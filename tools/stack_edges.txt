@@ -1248,8 +1248,23 @@ LpCtx.name_fn @0 in lp_row_cb,lp_key_cb -> nature16
 # pdna_origin_art_portrait/the icon router) are INLINED into anonymous `bx rN`
 # thunks by GCC on both gate ELFs, so gate_fn is not an edge in the disassembled
 # call graph from any ancestor and no disassembly-only dominator check can
-# confirm it (re-verified re-derivation pass, 2026-09-12). Re-audit by hand;
-# BACKLOG #131 proposes a `via=<predecessor set>` check instead, which IS
-# mechanically enforceable.
-gated gb_art_fetch need=6144 from=gb_art_source.h:PDNA_GB_FETCH_NEED gate=pdna_origin_art_stack_room
-gated gb_art_fetch_icon.constprop.0 need=6144 from=gb_art_source.h:PDNA_GB_ICON_NEED gate=pdna_origin_art_stack_room
+# confirm it (re-verified re-derivation pass, 2026-09-12) -- `gate=` stays
+# documentation for a human, re-audited by hand.
+#
+# BACKLOG #131: `via=pred1,pred2,...` is the ENFORCED counterpart -- the
+# comma-separated set of the ONLY real functions the auditor confirmed can
+# reach fn (i.e. the ones actually checked for calling gate_fn(need) first).
+# Every run, verify_gated_predecessors() (tools/stack_budget.py, right next to
+# verify_gated_macro_declarations()) reverses analysis["edges"] -- the ordinary
+# disassembled call graph, no inlining involved, unlike gate= -- to compute
+# fn's REAL predecessor set on THIS ELF and FATALs the moment it differs from
+# via= in either direction. Measured on both gate ELFs, 2026-09-12:
+# gb_art_fetch <- {gb_art_pic_cb}, gb_art_fetch_icon.constprop.0 <-
+# {gb_art_icon_cb}, identical on PokeDNA-artless.elf and PokeDNA.elf. This is
+# the only way the gate= hand audit can ever be invalidated: the moment some
+# new code path starts calling a gated function, the very next build FATALs,
+# naming the new caller, so it gets audited for the runtime gate before being
+# added to via= -- instead of silently riding along on an old audit that never
+# considered it.
+gated gb_art_fetch need=6144 from=gb_art_source.h:PDNA_GB_FETCH_NEED gate=pdna_origin_art_stack_room via=gb_art_pic_cb
+gated gb_art_fetch_icon.constprop.0 need=6144 from=gb_art_source.h:PDNA_GB_ICON_NEED gate=pdna_origin_art_stack_room via=gb_art_icon_cb
