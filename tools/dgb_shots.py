@@ -2908,31 +2908,46 @@ def run_b124_bobcheck(core_mod, image_mod, rom: Path, out_dir: Path, which: str)
     session, even with a Gen-2 ROM ALSO registered in the same fused image -- the
     exact bug this fix targets), while a session it answers true for (Crystal, same
     image) keeps showing GB icons. Reuses run_b124_dexicons()'s own navigation to
-    reach the dex grid, then takes two shots DEX_ANIM_PERIOD (30) frames apart --
-    straddling one bob toggle -- and diffs them with PIL. Prints the byte-diff count
-    for a caught cell's own pixel rect; a genuinely bobbing page has a NON-ZERO diff
-    there (two different frames of the same species' icon), a static page (pre-fix
-    behaviour on the Gen-1+Gen-2-ROM image) has ZERO."""
+    reach the dex grid, then captures a burst of frames (45 frames total, sampled every
+    5th frame = 9 samples, 1.5 animation periods) and diffs each against the first frame
+    with PIL. BACKLOG #137: stride-5 sampling avoids the aliasing trap of the original
+    stride-30 approach (equal to DEX_ANIM_PERIOD itself), which could land both frames
+    on the same animation phase despite a 4-6 frame redraw wave. Prints the max diff
+    across all samples; a genuinely bobbing page has a NON-ZERO max diff, a static page
+    (pre-fix behaviour on the Gen-1+Gen-2-ROM image) has ZERO."""
     from PIL import Image, ImageChops
     s = run_b124_dexicons(core_mod, image_mod, rom, out_dir, which, fallback=False)
     # s is now sitting on the dex grid (DV_GRID, page 1) right after run_b124_dexicons's
     # own "02_dex_grid" shot -- no further navigation needed.
-    p1 = s.shot("03_bob_a", "#124 review A5: bob-check frame A", allow_same=True)
-    s.run(30)   # DEX_ANIM_PERIOD -- one bob toggle
-    p2 = s.shot("03_bob_b", "#124 review A5: bob-check frame B (30 frames later)", allow_same=True)
-    im1, im2 = Image.open(p1).convert("RGB"), Image.open(p2).convert("RGB")
-    diff = ImageChops.difference(im1, im2)
-    # A caught cell in the grid's top-left region (GX=8,GY=24, 33x34 pitch per
-    # dex_geom() -- pdna_pick.c); crop generously around the first two rows so this
-    # does not depend on knowing exactly which cell is caught.
-    box = (0, 20, 240, 100)
-    region_diff = diff.crop(box)
-    nonzero = sum(1 for px in region_diff.getdata() if px != (0, 0, 0))
+    p1 = s.shot("03_bob_a", "#124 review A5: bob-check frame A (burst start)", allow_same=True)
+    im1 = Image.open(p1).convert("RGB")
+
+    # BACKLOG #137: capture burst at stride 5 (not stride 30=DEX_ANIM_PERIOD) to avoid
+    # aliasing against the animation period. The 21-cell redraw takes 4-6 real frames;
+    # stride 30 can land both samples on the same animation phase. Stride 5 ensures we
+    # cross multiple phases within 45 frames (1.5 periods).
+    max_nonzero = 0
+    frames_data = []
+    for i in range(9):  # 9 samples * 5 frames = 45 frames total (1.5 * DEX_ANIM_PERIOD)
+        s.run(5)
+        pi = s.shot(f"03_bob_s{i+1}", f"#124 review A5: bob-check sample {i+1}/9", allow_same=True)
+        frames_data.append(pi)
+        imi = Image.open(pi).convert("RGB")
+        diff = ImageChops.difference(im1, imi)
+        # A caught cell in the grid's top-left region (GX=8,GY=24, 33x34 pitch per
+        # dex_geom() -- pdna_pick.c); crop generously around the first two rows so this
+        # does not depend on knowing exactly which cell is caught.
+        box = (0, 20, 240, 100)
+        region_diff = diff.crop(box)
+        nonzero = sum(1 for px in region_diff.getdata() if px != (0, 0, 0))
+        max_nonzero = max(max_nonzero, nonzero)
+
+    ran = True
     print(f"== BACKLOG #124 review A5 bob-check ({which}) ==")
-    print(f"  frame A: {p1}")
-    print(f"  frame B: {p2}")
-    print(f"  non-zero pixels in the top grid rows' diff: {nonzero} "
-          f"({'BOBBING (differs)' if nonzero else 'STATIC (identical) -- would be the bug if this session should serve GB'})")
+    print(f"  frame A (baseline): {p1}")
+    print(f"  burst samples 1-9: {frames_data[0]} ... {frames_data[-1]}")
+    print(f"  max non-zero pixels in the top grid rows' diff (stride-5 burst): {max_nonzero} "
+          f"({'BOBBING (differs)' if max_nonzero else 'STATIC (identical) -- would be the bug if this session should serve GB'})")
 
 
 def measure_dex_sd_reads(core_mod, image_mod, rom: Path, out_dir: Path) -> None:
