@@ -2567,6 +2567,39 @@ def run_b124_dexicons(core_mod, image_mod, rom: Path, out_dir: Path, which: str,
     return s
 
 
+def run_b124_bobcheck(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> None:
+    """BACKLOG #124 review A5 follow-up: proves the caught-cell bob-animation flip
+    still runs on a session dex_cell_art_serves_page() answers false for (a Gen-1
+    session, even with a Gen-2 ROM ALSO registered in the same fused image -- the
+    exact bug this fix targets), while a session it answers true for (Crystal, same
+    image) keeps showing GB icons. Reuses run_b124_dexicons()'s own navigation to
+    reach the dex grid, then takes two shots DEX_ANIM_PERIOD (30) frames apart --
+    straddling one bob toggle -- and diffs them with PIL. Prints the byte-diff count
+    for a caught cell's own pixel rect; a genuinely bobbing page has a NON-ZERO diff
+    there (two different frames of the same species' icon), a static page (pre-fix
+    behaviour on the Gen-1+Gen-2-ROM image) has ZERO."""
+    from PIL import Image, ImageChops
+    s = run_b124_dexicons(core_mod, image_mod, rom, out_dir, which, fallback=False)
+    # s is now sitting on the dex grid (DV_GRID, page 1) right after run_b124_dexicons's
+    # own "02_dex_grid" shot -- no further navigation needed.
+    p1 = s.shot("03_bob_a", "#124 review A5: bob-check frame A", allow_same=True)
+    s.run(30)   # DEX_ANIM_PERIOD -- one bob toggle
+    p2 = s.shot("03_bob_b", "#124 review A5: bob-check frame B (30 frames later)", allow_same=True)
+    im1, im2 = Image.open(p1).convert("RGB"), Image.open(p2).convert("RGB")
+    diff = ImageChops.difference(im1, im2)
+    # A caught cell in the grid's top-left region (GX=8,GY=24, 33x34 pitch per
+    # dex_geom() -- pdna_pick.c); crop generously around the first two rows so this
+    # does not depend on knowing exactly which cell is caught.
+    box = (0, 20, 240, 100)
+    region_diff = diff.crop(box)
+    nonzero = sum(1 for px in region_diff.getdata() if px != (0, 0, 0))
+    print(f"== BACKLOG #124 review A5 bob-check ({which}) ==")
+    print(f"  frame A: {p1}")
+    print(f"  frame B: {p2}")
+    print(f"  non-zero pixels in the top grid rows' diff: {nonzero} "
+          f"({'BOBBING (differs)' if nonzero else 'STATIC (identical) -- would be the bug if this session should serve GB'})")
+
+
 def measure_dex_sd_reads(core_mod, image_mod, rom: Path, out_dir: Path) -> None:
     """BACKLOG #124 step 2: the 'perf dex:' log line's own `sd Xr/...` field for ONE
     Crystal dex-grid page (run_b124_dexicons's exact navigation, GB ROM registered,
@@ -3007,6 +3040,11 @@ def main(argv=None) -> int:
                      help="BACKLOG #124: with --b124-dexicons, expect --image to carry "
                           "no GB ROM (fuse_gb.py with just the .sav) -- the no-GB-ROM "
                           "fallback shot.")
+    ap.add_argument("--b124-bobcheck", choices=("red", "crystal"),
+                     help="BACKLOG #124 review A5: run_b124_bobcheck() against "
+                          "--image -- two frames 30 apart on the dex grid, diffed, "
+                          "to prove the caught-cell bob animation runs (or does not) "
+                          "on the named session.")
     ap.add_argument("--b124-sdcount", action="store_true",
                      help="BACKLOG #124 step 2: run measure_dex_sd_reads() against "
                           "--image (a Crystal single-ROM fused image, GB ROM present) "
@@ -3312,6 +3350,9 @@ def main(argv=None) -> int:
         ran = True
     if a.b124_sdcount:
         measure_dex_sd_reads(core_mod, image_mod, a.image, a.out)
+        ran = True
+    if a.b124_bobcheck:
+        run_b124_bobcheck(core_mod, image_mod, a.image, a.out, a.b124_bobcheck)
         ran = True
     if a.b124_dexicons:
         try:
