@@ -49,12 +49,15 @@ from __future__ import annotations
 import argparse
 import functools
 import json
+import re
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 import gb_shots  # noqa: E402 -- Session, load_mgba, KEY, HOLD/SETTLE/BIG_SETTLE
+import gen_gbfields  # noqa: E402 -- BACKLOG #129: GROUPS_GEN1's own header order,
+                     # imported directly rather than a second hand-copied list
 import fuse_gb   # noqa: E402 -- BACKLOG #98 D3: reads the fused image's OWN directory
                  # (locate_record_permissive/read_record/parse_directory, the same
                  # code path `fuse_gb.py --check` uses) instead of assuming a fixed
@@ -95,10 +98,75 @@ def gb_save_pick_index(image: Path) -> dict[str, int]:
         idx += 1
     return out
 
-# source/pdna_layout.h PDNA_NAV_ITEMS: two 10-row columns, Party at (col0, row0).
-# NV_GB is column 1, row 6 (Blocks=row0 of col1 .. GB import=row6) -- same arithmetic
-# tools/gb_shots.py's own run_e4_settings() uses for NV_SETTINGS (row 7, one further).
-NV_GB_DOWN_FROM_COL1_TOP = 6
+# BACKLOG #118 (coordinator addition, a74 audit): the OLD `NV_GB_DOWN_FROM_COL1_TOP =
+# 6` hand-copied literal drifted stale the moment NV_MAP was inserted ahead of NV_GB
+# in source/pdna_layout.h's PDNA_NAV_ITEMS -- the harness silently landed on the Map
+# screen's own "PICK YOUR ROM (.gba)" prompt instead of the GB-import picker, and
+# BOTH of Session.shot()'s own guards (flat-colour, identical-to-previous) let that
+# wrong-screen frame through uncaught. Fixed two ways: (1) the offset is now derived
+# from source/pdna_layout.h's own PDNA_NAV_ITEMS list every run, the same "read the
+# generator's own order, never hand-copy it" rule tools/gen_gbfields.py already
+# follows for the GB field tables; (2) nav_to_gb_import() below asserts the landed
+# screen against the SAME "PICK A SAVE" crop-signature boot_to_gb_session() uses --
+# gb_delta_pick_save() (pdna_main.c:8559) draws that exact title for BOTH the
+# top-level boot fork AND this nested NV_GB import (pdna_main.c:9151's own case
+# NV_GB calls the identical function), so no second reference PNG is needed: a
+# byte-identical screen does not need a byte-identical-but-differently-named ref.
+_NAV_LAYOUT_H = ROOT / "source" / "pdna_layout.h"
+
+
+@functools.lru_cache(maxsize=None)
+def _nav_item_order() -> list[str]:
+    """PDNA_NAV_ITEMS(X)'s own item order, parsed from source/pdna_layout.h --
+    never hand-copied. Returns the NV_* identifiers in on-screen index order
+    (index 0 == NV_PARTY, the menu's own top-left row). NOTE (h118 review): the screen refs are
+    save-independent by design, so a miscount that lands on an ADJACENT VALID row of the same kind
+    (e.g. Crystal's info page instead of Gold's) is NOT caught here -- only a wrong-screen landing is."""
+    text = _NAV_LAYOUT_H.read_text(encoding="utf-8")
+    m = re.search(r"#define PDNA_NAV_ITEMS\(X\)(.*?)\n\n", text, re.S)
+    if not m:
+        raise RuntimeError(f"{_NAV_LAYOUT_H}: PDNA_NAV_ITEMS(X) macro body not found "
+                            f"-- pdna_layout.h's own shape changed, fix this parser")
+    body = re.sub(r"/\*.*?\*/", "", m.group(1), flags=re.S)   # h118 review: a commented-out X(NV_…) must not count
+    items = re.findall(r"X\((NV_\w+),", body)
+    if not items:
+        raise RuntimeError(f"{_NAV_LAYOUT_H}: parsed ZERO X(NV_*, ...) entries out of "
+                            f"PDNA_NAV_ITEMS -- the regex above no longer matches")
+    return items
+
+
+def nav_down_from_col_top(name: str) -> int:
+    """DOWN count from the top of `name`'s own column (reached by ONE RIGHT press
+    from a fresh menu, source/pdna_main.c nav_menu(): KEY_RIGHT does `sel += rows`
+    when `sel + rows < NV_COUNT`, i.e. it jumps to index `rows` -- the first row of
+    column 1) down to `name`'s own row. PDNA_NAV_ROWS's own formula, replicated
+    here from source/pdna_layout.h (`(PDNA_NAV_COUNT + 1) / 2`): with today's 20
+    items that is 10 rows per column, so index 17 (NV_GB) is row 7 of column 1 --
+    NOT the stale hand-copied 6 this file used before BACKLOG #118's fix."""
+    items = _nav_item_order()
+    idx = items.index(name)
+    rows = (len(items) + 1) // 2
+    if idx < rows:
+        raise ValueError(f"{name}: index {idx} is in column 0, not column 1 -- "
+                          f"nav_down_from_col_top() only answers for a RIGHT-then-"
+                          f"DOWN column-1 approach; DOWN x{idx} alone reaches it "
+                          f"from a fresh menu (nav_menu's DOWN wraps the WHOLE "
+                          f"list linearly, not per column)")
+    return idx - rows
+
+
+def nav_to_gb_import(s: gb_shots.Session) -> None:
+    """START (box grid -> nav menu) -> RIGHT (column 0 -> column 1) -> DOWN x(NV_GB's
+    own row, derived from source every run) -> A -> asserts the landing is really
+    the "PICK A SAVE" picker (gb_delta_pick_save(), the SAME screen boot_to_gb_
+    session() lands on at the top-level boot fork) before returning -- a stale/wrong
+    DOWN count that lands on a DIFFERENT SCREEN now raises here, with a screenshot, instead of silently shooting
+    whatever screen it actually lands on (BACKLOG #118 coordinator addition)."""
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # box screen -> nav menu
+    s.tap("RIGHT")                                            # column 0 (Party) -> column 1 (Blocks)
+    s.press_n("DOWN", nav_down_from_col_top("NV_GB"))          # Blocks -> ... -> GB import
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # NV_GB -> the (separate) nested-import picker
+    assert_screen(s, "pick_a_save")
 
 # #62 review D9: rides out the one-time, per-generation cold ROM scan (see module
 # docstring). Gen 1 (a single sprite-portrait scan) measured ~258 s; Gen 2 pays TWO
@@ -107,6 +175,145 @@ NV_GB_DOWN_FROM_COL1_TOP = 6
 # (gb_art_fetch_icon, its own separate s_dicon_loc cache) -- measured ~500 s. 32,000
 # frames = ~533 s of emulated GBA time, comfortably over the Gen-2 worst case.
 GB_ART_COLD_SETTLE = 32000
+
+# BACKLOG #118 (orchestrator ruling 2026-09-12, after an h118 STOP on the brief's
+# original oracle.py-based design -- oracle.py's compose() reads Game Boy PPU
+# registers/VRAM off a bare `GbDriver` GB/GBC core (tools/gb_roundtrip.py:356);
+# this script's Session wraps a GBA core (source/ui.c:8 `DCNT_MODE3` -- a bitmap
+# framebuffer, no tilemap at all), so there is no tilemap cell for that tool to
+# read here). The replacement: an exact-match fixed-crop pixel signature against
+# a committed reference PNG, on a screen band chosen to hold no save-specific
+# text (no trainer name/ID/box name) so ONE reference serves every game/save.
+GB_ORACLE_REFS = ROOT / "tools" / "gb_oracle" / "refs"
+
+
+def _crop_for(name: str) -> tuple[int, int, int, int]:
+    """The fixed pixel band each named screen is identified by -- see
+    boot_to_gb_session()'s own docstring for the step-0 finding these support."""
+    return {
+        # pdna_main.c gb_delta_pick_save()/gb_delta_boot_pick() both open with
+        # `ui_text(4, 3, UI_TITLE, "PICK A SAVE"); ui_hline(0, 13, UI_SCR_W, ...);`
+        # -- the row list (save names) starts at y=18, well below this crop.
+        "pick_a_save": (0, 0, 240, 14),
+        # SAME title-band shape, pdna_gen12.c:815-816's "GAME BOY SAVE" header --
+        # the player name/ID line is ui_ptext_fit()'d at y=18, below this crop.
+        "gb_info_page": (0, 0, 240, 14),
+        # source/pdna_box.c render_full()'s 3-tab row (y=0..12): "PKMN DATA" /
+        # "(BANK)" (src->is_bank -- every GB source sets this true) / "SAVE" --
+        # fixed literals for any GB source, regardless of which box/save is
+        # loaded. The box name + occupancy count draw_box_banner() paints is at
+        # y=13+, below this crop -- that IS save-specific and deliberately excluded.
+        "gb_box_grid": (0, 0, 240, 12),
+        # BACKLOG #129: pdna_gbflags.c nf_draw_row()'s own selected-header row --
+        # "+ Story" (fold_glyph + name), the SEL panel spanning the full row
+        # (source: `ui_panel(2, y - 1, 236, 9, ...)`, y determined empirically for
+        # THIS deterministic tap sequence: fresh FLAGS-tab entry, header 0
+        # unfolded, then SELECT xN to "Story" -- the row text itself comes from
+        # GROUPS_GEN1's own header name (tools/gen_gbfields.py), not per-save
+        # data, so this crop is game/save-independent for Red/Yellow the same
+        # way the other refs are.
+        "gbflags_story_header": (0, 138, 240, 149),
+    }[name]
+
+
+def _current_crop(s: gb_shots.Session, name: str):
+    return s.screen.to_pil().convert("RGB").crop(_crop_for(name))
+
+
+def screen_is(s: gb_shots.Session, name: str) -> bool:
+    """Non-raising check: does s's CURRENT frame match the fixed-crop reference
+    tools/gb_oracle/refs/<name>.png exactly (pixel-for-pixel)? Used by
+    boot_to_gb_session() to detect whether the boot picker is showing at all --
+    BACKLOG #118 step 0's finding is that it isn't, on a single-fused-GB-save
+    image with no Emerald.sav (gb_delta_pick_save's own `if (n == 1) return 0;`,
+    pdna_main.c:8567)."""
+    from PIL import Image, ImageChops
+    ref = Image.open(GB_ORACLE_REFS / f"{name}.png").convert("RGB")
+    cur = _current_crop(s, name)
+    return ImageChops.difference(ref, cur).getbbox() is None
+
+
+def assert_screen(s: gb_shots.Session, name: str) -> None:
+    """Raising counterpart of screen_is(): on a miss, dumps the full current
+    frame AND the mismatched crop next to the run's other shots before raising,
+    so a wrong landing is a screenshot away, never a guess."""
+    if screen_is(s, name):
+        return
+    full_path = s.out_dir / f"{s.prefix}{name}_MISMATCH_full.png"
+    crop_path = s.out_dir / f"{s.prefix}{name}_MISMATCH_crop.png"
+    s.screen.to_pil().convert("RGB").save(full_path)
+    _current_crop(s, name).save(crop_path)
+    raise AssertionError(
+        f"assert_screen: expected screen '{name}' but the current frame's "
+        f"{_crop_for(name)} crop does not match tools/gb_oracle/refs/{name}.png "
+        f"-- see {full_path} and {crop_path}")
+
+
+def row_index(rom: Path, which: str | None) -> int:
+    """The DOWN count from the picker's own row 0 to `which`'s row.
+    gb_delta_boot_pick's row order (pdna_main.c:8612-8622, read from source):
+    row 0 is ALWAYS the loaded Gen-3 save (g3_label); rows 1..n mirror
+    fused_gb_save()'s own enumeration one for one, i.e. THIS image's fuse
+    order -- read live via gb_save_pick_index() (BACKLOG #98 D3), never a
+    hardcoded Red/Gold/Crystal guess. which=None means "stay on row 0" (the
+    Gen-3 save itself, e.g. to reach the flight image's Emerald session)."""
+    if which is None:
+        return 0
+    return gb_save_pick_index(rom)[which] + 1
+
+
+def select_jumps_to(groups: list[tuple[str, list]], from_title: str, to_title: str) -> int:
+    """BACKLOG #129: SELECT count to jump from `from_title`'s own header to
+    `to_title`'s, on pdna_gbflags.c's FLAGS tab -- SELECT jumps by header INDEX
+    regardless of fold state (nf_draw_row's own header rows), so the count is
+    just the difference of the two titles' positions in the generator's OWN
+    group list (`groups`, e.g. tools/gen_gbfields.py's GROUPS_GEN1/GROUPS_GEN2)
+    -- never a second, hand-copied header list that can drift out of sync with
+    the generator's real one (the exact class of bug BACKLOG #118's coordinator
+    addition found for NV_GB's own DOWN count)."""
+    titles = [title for title, _members in groups]
+    return titles.index(to_title) - titles.index(from_title)
+
+
+def boot_to_gb_session(s: gb_shots.Session, rom: Path, which: str | None = None) -> None:
+    """Shared boot prefix for EVERY run_* that opens a GB session -- covers both
+    image shapes BACKLOG #118 step 0 found in mGBA on 2026-09-12:
+
+      - a single-fused-GB-save image (tools/fuse_gb.py fed exactly one ROM+save
+        pair, no Emerald.sav) skips the "PICK A SAVE" picker ENTIRELY --
+        gb_delta_pick_save()'s own `if (n == 1) return 0;` (pdna_main.c:8567) --
+        landing straight on that save's own "GAME BOY SAVE" info page the
+        instant `s.run(700)` finishes (verified: Red-only and Gold-only images
+        both show "GAME BOY SAVE" with zero picker frames).
+      - any image with a Gen-3 save ready (flash_ok or the fused-.sav fallback)
+        AND a fused GB corpus -- e.g. `make delta-gb`'s own Emerald.sav +
+        Red/Gold/Crystal recipe, the "flight" shape -- ALWAYS shows the picker:
+        gb_delta_boot_pick() (pdna_main.c:8612) has NO n==1 shortcut anywhere in
+        its body (unlike gb_delta_pick_save). This is BACKLOG #118's own claim,
+        confirmed true for this image shape (verified: a Red+Gold+Crystal+
+        Emerald.sav image shows "PICK A SAVE" with rows "Gen 3 save (Emerald/
+        FR/LG)" (row 0, default-selected), "Red.sav", "Gold.sav", "Crystal.sav").
+      Lane tiny3's "single-ROM image, no picker" result and BACKLOG #118's
+      "fused build ALWAYS shows PICK A SAVE" claim are both correct -- about
+      different image shapes, not a contradiction.
+
+    `which` (a fused GB save's filename stem, e.g. "red"/"gold"/"crystal") picks
+    a row via row_index() when the picker IS showing; ignored otherwise (a
+    single-ROM image has nothing to pick). Either way this ends on the box
+    grid, ASSERTING each landing against a fixed-crop pixel reference
+    (screen_is()/assert_screen(), tools/gb_oracle/refs/*.png) rather than
+    trusting the tap count blindly -- a DOWN count that lands on a different screen raises here, with a
+    screenshot, instead of silently shooting the wrong save's screens."""
+    s.run(700)
+    if screen_is(s, "pick_a_save"):
+        n = row_index(rom, which)
+        if n:
+            s.press_n("DOWN", n, settle=gb_shots.SETTLE)   # Gen-3 row -> `which`'s row
+        s.tap("A", settle=60)                               # pick row -> S1 info
+    assert_screen(s, "gb_info_page")
+    s.tap("A", settle=60)                    # S1 info -> box grid (rom_gbsprite cold fetch)
+    s.run(GB_ART_COLD_SETTLE)
+    assert_screen(s, "gb_box_grid")
 
 
 def run_gbscreen_shell(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
@@ -137,7 +344,12 @@ def run_gbscreen_shell(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shot
     s.tap("A", settle=gb_shots.BIG_SETTLE)        # #68a boot picker, Emerald row (default) -> box
     s.tap("START", settle=gb_shots.BIG_SETTLE)   # box screen -> nav menu
     s.tap("RIGHT")                                 # column 0 (Party) -> column 1 (Blocks)
-    s.press_n("DOWN", 7)                           # Blocks -> ... -> Settings (index 17)
+    # BACKLOG #118 (coordinator addition, a74 audit): this was hand-copied as
+    # DOWN x7 ("index 17") -- but index 17 is NV_GB, not NV_SETTINGS (index 18,
+    # row 8 of column 1) -- the SAME stale-offset bug class as NV_GB_DOWN_FROM_
+    # COL1_TOP, caught by the same audit and fixed the same way: derived from
+    # source every run instead of hand-copied.
+    s.press_n("DOWN", nav_down_from_col_top("NV_SETTINGS"))   # Blocks -> ... -> Settings
     s.tap("A", settle=gb_shots.BIG_SETTLE)         # nav menu -> the Settings list
 
     s.tap("SEL", settle=GB_ART_COLD_SETTLE)        # hidden key -> gbscr_run_demo(PDNA_GEN1)
@@ -199,10 +411,7 @@ def run_nav_gb(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_
     # A actually lands past the boot picker, not mid-load.
     s.run(700)
     s.tap("A", settle=gb_shots.BIG_SETTLE)              # #68a boot picker, Emerald row (default) -> box
-    s.tap("START", settle=gb_shots.BIG_SETTLE)          # box screen -> nav menu
-    s.tap("RIGHT")                                        # column 0 (Party) -> column 1 (Blocks)
-    s.press_n("DOWN", NV_GB_DOWN_FROM_COL1_TOP)           # Blocks -> ... -> GB import
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                # NV_GB -> the save picker
+    nav_to_gb_import(s)                                   # box screen -> nav menu -> NV_GB -> the save picker
     for _ in range(idx):
         s.tap("DOWN", settle=gb_shots.SETTLE)
     s.tap("A", settle=gb_shots.BIG_SETTLE)                # picked -> this save's own S1 info page
@@ -361,10 +570,7 @@ def run_standalone(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Se
     # is unaffected by #68a's boot picker: same navigation run_nav_gb() below uses, but
     # inline here so one continuous session covers both the new picker AND the existing
     # nested-import path in one screenshot run.
-    s.tap("START", settle=gb_shots.BIG_SETTLE)            # box screen -> nav menu
-    s.tap("RIGHT")                                          # column 0 (Party) -> column 1 (Blocks)
-    s.press_n("DOWN", NV_GB_DOWN_FROM_COL1_TOP)             # Blocks -> ... -> GB import
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # NV_GB -> the (separate) nested-import picker
+    nav_to_gb_import(s)                                     # box screen -> nav menu -> NV_GB -> the picker
     s.tap("DOWN", settle=gb_shots.SETTLE)                   # Red (index 0) -> Gold (index 1)
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # picked -> Gold's own S1 info page
     s.shot("17_nv_gb_info", "#68a: NV_GB's nested import still works from inside the "
@@ -394,11 +600,7 @@ def run_u2c_trainer(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.S
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "u2c_")
     print("== U2c: Red's own trainer card (Red.sav, boot picker -> standalone -> Trainer) ==")
 
-    s.run(700)
-    s.tap("DOWN", settle=gb_shots.SETTLE)                  # Emerald (row 0) -> Red (row 1)
-    s.tap("A", settle=60)                                  # pick Red -> S1 info
-    s.tap("A", settle=60)                                  # -> box grid (rom_gbsprite cold fetch)
-    s.run(GB_ART_COLD_SETTLE)
+    boot_to_gb_session(s, rom, which="red")
     s.tap("START", settle=gb_shots.BIG_SETTLE)              # box grid -> nav menu
     s.press_n("DOWN", 3)                                     # Party -> Bank -> Daycare -> Trainer
     s.tap("A", settle=GB_ART_COLD_SETTLE)                   # Trainer -> pdna_gbtrainer_gen1_card()
@@ -496,15 +698,10 @@ def run_u3_trainer(core_mod, image_mod, rom: Path, out_dir: Path, which: str) ->
     nav menu -> DOWN x3 -> Trainer -> A -> pdna_gbtrainer_gen2_card() (gbscr_open()'s
     OWN separate cold rom_gbui scan, same GB_ART_COLD_SETTLE ride-out
     run_u2c_trainer() needs)."""
-    idx = gb_save_pick_index(rom)[which]
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"u3_{which}_")
     print(f"== U3: {which}'s own trainer card (boot picker -> standalone -> Trainer) ==")
 
-    s.run(700)
-    s.press_n("DOWN", idx + 1, settle=gb_shots.SETTLE)      # Emerald (row 0) -> `which` row
-    s.tap("A", settle=60)                                    # pick -> S1 info
-    s.tap("A", settle=60)                                    # -> box grid (rom_gbsprite cold fetch)
-    s.run(GB_ART_COLD_SETTLE)
+    boot_to_gb_session(s, rom, which=which)
     s.tap("START", settle=gb_shots.BIG_SETTLE)               # box grid -> nav menu
     s.press_n("DOWN", 3)                                       # Party -> Bank -> Daycare -> Trainer
     s.tap("A", settle=GB_ART_COLD_SETTLE)                    # Trainer -> pdna_gbtrainer_gen2_card()
@@ -611,24 +808,22 @@ def run_u4_bag(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_
     fused image (tools/fuse_gb.py fed only Red.gb+Red.sav, or only Yellow.gb+
     Yellow.sav -- BACKLOG #98's known harness gap: the fused image lookup is keyed by
     GENERATION only, so a Red+Yellow-both image would serve whichever ROM the cache
-    happens to answer with, not deterministically the one this run asked for). The
-    boot picker therefore has exactly ONE GB row (index 1) regardless of `which` --
-    same DOWN x1 -> A as run_u2c_trainer()'s own Red-only path, just generalised to
-    a caption-only `which` label (no PICK_INDEX lookup needed with a single-ROM image).
+    happens to answer with, not deterministically the one this run asked for). BACKLOG
+    #118 step 0: a single-fused-GB-save image with no Emerald.sav SKIPS the "PICK A
+    SAVE" picker entirely (gb_delta_pick_save's `if (n == 1) return 0;`,
+    pdna_main.c:8567) -- this docstring previously (wrongly) described a one-row
+    picker here; boot_to_gb_session() now detects whichever shape `rom` actually is
+    at runtime instead of assuming.
 
-    Nav: boot picker DOWN -> the GB row -> A -> S1 info -> A -> box grid (rom_gbsprite
-    cold scan) -> START -> nav menu -> DOWN x7 (Party->Bank->Daycare->Trainer->Clock
-    fix->Mirage->Pokedex->Bag, PDNA_NAV_ITEMS index 7) -> A -> pdna_gbbag() -- Gen 1,
-    so this lands on pdna_gbbag_gen1_screen() (gbscr_open()'s own cold rom_gbui scan,
-    separate cache from rom_gbsprite's box-grid one)."""
+    Nav: boot_to_gb_session() (picker skipped on this image shape) -> box grid
+    (rom_gbsprite cold scan) -> START -> nav menu -> DOWN x7 (Party->Bank->Daycare->
+    Trainer->Clock fix->Mirage->Pokedex->Bag, PDNA_NAV_ITEMS index 7) -> A ->
+    pdna_gbbag() -- Gen 1, so this lands on pdna_gbbag_gen1_screen() (gbscr_open()'s
+    own cold rom_gbui scan, separate cache from rom_gbsprite's box-grid one)."""
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"u4_{which}_")
     print(f"== U4: {which}'s own Item bag (boot picker -> standalone -> Bag) ==")
 
-    s.run(700)
-    s.tap("DOWN", settle=gb_shots.SETTLE)                   # Emerald (row 0) -> the GB row (row 1)
-    s.tap("A", settle=60)                                   # pick it -> S1 info
-    s.tap("A", settle=60)                                   # -> box grid (rom_gbsprite cold fetch)
-    s.run(GB_ART_COLD_SETTLE)
+    boot_to_gb_session(s, rom, which=which)
     s.tap("START", settle=gb_shots.BIG_SETTLE)              # box grid -> nav menu
     s.press_n("DOWN", 7)                                     # Party -> ... -> Bag (index 7)
     s.tap("A", settle=GB_ART_COLD_SETTLE)                   # Bag -> pdna_gbbag_gen1_screen()
@@ -1018,16 +1213,14 @@ def run_u4_bag(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_
 def run_u4_empty(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
     """N6(e): Red's own Item bag with an EMPTY Items pocket (count 0) -- `rom` must
     be fused with a Red save whose Items pocket was zeroed by docs/shots/rvu4/
-    mkbag.c (no ids given on argv -- gbb_write() then persists count=0). Same nav
-    as run_u4_bag()'s own red case: boot picker DOWN -> A -> A -> box grid -> START
-    -> nav DOWN x7 -> A."""
+    mkbag.c (no ids given on argv -- gbb_write() then persists count=0). BACKLOG
+    #118 step 0: boot_to_gb_session() decides at runtime whether the "PICK A SAVE"
+    picker is even showing (a single-fused-GB-save image with no Emerald.sav
+    skips it, pdna_main.c:8567) -- same nav as run_u4_bag()'s own red case
+    otherwise: box grid -> START -> nav DOWN x7 -> A."""
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "u4_empty_")
     print("== N6(e): Red's own Item bag, Items pocket count == 0 ==")
-    s.run(700)
-    s.tap("DOWN", settle=gb_shots.SETTLE)
-    s.tap("A", settle=60)
-    s.tap("A", settle=60)
-    s.run(GB_ART_COLD_SETTLE)
+    boot_to_gb_session(s, rom, which="red")
     s.tap("START", settle=gb_shots.BIG_SETTLE)
     s.press_n("DOWN", 7)
     s.tap("A", settle=GB_ART_COLD_SETTLE)
@@ -1069,11 +1262,7 @@ def run_m1_map(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessio
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "m1_map_")
     print("== M1: Red's own current-map view (boot picker -> standalone -> Map) ==")
 
-    s.run(700)
-    s.tap("DOWN", settle=gb_shots.SETTLE)                    # Emerald (row 0) -> the GB row (row 1)
-    s.tap("A", settle=60)                                    # pick it -> S1 info
-    s.tap("A", settle=60)                                    # -> box grid (rom_gbsprite cold fetch)
-    s.run(GB_ART_COLD_SETTLE)
+    boot_to_gb_session(s, rom, which="red")
     s.tap("START", settle=gb_shots.BIG_SETTLE)               # box grid -> nav menu
     s.press_n("DOWN", 16)                                     # Party -> ... -> Map (index 16)
     s.tap("A", settle=GB_ART_COLD_SETTLE)                    # Map -> pdna_gbmap_gen1()
@@ -1161,11 +1350,7 @@ def run_m1_map_vclamp(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "m1_map_vclamp_")
     print("== M1: vertical clamp on Route 17 (warped save) ==")
 
-    s.run(700)
-    s.tap("DOWN", settle=gb_shots.SETTLE)
-    s.tap("A", settle=60)
-    s.tap("A", settle=60)
-    s.run(GB_ART_COLD_SETTLE)
+    boot_to_gb_session(s, rom, which="red")
     s.tap("START", settle=gb_shots.BIG_SETTLE)
     s.press_n("DOWN", 16)
     s.tap("A", settle=GB_ART_COLD_SETTLE)
@@ -1336,9 +1521,7 @@ def run_u5_pack(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"u5_{which}_")
     print(f"== U5: {which}'s own Pack (single-ROM image -> standalone -> Pack) ==")
 
-    s.run(700)
-    s.tap("A", settle=60)                                   # S1 info -> box grid
-    s.run(GB_ART_COLD_SETTLE)
+    boot_to_gb_session(s, rom, which=which)
     s.tap("START", settle=gb_shots.BIG_SETTLE)              # box grid -> nav menu
     s.press_n("DOWN", 7)                                     # Party -> ... -> Bag (index 7)
     s.tap("A", settle=GB_ART_COLD_SETTLE)                   # Bag -> pdna_gbpack_gen2_screen()
@@ -1558,9 +1741,7 @@ def run_b89_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     print(f"== BACKLOG #89: {which}'s own Hall of Fame (single-ROM image -> "
           "standalone -> Records) ==")
 
-    s.run(700)
-    s.tap("A", settle=60)                                   # S1 info -> box grid
-    s.run(GB_ART_COLD_SETTLE)
+    boot_to_gb_session(s, rom, which=which)
     s.tap("START", settle=gb_shots.BIG_SETTLE)              # box grid -> nav menu
     s.press_n("DOWN", 12)                                    # Party -> ... -> Records (index 12)
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # Records -> pdna_gbhof()
@@ -1645,9 +1826,7 @@ def run_b89_hof_detail_only(core_mod, image_mod, rom: Path, out_dir: Path, which
     shipped, never exercised that branch at all."""
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b89_{which}_")
     print(f"== BACKLOG #89 D6/NICK: {which}'s Hall of Fame detail, poked-.sav proof shot ==")
-    s.run(700)
-    s.tap("A", settle=60)
-    s.run(GB_ART_COLD_SETTLE)
+    boot_to_gb_session(s, rom, which=which)
     s.tap("START", settle=gb_shots.BIG_SETTLE)
     s.press_n("DOWN", 12)
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # Records -> pdna_gbhof()
@@ -1673,9 +1852,7 @@ def run_b90_fly(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     print(f"== BACKLOG #90: {which}'s own Fly destinations (single-ROM image -> "
           "standalone -> Fly) ==")
 
-    s.run(700)
-    s.tap("A", settle=60)                                   # S1 info -> box grid
-    s.run(GB_ART_COLD_SETTLE)
+    boot_to_gb_session(s, rom, which=which)
     s.tap("START", settle=gb_shots.BIG_SETTLE)              # box grid -> nav menu
     s.press_n("DOWN", 14)                                    # Party -> ... -> Fly (index 14)
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # Fly -> pdna_gb_fly()
@@ -1820,9 +1997,7 @@ def run_b90_boxname(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -
     print(f"== BACKLOG #94: {which}'s own box-rename banner (single-ROM image -> "
           "standalone -> box grid -> banner -> A -> osk_input) ==")
 
-    s.run(700)
-    s.tap("A", settle=60)                                    # S1 info -> box grid
-    s.run(GB_ART_COLD_SETTLE)
+    boot_to_gb_session(s, rom, which=which)
     s.shot("01_box_grid", f"BACKLOG #94: {which}'s own box grid, freshly opened -- "
                            "box 0, cursor on the top-left cell")
 
@@ -1921,9 +2096,7 @@ def run_b85_daycare(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b85_{which}_")
     print(f"== BACKLOG #85: {which}'s own Day Care (D1/D6 re-shoot) ==")
 
-    s.run(700)
-    s.tap("A", settle=60)                                   # S1 info -> box grid
-    s.run(GB_ART_COLD_SETTLE)
+    boot_to_gb_session(s, rom, which=which)
     s.shot("00_box_before", f"BACKLOG #85: {which}.sav's own BOX1 on entry, before "
                              "switching to the box this run enters the Day Care from")
 
@@ -2094,9 +2267,7 @@ def run_b114_yard(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> 
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b114yard_{which}_")
     print(f"== BACKLOG #114: {which}'s own Day-Care YARD ==")
 
-    s.run(700)
-    s.tap("A", settle=60)                                   # S1 info -> box grid
-    s.run(GB_ART_COLD_SETTLE)
+    boot_to_gb_session(s, rom, which=which)
     s.press_n("R", box_index, settle=300)                   # -> the box with a free slot (see run_b85_daycare)
 
     s.tap("START", settle=gb_shots.BIG_SETTLE)              # box grid -> nav menu
@@ -2180,9 +2351,7 @@ def run_d7_gold(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessi
     per-generation COLUMN, not a per-generation row order) -> A -> app_nav_refuse()."""
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "d7_gold_")
     print("== N6(f): Gold's own START > BAG refusal ==")
-    s.run(700)
-    s.tap("A", settle=60)                                   # S1 info -> box grid (no DOWN/second A needed)
-    s.run(GB_ART_COLD_SETTLE)
+    boot_to_gb_session(s, rom, which="gold")
     s.tap("START", settle=gb_shots.BIG_SETTLE)
     s.press_n("DOWN", 7)
     s.tap("A", settle=gb_shots.BIG_SETTLE)
@@ -2219,9 +2388,7 @@ def run_b86_clock(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Ses
     it lands on a card that does not exist in this build)."""
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b86_clock_")
     print("== BACKLOG #86/#108: the Gen-2 Clock screen (Crystal) ==")
-    s.run(700)
-    s.tap("A", settle=60)                                   # S1 info -> box grid (single-ROM image)
-    s.run(GB_ART_COLD_SETTLE)
+    boot_to_gb_session(s, rom, which="crystal")
     s.tap("START", settle=gb_shots.BIG_SETTLE)               # box screen -> nav menu
     s.press_n("DOWN", 4)                                       # Party -> ... -> Clock fix (col 0, row 4)
     s.shot("01_nav_menu", "BACKLOG #86/#108: the nav menu with 'Clock fix' selected -- "
@@ -2283,9 +2450,7 @@ def run_b86_clock_gen1_fallback(core_mod, image_mod, rom: Path, out_dir: Path) -
     Gold-only one) -- ONE tap (A) reaches the box grid, no boot picker."""
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b86_clock_gen1_")
     print("== BACKLOG #86/#108: the Gen-1 fallback (Red, NAV_NOT_IN_GAME) ==")
-    s.run(700)
-    s.tap("A", settle=60)                                   # S1 info -> box grid (single-ROM image)
-    s.run(GB_ART_COLD_SETTLE)
+    boot_to_gb_session(s, rom, which="red")
     s.tap("START", settle=gb_shots.BIG_SETTLE)
     s.press_n("DOWN", 4)                                       # same column-0 row 4 as the Gen-2 shot
     s.tap("A", settle=gb_shots.BIG_SETTLE)                    # -> app_nav_refuse(NV_CLOCK, SE_KIND_GEN1)
@@ -2318,9 +2483,7 @@ def run_b88_flags(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> 
     section, TOGGLE-kind, for Crystal's own toggle/CAUTION shots)."""
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b88_flags_{which}_")
     print(f"== BACKLOG #88: the Flags & counters screen ({which}) ==")
-    s.run(700)
-    s.tap("A", settle=60)                                   # S1 info -> box grid (single-ROM image)
-    s.run(GB_ART_COLD_SETTLE)
+    boot_to_gb_session(s, rom, which=which)
     s.tap("START", settle=gb_shots.BIG_SETTLE)               # box screen -> nav menu
     s.press_n("DOWN", 8)                                       # Party -> ... -> Flags & counters (col 0, row 8)
     s.shot("01_nav_menu", "BACKLOG #88: the nav menu with 'Flags & counters' selected "
@@ -2381,12 +2544,22 @@ def run_b88_flags(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> 
 
         # BACKLOG #127 F3: "Hall of Fame rating" (the 33-char label that smashed 6
         # bytes past row[40] before D1's fix) lives in the LAST group, "Story"
-        # (GROUPS_GEN1's 6th entry, GBFL_KIND_READONLY) -- it stays folded in every
-        # other Gen-1 shot in this run. SELECT jumps by row INDEX to the next header
-        # regardless of fold state (same mechanic the raw-row jump below already
-        # relies on): h1,h2,h3,h4 -> h5 (Story).
-        for _ in range(5):
-            s.tap("SEL", settle=gb_shots.SETTLE)
+        # (GROUPS_GEN1's own last entry, GBFL_KIND_READONLY) -- it stays folded in
+        # every other Gen-1 shot in this run. SELECT jumps by row INDEX to the next
+        # header regardless of fold state (same mechanic the raw-row jump below
+        # already relies on). BACKLOG #129: the jump count is now DERIVED from
+        # GROUPS_GEN1's own header order (tools/gen_gbfields.py, imported directly)
+        # instead of a hand-copied "5" that a future group insertion could drift
+        # stale -- the exact bug class BACKLOG #118's NV_GB fix already caught once.
+        story_jumps = select_jumps_to(gen_gbfields.GROUPS_GEN1, "Key events", "Story")
+        s.press_n("SEL", story_jumps, settle=gb_shots.SETTLE)
+        # Assert the landing is REALLY "Story", not a neighbouring header a wrong
+        # jump count would silently land on instead (fixed-crop pixel signature,
+        # tools/gb_oracle/refs/gbflags_story_header.png -- the same technique
+        # boot_to_gb_session() uses, since tools/gb_oracle/oracle.py's own tilemap
+        # reader cannot attach to this GBA-hosted harness, see that helper's
+        # docstring for the full reasoning).
+        assert_screen(s, "gbflags_story_header")
         s.tap("A", settle=gb_shots.BIG_SETTLE)               # unfold "Story"
         s.tap("DOWN", settle=gb_shots.SETTLE)                # -> "Beat Champion Rival"
         s.tap("DOWN", settle=gb_shots.SETTLE)                # -> "Hall of Fame rating"
@@ -2457,9 +2630,7 @@ def run_b88_flags_d6(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.
     (post-game) (WARN) -- SELECT from header 0 steps forward one header per press."""
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b88_flags_d6_")
     print("== BACKLOG #88 D6: WARN confirm + READONLY message (crystal) ==")
-    s.run(700)
-    s.tap("A", settle=60)
-    s.run(GB_ART_COLD_SETTLE)
+    boot_to_gb_session(s, rom, which="crystal")
     s.tap("START", settle=gb_shots.BIG_SETTLE)
     s.press_n("DOWN", 8)                                     # -> Flags & counters row
     s.tap("A", settle=gb_shots.BIG_SETTLE)                   # -> pdna_gbflags(), COUNTERS tab
@@ -2551,9 +2722,7 @@ def run_b87_dex(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     tag = f"b87_dex_{which}_"
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, tag)
     print(f"== BACKLOG #87: the Pokedex screen ({which}) ==")
-    s.run(700)
-    s.tap("A", settle=60)                                   # S1 info -> box grid (single-ROM image)
-    s.run(GB_ART_COLD_SETTLE)
+    boot_to_gb_session(s, rom, which=which)
     s.tap("START", settle=gb_shots.BIG_SETTLE)               # box screen -> nav menu
     s.press_n("DOWN", 6)                                       # Party -> ... -> Pokedex (col 0, row 6)
     s.shot("01_nav_menu", "#87: the nav menu with 'Pokedex' selected -- "
@@ -2730,11 +2899,7 @@ def run_r1_xfer(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessi
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "r1_")
     print("== BACKLOG #104 R1: KEEP AS IS / MAKE LEGAL on a Gen 3 -> Game Boy paste ==")
 
-    s.run(700)
-    s.tap("DOWN", settle=gb_shots.SETTLE)                   # Emerald (row 0) -> Gold (row 1)
-    s.tap("A", settle=60)                                   # pick it -> S1 info
-    s.tap("A", settle=60)                                   # -> box grid (rom_gbsprite cold fetch)
-    s.run(GB_ART_COLD_SETTLE)
+    boot_to_gb_session(s, rom, which="gold")
     s.shot("01_box_grid", "BACKLOG #104 R1: Gold's box grid, boot-picker -> standalone "
                            "(g_clip pre-seeded with a Charizard at L20 -- fuse_sav.py "
                            "--clip, screenshot-only, no Gen-3 session ever opened). "
@@ -2866,11 +3031,7 @@ def run_r1_xfer_red(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.S
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "r1_red_")
     print("== BACKLOG #112: Gen-1 (Red) transfer-down now reaches the R1 screen ==")
 
-    s.run(700)
-    s.tap("DOWN", settle=gb_shots.SETTLE)                   # Emerald (row 0) -> Red (row 1)
-    s.tap("A", settle=60)                                   # pick it -> S1 info
-    s.tap("A", settle=60)                                   # -> box grid (rom_gbsprite cold fetch)
-    s.run(GB_ART_COLD_SETTLE)
+    boot_to_gb_session(s, rom, which="red")
     s.shot("01_box_grid", "BACKLOG #112: Red's box grid, boot-picker -> standalone "
                            "(g_clip pre-seeded with the SAME Charizard L20 run_r1_xfer "
                            "uses for Gold). BOX1, 20/20 -- no room here, see the R x5 "
@@ -3683,10 +3844,7 @@ def run_gbmon(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "gbmon_")
     print("== BACKLOG #92: the Gen-2 mon-menu ITEM row ==")
 
-    s.run(700)
-    s.tap("A", settle=60)                                   # S1 info -> box grid (single-ROM image,
-                                                               # no boot picker -- same nav as d7_gold)
-    s.run(GB_ART_COLD_SETTLE)
+    boot_to_gb_session(s, rom)   # single-ROM image, no boot picker -- same nav as d7_gold
     s.shot("01_box_grid", "#92: box grid, top-left cell occupied (this corpus's "
                            "every box is full) -- the mon this run's ITEM row "
                            "edits")
@@ -3991,11 +4149,7 @@ def run_gbnames(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     if which == "red":
         s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "gbnames_red_")
         print("== gbnames: Red's own Item bag, real names ==")
-        s.run(700)
-        s.tap("DOWN", settle=gb_shots.SETTLE)               # Emerald (row 0) -> the GB row (row 1)
-        s.tap("A", settle=60)                               # pick it -> S1 info
-        s.tap("A", settle=60)                               # -> box grid (rom_gbsprite cold fetch)
-        s.run(GB_ART_COLD_SETTLE)
+        boot_to_gb_session(s, rom, which="red")
         s.tap("START", settle=gb_shots.BIG_SETTLE)          # box grid -> nav menu
         s.press_n("DOWN", 7)                                 # Party -> ... -> Bag (index 7)
         s.tap("A", settle=GB_ART_COLD_SETTLE)               # Bag -> pdna_gbbag_gen1_screen()
@@ -4048,10 +4202,7 @@ def run_gbnames(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
 
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "gbnames_crystal_")
     print("== gbnames: Crystal's own Pack, real names ==")
-    s.run(700)
-    s.tap("A", settle=60)                                   # S1 info -> box grid (single-ROM image,
-                                                               # no boot picker)
-    s.run(GB_ART_COLD_SETTLE)
+    boot_to_gb_session(s, rom, which="crystal")   # single-ROM image, no boot picker
     s.tap("START", settle=gb_shots.BIG_SETTLE)              # box grid -> nav menu
     s.press_n("DOWN", 7)                                     # Party -> ... -> Bag (index 7)
     s.tap("A", settle=GB_ART_COLD_SETTLE)                   # Bag -> pdna_gbpack_gen2_screen()
