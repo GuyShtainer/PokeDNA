@@ -290,6 +290,58 @@ static void test_resolve_for_router(void) {
     CHECK(got == SE_ERA_NATIVE, "Da3: se_resolve's own NATIVE sentinel passes through");
   }
 
+  /* Da4: BACKLOG #132 regression -- a Gen-2 (Gold) save's default SUMMARY cell for a
+   * Kanto-dex mon (dex=1) with an uncertain per-record guess (origin_gen=1,
+   * certain=0), Gen-2 ROM registered but Gen-1 ROM NOT. se_resolve() answers concrete
+   * SE_ERA_GEN2 outright (SE_KIND_GEN2 wins before any per-record guess). The router
+   * must NOT collapse this to NATIVE -- a GB kind's concrete answer is a fact about the
+   * mounted save, not the untouched/default case the collapse exists to catch. */
+  {
+    SeRoms roms; for (int i = 0; i < SE_ERA_N; i++) roms.have[i] = false;
+    roms.have[SE_ERA_GEN2] = true;
+    SeSetting s; se_default(&s);
+    int why = -1;
+    SeEra got = se_resolve_for_router(&s, SE_KIND_GEN2, SE_PLACE_SUMMARY, 1, 0, 1,
+                                       &roms, true, &why);
+    CHECK(got == SE_ERA_GEN2,
+          "Da4: Gen-2 save, Kanto-dex mon -> stays GEN2, not collapsed to NATIVE");
+  }
+
+  /* Da5: same shape on a Gen-1 (Red) save -- must stay concrete GEN1. */
+  {
+    SeRoms roms; for (int i = 0; i < SE_ERA_N; i++) roms.have[i] = false;
+    roms.have[SE_ERA_GEN1] = true;
+    SeSetting s; se_default(&s);
+    int why = -1;
+    SeEra got = se_resolve_for_router(&s, SE_KIND_GEN1, SE_PLACE_SUMMARY, 1, 0, 1,
+                                       &roms, true, &why);
+    CHECK(got == SE_ERA_GEN1,
+          "Da5: Gen-1 save -> stays GEN1, not collapsed to NATIVE");
+  }
+
+  /* Da6: the no-ROM case on a Gen-2 save -- se_resolve() itself falls back to the
+   * NATIVE sentinel (era_has_rom fails), and the wrapper must not invent a ROM: it
+   * passes that NATIVE sentinel through unchanged. */
+  {
+    SeSetting s; se_default(&s);
+    int why = -1;
+    SeEra got = se_resolve_for_router(&s, SE_KIND_GEN2, SE_PLACE_SUMMARY, 1, 0, 1,
+                                       &no_roms, true, &why);
+    CHECK(got == SE_ERA_NATIVE, "Da6: Gen-2 save, no ROMs registered -> NATIVE");
+  }
+
+  /* Da7: an ordinary Gen-3 (Emerald) save with a Gen-2 import hint (origin_gen=2) is
+   * unaffected by the GB-kind exemption -- kind is SE_KIND_EM, not a GB kind, so the
+   * existing D1 collapse still applies exactly as before. */
+  {
+    SeSetting s; se_default(&s);
+    int why = -1;
+    SeEra got = se_resolve_for_router(&s, SE_KIND_EM, SE_PLACE_SUMMARY, 2, 1, 1,
+                                       &all_roms, true, &why);
+    CHECK(got == SE_ERA_NATIVE,
+          "Da7: Emerald save with a Gen-2 import hint -> still collapses to NATIVE");
+  }
+
   printf("(Da) se_resolve_for_router ok\n");
 }
 
