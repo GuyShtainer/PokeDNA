@@ -590,8 +590,10 @@ RECURSION_LINE_RE = re.compile(r'^recursion\s+(\S+)\s+depth=(\d+)$')
 # D1 (review-opus fix pass, BACKLOG #102): from=header:MACRO and gate=gate_fn ties N
 # to the real runtime constant and the function that enforces it -- see this file's
 # own docstring above ("gated fn need=N from=header:MACRO gate=gate_fn").
+# BACKLOG #131: `via=<comma-separated predecessor set>` is the ENFORCED half of a
+# `gated` line -- see this file's own docstring below and verify_gated_predecessors().
 GATED_LINE_RE = re.compile(
-    r'^gated\s+(\S+)\s+need=(\d+)\s+from=([\w./-]+):(\w+)\s+gate=(\S+)$')
+    r'^gated\s+(\S+)\s+need=(\d+)\s+from=([\w./-]+):(\w+)\s+gate=(\S+)\s+via=(\S+)$')
 
 
 def load_extra_edges(path):
@@ -724,10 +726,29 @@ def load_extra_edges(path):
         thunks (source/pdna_origin_art.c:530,559,836 -- verified in the
         disassembly 2026-09-12), so `gate_fn` is not an edge in
         analysis["edges"] from any ancestor and no disassembly-only dominator
-        check can confirm it. Re-audit by hand (BACKLOG #131 proposes a
-        `via=<predecessor set>` check, which IS mechanically enforceable).
+        check can confirm it -- re-audit `gate=` by hand.
+
+        `via=pred1,pred2,...` (BACKLOG #131) is the ENFORCED counterpart: the
+        comma-separated set of functions the human auditor confirmed are the
+        ONLY real callers able to reach `fn` -- i.e. the ones actually checked
+        for calling gate_fn(need) first. Unlike `gate=`, this IS mechanically
+        checkable, because it is a question about the ordinary disassembled
+        call graph (who calls fn), not about whether an inlined gate call
+        happened: every run (main(), right next to verify_gated_macro_
+        declarations()) reverses analysis["edges"] to compute fn's REAL
+        predecessor set on THIS ELF and FATALs the moment it differs from the
+        declared via= set (verify_gated_predecessors()) -- in EITHER direction,
+        a new real caller nobody audited, or a stale declared caller no longer
+        in the graph. This is the only way the hand audit behind `gate=` can
+        ever be invalidated: the moment some new code path calls a gated
+        function, this check catches it on the very next build, forcing that
+        new caller to be audited for the runtime gate before it is ever added
+        to via=. A `gated` function absent from this ELF entirely (a variant
+        that never links it) is not checked here -- same "stale declaration?
+        typo? inlined away?" WARNING path as any other declared implementation
+        (main()'s unknown_impls set already covers it).
         Example: `gated gb_art_fetch need=6144 from=gb_art_source.h:PDNA_GB_FETCH_NEED
-        gate=pdna_origin_art_stack_room`.
+        gate=pdna_origin_art_stack_room via=gb_art_pic_cb`.
 
     Multiple lines per caller/struct ACCUMULATE (pdna_box has eleven field lines).
     Returns (field_decls, field_offset_index, argsite_decls, whole_func_decls,
@@ -748,7 +769,8 @@ def load_extra_edges(path):
       isr_decls         : {fn, ...}
       addrtaken_ok      : {fn, ...}
       recursion_decls    : {fn: depth}
-      gated_decls        : {fn: (need, header, macro, gate_fn)} (D1: was {fn: need})
+      gated_decls        : {fn: (need, header, macro, gate_fn, via_frozenset)}
+                            (D1: was {fn: need}; BACKLOG #131 appended via_frozenset)
     """
     field_decls = {}
     field_site_decls = []   # [(struct, field, offset, callers_frozenset_or_None, {impls})]
@@ -790,9 +812,11 @@ def load_extra_edges(path):
                 continue
             gm = GATED_LINE_RE.match(line)
             if gm:
-                fn, need, header, macro, gate_fn = (
-                    gm.group(1), int(gm.group(2)), gm.group(3), gm.group(4), gm.group(5))
-                meta = (need, header, macro, gate_fn)
+                fn, need, header, macro, gate_fn, via_raw = (
+                    gm.group(1), int(gm.group(2)), gm.group(3), gm.group(4), gm.group(5),
+                    gm.group(6))
+                via = frozenset(via_raw.split(','))
+                meta = (need, header, macro, gate_fn, via)
                 if fn in gated_decls and gated_decls[fn] != meta:
                     raise ValueError(f"{path}:{lineno}: gated {fn} declared twice "
                                       f"with different metadata ({gated_decls[fn]} "
@@ -1305,7 +1329,7 @@ def verify_gated_macro_declarations(gated_decls, source_dir):
     macro today); the caller treats ANY entry as fatal."""
     problems = []
     cache = {}
-    for fn, (need, header, macro, _gate_fn) in sorted(gated_decls.items()):
+    for fn, (need, header, macro, _gate_fn, _via) in sorted(gated_decls.items()):
         if header not in cache:
             path = os.path.join(source_dir, header)
             try:
@@ -1326,6 +1350,54 @@ def verify_gated_macro_declarations(gated_decls, source_dir):
                 f"gated {fn}: declared need={format_num(need)}, but {header}'s "
                 f"{macro} is {format_num(macros[macro])} today -- the declaration "
                 "no longer mirrors the runtime gate. Re-derive both.")
+    return problems
+
+
+def verify_gated_predecessors(gated_decls, edges, funcs):
+    """BACKLOG #131: cross-check every `gated fn ... via=pred1,pred2,...` declaration's
+    predecessor set against `fn`'s REAL predecessors in THIS ELF's disassembled call
+    graph (edges, {caller: {callee, ...}} -- reversed here). `gate=gate_fn` (see this
+    file's own docstring, the `gated` grammar entry) cannot be mechanically confirmed
+    because GCC inlines this project's gate call sites into anonymous thunks; `via=`
+    covers what CAN be checked instead -- an ordinary "who calls fn" question the
+    disassembly answers directly, no inlining involved.
+
+    A `gated` fn absent from this ELF (a build variant that never links it) is skipped
+    here -- same "stale declaration? typo? inlined away?" WARNING path every other
+    declared implementation already gets from main()'s unknown_impls set, not a second
+    FATAL for the same absence.
+
+    Returns a list of human-readable mismatch strings (empty = every declared via=
+    set exactly matches this ELF's measured predecessors); the caller treats ANY
+    entry as fatal -- the whole point is that the moment a new function starts
+    calling a gated subtree, this fires on the very next build, forcing that new
+    caller to be hand-audited for the runtime gate before it is added to via=."""
+    preds = collections.defaultdict(set)
+    for caller, callees in edges.items():
+        for callee in callees:
+            preds[callee].add(caller)
+
+    problems = []
+    for fn, (_need, _header, _macro, _gate_fn, via) in sorted(gated_decls.items()):
+        if fn not in funcs:
+            continue
+        measured = frozenset(preds.get(fn, set()))
+        if measured == via:
+            continue
+        declared_str = "{" + ", ".join(sorted(via)) + "}" if via else "{}"
+        measured_str = "{" + ", ".join(sorted(measured)) + "}" if measured else "{}"
+        extra = sorted(measured - via)
+        missing = sorted(via - measured)
+        detail = []
+        if extra:
+            detail.append(f"new caller(s) not in via=: {', '.join(extra)}")
+        if missing:
+            detail.append(f"declared via= caller(s) no longer calling fn: "
+                           f"{', '.join(missing)}")
+        problems.append(
+            f"gated {fn}: declared via={declared_str}, measured predecessors="
+            f"{measured_str} ({'; '.join(detail)}). A new caller of a gated "
+            "subtree must be audited for the runtime gate, then added to via=.")
     return problems
 
 
@@ -3241,6 +3313,19 @@ def main(argv):
             print(f"***   {p}", file=sys.stderr)
         return 1
 
+    # BACKLOG #131: every `gated fn ... via=pred1,pred2,...` declaration's predecessor
+    # set is cross-checked against fn's REAL predecessors in analysis["edges"] (this
+    # ELF's disassembled call graph, reversed) -- the mechanically enforceable half of
+    # a `gated` line, unlike gate= (see verify_gated_predecessors()'s own docstring).
+    gated_via_problems = verify_gated_predecessors(gated_decls, analysis["edges"],
+                                                    analysis["funcs"])
+    if gated_via_problems:
+        print(f"*** stack_budget: {args.edges_file} has a `gated ... via=` mismatch:",
+              file=sys.stderr)
+        for p in gated_via_problems:
+            print(f"***   {p}", file=sys.stderr)
+        return 1
+
     # D5b: every name stack_edges.txt references (as a caller or an implementation)
     # must be unambiguous -- a bare name the census found duplicated across TUs is an
     # ERROR listing the qualified candidates, never a silent pick of "whichever one".
@@ -3407,7 +3492,7 @@ def main(argv):
         # actually enforce -- exactly the unsound state D1 exists to prevent.
         header = macro = None
         if e.fn in gated_decls:
-            _need, header, macro, _gate_fn = gated_decls[e.fn]
+            _need, header, macro, _gate_fn, _via = gated_decls[e.fn]
         print(f"*** Fix: the declared need ({format_num(e.need)} B) must equal the "
               "runtime constant it mirrors" +
               (f" ({header}'s {macro})" if header else "") +

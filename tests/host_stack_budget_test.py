@@ -869,27 +869,157 @@ def test_d3_su_frame_takes_max_not_bare_base_first():
 
 # === struct_field_offsets(): the D1 header-drift check, against the real header =========
 
+def _gcc_ground_truth_struct_layout(header_path, struct_name, field_names):
+    """BACKLOG #130: the ARM-EABI ground truth for `struct_name`'s field byte offsets
+    and total size, computed by the REAL target compiler (arm-none-eabi-gcc, this
+    project's actual -mcpu=arm7tdmi -mthumb ABI) rather than typed by hand into a
+    dict that then silently drifts out of sync with the header (exactly what
+    happened here: BACKLOG #120 S1 moved every offset from can_rename onward and
+    nobody re-derived the old hardcoded `expected` dict — the check kept comparing
+    stack_budget.py's parser against ITSELF, so it could never catch a real header
+    change, and it wasn't even in run_host_tests.py's loop to be seen failing).
+
+    Generates a throwaway .c file that #includes the header and takes offsetof()/
+    sizeof() of every field, compiles it to an object with -g -O0 -c (never linked,
+    never run -- this host has no way to execute an ARM binary), then reads the
+    struct's layout back out of the object's DWARF debug info via `readelf
+    --debug-dump=info`. Returns (offsets_dict, sizeof_int), or (None, None) if the
+    devkitARM toolchain isn't available here (same posture as the other absent-
+    fixture skips in this file: skip, don't fail).
+    """
+    gcc = os.path.join(sb.DEVKITARM, "bin", "arm-none-eabi-gcc")
+    readelf = os.path.join(sb.DEVKITARM, "bin", "arm-none-eabi-readelf")
+    if not (os.path.exists(gcc) and os.path.exists(readelf)):
+        return None, None
+
+    import subprocess
+    import tempfile
+
+    src_dir = os.path.dirname(header_path)
+    header_name = os.path.basename(header_path)
+    probe_lines = ["#include <stddef.h>", f'#include "{header_name}"', "",
+                   f"{struct_name} g_probe_anchor;",  # keeps the type's DWARF alive under -g
+                   "int main(void) {", "  return 0;", "}"]
+    with tempfile.TemporaryDirectory(prefix="pdna_boxsource_probe_") as tmp:
+        c_path = os.path.join(tmp, "probe.c")
+        o_path = os.path.join(tmp, "probe.o")
+        with open(c_path, "w") as f:
+            f.write("\n".join(probe_lines) + "\n")
+        cmd = [gcc, "-mthumb-interwork", "-mthumb", "-mcpu=arm7tdmi", "-mtune=arm7tdmi",
+               "-O0", "-g", "-I", src_dir, "-c", c_path, "-o", o_path]
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"arm-none-eabi-gcc probe failed:\n{r.stderr}")
+
+        r = subprocess.run([readelf, "--debug-dump=info", o_path],
+                            capture_output=True, text=True)
+        dump = r.stdout
+
+    # --- minimal DWARF walk: find the typedef named `struct_name`, follow its
+    # DW_AT_type to the structure_type DIE, then read that DIE's DW_TAG_member
+    # children (depth = parent_depth + 1, terminated when depth drops back down).
+    die_re = re.compile(r"^\s*<(\d+)><([0-9a-f]+)>: Abbrev Number: \d+ \((\w+)\)")
+    attr_re = re.compile(r"^\s*<[0-9a-f]+>\s+(DW_AT_\w+)\s*:\s*(.*)$")
+
+    dies = []  # list of dicts: depth, addr(int), tag, attrs
+    cur = None
+    for line in dump.splitlines():
+        m = die_re.match(line)
+        if m:
+            if cur is not None:
+                dies.append(cur)
+            cur = {"depth": int(m.group(1)), "addr": int(m.group(2), 16),
+                   "tag": m.group(3), "attrs": {}}
+            continue
+        m = attr_re.match(line)
+        if m and cur is not None:
+            cur["attrs"][m.group(1)] = m.group(2).strip()
+    if cur is not None:
+        dies.append(cur)
+
+    def attr_str(die, name):
+        v = die["attrs"].get(name)
+        if v is None:
+            return None
+        return v.rsplit(": ", 1)[-1] if v.startswith("(indirect string") else v
+
+    def attr_ref(die, name):
+        v = die["attrs"].get(name)
+        if v is None:
+            return None
+        m = re.search(r"<0x([0-9a-f]+)>", v)
+        return int(m.group(1), 16) if m else None
+
+    def attr_int(die, name):
+        v = die["attrs"].get(name)
+        return int(v) if v is not None else None
+
+    typedef_die = next((d for d in dies
+                         if d["tag"] == "DW_TAG_typedef"
+                         and attr_str(d, "DW_AT_name") == struct_name), None)
+    if typedef_die is None:
+        raise RuntimeError(f"{struct_name}: no DW_TAG_typedef in the probe's DWARF "
+                            f"(readelf output shape changed, or the struct isn't a "
+                            f"typedef anymore)")
+    struct_addr = attr_ref(typedef_die, "DW_AT_type")
+    struct_die = next((d for d in dies
+                        if d["tag"] == "DW_TAG_structure_type" and d["addr"] == struct_addr),
+                       None)
+    if struct_die is None:
+        raise RuntimeError(f"{struct_name}: typedef's DW_AT_type <0x{struct_addr:x}> "
+                            f"did not resolve to a DW_TAG_structure_type DIE")
+
+    idx = dies.index(struct_die)
+    parent_depth = struct_die["depth"]
+    offsets = {}
+    for d in dies[idx + 1:]:
+        if d["depth"] <= parent_depth:
+            break
+        if d["depth"] == parent_depth + 1 and d["tag"] == "DW_TAG_member":
+            name = attr_str(d, "DW_AT_name")
+            loc = attr_int(d, "DW_AT_data_member_location")
+            if name is not None and loc is not None:
+                offsets[name] = loc
+
+    missing = [f for f in field_names if f not in offsets]
+    if missing:
+        raise RuntimeError(f"{struct_name}: probe DWARF is missing field(s) {missing} "
+                            f"-- readelf output shape may have changed")
+    sizeof_val = attr_int(struct_die, "DW_AT_byte_size")
+    return {f: offsets[f] for f in field_names}, sizeof_val
+
+
 def test_boxsource_offsets_match_real_header():
     """Not a fixture -- this reads the REAL source/pdna_box.h shipped in this repo,
     so it doubles as a regression test for the header-offset computation the guard
-    trusts at build time. If this ever fails, either the header changed (update
-    tools/stack_edges.txt) or struct_field_offsets() has a bug."""
+    trusts at build time. The expected layout is no longer a hand-typed dict (that's
+    exactly what went stale in BACKLOG #130 -- BACKLOG #120 S1 moved every offset
+    from can_rename onward and nobody updated it): it is derived fresh, every run,
+    from arm-none-eabi-gcc's own offsetof()/sizeof() on the real header, so a future
+    header change can never silently outrun this check again."""
     header_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "..", "source", "pdna_box.h")
     if not os.path.exists(header_path):
         print("  (skip) source/pdna_box.h not found from this working directory")
         return
     with open(header_path) as f:
-        offsets = sb.struct_field_offsets(f.read(), "BoxSource")
-    expected = {
-        "nboxes": 0, "last_box_is_party": 4, "start_box": 8, "is_bank": 12,
-        "has_start": 13, "wp_count": 16, "records": 20, "menu_block": 24,
-        "get_name": 28, "set_name": 32, "get_wp": 36, "set_wp": 40, "can_edit": 44,
-        "commit": 48, "mark_dirty": 52, "note_add": 56, "note_box": 60, "capacity": 64,
-    }
+        header_text = f.read()
+    offsets = sb.struct_field_offsets(header_text, "BoxSource")
+    expected, expected_sizeof = _gcc_ground_truth_struct_layout(
+        header_path, "BoxSource", list(offsets.keys()))
+    if expected is None:
+        print("  (skip) arm-none-eabi-gcc/readelf not found under DEVKITARM "
+              f"({sb.DEVKITARM}) -- can't derive ground truth offsets")
+        return
     check("BoxSource field offsets match the real header (natural ARM EABI layout)",
           offsets == expected,
           {k: v for k, v in offsets.items() if expected.get(k) != v})
+    # Belt-and-braces: every declared field offset must fit inside the compiler's own
+    # reported struct size (catches a member appended after the parser's last known
+    # field going unnoticed rather than a specific hand-picked sizeof constant).
+    check("BoxSource field offsets all fit within the real header's sizeof(BoxSource)",
+          not offsets or max(offsets.values()) < expected_sizeof,
+          {"max_offset": max(offsets.values(), default=None), "sizeof": expected_sizeof})
 
 
 # === BACKLOG #106 G4: struct_field_offsets() by brace depth, not a lazy forward regex ==
@@ -1494,29 +1624,37 @@ def test_d4_undeclared_scc_is_fatal_declared_disagreement_is_fatal():
 
 def test_b102_gated_line_round_trips_through_the_parser():
     """D1 (review-opus fix pass): the `gated fn need=N from=header:MACRO
-    gate=gate_fn` declaration line (widened from the original bare `gated fn
-    need=N`, which let N drift silently from the runtime constant it claims to
-    mirror) parses into gated_decls as a (need, header, macro, gate_fn) tuple.
-    Also covers a GCC `.constprop.0` clone-suffixed name (gb_art_fetch_icon.
-    constprop.0, this backlog item's own real second declaration) to prove
-    GATED_LINE_RE's `\\S+`/`[\\w./-]+` groups don't repeat ARGSITE_LINE_RE's old
-    `\\w+`-only mistake (D6's own note) that silently dropped dotted names."""
+    gate=gate_fn via=pred1,pred2,...` declaration line (widened from the
+    original bare `gated fn need=N`, which let N drift silently from the
+    runtime constant it claims to mirror; BACKLOG #131 further widened it with
+    the enforced `via=` predecessor set) parses into gated_decls as a
+    (need, header, macro, gate_fn, via_frozenset) tuple. Also covers a GCC
+    `.constprop.0` clone-suffixed name (gb_art_fetch_icon.constprop.0, this
+    backlog item's own real second declaration) to prove GATED_LINE_RE's
+    `\\S+`/`[\\w./-]+` groups don't repeat ARGSITE_LINE_RE's old `\\w+`-only
+    mistake (D6's own note) that silently dropped dotted names, and a
+    multi-name via= list to prove the comma-split."""
     import tempfile
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
-        f.write("gated leaf_fn need=1234 from=some_header.h:SOME_MACRO gate=some_gate\n")
+        f.write("gated leaf_fn need=1234 from=some_header.h:SOME_MACRO "
+                "gate=some_gate via=caller_a,caller_b\n")
         f.write("gated gb_art_fetch_icon.constprop.0 need=6144 "
-                "from=gb_art_source.h:PDNA_GB_ICON_NEED gate=pdna_origin_art_stack_room\n")
+                "from=gb_art_source.h:PDNA_GB_ICON_NEED gate=pdna_origin_art_stack_room "
+                "via=gb_art_icon_cb\n")
         # repeated, identical metadata -- must accumulate cleanly, not conflict
-        f.write("gated leaf_fn need=1234 from=some_header.h:SOME_MACRO gate=some_gate\n")
+        f.write("gated leaf_fn need=1234 from=some_header.h:SOME_MACRO "
+                "gate=some_gate via=caller_a,caller_b\n")
         path = f.name
     try:
         _fd, _fi, _ad, _wd, _fo, _isr, _aok, _rd, gated_decls = sb.load_extra_edges(path)
-        check("(B102/D1) a gated line parses fn -> (need, header, macro, gate_fn)",
-              gated_decls.get("leaf_fn") == (1234, "some_header.h", "SOME_MACRO", "some_gate"),
+        check("(B102/D1) a gated line parses fn -> (need, header, macro, gate_fn, via)",
+              gated_decls.get("leaf_fn") == (1234, "some_header.h", "SOME_MACRO", "some_gate",
+                                              frozenset({"caller_a", "caller_b"})),
               gated_decls)
         check("(B102/D1) a dotted GCC clone-suffix name parses whole, not truncated",
               gated_decls.get("gb_art_fetch_icon.constprop.0") ==
-              (6144, "gb_art_source.h", "PDNA_GB_ICON_NEED", "pdna_origin_art_stack_room"),
+              (6144, "gb_art_source.h", "PDNA_GB_ICON_NEED", "pdna_origin_art_stack_room",
+               frozenset({"gb_art_icon_cb"})),
               gated_decls)
         check("(B102/D1) exactly the two distinct declared names, no phantom keys",
               set(gated_decls) == {"leaf_fn", "gb_art_fetch_icon.constprop.0"}, gated_decls)
@@ -1525,15 +1663,15 @@ def test_b102_gated_line_round_trips_through_the_parser():
 
 
 def test_b102_gated_line_conflicting_metadata_is_a_parse_error():
-    """Two `gated fn need=N from=... gate=...` lines for the same fn with ANY
-    differing field (need, header, macro, or gate_fn) must be a FATAL parse
-    error -- same posture as `recursion fn depth=N`'s own conflict check
+    """Two `gated fn need=N from=... gate=... via=...` lines for the same fn with
+    ANY differing field (need, header, macro, gate_fn, or via) must be a FATAL
+    parse error -- same posture as `recursion fn depth=N`'s own conflict check
     (test_d4 area above): a real disagreement is a question for a human, never a
     silent pick of either value."""
     import tempfile
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
-        f.write("gated leaf_fn need=1234 from=h.h:M gate=g\n")
-        f.write("gated leaf_fn need=5678 from=h.h:M gate=g\n")
+        f.write("gated leaf_fn need=1234 from=h.h:M gate=g via=a\n")
+        f.write("gated leaf_fn need=5678 from=h.h:M gate=g via=a\n")
         path = f.name
     raised = False
     msg = ""
@@ -1563,7 +1701,8 @@ def test_b102_d1_verify_gated_macro_declarations_passes_when_n_matches_header():
         hdr = os.path.join(d, "scratch_gate.h")
         with open(hdr, "w") as f:
             f.write("#define SCRATCH_NEED 4096\n")
-        gated_decls = {"scratch_fn": (4096, "scratch_gate.h", "SCRATCH_NEED", "scratch_gate")}
+        gated_decls = {"scratch_fn": (4096, "scratch_gate.h", "SCRATCH_NEED", "scratch_gate",
+                                     frozenset({"scratch_caller"}))}
         problems = sb.verify_gated_macro_declarations(gated_decls, d)
         check("(B102/D1b) a declaration matching its header's macro has no problems",
               problems == [], problems)
@@ -1581,7 +1720,8 @@ def test_b102_d1_verify_gated_macro_declarations_fatals_on_stale_macro():
         hdr = os.path.join(d, "scratch_gate.h")
         with open(hdr, "w") as f:
             f.write("#define SCRATCH_NEED 1000\n")   # header LOWERED since the line was written
-        gated_decls = {"scratch_fn": (4096, "scratch_gate.h", "SCRATCH_NEED", "scratch_gate")}
+        gated_decls = {"scratch_fn": (4096, "scratch_gate.h", "SCRATCH_NEED", "scratch_gate",
+                                     frozenset({"scratch_caller"}))}
         problems = sb.verify_gated_macro_declarations(gated_decls, d)
         check("(B102/D1b) a stale need vs. the header's real macro is reported",
               len(problems) == 1, problems)
@@ -1597,7 +1737,8 @@ def test_b102_d1_verify_gated_macro_declarations_fatals_on_missing_macro():
         hdr = os.path.join(d, "scratch_gate.h")
         with open(hdr, "w") as f:
             f.write("#define A_DIFFERENT_NAME 4096\n")
-        gated_decls = {"scratch_fn": (4096, "scratch_gate.h", "SCRATCH_NEED", "scratch_gate")}
+        gated_decls = {"scratch_fn": (4096, "scratch_gate.h", "SCRATCH_NEED", "scratch_gate",
+                                     frozenset({"scratch_caller"}))}
         problems = sb.verify_gated_macro_declarations(gated_decls, d)
         check("(B102/D1b) a macro absent from the header today is reported",
               len(problems) == 1 and "SCRATCH_NEED" in problems[0], problems)
@@ -1694,6 +1835,64 @@ def test_b102_semantics_a_whole_program_root_is_unaffected_by_gating():
     no_gated_tag = all(src != "gated" for _n, _b, src in path_with_decl)
     check("(B102 a) no path entry is tagged 'gated' when the gate isn't enforced",
           no_gated_tag, path_with_decl)
+
+
+# === BACKLOG #131: verify_gated_predecessors() -- the enforced via= check ===============
+
+def test_b131_via_matching_predecessor_set_is_ok():
+    """The declared via= set exactly matching the ELF's real predecessors (edges
+    reversed) reports no problems -- the two real declarations' own shape
+    (gb_art_fetch <- {gb_art_pic_cb}) as a synthetic graph."""
+    edges = {"gb_art_pic_cb": {"gb_art_fetch"}, "gb_art_fetch": {"leaf"}, "leaf": set()}
+    gated_decls = {"gb_art_fetch": (6144, "h.h", "M", "gate_fn", frozenset({"gb_art_pic_cb"}))}
+    funcs = set(edges) | {"leaf"}
+    problems = sb.verify_gated_predecessors(gated_decls, edges, funcs)
+    check("(B131) a matching via= set reports no problems", problems == [], problems)
+
+
+def test_b131_via_extra_real_caller_is_fatal():
+    """The core B131 property: a NEW caller the disassembly shows calling the
+    gated function, that via= never named, must be reported -- this is the
+    exact scenario the check exists for (some new code path starts reaching a
+    gated subtree; nobody has audited it for the runtime gate yet)."""
+    edges = {"gb_art_pic_cb": {"gb_art_fetch"},
+             "some_new_caller": {"gb_art_fetch"},
+             "gb_art_fetch": {"leaf"}, "leaf": set()}
+    gated_decls = {"gb_art_fetch": (6144, "h.h", "M", "gate_fn", frozenset({"gb_art_pic_cb"}))}
+    funcs = set(edges) | {"leaf"}
+    problems = sb.verify_gated_predecessors(gated_decls, edges, funcs)
+    check("(B131) an undeclared new real caller is reported", len(problems) == 1, problems)
+    check("(B131) the report names the new caller",
+          problems and "some_new_caller" in problems[0], problems)
+    check("(B131) the report tells the fixer what to do (audit, then add to via=)",
+          problems and "via=" in problems[0], problems)
+
+
+def test_b131_via_stale_declared_caller_is_also_fatal():
+    """The other direction: a declared via= caller that no longer calls fn at all
+    (removed/refactored away) must also be reported -- a stale declaration is not
+    a safe bound to keep trusting either, it's just an unaudited README at that
+    point."""
+    edges = {"gb_art_fetch": {"leaf"}, "leaf": set()}  # nothing calls gb_art_fetch anymore
+    gated_decls = {"gb_art_fetch": (6144, "h.h", "M", "gate_fn", frozenset({"gb_art_pic_cb"}))}
+    funcs = set(edges) | {"leaf", "gb_art_pic_cb"}
+    problems = sb.verify_gated_predecessors(gated_decls, edges, funcs)
+    check("(B131) a stale declared-but-absent caller is reported", len(problems) == 1, problems)
+    check("(B131) the report names the stale caller",
+          problems and "gb_art_pic_cb" in problems[0], problems)
+
+
+def test_b131_via_gated_fn_absent_from_this_elf_is_skipped_not_fatal():
+    """A `gated` fn this particular build variant never links at all (e.g. one
+    build's art path is compiled out) is skipped here -- the same 'stale
+    declaration? typo? inlined away?' WARNING every other declared implementation
+    already gets from main()'s unknown_impls set, not a second FATAL for the
+    exact same absence."""
+    edges = {"root": {"leaf"}, "leaf": set()}
+    gated_decls = {"gb_art_fetch": (6144, "h.h", "M", "gate_fn", frozenset({"gb_art_pic_cb"}))}
+    funcs = {"root", "leaf"}   # gb_art_fetch not in this build at all
+    problems = sb.verify_gated_predecessors(gated_decls, edges, funcs)
+    check("(B131) a gated fn absent from this ELF is not FATAL here", problems == [], problems)
 
 
 # === F5 (BACKLOG #84b seventh pass): tarjan_sccs() is iterative ========================
@@ -2355,6 +2554,10 @@ def main():
     test_b102_semantics_b_measured_over_need_fatals()
     test_b102_semantics_b_measured_at_or_under_need_excludes_the_subtree()
     test_b102_semantics_a_whole_program_root_is_unaffected_by_gating()
+    test_b131_via_matching_predecessor_set_is_ok()
+    test_b131_via_extra_real_caller_is_fatal()
+    test_b131_via_stale_declared_caller_is_also_fatal()
+    test_b131_via_gated_fn_absent_from_this_elf_is_skipped_not_fatal()
     test_d10_trap1_bl_to_own_pop_bx_tail_is_zero_indirect_sites()
     test_d10_trap5_literal_call_target_resolved_vs_table_index_blind_spot()
     test_d10_trap6_base_literal_loaded_far_before_its_use()
