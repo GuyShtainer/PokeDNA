@@ -586,6 +586,12 @@ ISR_LINE_RE = re.compile(r'^isr\s+(\S+)$')
 ADDRTAKEN_OK_RE = re.compile(r'^addrtaken-ok\s+(\S+)$')
 # D4 (BACKLOG #84b sixth pass): a declared depth for a real recursive SCC.
 RECURSION_LINE_RE = re.compile(r'^recursion\s+(\S+)\s+depth=(\d+)$')
+# BACKLOG #102: a runtime-gated subtree with its declared conservative bound.
+# D1 (review-opus fix pass, BACKLOG #102): from=header:MACRO and gate=gate_fn ties N
+# to the real runtime constant and the function that enforces it -- see this file's
+# own docstring above ("gated fn need=N from=header:MACRO gate=gate_fn").
+GATED_LINE_RE = re.compile(
+    r'^gated\s+(\S+)\s+need=(\d+)\s+from=([\w./-]+):(\w+)\s+gate=(\S+)$')
 
 
 def load_extra_edges(path):
@@ -671,9 +677,61 @@ def load_extra_edges(path):
         than one member of the same component must agree on N or that PAIR is
         itself a FATAL (a real question -- which is right? -- not a silent pick).
 
+      gated fn need=N from=header:MACRO gate=gate_fn
+        BACKLOG #102: `fn`'s subtree (fn's own frame plus everything it calls) is
+        entered at runtime ONLY after a call to `gate_fn(N)` (the runtime function
+        that mirrors this need -- e.g. pdna_origin_art_stack_room) has already
+        succeeded -- e.g. `gated gb_art_fetch need=6144
+        from=gb_art_source.h:PDNA_GB_FETCH_NEED gate=pdna_origin_art_stack_room`
+        mirrors `pdna_origin_art_stack_room(PDNA_GB_FETCH_NEED)` guarding every
+        call site that can reach gb_art_fetch (source/pdna_origin_art.c). Two
+        DIFFERENT semantics depending on which --root this run measures (tools/
+        stack_budget.py's deepest_from()/top_n_chains(), BACKLOG #102 design):
+          - measuring from --root main (the whole-program guard): a gated
+            subtree stays fully, ungated INCLUDED in the worst-case walk --
+            the guard's own worst-case number must never get smaller just
+            because some OTHER, unrelated re-derivation declared a gate here.
+          - measuring from any OTHER --root (a re-derivation, e.g. `--root
+            pcp_open_party_strip_inner`): the gated subtree is excluded
+            entirely -- charged 0 B -- ONLY IF its real, ungated measured size
+            is <= N (it is independently, freshly re-guarded by its own
+            runtime gate at the moment it actually runs, so an ancestor
+            --root's own budget must not additively reserve room for it too);
+            otherwise the run FATALs (`gated subtree fn measures M > declared
+            need N: the runtime gate would not protect it`), because the whole
+            point of declaring N here is that it must be a provably
+            conservative bound on what the runtime gate actually lets through.
+            D3 (review-opus fix pass, BACKLOG #102): an earlier draft of this
+            comment said "charged its declared N" -- that design was tried
+            first and REJECTED (see deepest_from()'s own BACKLOG #102 note and
+            the commit history) because it INCREASES a re-derived number
+            instead of shrinking it; "charged 0 B" below is what is actually
+            implemented.
+
+        D1 (review-opus fix pass, BACKLOG #102): the ORIGINAL `gated fn need=N`
+        shape (no from=/gate=) let N drift silently from the runtime constant it
+        claims to mirror -- if PDNA_GB_FETCH_NEED were later LOWERED in
+        gb_art_source.h, this tool would keep validating a STALE, now-too-large N
+        while PDNA_PARTY_STRIP_NEED silently stopped being conservative. `from=
+        header:MACRO` is now mechanically cross-checked every run (main(), right
+        after the struct-field header-drift check) against a plain `#define
+        MACRO <int>` in `header` (under --source-dir), via the same
+        _strip_c_comments()/_parse_int_macros() helpers verify_field_declarations()
+        already uses for Struct.field @OFFSET -- FATAL if MACRO's value != N today.
+        `gate=gate_fn` names the runtime function that performs the admission
+        check. It is DOCUMENTATION FOR A HUMAN, not a mechanical check: GCC
+        inlines this project's own gate call sites into anonymous `bx rN`
+        thunks (source/pdna_origin_art.c:530,559,836 -- verified in the
+        disassembly 2026-09-12), so `gate_fn` is not an edge in
+        analysis["edges"] from any ancestor and no disassembly-only dominator
+        check can confirm it. Re-audit by hand (BACKLOG #131 proposes a
+        `via=<predecessor set>` check, which IS mechanically enforceable).
+        Example: `gated gb_art_fetch need=6144 from=gb_art_source.h:PDNA_GB_FETCH_NEED
+        gate=pdna_origin_art_stack_room`.
+
     Multiple lines per caller/struct ACCUMULATE (pdna_box has eleven field lines).
     Returns (field_decls, field_offset_index, argsite_decls, whole_func_decls,
-             frame_overrides, isr_decls, addrtaken_ok, recursion_decls):
+             frame_overrides, isr_decls, addrtaken_ok, recursion_decls, gated_decls):
       field_decls        : {(struct, field): (offset, {impls})}  -- for header
                             verification ONLY (verify_field_declarations()); it
                             unions every impl regardless of caller qualification,
@@ -690,6 +748,7 @@ def load_extra_edges(path):
       isr_decls         : {fn, ...}
       addrtaken_ok      : {fn, ...}
       recursion_decls    : {fn: depth}
+      gated_decls        : {fn: (need, header, macro, gate_fn)} (D1: was {fn: need})
     """
     field_decls = {}
     field_site_decls = []   # [(struct, field, offset, callers_frozenset_or_None, {impls})]
@@ -699,9 +758,10 @@ def load_extra_edges(path):
     isr_decls = set()
     addrtaken_ok = set()
     recursion_decls = {}
+    gated_decls = {}
     if not path or not os.path.exists(path):
         return (field_decls, ({}, {}), argsite_decls, whole_func_decls, frame_overrides,
-                isr_decls, addrtaken_ok, recursion_decls)
+                isr_decls, addrtaken_ok, recursion_decls, gated_decls)
     with open(path) as f:
         for lineno, raw in enumerate(f, 1):
             line = raw.split('#', 1)[0].strip()
@@ -727,6 +787,17 @@ def load_extra_edges(path):
                                       f"with different depths ({recursion_decls[fn]} "
                                       f"and {depth})")
                 recursion_decls[fn] = depth
+                continue
+            gm = GATED_LINE_RE.match(line)
+            if gm:
+                fn, need, header, macro, gate_fn = (
+                    gm.group(1), int(gm.group(2)), gm.group(3), gm.group(4), gm.group(5))
+                meta = (need, header, macro, gate_fn)
+                if fn in gated_decls and gated_decls[fn] != meta:
+                    raise ValueError(f"{path}:{lineno}: gated {fn} declared twice "
+                                      f"with different metadata ({gated_decls[fn]} "
+                                      f"and {meta})")
+                gated_decls[fn] = meta
                 continue
             if '->' not in line:
                 raise ValueError(f"{path}:{lineno}: unrecognized line: {raw!r}")
@@ -787,7 +858,7 @@ def load_extra_edges(path):
     field_offset_index = (dict(qualified), dict(unqualified))
 
     return (field_decls, field_offset_index, argsite_decls, dict(whole_func_decls),
-            frame_overrides, isr_decls, addrtaken_ok, recursion_decls)
+            frame_overrides, isr_decls, addrtaken_ok, recursion_decls, gated_decls)
 
 
 # === struct-field offsets, computed from the header (D1) ==============================
@@ -1210,6 +1281,51 @@ def verify_field_declarations(field_decls, source_dir, struct_headers):
         elif real[field] != decl_off:
             problems.append(f"{struct}.{field}: declared @{decl_off}, header says "
                              f"@{real[field]} today -- header changed, stack_edges.txt did not")
+    return problems
+
+
+def verify_gated_macro_declarations(gated_decls, source_dir):
+    """D1(b) (review-opus fix pass, BACKLOG #102): cross-check every `gated fn
+    need=N from=header:MACRO gate=gate_fn` declaration's N against the header's
+    OWN `#define MACRO <int>` today -- exactly the same pattern
+    verify_field_declarations() already uses for Struct.field @OFFSET, reusing
+    the same _strip_c_comments()/_parse_int_macros() helpers a plain-value
+    header check needs (no C preprocessor here, so only a simple integer
+    `#define` is understood, same limitation _parse_int_macros() already
+    documents).
+
+    Without this check, N is a hand-copied literal with nothing tying it to the
+    real runtime constant it claims to mirror: if MACRO were later LOWERED in
+    `header` (a legitimate future shrink of, say, PDNA_GB_FETCH_NEED), this
+    tool would keep validating a STALE, now-too-large N forever, silently
+    letting PDNA_PARTY_STRIP_NEED (or whatever re-derivation trusts this gated
+    declaration) stop being conservative -- the runtime gate would now admit
+    LESS room than this walker still assumes it does. Returns a list of
+    human-readable mismatch strings (empty = every declaration mirrors its
+    macro today); the caller treats ANY entry as fatal."""
+    problems = []
+    cache = {}
+    for fn, (need, header, macro, _gate_fn) in sorted(gated_decls.items()):
+        if header not in cache:
+            path = os.path.join(source_dir, header)
+            try:
+                with open(path) as f:
+                    cache[header] = _parse_int_macros(_strip_c_comments(f.read()))
+            except OSError as e:
+                problems.append(f"gated {fn}: {e}")
+                cache[header] = None
+                continue
+        macros = cache[header]
+        if macros is None:
+            continue
+        if macro not in macros:
+            problems.append(f"gated {fn}: no `#define {macro} <int>` found in "
+                             f"{header} today -- header changed, stack_edges.txt did not")
+        elif macros[macro] != need:
+            problems.append(
+                f"gated {fn}: declared need={format_num(need)}, but {header}'s "
+                f"{macro} is {format_num(macros[macro])} today -- the declaration "
+                "no longer mirrors the runtime gate. Re-derive both.")
     return problems
 
 
@@ -2017,8 +2133,24 @@ def frame_of(name, su_sizes, estimated, overrides=None):
     return 0, "unknown"
 
 
+class GatedSubtreeExceeded(Exception):
+    """BACKLOG #102: raised by deepest_from() when `enforce_gates=True` and a
+    `gated fn need=N` subtree's real, ungated measured size exceeds its declared N
+    -- the declaration is supposed to be a provably conservative bound on what the
+    runtime `pdna_origin_art_stack_room(N)` gate actually lets through, and it just
+    failed to be one. Carries (fn, measured, need) so callers can print the FATAL
+    without re-deriving the numbers."""
+    def __init__(self, fn, measured, need):
+        self.fn = fn
+        self.measured = measured
+        self.need = need
+        super().__init__(
+            f"gated subtree {fn} measures {measured} > declared need {need}: "
+            "the runtime gate would not protect it")
+
+
 def deepest_from(root, edges, su_sizes, estimated, blacklist=(), overrides=None,
-                  scc_of=None):
+                  scc_of=None, gated=None, enforce_gates=False, gate_report=None):
     """Heaviest root..leaf chain by DFS with memoization; returns (total, path, cycles).
     path is a list of (name, frame_bytes, source).
 
@@ -2035,16 +2167,61 @@ def deepest_from(root, edges, su_sizes, estimated, blacklist=(), overrides=None,
     which made the printed total secretly depend on DFS visitation order (the very
     defect D4 exists to fix) -- with `scc_of=None` (every existing caller that never
     passes it, and every test fixture without a real cycle) this function's behaviour
-    is untouched, onstack/cycles included, for backward compatibility."""
+    is untouched, onstack/cycles included, for backward compatibility.
+
+    BACKLOG #102: `gated` is {fn: need} from stack_edges.txt's `gated fn need=N`
+    lines. `enforce_gates=False` (the default, and what every whole-program --root
+    main walk passes) makes `gated` a no-op -- the subtree is walked exactly as if
+    it were never declared, so the guard's own worst-case number can never shrink
+    just because some unrelated re-derivation declared a gate here. With
+    `enforce_gates=True` (what a re-derivation --root OTHER than main passes), the
+    first time go() reaches a node in `gated`, it measures that node's TRUE, ungated
+    subtree total via a nested deepest_from() call (with `fn` itself excluded from
+    that nested call's own gated dict, so it measures fn's real cost rather than
+    immediately re-triggering its own cap) with the SAME enforce_gates=True, so any
+    OTHER gated node further down still gets its own cap honoured, matching what the
+    runtime actually does layer by layer. If the measured total exceeds the declared
+    need, raises GatedSubtreeExceeded -- the declaration failed to be the provably
+    conservative bound it claims to be. Otherwise -- proven safe -- the node
+    contributes ZERO additional bytes to THIS chain (memoizes to 0, walked as an
+    atomic leaf for path-printing, best_child[fn] = None): the whole reason a
+    re-derivation is allowed to stop counting here is that `fn` is independently,
+    freshly re-guarded at the moment it actually runs by its OWN runtime call to
+    `pdna_origin_art_stack_room(need)`, checked against the REAL live stack pointer
+    at that instant -- not against whatever headroom an ANCESTOR gate (e.g.
+    PDNA_PARTY_STRIP_NEED's own outer check) happened to promise minutes/frames
+    earlier. That inner gate is what actually keeps `fn`'s real execution safe, so
+    the ancestor's own budget does not have to additively reserve room for it on
+    top of its own chain -- double-reserving the same protection twice is exactly
+    the "inflated in the safe direction" defect BACKLOG #102 exists to remove.
+    `gate_report`, when given a dict, is filled with {fn: (measured, need)} for
+    every gated node this run actually verified-and-excluded, so a caller can print
+    the proof without re-deriving it."""
     memo = {}
     best_child = {}
     onstack = set()
     cycles = []
     scc_of = scc_of or {}
+    gated = gated or {}
 
     def go(fn):
         if fn in memo:
             return memo[fn]
+        if enforce_gates and fn in gated:
+            need = gated[fn]
+            sub_gated = dict(gated)
+            del sub_gated[fn]
+            measured, _sub_path, sub_cycles = deepest_from(
+                fn, edges, su_sizes, estimated, blacklist, overrides, scc_of,
+                sub_gated, enforce_gates)
+            cycles.extend(sub_cycles)
+            if measured > need:
+                raise GatedSubtreeExceeded(fn, measured, need)
+            if gate_report is not None:
+                gate_report[fn] = (measured, need)
+            memo[fn] = 0
+            best_child[fn] = None
+            return 0
         comp = scc_of.get(fn)
         if comp is not None:
             charge, members = comp
@@ -2090,6 +2267,15 @@ def deepest_from(root, edges, su_sizes, estimated, blacklist=(), overrides=None,
     cur = root
     printed_scc = set()
     while cur is not None:
+        if enforce_gates and cur in gated:
+            # The gated branch in go() always memoizes cur to 0 (D3: NOT the
+            # declared need -- an earlier draft of this comment said that; see
+            # go()'s own BACKLOG #102 docstring for why 0 is what's implemented)
+            # and leaves best_child[cur] = None (an atomic leaf for printing
+            # purposes) -- true unconditionally for any cur reaching this point,
+            # since that branch runs before scc_of/onstack are even consulted.
+            path.append((cur, memo[cur], "gated"))
+            break
         comp = scc_of.get(cur)
         if comp is not None:
             charge, members = comp
@@ -2130,7 +2316,7 @@ def reachable_from(root, edges):
 
 def check_ambiguous_declarations(dup_names, addr_unique_name, field_decls, argsite_decls,
                                   whole_func_decls, frame_overrides, isr_decls,
-                                  addrtaken_ok, recursion_decls=()):
+                                  addrtaken_ok, recursion_decls=(), gated_decls=()):
     """D5b: any stack_edges.txt reference to a NAME the census found duplicated
     (`dup_names`, from read_symbol_census()) without its `@tu` qualifier is ambiguous
     -- it could silently resolve to whichever instance's node happens to exist under
@@ -2171,6 +2357,8 @@ def check_ambiguous_declarations(dup_names, addr_unique_name, field_decls, argsi
         check(fn, "addrtaken-ok")
     for fn in sorted(recursion_decls):
         check(fn, "recursion")
+    for fn in sorted(gated_decls):
+        check(fn, "gated")
     return problems
 
 
@@ -2273,18 +2461,31 @@ def whole_graph_blind_spots(reachable, blind):
     return out
 
 
-def top_n_chains(root, edges, su_sizes, estimated, n=5, overrides=None, scc_of=None):
+def top_n_chains(root, edges, su_sizes, estimated, n=5, overrides=None, scc_of=None,
+                  gated=None, enforce_gates=False, gate_report=None):
     """Top-N distinct chains from root, ranked by root's direct callees' subtree
-    weight (each callee's own heaviest chain, prefixed with root's frame)."""
+    weight (each callee's own heaviest chain, prefixed with root's frame).
+
+    BACKLOG #102: `gated`/`enforce_gates`/`gate_report` thread straight through to
+    every deepest_from() call this function makes -- see that function's own
+    docstring. main() passes enforce_gates=False for --root main (gated subtrees
+    stay fully included, unchanged whole-program worst case) and enforce_gates=True
+    for any other --root (a re-derivation, where a verified gated subtree is
+    excluded -- charged 0 -- instead of its real size, or FATALs if the declared
+    need doesn't actually bound it)."""
     root_frame, root_src = frame_of(root, su_sizes, estimated, overrides)
     children = sorted(edges.get(root, ()),
                        key=lambda c: deepest_from(c, edges, su_sizes, estimated,
-                                                   overrides=overrides, scc_of=scc_of)[0],
+                                                   overrides=overrides, scc_of=scc_of,
+                                                   gated=gated, enforce_gates=enforce_gates,
+                                                   gate_report=gate_report)[0],
                        reverse=True)
     chains = []
     for c in children[:n]:
         tot, path, cycles = deepest_from(c, edges, su_sizes, estimated,
-                                          overrides=overrides, scc_of=scc_of)
+                                          overrides=overrides, scc_of=scc_of,
+                                          gated=gated, enforce_gates=enforce_gates,
+                                          gate_report=gate_report)
         chains.append((root_frame + tot, [(root, root_frame, root_src)] + path, cycles))
     if not chains:
         chains = [(root_frame, [(root, root_frame, root_src)], [])]
@@ -3010,9 +3211,9 @@ def main(argv):
         return 1
 
     (field_decls, field_offset_index, argsite_decls, whole_func_decls, frame_overrides,
-     isr_decls, addrtaken_ok, recursion_decls) = (
+     isr_decls, addrtaken_ok, recursion_decls, gated_decls) = (
         load_extra_edges(args.edges_file) if args.edges_file
-        else ({}, ({}, {}), {}, {}, {}, set(), set(), {}))
+        else ({}, ({}, {}), {}, {}, {}, set(), set(), {}, {}))
 
     # D1 header-drift check: every declared Struct.field @OFFSET is checked against
     # the offset the struct's OWN header gives that field today, before anything
@@ -3027,12 +3228,25 @@ def main(argv):
             print(f"***   {p}", file=sys.stderr)
         return 1
 
+    # D1(b) (review-opus fix pass, BACKLOG #102): every `gated fn need=N from=
+    # header:MACRO ...` declaration's N is cross-checked against the header's own
+    # #define today, same posture as the Struct.field @OFFSET check right above --
+    # a declaration whose N no longer mirrors the runtime constant it claims to
+    # is not a bound this walker can vouch for.
+    gated_macro_problems = verify_gated_macro_declarations(gated_decls, args.source_dir)
+    if gated_macro_problems:
+        print(f"*** stack_budget: {args.edges_file} has stale `gated` declaration(s):",
+              file=sys.stderr)
+        for p in gated_macro_problems:
+            print(f"***   {p}", file=sys.stderr)
+        return 1
+
     # D5b: every name stack_edges.txt references (as a caller or an implementation)
     # must be unambiguous -- a bare name the census found duplicated across TUs is an
     # ERROR listing the qualified candidates, never a silent pick of "whichever one".
     ambiguous = check_ambiguous_declarations(
         dup_names, addr_unique_name, field_decls, argsite_decls, whole_func_decls,
-        frame_overrides, isr_decls, addrtaken_ok, recursion_decls)
+        frame_overrides, isr_decls, addrtaken_ok, recursion_decls, gated_decls)
     if ambiguous:
         print(f"*** stack_budget: {args.edges_file} references a duplicated static "
               "name without a '@tu' qualifier:", file=sys.stderr)
@@ -3095,7 +3309,12 @@ def main(argv):
 
     all_impls = ({impl for impls in field_decls.values() for impl in impls[1]}
                  | {impl for _n, impls in argsite_decls.values() for impl in impls}
-                 | {impl for impls in whole_func_decls.values() for impl in impls})
+                 | {impl for impls in whole_func_decls.values() for impl in impls}
+                 # BACKLOG #102: a `gated fn need=N` line absent from THIS build's ELF
+                 # (a variant that never links the gated fn at all) is exactly the same
+                 # "stale declaration? typo? inlined away?" situation as any other
+                 # declared name -- same WARNING path, not a new one.
+                 | set(gated_decls))
     unknown_impls = sorted(all_impls - analysis["funcs"])
     if unknown_impls:
         print(f"*** stack_budget: WARNING -- {args.edges_file} names implementation(s) not "
@@ -3161,9 +3380,53 @@ def main(argv):
             print(f"***   {p}", file=sys.stderr)
         return 1
 
-    chains = top_n_chains(args.root, analysis["edges"], su_sizes, estimated,
-                           n=args.top, overrides=frame_overrides, scc_of=scc_of)
+    # BACKLOG #102: gated subtrees are only ever capped/enforced when re-deriving a
+    # number from a --root OTHER than the real entry point -- --root main (the
+    # whole-program guard) always walks them fully, ungated, so no OTHER re-
+    # derivation's declared need can shrink the guard's own worst-case number.
+    enforce_gates = (args.root != "main")
+    gate_report = {}
+    # D1 (review-opus fix pass): gated_decls values are now (need, header, macro,
+    # gate_fn) 4-tuples -- deepest_from()/top_n_chains() only ever need the bare
+    # need, so unpack once here rather than teaching the walker's hot DFS path
+    # about the richer declaration shape.
+    gated_needs = {fn: meta[0] for fn, meta in gated_decls.items()}
+    try:
+        chains = top_n_chains(args.root, analysis["edges"], su_sizes, estimated,
+                               n=args.top, overrides=frame_overrides, scc_of=scc_of,
+                               gated=gated_needs, enforce_gates=enforce_gates,
+                               gate_report=gate_report)
+    except GatedSubtreeExceeded as e:
+        print(f"\n*** STACK_BUDGET GATED SUBTREE EXCEEDED: {e}", file=sys.stderr)
+        # D1 (review-opus fix pass): the old advice ("raise the need line to M")
+        # was WRONG -- N is not a free dial any more, it must equal the runtime
+        # PDNA_* constant the declaration's own `from=header:MACRO` names (checked
+        # by verify_gated_macro_declarations() elsewhere in this run). Raising
+        # only the stack_edges.txt line without also raising the header macro
+        # would make this tool validate a number the runtime gate does not
+        # actually enforce -- exactly the unsound state D1 exists to prevent.
+        header = macro = None
+        if e.fn in gated_decls:
+            _need, header, macro, _gate_fn = gated_decls[e.fn]
+        print(f"*** Fix: the declared need ({format_num(e.need)} B) must equal the "
+              "runtime constant it mirrors" +
+              (f" ({header}'s {macro})" if header else "") +
+              f" -- it is not a free dial. Either shrink the subtree below "
+              f"{format_num(e.measured)} B, or raise BOTH the header macro and this "
+              f"line to a re-measured, honest bound, then re-verify by re-running "
+              f"`--root fetch_pic_ex.constprop.0` (or the equivalent immediate "
+              f"caller of {e.fn}) -- THAT chain, not {e.fn}'s own "
+              f"{format_num(e.measured)} B in isolation, is what the runtime gate "
+              "must actually cover.", file=sys.stderr)
+        return 1
     deepest_total, deepest_path, cycles = chains[0][0], chains[0][1], chains[0][2]
+    if gate_report:
+        print("\nGATED SUBTREES EXCLUDED THIS RUN (measured <= declared need, so the "
+              "declaration is a valid bound -- each contributes 0 B to this chain, "
+              "protected instead by its own independent runtime gate):")
+        for fn, (measured, need) in sorted(gate_report.items()):
+            print(f"  {fn}: measured {format_num(measured)} B <= declared need "
+                  f"{format_num(need)} B -- excluded")
 
     # STOP-LICENCE check (D4, BACKLOG #84b fourth pass): any indirect-call site inside
     # a function REACHABLE FROM --root that resolve_all_sites() could not tie to a
@@ -3252,7 +3515,10 @@ def main(argv):
         for name, b, src in path:
             tag = {"su": "", "estimated": " (estimated)", "unknown": " (UNKNOWN, counted 0)",
                    "override": " (frame override, hand-measured)",
-                   "recursion": " (declared recursion, charged once)"}[src]
+                   "recursion": " (declared recursion, charged once)",
+                   "gated": " (declared gate: measured <= need, excluded -- protected by "
+                            "its own independent runtime gate)",
+                   }[src]
             print(f"      {b:6,d}  {name}{tag}")
         if cyc:
             print(f"      WARNING: recursion excluded at: {cyc}")
