@@ -2950,6 +2950,140 @@ def _write_manifest(out_dir: Path, ok: list[tuple[str, str]], skipped: list[tupl
         encoding="utf-8")
 
 
+def run_s2_bank(core_mod, image_mod, rom: Path, out_dir: Path, which: str,
+                 clip_rom: Path = None) -> gb_shots.Session:
+    """#120: the Bank, reachable from a Game Boy session (bank_edge's UP
+    hop). `rom` MUST be a ONE-ROM fused image matching `which` (tools/fuse_gb.py,
+    Gold.gbc+Gold.sav or Red.gb+Red.sav, NO Emerald.sav -- the boot takes the
+    fused-GB branch, gb_delta_pick_save() auto-picks the lone entry).
+
+    Reaching the Bank from a fresh box grid entry takes THREE UP presses, not the
+    two the brief's own prose named: UP #1 moves the grid cursor (which starts on a
+    cell, not the title) up onto the title banner (on_title=true); UP #2 moves from
+    the title onto the top tabs (s_tab_focus = 2, SAVE, since a GB source has no
+    PARTY tab); UP #3 is the actual bank_edge hop out of tab-focus mode. Verified by
+    hand against this exact image (probe screenshots, not guessed) -- the brief's
+    count undercounts the tab-focus stage by one press. Each press uses a generous
+    100-frame settle: the third one's paint (pdna_bank_show's own f_mkdir/meta_load/
+    box_load, all against a card mGBA does not have) needs more than the usual
+    BIG_SETTLE=40 to fully resolve, confirmed by hand (40 caught a stale mid-render
+    frame in an early probe; 60+ is reliably stable).
+
+    pdna_bank_show() DOES paint in mGBA despite having no SD card: f_mkdir/f_open
+    fail silently (FatFs has no disk to find), meta_load() and box_load() both fall
+    back to their in-RAM defaults (meta_defaults()/an all-empty box buffer), so the
+    Bank opens as an honest "BANK 1  0/30", every cell empty -- not a blank screen,
+    not a hang, not an error toast. Writing (STOP-LICENCE candidate) also does not
+    hang: CREATE's own commit (box_save, unconditionally called by the START-menu
+    "A = write" confirm) fails quietly and the cell stays occupied in RAM only (the
+    brief's own prediction, confirmed here) -- XFER-B7's own HW row covers whether a
+    real Everdrive/no-card session raises a FatFs toast the emulator cannot show.
+
+    `clip_rom`, when given, is a SEPARATE run for shot (c) only: a single-slot,
+    no-ROM image (tools/fuse_sav.py --gb ... --clip REC80.BIN) that seeds
+    g_clip.occupied so an empty Bank cell's "no PASTE HERE" proves the S2 gate
+    (app_gen3_pc_live() false during a GB session) rather than "nothing was ever
+    copied" -- fuse_gb.py's own directory format and fuse_sav.py's single-slot
+    locator cannot be layered onto one image (pdna_main.c's fused_sav_present()
+    check runs BEFORE the gb_delta_pick_save() loop, so a single-slot fusion always
+    pre-empts a directory one)."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"s2bank_{which}_")
+    print(f"== #120: the Bank from a Game Boy session ({which}) ==")
+    s.run(700)
+    s.tap("A", settle=60)                                   # S1 info -> box grid (single-ROM image)
+    s.run(GB_ART_COLD_SETTLE)
+    s.shot("a_gb_grid", f"#120: the {which} box grid, freshly entered "
+                        "-- every occupied cell wears its own era mark")
+
+    s.press_n("UP", 3, settle=100)                          # grid -> title -> tabs -> the hop (see docstring)
+    s.shot("b_bank_hop", "#120: UP x3 from the grid -- the Bank opens "
+                         "(\"BANK 1  0/30\", every cell empty -- no SD card in "
+                         "mGBA, meta_load()/box_load() both fall back to their "
+                         "in-RAM defaults, not a blank screen or a hang)")
+
+    # (c) is a SEPARATE image/session -- see the clip_rom branch below, run first so
+    # this function's own `s` (the main a/b/d/e/f/g walkthrough) is untouched by it.
+    if clip_rom is not None:
+        cs = gb_shots.Session(core_mod, image_mod, clip_rom, out_dir, f"s2bank_{which}_clip_")
+        cs.run(700)
+        cs.tap("A", settle=60)                              # single-slot image: info -> box grid directly
+        cs.run(GB_ART_COLD_SETTLE)
+        cs.press_n("UP", 3, settle=100)
+        cs.tap("A", settle=100)                             # A on the empty cell (cursor starts at 0)
+        cs.shot("c_empty_cell_clip_seeded", "#120: an EMPTY Bank cell's menu, "
+                "with a Gen-3 clipboard entry SEEDED (tools/fuse_sav.py --clip) so the "
+                "absence below means the S2 gate fired, not \"nothing was ever copied\" "
+                "-- CREATE present, no PASTE HERE (xg_paste_row: app_gen3_pc_live() is "
+                "false during a GB session, no live Gen-3 PC to paste into)")
+        s.taken += cs.taken
+        s.skipped += cs.skipped
+
+    s.tap("A", settle=100)                                  # A on the (still-empty) main-image cell
+    s.shot("c2_empty_cell_no_clip", "#120: the same empty-cell menu on the "
+           "MAIN (no-clip) image -- CREATE only, CANCEL -- included for contrast with "
+           "c_empty_cell_clip_seeded above")
+
+    s.tap("A", settle=200)                                  # CREATE -> pick_species(1)
+    s.shot("d1_species_picker", "#120: CREATE opens the real Gen-3 "
+           "pick_species() -- this is app_create_mon(), gen3_build_mon_spread(), no "
+           "GB ROM lookup involved (the Bank cell's own destination is a Gen-3 "
+           "record) -- Bulbasaur pre-selected")
+    s.tap("A", settle=200)                                  # pick Bulbasaur
+    s.shot("d2_new_mon_info", "#120: the NEW chip + info card -- OT/TID "
+           "read blank/0 (g_vinfo is cleared for the whole GB session, so the "
+           "created record has no live trainer identity to stamp -- a data-quality "
+           "note for the created mon's OWN fields, not a save-corruption path: "
+           "app_create_mon's commit target is the Bank's own record, never "
+           "g_save/g_party)")
+    s.tap("START", settle=100)                              # keep? A = write (backup first)
+    s.tap("A", settle=200)
+    s.shot("d3_created_in_bank", "#120: back in the Bank -- 1/30, the new "
+           "Bulbasaur showing OCCUPIED even though box_save's own SD write failed "
+           "silently (no card in mGBA) -- app_create_mon memcpys into the block "
+           "BEFORE the commit, matching the brief's own prediction")
+
+    s.tap("A", settle=150)                                  # menu on the created (occupied) cell
+    s.shot("d4_occupied_menu", "#120: the occupied Bank cell's menu -- "
+           "VIEW/EDIT, ITEM, LEGALITY, MOVE, COPY, DUPLICATE, RELEASE, CANCEL -- "
+           "no TO GAME, no PASTE, no TO DAY-CARE: this is the FULL (non-readonly) "
+           "app_mon_menu (readonly is cleared for the Bank visit), gated by "
+           "xg_togame_row/xg_paste_row (both false: no live Gen-3 PC)")
+
+    s.press_n("DOWN", 5, settle=60)                         # VIEW/EDIT..COPY -> DUPLICATE
+    s.tap("A", settle=150)                                  # DUPLICATE -> holding a copy
+    s.shot("e1_holding_in_bank", "#120: holding the fresh duplicate -- "
+           "the re-entry cursor after CREATE lands on the Bank's own bottom row "
+           "already (verified by hand against the held sprite's own pixel "
+           "position, not assumed), so ONE DOWN already falls off it")
+    s.tap("DOWN", settle=150)                               # off the Bank bottom -> back on the GB grid, still holding
+    s.shot("e2_off_bank_still_holding", "#120: one DOWN later -- back on "
+           "the GB grid, still holding the Bank-origin duplicate (footer: A drop "
+           "B cancel)")
+    s.tap("A", settle=150)                                  # A on a GB cell -- the cross-gen deny
+    s.shot("e3_cross_gen_deny", "#120: NOT ACROSS GENERATIONS -- the "
+           "cross-generation drop deny (drop_held/xg_drop_denied) fires; nothing "
+           "placed, the hand is still full")
+    s.tap("A", settle=100)                                  # dismiss the message
+    s.tap("B", settle=100)                                  # cancel the carry -- lands back in
+                                                             # NORMAL grid mode on the same cell
+                                                             # (verified by hand: no repositioning
+                                                             # needed, unlike an earlier draft of
+                                                             # this function assumed)
+    s.tap("A", settle=150)
+    s.shot("f_gb_menu_after_visit", "#120: the GB grid's own mon menu "
+           "after the whole Bank visit -- VIEW/EDIT, ITEM, LEGALITY, MOVE TO BOX, "
+           "COPY, RELEASE, CANCEL, still present (app_mon_menu_readonly, readonly "
+           "re-installed by gb_session_ops_install on the way out)")
+    s.tap("B", settle=100)
+    s.shot("g_grid_after_visit", "#120: the GB grid after the whole Bank "
+           "visit -- crop-compared against a_gb_grid: every occupied cell's era "
+           "mark is pixel-identical (only the cursor position differs); "
+           "pdna_bank_show()'s own pdna_origin_box_clear() drops the era cache on "
+           "exit, but gb_session_ops_install's hint re-install lets box_decode's "
+           "pdna_origin_box_note refill it on re-entry, so nothing visible is lost")
+    return s
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -3062,6 +3196,26 @@ def main(argv=None) -> int:
                           "byte-poked first (a nicknamed mon for *-nick, a shiny DV "
                           "quad for crystal-shiny) -- see run_b89_hof_detail_only()'s "
                           "own docstring")
+    ap.add_argument("--s2-bank", choices=("gold", "red"),
+                     help="#120: only run_s2_bank() against --image for the "
+                          "named game -- the Bank, reachable from a Game Boy session "
+                          "(bank_edge's UP hop). --image MUST be a ONE-ROM fused image "
+                          "matching this choice (tools/fuse_gb.py, Gold.gbc+Gold.sav or "
+                          "Red.gb+Red.sav, NO Emerald.sav -- the boot must take the "
+                          "fused-GB branch, gb_delta_pick_save() skips its own picker "
+                          "when n == 1). --s2-bank-clip is a SEPARATE, single-slot "
+                          "image (tools/fuse_sav.py --gb ... --clip REC80.BIN, no ROM) "
+                          "for the one shot (c) that needs a seeded Gen-3 clipboard "
+                          "entry to prove PASTE HERE's absence means something, rather "
+                          "than 'nothing was ever copied' -- fuse_gb.py's own directory "
+                          "format and fuse_sav.py's single-slot locator are two "
+                          "different fusion schemes and cannot be layered onto one "
+                          "image without the single-slot fork pre-empting the "
+                          "directory one (pdna_main.c checks fused_sav_present() "
+                          "before the gb_delta_pick_save() loop).")
+    ap.add_argument("--s2-bank-clip", type=Path,
+                     help="#120: the single-slot, clip-seeded image for "
+                          "--s2-bank's shot (c) -- see --s2-bank's own help.")
     ap.add_argument("--gbnames", choices=("red", "crystal"),
                      help="gbnames brief: only run_gbnames() against --image for the "
                           "named game -- real Gen-1/Gen-2 item names now shown by "
@@ -3432,6 +3586,24 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] gbnames ({a.gbnames}): {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if a.s2_bank:
+        # #120: new block at the END of the dispatch chain (minimal
+        # contact with h118/p2/mapg2/b124, which all edit this file too) -- ran =
+        # True per lane tiny2's own latch convention.
+        ran = True
+        try:
+            sess = run_s2_bank(core_mod, image_mod, a.image, a.out, a.s2_bank,
+                                clip_rom=a.s2_bank_clip)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] s2-bank ({a.s2_bank}): {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
