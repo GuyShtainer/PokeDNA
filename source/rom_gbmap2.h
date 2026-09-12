@@ -158,11 +158,13 @@ bool rgm2_colour_palette(const RomGbMap2Colour* c, GbReadFn read, void* ctx, uin
 
 /* Roof colours (design §7.4): only when environment is TOWN(1)/ROUTE(2);
  * `group` is the map's own 1-based group id, indexed DIRECTLY (no
- * decrement). `LoadMapPals` (engine/gfx/color.asm) copies TWO RGB15 words
- * (`ld bc, 4`) into palette slot PAL_BG_ROOF (=6)'s own colours 1 and 2 --
- * out_day[0] is the roof entry's FIRST word (morn), out_day[1] the SECOND
- * (day); the caller applies out_day[1] (design posture is DAY-only), never
- * out_day[0]. Both zeroed on failure. `c` must have c->ok. */
+ * decrement). `LoadMapPals` (engine/gfx/color.asm) copies TWO RGB15 words (`ld bc, 4`)
+ * into palette slot PAL_BG_ROOF (=6) -- out_day[0] becomes that slot's
+ * COLOUR 1 and out_day[1] its COLOUR 2. They are the two colours of ONE
+ * roof palette, not a morn/day pair: the routine's `cp NITE_F / jr c,
+ * .morn_day` picks the entry's FIRST 4 bytes for morn AND day alike (the
+ * last 4 are nite+dark). The caller must apply BOTH -- writing one value
+ * into both colours was review-opus D2. Both zeroed on failure. */
 bool rgm2_colour_roof(const RomGbMap2Colour* c, GbReadFn read, void* ctx, uint32_t size,
                        uint8_t environment, uint8_t group, uint16_t out_day[2]);
 
