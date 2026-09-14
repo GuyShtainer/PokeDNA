@@ -224,6 +224,42 @@ int main(int argc, char** argv) {
           "a compressed span ending exactly at image EOF still decodes (BACKLOG #103)");
   }
 
+  /* BACKLOG #103 F4 (review-opus LOW): the LZ10 all-literal span bound was one
+   * byte short when a stream's FINAL token is a clamped back-reference. The
+   * all-literal formula (4 + size + ceil(size/8)) assumes every output byte
+   * costs exactly 1 compressed data byte; a back-reference token spends 2
+   * bytes (disp+len) yet, when CLAMPED by `len > size - out` (this decoder's
+   * own clamp), can produce as few as 1 output byte -- "spending" one more
+   * compressed byte than the all-literal bound allocated for that single
+   * output byte. Synthetic stream (decompressed "ABCC", size=4): 3 literal
+   * bytes 'A','B','C' then a back-reference (disp=1, natural len=3, clamped
+   * to len=1 since only 1 byte of output remains) that repeats 'C'. Body =
+   * 1 flag byte + 3 literals + 2 back-reference bytes = 6 bytes; compressed
+   * span = 4 header + 6 = 10 bytes. The pre-fix bound (4 + 4 + ceil(4/8) = 9)
+   * is one byte short of the 10 actually needed -- the final back-reference
+   * byte falls outside it, the window's last fill starves, and the decode
+   * fails closed (returns 0) even though the stream is well-formed. This
+   * must fail on the pre-fix bound and pass with the +1u fix. */
+  {
+    static uint8_t img2[32];
+    memset(img2, 0xEE, sizeof img2);
+    img2[0] = 0x10;                       /* LZ10 */
+    img2[1] = 4; img2[2] = 0; img2[3] = 0;  /* size=4 */
+    img2[4] = 0x10;                       /* flags: bits 0-2 literal, bit 3 back-ref */
+    img2[5] = 'A'; img2[6] = 'B'; img2[7] = 'C';
+    img2[8] = 0x00; img2[9] = 0x00;       /* b1=0 (len=3, clamped to 1), b2=0 (disp=1) */
+
+    MemBuf mb2; mb2.p = img2; mb2.n = sizeof img2;
+    RomCtx erc2; memset(&erc2, 0, sizeof erc2);
+    erc2.read = mem_read; erc2.ctx = &mb2; erc2.size = (uint32_t)sizeof img2;
+
+    uint8_t out2[8];
+    uint32_t n2 = mr_lz77(&erc2, ROM_BASE, out2, sizeof out2);
+    CHECK(n2 == 4 && memcmp(out2, "ABCC", 4) == 0,
+          "a stream whose final token is a clamped back-reference still decodes "
+          "(BACKLOG #103 F4 -- the span bound was one byte short)");
+  }
+
   test_map(&rc, "littleroot", "docs/analysis-2026-07-29/render-littleroot.raw");
   test_map(&rc, "petalburg",  "docs/analysis-2026-07-29/render-petalburg.raw");
 

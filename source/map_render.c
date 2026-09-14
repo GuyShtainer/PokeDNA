@@ -48,9 +48,15 @@ static uint32_t lz77_run(const RomCtx* rom, uint32_t addr, uint8_t* dst, uint32_
   uint32_t src = addr + 4;
   uint32_t out = 0;
   /* LZ10 all-literal upper bound on the compressed span: 4 header bytes + `size`
-   * literal bytes + one flag byte per (up to) 8 literals. An over-read past this
+   * literal bytes + one flag byte per (up to) 8 literals, PLUS one more byte
+   * (BACKLOG #103 F4, review-opus LOW): a stream whose FINAL token is a
+   * back-reference clamped by `len > size - out` (this decoder's own clamp,
+   * a few lines below) still spends its full 2-byte back-reference token in
+   * the compressed stream even though it produces fewer than `len` output
+   * bytes -- the plain `size / 8` flag-byte count alone under-covers that
+   * token's own bytes by one in the worst case. An over-read past this bound
    * can never be needed to decode a well-formed stream. */
-  uint32_t span_end = addr + 4 + size + (size + 7u) / 8u;
+  uint32_t span_end = addr + 4 + size + 1u + (size + 7u) / 8u;
   uint32_t img_end = ROM_BASE + rom->size;
 
   /* one byte of compressed input, buffered */
