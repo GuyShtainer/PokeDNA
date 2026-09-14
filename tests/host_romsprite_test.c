@@ -393,6 +393,29 @@ static void run_rom(const char* path, const char* name, int expect_header) {
     chk(name, "a re-read-phase corruption still yields the clean pixels after the retry",
         okc && ok_rr && ir.bytes == ic.bytes && memcmp(dirty_rr, clean, ic.bytes) == 0);
 
+    /* (c) F1 review fix: corrupt ONLY the SEPARATE mr_lz77_size() window-
+     * sizing peek (call base+3), leaving decode_verified's own header read
+     * (call base+4) clean. `win` is computed from the peek's `size` BEFORE
+     * the loop; if the peek disagrees with the header the decode itself
+     * reads, `win = dst + size` can land inside dst[0,n) -- the window
+     * aliases live output, and mr_hash_span()'s re-read would silently
+     * overwrite decoded pixels while the hash still matches (the two
+     * refuters' reproduction: a 3,072 vs 4,096 disagreement -> 953 dirty
+     * bytes, accepted). decode_verified's guard (`if (win_bytes && n !=
+     * size) return 0;`, right after the `if (!n) return 0;` check) must
+     * refuse whenever the two header reads disagree, REGARDLESS of whether
+     * this particular disagreement happens to leave visibly dirty pixels --
+     * it is a provable-aliasing-risk guard, not a pixel-diff detector. XOR
+     * 0xFF on the peek's low size byte (species 1 front: true size 4096 ->
+     * peeked 4351, still <= cap and cap-peek >= 256, so a real window gets
+     * computed and used) reliably triggers the guard. */
+    base = fc.calls;
+    fc.hit_call = base + 3; fc.hit_pos = 1;
+    uint8_t dirty_pk[ROM_SPRITE_BUF_BYTES]; RomSpritePic ip;
+    int ok_pk = rom_sprite_pic(&rs, ROM_SPRITE_FRONT, 1, 0, dirty_pk, sizeof dirty_pk, &ip);
+    chk(name, "F1: a size-peek/header disagreement is REFUSED, not accepted "
+              "(the window-aliasing guard)", !ok_pk);
+
     fc.hit_call = 0;
   }
 

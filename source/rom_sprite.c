@@ -162,6 +162,13 @@ static uint32_t decode_verified(const RomSprite* rs, uint32_t addr,
     uint32_t consumed = 0, in_hash = 0;
     uint32_t n = mr_lz77_x(rs->rc, addr, dst, cap, win, win_bytes, &consumed, &in_hash);
     if (!n) return 0;
+    /* `win` was sized off a SEPARATE mr_lz77_size() peek of the same 4 header
+     * bytes. If that peek disagreed with the header this decode actually read,
+     * dst + size lands INSIDE dst[0,n): the window aliases live output and
+     * mr_hash_span()'s re-read below would overwrite it. A successful decode
+     * always returns exactly its header's size, so n != size means the two
+     * header reads disagreed -- refuse. */
+    if (win_bytes && n != size) return 0;
     if (!rs->verify) return n;
     uint32_t reread_hash = 0;
     if (mr_hash_span(rs->rc, addr, consumed, win, win_bytes, &reread_hash) && reread_hash == in_hash)
