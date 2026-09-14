@@ -108,6 +108,11 @@ BoxSource.set_name   @32 in box_options_menu,pdna_box -> banksrc_set_name gbsrc_
 # (no @32 site), so the sweep sees it address-taken -- declare it (its chain runs through
 # pick_item, over the 256-B exemption cap). Callers of set_name qualified for the same reason.
 AppSrcOps.item       @32 in app_mon_menu_readonly -> gb_item_hook
+# 2026-09-14 (the "stuck choosing the .gbc" cart fix): gb_art_source.c's SD read shim
+# calls its GbArtIo.fn progress callback between reads. pdna_main.c's gb_reg_progress
+# is the ONLY implementation ever stored there (app_register_gb_rom, its restore
+# call, and main()'s boot re-registration); every other GbArtIo is built with fn = 0.
+GbArtIo.fn           @0 in gb_art_read -> gb_reg_progress
 BoxSource.get_wp     @36 -> banksrc_get_wp gbsrc_get_wp pcsrc_get_wp
 BoxSource.set_wp     @40 -> banksrc_set_wp gbsrc_set_wp pcsrc_set_wp
 BoxSource.can_edit   @44 -> banksrc_can_edit gbsrc_can_edit app_can_edit
@@ -1034,6 +1039,12 @@ addrtaken-ok __aeabi_idiv0        # libgcc: division-by-zero trap, taken by the 
 addrtaken-ok __boot_method        # crt0: multiboot/cart boot-method DATA byte, not a function -- see the D5 note above
 addrtaken-ok __do_global_dtors_aux # crtstuff: static-destructor runner, taken via .fini_array
 addrtaken-ok __libc_init_array    # newlib crt: constructor runner, taken by crt0/_start
+addrtaken-ok gen1_write_layout    # 2026-09-14: only ever called DIRECTLY (5 sites, all in gen1_write.c; no
+                                  # assignment or table names it). The link placed this Thumb function at
+                                  # 0x08010000, and that EVEN word is pdna_romfull_screen's own literal for
+                                  # "ROM + 64 KiB" (its verification grid step) plus a u16 pair in s_fam --
+                                  # a real Thumb pointer to it would be the ODD 0x08010001, which occurs
+                                  # nowhere in the image (checked with a byte search of PokeDNA.gba).
 addrtaken-ok __text_start         # linker/crt boundary symbol, a zero-size DATA marker, not application code -- see the D5 note above
 addrtaken-ok __udivmoddi4         # libgcc: 64-bit unsigned division helper, taken by the div runtime
 addrtaken-ok __utf8_wctomb        # newlib: UTF-8 locale table entry, same family as __utf8_mbtowc above

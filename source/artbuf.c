@@ -9,7 +9,11 @@
 #include "artbuf.h"
 #include "sys.h"     /* EWRAM_BSS */
 
-EWRAM_BSS uint16_t mon_decomp[MON_DECOMP_BYTES / 2];
+/* aligned(4): gb_art_source.c also uses this as the 8 KB whole-ROM scan window, and
+ * lib/fatfs/diskio.c's direct DMA path needs a word-aligned destination (a 2-mod-4
+ * one is still correct, but bounces through fc_bounce four sectors at a time). A
+ * uint16_t array is only guaranteed 2-aligned; this makes the fast path a fact. */
+EWRAM_BSS uint16_t mon_decomp[MON_DECOMP_BYTES / 2] __attribute__((aligned(4)));
 
 /* Plain (IWRAM) .data, NOT EWRAM_BSS -- 4 bytes, and EWRAM has none to spare
  * (docs/SPRITE-ERA-DESIGN.md: 524 B free before this arc, 268 after slice E3's two

@@ -2784,6 +2784,40 @@ static void app_register_rom(void) {
  * app_register_rom() above but delegates the actual open+identify to gb_art_source.c
  * (it owns the FIL/RomGbSprite/scratch dance) and refuses a ROM that identifies as the
  * OTHER generation rather than silently accepting it into the wrong slot. */
+/* The registration progress screen (2026-09-14, the "stuck choosing the .gbc" cart
+ * bug). Invoked from gb_art_source.c's read shim between SD reads -- every 8th read
+ * and the first -- never during a transfer. Same instruments as art_extract_draw
+ * above: which locator, bytes covered / ROM size, a bar, the elapsed clock, and B to
+ * cancel (returning false stops the scan before its next read; nothing is written).
+ * Its own frame is deliberately tiny (one 40-byte row buffer): it runs at the BOTTOM
+ * of the locator's call chain, in place of the FatFs read it precedes. */
+typedef struct { uint8_t gen; uint8_t restoring; } GbRegUi;
+
+static bool gb_reg_progress(void* vctx, uint8_t locator, uint32_t done, uint32_t total,
+                            uint32_t elapsed_ms) {
+  const GbRegUi* c = (const GbRegUi*)vctx;
+  key_poll();
+  if (key_hit(KEY_B)) return false;
+  ui_clear();
+  ui_text(4, 4, UI_TITLE, c->restoring ? "RESTORING GAME BOY ROM" : "CHECKING GAME BOY ROM");
+  ui_hline(0, 14, UI_SCR_W, UI_BORDER);
+  ui_text(8, 26, UI_TEXT, c->gen == PDNA_GEN2
+                            ? (locator == GB_ART_LOC_ICONS ? "2/2  menu icon tables" : "1/2  sprite tables")
+                            : "1/1  sprite tables");
+  char row[40];
+  siprintf(row, "%lu / %lu KB", (unsigned long)(done >> 10), (unsigned long)(total >> 10));
+  ui_text(8, 40, UI_TEXT, row);
+  /* 32-bit only: a GB ROM is at most 8 MB, so (done >> 10) * 220 cannot overflow. */
+  int w = (total >> 10) ? (int)(((done >> 10) * 220u) / (total >> 10)) : 0;
+  ui_panel(8, 54, 220, 12, UI_PANEL, UI_BORDER);
+  if (w > 0) ui_fill_rect(9, 55, w > 218 ? 218 : w, 10, UI_OK);
+  siprintf(row, "elapsed %lu.%01lus", (unsigned long)(elapsed_ms / 1000),
+           (unsigned long)((elapsed_ms / 100) % 10));
+  ui_text(8, 74, UI_DIM, row);
+  ui_text(8, 148, UI_DIM, "B  cancel");
+  return true;
+}
+
 static void app_register_gb_rom(uint8_t gen) {
   char path[PATH_MAX];
   if (!app_pick_gb_rom(path, sizeof path)) {
@@ -2801,7 +2835,12 @@ static void app_register_gb_rom(uint8_t gen) {
     msg_wait("PATH TOO LONG", UI_WARN, "That folder is too deep for", "this app (127-char limit).");
     return;
   }
-  GbArtRegStatus st = gb_art_register(gen, path);
+  GbRegUi ui = { gen, 0 };
+  GbArtRegInfo info;
+  GbArtRegStatus st = gb_art_register(gen, path, gb_reg_progress, &ui, &info);
+  /* The log lines above are the evidence a cart run needs; put them on the card
+   * before the message, so a power-off at the dialog still leaves them. */
+  app_log_flush();
   switch (st) {
     case GB_ART_REG_OK: {
       app_gb_rom_path_set(gen, path);
@@ -2829,6 +2868,23 @@ static void app_register_gb_rom(uint8_t gen) {
     case GB_ART_REG_CANT_OPEN:
       msg_wait("CAN'T OPEN", UI_WARN, "File unreadable.", 0);
       break;
+    case GB_ART_REG_CANCELLED:
+      msg_wait("CANCELLED", UI_WARN, "Nothing was changed.", 0);
+      break;
+    case GB_ART_REG_TIMEOUT: {
+      char l1[40];
+      siprintf(l1, "No answer in %us at %lu KB.", (unsigned)GB_ART_SCAN_LIMIT_S,
+               (unsigned long)(info.covered >> 10));
+      msg_wait("TIMED OUT", UI_WARN, l1, "Re-copy the ROM to the card, retry.");
+      break;
+    }
+    case GB_ART_REG_READ_ERR: {
+      char l1[40];
+      siprintf(l1, "FatFs %u / err %u at %lu KB", (unsigned)info.fr, (unsigned)info.err,
+               (unsigned long)(info.fail_off >> 10));
+      msg_wait("READ ERROR", UI_WARN, l1, "Logged to /PokeDNA/log.txt.");
+      break;
+    }
     default: break;
   }
   /* E3 review item 5: a failed re-pick just called gb_art_register(gen, <bad path>),
@@ -2838,7 +2894,12 @@ static void app_register_gb_rom(uint8_t gen) {
    * "Change ROM" attempt that fails must not cost the user their already-working
    * art. Re-register the OLD path on any non-OK outcome; a no-op (EMPTY) if there
    * never was one. */
-  if (st != GB_ART_REG_OK) gb_art_register(gen, app_gb_rom_path(gen));
+  if (st != GB_ART_REG_OK) {
+    GbRegUi restore = { gen, 1 };
+    /* Cheap when the old ROM's .loc is on the card (a few dozen reads); the screen
+     * only lingers for the rare boot-less rescan, and B still cancels it. */
+    gb_art_register(gen, app_gb_rom_path(gen), gb_reg_progress, &restore, 0);
+  }
 }
 #endif
 
@@ -7094,7 +7155,7 @@ static void gb_rom_row_action(uint8_t gen) {
     else if (k & KEY_A) {
       if (sel == 0) { app_register_gb_rom(gen); return; }
       app_gb_rom_path_set(gen, "");
-      gb_art_register(gen, "");
+      gb_art_register(gen, "", 0, 0, 0);
       cfg_save();
       pdna_origin_art_invalidate();
       snd_ok();
@@ -9279,7 +9340,7 @@ int main(void) {
                             * panel gets exercised before hardware ever sees it */
   bus_late_selftests();   /* no card and no motor here, but the ROM-fetch probe is
                            * the only place this code can be exercised off-hardware */
-  gb_art_boot_register();                    /* #62 D1: without this s_gb_on stays 0 and
+  gb_art_boot_register(0, 0);                /* #62 D1: without this s_gb_on stays 0 and
                                                * every delta build draws Gen-3 stand-in art
                                                * instead of the fused GB corpus */
   pdna_era_boot_register();                  /* E4: the era resolver + cross-game Gen-3 rung */
@@ -9366,7 +9427,14 @@ int main(void) {
 
   strcpy(g_cwd, "/");
   cfg_load();                                /* restore last folder + sort/filter (#6) */
-  gb_art_boot_register();                    /* light up any registered GB ROMs (romgb1/romgb2) */
+  {
+    /* Light up any registered GB ROMs (romgb1/romgb2). With their .loc caches on the
+     * card this is a few dozen reads per ROM; only a missing/stale cache rescans, and
+     * that rescan now shows the same progress screen Settings does (B cancels it --
+     * the ROM simply stays unregistered for this session). */
+    GbRegUi boot_ui = { 0, 0 };
+    gb_art_boot_register(gb_reg_progress, &boot_ui);
+  }
   pdna_era_boot_register();                  /* E4: the era resolver + cross-game Gen-3 rung */
   /* ONE throughput sample per run, at two sizes, on the user's own card -- see
    * perf_sd_sample(). It runs HERE because it needs two things that only exist at this

@@ -13,6 +13,11 @@
 #include "rom_gbicon.h"       /* E5: the 16x16 Gen-2 party/PC menu icon rung          */
 #include "gb_art_source.h"
 #include "fused_gb.h"         /* PDNA_DELTA half: read the fuse_gb.py corpus from cart space */
+#include "gb_scan_guard.h"    /* cancel / timeout / read-error latch for the SD read shim  */
+#ifndef PDNA_DELTA
+#include "perf.h"             /* perf_ticks/perf_ms: the timeout clock (runs with IRQs off) */
+#include "rmbl.h"             /* rmbl_pause/resume around every SD read (rmbl.h contract)  */
+#endif
 
 /* ---- per-gen state -----------------------------------------------------------------
  * All plain (non-EWRAM) statics -- a handful of bytes each, the same "goes to IWRAM's
@@ -110,19 +115,120 @@ static void gb_icon_save_loc(const RomGbIconLoc* loc) {
   if (bw != sizeof *loc) log_line("gb art: icon loc cache write short");
 }
 
-/* The one seek+read shim gb_art_open_and_identify()/gb_art_fetch() go through -- same
- * shape as pdna_gen12.c's file-local gb_read(), duplicated rather than shared because
- * that one is `static` to a different translation unit and this module deliberately
- * does not reach into pdna_gen12.c's arena-resident session state (see
- * gb_art_source.h: this is a parallel, independent path, not a refactor of tested
- * paste-path code). */
+/* The one seek+read shim every FatFs-backed rom_gb* call in this file goes through
+ * -- same shape as pdna_gen12.c's file-local gb_read(), duplicated rather than
+ * shared because that one is `static` to a different translation unit and this
+ * module deliberately does not reach into pdna_gen12.c's arena-resident session
+ * state (see gb_art_source.h: this is a parallel, independent path, not a refactor
+ * of tested paste-path code).
+ *
+ * 2026-09-14 (the "stuck choosing the .gbc" cart bug): the ctx is no longer a bare
+ * FIL* but a GbArtIo carrying a gb_scan_guard. Before EVERY read the guard is asked
+ * (gb_scan_guard.h): once anything has stopped it -- the user's B, the per-locator
+ * time limit, or one failed read -- this returns false immediately, forever, without
+ * touching the handle. That is what turns "FatFs latched fp->err and every later
+ * f_read fails instantly" from a scanner spinning through thousands of instant
+ * failures into a clean unwind on the first one. A read failure records fr, the
+ * latched FIL.err and the offset for the caller's message and the log. */
+typedef struct GbArtIo {
+  GbArtProgressFn fn;         /* NULL = silent (boot, per-fetch). FIRST on purpose: this
+                               * is the one indirect call tools/stack_budget.py must
+                               * resolve (tools/stack_edges.txt `GbArtIo.fn @0`), and at
+                               * offset 0 its check never depends on sizing the nested
+                               * guard below.                                            */
+  void*           fn_ctx;
+  FIL*            f;
+  GbScanGuard     g;
+  uint32_t        t_start;    /* perf_ticks() at open, for GbArtRegInfo.elapsed_ms       */
+  uint32_t        reads_done; /* reads admitted by EARLIER guards (locator 1 -> 2)       */
+  uint32_t        fail_off;
+  uint8_t         locator;    /* GB_ART_LOC_* -- what the progress screen names          */
+  uint8_t         fr;         /* FRESULT of the failing call, 0 = none                   */
+  uint8_t         err;        /* FIL.err after it                                        */
+} GbArtIo;
+
+#define GB_ART_TICK_MASK   7u                                   /* poll/draw every 8 reads */
+#define GB_ART_LIMIT_TICKS (GB_ART_SCAN_LIMIT_S * 16384u)      /* perf_ticks() is 16,384 Hz */
+
+static void gb_art_io_init(GbArtIo* io, FIL* f, uint32_t size, GbArtProgressFn fn, void* fn_ctx,
+                           uint8_t locator, bool limited) {
+  memset(io, 0, sizeof *io);
+  io->f = f; io->fn = fn; io->fn_ctx = fn_ctx; io->locator = locator;
+  io->t_start = perf_ticks();
+  gb_scan_guard_init(&io->g, size, io->t_start, limited ? GB_ART_LIMIT_TICKS : 0u, GB_ART_TICK_MASK);
+}
+
+/* Start the next locator on the same handle: a fresh time limit and progress
+ * fraction, the read count carried forward. */
+static void gb_art_io_next(GbArtIo* io, uint8_t locator) {
+  io->reads_done += io->g.reads;
+  io->locator = locator;
+  uint32_t limit = io->g.limit;
+  gb_scan_guard_init(&io->g, io->g.total, perf_ticks(), limit, GB_ART_TICK_MASK);
+}
+
 static bool gb_art_read(void* ctx, uint32_t off, void* buf, uint32_t len) {
-  FIL* f = (FIL*)ctx;
+  GbArtIo* io = (GbArtIo*)ctx;
+  if (!io || !io->f || !buf) return false;
+  int tick = 0;
+  if (!gb_scan_guard_admit(&io->g, off, len, perf_ticks(), &tick)) return false;
+  if (tick && io->fn &&
+      !io->fn(io->fn_ctx, io->locator, io->g.hi, io->g.total,
+              perf_ms(gb_scan_guard_elapsed(&io->g, perf_ticks())))) {
+    gb_scan_guard_cancel(&io->g);
+    return false;
+  }
   UINT br = 0;
-  if (!f || !buf) return false;
-  if (f_lseek(f, (FSIZE_t)off) != FR_OK) return false;
-  if (f_read(f, buf, (UINT)len, &br) != FR_OK) return false;
-  return br == len;
+  FRESULT fr = FR_OK;
+  /* rmbl.h's contract: no cue may toggle the cart bus mid-transfer. Same per-read
+   * bracket pdna_main.c's iconrom_fatfs_read uses; a no-op when nothing is armed. */
+  rmbl_pause();
+  if ((FSIZE_t)off != io->f->fptr) fr = f_lseek(io->f, (FSIZE_t)off);
+  if (fr == FR_OK) fr = f_read(io->f, buf, (UINT)len, &br);
+  rmbl_resume();
+  if (fr != FR_OK || br != len) {
+    /* Recorded, not logged, HERE: this shim sits at the bottom of every locator's
+     * call chain, and log_line's newlib formatting subtree (~1.4 KB as the stack
+     * guard charges it) would be added to every GbReadFn site in the program. The
+     * callers log it from their own, shallower frames (gb_art_register via
+     * GbArtRegInfo; gb_art_log_stop below for the per-fetch paths). */
+    io->fr = (uint8_t)fr; io->err = io->f->err; io->fail_off = off;
+    gb_scan_guard_fail(&io->g);
+    return false;
+  }
+  return true;
+}
+
+/* The per-fetch paths' one line of evidence when a read stopped them -- at the
+ * fetch frame's depth, a sibling of the FatFs tail rather than beneath it. */
+static void gb_art_log_stop(const GbArtIo* io, const char* what) {
+  if (io->g.stop == GB_SCAN_OK) return;
+  log_line("gb art: %s stopped: loc%u stop=%u fr=%u err=%u off=%lu after %lu reads", what,
+           (unsigned)io->locator, (unsigned)io->g.stop, (unsigned)io->fr, (unsigned)io->err,
+           (unsigned long)io->fail_off, (unsigned long)io->g.reads);
+}
+
+/* Map a stopped guard to the registration status, or `fallback` when the locator
+ * failed on its own (tables not found) with the guard still green. */
+static GbArtRegStatus gb_art_stop_status(const GbScanGuard* g, GbArtRegStatus fallback) {
+  switch (g->stop) {
+    case GB_SCAN_STOP_CANCEL:   return GB_ART_REG_CANCELLED;
+    case GB_SCAN_STOP_TIMEOUT:  return GB_ART_REG_TIMEOUT;
+    case GB_SCAN_STOP_READ_ERR: return GB_ART_REG_READ_ERR;
+    default:                    return fallback;
+  }
+}
+
+static void gb_art_fill_info(GbArtRegInfo* info, const GbArtIo* io) {
+  if (!info) return;
+  info->reads      = io->reads_done + io->g.reads;
+  info->elapsed_ms = perf_ms(perf_ticks() - io->t_start);
+  info->covered    = io->g.hi;
+  info->fail_off   = io->fail_off;
+  info->locator    = io->locator;
+  info->fr         = io->fr;
+  info->err        = io->err;
+  info->stop       = io->g.stop;
 }
 
 /* ---- open + identify: shared by an explicit Settings registration and the lazy
@@ -141,8 +247,39 @@ static bool gb_art_read(void* ctx, uint32_t off, void* buf, uint32_t len) {
  * split exists to prove. Splitting the WRITE out to the caller's own frame makes it
  * true at the call-graph level, not just at runtime, that gb_art_have() never reaches
  * it. `out_loc` may be NULL (the fallback probe's case). */
+/* 2026-09-14: the scan window is mon_decomp (8 KB, EWRAM, word-aligned), not a 2 KB
+ * stack array -- four times the window is 4x fewer reads, and the frame drops by
+ * 2,048 B at the one call site that used to be this module's deepest. mon_decomp is
+ * only ever a scratch here (artbuf_claim() first, so any memo of its contents knows),
+ * and rom_gbsprite_open_loc()/rom_gbicon_open_loc() touch it only inside the open
+ * call. Loc-FIRST: the cached /PokeDNA/gbart<gen>.loc is loaded into *out_loc and
+ * offered to open_loc(), which validates it in a few dozen reads and only falls back
+ * to the whole-ROM scan when it does not describe this exact file -- so a boot, or
+ * re-registering the same ROM, no longer pays the 2 MB scan the old rom_gbsprite_open()
+ * call here always did. */
 static GbArtRegStatus __attribute__((noinline))
-gb_art_open_and_identify(uint8_t gen, const char* path, RomGbSpriteLoc* out_loc) {
+gb_art_warm_icons(GbArtIo* io, uint32_t sz, RomGbIconLoc* out_iloc, bool* out_have_iloc) {
+  gb_art_io_next(io, GB_ART_LOC_ICONS);
+  bool have = gb_icon_load_loc(out_iloc);
+  RomGbIcon gi;
+  int ok = rom_gbicon_open_loc(&gi, gb_art_read, io, sz, (uint8_t*)mon_decomp, MON_DECOMP_BYTES,
+                               have ? out_iloc : 0);
+  if (!ok) {
+    if (io->g.stop != GB_SCAN_OK) return gb_art_stop_status(&io->g, GB_ART_REG_BAD_ROM);
+    /* Icons are optional (Gen 1 has none at all): a Gen-2 ROM whose icon tables do
+     * not locate still registers for portraits, exactly as before this pre-warm. */
+    log_line("gb art: gen2 icon tables not located (portraits still on)");
+    return GB_ART_REG_OK;
+  }
+  rom_gbicon_save_loc(&gi, out_iloc);
+  *out_have_iloc = true;
+  return GB_ART_REG_OK;
+}
+
+static GbArtRegStatus __attribute__((noinline))
+gb_art_open_and_identify(uint8_t gen, const char* path, RomGbSpriteLoc* out_loc,
+                         RomGbIconLoc* out_iloc, bool* out_have_iloc,
+                         GbArtProgressFn fn, void* fn_ctx, GbArtRegInfo* info) {
   FIL fil;
   memset(&fil, 0, sizeof fil);
   if (f_open(&fil, path, FA_READ) != FR_OK) return GB_ART_REG_CANT_OPEN;
@@ -150,18 +287,30 @@ gb_art_open_and_identify(uint8_t gen, const char* path, RomGbSpriteLoc* out_loc)
   FSIZE_t fsz = f_size(&fil);
   uint32_t sz = (fsz > (FSIZE_t)0xFFFFFFFFu) ? 0xFFFFFFFFu : (uint32_t)fsz;
 
-  RomGbSprite gs;
-  uint8_t scratch[ROM_GBSPRITE_SCRATCH_MIN];
-  int ok = rom_gbsprite_open(&gs, gb_art_read, &fil, sz, scratch, (uint32_t)sizeof scratch);
-  f_close(&fil);
-  if (!ok) return GB_ART_REG_BAD_ROM;
-  if ((uint8_t)gs.gen != gen) return GB_ART_REG_WRONG_GEN;
+  GbArtIo io;
+  gb_art_io_init(&io, &fil, sz, fn, fn_ctx, GB_ART_LOC_SPRITES, true);
 
-  if (out_loc) rom_gbsprite_save_loc(&gs, out_loc);
-  return GB_ART_REG_OK;
+  bool have_loc = gb_art_load_loc(gen, out_loc);
+  artbuf_claim();
+  RomGbSprite gs;
+  int ok = rom_gbsprite_open_loc(&gs, gb_art_read, &io, sz, (uint8_t*)mon_decomp, MON_DECOMP_BYTES,
+                                 have_loc ? out_loc : 0);
+  GbArtRegStatus st = GB_ART_REG_OK;
+  if (!ok)                          st = gb_art_stop_status(&io.g, GB_ART_REG_BAD_ROM);
+  else if ((uint8_t)gs.gen != gen)  st = GB_ART_REG_WRONG_GEN;
+  *out_have_iloc = false;
+  if (st == GB_ART_REG_OK) {
+    rom_gbsprite_save_loc(&gs, out_loc);
+    if (gen == PDNA_GEN2) st = gb_art_warm_icons(&io, sz, out_iloc, out_have_iloc);
+  }
+  gb_art_fill_info(info, &io);
+  f_close(&fil);
+  return st;
 }
 
-GbArtRegStatus gb_art_register(uint8_t gen, const char* path) {
+GbArtRegStatus gb_art_register(uint8_t gen, const char* path, GbArtProgressFn progress,
+                               void* progress_ctx, GbArtRegInfo* info) {
+  if (info) memset(info, 0, sizeof *info);
   if (gen != PDNA_GEN1 && gen != PDNA_GEN2) return GB_ART_REG_BAD_ROM;
   if (!path || !path[0]) {
     s_reg_have[gen] = false;
@@ -172,16 +321,36 @@ GbArtRegStatus gb_art_register(uint8_t gen, const char* path) {
     return GB_ART_REG_EMPTY;
   }
   RomGbSpriteLoc loc;
-  GbArtRegStatus st = gb_art_open_and_identify(gen, path, &loc);
+  RomGbIconLoc iloc;
+  bool have_iloc = false;
+  GbArtRegStatus st = gb_art_open_and_identify(gen, path, &loc, &iloc, &have_iloc,
+                                               progress, progress_ctx, info);
   s_reg_have[gen] = (st == GB_ART_REG_OK);
   s_reg_checked[gen] = true;
-  if (s_reg_have[gen]) gb_art_save_loc(gen, &loc);   /* only this caller wants the cache */
+  /* The ONLY writes, and only on success: a cancel, a timeout or a read error leaves
+   * the card exactly as it was. Both sources are stack structs (RAM), never ROM. */
+  if (s_reg_have[gen]) {
+    gb_art_save_loc(gen, &loc);
+    if (have_iloc) gb_icon_save_loc(&iloc);
+  }
   /* E3 review: unconditional, not just on success -- a FAILED re-registration still
    * means "whatever the memo remembers for this gen may no longer be true" (the old
    * ROM might already be gone/replaced even though the new one didn't validate). */
   pdna_origin_art_invalidate();
-  if (st != GB_ART_REG_OK)
-    log_line("gb art: gen%u registration failed (%d) for %s", (unsigned)gen, (int)st, path);
+  if (st != GB_ART_REG_OK) {
+    if (info)
+      log_line("gb art: gen%u registration failed (%d) for %s: loc%u stop=%u fr=%u err=%u off=%lu "
+               "reads=%lu %lums", (unsigned)gen, (int)st, path, (unsigned)info->locator,
+               (unsigned)info->stop, (unsigned)info->fr, (unsigned)info->err,
+               (unsigned long)info->fail_off, (unsigned long)info->reads,
+               (unsigned long)info->elapsed_ms);
+    else
+      log_line("gb art: gen%u registration failed (%d) for %s", (unsigned)gen, (int)st, path);
+  } else if (info) {
+    log_line("gb art: gen%u registered %s: icons %s, %lu reads, %lu ms", (unsigned)gen, path,
+             have_iloc ? "cached" : (gen == PDNA_GEN2 ? "NOT located" : "n/a"),
+             (unsigned long)info->reads, (unsigned long)info->elapsed_ms);
+  }
   return st;
 }
 
@@ -283,9 +452,16 @@ gb_art_fetch(uint8_t gen, uint16_t dex, uint8_t form, uint8_t back, uint8_t shin
   RomGbSpriteLoc loc;
   bool have_loc = gb_art_load_loc(gen, &loc);
 
+  /* Silent, unlimited guard (no UI can be shown from a box repaint) -- it still latches
+   * the first failed read so a bad card unwinds instead of spinning. The scan window
+   * is mon_decomp (claimed right here, BEFORE its first write -- see the E3 BLOCKING 2
+   * note below, which this claim now also covers), so the loc-miss rescan is 4x fewer
+   * reads than the 2 KB stack window it replaced, and this frame is 2 KB lighter. */
+  GbArtIo io;
+  gb_art_io_init(&io, &fil, sz, 0, 0, GB_ART_LOC_SPRITES, false);
+  artbuf_claim();
   RomGbSprite gs;
-  uint8_t scratch[ROM_GBSPRITE_SCRATCH_MIN];
-  int ok = rom_gbsprite_open_loc(&gs, gb_art_read, &fil, sz, scratch, (uint32_t)sizeof scratch,
+  int ok = rom_gbsprite_open_loc(&gs, gb_art_read, &io, sz, (uint8_t*)mon_decomp, MON_DECOMP_BYTES,
                                  have_loc ? &loc : 0);
   /* Re-save the loc whenever it does NOT already match this exact ROM -- not just
    * when the file was missing. E3 review item 4: a STALE loc (the file at `path`
@@ -299,17 +475,17 @@ gb_art_fetch(uint8_t gen, uint16_t dex, uint8_t form, uint8_t back, uint8_t shin
     rom_gbsprite_save_loc(&gs, &fresh);
     gb_art_save_loc(gen, &fresh);
   }
-  if (!ok || (uint8_t)gs.gen != gen) { f_close(&fil); return 0; }
+  if (!ok || (uint8_t)gs.gen != gen) { gb_art_log_stop(&io, "fetch"); f_close(&fil); return 0; }
 
   RomGbSide side = back ? ROM_GBSPRITE_BACK : ROM_GBSPRITE_FRONT;
   RomGbPic info;
   const uint16_t* px = 0;
   uint8_t* mdbuf = (uint8_t*)mon_decomp;
-  /* E3 review BLOCKING 2: claim BEFORE the very first write below (rom_gbsprite_pic_buf
-   * writes the indexed px/work region even on a later failure) -- see artbuf.h. This
-   * is also what lets pdna_origin_art.c's fetch_pic() memo() capture a POST-fetch
-   * epoch that already accounts for this call's own writes. */
-  artbuf_claim();
+  /* E3 review BLOCKING 2: claim BEFORE the very first write (rom_gbsprite_pic_buf
+   * writes the indexed px/work region even on a later failure) -- see artbuf.h. The
+   * claim now sits above open_loc() (the scan window is mon_decomp too), which is
+   * earlier still; it is also what lets pdna_origin_art.c's fetch_pic() memo()
+   * capture a POST-fetch epoch that already accounts for this call's own writes. */
   /* px at [ROM_GBSPRITE_MAX_PIXELS, +3,136), work right after at
    * [ROM_GBSPRITE_RGB15_BYTES, +784) -- ROM_GBSPRITE_RGB15_BYTES (6,272) IS
    * ROM_GBSPRITE_MAX_PIXELS*2, so this is "px, then work" back to back, both past
@@ -357,9 +533,13 @@ gb_art_fetch_icon(uint8_t gen, uint16_t dex, uint8_t* out_w, uint8_t* out_h) {
   RomGbIconLoc loc;
   bool have_loc = gb_icon_load_loc(&loc);
 
+  /* Same silent guard + mon_decomp window as gb_art_fetch() above (claim first: the
+   * window is written before the decode below ever is). */
+  GbArtIo io;
+  gb_art_io_init(&io, &fil, sz, 0, 0, GB_ART_LOC_ICONS, false);
+  artbuf_claim();
   RomGbIcon gi;
-  uint8_t scratch[ROM_GBICON_SCRATCH_MIN];
-  int ok = rom_gbicon_open_loc(&gi, gb_art_read, &fil, sz, scratch, (uint32_t)sizeof scratch,
+  int ok = rom_gbicon_open_loc(&gi, gb_art_read, &io, sz, (uint8_t*)mon_decomp, MON_DECOMP_BYTES,
                                have_loc ? &loc : 0);
   /* Same "re-save whenever it does not already match" rule as gb_art_fetch()'s own
    * loc handling above -- a swapped ROM behind the same path/size must not pay a full
@@ -369,7 +549,7 @@ gb_art_fetch_icon(uint8_t gen, uint16_t dex, uint8_t* out_w, uint8_t* out_h) {
     rom_gbicon_save_loc(&gi, &fresh);
     gb_icon_save_loc(&fresh);
   }
-  if (!ok) { f_close(&fil); return 0; }
+  if (!ok) { gb_art_log_stop(&io, "icon fetch"); f_close(&fil); return 0; }
 
   /* D6 (E5 fix): dex 0 is the EGG sentinel (pdna_origin_art.c's pdna_origin_box_art
    * comment) -- never a real national dex (1..251), so this can never accidentally
@@ -382,10 +562,9 @@ gb_art_fetch_icon(uint8_t gen, uint16_t dex, uint8_t* out_w, uint8_t* out_h) {
     uint8_t tile[ROM_GBICON_FRAME_BYTES];      /* 64 B, this frame's OWN stack --
                                                 * never inside mon_decomp           */
     uint16_t pal[4];
-    /* claim BEFORE the write into mon_decomp below, same rule as gb_art_fetch()'s
-     * own comment (artbuf.h): a fetch that fails partway must still have already
-     * said "this content is not what it was". */
-    artbuf_claim();
+    /* claimed above, before open_loc() -- the same "before the first write" rule
+     * (artbuf.h): a fetch that fails partway must still have already said "this
+     * content is not what it was". */
     if (rom_gbicon_tiles(&gi, kind, 0, tile) && rom_gbicon_pal(&gi, kind, pal) &&
         rom_gbicon_to_rgb15(tile, pal, mon_decomp)) {
       *out_w = ROM_GBICON_W; *out_h = ROM_GBICON_H;
@@ -422,8 +601,10 @@ static EWRAM_BSS bool           s_dsprite_loc_ok[3];
 static EWRAM_BSS RomGbIconLoc   s_dicon_loc;          /* gen 2 only -- see rom_gbicon.h */
 static EWRAM_BSS bool           s_dicon_loc_ok;
 
-GbArtRegStatus gb_art_register(uint8_t gen, const char* path) {
-  (void)path;
+GbArtRegStatus gb_art_register(uint8_t gen, const char* path, GbArtProgressFn progress,
+                               void* progress_ctx, GbArtRegInfo* info) {
+  (void)path; (void)progress; (void)progress_ctx;
+  if (info) memset(info, 0, sizeof *info);
   if (gen != PDNA_GEN1 && gen != PDNA_GEN2) return GB_ART_REG_BAD_ROM;
   /* No file browser / SD under PDNA_DELTA to register a path FROM -- the only
    * source of a generation's ROM here is whatever fuse_gb.py fused in. Report
@@ -644,7 +825,7 @@ static int gb_art_stack_room(int need) {
   return (sp - __iheap_start) > need;
 }
 
-void gb_art_boot_register(void) {
+void gb_art_boot_register(GbArtProgressFn progress, void* progress_ctx) {
   static const PdnaGbArtSource src = { gb_art_pic_cb, gb_art_have_cb, gb_art_icon_cb, 0 };
   pdna_origin_art_register(&src);
   pdna_origin_art_set_stack_room_hook(gb_art_stack_room);
@@ -652,11 +833,14 @@ void gb_art_boot_register(void) {
   for (uint8_t gen = PDNA_GEN1; gen <= PDNA_GEN2; gen++) {
     const char* p = app_gb_rom_path(gen);
     if (p && p[0]) {
-      GbArtRegStatus st = gb_art_register(gen, p);
+      GbArtRegInfo info;
+      GbArtRegStatus st = gb_art_register(gen, p, progress, progress_ctx, &info);
       if (st != GB_ART_REG_OK)
         log_line("gb art: gen%u boot re-registration failed (%d)", (unsigned)gen, (int)st);
     }
   }
+#else
+  (void)progress; (void)progress_ctx;
 #endif
 }
 
