@@ -2942,7 +2942,6 @@ def run_b124_bobcheck(core_mod, image_mod, rom: Path, out_dir: Path, which: str)
         nonzero = sum(1 for px in region_diff.getdata() if px != (0, 0, 0))
         max_nonzero = max(max_nonzero, nonzero)
 
-    ran = True
     print(f"== BACKLOG #124 review A5 bob-check ({which}) ==")
     print(f"  frame A (baseline): {p1}")
     print(f"  burst samples 1-9: {frames_data[0]} ... {frames_data[-1]}")
