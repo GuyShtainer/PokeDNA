@@ -156,55 +156,139 @@ static void EWRAM_CODE SetRompage(u16 page) {
 
 static u16 EWRAM_BSS ROMPAGE_ROM;
 
-// returns true if the data is a match
-static bool EWRAM_CODE _EZFO_TestRompage(u16 wanted, u16 page) {
-  SetRompage(page);
-  if (wanted == ROM_HEADER_CHECKSUM) {
-    ROMPAGE_ROM = page;
-    return true;
+/* Detection diagnostics (io_ezfo.h). EWRAM: written while the ROM is unmapped. */
+static u8  EWRAM_BSS s_det_result;        /* EZFO_DET_*                                  */
+static u8  EWRAM_BSS s_lookalikes;        /* pages that passed the header word, not the  */
+static u16 EWRAM_BSS s_lookalike_first;   /* fingerprint; the first of them (0xFFFF=none) */
+
+/* ---- identifying OUR page ----------------------------------------------------
+ * The rompage register is write-only, so the driver has to find the page the CPU is
+ * running from by comparing what each candidate page shows at 0x08000000 against what
+ * the running image looked like BEFORE the first switch. Upstream compared one 16-bit
+ * header word (version | complement, at 0xBC). That word is identical for every build
+ * that shares a title, so a stale same-title image in PSRAM (probed first) or at a lower
+ * NOR page (scanned upward) was taken for the running one, and the driver returned into
+ * ROM .text with the WRONG image mapped -- a silent hang on the first screen (Guy's
+ * 2026-09-12 cart run: PokeDNA.gba booted from NOR with an earlier PokeDNA.gba still in
+ * PSRAM/NOR). The header word is now only a pre-filter: a page is accepted when
+ * EZFO_FP_WINS windows spread over the whole image, tail included, checksum the same as
+ * the running image did. A different build differs at the first window it reaches; a
+ * shorter or partial copy differs at the tail.
+ *
+ * Everything here runs from EWRAM with the ROM possibly unmapped: no array initialisers
+ * (memset lives in ROM) and no division (so does __aeabi_uidiv) -- EZFO_FP_WINS is a
+ * power of two and the step is a shift. The reference itself lives on the IWRAM stack. */
+#define EZFO_FP_WINS       32
+#define EZFO_FP_WINS_SHIFT 5                        /* log2(EZFO_FP_WINS)             */
+#define EZFO_FP_WORDS      16                       /* 64 B per window                */
+#define EZFO_FP_BYTES      (EZFO_FP_WORDS * 4)
+
+extern char __text_start[];                         /* devkitARM ld scripts: image   */
+extern char __rom_end__[];                          /* bounds, every build, any size */
+
+/* Walk the windows once. take != 0: store each window's checksum into fp[]; take == 0:
+ * compare against fp[] and stop at the first mismatch (returns 0). Returns 1 otherwise.
+ * noinline: -O2 would otherwise plant a copy at each of the three call sites, and this
+ * whole file is paid for in EWRAM bytes. Window i (i < WINS-1) starts (i+1) steps into
+ * the image, the last one is the image's final 64 B; a pathologically small image gets
+ * its first 64 B for every window. */
+static int EWRAM_CODE __attribute__((noinline)) fp_walk(u32* fp, int take) {
+  unsigned long lo   = (unsigned long)__text_start;
+  unsigned long hi   = (unsigned long)__rom_end__;
+  unsigned long span = hi - lo;
+  unsigned long step = span >> EZFO_FP_WINS_SHIFT;
+  int tiny = span < (unsigned long)EZFO_FP_BYTES * (EZFO_FP_WINS + 1);
+  int i, n;
+  for (i = 0; i < EZFO_FP_WINS; i++) {
+    unsigned long a;
+    const volatile u32* p;
+    u32 s = 0x9E3779B9u;              /* order-sensitive rolling checksum          */
+    if (tiny)                     a = lo;
+    else if (i == EZFO_FP_WINS - 1) a = (hi - EZFO_FP_BYTES) & ~3ul;
+    else                          a = (lo + step * (unsigned long)(i + 1)) & ~3ul;
+    p = (const volatile u32*)a;       /* volatile: every word is a real cart read  */
+    for (n = 0; n < EZFO_FP_WORDS; n++) s = ((s << 1) | (s >> 31)) ^ *p++;
+    if (take) fp[i] = s;
+    else if (fp[i] != s) return 0;
   }
-  return false;
+  return 1;
+}
+
+/* Map `page`, then: 0 = header word differs, 1 = header word matches but the windows do
+ * not (a look-alike), 2 = this page shows the running image. With use_fp == 0 the header
+ * word alone decides (the upstream rule), for a bus that could not hold the reference
+ * still. Leaves `page` mapped either way. noinline for the same EWRAM-bytes reason. */
+static int EWRAM_CODE __attribute__((noinline)) _EZFO_TestRompage(u32* fp, u16 hdr, u16 page, int use_fp) {
+  SetRompage(page);
+  if (hdr != ROM_HEADER_CHECKSUM) return 0;
+  if (use_fp && !fp_walk(fp, 0)) return 1;
+  return 2;
+}
+
+static void EWRAM_CODE note_lookalike(u16 page) {
+  if (s_lookalikes < 255) s_lookalikes++;
+  if (s_lookalike_first == 0xFFFF) s_lookalike_first = page;
 }
 
 bool EWRAM_CODE _EZFO_startUp(void) {
+  u32 fp[EZFO_FP_WINS];            /* IWRAM stack: readable while the ROM is unmapped */
+  int i, r, use_fp;
+  bool ok = false;
 #if FLASHCARTIO_EZFO_DISABLE_IRQ != 0
   u16 ime = REG_IME;
   REG_IME = 0;
 #endif
-  const u16 complement = ROM_HEADER_CHECKSUM;
+  const u16 hdr = ROM_HEADER_CHECKSUM;
+  /* The reference, taken BEFORE the first switch: this is the running image, whatever
+   * page it is on. Taken twice; if the two disagree the bus cannot be trusted to read
+   * the same bytes twice and the fingerprint would reject the true page, which is fatal
+   * (the return lands in unmapped ROM). Fall back to the header-only rule and say so. */
+  fp_walk(fp, 1);
+  use_fp = fp_walk(fp, 0);
+  s_lookalikes = 0;
+  s_lookalike_first = 0xFFFF;
 
-  // unmap rom, if the data matches, then this is not an ezflash
-  if (_EZFO_TestRompage(complement, ROMPAGE_BOOTLOADER)) {
-#if FLASHCARTIO_EZFO_DISABLE_IRQ != 0
-    REG_IME = ime;
-#endif
-    return false;
+  // unmap rom; if the running image is STILL there, the register did nothing: not an ezflash
+  if (_EZFO_TestRompage(fp, hdr, ROMPAGE_BOOTLOADER, use_fp) == 2) {
+    s_det_result = EZFO_DET_NOT_EZFO;
+    goto done;
   }
 
   // find where the rom is mapped, try psram first
-  if (_EZFO_TestRompage(complement, ROMPAGE_PSRAM)) {
-#if FLASHCARTIO_EZFO_DISABLE_IRQ != 0
-    REG_IME = ime;
-#endif
-    return true;
-  }
+  r = _EZFO_TestRompage(fp, hdr, ROMPAGE_PSRAM, use_fp);
+  if (r == 1) note_lookalike(ROMPAGE_PSRAM);
+  if (r == 2) { ROMPAGE_ROM = ROMPAGE_PSRAM; ok = true; }
 
-  // try and find it within norflash, test each 1MiB page (512 pages)
-  for (int i = 0; i < S98WS512PE0_FLASH_PAGE_MAX; i++) {
-    if (_EZFO_TestRompage(complement, i)) {
-#if FLASHCARTIO_EZFO_DISABLE_IRQ != 0
-      REG_IME = ime;
-#endif
-      return true;
-    }
+  // try and find it within norflash, test each 128 KiB page (512 pages; the kernel
+  // launches a NOR game with rompage = NORaddress >> 17, omega-de-kernel NORflash_OP.c:249)
+  for (i = 0; i < S98WS512PE0_FLASH_PAGE_MAX && !ok; i++) {
+    r = _EZFO_TestRompage(fp, hdr, (u16)i, use_fp);
+    if (r == 1) note_lookalike((u16)i);
+    if (r == 2) { ROMPAGE_ROM = (u16)i; ok = true; }
   }
+  /* Not found: the cart answered but no page shows this image. Nothing sensible can be
+   * mapped for the return (the true page is unknown), same as upstream -- the caller's
+   * diagnostics are the only witness. "This literally shouldn't happen." */
+  s_det_result = ok ? (use_fp ? EZFO_DET_OK : EZFO_DET_OK_HDRONLY) : EZFO_DET_NO_PAGE;
 
+done:
 #if FLASHCARTIO_EZFO_DISABLE_IRQ != 0
   REG_IME = ime;
 #endif
+  return ok;
+}
 
-  // this literally shouldn't happen, contact me if you hit this!
-  return false;
+/* ROM-resident getters: read EWRAM state, never called with a transfer in flight. */
+int _EZFO_detect_result(void) { return s_det_result; }
+
+u16 _EZFO_rompage(void) {
+  return (s_det_result == EZFO_DET_OK || s_det_result == EZFO_DET_OK_HDRONLY) ? ROMPAGE_ROM
+                                                                              : 0xFFFF;
+}
+
+unsigned _EZFO_lookalikes(unsigned* first) {
+  if (first) *first = s_lookalike_first;
+  return s_lookalikes;
 }
 
 bool EWRAM_CODE _EZFO_readSectors(u32 address, u32 count, void* buffer) {

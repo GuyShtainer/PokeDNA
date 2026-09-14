@@ -296,6 +296,29 @@ bool flashcartio_activate(void) {
   return ok;
 }
 
+/* What the last activate concluded (flashcartio.h FCIO_DET_*). Plain static: read from
+ * ROM code between transfers, never during one. */
+static int s_detect = FCIO_DET_NONE;
+
+int flashcartio_detect_code(void) { return s_detect; }
+
+unsigned flashcartio_ezfo_page(void) {
+#if FLASHCARTIO_EZFO_ENABLE != 0
+  return _EZFO_rompage();
+#else
+  return 0xFFFFu;
+#endif
+}
+
+unsigned flashcartio_ezfo_lookalikes(unsigned* first) {
+#if FLASHCARTIO_EZFO_ENABLE != 0
+  return _EZFO_lookalikes(first);
+#else
+  if (first) *first = 0xFFFFu;
+  return 0;
+#endif
+}
+
 static bool flashcartio_activate_inner(void) {
 #if FLASHCARTIO_ED_ENABLE != 0
 
@@ -311,6 +334,7 @@ static bool flashcartio_activate_inner(void) {
     bool success = diskInit() == 0;
     ed_lock_regs();
     if (!success) {
+      s_detect = FCIO_DET_ED_SD_FAIL;
 #if FLASHCARTIO_ED_DISABLE_IRQ != 0
       REG_IME = ime;
 #endif
@@ -319,6 +343,7 @@ static bool flashcartio_activate_inner(void) {
     }
 
     active_flashcart = EVERDRIVE_GBA_X5;
+    s_detect = FCIO_DET_ED_OK;
 
 #if FLASHCARTIO_ED_DISABLE_IRQ != 0
     REG_IME = ime;
@@ -332,11 +357,17 @@ static bool flashcartio_activate_inner(void) {
   // EZ Flash Omega
   if (_EZFO_startUp()) {
     active_flashcart = EZ_FLASH_OMEGA;
+    s_detect = (_EZFO_detect_result() == EZFO_DET_OK_HDRONLY) ? FCIO_DET_EZFO_HDRONLY
+                                                              : FCIO_DET_EZFO_OK;
     return true;
   }
-#endif
-
+  s_detect = (_EZFO_detect_result() == EZFO_DET_NO_PAGE) ? FCIO_DET_EZFO_NOPAGE
+                                                         : FCIO_DET_EZFO_NOT;
   return false;
+#else
+  s_detect = FCIO_DET_NO_BACKEND;
+  return false;
+#endif
 }
 
 bool flashcartio_read_sector(u32 sector, u8* destination, u16 count) {
