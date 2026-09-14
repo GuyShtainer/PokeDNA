@@ -266,10 +266,21 @@ bool EWRAM_CODE _EZFO_startUp(void) {
     if (r == 1) note_lookalike((u16)i);
     if (r == 2) { ROMPAGE_ROM = (u16)i; ok = true; }
   }
-  /* Not found: the cart answered but no page shows this image. Nothing sensible can be
-   * mapped for the return (the true page is unknown), same as upstream -- the caller's
-   * diagnostics are the only witness. "This literally shouldn't happen." */
-  s_det_result = ok ? (use_fp ? EZFO_DET_OK : EZFO_DET_OK_HDRONLY) : EZFO_DET_NO_PAGE;
+  /* Not found. Before returning into ROM, put SOMETHING plausible under the return
+   * address: leaving NOR page 0x1FF mapped (the loop's last probe) is a certain crash
+   * with no screen left to say so. If a page matched the header word, map THAT --
+   * upstream's rule is a bad answer, page 0x1FF is no answer at all -- and report it
+   * header-only. Without this, ONE transient bad word inside one fp_walk demotes the
+   * TRUE page to a look-alike and nothing else can ever match: a boot that works on
+   * main hangs here. */
+  if (!ok && s_lookalike_first != 0xFFFF) {
+    ROMPAGE_ROM = s_lookalike_first;
+    SetRompage(ROMPAGE_ROM);
+    ok = true;
+    s_det_result = EZFO_DET_OK_HDRONLY;
+  } else {
+    s_det_result = ok ? (use_fp ? EZFO_DET_OK : EZFO_DET_OK_HDRONLY) : EZFO_DET_NO_PAGE;
+  }
 
 done:
 #if FLASHCARTIO_EZFO_DISABLE_IRQ != 0
