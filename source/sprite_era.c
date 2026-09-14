@@ -134,8 +134,18 @@ SeEra se_resolve_for_router(const SeSetting* s, SeSaveKind kind, SePlace place,
    * (kind, origin_gen, origin_certain) means "this is the untouched/default answer" --
    * report it as NATIVE so the router runs the pre-E4 pipeline instead of the
    * cross-game rung. se_native_era() does its own defensive clamping of `kind`, same
-   * as se_resolve() does internally, so no re-clamping is needed here. */
-  if (e != SE_ERA_NATIVE && e == se_native_era(kind, origin_gen, origin_certain))
+   * as se_resolve() does internally, so no re-clamping is needed here.
+   *
+   * Exempt the two Game Boy save kinds from this collapse. For SE_KIND_GEN1/GEN2,
+   * se_native_era() always answers SE_ERA_GEN1/GEN2 outright (sprite_era.c:44-45),
+   * so a concrete se_resolve() answer for a GB kind is EXACTLY the native answer by
+   * construction -- the collapse would fire on every single GB record, unlike the
+   * Gen-3 kinds where it only fires on the genuine untouched/default case. The
+   * mounted cartridge's generation is a fact about the save, not a per-record guess,
+   * so it must never be downgraded to NATIVE: a concrete GEN1/GEN2 answer already
+   * routes to the GB rung, not the cross-game rung the collapse exists to avoid. */
+  if (kind != SE_KIND_GEN1 && kind != SE_KIND_GEN2 &&
+      e != SE_ERA_NATIVE && e == se_native_era(kind, origin_gen, origin_certain))
     return SE_ERA_NATIVE;
   return e;
 }
