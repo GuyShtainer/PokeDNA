@@ -57,8 +57,17 @@ static int g_fail = 0;
   } while (0)
 
 typedef struct { FILE* f; } HostCtx;
+
+/* Step 1 instrumentation (BACKLOG #103): count read-callback calls + bytes so
+ * the primary metric (calls/bytes per screen load) is measured directly on
+ * the exact code path the GBA runs, no emulator needed. Reset with
+ * g_reads = g_bytes = 0 around exactly one screen load. */
+static unsigned long g_reads = 0, g_bytes = 0;
+
 static bool host_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
   HostCtx* c = (HostCtx*)ctx;
+  g_reads++;
+  g_bytes += len;
   if (fseek(c->f, (long)off, SEEK_SET) != 0) return false;
   return fread(dst, 1, len, c->f) == len;
 }
@@ -351,6 +360,42 @@ static void test_bag_sprite(const char* label, const char* path, int card_bag_g,
   fclose(c.f);
 }
 
+/* Step 1 (BACKLOG #103): print read-callback counts for exactly ONE trainer
+ * card load and ONE bag load on Emerald (front, tier 0, male) -- the
+ * baseline this lane's every later step must reduce. */
+static void measure_counts(const char* emerald_path) {
+  /* Traced independently: rom_open()'s own ROM-kind identification (scanning
+   * candidate header offsets) costs 26 reads / 776 bytes on Emerald, is a
+   * ONE-TIME cost separate from rom_chrome_card_load(), and is untouched by
+   * this lane (steps 2-4 only touch mr_lz77/decode_verified). Printing BOTH
+   * the card-load-only count and the rom_open-inclusive count: the former
+   * reproduces the design doc's exact byte figure (3,992 B); the latter
+   * reproduces its exact call figure (94) -- the doc's "94 calls / 3,992
+   * bytes" pairing mixes the two (94 = 26 + 68; 3,992 excludes rom_open's
+   * 776 B). This is the mechanism-relevant number this lane's target
+   * (<=32 calls) is measured against, since rom_open is out of scope. */
+  HostCtx c; RomCtx rc;
+  g_reads = 0; g_bytes = 0;
+  if (!open_rom(emerald_path, &c, &rc)) { printf("counts: SKIP (no Emerald dump)\n"); return; }
+  unsigned long open_reads = g_reads, open_bytes = g_bytes;
+  RomChrome rch; rom_chrome_open(&rch, &rc);
+
+  static uint8_t scratch[8192];
+  RomChromeCard card_out;
+  g_reads = 0; g_bytes = 0;
+  int card_ok = rom_chrome_card_load(&rch, rch.card_style, 0, 0, 0, scratch, sizeof scratch, &card_out);
+  printf("counts Emerald card (load only): %lu reads / %lu bytes (ok=%d)\n", g_reads, g_bytes, card_ok);
+  printf("counts Emerald card (+rom_open %lu reads/%lu bytes): %lu reads / %lu bytes\n",
+         open_reads, open_bytes, g_reads + open_reads, g_bytes + open_bytes);
+
+  RomChromeBag bag_out;
+  g_reads = 0; g_bytes = 0;
+  int bag_ok = rom_chrome_bag_load(&rch, rch.bag_style, 0, scratch, sizeof scratch, &bag_out);
+  printf("counts Emerald bag: %lu reads / %lu bytes (ok=%d)\n", g_reads, g_bytes, bag_ok);
+
+  fclose(c.f);
+}
+
 int main(void) {
   const char* dir = "/Users/guyshtainer/VSCodeProjects/gba-toolkit/roms";
   char emerald[256], ruby[256], sapphire[256], firered[256], leafgreen[256];
@@ -390,6 +435,8 @@ int main(void) {
   test_bag_sprite("LeafGreen bag sprite", leafgreen, 2, 1);
   test_bag_sprite("Emerald bag sprite (budget-excluded)", emerald, 1, 0);
   test_bag_sprite("Ruby bag sprite (unwired game)", ruby, 0, 0);
+
+  measure_counts(emerald);
 
   if (g_fail) { printf("%d check(s) FAILED\n", g_fail); return 1; }
   printf("host_romchrome_test: all checks passed\n");

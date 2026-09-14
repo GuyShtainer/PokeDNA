@@ -34,6 +34,16 @@ static bool file_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
   return fread(dst, 1, len, f) == len;
 }
 
+/* a tiny synthetic in-memory image, for the EOF edge case below -- no ROM dump
+ * needed, so this check runs even on a machine with no corpus. */
+typedef struct { const uint8_t* p; uint32_t n; } MemBuf;
+static bool mem_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
+  MemBuf* m = (MemBuf*)ctx;
+  if (off > m->n || len > m->n - off) return false;
+  memcpy(dst, m->p + off, len);
+  return true;
+}
+
 /* generous static buffers — this is a host test, not the GBA */
 static uint8_t  s_prim_tiles[512 * 32], s_sec_tiles[512 * 32];
 static uint8_t  s_prim_mt[1024 * 16],   s_sec_mt[1024 * 16];
@@ -183,6 +193,71 @@ int main(int argc, char** argv) {
       CHECK(mr_lz77(&rc, p.tiles, s_prim_tiles, want - 1) == 0,
             "a cap below the declared size is refused (no overrun)");
     }
+  }
+
+  /* BACKLOG #103 step 2: a compressed span ending EXACTLY at end of image must
+   * still decode. The old fixed-64-B fill unconditionally requests 64 bytes per
+   * chunk regardless of how much of the image remains, so it fails
+   * rom_read_at's bounds check (and thus the whole decode) for any blob within
+   * 63 B of EOF -- even though its actual compressed span fits comfortably.
+   * Synthetic image: an all-literal LZ10 stream (flag 0x00 + 5 literal bytes),
+   * compressed span = 4 header + 1 flag + 5 literals = 10 bytes, placed so its
+   * last byte is the image's very last byte. This fails before the mr_lz77_w
+   * fix and must pass after it. */
+  {
+    static uint8_t img[32];
+    memset(img, 0xEE, sizeof img);
+    uint32_t blob_off = (uint32_t)sizeof img - 10u;
+    img[blob_off + 0] = 0x10;                      /* LZ10 */
+    img[blob_off + 1] = 5; img[blob_off + 2] = 0; img[blob_off + 3] = 0;  /* size=5 */
+    img[blob_off + 4] = 0x00;                      /* flag byte: all literals */
+    img[blob_off + 5] = 'A'; img[blob_off + 6] = 'B'; img[blob_off + 7] = 'C';
+    img[blob_off + 8] = 'D'; img[blob_off + 9] = 'E';
+
+    MemBuf mb; mb.p = img; mb.n = sizeof img;
+    RomCtx erc; memset(&erc, 0, sizeof erc);
+    erc.read = mem_read; erc.ctx = &mb; erc.size = (uint32_t)sizeof img;
+
+    uint8_t out[8];
+    uint32_t n = mr_lz77(&erc, ROM_BASE + blob_off, out, sizeof out);
+    CHECK(n == 5 && memcmp(out, "ABCDE", 5) == 0,
+          "a compressed span ending exactly at image EOF still decodes (BACKLOG #103)");
+  }
+
+  /* BACKLOG #103 F4 (review-opus LOW): the LZ10 all-literal span bound was one
+   * byte short when a stream's FINAL token is a clamped back-reference. The
+   * all-literal formula (4 + size + ceil(size/8)) assumes every output byte
+   * costs exactly 1 compressed data byte; a back-reference token spends 2
+   * bytes (disp+len) yet, when CLAMPED by `len > size - out` (this decoder's
+   * own clamp), can produce as few as 1 output byte -- "spending" one more
+   * compressed byte than the all-literal bound allocated for that single
+   * output byte. Synthetic stream (decompressed "ABCC", size=4): 3 literal
+   * bytes 'A','B','C' then a back-reference (disp=1, natural len=3, clamped
+   * to len=1 since only 1 byte of output remains) that repeats 'C'. Body =
+   * 1 flag byte + 3 literals + 2 back-reference bytes = 6 bytes; compressed
+   * span = 4 header + 6 = 10 bytes. The pre-fix bound (4 + 4 + ceil(4/8) = 9)
+   * is one byte short of the 10 actually needed -- the final back-reference
+   * byte falls outside it, the window's last fill starves, and the decode
+   * fails closed (returns 0) even though the stream is well-formed. This
+   * must fail on the pre-fix bound and pass with the +1u fix. */
+  {
+    static uint8_t img2[32];
+    memset(img2, 0xEE, sizeof img2);
+    img2[0] = 0x10;                       /* LZ10 */
+    img2[1] = 4; img2[2] = 0; img2[3] = 0;  /* size=4 */
+    img2[4] = 0x10;                       /* flags: bits 0-2 literal, bit 3 back-ref */
+    img2[5] = 'A'; img2[6] = 'B'; img2[7] = 'C';
+    img2[8] = 0x00; img2[9] = 0x00;       /* b1=0 (len=3, clamped to 1), b2=0 (disp=1) */
+
+    MemBuf mb2; mb2.p = img2; mb2.n = sizeof img2;
+    RomCtx erc2; memset(&erc2, 0, sizeof erc2);
+    erc2.read = mem_read; erc2.ctx = &mb2; erc2.size = (uint32_t)sizeof img2;
+
+    uint8_t out2[8];
+    uint32_t n2 = mr_lz77(&erc2, ROM_BASE, out2, sizeof out2);
+    CHECK(n2 == 4 && memcmp(out2, "ABCC", 4) == 0,
+          "a stream whose final token is a clamped back-reference still decodes "
+          "(BACKLOG #103 F4 -- the span bound was one byte short)");
   }
 
   test_map(&rc, "littleroot", "docs/analysis-2026-07-29/render-littleroot.raw");
