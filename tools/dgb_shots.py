@@ -2052,6 +2052,92 @@ def run_b90_boxname(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -
     return s
 
 
+def run_b132_portrait(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> list[gb_shots.Session]:
+    """BACKLOG #132: proves the fix (sprite_era.c:138's se_resolve_for_router() now
+    exempts SE_KIND_GEN1/SE_KIND_GEN2 from the NATIVE collapse) by driving box 1
+    slot 1's own VIEW summary through BOTH mounts that reach pdna_origin_art_
+    portrait() -- the standalone/boot-picker mount (boot_to_gb_session(), a single-
+    save fused image skips the top-level picker entirely) and the nested START >
+    NV_GB import mount (nav_to_gb_import(), reached from a combined image's default
+    Emerald row, same navigation run_nav_gb() already uses). `rom` must be the
+    COMBINED image (Emerald.sav + Red/Gold/Crystal, `make delta-gb`'s own recipe --
+    tools/fuse_gb.py) so BOTH mounts are reachable from the one image: the top-level
+    picker's own `which` row for the boot-picker mount, and the Emerald row -> NV_GB
+    -> `which` row for the nested mount.
+
+    Each mount's own box grid is shot BEFORE opening the cell's menu -- this is the
+    "box-grid hover panel" the brief asks for: root-cause point 7 says the box grid
+    is unaffected by this bug because it asks se_resolve_cell(), not
+    se_resolve_for_router(), so this shot is the pixel-identical-before/after
+    control for the grid half of the screen, alongside the summary shot proving the
+    PORTRAIT half actually changed (Gold) or stayed put (Red).
+
+    Returns both Sessions (boot-picker mount, nested mount) so the caller can sum
+    `.taken`/`.skipped` across both."""
+    sessions: list[gb_shots.Session] = []
+
+    # Mount 1: the standalone/boot-picker mount -- a combined image's top-level
+    # "PICK A SAVE" picker, `which`'s own row, straight to that save's box grid
+    # (boot_to_gb_session() handles the picker-vs-no-picker fork itself).
+    s1 = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b132_boot_{which}_")
+    print(f"== BACKLOG #132: {which}'s own summary portrait, boot-picker mount ==")
+    boot_to_gb_session(s1, rom, which=which)
+    s1.shot("01_box_grid", f"BACKLOG #132: {which}.sav's box grid, box 1, cursor on "
+                            "slot 1 -- the box-grid hover panel/cell art, reached "
+                            "via se_resolve_cell() (root-cause point 7: this hook "
+                            "does NOT collapse, so this shot is the unaffected "
+                            "control against the summary shot below)")
+    s1.tap("A", settle=gb_shots.BIG_SETTLE)                   # slot 1 -> the occupied-cell menu
+    s1.shot("02_mon_menu", f"BACKLOG #132: {which}.sav -- the occupied-cell menu "
+                            "this standalone mount offers (VIEW/EDIT, ITEM, MOVE TO "
+                            "BOX, ...)")
+    s1.tap("A", settle=gb_shots.BIG_SETTLE)                   # VIEW/EDIT -> the native summary
+    s1.shot("03_view_summary", f"BACKLOG #132: {which}.sav -- VIEW: the summary "
+                                "portrait via pdna_origin_art_portrait(). For Gold "
+                                "this is the fix itself (router_era now GEN2, not "
+                                "collapsed to NATIVE -- the portrait is Gold's own "
+                                "4-shade GB sprite, not the compiled Gen-3 stand-"
+                                "in); for Red this must be pixel-identical to a "
+                                "pre-fix capture (SE_KIND_GEN1's blind o.gen=1 "
+                                "verdict already happened to be right, so this "
+                                "record moves from the legacy branch to the era "
+                                "branch without changing a pixel).")
+    sessions.append(s1)
+
+    # Mount 2: the nested START > NV_GB import mount -- default Emerald row (0) on
+    # the SAME combined image -> ordinary Gen-3 box screen -> nav_to_gb_import() ->
+    # `which`'s own row on the (separate) nested-import picker -> that save's own
+    # S1 info page -> box grid (cold-fetched, same posture as run_nav_gb()).
+    idx = gb_save_pick_index(rom)[which]
+    s2 = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b132_nested_{which}_")
+    print(f"== BACKLOG #132: {which}'s own summary portrait, nested NV_GB import mount ==")
+    s2.run(700)
+    s2.tap("A", settle=gb_shots.BIG_SETTLE)                   # top-level picker, Emerald row (default) -> box
+    nav_to_gb_import(s2)                                        # box screen -> nav menu -> NV_GB -> the save picker
+    for _ in range(idx):
+        s2.tap("DOWN", settle=gb_shots.SETTLE)
+    s2.tap("A", settle=gb_shots.BIG_SETTLE)                   # picked -> this save's own S1 info page
+    s2.tap("A", settle=60)                                     # info -> box grid (COLD fetch starts)
+    s2.run(GB_ART_COLD_SETTLE)
+    s2.shot("01_box_grid", f"BACKLOG #132: {which}.sav's box grid via the nested "
+                            "NV_GB import mount -- box 1, cursor on slot 1 (same "
+                            "hover-panel control as the boot-picker mount above)")
+    s2.tap("A", settle=gb_shots.BIG_SETTLE)                   # A on slot 1 -> its menu
+    s2.shot("02_mon_menu", f"BACKLOG #132: {which}.sav -- the nested-import mount's "
+                            "own occupied-cell menu: VIEW / LEGALITY / COPY / "
+                            "CANCEL only (no EDIT/MOVE TO BOX/RELEASE)")
+    s2.tap("A", settle=gb_shots.BIG_SETTLE)                   # VIEW -> the native summary (read-only)
+    s2.shot("03_view_summary", f"BACKLOG #132: {which}.sav -- VIEW via the nested "
+                                "import mount: same expectation as the boot-picker "
+                                "mount's summary shot above (Gold changes to its "
+                                "own GB sprite, Red stays pixel-identical) -- both "
+                                "mounts reach the SAME pdna_origin_art_portrait(), "
+                                "so this is the second, independent proof.")
+    sessions.append(s2)
+
+    return sessions
+
+
 def run_b85_daycare(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
     """BACKLOG #85 (source/pdna_gbdaycare.c): the Gen-1/2 Day-Care screen over
     gb_daycare.h's core -- the Gen-1/2 twin of pdna_main.c's pdna_daycare(). `rom`
@@ -3552,6 +3638,13 @@ def main(argv=None) -> int:
                           "-- --image MUST be a ONE-ROM fused image matching this "
                           "choice (Gold.gbc+Gold.sav or Crystal.gbc+Crystal.sav), "
                           "same BACKLOG #98 harness-gap reasoning as --b90-fly")
+    ap.add_argument("--b132-portrait", choices=("gold", "red"),
+                     help="BACKLOG #132: run_b132_portrait() against --image for the "
+                          "named game's own summary portrait, through BOTH the "
+                          "boot-picker mount and the nested START > NV_GB import "
+                          "mount -- --image MUST be a COMBINED image (Emerald.sav + "
+                          "Red/Gold/Crystal, `make delta-gb`'s own recipe) so both "
+                          "mounts are reachable from the one image.")
     ap.add_argument("--out", type=Path, default=ROOT / "docs" / "shots" / "gb")
     ap.add_argument("--cold-start-compare", nargs=2, type=Path, metavar=("LOC_IMAGE", "NOLOC_IMAGE"),
                      help="BACKLOG #68b: measure+report the box-grid cold-start frame cost "
@@ -3718,6 +3811,20 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] b94 boxname ({a.b94_boxname}): {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        ran = True
+
+    if a.b132_portrait:
+        try:
+            sessions = run_b132_portrait(core_mod, image_mod, a.image, a.out, a.b132_portrait)
+            for sess in sessions:
+                ok += sess.taken
+                skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b132 portrait ({a.b132_portrait}): {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
