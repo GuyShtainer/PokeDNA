@@ -529,6 +529,32 @@ static const char* flashcart_name(void) {
   }
 }
 
+/* One line per detection attempt, for the boot screen and the log: what the driver
+ * concluded and, on an EZ-Flash, WHICH page it found the running image on. That page is
+ * the whole story of the 2026-09-12 NOR hang (lib/ezflashomega/io_ezfo.c, "identifying
+ * OUR page"): 0x200 = SD-loaded into PSRAM, below 0x200 = booted from the game NOR, and
+ * "la=N@P" = N stale same-title images were rejected, the first at page P. `out` holds
+ * 40 bytes; the line is kept under 29 characters so it fits a sys8 row. */
+static void detect_line(char* out, int attempt) {
+  unsigned page = flashcartio_ezfo_page(), first = 0xFFFFu;
+  unsigned la = flashcartio_ezfo_lookalikes(&first);
+  const char* what;
+  int n;
+  switch (flashcartio_detect_code()) {
+    case FCIO_DET_ED_OK:        what = "ED ok";       break;
+    case FCIO_DET_ED_SD_FAIL:   what = "ED sd fail";  break;
+    case FCIO_DET_EZFO_OK:      what = "EZ ok";       break;
+    case FCIO_DET_EZFO_HDRONLY: what = "EZ ok(hdr!)"; break;
+    case FCIO_DET_EZFO_NOT:     what = "no cart";     break;
+    case FCIO_DET_EZFO_NOPAGE:  what = "EZ no page";  break;
+    default:                    what = "?";           break;
+  }
+  if (page == 0x200u)     n = siprintf(out, "%d: %s PSRAM(SD)", attempt, what);
+  else if (page < 0x200u) n = siprintf(out, "%d: %s NOR#%u", attempt, what, page);
+  else                    n = siprintf(out, "%d: %s", attempt, what);
+  if (la) siprintf(out + n, " la=%u@%x", la, first);
+}
+
 /* Writes (edit mode, later) are Omega-only; surface it from M0. An image whose own
  * sampled CRCs say it is not the one we shipped must never write a user's save. */
 static bool cart_writable(void) {
@@ -9296,10 +9322,27 @@ int main(void) {
    * up, so a one-off glitch no longer hard-halts the tool on launch. Read-only here, so
    * retrying is risk-free. */
   bool active = false;
-  for (int a = 0; a < 8 && !(active = flashcartio_activate()); a++)
-    for (int v = 0; v < 8; v++) vsync();    /* ~130 ms settle, then re-detect */
+  for (int a = 0; a < 8 && !active; a++) {
+    /* Each attempt owns one row (8 rows x 8 px from y=86 end exactly at UI_FOOTER_Y).
+     * "probing..." goes up BEFORE the call, so a hang inside detection leaves the
+     * attempt number on screen; the verdict then overwrites it. Stack locals only. */
+    char d[40];
+    int y = 86 + a * UI_ROW_H;
+    siprintf(d, "%d: probing...", a + 1);
+    ui_text(6, y, UI_DIM, d);
+    active = flashcartio_activate();
+    detect_line(d, a + 1);
+    ui_fill_rect(6, y, 228, UI_ROW_H, UI_BG);
+    ui_text(6, y, active ? UI_OK : UI_WARN, d);
+    log_line("flashcart try %s", d);
+    if (!active) for (int v = 0; v < 8; v++) vsync();    /* ~130 ms settle, then re-detect */
+  }
   if (!active) halt_msg("No flashcart detected! Reseat cart & reboot.");
-  log_line("flashcart: %s", flashcart_name());
+  {
+    unsigned first = 0xFFFFu, la = flashcartio_ezfo_lookalikes(&first);
+    log_line("flashcart: %s code=%d page=0x%x lookalikes=%u first=0x%x", flashcart_name(),
+             flashcartio_detect_code(), flashcartio_ezfo_page(), la, first);
+  }
 
   FATFS fs;                                  /* lives forever (main never returns) */
   FRESULT fr = FR_NOT_READY;
@@ -9309,7 +9352,7 @@ int main(void) {
     log_line("f_mount attempt %d failed (fr=%d)", a, fr);
     ui_clear();
     ui_text(6, 70, UI_TITLE, "Mounting SD card...");
-    char rb[32]; siprintf(rb, "retry %d/7", a + 1);
+    char rb[32]; siprintf(rb, "retry %d/7 (fr=%d)", a + 1, (int)fr);
     ui_text(6, 86, UI_DIM, rb);
     for (int v = 0; v < 12; v++) vsync();    /* ~200 ms settle */
     flashcartio_activate();                  /* re-init the cart's SD interface, then retry */
