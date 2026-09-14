@@ -3,6 +3,7 @@
  * per-signature citations and the fail-closed rules. Pure C: no tonc, no
  * FatFs, no GBA headers. */
 #include "rom_gbui.h"
+#include "gb_scanwin.h"
 
 #include <string.h>
 
@@ -339,17 +340,19 @@ static int scan_multi(const Scan* s, ScanJob* jobs, uint32_t njobs) {
     if (jobs[j].look > look) look = jobs[j].look;
     if (jobs[j].look < minlook) minlook = jobs[j].look;
   }
-  if (!w || cap < look + 16u || s->size < look) return 0;
-  uint32_t step = cap - look + 1u;
-  for (uint32_t base = 0; base + look <= s->size; base += step) {
-    uint32_t n = s->size - base; if (n > cap) n = cap;
-    if (!rd(s, base, w, n)) return 0;
-    uint32_t lim = n - look;
-    for (uint32_t i = 0; i <= lim; i++) {
+  /* Forward-only, sector-aligned reads (gb_scanwin.h) -- the same window rule as
+   * rom_gbsprite.c's scan_multi, for the same measured reason. */
+  GbScanWin sw;
+  if (!w || !gb_scanwin_init(&sw, s->size, cap, look)) return 0;
+  while (gb_scanwin_plan(&sw, w)) {
+    if (!rd(s, sw.rd_off, w + sw.rd_dst, sw.rd_len)) return 0;
+    uint32_t cnt = gb_scanwin_filled(&sw);
+    uint32_t n = sw.have;
+    for (uint32_t i = sw.first; i < sw.first + cnt; i++) {
       const uint8_t* p = w + i;
       for (uint32_t j = 0; j < njobs; j++) {
         if (!jobs[j].cb(p)) continue;
-        if (jobs[j].n < jobs[j].cap) jobs[j].off[jobs[j].n] = base + i;
+        if (jobs[j].n < jobs[j].cap) jobs[j].off[jobs[j].n] = sw.base + i;
         jobs[j].n++;
       }
     }
@@ -357,13 +360,13 @@ static int scan_multi(const Scan* s, ScanJob* jobs, uint32_t njobs) {
      * signature duplicated in the final `look - minlook` bytes of the ROM is
      * never tested by the loop above. On the last window only, sweep those
      * remaining starts with each job bounded by its OWN pattern length. */
-    if (base + n >= s->size) {
-      for (uint32_t i = lim + 1; i + minlook <= n; i++) {
+    if (gb_scanwin_is_last(&sw)) {
+      for (uint32_t i = sw.first + cnt; i + minlook <= n; i++) {
         const uint8_t* p = w + i;
         for (uint32_t j = 0; j < njobs; j++) {
           if (i + jobs[j].look > n) continue;
           if (!jobs[j].cb(p)) continue;
-          if (jobs[j].n < jobs[j].cap) jobs[j].off[jobs[j].n] = base + i;
+          if (jobs[j].n < jobs[j].cap) jobs[j].off[jobs[j].n] = sw.base + i;
           jobs[j].n++;
         }
       }
