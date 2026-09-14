@@ -534,7 +534,10 @@ static const char* flashcart_name(void) {
  * the whole story of the 2026-09-12 NOR hang (lib/ezflashomega/io_ezfo.c, "identifying
  * OUR page"): 0x200 = SD-loaded into PSRAM, below 0x200 = booted from the game NOR, and
  * "la=N@P" = N stale same-title images were rejected, the first at page P. `out` holds
- * 40 bytes; the line is kept under 29 characters so it fits a sys8 row. */
+ * 40 bytes. The sys8 row budget (29 glyphs from x=6) is enforced by the two forms
+ * below: the longest verdict is "EZ hdr!" and the page prints in hex, so the worst
+ * row, "8: EZ hdr! NOR#1ff la=255@1ff", is exactly 29 -- TTE would otherwise wrap a
+ * longer row onto the next attempt's line. host_textfit_test.c measures that worst case. */
 static void detect_line(char* out, int attempt) {
   unsigned page = flashcartio_ezfo_page(), first = 0xFFFFu;
   unsigned la = flashcartio_ezfo_lookalikes(&first);
@@ -544,13 +547,13 @@ static void detect_line(char* out, int attempt) {
     case FCIO_DET_ED_OK:        what = "ED ok";       break;
     case FCIO_DET_ED_SD_FAIL:   what = "ED sd fail";  break;
     case FCIO_DET_EZFO_OK:      what = "EZ ok";       break;
-    case FCIO_DET_EZFO_HDRONLY: what = "EZ ok(hdr!)"; break;
+    case FCIO_DET_EZFO_HDRONLY: what = "EZ hdr!";     break;
     case FCIO_DET_EZFO_NOT:     what = "no cart";     break;
     case FCIO_DET_EZFO_NOPAGE:  what = "EZ no page";  break;
     default:                    what = "?";           break;
   }
   if (page == 0x200u)     n = siprintf(out, "%d: %s PSRAM(SD)", attempt, what);
-  else if (page < 0x200u) n = siprintf(out, "%d: %s NOR#%u", attempt, what, page);
+  else if (page < 0x200u) n = siprintf(out, "%d: %s NOR#%x", attempt, what, page);
   else                    n = siprintf(out, "%d: %s", attempt, what);
   if (la) siprintf(out + n, " la=%u@%x", la, first);
 }
