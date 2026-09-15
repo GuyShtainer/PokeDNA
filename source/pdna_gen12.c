@@ -1881,6 +1881,18 @@ static bool gbsrc_can_boxops_impl(int box) {
  * draw, just without a sprite. */
 static bool gbsrc_export_all_impl(int box) {
   if (!g_ed || gb_box_is_party(g_ed->s.gen, box)) return false;
+  /* b160: gb_export_hook's own single-mon export checks app_can_edit() directly
+   * (hard rule 4 -- ALL writes, not just save edits, are Omega-only; a .pk file
+   * under /PokeDNA/bank/ is still an SD write) rather than trusting
+   * can_boxops()'s menu-open gate alone. This loop reaches the same
+   * sf_write_verified() call per slot but never re-checked the cart itself --
+   * the same "trust the menu gate" gap item 1 of this slice fixed at the nav
+   * dispatch sites. Re-check here too. */
+  if (!app_can_edit()) {
+    snd_deny();
+    msg_wait(PDNA_GBEDIT_READONLY_TITLE, UI_WARN, app_gb_readonly_why(), 0);
+    return false;
+  }
   GbSession* s = &g_ed->s;
   GbsStatus lst = gbs_load_list(s, box, g_ed->list);
   if (lst != GBS_OK) { snd_deny(); msg_wait(PDNA_GBEDIT_BOXRD_TITLE, UI_WARN, gbs_status_text(lst), 0); return false; }
@@ -2620,6 +2632,22 @@ bool gb_persist(const char* what_for_log) {
            "in the emulator build.");
   return false;
 #else
+  /* b160: choke-point backstop for hard rule 4 (writes are Omega-only). Every
+   * gb_persist() caller is SUPPOSED to already be behind a can_edit gate the
+   * nav dispatch passed to its screen (gb_nav_from_start, all now
+   * `ed && app_can_edit()` per this slice's own fix) or, for the direct edit/
+   * move/release hooks, gb_locate()'s own app_can_edit() check above -- but
+   * this function is the ONE place every GB write path converges on before
+   * touching the card, so it re-checks here rather than trusting every caller
+   * (present and future) got its own gate right. Mirrors the PDNA_DELTA
+   * refusal shape above: log, sound, message, return false -- nothing touched. */
+  if (!app_can_edit()) {
+    log_line("gen12: persist refused: %s", app_readonly_why());
+    app_log_flush();
+    snd_error();
+    msg_wait("READ-ONLY", UI_WARN, app_gb_readonly_why(), 0);
+    return false;
+  }
   char bak[SF_PATH_MAX]; bak[0] = 0;
   s_busy(PDNA_GBEDIT_BUSY_BACKUP);
   rmbl_pause();
