@@ -645,7 +645,7 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * filename, so they stay static. msg_wait's (28, .., 184) proportional clamp, same as
  * every macro above. */
 #define PDNA_BANKSAVE_TMPONLY_TITLE     "BOX NOT IN PLACE"
-#define PDNA_BANKSAVE_TMPONLY_L2        "Restore the .bak on a PC."
+#define PDNA_BANKSAVE_TMPONLY_L2        "Card dropped it. Rename .tmp on a PC."
 #define PDNA_BANKSAVE_TMPANDOLD_TITLE   "BOX NOT SAVED"
 #define PDNA_BANKSAVE_TMPANDOLD_L1      "Old box intact."
 #define PDNA_BANKSAVE_TMPANDOLD_L2      "Try saving again."
