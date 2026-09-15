@@ -31,6 +31,15 @@
 /* Writes are EZ-Flash-Omega-only. */
 bool app_can_edit(void);
 
+/* BACKLOG #150 S150-8 decision 4: the loaded save's own Gen-3 origin-game id --
+ * 1 Sapphire, 2 Ruby, 3 Emerald, 4 FireRed, 5 LeafGreen (Gen 3's origin field is 4
+ * bits with no distinct value for Ruby vs Sapphire, so this cannot tell them apart
+ * from the save alone -- it returns the SAME id pdna_main.c's own two GB-import call
+ * sites already use, 1 for RS). Used as gen12_convert()'s Gb12Target.met_game for
+ * a native cell converting DOWN into the Gen-3 PC (S11.20 item 12(b): the converted
+ * mon's Gen-3 origin is the DESTINATION save's own game, never a fixed Emerald). */
+uint8_t app_met_game(void);
+
 /* Reason why writes are disabled (hack ROM vs. Omega cart). */
 const char* app_readonly_why(void);
 const char* app_readonly_footer(void);

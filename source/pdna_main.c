@@ -1316,6 +1316,15 @@ bool app_can_edit(void) {
 }
 #endif
 
+/* BACKLOG #150 S150-8 decision 4: same expression pdna_main.c's own two GB-import
+ * call sites already used inline (Gen 3's origin field cannot tell RS apart, so RS
+ * maps to Sapphire's id here -- NOT :4477's `? 3 : ? 4 : 2` variant, which maps RS to
+ * Ruby; the GB mount's own met_game stamp already uses THIS spelling, so a converted
+ * mon and a mounted mon must agree). */
+uint8_t app_met_game(void) {
+  return (uint8_t)(g_game == PK_RS ? 1 : g_game == PK_FRLG ? 4 : 3);
+}
+
 /* Flush the RAM log to SD now — for anomaly sites (wallpaper/icon self-verify) whose
  * evidence must survive a "see glitch -> power off". Same rmbl discipline as the
  * commit sites: no motor on the cart bus mid-transfer. Main-loop-synchronous only. */
@@ -9963,7 +9972,7 @@ static void view_save(const char* path) {
               msg_wait("GB IMPORT", UI_DIM, "No fused GB saves.", "Rebuild with tools/fuse_gb.py.");
           } else {
             fused_gb_set_active_save(pick);   /* the third pick site: the nested import (b98 re-verify) */
-            pdna_gen12_show_fused(pick, (uint8_t)(g_game == PK_RS ? 1 : g_game == PK_FRLG ? 4 : 3));
+            pdna_gen12_show_fused(pick, app_met_game());
           }
 #else
           /* Browse for a Gen-1/2 .sav and mount it READ-ONLY as a box source. The
@@ -9971,7 +9980,7 @@ static void view_save(const char* path) {
            * converted mon claims the cartridge it is actually going into. */
           char gp[PATH_MAX];
           if (app_pick_gb_save(gp, sizeof gp))
-            pdna_gen12_show(gp, (uint8_t)(g_game == PK_RS ? 1 : g_game == PK_FRLG ? 4 : 3));
+            pdna_gen12_show(gp, app_met_game());
 #endif
           break;
         }
