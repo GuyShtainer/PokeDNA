@@ -444,6 +444,67 @@ def run_nav_gb(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_
     return s
 
 
+def run_b64_import(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
+    """BACKLOG #64 -- IMPORTANT CAVEAT, read before trusting these shots as proof of
+    anything: pdna_main.c's NV_GB case is `#ifdef PDNA_DELTA` / `#else` (source/
+    pdna_main.c:9364-9391) -- on THIS build (PDNA_DELTA, the only kind this whole
+    script drives) NV_GB calls pdna_gen12_show_fused(), which BACKLOG #64 leaves
+    passing `ro = 0` to gb_session_core() on purpose (its own call site's comment:
+    "this entry already shows every screen through g_ed ... unaffected by this
+    lane"). The function BACKLOG #64 actually changed, pdna_gen12_show() (the plain
+    FIL-streaming entry `app_pick_gb_save()`'s SD file browser reaches), is called
+    from EXACTLY ONE site in the whole codebase (pdna_main.c:9391, inside the
+    `#else`) -- dead code under PDNA_DELTA, and mGBA has NO SD card at all in this
+    harness (gb_shots.py's own docstring: "the emulator has no SD card" -- the
+    entire reason PDNA_DELTA fusing exists). There is therefore NO WAY to reach
+    pdna_gen12_show() from mGBA, on any image this repo's tooling can build --
+    proving the read-parity fix (a streamed session opening the real Trainer/Bag/
+    Flags/Dex screens instead of falling back to the read-only info page) needs a
+    real SD card and a real flashcart, i.e. it is HARDWARE-ONLY (docs/HW-QUEUE.md),
+    not something a screenshot here can stand in for.
+
+    What THIS function is actually good for: a regression check that threading `ro`
+    through gb_session_core()/gb_nav_from_start() as a plain parameter did not
+    disturb the FUSED path's own pre-existing behaviour -- same navigation
+    run_nav_gb() already uses (boot picker -> Emerald default -> box screen ->
+    START > nav menu > NV_GB -> pick `which`), continued past run_nav_gb()'s own
+    shot 02 into the box grid's OWN nav menu (gb_nav_from_start(), ro == 0 here, no
+    g_ed either).
+
+    ONE shot only, not four: gb_info_page() (source/pdna_gen12.c) renders
+    mount-level info (kind/player/ID/counts) -- it takes no argument that would
+    make its content differ by WHICH nav row fell back to it, so Trainer's,
+    Bag's/Pack's, Flags', and Dex's fallback screens are ALL pixel-identical.
+    Confirmed by hand (dbg debug run, 2026-09): capturing more than one landed a
+    duplicate-frame refusal in gb_shots.Session.shot()'s own guard. One
+    representative row (Trainer) is the whole story for this regression check."""
+    idx = gb_save_pick_index(rom)[which]
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b64_{which}_")
+    print(f"== BACKLOG #64: {which}.sav — nested NV_GB import's OWN nav menu (fused path, ro==0) ==")
+
+    s.run(700)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)               # #68a boot picker, Emerald row (default) -> box
+    nav_to_gb_import(s)                                    # box screen -> nav menu -> NV_GB -> the save picker
+    for _ in range(idx):
+        s.tap("DOWN", settle=gb_shots.SETTLE)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                 # picked -> this save's own S1 info page
+    s.tap("A", settle=60)                                  # info -> box grid (COLD fetch starts)
+    s.run(GB_ART_COLD_SETTLE)                              # ride out the first-ever real scan
+
+    # Trainer: DOWN x3 from a fresh menu (same index run_u3_trainer()/run_u2c_trainer()
+    # already use against the resident-image mount's own identical shared menu).
+    s.tap("START", settle=gb_shots.BIG_SETTLE)
+    s.press_n("DOWN", 3)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.shot("01_trainer", f"#64: {which}.sav via NV_GB's fused mount -- Trainer row, "
+                          "ro == 0 and g_ed unset here, so gs == NULL: still shows the "
+                          "read-only info page (gb_info_page), UNCHANGED by this lane -- "
+                          "see this function's own docstring caveat. Bag/Pack, Flags and "
+                          "Dex all fall to the SAME screen (gb_info_page takes no "
+                          "per-row argument) so one shot stands for all four rows.")
+    return s
+
+
 def run_standalone(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
     """pokedna-delta-gb.gba (the ONLY image now -- BACKLOG #68a retires the separate
     blank-flash `delta-gb-only` recipe): boot lands on gb_delta_boot_pick()'s BOOT
@@ -3839,6 +3900,18 @@ def main(argv=None) -> int:
                           "mount -- --image MUST be a COMBINED image (Emerald.sav + "
                           "Red/Gold/Crystal, `make delta-gb`'s own recipe) so both "
                           "mounts are reachable from the one image.")
+    ap.add_argument("--b64-import", choices=("gold", "red"),
+                     help="BACKLOG #64: run_b64_import() against --image for the named "
+                          "game -- --image MUST be a COMBINED image (Emerald.sav + "
+                          "Red/Gold/Crystal, `make delta-gb`'s own recipe, same as "
+                          "run_nav_gb()). Drives the SAME START > nav menu > GB import "
+                          "(NV_GB) entry run_nav_gb() already uses; SEE run_b64_import()'s "
+                          "own docstring for an important caveat: under PDNA_DELTA this "
+                          "row calls pdna_gen12_show_fused(), NOT the pdna_gen12_show() "
+                          "FIL-streaming path BACKLOG #64 actually changed -- these shots "
+                          "are a REGRESSION check on the fused path (unaffected, ro == 0), "
+                          "not proof of the read-parity fix, which needs a real SD card "
+                          "and is HARDWARE-ONLY per the standing screenshot rule.")
     ap.add_argument("--out", type=Path, default=ROOT / "docs" / "shots" / "gb")
     ap.add_argument("--cold-start-compare", nargs=2, type=Path, metavar=("LOC_IMAGE", "NOLOC_IMAGE"),
                      help="BACKLOG #68b: measure+report the box-grid cold-start frame cost "
@@ -4069,6 +4142,18 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] b87 dex ({a.b87_dex}): {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        ran = True
+    if a.b64_import:
+        try:
+            sess = run_b64_import(core_mod, image_mod, a.image, a.out, a.b64_import)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b64 import ({a.b64_import}): {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
