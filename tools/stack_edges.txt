@@ -117,6 +117,18 @@ AppSrcOps.item       @32 in app_mon_menu_readonly -> gb_item_hook
 AppSrcOps.dup        @36 in app_mon_menu_readonly -> gb_dup_hook
 AppSrcOps.daycare    @40 in app_mon_menu_readonly -> gb_daycare_hook
 AppSrcOps.export_one @44 in app_mon_menu_readonly -> gb_export_hook
+
+# BACKLOG #93 step 5: BoxSource.can_boxops/export_all/release_all, appended at the
+# struct's END (pdna_box.h, same offset-stability rule can_rename's own comment
+# states) -- offsets 88/92/96, verified by hand: xfer@84 (a pointer, the struct's
+# previous last field) + 4 = 88, then 92, then 96, natural ARM EABI packing (no
+# field after it needing wider alignment). Only pdna_gen12_source() ever assigns
+# them (gbsrc_can_boxops/gbsrc_export_all/gbsrc_release_all); pcsrc/banksrc leave
+# all three NULL, so pdna_box.c's own `? :` gates fall back to their pre-#93
+# behaviour there, unchanged.
+BoxSource.can_boxops  @88 in pdna_box -> gbsrc_can_boxops
+BoxSource.export_all  @92 in box_options_menu -> gbsrc_export_all
+BoxSource.release_all @96 in box_options_menu -> gbsrc_release_all
 # 2026-09-14 (the "stuck choosing the .gbc" cart fix): gb_art_source.c's SD read shim
 # calls its GbArtIo.fn progress callback between reads. pdna_main.c's gb_reg_progress
 # is the ONLY implementation ever stored there (app_register_gb_rom, its restore

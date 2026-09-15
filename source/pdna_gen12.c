@@ -551,6 +551,38 @@ static bool gbsrc_can_rename(void) {
 static int  gbsrc_get_wp(int box) { (void)box; return GB12_WALLPAPER; }
 static void gbsrc_set_wp(int box, int wp) { (void)box; (void)wp; }           /* read-only */
 static bool gbsrc_can_edit(void) { return false; }
+/* BACKLOG #93: forward-declared _impl bodies (defined below gb_export_hook, whose
+ * GBA-only helpers gbpk_sanitize/gb_pk_pack/box_oam.h/pdna_progress.h they reuse) --
+ * same "thin wrapper here, real body later, host build gets a safe default" pattern
+ * gbsrc_get_raw_name_impl/gbsrc_can_rename_impl already use just above, for the same
+ * reason: tests/host_gen12_test.c compiles this whole file with -DPDNA_GEN12_HOST and
+ * has no tonc/box_oam/pdna_progress to link against. */
+#ifndef PDNA_GEN12_HOST
+static bool gbsrc_can_boxops_impl(int box);
+static bool gbsrc_export_all_impl(int box);
+static bool gbsrc_release_all_impl(int box);
+#endif
+static bool gbsrc_can_boxops(int box) {
+#ifndef PDNA_GEN12_HOST
+  return gbsrc_can_boxops_impl(box);
+#else
+  (void)box; return false;
+#endif
+}
+static bool gbsrc_export_all(int box) {
+#ifndef PDNA_GEN12_HOST
+  return gbsrc_export_all_impl(box);
+#else
+  (void)box; return false;
+#endif
+}
+static bool gbsrc_release_all(int box) {
+#ifndef PDNA_GEN12_HOST
+  return gbsrc_release_all_impl(box);
+#else
+  (void)box; return false;
+#endif
+}
 /* MUST return false. pdna_box's cross-scope drop writes the record into the
  * destination, calls commit(), and reverts on failure (pdna_box.c:714-718): a
  * commit() that returned true would tell the box screen a Pokemon had been written
@@ -628,6 +660,13 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
   s.note_add   = 0;                           /* nothing lands here; nothing to register */
   s.note_box   = gbsrc_note_box;              /* BACKLOG #56: remember the box for re-entry */
   s.capacity   = gbsrc_capacity;
+  /* BACKLOG #93: the box-menu open gate (can_boxops) is narrower than can_lift/
+   * can_edit -- see pdna_box.h's own comment on the field -- plus EXPORT ALL/RELEASE
+   * ALL bodies so the read-only .pk3 pair in pdna_box.c never runs on a Game Boy box
+   * (which has no 80-byte Gen-3 records to hand box_decode_to). */
+  s.can_boxops  = gbsrc_can_boxops;
+  s.export_all  = gbsrc_export_all;
+  s.release_all = gbsrc_release_all;
   return s;
 }
 
@@ -661,6 +700,8 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "gb_daycare.h"       /* BACKLOG #93: gbd_read/gbd_deposit for gb_daycare_hook's push */
 #include "gb_pk.h"            /* BACKLOG #93: gb_pk_pack/gb_pk_ext for gb_export_hook's .pk1/.pk2 */
 #include "pdna_pk.h"          /* BACKLOG #93: PDNA_BANK_DIR, shared with the Gen-3 .pk3 exporter */
+#include "box_oam.h"          /* BACKLOG #93: boxoam_suspend/resume around gbsrc_export_all/release_all's UI */
+#include "pdna_progress.h"    /* BACKLOG #93: pdna_progress_frame -- gbsrc_export_all's own progress screen */
 #include "pdna_gbdex.h"       /* BACKLOG #87: the Gen-1/2 Pokedex screen */
 #include "pdna_gbmap.h"       /* M1, BACKLOG #91: Gen 1's read-only current-map view */
 #include "pdna_gbhof.h"       /* BACKLOG #89: the Hall of Fame, both generations */
@@ -1655,6 +1696,30 @@ static void gbpk_sanitize(char* out, const char* in, int cap) {
 _Static_assert(GBS_LIST_BYTES >= SF_PATH_MAX + 56,
                "g_ed->list2 too small for gb_export_hook's path+payload split");
 
+/* Shared by gb_export_hook and gbsrc_export_all: `PDNA_BANK_DIR/<sanitized-nick-or-
+ * species>_<key16>.pk1|.pk2` (decision 6). GB records have no `personality` for
+ * .pk3's own %08lX, so gbsc_key/gbsc_key_hex (the sidecar's own fingerprint) stands
+ * in. Writes into `path` (caller-owned, >= SF_PATH_MAX); returns false on truncation. */
+static bool gb_pk_build_path(char* path, int cap, const GbEditMon* e) {
+  char nick[GB_TEXT_MAX];
+  gb_get_nickname(e, nick, sizeof nick);
+  const char* label = nick[0] ? nick : "MON";
+  uint16_t dex = gb_get_species_dex(e);
+  if (!nick[0] && dex) label = pk_species_name(dex);
+  char sbase[16];
+  gbpk_sanitize(sbase, label, sizeof sbase);
+
+  uint8_t dv4[4] = {
+    gb_get_dv(e, GB_ATK), gb_get_dv(e, GB_DEF), gb_get_dv(e, GB_SPE), gb_get_dv(e, GB_SPC)
+  };
+  uint64_t key = gbsc_key(e->gen, gb_get_otid(e), dv4, e->otname);
+  char keyhex[17];
+  gbsc_key_hex(key, keyhex);
+
+  int nprint = sniprintf(path, cap, PDNA_BANK_DIR "/%s_%s%s", sbase, keyhex, gb_pk_ext(e->gen));
+  return nprint >= 0 && nprint < cap;
+}
+
 /* app_src_ops_set() hook: EXPORT .pk on the read-only mon menu (BACKLOG #93). Writes a
  * .pk1/.pk2 file (source/gb_pk.c) to the same bank folder /PokeDNA/bank/ the Gen-3
  * .pk3 exporter uses. gb_locate_addr(), NOT gb_locate(): this is a read of the record
@@ -1700,29 +1765,10 @@ static bool gb_export_hook(uint8_t* rec80) {
     return false;
   }
 
-  char nick[GB_TEXT_MAX];
-  gb_get_nickname(&e, nick, sizeof nick);
-  const char* label = nick[0] ? nick : "MON";
-  {
-    uint16_t dex = gb_get_species_dex(&e);
-    if (!nick[0] && dex) label = pk_species_name(dex);
-  }
-  char sbase[16];
-  gbpk_sanitize(sbase, label, sizeof sbase);
-
-  uint8_t dv4[4] = {
-    gb_get_dv(&e, GB_ATK), gb_get_dv(&e, GB_DEF), gb_get_dv(&e, GB_SPE), gb_get_dv(&e, GB_SPC)
-  };
-  uint64_t key = gbsc_key(e.gen, gb_get_otid(&e), dv4, e.otname);
-  char keyhex[17];
-  gbsc_key_hex(key, keyhex);
-
   f_mkdir(PDNA_DIR);       /* ignore FR_EXIST */
   f_mkdir(PDNA_BANK_DIR);
 
-  int nprint = sniprintf(path, SF_PATH_MAX, PDNA_BANK_DIR "/%s_%s%s",
-                         sbase, keyhex, gb_pk_ext(e.gen));
-  if (nprint < 0 || nprint >= SF_PATH_MAX) {
+  if (!gb_pk_build_path(path, SF_PATH_MAX, &e)) {
     snd_error();
     msg_wait("EXPORT FAILED", UI_WARN, "Path too long.", 0);
     return false;
@@ -1741,6 +1787,138 @@ static bool gb_export_hook(uint8_t* rec80) {
   snd_error();
   msg_wait("EXPORT FAILED", UI_WARN, sf_status_str(wst), 0);
   return false;
+}
+
+/* BoxSource.can_boxops (BACKLOG #93, step 5): the narrow box-menu open gate this
+ * step exists to add -- see pdna_box.h's own comment on the field and the finding
+ * that shapes it (gbsrc_can_edit() is hardwired false and can_lift is S3's transfer
+ * field; neither means "the box options menu may open"). Silent: this is a menu-
+ * drawing query, never an action (same posture gb_editable_hook already documents
+ * for the same reason). The party pseudo-box refuses here too -- EXPORT ALL/RELEASE
+ * ALL on "the box that is really your party" is not a shape this step defines. */
+static bool gbsrc_can_boxops_impl(int box) {
+  if (!g_ed) return false;
+  if (gb_box_is_party(g_ed->s.gen, box)) return false;
+  return app_can_edit() && gbs_box_writable(&g_ed->s, box) == GBS_OK;
+}
+
+/* BoxSource.export_all (BACKLOG #93): one .pk1/.pk2 per occupied slot of `box`,
+ * mirroring export_box_all's own shape (pdna_box.c) -- the empty-box early-out, the
+ * progress screen per slot, the EXPORTED n/total result panel. No gb_persist: this
+ * writes new files under /PokeDNA/bank/, never a byte of the save itself. The
+ * progress screen's portrait argument is NULL (Gen-3's `mon_front_for_form` needs an
+ * INTERNAL Gen-3 species index, gen1/2's own dex numbering is NOT that index, and
+ * mapping one to the other is out of this step's scope) -- title/counter/note still
+ * draw, just without a sprite. */
+static bool gbsrc_export_all_impl(int box) {
+  if (!g_ed || gb_box_is_party(g_ed->s.gen, box)) return false;
+  GbSession* s = &g_ed->s;
+  GbsStatus lst = gbs_load_list(s, box, g_ed->list);
+  if (lst != GBS_OK) { snd_deny(); msg_wait(PDNA_GBEDIT_BOXRD_TITLE, UI_WARN, gbs_status_text(lst), 0); return false; }
+
+  int total = gb_list_count(s->gen, g_ed->list, box);
+  if (total <= 0) {
+    snd_deny();
+    ui_clear();
+    ui_panel(20, 60, 200, 44, UI_PANEL, UI_BORDER);
+    ui_text(30, 70, UI_WARN, "BOX IS EMPTY");
+    ui_text(30, 86, UI_DIM, "Nothing to export. Press A");
+    u16 kk; do { s_vsync(); kk = key_hit(KEY_A); } while (!kk);
+    return false;
+  }
+
+  f_mkdir(PDNA_DIR);
+  f_mkdir(PDNA_BANK_DIR);
+
+  boxoam_suspend();
+  int failed = 0;
+  for (int slot = 0; slot < total; slot++) {
+    pdna_progress_frame("EXPORT TO .pk", 0, slot, total, "Writing...");
+    GbEditMon e;
+    bool ok = gb_load(&e, s->gen, g_ed->list, box, slot) && !gb_is_egg(&e);
+    if (ok) {
+      char* path = (char*)g_ed->list2;
+      uint8_t* payload = g_ed->list2 + SF_PATH_MAX;
+      int wrote = gb_pk_pack(&e, payload, 56);
+      ok = wrote >= 0 && gb_pk_build_path(path, SF_PATH_MAX, &e);
+      if (ok) { rmbl_pause(); ok = sf_write_verified(path, payload, wrote) == SF_OK; rmbl_resume(); }
+    }
+    if (!ok) failed++;
+    for (int v = 0; v < 3; v++) s_vsync();
+  }
+  if (failed) snd_error(); else snd_save();
+  ui_clear();
+  ui_panel(20, 54, 200, 58, UI_PANEL, failed ? UI_WARN : UI_OK);
+  char l[40]; siprintf(l, "EXPORTED %d / %d", total - failed, total);
+  ui_text(30, 64, failed ? UI_WARN : UI_OK, l);
+  ui_text(30, 82, UI_DIM, "Saved to /PokeDNA/bank/");
+  ui_text(30, 96, UI_DIM, "Press A");
+  u16 kk; do { s_vsync(); kk = key_hit(KEY_A); } while (!kk);
+  boxoam_resume();
+  return false;   /* writes no save bytes -- box_options_menu's caller re-decodes for nothing either way */
+}
+
+/* BoxSource.release_all (BACKLOG #93): confirm with the count (the twin's own string,
+ * pdna_box.c's release_box_all), then delete every slot top-down so a mid-failure
+ * never shifts the indices of slots not yet visited, roll back + ONE persist -- the
+ * two-step "every deletion RAM-only until the single persist" shape decision 5's own
+ * paragraph documents: sf_write_verified's .tmp/byte-compare/rename means the live
+ * .sav can never be caught half-written. Refuses the party pseudo-box (can_boxops
+ * already keeps this unreachable from the menu; kept here too as the structural
+ * refusal the step's own text names). */
+static bool gbsrc_release_all_impl(int box) {
+  if (!g_ed || gb_box_is_party(g_ed->s.gen, box)) return false;
+  GbSession* s = &g_ed->s;
+  GbsStatus lst = gbs_load_list(s, box, g_ed->list);
+  if (lst != GBS_OK) { snd_deny(); msg_wait(PDNA_GBEDIT_BOXRD_TITLE, UI_WARN, gbs_status_text(lst), 0); return false; }
+
+  int total = gb_list_count(s->gen, g_ed->list, box);
+  if (total <= 0) {
+    snd_deny();
+    ui_clear();
+    ui_panel(20, 60, 200, 44, UI_PANEL, UI_BORDER);
+    ui_text(30, 70, UI_WARN, "BOX IS EMPTY");
+    ui_text(30, 86, UI_DIM, "Nothing to release. Press A");
+    u16 kk; do { s_vsync(); kk = key_hit(KEY_A); } while (!kk);
+    return false;
+  }
+
+  char q[40]; siprintf(q, "Release all %d Pokemon?", total);   /* release_box_all's own string */
+  if (!app_confirm(q, "Deleted permanently!")) { snd_back(); return false; }
+
+  boxoam_suspend();
+  bool ok = true;
+  for (int slot = total - 1; slot >= 0 && ok; slot--) {
+    GbsStatus dst = gbs_delete(s, box, slot, g_ed->list);
+    ok = (dst == GBS_OK);
+  }
+  bool persisted = false;
+  if (!ok) {
+    gb_rollback();
+    log_line("gen12: release-all box %d refused partway", box);
+    snd_error();
+    ui_clear();
+    ui_panel(20, 54, 200, 56, UI_PANEL, UI_WARN);
+    ui_text(30, 64, UI_WARN, "RELEASE FAILED");
+    ui_text(30, 82, UI_DIM, "Nothing changed.");
+  } else {
+    persisted = gb_persist("release-all");   /* ONE persist for the whole box (decision's own point) */
+    ui_clear();
+    ui_panel(20, 54, 200, 56, UI_PANEL, persisted ? UI_OK : UI_WARN);
+    if (persisted) {
+      snd_save();
+      ui_text(30, 64, UI_OK, "RELEASED");
+      char l[40]; siprintf(l, "Freed %d slots.", total);
+      ui_text(30, 82, UI_DIM, l);
+    } else {
+      ui_text(30, 64, UI_WARN, "RELEASE FAILED");
+      ui_text(30, 82, UI_DIM, "Nothing changed.");   /* gb_persist already rolled RAM back */
+    }
+  }
+  ui_text(30, 96, UI_DIM, "Press A");
+  u16 kk; do { s_vsync(); kk = key_hit(KEY_A); } while (!kk);
+  boxoam_resume();
+  return persisted;
 }
 
 /* ============================================================================

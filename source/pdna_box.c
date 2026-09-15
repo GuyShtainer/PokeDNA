@@ -2204,10 +2204,10 @@ static void box_options_menu(BoxSource* src, int box) {
         }
         return;
       } else if (sel == 2) {                       /* export all to .pk */
-        export_box_all(src, box);
+        if (src->export_all) src->export_all(box); else export_box_all(src, box);
         return;
       } else if (sel == 3) {                       /* release all (destructive; confirms) */
-        release_box_all(src, box);
+        if (src->release_all) src->release_all(box); else release_box_all(src, box);
         return;
       } else return;                               /* cancel */
     }
@@ -3389,7 +3389,13 @@ int pdna_box(BoxSource* src) {
                                                         * box_options_menu, unchanged; rename
                                                         * there is now a second path to the
                                                         * same osk_input as the direct-A one) */
-        if (src_can_lift(src, box, -1)) { boxoam_suspend(); box_options_menu(src, box); boxoam_resume();
+        /* BACKLOG #93: a source whose box menu is unreachable through the ordinary
+         * can_lift/can_edit capability (the finding that shapes this step -- GB
+         * hardwires can_edit false and can_lift is S3's transfer field, neither means
+         * "the box options menu may open") narrows the gate with can_boxops instead;
+         * NULL falls back to src_can_lift exactly as before this field existed. */
+        if (src->can_boxops ? src->can_boxops(box) : src_can_lift(src, box, -1)) {
+                               boxoam_suspend(); box_options_menu(src, box); boxoam_resume();
                                recs = src->records(box); box_decode(src, recs, box);  /* Release all mutates records */
                                s_oam_reload = true; need_full = true; }
         else snd_deny();

@@ -119,6 +119,25 @@ typedef struct {
   bool bank_edge;
   bool (*can_lift)(int box, int slot);
   const BoxXferOps* xfer;
+  /* BACKLOG #93: appended at the END, same offset-stability rule `can_rename`'s own
+   * comment above states (tools/stack_edges.txt's hand-verified BoxSource field-offset
+   * table is keyed by byte offset; a mid-struct insert would shift every field after
+   * it). All three NULL on PC/Bank, so their behaviour there is byte-identical to
+   * before this field existed -- the pdna_box.c gate falls back to `src_can_lift`/the
+   * existing export_box_all/release_box_all when unset (step 5's own design).
+   *   can_boxops(box)   narrower than can_lift/can_edit -- the box-menu open gate for
+   *                      a source whose box menu is unreachable through the ordinary
+   *                      lift/edit capability (the finding that shapes this step: GB
+   *                      hardwires can_edit false and can_lift is S3's transfer field,
+   *                      neither means "the box options menu may open").
+   *   export_all(box)    EXPORT ALL: writes one .pk1/.pk2 per occupied slot, driving
+   *                      the same progress screen export_box_all uses.
+   *   release_all(box)   RELEASE ALL: confirms with the count, then deletes every
+   *                      slot in one persist (never a half-written box).
+   */
+  bool (*can_boxops)(int box);
+  bool (*export_all)(int box);
+  bool (*release_all)(int box);
 } BoxSource;
 
 /* Game-faithful box screen over `src`: a left PKMN DATA panel + a 6x5 icon grid on
