@@ -200,7 +200,9 @@ static int EWRAM_CODE __attribute__((noinline)) fp_walk(u32* fp, int take) {
 static int EWRAM_CODE __attribute__((noinline)) _EZFO_TestRompage(u32* fp, u16 hdr, u16 page, int use_fp) {
   SetRompage(page);
   if (hdr != ROM_HEADER_CHECKSUM) return 0;
-  if (use_fp && !fp_walk(fp, 0)) return 1;
+  /* TWO consecutive walks must disagree before a header match is demoted to a
+   * look-alike: one transient bad word on the TRUE page is otherwise fatal. */
+  if (use_fp && !fp_walk(fp, 0) && !fp_walk(fp, 0)) return 1;
   return 2;
 }
 
