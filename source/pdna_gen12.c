@@ -976,8 +976,10 @@ static Gb12Edit* g_ed;        /* pointer only: the block itself lives in the are
  * streamed-session equivalent of `g_ed`'s own implicit tail pointer: set by
  * pdna_gen12_show()/pdna_gen12_show_fused() right after their own gbs_open_streamed()
  * succeeds, cleared beside every place this file already clears g_ed to 0. Pointer
- * only (8 B .data, matching g_ed's own "pointer only" comment) -- the bytes
- * themselves live in the SAME arena block gb12_arena_tail() has always pointed into. */
+ * only (8 B .bss -- both start zero, so they land beside g_ed in .bss, not .data;
+ * confirmed via arm-none-eabi-size: __iheap_start moved 8 B, __eheap_start did
+ * not, matching g_ed's own "pointer only" comment) -- the bytes themselves live
+ * in the SAME arena block gb12_arena_tail() has always pointed into. */
 static uint8_t* g_ro_tail;
 static uint32_t g_ro_tail_slack;
 
