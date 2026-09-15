@@ -1815,5 +1815,10 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_ROMHACK_TITLE "ROM HACK"
 #define PDNA_ROMHACK_L1    "Read-only until verified."
 #define PDNA_ROMHACK_L2    "Edits could corrupt this save."
+/* app_src_readonly_set()'s why-note for the mon-menu refusal -- drawn at
+ * PDNA_MONMENU_PROSE_W (a narrower budget than msg_wait's 184), hence the
+ * shorter wording. PF-checked in tests/host_textfit_test.c beside the other
+ * "why locked" prose the read-only mon menu draws. */
+#define PDNA_ROMHACK_NOTE  "ROM hack: locked"
 
 #endif /* PDNA_LAYOUT_H */

@@ -464,6 +464,11 @@ int main(void) {
   PF("Bad level data", RO_PROSE_X, RO_PROSE_W);
   PF("No ID could fit", RO_PROSE_X, RO_PROSE_W);
   PF("Can't convert", RO_PROSE_X, RO_PROSE_W);
+  /* BACKLOG #54 T1: PDNA_ROMHACK_NOTE is the g_src_note this menu draws when a
+   * Gen-3 save is opened against a hack-flagged ROM (app_src_readonly_set(0,
+   * PDNA_ROMHACK_NOTE), pdna_main.c view_save()) — same prose geometry as the
+   * GB-import "why locked" strings above. */
+  PF(PDNA_ROMHACK_NOTE, RO_PROSE_X, RO_PROSE_W);
   chk("ro menu row", RO_ROW_X, PDNA_MONMENU_ROW_W,
       (int)strlen(PDNA_LBL_LEGALITY) * SYS8_W, PDNA_LBL_LEGALITY);
   chk("ro menu row", RO_ROW_X, PDNA_MONMENU_ROW_W,

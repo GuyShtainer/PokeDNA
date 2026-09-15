@@ -9291,7 +9291,19 @@ static void view_save(const char* path) {
    * in particular never ran before this call), so checking app_rom_is_hack() any
    * earlier would read last session's (empty, on a fresh boot) mask instead of the
    * verdict this very open just produced. */
-  if (app_rom_is_hack(g_game)) msg_wait(PDNA_ROMHACK_TITLE, UI_WARN, PDNA_ROMHACK_L1, PDNA_ROMHACK_L2);
+  /* app_mon_menu_readonly() already tolerates g_src_why == NULL (pdna_main.c's own
+   * `(!empty && g_src_why) ? g_src_why(rec) : 0`) -- verified before wiring this in,
+   * per this lane's STOP-LICENCE clause -- so passing 0 here needs no wrapper
+   * function. Paired with app_src_readonly_clear() on the non-hack branch: the GB
+   * fork already clears on its own return paths (pdna_gen12.c:2843/3095), so between
+   * the two, no session can leak a stale read-only note into an unflagged save (a
+   * leak here is STOP-level, per this lane's brief). */
+  if (app_rom_is_hack(g_game)) {
+    app_src_readonly_set(0, PDNA_ROMHACK_NOTE);
+    msg_wait(PDNA_ROMHACK_TITLE, UI_WARN, PDNA_ROMHACK_L1, PDNA_ROMHACK_L2);
+  } else {
+    app_src_readonly_clear();
+  }
 #ifndef PDNA_DELTA
   /* The artless first run: offer the ROM registration ONCE per session, right where
    * its effect is about to be visible. B declines and the name chips carry on. */
