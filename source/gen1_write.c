@@ -807,6 +807,10 @@ Gen1WStatus gen1_write_range_ex(uint8_t* img, uint32_t len, Gen1Save* s,
   return GEN1W_ERR_VERIFY;
 }
 
+#ifndef __arm__   /* host-only: no GBA caller (gb_session.c uses _ex with its own scratch); keeping
+                   * it in the image made the delta layout's address-taken sweep flag it as an
+                   * unreached orphan (2026-09-16, BACKLOG #106 G2 class). tests/host_gen1write_test.c
+                   * still exercises it on the host. */
 Gen1WStatus gen1_write_range(uint8_t* img, uint32_t len, Gen1Save* s,
                              uint32_t off, const uint8_t* buf, uint32_t n) {
   /* The 64-byte convenience wrapper (P0 review D6): every field small enough that a
@@ -820,6 +824,7 @@ Gen1WStatus gen1_write_range(uint8_t* img, uint32_t len, Gen1Save* s,
    * here to avoid a second copy of that comparison drifting out of step with it. */
   return gen1_write_range_ex(img, len, s, off, buf, n, snap, sizeof snap);
 }
+#endif /* !__arm__ */
 
 /* ------------------------------------------------------------------------- */
 /* The Hall-of-Fame allowlist (BACKLOG #89) -- see gen1_write.h for the contract   */
