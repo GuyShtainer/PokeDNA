@@ -1084,6 +1084,7 @@ static void s_busy_reading(void) {
  * on the SOURCE half of a move can leave the destination half already committed in RAM,
  * and this is the only way back to a state the card actually holds. */
 void gb_rollback(void) {
+  if (!g_ed) return;   /* BACKLOG #64: streamed sessions have no resident image to roll back */
   memcpy(g_ed->img, g_ed->pristine, g_ed->len);
   gbs_open(&g_ed->s, g_ed->img, g_ed->len, g_ed->scratch, sizeof g_ed->scratch);
   if (g_m) g_m->loaded = -1;
