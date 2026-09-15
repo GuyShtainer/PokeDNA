@@ -126,8 +126,20 @@ static bool box_load(int box) {
  * would refuse that first write forever. f_stat absent is the "nothing to back up, carry
  * on" case, not a failure. */
 static bool __attribute__((noinline)) box_backup(const char* path) {
-  FILINFO fno;
-  if (f_stat(path, &fno) != FR_OK) return true;      /* never written -- nothing to back up */
+  /* f_stat's error is not one bit: FR_NO_FILE/FR_NO_PATH really do mean "never
+   * written" (the guard this helper exists for), but FR_DISK_ERR/FR_NOT_READY/
+   * FR_TIMEOUT/FR_INT_ERR mean the card would not even ANSWER -- treating those the
+   * same as absent would skip the backup of a box that is very much PRESENT and
+   * overwrite it unbacked on a transient fault (reproduced on hostfat: one read
+   * error made this report "never written" on a present box, wiping it with no
+   * .bak). fno=NULL is supported (ff.c:4818) and drops ~290 B of FILINFO's LFN
+   * buffer from this frame. */
+  FRESULT fr = f_stat(path, 0);
+  if (fr == FR_NO_FILE || fr == FR_NO_PATH) return true;   /* never written -- nothing to back up */
+  if (fr != FR_OK) {
+    log_line("bank: box stat failed (fr=%d) - refusing to write unbacked", (int)fr);
+    return false;
+  }
   char bak[SF_PATH_MAX];
   rmbl_pause();
   SfStatus bst = sf_backup_rolling(path, bak, sizeof bak);
