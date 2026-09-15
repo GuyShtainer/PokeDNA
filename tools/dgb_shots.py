@@ -4371,16 +4371,21 @@ def run_s150_7_down_edge(core_mod, image_mod, rom_gold: Path, rom_red: Path,
     # `return BANK_DOWN_REFUSED;` GB_BRIDGE case body this comment used to describe --
     # so this A no longer hits a stub refusal (and Red's GB BOX1 is 20/20, fully
     # occupied, on this real cartridge: the fixed !occupied scoping is why dispatch
-    # still runs here). The real bridge preview is what --s150-8-bridge (a separate,
-    # NEW chain in this same file) exercises end to end; this shot stays only to show
-    # that S150-7's own GB_BRIDGE arm is no longer a stub on the merged base.
-    sr.shot("12_red_bridge_preview", "S150-7 (b), post-84a43b8: 'WHAT WON'T TRANSFER "
-            "/ Nature and ability / Met place / level / ball / Kept in /PokeDNA/...; "
-            "restored when it comes back. / The copy in your Gen-3 save stays. / "
-            "A = transfer  B = cancel' -- the GB_BRIDGE arm's real preview "
-            "(bank_down_convert_gb, S150-8), reached even though Red's GB BOX1 shown "
-            "in frame 11 is 20/20 (fully occupied) -- proof the occupied refusal is "
-            "GEN3-only now, not a blanket gate on every arm")
+    # still runs here). 59dd45c (merged-tree review F1/F2/F3/F5, landed AFTER this
+    # shot was first captured on 84a43b8) fixed the bridge converting to the WRONG
+    # generation (its own SOURCE gen, not the MOUNTED session's) -- with dst_gen
+    # correctly Gen 1 now, xr_time_capsule_block() (source/xfer_rec.c:26-43) sees
+    # CHIKORITA's dex (152) exceed gb_max_species(GB_GEN1) (151) and blocks it
+    # BEFORE any loss screen renders, re-captured live to confirm (not assumed):
+    # this is no longer a preview at all, it is one of the two time-capsule
+    # refusals --s150-8-bridge (a separate, NEW chain in this same file) exercises
+    # end to end on its own planted cell. This shot stays only to show S150-7's own
+    # GB_BRIDGE arm reaches the SAME refusal Red's full box0 plant would always hit.
+    sr.shot("12_red_no_gen1_form", "S150-7 (b), post-59dd45c: 'NO GEN 1 FORM / "
+            "CHIKORITA: no Gen 1 form.' -- xr_time_capsule_block()'s species-floor "
+            "check (dex 152 > gb_max_species(GB_GEN1)=151) fires before any loss "
+            "screen, now that the bridge correctly targets dst_gen=GB_GEN1 (the "
+            "59dd45c fix) instead of the pre-fix bug's own source generation")
 
     sg.taken += sg2.taken + sr.taken
     sg.skipped += sg2.skipped + sr.skipped
@@ -4497,12 +4502,16 @@ def run_s150_8_gen3_arm(core_mod, image_mod, rom_emerald: Path, out_dir: Path) -
     # ---- confirm: the ledger write is refused on this vehicle (no SD card) -------
     s.tap("A", settle=300)
     s.shot("06_sidecar_folder_wall", "S150-8: A = transfer -> bdc_convert_gen3_core "
-           "succeeds in RAM -> xfer_down_write()'s f_mkdir(/PokeDNA/xfer/) fails "
-           "(no SD card on this vehicle) -- 'SIDECAR FOLDER / Nothing "
-           "transferred.' (PDNA_SIDECAR_MKDIR_TITLE/PDNA_SIDECAR_NOTWRITTEN_L2) -- "
-           "gb_bank_down_gen3 returns BANK_DOWN_REFUSED before app_xfer_pending_"
-           "set() ever runs, so no ledger entry and no PC write happen either; "
-           "real hardware proves the actual write (docs/HW-QUEUE.md)")
+           "succeeds in RAM -> the panel reads 'SIDECAR FOLDER' / 'Nothing "
+           "transferred.' / 'Press A' (PDNA_SIDECAR_MKDIR_TITLE / "
+           "PDNA_SIDECAR_NOTWRITTEN_L2) -- a LEDGER-WRITE refusal: "
+           "xfer_down_write()'s own f_mkdir(/PokeDNA/xfer/) (gb_bank_down_gen3, "
+           "source/pdna_gen12.c:2797-2799) runs BEFORE the caller's own PC-box "
+           "memcpy (drop_held only places `conv` AFTER bank_down_convert_gen3 "
+           "returns BANK_DOWN_CONVERTED, which never happens here) -- so this arm "
+           "never even reaches the point of writing the Gen-3 PC box itself; "
+           "whether the PC write would succeed on this vehicle is UNTESTED, not "
+           "just unproven, and carries to hardware (docs/HW-QUEUE.md)")
     s.tap("A", settle=250)
     s.shot("07_still_holding_after_ledger_refusal", "S150-8: still carrying the "
            "SAME item-holding CHIKORITA cell after the ledger-write refusal -- "
