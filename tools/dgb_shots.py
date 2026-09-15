@@ -3774,6 +3774,13 @@ def main(argv=None) -> int:
                           "Gen-2-only fused image (Gold.gbc+Gold.sav or "
                           "Crystal.gbc+Crystal.sav, tools/fuse_gb.py, one ROM per "
                           "image -- BACKLOG #98)")
+    ap.add_argument("--b93-menu", choices=("red", "gold"),
+                     help="BACKLOG #93: only run_b93_menu() against --image -- "
+                          "DUPLICATE/TO DAY-CARE/EXPORT .pk on the mon menu plus "
+                          "the GB box menu's EXPORT ALL/RELEASE ALL. --image MUST "
+                          "be a ONE-ROM fused image matching the choice (Gold.gbc+"
+                          "Gold.sav or Red.gb+Red.sav, tools/fuse_gb.py, no "
+                          "Emerald.sav -- BACKLOG #98)")
     ap.add_argument("--b89-hof", choices=("red", "crystal"),
                      help="BACKLOG #89: only run_b89_hof() against --image for the "
                           "named game (Red's or Crystal's own Hall of Fame screen) "
@@ -4250,6 +4257,19 @@ def main(argv=None) -> int:
             print(f"  [skip] {name}: {reason}")
         ran = True
 
+    if a.b93_menu:
+        try:
+            sess = run_b93_menu(core_mod, image_mod, a.image, a.out, a.b93_menu)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b93 menu ({a.b93_menu}): {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        ran = True
+
     if ran:
         return 0
 
@@ -4612,6 +4632,184 @@ def run_gbmon(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session
                                      "after Egg on a Gold session) -- proof the row "
                                      "list genuinely reflows around the absent Met "
                                      "rows rather than leaving a gap or a stale cursor")
+    return s
+
+
+def run_b93_menu(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
+    """BACKLOG #93: DUPLICATE / TO DAY-CARE / EXPORT .pk on the read-only mon menu,
+    plus the GB box menu's own EXPORT ALL / RELEASE ALL (can_boxops/export_all/
+    release_all). `rom` MUST be a ONE-ROM fused image matching `which` (Gold.gbc+
+    Gold.sav or Red.gb+Red.sav, no Emerald.sav -- same BACKLOG #98 single-ROM
+    reasoning run_gbmon()/run_s2_bank() already document) so boot_to_gb_session()
+    skips the picker.
+
+    Row order verified by hand against this exact image (probe screenshots, not
+    guessed), matching Gen 3's own app_mon_menu occupied-mon order (...COPY,
+    DUPLICATE, TO DAY-CARE, EXPORT, RELEASE): Gen 2 (gold) = VIEW/EDIT, ITEM,
+    LEGALITY, MOVE TO BOX, COPY, DUPLICATE, TO DAY-CARE, EXPORT .pk, RELEASE, CANCEL
+    (10 rows, PDNA_ROMENU_MAX, all fit on screen with no windowing); Gen 1 (red) is
+    the same list minus ITEM (9 rows) -- DUPLICATE sits 5 DOWNs in on gold, 4 on red.
+
+    THREE EMULATOR-BOUNDARY FACTS, each verified by hand against this exact image,
+    not assumed:
+      1. Guy's own roms/gb corpus is a "living dex" test save (run_gbmon's own
+         docstring) -- EVERY box AND the party are at capacity on both Red.sav and
+         Gold.sav (verified: box 0 20/20, box 1 20/20, party 6/6 on gold; box 0 and
+         party 6/6 on red). DUPLICATE's gbs_insert() therefore hits GBS_ERR_FULL on
+         every slot this corpus has -- "EDIT REFUSED / that box is full" is the ONLY
+         reachable outcome here, not a stand-in for the happy path. Reaching
+         DUPLICATE's own landing-slot success message (decision 1) needs a save with
+         room somewhere, which this corpus does not have -- deferred to hardware
+         (HW-QUEUE GBMON-1).
+      2. TO DAY-CARE and RELEASE ALL both end in gb_persist(), which hits the SAME
+         PDNA_DELTA "Edits are in-session only in the emulator build." wall
+         run_gbmon()'s own shot 05 documents -- there is no SD card under mGBA. Both
+         edits DO land in g_ed->img regardless (gb_persist's PDNA_DELTA branch
+         re-baselines pristine to the post-edit image on purpose, same #62 D2
+         posture every other GB write path takes) -- visible in the box grid's own
+         occupancy count right after dismissing the wall, captured below.
+      3. EXPORT does not call gb_persist (it writes a NEW file, never a save byte).
+         app_can_edit() is unconditionally true under PDNA_DELTA (no flashcart gate
+         there), so it reaches sf_write_verified, which fails at the FatFs layer
+         (no volume mounted under mGBA) with "EXPORT FAILED / open failed" -- the
+         real, hardware-shaped file write is HW-QUEUE GBMON-3/4."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b93_{which}_")
+    print(f"== BACKLOG #93: DUPLICATE / TO DAY-CARE / EXPORT .pk + the GB box menu ({which}) ==")
+
+    boot_to_gb_session(s, rom, which=which)
+    s.shot("01_box_grid", f"BACKLOG #93: {which}'s box grid, freshly entered -- "
+                           "top-left cell occupied (this corpus's every box is full)")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # occupied cell -> mon menu
+    s.shot("02_mon_menu", f"BACKLOG #93: the {which} mon-menu popup -- "
+                          + ("VIEW/EDIT, ITEM, LEGALITY, MOVE TO BOX, COPY, DUPLICATE, "
+                             "TO DAY-CARE, EXPORT .pk, RELEASE, CANCEL (10 rows, "
+                             "PDNA_ROMENU_MAX, all fit with no windowing)"
+                             if which == "gold" else
+                             "VIEW/EDIT, LEGALITY, MOVE TO BOX, COPY, DUPLICATE, "
+                             "TO DAY-CARE, EXPORT .pk, RELEASE, CANCEL (9 rows -- "
+                             "no ITEM on Gen 1)")
+                          + " -- DUPLICATE/TO DAY-CARE/EXPORT .pk are the three new "
+                            "rows, in Gen 3's own occupied-mon relative order")
+
+    downs_to_dup = 5 if which == "gold" else 4
+    s.press_n("DOWN", downs_to_dup, settle=gb_shots.SETTLE)
+    s.shot("03_duplicate_selected", "BACKLOG #93: cursor on DUPLICATE")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # -> gbs_insert -> GBS_ERR_FULL (this corpus)
+    s.shot("04_duplicate_box_full", "BACKLOG #93: gb_dup_hook's gbs_insert() refuses "
+                                     "-- 'EDIT REFUSED / that box is full / Save "
+                                     "unchanged.' -- this corpus's own box IS full "
+                                     "(20/20, see the docstring); the capacity gate "
+                                     "is real, this is not a stand-in for a different "
+                                     "failure")
+    s.tap("A", settle=200)                                  # dismiss -> EVERY row's A-press exits the
+                                                              # popup back to the box grid regardless of
+                                                              # outcome (app_mon_menu_readonly's switch
+                                                              # cases all `return` -- verified by hand:
+                                                              # this is NOT a re-drawn menu)
+    s.shot("05_grid_after_dup_refusal", "BACKLOG #93: dismissing the refusal exits "
+                                         "the popup back to the box grid (every row's "
+                                         "A-press does this, success or not -- "
+                                         "app_mon_menu_readonly's switch cases all "
+                                         "`return`) -- unchanged, still 20/20, "
+                                         "Bulbasaur still top-left")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # same cell -> menu again
+    s.press_n("DOWN", downs_to_dup + 1, settle=gb_shots.SETTLE)   # -> TO DAY-CARE
+    s.shot("06_daycare_selected", "BACKLOG #93: cursor on TO DAY-CARE")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # -> app_confirm
+    s.shot("07_daycare_confirm", "BACKLOG #93: 'Send to Day-Care?' / 'Moves this "
+                                  "Pokemon there.' -- Gen 3's own app_to_daycare "
+                                  "strings (pdna_main.c), reused verbatim")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # confirm -> gbd_deposit -> gbs_delete -> gb_persist
+    s.shot("08_daycare_delta_wall", "BACKLOG #93: gbd_deposit() lands the mon in "
+                                     "RAM (it calls gbs_finish() itself) and the "
+                                     "source slot is deleted, THEN gb_persist"
+                                     "('daycare-put') hits the PDNA_DELTA wall -- "
+                                     "'LEFT AT DAY CARE' and the Day-Care page "
+                                     "(the hook's own trailing pdna_gbdaycare() "
+                                     "open) are HARDWARE-ONLY")
+    s.tap("A", settle=250)                                  # dismiss -> box grid re-pages
+    s.shot("09_grid_after_daycare", "BACKLOG #93: back at the box grid -- one fewer "
+                                     "occupant than shot 01 (the top-left cell's "
+                                     "former occupant is gone, the NEXT mon has "
+                                     "taken its place) -- proof the deposit+delete "
+                                     "landed in g_ed->img despite the persist "
+                                     "refusal, same in-session posture every other "
+                                     "GB write path takes")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # the new top-left cell -> its own menu
+    s.press_n("DOWN", downs_to_dup + 2, settle=gb_shots.SETTLE)   # -> EXPORT .pk
+    s.shot("10_export_selected", "BACKLOG #93: cursor on EXPORT .pk")
+    s.tap("A", settle=150)                                  # -> gb_pk_pack -> sf_write_verified
+    s.shot("11_export_no_sd", "BACKLOG #93: gb_export_hook reaches sf_write_verified "
+                               "(app_can_edit() is unconditionally true under "
+                               "PDNA_DELTA) -- 'EXPORT FAILED / open failed', the "
+                               "honest FatFs-layer result of no SD volume under "
+                               "mGBA; the real .pk1/.pk2 write is HW-QUEUE GBMON-3")
+    s.tap("A", settle=200)                                  # dismiss -> box grid
+
+    s.tap("UP", settle=100)                                 # cell -> TITLE row (on_title = true)
+    s.shot("12_title_selected", "BACKLOG #93: UP selects the TITLE row")
+    s.tap("SEL", settle=100)                                # SELECT on title -> box_options_menu
+    s.shot("13_box_menu", "BACKLOG #93: SELECT on the title now opens the box menu "
+                           "at all -- BEFORE this lane it was UNREACHABLE on a GB "
+                           "grid (gbsrc_can_edit() is hardwired false and can_lift "
+                           "is still NULL, the finding that shapes gbsrc_can_"
+                           "boxops) -- 'Rename box / Wallpaper / Export all .pk / "
+                           "Release all / Cancel', can_boxops() gating the whole "
+                           "menu open, not can_rename/can_lift/can_edit")
+
+    s.press_n("DOWN", 3, settle=gb_shots.SETTLE)            # -> Release all
+    s.shot("14_release_all_selected", "BACKLOG #93: cursor on Release all")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # -> app_confirm with the count
+    s.shot("15_release_all_confirm", "BACKLOG #93: 'Release all N Pokemon?' / "
+                                      "'Deleted permanently!' -- release_box_all's "
+                                      "own string (pdna_box.c), reused verbatim, N "
+                                      "matching this box's real occupied count")
+    # 20 individual gbs_delete() calls (top-down, one per occupied slot) take real
+    # frames to settle -- measured by hand: BIG_SETTLE (40) is nowhere near enough
+    # (the confirm dialog is still on screen), 700 reliably reaches gb_persist's wall.
+    s.tap("A", settle=700)                                  # confirm -> delete top-down -> gb_persist
+    s.shot("16_release_all_delta_wall", "BACKLOG #93: every slot deletes top-down "
+                                         "(RAM-only), THEN gb_persist('release-all') "
+                                         "hits the same PDNA_DELTA wall -- the fix in "
+                                         "this lane's own follow-up commit makes sure "
+                                         "this is the ONLY dialog shown here (an "
+                                         "earlier version double-messaged with a "
+                                         "second, FALSE 'Nothing changed' panel on "
+                                         "top of it -- caught by this exact shot)")
+    s.tap("A", settle=250)                                  # dismiss -> box grid, no second dialog
+    s.shot("17_grid_after_release_all", "BACKLOG #93: straight to the box grid after "
+                                         "ONE dismiss -- 0/20 (or 0/whatever this box "
+                                         "held), every deletion landed in g_ed->img "
+                                         "despite the persist refusal, exactly like "
+                                         "shot 09's single-slot case")
+
+    # Bank-cell absence (#120 S2's own bank_edge UP hop, reused verbatim from
+    # run_s2_bank -- 3 UPs from a fresh grid entry: cell -> title -> tabs -> the hop).
+    s2 = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b93_{which}_bank_")
+    s2.run(700)
+    s2.tap("A", settle=60)
+    s2.run(GB_ART_COLD_SETTLE)
+    s2.press_n("UP", 3, settle=100)
+    s2.shot("18_bank_hop", "BACKLOG #93: the bank_edge UP hop opens the Bank -- "
+                            "'BANK 1  0/30', every cell empty (#120 S2's F1 fix: "
+                            "no write surface survives into a GB session's Bank "
+                            "visit, so nothing can ever land here in mGBA)")
+    s2.tap("A", settle=150)
+    s2.shot("19_bank_cell_absence", "BACKLOG #93: A on the (necessarily empty) Bank "
+                                     "cell shows NO popup at all (silent snd_deny(), "
+                                     "app_mon_menu's n == 0 branch) -- structurally "
+                                     "this excludes DUPLICATE/TO DAY-CARE/EXPORT the "
+                                     "same way it already excludes CREATE/PASTE HERE "
+                                     "(#120 S2), since all five are gated on the cell "
+                                     "being OCCUPIED. An occupied Bank cell showing "
+                                     "none of the three new rows is HARDWARE-ONLY "
+                                     "(a real Omega DE Bank keeps its contents across "
+                                     "sessions) -- HW-QUEUE GBMON-6.", allow_same=True)
+    s.taken += s2.taken
+    s.skipped += s2.skipped
     return s
 
 

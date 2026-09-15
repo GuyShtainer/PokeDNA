@@ -278,6 +278,15 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # (--s2-bank), captions all start "#120:". Appended after
     # "gb-item-names" per this list's own append-only rule.
     ("gb-bank-s2", "#120 S2 — the Bank from a Game Boy session", ("#120",)),
+    # BACKLOG #93: DUPLICATE / TO DAY-CARE / EXPORT .pk on the read-only mon menu,
+    # plus the GB box menu's own EXPORT ALL / RELEASE ALL (can_boxops/export_all/
+    # release_all) -- previously unreachable on a GB grid. Shots come from
+    # tools/dgb_shots.py's run_b93_menu() (--b93-menu {red,gold}), captions all
+    # start "BACKLOG #93:". Appended after "gb-bank-s2" per this list's own
+    # append-only rule.
+    ("gb-mon-menu-dup-daycare-export", "BACKLOG #93 — DUPLICATE / TO DAY-CARE / "
+     "EXPORT .pk on the mon menu, EXPORT ALL / RELEASE ALL on the GB box menu",
+     ("BACKLOG #93",)),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
 FEATURE_TITLE = {fid: title for fid, title, _prefixes in FEATURE_TABLE}
