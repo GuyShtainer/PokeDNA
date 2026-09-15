@@ -1198,6 +1198,22 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
     if (bank_down_dispatch(src, box, cur, s_held) == BANK_DOWN_LANDED) {
       s_holding = false; *done = true; s_oam_reload = true;
       recs = src->records(box);            /* the GB list grew -- repaint from the image */
+    } else {
+      /* D-Q5: bank_down_dispatch's GB_BRIDGE/GEN3 cases are each EXACTLY one line
+       * (`return BANK_DOWN_REFUSED;`) so S150-8's merge is a clean two-line body
+       * replacement -- no room in there for this stub's own snd_deny()/msg_wait().
+       * Re-deriving the arm here (pure, cheap, xg_bank_down_arm has no side effect)
+       * keeps that contract literal while still telling the player something when
+       * the cell needs a converter this slice does not build. NONE (and EXACT that
+       * already showed its own refusal via accept_down/gb_accept_down_hook) show
+       * nothing more here. */
+      uint8_t arm = xg_bank_down_arm(bc_kind(s_held), src->scope, app_gb_session_gen());
+      if (arm == XG_DOWN_ARM_GB_BRIDGE || arm == XG_DOWN_ARM_GEN3) {
+        boxoam_suspend();
+        snd_deny();
+        msg_wait(PDNA_XFER_DOWNSOON_TITLE, UI_WARN, PDNA_XFER_DOWNSOON_L1, PDNA_XFER_DOWNSOON_L2);
+        boxoam_resume();
+      }
     }
     return recs;
   }
