@@ -1047,6 +1047,19 @@ addrtaken-ok gen1_write_layout    # 2026-09-14: only ever called DIRECTLY (5 sit
                                   # a real Thumb pointer would be the ODD 0x08010001, whose only
 # occurrence in PokeDNA.gba is at 0x0809b4b6 -- UNALIGNED, inside
 # s_fam, so not a literal-pool word and not a relocated data word.
+addrtaken-ok gen1_encode_name     # BACKLOG #148: same false-positive class as gen1_write_layout above, a
+                                  # different function hit it because this lane's un-staticing of
+                                  # gb_art_io_init/gb_art_read (source/gb_art_source.c, moved to the new
+                                  # gb_art_io.h) shifted .text layout enough that THIS function -- not
+                                  # gen1_write_layout -- now links at the coincidence address 0x08010000.
+                                  # Called only DIRECTLY (gen1_write.c:279/282, grepped across the whole
+                                  # tree -- no assignment, table, or test harness function pointer names
+                                  # it). The ALIGNED word 0x08010001 (PokeDNA.elf .rodata @0x0875a21c) is
+                                  # inside `srf.0`, a 20-B local numeric table (words 6, 0x40000000,
+                                  # 0x20002000, 0x08010001, 5 -- a plain packed-field blob, not a function-
+                                  # pointer array); a real relocated Thumb pointer to this function appears
+                                  # nowhere in the image. Re-derive (nm -Sn | grep gen1_encode_name, then
+                                  # objdump -s -j .rodata around that address) if this ever moves again.
 addrtaken-ok __text_start         # linker/crt boundary symbol, a zero-size DATA marker, not application code -- see the D5 note above
 addrtaken-ok __udivmoddi4         # libgcc: 64-bit unsigned division helper, taken by the div runtime
 addrtaken-ok __utf8_wctomb        # newlib: UTF-8 locale table entry, same family as __utf8_mbtowc above

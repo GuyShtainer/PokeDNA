@@ -1434,8 +1434,9 @@ STRUCT_HEADERS = {
     "RomCtx": "rom_map.h",
     "ArtIconsGen": "art_icons_extract.h",
     "LpCtx": "pdna_pick.c",   # BACKLOG #107: list_pick's ctx struct for pick_rows()
-    "GbArtIo": "gb_art_source.c",   # 2026-09-14: the GB ROM read shim's ctx; its `fn`
-                                    # progress callback is the one indirect call there
+    "GbArtIo": "gb_art_io.h",   # BACKLOG #148: moved out of gb_art_source.c into its own
+                                # header so source/pdna_gbscreen.c can reuse it; its `fn`
+                                # progress callback is the one indirect call there
     "TTC": None,     # libtonc's tte_write dispatch table -- no .c/.h source shipped
                       # in this devkitPro install to grep (see the `recursion
                       # tte_write depth=2` declaration's own comment). Still
