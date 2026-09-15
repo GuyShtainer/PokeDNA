@@ -679,6 +679,7 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "ff.h"
 #include "savefile.h"      /* SF_PATH_MAX */
 #include "log.h"
+#include "xfer_io.h"       /* BACKLOG #150 S150-6: xr_path_for_key -- the one reader */
 #include "ui.h"
 #include "snd.h"
 #include "rmbl.h"
@@ -1297,9 +1298,11 @@ static bool __attribute__((noinline)) gb_has_sidecar(uint8_t gen, const GbEditMo
   };
   uint64_t key = gbsc_key(mon->gen, gb_get_otid(mon), dv4, mon->otname);
   char path[GBSC_PATH_MAX];
-  if (gbsc_path(path, sizeof path, PDNA_SIDECAR_DIR, key) < 0) return false;
-  FILINFO fi;
-  return f_stat(path, &fi) == FR_OK;
+  /* BACKLOG #150 S150-6, site 1: xr_path_for_key() already does the f_stat (it has
+   * to, to decide xfer vs sidecar) and returns true iff a file exists at the path
+   * it wrote -- the separate f_stat this function used to do afterward is now
+   * always redundant, so it is gone. */
+  return xr_path_for_key(path, key);
 }
 
 /* S5-B Part E, forward-declared above gb_info_page(): "N Pokemon here came from Gen 3".
@@ -2160,16 +2163,19 @@ static bool __attribute__((noinline)) gb_paste_write(const GbEditMon* mon, int b
   };
   uint64_t key = gbsc_key(mon->gen, gb_get_otid(mon), dv4, mon->otname);
   char path[GBSC_PATH_MAX];
-  if (gbsc_path(path, sizeof path, PDNA_SIDECAR_DIR, key) < 0) return false;
+  /* BACKLOG #150 S150-6, site 2: xr_path_for_key's bool is ignored here -- this key
+   * is the one gb_paste_write() is about to WRITE, existing or fresh; either way the
+   * path it resolves to (an in-place write of an existing record, or a brand-new
+   * file always created under xfer -- decision 4/D-Q7) is exactly where this write
+   * belongs. */
+  (void)xr_path_for_key(path, key);
 
-  /* S5-B review fix #10: PDNA_SIDECAR_MKDIR_TITLE was measured but never wired up --
-   * f_mkdir's result was silently discarded. FR_EXIST is the expected steady state
-   * (every transfer after the first); anything else means the write below cannot
-   * possibly land, so say so now rather than let sf_write_verified fail later with a
-   * less specific message. */
-  FRESULT mkr = f_mkdir(PDNA_SIDECAR_DIR);
+  /* BACKLOG #150 S150-6, site 3: the folder this write's mkdir must ensure is now
+   * xfer, not sidecar (S5-B review fix #10's own reasoning about f_mkdir's result
+   * still applies verbatim). */
+  FRESULT mkr = f_mkdir(PDNA_XFER_DIR);
   if (mkr != FR_OK && mkr != FR_EXIST) {
-    log_line("gen12: sidecar mkdir %s failed (%d)", PDNA_SIDECAR_DIR, (int)mkr);
+    log_line("gen12: sidecar mkdir %s failed (%d)", PDNA_XFER_DIR, (int)mkr);
     snd_error();
     msg_wait(PDNA_SIDECAR_MKDIR_TITLE, UI_WARN, PDNA_SIDECAR_NOTWRITTEN_L2, 0);
     return false;

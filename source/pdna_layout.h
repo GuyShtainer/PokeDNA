@@ -1055,7 +1055,7 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_SIDECAR_LOSS_SHINY      "Shiny not preserved"
 #define PDNA_SIDECAR_LOSS_GENDER     "Gender not preserved"
 #define PDNA_SIDECAR_LOSS_NAME       "Nickname/OT changed"
-#define PDNA_SIDECAR_LOSS_KEPT_L1    "Kept in /PokeDNA/sidecar;"
+#define PDNA_SIDECAR_LOSS_KEPT_L1    "Kept in /PokeDNA/xfer;"   /* BACKLOG #150 S150-6: was /PokeDNA/sidecar */
 #define PDNA_SIDECAR_LOSS_KEPT_L2    "restored when it comes back."
 #define PDNA_SIDECAR_LOSS_STAYS      "The copy in your Gen-3 save stays."
 #define PDNA_SIDECAR_LOSS_A_TRANSFER "A = transfer"

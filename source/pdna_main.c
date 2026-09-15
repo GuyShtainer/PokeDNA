@@ -36,6 +36,7 @@
 #include "pdna_box.h"
 #include "xfer_gate.h"      /* BACKLOG #120 S2: xg_pc_live/xg_togame_row/xg_paste_row/xg_inject_refuse */
 #include "bank_cell.h"      /* BACKLOG #150 S150-6: bc_is_native -- app_paste_gb_commit's G-H6 guard */
+#include "xfer_io.h"        /* BACKLOG #150 S150-6: xr_path_for_key/xr_path_for_name/xr_migrate_once */
 #include "gen3_trainer.h"
 #include "gen3_record.h"    /* Emerald Battle Record (save sector 31) info + export */
 #include "gen3_frontier.h"  /* g3f_streak_get/g3f_modes/g3f_mode_name for the record screen's streaks page */
@@ -3562,7 +3563,16 @@ app_paste_gb_merge(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* blo
   };
   uint64_t key = gbsc_key(g_clip.gb.gen, gb_get_otid(&g_clip.gb), dv4, g_clip.gb.otname);
   char path[GBSC_PATH_MAX];
-  if (gbsc_path(path, sizeof path, PDNA_SIDECAR_DIR, key) < 0) { *handled = false; return false; }
+  path[0] = 0;   /* xr_path_for_key leaves `out` untouched on its own bad-arg/too-long
+                  * refusal (never expected at GBSC_PATH_MAX in practice); an empty
+                  * path then fails sf_read_full cleanly (SF_ERR_OPEN) instead of
+                  * reading an uninitialized buffer as a filename. */
+  /* BACKLOG #150 S150-6, site 4: the bool is otherwise ignored -- when neither xfer
+   * nor sidecar holds this key, xr_path_for_key still resolves `path` to a real
+   * path (the xfer one), and app_paste_gb_lookup's own sf_read_full below already
+   * turns that "nothing on the card" case into SF_ERR_OPEN -> PDNA_SIDECAR_NONE_TITLE,
+   * exactly as it did when gbsc_path() could only ever point at sidecar. */
+  (void)xr_path_for_key(path, key);
 
   uint8_t buf[GBSC_FILE_MAX];
   uint32_t len = 0;
@@ -8684,13 +8694,14 @@ typedef struct {
 _Static_assert(sizeof(GbReconBuf) <= sizeof(g_entries),
               "gb_reconcile buffer no longer fits the borrowed g_entries cache");
 
+/* BACKLOG #150 S150-6, site 5: decision 4/D-Q7 applied to a FILENAME instead of a
+ * key, so a reconcile hit's later claim write lands in the same file it was read
+ * from (xr_path_for_name's own contract). `out` is always left holding a usable
+ * path (the xfer one) even on the never-expected bad-arg/too-long refusal, so no
+ * caller here needs its bool. */
 static void gb_recon_path(char* out, const char* name) {
-  int pn = 0;
-  const char* d = PDNA_SIDECAR_DIR;
-  while (*d && pn < GBSC_PATH_MAX - 1) out[pn++] = *d++;
-  if (pn < GBSC_PATH_MAX - 1) out[pn++] = '/';
-  while (*name && pn < GBSC_PATH_MAX - 1) out[pn++] = *name++;
-  out[pn] = 0;
+  out[0] = 0;
+  (void)xr_path_for_name(out, name);
 }
 
 /* Scan /PokeDNA/sidecar for .pds files (bounded to GB_RECON_MAX_FILES ACCEPTED and
@@ -8714,11 +8725,21 @@ static void gb_recon_path(char* out, const char* name) {
  * this pass is a first, cheap line of defense, not the only one.
  *
  * noinline: DIR/FILINFO/the 1042 B sidecar buffer all live in *rb (the borrowed
- * g_entries cache), never this function's own frame. */
-static void __attribute__((noinline)) gb_reconcile_walk(GbReconBuf* rb) {
-  rb->nfiles = 0;
-  rb->nhits = 0;
-  rb->nunique = 0;
+ * g_entries cache), never this function's own frame.
+ *
+ * `append` (BACKLOG #150 S150-6, decision 7): false (pass 1, xfer) resets
+ * rb->nfiles/nhits/nunique as this function always did. true (pass 2, sidecar)
+ * does NOT reset them -- it continues appending into the SAME rb->names/rb->hits
+ * pass 1 already filled, so the three bounds (GB_RECON_MAX_FILES/_EXAMINE/_HITS)
+ * stay global across both passes (golden rule 2) -- and additionally skips any
+ * `fi.fname` already present in rb->names[0..nfiles), so a filename migrated into
+ * xfer (found by pass 1) is never read a second time out of sidecar by pass 2. */
+static void __attribute__((noinline)) gb_reconcile_walk(GbReconBuf* rb, bool append) {
+  if (!append) {
+    rb->nfiles = 0;
+    rb->nhits = 0;
+    rb->nunique = 0;
+  }
   int examined = 0;
   while (examined < GB_RECON_MAX_EXAMINE && rb->nfiles < GB_RECON_MAX_FILES &&
         rb->nhits < GB_RECON_MAX_HITS &&
@@ -8729,6 +8750,13 @@ static void __attribute__((noinline)) gb_reconcile_walk(GbReconBuf* rb) {
     if (L < 5 || L >= GB_RECON_NAME_MAX) continue;
     const char* e = rb->fi.fname + L - 4;
     if (e[0] != '.' || (e[1] | 32) != 'p' || (e[2] | 32) != 'd' || (e[3] | 32) != 's') continue;
+
+    if (append) {
+      bool seen = false;
+      for (int k = 0; k < rb->nfiles; k++)
+        if (strcmp(rb->names[k], rb->fi.fname) == 0) { seen = true; break; }
+      if (seen) continue;               /* already found in pass 1 (xfer)          */
+    }
 
     int fidx = rb->nfiles;
     int cn = 0;
@@ -8951,12 +8979,26 @@ static void __attribute__((noinline)) gb_reconcile_on_load(void) {
   GbReconBuf* rb = (GbReconBuf*)app_box_swap_acquire(sizeof(GbReconBuf));
   if (!rb) { log_line("gen3: reconcile-on-load: swap buffer unavailable, skipped"); return; }
 
-  if (f_opendir(&rb->dir, PDNA_SIDECAR_DIR) != FR_OK) {
-    app_box_swap_release();
-    return;                                           /* no sidecar folder yet -- nothing to do */
+  /* BACKLOG #150 S150-6, site 6/decision 7: pass 1 (xfer) resets and fills
+   * rb->nfiles/nhits/nunique; pass 2 (sidecar) APPENDS, skipping any filename
+   * pass 1 already found -- post-migration this accepts nothing (every migrated
+   * file's twin is already in rb->names), so the steady-state cost is one extra
+   * f_opendir. On a card where the migration could not run (read-only cart,
+   * Everdrive, or a failed pass) pass 2 is what keeps this screen working at all. */
+  bool have_xfer = f_opendir(&rb->dir, PDNA_XFER_DIR) == FR_OK;
+  if (have_xfer) {
+    gb_reconcile_walk(rb, false);
+    f_closedir(&rb->dir);
+  } else {
+    rb->nfiles = 0; rb->nhits = 0; rb->nunique = 0;
   }
-  gb_reconcile_walk(rb);
-  f_closedir(&rb->dir);
+  if (f_opendir(&rb->dir, PDNA_SIDECAR_DIR) == FR_OK) {
+    gb_reconcile_walk(rb, true);
+    f_closedir(&rb->dir);
+  } else if (!have_xfer) {
+    app_box_swap_release();
+    return;                                 /* neither folder exists -- nothing to do */
+  }
 
   if (rb->nhits > 0) {
     /* S5-C 2nd review #1: nunique (DISTINCT mons), not nhits (sidecar entries) --
@@ -9525,6 +9567,19 @@ static void view_save(const char* path) {
    * load_phase_n() the screen would still show "10/13 party (forme)" for however long
    * that takes, which reads as a hang on exactly the step that did NOT freeze. */
   load_phase_n(11, PDNA_LOAD_PHASE_SIDECARS);
+  /* BACKLOG #150 S150-6, decision 6: the migration runs from exactly this ONE
+   * place, immediately before gb_reconcile_on_load(). No file-static "already
+   * tried" flag (NO new statics) -- the on-card MIGRATED marker is the gate, so a
+   * second load this same boot is an O(1) f_stat. A NULL borrow (something else
+   * holds app_box_swap_acquire's one buffer) just skips the migration this run --
+   * decision 4/D-Q7's fallback keeps every record reachable either way. */
+  {
+    uint8_t* mig = app_box_swap_acquire(GBSC_FILE_MAX);
+    if (mig) {
+      xr_migrate_once(mig, GBSC_FILE_MAX);
+      app_box_swap_release();
+    }
+  }
   gb_reconcile_on_load();
   /* A party release above edited g_sb1 in place -- g_party/g_nparty are a CACHE of
    * it (every other mutator in this file re-derives the same way afterward, e.g.
