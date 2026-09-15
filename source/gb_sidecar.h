@@ -33,12 +33,27 @@
  *
  * ---- ENTRY, GBSC_ENTRY (128) bytes, `count` of them follow the header ------------
  *   +0    1   gen (GB_GEN1 / GB_GEN2)
- *   +1    1   claimed (0/1) -- S5-C Part B2: set by gb_reconcile_on_load() once the
- *             Gen-3 original has been released from this save (design doc section
- *             12); a claimed entry is never offered again by that screen but still
- *             serves gbsc_merge_up() on the way UP (gbsc_find(..., include_claimed)) --
- *             the sidecar's whole job (restoring what a GB edit can't hold) does not
- *             stop just because the original was released
+ *   +1    1   FLAGS byte (BACKLOG #150 S150-6, promoted from the old single-purpose
+ *             "claimed" byte -- every entry ever written held only 0 or 1 here, so
+ *             this is backward-compatible by construction):
+ *               b0     claimed (0/1) -- S5-C Part B2: set by gb_reconcile_on_load()
+ *                      once the Gen-3 original has been released from this save
+ *                      (design doc section 12); a claimed entry is never offered
+ *                      again by that screen but still serves gbsc_merge_up() on the
+ *                      way UP (gbsc_find(..., include_claimed)) -- the sidecar's
+ *                      whole job (restoring what a GB edit can't hold) does not stop
+ *                      just because the original was released
+ *               b1-b2  state: 0 legacy/none (XR_STATE_NONE), 1 XR_STATE_PENDING,
+ *                      2 XR_STATE_CLAIMED
+ *               b3     kind: 0 XR_KIND_G3_HOME, 1 XR_KIND_NATIVE_HOME
+ *               b4     direction (G-M8): 0 == residence abroad is a GB save
+ *                      (XR_DIR_ABROAD_GB), 1 == residence abroad is a Gen-3 save
+ *                      (XR_DIR_ABROAD_G3)
+ *               b5     has-written-moves (this entry's +121..+125 block is valid)
+ *               b6-b7  reserved 0
+ *             A pre-#150 entry (flags byte literally 0 or 1) therefore decodes as
+ *             kind=G3_HOME / direction=GB / state=NONE / has_written_moves=0 --
+ *             exactly today's defaults, no version bump, no format change.
  *   +2    2   species_written (National Dex, as gb_get_species_dex(written) reads it)
  *   +4    2   otid16
  *   +6    4   dv4 (Atk, Def, Spe, Spc, one byte each -- gb_edit.h's own DV order)
@@ -61,7 +76,17 @@
  *             changes what is written without changing what the ORIGINAL was) be
  *             told apart from a genuine in-game level-up. See gb_sidecar.c's
  *             merge_species_and_level() for the comparison itself.
- *   +121  5   pad (0)
+ *   +121  4   moves_written[4] -- one byte per move slot, the MOVE ID actually
+ *             written to the Game Boy record at transfer time (the same id space
+ *             gb_get_move() reads), valid only when the flags byte's b5
+ *             (has-written-moves) is set. This is the baseline merge_moves()
+ *             compares the CURRENT Game Boy moves against, so a MAKE-LEGAL move
+ *             swap applied before the write does not read back as a genuine
+ *             in-game move change (G-H9).
+ *   +125  1   ppup_written -- four 2-bit fields (one per move slot, LSB-first),
+ *             valid only when b5 is set: the PP-Ups actually written per slot.
+ *   +121..+125 together replace the old 5-byte pad; both fields are 0 (and b5 is
+ *             clear) on any pre-#150 entry, which is exactly the old pad value.
  *   +126  2   entry crc16 (CRC-16/CCITT-FALSE over bytes +0..+125)
  *
  * ---- THE FINGERPRINT ---------------------------------------------------------
@@ -84,6 +109,23 @@
 
 /* Header flags byte, bit 0 (S5-C Part B2 -- see the header layout comment above). */
 #define GBSC_FLAG_KEEP_ASKED  0x0001u
+/* Header flags byte, bit 1 (BACKLOG #150 S150-6, decision D-Q2): file-level MIRROR of
+ * "at least one entry in this file has its own has-written-moves bit set". The
+ * per-entry bit (below) is what merge_moves() actually branches on -- this header bit
+ * exists only so a future scan does not have to open every entry to know whether the
+ * file is worth a closer look. */
+#define GBSC_FLAG_HAS_WRITTEN_MOVES  0x0002u
+
+/* Entry flags byte (+1), decoded fields -- see the entry layout comment above. */
+#define XR_KIND_G3_HOME       0
+#define XR_KIND_NATIVE_HOME   1
+
+#define XR_STATE_NONE         0
+#define XR_STATE_PENDING      1
+#define XR_STATE_CLAIMED      2
+
+#define XR_DIR_ABROAD_GB       0
+#define XR_DIR_ABROAD_G3       1
 
 /* ---- the fingerprint -------------------------------------------------------- */
 
@@ -132,11 +174,24 @@ typedef struct {
                                            * no internal struct padding a whole-struct
                                            * memcmp (host_gen3gb_test.c's own sidecar-
                                            * roundtrip check) would trip on. */
+  /* BACKLOG #150 S150-6 (decision D-Q1) -- placed after written_level, same reasoning:
+   * appending keeps every field above at its old offset inside the struct, so a
+   * caller that already only assigns named fields (never memcpy's the whole struct
+   * in) is unaffected. */
+  uint8_t  moves_written[4];             /* valid iff has_written_moves */
+  uint8_t  ppup_written;                 /* four 2-bit fields, valid iff has_written_moves */
+  uint8_t  kind;                         /* XR_KIND_* */
+  uint8_t  state;                        /* XR_STATE_* */
+  uint8_t  direction;                    /* XR_DIR_ABROAD_* */
+  uint8_t  has_written_moves;            /* 0/1 -- entry flags byte b5 */
 } GbscEntry;
 
 /* Fills every field of `e` from the record `gen3_to_gb` just built (`written`) and the
  * Gen-3 bytes it was built from (`original80`, the ORIGINAL 80-byte record, pre-loss).
- * `claimed` starts at 0. */
+ * `claimed` starts at 0. `kind`/`state`/`direction`/`has_written_moves`/
+ * `moves_written`/`ppup_written` also start at 0 (XR_KIND_G3_HOME / XR_STATE_NONE /
+ * XR_DIR_ABROAD_GB / no written-moves baseline) -- a caller that wants something else
+ * sets it on the returned `*e` before gbsc_add(). */
 void gbsc_entry_from(GbscEntry* e, const GbEditMon* written, const uint8_t* original80,
                      uint32_t rtc_epoch);
 

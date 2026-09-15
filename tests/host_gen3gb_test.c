@@ -225,6 +225,113 @@ static void test_format(void) {
   }
   /* ==== END S5-C Part B2 ======================================================== */
 
+  /* ==== BACKLOG #150 S150-6: the +1 flags byte (kind/state/direction/has-written-
+   * moves) is backward-compatible with every pre-#150 entry, and the claimed bit
+   * mutation preserves the other bits bit-identically. =========================== */
+  {
+    /* a pre-#150 entry: flags byte literally 0 (unclaimed) or 1 (claimed), the only
+     * two values any shipped writer ever produced -- built byte-by-byte, not via
+     * gbsc_add(), so nothing "new" leaks in by construction. */
+    uint8_t pre[GBSC_FILE_MAX];
+    uint32_t plen = (uint32_t)gbsc_init(pre, 0x99u);
+    GbscEntry pe; memset(&pe, 0, sizeof pe);
+    pe.gen = GB_GEN2; pe.otid16 = 0x1234;
+    memcpy(pe.otname_written, otname, GB_NAME_BYTES);
+    memcpy(pe.dv4, dv4, 4);
+    CHECK(gbsc_add(pre, &plen, sizeof pre, &pe) == 0, "pre-#150: entry added");
+    /* gbsc_add() as it stands today already only ever writes claimed(0/1) into the
+     * flags byte for a freshly-zeroed GbscEntry (kind/state/direction/has_written_
+     * moves all default to 0), so the byte IS a pre-#150 byte already -- this
+     * assertion pins that fact rather than hand-poking the byte, since there is no
+     * file I/O in this module to poke through. */
+    GbscEntry pd;
+    CHECK(gbsc_get(pre, plen, 0, &pd), "pre-#150: entry decodes");
+    CHECK(pd.kind == XR_KIND_G3_HOME, "pre-#150: kind defaults to XR_KIND_G3_HOME");
+    CHECK(pd.state == XR_STATE_NONE, "pre-#150: state defaults to XR_STATE_NONE");
+    CHECK(pd.direction == XR_DIR_ABROAD_GB, "pre-#150: direction defaults to XR_DIR_ABROAD_GB");
+    CHECK(pd.has_written_moves == 0, "pre-#150: has_written_moves defaults to 0");
+    CHECK(pd.claimed == 0, "pre-#150: claimed starts 0");
+
+    /* set/clear claimed must leave kind/state/direction/b5 bit-identical. Build a
+     * SECOND, SHIPPED (crc-valid, via gbsc_add -- the only writer this module has)
+     * entry that already carries kind=NATIVE_HOME/direction=ABROAD_G3/
+     * has_written_moves=1 -- the mutation review item's "set b3|b4|b5 on a shipped
+     * entry" -- then run it through gbsc_set_claimed(true) then (false) and assert
+     * every OTHER bit survives bit-identically. */
+    GbscEntry me; memset(&me, 0, sizeof me);
+    me.gen = GB_GEN2; me.otid16 = 0x1234;
+    memcpy(me.otname_written, otname, GB_NAME_BYTES);
+    memcpy(me.dv4, dv4, 4);
+    me.kind = XR_KIND_NATIVE_HOME;
+    me.direction = XR_DIR_ABROAD_G3;
+    me.has_written_moves = 1;
+    CHECK(gbsc_add(pre, &plen, sizeof pre, &me) == 1, "mutate: second entry added at index 1");
+
+    GbscEntry md0;
+    CHECK(gbsc_get(pre, plen, 1, &md0), "mutate: entry 1 decodes before any claim toggle");
+    CHECK(md0.kind == XR_KIND_NATIVE_HOME && md0.direction == XR_DIR_ABROAD_G3 &&
+          md0.has_written_moves == 1 && md0.claimed == 0,
+          "mutate: entry 1 starts kind/direction/has_written_moves set, claimed clear");
+
+    CHECK(gbsc_set_claimed(pre, plen, 1, true) == 0, "mutate: gbsc_set_claimed(1, true)");
+    GbscEntry md1;
+    CHECK(gbsc_get(pre, plen, 1, &md1), "mutate: entry 1 decodes after set_claimed(true)");
+    CHECK(md1.kind == XR_KIND_NATIVE_HOME && md1.direction == XR_DIR_ABROAD_G3 &&
+          md1.has_written_moves == 1,
+          "mutate: kind/direction/has_written_moves survive set_claimed(true) bit-identically");
+    CHECK(md1.claimed == 1, "mutate: claimed IS set after set_claimed(true)");
+
+    CHECK(gbsc_set_claimed(pre, plen, 1, false) == 0, "mutate: gbsc_set_claimed(1, false)");
+    GbscEntry md2;
+    CHECK(gbsc_get(pre, plen, 1, &md2), "mutate: entry 1 decodes after set_claimed(false)");
+    CHECK(md2.kind == XR_KIND_NATIVE_HOME && md2.direction == XR_DIR_ABROAD_G3 &&
+          md2.has_written_moves == 1,
+          "mutate: kind/direction/has_written_moves survive set_claimed(false) bit-identically");
+    CHECK(md2.claimed == 0, "mutate: claimed is CLEAR again after set_claimed(false)");
+
+    /* gbsc_find(include_claimed=false) still skips ONLY the b0-set entries, even
+     * with b3/b4 (kind/direction) also set on this entry. */
+    GbEditMon probe;
+    uint8_t rec0[GB_MAX_REC]; memset(rec0, 0, sizeof rec0);
+    CHECK(gb_load_parts(&probe, GB_GEN2, false, rec0, otname, otname, 0), "mutate: build a probe record");
+    gb_set_otid(&probe, 0x1234);
+    gb_set_dv(&probe, GB_ATK, dv4[0]); gb_set_dv(&probe, GB_DEF, dv4[1]);
+    gb_set_dv(&probe, GB_SPE, dv4[2]); gb_set_dv(&probe, GB_SPC, dv4[3]);
+    gb_set_otname_raw(&probe, otname);
+    CHECK(gbsc_find(pre, plen, &probe, 1, false) == 1,
+          "mutate: gbsc_find(include_claimed=false) still returns the unclaimed b3/b4-set entry");
+    CHECK(gbsc_set_claimed(pre, plen, 1, true) == 0, "mutate: claim it");
+    CHECK(gbsc_find(pre, plen, &probe, 1, false) == -1,
+          "mutate: gbsc_find(include_claimed=false) skips it once claimed, b3/b4 unchanged");
+    CHECK(gbsc_find(pre, plen, &probe, 1, true) == 1,
+          "mutate: gbsc_find(include_claimed=true) still finds it claimed");
+  }
+
+  /* a round-tripped NEW entry (kind/state/direction/has_written_moves all set) memcmps
+   * whole-struct -- the same discipline the GBSC_MAX_ENTRIES loop above already
+   * applies to the plain fields. */
+  {
+    uint8_t nbuf[GBSC_FILE_MAX];
+    uint32_t nlen = (uint32_t)gbsc_init(nbuf, 0x77u);
+    GbscEntry ne; memset(&ne, 0, sizeof ne);
+    ne.gen = GB_GEN1; ne.claimed = 1; ne.kind = XR_KIND_NATIVE_HOME;
+    ne.state = XR_STATE_PENDING; ne.direction = XR_DIR_ABROAD_G3;
+    ne.has_written_moves = 1;
+    ne.moves_written[0] = 10; ne.moves_written[1] = 20;
+    ne.moves_written[2] = 30; ne.moves_written[3] = 40;
+    ne.ppup_written = 0x1Bu;   /* 01 10 11 00 -- four distinct 2-bit fields */
+    ne.species_written = 1;
+    ne.otid16 = 0x4321;
+    memcpy(ne.dv4, dv4, 4);
+    memcpy(ne.otname_written, otname, GB_NAME_BYTES);
+    memcpy(ne.nick_written, otname, GB_NAME_BYTES);
+    CHECK(gbsc_add(nbuf, &nlen, sizeof nbuf, &ne) == 0, "new entry: added");
+    GbscEntry got;
+    CHECK(gbsc_get(nbuf, nlen, 0, &got), "new entry: decodes");
+    CHECK(memcmp(&got, &ne, sizeof got) == 0, "new entry: round-trips whole-struct bit-identical");
+  }
+  /* ==== END BACKLOG #150 S150-6 flags byte ===================================== */
+
   /* remove entry 3, check compaction */
   uint32_t len2 = len;
   CHECK(gbsc_remove(buf, &len2, 3) == 0, "gbsc_remove(3)");
@@ -1020,6 +1127,79 @@ static void test_make_legal(void) {
 }
 
 /* ============================================================================ */
+/* 6. BACKLOG #150 S150-6, G-H9: merge_moves() baselines from the entry's own      */
+/*    moves_written/ppup_written block when has_written_moves is set, not from    */
+/*    original80 -- so a MAKE-LEGAL-style move correction applied before the      */
+/*    Game Boy write does not read back on merge-up as a genuine in-game change.  */
+/* ============================================================================ */
+
+static void test_moves_baseline(void) {
+  printf("== 6. BACKLOG #150 S150-6 G-H9: merge_moves baselines from moves_written ==\n");
+
+  /* A Gen-3 record whose first move slot is EMPTY (0) -- the TRUE original, never
+   * corrected. */
+  uint8_t rec[80];
+  gen3_build_mon(1 /* Bulbasaur */, 10, 0x22223333u, 0xF00D0007u, "MVBASE", 3, rec);
+  EditMon em0; gen3_edit_load(rec, false, &em0);
+  em_set_move(&em0, 0, 0);
+  gen3_edit_commit(&em0, rec);
+
+  PkMon orig;
+  CHECK(pk_decode_mon(rec, false, &orig), "G-H9: decode the true original");
+  CHECK(orig.moves[0] == 0, "G-H9: the true original's move slot 0 is empty");
+
+  GbEditMon out; Gen3ToGbLoss loss;
+  G3GbStatus st = gen3_to_gb(rec, GB_GEN2, true, NULL, &out, &loss);
+  CHECK(st == G3GB_OK, "G-H9: converts (%s)", g3gb_status_text(st));
+  if (st != G3GB_OK) return;
+  CHECK(gb_get_move(&out, 0) == 0, "G-H9: the written record also has an empty slot 0 (no correction yet)");
+
+  /* Simulate a MAKE-LEGAL-style correction applied to the WRITTEN record before it
+   * left the card: fill slot 0 with a real move (id 33, Tackle -- ids agree 1:1
+   * across Gen 1/2/3 for every value a Game Boy can hold). original80 (`rec`) is
+   * NOT touched -- exactly decision 3c's "the ledger is written from the candidate,
+   * the ORIGINAL never changes" rule this whole entry format exists to honor. */
+  CHECK(gb_set_move(&out, 0, 33), "G-H9: corrects the written record's slot 0");
+  CHECK(gb_get_move(&out, 0) == 33, "G-H9: written record now shows move 33 in slot 0");
+
+  GbscEntry e; gbsc_entry_from(&e, &out, rec, 0);
+  e.has_written_moves = 1;
+  for (int i = 0; i < 4; i++) {
+    e.moves_written[i] = gb_get_move(&out, i);
+  }
+  e.ppup_written = 0;
+  CHECK(e.moves_written[0] == 33, "G-H9: entry's moves_written[0] captures the CORRECTED move (got %u)",
+        e.moves_written[0]);
+
+  /* Merge up with NO further Game-Boy-side edit (`now` == `out`, unedited since the
+   * write): the baseline used must be moves_written (33, matches `now` exactly) so
+   * moves_changed reads false and the ORIGINAL's true, empty slot 0 comes back
+   * untouched. Before this fix, decoding original80 (slot 0 == 0) would disagree
+   * with `now` (33) and wrongly report a genuine in-game move change. */
+  {
+    uint8_t back80[80]; GbscMergeReport rep;
+    CHECK(gbsc_merge_up(&e, &out, back80, &rep), "G-H9: merge up succeeds");
+    CHECK(!rep.moves_changed,
+          "G-H9: moves_changed is FALSE -- baselined from moves_written, not original80 (this is the fix)");
+    PkMon merged;
+    CHECK(pk_decode_mon(back80, false, &merged), "G-H9: merged record decodes");
+    CHECK(merged.moves[0] == 0, "G-H9: the restored record's move slot 0 is the TRUE original (empty), not 33");
+  }
+
+  /* Contrast: a PRE-#150 entry (has_written_moves == 0) for the identical inputs
+   * falls back to original80 -- today's exact behaviour -- and DOES read the same
+   * situation as a genuine move change, which is exactly the bug this field fixes. */
+  {
+    GbscEntry pre; gbsc_entry_from(&pre, &out, rec, 0);
+    CHECK(pre.has_written_moves == 0, "G-H9 contrast: a fresh gbsc_entry_from has has_written_moves == 0");
+    uint8_t back80[80]; GbscMergeReport rep;
+    CHECK(gbsc_merge_up(&pre, &out, back80, &rep), "G-H9 contrast: merge up succeeds");
+    CHECK(rep.moves_changed,
+          "G-H9 contrast: pre-#150 entry (no baseline) reads the correction as a genuine move change");
+  }
+}
+
+/* ============================================================================ */
 
 int main(int argc, char** argv) {
   test_format();
@@ -1027,6 +1207,7 @@ int main(int argc, char** argv) {
   test_lossy_name();
   test_stat_exp_and_ivs();
   test_rename_refused();
+  test_moves_baseline();
 
   printf("== 2. the Gen-3 corpus, both target generations ==\n");
   for (int i = 1; i < argc; i++) run_corpus_file(argv[i]);

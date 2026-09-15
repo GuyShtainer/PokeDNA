@@ -83,6 +83,10 @@ void gbsc_entry_from(GbscEntry* e, const GbEditMon* written, const uint8_t* orig
 
   e->gen             = written->gen;
   e->claimed         = 0;
+  e->kind            = XR_KIND_G3_HOME;
+  e->state           = XR_STATE_NONE;
+  e->direction       = XR_DIR_ABROAD_GB;
+  e->has_written_moves = 0;
   e->species_written = gb_get_species_dex(written);
   e->otid16          = gb_get_otid(written);
   e->dv4[0] = gb_get_dv(written, GB_ATK);
@@ -103,8 +107,30 @@ enum {
   E_GEN = 0, E_CLAIMED = 1, E_SPECIES = 2, E_OTID = 4, E_DV4 = 6,
   E_OTNAME = 10, E_NICK = 21, E_EXP = 32, E_RTC = 36, E_ORIG80 = 40,
   E_LEVEL = 120,   /* BACKLOG #104 R1 -- 1 byte of the old 6-byte pad, see gb_sidecar.h */
+  E_MOVES = 121, E_PPUP = 125,   /* BACKLOG #150 S150-6 -- the rest of the old pad */
   E_CRC = 126
 };
+
+/* Entry flags byte (E_CLAIMED, +1) bit layout -- BACKLOG #150 S150-6, decision D-Q1.
+ * See gb_sidecar.h's entry layout comment for the field meanings. */
+enum {
+  EF_CLAIMED  = 0x01u,           /* b0 */
+  EF_STATE_SH = 1, EF_STATE_MASK = 0x03u,       /* b1-b2, shifted */
+  EF_KIND     = 0x08u,           /* b3 */
+  EF_DIR      = 0x10u,           /* b4 */
+  EF_HASMOVES = 0x20u            /* b5 */
+};
+
+static uint8_t ef_compose(uint8_t claimed, uint8_t state, uint8_t kind, uint8_t dir,
+                          uint8_t has_moves) {
+  uint8_t f = 0;
+  if (claimed) f |= EF_CLAIMED;
+  f |= (uint8_t)((state & EF_STATE_MASK) << EF_STATE_SH);
+  if (kind) f |= EF_KIND;
+  if (dir) f |= EF_DIR;
+  if (has_moves) f |= EF_HASMOVES;
+  return f;
+}
 
 int gbsc_init(uint8_t* buf, uint64_t key) {
   if (!buf) return -1;
@@ -144,7 +170,8 @@ int gbsc_add(uint8_t* buf, uint32_t* len, uint32_t cap, const GbscEntry* e) {
   uint8_t* dst = buf + GBSC_HEADER + (uint32_t)count * GBSC_ENTRY;
   memset(dst, 0, GBSC_ENTRY);
   dst[E_GEN] = e->gen;
-  dst[E_CLAIMED] = e->claimed;
+  dst[E_CLAIMED] = ef_compose(e->claimed, e->state, e->kind, e->direction,
+                              e->has_written_moves);
   wr16(dst + E_SPECIES, e->species_written);
   wr16(dst + E_OTID, e->otid16);
   memcpy(dst + E_DV4, e->dv4, 4);
@@ -153,10 +180,18 @@ int gbsc_add(uint8_t* buf, uint32_t* len, uint32_t cap, const GbscEntry* e) {
   wr32(dst + E_EXP, e->exp_written);
   wr32(dst + E_RTC, e->rtc_epoch);
   memcpy(dst + E_ORIG80, e->original80, 80);
-  dst[E_LEVEL] = e->written_level;   /* BACKLOG #104 R1 -- bytes [121..125]: pad, zero */
+  dst[E_LEVEL] = e->written_level;   /* BACKLOG #104 R1 */
+  if (e->has_written_moves) {
+    memcpy(dst + E_MOVES, e->moves_written, 4);
+    dst[E_PPUP] = e->ppup_written;
+  }
   wr16(dst + E_CRC, crc16(dst, GBSC_ENTRY - 2));
 
   buf[5] = (uint8_t)(count + 1);
+  if (e->has_written_moves) {
+    uint16_t hf = rd16(buf + 6);
+    wr16(buf + 6, hf | GBSC_FLAG_HAS_WRITTEN_MOVES);   /* BACKLOG #150 D-Q2: file-level mirror */
+  }
   wr16(buf + 16, crc16(buf, 16));
   *len = new_len;
   return count;
@@ -177,7 +212,12 @@ bool gbsc_get(const uint8_t* buf, uint32_t len, int idx, GbscEntry* out) {
   memset(out, 0, sizeof *out);
   const uint8_t* e = buf + GBSC_HEADER + (uint32_t)idx * GBSC_ENTRY;
   out->gen             = e[E_GEN];
-  out->claimed         = e[E_CLAIMED];
+  uint8_t flags        = e[E_CLAIMED];
+  out->claimed         = (uint8_t)(flags & EF_CLAIMED);
+  out->state           = (uint8_t)((flags >> EF_STATE_SH) & EF_STATE_MASK);
+  out->kind            = (uint8_t)((flags & EF_KIND) ? 1 : 0);
+  out->direction       = (uint8_t)((flags & EF_DIR) ? 1 : 0);
+  out->has_written_moves = (uint8_t)((flags & EF_HASMOVES) ? 1 : 0);
   out->species_written = rd16(e + E_SPECIES);
   out->otid16          = rd16(e + E_OTID);
   memcpy(out->dv4, e + E_DV4, 4);
@@ -187,6 +227,10 @@ bool gbsc_get(const uint8_t* buf, uint32_t len, int idx, GbscEntry* out) {
   out->written_level = e[E_LEVEL];   /* BACKLOG #104 R1 -- 0 on any pre-R1 entry */
   out->rtc_epoch   = rd32(e + E_RTC);
   memcpy(out->original80, e + E_ORIG80, 80);
+  if (out->has_written_moves) {
+    memcpy(out->moves_written, e + E_MOVES, 4);
+    out->ppup_written = e[E_PPUP];
+  }
   return true;
 }
 
@@ -201,7 +245,7 @@ int gbsc_find(const uint8_t* buf, uint32_t len, const GbEditMon* now, int start,
   uint16_t otid = gb_get_otid(now);
   for (int i = start; i < count; i++) {
     const uint8_t* e = buf + GBSC_HEADER + (uint32_t)i * GBSC_ENTRY;
-    if (!include_claimed && e[E_CLAIMED]) continue;
+    if (!include_claimed && (e[E_CLAIMED] & EF_CLAIMED)) continue;
     if (e[E_GEN] != now->gen) continue;
     if (rd16(e + E_OTID) != otid) continue;
     if (memcmp(e + E_DV4, dv4, 4) != 0) continue;
@@ -216,7 +260,8 @@ int gbsc_set_claimed(uint8_t* buf, uint32_t len, int idx, bool claimed) {
   int count = gbsc_count(buf, len);
   if (count < 0 || idx < 0 || idx >= count) return -1;
   uint8_t* e = buf + GBSC_HEADER + (uint32_t)idx * GBSC_ENTRY;
-  e[E_CLAIMED] = claimed ? 1 : 0;
+  if (claimed) e[E_CLAIMED] |= EF_CLAIMED;
+  else         e[E_CLAIMED] &= (uint8_t)~EF_CLAIMED;   /* bit 0 ONLY -- preserve kind/state/direction/b5 */
   wr16(e + E_CRC, crc16(e, GBSC_ENTRY - 2));
   return 0;
 }
@@ -316,18 +361,28 @@ static void merge_species_and_level(EditMon* em, const GbscEntry* e, const GbEdi
 }
 
 /* Move ids agree 1:1 across Gen 1/2/3 for every id a Game Boy can hold (gb_editor.h:
- * "Gen-1/2 move ids ARE the Gen-3 ids for 1..251"), so the ORIGINAL record's own
- * moves -- decoded straight out of `original80` -- are exactly what the Game Boy
- * record held right after gen3_to_gb ran. No separate "moves_written" field is
- * needed in the entry. */
-static void merge_moves(EditMon* em, const GbEditMon* now, const PkMon* orig,
-                        bool have_orig, GbscMergeReport* rep) {
-  if (!have_orig) return;
+ * "Gen-1/2 move ids ARE the Gen-3 ids for 1..251"). The baseline this compares the
+ * CURRENT Game Boy moves against is, whenever the entry carries one (has_written_moves,
+ * BACKLOG #150 S150-6 G-H9), `e->moves_written`/`e->ppup_written` -- the moves ACTUALLY
+ * written to the Game Boy record at transfer time, which already reflects any
+ * MAKE-LEGAL move swap applied before the write, exactly the written_level precedent
+ * merge_species_and_level() above follows. Only a pre-#150 entry (has_written_moves
+ * clear) falls back to decoding `original80` -- today's exact, pre-#150 behaviour. */
+static void merge_moves(EditMon* em, const GbEditMon* now, const GbscEntry* e,
+                        const PkMon* orig, bool have_orig, GbscMergeReport* rep) {
+  bool have_baseline = e->has_written_moves || have_orig;
+  if (!have_baseline) return;
   bool differ = false;
   for (int i = 0; i < 4; i++) {
-    uint8_t orig_mv = (orig->moves[i] > 255u) ? 0 : (uint8_t)orig->moves[i];
-    uint8_t orig_up = (uint8_t)((orig->ppBonuses >> (i * 2)) & 0x3u);
-    if (gb_get_move(now, i) != orig_mv || gb_get_ppup(now, i) != orig_up) {
+    uint8_t base_mv, base_up;
+    if (e->has_written_moves) {
+      base_mv = e->moves_written[i];
+      base_up = (uint8_t)((e->ppup_written >> (i * 2)) & 0x3u);
+    } else {
+      base_mv = (orig->moves[i] > 255u) ? 0 : (uint8_t)orig->moves[i];
+      base_up = (uint8_t)((orig->ppBonuses >> (i * 2)) & 0x3u);
+    }
+    if (gb_get_move(now, i) != base_mv || gb_get_ppup(now, i) != base_up) {
       differ = true;
       break;
     }
@@ -405,7 +460,7 @@ bool gbsc_merge_up(const GbscEntry* e, const GbEditMon* now, uint8_t out80[80],
   if (have_orig) pk_resolve(&orig);
 
   merge_species_and_level(&em, e, now, &orig, have_orig, rep);
-  merge_moves(&em, now, &orig, have_orig, rep);
+  merge_moves(&em, now, e, &orig, have_orig, rep);
   merge_nickname(&em, e, now, rep);
 
   /* DVs are deliberately NOT re-checked here. dv4 is part of the sidecar's own

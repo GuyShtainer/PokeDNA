@@ -1130,6 +1130,24 @@ recursion tte_write depth=2
 # itself), and __text_start is a zero-size linker boundary symbol -- disassembling
 # "at" either one still produces a labelled block objdump calls a function.
 addrtaken-ok fp_walk             # hw1: EWRAM_CODE noinline fingerprint walker called only from _EZFO_startUp; the delta image never reaches flashcartio_activate, so it is unreached there while its address sits in the .ewram load data
+addrtaken-ok pdna_gen12_kind_name # BACKLOG #150 S150-6: same .ewram-load-data family as fp_walk above,
+                                  # not a genuine function-pointer/dispatch-table hit. Verified by
+                                  # disassembly on the artless ELF this slice's gb_sidecar.c growth
+                                  # produced: pdna_gen12_kind_name links to a plain, non-Thumb (bit0
+                                  # clear) address that a link-layout shuffle happened to place at
+                                  # 0x08040000 this build; that exact 32-bit word also appears five
+                                  # times as RAW DATA inside the EZ-Flash Omega driver's .ewram blob
+                                  # (`objdump -d`, addresses 0x2000104/0x2000238/0x2000480/0x200065c/
+                                  # 0x2000720 -- all between _EZFO_TestRompage and _EZFO_startUp,
+                                  # alongside 0xffffd200/0x09fe0000/0x08020000/0x09880000/0x09fc0000/
+                                  # 0x080000bc, the driver's own flashcart-detection ROM-page-test
+                                  # constants), never once with the Thumb bit set (0x08040001, which
+                                  # any real Thumb function pointer or interworking veneer would carry
+                                  # -- checked, zero hits). pdna_gen12_kind_name's own frame is 0 B
+                                  # (a trivial enum-to-string lookup, all four real call sites direct
+                                  # `pdna_gen12_kind_name(...)` calls in source/pdna_gen12.c), so even
+                                  # if this coincidence recurs at a different link address in a future
+                                  # build, the exemption is bounded by construction.
 addrtaken-ok __aeabi_idiv0        # libgcc: division-by-zero trap, taken by the div runtime itself
 addrtaken-ok __boot_method        # crt0: multiboot/cart boot-method DATA byte, not a function -- see the D5 note above
 addrtaken-ok __do_global_dtors_aux # crtstuff: static-destructor runner, taken via .fini_array
