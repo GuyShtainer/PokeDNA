@@ -113,28 +113,25 @@ static bool box_load(int box) {
   return st == SF_OK && sz >= BOX_BYTES;
 }
 
-/* box_save's pre-write backup step (BACKLOG #150 S150-0). Up to this slice, box_save was
- * plain sf_write_verified with NO backup and NO SF_ERR_RENAME triage; UP (the native-cell
- * feature this unblocks) makes the Bank file a mon's ONLY copy, so both are required
- * before any of that can land -- mirrors gb_persist's triage (pdna_gen12.c, the
- * sf_backup_rolling + SF_ERR_RENAME block right after its busy-panel).
+/* box_save's pre-write backup + write + SF_ERR_RENAME triage (BACKLOG #150 S150-0). Up
+ * to this slice, box_save was plain sf_write_verified with NO backup and NO
+ * SF_ERR_RENAME triage; UP (the native-cell feature this unblocks) makes the Bank file
+ * a mon's ONLY copy, so both are required before any of that can land -- mirrors
+ * gb_persist's triage (pdna_gen12.c, the sf_backup_rolling + SF_ERR_RENAME block right
+ * after its busy-panel).
  *
- * noinline: keeps bak[SF_PATH_MAX] (272 B) off box_save's frame across whatever deep
- * chain called it, same reasoning as meta_load's noinline above.
- *
- * THE GUARD: a box file exists only after its first save (box_load's own comment, and
- * pdna_bank.c:98-109's zero-on-absent read) -- so on the FIRST save into a never-used
- * box, `path` does not exist yet. Without this guard, sf_backup_rolling -> copy_file ->
- * f_open(FA_READ) on a missing source returns SF_ERR_OPEN -> SF_ERR_BACKUP, and box_save
- * would refuse that first write forever. f_stat absent is the "nothing to back up, carry
- * on" case, not a failure. */
+ * The mechanical work (the f_stat-absent-is-fine guard -- a box file exists only after
+ * its first save, box_load's own comment above, so f_stat absent on the FIRST save into
+ * a never-used box is "nothing to back up, carry on", not a failure -- plus the rolling
+ * backup and the verified write) lives in savefile.c's sf_save_rolling, not here: that
+ * makes it host-linkable, so host_bankbackup_test.c tests the real function directly
+ * instead of a re-typed copy of its decision table (review F3, which replaced an
+ * earlier noinline box_backup() helper that lived right here). box_save keeps only the
+ * SF_ERR_RENAME/SF_WHERE_TARGET triage and its UI (review F4), since that decision is
+ * this caller's to make, not sf_save_rolling's (savefile.h says so). */
 static bool box_save(void) {                    /* write the loaded box's records */
   if (g_loaded < 0) return false;
   char path[SF_PATH_MAX]; box_path(g_loaded, path);
-  /* sf_save_rolling (savefile.c) owns the f_stat-absent-is-fine guard, the rolling
-   * backup and the verified write -- host-linkable, so host_bankbackup_test.c tests
-   * THIS function directly instead of a re-typed copy of its decision table
-   * (BACKLOG #150 S150-0 review F3). */
   bool backed_up;
   rmbl_pause();
   SfStatus st = sf_save_rolling(path, box_recs(), BOX_BYTES, &backed_up);
