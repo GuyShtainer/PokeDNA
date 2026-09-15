@@ -987,6 +987,32 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XFER_NATIVE_L1    "This Game Boy Pokemon can"
 #define PDNA_XFER_NATIVE_L2    "only move inside the Bank."
 
+/* BACKLOG #150 S150-4 decision 11: the UP drop's own strings. PREP = the backup gate
+ * refused (nothing moved); KEPT = the Bank write landed but release_up refused (a
+ * duplicate, not a loss); REC = decision 5's ledger refusal (the mon already has a
+ * restorable Gen-3 original -- point at COPY/PASTE); ORIGIN = decision 4's one-time
+ * per-save prompt (Q7) plus its six game-name rows. */
+#define PDNA_XFER_PREP_TITLE "COULD NOT PREPARE"
+#define PDNA_XFER_PREP_L1    "The Bank backup failed."
+#define PDNA_XFER_PREP_L2    "Nothing was moved."
+
+#define PDNA_XFER_KEPT_TITLE "MOVED TO THE BANK"
+#define PDNA_XFER_KEPT_L1    "It is still in the Game Boy"
+#define PDNA_XFER_KEPT_L2    "save too - remove it there."
+
+#define PDNA_XFER_REC_TITLE  "IT CAME FROM GEN 3"
+#define PDNA_XFER_REC_L1     "Use COPY here, then PASTE in"
+#define PDNA_XFER_REC_L2     "the Gen 3 save to bring it back."
+
+#define PDNA_XFER_ORIGIN_TITLE "WHICH GAME IS THIS?"
+#define PDNA_XFER_ORIGIN_FOOT  "U/D pick  A ok  B cancel"
+#define PDNA_XFER_GAME_RED     "RED"
+#define PDNA_XFER_GAME_BLUE    "BLUE"
+#define PDNA_XFER_GAME_YELLOW  "YELLOW"
+#define PDNA_XFER_GAME_GOLD    "GOLD"
+#define PDNA_XFER_GAME_SILVER  "SILVER"
+#define PDNA_XFER_GAME_CRYSTAL "CRYSTAL"
+
 /* ---- S5-B Part D: PASTE (GB) on an empty Game Boy cell (pdna_gen12.c) ------------- */
 /* S5-C Part B1: Gen 1 is no longer refused outright -- a base-stat table now exists
  * (read live off the user's own ROM beside the .sav). GEN1_TITLE/L1 are repurposed

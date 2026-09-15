@@ -1461,6 +1461,14 @@ def verify_gated_predecessors(gated_decls, edges, funcs):
 # instead of trusting an unverifiable offset.
 STRUCT_HEADERS = {
     "BoxSource": "pdna_box.h",
+    # BACKLOG #150 S150-4 step 3/5: BoxXferOps's first two real (non-NULL) dispatch
+    # sites (lift_up/release_up) -- same header as BoxSource above (pdna_box.h
+    # declares both structs), registered the identical way so tools/stack_edges.txt's
+    # new BoxXferOps.lift_up/release_up rows get the same offset cross-check every
+    # other declared struct field gets, rather than a silent "stale declaration"
+    # failure. This dict entry, not tools/stack_edges.txt alone, is what step 3's own
+    # "derive the offsets ... from --dump-sites" instruction requires to succeed.
+    "BoxXferOps": "pdna_box.h",
     "RomGbUi": "rom_gbui.h",
     "Scan": "rom_gbui.c",     # file-local struct; struct_field_offsets() greps .c too
     "AppSrcOps": "pdna_app.h",

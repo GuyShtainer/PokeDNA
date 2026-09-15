@@ -65,6 +65,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 BOX_C = ROOT / "source" / "pdna_box.c"
 MAIN_C = ROOT / "source" / "pdna_main.c"
+BANK_C = ROOT / "source" / "pdna_bank.c"
 
 checks = 0
 fails: list[str] = []
@@ -119,6 +120,46 @@ MEMCPY80_RE = re.compile(r"memcpy\([^;]*,\s*80\)")
 CHUNK_COPY_RE = re.compile(r"memcpy\(s_ch_rec\[i\]")
 GATE_RE = re.compile(r"xg_native_escape_denied\(")
 BC_NATIVE_RE = re.compile(r"bc_is_native\(")
+# BACKLOG #150 S150-4: both start_carry() sites reachable with a BOXSCOPE_GB source
+# must be preceded by this exact call -- module-level so both the real check (g) and
+# its self-mutation demonstration (MUT G) share one pattern.
+SRC_CAN_LIFT_CUR_RE = re.compile(r"src_can_lift\(src, box, cur\)")
+COMBINED_GUARD_RE = re.compile(
+    r"if\s*\(\s*!src_can_lift\(src, box, cur\)\s*\|\|\s*!start_carry\(src, recs, box, cur\)\s*\)")
+# REVIEW F1: pdna_bank_next_serial() must call meta_load( BEFORE meta_save( -- g_meta/
+# g_bank_serial are populated ONLY by pdna_bank_show(); a GB-grid lift (this lane's
+# whole reason for pdna_bank_next_serial existing) runs before that ever happens, so
+# without this the first UP lift of a session persists zeroed box names/wallpapers and
+# re-issues serial 1.
+META_LOAD_RE = re.compile(r"\bmeta_load\(")
+META_SAVE_RE = re.compile(r"\bmeta_save\(")
+
+# REVIEW F2: nothing pinned commit-before-delete in drop_held's UP branch -- the
+# reviewer swapped release_up before commit() and ungated it, and every OTHER check
+# in this file still passed. These four regexes and up_order_facts() are shared by
+# the real check (i) and its self-mutation demonstration (MUT H).
+COMMIT_RE      = re.compile(r"\bok = src->commit\(\)")
+RELEASE_UP_RE  = re.compile(r"s_xfer_peer->release_up\(")
+ZEROBACK_RE    = re.compile(r"memset\(recs \+ \(uint32_t\)cur \* 80, 0, 80\)")
+RETURN_RECS_RE = re.compile(r"^\s*return recs;")
+
+def up_order_facts(lines, start, end):           # shared by the real check AND MUT H
+    c = first_match_line(lines, start, end, COMMIT_RE)
+    r = first_match_line(lines, start, end, RELEASE_UP_RE)
+    z = first_match_line(lines, start, end, ZEROBACK_RE)
+    if c is None: return False, "drop_held: no `ok = src->commit()` line in the UP branch"
+    if r is None: return False, "drop_held: no `s_xfer_peer->release_up(` call"
+    if z is None: return False, "drop_held: no zero-back memset of the destination cell"
+    if not c < r: return False, (f"drop_held: src->commit() (line {c+1}) does NOT come before "
+                                 f"release_up() (line {r+1}) -- the Game Boy save would lose the "
+                                 f"mon before the Bank has it")
+    if not c < z < r: return False, (f"drop_held: the zero-back memset (line {z+1}) is not between "
+                                     f"commit() ({c+1}) and release_up() ({r+1})")
+    if first_match_line(lines, z, r, RETURN_RECS_RE) is None:
+        return False, (f"drop_held: no `return recs;` between the zero-back memset (line {z+1}) and "
+                       f"release_up() (line {r+1}) -- release_up is not dominated by the "
+                       f"commit-failure early-out")
+    return True, "ok"
 
 
 def first_match_line(lines: list[str], start: int, end: int, pattern: re.Pattern) -> int | None:
@@ -150,6 +191,23 @@ def main() -> int:
     box_lines = strip_comments(BOX_C.read_text()).splitlines()
     box_text_stripped = "\n".join(box_lines)
     main_lines = strip_comments(MAIN_C.read_text()).splitlines()
+    bank_lines = strip_comments(BANK_C.read_text()).splitlines()
+
+    # ---- (h) REVIEW F1: pdna_bank_next_serial() calls meta_load( before meta_save( ----
+    s, e = extract_function(bank_lines, r"^uint32_t pdna_bank_next_serial\(void\)")
+    ns_body = bank_lines[s:e]
+    load_line = first_match_line(ns_body, 0, len(ns_body), META_LOAD_RE)
+    save_line = first_match_line(ns_body, 0, len(ns_body), META_SAVE_RE)
+    check(load_line is not None,
+          "pdna_bank_next_serial(): no meta_load( call in its (comment-stripped) body")
+    check(save_line is not None,
+          "pdna_bank_next_serial(): no meta_save( call in its (comment-stripped) body")
+    if load_line is not None and save_line is not None:
+        check(load_line < save_line,
+              f"pdna_bank_next_serial(): meta_load( (line {load_line + 1}) does not come "
+              f"BEFORE meta_save( (line {save_line + 1}) -- a GB-grid lift (which runs "
+              f"before pdna_bank_show() ever populates g_meta/g_bank_serial) would zero "
+              f"bank.meta and re-issue a spent serial")
 
     # ---- (a) drop_held / drop_chunk: xg_native_escape_denied( before first 80-byte memcpy ----
     for name, sig in [
@@ -257,6 +315,47 @@ def main() -> int:
     check(actual_count == EXPECTED_COUNT,
           f"pdna_box.c: expected exactly {EXPECTED_COUNT} xg_native_escape_denied( call sites, found {actual_count}")
 
+    # ---- (g) BACKLOG #150 S150-4: both start_carry() sites reachable with a
+    # BOXSCOPE_GB source are guarded by src_can_lift(src, box, cur) -- the second
+    # route the s150-4-5 brief missed (STOP-LICENCE, resolved by the orchestrator
+    # 2026-09-15: same guard as the first site, nothing bigger). Pinned COUNT, not
+    # presence alone (review F3's own lesson: presence-only checks can be masked by
+    # an unrelated call elsewhere in the same body) -- pdna_box's body must contain
+    # `src_can_lift(src, box, cur)` exactly 4 times: the CM_MOVE cursor-cycle guard,
+    # the CM_MOVE dispatch gate before begin_select(), the CM_ITEM held-item gate
+    # (unrelated to start_carry but the same predicate/args, decision 8), and the
+    # NORMAL-mode MOVE-menu site's combined `!src_can_lift(...) || !start_carry(...)`
+    # guard.
+    s, e = extract_function(box_lines, r"^int pdna_box\(BoxSource\* src\)")
+    pdna_box_body = box_lines[s:e]
+    lift_count = sum(1 for ln in pdna_box_body if SRC_CAN_LIFT_CUR_RE.search(ln))
+    check(lift_count == 4,
+          f"pdna_box(): expected exactly 4 src_can_lift(src, box, cur) sites "
+          f"(cursor-cycle, begin_select's dispatch gate, the CM_ITEM gate, the "
+          f"NORMAL-mode MOVE-menu guard), found {lift_count}")
+    # the NORMAL-mode site's specific shape: start_carry consumed in the SAME `if`
+    # condition as src_can_lift, so a refused lift can never fall through to the
+    # grab animation.
+    check(any(COMBINED_GUARD_RE.search(ln) for ln in pdna_box_body),
+          "pdna_box(): the NORMAL-mode MOVE-menu site's combined "
+          "`!src_can_lift(...) || !start_carry(...)` guard line not found")
+    # begin_select's own single-tap grab: start_carry's return is consumed in the
+    # SAME `if` as the occupancy check (`g_box[anchor].species && start_carry(...)`),
+    # not called as a bare statement whose return is silently discarded.
+    s2, e2 = extract_function(box_lines, r"^static uint8_t\* begin_select\(")
+    begin_select_body = box_lines[s2:e2]
+    BEGIN_SELECT_CONSUME_RE = re.compile(
+        r"g_box\[anchor\]\.species && start_carry\(src, recs, box, anchor\)")
+    check(any(BEGIN_SELECT_CONSUME_RE.search(ln) for ln in begin_select_body),
+          "begin_select(): start_carry(...)'s return is not consumed alongside the "
+          "occupancy check -- a refused GB lift could fall through unnoticed")
+
+    # ---- (i) REVIEW F2: drop_held's UP branch commits the Bank write BEFORE it ever
+    # calls release_up (the Game Boy delete) -- pins the order, not just presence. ----
+    s, e = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
+    ok, d = up_order_facts(box_lines, s, e)
+    check(ok, d)
+
     # ---- (f) review F3: the self-mutation harness, every run ----
     self_test_mutation_detection(box_lines)
 
@@ -320,6 +419,74 @@ def self_test_mutation_detection(box_lines: list[str]) -> None:
     ok, detail = gate_before_pattern(mut_f, 0, len(mut_f), GATE_RE, MEMCPY80_RE, "drop_held (MUT F)")
     check(not ok, f"MUT F (drop_held's gate moved after all memcpys) should have been caught but was not: {detail}")
     print(f"  MUT F demonstration -- gate block relocated after drop_held's last memcpy: {detail}")
+
+    # MUT G (BACKLOG #150 S150-4): revert the NORMAL-mode MOVE-menu site's combined
+    # guard back to what it looked like before this lane closed the second G-M7
+    # route -- an unconditional `start_carry(src, recs, box, cur);` with no
+    # src_can_lift() check at all. The count check (g) must drop from 4 to 3 and fail.
+    s, e = extract_function(box_lines, r"^int pdna_box\(BoxSource\* src\)")
+    body = box_lines[s:e]
+    combined_re = re.compile(
+        r"if\s*\(\s*!src_can_lift\(src, box, cur\)\s*\|\|\s*!start_carry\(src, recs, box, cur\)\s*\)\s*\{")
+    mut_g = []
+    replaced = False
+    i = 0
+    while i < len(body):
+        ln = body[i]
+        if not replaced and combined_re.search(ln):
+            # Replace the whole `if (...) { snd_deny(); } else { ... }` shape with a
+            # single unconditional `start_carry(src, recs, box, cur);` line -- brace-
+            # balanced removal of the if/else block this line opens.
+            depth = 0
+            j = i
+            depth += ln.count("{") - ln.count("}")
+            j += 1
+            while depth > 0 and j < len(body):
+                depth += body[j].count("{") - body[j].count("}")
+                j += 1
+            # j now points just past the matching close of the `if` block; consume a
+            # following `else { ... }` too, if present, the same way.
+            k = j
+            while k < len(body) and body[k].strip() == "":
+                k += 1
+            if k < len(body) and "else" in body[k]:
+                depth2 = body[k].count("{") - body[k].count("}")
+                m = k + 1
+                while depth2 > 0 and m < len(body):
+                    depth2 += body[m].count("{") - body[m].count("}")
+                    m += 1
+                j = m
+            mut_g.append("          start_carry(src, recs, box, cur);")
+            i = j
+            replaced = True
+            continue
+        mut_g.append(ln)
+        i += 1
+    check(replaced, "MUT G: could not locate the NORMAL-mode combined guard block to revert -- fix this test")
+    lift_count_mut = sum(1 for ln in mut_g if SRC_CAN_LIFT_CUR_RE.search(ln))
+    check(lift_count_mut == 3,
+          f"MUT G (NORMAL-mode guard reverted to unconditional start_carry) should have "
+          f"dropped the src_can_lift(src, box, cur) count to 3, got {lift_count_mut}")
+    print(f"  MUT G demonstration -- NORMAL-mode MOVE-menu guard reverted to unconditional "
+          f"start_carry: count dropped to {lift_count_mut} (expected 3, was 4)")
+
+    # MUT H (REVIEW F2): swap the release_up() line to ABOVE the `ok = src->commit()`
+    # line in a copy of drop_held's body -- the exact defect the reviewer demonstrated
+    # (the Game Boy save would lose the mon before the Bank has committed it) -- and
+    # assert up_order_facts() reports failure.
+    s, e = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
+    body = box_lines[s:e]
+    commit_i = first_match_line(body, 0, len(body), COMMIT_RE)
+    release_i = first_match_line(body, 0, len(body), RELEASE_UP_RE)
+    check(commit_i is not None and release_i is not None,
+          "MUT H: could not locate both the commit() and release_up() lines in the real source -- fix this test")
+    if commit_i is not None and release_i is not None and commit_i < release_i:
+        mut_h = list(body)
+        release_line = mut_h.pop(release_i)
+        mut_h.insert(commit_i, release_line)   # release_up's line now sits BEFORE commit()
+        ok, detail = up_order_facts(mut_h, 0, len(mut_h))
+        check(not ok, f"MUT H (release_up swapped before commit()) should have been caught but was not: {detail}")
+        print(f"  MUT H demonstration -- release_up() line swapped above src->commit(): {detail}")
 
 
 if __name__ == "__main__":

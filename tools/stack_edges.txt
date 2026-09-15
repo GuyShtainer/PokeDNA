@@ -131,9 +131,6 @@ impl-optional gb_reg_progress      variants=delta
 impl-optional gbmap2_sd_read       variants=delta
 impl-optional gbmap_sd_read        variants=delta
 impl-optional iconrom_fatfs_read   variants=delta
-# Forward-declared by docs/BANK-CROSSGEN-DESIGN.md §11.13 S150-4; exists in no variant yet.
-impl-pending gb_can_lift_hook pending=S150-4
-
 # records@20/get_name@28 moved below (BACKLOG #84b seventh pass): offset 20 is ALSO
 # AppSrcOps.view (app_mon_menu_readonly/pdna_dex_screen) and offset 28 is ALSO
 # AppSrcOps.create -- both are now qualified per-caller further down (search
@@ -267,15 +264,26 @@ BoxSource.get_raw_name @72 in box_options_menu,pdna_box -> gbsrc_get_raw_name
 # leaves `can_lift` NULL (memset default), so this `bl` never actually fires yet; the
 # guard cannot know that statically, though, so it still needs a bounded implementation
 # to charge against. Forward-declared to the name the design (docs/BANK-CROSSGEN-DESIGN.md
-# §4) gives S3's Game Boy cell-lift gate, `gb_can_lift_hook` -- not yet linked in ANY
-# variant, so it carries an `impl-pending ... pending=S150-4` row above (BACKLOG #155)
-# rather than a variant-scoped `impl-optional`. The walker WARNS the moment the symbol
-# IS linked, which is how S150-4 is reminded to promote this row instead of leaving a
-# permanent exemption behind. Deleting the row is NOT an option: it makes the guard
+# §4) gives S3's Game Boy cell-lift gate, `gb_can_lift_hook`. BACKLOG #150 S150-5:
+# pdna_gen12_source() now wires `s.can_lift = gb_can_lift_hook` (a thin host-safe
+# wrapper over `gb_can_lift_hook_impl`, the real body beside gb_editable_hook), so the
+# symbol IS linked and the earlier `impl-pending ... pending=S150-4` row (BACKLOG #155)
+# is gone -- this plain row below now describes a real, reachable call, same as every
+# other row in this file. Deleting THIS row is still not an option: it makes the guard
 # refuse with "BLIND SPOT: src_can_lift ... struct-field load @80" (design doc §9).
 # `xfer@84` has no declaration: nothing dereferences it anywhere in this build (no `bl`
 # site exists to require one) -- it is wired starting S3.
 BoxSource.can_lift @80 in src_can_lift -> gb_can_lift_hook
+
+# BACKLOG #150 S150-4 step 3/5: BoxXferOps's two live members, once the real k_gb_xfer
+# table (pdna_gen12.c) replaces the marker-only k_gb_xfer_s2 as the session-wide xfer
+# peer. Offsets derived from the walker's own BLIND SPOT report (never assumed):
+# `start_carry @ ...: struct-field load @4` (lift_up) and the analogous report for
+# drop_held's `s_xfer_peer->release_up(...)` call (release_up @16) -- both match the
+# natural ARM EABI layout of BoxXferOps (gen@0 padded to 4, lift_up@4, preview_down@8,
+# accept_down@12, release_up@16, move_within@20).
+BoxXferOps.lift_up @4 in start_carry -> gb_lift_up_hook
+BoxXferOps.release_up @16 in drop_held -> gb_release_up_hook
 
 # The commit parameter threaded through app_mon_menu (party call sites) and
 # app_paste_gb_merge -> app_paste_gb_commit -> app_commit_with_dex (inlined) -> `commit ?
@@ -1121,10 +1129,12 @@ BoxSource.can_edit @44 in pdna_origin_art_portrait,pdna_origin_box_art -> gb_art
 # field@16 site of its own (paste's only real path there is the release@8 tail-merge
 # above) -- but the DELTA build's codegen differs (confirmed live: `make delta`
 # reported a genuine `struct-field load @16` BLIND spot in app_mon_menu_readonly
-# before this line existed) so it IS a real, separate site on that variant. Offset 16
-# has no other struct claiming it, so this stays UNQUALIFIED (matches any caller that
-# ever presents a clean field@16 site -- today, app_mon_menu_readonly on normal/delta).
-AppSrcOps.paste @16 -> gb_paste_hook
+# before this line existed) so it IS a real, separate site on that variant.
+# BACKLOG #150 S150-4 step 5: offset 16 is now ALSO BoxXferOps.release_up (drop_held,
+# below) -- qualified with `in app_mon_menu_readonly` so the two offset-16 classes
+# stay disambiguated by caller instead of colliding (the guard's own error the moment
+# a second struct claims an unqualified offset).
+AppSrcOps.paste @16 in app_mon_menu_readonly -> gb_paste_hook
 # AppSrcOps.move (offset 4) DOES have a real site after all -- see the G5 correction
 # above `AppSrcOps.release @8 in app_mon_menu_readonly`, which also declares it.
 
