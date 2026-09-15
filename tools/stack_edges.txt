@@ -118,6 +118,8 @@
 # walker prints a LANDED warning so the row is promoted, not left behind forever.
 
 # Delta-only -- the artless/normal (PDNA_TARGET=nor) links do not contain it:
+# Listing EVERY variant in variants= re-creates a blanket exemption -- if the symbol exists
+# in no variant yet, use impl-pending instead (it un-silences itself when the symbol lands).
 impl-optional fused_gb_slice_read variants=nor,sd
 # Absent from the delta build (#ifndef PDNA_DELTA, or --gc-sections with no delta caller):
 impl-optional art_extract_progress variants=delta
