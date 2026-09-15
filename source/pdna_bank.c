@@ -133,6 +133,9 @@ static bool meta_save(void) {
  * "refuse the lift") on a meta write failure; 0 is otherwise never allocated because
  * this always increments FIRST. */
 uint32_t pdna_bank_next_serial(void) {
+  /* REVIEW F1: g_meta/g_bank_serial are populated ONLY by pdna_bank_show(); a GB-grid
+   * lift runs first */
+  meta_load();
   uint32_t next = g_bank_serial + 1;
   uint32_t prev = g_bank_serial;
   g_bank_serial = next;

@@ -65,6 +65,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 BOX_C = ROOT / "source" / "pdna_box.c"
 MAIN_C = ROOT / "source" / "pdna_main.c"
+BANK_C = ROOT / "source" / "pdna_bank.c"
 
 checks = 0
 fails: list[str] = []
@@ -125,6 +126,13 @@ BC_NATIVE_RE = re.compile(r"bc_is_native\(")
 SRC_CAN_LIFT_CUR_RE = re.compile(r"src_can_lift\(src, box, cur\)")
 COMBINED_GUARD_RE = re.compile(
     r"if\s*\(\s*!src_can_lift\(src, box, cur\)\s*\|\|\s*!start_carry\(src, recs, box, cur\)\s*\)")
+# REVIEW F1: pdna_bank_next_serial() must call meta_load( BEFORE meta_save( -- g_meta/
+# g_bank_serial are populated ONLY by pdna_bank_show(); a GB-grid lift (this lane's
+# whole reason for pdna_bank_next_serial existing) runs before that ever happens, so
+# without this the first UP lift of a session persists zeroed box names/wallpapers and
+# re-issues serial 1.
+META_LOAD_RE = re.compile(r"\bmeta_load\(")
+META_SAVE_RE = re.compile(r"\bmeta_save\(")
 
 
 def first_match_line(lines: list[str], start: int, end: int, pattern: re.Pattern) -> int | None:
@@ -156,6 +164,23 @@ def main() -> int:
     box_lines = strip_comments(BOX_C.read_text()).splitlines()
     box_text_stripped = "\n".join(box_lines)
     main_lines = strip_comments(MAIN_C.read_text()).splitlines()
+    bank_lines = strip_comments(BANK_C.read_text()).splitlines()
+
+    # ---- (h) REVIEW F1: pdna_bank_next_serial() calls meta_load( before meta_save( ----
+    s, e = extract_function(bank_lines, r"^uint32_t pdna_bank_next_serial\(void\)")
+    ns_body = bank_lines[s:e]
+    load_line = first_match_line(ns_body, 0, len(ns_body), META_LOAD_RE)
+    save_line = first_match_line(ns_body, 0, len(ns_body), META_SAVE_RE)
+    check(load_line is not None,
+          "pdna_bank_next_serial(): no meta_load( call in its (comment-stripped) body")
+    check(save_line is not None,
+          "pdna_bank_next_serial(): no meta_save( call in its (comment-stripped) body")
+    if load_line is not None and save_line is not None:
+        check(load_line < save_line,
+              f"pdna_bank_next_serial(): meta_load( (line {load_line + 1}) does not come "
+              f"BEFORE meta_save( (line {save_line + 1}) -- a GB-grid lift (which runs "
+              f"before pdna_bank_show() ever populates g_meta/g_bank_serial) would zero "
+              f"bank.meta and re-issue a spent serial")
 
     # ---- (a) drop_held / drop_chunk: xg_native_escape_denied( before first 80-byte memcpy ----
     for name, sig in [
