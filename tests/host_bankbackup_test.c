@@ -81,8 +81,8 @@ static int exists(const char* path) { FILINFO fi; return f_stat(path, &fi) == FR
 /* ---- box_save's own remaining triage: what it does with sf_save_rolling's result.
  * sf_save_rolling itself is the real thing under test below, not re-typed. ---- */
 
-static bool save_ok(const char* path, const uint8_t* buf, uint32_t len) {
-  SfStatus st = sf_save_rolling(path, buf, len);
+static bool save_ok(const char* path, const uint8_t* buf, uint32_t len, bool* out_backed_up) {
+  SfStatus st = sf_save_rolling(path, buf, len, out_backed_up);
   if (st == SF_ERR_RENAME)
     return sf_where_are_the_bytes(path, buf, len) == SF_WHERE_TARGET;
   return st == SF_OK;
@@ -93,25 +93,30 @@ static bool save_ok(const char* path, const uint8_t* buf, uint32_t len) {
 /* Absent source (a box file exists only after its first save): the backup step must be
  * a no-op, and the FIRST write into a never-used box must still succeed. */
 static void t_virgin_box_first_write(void) {
+  bool backed_up = true;   /* deliberately wrong default -- sf_save_rolling must clear it */
   fresh_card(4096);
   fill(s_new, BOX_BYTES, 1);
   CHECK(!exists(BOX), "virgin: setup left a box file behind");
-  CHECK(save_ok(BOX, s_new, BOX_BYTES), "virgin: first write into a never-used box refused");
+  CHECK(save_ok(BOX, s_new, BOX_BYTES, &backed_up), "virgin: first write into a never-used box refused");
   remount();
   CHECK(holds(BOX, s_new, BOX_BYTES), "virgin: the card does not hold the new box");
   CHECK(!exists(BAK), "virgin: a .bak appeared for a box that never existed");
+  CHECK(!backed_up,
+        "virgin: sf_save_rolling reported a backup for a box that never existed (review G2)");
 }
 
 /* Present source: backup is made, box.bak holds the OLD bytes, box holds the NEW ones. */
 static void t_present_box_backs_up(void) {
+  bool backed_up = false;
   fresh_card(4096);
   fill(s_old, BOX_BYTES, 2);
   fill(s_new, BOX_BYTES, 3);
   CHECK(write_raw(BOX, s_old, BOX_BYTES), "present: could not create the original box");
-  CHECK(save_ok(BOX, s_new, BOX_BYTES), "present: save refused on a healthy card");
+  CHECK(save_ok(BOX, s_new, BOX_BYTES, &backed_up), "present: save refused on a healthy card");
   remount();
   CHECK(holds(BOX, s_new, BOX_BYTES), "present: the card does not hold the new box");
   CHECK(holds(BAK, s_old, BOX_BYTES), "present: box.bak does not hold the pre-save bytes");
+  CHECK(backed_up, "present: sf_save_rolling did not report the backup it made (review G2)");
 }
 
 /* Backup fails on a present box: box_save must refuse and the ORIGINAL box must be
@@ -132,7 +137,7 @@ static void t_backup_failure_refuses(void) {
   fill(s_new, BOX_BYTES, 5);
   CHECK(write_raw(BOX, s_old, BOX_BYTES), "backupfail: could not create the original box");
   rd_fail_at = 0;                         /* fail exactly the first write, then heal */
-  bool ok = save_ok(BOX, s_new, BOX_BYTES);
+  bool ok = save_ok(BOX, s_new, BOX_BYTES, NULL);
   rd_fail_at = -1;
   CHECK(!ok, "backupfail: box_save reported success while the backup failed");
   remount();
@@ -157,7 +162,7 @@ static void t_stat_fault_refuses_unbacked_write(void) {
   CHECK(write_raw(BOX, s_old, BOX_BYTES), "statfault: could not create the original box");
   remount();
   rd_fail_read_at = 0;                    /* lands inside f_stat's own lookup; heals after */
-  bool ok = save_ok(BOX, s_new, BOX_BYTES);
+  bool ok = save_ok(BOX, s_new, BOX_BYTES, NULL);
   rd_fail_read_at = -1;
   CHECK(!ok, "statfault: box_save reported success on a card that would not even answer f_stat");
   remount();

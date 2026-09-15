@@ -135,8 +135,9 @@ static bool box_save(void) {                    /* write the loaded box's record
    * backup and the verified write -- host-linkable, so host_bankbackup_test.c tests
    * THIS function directly instead of a re-typed copy of its decision table
    * (BACKLOG #150 S150-0 review F3). */
+  bool backed_up;
   rmbl_pause();
-  SfStatus st = sf_save_rolling(path, box_recs(), BOX_BYTES);
+  SfStatus st = sf_save_rolling(path, box_recs(), BOX_BYTES, &backed_up);
   rmbl_resume();
   if (st != SF_OK && st != SF_ERR_RENAME) {
     /* the backup-gate refusal or a plain write failure -- sf_save_rolling already
@@ -171,9 +172,12 @@ static bool box_save(void) {                    /* write the loaded box's record
           msg_wait(PDNA_BANKSAVE_TMPANDOLD_TITLE, UI_WARN,
                     PDNA_BANKSAVE_TMPANDOLD_L1, PDNA_BANKSAVE_TMPANDOLD_L2);
           break;
-        default:                            /* neither name matches: use the backup */
-          msg_wait(PDNA_BANKSAVE_LOST_TITLE, UI_WARN,
-                    PDNA_BANKSAVE_LOST_L1, PDNA_BANKSAVE_LOST_L2);
+        default:                            /* neither name matches */
+          /* review G2: a virgin box (this write's own backup step never ran, since
+           * there was nothing to back up) never made a .bak -- "restore the .bak"
+           * would send the user hunting a file that does not exist. */
+          msg_wait(PDNA_BANKSAVE_LOST_TITLE, UI_WARN, PDNA_BANKSAVE_LOST_L1,
+                    backed_up ? PDNA_BANKSAVE_LOST_L2 : PDNA_GBEDIT_SAVELOST_NOBAK);
           break;
       }
       return false;                         /* anything but TARGET: a real failure */

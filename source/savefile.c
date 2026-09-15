@@ -483,7 +483,8 @@ SfWhere sf_where_are_the_bytes(const char* path, const uint8_t* buf, uint32_t le
 /* noinline: bak[SF_PATH_MAX] (272 B) is dead the instant sf_backup_rolling returns, same
  * reasoning as every other noinline scratch buffer in this file -- keep it off the
  * caller's frame across whatever deep chain called this. */
-SfStatus __attribute__((noinline)) sf_save_rolling(const char* path, const uint8_t* buf, uint32_t len) {
+SfStatus __attribute__((noinline)) sf_save_rolling(const char* path, const uint8_t* buf, uint32_t len, bool* out_backed_up) {
+  if (out_backed_up) *out_backed_up = false;
   /* fno=NULL (ff.c:4818) -- this call only needs the FRESULT, not FILINFO's ~290-byte
    * LFN buffer. FR_NO_FILE/FR_NO_PATH is the ONLY "never written, nothing to back up"
    * case; any other non-FR_OK result is a card fault (disk error, not ready, timeout,
@@ -501,6 +502,7 @@ SfStatus __attribute__((noinline)) sf_save_rolling(const char* path, const uint8
       log_line("save_rolling: backup failed (%s)", sf_status_str(bst));
       return bst;
     }
+    if (out_backed_up) *out_backed_up = true;   /* review G2: only NOW does a .bak exist */
   }
   return sf_write_verified(path, buf, len);
 }
