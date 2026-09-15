@@ -1079,16 +1079,16 @@ addrtaken-ok gen1_encode_name     # BACKLOG #148/#152 (review-opus fix pass corr
                                   # finds exactly THREE aligned hits, all inside this project's OWN code
                                   # (own_function_names() would flag any of these as real address-taken
                                   # evidence if they were the true source, which they are not -- see
-                                  # below): 0x0805d95c and 0x0805db64, both inside `pdna_romfull_screen`
-                                  # (nm -Sn: 0x0805d1c0, size 0x9a8) -- a `.word 0x08010000` literal in
+                                  # below): 0x0805d94c and 0x0805db54, both inside `pdna_romfull_screen`
+                                  # (nm -Sn: 0x0805d1b0, size 0x9a8) -- a `.word 0x08010000` literal in
                                   # its own ROM full-image-grid code (confirmed: `objdump -d | grep
                                   # '\.word\s*0x0801000[01]'` shows both, ROM base 0x08000000 + 64 KiB,
                                   # the region-size constant that verification-grid step steps by, NOT a
                                   # function pointer -- pdna_romfull_screen never takes gen1_encode_name's
-                                  # address); and 0x0809bb80 inside `s_fam` (nm -Sn: 0x0809bae8, size
+                                  # address); and 0x0809bb70 inside `s_fam` (nm -Sn: 0x0809bad8, size
                                   # 0x19d), a plain data table, same "no assignment site anywhere in
-                                  # source" proof as below. A fourth candidate, 0x08010001 at 0x0809bb6e,
-                                  # is UNALIGNED (0x0809bb6e % 4 != 0) -- not a literal-pool word, and
+                                  # source" proof as below. A fourth candidate, 0x08010001 at 0x0809bb5e,
+                                  # is UNALIGNED (0x0809bb5e % 4 != 0) -- not a literal-pool word, and
                                   # gen1_write_layout's own retired entry already established this file's
                                   # convention that an unaligned "hit" is not evidence. Safe because
                                   # gen1_encode_name is called ONLY DIRECTLY (gen1_write.c:279/282, plus
@@ -1099,6 +1099,11 @@ addrtaken-ok gen1_encode_name     # BACKLOG #148/#152 (review-opus fix pass corr
                                   # comparing) if this ever moves again -- do not re-add a libtonc/
                                   # third-party citation on inspection alone; own_function_names() proves
                                   # only this project's own object files can be the source.
+                                  # (Addresses as of a531cf2; any .text shift moves them by a constant --
+                                  # re-derive with the nm + objdump recipe above, never trust the literals.
+                                  # For the record: srf.0's bytes are `08 01 00 01`, which decode
+                                  # LITTLE-ENDIAN to 0x01000108 -- never a numeric match for this address;
+                                  # `objdump -s` prints bytes in address order, not word values.)
 addrtaken-ok __text_start         # linker/crt boundary symbol, a zero-size DATA marker, not application code -- see the D5 note above
 addrtaken-ok __udivmoddi4         # libgcc: 64-bit unsigned division helper, taken by the div runtime
 addrtaken-ok __utf8_wctomb        # newlib: UTF-8 locale table entry, same family as __utf8_mbtowc above

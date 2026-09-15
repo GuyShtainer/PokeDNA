@@ -87,6 +87,7 @@ export OBJCOPY := $(PREFIX)objcopy
 	     python3 $(dir $(OUTPUT))tools/stack_budget.py --elf $@ --builddir $(CURDIR) --root $$v --top 1 >/dev/null \
 	       || { echo "*** FATAL: a gated subtree reached from $$v exceeds its declared need (re-run --root $$v)"; rm -f $@; exit 1; }; \
 	   done; \
+	   echo "  GATED ok: `awk '/^gated /{n++}END{print n+0}' $(dir $(OUTPUT))tools/stack_edges.txt` gated subtree(s) re-measured from their via= roots"; \
 	 fi
 	$(NM) -Sn $@ > $(basename $(notdir $@)).map
 
@@ -623,6 +624,7 @@ stack-check:
 				python3 tools/stack_budget.py --elf "$$elf" --builddir "$(CURDIR)/$$bd" --root "$$v" --top 1 >/dev/null \
 					|| { echo "*** FATAL: a gated subtree reached from $$v exceeds its declared need (re-run --root $$v)"; exit 1; }; \
 			done; \
+	   echo "  GATED ok: `awk '/^gated /{n++}END{print n+0}' $(dir $(OUTPUT))tools/stack_edges.txt` gated subtree(s) re-measured from their via= roots"; \
 		else \
 			echo "-- $$elf -- skipped (not built)"; \
 		fi; \
