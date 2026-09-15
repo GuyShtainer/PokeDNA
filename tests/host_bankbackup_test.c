@@ -114,21 +114,58 @@ static void t_present_box_backs_up(void) {
   CHECK(holds(BAK, s_old, BOX_BYTES), "present: box.bak does not hold the pre-save bytes");
 }
 
-/* Backup fails on a present box (the copy's write is refused): box_save must refuse and
- * the ORIGINAL box must be untouched -- never a half-write on a failed backup. */
+/* Backup fails on a present box: box_save must refuse and the ORIGINAL box must be
+ * untouched -- never a half-write on a failed backup. rd_fail_all_writes would be
+ * VACUOUS here (review F2): with the backup and the main write both inside
+ * sf_save_rolling now, a permanently-dead card fails BOTH of them, so the test cannot
+ * tell "the backup gate refused" from "the write itself just couldn't happen either
+ * way" -- it would still pass with the gate deleted. rd_fail_at fails exactly ONE
+ * write (landing inside copy_file's write into box.baktmp, the very first write this
+ * call makes) and then HEALS, so the subsequent main write would succeed if nothing
+ * stopped it -- the only thing that CAN stop it is sf_save_rolling noticing the backup
+ * failed and returning before ever opening box00.box.tmp. That makes the mutation
+ * bite: delete the "backup failed -> return" check and this test starts seeing the
+ * NEW bytes in box00.box instead of the old ones. */
 static void t_backup_failure_refuses(void) {
   fresh_card(4096);
   fill(s_old, BOX_BYTES, 4);
   fill(s_new, BOX_BYTES, 5);
   CHECK(write_raw(BOX, s_old, BOX_BYTES), "backupfail: could not create the original box");
-  rd_fail_all_writes = 1;                 /* copy_file's write into box.baktmp is refused */
+  rd_fail_at = 0;                         /* fail exactly the first write, then heal */
   bool ok = save_ok(BOX, s_new, BOX_BYTES);
-  rd_fail_all_writes = 0;
+  rd_fail_at = -1;
   CHECK(!ok, "backupfail: box_save reported success while the backup failed");
   remount();
   CHECK(holds(BOX, s_old, BOX_BYTES), "backupfail: the original box was touched despite the refusal");
-  CHECK(!exists(BAK), "backupfail: a .bak appeared despite the backup failing");
-  CHECK(!exists(BAKTMP), "backupfail: a stray .baktmp was left behind");
+  CHECK(!holds(BOX, s_new, BOX_BYTES),
+        "backupfail: the NEW bytes landed in box00.box -- the backup-failed gate did not stop the write");
+}
+
+/* THE review F1 scenario, reproduced directly: f_stat itself fails transiently (not
+ * absent -- a card that would not even answer) on a PRESENT box. Before F1's fix this
+ * read as "never written", skipped the backup, and overwrote the box unbacked; a fresh
+ * remount (drops FatFs' cached directory window, as a reboot would) plus one injected
+ * read fault at the very next read reliably lands inside f_stat's own directory lookup
+ * (probed by hand: rd_fail_read_at = 0 right after a remount makes f_stat report
+ * FR_DISK_ERR on a file that unquestionably exists). The card heals immediately after,
+ * so nothing here is "unluckily still broken" -- this is exactly the one-bad-read,
+ * then-fine card the guard exists for. */
+static void t_stat_fault_refuses_unbacked_write(void) {
+  fresh_card(4096);
+  fill(s_old, BOX_BYTES, 8);
+  fill(s_new, BOX_BYTES, 9);
+  CHECK(write_raw(BOX, s_old, BOX_BYTES), "statfault: could not create the original box");
+  remount();
+  rd_fail_read_at = 0;                    /* lands inside f_stat's own lookup; heals after */
+  bool ok = save_ok(BOX, s_new, BOX_BYTES);
+  rd_fail_read_at = -1;
+  CHECK(!ok, "statfault: box_save reported success on a card that would not even answer f_stat");
+  remount();
+  CHECK(holds(BOX, s_old, BOX_BYTES),
+        "statfault: the original box was overwritten despite the refusal");
+  CHECK(!holds(BOX, s_new, BOX_BYTES),
+        "statfault: the NEW bytes landed in box00.box UNBACKED -- the f_stat fault was "
+        "mistaken for \"never written\" (review F1's exact bug)");
 }
 
 /* A forced rename failure whose bytes actually landed at TARGET must read as success --
@@ -168,6 +205,7 @@ int main(void) {
   t_virgin_box_first_write();
   t_present_box_backs_up();
   t_backup_failure_refuses();
+  t_stat_fault_refuses_unbacked_write();
   t_rename_target_counts_as_success();
   printf("\n%s: %d failure(s)\n", fails ? "FAIL" : "OK", fails);
   return fails ? 1 : 0;
