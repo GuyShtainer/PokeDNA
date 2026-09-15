@@ -387,7 +387,9 @@ gbl_verify argsites=1 -> fused_gb_slice_read gb_read
 #   rom_gbicon_open_loc   <- gb_art_source.c:362 gb_art_read; :547 fused_gb_slice_read
 #   rom_gbsprite_open(_loc) <- gb_art_source.c:155/288 gb_art_read; :496 fused_gb_slice_read;
 #                              pdna_gen12.c:1623/2109/2132 gb_read; :2091 fused_gb_slice_read
-#   rom_gbui_open(_loc)   <- pdna_gbscreen.c:486 gbscr_sd_read; :520 fused_gb_slice_read
+#   rom_gbui_open(_loc)   <- pdna_gbscreen.c:644 gb_art_read; :707 fused_gb_slice_read
+#                              (BACKLOG #148: gbscr_sd_read deleted, replaced by the
+#                              guarded gb_art_read -- see gb_art_io.h)
 # g1_bs_verify/g2_bd_verify/g2_pp_verify used to be declared HERE too (`argsites=1`
 # each) -- BACKLOG #106 G5 found they need no declaration of their own: --dump-sites
 # now resolves them `field @0`, dispatching through the SAME RomGbSprite.read their
@@ -613,8 +615,8 @@ rom_mon_icon_at argsites=1 -> gb_art_read fused_gb_slice_read gb_read
 # puts the read-function pointer itself in a register the AAPCS argument
 # registers don't cover, spilled to the stack across the locator's own scan
 # calls). Verified identical (7 / 9) across all three build variants.
-rom_gbui_open argsites=8 -> gbscr_sd_read fused_gb_slice_read gb_art_read g1_cardframe_cb g1_font_cb g1_textbox_cb g1_badges_cb g1_playerpic_cb g1_keyitem_cb g2_badgeleader_cb g2_cardpic_cm_cb g2_cardpic_gold_cb g2_frame_cb g2_pack_cb
-rom_gbui_open_loc argsites=10 -> gbscr_sd_read fused_gb_slice_read gb_art_read g1_cardframe_cb g1_font_cb g1_textbox_cb g1_badges_cb g1_playerpic_cb g1_keyitem_cb g2_badgeleader_cb g2_cardpic_cm_cb g2_cardpic_gold_cb g2_frame_cb g2_pack_cb
+rom_gbui_open argsites=8 -> fused_gb_slice_read gb_art_read g1_cardframe_cb g1_font_cb g1_textbox_cb g1_badges_cb g1_playerpic_cb g1_keyitem_cb g2_badgeleader_cb g2_cardpic_cm_cb g2_cardpic_gold_cb g2_frame_cb g2_pack_cb
+rom_gbui_open_loc argsites=10 -> fused_gb_slice_read gb_art_read g1_cardframe_cb g1_font_cb g1_textbox_cb g1_badges_cb g1_playerpic_cb g1_keyitem_cb g2_badgeleader_cb g2_cardpic_cm_cb g2_cardpic_gold_cb g2_frame_cb g2_pack_cb
 # F1/F2 (BACKLOG #84b seventh pass): widened to include rom_gbui.c's 10 `ScanJob.cb`
 # job-table callbacks (g1_*_cb/g2_*_cb, previously `addrtaken-ok` below). rom_gbui.c's
 # OWN file-local `locate`/`scan_multi` (rom_gbui.c:278/458) are BOTH fully inlined into
@@ -629,28 +631,30 @@ rom_gbui_open_loc argsites=10 -> gbscr_sd_read fused_gb_slice_read gb_art_read g
 # RomGbUi.read / the file-local Scan.read (source/rom_gbui.h:246, source/rom_gbui.c:25) --
 # both structs put their GbReadFn `read` hook as the FIRST member (offset 0), so `rd()`,
 # rom_gbui_open(), rom_gbui_open_loc(), and rom_gbui_tile()'s `gu->read(...)`/`s->read(...)`
-# calls all resolve to offset 0. Declared so the SD-backed leg (gbscr_sd_read, the fused-GB
-# leg fused_gb_slice_read, and the ROM-resident leg gb_art_read -- source/pdna_gbscreen.c:486/
-# 520, source/pdna_gen12.c:2213) is COUNTED in any chain that reaches it, instead of being a
-# blind spot that just happens not to be on today's top-5.
+# calls all resolve to offset 0. Declared so the fused-GB leg (fused_gb_slice_read,
+# source/pdna_gbscreen.c:707) and the guarded ROM-resident/SD leg (gb_art_read,
+# BACKLOG #148: source/pdna_gbscreen.c:644/807 -- gbscr_sd_read is gone, both of this
+# file's own read call sites go through gb_art_io.h's gb_art_read now) are COUNTED in
+# any chain that reaches them, instead of being a blind spot that just happens not to
+# be on today's top-5.
 #
 # D5a (BACKLOG #84b seventh pass): offset 0 is the single most contested offset in the
 # whole codebase -- EVERY struct whose first member is a function pointer lands here
 # (Scan, RomGbUi, RomGbIcon, RomGbSprite, RomCtx, G2Writer.rd, gb_sprite_codec.c's Br,
 # ...). Before this pass, field_offset_impls[0] was one GLOBAL union of every impl ever
 # declared at offset 0 -- so a G2Writer.rd dispatch in gen2_write.c's own helpers was
-# silently exempted using Scan/RomGbUi's read implementations (gbscr_sd_read etc, which
+# silently exempted using Scan/RomGbUi's read implementations (gb_art_read etc, which
 # G2Writer never calls), and vice versa: a real false PASS, not just noise. Every class
 # below is now qualified to the exact callers `--dump-sites` (against a real artless
 # ELF, empty --edges-file so classification is declaration-independent) showed actually
 # resolve a 'field @0' site, cross-checked by reading each caller's own parameter type.
-Scan.read @0 in all_blank.constprop.0,any_nonzero.constprop.0,block_eq,cardgfx_verify,distinct_tiles,font_verify,try_badgeleader_hit,try_pack.constprop.0,anchor_pack,rd@rom_gbui,parse_header@rom_gbui -> gbscr_sd_read fused_gb_slice_read gb_art_read
+Scan.read @0 in all_blank.constprop.0,any_nonzero.constprop.0,block_eq,cardgfx_verify,distinct_tiles,font_verify,try_badgeleader_hit,try_pack.constprop.0,anchor_pack,rd@rom_gbui,parse_header@rom_gbui -> fused_gb_slice_read gb_art_read
 # Each of the callers above takes `const Scan* s` (source/rom_gbui.c, grepped: every
 # one of them) and calls `s->read(...)`; `rd`/`parse_header` are rom_gbui.c's own
 # file-local helpers of that exact name (disambiguated @rom_gbui by the D5b symbol
 # census, since rom_gbicon.c/rom_gbsprite.c each define their OWN same-named statics).
 
-RomGbUi.read @0 in rom_gbui_open,rom_gbui_open_loc,rom_gbui_tile,gbscr_open_inner,g1_keyitems_verify,load_g1_keyitems_bits -> gbscr_sd_read fused_gb_slice_read gb_art_read gbscr_mem_read
+RomGbUi.read @0 in rom_gbui_open,rom_gbui_open_loc,rom_gbui_tile,gbscr_open_inner,g1_keyitems_verify,load_g1_keyitems_bits -> fused_gb_slice_read gb_art_read gbscr_mem_read
 # g1_keyitems_verify (BACKLOG #99, source/rom_gbui.c:197) added by p84b item 4: it takes
 # `const Scan* s` but rom_gbui.c:25's Scan and RomGbUi both put `read` at offset 0
 # (D5a's contested-offset-0 note above), and g1_keyitems_verify's own `rd(s, ...)` call
