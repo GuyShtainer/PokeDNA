@@ -9271,6 +9271,28 @@ static void view_save(const char* path) {
   load_phase_n(7, "pc storage");
   g_have_pc = (gen3_read_pc_storage(g_save, g_vinfo.slot, g_pc) == G3_PC_BYTES);
 
+  /* BACKLOG #54 T2 evidence, NO GATE (decision 6): a species field past the Gen-3
+   * ceiling is exactly the anomaly a per-hack SD profile (T2, still in BACKLOG) would
+   * want on record -- logged here because g_party/g_pc are already resident, but
+   * this touches nothing else: no s_hack_mask bit, no UI, no app_can_edit() change.
+   * One glitch Pokemon must never turn a retail user's own save read-only -- that is
+   * the ROM's call alone (decision 4), never the save's. */
+  {
+    int glitch = 0;
+    for (int i = 0; i < g_nparty; i++)
+      if (g_party[i].species > G3_MAX_SPECIES) glitch++;
+    if (g_have_pc)
+      for (int b = 0; b < G3_TOTAL_BOXES; b++)
+        for (int s = 0; s < G3_IN_BOX; s++) {
+          PkMon m;
+          if (pk_decode_mon(pk_box_slot(g_pc, b, s), false, &m) && m.species > G3_MAX_SPECIES)
+            glitch++;
+        }
+    if (glitch)
+      log_line("romhack evidence: %d mon(s) with species > %d (T2 signal, no gate)",
+               glitch, G3_MAX_SPECIES);
+  }
+
   /* SaveBlock2 (section 0) for the trainer card + per-game layout for stats */
   load_phase_n(8, "saveblock2");
   int s0 = gen3_find_section(g_save, g_vinfo.slot, 0);
