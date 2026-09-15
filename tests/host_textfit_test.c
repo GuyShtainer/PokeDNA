@@ -1023,6 +1023,16 @@ int main(void) {
   PF(PDNA_SIDECAR_DV_L2,    28, 184);
   /* ==== END S5-B sidecar (Part E) ============================================= */
 
+  /* ==== BACKLOG #150 S150-6, decision 8: the reroll re-key guard (source/pdna_main.c
+   * app_xfer_pid_guard) ========================================================== */
+  PF(PDNA_XFER_REKEY_TITLE,        28, 184);
+  PF(PDNA_XFER_REKEY_L1,           28, 184);
+  PF(PDNA_XFER_REKEY_FAILED_TITLE, 28, 184);
+  PF(PDNA_XFER_REKEY_FAILED_L1,    28, 184);
+  PF(PDNA_XFER_REKEY_DUP_TITLE,    28, 184);
+  PF(PDNA_XFER_REKEY_DUP_L1,       28, 184);
+  /* ==== END BACKLOG #150 S150-6 decision 8 ===================================== */
+
   /* ==== S5-B review fix #5: app_copy()'s honest toast (source/pdna_main.c) ========= */
   PF(PDNA_SIDECAR_COPY_HAS,  28, 184);
   PF(PDNA_SIDECAR_COPY_NONE, 28, 184);

@@ -37,6 +37,7 @@
 #include "xfer_gate.h"      /* BACKLOG #120 S2: xg_pc_live/xg_togame_row/xg_paste_row/xg_inject_refuse */
 #include "bank_cell.h"      /* BACKLOG #150 S150-6: bc_is_native -- app_paste_gb_commit's G-H6 guard */
 #include "xfer_io.h"        /* BACKLOG #150 S150-6: xr_path_for_key/xr_path_for_name/xr_migrate_once */
+#include "xfer_rec.h"       /* BACKLOG #150 S150-6: xr_key_g3 -- the reroll re-key guard             */
 #include "gen3_trainer.h"
 #include "gen3_record.h"    /* Emerald Battle Record (save sector 31) info + export */
 #include "gen3_frontier.h"  /* g3f_streak_get/g3f_modes/g3f_mode_name for the record screen's streaks page */
@@ -2133,6 +2134,81 @@ static bool app_commit_with_dex(uint8_t* rec, bool is_party, AppCommitFn commit,
   return commit ? commit() : false;
 }
 
+/* BACKLOG #150 S150-6, decision 8: the guard's own plan, handed from
+ * app_xfer_pid_guard() to app_xfer_pid_rekey() across the commit in between. */
+typedef struct {
+  bool needs_rekey;
+  char old_path[GBSC_PATH_MAX];
+  char new_path[GBSC_PATH_MAX];
+} XferRekeyPlan;
+
+/* BACKLOG #150 S150-6, decision 8/G-H5, order per D-Q3 (2026-09-15 orchestrator
+ * decision -- overrides the brief's original "re-key before commit" text): the
+ * reroll/PID/OT-id-change guard, run at the editor's commit chokepoint
+ * (app_box_browse/party_browse) rather than inside em_reroll/em_set_pid/
+ * em_set_unown_form/gen3_ivroll.c themselves -- those fire on every D-pad press;
+ * this fires once, right before the edit would actually land.
+ *
+ * `old_rec`/`new_rec` need only their first 8 bytes (PID + OT id) -- both the
+ * 80-byte box shape and the 100-byte party shape start with the same header, so
+ * the same function serves both call sites unmodified.
+ *
+ * Returns true = proceed with the commit. false = the whole commit is abandoned
+ * (B on the warning, or a duplicate-target refusal) -- no memcpy, no
+ * app_commit_with_dex, nothing written anywhere. When true and *out_plan.needs_rekey
+ * is set, the caller commits FIRST and only calls app_xfer_pid_rekey() after a
+ * VERIFIED successful commit (D-Q3: the save must never be committed with the old
+ * record already gone, and a failed re-key must never be read as "nothing
+ * happened" when the save itself did land). */
+static bool __attribute__((noinline)) app_xfer_pid_guard(const uint8_t* old_rec,
+                                                          const uint8_t* new_rec,
+                                                          XferRekeyPlan* out_plan) {
+  out_plan->needs_rekey = false;
+  uint64_t old_key = xr_key_g3(old_rec);
+  uint64_t new_key = xr_key_g3(new_rec);
+  if (old_key == new_key) return true;               /* PID/OT id unchanged -- no-op */
+
+  /* nothing filed under the old key -- nothing this edit could orphan. */
+  if (!xr_path_for_key(out_plan->old_path, old_key)) return true;
+
+  if (!app_confirm(PDNA_XFER_REKEY_TITLE, PDNA_XFER_REKEY_L1)) return false;   /* B: abandon */
+
+  /* A file ALREADY at the new key means two records would share one PID+OTID --
+   * a DUPLICATE, not a merge (decision 8). Refuse before anything is written. */
+  if (xr_path_for_key(out_plan->new_path, new_key)) {
+    snd_error();
+    msg_wait(PDNA_XFER_REKEY_DUP_TITLE, UI_WARN, PDNA_XFER_REKEY_DUP_L1, 0);
+    return false;
+  }
+
+  out_plan->needs_rekey = true;
+  return true;
+}
+
+/* D-Q3: runs ONLY after app_commit_with_dex() has reported a verified success.
+ * Re-key = sf_read_full(old) -> sf_write_verified(new) -> f_unlink(old), in that
+ * order (SS11.6 verbatim). Any failure before the unlink leaves the OLD file
+ * intact -- the save itself already committed, so there is no "abandon" left to
+ * do; this can only log and move on. S150-11's reconcile matches a stale-keyed
+ * file by identity (ident32 + OT + name) later.
+ *
+ * noinline, GBSC_FILE_MAX (1042 B) buffer on its own frame -- the same discipline
+ * app_paste_gb_merge already follows. */
+static void __attribute__((noinline)) app_xfer_pid_rekey(const XferRekeyPlan* plan) {
+  if (!plan->needs_rekey) return;
+
+  uint8_t buf[GBSC_FILE_MAX];
+  uint32_t len = 0;
+  bool ok = sf_read_full(plan->old_path, buf, sizeof buf, &len) == SF_OK;
+  if (ok) ok = sf_write_verified(plan->new_path, buf, len) == SF_OK;
+  if (ok) ok = f_unlink(plan->old_path) == FR_OK;
+
+  if (!ok) {
+    log_line("xfer: rekey failed, old key kept (%s -> %s)", plan->old_path, plan->new_path);
+    msg_wait(PDNA_XFER_REKEY_FAILED_TITLE, UI_WARN, PDNA_XFER_REKEY_FAILED_L1, 0);
+  }
+}
+
 /* Register a mon's species for a DEFERRED add (Day-Care withdraw, a carried/copied mon
  * dropped into the PC) — no SD write now. Stages the dex sections (SB2 + SB1) into the
  * in-RAM save image like app_stage_sb1, so the exit flush's finalize (which writes the
@@ -2197,7 +2273,16 @@ static bool app_box_browse(uint8_t* block, int box, int start, AppCommitFn commi
     uint8_t* rec = block + 0x0004 + ((uint32_t)box * 30 + idx) * 80;
     uint8_t out[100]; bool saved = false;
     int nav = pdna_inspect(rec, false, app_can_edit(), out, &saved, &card);
-    if (saved) { memcpy(rec, out, 80); if (app_commit_with_dex(rec, false, commit, block)) any = true; }
+    if (saved) {
+      XferRekeyPlan plan;
+      if (app_xfer_pid_guard(rec, out, &plan)) {
+        memcpy(rec, out, 80);
+        if (app_commit_with_dex(rec, false, commit, block)) {
+          any = true;
+          app_xfer_pid_rekey(&plan);
+        }
+      }
+    }
     if (nav == 0) break;
     for (int step = 0; step < G3_IN_BOX; step++) {           /* next occupied slot in dir nav */
       idx = (idx + nav + G3_IN_BOX) % G3_IN_BOX;
@@ -2221,7 +2306,16 @@ static bool party_browse(int start, AppCommitFn commit) {
     uint8_t* rec = g_sb1 + doff + (uint32_t)idx * 100;
     uint8_t out[100]; bool saved = false;
     int nav = pdna_inspect(rec, true, app_can_edit(), out, &saved, &card);
-    if (saved) { memcpy(rec, out, 100); if (app_commit_with_dex(rec, true, commit, g_sb1)) any = true; }
+    if (saved) {
+      XferRekeyPlan plan;
+      if (app_xfer_pid_guard(rec, out, &plan)) {
+        memcpy(rec, out, 100);
+        if (app_commit_with_dex(rec, true, commit, g_sb1)) {
+          any = true;
+          app_xfer_pid_rekey(&plan);
+        }
+      }
+    }
     if (nav == 0) break;
     idx = (idx + nav + count) % count;                     /* U/D = prev/next party mon */
   }

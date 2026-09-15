@@ -1106,6 +1106,23 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_SIDECAR_DV_L1           "Changing DVs orphans the sidecar."
 #define PDNA_SIDECAR_DV_L2           "A = continue"
 
+/* BACKLOG #150 S150-6, decision 8/G-H5: the reroll re-key guard, shown by
+ * app_xfer_pid_guard() (source/pdna_main.c) at the editor's commit chokepoint
+ * (app_box_browse/party_browse) when a saved edit changed a mon's PID or OT id AND
+ * a transfer-ledger record already exists under the OLD key. app_confirm's own
+ * title+L1 shape is the model (source/pdna_app.h:380). */
+#define PDNA_XFER_REKEY_TITLE        "SIDECAR WARNING"
+#define PDNA_XFER_REKEY_L1           "Breaks the link to its GB original."
+/* D-Q3: shown (msg_wait, a plain notice, not a confirm) only when the re-key runs
+ * AFTER a verified commit and fails -- the save itself already landed; the OLD
+ * record file is kept and logged, never lost. */
+#define PDNA_XFER_REKEY_FAILED_TITLE "LINK NOT UPDATED"
+#define PDNA_XFER_REKEY_FAILED_L1    "Saved. The old sidecar link was kept."
+/* A file ALREADY exists at the new key -- two records sharing one PID+OTID would be
+ * a DUPLICATE, not a merge (decision 8); refused before anything is written. */
+#define PDNA_XFER_REKEY_DUP_TITLE    "CANNOT RE-LINK"
+#define PDNA_XFER_REKEY_DUP_L1       "Sidecar already exists for that PID."
+
 /* The GB info page's extra line (Part E): "N here came from Gen 3". Built dynamically
  * (the count is data), but the trailing text is fixed and measured here at its widest
  * plausible count prefix ("30 " -- a box tops out at G3_IN_BOX/gb_list_capacity, well
