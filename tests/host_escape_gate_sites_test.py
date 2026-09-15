@@ -177,6 +177,28 @@ HOLDING_BLOCK_RE    = re.compile(r"if\s*\(\s*s_holding\s*\)\s*\{")
 # demonstration (MUT J).
 BEGIN_SELECT_REFUSAL_RE = re.compile(r"else\s*\{\s*snd_deny\(\);\s*\*pfull\s*=\s*true;\s*\}")
 
+# BACKLOG #142 (lane b142): the entry-time cursor-arrival hint's own `st == 1 &&
+# !s_holding` site (pdna_box()'s body OUTSIDE the s_holding carrying block above --
+# this one runs on a fresh, non-carrying arrival) must never send an is_bank source
+# to the SAVE tab. `SAVE_TAB_TERNARY_RE` matches the exact pre-fix shape,
+# `s_tab_focus = src->is_bank ? 2 : 1;` -- an is_bank grid's tab 1 is the inert
+# "(BANK)" label, so a Game Boy session (the only source that reaches this site with
+# is_bank true -- the real Bank never gets st==1, see the two app_box_start_set(1)
+# call sites, both captioned "bank dropped off the bottom -> PC opens/tabs") landed
+# on SAVE, one A away from ending the session.
+ARRIVAL_ST1_RE       = re.compile(r"st == 1 && !s_holding")
+SAVE_TAB_TERNARY_RE  = re.compile(r"is_bank\s*\?\s*2\s*:\s*1")
+
+
+def arrival_never_saves_check(pdna_box_body: list[str]) -> tuple[bool, list[str]]:
+    """BACKLOG #142: exactly one `st == 1 && !s_holding` site must exist in
+    pdna_box()'s own body, and none of its matching lines may carry the
+    `is_bank ? 2 : 1` ternary that sends an is_bank arrival to the SAVE tab.
+    Shared by the real check (l) and its self-mutation demonstration (MUT S)."""
+    sites = [ln for ln in pdna_box_body if ARRIVAL_ST1_RE.search(ln)]
+    bad = [ln for ln in sites if SAVE_TAB_TERNARY_RE.search(ln)]
+    return (len(sites) == 1 and not bad), sites
+
 
 def carrying_block(pdna_box_body: list[str]) -> list[str]:
     """The `if (s_holding) { ... }` sub-block inside pdna_box()'s own body (the "MOVE
@@ -496,6 +518,13 @@ def main() -> int:
     ok, details = bank_edge_sites_check(block)
     check(ok, "BACKLOG #171: " + "; ".join(d for d in details if "missing" in d))
 
+    # ---- (l) BACKLOG #142: the entry-time (non-carrying) `st == 1` arrival site
+    # never sends an is_bank source to the SAVE tab -- see ARRIVAL_ST1_RE's own
+    # comment above for why is_bank at this site always means a Game Boy session. ----
+    ok, sites = arrival_never_saves_check(pdna_box_body)
+    check(ok, f"BACKLOG #142: the st==1 arrival site sends an is_bank source to the "
+          f"SAVE tab (expected exactly 1 clean site, found {sites})")
+
     # ---- (k) BACKLOG #171/#171b review F1: begin_select's refusal branch sets
     # *pfull = true -- one of this repo's four named partial-repaint trap classes: a
     # full-screen paint from OUTSIDE pdna_box()'s own render pipeline (gb_pick_origin's
@@ -740,6 +769,30 @@ def self_test_mutation_detection(box_lines: list[str]) -> None:
         print(f"  MUT M demonstration -- `bool converted = true;` at drop_held's own top: "
               f"{len(asg_idx)} `converted = true` occurrence(s) found (expected exactly 1, "
               f"immediately after a BANK_DOWN_CONVERTED test)")
+
+    # MUT S (BACKLOG #142, lane b142): revert the entry-time `st == 1 && !s_holding`
+    # arrival site back to its pre-fix `s_tab_focus = src->is_bank ? 2 : 1;` form --
+    # the exact regression this lane fixed (a Game Boy session's own box grid parked
+    # the cursor on the SAVE tab on a directional arrival from its linked Bank) -- and
+    # assert arrival_never_saves_check() catches it.
+    s, e = extract_function(box_lines, r"^int pdna_box\(BoxSource\* src\)")
+    pdna_box_body = box_lines[s:e]
+    mut_n = list(pdna_box_body)
+    reverted_n = False
+    for i, ln in enumerate(mut_n):
+        if ARRIVAL_ST1_RE.search(ln) and "!src->is_bank" in ln:
+            mut_n[i] = ln.replace("st == 1 && !s_holding && !src->is_bank) s_tab_focus = 1;",
+                                   "st == 1 && !s_holding) s_tab_focus = src->is_bank ? 2 : 1;")
+            reverted_n = True
+            break
+    check(reverted_n, "MUT S: could not find the real fixed arrival site to revert -- "
+                       "fix this test")
+    if reverted_n:
+        ok, sites = arrival_never_saves_check(mut_n)
+        check(not ok, f"MUT S (arrival site reverted to `is_bank ? 2 : 1`) should have "
+                       f"been caught but was not: {sites}")
+        print(f"  MUT S demonstration -- arrival site reverted to the pre-fix "
+              f"`is_bank ? 2 : 1` ternary: correctly caught ({sites})")
 
 
 

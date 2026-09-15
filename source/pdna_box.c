@@ -3633,7 +3633,17 @@ int pdna_box(BoxSource* src) {
       if (st == 2)      s_ch_tr = chunk_anchor_rmax(&s_ch);   /* arrived from below -> bottom of grid */
       else if (st == 1) s_ch_tr = 0;                          /* arrived from above -> top of grid */
       else if (s_ch_tr > chunk_anchor_rmax(&s_ch)) s_ch_tr = chunk_anchor_rmax(&s_ch);
-    } else if (st == 1 && !s_holding) s_tab_focus = src->is_bank ? 2 : 1;
+    } else if (st == 1 && !s_holding && !src->is_bank) s_tab_focus = 1;
+    /* BACKLOG #142: an is_bank grid (the Game Boy session's own box; the real Bank
+     * never reaches st==1 -- see app_box_start_set(1)'s two call sites, both "...
+     * PC opens/tabs") has no PARTY tab to land on (tab 1 there is the inert "(BANK)"
+     * label), and it landed on tab 2 = SAVE instead -- one stray A ended the session.
+     * s_tab_focus is already -1 from this function's own reset a few lines up and
+     * `cur` is already 0 (its declared initial value, untouched by this branch), so
+     * doing nothing here for is_bank leaves the cursor on the grid's top-left CELL,
+     * mirroring the real PC grid's own st==1 arrival (which lands in its tabs, not
+     * possible here since GB's tab 1 is inert) -- tabs stay reachable via UP, same as
+     * every other grid visit. */
     else if (st == 2) cur = COLS * (ROWS - 1);
     else if (st == 3 && !s_holding && !src->is_bank) want_party_strip = true;
   }
