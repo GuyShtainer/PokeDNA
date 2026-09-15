@@ -2308,6 +2308,10 @@ int main(void) {
   PF(PDNA_ROMHACK_TITLE, 28, 184);
   PF(PDNA_ROMHACK_L1,    28, 184);
   PF(PDNA_ROMHACK_L2,    28, 184);
+  /* Review fix F1: app_readonly_why()'s honest wording for the ~12 pdna_main.c
+   * "READ-ONLY" refusal sites that used to always say "Needs EZ-Flash Omega." even
+   * when the real reason is a hack-flagged ROM. Same msg_wait (28, 184) clamp. */
+  PF(PDNA_ROMHACK_WHY, 28, 184);
   /* ==== END BACKLOG #54 ROM-hack banner ======================================== */
 
   printf("\n%d checks, %d FAILED\n", checks, fails);

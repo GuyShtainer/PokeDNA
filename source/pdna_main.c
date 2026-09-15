@@ -1186,6 +1186,19 @@ static PkGame pkgame_of_romkind(RomKind k) {
 
 static bool app_rom_is_hack(PkGame g) { return (s_hack_mask & (1u << (unsigned)g)) != 0; }
 
+/* Review fix F1: ~20 refusal sites share the literal "Needs EZ-Flash Omega." --
+ * correct for an Everdrive/pdna_romcheck_bad() refusal, a real LIE for an Omega
+ * owner whose cart is perfectly writable but whose currently-open game is
+ * hack-flagged (app_can_edit() now refuses for that reason too, BACKLOG #54).
+ * This picks the honest wording for the 12 pdna_main.c sites this lane owns; the
+ * other seven files' sites (pdna_box.c, pdna_frontier.c, pdna_fly.c,
+ * pdna_contest.c, pdna_map.c, pdna_gbfly.c, pdna_layout.h's own copy) are OUT OF
+ * SCOPE for this lane -- named in this lane's report as a follow-up BACKLOG item,
+ * not touched here. */
+static const char* app_readonly_why(void) {
+  return app_rom_is_hack(g_game) ? PDNA_ROMHACK_WHY : "Needs EZ-Flash Omega.";
+}
+
 static const char* romident_name(RomIdent id) {
   switch (id) {
     case ROM_ID_RETAIL:      return "RETAIL";
@@ -4074,7 +4087,7 @@ static void party_ov_cancel_paint(bool bsel) {
 
 static int app_party_overlay_inner(const uint8_t* held, int orig_box, int orig_slot, bool orig_bank,
                                    bool can_swap, uint8_t grab80[80], int* grab_slot, bool allow_move_to_box) {
-  if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); return 0; }
+  if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, app_readonly_why(), 0); return 0; }
   /* Same two-axis gate as app_mon_menu, and here it is a DATA-LOSS guard: a party mon
    * carried out through this overlay is removed from the party for real once it is
    * dropped (drop_held -> clear_origin -> app_party_remove_at), so dropping it into a
@@ -6063,7 +6076,7 @@ static int dc_menu(bool can_take, bool can_put) {
  * a mon in the Party/PC first (universal clipboard), then puts it in here — a paste, so
  * the source keeps its copy (release it separately for a true move, like the PC). */
 static bool dc_deposit(uint32_t base, uint32_t stride) {
-  if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); return false; }
+  if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, app_readonly_why(), 0); return false; }
   if (!g_clip.occupied) { snd_deny(); msg_wait("NOTHING COPIED", UI_DIM, "Copy a mon in PC/Party,", "then Put in here."); return false; }
   int fi = dc_first_free(base, stride);
   if (fi < 0) { snd_deny(); msg_wait("DAY-CARE FULL", UI_WARN, "Take a Pokemon out first.", 0); return false; }
@@ -6083,7 +6096,7 @@ static bool dc_deposit(uint32_t base, uint32_t stride) {
  *   To PC    - place on the clipboard so the user PASTEs it onto any free PC slot
  *              (a "grab"-style placement of their choice). */
 static bool dc_withdraw(uint32_t base, uint32_t stride, uint8_t* rec, int physi) {
-  if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); return false; }
+  if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, app_readonly_why(), 0); return false; }
   static const char* const D[3] = { "To Party", "To PC", "Cancel" };
   int sel = 0;
   for (;;) {
@@ -6551,7 +6564,7 @@ static bool sb_detail(SbRecord* b, uint32_t off) {
     if (k & KEY_B) return dirty;
     else if (k & KEY_A) { if (b->partyCount > 0) sb_mon_edit(b, off, psel, &dirty); }
     else if (k & KEY_SELECT) {
-      if (!can)        { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); }
+      if (!can)        { snd_deny(); msg_wait("READ-ONLY", UI_WARN, app_readonly_why(), 0); }
       else if (b->own) { snd_deny(); msg_wait("OWN BASE", UI_DIM, "Its look comes from your", "trainer card."); }
       else sb_owner_pick(b, off, &dirty);
     }
@@ -6655,7 +6668,7 @@ static void pdna_secretbase(void) {
       }
     }
     else if (k & KEY_SELECT) {                          /* clear a base (Omega-only, verified write) */
-      if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); continue; }
+      if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, app_readonly_why(), 0); continue; }
       const SbRecord* b = &g_sb_recs[sel];
       char l2[40]; siprintf(l2, "%s%s", b->trainerName[0] ? b->trainerName : "?", b->own ? "  (YOUR base)" : "'s base");
       if (app_confirm("Clear this Secret Base?", l2)) {
@@ -6878,7 +6891,7 @@ static void pdna_mirage(void) {
     if (k & KEY_UP)   { sel = (sel > 0) ? sel - 1 : n - 1; continue; }
     if (k & KEY_DOWN) { sel = (sel + 1) % n;               continue; }
 
-    if (!app_can_edit()) { msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); continue; }
+    if (!app_can_edit()) { msg_wait("READ-ONLY", UI_WARN, app_readonly_why(), 0); continue; }
     /* app_confirm's panel is the same narrow one. */
     if (!have) {
       /* msg_wait's panel is narrower than the screen: ~22 chars a line, not 29. */
@@ -8117,7 +8130,7 @@ static void pdna_battle_record(void) {
     u16 k = wait_keys(KEY_A | KEY_SELECT | KEY_B);
     if (k & KEY_B) { snd_back(); return; }
     if (k & KEY_A) { rec_files_page(); continue; }      /* browse exports; no record needed */
-    if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); continue; }
+    if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, app_readonly_why(), 0); continue; }
     rec_import();                                      /* success -> the rescan shows it */
   }
   rmbl_fire(RCUE_ROOM);
@@ -8196,12 +8209,12 @@ static void pdna_battle_record(void) {
       return;
     }
     if (k & KEY_SELECT) {                              /* import an older .rec over this one */
-      if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); continue; }
+      if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, app_readonly_why(), 0); continue; }
       if (rec_import()) g3_record_scan(g_save, g_save_size, &ri);   /* show the imported battle */
       continue;
     }
     /* ---- A: export the raw 4 KiB sector (verified write, Omega-only) ---- */
-    if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); continue; }
+    if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, app_readonly_why(), 0); continue; }
     const char* who = ri.names[ri.multiplayer_id][0] ? ri.names[ri.multiplayer_id] : "?";
     char base[8]; int o = 0;
     for (int i = 0; who[i] && o < 7; i++) {              /* sanitize the trainer name for FAT */
@@ -9468,12 +9481,12 @@ static void view_save(const char* path) {
                          else msg_wait("BAG", UI_WARN, "Read-only cart.", "Writes need an Omega.");
                          break;
         case NV_DATA:    if (app_can_edit()) data_editor();
-                         else { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); } break;
+                         else { snd_deny(); msg_wait("READ-ONLY", UI_WARN, app_readonly_why(), 0); } break;
         case NV_SECRET:  rmbl_fire(RCUE_ROOM); pdna_secretbase(); break;
         case NV_POKEBLOCK: if (app_can_edit()) pdna_pokeblock();
-                           else { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); } break;
+                           else { snd_deny(); msg_wait("READ-ONLY", UI_WARN, app_readonly_why(), 0); } break;
         case NV_EVENTS:   if (app_can_edit()) pdna_events();
-                           else { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); } break;
+                           else { snd_deny(); msg_wait("READ-ONLY", UI_WARN, app_readonly_why(), 0); } break;
         case NV_BATTLEREC: pdna_battle_record(); break;  /* viewing is free; export gates on Omega inside */
         case NV_FRONTIER: pdna_frontier(g_sb1, g_sb2, g_game); break;   /* viewing free; editing gates on Omega inside */
         case NV_FLY:      pdna_fly(g_sb1, g_game); break;        /* viewing free; editing gates on Omega inside */

@@ -1820,5 +1820,11 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * shorter wording. PF-checked in tests/host_textfit_test.c beside the other
  * "why locked" prose the read-only mon menu draws. */
 #define PDNA_ROMHACK_NOTE  "ROM hack: locked"
+/* Review fix F1: the flat "READ-ONLY / Needs EZ-Flash Omega." refusal at ~12
+ * app_can_edit()-gated sites in pdna_main.c is a real lie to an Omega owner whose
+ * cart is writable but whose ROM is hack-flagged -- app_readonly_why()
+ * (pdna_main.c) picks between this and the Omega message based on
+ * app_rom_is_hack(g_game). PF-checked at the same (28, 184) msg_wait clamp. */
+#define PDNA_ROMHACK_WHY "ROM hack: writes locked."
 
 #endif /* PDNA_LAYOUT_H */
