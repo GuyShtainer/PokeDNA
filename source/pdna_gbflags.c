@@ -236,9 +236,11 @@ static void ctr_edit_row(GbSession* s, GbGame g, int kind, bool* dirty) {
  * second static of this shape is the thing to avoid. These are just POINTERS
  * (trivial IWRAM .data, not the ~640 B the arrays themselves would cost); the bytes
  * they point at live in EWRAM, lent for exactly this screen's visit and released on
- * every exit path (flg_tail_acquire/flg_tail_release below). Only reachable when
- * g_ed is non-NULL (pdna_gen12.c's own gate on this screen), which is exactly
- * gb12_arena_tail()'s own precondition. */
+ * every exit path (flg_tail_acquire/flg_tail_release below). BACKLOG #64 review
+ * Finding 6: reachable whenever gb12_arena_tail() has a tail to lend -- the
+ * resident-image mount's own (g_ed non-NULL) OR a streamed read-only session's own
+ * (g_ed == NULL, g_ro_tail non-NULL, pdna_gen12.c) -- NOT gated on g_ed alone any
+ * more; see gb12_arena_tail()'s own comment for the two-tail rule. */
 static NamedFlag*  s_nf;
 static uint8_t*    s_kind;
 static uint8_t*    s_ord;
@@ -396,10 +398,13 @@ static void raw_flag_browser(GbSession* s, GbGame g, bool* dirty, bool* warned, 
 void pdna_gbflags(GbSession* s, bool can_edit) {
   if (!s || !s->open) { msg_wait("FLAGS", UI_WARN, "Could not read this save.", 0); return; }
   if (!flg_tail_acquire()) {
-    /* g_ed is guaranteed non-NULL here (the only caller, gb_nav_from_start, gates on
-     * it) -- a refusal means the arena tail is genuinely full, not a missing
-     * precondition. Honest refusal, no dead end, same posture as gbscr_open()'s own
-     * `reason` fallback path on the art-shell screens. */
+    /* BACKLOG #64 review Finding 6: `s` may be the resident-image session (g_ed
+     * non-NULL) OR a streamed read-only one (g_ed == NULL, g_ro_tail) -- either
+     * way gb12_arena_tail() has ITS OWN tail to lend by the time gb_nav_from_start
+     * calls this screen, so a refusal here means the arena tail is genuinely full
+     * (already lent to something else this visit), not a missing precondition.
+     * Honest refusal, no dead end, same posture as gbscr_open()'s own `reason`
+     * fallback path on the art-shell screens. */
     msg_wait("FLAGS", UI_WARN, "Not enough memory right now.", "Try again after a fresh boot.");
     return;
   }

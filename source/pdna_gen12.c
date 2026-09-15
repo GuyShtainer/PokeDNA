@@ -967,6 +967,20 @@ typedef struct {
 } Gb12Edit;
 static Gb12Edit* g_ed;        /* pointer only: the block itself lives in the arena */
 
+/* BACKLOG #64 review Finding 6 (CRITICAL fix): gb12_arena_tail()'s ONLY tail before
+ * this was the resident-image mount's own (g_ed's end); a streamed read-only session
+ * (g_ed == NULL) had no tail of its own at all, so map/flags/bag/dex/pack's own
+ * gb12_arena_tail() callers all refused with a false "Not enough memory right now"
+ * panel on EVERY read-only nav row that needs one -- a regression this lane
+ * introduced (those rows showed the working gb_info_page on main). g_ro_tail is the
+ * streamed-session equivalent of `g_ed`'s own implicit tail pointer: set by
+ * pdna_gen12_show()/pdna_gen12_show_fused() right after their own gbs_open_streamed()
+ * succeeds, cleared beside every place this file already clears g_ed to 0. Pointer
+ * only (8 B .data, matching g_ed's own "pointer only" comment) -- the bytes
+ * themselves live in the SAME arena block gb12_arena_tail() has always pointed into. */
+static uint8_t* g_ro_tail;
+static uint32_t g_ro_tail_slack;
+
 /* F1 (BACKLOG #94): gbsrc_set_name/gbsrc_can_rename's real bodies (declared as thin
  * shims above the PDNA_GEN12_HOST guard, since g_ed, app_can_edit, gbbn_rename,
  * gbbn_supported and gb_persist all live down here in the GBA-glue half of this file).
@@ -2180,12 +2194,19 @@ _Static_assert(GB12_ARENA_NEED_IMG <= APP_ARENA_BYTES,
  * counts every byte up to and including Gb12Edit, so the slack below (~23.7 KB) is
  * exactly what a caller may still take.
  *
- * `need <= slack` is the one runtime check; g_ed itself must be non-NULL (the
- * resident-image mount with a live edit session -- pdna_gbtrainer() is reachable
- * ONLY that way, never the read-only nav-menu FIL mount, whose own arena layout
- * (GB12_ARENA_NEED, above) has no Gb12Edit at all and this function correctly
- * refuses for). No allocation, no assert, no side effect -- a NULL return is an
- * ordinary "not available right now", same posture as app_arena_acquire() itself. */
+ * `need <= slack` is the one runtime check. BACKLOG #64 review Finding 6 (CRITICAL
+ * fix): this used to read "g_ed itself must be non-NULL ... never the read-only
+ * nav-menu FIL mount ... this function correctly refuses for" -- that was WRONG
+ * the moment this lane gave the read-only nav-menu FIL mount (and the fused delta
+ * entry) their own streamed GbSession: pdna_gbflags/pdna_gbdex/pdna_gbpack's own
+ * screens call THIS function regardless of which kind of session they were handed
+ * (gs, not g_ed -- see gb_nav_from_start), so a blanket "g_ed == NULL always
+ * refuses" answer here would false-panel every one of those screens on the
+ * streamed path instead of rendering them. The real rule now: g_ed non-NULL uses
+ * the resident-image tail (below, unchanged); g_ed NULL uses g_ro_tail instead
+ * (set only by a successful gbs_open_streamed(), see that global's own comment) --
+ * either way a NULL return is an ordinary "not available right now", same posture
+ * as app_arena_acquire() itself, never a silent wrong-tail hand-out. */
 /* U2b review item 0b: gb12_arena_tail() used to be a bare pointer -- any two
  * callers in the same visit (the shell's own cache AND, say, a future second
  * consumer) could unknowingly overlap the SAME bytes. One slice at a time: a
@@ -2197,8 +2218,15 @@ _Static_assert(GB12_ARENA_NEED_IMG <= APP_ARENA_BYTES,
 static bool g_tail_lent = false;
 
 uint8_t* gb12_arena_tail(uint32_t need) {
-  if (!g_ed) return NULL;
   if (g_tail_lent) return NULL;          /* already out on loan this visit    */
+  /* BACKLOG #64 review Finding 6: the streamed (read-only, g_ed == NULL) tail --
+   * see g_ro_tail's own comment above. Checked BEFORE the resident-image math below
+   * so a streamed session never falls through to dereference a NULL g_ed. */
+  if (!g_ed) {
+    if (!g_ro_tail || need > g_ro_tail_slack) return NULL;
+    g_tail_lent = true;
+    return g_ro_tail;
+  }
   if (GB12_ARENA_NEED_IMG > (uint32_t)APP_ARENA_BYTES) return NULL;   /* belt: the
                                             * _Static_assert above already forbids this
                                             * at compile time, but a caller must never
@@ -3186,12 +3214,27 @@ int pdna_gen12_show(const char* path, uint8_t met_game) {
   GbsStatus vst = gbs_open_streamed(&vw->s, gb_read, f, len, vw->scratch, sizeof vw->scratch);
   if (vst == GBS_OK && (vw->s.gen == GB_GEN1) == (m->kind == GB12_SAVE_RBY)) {
     vw_ok = true;
+    /* BACKLOG #64 review Finding 6 (CRITICAL fix): install this session's own
+     * read-only arena tail -- see g_ro_tail's own comment. The tail sits past
+     * Gb12View, the same "+4 for 4-byte rounding" reasoning GB12_ARENA_NEED_RO's
+     * own definition already uses. */
+    g_tail_lent = false;
+    g_ro_tail = (uint8_t*)(uintptr_t)vw + GB12_A4(sizeof(Gb12View)) + 4u;
+    g_ro_tail_slack = (uint32_t)APP_ARENA_BYTES - (uint32_t)GB12_ARENA_NEED_RO;
   } else {
     log_line("gen12: read-only session refused (%s, gen %d vs mount kind %d)",
              gbs_status_text(vst), (int)vw->s.gen, (int)m->kind);
   }
 
   gb_session_core(m, vw_ok ? &vw->s : 0);
+
+  /* MANDATORY: the arena block is about to go -- clear the tail exactly like every
+   * `g_ed = 0` site already clears g_tail_lent, or the next screen (resident-image
+   * or streamed) could be handed a pointer into an arena block that is no longer
+   * this session's to use. */
+  g_ro_tail = 0;
+  g_ro_tail_slack = 0;
+  g_tail_lent = false;
 
   f_close(f);
   app_arena_release();
