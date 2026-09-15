@@ -1892,8 +1892,10 @@ static bool gbsrc_release_all_impl(int box) {
     GbsStatus dst = gbs_delete(s, box, slot, g_ed->list);
     ok = (dst == GBS_OK);
   }
-  bool persisted = false;
   if (!ok) {
+    /* A mid-way gbs_delete() refusal: gb_rollback() genuinely reverts every delete
+     * this loop already applied (g_ed->img <- g_ed->pristine), so "Nothing changed"
+     * is accurate here -- this hook's OWN panel is the first and only word on it. */
     gb_rollback();
     log_line("gen12: release-all box %d refused partway", box);
     snd_error();
@@ -1901,22 +1903,29 @@ static bool gbsrc_release_all_impl(int box) {
     ui_panel(20, 54, 200, 56, UI_PANEL, UI_WARN);
     ui_text(30, 64, UI_WARN, "RELEASE FAILED");
     ui_text(30, 82, UI_DIM, "Nothing changed.");
-  } else {
-    persisted = gb_persist("release-all");   /* ONE persist for the whole box (decision's own point) */
-    ui_clear();
-    ui_panel(20, 54, 200, 56, UI_PANEL, persisted ? UI_OK : UI_WARN);
-    if (persisted) {
-      snd_save();
-      ui_text(30, 64, UI_OK, "RELEASED");
-      char l[40]; siprintf(l, "Freed %d slots.", total);
-      ui_text(30, 82, UI_DIM, l);
-    } else {
-      ui_text(30, 64, UI_WARN, "RELEASE FAILED");
-      ui_text(30, 82, UI_DIM, "Nothing changed.");   /* gb_persist already rolled RAM back */
-    }
+    ui_text(30, 96, UI_DIM, "Press A");
+    u16 kk; do { s_vsync(); kk = key_hit(KEY_A); } while (!kk);
+    boxoam_resume();
+    return false;
   }
-  ui_text(30, 96, UI_DIM, "Press A");
-  u16 kk; do { s_vsync(); kk = key_hit(KEY_A); } while (!kk);
+
+  /* gb_persist() ALWAYS shows its own message on refusal (the PDNA_DELTA wall or a
+   * hardware backup/write-fail dialog, each with its own accurate wording -- the
+   * PDNA_DELTA one explicitly does NOT roll RAM back, unlike the mid-way case just
+   * above) -- drawing a SECOND "RELEASE FAILED" panel on top of it would be a false
+   * "nothing changed" on the one path where something genuinely did. Only success
+   * gets a panel of this hook's own. */
+  bool persisted = gb_persist("release-all");   /* ONE persist for the whole box */
+  if (persisted) {
+    snd_save();
+    ui_clear();
+    ui_panel(20, 54, 200, 56, UI_PANEL, UI_OK);
+    ui_text(30, 64, UI_OK, "RELEASED");
+    char l[40]; siprintf(l, "Freed %d slots.", total);
+    ui_text(30, 82, UI_DIM, l);
+    ui_text(30, 96, UI_DIM, "Press A");
+    u16 kk; do { s_vsync(); kk = key_hit(KEY_A); } while (!kk);
+  }
   boxoam_resume();
   return persisted;
 }
