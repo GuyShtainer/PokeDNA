@@ -2700,42 +2700,63 @@ void gb12_arena_tail_release(void) {
   g_tail_lent = false;
 }
 
-/* BACKLOG #150 S150-2 step 5 (SCOPE DEVIATION -- forward-pulled from S150-13's own
- * row, docs/BANK-CROSSGEN-DESIGN.md:1345; S150-2's row, :1333, says nothing about
- * opening a summary): "A on a native Bank cell opens the REAL Gen-1/2 summary,
- * read-only". A native Bank cell that renders but cannot be opened is a dead cell for
- * the whole S150-3..S150-13 stretch, so this ships now as a SECOND, PARALLEL entry
- * point, deliberately NOT the refactor of gb_view_hook (below) that S150-13's own
- * design (SS11.9) eventually wants (a shared gb_summary_show(mon, gen), called from
- * both this and gb_view_hook). gb_view_hook's tail is a browse loop that can COMMIT
- * (gb_edit_commit) -- hanging that off a Bank cell is exactly what SS11.9's "EDIT is
- * denied" forbids, so this wrapper stays entirely separate and read-only: can_edit
- * and start_editing are both hard-coded false, so `saved` can never go true
- * (pdna_gbsummary.h's own contract: "saved is set true iff the user confirmed a
- * write", and nothing can be kept without can_edit). `has_sidecar` is false because
- * the ledger does not exist until S150-6. No U/D scroll loop -- a single native Bank
- * cell has no "next mon" to scroll to, so one call is the whole contract; if the user
- * presses U/D inside the summary it just exits, same as B. S150-13 may later rename
- * this to gb_summary_show; that rename, gb_view_hook's own refactor and any edit path
- * stay OUT of this function's scope. */
-bool gb_native_summary_open(const uint8_t rec80[80]) {
-  GbEditMon e; BcMeta meta;
-  if (!bc_unpack(rec80, &e, &meta)) return false;
-  bool saved = false; int card = 0;
-  /* Review F5 (BACKLOG #150 S150-2): pdna_gbsummary()'s own contract (pdna_gbsummary.h)
-   * returns 0 (exit), +1 (next mon) or -1 (prev mon) -- "the caller loads that slot and
-   * calls again, same contract as pdna_inspect()". A single native Bank cell has no
-   * prev/next mon to load, so U/D inside the summary used to silently dump the user
-   * back to the grid, contradicting the read-only footer's own "U/D mon" promise. Loop
-   * on a non-zero return so U/D just re-opens the SAME cell -- can_edit stays false on
-   * every call, so this can never turn into an edit loop. S150-13 owns the real fix (a
-   * no-nav footer variant for a single-cell view); this is the smallest correct
-   * behaviour until then. */
-  while (pdna_gbsummary(&e, /*can_edit*/false, /*start_editing*/false,
+/* BACKLOG #150 S150-14 (Guy's §10 Round-4 Q2, docs/BANK-CROSSGEN-DESIGN.md:456-458,
+ * verbatim: "editing a native Bank cell -> MUST-HAVE NOW: a slice that opens the
+ * Gen-1/2 editor (the GB session's own summary/edit screens) on a native Bank cell,
+ * writing the native bytes back through bc_pack; the Gen-3 editor stays denied on a
+ * native cell"). This was S150-2 step 5's read-only-only wrapper (SCOPE DEVIATION,
+ * forward-pulled from S150-13's own row, docs/BANK-CROSSGEN-DESIGN.md:1345); it
+ * still deliberately stays a SECOND, PARALLEL entry point, NOT the refactor of
+ * gb_view_hook (below) that S150-13's own design (§11.9) eventually wants (a shared
+ * gb_summary_show(mon, gen), called from both this and gb_view_hook) -- §11.9's own
+ * argument for denying the GEN-3 editor on a native cell (it would write an 80-byte
+ * Gen-3 record and destroy the "GBC1" tag) is untouched by Guy's Q2 and still stands;
+ * this function only ever writes back through bc_pack, never through the Gen-3
+ * editor's commit path. `has_sidecar` stays false: the ledger's key space
+ * (xr_key_g3, bytes 0..7) is not gbsc_key's, so gb_has_sidecar would warn about the
+ * wrong file (decision 11) -- the correct orphan warning for an edit is
+ * app_xfer_pid_guard's own dialog, fired by the caller at commit time.
+ *
+ * `can_edit` is computed HERE, not passed straight through: `allow_edit` alone is
+ * not enough to actually enter edit mode (decision 10) -- `out80` must be non-NULL
+ * (nowhere to pack a result) and `app_can_edit()` must be true (the CART gate; there
+ * is no GB save mounted here for `gb_locate()` to check instead).
+ *
+ * TRAP (decision 3): `pdna_gbsummary` edits `e` IN PLACE and does NOT restore it on a
+ * discard (pdna_gbedit.h:22-24 says so outright) -- so `bc_unpack` is re-run at the
+ * TOP of EVERY loop iteration, never once before the loop. A single `bc_unpack`
+ * outside the loop was safe only while can_edit was always false (S150-2); with
+ * editing on, a discarded edit followed by a U/D re-open would otherwise show the
+ * mutated (discarded) record as if it had been kept. `saved` is also checked BEFORE
+ * the `nav == 0` test, since pdna_gbsummary.c can set `*saved` on a U/D exit too
+ * (:617-625), not only on B. */
+bool gb_native_summary_open(const uint8_t rec80[80], bool allow_edit, uint8_t out80[80]) {
+  const bool can_edit = allow_edit && out80 && app_can_edit();
+  int card = 0;                                            /* sticky across re-opens, gb_view_hook's own hoist */
+  for (;;) {
+    GbEditMon e; BcMeta meta;
+    if (!bc_unpack(rec80, &e, &meta)) return false;
+    bool saved = false;
+    int nav = pdna_gbsummary(&e, can_edit, /*start_editing*/false,
                         meta.gen == GB_GEN1 ? "Gen 1 record" : "Gen 2 record",
-                        /*has_sidecar*/false, /*create*/false, &saved, &card) != 0) {
+                        /*has_sidecar*/false, /*create*/false, &saved, &card);
+    if (saved) {
+      /* decision 4: keep bank_serial/origin_game/rtc_epoch; ident32 recomputes for
+       * free inside bc_pack; re-derive only the two flag bits a GbEditMon can carry
+       * (b3 egg, b4 held-item) -- b0/b1/b2 are Bank/ledger state bank_cell.h says a
+       * GbEditMon has no home for, and must survive verbatim. */
+      uint8_t nf = (uint8_t)(meta.flags & (BC_FLAG_FROM_PARTY | BC_FLAG_HAS_XFER_REC | BC_FLAG_QUEUED_PC));
+      if (gb_is_egg(&e))        nf |= BC_FLAG_EGG;          /* gb_edit.h -- Gen 2 list byte 0xFD   */
+      if (gb_get_held_item(&e)) nf |= BC_FLAG_HOLDS_ITEM;   /* gb_edit.h -- Gen 2 only, 0 on Gen 1 */
+      if (bc_pack(&e, nf, meta.origin_game, meta.rtc_epoch, meta.bank_serial, out80) != 0) return false;
+      return true;
+    }
+    if (nav == 0) return false;
+    /* U/D: a single native Bank cell has no prev/next mon to load -- re-open the SAME
+     * cell (Review F5, S150-2), re-unpacking fresh from `rec80` at the top of the
+     * next iteration so a preceding discard (nav != 0, saved == false) can never
+     * leak the mutated `e` back into view (the trap this loop shape exists to avoid). */
   }
-  return true;   /* can_edit false => `saved` can never be true (see the comment above) */
 }
 
 /* S2/S3/S5-B: the resident-image edit pipeline's hooks, registered as one const struct

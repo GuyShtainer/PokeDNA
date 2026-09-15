@@ -2291,7 +2291,9 @@ static bool app_box_browse(uint8_t* block, int box, int start, AppCommitFn commi
      * §11.9 requirement. bc_is_native() first, before anything else: a native cell can
      * never be in a GB session's own grid (those records come from gb_build_slot), so
      * this and app_mon_menu_readonly's RO_VIEW arm below cannot collide. */
-    if (bc_is_native(rec)) { gb_native_summary_open(rec); break; }
+    /* BACKLOG #150 S150-14 step 1: temporarily read-only here -- step 2 turns this
+     * into app_native_cell_edit(rec, commit), the gated EDIT path. */
+    if (bc_is_native(rec)) { gb_native_summary_open(rec, /*allow_edit*/false, 0); break; }
     uint8_t out[100]; bool saved = false;
     int nav = pdna_inspect(rec, false, app_can_edit(), out, &saved, &card);
     if (saved) {
@@ -4812,7 +4814,7 @@ static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0, 
           /* BACKLOG #150 S150-2: a native Bank cell BEFORE the g_src_ops->view check --
            * bc_is_native() first, before anything else, exactly as app_box_browse's own
            * interception point does. */
-          if (bc_is_native(rec)) { gb_native_summary_open(rec); return false; }
+          if (bc_is_native(rec)) { gb_native_summary_open(rec, /*allow_edit*/false, 0); return false; }
           if (g_src_ops && g_src_ops->view) { g_src_ops->view(rec); return false; }
           { uint8_t d[100]; int card = 0;
             pdna_inspect(rec, is_party, false, d, 0, &card); return false; }
@@ -4879,7 +4881,7 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
      * pdna_romcheck_bad()) fell straight through to pdna_inspect()'s lossy Gen-3
      * decode for a native cell too -- the same G-H2 fix RO_VIEW/app_box_browse
      * already apply elsewhere in this file. */
-    if (native) { gb_native_summary_open(rec); return false; }
+    if (native) { gb_native_summary_open(rec, /*allow_edit*/false, 0); return false; }
     if (occupied) { uint8_t d[100]; int card = 0; pdna_inspect(rec, is_party, false, d, 0, &card); }
     return false;
   }
