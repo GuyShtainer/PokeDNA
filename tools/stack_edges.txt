@@ -470,15 +470,19 @@ portrait_redraw argsites=1 -> memcpy32
 
 # pdna_main.c's party_bob_recompose (pdna_main.c:4967, `memcpy32(&vid_mem[y * 240 + 2],
 # s_pcol, 34 * 2 / 4)` in the PDNA_MON_ICONS_ART_COMPILED branch -- BACKLOG #54, the
-# delta variant compiles this branch since it has no SD to stream art from) -- same
+# delta is the only variant where GCC leaves party_bob_recompose out-of-line; artless
+# and normal inline it into party_list, where the memcpy32 literal goes straight to r3
+# with no stack spill and the walker resolves the site with no declaration at all) -- same
 # memcpy32-via-spilled-literal shape as ui_blit_over/portrait_redraw above: memcpy32 is
 # IWRAM_CODE, out of BL's +-4MB range from ROM, so the compiler spills its address to
 # the stack across the y=12..150 loop and reloads it into r3 for the shared `bx r3`
 # thunk before every call. The `#else` (artless) branch's own memcpy32 call at
 # pdna_main.c:4999 is mutually exclusive with this one (preprocessor-gated), so only
 # ONE memcpy32 call exists in whichever branch a given build compiles -- confirmed
-# against this delta ELF's own disassembly (`arm-none-eabi-objdump -d --start-address
-# =0x8041bd8 --stop-address=0x8041d40`): exactly one `bl 804f70a <...bx r3 thunk>` in
+# against this delta ELF's own disassembly (addresses shift every build -- derive them:
+# A=$(arm-none-eabi-nm pokedna-delta.elf | awk '/ party_bob_recompose$/{print $1}');
+# arm-none-eabi-objdump -d --start-address=0x$A --stop-address=$((0x$A+0x1b0))):
+# exactly one `bl <...bx r3 thunk>` in
 # the whole function body, immediately after `bl mon_icon_for_form_frame` / `bl
 # mon_icon_egg_frame` (both direct calls -- those weak symbols resolve at link time in
 # this build, they are not this site) and before the closing `bl rumble_io_resume`.
