@@ -1843,28 +1843,54 @@ static bool gbsrc_export_all_impl(int box) {
   f_mkdir(PDNA_BANK_DIR);
 
   boxoam_suspend();
-  int failed = 0;
+  /* D6 (review-opus, BACKLOG #93): an Egg is a STRUCTURAL refusal (decision 5 --
+   * the file format cannot carry it, same as gb_export_hook's single-mon refusal),
+   * never a write failure -- counting it into `failed` made a box with one Egg and
+   * nineteen ordinary exports show "EXPORTED 19 / 20" in UI_WARN (orange), reading
+   * as "one broke" when nothing did. Eggs get their own bucket and never turn the
+   * panel orange by themselves. */
+  int failed = 0, eggs = 0;
   for (int slot = 0; slot < total; slot++) {
     pdna_progress_frame("EXPORT TO .pk", 0, slot, total, "Writing...");
     GbEditMon e;
-    bool ok = gb_load(&e, s->gen, g_ed->list, box, slot) && !gb_is_egg(&e);
-    if (ok) {
-      char* path = (char*)g_ed->list2;
-      uint8_t* payload = g_ed->list2 + SF_PATH_MAX;
-      int wrote = gb_pk_pack(&e, payload, 56);
-      ok = wrote >= 0 && gb_pk_build_path(path, SF_PATH_MAX, &e);
-      if (ok) { rmbl_pause(); ok = sf_write_verified(path, payload, wrote) == SF_OK; rmbl_resume(); }
+    bool loaded = gb_load(&e, s->gen, g_ed->list, box, slot);
+    if (loaded && gb_is_egg(&e)) {
+      eggs++;
+    } else {
+      bool ok = loaded;
+      if (ok) {
+        char* path = (char*)g_ed->list2;
+        uint8_t* payload = g_ed->list2 + SF_PATH_MAX;
+        int wrote = gb_pk_pack(&e, payload, 56);
+        ok = wrote >= 0 && gb_pk_build_path(path, SF_PATH_MAX, &e);
+        if (ok) { rmbl_pause(); ok = sf_write_verified(path, payload, wrote) == SF_OK; rmbl_resume(); }
+      }
+      if (!ok) failed++;
     }
-    if (!ok) failed++;
     for (int v = 0; v < 3; v++) s_vsync();
   }
   if (failed) snd_error(); else snd_save();
+  int exportable = total - eggs;
   ui_clear();
-  ui_panel(20, 54, 200, 58, UI_PANEL, failed ? UI_WARN : UI_OK);
-  char l[40]; siprintf(l, "EXPORTED %d / %d", total - failed, total);
-  ui_text(30, 64, failed ? UI_WARN : UI_OK, l);
-  ui_text(30, 82, UI_DIM, "Saved to /PokeDNA/bank/");
-  ui_text(30, 96, UI_DIM, "Press A");
+  if (eggs) {
+    /* Taller panel, a fourth row for the egg count -- see the header comment: the
+     * EXPORTED count is now out of `exportable`, not `total`, so a box that is
+     * entirely Eggs and otherwise-successful exports still reads UI_OK green. */
+    ui_panel(20, 54, 200, 72, UI_PANEL, failed ? UI_WARN : UI_OK);
+    char l[40]; siprintf(l, "EXPORTED %d / %d", exportable - failed, exportable);
+    ui_text(30, 64, failed ? UI_WARN : UI_OK, l);
+    char eggline[32];
+    siprintf(eggline, "%d Egg%s skipped", eggs, eggs == 1 ? "" : "s");
+    ui_text(30, 80, UI_DIM, eggline);
+    ui_text(30, 96, UI_DIM, "Saved to /PokeDNA/bank/");
+    ui_text(30, 110, UI_DIM, "Press A");
+  } else {
+    ui_panel(20, 54, 200, 58, UI_PANEL, failed ? UI_WARN : UI_OK);
+    char l[40]; siprintf(l, "EXPORTED %d / %d", exportable - failed, exportable);
+    ui_text(30, 64, failed ? UI_WARN : UI_OK, l);
+    ui_text(30, 82, UI_DIM, "Saved to /PokeDNA/bank/");
+    ui_text(30, 96, UI_DIM, "Press A");
+  }
   u16 kk; do { s_vsync(); kk = key_hit(KEY_A); } while (!kk);
   boxoam_resume();
   return false;   /* writes no save bytes -- box_options_menu's caller re-decodes for nothing either way */
