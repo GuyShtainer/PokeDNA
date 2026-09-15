@@ -470,7 +470,13 @@ def run_b64_import(core_mod, image_mod, rom: Path, out_dir: Path, which: str) ->
         ("trainer",     3, GB_ART_COLD_SETTLE),   # own cold rom_gbui scan (run_u3_trainer)
         ("bag_or_pack", 7, GB_ART_COLD_SETTLE),   # own cold scan (run_u4_bag/run_u5_pack)
         ("flags",       8, gb_shots.BIG_SETTLE),  # no art fetch (run_b88_flags)
-        ("dex",         6, gb_shots.BIG_SETTLE),  # no chooser for red/gold (only crystal has one)
+        ("dex",         6, gb_shots.BIG_SETTLE),  # BACKLOG #64 review R2: pdna_gbdex.c's own
+                                                    # gate is `if (s->gen == GB_GEN2)` (not a
+                                                    # Crystal-only check) -- gold ALSO lands on
+                                                    # the "Pokedex"/"Unown forms" chooser first;
+                                                    # only Gen 1 (red) skips it. Confirmed against
+                                                    # source, not just run_b87_dex()'s own choice
+                                                    # set (which never happened to cover gold).
         ("map",        16, GB_ART_COLD_SETTLE),   # own cold scan (run_m1_map/run_m1_map_gen2)
     ]
     sessions = []
@@ -490,12 +496,25 @@ def run_b64_import(core_mod, image_mod, rom: Path, out_dir: Path, which: str) ->
         s1.tap("START", settle=gb_shots.BIG_SETTLE)
         s1.press_n("DOWN", n)
         s1.tap("A", settle=a_settle)
+        if tag == "dex" and not kind_g1:
+            # BACKLOG #64 review R2: Gen 2 lands on gbdex_chooser() first (Pokedex /
+            # Unown forms, row 0 default-selected) -- one more A confirms row 0 and
+            # opens the actual dex grid, so this shot matches red's (Gen 1's own,
+            # chooser-free) landing screen shape. The grid's OWN header row ("No.1
+            # BULBASAUR ...") draws one repaint pass behind BIG_SETTLE (hand-
+            # calibrated, same class of delayed chrome as the box grid's own) --
+            # without this extra run(), the shot (and the B-count below) land on a
+            # stale partial frame that looks like an extra chooser round trip.
+            s1.tap("A", settle=gb_shots.BIG_SETTLE)
+            s1.run(2000)
         s1.shot(f"{i + 1:02d}_{tag}",
                 f"#64 Fix 3: {which}.sav via NV_GB's fused mount -- {tag} row -- NOW A REAL "
                 "streamed (read-only) session (gbs_open_streamed over the same "
                 "fused_gb_slice_read pair the mount used), not the gb_info_page fallback "
                 "this lane used to leave here before Fix 3")
         s1.tap("B", settle=gb_shots.BIG_SETTLE)
+        if tag == "dex" and not kind_g1:
+            s1.tap("B", settle=gb_shots.BIG_SETTLE)   # grid -> chooser -> box grid (2 levels)
         s1.run(2000)   # box grid header/footer repaint settle (hand-calibrated, see git log)
     sessions.append(s1)
 
@@ -507,11 +526,16 @@ def run_b64_import(core_mod, image_mod, rom: Path, out_dir: Path, which: str) ->
         s2.tap("START", settle=gb_shots.BIG_SETTLE)
         s2.press_n("DOWN", n)
         s2.tap("A", settle=a_settle)
+        if tag == "dex" and not kind_g1:
+            s2.tap("A", settle=gb_shots.BIG_SETTLE)   # chooser row 0 (Pokedex) -> the real grid
+            s2.run(2000)   # same header repaint settle as the import leg above
         s2.shot(f"{i + 1:02d}_{tag}",
                 f"#64 Fix 3: {which}.sav via the boot picker's OWN direct GB row -- {tag} "
                 "row -- the pre-existing resident-image mount (g_ed, editable), for a "
                 "pixel `cmp` against the import mount's read-only render above")
         s2.tap("B", settle=gb_shots.BIG_SETTLE)
+        if tag == "dex" and not kind_g1:
+            s2.tap("B", settle=gb_shots.BIG_SETTLE)   # grid -> chooser -> box grid (2 levels)
         s2.run(2000)
     sessions.append(s2)
 
