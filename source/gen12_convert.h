@@ -110,6 +110,14 @@ typedef struct {
   bool exp_clamped;      /* EXP exceeded the species' level-100 total and was capped   */
   bool gender_relaxed;   /* PID search dropped the gender constraint (should not happen)*/
   bool letter_relaxed;   /* PID search dropped the Unown letter (should not happen)     */
+  /* BACKLOG #150 S150-8 decision 6: CALLER-SET, never touched by gen12_convert() itself
+   * (it zeroes the whole struct at entry, so these start false/0 like every other
+   * field -- the caller sets them AFTER the call, because the caller is what decided
+   * to relax the held-item refusal, docs/BANK-CROSSGEN-DESIGN.md S11.5 G-H7). The item
+   * itself is NOT lost: the transfer record's original80 IS the native cell and
+   * carries it (S11.20 item 11) -- no new ledger field is added for this. */
+  bool    item_dropped;
+  uint8_t item_g2;        /* the Gen-2 item id that was dropped, for the loss row */
 } Gb12Notes;
 
 /* Can this record convert, and if not why? Pure, cheap (no PID search) -- safe to call
