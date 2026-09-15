@@ -1,4 +1,5 @@
 #include "bank_cell.h"
+#include "gen1_save.h"   /* gen1_decode_name -- the SAME lossy decoder gen12_from_gen1 uses */
 #include <string.h>
 
 /* --- little-endian helpers (hard rule 5: explicit, no bit-cast, no memcpy-onto-u32) */
@@ -122,5 +123,56 @@ bool bc_unpack(const uint8_t rec80[BC_CELL_BYTES], GbEditMon* mon, BcMeta* meta)
   meta->origin_game = rec80[BC_OFF_ORIGIN_GAME];
   meta->rtc_epoch   = rd32(rec80 + BC_OFF_RTC_EPOCH);
   meta->bank_serial = rd32(rec80 + BC_OFF_BANK_SERIAL);
+  return true;
+}
+
+bool bc_view(const GbEditMon* mon, const BcMeta* meta, uint32_t id_salt, Gb12Mon* out) {
+  if (!mon || !meta || !out) return false;
+  memset(out, 0, sizeof *out);
+
+  out->gen          = mon->gen;
+  out->species_dex  = gb_get_species_dex(mon);
+  out->exp          = gb_get_exp(mon);
+  out->level        = gb_get_level(mon);
+  out->dv_atk       = gb_get_dv(mon, GB_ATK);
+  out->dv_def       = gb_get_dv(mon, GB_DEF);
+  out->dv_spd       = gb_get_dv(mon, GB_SPE);
+  out->dv_spc       = gb_get_dv(mon, GB_SPC);
+  for (int i = 0; i < 4; i++) {
+    out->moves[i]  = gb_get_move(mon, i);
+    out->pp_ups[i] = gb_get_ppup(mon, i);
+  }
+  out->ot_id        = gb_get_otid(mon);
+  out->held_item    = gb_get_held_item(mon);      /* 0 for Gen 1 by the getter's own contract */
+  out->friendship   = gb_get_friendship(mon);      /* 0 for Gen 1 by the getter's own contract */
+  out->pokerus      = gb_get_pokerus(mon);
+  out->is_egg       = gb_is_egg(mon);
+
+  /* The parser's own lossy decoders, not gb_get_nickname/gb_get_otname (those are the
+   * reversible `{XX}`-escaping decoders) -- see the .h comment for why. */
+  if (mon->gen == GB_GEN1)
+    gen1_decode_name(out->ot_name, (int)sizeof out->ot_name, mon->otname, GB_NAME_BYTES);
+  else
+    g2_decode_text(mon->otname, GB_NAME_BYTES, out->ot_name, (int)sizeof out->ot_name);
+  if (mon->gen == GB_GEN1)
+    gen1_decode_name(out->nickname, (int)sizeof out->nickname, mon->nick, GB_NAME_BYTES);
+  else
+    g2_decode_text(mon->nick, GB_NAME_BYTES, out->nickname, (int)sizeof out->nickname);
+
+  /* ORCHESTRATOR DECISION (S150-2 finding 2, superseding decision 5's origin_game-based
+   * derivation): the converter's OWN rule, computed from the cell's native bytes --
+   * exactly gen12_from_gen2's caught_valid (gen2_save.c:535, "(rec[0x1D] | rec[0x1E])
+   * != 0"), never gated on origin_game. Gold/Silver's identical two bytes ARE
+   * Unused1/Unused2 there, but they are legitimately zero on a genuine non-capture
+   * (traded-in, in-game-gift) Crystal record too -- five real party slots in Guy's
+   * Crystal.sav prove it (tests/host_bankcell_test.c's named regression checks) -- so
+   * "is Crystal" is not the same predicate as "these bytes hold real capture data",
+   * and only the latter is what the converter (gen12_convert.c:415's put_ot_gender)
+   * actually keys off. Gen 1 has no capture-record bytes at all: always false. */
+  out->has_caught_data = (mon->gen == GB_GEN2) &&
+                         ((mon->rec[0x1D] | mon->rec[0x1E]) != 0);
+  out->ot_gender        = gb_get_caught_ot_gender(mon);   /* no has_caught gate on the getter itself */
+
+  out->slot_salt = id_salt;
   return true;
 }
