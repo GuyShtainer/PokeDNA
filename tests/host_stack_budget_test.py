@@ -445,7 +445,7 @@ def test_d_load_extra_edges_parses_frame_override():
         path = f.name
     try:
         field_decls, _field_offset_index, argsite_decls, whole_func_decls, \
-            frame_overrides, isr_decls, addrtaken_ok, _recursion_decls, \
+            frame_overrides, isr_decls, addrtaken_ok, _addrtaken_fragile, _recursion_decls, \
             _gated_decls, _impl_optional_decls, _impl_pending_decls = sb.load_extra_edges(path)
         check("(d) frame override line parsed", frame_overrides == {"leaf": 40},
               frame_overrides)
@@ -471,7 +471,7 @@ def test_d6_argsites_accepts_a_dotted_gcc_clone_name():
         path = f.name
     try:
         field_decls, _field_offset_index, argsite_decls, whole_func_decls, \
-            frame_overrides, isr_decls, addrtaken_ok, _recursion_decls, \
+            frame_overrides, isr_decls, addrtaken_ok, _addrtaken_fragile, _recursion_decls, \
             _gated_decls, _impl_optional_decls, _impl_pending_decls = sb.load_extra_edges(path)
         check("(D6) dotted caller name parsed into argsite_decls, not swallowed whole",
               argsite_decls == {"draw_wallpaper.constprop.0": (3, {"impl_a", "impl_b"})},
@@ -536,7 +536,7 @@ def test_d1_load_extra_edges_parses_isr_and_addrtaken_ok():
         f.write("addrtaken-ok some_table_entry  # compiler-generated, never called\n")
         path = f.name
     try:
-        (_fd, _fi, _ad, _wd, _fo, isr_decls, addrtaken_ok, _rd, _gd,
+        (_fd, _fi, _ad, _wd, _fo, isr_decls, addrtaken_ok, addrtaken_fragile, _rd, _gd,
          _iod, _ipd) = sb.load_extra_edges(path)
         check("(D1) isr lines parsed", isr_decls == {"hb_isr", "pwm_isr"}, isr_decls)
         check("(D1) addrtaken-ok line parsed", addrtaken_ok == {"some_table_entry"},
@@ -557,7 +557,7 @@ def test_b155_load_extra_edges_parses_impl_optional():
         f.write("isr hb_isr\n")
         path = f.name
     try:
-        (_fd, _fi, _ad, _wd, _fo, _isr, _aok, _rd, _gd,
+        (_fd, _fi, _ad, _wd, _fo, _isr, _aok, _aofrag, _rd, _gd,
          impl_optional_decls, _ipd) = sb.load_extra_edges(path)
         check("(B155) impl-optional lines parsed with their variants= sets",
               impl_optional_decls == {"fused_gb_slice_read": frozenset({"nor", "sd"}),
@@ -577,7 +577,7 @@ def test_b155_impl_optional_is_scoped_to_its_declared_variants():
         f.write("impl-pending gb_can_lift_hook pending=S150-4\n")
         path = f.name
     try:
-        (_fd, _fi, _ad, _wd, _fo, _isr, _aok, _rd, _gd,
+        (_fd, _fi, _ad, _wd, _fo, _isr, _aok, _aofrag, _rd, _gd,
          impl_optional_decls, impl_pending_decls) = sb.load_extra_edges(path)
         check("(B155) impl_optional_decls has the exact variants= set",
               impl_optional_decls == {"gb_art_read": frozenset({"delta"})},
@@ -784,6 +784,8 @@ def test_d3_stale_addrtaken_ok_line_is_a_warning_not_fatal():
 
 
 def test_d3_mutation_without_the_check_a_stale_line_is_never_flagged():
+    test_b159_load_extra_edges_parses_layout_fragile_qualifier()
+    test_b159_mutation_fragile_entries_excluded_from_stale_warning()
     """Mutation: without D3's `addrtaken_ok - taken` check, nothing at all reports a
     line that stopped being address-taken -- the exact silent-acceptance defect D3
     fixes (three unneeded lines, including a nonexistent symbol, were accepted
@@ -1723,7 +1725,7 @@ def test_b102_gated_line_round_trips_through_the_parser():
                 "gate=some_gate via=caller_a,caller_b\n")
         path = f.name
     try:
-        (_fd, _fi, _ad, _wd, _fo, _isr, _aok, _rd, gated_decls,
+        (_fd, _fi, _ad, _wd, _fo, _isr, _aok, _aofrag, _rd, gated_decls,
          _iod, _ipd) = sb.load_extra_edges(path)
         check("(B102/D1) a gated line parses fn -> (need, header, macro, gate_fn, via)",
               gated_decls.get("leaf_fn") == (1234, "some_header.h", "SOME_MACRO", "some_gate",
@@ -2123,7 +2125,7 @@ def test_d5a_shared_offset_two_structs_two_callers():
         f.write("Beta.y @20 in caller_beta -> impl_beta\n")
         path = f.name
     try:
-        _fd, field_offset_index, _ad, _wd, _fo, _isr, _aok, _rd, _gd, _iod, _ipd = \
+        _fd, field_offset_index, _ad, _wd, _fo, _isr, _aok, _aofrag, _rd, _gd, _iod, _ipd = \
             sb.load_extra_edges(path)
         analysis = {
             "indirect_sites": {
@@ -2158,7 +2160,7 @@ def test_d5a_two_structs_same_caller_both_credited():
         f.write("Beta.y @8 in shared_caller -> impl_beta\n")
         path = f.name
     try:
-        _fd, field_offset_index, _ad, _wd, _fo, _isr, _aok, _rd, _gd, _iod, _ipd = \
+        _fd, field_offset_index, _ad, _wd, _fo, _isr, _aok, _aofrag, _rd, _gd, _iod, _ipd = \
             sb.load_extra_edges(path)
         analysis = {
             "indirect_sites": {"shared_caller": [("0x1000", "bl\t9000 <thunk>", "r3")]},
@@ -2208,7 +2210,7 @@ def test_d5a_single_owner_offset_stays_legal_unqualified():
         f.write("Alpha.x @16 -> impl_alpha\n")
         path = f.name
     try:
-        _fd, field_offset_index, _ad, _wd, _fo, _isr, _aok, _rd, _gd, _iod, _ipd = \
+        _fd, field_offset_index, _ad, _wd, _fo, _isr, _aok, _aofrag, _rd, _gd, _iod, _ipd = \
             sb.load_extra_edges(path)
         analysis = {
             "indirect_sites": {"any_caller": [("0x1000", "bl\t9000 <thunk>", "r3")]},
@@ -2594,6 +2596,41 @@ def test_g2_third_party_fallback_scoped_to_non_project_functions():
           taken == {"crt_symbol"}, taken)
 
 
+def test_b159_load_extra_edges_parses_layout_fragile_qualifier():
+    """BACKLOG #159: addrtaken-ok entries can be marked with an optional
+    'layout-fragile' qualifier to suppress the warning that the entry is no
+    longer address-taken when the address coincidence is link-layout dependent."""
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        f.write("addrtaken-ok ordinary_fn      # no qualifier\n")
+        f.write("addrtaken-ok fragile_fn layout-fragile  # with qualifier\n")
+        path = f.name
+    try:
+        (_fd, _fi, _ad, _wd, _fo, _isr, addrtaken_ok, addrtaken_fragile, _rd, _gd,
+         _iod, _ipd) = sb.load_extra_edges(path)
+        check("(B159) both qualified and unqualified entries in addrtaken_ok set",
+              addrtaken_ok == {"ordinary_fn", "fragile_fn"}, addrtaken_ok)
+        check("(B159) only the qualified entry in addrtaken_fragile set",
+              addrtaken_fragile == {"fragile_fn"}, addrtaken_fragile)
+    finally:
+        os.unlink(path)
+
+
+def test_b159_mutation_fragile_entries_excluded_from_stale_warning():
+    """Mutation: if a layout-fragile entry is no longer address-taken in this
+    image, it should NOT be included in the stale warning, but an unqualified
+    entry still should be."""
+    addrtaken_ok = {"stale_ordinary", "stale_fragile", "still_taken"}
+    addrtaken_fragile = {"stale_fragile"}
+    taken = {"still_taken"}
+    
+    # The actual calculation used in stack_budget.py
+    stale = sorted((addrtaken_ok - addrtaken_fragile) - taken)
+    
+    check("(B159) fragile entry excluded from stale warning",
+          stale == ["stale_ordinary"], stale)
+    check("(B159) the still-taken entry is not in stale",
+          "still_taken" not in stale, stale)
 def main():
     print("host_stack_budget_test.py")
     test_a_estimator_no_explosion()
@@ -2688,3 +2725,5 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+

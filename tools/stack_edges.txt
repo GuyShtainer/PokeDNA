@@ -1185,7 +1185,9 @@ addrtaken-ok __aeabi_idiv0        # libgcc: division-by-zero trap, taken by the 
 addrtaken-ok __boot_method        # crt0: multiboot/cart boot-method DATA byte, not a function -- see the D5 note above
 addrtaken-ok __do_global_dtors_aux # crtstuff: static-destructor runner, taken via .fini_array
 addrtaken-ok __libc_init_array    # newlib crt: constructor runner, taken by crt0/_start
-addrtaken-ok gen1_encode_name     # BACKLOG #148/#152 (review-opus fix pass corrected this entry's own
+# Kept on purpose because the address coincidence comes and goes with the link layout;
+# the walker does not nag about it; drop the layout-fragile qualifier to be reminded again.
+addrtaken-ok gen1_encode_name layout-fragile  # BACKLOG #148/#152 (review-opus fix pass corrected this entry's own
                                   # evidence -- the previous draft chased a libtonc symbol, `srf.0`, that
                                   # is not even in this project's builddir and cannot be what the walker's
                                   # own raw-word scan matched; own_function_names()/scan_third_party_words_
