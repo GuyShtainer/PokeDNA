@@ -766,7 +766,8 @@ def load_extra_edges(path):
 
     Multiple lines per caller/struct ACCUMULATE (pdna_box has eleven field lines).
     Returns (field_decls, field_offset_index, argsite_decls, whole_func_decls,
-             frame_overrides, isr_decls, addrtaken_ok, recursion_decls, gated_decls):
+             frame_overrides, isr_decls, addrtaken_ok, addrtaken_fragile, recursion_decls, gated_decls,
+             impl_optional_decls, impl_pending_decls):
       field_decls        : {(struct, field): (offset, {impls})}  -- for header
                             verification ONLY (verify_field_declarations()); it
                             unions every impl regardless of caller qualification,
@@ -782,6 +783,8 @@ def load_extra_edges(path):
       frame_overrides   : {fn: bytes}
       isr_decls         : {fn, ...}
       addrtaken_ok      : {fn, ...}
+      addrtaken_fragile : {fn, ...}  (BACKLOG #159: entries marked with layout-fragile
+                            qualifier, exempt from "no longer address-taken" warnings)
       recursion_decls    : {fn: depth}
       gated_decls        : {fn: (need, header, macro, gate_fn, via_frozenset)}
                             (D1: was {fn: need}; BACKLOG #131 appended via_frozenset)

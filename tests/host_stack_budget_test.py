@@ -784,8 +784,6 @@ def test_d3_stale_addrtaken_ok_line_is_a_warning_not_fatal():
 
 
 def test_d3_mutation_without_the_check_a_stale_line_is_never_flagged():
-    test_b159_load_extra_edges_parses_layout_fragile_qualifier()
-    test_b159_mutation_fragile_entries_excluded_from_stale_warning()
     """Mutation: without D3's `addrtaken_ok - taken` check, nothing at all reports a
     line that stopped being address-taken -- the exact silent-acceptance defect D3
     fixes (three unneeded lines, including a nonexistent symbol, were accepted
@@ -2617,20 +2615,30 @@ def test_b159_load_extra_edges_parses_layout_fragile_qualifier():
 
 
 def test_b159_mutation_fragile_entries_excluded_from_stale_warning():
-    """Mutation: if a layout-fragile entry is no longer address-taken in this
-    image, it should NOT be included in the stale warning, but an unqualified
-    entry still should be."""
-    addrtaken_ok = {"stale_ordinary", "stale_fragile", "still_taken"}
-    addrtaken_fragile = {"stale_fragile"}
-    taken = {"still_taken"}
-    
-    # The actual calculation used in stack_budget.py
-    stale = sorted((addrtaken_ok - addrtaken_fragile) - taken)
-    
-    check("(B159) fragile entry excluded from stale warning",
-          stale == ["stale_ordinary"], stale)
-    check("(B159) the still-taken entry is not in stale",
-          "still_taken" not in stale, stale)
+    """Mutation: a layout-fragile addrtaken-ok entry that is no longer address-taken
+    in this image must NOT be reported stale; an unqualified entry in the same state
+    still must be. Drives the REAL parsed sets through main()'s own stale expression
+    (tools/stack_budget.py:~3808) so a regression to the old `addrtaken_ok - taken`
+    form is caught here, not just by a hand-rolled local recomputation."""
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        f.write("addrtaken-ok stale_ordinary\n")
+        f.write("addrtaken-ok stale_fragile layout-fragile\n")
+        f.write("addrtaken-ok still_taken\n")
+        path = f.name
+    try:
+        (_fd, _fi, _ad, _wd, _fo, _isr, addrtaken_ok, addrtaken_fragile, _rd, _gd,
+         _iod, _ipd) = sb.load_extra_edges(path)
+        taken = {"still_taken"}
+        # main()'s own line, tools/stack_budget.py:~3808 -- through the real parsed sets.
+        stale = sorted((addrtaken_ok - addrtaken_fragile) - taken)
+        check("(B159) fragile entry excluded from stale warning",
+              stale == ["stale_ordinary"], stale)
+        check("(B159) the still-taken entry is not in stale",
+              "still_taken" not in stale, stale)
+    finally:
+        os.unlink(path)
+
 def main():
     print("host_stack_budget_test.py")
     test_a_estimator_no_explosion()
@@ -2648,6 +2656,8 @@ def main():
     test_d8_unknown_frame_off_the_deepest_chain_still_fatal()
     test_d8_phantom_declared_name_not_linked_is_not_a_false_unknown()
     test_d1_load_extra_edges_parses_isr_and_addrtaken_ok()
+    test_b159_load_extra_edges_parses_layout_fragile_qualifier()
+    test_b159_mutation_fragile_entries_excluded_from_stale_warning()
     test_b155_load_extra_edges_parses_impl_optional()
     test_b155_impl_optional_is_scoped_to_its_declared_variants()
     test_b155_mutation_impl_optional_missing_variants_fails()
