@@ -259,8 +259,22 @@ bool EWRAM_CODE _EZFO_startUp(void) {
     SetRompage(ROMPAGE_ROM);
     ok = true;
     s_det_result = EZFO_DET_OK_HDRONLY;
+  } else if (!ok) {
+    /* Nothing matched at all -- not even a look-alike header word. The loop above leaves
+     * NOR page 0x1FF mapped (its last probe): returning into ROM with that under the
+     * return address is the same certain crash as above, only now with no plausible page
+     * to fall back on. No image of ours can start above 128 KiB in, so 0x1FF can never be
+     * right; map PSRAM instead -- it is the kernel's own SD-launch page, so it is at least
+     * POSSIBLY right, and it makes the caller's "no flashcart" diagnostic reachable
+     * instead of hanging before it can run. _EZFO_startUp() still returns false, and
+     * ROMPAGE_ROM is never read in that case (_EZFO_rompage() returns 0xFFFF unless
+     * s_det_result is OK/OK_HDRONLY): flashcartio_activate() keys off the false return,
+     * not off what is mapped, so active_flashcart stays NO_FLASHCART. */
+    ROMPAGE_ROM = ROMPAGE_PSRAM;
+    SetRompage(ROMPAGE_PSRAM);
+    s_det_result = EZFO_DET_NO_PAGE;
   } else {
-    s_det_result = ok ? (use_fp ? EZFO_DET_OK : EZFO_DET_OK_HDRONLY) : EZFO_DET_NO_PAGE;
+    s_det_result = use_fp ? EZFO_DET_OK : EZFO_DET_OK_HDRONLY;
   }
 
 done:
