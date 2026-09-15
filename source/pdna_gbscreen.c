@@ -506,6 +506,26 @@ static const char* const kReasonNoTail  = PDNA_GBSCR_REASON_NO_TAIL;
 static const char* const kReasonCancelled = PDNA_GBSCR_REASON_CANCELLED;
 static const char* const kReasonTimedOut  = PDNA_GBSCR_REASON_TIMED_OUT;
 static const char* const kReasonReadErr   = PDNA_GBSCR_REASON_READ_ERR;
+
+/* F4 (BACKLOG #148 review-opus fix pass): a guard stop can happen either during
+ * rom_gbui_open_loc()'s own scan OR during the cache-fill reads right after it
+ * (gu->read/gu->ctx stay bound to the SAME `io` on success, so a late B/timeout/
+ * read-error during cache-fill is just as real a guard stop as one during the
+ * scan) -- both sites map `io.g.stop` through this SAME switch so a cache-fill
+ * stop is no longer misreported as the generic kReasonOpen ("could not open the
+ * ROM"), which it was not: the ROM opened fine, something stopped the guard
+ * afterward. An un-stopped failure (gbscr_cache_plan()'s own pure logic
+ * refusing, no read ever attempted) correctly falls through to kReasonOpen via
+ * the `default` case, since `io.g.stop` is still GB_SCAN_OK then. No new stack:
+ * one `uint8_t` parameter, inlines trivially. */
+static const char* gbscr_stop_reason(uint8_t stop) {
+  switch (stop) {
+    case GB_SCAN_STOP_CANCEL:   return kReasonCancelled;
+    case GB_SCAN_STOP_TIMEOUT:  return kReasonTimedOut;
+    case GB_SCAN_STOP_READ_ERR: return kReasonReadErr;
+    default:                    return kReasonOpen;
+  }
+}
 #endif
 #ifdef PDNA_DELTA
 /* BACKLOG #98 D2: distinct fallback-page reasons for the two fused_gb_rom()
@@ -645,14 +665,7 @@ static bool __attribute__((noinline)) gbscr_open_inner(uint8_t gen, GbScreen* gs
                              have_loc ? &loc : 0);
   if (!ok || (uint8_t)gs->gu.gen != gen) {
     f_close(&fil);
-    if (reason) {
-      switch (io.g.stop) {
-        case GB_SCAN_STOP_CANCEL:   *reason = kReasonCancelled; break;
-        case GB_SCAN_STOP_TIMEOUT:  *reason = kReasonTimedOut;  break;
-        case GB_SCAN_STOP_READ_ERR: *reason = kReasonReadErr;   break;
-        default:                    *reason = kReasonOpen;      break;
-      }
-    }
+    if (reason) *reason = gbscr_stop_reason(io.g.stop);
     return false;
   }
   /* D5 fix (U2a review): the old condition here (`!have_loc || id_hash/size
@@ -675,7 +688,13 @@ static bool __attribute__((noinline)) gbscr_open_inner(uint8_t gen, GbScreen* gs
   bool cok = gbscr_cache_plan(gen, need_mask, opt_mask, &gs->gu, tail_len, &plan) &&
              gbscr_cache_fill(&gs->gu, &plan, tail, &gs->cache);
   f_close(&fil);
-  if (!cok) { if (reason) *reason = kReasonOpen; return false; }
+  /* F4: a guard stop DURING cache-fill (B held late, timeout, a read error) is
+   * just as real as one during the scan above -- gu->read/ctx are still bound
+   * to this same `io` here (rom_gbui_open_loc() left them that way on
+   * success), so io.g.stop reflects EITHER phase. The .loc written above
+   * stays valid either way: it describes tables that were genuinely located
+   * before this fill ever ran. */
+  if (!cok) { if (reason) *reason = gbscr_stop_reason(io.g.stop); return false; }
 #else
   const uint8_t* base; uint32_t size;
   if (!fused_gb_rom(gen, &base, &size)) {
