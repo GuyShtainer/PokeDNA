@@ -134,6 +134,33 @@ COMBINED_GUARD_RE = re.compile(
 META_LOAD_RE = re.compile(r"\bmeta_load\(")
 META_SAVE_RE = re.compile(r"\bmeta_save\(")
 
+# REVIEW F2: nothing pinned commit-before-delete in drop_held's UP branch -- the
+# reviewer swapped release_up before commit() and ungated it, and every OTHER check
+# in this file still passed. These four regexes and up_order_facts() are shared by
+# the real check (i) and its self-mutation demonstration (MUT H).
+COMMIT_RE      = re.compile(r"\bok = src->commit\(\)")
+RELEASE_UP_RE  = re.compile(r"s_xfer_peer->release_up\(")
+ZEROBACK_RE    = re.compile(r"memset\(recs \+ \(uint32_t\)cur \* 80, 0, 80\)")
+RETURN_RECS_RE = re.compile(r"^\s*return recs;")
+
+def up_order_facts(lines, start, end):           # shared by the real check AND MUT H
+    c = first_match_line(lines, start, end, COMMIT_RE)
+    r = first_match_line(lines, start, end, RELEASE_UP_RE)
+    z = first_match_line(lines, start, end, ZEROBACK_RE)
+    if c is None: return False, "drop_held: no `ok = src->commit()` line in the UP branch"
+    if r is None: return False, "drop_held: no `s_xfer_peer->release_up(` call"
+    if z is None: return False, "drop_held: no zero-back memset of the destination cell"
+    if not c < r: return False, (f"drop_held: src->commit() (line {c+1}) does NOT come before "
+                                 f"release_up() (line {r+1}) -- the Game Boy save would lose the "
+                                 f"mon before the Bank has it")
+    if not c < z < r: return False, (f"drop_held: the zero-back memset (line {z+1}) is not between "
+                                     f"commit() ({c+1}) and release_up() ({r+1})")
+    if first_match_line(lines, z, r, RETURN_RECS_RE) is None:
+        return False, (f"drop_held: no `return recs;` between the zero-back memset (line {z+1}) and "
+                       f"release_up() (line {r+1}) -- release_up is not dominated by the "
+                       f"commit-failure early-out")
+    return True, "ok"
+
 
 def first_match_line(lines: list[str], start: int, end: int, pattern: re.Pattern) -> int | None:
     for i in range(start, end):
@@ -323,6 +350,12 @@ def main() -> int:
           "begin_select(): start_carry(...)'s return is not consumed alongside the "
           "occupancy check -- a refused GB lift could fall through unnoticed")
 
+    # ---- (i) REVIEW F2: drop_held's UP branch commits the Bank write BEFORE it ever
+    # calls release_up (the Game Boy delete) -- pins the order, not just presence. ----
+    s, e = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
+    ok, d = up_order_facts(box_lines, s, e)
+    check(ok, d)
+
     # ---- (f) review F3: the self-mutation harness, every run ----
     self_test_mutation_detection(box_lines)
 
@@ -436,6 +469,24 @@ def self_test_mutation_detection(box_lines: list[str]) -> None:
           f"dropped the src_can_lift(src, box, cur) count to 3, got {lift_count_mut}")
     print(f"  MUT G demonstration -- NORMAL-mode MOVE-menu guard reverted to unconditional "
           f"start_carry: count dropped to {lift_count_mut} (expected 3, was 4)")
+
+    # MUT H (REVIEW F2): swap the release_up() line to ABOVE the `ok = src->commit()`
+    # line in a copy of drop_held's body -- the exact defect the reviewer demonstrated
+    # (the Game Boy save would lose the mon before the Bank has committed it) -- and
+    # assert up_order_facts() reports failure.
+    s, e = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
+    body = box_lines[s:e]
+    commit_i = first_match_line(body, 0, len(body), COMMIT_RE)
+    release_i = first_match_line(body, 0, len(body), RELEASE_UP_RE)
+    check(commit_i is not None and release_i is not None,
+          "MUT H: could not locate both the commit() and release_up() lines in the real source -- fix this test")
+    if commit_i is not None and release_i is not None and commit_i < release_i:
+        mut_h = list(body)
+        release_line = mut_h.pop(release_i)
+        mut_h.insert(commit_i, release_line)   # release_up's line now sits BEFORE commit()
+        ok, detail = up_order_facts(mut_h, 0, len(mut_h))
+        check(not ok, f"MUT H (release_up swapped before commit()) should have been caught but was not: {detail}")
+        print(f"  MUT H demonstration -- release_up() line swapped above src->commit(): {detail}")
 
 
 if __name__ == "__main__":
