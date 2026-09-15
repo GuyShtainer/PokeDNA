@@ -307,13 +307,20 @@ uint8_t* gb12_arena_tail(uint32_t need);
  * screen that took a tail slice, success or refusal alike. */
 void gb12_arena_tail_release(void);
 
-/* BACKLOG #150 S150-2 step 5: open the REAL Gen-1/2 summary, read-only, over a native
- * Bank cell's own 80 bytes (source/bank_cell.h's "GBC1" tag) -- NOT a refactor of
- * gb_view_hook (this file's .c), a deliberate parallel entry point kept scoped to
- * step 5 alone (see the .c's own comment for the full SCOPE DEVIATION reasoning).
- * Returns false only when `rec80` is not a native cell (bc_unpack fails); otherwise
- * always true (there is no prev/next mon to scroll to from a single cell). */
-bool gb_native_summary_open(const uint8_t rec80[80]);
+/* BACKLOG #150 S150-14 (was S150-2 step 5, read-only-only): open the REAL Gen-1/2
+ * summary over a native Bank cell's own 80 bytes (source/bank_cell.h's "GBC1" tag),
+ * with a gated EDIT mode -- NOT a refactor of gb_view_hook (this file's .c), still a
+ * deliberate parallel entry point (see the .c's own comment for the SCOPE DEVIATION
+ * reasoning). `allow_edit` requests edit mode; the function itself ANDs it with
+ * `out80 != NULL` and `app_can_edit()` before actually entering edit mode (decision
+ * 10 -- the gate lives here, not on `gb_locate()`, because no GB save is mounted for
+ * a Bank cell). Returns true iff `out80` now holds a NEW native cell (re-packed via
+ * `bc_pack`, same `bank_serial`/`origin_game`/`rtc_epoch`, recomputed `ident32`) the
+ * caller must commit; false means nothing to write -- not a native cell, the user
+ * left without confirming, editing was not allowed, or `bc_pack` refused. Pass
+ * `allow_edit=false, out80=NULL` for a read-only view (there is then no prev/next
+ * mon to scroll to from a single cell, and the return value is not meaningful). */
+bool gb_native_summary_open(const uint8_t rec80[80], bool allow_edit, uint8_t out80[80]);
 
 #ifdef PDNA_DELTA
 /* BACKLOG #62: mount fused_gb_save(idx) directly out of cartridge space -- no FIL, no

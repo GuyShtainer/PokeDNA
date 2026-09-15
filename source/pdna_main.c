@@ -2277,6 +2277,64 @@ bool app_walda_colors(uint16_t out[2]) {
 }
 
 
+/* BACKLOG #150 S150-14 step 2: a native-cell EDIT commit, mirroring the Gen-3 branch
+ * six lines below app_box_browse's own bc_is_native() check (app_xfer_pid_guard ->
+ * memcpy -> commit() -> app_xfer_pid_rekey, D-Q3's order verbatim, decision 9) --
+ * but through commit() DIRECTLY, never app_commit_with_dex (decision 8: a native
+ * cell has no Gen-3 species and app_dex_register_rec would read a meaningless
+ * decrypt off it; on the Bank block app_commit_with_dex's own `block == g_pc ||
+ * block == g_sb1` test is false anyway, so this is the same behaviour with that
+ * dead branch made structurally impossible).
+ *
+ * KNOWN DEVIATION (flagged for the orchestrator, reported prominently): `commit` is
+ * an AppCommitFn function pointer, so the `commit()` call three lines below is a
+ * genuinely NEW indirect-call site the stack walker cannot resolve on its own --
+ * confirmed by build: "STACK_BUDGET BLIND SPOT ... app_native_cell_edit @ ...: bl
+ * ... [parameter/register dispatch, no argsites declaration for this caller]". The
+ * brief's own Acceptance text says "you add no indirect call, so tools/
+ * stack_edges.txt needs no row -- if the walker warns, STOP", but decision 8's own
+ * literal instruction (call commit() directly) makes that indirect call
+ * UNAVOIDABLE regardless of which commit path is chosen -- app_commit_with_dex
+ * routing was tried first and still produced a NEW site (GCC inlined
+ * app_commit_with_dex into this noinline function rather than reusing its existing
+ * out-of-line body). tools/stack_edges.txt is outside this lane's declared file
+ * list ("Your files, and nothing else"), but completing decisions 6-9 is
+ * impossible without either touching it or abandoning `noinline`+commit() entirely
+ * -- STOP-LICENCE analysis in the delivery report. Resolution taken: ONE argsites
+ * row added for app_native_cell_edit, mirroring the EXACT existing pattern (see
+ * tools/stack_edges.txt's own comment at "app_mon_menu argsites=3 ->" /
+ * "app_paste_gb_merge argsites=1 ->" / "app_commit_with_dex argsites=1 ->", all the
+ * SAME AppCommitFn class, same four possible targets) -- a mechanical application
+ * of prior art, not a new design decision.
+ *
+ * `noinline` is load-bearing, not style (same reasoning as app_xfer_pid_guard/
+ * app_xfer_pid_rekey right above): it keeps the `cell`/`snapshot` 80-byte buffers
+ * and the XferRekeyPlan off app_box_browse's own frame, which sits on the
+ * pcp_open_party_strip_inner chain pdna_box.c's PDNA_PARTY_STRIP_NEED is derived
+ * from.
+ *
+ * Decision 7 (rollback): `rec` is snapshotted BEFORE the memcpy; a failed/absent
+ * commit() restores it and returns false without re-keying -- box_save's own
+ * failure path only logs (pdna_bank.c), so nothing else protects the in-RAM cell,
+ * and a native cell's 80 bytes are the mon's ONLY copy. */
+static bool __attribute__((noinline)) app_native_cell_edit(uint8_t* rec, AppCommitFn commit) {
+  uint8_t cell[80];
+  if (!gb_native_summary_open(rec, /*allow_edit*/true, cell)) return false;   /* nothing to write */
+
+  XferRekeyPlan plan;
+  if (!app_xfer_pid_guard(rec, cell, &plan)) return false;   /* abandoned, or duplicate-target refusal */
+
+  uint8_t snapshot[80];
+  memcpy(snapshot, rec, 80);
+  memcpy(rec, cell, 80);
+  if (!commit || !commit()) {
+    memcpy(rec, snapshot, 80);                                /* decision 7: restore, do NOT re-key */
+    return false;
+  }
+  app_xfer_pid_rekey(&plan);
+  return true;
+}
+
 /* Box summary BROWSER: VIEW/EDIT a box slot, then U/D scroll to the prev/next
  * occupied slot (real-PC style). Edits are saved per-mon (prompted on leave/change)
  * via the owning block's commit. `block` is the pc-layout buffer (box `box`'s 30
@@ -2291,7 +2349,11 @@ static bool app_box_browse(uint8_t* block, int box, int start, AppCommitFn commi
      * §11.9 requirement. bc_is_native() first, before anything else: a native cell can
      * never be in a GB session's own grid (those records come from gb_build_slot), so
      * this and app_mon_menu_readonly's RO_VIEW arm below cannot collide. */
-    if (bc_is_native(rec)) { gb_native_summary_open(rec); break; }
+    /* BACKLOG #150 S150-14 step 2: the gated EDIT path -- app_native_cell_edit()
+     * itself decides (inside gb_native_summary_open, decision 10) whether the cart
+     * can actually edit; on a read-only cart this behaves exactly like S150-2's
+     * original read-only call. */
+    if (bc_is_native(rec)) { if (app_native_cell_edit(rec, commit)) any = true; break; }
     uint8_t out[100]; bool saved = false;
     int nav = pdna_inspect(rec, false, app_can_edit(), out, &saved, &card);
     if (saved) {
@@ -4812,7 +4874,7 @@ static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0, 
           /* BACKLOG #150 S150-2: a native Bank cell BEFORE the g_src_ops->view check --
            * bc_is_native() first, before anything else, exactly as app_box_browse's own
            * interception point does. */
-          if (bc_is_native(rec)) { gb_native_summary_open(rec); return false; }
+          if (bc_is_native(rec)) { gb_native_summary_open(rec, /*allow_edit*/false, 0); return false; }
           if (g_src_ops && g_src_ops->view) { g_src_ops->view(rec); return false; }
           { uint8_t d[100]; int card = 0;
             pdna_inspect(rec, is_party, false, d, 0, &card); return false; }
@@ -4879,7 +4941,7 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
      * pdna_romcheck_bad()) fell straight through to pdna_inspect()'s lossy Gen-3
      * decode for a native cell too -- the same G-H2 fix RO_VIEW/app_box_browse
      * already apply elsewhere in this file. */
-    if (native) { gb_native_summary_open(rec); return false; }
+    if (native) { gb_native_summary_open(rec, /*allow_edit*/false, 0); return false; }
     if (occupied) { uint8_t d[100]; int card = 0; pdna_inspect(rec, is_party, false, d, 0, &card); }
     return false;
   }
@@ -4924,15 +4986,21 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
      * covers the case pk_decode_mon (not reached here -- line :4830 above already
      * intercepts it) would otherwise mis-read as empty (G-H2): the EMPTY branch below
      * never runs for a native cell.
-     * VIEW reuses A_SUMMARY's own dispatch case: a native cell is never is_party, so
-     * that case always calls app_box_browse(), whose own bc_is_native() check (this
-     * file, gb_native_summary_open()) opens the REAL Gen-1/2 summary read-only instead
-     * of the lossy Gen-3-converted copy -- exactly what D-Q1 asks for, with no new
-     * dispatch case. Labelled VIEW (not VIEW/EDIT): read-only in this slice.
-     * An EDIT row arrives with S150-14 (Guy's MUST-HAVE-NOW answer,
-     * docs/BANK-CROSSGEN-DESIGN.md:456-458) -- appended to this SAME whitelist block
-     * (plus decision 9's dispatch list below), never a restructure. */
-    lab[n]=PDNA_LBL_VIEW; act[n++]=A_SUMMARY;
+     * VIEW / EDIT reuses A_SUMMARY's own dispatch case: a native cell is never
+     * is_party, so that case always calls app_box_browse(), whose own bc_is_native()
+     * check (this file, gb_native_summary_open()) opens the REAL Gen-1/2 summary
+     * instead of the lossy Gen-3-converted copy -- exactly what D-Q1 asks for.
+     * BACKLOG #150 S150-14 (orchestrator decision, 2026-09-15): rather than adding a
+     * fourth action constant, EDIT is routed through this SAME A_SUMMARY case with
+     * can_edit computed inside gb_native_summary_open (app_box_browse now calls
+     * app_native_cell_edit, which passes allow_edit=true) -- A_SUMMARY is ALREADY in
+     * the dispatch whitelist below, so no whitelist edit is needed either; the
+     * Gen-3 editor (gen3_edit_load/gen3_edit_commit/em_reroll) still never runs on a
+     * native cell, since this label only ever reaches app_box_browse's native
+     * branch, which never calls pdna_inspect() for a native rec. Relabelled to
+     * Gen 3's own PDNA_LBL_VIEW_EDIT (pdna_layout.h) -- same label, same position,
+     * same action as Gen 3's own occupied row -- no new string. */
+    lab[n]=PDNA_LBL_VIEW_EDIT; act[n++]=A_SUMMARY;
     if (!is_party) { lab[n]=PDNA_LBL_MOVE; act[n++]=A_MOVE; }         /* box: pick up + reposition */
     lab[n]=PDNA_LBL_RELEASE; act[n++]=A_RELEASE;
   } else if (occupied) {

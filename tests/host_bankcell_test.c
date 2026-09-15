@@ -56,6 +56,7 @@
 
 #include "bank_cell.h"
 #include "gb_edit.h"
+#include "gb_editor.h"   /* gbe_press/gbe_adjust/gbe_set_move -- S150-14 section 10 */
 #include "gen1_save.h"
 #include "gen1_write.h"
 #include "gen2_save.h"
@@ -725,6 +726,143 @@ static void test_bank_plant(void) {
 }
 #endif /* PDNA_DELTA */
 
+/* ============================================================================ */
+/* 10. BACKLOG #150 S150-14: unpack -> mutate through the EDITOR'S OWN API      */
+/*     (gbe_press/gbe_adjust/gbe_set_move, never a direct rec[] poke) -> re-pack */
+/*     per decision 4 -- the exact sequence gb_native_summary_open() now runs   */
+/*     on a confirmed edit. */
+/* ============================================================================ */
+
+/* decision 4's re-pack, verbatim -- kept as one helper so every case below runs
+ * the SAME flag-derivation gb_native_summary_open() itself uses. */
+static int native_repack(const GbEditMon* e, const BcMeta* meta, uint8_t out80[BC_CELL_BYTES]) {
+  uint8_t nf = (uint8_t)(meta->flags & (BC_FLAG_FROM_PARTY | BC_FLAG_HAS_XFER_REC | BC_FLAG_QUEUED_PC));
+  if (gb_is_egg(e))        nf |= BC_FLAG_EGG;
+  if (gb_get_held_item(e)) nf |= BC_FLAG_HOLDS_ITEM;
+  return bc_pack(e, nf, meta->origin_game, meta->rtc_epoch, meta->bank_serial, out80);
+}
+
+static void test_native_edit_roundtrip(void) {
+  /* ---- Gen-1: a DV change through gbe_press (0<->15 extreme jump). b0 (from-party)
+   * and b1 (has-xfer-record) must survive verbatim (Bank/ledger state a GbEditMon
+   * cannot carry); bank_serial/origin_game/rtc_epoch must survive; ident32 must
+   * change (the edit touches rec[], inside the hashed span). */
+  {
+    GbEditMon mon;
+    memset(&mon, 0, sizeof mon);
+    mon.gen = GB_GEN1;
+    mon.is_party = false;
+    for (int i = 0; i < GEN1_BOX_REC_BYTES; i++) mon.rec[i] = (uint8_t)(i * 5 + 1);
+    mon.rec[0] = 1;                        /* species (arbitrary, non-zero) */
+    mon.list_species = 1;
+    memcpy(mon.otname, "GUY\x50\x50\x50\x50\x50\x50\x50\x50", GB_NAME_BYTES);
+    memcpy(mon.nick,   "MON\x50\x50\x50\x50\x50\x50\x50\x50", GB_NAME_BYTES);
+
+    uint8_t before[BC_CELL_BYTES];
+    uint8_t flags_in = (uint8_t)(BC_FLAG_FROM_PARTY | BC_FLAG_HAS_XFER_REC);
+    CHECK(bc_pack(&mon, flags_in, BC_ORIGIN_RED, 0x1234u, 77u, before) == 0, "10 g1: bc_pack base");
+    CHECK(bc_is_native(before), "10 g1: base cell native");
+
+    GbEditMon e; BcMeta meta;
+    CHECK(bc_unpack(before, &e, &meta), "10 g1: bc_unpack");
+    CHECK(meta.origin_game == BC_ORIGIN_RED, "10 g1: meta.origin_game round-trips");
+    CHECK(meta.rtc_epoch == 0x1234u, "10 g1: meta.rtc_epoch round-trips");
+    CHECK(meta.bank_serial == 77u, "10 g1: meta.bank_serial round-trips");
+
+    CHECK(gbe_press(&e, GBE_DVA), "10 g1: gbe_press(GBE_DVA) must change the record");
+
+    uint8_t after[BC_CELL_BYTES];
+    CHECK(native_repack(&e, &meta, after) == 0, "10 g1: re-pack");
+    CHECK(bc_is_native(after), "10 g1: re-packed cell still native");
+
+    CHECK(memcmp(before + BC_OFF_BANK_SERIAL, after + BC_OFF_BANK_SERIAL, 4) == 0,
+          "10 g1: bank_serial (bytes 73..76) identical");
+    CHECK(before[BC_OFF_ORIGIN_GAME] == after[BC_OFF_ORIGIN_GAME],
+          "10 g1: origin_game (byte 68) identical");
+    CHECK(memcmp(before + BC_OFF_RTC_EPOCH, after + BC_OFF_RTC_EPOCH, 4) == 0,
+          "10 g1: rtc_epoch (bytes 69..72) identical");
+    CHECK(memcmp(before + BC_OFF_IDENT32, after + BC_OFF_IDENT32, 4) != 0,
+          "10 g1: ident32 (bytes 4..7) CHANGED by the DV edit");
+    CHECK((after[BC_OFF_FLAGS] & (BC_FLAG_FROM_PARTY | BC_FLAG_HAS_XFER_REC)) ==
+          (BC_FLAG_FROM_PARTY | BC_FLAG_HAS_XFER_REC),
+          "10 g1: b0/b1 (from-party, has-xfer-record) preserved -- Bank/ledger state a GbEditMon cannot carry");
+    CHECK(after[BC_OFF_OLDBUILD] == BC_OLDBUILD_BYTE, "10 g1: byte 19 still 0x01 (the old-build guard) after re-pack");
+
+    GbEditMon back; BcMeta meta2;
+    CHECK(bc_unpack(after, &back, &meta2), "10 g1: second bc_unpack");
+    CHECK(memcmp(&back, &e, sizeof back) == 0,
+          "10 g1: a second bc_unpack returns the mutated mon field-for-field");
+  }
+
+  /* ---- Gen-2 item holder: b2 (queued-for-PC) must survive; clearing the held item
+   * through gbe_press(GBE_ITEM) must clear b4 (holds-item) on re-pack -- b3/b4 are
+   * the two bits the editor can really flip and must be re-derived, not carried. */
+  {
+    GbEditMon mon;
+    memset(&mon, 0, sizeof mon);
+    mon.gen = GB_GEN2;
+    mon.is_party = false;
+    for (int i = 0; i < G2_BOX_ENTRY; i++) mon.rec[i] = (uint8_t)(i * 3 + 2);
+    mon.rec[0] = 25;      /* Pikachu */
+    mon.rec[1] = 0x8D;    /* held item -- Light Ball */
+    mon.list_species = 25;
+    memcpy(mon.otname, "GUY\x50\x50\x50\x50\x50\x50\x50\x50", GB_NAME_BYTES);
+    memcpy(mon.nick,   "PIKA\x50\x50\x50\x50\x50\x50\x50", GB_NAME_BYTES);
+
+    uint8_t before[BC_CELL_BYTES];
+    uint8_t flags_in = (uint8_t)(BC_FLAG_QUEUED_PC | BC_FLAG_HOLDS_ITEM);
+    CHECK(bc_pack(&mon, flags_in, BC_ORIGIN_GOLD, 9u, 200u, before) == 0, "10 g2: bc_pack base");
+    CHECK((before[BC_OFF_FLAGS] & BC_FLAG_HOLDS_ITEM) != 0, "10 g2: base cell has b4 (holds-item) set");
+
+    GbEditMon e; BcMeta meta;
+    CHECK(bc_unpack(before, &e, &meta), "10 g2: bc_unpack");
+    CHECK(gb_get_held_item(&e) != 0, "10 g2: unpacked mon really is holding an item");
+
+    CHECK(gbe_press(&e, GBE_ITEM), "10 g2: gbe_press(GBE_ITEM) must change the record");
+    CHECK(gb_get_held_item(&e) == 0, "10 g2: item now cleared on `e`");
+
+    uint8_t after[BC_CELL_BYTES];
+    CHECK(native_repack(&e, &meta, after) == 0, "10 g2: re-pack");
+
+    CHECK((after[BC_OFF_FLAGS] & BC_FLAG_QUEUED_PC) != 0, "10 g2: b2 (queued-for-PC) preserved");
+    CHECK((after[BC_OFF_FLAGS] & BC_FLAG_HOLDS_ITEM) == 0,
+          "10 g2: b4 (holds-item) re-derived to 0 -- the item really was cleared");
+    CHECK(memcmp(before + BC_OFF_BANK_SERIAL, after + BC_OFF_BANK_SERIAL, 4) == 0,
+          "10 g2: bank_serial identical");
+    CHECK(before[BC_OFF_ORIGIN_GAME] == after[BC_OFF_ORIGIN_GAME], "10 g2: origin_game identical");
+    CHECK(memcmp(before + BC_OFF_RTC_EPOCH, after + BC_OFF_RTC_EPOCH, 4) == 0, "10 g2: rtc_epoch identical");
+    CHECK(memcmp(before + BC_OFF_IDENT32, after + BC_OFF_IDENT32, 4) != 0,
+          "10 g2: ident32 CHANGED (the item-clear touches rec[1], inside the hashed span)");
+  }
+
+  /* ---- A flags/epoch-only re-pack (no editor mutation of `e` at all) leaves
+   * ident32 UNCHANGED -- the G-M4 invariant, still true through this exact
+   * unpack -> [no edit] -> re-pack call shape. */
+  {
+    GbEditMon mon;
+    memset(&mon, 0, sizeof mon);
+    mon.gen = GB_GEN1;
+    mon.is_party = false;
+    for (int i = 0; i < GEN1_BOX_REC_BYTES; i++) mon.rec[i] = (uint8_t)(i * 13 + 9);
+    mon.rec[0] = 4;
+    mon.list_species = 4;
+    memcpy(mon.otname, "GUY\x50\x50\x50\x50\x50\x50\x50\x50", GB_NAME_BYTES);
+    memcpy(mon.nick,   "MON\x50\x50\x50\x50\x50\x50\x50\x50", GB_NAME_BYTES);
+
+    uint8_t before[BC_CELL_BYTES];
+    CHECK(bc_pack(&mon, BC_FLAG_FROM_PARTY, BC_ORIGIN_RED, 1u, 50u, before) == 0,
+          "10 flags-only: bc_pack base");
+
+    GbEditMon e; BcMeta meta;
+    CHECK(bc_unpack(before, &e, &meta), "10 flags-only: bc_unpack");
+    meta.rtc_epoch += 1u;                       /* epoch-only bump, still outside the hash */
+    uint8_t after[BC_CELL_BYTES];
+    CHECK(native_repack(&e, &meta, after) == 0, "10 flags-only: re-pack (epoch bumped, nothing else)");
+    CHECK(memcmp(before + BC_OFF_IDENT32, after + BC_OFF_IDENT32, 4) == 0,
+          "10 flags-only: ident32 unchanged by a flags/epoch-only re-pack (G-M4)");
+  }
+}
+
 int main(int argc, char** argv) {
   printf("== 1. Gen-1 corpus sweep ==\n");
   sweep_gen1("Red.sav");
@@ -762,6 +900,9 @@ int main(int argc, char** argv) {
   printf("== 9. bank_plant (PDNA_DELTA-only) ==\n");
   test_bank_plant();
 #endif
+
+  printf("== 10. S150-14 native-cell EDIT round trip (editor API -> re-pack) ==\n");
+  test_native_edit_roundtrip();
 
   printf("\n%d check(s), %s\n", g_check, g_fail ? "FAIL" : "OK");
   return g_fail ? 1 : 0;

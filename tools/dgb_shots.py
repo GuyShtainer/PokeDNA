@@ -4046,6 +4046,94 @@ def run_s150_3_escape_gate(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_
     return s
 
 
+def run_s150_14_native_edit(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #150 S150-14: editing a native Bank cell in the Game Boy's own summary/
+    edit screens. Reuses S150-2/S150-3's exact fixture and nav recipe (same box0 plant,
+    same --image requirements: a plain tools/fuse_sav.py fusion of an Emerald.sav onto
+    pokedna-delta-artless.gba, no --gb, no --clip) -- see run_s150_2_bank_native()'s own
+    docstring for why no fused payload is needed (source/bank_plant.c's PDNA_DELTA-only
+    box_load() hook).
+
+    EXPECTATION FOR THE LAST SHOT, stated up front (checked against the shipped source
+    before this ladder runs a single tap, not assumed): a delta image has no SD card
+    (run_s150_2_bank_native's own docstring says so) and source/pdna_bank.c's box_save()
+    has NO PDNA_DELTA branch (`grep -n PDNA_DELTA source/pdna_bank.c` shows only the
+    box_load() plant hook at :121-129 and the g_native_snap recompute comment referencing
+    it -- nothing in box_save() itself) -- so sf_write_verified() cannot succeed here and
+    decision 7's rollback is expected to fire: 07_after_commit proves the ROLLBACK (the
+    in-RAM cell restored to its pre-edit bytes), not a real write. Shots 02-06 are what
+    prove the edit reached the confirm dialog with the new value."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s150_14_")
+    print("== BACKLOG #150 S150-14: EDITING a native Bank cell in the GB's own screens ==")
+    CURSOR_SETTLE = 300
+    s.tap("START", settle=80)                              # nav menu
+    s.tap("DOWN", settle=60)                                # Party -> Bank (index 1, one DOWN)
+    s.tap("A", settle=150)                                  # -> pdna_bank_show(), box 0 (BANK 1)
+    # cursor already on slot 0 (the CHIKORITA plant). A opens the mon menu.
+    s.tap("A", settle=150)                                  # slot 0 -> its menu
+    s.shot("00_menu_view_edit", "S150-14: A on the CHIKORITA native cell -- the native "
+           "whitelist's row 0 now reads VIEW / EDIT (Gen 3's own label, decision 5), not "
+           "the read-only-only VIEW S150-2/S150-3 shipped")
+
+    s.tap("A", settle=150)                                  # select VIEW / EDIT -> A_SUMMARY -> app_box_browse
+    s.shot("01_summary_view", "S150-14: the REAL Gen-1/2 summary opens in VIEW (Gen 3's "
+           "own VIEW/EDIT contract: A inside enters edit) -- app_box_browse's native "
+           "branch now calls app_native_cell_edit(), which passes allow_edit=true")
+
+    s.tap("A", settle=150)                                  # A inside the summary -> edit mode
+    s.shot("02_edit_mode", "S150-14: A entered edit mode -- can_edit was gated inside "
+           "gb_native_summary_open (allow_edit && out80 && app_can_edit(), decision 10)")
+
+    s.tap("R", settle=CURSOR_SETTLE)                        # INFO (card 0) -> SKILLS (card 1)
+    # card_skills() registers fields in row order: HP's SE0 (slot 0, GBE_DVH is
+    # DERIVED and NOT registered -- pdna_gbsummary.c's stat_row(), "derived, shown,
+    # not registered"), THEN Atk's DVA (slot 1). fsel starts at 0 (HP's SE row) on
+    # entry, so one DOWN is needed to land on a real, editable DV field (Atk/GBE_DVA)
+    # before the "a DV change (RIGHT)" step below -- verified live: without this
+    # DOWN, RIGHT edits HP's stat-exp, not a DV (found running this exact ladder).
+    s.tap("DOWN", settle=CURSOR_SETTLE)                     # HP's SE0 (slot 0) -> Atk's DVA (slot 1)
+    s.shot("03_skills_dv", "S150-14: R switched to the SKILLS card in edit mode, DOWN "
+           "moved the cursor off HP's stat-exp row (HP's DV is DERIVED, not registered "
+           "-- pdna_gbsummary.c's stat_row()) onto Atk's DV row (GBE_DVA), the first "
+           "real editable DV field")
+
+    s.tap("RIGHT", settle=CURSOR_SETTLE)                    # gbedit_adjust_checked: +1 on Atk's DV (GBE_DVA)
+    s.shot("04_dv_changed", "S150-14: RIGHT on the Atk DV row -- gbedit_adjust_checked "
+           "incremented GBE_DVA by one (DV 1 -> 2); `dirty` is now true (memcmp against "
+           "the pre-edit shadow). This step ALREADY crosses Chikorita's 87.5% female / "
+           "12.5% male ratio -- the header (species/level + gender/shiny, gbe_header, "
+           "reads live off `e`'s current DVs every frame) flips F -> M right here")
+
+    # A few more RIGHT presses on the SAME field, past the threshold that already
+    # flipped gender at 04 above -- proves the header keeps tracking `e` live rather
+    # than freezing at the first change, not a second threshold crossing.
+    s.press_n("RIGHT", 10, settle=CURSOR_SETTLE)
+    s.shot("05_header_flipped", "S150-14: header still tracks `e` at DV 12 (the gender "
+           "flipped at 04 when DV 1 -> 2 crossed the ratio) -- confirms gbe_header reads "
+           "live off the edited DVs on every frame, not just the moment they changed")
+
+    # B in EDIT mode (gbsum_edit_keys) only clears `editing` back to VIEW -- it does
+    # NOT itself check `dirty` (that check lives in gbsum_view_keys, VIEW mode's own
+    # B handler). A second B, now in VIEW mode with `dirty` still true, is what
+    # actually calls gbedit_confirm() (verified live: a single B here left the
+    # screen in plain VIEW with no popup).
+    s.tap("B", settle=150)                                  # edit mode -> view mode (still dirty)
+    s.tap("B", settle=150)                                  # view mode, dirty -> gbedit_confirm()
+    s.shot("06_confirm_panel", "S150-14: the second B (VIEW mode, `dirty` true) -- "
+           "gbsum_view_keys's own KEY_B branch calls gbedit_confirm(c->e), the SAME "
+           "write-confirm panel pdna_gbedit() always used (pdna_gbedit.h)")
+
+    s.tap("A", settle=300)                                  # confirm -- *saved = true -> gb_native_summary_open
+                                                              # packs via bc_pack, returns true -> app_native_
+                                                              # cell_edit's app_xfer_pid_guard -> memcpy -> commit()
+    s.shot("07_after_commit", "S150-14: A on the confirm -- back at the box grid. EXPECTED "
+           "on a delta image (stated above, before this ladder ran): box_save() has no "
+           "PDNA_DELTA branch, so commit() fails and decision 7's rollback restores the "
+           "cell's pre-edit bytes -- this shot proves the ROLLBACK path, not a real write "
+           "(real-hardware validation, XFER-C23, proves the write)")
+    return s
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -4246,6 +4334,17 @@ def main(argv=None) -> int:
                           "whitelist (VIEW/MOVE/RELEASE/CANCEL), the deny toast when a "
                           "native cell in hand is dropped into the PC, and VIEW opening "
                           "the real Gen-1/2 summary.")
+    ap.add_argument("--s150-14", action="store_true",
+                     help="BACKLOG #150 S150-14: only run_s150_14_native_edit() against "
+                          "--image -- --image MUST be a plain tools/fuse_sav.py fusion "
+                          "of an Emerald.sav onto pokedna-delta-artless.gba (no --gb, "
+                          "no --clip -- same vehicle as --s150-2/--s150-3). The native "
+                          "mon menu's VIEW / EDIT row, entering edit mode in the REAL "
+                          "Gen-1/2 summary over a native cell, a DV change, the write-"
+                          "confirm panel, and the after-commit grid (a delta image has "
+                          "no PDNA_DELTA branch in box_save(), so this proves decision "
+                          "7's rollback, not a real write -- see the run function's own "
+                          "docstring).")
     ap.add_argument("--b54-romhack", choices=("hack", "control"),
                      help="BACKLOG #54: only run_b54_romhack() against --image for the "
                           "named case -- the ROM-hack banner + the mon-menu refusal it "
@@ -4826,6 +4925,21 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] s150-3: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if getattr(a, "s150_14", False):
+        # BACKLOG #150 S150-14: same append-only convention as --s150-2/--s150-3 above.
+        ran = True
+        try:
+            sess = run_s150_14_native_edit(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] s150-14: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:

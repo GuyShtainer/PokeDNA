@@ -215,6 +215,19 @@ def test_native_refusal_precedes_memcpy(text: str) -> None:
           "app_paste_gb_commit: self-mutation (order swapped) still reads as ok -- the check is vacuous")
 
 
+def test_rekey_order_native_cell_edit(text: str) -> None:
+    print("== (5) app_native_cell_edit: rekey AFTER commit(), rollback before the failure return ==")
+    w = window_after(text, "static bool __attribute__((noinline)) app_native_cell_edit(")
+    check(order_ok(w, "if (!commit || !commit()) {", "app_xfer_pid_rekey(&plan)"),
+          "app_native_cell_edit: app_xfer_pid_rekey(&plan) does not appear after the commit() test")
+    m = swapped(w, "if (!commit || !commit()) {", "app_xfer_pid_rekey(&plan)")
+    check(not order_ok(m, "if (!commit || !commit()) {", "app_xfer_pid_rekey(&plan)"),
+          "app_native_cell_edit: self-mutation (order swapped) still reads as ok -- vacuous")
+    blk, _, _ = brace_block(w, "if (!commit || !commit()) {")
+    check("memcpy(rec, snapshot, 80)" in blk,
+          "app_native_cell_edit: decision 7's rollback memcpy is not inside the failed-commit block")
+
+
 def main() -> int:
     text = PDNA_MAIN.read_text(errors="replace")
 
@@ -226,6 +239,7 @@ def main() -> int:
     print("== (2n) party_browse: app_xfer_pid_rekey is INSIDE the commit's if-block (review R3) ==")
     test_rekey_nesting(text, "if (app_commit_with_dex(rec, true, commit, g_sb1)) {",
                        "app_xfer_pid_rekey(&plan)", "party_browse")
+    test_rekey_order_native_cell_edit(text)
     test_rekey_order_daycare(text)
     test_native_refusal_precedes_memcpy(text)
 

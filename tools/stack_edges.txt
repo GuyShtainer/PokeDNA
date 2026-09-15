@@ -298,6 +298,18 @@ app_paste_gb_merge argsites=1 -> banksrc_commit gbsrc_commit app_commit_pc app_c
 # staying folded into app_mon_menu's own declared argsites=3. One call site.
 app_commit_with_dex argsites=1 -> banksrc_commit gbsrc_commit app_commit_pc app_commit_sb1
 
+# BACKLOG #150 S150-14: app_native_cell_edit (source/pdna_main.c, immediately above
+# app_box_browse) is a NEW noinline caller of the SAME AppCommitFn class documented
+# above -- decision 8 calls `commit()` directly (never app_commit_with_dex, since a
+# native cell has no Gen-3 species for app_dex_register_rec to register). Routing
+# through app_commit_with_dex instead was tried first specifically to reuse its
+# already-declared site rather than add a new row here, but GCC inlined
+# app_commit_with_dex into this noinline function anyway, producing a genuinely new
+# indirect-call instruction regardless of which path is used -- so the row is
+# unavoidable, not a style choice. Same four possible targets as every other
+# AppCommitFn call site in this file (BoxSource.commit @48 above); one call site.
+app_native_cell_edit argsites=1 -> banksrc_commit gbsrc_commit app_commit_pc app_commit_sb1
+
 # pdna_box: 4 sites (all through the same bx-r2/bx-r3 shared thunks as the eleven
 # declared field classes above) where the field value is SPILLED to the stack (the
 # resolver's `ldr reg, [sp, #K]` case) and reloaded past an intervening `bl` --
