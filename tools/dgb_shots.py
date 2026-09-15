@@ -3915,6 +3915,65 @@ def run_s150_2_bank_native(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_
     return s
 
 
+def run_s150_3_escape_gate(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #150 S150-3: the escape-route gate -- the mon-menu whitelist on a native
+    Bank cell (VIEW/MOVE/RELEASE/CANCEL only), the deny toast when a native cell in hand
+    reaches the drop_held gate (dragged out of the Bank into the PC), and the real
+    Gen-1/2 summary opened from the whitelist's own VIEW row. Reuses S150-2's exact
+    fixture and nav recipe (same box0 plant, same --image requirements: a plain
+    tools/fuse_sav.py fusion of an Emerald.sav onto pokedna-delta-artless.gba, no --gb,
+    no --clip) -- see run_s150_2_bank_native()'s own docstring for why no fused payload
+    is needed (source/bank_plant.c's PDNA_DELTA-only box_load() hook)."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s150_3_")
+    print("== BACKLOG #150 S150-3: the escape-route gate ==")
+    s.tap("START", settle=80)                              # nav menu
+    s.tap("DOWN", settle=60)                                # Party -> Bank (index 1, one DOWN)
+    s.tap("A", settle=150)                                  # -> pdna_bank_show(), box 0 (BANK 1)
+    # cursor already on slot 0 (the CHIKORITA plant). A opens the mon menu.
+    s.tap("A", settle=150)                                  # slot 0 -> its menu
+    s.shot("00_native_menu", "S150-3: A on the CHIKORITA native cell -- decision 7's "
+           "WHITELIST, not the ordinary eleven-row occupied menu: VIEW / MOVE / "
+           "RELEASE / CANCEL only, cursor defaults to row 0 (VIEW)")
+
+    # VIEW (row 0, already selected) -> A_SUMMARY's dispatch case -> app_box_browse ->
+    # its own bc_is_native() interception -> gb_native_summary_open() (D-Q1: the same
+    # wrapper S150-2 landed, now reachable through this lane's whitelist instead of a
+    # bespoke VIEW action).
+    s.tap("A", settle=150)                                  # select VIEW
+    s.shot("01_view_native_summary", "S150-3 D-Q1: VIEW opens the REAL Gen-1/2 summary "
+           "read-only, via gb_native_summary_open() -- the same wrapper S150-2 landed, "
+           "now reached through this lane's whitelist row instead of a bespoke action")
+    s.tap("B", settle=150)                                  # out of the summary, back to the grid
+
+    # MOVE (row 1): re-open the menu, DOWN once to MOVE, A to pick the cell up.
+    s.tap("A", settle=150)                                  # slot 0 -> its menu again
+    s.tap("DOWN", settle=60)                                # row 0 (VIEW) -> row 1 (MOVE)
+    s.tap("A", settle=150)                                  # select MOVE -> g_move_req -> start_carry
+    s.shot("02_carrying", "S150-3: MOVE picked the native cell up into the glove -- "
+           "still inside the Bank, s_orig_scope == BOXSCOPE_BANK")
+
+    # DOWN x5: 4 to walk the cursor from slot 0 (row 0) to the bottom row (row 4), a
+    # 5th to walk off the Bank's bottom edge -- pdna_box.c's own `else if (src->is_bank)
+    # { boxoam_exit(); return 5; }` under KEY_DOWN while still holding, carrying the
+    # native cell out into the PC box view.
+    s.press_n("DOWN", 5, settle=150)
+    s.shot("03_carried_into_pc", "S150-3: carried out of the Bank into the PC box view, "
+           "still holding the native cell (src->scope is now BOXSCOPE_PC)")
+
+    # A: attempt to drop onto whatever PC cell the cursor landed on -- drop_held's
+    # decision-3 dominating gate (xg_native_escape_denied(s_held, BOXSCOPE_PC)) fires
+    # BEFORE any memcpy, msg_wait's PDNA_XFER_NATIVE_TITLE/L1/L2 dialog shows, and the
+    # hand is NOT emptied.
+    s.tap("A", settle=150)
+    s.shot("04_deny_toast", "S150-3 decision 3: dropping a native cell into the PC -- "
+           "xg_native_escape_denied() denies BEFORE any 80-byte write, the "
+           "'STAYS IN THE BANK' toast shows, and the cell is still in hand (not lost)")
+    s.tap("A", settle=150)                                  # dismiss the toast (msg_wait waits for A)
+    s.shot("05_still_holding", "S150-3: after the toast, still carrying the same native "
+           "cell -- the deny kept the hand full, nothing was written or discarded")
+    return s
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -4100,6 +4159,14 @@ def main(argv=None) -> int:
                           "no --clip -- same vehicle as --s2-bank-control). No fused "
                           "payload needed: the native cells come from source/"
                           "bank_plant.c's PDNA_DELTA-only box_load() hook.")
+    ap.add_argument("--s150-3", action="store_true",
+                     help="BACKLOG #150 S150-3: only run_s150_3_escape_gate() against "
+                          "--image -- --image MUST be a plain tools/fuse_sav.py fusion "
+                          "of an Emerald.sav onto pokedna-delta-artless.gba (no --gb, "
+                          "no --clip -- same vehicle as --s150-2). The mon-menu "
+                          "whitelist (VIEW/MOVE/RELEASE/CANCEL), the deny toast when a "
+                          "native cell in hand is dropped into the PC, and VIEW opening "
+                          "the real Gen-1/2 summary.")
     ap.add_argument("--b54-romhack", choices=("hack", "control"),
                      help="BACKLOG #54: only run_b54_romhack() against --image for the "
                           "named case -- the ROM-hack banner + the mon-menu refusal it "
@@ -4650,6 +4717,21 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] s150-2: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if getattr(a, "s150_3", False):
+        # BACKLOG #150 S150-3: same append-only convention as --s150-2 above.
+        ran = True
+        try:
+            sess = run_s150_3_escape_gate(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] s150-3: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
