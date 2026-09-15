@@ -2791,28 +2791,41 @@ def test_b159_mutation_fragile_entries_excluded_from_stale_warning():
 # === BACKLOG #167: pin the count-only fallback population, per (variant, artless) ======
 
 def test_b167_check_count_only_max_passes_when_count_equals_declared_max():
-    """(a) K count-only callers measured, declared max == K -> not fatal."""
+    """(a) K count-only callers measured, declared max == K -> not fatal.
+    Wrapped in redirect_stderr/redirect_stdout (review F4): check_count_only_max
+    always prints a `count-only callers: ...` line, which otherwise leaks onto
+    this test SCRIPT's real stdout on every passing run, not just a failing
+    one -- a real build's own run of the guard is unaffected either way, this
+    is purely about keeping this test file's OWN output quiet on success."""
+    import contextlib
+    import io
     import tempfile
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
         f.write("count-only-max 5 variant=nor artless=1\n")
         path = f.name
     try:
         decls = sb.load_count_only_max_decls(path)
-        fatal = sb.check_count_only_max(5, "nor", True, decls, path)
+        with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            fatal = sb.check_count_only_max(5, "nor", True, decls, path)
         check("(B167) count == declared max is not fatal", fatal is False, fatal)
     finally:
         os.unlink(path)
 
 
 def test_b167_check_count_only_max_fatals_when_count_exceeds_max():
-    """(b) K count-only callers measured, declared max == K-1 -> FATAL (True)."""
+    """(b) K count-only callers measured, declared max == K-1 -> FATAL (True).
+    Wrapped (review F4) so the expected FATAL message doesn't leak onto this
+    test script's real stderr on a passing run."""
+    import contextlib
+    import io
     import tempfile
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
         f.write("count-only-max 4 variant=nor artless=1\n")
         path = f.name
     try:
         decls = sb.load_count_only_max_decls(path)
-        fatal = sb.check_count_only_max(5, "nor", True, decls, path)
+        with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            fatal = sb.check_count_only_max(5, "nor", True, decls, path)
         check("(B167) count exceeds declared max is FATAL", fatal is True, fatal)
     finally:
         os.unlink(path)
@@ -2821,7 +2834,9 @@ def test_b167_check_count_only_max_fatals_when_count_exceeds_max():
 def test_b167_check_count_only_max_missing_declaration_is_a_note_not_fatal():
     """(c) no count-only-max line for this exact (variant, artless) pair -> NOT
     fatal (a missing line must not break other variants/repos), but a one-time
-    stderr note names the undeclared pair so the gap is visible."""
+    stderr note names the undeclared pair so the gap is visible. Wraps BOTH
+    streams (review F4) -- stdout is discarded (the count line isn't under
+    test here), stderr is captured and asserted on."""
     import contextlib
     import io
     import tempfile
@@ -2831,7 +2846,7 @@ def test_b167_check_count_only_max_missing_declaration_is_a_note_not_fatal():
     try:
         decls = sb.load_count_only_max_decls(path)
         stderr_buf = io.StringIO()
-        with contextlib.redirect_stderr(stderr_buf):
+        with contextlib.redirect_stderr(stderr_buf), contextlib.redirect_stdout(io.StringIO()):
             fatal = sb.check_count_only_max(5, "nor", True, decls, path)
         check("(B167) missing declaration for this pair is not fatal",
               fatal is False, fatal)
@@ -2851,7 +2866,11 @@ def test_b167_key_distinguishes_artless_from_plain_nor():
     same variant=nor and checks the SAME count (15) against each: under the
     higher plain-nor max (20) it passes, but exceeds the lower nor+artless max
     (10) -- if the artless flag were ignored by the lookup (aliased onto the
-    plain nor line, or vice versa), both calls would agree."""
+    plain nor line, or vice versa), both calls would agree. Wrapped (review
+    F4): the artless call genuinely FATALs (by design), so without wrapping
+    this is the noisiest of the five tests on a passing run."""
+    import contextlib
+    import io
     import tempfile
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
         f.write("count-only-max 10 variant=nor artless=1\n")
@@ -2861,8 +2880,9 @@ def test_b167_key_distinguishes_artless_from_plain_nor():
         decls = sb.load_count_only_max_decls(path)
         check("(B167) two distinct (variant, artless) keys parsed from one file",
               decls == {("nor", True): 10, ("nor", False): 20}, decls)
-        fatal_artless = sb.check_count_only_max(15, "nor", True, decls, path)
-        fatal_nor = sb.check_count_only_max(15, "nor", False, decls, path)
+        with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            fatal_artless = sb.check_count_only_max(15, "nor", True, decls, path)
+            fatal_nor = sb.check_count_only_max(15, "nor", False, decls, path)
         check("(B167) the artless build FATALs against its OWN (lower) declared max",
               fatal_artless is True, fatal_artless)
         check("(B167) the plain nor build, same count, does not -- under its own "
@@ -2917,16 +2937,22 @@ def test_b167_mutation_broken_comparison_would_never_fatal():
     comparison in a scratch copy of stack_budget.py and re-running this exact
     assertion against it (see the brief's own verification, not repeated here
     as a permanent test since it would require importing a second copy of the
-    module)."""
+    module). Wrapped (review F4): the count=5 call genuinely FATALs (by
+    design, that's the boundary being tested), so without wrapping this leaks
+    on every passing run too."""
+    import contextlib
+    import io
     import tempfile
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
         f.write("count-only-max 4 variant=nor artless=1\n")
         path = f.name
     try:
         decls = sb.load_count_only_max_decls(path)
+        with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            at_max = sb.check_count_only_max(4, "nor", True, decls, path)
+            over_max = sb.check_count_only_max(5, "nor", True, decls, path)
         check("(B167) the comparison is a real boundary, not a constant",
-              sb.check_count_only_max(4, "nor", True, decls, path) is False
-              and sb.check_count_only_max(5, "nor", True, decls, path) is True)
+              at_max is False and over_max is True)
     finally:
         os.unlink(path)
 
