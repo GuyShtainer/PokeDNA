@@ -2867,8 +2867,18 @@ static void gb_bank_visit(Gb12Mount* m, bool from_hop) {
   gb_session_ops_install(m);                 /* re-install readonly -> ops -> hint, in order */
 }
 
-static void gb_nav_from_start(Gb12Mount* m) {
+static void gb_nav_from_start(Gb12Mount* m, GbSession* ro) {
   int kind = (m->kind == GB12_SAVE_RBY) ? SE_KIND_GEN1 : SE_KIND_GEN2;
+  /* BACKLOG #64: `gs` is whichever session this visit actually has -- the resident,
+   * EDITABLE one (g_ed->s) when the resident-image path latched one, else the
+   * read-only STREAMED one this nav-menu path built (`ro`, NULL if its own
+   * gbs_open_streamed refused). `ed` is true only for the resident-image path: every
+   * write primitive below is gated `ed && ...`, so a streamed session (gs == ro)
+   * always renders through the SAME screens with editing compiled out, never a
+   * write reaching gbs_write_field/gbs_commit_list with gs->img == NULL (that would
+   * already refuse via gbs_can_write(), but the UI should never even offer it). */
+  GbSession* gs = g_ed ? &g_ed->s : ro;
+  bool ed = (g_ed != 0);
   int nv = app_nav_menu(NAV_ALL_AVAILABLE);
   if (nv == NV_SETTINGS) {
     app_nav_settings();
@@ -2903,8 +2913,8 @@ static void gb_nav_from_start(Gb12Mount* m) {
      * GB12_ARENA_NEED's own comment). Falling back to the existing read-only info
      * page rather than inventing a fragile stage-buffer reuse under this slice's
      * one-hour budget; flagged for a follow-up slice, not silently worked around. */
-    if (g_ed) pdna_gbtrainer(&g_ed->s, true);
-    else      (void)gb_info_page(m);   /* A and B both just return to the grid */
+    if (gs) pdna_gbtrainer(gs, ed);
+    else    (void)gb_info_page(m);   /* A and B both just return to the grid */
   } else if (nv == NV_DEX) {
     /* BACKLOG #87: the shared Pokedex screen (pdna_pick.c's pdna_dex_screen, reused
      * UNCHANGED under item 1's species cap), over source/gb_dex.h's owned/seen core
@@ -2916,8 +2926,8 @@ static void gb_nav_from_start(Gb12Mount* m) {
      * app_can_edit() here, not a bare `true`: this is a NEW call site (same
      * reasoning NV_DAYCARE's own comment gives for why it does not just copy the
      * NV_TRAINER/NV_BAG/NV_CLOCK sibling literal). */
-    if (g_ed) pdna_gbdex(&g_ed->s, app_can_edit());
-    else      (void)gb_info_page(m);
+    if (gs) pdna_gbdex(gs, ed && app_can_edit());
+    else    (void)gb_info_page(m);
   } else if (nv == NV_BANK) {
     /* BACKLOG #120 S2: the Bank is reachable from the START menu too, not only the
      * bank_edge UP hop -- no g_ed needed (unlike every real-art screen above, the
@@ -2938,8 +2948,8 @@ static void gb_nav_from_start(Gb12Mount* m) {
      * row). Gating on `kind` here lets a Gen-2 NV_BAG press fall through to
      * the `else if (nv != NV_BACK)` branch below, which calls
      * app_nav_refuse() and shows nav_avail's own honest message instead. */
-    if (g_ed) pdna_gbbag(&g_ed->s, true);
-    else      (void)gb_info_page(m);
+    if (gs) pdna_gbbag(gs, ed);
+    else    (void)gb_info_page(m);
   } else if (nv == NV_BAG && kind == SE_KIND_GEN2) {
     /* U5 (BACKLOG #67): Gold/Silver/Crystal's own Pack + PC store, mirroring
      * U4's own gate one branch up -- same "needs a live GbSession to write
@@ -2947,13 +2957,13 @@ static void gb_nav_from_start(Gb12Mount* m) {
      * but g_ed's resident image is the only path that HAS one here; the
      * plain FIL-streaming entry falls back to the read-only info page, same
      * reasoning as NV_TRAINER above). */
-    if (g_ed) pdna_gbpack(&g_ed->s, true);
-    else      (void)gb_info_page(m);
+    if (gs) pdna_gbpack(gs, ed);
+    else    (void)gb_info_page(m);
   } else if (nv == NV_FLY) {
     /* BACKLOG #90: gb_fly.h has a real bit for both generations (see its own header)
      * -- same "needs a live GbSession to write through" gate as NV_TRAINER above. */
-    if (g_ed) pdna_gb_fly(&g_ed->s, true);
-    else      (void)gb_info_page(m);
+    if (gs) pdna_gb_fly(gs, ed);
+    else    (void)gb_info_page(m);
   } else if (nv == NV_CLOCK && kind == SE_KIND_GEN2) {
     /* BACKLOG #86/#108: Gen-2's own Clock fix screen, over gb_clock.h -- same
      * "needs a live GbSession to write through" gate as NV_TRAINER/NV_BAG above.
@@ -2962,8 +2972,8 @@ static void gb_nav_from_start(Gb12Mount* m) {
      * gated on `kind` anyway, the same defensive posture NV_BAG's own two branches
      * take, so a stray Gen-1 press falls through to app_nav_refuse()'s honest
      * message instead of silently opening a Gen-2-shaped screen. */
-    if (g_ed) pdna_gbclock(&g_ed->s, true);
-    else      (void)gb_info_page(m);
+    if (gs) pdna_gbclock(gs, ed);
+    else    (void)gb_info_page(m);
   } else if (nv == NV_DAYCARE) {
     /* BACKLOG #85: same "needs a live GbSession to write through" gate as
      * NV_TRAINER/NV_BAG/NV_BAG above -- gbd_read()/gbd_deposit()/gbd_withdraw()
@@ -2992,12 +3002,12 @@ static void gb_nav_from_start(Gb12Mount* m) {
      * pdna_gbpack.c/pdna_gbtrainer.c, which also trust their caller) -- since
      * this is a NEW call site, passing the real cart state rather than
      * copying the sibling literal is the hard-rule-4-safe choice. */
-    if (g_ed) {
+    if (gs) {
       int box = (m->ui_box >= 0 && m->ui_box <= m->party_box) ? m->ui_box
               : (m->current_box >= 0 && m->current_box <= m->party_box) ? m->current_box
               : 0;
-      if (gb_box_is_party(g_ed->s.gen, box)) box = 0;   /* the party is never a Day-Care source or landing (re-verify N1) */
-      pdna_gbdaycare(&g_ed->s, box, app_can_edit());
+      if (gb_box_is_party(gs->gen, box)) box = 0;   /* the party is never a Day-Care source or landing (re-verify N1) */
+      pdna_gbdaycare(gs, box, ed && app_can_edit());
     } else {
       (void)gb_info_page(m);
     }
@@ -3007,8 +3017,8 @@ static void gb_nav_from_start(Gb12Mount* m) {
      * (Trainer/Bag/Pack/Clock/Daycare above) -- pdna_gbflags() itself trusts its
      * caller (no internal app_can_edit() call, mirroring every sibling above),
      * so pass the real cart state, not a bare `true`. */
-    if (g_ed) pdna_gbflags(&g_ed->s, app_can_edit());
-    else      (void)gb_info_page(m);
+    if (gs) pdna_gbflags(gs, ed && app_can_edit());
+    else    (void)gb_info_page(m);
   } else if (nv == NV_MAP && kind == SE_KIND_GEN1) {
     /* M1 (BACKLOG #91): read-only current-map view, same "needs a live
      * GbSession to read the ROM's own tile bank through" gate every other
@@ -3016,8 +3026,8 @@ static void gb_nav_from_start(Gb12Mount* m) {
      * g_ed->s is the same resident session those already read/write
      * through gb12_arena_tail(). The plain FIL-streaming mount (no g_ed)
      * falls back to the read-only info page, same as Trainer/Bag/Pack. */
-    if (g_ed) pdna_gbmap_gen1(&g_ed->s);
-    else      (void)gb_info_page(m);
+    if (gs) pdna_gbmap_gen1(gs);
+    else    (void)gb_info_page(m);
   } else if (nv == NV_BATTLEREC) {
     /* BACKLOG #89: the "Records" row hosts the Hall of Fame on a Game Boy save --
      * nav_avail's own GB_TABLE keeps this row NAV_OK on BOTH kinds (unlike every
@@ -3026,13 +3036,13 @@ static void gb_nav_from_start(Gb12Mount* m) {
      * above are gated to their one supported generation. Same "needs a live
      * GbSession to write through" fallback as every sibling branch: the plain
      * FIL-streaming mount (no g_ed) falls back to the read-only info page. */
-    if (g_ed) pdna_gbhof(&g_ed->s, app_can_edit());
-    else      (void)gb_info_page(m);
+    if (gs) pdna_gbhof(gs, ed && app_can_edit());
+    else    (void)gb_info_page(m);
   } else if (nv == NV_MAP && kind == SE_KIND_GEN2) {
     /* M1-G2 (BACKLOG #91): the Gen-2 twin of the branch above -- same gate,
      * same fallback. */
-    if (g_ed) pdna_gbmap_gen2(&g_ed->s);
-    else      (void)gb_info_page(m);
+    if (gs) pdna_gbmap_gen2(gs);
+    else    (void)gb_info_page(m);
   } else if (nv != NV_BACK) {
     app_nav_refuse(nv, kind);   /* COMING SOON or NOT IN GEN 1/2, per nav_avail.h */
   }
@@ -3051,7 +3061,7 @@ static void gb_nav_from_start(Gb12Mount* m) {
  * the mount, shared by both entry points: the only difference between opening a GB save
  * from a loaded Gen-3 save's nav menu and opening one straight off the file browser is
  * WHERE THE BYTES COME FROM, and that difference lives entirely in the read callback. */
-static void gb_session_core(Gb12Mount* m) {
+static void gb_session_core(Gb12Mount* m, GbSession* ro) {
   rmbl_fire(RCUE_ROOM);
   if (!gb_info_page(m)) return;              /* B on the info page = never entered */
   /* BACKLOG #77: once per session, past the point the user could still back out --
@@ -3098,7 +3108,7 @@ static void gb_session_core(Gb12Mount* m) {
    * directional hint puts it) for the PC/Bank too -- there is no existing "resume
    * this exact cell" mechanism to mirror, so this does not invent one either. */
   for (int r; (r = pdna_box(&s)) != 0; ) {
-    if (r == 2) gb_nav_from_start(m);
+    if (r == 2) gb_nav_from_start(m, ro);
     else if (r == 4) gb_bank_visit(m, true);       /* BACKLOG #120 S2: bank_edge's UP hop */
     else app_box_start_set(1);
     s = pdna_gen12_source(m);
@@ -3170,9 +3180,8 @@ int pdna_gen12_show(const char* path, uint8_t met_game) {
    * GBS_OK AND the same generation cross-check pdna_gen12_show_image() makes against
    * its own gbs_open() -- a session that identified as the WRONG generation from the
    * same bytes the mount just parsed is a bug worth refusing loudly, not silently
-   * trusting. `vw_ok` is consumed in step 4 (threaded into gb_session_core /
-   * gb_nav_from_start as the `ro` parameter); wired here, not yet used, so this
-   * commit alone leaves it read-but-not-yet-passed on purpose. */
+   * trusting. Threaded into gb_session_core/gb_nav_from_start as the `ro` parameter,
+   * NEVER as g_ed (which stays untouched on this path). */
   bool vw_ok = false;
   GbsStatus vst = gbs_open_streamed(&vw->s, gb_read, f, len, vw->scratch, sizeof vw->scratch);
   if (vst == GBS_OK && (vw->s.gen == GB_GEN1) == (m->kind == GB12_SAVE_RBY)) {
@@ -3181,9 +3190,8 @@ int pdna_gen12_show(const char* path, uint8_t met_game) {
     log_line("gen12: read-only session refused (%s, gen %d vs mount kind %d)",
              gbs_status_text(vst), (int)vw->s.gen, (int)m->kind);
   }
-  (void)vw_ok;   /* step 4 threads this into gb_session_core's new `ro` parameter */
 
-  gb_session_core(m);
+  gb_session_core(m, vw_ok ? &vw->s : 0);
 
   f_close(f);
   app_arena_release();
@@ -3234,7 +3242,9 @@ int pdna_gen12_show_fused(int idx, uint8_t met_game) {
            name ? name : "?", pdna_gen12_kind_name(m->kind), m->nstored, m->nready,
            m->nblocked, m->nunreadable);
 
-  gb_session_core(m);
+  gb_session_core(m, 0);   /* BACKLOG #64: no read-only session here -- the fused delta
+                            * entry already shows every screen through g_ed (Option B
+                            * exists for the plain FIL-streaming nav path only) */
 
   app_arena_release();
   return 0;
@@ -3311,7 +3321,10 @@ int pdna_gen12_show_image(const char* path, uint8_t* img, uint32_t len,
     }
   }
 
-  gb_session_core(m);
+  gb_session_core(m, 0);   /* BACKLOG #64: no read-only session here either -- this
+                            * entry shows every screen through g_ed when gbs_open
+                            * succeeded above, or the plain read-only info page when
+                            * it did not (same as before this lane) */
 
   g_ed = 0;                                       /* the arena block is about to go */
   g_tail_lent = false;      /* U2b review 0b: the whole block goes away next line anyway,
