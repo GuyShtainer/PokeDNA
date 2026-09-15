@@ -206,6 +206,16 @@ BoxSource.can_lift @80 in src_can_lift -> gb_can_lift_hook
 app_mon_menu argsites=3 -> banksrc_commit gbsrc_commit app_commit_pc app_commit_sb1
 app_paste_gb_merge argsites=1 -> banksrc_commit gbsrc_commit app_commit_pc app_commit_sb1
 
+# BACKLOG #54 review fix F2: the new app_mon_menu_readonly() call site F2 added to
+# app_mon_menu's own !app_can_edit() branch grew that function's object code just
+# enough that GCC stopped fully inlining ONE instantiation of app_commit_with_dex
+# (source/pdna_main.c) into its callers -- it now stands alone with its own
+# `commit(rec, is_party, block)` call (the generic "block is neither g_pc nor
+# g_sb1" path, reached from banksrc/gbsrc callers), the SAME AppCommitFn class
+# documented above, just materialised as a genuine standalone caller instead of
+# staying folded into app_mon_menu's own declared argsites=3. One call site.
+app_commit_with_dex argsites=1 -> banksrc_commit gbsrc_commit app_commit_pc app_commit_sb1
+
 # pdna_box: 4 sites (all through the same bx-r2/bx-r3 shared thunks as the eleven
 # declared field classes above) where the field value is SPILLED to the stack (the
 # resolver's `ldr reg, [sp, #K]` case) and reloaded past an intervening `bl` --

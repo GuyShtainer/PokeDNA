@@ -3642,12 +3642,13 @@ def run_s2_bank_control(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_sho
 
 
 def run_b54_romhack(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
-    """BACKLOG #54 T0/T1: the ROM-hack banner + the box-grid refusal app_can_edit()
-    wires up. `rom` MUST be `tools/fuse_sav.py <pokedna-delta-artless.gba>
-    Emerald.sav` (a plain Gen-3 fusion, no --gb -- same shape as run_s2_bank_control's
-    own vehicle) -- FUSE NO GB SAVE: gb_delta_pick_save() (pdna_main.c:8559) takes the
-    GB fork for ANY fused GB save, and :8564-8567 is why a single fused GB save skips
-    its own picker, which is not the path this lane's banner lives on.
+    """BACKLOG #54 T0/T1: the ROM-hack banner + the read-only mon menu app_can_edit()
+    and app_src_readonly_set() wire up (review fix F2). `rom` MUST be
+    `tools/fuse_sav.py <pokedna-delta-artless.gba> Emerald.sav` (a plain Gen-3
+    fusion, no --gb -- same shape as run_s2_bank_control's own vehicle) -- FUSE NO
+    GB SAVE: gb_delta_pick_save() (pdna_main.c:8559) takes the GB fork for ANY fused
+    GB save, and :8564-8567 is why a single fused GB save skips its own picker,
+    which is not the path this lane's banner lives on.
 
     which="hack": `rom` is a COPY of Emerald.gba (made in /tmp, never in the roms/
     corpus, never committed) with 0xA0..0xAB overwritten "POKEMON HACK" before
@@ -3656,22 +3657,20 @@ def run_b54_romhack(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -
     shows the banner right after app_icon_rom_open() runs this session's
     classification.
 
-    A press on a box cell: verified live (mGBA + a temporary debug log_line, since
-    this differs from the brief's own prediction) that app_mon_menu() takes its
-    PRE-EXISTING `if (!app_can_edit()) { pdna_inspect(...); return false; }` branch
-    (pdna_main.c, written for cart-wide read-only carts, e.g. Everdrive) BEFORE it
-    ever reaches the `g_src_ro` check this lane's app_src_readonly_set() call feeds
-    -- app_can_edit() now returns false for a hack-flagged g_game (this lane's step
-    4), so that branch fires first every time, and app_mon_menu_readonly()'s richer
-    VIEW/LEGALITY/COPY/CANCEL menu (with PDNA_ROMHACK_NOTE's prose) is unreachable
-    from THIS entry point. Net effect, still exactly decision 6's "an honest message
-    + the save still opening and viewing normally": no menu at all, straight into the
-    read-only pdna_inspect() summary of whichever mon was selected -- editing is
-    blocked (verified: app_can_edit() is false), the save opens and views correctly,
-    and the boot banner already explained why. Reordering app_mon_menu()'s two
-    checks to make the richer menu reachable would touch shared, cart-wide read-only
-    logic well outside this lane's file list -- flagged for the review as a step 6
-    deviation rather than improvised here.
+    A press on a box cell: app_mon_menu()'s pre-existing `if (!app_can_edit())`
+    branch (written for cart-wide read-only carts, e.g. Everdrive) still fires
+    first, since app_can_edit() is also false for a hack-flagged g_game -- but
+    review fix F2 added a check INSIDE that branch: `app_rom_is_hack(g_game) &&
+    !g_src_ops` (the `!g_src_ops` guard keeps a MOUNTED GB session, which already
+    owns g_src_ops, from being re-routed here, and keeps every OTHER
+    !app_can_edit() reason -- Everdrive, pdna_romcheck_bad() -- byte-identical,
+    since neither ever calls app_src_readonly_set()) now calls
+    app_src_readonly_set(0, PDNA_ROMHACK_NOTE) and enters
+    app_mon_menu_readonly() -- VIEW / LEGALITY / COPY / CANCEL, with
+    PDNA_ROMHACK_NOTE's prose explaining why. Every row app_mon_menu_readonly()
+    can offer here is g_src_ops-gated (ITEM/MOVE/PASTE/CREATE/RELEASE all read
+    g_src_ops->*, and this call passes g_src_ops = NULL implicitly), so nothing
+    reachable here can mutate g_pc/g_party/g_sb1.
 
     which="control": `rom` is the UNMODIFIED Emerald.gba -- classifies RETAIL, no
     banner, the ordinary full mon menu (same shape as run_s2_bank_control's own
@@ -3686,24 +3685,24 @@ def run_b54_romhack(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -
                "'Read-only until verified.' / 'Edits could corrupt this save.' "
                "(PDNA_ROMHACK_TITLE/L1/L2)")
         s.tap("A", settle=150)                                  # dismiss the banner
-        s.shot("b_after_dismiss", "BACKLOG #54: A dismisses the banner -- the party/box view "
-               "underneath is otherwise the ordinary boot screen, no other chrome "
-               "change")
+        s.shot("b_after_dismiss", "BACKLOG #54: A dismisses the banner -- the party/box "
+               "view underneath is the ordinary boot screen, EXCEPT the icons are "
+               "text name chips (MAG/VOL/...) instead of real ROM sprites -- a real,"
+               " correct consequence of this lane: rom_open() refuses the hack "
+               "outright (decision 5, it keeps refusing anything but a bit-identical "
+               "retail build), so app_icon_rom_open() has no icon source to register "
+               "this session, same fallback a genuine no-ROM session already uses")
     else:
         s.shot("a_boot_no_banner", "BACKLOG #54: the unmodified Emerald.gba classifies "
                "RETAIL -- no banner, straight into the ordinary party/box view (retail "
                "pixel parity: this lane must not touch this path at all)")
     s.tap("A", settle=150)                                     # A on the first box cell
     if which == "hack":
-        s.shot("c_view_only_no_menu", "BACKLOG #54: A on a box cell in a HACK-flagged "
-               "save skips the action menu entirely -- app_mon_menu()'s own "
-               "pre-existing '!app_can_edit() -> view only' branch (written for "
-               "cart-wide read-only carts) fires first, since app_can_edit() is now "
-               "also false for a hack-flagged game -- straight into a read-only "
-               "pdna_inspect() summary of the selected mon, no EDIT/ITEM/LEGALITY/"
-               "MOVE/COPY/RELEASE reachable at all (a stricter refusal than the "
-               "brief's own VIEW+COPY menu prediction; see this function's own "
-               "docstring)")
+        s.shot("c_readonly_menu", "BACKLOG #54 (review fix F2): A on a box cell in a "
+               "HACK-flagged save opens app_mon_menu_readonly() -- VIEW, LEGALITY, "
+               "COPY, CANCEL only (no EDIT/ITEM/MOVE TO/RELEASE -- g_src_ops is "
+               "NULL), with PDNA_ROMHACK_NOTE's prose ('ROM hack: locked') "
+               "explaining why editing is off")
     else:
         s.shot("b_mon_menu_normal", "BACKLOG #54: the ordinary full mon menu on the "
                "same save opened against the unmodified ROM -- VIEW/EDIT, ITEM?, "

@@ -4589,6 +4589,31 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
   if (occupied) pk_resolve(&m0);
 
   if (!app_can_edit()) {                                 /* read-only carts: view only */
+    /* Review fix F2 (BACKLOG #54): a hack-flagged Gen-3 game's OWN box/party grid
+     * (no foreign source mounted, g_src_ops NULL) used to fall straight through to
+     * the bare pdna_inspect() below, skipping the richer read-only menu (VIEW /
+     * LEGALITY / COPY / CANCEL) and its why-note entirely -- ruling: keep the
+     * why-note (option a), do not delete it; app_src_readonly_set() also sets
+     * g_src_ro, which pdna_box.c/app_src_empty_action_offered() consult
+     * independently, so this needs to be the real gate, not a display-only tweak.
+     * `!g_src_ops` is the load-bearing guard: it is what keeps a MOUNTED GB session
+     * (which already owns g_src_ops via pdna_gen12.c's own app_src_readonly_set
+     * call) from being re-routed here a second time, and it is what keeps every
+     * other !app_can_edit() reason (Everdrive, pdna_romcheck_bad()) on the
+     * original bare-inspect path byte-identical -- neither of those ever calls
+     * app_src_readonly_set() itself, so g_src_ops is whatever the LAST real source
+     * left it (NULL on a fresh boot). Every row app_mon_menu_readonly() can offer
+     * here is g_src_ops-gated (ITEM/MOVE/PASTE/CREATE/RELEASE all read
+     * g_src_ops->*), and this call passes g_src_ops = NULL implicitly (set() nulls
+     * it), so VIEW/LEGALITY/COPY/CANCEL is the full reachable set -- nothing here
+     * can mutate g_pc/g_party/g_sb1. set() is idempotent (safe to call every visit)
+     * and re-arms the note after pdna_gen12.c:2843/3095's own clears, since this
+     * is reached again on the very next box-grid entry the GB fork returns to. */
+    if (app_rom_is_hack(g_game) && !g_src_ops) {
+      if (!occupied) return false;
+      app_src_readonly_set(0, PDNA_ROMHACK_NOTE);
+      return app_mon_menu_readonly(rec, is_party, &m0, false);
+    }
     if (occupied) { uint8_t d[100]; int card = 0; pdna_inspect(rec, is_party, false, d, 0, &card); }
     return false;
   }
