@@ -2,6 +2,7 @@
  * rom_gbsprite.h for the design, the decomp citations and the addresses this
  * lands on. Pure C: no tonc, no FatFs, no GBA headers. */
 #include "rom_gbsprite.h"
+#include "gb_scanwin.h"
 
 #include <string.h>
 
@@ -133,22 +134,23 @@ typedef struct {
   uint32_t n;                           /* > SCAN_MAX_HITS means "too many"   */
 } ScanJob;
 
+/* Forward-only, sector-aligned reads through gb_scanwin.h -- see that header for
+ * the measured reason (the old backward-hopping window cost 8,592 FatFs
+ * transactions per 2 MB scan on the cart; this costs one per chunk). */
 static int scan_multi(RomGbSprite* gs, ScanJob* jobs, uint32_t njobs) {
   uint8_t* w = gs->scratch;
-  uint32_t cap = gs->scratch_len;
   uint32_t look = 0;
   for (uint32_t j = 0; j < njobs; j++) { jobs[j].n = 0; if (jobs[j].look > look) look = jobs[j].look; }
-  if (!w || cap < look + 16u || gs->size < look) return 0;
-  uint32_t step = cap - look + 1u;
-  for (uint32_t base = 0; base + look <= gs->size; base += step) {
-    uint32_t n = gs->size - base; if (n > cap) n = cap;
-    if (!rd(gs, base, w, n)) return 0;
-    uint32_t lim = n - look;                        /* inclusive */
-    for (uint32_t i = 0; i <= lim; i++) {
+  GbScanWin sw;
+  if (!w || !gb_scanwin_init(&sw, gs->size, gs->scratch_len, look)) return 0;
+  while (gb_scanwin_plan(&sw, w)) {
+    if (!rd(gs, sw.rd_off, w + sw.rd_dst, sw.rd_len)) return 0;
+    uint32_t cnt = gb_scanwin_filled(&sw);
+    for (uint32_t i = sw.first; i < sw.first + cnt; i++) {
       const uint8_t* p = w + i;
       for (uint32_t j = 0; j < njobs; j++) {
         if (!jobs[j].cb(p)) continue;
-        if (jobs[j].n < SCAN_MAX_HITS) jobs[j].off[jobs[j].n] = base + i;
+        if (jobs[j].n < SCAN_MAX_HITS) jobs[j].off[jobs[j].n] = sw.base + i;
         jobs[j].n++;
       }
     }
@@ -264,6 +266,12 @@ static int g2_bd_verify(RomGbSprite* gs, uint32_t off) {
  * entries either side of it, cuts it to one.
  */
 #define G2_PP_LOOK  (201u * G2_ENTRY)          /* through the Unown hole        */
+/* ROM_GBSPRITE_SCRATCH_MIN must hold the carry for the longest pattern (this one)
+ * plus one aligned chunk -- gb_scanwin.h's rule. Pinned so a longer pattern fails
+ * the build instead of making every open() silently refuse at run time. */
+_Static_assert(((G2_PP_LOOK - 1u) + GB_SCANWIN_ALIGN - 1u) / GB_SCANWIN_ALIGN * GB_SCANWIN_ALIGN
+               + GB_SCANWIN_ALIGN <= ROM_GBSPRITE_SCRATCH_MIN,
+               "ROM_GBSPRITE_SCRATCH_MIN too small for the scan window");
 
 static int g2_pp_cb(const uint8_t* w) {
   const uint8_t* hole = w + G2_UNOWN_IDX * G2_ENTRY;

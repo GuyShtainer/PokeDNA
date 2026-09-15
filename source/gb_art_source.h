@@ -174,10 +174,55 @@ typedef enum {
   GB_ART_REG_EMPTY,         /* path was "" or NULL -- gen `gen` cleared, not an error   */
   GB_ART_REG_CANT_OPEN,     /* the file would not open for read                        */
   GB_ART_REG_WRONG_GEN,     /* opened and identified, but as the OTHER generation       */
-  GB_ART_REG_BAD_ROM        /* opened, but not a valid/locatable Game Boy image        */
+  GB_ART_REG_BAD_ROM,       /* opened, but not a valid/locatable Game Boy image        */
+  GB_ART_REG_CANCELLED,     /* the progress callback said stop (B) -- nothing persisted */
+  GB_ART_REG_TIMEOUT,       /* one locator exceeded GB_ART_SCAN_LIMIT_S -- nothing persisted */
+  GB_ART_REG_READ_ERR       /* an SD read failed (GbArtRegInfo has fr/err/offset) --  *
+                             * nothing persisted                                       */
 } GbArtRegStatus;
 
-GbArtRegStatus gb_art_register(uint8_t gen, const char* path);
+/* Which locator a progress report is about. Gen 1 only ever runs the first. */
+#define GB_ART_LOC_SPRITES 1
+#define GB_ART_LOC_ICONS   2
+
+/* Per-locator wall-clock limit. The clock is perf_ticks() (a hardware timer that
+ * keeps counting while the EZ-Flash driver holds IRQs off), not a VBlank frame count
+ * -- no VBlank IRQ is delivered during a transfer, which is exactly when a stuck
+ * card needs the limit to fire. See gb_scan_guard.h. */
+#define GB_ART_SCAN_LIMIT_S 60u
+
+/* Progress callback, invoked from INSIDE the ROM read shim between SD reads (never
+ * during a transfer): every 8th read, and on the first. `done`/`total` are bytes
+ * (the high-water mark of the file covered so far, and the ROM size). Return false
+ * to cancel: the current read is not performed, the locator unwinds, and
+ * gb_art_register() answers GB_ART_REG_CANCELLED having written nothing. The
+ * callback may poll input and draw -- both are safe between transfers -- but it
+ * runs at the bottom of the locator's call chain, so keep its own frame small
+ * (pdna_main.c's gb_reg_progress is the measured reference). */
+typedef bool (*GbArtProgressFn)(void* ctx, uint8_t locator, uint32_t done, uint32_t total,
+                                uint32_t elapsed_ms);
+
+/* What happened, for the caller's message and the log. Filled on every outcome. */
+typedef struct GbArtRegInfo {
+  uint32_t reads;        /* SD reads performed, both locators together              */
+  uint32_t elapsed_ms;   /* wall time from open to close                             */
+  uint32_t covered;      /* bytes of the ROM covered when it stopped (progress `done`) */
+  uint32_t fail_off;     /* file offset of the failing read (READ_ERR only)          */
+  uint8_t  locator;      /* GB_ART_LOC_* that was running when it finished/stopped   */
+  uint8_t  fr;           /* FatFs FRESULT of the failing call (READ_ERR only)        */
+  uint8_t  err;          /* FIL.err latched after it (READ_ERR only)                 */
+  uint8_t  stop;         /* gb_scan_guard.h GB_SCAN_* reason (0 = none)              */
+} GbArtRegInfo;
+
+/* `progress`/`progress_ctx` may be NULL (silent: boot, tests); `info` may be NULL.
+ * Reads the existing /PokeDNA/gbart<gen>.loc FIRST and only scans the whole ROM
+ * when that cache does not describe this exact file (a fresh path, a swapped
+ * ROM, or no cache yet) -- so re-registering the same ROM, and every boot, costs a
+ * few dozen reads, not a 2 MB scan. For a Gen-2 ROM the menu-icon tables are
+ * located too (locator 2/2) and /PokeDNA/gbicon2.loc written alongside, so the
+ * first party/box icon after registration does not pay a scan of its own. */
+GbArtRegStatus gb_art_register(uint8_t gen, const char* path, GbArtProgressFn progress,
+                               void* progress_ctx, GbArtRegInfo* info);
 
 /* Does generation `gen` (1 or 2) currently have working art? An explicit
  * gb_art_register() (Settings/boot) always wins outright once it has run. Failing
@@ -196,8 +241,11 @@ bool gb_art_have(uint8_t gen);
  * for each of romgb1/romgb2 that cfg_load() restored a non-empty path for
  * (app_gb_rom_path()), re-validates it via gb_art_register() so a fresh boot has
  * working art with no user action. Call once, after cfg_load(), from main()'s
- * startup — a no-op (source never registered) under PDNA_DELTA. */
-void gb_art_boot_register(void);
+ * startup — a no-op (source never registered) under PDNA_DELTA. `progress` is
+ * shown for the (rare) boot that has to rescan -- a missing or stale .loc; the
+ * common boot validates the cache in a few dozen reads and the screen barely
+ * flashes. NULL = silent. */
+void gb_art_boot_register(GbArtProgressFn progress, void* progress_ctx);
 
 /* Reset the "beside the save" fallback's per-save cache. Call from view_save()
  * (pdna_main.c) the moment a save is opened, BEFORE anything asks gb_art_have() —

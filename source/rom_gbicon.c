@@ -2,6 +2,7 @@
  * rom_gbicon.h for the design, the shape invariants and the addresses this
  * lands on. Pure C: no tonc, no FatFs, no GBA headers. */
 #include "rom_gbicon.h"
+#include "gb_scanwin.h"
 
 #include <string.h>
 
@@ -85,18 +86,18 @@ static void tiles_to_px(const uint8_t t[ROM_GBICON_FRAME_BYTES], uint8_t px[ROM_
  */
 static uint32_t scan_one(RomGbIcon* gi, int (*cb)(const uint8_t*), uint32_t look,
                          uint8_t* scratch, uint32_t scratch_len, uint32_t* out_off) {
-  uint32_t cap = scratch_len;
-  if (!scratch || cap < look + 16u || gi->size < look) return 0;
-  uint32_t step = cap - look + 1u;
+  /* Forward-only, sector-aligned reads (gb_scanwin.h) -- the same window rule as
+   * rom_gbsprite.c's scan_multi, for the same measured reason. */
+  GbScanWin sw;
+  if (!scratch || !gb_scanwin_init(&sw, gi->size, scratch_len, look)) return 0;
   uint32_t hits = 0;
-  for (uint32_t base = 0; base + look <= gi->size; base += step) {
-    uint32_t n = gi->size - base; if (n > cap) n = cap;
-    if (!rd(gi, base, scratch, n)) return 0;
-    uint32_t lim = n - look;
-    for (uint32_t i = 0; i <= lim; i++) {
+  while (gb_scanwin_plan(&sw, scratch)) {
+    if (!rd(gi, sw.rd_off, scratch + sw.rd_dst, sw.rd_len)) return 0;
+    uint32_t cnt = gb_scanwin_filled(&sw);
+    for (uint32_t i = sw.first; i < sw.first + cnt; i++) {
       if (!cb(scratch + i)) continue;
       hits++;
-      if (hits == 1) *out_off = base + i;
+      if (hits == 1) *out_off = sw.base + i;
       if (hits > 1) return hits;      /* ambiguous — no need to keep counting  */
     }
   }

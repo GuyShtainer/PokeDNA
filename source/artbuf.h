@@ -50,7 +50,9 @@ extern uint16_t mon_decomp[MON_DECOMP_BYTES / 2];
  * being trustworthy the moment we ask"). Known writers (grep mon_decomp for more
  * before adding a new one): mon_front_for_form/mon_back_for_form (mon_front.c/
  * mon_back.c), rom_portrait (pdna_origin_art.c), app_type_badge/app_item_icon
- * (pdna_main.c), icon_from_cache (art_fallbacks.c), gb_art_source.c's own fetch,
+ * (pdna_main.c), icon_from_cache (art_fallbacks.c), gb_art_source.c's gb_art_fetch /
+ * gb_art_fetch_icon / gb_art_open_and_identify (the WHOLE 8 KB since hw2: the
+ * locators scan through it),
  * the bag/trainer-card chrome decoders (pdna_bag.c, pdna_trainer.c), the box
  * wallpaper tile compare buffer (pdna_box.c) and rom_wallpaper.c.
  *
