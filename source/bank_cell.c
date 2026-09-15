@@ -168,9 +168,14 @@ bool bc_view(const GbEditMon* mon, const BcMeta* meta, uint32_t id_salt, Gb12Mon
    * Crystal.sav prove it (tests/host_bankcell_test.c's named regression checks) -- so
    * "is Crystal" is not the same predicate as "these bytes hold real capture data",
    * and only the latter is what the converter (gen12_convert.c:415's put_ot_gender)
-   * actually keys off. Gen 1 has no capture-record bytes at all: always false. */
+   * actually keys off. Gen 1 has no capture-record bytes at all: always false.
+   *
+   * GB2_REC_CAUGHT0/1 (review F7), not a bare 0x1D/0x1E: gb_edit.h's own exported
+   * pair, tied by a _Static_assert in gb_edit.c to the private R2_CAUGHT0/1 enum
+   * gb_get_caught_ot_gender()/gb_set_caught() actually use -- this can never desync
+   * from those getters without a compile error. */
   out->has_caught_data = (mon->gen == GB_GEN2) &&
-                         ((mon->rec[0x1D] | mon->rec[0x1E]) != 0);
+                         ((mon->rec[GB2_REC_CAUGHT0] | mon->rec[GB2_REC_CAUGHT1]) != 0);
   out->ot_gender        = gb_get_caught_ot_gender(mon);   /* no has_caught gate on the getter itself */
 
   out->slot_salt = id_salt;
