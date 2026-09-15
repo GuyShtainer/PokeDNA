@@ -303,11 +303,17 @@ int main(int argc, char** argv) {
 
   const char* truth_dir = gen_or_find_truth_dir(rom_path);
   if (!truth_dir) { fclose(f); return 0; }
+  const int truth_dir_generated = strncmp(truth_dir, "/tmp/pdna_render_truth_", 23) == 0;   /* tiny6 review: only a generated dir is removed */
   char littleroot_path[512], petalburg_path[512];
   snprintf(littleroot_path, sizeof littleroot_path, "%s/render-littleroot.raw", truth_dir);
   snprintf(petalburg_path, sizeof petalburg_path, "%s/render-petalburg.raw", truth_dir);
   test_map(&rc, "littleroot", littleroot_path);
   test_map(&rc, "petalburg",  petalburg_path);
+  if (truth_dir_generated) {          /* tiny6 review: never leak /tmp/pdna_render_truth_* */
+    char rmcmd[320];
+    snprintf(rmcmd, sizeof rmcmd, "rm -rf \"%s\"", truth_dir);
+    system(rmcmd);
+  }
 
   fclose(f);
   printf("\n");

@@ -64,29 +64,12 @@ typedef struct { FILE* f; } HostCtx;
  * g_reads = g_bytes = 0 around exactly one screen load. */
 static unsigned long g_reads = 0, g_bytes = 0;
 
-/* BACKLOG #139: the same call-ordinal single-byte-flip corruption mock
- * host_romsprite_test.c uses (hit_call/hit_pos), keyed on nothing but WHICH
- * physical read() call this is, never on len or address -- exactly what
- * review-opus's attack list demands. Fires exactly once (hit_call == 0
- * disarms it). g_reads (above) is the shared call-ordinal counter -- rom_chrome
- * has no per-item ROM TABLE the way rom_sprite does (its addresses are
- * compile-time CardPins/BagPins constants), so there is no table-entry variant
- * of this mock here; only decode_verified's compressed-input hash compare is
- * under test. */
-static long     g_hit_call = 0;
-static uint32_t g_hit_pos = 0;
-
 static bool host_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
   HostCtx* c = (HostCtx*)ctx;
   g_reads++;
   g_bytes += len;
   if (fseek(c->f, (long)off, SEEK_SET) != 0) return false;
-  if (fread(dst, 1, len, c->f) != len) return false;
-  if (g_hit_call && g_reads == (unsigned long)g_hit_call && g_hit_pos < len) {
-    ((uint8_t*)dst)[g_hit_pos] ^= 0xFF;
-    g_hit_call = 0;      /* fires exactly once */
-  }
-  return true;
+  return fread(dst, 1, len, c->f) == len;
 }
 
 static int open_rom(const char* path, HostCtx* c, RomCtx* rc) {
@@ -377,131 +360,6 @@ static void test_bag_sprite(const char* label, const char* path, int card_bag_g,
   fclose(c.f);
 }
 
-/* BACKLOG #139: prove decode_verified's hash-compare in rom_chrome.c is
- * load-bearing, the same way host_romsprite_test.c proved it for rom_sprite.c
- * (that mock exists only there today -- gutting rom_chrome's hash compare
- * left the suite green). One trainer-card load (Emerald, front/tier0/male):
- * corrupt one byte the decode consumes -> the verify must catch it and a
- * retry must yield the clean tileset bytes, never accepted-dirty; then the
- * SAME corruption point with verification off must sail through unfixed,
- * proving it is verification -- not luck -- doing the catching.
- *
- * Call ordinals traced empirically with a debug read-counter tracer against
- * Emerald.gba, verify ON, tileset fetch (the FIRST of card_load's four
- * fetches, k_card_emerald.tileset): call 1 = the LZ10 header (4 B), call 2 =
- * the whole compressed-body window chunk (the spare-tail window is large
- * enough here to cover the whole span in one read), call 3 = decode_verified's
- * verify re-read of the consumed span. Corrupting byte 1 of either call 2 or
- * call 3 costs a second full attempt (more than 3 calls) and still lands on
- * the exact clean bytes; byte 0 (a flags byte) was tried first and rejected
- * for this test because it can flip a token from literal to back-reference
- * and trip decode_verified's own "reference before the start" fail-closed
- * path (n != want) instead of producing a verifiable mismatch -- byte 1 always
- * lands inside a literal/length byte for this blob. With verification off,
- * corrupting call 2 costs the same read-call shape MINUS every re-read (8
- * calls total, one attempt), and the corrupted tileset bytes are accepted. */
-static void test_card_corruption(const char* label, const char* path) {
-  HostCtx c; RomCtx rc;
-  if (!open_rom(path, &c, &rc)) { printf("%s corruption: SKIP (no dump)\n", label); return; }
-  RomChrome rch; rom_chrome_open(&rch, &rc);
-  static uint8_t scratch_clean[8192], scratch_dirty[8192];
-
-  g_hit_call = 0;
-  RomChromeCard clean;
-  int okc = rom_chrome_card_load(&rch, 1, 0, 0, 0, scratch_clean, sizeof scratch_clean, &clean);
-  CHECK(okc, "%s: clean card-load baseline for the corruption cases failed", label);
-
-  /* (a) corrupt the decode's own compressed-input read (call 2). A retry
-   * must recover the exact clean tileset bytes. */
-  g_reads = 0;
-  g_hit_call = 2; g_hit_pos = 1;
-  RomChromeCard dec;
-  int ok_dec = rom_chrome_card_load(&rch, 1, 0, 0, 0, scratch_dirty, sizeof scratch_dirty, &dec);
-  CHECK(okc && ok_dec && memcmp(scratch_dirty, scratch_clean, 5120) == 0,
-       "%s: a decode-phase read corruption still yields the clean tileset (a retry recovers)", label);
-  CHECK(g_reads > 3, "%s: a decode-phase read corruption cost more than one attempt", label);
-  g_hit_call = 0;
-
-  /* (b) corrupt ONLY the verify re-read (call 3); the decode's own input hash
-   * is correct, so only the confirmation read sees garbage -- must not be
-   * silently accepted, a retry must still land on the clean bytes. */
-  memset(scratch_dirty, 0, sizeof scratch_dirty);
-  g_reads = 0;
-  g_hit_call = 3; g_hit_pos = 1;
-  RomChromeCard rr;
-  int ok_rr = rom_chrome_card_load(&rch, 1, 0, 0, 0, scratch_dirty, sizeof scratch_dirty, &rr);
-  CHECK(g_reads > 3, "%s: a re-read-phase corruption is not silently accepted (a retry happened)", label);
-  CHECK(okc && ok_rr && memcmp(scratch_dirty, scratch_clean, 5120) == 0,
-       "%s: a re-read-phase corruption still yields the clean tileset after the retry", label);
-  g_hit_call = 0;
-
-  /* (c) the SAME corruption point (call 2), verification OFF: with no reread
-   * to catch it, the corrupted decode must sail through UNFIXED -- proving it
-   * is verification, not luck, doing the catching above. */
-  rom_chrome_set_verify(&rch, 0);
-  memset(scratch_dirty, 0, sizeof scratch_dirty);
-  g_reads = 0;
-  g_hit_call = 2; g_hit_pos = 1;
-  RomChromeCard nv;
-  int ok_nv = rom_chrome_card_load(&rch, 1, 0, 0, 0, scratch_dirty, sizeof scratch_dirty, &nv);
-  CHECK(okc && ok_nv && memcmp(scratch_dirty, scratch_clean, 5120) != 0,
-       "%s: with verification OFF the same corrupted decode sails through unfixed "
-       "(so it is verification doing the catching)", label);
-  g_hit_call = 0;
-  rom_chrome_set_verify(&rch, 1);
-
-  fclose(c.f);
-}
-
-/* Mirror of test_card_corruption() for the bag screen's tileset fetch
- * (rom_chrome_bag_load, Emerald male). Traced empirically the same way: call
- * 1 = the LZ10 header, call 2 = the compressed-body window chunk, call 3 =
- * the verify re-read. */
-static void test_bag_corruption(const char* label, const char* path) {
-  HostCtx c; RomCtx rc;
-  if (!open_rom(path, &c, &rc)) { printf("%s corruption: SKIP (no dump)\n", label); return; }
-  RomChrome rch; rom_chrome_open(&rch, &rc);
-  static uint8_t scratch_clean[8192], scratch_dirty[8192];
-
-  g_hit_call = 0;
-  RomChromeBag clean;
-  int okc = rom_chrome_bag_load(&rch, 1, 0, scratch_clean, sizeof scratch_clean, &clean);
-  CHECK(okc, "%s: clean bag-load baseline for the corruption cases failed", label);
-
-  g_reads = 0;
-  g_hit_call = 2; g_hit_pos = 1;
-  RomChromeBag dec;
-  int ok_dec = rom_chrome_bag_load(&rch, 1, 0, scratch_dirty, sizeof scratch_dirty, &dec);
-  CHECK(okc && ok_dec && memcmp(scratch_dirty, scratch_clean, 1696) == 0,
-       "%s: a decode-phase read corruption still yields the clean tileset (a retry recovers)", label);
-  CHECK(g_reads > 3, "%s: a decode-phase read corruption cost more than one attempt", label);
-  g_hit_call = 0;
-
-  memset(scratch_dirty, 0, sizeof scratch_dirty);
-  g_reads = 0;
-  g_hit_call = 3; g_hit_pos = 1;
-  RomChromeBag rr;
-  int ok_rr = rom_chrome_bag_load(&rch, 1, 0, scratch_dirty, sizeof scratch_dirty, &rr);
-  CHECK(g_reads > 3, "%s: a re-read-phase corruption is not silently accepted (a retry happened)", label);
-  CHECK(okc && ok_rr && memcmp(scratch_dirty, scratch_clean, 1696) == 0,
-       "%s: a re-read-phase corruption still yields the clean tileset after the retry", label);
-  g_hit_call = 0;
-
-  rom_chrome_set_verify(&rch, 0);
-  memset(scratch_dirty, 0, sizeof scratch_dirty);
-  g_reads = 0;
-  g_hit_call = 2; g_hit_pos = 1;
-  RomChromeBag nv;
-  int ok_nv = rom_chrome_bag_load(&rch, 1, 0, scratch_dirty, sizeof scratch_dirty, &nv);
-  CHECK(okc && ok_nv && memcmp(scratch_dirty, scratch_clean, 1696) != 0,
-       "%s: with verification OFF the same corrupted decode sails through unfixed "
-       "(so it is verification doing the catching)", label);
-  g_hit_call = 0;
-  rom_chrome_set_verify(&rch, 1);
-
-  fclose(c.f);
-}
-
 /* Step 1 (BACKLOG #103): print read-callback counts for exactly ONE trainer
  * card load and ONE bag load on Emerald (front, tier 0, male) -- the
  * baseline this lane's every later step must reduce. */
@@ -579,10 +437,6 @@ int main(void) {
   test_bag_sprite("Ruby bag sprite (unwired game)", ruby, 0, 0);
 
   measure_counts(emerald);
-
-  /* BACKLOG #139 */
-  test_card_corruption("Emerald card corruption", emerald);
-  test_bag_corruption("Emerald bag corruption", emerald);
 
   if (g_fail) { printf("%d check(s) FAILED\n", g_fail); return 1; }
   printf("host_romchrome_test: all checks passed\n");

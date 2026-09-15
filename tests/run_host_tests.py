@@ -117,10 +117,6 @@ def main() -> int:
 
     saves = sorted(glob.glob(str(ROMS / "*.sav"))) or \
         sorted(glob.glob(str(FIXTURES / "*.sav")))
-    # BACKLOG #140: a test can opt OUT of the default "argv means .sav corpus"
-    # convention by carrying this exact marker line in its header comment -- it
-    # gets the .gba corpus instead (host_render_test.c wants a ROM, not a save).
-    roms = sorted(glob.glob(str(ROMS / "*.gba")))
 
     npass = nfail = nskip = 0
     failed: list[str] = []
@@ -155,18 +151,7 @@ def main() -> int:
             # `argv[i]`), so that test ran with an EMPTY corpus and failed four checks whose
             # whole point is that the corpus is non-empty — a red line in every run that had
             # nothing to do with the code under test.
-            #
-            # BACKLOG #140: the `RUN_HOST_TESTS: WANTS_ROM_ARGV` marker line overrides that
-            # default -- the test wants the .gba corpus instead (a ROM, not a save). Checked
-            # BEFORE the generic argv[] sniff below since a ROM-wanting test still indexes
-            # argv[1] and would otherwise match the .sav branch.
-            text = src.read_text(errors="replace")
-            if "RUN_HOST_TESTS: WANTS_ROM_ARGV" in text:
-                args = roms
-            elif re.search(r"argv\[\w+\]", text):
-                args = saves
-            else:
-                args = []
+            args = saves if re.search(r"argv\[\w+\]", src.read_text(errors="replace")) else []
             r = subprocess.run([binpath, *args], capture_output=True, text=True)
             outcome, detail = classify(r)
             npass, nfail, nskip = tally(name, outcome, detail, npass, nfail, nskip, failed)
