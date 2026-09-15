@@ -2822,8 +2822,8 @@ static void gb_session_ops_install(Gb12Mount* m) {
  * inside gb_session_core's own frame adds gb_session_core (208 B) + this function
  * (8 B) under main -> pdna_gen12_show_image -> gb_session_core -> gb_bank_visit ->
  * pdna_bank_show -> pdna_box -> ... -> gb_art_fetch, tools/stack_budget.py's new
- * deepest whole-program chain (was 13,000/12,992, now 13,296/13,288 -- margins
- * 1,784/2,328, both still positive). That chain is RUNTIME-UNREACHABLE from here,
+ * deepest whole-program chain (was 13,000/12,992, now 13,304/13,296 -- margins
+ * 1,776/2,320, both still positive). That chain is RUNTIME-UNREACHABLE from here,
  * twice over: (a) pdna_box.c's pcp_open_party_strip refuses immediately when
  * `src->is_bank` (pdna_box.c:2964, `if (src->is_bank) { snd_deny(); return; }`) --
  * pdna_gen12_source()/the Bank's own BoxSource both set is_bank true, so the PARTY
