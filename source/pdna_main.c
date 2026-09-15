@@ -35,6 +35,9 @@
 #include "pdna_summary.h"
 #include "pdna_box.h"
 #include "xfer_gate.h"      /* BACKLOG #120 S2: xg_pc_live/xg_togame_row/xg_paste_row/xg_inject_refuse */
+#include "bank_cell.h"      /* BACKLOG #150 S150-6: bc_is_native -- app_paste_gb_commit's G-H6 guard */
+#include "xfer_io.h"        /* BACKLOG #150 S150-6: xr_path_for_key/xr_path_for_name/xr_migrate_once */
+#include "xfer_rec.h"       /* BACKLOG #150 S150-6: xr_key_g3 -- the reroll re-key guard             */
 #include "gen3_trainer.h"
 #include "gen3_record.h"    /* Emerald Battle Record (save sector 31) info + export */
 #include "gen3_frontier.h"  /* g3f_streak_get/g3f_modes/g3f_mode_name for the record screen's streaks page */
@@ -2145,6 +2148,81 @@ static bool app_commit_with_dex(uint8_t* rec, bool is_party, AppCommitFn commit,
   return commit ? commit() : false;
 }
 
+/* BACKLOG #150 S150-6, decision 8: the guard's own plan, handed from
+ * app_xfer_pid_guard() to app_xfer_pid_rekey() across the commit in between. */
+typedef struct {
+  bool needs_rekey;
+  char old_path[GBSC_PATH_MAX];
+  char new_path[GBSC_PATH_MAX];
+} XferRekeyPlan;
+
+/* BACKLOG #150 S150-6, decision 8/G-H5, order per D-Q3 (2026-09-15 orchestrator
+ * decision -- overrides the brief's original "re-key before commit" text): the
+ * reroll/PID/OT-id-change guard, run at the editor's commit chokepoint
+ * (app_box_browse/party_browse) rather than inside em_reroll/em_set_pid/
+ * em_set_unown_form/gen3_ivroll.c themselves -- those fire on every D-pad press;
+ * this fires once, right before the edit would actually land.
+ *
+ * `old_rec`/`new_rec` need only their first 8 bytes (PID + OT id) -- both the
+ * 80-byte box shape and the 100-byte party shape start with the same header, so
+ * the same function serves both call sites unmodified.
+ *
+ * Returns true = proceed with the commit. false = the whole commit is abandoned
+ * (B on the warning, or a duplicate-target refusal) -- no memcpy, no
+ * app_commit_with_dex, nothing written anywhere. When true and *out_plan.needs_rekey
+ * is set, the caller commits FIRST and only calls app_xfer_pid_rekey() after a
+ * VERIFIED successful commit (D-Q3: the save must never be committed with the old
+ * record already gone, and a failed re-key must never be read as "nothing
+ * happened" when the save itself did land). */
+static bool __attribute__((noinline)) app_xfer_pid_guard(const uint8_t* old_rec,
+                                                          const uint8_t* new_rec,
+                                                          XferRekeyPlan* out_plan) {
+  out_plan->needs_rekey = false;
+  uint64_t old_key = xr_key_g3(old_rec);
+  uint64_t new_key = xr_key_g3(new_rec);
+  if (old_key == new_key) return true;               /* PID/OT id unchanged -- no-op */
+
+  /* nothing filed under the old key -- nothing this edit could orphan. */
+  if (!xr_path_for_key(out_plan->old_path, old_key)) return true;
+
+  if (!app_confirm(PDNA_XFER_REKEY_TITLE, PDNA_XFER_REKEY_L1)) return false;   /* B: abandon */
+
+  /* A file ALREADY at the new key means two records would share one PID+OTID --
+   * a DUPLICATE, not a merge (decision 8). Refuse before anything is written. */
+  if (xr_path_for_key(out_plan->new_path, new_key)) {
+    snd_error();
+    msg_wait(PDNA_XFER_REKEY_DUP_TITLE, UI_WARN, PDNA_XFER_REKEY_DUP_L1, 0);
+    return false;
+  }
+
+  out_plan->needs_rekey = true;
+  return true;
+}
+
+/* D-Q3: runs ONLY after app_commit_with_dex() has reported a verified success.
+ * Re-key = sf_read_full(old) -> sf_write_verified(new) -> f_unlink(old), in that
+ * order (SS11.6 verbatim). Any failure before the unlink leaves the OLD file
+ * intact -- the save itself already committed, so there is no "abandon" left to
+ * do; this can only log and move on. S150-11's reconcile matches a stale-keyed
+ * file by identity (ident32 + OT + name) later.
+ *
+ * noinline, GBSC_FILE_MAX (1042 B) buffer on its own frame -- the same discipline
+ * app_paste_gb_merge already follows. */
+static void __attribute__((noinline)) app_xfer_pid_rekey(const XferRekeyPlan* plan) {
+  if (!plan->needs_rekey) return;
+
+  uint8_t buf[GBSC_FILE_MAX];
+  uint32_t len = 0;
+  bool ok = sf_read_full(plan->old_path, buf, sizeof buf, &len) == SF_OK;
+  if (ok) ok = sf_write_verified(plan->new_path, buf, len) == SF_OK;
+  if (ok) ok = f_unlink(plan->old_path) == FR_OK;
+
+  if (!ok) {
+    log_line("xfer: rekey failed, old key kept (%s -> %s)", plan->old_path, plan->new_path);
+    msg_wait(PDNA_XFER_REKEY_FAILED_TITLE, UI_WARN, PDNA_XFER_REKEY_FAILED_L1, 0);
+  }
+}
+
 /* Register a mon's species for a DEFERRED add (Day-Care withdraw, a carried/copied mon
  * dropped into the PC) — no SD write now. Stages the dex sections (SB2 + SB1) into the
  * in-RAM save image like app_stage_sb1, so the exit flush's finalize (which writes the
@@ -2209,7 +2287,16 @@ static bool app_box_browse(uint8_t* block, int box, int start, AppCommitFn commi
     uint8_t* rec = block + 0x0004 + ((uint32_t)box * 30 + idx) * 80;
     uint8_t out[100]; bool saved = false;
     int nav = pdna_inspect(rec, false, app_can_edit(), out, &saved, &card);
-    if (saved) { memcpy(rec, out, 80); if (app_commit_with_dex(rec, false, commit, block)) any = true; }
+    if (saved) {
+      XferRekeyPlan plan;
+      if (app_xfer_pid_guard(rec, out, &plan)) {
+        memcpy(rec, out, 80);
+        if (app_commit_with_dex(rec, false, commit, block)) {
+          any = true;
+          app_xfer_pid_rekey(&plan);
+        }
+      }
+    }
     if (nav == 0) break;
     for (int step = 0; step < G3_IN_BOX; step++) {           /* next occupied slot in dir nav */
       idx = (idx + nav + G3_IN_BOX) % G3_IN_BOX;
@@ -2233,7 +2320,16 @@ static bool party_browse(int start, AppCommitFn commit) {
     uint8_t* rec = g_sb1 + doff + (uint32_t)idx * 100;
     uint8_t out[100]; bool saved = false;
     int nav = pdna_inspect(rec, true, app_can_edit(), out, &saved, &card);
-    if (saved) { memcpy(rec, out, 100); if (app_commit_with_dex(rec, true, commit, g_sb1)) any = true; }
+    if (saved) {
+      XferRekeyPlan plan;
+      if (app_xfer_pid_guard(rec, out, &plan)) {
+        memcpy(rec, out, 100);
+        if (app_commit_with_dex(rec, true, commit, g_sb1)) {
+          any = true;
+          app_xfer_pid_rekey(&plan);
+        }
+      }
+    }
     if (nav == 0) break;
     idx = (idx + nav + count) % count;                     /* U/D = prev/next party mon */
   }
@@ -3443,8 +3539,12 @@ static bool app_paste_gb_lookup(uint8_t* buf, uint32_t* len, const char* path,
   int first = -1, species_match = -1, start = 0;
   for (int guard = 0; guard <= GBSC_MAX_ENTRIES; guard++) {
     /* include_claimed=true: a claimed entry (its Gen-3 original already released by
-     * gb_reconcile_on_load) must still serve the merge up -- see gb_sidecar.h. */
-    int i = gbsc_find(buf, *len, &g_clip.gb, start, true);
+     * gb_reconcile_on_load) must still serve the merge up -- see gb_sidecar.h.
+     * want_kind=XR_KIND_G3_HOME (BACKLOG #150 S150-6): the merge UP restores a
+     * Gen-3 original from a GB-side entry; a native cell (XR_KIND_NATIVE_HOME) must
+     * never reach gbsc_merge_up -- gbsc_merge_up's own native refusal is belt, this
+     * filter is an earlier braces (G-H6). */
+    int i = gbsc_find(buf, *len, &g_clip.gb, start, true, XR_KIND_G3_HOME);
     if (i < 0) break;
     if (first < 0) first = i;
     GbscEntry cand;
@@ -3482,6 +3582,19 @@ static bool app_paste_gb_commit(uint8_t* buf, uint32_t* len, const char* path, i
                                 AppCommitFn commit, uint8_t* block,
                                 const GbscMergeReport* rep) {
   if (!app_sidecar_confirm(rep)) return false;
+
+  /* G-H6, the SECOND independent guard (belt is gbsc_merge_up's own native refusal,
+   * source/gb_sidecar.c) -- BACKLOG #150 S150-6, §11.6/§11.12/§11.13's required
+   * !bc_is_native(merged) assert. A pre-#150 sidecar entry has no kind byte at all,
+   * so a native cell reaching THIS point cannot be told apart from a real merged
+   * Gen-3 record by anything upstream of this check; refusing here means one can
+   * never land in g_save/g_pc through the clipboard even if the belt guard above it
+   * were ever bypassed. */
+  if (bc_is_native(merged)) {
+    log_line("gen3: paste-up refused: merged80 is a native cell");
+    snd_error();
+    return false;
+  }
 
   ClipMon tmp; memset(&tmp, 0, sizeof tmp);
   memcpy(tmp.rec, merged, 80);
@@ -3558,7 +3671,16 @@ app_paste_gb_merge(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* blo
   };
   uint64_t key = gbsc_key(g_clip.gb.gen, gb_get_otid(&g_clip.gb), dv4, g_clip.gb.otname);
   char path[GBSC_PATH_MAX];
-  if (gbsc_path(path, sizeof path, PDNA_SIDECAR_DIR, key) < 0) { *handled = false; return false; }
+  path[0] = 0;   /* xr_path_for_key leaves `out` untouched on its own bad-arg/too-long
+                  * refusal (never expected at GBSC_PATH_MAX in practice); an empty
+                  * path then fails sf_read_full cleanly (SF_ERR_OPEN) instead of
+                  * reading an uninitialized buffer as a filename. */
+  /* BACKLOG #150 S150-6, site 4: the bool is otherwise ignored -- when neither xfer
+   * nor sidecar holds this key, xr_path_for_key still resolves `path` to a real
+   * path (the xfer one), and app_paste_gb_lookup's own sf_read_full below already
+   * turns that "nothing on the card" case into SF_ERR_OPEN -> PDNA_SIDECAR_NONE_TITLE,
+   * exactly as it did when gbsc_path() could only ever point at sidecar. */
+  (void)xr_path_for_key(path, key);
 
   uint8_t buf[GBSC_FILE_MAX];
   uint32_t len = 0;
@@ -6430,9 +6552,20 @@ static void pdna_daycare(void) {
             saved = false;
             nav = pdna_inspect(recs[sel], false, app_can_edit(), out, &saved, &card);
             if (saved) {
-              memcpy(recs[sel], out, 80);                      /* daycare mons are 80-byte BoxPokemon in SB1 */
-              app_stage_sb1();                                 /* deferred: saved when you leave the save */
-              if (pk_decode_mon(recs[sel], false, &dc[sel])) pk_resolve(&dc[sel]);  /* refresh the scene copy */
+              /* BACKLOG #150 S150-6 review F4 (re-verify R1): the WARNING half ONLY.
+               * app_stage_sb1() is a RAM stage, not a verified commit -- flush_on_exit()'s
+               * B branch drops it outright ("disk untouched", :8733), so re-keying here
+               * would unlink the old-key record for a PID change that may never land.
+               * D-Q3: never unlink before a VERIFIED persist. The record keeps its old
+               * key; S150-11's identity matcher (ident32 + OT + name) reconciles it. */
+              XferRekeyPlan dplan;
+              if (app_xfer_pid_guard(recs[sel], out, &dplan)) {
+                if (dplan.needs_rekey)
+                  log_line("xfer: daycare PID change staged, re-key deferred (old key kept)");
+                memcpy(recs[sel], out, 80);                      /* daycare mons are 80-byte BoxPokemon in SB1 */
+                app_stage_sb1();                                 /* deferred: saved when you leave the save */
+                if (pk_decode_mon(recs[sel], false, &dc[sel])) pk_resolve(&dc[sel]);  /* refresh the scene copy */
+              }
             }
             if (n > 1) { if (nav > 0) sel = (sel + 1) % n; else if (nav < 0) sel = (sel + n - 1) % n; }
           } while (nav != 0 && n > 1);
@@ -8676,17 +8809,23 @@ typedef struct {
                          * than one Game Boy save (each transfer is its own sidecar
                          * entry, but they all name the SAME Gen-3 slot). The confirm
                          * screen promises nunique mons, not nhits entries. */
+  int        examined;  /* BACKLOG #150 S150-6 review F6: GB_RECON_MAX_EXAMINE must be
+                         * GLOBAL across BOTH reconcile passes (golden rule 2) -- a
+                         * per-call local would let a two-pass walk examine up to
+                         * 2x GB_RECON_MAX_EXAMINE entries total, unbounded across the
+                         * pair the way the old single-pass code never had to consider. */
 } GbReconBuf;
 _Static_assert(sizeof(GbReconBuf) <= sizeof(g_entries),
               "gb_reconcile buffer no longer fits the borrowed g_entries cache");
 
+/* BACKLOG #150 S150-6, site 5: decision 4/D-Q7 applied to a FILENAME instead of a
+ * key, so a reconcile hit's later claim write lands in the same file it was read
+ * from (xr_path_for_name's own contract). `out` is always left holding a usable
+ * path (the xfer one) even on the never-expected bad-arg/too-long refusal, so no
+ * caller here needs its bool. */
 static void gb_recon_path(char* out, const char* name) {
-  int pn = 0;
-  const char* d = PDNA_SIDECAR_DIR;
-  while (*d && pn < GBSC_PATH_MAX - 1) out[pn++] = *d++;
-  if (pn < GBSC_PATH_MAX - 1) out[pn++] = '/';
-  while (*name && pn < GBSC_PATH_MAX - 1) out[pn++] = *name++;
-  out[pn] = 0;
+  out[0] = 0;
+  (void)xr_path_for_name(out, name);
 }
 
 /* Scan /PokeDNA/sidecar for .pds files (bounded to GB_RECON_MAX_FILES ACCEPTED and
@@ -8710,21 +8849,38 @@ static void gb_recon_path(char* out, const char* name) {
  * this pass is a first, cheap line of defense, not the only one.
  *
  * noinline: DIR/FILINFO/the 1042 B sidecar buffer all live in *rb (the borrowed
- * g_entries cache), never this function's own frame. */
-static void __attribute__((noinline)) gb_reconcile_walk(GbReconBuf* rb) {
-  rb->nfiles = 0;
-  rb->nhits = 0;
-  rb->nunique = 0;
-  int examined = 0;
-  while (examined < GB_RECON_MAX_EXAMINE && rb->nfiles < GB_RECON_MAX_FILES &&
+ * g_entries cache), never this function's own frame.
+ *
+ * `append` (BACKLOG #150 S150-6, decision 7): false (pass 1, xfer) resets
+ * rb->nfiles/nhits/nunique as this function always did. true (pass 2, sidecar)
+ * does NOT reset them -- it continues appending into the SAME rb->names/rb->hits
+ * pass 1 already filled, so the three bounds (GB_RECON_MAX_FILES/_EXAMINE/_HITS)
+ * stay global across both passes (golden rule 2) -- and additionally skips any
+ * `fi.fname` already present in rb->names[0..nfiles), so a filename migrated into
+ * xfer (found by pass 1) is never read a second time out of sidecar by pass 2. */
+static void __attribute__((noinline)) gb_reconcile_walk(GbReconBuf* rb, bool append) {
+  if (!append) {
+    rb->nfiles = 0;
+    rb->nhits = 0;
+    rb->nunique = 0;
+    rb->examined = 0;   /* review F6: GLOBAL across both passes, reset only at pass 1 */
+  }
+  while (rb->examined < GB_RECON_MAX_EXAMINE && rb->nfiles < GB_RECON_MAX_FILES &&
         rb->nhits < GB_RECON_MAX_HITS &&
         f_readdir(&rb->dir, &rb->fi) == FR_OK && rb->fi.fname[0]) {
-    examined++;
+    rb->examined++;
     if (rb->fi.fattrib & AM_DIR) continue;
     int L = 0; while (rb->fi.fname[L]) L++;
     if (L < 5 || L >= GB_RECON_NAME_MAX) continue;
     const char* e = rb->fi.fname + L - 4;
     if (e[0] != '.' || (e[1] | 32) != 'p' || (e[2] | 32) != 'd' || (e[3] | 32) != 's') continue;
+
+    if (append) {
+      bool seen = false;
+      for (int k = 0; k < rb->nfiles; k++)
+        if (strcmp(rb->names[k], rb->fi.fname) == 0) { seen = true; break; }
+      if (seen) continue;               /* already found in pass 1 (xfer)          */
+    }
 
     int fidx = rb->nfiles;
     int cn = 0;
@@ -8947,12 +9103,29 @@ static void __attribute__((noinline)) gb_reconcile_on_load(void) {
   GbReconBuf* rb = (GbReconBuf*)app_box_swap_acquire(sizeof(GbReconBuf));
   if (!rb) { log_line("gen3: reconcile-on-load: swap buffer unavailable, skipped"); return; }
 
-  if (f_opendir(&rb->dir, PDNA_SIDECAR_DIR) != FR_OK) {
-    app_box_swap_release();
-    return;                                           /* no sidecar folder yet -- nothing to do */
+  /* BACKLOG #150 S150-6, site 6/decision 7 (review F3): pass 1 (xfer) resets and
+   * fills rb->nfiles/nhits/nunique; pass 2 (sidecar) APPENDS, skipping any filename
+   * pass 1 already found -- but ONLY runs at all when xr_migrated() is false. Once
+   * the migration has completed, every sidecar source is an inert backup (frozen
+   * at whatever it held at migration time) and /PokeDNA/xfer alone is the live
+   * ledger, so reading sidecar too would re-offer a mon whose xfer-side entry a
+   * PRIOR claim/KEEP already updated (the sidecar copy never saw that update). On
+   * a card where the migration could not run (read-only cart, Everdrive, or a
+   * failed pass) pass 2 is what keeps this screen working at all. */
+  bool have_xfer = f_opendir(&rb->dir, PDNA_XFER_DIR) == FR_OK;
+  if (have_xfer) {
+    gb_reconcile_walk(rb, false);
+    f_closedir(&rb->dir);
+  } else {
+    rb->nfiles = 0; rb->nhits = 0; rb->nunique = 0; rb->examined = 0;
   }
-  gb_reconcile_walk(rb);
-  f_closedir(&rb->dir);
+  if (!xr_migrated() && f_opendir(&rb->dir, PDNA_SIDECAR_DIR) == FR_OK) {
+    gb_reconcile_walk(rb, true);
+    f_closedir(&rb->dir);
+  } else if (!have_xfer) {
+    app_box_swap_release();
+    return;                                 /* neither folder exists -- nothing to do */
+  }
 
   if (rb->nhits > 0) {
     /* S5-C 2nd review #1: nunique (DISTINCT mons), not nhits (sidecar entries) --
@@ -9521,6 +9694,19 @@ static void view_save(const char* path) {
    * load_phase_n() the screen would still show "10/13 party (forme)" for however long
    * that takes, which reads as a hang on exactly the step that did NOT freeze. */
   load_phase_n(11, PDNA_LOAD_PHASE_SIDECARS);
+  /* BACKLOG #150 S150-6, decision 6: the migration runs from exactly this ONE
+   * place, immediately before gb_reconcile_on_load(). No file-static "already
+   * tried" flag (NO new statics) -- the on-card MIGRATED marker is the gate, so a
+   * second load this same boot is an O(1) f_stat. A NULL borrow (something else
+   * holds app_box_swap_acquire's one buffer) just skips the migration this run --
+   * decision 4/D-Q7's fallback keeps every record reachable either way. */
+  {
+    uint8_t* mig = app_box_swap_acquire(GBSC_FILE_MAX);
+    if (mig) {
+      xr_migrate_once(mig, GBSC_FILE_MAX);
+      app_box_swap_release();
+    }
+  }
   gb_reconcile_on_load();
   /* A party release above edited g_sb1 in place -- g_party/g_nparty are a CACHE of
    * it (every other mutator in this file re-derives the same way afterward, e.g.

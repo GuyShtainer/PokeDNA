@@ -44,7 +44,7 @@ FIXTURES = ROOT / "tests" / "fixtures"
 # else runs by default, so a real regression (the BoxSource offset drift, BACKLOG #130)
 # sat failing on main unnoticed. Named explicitly rather than globbed: tests/host_fusegb_test.py
 # is also pure-Python and deliberately stays off this list (own ticket, out of scope here).
-PY_TESTS = ["tests/host_stack_budget_test.py", "tests/host_gb_write_gate_test.py"]
+PY_TESTS = ["tests/host_stack_budget_test.py", "tests/host_gb_write_gate_test.py", "tests/host_xfer_rekey_order_test.py"]
 
 VERBOSE = "-v" in sys.argv
 

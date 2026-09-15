@@ -20,6 +20,13 @@
  * folder from. */
 #define PDNA_DIR          "/PokeDNA"
 #define PDNA_SIDECAR_DIR  PDNA_DIR "/sidecar"
+/* BACKLOG #150 S150-6, decision 1: the one folder that holds both sidecars AND
+ * transfer records going forward. PDNA_SIDECAR_DIR stays forever as the read
+ * fallback (decision 4/D-Q7, G-M1) -- every existing card's files are never moved
+ * or renamed, only copied. source/xfer_io.c's xr_path_for_key/xr_path_for_name are
+ * the ONE place that resolves which folder a given key/filename actually lives in;
+ * every reader and every in-place writer of an EXISTING record goes through them. */
+#define PDNA_XFER_DIR     PDNA_DIR "/xfer"
 
 /* Writes are EZ-Flash-Omega-only. */
 bool app_can_edit(void);

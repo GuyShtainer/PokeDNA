@@ -10,7 +10,7 @@
  *      source/gen3_save.c source/gen3_mon.c source/gen3_box.c source/gen3_edit.c \
  *      source/gen3_daycare.c source/data_tables.c \
  *      source/gb_edit.c source/gb_session.c source/gen1_save.c source/gen1_write.c \
- *      source/gen2_save.c source/gen2_write.c source/gb_sidecar.c -o /tmp/hrombase
+ *      source/gen2_save.c source/gen2_write.c source/gb_sidecar.c source/bank_cell.c -o /tmp/hrombase
  *   /tmp/hrombase /Users/guyshtainer/VSCodeProjects/gba-toolkit/roms/ (.sav files)
  *
  * Coverage:

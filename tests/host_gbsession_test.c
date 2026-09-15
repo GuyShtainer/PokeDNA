@@ -3,7 +3,7 @@
  *   cc -std=c11 -Wall -Wextra -I source -I tests tests/host_gbsession_test.c \
  *      source/gb_session.c source/gb_edit.c source/gen1_save.c source/gen1_write.c \
  *      source/gen2_save.c source/gen2_write.c source/data_tables.c \
- *      source/gen3_to_gb.c source/gb_sidecar.c source/gen3_edit.c source/gen3_mon.c \
+ *      source/gen3_to_gb.c source/gb_sidecar.c source/bank_cell.c source/gen3_edit.c source/gen3_mon.c \
  *      source/gen3_box.c source/gen3_save.c source/gen3_daycare.c -o /tmp/hgbs && /tmp/hgbs
  *
  * WHAT THIS FILE IS FOR, and why the engines' own tests are not enough.

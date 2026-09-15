@@ -6,7 +6,7 @@
  *      source/bank_cell.c source/gb_edit.c source/gen1_save.c source/gen1_write.c \
  *      source/gen2_save.c source/gen2_write.c source/gen3_save.c source/gen3_box.c \
  *      source/gen3_mon.c source/gen3_edit.c source/gen3_daycare.c source/gen3_clip.c \
- *      source/data_tables.c -o /tmp/hbc
+ *      source/data_tables.c source/gb_sidecar.c -o /tmp/hbc
  *   /tmp/hbc (Guy's five Gen-3 .sav files, positional argv -- run_host_tests.py hands
  *             them over automatically)
  *
@@ -52,6 +52,7 @@
 #include "gen3_box.h"
 #include "gen3_mon.h"
 #include "gen3_clip.h"
+#include "gb_sidecar.h"
 
 #define GB_ROMS "/Users/guyshtainer/VSCodeProjects/gba-toolkit/roms/gb"
 
@@ -405,6 +406,102 @@ static void test_terminator_refused(void) {
   CHECK(rc < 0, "bc_pack must refuse list_species == 0xFF");
 }
 
+/* ============================================================================ */
+/* 8. BACKLOG #150 S150-6, G-H6/review 1+8a: gbsc_merge_up refuses a bc_pack-      */
+/*    produced original80; review 8a's kind-filter cross-resolve check.           */
+/* ============================================================================ */
+
+static void test_sidecar_native_refusal(void) {
+  printf("== 8. gbsc_merge_up refuses a native original80 (G-H6) ==\n");
+
+  GbEditMon mon; memset(&mon, 0, sizeof mon);
+  mon.gen = GB_GEN2;
+  mon.list_species = 1;
+  mon.otname[0] = 0x81; memset(mon.otname + 1, 0x50, GB_NAME_BYTES - 1);
+  mon.nick[0]   = 0x81; memset(mon.nick + 1,   0x50, GB_NAME_BYTES - 1);
+
+  uint8_t cell[BC_CELL_BYTES];
+  CHECK(bc_pack(&mon, 0, BC_ORIGIN_GOLD, 0x1234u, 1u, cell) == 0,
+        "native-refusal: bc_pack builds a native cell");
+  CHECK(bc_is_native(cell), "native-refusal: the packed cell IS native (precondition)");
+
+  GbscEntry e; memset(&e, 0, sizeof e);
+  e.gen = GB_GEN2;
+  memcpy(e.original80, cell, 80);   /* a native cell masquerading as a sidecar's original */
+
+  uint8_t out80[80]; memset(out80, 0xAA, sizeof out80);
+  GbscMergeReport rep;
+  bool ok = gbsc_merge_up(&e, &mon, out80, &rep);
+  CHECK(!ok, "native-refusal: gbsc_merge_up returns false on a native original80");
+  {
+    uint8_t untouched[80]; memset(untouched, 0xAA, sizeof untouched);
+    CHECK(memcmp(out80, untouched, 80) == 0,
+          "native-refusal: out80 is left untouched (still the 0xAA sentinel)");
+  }
+
+  /* A real (non-native) original80 must still merge up normally -- the refusal is
+   * specific to bc_is_native(), not a general breakage. */
+  uint8_t real80[80]; memset(real80, 0, sizeof real80);   /* an all-zero cell is not native */
+  CHECK(!bc_is_native(real80), "native-refusal: the all-zero control is NOT native (precondition)");
+  GbscEntry e2 = e;
+  memcpy(e2.original80, real80, 80);
+  uint8_t out80b[80];
+  GbscMergeReport rep2;
+  CHECK(gbsc_merge_up(&e2, &mon, out80b, &rep2),
+        "native-refusal: a non-native original80 still merges up normally");
+}
+
+/* review 8a: two same-key entries of different `kind` must never cross-resolve
+ * through gbsc_find's want_kind filter. */
+static void test_sidecar_kind_filter(void) {
+  printf("== 8a. gbsc_find's want_kind filter never cross-resolves by kind ==\n");
+
+  uint8_t buf[GBSC_FILE_MAX];
+  uint32_t len = (uint32_t)gbsc_init(buf, 0x55u);
+  uint8_t dv4[4] = { 1, 2, 3, 4 };
+  uint8_t otname[GB_NAME_BYTES] = { 0x81, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50 };
+
+  GbscEntry e0; memset(&e0, 0, sizeof e0);
+  e0.gen = GB_GEN2; e0.otid16 = 0x2222; e0.kind = XR_KIND_G3_HOME;
+  memcpy(e0.dv4, dv4, 4); memcpy(e0.otname_written, otname, GB_NAME_BYTES);
+  CHECK(gbsc_add(buf, &len, sizeof buf, &e0) == 0, "kind-filter: G3_HOME entry added at 0");
+
+  GbscEntry e1 = e0; e1.kind = XR_KIND_NATIVE_HOME;
+  CHECK(gbsc_add(buf, &len, sizeof buf, &e1) == 1, "kind-filter: NATIVE_HOME entry added at 1 (same key)");
+
+  GbEditMon probe; memset(&probe, 0, sizeof probe);
+  probe.gen = GB_GEN2;
+  gb_set_otid(&probe, 0x2222);
+  gb_set_dv(&probe, GB_ATK, dv4[0]); gb_set_dv(&probe, GB_DEF, dv4[1]);
+  gb_set_dv(&probe, GB_SPE, dv4[2]); gb_set_dv(&probe, GB_SPC, dv4[3]);
+  gb_set_otname_raw(&probe, otname);
+
+  CHECK(gbsc_find(buf, len, &probe, 0, true, XR_KIND_G3_HOME) == 0,
+        "kind-filter: want_kind=G3_HOME resolves to entry 0, not 1");
+  CHECK(gbsc_find(buf, len, &probe, 0, true, XR_KIND_NATIVE_HOME) == 1,
+        "kind-filter: want_kind=NATIVE_HOME resolves to entry 1, not 0");
+  CHECK(gbsc_find(buf, len, &probe, 0, true, -1) == 0,
+        "kind-filter: want_kind<0 (any) still finds entry 0 first, same as before this parameter existed");
+  CHECK(gbsc_find(buf, len, &probe, 1, true, -1) == 1,
+        "kind-filter: any-kind walk from start=1 finds entry 1");
+
+  /* the tiebreak-invariance check: want_kind >= 0 removes candidates, never
+   * re-orders the survivors -- confirmed by re-walking with only ONE kind present. */
+  uint8_t buf2[GBSC_FILE_MAX];
+  uint32_t len2 = (uint32_t)gbsc_init(buf2, 0x66u);
+  GbscEntry g0 = e0; g0.kind = XR_KIND_G3_HOME;
+  GbscEntry g1 = e0; g1.kind = XR_KIND_G3_HOME;
+  CHECK(gbsc_add(buf2, &len2, sizeof buf2, &g0) == 0, "kind-filter: same-kind entry 0 added");
+  CHECK(gbsc_add(buf2, &len2, sizeof buf2, &g1) == 1, "kind-filter: same-kind entry 1 added");
+  for (int start = 0; start <= 2; start++) {
+    int any = gbsc_find(buf2, len2, &probe, start, true, -1);
+    int kind = gbsc_find(buf2, len2, &probe, start, true, XR_KIND_G3_HOME);
+    CHECK(any == kind,
+          "kind-filter: start=%d -- want_kind filter (all-matching) gives the SAME index as any-kind (%d vs %d)",
+          start, any, kind);
+  }
+}
+
 int main(int argc, char** argv) {
   printf("== 1. Gen-1 corpus sweep ==\n");
   sweep_gen1("Red.sav");
@@ -432,6 +529,9 @@ int main(int argc, char** argv) {
 
   printf("== 7. 0xFF list terminator refused ==\n");
   test_terminator_refused();
+
+  test_sidecar_native_refusal();
+  test_sidecar_kind_filter();
 
   printf("\n%d check(s), %s\n", g_check, g_fail ? "FAIL" : "OK");
   return g_fail ? 1 : 0;
