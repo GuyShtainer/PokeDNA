@@ -1681,32 +1681,41 @@ static bool gb_release_hook(uint8_t* rec80) {
  * call -- 0 when the RTC is absent, exactly as gb_paste_write already tolerates. */
 static bool gb_lift_up_hook(const uint8_t* rec80, uint8_t* out80, XferCarry* xc) {
   (void)xc;
-  if (!out80) return false;
+  if (!out80) { log_line("gen12: xferup lift refused: no destination buffer"); return false; }
   /* hard rule 4 / tests/host_gb_write_gate_test.py: this hook itself writes
    * (pdna_bank_next_serial() persists bank.meta), so it carries its own
    * app_can_edit() gate rather than relying only on the caller's can_lift check --
    * the SD side of the write is this function's own responsibility, not begin_
    * select's/the NORMAL-mode menu's, which merely decide whether to LOOK at a cell. */
-  if (!app_can_edit()) return false;
+  if (!app_can_edit()) { log_line("gen12: xferup lift refused: cart is not writable"); return false; }
 
   GbEditMon mon;
-  if (!gb_copy_native_hook(rec80, &mon, NULL)) return false;
+  if (!gb_copy_native_hook(rec80, &mon, NULL)) {
+    log_line("gen12: xferup lift refused: gb_copy_native_hook could not read the record");
+    return false;
+  }
 
   /* decision 5 / G-F6: a GB record that already has a ledger entry refuses the lift --
    * it is not merged here. The shipped COPY -> PASTE 3->GB->3 route
    * (pdna_main.c app_paste_gb_merge) stays the way home for that mon. */
-  if (gb_has_sidecar(mon.gen, &mon)) return false;
+  if (gb_has_sidecar(mon.gen, &mon)) {
+    log_line("gen12: xferup lift refused: mon already has a Gen-3 ledger entry (use COPY/PASTE)");
+    return false;
+  }
 
   /* decision 4/D-Q7: the one-time-per-save origin prompt (g_ed is non-NULL here --
    * lift_up is only ever reachable through k_gb_xfer, which pdna_gen12_source()
    * installs only when g_ed is set). -1 = B cancelled -> fail the lift, before any
    * serial is spent. */
   int origin = gb_origin_for_save(g_ed->s.gen, gb_session_is_crystal(&g_ed->s));
-  if (origin < 0) return false;
+  if (origin < 0) { log_line("gen12: xferup lift refused: origin prompt cancelled"); return false; }
   uint8_t origin_game = (uint8_t)origin;
 
   uint32_t serial = pdna_bank_next_serial();
-  if (!serial) return false;                 /* meta write failed -> refuse the lift */
+  if (!serial) {                              /* meta write failed -> refuse the lift */
+    log_line("gen12: xferup lift refused: bank.meta write failed (pdna_bank_next_serial)");
+    return false;
+  }
 
   uint8_t flags = 0;
   if (mon.is_party)          flags |= BC_FLAG_FROM_PARTY;
