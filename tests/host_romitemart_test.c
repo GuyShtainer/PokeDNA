@@ -274,6 +274,10 @@ typedef struct {
 } RomCase;
 
 static uint8_t  g_sheet[ROM_TYPE_SHEET_BYTES];   /* stands in for mon_decomp        */
+static uint8_t  g_sheet_wide[8192];    /* BACKLOG #145: stands in for the REAL
+                                         * mon_decomp cap (MON_DECOMP_BYTES, artbuf.h)
+                                         * pdna_main.c's app_type_badge() now passes,
+                                         * instead of ROM_TYPE_SHEET_BYTES == want */
 static uint16_t g_icon[ROM_ITEM_ICON_PX];
 static uint16_t g_ref[ROM_ITEM_ICON_PX];
 static uint16_t g_badge[ROM_TYPE_BADGE_MAX_PX];
@@ -727,6 +731,39 @@ static void verify_tests(const char* dir) {
     printf("  verify: one Emerald item icon costs %ld reads unverified / %ld verified (%.1fx)\n",
            plain_calls, verified_calls,
            plain_calls ? (double)verified_calls / (double)plain_calls : 0.0);
+
+    /* BACKLOG #145: the RSE type sheet's own read-callback count, cap == want
+     * (the dead-window shape rom_itemart.c:233/234/341/342's icon/palette
+     * callers use on purpose, and what pdna_main.c's app_type_badge() USED to
+     * pass) versus cap == MON_DECOMP_BYTES (8,192, what it passes now) --
+     * proves the BACKLOG #103 caller-tail LZ77 window actually activates once
+     * the caller supplies a real spare tail, and pins the AFTER count so a
+     * regression that quietly shrinks the window back to 0 fails this test. */
+    {
+      RomTypeSheet tsw;
+      mc.calls = 0;
+      chk("perf#145", "type sheet loads with cap == want (window off)",
+          rom_type_sheet_load(&ra, &ts, g_sheet, sizeof g_sheet));
+      long narrow_calls = mc.calls;
+
+      mc.calls = 0;
+      chk("perf#145", "type sheet loads with cap == MON_DECOMP_BYTES (window on)",
+          rom_type_sheet_load(&ra, &tsw, g_sheet_wide, sizeof g_sheet_wide));
+      long wide_calls = mc.calls;
+
+      chk("perf#145", "same pixels either way",
+          memcmp(ts.pal, tsw.pal, sizeof ts.pal) == 0 &&
+          memcmp(g_sheet, g_sheet_wide, sizeof g_sheet) == 0);
+      /* BACKLOG #103's own measurement pinned Emerald's type sheet at ~86 reads
+       * narrow / ~5 wide; a generous [1,10] band survives an unrelated FatFs
+       * chunk-size change without masking a real regression back toward 86. */
+      chk("perf#145", "widening the cap collapses the read count (narrow > 4x wide)",
+          narrow_calls > wide_calls * 4);
+      chk("perf#145", "the AFTER count stays in the pinned [1,10] band",
+          wide_calls >= 1 && wide_calls <= 10);
+      printf("  perf#145: Emerald type sheet costs %ld reads cap==want / %ld reads cap==MON_DECOMP_BYTES\n",
+             narrow_calls, wide_calls);
+    }
   } else chk("verify", "Emerald opens for the verification test", 0);
   free(rom);
 }
@@ -751,5 +788,21 @@ int main(int argc, char** argv) {
   verify_tests(dir);
 
   printf("rom_itemart test: %d checks, %d failure(s)\n", checks, fails);
+    /* BACKLOG #145 anti-regression: this file cannot include pdna_main.c (GBA/tonc
+   * headers -- not part of the pure-C host build), so a straight revert of
+   * app_type_badge()'s cap argument back to `need` would sail through every
+   * check above untouched. Scan the ONE call site's source text directly. */
+  {
+    FILE* f = fopen("source/pdna_main.c", "rb");
+    chk("perf#145", "source/pdna_main.c is readable from the repo root", f != 0);
+    if (f) {
+      static char buf[1 << 20];
+      size_t got = fread(buf, 1, sizeof buf - 1, f);
+      buf[got] = 0;
+      fclose(f);
+      chk("perf#145", "app_type_badge still passes the widened cap, not `need`",
+          strstr(buf, "scratch, scratch ? MON_DECOMP_BYTES : 0") != 0);
+    }
+  }
   return fails ? 1 : 0;
 }

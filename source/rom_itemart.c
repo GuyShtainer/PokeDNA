@@ -124,12 +124,17 @@ static int decode_verified(const RomItemArt* ra, uint32_t addr, uint8_t* dst,
    * rom_chrome.c's decode_verified: mr_lz77_w only ever writes dst[0,size)
    * (size == `want`) and only ever reads dst[0,out) with out < size for
    * back-references, so dst[want,cap) is provably untouched by this decode.
-   * Every call site here either passes cap == want (px[ROM_ITEM_ICON_BYTES],
-   * pr[ROM_ITEM_PAL_BYTES], :213-215/:320-323 -- window falls back to 0,0
-   * automatically) or, for rom_type_sheet_load()'s RSE scratch buffer
-   * (:360), leaves scratch[ROM_TYPE_SHEET_BYTES, scratch_cap) untouched by
-   * every later step of that same function (the RSE palette table decodes
-   * into its OWN separate local array, :361, never into the scratch tail). */
+   * Only ONE caller actually supplies a window: pdna_main.c's app_type_badge()
+   * passes rom_type_sheet_load() the whole MON_DECOMP_BYTES (8,192) buffer as
+   * scratch_cap, not just ROM_TYPE_SHEET_BYTES (5,888) == want (BACKLOG #145),
+   * because it leaves scratch[ROM_TYPE_SHEET_BYTES, scratch_cap) untouched by
+   * every later step of that same call (the RSE palette table decodes into its
+   * OWN separate local array, :361, never into the scratch tail) and only
+   * writes the type badge there AFTER rom_type_sheet_load() has returned. The
+   * icon/palette callers in THIS file (px[ROM_ITEM_ICON_BYTES],
+   * pr[ROM_ITEM_PAL_BYTES], :213-215/:320-323) intentionally pass cap == want
+   * -- their stack buffers are exactly the decoded size with no spare tail to
+   * lend, so their window falls back to 0,0 by design, not by omission. */
   uint8_t* win = 0; uint32_t win_bytes = 0;
   if (cap - want >= 256u) { win = dst + want; win_bytes = cap - want; }
 
