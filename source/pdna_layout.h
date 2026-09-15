@@ -638,6 +638,24 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_GBEDIT_SAVELOST_BAK      "Restore the .bak on a PC."
 #define PDNA_GBEDIT_SAVELOST_NOBAK    "No backup was made!"
 
+/* box_save's SF_ERR_RENAME switch (source/pdna_bank.c, BACKLOG #150 S150-0 review
+ * F4/XFER-C1): same shape as app_commit/gb_persist's own triage above, but box_save
+ * names the file only in the TMP_ONLY case (boxNN.box.tmp, siprintf'd from the box's
+ * own path at the call site) -- the other three cases don't send anyone hunting a
+ * filename, so they stay static. msg_wait's (28, .., 184) proportional clamp, same as
+ * every macro above. */
+#define PDNA_BANKSAVE_TMPONLY_TITLE     "BOX NOT IN PLACE"
+#define PDNA_BANKSAVE_TMPONLY_L2        "Restore the .bak on a PC."
+#define PDNA_BANKSAVE_TMPANDOLD_TITLE   "BOX NOT SAVED"
+#define PDNA_BANKSAVE_TMPANDOLD_L1      "Old box intact."
+#define PDNA_BANKSAVE_TMPANDOLD_L2      "Try saving again."
+#define PDNA_BANKSAVE_LOST_TITLE        "BOX LOST"
+#define PDNA_BANKSAVE_LOST_L1           "Card kept neither copy."
+#define PDNA_BANKSAVE_LOST_L2           "Restore the .bak on a PC."
+#define PDNA_BANKSAVE_UNCONFIRMED_TITLE "UNCONFIRMED"
+#define PDNA_BANKSAVE_UNCONFIRMED_L1    "Box looks correct."
+#define PDNA_BANKSAVE_UNCONFIRMED_L2    "Could not re-check the card."
+
 /* gbs_box_writable's SF_ERR_UNWRITABLE hint (source/pdna_gen12.c gb_edit_hook step 2):
  * "Switch boxes in-game once, then retry." measures 195px, over the 184px clamp;
  * "Change box in-game once, then retry." measures 188px, STILL over; this one (161px)

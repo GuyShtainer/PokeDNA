@@ -25,6 +25,7 @@
 #include "pdna_app.h"     /* app_can_edit, app_confirm */
 #include "pdna_pk.h"      /* PDNA_BANK_DIR */
 #include "pdna_bank.h"
+#include "pdna_layout.h"  /* PDNA_BANKSAVE_* -- box_save's SF_ERR_RENAME switch (S150-0 F4) */
 #include "pdna_origin_art.h"  /* the parallel era view: the bank is where all three meet */
 #include "log.h"           /* log_line (BACKLOG #150 S150-0's backup/rename triage) */
 #include "ui.h"
@@ -135,15 +136,49 @@ static bool box_save(void) {                    /* write the loaded box's record
   rmbl_pause();
   SfStatus st = sf_save_rolling(path, box_recs(), BOX_BYTES);
   rmbl_resume();
+  if (st != SF_OK && st != SF_ERR_RENAME) {
+    /* the backup-gate refusal or a plain write failure -- sf_save_rolling already
+     * logged the mechanical reason (savefile.c's own "save_rolling: ..." lines); this
+     * is the bank-level line that says WHICH box, same convention as app_commit's own
+     * "edit: backup failed (%s)" wrapping sf_backup_rolling's internal log. */
+    log_line("bank: box save failed (%s)", sf_status_str(st));
+    app_log_flush();
+    return false;
+  }
   if (st == SF_ERR_RENAME) {
     /* The bytes were written AND read back byte-for-byte -- it is the final swap the
      * card did not keep, a different piece of news from "the write failed". Ask the
      * card which file the user is actually holding rather than guessing, same triage
-     * as gb_persist (pdna_gen12.c) and app_commit (pdna_main.c). */
+     * as gb_persist (pdna_gen12.c) and app_commit (pdna_main.c) -- and, per §11.13/
+     * XFER-C1 (review F4), SHOW it instead of only logging it silently. */
     SfWhere w = sf_where_are_the_bytes(path, box_recs(), BOX_BYTES);
     log_line("bank: box save rename unconfirmed, bytes at %d", (int)w);
-    if (w != SF_WHERE_TARGET) return false;   /* anything else: a real failure */
-    st = SF_OK;                               /* the bytes ARE at path -- this is a success */
+    app_log_flush();
+    if (w != SF_WHERE_TARGET) {
+      snd_error();
+      char l1[64];
+      switch (w) {
+        case SF_WHERE_TMP_ONLY: {           /* the loud one: no .box on the card */
+          const char* nm = strrchr(path, '/');
+          nm = nm ? nm + 1 : path;
+          siprintf(l1, "Box is in %.28s.tmp", nm);
+          msg_wait(PDNA_BANKSAVE_TMPONLY_TITLE, UI_WARN, l1, PDNA_BANKSAVE_TMPONLY_L2);
+          break;
+        }
+        case SF_WHERE_TMP_AND_OLD:          /* old box intact; edit not applied */
+          msg_wait(PDNA_BANKSAVE_TMPANDOLD_TITLE, UI_WARN,
+                    PDNA_BANKSAVE_TMPANDOLD_L1, PDNA_BANKSAVE_TMPANDOLD_L2);
+          break;
+        default:                            /* neither name matches: use the backup */
+          msg_wait(PDNA_BANKSAVE_LOST_TITLE, UI_WARN,
+                    PDNA_BANKSAVE_LOST_L1, PDNA_BANKSAVE_LOST_L2);
+          break;
+      }
+      return false;                         /* anything but TARGET: a real failure */
+    }
+    msg_wait(PDNA_BANKSAVE_UNCONFIRMED_TITLE, UI_WARN,
+              PDNA_BANKSAVE_UNCONFIRMED_L1, PDNA_BANKSAVE_UNCONFIRMED_L2);
+    st = SF_OK;                             /* the bytes ARE at path -- this is a success */
   }
   bool ok = st == SF_OK;
   if (ok) g_dirty = false;
