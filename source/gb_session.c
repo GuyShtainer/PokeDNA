@@ -48,7 +48,56 @@ static bool img_wr(void* ctx, uint32_t off, const void* buf, uint32_t len) {
   return true;
 }
 
+/* ---- BACKLOG #64: the streamed (img == NULL) callbacks --------------------
+ *
+ * str_rd mirrors img_rd's own two-subtraction bounds check (a range that would wrap
+ * 32 bits is refused, not silently accepted) before handing off to the caller's own
+ * `s->rd`. str_wr always refuses: a streamed session is read-only by construction
+ * (see gb_session.h's `img == NULL` invariant), so nothing above this file should
+ * ever reach it -- g2w_begin needs SOME write callback to construct a G2Writer, and
+ * this is that callback's entire body. */
+static bool str_rd(void* ctx, uint32_t off, void* buf, uint32_t len) {
+  const GbSession* s = (const GbSession*)ctx;
+  if (!s || !s->rd || !buf) return false;
+  if (off > s->len || len > s->len - off) return false;
+  return s->rd(s->rdctx, off, buf, len);
+}
+
+static bool str_wr(void* ctx, uint32_t off, const void* buf, uint32_t len) {
+  (void)ctx; (void)off; (void)buf; (void)len;
+  return false;
+}
+
 /* ---- open ----------------------------------------------------------------- */
+
+GbsStatus gbs_open_streamed(GbSession* s,
+                            bool (*rd)(void*, uint32_t, void*, uint32_t), void* ctx,
+                            uint32_t len, uint8_t* scratch, uint32_t scratch_len) {
+  if (!s || !rd || !scratch || scratch_len < GBS_SCRATCH_BYTES) return GBS_ERR_ARG;
+  memset(s, 0, sizeof *s);
+  /* img stays NULL -- the read-only invariant gb_session.h documents. */
+  s->len = len;
+  s->scratch = scratch;
+  s->scratch_len = scratch_len;
+  s->rd = rd;
+  s->rdctx = ctx;
+
+  /* Same order and the same reasoning as gbs_open(): Gen 2 first (a 16-bit sum over
+   * ~3 KB), then Gen 1 (an 8-bit sum). */
+  if (g2w_begin(&s->g2w, str_rd, str_wr, s, len, scratch, scratch_len,
+                G2_VER_NONE) == G2W_OK) {
+    s->gen  = GB_GEN2;
+    s->open = true;
+    return GBS_OK;
+  }
+
+  if (gen1_open_ranged(rd, ctx, len, &s->g1) == GEN1_OK) {
+    s->gen  = GB_GEN1;
+    s->open = true;
+    return GBS_OK;
+  }
+  return GBS_ERR_NOT_GB;
+}
 
 GbsStatus gbs_open(GbSession* s, uint8_t* img, uint32_t len,
                    uint8_t* scratch, uint32_t scratch_len) {
@@ -503,7 +552,11 @@ GbsStatus gbs_move(GbSession* s, int from_box, int from_slot, int to_box, int* t
 GbsStatus gbs_read_field(GbSession* s, uint32_t off, void* buf, uint32_t n) {
   if (!s || !s->open || !buf || !n) return GBS_ERR_ARG;
   if (off > s->len || n > s->len - off) return GBS_ERR_ARG;
-  memcpy(buf, s->img + off, n);
+  if (s->img) {
+    memcpy(buf, s->img + off, n);
+  } else if (!s->rd || !s->rd(s->rdctx, off, buf, n)) {
+    return GBS_ERR_ARG;
+  }
   return GBS_OK;
 }
 
