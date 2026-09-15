@@ -191,17 +191,24 @@ static bool sanity_walk(RomCtx* c) {
 bool rom_open(RomCtx* c, RomReadFn read, void* ctx, uint32_t size) {
   if (!c || !read) return false;
   memset(c, 0, sizeof *c);
-  c->read = read; c->ctx = ctx; c->size = size; c->kind = ROM_NONE;
+  c->read = read; c->ctx = ctx; c->size = size; c->kind = ROM_NONE; c->ident = ROM_ID_NOT_GBA;
 
-  /* A retail Gen-3 cart is 16 MiB. Refuse anything else outright: a 32 MiB image is
-   * a hack, and a short one is a truncated dump. */
-  if (size != 16u * 1024u * 1024u) return false;
-
+  /* The header read used to be skipped outright for a wrong-size file (a retail cart
+   * is always 16 MiB). It no longer is: rule 1c classifies a pinned (code, version)
+   * ROM at the WRONG size as a HACK rather than silently refusing with no verdict at
+   * all, so rom_identify() needs the header regardless of size. This is the one place
+   * decision 1's "zero extra I/O" claim gains a read it did not have before — a single
+   * 0xC0-byte read, only for a file whose size already disagrees with every retail
+   * build, i.e. never on the hot path of a correctly-sized ROM. */
   uint8_t hdr[0xC0];
-  if (!c->read(c->ctx, 0, hdr, sizeof hdr)) return false;
-  /* Nintendo logo checksum byte + the fixed 0x96 at 0xB2 — a cheap "is this even a
-   * GBA ROM" gate before we trust anything else in the header. */
-  if (hdr[0xB2] != 0x96) return false;
+  if (!c->read(c->ctx, 0, hdr, sizeof hdr)) return false;   /* can't even read a header */
+
+  RomKind base_kind = ROM_NONE;
+  RomIdent ident = rom_identify(hdr, size, &base_kind);
+  c->ident = ident;
+  c->kind  = base_kind;     /* set even on a HACK verdict, so a caller can still say
+                              * which game the hack impersonates (decision 4). */
+  if (ident != ROM_ID_RETAIL) return false;
 
   memcpy(c->title, hdr + 0xA0, 12); c->title[12] = 0;
   memcpy(c->code,  hdr + 0xAC, 4);  c->code[4]  = 0;
@@ -212,16 +219,22 @@ bool rom_open(RomCtx* c, RomReadFn read, void* ctx, uint32_t size) {
     if (memcmp(k_versions[i].code, c->code, 4) == 0 && k_versions[i].version == c->version) {
       v = &k_versions[i]; break;
     }
+  /* rom_identify() already proved a pinned match exists for ROM_ID_RETAIL (rule b) —
+   * this re-lookup only recovers the full RomVersion row (map addresses, group count)
+   * that rom_identify()'s narrower signature can't return. */
   if (!v) return false;
 
-  c->kind          = v->kind;
   c->map_groups    = v->map_groups;
   c->map_layouts   = v->map_layouts;
   c->gfx_info_ptrs = v->gfx_info_ptrs;
   c->group_count   = v->groups;
   c->fmt = (v->kind == ROM_FIRERED || v->kind == ROM_LEAFGREEN) ? k_fmt_frlg : k_fmt_rse;
 
-  if (!derive_groups(c) || !sanity_walk(c)) { c->kind = ROM_NONE; return false; }
+  /* A structurally-intact retail (code, version, title, size) match that fails the
+   * table walk is a hack that relocated gMapGroups/gMapLayouts while keeping every
+   * header byte retail-looking (decision 1c's "or derive_groups/sanity_walk fails") —
+   * downgrade the verdict rather than leaving it RETAIL with kind reset to NONE. */
+  if (!derive_groups(c) || !sanity_walk(c)) { c->ident = ROM_ID_HACK; return false; }
   return true;
 }
 
