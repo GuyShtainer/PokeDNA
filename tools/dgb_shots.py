@@ -4138,7 +4138,7 @@ def run_s150_4_uplift(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots
     """BACKLOG #150 S150-4/5 follow-up (lane s150-4-5b): the UP-lift gesture's grab
     step end to end on `make delta-gb`'s own combined image (Emerald.sav +
     Red/Gold/Crystal) -- boot picker -> Gold's box grid -> CM_MOVE grab -> the origin
-    prompt draws -> pick GOLD -> the grab is REFUSED at the serial step.
+    prompt draws -> pick GOLD -> the grab is REFUSED at the serial step, cleanly.
 
     BACKLOG #171b (this lane, a review finding on top of #171): start_carry()
     (pdna_box.c:1077) gates the whole lift_up path on the per-BoxSource field
@@ -4149,28 +4149,30 @@ def run_s150_4_uplift(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots
     (before #171b) showed a "successful" grab with no prompt, which was the bug, not
     a delta-vehicle quirk. Fixed: `s.xfer = &k_gb_xfer;` in pdna_gen12_source(). Now
     verified live: the prompt draws, and the grab is correctly refused where the
-    vehicle cannot write bank.meta -- see the two facts below.
+    vehicle cannot write bank.meta -- see the facts below.
 
     THE ORIGIN PROMPT NOW DRAWS -- "WHICH GAME IS THIS?" / GOLD (selected) / SILVER,
     footer "U/D pick  A ok  B cancel", no box sprites over it (boxoam_suspend() runs
     before lift_up()). Confirmed stable across 200+ idle frames (a real blocking
     wait_keys(), not a transient compositing frame).
 
-    THE GRAB IS THEN REFUSED, SILENTLY -- pdna_bank_next_serial() (source/pdna_bank.c)
-    calls meta_save(), which fails (no SD card on this delta vehicle: `if
-    (!meta_save()) { g_bank_serial = prev; return 0; }`); gb_lift_up_hook logs "bank.meta
-    write failed" and returns false; start_carry() returns false; begin_select's own
-    `else snd_deny()` fires -- a BEEP ONLY, no on-screen dialog (matches this
-    codebase's existing silent-refusal convention elsewhere in pdna_box.c). The log
-    line itself is NOT visible in this mGBA build (log_under_mgba() reports false
-    here -- confirmed by installing a Python log sink and capturing zero "gen12:"
-    lines across the whole run, only unrelated GBA-hardware-register noise) -- quoted
-    from source, not shown on screen. A screen repaint is forced with a harmless L/R
-    box-switch-and-back (pdna_box.c's own partial-redraw convention leaves the origin
-    picker's stale background bitmap on screen until the next FULL repaint, a
-    cosmetic-only artifact, not a data issue) to PROVE the refusal cleanly: still
-    CM_MOVE, empty-handed ("MOVE  A grab  hold=set"), the same Bulbasaur still
-    sitting at slot 0, untouched.
+    THE GRAB IS THEN REFUSED, SILENTLY, AND THE SCREEN REPAINTS CLEANLY --
+    pdna_bank_next_serial() (source/pdna_bank.c) calls meta_save(), which fails (no
+    SD card on this delta vehicle: `if (!meta_save()) { g_bank_serial = prev; return
+    0; }`); gb_lift_up_hook logs "bank.meta write failed" and returns false;
+    start_carry() returns false; begin_select's refusal branch fires `snd_deny();
+    *pfull = true;` -- a BEEP ONLY, no on-screen dialog (matches this codebase's
+    existing silent-refusal convention elsewhere in pdna_box.c), but a FULL repaint
+    over gb_pick_origin's full-screen picker (a review fix on top of this same lane's
+    finding: the bare `else snd_deny();` this branch used to be left that repaint to
+    chance -- the very first cut of this chain caught the resulting stale-bitmap
+    frame live and needed a throwaway L/R box-switch to force a clean one; that
+    workaround is GONE now that the real fix sets *pfull itself). The log line is NOT
+    visible in this mGBA build (log_under_mgba() reports false here -- confirmed by
+    installing a Python log sink and capturing zero "gen12:" lines across the whole
+    run, only unrelated GBA-hardware-register noise) -- quoted from source, not shown
+    on screen. The very next frame is already clean: still CM_MOVE, empty-handed
+    ("MOVE  A grab  hold=set"), the same Bulbasaur still sitting at slot 0, untouched.
 
     THIS REFUSAL IS THE HONEST DELTA DEMONSTRATION -- a landed, persisted native
     cell (and therefore the #171 UP-into-tab-focus fix's own carry-navigation, which
@@ -4204,25 +4206,15 @@ def run_s150_4_uplift(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots
            "ran first). BEFORE #171b this screen never appeared at all -- the grab "
            "'succeeded' silently via the plain-memcpy fallback instead")
 
-    s.tap("A", settle=150)
-    s.shot("03_pick_gold_raw", "s150-4: A picks GOLD (already selected) -- "
+    s.tap("A", settle=200)
+    s.shot("03_refused_clean", "s150-4/BACKLOG #171b: A picks GOLD (already selected) -- "
            "gb_pick_origin() returns BC_ORIGIN_GOLD; gb_lift_up_hook then calls "
            "pdna_bank_next_serial(), whose meta_save() fails (no SD card on this "
            "delta vehicle) -- the grab is refused (a beep only, snd_deny(), no "
-           "dialog). The stale picker bitmap is still visible here: pdna_box.c's own "
-           "partial-redraw convention leaves it until the next FULL repaint -- a "
-           "cosmetic artifact, not a data issue, forced away by the next two taps",
-           allow_same=False)
-
-    s.tap("R", settle=200)
-    s.shot("04_forced_repaint_box2", "s150-4: R (switch box, forces a full repaint) "
-           "-- BOX2, still CM_MOVE, empty-handed ('MOVE  A grab  hold=set'): the "
-           "grab really was refused, nothing is being carried")
-
-    s.tap("L", settle=200)
-    s.shot("05_back_box1_untouched", "s150-4: L back to BOX1 -- No.1 BULBASAUR still "
-           "sitting at slot 0, byte-for-byte where it started; the refused grab left "
-           "the Game Boy save completely untouched")
+           "dialog) and begin_select's refusal branch now sets *pfull = true, "
+           "forcing a clean repaint over the picker in the SAME frame: still "
+           "CM_MOVE, empty-handed ('MOVE  A grab  hold=set'), No.1 BULBASAUR still "
+           "at slot 0 -- no leftover picker text, no forced L/R workaround needed")
     return s
 
 
@@ -4446,8 +4438,10 @@ def main(argv=None) -> int:
                           "`s.xfer = &k_gb_xfer`, so BoxXferOps.lift_up genuinely "
                           "runs): CM_MOVE grab, the origin prompt DRAWS (GOLD/SILVER), "
                           "picking GOLD is then REFUSED at the serial step (no SD card "
-                          "on this vehicle -- meta_save() fails) -- a beep only, the "
-                          "mon left untouched. A landed, persisted native cell needs "
+                          "on this vehicle -- meta_save() fails) -- a beep only, a "
+                          "clean repaint over the picker (review F1: begin_select's "
+                          "refusal branch now sets *pfull itself), the mon left "
+                          "untouched. A landed, persisted native cell needs "
                           "real hardware from here (a GB-scope hold can only begin "
                           "through a successful lift_up) -- see the run function's own "
                           "docstring for the full explanation, not faked. The Gen-1 "
