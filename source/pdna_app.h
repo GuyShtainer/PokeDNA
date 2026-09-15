@@ -193,6 +193,15 @@ typedef struct {
   bool (*editable)(const uint8_t* rec80);
   bool (*create)(void);
   bool (*item)(uint8_t* rec80);
+  /* BACKLOG #93: three more read-only-popup rows, appended at the end per the struct's
+   * own append-only convention (see `create`'s comment above). All three mirror a
+   * Gen-3 A_DUP/A_DAYCARE/A_EXPORT action for a source whose real record cannot travel
+   * through the Gen-3 clipboard/commit path (app_mon_menu_readonly's own header
+   * comment). NULL = the row is simply absent (the read-only menu's own omitted-row
+   * convention), never shown-then-refused. */
+  bool (*dup)(uint8_t* rec80);
+  bool (*daycare)(uint8_t* rec80);
+  bool (*export_one)(uint8_t* rec80);
 } AppSrcOps;
 void app_src_ops_set(const AppSrcOps* ops);
 

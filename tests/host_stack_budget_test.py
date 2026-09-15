@@ -1415,10 +1415,16 @@ def test_g5_cold_block_reached_only_via_a_forward_branch_still_resolves():
 def test_g5_app_mon_menu_readonly_four_way_merge_against_the_real_elf():
     """Not a fixture -- reads the REAL PokeDNA-artless.elf/build-artless this repo
     was just built with (skips cleanly if absent) and confirms the live defect
-    this fix found: app_mon_menu_readonly's -O2 tail merge is FOUR offsets wide
-    (4, 8, 16, 32 -- AppSrcOps.move/release/paste/item), not the three a human
-    listed by hand before this fix existed. If this ever reports fewer than
-    four, either the codegen changed (re-verify by hand) or G5 regressed."""
+    this fix found: app_mon_menu_readonly's -O2 tail merge folds EVERY
+    identically-shaped `return g_src_ops->field(rec) ? ... : false` case into one
+    dispatch site, so the multi-predecessor resolver must find every offset the
+    merge carries, not just one. Originally four offsets wide (4, 8, 16, 32 --
+    AppSrcOps.move/release/paste/item). BACKLOG #93 (2026-09-15) appended
+    dup/daycare/export_one at offsets 36/40/44 and their dispatch cases fold into
+    the same merge, so the set is now seven wide; fewer than seven = codegen
+    changed or G5 regressed. Asserted as an EXACT set (not a superset check) --
+    it must equal precisely the offsets of the AppSrcOps function-pointer fields
+    actually dispatched at this site."""
     elf = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "PokeDNA-artless.elf")
     builddir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "build-artless")
     if not (os.path.exists(elf) and os.path.isdir(builddir)):
@@ -1434,8 +1440,8 @@ def test_g5_app_mon_menu_readonly_four_way_merge_against_the_real_elf():
         if kind == 'field' and len(offs) > 1:
             found = offs
             break
-    check("(G5) app_mon_menu_readonly's tail merge resolves to all four offsets",
-          found == frozenset({4, 8, 16, 32}), found)
+    check("(G5) app_mon_menu_readonly's tail merge resolves to all seven offsets",
+          found == frozenset({4, 8, 16, 32, 36, 40, 44}), found)
 
 
 # === D4 (BACKLOG #106): _UNCONDITIONAL_EXIT_RE misses ARM-mode returns ==================

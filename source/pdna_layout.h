@@ -170,11 +170,13 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 
 /* Read-only source popup: the header grows by one line per explanatory line above the
  * rows (the source's note, and the per-record "why this one is locked"). */
-#define PDNA_ROMENU_MAX       7               /* VIEW/EDIT, ITEM?, LEGALITY, MOVE TO?, COPY?, RELEASE?,
-                                                * CANCEL -- one row dropped 2026-09-05 (BACKLOG #41
-                                                * follow-up): VIEW and EDIT merged into one row, matching
-                                                * the Gen-3 menu's own PDNA_LBL_VIEW_EDIT row. ITEM added
-                                                * 2026-09-10 (BACKLOG #92, Gen 2 only). */
+#define PDNA_ROMENU_MAX       10              /* VIEW/EDIT, ITEM?, LEGALITY, MOVE TO?, COPY?, DUPLICATE?,
+                                                * TO DAY-CARE?, EXPORT?, RELEASE?, CANCEL -- one row dropped
+                                                * 2026-09-05 (BACKLOG #41 follow-up): VIEW and EDIT merged
+                                                * into one row, matching the Gen-3 menu's own
+                                                * PDNA_LBL_VIEW_EDIT row. ITEM added 2026-09-10 (BACKLOG
+                                                * #92, Gen 2 only). DUPLICATE/TO DAY-CARE/EXPORT added
+                                                * 2026-09-15 (BACKLOG #93). */
 #define PDNA_ROMENU_HDR       15              /* title only                           */
 #define PDNA_ROMENU_LINE      10              /* each optional prose line             */
 #define PDNA_ROMENU_HEAD_PAD   3              /* divider -> first row                 */
