@@ -698,6 +698,23 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 _Static_assert(GB12_ARENA_NEED <= APP_ARENA_BYTES,
                "GB import no longer fits the borrowed EWRAM arena");
 
+/* BACKLOG #64: a read-only STREAMED GbSession riding the SAME arena block as the
+ * plain FIL-streaming mount above -- no resident image (a full Gen-1/2 image plus a
+ * session does not fit this arena at all; see docs/briefs/64-gb-import-path-brief.md's
+ * "THE BUDGET DOES NOT HOLD" section). `scratch` is g2w's own streaming scratch /
+ * gen1_commit's snapshot buffer -- GBS_SCRATCH_BYTES (1152), the same size as this
+ * mount's own GB12_STAGE_BYTES staging buffer, but a SEPARATE block: the mount's
+ * `stage` buffer is still live and read through while this session's own g2w streams
+ * (g2_detect_ranged during gbs_open_streamed's Gen-2 probe re-reads the file fresh,
+ * it does not reuse the mount's already-parsed `stage`), so the two buffers cannot be
+ * folded into one without risking one pipeline overwriting the other mid-read. */
+typedef struct { GbSession s; uint8_t scratch[GBS_SCRATCH_BYTES]; } Gb12View;
+#define GB12_ARENA_NEED_RO (GB12_A4(sizeof(Gb12Mount)) + GB12_A4(sizeof(FIL)) + \
+                            GB12_RECS_BYTES + GB12_STAGE_BYTES + \
+                            GB12_A4(sizeof(Gb12View)) + 4u)
+_Static_assert(GB12_ARENA_NEED_RO <= APP_ARENA_BYTES,
+               "GB import (read-only session) no longer fits the borrowed EWRAM arena");
+
 static void s_vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
 static u16  s_wait(u16 mask) {
   u16 k; do { s_vsync(); k = key_hit(mask); } while (!k);
@@ -3103,7 +3120,7 @@ int pdna_gen12_show(const char* path, uint8_t met_game) {
   /* The arena is the map screen's donor (pdna_app.h): it hands back g_pc, which is
    * only safe when the PC holds nothing unsaved. NULL means exactly that — say so
    * and stop, never "helpfully" commit on the user's behalf. */
-  uint8_t* arena = app_arena_acquire(GB12_ARENA_NEED);
+  uint8_t* arena = app_arena_acquire(GB12_ARENA_NEED_RO);
   if (!arena) {
     ui_clear();
     snd_deny();
@@ -3116,6 +3133,7 @@ int pdna_gen12_show(const char* path, uint8_t met_game) {
   FIL*  f         = (FIL*)(uintptr_t)(base + GB12_A4(sizeof(Gb12Mount)));
   uint8_t* recs   = (uint8_t*)(uintptr_t)(base + GB12_A4(sizeof(Gb12Mount)) + GB12_A4(sizeof(FIL)));
   uint8_t* stage  = recs + GB12_RECS_BYTES;
+  Gb12View* vw    = (Gb12View*)(uintptr_t)(stage + GB12_STAGE_BYTES);
 
   memset(f, 0, sizeof *f);
   if (f_open(f, path, FA_READ) != FR_OK) {
@@ -3144,6 +3162,26 @@ int pdna_gen12_show(const char* path, uint8_t met_game) {
   log_line("gen12: %s mounted (%s) %d mons, %d ready, %d locked, %d bad",
            path, pdna_gen12_kind_name(m->kind), m->nstored, m->nready,
            m->nblocked, m->nunreadable);
+
+  /* BACKLOG #64: a read-only STREAMED session over the SAME FIL/read-callback pair
+   * the mount just used -- reachability + read parity for the eleven GB-screen nav
+   * branches (gb_nav_from_start), never editing (g_ed stays untouched by this path;
+   * see the brief's Option B decision and its STOP-LICENCE item (b)). Accept only on
+   * GBS_OK AND the same generation cross-check pdna_gen12_show_image() makes against
+   * its own gbs_open() -- a session that identified as the WRONG generation from the
+   * same bytes the mount just parsed is a bug worth refusing loudly, not silently
+   * trusting. `vw_ok` is consumed in step 4 (threaded into gb_session_core /
+   * gb_nav_from_start as the `ro` parameter); wired here, not yet used, so this
+   * commit alone leaves it read-but-not-yet-passed on purpose. */
+  bool vw_ok = false;
+  GbsStatus vst = gbs_open_streamed(&vw->s, gb_read, f, len, vw->scratch, sizeof vw->scratch);
+  if (vst == GBS_OK && (vw->s.gen == GB_GEN1) == (m->kind == GB12_SAVE_RBY)) {
+    vw_ok = true;
+  } else {
+    log_line("gen12: read-only session refused (%s, gen %d vs mount kind %d)",
+             gbs_status_text(vst), (int)vw->s.gen, (int)m->kind);
+  }
+  (void)vw_ok;   /* step 4 threads this into gb_session_core's new `ro` parameter */
 
   gb_session_core(m);
 
