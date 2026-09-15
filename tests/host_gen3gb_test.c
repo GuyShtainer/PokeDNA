@@ -356,6 +356,68 @@ static void test_format(void) {
   uint8_t otname2[GB_NAME_BYTES]; memcpy(otname2, otname, GB_NAME_BYTES); otname2[0] ^= 1;
   uint64_t k3 = gbsc_key(GB_GEN2, 0x1234, dv4, otname2);
   CHECK(k1 != k3, "a different otname byte changes the key");
+
+  /* ==== BACKLOG #150 S150-6 review F7: gbsc_find_by_key / gbsc_evict_oldest ==== */
+  {
+    uint8_t fbuf[GBSC_FILE_MAX];
+    uint32_t flen = (uint32_t)gbsc_init(fbuf, 0x42u);
+    GbscEntry f0; memset(&f0, 0, sizeof f0);
+    f0.gen = GB_GEN2;
+    memset(f0.original80, 0x11, 80);
+    GbscEntry f1 = f0; memset(f1.original80, 0x22, 80);
+    GbscEntry f2 = f0; memset(f2.original80, 0x11, 80); f2.original80[7] = 0x99; /* differs in byte 7 */
+    CHECK(gbsc_add(fbuf, &flen, sizeof fbuf, &f0) == 0, "find_by_key: entry 0 added");
+    CHECK(gbsc_add(fbuf, &flen, sizeof fbuf, &f1) == 1, "find_by_key: entry 1 added");
+    CHECK(gbsc_add(fbuf, &flen, sizeof fbuf, &f2) == 2, "find_by_key: entry 2 added");
+
+    uint8_t id_match[8]; memset(id_match, 0x11, 8);
+    uint8_t id_none[8];  memset(id_none, 0xEE, 8);
+    CHECK(gbsc_find_by_key(fbuf, flen, id_match) == 0,
+          "find_by_key: returns the FIRST index whose original80[0..7] matches (got %d)",
+          gbsc_find_by_key(fbuf, flen, id_match));
+    CHECK(gbsc_find_by_key(fbuf, flen, id_none) == -1, "find_by_key: -1 when no entry matches");
+
+    /* evict_oldest: refuses on a non-full file. */
+    CHECK(gbsc_evict_oldest(fbuf, &flen) == -1, "evict_oldest: refuses on a non-full (3/8) file");
+
+    /* fill to GBSC_MAX_ENTRIES, entry 0 (oldest) NOT pending -> evicts it. */
+    GbscEntry filler; memset(&filler, 0, sizeof filler); filler.gen = GB_GEN1;
+    while (gbsc_count(fbuf, flen) < GBSC_MAX_ENTRIES) {
+      memset(filler.original80, (uint8_t)(0x30 + gbsc_count(fbuf, flen)), 80);
+      CHECK(gbsc_add(fbuf, &flen, sizeof fbuf, &filler) >= 0, "evict_oldest: filler entry added");
+    }
+    CHECK(gbsc_count(fbuf, flen) == GBSC_MAX_ENTRIES, "evict_oldest: file is now full");
+    GbscEntry old0; CHECK(gbsc_get(fbuf, flen, 0, &old0), "evict_oldest: read entry 0 before evict");
+    CHECK(old0.state != XR_STATE_PENDING, "evict_oldest: entry 0 (f0) is not XR_STATE_PENDING (precondition)");
+    GbscEntry survivor1; CHECK(gbsc_get(fbuf, flen, 1, &survivor1), "evict_oldest: read entry 1 (will become 0) before evict");
+    CHECK(gbsc_evict_oldest(fbuf, &flen) == 0, "evict_oldest: evicts entry 0, returns 0");
+    CHECK(gbsc_count(fbuf, flen) == GBSC_MAX_ENTRIES - 1, "evict_oldest: count decremented by one");
+    GbscEntry after0; CHECK(gbsc_get(fbuf, flen, 0, &after0), "evict_oldest: entry 0 still decodes after evict");
+    CHECK(memcmp(after0.original80, survivor1.original80, 80) == 0,
+          "evict_oldest: compaction -- the old entry 1 is now entry 0");
+
+    /* re-fill to full again, this time mark the new oldest (index 0) XR_STATE_PENDING
+     * via a direct gbsc_add (state is a settable field) -- must refuse. */
+    GbscEntry pending = filler; memset(pending.original80, 0x77, 80); pending.state = XR_STATE_PENDING;
+    /* remove entry 0 and re-add it as pending, so it is oldest (index 0) again. */
+    uint32_t plen2 = flen;
+    CHECK(gbsc_remove(fbuf, &plen2, 0) == 0, "evict_oldest: remove the current oldest to re-seat a pending one");
+    /* gbsc_add always appends -- to make the PENDING entry oldest (index 0), rebuild
+     * a fresh file with it added first. */
+    uint8_t pbuf[GBSC_FILE_MAX];
+    uint32_t plen3 = (uint32_t)gbsc_init(pbuf, 0x43u);
+    CHECK(gbsc_add(pbuf, &plen3, sizeof pbuf, &pending) == 0, "evict_oldest: pending entry added first (index 0)");
+    for (int i = 0; i < GBSC_MAX_ENTRIES - 1; i++) {
+      GbscEntry filler2 = filler; memset(filler2.original80, (uint8_t)(0x50 + i), 80);
+      CHECK(gbsc_add(pbuf, &plen3, sizeof pbuf, &filler2) == i + 1, "evict_oldest: filler2 entry added");
+    }
+    CHECK(gbsc_count(pbuf, plen3) == GBSC_MAX_ENTRIES, "evict_oldest: pending file is full");
+    GbscEntry pd0; CHECK(gbsc_get(pbuf, plen3, 0, &pd0), "evict_oldest: read pending entry 0");
+    CHECK(pd0.state == XR_STATE_PENDING, "evict_oldest: entry 0 IS XR_STATE_PENDING (precondition)");
+    CHECK(gbsc_evict_oldest(pbuf, &plen3) == -1, "evict_oldest: refuses when the oldest entry is XR_STATE_PENDING");
+    CHECK(gbsc_count(pbuf, plen3) == GBSC_MAX_ENTRIES, "evict_oldest: refusal leaves the file untouched (still full)");
+  }
+  /* ==== END review F7 =========================================================== */
 }
 
 /* ============================================================================ */
@@ -1162,12 +1224,12 @@ static void test_moves_baseline(void) {
   CHECK(gb_set_move(&out, 0, 33), "G-H9: corrects the written record's slot 0");
   CHECK(gb_get_move(&out, 0) == 33, "G-H9: written record now shows move 33 in slot 0");
 
+  /* gbsc_entry_from() itself now ALWAYS fills moves_written/ppup_written from
+   * `written`'s own current moves and sets has_written_moves = 1 (review F1: this
+   * is the ONLY production entry writer -- pdna_gen12.c's gb_paste_write -- so
+   * G-H9's fix is dead unless this path fills the block itself). */
   GbscEntry e; gbsc_entry_from(&e, &out, rec, 0);
-  e.has_written_moves = 1;
-  for (int i = 0; i < 4; i++) {
-    e.moves_written[i] = gb_get_move(&out, i);
-  }
-  e.ppup_written = 0;
+  CHECK(e.has_written_moves == 1, "G-H9: gbsc_entry_from sets has_written_moves (production writer)");
   CHECK(e.moves_written[0] == 33, "G-H9: entry's moves_written[0] captures the CORRECTED move (got %u)",
         e.moves_written[0]);
 
@@ -1186,16 +1248,23 @@ static void test_moves_baseline(void) {
     CHECK(merged.moves[0] == 0, "G-H9: the restored record's move slot 0 is the TRUE original (empty), not 33");
   }
 
-  /* Contrast: a PRE-#150 entry (has_written_moves == 0) for the identical inputs
-   * falls back to original80 -- today's exact behaviour -- and DOES read the same
-   * situation as a genuine move change, which is exactly the bug this field fixes. */
+  /* Contrast: a PRE-#150 entry (has_written_moves == 0, moves_written/ppup_written
+   * still their zeroed pad) for the IDENTICAL inputs falls back to decoding
+   * original80 -- today's exact legacy behaviour -- and DOES read the same
+   * situation as a genuine move change, which is exactly the bug this field
+   * fixes. Built by calling the production writer and then clearing the new
+   * fields back to their pre-#150 pad values (review F1) -- gbsc_entry_from()
+   * itself can no longer produce this shape; only a REAL pre-#150 file on a
+   * user's card looks like this now. */
   {
     GbscEntry pre; gbsc_entry_from(&pre, &out, rec, 0);
-    CHECK(pre.has_written_moves == 0, "G-H9 contrast: a fresh gbsc_entry_from has has_written_moves == 0");
+    pre.has_written_moves = 0;
+    memset(pre.moves_written, 0, 4);
+    pre.ppup_written = 0;
     uint8_t back80[80]; GbscMergeReport rep;
     CHECK(gbsc_merge_up(&pre, &out, back80, &rep), "G-H9 contrast: merge up succeeds");
     CHECK(rep.moves_changed,
-          "G-H9 contrast: pre-#150 entry (no baseline) reads the correction as a genuine move change");
+          "G-H9 contrast: a legacy (has_written_moves==0) entry reads the correction as a genuine move change");
   }
 }
 

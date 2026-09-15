@@ -87,7 +87,6 @@ void gbsc_entry_from(GbscEntry* e, const GbEditMon* written, const uint8_t* orig
   e->kind            = XR_KIND_G3_HOME;
   e->state           = XR_STATE_NONE;
   e->direction       = XR_DIR_ABROAD_GB;
-  e->has_written_moves = 0;
   e->species_written = gb_get_species_dex(written);
   e->otid16          = gb_get_otid(written);
   e->dv4[0] = gb_get_dv(written, GB_ATK);
@@ -98,6 +97,16 @@ void gbsc_entry_from(GbscEntry* e, const GbEditMon* written, const uint8_t* orig
   memcpy(e->nick_written,   written->nick,   GB_NAME_BYTES);
   e->exp_written = gb_get_exp(written);
   e->written_level = gb_get_level(written);   /* BACKLOG #104 R1 */
+  /* BACKLOG #150 S150-6 / D-Q1, design §11.6: the abroad MOVE snapshot, the exact
+   * generalisation of written_level above -- what was ACTUALLY written to the GB
+   * record, corrections included, so merge_moves never re-reads a correction as an
+   * in-game change (G-H9). */
+  for (int i = 0; i < 4; i++) e->moves_written[i] = gb_get_move(written, i);
+  e->ppup_written = (uint8_t)((gb_get_ppup(written, 0) & 3u) |
+                              ((gb_get_ppup(written, 1) & 3u) << 2) |
+                              ((gb_get_ppup(written, 2) & 3u) << 4) |
+                              ((gb_get_ppup(written, 3) & 3u) << 6));
+  e->has_written_moves = 1;
   e->rtc_epoch   = rtc_epoch;
   memcpy(e->original80, original80, 80);
 }

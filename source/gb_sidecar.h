@@ -188,10 +188,16 @@ typedef struct {
 
 /* Fills every field of `e` from the record `gen3_to_gb` just built (`written`) and the
  * Gen-3 bytes it was built from (`original80`, the ORIGINAL 80-byte record, pre-loss).
- * `claimed` starts at 0. `kind`/`state`/`direction`/`has_written_moves`/
- * `moves_written`/`ppup_written` also start at 0 (XR_KIND_G3_HOME / XR_STATE_NONE /
- * XR_DIR_ABROAD_GB / no written-moves baseline) -- a caller that wants something else
- * sets it on the returned `*e` before gbsc_add(). */
+ * `claimed` starts at 0; `kind`/`state`/`direction` start at XR_KIND_G3_HOME/
+ * XR_STATE_NONE/XR_DIR_ABROAD_GB -- a caller that wants something else sets it on
+ * the returned `*e` before gbsc_add(). `moves_written`/`ppup_written` are ALWAYS
+ * filled from `written`'s own current moves/PP-ups (the same object
+ * written_level/species_written/exp_written already come from) and
+ * `has_written_moves` is ALWAYS set to 1 (BACKLOG #150 S150-6 review F1, G-H9 for
+ * real): the written-moves baseline exists precisely so a MAKE-LEGAL move
+ * correction applied before this call is captured, not re-derived later from
+ * `original80` (which merge_moves() only still falls back to for a PRE-#150 entry,
+ * one this function never produces). */
 void gbsc_entry_from(GbscEntry* e, const GbEditMon* written, const uint8_t* original80,
                      uint32_t rtc_epoch);
 
