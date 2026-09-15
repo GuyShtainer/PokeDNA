@@ -176,42 +176,21 @@ static u16 EWRAM_BSS s_lookalike_first;   /* fingerprint; the first of them (0xF
  * shorter or partial copy differs at the tail.
  *
  * Everything here runs from EWRAM with the ROM possibly unmapped: no array initialisers
- * (memset lives in ROM) and no division (so does __aeabi_uidiv) -- EZFO_FP_WINS is a
- * power of two and the step is a shift. The reference itself lives on the IWRAM stack. */
-#define EZFO_FP_WINS       32
-#define EZFO_FP_WINS_SHIFT 5                        /* log2(EZFO_FP_WINS)             */
-#define EZFO_FP_WORDS      16                       /* 64 B per window                */
-#define EZFO_FP_BYTES      (EZFO_FP_WORDS * 4)
+ * (memset lives in ROM) and no division (so does __aeabi_uidiv) -- the walk itself is
+ * ezfo_fp.h, one definition shared with tests/host_fpwalk_test.c, forced inline below so
+ * its code lands in THIS function's EWRAM bytes and not in .text. The reference lives
+ * on the IWRAM stack. */
+#define EZFO_FP_FN   static inline __attribute__((always_inline))
+#define EZFO_FP_WORD u32
+#include "ezfo_fp.h"
 
 extern char __text_start[];                         /* devkitARM ld scripts: image   */
 extern char __rom_end__[];                          /* bounds, every build, any size */
 
-/* Walk the windows once. take != 0: store each window's checksum into fp[]; take == 0:
- * compare against fp[] and stop at the first mismatch (returns 0). Returns 1 otherwise.
- * noinline: -O2 would otherwise plant a copy at each of the three call sites, and this
- * whole file is paid for in EWRAM bytes. Window i (i < WINS-1) starts (i+1) steps into
- * the image, the last one is the image's final 64 B; a pathologically small image gets
- * its first 64 B for every window. */
+/* noinline: -O2 would otherwise plant a copy at each of the three call sites, and this
+ * whole file is paid for in EWRAM bytes. */
 static int EWRAM_CODE __attribute__((noinline)) fp_walk(u32* fp, int take) {
-  unsigned long lo   = (unsigned long)__text_start;
-  unsigned long hi   = (unsigned long)__rom_end__;
-  unsigned long span = hi - lo;
-  unsigned long step = span >> EZFO_FP_WINS_SHIFT;
-  int tiny = span < (unsigned long)EZFO_FP_BYTES * (EZFO_FP_WINS + 1);
-  int i, n;
-  for (i = 0; i < EZFO_FP_WINS; i++) {
-    unsigned long a;
-    const volatile u32* p;
-    u32 s = 0x9E3779B9u;              /* order-sensitive rolling checksum          */
-    if (tiny)                     a = lo;
-    else if (i == EZFO_FP_WINS - 1) a = (hi - EZFO_FP_BYTES) & ~3ul;
-    else                          a = (lo + step * (unsigned long)(i + 1)) & ~3ul;
-    p = (const volatile u32*)a;       /* volatile: every word is a real cart read  */
-    for (n = 0; n < EZFO_FP_WORDS; n++) s = ((s << 1) | (s >> 31)) ^ *p++;
-    if (take) fp[i] = s;
-    else if (fp[i] != s) return 0;
-  }
-  return 1;
+  return ezfo_fp_walk(fp, take, (unsigned long)__text_start, (unsigned long)__rom_end__);
 }
 
 /* Map `page`, then: 0 = header word differs, 1 = header word matches but the windows do
