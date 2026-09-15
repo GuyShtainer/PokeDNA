@@ -2871,7 +2871,7 @@ static bool __attribute__((noinline)) gb_accept_down_hook(int dst_box, const uin
       msg_wait(PDNA_GBEDIT_MOVE_REFUSED_TITLE, UI_WARN, PDNA_GBEDIT_MOVE_FULL_L2, 0);
       return false;
     }
-    if (!gb_accept_down_party_deposit(g_m)) return false;
+    if (!g_m || !gb_accept_down_party_deposit(g_m)) return false;
     /* REVIEW F1: the 10(c) deposit above already committed the moved party member into
      * a box in the RESIDENT image (gbs_move -> gbs_commit_list) -- an un-consented
      * change to the user's data if this function returns false past this point without
