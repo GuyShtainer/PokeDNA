@@ -2297,6 +2297,14 @@ int main(void) {
   PF(PDNA_DET_HDRONLY_L1,    28, 184);
   PF(PDNA_DET_HDRONLY_L2,    28, 184);
 
+  /* ==== BACKLOG #54: the ROM-hack banner (source/pdna_main.c app_register_rom's
+   * verdict-specific refusal + view_save's once-per-open notice). msg_wait's own
+   * (28, 184) clamp, same as every other msg_wait check in this file. */
+  PF(PDNA_ROMHACK_TITLE, 28, 184);
+  PF(PDNA_ROMHACK_L1,    28, 184);
+  PF(PDNA_ROMHACK_L2,    28, 184);
+  /* ==== END BACKLOG #54 ROM-hack banner ======================================== */
+
   printf("\n%d checks, %d FAILED\n", checks, fails);
   return fails ? 1 : 0;
 }

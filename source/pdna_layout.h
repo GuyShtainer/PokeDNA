@@ -1805,4 +1805,15 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_DET_HDRONLY_L1    "Cart page matched by header only."
 #define PDNA_DET_HDRONLY_L2    "Re-copy this build if it misbehaves."
 
+/* ---- BACKLOG #54 T1: the ROM-hack banner ------------------------------------
+ * Shown by app_register_rom()'s verdict-specific refusal and once per save open
+ * in view_save() (right after app_icon_rom_open() runs this session's rom_open()/
+ * rom_identify() classification for g_game's slot) whenever that slot is flagged
+ * ROM_ID_HACK (source/rom_map.h). msg_wait's usual (28, 184) clamp, PF-checked in
+ * tests/host_textfit_test.c beside the rest of that file's msg_wait strings.
+ * Fixed strings, no siprintf (BACKLOG #34). */
+#define PDNA_ROMHACK_TITLE "ROM HACK"
+#define PDNA_ROMHACK_L1    "Read-only until verified."
+#define PDNA_ROMHACK_L2    "Edits could corrupt this save."
+
 #endif /* PDNA_LAYOUT_H */

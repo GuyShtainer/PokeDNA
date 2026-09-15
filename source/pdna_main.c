@@ -2910,7 +2910,11 @@ static void app_register_rom(void) {
   app_rom_note_verdict(&rc, "register");   /* fires whether or not rom_open() accepted it */
   if (!reg_ok) {
     f_close(&s_iconrom_fil); s_iconrom_fil_open = false;
-    msg_wait("NOT A POKEMON ROM", UI_WARN, "Retail R/S/E/FR/LG only.", 0);
+    /* BACKLOG #54 T1: verdict-specific refusal, not the flat "NOT A POKEMON ROM" for
+     * every non-retail case -- a hack the header can still identify (known or unknown
+     * base kind) gets the honest banner instead. */
+    if (rc.ident == ROM_ID_HACK) msg_wait(PDNA_ROMHACK_TITLE, UI_WARN, PDNA_ROMHACK_L1, PDNA_ROMHACK_L2);
+    else msg_wait("NOT A POKEMON ROM", UI_WARN, "Retail R/S/E/FR/LG only.", 0);
     return;
   }
   PkGame rg = (rc.kind == ROM_EMERALD) ? PK_EMERALD
@@ -9281,6 +9285,13 @@ static void view_save(const char* path) {
    * the cart rather than the CPU. */
   load_phase_n(9, "art: open rom");
   app_icon_rom_open();                           /* fused or registered-SD icon source */
+  /* BACKLOG #54 T1: the banner, once per save open, AFTER app_icon_rom_open() rather
+   * than immediately at the g_game= line above -- app_icon_rom_open() is what actually
+   * runs THIS session's rom_open()/rom_identify() classification (the fused ROM path
+   * in particular never ran before this call), so checking app_rom_is_hack() any
+   * earlier would read last session's (empty, on a fresh boot) mask instead of the
+   * verdict this very open just produced. */
+  if (app_rom_is_hack(g_game)) msg_wait(PDNA_ROMHACK_TITLE, UI_WARN, PDNA_ROMHACK_L1, PDNA_ROMHACK_L2);
 #ifndef PDNA_DELTA
   /* The artless first run: offer the ROM registration ONCE per session, right where
    * its effect is about to be visible. B declines and the name chips carry on. */
