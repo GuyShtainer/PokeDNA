@@ -605,6 +605,13 @@ GATED_LINE_RE = re.compile(
     r'^gated\s+(\S+)\s+need=(\d+)\s+from=([\w./-]+):(\w+)\s+gate=(\S+)\s+via=(\S+)$')
 
 
+
+def _stale_addrtaken(addrtaken_ok, addrtaken_fragile, taken):
+    """The addrtaken-ok lines that are no longer address-taken in this image and
+    are NOT marked layout-fragile (BACKLOG #159): main() warns about exactly these."""
+    return sorted((addrtaken_ok - addrtaken_fragile) - taken)
+
+
 def load_extra_edges(path):
     """Parse tools/stack_edges.txt. Three declaration shapes, one non-comment line each
     (D1, BACKLOG #84b review, fixing the per-FUNCTION blind-spot exemption defect):
@@ -3808,7 +3815,7 @@ def main(argv):
         # OTHER image variant) but isn't in THIS one. A WARNING, not a FATAL: a line
         # only one image variant needs is legitimately unneeded on the other, so this
         # is "delete it if it truly serves nothing on either build", never a gate.
-        stale = sorted((addrtaken_ok - addrtaken_fragile) - taken)
+        stale = _stale_addrtaken(addrtaken_ok, addrtaken_fragile, taken)
         if stale:
             print(f"\n*** STACK_BUDGET WARNING: {len(stale)} addrtaken-ok line(s) are no "
                   "longer address-taken in this image (delete if unneeded on BOTH images): "

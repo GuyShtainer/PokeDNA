@@ -2618,7 +2618,7 @@ def test_b159_mutation_fragile_entries_excluded_from_stale_warning():
     """Mutation: a layout-fragile addrtaken-ok entry that is no longer address-taken
     in this image must NOT be reported stale; an unqualified entry in the same state
     still must be. Drives the REAL parsed sets through main()'s own stale expression
-    (tools/stack_budget.py:~3808) so a regression to the old `addrtaken_ok - taken`
+    (tools/stack_budget.py:~3818) so a regression to the old `addrtaken_ok - taken`
     form is caught here, not just by a hand-rolled local recomputation."""
     import tempfile
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
@@ -2630,12 +2630,14 @@ def test_b159_mutation_fragile_entries_excluded_from_stale_warning():
         (_fd, _fi, _ad, _wd, _fo, _isr, addrtaken_ok, addrtaken_fragile, _rd, _gd,
          _iod, _ipd) = sb.load_extra_edges(path)
         taken = {"still_taken"}
-        # main()'s own line, tools/stack_budget.py:~3808 -- through the real parsed sets.
-        stale = sorted((addrtaken_ok - addrtaken_fragile) - taken)
+        # main()'s own line, tools/stack_budget.py:~3818 -- through the real parsed sets.
+        stale = sb._stale_addrtaken(addrtaken_ok, addrtaken_fragile, taken)
         check("(B159) fragile entry excluded from stale warning",
               stale == ["stale_ordinary"], stale)
         check("(B159) the still-taken entry is not in stale",
               "still_taken" not in stale, stale)
+        check("(B159) unqualified entries still reported stale",
+              sb._stale_addrtaken({"a"}, set(), set()) == ["a"], None)
     finally:
         os.unlink(path)
 
