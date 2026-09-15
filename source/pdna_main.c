@@ -4508,7 +4508,8 @@ bool app_src_empty_action_offered(void) {
  * that one row + CANCEL. See pdna_app.h's AppSrcOps.paste for what the row does. */
 static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0, bool empty) {
   const char* locked = (!empty && g_src_why) ? g_src_why(rec) : 0;
-  enum { RO_VIEW, RO_ITEM, RO_MOVE, RO_RELEASE, RO_LEGAL, RO_COPY, RO_PASTE, RO_CREATE, RO_CANCEL };
+  enum { RO_VIEW, RO_ITEM, RO_MOVE, RO_RELEASE, RO_LEGAL, RO_COPY, RO_PASTE, RO_CREATE,
+         RO_DUP, RO_DAYCARE, RO_EXPORT, RO_CANCEL };
   int act[PDNA_ROMENU_MAX]; const char* lab[PDNA_ROMENU_MAX]; int n = 0;
   if (empty) {
     /* CREATE first, PASTE after -- the same order Gen-3's own empty-cell menu uses
@@ -4595,6 +4596,13 @@ static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0, 
     lab[n] = PDNA_LBL_LEGALITY; act[n++] = RO_LEGAL;
     if (g_src_ops && g_src_ops->move) { lab[n] = PDNA_LBL_MOVE_TO_BOX; act[n++] = RO_MOVE; }
     if (!locked) { lab[n] = PDNA_LBL_COPY; act[n++] = RO_COPY; }
+    /* BACKLOG #93: Gen-3's own occupied-mon order is …COPY, DUPLICATE, TO DAY-CARE,
+     * EXPORT, RELEASE (app_mon_menu above) -- mirrored here, before RELEASE so RELEASE
+     * stays last. Each gated on the source actually offering the hook (the read-only
+     * menu's omitted-row convention), never shown-then-refused. */
+    if (g_src_ops && g_src_ops->dup)         { lab[n] = PDNA_LBL_DUPLICATE;  act[n++] = RO_DUP; }
+    if (g_src_ops && g_src_ops->daycare)     { lab[n] = PDNA_LBL_TO_DAYCARE; act[n++] = RO_DAYCARE; }
+    if (g_src_ops && g_src_ops->export_one)  { lab[n] = PDNA_LBL_EXPORT_PK;  act[n++] = RO_EXPORT; }
     if (g_src_ops && g_src_ops->release) { lab[n] = PDNA_LBL_RELEASE;   act[n++] = RO_RELEASE; }
   }
   lab[n] = PDNA_LBL_CANCEL;   act[n++] = RO_CANCEL;
@@ -4653,6 +4661,9 @@ static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0, 
         case RO_COPY:  return app_copy(rec, is_party);
         case RO_PASTE:  return (g_src_ops && g_src_ops->paste)  ? g_src_ops->paste(rec)   : false;
         case RO_CREATE: return (g_src_ops && g_src_ops->create) ? g_src_ops->create() : false;
+        case RO_DUP:     return (g_src_ops && g_src_ops->dup)        ? g_src_ops->dup(rec)        : false;
+        case RO_DAYCARE: return (g_src_ops && g_src_ops->daycare)    ? g_src_ops->daycare(rec)    : false;
+        case RO_EXPORT:  return (g_src_ops && g_src_ops->export_one) ? g_src_ops->export_one(rec) : false;
         default:        return false;
       }
     }

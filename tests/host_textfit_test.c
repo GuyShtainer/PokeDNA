@@ -539,6 +539,8 @@ int main(void) {
   PF(PDNA_GBEDIT_MOVE_DUP_L2,      28, 184);
   PF(PDNA_GBEDIT_GENDER_LOCKED_TITLE, 28, 184);   /* G1 review LOW-1 */
   PF(PDNA_GBEDIT_GENDER_LOCKED_L1,    28, 184);
+  PF(PDNA_GBEDIT_DAYCARE_PARTY_TITLE, 28, 184);   /* D5, review-opus, BACKLOG #93 */
+  PF(PDNA_GBEDIT_DUP_PARTY_L1,        28, 184);
 
   /* BACKLOG #95 review C2: msg_wait's (28, .., 184) clamp again -- these are pre-
    * split across l1/l2 rather than wrapped (msg_wait's l1/l2 are each a single

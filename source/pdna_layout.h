@@ -170,11 +170,13 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 
 /* Read-only source popup: the header grows by one line per explanatory line above the
  * rows (the source's note, and the per-record "why this one is locked"). */
-#define PDNA_ROMENU_MAX       7               /* VIEW/EDIT, ITEM?, LEGALITY, MOVE TO?, COPY?, RELEASE?,
-                                                * CANCEL -- one row dropped 2026-09-05 (BACKLOG #41
-                                                * follow-up): VIEW and EDIT merged into one row, matching
-                                                * the Gen-3 menu's own PDNA_LBL_VIEW_EDIT row. ITEM added
-                                                * 2026-09-10 (BACKLOG #92, Gen 2 only). */
+#define PDNA_ROMENU_MAX       10              /* VIEW/EDIT, ITEM?, LEGALITY, MOVE TO?, COPY?, DUPLICATE?,
+                                                * TO DAY-CARE?, EXPORT?, RELEASE?, CANCEL -- one row dropped
+                                                * 2026-09-05 (BACKLOG #41 follow-up): VIEW and EDIT merged
+                                                * into one row, matching the Gen-3 menu's own
+                                                * PDNA_LBL_VIEW_EDIT row. ITEM added 2026-09-10 (BACKLOG
+                                                * #92, Gen 2 only). DUPLICATE/TO DAY-CARE/EXPORT added
+                                                * 2026-09-15 (BACKLOG #93). */
 #define PDNA_ROMENU_HDR       15              /* title only                           */
 #define PDNA_ROMENU_LINE      10              /* each optional prose line             */
 #define PDNA_ROMENU_HEAD_PAD   3              /* divider -> first row                 */
@@ -685,6 +687,29 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * never show garbage). Exactly 12 characters -- the same ui_truncate() cap the real
  * nickname goes through -- so it never itself needs the cut. */
 #define PDNA_GBEDIT_RELEASE_FALLBACK  "this Pokemon"
+
+/* BACKLOG #93: DUPLICATE on the read-only mon menu (gb_dup_hook, pdna_gen12.c).
+ * The once-per-visit sidecar warning (decision 2, the s_id_warned/gbtr_id_edit_ok
+ * idiom) and the success message naming the landing slot (decision 1). */
+#define PDNA_GBEDIT_DUP_SIDECAR_TITLE "Came from Gen 3."
+#define PDNA_GBEDIT_DUP_SIDECAR_L1    "Only one copy can go back."
+#define PDNA_GBEDIT_DUP_TITLE         "DUPLICATED"
+/* D5 (review-opus, BACKLOG #93): DUPLICATE on a party mon used to hit gbs_insert's
+ * own GBS_ERR_ARG (a party-shaped record handed to a box-only destination,
+ * gb_session.h's own gbs_insert() header) and show its raw status text, "bad
+ * argument" -- accurate but not a sentence a player asked for. Reuses
+ * PDNA_GBEDIT_DAYCARE_PARTY_TITLE ("CAN'T"), the same twin refusal TO DAY-CARE
+ * already gives the party pseudo-box, for one title both share. */
+#define PDNA_GBEDIT_DUP_PARTY_L1      "Can't duplicate a party mon."
+
+/* BACKLOG #93: TO DAY-CARE on the read-only mon menu (gb_daycare_hook, pdna_gen12.c).
+ * The full/confirm/success strings are Gen 3's own app_to_daycare/gbdc_deposit literals,
+ * reused verbatim (decision-mandated); these two are new, GB-specific structural
+ * refusals (step 3: "with a message, never a bare buzz"). */
+#define PDNA_GBEDIT_DAYCARE_PARTY_TITLE "CAN'T"
+#define PDNA_GBEDIT_DAYCARE_PARTY_L1    "The party can't go to Day-Care that way."
+#define PDNA_GBEDIT_DAYCARE_EGG_TITLE   "EGG"
+#define PDNA_GBEDIT_DAYCARE_EGG_L1      "An Egg can't be left at the Day-Care."
 
 /* BACKLOG review (post-#40(c)): gb_move_hook's own refusals reused
  * PDNA_GBEDIT_REFUSED_TITLE ("EDIT REFUSED"), same mismatch #40(c) fixed for PASTE — a

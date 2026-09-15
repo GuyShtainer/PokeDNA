@@ -2178,6 +2178,19 @@ static void box_options_menu(BoxSource* src, int box) {
     else if (k & KEY_A) {
       snd_ok();
       if (sel == 0) {                              /* rename */
+        /* D2 (review-opus, BACKLOG #93): this row used to draw and act on Rename
+         * unconditionally -- the direct-A-on-banner shortcut (~:3444) already gates
+         * on can_rename, but THIS second path to the same osk_input did not, so a
+         * Gen-1 GB box (gbsrc_can_rename_impl -> gbbn_supported -> false, no box-
+         * name table) reached this menu (now openable via can_boxops, BACKLOG #93)
+         * and could type a name that died with a bare beep when set_name/commit
+         * silently no-op'd. Same gate as the direct-A path, so PC/Bank (can_rename
+         * NULL -> falls back to src_can_lift, unchanged) stay byte-identical. */
+        if (!(src->can_rename ? src->can_rename() : src_can_lift(src, box, -1))) {
+          snd_deny();
+          msg_wait("NO BOX NAMES", UI_WARN, "This game has no box names.", 0);
+          return;
+        }
         /* F1b: seed with the RAW stored name, not get_name()'s display string --
          * get_name() prefixes "GB " only for Gen-1's synthesized names; Gen-2 names
          * are echoed as-is (BACKLOG #122). The raw name must never be typed back
@@ -2191,6 +2204,22 @@ static void box_options_menu(BoxSource* src, int box) {
         }
         return;
       } else if (sel == 1) {                       /* wallpaper */
+        /* D3 (review-opus, BACKLOG #93): gbsrc_set_wp is a documented no-op (GB
+         * boxes have no wallpaper byte), so wallpaper_pick's own choice used to
+         * vanish silently on a GB box (now reachable via can_boxops). `can_boxops
+         * != NULL` alone is the simplest test that is true EXACTLY for the GB
+         * source: no BoxSource field for "has wallpaper" exists (and adding one
+         * would shift every hand-verified offset in tools/stack_edges.txt for no
+         * real gain, same reasoning can_rename's own comment gives) -- can_boxops
+         * is set ONLY by pdna_gen12_source() today (grepped), so this reads
+         * exactly as "the GB source", not a coincidence. PC/Bank (can_boxops NULL)
+         * are unaffected -- byte-identical to before this check existed. */
+        if (src->can_boxops) {
+          snd_deny();
+          msg_wait("NO WALLPAPER", UI_WARN, "Game Boy boxes have no",
+                   "wallpaper to change.");
+          return;
+        }
         int wp = wallpaper_pick(src, src->get_wp(box));
         if (wp >= 0) {
           if (src->is_bank || wp < G3_BOX_WALLPAPER_FRIENDS) {  /* standard wallpaper */
@@ -2204,10 +2233,10 @@ static void box_options_menu(BoxSource* src, int box) {
         }
         return;
       } else if (sel == 2) {                       /* export all to .pk */
-        export_box_all(src, box);
+        if (src->export_all) src->export_all(box); else export_box_all(src, box);
         return;
       } else if (sel == 3) {                       /* release all (destructive; confirms) */
-        release_box_all(src, box);
+        if (src->release_all) src->release_all(box); else release_box_all(src, box);
         return;
       } else return;                               /* cancel */
     }
@@ -2945,23 +2974,35 @@ out:
  * temporarily comment the `gated gb_art_fetch` line out of tools/stack_edges.txt
  * for this one measurement, exactly how the 5,864 figure above was obtained.)
  *
- * With both descents excluded, the new heaviest chain for this root is the OLD
- * SD-write branch BACKLOG #84b's own comment already named as the runner-up:
- * party_strip_overlay -> app_party_mon_menu -> app_mon_menu -> app_paste_gb_merge ->
- * app_commit_sb1 -> app_save_finalize -> sf_where_are_the_bytes -> file_matches ->
- * f_open -> ... -> ed_sd_dma_to_rom. MEASURED (2026-09-11): 6,552 B on the artless
- * ELF, 6,536 B on the normal ELF -- the WORSE (artless) of the two is taken, +64 B
- * for the ISR reentry onto the same stack (libtonc's isr_master runs handlers on
- * __sp_usr too) = 6,616. The prior pass's own report had estimated ~6,608 for this
- * re-derivation; the 8 B difference here is ordinary code drift between that estimate
- * and this actual re-measurement, not a defect (see tools/stack_budget.py's own
- * BACKLOG #102 commit for the two alternate charging strategies tried and why
- * "exclude, charge 0" -- not "charge the declared need" -- is the one that is both
- * correct and actually shrinks this constant).
+ * With both descents excluded, the heaviest chain for this root used to be the
+ * OLD SD-write branch BACKLOG #84b's own comment named as the runner-up
+ * (party_strip_overlay -> app_party_mon_menu -> app_mon_menu -> app_paste_gb_merge
+ * -> app_commit_sb1 -> ... -> ed_sd_dma_to_rom, 6,552 B artless / 6,536 B normal,
+ * +64 ISR = 6,616). BACKLOG #93 (2026-09-15, review-opus re-derivation) replaced
+ * it: app_mon_menu now also reaches app_mon_menu_readonly (the read-only GB source
+ * popup, g_src_ro true for the whole party-strip visit), whose new DUPLICATE/TO
+ * DAY-CARE/EXPORT rows add a deeper real chain than the old paste/commit one --
+ *
+ *   party_strip_overlay -> app_party_mon_menu -> app_mon_menu ->
+ *   app_mon_menu_readonly -> gb_daycare_hook -> pdna_gbdaycare ->
+ *   pdna_gbsummary_inner -> gbedit_press -> ... -> commit_bytes -> f_mkdir
+ *
+ * MEASURED (2026-09-15, both ELFs freshly built from this exact tree):
+ *
+ *   python3 tools/stack_budget.py --elf PokeDNA-artless.elf \
+ *       --builddir "$(pwd)/build-artless" --root pcp_open_party_strip_inner --top 3
+ *   python3 tools/stack_budget.py --elf PokeDNA.elf \
+ *       --builddir "$(pwd)/build" --root pcp_open_party_strip_inner --top 3
+ *
+ * 7,128 B on the artless ELF, 7,112 B on the normal ELF (re-measured after merging into 48b5eaa: b54's app_mon_menu frame grew 888 -> 896) -- the WORSE (artless) of
+ * the two is taken, +64 B for the ISR reentry onto the same stack (libtonc's
+ * isr_master runs handlers on __sp_usr too) = 7,184. (The old paste/commit chain
+ * is still reachable from this root and still real -- gb_daycare_hook's chain is
+ * simply deeper now, 7,120 > 6,552, so it is the one that sets the constant.)
  *
  * With #84a's stack room at ~15,080-15,616 B (tools/stack_budget.py's own "STACK ok"
  * line, both non-delta build variants) this gate should NEVER fire on today's tree --
- * margin 8,464-9,016 B at 6,616, comfortably above the 1,024 B floor the static
+ * margin ~7,888-8,432 B at 7,184, comfortably above the 1,024 B floor the static
  * per-build guard itself requires -- it is a tripwire against a future regression
  * eating most of that margin, not a live constraint. Proved by: (a) shooting the
  * party strip once in mGBA at the re-derived constant, confirming it still opens
@@ -2972,7 +3013,12 @@ out:
  * (hardware-testing-protocol; the emulator cannot prove a stack-overflow refusal is
  * correct on real silicon, only that the code path the refusal message takes is
  * reachable and renders). */
-#define PDNA_PARTY_STRIP_NEED 6616   /* re-derived 2026-09-11 (BACKLOG #102): 6,552 + 64 ISR (was 9,792) */
+#define PDNA_PARTY_STRIP_NEED 7192   /* re-derived 2026-09-15 (BACKLOG #93): 7,128 + 64 ISR
+                                      * (was 6,616 = 6,552 + 64 from #102); new #1 chain is
+                                      * gb_daycare_hook's (DUPLICATE/TO DAY-CARE/EXPORT rows
+                                      * on the read-only GB mon menu, reachable through
+                                      * app_mon_menu from this same root), not the old
+                                      * app_paste_gb_merge/app_commit_sb1 branch */
 
 static void __attribute__((noinline)) pcp_open_party_strip_inner(BoxSource* src, int box,
                                                                   int* cur, bool* need_full) {
@@ -3389,7 +3435,13 @@ int pdna_box(BoxSource* src) {
                                                         * box_options_menu, unchanged; rename
                                                         * there is now a second path to the
                                                         * same osk_input as the direct-A one) */
-        if (src_can_lift(src, box, -1)) { boxoam_suspend(); box_options_menu(src, box); boxoam_resume();
+        /* BACKLOG #93: a source whose box menu is unreachable through the ordinary
+         * can_lift/can_edit capability (the finding that shapes this step -- GB
+         * hardwires can_edit false and can_lift is S3's transfer field, neither means
+         * "the box options menu may open") narrows the gate with can_boxops instead;
+         * NULL falls back to src_can_lift exactly as before this field existed. */
+        if (src->can_boxops ? src->can_boxops(box) : src_can_lift(src, box, -1)) {
+                               boxoam_suspend(); box_options_menu(src, box); boxoam_resume();
                                recs = src->records(box); box_decode(src, recs, box);  /* Release all mutates records */
                                s_oam_reload = true; need_full = true; }
         else snd_deny();
