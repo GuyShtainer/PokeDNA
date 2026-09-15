@@ -1232,17 +1232,25 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
   bool occupied = g_box[cur].species != 0 || bc_is_native(recs + (uint32_t)cur * 80) ||
                  (src->scope == BOXSCOPE_BANK && app_bank_slot_pending(box, cur));   /* the REAL Bank's deferred-delete queue, never a GB box index (S1 review D1) */
   uint8_t conv[80]; bool converted = false;
+  /* The arm is pure and cheap; derive it ONCE here. The `occupied` refusal (S150-8
+   * review F7: never let the Gen-3 arm write a ledger entry for a drop this site is
+   * about to refuse) applies to the GEN3 arm ONLY -- a Game Boy list appends at its
+   * own next free slot, so for EXACT/GB_BRIDGE the cell under the cursor is
+   * irrelevant and the accept_down hook decides (incl. the party-full offer, which
+   * is reachable ONLY through a drop on a fully occupied party -- the union's
+   * unscoped `!occupied` made it unreachable; caught by the merged-tree shot lane,
+   * 2026-09-16). */
+  uint8_t arm = xg_bank_down_arm(bc_kind(s_held), src->scope, app_gb_session_gen());
   if (s_orig_scope == BOXSCOPE_BANK && s_orig_slot >= 0 && !s_held_dup &&
-      src->scope != BOXSCOPE_BANK && bc_is_native(s_held) && !occupied) {
+      src->scope != BOXSCOPE_BANK && bc_is_native(s_held) &&
+      !(arm == XG_DOWN_ARM_GEN3 && occupied)) {
     BankDownResult bd = bank_down_dispatch(src, box, cur, s_held,
                                            recs + (uint32_t)cur * 80, conv);
     if (bd == BANK_DOWN_LANDED) {
-      /* Two arms LAND: re-derive which (xg_bank_down_arm is pure and cheap). EXACT
-       * (S150-7): the GB list grew and the Bank consume ALREADY ran inside
-       * bank_down_exact -- repaint from the image. GB_BRIDGE (S150-8): the bridge
-       * wrote the mounted OTHER-generation session, not `recs`/`box`, and the Bank
-       * origin's removal is deferred to the exit save -- no records() reload. */
-      uint8_t arm = xg_bank_down_arm(bc_kind(s_held), src->scope, app_gb_session_gen());
+      /* Two arms LAND. EXACT (S150-7): the GB list grew and the Bank consume ALREADY
+       * ran inside bank_down_exact -- repaint from the image. GB_BRIDGE (S150-8): the
+       * bridge wrote the mounted OTHER-generation session, not `recs`/`box`, and the
+       * Bank origin's removal is deferred to the exit save -- no records() reload. */
       if (arm == XG_DOWN_ARM_EXACT) {
         s_holding = false; *done = true; s_oam_reload = true;
         recs = src->records(box);            /* the GB list grew -- repaint from the image */

@@ -742,5 +742,39 @@ def self_test_mutation_detection(box_lines: list[str]) -> None:
               f"immediately after a BANK_DOWN_CONVERTED test)")
 
 
+
+# ---- (m) 2026-09-16 (merged-tree shot lane): the DOWN dispatch's `occupied` refusal is scoped to
+# the GEN3 arm. An unscoped `&& !occupied` on the dispatch condition made the EXACT arm refuse
+# every drop on an occupied Game Boy cell (a GB list appends; the cursor cell is irrelevant) and
+# put the party-full offer out of reach. Comment-stripped; self-mutation below.
+GEN3_SCOPED_RE = re.compile(r"!\(arm == XG_DOWN_ARM_GEN3 && occupied\)")
+BARE_OCC_RE    = re.compile(r"&&\s*!occupied\b")
+
+def down_dispatch_occupied_scoped(lines):
+    s, e = extract_function(lines, r"^static uint8_t\* drop_held\(")
+    body = lines[s:e]
+    disp = first_match_line(body, 0, len(body), re.compile(r"bank_down_dispatch\(src, box, cur, s_held"))
+    if disp is None: return False, "drop_held: no bank_down_dispatch call"
+    window = body[max(0, disp - 8):disp]
+    if any(BARE_OCC_RE.search(l) for l in window):
+        return False, "drop_held: the DOWN dispatch condition carries a bare `&& !occupied` (must be scoped to the GEN3 arm)"
+    if not any(GEN3_SCOPED_RE.search(l) for l in window):
+        return False, "drop_held: the DOWN dispatch condition lacks `!(arm == XG_DOWN_ARM_GEN3 && occupied)`"
+    return True, "ok"
+
+def _run_check_m():
+    lines = strip_comments(BOX_C.read_text()).split("\n") if "strip_comments" in globals() else BOX_C.read_text().split("\n")
+    ok, d = down_dispatch_occupied_scoped(lines); check(ok, d)
+    # MUT N: un-scope it back to the union's bare form -- must be caught
+    s, e = extract_function(lines, r"^static uint8_t\* drop_held\(")
+    mut = list(lines)
+    for i in range(s, e):
+        if GEN3_SCOPED_RE.search(mut[i]):
+            mut[i] = GEN3_SCOPED_RE.sub("!occupied", mut[i]); break
+    ok2, d2 = down_dispatch_occupied_scoped(mut)
+    check(not ok2, "MUT N (bare !occupied restored) should have been caught but was not")
+    print(f"  MUT N demonstration -- `!occupied` un-scoped from the GEN3 arm: {d2}")
+
 if __name__ == "__main__":
+    _run_check_m()
     sys.exit(main())
