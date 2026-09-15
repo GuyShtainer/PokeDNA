@@ -1044,47 +1044,61 @@ addrtaken-ok __aeabi_idiv0        # libgcc: division-by-zero trap, taken by the 
 addrtaken-ok __boot_method        # crt0: multiboot/cart boot-method DATA byte, not a function -- see the D5 note above
 addrtaken-ok __do_global_dtors_aux # crtstuff: static-destructor runner, taken via .fini_array
 addrtaken-ok __libc_init_array    # newlib crt: constructor runner, taken by crt0/_start
-addrtaken-ok gen1_write_layout    # 2026-09-14: only ever called DIRECTLY (5 sites, all in gen1_write.c; no
-                                  # assignment or table names it). The link placed this Thumb function at
-                                  # 0x08010000, and that EVEN word is pdna_romfull_screen's own literal for
-                                  # "ROM + 64 KiB" (its verification grid step) plus a u16 pair in s_fam --
-                                  # a real Thumb pointer would be the ODD 0x08010001, whose only
-# occurrence in PokeDNA.gba is at 0x0809b4b6 -- UNALIGNED, inside
-# s_fam, so not a literal-pool word and not a relocated data word.
-addrtaken-ok gen1_encode_name     # BACKLOG #148/#152: same false-positive class as gen1_write_layout
-                                  # above, a different function hit it because this lane's un-staticing
-                                  # of gb_art_io_init/gb_art_read (source/gb_art_source.c, moved to the
-                                  # new gb_art_io.h) shifted .text layout enough that THIS function --
-                                  # not gen1_write_layout -- now links at the coincidence address
-                                  # 0x08010000. Called only DIRECTLY (gen1_write.c:279/282, grepped
-                                  # across the whole tree -- no assignment, table, or test harness
-                                  # function pointer names it).
+addrtaken-ok gen1_encode_name     # BACKLOG #148/#152 (review-opus fix pass corrected this entry's own
+                                  # evidence -- the previous draft chased a libtonc symbol, `srf.0`, that
+                                  # is not even in this project's builddir and cannot be what the walker's
+                                  # own raw-word scan matched; own_function_names()/scan_third_party_words_
+                                  # raw()'s restrict_to (tools/stack_budget.py:2987/:3009) explicitly
+                                  # excludes any name not defined in one of THIS project's own *.o files
+                                  # under builddir -- libtonc/crt0/newlib are linked from prebuilt *.a
+                                  # archives whose member objects never land there, so srf.0 could not
+                                  # have flagged gen1_encode_name; that reasoning was wrong even though the
+                                  # exemption itself is correct and load-bearing, confirmed by removing it
+                                  # and rebuilding: `make` FATALs with "ADDRESS-TAKEN, UNREACHED,
+                                  # UNDECLARED: gen1_encode_name frame 40").
                                   #
-                                  # PROVEN, not asserted (BACKLOG #152 review): the ALIGNED word
-                                  # 0x08010001 in the final ELF's .rodata is inside a 20-B local const
-                                  # object nm names `srf.0`, which libtonc's own tte_main.o (part of
-                                  # -ltonc, not this codebase) defines at .rodata offset 0x13c-0x150 --
-                                  # `arm-none-eabi-ar x libtonc.a tte_main.o && arm-none-eabi-objdump -s
-                                  # -j .rodata --start-address=0x130 --stop-address=0x150 tte_main.o`
-                                  # shows the exact same 5 words (00000006 40000000 20002000 08010001
-                                  # 00000005) at that offset, byte-identical to the final image's copy --
-                                  # its size (20 B) and the shape of the surrounding two words (a u16
-                                  # pair then a u32) match libtonc's own `TSurface` (tonc_surface.h:133-
-                                  # 143: u8* data; u32 pitch; u16 width,height; u8 bpp,type; u16 palSize;
-                                  # u16* palData; = 20 B exactly), not `TSurfaceProcTab` (the struct that
-                                  # actually carries function pointers, tonc_surface.h:166-178 -- a much
-                                  # bigger struct, name+9 fnPtr fields, and its first field is a `const
-                                  # char*`, not a length-prefixed table). DEFINITIVE: `arm-none-eabi-
-                                  # objdump -r -j .rodata tte_main.o` lists R_ARM_ABS32 relocations at
-                                  # offsets 0x130/0x134/0x138 (the symbol immediately BEFORE srf.0, which
-                                  # genuinely is a function-pointer table) and NONE at all inside srf.0's
-                                  # own range (0x13c/0x140/0x144/0x148/0x14c) -- a real `&function` value
-                                  # is only known at link time and MUST carry a relocation record in the
-                                  # object file; the word coinciding with gen1_encode_name's address has
-                                  # none, so it is compile-time-constant DATA, not a pointer, full stop.
-                                  # Re-derive (nm -Sn PokeDNA.elf | grep gen1_encode_name, then repeat
-                                  # the objdump -r proof above against whichever symbol now collides) if
-                                  # this ever moves again -- do not re-add this line on inspection alone.
+                                  # gen1_write.c's own `gen1_write_layout`, a sibling static function,
+                                  # carried this same exemption from 2026-09-14 to today for the identical
+                                  # reason (the coincidence-address class is real and recurring, just
+                                  # landing on a different function each time .text shifts) -- that entry
+                                  # is now STALE on all three built images (nm -Sn: artless 0x080101ac,
+                                  # normal 0x08010078, delta 0x0800ffc4, none at the collision address)
+                                  # and has been deleted per this file's own "delete if unneeded on BOTH
+                                  # images" instruction (all three checked, not just two).
+                                  #
+                                  # THE REAL EVIDENCE (re-derived directly, 2026-09-15): gen1_encode_name
+                                  # links at 0x08010000 in PokeDNA.elf (nm -Sn; artless 0x08010134, delta
+                                  # 0x0800ff4c -- no collision on those two images today, kept as a
+                                  # standing exemption since the coincidence is address-layout-fragile and
+                                  # can recur on ANY future rebuild, same posture gen1_write_layout's own
+                                  # entry held). stack_budget.py masks the Thumb bit before comparing
+                                  # (`int(word,16) & ~1`, ~:2982), so 0x08010000 and 0x08010001 are the
+                                  # SAME hit to the walker -- no need to separate "even" from "odd"
+                                  # occurrences the way the old (wrong) analysis did. `objcopy -O binary`
+                                  # + a raw 4-byte scan of PokeDNA.elf's flat image for both encodings
+                                  # finds exactly THREE aligned hits, all inside this project's OWN code
+                                  # (own_function_names() would flag any of these as real address-taken
+                                  # evidence if they were the true source, which they are not -- see
+                                  # below): 0x0805d95c and 0x0805db64, both inside `pdna_romfull_screen`
+                                  # (nm -Sn: 0x0805d1c0, size 0x9a8) -- a `.word 0x08010000` literal in
+                                  # its own ROM full-image-grid code (confirmed: `objdump -d | grep
+                                  # '\.word\s*0x0801000[01]'` shows both, ROM base 0x08000000 + 64 KiB,
+                                  # the region-size constant that verification-grid step steps by, NOT a
+                                  # function pointer -- pdna_romfull_screen never takes gen1_encode_name's
+                                  # address); and 0x0809bb80 inside `s_fam` (nm -Sn: 0x0809bae8, size
+                                  # 0x19d), a plain data table, same "no assignment site anywhere in
+                                  # source" proof as below. A fourth candidate, 0x08010001 at 0x0809bb6e,
+                                  # is UNALIGNED (0x0809bb6e % 4 != 0) -- not a literal-pool word, and
+                                  # gen1_write_layout's own retired entry already established this file's
+                                  # convention that an unaligned "hit" is not evidence. Safe because
+                                  # gen1_encode_name is called ONLY DIRECTLY (gen1_write.c:279/282, plus
+                                  # tests/host_gen1write_test.c; grepped the whole tree -- no `&`, no
+                                  # table, no function-pointer field ever holds its address). Re-derive
+                                  # with `nm -Sn <elf> | grep gen1_encode_name`, then `objdump -d <elf> |
+                                  # grep '\.word\s*0x0801000[01]'` (mask the Thumb bit yourself when
+                                  # comparing) if this ever moves again -- do not re-add a libtonc/
+                                  # third-party citation on inspection alone; own_function_names() proves
+                                  # only this project's own object files can be the source.
 addrtaken-ok __text_start         # linker/crt boundary symbol, a zero-size DATA marker, not application code -- see the D5 note above
 addrtaken-ok __udivmoddi4         # libgcc: 64-bit unsigned division helper, taken by the div runtime
 addrtaken-ok __utf8_wctomb        # newlib: UTF-8 locale table entry, same family as __utf8_mbtowc above
