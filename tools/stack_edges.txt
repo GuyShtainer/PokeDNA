@@ -831,7 +831,7 @@ G2Writer.rd @0 in cmp_regions,g2w_calc_checksums,g2w_commit_list,g2w_load_list,r
 # one call site, gbs_open_streamed(&vw->s, gb_read, f, len, ...)). Declared here ahead
 # of that wiring landing so every intermediate commit in this lane keeps a clean
 # stack-budget certificate.
-GbSession.rd @20 in gbs_read_field -> gb_read
+GbSession.rd @20 in gbs_read_field,gbs_load_list -> gb_read
 
 # icon_store.c's run_fill() calls cache_fill_rows()/rom_fill_row() directly (no visible
 # function-pointer parameter of its own) -- both are one-call-site file-local helpers
