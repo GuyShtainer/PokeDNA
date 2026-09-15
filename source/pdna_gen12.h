@@ -303,6 +303,14 @@ uint8_t* gb12_arena_tail(uint32_t need);
  * screen that took a tail slice, success or refusal alike. */
 void gb12_arena_tail_release(void);
 
+/* BACKLOG #150 S150-2 step 5: open the REAL Gen-1/2 summary, read-only, over a native
+ * Bank cell's own 80 bytes (source/bank_cell.h's "GBC1" tag) -- NOT a refactor of
+ * gb_view_hook (this file's .c), a deliberate parallel entry point kept scoped to
+ * step 5 alone (see the .c's own comment for the full SCOPE DEVIATION reasoning).
+ * Returns false only when `rec80` is not a native cell (bc_unpack fails); otherwise
+ * always true (there is no prev/next mon to scroll to from a single cell). */
+bool gb_native_summary_open(const uint8_t rec80[80]);
+
 #ifdef PDNA_DELTA
 /* BACKLOG #62: mount fused_gb_save(idx) directly out of cartridge space -- no FIL, no
  * resident copy, reads go straight through fused_gb_slice_read() the same way CREATE's

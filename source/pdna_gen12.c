@@ -21,6 +21,7 @@
 #include "data_tables.h"   /* pk_species_name (report list) */
 #include "evolutions.h"    /* pk_evo_floor/pk_evo_min_level -- BACKLOG #104 R1 D3 */
 #include "gb12_render.h"  /* the display ladder: GB_SHOW_*, gb12_presentation, gb12_render_rec */
+#include "bank_cell.h"    /* bc_unpack -- gb_native_summary_open (BACKLOG #150 S150-2 step 5) */
 
 /* ================================================================= pure core */
 
@@ -2655,6 +2656,34 @@ uint8_t* gb12_arena_tail(uint32_t need) {
  * call" posture as app_arena_release() itself. */
 void gb12_arena_tail_release(void) {
   g_tail_lent = false;
+}
+
+/* BACKLOG #150 S150-2 step 5 (SCOPE DEVIATION -- forward-pulled from S150-13's own
+ * row, docs/BANK-CROSSGEN-DESIGN.md:1345; S150-2's row, :1333, says nothing about
+ * opening a summary): "A on a native Bank cell opens the REAL Gen-1/2 summary,
+ * read-only". A native Bank cell that renders but cannot be opened is a dead cell for
+ * the whole S150-3..S150-13 stretch, so this ships now as a SECOND, PARALLEL entry
+ * point, deliberately NOT the refactor of gb_view_hook (below) that S150-13's own
+ * design (SS11.9) eventually wants (a shared gb_summary_show(mon, gen), called from
+ * both this and gb_view_hook). gb_view_hook's tail is a browse loop that can COMMIT
+ * (gb_edit_commit) -- hanging that off a Bank cell is exactly what SS11.9's "EDIT is
+ * denied" forbids, so this wrapper stays entirely separate and read-only: can_edit
+ * and start_editing are both hard-coded false, so `saved` can never go true
+ * (pdna_gbsummary.h's own contract: "saved is set true iff the user confirmed a
+ * write", and nothing can be kept without can_edit). `has_sidecar` is false because
+ * the ledger does not exist until S150-6. No U/D scroll loop -- a single native Bank
+ * cell has no "next mon" to scroll to, so one call is the whole contract; if the user
+ * presses U/D inside the summary it just exits, same as B. S150-13 may later rename
+ * this to gb_summary_show; that rename, gb_view_hook's own refactor and any edit path
+ * stay OUT of this function's scope. */
+bool gb_native_summary_open(const uint8_t rec80[80]) {
+  GbEditMon e; BcMeta meta;
+  if (!bc_unpack(rec80, &e, &meta)) return false;
+  bool saved = false; int card = 0;
+  pdna_gbsummary(&e, /*can_edit*/false, /*start_editing*/false,
+                meta.gen == GB_GEN1 ? "Gen 1 record" : "Gen 2 record",
+                /*has_sidecar*/false, /*create*/false, &saved, &card);
+  return true;   /* can_edit false => `saved` can never be true (see the comment above) */
 }
 
 /* S2/S3/S5-B: the resident-image edit pipeline's hooks, registered as one const struct

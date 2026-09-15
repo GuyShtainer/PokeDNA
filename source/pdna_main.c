@@ -49,6 +49,7 @@
 #include "gen3_gen.h"      /* gen3_build_mon_spread — one seed, matched PID + IVs */
 #include "pdna_legality.h" /* pdna_legality_show */
 #include "pdna_gen12.h"    /* GB import: mount a Gen-1/2 save read-only */
+#include "bank_cell.h"     /* bc_is_native -- native Bank cell interception (BACKLOG #150 S150-2) */
 #include "pdna_pk.h"     /* pdna_pk_export (.pk3) */
 #include "pdna_bank.h"   /* pdna_bank_show (bank = parallel boxes) */
 #include "gen3_flags.h"    /* event flags */
@@ -2193,6 +2194,12 @@ static bool app_box_browse(uint8_t* block, int box, int start, AppCommitFn commi
   int card = 0;                                            /* sticky across mon-scroll */
   for (;;) {
     uint8_t* rec = block + 0x0004 + ((uint32_t)box * 30 + idx) * 80;
+    /* BACKLOG #150 S150-2: a native Bank cell ("GBC1") gets the REAL Gen-1/2 summary,
+     * read-only, instead of pdna_inspect()'s lossy Gen-3-converted copy -- exactly the
+     * §11.9 requirement. bc_is_native() first, before anything else: a native cell can
+     * never be in a GB session's own grid (those records come from gb_build_slot), so
+     * this and app_mon_menu_readonly's RO_VIEW arm below cannot collide. */
+    if (bc_is_native(rec)) { gb_native_summary_open(rec); break; }
     uint8_t out[100]; bool saved = false;
     int nav = pdna_inspect(rec, false, app_can_edit(), out, &saved, &card);
     if (saved) { memcpy(rec, out, 80); if (app_commit_with_dex(rec, false, commit, block)) any = true; }
@@ -4651,6 +4658,10 @@ static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0, 
            * lossy Gen-3-converted copy this menu was handed -- the whole point being
            * that VIEW (and, from inside it, EDIT) work on the record as its own
            * generation actually stores it. */
+          /* BACKLOG #150 S150-2: a native Bank cell BEFORE the g_src_ops->view check --
+           * bc_is_native() first, before anything else, exactly as app_box_browse's own
+           * interception point does. */
+          if (bc_is_native(rec)) { gb_native_summary_open(rec); return false; }
           if (g_src_ops && g_src_ops->view) { g_src_ops->view(rec); return false; }
           { uint8_t d[100]; int card = 0;
             pdna_inspect(rec, is_party, false, d, 0, &card); return false; }
