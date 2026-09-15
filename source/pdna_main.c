@@ -9380,6 +9380,13 @@ static void view_save(const char* path) {
   if (s0 >= 0)
     memcpy(g_sb2, g_save + (uint32_t)g_vinfo.slot * G3_SLOT_BYTES + (uint32_t)s0 * G3_SECTOR_SIZE,
            G3_SECTOR_DATA_SIZE);
+  /* Review fix F8 (info, BACKLOG #54): the ROM-hack banner/note set-or-clear below
+   * (app_icon_rom_open() then the app_rom_is_hack(g_game) branch) sits AFTER this
+   * point in view_save() -- four earlier `return;`s above (today: the truncated-read,
+   * bad-header, corrupt-slot and no-valid-slot refusals) all exit before g_game is
+   * even assigned. Any screen a future edit adds ABOVE this line must not read
+   * g_src_note/g_src_ro: this save hasn't been classified yet, and the note/ro state
+   * still reflects whatever the PREVIOUS save (or GB session) left behind. */
   g_game = g_frlg ? PK_FRLG : (g_vinfo.version_guess == G3_VER_RS ? PK_RS : PK_EMERALD);
   g_save_kind = se_kind_from_game((int)g_game);   /* E4: app_save_kind()'s Gen-3 half */
   /* The FIRST SD access after the read: f_open of the registered game ROM (artless) or
