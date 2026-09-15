@@ -3056,7 +3056,7 @@ def run_s2_bank(core_mod, image_mod, rom: Path, out_dir: Path, which: str,
            "by any of this.")
     s.tap("A", settle=150)
     s.shot("f2_gb_own_menu", "#120: the GB grid's own mon menu, unaffected -- "
-           "VIEW/EDIT, ITEM, LEGALITY, MOVE TO BOX, COPY, RELEASE, CANCEL, same as "
+           "VIEW/EDIT, LEGALITY, MOVE TO BOX, COPY, RELEASE, CANCEL (+ITEM on Gen 2), same as "
            "before the Bank visit (app_mon_menu_readonly, readonly re-installed by "
            "gb_session_ops_install on the way out)")
     s.tap("B", settle=100)

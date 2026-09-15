@@ -275,7 +275,7 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
      "shells (embedded identifier table, TM/HM synthesized)", ("gbnames",)),
     # BACKLOG #120 S2: the Bank, reachable from a Game Boy session (bank_edge's UP
     # hop past the top tabs). Shots come from tools/dgb_shots.py's run_s2_bank()
-    # (--s2-bank), captions all start "BACKLOG #120 S2:". Appended after
+    # (--s2-bank), captions all start "#120:". Appended after
     # "gb-item-names" per this list's own append-only rule.
     ("gb-bank-s2", "#120 S2 — the Bank from a Game Boy session", ("#120",)),
 ]

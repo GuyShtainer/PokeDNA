@@ -1938,6 +1938,9 @@ bool app_commit_pc(void)  {
    * Gen-3 save at all, in which case app_commit_block() below would write Gen-3
    * sections into a GB battery image. */
   if (xg_inject_refuse(app_arena_held(), g_vinfo.valid)) {
+    /* Deliberate asymmetry vs app_commit_all(): that one releases-and-continues for a
+     * Gen-3 caller that forgot the arena; here a GB session can never have a live PC,
+     * so refusing is the only safe answer (s2 re-verify D6). */
     log_line("BUG: app_commit_pc with no live Gen-3 PC - refused");
     return false;
   }

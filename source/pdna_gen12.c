@@ -2822,7 +2822,7 @@ static void gb_session_ops_install(Gb12Mount* m) {
  * inside gb_session_core's own frame adds gb_session_core (208 B) + this function
  * (8 B) under main -> pdna_gen12_show_image -> gb_session_core -> gb_bank_visit ->
  * pdna_bank_show -> pdna_box -> ... -> gb_art_fetch, tools/stack_budget.py's new
- * deepest whole-program chain (was 13,000/12,992, now 13,304/13,296 -- margins
+ * deepest whole-program chain (was 13,000/12,992, now 11,264/11,256 on main 719f483 -- margins 3,808/4,352, both still positive;
  * 1,776/2,320, both still positive). That chain is RUNTIME-UNREACHABLE from here,
  * twice over: (a) pdna_box.c's pcp_open_party_strip refuses immediately when
  * `src->is_bank` (pdna_box.c:2964, `if (src->is_bank) { snd_deny(); return; }`) --
@@ -2838,11 +2838,12 @@ static void gb_session_ops_install(Gb12Mount* m) {
  * this function's own frames). The structural fix -- routing the party-strip opener
  * through a BoxSource capability the Bank leaves NULL so the walker itself can scope
  * it out -- is BACKLOG #134, not this slice. */
-static void gb_bank_visit(Gb12Mount* m) {
+static void gb_bank_visit(Gb12Mount* m, bool from_hop) {
   app_src_readonly_clear();                  /* also nulls g_src_ops, same as readonly_set */
   pdna_origin_box_set_hint(0);
   rmbl_fire(RCUE_ROOM);
-  app_box_start_set(2);                      /* bank opens at the bottom row (unless carrying) */
+  if (from_hop) app_box_start_set(2);   /* the UP hop arrives from below, like Gen 3's r == 4;
+                                         * the START-menu entry must land where the Gen-3 twin does */                      /* bank opens at the bottom row (unless carrying) */
   int br = pdna_bank_show();
   if (br == 5) app_box_start_set(1);         /* bank dropped off the bottom -> PC tabs */
   gb_session_ops_install(m);                 /* re-install readonly -> ops -> hint, in order */
@@ -2904,7 +2905,7 @@ static void gb_nav_from_start(Gb12Mount* m) {
      * bank_edge UP hop -- no g_ed needed (unlike every real-art screen above, the
      * Bank never touches the GB session's own bytes; it is the Gen-3 PC storage,
      * gated entirely on the readonly/ops gates around the visit). */
-    gb_bank_visit(m);
+    gb_bank_visit(m, false);
   } else if (nv == NV_BAG && kind == SE_KIND_GEN1) {
     /* U4 (BACKLOG #67): Red/Yellow's own Item bag + PC store, same "needs a
      * live GbSession to write through" gate as NV_TRAINER above. D7 (U4
@@ -3075,7 +3076,7 @@ static void gb_session_core(Gb12Mount* m) {
    * this exact cell" mechanism to mirror, so this does not invent one either. */
   for (int r; (r = pdna_box(&s)) != 0; ) {
     if (r == 2) gb_nav_from_start(m);
-    else if (r == 4) gb_bank_visit(m);       /* BACKLOG #120 S2: bank_edge's UP hop */
+    else if (r == 4) gb_bank_visit(m, true);       /* BACKLOG #120 S2: bank_edge's UP hop */
     else app_box_start_set(1);
     s = pdna_gen12_source(m);
   }
