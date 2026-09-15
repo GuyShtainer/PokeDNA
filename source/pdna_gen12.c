@@ -659,6 +659,8 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "gb_boxnames.h"      /* BACKLOG #94: gbbn_rename/gbbn_supported -- the box banner's rename */
 #include "pdna_gbdaycare.h"   /* BACKLOG #85: the Gen-1/2 Day-Care screen */
 #include "gb_daycare.h"       /* BACKLOG #93: gbd_read/gbd_deposit for gb_daycare_hook's push */
+#include "gb_pk.h"            /* BACKLOG #93: gb_pk_pack/gb_pk_ext for gb_export_hook's .pk1/.pk2 */
+#include "pdna_pk.h"          /* BACKLOG #93: PDNA_BANK_DIR, shared with the Gen-3 .pk3 exporter */
 #include "pdna_gbdex.h"       /* BACKLOG #87: the Gen-1/2 Pokedex screen */
 #include "pdna_gbmap.h"       /* M1, BACKLOG #91: Gen 1's read-only current-map view */
 #include "pdna_gbhof.h"       /* BACKLOG #89: the Hall of Fame, both generations */
@@ -1628,6 +1630,117 @@ static bool gb_daycare_hook(uint8_t* rec80) {
   msg_wait("LEFT AT DAY CARE", UI_OK, "Moved from the box. Saved.", 0);   /* gbdc_deposit's own words */
   pdna_gbdaycare(&g_ed->s, box, app_can_edit());
   return true;
+}
+
+/* keep only [A-Za-z0-9] from `in`; collapse runs of other chars to one '_'. Mirrors
+ * pdna_pk.c's own (file-static, unexported) `sanitize` byte-for-byte -- small enough
+ * that duplicating it here is cheaper than exporting a private helper across files. */
+static void gbpk_sanitize(char* out, const char* in, int cap) {
+  int o = 0;
+  for (int i = 0; in[i] && o < cap - 1; i++) {
+    char c = in[i];
+    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) out[o++] = c;
+    else if (o > 0 && out[o - 1] != '_') out[o++] = '_';
+  }
+  while (o > 0 && out[o - 1] == '_') o--;
+  out[o] = 0;
+  if (o == 0) { out[0] = 'M'; out[1] = 'O'; out[2] = 'N'; out[3] = 0; }
+}
+
+/* Decision 7's borrowed buffer, split into its two pieces: path first (SF_PATH_MAX,
+ * 272 B), then the packed .pk1/.pk2 payload (at most 56 B, GB_PK1_BYTES's own ceiling)
+ * right after it. `g_ed->list2` is S3's destination staging buffer (gbs_move's own),
+ * never concurrent with an export -- no new statics, per hard rule 2 (EWRAM is ~1,156
+ * B free). */
+_Static_assert(GBS_LIST_BYTES >= SF_PATH_MAX + 56,
+               "g_ed->list2 too small for gb_export_hook's path+payload split");
+
+/* app_src_ops_set() hook: EXPORT .pk on the read-only mon menu (BACKLOG #93). Writes a
+ * .pk1/.pk2 file (source/gb_pk.c) to the same bank folder /PokeDNA/bank/ the Gen-3
+ * .pk3 exporter uses. gb_locate_addr(), NOT gb_locate(): this is a read of the record
+ * plus an SD write of a NEW file, never a box mutation, so a virgin Gen-1 bank (which
+ * gb_locate's gbs_box_writable gate would refuse) stays exportable -- only the CART
+ * gate (app_can_edit(), hard rule 4: Omega-only) applies. */
+static bool gb_export_hook(uint8_t* rec80) {
+  int box, slot;
+  if (!g_ed) return false;
+  if (!gb_locate_addr(rec80, &box, &slot)) return false;
+
+  if (!app_can_edit()) {
+    snd_deny();
+    msg_wait(PDNA_GBEDIT_READONLY_TITLE, UI_WARN, PDNA_GBEDIT_NEEDS_OMEGA, 0);
+    return false;
+  }
+
+  GbSession* s = &g_ed->s;
+  GbsStatus st = gbs_load_list(s, box, g_ed->list);
+  if (st != GBS_OK) { snd_deny(); msg_wait(PDNA_GBEDIT_BOXRD_TITLE, UI_WARN, gbs_status_text(st), 0); return false; }
+  if (slot >= gb_list_count(s->gen, g_ed->list, box)) {
+    snd_deny(); msg_wait(PDNA_GBEDIT_EMPTYSLOT_TITLE, UI_WARN, PDNA_GBEDIT_EMPTYSLOT_L1, 0); return false;
+  }
+
+  GbEditMon e;
+  if (!gb_load(&e, s->gen, g_ed->list, box, slot)) { snd_deny(); return false; }
+
+  if (gb_is_egg(&e)) {
+    snd_deny();
+    msg_wait("EGGS", UI_WARN, "Eggs can't be exported.", 0);
+    return false;
+  }
+
+  /* Assemble the payload in RAM first (rom-load-lab's own f_write-from-ROM bug: the
+   * pointer handed to sf_write_verified must never resolve into ROM -- both halves of
+   * this split live in g_ed->list2, an EWRAM buffer, never a `const` table). */
+  char* path = (char*)g_ed->list2;
+  uint8_t* payload = g_ed->list2 + SF_PATH_MAX;
+  int wrote = gb_pk_pack(&e, payload, 56);
+  if (wrote < 0) {
+    snd_error();
+    msg_wait("EXPORT FAILED", UI_WARN, "Could not build the file.", 0);
+    return false;
+  }
+
+  char nick[GB_TEXT_MAX];
+  gb_get_nickname(&e, nick, sizeof nick);
+  const char* label = nick[0] ? nick : "MON";
+  {
+    uint16_t dex = gb_get_species_dex(&e);
+    if (!nick[0] && dex) label = pk_species_name(dex);
+  }
+  char sbase[16];
+  gbpk_sanitize(sbase, label, sizeof sbase);
+
+  uint8_t dv4[4] = {
+    gb_get_dv(&e, GB_ATK), gb_get_dv(&e, GB_DEF), gb_get_dv(&e, GB_SPE), gb_get_dv(&e, GB_SPC)
+  };
+  uint64_t key = gbsc_key(e.gen, gb_get_otid(&e), dv4, e.otname);
+  char keyhex[17];
+  gbsc_key_hex(key, keyhex);
+
+  f_mkdir(PDNA_DIR);       /* ignore FR_EXIST */
+  f_mkdir(PDNA_BANK_DIR);
+
+  int nprint = sniprintf(path, SF_PATH_MAX, PDNA_BANK_DIR "/%s_%s%s",
+                         sbase, keyhex, gb_pk_ext(e.gen));
+  if (nprint < 0 || nprint >= SF_PATH_MAX) {
+    snd_error();
+    msg_wait("EXPORT FAILED", UI_WARN, "Path too long.", 0);
+    return false;
+  }
+
+  rmbl_pause();
+  SfStatus wst = sf_write_verified(path, payload, wrote);
+  rmbl_resume();
+
+  if (wst == SF_OK) {
+    char p2[40]; ui_truncate(p2, path, 29);
+    snd_save();
+    msg_wait("EXPORTED", UI_OK, p2, "Open it from START > Bank.");
+    return true;
+  }
+  snd_error();
+  msg_wait("EXPORT FAILED", UI_WARN, sf_status_str(wst), 0);
+  return false;
 }
 
 /* ============================================================================
@@ -2885,13 +2998,13 @@ static const AppSrcOps k_gb_ops_gen1 = {
   .edit = 0, .move = gb_move_hook, .release = gb_release_hook,
   .copy_native = gb_copy_native_hook, .paste = gb_paste_hook, .view = gb_view_hook,
   .editable = gb_editable_hook, .create = gb_create_hook,
-  .dup = gb_dup_hook, .daycare = gb_daycare_hook,   /* BACKLOG #93 */
+  .dup = gb_dup_hook, .daycare = gb_daycare_hook, .export_one = gb_export_hook,   /* BACKLOG #93 */
 };
 static const AppSrcOps k_gb_ops_gen2 = {
   .edit = 0, .move = gb_move_hook, .release = gb_release_hook,
   .copy_native = gb_copy_native_hook, .paste = gb_paste_hook, .view = gb_view_hook,
   .editable = gb_editable_hook, .create = gb_create_hook, .item = gb_item_hook,
-  .dup = gb_dup_hook, .daycare = gb_daycare_hook,   /* BACKLOG #93 */
+  .dup = gb_dup_hook, .daycare = gb_daycare_hook, .export_one = gb_export_hook,   /* BACKLOG #93 */
 };
 
 /* Bag/menu review fix (the nav-menu-copy-lossy finding): the read-only nav-menu mount

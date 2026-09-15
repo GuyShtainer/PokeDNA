@@ -116,6 +116,7 @@ AppSrcOps.item       @32 in app_mon_menu_readonly -> gb_item_hook
 # the same pass that adds these, not left bare.
 AppSrcOps.dup        @36 in app_mon_menu_readonly -> gb_dup_hook
 AppSrcOps.daycare    @40 in app_mon_menu_readonly -> gb_daycare_hook
+AppSrcOps.export_one @44 in app_mon_menu_readonly -> gb_export_hook
 # 2026-09-14 (the "stuck choosing the .gbc" cart fix): gb_art_source.c's SD read shim
 # calls its GbArtIo.fn progress callback between reads. pdna_main.c's gb_reg_progress
 # is the ONLY implementation ever stored there (app_register_gb_rom, its restore
@@ -138,7 +139,13 @@ BoxSource.get_wp     @36 in render_full,chunk_draw -> banksrc_get_wp gbsrc_get_w
 # function name anyway (documentary; matches nothing today) so a future codegen change
 # that DOES surface a real field site here still has a name to attach to.
 BoxSource.set_wp     @40 in box_options_menu -> banksrc_set_wp gbsrc_set_wp pcsrc_set_wp
-BoxSource.can_edit   @44 -> banksrc_can_edit gbsrc_can_edit app_can_edit
+# BACKLOG #93: qualified now that offset 44 is shared with AppSrcOps.export_one (above).
+# --dump-sites against a clean build finds exactly one real field-classified can_edit()
+# call site besides the two art-source coincidental-collision entries already qualified
+# below (search "BoxSource.can_edit @44 in pdna_origin_art_portrait"): src_can_lift
+# (pdna_box.c), the `can_lift ? can_lift(...) : src->can_edit()` wrapper every lift-gate
+# caller in that file goes through.
+BoxSource.can_edit   @44 in src_can_lift -> banksrc_can_edit gbsrc_can_edit app_can_edit
 BoxSource.commit     @48 -> banksrc_commit gbsrc_commit app_commit_pc app_commit_sb1
 BoxSource.mark_dirty @52 -> banksrc_mark_dirty gbsrc_mark_dirty app_mark_pc_dirty
 BoxSource.note_add @56 in drop_held -> pcsrc_note_add
