@@ -270,7 +270,7 @@ static void rs_tower(uint8_t* sb2) {
     if (k & KEY_UP)   sel = sel ? sel - 1 : 2;
     if (k & KEY_DOWN) sel = (sel + 1) % 3;
     if (k & KEY_A) {
-      if (!app_can_edit()) { snd_deny(); s_msg("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); pv_valid = false; continue; }
+      if (!app_can_edit()) { snd_deny(); s_msg("READ-ONLY", UI_WARN, app_readonly_why(), 0); pv_valid = false; continue; }
       int v;
       if (sel < 2) {
         if (!num_entry(sel ? "Record streak (Open)" : "Record streak (Lv50)",
@@ -414,7 +414,7 @@ void pdna_frontier(uint8_t* sb1, uint8_t* sb2, PkGame game) {
 
     const FrRow* r = &rows[sel];
     if (r->kind == ROW_HDR) continue;
-    if (!app_can_edit()) { snd_deny(); s_msg("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); pv_valid = false; continue; }
+    if (!app_can_edit()) { snd_deny(); s_msg("READ-ONLY", UI_WARN, app_readonly_why(), 0); pv_valid = false; continue; }
 
     /* Editing mid-challenge collides with the resume flow, which also owns the
      * party stashed for the run. Warn once per visit, then let the user decide. */

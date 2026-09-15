@@ -591,7 +591,7 @@ void pdna_gbdaycare(GbSession* s, int cur_box, bool can_edit) {
     else if (k & KEY_DOWN) { sel = (sel + 1) % nrows; redraw = true; }
     else if (k & KEY_A) {
       if (!dc->gen1 && dc->has_egg && sel == 2) {
-        if (!can_edit) { snd_deny(); msg_wait("EGG", UI_WARN, "Read-only cart.", "Writes need an Omega."); }
+        if (!can_edit) { snd_deny(); msg_wait("EGG", UI_WARN, app_gb_readonly_why(), 0); }
         else gbdc_take_egg(s, list, list2);
       } else {
         int slot = sel;   /* 0 or 1 */
@@ -602,7 +602,7 @@ void pdna_gbdaycare(GbSession* s, int cur_box, bool can_edit) {
           /* Read-only cart, empty slot: nothing this menu could offer at all --
            * say so directly instead of opening a popup with only Cancel in it. */
           snd_deny();
-          msg_wait("DAY CARE", UI_WARN, "Read-only cart.", "Writes need an Omega.");
+          msg_wait("DAY CARE", UI_WARN, app_gb_readonly_why(), 0);
         } else {
           int act = gbdc_menu(occ, can_put_here, can_take_here);
           if (act == 0)      gbdc_view_edit(s, dc, slot, can_edit);

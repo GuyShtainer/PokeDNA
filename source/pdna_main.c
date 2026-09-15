@@ -1192,13 +1192,27 @@ static bool app_rom_is_hack(PkGame g) { return (s_hack_mask & (1u << (unsigned)g
  * correct for an Everdrive/pdna_romcheck_bad() refusal, a real LIE for an Omega
  * owner whose cart is perfectly writable but whose currently-open game is
  * hack-flagged (app_can_edit() now refuses for that reason too, BACKLOG #54).
- * This picks the honest wording for the 12 pdna_main.c sites this lane owns; the
- * other seven files' sites (pdna_box.c, pdna_frontier.c, pdna_fly.c,
- * pdna_contest.c, pdna_map.c, pdna_gbfly.c, pdna_layout.h's own copy) are OUT OF
- * SCOPE for this lane -- named in this lane's report as a follow-up BACKLOG item,
- * not touched here. */
-static const char* app_readonly_why(void) {
-  return app_rom_is_hack(g_game) ? PDNA_ROMHACK_WHY : "Needs EZ-Flash Omega.";
+ * This picks the honest wording for all remaining sites. */
+const char* app_readonly_why(void) {
+  return (g_vinfo.valid && app_rom_is_hack(g_game)) ? PDNA_ROMHACK_WHY : "Needs EZ-Flash Omega.";
+}
+
+/* Review fix F3: renamed from app_readonly_why_short() -- callers need the full
+ * footer including the "  B back" hint, not just the reason fragment. */
+const char* app_readonly_footer(void) {
+  return (g_vinfo.valid && app_rom_is_hack(g_game)) ? "ROM hack: locked  B back" : "read-only (Omega)  B back";
+}
+
+/* Review fix F2(b): the Game Boy sites can be read-only for a reason that is
+ * neither the cart nor a hack -- a streamed/view-only session
+ * (pdna_gen12_resident() == false). Give those sites the honest wording instead of
+ * blaming the cart/ROM. */
+const char* app_gb_readonly_why(void) {
+  return pdna_gen12_resident() ? app_readonly_why() : PDNA_GB_VIEWONLY_WHY;
+}
+
+const char* app_gb_readonly_footer(void) {
+  return pdna_gen12_resident() ? app_readonly_footer() : PDNA_GB_VIEWONLY_FOOT;
 }
 
 static const char* romident_name(RomIdent id) {
@@ -9597,7 +9611,7 @@ static void view_save(const char* path) {
         case NV_MIRAGE:  pdna_mirage(); break;
         case NV_DEX:     pdna_dex_edit(); break;
         case NV_BAG:     if (app_can_edit()) bag_entry();
-                         else msg_wait("BAG", UI_WARN, "Read-only cart.", "Writes need an Omega.");
+                         else msg_wait("BAG", UI_WARN, app_readonly_why(), 0);
                          break;
         case NV_DATA:    if (app_can_edit()) data_editor();
                          else { snd_deny(); msg_wait("READ-ONLY", UI_WARN, app_readonly_why(), 0); } break;

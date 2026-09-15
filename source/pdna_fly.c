@@ -147,7 +147,7 @@ void pdna_fly(uint8_t* sb1, PkGame game) {
       else
         ui_text(4, 144, UI_WARN, "No Fly badge yet - can't fly");
       ui_text(4, 152, UI_DIM, app_can_edit() ? "A toggle  START all  B back"
-                                             : "read-only (Omega)  B back");
+                                             : app_readonly_footer());
     } else {
       if (sel != pv.sel) {
         fly_row_paint(t, sb1, game, pv.sel, 18 + (pv.sel - top) * 10, false);
@@ -180,7 +180,7 @@ void pdna_fly(uint8_t* sb1, PkGame game) {
     if (k & (KEY_A | KEY_START)) {
       if (!app_can_edit()) {
         snd_deny();
-        s_msg("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0);
+        s_msg("READ-ONLY", UI_WARN, app_readonly_why(), 0);
         pv.valid = false;             /* s_msg clears the screen before drawing its panel */
         continue;
       }

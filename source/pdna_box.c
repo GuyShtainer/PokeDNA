@@ -2633,7 +2633,7 @@ static int party_strip_overlay(BoxSource* src, int box, int* cur,
                                uint8_t grab80[80], int* grab_slot, bool allow_move_to_box) {
   if (!app_can_edit()) {
     snd_deny();
-    boxoam_suspend(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); boxoam_resume();
+    boxoam_suspend(); msg_wait("READ-ONLY", UI_WARN, app_readonly_why(), 0); boxoam_resume();
     return 0;
   }
   /* Same read-only-SOURCE gate as app_party_overlay (see that function's own comment,
