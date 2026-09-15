@@ -2234,7 +2234,8 @@ int main(void) {
   T(PDNA_GBFLY_NO_THUNDER, 4);
   T(PDNA_GBFLY_NO_STORM, 4);
   T("read-only (Omega)  B back", 4);
-  /* D4: START's mark-all footer hint. PDNA_GBFLY_HINT_EDIT is the compile-time pick
+  T("ROM hack: locked  B back", 4);
+  T("view-only  B back", 4);  /* D4: START's mark-all footer hint. PDNA_GBFLY_HINT_EDIT is the compile-time pick
    * between the two forms below (its own sizeof check in pdna_gbfly.h) -- assert the
    * SHORT form is what actually gets drawn (32 > 29 cols, over budget) and that the
    * LONG form genuinely fails T()'s own check, so a future edit that shrinks it back
