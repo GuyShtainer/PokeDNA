@@ -1174,13 +1174,17 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
        * is the box already paged in for this drop) for a record whose bytes 0..7
        * (magic + ident32) equal the cell's -- a plain memcmp, not a recomputed
        * bc_ident32() on the candidate (a match on bytes 0..3 alone already implies
-       * "GBC1", so no separate bc_is_native() check is needed). */
+       * "GBC1", so no separate bc_is_native() check is needed).
+       * REVIEW F5: this box only -- a collision with a native cell sitting in one
+       * of the OTHER 15 boxes is not caught here (each of those has its own
+       * bank_serial history this scan never pages in to check). The log line says
+       * so explicitly; widening to all 16 boxes is BACKLOG, not this lane. */
       for (int s = 0; s < G3_BOX_SLOTS; s++) {
         if (s == cur) continue;
         if (memcmp(recs + (uint32_t)s * 80, s_held, 8) == 0) {
           snd_error();
           boxoam_resume();
-          log_line("bank: up box %d slot %d -> bank box %d slot %d: ident32 collision at slot %d, refusing", s_orig_box, s_orig_slot, box, cur, s);
+          log_line("bank: up box %d slot %d -> bank box %d slot %d: ident32 collision at slot %d (scan: box %d only), refusing", s_orig_box, s_orig_slot, box, cur, s, box);
           app_log_flush();
           return recs;                                        /* still holding */
         }
