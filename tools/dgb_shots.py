@@ -444,65 +444,88 @@ def run_nav_gb(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_
     return s
 
 
-def run_b64_import(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
-    """BACKLOG #64 -- IMPORTANT CAVEAT, read before trusting these shots as proof of
-    anything: pdna_main.c's NV_GB case is `#ifdef PDNA_DELTA` / `#else` (source/
-    pdna_main.c:9364-9391) -- on THIS build (PDNA_DELTA, the only kind this whole
-    script drives) NV_GB calls pdna_gen12_show_fused(), which BACKLOG #64 leaves
-    passing `ro = 0` to gb_session_core() on purpose (its own call site's comment:
-    "this entry already shows every screen through g_ed ... unaffected by this
-    lane"). The function BACKLOG #64 actually changed, pdna_gen12_show() (the plain
-    FIL-streaming entry `app_pick_gb_save()`'s SD file browser reaches), is called
-    from EXACTLY ONE site in the whole codebase (pdna_main.c:9391, inside the
-    `#else`) -- dead code under PDNA_DELTA, and mGBA has NO SD card at all in this
-    harness (gb_shots.py's own docstring: "the emulator has no SD card" -- the
-    entire reason PDNA_DELTA fusing exists). There is therefore NO WAY to reach
-    pdna_gen12_show() from mGBA, on any image this repo's tooling can build --
-    proving the read-parity fix (a streamed session opening the real Trainer/Bag/
-    Flags/Dex screens instead of falling back to the read-only info page) needs a
-    real SD card and a real flashcart, i.e. it is HARDWARE-ONLY (docs/HW-QUEUE.md),
-    not something a screenshot here can stand in for.
+def run_b64_import(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> list[gb_shots.Session]:
+    """BACKLOG #64 review Fix 3 (F1 ruling): pdna_gen12_show_fused() now installs
+    the SAME Option B streamed session pdna_gen12_show() does (source/pdna_gen12.c)
+    -- this delta-gb image's own NV_GB import row IS emulator-testable proof of the
+    read-parity fix now, not the still-HW-only pdna_gen12_show() FIL-streaming path
+    (`app_pick_gb_save()`'s real SD file browser -- pdna_main.c:9391, the ONLY call
+    site, `#ifndef PDNA_DELTA`, dead code on every image this harness can build;
+    mGBA has no SD card at all -- see this function's own git-log history for the
+    fuller citation this docstring used to carry before Fix 3 landed).
 
-    What THIS function is actually good for: a regression check that threading `ro`
-    through gb_session_core()/gb_nav_from_start() as a plain parameter did not
-    disturb the FUSED path's own pre-existing behaviour -- same navigation
-    run_nav_gb() already uses (boot picker -> Emerald default -> box screen ->
-    START > nav menu > NV_GB -> pick `which`), continued past run_nav_gb()'s own
-    shot 02 into the box grid's OWN nav menu (gb_nav_from_start(), ro == 0 here, no
-    g_ed either).
-
-    ONE shot only, not four: gb_info_page() (source/pdna_gen12.c) renders
-    mount-level info (kind/player/ID/counts) -- it takes no argument that would
-    make its content differ by WHICH nav row fell back to it, so Trainer's,
-    Bag's/Pack's, Flags', and Dex's fallback screens are ALL pixel-identical.
-    Confirmed by hand (dbg debug run, 2026-09): capturing more than one landed a
-    duplicate-frame refusal in gb_shots.Session.shot()'s own guard. One
-    representative row (Trainer) is the whole story for this regression check."""
+    Captures Trainer / Bag-or-Pack / Flags / Dex / Map from BOTH of THIS image's
+    real mounts over the SAME `which` save, named to `cmp` pairwise:
+      - `import_*`  the nested NV_GB import (nav_to_gb_import(), THIS lane's own
+                     streamed read-only session, ed == false, gs == &vw.s)
+      - `direct_*`  the boot picker's own DIRECT GB row (boot_to_gb_session(), the
+                     pre-existing resident-image mount, ed == true, gs == &g_ed->s)
+    Same underlying save bytes either way -- a real pixel difference here would
+    mean either the streamed session's read parity is wrong, or the read-only
+    render draws different chrome than the editable one (worth a caption either
+    way, not necessarily a bug: e.g. an edit cursor only the editable mount shows)."""
     idx = gb_save_pick_index(rom)[which]
-    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b64_{which}_")
-    print(f"== BACKLOG #64: {which}.sav — nested NV_GB import's OWN nav menu (fused path, ro==0) ==")
+    kind_g1 = (which == "red")
+    rows = [
+        ("trainer",     3, GB_ART_COLD_SETTLE),   # own cold rom_gbui scan (run_u3_trainer)
+        ("bag_or_pack", 7, GB_ART_COLD_SETTLE),   # own cold scan (run_u4_bag/run_u5_pack)
+        ("flags",       8, gb_shots.BIG_SETTLE),  # no art fetch (run_b88_flags)
+        ("dex",         6, gb_shots.BIG_SETTLE),  # no chooser for red/gold (only crystal has one)
+        ("map",        16, GB_ART_COLD_SETTLE),   # own cold scan (run_m1_map/run_m1_map_gen2)
+    ]
+    sessions = []
 
-    s.run(700)
-    s.tap("A", settle=gb_shots.BIG_SETTLE)               # #68a boot picker, Emerald row (default) -> box
-    nav_to_gb_import(s)                                    # box screen -> nav menu -> NV_GB -> the save picker
+    # ---- mount 1: the nested NV_GB import (streamed, ed == false) --------------
+    s1 = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b64_{which}_import_")
+    print(f"== BACKLOG #64 Fix 3: {which}.sav — NV_GB import mount (streamed, ed==false) ==")
+    s1.run(700)
+    s1.tap("A", settle=gb_shots.BIG_SETTLE)                # #68a boot picker, Emerald row (default) -> box
+    nav_to_gb_import(s1)                                     # box screen -> nav menu -> NV_GB -> the save picker
     for _ in range(idx):
-        s.tap("DOWN", settle=gb_shots.SETTLE)
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                 # picked -> this save's own S1 info page
-    s.tap("A", settle=60)                                  # info -> box grid (COLD fetch starts)
-    s.run(GB_ART_COLD_SETTLE)                              # ride out the first-ever real scan
+        s1.tap("DOWN", settle=gb_shots.SETTLE)
+    s1.tap("A", settle=gb_shots.BIG_SETTLE)                  # picked -> this save's own S1 info page
+    s1.tap("A", settle=60)                                   # info -> box grid (COLD fetch starts)
+    s1.run(GB_ART_COLD_SETTLE)                               # ride out the first-ever real scan
+    for i, (tag, n, a_settle) in enumerate(rows):
+        s1.tap("START", settle=gb_shots.BIG_SETTLE)
+        s1.press_n("DOWN", n)
+        s1.tap("A", settle=a_settle)
+        s1.shot(f"{i + 1:02d}_{tag}",
+                f"#64 Fix 3: {which}.sav via NV_GB's fused mount -- {tag} row -- NOW A REAL "
+                "streamed (read-only) session (gbs_open_streamed over the same "
+                "fused_gb_slice_read pair the mount used), not the gb_info_page fallback "
+                "this lane used to leave here before Fix 3")
+        s1.tap("B", settle=gb_shots.BIG_SETTLE)
+        s1.run(2000)   # box grid header/footer repaint settle (hand-calibrated, see git log)
+    sessions.append(s1)
 
-    # Trainer: DOWN x3 from a fresh menu (same index run_u3_trainer()/run_u2c_trainer()
-    # already use against the resident-image mount's own identical shared menu).
-    s.tap("START", settle=gb_shots.BIG_SETTLE)
-    s.press_n("DOWN", 3)
-    s.tap("A", settle=gb_shots.BIG_SETTLE)
-    s.shot("01_trainer", f"#64: {which}.sav via NV_GB's fused mount -- Trainer row, "
-                          "ro == 0 and g_ed unset here, so gs == NULL: still shows the "
-                          "read-only info page (gb_info_page), UNCHANGED by this lane -- "
-                          "see this function's own docstring caveat. Bag/Pack, Flags and "
-                          "Dex all fall to the SAME screen (gb_info_page takes no "
-                          "per-row argument) so one shot stands for all four rows.")
-    return s
+    # ---- mount 2: the boot picker's own direct GB row (resident image, ed == true)
+    s2 = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b64_{which}_direct_")
+    print(f"== BACKLOG #64 Fix 3: {which}.sav — boot picker's direct GB row (resident, ed==true) ==")
+    boot_to_gb_session(s2, rom, which=which)
+    for i, (tag, n, a_settle) in enumerate(rows):
+        s2.tap("START", settle=gb_shots.BIG_SETTLE)
+        s2.press_n("DOWN", n)
+        s2.tap("A", settle=a_settle)
+        s2.shot(f"{i + 1:02d}_{tag}",
+                f"#64 Fix 3: {which}.sav via the boot picker's OWN direct GB row -- {tag} "
+                "row -- the pre-existing resident-image mount (g_ed, editable), for a "
+                "pixel `cmp` against the import mount's read-only render above")
+        s2.tap("B", settle=gb_shots.BIG_SETTLE)
+        s2.run(2000)
+    sessions.append(s2)
+
+    print(f"\n== BACKLOG #64: {which}.sav -- cmp import_* vs direct_* ==")
+    for i, (tag, _n, _a) in enumerate(rows):
+        a = out_dir / f"b64_{which}_import_{i + 1:02d}_{tag}.png"
+        b = out_dir / f"b64_{which}_direct_{i + 1:02d}_{tag}.png"
+        if not (a.exists() and b.exists()):
+            print(f"  [skip] {tag}: missing {a if not a.exists() else b}")
+            continue
+        same = a.read_bytes() == b.read_bytes()
+        print(f"  {'MATCH ' if same else 'DIFFER'} {tag}: {a.name} vs {b.name}")
+
+    return sessions
 
 
 def run_standalone(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
@@ -3901,17 +3924,18 @@ def main(argv=None) -> int:
                           "Red/Gold/Crystal, `make delta-gb`'s own recipe) so both "
                           "mounts are reachable from the one image.")
     ap.add_argument("--b64-import", choices=("gold", "red"),
-                     help="BACKLOG #64: run_b64_import() against --image for the named "
-                          "game -- --image MUST be a COMBINED image (Emerald.sav + "
-                          "Red/Gold/Crystal, `make delta-gb`'s own recipe, same as "
-                          "run_nav_gb()). Drives the SAME START > nav menu > GB import "
-                          "(NV_GB) entry run_nav_gb() already uses; SEE run_b64_import()'s "
-                          "own docstring for an important caveat: under PDNA_DELTA this "
-                          "row calls pdna_gen12_show_fused(), NOT the pdna_gen12_show() "
-                          "FIL-streaming path BACKLOG #64 actually changed -- these shots "
-                          "are a REGRESSION check on the fused path (unaffected, ro == 0), "
-                          "not proof of the read-parity fix, which needs a real SD card "
-                          "and is HARDWARE-ONLY per the standing screenshot rule.")
+                     help="BACKLOG #64 (review Fix 3): run_b64_import() against --image "
+                          "for the named game -- --image MUST be a COMBINED image "
+                          "(Emerald.sav + Red/Gold/Crystal, `make delta-gb`'s own recipe, "
+                          "same as run_nav_gb()). Drives the SAME START > nav menu > GB "
+                          "import (NV_GB) entry run_nav_gb() already uses, now a REAL "
+                          "streamed read-only session after Fix 3 gave pdna_gen12_show_"
+                          "fused() its own Option B install -- captures Trainer/Bag-or-"
+                          "Pack/Flags/Dex/Map from BOTH this mount AND the boot picker's "
+                          "own direct GB row (the pre-existing resident-image mount) over "
+                          "the SAME save, and `cmp`s each pair. The still-HW-only half is "
+                          "pdna_gen12_show() itself (the real FIL/SD file-browser entry) "
+                          "-- see run_b64_import()'s own docstring.")
     ap.add_argument("--out", type=Path, default=ROOT / "docs" / "shots" / "gb")
     ap.add_argument("--cold-start-compare", nargs=2, type=Path, metavar=("LOC_IMAGE", "NOLOC_IMAGE"),
                      help="BACKLOG #68b: measure+report the box-grid cold-start frame cost "
@@ -4149,9 +4173,10 @@ def main(argv=None) -> int:
         ran = True
     if a.b64_import:
         try:
-            sess = run_b64_import(core_mod, image_mod, a.image, a.out, a.b64_import)
-            ok += sess.taken
-            skipped += sess.skipped
+            sessions = run_b64_import(core_mod, image_mod, a.image, a.out, a.b64_import)
+            for sess in sessions:
+                ok += sess.taken
+                skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] b64 import ({a.b64_import}): {e}")
         _write_manifest(a.out, ok, skipped)
