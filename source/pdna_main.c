@@ -9343,21 +9343,21 @@ static void view_save(const char* path) {
 
   /* BACKLOG #54 T2 evidence, NO GATE (decision 6): a species field past the Gen-3
    * ceiling is exactly the anomaly a per-hack SD profile (T2, still in BACKLOG) would
-   * want on record -- logged here because g_party/g_pc are already resident, but
-   * this touches nothing else: no s_hack_mask bit, no UI, no app_can_edit() change.
-   * One glitch Pokemon must never turn a retail user's own save read-only -- that is
-   * the ROM's call alone (decision 4), never the save's. */
+   * want on record -- logged here because g_party is already resident and resolved,
+   * but this touches nothing else: no s_hack_mask bit, no UI, no app_can_edit()
+   * change. One glitch Pokemon must never turn a retail user's own save read-only --
+   * that is the ROM's call alone (decision 4), never the save's.
+   *
+   * Review fix F5 (speed): party only -- the PC sweep would cost 420 decryptions
+   * (pk_decode_mon per slot, G3_TOTAL_BOXES * G3_IN_BOX) on the boot path for every
+   * save open, a real cost with no signal this evidence-only, no-gate line needs to
+   * pay for (BACKLOG #73). g_party is already decoded (pk_resolve above), so this
+   * reads a field already in memory at zero extra decode cost, same spirit as the
+   * "free, already in memory" framing the PC sweep never actually delivered. */
   {
     int glitch = 0;
     for (int i = 0; i < g_nparty; i++)
       if (g_party[i].species > G3_MAX_SPECIES) glitch++;
-    if (g_have_pc)
-      for (int b = 0; b < G3_TOTAL_BOXES; b++)
-        for (int s = 0; s < G3_IN_BOX; s++) {
-          PkMon m;
-          if (pk_decode_mon(pk_box_slot(g_pc, b, s), false, &m) && m.species > G3_MAX_SPECIES)
-            glitch++;
-        }
     if (glitch)
       log_line("romhack evidence: %d mon(s) with species > %d (T2 signal, no gate)",
                glitch, G3_MAX_SPECIES);
