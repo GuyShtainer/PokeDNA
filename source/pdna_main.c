@@ -1901,6 +1901,14 @@ void __attribute__((noinline)) app_xfer_pending_undo(void) {
     app_xfer_pending_drop();
     return;
   }
+  GbscEntry e;
+  if (!gbsc_get(s_promote_buf, len, g_xd_idx, &e) ||
+      e.kind != XR_KIND_NATIVE_HOME || e.direction != XR_DIR_ABROAD_G3 ||
+      e.state != XR_STATE_PENDING) {
+    log_line("xfer: undo: entry %d in %s no longer matches -- leaving it", (int)g_xd_idx, path);
+    app_xfer_pending_drop();
+    return;
+  }
   if (gbsc_remove(s_promote_buf, &len, g_xd_idx) != 0) {
     log_line("xfer: undo: remove failed in %s", path);
     app_xfer_pending_drop();

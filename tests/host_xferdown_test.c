@@ -354,6 +354,70 @@ static void test_time_capsule_refusal(void) {
   CHECK(tc_bad == 250, "tc_bad names the move");
 }
 
+/* ============================================================================ */
+/* G. F2 (review): app_xfer_pending_undo()/app_xfer_promote()'s identity re-check   */
+/* -- gbsc_remove(idx) alone is a blind index into a file that may have changed    */
+/* under us (a GB paste to the same key, gbsc_evict_oldest, a re-mount); this      */
+/* proves the SAME predicate (kind==NATIVE_HOME && direction==ABROAD_G3 &&         */
+/* state==PENDING) both pdna_main.c functions gate on tells a genuine match apart  */
+/* from a stale index -- app_xfer_pending_undo itself is FatFs/GBA-only and not    */
+/* host-testable, so this exercises its exact identity predicate against the same */
+/* gb_sidecar.c primitives it calls. */
+/* ============================================================================ */
+static bool xfer_identity_ok(const uint8_t* buf, uint32_t len, int idx) {
+  GbscEntry e;
+  if (!gbsc_get(buf, len, idx, &e)) return false;
+  return e.kind == XR_KIND_NATIVE_HOME && e.direction == XR_DIR_ABROAD_G3 &&
+         e.state == XR_STATE_PENDING;
+}
+
+static void test_pending_identity_check(void) {
+  uint8_t cell[80];
+  build_gen2_cell(cell, 25, 0, 33, 700);
+  uint8_t out80[80]; GbEditMon written; Gb12Notes notes; uint16_t g3item;
+  Gb12Result r = bdc_convert_gen3_core(cell, 3, out80, &written, &notes, &g3item);
+  CHECK(r == GB12_OK, "identity-check fixture converts");
+
+  GbscEntry e;
+  gbsc_entry_from(&e, &written, cell, 0);
+  e.kind = XR_KIND_NATIVE_HOME; e.state = XR_STATE_PENDING; e.direction = XR_DIR_ABROAD_G3; e.claimed = 1;
+
+  uint8_t buf[GBSC_FILE_MAX]; uint32_t len = (uint32_t)gbsc_init(buf, 0xBBu);
+  int idx = gbsc_add(buf, &len, GBSC_FILE_MAX, &e);
+  CHECK(idx == 0, "identity-check fixture: gbsc_add succeeds");
+
+  CHECK(xfer_identity_ok(buf, len, idx), "matching PENDING/NATIVE_HOME/ABROAD_G3 entry: identity check passes");
+
+  /* Simulate a promotion racing ahead of us (e.g. app_xfer_promote already ran, or
+   * gb_bank_down_bridge's own xfer_down_claim_now touched this same index by
+   * coincidence): flip state to CLAIMED in place -- the undo path must now refuse
+   * to touch it rather than deleting a live, already-promoted (or otherwise
+   * foreign) entry. */
+  GbscEntry stale;
+  CHECK(gbsc_get(buf, len, idx, &stale), "re-read for the CLAIMED mutation");
+  stale.state = XR_STATE_CLAIMED;
+  uint8_t buf2[GBSC_FILE_MAX]; uint32_t len2 = len;
+  memcpy(buf2, buf, len);
+  CHECK(gbsc_remove(buf2, &len2, idx) == 0, "mutation fixture: remove the PENDING copy");
+  int idx2 = gbsc_add(buf2, &len2, GBSC_FILE_MAX, &stale);
+  CHECK(idx2 == idx, "mutation fixture: the CLAIMED entry lands back at the same index");
+  CHECK(!xfer_identity_ok(buf2, len2, idx2),
+        "a since-CLAIMED entry at the SAME index fails the identity check (undo must leave it alone)");
+
+  /* A wrong KIND (e.g. an ordinary Gen-3-home entry from an unrelated GB paste
+   * landing at the same index after an evict/re-add) must also fail. */
+  GbscEntry wrongkind = e;
+  wrongkind.kind = XR_KIND_G3_HOME;
+  uint8_t buf3[GBSC_FILE_MAX]; uint32_t len3 = (uint32_t)gbsc_init(buf3, 0xCCu);
+  int idx3 = gbsc_add(buf3, &len3, GBSC_FILE_MAX, &wrongkind);
+  CHECK(idx3 == 0, "wrong-kind fixture: gbsc_add succeeds");
+  CHECK(!xfer_identity_ok(buf3, len3, idx3), "a wrong-KIND entry at the same index fails the identity check");
+
+  /* An out-of-range index (the file shrank under us, e.g. gbsc_remove of an
+   * unrelated earlier entry) must fail via gbsc_get() itself, not crash. */
+  CHECK(!xfer_identity_ok(buf, len, idx + 5), "an out-of-range index fails the identity check (no crash)");
+}
+
 int main(void) {
   test_mask();               printf("  (A) xr_game_item_mask        ok\n");
   test_item_edge();          printf("  (B) item-map edge            ok\n");
@@ -361,6 +425,7 @@ int main(void) {
   test_roundtrip_2_3_2();    printf("  (D) round trip 2->3->2       ok\n");
   test_bridge_roundtrips();  printf("  (E) round trip 1<->2 bridge  ok\n");
   test_time_capsule_refusal();printf("  (F) time-capsule refusal     ok\n");
+  test_pending_identity_check(); printf("  (G) pending identity check   ok\n");
 
   printf("%d checks, %d failed\n", g_check, g_fail);
   if (g_fail) { printf("FAILED\n"); return 1; }
