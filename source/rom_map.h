@@ -55,6 +55,25 @@ typedef enum {
   ROM_LEAFGREEN,        /* BPGE rev 0/1          */
 } RomKind;
 
+/* ---- ROM-hack detection (BACKLOG #54, tier T0) ------------------------------
+ * The reader tables above are address-pinned to 11 retail builds; a binary hack that
+ * keeps the same (code, version) pair and the same 16 MiB size but relocates internal
+ * tables used to register as that retail game, silently. RomIdent is the honest
+ * verdict rom_open() now derives from the 0xC0 header it already reads, at zero extra
+ * I/O cost (no whole-ROM hash, no fingerprint window — see rom_identify()'s comment
+ * for why that is out of scope here; T2's per-hack SD profile is the follow-on that
+ * would let a verified hack unlock editing, and stays in BACKLOG). None of this loosens
+ * rom_open()'s refusal of anything but a bit-identical retail build: T1's honesty is
+ * limited to WHAT gets reported and WHETHER the save opens read-only, not to widening
+ * what rom_open() accepts. */
+typedef enum {
+  ROM_ID_RETAIL = 0,    /* code+version pinned, size == 16 MiB, title matches retail */
+  ROM_ID_HACK,          /* pinned code+version but title/size/structure diverges, OR
+                          * no pin match but the title starts "POKEMON" (base unknown) */
+  ROM_ID_NOT_POKEMON,   /* a GBA ROM, but neither a pinned build nor "POKEMON..." titled */
+  ROM_ID_NOT_GBA,       /* hdr[0xB2] != 0x96 — not even a GBA cart image               */
+} RomIdent;
+
 /* Per-game structural constants (the FRLG divergences above). */
 typedef struct {
   uint8_t  layout_size;        /* 24 RSE / 28 FRLG                                */
@@ -83,10 +102,29 @@ typedef struct {
   uint32_t  map_layouts;       /* ROM address of gMapLayouts                       */
   uint32_t  gfx_info_ptrs;     /* gObjectEventGraphicsInfoPointers                 */
   uint8_t   group_count;
+  uint8_t   ident;              /* RomIdent — the hack/retail verdict (BACKLOG #54).
+                                  * Placed here, not appended at the tail: 3 bytes of
+                                  * padding already sit between group_count and the
+                                  * 4-aligned group_ptr[] below, so this byte spends
+                                  * padding rather than growing sizeof(RomCtx) — see
+                                  * the _Static_assert beside the struct's close brace. */
   uint32_t  group_ptr[ROM_MAX_GROUPS];   /* gMapGroups[i]                          */
   uint16_t  group_size[ROM_MAX_GROUPS];  /* derived from consecutive differences    */
   uint16_t  total_maps;
 } RomCtx;
+
+/* The padding argument above holds regardless of pointer width (both `read` and `ctx`
+ * are already aligned to their own size, so the fields between them and group_count
+ * shift together with no net change to the gap before group_ptr[]) — but pointer width
+ * itself differs: 4 bytes on the GBA target, 8 on every host build that compiles this
+ * header for tests/host_romident_test.c and friends. Measured on main before this
+ * lane (both values unchanged by adding `ident`): 352 on a 32-bit-pointer target, 368
+ * on a 64-bit-pointer host. */
+#if UINTPTR_MAX == 0xFFFFFFFFu
+_Static_assert(sizeof(RomCtx) == 352, "RomCtx grew on the 32-bit (GBA) target");
+#else
+_Static_assert(sizeof(RomCtx) == 368, "RomCtx grew on the 64-bit (host) target");
+#endif
 
 /* ---- structures, already byte-swapped and per-game-normalised --------------- */
 
@@ -185,11 +223,24 @@ typedef struct {
 /* ---- API ------------------------------------------------------------------- */
 
 /* Identify the ROM and fill *c (including the derived per-group map counts).
- * `size` is the file's byte length. Returns false and leaves kind = ROM_NONE for
- * anything not on the known-version list, or whose structure fails the sanity walk
- * (a ROM hack that relocated the tables, a truncated dump, a wrong-region build).
- * A false return must be reported to the user, never worked around. */
+ * `size` is the file's byte length. Returns false for anything but a retail build
+ * (`c->ident != ROM_ID_RETAIL`) — a ROM hack that relocated the tables, a truncated
+ * dump, a wrong-region build, or a structurally-intact hack the sanity walk cannot
+ * see (rule 1c downgrades that case from RETAIL to ROM_ID_HACK after the walk).
+ * `c->kind`/`c->ident` are set BEFORE every return, including the false ones, so a
+ * caller can still attribute a HACK verdict to the base game it impersonates — `kind`
+ * is no longer ROM_NONE on that path. A false return must be reported to the user,
+ * never worked around. */
 bool rom_open(RomCtx* c, RomReadFn read, void* ctx, uint32_t size);
+
+/* Pure classification, no I/O: given the 0xC0 header bytes rom_open() already read
+ * and the file size, which of the four RomIdent verdicts applies (decision 1 in
+ * BACKLOG #54's brief), and — for a pinned (code, version) match, retail or hack —
+ * which RomKind it impersonates. `*base_kind` is ROM_NONE for ROM_ID_NOT_GBA,
+ * ROM_ID_NOT_POKEMON, and the "unknown base" flavour of ROM_ID_HACK (rule 1d): a
+ * hack whose header doesn't even match a pinned code+version cannot be attributed to
+ * a specific game, and guessing one would risk locking a retail save of that game. */
+RomIdent rom_identify(const uint8_t hdr[0xC0], uint32_t size, RomKind* base_kind);
 
 /* Raw read at a ROM ADDRESS (0x08xxxxxx), bounds-checked against the file. */
 bool rom_read_at(const RomCtx* c, uint32_t addr, void* dst, uint32_t len);

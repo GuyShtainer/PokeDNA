@@ -46,6 +46,60 @@ static const RomVersion k_versions[] = {
 };
 #define K_NVERSIONS ((int)(sizeof k_versions / sizeof k_versions[0]))
 
+/* ---- ROM-hack detection (BACKLOG #54) --------------------------------------
+ * Retail internal title at 0xA0, exactly 12 chars, no padding — indexed by RomKind
+ * so it lives beside k_versions and cannot drift from it (decision 2). PER-GAME, not
+ * per-revision: FireRed r0 and r1 both ship "POKEMON FIRE", so one row covers both
+ * pinned rows in k_versions above. Measured on Guy's own corpus (one dump per game;
+ * the revision the title was READ FROM is noted, but the string is the same for
+ * every revision of that game):
+ *   POKEMON EMER — BPEE rev 0
+ *   POKEMON RUBY — AXVE rev 2
+ *   POKEMON SAPP — AXPE rev 1
+ *   POKEMON FIRE — BPRE rev 1
+ *   POKEMON LEAF — BPGE rev 0
+ * NO content hash, NO fingerprint window: a whole-ROM hash at boot is too slow, and a
+ * fixed-window CRC is wrong on correctness — six of the eleven pinned builds (AXVE
+ * r0/r1, AXPE r0/r2, BPRE r0, BPGE r1) are absent from the corpus, so their constants
+ * would be guessed, and a guessed constant misdetecting a retail ROM as a hack is the
+ * exact failure this table exists to prevent. Content-level identification (a
+ * per-hack SD profile) is BACKLOG #54's T2, deliberately out of scope here. */
+static const char* const k_retail_title[] = {
+  [ROM_NONE]      = 0,
+  [ROM_EMERALD]   = "POKEMON EMER",
+  [ROM_RUBY]      = "POKEMON RUBY",
+  [ROM_SAPPHIRE]  = "POKEMON SAPP",
+  [ROM_FIRERED]   = "POKEMON FIRE",
+  [ROM_LEAFGREEN] = "POKEMON LEAF",
+};
+
+/* Decision 1's five-way verdict, straight off the header rom_open() already reads —
+ * no extra I/O, no statics, no GBA/tonc/FatFs headers (host-testable in isolation:
+ * tests/host_romident_test.c calls this directly with synthetic headers). */
+RomIdent rom_identify(const uint8_t hdr[0xC0], uint32_t size, RomKind* base_kind) {
+  if (base_kind) *base_kind = ROM_NONE;
+  if (hdr[0xB2] != 0x96) return ROM_ID_NOT_GBA;              /* rule (a) */
+
+  char code[5];  memcpy(code, hdr + 0xAC, 4);  code[4]  = 0;
+  char title[13]; memcpy(title, hdr + 0xA0, 12); title[12] = 0;
+  uint8_t version = hdr[0xBC];
+
+  const RomVersion* v = 0;
+  for (int i = 0; i < K_NVERSIONS; i++)
+    if (memcmp(k_versions[i].code, code, 4) == 0 && k_versions[i].version == version) {
+      v = &k_versions[i]; break;
+    }
+
+  if (v) {
+    if (base_kind) *base_kind = v->kind;
+    bool title_ok = memcmp(title, k_retail_title[v->kind], 12) == 0;
+    if (size == 16u * 1024u * 1024u && title_ok) return ROM_ID_RETAIL;   /* rule (b) */
+    return ROM_ID_HACK;                                                 /* rule (c) */
+  }
+  if (memcmp(title, "POKEMON", 7) == 0) return ROM_ID_HACK;             /* rule (d), base unknown */
+  return ROM_ID_NOT_POKEMON;                                            /* rule (e) */
+}
+
 static const RomFmt k_fmt_rse  = { 24, 0x10, 0x14, 2, 512, 512, 6, 0 };
 static const RomFmt k_fmt_frlg = { 28, 0x14, 0x10, 4, 640, 640, 7, 1 };
 
