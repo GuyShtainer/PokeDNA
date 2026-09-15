@@ -1166,6 +1166,56 @@ static int  g_nparty = 0;
 static bool g_frlg = false, g_have_pc = false;
 static PkGame g_game = PK_EMERALD;
 
+/* ---- ROM-hack session verdict (BACKLOG #54, T0/T1) --------------------------
+ * One bit per PkGame slot (PK_RS/PK_EMERALD/PK_FRLG — the save-side granularity;
+ * RomKind's Ruby/Sapphire and FireRed/LeafGreen pairs both collapse into one slot
+ * each, same as app_rom_path_set()'s existing per-slot registration). Set when a
+ * Gen-3 ROM opened THIS SESSION classifies as ROM_ID_HACK with a known base kind;
+ * cleared when one classifies as ROM_ID_RETAIL for that same slot. An unknown-kind
+ * hack (rule 1d, RomKind ROM_NONE) touches no bit at all -- it cannot be attributed
+ * to a game, and guessing would lock a retail save of that game (decision 4). The
+ * ROM is the only signal that can ever set or clear this: a save carries no game
+ * identifier (Gen3SaveInfo has no field for one), so it can neither raise nor clear
+ * a verdict here. Only 1 byte, only static in this lane. */
+static uint8_t s_hack_mask;
+
+static PkGame pkgame_of_romkind(RomKind k) {
+  return (k == ROM_RUBY || k == ROM_SAPPHIRE) ? PK_RS
+       : (k == ROM_FIRERED || k == ROM_LEAFGREEN) ? PK_FRLG : PK_EMERALD;
+}
+
+bool app_rom_is_hack(PkGame g) { return (s_hack_mask & (1u << (unsigned)g)) != 0; }
+
+static const char* romident_name(RomIdent id) {
+  switch (id) {
+    case ROM_ID_RETAIL:      return "RETAIL";
+    case ROM_ID_HACK:        return "HACK";
+    case ROM_ID_NOT_POKEMON: return "NOT_POKEMON";
+    default:                 return "NOT_GBA";
+  }
+}
+
+/* Called at every one of the three places a Gen-3 ROM handle gets opened
+ * (app_register_rom, app_icon_rom_open's fused open, its SD candidate loop) --
+ * whether rom_open() returned true or false. `rc` must already carry the verdict
+ * rom_open() sets before every return (rc->ident, rc->kind). `where` is a short tag
+ * for the log line only. */
+static void app_rom_note_verdict(const RomCtx* rc, const char* where) {
+  if (!rc) return;
+  if (rc->ident == ROM_ID_HACK && rc->kind != ROM_NONE) {
+    PkGame g = pkgame_of_romkind(rc->kind);
+    s_hack_mask |= (uint8_t)(1u << (unsigned)g);
+    log_line("romhack: %s -> HACK impersonating %s (read-only until verified)",
+             where, rom_kind_name(rc->kind));
+  } else if (rc->ident == ROM_ID_RETAIL) {
+    PkGame g = pkgame_of_romkind(rc->kind);
+    s_hack_mask &= (uint8_t)~(1u << (unsigned)g);
+    log_line("romhack: %s -> RETAIL %s", where, rom_kind_name(rc->kind));
+  } else {
+    log_line("romhack: %s -> %s", where, romident_name(rc->ident));
+  }
+}
+
 /* BACKLOG #114: narrow accessor for pdna_yard.c's dc_seed() (moved out of this file) --
  * see pdna_app.h's own comment on why this is the one field exposed, not g_vinfo itself. */
 uint16_t app_tid_public(void) { return g_vinfo.tid_public; }
@@ -2544,7 +2594,13 @@ static void app_icon_rom_open(void) {
     return;
   }
   uint32_t fsz = 0;
-  if (fused_rom_present(&fsz) && rom_open(&s_iconrom_ctx, fused_rom_read, 0, fsz)) {
+  bool fused_present = fused_rom_present(&fsz);
+  bool fused_ok = fused_present && rom_open(&s_iconrom_ctx, fused_rom_read, 0, fsz);
+  /* Note the verdict whether or not rom_open() succeeded -- a HACK impersonating a
+   * retail game must set s_hack_mask even though the branch below never runs for it
+   * (rom_open() only ever returns true for ROM_ID_RETAIL). */
+  if (fused_present) app_rom_note_verdict(&s_iconrom_ctx, "fused");
+  if (fused_ok) {
     /* rom_chrome_open() does NOT need the GF header rom_mon_open() below checks
      * (Ruby/Sapphire have none) -- it is called unconditionally on every
      * successful rom_open() so a Ruby cart's card rung is reachable at all,
@@ -2642,7 +2698,13 @@ static void app_icon_rom_open(void) {
     s_iconrom_fil_open = true;
     fastseek_arm(&s_iconrom_fil, s_iconrom_clmt, sizeof s_iconrom_clmt / sizeof s_iconrom_clmt[0], "rom");
     uint32_t sz = (uint32_t)f_size(&s_iconrom_fil);
-    if (rom_open(&s_iconrom_ctx, iconrom_fatfs_read, 0, sz)) {
+    bool sd_ok = rom_open(&s_iconrom_ctx, iconrom_fatfs_read, 0, sz);
+    /* Each of up to three candidates gets its own verdict, attributed to the kind
+     * actually classified -- NOT necessarily order[i]'s intended slot, a hacked
+     * FireRed found while looking for Emerald icons must still flag PK_FRLG, not
+     * whatever this loop iteration was hoping to find (fallback-order trap). */
+    app_rom_note_verdict(&s_iconrom_ctx, "sd");
+    if (sd_ok) {
       /* Same reasoning as the fused branch above: rom_chrome_open() does not need
        * the GF header, so it runs on every successful rom_open() -- reaching Ruby,
        * which rom_mon_open() below always refuses (no GF header). */
@@ -2834,7 +2896,9 @@ static void app_register_rom(void) {
   fastseek_arm(&s_iconrom_fil, s_iconrom_clmt, sizeof s_iconrom_clmt / sizeof s_iconrom_clmt[0], "rom");
   uint32_t sz = (uint32_t)f_size(&s_iconrom_fil);
   RomCtx rc;
-  if (!rom_open(&rc, iconrom_fatfs_read, 0, sz)) {
+  bool reg_ok = rom_open(&rc, iconrom_fatfs_read, 0, sz);
+  app_rom_note_verdict(&rc, "register");   /* fires whether or not rom_open() accepted it */
+  if (!reg_ok) {
     f_close(&s_iconrom_fil); s_iconrom_fil_open = false;
     msg_wait("NOT A POKEMON ROM", UI_WARN, "Retail R/S/E/FR/LG only.", 0);
     return;
