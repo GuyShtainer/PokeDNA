@@ -1,22 +1,14 @@
-/* Host test for pdna_bank.c's box_save() backup + SF_ERR_RENAME triage (BACKLOG #150
- * S150-0). pdna_bank.c itself is not host-linkable (it includes <tonc.h> and "ui.h"), so
- * this drives the REAL savefile.c primitives over the REAL lib/fatfs on a RAM disk
- * (tests/hostfat), through a copy of box_save's exact decision table:
- *
- *   test_box_backup(path):
- *     f_stat(path) absent  -> nothing to back up, return true (a box file exists only
- *                             after its first save, pdna_bank.c box_load :98-109)
- *     f_stat(path) present -> sf_backup_rolling(path); false on any SF error
- *
- *   test_box_save(path, buf, len):
- *     !test_box_backup(path)             -> refuse, nothing written
- *     sf_write_verified() == SF_ERR_RENAME -> ask sf_where_are_the_bytes(); TARGET counts
- *                                             as success (the bytes landed), else refuse
- *     otherwise                           -> SF_OK is success
- *
- * This is deliberately the SAME shape box_save() gets in pdna_bank.c: if that file ever
- * changes to something host-linkable, this test's two helpers should be replaced by a
- * direct call into it (see the brief's step 3).
+/* Host test for savefile.c's sf_save_rolling(), the function box_save() (pdna_bank.c)
+ * calls for its backup + write (BACKLOG #150 S150-0 review F3). pdna_bank.c itself is
+ * not host-linkable (it includes <tonc.h> and "ui.h"), but sf_save_rolling is a plain
+ * savefile.c primitive with no such dependency, so this links and calls the REAL
+ * function over the REAL lib/fatfs on a RAM disk (tests/hostfat) -- earlier revisions
+ * of this test re-typed box_save's decision table by hand, which passed even with the
+ * whole fix reverted (F3's finding: zero mutations bitten). `save_ok()` below is only
+ * the thin SF_ERR_RENAME/SF_WHERE_TARGET wrapper box_save itself still owns (savefile.h
+ * says sf_save_rolling does not decide that on its own) -- everything else under test
+ * (the f_stat-absent-is-fine guard, the backup gate, the write) is sf_save_rolling's
+ * own code, unmodified.
  *
  *   cc -std=c11 -DFF_USE_MKFS=1 -Dsiprintf=sprintf -Dsniprintf=snprintf -Dvsniprintf=vsnprintf -I tests/hostfat -I lib/fatfs -I source \
  *      tests/host_bankbackup_test.c source/savefile.c source/log.c lib/fatfs/ff.c \
@@ -86,18 +78,11 @@ static int holds(const char* path, const unsigned char* want, unsigned n) {
 
 static int exists(const char* path) { FILINFO fi; return f_stat(path, &fi) == FR_OK; }
 
-/* ---- the decision table under test (mirrors box_save's planned shape exactly) ---- */
+/* ---- box_save's own remaining triage: what it does with sf_save_rolling's result.
+ * sf_save_rolling itself is the real thing under test below, not re-typed. ---- */
 
-static bool test_box_backup(const char* path) {
-  FILINFO fi;
-  if (f_stat(path, &fi) != FR_OK) return true;      /* absent = nothing to back up */
-  char bak[SF_PATH_MAX];
-  return sf_backup_rolling(path, bak, sizeof bak) == SF_OK;
-}
-
-static bool test_box_save(const char* path, const uint8_t* buf, uint32_t len) {
-  if (!test_box_backup(path)) return false;
-  SfStatus st = sf_write_verified(path, buf, len);
+static bool save_ok(const char* path, const uint8_t* buf, uint32_t len) {
+  SfStatus st = sf_save_rolling(path, buf, len);
   if (st == SF_ERR_RENAME)
     return sf_where_are_the_bytes(path, buf, len) == SF_WHERE_TARGET;
   return st == SF_OK;
@@ -111,7 +96,7 @@ static void t_virgin_box_first_write(void) {
   fresh_card(4096);
   fill(s_new, BOX_BYTES, 1);
   CHECK(!exists(BOX), "virgin: setup left a box file behind");
-  CHECK(test_box_save(BOX, s_new, BOX_BYTES), "virgin: first write into a never-used box refused");
+  CHECK(save_ok(BOX, s_new, BOX_BYTES), "virgin: first write into a never-used box refused");
   remount();
   CHECK(holds(BOX, s_new, BOX_BYTES), "virgin: the card does not hold the new box");
   CHECK(!exists(BAK), "virgin: a .bak appeared for a box that never existed");
@@ -123,7 +108,7 @@ static void t_present_box_backs_up(void) {
   fill(s_old, BOX_BYTES, 2);
   fill(s_new, BOX_BYTES, 3);
   CHECK(write_raw(BOX, s_old, BOX_BYTES), "present: could not create the original box");
-  CHECK(test_box_save(BOX, s_new, BOX_BYTES), "present: save refused on a healthy card");
+  CHECK(save_ok(BOX, s_new, BOX_BYTES), "present: save refused on a healthy card");
   remount();
   CHECK(holds(BOX, s_new, BOX_BYTES), "present: the card does not hold the new box");
   CHECK(holds(BAK, s_old, BOX_BYTES), "present: box.bak does not hold the pre-save bytes");
@@ -137,7 +122,7 @@ static void t_backup_failure_refuses(void) {
   fill(s_new, BOX_BYTES, 5);
   CHECK(write_raw(BOX, s_old, BOX_BYTES), "backupfail: could not create the original box");
   rd_fail_all_writes = 1;                 /* copy_file's write into box.baktmp is refused */
-  bool ok = test_box_save(BOX, s_new, BOX_BYTES);
+  bool ok = save_ok(BOX, s_new, BOX_BYTES);
   rd_fail_all_writes = 0;
   CHECK(!ok, "backupfail: box_save reported success while the backup failed");
   remount();

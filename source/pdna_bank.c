@@ -125,38 +125,15 @@ static bool box_load(int box) {
  * f_open(FA_READ) on a missing source returns SF_ERR_OPEN -> SF_ERR_BACKUP, and box_save
  * would refuse that first write forever. f_stat absent is the "nothing to back up, carry
  * on" case, not a failure. */
-static bool __attribute__((noinline)) box_backup(const char* path) {
-  /* f_stat's error is not one bit: FR_NO_FILE/FR_NO_PATH really do mean "never
-   * written" (the guard this helper exists for), but FR_DISK_ERR/FR_NOT_READY/
-   * FR_TIMEOUT/FR_INT_ERR mean the card would not even ANSWER -- treating those the
-   * same as absent would skip the backup of a box that is very much PRESENT and
-   * overwrite it unbacked on a transient fault (reproduced on hostfat: one read
-   * error made this report "never written" on a present box, wiping it with no
-   * .bak). fno=NULL is supported (ff.c:4818) and drops ~290 B of FILINFO's LFN
-   * buffer from this frame. */
-  FRESULT fr = f_stat(path, 0);
-  if (fr == FR_NO_FILE || fr == FR_NO_PATH) return true;   /* never written -- nothing to back up */
-  if (fr != FR_OK) {
-    log_line("bank: box stat failed (fr=%d) - refusing to write unbacked", (int)fr);
-    return false;
-  }
-  char bak[SF_PATH_MAX];
-  rmbl_pause();
-  SfStatus bst = sf_backup_rolling(path, bak, sizeof bak);
-  rmbl_resume();
-  if (bst != SF_OK) {
-    log_line("bank: box backup failed (%s)", sf_status_str(bst));
-    return false;
-  }
-  return true;
-}
-
 static bool box_save(void) {                    /* write the loaded box's records */
   if (g_loaded < 0) return false;
   char path[SF_PATH_MAX]; box_path(g_loaded, path);
-  if (!box_backup(path)) return false;
+  /* sf_save_rolling (savefile.c) owns the f_stat-absent-is-fine guard, the rolling
+   * backup and the verified write -- host-linkable, so host_bankbackup_test.c tests
+   * THIS function directly instead of a re-typed copy of its decision table
+   * (BACKLOG #150 S150-0 review F3). */
   rmbl_pause();
-  SfStatus st = sf_write_verified(path, box_recs(), BOX_BYTES);
+  SfStatus st = sf_save_rolling(path, box_recs(), BOX_BYTES);
   rmbl_resume();
   if (st == SF_ERR_RENAME) {
     /* The bytes were written AND read back byte-for-byte -- it is the final swap the
