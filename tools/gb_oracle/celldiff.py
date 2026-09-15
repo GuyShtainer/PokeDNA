@@ -16,10 +16,10 @@ THREE independent modes, all sharing the same by-CELL-POSITION diff idea:
       ACCEPTED_DEVIATIONS tables below), not just counted.
 
   --selftest   proves the comparator itself is not a dead stub: builds two
-      SYNTHETIC 20x18 grids that agree everywhere except ONE cell whose
-      (row, col) is chosen by this run (so a hardcoded lucky guess can never
-      pass), runs diff_grids(), and FAILS unless the reported mismatch set
-      is EXACTLY that one cell. Needs no ROM, no save, no mGBA -- CI-safe,
+      SYNTHETIC 20x18 grids that agree everywhere except ONE cell -- the
+      grid's LAST cell (row 17, col 19), so an off-by-one on either axis or
+      a dropped last row/column is caught -- runs diff_grids(), and FAILS
+      unless the reported mismatch set is EXACTLY that one cell. Needs no ROM, no save, no mGBA -- CI-safe,
       registered in tests/run_host_tests.py's PY_TESTS.
 
   --demo   an end-to-end REAL run over two screens (BACKLOG #97's own ask):
@@ -185,7 +185,7 @@ def run(tag, harness, real_json, sav, top, sel, blink=None):
 # EXACTLY it. The chosen cell moves with argv (see main()) so a hardcoded
 # lucky match can't silently pass.
 # ---------------------------------------------------------------------------
-def selftest(bad_row=7, bad_col=13):
+def selftest(bad_row=17, bad_col=19):
     real = [[0x7F for _ in range(20)] for _ in range(18)]
     mine = [[0x7F for _ in range(20)] for _ in range(18)]
     mine[bad_row][bad_col] = 0x01          # the one deliberate defect
