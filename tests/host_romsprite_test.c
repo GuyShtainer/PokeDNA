@@ -72,6 +72,14 @@ typedef struct {
   uint32_t hit_pos;
   uint8_t  hit_call_xor;  /* 0 (the memset default) means "use 0xFF", the value
                            * every pre-BACKLOG#144 case relied on implicitly */
+  /* BACKLOG #165 cases (e)/(f): decode_verified's own-header retry needs MORE
+   * than one physical read corrupted within the SAME rom_sprite_pic() call --
+   * attempt 0's header AND attempt 1's header (case e), or all three attempts'
+   * headers (case f). Two more independent single-shot slots, same fire-once
+   * semantics as hit_call/hit_pos/hit_call_xor above. */
+  long     hit_call_b, hit_call_c;
+  uint32_t hit_pos_b,  hit_pos_c;
+  uint8_t  hit_call_xor_b, hit_call_xor_c;
   /* the same trick one level up: make a TABLE ENTRY read return a different (but
    * perfectly valid) neighbouring row on alternate reads. A garbled pointer that
    * still lands on a real sprite decodes identically every time, so only a
@@ -96,6 +104,16 @@ static bool file_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
     ((uint8_t*)dst)[fc->hit_pos] ^= fc->hit_call_xor ? fc->hit_call_xor : 0xFF;
     fc->hit_call = 0;      /* fires exactly once */
     fc->hit_call_xor = 0;  /* back to the 0xFF default for the next case */
+  }
+  if (fc->hit_call_b && fc->calls == fc->hit_call_b && fc->hit_pos_b < len) {
+    ((uint8_t*)dst)[fc->hit_pos_b] ^= fc->hit_call_xor_b ? fc->hit_call_xor_b : 0xFF;
+    fc->hit_call_b = 0;
+    fc->hit_call_xor_b = 0;
+  }
+  if (fc->hit_call_c && fc->calls == fc->hit_call_c && fc->hit_pos_c < len) {
+    ((uint8_t*)dst)[fc->hit_pos_c] ^= fc->hit_call_xor_c ? fc->hit_call_xor_c : 0xFF;
+    fc->hit_call_c = 0;
+    fc->hit_call_xor_c = 0;
   }
   return true;
 }
@@ -361,7 +379,9 @@ static void run_rom(const char* path, const char* name, int expect_header) {
     /* (a) corrupt the DECODE's own compressed-input read (call base+5).
      * A retry must recover the exact clean pixels. */
     long base = fc.calls;
-    fc.hit_call = base + 5; fc.hit_pos = 1;
+    fc.hit_call = base + 5; fc.hit_pos = 1; fc.hit_call_xor = 0;  /* reset at the arm
+      site (BACKLOG #165): an armed-but-never-fired xor from an earlier case must not
+      leak into this one -- do not rely solely on the fire branch's own reset */
     uint8_t dirty_dec[ROM_SPRITE_BUF_BYTES]; RomSpritePic id;
     int ok_dec = rom_sprite_pic(&rs, ROM_SPRITE_FRONT, 1, 0, dirty_dec, sizeof dirty_dec, &id);
     chk(name, "a decode-phase read corruption still yields the clean pixels (a retry recovers)",
@@ -375,7 +395,7 @@ static void run_rom(const char* path, const char* name, int expect_header) {
      * the table entry once (not twice), so the body chunk is call base+4. */
     RomSprite nv = rs; rom_sprite_set_verify(&nv, 0);
     base = fc.calls;
-    fc.hit_call = base + 4; fc.hit_pos = 1;
+    fc.hit_call = base + 4; fc.hit_pos = 1; fc.hit_call_xor = 0;
     uint8_t dirty_nv[ROM_SPRITE_BUF_BYTES]; RomSpritePic idn;
     int ok_nv = rom_sprite_pic(&nv, ROM_SPRITE_FRONT, 1, 0, dirty_nv, sizeof dirty_nv, &idn);
     chk(name, "with verification OFF the same corrupted decode sails through unfixed "
@@ -388,7 +408,7 @@ static void run_rom(const char* path, const char* name, int expect_header) {
      * attempt: prove a retry happened (more calls than one clean attempt
      * costs), and that the final, accepted pixels are still the clean ones. */
     base = fc.calls;
-    fc.hit_call = base + 6; fc.hit_pos = 1;
+    fc.hit_call = base + 6; fc.hit_pos = 1; fc.hit_call_xor = 0;
     uint8_t dirty_rr[ROM_SPRITE_BUF_BYTES]; RomSpritePic ir;
     int ok_rr = rom_sprite_pic(&rs, ROM_SPRITE_FRONT, 1, 0, dirty_rr, sizeof dirty_rr, &ir);
     chk(name, "a re-read-phase corruption is not silently accepted (a retry happened)",
@@ -437,7 +457,58 @@ static void run_rom(const char* path, const char* name, int expect_header) {
     chk(name, "the size-peek disagreement cost a retry (the fallback actually ran)",
         (fc.calls - base) > 6);
 
-    fc.hit_call = 0;
+    /* (d) BACKLOG #165: corrupt decode_verified's OWN header read on attempt 0
+     * (call base+4, hit_pos 0, default xor 0xFF: the LZ10 type byte 0x10 ->
+     * 0xEF, so lz77_run's own `h[0] != 0x10` check bails after exactly that
+     * one read -- attempt 0 spends only this single call). Before this lane's
+     * fix, `if (!n) return 0;` on attempt 0 was terminal: a transient bad read
+     * of the decode's OWN header (not the separate size-peek case (c) covers)
+     * spent the whole 3-attempt budget on nothing and the sprite went missing.
+     * The fix retries with the fixed fallback window: attempt 1 re-reads a
+     * clean header (the hit already fired once) and decodes normally. */
+    base = fc.calls;
+    fc.hit_call = base + 4; fc.hit_pos = 0; fc.hit_call_xor = 0xFF;
+    uint8_t dirty_h0[ROM_SPRITE_BUF_BYTES]; RomSpritePic ih0;
+    int ok_h0 = rom_sprite_pic(&rs, ROM_SPRITE_FRONT, 1, 0, dirty_h0, sizeof dirty_h0, &ih0);
+    chk(name, "BACKLOG#165: a bad read of decode_verified's OWN header on attempt 0 "
+              "RECOVERS the clean pixels via the attempt-1 retry",
+        ok_h0 && ih0.bytes == ic.bytes && memcmp(dirty_h0, clean, ic.bytes) == 0);
+    chk(name, "the own-header corruption on attempt 0 cost a retry (the fallback ran)",
+        (fc.calls - base) > 6);
+
+    /* (e) the same corruption on BOTH attempt 0 and attempt 1's own header
+     * reads (call base+4, then call base+5 -- attempt 1's header read is the
+     * very next call, since a header-corrupted attempt bails after exactly
+     * one read). Attempt 2 gets a clean header (both hits already fired) and
+     * must still recover the exact clean pixels. */
+    base = fc.calls;
+    fc.hit_call = base + 4; fc.hit_pos = 0; fc.hit_call_xor = 0xFF;
+    fc.hit_call_b = base + 5; fc.hit_pos_b = 0; fc.hit_call_xor_b = 0xFF;
+    uint8_t dirty_h01[ROM_SPRITE_BUF_BYTES]; RomSpritePic ih01;
+    int ok_h01 = rom_sprite_pic(&rs, ROM_SPRITE_FRONT, 1, 0, dirty_h01, sizeof dirty_h01, &ih01);
+    chk(name, "BACKLOG#165: own-header corruption on attempts 0 AND 1 still RECOVERS "
+              "the clean pixels on attempt 2",
+        ok_h01 && ih01.bytes == ic.bytes && memcmp(dirty_h01, clean, ic.bytes) == 0);
+    chk(name, "corrupting two attempts' own header reads cost two retries",
+        (fc.calls - base) > 7);
+
+    /* (f) all three attempts' own header reads corrupted (calls base+4,
+     * base+5, base+6): the 3-attempt budget is genuinely exhausted, so this
+     * MUST be refused -- never a silently accepted wrong picture. */
+    base = fc.calls;
+    fc.hit_call = base + 4; fc.hit_pos = 0; fc.hit_call_xor = 0xFF;
+    fc.hit_call_b = base + 5; fc.hit_pos_b = 0; fc.hit_call_xor_b = 0xFF;
+    fc.hit_call_c = base + 6; fc.hit_pos_c = 0; fc.hit_call_xor_c = 0xFF;
+    uint8_t dirty_h012[ROM_SPRITE_BUF_BYTES]; RomSpritePic ih012;
+    memset(dirty_h012, 0xAA, sizeof dirty_h012);   /* poison: prove a refusal never writes pixels */
+    int ok_h012 = rom_sprite_pic(&rs, ROM_SPRITE_FRONT, 1, 0, dirty_h012, sizeof dirty_h012, &ih012);
+    chk(name, "BACKLOG#165: own-header corruption on all three attempts is REFUSED, "
+              "never dirty",
+        ok_h012 == 0);
+    chk(name, "a refused decode never wrote clean-looking pixels into the caller's buffer",
+        memcmp(dirty_h012, clean, ic.bytes) != 0);
+
+    fc.hit_call = 0; fc.hit_call_b = 0; fc.hit_call_c = 0;
   }
 
   /* 6c) the same hazard one level up: the 8-byte TABLE ENTRY read itself. */
