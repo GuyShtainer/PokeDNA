@@ -144,8 +144,19 @@ static bool box_save(void) {                    /* write the loaded box's record
   char path[SF_PATH_MAX]; box_path(g_loaded, path);
   if (!box_backup(path)) return false;
   rmbl_pause();
-  bool ok = sf_write_verified(path, box_recs(), BOX_BYTES) == SF_OK;
+  SfStatus st = sf_write_verified(path, box_recs(), BOX_BYTES);
   rmbl_resume();
+  if (st == SF_ERR_RENAME) {
+    /* The bytes were written AND read back byte-for-byte -- it is the final swap the
+     * card did not keep, a different piece of news from "the write failed". Ask the
+     * card which file the user is actually holding rather than guessing, same triage
+     * as gb_persist (pdna_gen12.c) and app_commit (pdna_main.c). */
+    SfWhere w = sf_where_are_the_bytes(path, box_recs(), BOX_BYTES);
+    log_line("bank: box save rename unconfirmed, bytes at %d", (int)w);
+    if (w != SF_WHERE_TARGET) return false;   /* anything else: a real failure */
+    st = SF_OK;                               /* the bytes ARE at path -- this is a success */
+  }
+  bool ok = st == SF_OK;
   if (ok) g_dirty = false;
   return ok;
 }
