@@ -2204,6 +2204,22 @@ static void box_options_menu(BoxSource* src, int box) {
         }
         return;
       } else if (sel == 1) {                       /* wallpaper */
+        /* D3 (review-opus, BACKLOG #93): gbsrc_set_wp is a documented no-op (GB
+         * boxes have no wallpaper byte), so wallpaper_pick's own choice used to
+         * vanish silently on a GB box (now reachable via can_boxops). `can_boxops
+         * != NULL` alone is the simplest test that is true EXACTLY for the GB
+         * source: no BoxSource field for "has wallpaper" exists (and adding one
+         * would shift every hand-verified offset in tools/stack_edges.txt for no
+         * real gain, same reasoning can_rename's own comment gives) -- can_boxops
+         * is set ONLY by pdna_gen12_source() today (grepped), so this reads
+         * exactly as "the GB source", not a coincidence. PC/Bank (can_boxops NULL)
+         * are unaffected -- byte-identical to before this check existed. */
+        if (src->can_boxops) {
+          snd_deny();
+          msg_wait("NO WALLPAPER", UI_WARN, "Game Boy boxes have no",
+                   "wallpaper to change.");
+          return;
+        }
         int wp = wallpaper_pick(src, src->get_wp(box));
         if (wp >= 0) {
           if (src->is_bank || wp < G3_BOX_WALLPAPER_FRIENDS) {  /* standard wallpaper */
