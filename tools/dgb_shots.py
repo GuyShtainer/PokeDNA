@@ -4134,6 +4134,113 @@ def run_s150_14_native_edit(core_mod, image_mod, rom: Path, out_dir: Path) -> gb
     return s
 
 
+def run_s150_4_uplift(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #150 S150-4/5 follow-up (lane s150-4-5b): the UP-lift gesture end to
+    end on `make delta-gb`'s own combined image (Emerald.sav + Red/Gold/Crystal) --
+    boot picker -> Gold's box grid -> CM_MOVE grab -> carry UP into the Bank
+    (gb_bank_visit) -> drop attempt on an empty cell -> back out -> VIEW/EDIT on an
+    already-native cell.
+
+    FIX THIS CHAIN DEPENDS ON (BACKLOG #171, this lane): pdna_box.c's carrying-block
+    KEY_UP handler at row 0 used to gate tab-focus entry on `!src->is_bank` alone -- a
+    GB source is ALWAYS is_bank=true AND bank_edge=true (pdna_gen12_source()), so that
+    one site silently swallowed every UP press while holding, and the carry could
+    never reach the tabs or the Bank. Fixed to `!src->is_bank || src->bank_edge`, the
+    same form its two siblings already used. Verified live in mGBA (this lane's own
+    per-tap trace, BEFORE the fix): every frame after an UP tap was byte-identical to
+    the one before it, four taps in a row.
+
+    THE ORIGIN PROMPT (Gold vs Silver) DOES NOT APPEAR ON THIS VEHICLE -- verified by
+    frame-stepping across the whole Bank-hop tap (60+ emulated frames, no picker frame
+    ever drawn): gb_origin_for_save()'s own `existed` short-circuit
+    (xr_path_for_name -> f_stat) resolves true against mGBA's disk-less FatFs stub on
+    this build, skipping the picker instead of falling through to it. This is a
+    delta/mGBA SD-read quirk, unrelated to the BACKLOG #171 fix (a pure key-dispatch
+    change) -- the origin prompt itself is HARDWARE-ONLY here (XFER-UP1), not faked.
+
+    THE DELTA VEHICLE CANNOT PERSIST THE BANK WRITE -- box_save() has no PDNA_DELTA
+    branch (same precedent as run_s150_14_native_edit's own docstring above): the drop
+    onto an empty Bank cell reaches pdna_bank_prepare_native()'s own backup gate,
+    which fails (no SD card to back the Bank up to), and drop_held's decision-1
+    ordering means a failed Bank write ROLLS BACK and KEEPS HOLDING -- "COULD NOT
+    PREPARE / The Bank backup failed. / Nothing was moved." -- never a loss, never a
+    corrupted cell, proven live. A B-cancel afterward returns the mon to its GB
+    origin cleanly.
+
+    THE LANDED-CELL VIEW/EDIT step is therefore demonstrated on one of
+    source/bank_plant.c's own PDNA_DELTA-only planted cells (box0 slot 0, the
+    CHIKORITA plant S150-2/S150-3/S150-14 already use) rather than a freshly-dropped
+    one, for the same reason S150-14's own last shot proves the rollback and not a
+    real write: there is no way to make a NEW native cell persist on this vehicle.
+
+    NOT in this chain: the Gen-1 last-party-mon (party-floor) refusal. Guy's own
+    Red.sav (the corpus `make delta-gb` fuses) carries a FULL 6/6 party -- lifting any
+    one of six never crosses the party floor, so the refusal is not reachable with
+    this exact corpus without save surgery this lane does not perform. Left for real
+    hardware (or a purpose-built 1-mon-party fixture), not faked here."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s150_4_")
+    print("== BACKLOG #150 S150-4/5 follow-up: the UP-lift gesture, post-BACKLOG #171 ==")
+    boot_to_gb_session(s, rom, which="gold")
+    s.shot("00_gold_box_grid", "s150-4: Gold's box grid, freshly entered -- cursor on "
+           "slot 0 (No.1 BULBASAUR), footer 'A menu  SEL  L/R  B'")
+
+    s.tap("SEL", settle=100)
+    s.shot("01_cm_move", "s150-4: SELECT cycled the cursor mode to MOVE (a GB grid "
+           "cycles NORMAL<->MOVE only, decision 8(b)) -- footer 'MOVE  A grab  hold=set'")
+
+    s.tap("A", settle=100)
+    s.shot("02_grabbed", "s150-4: A grabbed slot 0 -- begin_select's single-tap path "
+           "ran start_carry() -> BoxXferOps.lift_up (gb_lift_up_hook): the record "
+           "packed into an 80-byte native cell, footer 'A drop  B cancel'")
+
+    s.tap("UP", settle=100)
+    s.shot("03_tab_focus", "s150-4/BACKLOG #171: UP from row 0 while holding now "
+           "enters tab focus (footer 'L/R tab  A pick  DN') -- BEFORE the #171 fix "
+           "this tap did nothing at all, every frame pixel-identical to 02")
+
+    s.tap("UP", settle=150)
+    s.shot("04_bank_hop", "s150-4: a second UP -- src->bank_edge lets a GB source hop "
+           "past the tabs (pdna_box.c's `!src->is_bank || src->bank_edge` check) -- "
+           "gb_bank_visit() opens the Bank ('1:BANK 1 5/30', box0's own PDNA_DELTA "
+           "plant), still carrying the Bulbasaur")
+
+    s.press_n("RIGHT", 5, settle=100)
+    s.shot("05_empty_cell", "s150-4: cursor moved onto an empty Bank cell (left panel "
+           "'(empty)') -- footer still 'A drop  B cancel'")
+
+    s.tap("A", settle=200)
+    s.shot("06_backup_failed", "s150-4: A drops -- drop_held's decision-1 ordering "
+           "calls pdna_bank_prepare_native() BEFORE any write; it fails (no SD card "
+           "on this delta vehicle) -- 'COULD NOT PREPARE / The Bank backup failed. / "
+           "Nothing was moved.' -- THE DELTA VEHICLE CANNOT PERSIST THE BANK WRITE, "
+           "exactly here; the carry is untouched (still holding), nothing lost")
+
+    s.tap("A", settle=150)
+    s.shot("07_still_holding", "s150-4: A dismissed the dialog -- still carrying the "
+           "same mon (footer 'A drop  B cancel'), the failed write rolled back cleanly")
+
+    s.tap("B", settle=200)
+    s.shot("08_cancelled", "s150-4: B cancels the carry -- the origin (GB box/party) "
+           "keeps it, footer back to plain 'A menu  SEL  L/R  B'")
+
+    s.press_n("UP", 4, settle=100)
+    s.press_n("LEFT", 3, settle=100)
+    s.shot("09_on_native_plant", "s150-4: navigated back onto box0 slot 0's own "
+           "PDNA_DELTA plant (No.152 CHIKORITA Lv12) -- a pre-existing native cell, "
+           "since this vehicle cannot produce a freshly-landed one of its own "
+           "(box_save has no PDNA_DELTA branch, same as run_s150_14_native_edit)")
+
+    s.tap("A", settle=150)
+    s.shot("10_native_whitelist", "s150-4: A opens decision 7's native WHITELIST -- "
+           "VIEW/EDIT, MOVE, RELEASE, CANCEL, cursor defaults to row 0")
+
+    s.tap("A", settle=200)
+    s.shot("11_view_edit", "s150-4: VIEW/EDIT opens the REAL Gen-1/2 summary "
+           "(gb_native_summary_open) -- GB2 chip, INFO card, footer 'e edit  U/D mon  "
+           "L/R  B' -- not a Gen-3-converted copy")
+    return s
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -4345,6 +4452,18 @@ def main(argv=None) -> int:
                           "no PDNA_DELTA branch in box_save(), so this proves decision "
                           "7's rollback, not a real write -- see the run function's own "
                           "docstring).")
+    ap.add_argument("--s150-4", action="store_true",
+                     help="BACKLOG #150 S150-4/5 follow-up (lane s150-4-5b, BACKLOG "
+                          "#171): only run_s150_4_uplift() against --image -- --image "
+                          "MUST be `make delta-gb`'s own combined image (Emerald.sav + "
+                          "Red/Gold/Crystal). The UP-lift gesture end to end: CM_MOVE "
+                          "grab, UP into tab focus (BACKLOG #171's own fix), a second "
+                          "UP hops into the Bank, a drop attempt on an empty cell (the "
+                          "delta vehicle cannot persist it -- see the run function's "
+                          "own docstring for exactly where that shows), and VIEW/EDIT "
+                          "on an already-native planted cell. The origin prompt and "
+                          "the Gen-1 last-party-mon refusal are NOT reachable on this "
+                          "vehicle/corpus -- also explained in the docstring, not faked.")
     ap.add_argument("--b54-romhack", choices=("hack", "control"),
                      help="BACKLOG #54: only run_b54_romhack() against --image for the "
                           "named case -- the ROM-hack banner + the mon-menu refusal it "
@@ -4940,6 +5059,22 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] s150-14: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if getattr(a, "s150_4", False):
+        # BACKLOG #150 S150-4/5 follow-up (lane s150-4-5b, BACKLOG #171): same
+        # append-only convention as --s150-2/--s150-3/--s150-14 above.
+        ran = True
+        try:
+            sess = run_s150_4_uplift(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] s150-4: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:

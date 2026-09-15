@@ -296,6 +296,16 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     ("gb-mon-menu-dup-daycare-export", "BACKLOG #93 — DUPLICATE / TO DAY-CARE / "
      "EXPORT .pk on the mon menu, EXPORT ALL / RELEASE ALL on the GB box menu",
      ("BACKLOG #93",)),
+    # BACKLOG #150 S150-4/5 follow-up (lane s150-4-5b, BACKLOG #171): the UP-lift
+    # gesture end to end -- CM_MOVE grab, UP into tab focus (the #171 fix), a second
+    # UP hops into the Bank, a drop attempt (the delta vehicle cannot persist it),
+    # VIEW/EDIT on an already-native cell. Shots come from tools/dgb_shots.py's
+    # run_s150_4_uplift() (--s150-4), captions all start "s150-4:" or
+    # "s150-4/BACKLOG #171:". Appended after "gb-mon-menu-dup-daycare-export" per
+    # this list's own append-only rule.
+    ("gb-uplift-s150-4", "BACKLOG #150 S150-4/5 follow-up — the UP-lift gesture into "
+     "the Bank (BACKLOG #171 fix: a GB carry could not enter tab focus)",
+     ("s150-4", "s150-4/BACKLOG #171")),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
 FEATURE_TITLE = {fid: title for fid, title, _prefixes in FEATURE_TABLE}
