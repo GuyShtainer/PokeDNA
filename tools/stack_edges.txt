@@ -1523,4 +1523,9 @@ gated gbscr_open_inner need=6088 from=rom_gbui.h:PDNA_GB_UI_NEED gate=gbscr_open
 # by reading it before relying on it, not assumed. via= is pcp_open_party_strip_
 # inner's ONLY caller in this build (objdump-derived, both ELFs): a `bl` from
 # pcp_open_party_strip itself, no other call site anywhere in the disassembly.
-gated pcp_open_party_strip_inner need=7192 from=pdna_box.c:PDNA_PARTY_STRIP_NEED gate=pcp_open_party_strip via=pcp_open_party_strip
+# BACKLOG #150 S150-2 (D-Q1, 2026-09-15): re-derived again -- box_decode()'s new
+# `uint8_t hint[30]` (decision 11) inlines into party_strip_overlay on this exact
+# chain, growing it to 7,152 B (artless) / 7,144 B (normal), both <= the
+# orchestrator's 64 B ceiling for an in-lane re-derivation. New need = 7,152 + 64
+# ISR = 7,216 (artless dominates) -- see PDNA_PARTY_STRIP_NEED's own comment.
+gated pcp_open_party_strip_inner need=7216 from=pdna_box.c:PDNA_PARTY_STRIP_NEED gate=pcp_open_party_strip via=pcp_open_party_strip
