@@ -206,52 +206,71 @@ def run_gold(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     s = Session(core_mod, image_mod, rom, out_dir, "gold_")
     print("== Gold.sav (Gen 2, --clip seeded) ==")
 
+    # Occupied-mon menu row order (source/pdna_main.c:4565-4605, app_mon_menu_readonly),
+    # for a Gen-2 mount with every hook present and the slot not locked (k_gb_ops_gen2,
+    # source/pdna_gen12.c:3295-3300 -- this table has .item set, unlike Gen 1's):
+    #   0:VIEW/EDIT  1:ITEM  2:LEGALITY  3:MOVE TO BOX  4:COPY  5:DUPLICATE
+    #   6:TO DAY-CARE  7:EXPORT .pk  8:RELEASE  9:CANCEL
+    # BACKLOG #149 (this lane, re-derived from a live per-tap trace, GB_SHOTS_TRACE=1):
+    # `sel` is declared `int sel = 0, top = 0;` LOCAL to app_mon_menu_readonly
+    # (pdna_main.c:4624) -- the cursor does NOT persist between openings, it resets to
+    # row 0 every time the menu opens. And every row's own case in the dispatch switch
+    # (pdna_main.c:4649-4667) ends with `return <hook call or false>` -- picking ANY row
+    # and then backing out of whatever it opened (even by cancelling) closes the WHOLE
+    # menu, straight back to the box grid; there is no "back to the row list" state.
+    # Both assumptions in the previous two lane commits (4732830/288a067 -- cursor
+    # "stays" at the last row, cancelling a sub-picker returns to the row list) were
+    # wrong; every row demoed below is a fresh box-grid-A-DOWN*n-A sequence.
+    #
+    # A trace also caught a THIRD surprise the old script never accounted for: B from
+    # the box grid does not go straight to the info page -- it first opens a "NOT
+    # TRANSFERABLE" interstitial (why the converted-copy mons that don't fit stay in
+    # their boxes), and only a second B (or A) from there reaches the info page. Not
+    # used below (every reopen goes box-grid -> A, never through the info page), but
+    # worth knowing if a future shot needs to leave the box grid.
     s.shot("01_info", "S1: the info page — Gold/Silver save, converted-copy notice, counts")
 
     s.tap("A", settle=BIG_SETTLE)          # info -> box grid
     s.shot("02_box_grid", "S2: box grid — GB BOX1 20/20 (BACKLOG #40(a): the banner now uses "
                           "the source's own capacity, not the Gen-3 grid's 30 cells)")
 
-    s.tap("A", settle=BIG_SETTLE)          # A on slot 0 (Bulbasaur) -> mon menu
+    s.tap("A", settle=BIG_SETTLE)          # A on slot 0 (Bulbasaur) -> mon menu, row 0 selected
     s.shot("03_mon_menu", "S2: the read-only mon menu — Gen-3 parity (BACKLOG #42/#43 batch, "
                           "2026-09-05): VIEW and EDIT are now ONE row (\"VIEW / EDIT\", same "
-                          "label the Gen-3 menu uses), then LEGALITY/MOVE TO BOX/COPY/RELEASE "
-                          "(UX-parity audit, 2026-09-07: reordered + MOVE TO relabelled MOVE TO "
-                          "BOX to match Gen 3's own row order/labels exactly)")
+                          "label the Gen-3 menu uses), then ITEM/LEGALITY/MOVE TO BOX/COPY/"
+                          "DUPLICATE/TO DAY-CARE/EXPORT .pk/RELEASE (UX-parity audit, "
+                          "2026-09-07: reordered + MOVE TO relabelled MOVE TO BOX to match "
+                          "Gen 3's own row order/labels exactly)")
 
-    # ---- MOVE TO BOX: menu order is now VIEW/EDIT, LEGALITY, MOVE TO BOX, COPY,
-    # RELEASE, CANCEL (UX-parity audit, Guy 2026-09-07: Gen 3's own occupied-mon-menu
-    # order is Summary -> Legality -> Move -> Copy -> ... -> Release LAST, and this
-    # row list used to read View/Edit, Move To, Release, Legality, Copy -- Release
-    # 2nd, Legality 4th, the reverse. The row also got a new LABEL: "MOVE TO" is now
-    # "MOVE TO BOX", reusing Gen 3's own PDNA_LBL_MOVE_TO_BOX verbatim instead of a
-    # third, bespoke wording. ----
-    s.press_n("DOWN", 2)                   # VIEW/EDIT -> LEGALITY -> MOVE TO BOX
+    # ---- MOVE TO BOX: row 3. Fresh menu, DOWN x3 from row 0. ----
+    s.press_n("DOWN", 3)                   # row 0 (VIEW/EDIT) -> row 3 (MOVE TO BOX)
     s.tap("A", settle=BIG_SETTLE)          # open the box/party picker
     s.shot("07_move_to_picker", "S3: MOVE TO BOX — the destination box/party picker "
                                  "(UX-parity audit: relabelled from \"MOVE TO\" to Gen 3's own "
                                  "\"MOVE TO BOX\", and moved to sit after LEGALITY, matching "
                                  "Gen 3's own row order)")
-    s.tap("B", settle=BIG_SETTLE)          # cancel — do not actually move anything
+    s.tap("B", settle=BIG_SETTLE)          # cancel picker -> the WHOLE menu closes -> box grid
+                                            # directly (RO_MOVE returns the hook's result straight
+                                            # out of app_mon_menu_readonly; there is no "back to
+                                            # the row list" -- verified by trace, BACKLOG #149)
 
-    # ---- RELEASE: back at the box grid; A -> menu -> DOWN x4 -> RELEASE (now LAST,
-    # right before Cancel, matching Gen 3's own occupied-menu order). ----
-    s.tap("A", settle=BIG_SETTLE)
-    s.press_n("DOWN", 4)                   # VIEW/EDIT -> LEGALITY -> MOVE TO BOX -> COPY -> RELEASE
+    # ---- RELEASE: row 8. Reopen the menu fresh (cursor always resets to row 0), DOWN x8. ----
+    s.tap("A", settle=BIG_SETTLE)          # box grid -> mon menu, row 0 again
+    s.press_n("DOWN", 8)                   # row 0 (VIEW/EDIT) -> row 8 (RELEASE)
     s.tap("A", settle=BIG_SETTLE)
     s.shot("08_release_confirm", "S3: RELEASE — the confirm popup (UX-parity audit: RELEASE "
                                   "is now the LAST row before CANCEL, matching Gen 3's own "
                                   "occupied-mon-menu order, not 2nd)")
-    s.tap("B", settle=BIG_SETTLE)          # cancel — do not actually release it
+    s.tap("B", settle=BIG_SETTLE)          # cancel confirm -> the menu closes -> box grid directly
 
-    # ---- BACKLOG #41: VIEW now opens pdna_gbsummary.c over the NATIVE record (three
-    # cards) instead of pdna_inspect() on the lossy Gen-3-converted copy. A -> VIEW
-    # (the menu's first row, already selected). ----
-    s.tap("A", settle=BIG_SETTLE)
-    s.tap("A", settle=BIG_SETTLE)          # VIEW (already selected) -> the summary, card 0 INFO
+    # ---- BACKLOG #41: VIEW/EDIT summary. Reopen the menu fresh (row 0 = VIEW/EDIT already
+    # selected), one A both opens the menu, the next A picks VIEW/EDIT. ----
+    s.tap("A", settle=BIG_SETTLE)          # box grid -> mon menu, row 0 (VIEW/EDIT)
+    s.tap("A", settle=BIG_SETTLE)          # A on VIEW/EDIT -> the summary, VIEW mode, card 0
+    s.run(BIG_SETTLE)                      # extra settle for summary entry animation
     s.shot("04_view_info", "BACKLOG #41: the native summary, VIEW, card 0 INFO — "
                             "nickname/level/type/OT/item/friendship/EXP")
-    s.tap("R", settle=BIG_SETTLE)          # card 0 -> 1
+    s.tap("R", settle=BIG_SETTLE)          # card 0 -> 1 (SKILLS)
     s.shot("04b_view_skills", "BACKLOG #41 slice E1: VIEW, card 1 SKILLS — HP/Atk/Def/Spe/"
                                "SpA/SpD, each a two-row cell (value, then DV + stat exp)")
     s.tap("R", settle=BIG_SETTLE)          # card 1 -> 2
@@ -267,9 +286,10 @@ def run_gold(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     # ---- EDIT: Gen-3 parity (BACKLOG #42/#43 batch) retired the standalone EDIT row that
     # opened straight into edit mode -- the merged VIEW/EDIT row always opens in VIEW, and
     # (like the Gen-3 summary) A INSIDE it flips to edit mode (pdna_gbsummary.c's own KEY_A
-    # handler, c->can_edit). menu -> VIEW/EDIT (already selected) -> A again for edit. ----
-    s.tap("A", settle=BIG_SETTLE)
-    s.tap("A", settle=BIG_SETTLE)          # VIEW/EDIT (already selected) -> the summary, VIEW
+    # handler, c->can_edit). Fresh menu -> VIEW/EDIT (row 0, already selected) -> A again
+    # for VIEW -> A again for edit. ----
+    s.tap("A", settle=BIG_SETTLE)          # box grid -> mon menu, row 0
+    s.tap("A", settle=BIG_SETTLE)          # A on VIEW/EDIT -> the summary, VIEW
     s.tap("A", settle=BIG_SETTLE)          # A inside VIEW -> editing = true, same as Gen 3
     s.shot("05_edit_info", "Gen-3 parity: A inside the VIEW/EDIT summary flips to edit "
                             "mode, card 0 — the frame on Nickname (fsel resets on entry)")
@@ -301,8 +321,9 @@ def run_gold(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     s.tap("A", settle=BIG_SETTLE)          # A = write -> gb_edit_commit -> gb_persist refuses (no SD in mGBA)
     s.shot("07b_save_refusal", "BACKLOG #41: confirmed -> gb_persist refuses (no SD card in "
                                 "mGBA) — honest evidence, not a bug")
-    s.tap("B", settle=BIG_SETTLE)          # dismiss / back out however far this landed
-    s.tap("B", settle=BIG_SETTLE)
+    s.tap("A", settle=BIG_SETTLE)          # A ("Press A") dismisses the refusal -> box grid
+                                            # directly -- NOT B (BACKLOG #149: this screen's own
+                                            # footer reads "Press A"; B does nothing here)
 
     return s
 
