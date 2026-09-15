@@ -586,10 +586,15 @@ ISR_LINE_RE = re.compile(r'^isr\s+(\S+)$')
 ADDRTAKEN_OK_RE = re.compile(r'^addrtaken-ok\s+(\S+)$')
 # D4 (BACKLOG #84b sixth pass): a declared depth for a real recursive SCC.
 RECURSION_LINE_RE = re.compile(r'^recursion\s+(\S+)\s+depth=(\d+)$')
-# BACKLOG #155: an implementation that may be absent from some build variants
-# (e.g. fused_gb_slice_read, delta-only). When the impl is present, it must be
-# properly reached; when absent, no warning is printed.
-IMPL_OPTIONAL_RE = re.compile(r'^impl-optional\s+(\S+)$')
+# BACKLOG #155: an implementation that is absent from SOME build variants.
+# `variants=` lists the variants in which absence is legal; in EVERY OTHER variant
+# the impl must exist or the "not found" warning fires exactly as before. A blanket
+# exemption would hide a renamed/deleted/typo'd target in every image (#155 review F1).
+IMPL_OPTIONAL_RE = re.compile(r'^impl-optional\s+(\S+)\s+variants=([A-Za-z0-9,_-]+)$')
+# BACKLOG #155: a declaration whose implementation does not exist in ANY variant yet
+# (forward-declared by a design ahead of the slice that adds it). Absent everywhere is
+# fine; the moment it IS linked the walker says so, so the row cannot outlive its slice.
+IMPL_PENDING_RE  = re.compile(r'^impl-pending\s+(\S+)\s+pending=(\S+)$')
 # BACKLOG #102: a runtime-gated subtree with its declared conservative bound.
 # D1 (review-opus fix pass, BACKLOG #102): from=header:MACRO and gate=gate_fn ties N
 # to the real runtime constant and the function that enforces it -- see this file's
@@ -775,8 +780,12 @@ def load_extra_edges(path):
       recursion_decls    : {fn: depth}
       gated_decls        : {fn: (need, header, macro, gate_fn, via_frozenset)}
                             (D1: was {fn: need}; BACKLOG #131 appended via_frozenset)
-      impl_optional_decls : {impl, ...}  (BACKLOG #155: implementations that may be
-                            absent from some build variants without warning)
+      impl_optional_decls : {impl: {variant, ...}}  (BACKLOG #155: implementations
+                            that may be absent from the listed variants without
+                            warning; absent elsewhere still warns)
+      impl_pending_decls  : {impl: pending_tag}  (BACKLOG #155: implementations that
+                            do not exist in ANY variant yet; a WARNING fires the
+                            moment one is linked, so the row can't outlive its slice)
     """
     field_decls = {}
     field_site_decls = []   # [(struct, field, offset, callers_frozenset_or_None, {impls})]
@@ -787,10 +796,12 @@ def load_extra_edges(path):
     addrtaken_ok = set()
     recursion_decls = {}
     gated_decls = {}
-    impl_optional_decls = set()
+    impl_optional_decls = {}
+    impl_pending_decls = {}
     if not path or not os.path.exists(path):
         return (field_decls, ({}, {}), argsite_decls, whole_func_decls, frame_overrides,
-                isr_decls, addrtaken_ok, recursion_decls, gated_decls, impl_optional_decls)
+                isr_decls, addrtaken_ok, recursion_decls, gated_decls, impl_optional_decls,
+                impl_pending_decls)
     with open(path) as f:
         for lineno, raw in enumerate(f, 1):
             line = raw.split('#', 1)[0].strip()
@@ -819,7 +830,11 @@ def load_extra_edges(path):
                 continue
             iom = IMPL_OPTIONAL_RE.match(line)
             if iom:
-                impl_optional_decls.add(iom.group(1))
+                impl_optional_decls[iom.group(1)] = frozenset(iom.group(2).split(','))
+                continue
+            ipm = IMPL_PENDING_RE.match(line)
+            if ipm:
+                impl_pending_decls[ipm.group(1)] = ipm.group(2)
                 continue
             gm = GATED_LINE_RE.match(line)
             if gm:
@@ -894,7 +909,7 @@ def load_extra_edges(path):
 
     return (field_decls, field_offset_index, argsite_decls, dict(whole_func_decls),
             frame_overrides, isr_decls, addrtaken_ok, recursion_decls, gated_decls,
-            impl_optional_decls)
+            impl_optional_decls, impl_pending_decls)
 
 
 # === struct-field offsets, computed from the header (D1) ==============================
@@ -3183,6 +3198,8 @@ def main(argv):
     ap.add_argument("--root", default="main")
     ap.add_argument("--margin", type=int, default=SAFETY_MARGIN)
     ap.add_argument("--top", type=int, default=5)
+    ap.add_argument("--variant", default="nor", help="which build variant this ELF is "
+                     "(nor/sd/delta) -- scopes impl-optional rows; see tools/stack_edges.txt")
     ap.add_argument("--sccs", action="store_true",
                      help="D5b: print the Tarjan SCCs (real recursion only) over the "
                           "graph reachable from --root, instead of running the guard")
@@ -3299,9 +3316,10 @@ def main(argv):
         return 1
 
     (field_decls, field_offset_index, argsite_decls, whole_func_decls, frame_overrides,
-     isr_decls, addrtaken_ok, recursion_decls, gated_decls, impl_optional_decls) = (
+     isr_decls, addrtaken_ok, recursion_decls, gated_decls, impl_optional_decls,
+     impl_pending_decls) = (
         load_extra_edges(args.edges_file) if args.edges_file
-        else ({}, ({}, {}), {}, {}, {}, set(), set(), {}, {}, set()))
+        else ({}, ({}, {}), {}, {}, {}, set(), set(), {}, {}, {}, {}))
 
     # D1 header-drift check: every declared Struct.field @OFFSET is checked against
     # the offset the struct's OWN header gives that field today, before anything
@@ -3416,12 +3434,22 @@ def main(argv):
                  # "stale declaration? typo? inlined away?" situation as any other
                  # declared name -- same WARNING path, not a new one.
                  | set(gated_decls))
-    # BACKLOG #155: implementations marked as impl-optional may be absent from some
-    # build variants without warning -- remove them from the unknown check.
-    unknown_impls = sorted(all_impls - analysis["funcs"] - impl_optional_decls)
+    # BACKLOG #155 (review F1): implementations marked as impl-optional may be absent
+    # ONLY from the variants their `variants=` list names -- in every other variant a
+    # missing impl still warns, so a renamed/deleted/typo'd target can't hide behind a
+    # blanket exemption. impl-pending names (not yet linked in ANY variant) are always
+    # exempt from the "not found" warning, but flip to a LANDED warning below instead.
+    exempt = {n for n, vs in impl_optional_decls.items() if args.variant in vs}
+    exempt |= set(impl_pending_decls)
+    unknown_impls = sorted(all_impls - analysis["funcs"] - exempt)
     if unknown_impls:
         print(f"*** stack_budget: WARNING -- {args.edges_file} names implementation(s) not "
               f"found in {args.elf}: {unknown_impls} (stale declaration? typo? inlined away?)")
+    landed = sorted(n for n in impl_pending_decls if n in analysis["funcs"])
+    if landed:
+        print(f"*** stack_budget: WARNING -- impl-pending name(s) are now LINKED in "
+              f"{args.elf}: {landed} -- promote the line to a real declaration and delete "
+              f"the impl-pending row ({', '.join(impl_pending_decls[n] for n in landed)})")
 
     # A caller declared with `argsites=N` whose disassembly count no longer matches N
     # is a stale declaration -- FATAL immediately, independent of the top-N chains
