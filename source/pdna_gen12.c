@@ -658,6 +658,7 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "pdna_gbflags.h"     /* BACKLOG #88: the Flags & counters screen */
 #include "gb_boxnames.h"      /* BACKLOG #94: gbbn_rename/gbbn_supported -- the box banner's rename */
 #include "pdna_gbdaycare.h"   /* BACKLOG #85: the Gen-1/2 Day-Care screen */
+#include "gb_daycare.h"       /* BACKLOG #93: gbd_read/gbd_deposit for gb_daycare_hook's push */
 #include "pdna_gbdex.h"       /* BACKLOG #87: the Gen-1/2 Pokedex screen */
 #include "pdna_gbmap.h"       /* M1, BACKLOG #91: Gen 1's read-only current-map view */
 #include "pdna_gbhof.h"       /* BACKLOG #89: the Hall of Fame, both generations */
@@ -1545,6 +1546,88 @@ static bool gb_dup_hook(uint8_t* rec80) {
     msg_wait(PDNA_GBEDIT_DUP_TITLE, UI_OK, l1, 0);
   }
   return ok;
+}
+
+/* app_src_ops_set() hook: TO DAY-CARE on the read-only mon menu (BACKLOG #93) -- the
+ * PUSH direction from an occupied box cell (the existing Day-Care screen's gbdc_deposit,
+ * pdna_gbdaycare.c, is a PULL -- a box picker reached FROM inside the Day-Care page;
+ * this is Gen 3's own A_DAYCARE shape reached FROM the mon menu instead). Mirrors
+ * app_to_daycare/gbdc_deposit's own steps: find the first free Day-Care slot (Gen 1 has
+ * only slot 0 -- GbDaycare.gen1), deposit, delete the source, one persist. The full/
+ * confirm/success strings are Gen 3's OWN literals (app_to_daycare, pdna_main.c),
+ * reused verbatim. */
+static bool gb_daycare_hook(uint8_t* rec80) {
+  int box, slot;
+  if (!gb_locate(rec80, &box, &slot)) return false;
+  GbSession* s = &g_ed->s;
+
+  /* The party is exposed as one more box in this session's own numbering (gb_session's
+   * header comment) -- Gen 3's twin excludes it structurally (`!is_bank` around A_DAYCARE);
+   * this menu has no such split, so refuse it here with a message, never a bare buzz. */
+  if (gb_box_is_party(s->gen, box)) {
+    snd_deny();
+    msg_wait(PDNA_GBEDIT_DAYCARE_PARTY_TITLE, UI_WARN, PDNA_GBEDIT_DAYCARE_PARTY_L1, 0);
+    return false;
+  }
+
+  GbsStatus st = gbs_load_list(s, box, g_ed->list);
+  if (st != GBS_OK) { snd_deny(); msg_wait(PDNA_GBEDIT_BOXRD_TITLE, UI_WARN, gbs_status_text(st), 0); return false; }
+  if (slot >= gb_list_count(s->gen, g_ed->list, box)) {
+    snd_deny(); msg_wait(PDNA_GBEDIT_EMPTYSLOT_TITLE, UI_WARN, PDNA_GBEDIT_EMPTYSLOT_L1, 0); return false;
+  }
+
+  GbEditMon mon;
+  if (!gb_load(&mon, s->gen, g_ed->list, box, slot)) { snd_deny(); return false; }
+
+  /* Egg-ness lives in the list byte, outside the 32-byte record (decision 5's own
+   * reasoning, reused here) -- gbd_deposit() has no equivalent structural gate of its
+   * own (it only ever sees a box-shaped GbEditMon), so this hook checks first. */
+  if (gb_is_egg(&mon)) {
+    snd_deny();
+    msg_wait(PDNA_GBEDIT_DAYCARE_EGG_TITLE, UI_WARN, PDNA_GBEDIT_DAYCARE_EGG_L1, 0);
+    return false;
+  }
+
+  GbDaycare dc;
+  if (!gbd_read(s, &dc)) { snd_deny(); return false; }
+  int dcslot = -1;
+  if (!dc.slot[0].occupied) dcslot = 0;
+  else if (!dc.gen1 && !dc.slot[1].occupied) dcslot = 1;
+  if (dcslot < 0) {
+    snd_deny();
+    msg_wait("DAY-CARE FULL", UI_WARN, "Take a Pokemon out first.", 0);   /* Gen 3's own words */
+    return false;
+  }
+
+  if (!app_confirm("Send to Day-Care?", "Moves this Pokemon there.")) return false;  /* Gen 3's own words */
+
+  GbsStatus dst = gbd_deposit(s, dcslot, &mon);          /* lands in RAM, calls gbs_finish() itself */
+  if (dst != GBS_OK) {
+    gb_rollback();
+    log_line("gen12: daycare-put box %d slot %d refused: %s", box, slot, gbs_status_text(dst));
+    snd_error();
+    msg_wait(PDNA_GBEDIT_REFUSED_TITLE, UI_WARN, gbs_status_text(dst), PDNA_GBEDIT_UNCHANGED_L2);
+    return false;
+  }
+
+  /* Remove the source AFTER the deposit landed, exactly like gbdc_deposit's own two-
+   * commit shape: any failure here rolls the WHOLE image back, not just this half. */
+  GbsStatus del = gbs_delete(s, box, slot, g_ed->list);
+  if (del != GBS_OK) {
+    gb_rollback();
+    log_line("gen12: daycare-put box %d slot %d delete refused: %s", box, slot, gbs_status_text(del));
+    snd_error();
+    msg_wait(PDNA_GBEDIT_REFUSED_TITLE, UI_WARN, gbs_status_text(del), PDNA_GBEDIT_UNCHANGED_L2);
+    return false;
+  }
+
+  log_line("=== gb daycare-put -> %s box %d slot %d -> daycare slot %d ===",
+           g_ed->path, box, slot, dcslot);
+  if (!gb_persist("daycare-put")) return false;   /* gb_persist already reported any refusal */
+  snd_ok();
+  msg_wait("LEFT AT DAY CARE", UI_OK, "Moved from the box. Saved.", 0);   /* gbdc_deposit's own words */
+  pdna_gbdaycare(&g_ed->s, box, app_can_edit());
+  return true;
 }
 
 /* ============================================================================
@@ -2802,13 +2885,13 @@ static const AppSrcOps k_gb_ops_gen1 = {
   .edit = 0, .move = gb_move_hook, .release = gb_release_hook,
   .copy_native = gb_copy_native_hook, .paste = gb_paste_hook, .view = gb_view_hook,
   .editable = gb_editable_hook, .create = gb_create_hook,
-  .dup = gb_dup_hook,   /* BACKLOG #93 */
+  .dup = gb_dup_hook, .daycare = gb_daycare_hook,   /* BACKLOG #93 */
 };
 static const AppSrcOps k_gb_ops_gen2 = {
   .edit = 0, .move = gb_move_hook, .release = gb_release_hook,
   .copy_native = gb_copy_native_hook, .paste = gb_paste_hook, .view = gb_view_hook,
   .editable = gb_editable_hook, .create = gb_create_hook, .item = gb_item_hook,
-  .dup = gb_dup_hook,   /* BACKLOG #93 */
+  .dup = gb_dup_hook, .daycare = gb_daycare_hook,   /* BACKLOG #93 */
 };
 
 /* Bag/menu review fix (the nav-menu-copy-lossy finding): the read-only nav-menu mount

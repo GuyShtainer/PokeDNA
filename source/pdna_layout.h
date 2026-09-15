@@ -695,6 +695,15 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_GBEDIT_DUP_SIDECAR_L1    "Only one copy can go back."
 #define PDNA_GBEDIT_DUP_TITLE         "DUPLICATED"
 
+/* BACKLOG #93: TO DAY-CARE on the read-only mon menu (gb_daycare_hook, pdna_gen12.c).
+ * The full/confirm/success strings are Gen 3's own app_to_daycare/gbdc_deposit literals,
+ * reused verbatim (decision-mandated); these two are new, GB-specific structural
+ * refusals (step 3: "with a message, never a bare buzz"). */
+#define PDNA_GBEDIT_DAYCARE_PARTY_TITLE "CAN'T"
+#define PDNA_GBEDIT_DAYCARE_PARTY_L1    "The party can't go to Day-Care that way."
+#define PDNA_GBEDIT_DAYCARE_EGG_TITLE   "EGG"
+#define PDNA_GBEDIT_DAYCARE_EGG_L1      "An Egg can't be left at the Day-Care."
+
 /* BACKLOG review (post-#40(c)): gb_move_hook's own refusals reused
  * PDNA_GBEDIT_REFUSED_TITLE ("EDIT REFUSED"), same mismatch #40(c) fixed for PASTE — a
  * MOVE TO was never an edit either. Same (28, 184) proportional clamp. */
