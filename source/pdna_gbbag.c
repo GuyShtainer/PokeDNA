@@ -129,12 +129,12 @@ static bool pdna_gbbag_plain(GbBag* bag, bool can_edit, const char* header, cons
     if (n > 0 && (k & KEY_UP))        sel = (sel > 0) ? sel - 1 : n - 1;
     else if (n > 0 && (k & KEY_DOWN)) sel = (sel + 1) % n;
     else if (k & KEY_A) {
-      if (!can_edit) {
+      if (n > 0 && !can_edit) {
         snd_deny();
         msg_wait("READ-ONLY", UI_WARN, app_gb_readonly_why(), NULL);
         continue;
       }
-      if (n > 0) {
+      if (can_edit && n > 0) {
         uint32_t q = num_entry("QUANTITY", l->entries[sel].qty, GBB_QTY_CAP);
         if (q < 1) q = 1;
         gbb_set_qty(GBF_G_RED, bag, pocket, sel, (uint8_t)q);

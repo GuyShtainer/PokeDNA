@@ -166,11 +166,13 @@ static bool pdna_gbpack_plain(GbBag* bag, GbGame game, bool can_edit, const char
     else if (total > 0 && (k & KEY_DOWN)) sel = (sel + 1) % total;
     else if (k & KEY_A) {
       if (!can_edit) {
-        snd_deny();
-        msg_wait("READ-ONLY", UI_WARN, app_gb_readonly_why(), NULL);
+        if (sel < total - 1) {
+          snd_deny();
+          msg_wait("READ-ONLY", UI_WARN, app_gb_readonly_why(), NULL);
+        }
         continue;
       }
-      if (can_edit && sel < total - 1) {
+      if (sel < total - 1) {
         if (pocket == GBB_POCKET_KEY) { /* no qty to edit */ }
         else if (pocket == GBB_POCKET_TMHM) {
           /* D4/D5: `sel` is an owned-list POSITION here (row_total() just above
