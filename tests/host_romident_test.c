@@ -78,6 +78,29 @@ int main(void) {
   CHECK(id == ROM_ID_HACK, "'ZZZZ'+'POKEMON XYZ' got ident=%d, expected HACK", id);
   CHECK(kind == ROM_NONE, "'ZZZZ'+'POKEMON XYZ' got kind=%d, expected ROM_NONE", kind);
 
+  /* Review fix F3: genuine NON-US retail carts hit rule (d) too -- a real (code,
+   * version) pair k_versions simply doesn't pin (only the 11 US builds are).
+   * kind == ROM_NONE here means "the UI cannot say what this is" (unsupported
+   * region/build), NOT "this is a hack" -- app_register_rom() (pdna_main.c) now
+   * shows PDNA_ROMOTHER_* instead of PDNA_ROMHACK_* whenever kind == ROM_NONE, so
+   * this asserts the ONE signal that banner-selection logic reads. */
+  build_hdr(hdr, "POKEMON RUBY", "AXVD", 0, true);  /* Ruby, German */
+  id = rom_identify(hdr, MIB16, &kind);
+  CHECK(id == ROM_ID_HACK, "'AXVD' (Ruby DE) got ident=%d, expected HACK (rule 1d, "
+        "genuine non-US retail, NOT a real hack)", id);
+  CHECK(kind == ROM_NONE, "'AXVD' (Ruby DE) got kind=%d, expected ROM_NONE -- the UI "
+        "must show 'unsupported ROM', never 'ROM HACK'", kind);
+
+  build_hdr(hdr, "POKEMON EMER", "BPEJ", 0, true);  /* Emerald, Japanese */
+  id = rom_identify(hdr, MIB16, &kind);
+  CHECK(id == ROM_ID_HACK, "'BPEJ' (Emerald JP) got ident=%d, expected HACK (rule 1d)", id);
+  CHECK(kind == ROM_NONE, "'BPEJ' (Emerald JP) got kind=%d, expected ROM_NONE", kind);
+
+  build_hdr(hdr, "POKEMON EMER", "BPES", 0, true);  /* Emerald, Spanish */
+  id = rom_identify(hdr, MIB16, &kind);
+  CHECK(id == ROM_ID_HACK, "'BPES' (Emerald ES) got ident=%d, expected HACK (rule 1d)", id);
+  CHECK(kind == ROM_NONE, "'BPES' (Emerald ES) got kind=%d, expected ROM_NONE", kind);
+
   /* rule (e): unpinned code, title does NOT start "POKEMON" -> NOT_POKEMON */
   build_hdr(hdr, "TETRIS", "ZZZZ", 0, true);
   id = rom_identify(hdr, MIB16, &kind);

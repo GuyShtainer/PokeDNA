@@ -2925,8 +2925,22 @@ static void app_register_rom(void) {
     f_close(&s_iconrom_fil); s_iconrom_fil_open = false;
     /* BACKLOG #54 T1: verdict-specific refusal, not the flat "NOT A POKEMON ROM" for
      * every non-retail case -- a hack the header can still identify (known or unknown
-     * base kind) gets the honest banner instead. */
-    if (rc.ident == ROM_ID_HACK) msg_wait(PDNA_ROMHACK_TITLE, UI_WARN, PDNA_ROMHACK_L1, PDNA_ROMHACK_L2);
+     * base kind) gets the honest banner instead.
+     *
+     * Review fix F3: rule 1d (rom_identify(), source/rom_map.c) also catches genuine
+     * NON-US retail carts -- a French/German/Italian/Japanese/Spanish Ruby/Sapphire/
+     * Emerald/FireRed/LeafGreen has a real (code, version) pair that is simply not on
+     * k_versions (only the 11 US builds are pinned, decision 2), so it falls to "no
+     * k_versions match but title starts POKEMON" -> ROM_ID_HACK with kind == ROM_NONE.
+     * Calling a genuine retail cartridge from another region a "ROM HACK" is a false
+     * accusation this rule was never meant to make -- kind == ROM_NONE means "this
+     * lane cannot say WHAT it is" (unsupported region/build), not "this is a hack".
+     * kind != ROM_NONE still means a pinned US (code, version) whose title or size
+     * diverges -- THAT is the genuine hack case the ROM HACK banner is for. */
+    if (rc.ident == ROM_ID_HACK && rc.kind != ROM_NONE)
+      msg_wait(PDNA_ROMHACK_TITLE, UI_WARN, PDNA_ROMHACK_L1, PDNA_ROMHACK_L2);
+    else if (rc.ident == ROM_ID_HACK)
+      msg_wait(PDNA_ROMOTHER_TITLE, UI_WARN, PDNA_ROMOTHER_L1, PDNA_ROMOTHER_L2);
     else msg_wait("NOT A POKEMON ROM", UI_WARN, "Retail R/S/E/FR/LG only.", 0);
     return;
   }

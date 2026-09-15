@@ -1826,5 +1826,15 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * (pdna_main.c) picks between this and the Omega message based on
  * app_rom_is_hack(g_game). PF-checked at the same (28, 184) msg_wait clamp. */
 #define PDNA_ROMHACK_WHY "ROM hack: writes locked."
+/* Review fix F3: rule 1d (rom_identify()) also catches genuine non-US retail carts
+ * (AXVD/BPEJ/BPES/... -- a real (code, version) pair simply absent from k_versions,
+ * which only pins the 11 US builds) as ROM_ID_HACK with kind == ROM_NONE. Calling a
+ * real retail cartridge from another region a "ROM HACK" is a false accusation;
+ * app_register_rom() (pdna_main.c) now shows this honest "can't say what this is"
+ * banner instead whenever kind == ROM_NONE, reserving PDNA_ROMHACK_* for a pinned
+ * US (code, version) whose title/size genuinely diverges (kind != ROM_NONE). */
+#define PDNA_ROMOTHER_TITLE "UNSUPPORTED ROM"
+#define PDNA_ROMOTHER_L1    "Not a retail US R/S/E/FR/LG."
+#define PDNA_ROMOTHER_L2    "A hack, or another region."
 
 #endif /* PDNA_LAYOUT_H */

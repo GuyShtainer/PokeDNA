@@ -2312,6 +2312,11 @@ int main(void) {
    * "READ-ONLY" refusal sites that used to always say "Needs EZ-Flash Omega." even
    * when the real reason is a hack-flagged ROM. Same msg_wait (28, 184) clamp. */
   PF(PDNA_ROMHACK_WHY, 28, 184);
+  /* Review fix F3: the honest "can't say what this is" banner for a genuine non-US
+   * retail cart rule 1d would otherwise mislabel HACK -- same msg_wait clamp. */
+  PF(PDNA_ROMOTHER_TITLE, 28, 184);
+  PF(PDNA_ROMOTHER_L1,    28, 184);
+  PF(PDNA_ROMOTHER_L2,    28, 184);
   /* ==== END BACKLOG #54 ROM-hack banner ======================================== */
 
   printf("\n%d checks, %d FAILED\n", checks, fails);
