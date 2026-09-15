@@ -285,16 +285,14 @@ BoxSource.can_lift @80 in src_can_lift -> gb_can_lift_hook
 BoxXferOps.lift_up @4 in start_carry -> gb_lift_up_hook
 BoxXferOps.release_up @16 in drop_held -> gb_release_up_hook
 
-# BACKLOG #150 S150-7 step 3: bank_down_dispatch's EXACT arm (bank_down_exact, inlined
+# BACKLOG #150 S150-7 step 3/4: bank_down_dispatch's EXACT arm (bank_down_exact, inlined
 # into bank_down_dispatch.constprop.0 by -O2 -- the walker's own BLIND SPOT report named
-# the caller as bank_down_dispatch.constprop.0) calls src->xfer->accept_down(dst_box,
-# cell80). gb_accept_down_hook does not exist until step 4 (pdna_gen12.c) -- forward-
-# declared here the same way BoxSource.can_lift's gb_can_lift_hook row was for S150-5,
-# with the companion impl-pending row below so the walker does not warn "not found" in
-# the meantime. Step 4 deletes the impl-pending line once the symbol lands (leaving this
-# row, which will already be correct).
+# the caller as bank_down_dispatch.constprop.0) calls s_xfer_peer->accept_down(dst_box,
+# cell80) (D-Q7 plumbing fix: s_xfer_peer, not src->xfer -- see pdna_box.c's own comment
+# on bank_down_exact). gb_accept_down_hook now exists (pdna_gen12.c, step 4) and is
+# linked, so the step-3 impl-pending companion row is gone (promoted, per its own
+# "moment the symbol IS linked" rule).
 BoxXferOps.accept_down @12 in bank_down_dispatch,bank_down_dispatch.constprop.0 -> gb_accept_down_hook
-impl-pending gb_accept_down_hook pending=S150-7
 
 # The commit parameter threaded through app_mon_menu (party call sites) and
 # app_paste_gb_merge -> app_paste_gb_commit -> app_commit_with_dex (inlined) -> `commit ?

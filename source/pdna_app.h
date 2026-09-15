@@ -576,6 +576,12 @@ bool        app_gb_rom_path_set(uint8_t gen, const char* path);
  * not "the user visited a Settings row", so the fallback counting is deliberate. */
 bool        app_gb_rom_registered(uint8_t gen);
 
+/* BACKLOG #150 S150-7 D-Q7: the mounted GB session's own generation (GB_GEN1/GB_GEN2),
+ * or 0 outside a GB session -- pdna_box.c's bank_down_dispatch needs this for
+ * xg_bank_down_arm()'s `dst_gen` argument and cannot reach it through the xfer vtable
+ * (see pdna_gen12.c's own comment on this function for why). */
+uint8_t     app_gb_session_gen(void);
+
 /* BACKLOG #47: Settings > Game ROM's "Turn ROM art OFF" switch (g_rom_art_off,
  * pdna_main.c) -- "no ROM art at all", not "no Gen-3 ROM art". Exposed here so
  * gb_art_source.c (a lower module that never reaches into pdna_main.c's statics

@@ -64,7 +64,10 @@ DISPATCH_RE = re.compile(r"pdna_gb\w*\(\s*(?:gs|&g_ed->s)\s*,")
 # is no function to check for it.
 TABLE_NAMES = ("k_gb_ops_gen1", "k_gb_ops_gen2", "k_gb_xfer")
 FIELD_RE = re.compile(r"\.(\w+)\s*=\s*(\w+)")
-SKIP_FIELDS = {"edit", "copy_native", "editable"}  # not mutating -- no cart gate required
+# BACKLOG #150 S150-7: `gen` is a uint8_t (not a function, never mutates anything);
+# `preview_down` is a pure read-only preview (no write, per its own header comment);
+# `move_within` is unimplemented (NULL) in this lane -- none of the three need a gate.
+SKIP_FIELDS = {"edit", "copy_native", "editable", "gen", "preview_down", "move_within"}
 # (`view` stays IN: gb_view_hook computes can_edit = app_can_edit() && ... and hands it to an
 #  editable summary -- b160 re-verify R5.)
 

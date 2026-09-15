@@ -1112,15 +1112,49 @@ static uint8_t* clear_origin(BoxSource* src, int box) {
 typedef enum { BANK_DOWN_REFUSED = 0, BANK_DOWN_LANDED = 1 } BankDownResult;
 
 /* The XG_DOWN_ARM_EXACT arm: land the cell in a Game Boy save of the SAME generation
- * via the vtable's accept_down hook, then (BACKLOG #150 S150-7 step 4 fills in) consume
- * the Bank's own copy per D7/D12. */
+ * via the vtable's accept_down hook, then the ONE Bank consume (D7/D12). G-H1's
+ * ordering, applied to a GB destination: the consume runs ONLY after accept_down's
+ * internal gb_persist() returned true, and it is IMMEDIATE, not queued -- unlike a
+ * Gen-3 PC write (app_bank_defer_delete, deferred to the exit save), gb_persist already
+ * wrote the card by the time control returns here.
+ *
+ * D-Q7 PLUMBING FIX: reads `s_xfer_peer` (this file's own module-singleton, above),
+ * NOT `src->xfer` -- `pdna_gen12_source()` on this merged base never actually sets its
+ * returned BoxSource's `.xfer` field (its own comment claiming otherwise is stale from
+ * the S1 pure-refactor slice); the only thing that IS ever populated is
+ * `s_xfer_peer` via `pdna_box_xfer_set(&k_gb_xfer)`, called once per GB session visit
+ * from gb_session_core() and read directly by drop_held's own UP-carry sites (:1222/
+ * :1238/:1286 above). Using `src->xfer` here would make bank_down_dispatch's EXACT arm
+ * ALWAYS see a NULL vtable and refuse every drop silently -- the exact "has no way out"
+ * failure this whole slice exists to fix. Confirmed on the emulator (step 7's delta
+ * shots): with `src->xfer` the MOVE/DOWN/A gesture never reaches accept_down at all. */
 static BankDownResult bank_down_exact(BoxSource* src, int dst_box, const uint8_t cell80[80]) {
-  if (!src->xfer || !src->xfer->accept_down) { snd_deny(); return BANK_DOWN_REFUSED; }
+  (void)src;
+  if (!s_xfer_peer || !s_xfer_peer->accept_down) { snd_deny(); return BANK_DOWN_REFUSED; }
   boxoam_suspend();
-  bool ok = src->xfer->accept_down(dst_box, cell80);
+  bool ok = s_xfer_peer->accept_down(dst_box, cell80);
   boxoam_resume();
   if (!ok) return BANK_DOWN_REFUSED;          /* the hook already said why */
-  /* BACKLOG #150 S150-7 step 4 fills in the Bank consume (D7/D12) here. */
+
+  uint8_t slots1[1]; uint8_t recs1[1][80];
+  slots1[0] = (uint8_t)s_orig_slot; memcpy(recs1[0], cell80, 80);
+  if (!app_bank_clear_slots(s_orig_box, slots1, (const uint8_t (*)[80])recs1, 1)) {
+    /* D7: the reconcile (S150-11) cannot help here -- the EXACT arm writes NO
+     * /PokeDNA/xfer/ entry (D6) for it to walk. Say so explicitly: the game HAS the
+     * mon now, the Bank slot is a DUPLICATE the player can delete themselves, never a
+     * loss. Still BANK_DOWN_LANDED -- the operation succeeded from the player's view;
+     * only the Bank-side cleanup didn't, and that is reported, not silently retried. */
+    boxoam_suspend();
+    snd_error();
+    char l1[40];
+    siprintf(l1, "Bank box %d slot %d", s_orig_box + 1, s_orig_slot + 1);
+    msg_wait(PDNA_XFER_DOWN_DUP_TITLE, UI_WARN, l1, PDNA_XFER_DOWN_DUP_L2);
+    boxoam_resume();
+    log_line("gen12: bank-down consume failed -- Bank box %d slot %d still holds a "
+             "duplicate (the game save already has it)", s_orig_box, s_orig_slot);
+    return BANK_DOWN_LANDED;
+  }
+  snd_save();
   return BANK_DOWN_LANDED;
 }
 
@@ -1135,7 +1169,7 @@ static BankDownResult bank_down_exact(BoxSource* src, int dst_box, const uint8_t
 static BankDownResult __attribute__((noinline))
 bank_down_dispatch(BoxSource* src, int dst_box, int dst_cell, const uint8_t cell80[80]) {
   (void)dst_cell;
-  switch (xg_bank_down_arm(bc_kind(cell80), src->scope, (uint8_t)(src->xfer ? src->xfer->gen : 0))) {
+  switch (xg_bank_down_arm(bc_kind(cell80), src->scope, app_gb_session_gen())) {
     case XG_DOWN_ARM_EXACT:     return bank_down_exact(src, dst_box, cell80);
     case XG_DOWN_ARM_GB_BRIDGE: return BANK_DOWN_REFUSED; /* S150-8 */
     case XG_DOWN_ARM_GEN3:      return BANK_DOWN_REFUSED; /* S150-8 */
