@@ -17,25 +17,62 @@ uint32_t mr_lz77_size(const RomCtx* rom, uint32_t addr) {
   return (uint32_t)h[1] | ((uint32_t)h[2] << 8) | ((uint32_t)h[3] << 16);
 }
 
-/* Streaming LZ77 (LZ10). Pulls the compressed bytes through a small window so a 16 MiB
- * ROM on the SD is never fully resident, and hard-caps every write to dst. */
-uint32_t mr_lz77(const RomCtx* rom, uint32_t addr, uint8_t* dst, uint32_t dst_cap) {
-  uint32_t size = mr_lz77_size(rom, addr);
-  if (!size || !dst || size > dst_cap) return 0;
+#define MR_FNV_OFFSET 2166136261u
+#define MR_FNV_PRIME  16777619u
 
-  uint8_t buf[64];
+/* Streaming LZ77 (LZ10) core, shared by mr_lz77_w() and mr_lz77_x(). Pulls the
+ * compressed bytes through a window so a 16 MiB ROM on the SD is never fully
+ * resident, and hard-caps every write to dst. When `out_consumed`/`out_hash`
+ * are non-NULL, every consumed input byte -- the 4 header bytes included --
+ * is folded into an FNV-1a running hash and counted, so the caller learns the
+ * EXACT compressed span this decode actually read (BACKLOG #103 step 4). */
+static uint32_t lz77_run(const RomCtx* rom, uint32_t addr, uint8_t* dst, uint32_t dst_cap,
+                         uint8_t* win, uint32_t win_bytes,
+                         uint32_t* out_consumed, uint32_t* out_hash) {
+  uint8_t h[4];
+  if (!rom_read_at(rom, addr, h, 4)) return 0;
+  if (h[0] != 0x10) return 0;                     /* LZ10 only */
+  uint32_t size = (uint32_t)h[1] | ((uint32_t)h[2] << 8) | ((uint32_t)h[3] << 16);
+  if (!size || !dst || size > dst_cap) return 0;
+  if (win_bytes && !win) return 0;
+
+  int track = (out_consumed || out_hash) ? 1 : 0;
+  uint32_t hash = MR_FNV_OFFSET;
+  uint32_t consumed = 4;
+  if (track) for (int i = 0; i < 4; i++) { hash ^= h[i]; hash *= MR_FNV_PRIME; }
+
+  uint8_t stack_buf[64];
+  uint8_t* buf = win_bytes ? win : stack_buf;
+  uint32_t buf_cap = win_bytes ? win_bytes : (uint32_t)sizeof stack_buf;
   uint32_t buf_at = 0, buf_len = 0;               /* buf covers [buf_at, buf_at+buf_len) */
   uint32_t src = addr + 4;
   uint32_t out = 0;
+  /* LZ10 all-literal upper bound on the compressed span: 4 header bytes + `size`
+   * literal bytes + one flag byte per (up to) 8 literals, PLUS one more byte
+   * (BACKLOG #103 F4, review-opus LOW): a stream whose FINAL token is a
+   * back-reference clamped by `len > size - out` (this decoder's own clamp,
+   * a few lines below) still spends its full 2-byte back-reference token in
+   * the compressed stream even though it produces fewer than `len` output
+   * bytes -- the plain `size / 8` flag-byte count alone under-covers that
+   * token's own bytes by one in the worst case. An over-read past this bound
+   * can never be needed to decode a well-formed stream. */
+  uint32_t span_end = addr + 4 + size + 1u + (size + 7u) / 8u;
+  uint32_t img_end = ROM_BASE + rom->size;
 
   /* one byte of compressed input, buffered */
   #define NEXT(v) do {                                                        \
       if (buf_at >= buf_len) {                                                \
-        buf_len = sizeof buf;                                                 \
-        if (!rom_read_at(rom, src, buf, buf_len)) return 0;                   \
-        src += buf_len; buf_at = 0;                                           \
+        uint32_t remain_span = (src < span_end) ? (span_end - src) : 0u;      \
+        uint32_t remain_img  = (src < img_end)  ? (img_end - src)  : 0u;      \
+        uint32_t want = buf_cap;                                              \
+        if (remain_span < want) want = remain_span;                           \
+        if (remain_img  < want) want = remain_img;                            \
+        if (!want) return 0;                                                  \
+        if (!rom_read_at(rom, src, buf, want)) return 0;                      \
+        buf_len = want; src += want; buf_at = 0;                              \
       }                                                                       \
       (v) = buf[buf_at++];                                                    \
+      if (track) { hash ^= (v); hash *= MR_FNV_PRIME; consumed++; }           \
     } while (0)
 
   while (out < size) {
@@ -61,7 +98,47 @@ uint32_t mr_lz77(const RomCtx* rom, uint32_t addr, uint8_t* dst, uint32_t dst_ca
     }
   }
   #undef NEXT
+  if (out_consumed) *out_consumed = consumed;
+  if (out_hash) *out_hash = hash;
   return out;
+}
+
+uint32_t mr_lz77_w(const RomCtx* rom, uint32_t addr, uint8_t* dst, uint32_t dst_cap,
+                   uint8_t* win, uint32_t win_bytes) {
+  return lz77_run(rom, addr, dst, dst_cap, win, win_bytes, 0, 0);
+}
+
+uint32_t mr_lz77_x(const RomCtx* rom, uint32_t addr, uint8_t* dst, uint32_t dst_cap,
+                   uint8_t* win, uint32_t win_bytes, uint32_t* consumed, uint32_t* in_hash) {
+  uint32_t c = 0, hv = 0;
+  uint32_t n = lz77_run(rom, addr, dst, dst_cap, win, win_bytes, &c, &hv);
+  if (consumed) *consumed = n ? c : 0;
+  if (in_hash)  *in_hash  = n ? hv : 0;
+  return n;
+}
+
+bool mr_hash_span(const RomCtx* rom, uint32_t addr, uint32_t len,
+                  uint8_t* win, uint32_t win_bytes, uint32_t* out_hash) {
+  if (!rom || !len) return false;
+  if (win_bytes && !win) return false;
+
+  uint8_t stack_buf[64];
+  uint8_t* buf = win_bytes ? win : stack_buf;
+  uint32_t buf_cap = win_bytes ? win_bytes : (uint32_t)sizeof stack_buf;
+  uint32_t hash = MR_FNV_OFFSET;
+  uint32_t src = addr, remaining = len;
+  while (remaining) {
+    uint32_t chunk = (remaining < buf_cap) ? remaining : buf_cap;
+    if (!rom_read_at(rom, src, buf, chunk)) return false;
+    for (uint32_t i = 0; i < chunk; i++) { hash ^= buf[i]; hash *= MR_FNV_PRIME; }
+    src += chunk; remaining -= chunk;
+  }
+  if (out_hash) *out_hash = hash;
+  return true;
+}
+
+uint32_t mr_lz77(const RomCtx* rom, uint32_t addr, uint8_t* dst, uint32_t dst_cap) {
+  return mr_lz77_w(rom, addr, dst, dst_cap, 0, 0);
 }
 
 uint32_t mr_metatile_table_bytes(const RomCtx* rom, uint32_t tileset_addr) {

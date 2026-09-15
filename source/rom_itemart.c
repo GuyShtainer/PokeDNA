@@ -119,16 +119,35 @@ static int read_verified(const RomItemArt* ra, uint32_t addr, uint8_t* dst, uint
 static int decode_verified(const RomItemArt* ra, uint32_t addr, uint8_t* dst,
                            uint32_t cap, uint32_t want) {
   if (want > cap) return 0;
-  uint32_t n = mr_lz77(ra->rc, addr, dst, cap);
-  if (n != want) return 0;
-  if (!ra->verify) return 1;
-  uint32_t prev = hash32(dst, n);
-  for (int attempt = 0; attempt < 2; attempt++) {
-    n = mr_lz77(ra->rc, addr, dst, cap);
+  /* Borrow the caller's own unused tail dst[want,cap) as the LZ77 input window
+   * when it is comfortably large (BACKLOG #103 step 3), same argument as
+   * rom_chrome.c's decode_verified: mr_lz77_w only ever writes dst[0,size)
+   * (size == `want`) and only ever reads dst[0,out) with out < size for
+   * back-references, so dst[want,cap) is provably untouched by this decode.
+   * Every call site here either passes cap == want (px[ROM_ITEM_ICON_BYTES],
+   * pr[ROM_ITEM_PAL_BYTES], :213-215/:320-323 -- window falls back to 0,0
+   * automatically) or, for rom_type_sheet_load()'s RSE scratch buffer
+   * (:360), leaves scratch[ROM_TYPE_SHEET_BYTES, scratch_cap) untouched by
+   * every later step of that same function (the RSE palette table decodes
+   * into its OWN separate local array, :361, never into the scratch tail). */
+  uint8_t* win = 0; uint32_t win_bytes = 0;
+  if (cap - want >= 256u) { win = dst + want; win_bytes = cap - want; }
+
+  /* BACKLOG #103 step 4: verify by hashing the CONSUMED COMPRESSED INPUT,
+   * never by decoding twice -- same rationale as rom_chrome.c's
+   * decode_verified (see that comment for the full argument). Decode once,
+   * learn the exact compressed span mr_lz77_x() consumed, re-read exactly
+   * those raw bytes with the ONE shared mr_hash_span() and compare hashes;
+   * on a mismatch re-decode (up to 2 retries, matching the old 3-attempt
+   * budget) so the checked pass is always the pass whose output is kept. */
+  for (int attempt = 0; attempt < 3; attempt++) {
+    uint32_t consumed = 0, in_hash = 0;
+    uint32_t n = mr_lz77_x(ra->rc, addr, dst, cap, win, win_bytes, &consumed, &in_hash);
     if (n != want) return 0;
-    uint32_t h = hash32(dst, n);
-    if (h == prev) return 1;
-    prev = h;
+    if (!ra->verify) return 1;
+    uint32_t reread_hash = 0;
+    if (mr_hash_span(ra->rc, addr, consumed, win, win_bytes, &reread_hash) && reread_hash == in_hash)
+      return 1;
   }
   return 0;
 }
