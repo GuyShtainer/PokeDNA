@@ -228,7 +228,8 @@ def test_b_blind_spot_per_site():
     field_decls = {("Widget", "handler"): (20, {"impl_handler"})}
     argsite_decls = {}
     whole_func_decls = {}
-    edges_to_add, blind, count_mismatches, legacy_ambiguous = sb.resolve_all_sites(
+    (edges_to_add, blind, count_mismatches, legacy_ambiguous, _tm,
+     _cov) = sb.resolve_all_sites(
         analysis, field_index(field_decls), argsite_decls, whole_func_decls)
     check("(b) declared offset (20) exempted -> edge added",
           edges_to_add.get("caller_a") == {"impl_handler"}, edges_to_add)
@@ -369,7 +370,8 @@ def test_c_argsites_count_mismatch():
     field_decls = {}
     argsite_decls = {"caller_b": (2, {"impl_x", "impl_y"})}
     whole_func_decls = {}
-    edges_to_add, blind, count_mismatches, legacy_ambiguous = sb.resolve_all_sites(
+    (edges_to_add, blind, count_mismatches, legacy_ambiguous, _tm,
+     _cov) = sb.resolve_all_sites(
         analysis, field_index(field_decls), argsite_decls, whole_func_decls)
     check("(c) argsites mismatch reported (declared 2, found 3)",
           count_mismatches == [("caller_b", 2, 3)], count_mismatches)
@@ -395,7 +397,8 @@ def test_c_argsites_count_match_is_clean():
         },
     }
     argsite_decls = {"caller_c": (2, {"impl_z"})}
-    edges_to_add, blind, count_mismatches, legacy_ambiguous = sb.resolve_all_sites(
+    (edges_to_add, blind, count_mismatches, legacy_ambiguous, _tm,
+     _cov) = sb.resolve_all_sites(
         analysis, ({}, {}), argsite_decls, {})
     check("(c) matching argsites count -> no mismatch, edge added",
           count_mismatches == [] and edges_to_add.get("caller_c") == {"impl_z"})
@@ -1595,7 +1598,8 @@ def test_d4_undeclared_shallow_site_is_a_blind_spot_off_the_deepest_chain():
           on_chain == {"root", "mid", "deep"} and total == 520, (on_chain, total))
 
     # no declaration for offset 99 -> resolve_all_sites must name it a blind spot
-    edges_to_add, blind, count_mismatches, legacy_ambiguous = sb.resolve_all_sites(
+    (edges_to_add, blind, count_mismatches, legacy_ambiguous, _tm,
+     _cov) = sb.resolve_all_sites(
         analysis, ({}, {}), {}, {})
     check("(D4) undeclared site has no edge added", edges_to_add == {}, edges_to_add)
 
@@ -1611,7 +1615,8 @@ def test_d4_undeclared_shallow_site_is_a_blind_spot_off_the_deepest_chain():
 def test_d4_declaring_the_site_clears_it_and_deepest_number_is_unchanged():
     analysis, edges, su_sizes, estimated = _d4_graph()
     field_decls = {("Widget", "handler"): (99, {"impl_handler"})}
-    edges_to_add, blind, count_mismatches, legacy_ambiguous = sb.resolve_all_sites(
+    (edges_to_add, blind, count_mismatches, legacy_ambiguous, _tm,
+     _cov) = sb.resolve_all_sites(
         analysis, field_index(field_decls), {}, {})
     check("(D4) declared offset 99 -> edge added, no blind entries left",
           edges_to_add.get("shallow") == {"impl_handler"} and blind == {}, (edges_to_add, blind))
@@ -2135,7 +2140,8 @@ def test_d5a_shared_offset_two_structs_two_callers():
                 "caller_beta": [(0x1ffc, "ldr\tr3, [r4, #20]")],
             },
         }
-        edges_to_add, blind, count_mismatches, legacy_ambiguous = sb.resolve_all_sites(
+        (edges_to_add, blind, count_mismatches, legacy_ambiguous, _tm,
+     _cov) = sb.resolve_all_sites(
             analysis, field_offset_index, {}, {})
         check("(D5a) caller_alpha credited ONLY impl_alpha, not impl_beta",
               edges_to_add.get("caller_alpha") == {"impl_alpha"}, edges_to_add)
@@ -2164,7 +2170,7 @@ def test_d5a_two_structs_same_caller_both_credited():
             "indirect_sites": {"shared_caller": [("0x1000", "bl\t9000 <thunk>", "r3")]},
             "fn_insn_seq": {"shared_caller": [(0x0ffc, "ldr\tr3, [r4, #8]")]},
         }
-        edges_to_add, blind, _cm, _la = sb.resolve_all_sites(
+        edges_to_add, blind, _cm, _la, _tm, _cov = sb.resolve_all_sites(
             analysis, field_offset_index, {}, {})
         check("(D5a) a caller declared against BOTH structs at one offset gets the union",
               edges_to_add.get("shared_caller") == {"impl_alpha", "impl_beta"}, edges_to_add)
@@ -2214,7 +2220,7 @@ def test_d5a_single_owner_offset_stays_legal_unqualified():
             "indirect_sites": {"any_caller": [("0x1000", "bl\t9000 <thunk>", "r3")]},
             "fn_insn_seq": {"any_caller": [(0x0ffc, "ldr\tr3, [r4, #16]")]},
         }
-        edges_to_add, blind, _cm, _la = sb.resolve_all_sites(
+        edges_to_add, blind, _cm, _la, _tm, _cov = sb.resolve_all_sites(
             analysis, field_offset_index, {}, {})
         check("(D5a) a single-owner offset stays legal unqualified, matches any caller",
               edges_to_add.get("any_caller") == {"impl_alpha"}, edges_to_add)
@@ -2594,6 +2600,117 @@ def test_g2_third_party_fallback_scoped_to_non_project_functions():
           taken == {"crt_symbol"}, taken)
 
 
+def _b157_spilled_literal_seq(reload_off=4, lit_word="0x00002001"):
+    """The exact single-store-then-reload spilled-literal-pool shape this file's own
+    stack_edges.txt comments document for party_bob_recompose/ui_blit_over/
+    portrait_redraw/under_blit/wp_fold_region/draw_wallpaper: `ldr r3,[pc,#imm]`
+    (a literal, the IWRAM helper's own address) -> `str r3,[sp,#off]` (spilled
+    because the loop body below calls something that clobbers r3) -> a `bl` to some
+    unrelated function (proving the chase survives an intervening call, exactly the
+    real shape's "loop body" calls) -> `ldr r3,[sp,#off]` (reload) -> `bl <bx-r3
+    thunk>` (the actual indirect dispatch). Returns (fn_insn_seq, insn_map, name_at)
+    -- `insn_map`/`name_at` place the literal's target at 0x2000, named "memcpy32"
+    (mirroring the real party_bob_recompose case #157 exists to catch)."""
+    fn_insn_seq = [
+        (0x1000, "ldr\tr3, [pc, #12]\t@ (1010 <fn+0x10>)"),
+        (0x1002, f"str\tr3, [sp, #{reload_off}]"),
+        (0x1004, "bl\t3000 <unrelated_fn>"),          # loop-body call: must not disturb the chase
+        (0x1006, "movs\tr0, #0"),
+        (0x1008, f"ldr\tr3, [sp, #{reload_off}]"),     # reload right before the dispatch
+        (0x100a, "bl\t2010 <__bx_r3_thunk>"),          # the indirect-call site itself
+    ]
+    insn_map = {0x1010: f".word {lit_word}"}
+    name_at = {0x2000: "memcpy32"}
+    return fn_insn_seq, insn_map, name_at
+
+
+def test_b157_chase_reg_to_literal_word_resolves_spilled_literal():
+    """_chase_reg_to_literal_word() must see all the way through the single-store-
+    then-reload spilled-literal shape -- including the intervening `bl` to some
+    unrelated function between the spill and the reload, the exact loop-body call
+    that forces the compiler to spill in the first place (memcpy32/wp_copy_
+    verified/memset32 are all IWRAM_CODE, out of BL's +-4MB range from ROM, so
+    their address can't just sit in a caller-saved register across a call)."""
+    seq, insn_map, name_at = _b157_spilled_literal_seq()
+    target = sb._chase_reg_to_literal_word(seq, insn_map, name_at, len(seq) - 2, "r3")
+    check("(B157) spilled literal chased through an intervening bl resolves to memcpy32",
+          target == "memcpy32", target)
+
+
+def test_b157_chase_reg_to_literal_word_second_level_spill_bails_honestly():
+    """The chase is deliberately ONE level of spill deep only (`allow_sp_spill=False`
+    after the first `ldr reg,[sp,#off]`) -- a second level (a spill of a spill) must
+    return None, not silently keep chasing into a shape this file's own docstring
+    says it does not follow. Directly exercises the `allow_sp_spill=False` guard
+    _chase_sp_spill() passes down, at the unit level."""
+    seq = [
+        (0x1000, "ldr\tr3, [pc, #4]\t@ (1008 <fn+0x8>)"),
+        (0x1002, "str\tr3, [sp, #8]"),          # a genuine literal, spilled once
+        (0x1004, "ldr\tr3, [sp, #8]"),          # reloaded
+        (0x1006, "str\tr3, [sp, #12]"),         # SPILLED AGAIN (second level)
+        (0x1008, "ldr\tr3, [sp, #12]"),         # reloaded again -- this is what feeds the call
+        (0x100a, "bl\t2010 <__bx_r3_thunk>"),
+    ]
+    insn_map = {0x1008: ".word 0x00002001"}
+    name_at = {0x2000: "memcpy32"}
+    target = sb._chase_reg_to_literal_word(seq, insn_map, name_at, len(seq) - 2, "r3")
+    check("(B157) a second level of spill-through-spill bails honestly (None), not a guess",
+          target is None, target)
+
+
+def test_b157_resolve_all_sites_target_verified_when_correct():
+    """Sanity check: when the declared impl DOES match the resolvable literal-pool
+    target, resolve_all_sites() reports no target_mismatches, no count_only_
+    validated note (the site WAS resolvable), and adds the real edge -- proves the
+    new check isn't just always failing."""
+    seq, insn_map, name_at = _b157_spilled_literal_seq()
+    analysis = {
+        "indirect_sites": {"caller_x": [("0x100a", "bl\t2010 <thunk>", "r3")]},
+        "fn_insn_seq": {"caller_x": seq},
+        "insn": insn_map,
+        "name_at": name_at,
+    }
+    argsite_decls = {"caller_x": (1, {"memcpy32"})}
+    (edges_to_add, _blind, _cm, _la, target_mismatches,
+     count_only_validated) = sb.resolve_all_sites(analysis, ({}, {}), argsite_decls, {})
+    check("(B157) correct declaration: no target mismatch",
+          target_mismatches == [], target_mismatches)
+    check("(B157) correct declaration: no count-only-validated note either",
+          count_only_validated == [], count_only_validated)
+    check("(B157) correct declaration: the real edge is added",
+          edges_to_add.get("caller_x") == {"memcpy32"}, edges_to_add)
+
+
+def test_b157_mutation_memcpy16_swapped_in_is_caught():
+    """THE mutation test BACKLOG #157 exists for: mutate a declaration's target from
+    the real implementation (memcpy32) to a plausible-but-wrong one (memcpy16, the
+    project's OWN other IWRAM copy helper -- not a nonsense name, exactly the kind
+    of typo/copy-paste-from-a-neighbour-line mistake the pre-#157 count-only check
+    could never catch since the SITE COUNT does not change). Before this fix,
+    resolve_all_sites() would have silently unioned {"memcpy16"} into edges_to_add
+    and printed nothing -- 'STACK ok' with a graph edge pointing at a function that
+    is NOT what actually runs. After this fix it must FATAL-shape (a non-empty
+    target_mismatches entry naming the caller, the site, the REAL resolved target,
+    and what was wrongly declared) and must NOT add the false edge."""
+    seq, insn_map, name_at = _b157_spilled_literal_seq()
+    analysis = {
+        "indirect_sites": {"caller_x": [("0x100a", "bl\t2010 <thunk>", "r3")]},
+        "fn_insn_seq": {"caller_x": seq},
+        "insn": insn_map,
+        "name_at": name_at,
+    }
+    mutated_decls = {"caller_x": (1, {"memcpy16"})}     # the mutation: memcpy32 -> memcpy16
+    (edges_to_add, _blind, _cm, _la, target_mismatches,
+     count_only_validated) = sb.resolve_all_sites(analysis, ({}, {}), mutated_decls, {})
+    check("(B157 mutation) the wrong declared target is caught as a target mismatch",
+          target_mismatches == [("caller_x", "0x100a", "memcpy32", ["memcpy16"])],
+          target_mismatches)
+    check("(B157 mutation) the false edge is NOT added to the graph",
+          "caller_x" not in edges_to_add, edges_to_add)
+    check("(B157 mutation) NOT silently downgraded to a count-only-validated note either",
+          count_only_validated == [], count_only_validated)
+
+
 def test_b159_load_extra_edges_parses_layout_fragile_qualifier():
     """BACKLOG #159: addrtaken-ok entries can be marked with an optional
     'layout-fragile' qualifier to suppress the warning that the entry is no
@@ -2727,6 +2844,10 @@ def main():
     test_g2_local_symbol_exact_start_vs_mid_function_jump_table_entry()
     test_g2_text_literal_pool_still_detected_via_objdump_annotation()
     test_g2_third_party_fallback_scoped_to_non_project_functions()
+    test_b157_chase_reg_to_literal_word_resolves_spilled_literal()
+    test_b157_chase_reg_to_literal_word_second_level_spill_bails_honestly()
+    test_b157_resolve_all_sites_target_verified_when_correct()
+    test_b157_mutation_memcpy16_swapped_in_is_caught()
     print()
     if FAILURES:
         print(f"host_stack_budget_test: {len(FAILURES)} FAILED: {', '.join(FAILURES)}")

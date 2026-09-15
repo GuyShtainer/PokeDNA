@@ -545,6 +545,13 @@ def analyze(dump_text, addr_unique_name=None):
         "veneers": veneers,
         "fn_lines": fn_lines,
         "fn_insn_seq": dict(fn_insn_seq),
+        # BACKLOG #157: the raw addr -> instruction-text map (every decoded line,
+        # keyed by absolute address, function-independent) -- _literal_call_target()
+        # already needed this locally (as `insn`) to read back a `.word` literal's
+        # value; resolve_all_sites() (a different function, called later, on just
+        # the returned `analysis` dict) needs the SAME lookup to verify an argsites
+        # declaration's TARGET, not just its site count, so it is exposed here too.
+        "insn": dict(insn),
     }
 
 
@@ -1646,6 +1653,100 @@ def _literal_call_target(fn_insn_seq, insn_map, name_at_map, reg):
     return None                                         # never (re)defined in this function
 
 
+# BACKLOG #157: `str rX, [sp, #off]` -- the ONE Thumb shape _chase_reg_to_literal_word()
+# below needs to recognize a stack-spilled literal's store side (its load side is
+# already the `ldr rN, [sp, #off]` LDR_FIELD_RE, with base 'sp', already matches).
+STR_SP_RE = re.compile(rf'^str\w*\s+({REG_TOK})\s*,\s*\[\s*sp\s*,\s*#(-?\d+)\s*\]$')
+
+
+def _chase_sp_spill(fn_insn_seq, insn_map, name_at_map, start_i, off):
+    """BACKLOG #157: the second half of the spilled-literal-pool shape
+    (`ldr reg,[pc,#imm]` -> `str reg,[sp,#off]` ... loop body ... `ldr rN,[sp,#off]`
+    -> `bl <bx-rN thunk>`) party_bob_recompose/ui_blit_over/portrait_redraw's own
+    stack_edges.txt comments document -- memcpy32's address is spilled across a
+    loop because it's IWRAM_CODE, out of BL's +-4MB range, so GCC can't leave it in
+    a caller-saved register across the loop body. Scans `fn_insn_seq` backward from
+    `start_i` (the instruction just above the `ldr rN,[sp,#off]` reload
+    _chase_reg_to_literal_word() already found) for the NEAREST preceding
+    `str rY,[sp,#off]` at the SAME offset (the standard "last write before this
+    read" answer when scanning backward with no intervening redefinition of that
+    exact slot) -- calls/branches pass through untouched (a callee does not write
+    into ITS CALLER's own local stack slots in this ABI). Once found, continues
+    the chase for `rY`'s own origin ONE level only (`allow_sp_spill=False` -- a
+    second level of spill-through-spill is not the shape any real caller in this
+    codebase uses; keeping this to exactly one level matches "the shape is not
+    that simple" bailing out honestly to the count-only-validated fallback rather
+    than guessing). Returns the resolved function name, or None."""
+    for i in range(start_i, -1, -1):
+        _a, ins = fn_insn_seq[i]
+        ins_clean = ins.split('@')[0].strip()
+        sm = STR_SP_RE.match(ins_clean)
+        if sm and int(sm.group(2)) == off:
+            return _chase_reg_to_literal_word(fn_insn_seq, insn_map, name_at_map,
+                                               i - 1, sm.group(1), allow_sp_spill=False)
+    return None                                # no store to this slot found: give up
+
+
+def _chase_reg_to_literal_word(fn_insn_seq, insn_map, name_at_map, start_i, reg,
+                                allow_sp_spill=True):
+    """BACKLOG #157: like _literal_call_target() (same clobber-tracking discipline:
+    calls/branches pass through unless they clobber a caller-saved `reg`, `mov`
+    copies are chased, anything else redefining `reg` bails to None), but callable
+    from an arbitrary starting index (not just "the instruction right before this
+    function's own `bl <bx-rN thunk>`" -- resolve_all_sites() needs to start this
+    chase at each individual argsites site, of which a caller can have several) and
+    ALSO able to see through exactly one level of the stack-spilled-literal shape
+    (`ldr reg,[sp,#off]` -> _chase_sp_spill()) that _literal_call_target() (D6,
+    trap #5) deliberately does not chase (`if m.group(2) != 'pc': return None`) --
+    kept separate on purpose rather than folding this into trap #5 itself, so
+    trap #5's own existing, already-verified behaviour (used to auto-resolve a
+    direct literal call into a real edge with NO declaration needed at all) is
+    untouched. Returns the resolved function name, or None (a struct-field load, a
+    literal that does not land on a function's entry address, a spill this walker
+    cannot trace back to a literal in one level, or a shape this tracker can't
+    follow at all -- erring toward "can't resolve" the same conservative direction
+    every other chase in this file takes)."""
+    for i in range(start_i, -1, -1):
+        a, ins = fn_insn_seq[i]
+        ins_clean = ins.split('@')[0].strip()
+        if CALL_MNEM_RE.match(ins_clean):
+            if reg in CALLER_SAVED_REGS:
+                return None                            # clobbered by the call
+            continue                                    # callee-saved reg survives a call
+        if BRANCH_MNEM_RE.match(ins_clean):
+            continue
+        m = LDR_FIELD_RE.match(ins_clean)
+        if m:
+            if m.group(1) != reg:
+                continue
+            base = m.group(2)
+            if base == 'pc':
+                lit_addr = (a & ~3) + 4 + int(m.group(3))   # Thumb PC-relative: align, +4 pipeline
+                word_ins = insn_map.get(lit_addr, "")
+                wm = re.match(r'^\.word\s+0x([0-9a-f]+)$', word_ins)
+                if not wm:
+                    return None
+                return name_at_map.get(int(wm.group(1), 16) & ~1)   # mask the Thumb bit
+            if base == 'sp' and allow_sp_spill:
+                return _chase_sp_spill(fn_insn_seq, insn_map, name_at_map, i - 1,
+                                        int(m.group(3)))
+            return None                                # field/second-level-spill/lr load
+        if _ldm_defines(ins_clean, reg):                # trap #7: ldm redefines it, not a literal
+            return None
+        if LDM_RE.match(ins_clean):
+            continue                                    # ldm, but doesn't touch `reg`
+        if STORE_MNEM_RE.match(ins_clean) or CMP_MNEM_RE.match(ins_clean):
+            continue
+        mv = MOV_REG_RE.match(ins_clean)
+        if mv and mv.group(1) == reg:
+            reg = mv.group(2)
+            continue
+        dm = DEST_REG_RE.match(ins_clean)
+        if dm and dm.group(1) == reg:
+            return None                                # set by something not ldr-pc/mov
+    return None                                         # never (re)defined in this function
+
+
 def _base_is_section_anchor(fn_insn_seq, ldr_idx, base_reg):
     """True if `base_reg` (the rY in `ldr rN, [rY, #off]`) was ITSELF materialized
     from a PC-relative literal (`ldr rY, [pc, #imm]`) with nothing redefining it in
@@ -2120,15 +2221,37 @@ def resolve_all_sites(analysis, field_offset_index, argsite_decls, whole_func_de
                            whose count no longer matches the disassembly
       legacy_ambiguous  : [caller, ...] whole-function declarations on a caller that
                            now has more than one indirect site (needs a structured decl)
+      target_mismatches : [(caller, addr, resolved_target, declared_impls), ...]
+                           (BACKLOG #157) an argsites site whose dispatch register
+                           was traced all the way back to a concrete `.word`
+                           literal-pool value (the spilled-literal-pool shape --
+                           see _chase_reg_to_literal_word()), and that CONCRETE
+                           target is not one of the caller's own declared impls --
+                           i.e. the count matched, but the wrong name was declared.
+                           Proves the count-only check alone cannot catch a
+                           mutated/wrong implementation name (e.g. `-> memcpy16`
+                           swapped in for a real `-> memcpy32` site).
+      count_only_validated : [caller, ...] argsites declarations where the count
+                           matched but at least one site's register could NOT be
+                           traced to a concrete literal (a genuine parameter/
+                           struct-threaded dispatch, or a shape more complex than
+                           the single-store-then-reload spill) -- these callers
+                           are validated by SITE COUNT ONLY, same as before this
+                           BACKLOG #157 fix; printed once per caller so the gap is
+                           visible, not silently identical-looking to a verified one.
     Never trusts a caller-wide declaration for MULTIPLE sites unless every one of
     them is individually accounted for -- the whole point of D1."""
     qualified_offset_impls, unqualified_offset_impls = field_offset_index
 
     fn_insn_seq = analysis["fn_insn_seq"]
+    insn_map = analysis.get("insn", {})
+    name_at = analysis.get("name_at", {})
     edges_to_add = collections.defaultdict(set)
     blind = collections.defaultdict(list)
     count_mismatches = []
     legacy_ambiguous = []
+    target_mismatches = []
+    count_only_validated = []
 
     for fn, sites in analysis["indirect_sites"].items():
         total = len(sites)
@@ -2175,18 +2298,48 @@ def resolve_all_sites(analysis, field_offset_index, argsite_decls, whole_func_de
                 else:
                     edges_to_add[fn] |= site_impls
             else:
-                nonfield_sites.append((addr, ins))
+                nonfield_sites.append((addr, ins, reg))
         if fn in argsite_decls:
             n, impls = argsite_decls[fn]
             if len(nonfield_sites) != n:
                 count_mismatches.append((fn, n, len(nonfield_sites)))
             else:
-                edges_to_add[fn] |= impls
+                # BACKLOG #157: the count matching is NOT proof the declared impl(s)
+                # are the right ones -- try to read the concrete literal-pool value
+                # each site's register actually dispatches through (the single-
+                # store-then-reload spilled-literal shape) and compare it against
+                # the declared impls, name for name (Thumb-bit-masked address ==
+                # the same as a name match, since `name_at` is a bijection from this
+                # ELF's own addresses). A site whose shape is too complex to trace
+                # falls back to today's count-only trust, ONE reported note per
+                # caller (not per unresolved site). Mirrors count_mismatches's own
+                # "don't trust it either" posture: a caller with ANY proven-wrong
+                # site does not get its edges unioned in (main() FATALs on this
+                # anyway, but a caller of resolve_all_sites() in isolation -- e.g.
+                # a future re-derivation, or this file's own unit tests -- must
+                # never see a graph edge this run just proved false).
+                any_unresolved = False
+                fn_mismatches = []
+                for addr, ins, reg in nonfield_sites:
+                    seq = fn_insn_seq.get(fn, [])
+                    idx = bisect.bisect_left(seq, (int(addr, 16), ''))
+                    target = _chase_reg_to_literal_word(seq, insn_map, name_at, idx - 1, reg)
+                    if target is None:
+                        any_unresolved = True
+                    elif target not in impls:
+                        fn_mismatches.append((fn, addr, target, sorted(impls)))
+                if fn_mismatches:
+                    target_mismatches.extend(fn_mismatches)
+                else:
+                    edges_to_add[fn] |= impls
+                    if any_unresolved:
+                        count_only_validated.append(fn)
         else:
-            for addr, ins in nonfield_sites:
+            for addr, ins, reg in nonfield_sites:
                 blind[fn].append((addr, ins, "parameter/register dispatch, no "
                                    "argsites declaration for this caller"))
-    return dict(edges_to_add), dict(blind), count_mismatches, legacy_ambiguous
+    return (dict(edges_to_add), dict(blind), count_mismatches, legacy_ambiguous,
+            target_mismatches, sorted(set(count_only_validated)))
 
 
 def dump_sites(analysis, field_offset_index, argsite_decls, whole_func_decls):
@@ -3392,7 +3545,8 @@ def main(argv):
             print(f"***   {p}", file=sys.stderr)
         return 1
 
-    edges_to_add, blind, count_mismatches, legacy_ambiguous = resolve_all_sites(
+    (edges_to_add, blind, count_mismatches, legacy_ambiguous, target_mismatches,
+     count_only_validated) = resolve_all_sites(
         analysis, field_offset_index, argsite_decls, whole_func_decls)
 
     # F1(b) (BACKLOG #84b seventh pass): an `addrtaken-ok` exemption is CHECKED, not
@@ -3481,6 +3635,32 @@ def main(argv):
                   "a site appeared or vanished; re-read the source and update the count",
                   file=sys.stderr)
         return 1
+    # BACKLOG #157: an argsites declaration whose count matched but whose site(s)
+    # resolve to a CONCRETE literal-pool target that is not among the declared
+    # impls -- the count-only check above cannot catch this (a mutated/renamed
+    # implementation with the same site count still "passes"); FATAL, naming the
+    # caller, the site, the resolved target, and what was declared.
+    if target_mismatches:
+        print(f"*** stack_budget: {args.edges_file} argsites declaration(s) name the "
+              "WRONG implementation for a resolvable site:", file=sys.stderr)
+        for caller, addr, target, impls in target_mismatches:
+            print(f"***   {caller} @ {addr}: dispatch register resolves to literal-pool "
+                  f"target '{target}', which is not in the declared impls "
+                  f"{impls} -- re-read the source and fix the '-> ...' list",
+                  file=sys.stderr)
+        return 1
+    # BACKLOG #157: an argsites declaration where AT LEAST ONE site's dispatch
+    # register could not be traced to a concrete literal (a genuine parameter/
+    # struct-threaded dispatch, or a spill shape more complex than one level) --
+    # not fatal (this is exactly the same count-only trust this file has always
+    # extended such declarations), but printed once per caller so this residual
+    # blind spot never looks identical to a target-verified declaration.
+    if count_only_validated:
+        print(f"*** stack_budget: {len(count_only_validated)} argsites declaration(s) "
+              f"in {args.edges_file} are validated by SITE COUNT ONLY (the dispatch "
+              "register could not be traced to a concrete literal-pool target):")
+        for caller in count_only_validated:
+            print(f"***   {caller}")
     if legacy_ambiguous:
         print(f"*** stack_budget: {args.edges_file} declares a whole-function exemption "
               "for a caller that now has MORE THAN ONE indirect-call site -- that is "
