@@ -375,7 +375,8 @@ static void raw_flag_browser(GbSession* s, GbGame g, bool* dirty, bool* warned, 
       ui_text(8, y, ink, row);
     }
     ui_hline(0, 151, UI_SCR_W, UI_BORDER);
-    ui_text(4, 152, UI_DIM, "A toggle  U/D  SEL jump#  B back");
+    ui_text(4, 152, UI_DIM, can_edit ? "A toggle  U/D  SEL jump#  B back"
+                                     : "U/D  SEL jump#  B back");
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B | KEY_SELECT);
     if (k & KEY_B) return;
@@ -458,7 +459,8 @@ void pdna_gbflags(GbSession* s, bool can_edit) {
       if (!part) {
         for (int i = 0; i < 14 && top + i < ctr_n; i++)
           ctr_row_paint(s, g, ctr_rows[top + i], 16 + i * 9, top + i == sel);
-        ui_text(4, 152, UI_DIM, "A edit  U/D  L/R tab  B done");
+        ui_text(4, 152, UI_DIM, can_edit ? "A edit  U/D  L/R tab  B done"
+                                         : "U/D  L/R tab  B done");
       } else if (sel != c_sel) {                  /* cursor-only change: swap the highlight */
         ctr_row_repaint(s, g, ctr_rows, ctr_n, top, c_sel, sel);
         ctr_row_repaint(s, g, ctr_rows, ctr_n, top, sel, sel);
@@ -478,7 +480,8 @@ void pdna_gbflags(GbSession* s, bool can_edit) {
           if (!nf_visible(r)) continue;
           nf_draw_row(s, g, r, 26 + drawn * 9, r == sel); drawn++;
         }
-        ui_text(4, 152, UI_DIM, "A toggle/fold  SEL jump  L/R");
+        ui_text(4, 152, UI_DIM, can_edit ? "A toggle/fold  SEL jump  L/R"
+                                         : "A fold  SEL jump  L/R");
       }
       f_valid = true; f_top = top; f_fold = s_gbfl_folded; f_sel = sel;
     }
