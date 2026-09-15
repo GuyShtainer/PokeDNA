@@ -175,6 +175,46 @@ static void test_xg_chunk_crossgen_denied(void) {
   printf("(I) xg_chunk_crossgen_denied: all 9 scope pairs\n");
 }
 
+/* ---- BACKLOG #150 S150-7 decision D2: xg_bank_down_arm's own truth table --------- */
+static void test_xg_bank_down_arm(void) {
+  /* cell_gen: 0 (not native), 1 (GB_GEN1), 2 (GB_GEN2), and a garbage value (3) to
+   * prove the "anything other than 1 or 2" row, not just the documented "0". */
+  const uint8_t cell_gens[4] = { 0, 1, 2, 3 };
+  const uint8_t scopes[3]    = { BOXSCOPE_PC, BOXSCOPE_BANK, XG_SCOPE_GB };
+  /* dst_gen: 0 (no session), 1, 2, and a garbage value (3) for the "out of range" row. */
+  const uint8_t dst_gens[4]  = { 0, 1, 2, 3 };
+
+  for (int ci = 0; ci < 4; ci++)
+    for (int si = 0; si < 3; si++)
+      for (int gi = 0; gi < 4; gi++) {
+        uint8_t cell_gen = cell_gens[ci], dst_scope = scopes[si], dst_gen = dst_gens[gi];
+        bool cell_native = (cell_gen == 1 || cell_gen == 2);
+        uint8_t want;
+        if (!cell_native) want = XG_DOWN_ARM_NONE;
+        else if (dst_scope == BOXSCOPE_BANK) want = XG_DOWN_ARM_NONE;
+        else if (dst_scope == BOXSCOPE_PC) want = XG_DOWN_ARM_GEN3;
+        else if (dst_gen != 1 && dst_gen != 2) want = XG_DOWN_ARM_NONE;
+        else want = (dst_gen == cell_gen) ? XG_DOWN_ARM_EXACT : XG_DOWN_ARM_GB_BRIDGE;
+
+        uint8_t got = xg_bank_down_arm(cell_gen, dst_scope, dst_gen);
+        CHECK(got == want,
+              "bank_down_arm: cell_gen/dst_scope/dst_gen combination matches the D2 table");
+        if (got != want)
+          printf("     cell_gen=%u dst_scope=%u dst_gen=%u: want %u got %u\n",
+                 cell_gen, dst_scope, dst_gen, want, got);
+      }
+  /* Named rows, exactly as the design doc's table lists them. */
+  CHECK(xg_bank_down_arm(0, XG_SCOPE_GB, 1) == XG_DOWN_ARM_NONE, "row 1: cell_gen 0 -> NONE");
+  CHECK(xg_bank_down_arm(1, BOXSCOPE_BANK, 0) == XG_DOWN_ARM_NONE, "row 2: any Bank destination -> NONE");
+  CHECK(xg_bank_down_arm(2, BOXSCOPE_PC, 0) == XG_DOWN_ARM_GEN3, "row 3: PC destination -> GEN3");
+  CHECK(xg_bank_down_arm(1, XG_SCOPE_GB, 1) == XG_DOWN_ARM_EXACT, "row 4: GB, same gen -> EXACT");
+  CHECK(xg_bank_down_arm(2, XG_SCOPE_GB, 2) == XG_DOWN_ARM_EXACT, "row 4: GB, same gen (gen 2) -> EXACT");
+  CHECK(xg_bank_down_arm(1, XG_SCOPE_GB, 2) == XG_DOWN_ARM_GB_BRIDGE, "row 5: GB, other gen -> GB_BRIDGE");
+  CHECK(xg_bank_down_arm(2, XG_SCOPE_GB, 1) == XG_DOWN_ARM_GB_BRIDGE, "row 5: GB, other gen (gen 1) -> GB_BRIDGE");
+  CHECK(xg_bank_down_arm(1, XG_SCOPE_GB, 0) == XG_DOWN_ARM_NONE, "row 6: GB, dst_gen 0 -> NONE");
+  printf("(P) xg_bank_down_arm: 4x3x4 = 48 combinations against the D2 table, plus the 8 named rows\n");
+}
+
 /* ---- REVIEW F6: gbs_can_delete's own lift-refusal table, over a SYNTHESISED session
  * (the corpus has no Mail) ------------------------------------------------------- */
 static uint8_t g_cd_img[GBF_MAX_BYTES];
@@ -339,6 +379,7 @@ int main(void) {
   test_xg_drop_denied();
   test_xg_native_escape_denied();
   test_xg_chunk_crossgen_denied();
+  test_xg_bank_down_arm();
   test_gbs_can_delete_table();
   test_mail_row_mutation();
 

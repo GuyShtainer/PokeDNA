@@ -66,4 +66,27 @@ bool xg_native_escape_denied(const uint8_t rec80[80], uint8_t dst_scope);
  * and would not preserve the line it replaces (S150-3 decision 1). */
 bool xg_chunk_crossgen_denied(uint8_t dst_scope, uint8_t chunk_scope);
 
+/* BACKLOG #150 S150-7 decision D2 -- which DOWN arm a native "GBC1" Bank cell takes
+ * off pdna_box.c's bank_down_dispatch(). Pure predicate: `cell_gen` = bc_kind(cell80)
+ * (0 when not native), `dst_scope` = BOXSCOPE_* as a plain uint8_t, `dst_gen` = the
+ * destination GB session's generation (GB_GEN1/GB_GEN2; 0 when the destination is not
+ * a GB save at all). This header never includes bank_cell.h/gb_edit.h -- the caller
+ * has already done the one read (bc_kind) this predicate needs.
+ *
+ *   cell_gen==0                        -> XG_DOWN_ARM_NONE   (not a native DOWN at all)
+ *   dst_scope==BOXSCOPE_BANK           -> XG_DOWN_ARM_NONE   (native cells only ever
+ *                                          leave the Bank through THIS dispatcher, and
+ *                                          a Bank->Bank drop is drop_held's own
+ *                                          within-scope move, never this arm)
+ *   dst_scope==BOXSCOPE_PC             -> XG_DOWN_ARM_GEN3   (S150-8)
+ *   dst_scope==BOXSCOPE_GB, same gen   -> XG_DOWN_ARM_EXACT  (S150-7, this lane)
+ *   dst_scope==BOXSCOPE_GB, other gen  -> XG_DOWN_ARM_GB_BRIDGE (S150-8)
+ *   dst_scope==BOXSCOPE_GB, dst_gen 0
+ *     or out of range                  -> XG_DOWN_ARM_NONE   (no session, nothing can land) */
+enum { XG_DOWN_ARM_NONE = 0,   /* not a native DOWN at all -- drop_held's own paths handle it */
+       XG_DOWN_ARM_EXACT,      /* native cell -> SAME-generation GB save   (S150-7)           */
+       XG_DOWN_ARM_GB_BRIDGE,  /* native cell -> OTHER-generation GB save  (S150-8)           */
+       XG_DOWN_ARM_GEN3 };     /* native cell -> Gen-3 PC / party          (S150-8)           */
+uint8_t xg_bank_down_arm(uint8_t cell_gen, uint8_t dst_scope, uint8_t dst_gen);
+
 #endif

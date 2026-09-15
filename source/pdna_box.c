@@ -1103,6 +1103,47 @@ static uint8_t* clear_origin(BoxSource* src, int box) {
   return src->records(box);                                  /* reload the current box */
 }
 
+/* docs/BANK-CROSSGEN-DESIGN.md SS11.3 + SS11.20 item 12(c): the ONE entry a native
+ * "GBC1" Bank cell leaves the Bank through. Called from drop_held() the moment a
+ * native carry is dropped on a NON-Bank destination, BEFORE xg_native_escape_denied
+ * -- that gate still guards every RAW 80-byte write below it, and this call never
+ * falls through to one. Either the cell LANDED (destination persisted AND the Bank
+ * source consumed) or NOTHING anywhere changed and the hand keeps holding. */
+typedef enum { BANK_DOWN_REFUSED = 0, BANK_DOWN_LANDED = 1 } BankDownResult;
+
+/* The XG_DOWN_ARM_EXACT arm: land the cell in a Game Boy save of the SAME generation
+ * via the vtable's accept_down hook, then (BACKLOG #150 S150-7 step 4 fills in) consume
+ * the Bank's own copy per D7/D12. */
+static BankDownResult bank_down_exact(BoxSource* src, int dst_box, const uint8_t cell80[80]) {
+  if (!src->xfer || !src->xfer->accept_down) { snd_deny(); return BANK_DOWN_REFUSED; }
+  boxoam_suspend();
+  bool ok = src->xfer->accept_down(dst_box, cell80);
+  boxoam_resume();
+  if (!ok) return BANK_DOWN_REFUSED;          /* the hook already said why */
+  /* BACKLOG #150 S150-7 step 4 fills in the Bank consume (D7/D12) here. */
+  return BANK_DOWN_LANDED;
+}
+
+/* BACKLOG #150 S150-7 decision D1/D-Q5 (CANONICAL spelling for the parallel S150-8
+ * lane -- see the brief's "Known divergence" section): a switch over xg_bank_down_arm()
+ * whose EXACT case calls bank_down_exact(); the GB_BRIDGE and GEN3 cases are each
+ * exactly one line so S150-8's merge replaces just those two lines with calls into its
+ * own new file. `dst_cell` is unused by the EXACT arm (a Game Boy list always appends
+ * at its own next free slot -- see gb_create_hook's own comment) and is carried for
+ * S150-8's Gen-3 arm, which needs the exact cell. noinline: must not inline into
+ * drop_held, which sits on the box-screen stack chain. */
+static BankDownResult __attribute__((noinline))
+bank_down_dispatch(BoxSource* src, int dst_box, int dst_cell, const uint8_t cell80[80]) {
+  (void)dst_cell;
+  switch (xg_bank_down_arm(bc_kind(cell80), src->scope, (uint8_t)(src->xfer ? src->xfer->gen : 0))) {
+    case XG_DOWN_ARM_EXACT:     return bank_down_exact(src, dst_box, cell80);
+    case XG_DOWN_ARM_GB_BRIDGE: return BANK_DOWN_REFUSED; /* S150-8 */
+    case XG_DOWN_ARM_GEN3:      return BANK_DOWN_REFUSED; /* S150-8 */
+    case XG_DOWN_ARM_NONE:
+    default:                    return BANK_DOWN_REFUSED;
+  }
+}
+
 /* Drop the held mon onto cursor cell `cur`. Within the origin's scope: true move (place +
  * clear origin; swap if occupied). Across the PC<->Bank boundary: COPY onto an empty cell
  * only (origin kept) so a mon can't be lost between two save scopes. *done=true when the
@@ -1111,6 +1152,20 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
   *done = false;
   if (s_orig_slot >= 0 && same_scope(src) && s_orig_box == box && cur == s_orig_slot) {
     s_holding = false; *done = true; return recs;            /* dropped back on its own cell */
+  }
+  /* BACKLOG #150 S150-7 (SS11.3, SS11.20 item 12(c)): the ONE sanctioned exit a native
+   * cell has. ABOVE the escape gate on purpose -- that gate still guards every RAW
+   * 80-byte write below, and this branch never falls through to one. !s_held_dup:
+   * S150-3's menu whitelist keeps DUPLICATE off a native cell's menu, so a native
+   * s_held_dup is already impossible -- belt and braces, since a dup has no origin
+   * to consume. */
+  if (s_orig_scope == BOXSCOPE_BANK && s_orig_slot >= 0 && !s_held_dup &&
+      src->scope != BOXSCOPE_BANK && bc_is_native(s_held)) {
+    if (bank_down_dispatch(src, box, cur, s_held) == BANK_DOWN_LANDED) {
+      s_holding = false; *done = true; s_oam_reload = true;
+      recs = src->records(box);            /* the GB list grew -- repaint from the image */
+    }
+    return recs;
   }
   /* BACKLOG #150 S150-3 decision 3: a native "GBC1" cell may only ever land back in the
    * Bank -- `src->scope` IS the destination scope on every branch below (`recs` always
