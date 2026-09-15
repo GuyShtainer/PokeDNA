@@ -6538,9 +6538,15 @@ static void pdna_daycare(void) {
             saved = false;
             nav = pdna_inspect(recs[sel], false, app_can_edit(), out, &saved, &card);
             if (saved) {
-              memcpy(recs[sel], out, 80);                      /* daycare mons are 80-byte BoxPokemon in SB1 */
-              app_stage_sb1();                                 /* deferred: saved when you leave the save */
-              if (pk_decode_mon(recs[sel], false, &dc[sel])) pk_resolve(&dc[sel]);  /* refresh the scene copy */
+              /* BACKLOG #150 S150-6 review F4: the third pdna_inspect->save route --
+               * mirrors app_box_browse/party_browse's guarded commit exactly. */
+              XferRekeyPlan dplan;
+              if (app_xfer_pid_guard(recs[sel], out, &dplan)) {
+                memcpy(recs[sel], out, 80);                      /* daycare mons are 80-byte BoxPokemon in SB1 */
+                app_stage_sb1();                                 /* deferred: saved when you leave the save */
+                app_xfer_pid_rekey(&dplan);
+                if (pk_decode_mon(recs[sel], false, &dc[sel])) pk_resolve(&dc[sel]);  /* refresh the scene copy */
+              }
             }
             if (n > 1) { if (nav > 0) sel = (sel + 1) % n; else if (nav < 0) sel = (sel + n - 1) % n; }
           } while (nav != 0 && n > 1);
@@ -8784,6 +8790,11 @@ typedef struct {
                          * than one Game Boy save (each transfer is its own sidecar
                          * entry, but they all name the SAME Gen-3 slot). The confirm
                          * screen promises nunique mons, not nhits entries. */
+  int        examined;  /* BACKLOG #150 S150-6 review F6: GB_RECON_MAX_EXAMINE must be
+                         * GLOBAL across BOTH reconcile passes (golden rule 2) -- a
+                         * per-call local would let a two-pass walk examine up to
+                         * 2x GB_RECON_MAX_EXAMINE entries total, unbounded across the
+                         * pair the way the old single-pass code never had to consider. */
 } GbReconBuf;
 _Static_assert(sizeof(GbReconBuf) <= sizeof(g_entries),
               "gb_reconcile buffer no longer fits the borrowed g_entries cache");
@@ -8833,12 +8844,12 @@ static void __attribute__((noinline)) gb_reconcile_walk(GbReconBuf* rb, bool app
     rb->nfiles = 0;
     rb->nhits = 0;
     rb->nunique = 0;
+    rb->examined = 0;   /* review F6: GLOBAL across both passes, reset only at pass 1 */
   }
-  int examined = 0;
-  while (examined < GB_RECON_MAX_EXAMINE && rb->nfiles < GB_RECON_MAX_FILES &&
+  while (rb->examined < GB_RECON_MAX_EXAMINE && rb->nfiles < GB_RECON_MAX_FILES &&
         rb->nhits < GB_RECON_MAX_HITS &&
         f_readdir(&rb->dir, &rb->fi) == FR_OK && rb->fi.fname[0]) {
-    examined++;
+    rb->examined++;
     if (rb->fi.fattrib & AM_DIR) continue;
     int L = 0; while (rb->fi.fname[L]) L++;
     if (L < 5 || L >= GB_RECON_NAME_MAX) continue;
@@ -9073,20 +9084,23 @@ static void __attribute__((noinline)) gb_reconcile_on_load(void) {
   GbReconBuf* rb = (GbReconBuf*)app_box_swap_acquire(sizeof(GbReconBuf));
   if (!rb) { log_line("gen3: reconcile-on-load: swap buffer unavailable, skipped"); return; }
 
-  /* BACKLOG #150 S150-6, site 6/decision 7: pass 1 (xfer) resets and fills
-   * rb->nfiles/nhits/nunique; pass 2 (sidecar) APPENDS, skipping any filename
-   * pass 1 already found -- post-migration this accepts nothing (every migrated
-   * file's twin is already in rb->names), so the steady-state cost is one extra
-   * f_opendir. On a card where the migration could not run (read-only cart,
-   * Everdrive, or a failed pass) pass 2 is what keeps this screen working at all. */
+  /* BACKLOG #150 S150-6, site 6/decision 7 (review F3): pass 1 (xfer) resets and
+   * fills rb->nfiles/nhits/nunique; pass 2 (sidecar) APPENDS, skipping any filename
+   * pass 1 already found -- but ONLY runs at all when xr_migrated() is false. Once
+   * the migration has completed, every sidecar source is an inert backup (frozen
+   * at whatever it held at migration time) and /PokeDNA/xfer alone is the live
+   * ledger, so reading sidecar too would re-offer a mon whose xfer-side entry a
+   * PRIOR claim/KEEP already updated (the sidecar copy never saw that update). On
+   * a card where the migration could not run (read-only cart, Everdrive, or a
+   * failed pass) pass 2 is what keeps this screen working at all. */
   bool have_xfer = f_opendir(&rb->dir, PDNA_XFER_DIR) == FR_OK;
   if (have_xfer) {
     gb_reconcile_walk(rb, false);
     f_closedir(&rb->dir);
   } else {
-    rb->nfiles = 0; rb->nhits = 0; rb->nunique = 0;
+    rb->nfiles = 0; rb->nhits = 0; rb->nunique = 0; rb->examined = 0;
   }
-  if (f_opendir(&rb->dir, PDNA_SIDECAR_DIR) == FR_OK) {
+  if (!xr_migrated() && f_opendir(&rb->dir, PDNA_SIDECAR_DIR) == FR_OK) {
     gb_reconcile_walk(rb, true);
     f_closedir(&rb->dir);
   } else if (!have_xfer) {
