@@ -899,6 +899,10 @@ int main(void) {
   PF(PDNA_XFER_NOGEN_TITLE, 28, 184);
   PF(PDNA_XFER_NOGEN_L1,    28, 184);
   PF(PDNA_XFER_NOGEN_L2,    28, 184);
+  /* BACKLOG #150 S150-3 decision 10: drop_held's native-escape deny (pdna_box.c). */
+  PF(PDNA_XFER_NATIVE_TITLE, 28, 184);
+  PF(PDNA_XFER_NATIVE_L1,    28, 184);
+  PF(PDNA_XFER_NATIVE_L2,    28, 184);
   /* BACKLOG #120 S2: app_inject_to_game()/_deferred()'s "no live Gen-3 PC" refusal
    * (pdna_main.c). Literal, like the msg_wait call sites that pass it directly. */
   PF("NO GEN-3 SAVE",              28, 184);

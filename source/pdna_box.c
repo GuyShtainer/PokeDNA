@@ -13,6 +13,9 @@
 _Static_assert(BOXSCOPE_GB == 2, "source/xfer_gate.c's XG_SCOPE_GB hard-codes 2 for "
                "BOXSCOPE_GB -- keep them in step or the cross-generation drop deny "
                "silently stops firing");
+_Static_assert(BOXSCOPE_BANK == 1, "source/xfer_gate.c's XG_SCOPE_BANK hard-codes 1 for "
+               "BOXSCOPE_BANK -- keep them in step or the native-cell escape gate "
+               "silently stops firing (BACKLOG #150 S150-3)");
 #include "ui.h"
 #include "pdna_layout.h"    /* PDNA_PCP_*: the PC-box party strip's retail-measured geometry */
 #include "gen3_save.h"
@@ -1090,6 +1093,21 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
   if (s_orig_slot >= 0 && same_scope(src) && s_orig_box == box && cur == s_orig_slot) {
     s_holding = false; *done = true; return recs;            /* dropped back on its own cell */
   }
+  /* BACKLOG #150 S150-3 decision 3: a native "GBC1" cell may only ever land back in the
+   * Bank -- `src->scope` IS the destination scope on every branch below (`recs` always
+   * belongs to `src`), including the homeless fall-through further down that runs the
+   * "PC -> Bank" code with the PC as the real destination. Dominates the five memcpy
+   * sites below that can write s_held into `recs`: the cross-scope DUPLICATE fast path,
+   * the BANK -> PC true-MOVE, the PC -> Bank always-RELEASE, the empty-cell place, and
+   * the same-scope SWAP place. The hand is NOT emptied (still holding), same shape as
+   * the `if (occupied)` refusal below it. */
+  if (xg_native_escape_denied(s_held, src->scope)) {
+    boxoam_suspend();
+    snd_deny();
+    msg_wait(PDNA_XFER_NATIVE_TITLE, UI_WARN, PDNA_XFER_NATIVE_L1, PDNA_XFER_NATIVE_L2);
+    boxoam_resume();
+    return recs;
+  }
   /* A bank slot whose mon is moving out to the PC looks empty but still holds that mon's only
    * on-card copy until the PC is saved — treat it as OCCUPIED so nothing overwrites it.
    * bc_is_native (BACKLOG #150 S150-2, G-H2): a native cell g_box[cur].species cannot
@@ -1152,6 +1170,11 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
   /* occupied within scope -> SWAP, then KEEP HOLDING the displaced occupant (place it
    * yourself next; we don't auto-throw it into the held mon's old cell). */
   if (s_orig_slot < 0 && s_held_dup) { snd_deny(); return recs; }          /* a fresh dup can't swap */
+  /* BACKLOG #150 S150-3 review F2: the escape gate above reads the HELD record; the SWAP
+   * below also WRITES the destination. A native cell may be DISPLACED by another
+   * native cell, never overwritten by a Gen-3 record -- box_save's invariant would
+   * then refuse every later save of this box with no UI at all. */
+  if (bc_is_native(recs + (uint32_t)cur * 80) && !bc_is_native(s_held)) { snd_deny(); return recs; }
   if (s_orig_slot >= 0 && s_orig_box != box && src->scope == BOXSCOPE_BANK) { snd_deny(); return recs; }  /* the REAL Bank's cross-box swap is unsafe (S1 review D1 companion); GB swaps arrive with S3's move_within */
   if (src->note_add) src->note_add(s_held);                                /* placed mon enters this scope -> dex */
   uint8_t occ[80]; memcpy(occ, recs + (uint32_t)cur * 80, 80);             /* save the occupant */
@@ -1290,20 +1313,36 @@ static void draw_footer(bool is_bank, bool on_title, bool moving) {
   ui_text(WP_X + 2, 152, RGB15(31, 31, 31), f);
 }
 
-/* Set a box mon's held item (decrypt -> set -> re-encode + checksum, in place). */
-static void box_set_held(uint8_t* recs, int slot, uint16_t item) {
+/* Set a box mon's held item (decrypt -> set -> re-encode + checksum, in place).
+ * Returns false, writing nothing, on a native cell.
+ * BACKLOG #150 S150-3 review F1: a native GBC1 cell is not a Gen-3 record -- the
+ * grid's ITEM mode is a fourteenth escape route the brief's twelve missed. Every
+ * native cell decodes as g_box[cur].species != 0 (S150-2's G-H2 stand-in) and
+ * heldItem == 0, so GIVE/swap, TAKE and the B put-back's own g_box[]-only tests
+ * never exclude it on their own -- this is the single choke point all three
+ * callers now gate on. */
+static bool box_set_held(uint8_t* recs, int slot, uint16_t item) {
   uint8_t* rec = recs + (uint32_t)slot * 80;
+  if (bc_is_native(rec)) { snd_deny(); return false; }
   EditMon e; gen3_edit_load(rec, false, &e);
   em_set_item(&e, item);
   uint8_t out[100]; gen3_edit_commit(&e, out);
   memcpy(rec, out, 80);
+  return true;
 }
 
 /* A safe home slot to deposit the carried item: its source slot if still empty-
- * handed, else the first occupied mon with no item; -1 if nowhere (never lose it). */
-static int item_home(void) {
-  if (s_item_from >= 0 && g_box[s_item_from].species && !g_box[s_item_from].heldItem) return s_item_from;
-  for (int s = 0; s < 30; s++) if (g_box[s].species && !g_box[s].heldItem) return s;
+ * handed, else the first occupied mon with no item; -1 if nowhere (never lose it).
+ * BACKLOG #150 S150-3 review F1: `recs` lets this skip bc_is_native() slots -- a
+ * native cell always decodes heldItem == 0 (it has no Gen-3 item field at all), so
+ * without this it reads as a perfectly "safe" home for a real item, and
+ * box_set_held() would then have to refuse the put-back and strand the item on
+ * the cursor mid-carry. */
+static int item_home(const uint8_t* recs) {
+  if (s_item_from >= 0 && g_box[s_item_from].species && !g_box[s_item_from].heldItem &&
+      !bc_is_native(recs + (uint32_t)s_item_from * 80)) return s_item_from;
+  for (int s = 0; s < 30; s++)
+    if (g_box[s].species && !g_box[s].heldItem && !bc_is_native(recs + (uint32_t)s * 80)) return s;
   return -1;
 }
 
@@ -1923,7 +1962,15 @@ static uint8_t* drop_chunk(BoxSource* src, int box, uint8_t* recs, bool* pfull) 
    * — but drop_chunk is the one place that would actually memcpy converted-looking bytes
    * into a foreign records buffer, so it denies on its own, before any memcpy, rather than
    * trusting the edges alone. */
-  if (src->scope == BOXSCOPE_GB || s_ch_scope == BOXSCOPE_GB) { snd_deny(); *pfull = false; return recs; }
+  if (xg_chunk_crossgen_denied(src->scope, s_ch_scope)) { snd_deny(); *pfull = false; return recs; }
+  /* BACKLOG #150 S150-3 decision 4: dominates every memcpy in drop_chunk_pc_to_bank,
+   * drop_chunk_bank_cross and this function's own same-scope/Bank->PC-deferred writes
+   * below -- all four are reached only through this function's own control flow, never
+   * called directly. Refuses the WHOLE drop (keeps the chunk in hand) if ANY selected
+   * cell is native and the destination is not the Bank -- a chunk never partially lands. */
+  for (int i = 0; i < s_ch.n; i++) {
+    if (xg_native_escape_denied(s_ch_rec[i], src->scope)) { snd_deny(); *pfull = false; return recs; }
+  }
   *pfull = true;
 
   uint8_t dest[G3_BOX_SLOTS], vac[G3_BOX_SLOTS], tgt[G3_BOX_SLOTS];
@@ -2068,6 +2115,12 @@ static uint8_t* begin_select(BoxSource* src, int box, uint8_t* recs, int cur, bo
   uint8_t occ[G3_BOX_SLOTS];
   for (int s = 0; s < G3_BOX_SLOTS; s++) occ[s] = g_box[s].species ? 1 : 0;
   if (chunk_build(&s_ch, occ, anchor, corner) == 0) { snd_deny(); return recs; }
+  /* BACKLOG #150 S150-3 decision 5: a native cell never enters a chunk in v1 -- a lift has
+   * no destination yet, so this checks bc_is_native() directly against the RAW bytes still
+   * in `recs`, not the escape predicate. Denies the whole selection outright (s_ch_hold
+   * stays unset, nothing copied into s_ch_rec). */
+  for (int i = 0; i < s_ch.n; i++)
+    if (bc_is_native(recs + (uint32_t)s_ch.src[i] * 80)) { snd_deny(); return recs; }
   for (int i = 0; i < s_ch.n; i++) memcpy(s_ch_rec[i], recs + (uint32_t)s_ch.src[i] * 80, 80);
   for (int i = 0; i < s_ch.n; i++) {                    /* decode ONCE for the block display */
     PkMon m; pk_decode_mon(s_ch_rec[i], false, &m);
@@ -2220,20 +2273,30 @@ static void export_box_all(BoxSource* src, int box) {
   uint8_t* recs = src->records(box);
   PkMon list[G3_BOX_SLOTS];
   box_decode_to(src, recs, box, list, 0);
-  int total = 0;
-  for (int s = 0; s < G3_BOX_SLOTS; s++) if (list[s].species) total++;
+  /* BACKLOG #150 S150-3 D-Q8 (the thirteenth site): a native cell decodes to a non-zero
+   * `species` stand-in (box_decode_to's native pass), so the plain `list[s].species`
+   * test below would count it as an exportable Gen-3 mon and pdna_pk_export_silent
+   * would write its RAW 80 bytes into a .pk3 verbatim -- not a Gen-3 record at all.
+   * Skip and count; do NOT rely on the import side's pk3_validate to catch it later. */
+  int total = 0, native_skip = 0;
+  for (int s = 0; s < G3_BOX_SLOTS; s++) {
+    if (bc_is_native(recs + (uint32_t)s * 80)) { native_skip++; continue; }
+    if (list[s].species) total++;
+  }
   if (total == 0) {
     snd_deny();
     ui_clear();
     ui_panel(20, 60, 200, 44, UI_PANEL, UI_BORDER);
-    ui_text(30, 70, UI_WARN, "BOX IS EMPTY");
-    ui_text(30, 86, UI_DIM, "Nothing to export. Press A");
+    ui_text(30, 70, UI_WARN, native_skip ? "NOTHING TO EXPORT" : "BOX IS EMPTY");
+    if (native_skip) { char l0[40]; siprintf(l0, "%d native skipped. Press A", native_skip); ui_text(30, 86, UI_DIM, l0); }
+    else ui_text(30, 86, UI_DIM, "Nothing to export. Press A");
     u16 kk; do { s_vsync(); kk = key_hit(KEY_A); } while (!kk);
     return;
   }
   boxoam_suspend();
   int done = 0, failed = 0;
   for (int s = 0; s < G3_BOX_SLOTS; s++) {
+    if (bc_is_native(recs + (uint32_t)s * 80)) continue;
     if (!list[s].species) continue;
     pdna_progress_frame("EXPORT TO .pk", &list[s], done, total, "Writing...");
     if (pdna_pk_export_silent(recs + (uint32_t)s * 80, &list[s], 0, 0) != SF_OK) failed++;
@@ -2246,7 +2309,13 @@ static void export_box_all(BoxSource* src, int box) {
   char l[40]; siprintf(l, "EXPORTED %d / %d", total - failed, total);
   ui_text(30, 64, failed ? UI_WARN : UI_OK, l);
   ui_text(30, 82, UI_DIM, "Saved to /PokeDNA/bank/");
-  ui_text(30, 96, UI_DIM, "Press A");
+  if (native_skip) {
+    char l2[32]; siprintf(l2, "%d native skipped", native_skip);
+    ui_text(30, 94, UI_DIM, l2);
+    ui_text(30, 108, UI_DIM, "Press A");
+  } else {
+    ui_text(30, 96, UI_DIM, "Press A");
+  }
   u16 kk; do { s_vsync(); kk = key_hit(KEY_A); } while (!kk);
   boxoam_resume();
 }
@@ -3006,7 +3075,11 @@ static int party_strip_overlay(BoxSource* src, int box, int* cur,
          * unconditionally, so this function is self-sufficient regardless of which
          * call site is running (matches the same principle the s_holding clear below
          * already follows). */
-        bool placed = app_party_place_held(s_held, sel, s_orig_box, s_orig_slot, (s_orig_scope == BOXSCOPE_BANK), can_swap_now);
+        /* BACKLOG #150 S150-3 decision 3 (party site): the party lives in `g_sb1`,
+         * PC-scope storage -- a native cell can never survive there. */
+        bool placed;
+        if (xg_native_escape_denied(s_held, BOXSCOPE_PC)) { snd_deny(); placed = false; }
+        else placed = app_party_place_held(s_held, sel, s_orig_box, s_orig_slot, (s_orig_scope == BOXSCOPE_BANK), can_swap_now);
         if (placed && s_orig_scope == BOXSCOPE_PC && s_orig_slot >= 0) {
           recs = src->records(box); box_decode(src, recs, box); s_oam_reload = true;
         }
@@ -3146,20 +3219,20 @@ out:
  * (hardware-testing-protocol; the emulator cannot prove a stack-overflow refusal is
  * correct on real silicon, only that the code path the refusal message takes is
  * reachable and renders). */
-#define PDNA_PARTY_STRIP_NEED 7216   /* re-derived 2026-09-15 (BACKLOG #150 S150-2, D-Q1,
-                                      * growth 24 B artless / 32 B normal, both <= the
-                                      * orchestrator's 64 B ceiling): the #1 chain's own frame
-                                      * total grew from 7,128 to 7,152 B (artless, dominates
-                                      * over normal's 7,112 -> 7,144) -- box_decode() gained a
-                                      * local `uint8_t hint[30]` (decision 11's per-slot era
-                                      * hint) and inlines into its sole caller,
-                                      * party_strip_overlay, on THIS chain (pdna_box.c:~2771/
-                                      * 2806/2880), so the array's stack cost lands on
-                                      * party_strip_overlay's own frame (912 -> 936 B). New
-                                      * need = 7,152 + 64 ISR = 7,216. The chain's own shape is
+#define PDNA_PARTY_STRIP_NEED 7224   /* re-derived 2026-09-15 (BACKLOG #150 S150-3 review pass,
+                                      * D-Q4, growth 8 B artless / 8 B normal, both <= the 64 B
+                                      * ceiling): review F4 turned app_mon_menu_readonly's blunt
+                                      * early return into a `bool ro_native` + whitelist branch,
+                                      * on THIS chain (party_strip_overlay -> app_party_mon_menu
+                                      * -> app_mon_menu -> app_mon_menu_readonly, reached with
+                                      * g_src_ro true for the whole party-strip visit) -- the #1
+                                      * chain's own total grew from 7,152 to 7,160 B (artless,
+                                      * still dominates over normal's 7,144 -> 7,152). New need =
+                                      * 7,160 + 64 ISR = 7,224. The chain's own shape is
                                       * otherwise unchanged from the prior derivation below.
-                                      * (was 7,192 = 7,128 + 64 ISR, BACKLOG #93; was 6,616 =
-                                      * 6,552 + 64 from #102); #1 chain is still
+                                      * (was 7,216 = 7,152 + 64 ISR, S150-2 D-Q1; was 7,192 =
+                                      * 7,128 + 64 ISR, BACKLOG #93; was 6,616 = 6,552 + 64 from
+                                      * #102); #1 chain is still
                                       * gb_daycare_hook's (DUPLICATE/TO DAY-CARE/EXPORT rows
                                       * on the read-only GB mon menu, reachable through
                                       * app_mon_menu from this same root), not the old
@@ -3459,11 +3532,18 @@ int pdna_box(BoxSource* src) {
       }
       if (k & KEY_B) {                               /* cancel */
         if (homeless) {                              /* must place it somewhere -> first free in this box */
+          /* BACKLOG #150 S150-3 decision 3: a native homeless carry is unreachable today
+           * (DUPLICATE is dominated by drop_held's own gate and a native cell cannot be
+           * in the party), but losing it would be a data-loss bug -- refuse, never
+           * discard, the same fail-safe as the box-full `fs < 0` case right below. */
+          if (xg_native_escape_denied(s_held, src->scope)) { snd_deny(); }
+          else {
           int fs = -1; for (int s = 0; s < COLS * ROWS; s++) if (!g_box[s].species) { fs = s; break; }
           if (fs < 0) { snd_deny(); }                /* box full: keep holding */
           else { memcpy(recs + (uint32_t)fs * 80, s_held, 80); src->mark_dirty();
                  snd_back(); s_holding = false; s_orig_slot = -1; s_orig_box = -1; s_orig_scope = BOXSCOPE_PC; s_held_dup = false; s_orig_party = false;
                  box_decode(src, recs, box); s_oam_reload = true; need_full = true; }
+          }
         } else {                                     /* origin keeps it (party / box / dup) -> nothing to place */
           snd_back(); s_holding = false; s_orig_slot = -1; s_orig_box = -1; s_orig_scope = BOXSCOPE_PC; s_held_dup = false; s_orig_party = false;
           s_oam_reload = true; need_full = true;
@@ -3502,24 +3582,27 @@ int pdna_box(BoxSource* src) {
     if (s_item_held > 0) {
       if (k & KEY_B) {                               /* put it back (never lose it) */
         if (s_item_from_box >= 0 && s_item_from_box != box) SWITCH_BOX(s_item_from_box);  /* back to its box */
-        int home = item_home();
+        int home = item_home(recs);
         /* Park the cursor on the mon that just got the item back, so the left panel
          * shows where it went. (SWITCH_BOX now PRESERVES the cursor cell, so without
          * this a cross-box put-back would leave the glove on an unrelated slot.) */
         if (home >= 0) { cur = home;
-                         box_set_held(recs, home, (uint16_t)s_item_held); box_decode(src, recs, box);
-                         src->mark_dirty(); s_item_held = 0; s_item_from = -1; s_item_from_box = -1; need_full = true; }
+                         if (box_set_held(recs, home, (uint16_t)s_item_held)) {
+                           box_decode(src, recs, box);
+                           src->mark_dirty(); s_item_held = 0; s_item_from = -1; s_item_from_box = -1; need_full = true;
+                         } }
         else snd_deny();
       }
       else if (k & KEY_A) {                          /* give / swap onto the cursor mon */
         if (g_box[cur].species) {
           uint16_t old = g_box[cur].heldItem;        /* swap: take this mon's old item */
-          box_set_held(recs, cur, (uint16_t)s_item_held);
-          box_decode(src, recs, box);
-          src->mark_dirty();
-          s_item_held = old; s_item_from = old ? cur : -1;   /* keep holding the swapped-out item */
-          s_item_from_box = old ? box : -1;
-          need_full = true;
+          if (box_set_held(recs, cur, (uint16_t)s_item_held)) {
+            box_decode(src, recs, box);
+            src->mark_dirty();
+            s_item_held = old; s_item_from = old ? cur : -1;   /* keep holding the swapped-out item */
+            s_item_from_box = old ? box : -1;
+            need_full = true;
+          }
         } else snd_deny();
       }
       else if ((k & KEY_L) && nb > 1) { SWITCH_BOX((box + nb - 1) % nb); }   /* flip boxes while carrying */
@@ -3647,12 +3730,18 @@ int pdna_box(BoxSource* src) {
     else if ((k & KEY_A) && s_cur_mode == CM_ITEM) {     /* transparent hand: pick up the held item */
       if (!src_can_lift(src, box, cur)) snd_deny();
       else if (g_box[cur].species && g_box[cur].heldItem) {
-        s_item_held = g_box[cur].heldItem; s_item_from = cur; s_item_from_box = box;
-        box_set_held(recs, cur, 0);
-        box_decode(src, recs, box);
-        src->mark_dirty();
-        play_item_grab_anim(cur, (uint16_t)s_item_held);   /* fist closes over the mon (grab beat) */
-        need_full = true;
+        /* BACKLOG #150 S150-3 review F1: structurally unreachable on a native cell
+         * already (it always decodes heldItem == 0), but box_set_held is still the
+         * gate of record -- read the item BEFORE the write attempt, same ordering
+         * as the GIVE/swap site's `old = g_box[cur].heldItem` above. */
+        uint16_t item = g_box[cur].heldItem;
+        if (box_set_held(recs, cur, 0)) {
+          s_item_held = item; s_item_from = cur; s_item_from_box = box;
+          box_decode(src, recs, box);
+          src->mark_dirty();
+          play_item_grab_anim(cur, (uint16_t)s_item_held);   /* fist closes over the mon (grab beat) */
+          need_full = true;
+        }
       } else snd_deny();                                 /* empty slot or no item */
     }
     else if (k & KEY_A) {

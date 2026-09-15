@@ -3876,7 +3876,8 @@ def run_s150_2_bank_native(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_
     s.press_n("LEFT", 4, settle=CURSOR_SETTLE)              # slot 4 -> slot 0
     s.tap("A", settle=150)                                  # slot 0 -> the occupied-mon menu
     s.shot("06_cell0_menu", "S150-2: A on the CHIKORITA cell -- the ordinary occupied-"
-           "mon menu, cursor on row 0 (Summary/VIEW-EDIT)")
+           "mon menu, cursor on row 0 (Summary/VIEW-EDIT) -- on/after S150-3 this is "
+           "the native WHITELIST (VIEW/MOVE/RELEASE/CANCEL)")
     s.tap("A", settle=150)                                  # select the Summary row
     s.shot("07_cell0_summary", "S150-2: the REAL Gen-1/2 summary, opened read-only over "
            "the native cell's own 80 bytes via gb_native_summary_open() (decision "
@@ -3895,7 +3896,8 @@ def run_s150_2_bank_native(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_
            "shape (review F1: app_mon_menu's occupancy for a native cell now comes "
            "from bc_is_native() -- decoded via pdna_native_cell_decode(), the same "
            "ladder the grid uses -- not from whether pk_decode_mon's meaningless-key "
-           "decrypt of the raw bytes happens to pass its checksum)")
+           "decrypt of the raw bytes happens to pass its checksum) -- on/after S150-3 "
+           "this is the native WHITELIST (VIEW/MOVE/RELEASE/CANCEL)")
     s.tap("A", settle=150)                                  # select the Summary row
     s.shot("10_cell4_summary_or_refuse", "S150-2: the Summary row on the DMG cell -- "
            "bc_unpack succeeds (the glitch species lives in list_species/rec, outside "
@@ -3912,6 +3914,135 @@ def run_s150_2_bank_native(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_
            "least attempts gen12_can_convert, and 27/30 pay the full PID search, "
            "which is the worst case SS11.9 prices) -- every cell native, every one "
            "wearing its era badge EXCEPT the DMG cell (D-Q3), no '?' anywhere")
+    return s
+
+
+def run_s150_3_escape_gate(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #150 S150-3: the escape-route gate -- the mon-menu whitelist on a native
+    Bank cell (VIEW/MOVE/RELEASE/CANCEL only), the deny toast when a native cell in hand
+    reaches the drop_held gate (dragged out of the Bank into the PC), and the real
+    Gen-1/2 summary opened from the whitelist's own VIEW row. Reuses S150-2's exact
+    fixture and nav recipe (same box0 plant, same --image requirements: a plain
+    tools/fuse_sav.py fusion of an Emerald.sav onto pokedna-delta-artless.gba, no --gb,
+    no --clip) -- see run_s150_2_bank_native()'s own docstring for why no fused payload
+    is needed (source/bank_plant.c's PDNA_DELTA-only box_load() hook)."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s150_3_")
+    print("== BACKLOG #150 S150-3: the escape-route gate ==")
+    s.tap("START", settle=80)                              # nav menu
+    s.tap("DOWN", settle=60)                                # Party -> Bank (index 1, one DOWN)
+    s.tap("A", settle=150)                                  # -> pdna_bank_show(), box 0 (BANK 1)
+    # cursor already on slot 0 (the CHIKORITA plant). A opens the mon menu.
+    s.tap("A", settle=150)                                  # slot 0 -> its menu
+    s.shot("00_native_menu", "S150-3: A on the CHIKORITA native cell -- decision 7's "
+           "WHITELIST, not the ordinary eleven-row occupied menu: VIEW / MOVE / "
+           "RELEASE / CANCEL only, cursor defaults to row 0 (VIEW)")
+
+    # VIEW (row 0, already selected) -> A_SUMMARY's dispatch case -> app_box_browse ->
+    # its own bc_is_native() interception -> gb_native_summary_open() (D-Q1: the same
+    # wrapper S150-2 landed, now reachable through this lane's whitelist instead of a
+    # bespoke VIEW action).
+    s.tap("A", settle=150)                                  # select VIEW
+    s.shot("01_view_native_summary", "S150-3 D-Q1: VIEW opens the REAL Gen-1/2 summary "
+           "read-only, via gb_native_summary_open() -- the same wrapper S150-2 landed, "
+           "now reached through this lane's whitelist row instead of a bespoke action")
+    s.tap("B", settle=150)                                  # out of the summary, back to the grid
+
+    # MOVE (row 1): re-open the menu, DOWN once to MOVE, A to pick the cell up.
+    s.tap("A", settle=150)                                  # slot 0 -> its menu again
+    s.tap("DOWN", settle=60)                                # row 0 (VIEW) -> row 1 (MOVE)
+    s.tap("A", settle=150)                                  # select MOVE -> g_move_req -> start_carry
+    s.shot("02_carrying", "S150-3: MOVE picked the native cell up into the glove -- "
+           "still inside the Bank, s_orig_scope == BOXSCOPE_BANK")
+
+    # DOWN x5: 4 to walk the cursor from slot 0 (row 0) to the bottom row (row 4), a
+    # 5th to walk off the Bank's bottom edge -- pdna_box.c's own `else if (src->is_bank)
+    # { boxoam_exit(); return 5; }` under KEY_DOWN while still holding, carrying the
+    # native cell out into the PC box view.
+    s.press_n("DOWN", 5, settle=150)
+    s.shot("03_carried_into_pc", "S150-3: carried out of the Bank into the PC box view, "
+           "still holding the native cell (src->scope is now BOXSCOPE_PC)")
+
+    # A: attempt to drop onto whatever PC cell the cursor landed on -- drop_held's
+    # decision-3 dominating gate (xg_native_escape_denied(s_held, BOXSCOPE_PC)) fires
+    # BEFORE any memcpy, msg_wait's PDNA_XFER_NATIVE_TITLE/L1/L2 dialog shows, and the
+    # hand is NOT emptied.
+    s.tap("A", settle=150)
+    s.shot("04_deny_toast", "S150-3 decision 3: dropping a native cell into the PC -- "
+           "xg_native_escape_denied() denies BEFORE any 80-byte write, the "
+           "'STAYS IN THE BANK' toast shows, and the cell is still in hand (not lost)")
+    s.tap("A", settle=150)                                  # dismiss the toast (msg_wait waits for A)
+    s.shot("05_still_holding", "S150-3: after the toast, still carrying the same native "
+           "cell -- the deny kept the hand full, nothing was written or discarded")
+
+    # Recover to a clean Bank state before the review F1/F2 demos below: UP walks the
+    # carry back up through the PC grid -> PARTY tab -> "off PC top -> Bank" (pdna_main.c
+    # r==4), then A drops the native cell back on its own origin cell (drop_held's
+    # self-drop early return).
+    s.press_n("UP", 8, settle=150)
+    s.tap("A", settle=150)
+    s.shot("06_native_cell_restored", "S150-3: recovery -- the native cell dropped back "
+           "on its own slot 0, no longer carried, ready for the review demos below")
+
+    # ---- review F1: the grid's ITEM mode is a fourteenth escape route ----------------
+    # Build a real (non-native) mon at the first empty slot (slot 5: box0's plant only
+    # populates 0-4), give it an item via the ordinary ITEM menu row, then TAKE it in
+    # the grid's own ITEM cursor mode and try to GIVE/swap it onto the native CHIKORITA
+    # cell at slot 0 -- box_set_held()'s bc_is_native() refusal must fire BEFORE any
+    # write, with the native cell's own data untouched and the item still in hand.
+    s.press_n("RIGHT", 5, settle=150)                       # slot 0 -> slot 5 (empty)
+    s.tap("A", settle=150)                                  # menu on the empty slot
+    s.tap("A", settle=200)                                  # CREATE (default selection) -> species picker
+    s.tap("A", settle=400)                                  # pick the default species (BULBASAUR) -> summary
+    s.tap("B", settle=400)                                  # "Keep this Pokemon?" prompt
+    s.tap("A", settle=600)                                  # A = write (backup first)
+    s.tap("A", settle=300)                                  # occupied menu on the new mon
+    s.tap("DOWN", settle=150)                                # VIEW/EDIT -> ITEM
+    s.tap("A", settle=300)                                  # select ITEM -> pick_item
+    s.tap("DOWN", settle=150)                                # "?????" (no item) -> MASTER BALL
+    s.tap("A", settle=400)                                  # give it MASTER BALL
+    s.tap("SEL", settle=100)                                 # cursor mode: NORMAL -> MOVE
+    s.tap("SEL", settle=100)                                 # MOVE -> ITEM
+    s.tap("A", settle=300)                                  # TAKE the item off slot 5
+    s.shot("07_item_taken", "S150-3 review F1: TAKE'd MASTER BALL off the fresh mon in "
+           "ITEM cursor mode -- footer reads 'A give  B put back'")
+    s.press_n("LEFT", 5, settle=150)                        # slot 5 -> slot 0 (native CHIKORITA)
+    s.shot("08_item_cursor_on_native", "S150-3 review F1: still carrying the item, cursor "
+           "now on the native CHIKORITA cell")
+    s.tap("A", settle=300)                                  # GIVE/swap attempt -> box_set_held() refuses
+    s.shot("09_item_give_denied", "S150-3 review F1: A (give/swap) onto the native cell -- "
+           "box_set_held()'s bc_is_native() check denies BEFORE any write; pixel-identical "
+           "to 08 (a silent snd_deny(), no dialog) -- the native cell and the held item are "
+           "both untouched", allow_same=True)
+    s.tap("B", settle=300)                                  # put the item back (item_home() skips native slots)
+    s.shot("10_item_put_back", "S150-3 review F1: B puts the item back on its real home "
+           "slot -- item_home()'s own bc_is_native() skip never considered the native cell "
+           "a candidate \"safe home\" in the first place")
+    s.tap("SEL", settle=100)                                 # cursor mode: ITEM -> NORMAL (so the next
+                                                              # A opens the menu, not another TAKE)
+
+    # ---- review F2: drop_held's same-box SWAP branch gated only the held record -----
+    # MOVE the same real mon (now back at slot 5) and try to drop/swap it onto the
+    # native CHIKORITA cell in the SAME box -- the destination-side bc_is_native() guard
+    # (immediately before the cross-box refusal) must deny before any memcpy, keeping
+    # the native cell displayed and the carry still in hand.
+    s.tap("A", settle=150)                                  # menu on slot 5 again
+    s.press_n("DOWN", 3, settle=150)                        # VIEW/EDIT -> ITEM -> LEGALITY -> MOVE
+    s.tap("A", settle=300)                                  # select MOVE -> pick it up
+    s.shot("11_carrying_real_mon", "S150-3 review F2: MOVE picked up the real (non-native) "
+           "mon from slot 5")
+    s.press_n("LEFT", 5, settle=150)                        # slot 5 -> slot 0 (native CHIKORITA), same box
+    s.shot("12_move_cursor_on_native", "S150-3 review F2: carrying the real mon, cursor now "
+           "on the native CHIKORITA cell -- SAME box, so the cross-box refusal below it "
+           "does not fire on its own")
+    s.tap("A", settle=300)                                  # drop/swap attempt -> the new F2 guard refuses
+    s.shot("13_swap_denied", "S150-3 review F2: A (drop/swap) onto the native cell in the "
+           "SAME box -- pixel-identical to 12 (a silent snd_deny(), no dialog): "
+           "`bc_is_native(recs+cur*80) && !bc_is_native(s_held)` denies before drop_held's "
+           "SWAP memcpy runs, so box_save's invariant never has anything to silently refuse",
+           allow_same=True)
+    s.tap("B", settle=300)                                  # cancel the carry -- origin (box mon) keeps it
+    s.shot("14_swap_cancelled", "S150-3 review F2: B cancels the carry -- the real mon "
+           "stays at its own slot 5, nothing lost")
     return s
 
 
@@ -4100,6 +4231,14 @@ def main(argv=None) -> int:
                           "no --clip -- same vehicle as --s2-bank-control). No fused "
                           "payload needed: the native cells come from source/"
                           "bank_plant.c's PDNA_DELTA-only box_load() hook.")
+    ap.add_argument("--s150-3", action="store_true",
+                     help="BACKLOG #150 S150-3: only run_s150_3_escape_gate() against "
+                          "--image -- --image MUST be a plain tools/fuse_sav.py fusion "
+                          "of an Emerald.sav onto pokedna-delta-artless.gba (no --gb, "
+                          "no --clip -- same vehicle as --s150-2). The mon-menu "
+                          "whitelist (VIEW/MOVE/RELEASE/CANCEL), the deny toast when a "
+                          "native cell in hand is dropped into the PC, and VIEW opening "
+                          "the real Gen-1/2 summary.")
     ap.add_argument("--b54-romhack", choices=("hack", "control"),
                      help="BACKLOG #54: only run_b54_romhack() against --image for the "
                           "named case -- the ROM-hack banner + the mon-menu refusal it "
@@ -4650,6 +4789,21 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] s150-2: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if getattr(a, "s150_3", False):
+        # BACKLOG #150 S150-3: same append-only convention as --s150-2 above.
+        ran = True
+        try:
+            sess = run_s150_3_escape_gate(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] s150-3: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:

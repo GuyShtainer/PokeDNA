@@ -1572,4 +1572,10 @@ gated gbscr_open_inner need=6088 from=rom_gbui.h:PDNA_GB_UI_NEED gate=gbscr_open
 # chain, growing it to 7,152 B (artless) / 7,144 B (normal), both <= the
 # orchestrator's 64 B ceiling for an in-lane re-derivation. New need = 7,152 + 64
 # ISR = 7,216 (artless dominates) -- see PDNA_PARTY_STRIP_NEED's own comment.
-gated pcp_open_party_strip_inner need=7216 from=pdna_box.c:PDNA_PARTY_STRIP_NEED gate=pcp_open_party_strip via=pcp_open_party_strip
+# BACKLOG #150 S150-3 (review pass F4, D-Q4, 2026-09-15): re-derived again --
+# app_mon_menu_readonly's blunt early return became a `bool ro_native` +
+# whitelist branch, on this same chain (reached with g_src_ro true for the
+# whole party-strip visit), growing it to 7,160 B (artless) / 7,152 B (normal),
+# both <= the 64 B ceiling. New need = 7,160 + 64 ISR = 7,224 (artless
+# dominates) -- see PDNA_PARTY_STRIP_NEED's own comment.
+gated pcp_open_party_strip_inner need=7224 from=pdna_box.c:PDNA_PARTY_STRIP_NEED gate=pcp_open_party_strip via=pcp_open_party_strip

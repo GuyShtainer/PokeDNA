@@ -46,4 +46,21 @@ bool xg_clear_carry_on_gb_exit(bool carry_is_gb);
  * yet; S3/S4 replace this with the real transfer). */
 bool xg_drop_denied(uint8_t dst_scope, uint8_t src_scope);
 
+/* BACKLOG #150 S150-3: the escape-route gate. A native "GBC1" Bank cell
+ * (source/bank_cell.h, bc_is_native) is, once S150-4 lands, the mon's ONLY copy on
+ * the card -- it may only ever move WITHIN the Bank (a Bank-scope destination).
+ * True when `rec80` is native AND the drop's destination is anything other than
+ * the Bank (PC, GB, or any later scope) -- called before every 80-byte write a
+ * held/carried record could reach: pdna_box.c's drop_held (the twelve sites named
+ * in the brief), the party-place call, and the homeless B-cancel. */
+bool xg_native_escape_denied(const uint8_t rec80[80], uint8_t dst_scope);
+
+/* pdna_box.c drop_chunk(): the same rule as the line-1926 cross-generation refusal
+ * it sits beside (`dst_scope == BOXSCOPE_GB || chunk_scope == BOXSCOPE_GB`), spelled
+ * out as its own predicate -- a verbatim factoring of that existing expression, not
+ * a new rule. Takes both scopes (not parameterless, docs/BANK-CROSSGEN-DESIGN.md
+ * SS11.12 notwithstanding): a constant with no parameters could not be truth-tabled
+ * and would not preserve the line it replaces (S150-3 decision 1). */
+bool xg_chunk_crossgen_denied(uint8_t dst_scope, uint8_t chunk_scope);
+
 #endif

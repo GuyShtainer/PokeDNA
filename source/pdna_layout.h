@@ -980,6 +980,13 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XFER_NOGEN_L1    "This Pokemon cannot move"
 #define PDNA_XFER_NOGEN_L2    "between these two saves yet."
 
+/* BACKLOG #150 S150-3 decision 3/10: a native "GBC1" Bank cell dropped anywhere other
+ * than back into the Bank (drop_held's dominating xg_native_escape_denied() call). The
+ * hand is NOT emptied -- msg_wait, then the caller keeps holding, like PDNA_XFER_NOGEN. */
+#define PDNA_XFER_NATIVE_TITLE "STAYS IN THE BANK"
+#define PDNA_XFER_NATIVE_L1    "This Game Boy Pokemon can"
+#define PDNA_XFER_NATIVE_L2    "only move inside the Bank."
+
 /* ---- S5-B Part D: PASTE (GB) on an empty Game Boy cell (pdna_gen12.c) ------------- */
 /* S5-C Part B1: Gen 1 is no longer refused outright -- a base-stat table now exists
  * (read live off the user's own ROM beside the .sav). GEN1_TITLE/L1 are repurposed
