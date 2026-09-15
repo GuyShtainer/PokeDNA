@@ -25,6 +25,7 @@
 #include "pdna_app.h"     /* app_can_edit, app_confirm */
 #include "pdna_pk.h"      /* PDNA_BANK_DIR */
 #include "pdna_bank.h"
+#include "bank_cell.h"    /* bc_is_native -- box_save's native invariant (BACKLOG #150 S150-3) */
 #include "bank_plant.h"   /* PDNA_DELTA-only test plant (BACKLOG #150 S150-2 step 6) */
 #include "pdna_layout.h"  /* PDNA_BANKSAVE_* -- box_save's SF_ERR_RENAME switch (S150-0 F4) */
 #include "pdna_origin_art.h"  /* the parallel era view: the bank is where all three meet */
@@ -50,6 +51,14 @@ static bool g_dirty  = false;              /* loaded box has unsaved deferred mo
 static struct { uint8_t name[9]; uint8_t wp; } g_meta[BANK_BOXES];
 
 static uint8_t* box_recs(void) { return g_bankbuf + 0x0004; }
+
+/* BACKLOG #150 S150-3 decision 6 (D-Q2 accepted): one bit per slot in the loaded box --
+ * set at page-in time (box_load's own tail, after sf_read_full) when that slot's raw
+ * bytes were bc_is_native(). box_save() consults it (and only it -- the ONE new static
+ * this lane may add) to refuse an in-place overwrite of a native cell by a different,
+ * non-empty record. Zero elsewhere (RELEASE/clear_origin/consume-to-zero all leave the
+ * slot all-zero, which the invariant exempts). 30 bits, one per BOX_RECS slot. */
+static uint32_t g_native_snap;
 
 /* ---- paths ---- */
 static void box_path(int box, char* out) { siprintf(out, PDNA_BANK_DIR "/box%02d.box", box); }
@@ -117,6 +126,14 @@ static bool box_load(int box) {
   if (st != SF_OK && box == 0) bank_plant_box0(box_recs());
   if (st != SF_OK && box == 1) bank_plant_box_full(box_recs());
 #endif
+  /* BACKLOG #150 S150-3 decision 6: recomputed at every page-in, AFTER the PDNA_DELTA
+   * plant above so a planted native cell is captured too -- this is the ONE choke
+   * point every caller that can later reach box_save() pages through (banksrc_records,
+   * pdna_bank_clear_slots, pdna_bank_flush_deletions all call box_load() when the
+   * wanted box isn't already resident). */
+  g_native_snap = 0;
+  for (int s = 0; s < BOX_RECS; s++)
+    if (bc_is_native(box_recs() + (uint32_t)s * REC_BYTES)) g_native_snap |= (1u << s);
   g_loaded = box;
   g_dirty = false;
   return st == SF_OK && sz >= BOX_BYTES;
@@ -138,8 +155,32 @@ static bool box_load(int box) {
  * earlier noinline box_backup() helper that lived right here). box_save keeps only the
  * SF_ERR_RENAME/SF_WHERE_TARGET triage and its UI (review F4), since that decision is
  * this caller's to make, not sf_save_rolling's (savefile.h says so). */
+/* BACKLOG #150 S150-3 decision 6: "native ⇒ still native OR all-zero" -- NOT "still
+ * native". A same-scope Bank move zeroes the origin (clear_origin), RELEASE zeroes a
+ * cell (clip_clear_box_slot), and a consume-to-zero transition is legitimate; the
+ * data-loss transition this refuses is an in-place overwrite by a DIFFERENT, non-empty
+ * record. Kept out of box_save's own frame (noinline, same reasoning as meta_load /
+ * migrate_flat_pk3 above -- this file's deepest write chain runs long after this
+ * function returns). Log + refuse only, no UI: box_save runs from callers with no grid
+ * on screen (its own review-G4 comment above says so). */
+static bool __attribute__((noinline)) native_invariant_ok(void) {
+  for (int s = 0; s < BOX_RECS; s++) {
+    if (!(g_native_snap & (1u << s))) continue;
+    const uint8_t* p = box_recs() + (uint32_t)s * REC_BYTES;
+    if (bc_is_native(p)) continue;
+    bool allzero = true;
+    for (int i = 0; i < REC_BYTES; i++) if (p[i]) { allzero = false; break; }
+    if (allzero) continue;
+    log_line("bank: box %d slot %d: native cell overwritten, refusing", g_loaded, s);
+    app_log_flush();
+    return false;
+  }
+  return true;
+}
+
 static bool box_save(void) {                    /* write the loaded box's records */
   if (g_loaded < 0) return false;
+  if (!native_invariant_ok()) return false;
   char path[SF_PATH_MAX]; box_path(g_loaded, path);
   bool backed_up;
   rmbl_pause();
@@ -310,6 +351,12 @@ static void __attribute__((noinline)) migrate_flat_pk3(void) {
   int box = 0, slot = 0, packed = 0;
   bool box_open = false;
   memset(g_bankbuf, 0, sizeof g_bankbuf);
+  /* BACKLOG #150 S150-3 decision 6: this function sets g_loaded directly (never calls
+   * box_load()), so it must clear the snapshot itself -- an .pk3 import always packs
+   * plain Gen-3 records, never native cells, but a STALE snapshot left over from
+   * whatever box_load() last ran would false-refuse this function's own box_save()
+   * calls below. */
+  g_native_snap = 0;
   g_loaded = 0;
 
   DIR d; FILINFO fno;
@@ -325,6 +372,7 @@ static void __attribute__((noinline)) migrate_flat_pk3(void) {
         g_loaded = box; box_save();
         box++; slot = 0; box_open = false;
         memset(g_bankbuf, 0, sizeof g_bankbuf);
+        g_native_snap = 0;                       /* same reasoning as the memset above */
       }
     }
     f_closedir(&d);
