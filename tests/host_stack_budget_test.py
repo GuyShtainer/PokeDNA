@@ -2905,44 +2905,28 @@ def test_b167_sd_variant_line_parses():
 
 
 def test_b167_mutation_broken_comparison_would_never_fatal():
-    """THE mutation test BACKLOG #167's brief asks for: with
-    check_count_only_max's count-vs-max comparison broken (reverted to a
-    tautology that can never distinguish over-budget from in-budget, e.g. the
-    FATAL branch deleted outright), test (b)'s own fixture -- 5 count-only
-    callers against a declared max of 4 -- must go from FATAL to silently
-    accepted. Monkeypatches the REAL sb.check_count_only_max module attribute
-    (not a hand-copied reimplementation living only in this test file) so this
-    proves test (b) actually depends on stack_budget.py's own comparison, not
-    on the fixture shape alone -- a walker regression that deletes/weakens the
-    `count > max_n` check would make THIS test fail, which is the point."""
+    """Review F3: the previous version of this test monkeypatched
+    sb.check_count_only_max with a hand-written stub and asserted the STUB
+    returns a constant -- that only proves Python assigns module attributes,
+    not that the LIVE comparison in stack_budget.py is a real boundary. This
+    version calls the real function on both sides of the max=4 boundary: count
+    4 (at the max) must NOT fatal, count 5 (one over) must fatal. If a future
+    edit reverts `count > max_n` to a tautology (e.g. `if False:` / the branch
+    deleted outright), the count=5 call collapses to the same False as count=4
+    and this test catches it -- proved below by reverting the walker's own
+    comparison in a scratch copy of stack_budget.py and re-running this exact
+    assertion against it (see the brief's own verification, not repeated here
+    as a permanent test since it would require importing a second copy of the
+    module)."""
     import tempfile
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
         f.write("count-only-max 4 variant=nor artless=1\n")
         path = f.name
     try:
         decls = sb.load_count_only_max_decls(path)
-        real_fatal = sb.check_count_only_max(5, "nor", True, decls, path)
-        check("(B167) sanity: the real check FATALs on test (b)'s own fixture",
-              real_fatal is True, real_fatal)
-
-        def _broken_check_count_only_max(count, variant, artless, count_only_max_decls,
-                                          edges_file):
-            # The mutation: the comparison never gates anything -- as if
-            # `count > max_n` had been replaced by a tautology / deleted.
-            return False
-
-        orig = sb.check_count_only_max
-        sb.check_count_only_max = _broken_check_count_only_max
-        try:
-            mutated_fatal = sb.check_count_only_max(5, "nor", True, decls, path)
-        finally:
-            sb.check_count_only_max = orig   # restore before any other test runs
-        check("(B167 mutation) with the comparison broken, the SAME fixture that "
-              "must FATAL is silently accepted instead -- proves the earlier test "
-              "bites stack_budget.py's own comparison, not just the fixture",
-              mutated_fatal is False, mutated_fatal)
-        check("(B167) the real function is restored and still fatals afterward",
-              sb.check_count_only_max(5, "nor", True, decls, path) is True, None)
+        check("(B167) the comparison is a real boundary, not a constant",
+              sb.check_count_only_max(4, "nor", True, decls, path) is False
+              and sb.check_count_only_max(5, "nor", True, decls, path) is True)
     finally:
         os.unlink(path)
 
