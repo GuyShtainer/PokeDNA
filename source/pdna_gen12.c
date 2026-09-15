@@ -565,8 +565,9 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
                                               * PARTY tab and the PC hand-off edges (codes
                                               * 1/4) -- neither applies to a raw GB save's
                                               * own box */
-  s.scope      = BOXSCOPE_GB;    /* BACKLOG #120 S1: can_lift/xfer stay NULL -- no GB body
-                                  * wired yet (this is the pure-refactor slice) */
+  s.scope      = BOXSCOPE_GB;    /* BACKLOG #171b: can_lift/xfer are wired below --
+                                  * start_carry() (pdna_box.c) reads src->xfer, not the
+                                  * file-static s_xfer_peer a Bank visit installs */
   s.bank_edge  = true;            /* BACKLOG #120 S2: the single-carry UP-past-the-tabs edge
                                    * now opens the Bank instead of staying dead */
   s.has_start  = true;                       /* BACKLOG #48: is_bank also suppresses START
@@ -592,6 +593,9 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
   s.set_wp     = gbsrc_set_wp;
   s.can_edit   = gbsrc_can_edit;
   s.can_lift   = gb_can_lift_hook;   /* BACKLOG #150 S150-5: the GB grid's own grab-time refusal */
+#ifndef PDNA_GEN12_HOST
+  s.xfer       = &k_gb_xfer;   /* BACKLOG #171b: start_carry reads src->xfer, not s_xfer_peer */
+#endif
   s.commit     = gbsrc_commit;
   s.mark_dirty = gbsrc_mark_dirty;
   s.note_add   = 0;                           /* nothing lands here; nothing to register */

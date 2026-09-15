@@ -271,8 +271,22 @@ BoxSource.get_raw_name @72 in box_options_menu,pdna_box -> gbsrc_get_raw_name
 # is gone -- this plain row below now describes a real, reachable call, same as every
 # other row in this file. Deleting THIS row is still not an option: it makes the guard
 # refuse with "BLIND SPOT: src_can_lift ... struct-field load @80" (design doc §9).
-# `xfer@84` has no declaration: nothing dereferences it anywhere in this build (no `bl`
-# site exists to require one) -- it is wired starting S3.
+# BACKLOG #171b (lane s150-4-5b, post-#171 review finding): `xfer@84` is now WIRED --
+# pdna_gen12_source() assigns `s.xfer = &k_gb_xfer`, so start_carry()'s
+# `src->xfer && src->xfer->lift_up` really does read a non-NULL pointer and really does
+# call through it at runtime (before this fix the field was always NULL -- every GB
+# grab silently fell to the plain-memcpy branch, and BoxXferOps.lift_up/gb_lift_up_hook
+# never ran -- confirmed live in mGBA). `xfer@84` ITSELF still has no separate row here
+# on purpose: it is a plain pointer LOAD, not an indirect CALL (the walker only
+# requires a declaration at the site of an actual `bl`-through-a-register); the call
+# that load feeds -- `src->xfer->lift_up(...)` -- is exactly what the
+# `BoxXferOps.lift_up @4 in start_carry -> gb_lift_up_hook` row right below already
+# covers, and did before this fix (added pre-emptively, BACKLOG #150 S150-4 step 3/5).
+# Rebuilt both gate targets after this fix: EWRAM still 800 B free, STACK 11,888 ->
+# 11,896 of 15,048 (artless, margin 3,160 -> 3,152 -- one real call edge is now live
+# where the optimizer used to prove the branch dead), GATED still 4, and the
+# count-only list is BYTE-IDENTICAL, same 48 names in the same order -- no new BLIND
+# SPOT, no row needed here beyond this note.
 BoxSource.can_lift @80 in src_can_lift -> gb_can_lift_hook
 
 # BACKLOG #150 S150-4 step 3/5: BoxXferOps's two live members, once the real k_gb_xfer
