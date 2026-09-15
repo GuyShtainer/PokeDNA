@@ -278,6 +278,15 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # (--s2-bank), captions all start "#120:". Appended after
     # "gb-item-names" per this list's own append-only rule.
     ("gb-bank-s2", "#120 S2 — the Bank from a Game Boy session", ("#120",)),
+    # BACKLOG #54: ROM-hack detection (T0) + the read-only posture it gates (T1) --
+    # the msg_wait banner (app_register_rom's refusal, view_save's once-per-open
+    # notice) and the mon-menu refusal (app_src_readonly_set routing through
+    # app_mon_menu_readonly). Shots come from tools/dgb_shots.py's
+    # run_b54_romhack() (--b54-romhack hack|control), captions all start
+    # "BACKLOG #54:". Appended after "gb-bank-s2" per this list's own
+    # append-only rule.
+    ("romhack", "BACKLOG #54 — ROM-hack detection + read-only posture",
+     ("BACKLOG #54",)),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
 FEATURE_TITLE = {fid: title for fid, title, _prefixes in FEATURE_TABLE}
