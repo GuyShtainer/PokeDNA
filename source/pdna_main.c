@@ -529,6 +529,47 @@ static const char* flashcart_name(void) {
   }
 }
 
+/* One line per detection attempt, for the boot screen and the log: what the driver
+ * concluded and, on an EZ-Flash, WHICH page it found the running image on. That page is
+ * the whole story of the 2026-09-12 NOR hang (lib/ezflashomega/io_ezfo.c, "identifying
+ * OUR page"): "PSRAM" = SD-loaded (page 0x200), "NOR#p" = booted from the game NOR, and
+ * "la=N@P" = N stale same-title images were rejected, the first at page P. `out` holds
+ * 40 bytes. The sys8 row budget (29 glyphs from PDNA_DETECT_X) is enforced by the two
+ * forms below: the longest verdict is "EZ hdr!" and the page prints in hex, so the worst
+ * row, "8: EZ hdr! NOR#1ff la=255@1ff", is exactly 29 -- TTE would otherwise wrap a
+ * longer row onto the next attempt's line. The strings and formats live in
+ * pdna_layout.h so host_textfit_test.c measures that worst case from the same parts. */
+#ifndef PDNA_TEST_DETECT_WORST
+#define PDNA_TEST_DETECT_WORST 0   /* 1: paint the widest reachable row whatever the cart
+                                    * said -- the emulator shot vehicle for the sys8 row
+                                    * budget (no cart answers there). Never in a shipped
+                                    * build; host_textfit_test.c is the build-time check. */
+#endif
+
+static void detect_line(char* out, int attempt) {
+  unsigned page = flashcartio_ezfo_page(), first = 0xFFFFu;
+  unsigned la = flashcartio_ezfo_lookalikes(&first);
+  int code = flashcartio_detect_code();
+  const char* what;
+  int n;
+#if PDNA_TEST_DETECT_WORST
+  code = FCIO_DET_EZFO_HDRONLY; page = 0x1ffu; la = 255u; first = 0x1ffu;
+#endif
+  switch (code) {
+    case FCIO_DET_ED_OK:        what = PDNA_DET_ED_OK;      break;
+    case FCIO_DET_ED_SD_FAIL:   what = PDNA_DET_ED_SDFAIL;  break;
+    case FCIO_DET_EZFO_OK:      what = PDNA_DET_EZ_OK;      break;
+    case FCIO_DET_EZFO_HDRONLY: what = PDNA_DET_EZ_HDRONLY; break;
+    case FCIO_DET_EZFO_NOT:     what = PDNA_DET_NOCART;     break;
+    case FCIO_DET_EZFO_NOPAGE:  what = PDNA_DET_EZ_NOPAGE;  break;
+    default:                    what = PDNA_DET_UNKNOWN;    break;
+  }
+  if (page == 0x200u)     n = siprintf(out, PDNA_DET_FMT_PSRAM, attempt, what);
+  else if (page < 0x200u) n = siprintf(out, PDNA_DET_FMT_NOR, attempt, what, page);
+  else                    n = siprintf(out, PDNA_DET_FMT_PLAIN, attempt, what);
+  if (la) siprintf(out + n, PDNA_DET_FMT_LA, la, first);
+}
+
 /* Writes (edit mode, later) are Omega-only; surface it from M0. An image whose own
  * sampled CRCs say it is not the one we shipped must never write a user's save. */
 static bool cart_writable(void) {
@@ -9296,10 +9337,33 @@ int main(void) {
    * up, so a one-off glitch no longer hard-halts the tool on launch. Read-only here, so
    * retrying is risk-free. */
   bool active = false;
-  for (int a = 0; a < 8 && !(active = flashcartio_activate()); a++)
-    for (int v = 0; v < 8; v++) vsync();    /* ~130 ms settle, then re-detect */
+  for (int a = 0; a < 8 && !active; a++) {
+    /* Each attempt owns one row (8 rows x 8 px from y=86 end exactly at UI_FOOTER_Y).
+     * "probing..." goes up BEFORE the call, so a hang inside detection leaves the
+     * attempt number on screen; the verdict then overwrites it. Stack locals only. */
+    char d[40];
+    int y = PDNA_DETECT_Y0 + a * UI_ROW_H;
+    siprintf(d, "%d: probing...", a + 1);
+    ui_text(PDNA_DETECT_X, y, UI_DIM, d);
+    active = flashcartio_activate();
+    detect_line(d, a + 1);
+    ui_fill_rect(PDNA_DETECT_X, y, 228, UI_ROW_H, UI_BG);
+    ui_text(PDNA_DETECT_X, y, active ? UI_OK : UI_WARN, d);
+    log_line("flashcart try %s", d);
+    if (!active) for (int v = 0; v < 8; v++) vsync();    /* ~130 ms settle, then re-detect */
+  }
   if (!active) halt_msg("No flashcart detected! Reseat cart & reboot.");
-  log_line("flashcart: %s", flashcart_name());
+  {
+    unsigned first = 0xFFFFu, la = flashcartio_ezfo_lookalikes(&first);
+    log_line("flashcart: %s code=%d page=0x%x lookalikes=%u first=0x%x", flashcart_name(),
+             flashcartio_detect_code(), flashcartio_ezfo_page(), la, first);
+  }
+  /* The page was matched by the header word only: the driver could not read the image
+   * the same way twice, so the fingerprint that tells a stale same-title copy from the
+   * running one was not applied (hw1 review #2). Say so before anything else runs off
+   * this page. Pure UI + wait_keys: safe before the mount. */
+  if (flashcartio_detect_code() == FCIO_DET_EZFO_HDRONLY)
+    msg_wait(PDNA_DET_HDRONLY_TITLE, UI_WARN, PDNA_DET_HDRONLY_L1, PDNA_DET_HDRONLY_L2);
 
   FATFS fs;                                  /* lives forever (main never returns) */
   FRESULT fr = FR_NOT_READY;
@@ -9309,7 +9373,7 @@ int main(void) {
     log_line("f_mount attempt %d failed (fr=%d)", a, fr);
     ui_clear();
     ui_text(6, 70, UI_TITLE, "Mounting SD card...");
-    char rb[32]; siprintf(rb, "retry %d/7", a + 1);
+    char rb[32]; siprintf(rb, "retry %d/7 (fr=%d)", a + 1, (int)fr);
     ui_text(6, 86, UI_DIM, rb);
     for (int v = 0; v < 12; v++) vsync();    /* ~200 ms settle */
     flashcartio_activate();                  /* re-init the cart's SD interface, then retry */

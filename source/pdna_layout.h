@@ -1770,4 +1770,33 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * same posture as pdna_clock()'s own FRLG fallback, pdna_main.c). */
 #define PDNA_GBCLOCK_NOCLOCK_L1 "This save has no clock to fix."
 
+/* ---- boot: flashcart detection rows + the header-only dialog (pdna_main.c) ---------
+ * detect_line() paints one sys8 row per detection attempt at PDNA_DETECT_X, from
+ * PDNA_DETECT_Y0, UI_ROW_H apart (8 rows end exactly at UI_FOOTER_Y). The parts below
+ * are what it prints; host_textfit_test.c assembles the worst reachable row from THEM
+ * (attempt 8, the longest verdict, NOR page 0x1ff, 255 look-alikes first at 0x1ff) and
+ * measures it, so a longer verdict string fails at build time instead of wrapping onto
+ * the next attempt's row on the cart. A page form is only ever printed with an EZ-Flash
+ * "found" verdict (EZ_OK / EZ_HDRONLY); every other verdict uses the plain form. The
+ * worst reachable row is "8: EZ hdr! NOR#1ff la=255@1ff" = 29 glyphs (the test found
+ * "PSRAM(SD)" pushed the header-only fallback's row to 31: hence the bare "PSRAM"). */
+#define PDNA_DETECT_X          6
+#define PDNA_DETECT_Y0         86
+#define PDNA_DET_ED_OK         "ED ok"
+#define PDNA_DET_ED_SDFAIL     "ED sd fail"
+#define PDNA_DET_EZ_OK         "EZ ok"
+#define PDNA_DET_EZ_HDRONLY    "EZ hdr!"
+#define PDNA_DET_NOCART        "no cart"
+#define PDNA_DET_EZ_NOPAGE     "EZ no page"
+#define PDNA_DET_UNKNOWN       "?"
+#define PDNA_DET_FMT_PSRAM     "%d: %s PSRAM"        /* SD-loaded; "(SD)" cost 4 glyphs */
+#define PDNA_DET_FMT_NOR       "%d: %s NOR#%x"
+#define PDNA_DET_FMT_PLAIN     "%d: %s"
+#define PDNA_DET_FMT_LA        " la=%u@%x"
+/* msg_wait (28/184 clamp) shown after detection when the page was matched by the header
+ * word only -- the fingerprint could not be trusted on this bus (hw1 review #2). */
+#define PDNA_DET_HDRONLY_TITLE "IMAGE NOT VERIFIED"
+#define PDNA_DET_HDRONLY_L1    "Cart page matched by header only."
+#define PDNA_DET_HDRONLY_L2    "Re-copy this build if it misbehaves."
+
 #endif /* PDNA_LAYOUT_H */
