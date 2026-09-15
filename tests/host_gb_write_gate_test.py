@@ -9,7 +9,7 @@ Pure-text checks, no mgba, no build -- this is the same "grep the shipped source
 don't re-type your own copy of it" posture tests/textfit_mutation_check.py proves
 for the layout tests, applied here to a write-safety gate instead of a pixel budget.
 
-Two checks:
+Three checks:
 
   (a) gb_nav_from_start() (the GB nav-menu dispatcher): every `pdna_gbXXX(gs, ...)`
       / `pdna_gbdaycare(gs, ...)` call inside it that passes a second (can_edit-
@@ -25,6 +25,14 @@ Two checks:
       check there) must reach `app_can_edit(` or `gb_locate(` somewhere in its own
       function body -- gb_locate() itself calls app_can_edit() (pdna_gen12.c
       gate 1), so a hook that defers to it is still covered.
+
+  (c) BACKLOG #150 S150-14: every function named in NAMED_WRITE_HOOKS (today just
+      gb_native_summary_open, the native-Bank-cell EDIT entry point -- it is not a
+      k_gb_ops_* hook, so check (b) never sees it, and it takes no `gs`, so check
+      (a) never sees it either) must reach `app_can_edit(` somewhere in its own
+      function body. gb_native_summary_open has no `gb_locate()` fallback (decision
+      10: there is no GB save mounted for a Bank cell, so gb_locate() is the WRONG
+      gate here) -- the gate must be app_can_edit( itself, not either-or.
 
 Run directly:
 
@@ -59,6 +67,10 @@ FIELD_RE = re.compile(r"\.(\w+)\s*=\s*(\w+)")
 SKIP_FIELDS = {"edit", "copy_native", "editable"}  # not mutating -- no cart gate required
 # (`view` stays IN: gb_view_hook computes can_edit = app_can_edit() && ... and hands it to an
 #  editable summary -- b160 re-verify R5.)
+
+# BACKLOG #150 S150-14, check (c): named write hooks outside the k_gb_ops_* tables and
+# outside gb_nav_from_start's dispatch -- checked individually by name, not by table scan.
+NAMED_WRITE_HOOKS = ("gb_native_summary_open",)
 
 
 def strip_comments(text: str) -> str:
@@ -148,9 +160,26 @@ def check_mutating_hooks(text: str) -> list[str]:
     return violations
 
 
+def check_named_write_hooks(text: str) -> list[str]:
+    """BACKLOG #150 S150-14, check (c): every function in NAMED_WRITE_HOOKS must
+    reach `app_can_edit(` in its own body (comments excluded) -- gb_locate() is
+    NOT an acceptable alternative here (decision 10: no GB save is mounted for a
+    Bank cell, so gb_locate() is the wrong gate)."""
+    violations = []
+    for func in NAMED_WRITE_HOOKS:
+        body = extract_function_body(text, func)
+        if not body:
+            violations.append(f"{func}(): function body not found")
+            continue
+        code = strip_comments(body)
+        if "app_can_edit(" not in code:
+            violations.append(f"{func}(): body has no app_can_edit( (comments excluded)")
+    return violations
+
+
 def run_all(path: Path) -> list[str]:
     text = path.read_text()
-    return check_nav_dispatch(text) + check_mutating_hooks(text)
+    return check_nav_dispatch(text) + check_mutating_hooks(text) + check_named_write_hooks(text)
 
 
 def main() -> int:
@@ -163,13 +192,14 @@ def main() -> int:
     fields = gate_table_fields(SRC.read_text())
     print(f"gb_nav_from_start dispatch check: {'ok' if not any('gb_nav_from_start' in v or 'app_can_edit()' in v for v in violations) else 'see violations below'}")
     print(f"mutating hooks checked ({len(fields)}): " + ", ".join(f".{k}={v}" for k, v in sorted(fields.items())))
+    print(f"named write hooks checked ({len(NAMED_WRITE_HOOKS)}): " + ", ".join(NAMED_WRITE_HOOKS))
     if violations:
         print("FAIL -- shipped source/pdna_gen12.c has a write-gate gap:")
         for v in violations:
             print(f"  FAIL: {v}")
         return 1
-    print("ok: shipped source/pdna_gen12.c -- every can_edit dispatch and every "
-          "mutating AppSrcOps hook reaches app_can_edit()/gb_locate()")
+    print("ok: shipped source/pdna_gen12.c -- every can_edit dispatch, every mutating "
+          "AppSrcOps hook and every named write hook reaches app_can_edit()/gb_locate()")
 
     # --- self-mutation proof: revert ONE dispatch to bare `ed`, must go red ----
     tmpdir = Path(tempfile.mkdtemp(prefix="gbwritegate_"))
@@ -213,10 +243,30 @@ def main() -> int:
         print("self-mutation check 2: deleting gb_create_hook's gate -- correctly caught:")
         for v in mutation2:
             print(f"  (mutated-copy) FAIL: {v}")
+
+        # --- third self-mutation (BACKLOG #150 S150-14): drop `&& app_can_edit()`
+        # from gb_native_summary_open's own gate line, must go red.
+        target3 = "const bool can_edit = allow_edit && out80 && app_can_edit();"
+        mutated_line3 = "const bool can_edit = allow_edit && out80;"
+        if target3 not in original:
+            print(f"FAIL -- third self-mutation target line not found verbatim: {target3!r} "
+                  f"(source drifted -- update this test's target string)")
+            return 1
+        mutated3 = original.replace(target3, mutated_line3, 1)
+        scratch.write_text(mutated3)
+        mutation3 = [v for v in run_all(scratch) if "gb_native_summary_open" in v]
+        if not mutation3:
+            print("FAIL -- third self-mutation check: dropping `&& app_can_edit()` from "
+                  "gb_native_summary_open's gate line did NOT turn this test red (vacuous check)")
+            return 1
+        print("self-mutation check 3: dropping `&& app_can_edit()` from "
+              "gb_native_summary_open's gate line -- correctly caught:")
+        for v in mutation3:
+            print(f"  (mutated-copy) FAIL: {v}")
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
-    print("\nhost_gb_write_gate_test: ok (shipped source clean, both mutations caught)")
+    print("\nhost_gb_write_gate_test: ok (shipped source clean, all three mutations caught)")
     return 0
 
 
