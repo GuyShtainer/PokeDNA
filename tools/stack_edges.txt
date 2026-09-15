@@ -1047,19 +1047,40 @@ addrtaken-ok gen1_write_layout    # 2026-09-14: only ever called DIRECTLY (5 sit
                                   # a real Thumb pointer would be the ODD 0x08010001, whose only
 # occurrence in PokeDNA.gba is at 0x0809b4b6 -- UNALIGNED, inside
 # s_fam, so not a literal-pool word and not a relocated data word.
-addrtaken-ok gen1_encode_name     # BACKLOG #148: same false-positive class as gen1_write_layout above, a
-                                  # different function hit it because this lane's un-staticing of
-                                  # gb_art_io_init/gb_art_read (source/gb_art_source.c, moved to the new
-                                  # gb_art_io.h) shifted .text layout enough that THIS function -- not
-                                  # gen1_write_layout -- now links at the coincidence address 0x08010000.
-                                  # Called only DIRECTLY (gen1_write.c:279/282, grepped across the whole
-                                  # tree -- no assignment, table, or test harness function pointer names
-                                  # it). The ALIGNED word 0x08010001 (PokeDNA.elf .rodata @0x0875a21c) is
-                                  # inside `srf.0`, a 20-B local numeric table (words 6, 0x40000000,
-                                  # 0x20002000, 0x08010001, 5 -- a plain packed-field blob, not a function-
-                                  # pointer array); a real relocated Thumb pointer to this function appears
-                                  # nowhere in the image. Re-derive (nm -Sn | grep gen1_encode_name, then
-                                  # objdump -s -j .rodata around that address) if this ever moves again.
+addrtaken-ok gen1_encode_name     # BACKLOG #148/#152: same false-positive class as gen1_write_layout
+                                  # above, a different function hit it because this lane's un-staticing
+                                  # of gb_art_io_init/gb_art_read (source/gb_art_source.c, moved to the
+                                  # new gb_art_io.h) shifted .text layout enough that THIS function --
+                                  # not gen1_write_layout -- now links at the coincidence address
+                                  # 0x08010000. Called only DIRECTLY (gen1_write.c:279/282, grepped
+                                  # across the whole tree -- no assignment, table, or test harness
+                                  # function pointer names it).
+                                  #
+                                  # PROVEN, not asserted (BACKLOG #152 review): the ALIGNED word
+                                  # 0x08010001 in the final ELF's .rodata is inside a 20-B local const
+                                  # object nm names `srf.0`, which libtonc's own tte_main.o (part of
+                                  # -ltonc, not this codebase) defines at .rodata offset 0x13c-0x150 --
+                                  # `arm-none-eabi-ar x libtonc.a tte_main.o && arm-none-eabi-objdump -s
+                                  # -j .rodata --start-address=0x130 --stop-address=0x150 tte_main.o`
+                                  # shows the exact same 5 words (00000006 40000000 20002000 08010001
+                                  # 00000005) at that offset, byte-identical to the final image's copy --
+                                  # its size (20 B) and the shape of the surrounding two words (a u16
+                                  # pair then a u32) match libtonc's own `TSurface` (tonc_surface.h:133-
+                                  # 143: u8* data; u32 pitch; u16 width,height; u8 bpp,type; u16 palSize;
+                                  # u16* palData; = 20 B exactly), not `TSurfaceProcTab` (the struct that
+                                  # actually carries function pointers, tonc_surface.h:166-178 -- a much
+                                  # bigger struct, name+9 fnPtr fields, and its first field is a `const
+                                  # char*`, not a length-prefixed table). DEFINITIVE: `arm-none-eabi-
+                                  # objdump -r -j .rodata tte_main.o` lists R_ARM_ABS32 relocations at
+                                  # offsets 0x130/0x134/0x138 (the symbol immediately BEFORE srf.0, which
+                                  # genuinely is a function-pointer table) and NONE at all inside srf.0's
+                                  # own range (0x13c/0x140/0x144/0x148/0x14c) -- a real `&function` value
+                                  # is only known at link time and MUST carry a relocation record in the
+                                  # object file; the word coinciding with gen1_encode_name's address has
+                                  # none, so it is compile-time-constant DATA, not a pointer, full stop.
+                                  # Re-derive (nm -Sn PokeDNA.elf | grep gen1_encode_name, then repeat
+                                  # the objdump -r proof above against whichever symbol now collides) if
+                                  # this ever moves again -- do not re-add this line on inspection alone.
 addrtaken-ok __text_start         # linker/crt boundary symbol, a zero-size DATA marker, not application code -- see the D5 note above
 addrtaken-ok __udivmoddi4         # libgcc: 64-bit unsigned division helper, taken by the div runtime
 addrtaken-ok __utf8_wctomb        # newlib: UTF-8 locale table entry, same family as __utf8_mbtowc above
@@ -1317,3 +1338,37 @@ LpCtx.name_fn @0 in lp_row_cb,lp_key_cb -> nature16
 # considered it.
 gated gb_art_fetch need=6144 from=gb_art_source.h:PDNA_GB_FETCH_NEED gate=pdna_origin_art_stack_room via=gb_art_pic_cb
 gated gb_art_fetch_icon.constprop.0 need=6144 from=gb_art_source.h:PDNA_GB_ICON_NEED gate=pdna_origin_art_stack_room via=gb_art_icon_cb
+
+# BACKLOG #148/#152: gbscr_open_inner is the SAME shape as gb_art_fetch/
+# gb_art_fetch_icon above -- a subtree that only ever runs after its OWN caller
+# (gbscr_open(), source/pdna_gbscreen.c:736) has already passed a fresh
+# pdna_origin_art_stack_room(PDNA_GB_UI_NEED) check against the LIVE stack
+# pointer, so any UNRELATED --root re-derivation elsewhere in the program may
+# exclude this subtree (charge it 0 B) rather than double-count it, exactly as
+# gb_art_fetch's own comment above explains -- --root main stays unaffected
+# either way (a gated subtree is always fully, ungated included there).
+#
+# RECONCILING need= with what PDNA_GB_UI_NEED must cover (2026-09-15): unlike
+# gb_art_fetch (gate=pdna_origin_art_stack_room runs INSIDE gb_art_pic_cb, one
+# frame above gb_art_fetch, so gb_art_pic_cb's own frame is already folded into
+# PDNA_GB_FETCH_NEED's derivation by construction), gbscr_open()'s stack-room
+# check runs BEFORE gbscr_open()'s OWN 40-B frame is fully accounted and before
+# gbscr_open_inner's frame exists at all (D1's whole point: gate from OUTSIDE
+# the frame being gated, source/pdna_gbscreen.c's own comment on gbscr_open()).
+# So PDNA_GB_UI_NEED (rom_gbui.h) = 5,984 (the `--root gbscr_open_inner --top 1`
+# raw figure, both gate ELFs, 2026-09-15) + 40 (gbscr_open's own .su frame) + 64
+# (ISR) = 6,088 -- but THIS declaration's `fn=gbscr_open_inner` measures the
+# walker's subtree starting AT gbscr_open_inner, which does NOT include
+# gbscr_open's 40 B or the flat +64 ISR the guarded "STACK ok" line adds
+# separately. need=6088 is therefore deliberately looser than the tightest
+# possible bound on gbscr_open_inner alone (5,984 <= 6,088, 104 B of slack) --
+# that slack is exactly the 40+64 the runtime constant must ALSO cover one
+# frame up, which this fn= cannot see. Declaring the SAME literal both places
+# keeps verify_gated_macro_declarations()'s N==macro cross-check meaningful
+# (a real re-derivation of PDNA_GB_UI_NEED changes both together) while still
+# being a VALID, if non-tight, upper bound for the mechanical
+# measured-subtree-exceeds-declared-need FATAL below. via=gbscr_open is the
+# ONLY real predecessor (grepped the disassembly of both gate ELFs for
+# `bl <gbscr_open_inner's address>` -- exactly one call site, inside
+# gbscr_open(); gbscr_open_inner is `static noinline`, no other TU can reach it).
+gated gbscr_open_inner need=6088 from=rom_gbui.h:PDNA_GB_UI_NEED gate=gbscr_open via=gbscr_open

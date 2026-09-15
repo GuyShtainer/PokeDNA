@@ -227,8 +227,48 @@ typedef enum {
  * union already on this chain. The Settings-path/nav-menu-chain margins earlier
  * in this comment are stale from the FOURTH pass and NOT re-verified here; do not
  * trust them without independently re-running this same command against those
- * two call sites first. */
-#define PDNA_GB_UI_NEED 5608
+ * two call sites first.
+ *
+ * STALE by 2026-09-15 (BACKLOG #152, found while re-verifying #148): the EIGHTH
+ * pass's 5,544 B had drifted to 5,920 B on main (1ade3e5) -- 376 B of untracked
+ * growth from whatever landed on this chain between the two passes -- BEFORE
+ * BACKLOG #148 touched a single line here. #148 then added its own +64 B
+ * (gbscr_open_inner's GbArtIo + GbRegUi locals, the cancel/timeout/read-error
+ * guard's cost) on top of that, to 5,984 B.
+ *
+ * RE-DERIVED (BACKLOG #148/#152, NINTH pass, 2026-09-15), same command, run on
+ * BOTH gate ELFs after #148's change (identical on both -- this chain has no
+ * PDNA_ARTLESS-conditional code):
+ *
+ *   python3 tools/stack_budget.py --elf PokeDNA-artless.elf --builddir
+ *       "$(pwd)/build-artless" --root gbscr_open_inner --top 1
+ *   python3 tools/stack_budget.py --elf PokeDNA.elf --builddir "$(pwd)/build"
+ *       --root gbscr_open_inner --top 1
+ *
+ * both reported 5,984 B for the `gbscr_open_inner` sub-root chain (the walker's
+ * own `--root` measurement STARTS at gbscr_open_inner's own frame -- it does not
+ * include the frame of `gbscr_open()`, the thin wrapper every real caller
+ * actually calls, which sits ABOVE gbscr_open_inner on every real stack). This
+ * constant gates from `gbscr_open()` (source/pdna_gbscreen.c:736's
+ * `pdna_origin_art_stack_room(PDNA_GB_UI_NEED)` call, BEFORE gbscr_open_inner's
+ * own frame exists -- D1's whole point), so it must cover gbscr_open()'s frame
+ * too: 5,984 + 40 (gbscr_open's own .su frame, both ELFs, unchanged by #148) +
+ * 64 (ISR reentry) = 6,088, already a multiple of 8 (no rounding needed).
+ *
+ * ONE caller total (grepped): source/pdna_gbscreen.c:736. No test and no other
+ * constant derives from PDNA_GB_UI_NEED (grepped tests/ and source/pdna_origin_art.*
+ * -- neither references it by name).
+ *
+ * PINNED at build time (BACKLOG #152): tools/stack_edges.txt now carries a
+ * `gated gbscr_open_inner need=6088 from=rom_gbui.h:PDNA_GB_UI_NEED
+ * gate=gbscr_open ...` declaration (the same b102 mechanism gb_art_fetch/
+ * gb_art_fetch_icon already use) -- the walker FATALs if this chain's measured
+ * subtree ever exceeds 6088 again without this constant being re-derived in the
+ * same commit, which is exactly the drift this NINTH pass found undetected for
+ * 5 days. The gated declaration in tools/stack_edges.txt keeps this honest at
+ * build time -- do not edit either this constant or that declaration alone;
+ * both move together or the guard FATALs. */
+#define PDNA_GB_UI_NEED 6088
 
 /* Each entry is the SCAN HIT file offset (where the locator's ScanCb pattern
  * matched), never a located block itself. gen 1 uses FONT/TEXTBOX/CARDFRAME/
