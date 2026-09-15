@@ -23,6 +23,15 @@ bool xg_togame_row(bool is_bank, bool pc_live, bool have_pc);
  * only with something clipped, only with a live Gen-3 PC to paste into. */
 bool xg_paste_row(bool clip_occupied, bool pc_live);
 
+/* pdna_main.c empty-cell CREATE row (app_mon_menu): CREATE builds a Gen-3 record off
+ * g_vinfo (otId/trainer name) and, on a Bank cell, commits straight to the SD card
+ * (banksrc_commit -> box_save) -- with no live Gen-3 save (a GB session's Bank
+ * visit) that write would persist a checksummed record built off a zeroed g_vinfo,
+ * a new write surface a later Gen-3 session's TO GAME could inject into the real
+ * save. Always offered off a Bank cell (!is_bank -- PC/party's own CREATE is
+ * unaffected); on a Bank cell, only with a live Gen-3 PC (BACKLOG #120 S2 F1). */
+bool xg_create_row(bool is_bank, bool pc_live);
+
 /* pdna_main.c app_inject_to_game()/_deferred()/app_commit_pc() first statement:
  * refuse writing into g_pc while it is the GB session's arena, or with no parsed
  * Gen-3 save to receive the write. */

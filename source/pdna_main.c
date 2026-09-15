@@ -4037,6 +4037,16 @@ int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool ori
  * The summary — not the flat field list — is deliberate: making a Pokémon should look
  * like inspecting one, and the summary reaches all 40 editable fields anyway. */
 static bool app_create_mon(uint8_t* rec, AppCommitFn commit, uint8_t* block) {
+  /* BACKLOG #120 S2 F1 (review finding): defence in depth -- the CREATE row above
+   * should already have hidden this action on a Bank cell with no live Gen-3 save,
+   * but this is the actual write-time gate (same posture as app_inject_to_game's
+   * own belt-and-braces refusal). Without a parsed save, otId/trainer name below
+   * would be built off zeroed g_vinfo. */
+  if (!g_vinfo.valid) {
+    snd_deny();
+    msg_wait("NO GEN-3 SAVE", UI_WARN, "Open a Gen-3 save first,", "then use the Bank.");
+    return false;
+  }
   uint16_t sp = pick_species(1);
   if (sp == 0xFFFF || sp == 0) return false;
   uint32_t otId = (uint32_t)g_vinfo.tid_public | ((uint32_t)g_vinfo.tid_secret << 16);
@@ -4459,13 +4469,22 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
     if (g_item_held)                 { lab[n]=PDNA_LBL_GIVE_ITEM; act[n++]=A_GIVEITEM; }
     lab[n]=PDNA_LBL_RELEASE;   act[n++]=A_RELEASE;
   } else {                                              /* empty slot */
-    if (!is_party) { lab[n]=PDNA_LBL_CREATE; act[n++]=A_CREATE; }   /* build a mon from nothing (box/bank) */
+    /* BACKLOG #120 S2 F1 (review finding): CREATE builds a Gen-3 record off g_vinfo
+     * (otId/trainer name) and, on a Bank cell, commits straight to the SD card
+     * (banksrc_commit -> box_save) -- unguarded, a GB session's Bank visit (no live
+     * Gen-3 save) would persist a checksummed record built off a zeroed g_vinfo, a
+     * new write surface a later Gen-3 session's TO GAME could inject into the real
+     * save. xg_create_row leaves PC/party CREATE (!is_bank) untouched. */
+    if (!is_party && xg_create_row(is_bank, app_gen3_pc_live())) { lab[n]=PDNA_LBL_CREATE; act[n++]=A_CREATE; }   /* build a mon from nothing (box/bank) */
     /* BACKLOG #120 S2: same xg_paste_row gate as the occupied-cell PASTE row above --
      * an empty Bank cell during a GB session's visit has no live Gen-3 PC to paste
      * FROM, so this is hidden; an ordinary Gen-3 session (app_gen3_pc_live() true)
      * sees no change. */
     if (xg_paste_row(g_clip.occupied, app_gen3_pc_live())) { lab[n]=PDNA_LBL_PASTE_HERE; act[n++]=A_PASTE; }
-    if (n == 0) return false;                            /* empty party slot, nothing to paste */
+    /* BACKLOG #120 S2 F1: an empty Bank cell in a GB session now legitimately has
+     * n == 0 (neither CREATE nor PASTE HERE offered) -- deny audibly so A is not a
+     * silent no-op, matching every other refused action in this tree. */
+    if (n == 0) { snd_deny(); return false; }             /* empty party slot, nothing to paste */
   }
   lab[n]=PDNA_LBL_CANCEL; act[n++]=A_CANCEL;
 

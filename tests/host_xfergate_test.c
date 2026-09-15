@@ -44,6 +44,14 @@ static void test_xg_paste_row(void) {
   printf("(C) xg_paste_row: full 2x2 truth table\n");
 }
 
+static void test_xg_create_row(void) {
+  CHECK(xg_create_row(false, false) == true,  "create_row: PC/party cell, no live PC -> still true (unaffected)");
+  CHECK(xg_create_row(false, true)  == true,  "create_row: PC/party cell, live PC -> true");
+  CHECK(xg_create_row(true,  false) == false, "create_row: Bank cell, no live Gen-3 PC -> false");
+  CHECK(xg_create_row(true,  true)  == true,  "create_row: Bank cell, live Gen-3 PC -> true");
+  printf("(G) xg_create_row: full 2x2 truth table\n");
+}
+
 static void test_xg_inject_refuse(void) {
   CHECK(xg_inject_refuse(false, false) == true,  "inject_refuse: arena free, no save -> refuse");
   CHECK(xg_inject_refuse(false, true)  == false, "inject_refuse: arena free, live save -> allow");
@@ -73,6 +81,7 @@ int main(void) {
   test_xg_pc_live();
   test_xg_togame_row();
   test_xg_paste_row();
+  test_xg_create_row();
   test_xg_inject_refuse();
   test_xg_clear_carry_on_gb_exit();
   test_xg_drop_denied();

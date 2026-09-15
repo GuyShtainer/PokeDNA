@@ -8,6 +8,8 @@ bool xg_togame_row(bool is_bank, bool pc_live, bool have_pc) { return is_bank &&
 
 bool xg_paste_row(bool clip_occupied, bool pc_live) { return clip_occupied && pc_live; }
 
+bool xg_create_row(bool is_bank, bool pc_live) { return !is_bank || pc_live; }
+
 bool xg_inject_refuse(bool arena_held, bool vinfo_valid) { return arena_held || !vinfo_valid; }
 
 bool xg_clear_carry_on_gb_exit(bool carry_is_gb) { return carry_is_gb; }
