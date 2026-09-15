@@ -431,10 +431,11 @@ static void run_rom(const char* path, const char* name, int expect_header) {
     fc.hit_call = base + 3; fc.hit_pos = 2; fc.hit_call_xor = 0x1C;
     uint8_t dirty_pk[ROM_SPRITE_BUF_BYTES]; RomSpritePic ip;
     int ok_pk = rom_sprite_pic(&rs, ROM_SPRITE_FRONT, 1, 0, dirty_pk, sizeof dirty_pk, &ip);
-    chk(name, "F1/BACKLOG#144: a size-peek/header disagreement is never silently "
-              "accepted with wrong pixels -- refused, or recovered byte-identical "
-              "to the clean reference",
-        !ok_pk || (ip.bytes == ic.bytes && memcmp(dirty_pk, clean, ic.bytes) == 0));
+    chk(name, "F1/BACKLOG#144: a size-peek/header disagreement RECOVERS the clean "
+              "pixels via the fixed-window retry, never refused and never dirty",
+        ok_pk && ip.bytes == ic.bytes && memcmp(dirty_pk, clean, ic.bytes) == 0);
+    chk(name, "the size-peek disagreement cost a retry (the fallback actually ran)",
+        (fc.calls - base) > 6);
 
     fc.hit_call = 0;
   }
