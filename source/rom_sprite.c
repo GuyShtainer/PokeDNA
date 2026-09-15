@@ -161,7 +161,16 @@ static uint32_t decode_verified(const RomSprite* rs, uint32_t addr,
   for (int attempt = 0; attempt < 3; attempt++) {
     uint32_t consumed = 0, in_hash = 0;
     uint32_t n = mr_lz77_x(rs->rc, addr, dst, cap, win, win_bytes, &consumed, &in_hash);
-    if (!n) return 0;
+    if (!n) {
+      /* mr_lz77_x returns 0 both for a transient bad read of its OWN header
+       * (type byte != 0x10, or a malformed NEXT/disp mid-stream) and for a
+       * genuinely oversize/corrupt blob -- the two are indistinguishable at
+       * this level. Retrying with the fixed stack window (never derived from
+       * `size`, never aliasing dst) costs nothing but a re-read, so spend the
+       * budget: only the LAST attempt's zero is terminal. */
+      if (attempt < 2) { win = 0; win_bytes = 0; continue; }
+      return 0;
+    }
     /* `win` was sized off a SEPARATE mr_lz77_size() peek of the same 4 header
      * bytes. If that peek disagreed with the header this decode actually read,
      * dst + size lands INSIDE dst[0,n): the window aliases live output and
