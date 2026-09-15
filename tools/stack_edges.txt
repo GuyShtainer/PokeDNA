@@ -97,6 +97,35 @@
 # the direction that genuinely risks an under-count, same as the offset-mismatch case
 # right above it.
 
+# BACKLOG #155: an implementation that is absent from one or more build variants
+# (e.g., fused_gb_slice_read exists only in delta-gb, not in artless or normal)
+# can be marked with `impl-optional <impl>` to suppress the "not found" warning
+# when that build variant is measured. When the impl IS present, it is still
+# subject to all normal reachability checks; when absent, no warning is printed.
+#
+# Example: `impl-optional fused_gb_slice_read` means the walker will not warn if
+# fused_gb_slice_read is not found in the ELF, but it will still check all the
+# dispatch sites that name it (gen1_open_ranged, rom_gblearn_open, etc.) when it
+# IS present in the linked image.
+
+# === Variant-conditional implementations (BACKLOG #155) ==========================
+# Delta-only (delta-gb does not link these):
+impl-optional fused_gb_slice_read
+# Artless/normal-only (artless/normal use SD; delta-gb uses fused ROM):
+impl-optional art_extract_progress
+impl-optional art_icons_stream
+impl-optional g3cross_pic_cb
+impl-optional g3x_fatfs_read
+impl-optional gb_art_read
+impl-optional gb_reg_progress
+impl-optional gbmap2_sd_read
+impl-optional gbmap_sd_read
+impl-optional iconrom_fatfs_read
+# S150-4 future implementation (BACKLOG #120):
+impl-optional gb_can_lift_hook
+
+# === Struct field dispatches (BACKLOG #84b) =======================================
+
 # records@20/get_name@28 moved below (BACKLOG #84b seventh pass): offset 20 is ALSO
 # AppSrcOps.view (app_mon_menu_readonly/pdna_dex_screen) and offset 28 is ALSO
 # AppSrcOps.create -- both are now qualified per-caller further down (search
@@ -231,8 +260,8 @@ BoxSource.get_raw_name @72 in box_options_menu,pdna_box -> gbsrc_get_raw_name
 # guard cannot know that statically, though, so it still needs a bounded implementation
 # to charge against. Forward-declared to the name the design (docs/BANK-CROSSGEN-DESIGN.md
 # §4) gives S3's Game Boy cell-lift gate, `gb_can_lift_hook` -- not yet linked in this
-# build, which this file's own posture (see the "WHY A NAMED IMPLEMENTATION MISSING..."
-# note above) treats as a non-fatal shrink of the reachable graph, not an under-count.
+# build, marked impl-optional (BACKLOG #155) so the "not found" warning is suppressed.
+# When S150-4 adds the implementation, it will be present in the ELF and no longer optional.
 # `xfer@84` has no declaration: nothing dereferences it anywhere in this build (no `bl`
 # site exists to require one) -- it is wired starting S3.
 BoxSource.can_lift @80 in src_can_lift -> gb_can_lift_hook
