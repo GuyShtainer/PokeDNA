@@ -167,8 +167,15 @@ static uint32_t decode_verified(const RomSprite* rs, uint32_t addr,
      * dst + size lands INSIDE dst[0,n): the window aliases live output and
      * mr_hash_span()'s re-read below would overwrite it. A successful decode
      * always returns exactly its header's size, so n != size means the two
-     * header reads disagreed -- refuse. */
-    if (win_bytes && n != size) return 0;
+     * header reads disagreed -- a transient bad header read, not proof the
+     * blob itself is bad. Fall back to mr_lz77_x's own fixed 64 B stack
+     * window (win = 0, win_bytes = 0) for the remaining attempts: that window
+     * is never derived from `size` and never overlaps `dst`, so aliasing is
+     * impossible regardless of what the header reads next -- BACKLOG #103's
+     * review found this `return 0` was spending the whole 3-attempt retry
+     * budget on one bad peek instead of falling back, turning a transient
+     * miss into a missing sprite. */
+    if (win_bytes && n != size) { win = 0; win_bytes = 0; continue; }
     if (!rs->verify) return n;
     uint32_t reread_hash = 0;
     if (mr_hash_span(rs->rc, addr, consumed, win, win_bytes, &reread_hash) && reread_hash == in_hash)
