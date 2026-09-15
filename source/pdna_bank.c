@@ -26,6 +26,7 @@
 #include "pdna_pk.h"      /* PDNA_BANK_DIR */
 #include "pdna_bank.h"
 #include "pdna_origin_art.h"  /* the parallel era view: the bank is where all three meet */
+#include "log.h"           /* log_line (BACKLOG #150 S150-0's backup/rename triage) */
 #include "ui.h"
 #include "snd.h"
 #include "rmbl.h"          /* rumble must not toggle the cart bus during an SD write */
@@ -109,9 +110,39 @@ static bool box_load(int box) {
   return st == SF_OK && sz >= BOX_BYTES;
 }
 
+/* box_save's pre-write backup step (BACKLOG #150 S150-0). Up to this slice, box_save was
+ * plain sf_write_verified with NO backup and NO SF_ERR_RENAME triage; UP (the native-cell
+ * feature this unblocks) makes the Bank file a mon's ONLY copy, so both are required
+ * before any of that can land -- mirrors gb_persist's triage (pdna_gen12.c, the
+ * sf_backup_rolling + SF_ERR_RENAME block right after its busy-panel).
+ *
+ * noinline: keeps bak[SF_PATH_MAX] (272 B) off box_save's frame across whatever deep
+ * chain called it, same reasoning as meta_load's noinline above.
+ *
+ * THE GUARD: a box file exists only after its first save (box_load's own comment, and
+ * pdna_bank.c:98-109's zero-on-absent read) -- so on the FIRST save into a never-used
+ * box, `path` does not exist yet. Without this guard, sf_backup_rolling -> copy_file ->
+ * f_open(FA_READ) on a missing source returns SF_ERR_OPEN -> SF_ERR_BACKUP, and box_save
+ * would refuse that first write forever. f_stat absent is the "nothing to back up, carry
+ * on" case, not a failure. */
+static bool __attribute__((noinline)) box_backup(const char* path) {
+  FILINFO fno;
+  if (f_stat(path, &fno) != FR_OK) return true;      /* never written -- nothing to back up */
+  char bak[SF_PATH_MAX];
+  rmbl_pause();
+  SfStatus bst = sf_backup_rolling(path, bak, sizeof bak);
+  rmbl_resume();
+  if (bst != SF_OK) {
+    log_line("bank: box backup failed (%s)", sf_status_str(bst));
+    return false;
+  }
+  return true;
+}
+
 static bool box_save(void) {                    /* write the loaded box's records */
   if (g_loaded < 0) return false;
   char path[SF_PATH_MAX]; box_path(g_loaded, path);
+  if (!box_backup(path)) return false;
   rmbl_pause();
   bool ok = sf_write_verified(path, box_recs(), BOX_BYTES) == SF_OK;
   rmbl_resume();
