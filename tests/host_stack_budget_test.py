@@ -446,7 +446,7 @@ def test_d_load_extra_edges_parses_frame_override():
     try:
         field_decls, _field_offset_index, argsite_decls, whole_func_decls, \
             frame_overrides, isr_decls, addrtaken_ok, _recursion_decls, \
-            _gated_decls = sb.load_extra_edges(path)
+            _gated_decls, _impl_optional_decls = sb.load_extra_edges(path)
         check("(d) frame override line parsed", frame_overrides == {"leaf": 40},
               frame_overrides)
         check("(d) field-offset line parsed alongside it",
@@ -472,7 +472,7 @@ def test_d6_argsites_accepts_a_dotted_gcc_clone_name():
     try:
         field_decls, _field_offset_index, argsite_decls, whole_func_decls, \
             frame_overrides, isr_decls, addrtaken_ok, _recursion_decls, \
-            _gated_decls = sb.load_extra_edges(path)
+            _gated_decls, _impl_optional_decls = sb.load_extra_edges(path)
         check("(D6) dotted caller name parsed into argsite_decls, not swallowed whole",
               argsite_decls == {"draw_wallpaper.constprop.0": (3, {"impl_a", "impl_b"})},
               argsite_decls)
@@ -536,10 +536,49 @@ def test_d1_load_extra_edges_parses_isr_and_addrtaken_ok():
         f.write("addrtaken-ok some_table_entry  # compiler-generated, never called\n")
         path = f.name
     try:
-        _fd, _fi, _ad, _wd, _fo, isr_decls, addrtaken_ok, _rd, _gd = sb.load_extra_edges(path)
+        (_fd, _fi, _ad, _wd, _fo, isr_decls, addrtaken_ok, _rd, _gd,
+         _iod) = sb.load_extra_edges(path)
         check("(D1) isr lines parsed", isr_decls == {"hb_isr", "pwm_isr"}, isr_decls)
         check("(D1) addrtaken-ok line parsed", addrtaken_ok == {"some_table_entry"},
               addrtaken_ok)
+    finally:
+        os.unlink(path)
+
+
+def test_b155_load_extra_edges_parses_impl_optional():
+    """BACKLOG #155: impl-optional implementations are variant-conditional and
+    are excluded from unknown_impls checks without warning."""
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        f.write("impl-optional fused_gb_slice_read\n")
+        f.write("impl-optional gb_art_read\n")
+        f.write("# normal declaration for contrast\n")
+        f.write("isr hb_isr\n")
+        path = f.name
+    try:
+        (_fd, _fi, _ad, _wd, _fo, _isr, _aok, _rd, _gd,
+         impl_optional_decls) = sb.load_extra_edges(path)
+        check("(B155) impl-optional lines parsed",
+              impl_optional_decls == {"fused_gb_slice_read", "gb_art_read"},
+              impl_optional_decls)
+    finally:
+        os.unlink(path)
+
+
+def test_b155_mutation_impl_optional_line_missing_name_fails():
+    """Malformed impl-optional line without a name should parse as a regular
+    declaration attempt and fail (no -> operator)."""
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        f.write("impl-optional\n")  # missing the implementation name
+        path = f.name
+    try:
+        try:
+            sb.load_extra_edges(path)
+            check("(B155) malformed impl-optional should fail", False, "no error raised")
+        except ValueError as e:
+            check("(B155) malformed impl-optional raises ValueError",
+                  "unrecognized line" in str(e), str(e))
     finally:
         os.unlink(path)
 
@@ -1652,7 +1691,8 @@ def test_b102_gated_line_round_trips_through_the_parser():
                 "gate=some_gate via=caller_a,caller_b\n")
         path = f.name
     try:
-        _fd, _fi, _ad, _wd, _fo, _isr, _aok, _rd, gated_decls = sb.load_extra_edges(path)
+        (_fd, _fi, _ad, _wd, _fo, _isr, _aok, _rd, gated_decls,
+         _iod) = sb.load_extra_edges(path)
         check("(B102/D1) a gated line parses fn -> (need, header, macro, gate_fn, via)",
               gated_decls.get("leaf_fn") == (1234, "some_header.h", "SOME_MACRO", "some_gate",
                                               frozenset({"caller_a", "caller_b"})),
@@ -2051,7 +2091,7 @@ def test_d5a_shared_offset_two_structs_two_callers():
         f.write("Beta.y @20 in caller_beta -> impl_beta\n")
         path = f.name
     try:
-        _fd, field_offset_index, _ad, _wd, _fo, _isr, _aok, _rd, _gd = \
+        _fd, field_offset_index, _ad, _wd, _fo, _isr, _aok, _rd, _gd, _iod = \
             sb.load_extra_edges(path)
         analysis = {
             "indirect_sites": {
@@ -2086,7 +2126,7 @@ def test_d5a_two_structs_same_caller_both_credited():
         f.write("Beta.y @8 in shared_caller -> impl_beta\n")
         path = f.name
     try:
-        _fd, field_offset_index, _ad, _wd, _fo, _isr, _aok, _rd, _gd = \
+        _fd, field_offset_index, _ad, _wd, _fo, _isr, _aok, _rd, _gd, _iod = \
             sb.load_extra_edges(path)
         analysis = {
             "indirect_sites": {"shared_caller": [("0x1000", "bl\t9000 <thunk>", "r3")]},
@@ -2136,7 +2176,7 @@ def test_d5a_single_owner_offset_stays_legal_unqualified():
         f.write("Alpha.x @16 -> impl_alpha\n")
         path = f.name
     try:
-        _fd, field_offset_index, _ad, _wd, _fo, _isr, _aok, _rd, _gd = \
+        _fd, field_offset_index, _ad, _wd, _fo, _isr, _aok, _rd, _gd, _iod = \
             sb.load_extra_edges(path)
         analysis = {
             "indirect_sites": {"any_caller": [("0x1000", "bl\t9000 <thunk>", "r3")]},

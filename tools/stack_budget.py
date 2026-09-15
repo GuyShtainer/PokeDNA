@@ -586,6 +586,10 @@ ISR_LINE_RE = re.compile(r'^isr\s+(\S+)$')
 ADDRTAKEN_OK_RE = re.compile(r'^addrtaken-ok\s+(\S+)$')
 # D4 (BACKLOG #84b sixth pass): a declared depth for a real recursive SCC.
 RECURSION_LINE_RE = re.compile(r'^recursion\s+(\S+)\s+depth=(\d+)$')
+# BACKLOG #155: an implementation that may be absent from some build variants
+# (e.g. fused_gb_slice_read, delta-only). When the impl is present, it must be
+# properly reached; when absent, no warning is printed.
+IMPL_OPTIONAL_RE = re.compile(r'^impl-optional\s+(\S+)$')
 # BACKLOG #102: a runtime-gated subtree with its declared conservative bound.
 # D1 (review-opus fix pass, BACKLOG #102): from=header:MACRO and gate=gate_fn ties N
 # to the real runtime constant and the function that enforces it -- see this file's
@@ -771,6 +775,8 @@ def load_extra_edges(path):
       recursion_decls    : {fn: depth}
       gated_decls        : {fn: (need, header, macro, gate_fn, via_frozenset)}
                             (D1: was {fn: need}; BACKLOG #131 appended via_frozenset)
+      impl_optional_decls : {impl, ...}  (BACKLOG #155: implementations that may be
+                            absent from some build variants without warning)
     """
     field_decls = {}
     field_site_decls = []   # [(struct, field, offset, callers_frozenset_or_None, {impls})]
@@ -781,9 +787,10 @@ def load_extra_edges(path):
     addrtaken_ok = set()
     recursion_decls = {}
     gated_decls = {}
+    impl_optional_decls = set()
     if not path or not os.path.exists(path):
         return (field_decls, ({}, {}), argsite_decls, whole_func_decls, frame_overrides,
-                isr_decls, addrtaken_ok, recursion_decls, gated_decls)
+                isr_decls, addrtaken_ok, recursion_decls, gated_decls, impl_optional_decls)
     with open(path) as f:
         for lineno, raw in enumerate(f, 1):
             line = raw.split('#', 1)[0].strip()
@@ -809,6 +816,10 @@ def load_extra_edges(path):
                                       f"with different depths ({recursion_decls[fn]} "
                                       f"and {depth})")
                 recursion_decls[fn] = depth
+                continue
+            iom = IMPL_OPTIONAL_RE.match(line)
+            if iom:
+                impl_optional_decls.add(iom.group(1))
                 continue
             gm = GATED_LINE_RE.match(line)
             if gm:
@@ -882,7 +893,8 @@ def load_extra_edges(path):
     field_offset_index = (dict(qualified), dict(unqualified))
 
     return (field_decls, field_offset_index, argsite_decls, dict(whole_func_decls),
-            frame_overrides, isr_decls, addrtaken_ok, recursion_decls, gated_decls)
+            frame_overrides, isr_decls, addrtaken_ok, recursion_decls, gated_decls,
+            impl_optional_decls)
 
 
 # === struct-field offsets, computed from the header (D1) ==============================
@@ -3287,9 +3299,9 @@ def main(argv):
         return 1
 
     (field_decls, field_offset_index, argsite_decls, whole_func_decls, frame_overrides,
-     isr_decls, addrtaken_ok, recursion_decls, gated_decls) = (
+     isr_decls, addrtaken_ok, recursion_decls, gated_decls, impl_optional_decls) = (
         load_extra_edges(args.edges_file) if args.edges_file
-        else ({}, ({}, {}), {}, {}, {}, set(), set(), {}, {}))
+        else ({}, ({}, {}), {}, {}, {}, set(), set(), {}, {}, set()))
 
     # D1 header-drift check: every declared Struct.field @OFFSET is checked against
     # the offset the struct's OWN header gives that field today, before anything
@@ -3404,7 +3416,9 @@ def main(argv):
                  # "stale declaration? typo? inlined away?" situation as any other
                  # declared name -- same WARNING path, not a new one.
                  | set(gated_decls))
-    unknown_impls = sorted(all_impls - analysis["funcs"])
+    # BACKLOG #155: implementations marked as impl-optional may be absent from some
+    # build variants without warning -- remove them from the unknown check.
+    unknown_impls = sorted(all_impls - analysis["funcs"] - impl_optional_decls)
     if unknown_impls:
         print(f"*** stack_budget: WARNING -- {args.edges_file} names implementation(s) not "
               f"found in {args.elf}: {unknown_impls} (stale declaration? typo? inlined away?)")
