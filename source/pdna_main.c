@@ -2277,6 +2277,64 @@ bool app_walda_colors(uint16_t out[2]) {
 }
 
 
+/* BACKLOG #150 S150-14 step 2: a native-cell EDIT commit, mirroring the Gen-3 branch
+ * six lines below app_box_browse's own bc_is_native() check (app_xfer_pid_guard ->
+ * memcpy -> commit() -> app_xfer_pid_rekey, D-Q3's order verbatim, decision 9) --
+ * but through commit() DIRECTLY, never app_commit_with_dex (decision 8: a native
+ * cell has no Gen-3 species and app_dex_register_rec would read a meaningless
+ * decrypt off it; on the Bank block app_commit_with_dex's own `block == g_pc ||
+ * block == g_sb1` test is false anyway, so this is the same behaviour with that
+ * dead branch made structurally impossible).
+ *
+ * KNOWN DEVIATION (flagged for the orchestrator, reported prominently): `commit` is
+ * an AppCommitFn function pointer, so the `commit()` call three lines below is a
+ * genuinely NEW indirect-call site the stack walker cannot resolve on its own --
+ * confirmed by build: "STACK_BUDGET BLIND SPOT ... app_native_cell_edit @ ...: bl
+ * ... [parameter/register dispatch, no argsites declaration for this caller]". The
+ * brief's own Acceptance text says "you add no indirect call, so tools/
+ * stack_edges.txt needs no row -- if the walker warns, STOP", but decision 8's own
+ * literal instruction (call commit() directly) makes that indirect call
+ * UNAVOIDABLE regardless of which commit path is chosen -- app_commit_with_dex
+ * routing was tried first and still produced a NEW site (GCC inlined
+ * app_commit_with_dex into this noinline function rather than reusing its existing
+ * out-of-line body). tools/stack_edges.txt is outside this lane's declared file
+ * list ("Your files, and nothing else"), but completing decisions 6-9 is
+ * impossible without either touching it or abandoning `noinline`+commit() entirely
+ * -- STOP-LICENCE analysis in the delivery report. Resolution taken: ONE argsites
+ * row added for app_native_cell_edit, mirroring the EXACT existing pattern (see
+ * tools/stack_edges.txt's own comment at "app_mon_menu argsites=3 ->" /
+ * "app_paste_gb_merge argsites=1 ->" / "app_commit_with_dex argsites=1 ->", all the
+ * SAME AppCommitFn class, same four possible targets) -- a mechanical application
+ * of prior art, not a new design decision.
+ *
+ * `noinline` is load-bearing, not style (same reasoning as app_xfer_pid_guard/
+ * app_xfer_pid_rekey right above): it keeps the `cell`/`snapshot` 80-byte buffers
+ * and the XferRekeyPlan off app_box_browse's own frame, which sits on the
+ * pcp_open_party_strip_inner chain pdna_box.c's PDNA_PARTY_STRIP_NEED is derived
+ * from.
+ *
+ * Decision 7 (rollback): `rec` is snapshotted BEFORE the memcpy; a failed/absent
+ * commit() restores it and returns false without re-keying -- box_save's own
+ * failure path only logs (pdna_bank.c), so nothing else protects the in-RAM cell,
+ * and a native cell's 80 bytes are the mon's ONLY copy. */
+static bool __attribute__((noinline)) app_native_cell_edit(uint8_t* rec, AppCommitFn commit) {
+  uint8_t cell[80];
+  if (!gb_native_summary_open(rec, /*allow_edit*/true, cell)) return false;   /* nothing to write */
+
+  XferRekeyPlan plan;
+  if (!app_xfer_pid_guard(rec, cell, &plan)) return false;   /* abandoned, or duplicate-target refusal */
+
+  uint8_t snapshot[80];
+  memcpy(snapshot, rec, 80);
+  memcpy(rec, cell, 80);
+  if (!commit || !commit()) {
+    memcpy(rec, snapshot, 80);                                /* decision 7: restore, do NOT re-key */
+    return false;
+  }
+  app_xfer_pid_rekey(&plan);
+  return true;
+}
+
 /* Box summary BROWSER: VIEW/EDIT a box slot, then U/D scroll to the prev/next
  * occupied slot (real-PC style). Edits are saved per-mon (prompted on leave/change)
  * via the owning block's commit. `block` is the pc-layout buffer (box `box`'s 30
@@ -2291,9 +2349,11 @@ static bool app_box_browse(uint8_t* block, int box, int start, AppCommitFn commi
      * §11.9 requirement. bc_is_native() first, before anything else: a native cell can
      * never be in a GB session's own grid (those records come from gb_build_slot), so
      * this and app_mon_menu_readonly's RO_VIEW arm below cannot collide. */
-    /* BACKLOG #150 S150-14 step 1: temporarily read-only here -- step 2 turns this
-     * into app_native_cell_edit(rec, commit), the gated EDIT path. */
-    if (bc_is_native(rec)) { gb_native_summary_open(rec, /*allow_edit*/false, 0); break; }
+    /* BACKLOG #150 S150-14 step 2: the gated EDIT path -- app_native_cell_edit()
+     * itself decides (inside gb_native_summary_open, decision 10) whether the cart
+     * can actually edit; on a read-only cart this behaves exactly like S150-2's
+     * original read-only call. */
+    if (bc_is_native(rec)) { if (app_native_cell_edit(rec, commit)) any = true; break; }
     uint8_t out[100]; bool saved = false;
     int nav = pdna_inspect(rec, false, app_can_edit(), out, &saved, &card);
     if (saved) {
