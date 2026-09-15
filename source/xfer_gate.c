@@ -32,3 +32,11 @@ bool xg_native_escape_denied(const uint8_t rec80[80], uint8_t dst_scope) {
 bool xg_chunk_crossgen_denied(uint8_t dst_scope, uint8_t chunk_scope) {
   return dst_scope == XG_SCOPE_GB || chunk_scope == XG_SCOPE_GB;
 }
+
+uint8_t xg_bank_down_arm(uint8_t cell_gen, uint8_t dst_scope, uint8_t dst_gen) {
+  if (cell_gen != 1u && cell_gen != 2u) return XG_DOWN_ARM_NONE;
+  if (dst_scope == XG_SCOPE_BANK) return XG_DOWN_ARM_NONE;
+  if (dst_scope != XG_SCOPE_GB) return XG_DOWN_ARM_GEN3;      /* BOXSCOPE_PC (0) */
+  if (dst_gen != 1u && dst_gen != 2u) return XG_DOWN_ARM_NONE; /* no GB session   */
+  return (dst_gen == cell_gen) ? XG_DOWN_ARM_EXACT : XG_DOWN_ARM_GB_BRIDGE;
+}

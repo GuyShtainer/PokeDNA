@@ -476,16 +476,35 @@ static bool gb_can_lift_hook_impl(int box, int slot);
  * pdna_gen12_source() (which wires s.xfer) appears in file order. */
 static bool gb_lift_up_hook(const uint8_t* rec80, uint8_t* out80, XferCarry* xc);
 static bool gb_release_up_hook(int box, int slot, const uint8_t cell80[80]);
+/* BACKLOG #150 S150-7 step 4: BoxXferOps.accept_down's real body (defined further
+ * below, beside gb_paste_hook -- D8's own ordering comment), forward-declared for the
+ * same reason as lift_up/release_up above. */
+static bool gb_accept_down_hook(int dst_box, const uint8_t cell80[80]);
 /* The real xfer vtable -- replaces the earlier S2 marker-only table (every function
- * pointer NULL) now that UP has a real lift/release. lift_up/release_up are the only
- * two members this lane implements; preview_down/accept_down (DOWN) and move_within
- * (within-GB) stay NULL -- not this lane's job. `.gen` is unread today (kept 0, same
- * as the S2 marker it replaces). Declared `static const` at file scope like every
- * other BoxXferOps/AppSrcOps table in this file (k_gb_ops_gen1/gen2/ro). */
+ * pointer NULL) now that UP has a real lift/release and DOWN has a real EXACT-arm
+ * landing. preview_down and move_within stay NULL -- not this lane's job. `.gen` is
+ * unread today (kept 0, same as the S2 marker it replaces) -- BACKLOG #150 S150-7's
+ * arm selector reads the session's generation through app_gb_session_gen() instead
+ * (below), a computed value off the EXISTING g_m pointer, specifically so this table
+ * can stay `static const` (in ROM) rather than becoming a 24-byte EWRAM static just to
+ * hold one field that changes per session (D-Q8: no new EWRAM statics). Declared
+ * `static const` at file scope like every other BoxXferOps/AppSrcOps table in this file
+ * (k_gb_ops_gen1/gen2/ro). */
 static const BoxXferOps k_gb_xfer = {
-  .gen = 0, .lift_up = gb_lift_up_hook, .preview_down = 0, .accept_down = 0,
+  .gen = 0, .lift_up = gb_lift_up_hook, .preview_down = 0, .accept_down = gb_accept_down_hook,
   .release_up = gb_release_up_hook, .move_within = 0,
 };
+
+/* BACKLOG #150 S150-7 D-Q7 plumbing fix: xg_bank_down_arm()'s `dst_gen` argument, for
+ * pdna_box.c's bank_down_dispatch -- it cannot read the session's generation off
+ * `k_gb_xfer.gen` (kept 0, see above) or off `src->xfer` (never populated -- see
+ * bank_down_exact's own comment), so this is a small computed getter over the
+ * EXISTING `g_m` pointer (set by pdna_gen12_source(), already reachable from every GB
+ * screen) instead of a new stored field. 0 outside a GB session (no g_m), matching
+ * D2's "no session -> NONE" row. */
+uint8_t app_gb_session_gen(void) {
+  return g_m ? ((g_m->kind == GB12_SAVE_RBY) ? GB_GEN1 : GB_GEN2) : 0;
+}
 #endif
 static bool gbsrc_can_boxops(int box) {
 #ifndef PDNA_GEN12_HOST
@@ -2713,6 +2732,244 @@ static void __attribute__((noinline)) gb_gen1_norom_msg(void) {
  *      as it stood when the popup opened; cheap, and every other hook does the same)
  *   6-8. gb_paste_write(): the sidecar (verified, written FIRST -- design doc section 5
  *      point 3), gbs_insert(), then the card (gb_persist). */
+/* BACKLOG #150 S150-7 decision D10: the first STORAGE box (never the party) with room,
+ * for the 10(c) deposit. -1 when every box is full -- the caller refuses the WHOLE drop
+ * before anything moves rather than offering a second picker. g_ed->list2 as scratch:
+ * safe here because this only ever runs from gb_accept_down_party_deposit(), strictly
+ * BEFORE that function's own gbs_move() call touches list2 for real. */
+static int gb_first_free_box(void) {
+  int nb = gbs_nboxes(&g_ed->s);
+  for (int b = 0; b < nb; b++) {
+    if (gbs_box_writable(&g_ed->s, b) != GBS_OK) continue;
+    if (gbs_load_list(&g_ed->s, b, g_ed->list2) != GBS_OK) continue;
+    int c = gb_list_count(g_ed->s.gen, g_ed->list2, b);
+    if (c >= 0 && c < gb_list_capacity(g_ed->s.gen, b)) return b;
+  }
+  return -1;
+}
+
+/* BACKLOG #150 S150-7 decision D9: the party-full offer's own picker, a direct sibling
+ * of gb_pick_box() above -- same PDNA_GBEDIT_PICKBOX_* layout constants, same
+ * ui_panel/ui_hline chrome, same s_wait(KEY_UP|KEY_DOWN|KEY_A|KEY_B) loop. Rows are the
+ * party members' own nicknames (gb_get_nickname, drawn with ui_ptext -- PokeDNA's own
+ * proportional font, never ui_text+truncate). Returns the chosen slot, or -1 on B. */
+#define GB12_PICKPARTY_MAX 6   /* retail's own party cap, both generations */
+
+static int gb_pick_party_slot(const Gb12Mount* m) {
+  int pb = m->party_box;
+  if (gbs_load_list(&g_ed->s, pb, g_ed->list2) != GBS_OK) return -1;
+  int n = gb_list_count(g_ed->s.gen, g_ed->list2, pb);
+  if (n <= 0 || n > GB12_PICKPARTY_MAX) return -1;
+
+  int sel = 0;
+  for (;;) {
+    ui_clear();
+    ui_text(4, 3, UI_TITLE, PDNA_GBEDIT_PICKPARTY_TITLE);
+    ui_hline(0, 13, UI_SCR_W, UI_BORDER);
+    for (int i = 0; i < n; i++) {
+      GbEditMon e;
+      char nm[GB_TEXT_MAX];
+      if (gb_load(&e, g_ed->s.gen, g_ed->list2, pb, i)) gb_get_nickname(&e, nm, sizeof nm);
+      else nm[0] = 0;
+      int y = PDNA_GBEDIT_PICKBOX_Y0 + i * PDNA_GBEDIT_PICKBOX_ROW_H;
+      bool sh = (i == sel);
+      if (sh) ui_panel(2, y - 1, UI_SCR_W - 4, PDNA_GBEDIT_PICKBOX_ROW_H, UI_SEL, UI_TITLE);
+      ui_ptext(4, y, sh ? UI_SELTEXT : UI_TEXT, nm[0] ? nm : "?");
+    }
+    ui_hline(0, 147, UI_SCR_W, UI_BORDER);
+    ui_text(4, 150, UI_DIM, PDNA_GBEDIT_PICKPARTY_FOOT);
+
+    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    if (k & KEY_B) return -1;
+    if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : n - 1;
+    if (k & KEY_DOWN) sel = (sel + 1) % n;
+    if (k & KEY_A) return sel;
+  }
+}
+
+/* BACKLOG #150 S150-7 SS11.20 item 10(c): the party is full -- offer to send one party
+ * member to a box first rather than refusing the drop outright. Confirm decline, B on
+ * the picker, or no free box all refuse the WHOLE drop with nothing touched; the actual
+ * deposit is gbs_move(), RAM-only (D5 -- the caller's ONE gb_persist runs afterwards). */
+static bool gb_accept_down_party_deposit(const Gb12Mount* m) {
+  char l1[64];
+  siprintf(l1, "%s %s", PDNA_XFER_PARTYFULL_L1, PDNA_XFER_PARTYFULL_L2);
+  if (!app_confirm(PDNA_XFER_PARTYFULL_TITLE, l1)) return false;
+
+  int chosen = gb_pick_party_slot(m);
+  if (chosen < 0) return false;
+
+  int dep = gb_first_free_box();
+  if (dep < 0) {
+    snd_deny();
+    msg_wait(PDNA_GBEDIT_MOVE_REFUSED_TITLE, UI_WARN, PDNA_XFER_DOWN_NOROOM_L1, 0);
+    return false;
+  }
+
+  int pb = gbs_party_box(&g_ed->s);
+  int to_slot = -1;
+  GbsStatus st = gbs_move(&g_ed->s, pb, chosen, dep, &to_slot, g_ed->list, g_ed->list2);
+  if (st != GBS_OK) {
+    gb_rollback();
+    log_line("gen12: bank-down party deposit box %d slot %d -> box %d refused: %s",
+             pb, chosen, dep, gbs_status_text(st));
+    snd_error();
+    const char* hint = 0;
+    switch (st) {
+      case GBS_ERR_NEEDS_BASE:  hint = PDNA_GBEDIT_MOVE_NEEDSBASE_L2; break;
+      case GBS_ERR_PARTY_FLOOR: hint = PDNA_GBEDIT_MOVE_FLOOR_L2;     break;
+      case GBS_ERR_MAIL:        hint = PDNA_GBEDIT_MOVE_MAIL_L2;      break;
+      case GBS_ERR_FULL:        hint = PDNA_GBEDIT_MOVE_FULL_L2;      break;
+      case GBS_ERR_UNWRITABLE:  hint = PDNA_GBEDIT_UNWRITABLE_HINT;   break;
+      default: break;
+    }
+    msg_wait(PDNA_GBEDIT_MOVE_REFUSED_TITLE, UI_WARN, gbs_status_text(st), hint);
+    return false;
+  }
+  return true;
+}
+
+/* BACKLOG #150 S150-7 decisions D3/D8/D11: land a NATIVE "GBC1" Bank cell in THIS Game
+ * Boy save -- the EXACT arm bank_down_dispatch() (pdna_box.c) calls through
+ * BoxXferOps.accept_down. Mirrors gb_paste_hook's own pre-flight ordering (above): every
+ * refusal leaves nothing past it touched, and after the ONE confirm line nothing may
+ * refuse for a reason the pre-flight list could already have seen.
+ * PRECONDITION, guaranteed by bank_down_dispatch: bc_is_native(cell80) and the cell's
+ * gen equals this session's gen (xg_bank_down_arm's EXACT row) -- both re-checked here
+ * anyway (belt and braces; a bare `bl` through the vtable cannot itself enforce them). */
+static bool __attribute__((noinline)) gb_accept_down_hook(int dst_box, const uint8_t cell80[80]) {
+  /* D8: gb_locate()'s own gates 1/2, run directly -- a native cell has no rec80 address
+   * inside the mount's paged box buffer for gb_locate_addr() to resolve. */
+  if (!g_ed) return false;
+  if (!app_can_edit()) {
+    snd_deny();
+    msg_wait(PDNA_GBEDIT_READONLY_TITLE, UI_WARN, app_gb_readonly_why(), 0);
+    return false;
+  }
+  GbsStatus wr = gbs_box_writable(&g_ed->s, dst_box);
+  if (wr != GBS_OK) {
+    snd_deny();
+    msg_wait(PDNA_GBEDIT_BOXWR_TITLE, UI_WARN, gbs_status_text(wr),
+             wr == GBS_ERR_UNWRITABLE ? PDNA_GBEDIT_UNWRITABLE_HINT : 0);
+    return false;
+  }
+
+  GbEditMon mon; BcMeta meta;
+  if (!bc_unpack(cell80, &mon, &meta)) { snd_deny(); return false; }
+  if (mon.gen != g_ed->s.gen) { snd_deny(); return false; }   /* xg_bank_down_arm's own precondition */
+
+  const bool to_party = (dst_box == gbs_party_box(&g_ed->s));
+  GbGen1Base g1base;
+  bool have_g1base = false;
+  uint16_t dex = 0;
+  if (to_party && g_ed->s.gen == GB_GEN1) {
+    dex = gb_get_species_dex(&mon);
+    Gb1BaseStatus bst = dex ? gb_gen1_base_from_rom(dex, &g1base) : GB1BASE_BAD_ROM;
+    if (bst == GB1BASE_NO_ROM) { snd_deny(); gb_gen1_norom_msg(); return false; }
+    if (bst != GB1BASE_OK) {
+      snd_deny();
+      msg_wait(PDNA_GBEDIT_MOVE_REFUSED_TITLE, UI_WARN, PDNA_GBEDIT_MOVE_NEEDSBASE_L2, 0);
+      return false;
+    }
+    have_g1base = true;
+  }
+
+  /* Capacity, and the 10(c) party-full offer -- strictly before any byte moves. */
+  if (gbs_load_list(&g_ed->s, dst_box, g_ed->list) != GBS_OK) { snd_deny(); return false; }
+  int count = gb_list_count(g_ed->s.gen, g_ed->list, dst_box);
+  int cap = gb_list_capacity(g_ed->s.gen, dst_box);
+  if (count < 0) { snd_deny(); return false; }
+  if (count >= cap) {
+    if (!to_party) {
+      snd_deny();
+      msg_wait(PDNA_GBEDIT_MOVE_REFUSED_TITLE, UI_WARN, PDNA_GBEDIT_MOVE_FULL_L2, 0);
+      return false;
+    }
+    if (!g_m || !gb_accept_down_party_deposit(g_m)) return false;
+    /* REVIEW F1: the 10(c) deposit above already committed the moved party member into
+     * a box in the RESIDENT image (gbs_move -> gbs_commit_list) -- an un-consented
+     * change to the user's data if this function returns false past this point without
+     * undoing it (the next gb_persist() anywhere, even a plain box rename, would write
+     * it to the card). gb_rollback() over an image this reload call left untouched is
+     * the documented no-op (gb_session.h), so it is safe here regardless of which
+     * branch below actually needed it. */
+    if (gbs_load_list(&g_ed->s, dst_box, g_ed->list) != GBS_OK) {
+      gb_rollback(); snd_deny(); return false;
+    }
+  }
+
+  /* The ONE confirm line (D-Q2/D-Q3), REVIEW F6: the party landing now names the mon
+   * on its own first line and keeps the per-generation stats note as a second line --
+   * UX parity with the box-destination confirm (which has always named the mon) and
+   * with the Gen-3 twin's own two-line confirm shape. app_confirm() takes a single
+   * string and wraps it itself (ui_ptext_wrap, max 2 lines) at word boundaries, so the
+   * name is padded with spaces to fill the panel's own 184px width before the stats
+   * note is appended -- the padding-width space is always the wrap point (any word
+   * from the stats note would overflow before a shorter one), landing the name alone
+   * on line 1 without a second, separately-addressed line parameter. */
+  char nm[GB_TEXT_MAX];
+  gb_get_nickname(&mon, nm, sizeof nm);
+  char cl1[100];  /* REVIEW F6: name (<=20 cols) + up to ~44 padding spaces (forcing the
+                   * wrap) + the longest per-gen stat line ("New stats, full HP,
+                   * healthy.", 28 B) + NUL -- 80 B truncated the trailing "y." off that
+                   * sentence on real hardware (found re-shooting frame 09), 100 B has
+                   * comfortable headroom. */
+  ui_truncate(cl1, nm[0] ? nm : PDNA_GBEDIT_RELEASE_FALLBACK, 20);
+  if (to_party) {
+    char stat_line[48];
+    if (g_ed->s.gen == GB_GEN1) {
+      uint8_t exp_level = gb_level_from_exp(dex, gb_get_exp(&mon));
+      uint8_t box_level = mon.rec[G1R_BOXLEVEL];
+      if (exp_level && exp_level != box_level)
+        siprintf(stat_line, "Lv %u from EXP (box said %u)", (unsigned)exp_level, (unsigned)box_level);
+      else
+        siprintf(stat_line, "%s", PDNA_XFER_DOWN_PARTYFOOT_G1);
+    } else {
+      siprintf(stat_line, "%s", PDNA_XFER_DOWN_PARTYFOOT_G2);
+    }
+    int n = 0;
+    while (cl1[n]) n++;                                     /* end of the name */
+    while (n < (int)sizeof cl1 - 2 && ui_ptext_w(cl1) < 180) { cl1[n++] = ' '; cl1[n] = 0; }
+    int room = (int)sizeof cl1 - n - 1;
+    if (room > 0) {
+      int k = 0;
+      while (stat_line[k] && k < room) { cl1[n + k] = stat_line[k]; k++; }
+      cl1[n + k] = 0;
+    }
+  }
+  /* REVIEW F1: same reasoning as the reload refusal above -- a DECLINED confirm must
+   * not leave the 10(c) deposit's own party->box move sitting committed in the
+   * resident image. gb_rollback() is a no-op when the party-full branch never ran
+   * (nothing to undo), so this is unconditional, not gated on `to_party`. */
+  if (!app_confirm(PDNA_XFER_DOWN_CONFIRM_TITLE, cl1)) { gb_rollback(); return false; }
+
+  int slot = -1;
+  GbsStatus ist = to_party
+    ? gbs_insert_party(&g_ed->s, &mon, have_g1base ? &g1base : NULL, &slot, g_ed->list)
+    : gbs_insert(&g_ed->s, dst_box, &mon, &slot, g_ed->list);
+  if (ist != GBS_OK) {
+    gb_rollback();
+    log_line("gen12: bank-down -> box %d refused: %s", dst_box, gbs_status_text(ist));
+    snd_error();
+    const char* hint = 0;
+    switch (ist) {
+      case GBS_ERR_NEEDS_BASE:  hint = PDNA_GBEDIT_MOVE_NEEDSBASE_L2; break;
+      case GBS_ERR_PARTY_FLOOR: hint = PDNA_GBEDIT_MOVE_FLOOR_L2;     break;
+      case GBS_ERR_MAIL:        hint = PDNA_GBEDIT_MOVE_MAIL_L2;      break;
+      case GBS_ERR_FULL:        hint = PDNA_GBEDIT_MOVE_FULL_L2;      break;
+      case GBS_ERR_UNWRITABLE:  hint = PDNA_GBEDIT_UNWRITABLE_HINT;   break;
+      default: break;
+    }
+    const char* l1 = (ist == GBS_ERR_FULL && to_party)
+                    ? PDNA_GBEDIT_MOVE_PARTYFULL_L1 : gbs_status_text(ist);
+    msg_wait(PDNA_GBEDIT_MOVE_REFUSED_TITLE, UI_WARN, l1, hint);
+    return false;
+  }
+
+  log_line("=== gb bank-down -> %s box %d slot %d ===", g_ed->path, dst_box, slot);
+  return gb_persist("bank-down");     /* the ONE card write; it reports its own refusals */
+}
+
 static bool gb_paste_hook(uint8_t* rec80) {
   int box, slot;
   if (!gb_locate(rec80, &box, &slot)) return false;                          /* 1 */

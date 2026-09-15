@@ -1103,6 +1103,95 @@ static uint8_t* clear_origin(BoxSource* src, int box) {
   return src->records(box);                                  /* reload the current box */
 }
 
+/* docs/BANK-CROSSGEN-DESIGN.md SS11.3 + SS11.20 item 12(c): the ONE entry a native
+ * "GBC1" Bank cell leaves the Bank through. Called from drop_held() the moment a
+ * native carry is dropped on a NON-Bank destination, BEFORE xg_native_escape_denied
+ * -- that gate still guards every RAW 80-byte write below it, and this call never
+ * falls through to one. Either the cell LANDED (destination persisted AND the Bank
+ * source consumed) or NOTHING anywhere changed and the hand keeps holding. */
+typedef enum { BANK_DOWN_REFUSED = 0, BANK_DOWN_LANDED = 1 } BankDownResult;
+
+/* The XG_DOWN_ARM_EXACT arm: land the cell in a Game Boy save of the SAME generation
+ * via the vtable's accept_down hook, then the ONE Bank consume (D7/D12). G-H1's
+ * ordering, applied to a GB destination: the consume runs ONLY after accept_down's
+ * internal gb_persist() returned true, and it is IMMEDIATE, not queued -- unlike a
+ * Gen-3 PC write (app_bank_defer_delete, deferred to the exit save), gb_persist already
+ * wrote the card by the time control returns here.
+ *
+ * D-Q7 PLUMBING FIX: reads `s_xfer_peer` (this file's own module-singleton, above),
+ * NOT `src->xfer` -- historically `pdna_gen12_source()` never set its returned
+ * BoxSource's `.xfer` field (BACKLOG #171b fixed that at the 1817790 merge: it now
+ * assigns `&k_gb_xfer`, the SAME static const object, so either read resolves to it;
+ * `k_gb_xfer.gen` is still 0 -- never derive dst_gen from `src->xfer->gen`); the peer
+ * that has always been populated is
+ * `s_xfer_peer` via `pdna_box_xfer_set(&k_gb_xfer)`, called once per GB session visit
+ * from gb_session_core() and read directly by drop_held's own UP-carry sites (:1222/
+ * :1238/:1286 above). Using `src->xfer` here would make bank_down_dispatch's EXACT arm
+ * ALWAYS see a NULL vtable and refuse every drop silently -- the exact "has no way out"
+ * failure this whole slice exists to fix. Confirmed on the emulator (step 7's delta
+ * shots): with `src->xfer` the MOVE/DOWN/A gesture never reaches accept_down at all. */
+static BankDownResult bank_down_exact(BoxSource* src, int dst_box, const uint8_t cell80[80]) {
+  (void)src;
+  if (!s_xfer_peer || !s_xfer_peer->accept_down) { snd_deny(); return BANK_DOWN_REFUSED; }
+  boxoam_suspend();
+  bool ok = s_xfer_peer->accept_down(dst_box, cell80);
+  boxoam_resume();
+  if (!ok) return BANK_DOWN_REFUSED;          /* the hook already said why */
+
+  uint8_t slots1[1]; uint8_t recs1[1][80];
+  slots1[0] = (uint8_t)s_orig_slot; memcpy(recs1[0], cell80, 80);
+  /* REVIEW F3: app_bank_clear_slots() is a full SD read+write (box_save(), pdna_bank.c)
+   * -- OS-mode rule (hard rule 1), the box OAM animation must be suspended for the
+   * whole SD transfer, same as this file's other consume site (:2135's
+   * gb_release_up_hook path, which keeps its own boxoam_suspend/resume bracket around
+   * the write). This one previously resumed right after accept_down (:1136 above) and
+   * never re-suspended before the consume -- hardware-only (mGBA has no OS-mode ROM
+   * disappearance to reproduce), but a real EZ-Flash Omega DE could have painted a
+   * cursor-bob frame mid-transfer. */
+  boxoam_suspend();
+  if (!app_bank_clear_slots(s_orig_box, slots1, (const uint8_t (*)[80])recs1, 1)) {
+    /* D7: the reconcile (S150-11) cannot help here -- the EXACT arm writes NO
+     * /PokeDNA/xfer/ entry (D6) for it to walk. Say so explicitly: the game HAS the
+     * mon now, the Bank slot is a DUPLICATE the player can delete themselves, never a
+     * loss. Still BANK_DOWN_LANDED -- the operation succeeded from the player's view;
+     * only the Bank-side cleanup didn't, and that is reported, not silently retried. */
+    snd_error();
+    /* REVIEW F4: PDNA_XFER_DOWN_DUP_L1 ("The game save HAS it now.") is the
+     * reassuring half of D7's message -- used here as the static first line; the
+     * dynamic box/slot naming moves to the second line. */
+    char l2[40];
+    siprintf(l2, "Bank box %d slot %d", s_orig_box + 1, s_orig_slot + 1);
+    msg_wait(PDNA_XFER_DOWN_DUP_TITLE, UI_WARN, PDNA_XFER_DOWN_DUP_L1, l2);
+    boxoam_resume();
+    log_line("gen12: bank-down consume failed -- Bank box %d slot %d still holds a "
+             "duplicate (the game save already has it)", s_orig_box, s_orig_slot);
+    return BANK_DOWN_LANDED;
+  }
+  boxoam_resume();
+  snd_save();
+  return BANK_DOWN_LANDED;
+}
+
+/* BACKLOG #150 S150-7 decision D1/D-Q5 (CANONICAL spelling for the parallel S150-8
+ * lane -- see the brief's "Known divergence" section): a switch over xg_bank_down_arm()
+ * whose EXACT case calls bank_down_exact(); the GB_BRIDGE and GEN3 cases are each
+ * exactly one line so S150-8's merge replaces just those two lines with calls into its
+ * own new file. `dst_cell` is unused by the EXACT arm (a Game Boy list always appends
+ * at its own next free slot -- see gb_create_hook's own comment) and is carried for
+ * S150-8's Gen-3 arm, which needs the exact cell. noinline: must not inline into
+ * drop_held, which sits on the box-screen stack chain. */
+static BankDownResult __attribute__((noinline))
+bank_down_dispatch(BoxSource* src, int dst_box, int dst_cell, const uint8_t cell80[80]) {
+  (void)dst_cell;
+  switch (xg_bank_down_arm(bc_kind(cell80), src->scope, app_gb_session_gen())) {
+    case XG_DOWN_ARM_EXACT:     return bank_down_exact(src, dst_box, cell80);
+    case XG_DOWN_ARM_GB_BRIDGE: return BANK_DOWN_REFUSED; /* S150-8 */
+    case XG_DOWN_ARM_GEN3:      return BANK_DOWN_REFUSED; /* S150-8 */
+    case XG_DOWN_ARM_NONE:
+    default:                    return BANK_DOWN_REFUSED;
+  }
+}
+
 /* Drop the held mon onto cursor cell `cur`. Within the origin's scope: true move (place +
  * clear origin; swap if occupied). Across the PC<->Bank boundary: COPY onto an empty cell
  * only (origin kept) so a mon can't be lost between two save scopes. *done=true when the
@@ -1111,6 +1200,36 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
   *done = false;
   if (s_orig_slot >= 0 && same_scope(src) && s_orig_box == box && cur == s_orig_slot) {
     s_holding = false; *done = true; return recs;            /* dropped back on its own cell */
+  }
+  /* BACKLOG #150 S150-7 (SS11.3, SS11.20 item 12(c)): the ONE sanctioned exit a native
+   * cell has. ABOVE the escape gate on purpose -- that gate still guards every RAW
+   * 80-byte write below, and this branch never falls through to one. !s_held_dup:
+   * S150-3's menu whitelist keeps DUPLICATE off a native cell's menu, so a native
+   * s_held_dup is already impossible -- belt and braces, since a dup has no origin
+   * to consume. */
+  if (s_orig_scope == BOXSCOPE_BANK && s_orig_slot >= 0 && !s_held_dup &&
+      src->scope != BOXSCOPE_BANK && bc_is_native(s_held)) {
+    if (bank_down_dispatch(src, box, cur, s_held) == BANK_DOWN_LANDED) {
+      s_holding = false; *done = true; s_oam_reload = true;
+      recs = src->records(box);            /* the GB list grew -- repaint from the image */
+    } else {
+      /* D-Q5: bank_down_dispatch's GB_BRIDGE/GEN3 cases are each EXACTLY one line
+       * (`return BANK_DOWN_REFUSED;`) so S150-8's merge is a clean two-line body
+       * replacement -- no room in there for this stub's own snd_deny()/msg_wait().
+       * Re-deriving the arm here (pure, cheap, xg_bank_down_arm has no side effect)
+       * keeps that contract literal while still telling the player something when
+       * the cell needs a converter this slice does not build. NONE (and EXACT that
+       * already showed its own refusal via accept_down/gb_accept_down_hook) show
+       * nothing more here. */
+      uint8_t arm = xg_bank_down_arm(bc_kind(s_held), src->scope, app_gb_session_gen());
+      if (arm == XG_DOWN_ARM_GB_BRIDGE || arm == XG_DOWN_ARM_GEN3) {
+        boxoam_suspend();
+        snd_deny();
+        msg_wait(PDNA_XFER_DOWNSOON_TITLE, UI_WARN, PDNA_XFER_DOWNSOON_L1, PDNA_XFER_DOWNSOON_L2);
+        boxoam_resume();
+      }
+    }
+    return recs;
   }
   /* BACKLOG #150 S150-3 decision 3: a native "GBC1" cell may only ever land back in the
    * Bank -- `src->scope` IS the destination scope on every branch below (`recs` always

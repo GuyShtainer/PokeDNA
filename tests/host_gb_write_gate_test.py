@@ -72,7 +72,10 @@ DISPATCH_RE = re.compile(r"pdna_gb\w*\(\s*(?:gs|&g_ed->s)\s*,")
 # is no function to check for it.
 TABLE_NAMES = ("k_gb_ops_gen1", "k_gb_ops_gen2", "k_gb_xfer")
 FIELD_RE = re.compile(r"\.(\w+)\s*=\s*(\w+)")
-SKIP_FIELDS = {"edit", "copy_native", "editable"}  # not mutating -- no cart gate required
+# BACKLOG #150 S150-7: `gen` is a uint8_t (not a function, never mutates anything);
+# `preview_down` is a pure read-only preview (no write, per its own header comment);
+# `move_within` is unimplemented (NULL) in this lane -- none of the three need a gate.
+SKIP_FIELDS = {"edit", "copy_native", "editable", "gen", "preview_down", "move_within"}
 # (`view` stays IN: gb_view_hook computes can_edit = app_can_edit() && ... and hands it to an
 #  editable summary -- b160 re-verify R5.)
 
@@ -217,10 +220,60 @@ def check_native_unpack_in_loop(text: str) -> list[str]:
     return []
 
 
+def check_accept_down_rollback(text: str) -> list[str]:
+    """REVIEW F1 (BACKLOG #150 S150-7): gb_accept_down_hook()'s 10(c) party-full offer
+    (gb_accept_down_party_deposit()) commits a party->box move into the RESIDENT image
+    (gbs_move -> gbs_commit_list) before this hook has finished its own pre-flight --
+    a declined confirm or a reload failure past that point must not leave that move
+    sitting in the image un-rolled-back (the NEXT gb_persist() anywhere, even an
+    unrelated box rename, would write it to the card). Every `return false;` in the
+    function body AFTER the gb_accept_down_party_deposit( call must have a
+    `gb_rollback(` earlier in its own enclosing brace block (comment-stripped)."""
+    body = extract_function_body(text, "gb_accept_down_hook")
+    if not body:
+        return ["gb_accept_down_hook() not found in source/pdna_gen12.c"]
+    code = strip_comments(body)
+    # Anchored on the WHOLE `if (!gb_accept_down_party_deposit(...)) return false;`
+    # statement, not just the call's opening paren -- that specific `return false;`
+    # needs no gb_rollback() of its own (gb_accept_down_party_deposit()'s own contract
+    # is "nothing touched" on a false return, same as every other pre-flight refusal in
+    # this hook); the invariant only starts to matter for what runs AFTER the deposit
+    # actually SUCCEEDED.
+    dm = re.search(r"gb_accept_down_party_deposit\([^)]*\)\)\s*return\s+false\s*;", code)
+    if not dm:
+        return ["gb_accept_down_party_deposit(...)) return false; statement not found "
+                "in gb_accept_down_hook -- check is stale, update it"]
+    tail = code[dm.end():]
+
+    events = [(m.start(), "open") for m in re.finditer(r"\{", tail)]
+    events += [(m.start(), "close") for m in re.finditer(r"\}", tail)]
+    events += [(m.start(), "return") for m in re.finditer(r"\breturn\s+false\s*;", tail)]
+    events.sort(key=lambda e: e[0])
+
+    violations = []
+    stack = [0]   # block-start offsets into `tail`; 0 = the implicit outer block
+    for pos, kind in events:
+        if kind == "open":
+            stack.append(pos)
+        elif kind == "close":
+            if len(stack) > 1:
+                stack.pop()
+        else:
+            block_start = stack[-1]
+            window = tail[block_start:pos]
+            if "gb_rollback(" not in window:
+                lineno = tail[:pos].count("\n") + 1
+                violations.append(
+                    f"gb_accept_down_hook: a `return false;` after the 10(c) deposit "
+                    f"call (tail line {lineno}) has no gb_rollback( earlier in its own "
+                    f"enclosing block -- an un-consented change could reach the card")
+    return violations
+
+
 def run_all(path: Path) -> list[str]:
     text = path.read_text()
     return (check_nav_dispatch(text) + check_mutating_hooks(text) + check_named_write_hooks(text)
-            + check_native_unpack_in_loop(text) + check_xfer_wired(text))
+            + check_native_unpack_in_loop(text) + check_xfer_wired(text) + check_accept_down_rollback(text))
 
 
 def main() -> int:
@@ -324,10 +377,31 @@ def main() -> int:
               "pdna_gen12_source() -- correctly caught:")
         for v in mutation4:
             print(f"  (mutated-copy) FAIL: {v}")
+
+        # --- fifth self-mutation (REVIEW F1, BACKLOG #150 S150-7): drop the
+        # gb_rollback() a declined confirm needs after the 10(c) deposit, must go red.
+        target5 = ("if (!app_confirm(PDNA_XFER_DOWN_CONFIRM_TITLE, cl1)) "
+                   "{ gb_rollback(); return false; }")
+        mutated_line5 = "if (!app_confirm(PDNA_XFER_DOWN_CONFIRM_TITLE, cl1)) { return false; }"
+        if target5 not in original:
+            print(f"FAIL -- fifth self-mutation target line not found verbatim: {target5!r} "
+                  f"(source drifted -- update this test's target string)")
+            return 1
+        mutated5 = original.replace(target5, mutated_line5, 1)
+        scratch.write_text(mutated5)
+        mutation5 = [v for v in run_all(scratch) if "gb_accept_down_hook" in v]
+        if not mutation5:
+            print("FAIL -- fifth self-mutation check: dropping gb_rollback() from the "
+                  "declined-confirm return did NOT turn this test red (vacuous check)")
+            return 1
+        print("self-mutation check 5: dropping gb_rollback() from the declined-confirm "
+              "return in gb_accept_down_hook -- correctly caught:")
+        for v in mutation5:
+            print(f"  (mutated-copy) FAIL: {v}")
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
-    print("\nhost_gb_write_gate_test: ok (shipped source clean, all four mutations caught)")
+    print("\nhost_gb_write_gate_test: ok (shipped source clean, all five mutations caught)")
     return 0
 
 

@@ -1004,6 +1004,32 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XFER_REC_L1     "Use COPY here, then PASTE in"
 #define PDNA_XFER_REC_L2     "the Gen 3 save to bring it back."
 
+/* BACKLOG #150 S150-7: the DOWN edge -- a native Bank cell back into a Game Boy save. */
+#define PDNA_XFER_DOWNSOON_TITLE "COMING SOON"
+#define PDNA_XFER_DOWNSOON_L1    "This Pokemon needs a game"
+#define PDNA_XFER_DOWNSOON_L2    "of the OTHER generation."
+
+#define PDNA_XFER_DOWN_CONFIRM_TITLE "MOVE TO THE GAME?"
+
+#define PDNA_XFER_DOWN_DUP_TITLE "SAVED - BANK COPY LEFT"
+#define PDNA_XFER_DOWN_DUP_L1    "The game save HAS it now."
+#define PDNA_XFER_DOWN_DUP_L2    "Delete the Bank copy yourself."
+
+#define PDNA_XFER_DOWN_NOROOM_L1 "Every box is full."
+
+#define PDNA_XFER_PARTYFULL_TITLE "PARTY IS FULL"
+#define PDNA_XFER_PARTYFULL_L1    "Send a party Pokemon to a"
+#define PDNA_XFER_PARTYFULL_L2    "box first?"
+
+/* D-Q3: per-generation confirm-footer wording -- Gen 2's box->party landing also
+ * resets HP/status to full-healthy (gb_session.c's own box->party conversion), Gen 1's
+ * does not (D4: HP/status are the record's own bytes, preserved). */
+#define PDNA_XFER_DOWN_PARTYFOOT_G1 "Recomputes stats."
+#define PDNA_XFER_DOWN_PARTYFOOT_G2 "New stats, full HP, healthy."
+
+#define PDNA_GBEDIT_PICKPARTY_TITLE "SEND WHICH PARTY MON?"
+#define PDNA_GBEDIT_PICKPARTY_FOOT  "U/D pick  A ok  B cancel"
+
 #define PDNA_XFER_ORIGIN_TITLE "WHICH GAME IS THIS?"
 #define PDNA_XFER_ORIGIN_FOOT  "U/D pick  A ok  B cancel"
 #define PDNA_XFER_GAME_RED     "RED"

@@ -45,6 +45,7 @@
 #include "gen3_to_gb.h"   /* S5-B review fix #8: gen3_to_gb -- the production down converter */
 #include "gb_sidecar.h"   /* S5-B review fix #8: gbsc_entry_from/gbsc_merge_up               */
 #include "gen3_edit.h"    /* gen3_build_mon -- a synthetic but LEGAL Gen-3 record             */
+#include "bank_cell.h"    /* BACKLOG #150 S150-7 step 6: bc_pack/bc_unpack round trip         */
 
 #define ROMS "/Users/guyshtainer/VSCodeProjects/gba-toolkit/roms/gb"
 
@@ -928,6 +929,108 @@ static void test_dup_roundtrip(const char* file, uint8_t expect_gen) {
         "dup: the original slot is unchanged");
 }
 
+/* ---- BACKLOG #150 S150-7 step 6: the 2->2 / 1->1 byte-identity round trip --------
+ * bc_pack() (the native Bank cell codec) into a native 80-byte cell, bc_unpack() it
+ * back, land it via gbs_insert() into a DIFFERENT box, gb_load() the slot it landed at,
+ * and assert both 11-byte name fields -- INCLUDING the bytes past their 0x50
+ * terminators (host_gbsession_test.c's own header note: 733 of 2738 real name fields
+ * carry junk there) -- and the species-list byte are byte-identical to the source.
+ * gb_verify_slot() is the extra, independent cross-check: the shipping parser's own
+ * re-decode of the landed slot must also agree with what gb_load() returned.
+ * `pred` (may be NULL) narrows the source slot to a specific kind -- an Egg or an
+ * item-holder, per the brief's "plus" clause; `what` names it in the printout. */
+typedef bool (*BankCellSlotPred)(const GbEditMon* e);
+
+static bool bc_pred_egg(const GbEditMon* e) { return e->list_species == G2_LIST_EGG; }
+static bool bc_pred_item(const GbEditMon* e) { return gb_get_held_item(e) != 0; }
+
+static void s150_7_bank_cell_roundtrip(const char* file, uint8_t expect_gen,
+                                       BankCellSlotPred pred, const char* what) {
+  uint32_t len = load(file);
+  if (!len) { printf("  SKIP %s (BACKLOG #150 S150-7 bank-cell round trip%s%s)\n",
+                     file, what ? ", " : "", what ? what : ""); return; }
+  printf("  -- BACKLOG #150 S150-7 bank-cell round trip%s%s: %s\n",
+         what ? ", " : "", what ? what : "", file);
+
+  GbSession s;
+  CHECK(gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "bank-cell rt: session opens");
+  CHECK(s.gen == expect_gen, "bank-cell rt: the right generation was detected");
+
+  int nb = gbs_nboxes(&s), pb = gbs_party_box(&s);
+  int srcbox = -1, srcslot = -1;
+  GbEditMon orig;
+  for (int b = 0; b < nb && srcbox < 0; b++) {
+    if (b == pb) continue;
+    if (gbs_load_list(&s, b, g_list3) != GBS_OK) continue;
+    int c = gb_list_count(s.gen, g_list3, b);
+    for (int i = 0; i < c; i++) {
+      if (!gb_load(&orig, s.gen, g_list3, b, i)) continue;
+      if (pred && !pred(&orig)) continue;
+      srcbox = b; srcslot = i; break;
+    }
+  }
+  if (srcbox < 0) {
+    printf("     (no%s%s box mon found; skipped)\n", what ? " " : "", what ? what : "");
+    return;
+  }
+  CHECK(gbs_load_list(&s, srcbox, g_list3) == GBS_OK && gb_load(&orig, s.gen, g_list3, srcbox, srcslot),
+        "bank-cell rt: source slot reloads");
+
+  uint8_t cell80[80];
+  int pk = bc_pack(&orig, 0, BC_ORIGIN_UNKNOWN, 0, 1, cell80);
+  CHECK(pk == 0, "bank-cell rt: bc_pack succeeds");
+  if (pk != 0) return;
+  CHECK(bc_is_native(cell80), "bank-cell rt: the packed cell reads as native");
+
+  GbEditMon unpacked; BcMeta meta;
+  CHECK(bc_unpack(cell80, &unpacked, &meta), "bank-cell rt: bc_unpack succeeds");
+  CHECK(meta.gen == s.gen, "bank-cell rt: unpacked meta.gen matches the session");
+  CHECK(!unpacked.is_party, "bank-cell rt: a cell only ever holds the box shape");
+
+  int dst = -1, dcount0 = -1;
+  for (int b = 0; b < nb; b++) {
+    if (b == pb || b == srcbox || gbs_box_writable(&s, b) != GBS_OK) continue;
+    if (gbs_load_list(&s, b, g_list) != GBS_OK) continue;
+    int c = gb_list_count(s.gen, g_list, b);
+    if (c >= 0 && c < gb_list_capacity(s.gen, b)) { dst = b; dcount0 = c; break; }
+  }
+  if (dst < 0) { printf("     (no writable box other than the source with room; skipped)\n"); return; }
+
+  int slot_out = -1;
+  GbsStatus ist = gbs_insert(&s, dst, &unpacked, &slot_out, g_list);
+  CHECK(ist == GBS_OK, "bank-cell rt: gbs_insert accepts the unpacked cell");
+  if (ist != GBS_OK) return;
+  CHECK(gb_list_count(s.gen, g_list, dst) == dcount0 + 1, "bank-cell rt: destination count is +1");
+
+  GbEditMon landed;
+  CHECK(gb_load(&landed, s.gen, g_list, dst, slot_out), "bank-cell rt: the landed slot loads");
+
+  int rec_len = gb_rec_size(s.gen, false);
+  CHECK(rec_len > 0 && memcmp(landed.rec, orig.rec, (size_t)rec_len) == 0,
+        "bank-cell rt: the record bytes are byte-identical to the source (through bc_pack/bc_unpack)");
+  CHECK(memcmp(landed.otname, orig.otname, GB_NAME_BYTES) == 0,
+        "bank-cell rt: the OT name field is identical, incl. the bytes past its 0x50 terminator");
+  CHECK(memcmp(landed.nick, orig.nick, GB_NAME_BYTES) == 0,
+        "bank-cell rt: the nickname field is identical, incl. the bytes past its 0x50 terminator");
+  CHECK(landed.list_species == orig.list_species,
+        "bank-cell rt: the species-list byte is identical");
+  CHECK(gb_verify_slot(&landed, g_list, dst, slot_out),
+        "bank-cell rt: the shipping parser independently agrees the landed record is intact");
+
+  /* The original slot itself must be untouched -- this is gbs_insert() into a
+   * DIFFERENT box, never a move. */
+  GbEditMon still_there;
+  CHECK(gb_load(&still_there, s.gen, g_list3, srcbox, srcslot), "bank-cell rt: the original slot still loads");
+  CHECK(memcmp(still_there.rec, orig.rec, (size_t)rec_len) == 0,
+        "bank-cell rt: the original slot's record bytes are unchanged");
+
+  if (pred == bc_pred_egg)
+    CHECK(landed.list_species == G2_LIST_EGG, "bank-cell rt: the Egg is still an Egg after landing");
+  if (pred == bc_pred_item)
+    CHECK(gb_get_held_item(&landed) == gb_get_held_item(&orig),
+          "bank-cell rt: the held item survived the round trip");
+}
+
 /* ---- S5-B review fix #8: round-trip the PRODUCTION COMPOSITION -------------------
  * host_gen3gb_test.c already proves gen3_to_gb() + gbsc_merge_up() agree in isolation,
  * over an in-memory list buffer neither ever touches. What it CANNOT prove is that
@@ -1316,6 +1419,16 @@ int main(void) {
   test_dup_roundtrip("Yellow.sav",  GB_GEN1);
   test_dup_roundtrip("Gold.sav",    GB_GEN2);
   test_dup_roundtrip("Crystal.sav", GB_GEN2);
+
+  /* BACKLOG #150 S150-7 step 6: the 2->2 / 1->1 native-cell round trip. */
+  s150_7_bank_cell_roundtrip("Red.sav",     GB_GEN1, NULL, NULL);
+  s150_7_bank_cell_roundtrip("Yellow.sav",  GB_GEN1, NULL, NULL);
+  s150_7_bank_cell_roundtrip("Gold.sav",    GB_GEN2, NULL, NULL);
+  s150_7_bank_cell_roundtrip("Crystal.sav", GB_GEN2, NULL, NULL);
+  s150_7_bank_cell_roundtrip("Gold.sav",    GB_GEN2, bc_pred_egg,  "an Egg");
+  s150_7_bank_cell_roundtrip("Crystal.sav", GB_GEN2, bc_pred_egg,  "an Egg");
+  s150_7_bank_cell_roundtrip("Gold.sav",    GB_GEN2, bc_pred_item, "an item holder");
+  s150_7_bank_cell_roundtrip("Crystal.sav", GB_GEN2, bc_pred_item, "an item holder");
 
   if (!g_ran) printf("  (no corpus present — structural checks only)\n");
   printf("%s: %d/%d checks passed over %d save(s)\n",

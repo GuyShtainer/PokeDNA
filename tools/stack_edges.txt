@@ -325,6 +325,15 @@ BoxSource.can_lift @80 in src_can_lift -> gb_can_lift_hook
 BoxXferOps.lift_up @4 in start_carry -> gb_lift_up_hook
 BoxXferOps.release_up @16 in drop_held -> gb_release_up_hook
 
+# BACKLOG #150 S150-7 step 3/4: bank_down_dispatch's EXACT arm (bank_down_exact, inlined
+# into bank_down_dispatch.constprop.0 by -O2 -- the walker's own BLIND SPOT report named
+# the caller as bank_down_dispatch.constprop.0) calls s_xfer_peer->accept_down(dst_box,
+# cell80) (D-Q7 plumbing fix: s_xfer_peer, not src->xfer -- see pdna_box.c's own comment
+# on bank_down_exact). gb_accept_down_hook now exists (pdna_gen12.c, step 4) and is
+# linked, so the step-3 impl-pending companion row is gone (promoted, per its own
+# "moment the symbol IS linked" rule).
+BoxXferOps.accept_down @12 in bank_down_dispatch,bank_down_dispatch.constprop.0 -> gb_accept_down_hook
+
 # The commit parameter threaded through app_mon_menu (party call sites) and
 # app_paste_gb_merge -> app_paste_gb_commit -> app_commit_with_dex (inlined) -> `commit ?
 # commit() : 0` (source/pdna_app.h:52, source/pdna_main.c:1931/3132-3148/3243/3256/3275-3285/
@@ -1141,7 +1150,11 @@ AppSrcOps.release @8 in pdna_dex_screen -> dex_state dex_set_state dex_get_natio
 AppSrcOps.copy_native @12 in app_copy.isra.0 -> gb_copy_native_hook
 AppSrcOps.view @20 in app_mon_menu_readonly -> gb_view_hook
 AppSrcOps.view @20 in pdna_dex_screen -> dex_state dex_set_state dex_get_national dex_set_national
-BoxSource.records @20 in clear_origin,export_box_all,party_strip_overlay,release_box_all -> banksrc_records gbsrc_records pcsrc_records
+BoxSource.records @20 in clear_origin,drop_held,export_box_all,party_strip_overlay,release_box_all -> banksrc_records gbsrc_records pcsrc_records
+# drop_held's own offset-20 call site (BACKLOG #150 S150-7 step 3): `recs =
+# src->records(box);` after bank_down_dispatch() lands the EXACT arm, repainting the
+# grid from the image the GB list just grew into -- added to the existing caller list
+# above, not a new row (same offset, same targets).
 # release_box_all's offset-20 site is the exact one the third review pass named:
 # BoxSource.records(), never AppSrcOps.view -- this is the fix for "release_box_all no
 # longer reaches gb_view_hook".

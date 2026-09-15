@@ -40,8 +40,22 @@ typedef struct XferCarry XferCarry;
 typedef struct {
   uint8_t gen;                                     /* PDNA_GEN1 / PDNA_GEN2, for the wording */
   bool (*lift_up)(const uint8_t* rec80, uint8_t* out80, XferCarry* xc);       /* GB -> Gen-3 native */
-  bool (*preview_down)(const uint8_t* rec80, XferCarry* xc);                 /* pure Gen-3 -> GB conversion, no write */
-  bool (*accept_down)(int box, const uint8_t* original80, XferCarry* xc);    /* commits the DOWN drop */
+  /* BACKLOG #150 S150-7 decision D-Q6: reshaped once, alongside accept_down below, so
+   * the vtable's SHAPE only ever changes here -- S150-8's later diff fills bodies, not
+   * signatures. Re-shaped from `(const uint8_t* rec80, XferCarry* xc)`: `XferCarry`
+   * stays incomplete (nobody defines it, S150-4-5 decision 6) and a native cell's 80
+   * bytes already ARE the payload. S150-7's EXACT arm has nothing to preview -- no
+   * converter ever runs, the cell's own bytes are the destination's bytes -- so this
+   * lane installs no body here; S150-8 fills it for its two converting arms. */
+  bool (*preview_down)(const uint8_t cell80[80]);
+  /* BACKLOG #150 S150-7 decision D3: land a NATIVE "GBC1" Bank cell in this Game Boy
+   * save. `dst_box` is the box the grid is showing, or the party pseudo-box (nboxes-1).
+   * PRECONDITION, guaranteed by bank_down_dispatch: bc_is_native(cell80) and the
+   * cell's gen EQUALS this session's gen -- S150-8's cross-generation bridge arm
+   * re-packs into the destination generation BEFORE calling this. Returns true only
+   * after gb_persist() verified the save on the card; on false NOTHING was written
+   * (the resident image is rolled back) and the caller keeps holding. */
+  bool (*accept_down)(int dst_box, const uint8_t cell80[80]);
   /* BACKLOG #150 S150-4 decision 6/7: re-shaped from `(int, int, const XferCarry*)` --
    * this lane needs no XferCarry (the packed cell already lives in s_held[80]), so the
    * hook is handed the 80 bytes it must RE-VERIFY against before it deletes (decision
