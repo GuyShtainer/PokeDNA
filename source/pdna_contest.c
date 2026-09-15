@@ -254,7 +254,7 @@ void pdna_contest(uint8_t* sb1, uint8_t* pc, PkGame game) {
     else if (page == 0 && (k & KEY_UP))   sel = (sel == 0) ? GC_CATEGORY_COUNT - 1 : sel - 1;
     else if (page == 0 && (k & KEY_DOWN)) sel = (sel + 1) % GC_CATEGORY_COUNT;
     else if (page == 0 && (k & KEY_A)) {
-      if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); continue; }
+      if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, app_readonly_why(), 0); continue; }
       PkMon donor;
       if (!pick_donor(sb1, pc, &donor)) continue;
       char l1[48]; siprintf(l1, "Show %s as %s winner?", pk_species_name(donor.species), CAT_NAME[sel]);

@@ -1176,7 +1176,7 @@ static bool gb_locate(uint8_t* rec80, int* box, int* slot) {
 
   if (!app_can_edit()) {                                                    /* 1 */
     snd_deny();
-    msg_wait(PDNA_GBEDIT_READONLY_TITLE, UI_WARN, PDNA_GBEDIT_NEEDS_OMEGA, 0);
+    msg_wait(PDNA_GBEDIT_READONLY_TITLE, UI_WARN, app_readonly_why(), 0);
     return false;
   }
   GbsStatus st = gbs_box_writable(&g_ed->s, *box);                          /* 2 */
@@ -1798,7 +1798,7 @@ static bool gb_export_hook(uint8_t* rec80) {
 
   if (!app_can_edit()) {
     snd_deny();
-    msg_wait(PDNA_GBEDIT_READONLY_TITLE, UI_WARN, PDNA_GBEDIT_NEEDS_OMEGA, 0);
+    msg_wait(PDNA_GBEDIT_READONLY_TITLE, UI_WARN, app_readonly_why(), 0);
     return false;
   }
 

@@ -24,6 +24,10 @@
 /* Writes are EZ-Flash-Omega-only. */
 bool app_can_edit(void);
 
+/* Reason why writes are disabled (hack ROM vs. Omega cart). */
+const char* app_readonly_why(void);
+const char* app_readonly_why_short(void);
+
 /* The session RNG every "create a Pokemon from nothing" caller seeds from (a counter
  * + this trainer's own TID + the cart RTC when present, NEVER the same across two
  * players or two carts) -- a thin public wrapper over pdna_main.c's own file-static

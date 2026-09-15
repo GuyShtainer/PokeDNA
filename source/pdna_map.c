@@ -842,7 +842,7 @@ static bool do_drop(void) {
   char l1[40], l2[40];
 
   if (!app_can_edit()) {
-    map_dialog("READ-ONLY", "Needs EZ-Flash Omega.", "Cannot place here.", "A ok",
+    map_dialog("READ-ONLY", app_readonly_why(), "Cannot place here.", "A ok",
                KEY_A | KEY_B);
     dialog_done();
     return false;
@@ -1010,7 +1010,7 @@ static bool restore_item_ball(const RomObjectEvent* o) {
   char l1[40];
 
   if (!app_can_edit()) {
-    map_dialog("READ-ONLY", "Needs EZ-Flash Omega.", "Cannot restore items.", "A ok",
+    map_dialog("READ-ONLY", app_readonly_why(), "Cannot restore items.", "A ok",
                KEY_A | KEY_B);
     dialog_done();
     return false;

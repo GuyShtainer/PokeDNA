@@ -153,7 +153,7 @@ void pdna_gb_fly(GbSession* s, bool can_edit) {
         ui_text(4, 144, UI_OK, PDNA_GBFLY_BADGE_OK);
       else
         ui_text(4, 144, UI_WARN, gen1 ? PDNA_GBFLY_NO_THUNDER : PDNA_GBFLY_NO_STORM);
-      ui_text(4, 152, UI_DIM, can_edit ? PDNA_GBFLY_HINT_EDIT : "read-only (Omega)  B back");
+      ui_text(4, 152, UI_DIM, can_edit ? PDNA_GBFLY_HINT_EDIT : app_readonly_why_short());
     } else {
       if (sel != pv.sel) {
         gbfly_row_paint(s, gen1, pv.sel, 18 + (pv.sel - top) * 10, false);
@@ -180,7 +180,7 @@ void pdna_gb_fly(GbSession* s, bool can_edit) {
     if (k & (KEY_A | KEY_START)) {
       if (!can_edit) {
         snd_deny();
-        s_msg("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0);
+        s_msg("READ-ONLY", UI_WARN, app_readonly_why(), 0);
         pv.valid = false;
         continue;
       }

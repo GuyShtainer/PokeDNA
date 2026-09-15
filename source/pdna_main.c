@@ -1192,13 +1192,13 @@ static bool app_rom_is_hack(PkGame g) { return (s_hack_mask & (1u << (unsigned)g
  * correct for an Everdrive/pdna_romcheck_bad() refusal, a real LIE for an Omega
  * owner whose cart is perfectly writable but whose currently-open game is
  * hack-flagged (app_can_edit() now refuses for that reason too, BACKLOG #54).
- * This picks the honest wording for the 12 pdna_main.c sites this lane owns; the
- * other seven files' sites (pdna_box.c, pdna_frontier.c, pdna_fly.c,
- * pdna_contest.c, pdna_map.c, pdna_gbfly.c, pdna_layout.h's own copy) are OUT OF
- * SCOPE for this lane -- named in this lane's report as a follow-up BACKLOG item,
- * not touched here. */
-static const char* app_readonly_why(void) {
+ * This picks the honest wording for all remaining sites. */
+const char* app_readonly_why(void) {
   return app_rom_is_hack(g_game) ? PDNA_ROMHACK_WHY : "Needs EZ-Flash Omega.";
+}
+
+const char* app_readonly_why_short(void) {
+  return app_rom_is_hack(g_game) ? PDNA_ROMHACK_NOTE : "read-only (Omega)";
 }
 
 static const char* romident_name(RomIdent id) {
@@ -9597,7 +9597,7 @@ static void view_save(const char* path) {
         case NV_MIRAGE:  pdna_mirage(); break;
         case NV_DEX:     pdna_dex_edit(); break;
         case NV_BAG:     if (app_can_edit()) bag_entry();
-                         else msg_wait("BAG", UI_WARN, "Read-only cart.", "Writes need an Omega.");
+                         else msg_wait("BAG", UI_WARN, "Read-only cart.", app_readonly_why());
                          break;
         case NV_DATA:    if (app_can_edit()) data_editor();
                          else { snd_deny(); msg_wait("READ-ONLY", UI_WARN, app_readonly_why(), 0); } break;
