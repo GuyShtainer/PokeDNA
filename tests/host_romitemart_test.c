@@ -788,5 +788,21 @@ int main(int argc, char** argv) {
   verify_tests(dir);
 
   printf("rom_itemart test: %d checks, %d failure(s)\n", checks, fails);
+    /* BACKLOG #145 anti-regression: this file cannot include pdna_main.c (GBA/tonc
+   * headers -- not part of the pure-C host build), so a straight revert of
+   * app_type_badge()'s cap argument back to `need` would sail through every
+   * check above untouched. Scan the ONE call site's source text directly. */
+  {
+    FILE* f = fopen("source/pdna_main.c", "rb");
+    chk("perf#145", "source/pdna_main.c is readable from the repo root", f != 0);
+    if (f) {
+      static char buf[1 << 20];
+      size_t got = fread(buf, 1, sizeof buf - 1, f);
+      buf[got] = 0;
+      fclose(f);
+      chk("perf#145", "app_type_badge still passes the widened cap, not `need`",
+          strstr(buf, "scratch, scratch ? MON_DECOMP_BYTES : 0") != 0);
+    }
+  }
   return fails ? 1 : 0;
 }
