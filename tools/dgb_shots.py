@@ -3819,6 +3819,102 @@ def run_b54_romhack(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -
     return s
 
 
+def run_s150_2_bank_native(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #150 S150-2: a native ("GBC1") Bank cell renders as the Gen-1/2 Pokemon
+    it is. `rom` MUST be `tools/fuse_sav.py <pokedna-delta-artless.gba> <Emerald.sav>`
+    (a plain Gen-3 fusion, no --gb, no --clip -- same vehicle as run_s2_bank_control) --
+    NO fused payload is needed because the cells themselves come from source/
+    bank_plant.c's PDNA_DELTA-only hook in box_load() (source/pdna_bank.c): on this
+    build there is never a real box file to read (no SD card at all in a delta image),
+    so box 0 plants bank_plant_box0()'s five directed cells and box 1 plants
+    bank_plant_box_full()'s 30-NATIVE worst case, automatically, the first time either
+    is paged in.
+
+    Same boot/nav recipe as run_s2_bank_control's own docstring: START, DOWN, A ->
+    pdna_bank_show(), landing on box 0 (BANK 1 in the on-screen banner) -- ALREADY the
+    planted grid, no extra navigation needed to reach it. mGBA timing is NOT the
+    measurement the S150-2 acceptance row asks for (a real hardware box-flip timing for
+    the 30-native box) -- this panel is a RENDER proof only; the perf numbers come from
+    real hardware, reported separately."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s150_2_")
+    print("== BACKLOG #150 S150-2: native Bank cells render + the 30-native worst case ==")
+    # CURSOR is a much slower repaint on this screen than an ordinary GB-box cursor
+    # move (the left DATA panel redraws through pdna_summary's own species/level/
+    # nickname layout, not a quick highlight-only blit) -- SETTLE (12 frames, this
+    # file's own "simple cursor move" constant) and even 80 both left the previous
+    # frame on screen (found live: a `pixel-identical to the previous shot` abort);
+    # 300 is what a debug probe against this exact build confirmed settles fully.
+    CURSOR_SETTLE = 300
+    s.tap("START", settle=80)                              # nav menu
+    s.tap("DOWN", settle=60)                                # Party -> Bank (index 1, one DOWN)
+    s.tap("A", settle=150)                                  # -> pdna_bank_show(), box 0 (BANK 1)
+    s.shot("00_planted_box0", "S150-2: BANK 1, box_load()'s PDNA_DELTA plant -- five "
+           "native cells at slots 0-4 (CHIKORITA/2, PIKACHU/1, an Egg, an item "
+           "holder, the DMG chip), the rest of the grid ordinary empty Gen-3 slots -- "
+           "no '?' badge anywhere; every native cell wears its era mark EXCEPT the "
+           "DMG cell (species 252 + isBadEgg, D-Q3 -- review F3: no era to claim)")
+
+    # cursor on each of the five cells in turn -- the left DATA panel (species/level/
+    # nickname) is the thing this shot list actually proves: a native cell decodes to
+    # a REAL species/level/nickname, not a placeholder or a hole. Slot 0's own panel
+    # is ALREADY shown by 00_planted_box0 above (the cursor defaults there on entry),
+    # so this only shoots slots 1..4 -- a slot-0 repeat here would be pixel-identical
+    # to 00 with no tap in between and trip the same-frame guard (found live).
+    labels = ["02_cell1_pikachu", "03_cell2_egg", "04_cell3_item_holder", "05_cell4_dmg"]
+    for label in labels:
+        s.tap("RIGHT", settle=CURSOR_SETTLE)                # slot i-1 -> slot i
+        s.shot(label, f"S150-2: cursor moved one slot right -- the left panel shows "
+               "the native cell's own species/level/nickname (05_cell4_dmg: the DMG "
+               "chip, nickname DAMAGED)")
+
+    # back to slot 0. A opens the ordinary occupied-mon menu (cursor defaults to row 0,
+    # which is the Summary/"VIEW/EDIT" row, Gen 3's own occupied-mon-menu order per the
+    # UX-parity audit -- run_gold's own comments above document the same convention);
+    # a second A selects it -- app_box_browse's A_SUMMARY case (pdna_main.c) is where
+    # this lane's bc_is_native() interception sits, so this opens the REAL Gen-1/2
+    # summary (decision 12-13, step 5) instead of pdna_inspect()'s lossy copy.
+    s.press_n("LEFT", 4, settle=CURSOR_SETTLE)              # slot 4 -> slot 0
+    s.tap("A", settle=150)                                  # slot 0 -> the occupied-mon menu
+    s.shot("06_cell0_menu", "S150-2: A on the CHIKORITA cell -- the ordinary occupied-"
+           "mon menu, cursor on row 0 (Summary/VIEW-EDIT)")
+    s.tap("A", settle=150)                                  # select the Summary row
+    s.shot("07_cell0_summary", "S150-2: the REAL Gen-1/2 summary, opened read-only over "
+           "the native cell's own 80 bytes via gb_native_summary_open() (decision "
+           "12-13, step 5) -- NOT pdna_inspect()'s lossy Gen-3-converted copy")
+    s.tap("B", settle=150)                                  # out of the summary
+    s.shot("08_cell0_back", "S150-2: B returns to the box grid, cursor still on slot 0")
+
+    # cell 4 -- the DMG cell. bc_unpack() itself does not reject on the glitch species
+    # (only bc_is_native's magic/ident32/old-build check gates it), so A here is
+    # expected to reach the summary over the damaged record, showing whatever garbage
+    # decodes out of the 0xFE glitch species -- an honest reflection of "this record
+    # decodes but was never a well-formed one", not a refusal.
+    s.press_n("RIGHT", 4, settle=CURSOR_SETTLE)             # slot 0 -> slot 4
+    s.tap("A", settle=150)                                  # slot 4 -> its occupied-mon menu
+    s.shot("09_cell4_menu", "S150-2: A on the DMG cell -- the same occupied-mon menu "
+           "shape (review F1: app_mon_menu's occupancy for a native cell now comes "
+           "from bc_is_native() -- decoded via pdna_native_cell_decode(), the same "
+           "ladder the grid uses -- not from whether pk_decode_mon's meaningless-key "
+           "decrypt of the raw bytes happens to pass its checksum)")
+    s.tap("A", settle=150)                                  # select the Summary row
+    s.shot("10_cell4_summary_or_refuse", "S150-2: the Summary row on the DMG cell -- "
+           "bc_unpack succeeds (the glitch species lives in list_species/rec, outside "
+           "bc_is_native's own magic/ident32/old-build check), so this is expected to "
+           "open the summary over the damaged record rather than refuse outright")
+    s.tap("B", settle=150)
+
+    # L/R once to the 30-NATIVE worst case (box 1, BANK 2)
+    s.tap("R", settle=300)
+    s.shot("11_bank2_30native", "S150-2: BANK 2 -- bank_plant_box_full()'s 30-NATIVE "
+           "worst case (review F4: 27 FULL + 2 RELAXED + 1 NONE/DMG across the 30 "
+           "slots -- it reuses box0's own five directed cells at 0-4, then 25 fresh "
+           "FULL cells at 5-29 -- not 30 fresh FULL cells; every render still at "
+           "least attempts gen12_can_convert, and 27/30 pay the full PID search, "
+           "which is the worst case SS11.9 prices) -- every cell native, every one "
+           "wearing its era badge EXCEPT the DMG cell (D-Q3), no '?' anywhere")
+    return s
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -3997,6 +4093,13 @@ def main(argv=None) -> int:
                           "Emerald.sav onto pokedna-delta-artless.gba (no --gb, no "
                           "--clip) proving CREATE + PASTE HERE survive an ordinary "
                           "Gen-3 session's own Bank visit, unaffected by the F1 gate.")
+    ap.add_argument("--s150-2", action="store_true",
+                     help="BACKLOG #150 S150-2: only run_s150_2_bank_native() against "
+                          "--image -- --image MUST be a plain tools/fuse_sav.py fusion "
+                          "of an Emerald.sav onto pokedna-delta-artless.gba (no --gb, "
+                          "no --clip -- same vehicle as --s2-bank-control). No fused "
+                          "payload needed: the native cells come from source/"
+                          "bank_plant.c's PDNA_DELTA-only box_load() hook.")
     ap.add_argument("--b54-romhack", choices=("hack", "control"),
                      help="BACKLOG #54: only run_b54_romhack() against --image for the "
                           "named case -- the ROM-hack banner + the mon-menu refusal it "
@@ -4532,6 +4635,21 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] s2-bank-control: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if getattr(a, "s150_2", False):
+        # BACKLOG #150 S150-2: same append-only convention as --s2-bank-control above.
+        ran = True
+        try:
+            sess = run_s150_2_bank_native(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] s150-2: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:

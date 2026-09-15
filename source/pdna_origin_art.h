@@ -530,8 +530,20 @@ void pdna_origin_art_invalidate(void);
 
 /* Recompute the 30-cell cache from an ALREADY DECODED box. This is the cheap door --
  * pdna_box.c decodes all 30 records for the grid anyway, so calling it there adds only
- * the detection itself. */
+ * the detection itself. Byte-for-byte pdna_origin_box_note_hinted(box, 0) -- a zero
+ * hint array is the pre-hinted behaviour, since pdna_origin_of_hint() returns right
+ * away for anything that isn't PDNA_GEN1/PDNA_GEN2 (pdna_origin_art.c:216-225). */
 void pdna_origin_box_note(const PkMon box[PDNA_ORIGIN_BOX]);
+
+/* Same as pdna_origin_box_note, but with a PER-SLOT era hint (BACKLOG #150 S150-2,
+ * docs/BANK-CROSSGEN-DESIGN.md SS11.9). A GB session's own box is entirely one era
+ * (s_box_hint, set once per session by pdna_origin_box_set_hint) -- but a Bank box is
+ * MIXED: a real Gen-3 mon sits beside a native Gen-1/2 cell (S150-2) sits beside an
+ * old-style GB-import Gen-3 stand-in, all 30 slots at once, and no single session-wide
+ * hint can describe that. `hint[i]` (PDNA_GEN1/PDNA_GEN2, or 0 for "use the session
+ * hint / no hint") overrides the session-wide s_box_hint for slot `i` only; `hint` may
+ * be NULL, which is exactly pdna_origin_box_note's own behaviour. */
+void pdna_origin_box_note_hinted(const PkMon box[PDNA_ORIGIN_BOX], const uint8_t hint[PDNA_ORIGIN_BOX]);
 
 /* Forget the cache (every cell reads back as native/no marker). Call when the box the
  * cache describes is no longer on screen. Independent of pdna_origin_box_set_hint()

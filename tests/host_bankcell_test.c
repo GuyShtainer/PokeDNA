@@ -2,13 +2,23 @@
  * (BACKLOG #150 S150-1). Pure C, dual-compiles on the host; the module under test has
  * ZERO callers in the shipped build, so this file is the only thing exercising it.
  *
- *   cc -std=c11 -Wall -Wextra -I source tests/host_bankcell_test.c \
+ *   cc -std=c11 -Wall -Wextra -I source -DPDNA_DELTA tests/host_bankcell_test.c \
  *      source/bank_cell.c source/gb_edit.c source/gen1_save.c source/gen1_write.c \
  *      source/gen2_save.c source/gen2_write.c source/gen3_save.c source/gen3_box.c \
  *      source/gen3_mon.c source/gen3_edit.c source/gen3_daycare.c source/gen3_clip.c \
- *      source/data_tables.c source/gb_sidecar.c -o /tmp/hbc
+ *      source/gen12_convert.c source/data_tables.c source/bank_plant.c \
+ *      source/gb_new_mon.c source/gb_editor.c source/gb_session.c source/rom_gblearn.c \
+ *      source/rom_gbbase.c source/rom_gbsprite.c source/gb_sprite_codec.c \
+ *      source/ui_font.c source/gb_sidecar.c -o /tmp/hbc
  *   /tmp/hbc (Guy's five Gen-3 .sav files, positional argv -- run_host_tests.py hands
- *             them over automatically)
+ *             them over automatically). -DPDNA_DELTA compiles section 8 (bank_plant,
+ *             BACKLOG #150 S150-2 step 6) IN; it never affects the shipped GBA build
+ *             (PDNA_DELTA is only ever defined by `make PDNA_TARGET=delta`, which
+ *             neither gate target uses -- see the lane's delivery report for the nm
+ *             proof that no bank_plant symbol reaches either gate ELF). Section 8
+ *             additionally writes box15.box/box14.box to the CURRENT directory when
+ *             the environment variable PDNA_EMIT_PLANT=1 is set -- never by default,
+ *             never into git (.gitignore covers /box14.box and /box15.box).
  *
  * Two independent corpora, read-only:
  *   - Gen-1/2: Guy's own dumps at a FIXED path outside the repo (gitignored, the same
@@ -42,6 +52,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdbool.h>
+#include <stdlib.h>   /* getenv -- PDNA_EMIT_PLANT (section 8) */
 
 #include "bank_cell.h"
 #include "gb_edit.h"
@@ -116,6 +127,66 @@ static void roundtrip_one(const char* tag, const GbEditMon* mon, uint32_t serial
 }
 
 /* ============================================================================ */
+/* bc_view() parity (BACKLOG #150 S150-2): gb_load -> bc_pack -> bc_unpack ->
+ * bc_view must equal, field for field, the gen12_from_gen1/gen12_from_gen2 struct
+ * the shipping GB grid builds for the SAME slot -- slot_salt excepted (the caller's
+ * own value, never derived from the record). `check_caught` gates has_caught_data/
+ * ot_gender; every call site below now passes true (finding 2's fix: bc_view
+ * derives has_caught_data from the SAME byte-level rule gen12_from_gen2 does, never
+ * from origin_game, so the comparison holds unconditionally -- kept as a parameter
+ * rather than deleted so a future caller that genuinely cannot compare it has an
+ * documented escape hatch, not a silently-relaxed default).
+ * A mismatch means a native cell would render DIFFERENTLY from the same mon in a
+ * GB session -- never a tolerance to relax, always a bug in bc_view. */
+static void check_gb12_parity(const char* tag, const Gb12Mon* got, const Gb12Mon* want,
+                              bool check_caught) {
+  CHECK(got->gen == want->gen, "%s: bc_view gen mismatch (%u vs %u)", tag, got->gen, want->gen);
+  CHECK(got->species_dex == want->species_dex, "%s: species_dex mismatch (%u vs %u)",
+        tag, got->species_dex, want->species_dex);
+  CHECK(got->exp == want->exp, "%s: exp mismatch (%u vs %u)", tag, got->exp, want->exp);
+  CHECK(got->level == want->level, "%s: level mismatch (%u vs %u)", tag, got->level, want->level);
+  CHECK(got->dv_atk == want->dv_atk, "%s: dv_atk mismatch", tag);
+  CHECK(got->dv_def == want->dv_def, "%s: dv_def mismatch", tag);
+  CHECK(got->dv_spd == want->dv_spd, "%s: dv_spd mismatch", tag);
+  CHECK(got->dv_spc == want->dv_spc, "%s: dv_spc mismatch", tag);
+  for (int i = 0; i < 4; i++) {
+    CHECK(got->moves[i] == want->moves[i], "%s: moves[%d] mismatch (%u vs %u)",
+          tag, i, got->moves[i], want->moves[i]);
+    CHECK(got->pp_ups[i] == want->pp_ups[i], "%s: pp_ups[%d] mismatch", tag, i);
+  }
+  CHECK(got->ot_id == want->ot_id, "%s: ot_id mismatch (%u vs %u)", tag, got->ot_id, want->ot_id);
+  CHECK(strcmp(got->ot_name, want->ot_name) == 0, "%s: ot_name mismatch (\"%s\" vs \"%s\")",
+        tag, got->ot_name, want->ot_name);
+  CHECK(strcmp(got->nickname, want->nickname) == 0, "%s: nickname mismatch (\"%s\" vs \"%s\")",
+        tag, got->nickname, want->nickname);
+  CHECK(got->held_item == want->held_item, "%s: held_item mismatch (%u vs %u)",
+        tag, got->held_item, want->held_item);
+  CHECK(got->friendship == want->friendship, "%s: friendship mismatch (%u vs %u)",
+        tag, got->friendship, want->friendship);
+  CHECK(got->pokerus == want->pokerus, "%s: pokerus mismatch (%u vs %u)", tag, got->pokerus, want->pokerus);
+  CHECK(got->is_egg == want->is_egg, "%s: is_egg mismatch", tag);
+  if (check_caught) {
+    CHECK(got->has_caught_data == want->has_caught_data, "%s: has_caught_data mismatch", tag);
+    CHECK(got->ot_gender == want->ot_gender, "%s: ot_gender mismatch", tag);
+  }
+}
+
+/* pack `mon` under `origin`, unpack, bc_view with a fixed id_salt (irrelevant --
+ * slot_salt is excepted from the comparison), and check it against `want`. */
+static void view_parity_one(const char* tag, const GbEditMon* mon, uint8_t origin,
+                            const Gb12Mon* want, bool check_caught, uint32_t serial) {
+  uint8_t cell[BC_CELL_BYTES];
+  int rc = bc_pack(mon, 0, origin, 0, serial, cell);
+  CHECK(rc == 0, "%s: bc_pack failed (view parity)", tag);
+  if (rc != 0) return;
+  GbEditMon back; BcMeta meta;
+  CHECK(bc_unpack(cell, &back, &meta), "%s: bc_unpack failed (view parity)", tag);
+  Gb12Mon got;
+  CHECK(bc_view(&back, &meta, 0, &got), "%s: bc_view failed", tag);
+  check_gb12_parity(tag, &got, want, check_caught);
+}
+
+/* ============================================================================ */
 /* 1. Gen-1 corpus sweep: Red.sav, Yellow.sav -- every box + the party.          */
 /* ============================================================================ */
 
@@ -146,6 +217,15 @@ static void sweep_gen1(const char* file) {
       snprintf(tag, sizeof tag, "%s box%d slot%d", file, box, slot);
       CHECK(gb_load(&mon, GB_GEN1, img + off, box, slot), "%s: gb_load", tag);
       roundtrip_one(tag, &mon, g_serial++);
+
+      /* bc_view parity: independently decode the SAME slot the shipping GB grid's
+       * own way (gen1_decode -> gen12_from_gen1) and compare field for field. */
+      Gen1Mon g1;
+      CHECK(gen1_decode(img + off, box, slot, &g1), "%s: gen1_decode (view parity)", tag);
+      Gb12Mon want;
+      gen12_from_gen1(&g1, 0, &want);
+      uint8_t origin = (strcmp(file, "Yellow.sav") == 0) ? BC_ORIGIN_YELLOW : BC_ORIGIN_RED;
+      view_parity_one(tag, &mon, origin, &want, true, g_serial++);
       n++;
     }
   }
@@ -186,10 +266,75 @@ static void sweep_gen2(const char* file) {
       CHECK(gb_load(&mon, GB_GEN2, img + off, box, slot), "%s: gb_load", tag);
       if (mon.list_species == G2_LIST_EGG) eggs++;
       roundtrip_one(tag, &mon, g_serial++);
+
+      /* bc_view parity, same shape as the Gen-1 sweep. has_caught_data/ot_gender are
+       * ALWAYS comparable now (S150-2 finding 2): bc_view derives has_caught_data
+       * from the same byte-level rule gen12_from_gen2 does ((rec[0x1D]|rec[0x1E])
+       * != 0), never from origin_game, so raw equality holds unconditionally --
+       * including for Gold.sav, whose identical bytes are Unused1/Unused2 but
+       * still compare bit-for-bit the same way on both sides. */
+      G2Mon g2;
+      CHECK(g2_list_mon(img + off, box, slot, &g2), "%s: g2_list_mon (view parity)", tag);
+      Gb12Mon want;
+      gen12_from_gen2(&g2, 0, &want);
+      bool is_crystal = (strcmp(file, "Crystal.sav") == 0);
+      uint8_t origin = is_crystal ? BC_ORIGIN_CRYSTAL : BC_ORIGIN_GOLD;
+      view_parity_one(tag, &mon, origin, &want, /*check_caught=*/true, g_serial++);
       n++;
     }
   }
   printf("  %s: %d Gen-2 record(s) round-tripped (%d egg(s))\n", file, n, eggs);
+}
+
+/* ============================================================================ */
+/* 2b. NAMED regression: five real Crystal.sav box7 slots with legitimately       */
+/*     all-zero capture bytes (S150-2 finding 2) -- has_caught_data must be       */
+/*     FALSE for these even though origin_game is Crystal, because it is the      */
+/*     converter's own byte-level rule (gen2_save.c:535's caught_valid), never    */
+/*     origin_game. Pinned by slot number so a future regression here fails       */
+/*     loud, not silently inside the general sweep's loop.                       */
+/* ============================================================================ */
+
+static void regress_crystal_uncaught_box7(void) {
+  char path[512];
+  snprintf(path, sizeof path, "%s/Crystal.sav", GB_ROMS);
+  FILE* f = fopen(path, "rb");
+  if (!f) { printf("  SKIP Crystal.sav uncaught-box7 regression (not present)\n"); return; }
+  static uint8_t img[G2_SAVE_SIZE + G2_MAX_RTC_TAIL];
+  uint32_t len = (uint32_t)fread(img, 1, sizeof img, f);
+  fclose(f);
+
+  G2Save sv;
+  if (!g2_detect(img, len, &sv) || !sv.supported) { printf("  SKIP Crystal.sav uncaught-box7 regression (unsupported)\n"); return; }
+  G2Header hd;
+  if (!g2_read_header(img, &sv, &hd)) { printf("  SKIP Crystal.sav uncaught-box7 regression (no header)\n"); return; }
+  /* box 7 (0-indexed, an ordinary PC box -- NOT G2_BOX_PARTY, which is 14): the
+   * original sweep tagged these failures "Crystal.sav box7 slotN". */
+  const int kBox = 7;
+  uint32_t off = g2_list_offset(&sv, kBox, hd.current_box);
+  if (off == 0) { printf("  SKIP Crystal.sav uncaught-box7 regression (no box7 list)\n"); return; }
+
+  static const int kSlots[] = { 3, 4, 5, 9, 10 };
+  int n = 0;
+  for (unsigned i = 0; i < sizeof kSlots / sizeof kSlots[0]; i++) {
+    int slot = kSlots[i];
+    char tag[64]; snprintf(tag, sizeof tag, "Crystal.sav box7 slot%d (named regression)", slot);
+    GbEditMon mon;
+    CHECK(gb_load(&mon, GB_GEN2, img + off, kBox, slot), "%s: gb_load", tag);
+    /* precondition: the record's own capture bytes really are both zero */
+    CHECK((mon.rec[0x1D] | mon.rec[0x1E]) == 0, "%s: precondition failed -- capture bytes are NOT zero, this slot no longer regresses", tag);
+
+    uint8_t cell[BC_CELL_BYTES];
+    CHECK(bc_pack(&mon, 0, BC_ORIGIN_CRYSTAL, 0, 90000u + (uint32_t)i, cell) == 0, "%s: bc_pack", tag);
+    GbEditMon back; BcMeta meta;
+    CHECK(bc_unpack(cell, &back, &meta), "%s: bc_unpack", tag);
+    Gb12Mon got;
+    CHECK(bc_view(&back, &meta, 0, &got), "%s: bc_view", tag);
+    CHECK(got.has_caught_data == false, "%s: has_caught_data must be false (origin_game plays no part)", tag);
+    CHECK(got.ot_gender == 0, "%s: ot_gender must be 0", tag);
+    n++;
+  }
+  printf("  Crystal.sav: %d named uncaught-box7 regression slot(s) checked\n", n);
 }
 
 /* ============================================================================ */
@@ -502,6 +647,84 @@ static void test_sidecar_kind_filter(void) {
   }
 }
 
+/* 9. bank_plant (BACKLOG #150 S150-2 step 6): the PDNA_DELTA-only test plant.   */
+/*    Compiled in only when the cc line above defines -DPDNA_DELTA; the shipped  */
+/*    build never does, and D-Q7's own nm proof (the lane's delivery report)     */
+/*    confirms no bank_plant symbol reaches either gate ELF.                    */
+/* ============================================================================ */
+#ifdef PDNA_DELTA
+#include "bank_plant.h"
+
+#define PLANT_BOX_BYTES (30 * BC_CELL_BYTES)   /* 2400 */
+
+static void check_plant_box0(const uint8_t recs[PLANT_BOX_BYTES]) {
+  /* slots 0,1,2,3 are native and each converts to something (FULL/RELAXED); slot 4
+   * is native but unrepresentable (GB_SHOW_NONE) -- bc_is_native is still true for
+   * ALL FIVE (that is the whole point of G-H2: occupancy comes from the raw bytes,
+   * not from whether a stand-in could be built). Slots 5..29 are untouched (all-zero
+   * -- ordinary empty Gen-3 slots). */
+  for (int s = 0; s < 5; s++)
+    CHECK(bc_is_native(recs + (uint32_t)s * BC_CELL_BYTES), "plant box0 slot %d must be native", s);
+  for (int s = 5; s < 30; s++) {
+    uint8_t zero[BC_CELL_BYTES]; memset(zero, 0, sizeof zero);
+    CHECK(memcmp(recs + (uint32_t)s * BC_CELL_BYTES, zero, BC_CELL_BYTES) == 0,
+          "plant box0 slot %d must be untouched (all-zero)", s);
+  }
+  /* slot 4's own bytes decode back to the glitch species + BC_ORIGIN_GOLD this file
+   * packed it with -- an independent re-check that bc_pack really did carry the
+   * 0xFE glitch through, not just "is native". */
+  GbEditMon back; BcMeta meta;
+  CHECK(bc_unpack(recs + (uint32_t)4 * BC_CELL_BYTES, &back, &meta), "plant box0 slot 4: bc_unpack");
+  CHECK(back.list_species == 0xFE, "plant box0 slot 4: list_species must be the 0xFE glitch index");
+  CHECK(meta.origin_game == BC_ORIGIN_GOLD, "plant box0 slot 4: origin_game must be GOLD");
+}
+
+static void check_plant_box_full(const uint8_t recs[PLANT_BOX_BYTES]) {
+  int n = 0;
+  uint32_t idents[30];
+  for (int s = 0; s < 30; s++) {
+    const uint8_t* cell = recs + (uint32_t)s * BC_CELL_BYTES;
+    CHECK(bc_is_native(cell), "plant box_full slot %d must be native (the 30-NATIVE worst case)", s);
+    idents[s] = bc_ident32(cell);
+    if (bc_is_native(cell)) n++;
+  }
+  CHECK(n == 30, "plant box_full must have 30/30 native slots, got %d", n);
+  for (int a = 0; a < 30; a++)
+    for (int b = a + 1; b < 30; b++)
+      CHECK(idents[a] != idents[b], "plant box_full: slots %d and %d share an ident32 (bank_serial collision)", a, b);
+}
+
+/* PDNA_EMIT_PLANT=1 (never by default, never into the repo -- .gitignore covers
+ * /box14.box and /box15.box): write the raw 2400-byte buffers to the CURRENT
+ * directory as box15.box (the five directed cells) and box14.box (the 30-native
+ * worst case) for a real-hardware SD-card copy to /PokeDNA/bank/box15.box and
+ * /PokeDNA/bank/box14.box -- BANK_BOXES is 16 (pdna_bank.c) and box_path is
+ * "box%02d.box", so those are BANK 16 and BANK 15, the two highest boxes. */
+static void maybe_emit_plant(const char* name, const uint8_t recs[PLANT_BOX_BYTES]) {
+  if (!getenv("PDNA_EMIT_PLANT") || strcmp(getenv("PDNA_EMIT_PLANT"), "1") != 0) return;
+  FILE* f = fopen(name, "wb");
+  if (!f) { printf("  !! could not open %s for PDNA_EMIT_PLANT\n", name); return; }
+  size_t wr = fwrite(recs, 1, PLANT_BOX_BYTES, f);
+  fclose(f);
+  printf("  PDNA_EMIT_PLANT: wrote %s (%zu bytes)\n", name, wr);
+}
+
+static void test_bank_plant(void) {
+  static uint8_t box0[PLANT_BOX_BYTES];
+  static uint8_t boxfull[PLANT_BOX_BYTES];
+  memset(box0, 0, sizeof box0);
+  memset(boxfull, 0, sizeof boxfull);
+
+  bank_plant_box0(box0);
+  check_plant_box0(box0);
+  maybe_emit_plant("box15.box", box0);
+
+  bank_plant_box_full(boxfull);
+  check_plant_box_full(boxfull);
+  maybe_emit_plant("box14.box", boxfull);
+}
+#endif /* PDNA_DELTA */
+
 int main(int argc, char** argv) {
   printf("== 1. Gen-1 corpus sweep ==\n");
   sweep_gen1("Red.sav");
@@ -510,6 +733,9 @@ int main(int argc, char** argv) {
   printf("== 2. Gen-2 corpus sweep ==\n");
   sweep_gen2("Gold.sav");
   sweep_gen2("Crystal.sav");
+
+  printf("== 2b. named regression: Crystal.sav uncaught party slots ==\n");
+  regress_crystal_uncaught_box7();
 
   printf("== 3. all-zero cell ==\n");
   test_zero_cell();
@@ -532,6 +758,10 @@ int main(int argc, char** argv) {
 
   test_sidecar_native_refusal();
   test_sidecar_kind_filter();
+#ifdef PDNA_DELTA
+  printf("== 9. bank_plant (PDNA_DELTA-only) ==\n");
+  test_bank_plant();
+#endif
 
   printf("\n%d check(s), %s\n", g_check, g_fail ? "FAIL" : "OK");
   return g_fail ? 1 : 0;

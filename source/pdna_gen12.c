@@ -20,6 +20,8 @@
 #include "gen3_mon.h"
 #include "data_tables.h"   /* pk_species_name (report list) */
 #include "evolutions.h"    /* pk_evo_floor/pk_evo_min_level -- BACKLOG #104 R1 D3 */
+#include "gb12_render.h"  /* the display ladder: GB_SHOW_*, gb12_presentation, gb12_render_rec */
+#include "bank_cell.h"    /* bc_unpack -- gb_native_summary_open (BACKLOG #150 S150-2 step 5) */
 
 /* ================================================================= pure core */
 
@@ -197,55 +199,13 @@ static bool gb_slot_mon(const Gb12Mount* m, int box, int slot, Gb12Mon* out) {
   return true;
 }
 
-/* How a record is PRESENTED in the grid. A refusal is never a hole: the user has to
- * be able to find the Pokemon they are looking for and be told why it is stuck. */
-enum {
-  GB_SHOW_FULL,        /* converts cleanly                                      */
-  GB_SHOW_RELAXED,     /* egg / item holder: shown truthfully, copy refused      */
-  GB_SHOW_PLACEHOLDER, /* record damaged but the species is real: shown as itself */
-  GB_SHOW_NONE         /* no Pokemon can be shown (glitch species / empty slot)  */
-};
+/* The display ladder (GB_SHOW_*, gb12_presentation, gb12_render_rec) moved to the
+ * pure-C source/gb12_render.{c,h} (BACKLOG #150 S150-2) so the native Bank cell's
+ * own render path (pdna_box.c) can share it byte-for-byte. See gb12_render.h. */
 
-/* Decide the presentation WITHOUT running a PID search, so the whole-save census at
- * mount stays cheap. */
-static int gb_presentation(const Gb12Mon* in, Gb12Result r) {
-  if (r == GB12_OK) return GB_SHOW_FULL;
-  if (r == GB12_ERR_EMPTY) return GB_SHOW_NONE;
-  if (r == GB12_ERR_EGG || r == GB12_ERR_HELD_ITEM) {
-    /* An egg and an item holder are both real, identifiable Pokemon; only the
-     * TRANSFER is refused. Convert a copy with just that property dropped so the
-     * grid shows the actual species/level/nickname, and veto the copy instead. */
-    Gb12Mon relaxed = *in;
-    relaxed.is_egg = false;
-    relaxed.held_item = 0;
-    if (gen12_can_convert(&relaxed) == GB12_OK) return GB_SHOW_RELAXED;
-    return (in->species_dex >= 1 && in->species_dex <= 251) ? GB_SHOW_PLACEHOLDER : GB_SHOW_NONE;
-  }
-  /* Damaged move list / level / (unreachable) PID failure: the species is still a
-   * real Pokemon, so show a minimal record of that species rather than a hole. */
-  if (in->species_dex >= 1 && in->species_dex <= 251) return GB_SHOW_PLACEHOLDER;
-  return GB_SHOW_NONE;                       /* MissingNo and friends: nothing to draw */
-}
-
-/* Deterministic personality for a placeholder record. Not the converter's identity
- * hash (that one is private to gen12_convert.c and only defined for records that
- * convert); this only has to be STABLE for a given slot, because the clipboard and
- * the bank match mons by their first 8 bytes. FNV-1a over an explicit byte list —
- * never over struct memory, whose padding is uninitialised. */
-static uint32_t placeholder_pid(int box, int slot, const Gb12Mon* in) {
-  uint32_t h = 2166136261u;
-  const uint8_t seq[8] = {
-    (uint8_t)box, (uint8_t)slot,
-    (uint8_t)in->species_dex, (uint8_t)(in->species_dex >> 8),
-    (uint8_t)in->ot_id, (uint8_t)(in->ot_id >> 8),
-    in->level, in->gen
-  };
-  for (int i = 0; i < 8; i++) { h ^= seq[i]; h *= 16777619u; }
-  return h ? h : 1u;                         /* 0 would read as an empty slot */
-}
-
-/* Build the 80-byte record shown for one slot, and its refusal reason.
- * `rec` is zeroed on entry by the caller; leaving it zeroed means "empty cell". */
+/* Build the 80-byte record shown for one slot, and its refusal reason. `rec` is part
+ * of pdna_gen12_page's whole-buffer memset (pdna_gen12.c:~445), so gb12_render_rec's
+ * own memset at entry is redundant-but-harmless here — see decision 2. */
 static void gb_build_slot(Gb12Mount* m, int box, int slot, uint8_t* rec, uint8_t* reason) {
   Gb12Mon in;
   *reason = (uint8_t)GB12_ERR_EMPTY;
@@ -255,59 +215,7 @@ static void gb_build_slot(Gb12Mount* m, int box, int slot, uint8_t* rec, uint8_t
     *reason = (uint8_t)GB12_ERR_SPECIES;
     return;
   }
-
-  Gb12Result r = gen12_can_convert(&in);
-  *reason = (uint8_t)r;
-  int how = gb_presentation(&in, r);
-
-  if (how == GB_SHOW_FULL) {
-    if (gen12_convert(&in, &m->tgt, rec, 0) == GB12_OK) return;
-    memset(rec, 0, 80);                      /* documented-unreachable; fail visible, not wrong */
-    *reason = (uint8_t)GB12_ERR_PID;
-    how = (in.species_dex >= 1 && in.species_dex <= 251) ? GB_SHOW_PLACEHOLDER : GB_SHOW_NONE;
-  }
-
-  if (how == GB_SHOW_RELAXED) {
-    Gb12Mon relaxed = in;
-    bool was_egg = in.is_egg;
-    relaxed.is_egg = false;
-    relaxed.held_item = 0;
-    if (gen12_convert(&relaxed, &m->tgt, rec, 0) == GB12_OK) {
-      if (was_egg) {                         /* draw it as the Egg it really is */
-        EditMon e;
-        gen3_edit_load(rec, false, &e);
-        em_set_egg(&e, true);
-        gen3_edit_commit(&e, rec);
-      }
-      return;
-    }
-    memset(rec, 0, 80);
-    how = (in.species_dex >= 1 && in.species_dex <= 251) ? GB_SHOW_PLACEHOLDER : GB_SHOW_NONE;
-  }
-
-  if (how == GB_SHOW_PLACEHOLDER) {
-    /* A stand-in of the right species and (clamped) level carrying the GB nickname,
-     * so the cell reads as the Pokemon the player remembers. It is NOT the real mon
-     * — its IVs/moves are gen3_build_mon's defaults — which is exactly why the copy
-     * veto below is unconditional for every non-OK reason. */
-    char otname[sizeof in.ot_name], nick[sizeof in.nickname];
-    uint8_t lv = in.level;
-    if (lv < 1) lv = 1;
-    if (lv > 100) lv = 100;
-    copy_z(otname, in.ot_name, (int)sizeof otname);
-    copy_z(nick, in.nickname, (int)sizeof nick);
-    uint8_t metgame = (m->tgt.met_game >= 1 && m->tgt.met_game <= 15) ? m->tgt.met_game : 3;
-    gen3_build_mon(in.species_dex, lv, placeholder_pid(box, slot, &in),
-                   (uint32_t)in.ot_id, otname, metgame, rec);
-    if (nick[0]) {
-      EditMon e;
-      gen3_edit_load(rec, false, &e);
-      em_set_nickname(&e, nick);
-      gen3_edit_commit(&e, rec);
-    }
-    return;
-  }
-  memset(rec, 0, 80);                        /* GB_SHOW_NONE */
+  gb12_render_rec(&in, &m->tgt, (uint32_t)box * 20u + (uint32_t)slot, rec, reason);
 }
 
 /* Whole-save census: how many Pokemon are here, how many will convert, and WHERE the
@@ -335,13 +243,13 @@ static void gb_census(Gb12Mount* m) {
       m->nstored++;
       if (!gb_slot_mon(m, b, s, &in)) {
         /* The species list claims a Pokemon here but nothing decodes: a glitch
-         * species byte. `in` is not filled, so do NOT ask gb_presentation. */
+         * species byte. `in` is not filled, so do NOT ask gb12_presentation. */
         r = GB12_ERR_SPECIES;
         how = GB_SHOW_NONE;
       } else {
         r = gen12_can_convert(&in);
         dex = in.species_dex;
-        how = gb_presentation(&in, r);
+        how = gb12_presentation(&in, r);
       }
 
       if (r == GB12_OK) { m->nready++; continue; }
@@ -2790,6 +2698,44 @@ uint8_t* gb12_arena_tail(uint32_t need) {
  * call" posture as app_arena_release() itself. */
 void gb12_arena_tail_release(void) {
   g_tail_lent = false;
+}
+
+/* BACKLOG #150 S150-2 step 5 (SCOPE DEVIATION -- forward-pulled from S150-13's own
+ * row, docs/BANK-CROSSGEN-DESIGN.md:1345; S150-2's row, :1333, says nothing about
+ * opening a summary): "A on a native Bank cell opens the REAL Gen-1/2 summary,
+ * read-only". A native Bank cell that renders but cannot be opened is a dead cell for
+ * the whole S150-3..S150-13 stretch, so this ships now as a SECOND, PARALLEL entry
+ * point, deliberately NOT the refactor of gb_view_hook (below) that S150-13's own
+ * design (SS11.9) eventually wants (a shared gb_summary_show(mon, gen), called from
+ * both this and gb_view_hook). gb_view_hook's tail is a browse loop that can COMMIT
+ * (gb_edit_commit) -- hanging that off a Bank cell is exactly what SS11.9's "EDIT is
+ * denied" forbids, so this wrapper stays entirely separate and read-only: can_edit
+ * and start_editing are both hard-coded false, so `saved` can never go true
+ * (pdna_gbsummary.h's own contract: "saved is set true iff the user confirmed a
+ * write", and nothing can be kept without can_edit). `has_sidecar` is false because
+ * the ledger does not exist until S150-6. No U/D scroll loop -- a single native Bank
+ * cell has no "next mon" to scroll to, so one call is the whole contract; if the user
+ * presses U/D inside the summary it just exits, same as B. S150-13 may later rename
+ * this to gb_summary_show; that rename, gb_view_hook's own refactor and any edit path
+ * stay OUT of this function's scope. */
+bool gb_native_summary_open(const uint8_t rec80[80]) {
+  GbEditMon e; BcMeta meta;
+  if (!bc_unpack(rec80, &e, &meta)) return false;
+  bool saved = false; int card = 0;
+  /* Review F5 (BACKLOG #150 S150-2): pdna_gbsummary()'s own contract (pdna_gbsummary.h)
+   * returns 0 (exit), +1 (next mon) or -1 (prev mon) -- "the caller loads that slot and
+   * calls again, same contract as pdna_inspect()". A single native Bank cell has no
+   * prev/next mon to load, so U/D inside the summary used to silently dump the user
+   * back to the grid, contradicting the read-only footer's own "U/D mon" promise. Loop
+   * on a non-zero return so U/D just re-opens the SAME cell -- can_edit stays false on
+   * every call, so this can never turn into an edit loop. S150-13 owns the real fix (a
+   * no-nav footer variant for a single-cell view); this is the smallest correct
+   * behaviour until then. */
+  while (pdna_gbsummary(&e, /*can_edit*/false, /*start_editing*/false,
+                        meta.gen == GB_GEN1 ? "Gen 1 record" : "Gen 2 record",
+                        /*has_sidecar*/false, /*create*/false, &saved, &card) != 0) {
+  }
+  return true;   /* can_edit false => `saved` can never be true (see the comment above) */
 }
 
 /* S2/S3/S5-B: the resident-image edit pipeline's hooks, registered as one const struct

@@ -46,6 +46,12 @@ enum {
   R2_CAUGHT0 = 0x1D, R2_CAUGHT1 = 0x1E, R2_LEVEL = 0x1F,
   R2_STATUS = 0x20, R2_CURHP = 0x22, R2_STATS = 0x24
 };
+/* BACKLOG #150 S150-2 review F7: bank_cell.c's bc_view() checks these same two bytes
+ * byte-level and cannot see this private enum, so it uses the exported GB2_REC_CAUGHT0/1
+ * (gb_edit.h) instead -- tie the two copies together here so this enum can never drift
+ * out from under that exported pair without a compile error. */
+_Static_assert(R2_CAUGHT0 == GB2_REC_CAUGHT0, "R2_CAUGHT0 must match the exported GB2_REC_CAUGHT0");
+_Static_assert(R2_CAUGHT1 == GB2_REC_CAUGHT1, "R2_CAUGHT1 must match the exported GB2_REC_CAUGHT1");
 
 #define PP_MASK     0x3Fu   /* pokered/constants/pokemon_data_constants.asm:102 */
 #define PP_UP_SHIFT 6       /* PP_UP_MASK %11000000, same file :101            */

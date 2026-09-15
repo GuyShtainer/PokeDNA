@@ -42,6 +42,8 @@ _Static_assert(BOXSCOPE_GB == 2, "source/xfer_gate.c's XG_SCOPE_GB hard-codes 2 
 #include "gen3_chunk.h"     /* Chunk: Emerald-style rubber-band multi-select geometry */
 #include "pdna_progress.h"  /* pdna_progress_frame: batch sprite + N/total bar */
 #include "pdna_pk.h"        /* pdna_pk_export_silent: "Export all" from the box title */
+#include "bank_cell.h"      /* bc_is_native/bc_unpack/bc_view/bc_ident32 -- native Bank cell render (BACKLOG #150 S150-2) */
+#include "gb12_render.h"    /* gb12_render_rec/GB_SHOW_* -- shared display ladder */
 
 #define COLS 6
 #define ROWS 5
@@ -70,16 +72,91 @@ static int s_item_from_box = -1;      /* box the carried item came from (for put
 
 static PkMon EWRAM_BSS g_box[30];
 
+/* The DAMAGED stand-in (BACKLOG #150 S150-2, decision 8): a native cell whose
+ * gb12_render_rec ladder bottomed out at GB_SHOW_NONE (no decodable Pokemon at all --
+ * a genuinely corrupt record, not merely a refused transfer) is shown as species 252
+ * ("?" in data_tables.c, an unused Gen-3 slot -- non-zero so app_mon_menu's own
+ * `occupied` test never calls the cell EMPTY) with the plaintext isBadEgg bit forced
+ * on, exactly the predicate `cell_damaged()` below tests for. `species == 252 &&
+ * isBadEgg` is produced by NOTHING else in this tree (review finding 6 sweeps the
+ * whole Gen-3 corpus for it). Level is the native level clamped to 1..100, or 1. */
+static void bank_damaged_standin(const Gb12Mon* in, uint32_t salt, uint8_t out80[80]) {
+  uint8_t lv = in->level;
+  if (lv < 1) lv = 1;
+  if (lv > 100) lv = 100;
+  gen3_build_mon(252, lv, salt, (uint32_t)in->ot_id, in->ot_name, 3, out80);
+  EditMon e;
+  gen3_edit_load(out80, false, &e);
+  em_set_nickname(&e, "DAMAGED");
+  gen3_edit_commit(&e, out80);
+  out80[0x13] |= 0x01;   /* plaintext isBadEgg bit, OUTSIDE the encrypted/checksummed
+                          * 48 bytes (gen3_mon.c:79-80) -- set AFTER gen3_edit_commit,
+                          * the same byte the tree already writes by hand elsewhere
+                          * (pdna_main.c:6533's e.raw[0x13], a different call shape). */
+}
+
+/* A native Bank cell ("GBC1", source/bank_cell.h, merged in S150-1) rendered as the
+ * Gen-1/2 Pokemon it is, via the SAME display ladder a GB session's own grid uses
+ * (source/gb12_render.h) -- so a native cell and the identical mon in a GB session
+ * render identically. `__attribute__((noinline))`: this function's GbEditMon +
+ * Gb12Mon + 80-byte scratch must never join a caller's own frame -- box_decode_to's
+ * sits on the party-strip chain (#define PDNA_PARTY_STRIP_NEED, pdna_box.c) at
+ * effectively zero slack, and app_mon_menu's (pdna_main.c, review F1) is under the
+ * same root. `hint` may be NULL.
+ *
+ * Review F1 (BACKLOG #150 S150-2): hoisted from a pdna_box.c-static `box_native_
+ * decode` to a shared, non-static function (declared in pdna_app.h) so app_mon_menu
+ * (pdna_main.c) can decode a native cell the SAME way the grid does, instead of
+ * running pk_decode_mon on bytes it cannot decrypt (a meaningless-key decrypt that
+ * read "??? ? ?" and made `occupied` a coin flip -- a G-H2 violation: CREATE/PASTE
+ * HERE could be offered over a cell that is never empty). Definition stays here
+ * (not moved to a different .c) because bank_damaged_standin/bc_view/gb12_render_rec
+ * all already live in this TU; only the declaration moves to a shared header. */
+void __attribute__((noinline)) pdna_native_cell_decode(const uint8_t* cell, PkMon* out, uint8_t* hint) {
+  GbEditMon e; BcMeta meta;
+  if (!bc_unpack(cell, &e, &meta)) return;       /* leave the plain Gen-3 decode alone */
+  uint32_t salt = bc_ident32(cell);
+  Gb12Mon in; if (!bc_view(&e, &meta, salt, &in)) return;
+  Gb12Target tgt; tgt.met_game = 0;               /* 0 -> Emerald, gen12_convert.h:87; display only.
+                                                   * The DOWN edge (S150-8) is where a REAL
+                                                   * destination game belongs. */
+  uint8_t tmp[80]; uint8_t reason = 0;
+  int rung = gb12_render_rec(&in, &tgt, salt, tmp, &reason);
+  if (rung == GB_SHOW_NONE) bank_damaged_standin(&in, salt, tmp);
+  pk_decode_mon(tmp, false, out);
+  pk_resolve(out);   /* pk_decode_box_raw's own convention for every other slot
+                      * (gen3_box.c:113) -- level/stats/gender are all DERIVED, never
+                      * stored in a box record, and are computed here, not by
+                      * pk_decode_mon. Skipping this left every native cell showing
+                      * Lv0 (found live: this lane's own mGBA shot) even though the
+                      * built record's EXP was correct throughout. */
+  out->raw = 0;   /* BACKLOG #46: gen3_mon.c:77 parks a pointer to `tmp`, a local about to
+                   * go out of scope -- precedent gen3_edit.c:686-693. */
+  if (hint) *hint = meta.gen;   /* 1/2 == PDNA_GEN1/PDNA_GEN2, pdna_origin_art.h:107 */
+}
+
 /* Decode a box's raw records for DISPLAY. For the bank, a mon the user already carried out to the
  * PC is deleted from the card only at the save prompt — but it must LOOK gone right away (Guy), so
  * blank those slots here. This is display-only: the raw buffer keeps the record (it's the mon's only
- * on-card copy until the PC is written), so box_save can never persist a half-done move. */
-static void box_decode_to(BoxSource* src, const uint8_t* recs, int box, PkMon out[G3_BOX_SLOTS]) {
+ * on-card copy until the PC is written), so box_save can never persist a half-done move.
+ *
+ * The native pass (BACKLOG #150 S150-2, G-M6) is scope-agnostic ON PURPOSE (no is_bank
+ * test): §11.1's residual says an old build can drag a native cell into a Gen-3 PC box,
+ * and this is the one interception point that renders it correctly wherever it sits. It
+ * runs BEFORE app_bank_hide_pending (G-M6, non-negotiable) -- a native cell queued for a
+ * Bank->PC deferred delete must still draw BLANK, exactly like a plain Gen-3 mon does,
+ * which only holds if hide_pending sees (and can blank) the slot the native pass just
+ * wrote. `hint` may be NULL. */
+static void box_decode_to(BoxSource* src, const uint8_t* recs, int box, PkMon out[G3_BOX_SLOTS], uint8_t* hint) {
   pk_decode_box_raw(recs, out);
-  if (src->is_bank) app_bank_hide_pending(box, out);
+  if (hint) memset(hint, 0, G3_BOX_SLOTS);
+  for (int s = 0; s < G3_BOX_SLOTS; s++)
+    if (bc_is_native(recs + (uint32_t)s * 80)) pdna_native_cell_decode(recs + (uint32_t)s * 80, &out[s], hint ? &hint[s] : 0);
+  if (src->is_bank) app_bank_hide_pending(box, out);              /* LAST — pdna_main.c:2158 */
 }
 static void box_decode(BoxSource* src, const uint8_t* recs, int box) {
-  box_decode_to(src, recs, box, g_box);
+  uint8_t hint[G3_BOX_SLOTS];
+  box_decode_to(src, recs, box, g_box, hint);
   /* THE ERA CACHE IS FILLED FROM WHAT IS ACTUALLY ON SCREEN. This is the single point
    * where the 30 displayed records change, in the PC and in the bank alike, so it is
    * the one place that can promise "the markers describe the mons you are looking at".
@@ -87,16 +164,30 @@ static void box_decode(BoxSource* src, const uint8_t* recs, int box) {
    * pdna_bank.c) put a Game Boy marker on a bank slot the user had already carried out
    * to the PC: box_decode_to blanks those for display, and the raw buffer still holds
    * them because that record is the mon's only on-card copy until the PC is written.
-   * Cost is 30 record decodes + 30 integer comparisons on a user action, never a frame. */
-  pdna_origin_box_note(g_box);
+   * Cost is 30 record decodes + 30 integer comparisons on a user action, never a frame.
+   *
+   * _hinted (BACKLOG #150 S150-2): a Bank box is MIXED -- a real Gen-3 mon beside a
+   * native Gen-1/2 cell beside an old-style GB-import Gen-3 stand-in, all 30 slots at
+   * once -- and no single session-wide hint (pdna_origin_box_set_hint) can describe
+   * that, so `hint` (filled by box_decode_to's native pass) carries the per-slot era. */
+  pdna_origin_box_note_hinted(g_box, hint);
 }
 
 /* Occupancy for DROP targeting. A bank slot pending a Bank->PC deletion looks empty (box_decode
  * hides it) but still physically holds the mon's ONLY on-card copy, so it counts as OCCUPIED —
- * nothing may overwrite it until the PC destination is saved (after that the slot frees for real). */
-static void box_occupancy(BoxSource* src, int box, uint8_t occ[G3_BOX_SLOTS]) {
+ * nothing may overwrite it until the PC destination is saved (after that the slot frees for real).
+ *
+ * `recs` (BACKLOG #150 S150-2, G-H2): occupancy must be provable from the RAW bytes, not
+ * from g_box[].species alone -- a native cell that bank_damaged_standin() could not even
+ * build a stand-in for (GB_SHOW_NONE with an unrepresentable species) would otherwise read
+ * as an empty slot and accept a drop that destroys the ONLY on-card copy of that Game Boy
+ * mon. Do NOT call src->records(box) in here: on the Bank that is a paging call that can
+ * flush a dirty box (banksrc_records, pdna_bank.c) -- every caller already holds the recs
+ * for this exact box and must pass it in. */
+static void box_occupancy(BoxSource* src, int box, const uint8_t* recs, uint8_t occ[G3_BOX_SLOTS]) {
   for (int s = 0; s < G3_BOX_SLOTS; s++)
-    occ[s] = (g_box[s].species || (src->is_bank && app_bank_slot_pending(box, s))) ? 1 : 0;
+    occ[s] = (g_box[s].species || bc_is_native(recs + (uint32_t)s * 80) ||
+             (src->is_bank && app_bank_slot_pending(box, s))) ? 1 : 0;
 }
 
 /* Mon-in-hand carry (move mode). The carried mon lives in s_held (a copy); its ORIGIN
@@ -1000,8 +1091,11 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
     s_holding = false; *done = true; return recs;            /* dropped back on its own cell */
   }
   /* A bank slot whose mon is moving out to the PC looks empty but still holds that mon's only
-   * on-card copy until the PC is saved — treat it as OCCUPIED so nothing overwrites it. */
-  bool occupied = g_box[cur].species != 0 || (src->scope == BOXSCOPE_BANK && app_bank_slot_pending(box, cur));   /* the REAL Bank's deferred-delete queue, never a GB box index (S1 review D1) */
+   * on-card copy until the PC is saved — treat it as OCCUPIED so nothing overwrites it.
+   * bc_is_native (BACKLOG #150 S150-2, G-H2): a native cell g_box[cur].species cannot
+   * represent (GB_SHOW_NONE, no DAMAGED stand-in built) must not read as empty either. */
+  bool occupied = g_box[cur].species != 0 || bc_is_native(recs + (uint32_t)cur * 80) ||
+                 (src->scope == BOXSCOPE_BANK && app_bank_slot_pending(box, cur));   /* the REAL Bank's deferred-delete queue, never a GB box index (S1 review D1) */
   if (!same_scope(src)) {                                    /* cross-scope drop */
     /* BACKLOG #120 S2: no lift path exists yet for either side of a Game-Boy-scope
      * transfer (S3/S4 add the real UP/DOWN mechanics) -- deny before the occupied
@@ -1344,9 +1438,28 @@ era_cell_blit(int slot, const PdnaArt* a, int cx, int cy) {
  * is checked independently here (pdna_origin_box_mark(), a second cache-only lookup,
  * equally free) so a Crystal import sitting at its default cell still wears its '2'
  * even though it draws no picture over the Gen-3 OBJ icon. */
+/* A native cell whose display ladder bottomed out at GB_SHOW_NONE (bank_damaged_standin,
+ * above): species 252 + the plaintext isBadEgg bit, produced by NOTHING else in this
+ * tree. A damaged cell wears no '1'/'2' era pad (species 252 fails
+ * species_could_be_gb) -- the DMG chip below IS its only marker. */
+static bool cell_damaged(int s) { return g_box[s].species == 252 && g_box[s].isBadEgg; }
+
 static void era_cell_draw(int slot) {
-  if (!pdna_origin_box_gb(slot) && !pdna_origin_box_mark(slot)) return; /* nothing at all */
   int cx = GRID_X + (slot % COLS) * CELL_W, cy = GRID_Y + (slot / COLS) * CELL_H;
+  if (cell_damaged(slot)) {
+    /* CELL_W - 2 = 22 px wide with 18 px of label room (ui.c's chip_label(t, name,
+     * w - 4)) -- "DAMAGED" would be cut mid-word, so the chip says DMG (3 glyphs,
+     * exactly like the shipped EGG chip above) and the full word rides in the
+     * stand-in's NICKNAME, which the left data panel shows when the cursor is on
+     * the cell. Same bookkeeping era_cell_blit does (s_era_drawn + boxoam_hide_slot)
+     * so artless_cells() skips this cell and a later repaint hands the OBJ icon
+     * back correctly (era_cell_icon_back / era_hides_apply). */
+    ui_name_chip(cx, cy + 5, CELL_W - 2, 12, UI_WARN, 0x0000, "DMG");
+    s_era_drawn |= 1u << slot;
+    boxoam_hide_slot(slot);
+    return;
+  }
+  if (!pdna_origin_box_gb(slot) && !pdna_origin_box_mark(slot)) return; /* nothing at all */
 
   /* Layer 1. art_wanted() is a cache lookup plus the source's have() probe — no decode,
    * no card access — so a box with no registered era ROM stops here for free. */
@@ -1364,6 +1477,16 @@ static void era_cell_draw(int slot) {
 
 /* Every cell's era, in one pass, painted with the wallpaper so each full repaint carries
  * it for free. */
+
+/* A DAMAGED cell needs no registered era ROM and trips no pdna_origin_box_any_gb()
+ * evidence (species 252 is not a GB species at all) -- so era_cells()'s bail below
+ * needs its OWN 30-cell scan, or a box whose only native cell is damaged would never
+ * reach era_cell_draw() and the DMG chip would never paint. */
+static bool any_damaged(void) {
+  for (int i = 0; i < G3_BOX_SLOTS; i++) if (cell_damaged(i)) return true;
+  return false;
+}
+
 static void era_cells(void) {
   /* THE BOX WITH NO IMPORTS DOES NOTHING AT ALL. Nothing to un-draw and nothing to
    * draw is the case for every box of a save with no Game Boy imports -- so say it
@@ -1377,8 +1500,9 @@ static void era_cells(void) {
    * that DID move this session is in box_decode, not here: see pdna_origin_box_note.
    *
    * s_era_drawn must be in the condition: if a previous box left art on screen it
-   * still has to be handed back even when THIS box has no imports. */
-  if (s_era_drawn || pdna_origin_box_any_gb()) {
+   * still has to be handed back even when THIS box has no imports. any_damaged()
+   * (BACKLOG #150 S150-2) covers the DMG-only case above. */
+  if (s_era_drawn || pdna_origin_box_any_gb() || any_damaged()) {
     /* Reset first, THEN recompute. s_era_drawn survives across box flips and across whole
      * pdna_box() runs, and a stale set bit means a permanently hidden OBJ icon over a cell
      * that no longer has art to show — an empty cell holding a real Pokemon. Handing every
@@ -1615,25 +1739,32 @@ static void chunk_oam_sync(int box, bool is_bank, bool fit) {
     for (int i = 0; i < s_ch.n; i++) boxoam_hide_slot(s_ch.src[i]);   /* lift-hide the sources */
 }
 
-/* Footprint fit test vs the CURRENT box (own sources count as vacating on the source box). */
-static bool chunk_fit(BoxSource* src, int box) {
+/* Footprint fit test vs the CURRENT box (own sources count as vacating on the source box).
+ * `recs` (BACKLOG #150 S150-2, G-H2, finding 1): box_occupancy needs the raw records to
+ * see a native cell that g_box[].species cannot represent. chunk_fit never calls
+ * src->records(box) itself -- that can flush a dirty bank box (pdna_bank.c's
+ * banksrc_records) -- every caller below already holds the `recs` for this exact `box`
+ * (begin_select's own parameter; the main render loop's recs/SWITCH_BOX pairing, which
+ * keeps recs and box in lockstep at every reassignment of either), so this is pure
+ * parameter threading, zero new I/O. */
+static bool chunk_fit(BoxSource* src, int box, const uint8_t* recs) {
   uint8_t dest[G3_BOX_SLOTS], vac[G3_BOX_SLOTS], tgt[G3_BOX_SLOTS];
   bool same = (box == s_ch_box && src->is_bank == (s_ch_scope == BOXSCOPE_BANK));
-  box_occupancy(src, box, dest);                /* moving-out bank mons still count as occupied */
+  box_occupancy(src, box, recs, dest);           /* moving-out bank mons still count as occupied */
   if (same) { memset(vac, 0, sizeof vac); for (int i = 0; i < s_ch.n; i++) vac[s_ch.src[i]] = 1; }
   return chunk_can_drop(&s_ch, s_ch_tr, s_ch_tc, dest, same ? vac : 0, tgt);
 }
 
 /* Light anchor-move update: the block, its fit tint, and the fist are pure OAM — no
  * bitmap touches at all (the old code re-blitted the whole wallpaper per step). */
-static void chunk_move(BoxSource* src, int box) {
-  chunk_oam_sync(box, src->is_bank, chunk_fit(src, box));
+static void chunk_move(BoxSource* src, int box, const uint8_t* recs) {
+  chunk_oam_sync(box, src->is_bank, chunk_fit(src, box, recs));
 }
 
 /* Full repaint while carrying a chunk: BG chrome + the floating block (whitened = fits here,
  * darkened = blocked) at the anchor. clear=false repaints OVER the current screen (no black
  * flash) so a box switch doesn't flicker; plain anchor moves use chunk_move (OAM-only). */
-static void chunk_draw(BoxSource* src, int box, bool clear) {
+static void chunk_draw(BoxSource* src, int box, bool clear, const uint8_t* recs) {
   if (clear) ui_clear();
   draw_tab(0, PANEL_W + 1, "PKMN DATA", true);
   draw_tab(PANEL_W + 1, 92, src->is_bank ? "(BANK)" : "PARTY", false);
@@ -1658,7 +1789,7 @@ static void chunk_draw(BoxSource* src, int box, bool clear) {
   ui_fill_rect(WP_X, 152, WP_W, 8, UI_BG);
   ui_text(WP_X + 2, 152, RGB15(31, 31, 31), f);
 
-  chunk_oam_sync(box, src->is_bank, chunk_fit(src, box));
+  chunk_oam_sync(box, src->is_bank, chunk_fit(src, box, recs));
 
   /* §12b: draw_wallpaper above WIPED every understudy blit, but a full repaint with
    * an UNMOVED anchor (refused-drop popups etc.) fires no cover transitions in
@@ -1797,7 +1928,7 @@ static uint8_t* drop_chunk(BoxSource* src, int box, uint8_t* recs, bool* pfull) 
 
   uint8_t dest[G3_BOX_SLOTS], vac[G3_BOX_SLOTS], tgt[G3_BOX_SLOTS];
   bool same = (box == s_ch_box && src->is_bank == (s_ch_scope == BOXSCOPE_BANK));
-  box_occupancy(src, box, dest);                 /* moving-out bank mons still count as occupied */
+  box_occupancy(src, box, recs, dest);            /* moving-out bank mons still count as occupied */
   if (same) { memset(vac, 0, sizeof vac); for (int i = 0; i < s_ch.n; i++) vac[s_ch.src[i]] = 1; }
   if (!chunk_can_drop(&s_ch, s_ch_tr, s_ch_tc, dest, same ? vac : 0, tgt)) {
     snd_deny();
@@ -1955,7 +2086,7 @@ static uint8_t* begin_select(BoxSource* src, int box, uint8_t* recs, int cur, bo
    * place, holds a moment, then block + fist rise together 1px/frame to the 8px carry
    * height. After the first draw the anchor is unmoved, so every rise frame is pure OAM. */
   s_ch_lift = 0;
-  chunk_draw(src, box, false);
+  chunk_draw(src, box, false, recs);
   /* Retail descends the OPEN hand onto the block before the fist closes on it — the
    * same beat as the single-mon grab (capture doc §4.6). chunk_draw has already put
    * the fist sprite up, so the descent runs on the cursor's own dy driver and the
@@ -1970,10 +2101,10 @@ static uint8_t* begin_select(BoxSource* src, int box, uint8_t* recs, int cur, bo
     }
     boxoam_cursor_dy(0);
     boxoam_hand_pose(BOXOAM_POSE_NORMAL);
-    chunk_draw(src, box, false);                        /* fist look back, hand hidden */
+    chunk_draw(src, box, false, recs);                        /* fist look back, hand hidden */
   }
   for (int v = 0; v < 8; v++) { boxoam_commit(); s_vsync(); }
-  for (int v = 1; v <= 8; v++) { s_ch_lift = v; chunk_move(src, box); boxoam_commit(); s_vsync(); }
+  for (int v = 1; v <= 8; v++) { s_ch_lift = v; chunk_move(src, box, recs); boxoam_commit(); s_vsync(); }
   *pfull = false;
   return recs;
 }
@@ -2088,7 +2219,7 @@ static int wallpaper_pick(BoxSource* src, int cur_wp) {
 static void export_box_all(BoxSource* src, int box) {
   uint8_t* recs = src->records(box);
   PkMon list[G3_BOX_SLOTS];
-  box_decode_to(src, recs, box, list);
+  box_decode_to(src, recs, box, list, 0);
   int total = 0;
   for (int s = 0; s < G3_BOX_SLOTS; s++) if (list[s].species) total++;
   if (total == 0) {
@@ -2126,7 +2257,7 @@ static void export_box_all(BoxSource* src, int box) {
 static void release_box_all(BoxSource* src, int box) {
   uint8_t* recs = src->records(box);
   PkMon list[G3_BOX_SLOTS];
-  box_decode_to(src, recs, box, list);
+  box_decode_to(src, recs, box, list, 0);
   int total = 0;
   for (int s = 0; s < G3_BOX_SLOTS; s++) if (list[s].species) total++;
   if (total == 0) {
@@ -3015,8 +3146,20 @@ out:
  * (hardware-testing-protocol; the emulator cannot prove a stack-overflow refusal is
  * correct on real silicon, only that the code path the refusal message takes is
  * reachable and renders). */
-#define PDNA_PARTY_STRIP_NEED 7192   /* re-derived 2026-09-15 (BACKLOG #93): 7,128 + 64 ISR
-                                      * (was 6,616 = 6,552 + 64 from #102); new #1 chain is
+#define PDNA_PARTY_STRIP_NEED 7216   /* re-derived 2026-09-15 (BACKLOG #150 S150-2, D-Q1,
+                                      * growth 24 B artless / 32 B normal, both <= the
+                                      * orchestrator's 64 B ceiling): the #1 chain's own frame
+                                      * total grew from 7,128 to 7,152 B (artless, dominates
+                                      * over normal's 7,112 -> 7,144) -- box_decode() gained a
+                                      * local `uint8_t hint[30]` (decision 11's per-slot era
+                                      * hint) and inlines into its sole caller,
+                                      * party_strip_overlay, on THIS chain (pdna_box.c:~2771/
+                                      * 2806/2880), so the array's stack cost lands on
+                                      * party_strip_overlay's own frame (912 -> 936 B). New
+                                      * need = 7,152 + 64 ISR = 7,216. The chain's own shape is
+                                      * otherwise unchanged from the prior derivation below.
+                                      * (was 7,192 = 7,128 + 64 ISR, BACKLOG #93; was 6,616 =
+                                      * 6,552 + 64 from #102); #1 chain is still
                                       * gb_daycare_hook's (DUPLICATE/TO DAY-CARE/EXPORT rows
                                       * on the read-only GB mon menu, reachable through
                                       * app_mon_menu from this same root), not the old
@@ -3146,7 +3289,7 @@ int pdna_box(BoxSource* src) {
   for (;;) {
     if (need_full) {
       bool clr = !paint_over;                  /* a box switch repaints over, no wipe */
-      if (s_ch_hold) chunk_draw(src, box, clr);
+      if (s_ch_hold) chunk_draw(src, box, clr, recs);
       else           render_full(src, box, cur, on_title, s_holding, clr);
       need_full = false; paint_over = false;
       app_crumb_shown();   /* one-shot per save-open: the box is on screen (no-op after) */
@@ -3277,7 +3420,7 @@ int pdna_box(BoxSource* src) {
                                 else snd_deny(); }
       if (!s_ch_hold) boxoam_chunk_end();            /* B-cancel / successful drop: restore the
                                                       * borrowed regions before the full repaint */
-      if (s_ch_hold && !need_full) chunk_move(src, box);   /* anchor move: pure OAM, no bitmap */
+      if (s_ch_hold && !need_full) chunk_move(src, box, recs);   /* anchor move: pure OAM, no bitmap */
       continue;                                      /* chunk carry swallows all other keys */
     }
 

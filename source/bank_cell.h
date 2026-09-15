@@ -6,6 +6,7 @@
 #include "gb_edit.h"     /* GbEditMon, GB_GEN1/GB_GEN2, GB_NAME_BYTES, GB_LIST_TERMINATOR */
 #include "gen1_write.h"  /* G1R_BOXLEVEL, G1R_LEVEL -- the party->box level sync           */
 #include "gen2_save.h"   /* G2_BOX_ENTRY                                                  */
+#include "gen12_convert.h" /* Gb12Mon -- bc_view()'s output shape                         */
 
 /* The tagged 80-byte native Bank cell ("GBC1"), pure C, no tonc/sys.h, no FatFs.
  *
@@ -169,5 +170,33 @@ int bc_pack(const GbEditMon* mon, uint8_t flags, uint8_t origin_game,
  * writing nothing to either out-parameter, when `rec80`/`mon`/`meta` is NULL or
  * !bc_is_native(rec80). */
 bool bc_unpack(const uint8_t rec80[BC_CELL_BYTES], GbEditMon* mon, BcMeta* meta);
+
+/* A native cell's Gb12Mon VIEW (BACKLOG #150 S150-2, docs/BANK-CROSSGEN-DESIGN.md
+ * SS11.5/SS11.13 row S150-2) -- a pure field copy off `mon`'s own getters, so a native
+ * cell renders THE SAME as the identical mon in a GB session (both read the same
+ * fields through the same accessors). NOT gen12_convert's input pipeline: this never
+ * calls gen12_can_convert/gen12_convert itself -- the caller (box_native_decode,
+ * pdna_box.c) hands the result to gb12_render_rec, exactly as the GB grid does.
+ *
+ * Names are decoded with gen1_decode_name()/g2_decode_text() -- the SAME lossy
+ * decoders gen12_from_gen1/gen12_from_gen2 use -- never gb_get_nickname/gb_get_otname
+ * (the reversible `{XX}`-escaping decoders, gb_edit.h:425-430): using the parser's own
+ * decoder is what makes a native cell and the same mon in a GB session render the
+ * identical string.
+ *
+ * `has_caught_data` is the converter's own rule (gen12_from_gen2's caught_valid,
+ * gen2_save.c:535): Gen 2 with `(rec[0x1D] | rec[0x1E]) != 0`, else false. NOT gated
+ * on `meta->origin_game` -- a genuine Crystal record can have legitimately all-zero
+ * capture bytes (a traded-in or in-game-gift mon), and the parity sweep in
+ * tests/host_bankcell_test.c pins five such real records from Guy's own Crystal.sav.
+ * Gold/Silver's identical two bytes ARE Unused1/Unused2 there (gb_edit.h:138-145),
+ * but the byte-level predicate ("do these bytes hold real capture data") is exactly
+ * what gen12_convert.c:415's put_ot_gender keys off, so it is the correct one here
+ * too, independent of which game the bytes came from.
+ *
+ * `out->slot_salt = id_salt` (the caller's bc_ident32(), so a native cell's
+ * placeholder PID is stable per-cell rather than per-grid-position). Returns false,
+ * writing nothing, only when `mon`, `meta` or `out` is NULL. */
+bool bc_view(const GbEditMon* mon, const BcMeta* meta, uint32_t id_salt, Gb12Mon* out);
 
 #endif /* BANK_CELL_H */

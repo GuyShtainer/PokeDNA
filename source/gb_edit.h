@@ -66,6 +66,17 @@ enum { GB_HP = 0, GB_ATK, GB_DEF, GB_SPE, GB_SPC, GB_NSTATS };
 
 #define GB_MAX_REC      48   /* Gen-2 party record; the largest of the four kinds */
 #define GB_NAME_BYTES   11   /* OT and nickname fields, both generations          */
+
+/* BACKLOG #150 S150-2 review F7: R2_CAUGHT0/R2_CAUGHT1 (gb_edit.c's own private
+ * `enum { ... R2_CAUGHT0 = 0x1D, R2_CAUGHT1 = 0x1E ... }`, not otherwise exported)
+ * are the two bytes gb_get_caught_ot_gender() reads and gb_set_caught() writes, and
+ * the SAME two bytes source/bank_cell.c's bc_view() checks byte-level (the converter's
+ * own caught_valid rule, gen2_save.c:535). Exported here so bank_cell.c never has to
+ * re-hardcode the offsets, and gb_edit.c's own _Static_assert (gb_edit.c, next to the
+ * private enum) ties the two copies together -- a future change to either desyncs
+ * loudly at compile time, not silently at runtime. */
+#define GB2_REC_CAUGHT0 0x1D
+#define GB2_REC_CAUGHT1 0x1E
 #define GB_NICK_GLYPHS  10   /* glyphs the games let you enter in a nickname       */
 #define GB_OT_GLYPHS     7   /* ... and in a trainer name                          */
 #define GB_MAX_STAT    999   /* MAX_STAT_VALUE, both decomps                       */

@@ -634,4 +634,16 @@ SeSaveKind app_save_kind(void);
 const uint16_t* app_item_icon(uint16_t item_id);
 const uint16_t* app_type_badge(uint8_t type_id, uint8_t* out_h);
 
+/* Decode a native Bank cell ("GBC1", source/bank_cell.h) into a PkMon, via the SAME
+ * display ladder the Bank grid uses (source/gb12_render.h) -- so a native cell reads
+ * the same everywhere it is decoded. Defined in pdna_box.c (review F1, BACKLOG #150
+ * S150-2): app_mon_menu (pdna_main.c) needs this so a native cell's title/occupancy
+ * do not come from pk_decode_mon running on bytes it cannot decrypt (a meaningless-
+ * key decrypt -- "??? ? ?" titles, `occupied` a coin flip, CREATE/PASTE HERE
+ * reachable over a cell that is never actually empty). `__attribute__((noinline))`:
+ * this function's own GbEditMon + Gb12Mon + 80-byte scratch must never join a
+ * caller's frame -- both pdna_box.c's box_decode_to and pdna_main.c's app_mon_menu
+ * sit on stack-budget-gated chains. `hint` may be NULL. */
+void pdna_native_cell_decode(const uint8_t* cell, PkMon* out, uint8_t* hint);
+
 #endif /* PDNA_APP_H */
