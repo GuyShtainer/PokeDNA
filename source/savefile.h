@@ -108,4 +108,22 @@ typedef enum {
 } SfWhere;
 SfWhere sf_where_are_the_bytes(const char* path, const uint8_t* buf, uint32_t len);
 
+/* A rolling-backup write for callers whose file (unlike a .sav) may not exist yet:
+ *   f_stat(path) -- absence (FR_NO_FILE/FR_NO_PATH) is fine, nothing to back up, the
+ *     write proceeds; any OTHER stat result is a card fault, not an empty slot, and
+ *     REFUSES rather than silently writing a present file with no backup
+ *   present -> sf_backup_rolling(path) first; its failure refuses too
+ *   -> sf_write_verified(path, buf, len)
+ * The return is sf_write_verified's raw status, SF_ERR_RENAME included: this function
+ * does not decide "success" on the caller's behalf. A caller that wants the same
+ * leniency app_commit/gb_persist give a confirmed-but-unconfirmable rename applies it
+ * itself -- sf_where_are_the_bytes(path, buf, len) == SF_WHERE_TARGET means the bytes
+ * landed and the write should read as a success despite the SF_ERR_RENAME.
+ * `out_backed_up` (may be NULL) is set to false at entry and to true only right after a
+ * successful sf_backup_rolling -- a caller whose failure message names a .bak (e.g. "use
+ * the backup") must not say that for a box that was NEVER written before this call:
+ * a virgin file has no backup to fall back to, and the message would send the user
+ * chasing a file that does not exist. */
+SfStatus sf_save_rolling(const char* path, const uint8_t* buf, uint32_t len, bool* out_backed_up);
+
 #endif /* SAVEFILE_H */

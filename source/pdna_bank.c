@@ -25,7 +25,9 @@
 #include "pdna_app.h"     /* app_can_edit, app_confirm */
 #include "pdna_pk.h"      /* PDNA_BANK_DIR */
 #include "pdna_bank.h"
+#include "pdna_layout.h"  /* PDNA_BANKSAVE_* -- box_save's SF_ERR_RENAME switch (S150-0 F4) */
 #include "pdna_origin_art.h"  /* the parallel era view: the bank is where all three meet */
+#include "log.h"           /* log_line (BACKLOG #150 S150-0's backup/rename triage) */
 #include "ui.h"
 #include "snd.h"
 #include "rmbl.h"          /* rumble must not toggle the cart bus during an SD write */
@@ -98,7 +100,9 @@ static bool meta_save(void) {
 /* Read a box file -> g_bankbuf (absent/short/failed -> zeroed = an empty box, which is what
  * BROWSING wants). Returns whether the file was read IN FULL: any caller that intends to WRITE the
  * box back must gate on this — committing a zeroed buffer after a failed page-in would silently wipe
- * that box's untouched mons, and bank box files take NO immutable backup. */
+ * that box's untouched mons, and bank box files take only a single rolling .bak (box_save's
+ * sf_save_rolling, BACKLOG #150 S150-0), not an immutable backup — there is no earlier generation
+ * to fall back past that one file. */
 static bool box_load(int box) {
   char path[SF_PATH_MAX]; box_path(box, path);
   uint32_t sz = 0;
@@ -109,12 +113,88 @@ static bool box_load(int box) {
   return st == SF_OK && sz >= BOX_BYTES;
 }
 
+/* box_save's pre-write backup + write + SF_ERR_RENAME triage (BACKLOG #150 S150-0). Up
+ * to this slice, box_save was plain sf_write_verified with NO backup and NO
+ * SF_ERR_RENAME triage; UP (the native-cell feature this unblocks) makes the Bank file
+ * a mon's ONLY copy, so both are required before any of that can land -- mirrors
+ * gb_persist's triage (pdna_gen12.c, the sf_backup_rolling + SF_ERR_RENAME block right
+ * after its busy-panel).
+ *
+ * The mechanical work (the f_stat-absent-is-fine guard -- a box file exists only after
+ * its first save, box_load's own comment above, so f_stat absent on the FIRST save into
+ * a never-used box is "nothing to back up, carry on", not a failure -- plus the rolling
+ * backup and the verified write) lives in savefile.c's sf_save_rolling, not here: that
+ * makes it host-linkable, so host_bankbackup_test.c tests the real function directly
+ * instead of a re-typed copy of its decision table (review F3, which replaced an
+ * earlier noinline box_backup() helper that lived right here). box_save keeps only the
+ * SF_ERR_RENAME/SF_WHERE_TARGET triage and its UI (review F4), since that decision is
+ * this caller's to make, not sf_save_rolling's (savefile.h says so). */
 static bool box_save(void) {                    /* write the loaded box's records */
   if (g_loaded < 0) return false;
   char path[SF_PATH_MAX]; box_path(g_loaded, path);
+  bool backed_up;
   rmbl_pause();
-  bool ok = sf_write_verified(path, box_recs(), BOX_BYTES) == SF_OK;
+  SfStatus st = sf_save_rolling(path, box_recs(), BOX_BYTES, &backed_up);
   rmbl_resume();
+  if (st != SF_OK && st != SF_ERR_RENAME) {
+    /* the backup-gate refusal or a plain write failure -- sf_save_rolling already
+     * logged the mechanical reason (savefile.c's own "save_rolling: ..." lines); this
+     * is the bank-level line that says WHICH box, same convention as app_commit's own
+     * "edit: backup failed (%s)" wrapping sf_backup_rolling's internal log. */
+    log_line("bank: box save failed (%s)", sf_status_str(st));
+    app_log_flush();
+    return false;
+  }
+  if (st == SF_ERR_RENAME) {
+    /* The bytes were written AND read back byte-for-byte -- it is the final swap the
+     * card did not keep, a different piece of news from "the write failed". Ask the
+     * card which file the user is actually holding rather than guessing, same triage
+     * as gb_persist (pdna_gen12.c) and app_commit (pdna_main.c) -- and, per §11.13/
+     * XFER-C1 (review F4), SHOW it instead of only logging it silently. */
+    SfWhere w = sf_where_are_the_bytes(path, box_recs(), BOX_BYTES);
+    log_line("bank: box save rename unconfirmed, bytes at %d", (int)w);
+    app_log_flush();
+    /* review G4: unlike the box screen's own boxoam_suspend/resume bracket, box_save
+     * has none of its own -- SWITCH_BOX's chain reaches here through banksrc_records
+     * with the box-cell sprites still enabled, but box_save ALSO runs from callers with
+     * no grid on screen at all (a blind boxoam_resume() here would be wrong in that
+     * case). msg_wait's blocking wait-for-A loop must not run with arbitrary leftover
+     * OBJ content still visible underneath it, so disable OBJ for exactly this UI block
+     * and restore whatever the caller had on every exit path. */
+    u16 dc = REG_DISPCNT;
+    REG_DISPCNT &= ~DCNT_OBJ;
+    if (w != SF_WHERE_TARGET) {
+      snd_error();
+      char l1[64];
+      switch (w) {
+        case SF_WHERE_TMP_ONLY: {           /* the loud one: no .box on the card */
+          const char* nm = strrchr(path, '/');
+          nm = nm ? nm + 1 : path;
+          siprintf(l1, "Box is in %.28s.tmp", nm);
+          msg_wait(PDNA_BANKSAVE_TMPONLY_TITLE, UI_WARN, l1, PDNA_BANKSAVE_TMPONLY_L2);
+          break;
+        }
+        case SF_WHERE_TMP_AND_OLD:          /* old box intact; edit not applied */
+          msg_wait(PDNA_BANKSAVE_TMPANDOLD_TITLE, UI_WARN,
+                    PDNA_BANKSAVE_TMPANDOLD_L1, PDNA_BANKSAVE_TMPANDOLD_L2);
+          break;
+        default:                            /* neither name matches */
+          /* review G2: a virgin box (this write's own backup step never ran, since
+           * there was nothing to back up) never made a .bak -- "restore the .bak"
+           * would send the user hunting a file that does not exist. */
+          msg_wait(PDNA_BANKSAVE_LOST_TITLE, UI_WARN, PDNA_BANKSAVE_LOST_L1,
+                    backed_up ? PDNA_BANKSAVE_LOST_L2 : PDNA_GBEDIT_SAVELOST_NOBAK);
+          break;
+      }
+      REG_DISPCNT = dc;
+      return false;                         /* anything but TARGET: a real failure */
+    }
+    msg_wait(PDNA_BANKSAVE_UNCONFIRMED_TITLE, UI_WARN,
+              PDNA_BANKSAVE_UNCONFIRMED_L1, PDNA_BANKSAVE_UNCONFIRMED_L2);
+    REG_DISPCNT = dc;
+    st = SF_OK;                             /* the bytes ARE at path -- this is a success */
+  }
+  bool ok = st == SF_OK;
   if (ok) g_dirty = false;
   return ok;
 }
@@ -166,7 +246,9 @@ void pdna_bank_hide_pending(int box, PkMon g[BOX_RECS]) {
 /* Clear identity-matched `slots` in bank `box` and persist it (verified). For the cross-box MOVE —
  * called ONLY after the destination box is already committed. Pages the box in FIRST and REFUSES to
  * write when that read did not fully succeed, or when nothing matched: committing a zeroed/partial
- * buffer would wipe the box's untouched bystander mons, and bank box files take NO immutable backup.
+ * buffer would wipe the box's untouched bystander mons, and bank box files take only a single
+ * rolling .bak (box_save's sf_save_rolling, BACKLOG #150 S150-0), not an immutable backup — there
+ * is no earlier generation to fall back past that one file.
  * Returning false leaves the file untouched => the move degrades to a safe, recoverable DUPLICATE. */
 bool pdna_bank_clear_slots(int box, const uint8_t* slots, const uint8_t (*recs80)[80], int n) {
   if (box < 0 || box >= BANK_BOXES || n <= 0) return false;

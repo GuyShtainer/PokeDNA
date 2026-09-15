@@ -659,6 +659,24 @@ int main(void) {
   PF(PDNA_GBEDIT_SAVELOST_NOBAK,    28, 184);
   PF(PDNA_GBEDIT_UNWRITABLE_HINT,   28, 184);
 
+  /* box_save's own SF_ERR_RENAME switch (source/pdna_bank.c, BACKLOG #150 S150-0
+   * review F4/XFER-C1) -- same (28, .., 184) msg_wait clamp. The TMP_ONLY case's l1 is
+   * built at runtime (siprintf "Box is in %.28s.tmp", the box's own filename); the
+   * worst case is box15.box (BANK_BOXES=16, pdna_bank.c box_path "box%02d.box"), typed
+   * out literally here since PF takes the rendered string, not the format. */
+  PF(PDNA_BANKSAVE_TMPONLY_TITLE,     28, 184);
+  PF("Box is in box15.box.tmp",       28, 184);
+  PF(PDNA_BANKSAVE_TMPONLY_L2,        28, 184);
+  PF(PDNA_BANKSAVE_TMPANDOLD_TITLE,   28, 184);
+  PF(PDNA_BANKSAVE_TMPANDOLD_L1,      28, 184);
+  PF(PDNA_BANKSAVE_TMPANDOLD_L2,      28, 184);
+  PF(PDNA_BANKSAVE_LOST_TITLE,        28, 184);
+  PF(PDNA_BANKSAVE_LOST_L1,           28, 184);
+  PF(PDNA_BANKSAVE_LOST_L2,           28, 184);
+  PF(PDNA_BANKSAVE_UNCONFIRMED_TITLE, 28, 184);
+  PF(PDNA_BANKSAVE_UNCONFIRMED_L1,    28, 184);
+  PF(PDNA_BANKSAVE_UNCONFIRMED_L2,    28, 184);
+
   /* gb_edit_hook / gb_edit_persist's own gate + verdict popups — everything else the
    * S2 edit path draws. s_busy's own line ("Saving - do not power off") and the
    * caller-supplied line draw via ui_text at x=28 (T(), fixed sys8); every msg_wait

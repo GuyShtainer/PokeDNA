@@ -1758,8 +1758,10 @@ static uint8_t* drop_chunk_bank_cross(BoxSource* src, int box, const uint8_t* tg
   /* Dest committed -> clear the moved slots in the SOURCE box. app_bank_clear_slots pages that box
    * in and REFUSES to rewrite it if the page-in read was incomplete or nothing matched: committing a
    * zeroed/partial buffer would wipe the source box's untouched BYSTANDER mons, and bank box files
-   * take no backup. If it refuses, the move simply degrades to a safe duplicate (the mons live in
-   * both boxes) — never a loss. */
+   * take only a single rolling .bak (box_save's sf_save_rolling, BACKLOG #150 S150-0), not an
+   * immutable backup -- there is no earlier generation to fall back past that one file. If it
+   * refuses, the move simply degrades to a safe duplicate (the mons live in both boxes) — never a
+   * loss. */
   app_bank_clear_slots(s_ch_box, s_ch.src, (const uint8_t (*)[80])s_ch_rec, s_ch.n);
   recs = src->records(box);                          /* page the dest box back for display */
   boxoam_resume();
