@@ -4224,6 +4224,13 @@ def main(argv=None) -> int:
                           "Emerald.sav onto pokedna-delta-artless.gba (no --gb, no "
                           "--clip) proving CREATE + PASTE HERE survive an ordinary "
                           "Gen-3 session's own Bank visit, unaffected by the F1 gate.")
+    ap.add_argument("--s2-control", action="store_true",
+                     help="#143: only run_s2_control() against --image -- the Gen-3 "
+                          "CONTROL for the Bank menu (what a Gen-3 Bank cell offers: "
+                          "TO GAME / PASTE HERE / CREATE). --image MUST be a plain "
+                          "tools/fuse_sav.py fusion of an Emerald.sav onto pokedna-"
+                          "delta-artless.gba (no --gb, no --clip -- same vehicle as "
+                          "--s2-bank-control).")
     ap.add_argument("--s150-2", action="store_true",
                      help="BACKLOG #150 S150-2: only run_s150_2_bank_native() against "
                           "--image -- --image MUST be a plain tools/fuse_sav.py fusion "
@@ -4780,6 +4787,21 @@ def main(argv=None) -> int:
             print(f"  [skip] {name}: {reason}")
         return 0
 
+    if getattr(a, "s2_control", False):
+        # #143: same append-only convention as --s2-bank-control above.
+        ran = True
+        try:
+            sess = run_s2_control(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] s2-control: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
     if getattr(a, "s150_2", False):
         # BACKLOG #150 S150-2: same append-only convention as --s2-bank-control above.
         ran = True
@@ -5280,10 +5302,46 @@ def run_b93_menu(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> g
                            "Release all / Cancel', can_boxops() gating the whole "
                            "menu open, not can_rename/can_lift/can_edit")
 
-    s.press_n("DOWN", 3, settle=gb_shots.SETTLE)            # -> Release all
-    s.shot("14_release_all_selected", "BACKLOG #93: cursor on Release all")
+    # D2: Rename box attempt (shows input interface, gates refusal under pdna_gbnames_on=false)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # A on Rename box
+    s.shot("14_rename_box_interface", "BACKLOG #156 D2: A on Rename box -- the box "
+                                       "name input interface (pdna_gbnames_on gates "
+                                       "whether the user can actually save a new name; "
+                                       "when false, the refusal 'NO BOX NAMES / Names "
+                                       "cannot be changed.' fires at confirm, not at entry)")
+    s.tap("B", settle=100)                                  # exit without changing
+
+    # Back to box menu for the Wallpaper test
+    s.tap("SEL", settle=100)                                # SELECT on title -> box_options_menu again
+    s.tap("DOWN", settle=gb_shots.SETTLE)                   # -> Wallpaper
+    s.shot("15_wallpaper_selected", "BACKLOG #156 D3: cursor on Wallpaper in the "
+                                     "box menu")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # A on Wallpaper -> wallpaper picker
+    s.shot("16_wallpaper_interface", "BACKLOG #156 D3: A on Wallpaper -- the "
+                                      "wallpaper selection grid (pdna_gbnames_on gates "
+                                      "whether the user can actually change it; when "
+                                      "false, the refusal 'NO WALLPAPER / Wallpaper "
+                                      "cannot be changed.' fires at confirm)")
+    s.tap("B", settle=100)                                  # exit without changing
+    s.tap("B", settle=100)                                  # back to box grid
+
+    # D5: Party mon DUPLICATE refusal (show the refusal when pressing A on a party mon)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # A on a box cell
+    s.press_n("DOWN", downs_to_dup, settle=gb_shots.SETTLE) # -> DUPLICATE
+    s.shot("17_dup_selected", "BACKLOG #156 D5: cursor on DUPLICATE in an occupied "
+                               "cell menu")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # A on DUPLICATE -> gbs_insert / check is_party_mon
+    s.shot("18_dup_party_refusal", "BACKLOG #156 D5: A on DUPLICATE for a cell in "
+                                    "the party-box leg (party mons, indices 0-5) shows "
+                                    "the refusal -- 'EDIT REFUSED / Can't duplicate a "
+                                    "party Pokemon. / Save unchanged.' -- app_dup_hook() "
+                                    "gates DUPLICATE via is_party_mon()")
+    s.tap("A", settle=200)                                  # dismiss
+
+    s.press_n("DOWN", 1, settle=gb_shots.SETTLE)            # DOWN -> Release all (skip Rename/Wallpaper/Export)
+    s.shot("19_release_all_selected", "BACKLOG #93: cursor on Release all")
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # -> app_confirm with the count
-    s.shot("15_release_all_confirm", "BACKLOG #93: 'Release all N Pokemon?' / "
+    s.shot("20_release_all_confirm", "BACKLOG #93: 'Release all N Pokemon?' / "
                                       "'Deleted permanently!' -- release_box_all's "
                                       "own string (pdna_box.c), reused verbatim, N "
                                       "matching this box's real occupied count")
@@ -5291,7 +5349,7 @@ def run_b93_menu(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> g
     # frames to settle -- measured by hand: BIG_SETTLE (40) is nowhere near enough
     # (the confirm dialog is still on screen), 700 reliably reaches gb_persist's wall.
     s.tap("A", settle=700)                                  # confirm -> delete top-down -> gb_persist
-    s.shot("16_release_all_delta_wall", "BACKLOG #93: every slot deletes top-down "
+    s.shot("21_release_all_delta_wall", "BACKLOG #93: every slot deletes top-down "
                                          "(RAM-only), THEN gb_persist('release-all') "
                                          "hits the same PDNA_DELTA wall -- the fix in "
                                          "this lane's own follow-up commit makes sure "
@@ -5300,7 +5358,7 @@ def run_b93_menu(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> g
                                          "second, FALSE 'Nothing changed' panel on "
                                          "top of it -- caught by this exact shot)")
     s.tap("A", settle=250)                                  # dismiss -> box grid, no second dialog
-    s.shot("17_grid_after_release_all", "BACKLOG #93: straight to the box grid after "
+    s.shot("22_grid_after_release_all", "BACKLOG #93: straight to the box grid after "
                                          "ONE dismiss -- 0/20 (or 0/whatever this box "
                                          "held), every deletion landed in g_ed->img "
                                          "despite the persist refusal, exactly like "
@@ -5313,7 +5371,7 @@ def run_b93_menu(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> g
     s2.tap("A", settle=60)
     s2.run(GB_ART_COLD_SETTLE)
     s2.press_n("UP", 3, settle=100)
-    s2.shot("18_bank_hop", "BACKLOG #93: the bank_edge UP hop opens the Bank -- "
+    s2.shot("23_bank_hop", "BACKLOG #93: the bank_edge UP hop opens the Bank -- "
                             "'BANK 1  0/30', every cell empty (#120 S2's F1 fix: "
                             "no write surface survives into a GB session's Bank "
                             "visit, so nothing can ever land here in mGBA)")
@@ -5327,7 +5385,7 @@ def run_b93_menu(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> g
     # Bank visit and app_mon_menu_readonly -- where DUPLICATE/TO DAY-CARE/EXPORT all
     # live -- is never entered from inside the Bank at all, occupied cell or not.
     # Named/captioned to say exactly that, not to imply an occupied-cell test ran.
-    s2.shot("19_bank_empty_cell_structural_proof",
+    s2.shot("24_bank_empty_cell_structural_proof",
             "BACKLOG #93 (D9): this Bank cell is EMPTY, not occupied -- mGBA has no "
             "way to get an occupied one here (#120 S2's F1 fix). A on it shows NO "
             "popup (silent snd_deny(), app_mon_menu's n == 0 branch on an empty "
@@ -5471,6 +5529,45 @@ def run_gbnames(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
                          "arithmetic g2pack_row_label()'s own TM/HM branch already "
                          "had (unaffected by this slice's id-based table -- that "
                          "branch never used a raw item id to begin with)")
+    return s
+
+
+def run_s2_control(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """#143: the Gen-3 CONTROL for the Bank menu -- what an Emerald Bank cell offers
+    when accessed from a Gen-3 session (TO GAME / PASTE HERE / CREATE). `rom` MUST be
+    `tools/fuse_sav.py <pokedna-delta-artless.gba> <Emerald.sav>` (a plain Gen-3
+    fusion, no --gb, no --clip -- same vehicle as run_s2_bank_control), so the boot
+    takes the Gen-3 path and lands straight on the party/box view.
+
+    Unlike run_s2_bank() which probes the Bank from a GB session (showing why F1 closed
+    it off: no CREATE, no PASTE HERE on an empty cell), this run shows the Gen-3
+    Bank's own menu structure: an occupied cell offers TO GAME (send to the game's own
+    party/PC), and an empty cell offers CREATE and PASTE HERE (import from clipboard
+    or create a new Gen-3 mon in the Bank). The F1 gate (xg_create_row/xg_paste_row)
+    does NOT apply here -- only to the GB session's Bank visit; a Gen-3 session's Bank
+    visit always shows the full menu."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s2_control_")
+    print("== #143: the Gen-3 Bank control -- what CREATE + PASTE HERE look like ==")
+    s.run(700)
+    s.shot("00_boot", "#143: Emerald boots straight into the party/box view "
+           "(no boot picker -- only one save is fused)")
+    s.tap("START", settle=80)                                  # nav menu
+    s.tap("DOWN", settle=60)                                   # Party -> Bank (index 1, one DOWN)
+    s.tap("A", settle=150)                                  # -> pdna_bank_show()
+    s.shot("01_bank_grid", "#143: the Bank, from a Gen-3 session -- box 0 displays "
+           "its mixed content (occupied + empty cells, era marks on the occupied ones)")
+    s.tap("A", settle=150)                                  # A on an occupied cell
+    s.shot("02_occupied_cell_menu", "#143: an OCCUPIED Bank cell's menu from a "
+           "Gen-3 session -- TO GAME / PASTE HERE / CREATE / CANCEL -- the full "
+           "suite (TO GAME is the Gen-3-only row, replacing the GB-session's ITEM row)")
+    s.tap("B", settle=100)                                  # back to grid
+    s.tap("DOWN", settle=60)                                 # move to an empty cell (if top-left is occupied)
+    s.tap("A", settle=150)                                  # A on an empty cell
+    s.shot("03_empty_cell_menu", "#143: an EMPTY Bank cell's menu from a Gen-3 "
+           "session -- PASTE HERE / CREATE / CANCEL -- xg_create_row and xg_paste_row "
+           "are both true in an ordinary Gen-3 session (pc_live is true, parsed save, "
+           "arena free), so both rows present on the empty cell (TO GAME is absent "
+           "because the cell is empty, not because of a gate)")
     return s
 
 
