@@ -53,6 +53,8 @@
 #include "gen3_edit.h"   /* F3 (review): gen3_edit_load -- an INDEPENDENT reader of the
                           * converted record's own raw nickname bytes, for the
                           * nick_written-override assertion below */
+#include "gen3_mon.h"    /* R2 (review): pk_decode_mon -- the re-lifted-Gen-1 friendship check */
+#include "gen3_box.h"    /* R2 (review): pk_resolve -- computes .friendship/.level from EXP */
 
 #define GB_ROMS "/Users/guyshtainer/VSCodeProjects/gba-toolkit/roms/gb"
 
@@ -457,15 +459,20 @@ static void test_bridge_roundtrips(void) {
   test_bridge_one_case(25, GB_GEN2, GB_GEN1, 0x1D, "2->1 Pikachu, Light Ball dropped");
 }
 
-/* F6 (review): a REAL two-hop byte compare -- a real Crystal.sav box-0 record run
+/* F6/R2 (review): a REAL two-hop byte compare -- a real Crystal.sav box-0 record run
  * through the bridge (Gen 2 -> Gen 1, the only direction Gen 1's smaller species/
- * move range can ever refuse, so it is also the more interesting one) with EVERY
- * field taken from the corpus record (build_gen2_cell_faithful), not a synthetic
- * level-20/DV-12 fixture. Documents what genuinely does NOT survive, rather than
- * asserting a number this run cannot independently verify without the reviewer's
- * own exact fixture in hand -- what is asserted below is measured on THIS run's own
- * real record, printed either way so a re-run against a different save shows its own
- * numbers rather than silently repeating a stale claim. */
+ * move range can ever refuse, so it is also the more interesting one).
+ *
+ * R2 correction: build_gen2_cell_faithful() rebuilt the cell from a DECODED G2Mon
+ * (g2_box_mon_at), which already lost the exact loss this test exists to find --
+ * g2_box_mon_at decodes raw byte 0xE1 (the "PK" ligature, gb_edit.c's own charmap)
+ * to a plain space in its UTF-8 otname string, and gb_set_otname then RE-ENCODES
+ * that space back to a normal GB space byte, never touching 0xE1 again. The loss
+ * had already happened before the bridge ever ran. Fixed the same way
+ * tests/host_bankcell_test.c:267/329 builds a cell for its own corpus sweeps:
+ * gb_load() straight off the raw list bytes (never through a decoded G2Mon), then
+ * bc_pack() -- the RAW otname/nickname bytes ride along unchanged until gen3_to_gb's
+ * own encoder actually re-spells them. */
 static void test_bridge_real_corpus_2_to_1(void) {
   size_t len;
   char path[512];
@@ -475,23 +482,41 @@ static void test_bridge_real_corpus_2_to_1(void) {
   if (!g2_detect(g_gen2_img, (uint32_t)len, &sv) || !sv.supported) { printf("  SKIP E2 (detect failed)\n"); return; }
   G2Header hd;
   if (!g2_read_header(g_gen2_img, &sv, &hd)) { printf("  SKIP E2 (header)\n"); return; }
-  int n = g2_box_count_at(g_gen2_img, &sv, &hd, 0);
+  uint32_t off = g2_list_offset(&sv, 0, hd.current_box);
+  if (off == 0) { printf("  SKIP E2 (no box0 list)\n"); return; }
+  int n = gb_list_count(GB_GEN2, g_gen2_img + off, 0);
   if (n <= 0) { printf("  SKIP E2 (box 0 empty)\n"); return; }
 
   int ran = 0;
   GbGen1Base base = { .base = { 35, 55, 40, 90, 50 }, .type1 = 0x18, .type2 = 0x18 };
   for (int slot = 0; slot < n && ran < 3; slot++) {
-    G2Mon g2;
-    if (!g2_box_mon_at(g_gen2_img, &sv, &hd, 0, slot, &g2)) continue;
-    if (g2.species < 1 || g2.species > 251 || g2.is_egg) continue;
-    if (g2.species > (int)gb_max_species(GB_GEN1)) continue;   /* the time-capsule species bound -- not this test's own edge */
+    GbEditMon mon;
+    if (!gb_load(&mon, GB_GEN2, g_gen2_img + off, 0, slot)) continue;
+    if (mon.list_species == G2_LIST_EGG) continue;
+    uint16_t dex = gb_get_species_dex(&mon);
+    if (dex < 1 || dex > gb_max_species(GB_GEN1)) continue;   /* time-capsule species bound -- not this test's own edge */
     bool moves_ok = true;
-    for (int mi = 0; mi < 4; mi++)
-      if (g2.moves[mi] != 0 && g2.moves[mi] > gb_max_move(GB_GEN1)) moves_ok = false;
-    if (!moves_ok) continue;   /* the time-capsule move bound, same reason */
+    for (int mi = 0; mi < 4; mi++) {
+      uint8_t mv = gb_get_move(&mon, mi);
+      if (mv != 0 && mv > gb_max_move(GB_GEN1)) moves_ok = false;
+    }
+    if (!moves_ok) continue;   /* time-capsule move bound, same reason */
+
+    /* R2: pin the documented case for Crystal.sav box 0 slot 0 (dex 1, OT bytes
+     * `8C A0 B3 B3 A8 A0 E1 50 50 50 50` -- byte 6 is the "PK" ligature 0xE1). If
+     * this fires, the corpus changed and the pinned assertion below needs a new
+     * fixture, not a quiet skip. */
+    if (slot == 0) {
+      CHECK(dex == 1, "Crystal.sav box0 slot0 precondition: dex 1 (got %u) -- corpus changed?", dex);
+      CHECK(mon.otname[6] == 0xE1,
+            "Crystal.sav box0 slot0 precondition: OT byte[6] is 0xE1 (got 0x%02X) -- corpus changed?",
+            mon.otname[6]);
+    }
 
     uint8_t cell[80];
-    build_gen2_cell_faithful(cell, &g2, 2000u + (uint32_t)slot);
+    int rc = bc_pack(&mon, 0, BC_ORIGIN_CRYSTAL, 0, 2000u + (uint32_t)slot, cell);
+    CHECK(rc == 0, "real 2->1 slot %d: bc_pack succeeds", slot);
+    if (rc != 0) continue;
 
     int tc; uint16_t tc_bad; Gb12Result g12; G3GbStatus g3gb;
     GbEditMon out; Gen3ToGbLoss loss; Gb12Notes notes;
@@ -508,41 +533,70 @@ static void test_bridge_real_corpus_2_to_1(void) {
     gbsc_entry_from(&e, &out, cell, 0);
     CHECK(memcmp(e.original80, cell, 80) == 0, "real 2->1 slot %d: original80 == cell80", slot);
 
-    /* (b) the documented loss set: friendship is Gen-1-shaped by construction (Gen 1
-     * has no friendship byte), so gen3_to_gb() must have flagged it, and the WRITTEN
-     * record's own friendship byte is gb_new_mon-shaped Gen-1 default -- print rather
-     * than hard-assert the exact number so a future default change fails loudly
-     * instead of silently drifting past an untouched assertion. */
+    /* (b) friendship: gen3_to_gb() ALWAYS flags friendship_dropped for a Gen-1
+     * target (source/gen3_to_gb.c's set_gen2_only_fields: "gen != GB_GEN2" is
+     * unconditional, not gated on the actual friendship value) -- confirmed by
+     * reading that function, not assumed. */
     CHECK(loss.friendship_dropped, "real 2->1 slot %d: friendship_dropped flagged (corpus value was %u)",
-          slot, g2.friendship);
-    printf("  real 2->1 slot %d: friendship %u (Gen 2, corpus) -> %u (written Gen 1 record, no field to keep it in)\n",
-           slot, g2.friendship, gb_get_friendship(&out));
+          slot, gb_get_friendship(&mon));
 
-    /* (c) OT name / nickname -- the one field Gb12Notes has NO way to report a loss
-     * for at all (it is not even a Gen12Notes-tracked concept; gen12_convert() has no
-     * name-loss field). Compare the WRITTEN Gen-1 record's decoded OT name/nickname
-     * against the corpus record's own decoded strings; a mismatch here is real and
-     * undocumented anywhere in Gb12Notes or Gen3ToGbLoss (ot_lossy/nick_lossy cover
-     * the Gen-3 -> GB half of gen3_to_gb's OWN encode, not a glyph that already
-     * failed to survive the Gen-2 -> Gen-3 INTERMEDIATE hop inside gen12_convert). */
+    if (slot == 0) {
+      /* R2: pin the round trip on the documented slot -- Gen 2's 120 has nowhere
+       * to live in a Gen-1 record at all ("none"); lifting that WRITTEN Gen-1
+       * record back up through gen12_convert (a later, separate gesture -- the
+       * same one hop 5 of Guy's 2->3->1->2 scenario would take) does NOT recover
+       * 120 -- it lands on gen3_edit.c's own documented Gen-1-import default, 70
+       * (em_create_base's own comment: "70 is the CAUGHT base friendship ...
+       * what a Gen-1 import keeps"). */
+      CHECK(gb_get_friendship(&mon) == 120, "real 2->1 slot 0 precondition: corpus friendship is 120 (got %u)",
+            gb_get_friendship(&mon));
+
+      uint8_t cell2[80];
+      int rc2 = bc_pack(&out, 0, BC_ORIGIN_RED, 0, 2100u, cell2);
+      CHECK(rc2 == 0, "real 2->1->(up) slot 0: re-pack the written Gen-1 record");
+      if (rc2 == 0) {
+        uint8_t up80[80]; GbEditMon up_written; Gb12Notes up_notes; uint16_t up_g3item;
+        Gb12Result upr = bdc_convert_gen3_core(cell2, 3, up80, &up_written, &up_notes, &up_g3item);
+        CHECK(upr == GB12_OK, "real 2->1->(up) slot 0: the Gen-1 record lifts back up (%s)",
+              gen12_reason_text(upr));
+        if (upr == GB12_OK) {
+          PkMon pk;
+          CHECK(pk_decode_mon(up80, false, &pk), "real 2->1->(up) slot 0: the re-lifted record decodes");
+          pk_resolve(&pk);
+          CHECK(pk.friendship == 70,
+                "real 2->1->(up) slot 0: friendship 120 -> Gen1(none) -> back %u (want 70, gen3_edit.c's own Gen-1-import default, NOT the original 120)",
+                pk.friendship);
+        }
+      }
+    }
+
+    /* (c) OT name / nickname. R2's own finding: byte 6 of box0 slot0's OT name is
+     * the "PK" ligature 0xE1; this is the documented, PRE-EXISTING loss BACKLOG
+     * #177 will add a loss-screen row for -- gen12_convert's own name decode/
+     * re-encode round trip does not preserve it (asserted below, not merely
+     * printed, for the pinned slot). Gb12Notes has no field to report this loss
+     * at all today (it is not even a tracked concept there), and neither
+     * loss.nick_lossy nor loss.ot_lossy fires for it -- gen3_to_gb's own encode
+     * succeeds on whatever text it is handed; the byte already changed one hop
+     * earlier, inside gen12_convert's own name round trip. */
     char written_ot[64], written_nick[64];
     gb_get_otname(&out, written_ot, sizeof written_ot);
     gb_get_nickname(&out, written_nick, sizeof written_nick);
-    bool ot_ok = strcmp(written_ot, g2.otname) == 0;
-    bool nick_ok = strcmp(written_nick, g2.nickname) == 0;
-    printf("  real 2->1 slot %d: OT name %s -> %s (%s), nickname %s -> %s (%s)\n",
-           slot, g2.otname, written_ot, ot_ok ? "same" : "CHANGED",
-           g2.nickname, written_nick, nick_ok ? "same" : "CHANGED");
-    if (!ot_ok || !nick_ok) {
-      printf("  ^ DOCUMENTED LOSS (F6): a name glyph did not survive Gen2->Gen3(intermediate)->Gen1;"
-             " Gb12Notes has no field to report it and neither loss.nick_lossy nor loss.ot_lossy"
-             " fired for it (gen3_to_gb's own encode succeeded on whatever ASCII it was handed --"
-             " the mismatch, if any, happened one hop earlier, inside gen12_convert's own encode,"
-             " which this test's own CHECKs below do not currently pin further).\n");
+    if (slot == 0) {
+      CHECK(out.otname[6] == 0x7F,
+            "BACKLOG #177 (documented, pre-existing loss): OT byte[6] 0xE1 -> 0x%02X after 2->1"
+            " (want 0x7F, the current -- lossy -- behaviour; if this now reads 0xE1, #177 already fixed it,"
+            " update this pin)", out.otname[6]);
+    } else {
+      char src_ot[64], src_nick[64];
+      gb_get_otname(&mon, src_ot, sizeof src_ot);
+      gb_get_nickname(&mon, src_nick, sizeof src_nick);
+      bool ot_ok = strcmp(written_ot, src_ot) == 0;
+      bool nick_ok = strcmp(written_nick, src_nick) == 0;
+      printf("  real 2->1 slot %d: OT name %s -> %s (%s), nickname %s -> %s (%s)\n",
+             slot, src_ot, written_ot, ot_ok ? "same" : "CHANGED",
+             src_nick, written_nick, nick_ok ? "same" : "CHANGED");
     }
-    /* Not hard-asserted (informational, per-run): this test documents whatever this
-     * corpus actually shows rather than asserting a specific pre-known byte pair
-     * without the reviewer's own exact fixture to reproduce it against. */
     ran++;
   }
   if (!ran) printf("  SKIP E2 (no real corpus slot both time-capsule-legal and Gen1-base-available)\n");
