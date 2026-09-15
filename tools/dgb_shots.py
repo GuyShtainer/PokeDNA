@@ -4261,12 +4261,17 @@ def run_s150_7_down_edge(core_mod, image_mod, rom_gold: Path, rom_red: Path,
     sg2.shot("08_gold_party_picker", "S150-7 (c) D9: gb_pick_party_slot() -- 'SEND "
              "WHICH PARTY MON?', rows are the six party members' own nicknames (ui_ptext, "
              "gb_pick_box's own chrome), footer 'U/D pick  A ok  B cancel'")
-    sg2.tap("A", settle=250)                          # pick the top row
-    sg2.shot("09_gold_party_confirm", "S150-7 (c)+(D-Q2/D-Q3): the deposit ran RAM-only "
-             "(gbs_move, freeing a party slot), THEN the CHIKORITA landing's own confirm "
-             "-- the Gen-2 per-generation footer, 'New stats, full HP, healthy.', not a "
-             "nickname (D-Q3: this landing recomputes stats/HP/status, so the footer "
-             "says so rather than naming a mon the player already picked)")
+    # REVIEW F6: 250 frames caught this specific two-line ui_ptext_wrap() confirm still
+    # mid-repaint on real hardware timing (found re-shooting this exact frame) -- 400
+    # is what a probe against this build confirmed settles both lines fully.
+    sg2.tap("A", settle=400)                          # pick the top row
+    sg2.shot("09_gold_party_confirm", "S150-7 (c)+(D-Q2/D-Q3)+F6: the deposit ran "
+             "RAM-only (gbs_move, freeing a party slot), THEN the CHIKORITA landing's "
+             "own confirm -- TWO lines, UX parity with the box-destination confirm "
+             "(frame 03): the mon's own name on line 1 ('CHIKORITA'), the Gen-2 "
+             "per-generation stats note on line 2 ('New stats, full HP, healthy.') -- "
+             "D-Q3's wording accepted as 'Recomputes stats.' (Gen 1) / 'New stats, "
+             "full HP, healthy.' (Gen 2)")
 
     # ---- (b) GB_BRIDGE: the SAME CHIKORITA cell, dropped on Red (a DIFFERENT gen) ----
     sr = gb_shots.Session(core_mod, image_mod, rom_red, out_dir, "s150_7_red_")

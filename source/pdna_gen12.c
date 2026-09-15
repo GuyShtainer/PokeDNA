@@ -2884,21 +2884,44 @@ static bool __attribute__((noinline)) gb_accept_down_hook(int dst_box, const uin
     }
   }
 
-  /* The ONE confirm line (D-Q2/D-Q3). */
-  char cl1[48];
-  if (to_party && g_ed->s.gen == GB_GEN1) {
-    uint8_t exp_level = gb_level_from_exp(dex, gb_get_exp(&mon));
-    uint8_t box_level = mon.rec[G1R_BOXLEVEL];
-    if (exp_level && exp_level != box_level)
-      siprintf(cl1, "Lv %u from EXP (box said %u)", (unsigned)exp_level, (unsigned)box_level);
-    else
-      siprintf(cl1, "%s", PDNA_XFER_DOWN_PARTYFOOT_G1);
-  } else if (to_party) {
-    siprintf(cl1, "%s", PDNA_XFER_DOWN_PARTYFOOT_G2);
-  } else {
-    char nm[GB_TEXT_MAX];
-    gb_get_nickname(&mon, nm, sizeof nm);
-    ui_truncate(cl1, nm[0] ? nm : PDNA_GBEDIT_RELEASE_FALLBACK, 20);
+  /* The ONE confirm line (D-Q2/D-Q3), REVIEW F6: the party landing now names the mon
+   * on its own first line and keeps the per-generation stats note as a second line --
+   * UX parity with the box-destination confirm (which has always named the mon) and
+   * with the Gen-3 twin's own two-line confirm shape. app_confirm() takes a single
+   * string and wraps it itself (ui_ptext_wrap, max 2 lines) at word boundaries, so the
+   * name is padded with spaces to fill the panel's own 184px width before the stats
+   * note is appended -- the padding-width space is always the wrap point (any word
+   * from the stats note would overflow before a shorter one), landing the name alone
+   * on line 1 without a second, separately-addressed line parameter. */
+  char nm[GB_TEXT_MAX];
+  gb_get_nickname(&mon, nm, sizeof nm);
+  char cl1[100];  /* REVIEW F6: name (<=20 cols) + up to ~44 padding spaces (forcing the
+                   * wrap) + the longest per-gen stat line ("New stats, full HP,
+                   * healthy.", 28 B) + NUL -- 80 B truncated the trailing "y." off that
+                   * sentence on real hardware (found re-shooting frame 09), 100 B has
+                   * comfortable headroom. */
+  ui_truncate(cl1, nm[0] ? nm : PDNA_GBEDIT_RELEASE_FALLBACK, 20);
+  if (to_party) {
+    char stat_line[48];
+    if (g_ed->s.gen == GB_GEN1) {
+      uint8_t exp_level = gb_level_from_exp(dex, gb_get_exp(&mon));
+      uint8_t box_level = mon.rec[G1R_BOXLEVEL];
+      if (exp_level && exp_level != box_level)
+        siprintf(stat_line, "Lv %u from EXP (box said %u)", (unsigned)exp_level, (unsigned)box_level);
+      else
+        siprintf(stat_line, "%s", PDNA_XFER_DOWN_PARTYFOOT_G1);
+    } else {
+      siprintf(stat_line, "%s", PDNA_XFER_DOWN_PARTYFOOT_G2);
+    }
+    int n = 0;
+    while (cl1[n]) n++;                                     /* end of the name */
+    while (n < (int)sizeof cl1 - 2 && ui_ptext_w(cl1) < 180) { cl1[n++] = ' '; cl1[n] = 0; }
+    int room = (int)sizeof cl1 - n - 1;
+    if (room > 0) {
+      int k = 0;
+      while (stat_line[k] && k < room) { cl1[n + k] = stat_line[k]; k++; }
+      cl1[n + k] = 0;
+    }
   }
   /* REVIEW F1: same reasoning as the reload refusal above -- a DECLINED confirm must
    * not leave the 10(c) deposit's own party->box move sitting committed in the
