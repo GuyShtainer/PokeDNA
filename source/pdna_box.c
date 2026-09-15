@@ -1187,9 +1187,13 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
       }
       memcpy(recs + (uint32_t)cur * 80, s_held, 80);
       bool ok = src->commit();                                 /* verified bank box_save */
-      boxoam_resume();
       if (!ok) {
         memset(recs + (uint32_t)cur * 80, 0, 80);
+        /* REVIEW F4: resume here, not right after commit() -- the caller (gb_persist,
+         * via release_up below) draws its own "Saving -- do not power off" panels and
+         * msg_wait draws PDNA_XFER_KEPT_*; both must render with the box sprites OFF,
+         * same as the backup-gate/collision refusals above. */
+        boxoam_resume();
         snd_error();
         log_line("bank: up box %d slot %d -> bank box %d slot %d: bank write failed", s_orig_box, s_orig_slot, box, cur);
         app_log_flush();
@@ -1207,6 +1211,7 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
         snd_save();
         log_line("bank: up box %d slot %d -> bank box %d slot %d: ok", gb_box, gb_slot, box, cur);
       }
+      boxoam_resume();                                         /* REVIEW F4: covers gb_persist's own panels + PDNA_XFER_KEPT_* above */
       return recs;
     }
     if (s_held_dup && s_orig_slot < 0) {                     /* a fresh DUPLICATE: placing it is loss-proof
