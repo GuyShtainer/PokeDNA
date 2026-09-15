@@ -1043,8 +1043,9 @@ addrtaken-ok gen1_write_layout    # 2026-09-14: only ever called DIRECTLY (5 sit
                                   # assignment or table names it). The link placed this Thumb function at
                                   # 0x08010000, and that EVEN word is pdna_romfull_screen's own literal for
                                   # "ROM + 64 KiB" (its verification grid step) plus a u16 pair in s_fam --
-                                  # a real Thumb pointer to it would be the ODD 0x08010001, which occurs
-                                  # nowhere in the image (checked with a byte search of PokeDNA.gba).
+                                  # a real Thumb pointer would be the ODD 0x08010001, whose only
+# occurrence in PokeDNA.gba is at 0x0809b4b6 -- UNALIGNED, inside
+# s_fam, so not a literal-pool word and not a relocated data word.
 addrtaken-ok __text_start         # linker/crt boundary symbol, a zero-size DATA marker, not application code -- see the D5 note above
 addrtaken-ok __udivmoddi4         # libgcc: 64-bit unsigned division helper, taken by the div runtime
 addrtaken-ok __utf8_wctomb        # newlib: UTF-8 locale table entry, same family as __utf8_mbtowc above

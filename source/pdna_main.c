@@ -2801,9 +2801,8 @@ static bool gb_reg_progress(void* vctx, uint8_t locator, uint32_t done, uint32_t
   ui_clear();
   ui_text(4, 4, UI_TITLE, c->restoring ? "RESTORING GAME BOY ROM" : "CHECKING GAME BOY ROM");
   ui_hline(0, 14, UI_SCR_W, UI_BORDER);
-  ui_text(8, 26, UI_TEXT, c->gen == PDNA_GEN2
-                            ? (locator == GB_ART_LOC_ICONS ? "2/2  menu icon tables" : "1/2  sprite tables")
-                            : "1/1  sprite tables");
+  ui_text(8, 26, UI_TEXT, locator == GB_ART_LOC_ICONS ? "2/2  menu icon tables"
+                        : (c->gen == PDNA_GEN2 ? "1/2  sprite tables" : "1/1  sprite tables"));
   char row[40];
   siprintf(row, "%lu / %lu KB", (unsigned long)(done >> 10), (unsigned long)(total >> 10));
   ui_text(8, 40, UI_TEXT, row);
