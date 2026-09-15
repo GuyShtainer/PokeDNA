@@ -4817,16 +4817,28 @@ def run_b93_menu(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> g
                             "no write surface survives into a GB session's Bank "
                             "visit, so nothing can ever land here in mGBA)")
     s2.tap("A", settle=150)
-    s2.shot("19_bank_cell_absence", "BACKLOG #93: A on the (necessarily empty) Bank "
-                                     "cell shows NO popup at all (silent snd_deny(), "
-                                     "app_mon_menu's n == 0 branch) -- structurally "
-                                     "this excludes DUPLICATE/TO DAY-CARE/EXPORT the "
-                                     "same way it already excludes CREATE/PASTE HERE "
-                                     "(#120 S2), since all five are gated on the cell "
-                                     "being OCCUPIED. An occupied Bank cell showing "
-                                     "none of the three new rows is HARDWARE-ONLY "
-                                     "(a real Omega DE Bank keeps its contents across "
-                                     "sessions) -- HW-QUEUE GBMON-6.", allow_same=True)
+    # D9 (review-opus, BACKLOG #93): this shot shows an EMPTY Bank cell -- there is
+    # no occupied one to press A on in mGBA (#120 S2's F1 fix already closed the
+    # only way anything lands in a GB session's Bank visit), so the proof this shot
+    # backs is STRUCTURAL, not a screenshot of the actual row list being absent from
+    # an occupied cell's popup: gb_bank_visit() calls app_src_readonly_clear()
+    # BEFORE pdna_bank_show() (pdna_gen12.c), so g_src_ro is false for the entire
+    # Bank visit and app_mon_menu_readonly -- where DUPLICATE/TO DAY-CARE/EXPORT all
+    # live -- is never entered from inside the Bank at all, occupied cell or not.
+    # Named/captioned to say exactly that, not to imply an occupied-cell test ran.
+    s2.shot("19_bank_empty_cell_structural_proof",
+            "BACKLOG #93 (D9): this Bank cell is EMPTY, not occupied -- mGBA has no "
+            "way to get an occupied one here (#120 S2's F1 fix). A on it shows NO "
+            "popup (silent snd_deny(), app_mon_menu's n == 0 branch on an empty "
+            "cell), which is NOT itself a demonstration that DUPLICATE/TO DAY-CARE/"
+            "EXPORT are absent from an OCCUPIED Bank cell's popup. The real proof is "
+            "structural, not this screenshot: gb_bank_visit() calls "
+            "app_src_readonly_clear() BEFORE pdna_bank_show() (pdna_gen12.c), so "
+            "g_src_ro is false for the whole Bank visit and app_mon_menu_readonly -- "
+            "where all three new rows live -- can never be entered from inside the "
+            "Bank, occupied cell or not. An occupied Bank cell is itself "
+            "HARDWARE-ONLY (a real Omega DE Bank keeps its contents across "
+            "sessions) -- HW-QUEUE GBMON-6.", allow_same=True)
     s.taken += s2.taken
     s.skipped += s2.skipped
     return s
