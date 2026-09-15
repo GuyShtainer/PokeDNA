@@ -681,7 +681,6 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_GBCREATE_BUSY_LINE   "This can take a moment."
 
 #define PDNA_GBEDIT_READONLY_TITLE "READ-ONLY"
-#define PDNA_GBEDIT_NEEDS_OMEGA    "Needs EZ-Flash Omega."
 
 #define PDNA_GBEDIT_BOXWR_TITLE    "CAN'T EDIT THIS BOX"
 #define PDNA_GBEDIT_BOXRD_TITLE    "CAN'T READ THIS BOX"
@@ -1877,6 +1876,11 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * (pdna_main.c) picks between this and the Omega message based on
  * app_rom_is_hack(g_game). PF-checked at the same (28, 184) msg_wait clamp. */
 #define PDNA_ROMHACK_WHY "ROM hack: writes locked."
+/* Review fix F2: the honest reason for the GB-only sites when the session is a
+ * streamed/view-only one (pdna_gen12_resident() == false) -- neither the cart nor
+ * a hack ROM caused the refusal. */
+#define PDNA_GB_VIEWONLY_WHY  "View-only session."
+#define PDNA_GB_VIEWONLY_FOOT "view-only  B back"
 /* Review fix F3: rule 1d (rom_identify()) also catches genuine non-US retail carts
  * (AXVD/BPEJ/BPES/... -- a real (code, version) pair simply absent from k_versions,
  * which only pins the 11 US builds) as ROM_ID_HACK with kind == ROM_NONE. Calling a

@@ -214,6 +214,10 @@ const char* pdna_gen12_why_locked(const uint8_t* rec80);
 /* The line the user must see, in as many places as it fits. */
 const char* pdna_gen12_honest_line(void);
 
+/* true while a resident, writable Game Boy edit session is open; false for
+ * streamed/view-only sessions (review fix F2). */
+bool pdna_gen12_resident(void);
+
 /* Fill a BoxSource over `m` and make it this module's active mount. The hooks act on
  * module-singleton state (the BoxSource contract takes no `self`), so exactly one GB
  * save is mounted at a time. Pass NULL to unmount. */

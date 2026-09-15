@@ -1011,6 +1011,10 @@ typedef struct {
 } Gb12Edit;
 static Gb12Edit* g_ed;        /* pointer only: the block itself lives in the arena */
 
+/* Review fix F2(a): true while a resident, writable Game Boy edit session is open;
+ * false for streamed/view-only sessions. */
+bool pdna_gen12_resident(void) { return g_ed != 0; }
+
 /* BACKLOG #64 review Finding 6 (CRITICAL fix): gb12_arena_tail()'s ONLY tail before
  * this was the resident-image mount's own (g_ed's end); a streamed read-only session
  * (g_ed == NULL) had no tail of its own at all, so map/flags/bag/dex/pack's own
@@ -1176,7 +1180,7 @@ static bool gb_locate(uint8_t* rec80, int* box, int* slot) {
 
   if (!app_can_edit()) {                                                    /* 1 */
     snd_deny();
-    msg_wait(PDNA_GBEDIT_READONLY_TITLE, UI_WARN, app_readonly_why(), 0);
+    msg_wait(PDNA_GBEDIT_READONLY_TITLE, UI_WARN, app_gb_readonly_why(), 0);
     return false;
   }
   GbsStatus st = gbs_box_writable(&g_ed->s, *box);                          /* 2 */
@@ -1798,7 +1802,7 @@ static bool gb_export_hook(uint8_t* rec80) {
 
   if (!app_can_edit()) {
     snd_deny();
-    msg_wait(PDNA_GBEDIT_READONLY_TITLE, UI_WARN, app_readonly_why(), 0);
+    msg_wait(PDNA_GBEDIT_READONLY_TITLE, UI_WARN, app_gb_readonly_why(), 0);
     return false;
   }
 
@@ -3497,7 +3501,7 @@ static void gb_nav_from_start(Gb12Mount* m, GbSession* ro) {
   } else if (nv == NV_FLY) {
     /* BACKLOG #90: gb_fly.h has a real bit for both generations (see its own header)
      * -- same "needs a live GbSession to write through" gate as NV_TRAINER above. */
-    if (gs) pdna_gb_fly(gs, ed);
+    if (gs) pdna_gb_fly(gs, ed && app_can_edit());
     else    (void)gb_info_page(m);
   } else if (nv == NV_CLOCK && kind == SE_KIND_GEN2) {
     /* BACKLOG #86/#108: Gen-2's own Clock fix screen, over gb_clock.h -- same

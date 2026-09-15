@@ -147,7 +147,7 @@ void pdna_fly(uint8_t* sb1, PkGame game) {
       else
         ui_text(4, 144, UI_WARN, "No Fly badge yet - can't fly");
       ui_text(4, 152, UI_DIM, app_can_edit() ? "A toggle  START all  B back"
-                                             : app_readonly_why_short());
+                                             : app_readonly_footer());
     } else {
       if (sel != pv.sel) {
         fly_row_paint(t, sb1, game, pv.sel, 18 + (pv.sel - top) * 10, false);

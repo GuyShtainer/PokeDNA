@@ -685,7 +685,11 @@ int main(void) {
   T(PDNA_GBEDIT_BUSY_BACKUP,  28);
   T(PDNA_GBEDIT_BUSY_WRITING, 28);
   PF(PDNA_GBEDIT_READONLY_TITLE,    28, 184);
-  PF(PDNA_GBEDIT_NEEDS_OMEGA,       28, 184);
+  /* b153 review F5: PDNA_GBEDIT_NEEDS_OMEGA was deleted (dead -- the GB refusal
+   * sites now call app_gb_readonly_why(), never that literal). Its replacements,
+   * the GB view-only wording (F2), are PF-checked here instead. */
+  PF(PDNA_GB_VIEWONLY_WHY,          28, 184);
+  PF(PDNA_GB_VIEWONLY_FOOT,         28, 184);
   PF(PDNA_GBEDIT_BOXWR_TITLE,       28, 184);
   PF(PDNA_GBEDIT_BOXRD_TITLE,       28, 184);
   PF(PDNA_GBEDIT_EMPTYSLOT_TITLE,   28, 184);

@@ -1194,11 +1194,25 @@ static bool app_rom_is_hack(PkGame g) { return (s_hack_mask & (1u << (unsigned)g
  * hack-flagged (app_can_edit() now refuses for that reason too, BACKLOG #54).
  * This picks the honest wording for all remaining sites. */
 const char* app_readonly_why(void) {
-  return app_rom_is_hack(g_game) ? PDNA_ROMHACK_WHY : "Needs EZ-Flash Omega.";
+  return (g_vinfo.valid && app_rom_is_hack(g_game)) ? PDNA_ROMHACK_WHY : "Needs EZ-Flash Omega.";
 }
 
-const char* app_readonly_why_short(void) {
-  return app_rom_is_hack(g_game) ? PDNA_ROMHACK_NOTE : "read-only (Omega)";
+/* Review fix F3: renamed from app_readonly_why_short() -- callers need the full
+ * footer including the "  B back" hint, not just the reason fragment. */
+const char* app_readonly_footer(void) {
+  return (g_vinfo.valid && app_rom_is_hack(g_game)) ? "ROM hack: locked  B back" : "read-only (Omega)  B back";
+}
+
+/* Review fix F2(b): the Game Boy sites can be read-only for a reason that is
+ * neither the cart nor a hack -- a streamed/view-only session
+ * (pdna_gen12_resident() == false). Give those sites the honest wording instead of
+ * blaming the cart/ROM. */
+const char* app_gb_readonly_why(void) {
+  return pdna_gen12_resident() ? app_readonly_why() : PDNA_GB_VIEWONLY_WHY;
+}
+
+const char* app_gb_readonly_footer(void) {
+  return pdna_gen12_resident() ? app_readonly_footer() : PDNA_GB_VIEWONLY_FOOT;
 }
 
 static const char* romident_name(RomIdent id) {
@@ -9597,7 +9611,7 @@ static void view_save(const char* path) {
         case NV_MIRAGE:  pdna_mirage(); break;
         case NV_DEX:     pdna_dex_edit(); break;
         case NV_BAG:     if (app_can_edit()) bag_entry();
-                         else msg_wait("BAG", UI_WARN, "Read-only cart.", app_readonly_why());
+                         else msg_wait("BAG", UI_WARN, app_readonly_why(), 0);
                          break;
         case NV_DATA:    if (app_can_edit()) data_editor();
                          else { snd_deny(); msg_wait("READ-ONLY", UI_WARN, app_readonly_why(), 0); } break;
