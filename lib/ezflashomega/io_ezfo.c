@@ -259,8 +259,30 @@ bool EWRAM_CODE _EZFO_startUp(void) {
     SetRompage(ROMPAGE_ROM);
     ok = true;
     s_det_result = EZFO_DET_OK_HDRONLY;
+  } else if (!ok) {
+    /* Nothing matched at all -- not even a look-alike header word. The loop above leaves
+     * NOR page 0x1FF mapped (its last probe): returning into ROM with that under the
+     * return address is the same certain crash as above, only now with no plausible page
+     * to fall back on. The loop just PROVED 0x1FF is not us, and for every image larger
+     * than one 128 KiB page (File-Browser-GBA 144 KiB, PokeLinkSim 201 KiB, PokeDNA
+     * 7.7 MB) it could not have been the start page in the first place. Map PSRAM
+     * instead -- POSSIBLY right, and on an SD-launched image (the common case for these
+     * tools) it is the true page, so the caller's "no flashcart" diagnostic becomes
+     * reachable. On a NOR boot it is still a hang, only a different one: 0x1FF is never
+     * better.
+     *
+     * If an EARLIER activate in this power cycle located the page, we are still running
+     * from it -- nothing physically moved -- so restore THAT rather than guessing PSRAM.
+     * PokeDNA re-activates mid-session inside its f_mount retry (pdna_main.c:~10019), and
+     * it boots from NOR, where PSRAM is exactly the wrong guess. s_det_result still holds
+     * the previous verdict here (it is written only at the tail), and EWRAM_BSS is zeroed
+     * at boot, so the first-ever activate falls through to PSRAM as before. */
+    if (s_det_result != EZFO_DET_OK && s_det_result != EZFO_DET_OK_HDRONLY)
+      ROMPAGE_ROM = ROMPAGE_PSRAM;
+    SetRompage(ROMPAGE_ROM);
+    s_det_result = EZFO_DET_NO_PAGE;
   } else {
-    s_det_result = ok ? (use_fp ? EZFO_DET_OK : EZFO_DET_OK_HDRONLY) : EZFO_DET_NO_PAGE;
+    s_det_result = use_fp ? EZFO_DET_OK : EZFO_DET_OK_HDRONLY;
   }
 
 done:
