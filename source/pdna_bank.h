@@ -41,4 +41,14 @@ bool pdna_bank_clear_slots(int box, const uint8_t* slots, const uint8_t (*recs80
 void pdna_bank_flush_deletions(void);   /* apply pending deletions (call AFTER the PC is written) */
 void pdna_bank_clear_deletions(void);   /* drop pending deletions (discard / fresh save) */
 
+/* BACKLOG #150 S150-4 decision 2: allocate + persist (BEFORE returning) the next
+ * bank_serial a native cell's bc_pack() needs. 0 = refuse the lift (a meta write
+ * failure); otherwise non-zero and unique across every prior call that persisted. */
+uint32_t pdna_bank_next_serial(void);
+
+/* BACKLOG #150 S150-4 decision 3: the one-shot immutable pre-#150 backup gate. Call
+ * BEFORE writing a native cell into the Bank; false => refuse the lift (nothing was
+ * moved). O(1) once /PokeDNA/bank/backup-v1/DONE exists. */
+bool pdna_bank_prepare_native(void);
+
 #endif /* PDNA_BANK_H */

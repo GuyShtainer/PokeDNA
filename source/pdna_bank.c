@@ -39,7 +39,7 @@
 #define REC_BYTES    80
 #define BOX_BYTES    (BOX_RECS * REC_BYTES)   /* 2400 */
 #define META_MAGIC   "PKVBNK"
-#define META_VERSION 1
+#define META_VERSION 2   /* BACKLOG #150 S150-4 decision 2: bytes 10..13 now hold g_bank_serial */
 #define META_HDR     16
 #define META_BYTES   (META_HDR + BANK_BOXES * 10)   /* 16 + 160 = 176 */
 
@@ -60,6 +60,13 @@ static uint8_t* box_recs(void) { return g_bankbuf + 0x0004; }
  * slot all-zero, which the invariant exempts). 30 bits, one per BOX_RECS slot. */
 static uint32_t g_native_snap;
 
+/* BACKLOG #150 S150-4 decision 2: the EXACTLY ONE new static this lane licenses (4
+ * bytes). bank.meta bytes 10..13 (LE), persisted BEFORE the cell that consumes it
+ * (pdna_bank_next_serial's own contract) -- makes ident32 unique by construction
+ * across two packs of the same mon (G-M4). 0 when absent/short/bad-magic, same as
+ * every other meta_load() field. */
+static uint32_t g_bank_serial;
+
 /* ---- paths ---- */
 static void box_path(int box, char* out) { siprintf(out, PDNA_BANK_DIR "/box%02d.box", box); }
 static const char* meta_path(void) { return PDNA_BANK_DIR "/bank.meta"; }
@@ -70,6 +77,7 @@ static void meta_defaults(void) {
     siprintf((char*)g_meta[b].name, "BANK %d", b + 1);
     g_meta[b].wp = (uint8_t)(b % G3_BOX_WALLPAPER_COUNT);   /* each box a different look */
   }
+  g_bank_serial = 0;   /* decision 2: zero it too, same as every other meta_defaults() field */
 }
 
 /* noinline (BACKLOG #81): meta_load's 176-byte buf[] would otherwise be inlined into
@@ -87,6 +95,14 @@ static bool __attribute__((noinline)) meta_load(void) {
     memcpy(g_meta[b].name, p, 9); g_meta[b].name[8] = 0;
     g_meta[b].wp = p[9] % G3_BOX_WALLPAPER_COUNT;
   }
+  /* decision 2: bytes 10..13, LE -- 0 when absent/short/bad-magic (the guard above
+   * already returned false in every one of those cases; a v1 file that passed the
+   * guard simply has zero bytes there, which decodes to 0 -- a clean v1 upgrade). No
+   * tri-state on byte 8 (the version): meta_load never inspected it before this lane
+   * and G-H3 says the version byte is not the backup gate, so a version branch here
+   * would be dead code. */
+  g_bank_serial = (uint32_t)buf[10] | ((uint32_t)buf[11] << 8) |
+                  ((uint32_t)buf[12] << 16) | ((uint32_t)buf[13] << 24);
   return true;
 }
 
@@ -95,6 +111,10 @@ static bool meta_save(void) {
   memset(buf, 0, sizeof buf);
   memcpy(buf, META_MAGIC, 6);
   buf[8] = META_VERSION; buf[9] = BANK_BOXES;
+  buf[10] = (uint8_t)(g_bank_serial & 0xFF);
+  buf[11] = (uint8_t)((g_bank_serial >> 8) & 0xFF);
+  buf[12] = (uint8_t)((g_bank_serial >> 16) & 0xFF);
+  buf[13] = (uint8_t)((g_bank_serial >> 24) & 0xFF);
   for (int b = 0; b < BANK_BOXES; b++) {
     uint8_t* p = buf + META_HDR + b * 10;
     memcpy(p, g_meta[b].name, 9);
@@ -104,6 +124,20 @@ static bool meta_save(void) {
   bool ok = sf_write_verified(meta_path(), buf, META_BYTES) == SF_OK;
   rmbl_resume();
   return ok;
+}
+
+/* BACKLOG #150 S150-4 decision 2: allocate the next serial and PERSIST it before
+ * returning (SS11.1 rule (i)) -- so a lift that then fails to write its cell never
+ * leaves a serial "spent" only in RAM (which a later lift could reuse, breaking
+ * G-M4's "two lifts differ in bytes 0..7" guarantee). Returns 0 (a caller-visible
+ * "refuse the lift") on a meta write failure; 0 is otherwise never allocated because
+ * this always increments FIRST. */
+uint32_t pdna_bank_next_serial(void) {
+  uint32_t next = g_bank_serial + 1;
+  uint32_t prev = g_bank_serial;
+  g_bank_serial = next;
+  if (!meta_save()) { g_bank_serial = prev; return 0; }
+  return next;
 }
 
 /* ---- box files ---- */
@@ -389,6 +423,67 @@ static bool layout_exists(void) {
   FILINFO fno;
   return f_stat(meta_path(), &fno) == FR_OK;
 }
+
+/* BACKLOG #150 S150-4 decision 3: the one-shot immutable pre-#150 snapshot hard rule 3
+ * wants before a mon's ONLY copy starts living in a box file. `/PokeDNA/bank/backup-v1/
+ * DONE` is a DONE marker, never a count (G-H3/G-L1) -- every attempt REWRITES every
+ * non-empty box rather than validating an existing copy, because sf_write_verified
+ * already byte-compares the file it just wrote against the source buffer as part of
+ * its own contract (savefile.h), so the rewrite IS the per-file validation. At most
+ * 16 x 2400 B, written once ever (present marker -> O(1) f_stat and return).
+ *
+ * Modelled on migrate_flat_pk3 above: noinline (same 784-byte-frame reasoning), same
+ * "own the box buffer, force a fresh page-in when done" idiom (g_loaded = -1).
+ *
+ * Stray-file deletion is DELIBERATELY NOT implemented (declared deviation from
+ * SS11.1's prose): nothing here counts files, so a stray backup-v1/*.box left over
+ * from an interrupted run cannot fool anything -- the marker is the only thing this
+ * function or box_save() ever trusts, and the marker is written LAST. */
+static bool __attribute__((noinline)) bank_backup_v1(void) {
+  char marker[SF_PATH_MAX];
+  siprintf(marker, PDNA_BANK_DIR "/backup-v1/DONE");
+  FILINFO fno;
+  if (f_stat(marker, &fno) == FR_OK) return true;      /* already done -> O(1) */
+  if (!app_can_edit()) return false;
+
+  FRESULT mkr = f_mkdir(PDNA_BANK_DIR "/backup-v1");
+  if (mkr != FR_OK && mkr != FR_EXIST) {
+    log_line("bank: backup-v1 mkdir failed (%d)", (int)mkr);
+    app_log_flush();
+    return false;
+  }
+
+  if (g_dirty) box_save();   /* flush whatever is resident before backing up */
+
+  int count = 0;
+  for (int b = 0; b < BANK_BOXES; b++) {
+    char src[SF_PATH_MAX]; box_path(b, src);
+    FILINFO sfno;
+    if (f_stat(src, &sfno) != FR_OK || (uint32_t)sfno.fsize != (uint32_t)BOX_BYTES) continue;   /* absent or wrong size -> skip */
+    if (!box_load(b)) { log_line("bank: backup-v1 box %d page-in incomplete, refusing", b); app_log_flush(); return false; }
+    char dst[SF_PATH_MAX];
+    siprintf(dst, PDNA_BANK_DIR "/backup-v1/box%02d.box", b);
+    if (sf_write_verified(dst, box_recs(), BOX_BYTES) != SF_OK) {
+      log_line("bank: backup-v1 box %d write failed", b);
+      app_log_flush();
+      return false;                                     /* NO marker on any failure */
+    }
+    count++;
+  }
+
+  char mbuf[16];
+  siprintf(mbuf, "%d %d\n", count, BOX_BYTES);
+  if (sf_write_verified(marker, (const uint8_t*)mbuf, (uint32_t)strlen(mbuf)) != SF_OK) {
+    log_line("bank: backup-v1 marker write failed");
+    app_log_flush();
+    return false;                                       /* a card that can't take 16 B can't take the 2400-B box write either */
+  }
+  g_loaded = -1;                                         /* force a fresh page-in, migrate_flat_pk3's own idiom */
+  return true;
+}
+
+/* Public entry: called from drop_held BEFORE the cell is written (decision 3). */
+bool pdna_bank_prepare_native(void) { return bank_backup_v1(); }
 
 /* ---- BoxSource hooks (singleton state) ---- */
 static uint8_t* banksrc_records(int box) {
