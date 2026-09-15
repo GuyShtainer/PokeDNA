@@ -5544,6 +5544,28 @@ def run_s2_control(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Se
     fusion, no --gb, no --clip -- same vehicle as run_s2_bank_control), so the boot
     takes the Gen-3 path and lands straight on the party/box view.
 
+    TAKE 2 (BACKLOG #143 reviewer findings, the two-BOUNCE retire): the previous cut
+    of this function opened the Bank (source/pdna_bank.c) straight onto its box 0 and
+    A'd whatever cell the cursor landed on first -- box 0's slots 0-4 are PLANTED
+    native "GBC1" cells (PDNA_DELTA-only, source/bank_plant.c's bank_plant_box0(),
+    called from pdna_bank.c:126 whenever box 0's real file can't be read, which is
+    every fresh SD state on this fixture), so that always hit a Gen-1/2 cell and the
+    app correctly routed it through app_mon_menu_readonly()'s native whitelist (VIEW
+    only) -- a real behaviour, just the WRONG control (a native cell, not a Gen-3 one;
+    the brief calls this out explicitly: "a native cell is not [an acceptable
+    control]"). bank_plant.c plants NO Gen-3 cells anywhere -- slots 5-29 of box 0 are
+    left genuinely empty (ordinary zeroed Gen-3 box slots, per bank_plant.h's own
+    doc), so the only way to see an OCCUPIED Gen-3 Bank cell's menu is to put a real
+    Gen-3 record there first: COPY a mon off the save's own box (box 0 of the SAVE's
+    PC, not the Bank -- app_mon_menu's ordinary occupied-cell menu, reached straight
+    off the boot cursor) into the clipboard, then PASTE HERE into an empty (non-
+    native) Bank slot. This run does exactly that, entirely through taps a player has
+    -- no ROM/save file is edited directly.
+
+    Bank grid layout confirmed live (source/pdna_bank.c's BOX_RECS=30, pdna_box.c's
+    5-column grid): slot 5 is row 2, column 0 (one DOWN from slot 0); slot 6 is row 2,
+    column 1 (one more RIGHT). Both non-native, non-planted.
+
     Unlike run_s2_bank() which probes the Bank from a GB session (showing why F1 closed
     it off: no CREATE, no PASTE HERE on an empty cell), this run shows the Gen-3
     Bank's own menu structure: an occupied cell offers TO GAME (send to the game's own
@@ -5554,25 +5576,50 @@ def run_s2_control(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Se
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s2_control_")
     print("== #143: the Gen-3 Bank control -- what CREATE + PASTE HERE look like ==")
     s.run(700)
-    s.shot("00_boot", "#143: Emerald boots straight into the party/box view "
-           "(no boot picker -- only one save is fused)")
+    s.shot("00_boot", "#143: Emerald boots straight into the party/box view, cursor "
+           "on box 0 slot 0 -- No.81 TRIEYE (artless label for MAGNETITE/Magnemite) "
+           "Lv24, a real Gen-3 record in the SAVE's own PC (not the Bank)")
+
+    # Copy the boot cursor's own Gen-3 mon off the save's PC into the clipboard --
+    # app_mon_menu's ORDINARY occupied-cell menu (is_bank == false): VIEW/EDIT, ITEM,
+    # LEGALITY, MOVE, COPY, DUPLICATE, TO DAY-CARE, EXPORT .pk, RELEASE (live-traced;
+    # COPY is row index 4). Confirmed live: this is the SAVE's PC box, not the Bank
+    # (the row reads "MOVE", not "MOVE TO BOX" -- is_party is false here).
+    s.tap("A", settle=150)                                     # box cell 0 -> its menu
+    s.press_n("DOWN", 4, settle=gb_shots.SETTLE)               # -> COPY row
+    s.tap("A", settle=150)                                     # COPY -> "COPIED" dialog
+    s.tap("A", settle=100)                                     # dismiss -> back to box view
+
     s.tap("START", settle=80)                                  # nav menu
     s.tap("DOWN", settle=60)                                   # Party -> Bank (index 1, one DOWN)
-    s.tap("A", settle=150)                                  # -> pdna_bank_show()
-    s.shot("01_bank_grid", "#143: the Bank, from a Gen-3 session -- box 0 displays "
-           "its mixed content (occupied + empty cells, era marks on the occupied ones)")
-    s.tap("A", settle=150)                                  # A on an occupied cell
-    s.shot("02_occupied_cell_menu", "#143: an OCCUPIED Bank cell's menu from a "
-           "Gen-3 session -- TO GAME / PASTE HERE / CREATE / CANCEL -- the full "
-           "suite (TO GAME is the Gen-3-only row, replacing the GB-session's ITEM row)")
-    s.tap("B", settle=100)                                  # back to grid
-    s.tap("DOWN", settle=60)                                 # move to an empty cell (if top-left is occupied)
-    s.tap("A", settle=150)                                  # A on an empty cell
-    s.shot("03_empty_cell_menu", "#143: an EMPTY Bank cell's menu from a Gen-3 "
-           "session -- PASTE HERE / CREATE / CANCEL -- xg_create_row and xg_paste_row "
+    s.tap("A", settle=150)                                     # -> pdna_bank_show(), box 0 (BANK 1)
+    s.shot("01_bank_grid", "#143: the Bank, from a Gen-3 session -- BANK 1 (box 0) "
+           "shows the PDNA_DELTA plant's 5 native cells (CHI1/PIK/EGG/CHI2/DMG, "
+           "bank_plant_box0) across its top row and genuinely empty Gen-3 slots "
+           "everywhere else (5/30 occupied); cursor on slot 0 (CHI1, native)")
+
+    s.tap("DOWN", settle=gb_shots.SETTLE)                      # slot 0 -> slot 5 (row 2, col 0): empty, non-native
+    s.tap("A", settle=150)                                     # A on the empty Gen-3 slot
+    s.tap("DOWN", settle=gb_shots.SETTLE)                      # CREATE -> PASTE HERE
+    s.tap("A", settle=150)                                     # PASTE HERE -> commits the clipboard mon into slot 5
+
+    s.tap("A", settle=150)                                     # A again on the now-OCCUPIED slot 5
+    s.shot("02_occupied_cell_menu", "#143: an OCCUPIED Gen-3 Bank cell's menu (slot "
+           "5, just pasted from the save's own PC) from a Gen-3 session -- VIEW/EDIT, "
+           "ITEM, LEGALITY, MOVE, COPY, PASTE, DUPLICATE, TO GAME, RELEASE -- TO GAME "
+           "is the Gen-3-only row (send the mon into the loaded save), present "
+           "because app_mon_menu (not the read-only variant) is driving this cell")
+
+    s.tap("B", settle=100)                                     # back to the grid
+    s.tap("RIGHT", settle=gb_shots.SETTLE)                     # slot 5 -> slot 6 (row 2, col 1): still empty
+    s.tap("A", settle=150)                                     # A on the empty Gen-3 slot
+    s.shot("03_empty_cell_menu", "#143: an EMPTY Gen-3 Bank cell's menu (slot 6, "
+           "distinct from the slot the previous shot just filled) from a Gen-3 "
+           "session -- CREATE / PASTE HERE / CANCEL -- xg_create_row and xg_paste_row "
            "are both true in an ordinary Gen-3 session (pc_live is true, parsed save, "
-           "arena free), so both rows present on the empty cell (TO GAME is absent "
-           "because the cell is empty, not because of a gate)")
+           "arena free, clipboard still holds the Magnemite copy from the boot step), "
+           "so both rows present on the empty cell (TO GAME is absent because the "
+           "cell is empty, not because of a gate)")
     return s
 
 
