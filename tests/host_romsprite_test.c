@@ -52,6 +52,7 @@ typedef struct {
   uint32_t high;         /* highest off+len actually requested      */
   uint32_t over;         /* reads that ran past `limit`             */
   long     calls;
+  long     slot_collisions; /* two corruption slots armed on one call (b165 F3) */
   unsigned long bytes;   /* step 1 (BACKLOG #103): total bytes requested */
   /* BACKLOG #103 step 4: corrupt exactly ONE physical read call, by its 1-based
    * call index, XOR-ing one byte of ITS OWN returned buffer. This models the
@@ -109,12 +110,14 @@ static bool file_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
     fc->hit_call_xor = 0;  /* back to the 0xFF default for the next case */
     fired = fc->calls;
   }
+  if (fc->hit_call_b && fc->calls == fired && fc->calls == fc->hit_call_b) fc->slot_collisions++;
   if (fc->hit_call_b && fc->calls != fired && fc->calls == fc->hit_call_b && fc->hit_pos_b < len) {
     ((uint8_t*)dst)[fc->hit_pos_b] ^= fc->hit_call_xor_b ? fc->hit_call_xor_b : 0xFF;
     fc->hit_call_b = 0;
     fc->hit_call_xor_b = 0;
     fired = fc->calls;
   }
+  if (fc->hit_call_c && fc->calls == fired && fc->calls == fc->hit_call_c) fc->slot_collisions++;
   if (fc->hit_call_c && fc->calls != fired && fc->calls == fc->hit_call_c && fc->hit_pos_c < len) {
     ((uint8_t*)dst)[fc->hit_pos_c] ^= fc->hit_call_xor_c ? fc->hit_call_xor_c : 0xFF;
     fc->hit_call_c = 0;
@@ -513,6 +516,8 @@ static void run_rom(const char* path, const char* name, int expect_header) {
     chk(name, "a refused decode never wrote clean-looking pixels into the caller's buffer",
         memcmp(dirty_h012, clean, ic.bytes) != 0);
 
+    chk(name, "no two corruption slots were armed on the same read call "
+              "(a collision would silently weaken the case above)", fc.slot_collisions == 0);
     fc.hit_call = 0; fc.hit_call_b = 0; fc.hit_call_c = 0;
   }
 
