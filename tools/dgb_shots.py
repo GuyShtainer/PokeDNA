@@ -3020,10 +3020,10 @@ def run_b124_bobcheck(core_mod, image_mod, rom: Path, out_dir: Path, which: str)
         frames_data.append(pi)
         imi = Image.open(pi).convert("RGB")
         diff = ImageChops.difference(im1, imi)
-        # A caught cell in the grid's top-left region (GX=8,GY=24, 33x34 pitch per
-        # dex_geom() -- pdna_pick.c); crop generously around the first two rows so this
-        # does not depend on knowing exactly which cell is caught.
-        box = (0, 20, 240, 100)
+        # A caught cell in the grid's top-left region. From dex_geom() (pdna_pick.c):
+        # y0=24, ch=34 (cell height), vrows=3 (visible rows). Crop box covers all 3 rows
+        # with margin: (0, 20, 240, y0 + vrows*ch + margin) = (0, 20, 240, 24+3*34+4) = (0, 20, 240, 130).
+        box = (0, 20, 240, 130)
         region_diff = diff.crop(box)
         nonzero = sum(1 for px in region_diff.getdata() if px != (0, 0, 0))
         max_nonzero = max(max_nonzero, nonzero)
