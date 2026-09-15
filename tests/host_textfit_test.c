@@ -903,6 +903,24 @@ int main(void) {
   PF(PDNA_XFER_NATIVE_TITLE, 28, 184);
   PF(PDNA_XFER_NATIVE_L1,    28, 184);
   PF(PDNA_XFER_NATIVE_L2,    28, 184);
+  /* BACKLOG #150 S150-4 decision 11: the UP drop's own strings (pdna_box.c/pdna_gen12.c). */
+  PF(PDNA_XFER_PREP_TITLE,   28, 184);
+  PF(PDNA_XFER_PREP_L1,      28, 184);
+  PF(PDNA_XFER_PREP_L2,      28, 184);
+  PF(PDNA_XFER_KEPT_TITLE,   28, 184);
+  PF(PDNA_XFER_KEPT_L1,      28, 184);
+  PF(PDNA_XFER_KEPT_L2,      28, 184);
+  PF(PDNA_XFER_REC_TITLE,    28, 184);
+  PF(PDNA_XFER_REC_L1,       28, 184);
+  PF(PDNA_XFER_REC_L2,       28, 184);
+  PF(PDNA_XFER_ORIGIN_TITLE, 28, 184);
+  PF(PDNA_XFER_ORIGIN_FOOT,  28, 184);
+  PF(PDNA_XFER_GAME_RED,     28, 184);
+  PF(PDNA_XFER_GAME_BLUE,    28, 184);
+  PF(PDNA_XFER_GAME_YELLOW,  28, 184);
+  PF(PDNA_XFER_GAME_GOLD,    28, 184);
+  PF(PDNA_XFER_GAME_SILVER,  28, 184);
+  PF(PDNA_XFER_GAME_CRYSTAL, 28, 184);
   /* BACKLOG #120 S2: app_inject_to_game()/_deferred()'s "no live Gen-3 PC" refusal
    * (pdna_main.c). Literal, like the msg_wait call sites that pass it directly. */
   PF("NO GEN-3 SAVE",              28, 184);

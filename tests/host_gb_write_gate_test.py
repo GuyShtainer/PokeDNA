@@ -54,7 +54,7 @@ DISPATCH_RE = re.compile(r"pdna_gb\w*\(\s*(?:gs|&g_ed->s)\s*,")
 # picked up automatically. `.edit` is deliberately excluded: both tables set it
 # to 0 (see pdna_gen12.c's own comment on gb_edit_hook being retired), so there
 # is no function to check for it.
-TABLE_NAMES = ("k_gb_ops_gen1", "k_gb_ops_gen2")
+TABLE_NAMES = ("k_gb_ops_gen1", "k_gb_ops_gen2", "k_gb_xfer")
 FIELD_RE = re.compile(r"\.(\w+)\s*=\s*(\w+)")
 SKIP_FIELDS = {"edit", "copy_native", "editable"}  # not mutating -- no cart gate required
 # (`view` stays IN: gb_view_hook computes can_edit = app_can_edit() && ... and hands it to an

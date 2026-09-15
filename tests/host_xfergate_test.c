@@ -77,15 +77,27 @@ static void test_xg_clear_carry_on_gb_exit(void) {
   printf("(E) xg_clear_carry_on_gb_exit: both inputs\n");
 }
 
+/* BACKLOG #150 S150-4 decision 9/step 6(b): the full 3x3x2 = 18-combination truth
+ * table -- false for EXACTLY ONE (dst=BANK, src=GB, have_xfer=true), the UP edge this
+ * lane adds. Every other combination stays denied, including have_xfer=true on any
+ * OTHER scope pair (a vtable existing says nothing about whether GB is even
+ * involved) and (dst=BANK, src=GB, have_xfer=false) (S2's "no lift path yet" case,
+ * still denied when the real vtable isn't installed). */
 static void test_xg_drop_denied(void) {
   uint8_t scopes[3] = { BOXSCOPE_PC, BOXSCOPE_BANK, 2u /* BOXSCOPE_GB, see the comment above */ };
+  int allowed = 0;
   for (int d = 0; d < 3; d++)
-    for (int s = 0; s < 3; s++) {
-      bool want = (scopes[d] == 2u) || (scopes[s] == 2u);   /* BOXSCOPE_GB */
-      CHECK(xg_drop_denied(scopes[d], scopes[s]) == want,
-            "drop_denied: true iff either side is BOXSCOPE_GB (== 2, pdna_box.c's own _Static_assert)");
-    }
-  printf("(F) xg_drop_denied: all 9 scope pairs\n");
+    for (int s = 0; s < 3; s++)
+      for (int hx = 0; hx <= 1; hx++) {
+        bool have_xfer = (bool)hx;
+        bool allow = (scopes[d] == BOXSCOPE_BANK) && (scopes[s] == 2u) && have_xfer;
+        bool want = !allow && ((scopes[d] == 2u) || (scopes[s] == 2u));
+        if (allow) allowed++;
+        CHECK(xg_drop_denied(scopes[d], scopes[s], have_xfer) == want,
+              "drop_denied: denied unless dst=BANK, src=GB, have_xfer -- the one S150-4 allow-rule");
+      }
+  CHECK(allowed == 1, "drop_denied: exactly ONE of the 18 combinations is allowed");
+  printf("(F) xg_drop_denied: all 3x3x2 = 18 scope/have_xfer combinations, exactly one allowed\n");
 }
 
 /* BACKLOG #150 S150-3 step 1: build a native fixture WITHOUT a corpus -- fill 80 bytes
