@@ -876,6 +876,58 @@ static void s5_insert(const char* file, uint8_t expect_gen) {
   }
 }
 
+/* ---- BACKLOG #93: DUPLICATE's own round trip -------------------------------------
+ * gb_dup_hook (pdna_gen12.c) is gb_load() -> gbs_insert() of the SAME loaded record ->
+ * gb_persist(); the Acceptance section asks for exactly this over the corpus: load an
+ * occupied slot, insert an unmodified copy of it, re-load the slot it landed at, and
+ * confirm the two GbEditMon structs are byte-identical (decision 2: "never re-roll
+ * DVs, that makes a different Pokemon") and the box's own count is +1. s5_insert's
+ * case (a) already exercises the same gbs_insert() call with a copy sourced from a
+ * DIFFERENT box; this is the DUPLICATE-specific shape (same box, same record, and an
+ * explicit re-gb_load memcmp rather than gb_verify_slot's field-by-field check). */
+static void test_dup_roundtrip(const char* file, uint8_t expect_gen) {
+  uint32_t len = load(file);
+  if (!len) { printf("  SKIP %s (BACKLOG #93 dup round trip)\n", file); return; }
+  printf("  -- BACKLOG #93 dup round trip: %s\n", file);
+
+  GbSession s;
+  CHECK(gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK,
+        "dup: session opens");
+  CHECK(s.gen == expect_gen, "dup: the right generation was detected");
+
+  int nb = gbs_nboxes(&s), pb = gbs_party_box(&s), box = -1, count0 = -1;
+  for (int b = 0; b < nb; b++) {
+    if (b == pb || gbs_box_writable(&s, b) != GBS_OK) continue;
+    if (gbs_load_list(&s, b, g_list) != GBS_OK) continue;
+    int c = gb_list_count(s.gen, g_list, b);
+    if (c > 0 && c < gb_list_capacity(s.gen, b)) { box = b; count0 = c; break; }
+  }
+  if (box < 0) { printf("     (no writable box with a mon and room; skipped)\n"); return; }
+
+  GbEditMon original;
+  CHECK(gb_load(&original, s.gen, g_list, box, 0), "dup: source slot loads");
+
+  int slot_out = -1;
+  GbsStatus ist = gbs_insert(&s, box, &original, &slot_out, g_list);
+  CHECK(ist == GBS_OK, "dup: gbs_insert accepts the unmodified copy");
+  if (ist != GBS_OK) return;
+
+  CHECK(gbs_load_list(&s, box, g_list) == GBS_OK, "dup: box reloads after insert");
+  CHECK(gb_list_count(s.gen, g_list, box) == count0 + 1,
+        "dup: list count is +1");
+
+  GbEditMon copy;
+  CHECK(gb_load(&copy, s.gen, g_list, box, slot_out), "dup: the landed copy loads back");
+  CHECK(memcmp(&original, &copy, sizeof(GbEditMon)) == 0,
+        "dup: the copy is byte-identical to the source (no DV re-roll)");
+
+  /* The original slot itself must be untouched -- DUPLICATE never mutates its source. */
+  GbEditMon still_there;
+  CHECK(gb_load(&still_there, s.gen, g_list, box, 0), "dup: the original slot still loads");
+  CHECK(memcmp(&original, &still_there, sizeof(GbEditMon)) == 0,
+        "dup: the original slot is unchanged");
+}
+
 /* ---- S5-B review fix #8: round-trip the PRODUCTION COMPOSITION -------------------
  * host_gen3gb_test.c already proves gen3_to_gb() + gbsc_merge_up() agree in isolation,
  * over an in-memory list buffer neither ever touches. What it CANNOT prove is that
@@ -1100,6 +1152,11 @@ int main(void) {
 
   s8_roundtrip("Gold.sav",    GB_GEN2);
   s8_roundtrip("Crystal.sav", GB_GEN2);
+
+  test_dup_roundtrip("Red.sav",     GB_GEN1);
+  test_dup_roundtrip("Yellow.sav",  GB_GEN1);
+  test_dup_roundtrip("Gold.sav",    GB_GEN2);
+  test_dup_roundtrip("Crystal.sav", GB_GEN2);
 
   if (!g_ran) printf("  (no corpus present — structural checks only)\n");
   printf("%s: %d/%d checks passed over %d save(s)\n",

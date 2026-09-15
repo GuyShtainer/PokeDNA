@@ -688,6 +688,13 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * nickname goes through -- so it never itself needs the cut. */
 #define PDNA_GBEDIT_RELEASE_FALLBACK  "this Pokemon"
 
+/* BACKLOG #93: DUPLICATE on the read-only mon menu (gb_dup_hook, pdna_gen12.c).
+ * The once-per-visit sidecar warning (decision 2, the s_id_warned/gbtr_id_edit_ok
+ * idiom) and the success message naming the landing slot (decision 1). */
+#define PDNA_GBEDIT_DUP_SIDECAR_TITLE "Came from Gen 3."
+#define PDNA_GBEDIT_DUP_SIDECAR_L1    "Only one copy can go back."
+#define PDNA_GBEDIT_DUP_TITLE         "DUPLICATED"
+
 /* BACKLOG review (post-#40(c)): gb_move_hook's own refusals reused
  * PDNA_GBEDIT_REFUSED_TITLE ("EDIT REFUSED"), same mismatch #40(c) fixed for PASTE — a
  * MOVE TO was never an edit either. Same (28, 184) proportional clamp. */

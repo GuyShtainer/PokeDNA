@@ -1485,6 +1485,68 @@ static bool gb_release_hook(uint8_t* rec80) {
   return gb_persist("release");
 }
 
+/* BACKLOG #93: DUPLICATE on the read-only mon menu. Once-per-visit warning when the
+ * source mon already carries a Gen-3 sidecar claim (decision 2) -- same idiom as
+ * pdna_gbtrainer.c's s_id_warned/gbtr_id_edit_ok. */
+static bool s_dup_warned;
+
+/* Split out of gb_dup_hook so the confirm dialog's own call frame (app_confirm's text
+ * layout locals) is never simultaneously live with gbs_insert()'s -- same "noinline
+ * sheds a frame that need not overlap with a later one" discipline gb_release_confirm's
+ * own header explains. Loads the record fresh via gb_load into *out (NEVER the
+ * converted Gen-3 copy the grid shows -- the design forbids editing off of that); the
+ * caller hands *out to gbs_insert() completely unmodified -- decision 2: record bytes
+ * stay byte-identical, DVs included, or this makes a different Pokemon. */
+static bool __attribute__((noinline))
+gb_dup_confirm(uint8_t gen, const uint8_t* list, int box, int slot, GbEditMon* out) {
+  if (!gb_load(out, gen, list, box, slot)) return false;
+  if (!gb_has_sidecar(gen, out)) return true;      /* no Gen-3 original to double-claim */
+  if (s_dup_warned) return true;                   /* once per visit */
+  s_dup_warned = true;
+  return app_confirm(PDNA_GBEDIT_DUP_SIDECAR_TITLE, PDNA_GBEDIT_DUP_SIDECAR_L1);
+}
+
+/* app_src_ops_set() hook: DUPLICATE on the read-only mon menu (BACKLOG #93). Mirrors
+ * Gen 3's own app_duplicate (append-then-commit, pdna_main.c) for a source whose real
+ * record cannot travel through the Gen-3 clipboard/commit carry (decision 1's header):
+ * gbs_insert() appends at the box's own next free slot and enforces capacity itself
+ * (GBS_ERR_FULL). No identity-edit warning of the Gen-3 kind -- id_edit_ok has no twin
+ * here (decision 2) -- the sidecar note above stands in for it. The success message
+ * names the landing slot (decision 1). */
+static bool gb_dup_hook(uint8_t* rec80) {
+  int box, slot;
+  if (!gb_locate(rec80, &box, &slot)) return false;
+  GbSession* s = &g_ed->s;
+
+  GbsStatus st = gbs_load_list(s, box, g_ed->list);
+  if (st != GBS_OK) { snd_deny(); msg_wait(PDNA_GBEDIT_BOXRD_TITLE, UI_WARN, gbs_status_text(st), 0); return false; }
+  if (slot >= gb_list_count(s->gen, g_ed->list, box)) {
+    snd_deny(); msg_wait(PDNA_GBEDIT_EMPTYSLOT_TITLE, UI_WARN, PDNA_GBEDIT_EMPTYSLOT_L1, 0); return false;
+  }
+
+  GbEditMon e;
+  if (!gb_dup_confirm(s->gen, g_ed->list, box, slot, &e)) return false;
+
+  int slot_out = -1;
+  GbsStatus ist = gbs_insert(s, box, &e, &slot_out, g_ed->list);
+  if (ist != GBS_OK) {
+    gb_rollback();
+    log_line("gen12: dup box %d slot %d refused: %s", box, slot, gbs_status_text(ist));
+    snd_error();
+    msg_wait(PDNA_GBEDIT_REFUSED_TITLE, UI_WARN, gbs_status_text(ist), PDNA_GBEDIT_UNCHANGED_L2);
+    return false;
+  }
+
+  log_line("=== gb dup -> %s box %d slot %d -> slot %d ===", g_ed->path, box, slot, slot_out);
+  bool ok = gb_persist("dup");
+  if (ok) {
+    char l1[32];
+    siprintf(l1, "Landed in slot %d.", slot_out + 1);
+    msg_wait(PDNA_GBEDIT_DUP_TITLE, UI_OK, l1, 0);
+  }
+  return ok;
+}
+
 /* ============================================================================
  * S5-B Part D: AppSrcOps.paste -- PASTE (GB) on an empty cell, the DOWN direction
  * (docs/GEN3-TO-GB-SIDECAR-DESIGN.md sections 5 + 10)
@@ -2740,11 +2802,13 @@ static const AppSrcOps k_gb_ops_gen1 = {
   .edit = 0, .move = gb_move_hook, .release = gb_release_hook,
   .copy_native = gb_copy_native_hook, .paste = gb_paste_hook, .view = gb_view_hook,
   .editable = gb_editable_hook, .create = gb_create_hook,
+  .dup = gb_dup_hook,   /* BACKLOG #93 */
 };
 static const AppSrcOps k_gb_ops_gen2 = {
   .edit = 0, .move = gb_move_hook, .release = gb_release_hook,
   .copy_native = gb_copy_native_hook, .paste = gb_paste_hook, .view = gb_view_hook,
   .editable = gb_editable_hook, .create = gb_create_hook, .item = gb_item_hook,
+  .dup = gb_dup_hook,   /* BACKLOG #93 */
 };
 
 /* Bag/menu review fix (the nav-menu-copy-lossy finding): the read-only nav-menu mount
