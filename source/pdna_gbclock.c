@@ -89,8 +89,7 @@ static void gbclock_render(const GbClock* c, int sel, bool can_edit, ClockPaint*
       /* D6 (b86 review): mirror the Gen-3 read-only branch (pdna_main.c's
        * "SAVE CLOCK / RTC" screen) verbatim -- same two lines, same x=6 column,
        * same posture (viewing rows is still fine; A is refused, not offered). */
-      ui_text(6, 112, UI_DIM, "Read-only cart - fixing needs");
-      ui_text(6, 122, UI_DIM, "an EZ-Flash Omega.");
+      ui_text(6, 112, UI_DIM, app_gb_readonly_why());
     }
     ui_hline(0, 151, UI_SCR_W, UI_BORDER);
     trainer_key_legend(can_edit ? "U/D select  A choose  B back" : "U/D select  B back");

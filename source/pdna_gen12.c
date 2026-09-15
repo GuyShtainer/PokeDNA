@@ -2644,8 +2644,12 @@ bool gb_persist(const char* what_for_log) {
   if (!app_can_edit()) {
     log_line("gen12: persist refused: %s", app_readonly_why());
     app_log_flush();
+    gb_rollback();            /* pdna_gen12.h:263 contract: EVERY non-DELTA refusal
+                               * leaves the resident image at the card's bytes and
+                               * re-latches the session. Callers discard our return
+                               * value and rely on exactly this. */
     snd_error();
-    msg_wait("READ-ONLY", UI_WARN, app_gb_readonly_why(), 0);
+    msg_wait(PDNA_GBEDIT_READONLY_TITLE, UI_WARN, app_gb_readonly_why(), 0);
     return false;
   }
   char bak[SF_PATH_MAX]; bak[0] = 0;
@@ -3104,6 +3108,15 @@ gb_create_learn(uint16_t dex, const uint8_t g1_start[4], uint8_t* out_level, uin
  * 13 (17/20, real room) still refused "BOX FULL", because it was silently
  * targeting box 0 (20/20) instead. */
 static bool gb_create_hook(void) {
+  /* b160 F2: the CREATE row reaches here with NO cart gate anywhere on its path
+   * (app_src_empty_action_offered -> app_mon_menu_readonly's RO_CREATE row ->
+   * g_src_ops->create; none check app_can_edit). Same gate gb_locate() applies to
+   * every other mutating hook -- refuse BEFORE the picker, not at gb_persist(). */
+  if (!app_can_edit()) {
+    snd_deny();
+    msg_wait(PDNA_GBEDIT_READONLY_TITLE, UI_WARN, app_gb_readonly_why(), 0);
+    return false;
+  }
   int box = (g_m->ui_box >= 0 && g_m->ui_box <= g_m->party_box) ? g_m->ui_box
           : (g_m->current_box >= 0 && g_m->current_box <= g_m->party_box) ? g_m->current_box
           : 0;

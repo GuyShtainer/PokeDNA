@@ -271,12 +271,12 @@ static void gbtr_plain_render(const GbTrainer* t, bool gen1, const int* rows, in
     if (header2) ui_ptext_fit(4, 11, GBTR_HEADER2_MAXW, UI_DIM, header2);
     ui_hline(0, hline_y, UI_SCR_W, UI_BORDER);
     for (int i = 0; i < nrows; i++)
-      gbtr_row_paint(t, rows[i], gen1, row_y0 + i * 9, can_edit && i == sel);
+      gbtr_row_paint(t, rows[i], gen1, row_y0 + i * 9, i == sel);
     ui_hline(0, 151, UI_SCR_W, UI_BORDER);
     trainer_key_legend(can_edit ? "A edit  START save  B cancel" : "B back");
   } else if (sel != pv->sel) {
     gbtr_row_paint(t, rows[pv->sel], gen1, row_y0 + pv->sel * 9, false);
-    gbtr_row_paint(t, rows[sel],     gen1, row_y0 + sel     * 9, can_edit);
+    gbtr_row_paint(t, rows[sel],     gen1, row_y0 + sel     * 9, true);
   }
 
   pv->sel = sel; pv->gen = ui_clear_gen(); pv->valid = true;
