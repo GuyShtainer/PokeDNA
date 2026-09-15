@@ -446,7 +446,7 @@ def test_d_load_extra_edges_parses_frame_override():
     try:
         field_decls, _field_offset_index, argsite_decls, whole_func_decls, \
             frame_overrides, isr_decls, addrtaken_ok, _recursion_decls, \
-            _gated_decls = sb.load_extra_edges(path)
+            _gated_decls, _impl_optional_decls, _impl_pending_decls = sb.load_extra_edges(path)
         check("(d) frame override line parsed", frame_overrides == {"leaf": 40},
               frame_overrides)
         check("(d) field-offset line parsed alongside it",
@@ -472,7 +472,7 @@ def test_d6_argsites_accepts_a_dotted_gcc_clone_name():
     try:
         field_decls, _field_offset_index, argsite_decls, whole_func_decls, \
             frame_overrides, isr_decls, addrtaken_ok, _recursion_decls, \
-            _gated_decls = sb.load_extra_edges(path)
+            _gated_decls, _impl_optional_decls, _impl_pending_decls = sb.load_extra_edges(path)
         check("(D6) dotted caller name parsed into argsite_decls, not swallowed whole",
               argsite_decls == {"draw_wallpaper.constprop.0": (3, {"impl_a", "impl_b"})},
               argsite_decls)
@@ -536,10 +536,81 @@ def test_d1_load_extra_edges_parses_isr_and_addrtaken_ok():
         f.write("addrtaken-ok some_table_entry  # compiler-generated, never called\n")
         path = f.name
     try:
-        _fd, _fi, _ad, _wd, _fo, isr_decls, addrtaken_ok, _rd, _gd = sb.load_extra_edges(path)
+        (_fd, _fi, _ad, _wd, _fo, isr_decls, addrtaken_ok, _rd, _gd,
+         _iod, _ipd) = sb.load_extra_edges(path)
         check("(D1) isr lines parsed", isr_decls == {"hb_isr", "pwm_isr"}, isr_decls)
         check("(D1) addrtaken-ok line parsed", addrtaken_ok == {"some_table_entry"},
               addrtaken_ok)
+    finally:
+        os.unlink(path)
+
+
+def test_b155_load_extra_edges_parses_impl_optional():
+    """BACKLOG #155: impl-optional implementations are variant-conditional (the
+    `variants=` list) and are excluded from unknown_impls checks ONLY in those
+    variants -- not a blanket exemption."""
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        f.write("impl-optional fused_gb_slice_read variants=nor,sd\n")
+        f.write("impl-optional gb_art_read variants=delta\n")
+        f.write("# normal declaration for contrast\n")
+        f.write("isr hb_isr\n")
+        path = f.name
+    try:
+        (_fd, _fi, _ad, _wd, _fo, _isr, _aok, _rd, _gd,
+         impl_optional_decls, _ipd) = sb.load_extra_edges(path)
+        check("(B155) impl-optional lines parsed with their variants= sets",
+              impl_optional_decls == {"fused_gb_slice_read": frozenset({"nor", "sd"}),
+                                       "gb_art_read": frozenset({"delta"})},
+              impl_optional_decls)
+    finally:
+        os.unlink(path)
+
+
+def test_b155_impl_optional_is_scoped_to_its_declared_variants():
+    """BACKLOG #155 review F1: an impl-optional row exempts the name ONLY in the
+    variants it names; elsewhere a missing implementation is still the stale-declaration
+    WARNING. A blanket exemption hid a renamed/typo'd target in all three images."""
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        f.write("impl-optional gb_art_read variants=delta\n")
+        f.write("impl-pending gb_can_lift_hook pending=S150-4\n")
+        path = f.name
+    try:
+        (_fd, _fi, _ad, _wd, _fo, _isr, _aok, _rd, _gd,
+         impl_optional_decls, impl_pending_decls) = sb.load_extra_edges(path)
+        check("(B155) impl_optional_decls has the exact variants= set",
+              impl_optional_decls == {"gb_art_read": frozenset({"delta"})},
+              impl_optional_decls)
+        # Reproduce main()'s own exempt-set expression (tools/stack_budget.py, the
+        # "unknown_impls" computation): membership must hold in "delta" and fail in "nor".
+        exempt_delta = {n for n, vs in impl_optional_decls.items() if "delta" in vs}
+        exempt_nor = {n for n, vs in impl_optional_decls.items() if "nor" in vs}
+        check("(B155) gb_art_read is exempt in variant=delta",
+              "gb_art_read" in exempt_delta, exempt_delta)
+        check("(B155) gb_art_read is NOT exempt in variant=nor",
+              "gb_art_read" not in exempt_nor, exempt_nor)
+        check("(B155) impl_pending_decls parsed",
+              impl_pending_decls == {"gb_can_lift_hook": "S150-4"}, impl_pending_decls)
+    finally:
+        os.unlink(path)
+
+
+def test_b155_mutation_impl_optional_missing_variants_fails():
+    """Malformed impl-optional line without a `variants=` clause (the old,
+    now-removed blanket-exemption syntax) should parse as a regular declaration
+    attempt and fail (no -> operator) -- same posture as any other malformed line."""
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        f.write("impl-optional gb_art_read\n")  # missing variants=...
+        path = f.name
+    try:
+        try:
+            sb.load_extra_edges(path)
+            check("(B155) malformed impl-optional should fail", False, "no error raised")
+        except ValueError as e:
+            check("(B155) malformed impl-optional raises ValueError",
+                  "unrecognized line" in str(e), str(e))
     finally:
         os.unlink(path)
 
@@ -1652,7 +1723,8 @@ def test_b102_gated_line_round_trips_through_the_parser():
                 "gate=some_gate via=caller_a,caller_b\n")
         path = f.name
     try:
-        _fd, _fi, _ad, _wd, _fo, _isr, _aok, _rd, gated_decls = sb.load_extra_edges(path)
+        (_fd, _fi, _ad, _wd, _fo, _isr, _aok, _rd, gated_decls,
+         _iod, _ipd) = sb.load_extra_edges(path)
         check("(B102/D1) a gated line parses fn -> (need, header, macro, gate_fn, via)",
               gated_decls.get("leaf_fn") == (1234, "some_header.h", "SOME_MACRO", "some_gate",
                                               frozenset({"caller_a", "caller_b"})),
@@ -2051,7 +2123,7 @@ def test_d5a_shared_offset_two_structs_two_callers():
         f.write("Beta.y @20 in caller_beta -> impl_beta\n")
         path = f.name
     try:
-        _fd, field_offset_index, _ad, _wd, _fo, _isr, _aok, _rd, _gd = \
+        _fd, field_offset_index, _ad, _wd, _fo, _isr, _aok, _rd, _gd, _iod, _ipd = \
             sb.load_extra_edges(path)
         analysis = {
             "indirect_sites": {
@@ -2086,7 +2158,7 @@ def test_d5a_two_structs_same_caller_both_credited():
         f.write("Beta.y @8 in shared_caller -> impl_beta\n")
         path = f.name
     try:
-        _fd, field_offset_index, _ad, _wd, _fo, _isr, _aok, _rd, _gd = \
+        _fd, field_offset_index, _ad, _wd, _fo, _isr, _aok, _rd, _gd, _iod, _ipd = \
             sb.load_extra_edges(path)
         analysis = {
             "indirect_sites": {"shared_caller": [("0x1000", "bl\t9000 <thunk>", "r3")]},
@@ -2136,7 +2208,7 @@ def test_d5a_single_owner_offset_stays_legal_unqualified():
         f.write("Alpha.x @16 -> impl_alpha\n")
         path = f.name
     try:
-        _fd, field_offset_index, _ad, _wd, _fo, _isr, _aok, _rd, _gd = \
+        _fd, field_offset_index, _ad, _wd, _fo, _isr, _aok, _rd, _gd, _iod, _ipd = \
             sb.load_extra_edges(path)
         analysis = {
             "indirect_sites": {"any_caller": [("0x1000", "bl\t9000 <thunk>", "r3")]},
@@ -2539,6 +2611,9 @@ def main():
     test_d8_unknown_frame_off_the_deepest_chain_still_fatal()
     test_d8_phantom_declared_name_not_linked_is_not_a_false_unknown()
     test_d1_load_extra_edges_parses_isr_and_addrtaken_ok()
+    test_b155_load_extra_edges_parses_impl_optional()
+    test_b155_impl_optional_is_scoped_to_its_declared_variants()
+    test_b155_mutation_impl_optional_missing_variants_fails()
     test_d1_words_from_objdump_s_text_byte_order()
     test_d1_orphan_detection_catches_the_planted_function()
     test_g1_addrtaken_ok_exemption_capped_at_own_deepest_chain()
