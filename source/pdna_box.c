@@ -1158,9 +1158,18 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
    * `app_bank_defer_delete`'s own identity match (pdna_bank.c's BANK_DEL_IDLEN
    * memcmp against the first 8 bytes handed at drop time) still matches the Bank
    * slot's real native bytes. */
+  /* BACKLOG #150 S150-8 review F7: hoisted from further below (its own comment stays
+   * there) so the dispatch condition just below can gate on `!occupied` too -- a
+   * refused-for-occupied drop must never even CALL bank_down_dispatch, so the Gen-3
+   * arm's own ledger write (xfer_down_write, decision 8) can never run for a
+   * destination this call site is about to refuse anyway, which would otherwise
+   * orphan an XR_PENDING entry AND leave decision 9's g_xd_key/g_xd_idx pointing at
+   * a transfer nothing will ever complete. */
+  bool occupied = g_box[cur].species != 0 || bc_is_native(recs + (uint32_t)cur * 80) ||
+                 (src->scope == BOXSCOPE_BANK && app_bank_slot_pending(box, cur));   /* the REAL Bank's deferred-delete queue, never a GB box index (S1 review D1) */
   uint8_t conv[80]; bool converted = false;
   if (s_orig_scope == BOXSCOPE_BANK && s_orig_slot >= 0 && !s_held_dup &&
-      src->scope != BOXSCOPE_BANK && bc_is_native(s_held)) {
+      src->scope != BOXSCOPE_BANK && bc_is_native(s_held) && !occupied) {
     BankDownResult bd = bank_down_dispatch(src, box, cur, s_held,
                                            recs + (uint32_t)cur * 80, conv);
     if (bd == BANK_DOWN_LANDED) {                                /* the bridge arm -- its own tail.
@@ -1196,12 +1205,14 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
     boxoam_resume();
     return recs;
   }
-  /* A bank slot whose mon is moving out to the PC looks empty but still holds that mon's only
-   * on-card copy until the PC is saved — treat it as OCCUPIED so nothing overwrites it.
-   * bc_is_native (BACKLOG #150 S150-2, G-H2): a native cell g_box[cur].species cannot
-   * represent (GB_SHOW_NONE, no DAMAGED stand-in built) must not read as empty either. */
-  bool occupied = g_box[cur].species != 0 || bc_is_native(recs + (uint32_t)cur * 80) ||
-                 (src->scope == BOXSCOPE_BANK && app_bank_slot_pending(box, cur));   /* the REAL Bank's deferred-delete queue, never a GB box index (S1 review D1) */
+  /* `occupied` -- computed above (review F7), before the dispatch block, so this
+   * function's own destination-occupancy rule gates BOTH the DOWN dispatch and the
+   * ordinary cross/same-scope drop paths below with the identical definition. A bank
+   * slot whose mon is moving out to the PC looks empty but still holds that mon's
+   * only on-card copy until the PC is saved — treated as OCCUPIED so nothing
+   * overwrites it. bc_is_native (BACKLOG #150 S150-2, G-H2): a native cell
+   * g_box[cur].species cannot represent (GB_SHOW_NONE, no DAMAGED stand-in built)
+   * must not read as empty either. */
   if (!same_scope(src)) {                                    /* cross-scope drop */
     /* BACKLOG #120 S2 / #150 S150-4 decision 9: no lift path exists for a
      * Game-Boy-scope transfer unless a REAL xfer vtable is installed (not the S2
