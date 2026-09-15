@@ -2882,6 +2882,19 @@ bool gb_reg_progress(void* vctx, uint8_t locator, uint32_t done, uint32_t total,
   const GbRegUi* c = (const GbRegUi*)vctx;
   key_poll();
   if (key_hit(KEY_B)) return false;
+  /* F5 (BACKLOG #148 review-opus fix pass, UX parity): a warm gbui<gen>.loc hit
+   * (gbscr_open_inner's own scan, GB_ART_LOC_UI) costs only 19-29 reads --
+   * 3-5 ticks of this callback -- on EVERY routine open of a trainer card/bag/
+   * pack/map, where the Gen-3 twins open silently. Poll B always (so a cancel
+   * still works even on a fast scan that is about to finish anyway), but do
+   * not PAINT until the scan has genuinely been slow: a cold, no-.loc scan
+   * (694-1,110 reads measured) crosses 400 ms well within its first second, so
+   * this never hides a real multi-second wait, only the routine-open flicker.
+   * Scoped to GB_ART_LOC_UI only -- the hw2 registration path (LOC_SPRITES/
+   * LOC_ICONS, Settings > Game ROM) is untouched, since THAT screen is a
+   * deliberate, rare, user-initiated action where showing progress immediately
+   * is correct, not flicker. */
+  if (locator == GB_ART_LOC_UI && elapsed_ms < 400u) return true;
   ui_clear();
   ui_text(4, 4, UI_TITLE, c->restoring ? "RESTORING GAME BOY ROM" : "CHECKING GAME BOY ROM");
   ui_hline(0, 14, UI_SCR_W, UI_BORDER);
