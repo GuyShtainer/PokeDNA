@@ -72,6 +72,24 @@ Checks:
       left that to chance (found live in mGBA: the refused-origin-prompt frame stayed
       on screen with box icons drawn over it). MUT J reverts the real branch to its
       pre-fix bare form and asserts the checker catches it.
+  (n) merged-tree review F4: bank_down_dispatch's (source/pdna_box.c) three case labels
+      each bind to their OWN callee -- XG_DOWN_ARM_EXACT -> bank_down_exact(,
+      XG_DOWN_ARM_GB_BRIDGE -> bank_down_convert_gb(, XG_DOWN_ARM_GEN3 ->
+      bank_down_convert_gen3( -- on the same line or the next non-blank line. Before
+      this, only the switch's EXISTENCE was pinned, never WHICH callee each case
+      binds to, so a callee swap between two cases survived every other check in this
+      file. MUT O swaps the GB_BRIDGE and GEN3 callees and must be caught.
+  (o) merged-tree review F4: drop_held's non-EXACT LANDED tail (the block after
+      `if (arm == XG_DOWN_ARM_EXACT) { ... return recs; }`, still inside
+      `if (bd == BANK_DOWN_LANDED)`) must contain app_bank_clear_slots( (the immediate
+      Bank consume, 59dd45c) and must NOT contain app_bank_defer_delete( (which would
+      wait for a Gen-3 exit-save flush a Game Boy session never runs, merged-tree
+      review F2). MUT P deletes the app_bank_clear_slots( call and MUT Q replaces it
+      with app_bank_defer_delete(; both must be caught.
+  (p) merged-tree review F4/F1: gb_bank_down_bridge (source/pdna_gen12.c) computes its
+      destination generation as `uint8_t dst_gen = g_ed->s.gen;` (the MOUNTED
+      session), never the inverted `? GB_GEN2 : GB_GEN1` form review F1 removed. MUT R
+      restores the inverted line and must be caught.
 """
 from __future__ import annotations
 
@@ -83,6 +101,7 @@ ROOT = Path(__file__).resolve().parent.parent
 BOX_C = ROOT / "source" / "pdna_box.c"
 MAIN_C = ROOT / "source" / "pdna_main.c"
 BANK_C = ROOT / "source" / "pdna_bank.c"
+GEN12_C = ROOT / "source" / "pdna_gen12.c"
 
 checks = 0
 fails: list[str] = []
@@ -289,11 +308,93 @@ def gate_before_pattern(lines: list[str], start: int, end: int, gate_pat: re.Pat
     return True, f"{name}: ok (gate line {gate_line + 1} < write line {write_line + 1})"
 
 
+# ---- (n) merged-tree review F4: bank_down_dispatch's three case->callee bindings.
+# Shared by the real check (n) and its self-mutation demonstration (MUT O). ----------
+DISPATCH_CASE_EXACT_RE    = re.compile(r"case\s+XG_DOWN_ARM_EXACT\s*:")
+DISPATCH_CASE_GBBRIDGE_RE = re.compile(r"case\s+XG_DOWN_ARM_GB_BRIDGE\s*:")
+DISPATCH_CASE_GEN3_RE     = re.compile(r"case\s+XG_DOWN_ARM_GEN3\s*:")
+CALL_EXACT_RE    = re.compile(r"bank_down_exact\(")
+CALL_GBBRIDGE_RE = re.compile(r"bank_down_convert_gb\(")
+CALL_GEN3_RE     = re.compile(r"bank_down_convert_gen3\(")
+DISPATCH_BINDINGS = (
+    ("XG_DOWN_ARM_EXACT -> bank_down_exact(", DISPATCH_CASE_EXACT_RE, CALL_EXACT_RE),
+    ("XG_DOWN_ARM_GB_BRIDGE -> bank_down_convert_gb(", DISPATCH_CASE_GBBRIDGE_RE, CALL_GBBRIDGE_RE),
+    ("XG_DOWN_ARM_GEN3 -> bank_down_convert_gen3(", DISPATCH_CASE_GEN3_RE, CALL_GEN3_RE),
+)
+
+
+def dispatch_case_bindings(body: list[str]) -> list[tuple[bool, str]]:
+    """bank_down_dispatch's own dense one-case-per-line switch style (source/pdna_box.c):
+    each case's callee sits either on the case's own line or the next NON-BLANK line.
+    Review F4: before this, only the switch's existence was pinned, never WHICH callee
+    each case binds to -- a callee swap between two cases (MUT O) survived every other
+    check in this file. Returns one (ok, msg) pair per binding, in DISPATCH_BINDINGS order."""
+    results = []
+    for label, case_re, call_re in DISPATCH_BINDINGS:
+        case_i = first_match_line(body, 0, len(body), case_re)
+        if case_i is None:
+            results.append((False, f"bank_down_dispatch: case label not found for {label}"))
+            continue
+        ok = bool(call_re.search(body[case_i]))
+        if not ok:
+            j = case_i + 1
+            while j < len(body) and body[j].strip() == "":
+                j += 1
+            ok = j < len(body) and bool(call_re.search(body[j]))
+        results.append((ok, f"bank_down_dispatch: {label} not bound on its case line "
+                             f"or the next non-blank line"))
+    return results
+
+
+# ---- (o) merged-tree review F4: drop_held's non-EXACT LANDED tail. Shared by the real
+# check (o) and its self-mutation demonstrations (MUT P / MUT Q). --------------------
+LANDED_IF_RE    = re.compile(r"if\s*\(\s*bd\s*==\s*BANK_DOWN_LANDED\s*\)\s*\{")
+EXACT_ARM_IF_RE = re.compile(r"if\s*\(\s*arm\s*==\s*XG_DOWN_ARM_EXACT\s*\)\s*\{")
+CLEAR_SLOTS_RE  = re.compile(r"app_bank_clear_slots\(")
+DEFER_DELETE_RE = re.compile(r"app_bank_defer_delete\(")
+
+
+def landed_tail_block(dh_body: list[str]) -> list[str]:
+    """The non-EXACT LANDED tail inside drop_held: the block after
+    `if (arm == XG_DOWN_ARM_EXACT) { ... return recs; }`, still inside
+    `if (bd == BANK_DOWN_LANDED) { ... }` -- the GB_BRIDGE arm's own immediate Bank
+    consume (59dd45c / merged-tree review F2)."""
+    landed_i = first_match_line(dh_body, 0, len(dh_body), LANDED_IF_RE)
+    if landed_i is None:
+        raise AssertionError("drop_held: `if (bd == BANK_DOWN_LANDED) {` not found")
+    depth = 0
+    landed_end = landed_i
+    for i in range(landed_i, len(dh_body)):
+        depth += dh_body[i].count("{") - dh_body[i].count("}")
+        if depth == 0 and i > landed_i:
+            landed_end = i
+            break
+    landed_block = dh_body[landed_i:landed_end + 1]
+    exact_i = first_match_line(landed_block, 0, len(landed_block), EXACT_ARM_IF_RE)
+    if exact_i is None:
+        raise AssertionError("drop_held: `if (arm == XG_DOWN_ARM_EXACT) {` not found "
+                              "inside the LANDED block")
+    depth = 0
+    exact_end = exact_i
+    for i in range(exact_i, len(landed_block)):
+        depth += landed_block[i].count("{") - landed_block[i].count("}")
+        if depth == 0 and i > exact_i:
+            exact_end = i
+            break
+    return landed_block[exact_end + 1:]
+
+
+# ---- (p) merged-tree review F4/F1: gb_bank_down_bridge's destination generation. ----
+DST_GEN_LINE_RE = re.compile(r"uint8_t\s+dst_gen\s*=\s*g_ed->s\.gen\s*;")
+INVERTED_GEN_RE = re.compile(r"\?\s*GB_GEN2\s*:\s*GB_GEN1")
+
+
 def main() -> int:
     box_lines = strip_comments(BOX_C.read_text()).splitlines()
     box_text_stripped = "\n".join(box_lines)
     main_lines = strip_comments(MAIN_C.read_text()).splitlines()
     bank_lines = strip_comments(BANK_C.read_text()).splitlines()
+    gen12_lines = strip_comments(GEN12_C.read_text()).splitlines()
 
     # ---- (h) REVIEW F1: pdna_bank_next_serial() calls meta_load( before meta_save( ----
     s, e = extract_function(bank_lines, r"^uint32_t pdna_bank_next_serial\(void\)")
@@ -517,8 +618,41 @@ def main() -> int:
     ok, d = down_order_facts(box_lines, sd, ed)
     check(ok, d)
 
+    # ---- (n) merged-tree review F4: bank_down_dispatch's three case->callee bindings ----
+    sdd, edd = extract_function(box_lines, r"^bank_down_dispatch\(")
+    dispatch_body = box_lines[sdd:edd]
+    for ok, msg in dispatch_case_bindings(dispatch_body):
+        check(ok, msg)
+
+    # ---- (o) merged-tree review F4: drop_held's non-EXACT LANDED tail must consume the
+    # Bank slot IMMEDIATELY (app_bank_clear_slots(), 59dd45c), never defer it
+    # (app_bank_defer_delete() -- a Game Boy session never runs the Gen-3 exit-save
+    # flush a deferred delete waits for, merged-tree review F2). ----
+    sh, eh = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
+    dh_body_full = box_lines[sh:eh]
+    landed_tail = landed_tail_block(dh_body_full)
+    check(any(CLEAR_SLOTS_RE.search(ln) for ln in landed_tail),
+          "drop_held LANDED tail (non-EXACT): no app_bank_clear_slots( call -- the "
+          "GB_BRIDGE arm's Bank slot would never be consumed")
+    check(not any(DEFER_DELETE_RE.search(ln) for ln in landed_tail),
+          "drop_held LANDED tail (non-EXACT): contains app_bank_defer_delete( -- a "
+          "Game Boy session never runs the Gen-3 exit-save flush a deferred delete "
+          "waits for (merged-tree review F2)")
+
+    # ---- (p) merged-tree review F4/F1: gb_bank_down_bridge's destination generation is
+    # the MOUNTED session's own generation, never the inverted `? GB_GEN2 : GB_GEN1`
+    # form review F1 removed. ----
+    sb, eb = extract_function(gen12_lines, r"^BankDownResult gb_bank_down_bridge\(")
+    bridge_body = gen12_lines[sb:eb]
+    check(any(DST_GEN_LINE_RE.search(ln) for ln in bridge_body),
+          "gb_bank_down_bridge: no `uint8_t dst_gen = g_ed->s.gen;` line found in its "
+          "(comment-stripped) body")
+    check(not any(INVERTED_GEN_RE.search(ln) for ln in bridge_body),
+          "gb_bank_down_bridge: contains the inverted `? GB_GEN2 : GB_GEN1` form "
+          "review F1 removed -- the bridge would land in the WRONG generation")
+
     # ---- (f) review F3: the self-mutation harness, every run ----
-    self_test_mutation_detection(box_lines)
+    self_test_mutation_detection(box_lines, gen12_lines)
 
     print(f"{checks} checks, {len(fails)} failed")
     for f in fails:
@@ -526,7 +660,7 @@ def main() -> int:
     return 1 if fails else 0
 
 
-def self_test_mutation_detection(box_lines: list[str]) -> None:
+def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str]) -> None:
     """Review F3: prove the checker actually has teeth, on every run, not just when a
     human remembers to demonstrate it by hand. Builds two synthetic mutated copies of
     the real (comment-stripped) pdna_box.c body text and asserts gate_before_pattern()
@@ -741,7 +875,76 @@ def self_test_mutation_detection(box_lines: list[str]) -> None:
               f"{len(asg_idx)} `converted = true` occurrence(s) found (expected exactly 1, "
               f"immediately after a BANK_DOWN_CONVERTED test)")
 
+    # MUT O (merged-tree review F4): swap bank_down_dispatch's GB_BRIDGE and GEN3
+    # callees on a copy -- the switch still compiles and still has a case for each arm,
+    # but a GB_BRIDGE drop would land inside bank_down_convert_gen3() and vice versa.
+    s, e = extract_function(box_lines, r"^bank_down_dispatch\(")
+    body = box_lines[s:e]
+    mut_o = list(body)
+    gb_i = first_match_line(mut_o, 0, len(mut_o), DISPATCH_CASE_GBBRIDGE_RE)
+    g3_i = first_match_line(mut_o, 0, len(mut_o), DISPATCH_CASE_GEN3_RE)
+    check(gb_i is not None and g3_i is not None,
+          "MUT O: could not locate both the GB_BRIDGE and GEN3 case lines to swap -- fix this test")
+    if gb_i is not None and g3_i is not None:
+        placeholder = "\x00MUT_O_SWAP\x00"
+        mut_o[gb_i] = CALL_GBBRIDGE_RE.sub(placeholder, mut_o[gb_i])
+        mut_o[gb_i] = CALL_GEN3_RE.sub("bank_down_convert_gb(", mut_o[gb_i])
+        mut_o[gb_i] = mut_o[gb_i].replace(placeholder, "bank_down_convert_gen3(")
+        mut_o[g3_i] = CALL_GEN3_RE.sub(placeholder, mut_o[g3_i])
+        mut_o[g3_i] = CALL_GBBRIDGE_RE.sub("bank_down_convert_gen3(", mut_o[g3_i])
+        mut_o[g3_i] = mut_o[g3_i].replace(placeholder, "bank_down_convert_gb(")
+        results = dispatch_case_bindings(mut_o)
+        any_fail = any(not ok for ok, _ in results)
+        check(any_fail, "MUT O (GB_BRIDGE/GEN3 callees swapped) should have been caught but was not")
+        print(f"  MUT O demonstration -- bank_down_dispatch's GB_BRIDGE/GEN3 callees swapped: "
+              f"{[msg for ok, msg in results if not ok]}")
 
+    # MUT P (merged-tree review F4): delete drop_held's non-EXACT LANDED-tail
+    # app_bank_clear_slots( call on a copy -- the GB_BRIDGE arm's Bank slot would never
+    # be consumed, a permanent duplicate.
+    s, e = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
+    dh_body = box_lines[s:e]
+    tail = landed_tail_block(dh_body)
+    check(any(CLEAR_SLOTS_RE.search(ln) for ln in tail),
+          "MUT P: the real drop_held LANDED tail has no app_bank_clear_slots( call to "
+          "delete -- fix this test")
+    mut_p = [ln for ln in tail if not CLEAR_SLOTS_RE.search(ln)]
+    ok = any(CLEAR_SLOTS_RE.search(ln) for ln in mut_p)
+    check(not ok, "MUT P (app_bank_clear_slots( deleted from the LANDED tail) should "
+                   "have been caught but was not")
+    print("  MUT P demonstration -- app_bank_clear_slots( deleted from drop_held's "
+          "non-EXACT LANDED tail: correctly caught")
+
+    # MUT Q (merged-tree review F4): replace that same call with
+    # app_bank_defer_delete( on a copy -- the GB_BRIDGE arm would wait for a Gen-3
+    # exit-save flush a Game Boy session never runs (merged-tree review F2).
+    mut_q = [CLEAR_SLOTS_RE.sub("app_bank_defer_delete(", ln) for ln in tail]
+    still_has_clear = any(CLEAR_SLOTS_RE.search(ln) for ln in mut_q)
+    now_has_defer = any(DEFER_DELETE_RE.search(ln) for ln in mut_q)
+    check(not still_has_clear and now_has_defer,
+          "MUT Q: substitution did not produce the expected app_bank_defer_delete( "
+          "shape -- fix this test")
+    check(now_has_defer, "MUT Q (app_bank_clear_slots( replaced with "
+                          "app_bank_defer_delete() should have been caught but was not")
+    print("  MUT Q demonstration -- app_bank_clear_slots( replaced with "
+          "app_bank_defer_delete( in drop_held's non-EXACT LANDED tail: correctly caught")
+
+    # MUT R (merged-tree review F1): restore gb_bank_down_bridge's pre-fix inverted
+    # `? GB_GEN2 : GB_GEN1` destination-generation line on a copy -- review F1 found
+    # this bridges into the WRONG generation.
+    s, e = extract_function(gen12_lines, r"^BankDownResult gb_bank_down_bridge\(")
+    bridge_body = gen12_lines[s:e]
+    dst_i = first_match_line(bridge_body, 0, len(bridge_body), DST_GEN_LINE_RE)
+    check(dst_i is not None,
+          "MUT R: could not locate the real `uint8_t dst_gen = g_ed->s.gen;` line -- fix this test")
+    if dst_i is not None:
+        mut_r = list(bridge_body)
+        mut_r[dst_i] = "  uint8_t dst_gen = (g_m->kind == GB12_SAVE_RBY) ? GB_GEN2 : GB_GEN1;"
+        ok = not any(INVERTED_GEN_RE.search(ln) for ln in mut_r)
+        check(not ok, "MUT R (inverted `? GB_GEN2 : GB_GEN1` restored) should have "
+                       "been caught but was not")
+        print("  MUT R demonstration -- gb_bank_down_bridge's dst_gen line reverted to "
+              "the inverted `? GB_GEN2 : GB_GEN1` form: correctly caught")
 
 # ---- (m) 2026-09-16 (merged-tree shot lane): the DOWN dispatch's `occupied` refusal is scoped to
 # the GEN3 arm. An unscoped `&& !occupied` on the dispatch condition made the EXACT arm refuse
