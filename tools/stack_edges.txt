@@ -1346,3 +1346,14 @@ LpCtx.name_fn @0 in lp_row_cb,lp_key_cb -> nature16
 # considered it.
 gated gb_art_fetch need=6144 from=gb_art_source.h:PDNA_GB_FETCH_NEED gate=pdna_origin_art_stack_room via=gb_art_pic_cb
 gated gb_art_fetch_icon.constprop.0 need=6144 from=gb_art_source.h:PDNA_GB_ICON_NEED gate=pdna_origin_art_stack_room via=gb_art_icon_cb
+# BACKLOG #93 (review-opus, 2026-09-15): pcp_open_party_strip_inner's own gate
+# (pcp_open_party_strip's pdna_origin_art_stack_room(PDNA_PARTY_STRIP_NEED) check,
+# pdna_box.c) already re-derives this subtree's worst case by hand at ~7,120 B
+# (artless) / 7,104 B (normal) every time it changes -- see PDNA_PARTY_STRIP_NEED's
+# own derivation comment. `from=pdna_box.c:...`, a .c file, not a .h: verify_gated_
+# macro_declarations() only greps a plain `#define MACRO <int>` via _parse_int_macros/
+# _strip_c_comments, with no extension check anywhere in that function -- confirmed
+# by reading it before relying on it, not assumed. via= is pcp_open_party_strip_
+# inner's ONLY caller in this build (objdump-derived, both ELFs): a `bl` from
+# pcp_open_party_strip itself, no other call site anywhere in the disassembly.
+gated pcp_open_party_strip_inner need=7184 from=pdna_box.c:PDNA_PARTY_STRIP_NEED gate=pcp_open_party_strip via=pcp_open_party_strip
