@@ -279,9 +279,10 @@ GbsStatus gbs_move(GbSession* s, int from_box, int from_slot, int to_box, int* t
  * record (see gen3_to_gb.h: "into a brand-new Game Boy BOX record"). So `mon` may only
  * land in a STORAGE box, never the party: PARTY IS DELIBERATELY REFUSED WITH
  * GBS_ERR_ARG, because landing a converted mon in the party (species-limit checks,
- * live-stat computation, the Gen-2 Mail-shift rule) is gbs_move()'s job, not this one's
- * — a caller that wants the party target still has to go through gbs_move() with `mon`
- * inserted into a scratch box first, exactly as today.
+ * live-stat computation, the Gen-2 Mail-shift rule) is gbs_insert_party()'s job (BACKLOG
+ * #150 S150-7, below), not this one's — a caller that wants the party target calls that
+ * entry point directly rather than going through gbs_move() with `mon` inserted into a
+ * scratch box first.
  *
  *   GBS_ERR_BOX          `box` is not a valid box for this session's generation.
  *   GBS_ERR_UNWRITABLE   gbs_box_writable()'s own refusal (a virgin Gen-1 bank, ...).
@@ -297,6 +298,19 @@ GbsStatus gbs_move(GbSession* s, int from_box, int from_slot, int to_box, int* t
  * party. */
 GbsStatus gbs_insert(GbSession* s, int box, const GbEditMon* mon, int* slot_out,
                      uint8_t* list);
+
+/* BACKLOG #150 S150-7 — insert an already-built BOX-shape record into the PARTY, doing
+ * the box->party record-kind conversion the game does on withdrawal. The party twin of
+ * gbs_insert() (which refuses the party on purpose, above).
+ *   GBS_ERR_ARG          NULL arg / mon->gen != s->gen / mon->is_party true.
+ *   GBS_ERR_UNWRITABLE   gbs_box_writable()'s own refusal, or a streamed session.
+ *   GBS_ERR_FULL         the party already holds gb_list_capacity() Pokemon.
+ *   GBS_ERR_MAIL         Gen-2 only: some current party member holds Mail.
+ *   GBS_ERR_NEEDS_BASE   Gen 1 with g1base == NULL, or gb_recalc_stats refused.
+ * `g1base` is REQUIRED for Gen 1 and IGNORED for Gen 2 (gb_edit.h's GbGen1Base note).
+ * `list` is the caller's GBS_LIST_BYTES staging buffer, same convention as gbs_insert. */
+GbsStatus gbs_insert_party(GbSession* s, const GbEditMon* mon, const GbGen1Base* g1base,
+                           int* slot_out, uint8_t* list);
 
 /* ---- generic field read/write (BACKLOG #49 P0, docs/GEN12-PARITY-DESIGN.md §4.0) ----
  *

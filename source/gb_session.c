@@ -474,6 +474,31 @@ static GbsStatus append_gen2(uint8_t* list, int box, const G2Slot* slotv, int* s
   return map_g2w(g2w_append(list, box, slotv, slot_out));
 }
 
+/* Gen-2 box -> party record-kind conversion (BACKLOG #150 S150-7): build a party-kind
+ * GbEditMon from the box record (bytes 32..47 -- status/unused/curHP/stats -- zeroed, so
+ * gb_recalc_stats's own "carry HP across the old/new maximum" rule sees old_max == 0 and
+ * lands the mon at full HP, status healthy), recompute its stats (Gen 2's base-stat
+ * table is built in), and commit the whole 48-byte record straight back out. Chosen over
+ * hand-extracting six stats into g2w_slot_to_party: gb_commit_parts already knows the
+ * party record layout, so there is nothing left for this file to get wrong by
+ * transcribing it a second time. Factored out of gbs_move() so gbs_insert_party() can
+ * share the exact same body -- one copy of this conversion, not two. */
+static GbsStatus g2_slot_box_to_party(G2Slot* slotv) {
+  GbEditMon e;
+  uint8_t rec48[GB_MAX_REC];
+  memcpy(rec48, slotv->rec, 32);
+  memset(rec48 + 32, 0, GB_MAX_REC - 32);
+  uint8_t list_sp = slotv->is_egg ? (uint8_t)G2_LIST_EGG : slotv->rec[0];
+  if (!gb_load_parts(&e, GB_GEN2, true, rec48, slotv->otname, slotv->nickname, list_sp))
+    return GBS_ERR_ENGINE;
+  if (!gb_recalc_stats(&e)) return GBS_ERR_ENGINE;
+  if (!gb_commit_parts(&e, slotv->rec, slotv->otname, slotv->nickname, &list_sp))
+    return GBS_ERR_ENGINE;
+  slotv->is_egg   = (list_sp == G2_LIST_EGG);
+  slotv->is_party = true;
+  return GBS_OK;
+}
+
 GbsStatus gbs_move(GbSession* s, int from_box, int from_slot, int to_box, int* to_slot,
                    uint8_t* src_list, uint8_t* dst_list) {
   if (!s || !s->open || !src_list || !dst_list || !to_slot) return GBS_ERR_ARG;
@@ -542,26 +567,9 @@ GbsStatus gbs_move(GbSession* s, int from_box, int from_slot, int to_box, int* t
     if (src_party && !dst_party) {
       g2w_slot_to_box(&slotv);
     } else if (!src_party && dst_party) {
-      /* box -> party: build a party-kind GbEditMon from the box record (bytes 32..47 --
-       * status/unused/curHP/stats -- zeroed, so gb_recalc_stats's own "carry HP across
-       * the old/new maximum" rule sees old_max == 0 and lands the mon at full HP, status
-       * healthy), recompute its stats (Gen 2's base-stat table is built in), and commit
-       * the whole 48-byte record straight back out. Chosen over hand-extracting six
-       * stats into g2w_slot_to_party: gb_commit_parts already knows the party record
-       * layout, so there is nothing left for this file to get wrong by transcribing it a
-       * second time. */
-      GbEditMon e;
-      uint8_t rec48[GB_MAX_REC];
-      memcpy(rec48, slotv.rec, 32);
-      memset(rec48 + 32, 0, GB_MAX_REC - 32);
-      uint8_t list_sp = slotv.is_egg ? (uint8_t)G2_LIST_EGG : slotv.rec[0];
-      if (!gb_load_parts(&e, GB_GEN2, true, rec48, slotv.otname, slotv.nickname, list_sp))
-        return GBS_ERR_ENGINE;
-      if (!gb_recalc_stats(&e)) return GBS_ERR_ENGINE;
-      if (!gb_commit_parts(&e, slotv.rec, slotv.otname, slotv.nickname, &list_sp))
-        return GBS_ERR_ENGINE;
-      slotv.is_egg   = (list_sp == G2_LIST_EGG);
-      slotv.is_party = true;
+      /* box -> party: see g2_slot_box_to_party()'s own header comment above. */
+      GbsStatus bpst = g2_slot_box_to_party(&slotv);
+      if (bpst != GBS_OK) return bpst;
     }
 
     int slot_out = 0;
@@ -695,6 +703,94 @@ GbsStatus gbs_insert(GbSession* s, int box, const GbEditMon* mon, int* slot_out,
   }
 
   GbsStatus cst = gbs_commit_list(s, box, list);
+  if (cst != GBS_OK) return cst;
+  *slot_out = slot;
+  return GBS_OK;
+}
+
+/* ============================================================================
+ * BACKLOG #150 S150-7 — insert an already-built BOX record into the PARTY, doing the
+ * box->party record-kind conversion the game does on withdrawal. The party twin of
+ * gbs_insert() (which refuses the party on purpose, above).
+ * ========================================================================== */
+
+GbsStatus gbs_insert_party(GbSession* s, const GbEditMon* mon, const GbGen1Base* g1base,
+                           int* slot_out, uint8_t* list) {
+  if (!s || !s->open || !mon || !slot_out || !list) return GBS_ERR_ARG;
+  if (mon->gen != s->gen || mon->is_party) return GBS_ERR_ARG;
+  if (!gbs_can_write(s)) return GBS_ERR_UNWRITABLE;   /* BACKLOG #64: streamed = read-only */
+
+  int box = gbs_party_box(s);
+  GbsStatus wr = gbs_box_writable(s, box);
+  if (wr != GBS_OK) return wr;
+
+  GbsStatus ld = gbs_load_list(s, box, list);
+  if (ld != GBS_OK) return ld;
+
+  int count = gb_list_count(s->gen, list, box);
+  if (count < 0) return GBS_ERR_STRUCT;
+  if (count >= gb_list_capacity(s->gen, box)) return GBS_ERR_FULL;
+
+  int slot = 0;
+  if (s->gen == GB_GEN2) {
+    if (g2_party_has_mail(list, box)) return GBS_ERR_MAIL;
+
+    G2Slot slotv;
+    memset(&slotv, 0, sizeof slotv);
+    uint8_t list_sp = 0;
+    if (!gb_commit_parts(mon, slotv.rec, slotv.otname, slotv.nickname, &list_sp))
+      return GBS_ERR_ENGINE;
+    slotv.is_egg   = (list_sp == G2_LIST_EGG);
+    slotv.is_party = false;                    /* box shape first -- the helper converts */
+    GbsStatus bpst = g2_slot_box_to_party(&slotv);
+    if (bpst != GBS_OK) return bpst;
+
+    GbsStatus ist = append_gen2(list, box, &slotv, &slot);
+    if (ist != GBS_OK) return ist;
+  } else {
+    /* Gen 1 (D4, retail fidelity): pokered's own _MoveMon BOX_TO_PARTY branch copies the
+     * 33-byte box record verbatim, farcalls CalcLevelFromExperience for the level and
+     * CalcStats(b=$1) for the stats -- never touching current HP or the status byte, and
+     * never touching the stored types (evolution-only field). */
+    GbEditMon e = *mon;
+    e.is_party = true;
+    e.rec_len  = GEN1_PARTY_REC_BYTES;
+
+    uint8_t t1 = e.rec[G1R_TYPE1], t2 = e.rec[G1R_TYPE2];
+    uint16_t hp = (uint16_t)(((uint16_t)e.rec[G1R_HP] << 8) | e.rec[G1R_HP + 1]);
+
+    memset(e.rec + G1R_LEVEL, 0, GEN1_PARTY_REC_BYTES - G1R_LEVEL);   /* level + stats tail */
+
+    uint16_t dex = gb_get_species_dex(&e);
+    uint8_t level = gb_level_from_exp(dex, gb_get_exp(&e));
+    if (!level) level = mon->rec[G1R_BOXLEVEL];   /* glitch species, no growth curve: honest fallback */
+    e.rec[G1R_LEVEL] = level;
+
+    if (!g1base) return GBS_ERR_NEEDS_BASE;
+    if (!gb_set_gen1_base(&e, g1base)) return GBS_ERR_NEEDS_BASE;
+    if (!gb_recalc_stats(&e)) return GBS_ERR_NEEDS_BASE;
+
+    /* D4: types and current HP/status are the record's OWN bytes, never the ROM's --
+     * gb_set_gen1_base() just overwrote the types with the ROM row and gb_recalc_stats()
+     * (via carry_hp, old_max==0 after the memset above) just filled HP to the newly
+     * computed max. Both undone here, after the stat math that needed them is done. */
+    e.rec[G1R_TYPE1] = t1; e.rec[G1R_TYPE2] = t2;
+    e.rec[G1R_HP] = (uint8_t)(hp >> 8); e.rec[G1R_HP + 1] = (uint8_t)hp;
+
+    Gen1EditMon ge;
+    memset(&ge, 0, sizeof ge);
+    ge.is_party = true;
+    memcpy(ge.rec, e.rec, GEN1_PARTY_REC_BYTES);
+    memcpy(ge.ot,   e.otname, GB_NAME_BYTES);
+    memcpy(ge.nick, e.nick,   GB_NAME_BYTES);
+    GbsStatus ist = append_gen1(list, box, &ge, &slot);
+    if (ist != GBS_OK) return ist;
+  }
+
+  bool need_ack = (s->gen == GB_GEN2);
+  if (need_ack) s->g2w.party_mail_ack = true;
+  GbsStatus cst = gbs_commit_list(s, box, list);
+  if (need_ack) s->g2w.party_mail_ack = false;   /* never leaks into a later commit */
   if (cst != GBS_OK) return cst;
   *slot_out = slot;
   return GBS_OK;
