@@ -3254,7 +3254,7 @@ int pdna_gen12_show_fused(int idx, uint8_t met_game) {
   const char* name = 0; const uint8_t* base = 0; uint32_t size = 0;
   if (!fused_gb_save(idx, &name, &base, &size)) return 0;
 
-  uint8_t* arena = app_arena_acquire(GB12_ARENA_NEED);
+  uint8_t* arena = app_arena_acquire(GB12_ARENA_NEED_RO);
   if (!arena) {
     ui_clear();
     snd_deny();
@@ -3266,6 +3266,7 @@ int pdna_gen12_show_fused(int idx, uint8_t met_game) {
   Gb12Mount* m    = (Gb12Mount*)(uintptr_t)abase;
   uint8_t* recs   = (uint8_t*)(uintptr_t)(abase + GB12_A4(sizeof(Gb12Mount)) + GB12_A4(sizeof(FIL)));
   uint8_t* stage  = recs + GB12_RECS_BYTES;
+  Gb12View* vw    = (Gb12View*)(uintptr_t)(stage + GB12_STAGE_BYTES);
 
   s_gb_import_slice.base = base;
   s_gb_import_slice.size = size;
@@ -3285,9 +3286,30 @@ int pdna_gen12_show_fused(int idx, uint8_t met_game) {
            name ? name : "?", pdna_gen12_kind_name(m->kind), m->nstored, m->nready,
            m->nblocked, m->nunreadable);
 
-  gb_session_core(m, 0);   /* BACKLOG #64: no read-only session here -- the fused delta
-                            * entry already shows every screen through g_ed (Option B
-                            * exists for the plain FIL-streaming nav path only) */
+  /* BACKLOG #64 review Finding (F1 ruling): this entry does NOT set g_ed either
+   * (only pdna_gen12_show_image() does) -- the comment this replaces claimed
+   * "already shows every screen through g_ed", which was false; every nav row here
+   * fell back to gb_info_page exactly like the plain FIL entry did before this
+   * lane. Same Option B installation as pdna_gen12_show() above, over the SAME
+   * fused_gb_slice_read/s_gb_import_slice pair the mount just used. */
+  bool vw_ok = (gbs_open_streamed(&vw->s, fused_gb_slice_read, &s_gb_import_slice, size,
+                                  vw->scratch, sizeof vw->scratch) == GBS_OK) &&
+               ((vw->s.gen == GB_GEN1) == (m->kind == GB12_SAVE_RBY));
+  if (vw_ok) {
+    g_tail_lent = false;
+    g_ro_tail = (uint8_t*)(uintptr_t)vw + GB12_A4(sizeof(Gb12View)) + 4u;
+    g_ro_tail_slack = (uint32_t)APP_ARENA_BYTES - (uint32_t)GB12_ARENA_NEED_RO;
+  } else {
+    log_line("gen12: fused read-only session refused (gen %d vs mount kind %d)",
+             (int)vw->s.gen, (int)m->kind);
+  }
+
+  gb_session_core(m, vw_ok ? &vw->s : 0);
+
+  /* MANDATORY: same clear-before-release bracket as pdna_gen12_show() above. */
+  g_ro_tail = 0;
+  g_ro_tail_slack = 0;
+  g_tail_lent = false;
 
   app_arena_release();
   return 0;
