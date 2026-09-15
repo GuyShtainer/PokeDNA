@@ -50,6 +50,9 @@
 #include "gen1_save.h"
 #include "gen2_save.h"
 #include "bank_down_convert.h"
+#include "gen3_edit.h"   /* F3 (review): gen3_edit_load -- an INDEPENDENT reader of the
+                          * converted record's own raw nickname bytes, for the
+                          * nick_written-override assertion below */
 
 #define GB_ROMS "/Users/guyshtainer/VSCodeProjects/gba-toolkit/roms/gb"
 
@@ -88,6 +91,27 @@ static void build_gen2_cell(uint8_t out80[80], uint16_t species_dex, uint8_t ite
   gb_set_otid(&m, 12345);
   gb_set_held_item(&m, item);
   int rc = bc_pack(&m, 0, 0 /* origin unknown */, 0, serial, out80);
+  if (rc != 0) { fprintf(stderr, "bc_pack failed rc=%d\n", rc); exit(1); }
+}
+
+/* F3 (review): a Gen-2 cell whose nickname is the male gender sign (U+2642, GB_GEN1/2's
+ * own byte for it -- gb_edit.c's encoder recognises the UTF-8 sequence directly) --
+ * NOT ASCII, so its GB raw byte and its Gen-3 raw byte cannot possibly agree by
+ * charset coincidence, unlike an ASCII letter which happens to still differ but less
+ * legibly proves the override actually ran. */
+static void build_gen2_cell_named(uint8_t out80[80], uint16_t species_dex, const char* nick,
+                                  uint32_t serial) {
+  GbEditMon m; memset(&m, 0, sizeof m);
+  m.gen = GB_GEN2;
+  gb_set_species(&m, species_dex, NULL);
+  gb_set_level(&m, 20);
+  gb_set_dv(&m, GB_ATK, 12); gb_set_dv(&m, GB_DEF, 12);
+  gb_set_dv(&m, GB_SPE, 12); gb_set_dv(&m, GB_SPC, 12);
+  gb_set_move(&m, 0, 33);
+  gb_set_otid(&m, 12345);
+  bool named = gb_set_nickname(&m, nick);
+  if (!named) { fprintf(stderr, "gb_set_nickname(%s) failed\n", nick); exit(1); }
+  int rc = bc_pack(&m, 0, 0, 0, serial, out80);
   if (rc != 0) { fprintf(stderr, "bc_pack failed rc=%d\n", rc); exit(1); }
 }
 
@@ -239,15 +263,29 @@ static void test_roundtrip_2_3_2(void) {
     e.state = XR_STATE_PENDING;
     e.direction = XR_DIR_ABROAD_G3;
     e.claimed = 1;
-    memcpy(e.nick_written, written.nick, sizeof e.nick_written);
+    /* F3 (review): nick_written must hold the nickname AS WRITTEN ABROAD -- for
+     * this (Gen-3) direction that is the CONVERTED record's own raw 10-byte
+     * nickname field (out80 + 0x08, gen3_mon.c's own decode_name() call site),
+     * never the GB bytes gbsc_entry_from() copies from `written` by default (the
+     * cell's own unpacked GB record -- a no-op override that would leave
+     * S150-8b's nickname merge trying to decode GB bytes as if they were Gen-3
+     * ones). Read the independent copy through gen3_edit_load(), a completely
+     * different code path from the plain pointer arithmetic the override itself
+     * uses, so this is not the same tautology the review found (memcpy then
+     * compare itself). */
+    memcpy(e.nick_written, out80 + 0x08, sizeof e.nick_written);
+
+    EditMon indep; gen3_edit_load(out80, false, &indep);
+    CHECK(memcmp(e.nick_written, indep.raw + 0x08, sizeof e.nick_written) == 0,
+          "slot %d: nick_written matches an INDEPENDENT read of the Gen-3 record's own nickname bytes", slot);
+    CHECK(memcmp(e.nick_written, written.nick, sizeof e.nick_written) != 0,
+          "slot %d: nick_written differs from the GB bytes (the override actually ran, not a no-op)", slot);
 
     CHECK(memcmp(e.original80, cell, 80) == 0, "slot %d: original80 == cell80", slot);
     CHECK(e.kind == XR_KIND_NATIVE_HOME, "slot %d: kind == XR_KIND_NATIVE_HOME", slot);
     CHECK(e.state == XR_STATE_PENDING, "slot %d: state == XR_STATE_PENDING", slot);
     CHECK(e.direction == XR_DIR_ABROAD_G3, "slot %d: direction == XR_DIR_ABROAD_G3", slot);
     CHECK(e.claimed == 1, "slot %d: claimed == 1", slot);
-    CHECK(memcmp(e.nick_written, written.nick, sizeof e.nick_written) == 0,
-          "slot %d: nick_written is the Gen-3 nickname bytes verbatim", slot);
 
     /* round trip through a real 1042-byte gbsc buffer */
     uint8_t buf[GBSC_FILE_MAX]; uint32_t blen = (uint32_t)gbsc_init(buf, 0xAAu);
@@ -279,6 +317,38 @@ static void test_roundtrip_2_3_2(void) {
   }
   if (!ran) printf("  SKIP D (no importable box-0 slot found)\n");
   else printf("  D: %d slot(s) round-tripped 2->3->2 via the record\n", ran);
+}
+
+/* F3 (review), dedicated case: a nickname containing the MALE GENDER SIGN (U+2642) --
+ * not representable in ASCII at all, so its GB raw byte and its Gen-3 raw byte cannot
+ * agree by charset coincidence the way two ASCII letters occasionally might. Proves
+ * xfer_down_write()'s nick_g3 override survives a genuinely non-ASCII GB glyph, not
+ * just "some bytes happened to differ". */
+static void test_nick_written_nonascii_glyph(void) {
+  uint8_t cell[80];
+  build_gen2_cell_named(cell, 25, "PIKA\xE2\x99\x82", 950);   /* "PIKA<male sign>" */
+
+  GbEditMon back0; BcMeta meta0;
+  CHECK(bc_unpack(cell, &back0, &meta0), "nonascii fixture: cell unpacks");
+  char nick_check[64];
+  CHECK(gb_get_nickname(&back0, nick_check, sizeof nick_check) > 0 &&
+        strstr(nick_check, "\xE2\x99\x82") != NULL,
+        "nonascii fixture: the male sign actually landed in the GB record (got %s)", nick_check);
+
+  uint8_t out80[80]; GbEditMon written; Gb12Notes notes; uint16_t g3item;
+  Gb12Result r = bdc_convert_gen3_core(cell, 3, out80, &written, &notes, &g3item);
+  CHECK(r == GB12_OK, "nonascii fixture converts (got %s)", gen12_reason_text(r));
+  if (r != GB12_OK) return;
+
+  GbscEntry e;
+  gbsc_entry_from(&e, &written, cell, 0);
+  memcpy(e.nick_written, out80 + 0x08, sizeof e.nick_written);   /* the F3 fix, exactly as xfer_down_write applies it */
+
+  EditMon indep; gen3_edit_load(out80, false, &indep);
+  CHECK(memcmp(e.nick_written, indep.raw + 0x08, sizeof e.nick_written) == 0,
+        "nonascii: nick_written matches an independent read of the Gen-3 record");
+  CHECK(memcmp(e.nick_written, written.nick, sizeof e.nick_written) != 0,
+        "nonascii: nick_written differs from the GB bytes (male sign's GB byte != its Gen-3 byte)");
 }
 
 /* ============================================================================ */
@@ -423,6 +493,7 @@ int main(void) {
   test_item_edge();          printf("  (B) item-map edge            ok\n");
   test_time_capsule();       printf("  (C) xr_time_capsule_block    ok\n");
   test_roundtrip_2_3_2();    printf("  (D) round trip 2->3->2       ok\n");
+  test_nick_written_nonascii_glyph(); printf("  (D2) nick_written, non-ASCII glyph ok\n");
   test_bridge_roundtrips();  printf("  (E) round trip 1<->2 bridge  ok\n");
   test_time_capsule_refusal();printf("  (F) time-capsule refusal     ok\n");
   test_pending_identity_check(); printf("  (G) pending identity check   ok\n");

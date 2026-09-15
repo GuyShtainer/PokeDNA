@@ -2578,8 +2578,8 @@ static void xfer_down_undo(const char* path, uint8_t* scratch) {
  * already shown. */
 static int __attribute__((noinline))
 xfer_down_write(uint64_t key, const uint8_t cell80[80], const GbEditMon* written,
-                uint8_t direction, uint8_t* scratch, char path_out[GBSC_PATH_MAX],
-                uint32_t* len_out) {
+                uint8_t direction, const uint8_t nick_g3[10], uint8_t* scratch,
+                char path_out[GBSC_PATH_MAX], uint32_t* len_out) {
   (void)xr_path_for_key(path_out, key);
 
   FRESULT mkr = f_mkdir(PDNA_XFER_DIR);
@@ -2631,7 +2631,15 @@ xfer_down_write(uint64_t key, const uint8_t cell80[80], const GbEditMon* written
   e.state = XR_STATE_PENDING;
   e.direction = direction;
   e.claimed = 1;
-  memcpy(e.nick_written, written->nick, sizeof e.nick_written);   /* D-8b-link */
+  /* D-8b-link / F3 (review): nick_written holds the nickname bytes IN THE ABROAD
+   * FORMAT (gb_sidecar.h's own contract comment) -- Gen-3 bytes for ABROAD_G3
+   * (`nick_g3`, the 10 raw bytes at the converted record's own +0x08, gen3_mon.c's
+   * own decode_name() call site), GB bytes (`written->nick`) for ABROAD_GB. Passing
+   * the wrong one for ABROAD_G3 was a no-op copy of GB bytes S150-8b's nickname
+   * merge on the way back cannot use -- gbsc_entry_from() itself already fills GB
+   * bytes by default, so this only OVERRIDES for the Gen-3 case. */
+  if (nick_g3) memcpy(e.nick_written, nick_g3, sizeof e.nick_written);
+  else         memcpy(e.nick_written, written->nick, sizeof e.nick_written);
 
   int old = gbsc_find_by_key(scratch, len, cell80);
   if (old >= 0) gbsc_remove(scratch, &len, old);
@@ -2746,7 +2754,12 @@ BankDownResult gb_bank_down_gen3(BoxSource* src, int dst_box, int dst_cell,
    * static of any kind. */
   uint8_t scratch[GBSC_FILE_MAX];
   char path[GBSC_PATH_MAX];
-  int idx = xfer_down_write(xr_key_g3(out80), cell80, &written, XR_DIR_ABROAD_G3, scratch, path, NULL);
+  /* F3 (review): the Gen-3 record's own 10 raw nickname bytes (gen3_mon.c's own
+   * decode_name(out->nickname, mon + 0x08, 10) call site names the offset) -- the
+   * nickname AS WRITTEN ABROAD, not the GB bytes gbsc_entry_from() would otherwise
+   * copy from `written` (the cell's own unpacked GB record). */
+  int idx = xfer_down_write(xr_key_g3(out80), cell80, &written, XR_DIR_ABROAD_G3,
+                            out80 + 0x08, scratch, path, NULL);
   if (idx < 0) return BANK_DOWN_REFUSED;
 
   app_xfer_pending_set(xr_key_g3(out80), (int16_t)idx);                     /* decision 9 */
@@ -3043,7 +3056,7 @@ BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]) {
   uint64_t key = gbsc_key(mon.gen, gb_get_otid(&mon), dv4, mon.otname);
   char path[GBSC_PATH_MAX];
   uint32_t wlen = 0;
-  int idx = xfer_down_write(key, cell80, &mon, XR_DIR_ABROAD_GB, g_ed->sidecar, path, &wlen);
+  int idx = xfer_down_write(key, cell80, &mon, XR_DIR_ABROAD_GB, NULL, g_ed->sidecar, path, &wlen);
   if (idx < 0) return BANK_DOWN_REFUSED;
 
   int newslot = -1;
