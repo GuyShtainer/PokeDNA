@@ -4365,11 +4365,22 @@ def run_s150_7_down_edge(core_mod, image_mod, rom_gold: Path, rom_red: Path,
     sr.shot("11_red_carrying", "S150-7 (b): carrying the Gen-2 CHIKORITA cell, back on "
             "Red's own (Gen-1) grid -- xg_bank_down_arm resolves GB_BRIDGE, not EXACT")
     sr.tap("A", settle=250)
-    sr.shot("12_red_downsoon", "S150-7 (b) S150-8 stub: 'COMING SOON / This Pokemon "
-            "needs a game of the OTHER generation.' -- the GB_BRIDGE arm's one-line "
-            "refusal (D-Q5: bank_down_dispatch's own case body stays a single `return "
-            "BANK_DOWN_REFUSED;`; this toast is drop_held's own re-derivation of the "
-            "arm, not code living inside the dispatcher's switch)")
+    # 84a43b8 (source/pdna_box.c: the occupied refusal is scoped to XG_DOWN_ARM_GEN3
+    # only) landed AFTER this docstring's own "S150-8 stub" note was written, and it
+    # also lands after S150-8's own bank_down_convert_gb() replaced the old one-line
+    # `return BANK_DOWN_REFUSED;` GB_BRIDGE case body this comment used to describe --
+    # so this A no longer hits a stub refusal (and Red's GB BOX1 is 20/20, fully
+    # occupied, on this real cartridge: the fixed !occupied scoping is why dispatch
+    # still runs here). The real bridge preview is what --s150-8-bridge (a separate,
+    # NEW chain in this same file) exercises end to end; this shot stays only to show
+    # that S150-7's own GB_BRIDGE arm is no longer a stub on the merged base.
+    sr.shot("12_red_bridge_preview", "S150-7 (b), post-84a43b8: 'WHAT WON'T TRANSFER "
+            "/ Nature and ability / Met place / level / ball / Kept in /PokeDNA/...; "
+            "restored when it comes back. / The copy in your Gen-3 save stays. / "
+            "A = transfer  B = cancel' -- the GB_BRIDGE arm's real preview "
+            "(bank_down_convert_gb, S150-8), reached even though Red's GB BOX1 shown "
+            "in frame 11 is 20/20 (fully occupied) -- proof the occupied refusal is "
+            "GEN3-only now, not a blanket gate on every arm")
 
     sg.taken += sg2.taken + sr.taken
     sg.skipped += sg2.skipped + sr.skipped
