@@ -162,6 +162,28 @@ def up_order_facts(lines, start, end):           # shared by the real check AND 
     return True, "ok"
 
 
+# REVIEW F2 (BACKLOG #150 S150-7): nothing pinned accept_down() (the persist) before
+# app_bank_clear_slots() (the Bank consume) in bank_down_exact() -- the reviewer
+# inverted them and every other check stayed green (D7/D12's whole point: the Bank
+# copy must not be zeroed until the Game Boy save actually has the mon). Modelled
+# byte-for-byte on up_order_facts() above -- same shared-function-for-real-check-and-
+# MUT posture (review F3's point in this same file).
+ACCEPT_DOWN_RE = re.compile(r"s_xfer_peer->accept_down\(")
+CONSUME_RE = re.compile(r"app_bank_clear_slots\(")
+
+
+def down_order_facts(lines, start, end):        # shared by the real check AND MUT I
+    a = first_match_line(lines, start, end, ACCEPT_DOWN_RE)
+    c = first_match_line(lines, start, end, CONSUME_RE)
+    if a is None: return False, "bank_down_exact: no `s_xfer_peer->accept_down(` call"
+    if c is None: return False, "bank_down_exact: no `app_bank_clear_slots(` call"
+    if not a < c: return False, (f"bank_down_exact: accept_down() (line {a+1}, the persist) does NOT "
+                                 f"come before app_bank_clear_slots() (line {c+1}, the Bank consume) "
+                                 f"-- the Bank's own copy could be zeroed before the Game Boy save "
+                                 f"has the mon")
+    return True, "ok"
+
+
 def first_match_line(lines: list[str], start: int, end: int, pattern: re.Pattern) -> int | None:
     for i in range(start, end):
         if pattern.search(lines[i]):
@@ -356,6 +378,14 @@ def main() -> int:
     ok, d = up_order_facts(box_lines, s, e)
     check(ok, d)
 
+    # ---- REVIEW F2 (BACKLOG #150 S150-7): bank_down_exact's own DOWN-side order --
+    # accept_down() (the persist) must come before app_bank_clear_slots() (the Bank
+    # consume), the D7/D12 ordering that makes a refused/failed consume a duplicate
+    # rather than a loss. ----
+    sd, ed = extract_function(box_lines, r"^static BankDownResult bank_down_exact\(")
+    ok, d = down_order_facts(box_lines, sd, ed)
+    check(ok, d)
+
     # ---- (f) review F3: the self-mutation harness, every run ----
     self_test_mutation_detection(box_lines)
 
@@ -487,6 +517,26 @@ def self_test_mutation_detection(box_lines: list[str]) -> None:
         ok, detail = up_order_facts(mut_h, 0, len(mut_h))
         check(not ok, f"MUT H (release_up swapped before commit()) should have been caught but was not: {detail}")
         print(f"  MUT H demonstration -- release_up() line swapped above src->commit(): {detail}")
+
+    # MUT I (REVIEW F2): swap accept_down() and app_bank_clear_slots() in a copy of
+    # bank_down_exact's body -- the exact inversion the reviewer demonstrated -- and
+    # assert down_order_facts() reports failure.
+    sd, ed = extract_function(box_lines, r"^static BankDownResult bank_down_exact\(")
+    down_body = box_lines[sd:ed]
+    accept_i = first_match_line(down_body, 0, len(down_body), ACCEPT_DOWN_RE)
+    consume_i = first_match_line(down_body, 0, len(down_body), CONSUME_RE)
+    check(accept_i is not None and consume_i is not None,
+          "MUT I: could not locate both the accept_down() and app_bank_clear_slots() "
+          "lines in the real source -- fix this test")
+    if accept_i is not None and consume_i is not None and accept_i < consume_i:
+        mut_i = list(down_body)
+        consume_line = mut_i.pop(consume_i)
+        mut_i.insert(accept_i, consume_line)   # the Bank consume's line now sits BEFORE accept_down()
+        ok, detail = down_order_facts(mut_i, 0, len(mut_i))
+        check(not ok, f"MUT I (app_bank_clear_slots swapped before accept_down()) should have been "
+              f"caught but was not: {detail}")
+        print(f"  MUT I demonstration -- app_bank_clear_slots() line swapped above "
+              f"accept_down(): {detail}")
 
 
 if __name__ == "__main__":
