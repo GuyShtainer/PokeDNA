@@ -397,7 +397,9 @@ gbl_verify argsites=1 -> fused_gb_slice_read gb_read
 #   rom_gbicon_open_loc   <- gb_art_source.c:362 gb_art_read; :547 fused_gb_slice_read
 #   rom_gbsprite_open(_loc) <- gb_art_source.c:155/288 gb_art_read; :496 fused_gb_slice_read;
 #                              pdna_gen12.c:1623/2109/2132 gb_read; :2091 fused_gb_slice_read
-#   rom_gbui_open(_loc)   <- pdna_gbscreen.c:486 gbscr_sd_read; :520 fused_gb_slice_read
+#   rom_gbui_open(_loc)   <- pdna_gbscreen.c:644 gb_art_read; :707 fused_gb_slice_read
+#                              (BACKLOG #148: gbscr_sd_read deleted, replaced by the
+#                              guarded gb_art_read -- see gb_art_io.h)
 # g1_bs_verify/g2_bd_verify/g2_pp_verify used to be declared HERE too (`argsites=1`
 # each) -- BACKLOG #106 G5 found they need no declaration of their own: --dump-sites
 # now resolves them `field @0`, dispatching through the SAME RomGbSprite.read their
@@ -623,8 +625,8 @@ rom_mon_icon_at argsites=1 -> gb_art_read fused_gb_slice_read gb_read
 # puts the read-function pointer itself in a register the AAPCS argument
 # registers don't cover, spilled to the stack across the locator's own scan
 # calls). Verified identical (7 / 9) across all three build variants.
-rom_gbui_open argsites=8 -> gbscr_sd_read fused_gb_slice_read gb_art_read g1_cardframe_cb g1_font_cb g1_textbox_cb g1_badges_cb g1_playerpic_cb g1_keyitem_cb g2_badgeleader_cb g2_cardpic_cm_cb g2_cardpic_gold_cb g2_frame_cb g2_pack_cb
-rom_gbui_open_loc argsites=10 -> gbscr_sd_read fused_gb_slice_read gb_art_read g1_cardframe_cb g1_font_cb g1_textbox_cb g1_badges_cb g1_playerpic_cb g1_keyitem_cb g2_badgeleader_cb g2_cardpic_cm_cb g2_cardpic_gold_cb g2_frame_cb g2_pack_cb
+rom_gbui_open argsites=8 -> fused_gb_slice_read gb_art_read g1_cardframe_cb g1_font_cb g1_textbox_cb g1_badges_cb g1_playerpic_cb g1_keyitem_cb g2_badgeleader_cb g2_cardpic_cm_cb g2_cardpic_gold_cb g2_frame_cb g2_pack_cb
+rom_gbui_open_loc argsites=10 -> fused_gb_slice_read gb_art_read g1_cardframe_cb g1_font_cb g1_textbox_cb g1_badges_cb g1_playerpic_cb g1_keyitem_cb g2_badgeleader_cb g2_cardpic_cm_cb g2_cardpic_gold_cb g2_frame_cb g2_pack_cb
 # F1/F2 (BACKLOG #84b seventh pass): widened to include rom_gbui.c's 10 `ScanJob.cb`
 # job-table callbacks (g1_*_cb/g2_*_cb, previously `addrtaken-ok` below). rom_gbui.c's
 # OWN file-local `locate`/`scan_multi` (rom_gbui.c:278/458) are BOTH fully inlined into
@@ -639,28 +641,30 @@ rom_gbui_open_loc argsites=10 -> gbscr_sd_read fused_gb_slice_read gb_art_read g
 # RomGbUi.read / the file-local Scan.read (source/rom_gbui.h:246, source/rom_gbui.c:25) --
 # both structs put their GbReadFn `read` hook as the FIRST member (offset 0), so `rd()`,
 # rom_gbui_open(), rom_gbui_open_loc(), and rom_gbui_tile()'s `gu->read(...)`/`s->read(...)`
-# calls all resolve to offset 0. Declared so the SD-backed leg (gbscr_sd_read, the fused-GB
-# leg fused_gb_slice_read, and the ROM-resident leg gb_art_read -- source/pdna_gbscreen.c:486/
-# 520, source/pdna_gen12.c:2213) is COUNTED in any chain that reaches it, instead of being a
-# blind spot that just happens not to be on today's top-5.
+# calls all resolve to offset 0. Declared so the fused-GB leg (fused_gb_slice_read,
+# source/pdna_gbscreen.c:707) and the guarded ROM-resident/SD leg (gb_art_read,
+# BACKLOG #148: source/pdna_gbscreen.c:644/807 -- gbscr_sd_read is gone, both of this
+# file's own read call sites go through gb_art_io.h's gb_art_read now) are COUNTED in
+# any chain that reaches them, instead of being a blind spot that just happens not to
+# be on today's top-5.
 #
 # D5a (BACKLOG #84b seventh pass): offset 0 is the single most contested offset in the
 # whole codebase -- EVERY struct whose first member is a function pointer lands here
 # (Scan, RomGbUi, RomGbIcon, RomGbSprite, RomCtx, G2Writer.rd, gb_sprite_codec.c's Br,
 # ...). Before this pass, field_offset_impls[0] was one GLOBAL union of every impl ever
 # declared at offset 0 -- so a G2Writer.rd dispatch in gen2_write.c's own helpers was
-# silently exempted using Scan/RomGbUi's read implementations (gbscr_sd_read etc, which
+# silently exempted using Scan/RomGbUi's read implementations (gb_art_read etc, which
 # G2Writer never calls), and vice versa: a real false PASS, not just noise. Every class
 # below is now qualified to the exact callers `--dump-sites` (against a real artless
 # ELF, empty --edges-file so classification is declaration-independent) showed actually
 # resolve a 'field @0' site, cross-checked by reading each caller's own parameter type.
-Scan.read @0 in all_blank.constprop.0,any_nonzero.constprop.0,block_eq,cardgfx_verify,distinct_tiles,font_verify,try_badgeleader_hit,try_pack.constprop.0,anchor_pack,rd@rom_gbui,parse_header@rom_gbui -> gbscr_sd_read fused_gb_slice_read gb_art_read
+Scan.read @0 in all_blank.constprop.0,any_nonzero.constprop.0,block_eq,cardgfx_verify,distinct_tiles,font_verify,try_badgeleader_hit,try_pack.constprop.0,anchor_pack,rd@rom_gbui,parse_header@rom_gbui -> fused_gb_slice_read gb_art_read
 # Each of the callers above takes `const Scan* s` (source/rom_gbui.c, grepped: every
 # one of them) and calls `s->read(...)`; `rd`/`parse_header` are rom_gbui.c's own
 # file-local helpers of that exact name (disambiguated @rom_gbui by the D5b symbol
 # census, since rom_gbicon.c/rom_gbsprite.c each define their OWN same-named statics).
 
-RomGbUi.read @0 in rom_gbui_open,rom_gbui_open_loc,rom_gbui_tile,gbscr_open_inner,g1_keyitems_verify,load_g1_keyitems_bits -> gbscr_sd_read fused_gb_slice_read gb_art_read gbscr_mem_read
+RomGbUi.read @0 in rom_gbui_open,rom_gbui_open_loc,rom_gbui_tile,gbscr_open_inner,g1_keyitems_verify,load_g1_keyitems_bits -> fused_gb_slice_read gb_art_read gbscr_mem_read
 # g1_keyitems_verify (BACKLOG #99, source/rom_gbui.c:197) added by p84b item 4: it takes
 # `const Scan* s` but rom_gbui.c:25's Scan and RomGbUi both put `read` at offset 0
 # (D5a's contested-offset-0 note above), and g1_keyitems_verify's own `rd(s, ...)` call
@@ -1050,13 +1054,66 @@ addrtaken-ok __aeabi_idiv0        # libgcc: division-by-zero trap, taken by the 
 addrtaken-ok __boot_method        # crt0: multiboot/cart boot-method DATA byte, not a function -- see the D5 note above
 addrtaken-ok __do_global_dtors_aux # crtstuff: static-destructor runner, taken via .fini_array
 addrtaken-ok __libc_init_array    # newlib crt: constructor runner, taken by crt0/_start
-addrtaken-ok gen1_write_layout    # 2026-09-14: only ever called DIRECTLY (5 sites, all in gen1_write.c; no
-                                  # assignment or table names it). The link placed this Thumb function at
-                                  # 0x08010000, and that EVEN word is pdna_romfull_screen's own literal for
-                                  # "ROM + 64 KiB" (its verification grid step) plus a u16 pair in s_fam --
-                                  # a real Thumb pointer would be the ODD 0x08010001, whose only
-# occurrence in PokeDNA.gba is at 0x0809b4b6 -- UNALIGNED, inside
-# s_fam, so not a literal-pool word and not a relocated data word.
+addrtaken-ok gen1_encode_name     # BACKLOG #148/#152 (review-opus fix pass corrected this entry's own
+                                  # evidence -- the previous draft chased a libtonc symbol, `srf.0`, that
+                                  # is not even in this project's builddir and cannot be what the walker's
+                                  # own raw-word scan matched; own_function_names()/scan_third_party_words_
+                                  # raw()'s restrict_to (tools/stack_budget.py:2987/:3009) explicitly
+                                  # excludes any name not defined in one of THIS project's own *.o files
+                                  # under builddir -- libtonc/crt0/newlib are linked from prebuilt *.a
+                                  # archives whose member objects never land there, so srf.0 could not
+                                  # have flagged gen1_encode_name; that reasoning was wrong even though the
+                                  # exemption itself is correct and load-bearing, confirmed by removing it
+                                  # and rebuilding: `make` FATALs with "ADDRESS-TAKEN, UNREACHED,
+                                  # UNDECLARED: gen1_encode_name frame 40").
+                                  #
+                                  # gen1_write.c's own `gen1_write_layout`, a sibling static function,
+                                  # carried this same exemption from 2026-09-14 to today for the identical
+                                  # reason (the coincidence-address class is real and recurring, just
+                                  # landing on a different function each time .text shifts) -- that entry
+                                  # is now STALE on all three built images (nm -Sn: artless 0x080101ac,
+                                  # normal 0x08010078, delta 0x0800ffc4, none at the collision address)
+                                  # and has been deleted per this file's own "delete if unneeded on BOTH
+                                  # images" instruction (all three checked, not just two).
+                                  #
+                                  # THE REAL EVIDENCE (re-derived directly, 2026-09-15): gen1_encode_name
+                                  # links at 0x08010000 in PokeDNA.elf (nm -Sn; artless 0x08010134, delta
+                                  # 0x0800ff4c -- no collision on those two images today, kept as a
+                                  # standing exemption since the coincidence is address-layout-fragile and
+                                  # can recur on ANY future rebuild, same posture gen1_write_layout's own
+                                  # entry held). stack_budget.py masks the Thumb bit before comparing
+                                  # (`int(word,16) & ~1`, ~:2982), so 0x08010000 and 0x08010001 are the
+                                  # SAME hit to the walker -- no need to separate "even" from "odd"
+                                  # occurrences the way the old (wrong) analysis did. `objcopy -O binary`
+                                  # + a raw 4-byte scan of PokeDNA.elf's flat image for both encodings
+                                  # finds exactly THREE aligned hits, all inside this project's OWN code
+                                  # (own_function_names() would flag any of these as real address-taken
+                                  # evidence if they were the true source, which they are not -- see
+                                  # below): 0x0805d94c and 0x0805db54, both inside `pdna_romfull_screen`
+                                  # (nm -Sn: 0x0805d1b0, size 0x9a8) -- a `.word 0x08010000` literal in
+                                  # its own ROM full-image-grid code (confirmed: `objdump -d | grep
+                                  # '\.word\s*0x0801000[01]'` shows both, ROM base 0x08000000 + 64 KiB,
+                                  # the region-size constant that verification-grid step steps by, NOT a
+                                  # function pointer -- pdna_romfull_screen never takes gen1_encode_name's
+                                  # address); and 0x0809bb70 inside `s_fam` (nm -Sn: 0x0809bad8, size
+                                  # 0x19d), a plain data table, same "no assignment site anywhere in
+                                  # source" proof as below. A fourth candidate, 0x08010001 at 0x0809bb5e,
+                                  # is UNALIGNED (0x0809bb5e % 4 != 0) -- not a literal-pool word, and
+                                  # gen1_write_layout's own retired entry already established this file's
+                                  # convention that an unaligned "hit" is not evidence. Safe because
+                                  # gen1_encode_name is called ONLY DIRECTLY (gen1_write.c:279/282, plus
+                                  # tests/host_gen1write_test.c; grepped the whole tree -- no `&`, no
+                                  # table, no function-pointer field ever holds its address). Re-derive
+                                  # with `nm -Sn <elf> | grep gen1_encode_name`, then `objdump -d <elf> |
+                                  # grep '\.word\s*0x0801000[01]'` (mask the Thumb bit yourself when
+                                  # comparing) if this ever moves again -- do not re-add a libtonc/
+                                  # third-party citation on inspection alone; own_function_names() proves
+                                  # only this project's own object files can be the source.
+                                  # (Addresses as of a531cf2; any .text shift moves them by a constant --
+                                  # re-derive with the nm + objdump recipe above, never trust the literals.
+                                  # For the record: srf.0's bytes are `08 01 00 01`, which decode
+                                  # LITTLE-ENDIAN to 0x01000108 -- never a numeric match for this address;
+                                  # `objdump -s` prints bytes in address order, not word values.)
 addrtaken-ok __text_start         # linker/crt boundary symbol, a zero-size DATA marker, not application code -- see the D5 note above
 addrtaken-ok __udivmoddi4         # libgcc: 64-bit unsigned division helper, taken by the div runtime
 addrtaken-ok __utf8_wctomb        # newlib: UTF-8 locale table entry, same family as __utf8_mbtowc above
@@ -1314,3 +1371,56 @@ LpCtx.name_fn @0 in lp_row_cb,lp_key_cb -> nature16
 # considered it.
 gated gb_art_fetch need=6144 from=gb_art_source.h:PDNA_GB_FETCH_NEED gate=pdna_origin_art_stack_room via=gb_art_pic_cb
 gated gb_art_fetch_icon.constprop.0 need=6144 from=gb_art_source.h:PDNA_GB_ICON_NEED gate=pdna_origin_art_stack_room via=gb_art_icon_cb
+
+# BACKLOG #148/#152: gbscr_open_inner is the SAME shape as gb_art_fetch/
+# gb_art_fetch_icon above -- a subtree that only ever runs after its OWN caller
+# (gbscr_open(), source/pdna_gbscreen.c:736) has already passed a fresh
+# pdna_origin_art_stack_room(PDNA_GB_UI_NEED) check against the LIVE stack
+# pointer, so any UNRELATED --root re-derivation elsewhere in the program may
+# exclude this subtree (charge it 0 B) rather than double-count it, exactly as
+# gb_art_fetch's own comment above explains -- --root main stays unaffected
+# either way (a gated subtree is always fully, ungated included there).
+#
+# RECONCILING need= with what PDNA_GB_UI_NEED must cover (review-opus fix pass,
+# BACKLOG #148/#152 -- corrects an earlier draft of this same paragraph, which
+# wrongly claimed gbscr_open()'s own 40-B frame had to be ADDED on top of
+# gbscr_open_inner's subtree): `pdna_origin_art_stack_room(PDNA_GB_UI_NEED)`
+# (source/pdna_gbscreen.c:736) reads the LIVE stack pointer from INSIDE
+# gbscr_open()'s own frame, AFTER its prologue already pushed that ~40 B -- so
+# gbscr_open()'s frame is ALREADY spent, already reflected in the SP the check
+# reads, by the time the check runs. The TIGHT requirement is therefore 5,984
+# (gbscr_open_inner's own subtree, the `--root gbscr_open_inner --top 1` raw
+# figure, both gate ELFs, 2026-09-15) + 64 (ISR) = 6,048, not +40 again.
+# PDNA_GB_UI_NEED is 6,088 anyway -- 40 B of harmless over-provision the runtime
+# check does not actually need, kept rather than re-derived down to the bare
+# 6,048 for a comment fix. need=6088 here matches the header exactly (must,
+# per verify_gated_macro_declarations() below), so it is looser than the
+# tightest possible bound on gbscr_open_inner alone by that same 104 B
+# (6,088 - 5,984) -- all of it harmless slack, not a requirement this fn=
+# cannot see. via=gbscr_open is the ONLY real predecessor (grepped the
+# disassembly of both gate ELFs for `bl <gbscr_open_inner's address>` --
+# exactly one call site, inside gbscr_open(); gbscr_open_inner is `static
+# noinline`, no other TU can reach it).
+#
+# WHAT THIS DECLARATION ACTUALLY ENFORCES, AND WHEN (review-opus fix pass):
+# tools/stack_budget.py's own `enforce_gates = (args.root != "main")` (~:3475)
+# means the mechanical "does gbscr_open_inner's measured subtree still fit
+# inside declared need" check -- the ONE that would have caught this NINTH
+# pass's own 376-B drift -- ONLY runs when the walker is invoked `--root`
+# something OTHER than `main`. Two of the three checks this declaration buys
+# run UNCONDITIONALLY, every build, regardless of root
+# (verify_gated_macro_declarations()/verify_gated_predecessors(), called
+# unconditionally at tools/stack_budget.py:3311/3323): need=6088 must equal
+# rom_gbui.h's #define today, and via=gbscr_open must equal the real,
+# disassembled predecessor set. The THIRD (the drift check itself) needed the
+# Makefile's own stack steps extended with a loop over every declared `via=`
+# root (BACKLOG #148/#152 -- see the Makefile's own comment) to run at build
+# time at all; before that loop existed, `--root main` (the Makefile's only
+# invocation until this fix) always walks a gated subtree fully and ungated
+# (BACKLOG #102's own rule), so the drift check silently never ran. Hand-verify
+# what the Makefile's loop now runs for you: `python3 tools/stack_budget.py
+# --elf PokeDNA-artless.elf --builddir "$(pwd)/build-artless" --root gbscr_open
+# --top 1` prints "GATED SUBTREES EXCLUDED THIS RUN ... gbscr_open_inner:
+# measured 5,984 B <= declared need 6,088 B -- excluded" and exits 0 (both gate
+# ELFs, 2026-09-15); a FATAL there means re-derive PDNA_GB_UI_NEED now.
+gated gbscr_open_inner need=6088 from=rom_gbui.h:PDNA_GB_UI_NEED gate=gbscr_open via=gbscr_open

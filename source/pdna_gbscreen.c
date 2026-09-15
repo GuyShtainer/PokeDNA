@@ -23,6 +23,10 @@
 #include "pdna_origin_art.h"  /* PDNA_GEN1/2, pdna_origin_art_stack_room       */
 #include "ui.h"                /* ui_fill_rect, ui_ptext, ui_ptext_shadow      */
 #include "pdna_layout.h"       /* PDNA_GBSCR_KEY_.. / PDNA_GBSCR_ACT_.. -- D1 fix, measured by host_textfit */
+#ifndef PDNA_DELTA
+#include "gb_art_io.h"         /* BACKLOG #148: GbArtIo/gb_art_read/gb_reg_progress -- the   *
+                                * SD leg only; the delta leg has no FIL to guard             */
+#endif
 #ifdef PDNA_DELTA
 #include "fused_gb.h"
 #endif
@@ -496,6 +500,33 @@ static const char* const kReasonOpen    = PDNA_GBSCR_REASON_OPEN;
 static const char* const kReasonOpenDetail = PDNA_GBSCR_REASON_OPEN_DETAIL;
 static const char* const kReasonBadGen  = PDNA_GBSCR_REASON_BAD_GEN;
 static const char* const kReasonNoTail  = PDNA_GBSCR_REASON_NO_TAIL;
+#ifndef PDNA_DELTA
+/* BACKLOG #148: gb_scan_guard.h stop reasons for gbscr_open_inner()'s widened
+ * scan (SD leg only -- the delta leg has no guard, no SD, nothing to cancel). */
+static const char* const kReasonCancelled = PDNA_GBSCR_REASON_CANCELLED;
+static const char* const kReasonTimedOut  = PDNA_GBSCR_REASON_TIMED_OUT;
+static const char* const kReasonReadErr   = PDNA_GBSCR_REASON_READ_ERR;
+
+/* F4 (BACKLOG #148 review-opus fix pass): a guard stop can happen either during
+ * rom_gbui_open_loc()'s own scan OR during the cache-fill reads right after it
+ * (gu->read/gu->ctx stay bound to the SAME `io` on success, so a late B/timeout/
+ * read-error during cache-fill is just as real a guard stop as one during the
+ * scan) -- both sites map `io.g.stop` through this SAME switch so a cache-fill
+ * stop is no longer misreported as the generic kReasonOpen ("could not open the
+ * ROM"), which it was not: the ROM opened fine, something stopped the guard
+ * afterward. An un-stopped failure (gbscr_cache_plan()'s own pure logic
+ * refusing, no read ever attempted) correctly falls through to kReasonOpen via
+ * the `default` case, since `io.g.stop` is still GB_SCAN_OK then. No new stack:
+ * one `uint8_t` parameter, inlines trivially. */
+static const char* gbscr_stop_reason(uint8_t stop) {
+  switch (stop) {
+    case GB_SCAN_STOP_CANCEL:   return kReasonCancelled;
+    case GB_SCAN_STOP_TIMEOUT:  return kReasonTimedOut;
+    case GB_SCAN_STOP_READ_ERR: return kReasonReadErr;
+    default:                    return kReasonOpen;
+  }
+}
+#endif
 #ifdef PDNA_DELTA
 /* BACKLOG #98 D2: distinct fallback-page reasons for the two fused_gb_rom()
  * failure modes fused_gb_lookup_failed_reason() can now report that
@@ -506,19 +537,14 @@ static const char* const kReasonOrphanedRom  = PDNA_GBSCR_REASON_ORPHANED_ROM;
 
 #ifndef PDNA_DELTA
 /* ---- SD build: FIL-backed I/O, the /PokeDNA/gbui<gen>.loc cache -----------
- * Same shape as gb_art_source.c's own gb_art_read/gb_art_loc_path/load_loc/
- * save_loc/resolve_path -- duplicated rather than shared (that module's own
- * comment explains why: those helpers are `static` to a different translation
- * unit and this is a parallel, independent path). */
-static bool gbscr_sd_read(void* ctx, uint32_t off, void* buf, uint32_t len) {
-  FIL* f = (FIL*)ctx;
-  UINT br = 0;
-  if (!f || !buf) return false;
-  if (f_lseek(f, (FSIZE_t)off) != FR_OK) return false;
-  if (f_read(f, buf, (UINT)len, &br) != FR_OK) return false;
-  return br == len;
-}
-
+ * BACKLOG #148: the plain, unguarded gbscr_sd_read() shim that used to live
+ * here (seek+read, nothing else) is gone -- gb_art_source.h's gb_art_read()
+ * (via gb_art_io.h) does the same seek+read AND the cancel/timeout/read-error
+ * latch, so every RomGbUi open in this file goes through that instead of a
+ * second, unguarded copy. gbscr_loc_path/load_loc/save_loc/resolve_path below
+ * stay duplicated from gb_art_source.c's own gbart<gen>.loc equivalents --
+ * different cache files, different generation entirely (this module's .loc
+ * describes rom_gbui.c's UI-tile tables, not rom_gbsprite.c's mon tables). */
 static void gbscr_loc_path(uint8_t gen, char* out, int cap) {
   siprintf(out, "%.*s/gbui%u.loc", cap - 11, PDNA_DIR, (unsigned)gen);
 }
@@ -612,9 +638,36 @@ static bool __attribute__((noinline)) gbscr_open_inner(uint8_t gen, GbScreen* gs
 
   RomGbUiLoc loc;
   bool have_loc = gbscr_load_loc(gen, &loc);
-  int ok = rom_gbui_open_loc(&gs->gu, gbscr_sd_read, &fil, sz, tail, ROM_GBUI_SCRATCH_MIN,
+  /* BACKLOG #148: the scan (and, since gu->read/ctx stay bound to `io` after a
+   * successful open, the cache-fill reads right below) run through the SAME
+   * cancel(B)/60-s-timeout/read-error guard gb_art_source.c's own registration
+   * scan uses, via gb_art_io.h's GbArtIo + gb_art_read(). `ui`/`io` are ordinary
+   * locals on THIS frame -- gone the moment this function returns, exactly like
+   * the old bare `fil` ctx was, and gbscr_flush()'s own local RomGbUi copy
+   * already rebinds .read/.ctx to gbscr_mem_read before ever using them again
+   * (see that function's own comment), so nothing outlives this call.
+   *
+   * `tail_len` (not ROM_GBUI_SCRATCH_MIN) is the scan window: gbscr_cache_plan/
+   * _fill() below only ever write into `tail` AFTER this call returns (starting
+   * at `tail + ROM_GBUI_SCRATCH_MIN`, see gbscr_cache_plan()'s own plan and the
+   * file header's U2b item-1 note), so every byte of the tail_len the caller
+   * lent is free scan scratch here -- widening the window cannot clobber
+   * anything the plan will read later. RomGbUi itself keeps no pointer into
+   * `scratch` past this one call: rom_gbui.c's `Scan` (the struct that actually
+   * holds `scratch`/`scratch_len`) is a plain LOCAL inside rom_gbui_open()/
+   * rom_gbui_open_loc(), never copied onto RomGbUi, and rom_gbui.h's own
+   * rom_gbui_open() doc comment says the scratch "may be released or reused
+   * immediately afterward" -- confirmed by reading rom_gbui.c, not assumed. */
+  GbRegUi ui = { gen, 0 };
+  GbArtIo io;
+  gb_art_io_init(&io, &fil, sz, gb_reg_progress, &ui, GB_ART_LOC_UI, true);
+  int ok = rom_gbui_open_loc(&gs->gu, gb_art_read, &io, sz, tail, tail_len,
                              have_loc ? &loc : 0);
-  if (!ok || (uint8_t)gs->gu.gen != gen) { f_close(&fil); if (reason) *reason = kReasonOpen; return false; }
+  if (!ok || (uint8_t)gs->gu.gen != gen) {
+    f_close(&fil);
+    if (reason) *reason = gbscr_stop_reason(io.g.stop);
+    return false;
+  }
   /* D5 fix (U2a review): the old condition here (`!have_loc || id_hash/size
    * mismatch`) never healed a REJECTED loc -- rom_gbui_open_loc() also falls
    * back to a full scan on a `check`/gen/revalidate failure inside a
@@ -635,7 +688,13 @@ static bool __attribute__((noinline)) gbscr_open_inner(uint8_t gen, GbScreen* gs
   bool cok = gbscr_cache_plan(gen, need_mask, opt_mask, &gs->gu, tail_len, &plan) &&
              gbscr_cache_fill(&gs->gu, &plan, tail, &gs->cache);
   f_close(&fil);
-  if (!cok) { if (reason) *reason = kReasonOpen; return false; }
+  /* F4: a guard stop DURING cache-fill (B held late, timeout, a read error) is
+   * just as real as one during the scan above -- gu->read/ctx are still bound
+   * to this same `io` here (rom_gbui_open_loc() left them that way on
+   * success), so io.g.stop reflects EITHER phase. The .loc written above
+   * stays valid either way: it describes tables that were genuinely located
+   * before this fill ever ran. */
+  if (!cok) { if (reason) *reason = gbscr_stop_reason(io.g.stop); return false; }
 #else
   const uint8_t* base; uint32_t size;
   if (!fused_gb_rom(gen, &base, &size)) {
@@ -660,8 +719,11 @@ static bool __attribute__((noinline)) gbscr_open_inner(uint8_t gen, GbScreen* gs
    * beyond gb_scale_mode, so a delta-build gbscr_open() always does the full
    * scan. Rare (a screen entry, not a per-frame cost); a future slice may add
    * an EWRAM cache the same way gb_art_source.c's #62 D1 did IF the budget is
-   * revisited. */
-  int ok = rom_gbui_open(&gs->gu, fused_gb_slice_read, &slice, size, tail, ROM_GBUI_SCRATCH_MIN);
+   * revisited. BACKLOG #148: `tail_len` (not ROM_GBUI_SCRATCH_MIN) here too, for
+   * the same reason as the SD leg above -- the whole caller-lent tail is free
+   * scan scratch before gbscr_cache_plan/_fill() ever touch it. This leg has no
+   * FIL, no guard and no progress screen (cart-space reads never block). */
+  int ok = rom_gbui_open(&gs->gu, fused_gb_slice_read, &slice, size, tail, tail_len);
   if (!ok || (uint8_t)gs->gu.gen != gen) { if (reason) *reason = kReasonOpen; return false; }
 
   GbscrCache plan;
@@ -753,7 +815,15 @@ bool gbscr_decode_pic_gen1(GbScreen* gs, uint8_t* buf, uint32_t buf_len) {
   FIL fil;
   memset(&fil, 0, sizeof fil);
   if (f_open(&fil, path, FA_READ) != FR_OK) return false;
-  err = gb_sprite_gen1_buf(px, work, gbscr_sd_read, &fil, gs->gu.playerpic, &info);
+  /* BACKLOG #148: gbscr_sd_read() is gone -- this is a single already-known-
+   * offset read (gs->gu.playerpic), not a scan, so no progress/timeout (same
+   * silent-fetch shape gb_art_source.c itself uses for its own per-fetch
+   * reads: fn=0, limited=false). */
+  FSIZE_t fsz = f_size(&fil);
+  uint32_t sz = (fsz > (FSIZE_t)0xFFFFFFFFu) ? 0xFFFFFFFFu : (uint32_t)fsz;
+  GbArtIo io;
+  gb_art_io_init(&io, &fil, sz, 0, 0, GB_ART_LOC_UI, false);
+  err = gb_sprite_gen1_buf(px, work, gb_art_read, &io, gs->gu.playerpic, &info);
   f_close(&fil);
 #else
   const uint8_t* base; uint32_t size;

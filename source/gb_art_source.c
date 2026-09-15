@@ -12,6 +12,8 @@
 #include "rom_gbsprite.h"
 #include "rom_gbicon.h"       /* E5: the 16x16 Gen-2 party/PC menu icon rung          */
 #include "gb_art_source.h"
+#include "gb_art_io.h"        /* BACKLOG #148: GbArtIo/gb_art_io_init/gb_art_read moved  *
+                               * here so source/pdna_gbscreen.c can reuse them            */
 #include "fused_gb.h"         /* PDNA_DELTA half: read the fuse_gb.py corpus from cart space */
 #include "gb_scan_guard.h"    /* cancel / timeout / read-error latch for the SD read shim  */
 #ifndef PDNA_DELTA
@@ -129,29 +131,18 @@ static void gb_icon_save_loc(const RomGbIconLoc* loc) {
  * touching the handle. That is what turns "FatFs latched fp->err and every later
  * f_read fails instantly" from a scanner spinning through thousands of instant
  * failures into a clean unwind on the first one. A read failure records fr, the
- * latched FIL.err and the offset for the caller's message and the log. */
-typedef struct GbArtIo {
-  GbArtProgressFn fn;         /* NULL = silent (boot, per-fetch). FIRST on purpose: this
-                               * is the one indirect call tools/stack_budget.py must
-                               * resolve (tools/stack_edges.txt `GbArtIo.fn @0`), and at
-                               * offset 0 its check never depends on sizing the nested
-                               * guard below.                                            */
-  void*           fn_ctx;
-  FIL*            f;
-  GbScanGuard     g;
-  uint32_t        t_start;    /* perf_ticks() at open, for GbArtRegInfo.elapsed_ms       */
-  uint32_t        reads_done; /* reads admitted by EARLIER guards (locator 1 -> 2)       */
-  uint32_t        fail_off;
-  uint8_t         locator;    /* GB_ART_LOC_* -- what the progress screen names          */
-  uint8_t         fr;         /* FRESULT of the failing call, 0 = none                   */
-  uint8_t         err;        /* FIL.err after it                                        */
-} GbArtIo;
+ * latched FIL.err and the offset for the caller's message and the log.
+ *
+ * BACKLOG #148: the GbArtIo type itself, and gb_art_io_init()/gb_art_read() below, now
+ * live in gb_art_io.h (no longer `static` here) so source/pdna_gbscreen.c's
+ * gbscr_open_inner can drive the same guard over its own whole-tail scan instead of the
+ * plain, unguarded gbscr_sd_read() shim it used to open with (now deleted). */
 
 #define GB_ART_TICK_MASK   7u                                   /* poll/draw every 8 reads */
 #define GB_ART_LIMIT_TICKS (GB_ART_SCAN_LIMIT_S * 16384u)      /* perf_ticks() is 16,384 Hz */
 
-static void gb_art_io_init(GbArtIo* io, FIL* f, uint32_t size, GbArtProgressFn fn, void* fn_ctx,
-                           uint8_t locator, bool limited) {
+void gb_art_io_init(GbArtIo* io, FIL* f, uint32_t size, GbArtProgressFn fn, void* fn_ctx,
+                    uint8_t locator, bool limited) {
   memset(io, 0, sizeof *io);
   io->f = f; io->fn = fn; io->fn_ctx = fn_ctx; io->locator = locator;
   io->t_start = perf_ticks();
@@ -167,7 +158,7 @@ static void gb_art_io_next(GbArtIo* io, uint8_t locator) {
   gb_scan_guard_init(&io->g, io->g.total, perf_ticks(), limit, GB_ART_TICK_MASK);
 }
 
-static bool gb_art_read(void* ctx, uint32_t off, void* buf, uint32_t len) {
+bool gb_art_read(void* ctx, uint32_t off, void* buf, uint32_t len) {
   GbArtIo* io = (GbArtIo*)ctx;
   if (!io || !io->f || !buf) return false;
   int tick = 0;

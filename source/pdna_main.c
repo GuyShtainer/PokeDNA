@@ -77,6 +77,8 @@
 #endif
 #include "pdna_origin_art.h" /* pdna_origin_art_set_romsprite -- registers the RomSprite */
 #include "gb_art_source.h" /* slice E3: the GB half of the same art router, romgb1/romgb2 */
+#include "gb_art_io.h"     /* BACKLOG #148: GbRegUi/GB_ART_LOC_UI -- gb_reg_progress's ctx *
+                            * type and the new locator pdna_gbscreen.c's scan reports    */
 #include "pdna_gbscreen.h" /* U2a: the shared GB-screen shell, gb_scale_mode/"gbscale" key */
 #include "artbuf.h"        /* mon_decomp -- the shared 8 KiB decode buffer            */
 #include "item_icons.h"    /* item_icon_for -- the compiled rung app_item_icon() tries first */
@@ -3017,18 +3019,35 @@ static void app_register_rom(void) {
  * above: which locator, bytes covered / ROM size, a bar, the elapsed clock, and B to
  * cancel (returning false stops the scan before its next read; nothing is written).
  * Its own frame is deliberately tiny (one 40-byte row buffer): it runs at the BOTTOM
- * of the locator's call chain, in place of the FatFs read it precedes. */
-typedef struct { uint8_t gen; uint8_t restoring; } GbRegUi;
-
-static bool gb_reg_progress(void* vctx, uint8_t locator, uint32_t done, uint32_t total,
-                            uint32_t elapsed_ms) {
+ * of the locator's call chain, in place of the FatFs read it precedes.
+ *
+ * BACKLOG #148: no longer `static` -- source/pdna_gbscreen.c's gbscr_open_inner()
+ * reuses this SAME progress screen for its own whole-tail scan (locator
+ * GB_ART_LOC_UI, "screen data" below) instead of a second copy, so the ctx type
+ * (GbRegUi) now lives in gb_art_io.h where both translation units can see it. */
+bool gb_reg_progress(void* vctx, uint8_t locator, uint32_t done, uint32_t total,
+                     uint32_t elapsed_ms) {
   const GbRegUi* c = (const GbRegUi*)vctx;
   key_poll();
   if (key_hit(KEY_B)) return false;
+  /* F5 (BACKLOG #148 review-opus fix pass, UX parity): a warm gbui<gen>.loc hit
+   * (gbscr_open_inner's own scan, GB_ART_LOC_UI) costs only 19-29 reads --
+   * 3-5 ticks of this callback -- on EVERY routine open of a trainer card/bag/
+   * pack/map, where the Gen-3 twins open silently. Poll B always (so a cancel
+   * still works even on a fast scan that is about to finish anyway), but do
+   * not PAINT until the scan has genuinely been slow: a cold, no-.loc scan
+   * (694-1,110 reads measured) crosses 400 ms well within its first second, so
+   * this never hides a real multi-second wait, only the routine-open flicker.
+   * Scoped to GB_ART_LOC_UI only -- the hw2 registration path (LOC_SPRITES/
+   * LOC_ICONS, Settings > Game ROM) is untouched, since THAT screen is a
+   * deliberate, rare, user-initiated action where showing progress immediately
+   * is correct, not flicker. */
+  if (locator == GB_ART_LOC_UI && elapsed_ms < 400u) return true;
   ui_clear();
   ui_text(4, 4, UI_TITLE, c->restoring ? "RESTORING GAME BOY ROM" : "CHECKING GAME BOY ROM");
   ui_hline(0, 14, UI_SCR_W, UI_BORDER);
   ui_text(8, 26, UI_TEXT, locator == GB_ART_LOC_ICONS ? "2/2  menu icon tables"
+                        : locator == GB_ART_LOC_UI    ? "1/1  screen data"
                         : (c->gen == PDNA_GEN2 ? "1/2  sprite tables" : "1/1  sprite tables"));
   char row[40];
   siprintf(row, "%lu / %lu KB", (unsigned long)(done >> 10), (unsigned long)(total >> 10));
