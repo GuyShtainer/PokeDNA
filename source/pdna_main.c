@@ -35,6 +35,7 @@
 #include "pdna_summary.h"
 #include "pdna_box.h"
 #include "xfer_gate.h"      /* BACKLOG #120 S2: xg_pc_live/xg_togame_row/xg_paste_row/xg_inject_refuse */
+#include "bank_cell.h"      /* BACKLOG #150 S150-6: bc_is_native -- app_paste_gb_commit's G-H6 guard */
 #include "gen3_trainer.h"
 #include "gen3_record.h"    /* Emerald Battle Record (save sector 31) info + export */
 #include "gen3_frontier.h"  /* g3f_streak_get/g3f_modes/g3f_mode_name for the record screen's streaks page */
@@ -3429,8 +3430,12 @@ static bool app_paste_gb_lookup(uint8_t* buf, uint32_t* len, const char* path,
   int first = -1, species_match = -1, start = 0;
   for (int guard = 0; guard <= GBSC_MAX_ENTRIES; guard++) {
     /* include_claimed=true: a claimed entry (its Gen-3 original already released by
-     * gb_reconcile_on_load) must still serve the merge up -- see gb_sidecar.h. */
-    int i = gbsc_find(buf, *len, &g_clip.gb, start, true);
+     * gb_reconcile_on_load) must still serve the merge up -- see gb_sidecar.h.
+     * want_kind=XR_KIND_G3_HOME (BACKLOG #150 S150-6): the merge UP restores a
+     * Gen-3 original from a GB-side entry; a native cell (XR_KIND_NATIVE_HOME) must
+     * never reach gbsc_merge_up -- gbsc_merge_up's own native refusal is belt, this
+     * filter is an earlier braces (G-H6). */
+    int i = gbsc_find(buf, *len, &g_clip.gb, start, true, XR_KIND_G3_HOME);
     if (i < 0) break;
     if (first < 0) first = i;
     GbscEntry cand;
@@ -3468,6 +3473,19 @@ static bool app_paste_gb_commit(uint8_t* buf, uint32_t* len, const char* path, i
                                 AppCommitFn commit, uint8_t* block,
                                 const GbscMergeReport* rep) {
   if (!app_sidecar_confirm(rep)) return false;
+
+  /* G-H6, the SECOND independent guard (belt is gbsc_merge_up's own native refusal,
+   * source/gb_sidecar.c) -- BACKLOG #150 S150-6, §11.6/§11.12/§11.13's required
+   * !bc_is_native(merged) assert. A pre-#150 sidecar entry has no kind byte at all,
+   * so a native cell reaching THIS point cannot be told apart from a real merged
+   * Gen-3 record by anything upstream of this check; refusing here means one can
+   * never land in g_save/g_pc through the clipboard even if the belt guard above it
+   * were ever bypassed. */
+  if (bc_is_native(merged)) {
+    log_line("gen3: paste-up refused: merged80 is a native cell");
+    snd_error();
+    return false;
+  }
 
   ClipMon tmp; memset(&tmp, 0, sizeof tmp);
   memcpy(tmp.rec, merged, 80);

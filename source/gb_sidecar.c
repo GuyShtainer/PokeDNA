@@ -2,6 +2,7 @@
 #include "gen3_edit.h"     /* EditMon, gen3_edit_load/commit, em_set_*             */
 #include "gen3_mon.h"      /* PkMon, pk_decode_mon, PK_* stat order                */
 #include "gen3_box.h"      /* pk_resolve -- the ORIGINAL record's true level       */
+#include "bank_cell.h"     /* bc_is_native -- BACKLOG #150 S150-6, G-F4/G-H6 native refusal */
 #include <string.h>
 
 /* ---- little-endian codec, CRC-16/CCITT-FALSE -------------------------------- */
@@ -235,7 +236,7 @@ bool gbsc_get(const uint8_t* buf, uint32_t len, int idx, GbscEntry* out) {
 }
 
 int gbsc_find(const uint8_t* buf, uint32_t len, const GbEditMon* now, int start,
-             bool include_claimed) {
+             bool include_claimed, int want_kind) {
   int count = gbsc_count(buf, len);
   if (count < 0 || !now || start < 0) return -1;
   uint8_t dv4[4] = {
@@ -246,6 +247,10 @@ int gbsc_find(const uint8_t* buf, uint32_t len, const GbEditMon* now, int start,
   for (int i = start; i < count; i++) {
     const uint8_t* e = buf + GBSC_HEADER + (uint32_t)i * GBSC_ENTRY;
     if (!include_claimed && (e[E_CLAIMED] & EF_CLAIMED)) continue;
+    if (want_kind >= 0) {
+      uint8_t kind = (uint8_t)((e[E_CLAIMED] & EF_KIND) ? 1 : 0);
+      if (kind != (uint8_t)want_kind) continue;
+    }
     if (e[E_GEN] != now->gen) continue;
     if (rd16(e + E_OTID) != otid) continue;
     if (memcmp(e + E_DV4, dv4, 4) != 0) continue;
@@ -253,6 +258,30 @@ int gbsc_find(const uint8_t* buf, uint32_t len, const GbEditMon* now, int start,
     return i;                 /* species deliberately not compared -- see gb_sidecar.h */
   }
   return -1;
+}
+
+/* BACKLOG #150 S150-6, §11.6: DOWN's replace-not-append lookup. */
+int gbsc_find_by_key(const uint8_t* buf, uint32_t len, const uint8_t id8[8]) {
+  int count = gbsc_count(buf, len);
+  if (count < 0 || !id8) return -1;
+  for (int i = 0; i < count; i++) {
+    const uint8_t* e = buf + GBSC_HEADER + (uint32_t)i * GBSC_ENTRY;
+    if (memcmp(e + E_ORIG80, id8, 8) == 0) return i;
+  }
+  return -1;
+}
+
+/* BACKLOG #150 S150-6, §11.6: refuses eviction only when the file is not already
+ * full, or when it is full and the OLDEST (index 0 -- gbsc_add appends, gbsc_remove
+ * compacts) entry is itself XR_STATE_PENDING. */
+int gbsc_evict_oldest(uint8_t* buf, uint32_t* len) {
+  if (!buf || !len) return -1;
+  int count = gbsc_count(buf, *len);
+  if (count != GBSC_MAX_ENTRIES) return -1;
+  const uint8_t* e0 = buf + GBSC_HEADER;
+  uint8_t state0 = (uint8_t)((e0[E_CLAIMED] >> EF_STATE_SH) & EF_STATE_MASK);
+  if (state0 == XR_STATE_PENDING) return -1;
+  return gbsc_remove(buf, len, 0);
 }
 
 /* S5-C Part B2. */
@@ -450,6 +479,13 @@ bool gbsc_merge_up(const GbscEntry* e, const GbEditMon* now, uint8_t out80[80],
   if (!rep) rep = &local;
   memset(rep, 0, sizeof *rep);
   if (!e || !now || !out80) return false;
+  /* G-F4/G-H6: belt (the braces are app_paste_gb_commit's independent
+   * !bc_is_native(merged) assert before the clipboard memcpy, source/pdna_main.c).
+   * A native cell (S150-1's bc_pack output, kind byte absent on pre-#150 entries so
+   * this check cannot rely on e->kind alone) must never reach gen3_edit_load below --
+   * that would decrypt it with key = magic XOR ident32 and re-encrypt the wreckage
+   * into the real save via the clipboard path. */
+  if (bc_is_native(e->original80)) return false;
   if (e->gen != now->gen) return false;
 
   EditMon em;

@@ -3,7 +3,7 @@
  * format + the merge back up). docs/GEN3-TO-GB-SIDECAR-DESIGN.md is the design.
  *
  *   cc -std=c11 -Wall -Wextra -I source tests/host_gen3gb_test.c \
- *      source/gen3_to_gb.c source/gb_sidecar.c source/evolutions.c \
+ *      source/gen3_to_gb.c source/gb_sidecar.c source/bank_cell.c source/evolutions.c \
  *      source/gen3_save.c source/gen3_mon.c source/gen3_box.c source/gen3_edit.c \
  *      source/gen3_daycare.c source/data_tables.c \
  *      source/gb_edit.c source/gb_session.c source/gen1_save.c source/gen1_write.c \
@@ -153,14 +153,14 @@ static void test_format(void) {
   gb_set_dv(&now, GB_SPE, dv4[2]); gb_set_dv(&now, GB_SPC, dv4[3]);
   gb_set_otname_raw(&now, otname);
   for (int i = 0; i < GBSC_MAX_ENTRIES; i++)
-    CHECK(gbsc_find(buf, len, &now, i, true) == i, "gbsc_find(start=%d) returns %d", i, i);
-  CHECK(gbsc_find(buf, len, &now, GBSC_MAX_ENTRIES, true) == -1, "gbsc_find past the end returns -1");
+    CHECK(gbsc_find(buf, len, &now, i, true, -1) == i, "gbsc_find(start=%d) returns %d", i, i);
+  CHECK(gbsc_find(buf, len, &now, GBSC_MAX_ENTRIES, true, -1) == -1, "gbsc_find past the end returns -1");
 
   /* ==== S5-C Part B2: claimed/keep-asked flags ================================
    * gbsc_set_claimed / gbsc_flags_get/set and gbsc_find's new include_claimed gate --
    * docs/GEN3-TO-GB-SIDECAR-DESIGN.md section 12: gb_reconcile_on_load() marks an
    * entry claimed once its Gen-3 original is released, and must never re-offer it;
-   * the merge UP (gbsc_find(..., true)) must still find it regardless. */
+   * the merge UP (gbsc_find(..., true, -1)) must still find it regardless. */
   {
     CHECK(gbsc_set_claimed(buf, len, 3, true) == 0, "gbsc_set_claimed(3, true)");
     CHECK(gbsc_count(buf, len) == GBSC_MAX_ENTRIES,
@@ -169,16 +169,16 @@ static void test_format(void) {
     CHECK(gbsc_get(buf, len, 3, &got3) && got3.claimed == 1,
           "entry 3 decodes with claimed == 1");
     for (int i = 0; i < GBSC_MAX_ENTRIES; i++)
-      CHECK((gbsc_find(buf, len, &now, i, false) == i) == (i != 3),
+      CHECK((gbsc_find(buf, len, &now, i, false, -1) == i) == (i != 3),
             "gbsc_find(start=%d, include_claimed=false) %s entry 3",
             i, i == 3 ? "skips" : "still returns");
-    CHECK(gbsc_find(buf, len, &now, 0, true) == 0,
+    CHECK(gbsc_find(buf, len, &now, 0, true, -1) == 0,
           "gbsc_find(..., include_claimed=true) still finds claimed entry 3 (from 0)");
-    CHECK(gbsc_find(buf, len, &now, 3, true) == 3,
+    CHECK(gbsc_find(buf, len, &now, 3, true, -1) == 3,
           "gbsc_find(..., include_claimed=true) finds entry 3 itself, unlike start=3 above");
     CHECK(gbsc_set_claimed(buf, len, 3, false) == 0, "gbsc_set_claimed(3, false) unclaims it");
     CHECK(gbsc_get(buf, len, 3, &got3) && got3.claimed == 0, "entry 3 decodes with claimed == 0 again");
-    CHECK(gbsc_find(buf, len, &now, 0, false) == 0,
+    CHECK(gbsc_find(buf, len, &now, 0, false, -1) == 0,
           "unclaimed again: include_claimed=false finds entry 0 first, same as before");
     CHECK(gbsc_set_claimed(buf, len, GBSC_MAX_ENTRIES, true) == -1,
           "gbsc_set_claimed refuses an out-of-range index");
@@ -298,12 +298,12 @@ static void test_format(void) {
     gb_set_dv(&probe, GB_ATK, dv4[0]); gb_set_dv(&probe, GB_DEF, dv4[1]);
     gb_set_dv(&probe, GB_SPE, dv4[2]); gb_set_dv(&probe, GB_SPC, dv4[3]);
     gb_set_otname_raw(&probe, otname);
-    CHECK(gbsc_find(pre, plen, &probe, 1, false) == 1,
+    CHECK(gbsc_find(pre, plen, &probe, 1, false, -1) == 1,
           "mutate: gbsc_find(include_claimed=false) still returns the unclaimed b3/b4-set entry");
     CHECK(gbsc_set_claimed(pre, plen, 1, true) == 0, "mutate: claim it");
-    CHECK(gbsc_find(pre, plen, &probe, 1, false) == -1,
+    CHECK(gbsc_find(pre, plen, &probe, 1, false, -1) == -1,
           "mutate: gbsc_find(include_claimed=false) skips it once claimed, b3/b4 unchanged");
-    CHECK(gbsc_find(pre, plen, &probe, 1, true) == 1,
+    CHECK(gbsc_find(pre, plen, &probe, 1, true, -1) == 1,
           "mutate: gbsc_find(include_claimed=true) still finds it claimed");
   }
 
@@ -597,7 +597,7 @@ static void check_conversion(const uint8_t* rec, uint8_t gen, const GbGen1Base* 
   GbscEntry back;
   CHECK(gbsc_get(filebuf, flen, 0, &back), "sidecar get");
   CHECK(memcmp(&back, &e, sizeof back) == 0, "sidecar entry decodes back exactly");
-  CHECK(gbsc_find(filebuf, flen, &out, 0, true) == 0, "gbsc_find locates the entry at index 0");
+  CHECK(gbsc_find(filebuf, flen, &out, 0, true, -1) == 0, "gbsc_find locates the entry at index 0");
 
   uint8_t back80[80];
   GbscMergeReport rep;
@@ -777,7 +777,7 @@ static void test_gb_side_changes(void) {
     uint32_t flen = (uint32_t)gbsc_init(filebuf, key);
     CHECK(gbsc_add(filebuf, &flen, sizeof filebuf, &g_sample_entry[GB_GEN2]) == 0,
           "(d) rebuild a one-entry sidecar file for the unedited sample");
-    CHECK(gbsc_find(filebuf, flen, &chg, 0, true) == -1,
+    CHECK(gbsc_find(filebuf, flen, &chg, 0, true, -1) == -1,
           "(d) gbsc_find no longer locates the entry once a DV changed (orphaned)");
 
     uint8_t back80[80]; GbscMergeReport rep;

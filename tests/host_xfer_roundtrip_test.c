@@ -1,7 +1,7 @@
 /* BACKLOG #104 audit: is a cross-generation transfer ROUND-TRIP EXACT today?
  *
  *   cc -std=c11 -Wall -Wextra -I source tests/host_xfer_roundtrip_test.c \
- *      source/gen3_to_gb.c source/gb_sidecar.c source/gen12_convert.c \
+ *      source/gen3_to_gb.c source/gb_sidecar.c source/bank_cell.c source/gen12_convert.c \
  *      source/gen3_save.c source/gen3_mon.c source/gen3_box.c source/gen3_edit.c \
  *      source/gen3_daycare.c source/data_tables.c source/evolutions.c \
  *      source/gb_edit.c source/gen1_save.c source/gen2_save.c \

@@ -227,9 +227,28 @@ bool gbsc_get(const uint8_t* buf, uint32_t len, int idx, GbscEntry* out);
  * (app_paste_gb_lookup, pdna_main.c) must still find one: a released original is
  * exactly why the sidecar exists, not a reason to stop serving it. Every call site
  * that predates this parameter (the up-merge, and every existing test) wants true --
- * nothing could BE claimed before this slice. */
+ * nothing could BE claimed before this slice.
+ *
+ * `want_kind` (BACKLOG #150 S150-6, decision D-Q5/review 8b): XR_KIND_* to require,
+ * or < 0 for "any kind" (every call site that predates this parameter). The filter
+ * may only REMOVE non-matching candidates from the walk -- it never changes which
+ * entry wins among the survivors (app_paste_gb_lookup's own tiebreak order, S150-9's
+ * job to rework, must survive byte-for-byte). A caller resolving the merge UP wants
+ * XR_KIND_G3_HOME (a native cell, kind XR_KIND_NATIVE_HOME, must never reach
+ * gbsc_merge_up -- see gbsc_merge_up's own native refusal below and G-H6). */
 int gbsc_find(const uint8_t* buf, uint32_t len, const GbEditMon* now, int start,
-             bool include_claimed);
+             bool include_claimed, int want_kind);
+
+/* First entry (any index) whose original80[0..7] equals `id8` -- DOWN's replace-not-
+ * append lookup (S150-6, §11.6). -1 if none, or if the file does not validate. */
+int gbsc_find_by_key(const uint8_t* buf, uint32_t len, const uint8_t id8[8]);
+
+/* When the file is already at GBSC_MAX_ENTRIES and entry 0 (the OLDEST -- gbsc_add
+ * always appends, gbsc_remove always compacts, so index 0 is always the oldest
+ * surviving entry) is not itself XR_STATE_PENDING, evict it (gbsc_remove(buf, len, 0))
+ * and return 0. Otherwise -1, refusing nothing else: a file whose oldest entry IS
+ * pending is the one case §11.6 reserves the refusal for. */
+int gbsc_evict_oldest(uint8_t* buf, uint32_t* len);
 
 /* Set/clear entry `idx`'s `claimed` byte and rewrite its crc16 (the entry's own crc
  * covers bytes +0..+125, `claimed` included -- see the entry layout above). 0 on
