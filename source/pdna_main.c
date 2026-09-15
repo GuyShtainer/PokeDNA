@@ -4650,6 +4650,13 @@ bool app_src_empty_action_offered(void) {
  * Pokemon that does not exist) that makes no sense, so the row list collapses to just
  * that one row + CANCEL. See pdna_app.h's AppSrcOps.paste for what the row does. */
 static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0, bool empty) {
+  /* BACKLOG #150 S150-3 decision 9: reachable on a Bank cell through the hack-ROM
+   * branch above (app_rom_is_hack(g_game) && !g_src_ops -> app_src_readonly_set ->
+   * this function), where RO_COPY would load the native bytes into g_clip -- a
+   * clipboard that outlives the save and can be pasted into a non-hack save later.
+   * Blunt refusal, not a whitelist: this read-only variant has no whitelist shape to
+   * reuse yet, so deny outright rather than build one for a hack-ROM-Bank edge case. */
+  if (!empty && bc_is_native(rec)) { snd_deny(); return false; }
   const char* locked = (!empty && g_src_why) ? g_src_why(rec) : 0;
   enum { RO_VIEW, RO_ITEM, RO_MOVE, RO_RELEASE, RO_LEGAL, RO_COPY, RO_PASTE, RO_CREATE,
          RO_DUP, RO_DAYCARE, RO_EXPORT, RO_CANCEL };
@@ -4828,6 +4835,11 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
    * cell). Decode it the way the grid does, and it is ALWAYS occupied: the raw
    * bytes are the mon's only copy (G-H2). */
   if (!is_party && bc_is_native(rec)) { pdna_native_cell_decode(rec, &m0, 0); occupied = true; }
+  /* BACKLOG #150 S150-3 decision 7: a WHITELIST, not a blacklist (G-F3's own lesson --
+   * a blacklist silently re-opens when a twelfth row is added). Native cells are never
+   * is_party (a native cell only ever lives in a Bank box), so `native` mirrors the
+   * gate right above verbatim. */
+  const bool native = !is_party && bc_is_native(rec);
 
   if (!app_can_edit()) {                                 /* read-only carts: view only */
     /* Review fix F2 (BACKLOG #54): a hack-flagged Gen-3 game's OWN box/party grid
@@ -4892,7 +4904,25 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
   /* Labels come from pdna_layout.h: they are 8 px/glyph inside a 100 px panel, so their
    * WIDTH is a real constraint (host_textfit_test.c measures every one of them). */
   int act[PDNA_MONMENU_MAX]; const char* lab[PDNA_MONMENU_MAX]; int n = 0;
-  if (occupied) {
+  if (native) {
+    /* BACKLOG #150 S150-3 decision 7 + D-Q1 (orchestrator 2026-09-15): VIEW / MOVE /
+     * RELEASE / CANCEL, in Gen-3's own relative order -- CANCEL is appended
+     * unconditionally below, same as every other branch. Putting `native` FIRST also
+     * covers the case pk_decode_mon (not reached here -- line :4830 above already
+     * intercepts it) would otherwise mis-read as empty (G-H2): the EMPTY branch below
+     * never runs for a native cell.
+     * VIEW reuses A_SUMMARY's own dispatch case: a native cell is never is_party, so
+     * that case always calls app_box_browse(), whose own bc_is_native() check (this
+     * file, gb_native_summary_open()) opens the REAL Gen-1/2 summary read-only instead
+     * of the lossy Gen-3-converted copy -- exactly what D-Q1 asks for, with no new
+     * dispatch case. Labelled VIEW (not VIEW/EDIT): read-only in this slice.
+     * An EDIT row arrives with S150-14 (Guy's MUST-HAVE-NOW answer,
+     * docs/BANK-CROSSGEN-DESIGN.md:456-458) -- appended to this SAME whitelist block
+     * (plus decision 9's dispatch list below), never a restructure. */
+    lab[n]=PDNA_LBL_VIEW; act[n++]=A_SUMMARY;
+    if (!is_party) { lab[n]=PDNA_LBL_MOVE; act[n++]=A_MOVE; }         /* box: pick up + reposition */
+    lab[n]=PDNA_LBL_RELEASE; act[n++]=A_RELEASE;
+  } else if (occupied) {
     lab[n]=PDNA_LBL_VIEW_EDIT; act[n++]=A_SUMMARY;     /* opens the editable summary (moves edited there) */
     lab[n]=PDNA_LBL_ITEM;    act[n++]=A_ITEM;
     lab[n]=PDNA_LBL_LEGALITY; act[n++]=A_LEGAL;
@@ -4992,6 +5022,10 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
     else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : n - 1;
     else if (k & KEY_DOWN) sel = (sel + 1) % n;
     else if (k & KEY_A) {
+      /* BACKLOG #150 S150-3 decision 9: defence in depth -- cannot be out-of-sync with
+       * the row build above since it whitelists the exact same four actions. Refuses
+       * anything else outright before the switch even runs. */
+      if (native && act[sel] != A_SUMMARY && act[sel] != A_MOVE && act[sel] != A_RELEASE && act[sel] != A_CANCEL) { snd_deny(); return false; }
       switch (act[sel]) {
         case A_SUMMARY: return is_party ? party_browse(slot, commit)                  /* party: scroll mons */
                                         : app_box_browse(block, box, slot, commit);   /* box: scroll mons */
