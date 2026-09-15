@@ -100,17 +100,22 @@ static bool file_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
   }
   if (fseek(fc->f, (long)off, SEEK_SET) != 0) return false;
   if (fread(dst, 1, len, fc->f) != len) return false;
+  /* A call consumed by one slot is ineligible for the others: two slots armed on
+   * the same call would XOR the byte twice (= identity) and pass silently. */
+  long fired = -1;
   if (fc->hit_call && fc->calls == fc->hit_call && fc->hit_pos < len) {
     ((uint8_t*)dst)[fc->hit_pos] ^= fc->hit_call_xor ? fc->hit_call_xor : 0xFF;
     fc->hit_call = 0;      /* fires exactly once */
     fc->hit_call_xor = 0;  /* back to the 0xFF default for the next case */
+    fired = fc->calls;
   }
-  if (fc->hit_call_b && fc->calls == fc->hit_call_b && fc->hit_pos_b < len) {
+  if (fc->hit_call_b && fc->calls != fired && fc->calls == fc->hit_call_b && fc->hit_pos_b < len) {
     ((uint8_t*)dst)[fc->hit_pos_b] ^= fc->hit_call_xor_b ? fc->hit_call_xor_b : 0xFF;
     fc->hit_call_b = 0;
     fc->hit_call_xor_b = 0;
+    fired = fc->calls;
   }
-  if (fc->hit_call_c && fc->calls == fc->hit_call_c && fc->hit_pos_c < len) {
+  if (fc->hit_call_c && fc->calls != fired && fc->calls == fc->hit_call_c && fc->hit_pos_c < len) {
     ((uint8_t*)dst)[fc->hit_pos_c] ^= fc->hit_call_xor_c ? fc->hit_call_xor_c : 0xFF;
     fc->hit_call_c = 0;
     fc->hit_call_xor_c = 0;

@@ -167,9 +167,8 @@ static uint32_t decode_verified(const RomSprite* rs, uint32_t addr,
        * genuinely oversize/corrupt blob -- the two are indistinguishable at
        * this level. Retrying with the fixed stack window (never derived from
        * `size`, never aliasing dst) costs nothing but a re-read, so spend the
-       * budget: only the LAST attempt's zero is terminal. */
-      if (attempt < 2) { win = 0; win_bytes = 0; continue; }
-      return 0;
+       * budget: the loop-exit `return 0` below is the terminal path. */
+      win = 0; win_bytes = 0; continue;
     }
     /* `win` was sized off a SEPARATE mr_lz77_size() peek of the same 4 header
      * bytes. If that peek disagreed with the header this decode actually read,
