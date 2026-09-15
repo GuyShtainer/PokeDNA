@@ -2638,7 +2638,12 @@ xfer_down_write(uint64_t key, const uint8_t cell80[80], const GbEditMon* written
    * the wrong one for ABROAD_G3 was a no-op copy of GB bytes S150-8b's nickname
    * merge on the way back cannot use -- gbsc_entry_from() itself already fills GB
    * bytes by default, so this only OVERRIDES for the Gen-3 case. */
-  if (nick_g3) memcpy(e.nick_written, nick_g3, sizeof e.nick_written);
+  /* R1 (review): the Gen-3 nickname field is only 10 bytes (gen3_mon.c's own
+   * decode_name(out->nickname, mon + 0x08, 10)) -- byte 11 at +0x12 is the PLAINTEXT
+   * language byte, not part of the name at all. Copying sizeof(e.nick_written) (11,
+   * GB_NAME_BYTES) read one byte too far into `nick_g3` and stored the language
+   * byte in nick_written[10]. */
+  if (nick_g3) { memcpy(e.nick_written, nick_g3, 10); e.nick_written[10] = 0; }
   else         memcpy(e.nick_written, written->nick, sizeof e.nick_written);
 
   int old = gbsc_find_by_key(scratch, len, cell80);

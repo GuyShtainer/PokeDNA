@@ -307,12 +307,16 @@ static void test_roundtrip_2_3_2(void) {
      * different code path from the plain pointer arithmetic the override itself
      * uses, so this is not the same tautology the review found (memcpy then
      * compare itself). */
-    memcpy(e.nick_written, out80 + 0x08, sizeof e.nick_written);
+    /* R1 (review): only 10 bytes are the Gen-3 nickname (gen3_mon.c's own
+     * decode_name(..., mon + 0x08, 10)) -- byte 11 at +0x12 is the plaintext
+     * language byte, not part of the name; copying sizeof(e.nick_written) (11)
+     * read one byte too far and reproduced the bug this test was meant to catch. */
+    memcpy(e.nick_written, out80 + 0x08, 10); e.nick_written[10] = 0;
 
     EditMon indep; gen3_edit_load(out80, false, &indep);
-    CHECK(memcmp(e.nick_written, indep.raw + 0x08, sizeof e.nick_written) == 0,
+    CHECK(memcmp(e.nick_written, indep.raw + 0x08, 10) == 0,
           "slot %d: nick_written matches an INDEPENDENT read of the Gen-3 record's own nickname bytes", slot);
-    CHECK(memcmp(e.nick_written, written.nick, sizeof e.nick_written) != 0,
+    CHECK(memcmp(e.nick_written, written.nick, 10) != 0,
           "slot %d: nick_written differs from the GB bytes (the override actually ran, not a no-op)", slot);
 
     CHECK(memcmp(e.original80, cell, 80) == 0, "slot %d: original80 == cell80", slot);
@@ -394,12 +398,13 @@ static void test_nick_written_nonascii_glyph(void) {
 
   GbscEntry e;
   gbsc_entry_from(&e, &written, cell, 0);
-  memcpy(e.nick_written, out80 + 0x08, sizeof e.nick_written);   /* the F3 fix, exactly as xfer_down_write applies it */
+  /* R1 (review): 10 bytes only -- xfer_down_write's own fix, exactly reproduced. */
+  memcpy(e.nick_written, out80 + 0x08, 10); e.nick_written[10] = 0;
 
   EditMon indep; gen3_edit_load(out80, false, &indep);
-  CHECK(memcmp(e.nick_written, indep.raw + 0x08, sizeof e.nick_written) == 0,
+  CHECK(memcmp(e.nick_written, indep.raw + 0x08, 10) == 0,
         "nonascii: nick_written matches an independent read of the Gen-3 record");
-  CHECK(memcmp(e.nick_written, written.nick, sizeof e.nick_written) != 0,
+  CHECK(memcmp(e.nick_written, written.nick, 10) != 0,
         "nonascii: nick_written differs from the GB bytes (male sign's GB byte != its Gen-3 byte)");
 }
 
