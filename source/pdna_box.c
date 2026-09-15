@@ -1223,7 +1223,7 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
    * memcmp against the first 8 bytes handed at drop time) still matches the Bank
    * slot's real native bytes. */
   /* BACKLOG #150 S150-8 review F7: hoisted from further below (its own comment stays
-   * there) so the dispatch condition just below can gate on `!occupied` too -- a
+   * there) so the dispatch condition just below can gate the GEN3 arm on `!occupied` -- a
    * refused-for-occupied drop must never even CALL bank_down_dispatch, so the Gen-3
    * arm's own ledger write (xfer_down_write, decision 8) can never run for a
    * destination this call site is about to refuse anyway, which would otherwise
@@ -1249,15 +1249,29 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
     if (bd == BANK_DOWN_LANDED) {
       /* Two arms LAND. EXACT (S150-7): the GB list grew and the Bank consume ALREADY
        * ran inside bank_down_exact -- repaint from the image. GB_BRIDGE (S150-8): the
-       * bridge wrote the mounted OTHER-generation session, not `recs`/`box`, and the
-       * Bank origin's removal is deferred to the exit save -- no records() reload. */
+       * bridge wrote the MOUNTED session's box `box` (gbs_insert appends to the list on
+       * screen) and gb_persist already verified the card, so its Bank consume is
+       * IMMEDIATE like EXACT's -- a deferred delete would wait for the Gen-3 exit-save
+       * flush that a Game Boy session never runs, and every later save open clears the
+       * queue (merged-tree review F2); then repaint (F3). */
       if (arm == XG_DOWN_ARM_EXACT) {
         s_holding = false; *done = true; s_oam_reload = true;
         recs = src->records(box);            /* the GB list grew -- repaint from the image */
         return recs;
       }
       s_holding = false; *done = true;
-      app_bank_defer_delete(s_orig_box, s_orig_slot, s_held);
+      { uint8_t slots1[1]; slots1[0] = (uint8_t)s_orig_slot;
+        /* s_held IS the 80-byte record: hand it to the consume directly (no 80-B copy
+         * here -- the escape-gate structural test treats every 80-B memcpy in
+         * drop_held as a write that must sit below the gate). */
+        boxoam_suspend();                              /* hard rule 1: SD write with OAM off */
+        if (!app_bank_clear_slots(s_orig_box, slots1, (const uint8_t (*)[80])s_held, 1)) {
+          snd_error();                                 /* D7: the game HAS it; the Bank keeps a duplicate */
+          char l2[40]; siprintf(l2, "Bank box %d slot %d", s_orig_box + 1, s_orig_slot + 1);
+          msg_wait(PDNA_XFER_DOWN_DUP_TITLE, UI_WARN, PDNA_XFER_DOWN_DUP_L1, l2);
+        }
+        boxoam_resume(); }
+      s_oam_reload = true; recs = src->records(box);   /* the mounted list grew -- repaint */
       return recs;
     }
     if (bd != BANK_DOWN_CONVERTED) return recs;   /* REFUSED: keep holding; the arm already said why */

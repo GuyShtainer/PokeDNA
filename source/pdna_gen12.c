@@ -3005,7 +3005,7 @@ BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]) {
     return BANK_DOWN_REFUSED;
   }
 
-  uint8_t dst_gen = (g_ed->s.gen == GB_GEN1) ? GB_GEN2 : GB_GEN1;   /* the OTHER generation */
+  uint8_t dst_gen = g_ed->s.gen;   /* the MOUNTED session IS the destination (gbs_insert requires mon->gen == s->gen); the cell is the OTHER generation -- review F1 of the merged tree */
 
   int tc; uint16_t tc_bad; Gb12Result g12; G3GbStatus g3gb;
   GbEditMon mon; Gen3ToGbLoss loss; Gb12Notes notes;
