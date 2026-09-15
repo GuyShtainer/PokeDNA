@@ -1253,14 +1253,32 @@ static bool     g_item_held = false;
  * covers every one of them, including the mon-menu edit gate this lane never touches
  * directly. Named consequence (see this lane's report): this also parks the SD-side
  * art/cache writes that consult app_can_edit() (gb_art_source.c:64,
- * pdna_gbscreen.c:517) -- accepted, those are caches, never the save itself. */
+ * pdna_gbscreen.c:517) -- accepted, those are caches, never the save itself.
+ *
+ * Review fix F4 (over-lock, BACKLOG #54): g_game is the last Gen-3 slot a save was
+ * opened for and does NOT get cleared on entering a Game Boy session (START > GB
+ * import) -- so a hack-flagged g_game would otherwise also lock Gen-1/2 editing,
+ * which never touched the flagged ROM at all. `!app_arena_held()` scopes the hack
+ * term to OUTSIDE a GB session: traced all three GB entry points
+ * (pdna_gen12_show/_show_fused/_show_image, source/pdna_gen12.c) -- each calls
+ * app_arena_acquire() before showing any screen and app_arena_release() as the
+ * last statement after gb_session_core(m) returns, with NO release/reacquire in
+ * between (icon_store_borrow(false), called on every nav-menu exit inside the
+ * session, is explicitly a no-op against this arena per pdna_gen12.c's own
+ * comment: "It cannot release THIS session's own EWRAM arena: that arena was
+ * acquired directly ... not through icon_store_borrow()") -- so app_arena_held()
+ * is true for the WHOLE visible GB session, false everywhere else. Over-locking
+ * (the safe direction) is preserved everywhere app_arena_held() is false. */
 #ifdef PDNA_DELTA
 /* Emulator build: there is no flashcart to gate on — the save is our own flash chip,
  * which is always writable. */
-bool app_can_edit(void) { return !pdna_romcheck_bad() && !app_rom_is_hack(g_game); }
+bool app_can_edit(void) {
+  return !pdna_romcheck_bad() && !(!app_arena_held() && app_rom_is_hack(g_game));
+}
 #else
 bool app_can_edit(void) {
-  return active_flashcart == EZ_FLASH_OMEGA && !pdna_romcheck_bad() && !app_rom_is_hack(g_game);
+  return active_flashcart == EZ_FLASH_OMEGA && !pdna_romcheck_bad() &&
+         !(!app_arena_held() && app_rom_is_hack(g_game));
 }
 #endif
 
