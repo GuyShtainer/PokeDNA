@@ -3683,7 +3683,8 @@ int pdna_box(BoxSource* src) {
       else if (k & KEY_RIGHT) cur = (cur % COLS == COLS - 1) ? cur - COLS + 1 : cur + 1;
       else if (k & KEY_UP)    {
         if (cur >= COLS) cur -= COLS;
-        else if (!src->is_bank) { s_tab_focus = 1; need_full = true; }  /* off PC top -> top tabs (PARTY), still holding */
+        /* BACKLOG #171: a GB source is is_bank+bank_edge, so the carry must be allowed to enter tab focus */
+        else if (!src->is_bank || src->bank_edge) { s_tab_focus = 1; need_full = true; }  /* off PC top -> top tabs (PARTY), still holding */
       }
       else if (k & KEY_DOWN)  {
         if (cur < COLS * (ROWS - 1)) cur += COLS;

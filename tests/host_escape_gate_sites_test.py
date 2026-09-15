@@ -55,6 +55,15 @@ Checks:
       bc_is_native() directly, not this predicate, so this count is unchanged by them.
   (f) self_test_mutation_detection(): MUT A and MUT F both make the relevant per-site
       check FAIL, on synthetic mutated copies, every run.
+  (j) BACKLOG #171 (lane s150-4-5b): every `s_tab_focus = 1;` site inside pdna_box()'s
+      own `if (s_holding) { ... }` carrying block that is ALSO gated on `!src->is_bank`
+      (on the same line -- this file's own dense single-line if/else-if style) carries
+      `|| src->bank_edge` on that same line, and there is exactly ONE such site --
+      without the clause a GB source (always is_bank AND bank_edge, never is_bank
+      alone) can never enter tab focus while holding a lifted mon, so `UP` from row 0
+      while carrying does nothing at all (found live in mGBA: every frame after the
+      tap was pixel-identical to the one before it). MUT I reverts the real site to
+      its pre-fix `!src->is_bank`-only form and asserts the checker catches it.
 """
 from __future__ import annotations
 
@@ -142,6 +151,61 @@ COMMIT_RE      = re.compile(r"\bok = src->commit\(\)")
 RELEASE_UP_RE  = re.compile(r"s_xfer_peer->release_up\(")
 ZEROBACK_RE    = re.compile(r"memset\(recs \+ \(uint32_t\)cur \* 80, 0, 80\)")
 RETURN_RECS_RE = re.compile(r"^\s*return recs;")
+
+# BACKLOG #171 (lane s150-4-5b): the dead-carry site guard. `TAB1_ASSIGN_RE` matches
+# only the literal `s_tab_focus = 1;` assignment (never the two ternary forms
+# `s_tab_focus = src->is_bank ? 2 : 1;` / `(s_tab_focus > 0) ? s_tab_focus - 1 : 2` --
+# those always assign regardless of is_bank, so they cannot be the dead-carry shape).
+TAB1_ASSIGN_RE     = re.compile(r"s_tab_focus\s*=\s*1\s*;")
+IS_BANK_GUARD_RE   = re.compile(r"!src->is_bank")
+BANK_EDGE_CLAUSE_RE = re.compile(r"src->bank_edge")
+HOLDING_BLOCK_RE    = re.compile(r"if\s*\(\s*s_holding\s*\)\s*\{")
+
+
+def carrying_block(pdna_box_body: list[str]) -> list[str]:
+    """The `if (s_holding) { ... }` sub-block inside pdna_box()'s own body (the "MOVE
+    MODE (mon-in-hand)" section) -- found by a direct line scan for its own opening
+    brace, then brace-counted to its close, the same idiom extract_function() uses but
+    starting from a known index instead of a fresh regex search over the whole file."""
+    start = None
+    for i, ln in enumerate(pdna_box_body):
+        if HOLDING_BLOCK_RE.search(ln):
+            start = i
+            break
+    if start is None:
+        raise AssertionError("pdna_box(): `if (s_holding) {` block not found")
+    depth = 0
+    for i in range(start, len(pdna_box_body)):
+        depth += pdna_box_body[i].count("{") - pdna_box_body[i].count("}")
+        if depth == 0 and i > start:
+            return pdna_box_body[start:i + 1]
+    raise AssertionError("pdna_box(): unbalanced braces in the s_holding carrying block")
+
+
+def bank_edge_sites_check(block: list[str]) -> tuple[bool, list[str]]:
+    """BACKLOG #171: every `s_tab_focus = 1;` site in `block` that is ALSO gated on
+    `!src->is_bank` (on the SAME line -- this codebase's own dense single-line
+    if/else-if style) must carry `|| src->bank_edge` on that same line, or a GB source
+    (always is_bank AND bank_edge, never is_bank alone -- pdna_gen12_source()) can
+    never enter tab focus while holding, so `UP` from row 0 while carrying does
+    nothing -- the exact dead-carry bug lane s150-4-5b found live in mGBA (every frame
+    after the tap pixel-identical to the one before it). Shared by the real check (j)
+    and its self-mutation demonstration (MUT I). Returns (all_ok, per_site_details)."""
+    sites = [i for i, ln in enumerate(block) if TAB1_ASSIGN_RE.search(ln)]
+    details = []
+    all_ok = True
+    for i in sites:
+        ln = block[i]
+        guarded = bool(IS_BANK_GUARD_RE.search(ln))
+        has_clause = bool(BANK_EDGE_CLAUSE_RE.search(ln))
+        if guarded and not has_clause:
+            all_ok = False
+            details.append(f"line {i + 1}: guarded on !src->is_bank but missing "
+                            f"`|| src->bank_edge` -- a GB source can never enter tab "
+                            f"focus at this site while holding")
+        else:
+            details.append(f"line {i + 1}: ok ({'guarded+clause' if guarded else 'unguarded, no clause needed'})")
+    return all_ok, details
 
 def up_order_facts(lines, start, end):           # shared by the real check AND MUT H
     c = first_match_line(lines, start, end, COMMIT_RE)
@@ -356,6 +420,21 @@ def main() -> int:
     ok, d = up_order_facts(box_lines, s, e)
     check(ok, d)
 
+    # ---- (j) BACKLOG #171: every is_bank-guarded `s_tab_focus = 1;` site in pdna_box()'s
+    # carrying block also carries `|| src->bank_edge`, and there is exactly ONE such
+    # site -- pinned so a second/third/fourth site added later without the clause is a
+    # forced, deliberate look, not a silent pass. ----
+    s, e = extract_function(box_lines, r"^int pdna_box\(BoxSource\* src\)")
+    pdna_box_body = box_lines[s:e]
+    block = carrying_block(pdna_box_body)
+    tab1_count = sum(1 for ln in block if TAB1_ASSIGN_RE.search(ln))
+    check(tab1_count == 1,
+          f"pdna_box()'s carrying block: expected exactly 1 `s_tab_focus = 1;` site, "
+          f"found {tab1_count} -- BACKLOG #171's own site count drifted, look before "
+          f"trusting the per-site check below")
+    ok, details = bank_edge_sites_check(block)
+    check(ok, "BACKLOG #171: " + "; ".join(d for d in details if "missing" in d))
+
     # ---- (f) review F3: the self-mutation harness, every run ----
     self_test_mutation_detection(box_lines)
 
@@ -487,6 +566,29 @@ def self_test_mutation_detection(box_lines: list[str]) -> None:
         ok, detail = up_order_facts(mut_h, 0, len(mut_h))
         check(not ok, f"MUT H (release_up swapped before commit()) should have been caught but was not: {detail}")
         print(f"  MUT H demonstration -- release_up() line swapped above src->commit(): {detail}")
+
+    # MUT I (BACKLOG #171): revert the ONE real, clause-carrying `s_tab_focus = 1;`
+    # site back to its pre-fix `else if (!src->is_bank) { s_tab_focus = 1; ... }` form
+    # (no `|| src->bank_edge`) -- the exact dead-carry regression lane s150-4-5b found
+    # live in mGBA -- and assert bank_edge_sites_check() catches it.
+    s, e = extract_function(box_lines, r"^int pdna_box\(BoxSource\* src\)")
+    pdna_box_body = box_lines[s:e]
+    block = carrying_block(pdna_box_body)
+    mut_i = list(block)
+    reverted = False
+    for i, ln in enumerate(mut_i):
+        if TAB1_ASSIGN_RE.search(ln) and BANK_EDGE_CLAUSE_RE.search(ln):
+            mut_i[i] = ln.replace(" || src->bank_edge", "")
+            reverted = True
+            break
+    check(reverted, "MUT I: could not find the real, clause-carrying `s_tab_focus = 1;` "
+                     "site to revert -- fix this test")
+    if reverted:
+        ok, details = bank_edge_sites_check(mut_i)
+        check(not ok, f"MUT I (bank_edge clause stripped) should have been caught but "
+                       f"was not: {details}")
+        print(f"  MUT I demonstration -- `|| src->bank_edge` stripped from the "
+              f"s_tab_focus=1 site: {details}")
 
 
 if __name__ == "__main__":
