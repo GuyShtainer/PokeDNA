@@ -2683,7 +2683,17 @@ const uint16_t* app_type_badge(uint8_t type_id, uint8_t* out_h) {
   uint32_t need = (uint32_t)rom_type_scratch_bytes(&s_romitemart);   /* 5,888 RSE / 0 FRLG */
   uint8_t* scratch = need ? (uint8_t*)mon_decomp : 0;
   RomTypeSheet ts;
-  if (!rom_type_sheet_load(&s_romitemart, &ts, scratch, need)) return 0;
+  /* BACKLOG #145: hand decode_verified() the WHOLE mon_decomp buffer as cap, not
+   * just `need` -- passing cap == want (need == ROM_TYPE_SHEET_BYTES) made the
+   * BACKLOG #103 caller-tail LZ77 window (rom_itemart.c's decode_verified) size
+   * to zero, so the RSE type sheet never got the ~86 -> ~5 read win the window
+   * gives every other caller. Safe because the badge below (mon_decomp + 6144)
+   * is written strictly AFTER this call returns, and decode_verified only READS
+   * dst[want,cap) as LZ77 back-reference input during its own decode -- it never
+   * writes there (rom_itemart.c's decode_verified comment). scratch is 0 on
+   * FR/LG (need == 0); rom_type_sheet_load ignores scratch_cap on that path. */
+  if (!rom_type_sheet_load(&s_romitemart, &ts, scratch, scratch ? MON_DECOMP_BYTES : 0))
+    return 0;
   /* the sheet occupies mon_decomp[0..need); the badge is decoded past it, at the
    * offset rom_itemart.h:145-149 recommends, well inside the 8 KiB buffer either
    * way (need is at most ROM_TYPE_SHEET_BYTES == 5,888). */
