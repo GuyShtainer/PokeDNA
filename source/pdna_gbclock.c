@@ -86,9 +86,8 @@ static void gbclock_render(const GbClock* c, int sel, bool can_edit, ClockPaint*
     gbclock_header(c);
     for (int i = 0; i < ROW_N; i++) gbclock_row_paint(i, 60 + i * 16, i == sel);
     if (!can_edit) {
-      /* b160 F5: the honest reason via app_gb_readonly_why() -- cart, ROM hack, or
-       * streamed session. The Gen-3 twin (pdna_main.c:~7120) still hardcodes its
-       * own two lines; BACKLOG #161 carries the parity follow-up. */
+      /* b160 F5 + b161: the honest reason via app_gb_readonly_why() -- cart, ROM hack, or
+       * streamed session. The Gen-3 twin (pdna_main.c, the SAVE CLOCK / RTC !can branch) uses app_readonly_why() the same way (b161). */
       ui_text(6, 112, UI_DIM, app_gb_readonly_why());
     }
     ui_hline(0, 151, UI_SCR_W, UI_BORDER);

@@ -118,7 +118,7 @@ static bool pdna_gbbag_plain(GbBag* bag, bool can_edit, const char* header, cons
     for (int i = 0; i < vis && top + i < n; i++)
       gbbag_row_paint(bag, pocket, top + i, row_y0 + i * 9, top + i == sel);
     ui_hline(0, 151, UI_SCR_W, UI_BORDER);
-    trainer_key_legend(can_edit ? "A edit  L/R store  B save" : "L/R store  B back");
+    ui_text(4, 152, UI_DIM, can_edit ? "A edit  L/R store  B save" : app_gb_readonly_footer());
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B);
     if (k & KEY_B) return true;
@@ -128,10 +128,17 @@ static bool pdna_gbbag_plain(GbBag* bag, bool can_edit, const char* header, cons
     }
     if (n > 0 && (k & KEY_UP))        sel = (sel > 0) ? sel - 1 : n - 1;
     else if (n > 0 && (k & KEY_DOWN)) sel = (sel + 1) % n;
-    else if (can_edit && n > 0 && (k & KEY_A)) {
-      uint32_t q = num_entry("QUANTITY", l->entries[sel].qty, GBB_QTY_CAP);
-      if (q < 1) q = 1;
-      gbb_set_qty(GBF_G_RED, bag, pocket, sel, (uint8_t)q);
+    else if (k & KEY_A) {
+      if (n > 0 && !can_edit) {
+        snd_deny();
+        msg_wait("READ-ONLY", UI_WARN, app_gb_readonly_why(), NULL);
+        continue;
+      }
+      if (can_edit && n > 0) {
+        uint32_t q = num_entry("QUANTITY", l->entries[sel].qty, GBB_QTY_CAP);
+        if (q < 1) q = 1;
+        gbb_set_qty(GBF_G_RED, bag, pocket, sel, (uint8_t)q);
+      }
     }
   }
 }
@@ -525,6 +532,11 @@ static bool pdna_gbbag_gen1_screen(GbScreen* gs, GbBag* bag, bool can_edit) {
       continue;
     }
     if (k & KEY_START) {
+      if (!can_edit) {
+        snd_deny();
+        msg_wait("READ-ONLY", UI_WARN, app_gb_readonly_why(), NULL);
+        continue;
+      }
       if (can_edit) {
         int swap_src = 0;
         g1_swap_active = false;   /* any START-menu visit disarms; only SWAP re-arms (N1) */
@@ -567,6 +579,11 @@ static bool pdna_gbbag_gen1_screen(GbScreen* gs, GbBag* bag, bool can_edit) {
       }
       /* D3: A on the CANCEL row is the same "leave" path as B. */
       if (sel == l->count) { want_commit = true; break; }
+      if (!can_edit) {
+        snd_deny();
+        msg_wait("READ-ONLY", UI_WARN, app_gb_readonly_why(), NULL);
+        continue;
+      }
       if (can_edit && l->count > 0) {
         uint32_t q = num_entry("QUANTITY", l->entries[sel].qty, GBB_QTY_CAP);
         if (q < 1) q = 1;

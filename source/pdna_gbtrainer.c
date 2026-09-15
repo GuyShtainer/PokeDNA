@@ -273,7 +273,7 @@ static void gbtr_plain_render(const GbTrainer* t, bool gen1, const int* rows, in
     for (int i = 0; i < nrows; i++)
       gbtr_row_paint(t, rows[i], gen1, row_y0 + i * 9, i == sel);
     ui_hline(0, 151, UI_SCR_W, UI_BORDER);
-    trainer_key_legend(can_edit ? "A edit  START save  B cancel" : "B back");
+    ui_text(4, 152, UI_DIM, can_edit ? "A edit  START save  B cancel" : app_gb_readonly_footer());
   } else if (sel != pv->sel) {
     gbtr_row_paint(t, rows[pv->sel], gen1, row_y0 + pv->sel * 9, false);
     gbtr_row_paint(t, rows[sel],     gen1, row_y0 + sel     * 9, true);
@@ -351,11 +351,26 @@ static bool pdna_gbtrainer_plain(GbTrainer* t, bool gen1, bool can_edit, const c
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B | KEY_START);
     if (k & KEY_B) return false;                  /* discard: `t` was never written */
-    if (k & KEY_START) { if (can_edit) return true; continue; }
+    if (k & KEY_START) {
+      if (!can_edit) {
+        snd_deny();
+        msg_wait("READ-ONLY", UI_WARN, app_gb_readonly_why(), NULL);
+        continue;
+      }
+      if (can_edit) return true;
+      continue;
+    }
 
     if (k & KEY_UP)        sel = (sel > 0) ? sel - 1 : nrows - 1;
     else if (k & KEY_DOWN) sel = (sel + 1) % nrows;
-    else if ((k & KEY_A) && can_edit) gbtr_edit_row(t, gen1, rows[sel]);
+    else if (k & KEY_A) {
+      if (!can_edit) {
+        snd_deny();
+        msg_wait("READ-ONLY", UI_WARN, app_gb_readonly_why(), NULL);
+        continue;
+      }
+      gbtr_edit_row(t, gen1, rows[sel]);
+    }
   }
 }
 

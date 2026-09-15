@@ -7268,8 +7268,7 @@ static void pdna_clock(void) {
         ui_text(6, 112, UI_DIM, "GAME RTC = on, then set TIME.");
         ui_text(4, 152, UI_DIM, "B back");
       } else if (!can) {
-        ui_text(6, 102, UI_DIM, "Read-only cart - fixing needs");
-        ui_text(6, 112, UI_DIM, "an EZ-Flash Omega.");
+        ui_text(6, 102, UI_DIM, app_readonly_why());
         ui_text(4, 152, UI_DIM, "B back");
       } else {
         ui_text(6, 102, UI_DIM, "Set the cart clock correctly");
