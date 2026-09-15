@@ -99,10 +99,20 @@ static void bank_damaged_standin(const Gb12Mon* in, uint32_t salt, uint8_t out80
  * Gen-1/2 Pokemon it is, via the SAME display ladder a GB session's own grid uses
  * (source/gb12_render.h) -- so a native cell and the identical mon in a GB session
  * render identically. `__attribute__((noinline))`: this function's GbEditMon +
- * Gb12Mon + 80-byte scratch must never join box_decode_to's own frame, which sits on
- * the party-strip chain (#define PDNA_PARTY_STRIP_NEED, pdna_box.c) at effectively
- * zero slack -- see the S150-2 brief's stack-budget section. `hint` may be NULL. */
-static void __attribute__((noinline)) box_native_decode(const uint8_t* cell, PkMon* out, uint8_t* hint) {
+ * Gb12Mon + 80-byte scratch must never join a caller's own frame -- box_decode_to's
+ * sits on the party-strip chain (#define PDNA_PARTY_STRIP_NEED, pdna_box.c) at
+ * effectively zero slack, and app_mon_menu's (pdna_main.c, review F1) is under the
+ * same root. `hint` may be NULL.
+ *
+ * Review F1 (BACKLOG #150 S150-2): hoisted from a pdna_box.c-static `box_native_
+ * decode` to a shared, non-static function (declared in pdna_app.h) so app_mon_menu
+ * (pdna_main.c) can decode a native cell the SAME way the grid does, instead of
+ * running pk_decode_mon on bytes it cannot decrypt (a meaningless-key decrypt that
+ * read "??? ? ?" and made `occupied` a coin flip -- a G-H2 violation: CREATE/PASTE
+ * HERE could be offered over a cell that is never empty). Definition stays here
+ * (not moved to a different .c) because bank_damaged_standin/bc_view/gb12_render_rec
+ * all already live in this TU; only the declaration moves to a shared header. */
+void __attribute__((noinline)) pdna_native_cell_decode(const uint8_t* cell, PkMon* out, uint8_t* hint) {
   GbEditMon e; BcMeta meta;
   if (!bc_unpack(cell, &e, &meta)) return;       /* leave the plain Gen-3 decode alone */
   uint32_t salt = bc_ident32(cell);
@@ -141,7 +151,7 @@ static void box_decode_to(BoxSource* src, const uint8_t* recs, int box, PkMon ou
   pk_decode_box_raw(recs, out);
   if (hint) memset(hint, 0, G3_BOX_SLOTS);
   for (int s = 0; s < G3_BOX_SLOTS; s++)
-    if (bc_is_native(recs + (uint32_t)s * 80)) box_native_decode(recs + (uint32_t)s * 80, &out[s], hint ? &hint[s] : 0);
+    if (bc_is_native(recs + (uint32_t)s * 80)) pdna_native_cell_decode(recs + (uint32_t)s * 80, &out[s], hint ? &hint[s] : 0);
   if (src->is_bank) app_bank_hide_pending(box, out);              /* LAST — pdna_main.c:2158 */
 }
 static void box_decode(BoxSource* src, const uint8_t* recs, int box) {

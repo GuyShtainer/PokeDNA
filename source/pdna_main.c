@@ -4686,6 +4686,13 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
   bool occupied = pk_decode_mon(rec, is_party, &m0);
   if (occupied) pk_resolve(&m0);
 
+  /* BACKLOG #150 S150-2 review F1: a native "GBC1" cell is not a Gen-3 record --
+   * pk_decode_mon just decrypts it with a meaningless key (title read "??? ? ?",
+   * and `occupied` was a 2^-16 coin flip that could offer CREATE/PASTE over the
+   * cell). Decode it the way the grid does, and it is ALWAYS occupied: the raw
+   * bytes are the mon's only copy (G-H2). */
+  if (!is_party && bc_is_native(rec)) { pdna_native_cell_decode(rec, &m0, 0); occupied = true; }
+
   if (!app_can_edit()) {                                 /* read-only carts: view only */
     /* Review fix F2 (BACKLOG #54): a hack-flagged Gen-3 game's OWN box/party grid
      * (no foreign source mounted, g_src_ops NULL) used to fall straight through to
