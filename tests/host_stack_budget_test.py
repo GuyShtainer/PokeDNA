@@ -2658,6 +2658,35 @@ def test_b157_chase_reg_to_literal_word_second_level_spill_bails_honestly():
           target is None, target)
 
 
+def test_b157_chase_sp_spill_two_writers_same_offset_is_not_control_flow_safe():
+    """Review F1 (BACKLOG #157): a LINEAR backward scan for the nearest preceding
+    `str rY,[sp,#off]` is not control-flow-aware -- an unconditional branch can skip
+    over a DIFFERENT store to the SAME offset from a block that never actually runs
+    on this path, and "nearest in address order" is not "the one that actually
+    executed". Synthetic: [sp,#8] gets a genuine memcpy32 literal store, then an
+    unconditional `b.n` jumps PAST a second, unrelated memcpy16-literal store to the
+    SAME offset, landing straight on the reload -- confirmed live in mgfx_load,
+    whose real [sp,#32] slot has four writers and was only ever "right" by address-
+    order adjacency, never by being provably the sole writer. _chase_sp_spill() must
+    refuse (None) the moment it finds MORE THAN ONE writer for the offset anywhere
+    in the function, rather than guess which one is real without a CFG."""
+    seq = [
+        (0x1000, "ldr\tr3, [pc, #76]\t@ (1050 <fn+0x50>)"),   # -> memcpy32 (the real predecessor)
+        (0x1002, "str\tr3, [sp, #8]"),
+        (0x1004, "b.n\t100c <fn+0xc>"),                        # jumps OVER the memcpy16 store below
+        (0x1006, "ldr\tr4, [pc, #76]\t@ (1054 <fn+0x54>)"),    # -> memcpy16 (a non-predecessor block)
+        (0x1008, "str\tr4, [sp, #8]"),                         # SAME offset, second writer
+        (0x100c, "ldr\tr3, [sp, #8]"),                         # branch target: the reload
+        (0x100e, "bl\t2010 <__bx_r3_thunk>"),
+    ]
+    insn_map = {0x1050: ".word 0x00002001", 0x1054: ".word 0x00003001"}
+    name_at = {0x2000: "memcpy32", 0x3000: "memcpy16"}
+    target = sb._chase_reg_to_literal_word(seq, insn_map, name_at, len(seq) - 2, "r3")
+    check("(B157 F1) two writers of the same slot, split by an unconditional branch, "
+          "resolve to None (not the nearest-in-address-order memcpy16)",
+          target is None, target)
+
+
 def test_b157_resolve_all_sites_target_verified_when_correct():
     """Sanity check: when the declared impl DOES match the resolvable literal-pool
     target, resolve_all_sites() reports no target_mismatches, no count_only_
@@ -2846,6 +2875,7 @@ def main():
     test_g2_third_party_fallback_scoped_to_non_project_functions()
     test_b157_chase_reg_to_literal_word_resolves_spilled_literal()
     test_b157_chase_reg_to_literal_word_second_level_spill_bails_honestly()
+    test_b157_chase_sp_spill_two_writers_same_offset_is_not_control_flow_safe()
     test_b157_resolve_all_sites_target_verified_when_correct()
     test_b157_mutation_memcpy16_swapped_in_is_caught()
     print()

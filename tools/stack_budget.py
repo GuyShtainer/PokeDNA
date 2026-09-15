@@ -1665,26 +1665,31 @@ def _chase_sp_spill(fn_insn_seq, insn_map, name_at_map, start_i, off):
     -> `bl <bx-rN thunk>`) party_bob_recompose/ui_blit_over/portrait_redraw's own
     stack_edges.txt comments document -- memcpy32's address is spilled across a
     loop because it's IWRAM_CODE, out of BL's +-4MB range, so GCC can't leave it in
-    a caller-saved register across the loop body. Scans `fn_insn_seq` backward from
-    `start_i` (the instruction just above the `ldr rN,[sp,#off]` reload
-    _chase_reg_to_literal_word() already found) for the NEAREST preceding
-    `str rY,[sp,#off]` at the SAME offset (the standard "last write before this
-    read" answer when scanning backward with no intervening redefinition of that
-    exact slot) -- calls/branches pass through untouched (a callee does not write
-    into ITS CALLER's own local stack slots in this ABI). Once found, continues
-    the chase for `rY`'s own origin ONE level only (`allow_sp_spill=False` -- a
-    second level of spill-through-spill is not the shape any real caller in this
-    codebase uses; keeping this to exactly one level matches "the shape is not
-    that simple" bailing out honestly to the count-only-validated fallback rather
-    than guessing). Returns the resolved function name, or None."""
-    for i in range(start_i, -1, -1):
-        _a, ins = fn_insn_seq[i]
-        ins_clean = ins.split('@')[0].strip()
-        sm = STR_SP_RE.match(ins_clean)
+    a caller-saved register across the loop body. Requires `start_i`'s slot (`off`)
+    to have the function's ONLY `str rY,[sp,#off]` at that offset (a slot with more
+    than one writer is not resolvable without a CFG -- bail): a linear backward
+    scan for the NEAREST preceding store is NOT control-flow-aware -- an
+    unconditional branch can skip over a DIFFERENT store to the same offset from a
+    block that is not actually this read's predecessor, and the nearest one in
+    address order is not necessarily the one that actually executed (review F1,
+    BACKLOG #157: confirmed live in mgfx_load, whose [sp,#32] has four writers and
+    was only ever "right" by address-order adjacency). Once the unique store is
+    found, continues the chase for `rY`'s own origin ONE level only
+    (`allow_sp_spill=False` -- a second level of spill-through-spill is not the
+    shape any real caller in this codebase uses; keeping this to exactly one level
+    matches "the shape is not that simple" bailing out honestly to the count-only-
+    validated fallback rather than guessing). Returns the resolved function name,
+    or None."""
+    stores = []
+    for i, (_a, ins) in enumerate(fn_insn_seq):
+        sm = STR_SP_RE.match(ins.split('@')[0].strip())
         if sm and int(sm.group(2)) == off:
-            return _chase_reg_to_literal_word(fn_insn_seq, insn_map, name_at_map,
-                                               i - 1, sm.group(1), allow_sp_spill=False)
-    return None                                # no store to this slot found: give up
+            stores.append((i, sm.group(1)))
+    if len(stores) != 1 or stores[0][0] > start_i:
+        return None        # >1 writer (or none before the reload): NOT control-flow safe
+    i, src = stores[0]
+    return _chase_reg_to_literal_word(fn_insn_seq, insn_map, name_at_map,
+                                       i - 1, src, allow_sp_spill=False)
 
 
 def _chase_reg_to_literal_word(fn_insn_seq, insn_map, name_at_map, start_i, reg,
@@ -3658,9 +3663,10 @@ def main(argv):
     if count_only_validated:
         print(f"*** stack_budget: {len(count_only_validated)} argsites declaration(s) "
               f"in {args.edges_file} are validated by SITE COUNT ONLY (the dispatch "
-              "register could not be traced to a concrete literal-pool target):")
+              "register could not be traced to a concrete literal-pool target):",
+              file=sys.stderr)
         for caller in count_only_validated:
-            print(f"***   {caller}")
+            print(f"***   {caller}", file=sys.stderr)
     if legacy_ambiguous:
         print(f"*** stack_budget: {args.edges_file} declares a whole-function exemption "
               "for a caller that now has MORE THAN ONE indirect-call site -- that is "
