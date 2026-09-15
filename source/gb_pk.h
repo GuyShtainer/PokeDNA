@@ -53,4 +53,16 @@ bool gb_pk_unpack(const uint8_t* in, int len, uint8_t gen, GbEditMon* out);
  * bytes (".pkN\0"), so a caller may treat the return as a plain C string. */
 const char* gb_pk_ext(uint8_t gen);
 
+/* FILENAME COLLISIONS (D7, review-opus, BACKLOG #93): the on-card filename
+ * (PDNA_BANK_DIR/<sanitized-nick-or-species>_<key16>.pk1|.pk2, decision 6) is built
+ * from gbsc_key() (gb_sidecar.h) alone -- a PURE function of gen/otid16/dv4/otname.
+ * A DUPLICATE (pdna_gen12.c's gb_dup_hook) is byte-identical to its source by design
+ * (decision 2: never re-roll DVs, that makes a different Pokemon), so a mon and its
+ * own copy collide on this SAME name. The caller-side path builder (pdna_gen12.c's
+ * gb_pk_build_path(), used by both gb_export_hook and gbsrc_export_all_impl) checks
+ * with f_stat() and appends `_2`, `_3`, ... before the extension until it finds a
+ * free name, bounded to 99 tries; this header owns no filesystem calls itself (the
+ * pure-C core stays free of FatFs, hard rule 5), so the collision handling lives
+ * entirely on the caller side, documented here for anyone reading this file first. */
+
 #endif

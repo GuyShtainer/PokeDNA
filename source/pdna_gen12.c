@@ -1711,7 +1711,16 @@ _Static_assert(GBS_LIST_BYTES >= SF_PATH_MAX + 56,
 /* Shared by gb_export_hook and gbsrc_export_all: `PDNA_BANK_DIR/<sanitized-nick-or-
  * species>_<key16>.pk1|.pk2` (decision 6). GB records have no `personality` for
  * .pk3's own %08lX, so gbsc_key/gbsc_key_hex (the sidecar's own fingerprint) stands
- * in. Writes into `path` (caller-owned, >= SF_PATH_MAX); returns false on truncation. */
+ * in. Writes into `path` (caller-owned, >= SF_PATH_MAX); returns false on truncation.
+ *
+ * D7 (review-opus, BACKLOG #93): gbsc_key() is a pure function of copied fields
+ * (gen/otid16/dv4/otname) -- decision 2 keeps a DUPLICATE byte-identical to its
+ * source, DVs included, so a mon and its own copy collide on this SAME filename.
+ * f_stat() checks before returning; on a hit, `_2`, `_3`, ... is appended before the
+ * extension until a free name is found, bounded to 99 tries (golden rule 2: every
+ * loop needs a provable upper bound) -- past that, the last-tried (still-colliding)
+ * path stands and the write becomes an overwrite rather than looping forever or
+ * growing the path unboundedly. */
 static bool gb_pk_build_path(char* path, int cap, const GbEditMon* e) {
   char nick[GB_TEXT_MAX];
   gb_get_nickname(e, nick, sizeof nick);
@@ -1727,9 +1736,19 @@ static bool gb_pk_build_path(char* path, int cap, const GbEditMon* e) {
   uint64_t key = gbsc_key(e->gen, gb_get_otid(e), dv4, e->otname);
   char keyhex[17];
   gbsc_key_hex(key, keyhex);
+  const char* ext = gb_pk_ext(e->gen);
 
-  int nprint = sniprintf(path, cap, PDNA_BANK_DIR "/%s_%s%s", sbase, keyhex, gb_pk_ext(e->gen));
-  return nprint >= 0 && nprint < cap;
+  int nprint = sniprintf(path, cap, PDNA_BANK_DIR "/%s_%s%s", sbase, keyhex, ext);
+  if (nprint < 0 || nprint >= cap) return false;
+
+  FILINFO fi;
+  if (f_stat(path, &fi) != FR_OK) return true;      /* no collision, the common case */
+  for (int n = 2; n <= 99; n++) {
+    int np2 = sniprintf(path, cap, PDNA_BANK_DIR "/%s_%s_%d%s", sbase, keyhex, n, ext);
+    if (np2 < 0 || np2 >= cap) return false;
+    if (f_stat(path, &fi) != FR_OK) return true;
+  }
+  return true;   /* suffix range exhausted; the last-tried path stands (an overwrite) */
 }
 
 /* app_src_ops_set() hook: EXPORT .pk on the read-only mon menu (BACKLOG #93). Writes a
