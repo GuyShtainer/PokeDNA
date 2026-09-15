@@ -1138,13 +1138,21 @@ static BankDownResult bank_down_exact(BoxSource* src, int dst_box, const uint8_t
 
   uint8_t slots1[1]; uint8_t recs1[1][80];
   slots1[0] = (uint8_t)s_orig_slot; memcpy(recs1[0], cell80, 80);
+  /* REVIEW F3: app_bank_clear_slots() is a full SD read+write (box_save(), pdna_bank.c)
+   * -- OS-mode rule (hard rule 1), the box OAM animation must be suspended for the
+   * whole SD transfer, same as this file's other consume site (:2135's
+   * gb_release_up_hook path, which keeps its own boxoam_suspend/resume bracket around
+   * the write). This one previously resumed right after accept_down (:1136 above) and
+   * never re-suspended before the consume -- hardware-only (mGBA has no OS-mode ROM
+   * disappearance to reproduce), but a real EZ-Flash Omega DE could have painted a
+   * cursor-bob frame mid-transfer. */
+  boxoam_suspend();
   if (!app_bank_clear_slots(s_orig_box, slots1, (const uint8_t (*)[80])recs1, 1)) {
     /* D7: the reconcile (S150-11) cannot help here -- the EXACT arm writes NO
      * /PokeDNA/xfer/ entry (D6) for it to walk. Say so explicitly: the game HAS the
      * mon now, the Bank slot is a DUPLICATE the player can delete themselves, never a
      * loss. Still BANK_DOWN_LANDED -- the operation succeeded from the player's view;
      * only the Bank-side cleanup didn't, and that is reported, not silently retried. */
-    boxoam_suspend();
     snd_error();
     char l1[40];
     siprintf(l1, "Bank box %d slot %d", s_orig_box + 1, s_orig_slot + 1);
@@ -1154,6 +1162,7 @@ static BankDownResult bank_down_exact(BoxSource* src, int dst_box, const uint8_t
              "duplicate (the game save already has it)", s_orig_box, s_orig_slot);
     return BANK_DOWN_LANDED;
   }
+  boxoam_resume();
   snd_save();
   return BANK_DOWN_LANDED;
 }
