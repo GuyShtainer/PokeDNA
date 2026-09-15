@@ -95,13 +95,37 @@ const char* gbs_status_text(GbsStatus st);
 /* ---- the session ---------------------------------------------------------- */
 
 typedef struct {
-  uint8_t*  img;          /* the resident save; CALLER-OWNED, must outlive the session */
+  uint8_t*  img;          /* the resident save; CALLER-OWNED, must outlive the session.
+                           * INVARIANT (BACKLOG #64): img == NULL means this session is
+                           * STREAMED and therefore READ-ONLY -- every function that
+                           * would dereference img instead goes through `rd`, and every
+                           * function that would WRITE through img is refused outright
+                           * (gbs_can_write() in gb_session.c). */
   uint32_t  len;          /* file length INCLUDING any RTC tail, which is never touched */
   uint8_t   gen;          /* GB_GEN1 / GB_GEN2 (gb_edit.h's numbering)                 */
   bool      open;
 
   uint8_t*  scratch;      /* CALLER-OWNED, >= GBS_SCRATCH_BYTES, outlives the session   */
   uint32_t  scratch_len;
+
+  /* ---- BACKLOG #64: streamed read-only sessions (img == NULL) -------------------
+   * Set only by gbs_open_streamed(). Placed HERE (right after scratch_len, before
+   * g1/g2w) rather than at the end of the struct for two reasons: it is where the
+   * brief puts it, and tools/stack_budget.py's struct-field parser lays a header
+   * out top-down and stops trusting offsets once it hits a member type it cannot
+   * size from THIS header alone (Gen1Save/G2Writer are opaque here -- their bodies
+   * live in gen1_save.h/gen2_write.h) -- putting `rd`/`rdctx` after g1/g2w would
+   * make their own offset unresolvable. Typed as gen1_save.h's Gen1ReadFn (not a
+   * fresh inline function-pointer field): it is already this exact signature
+   * (gb_read()'s own shape, and gen2_save.h's G2ReadFn), so a caller's existing
+   * FIL/ROM read callback plugs straight in with no adapter; and the parser only
+   * resolves a POINTER FIELD's offset through a known typedef name
+   * (_KNOWN_PTR_TYPEDEFS) -- an inline `bool (*rd)(...)` declarator's own
+   * parameter-list commas defeat its multi-declarator split, which every other
+   * function-pointer struct field in this codebase (GbArtIo.fn, Gb12Mount.rd,
+   * RomGbLearn.read, ...) already avoids the same way. */
+  Gen1ReadFn rd;
+  void* rdctx;
 
   Gen1Save  g1;           /* gen == GB_GEN1                                            */
   G2Writer  g2w;          /* gen == GB_GEN2: begun once, reused for load and commit    */
@@ -113,6 +137,17 @@ typedef struct {
  * once in 256. `img` is retained; do not move or free it while the session is open. */
 GbsStatus gbs_open(GbSession* s, uint8_t* img, uint32_t len,
                    uint8_t* scratch, uint32_t scratch_len);
+
+/* BACKLOG #64: same identification, over a caller's read callback instead of a
+ * resident buffer -- for a session that must stay READ-ONLY (no room for an image).
+ * `img` stays NULL for the life of this session: every write entry point below
+ * refuses with GBS_ERR_UNWRITABLE (gbs_can_write(), gb_session.c), and every read
+ * goes through `rd`/`rdctx` instead of a direct memcpy. `scratch`/`scratch_len` are
+ * still required (the Gen-2 writer's own streaming scratch), same contract as
+ * gbs_open(). */
+GbsStatus gbs_open_streamed(GbSession* s,
+                            bool (*rd)(void*, uint32_t, void*, uint32_t), void* ctx,
+                            uint32_t len, uint8_t* scratch, uint32_t scratch_len);
 
 /* Storage boxes, excluding the party pseudo-box (12 for Gen 1, 14 for Gen 2), and the
  * index the party is addressed by. Both 0 / -1 on a closed session. */

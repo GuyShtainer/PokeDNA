@@ -1437,6 +1437,7 @@ STRUCT_HEADERS = {
     "GbArtIo": "gb_art_io.h",   # BACKLOG #148: moved out of gb_art_source.c into its own
                                 # header so source/pdna_gbscreen.c can reuse it; its `fn`
                                 # progress callback is the one indirect call there
+    "GbSession": "gb_session.h",    # BACKLOG #64: the new `rd` streamed-read callback
     "TTC": None,     # libtonc's tte_write dispatch table -- no .c/.h source shipped
                       # in this devkitPro install to grep (see the `recursion
                       # tte_write depth=2` declaration's own comment). Still

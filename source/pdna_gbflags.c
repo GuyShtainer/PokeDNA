@@ -236,9 +236,11 @@ static void ctr_edit_row(GbSession* s, GbGame g, int kind, bool* dirty) {
  * second static of this shape is the thing to avoid. These are just POINTERS
  * (trivial IWRAM .data, not the ~640 B the arrays themselves would cost); the bytes
  * they point at live in EWRAM, lent for exactly this screen's visit and released on
- * every exit path (flg_tail_acquire/flg_tail_release below). Only reachable when
- * g_ed is non-NULL (pdna_gen12.c's own gate on this screen), which is exactly
- * gb12_arena_tail()'s own precondition. */
+ * every exit path (flg_tail_acquire/flg_tail_release below). BACKLOG #64 review
+ * Finding 6: reachable whenever gb12_arena_tail() has a tail to lend -- the
+ * resident-image mount's own (g_ed non-NULL) OR a streamed read-only session's own
+ * (g_ed == NULL, g_ro_tail non-NULL, pdna_gen12.c) -- NOT gated on g_ed alone any
+ * more; see gb12_arena_tail()'s own comment for the two-tail rule. */
 static NamedFlag*  s_nf;
 static uint8_t*    s_kind;
 static uint8_t*    s_ord;
@@ -373,7 +375,8 @@ static void raw_flag_browser(GbSession* s, GbGame g, bool* dirty, bool* warned, 
       ui_text(8, y, ink, row);
     }
     ui_hline(0, 151, UI_SCR_W, UI_BORDER);
-    ui_text(4, 152, UI_DIM, "A toggle  U/D  SEL jump#  B back");
+    ui_text(4, 152, UI_DIM, can_edit ? "A toggle  U/D  SEL jump#  B back"
+                                     : "U/D  SEL jump#  B back");
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B | KEY_SELECT);
     if (k & KEY_B) return;
@@ -396,10 +399,13 @@ static void raw_flag_browser(GbSession* s, GbGame g, bool* dirty, bool* warned, 
 void pdna_gbflags(GbSession* s, bool can_edit) {
   if (!s || !s->open) { msg_wait("FLAGS", UI_WARN, "Could not read this save.", 0); return; }
   if (!flg_tail_acquire()) {
-    /* g_ed is guaranteed non-NULL here (the only caller, gb_nav_from_start, gates on
-     * it) -- a refusal means the arena tail is genuinely full, not a missing
-     * precondition. Honest refusal, no dead end, same posture as gbscr_open()'s own
-     * `reason` fallback path on the art-shell screens. */
+    /* BACKLOG #64 review Finding 6: `s` may be the resident-image session (g_ed
+     * non-NULL) OR a streamed read-only one (g_ed == NULL, g_ro_tail) -- either
+     * way gb12_arena_tail() has ITS OWN tail to lend by the time gb_nav_from_start
+     * calls this screen, so a refusal here means the arena tail is genuinely full
+     * (already lent to something else this visit), not a missing precondition.
+     * Honest refusal, no dead end, same posture as gbscr_open()'s own `reason`
+     * fallback path on the art-shell screens. */
     msg_wait("FLAGS", UI_WARN, "Not enough memory right now.", "Try again after a fresh boot.");
     return;
   }
@@ -453,7 +459,8 @@ void pdna_gbflags(GbSession* s, bool can_edit) {
       if (!part) {
         for (int i = 0; i < 14 && top + i < ctr_n; i++)
           ctr_row_paint(s, g, ctr_rows[top + i], 16 + i * 9, top + i == sel);
-        ui_text(4, 152, UI_DIM, "A edit  U/D  L/R tab  B done");
+        ui_text(4, 152, UI_DIM, can_edit ? "A edit  U/D  L/R tab  B done"
+                                         : "U/D  L/R tab  B done");
       } else if (sel != c_sel) {                  /* cursor-only change: swap the highlight */
         ctr_row_repaint(s, g, ctr_rows, ctr_n, top, c_sel, sel);
         ctr_row_repaint(s, g, ctr_rows, ctr_n, top, sel, sel);
@@ -473,7 +480,8 @@ void pdna_gbflags(GbSession* s, bool can_edit) {
           if (!nf_visible(r)) continue;
           nf_draw_row(s, g, r, 26 + drawn * 9, r == sel); drawn++;
         }
-        ui_text(4, 152, UI_DIM, "A toggle/fold  SEL jump  L/R");
+        ui_text(4, 152, UI_DIM, can_edit ? "A toggle/fold  SEL jump  L/R"
+                                         : "A fold  SEL jump  L/R");
       }
       f_valid = true; f_top = top; f_fold = s_gbfl_folded; f_sel = sel;
     }

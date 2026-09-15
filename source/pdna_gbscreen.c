@@ -1202,11 +1202,13 @@ void __attribute__((noinline)) gbscr_run_demo(uint8_t gen) {
   GbScreen gs;
   const char* reason = 0;
 
-  /* U2b item 1: this demo is reached from Settings (no GB session, no g_ed), so
-   * it takes its OWN tail buffer via app_arena_acquire() rather than
-   * gb12_arena_tail() (which only ever returns non-NULL inside a resident-image
-   * GB session) -- released before returning either way. TEXTBOX is the only
-   * extra block this demo's own border needs; FONT is always cached. */
+  /* U2b item 1: this demo is reached from Settings (no GB session at all, neither
+   * a resident-image one (g_ed) nor a streamed read-only one (g_ro_tail,
+   * BACKLOG #64)), so it takes its OWN tail buffer via app_arena_acquire() rather
+   * than gb12_arena_tail() (which only ever returns non-NULL inside an ACTIVE GB
+   * session of either kind -- see that function's own comment) -- released before
+   * returning either way. TEXTBOX is the only extra block this demo's own border
+   * needs; FONT is always cached. */
   uint32_t need = gbscr_tail_need(gen, GBSCR_NEED_TEXTBOX, 0);
   uint8_t* tail = app_arena_acquire(need);
   if (!tail) {

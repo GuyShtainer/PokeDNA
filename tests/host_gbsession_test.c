@@ -938,6 +938,160 @@ static void s8_roundtrip(const char* file, uint8_t expect_gen) {
         "S8: the merge report is all-false -- a true no-op");
 }
 
+/* ============================================================================
+ * BACKLOG #64: gbs_open_streamed() -- a read-only session over a read callback,
+ * proven equivalent to the resident-image session over the SAME bytes, and proven
+ * to refuse every write entry point without touching the file.
+ * ========================================================================== */
+
+/* Mirrors gb_read()'s own shape (source/pdna_gen12.c) -- a plain stdio pread, no
+ * seek-then-read races because this test never runs two reads concurrently. */
+static bool stdio_rd(void* ctx, uint32_t off, void* buf, uint32_t len) {
+  FILE* f = (FILE*)ctx;
+  if (fseek(f, (long)off, SEEK_SET) != 0) return false;
+  return fread(buf, 1, len, f) == len;
+}
+
+/* Streamed vs resident: same file, two sessions, same answers. */
+static void s64_streamed_vs_resident(const char* file, uint8_t expect_gen) {
+  uint32_t len = load(file);
+  if (!len) { printf("  SKIP %s (BACKLOG #64 streamed/resident)\n", file); return; }
+  g_ran++;
+  printf("  -- BACKLOG #64 streamed vs resident: %s\n", file);
+
+  GbSession sr;
+  CHECK(gbs_open(&sr, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK,
+        "S64: resident session opens");
+
+  char path[512];
+  snprintf(path, sizeof path, "%s/%s", ROMS, file);
+  FILE* f = fopen(path, "rb");
+  CHECK(f != NULL, "S64: the corpus file reopens for the streamed session");
+  if (!f) return;
+
+  GbSession ss;
+  GbsStatus sst = gbs_open_streamed(&ss, stdio_rd, f, len, g_scratch2, sizeof g_scratch2);
+  CHECK(sst == GBS_OK, "S64: streamed session opens over the same bytes");
+  CHECK(ss.img == NULL, "S64: a streamed session's img stays NULL (the invariant)");
+
+  CHECK(sr.gen == expect_gen && ss.gen == expect_gen,
+        "S64: both sessions detect the same generation");
+  CHECK(gbs_nboxes(&sr) == gbs_nboxes(&ss), "S64: gbs_nboxes agrees");
+  CHECK(gbs_party_box(&sr) == gbs_party_box(&ss), "S64: gbs_party_box agrees");
+  CHECK(gb_session_is_crystal(&sr) == gb_session_is_crystal(&ss),
+        "S64: gb_session_is_crystal agrees");
+
+  /* A spread of offsets: trainer name, money, the dex-owned block, a box list, and
+   * the last valid byte -- per-generation, since the two engines place these at
+   * different fixed offsets (gen1_save.h / gen2_save.h's G2Offsets). */
+  uint32_t name_off, money_off, dex_off, list_off;
+  if (expect_gen == GB_GEN1) {
+    name_off  = GEN1_OFF_PLAYER_NAME;
+    money_off = 0x25F3u;          /* docs/GEN12-PARITY-DESIGN.md §1.1, RBY money */
+    dex_off   = 0x25A3u;          /* source/gb_fields.c:73 GBF_DEX_OWNED, RBY column */
+    list_off  = gen1_list_offset(&sr.g1, 0);
+  } else {
+    G2Offsets go; g2_offsets(sr.g2w.sv.version, &go);
+    name_off  = go.player_name;
+    money_off = go.money;
+    dex_off   = go.dex_owned;
+    list_off  = go.current_box_list;
+  }
+  struct { const char* tag; uint32_t off; uint32_t n; } spots[] = {
+    { "trainer name", name_off,  8   },
+    { "money",        money_off, 3   },
+    { "dex block",    dex_off,   19  },
+    { "box list",     list_off,  16  },
+    { "last byte",    len - 1,   1   },
+  };
+  for (unsigned i = 0; i < sizeof spots / sizeof spots[0]; i++) {
+    uint8_t br[19], bs[19];
+    CHECK(spots[i].n <= sizeof br, "S64: test buffer wide enough");
+    GbsStatus rr = gbs_read_field(&sr, spots[i].off, br, spots[i].n);
+    GbsStatus rs = gbs_read_field(&ss, spots[i].off, bs, spots[i].n);
+    CHECK(rr == GBS_OK && rs == GBS_OK, spots[i].tag);
+    CHECK(memcmp(br, bs, spots[i].n) == 0, "S64: streamed and resident read the same bytes");
+  }
+
+  /* gbs_load_list agrees too, over the party AND box 0. */
+  int pb = gbs_party_box(&sr);
+  int boxes_to_check[2] = { 0, pb };
+  for (int i = 0; i < 2; i++) {
+    GbsStatus lr = gbs_load_list(&sr, boxes_to_check[i], g_list);
+    GbsStatus ls = gbs_load_list(&ss, boxes_to_check[i], g_list2);
+    CHECK(lr == ls, "S64: gbs_load_list agrees on status");
+    if (lr == GBS_OK && ls == GBS_OK) {
+      int n = gb_list_size(expect_gen, boxes_to_check[i]);
+      CHECK(n > 0 && memcmp(g_list, g_list2, (size_t)n) == 0,
+            "S64: streamed and resident load the identical list bytes");
+    }
+  }
+
+  /* Out-of-range gbs_read_field, both kinds, on BOTH sessions. */
+  uint8_t junk1[4];
+  CHECK(gbs_read_field(&sr, len, junk1, 1) == GBS_ERR_ARG,
+        "S64: resident refuses off == len");
+  CHECK(gbs_read_field(&ss, len, junk1, 1) == GBS_ERR_ARG,
+        "S64: streamed refuses off == len");
+  CHECK(gbs_read_field(&sr, 0, junk1, len + 1) == GBS_ERR_ARG,
+        "S64: resident refuses n == len+1");
+  CHECK(gbs_read_field(&ss, 0, junk1, len + 1) == GBS_ERR_ARG,
+        "S64: streamed refuses n == len+1");
+
+  /* ---- mutation half: every write entry point refuses, and the file is untouched */
+  long fsz_before = 0;
+  { fseek(f, 0, SEEK_END); fsz_before = ftell(f); }
+  uint8_t before_bytes[64];
+  CHECK(gbs_read_field(&ss, 0, before_bytes, sizeof before_bytes) == GBS_OK,
+        "S64: read the header before the mutation attempts");
+
+  CHECK(gbs_box_writable(&ss, 0) == GBS_ERR_UNWRITABLE,
+        "S64: gbs_box_writable refuses on a streamed session");
+  CHECK(gbs_commit_list(&ss, 0, g_list) == GBS_ERR_UNWRITABLE,
+        "S64: gbs_commit_list refuses on a streamed session");
+  CHECK(gbs_delete(&ss, 0, 0, g_list) == GBS_ERR_UNWRITABLE,
+        "S64: gbs_delete refuses on a streamed session");
+  int to_slot = -1;
+  CHECK(gbs_move(&ss, 0, 0, 1, &to_slot, g_list, g_list2) == GBS_ERR_UNWRITABLE,
+        "S64: gbs_move refuses on a streamed session");
+  CHECK(gbs_finish(&ss) == GBS_ERR_UNWRITABLE,
+        "S64: gbs_finish refuses on a streamed session");
+  uint8_t w3[3] = { 1, 2, 3 };
+  CHECK(gbs_write_field(&ss, money_off, w3, 3) == GBS_ERR_UNWRITABLE,
+        "S64: gbs_write_field refuses on a streamed session");
+  CHECK(gbs_write_outside_sum(&ss, 0, w3, 1) == GBS_ERR_UNWRITABLE,
+        "S64: gbs_write_outside_sum refuses on a streamed session");
+  {
+    GbEditMon dummy; memset(&dummy, 0, sizeof dummy);
+    dummy.gen = expect_gen; dummy.is_party = false;
+    int slot_out = -1;
+    CHECK(gbs_insert(&ss, 0, &dummy, &slot_out, g_list) == GBS_ERR_UNWRITABLE,
+          "S64: gbs_insert refuses on a streamed session");
+  }
+
+  uint8_t after_bytes[64];
+  CHECK(gbs_read_field(&ss, 0, after_bytes, sizeof after_bytes) == GBS_OK,
+        "S64: read the header again after the mutation attempts");
+  CHECK(memcmp(before_bytes, after_bytes, sizeof before_bytes) == 0,
+        "S64: the header is byte-identical after every refused write");
+
+  long fsz_after = 0;
+  { fseek(f, 0, SEEK_END); fsz_after = ftell(f); }
+  CHECK(fsz_before == fsz_after, "S64: the backing file's SIZE is unchanged");
+
+  /* And re-read the WHOLE file straight off disk (bypassing both sessions' own
+   * caches entirely) to prove the mutation attempts never reached the card. */
+  fseek(f, 0, SEEK_SET);
+  uint8_t* disk = g_img2;   /* reuse s3_gen2_party_box's own third image buffer -- g_img/g_orig
+                             * are this test's own resident copy and must stay untouched */
+  uint32_t got = (uint32_t)fread(disk, 1, len, f);
+  CHECK(got == len, "S64: re-read the whole file from disk");
+  CHECK(memcmp(disk, g_orig, len) == 0,
+        "S64: THE BACKING FILE ON DISK IS BYTE-IDENTICAL AFTER EVERY REFUSED WRITE");
+
+  fclose(f);
+}
+
 /* A file that is the right SIZE but is not a Game Boy save at all must be refused —
  * the browser forks on size alone, so this is the guard that stands behind that. */
 static void rejects_garbage(void) {
@@ -1100,6 +1254,12 @@ int main(void) {
 
   s8_roundtrip("Gold.sav",    GB_GEN2);
   s8_roundtrip("Crystal.sav", GB_GEN2);
+
+  /* BACKLOG #64: the read-only STREAMED session, over every corpus save. */
+  s64_streamed_vs_resident("Red.sav",     GB_GEN1);
+  s64_streamed_vs_resident("Yellow.sav",  GB_GEN1);
+  s64_streamed_vs_resident("Gold.sav",    GB_GEN2);
+  s64_streamed_vs_resident("Crystal.sav", GB_GEN2);
 
   if (!g_ran) printf("  (no corpus present — structural checks only)\n");
   printf("%s: %d/%d checks passed over %d save(s)\n",

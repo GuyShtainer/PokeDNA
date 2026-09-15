@@ -304,7 +304,13 @@ bool pdna_gbdex(GbSession* s, bool can_edit) {
    * unrelated persist (e.g. a different screen's own confirm-and-commit later in
    * the same session) would silently carry this screen's declined dex edits out
    * to the .sav too. gb_rollback() restores g_ed->img from g_ed->pristine, same
-   * pattern every other decline path in pdna_gen12.c already uses. */
+   * pattern every other decline path in pdna_gen12.c already uses. BACKLOG #64
+   * review: `dirty` can only become true when `can_edit` was true, and
+   * gb_nav_from_start() only ever passes `ed && app_can_edit()` for this row --
+   * `ed` is false on a streamed (read-only) session, so this whole branch (and
+   * its g_ed-shaped assumptions) stays genuinely unreachable there; `s` may be
+   * g_ed->s or a streamed session up above, but by the time control reaches HERE
+   * it is provably g_ed->s. */
   if (!app_confirm("Save Pokedex changes?", "Writes the dex now.")) { gb_rollback(); return false; }
 
   GbsStatus st = gbs_finish(s);

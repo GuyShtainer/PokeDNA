@@ -510,8 +510,8 @@ mgfx_zoom_build argsites=1 -> fused_rom_read rom_fatfs_read g3x_fatfs_read iconr
 # (declared above) with the correct single implementation (img_rd, not img_wr --
 # G5's per-predecessor chase is precise enough here to tell rd from wr where the
 # old spilled/nonfield classification could not).
-g2w_begin argsites=1 -> img_rd img_wr
-write_patch.part.0 argsites=1 -> img_rd img_wr
+g2w_begin argsites=1 -> img_rd img_wr str_rd str_wr
+write_patch.part.0 argsites=1 -> img_rd img_wr str_rd str_wr
 
 # box_oam.c's memcpy32 (libtonc's IWRAM_CODE LDMIA/STMIA word copy, box_oam.c:1247's
 # own comment already names it as the reason for the shared bx-rN thunk boxoam_commit
@@ -592,7 +592,7 @@ Gb12Mount.rd @4 in gbsrc_set_name -> gb_read fused_gb_slice_read gb_img_read
 # part.0 actually dispatch through (both take `G2Writer* w` and write out a patched
 # region -- read side already covered by G2Writer.rd@0 above for THIS caller's
 # sibling reads).
-G2Writer.wr @4 in refresh_checksums,write_patch.part.0 -> img_wr
+G2Writer.wr @4 in refresh_checksums,write_patch.part.0 -> img_wr str_wr
 
 # rom_gblearn.h's RomGbLearn.read (read@4 -- `uint8_t gen; bool ok; GbReadFn read;`
 # packs `read` to offset 4 after the two 1-byte fields, verified by header). rom_
@@ -825,10 +825,27 @@ RomCtx.read @0 in tileset_to_vram -> fused_rom_read rom_fatfs_read g3x_fatfs_rea
 # each one-call-site file-local, inlined at -O2) dereferencing their `const RomMon*
 # rm` parameter the same way as read_small.
 
-G2Writer.rd @0 in cmp_regions,g2w_calc_checksums,g2w_commit_list,g2w_load_list,readback_cmp -> img_rd
+G2Writer.rd @0 in cmp_regions,g2w_calc_checksums,g2w_commit_list,g2w_load_list,readback_cmp -> img_rd str_rd
 # source/gen2_write.h: `G2ReadFn rd;` is G2Writer's first member (rd@0, wr@4 -- see
 # the already-declared G2Writer.wr class below). Every caller above takes `G2Writer*
 # w` (grepped gen2_write.c) and calls `w->rd(...)`.
+
+# BACKLOG #64: gb_session.h's new `Gen1ReadFn rd;` field, placed right after
+# `scratch_len` (BEFORE g1/g2w -- see that field's own header comment on why: this
+# parser lays a struct out top-down and stops trusting offsets once it hits a
+# member type it cannot size from gb_session.h alone, and Gen1Save/G2Writer are
+# exactly that). Verified by offsetof against this build's own layout: offset 20,
+# sizeof(GbSession) 120. gbs_read_field's `else if (!s->rd || !s->rd(...))` branch
+# (gb_session.c) is the read-only streamed-session leg -- the only site in the
+# codebase that ever ASSIGNS s->rd is gbs_open_streamed's own `s->rd = rd;` (a
+# parameter, not yet dispatched through there -- str_rd's own `s->rd(...)` call is
+# dead-code-eliminated at -O2 today because nothing calls gbs_open_streamed yet), and
+# the only value this design will ever pass as that parameter is pdna_gen12.c's
+# gb_read (pdna_gen12_show's FIL-streaming read shim -- BACKLOG #64 step 3 wires the
+# one call site, gbs_open_streamed(&vw->s, gb_read, f, len, ...)). Declared here ahead
+# of that wiring landing so every intermediate commit in this lane keeps a clean
+# stack-budget certificate.
+GbSession.rd @20 in gbs_read_field,gbs_load_list,str_rd -> gb_read
 
 # icon_store.c's run_fill() calls cache_fill_rows()/rom_fill_row() directly (no visible
 # function-pointer parameter of its own) -- both are one-call-site file-local helpers

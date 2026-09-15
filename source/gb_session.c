@@ -48,7 +48,65 @@ static bool img_wr(void* ctx, uint32_t off, const void* buf, uint32_t len) {
   return true;
 }
 
+/* ---- BACKLOG #64: the streamed (img == NULL) callbacks --------------------
+ *
+ * str_rd mirrors img_rd's own two-subtraction bounds check (a range that would wrap
+ * 32 bits is refused, not silently accepted) before handing off to the caller's own
+ * `s->rd`. str_wr always refuses: a streamed session is read-only by construction
+ * (see gb_session.h's `img == NULL` invariant), so nothing above this file should
+ * ever reach it -- g2w_begin needs SOME write callback to construct a G2Writer, and
+ * this is that callback's entire body. */
+static bool str_rd(void* ctx, uint32_t off, void* buf, uint32_t len) {
+  const GbSession* s = (const GbSession*)ctx;
+  if (!s || !s->rd || !buf) return false;
+  if (off > s->len || len > s->len - off) return false;
+  return s->rd(s->rdctx, off, buf, len);
+}
+
+static bool str_wr(void* ctx, uint32_t off, const void* buf, uint32_t len) {
+  (void)ctx; (void)off; (void)buf; (void)len;
+  return false;
+}
+
+/* BACKLOG #64: the one choke point every write entry point (everything below that
+ * dereferences s->img outside gbs_read_field's own read leg) gates on. A streamed
+ * session (img == NULL) is read-only by construction -- see gb_session.h's own
+ * invariant comment -- so this is simply "is a session open AND resident", asked in
+ * one place rather than re-derived at each call site. */
+static bool gbs_can_write(const GbSession* s) {
+  return s && s->open && s->img;
+}
+
 /* ---- open ----------------------------------------------------------------- */
+
+GbsStatus gbs_open_streamed(GbSession* s,
+                            bool (*rd)(void*, uint32_t, void*, uint32_t), void* ctx,
+                            uint32_t len, uint8_t* scratch, uint32_t scratch_len) {
+  if (!s || !rd || !scratch || scratch_len < GBS_SCRATCH_BYTES) return GBS_ERR_ARG;
+  memset(s, 0, sizeof *s);
+  /* img stays NULL -- the read-only invariant gb_session.h documents. */
+  s->len = len;
+  s->scratch = scratch;
+  s->scratch_len = scratch_len;
+  s->rd = rd;
+  s->rdctx = ctx;
+
+  /* Same order and the same reasoning as gbs_open(): Gen 2 first (a 16-bit sum over
+   * ~3 KB), then Gen 1 (an 8-bit sum). */
+  if (g2w_begin(&s->g2w, str_rd, str_wr, s, len, scratch, scratch_len,
+                G2_VER_NONE) == G2W_OK) {
+    s->gen  = GB_GEN2;
+    s->open = true;
+    return GBS_OK;
+  }
+
+  if (gen1_open_ranged(rd, ctx, len, &s->g1) == GEN1_OK) {
+    s->gen  = GB_GEN1;
+    s->open = true;
+    return GBS_OK;
+  }
+  return GBS_ERR_NOT_GB;
+}
 
 GbsStatus gbs_open(GbSession* s, uint8_t* img, uint32_t len,
                    uint8_t* scratch, uint32_t scratch_len) {
@@ -100,6 +158,7 @@ bool gb_session_is_crystal(const GbSession* s) {
 
 GbsStatus gbs_box_writable(GbSession* s, int box) {
   if (!s || !s->open) return GBS_ERR_ARG;
+  if (!gbs_can_write(s)) return GBS_ERR_UNWRITABLE;   /* BACKLOG #64: streamed = read-only */
   if (!gb_box_valid(s->gen, box)) return GBS_ERR_BOX;
 
   if (s->gen == GB_GEN1) {
@@ -132,7 +191,16 @@ GbsStatus gbs_load_list(GbSession* s, int box, uint8_t* list) {
   uint32_t off = gen1_list_offset(&s->g1, box);
   uint32_t n   = gen1_list_bytes(box);
   if (!n || off > s->len || n > s->len - off) return GBS_ERR_BOX;
-  memcpy(list, s->img + off, n);
+  /* BACKLOG #64: streamed session (img == NULL) -- route through the read callback,
+   * same as the Gen-2 branch above already does through g2w_load_list's own
+   * callback. Read-only, so there is nothing to gate: gbs_can_write() only matters
+   * to a caller that means to WRITE this list back afterward, and gbs_commit_list
+   * (below) refuses that on its own. */
+  if (s->img) {
+    memcpy(list, s->img + off, n);
+  } else if (!s->rd || !s->rd(s->rdctx, off, list, n)) {
+    return GBS_ERR_ARG;
+  }
   return GBS_OK;
 }
 
@@ -216,6 +284,10 @@ static GbsStatus gen1_commit(GbSession* s, int box, const uint8_t* list) {
 
 GbsStatus gbs_commit_list(GbSession* s, int box, const uint8_t* list) {
   if (!s || !s->open || !list) return GBS_ERR_ARG;
+  if (!gbs_can_write(s)) return GBS_ERR_UNWRITABLE;   /* BACKLOG #64: streamed = read-only;
+                                                        * gen1_commit's own body dereferences
+                                                        * s->img unconditionally, so this must
+                                                        * gate BEFORE either engine body runs */
   if (!gb_box_valid(s->gen, box)) return GBS_ERR_BOX;
 
   if (s->gen == GB_GEN1) return gen1_commit(s, box, list);
@@ -336,6 +408,7 @@ static GbsStatus delete_from_list(GbSession* s, int box, int slot, uint8_t* list
 
 GbsStatus gbs_delete(GbSession* s, int box, int slot, uint8_t* list) {
   if (!s || !s->open || !list) return GBS_ERR_ARG;
+  if (!gbs_can_write(s)) return GBS_ERR_UNWRITABLE;   /* BACKLOG #64: streamed = read-only */
   if (!gb_box_valid(s->gen, box)) return GBS_ERR_BOX;
 
   GbsStatus ld = gbs_load_list(s, box, list);
@@ -387,6 +460,7 @@ static GbsStatus append_gen2(uint8_t* list, int box, const G2Slot* slotv, int* s
 GbsStatus gbs_move(GbSession* s, int from_box, int from_slot, int to_box, int* to_slot,
                    uint8_t* src_list, uint8_t* dst_list) {
   if (!s || !s->open || !src_list || !dst_list || !to_slot) return GBS_ERR_ARG;
+  if (!gbs_can_write(s)) return GBS_ERR_UNWRITABLE;   /* BACKLOG #64: streamed = read-only */
   if (from_box == to_box) return GBS_ERR_ARG;
   if (!gb_box_valid(s->gen, from_box) || !gb_box_valid(s->gen, to_box)) return GBS_ERR_BOX;
 
@@ -503,12 +577,17 @@ GbsStatus gbs_move(GbSession* s, int from_box, int from_slot, int to_box, int* t
 GbsStatus gbs_read_field(GbSession* s, uint32_t off, void* buf, uint32_t n) {
   if (!s || !s->open || !buf || !n) return GBS_ERR_ARG;
   if (off > s->len || n > s->len - off) return GBS_ERR_ARG;
-  memcpy(buf, s->img + off, n);
+  if (s->img) {
+    memcpy(buf, s->img + off, n);
+  } else if (!s->rd || !s->rd(s->rdctx, off, buf, n)) {
+    return GBS_ERR_ARG;
+  }
   return GBS_OK;
 }
 
 GbsStatus gbs_write_field(GbSession* s, uint32_t off, const void* buf, uint32_t n) {
   if (!s || !s->open || !buf || !n) return GBS_ERR_ARG;
+  if (!gbs_can_write(s)) return GBS_ERR_UNWRITABLE;   /* BACKLOG #64: streamed = read-only */
   if (s->gen == GB_GEN1)
     /* _ex, not the 64-B gen1_write_range wrapper (P0 review D6): GBF_EVENT_FLAGS_BASE
      * alone is 320 B, past the wrapper's cap. The session's own scratch is the
@@ -525,6 +604,7 @@ GbsStatus gbs_write_field(GbSession* s, uint32_t off, const void* buf, uint32_t 
 
 GbsStatus gbs_write_outside_sum(GbSession* s, uint32_t off, const void* buf, uint32_t n) {
   if (!s || !s->open || !buf || !n) return GBS_ERR_ARG;
+  if (!gbs_can_write(s)) return GBS_ERR_UNWRITABLE;   /* BACKLOG #64: streamed = read-only */
   if (s->gen == GB_GEN1)
     return map_gen1w(gen1_write_outside_sum(s->img, s->len, &s->g1, off,
                                            (const uint8_t*)buf, n,
@@ -534,6 +614,7 @@ GbsStatus gbs_write_outside_sum(GbSession* s, uint32_t off, const void* buf, uin
 
 GbsStatus gbs_finish(GbSession* s) {
   if (!s || !s->open) return GBS_ERR_ARG;
+  if (!gbs_can_write(s)) return GBS_ERR_UNWRITABLE;   /* BACKLOG #64: streamed = read-only */
   /* Gen 1 has no backup mirror and no deferred checksum: gen1_write_range_ex already
    * fixed the main checksum and re-verified the image on every gbs_write_field call, so
    * there is nothing left to close out. */
@@ -548,6 +629,7 @@ GbsStatus gbs_finish(GbSession* s) {
 GbsStatus gbs_insert(GbSession* s, int box, const GbEditMon* mon, int* slot_out,
                      uint8_t* list) {
   if (!s || !s->open || !mon || !slot_out || !list) return GBS_ERR_ARG;
+  if (!gbs_can_write(s)) return GBS_ERR_UNWRITABLE;   /* BACKLOG #64: streamed = read-only */
   if (!gb_box_valid(s->gen, box)) return GBS_ERR_BOX;
 
   GbsStatus wr = gbs_box_writable(s, box);
