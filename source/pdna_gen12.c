@@ -3451,8 +3451,14 @@ static void gb_nav_from_start(Gb12Mount* m, GbSession* ro) {
      * own arena budget, GB12_ARENA_NEED, has no room left to stage one -- see
      * GB12_ARENA_NEED's own comment). Falling back to the existing read-only info
      * page rather than inventing a fragile stage-buffer reuse under this slice's
-     * one-hour budget; flagged for a follow-up slice, not silently worked around. */
-    if (gs) pdna_gbtrainer(gs, ed);
+     * one-hour budget; flagged for a follow-up slice, not silently worked around.
+     *
+     * app_can_edit() here, not a bare `ed` (b160 fix, same pattern as b153's
+     * NV_FLY change below): pdna_gbtrainer() trusts its caller for the write
+     * gate (no internal app_can_edit() call of its own), so a resident session
+     * on an EverDrive / bad-ROM-check / hack cart must not reach it with edits
+     * enabled. */
+    if (gs) pdna_gbtrainer(gs, ed && app_can_edit());
     else    (void)gb_info_page(m);   /* A and B both just return to the grid */
   } else if (nv == NV_DEX) {
     /* BACKLOG #87: the shared Pokedex screen (pdna_pick.c's pdna_dex_screen, reused
@@ -3486,8 +3492,12 @@ static void gb_nav_from_start(Gb12Mount* m, GbSession* ro) {
      * the DESIGNED "coming soon" text nav_avail already has for this exact
      * row). Gating on `kind` here lets a Gen-2 NV_BAG press fall through to
      * the `else if (nv != NV_BACK)` branch below, which calls
-     * app_nav_refuse() and shows nav_avail's own honest message instead. */
-    if (gs) pdna_gbbag(gs, ed);
+     * app_nav_refuse() and shows nav_avail's own honest message instead.
+     *
+     * app_can_edit() here, not a bare `ed` (b160 fix, same pattern as b153's
+     * NV_FLY change below): pdna_gbbag() trusts its caller for the write gate
+     * (no internal app_can_edit() call of its own). */
+    if (gs) pdna_gbbag(gs, ed && app_can_edit());
     else    (void)gb_info_page(m);
   } else if (nv == NV_BAG && kind == SE_KIND_GEN2) {
     /* U5 (BACKLOG #67): Gold/Silver/Crystal's own Pack + PC store, mirroring
@@ -3495,8 +3505,12 @@ static void gb_nav_from_start(Gb12Mount* m, GbSession* ro) {
      * through" rule (pdna_gbpack() itself refuses a NULL/non-Gen-2 session,
      * but g_ed's resident image is the only path that HAS one here; the
      * plain FIL-streaming entry falls back to the read-only info page, same
-     * reasoning as NV_TRAINER above). */
-    if (gs) pdna_gbpack(gs, ed);
+     * reasoning as NV_TRAINER above).
+     *
+     * app_can_edit() here, not a bare `ed` (b160 fix, same pattern as b153's
+     * NV_FLY change below): pdna_gbpack() trusts its caller for the write gate
+     * (no internal app_can_edit() call of its own). */
+    if (gs) pdna_gbpack(gs, ed && app_can_edit());
     else    (void)gb_info_page(m);
   } else if (nv == NV_FLY) {
     /* BACKLOG #90: gb_fly.h has a real bit for both generations (see its own header)
@@ -3510,8 +3524,12 @@ static void gb_nav_from_start(Gb12Mount* m, GbSession* ro) {
      * clock at all), so this branch is never reached from the plain-Gen-1 nav menu;
      * gated on `kind` anyway, the same defensive posture NV_BAG's own two branches
      * take, so a stray Gen-1 press falls through to app_nav_refuse()'s honest
-     * message instead of silently opening a Gen-2-shaped screen. */
-    if (gs) pdna_gbclock(gs, ed);
+     * message instead of silently opening a Gen-2-shaped screen.
+     *
+     * app_can_edit() here, not a bare `ed` (b160 fix, same pattern as b153's
+     * NV_FLY change below): pdna_gbclock() trusts its caller for the write
+     * gate (no internal app_can_edit() call of its own). */
+    if (gs) pdna_gbclock(gs, ed && app_can_edit());
     else    (void)gb_info_page(m);
   } else if (nv == NV_DAYCARE) {
     /* BACKLOG #85: same "needs a live GbSession to write through" gate as
