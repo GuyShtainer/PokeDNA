@@ -5418,7 +5418,7 @@ def run_b93_menu(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> g
     s2.run(GB_ART_COLD_SETTLE)
     s2.press_n("UP", 3, settle=100)
     s2.shot("26_bank_hop", "BACKLOG #93: the bank_edge UP hop opens the Bank -- "
-                            "'BANK 1  0/30', every cell empty (#120 S2's F1 fix: "
+                            "'BANK 1  5/30' -- the five PDNA_DELTA-planted native cells in slots 0-4, the rest empty (#120 S2's F1 fix: "
                             "no write surface survives into a GB session's Bank "
                             "visit, so nothing can ever land here in mGBA)")
     s2.tap("A", settle=150)
@@ -5618,7 +5618,7 @@ def run_s2_control(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Se
     print("== #143: the Gen-3 Bank control -- what CREATE + PASTE HERE look like ==")
     s.run(700)
     s.shot("00_boot", "#143: Emerald boots straight into the party/box view, cursor "
-           "on box 0 slot 0 -- No.81 TRIEYE (artless label for MAGNETITE/Magnemite) "
+           "on box 0 slot 0 -- No.81 TRIEYE (the mon's own NICKNAME from the save; the species line reads MAGNEMITE) "
            "Lv24, a real Gen-3 record in the SAVE's own PC (not the Bank)")
 
     # Copy the boot cursor's own Gen-3 mon off the save's PC into the clipboard --
