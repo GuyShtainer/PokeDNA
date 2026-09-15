@@ -694,6 +694,13 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_GBEDIT_DUP_SIDECAR_TITLE "Came from Gen 3."
 #define PDNA_GBEDIT_DUP_SIDECAR_L1    "Only one copy can go back."
 #define PDNA_GBEDIT_DUP_TITLE         "DUPLICATED"
+/* D5 (review-opus, BACKLOG #93): DUPLICATE on a party mon used to hit gbs_insert's
+ * own GBS_ERR_ARG (a party-shaped record handed to a box-only destination,
+ * gb_session.h's own gbs_insert() header) and show its raw status text, "bad
+ * argument" -- accurate but not a sentence a player asked for. Reuses
+ * PDNA_GBEDIT_DAYCARE_PARTY_TITLE ("CAN'T"), the same twin refusal TO DAY-CARE
+ * already gives the party pseudo-box, for one title both share. */
+#define PDNA_GBEDIT_DUP_PARTY_L1      "Can't duplicate a party mon."
 
 /* BACKLOG #93: TO DAY-CARE on the read-only mon menu (gb_daycare_hook, pdna_gen12.c).
  * The full/confirm/success strings are Gen 3's own app_to_daycare/gbdc_deposit literals,

@@ -1562,6 +1562,18 @@ static bool gb_dup_hook(uint8_t* rec80) {
   if (!gb_locate(rec80, &box, &slot)) return false;
   GbSession* s = &g_ed->s;
 
+  /* D5 (review-opus, BACKLOG #93): refuse the party pseudo-box in plain English
+   * before gbs_insert() ever refuses it with GBS_ERR_ARG (a party-shaped record
+   * handed to a box-only destination -- gbs_insert()'s own header) -- that raw
+   * status text reads as "bad argument", not a sentence about what actually
+   * happened. Same structural-refusal idiom TO DAY-CARE already uses for the
+   * same box. */
+  if (gb_box_is_party(s->gen, box)) {
+    snd_deny();
+    msg_wait(PDNA_GBEDIT_DAYCARE_PARTY_TITLE, UI_WARN, PDNA_GBEDIT_DUP_PARTY_L1, 0);
+    return false;
+  }
+
   GbsStatus st = gbs_load_list(s, box, g_ed->list);
   if (st != GBS_OK) { snd_deny(); msg_wait(PDNA_GBEDIT_BOXRD_TITLE, UI_WARN, gbs_status_text(st), 0); return false; }
   if (slot >= gb_list_count(s->gen, g_ed->list, box)) {
