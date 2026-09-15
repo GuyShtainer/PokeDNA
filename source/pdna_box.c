@@ -1154,9 +1154,12 @@ static BankDownResult bank_down_exact(BoxSource* src, int dst_box, const uint8_t
      * loss. Still BANK_DOWN_LANDED -- the operation succeeded from the player's view;
      * only the Bank-side cleanup didn't, and that is reported, not silently retried. */
     snd_error();
-    char l1[40];
-    siprintf(l1, "Bank box %d slot %d", s_orig_box + 1, s_orig_slot + 1);
-    msg_wait(PDNA_XFER_DOWN_DUP_TITLE, UI_WARN, l1, PDNA_XFER_DOWN_DUP_L2);
+    /* REVIEW F4: PDNA_XFER_DOWN_DUP_L1 ("The game save HAS it now.") is the
+     * reassuring half of D7's message -- used here as the static first line; the
+     * dynamic box/slot naming moves to the second line. */
+    char l2[40];
+    siprintf(l2, "Bank box %d slot %d", s_orig_box + 1, s_orig_slot + 1);
+    msg_wait(PDNA_XFER_DOWN_DUP_TITLE, UI_WARN, PDNA_XFER_DOWN_DUP_L1, l2);
     boxoam_resume();
     log_line("gen12: bank-down consume failed -- Bank box %d slot %d still holds a "
              "duplicate (the game save already has it)", s_orig_box, s_orig_slot);
