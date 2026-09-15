@@ -1586,6 +1586,17 @@ void app_note_boot_checksums(void) {
 }
 
 static bool app_save_finalize(void) {
+  /* Review fix F7 (defence in depth, BACKLOG #54): app_save_finalize() is the single
+   * funnel every Gen-3 whole-file write passes through (app_commit_all/app_commit_sb1/
+   * app_commit_sb2/app_commit_sb12/app_commit_block, all the way down). A no-op on
+   * every gated happy path -- every one of those callers already checks
+   * app_can_edit() (or the equivalent) before reaching here -- so this only ever
+   * fires if a future call site forgets to gate, catching the bug at the LAST
+   * possible moment instead of writing the flash chip. */
+  if (!app_can_edit()) {
+    log_line("BUG: app_save_finalize with editing disabled - refused");
+    return false;
+  }
   /* Fold any pending deferred PC-box edits into the image FIRST, so EVERY whole-file write
    * is internally consistent. A cross-buffer move (party<->box, PC<->Day-Care) stages its
    * SaveBlock1 half into g_save (app_stage_sb1) while its PC half lives only in g_pc; without
