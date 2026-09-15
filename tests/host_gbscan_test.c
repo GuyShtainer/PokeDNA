@@ -257,7 +257,20 @@ static void part_b_rom(const char* name, uint8_t gen, const Want* want, int has_
  *     2,048 + 1,024 + 96(CARDGFX 6*16) + 96(STATUSWORD 6*16) +
  *     1,376(LEADERS 86*16) + 704(BADGES g2 44*16) + 560(CARDPIC_M 35*16) =
  *     5,904 (+16 CARDCORNER opt = 5,920 -- used below, the larger/more
- *     conservative figure)
+ *     conservative figure). A FEMALE save also opts in CARDPIC_F (+560,
+ *     35*16, Crystal's Kris pic): 5,920 + 560 = 6,480 -- not used below
+ *     (male's 5,920 is the deterministic figure this file picks), but the
+ *     SAME chunk tier as 5,920 (measured, both 1,117 disk_read at part D's
+ *     scale below): rom_gbui_open's own internal chunk size only steps at
+ *     ~2,048/4,096/8,192 tiers (part D's own comment on the brief's
+ *     unverified 1/4 claim), and both 5,920 and 6,480 fall inside the
+ *     [4,096, 8,192) tier. In fact only 4,096 of the 5,920 B lent by the
+ *     Gen-2 card is ever touched by that tier's window -- 0xAA-filling the
+ *     whole scratch first and re-opening confirms bytes [0, 4,096) are
+ *     overwritten and [4,096, 5,920) stay 0xAA, 1,824 B genuinely unused --
+ *     so widening the tail further gains this screen NOTHING until the next
+ *     chunk tier at 8,192, where part D's own comment below measures 606
+ *     disk_read (down from 1,117) -- the actual, not estimated, next step.
  *   Gen-2 pack (pdna_gbpack.c:421: TEXTBOX|PACKMENU|PACK, gen2) =
  *     2,048 + 1,024 + 432(TEXTBOX g2 54*8) + 1,280(PACKMENU 80*16) +
  *     960(PACK_M 60*16) = 5,744
