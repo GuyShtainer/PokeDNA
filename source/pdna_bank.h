@@ -38,7 +38,9 @@ bool pdna_bank_slot_pending(int box, int slot);
  * file untouched) if the box's page-in read was incomplete or nothing matched. Cross-box MOVE only,
  * and ONLY after the destination box is committed. */
 bool pdna_bank_clear_slots(int box, const uint8_t* slots, const uint8_t (*recs80)[80], int n);
-void pdna_bank_flush_deletions(void);   /* apply pending deletions (call AFTER the PC is written) */
+int  pdna_bank_flush_deletions(void);   /* apply pending deletions (call AFTER the PC is written);
+                                          * BACKLOG #150 S150-8 decision 10: returns the count still
+                                          * queued after a failed box_save() (0 = all flushed) */
 void pdna_bank_clear_deletions(void);   /* drop pending deletions (discard / fresh save) */
 
 /* BACKLOG #150 S150-4 decision 2: allocate + persist (BEFORE returning) the next

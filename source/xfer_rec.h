@@ -20,4 +20,18 @@
  * exactly the property the reroll re-key guard (decision 8) needs. */
 uint64_t xr_key_g3(const uint8_t rec80[80]);
 
+/* BACKLOG #150 S150-8 decision 5: the pk_item_games() mask bit for a Gen-3 origin-game
+ * id (1 Sapphire, 2 Ruby, 3 Emerald, 4 FireRed, 5 LeafGreen) -- bit0 RS, bit1 Emerald,
+ * bit2 FRLG (source/pdna_pick.c documents the mask). 0 for an unknown id (0 or > 5). */
+uint8_t xr_game_item_mask(uint8_t met_game);
+
+/* BACKLOG #150 S150-8 decision 14, §11.20 item 12(a): Gen 2 -> Gen 1 is allowed under
+ * the time-capsule rules -- species <= gb_max_species(GB_GEN1) (151) and every
+ * non-empty move <= gb_max_move(GB_GEN1) (165, exact -- Gen 1 has precisely moves
+ * 1..165 with no gaps, D-Q7). Returns 0 when it may travel; 1 = species, 2 = a move
+ * (and *bad is the offending species dex or move id, for the exact-reason message).
+ * Gen 1 -> Gen 2 is always allowed and returns 0 without looking. */
+int xr_time_capsule_block(uint8_t src_gen, uint8_t dst_gen, uint16_t species_dex,
+                          const uint16_t moves[4], uint16_t* bad);
+
 #endif

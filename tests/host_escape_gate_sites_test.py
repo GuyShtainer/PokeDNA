@@ -134,6 +134,9 @@ def extract_function(lines: list[str], sig_re: str) -> tuple[int, int]:
 
 
 MEMCPY80_RE = re.compile(r"memcpy\([^;]*,\s*80\)")
+# BACKLOG #150 S150-8 review F5: module-level so both the real check (j) and its
+# self-mutation demonstration (MUT I) share one pattern.
+CONVERTED_TRUE_RE = re.compile(r"\bconverted\s*=\s*true\b")
 CHUNK_COPY_RE = re.compile(r"memcpy\(s_ch_rec\[i\]")
 GATE_RE = re.compile(r"xg_native_escape_denied\(")
 BC_NATIVE_RE = re.compile(r"bc_is_native\(")
@@ -316,6 +319,29 @@ def main() -> int:
         s, e = extract_function(box_lines, sig)
         ok, detail = gate_before_pattern(box_lines, s, e, GATE_RE, MEMCPY80_RE, name)
         check(ok, detail)
+
+    # ---- (a''''=j) BACKLOG #150 S150-8 review F5: `bool converted = true;` at drop_held's
+    # top would satisfy check (a) above (it never even LOOKS at the gate's condition, only
+    # its line position relative to the first 80-byte memcpy) while unconditionally
+    # bypassing the whole native-escape gate. Two independent checks close that hole:
+    #   - the ONE xg_native_escape_denied( call in drop_held must read
+    #     `if (!converted && xg_native_escape_denied(` -- not a bare, unconditional gate;
+    #   - `converted = true` must be assigned exactly once, and only within 3 lines after
+    #     a line that names BANK_DOWN_CONVERTED (the dispatch result check that is the
+    #     ONLY legitimate reason `converted` may ever become true).
+    s, e = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
+    dh_body = box_lines[s:e]
+    gate_idx = [i for i in range(len(dh_body)) if GATE_RE.search(dh_body[i])]
+    check(len(gate_idx) == 1 and "!converted &&" in dh_body[gate_idx[0]],
+          "drop_held: the one escape gate must read "
+          "`if (!converted && xg_native_escape_denied(` -- found: " +
+          (dh_body[gate_idx[0]].strip() if len(gate_idx) == 1 else f"{len(gate_idx)} gate call(s)"))
+    asg_idx = [i for i, ln in enumerate(dh_body) if CONVERTED_TRUE_RE.search(ln)]
+    check(len(asg_idx) == 1 and
+          any("BANK_DOWN_CONVERTED" in dh_body[j] for j in range(max(0, asg_idx[0] - 3), asg_idx[0])),
+          "drop_held: `converted = true` must be assigned exactly once, immediately after "
+          "a BANK_DOWN_CONVERTED test -- found at line(s) " +
+          ", ".join(str(i + 1) for i in asg_idx))
 
     # ---- (a') begin_select: bc_is_native( before the copy-into-chunk loop ----
     s, e = extract_function(box_lines, r"^static uint8_t\* begin_select\(")
@@ -668,7 +694,7 @@ def self_test_mutation_detection(box_lines: list[str]) -> None:
                        "should have been caught but was not")
         print("  MUT J demonstration -- begin_select's refusal branch reverted to "
               "bare `else snd_deny();` (no *pfull = true): correctly caught")
-    # MUT I (REVIEW F2): swap accept_down() and app_bank_clear_slots() in a copy of
+    # MUT L (REVIEW F2): swap accept_down() and app_bank_clear_slots() in a copy of
     # bank_down_exact's body -- the exact inversion the reviewer demonstrated -- and
     # assert down_order_facts() reports failure.
     sd, ed = extract_function(box_lines, r"^static BankDownResult bank_down_exact\(")
@@ -676,17 +702,44 @@ def self_test_mutation_detection(box_lines: list[str]) -> None:
     accept_i = first_match_line(down_body, 0, len(down_body), ACCEPT_DOWN_RE)
     consume_i = first_match_line(down_body, 0, len(down_body), CONSUME_RE)
     check(accept_i is not None and consume_i is not None,
-          "MUT I: could not locate both the accept_down() and app_bank_clear_slots() "
+          "MUT L: could not locate both the accept_down() and app_bank_clear_slots() "
           "lines in the real source -- fix this test")
     if accept_i is not None and consume_i is not None and accept_i < consume_i:
         mut_i = list(down_body)
         consume_line = mut_i.pop(consume_i)
         mut_i.insert(accept_i, consume_line)   # the Bank consume's line now sits BEFORE accept_down()
         ok, detail = down_order_facts(mut_i, 0, len(mut_i))
-        check(not ok, f"MUT I (app_bank_clear_slots swapped before accept_down()) should have been "
+        check(not ok, f"MUT L (app_bank_clear_slots swapped before accept_down()) should have been "
               f"caught but was not: {detail}")
-        print(f"  MUT I demonstration -- app_bank_clear_slots() line swapped above "
+        print(f"  MUT L demonstration -- app_bank_clear_slots() line swapped above "
               f"accept_down(): {detail}")
+    # MUT M (BACKLOG #150 S150-8 review F5): `bool converted = true;` at drop_held's own
+    # top -- the exact defect the reviewer demonstrated (passes check (a) above, which
+    # only looks at line POSITION relative to the first 80-byte memcpy, never the gate's
+    # own condition) while unconditionally bypassing the native-escape gate for every
+    # drop. The new per-site checks above must catch it.
+    s, e = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
+    body = box_lines[s:e]
+    decl_i = first_match_line(body, 0, len(body), re.compile(r"bool converted = false;"))
+    check(decl_i is not None, "MUT M: could not locate `bool converted = false;` in the real source -- fix this test")
+    if decl_i is not None:
+        mut_i = list(body)
+        mut_i[decl_i] = mut_i[decl_i].replace("converted = false", "converted = true")
+        gate_idx = [i for i in range(len(mut_i)) if GATE_RE.search(mut_i[i])]
+        gate_ok = len(gate_idx) == 1 and "!converted &&" in mut_i[gate_idx[0]]
+        # the gate TEXT is unaffected by this mutation (still reads `!converted &&`), so
+        # what must actually catch MUT M is the SECOND check: `converted = true` now
+        # appears twice (the declaration-turned-assignment plus the real, legitimate
+        # one after BANK_DOWN_CONVERTED) -- exactly the ambiguity a reviewer would flag.
+        asg_idx = [i for i, ln in enumerate(mut_i) if CONVERTED_TRUE_RE.search(ln)]
+        asg_ok = len(asg_idx) == 1 and any(
+            "BANK_DOWN_CONVERTED" in mut_i[j] for j in range(max(0, asg_idx[0] - 3), asg_idx[0]))
+        check(gate_ok, "MUT M: unexpectedly broke the gate-text check too -- fix this test's mutation")
+        check(not asg_ok, "MUT M (`converted` initialised true) should have been caught by the "
+                          "single-assignment check but was not")
+        print(f"  MUT M demonstration -- `bool converted = true;` at drop_held's own top: "
+              f"{len(asg_idx)} `converted = true` occurrence(s) found (expected exactly 1, "
+              f"immediately after a BANK_DOWN_CONVERTED test)")
 
 
 if __name__ == "__main__":

@@ -46,6 +46,7 @@ _Static_assert(BOXSCOPE_BANK == 1, "source/xfer_gate.c's XG_SCOPE_BANK hard-code
 #include "pdna_progress.h"  /* pdna_progress_frame: batch sprite + N/total bar */
 #include "pdna_pk.h"        /* pdna_pk_export_silent: "Export all" from the box title */
 #include "bank_cell.h"      /* bc_is_native/bc_unpack/bc_view/bc_ident32 -- native Bank cell render (BACKLOG #150 S150-2) */
+#include "pdna_gen12.h"     /* BACKLOG #150 S150-8: BankDownResult, bank_down_convert_gb/gen3 */
 #include "gb12_render.h"    /* gb12_render_rec/GB_SHOW_* -- shared display ladder */
 #include "pdna_bank.h"      /* pdna_bank_prepare_native -- the UP drop's backup gate (BACKLOG #150 S150-4) */
 
@@ -1109,7 +1110,7 @@ static uint8_t* clear_origin(BoxSource* src, int box) {
  * -- that gate still guards every RAW 80-byte write below it, and this call never
  * falls through to one. Either the cell LANDED (destination persisted AND the Bank
  * source consumed) or NOTHING anywhere changed and the hand keeps holding. */
-typedef enum { BANK_DOWN_REFUSED = 0, BANK_DOWN_LANDED = 1 } BankDownResult;
+/* BankDownResult (REFUSED / LANDED / CONVERTED) lives in bank_down_convert.h (S150-8). */
 
 /* The XG_DOWN_ARM_EXACT arm: land the cell in a Game Boy save of the SAME generation
  * via the vtable's accept_down hook, then the ONE Bank consume (D7/D12). G-H1's
@@ -1181,12 +1182,12 @@ static BankDownResult bank_down_exact(BoxSource* src, int dst_box, const uint8_t
  * S150-8's Gen-3 arm, which needs the exact cell. noinline: must not inline into
  * drop_held, which sits on the box-screen stack chain. */
 static BankDownResult __attribute__((noinline))
-bank_down_dispatch(BoxSource* src, int dst_box, int dst_cell, const uint8_t cell80[80]) {
-  (void)dst_cell;
+bank_down_dispatch(BoxSource* src, int dst_box, int dst_cell, const uint8_t cell80[80],
+                   const uint8_t dstrec[80], uint8_t out80[80]) {
   switch (xg_bank_down_arm(bc_kind(cell80), src->scope, app_gb_session_gen())) {
     case XG_DOWN_ARM_EXACT:     return bank_down_exact(src, dst_box, cell80);
-    case XG_DOWN_ARM_GB_BRIDGE: return BANK_DOWN_REFUSED; /* S150-8 */
-    case XG_DOWN_ARM_GEN3:      return BANK_DOWN_REFUSED; /* S150-8 */
+    case XG_DOWN_ARM_GB_BRIDGE: return bank_down_convert_gb(src, dst_box, dst_cell, cell80);
+    case XG_DOWN_ARM_GEN3:      return bank_down_convert_gen3(src, dst_box, dst_cell, cell80, dstrec, out80);
     case XG_DOWN_ARM_NONE:
     default:                    return BANK_DOWN_REFUSED;
   }
@@ -1201,35 +1202,58 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
   if (s_orig_slot >= 0 && same_scope(src) && s_orig_box == box && cur == s_orig_slot) {
     s_holding = false; *done = true; return recs;            /* dropped back on its own cell */
   }
-  /* BACKLOG #150 S150-7 (SS11.3, SS11.20 item 12(c)): the ONE sanctioned exit a native
-   * cell has. ABOVE the escape gate on purpose -- that gate still guards every RAW
-   * 80-byte write below, and this branch never falls through to one. !s_held_dup:
-   * S150-3's menu whitelist keeps DUPLICATE off a native cell's menu, so a native
-   * s_held_dup is already impossible -- belt and braces, since a dup has no origin
-   * to consume. */
+  /* BACKLOG #150 S150-8 decision 11/12 (as adapted for this lane's base -- S150-7's
+   * `bank_down_dispatch` does not exist on disk, see the delivery report): a native
+   * "GBC1" cell converting DOWN, either into the Gen-3 PC (BANK_DOWN_CONVERTED) or
+   * straight into a Game Boy save of the OTHER generation (BANK_DOWN_LANDED). The
+   * bridge arm (LANDED) has ALREADY written its own destination -- not a PC record
+   * at all, so it returns immediately, same shape as the UP drop's own tail. The
+   * Gen-3 arm (CONVERTED) has NOT: `conv` holds the finished record and `converted`
+   * makes control FALL THROUGH into the EXISTING "BANK -> PC true MOVE" branch
+   * below, which places `conv` (not `s_held`) -- reusing that branch's own already-
+   * declared BoxSource.note_add/records call sites rather than adding a new one
+   * (tools/stack_edges.txt's GATED-4 gate forbids a new caller; a second reason,
+   * independent of gate wiring, this reuse is also required for:
+   * tests/host_escape_gate_sites_test.py's structural check that every 80-byte
+   * memcpy in this function is preceded, in TEXT ORDER, by the ONE
+   * `xg_native_escape_denied(` call below -- reusing the existing memcpy keeps that
+   * true without adding a second gate call, which would break the file's own exact
+   * count check). `s_held` stays untouched (still the native cell) so
+   * `app_bank_defer_delete`'s own identity match (pdna_bank.c's BANK_DEL_IDLEN
+   * memcmp against the first 8 bytes handed at drop time) still matches the Bank
+   * slot's real native bytes. */
+  /* BACKLOG #150 S150-8 review F7: hoisted from further below (its own comment stays
+   * there) so the dispatch condition just below can gate on `!occupied` too -- a
+   * refused-for-occupied drop must never even CALL bank_down_dispatch, so the Gen-3
+   * arm's own ledger write (xfer_down_write, decision 8) can never run for a
+   * destination this call site is about to refuse anyway, which would otherwise
+   * orphan an XR_PENDING entry AND leave decision 9's g_xd_key/g_xd_idx pointing at
+   * a transfer nothing will ever complete. */
+  bool occupied = g_box[cur].species != 0 || bc_is_native(recs + (uint32_t)cur * 80) ||
+                 (src->scope == BOXSCOPE_BANK && app_bank_slot_pending(box, cur));   /* the REAL Bank's deferred-delete queue, never a GB box index (S1 review D1) */
+  uint8_t conv[80]; bool converted = false;
   if (s_orig_scope == BOXSCOPE_BANK && s_orig_slot >= 0 && !s_held_dup &&
-      src->scope != BOXSCOPE_BANK && bc_is_native(s_held)) {
-    if (bank_down_dispatch(src, box, cur, s_held) == BANK_DOWN_LANDED) {
-      s_holding = false; *done = true; s_oam_reload = true;
-      recs = src->records(box);            /* the GB list grew -- repaint from the image */
-    } else {
-      /* D-Q5: bank_down_dispatch's GB_BRIDGE/GEN3 cases are each EXACTLY one line
-       * (`return BANK_DOWN_REFUSED;`) so S150-8's merge is a clean two-line body
-       * replacement -- no room in there for this stub's own snd_deny()/msg_wait().
-       * Re-deriving the arm here (pure, cheap, xg_bank_down_arm has no side effect)
-       * keeps that contract literal while still telling the player something when
-       * the cell needs a converter this slice does not build. NONE (and EXACT that
-       * already showed its own refusal via accept_down/gb_accept_down_hook) show
-       * nothing more here. */
+      src->scope != BOXSCOPE_BANK && bc_is_native(s_held) && !occupied) {
+    BankDownResult bd = bank_down_dispatch(src, box, cur, s_held,
+                                           recs + (uint32_t)cur * 80, conv);
+    if (bd == BANK_DOWN_LANDED) {
+      /* Two arms LAND: re-derive which (xg_bank_down_arm is pure and cheap). EXACT
+       * (S150-7): the GB list grew and the Bank consume ALREADY ran inside
+       * bank_down_exact -- repaint from the image. GB_BRIDGE (S150-8): the bridge
+       * wrote the mounted OTHER-generation session, not `recs`/`box`, and the Bank
+       * origin's removal is deferred to the exit save -- no records() reload. */
       uint8_t arm = xg_bank_down_arm(bc_kind(s_held), src->scope, app_gb_session_gen());
-      if (arm == XG_DOWN_ARM_GB_BRIDGE || arm == XG_DOWN_ARM_GEN3) {
-        boxoam_suspend();
-        snd_deny();
-        msg_wait(PDNA_XFER_DOWNSOON_TITLE, UI_WARN, PDNA_XFER_DOWNSOON_L1, PDNA_XFER_DOWNSOON_L2);
-        boxoam_resume();
+      if (arm == XG_DOWN_ARM_EXACT) {
+        s_holding = false; *done = true; s_oam_reload = true;
+        recs = src->records(box);            /* the GB list grew -- repaint from the image */
+        return recs;
       }
+      s_holding = false; *done = true;
+      app_bank_defer_delete(s_orig_box, s_orig_slot, s_held);
+      return recs;
     }
-    return recs;
+    if (bd != BANK_DOWN_CONVERTED) return recs;   /* REFUSED: keep holding; the arm already said why */
+    converted = true;                             /* fall through to the BANK -> PC branch, with `conv` */
   }
   /* BACKLOG #150 S150-3 decision 3: a native "GBC1" cell may only ever land back in the
    * Bank -- `src->scope` IS the destination scope on every branch below (`recs` always
@@ -1238,20 +1262,26 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
    * sites below that can write s_held into `recs`: the cross-scope DUPLICATE fast path,
    * the BANK -> PC true-MOVE, the PC -> Bank always-RELEASE, the empty-cell place, and
    * the same-scope SWAP place. The hand is NOT emptied (still holding), same shape as
-   * the `if (occupied)` refusal below it. */
-  if (xg_native_escape_denied(s_held, src->scope)) {
+   * the `if (occupied)` refusal below it.
+   * BACKLOG #150 S150-8 decision 12: `!converted &&` -- after BANK_DOWN_CONVERTED
+   * `s_held` is still native, so this gate would otherwise refuse a transfer its own
+   * arm already approved; every OTHER path (that never went through the dispatch
+   * above) still refuses exactly as before -- defence in depth, unweakened. */
+  if (!converted && xg_native_escape_denied(s_held, src->scope)) {
     boxoam_suspend();
     snd_deny();
     msg_wait(PDNA_XFER_NATIVE_TITLE, UI_WARN, PDNA_XFER_NATIVE_L1, PDNA_XFER_NATIVE_L2);
     boxoam_resume();
     return recs;
   }
-  /* A bank slot whose mon is moving out to the PC looks empty but still holds that mon's only
-   * on-card copy until the PC is saved — treat it as OCCUPIED so nothing overwrites it.
-   * bc_is_native (BACKLOG #150 S150-2, G-H2): a native cell g_box[cur].species cannot
-   * represent (GB_SHOW_NONE, no DAMAGED stand-in built) must not read as empty either. */
-  bool occupied = g_box[cur].species != 0 || bc_is_native(recs + (uint32_t)cur * 80) ||
-                 (src->scope == BOXSCOPE_BANK && app_bank_slot_pending(box, cur));   /* the REAL Bank's deferred-delete queue, never a GB box index (S1 review D1) */
+  /* `occupied` -- computed above (review F7), before the dispatch block, so this
+   * function's own destination-occupancy rule gates BOTH the DOWN dispatch and the
+   * ordinary cross/same-scope drop paths below with the identical definition. A bank
+   * slot whose mon is moving out to the PC looks empty but still holds that mon's
+   * only on-card copy until the PC is saved — treated as OCCUPIED so nothing
+   * overwrites it. bc_is_native (BACKLOG #150 S150-2, G-H2): a native cell
+   * g_box[cur].species cannot represent (GB_SHOW_NONE, no DAMAGED stand-in built)
+   * must not read as empty either. */
   if (!same_scope(src)) {                                    /* cross-scope drop */
     /* BACKLOG #120 S2 / #150 S150-4 decision 9: no lift path exists for a
      * Game-Boy-scope transfer unless a REAL xfer vtable is installed (not the S2
@@ -1351,8 +1381,13 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
        * queue holds 64: when FULL, refuse the drop (a silent un-queued move would leave a
        * duplicate behind) — save + re-enter to flush the queue. */
       if (app_bank_defer_full()) { snd_deny(); return recs; }
-      if (src->note_add) src->note_add(s_held);
-      memcpy(recs + (uint32_t)cur * 80, s_held, 80); src->mark_dirty();
+      /* BACKLOG #150 S150-8 decision 11: `converted` -> place `conv` (the arm's own
+       * finished Gen-3 record), never `s_held` (still the native cell) -- see this
+       * function's own dispatch-block comment for why this reuses the existing
+       * call sites instead of adding new ones. */
+      const uint8_t* placing = converted ? conv : s_held;
+      if (src->note_add) src->note_add(placing);
+      memcpy(recs + (uint32_t)cur * 80, placing, 80); src->mark_dirty();
       app_bank_defer_delete(s_orig_box, s_orig_slot, s_held);
       s_holding = false; *done = true; return recs;
     }
@@ -3309,9 +3344,19 @@ static int party_strip_overlay(BoxSource* src, int box, int* cur,
          * call site is running (matches the same principle the s_holding clear below
          * already follows). */
         /* BACKLOG #150 S150-3 decision 3 (party site): the party lives in `g_sb1`,
-         * PC-scope storage -- a native cell can never survive there. */
+         * PC-scope storage -- a native cell can never survive there. BACKLOG #150
+         * S150-8 decision 2/D-Q2: say so, with a sentence -- the Gen-3 PARTY
+         * destination is CUT for this lane (a converted copy lands in the PC only;
+         * see this lane's OPEN WORK note), so a bare snd_deny() would silently look
+         * like a bug rather than the documented gap it is. */
         bool placed;
-        if (xg_native_escape_denied(s_held, BOXSCOPE_PC)) { snd_deny(); placed = false; }
+        if (bc_is_native(s_held)) {
+          boxoam_suspend();
+          snd_deny();
+          msg_wait(PDNA_XFER_PARTY_TITLE, UI_WARN, PDNA_XFER_PARTY_L1, PDNA_XFER_PARTY_L2);
+          boxoam_resume();
+          placed = false;
+        } else if (xg_native_escape_denied(s_held, BOXSCOPE_PC)) { snd_deny(); placed = false; }
         else placed = app_party_place_held(s_held, sel, s_orig_box, s_orig_slot, (s_orig_scope == BOXSCOPE_BANK), can_swap_now);
         if (placed && s_orig_scope == BOXSCOPE_PC && s_orig_slot >= 0) {
           recs = src->records(box); box_decode(src, recs, box); s_oam_reload = true;

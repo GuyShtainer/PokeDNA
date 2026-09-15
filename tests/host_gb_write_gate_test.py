@@ -81,7 +81,17 @@ SKIP_FIELDS = {"edit", "copy_native", "editable", "gen", "preview_down", "move_w
 
 # BACKLOG #150 S150-14, check (c): named write hooks outside the k_gb_ops_* tables and
 # outside gb_nav_from_start's dispatch -- checked individually by name, not by table scan.
-NAMED_WRITE_HOOKS = ("gb_native_summary_open",)
+NAMED_WRITE_HOOKS = ("gb_native_summary_open",
+                     # BACKLOG #150 S150-8 step 7: the two DOWN-converting arms --
+                     # neither is a k_gb_ops_* table hook (check (b) never sees
+                     # them) and neither takes a `gs` argument (check (a) never
+                     # sees them either). gb_locate() is the wrong gate for
+                     # BOTH (the Gen-3 arm has no GB save mounted at all; the
+                     # bridge arm's destination box comes straight from the
+                     # dispatcher, not from a gb_locate() lookup) -- app_can_edit(
+                     # must appear in each body directly, same reasoning as
+                     # gb_native_summary_open's own row above.
+                     "gb_bank_down_gen3", "gb_bank_down_bridge")
 
 
 def strip_comments(text: str) -> str:
