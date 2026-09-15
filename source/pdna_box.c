@@ -1170,6 +1170,11 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
   /* occupied within scope -> SWAP, then KEEP HOLDING the displaced occupant (place it
    * yourself next; we don't auto-throw it into the held mon's old cell). */
   if (s_orig_slot < 0 && s_held_dup) { snd_deny(); return recs; }          /* a fresh dup can't swap */
+  /* BACKLOG #150 S150-3 review F2: the escape gate above reads the HELD record; the SWAP
+   * below also WRITES the destination. A native cell may be DISPLACED by another
+   * native cell, never overwritten by a Gen-3 record -- box_save's invariant would
+   * then refuse every later save of this box with no UI at all. */
+  if (bc_is_native(recs + (uint32_t)cur * 80) && !bc_is_native(s_held)) { snd_deny(); return recs; }
   if (s_orig_slot >= 0 && s_orig_box != box && src->scope == BOXSCOPE_BANK) { snd_deny(); return recs; }  /* the REAL Bank's cross-box swap is unsafe (S1 review D1 companion); GB swaps arrive with S3's move_within */
   if (src->note_add) src->note_add(s_held);                                /* placed mon enters this scope -> dex */
   uint8_t occ[80]; memcpy(occ, recs + (uint32_t)cur * 80, 80);             /* save the occupant */
@@ -1308,20 +1313,36 @@ static void draw_footer(bool is_bank, bool on_title, bool moving) {
   ui_text(WP_X + 2, 152, RGB15(31, 31, 31), f);
 }
 
-/* Set a box mon's held item (decrypt -> set -> re-encode + checksum, in place). */
-static void box_set_held(uint8_t* recs, int slot, uint16_t item) {
+/* Set a box mon's held item (decrypt -> set -> re-encode + checksum, in place).
+ * Returns false, writing nothing, on a native cell.
+ * BACKLOG #150 S150-3 review F1: a native GBC1 cell is not a Gen-3 record -- the
+ * grid's ITEM mode is a fourteenth escape route the brief's twelve missed. Every
+ * native cell decodes as g_box[cur].species != 0 (S150-2's G-H2 stand-in) and
+ * heldItem == 0, so GIVE/swap, TAKE and the B put-back's own g_box[]-only tests
+ * never exclude it on their own -- this is the single choke point all three
+ * callers now gate on. */
+static bool box_set_held(uint8_t* recs, int slot, uint16_t item) {
   uint8_t* rec = recs + (uint32_t)slot * 80;
+  if (bc_is_native(rec)) { snd_deny(); return false; }
   EditMon e; gen3_edit_load(rec, false, &e);
   em_set_item(&e, item);
   uint8_t out[100]; gen3_edit_commit(&e, out);
   memcpy(rec, out, 80);
+  return true;
 }
 
 /* A safe home slot to deposit the carried item: its source slot if still empty-
- * handed, else the first occupied mon with no item; -1 if nowhere (never lose it). */
-static int item_home(void) {
-  if (s_item_from >= 0 && g_box[s_item_from].species && !g_box[s_item_from].heldItem) return s_item_from;
-  for (int s = 0; s < 30; s++) if (g_box[s].species && !g_box[s].heldItem) return s;
+ * handed, else the first occupied mon with no item; -1 if nowhere (never lose it).
+ * BACKLOG #150 S150-3 review F1: `recs` lets this skip bc_is_native() slots -- a
+ * native cell always decodes heldItem == 0 (it has no Gen-3 item field at all), so
+ * without this it reads as a perfectly "safe" home for a real item, and
+ * box_set_held() would then have to refuse the put-back and strand the item on
+ * the cursor mid-carry. */
+static int item_home(const uint8_t* recs) {
+  if (s_item_from >= 0 && g_box[s_item_from].species && !g_box[s_item_from].heldItem &&
+      !bc_is_native(recs + (uint32_t)s_item_from * 80)) return s_item_from;
+  for (int s = 0; s < 30; s++)
+    if (g_box[s].species && !g_box[s].heldItem && !bc_is_native(recs + (uint32_t)s * 80)) return s;
   return -1;
 }
 
@@ -3561,24 +3582,27 @@ int pdna_box(BoxSource* src) {
     if (s_item_held > 0) {
       if (k & KEY_B) {                               /* put it back (never lose it) */
         if (s_item_from_box >= 0 && s_item_from_box != box) SWITCH_BOX(s_item_from_box);  /* back to its box */
-        int home = item_home();
+        int home = item_home(recs);
         /* Park the cursor on the mon that just got the item back, so the left panel
          * shows where it went. (SWITCH_BOX now PRESERVES the cursor cell, so without
          * this a cross-box put-back would leave the glove on an unrelated slot.) */
         if (home >= 0) { cur = home;
-                         box_set_held(recs, home, (uint16_t)s_item_held); box_decode(src, recs, box);
-                         src->mark_dirty(); s_item_held = 0; s_item_from = -1; s_item_from_box = -1; need_full = true; }
+                         if (box_set_held(recs, home, (uint16_t)s_item_held)) {
+                           box_decode(src, recs, box);
+                           src->mark_dirty(); s_item_held = 0; s_item_from = -1; s_item_from_box = -1; need_full = true;
+                         } }
         else snd_deny();
       }
       else if (k & KEY_A) {                          /* give / swap onto the cursor mon */
         if (g_box[cur].species) {
           uint16_t old = g_box[cur].heldItem;        /* swap: take this mon's old item */
-          box_set_held(recs, cur, (uint16_t)s_item_held);
-          box_decode(src, recs, box);
-          src->mark_dirty();
-          s_item_held = old; s_item_from = old ? cur : -1;   /* keep holding the swapped-out item */
-          s_item_from_box = old ? box : -1;
-          need_full = true;
+          if (box_set_held(recs, cur, (uint16_t)s_item_held)) {
+            box_decode(src, recs, box);
+            src->mark_dirty();
+            s_item_held = old; s_item_from = old ? cur : -1;   /* keep holding the swapped-out item */
+            s_item_from_box = old ? box : -1;
+            need_full = true;
+          }
         } else snd_deny();
       }
       else if ((k & KEY_L) && nb > 1) { SWITCH_BOX((box + nb - 1) % nb); }   /* flip boxes while carrying */
@@ -3706,12 +3730,18 @@ int pdna_box(BoxSource* src) {
     else if ((k & KEY_A) && s_cur_mode == CM_ITEM) {     /* transparent hand: pick up the held item */
       if (!src_can_lift(src, box, cur)) snd_deny();
       else if (g_box[cur].species && g_box[cur].heldItem) {
-        s_item_held = g_box[cur].heldItem; s_item_from = cur; s_item_from_box = box;
-        box_set_held(recs, cur, 0);
-        box_decode(src, recs, box);
-        src->mark_dirty();
-        play_item_grab_anim(cur, (uint16_t)s_item_held);   /* fist closes over the mon (grab beat) */
-        need_full = true;
+        /* BACKLOG #150 S150-3 review F1: structurally unreachable on a native cell
+         * already (it always decodes heldItem == 0), but box_set_held is still the
+         * gate of record -- read the item BEFORE the write attempt, same ordering
+         * as the GIVE/swap site's `old = g_box[cur].heldItem` above. */
+        uint16_t item = g_box[cur].heldItem;
+        if (box_set_held(recs, cur, 0)) {
+          s_item_held = item; s_item_from = cur; s_item_from_box = box;
+          box_decode(src, recs, box);
+          src->mark_dirty();
+          play_item_grab_anim(cur, (uint16_t)s_item_held);   /* fist closes over the mon (grab beat) */
+          need_full = true;
+        }
       } else snd_deny();                                 /* empty slot or no item */
     }
     else if (k & KEY_A) {
