@@ -10,6 +10,7 @@
 #include "gba_rtc.h"       /* GbaRtcTime, gba_rtc_get */
 #include "rumble.h"        /* rumble_io_suspend/resume */
 #include "ui_layout.h"     /* UI_SCR_W */
+#include "ui.h"            /* ui_fill_rect, ui_text (needed for #ifndef HAVE_DAYCARE_BG fallback) */
 #include "pdna_app.h"      /* app_session_seed decl, app_tid_public */
 
 /* See pdna_yard.h for the shape this file mirrors, the extraction's provenance
