@@ -1075,7 +1075,10 @@ static int cursor_look(void) {
  * pickup sites). */
 static bool start_carry(BoxSource* src, const uint8_t* recs, int box, int slot) {
   if (src->scope == BOXSCOPE_GB && src->xfer && src->xfer->lift_up) {
-    if (!src->xfer->lift_up(recs + (uint32_t)slot * 80, s_held, 0)) return false;
+    boxoam_suspend(); /* REVIEW F3: lift_up can open the full-screen origin picker */
+    bool got = src->xfer->lift_up(recs + (uint32_t)slot * 80, s_held, 0);
+    boxoam_resume();
+    if (!got) return false;
   } else {
     memcpy(s_held, recs + (uint32_t)slot * 80, 80);            /* lift-don't-clear: copy, origin stays */
   }
