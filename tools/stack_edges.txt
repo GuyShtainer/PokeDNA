@@ -404,6 +404,15 @@ pdna_origin_art_stack_room argsites=1 -> gb_art_stack_room
 pdna_origin_box_art argsites=1 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
 pdna_origin_box_art_wanted argsites=1 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
 pdna_origin_box_note argsites=1 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
+# BACKLOG #150 S150-2: pdna_origin_box_note()'s whole body moved into the new
+# pdna_origin_box_note_hinted() (pdna_origin_box_note is now a 1-line wrapper calling
+# it with hint=0), so the SAME indirect call site the line above already resolves is
+# now attributed by the walker to pdna_origin_box_note_hinted.part.0 instead -- GCC -O2
+# outlines it as a `.part.0` clone in the artless ELF (the bare, unsuffixed name is a
+# silent dead declaration for a suffixed symbol -- see this file's own D6/D7 comments
+# a few lines up). Same site, same PdnaGbArtSource triple, same argsites=1 -- not a
+# new indirect call.
+pdna_origin_box_note_hinted.part.0 argsites=1 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
 fetch_pic_ex.constprop.0 argsites=1 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
 # BACKLOG #124: fetch_icon() is the new static helper factored out of
 # pdna_origin_box_art()'s ERA_GEN2 branch (pdna_origin_art.c), shared by that branch

@@ -1457,6 +1457,39 @@ static void part_i(void) {
              "I12 (#53a) clearing the hint reverts to the ordinary uncertain mark");
   }
 
+  /* I13 (BACKLOG #150 S150-2): pdna_origin_box_note_hinted -- a PER-SLOT hint, for a
+   * MIXED Bank box where one slot's era is known (a native Gen-1/2 cell, S150-2) and
+   * the rest are not. `hint[i]` overrides s_box_hint for slot i only; the session-wide
+   * hint (set by pdna_origin_box_set_hint, I12 above) keeps governing every slot with
+   * hint[i] == 0, exactly like a GB session's own box. */
+  {
+    PkMon box13[PDNA_ORIGIN_BOX]; memset(box13, 0, sizeof box13);
+    box13[0] = gb_m;   /* slot 0: gets a per-slot hint override        */
+    box13[1] = gb_m;   /* slot 1: no per-slot hint -- follows s_box_hint */
+    uint8_t hint[PDNA_ORIGIN_BOX]; memset(hint, 0, sizeof hint);
+    hint[0] = PDNA_GEN2;
+
+    pdna_origin_box_set_hint(0);   /* session: no hint (a Gen-3 save/Bank) */
+    pdna_origin_box_note_hinted(box13, hint);
+    CHECK_EQ(pdna_origin_box_mark(0), '2',
+             "I13 per-slot hint=GEN2 -> CERTAIN Gen-2 for slot 0 alone");
+    CHECK_EQ(pdna_origin_box_mark(1), '?',
+             "I13 slot 1 has no per-slot hint -> falls back to the (absent) session hint");
+
+    /* A NULL hint array is byte-for-byte pdna_origin_box_note()'s own behaviour
+     * (the .h's own claim) -- prove it against the SAME box, cache cleared first so
+     * a stale slot-0 mark from the block above cannot leak into the comparison. */
+    pdna_origin_box_clear();
+    pdna_origin_box_note_hinted(box13, 0);
+    char mark_hinted_null[PDNA_ORIGIN_BOX];
+    for (int i = 0; i < PDNA_ORIGIN_BOX; i++) mark_hinted_null[i] = pdna_origin_box_mark(i);
+    pdna_origin_box_clear();
+    pdna_origin_box_note(box13);
+    for (int i = 0; i < PDNA_ORIGIN_BOX; i++)
+      CHECK_EQ(mark_hinted_null[i], pdna_origin_box_mark(i),
+               "I13 slot %d: pdna_origin_box_note_hinted(box, NULL) != pdna_origin_box_note(box)", i);
+  }
+
   /* leave global state clean for whichever part runs next */
   g_gbicon_on = 0;
   gb_source_on();

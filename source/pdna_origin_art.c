@@ -654,10 +654,10 @@ static uint8_t s_box_hint = 0;
 
 void pdna_origin_box_set_hint(uint8_t gen) { s_box_hint = gen; }
 
-static uint8_t cell_pack(const PkMon* m) {
+static uint8_t cell_pack(const PkMon* m, uint8_t hint) {
   if (!m || m->species == 0) return 0;
   PdnaOrigin o;
-  pdna_origin_of_hint(m, s_box_hint, &o);
+  pdna_origin_of_hint(m, hint ? hint : s_box_hint, &o);
   uint8_t v = (uint8_t)(o.gen & CELL_GEN);
   if (o.gen_certain) v |= CELL_CERT;
   if (o.verdict == PDNA_ORIGIN_GB) v |= CELL_GB;
@@ -686,10 +686,14 @@ static void cells_finish(void) {
   s_cells_valid = 1;
 }
 
-void pdna_origin_box_note(const PkMon box[PDNA_ORIGIN_BOX]) {
+void pdna_origin_box_note_hinted(const PkMon box[PDNA_ORIGIN_BOX], const uint8_t hint[PDNA_ORIGIN_BOX]) {
   if (!box) { pdna_origin_box_clear(); return; }
-  for (int i = 0; i < PDNA_ORIGIN_BOX; i++) s_cell[i] = cell_pack(&box[i]);
+  for (int i = 0; i < PDNA_ORIGIN_BOX; i++) s_cell[i] = cell_pack(&box[i], hint ? hint[i] : 0);
   cells_finish();
+}
+
+void pdna_origin_box_note(const PkMon box[PDNA_ORIGIN_BOX]) {
+  pdna_origin_box_note_hinted(box, 0);
 }
 
 void pdna_origin_box_clear(void) {
