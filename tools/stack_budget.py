@@ -583,7 +583,7 @@ ARGSITE_LINE_RE = re.compile(r'^([\w.@]+)\s+argsites=(\d+)$')
 FRAME_LINE_RE = re.compile(r'^frame\s+(\S+)\s*=\s*(\d+)\b')
 # D1 (BACKLOG #84b fifth pass): two more declaration shapes, for the address-taken sweep.
 ISR_LINE_RE = re.compile(r'^isr\s+(\S+)$')
-ADDRTAKEN_OK_RE = re.compile(r'^addrtaken-ok\s+(\S+)$')
+ADDRTAKEN_OK_RE = re.compile(r'^addrtaken-ok\s+(\S+)(?:\s+layout-fragile)?$')
 # D4 (BACKLOG #84b sixth pass): a declared depth for a real recursive SCC.
 RECURSION_LINE_RE = re.compile(r'^recursion\s+(\S+)\s+depth=(\d+)$')
 # BACKLOG #155: an implementation that is absent from SOME build variants.
@@ -603,6 +603,13 @@ IMPL_PENDING_RE  = re.compile(r'^impl-pending\s+(\S+)\s+pending=(\S+)$')
 # `gated` line -- see this file's own docstring below and verify_gated_predecessors().
 GATED_LINE_RE = re.compile(
     r'^gated\s+(\S+)\s+need=(\d+)\s+from=([\w./-]+):(\w+)\s+gate=(\S+)\s+via=(\S+)$')
+
+
+
+def _stale_addrtaken(addrtaken_ok, addrtaken_fragile, taken):
+    """The addrtaken-ok lines that are no longer address-taken in this image and
+    are NOT marked layout-fragile (BACKLOG #159): main() warns about exactly these."""
+    return sorted((addrtaken_ok - addrtaken_fragile) - taken)
 
 
 def load_extra_edges(path):
@@ -663,13 +670,18 @@ def load_extra_edges(path):
         (its address is taken by `irq_add` itself, not a struct field/global this
         file has any other way to name).
 
-      addrtaken-ok fn
+      addrtaken-ok fn [layout-fragile]
         D1's escape hatch: `fn`'s address is genuinely taken somewhere in the
         linked image (a real function pointer this walker's sweep will find) but
         is a confirmed false positive -- e.g. a compiler-generated table entry
         with no runtime call path this project's code ever exercises. Each use
         should carry a one-line reason in a trailing comment; the sweep still
-        finds and reports these functions, they are just not fatal.
+        finds and reports these functions, they are just not fatal. An optional
+        trailing `layout-fragile` qualifier (BACKLOG #159) suppresses the warning
+        that the entry is no longer address-taken in this image when the function's
+        address coincidence is link-layout dependent -- it will come and go as
+        the .text section shifts on rebuilds, so the exemption is kept on purpose
+        and should not be flagged as stale.
 
       recursion fn depth=N
         D4 (BACKLOG #84b sixth pass): `fn` sits in a real strongly-connected
@@ -761,7 +773,8 @@ def load_extra_edges(path):
 
     Multiple lines per caller/struct ACCUMULATE (pdna_box has eleven field lines).
     Returns (field_decls, field_offset_index, argsite_decls, whole_func_decls,
-             frame_overrides, isr_decls, addrtaken_ok, recursion_decls, gated_decls):
+             frame_overrides, isr_decls, addrtaken_ok, addrtaken_fragile, recursion_decls, gated_decls,
+             impl_optional_decls, impl_pending_decls):
       field_decls        : {(struct, field): (offset, {impls})}  -- for header
                             verification ONLY (verify_field_declarations()); it
                             unions every impl regardless of caller qualification,
@@ -777,6 +790,8 @@ def load_extra_edges(path):
       frame_overrides   : {fn: bytes}
       isr_decls         : {fn, ...}
       addrtaken_ok      : {fn, ...}
+      addrtaken_fragile : {fn, ...}  (BACKLOG #159: entries marked with layout-fragile
+                            qualifier, exempt from "no longer address-taken" warnings)
       recursion_decls    : {fn: depth}
       gated_decls        : {fn: (need, header, macro, gate_fn, via_frozenset)}
                             (D1: was {fn: need}; BACKLOG #131 appended via_frozenset)
@@ -794,13 +809,14 @@ def load_extra_edges(path):
     frame_overrides = {}
     isr_decls = set()
     addrtaken_ok = set()
+    addrtaken_fragile = set()
     recursion_decls = {}
     gated_decls = {}
     impl_optional_decls = {}
     impl_pending_decls = {}
     if not path or not os.path.exists(path):
         return (field_decls, ({}, {}), argsite_decls, whole_func_decls, frame_overrides,
-                isr_decls, addrtaken_ok, recursion_decls, gated_decls, impl_optional_decls,
+                isr_decls, addrtaken_ok, addrtaken_fragile, recursion_decls, gated_decls, impl_optional_decls,
                 impl_pending_decls)
     with open(path) as f:
         for lineno, raw in enumerate(f, 1):
@@ -817,7 +833,10 @@ def load_extra_edges(path):
                 continue
             aok = ADDRTAKEN_OK_RE.match(line)
             if aok:
-                addrtaken_ok.add(aok.group(1))
+                fn_name = aok.group(1)
+                addrtaken_ok.add(fn_name)
+                if 'layout-fragile' in line:
+                    addrtaken_fragile.add(fn_name)
                 continue
             rm = RECURSION_LINE_RE.match(line)
             if rm:
@@ -908,7 +927,7 @@ def load_extra_edges(path):
     field_offset_index = (dict(qualified), dict(unqualified))
 
     return (field_decls, field_offset_index, argsite_decls, dict(whole_func_decls),
-            frame_overrides, isr_decls, addrtaken_ok, recursion_decls, gated_decls,
+            frame_overrides, isr_decls, addrtaken_ok, addrtaken_fragile, recursion_decls, gated_decls,
             impl_optional_decls, impl_pending_decls)
 
 
@@ -3316,10 +3335,10 @@ def main(argv):
         return 1
 
     (field_decls, field_offset_index, argsite_decls, whole_func_decls, frame_overrides,
-     isr_decls, addrtaken_ok, recursion_decls, gated_decls, impl_optional_decls,
+     isr_decls, addrtaken_ok, addrtaken_fragile, recursion_decls, gated_decls, impl_optional_decls,
      impl_pending_decls) = (
         load_extra_edges(args.edges_file) if args.edges_file
-        else ({}, ({}, {}), {}, {}, {}, set(), set(), {}, {}, {}, {}))
+        else ({}, ({}, {}), {}, {}, {}, set(), set(), set(), {}, {}, {}, {}))
 
     # D1 header-drift check: every declared Struct.field @OFFSET is checked against
     # the offset the struct's OWN header gives that field today, before anything
@@ -3796,7 +3815,7 @@ def main(argv):
         # OTHER image variant) but isn't in THIS one. A WARNING, not a FATAL: a line
         # only one image variant needs is legitimately unneeded on the other, so this
         # is "delete it if it truly serves nothing on either build", never a gate.
-        stale = sorted(addrtaken_ok - taken)
+        stale = _stale_addrtaken(addrtaken_ok, addrtaken_fragile, taken)
         if stale:
             print(f"\n*** STACK_BUDGET WARNING: {len(stale)} addrtaken-ok line(s) are no "
                   "longer address-taken in this image (delete if unneeded on BOTH images): "
