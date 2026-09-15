@@ -337,9 +337,25 @@ pdna_box argsites=4 -> banksrc_records gbsrc_records pcsrc_records banksrc_get_n
 # simply wrong for this caller -- G5's multi-predecessor chase resolves what the
 # single-path scan couldn't, the same correction app_mon_menu_readonly's own G5 note
 # below describes.
-draw_wallpaper.constprop.0 argsites=3 -> banksrc_records gbsrc_records pcsrc_records banksrc_get_name gbsrc_get_name pcsrc_get_name banksrc_set_name gbsrc_set_name pcsrc_set_name banksrc_get_wp gbsrc_get_wp pcsrc_get_wp banksrc_set_wp gbsrc_set_wp pcsrc_set_wp banksrc_can_edit gbsrc_can_edit app_can_edit banksrc_commit gbsrc_commit app_commit_pc app_commit_sb1 banksrc_mark_dirty gbsrc_mark_dirty app_mark_pc_dirty pcsrc_note_add gbsrc_note_box gbsrc_capacity
-under_blit argsites=1 -> banksrc_records gbsrc_records pcsrc_records banksrc_get_name gbsrc_get_name pcsrc_get_name banksrc_set_name gbsrc_set_name pcsrc_set_name banksrc_get_wp gbsrc_get_wp pcsrc_get_wp banksrc_set_wp gbsrc_set_wp pcsrc_set_wp banksrc_can_edit gbsrc_can_edit app_can_edit banksrc_commit gbsrc_commit app_commit_pc app_commit_sb1 banksrc_mark_dirty gbsrc_mark_dirty app_mark_pc_dirty pcsrc_note_add gbsrc_note_box gbsrc_capacity
-wp_fold_region argsites=1 -> banksrc_records gbsrc_records pcsrc_records banksrc_get_name gbsrc_get_name pcsrc_get_name banksrc_set_name gbsrc_set_name pcsrc_set_name banksrc_get_wp gbsrc_get_wp pcsrc_get_wp banksrc_set_wp gbsrc_set_wp pcsrc_set_wp banksrc_can_edit gbsrc_can_edit app_can_edit banksrc_commit gbsrc_commit app_commit_pc app_commit_sb1 banksrc_mark_dirty gbsrc_mark_dirty app_mark_pc_dirty pcsrc_note_add gbsrc_note_box gbsrc_capacity
+#
+# BACKLOG #157 CORRECTION: the "conservative BoxSource union" impl list two comment
+# blocks above was a documented GUESS ("the resolver can't say which specific field
+# a spilled site targets") -- the count matched (3/1/1), so it silently passed for
+# years with the WRONG implementation named. stack_budget.py can now read the
+# `.word` literal each of these sites' register is spilled-then-reloaded from (the
+# new single-store-then-reload chase, _chase_reg_to_literal_word()) and it is NOT
+# any BoxSource field function at all: all 3 draw_wallpaper sites and the 1
+# under_blit/wp_fold_region site resolve to wp_copy_verified (0x03000049 Thumb-
+# tagged in this build's literal pool == wp_copy_verified's own entry, confirmed via
+# `arm-none-eabi-nm PokeDNA-artless.elf | grep wp_copy_verified` -> 03000048)
+# -- the verified-write helper wp_audit()'s inlined body (pdna_box.c:885-899) really
+# calls, not a struct-field dispatch of any kind. Re-derive on any future doubt:
+# `A=$(arm-none-eabi-nm <elf> | awk '/ under_blit$/{print $1}');
+#  arm-none-eabi-objdump -d --start-address=0x$A --stop-address=$((0x$A+0x1e0)) <elf>`
+# and read the spilled register's own `ldr rN,[pc,#imm]` .word back by hand.
+draw_wallpaper.constprop.0 argsites=3 -> wp_copy_verified
+under_blit argsites=1 -> wp_copy_verified
+wp_fold_region argsites=1 -> wp_copy_verified
 
 # pdna_pick.c's dex-screen family (s_dget/s_dset/s_getnat/s_setnat, file-static
 # DexGetState/DexSetState/DexGetNat/DexSetNat globals set once by pdna_dex_screen,
@@ -600,7 +616,16 @@ flashcartio_bus_validate argsites=1 -> fcio_sum_ag.constprop.0
 # art_rom_fnv above (traced up through pdna_map.c's mgfx_load call site, `rc`
 # forwarded from its own caller, ultimately one of rom_open's registrations). Site
 # count verified against this build's disassembly (1).
-mgfx_load argsites=1 -> fused_rom_read rom_fatfs_read g3x_fatfs_read iconrom_fatfs_read
+#
+# BACKLOG #157 CORRECTION: that RomCtx.read reasoning was traced by reading the
+# SOURCE, never cross-checked against the disassembly's own literal pool -- the
+# real site (the `bx r5`-thunk `bl` at mgfx_load's one spilled-literal indirect
+# call) resolves to memset32, not any RomReadFn family member (confirmed: chase
+# the `mov r3,sl`/`mov sl,r3` register-shuffle back to its `ldr r3,[pc,#imm]` ->
+# `.word 0x030003b8` == memset32's own nm entry). The count-only check (declared
+# argsites=1, disassembly has 1) had passed on the WRONG name for as long as this
+# line existed.
+mgfx_load argsites=1 -> memset32
 
 # mgfx_zoom_build -> zslot -> build_exact -> mr_metatile_mip_idx -> mr_metatile_idx8
 # -> mr_metatile_entries (map_render.c:122-148), whose ROM-fallback leg calls
@@ -608,7 +633,12 @@ mgfx_load argsites=1 -> fused_rom_read rom_fatfs_read g3x_fatfs_read iconrom_fat
 # built with (the `rc` mgfx_load/rom_map_header/rom_layout were all given, per
 # camera_refresh's own call chain), so the SAME implementation family applies. Site
 # count verified against this build's disassembly (1).
-mgfx_zoom_build argsites=1 -> fused_rom_read rom_fatfs_read g3x_fatfs_read iconrom_fatfs_read
+#
+# BACKLOG #157 CORRECTION: same defect class as mgfx_load just above -- the one
+# real site resolves to memset32 (same literal-pool value, 0x030003b8), not the
+# RomReadFn family. Re-derived directly from this build's disassembly, not
+# re-traced by source reading alone.
+mgfx_zoom_build argsites=1 -> memset32
 
 # gen2_write.h's G2Writer.rd/wr (rd@0 img_rd, wr@4 img_wr -- the ONLY registration
 # site in the codebase, gb_session.c:69's `g2w_begin(&s->g2w, img_rd, img_wr, ...)`)
@@ -1095,12 +1125,24 @@ AppSrcOps.paste @16 -> gb_paste_hook
 # (grep `app_src_readonly_set(` source/*.c): pdna_gen12.c:2543,
 # `app_src_readonly_set(pdna_gen12_why_locked, "Converted copy")`.
 app_mon_menu_readonly argsites=1 -> pdna_gen12_why_locked
-# g_src_why(rec) ALSO surfaces as a separate site in party_list on the normal (full-
-# art) build only -- app_mon_menu_readonly's `locked = g_src_why(rec)` line inlines
-# differently there (a different set of surrounding branches makes the compiler fold
-# it into its caller). Same single implementation, same global. Site count verified
-# against the normal build's disassembly (1); artless has 0 (fully un-inlined there).
-party_list argsites=1 -> pdna_gen12_why_locked
+# BACKLOG #157 CORRECTION: this line used to read
+# `party_list argsites=1 -> pdna_gen12_why_locked`, on the theory that
+# app_mon_menu_readonly's `locked = g_src_why(rec)` line inlines into party_list on
+# the normal (full-art) build. stack_budget.py's new literal-pool chase (the same
+# single-store-then-reload trace as party_bob_recompose/ui_blit_over/portrait_redraw
+# above) proves that theory wrong for today's codegen: party_list's one real
+# nonfield site (the `bl <bx-r? thunk>` at party_list's own body) resolves to
+# memcpy32, not pdna_gen12_why_locked -- this is party_bob_recompose's OWN spilled
+# memcpy32 call, now the ONLY indirect site left after further inlining merged it
+# and whatever g_src_why call used to be here (a g_src_why call may no longer
+# reach party_list at all on today's source; --dump-sites on the normal ELF shows
+# exactly one nonfield site). The count-only check (declared argsites=1,
+# disassembly has 1) passed on the WRONG target for as long as this line existed.
+# Re-derive on any future doubt: `arm-none-eabi-nm PokeDNA.elf | awk '/ party_list$/
+# {print $1}'` then objdump that range and read the spilled register's own
+# `ldr rN,[pc,#imm]` .word back by hand, the same recipe under_blit's own #157
+# correction two sections above documents.
+party_list argsites=1 -> memcpy32
 
 # LOWER-CONFIDENCE (newlib internal, not our source -- found 2026-09-10 while certifying G2
 # on the full-art delta/normal builds, where this chain ranks in the top 5 only because the
