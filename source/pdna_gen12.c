@@ -2872,7 +2872,16 @@ static bool __attribute__((noinline)) gb_accept_down_hook(int dst_box, const uin
       return false;
     }
     if (!gb_accept_down_party_deposit(g_m)) return false;
-    if (gbs_load_list(&g_ed->s, dst_box, g_ed->list) != GBS_OK) { snd_deny(); return false; }
+    /* REVIEW F1: the 10(c) deposit above already committed the moved party member into
+     * a box in the RESIDENT image (gbs_move -> gbs_commit_list) -- an un-consented
+     * change to the user's data if this function returns false past this point without
+     * undoing it (the next gb_persist() anywhere, even a plain box rename, would write
+     * it to the card). gb_rollback() over an image this reload call left untouched is
+     * the documented no-op (gb_session.h), so it is safe here regardless of which
+     * branch below actually needed it. */
+    if (gbs_load_list(&g_ed->s, dst_box, g_ed->list) != GBS_OK) {
+      gb_rollback(); snd_deny(); return false;
+    }
   }
 
   /* The ONE confirm line (D-Q2/D-Q3). */
@@ -2891,7 +2900,11 @@ static bool __attribute__((noinline)) gb_accept_down_hook(int dst_box, const uin
     gb_get_nickname(&mon, nm, sizeof nm);
     ui_truncate(cl1, nm[0] ? nm : PDNA_GBEDIT_RELEASE_FALLBACK, 20);
   }
-  if (!app_confirm(PDNA_XFER_DOWN_CONFIRM_TITLE, cl1)) return false;
+  /* REVIEW F1: same reasoning as the reload refusal above -- a DECLINED confirm must
+   * not leave the 10(c) deposit's own party->box move sitting committed in the
+   * resident image. gb_rollback() is a no-op when the party-full branch never ran
+   * (nothing to undo), so this is unconditional, not gated on `to_party`. */
+  if (!app_confirm(PDNA_XFER_DOWN_CONFIRM_TITLE, cl1)) { gb_rollback(); return false; }
 
   int slot = -1;
   GbsStatus ist = to_party
