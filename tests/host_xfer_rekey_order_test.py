@@ -55,7 +55,12 @@ def check(cond: bool, msg: str) -> None:
         print(f"  !! FAIL: {msg}")
 
 
-def window_after(text: str, anchor: str, size: int = 900) -> str:
+def window_after(text: str, anchor: str, size: int = 2400) -> str:
+    # 2400, not 900: the s150-2 merge put the native-cell branch (comment + the
+    # gb_native_summary_open early-out) at the top of app_box_browse, which pushed the
+    # commit/re-key pair to ~1,120 chars past the anchor and turned this test red on a
+    # correct main. A window that stops short of the pair fails loudly (order_ok returns
+    # False), never silently -- but it must be sized for the whole function.
     """The `size` characters of `text` starting at the FIRST occurrence of
     `anchor` (anchor included). Asserts the anchor is found exactly once,
     the same "one accountable site" discipline the C golden rules ask of
