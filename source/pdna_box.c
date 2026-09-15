@@ -2178,6 +2178,19 @@ static void box_options_menu(BoxSource* src, int box) {
     else if (k & KEY_A) {
       snd_ok();
       if (sel == 0) {                              /* rename */
+        /* D2 (review-opus, BACKLOG #93): this row used to draw and act on Rename
+         * unconditionally -- the direct-A-on-banner shortcut (~:3444) already gates
+         * on can_rename, but THIS second path to the same osk_input did not, so a
+         * Gen-1 GB box (gbsrc_can_rename_impl -> gbbn_supported -> false, no box-
+         * name table) reached this menu (now openable via can_boxops, BACKLOG #93)
+         * and could type a name that died with a bare beep when set_name/commit
+         * silently no-op'd. Same gate as the direct-A path, so PC/Bank (can_rename
+         * NULL -> falls back to src_can_lift, unchanged) stay byte-identical. */
+        if (!(src->can_rename ? src->can_rename() : src_can_lift(src, box, -1))) {
+          snd_deny();
+          msg_wait("NO BOX NAMES", UI_WARN, "This game has no box names.", 0);
+          return;
+        }
         /* F1b: seed with the RAW stored name, not get_name()'s display string --
          * get_name() prefixes "GB " only for Gen-1's synthesized names; Gen-2 names
          * are echoed as-is (BACKLOG #122). The raw name must never be typed back
