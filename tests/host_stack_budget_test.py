@@ -2872,6 +2872,38 @@ def test_b167_key_distinguishes_artless_from_plain_nor():
         os.unlink(path)
 
 
+def test_b167_sd_variant_line_parses():
+    """Review F2: --variant advertises nor/sd/delta and `make sd` exists, but
+    COUNT_ONLY_MAX_RE originally only accepted nor|delta -- a real
+    `count-only-max N variant=sd` line would have hit load_extra_edges()'s
+    catch-all "unrecognized line" ValueError and bricked every build reading
+    this file, not just the sd one. Confirms the line parses into the (sd,
+    False) key, and that a nor run simply treats it as "not this variant"
+    (missing declaration note, not a crash, not a false match)."""
+    import contextlib
+    import io
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        f.write("count-only-max 7 variant=sd\n")
+        path = f.name
+    try:
+        decls = sb.load_count_only_max_decls(path)   # must not raise
+        check("(B167 F2) a variant=sd line parses into the (sd, False) key",
+              decls == {("sd", False): 7}, decls)
+        stderr_buf = io.StringIO()
+        stdout_buf = io.StringIO()
+        with contextlib.redirect_stderr(stderr_buf), contextlib.redirect_stdout(stdout_buf):
+            fatal = sb.check_count_only_max(3, "nor", False, decls, path)
+        check("(B167 F2) a nor run against an sd-only file is 'not this variant' "
+              "(missing-declaration note), not fatal and not a false match",
+              fatal is False, fatal)
+        check("(B167 F2) the missing-declaration note names variant=nor, not sd",
+              "count-only-max not declared for variant=nor" in stderr_buf.getvalue(),
+              stderr_buf.getvalue())
+    finally:
+        os.unlink(path)
+
+
 def test_b167_mutation_broken_comparison_would_never_fatal():
     """THE mutation test BACKLOG #167's brief asks for: with
     check_count_only_max's count-vs-max comparison broken (reverted to a
@@ -3010,6 +3042,7 @@ def main():
     test_b167_check_count_only_max_fatals_when_count_exceeds_max()
     test_b167_check_count_only_max_missing_declaration_is_a_note_not_fatal()
     test_b167_key_distinguishes_artless_from_plain_nor()
+    test_b167_sd_variant_line_parses()
     test_b167_mutation_broken_comparison_would_never_fatal()
     print()
     if FAILURES:

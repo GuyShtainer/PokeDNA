@@ -614,7 +614,7 @@ GATED_LINE_RE = re.compile(
 # (`count_only_validated` from resolve_all_sites()) per (variant, artless) build
 # pair, so a codegen shift that silently makes a verified site untraceable again
 # (adding one more caller to the count-only list) is a FATAL, not a build that
-# stays green forever. `variant` is nor/delta (matches --variant); the optional
+# stays green forever. `variant` is nor/sd/delta (matches --variant); the optional
 # trailing `artless=1` distinguishes a PDNA_ARTLESS=1 image from its full-art
 # sibling of the SAME --variant -- see the --artless argparse help above for why
 # --variant alone can't tell them apart. Parsed by load_count_only_max_decls(),
@@ -624,7 +624,7 @@ GATED_LINE_RE = re.compile(
 # an extra unpacked field; load_extra_edges() still recognizes and skips the line
 # below so it isn't rejected as "unrecognized".
 COUNT_ONLY_MAX_RE = re.compile(
-    r'^count-only-max\s+(\d+)\s+variant=(nor|delta)(\s+artless=1)?$')
+    r'^count-only-max\s+(\d+)\s+variant=(nor|sd|delta)(\s+artless=1)?$')
 
 
 def _stale_addrtaken(addrtaken_ok, addrtaken_fragile, taken):
@@ -959,7 +959,7 @@ def load_extra_edges(path):
 
 
 def load_count_only_max_decls(path):
-    """Parse `count-only-max N variant=<nor|delta> [artless=1]` lines out of
+    """Parse `count-only-max N variant=<nor|sd|delta> [artless=1]` lines out of
     tools/stack_edges.txt (BACKLOG #167). Returns {(variant, artless_bool): N}.
 
     A deliberately separate, second small read of the same file rather than a
