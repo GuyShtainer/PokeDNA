@@ -3496,6 +3496,13 @@ static void gb_session_core(Gb12Mount* m) {
    * ops -> hint, order load-bearing -- see gb_session_ops_install's own comment) is
    * now the same helper a Bank visit re-runs on its way back out. */
   gb_session_ops_install(m);
+  /* D4 (review-opus, BACKLOG #93): s_dup_warned was never cleared anywhere, so the
+   * once-per-visit sidecar warning (decision 2, gb_dup_confirm) was really once per
+   * POWER-ON -- a second, later visit whose duplicated mon also has a sidecar claim
+   * never saw the warning again. Same twin idiom as pdna_trainer.c:1020/
+   * pdna_gbtrainer.c:1074's own s_id_warned reset: cleared here, once per visit,
+   * where every entry into a GB session's box screen passes through. */
+  s_dup_warned = false;
   BoxSource s = pdna_gen12_source(m);
   /* #77 (review, 2026-09-09): AFTER pdna_gen12_source() sets g_m, so app_save_kind()
    * reports GEN1/GEN2 when app_icon_rom_open()'s kind check runs. */
