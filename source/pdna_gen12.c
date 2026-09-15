@@ -469,6 +469,7 @@ static bool gbsrc_can_edit(void) { return false; }
 static bool gbsrc_can_boxops_impl(int box);
 static bool gbsrc_export_all_impl(int box);
 static bool gbsrc_release_all_impl(int box);
+static bool gb_can_lift_hook_impl(int box, int slot);
 #endif
 static bool gbsrc_can_boxops(int box) {
 #ifndef PDNA_GEN12_HOST
@@ -489,6 +490,17 @@ static bool gbsrc_release_all(int box) {
   return gbsrc_release_all_impl(box);
 #else
   (void)box; return false;
+#endif
+}
+/* BACKLOG #150 S150-5: BoxSource.can_lift -- same "thin wrapper here, real body
+ * later" pattern as the three _impl pairs just above, for the same reason (the real
+ * body needs gbs_can_delete/gbs_load_list, which cost nothing extra to guard the
+ * same way here). Host build gets a safe "never liftable" default. */
+static bool gb_can_lift_hook(int box, int slot) {
+#ifndef PDNA_GEN12_HOST
+  return gb_can_lift_hook_impl(box, slot);
+#else
+  (void)box; (void)slot; return false;
 #endif
 }
 /* MUST return false. pdna_box's cross-scope drop writes the record into the
@@ -563,6 +575,7 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
   s.get_wp     = gbsrc_get_wp;
   s.set_wp     = gbsrc_set_wp;
   s.can_edit   = gbsrc_can_edit;
+  s.can_lift   = gb_can_lift_hook;   /* BACKLOG #150 S150-5: the GB grid's own grab-time refusal */
   s.commit     = gbsrc_commit;
   s.mark_dirty = gbsrc_mark_dirty;
   s.note_add   = 0;                           /* nothing lands here; nothing to register */
@@ -1128,6 +1141,20 @@ static bool gb_editable_hook(const uint8_t* rec80) {
   return app_can_edit() && gbs_box_writable(&g_ed->s, box) == GBS_OK;
 }
 
+/* BoxSource.can_lift real body (BACKLOG #150 S150-5): the GB grid's own grab-time
+ * refusal. Same two gates gb_editable_hook takes (the cart and the box), PLUS
+ * gbs_can_delete()'s whole refusal table (gb_session.c) -- a Gen-1 one-mon party or a
+ * Mail-holding Gen-2 party is not liftable AT ALL, rather than letting the grab
+ * succeed and the drop fail late (S150-5's whole acceptance). No open edit session
+ * (g_ed NULL: the read-only nav-menu mount) means no GbSession to check against --
+ * refuse. GBA-only (needs gbs_can_delete's own frame); gb_can_lift_hook() above is
+ * the thin wrapper the host build actually links. */
+static bool gb_can_lift_hook_impl(int box, int slot) {
+  if (!g_ed) return false;
+  if (!(app_can_edit() && gbs_box_writable(&g_ed->s, box) == GBS_OK)) return false;
+  return gbs_can_delete(&g_ed->s, box, slot, g_ed->list, 0) == GBS_OK;
+}
+
 /* AppSrcOps.copy_native (S5-B): capture the record in its own Game Boy shape for the
  * clipboard, not the lossy Gen-3-converted bytes the grid shows. Nothing here mutates
  * the image or requires app_can_edit(): "copying is allowed on any cart". Two sources
@@ -1195,15 +1222,20 @@ static bool gb_copy_native_hook(const uint8_t* rec80, GbEditMon* out, bool* has_
   return ok;
 }
 
-/* S5-B Part E: does `mon` already have a sidecar entry on the card? Only Gen 2 ever
- * can (Gen 1 has no gen3_to_gb() target yet -- S5-C -- so no Gen-1 record was ever
- * transferred down). noinline for the same reason gb_paste_write is: FILINFO
- * (lib/fatfs/ffconf.h: FF_USE_LFN=1, so fname[FF_LFN_BUF+1]=256 bytes alone) is well
- * over the ~200 B a hook's own frame should carry -- one f_stat is cheap, but only if
- * its 280-ish-byte argument lives in a frame that is not also live for the whole
- * editor/picker/confirm run gb_edit_hook drives. */
+/* S5-B Part E: does `mon` already have a sidecar entry on the card? Gen-1 targets
+ * shipped (S5-C Part B1, pdna_gen12.c gen3_to_gb() Gen-1 branch) and gb_paste_write
+ * writes a ledger entry for both gens (pdna_gen12.c gbsc_entry_from call), so a Gen-1
+ * mon can carry a sidecar just like a Gen-2 one -- the old `if (gen != GB_GEN2) return
+ * false;` short-circuit was stale (BACKLOG #150 S150-4 mismatch 6) and made every
+ * caller wrong for Gen 1: gb_copy_native_hook's "lossless" toast, the info-page sidecar
+ * count, gb_dup_confirm's once-per-visit warning and the summary view's has_sidecar
+ * flag all now answer correctly for Gen-1 mons too (an intended shipped-behaviour
+ * change, not a bug fix to a call site). noinline for the same reason gb_paste_write
+ * is: FILINFO (lib/fatfs/ffconf.h: FF_USE_LFN=1, so fname[FF_LFN_BUF+1]=256 bytes
+ * alone) is well over the ~200 B a hook's own frame should carry -- one f_stat is
+ * cheap, but only if its 280-ish-byte argument lives in a frame that is not also live
+ * for the whole editor/picker/confirm run gb_edit_hook drives. */
 static bool __attribute__((noinline)) gb_has_sidecar(uint8_t gen, const GbEditMon* mon) {
-  if (gen != GB_GEN2) return false;
   uint8_t dv4[4] = {
     gb_get_dv(mon, GB_ATK), gb_get_dv(mon, GB_DEF),
     gb_get_dv(mon, GB_SPE), gb_get_dv(mon, GB_SPC)

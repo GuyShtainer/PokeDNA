@@ -1161,6 +1161,11 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
     snd_save();
     s_holding = false; *done = true; return recs;
   }
+  /* BACKLOG #150 S150-5 decision 8(c): a within-GB move is move_within's job (NOT in
+   * this lane) -- the same-scope empty-place and SWAP branches below stay refused for
+   * a GB-scope source. Dropping the mon back on its OWN cell is handled by the
+   * top-of-function check above and is unaffected (it returns before reaching here). */
+  if (src->scope == BOXSCOPE_GB) { snd_deny(); return recs; }
   if (!occupied) {                                           /* empty -> place, clear origin */
     if (src->note_add) src->note_add(s_held);
     memcpy(recs + (uint32_t)cur * 80, s_held, 80); src->mark_dirty();
@@ -2111,6 +2116,12 @@ static uint8_t* begin_select(BoxSource* src, int box, uint8_t* recs, int cur, bo
     } else snd_deny();
     return recs;
   }
+  /* BACKLOG #150 S150-5 decision 8(a): a GB-scope carry stays SINGLE -- a chunk carry
+   * going through the same can_lift/lift_up machinery decision 8 just opened up would
+   * be a second, much larger surface to re-verify (the re-verify in gb_release_up_hook
+   * only ever expects ONE cell's worth of identity to match). Refuse before the chunk
+   * is even built (SS11.2 step 2: "a CHUNK carry stays denied in every cross-gen case"). */
+  if (src->scope == BOXSCOPE_GB) { snd_deny(); return recs; }
   /* build the chunk from the OCCUPIED cells inside the rectangle */
   uint8_t occ[G3_BOX_SLOTS];
   for (int s = 0; s < G3_BOX_SLOTS; s++) occ[s] = g_box[s].species ? 1 : 0;
@@ -3674,7 +3685,11 @@ int pdna_box(BoxSource* src) {
                                s_oam_reload = true; need_full = true; }
         else snd_deny();
       }
-      else if (src_can_lift(src, box, cur)) { s_cur_mode = (s_cur_mode + 1) % 3; need_full = true; }  /* cycle cursor mode (Omega-only edit modes) */
+      /* BACKLOG #150 S150-5 decision 8(b): a GB grid cycles NORMAL<->MOVE only -- CM_ITEM's
+       * take-the-held-item branch mutates the SYNTHESISED Gen-3 grid via box_set_held() +
+       * mark_dirty() and can never persist (a UX lie), now that can_lift going true
+       * switches on machinery that was unreachable before this lane. */
+      else if (src_can_lift(src, box, cur)) { s_cur_mode = (s_cur_mode + 1) % (src->scope == BOXSCOPE_GB ? 2 : 3); need_full = true; }  /* cycle cursor mode (Omega-only edit modes) */
       else snd_deny();
     }
     else if (on_title) {                           /* TITLE row: limited controls */

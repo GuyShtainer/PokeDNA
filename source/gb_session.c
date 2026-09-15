@@ -406,7 +406,16 @@ static GbsStatus delete_from_list(GbSession* s, int box, int slot, uint8_t* list
   return map_g2w(g2w_delete(list, box, slot));
 }
 
-GbsStatus gbs_delete(GbSession* s, int box, int slot, uint8_t* list) {
+/* BACKLOG #150 S150-5(a): the refusal half of gbs_delete(), extracted so
+ * gb_can_lift_hook (pdna_gen12.c) can ask the SAME question without re-deriving it
+ * (a second, near-identical predicate would be a second thing to get wrong). Loads
+ * `list` (gbs_load_list) exactly as gbs_delete() always did at this point; the
+ * caller must treat GBS_OK as "delete_from_list()/the rest of gbs_delete() may now
+ * run", nothing more. `need_ack_out`, if non-NULL, receives the same need_ack
+ * gbs_delete() itself computes (Gen-2 party ack) — the pre-check caller (gb_can_lift_hook)
+ * passes NULL and does not want the flag. */
+GbsStatus gbs_can_delete(GbSession* s, int box, int slot, uint8_t* list, bool* need_ack_out) {
+  if (need_ack_out) *need_ack_out = false;
   if (!s || !s->open || !list) return GBS_ERR_ARG;
   if (!gbs_can_write(s)) return GBS_ERR_UNWRITABLE;   /* BACKLOG #64: streamed = read-only */
   if (!gb_box_valid(s->gen, box)) return GBS_ERR_BOX;
@@ -428,6 +437,14 @@ GbsStatus gbs_delete(GbSession* s, int box, int slot, uint8_t* list) {
       need_ack = true;
     }
   }
+  if (need_ack_out) *need_ack_out = need_ack;
+  return GBS_OK;
+}
+
+GbsStatus gbs_delete(GbSession* s, int box, int slot, uint8_t* list) {
+  bool need_ack = false;
+  GbsStatus pre = gbs_can_delete(s, box, slot, list, &need_ack);
+  if (pre != GBS_OK) return pre;
 
   GbsStatus dst = delete_from_list(s, box, slot, list);
   if (dst != GBS_OK) return dst;

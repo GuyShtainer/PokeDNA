@@ -238,6 +238,13 @@ GbsStatus gbs_commit_list(GbSession* s, int box, const uint8_t* list);
  * Otherwise whatever gbs_commit_list(s, box, list) returns. */
 GbsStatus gbs_delete(GbSession* s, int box, int slot, uint8_t* list);
 
+/* BACKLOG #150 S150-5(a): the refusal half of gbs_delete(), extracted so a pre-check
+ * caller (gb_can_lift_hook, pdna_gen12.c) can ask "would gbs_delete(s, box, slot, list)
+ * refuse?" without re-deriving the party/mail/box-valid rules. Loads `list` via
+ * gbs_load_list() exactly as gbs_delete() does; GBS_OK means gbs_delete() would proceed
+ * past this point. `need_ack_out` may be NULL (the pre-check caller does not want it). */
+GbsStatus gbs_can_delete(GbSession* s, int box, int slot, uint8_t* list, bool* need_ack_out);
+
 /* Move slot `from_slot` of `from_box` into `to_box`, landing it at `*to_slot` (out
  * parameter, valid only on GBS_OK). `src_list`/`dst_list` are the caller's two
  * GBS_LIST_BYTES staging buffers — TWO, because both boxes are loaded and rewritten
