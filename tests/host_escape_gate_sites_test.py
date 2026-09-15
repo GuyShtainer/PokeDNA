@@ -64,6 +64,14 @@ Checks:
       while carrying does nothing at all (found live in mGBA: every frame after the
       tap was pixel-identical to the one before it). MUT I reverts the real site to
       its pre-fix `!src->is_bank`-only form and asserts the checker catches it.
+  (k) BACKLOG #171/#171b review F1 (lane s150-4-5b): begin_select's refusal branch
+      (`} else { snd_deny(); *pfull = true; }`) sets *pfull = true -- one of this
+      repo's four named partial-repaint trap classes: a REFUSED lift after
+      gb_pick_origin's full-screen picker painted leaves that picker's bitmap on
+      screen, un-erased, until the next need_full repaint; a bare `else snd_deny();`
+      left that to chance (found live in mGBA: the refused-origin-prompt frame stayed
+      on screen with box icons drawn over it). MUT J reverts the real branch to its
+      pre-fix bare form and asserts the checker catches it.
 """
 from __future__ import annotations
 
@@ -160,6 +168,11 @@ TAB1_ASSIGN_RE     = re.compile(r"s_tab_focus\s*=\s*1\s*;")
 IS_BANK_GUARD_RE   = re.compile(r"!src->is_bank")
 BANK_EDGE_CLAUSE_RE = re.compile(r"src->bank_edge")
 HOLDING_BLOCK_RE    = re.compile(r"if\s*\(\s*s_holding\s*\)\s*\{")
+
+# BACKLOG #171/#171b review F1 (lane s150-4-5b): begin_select's refusal branch must
+# set *pfull = true -- shared by the real check (k) and its self-mutation
+# demonstration (MUT J).
+BEGIN_SELECT_REFUSAL_RE = re.compile(r"else\s*\{\s*snd_deny\(\);\s*\*pfull\s*=\s*true;\s*\}")
 
 
 def carrying_block(pdna_box_body: list[str]) -> list[str]:
@@ -435,6 +448,20 @@ def main() -> int:
     ok, details = bank_edge_sites_check(block)
     check(ok, "BACKLOG #171: " + "; ".join(d for d in details if "missing" in d))
 
+    # ---- (k) BACKLOG #171/#171b review F1: begin_select's refusal branch sets
+    # *pfull = true -- one of this repo's four named partial-repaint trap classes: a
+    # full-screen paint from OUTSIDE pdna_box()'s own render pipeline (gb_pick_origin's
+    # ui_clear/ui_text picker, opened from inside lift_up()) leaves a stale bitmap on
+    # screen until the NEXT need_full repaint; a bare `else snd_deny();` here left that
+    # repaint to chance -- found live in mGBA (lane s150-4-5b): a REFUSED lift (the
+    # origin prompt drawn, then cancelled at the serial step) left the picker's text on
+    # screen with box icons drawn over it, un-erased, until an UNRELATED L/R box-switch
+    # forced a real repaint. ----
+    check(any(BEGIN_SELECT_REFUSAL_RE.search(ln) for ln in begin_select_body),
+          "begin_select(): the refusal branch does not set *pfull = true -- a REFUSED "
+          "lift (e.g. gb_pick_origin's full-screen picker, cancelled at the serial "
+          "step) leaves a stale full-screen paint on screen with no forced repaint")
+
     # ---- (f) review F3: the self-mutation harness, every run ----
     self_test_mutation_detection(box_lines)
 
@@ -589,6 +616,29 @@ def self_test_mutation_detection(box_lines: list[str]) -> None:
                        f"was not: {details}")
         print(f"  MUT I demonstration -- `|| src->bank_edge` stripped from the "
               f"s_tab_focus=1 site: {details}")
+
+    # MUT J (BACKLOG #171/#171b review F1): revert begin_select's refusal branch back
+    # to its pre-fix bare `else snd_deny();` form (no *pfull = true) -- the exact
+    # stale-full-screen-paint regression lane s150-4-5b found live in mGBA (the
+    # refused-origin-prompt frame left un-erased with box icons drawn over it) -- and
+    # assert the checker catches it.
+    s, e = extract_function(box_lines, r"^static uint8_t\* begin_select\(")
+    body = box_lines[s:e]
+    mut_j = list(body)
+    reverted_j = False
+    for i, ln in enumerate(mut_j):
+        if BEGIN_SELECT_REFUSAL_RE.search(ln):
+            mut_j[i] = BEGIN_SELECT_REFUSAL_RE.sub("else snd_deny();", ln)
+            reverted_j = True
+            break
+    check(reverted_j, "MUT J: could not find the real `*pfull = true` refusal branch "
+                       "to revert -- fix this test")
+    if reverted_j:
+        ok = any(BEGIN_SELECT_REFUSAL_RE.search(ln) for ln in mut_j)
+        check(not ok, "MUT J (refusal branch reverted to bare `else snd_deny();`) "
+                       "should have been caught but was not")
+        print("  MUT J demonstration -- begin_select's refusal branch reverted to "
+              "bare `else snd_deny();` (no *pfull = true): correctly caught")
 
 
 if __name__ == "__main__":

@@ -2208,7 +2208,7 @@ static uint8_t* begin_select(BoxSource* src, int box, uint8_t* recs, int cur, bo
       carry_move(src, box, anchor, anchor);
       draw_footer(src->is_bank, false, true);
       *pfull = false;
-    } else snd_deny();
+    } else { snd_deny(); *pfull = true; }   /* REVIEW: gb_pick_origin painted a full screen; repaint over it */
     return recs;
   }
   /* BACKLOG #150 S150-5 decision 8(a): a GB-scope carry stays SINGLE -- a chunk carry
