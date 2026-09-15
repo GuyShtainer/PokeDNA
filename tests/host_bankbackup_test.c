@@ -144,6 +144,9 @@ static void t_backup_failure_refuses(void) {
   CHECK(holds(BOX, s_old, BOX_BYTES), "backupfail: the original box was touched despite the refusal");
   CHECK(!holds(BOX, s_new, BOX_BYTES),
         "backupfail: the NEW bytes landed in box00.box -- the backup-failed gate did not stop the write");
+  CHECK(!exists(BAK), "backupfail: a .bak appeared despite the backup failing");
+  CHECK(!exists(BAKTMP),
+        "backupfail: a stray .baktmp was left behind -- sf_backup_rolling's own cleanup did not run");
 }
 
 /* THE review F1 scenario, reproduced directly: f_stat itself fails transiently (not
