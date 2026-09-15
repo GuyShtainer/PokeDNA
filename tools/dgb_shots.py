@@ -4647,20 +4647,30 @@ def run_b93_menu(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> g
     guessed), matching Gen 3's own app_mon_menu occupied-mon order (...COPY,
     DUPLICATE, TO DAY-CARE, EXPORT, RELEASE): Gen 2 (gold) = VIEW/EDIT, ITEM,
     LEGALITY, MOVE TO BOX, COPY, DUPLICATE, TO DAY-CARE, EXPORT .pk, RELEASE, CANCEL
-    (10 rows, PDNA_ROMENU_MAX, all fit on screen with no windowing); Gen 1 (red) is
-    the same list minus ITEM (9 rows) -- DUPLICATE sits 5 DOWNs in on gold, 4 on red.
+    (10 rows, PDNA_ROMENU_MAX); Gen 1 (red) is the same list minus ITEM (9 rows) --
+    DUPLICATE sits 5 DOWNs in on gold, 4 on red. D8 correction (review-opus,
+    2026-09-15): "all fit on screen with no windowing" was WRONG -- ui_popup_vfit
+    gives vis=8 for this panel's geometry, so on gold RELEASE and CANCEL scroll off
+    the bottom of the visible list (parity-correct: Gen 3's own app_mon_menu windows
+    the same way once it has enough rows). Confirmed by re-reading shot 02 itself,
+    not re-derived from a claim.
 
     THREE EMULATOR-BOUNDARY FACTS, each verified by hand against this exact image,
     not assumed:
-      1. Guy's own roms/gb corpus is a "living dex" test save (run_gbmon's own
-         docstring) -- EVERY box AND the party are at capacity on both Red.sav and
-         Gold.sav (verified: box 0 20/20, box 1 20/20, party 6/6 on gold; box 0 and
-         party 6/6 on red). DUPLICATE's gbs_insert() therefore hits GBS_ERR_FULL on
-         every slot this corpus has -- "EDIT REFUSED / that box is full" is the ONLY
-         reachable outcome here, not a stand-in for the happy path. Reaching
-         DUPLICATE's own landing-slot success message (decision 1) needs a save with
-         room somewhere, which this corpus does not have -- deferred to hardware
-         (HW-QUEUE GBMON-1).
+      1. D8 correction (review-opus, 2026-09-15): "EVERY box AND the party are at
+         capacity" was WRONG -- that was true of box 0 and the party specifically
+         (the ones this run actually starts on: box 0 20/20, party 6/6, both saves),
+         generalized past what was actually checked. A full box census (review-
+         opus) finds real room elsewhere: Red box 4 (19/20), box 5 (16/20); Yellow
+         box 7 (11/20), box 8 (7/20), box 9 (1/20), boxes 10-11 (0/20); Gold boxes
+         12-13 (17/20 each); Crystal box 12 (18/20). The REAL, ALWAYS-true reason
+         DUPLICATE's landing-slot success message (decision 1) is unshootable here
+         is fact 2 below, not corpus fullness: gb_persist("dup") refuses under
+         PDNA_DELTA regardless of whether gbs_insert() itself would have succeeded,
+         so even a box with room would still dead-end at the same wall fact 2
+         documents, one step later. "EDIT REFUSED / that box is full" (shot 04,
+         box 0) is real and correct for THAT box, just not proof that no box in
+         this corpus has room -- deferred to hardware either way (HW-QUEUE GBMON-1).
       2. TO DAY-CARE and RELEASE ALL both end in gb_persist(), which hits the SAME
          PDNA_DELTA "Edits are in-session only in the emulator build." wall
          run_gbmon()'s own shot 05 documents -- there is no SD card under mGBA. Both
@@ -4678,17 +4688,22 @@ def run_b93_menu(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> g
 
     boot_to_gb_session(s, rom, which=which)
     s.shot("01_box_grid", f"BACKLOG #93: {which}'s box grid, freshly entered -- "
-                           "top-left cell occupied (this corpus's every box is full)")
+                           "top-left cell occupied (this box, box 0, is 20/20 full; "
+                           "not every box in this corpus is, see the docstring's D8 "
+                           "correction)")
 
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # occupied cell -> mon menu
     s.shot("02_mon_menu", f"BACKLOG #93: the {which} mon-menu popup -- "
                           + ("VIEW/EDIT, ITEM, LEGALITY, MOVE TO BOX, COPY, DUPLICATE, "
-                             "TO DAY-CARE, EXPORT .pk, RELEASE, CANCEL (10 rows, "
-                             "PDNA_ROMENU_MAX, all fit with no windowing)"
+                             "TO DAY-CARE, EXPORT .pk visible (10 rows total, "
+                             "PDNA_ROMENU_MAX, ui_popup_vfit windows to vis=8 -- "
+                             "RELEASE/CANCEL scroll off the bottom, parity-correct: "
+                             "Gen 3's own app_mon_menu windows the same way)"
                              if which == "gold" else
                              "VIEW/EDIT, LEGALITY, MOVE TO BOX, COPY, DUPLICATE, "
-                             "TO DAY-CARE, EXPORT .pk, RELEASE, CANCEL (9 rows -- "
-                             "no ITEM on Gen 1)")
+                             "TO DAY-CARE, EXPORT .pk, RELEASE visible (9 rows total "
+                             "-- no ITEM on Gen 1 -- windowed to vis=8, CANCEL scrolls "
+                             "off the bottom, same parity-correct windowing)")
                           + " -- DUPLICATE/TO DAY-CARE/EXPORT .pk are the three new "
                             "rows, in Gen 3's own occupied-mon relative order")
 
@@ -4698,10 +4713,14 @@ def run_b93_menu(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> g
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # -> gbs_insert -> GBS_ERR_FULL (this corpus)
     s.shot("04_duplicate_box_full", "BACKLOG #93: gb_dup_hook's gbs_insert() refuses "
                                      "-- 'EDIT REFUSED / that box is full / Save "
-                                     "unchanged.' -- this corpus's own box IS full "
-                                     "(20/20, see the docstring); the capacity gate "
-                                     "is real, this is not a stand-in for a different "
-                                     "failure")
+                                     "unchanged.' -- THIS box (box 0) really is 20/20 "
+                                     "full, so the capacity gate is real here, not a "
+                                     "stand-in for a different failure; other boxes in "
+                                     "this corpus DO have room (docstring's D8 "
+                                     "correction), but DUPLICATE's landing-slot "
+                                     "success message would still be unreachable "
+                                     "there too -- gb_persist('dup') refuses under "
+                                     "PDNA_DELTA regardless (fact 2)")
     s.tap("A", settle=200)                                  # dismiss -> EVERY row's A-press exits the
                                                               # popup back to the box grid regardless of
                                                               # outcome (app_mon_menu_readonly's switch
