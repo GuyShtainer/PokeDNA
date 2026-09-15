@@ -1030,6 +1030,7 @@ recursion tte_write depth=2
 # crt0's boot-method BYTE (a data flag multiboot.s reads, not a dispatch target
 # itself), and __text_start is a zero-size linker boundary symbol -- disassembling
 # "at" either one still produces a labelled block objdump calls a function.
+addrtaken-ok fp_walk             # hw1: EWRAM_CODE noinline fingerprint walker called only from _EZFO_startUp; the delta image never reaches flashcartio_activate, so it is unreached there while its address sits in the .ewram load data
 addrtaken-ok __aeabi_idiv0        # libgcc: division-by-zero trap, taken by the div runtime itself
 addrtaken-ok __boot_method        # crt0: multiboot/cart boot-method DATA byte, not a function -- see the D5 note above
 addrtaken-ok __do_global_dtors_aux # crtstuff: static-destructor runner, taken via .fini_array
