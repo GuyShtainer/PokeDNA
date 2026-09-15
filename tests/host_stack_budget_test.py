@@ -2787,6 +2787,176 @@ def test_b159_mutation_fragile_entries_excluded_from_stale_warning():
     finally:
         os.unlink(path)
 
+
+# === BACKLOG #167: pin the count-only fallback population, per (variant, artless) ======
+
+def test_b167_check_count_only_max_passes_when_count_equals_declared_max():
+    """(a) K count-only callers measured, declared max == K -> not fatal.
+    Wrapped in redirect_stderr/redirect_stdout (review F4): check_count_only_max
+    always prints a `count-only callers: ...` line, which otherwise leaks onto
+    this test SCRIPT's real stdout on every passing run, not just a failing
+    one -- a real build's own run of the guard is unaffected either way, this
+    is purely about keeping this test file's OWN output quiet on success."""
+    import contextlib
+    import io
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        f.write("count-only-max 5 variant=nor artless=1\n")
+        path = f.name
+    try:
+        decls = sb.load_count_only_max_decls(path)
+        with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            fatal = sb.check_count_only_max(5, "nor", True, decls, path)
+        check("(B167) count == declared max is not fatal", fatal is False, fatal)
+    finally:
+        os.unlink(path)
+
+
+def test_b167_check_count_only_max_fatals_when_count_exceeds_max():
+    """(b) K count-only callers measured, declared max == K-1 -> FATAL (True).
+    Wrapped (review F4) so the expected FATAL message doesn't leak onto this
+    test script's real stderr on a passing run."""
+    import contextlib
+    import io
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        f.write("count-only-max 4 variant=nor artless=1\n")
+        path = f.name
+    try:
+        decls = sb.load_count_only_max_decls(path)
+        with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            fatal = sb.check_count_only_max(5, "nor", True, decls, path)
+        check("(B167) count exceeds declared max is FATAL", fatal is True, fatal)
+    finally:
+        os.unlink(path)
+
+
+def test_b167_check_count_only_max_missing_declaration_is_a_note_not_fatal():
+    """(c) no count-only-max line for this exact (variant, artless) pair -> NOT
+    fatal (a missing line must not break other variants/repos), but a one-time
+    stderr note names the undeclared pair so the gap is visible. Wraps BOTH
+    streams (review F4) -- stdout is discarded (the count line isn't under
+    test here), stderr is captured and asserted on."""
+    import contextlib
+    import io
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        f.write("count-only-max 5 variant=delta\n")   # a different pair entirely
+        path = f.name
+    try:
+        decls = sb.load_count_only_max_decls(path)
+        stderr_buf = io.StringIO()
+        with contextlib.redirect_stderr(stderr_buf), contextlib.redirect_stdout(io.StringIO()):
+            fatal = sb.check_count_only_max(5, "nor", True, decls, path)
+        check("(B167) missing declaration for this pair is not fatal",
+              fatal is False, fatal)
+        check("(B167) missing declaration prints a one-time note naming the pair",
+              "count-only-max not declared for variant=nor artless=1" in stderr_buf.getvalue(),
+              stderr_buf.getvalue())
+    finally:
+        os.unlink(path)
+
+
+def test_b167_key_distinguishes_artless_from_plain_nor():
+    """The lookup key is the (variant, artless) PAIR, not variant alone -- the
+    whole reason count-only-max needs an artless= qualifier: `make artless` and
+    `make` both invoke stack_budget.py with --variant nor (PDNA_ARTLESS never
+    changes PDNA_TARGET, Makefile:84/:87), so --variant alone cannot select a
+    different max for the two images. Declares two different maxima for the
+    same variant=nor and checks the SAME count (15) against each: under the
+    higher plain-nor max (20) it passes, but exceeds the lower nor+artless max
+    (10) -- if the artless flag were ignored by the lookup (aliased onto the
+    plain nor line, or vice versa), both calls would agree. Wrapped (review
+    F4): the artless call genuinely FATALs (by design), so without wrapping
+    this is the noisiest of the five tests on a passing run."""
+    import contextlib
+    import io
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        f.write("count-only-max 10 variant=nor artless=1\n")
+        f.write("count-only-max 20 variant=nor\n")
+        path = f.name
+    try:
+        decls = sb.load_count_only_max_decls(path)
+        check("(B167) two distinct (variant, artless) keys parsed from one file",
+              decls == {("nor", True): 10, ("nor", False): 20}, decls)
+        with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            fatal_artless = sb.check_count_only_max(15, "nor", True, decls, path)
+            fatal_nor = sb.check_count_only_max(15, "nor", False, decls, path)
+        check("(B167) the artless build FATALs against its OWN (lower) declared max",
+              fatal_artless is True, fatal_artless)
+        check("(B167) the plain nor build, same count, does not -- under its own "
+              "(higher) declared max, not the artless line",
+              fatal_nor is False, fatal_nor)
+    finally:
+        os.unlink(path)
+
+
+def test_b167_sd_variant_line_parses():
+    """Review F2: --variant advertises nor/sd/delta and `make sd` exists, but
+    COUNT_ONLY_MAX_RE originally only accepted nor|delta -- a real
+    `count-only-max N variant=sd` line would have hit load_extra_edges()'s
+    catch-all "unrecognized line" ValueError and bricked every build reading
+    this file, not just the sd one. Confirms the line parses into the (sd,
+    False) key, and that a nor run simply treats it as "not this variant"
+    (missing declaration note, not a crash, not a false match)."""
+    import contextlib
+    import io
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        f.write("count-only-max 7 variant=sd\n")
+        path = f.name
+    try:
+        decls = sb.load_count_only_max_decls(path)   # must not raise
+        check("(B167 F2) a variant=sd line parses into the (sd, False) key",
+              decls == {("sd", False): 7}, decls)
+        stderr_buf = io.StringIO()
+        stdout_buf = io.StringIO()
+        with contextlib.redirect_stderr(stderr_buf), contextlib.redirect_stdout(stdout_buf):
+            fatal = sb.check_count_only_max(3, "nor", False, decls, path)
+        check("(B167 F2) a nor run against an sd-only file is 'not this variant' "
+              "(missing-declaration note), not fatal and not a false match",
+              fatal is False, fatal)
+        check("(B167 F2) the missing-declaration note names variant=nor, not sd",
+              "count-only-max not declared for variant=nor" in stderr_buf.getvalue(),
+              stderr_buf.getvalue())
+    finally:
+        os.unlink(path)
+
+
+def test_b167_mutation_broken_comparison_would_never_fatal():
+    """Review F3: the previous version of this test monkeypatched
+    sb.check_count_only_max with a hand-written stub and asserted the STUB
+    returns a constant -- that only proves Python assigns module attributes,
+    not that the LIVE comparison in stack_budget.py is a real boundary. This
+    version calls the real function on both sides of the max=4 boundary: count
+    4 (at the max) must NOT fatal, count 5 (one over) must fatal. If a future
+    edit reverts `count > max_n` to a tautology (e.g. `if False:` / the branch
+    deleted outright), the count=5 call collapses to the same False as count=4
+    and this test catches it -- proved below by reverting the walker's own
+    comparison in a scratch copy of stack_budget.py and re-running this exact
+    assertion against it (see the brief's own verification, not repeated here
+    as a permanent test since it would require importing a second copy of the
+    module). Wrapped (review F4): the count=5 call genuinely FATALs (by
+    design, that's the boundary being tested), so without wrapping this leaks
+    on every passing run too."""
+    import contextlib
+    import io
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        f.write("count-only-max 4 variant=nor artless=1\n")
+        path = f.name
+    try:
+        decls = sb.load_count_only_max_decls(path)
+        with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            at_max = sb.check_count_only_max(4, "nor", True, decls, path)
+            over_max = sb.check_count_only_max(5, "nor", True, decls, path)
+        check("(B167) the comparison is a real boundary, not a constant",
+              at_max is False and over_max is True)
+    finally:
+        os.unlink(path)
+
+
 def main():
     print("host_stack_budget_test.py")
     test_a_estimator_no_explosion()
@@ -2878,6 +3048,12 @@ def main():
     test_b157_chase_sp_spill_two_writers_same_offset_is_not_control_flow_safe()
     test_b157_resolve_all_sites_target_verified_when_correct()
     test_b157_mutation_memcpy16_swapped_in_is_caught()
+    test_b167_check_count_only_max_passes_when_count_equals_declared_max()
+    test_b167_check_count_only_max_fatals_when_count_exceeds_max()
+    test_b167_check_count_only_max_missing_declaration_is_a_note_not_fatal()
+    test_b167_key_distinguishes_artless_from_plain_nor()
+    test_b167_sd_variant_line_parses()
+    test_b167_mutation_broken_comparison_would_never_fatal()
     print()
     if FAILURES:
         print(f"host_stack_budget_test: {len(FAILURES)} FAILED: {', '.join(FAILURES)}")

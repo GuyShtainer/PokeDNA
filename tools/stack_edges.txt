@@ -117,6 +117,20 @@
 # Absence everywhere is legal; the moment the symbol IS linked in ANY variant the
 # walker prints a LANDED warning so the row is promoted, not left behind forever.
 
+# BACKLOG #167 (2026-09-15): pins the argsites-declaration count-only fallback
+# population (resolve_all_sites()'s count_only_validated) per build so a codegen
+# shift that makes a verified site untraceable again (adding one more caller to
+# the count-only list) is a FATAL, not a build that stays green forever. Keyed
+# by (--variant, --artless) -- --variant alone cannot distinguish `make artless`
+# from `make` (both pass --variant nor; PDNA_ARTLESS never changes PDNA_TARGET),
+# yet the two images' count-only population can differ. N below is the measured
+# count on main at the time these lines were added; raise it (with a dated
+# comment explaining why) when a genuine new count-only site is added on
+# purpose, never to silence an unexplained increase.
+count-only-max 48 variant=nor artless=1
+count-only-max 48 variant=nor
+count-only-max 48 variant=delta
+
 # Delta-only -- the artless/normal (PDNA_TARGET=nor) links do not contain it:
 # Listing EVERY variant in variants= re-creates a blanket exemption -- if the symbol exists
 # in no variant yet, use impl-pending instead (it un-silences itself when the symbol lands).

@@ -610,7 +610,21 @@ IMPL_PENDING_RE  = re.compile(r'^impl-pending\s+(\S+)\s+pending=(\S+)$')
 # `gated` line -- see this file's own docstring below and verify_gated_predecessors().
 GATED_LINE_RE = re.compile(
     r'^gated\s+(\S+)\s+need=(\d+)\s+from=([\w./-]+):(\w+)\s+gate=(\S+)\s+via=(\S+)$')
-
+# BACKLOG #167: pins the argsites-declaration count-only fallback population
+# (`count_only_validated` from resolve_all_sites()) per (variant, artless) build
+# pair, so a codegen shift that silently makes a verified site untraceable again
+# (adding one more caller to the count-only list) is a FATAL, not a build that
+# stays green forever. `variant` is nor/sd/delta (matches --variant); the optional
+# trailing `artless=1` distinguishes a PDNA_ARTLESS=1 image from its full-art
+# sibling of the SAME --variant -- see the --artless argparse help above for why
+# --variant alone can't tell them apart. Parsed by load_count_only_max_decls(),
+# a SEPARATE small read of stack_edges.txt (not folded into load_extra_edges()'s
+# big 12-tuple contract) so this new declaration kind doesn't force every one of
+# host_stack_budget_test.py's ~20 unrelated load_extra_edges() call sites to grow
+# an extra unpacked field; load_extra_edges() still recognizes and skips the line
+# below so it isn't rejected as "unrecognized".
+COUNT_ONLY_MAX_RE = re.compile(
+    r'^count-only-max\s+(\d+)\s+variant=(nor|sd|delta)(\s+artless=1)?$')
 
 
 def _stale_addrtaken(addrtaken_ok, addrtaken_fragile, taken):
@@ -862,6 +876,12 @@ def load_extra_edges(path):
             if ipm:
                 impl_pending_decls[ipm.group(1)] = ipm.group(2)
                 continue
+            # BACKLOG #167: `count-only-max N variant=V [artless=1]` is parsed by
+            # load_count_only_max_decls() (a separate small read, see that
+            # function's docstring for why) -- recognized and skipped HERE only so
+            # it doesn't fall through to the "unrecognized line" error below.
+            if COUNT_ONLY_MAX_RE.match(line):
+                continue
             gm = GATED_LINE_RE.match(line)
             if gm:
                 fn, need, header, macro, gate_fn, via_raw = (
@@ -936,6 +956,46 @@ def load_extra_edges(path):
     return (field_decls, field_offset_index, argsite_decls, dict(whole_func_decls),
             frame_overrides, isr_decls, addrtaken_ok, addrtaken_fragile, recursion_decls, gated_decls,
             impl_optional_decls, impl_pending_decls)
+
+
+def load_count_only_max_decls(path):
+    """Parse `count-only-max N variant=<nor|sd|delta> [artless=1]` lines out of
+    tools/stack_edges.txt (BACKLOG #167). Returns {(variant, artless_bool): N}.
+
+    A deliberately separate, second small read of the same file rather than a
+    13th element threaded through load_extra_edges()'s return tuple -- that
+    tuple is unpacked positionally at ~20 call sites across
+    tests/host_stack_budget_test.py for declaration kinds this new one has
+    nothing to do with; growing it would force every one of those unrelated
+    tests to add a throwaway unpacked field. load_extra_edges() still matches
+    and skips a `count-only-max` line (see COUNT_ONLY_MAX_RE's use there) so it
+    is not rejected as "unrecognized" -- the two functions parse the same file
+    for disjoint line kinds, same as this file's other small per-kind readers.
+
+    Raises ValueError on a duplicate (variant, artless) pair declared twice with
+    different N (mirrors load_extra_edges()'s own duplicate-declaration policy
+    for `frame`/`recursion`/`gated` lines elsewhere in this file).
+    """
+    decls = {}
+    if not path or not os.path.exists(path):
+        return decls
+    with open(path) as f:
+        for lineno, raw in enumerate(f, 1):
+            line = raw.split('#', 1)[0].strip()
+            if not line:
+                continue
+            m = COUNT_ONLY_MAX_RE.match(line)
+            if not m:
+                continue
+            n, variant, artless_suffix = int(m.group(1)), m.group(2), m.group(3)
+            key = (variant, bool(artless_suffix))
+            if key in decls and decls[key] != n:
+                variant_label = variant + (" artless=1" if artless_suffix else "")
+                raise ValueError(f"{path}:{lineno}: count-only-max for variant="
+                                  f"{variant_label} declared twice with different "
+                                  f"values ({decls[key]} and {n})")
+            decls[key] = n
+    return decls
 
 
 # === struct-field offsets, computed from the header (D1) ==============================
@@ -2257,6 +2317,14 @@ def resolve_all_sites(analysis, field_offset_index, argsite_decls, whole_func_de
     qualified_offset_impls, unqualified_offset_impls = field_offset_index
 
     fn_insn_seq = analysis["fn_insn_seq"]
+    # NOTE (BACKLOG #167): this fail-open .get("insn", {}) is intentionally left
+    # alone -- pre-#157 fixture dicts in tests/host_stack_budget_test.py omit
+    # "insn" entirely, and an empty dict here just means _chase_reg_to_literal_word()
+    # can never resolve a target, i.e. every site becomes count-only instead of
+    # target-verified. That is exactly the risk #167's count-only-max declaration
+    # now bounds (a caller silently falling back to count-only trust is FATAL once
+    # it pushes the count over the declared max) -- so a stale/missing "insn" key
+    # is already covered by the new ceiling, not a separate defect to fix here.
     insn_map = analysis.get("insn", {})
     name_at = analysis.get("name_at", {})
     edges_to_add = collections.defaultdict(set)
@@ -3375,6 +3443,40 @@ def read_build_dir_stamp(elf, sections, section_dumps=None):
     return None
 
 
+def check_count_only_max(count, variant, artless, count_only_max_decls, edges_file):
+    """BACKLOG #167: compares `count` (the number of argsites declarations
+    validated by site count only, i.e. len(count_only_validated)) against the
+    `count-only-max N variant=V [artless=1]` declaration for this exact
+    (variant, artless) pair -- --variant alone cannot distinguish an artless
+    image from its full-art sibling (see the --artless argparse help), so the
+    lookup key is the pair, not variant alone.
+
+    Always prints `count-only callers: <count> (max <N>)` (or "(max undeclared)"
+    when the pair has no declaration) so the number is visible on every run, not
+    only when something is wrong.
+
+    Returns True when the build must FATAL (count exceeds a declared max);
+    False otherwise (below max, or no declaration -- a missing declaration is a
+    one-time stderr note, not fatal, so other variants/repos keep building)."""
+    key = (variant, artless)
+    max_n = count_only_max_decls.get(key)
+    variant_label = variant + (" artless=1" if artless else "")
+    if max_n is None:
+        print(f"*** stack_budget: count-only-max not declared for variant="
+              f"{variant_label} in {edges_file} -- {count} count-only caller(s) "
+              "are not pinned for this build", file=sys.stderr)
+        print(f"  count-only callers: {count} (max undeclared)")
+        return False
+    print(f"  count-only callers: {count} (max {max_n})")
+    if count > max_n:
+        print(f"*** stack_budget: FATAL: {count} count-only callers on "
+              f"{variant_label}, max {max_n} -- a verified site lost its shape; "
+              f"re-derive or raise the max in {edges_file} with a dated comment",
+              file=sys.stderr)
+        return True
+    return False
+
+
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -3385,6 +3487,16 @@ def main(argv):
     ap.add_argument("--top", type=int, default=5)
     ap.add_argument("--variant", default="nor", help="which build variant this ELF is "
                      "(nor/sd/delta) -- scopes impl-optional rows; see tools/stack_edges.txt")
+    ap.add_argument("--artless", action="store_true",
+                     help="BACKLOG #167: this ELF was built with PDNA_ARTLESS=1 (no "
+                          "compiled-art .su/.o objects) -- together with --variant, "
+                          "identifies the (variant, artless) pair a "
+                          "'count-only-max N variant=V [artless=1]' declaration in "
+                          "tools/stack_edges.txt pins. --variant alone cannot tell an "
+                          "artless build from its full-art sibling: `make artless` and "
+                          "`make` both pass --variant nor (PDNA_ARTLESS never changes "
+                          "PDNA_TARGET), yet the two images' count-only fallback "
+                          "population can differ.")
     ap.add_argument("--sccs", action="store_true",
                      help="D5b: print the Tarjan SCCs (real recursion only) over the "
                           "graph reachable from --root, instead of running the guard")
@@ -3505,6 +3617,11 @@ def main(argv):
      impl_pending_decls) = (
         load_extra_edges(args.edges_file) if args.edges_file
         else ({}, ({}, {}), {}, {}, {}, set(), set(), set(), {}, {}, {}, {}))
+    # BACKLOG #167: a separate small read of args.edges_file for `count-only-max`
+    # lines -- see load_count_only_max_decls()'s own docstring for why this isn't
+    # threaded through the 12-tuple above.
+    count_only_max_decls = (load_count_only_max_decls(args.edges_file)
+                             if args.edges_file else {})
 
     # D1 header-drift check: every declared Struct.field @OFFSET is checked against
     # the offset the struct's OWN header gives that field today, before anything
@@ -3675,6 +3792,12 @@ def main(argv):
               file=sys.stderr)
         for caller in count_only_validated:
             print(f"***   {caller}", file=sys.stderr)
+    # BACKLOG #167: pin the count-only fallback population itself -- nothing
+    # above stops a codegen shift from silently adding a 48th (49th, ...)
+    # count-only caller and the build staying green forever.
+    if check_count_only_max(len(count_only_validated), args.variant, args.artless,
+                             count_only_max_decls, args.edges_file):
+        return 1
     if legacy_ambiguous:
         print(f"*** stack_budget: {args.edges_file} declares a whole-function exemption "
               "for a caller that now has MORE THAN ONE indirect-call site -- that is "

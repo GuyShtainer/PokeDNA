@@ -81,10 +81,10 @@ export OBJCOPY := $(PREFIX)objcopy
 	@if [ "$(PDNA_STACK_CHECK)" = "0" ]; then \
 	   echo "  STACK skip (PDNA_STACK_CHECK=0)"; \
 	 else \
-	   python3 $(dir $(OUTPUT))tools/stack_budget.py --elf $@ --builddir $(CURDIR) --root main --variant $(PDNA_TARGET) \
+	   python3 $(dir $(OUTPUT))tools/stack_budget.py --elf $@ --builddir $(CURDIR) --root main --variant $(PDNA_TARGET) $(if $(filter 1,$(PDNA_ARTLESS)),--artless,) \
 	     || { rm -f $@; exit 1; }; \
 	   for v in `awk '/^gated /{print $$6}' $(dir $(OUTPUT))tools/stack_edges.txt | sed 's/^via=//' | tr ',' '\n' | sort -u`; do \
-	     python3 $(dir $(OUTPUT))tools/stack_budget.py --elf $@ --builddir $(CURDIR) --root $$v --top 1 --variant $(PDNA_TARGET) >/dev/null \
+	     python3 $(dir $(OUTPUT))tools/stack_budget.py --elf $@ --builddir $(CURDIR) --root $$v --top 1 --variant $(PDNA_TARGET) $(if $(filter 1,$(PDNA_ARTLESS)),--artless,) >/dev/null \
 	       || { echo "*** FATAL: a gated subtree reached from $$v exceeds its declared need (re-run --root $$v)"; rm -f $@; exit 1; }; \
 	   done; \
 	   echo "  GATED ok: `awk '/^gated /{n++}END{print n+0}' $(dir $(OUTPUT))tools/stack_edges.txt` gated subtree(s) re-measured from their via= roots"; \
@@ -615,13 +615,13 @@ retail-gate:   # per-worktree scratch: the shared default raced between parallel
 # it" are one command.
 stack-check:
 	@python3 tests/host_stack_budget_test.py
-	@for e in PokeDNA-artless.elf:build-artless:nor PokeDNA.elf:build:nor pokedna-delta.elf:build-delta:delta; do \
-		elf=$${e%%:*}; rest=$${e#*:}; bd=$${rest%%:*}; va=$${rest##*:}; \
+	@for e in PokeDNA-artless.elf:build-artless:nor:--artless PokeDNA.elf:build:nor: pokedna-delta.elf:build-delta:delta:; do \
+		elf=$${e%%:*}; rest=$${e#*:}; bd=$${rest%%:*}; rest=$${rest#*:}; va=$${rest%%:*}; al=$${rest##*:}; \
 		if [ -f "$$elf" ] && [ -d "$$bd" ]; then \
 			echo "-- $$elf --"; \
-			python3 tools/stack_budget.py --elf "$$elf" --builddir "$(CURDIR)/$$bd" --root main --variant "$$va" || exit 1; \
+			python3 tools/stack_budget.py --elf "$$elf" --builddir "$(CURDIR)/$$bd" --root main --variant "$$va" $$al || exit 1; \
 			for v in `awk '/^gated /{print $$6}' tools/stack_edges.txt | sed 's/^via=//' | tr ',' '\n' | sort -u`; do \
-				python3 tools/stack_budget.py --elf "$$elf" --builddir "$(CURDIR)/$$bd" --root "$$v" --top 1 --variant "$$va" >/dev/null \
+				python3 tools/stack_budget.py --elf "$$elf" --builddir "$(CURDIR)/$$bd" --root "$$v" --top 1 --variant "$$va" $$al >/dev/null \
 					|| { echo "*** FATAL: a gated subtree reached from $$v exceeds its declared need (re-run --root $$v)"; exit 1; }; \
 			done; \
 	   echo "  GATED ok: `awk '/^gated /{n++}END{print n+0}' $(dir $(OUTPUT))tools/stack_edges.txt` gated subtree(s) re-measured from their via= roots"; \
