@@ -292,8 +292,11 @@ typedef struct {
                             * Gen-3 (ASCII-only) charset cannot spell -- a "{XX}"
                             * escape OR a real non-ASCII glyph such as the gender
                             * signs -- so the SIDECAR's name is kept instead         */
-  bool gb_item_ignored;   /* Gen 2 holds a non-zero item -- no Gen-2->Gen-3 item map
-                            * exists in this tree, so the sidecar's Gen-3 item is kept */
+  bool gb_item_ignored;   /* Gen 2 holds a non-zero item and the Gen-3 side keeps the
+                            * sidecar's own item. The Gen-2<->Gen-3 name-keyed map now
+                            * exists (source/item_map_g2g3.h, BACKLOG #150 S150-8-CORE)
+                            * but has no callers yet -- S150-8 is the slice that wires
+                            * it into this merge and into the DOWN edge.              */
 } GbscMergeReport;
 
 /* NOTE ON DVs, DELIBERATELY ABSENT FROM GbscMergeReport (design decision,
