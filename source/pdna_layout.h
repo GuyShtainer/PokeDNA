@@ -1006,8 +1006,14 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XFER_TOOMANY_L2    "for this Pokemon."
 
 #define PDNA_XFER_TC_TITLE        "NO GEN 1 FORM"
-#define PDNA_XFER_TC_SPECIES_FMT  "%s did not exist in Gen 1."
-#define PDNA_XFER_TC_MOVE_FMT     "%s cannot be known in Gen 1."
+/* BACKLOG #150 S150-8: shortened from the brief's original "%s did not exist in
+ * Gen 1." / "%s cannot be known in Gen 1." -- host_textfit_test.c found the real
+ * worst-case move name in xr_time_capsule_block's reachable range (166..251, e.g.
+ * "EXTREMESPEED") overflows the 184 px budget with the longer wording (200 px
+ * measured); the species side is tight but passes. Shortened uniformly rather than
+ * leaving the species/move rows differently worded. */
+#define PDNA_XFER_TC_SPECIES_FMT  "%s: no Gen 1 form."
+#define PDNA_XFER_TC_MOVE_FMT     "%s: not in Gen 1."
 
 #define PDNA_XFER_FLUSHFAIL_TITLE "BANK NOT FULLY UPDATED"
 #define PDNA_XFER_FLUSHFAIL_L1    "%d Pokemon are still in the"

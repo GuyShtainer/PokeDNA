@@ -59,6 +59,10 @@
                             * re-typed "36" */
 #include "pdna_gbfly.h"    /* BACKLOG #90 D3: the Fly screen's own badge/spn strings,
                             * not a re-typed copy */
+#include "gb_edit.h"       /* BACKLOG #150 S150-8: gb_max_move/gb_max_species -- the
+                            * time-capsule message's real worst-case bound */
+#include "data_tables.h"   /* BACKLOG #150 S150-8: pk_move_name/pk_species_name -- the
+                            * REAL move table, not a guessed-at worst-case literal */
 
 #define SCR_W   UI_SCR_W
 #define SYS8_W  UI_SYS8_W   /* tonc sys8 advance: fixed 8 px per glyph */
@@ -921,6 +925,44 @@ int main(void) {
   PF(PDNA_XFER_GAME_GOLD,    28, 184);
   PF(PDNA_XFER_GAME_SILVER,  28, 184);
   PF(PDNA_XFER_GAME_CRYSTAL, 28, 184);
+  /* BACKLOG #150 S150-8 decision 13: the DOWN-converting edge's own strings. */
+  PF(PDNA_XFER_PARTY_TITLE,     28, 184);
+  PF(PDNA_XFER_PARTY_L1,        28, 184);
+  PF(PDNA_XFER_PARTY_L2,        28, 184);
+  PF(PDNA_XFER_SAVEFIRST_TITLE, 28, 184);
+  PF(PDNA_XFER_SAVEFIRST_L1,    28, 184);
+  PF(PDNA_XFER_SAVEFIRST_L2,    28, 184);
+  PF(PDNA_XFER_TOOMANY_TITLE,   28, 184);
+  PF(PDNA_XFER_TOOMANY_L1,      28, 184);
+  PF(PDNA_XFER_TOOMANY_L2,      28, 184);
+  PF(PDNA_XFER_TC_TITLE,        28, 184);
+  { /* PDNA_XFER_TC_SPECIES_FMT/MOVE_FMT are siprintf'd with a species/move name --
+     * xr_time_capsule_block() can only ever name a species > gb_max_species(GB_GEN1)
+     * (151) or a move > gb_max_move(GB_GEN1) (165), so the REAL worst case is the
+     * widest name in exactly that reachable range, not the widest name in the whole
+     * table (a species/move this refusal can never actually name, like a Gen-1-legal
+     * THUNDERPUNCH, would overstate the budget it needs). Scan the real tables
+     * (data_tables.c) rather than guessing a literal, same convention as
+     * PDNA_SIDECAR_LEGAL_WHY_FMT above. */
+    char row[64];
+    int worst_sp = 0, worst_mv = 0;
+    for (int dex = gb_max_species(GB_GEN1) + 1; dex <= 251; dex++) {
+      snprintf(row, sizeof row, PDNA_XFER_TC_SPECIES_FMT, pk_species_name((uint16_t)dex));
+      int w = pwidth(row);
+      if (w > worst_sp) worst_sp = w;
+    }
+    for (int mv = gb_max_move(GB_GEN1) + 1; mv <= 251; mv++) {
+      snprintf(row, sizeof row, PDNA_XFER_TC_MOVE_FMT, pk_move_name((uint16_t)mv));
+      int w = pwidth(row);
+      if (w > worst_mv) worst_mv = w;
+    }
+    chk("ptext_fit", 28, 184, worst_sp, "TC species refusal, worst real dex 152..251");
+    chk("ptext_fit", 28, 184, worst_mv, "TC move refusal, worst real move 166..251");
+  }
+  PF(PDNA_XFER_FLUSHFAIL_TITLE, 28, 184);
+  { char row[48]; snprintf(row, sizeof row, PDNA_XFER_FLUSHFAIL_L1, 64);
+    chk("ptext_fit", 28, 184, pwidth(row), row); }
+  PF(PDNA_XFER_FLUSHFAIL_L2,    28, 184);
   /* BACKLOG #120 S2: app_inject_to_game()/_deferred()'s "no live Gen-3 PC" refusal
    * (pdna_main.c). Literal, like the msg_wait call sites that pass it directly. */
   PF("NO GEN-3 SAVE",              28, 184);
