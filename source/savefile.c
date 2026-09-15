@@ -506,3 +506,16 @@ SfStatus __attribute__((noinline)) sf_save_rolling(const char* path, const uint8
   }
   return sf_write_verified(path, buf, len);
 }
+
+/* BACKLOG #158: the verdict box_save() (pdna_bank.c) used to re-derive by hand -- see the
+ * doc comment in savefile.h. `buf` is `const void*` (not `const uint8_t*`) purely so a
+ * caller with a `uint8_t*` box buffer needs no cast; it is never touched, only forwarded
+ * to sf_where_are_the_bytes. */
+bool sf_save_rolling_ok(const char* path, const void* buf, uint32_t len, SfWhere* out_where) {
+  SfStatus st = sf_save_rolling(path, (const uint8_t*)buf, len, NULL);
+  if (st == SF_OK) return true;
+  if (st != SF_ERR_RENAME) return false;    /* hard failure: no ambiguity to report */
+  SfWhere w = sf_where_are_the_bytes(path, (const uint8_t*)buf, len);
+  if (out_where) *out_where = w;
+  return w == SF_WHERE_TARGET;
+}

@@ -126,4 +126,21 @@ SfWhere sf_where_are_the_bytes(const char* path, const uint8_t* buf, uint32_t le
  * chasing a file that does not exist. */
 SfStatus sf_save_rolling(const char* path, const uint8_t* buf, uint32_t len, bool* out_backed_up);
 
+/* The one-place verdict for sf_save_rolling's result (BACKLOG #158): plain SF_OK is a
+ * yes; SF_ERR_RENAME is a yes only when sf_where_are_the_bytes(path, buf, len) reports
+ * SF_WHERE_TARGET (the swap silently landed after all); every other status, and every
+ * other SfWhere, is a no. This used to be re-typed by hand inside box_save() (pdna_bank.c)
+ * AND, separately, inside its own host test (a copy the mutation testing in F3 already
+ * caught drifting once) -- moved here so both call the SAME code and the host test can
+ * link the real thing.
+ *
+ * `out_where` (may be NULL) is left UNTOUCHED unless sf_save_rolling actually returned
+ * SF_ERR_RENAME -- a caller that pre-sets it to a sentinel outside the enum's range (e.g.
+ * `(SfWhere)-1`) can tell "no rename ambiguity occurred at all" (plain SF_OK, or a hard
+ * failure from the backup/write step -- box_save's own triage stays silent on those, same
+ * as before this refactor) apart from "SF_ERR_RENAME happened", which is the ONLY case
+ * that needs the caller's own UI triage (box_save's msg_wait switch). This mirrors
+ * sf_save_rolling's own out_backed_up contract (savefile.c) instead of inventing a new one. */
+bool sf_save_rolling_ok(const char* path, const void* buf, uint32_t len, SfWhere* out_where);
+
 #endif /* SAVEFILE_H */

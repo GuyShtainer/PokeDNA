@@ -658,6 +658,13 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_BANKSAVE_UNCONFIRMED_L1    "Box looks correct."
 #define PDNA_BANKSAVE_UNCONFIRMED_L2    "Could not re-check the card."
 
+/* BACKLOG #163: the Bank screen's persistent per-box banner (pdna_bank_box_unsaved) --
+ * drawn every frame the loaded box is the one box_save() most recently refused to write,
+ * so leaving it on screen is never mistaken for a save that landed. Deliberately the same
+ * text as PDNA_BANKSAVE_TMPANDOLD_TITLE (it is describing the same fact), kept as its own
+ * define since the banner and that one dialog can change independently. */
+#define PDNA_BANK_UNSAVED_BANNER        "BOX NOT SAVED"
+
 /* gbs_box_writable's SF_ERR_UNWRITABLE hint (source/pdna_gen12.c gb_edit_hook step 2):
  * "Switch boxes in-game once, then retry." measures 195px, over the 184px clamp;
  * "Change box in-game once, then retry." measures 188px, STILL over; this one (161px)
