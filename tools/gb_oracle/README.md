@@ -83,7 +83,62 @@ tiles of `RomGbUi.frames`'s frame 0 (linear index 0..5) via `rom_gbui_tile()` an
 compare pixel-for-pixel against the captured cell, the same way `celldiff.py` already
 treats `SRC_PIC`/codec cells it cannot express as one flat index.
 
-## Usage
+## `--selftest` and `--demo` (BACKLOG #97 follow-up)
+
+A U2c/U3-review finding motivated two more `celldiff.py` modes: a from-scratch GB-screen
+comparator can ship as a **dead stub** — a diff loop that looks right but never actually
+appends a mismatch — with nothing mechanical catching it. `celldiff.py`'s own `run()`
+loop was checked and does append correctly, but nothing PROVED that, and nothing kept it
+proving it on every future change.
+
+```sh
+# No ROM/save/mGBA needed -- CI-safe, registered in tests/run_host_tests.py's PY_TESTS
+# (via the thin argv-free wrapper tests/host_gb_oracle_selftest_test.py, since PY_TESTS
+# entries run with no extra argv).
+python3 tools/gb_oracle/celldiff.py --selftest
+
+# The real end-to-end pipeline: Gen-2 trainer card (Gold) + Gen-1 Item bag border (Red).
+python3 tools/gb_oracle/celldiff.py --demo --gb-roms roms/gb
+```
+
+`--selftest` builds two synthetic 20x18 grids that agree everywhere except one
+deliberately-injected cell, runs `diff_grids()` (the same function `run()` calls), and
+FAILS unless the reported mismatch set is exactly that one cell — plus a negative half
+(two identical grids must report zero mismatches, so a comparator that reports
+*something* regardless of input can't pass by accident).
+
+`--demo` is the genuinely real thing, not a smoke test: for each of two screens it (1)
+compiles a small throwaway host harness (`harness_g2card.c` / `harness_g1bag.c`, checked
+in next to this file) that calls the SHIPPED, UNMODIFIED cell geometry —
+`source/g2card_cells.c`'s `g2card_build_upper_cells()` for the Gen-2 trainer card's 51
+always-shown static cells, and `source/pdna_gbbag.c`'s `g1bag_border()` for the Gen-1
+bag's 90 frame cells (sed-extracted fresh every run, so it can never drift from what
+ships) — and resolves every cell to a **real ROM file byte offset** via `rom_gbui_open()`
++ `gbscr_block_off()`, the exact two functions the shipped painter itself uses; (2) boots
+the real ROM+save in mGBA (`gb_roundtrip.GbDriver`) and captures the real VRAM tilemap +
+per-tile pixel data (`oracle.py`'s own `compose()`/`tile_px()`); (3) diffs BY CELL
+POSITION, pixel-for-pixel (never by a flat tile-id identity — see the WARNING above),
+and lists every mismatching `(row, col)` with the ROM offset it expected, not just a
+count. Run against Guy's own corpus (2026-09-15): **zero mismatches on both screens**
+(51 Gen-2 upper-card cells, 90 Gen-1 bag-border cells) — the shipped painter's static
+geometry produces bit-identical pixels to the real cartridge.
+
+Both cell sets were picked to need NO save parsing (Gold's protagonist card pic and
+Red's bag frame are both save-independent), which is why `--demo` only needs `--gb-roms`
+(`Gold.gbc`/`Gold.sav`/`Red.gb`/`Red.sav`) and `--mgba-vendor`/`$GB_ROUNDTRIP_MGBA` — no
+`--harness`/`--grids-dir` juggling.
+
+## Named accepted deviations
+
+`ACCEPTED_DEVIATIONS` in `celldiff.py` is a small `{screen_tag: {(row, col): "name"}}`
+table — item 4 of the BACKLOG #97 brief. A mismatch at a listed cell still shows up in
+the report (never silently dropped) but tagged `ACCEPTED: <name>` instead of landing in
+an unexplained bucket, e.g. the original Red-bag list comparator's down-scroll marker at
+`(row 11, col 18)`, which blinks every 32 VBlanks and legitimately differs depending on
+capture phase. Both `--demo` screens compare only save/time-independent cells, so their
+own tables are empty — any mismatch there would be a real defect, not a known deviation.
+
+## Usage (the original `--harness` mode)
 
 ```sh
 # Ground truth from the real cartridge:
@@ -99,7 +154,7 @@ Neither script guesses a ROM-corpus / grids-directory / mGBA-vendor path from it
 location — a checkout that is not nested exactly like one reviewer's own machine makes
 that silently wrong rather than loudly missing (this repo's own docs describe the usual
 layout: `docs/kb/pokemon/`, `gba-toolkit/roms.sh`). `--gb-roms`/`--grids-dir` are
-required flags on `celldiff.py`; `--mgba-vendor` on `oracle.py` falls back to
-`$GB_ROUNDTRIP_MGBA` (same env var `tools/gb_roundtrip.py` itself honors) and is
-required only if that is unset. Neither script embeds any ROM, save, or pixel data;
+required in `--harness` mode (`--demo` needs only `--gb-roms`); `--mgba-vendor` falls
+back to `$GB_ROUNDTRIP_MGBA` (same env var `tools/gb_roundtrip.py` itself honors) and is
+required only if that is unset. No script here embeds any ROM, save, or pixel data;
 point them at your own dumps.

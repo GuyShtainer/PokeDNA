@@ -199,4 +199,11 @@ def main():
     return 0
 
 
-sys.exit(main())
+# BACKLOG #97 follow-up: guarded so celldiff.py --demo can `import oracle` and
+# reuse compose()/tile_px() (the same LCDC-aware VRAM ground truth this file's
+# own --tag runs use) without argparse's `required=True` flags aborting the
+# import (they used to -- `sys.exit(main())` ran unconditionally at module
+# scope, so anything importing this file for its functions instead of running
+# it as a script got a SystemExit: 2 before a single line of its own code ran).
+if __name__ == "__main__":
+    sys.exit(main())
