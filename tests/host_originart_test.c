@@ -428,9 +428,30 @@ static void part_a(void) {
       memset(out, 0, sizeof out);
       gen3_edit_commit(&e, out);
       if (redecode(out, &eggm)) {
+        /* BACKLOG #150 S150-2 review F3: species_could_be_gb() (the predicate this
+         * whole A8 block exists to test) refuses an INFERENCE from the record
+         * alone -- an egg can never support one, since the converter's own
+         * fingerprint never emits an egg. That refusal is right for the NO-HINT
+         * case (pdna_origin_of, A7 above) but was ALSO vetoing a hint the caller
+         * already supplies as a KNOWN fact (box_native_decode's per-slot hint /
+         * a GB session's own hint) -- an egg the caller KNOWS is Gen 2 must still
+         * wear its era mark, exactly like any other hinted record. This is the
+         * corrected expectation, not a relaxation: a bad egg / out-of-range
+         * species (the DAMAGED stand-in, species 252 + isBadEgg) still refuses. */
         pdna_origin_of_hint(&eggm, PDNA_GEN2, &o);
-        CHECK_EQ(o.verdict, PDNA_ORIGIN_NATIVE, "A8 an EGG is not a Gen-2 import "
-                 "(the converter refuses eggs; what is drawn is a stand-in)");
+        CHECK_EQ(o.verdict, PDNA_ORIGIN_GB, "A8 a HINTED egg DOES wear its era mark "
+                 "(review F3: the hint is a known fact, not an inference)");
+        CHECK_EQ(o.gen, PDNA_GEN2, "A8 hinted egg gen must be the hint");
+        CHECK_EQ(o.gen_certain, 1, "A8 hinted egg must be certain");
+
+        /* A bad egg still refuses -- D-Q3's own requirement (the DAMAGED stand-in
+         * must stay unmarked). isBadEgg is a plaintext bit outside the substruct
+         * checksum (gen3_mon.c:79-80); flip it directly on the decoded copy. */
+        PkMon badeggm = eggm;
+        badeggm.isBadEgg = true;
+        pdna_origin_of_hint(&badeggm, PDNA_GEN2, &o);
+        CHECK_EQ(o.verdict, PDNA_ORIGIN_NATIVE, "A8 a HINTED bad-egg still refuses "
+                 "(D-Q3: the DAMAGED stand-in must stay unmarked)");
       }
     }
     /* a species no GB record can hold, hinted anyway */

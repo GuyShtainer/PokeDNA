@@ -223,7 +223,12 @@ void pdna_origin_of_hint(const PkMon* m, uint8_t hint_gen, PdnaOrigin* out) {
    * asked us to tell. */
   pdna_origin_of(m, out);
   if (hint_gen != PDNA_GEN1 && hint_gen != PDNA_GEN2) return;
-  if (!species_could_be_gb(m)) return;
+  /* BACKLOG #150 S150-2 review F3: species_could_be_gb() refuses an INFERENCE from the
+   * record alone, which an egg can never support. It must not veto an era the caller
+   * already KNOWS (box_native_decode's per-slot hint / the session hint). A bad egg or
+   * an out-of-Gen-2-range species still has no era to claim -- which is what keeps the
+   * DAMAGED stand-in (species 252 + isBadEgg) unmarked, per D-Q3. */
+  if (!m || m->species == 0 || m->species > GEN2_MAX_DEX || m->isBadEgg) return;
 
   out->gen = hint_gen;
   out->verdict = PDNA_ORIGIN_GB;
