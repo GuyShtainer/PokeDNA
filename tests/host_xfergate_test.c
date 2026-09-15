@@ -15,7 +15,13 @@ static int checks = 0, fails = 0;
 
 #define BOXSCOPE_PC   0u
 #define BOXSCOPE_BANK 1u
-#define BOXSCOPE_GB   2u
+/* BOXSCOPE_GB's value (2) is NOT redefined here -- the single source of truth is
+ * source/pdna_box.c's own _Static_assert(BOXSCOPE_GB == 2, ...) right after its
+ * "#include "xfer_gate.h"", which fails the build if source/pdna_box.h's
+ * BOXSCOPE_GB and source/xfer_gate.c's hard-coded XG_SCOPE_GB ever drift apart.
+ * This test still needs the literal value (xfer_gate.h deliberately does not
+ * include pdna_box.h), so it is spelled out at each use below instead of a second
+ * local #define that could itself go stale unnoticed (BACKLOG #120 S2 F2). */
 
 static void test_xg_pc_live(void) {
   CHECK(xg_pc_live(false, false) == false, "pc_live: no save, arena free -> false");
@@ -67,12 +73,12 @@ static void test_xg_clear_carry_on_gb_exit(void) {
 }
 
 static void test_xg_drop_denied(void) {
-  uint8_t scopes[3] = { BOXSCOPE_PC, BOXSCOPE_BANK, BOXSCOPE_GB };
+  uint8_t scopes[3] = { BOXSCOPE_PC, BOXSCOPE_BANK, 2u /* BOXSCOPE_GB, see the comment above */ };
   for (int d = 0; d < 3; d++)
     for (int s = 0; s < 3; s++) {
-      bool want = (scopes[d] == BOXSCOPE_GB) || (scopes[s] == BOXSCOPE_GB);
+      bool want = (scopes[d] == 2u) || (scopes[s] == 2u);   /* BOXSCOPE_GB */
       CHECK(xg_drop_denied(scopes[d], scopes[s]) == want,
-            "drop_denied: true iff either side is BOXSCOPE_GB");
+            "drop_denied: true iff either side is BOXSCOPE_GB (== 2, pdna_box.c's own _Static_assert)");
     }
   printf("(F) xg_drop_denied: all 9 scope pairs\n");
 }

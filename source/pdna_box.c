@@ -10,6 +10,9 @@
 #include "sys.h"            /* EWRAM_BSS (after tonc.h so u8 macro doesn't clash) */
 #include "pdna_box.h"
 #include "xfer_gate.h"      /* BACKLOG #120 S2: xg_drop_denied gates cross-generation drops */
+_Static_assert(BOXSCOPE_GB == 2, "source/xfer_gate.c's XG_SCOPE_GB hard-codes 2 for "
+               "BOXSCOPE_GB -- keep them in step or the cross-generation drop deny "
+               "silently stops firing");
 #include "ui.h"
 #include "pdna_layout.h"    /* PDNA_PCP_*: the PC-box party strip's retail-measured geometry */
 #include "gen3_save.h"
