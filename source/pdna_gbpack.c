@@ -153,7 +153,7 @@ static bool pdna_gbpack_plain(GbBag* bag, GbGame game, bool can_edit, const char
     for (int i = 0; i < vis && top + i < total; i++)
       gbpack_row_paint(bag, pocket, top + i, row_y0 + i * 9, top + i == sel);
     ui_hline(0, 151, UI_SCR_W, UI_BORDER);
-    trainer_key_legend(can_edit ? "A edit  L/R pocket  B save" : "L/R pocket  B back");
+    ui_text(4, 152, UI_DIM, can_edit ? "A edit  L/R pocket  B save" : app_gb_readonly_footer());
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B | KEY_START);
     if (k & KEY_B) return true;
@@ -164,23 +164,30 @@ static bool pdna_gbpack_plain(GbBag* bag, GbGame game, bool can_edit, const char
     }
     if (total > 0 && (k & KEY_UP))        sel = (sel > 0) ? sel - 1 : total - 1;
     else if (total > 0 && (k & KEY_DOWN)) sel = (sel + 1) % total;
-    else if (can_edit && sel < total - 1 && (k & KEY_A)) {
-      if (pocket == GBB_POCKET_KEY) { /* no qty to edit */ }
-      else if (pocket == GBB_POCKET_TMHM) {
-        /* D4/D5: `sel` is an owned-list POSITION here (row_total() just above
-         * rebuilt g2_tm_owned for this pocket) -- map to the real tmhm_index.
-         * HMs (D5) have no count to edit at all -- matches the real cartridge's
-         * own "no x column" posture; A on an HM row is a no-op here. */
-        int real = g2_tm_owned[sel];
-        if (!g2pack_is_hm(real)) {
-          uint8_t cur = 0; gbb_tmhm_get(bag, real, &cur);
-          uint32_t q = num_entry("COUNT", cur, GBB_TMHM_CAP);
-          gbb_tmhm_set(game, bag, real, (uint8_t)q);
+    else if (k & KEY_A) {
+      if (!can_edit) {
+        snd_deny();
+        msg_wait("READ-ONLY", UI_WARN, app_gb_readonly_why(), NULL);
+        continue;
+      }
+      if (can_edit && sel < total - 1) {
+        if (pocket == GBB_POCKET_KEY) { /* no qty to edit */ }
+        else if (pocket == GBB_POCKET_TMHM) {
+          /* D4/D5: `sel` is an owned-list POSITION here (row_total() just above
+           * rebuilt g2_tm_owned for this pocket) -- map to the real tmhm_index.
+           * HMs (D5) have no count to edit at all -- matches the real cartridge's
+           * own "no x column" posture; A on an HM row is a no-op here. */
+          int real = g2_tm_owned[sel];
+          if (!g2pack_is_hm(real)) {
+            uint8_t cur = 0; gbb_tmhm_get(bag, real, &cur);
+            uint32_t q = num_entry("COUNT", cur, GBB_TMHM_CAP);
+            gbb_tmhm_set(game, bag, real, (uint8_t)q);
+          }
+        } else {
+          uint32_t q = num_entry("QUANTITY", bag->pockets[pocket].entries[sel].qty, GBB_QTY_CAP);
+          if (q < 1) q = 1;
+          gbb_set_qty(game, bag, pocket, sel, (uint8_t)q);
         }
-      } else {
-        uint32_t q = num_entry("QUANTITY", bag->pockets[pocket].entries[sel].qty, GBB_QTY_CAP);
-        if (q < 1) q = 1;
-        gbb_set_qty(game, bag, pocket, sel, (uint8_t)q);
       }
     }
   }
@@ -340,6 +347,11 @@ static bool pdna_gbpack_gen2_screen(GbScreen* gs, GbBag* bag, GbGame game, bool 
       continue;
     }
     if (k & KEY_START) {
+      if (!can_edit) {
+        snd_deny();
+        msg_wait("READ-ONLY", UI_WARN, app_gb_readonly_why(), NULL);
+        continue;
+      }
       if (can_edit) {
         int swap_src = 0;
         g2_pack_swap_active = false;
@@ -381,6 +393,11 @@ static bool pdna_gbpack_gen2_screen(GbScreen* gs, GbBag* bag, GbGame game, bool 
         continue;
       }
       if (sel == total - 1) { want_commit = true; break; }   /* CANCEL row */
+      if (!can_edit) {
+        snd_deny();
+        msg_wait("READ-ONLY", UI_WARN, app_gb_readonly_why(), NULL);
+        continue;
+      }
       if (can_edit) {
         if (pocket == GBB_POCKET_KEY) {
           /* no quantity field to edit -- matches the real cartridge's own

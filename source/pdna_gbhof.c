@@ -86,8 +86,7 @@ static void hof_list_render(const GbSession* s, int present, int count, bool can
        * the old y=112/122 pair painted straight over rows 7-8. Sit below the last
        * row and above the hline at 151 instead. Same two-line shape/column
        * pdna_gbclock.c's own read-only branch uses otherwise. */
-      ui_text(6, 134, UI_DIM, "Read-only cart - editing");
-      ui_text(6, 143, UI_DIM, "needs an EZ-Flash Omega.");
+      ui_text(6, 134, UI_DIM, app_gb_readonly_why());
     }
     ui_hline(0, 151, UI_SCR_W, UI_BORDER);
     trainer_key_legend(can_edit ? "U/D sel A view L/R pg ST menu"
