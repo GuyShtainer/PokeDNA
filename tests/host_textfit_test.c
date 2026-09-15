@@ -2251,6 +2251,43 @@ int main(void) {
   chkv("PDNA_GBMAP_HINT fits GBSCR_COLS (1:1 and stretched)",
        (int)strlen(PDNA_GBMAP_HINT), GBSCR_COLS);
 
+  printf("\n== boot: flashcart detection rows + the header-only dialog (pdna_main.c) ==\n");
+  /* detect_line() -- sys8 rows at PDNA_DETECT_X, one per attempt. Assembled from
+   * pdna_layout.h's own parts (the strings and formats the shipped code prints) with the
+   * widest value every field can take: attempt 8, NOR page 0x1ff, 255 look-alikes
+   * (s_lookalikes is a u8, capped) first at 0x1ff. A page form only ever follows an
+   * EZ-Flash "found" verdict; every verdict can carry the look-alike suffix. The worst
+   * reachable row is "8: EZ hdr! NOR#1ff la=255@1ff" -- 29 glyphs; one more and TTE
+   * wraps it onto the next attempt's row (hw1 review #3). */
+  {
+    static const char* found[] = { PDNA_DET_EZ_OK, PDNA_DET_EZ_HDRONLY };
+    static const char* all[]   = { PDNA_DET_ED_OK, PDNA_DET_ED_SDFAIL, PDNA_DET_EZ_OK,
+                                   PDNA_DET_EZ_HDRONLY, PDNA_DET_NOCART, PDNA_DET_EZ_NOPAGE,
+                                   PDNA_DET_UNKNOWN };
+    char row[64];
+    int n;
+    for (size_t i = 0; i < sizeof found / sizeof found[0]; i++) {
+      n = snprintf(row, sizeof row, PDNA_DET_FMT_NOR, 8, found[i], 0x1ffu);
+      snprintf(row + n, sizeof row - (size_t)n, PDNA_DET_FMT_LA, 255u, 0x1ffu);
+      T(row, PDNA_DETECT_X);
+      n = snprintf(row, sizeof row, PDNA_DET_FMT_PSRAM, 8, found[i]);
+      snprintf(row + n, sizeof row - (size_t)n, PDNA_DET_FMT_LA, 255u, 0x1ffu);
+      T(row, PDNA_DETECT_X);
+    }
+    for (size_t i = 0; i < sizeof all / sizeof all[0]; i++) {
+      n = snprintf(row, sizeof row, PDNA_DET_FMT_PLAIN, 8, all[i]);
+      snprintf(row + n, sizeof row - (size_t)n, PDNA_DET_FMT_LA, 255u, 0x1ffu);
+      T(row, PDNA_DETECT_X);
+    }
+    /* eight rows from PDNA_DETECT_Y0, UI_ROW_H apart, must end at or above the footer */
+    chkv("8 detect rows end at UI_FOOTER_Y", PDNA_DETECT_Y0 + 8 * UI_ROW_H, UI_FOOTER_Y);
+  }
+  /* The header-only dialog (hw1 review #2): msg_wait clamps title/l1/l2 through
+   * ui_ptext_fit(28, .., 184), the same (28, 184) every other msg_wait check uses. */
+  PF(PDNA_DET_HDRONLY_TITLE, 28, 184);
+  PF(PDNA_DET_HDRONLY_L1,    28, 184);
+  PF(PDNA_DET_HDRONLY_L2,    28, 184);
+
   printf("\n%d checks, %d FAILED\n", checks, fails);
   return fails ? 1 : 0;
 }
