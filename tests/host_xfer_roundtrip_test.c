@@ -5,7 +5,7 @@
  *      source/gen3_save.c source/gen3_mon.c source/gen3_box.c source/gen3_edit.c \
  *      source/gen3_daycare.c source/data_tables.c source/evolutions.c \
  *      source/gb_edit.c source/gen1_save.c source/gen2_save.c \
- *      source/xfer_rec.c \
+ *      source/xfer_rec.c source/bank_restore.c \
  *      -o /tmp/hxfer
  *   /tmp/hxfer /Users/guyshtainer/VSCodeProjects/gba-toolkit/roms/ (.sav files)
  *
@@ -73,6 +73,7 @@
 #include "gen2_save.h"
 #include "bank_cell.h"
 #include "xfer_rec.h"
+#include "bank_restore.h"
 #include "data_tables.h"   /* pk_national_no */
 
 /* Same convention as host_gen3gb_test.c/host_gbsession_test.c: the Game Boy corpus
@@ -831,6 +832,50 @@ static void test_merge_and_refuse(void) {
         "REFUSE-1: `out` is left untouched (still the sentinel)");
 }
 
+/* ---- BACKLOG #150 S150-8b, D-Q1: bank_restore_from_entry() -- the pure core ---- */
+
+static void test_bank_restore_from_entry(void) {
+  printf("\n-- D3. bank_restore_from_entry (BACKLOG #150 S150-8b, D-Q1) --\n");
+  if (!g_rt1_capture.have) {
+    printf("  SKIP (no Gen-2 record converted cleanly in RT-1 -- corpus absent?)\n");
+    return;
+  }
+
+  uint8_t cell80[80];
+  XrMergeReport rep;
+  int rc = bank_restore_from_entry(&g_rt1_capture.e, g_rt1_capture.g3rec80, 4242u,
+                                   cell80, &rep);
+  CHECK(rc == 1, "bank_restore_from_entry: succeeds on a real NATIVE_HOME entry (rc=%d)", rc);
+  if (rc == 1) {
+    CHECK(bc_is_native(cell80), "bank_restore_from_entry: the rebuilt cell is native");
+    GbEditMon back; BcMeta meta;
+    CHECK(bc_unpack(cell80, &back, &meta), "bank_restore_from_entry: rebuilt cell unpacks");
+    xr_check_roundtrip("bank_restore_from_entry (no abroad edit)", &g_rt1_capture.written, &back);
+    CHECK(meta.bank_serial == 4242u, "bank_restore_from_entry: bank_serial is the caller's fresh serial");
+  }
+
+  /* bank_serial == 0 -- caller's allocation failed -- must refuse without writing. */
+  uint8_t sentinel[80]; memset(sentinel, 0xAA, sizeof sentinel);
+  uint8_t cell_copy[80]; memcpy(cell_copy, sentinel, 80);
+  int rc0 = bank_restore_from_entry(&g_rt1_capture.e, g_rt1_capture.g3rec80, 0, cell_copy, NULL);
+  CHECK(rc0 == -1, "bank_restore_from_entry: bank_serial 0 is refused (rc=%d)", rc0);
+  CHECK(memcmp(cell_copy, sentinel, 80) == 0, "bank_restore_from_entry: out_cell80 untouched on refusal");
+
+  /* kind != XR_KIND_NATIVE_HOME -- the defensive "not this edge's job" path. */
+  GbscEntry g3home_e = g_rt1_capture.e;
+  g3home_e.kind = XR_KIND_G3_HOME;
+  int rcg = bank_restore_from_entry(&g3home_e, g_rt1_capture.g3rec80, 4243u, cell_copy, NULL);
+  CHECK(rcg == 0, "bank_restore_from_entry: a Gen-3-home entry returns 0, not 1 or -1 (rc=%d)", rcg);
+
+  /* REFUSE-1's mirror: original80 not actually native -- bc_is_native's own belt. */
+  if (g_have_g3_sample) {
+    GbscEntry bad_e = g_rt1_capture.e;
+    memcpy(bad_e.original80, g_g3_sample_rec, 80);
+    int rcb = bank_restore_from_entry(&bad_e, g_rt1_capture.g3rec80, 4244u, cell_copy, NULL);
+    CHECK(rcb == -1, "bank_restore_from_entry: a non-native original80 is refused (rc=%d)", rcb);
+  }
+}
+
 /* ============================================================================ */
 
 int main(int argc, char** argv) {
@@ -883,6 +928,7 @@ int main(int argc, char** argv) {
   else printf("  SKIP RT-3 egg (no Gen-3 corpus record on argv to stand in as g3_rec80)\n");
 
   test_merge_and_refuse();
+  test_bank_restore_from_entry();
 
   printf("\n== summary: %d checks, %d fail(s) (fails mean the PIPELINE didn't run --\n"
          "   never that a round trip was lossy; see the tables above for that) ==\n",
