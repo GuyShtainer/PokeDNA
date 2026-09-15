@@ -90,6 +90,19 @@ Checks:
       destination generation as `uint8_t dst_gen = g_ed->s.gen;` (the MOUNTED
       session), never the inverted `? GB_GEN2 : GB_GEN1` form review F1 removed. MUT R
       restores the inverted line and must be caught.
+  (q) merged-tree reviewer: the same non-EXACT LANDED tail must ALSO repaint --
+      `s_oam_reload = true;` AND a `recs = src->records(box)` reassignment -- so a
+      revert that keeps the Bank consume but drops the repaint (leaving the on-screen
+      box stale after a GB_BRIDGE drop) is caught. MUT S drops both lines.
+  (r) merged-tree reviewer, negative form of review F2: the tail must contain NO
+      app_bank_defer_delete(, even alongside a KEPT app_bank_clear_slots( -- the
+      regression is re-adding the defer, not just replacing the immediate consume
+      (that shape is MUT Q). MUT T re-adds the defer call without removing the consume.
+  (s) merged-tree reviewer, MUT L's shape: the tail's app_bank_clear_slots( call must
+      come AFTER the bank_down_dispatch( call in text order. MUT U moves it before.
+  (t) merged-tree reviewer: drop_held derives `arm` via xg_bank_down_arm( exactly
+      ONCE, above the bank_down_dispatch( call -- the union's original bug class was a
+      second derivation in the tail. MUT V adds a second derivation after dispatch.
 """
 from __future__ import annotations
 
@@ -388,6 +401,84 @@ def landed_tail_block(dh_body: list[str]) -> list[str]:
 DST_GEN_LINE_RE = re.compile(r"uint8_t\s+dst_gen\s*=\s*g_ed->s\.gen\s*;")
 INVERTED_GEN_RE = re.compile(r"\?\s*GB_GEN2\s*:\s*GB_GEN1")
 
+# ---- (q)/(r) merged-tree reviewer: the non-EXACT LANDED tail must both repaint (q)
+# and never re-admit a deferred delete even alongside a kept consume (r). Shared with
+# MUT S / MUT T. -----------------------------------------------------------------
+OAM_RELOAD_RE    = re.compile(r"s_oam_reload\s*=\s*true\s*;")
+RECS_REASSIGN_RE = re.compile(r"recs\s*=\s*src->records\(box\)")
+
+
+def landed_tail_repaints(tail: list[str]) -> tuple[bool, str]:
+    """(q) merged-tree reviewer: the non-EXACT LANDED tail must repaint from the image
+    after its Bank consume -- BOTH `s_oam_reload = true;` and a `recs =
+    src->records(box)` reassignment. A revert that keeps the consume
+    (app_bank_clear_slots() still present) but drops the repaint would leave the
+    on-screen box stale after a GB_BRIDGE drop actually landed."""
+    if not any(OAM_RELOAD_RE.search(ln) for ln in tail):
+        return False, ("drop_held LANDED tail (non-EXACT): no `s_oam_reload = true;` "
+                        "-- the on-screen box would go stale after a GB_BRIDGE drop")
+    if not any(RECS_REASSIGN_RE.search(ln) for ln in tail):
+        return False, ("drop_held LANDED tail (non-EXACT): no `recs = src->records(box)` "
+                        "reassignment -- the caller keeps the pre-drop record image")
+    return True, "ok"
+
+
+def landed_tail_no_defer(tail: list[str]) -> tuple[bool, str]:
+    """(r) merged-tree reviewer, negative form of review F2: the non-EXACT LANDED tail
+    must contain NO app_bank_defer_delete( call, even if app_bank_clear_slots( is ALSO
+    present -- a Game Boy session never runs the Gen-3 exit-save flush a deferred
+    delete waits for, so re-ADDING a defer call alongside the immediate consume (not
+    just replacing it) is just as wrong."""
+    if any(DEFER_DELETE_RE.search(ln) for ln in tail):
+        return False, ("drop_held LANDED tail (non-EXACT): contains "
+                        "app_bank_defer_delete( -- a Game Boy session never runs the "
+                        "Gen-3 exit-save flush a deferred delete waits for")
+    return True, "ok"
+
+
+# ---- (s)/(t) merged-tree reviewer: the LANDED tail's consume must come AFTER the
+# dispatch call (s, MUT L's shape), and `arm` must be derived exactly ONCE, above that
+# call (t). Both operate on drop_held's WHOLE body, not just the tail slice. Shared
+# with MUT U / MUT V. ---------------------------------------------------------------
+DISPATCH_CALL_RE = re.compile(r"\bbank_down_dispatch\(")
+ARM_DERIVE_RE     = re.compile(r"\bxg_bank_down_arm\(")
+
+
+def landed_consume_after_dispatch(dh_body: list[str]) -> tuple[bool, str]:
+    """(s) merged-tree reviewer, MUT L's shape: drop_held's app_bank_clear_slots( call
+    (the LANDED tail's Bank consume) must come AFTER the bank_down_dispatch( call in
+    text order -- the same persist-before-consume ordering review F2 pinned for
+    bank_down_exact, now pinned for drop_held's own caller-side consume too."""
+    disp_i = first_match_line(dh_body, 0, len(dh_body), DISPATCH_CALL_RE)
+    clear_i = first_match_line(dh_body, 0, len(dh_body), CLEAR_SLOTS_RE)
+    if disp_i is None:
+        return False, "drop_held: no bank_down_dispatch( call found"
+    if clear_i is None:
+        return False, "drop_held: no app_bank_clear_slots( call found"
+    if not disp_i < clear_i:
+        return False, (f"drop_held: app_bank_clear_slots( (line {clear_i + 1}) does not "
+                        f"come AFTER bank_down_dispatch( (line {disp_i + 1}) -- the Bank "
+                        f"slot would be consumed before the dispatch even runs")
+    return True, "ok"
+
+
+def arm_derived_once_above_dispatch(dh_body: list[str]) -> tuple[bool, str]:
+    """(t) merged-tree reviewer: drop_held derives `arm` via xg_bank_down_arm( exactly
+    ONCE, above the bank_down_dispatch( call -- the union's original bug class was a
+    second derivation inside the tail, which could disagree with the first if state
+    changed in between."""
+    arm_idx = [i for i, ln in enumerate(dh_body) if ARM_DERIVE_RE.search(ln)]
+    disp_i = first_match_line(dh_body, 0, len(dh_body), DISPATCH_CALL_RE)
+    if disp_i is None:
+        return False, "drop_held: no bank_down_dispatch( call found"
+    if len(arm_idx) != 1:
+        return False, (f"drop_held: expected exactly 1 xg_bank_down_arm( call, "
+                        f"found {len(arm_idx)}")
+    if not arm_idx[0] < disp_i:
+        return False, (f"drop_held: xg_bank_down_arm( (line {arm_idx[0] + 1}) does not "
+                        f"come ABOVE bank_down_dispatch( (line {disp_i + 1})")
+    return True, "ok"
+
 
 def main() -> int:
     box_lines = strip_comments(BOX_C.read_text()).splitlines()
@@ -638,6 +729,26 @@ def main() -> int:
           "drop_held LANDED tail (non-EXACT): contains app_bank_defer_delete( -- a "
           "Game Boy session never runs the Gen-3 exit-save flush a deferred delete "
           "waits for (merged-tree review F2)")
+
+    # ---- (q) merged-tree reviewer: the same tail must ALSO repaint (s_oam_reload +
+    # recs reassignment) -- a revert that keeps the consume but drops the repaint. ----
+    ok, msg = landed_tail_repaints(landed_tail)
+    check(ok, msg)
+
+    # ---- (r) merged-tree reviewer, negative form of F2: no app_bank_defer_delete( in
+    # the tail, even alongside a kept app_bank_clear_slots(. ----
+    ok, msg = landed_tail_no_defer(landed_tail)
+    check(ok, msg)
+
+    # ---- (s) merged-tree reviewer, MUT L's shape: the tail's consume comes AFTER the
+    # bank_down_dispatch( call in text order. ----
+    ok, msg = landed_consume_after_dispatch(dh_body_full)
+    check(ok, msg)
+
+    # ---- (t) merged-tree reviewer: `arm` is derived exactly ONCE, above the
+    # bank_down_dispatch( call. ----
+    ok, msg = arm_derived_once_above_dispatch(dh_body_full)
+    check(ok, msg)
 
     # ---- (p) merged-tree review F4/F1: gb_bank_down_bridge's destination generation is
     # the MOUNTED session's own generation, never the inverted `? GB_GEN2 : GB_GEN1`
@@ -945,6 +1056,67 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str]) -
                        "been caught but was not")
         print("  MUT R demonstration -- gb_bank_down_bridge's dst_gen line reverted to "
               "the inverted `? GB_GEN2 : GB_GEN1` form: correctly caught")
+
+    # MUT S (merged-tree reviewer): drop the non-EXACT LANDED tail's repaint lines
+    # (s_oam_reload = true; and the recs = src->records(box) reassignment) on a copy,
+    # keeping the Bank consume -- a revert that keeps the consume but drops the
+    # repaint would leave the on-screen box stale after a GB_BRIDGE drop.
+    s, e = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
+    dh_body = box_lines[s:e]
+    tail = landed_tail_block(dh_body)
+    ok, _ = landed_tail_repaints(tail)
+    check(ok, "MUT S: the real drop_held LANDED tail does not currently repaint -- fix this test")
+    mut_s = [ln for ln in tail if not OAM_RELOAD_RE.search(ln) and not RECS_REASSIGN_RE.search(ln)]
+    ok2, detail = landed_tail_repaints(mut_s)
+    check(not ok2, f"MUT S (repaint lines dropped from the LANDED tail) should have "
+                    f"been caught but was not: {detail}")
+    print(f"  MUT S demonstration -- s_oam_reload/recs reassignment dropped from "
+          f"drop_held's non-EXACT LANDED tail: {detail}")
+
+    # MUT T (merged-tree reviewer): re-ADD app_bank_defer_delete( into the tail on a
+    # copy WITHOUT removing app_bank_clear_slots( -- the regression is re-adding the
+    # defer, not just replacing the immediate consume (that shape is MUT Q).
+    mut_t = list(tail) + ["        app_bank_defer_delete(s_orig_box, s_orig_slot);"]
+    ok3, detail = landed_tail_no_defer(mut_t)
+    check(not ok3, f"MUT T (app_bank_defer_delete( re-added alongside a kept "
+                    f"app_bank_clear_slots() should have been caught but was not: {detail}")
+    print(f"  MUT T demonstration -- app_bank_defer_delete( re-added alongside a kept "
+          f"app_bank_clear_slots( in the LANDED tail: {detail}")
+
+    # MUT U (merged-tree reviewer, MUT L's shape): move drop_held's
+    # app_bank_clear_slots( call line to BEFORE its bank_down_dispatch( call on a
+    # copy -- the Bank slot would be consumed before the dispatch that decides whether
+    # the drop even lands.
+    disp_i = first_match_line(dh_body, 0, len(dh_body), DISPATCH_CALL_RE)
+    clear_i = first_match_line(dh_body, 0, len(dh_body), CLEAR_SLOTS_RE)
+    check(disp_i is not None and clear_i is not None and disp_i < clear_i,
+          "MUT U: could not locate bank_down_dispatch( before app_bank_clear_slots( "
+          "in the real source -- fix this test")
+    if disp_i is not None and clear_i is not None and disp_i < clear_i:
+        mut_u = list(dh_body)
+        clear_line = mut_u.pop(clear_i)
+        mut_u.insert(disp_i, clear_line)   # the Bank consume's line now sits BEFORE the dispatch call
+        ok4, detail = landed_consume_after_dispatch(mut_u)
+        check(not ok4, f"MUT U (app_bank_clear_slots( moved before bank_down_dispatch() "
+                        f"should have been caught but was not: {detail}")
+        print(f"  MUT U demonstration -- app_bank_clear_slots( line moved above "
+              f"bank_down_dispatch(: {detail}")
+
+    # MUT V (merged-tree reviewer): duplicate drop_held's `arm = xg_bank_down_arm(...)`
+    # derivation into a second site just after the bank_down_dispatch( call, on a
+    # copy -- the union's original bug class was a second derivation in the tail,
+    # which could disagree with the first if state changed in between.
+    arm_idx = [i for i, ln in enumerate(dh_body) if ARM_DERIVE_RE.search(ln)]
+    check(len(arm_idx) == 1, f"MUT V: expected exactly 1 real xg_bank_down_arm( call to "
+                              f"duplicate, found {len(arm_idx)} -- fix this test")
+    if len(arm_idx) == 1 and disp_i is not None:
+        mut_v = list(dh_body)
+        mut_v.insert(disp_i + 1, mut_v[arm_idx[0]])   # a second derivation, now AFTER dispatch too
+        ok5, detail = arm_derived_once_above_dispatch(mut_v)
+        check(not ok5, f"MUT V (a second xg_bank_down_arm( derivation added after "
+                        f"dispatch) should have been caught but was not: {detail}")
+        print(f"  MUT V demonstration -- a second xg_bank_down_arm( derivation added "
+              f"after bank_down_dispatch(: {detail}")
 
 # ---- (m) 2026-09-16 (merged-tree shot lane): the DOWN dispatch's `occupied` refusal is scoped to
 # the GEN3 arm. An unscoped `&& !occupied` on the dispatch condition made the EXACT arm refuse
