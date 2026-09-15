@@ -1356,4 +1356,4 @@ gated gb_art_fetch_icon.constprop.0 need=6144 from=gb_art_source.h:PDNA_GB_ICON_
 # by reading it before relying on it, not assumed. via= is pcp_open_party_strip_
 # inner's ONLY caller in this build (objdump-derived, both ELFs): a `bl` from
 # pcp_open_party_strip itself, no other call site anywhere in the disassembly.
-gated pcp_open_party_strip_inner need=7184 from=pdna_box.c:PDNA_PARTY_STRIP_NEED gate=pcp_open_party_strip via=pcp_open_party_strip
+gated pcp_open_party_strip_inner need=7192 from=pdna_box.c:PDNA_PARTY_STRIP_NEED gate=pcp_open_party_strip via=pcp_open_party_strip

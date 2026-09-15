@@ -2994,7 +2994,7 @@ out:
  *   python3 tools/stack_budget.py --elf PokeDNA.elf \
  *       --builddir "$(pwd)/build" --root pcp_open_party_strip_inner --top 3
  *
- * 7,120 B on the artless ELF, 7,104 B on the normal ELF -- the WORSE (artless) of
+ * 7,128 B on the artless ELF, 7,112 B on the normal ELF (re-measured after merging into 48b5eaa: b54's app_mon_menu frame grew 888 -> 896) -- the WORSE (artless) of
  * the two is taken, +64 B for the ISR reentry onto the same stack (libtonc's
  * isr_master runs handlers on __sp_usr too) = 7,184. (The old paste/commit chain
  * is still reachable from this root and still real -- gb_daycare_hook's chain is
@@ -3013,7 +3013,7 @@ out:
  * (hardware-testing-protocol; the emulator cannot prove a stack-overflow refusal is
  * correct on real silicon, only that the code path the refusal message takes is
  * reachable and renders). */
-#define PDNA_PARTY_STRIP_NEED 7184   /* re-derived 2026-09-15 (BACKLOG #93): 7,120 + 64 ISR
+#define PDNA_PARTY_STRIP_NEED 7192   /* re-derived 2026-09-15 (BACKLOG #93): 7,128 + 64 ISR
                                       * (was 6,616 = 6,552 + 64 from #102); new #1 chain is
                                       * gb_daycare_hook's (DUPLICATE/TO DAY-CARE/EXPORT rows
                                       * on the read-only GB mon menu, reachable through
