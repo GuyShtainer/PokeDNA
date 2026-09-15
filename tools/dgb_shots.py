@@ -4376,6 +4376,81 @@ def run_s150_7_down_edge(core_mod, image_mod, rom_gold: Path, rom_red: Path,
     return sg
 
 
+def run_b142_tab_focus_arrival(core_mod, image_mod, rom_after: Path, rom_before: Path,
+                                out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #142: a directional arrival into an is_bank grid used to focus tab 2
+    (SAVE) instead of the grid's top-left cell. The one live site: pdna_box.c's
+    entry-time "cursor-arrival hint" -- `else if (st == 1 && !s_holding)
+    s_tab_focus = src->is_bank ? 2 : 1;` (before this lane's fix). `st == 1` is set
+    by app_box_start_set(1), both of whose call sites are captioned "bank dropped
+    off the bottom -> PC opens/tabs" (pdna_main.c:10006, pdna_gen12.c:4371) -- i.e.
+    this branch only ever runs for the destination screen of a Bank hand-off, never
+    for the real Bank itself. `src->is_bank` is true here ONLY for a Game Boy
+    session's own box (pdna_gen12_source() -- the real PC's is_bank is false, so it
+    always took the ": 1" PARTY-tab arm, unaffected by this lane). A GB grid's tab 1
+    is the INERT "(BANK)" label (pdna_box.c's own draw_tab call), so the ternary's
+    "? 2" arm parked the cursor on SAVE -- one A there calls boxoam_exit() and
+    return 0, ending the whole Game Boy session (pdna_box.c ~3927, "SAVE -> exit
+    (save prompt)").
+
+    Gesture, verified live against these exact fused images (both
+    `tools/fuse_gb.py <pokedna-delta-artless.gba> Gold.gbc Gold.sav`, ONE built
+    from this lane's own fixed source, ONE from a scratch pre-fix build of the
+    same commit the lane branched from -- same idiom as run_s150_7_down_edge's
+    two-image A/B, just before/after code instead of two save files):
+      grid entry: boot_to_gb_session(..., which="gold") -- single-ROM fusion, no
+        picker, lands on Gold's own box grid, slot 0 = No.1 BULBASAUR (the same
+        corpus run_s150_4_uplift already shot).
+      grid -> the GB session's own linked Bank: UP x3 (cell -> title -> tabs ->
+        the bank_edge hop) -- `from_hop` sets app_box_start_set(2), so the linked
+        Bank opens on its OWN bottom row already (pdna_gen12.c:4368, mirrors
+        run_s150_7_down_edge's own "Bank opens on the bottom row" finding).
+      Bank -> back onto the GB grid: DOWN x1 -- already on the bottom row, so this
+        one press is "off the bank bottom -> PC tabs" (pdna_box.c:4021), returning
+        5; gb_bank_visit() turns that into app_box_start_set(1) (pdna_gen12.c:4371)
+        and re-enters the GB source's own pdna_box() -- the exact `st == 1` arrival
+        this lane's fix touches.
+    """
+    print("== BACKLOG #142: is_bank grid tab-focus arrival ==")
+    UP_INTO_BANK = 3     # cell -> title -> tabs -> the bank_edge hop
+    DOWN_OFF_BANK = 1    # the linked Bank opens on its own bottom row already
+
+    def arrive(s: gb_shots.Session, rom: Path) -> None:
+        boot_to_gb_session(s, rom, which="gold")
+        s.press_n("UP", UP_INTO_BANK, settle=100)
+        s.press_n("DOWN", DOWN_OFF_BANK, settle=150)
+
+    # ---- BEFORE: the merged main's arrival lands on SAVE -----------------------
+    sb = gb_shots.Session(core_mod, image_mod, rom_before, out_dir, "b142_before_")
+    arrive(sb, rom_before)
+    sb.shot("00_before_arrival", "BACKLOG #142 (before the fix): back on Gold's own "
+            "box grid after the Bank dropped off its bottom -- the top-right tab "
+            "reads SAVE, highlighted, not the grid")
+    sb.tap("A", settle=200)
+    sb.shot("01_before_stray_a", "BACKLOG #142 (before the fix): one A on that "
+            "arrival hit the SAVE tab -- boxoam_exit() ran and the box grid is gone; "
+            "this save's own save-exit flow now shows its 'NOT TRANSFERABLE' report "
+            "(items held on mons this generation can't take along), exactly the "
+            "unintended save-and-exit the reported defect describes, not a deliberate "
+            "SAVE press")
+
+    # ---- AFTER: the fix lands on the top-left cell instead ---------------------
+    sa = gb_shots.Session(core_mod, image_mod, rom_after, out_dir, "b142_after_")
+    arrive(sa, rom_after)
+    sa.shot("02_after_arrival", "BACKLOG #142 (after the fix): the same arrival -- "
+            "s_tab_focus stays -1 (unset by this branch now), cur stays 0 -- the "
+            "hand cursor sits on the grid's top-left cell, no tab highlighted")
+    sa.tap("A", settle=200)
+    sa.shot("03_after_safe_a", "BACKLOG #142 (after the fix): the same stray A now "
+            "opens the ordinary cell-0 action menu instead of ending the session -- "
+            "the tabs are still reachable, just by pressing UP first, same as any "
+            "other grid visit")
+
+    sb.taken += sa.taken
+    sb.skipped += sa.skipped
+    return sb
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -4617,6 +4692,18 @@ def main(argv=None) -> int:
     ap.add_argument("--s150-7-red", type=Path,
                      help="#150 S150-7: the Gen-1 (Red) fused image --s150-7 also needs "
                           "-- see --s150-7's own help.")
+    ap.add_argument("--b142", action="store_true",
+                     help="BACKLOG #142: only run_b142_tab_focus_arrival() -- the "
+                          "is_bank grid's directional-arrival tab focus. Needs TWO "
+                          "images, both `tools/fuse_gb.py <pokedna-delta-artless.gba> "
+                          "Gold.gbc Gold.sav`: --image is built from THIS lane's fixed "
+                          "source, --b142-before from a scratch pre-fix build of the "
+                          "commit this lane branched from (same before/after idiom as "
+                          "the two rebuilt images, just source-level instead of a "
+                          "second ROM/save).")
+    ap.add_argument("--b142-before", type=Path,
+                     help="#142: the pre-fix fused image --b142 also needs -- see "
+                          "--b142's own help.")
     ap.add_argument("--b54-romhack", choices=("hack", "control"),
                      help="BACKLOG #54: only run_b54_romhack() against --image for the "
                           "named case -- the ROM-hack banner + the mon-menu refusal it "
@@ -5240,6 +5327,24 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] s150-7: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if getattr(a, "b142", False):
+        # BACKLOG #142: append-only, same two-image convention as --s150-7 above.
+        ran = True
+        if not a.b142_before:
+            sys.exit("--b142 also needs --b142-before (see --b142's own --help)")
+        try:
+            sess = run_b142_tab_focus_arrival(core_mod, image_mod, a.image,
+                                               a.b142_before, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b142: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
