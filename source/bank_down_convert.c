@@ -31,7 +31,7 @@ Gb12Result bdc_convert_gen3_core(const uint8_t cell80[BC_CELL_BYTES], uint8_t me
 
   if (g2_item != 0) {
     if (travels) {
-      if (g3_item) *g3_item = mapped;
+      if (g3_item) *g3_item = mapped; notes->item_g2 = g2_item;   /* travels: name it on the loss row */
     } else {
       notes->item_dropped = true;
       notes->item_g2 = g2_item;

@@ -119,6 +119,11 @@ static void test_item_edge(void) {
   CHECK(r == GB12_OK, "Light Ball Pikachu converts (got %s)", gen12_reason_text(r));
   CHECK(!notes.item_dropped, "Light Ball travels: no item_dropped note");
   CHECK(g3item != 0, "Light Ball travels: g3_item is non-zero (got %u)", g3item);
+  /* F1 (review): a TRAVELLING item must also name itself in notes.item_g2 -- the
+   * "Item: <name> travels" loss row (gb_down_loss_screen) keys off this field, not
+   * off item_dropped, so a bug that only set item_g2 in the dropped branch left the
+   * travelling row silently blank. */
+  CHECK(notes.item_g2 == 0x1D, "Light Ball travels: item_g2 names it too (got 0x%02X)", notes.item_g2);
 
   /* Mail (0xB5..0xBD): no Gen-3 counterpart -> item_g2_to_g3 returns 0 -> dropped,
    * named, but the item still readable back out of the ORIGINAL cell (S11.20 item 11:
