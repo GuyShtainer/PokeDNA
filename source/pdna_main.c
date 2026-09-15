@@ -1184,7 +1184,7 @@ static PkGame pkgame_of_romkind(RomKind k) {
        : (k == ROM_FIRERED || k == ROM_LEAFGREEN) ? PK_FRLG : PK_EMERALD;
 }
 
-bool app_rom_is_hack(PkGame g) { return (s_hack_mask & (1u << (unsigned)g)) != 0; }
+static bool app_rom_is_hack(PkGame g) { return (s_hack_mask & (1u << (unsigned)g)) != 0; }
 
 static const char* romident_name(RomIdent id) {
   switch (id) {
@@ -1233,12 +1233,22 @@ static bool     g_item_held = false;
 
 /* ===================== edit / commit (V4) =============================== */
 
+/* BACKLOG #54 T1: a ROM hack registered for g_game's slot also parks editing, even
+ * though the save itself may parse as perfectly retail -- the ROM is the only signal
+ * that can raise this (decision 4), and app_can_edit() is the single chokepoint
+ * `pdna_romcheck_bad()` already fans out to 84 call sites from, so this one line
+ * covers every one of them, including the mon-menu edit gate this lane never touches
+ * directly. Named consequence (see this lane's report): this also parks the SD-side
+ * art/cache writes that consult app_can_edit() (gb_art_source.c:64,
+ * pdna_gbscreen.c:517) -- accepted, those are caches, never the save itself. */
 #ifdef PDNA_DELTA
 /* Emulator build: there is no flashcart to gate on — the save is our own flash chip,
  * which is always writable. */
-bool app_can_edit(void) { return !pdna_romcheck_bad(); }
+bool app_can_edit(void) { return !pdna_romcheck_bad() && !app_rom_is_hack(g_game); }
 #else
-bool app_can_edit(void) { return active_flashcart == EZ_FLASH_OMEGA && !pdna_romcheck_bad(); }
+bool app_can_edit(void) {
+  return active_flashcart == EZ_FLASH_OMEGA && !pdna_romcheck_bad() && !app_rom_is_hack(g_game);
+}
 #endif
 
 /* Flush the RAM log to SD now — for anomaly sites (wallpaper/icon self-verify) whose
