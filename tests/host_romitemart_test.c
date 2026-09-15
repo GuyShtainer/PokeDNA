@@ -73,6 +73,16 @@ typedef struct {
   uint32_t n;
   long calls;
   int  flaky;
+  /* BACKLOG #139: the same call-ordinal single-byte-flip mock
+   * host_romsprite_test.c uses (hit_call/hit_pos) -- keyed on nothing but
+   * WHICH physical read() call this is, never on len or address. Fires
+   * exactly once (hit_call == 0 disarms it). This is a DIFFERENT, narrower
+   * attack than `flaky` above (which corrupts a byte on EVERY call): it
+   * models one single transient bad read, the shape review-opus's attack
+   * list demands, and is what proves decode_verified's hash-compare itself
+   * (not the LZ77 stream's own structural checks) is load-bearing. */
+  long     hit_call;
+  uint32_t hit_pos;
 } MemCtx;
 
 static bool mem_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
@@ -82,6 +92,10 @@ static bool mem_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
   m->calls++;
   if (m->flaky && len)
     ((uint8_t*)dst)[len - 1] ^= (uint8_t)(m->calls * 37u + 1u);
+  if (m->hit_call && m->calls == m->hit_call && m->hit_pos < len) {
+    ((uint8_t*)dst)[m->hit_pos] ^= 0xFF;
+    m->hit_call = 0;      /* fires exactly once */
+  }
   return true;
 }
 
@@ -768,6 +782,127 @@ static void verify_tests(const char* dir) {
   free(rom);
 }
 
+/* BACKLOG #139: mirror host_romsprite_test.c's hit_call/hit_pos mock for
+ * rom_itemart.c's decode_verified -- proves its hash-compare is load-bearing
+ * on its own (not the LZ77 stream's own structural checks, and not the
+ * `flaky`-reader control above, which corrupts every call rather than
+ * exactly one). One item icon load (Emerald, item id 1) exercises BOTH
+ * decode_verified call sites rom_item_icon() makes -- the icon's own pic
+ * blob AND its palette blob -- so "one item icon + one palette" both come
+ * out of the SAME rom_item_icon() call, corrupted at different call
+ * ordinals.
+ *
+ * Call ordinals traced empirically with a debug read-counter tracer against
+ * Emerald.gba, item id 1, verification ON: call 1-2 = the item table entry
+ * (read + verify re-read), call 3 = the icon LZ10 header, calls 4-7 = the
+ * icon's compressed body (4 x 64 B stack-window chunks -- cap == want here,
+ * so decode_verified has no spare tail to borrow as a window and falls back
+ * to the 64 B stack buffer, unlike rom_chrome's card/bag fetches), calls
+ * 8-11 = the verify re-read of the consumed span (also chunked), call 12 =
+ * the palette's own LZ10 header, call 13 = the palette's one compressed-body
+ * chunk, call 14 = the palette's verify re-read. With verification off the
+ * same load costs calls 1 (table, no re-read) + 2 (icon header) + 3-6 (icon
+ * body) + 7 (palette header) + 8 (palette body) = 8 calls, no re-reads at
+ * all. Byte position 1 (not 0) is used throughout for the same reason
+ * host_romsprite_test.c and host_romchrome_test.c use it: byte 0 of an LZ77
+ * body chunk is often a flags byte, and flipping it can turn a literal into
+ * a back-reference and trip decode_verified's OWN "reference before the
+ * start" fail-closed guard (n != want, an immediate hard failure with no
+ * retry) instead of landing on the hash-compare this test targets; byte 1
+ * always lands inside a literal/length byte for this blob. The palette's
+ * verify-off control (byte position 4) was picked the same empirical way --
+ * position 1 there happens to fall in a byte the decode never re-touches for
+ * THIS blob's contents, which would make the control pass for the wrong
+ * reason (an unaffected byte, not a caught-vs-uncaught corruption). */
+static void test_ordinal_corruption(const char* dir) {
+  char path[512];
+  snprintf(path, sizeof path, "%s/Emerald.gba", dir);
+  uint32_t n = 0;
+  uint8_t* rom = slurp(path, &n);
+  if (!rom) { printf("SKIP ordinal corruption (no %s)\n", path); return; }
+
+  RomCtx rc; RomItemArt ra;
+  MemCtx mc = { rom, n, 0, 0, 0, 0 };
+  if (!rom_open(&rc, mem_read, &mc, n) || !rom_itemart_open(&ra, &rc)) {
+    chk("ordinal", "Emerald opens for the ordinal-corruption test", 0);
+    free(rom); return;
+  }
+
+  static uint16_t clean[ROM_ITEM_ICON_PX], dirty[ROM_ITEM_ICON_PX];
+  mc.hit_call = 0;
+  int okc = rom_item_icon(&ra, 1, clean, ROM_ITEM_ICON_PX);
+  chk("ordinal", "clean item-icon baseline for the corruption cases succeeds", okc);
+
+  /* (a) the icon's OWN decode-phase read (call 4). A retry must recover the
+   * exact clean pixels. */
+  mc.calls = 0; mc.hit_call = 4; mc.hit_pos = 1;
+  int ok_dec = rom_item_icon(&ra, 1, dirty, ROM_ITEM_ICON_PX);
+  chk("ordinal", "an icon decode-phase read corruption still yields the clean pixels "
+      "(a retry recovers)", okc && ok_dec && memcmp(dirty, clean, sizeof clean) == 0);
+  chk("ordinal", "an icon decode-phase read corruption cost more than one attempt",
+      mc.calls > 11);
+  mc.hit_call = 0;
+
+  /* (b) the icon's verify RE-READ only (call 8); the decode's own input hash
+   * is correct, only the confirmation read sees garbage -- must not be
+   * silently accepted. */
+  memset(dirty, 0, sizeof dirty);
+  mc.calls = 0; mc.hit_call = 8; mc.hit_pos = 1;
+  int ok_rr = rom_item_icon(&ra, 1, dirty, ROM_ITEM_ICON_PX);
+  chk("ordinal", "an icon re-read-phase corruption is not silently accepted "
+      "(a retry happened)", mc.calls > 11);
+  chk("ordinal", "an icon re-read-phase corruption still yields the clean pixels "
+      "after the retry", okc && ok_rr && memcmp(dirty, clean, sizeof clean) == 0);
+  mc.hit_call = 0;
+
+  /* (c) same decode-phase point (call 4), verification OFF: with no re-read
+   * to catch it, the corrupted icon must sail through UNFIXED -- proving it
+   * is verification, not luck, doing the catching above. */
+  rom_itemart_set_verify(&ra, 0);
+  memset(dirty, 0, sizeof dirty);
+  mc.calls = 0; mc.hit_call = 4; mc.hit_pos = 1;
+  int ok_nv = rom_item_icon(&ra, 1, dirty, ROM_ITEM_ICON_PX);
+  chk("ordinal", "with verification OFF the same icon decode-phase corruption sails "
+      "through unfixed (so it is verification doing the catching)",
+      okc && ok_nv && memcmp(dirty, clean, sizeof clean) != 0);
+  mc.hit_call = 0;
+  rom_itemart_set_verify(&ra, 1);
+
+  /* (d) the PALETTE's own decode-phase read (call 13). */
+  memset(dirty, 0, sizeof dirty);
+  mc.calls = 0; mc.hit_call = 13; mc.hit_pos = 1;
+  int ok_pal = rom_item_icon(&ra, 1, dirty, ROM_ITEM_ICON_PX);
+  chk("ordinal", "a palette decode-phase read corruption still yields the clean pixels "
+      "(a retry recovers)", okc && ok_pal && memcmp(dirty, clean, sizeof clean) == 0);
+  chk("ordinal", "a palette decode-phase read corruption cost more than one attempt",
+      mc.calls > 14);
+  mc.hit_call = 0;
+
+  /* (e) the PALETTE's verify RE-READ only (call 14). */
+  memset(dirty, 0, sizeof dirty);
+  mc.calls = 0; mc.hit_call = 14; mc.hit_pos = 1;
+  int ok_palrr = rom_item_icon(&ra, 1, dirty, ROM_ITEM_ICON_PX);
+  chk("ordinal", "a palette re-read-phase corruption is not silently accepted "
+      "(a retry happened)", mc.calls > 14);
+  chk("ordinal", "a palette re-read-phase corruption still yields the clean pixels "
+      "after the retry", okc && ok_palrr && memcmp(dirty, clean, sizeof clean) == 0);
+  mc.hit_call = 0;
+
+  /* (f) the PALETTE's decode-phase point (call 8 of the verify-OFF call
+   * shape), verification OFF: sails through unfixed. */
+  rom_itemart_set_verify(&ra, 0);
+  memset(dirty, 0, sizeof dirty);
+  mc.calls = 0; mc.hit_call = 8; mc.hit_pos = 4;
+  int ok_palnv = rom_item_icon(&ra, 1, dirty, ROM_ITEM_ICON_PX);
+  chk("ordinal", "with verification OFF the same palette decode-phase corruption sails "
+      "through unfixed (so it is verification doing the catching)",
+      okc && ok_palnv && memcmp(dirty, clean, sizeof clean) != 0);
+  mc.hit_call = 0;
+  rom_itemart_set_verify(&ra, 1);
+
+  free(rom);
+}
+
 int main(int argc, char** argv) {
   const char* dir = "/Users/guyshtainer/VSCodeProjects/gba-toolkit/roms";
   /* run_host_tests.py hands every argv[1]-reading test the .sav corpus -- this test
@@ -786,6 +921,7 @@ int main(int argc, char** argv) {
 
   bounds_tests(dir);
   verify_tests(dir);
+  test_ordinal_corruption(dir);   /* BACKLOG #139 */
 
   printf("rom_itemart test: %d checks, %d failure(s)\n", checks, fails);
     /* BACKLOG #145 anti-regression: this file cannot include pdna_main.c (GBA/tonc
