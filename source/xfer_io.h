@@ -10,13 +10,22 @@
  * include ff.h/savefile.h/log.h; never tonc.h/sys.h (source/xfer_rec.h is the pure
  * half). */
 
+/* review F3: true once "/PokeDNA/xfer/MIGRATED" exists -- the migration has
+ * actually completed, so /PokeDNA/xfer is now THE ledger and every sidecar source
+ * is an inert backup. xr_path_for_key/xr_path_for_name's sidecar fallback (and
+ * gb_reconcile_on_load's pass 2, source/pdna_main.c) are both gated on this being
+ * false. */
+bool xr_migrated(void);
+
 /* Decision 4/D-Q7 -- ONE path per key, for reads AND in-place writes of an EXISTING
- * key: the /PokeDNA/xfer path, unless that file is absent AND the /PokeDNA/sidecar
- * one exists, in which case the sidecar path. Writes out[GBSC_PATH_MAX] either way.
- * Returns true iff a file exists at the path it wrote; when neither exists it still
- * writes the xfer path (where a brand-new file belongs, decision 4/D-Q7) and returns
- * false. False (with `out` untouched) only on a bad argument or a path that would
- * not fit GBSC_PATH_MAX. */
+ * key: the /PokeDNA/xfer path, unless that file is absent AND the migration has
+ * NOT completed (xr_migrated() false) AND the /PokeDNA/sidecar one exists, in
+ * which case the sidecar path (review F3: post-migration the sidecar fallback is
+ * gated off -- see xr_migrated()'s own comment). Writes out[GBSC_PATH_MAX] either
+ * way. Returns true iff a file exists at the path it wrote; when neither exists
+ * (or migration already ran) it still writes the xfer path (where a brand-new
+ * file belongs, decision 4/D-Q7) and returns false. False (with `out` untouched)
+ * only on a bad argument or a path that would not fit GBSC_PATH_MAX. */
 bool xr_path_for_key(char out[GBSC_PATH_MAX], uint64_t key);
 
 /* Same rule, applied to an on-card FILENAME (e.g. "0019A3F17C0B44E2.pds") instead of

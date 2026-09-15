@@ -23,9 +23,27 @@ static int join_path(char* out, int cap, const char* dir, const char* name) {
   return p;
 }
 
+/* BACKLOG #150 S150-6 review F3: the sidecar fallback is gated on the MIGRATED
+ * marker. Once a migration has actually completed, /PokeDNA/xfer IS the ledger and
+ * every sidecar source is an inert backup -- preferring a sidecar file over an
+ * ABSENT xfer file at that point would resurrect a record a claim/KEEP/re-key
+ * write already updated only in xfer (the sidecar copy is frozen at whatever it
+ * held at migration time). The fallback exists ONLY for the case decision 4/D-Q7
+ * was written for: migration never ran at all (read-only cart, EverDrive, or a
+ * failed pass), so xfer might not even hold a copy of a record that is still
+ * genuinely live in sidecar. */
+static bool marker_present(void) {
+  char marker[GBSC_PATH_MAX] = {0};
+  if (join_path(marker, GBSC_PATH_MAX, PDNA_XFER_DIR, "MIGRATED") < 0) return false;
+  FILINFO fi;
+  return f_stat(marker, &fi) == FR_OK;
+}
+
+bool xr_migrated(void) { return marker_present(); }
+
 bool xr_path_for_key(char out[GBSC_PATH_MAX], uint64_t key) {
   if (!out) return false;
-  char xpath[GBSC_PATH_MAX];
+  char xpath[GBSC_PATH_MAX] = {0};
   if (gbsc_path(xpath, GBSC_PATH_MAX, PDNA_XFER_DIR, key) < 0) return false;
 
   FILINFO fi;
@@ -34,21 +52,24 @@ bool xr_path_for_key(char out[GBSC_PATH_MAX], uint64_t key) {
     return true;
   }
 
-  char spath[GBSC_PATH_MAX];
-  if (gbsc_path(spath, GBSC_PATH_MAX, PDNA_SIDECAR_DIR, key) >= 0 &&
-      f_stat(spath, &fi) == FR_OK) {
-    memcpy(out, spath, GBSC_PATH_MAX);
-    return true;
+  if (!marker_present()) {
+    char spath[GBSC_PATH_MAX] = {0};
+    if (gbsc_path(spath, GBSC_PATH_MAX, PDNA_SIDECAR_DIR, key) >= 0 &&
+        f_stat(spath, &fi) == FR_OK) {
+      memcpy(out, spath, GBSC_PATH_MAX);
+      return true;
+    }
   }
 
-  /* neither exists -- a brand-new file belongs under xfer (decision 4/D-Q7). */
+  /* neither exists (or migration already ran) -- a brand-new file belongs under
+   * xfer (decision 4/D-Q7). */
   memcpy(out, xpath, GBSC_PATH_MAX);
   return false;
 }
 
 bool xr_path_for_name(char out[GBSC_PATH_MAX], const char* name) {
   if (!out || !name) return false;
-  char xpath[GBSC_PATH_MAX];
+  char xpath[GBSC_PATH_MAX] = {0};
   if (join_path(xpath, GBSC_PATH_MAX, PDNA_XFER_DIR, name) < 0) return false;
 
   FILINFO fi;
@@ -57,11 +78,13 @@ bool xr_path_for_name(char out[GBSC_PATH_MAX], const char* name) {
     return true;
   }
 
-  char spath[GBSC_PATH_MAX];
-  if (join_path(spath, GBSC_PATH_MAX, PDNA_SIDECAR_DIR, name) >= 0 &&
-      f_stat(spath, &fi) == FR_OK) {
-    memcpy(out, spath, GBSC_PATH_MAX);
-    return true;
+  if (!marker_present()) {
+    char spath[GBSC_PATH_MAX] = {0};
+    if (join_path(spath, GBSC_PATH_MAX, PDNA_SIDECAR_DIR, name) >= 0 &&
+        f_stat(spath, &fi) == FR_OK) {
+      memcpy(out, spath, GBSC_PATH_MAX);
+      return true;
+    }
   }
 
   memcpy(out, xpath, GBSC_PATH_MAX);
@@ -71,7 +94,7 @@ bool xr_path_for_name(char out[GBSC_PATH_MAX], const char* name) {
 /* ---- the one reader ----------------------------------------------------------- */
 
 SfStatus xr_open(uint64_t key, uint8_t* buf, uint32_t cap, uint32_t* len, char* path_out) {
-  char path[GBSC_PATH_MAX];
+  char path[GBSC_PATH_MAX] = {0};
   bool exists = xr_path_for_key(path, key);
   if (path_out) memcpy(path_out, path, GBSC_PATH_MAX);
   if (!exists) return SF_ERR_OPEN;
@@ -127,9 +150,9 @@ static uint64_t file_hash(const uint8_t* buf, uint32_t len) {
 }
 
 static bool write_marker(uint32_t copied) {
-  char path[GBSC_PATH_MAX];
+  char path[GBSC_PATH_MAX] = {0};
   if (join_path(path, GBSC_PATH_MAX, PDNA_XFER_DIR, "MIGRATED") < 0) return false;
-  char body[16];
+  char body[16] = {0};
   int n = u32_to_dec(copied, body);
   return sf_write_verified(path, (const uint8_t*)body, (uint32_t)n) == SF_OK;
 }
@@ -137,7 +160,7 @@ static bool write_marker(uint32_t copied) {
 int __attribute__((noinline)) xr_migrate_once(uint8_t* scratch, uint32_t cap) {
   if (!app_can_edit()) return -1;
 
-  char marker[GBSC_PATH_MAX];
+  char marker[GBSC_PATH_MAX] = {0};
   if (join_path(marker, GBSC_PATH_MAX, PDNA_XFER_DIR, "MIGRATED") < 0) return -1;
   FILINFO fi;
   if (f_stat(marker, &fi) == FR_OK) return 0;   /* already migrated -- O(1) */
@@ -163,7 +186,7 @@ int __attribute__((noinline)) xr_migrate_once(uint8_t* scratch, uint32_t cap) {
     int L = 0; while (e.fname[L] && L < 64) L++;
     if (!is_hex_pds_name(e.fname, L)) continue;
 
-    char src[GBSC_PATH_MAX], dst[GBSC_PATH_MAX];
+    char src[GBSC_PATH_MAX] = {0}, dst[GBSC_PATH_MAX] = {0};
     if (join_path(src, GBSC_PATH_MAX, PDNA_SIDECAR_DIR, e.fname) < 0) continue;
     if (join_path(dst, GBSC_PATH_MAX, PDNA_XFER_DIR, e.fname) < 0) continue;
 

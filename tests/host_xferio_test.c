@@ -138,17 +138,41 @@ int main(void) {
     CHECK(strcmp(out, xfer_path) == 0, "(b) post-migration: resolves to the XFER path (%s vs %s)", out, xfer_path);
   }
 
-  /* ---- (c) delete the xfer copy -- xr_open finds the sidecar original again (G-M1) */
-  printf("== (c) delete xfer copy -- xr_open falls back to sidecar (G-M1) ==\n");
+  /* ---- (c) review F3: POST-MIGRATION, the sidecar fallback is gated OFF -------- */
+  printf("== (c) marker present + xfer copy deleted -- resolves to xfer/false, NOT sidecar (F3) ==\n");
+  CHECK(xr_migrated(), "(c) the marker is present (precondition for this case)");
   CHECK(f_unlink(xfer_path) == FR_OK, "(c) delete the xfer copy");
   {
-    uint32_t len = 0; char out[GBSC_PATH_MAX];
-    SfStatus st = xr_open(key, readback, sizeof readback, &len, out);
-    CHECK(st == SF_OK, "(c) xr_open still succeeds (%s)", sf_status_str(st));
-    CHECK(strcmp(out, sidecar_path) == 0, "(c) resolves back to the SIDECAR path");
-    CHECK(len == clen && memcmp(readback, content, clen) == 0, "(c) bytes match the sidecar original exactly");
+    char out[GBSC_PATH_MAX];
+    bool found = xr_path_for_key(out, key);
+    CHECK(!found, "(c) xr_path_for_key returns false (no live record) once migrated");
+    CHECK(strcmp(out, xfer_path) == 0, "(c) still resolves to the XFER path, not sidecar (%s vs %s)", out, xfer_path);
+
+    uint32_t len = 0; char out2[GBSC_PATH_MAX];
+    SfStatus st = xr_open(key, readback, sizeof readback, &len, out2);
+    CHECK(st == SF_ERR_OPEN, "(c) xr_open fails (SF_ERR_OPEN) -- does NOT silently return the stale sidecar copy (%s)",
+          sf_status_str(st));
   }
-  /* restore the xfer copy for the following cases */
+
+  /* ---- (c2) the reviewer's scenario: migrate -> a claim/KEEP write lands ONLY in
+   * xfer (the sidecar copy is now STALE) -> delete the xfer copy -> resolve ->
+   * must NOT return the (wrong, stale) sidecar bytes. */
+  printf("== (c2) a post-migration write to xfer only, then its deletion, never falls back to the stale sidecar ==\n");
+  {
+    uint8_t updated[GBSC_FILE_MAX];
+    memcpy(updated, content, clen);
+    CHECK(gbsc_set_claimed(updated, clen, 0, true) == 0, "(c2) simulate a claim write landing in the xfer copy");
+    CHECK(memcmp(updated, content, clen) != 0, "(c2) the claimed bytes now differ from the sidecar's frozen copy");
+    CHECK(write_raw(xfer_path, updated, clen), "(c2) write the claimed bytes to the xfer copy");
+
+    CHECK(f_unlink(xfer_path) == FR_OK, "(c2) delete the (claimed) xfer copy");
+    char out[GBSC_PATH_MAX];
+    bool found = xr_path_for_key(out, key);
+    CHECK(!found, "(c2) xr_path_for_key returns false -- the claim is not silently lost to a stale sidecar read");
+    CHECK(strcmp(out, xfer_path) == 0, "(c2) resolves to the xfer path, not the stale sidecar (%s vs %s)", out, xfer_path);
+  }
+
+  /* restore the xfer copy (the ORIGINAL, unclaimed content) for the following cases */
   CHECK(write_raw(xfer_path, content, clen), "(c) restore the xfer copy for the next cases");
 
   /* ---- (d) a second xr_migrate_once copies 0 files, marker unchanged -------- */
