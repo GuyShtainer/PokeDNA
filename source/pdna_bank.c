@@ -154,6 +154,15 @@ static bool box_save(void) {                    /* write the loaded box's record
     SfWhere w = sf_where_are_the_bytes(path, box_recs(), BOX_BYTES);
     log_line("bank: box save rename unconfirmed, bytes at %d", (int)w);
     app_log_flush();
+    /* review G4: unlike the box screen's own boxoam_suspend/resume bracket, box_save
+     * has none of its own -- SWITCH_BOX's chain reaches here through banksrc_records
+     * with the box-cell sprites still enabled, but box_save ALSO runs from callers with
+     * no grid on screen at all (a blind boxoam_resume() here would be wrong in that
+     * case). msg_wait's blocking wait-for-A loop must not run with arbitrary leftover
+     * OBJ content still visible underneath it, so disable OBJ for exactly this UI block
+     * and restore whatever the caller had on every exit path. */
+    u16 dc = REG_DISPCNT;
+    REG_DISPCNT &= ~DCNT_OBJ;
     if (w != SF_WHERE_TARGET) {
       snd_error();
       char l1[64];
@@ -177,10 +186,12 @@ static bool box_save(void) {                    /* write the loaded box's record
                     backed_up ? PDNA_BANKSAVE_LOST_L2 : PDNA_GBEDIT_SAVELOST_NOBAK);
           break;
       }
+      REG_DISPCNT = dc;
       return false;                         /* anything but TARGET: a real failure */
     }
     msg_wait(PDNA_BANKSAVE_UNCONFIRMED_TITLE, UI_WARN,
               PDNA_BANKSAVE_UNCONFIRMED_L1, PDNA_BANKSAVE_UNCONFIRMED_L2);
+    REG_DISPCNT = dc;
     st = SF_OK;                             /* the bytes ARE at path -- this is a success */
   }
   bool ok = st == SF_OK;
