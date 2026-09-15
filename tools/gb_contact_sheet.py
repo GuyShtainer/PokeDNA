@@ -321,7 +321,7 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # append-only rule.
     ("gb-bank-down-edge", "BACKLOG #150 S150-7/S150-8 — the Bank's DOWN edge: EXACT, "
      "GB_BRIDGE, and GEN3 arms off the same planted cells",
-     ("S150-7", "S150-7 (a)", "S150-7 (b)", "S150-7 (b), post-84a43b8", "S150-7 (c)",
+     ("S150-7", "S150-7 (a)", "S150-7 (b)", "S150-7 (b), post-59dd45c", "S150-7 (c)",
       "S150-7 (c) SS11.20 item 10(c)", "S150-7 (c) D9", "S150-7 (c)+(D-Q2/D-Q3)+F6",
       "S150-7 (d)", "S150-8", "S150-8 bridge")),
 ]

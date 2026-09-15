@@ -4548,6 +4548,148 @@ def run_s150_8_gen3_arm(core_mod, image_mod, rom_emerald: Path, out_dir: Path) -
     return s
 
 
+def run_s150_8_bridge(core_mod, image_mod, rom_gold: Path, rom_red: Path,
+                      out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #150 S150-8: the CONVERTING DOWN edge's GB_BRIDGE arm (a native cell
+    crosses Gen 1 <-> Gen 2, source/pdna_gen12.c gb_bank_down_bridge()), post-59dd45c
+    (the merged-tree review fix: the bridge now converts to the MOUNTED session's own
+    generation, not its own source generation).
+
+    KNOWN DEVIATION FROM THE BRIEF'S OWN WORDING, found live and reported here rather
+    than silently substituted: the brief's own text asks to carry the planted Gen-2
+    CHIKORITA cell into Red's grid and expects 'the bridge preview ... -> confirm ->
+    the delta wall' from THAT gesture. That specific combination is IMPOSSIBLE with
+    bank_plant.c's current data, not a harness miscalibration -- xr_time_capsule_
+    block() (source/xfer_rec.c:26-43) is the FIRST thing bdc_convert_gb_core() checks,
+    unconditionally, before any loss screen exists, and CHIKORITA's dex (152) always
+    exceeds gb_max_species(GB_GEN1)=151 for ANY Gen-2->Gen-1 drop, item-holding or
+    not, occupied destination or not. So CHIKORITA -> Red can only ever reach the
+    species time-capsule refusal (confirmed live below, and already the SAME frame
+    run_s150_7_down_edge's own frame 12 shows) -- never the preview. The brief's own
+    SEPARATE ask two sentences later ("a planted cell with dex > 151 -> NO GEN 1
+    FORM-class message") is exactly what CHIKORITA -> Red demonstrates; the two asks
+    cannot both be it. The preview/confirm/wall sequence is demonstrated below on the
+    ONE direction bank_plant.c's data can actually reach it: the Gen-1 PIKACHU cell
+    (dex 25, always allowed into Gen 2 -- xr_time_capsule_block() returns 0
+    unconditionally whenever dst_gen != GB_GEN1) carried into `rom_gold`. This is the
+    SAME gb_bank_down_bridge() function and the SAME GB_BRIDGE arm the brief is
+    asking about, run in the one direction this planted data can reach end to end.
+
+    `rom_gold`/`rom_red` = tools/fuse_gb.py <pokedna-delta-artless.gba> Gold.gbc
+    Gold.sav / Red.gb Red.sav (the SAME two images run_s150_7_down_edge() uses).
+
+    Nav recipe (probe screenshots under /tmp/s150-78-trace/s150-8-bridge/, not
+    guessed): Bank entry is run_s150_7_down_edge's own boot_to_grid + UP_INTO_BANK(3)
+    + UP_TO_ROW0(4); box 0's cursor starts on slot 0 (plain CHIKORITA) -- ONE RIGHT
+    reaches slot 1 (PIKACHU) on the Gold image; no move is needed on the Red image
+    (slot 0 IS the CHIKORITA cell already). Pick-up and the DOWN_OFF_BANK=5 hop are
+    IDENTICAL to run_s150_7_down_edge's own pick_up_chikorita(). On Gold, R x13
+    reaches this cartridge's own box 13 (17/20, room) -- the SAME box run_s150_7_
+    down_edge's own EXACT-arm test uses; the GB_BRIDGE arm is not gated by the
+    84a43b8 occupied-refusal (that gate is GEN3-only), so the cursor's default
+    (occupied) position on this box needs no further navigation, matching
+    run_s150_7_down_edge's frame-11/12 finding that a fully-occupied Red box (20/20)
+    dispatches fine too."""
+    print("== BACKLOG #150 S150-8: the DOWN edge (GB_BRIDGE arm) ==")
+    UP_INTO_BANK = 3
+    UP_TO_ROW0 = 4
+    DOWN_OFF_BANK = 5
+
+    def boot_to_grid(s: gb_shots.Session) -> None:
+        s.run(700)
+        s.tap("A", settle=60)
+        s.run(100)
+
+    # ---- (1) Gen 1 -> Gen 2: PIKACHU carried into Gold -- the REACHABLE direction
+    # for the preview/confirm/wall sequence (see the docstring's own deviation note) --
+    sg = gb_shots.Session(core_mod, image_mod, rom_gold, out_dir, "s150_8b_gold_")
+    boot_to_grid(sg)
+    sg.press_n("UP", UP_INTO_BANK, settle=100)
+    sg.press_n("UP", UP_TO_ROW0, settle=60)
+    sg.shot("00_bank", "S150-8 bridge: Gold's own Bank, box 0's five planted cells "
+            "(CHI/PIK/EGG/CHI/DMG), cursor on slot 0")
+    sg.tap("RIGHT", settle=100)
+    sg.shot("01_cursor_pikachu", "S150-8 bridge: cursor moved RIGHT x1 to slot 1 -- "
+            "the Gen-1 PIKACHU cell (dex 25, no species/move ever blocks a "
+            "Gen-1->Gen-2 drop: xr_time_capsule_block() returns 0 whenever "
+            "dst_gen != GB_GEN1, unconditionally)")
+    sg.tap("A", settle=150)                     # native-cell whitelist menu
+    sg.tap("DOWN", settle=60)                   # VIEW/EDIT -> MOVE
+    sg.tap("A", settle=150)                     # MOVE -> carrying
+    sg.press_n("DOWN", DOWN_OFF_BANK, settle=150)
+    sg.shot("02_carrying_on_pc", "S150-8 bridge: carrying PIKACHU, back on Gold's "
+            "own PC grid -- xg_bank_down_arm resolves GB_BRIDGE (cell_gen 1 != "
+            "dst_gen 2)")
+    for _ in range(13):
+        sg.tap("R", settle=150)
+    sg.shot("03_box13_room", "S150-8 bridge: R x13 -> this cartridge's own box 13 "
+            "(17/20, room) -- the SAME box run_s150_7_down_edge's EXACT-arm test "
+            "uses; cursor sits on box13's own default (occupied) cell, which needs "
+            "no further navigation since GB_BRIDGE is not occupied-gated")
+    sg.tap("A", settle=300)
+    sg.shot("04_bridge_preview", "S150-8 bridge: A -- gb_paste_loss_screen's own "
+            "'WHAT WON'T TRANSFER' preview -- 'Nature and ability' / 'Met place / "
+            "level / ball' rows shown (loss->nature/ability and loss->met_data/ball "
+            "all true for this Gen-1->Gen-2 conversion); NO friendship/pokerus row "
+            "(loss->pokerus_dropped and loss->friendship_dropped are both false for "
+            "this specific mon -- the brief's own 'friendship row' is conditional, "
+            "PDNA_SIDECAR_LOSS_POKERUS, and does not apply to every bridge "
+            "transfer, only when gen3_to_gb's own conversion actually drops it); "
+            "no dropped-item row (PIKACHU carries no item)")
+    sg.tap("A", settle=300)                     # A = transfer
+    sg.shot("05_sidecar_folder_wall", "S150-8 bridge: A = transfer -> the panel "
+            "reads 'SIDECAR FOLDER' / 'Nothing transferred.' / 'Press A' "
+            "(PDNA_SIDECAR_MKDIR_TITLE/PDNA_SIDECAR_NOTWRITTEN_L2) -- CASE (c), a "
+            "LEDGER-WRITE refusal: gb_bank_down_bridge() calls xfer_down_write() "
+            "(source/pdna_gen12.c:3096) BEFORE gbs_insert() (:3100), and this "
+            "vehicle's f_mkdir(/PokeDNA/xfer/) fails first (no SD card) -- so "
+            "gbs_insert()/gb_persist() NEVER RUN on this vehicle. This is NOT frame "
+            "04's docstring case (a) ('GAME BOY SAVE / Edits are in-session only', "
+            "which would mean gbs_insert succeeded and only the final persist "
+            "refused) and NOT case (b) (PDNA_SIDECAR_XFER_REFUSED_TITLE + a GBS "
+            "status, which would mean gbs_insert itself refused, the PRE-59dd45c "
+            "signature) -- the chain never reaches either of those checks, so "
+            "59dd45c's own fix (converting to the mounted session's generation) is "
+            "UNTESTED on this vehicle, not disproven: hardware must prove it "
+            "(docs/HW-QUEUE.md)")
+    sg.tap("A", settle=250)                     # dismiss
+    sg.shot("06_still_holding", "S150-8 bridge: still carrying the same PIKACHU "
+            "cell after the ledger-write refusal -- box 13 unchanged (17/20)")
+
+    # ---- (2) Gen 2 -> Gen 1: CHIKORITA carried into Red -- the two time-capsule
+    # refusals the brief asks for; only the species one is reachable with the
+    # current planted data (see the docstring's own deviation note) ----------------
+    sr = gb_shots.Session(core_mod, image_mod, rom_red, out_dir, "s150_8b_red_")
+    boot_to_grid(sr)
+    sr.press_n("UP", UP_INTO_BANK, settle=100)
+    sr.press_n("UP", UP_TO_ROW0, settle=60)
+    sr.shot("07_red_bank", "S150-8 bridge: Red's own Bank, the SAME generation-"
+            "agnostic box 0 plant, cursor on slot 0 (the plain CHIKORITA cell, "
+            "dex 152)")
+    sr.tap("A", settle=150)
+    sr.tap("DOWN", settle=60)
+    sr.tap("A", settle=150)
+    sr.press_n("DOWN", DOWN_OFF_BANK, settle=150)
+    sr.shot("08_red_carrying", "S150-8 bridge: carrying CHIKORITA, back on Red's "
+            "own (Gen-1) grid")
+    sr.tap("A", settle=250)
+    sr.shot("09_no_gen1_form", "S150-8 bridge: A -- 'NO GEN 1 FORM' / 'CHIKORITA: "
+            "no Gen 1 form.' / 'Press A' (PDNA_XFER_TC_TITLE/PDNA_XFER_TC_SPECIES_"
+            "FMT) -- xr_time_capsule_block()'s species-floor check (tc==1: dex 152 "
+            "> gb_max_species(GB_GEN1)=151) fires before ANY loss screen; this is "
+            "the ONE time-capsule refusal bank_plant.c's data can reach -- every "
+            "planted cell uses move id 33 (Tackle, plant_gen2_chikorita() and the "
+            "Pikachu block both, source/bank_plant.c:25/51), a Gen-1-legal move id "
+            "well under gb_max_move(GB_GEN1)=165, so NO planted cell can ever "
+            "trigger the move-based refusal (tc==2, '<MOVE>: not in Gen 1.') -- "
+            "none is planted for that case, exactly as this lane's own brief's "
+            "fallback anticipates; a plant addition (a Gen-2-only move on a "
+            "species that clears the dex<=151 floor) is needed to shoot it")
+    sg.taken += sr.taken
+    sg.skipped += sr.skipped
+    return sg
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -4796,6 +4938,15 @@ def main(argv=None) -> int:
                           "box). --image MUST be tools/fuse_sav.py <pokedna-delta-"
                           "artless.gba> Emerald.sav (a plain Gen-3 fusion, no --gb -- "
                           "same vehicle shape as --s2-bank-control).")
+    ap.add_argument("--s150-8-bridge", action="store_true",
+                     help="BACKLOG #150 S150-8: only run_s150_8_bridge() -- the "
+                          "CONVERTING DOWN edge's GB_BRIDGE arm (Gen 1 <-> Gen 2). "
+                          "Needs TWO images: --image MUST be tools/fuse_gb.py "
+                          "<pokedna-delta-artless.gba> Gold.gbc Gold.sav (Gen 2), and "
+                          "--s150-7-red MUST be tools/fuse_gb.py <pokedna-delta-"
+                          "artless.gba> Red.gb Red.sav (Gen 1) -- the SAME two images "
+                          "--s150-7 uses (reuses --s150-7-red rather than adding a "
+                          "third flag name for the identical Red image).")
     ap.add_argument("--b54-romhack", choices=("hack", "control"),
                      help="BACKLOG #54: only run_b54_romhack() against --image for the "
                           "named case -- the ROM-hack banner + the mon-menu refusal it "
@@ -5434,6 +5585,24 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] s150-8: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+    if getattr(a, "s150_8_bridge", False):
+        # BACKLOG #150 S150-8: append-only, same convention as --s150-7 above --
+        # needs a SECOND image (--s150-7-red, reused rather than a new flag name).
+        ran = True
+        if not a.s150_7_red:
+            sys.exit("--s150-8-bridge also needs --s150-7-red (see --s150-8-bridge's "
+                      "own --help)")
+        try:
+            sess = run_s150_8_bridge(core_mod, image_mod, a.image, a.s150_7_red, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] s150-8-bridge: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
