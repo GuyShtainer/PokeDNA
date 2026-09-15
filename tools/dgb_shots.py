@@ -5303,45 +5303,38 @@ def run_b93_menu(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> g
                            "menu open, not can_rename/can_lift/can_edit")
 
     # D2: Rename box attempt (shows input interface, gates refusal under pdna_gbnames_on=false)
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # A on Rename box
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # A on Rename box -> osk_core()
     s.shot("14_rename_box_interface", "BACKLOG #156 D2: A on Rename box -- the box "
-                                       "name input interface (pdna_gbnames_on gates "
-                                       "whether the user can actually save a new name; "
-                                       "when false, the refusal 'NO BOX NAMES / Names "
-                                       "cannot be changed.' fires at confirm, not at entry)")
-    s.tap("B", settle=100)                                  # exit without changing
+                                       "name input (OSK) interface. SELECT cancels and "
+                                       "returns to the box menu unchanged.")
+    s.tap("SEL", settle=100)                                # SELECT to cancel/exit OSK (osk.c:197)
 
-    # Back to box menu for the Wallpaper test
-    s.tap("SEL", settle=100)                                # SELECT on title -> box_options_menu again
-    s.tap("DOWN", settle=gb_shots.SETTLE)                   # -> Wallpaper
-    s.shot("15_wallpaper_selected", "BACKLOG #156 D3: cursor on Wallpaper in the "
-                                     "box menu")
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # A on Wallpaper -> wallpaper picker
-    s.shot("16_wallpaper_interface", "BACKLOG #156 D3: A on Wallpaper -- the "
-                                      "wallpaper selection grid (pdna_gbnames_on gates "
-                                      "whether the user can actually change it; when "
-                                      "false, the refusal 'NO WALLPAPER / Wallpaper "
-                                      "cannot be changed.' fires at confirm)")
-    s.tap("B", settle=100)                                  # exit without changing
-    s.tap("B", settle=100)                                  # back to box grid
+    # Exit menu back to grid
+    s.tap("B", settle=100)                                  # B to exit box menu -> back to grid
 
-    # D5: Party mon DUPLICATE refusal (show the refusal when pressing A on a party mon)
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # A on a box cell
+    # D5: Party pseudo-box DUPLICATE refusal
+    # Navigate to the party pseudo-box (the last box, nboxes-1) using L key (pdna_box.c:3475)
+    s.tap("L", settle=150)                                  # L key: navigate to previous box (circularly)
+    s.shot("15_party_box_after_nav", "BACKLOG #156 D5: after L navigation -- now viewing "
+                                      "the party pseudo-box (last box, nboxes-1). The banner "
+                                      "should show no ordinal number (it's the pseudo-box).")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # A on an occupied party cell -> mon menu
     s.press_n("DOWN", downs_to_dup, settle=gb_shots.SETTLE) # -> DUPLICATE
-    s.shot("17_dup_selected", "BACKLOG #156 D5: cursor on DUPLICATE in an occupied "
-                               "cell menu")
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # A on DUPLICATE -> gbs_insert / check is_party_mon
-    s.shot("18_dup_party_refusal", "BACKLOG #156 D5: A on DUPLICATE for a cell in "
-                                    "the party-box leg (party mons, indices 0-5) shows "
-                                    "the refusal -- 'EDIT REFUSED / Can't duplicate a "
-                                    "party Pokemon. / Save unchanged.' -- app_dup_hook() "
-                                    "gates DUPLICATE via is_party_mon()")
+    s.shot("16_dup_party_selected", "BACKLOG #156 D5: cursor on DUPLICATE in a "
+                                     "party pseudo-box cell menu")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # A on DUPLICATE -> gb_dup_hook checks gb_box_is_party
+    s.shot("17_dup_party_refusal", "BACKLOG #156 D5: A on DUPLICATE for a party mon "
+                                    "(box == party pseudo-box, nboxes-1) shows the refusal -- "
+                                    "title 'CAN'T', single line 'Can't duplicate a party mon.' "
+                                    "(PDNA_GBEDIT_DAYCARE_PARTY_TITLE / pdna_layout.h:720, "
+                                    "msg_wait(..., 0) with no third line) -- gb_dup_hook "
+                                    "(pdna_gen12.c:1509) calls gb_box_is_party (gb_edit.c:172)")
     s.tap("A", settle=200)                                  # dismiss
 
-    s.press_n("DOWN", 1, settle=gb_shots.SETTLE)            # DOWN -> Release all (skip Rename/Wallpaper/Export)
-    s.shot("19_release_all_selected", "BACKLOG #93: cursor on Release all")
+    s.press_n("DOWN", 1, settle=gb_shots.SETTLE)            # DOWN -> Release all (skip Export)
+    s.shot("18_release_all_selected", "BACKLOG #93: cursor on Release all")
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # -> app_confirm with the count
-    s.shot("20_release_all_confirm", "BACKLOG #93: 'Release all N Pokemon?' / "
+    s.shot("19_release_all_confirm", "BACKLOG #93: 'Release all N Pokemon?' / "
                                       "'Deleted permanently!' -- release_box_all's "
                                       "own string (pdna_box.c), reused verbatim, N "
                                       "matching this box's real occupied count")
@@ -5349,7 +5342,7 @@ def run_b93_menu(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> g
     # frames to settle -- measured by hand: BIG_SETTLE (40) is nowhere near enough
     # (the confirm dialog is still on screen), 700 reliably reaches gb_persist's wall.
     s.tap("A", settle=700)                                  # confirm -> delete top-down -> gb_persist
-    s.shot("21_release_all_delta_wall", "BACKLOG #93: every slot deletes top-down "
+    s.shot("20_release_all_delta_wall", "BACKLOG #93: every slot deletes top-down "
                                          "(RAM-only), THEN gb_persist('release-all') "
                                          "hits the same PDNA_DELTA wall -- the fix in "
                                          "this lane's own follow-up commit makes sure "
@@ -5358,7 +5351,7 @@ def run_b93_menu(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> g
                                          "second, FALSE 'Nothing changed' panel on "
                                          "top of it -- caught by this exact shot)")
     s.tap("A", settle=250)                                  # dismiss -> box grid, no second dialog
-    s.shot("22_grid_after_release_all", "BACKLOG #93: straight to the box grid after "
+    s.shot("21_grid_after_release_all", "BACKLOG #93: straight to the box grid after "
                                          "ONE dismiss -- 0/20 (or 0/whatever this box "
                                          "held), every deletion landed in g_ed->img "
                                          "despite the persist refusal, exactly like "
@@ -5371,7 +5364,7 @@ def run_b93_menu(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> g
     s2.tap("A", settle=60)
     s2.run(GB_ART_COLD_SETTLE)
     s2.press_n("UP", 3, settle=100)
-    s2.shot("23_bank_hop", "BACKLOG #93: the bank_edge UP hop opens the Bank -- "
+    s2.shot("22_bank_hop", "BACKLOG #93: the bank_edge UP hop opens the Bank -- "
                             "'BANK 1  0/30', every cell empty (#120 S2's F1 fix: "
                             "no write surface survives into a GB session's Bank "
                             "visit, so nothing can ever land here in mGBA)")
@@ -5385,7 +5378,7 @@ def run_b93_menu(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> g
     # Bank visit and app_mon_menu_readonly -- where DUPLICATE/TO DAY-CARE/EXPORT all
     # live -- is never entered from inside the Bank at all, occupied cell or not.
     # Named/captioned to say exactly that, not to imply an occupied-cell test ran.
-    s2.shot("24_bank_empty_cell_structural_proof",
+    s2.shot("23_bank_empty_cell_structural_proof",
             "BACKLOG #93 (D9): this Bank cell is EMPTY, not occupied -- mGBA has no "
             "way to get an occupied one here (#120 S2's F1 fix). A on it shows NO "
             "popup (silent snd_deny(), app_mon_menu's n == 0 branch on an empty "
