@@ -2283,9 +2283,16 @@ int main(void) {
   T(PDNA_GBCLOCK_ROW_SHIFT, 6);
   T(PDNA_GBCLOCK_ROW_CLEAR, 6);
   T(PDNA_GBCLOCK_TITLE, 4);
-  /* D6 (b86 review): the read-only branch's two explanatory lines, verbatim from
-   * the Gen-3 "SAVE CLOCK / RTC" screen's own !can branch (pdna_main.c), same x=6
-   * fixed sys8 column. */
+  /* b160 F5: the read-only branch now draws app_gb_readonly_why()'s ONE line
+   * (source/pdna_gbclock.c) instead of two hardcoded literals -- check every
+   * string that function can return fits the same x=6 fixed sys8 column
+   * (app_readonly_why()'s two, plus the GB-only streamed-session wording). */
+  T("Needs EZ-Flash Omega.", 6);
+  T(PDNA_ROMHACK_WHY, 6);
+  T(PDNA_GB_VIEWONLY_WHY, 6);
+  /* b160 R2: still live at pdna_main.c:7120-7121 (the Gen-3 "SAVE CLOCK / RTC"
+   * !can branch). The GB clock stopped using them, the Gen-3 twin did not --
+   * and the first is 238 of 240 px at x=6. */
   T("Read-only cart - fixing needs", 6);
   T("an EZ-Flash Omega.", 6);
   /* M1 (BACKLOG #91) D6: the Gen-1 Map screen's own "D-PAD PAN" hint is

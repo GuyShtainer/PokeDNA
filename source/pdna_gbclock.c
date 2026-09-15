@@ -86,11 +86,10 @@ static void gbclock_render(const GbClock* c, int sel, bool can_edit, ClockPaint*
     gbclock_header(c);
     for (int i = 0; i < ROW_N; i++) gbclock_row_paint(i, 60 + i * 16, i == sel);
     if (!can_edit) {
-      /* D6 (b86 review): mirror the Gen-3 read-only branch (pdna_main.c's
-       * "SAVE CLOCK / RTC" screen) verbatim -- same two lines, same x=6 column,
-       * same posture (viewing rows is still fine; A is refused, not offered). */
-      ui_text(6, 112, UI_DIM, "Read-only cart - fixing needs");
-      ui_text(6, 122, UI_DIM, "an EZ-Flash Omega.");
+      /* b160 F5: the honest reason via app_gb_readonly_why() -- cart, ROM hack, or
+       * streamed session. The Gen-3 twin (pdna_main.c:~7120) still hardcodes its
+       * own two lines; BACKLOG #161 carries the parity follow-up. */
+      ui_text(6, 112, UI_DIM, app_gb_readonly_why());
     }
     ui_hline(0, 151, UI_SCR_W, UI_BORDER);
     trainer_key_legend(can_edit ? "U/D select  A choose  B back" : "U/D select  B back");
