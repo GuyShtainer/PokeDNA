@@ -1352,27 +1352,46 @@ gated gb_art_fetch_icon.constprop.0 need=6144 from=gb_art_source.h:PDNA_GB_ICON_
 # gb_art_fetch's own comment above explains -- --root main stays unaffected
 # either way (a gated subtree is always fully, ungated included there).
 #
-# RECONCILING need= with what PDNA_GB_UI_NEED must cover (2026-09-15): unlike
-# gb_art_fetch (gate=pdna_origin_art_stack_room runs INSIDE gb_art_pic_cb, one
-# frame above gb_art_fetch, so gb_art_pic_cb's own frame is already folded into
-# PDNA_GB_FETCH_NEED's derivation by construction), gbscr_open()'s stack-room
-# check runs BEFORE gbscr_open()'s OWN 40-B frame is fully accounted and before
-# gbscr_open_inner's frame exists at all (D1's whole point: gate from OUTSIDE
-# the frame being gated, source/pdna_gbscreen.c's own comment on gbscr_open()).
-# So PDNA_GB_UI_NEED (rom_gbui.h) = 5,984 (the `--root gbscr_open_inner --top 1`
-# raw figure, both gate ELFs, 2026-09-15) + 40 (gbscr_open's own .su frame) + 64
-# (ISR) = 6,088 -- but THIS declaration's `fn=gbscr_open_inner` measures the
-# walker's subtree starting AT gbscr_open_inner, which does NOT include
-# gbscr_open's 40 B or the flat +64 ISR the guarded "STACK ok" line adds
-# separately. need=6088 is therefore deliberately looser than the tightest
-# possible bound on gbscr_open_inner alone (5,984 <= 6,088, 104 B of slack) --
-# that slack is exactly the 40+64 the runtime constant must ALSO cover one
-# frame up, which this fn= cannot see. Declaring the SAME literal both places
-# keeps verify_gated_macro_declarations()'s N==macro cross-check meaningful
-# (a real re-derivation of PDNA_GB_UI_NEED changes both together) while still
-# being a VALID, if non-tight, upper bound for the mechanical
-# measured-subtree-exceeds-declared-need FATAL below. via=gbscr_open is the
-# ONLY real predecessor (grepped the disassembly of both gate ELFs for
-# `bl <gbscr_open_inner's address>` -- exactly one call site, inside
-# gbscr_open(); gbscr_open_inner is `static noinline`, no other TU can reach it).
+# RECONCILING need= with what PDNA_GB_UI_NEED must cover (review-opus fix pass,
+# BACKLOG #148/#152 -- corrects an earlier draft of this same paragraph, which
+# wrongly claimed gbscr_open()'s own 40-B frame had to be ADDED on top of
+# gbscr_open_inner's subtree): `pdna_origin_art_stack_room(PDNA_GB_UI_NEED)`
+# (source/pdna_gbscreen.c:736) reads the LIVE stack pointer from INSIDE
+# gbscr_open()'s own frame, AFTER its prologue already pushed that ~40 B -- so
+# gbscr_open()'s frame is ALREADY spent, already reflected in the SP the check
+# reads, by the time the check runs. The TIGHT requirement is therefore 5,984
+# (gbscr_open_inner's own subtree, the `--root gbscr_open_inner --top 1` raw
+# figure, both gate ELFs, 2026-09-15) + 64 (ISR) = 6,048, not +40 again.
+# PDNA_GB_UI_NEED is 6,088 anyway -- 40 B of harmless over-provision the runtime
+# check does not actually need, kept rather than re-derived down to the bare
+# 6,048 for a comment fix. need=6088 here matches the header exactly (must,
+# per verify_gated_macro_declarations() below), so it is looser than the
+# tightest possible bound on gbscr_open_inner alone by that same 104 B
+# (6,088 - 5,984) -- all of it harmless slack, not a requirement this fn=
+# cannot see. via=gbscr_open is the ONLY real predecessor (grepped the
+# disassembly of both gate ELFs for `bl <gbscr_open_inner's address>` --
+# exactly one call site, inside gbscr_open(); gbscr_open_inner is `static
+# noinline`, no other TU can reach it).
+#
+# WHAT THIS DECLARATION ACTUALLY ENFORCES, AND WHEN (review-opus fix pass):
+# tools/stack_budget.py's own `enforce_gates = (args.root != "main")` (~:3475)
+# means the mechanical "does gbscr_open_inner's measured subtree still fit
+# inside declared need" check -- the ONE that would have caught this NINTH
+# pass's own 376-B drift -- ONLY runs when the walker is invoked `--root`
+# something OTHER than `main`. Two of the three checks this declaration buys
+# run UNCONDITIONALLY, every build, regardless of root
+# (verify_gated_macro_declarations()/verify_gated_predecessors(), called
+# unconditionally at tools/stack_budget.py:3311/3323): need=6088 must equal
+# rom_gbui.h's #define today, and via=gbscr_open must equal the real,
+# disassembled predecessor set. The THIRD (the drift check itself) needed the
+# Makefile's own stack steps extended with a loop over every declared `via=`
+# root (BACKLOG #148/#152 -- see the Makefile's own comment) to run at build
+# time at all; before that loop existed, `--root main` (the Makefile's only
+# invocation until this fix) always walks a gated subtree fully and ungated
+# (BACKLOG #102's own rule), so the drift check silently never ran. Hand-verify
+# what the Makefile's loop now runs for you: `python3 tools/stack_budget.py
+# --elf PokeDNA-artless.elf --builddir "$(pwd)/build-artless" --root gbscr_open
+# --top 1` prints "GATED SUBTREES EXCLUDED THIS RUN ... gbscr_open_inner:
+# measured 5,984 B <= declared need 6,088 B -- excluded" and exits 0 (both gate
+# ELFs, 2026-09-15); a FATAL there means re-derive PDNA_GB_UI_NEED now.
 gated gbscr_open_inner need=6088 from=rom_gbui.h:PDNA_GB_UI_NEED gate=gbscr_open via=gbscr_open

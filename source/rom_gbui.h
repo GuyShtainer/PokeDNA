@@ -246,28 +246,57 @@ typedef enum {
  *       --root gbscr_open_inner --top 1
  *
  * both reported 5,984 B for the `gbscr_open_inner` sub-root chain (the walker's
- * own `--root` measurement STARTS at gbscr_open_inner's own frame -- it does not
- * include the frame of `gbscr_open()`, the thin wrapper every real caller
- * actually calls, which sits ABOVE gbscr_open_inner on every real stack). This
- * constant gates from `gbscr_open()` (source/pdna_gbscreen.c:736's
- * `pdna_origin_art_stack_room(PDNA_GB_UI_NEED)` call, BEFORE gbscr_open_inner's
- * own frame exists -- D1's whole point), so it must cover gbscr_open()'s frame
- * too: 5,984 + 40 (gbscr_open's own .su frame, both ELFs, unchanged by #148) +
- * 64 (ISR reentry) = 6,088, already a multiple of 8 (no rounding needed).
+ * own `--root` measurement STARTS at gbscr_open_inner's own frame).
+ *
+ * RECONCILED (review-opus fix pass, BACKLOG #148/#152): `pdna_origin_art_stack_room()`
+ * reads the LIVE stack pointer from INSIDE `gbscr_open()`'s own frame (its call
+ * site is source/pdna_gbscreen.c:736, after `gbscr_open()`'s prologue has already
+ * pushed its own ~40 B) -- so by the time the check runs, `gbscr_open()`'s own
+ * frame is ALREADY spent, already reflected in the SP the check reads. The TIGHT
+ * requirement is therefore 5,984 (gbscr_open_inner's own subtree) + 64 (ISR
+ * reentry) = 6,048, NOT +40 again for `gbscr_open()`'s frame on top of that (the
+ * earlier draft of this comment double-counted it: once implicitly via the
+ * already-lowered SP, once explicitly via a `+40` this constant did not need).
+ * PDNA_GB_UI_NEED is kept at 6,088 anyway -- 40 B of harmless over-provision,
+ * not a necessity -- rather than re-deriving it down to the bare 6,048 for a
+ * one-time comment fix; either value is safe, 6,088 merely spends 40 B of
+ * headroom the runtime check does not actually need.
  *
  * ONE caller total (grepped): source/pdna_gbscreen.c:736. No test and no other
  * constant derives from PDNA_GB_UI_NEED (grepped tests/ and source/pdna_origin_art.*
  * -- neither references it by name).
  *
- * PINNED at build time (BACKLOG #152): tools/stack_edges.txt now carries a
- * `gated gbscr_open_inner need=6088 from=rom_gbui.h:PDNA_GB_UI_NEED
- * gate=gbscr_open ...` declaration (the same b102 mechanism gb_art_fetch/
- * gb_art_fetch_icon already use) -- the walker FATALs if this chain's measured
- * subtree ever exceeds 6088 again without this constant being re-derived in the
- * same commit, which is exactly the drift this NINTH pass found undetected for
- * 5 days. The gated declaration in tools/stack_edges.txt keeps this honest at
- * build time -- do not edit either this constant or that declaration alone;
- * both move together or the guard FATALs. */
+ * WHAT tools/stack_edges.txt's `gated gbscr_open_inner need=6088
+ * from=rom_gbui.h:PDNA_GB_UI_NEED gate=gbscr_open via=gbscr_open` declaration
+ * ACTUALLY enforces (review-opus fix pass corrected this -- the previous draft
+ * claimed it was "pinned at build time" in full; that was FALSE): tools/
+ * stack_budget.py's own `enforce_gates = (args.root != "main")` (~:3475) means
+ * the ONE check that would catch a repeat of this NINTH pass's 376-B drift --
+ * "does gbscr_open_inner's measured subtree still fit inside declared need" --
+ * only runs when the walker is invoked with `--root` something OTHER than
+ * `main`. Both of the Makefile's own build-time invocations (the artless/normal
+ * stack steps, and `make stack-check`) pass `--root main`, under which a gated
+ * subtree is ALWAYS walked fully and ungated (BACKLOG #102's own rule: "--root
+ * main stays unaffected either way") -- so that drift check did NOT run at
+ * build time before this fix, and PDNA_GB_UI_NEED could have silently drifted
+ * out from under its own runtime gate for another 5 days undetected, same as
+ * the EIGHTH-to-NINTH-pass gap. The Makefile now ALSO loops over every `via=`
+ * root declared in tools/stack_edges.txt (this very declaration's `via=
+ * gbscr_open` included) after each `--root main` run, so the drift check DOES
+ * run at build time as of this commit -- see the Makefile's own comment at that
+ * loop. What DOES run unconditionally, every build, regardless of root
+ * (verify_gated_macro_declarations()/verify_gated_predecessors(), called
+ * unconditionally near tools/stack_budget.py:3311/3323): need=6088 must equal
+ * this #define today, and via=gbscr_open must equal gbscr_open_inner's true,
+ * disassembled predecessor set -- both FATAL immediately on any mismatch,
+ * independent of the Makefile's own `--root` choice.
+ *
+ * Hand-verify the drift check itself (what the Makefile's new loop now runs
+ * for you every build): `python3 tools/stack_budget.py --elf PokeDNA-artless.elf
+ * --builddir "$(pwd)/build-artless" --root gbscr_open --top 1` -- prints
+ * "GATED SUBTREES EXCLUDED THIS RUN ... gbscr_open_inner: measured 5,984 B <=
+ * declared need 6,088 B -- excluded" (both gate ELFs, 2026-09-15) and exits 0;
+ * a FATAL there means PDNA_GB_UI_NEED needs re-deriving right now, not later. */
 #define PDNA_GB_UI_NEED 6088
 
 /* Each entry is the SCAN HIT file offset (where the locator's ScanCb pattern

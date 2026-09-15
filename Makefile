@@ -83,6 +83,10 @@ export OBJCOPY := $(PREFIX)objcopy
 	 else \
 	   python3 $(dir $(OUTPUT))tools/stack_budget.py --elf $@ --builddir $(CURDIR) --root main \
 	     || { rm -f $@; exit 1; }; \
+	   for v in `awk '/^gated /{print $$6}' $(dir $(OUTPUT))tools/stack_edges.txt | sed 's/^via=//' | tr ',' '\n' | sort -u`; do \
+	     python3 $(dir $(OUTPUT))tools/stack_budget.py --elf $@ --builddir $(CURDIR) --root $$v --top 1 >/dev/null \
+	       || { echo "*** FATAL: a gated subtree reached from $$v exceeds its declared need (re-run --root $$v)"; rm -f $@; exit 1; }; \
+	   done; \
 	 fi
 	$(NM) -Sn $@ > $(basename $(notdir $@)).map
 
@@ -615,6 +619,10 @@ stack-check:
 		if [ -f "$$elf" ] && [ -d "$$bd" ]; then \
 			echo "-- $$elf --"; \
 			python3 tools/stack_budget.py --elf "$$elf" --builddir "$(CURDIR)/$$bd" --root main || exit 1; \
+			for v in `awk '/^gated /{print $$6}' tools/stack_edges.txt | sed 's/^via=//' | tr ',' '\n' | sort -u`; do \
+				python3 tools/stack_budget.py --elf "$$elf" --builddir "$(CURDIR)/$$bd" --root "$$v" --top 1 >/dev/null \
+					|| { echo "*** FATAL: a gated subtree reached from $$v exceeds its declared need (re-run --root $$v)"; exit 1; }; \
+			done; \
 		else \
 			echo "-- $$elf -- skipped (not built)"; \
 		fi; \
