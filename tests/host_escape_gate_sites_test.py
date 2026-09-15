@@ -790,6 +790,8 @@ def main() -> int:
     check(not any(INVERTED_GEN_RE.search(ln) for ln in bridge_body),
           "gb_bank_down_bridge: contains the inverted `? GB_GEN2 : GB_GEN1` form "
           "review F1 removed -- the bridge would land in the WRONG generation")
+    check(sum(1 for ln in bridge_body if re.search(r"\bdst_gen\s*=", ln)) == 1,
+          "gb_bank_down_bridge: dst_gen must be assigned exactly once (its declaration)")   # Fable review F1
 
     # ---- (f) review F3: the self-mutation harness, every run ----
     self_test_mutation_detection(box_lines, gen12_lines)
