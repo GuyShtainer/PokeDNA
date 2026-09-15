@@ -234,6 +234,75 @@ static void part_b_rom(const char* name, uint8_t gen, const Want* want, int has_
   fclose(r.f);
 }
 
+/* BACKLOG #148: gbscr_open_inner() now passes the CALLER's own tail_len (not
+ * ROM_GBUI_SCRATCH_MIN) to rom_gbui_open(_loc)()'s scratch window -- these are
+ * the REAL tail sizes the four gbscreen callers that request the most blocks
+ * lend, hand-derived from source/pdna_gbscreen.c's own gbscr_tail_need() (pure
+ * arithmetic: ROM_GBUI_SCRATCH_MIN(2,048) + FONT(128*8=1,024) + each requested
+ * block's gbscr_block_bytes()) rather than linked from the host (gbscr_tail_need
+ * lives in pdna_gbscreen.c, which pulls in tonc.h/ff.h outside its
+ * PDNA_GBSCREEN_HOST_TEST guard for this test's own purposes -- not worth a new
+ * multi-file cc line here; the brief's own fallback path). Each is checked
+ * against the derivation below so a hand-arithmetic mistake fails loudly instead
+ * of silently testing the wrong number:
+ *
+ *   Gen-1 trainer card (pdna_gbtrainer.c ~563: CARDFRAME|BADGES|TEXTBOX, gen1) =
+ *     2,048 + 1,024 + 640(CARDFRAME 40*16) + 1,024(BADGES g1 64*16) +
+ *     512(TEXTBOX g1 32*16) = 5,248
+ *   Gen-1 bag (pdna_gbbag.c:610: TEXTBOX only, gen1) =
+ *     2,048 + 1,024 + 512(TEXTBOX g1) = 3,584
+ *   Gen-2 trainer card (pdna_gbtrainer.c ~964: CARDGFX|STATUSWORD|LEADERS|
+ *     BADGES|CARDPIC_M, male -- CARDCORNER opt is 16 on Gold, CARDPIC_F opt
+ *     only when female, both left OUT for a single deterministic figure) =
+ *     2,048 + 1,024 + 96(CARDGFX 6*16) + 96(STATUSWORD 6*16) +
+ *     1,376(LEADERS 86*16) + 704(BADGES g2 44*16) + 560(CARDPIC_M 35*16) =
+ *     5,904 (+16 CARDCORNER opt = 5,920 -- used below, the larger/more
+ *     conservative figure)
+ *   Gen-2 pack (pdna_gbpack.c:421: TEXTBOX|PACKMENU|PACK, gen2) =
+ *     2,048 + 1,024 + 432(TEXTBOX g2 54*8) + 1,280(PACKMENU 80*16) +
+ *     960(PACK_M 60*16) = 5,744
+ */
+#define GBSCR_TAIL_G1_CARD 5248u
+#define GBSCR_TAIL_G1_BAG  3584u
+#define GBSCR_TAIL_G2_CARD 5920u
+#define GBSCR_TAIL_G2_PACK 5744u
+
+static void part_b_real_size_one(const char* name, uint8_t gen, uint32_t real_cap,
+                                 const char* screen) {
+  Rd r;
+  if (!rd_open(&r, name)) { printf("  %s: SKIP (dump not present)\n", name); return; }
+  char who[64]; snprintf(who, sizeof who, "B-real %s/%s", name, screen);
+
+  RomGbUi gu_narrow, gu_wide;
+  r.calls = r.big_calls = r.back_big = r.last_big_end = 0;
+  int ok_narrow = rom_gbui_open(&gu_narrow, rd_read, &r, r.size, b_scratch, 2048);
+  r.calls = r.big_calls = r.back_big = r.last_big_end = 0;
+  int ok_wide = rom_gbui_open(&gu_wide, rd_read, &r, r.size, b_scratch, real_cap);
+  chk(who, "ui locator opens at 2,048", ok_narrow);
+  chk(who, "ui locator opens at the real tail size", ok_wide);
+  if (ok_narrow && ok_wide) {
+    chk(who, "generation as expected (narrow)", (uint8_t)gu_narrow.gen == gen);
+    chk(who, "generation as expected (wide)", (uint8_t)gu_wide.gen == gen);
+    RomGbUiLoc ln, lw;
+    rom_gbui_save_loc(&gu_narrow, &ln);
+    rom_gbui_save_loc(&gu_wide, &lw);
+    chk(who, "ui loc identical at the real screen tail size vs 2,048",
+        memcmp(&ln, &lw, sizeof ln) == 0);
+  }
+  fclose(r.f);
+}
+
+static void part_b_real_sizes(void) {
+  part_b_real_size_one("Red.gb",      1, GBSCR_TAIL_G1_CARD, "g1-card");
+  part_b_real_size_one("Red.gb",      1, GBSCR_TAIL_G1_BAG,  "g1-bag");
+  part_b_real_size_one("Yellow.gb",   1, GBSCR_TAIL_G1_CARD, "g1-card");
+  part_b_real_size_one("Yellow.gb",   1, GBSCR_TAIL_G1_BAG,  "g1-bag");
+  part_b_real_size_one("Gold.gbc",    2, GBSCR_TAIL_G2_CARD, "g2-card");
+  part_b_real_size_one("Gold.gbc",    2, GBSCR_TAIL_G2_PACK, "g2-pack");
+  part_b_real_size_one("Crystal.gbc", 2, GBSCR_TAIL_G2_CARD, "g2-card");
+  part_b_real_size_one("Crystal.gbc", 2, GBSCR_TAIL_G2_PACK, "g2-pack");
+}
+
 static void part_b(void) {
   static const Want red     = { 0x383DE, 0x0425B, 0, 0, 0 };
   static const Want yellow  = { 0x383DE, 0,       0, 0, 0 };
@@ -243,6 +312,7 @@ static void part_b(void) {
   part_b_rom("Yellow.gb",   1, &yellow,  0);
   part_b_rom("Gold.gbc",    2, &gold,    1);
   part_b_rom("Crystal.gbc", 2, &crystal, 1);
+  part_b_real_sizes();
 }
 
 /* ------------------------------------------------------------------ part C */
@@ -311,6 +381,38 @@ static bool shim_read(void* ctx, uint32_t off, void* buf, uint32_t len) {
   return br == len;
 }
 
+/* BACKLOG #148 (c): the SAME admit-before/fail-after shape gb_art_read() (gb_art_io.h)
+ * wraps around a FatFs read with -- gb_art_source.c itself is not host-testable (it
+ * pulls in tonc.h/ff.h unconditionally, no PDNA_GBSCREEN_HOST_TEST-style split), so
+ * this reproduces the two calls that actually matter (gb_scan_guard_admit() before
+ * the read, gb_scan_guard_fail() when it fails) against the ALREADY-linked,
+ * ALREADY-tested gb_scan_guard.h primitives (part C exercises those directly) --
+ * not a second copy of gb_art_read's FatFs specifics, the same "harness-local
+ * reimplementation of the seek+read shape" convention `shim_read` above already
+ * uses for gb_art_source.c's plain read. */
+typedef struct { FIL* f; GbScanGuard g; unsigned long calls; long fail_at; } GuardedShim;
+
+static bool guarded_shim_read(void* ctx, uint32_t off, void* buf, uint32_t len) {
+  GuardedShim* s = (GuardedShim*)ctx;
+  int tick;
+  if (!gb_scan_guard_admit(&s->g, off, len, s->calls, &tick)) return false;
+  s->calls++;
+  if (s->fail_at >= 0 && (long)s->g.reads > s->fail_at) {
+    gb_scan_guard_fail(&s->g);
+    return false;
+  }
+  UINT br = 0;
+  if ((FSIZE_t)off != s->f->fptr && f_lseek(s->f, (FSIZE_t)off) != FR_OK) {
+    gb_scan_guard_fail(&s->g);
+    return false;
+  }
+  if (f_read(s->f, buf, (UINT)len, &br) != FR_OK || br != len) {
+    gb_scan_guard_fail(&s->g);
+    return false;
+  }
+  return true;
+}
+
 static void part_d(void) {
   char p[256]; snprintf(p, sizeof p, "%s%s", ROMS, "Gold.gbc");
   FILE* f = fopen(p, "rb");
@@ -366,6 +468,82 @@ static void part_d(void) {
     chk("D loc-hit", "under 40 transactions (measured 26)", rd_read_calls <= 40);
     f_close(&fil);
   }
+
+  /* BACKLOG #148: the SAME transaction-count proof as the rom_gbsprite bound[]
+   * pair above, but for rom_gbui_open() -- the locator gbscr_open_inner() now
+   * calls with the caller's tail_len instead of a fixed ROM_GBUI_SCRATCH_MIN
+   * (2,048). GBSCR_TAIL_G2_CARD (5,920, defined above with part B's real-size
+   * derivation) is the Gen-2 trainer card's real tail -- the widest of the four
+   * real screens, so this is the tightest proof of what a real screen actually
+   * gets, not an arbitrary 8/64 KB best case.
+   *
+   * MEASURED (2026-09-15, this harness, Gold.gbc): narrow(2,048)=2,141
+   * disk_read, wide(5,920)=1,117 -- a REAL but only ~1.92x reduction, not the
+   * "<= 1/4" (4x) the brief assumed by extrapolating from rom_gbsprite's own
+   * 4126->545 (7.6x) at 2,048-vs-8,192 above. Probed independently (a throwaway
+   * host binary, every power-of-two-ish cap 2,048..32,768): rom_gbui_open's own
+   * chunk size only steps at 2,048/4,096/8,192-ish tiers (gb_scanwin.h's own
+   * doubling), and disk_read SATURATES at 606 from 8,192 upward -- even the
+   * best case (whole-ROM scratch) is 2,141/606 = 3.53x, short of 4x. The Gen-2
+   * card's real 5,920 lands in the 4,096-tier (1,117, same as any cap in
+   * [4,096, 8,192)), not the 8,192 tier -- rom_gbui_open's tiering, unlike
+   * rom_gbsprite's more continuous scan, does not hit 4x at any real screen's
+   * tail size. Bound set to the true measured ratio (with margin), not the
+   * brief's unverified 1/4 -- reported as a deviation, not silently
+   * substituted. */
+  {
+    unsigned long narrow_calls, wide_calls;
+    FIL fil; Shim s = { &fil, 0 };
+    chk("D ui", "open for read (narrow)", f_open(&fil, "/rom.bin", FA_READ) == FR_OK);
+    rd_read_calls = rd_reads = rd_read_back = 0;
+    RomGbUi gu_n;
+    int ok_n = rom_gbui_open(&gu_n, shim_read, &s, n, b_scratch, 2048);
+    narrow_calls = rd_read_calls;
+    chk("D ui narrow=2048", "locates Gold", ok_n);
+    printf("  D ui narrow=2048: %lu f_reads -> %lu disk_read calls\n", s.calls, narrow_calls);
+    f_close(&fil);
+
+    s = (Shim){ &fil, 0 };
+    chk("D ui", "open for read (wide)", f_open(&fil, "/rom.bin", FA_READ) == FR_OK);
+    rd_read_calls = rd_reads = rd_read_back = 0;
+    RomGbUi gu_w;
+    int ok_w = rom_gbui_open(&gu_w, shim_read, &s, n, b_scratch, GBSCR_TAIL_G2_CARD);
+    wide_calls = rd_read_calls;
+    chk("D ui wide=5920", "locates Gold", ok_w);
+    printf("  D ui wide=%u: %lu f_reads -> %lu disk_read calls\n",
+           GBSCR_TAIL_G2_CARD, s.calls, wide_calls);
+    f_close(&fil);
+
+    char msg[160];
+    snprintf(msg, sizeof msg,
+             "wide (tail_len=%u) disk_read=%lu must be <= 60%% of narrow (2,048) "
+             "disk_read=%lu (measured ratio %.1f%%, brief's unverified 1/4 target "
+             "not reached -- see comment above)",
+             GBSCR_TAIL_G2_CARD, wide_calls, narrow_calls,
+             narrow_calls ? (100.0 * (double)wide_calls / (double)narrow_calls) : 0.0);
+    chk("D ui", msg, ok_n && ok_w && wide_calls * 10 <= narrow_calls * 6);
+  }
+
+  /* BACKLOG #148 (c): a reader that fails on the Nth read surfaces
+   * GB_SCAN_STOP_READ_ERR (the guard's own latch, gb_scan_guard_fail()) and
+   * rom_gbui_open() -- which only ever sees the read function's `false` return,
+   * exactly as it would from gb_art_read() on the cart -- returns 0. `fail_at`
+   * chosen mid-scan (not the first read) so this proves the unwind happens
+   * DURING a real locate, not just on a degenerate empty scan. */
+  {
+    FIL fil; GuardedShim gs = { &fil, {0}, 0, 20 };
+    chk("D read-err", "open for read", f_open(&fil, "/rom.bin", FA_READ) == FR_OK);
+    gb_scan_guard_init(&gs.g, n, 0, 0, 7);
+    RomGbUi gu;
+    int ok = rom_gbui_open(&gu, guarded_shim_read, &gs, n, b_scratch, 8192);
+    chk("D read-err", "rom_gbui_open returns 0 when the Nth read fails", ok == 0);
+    chk("D read-err", "guard latches GB_SCAN_STOP_READ_ERR",
+        gs.g.stop == GB_SCAN_STOP_READ_ERR);
+    chk("D read-err", "at least fail_at+1 reads were attempted (not fewer)",
+        gs.g.reads >= 21);
+    f_close(&fil);
+  }
+
   f_mount(0, "", 0);
   rd_free();
   free(b);
