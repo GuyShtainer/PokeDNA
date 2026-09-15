@@ -498,8 +498,8 @@ mgfx_zoom_build argsites=1 -> fused_rom_read rom_fatfs_read g3x_fatfs_read iconr
 # (declared above) with the correct single implementation (img_rd, not img_wr --
 # G5's per-predecessor chase is precise enough here to tell rd from wr where the
 # old spilled/nonfield classification could not).
-g2w_begin argsites=1 -> img_rd img_wr
-write_patch.part.0 argsites=1 -> img_rd img_wr
+g2w_begin argsites=1 -> img_rd img_wr str_rd str_wr
+write_patch.part.0 argsites=1 -> img_rd img_wr str_rd str_wr
 
 # box_oam.c's memcpy32 (libtonc's IWRAM_CODE LDMIA/STMIA word copy, box_oam.c:1247's
 # own comment already names it as the reason for the shared bx-rN thunk boxoam_commit
@@ -580,7 +580,7 @@ Gb12Mount.rd @4 in gbsrc_set_name -> gb_read fused_gb_slice_read gb_img_read
 # part.0 actually dispatch through (both take `G2Writer* w` and write out a patched
 # region -- read side already covered by G2Writer.rd@0 above for THIS caller's
 # sibling reads).
-G2Writer.wr @4 in refresh_checksums,write_patch.part.0 -> img_wr
+G2Writer.wr @4 in refresh_checksums,write_patch.part.0 -> img_wr str_wr
 
 # rom_gblearn.h's RomGbLearn.read (read@4 -- `uint8_t gen; bool ok; GbReadFn read;`
 # packs `read` to offset 4 after the two 1-byte fields, verified by header). rom_
@@ -811,7 +811,7 @@ RomCtx.read @0 in tileset_to_vram -> fused_rom_read rom_fatfs_read g3x_fatfs_rea
 # each one-call-site file-local, inlined at -O2) dereferencing their `const RomMon*
 # rm` parameter the same way as read_small.
 
-G2Writer.rd @0 in cmp_regions,g2w_calc_checksums,g2w_commit_list,g2w_load_list,readback_cmp -> img_rd
+G2Writer.rd @0 in cmp_regions,g2w_calc_checksums,g2w_commit_list,g2w_load_list,readback_cmp -> img_rd str_rd
 # source/gen2_write.h: `G2ReadFn rd;` is G2Writer's first member (rd@0, wr@4 -- see
 # the already-declared G2Writer.wr class below). Every caller above takes `G2Writer*
 # w` (grepped gen2_write.c) and calls `w->rd(...)`.
@@ -831,7 +831,7 @@ G2Writer.rd @0 in cmp_regions,g2w_calc_checksums,g2w_commit_list,g2w_load_list,r
 # one call site, gbs_open_streamed(&vw->s, gb_read, f, len, ...)). Declared here ahead
 # of that wiring landing so every intermediate commit in this lane keeps a clean
 # stack-budget certificate.
-GbSession.rd @20 in gbs_read_field,gbs_load_list -> gb_read
+GbSession.rd @20 in gbs_read_field,gbs_load_list,str_rd -> gb_read
 
 # icon_store.c's run_fill() calls cache_fill_rows()/rom_fill_row() directly (no visible
 # function-pointer parameter of its own) -- both are one-call-site file-local helpers
@@ -1057,17 +1057,6 @@ addrtaken-ok __aeabi_idiv0        # libgcc: division-by-zero trap, taken by the 
 addrtaken-ok __boot_method        # crt0: multiboot/cart boot-method DATA byte, not a function -- see the D5 note above
 addrtaken-ok __do_global_dtors_aux # crtstuff: static-destructor runner, taken via .fini_array
 addrtaken-ok __libc_init_array    # newlib crt: constructor runner, taken by crt0/_start
-addrtaken-ok str_rd               # BACKLOG #64 step 1: gb_session.c's streamed-session read
-                                  # callback, passed to g2w_begin() inside gbs_open_streamed().
-                                  # Genuinely unreached today -- nothing in this lane's step 1
-                                  # commit calls gbs_open_streamed() yet (step 3 wires the one
-                                  # call site, pdna_gen12.c's pdna_gen12_show()). Its address is
-                                  # taken regardless (g2w_begin's `rd` parameter), so it survives
-                                  # linking even though no path from main reaches it. Step 3
-                                  # should ADD str_rd/str_wr to `g2w_begin argsites=1 -> ...`'s
-                                  # implementation list (they become genuinely reachable then)
-                                  # and DELETE these two addrtaken-ok lines.
-addrtaken-ok str_wr               # same call, gb_session.c's write refusal stub -- see str_rd.
 addrtaken-ok gen1_write_layout    # 2026-09-14: only ever called DIRECTLY (5 sites, all in gen1_write.c; no
                                   # assignment or table names it). The link placed this Thumb function at
                                   # 0x08010000, and that EVEN word is pdna_romfull_screen's own literal for
