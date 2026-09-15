@@ -170,6 +170,15 @@ def main() -> int:
     ok, detail = gate_before_pattern(box_lines, s, e, BC_NATIVE_RE, MEMCPY80_RE, "box_set_held")
     check(ok, detail)
 
+    # ---- (a''') review F2: drop_held's SWAP DESTINATION guard. Two-term pattern on
+    # purpose -- a bare `bc_is_native(recs + (uint32_t)cur * 80)` is masked by the
+    # `occupied` computation higher in the same body (S150-2, G-H2).
+    F2_SWAP_RE = re.compile(r"bc_is_native\([^;]*\)\s*&&\s*!bc_is_native\(s_held\)")
+    s, e = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
+    ok, detail = gate_before_pattern(box_lines, s, e, F2_SWAP_RE,
+                                     re.compile(r"memcpy\(occ, recs"), "drop_held SWAP dest (F2)")
+    check(ok, detail)
+
     s, e = extract_function(box_lines, r"^static int item_home\(")
     check(first_match_line(box_lines, s, e, BC_NATIVE_RE) is not None,
           "item_home: no bc_is_native( found in its (comment-stripped) body")
@@ -286,7 +295,9 @@ def self_test_mutation_detection(box_lines: list[str]) -> None:
         if GATE_RE.search(ln):
             gate_start = i
             break
-    assert gate_start is not None, "drop_held's own gate line vanished from the real source -- fix the source, not this test"
+    if gate_start is None:
+        check(False, "drop_held's own gate line vanished from the real source -- fix the source, not this test")
+        return
     # the gate is a single `if (xg_native_escape_denied(s_held, src->scope)) {` line
     # followed by its brace-balanced block; find its close by brace counting from gate_start.
     depth = 0
@@ -302,7 +313,9 @@ def self_test_mutation_detection(box_lines: list[str]) -> None:
     for i, ln in enumerate(rest):
         if MEMCPY80_RE.search(ln):
             last_memcpy = i
-    assert last_memcpy is not None, "drop_held has no 80-byte memcpy left after removing the gate block -- unexpected shape"
+    if last_memcpy is None:
+        check(False, "drop_held has no 80-byte memcpy left after removing the gate block -- unexpected shape")
+        return
     mut_f = rest[:last_memcpy + 1] + gate_block + rest[last_memcpy + 1:]
     ok, detail = gate_before_pattern(mut_f, 0, len(mut_f), GATE_RE, MEMCPY80_RE, "drop_held (MUT F)")
     check(not ok, f"MUT F (drop_held's gate moved after all memcpys) should have been caught but was not: {detail}")
