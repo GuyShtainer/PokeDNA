@@ -132,3 +132,9 @@ __pycache__/
 *.pk2
 *.sav.dat
 /roms/
+
+# PDNA_EMIT_PLANT=1 test output (BACKLOG #150 S150-2 step 6): raw 2400-byte Bank box
+# files emitted by tests/host_bankcell_test.c for a real-hardware SD-card copy, never
+# by default and never committed.
+/box14.box
+/box15.box

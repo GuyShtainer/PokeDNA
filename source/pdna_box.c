@@ -114,6 +114,12 @@ static void __attribute__((noinline)) box_native_decode(const uint8_t* cell, PkM
   int rung = gb12_render_rec(&in, &tgt, salt, tmp, &reason);
   if (rung == GB_SHOW_NONE) bank_damaged_standin(&in, salt, tmp);
   pk_decode_mon(tmp, false, out);
+  pk_resolve(out);   /* pk_decode_box_raw's own convention for every other slot
+                      * (gen3_box.c:113) -- level/stats/gender are all DERIVED, never
+                      * stored in a box record, and are computed here, not by
+                      * pk_decode_mon. Skipping this left every native cell showing
+                      * Lv0 (found live: this lane's own mGBA shot) even though the
+                      * built record's EXP was correct throughout. */
   out->raw = 0;   /* BACKLOG #46: gen3_mon.c:77 parks a pointer to `tmp`, a local about to
                    * go out of scope -- precedent gen3_edit.c:686-693. */
   if (hint) *hint = meta.gen;   /* 1/2 == PDNA_GEN1/PDNA_GEN2, pdna_origin_art.h:107 */

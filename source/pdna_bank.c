@@ -25,6 +25,7 @@
 #include "pdna_app.h"     /* app_can_edit, app_confirm */
 #include "pdna_pk.h"      /* PDNA_BANK_DIR */
 #include "pdna_bank.h"
+#include "bank_plant.h"   /* PDNA_DELTA-only test plant (BACKLOG #150 S150-2 step 6) */
 #include "pdna_layout.h"  /* PDNA_BANKSAVE_* -- box_save's SF_ERR_RENAME switch (S150-0 F4) */
 #include "pdna_origin_art.h"  /* the parallel era view: the bank is where all three meet */
 #include "log.h"           /* log_line (BACKLOG #150 S150-0's backup/rename triage) */
@@ -108,6 +109,14 @@ static bool box_load(int box) {
   uint32_t sz = 0;
   memset(g_bankbuf, 0, sizeof g_bankbuf);
   SfStatus st = sf_read_full(path, box_recs(), BOX_BYTES, &sz);
+#ifdef PDNA_DELTA
+  /* BACKLOG #150 S150-2 step 6: a PDNA_DELTA-only test plant -- boxes 0 and 1 only, and
+   * only when the real file could not be read (a virgin/absent box, the common delta-
+   * test-vehicle case). ZERO effect on the shipped build (PDNA_DELTA is never defined
+   * there): see bank_plant.h. */
+  if (st != SF_OK && box == 0) bank_plant_box0(box_recs());
+  if (st != SF_OK && box == 1) bank_plant_box_full(box_recs());
+#endif
   g_loaded = box;
   g_dirty = false;
   return st == SF_OK && sz >= BOX_BYTES;

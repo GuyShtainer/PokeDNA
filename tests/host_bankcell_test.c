@@ -2,13 +2,23 @@
  * (BACKLOG #150 S150-1). Pure C, dual-compiles on the host; the module under test has
  * ZERO callers in the shipped build, so this file is the only thing exercising it.
  *
- *   cc -std=c11 -Wall -Wextra -I source tests/host_bankcell_test.c \
+ *   cc -std=c11 -Wall -Wextra -I source -DPDNA_DELTA tests/host_bankcell_test.c \
  *      source/bank_cell.c source/gb_edit.c source/gen1_save.c source/gen1_write.c \
  *      source/gen2_save.c source/gen2_write.c source/gen3_save.c source/gen3_box.c \
  *      source/gen3_mon.c source/gen3_edit.c source/gen3_daycare.c source/gen3_clip.c \
- *      source/gen12_convert.c source/data_tables.c -o /tmp/hbc
+ *      source/gen12_convert.c source/data_tables.c source/bank_plant.c \
+ *      source/gb_new_mon.c source/gb_editor.c source/gb_session.c source/rom_gblearn.c \
+ *      source/rom_gbbase.c source/rom_gbsprite.c source/gb_sprite_codec.c \
+ *      source/ui_font.c -o /tmp/hbc
  *   /tmp/hbc (Guy's five Gen-3 .sav files, positional argv -- run_host_tests.py hands
- *             them over automatically)
+ *             them over automatically). -DPDNA_DELTA compiles section 8 (bank_plant,
+ *             BACKLOG #150 S150-2 step 6) IN; it never affects the shipped GBA build
+ *             (PDNA_DELTA is only ever defined by `make PDNA_TARGET=delta`, which
+ *             neither gate target uses -- see the lane's delivery report for the nm
+ *             proof that no bank_plant symbol reaches either gate ELF). Section 8
+ *             additionally writes box15.box/box14.box to the CURRENT directory when
+ *             the environment variable PDNA_EMIT_PLANT=1 is set -- never by default,
+ *             never into git (.gitignore covers /box14.box and /box15.box).
  *
  * Two independent corpora, read-only:
  *   - Gen-1/2: Guy's own dumps at a FIXED path outside the repo (gitignored, the same
@@ -42,6 +52,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdbool.h>
+#include <stdlib.h>   /* getenv -- PDNA_EMIT_PLANT (section 8) */
 
 #include "bank_cell.h"
 #include "gb_edit.h"
@@ -539,6 +550,85 @@ static void test_terminator_refused(void) {
   CHECK(rc < 0, "bc_pack must refuse list_species == 0xFF");
 }
 
+/* ============================================================================ */
+/* 8. bank_plant (BACKLOG #150 S150-2 step 6): the PDNA_DELTA-only test plant.   */
+/*    Compiled in only when the cc line above defines -DPDNA_DELTA; the shipped  */
+/*    build never does, and D-Q7's own nm proof (the lane's delivery report)     */
+/*    confirms no bank_plant symbol reaches either gate ELF.                    */
+/* ============================================================================ */
+#ifdef PDNA_DELTA
+#include "bank_plant.h"
+
+#define PLANT_BOX_BYTES (30 * BC_CELL_BYTES)   /* 2400 */
+
+static void check_plant_box0(const uint8_t recs[PLANT_BOX_BYTES]) {
+  /* slots 0,1,2,3 are native and each converts to something (FULL/RELAXED); slot 4
+   * is native but unrepresentable (GB_SHOW_NONE) -- bc_is_native is still true for
+   * ALL FIVE (that is the whole point of G-H2: occupancy comes from the raw bytes,
+   * not from whether a stand-in could be built). Slots 5..29 are untouched (all-zero
+   * -- ordinary empty Gen-3 slots). */
+  for (int s = 0; s < 5; s++)
+    CHECK(bc_is_native(recs + (uint32_t)s * BC_CELL_BYTES), "plant box0 slot %d must be native", s);
+  for (int s = 5; s < 30; s++) {
+    uint8_t zero[BC_CELL_BYTES]; memset(zero, 0, sizeof zero);
+    CHECK(memcmp(recs + (uint32_t)s * BC_CELL_BYTES, zero, BC_CELL_BYTES) == 0,
+          "plant box0 slot %d must be untouched (all-zero)", s);
+  }
+  /* slot 4's own bytes decode back to the glitch species + BC_ORIGIN_GOLD this file
+   * packed it with -- an independent re-check that bc_pack really did carry the
+   * 0xFE glitch through, not just "is native". */
+  GbEditMon back; BcMeta meta;
+  CHECK(bc_unpack(recs + (uint32_t)4 * BC_CELL_BYTES, &back, &meta), "plant box0 slot 4: bc_unpack");
+  CHECK(back.list_species == 0xFE, "plant box0 slot 4: list_species must be the 0xFE glitch index");
+  CHECK(meta.origin_game == BC_ORIGIN_GOLD, "plant box0 slot 4: origin_game must be GOLD");
+}
+
+static void check_plant_box_full(const uint8_t recs[PLANT_BOX_BYTES]) {
+  int n = 0;
+  uint32_t idents[30];
+  for (int s = 0; s < 30; s++) {
+    const uint8_t* cell = recs + (uint32_t)s * BC_CELL_BYTES;
+    CHECK(bc_is_native(cell), "plant box_full slot %d must be native (the 30-NATIVE worst case)", s);
+    idents[s] = bc_ident32(cell);
+    if (bc_is_native(cell)) n++;
+  }
+  CHECK(n == 30, "plant box_full must have 30/30 native slots, got %d", n);
+  for (int a = 0; a < 30; a++)
+    for (int b = a + 1; b < 30; b++)
+      CHECK(idents[a] != idents[b], "plant box_full: slots %d and %d share an ident32 (bank_serial collision)", a, b);
+}
+
+/* PDNA_EMIT_PLANT=1 (never by default, never into the repo -- .gitignore covers
+ * /box14.box and /box15.box): write the raw 2400-byte buffers to the CURRENT
+ * directory as box15.box (the five directed cells) and box14.box (the 30-native
+ * worst case) for a real-hardware SD-card copy to /PokeDNA/bank/box15.box and
+ * /PokeDNA/bank/box14.box -- BANK_BOXES is 16 (pdna_bank.c) and box_path is
+ * "box%02d.box", so those are BANK 16 and BANK 15, the two highest boxes. */
+static void maybe_emit_plant(const char* name, const uint8_t recs[PLANT_BOX_BYTES]) {
+  if (!getenv("PDNA_EMIT_PLANT") || strcmp(getenv("PDNA_EMIT_PLANT"), "1") != 0) return;
+  FILE* f = fopen(name, "wb");
+  if (!f) { printf("  !! could not open %s for PDNA_EMIT_PLANT\n", name); return; }
+  size_t wr = fwrite(recs, 1, PLANT_BOX_BYTES, f);
+  fclose(f);
+  printf("  PDNA_EMIT_PLANT: wrote %s (%zu bytes)\n", name, wr);
+}
+
+static void test_bank_plant(void) {
+  static uint8_t box0[PLANT_BOX_BYTES];
+  static uint8_t boxfull[PLANT_BOX_BYTES];
+  memset(box0, 0, sizeof box0);
+  memset(boxfull, 0, sizeof boxfull);
+
+  bank_plant_box0(box0);
+  check_plant_box0(box0);
+  maybe_emit_plant("box15.box", box0);
+
+  bank_plant_box_full(boxfull);
+  check_plant_box_full(boxfull);
+  maybe_emit_plant("box14.box", boxfull);
+}
+#endif /* PDNA_DELTA */
+
 int main(int argc, char** argv) {
   printf("== 1. Gen-1 corpus sweep ==\n");
   sweep_gen1("Red.sav");
@@ -569,6 +659,11 @@ int main(int argc, char** argv) {
 
   printf("== 7. 0xFF list terminator refused ==\n");
   test_terminator_refused();
+
+#ifdef PDNA_DELTA
+  printf("== 8. bank_plant (PDNA_DELTA-only) ==\n");
+  test_bank_plant();
+#endif
 
   printf("\n%d check(s), %s\n", g_check, g_fail ? "FAIL" : "OK");
   return g_fail ? 1 : 0;
