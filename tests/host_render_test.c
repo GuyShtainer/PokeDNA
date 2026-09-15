@@ -1,27 +1,32 @@
 /* Host (PC) test for map_render — the Gen-3 overworld renderer core.
  *
- * This is a DIFFERENTIAL test. tools/gen_render_truth.py is an independent Python
- * implementation of the same spec; it renders real maps out of a real retail ROM and
- * dumps the composited pixels to docs/analysis-2026-07-29/render-<map>.raw. This test
- * renders the same region with the C core and requires the two to agree BYTE FOR BYTE.
+ * DIFFERENTIAL test: tools/gen_render_truth.py is an independent Python spec
+ * implementation; it renders real maps out of a real retail ROM to render-<map>.raw
+ * (default docs/analysis-2026-07-29, gitignored -- absent on a fresh clone). Missing?
+ * This test GENERATES it itself into a temp dir (gen_or_find_truth_dir() below), or
+ * SKIPs with the reason. Pins LZ77, the 4bpp nibble order, tile flips, BGR555, the
+ * primary/secondary tile+metatile split, the 2-layer draw order, colour-0
+ * transparency, and the palette-slot-6 secondary trap, all at once.
  *
- * Two independent implementations agreeing on real ROM bytes is what makes a pixel
- * pipeline trustworthy before it ever reaches a GBA screen. It pins down, all at once:
- * LZ77 decompression, the 4bpp low-nibble-is-left rule, tile flips, the BGR555 palette
- * layout, the primary/secondary tile+metatile split, the metatile 2-layer draw order,
- * colour-0 transparency in the top layer, and the palette-slot-6 secondary trap.
+ * BACKLOG #140: this test wants a ROM (.gba) argv, not run_host_tests.py's default
+ * .sav corpus -- `RUN_HOST_TESTS: WANTS_ROM_ARGV` below is the marker the runner
+ * greps for (see tests/run_host_tests.py) to pass the .gba corpus instead. No ROM
+ * found -> a `SKIP (` -prefixed line + exit 0, same convention every host test uses.
+ * RUN_HOST_TESTS: WANTS_ROM_ARGV
  *
- * Regenerate the ground truth after ANY change to the spec:
- *   python3 tools/gen_render_truth.py <rom.gba>
+ * Regenerate the ground truth after any spec change: python3 tools/gen_render_truth.py <rom.gba>
  *
  * Build + run (from the repo root):
- *   cc -I source tests/host_render_test.c source/map_render.c source/rom_map.c \
+ *   cc -std=c11 -I source tests/host_render_test.c source/map_render.c source/rom_map.c \
  *      -o /tmp/hr && /tmp/hr "<rom.gba>"
  */
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <unistd.h>
 #include "map_render.h"
 #include "rom_map.h"
 
@@ -159,11 +164,47 @@ static void test_map(RomCtx* rc, const char* label, const char* raw_path) {
   CHECK(!mr_metatile_mip(&mr, 0, 32, mip, 8), "a mip larger than the metatile is refused");
 }
 
+/* Locate a directory holding render-littleroot.raw / render-petalburg.raw, generating
+ * one with tools/gen_render_truth.py against `rom_path` if the checked-in (gitignored)
+ * docs/ copy is absent. Returns a pointer to a static buffer valid for the rest of
+ * main(), or NULL (with a `SKIP (` line already printed) if neither is available. */
+static const char* gen_or_find_truth_dir(const char* rom_path) {
+  static const char* k_docs_dir = "docs/analysis-2026-07-29";
+  static char tmp_dir[256];
+  char probe[512];
+  snprintf(probe, sizeof probe, "%s/render-petalburg.raw", k_docs_dir);
+  FILE* have = fopen(probe, "rb");
+  if (have) { fclose(have); return k_docs_dir; }
+
+  snprintf(tmp_dir, sizeof tmp_dir, "/tmp/pdna_render_truth_%ld_%d",
+           (long)time(NULL), (int)getpid());
+  if (mkdir(tmp_dir, 0755) != 0) {
+    printf("SKIP (could not create %s to generate the render ground truth)\n", tmp_dir);
+    return 0;
+  }
+  char cmd[1024];
+  snprintf(cmd, sizeof cmd, "python3 tools/gen_render_truth.py \"%s\" --out \"%s\" "
+           ">/dev/null 2>&1", rom_path, tmp_dir);
+  int rc = system(cmd);
+  if (rc != 0) {
+    printf("SKIP (tools/gen_render_truth.py failed generating the ground truth, exit %d)\n", rc);
+    return 0;
+  }
+  snprintf(probe, sizeof probe, "%s/render-petalburg.raw", tmp_dir);
+  have = fopen(probe, "rb");
+  if (!have) {
+    printf("SKIP (tools/gen_render_truth.py ran but did not write render-petalburg.raw)\n");
+    return 0;
+  }
+  fclose(have);
+  return tmp_dir;
+}
+
 int main(int argc, char** argv) {
   const char* rom_path = (argc > 1) ? argv[1]
       : "/Users/guyshtainer/Desktop/pokemon sav/POKEMON_EMER_BPEE00.gba";
   FILE* f = fopen(rom_path, "rb");
-  if (!f) { printf("(skipped: %s not found)\n", rom_path); return 0; }
+  if (!f) { printf("SKIP (no ROM at %s)\n", rom_path); return 0; }
   fseek(f, 0, SEEK_END);
   uint32_t sz = (uint32_t)ftell(f);
   fseek(f, 0, SEEK_SET);
@@ -260,8 +301,13 @@ int main(int argc, char** argv) {
           "(BACKLOG #103 F4 -- the span bound was one byte short)");
   }
 
-  test_map(&rc, "littleroot", "docs/analysis-2026-07-29/render-littleroot.raw");
-  test_map(&rc, "petalburg",  "docs/analysis-2026-07-29/render-petalburg.raw");
+  const char* truth_dir = gen_or_find_truth_dir(rom_path);
+  if (!truth_dir) { fclose(f); return 0; }
+  char littleroot_path[512], petalburg_path[512];
+  snprintf(littleroot_path, sizeof littleroot_path, "%s/render-littleroot.raw", truth_dir);
+  snprintf(petalburg_path, sizeof petalburg_path, "%s/render-petalburg.raw", truth_dir);
+  test_map(&rc, "littleroot", littleroot_path);
+  test_map(&rc, "petalburg",  petalburg_path);
 
   fclose(f);
   printf("\n");
