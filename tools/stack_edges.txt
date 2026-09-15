@@ -275,6 +275,16 @@ BoxSource.get_raw_name @72 in box_options_menu,pdna_box -> gbsrc_get_raw_name
 # site exists to require one) -- it is wired starting S3.
 BoxSource.can_lift @80 in src_can_lift -> gb_can_lift_hook
 
+# BACKLOG #150 S150-4 step 3/5: BoxXferOps's two live members, once the real k_gb_xfer
+# table (pdna_gen12.c) replaces the marker-only k_gb_xfer_s2 as the session-wide xfer
+# peer. Offsets derived from the walker's own BLIND SPOT report (never assumed):
+# `start_carry @ ...: struct-field load @4` (lift_up) and the analogous report for
+# drop_held's `s_xfer_peer->release_up(...)` call (release_up @16) -- both match the
+# natural ARM EABI layout of BoxXferOps (gen@0 padded to 4, lift_up@4, preview_down@8,
+# accept_down@12, release_up@16, move_within@20).
+BoxXferOps.lift_up @4 in start_carry -> gb_lift_up_hook
+BoxXferOps.release_up @16 in drop_held -> gb_release_up_hook
+
 # The commit parameter threaded through app_mon_menu (party call sites) and
 # app_paste_gb_merge -> app_paste_gb_commit -> app_commit_with_dex (inlined) -> `commit ?
 # commit() : 0` (source/pdna_app.h:52, source/pdna_main.c:1931/3132-3148/3243/3256/3275-3285/
@@ -1077,10 +1087,12 @@ BoxSource.can_edit @44 in pdna_origin_art_portrait,pdna_origin_box_art -> gb_art
 # field@16 site of its own (paste's only real path there is the release@8 tail-merge
 # above) -- but the DELTA build's codegen differs (confirmed live: `make delta`
 # reported a genuine `struct-field load @16` BLIND spot in app_mon_menu_readonly
-# before this line existed) so it IS a real, separate site on that variant. Offset 16
-# has no other struct claiming it, so this stays UNQUALIFIED (matches any caller that
-# ever presents a clean field@16 site -- today, app_mon_menu_readonly on normal/delta).
-AppSrcOps.paste @16 -> gb_paste_hook
+# before this line existed) so it IS a real, separate site on that variant.
+# BACKLOG #150 S150-4 step 5: offset 16 is now ALSO BoxXferOps.release_up (drop_held,
+# below) -- qualified with `in app_mon_menu_readonly` so the two offset-16 classes
+# stay disambiguated by caller instead of colliding (the guard's own error the moment
+# a second struct claims an unqualified offset).
+AppSrcOps.paste @16 in app_mon_menu_readonly -> gb_paste_hook
 # AppSrcOps.move (offset 4) DOES have a real site after all -- see the G5 correction
 # above `AppSrcOps.release @8 in app_mon_menu_readonly`, which also declares it.
 

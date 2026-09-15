@@ -42,7 +42,12 @@ typedef struct {
   bool (*lift_up)(const uint8_t* rec80, uint8_t* out80, XferCarry* xc);       /* GB -> Gen-3 native */
   bool (*preview_down)(const uint8_t* rec80, XferCarry* xc);                 /* pure Gen-3 -> GB conversion, no write */
   bool (*accept_down)(int box, const uint8_t* original80, XferCarry* xc);    /* commits the DOWN drop */
-  bool (*release_up)(int box, int slot, const XferCarry* xc);                /* consumes the GB origin after UP lands */
+  /* BACKLOG #150 S150-4 decision 6/7: re-shaped from `(int, int, const XferCarry*)` --
+   * this lane needs no XferCarry (the packed cell already lives in s_held[80]), so the
+   * hook is handed the 80 bytes it must RE-VERIFY against before it deletes (decision
+   * 7: the user may have walked to another screen between the lift and the drop; a
+   * blind (box, slot) delete could hit a bystander). */
+  bool (*release_up)(int box, int slot, const uint8_t cell80[80]);           /* consumes the GB origin after UP lands, re-verified */
   bool (*move_within)(int box, int slot, int dst_box);                      /* (GB,GB) different-box drop = a within-save move */
 } BoxXferOps;
 

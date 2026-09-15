@@ -42,9 +42,12 @@ bool xg_inject_refuse(bool arena_held, bool vinfo_valid);
 bool xg_clear_carry_on_gb_exit(bool carry_is_gb);
 
 /* pdna_box.c drop_held(): deny a drop when either side of the transfer is
- * BOXSCOPE_GB (== 2) — no cross-generation drop lands here (S2 has no lift path
- * yet; S3/S4 replace this with the real transfer). */
-bool xg_drop_denied(uint8_t dst_scope, uint8_t src_scope);
+ * BOXSCOPE_GB (== 2) — no cross-generation drop lands here, EXCEPT (BACKLOG #150
+ * S150-4 decision 9) a Bank destination receiving a GB-scope carry when both sides
+ * have an xfer vtable (`have_xfer`, since a bare predicate cannot see the vtable
+ * itself) -- the UP edge this lane adds. Every other GB-involving pair (including
+ * GB<-BANK, which is DOWN, not this lane) stays denied. */
+bool xg_drop_denied(uint8_t dst_scope, uint8_t src_scope, bool have_xfer);
 
 /* BACKLOG #150 S150-3: the escape-route gate. A native "GBC1" Bank cell
  * (source/bank_cell.h, bc_is_native) is, once S150-4 lands, the mon's ONLY copy on

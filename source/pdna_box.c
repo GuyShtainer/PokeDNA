@@ -47,6 +47,7 @@ _Static_assert(BOXSCOPE_BANK == 1, "source/xfer_gate.c's XG_SCOPE_BANK hard-code
 #include "pdna_pk.h"        /* pdna_pk_export_silent: "Export all" from the box title */
 #include "bank_cell.h"      /* bc_is_native/bc_unpack/bc_view/bc_ident32 -- native Bank cell render (BACKLOG #150 S150-2) */
 #include "gb12_render.h"    /* gb12_render_rec/GB_SHOW_* -- shared display ladder */
+#include "pdna_bank.h"      /* pdna_bank_prepare_native -- the UP drop's backup gate (BACKLOG #150 S150-4) */
 
 #define COLS 6
 #define ROWS 5
@@ -1062,11 +1063,26 @@ static int cursor_look(void) {
 }
 
 /* ---- mon-in-hand carry helpers (data-safety notes on the s_held declaration) ---- */
-static void start_carry(BoxSource* src, const uint8_t* recs, int box, int slot) {
-  memcpy(s_held, recs + (uint32_t)slot * 80, 80);            /* lift-don't-clear: copy, origin stays */
+/* BACKLOG #150 S150-4 step 3 (G-M7): a GB-scope source with a real xfer vtable packs
+ * its NATIVE bytes through lift_up() instead of the plain memcpy -- `recs` is the
+ * mount's SYNTHESISED Gen-3 grid for a GB source (gb_build_slot), and copying that
+ * would silently store a converted Gen-3 record where a native cell belongs. Returns
+ * false with NOTHING held (s_holding untouched) when lift_up() refuses (decision 5's
+ * ledger check, pdna_bank_next_serial()'s own failure, or a cancelled origin prompt) --
+ * every call site must check this return, either by acting on it (begin_select's
+ * single-tap grab, the NORMAL-mode MOVE-menu site) or by casting it (void) with a
+ * comment proving that call site can never be GB-scope (the party-strip/day-care
+ * pickup sites). */
+static bool start_carry(BoxSource* src, const uint8_t* recs, int box, int slot) {
+  if (src->scope == BOXSCOPE_GB && src->xfer && src->xfer->lift_up) {
+    if (!src->xfer->lift_up(recs + (uint32_t)slot * 80, s_held, 0)) return false;
+  } else {
+    memcpy(s_held, recs + (uint32_t)slot * 80, 80);            /* lift-don't-clear: copy, origin stays */
+  }
   s_holding = true; s_orig_box = box; s_orig_slot = slot; s_orig_scope = src->scope;
   s_held_dup = false;                                         /* a real mon (origin keeps it) */
   s_orig_party = false;                                       /* a box/bank origin, not the party */
+  return true;
 }
 
 /* Clear the origin cell after a within-scope drop; handles bank paging and returns the
@@ -1115,12 +1131,16 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
   bool occupied = g_box[cur].species != 0 || bc_is_native(recs + (uint32_t)cur * 80) ||
                  (src->scope == BOXSCOPE_BANK && app_bank_slot_pending(box, cur));   /* the REAL Bank's deferred-delete queue, never a GB box index (S1 review D1) */
   if (!same_scope(src)) {                                    /* cross-scope drop */
-    /* BACKLOG #120 S2: no lift path exists yet for either side of a Game-Boy-scope
-     * transfer (S3/S4 add the real UP/DOWN mechanics) -- deny before the occupied
-     * check and before the DUPLICATE fast-path below, so a GB-scope carry can never
-     * land, dup or not. Bracketed like the PC->Bank commit below it uses for its
-     * own boxoam_suspend()/resume(). */
-    if (xg_drop_denied(src->scope, s_orig_scope)) {
+    /* BACKLOG #120 S2 / #150 S150-4 decision 9: no lift path exists for a
+     * Game-Boy-scope transfer unless a REAL xfer vtable is installed (not the S2
+     * marker-only k_gb_xfer_s2, whose members were all NULL) -- deny before the
+     * occupied check and before the DUPLICATE fast-path below, so a GB-scope carry
+     * can never land there, dup or not. `have_xfer` is what lets decision 9's one
+     * allow-rule (BANK<-GB) through once k_gb_xfer (this lane) is session-wide.
+     * Bracketed like the PC->Bank commit below it uses for its own
+     * boxoam_suspend()/resume(). */
+    bool have_xfer = s_xfer_peer && s_xfer_peer->lift_up && s_xfer_peer->release_up;
+    if (xg_drop_denied(src->scope, s_orig_scope, have_xfer)) {
       boxoam_suspend();
       snd_deny();
       msg_wait(PDNA_XFER_NOGEN_TITLE, UI_WARN, PDNA_XFER_NOGEN_L1, PDNA_XFER_NOGEN_L2);
@@ -1128,6 +1148,64 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
       return recs;
     }
     if (occupied) { snd_deny(); return recs; }
+    /* BACKLOG #150 S150-4 decisions 1/7/9/10: the UP drop -- a Game Boy mon carried
+     * into an empty Bank cell. ORDER (decision 1): the Bank write is committed and
+     * VERIFIED first; only then does the Game Boy save lose the mon (release_up).
+     * A failed Bank write reverts the cell and KEEPS HOLDING (never touches the GB
+     * save); a failed release_up leaves a DUPLICATE (the Bank already has it, the GB
+     * save still has it too) -- a duplicate is visible and repairable, a loss is not. */
+    if (src->scope == BOXSCOPE_BANK && s_orig_scope == BOXSCOPE_GB &&
+        s_orig_slot >= 0 && s_xfer_peer && s_xfer_peer->release_up) {
+      boxoam_suspend();
+      if (!pdna_bank_prepare_native()) {
+        snd_error();
+        msg_wait(PDNA_XFER_PREP_TITLE, UI_WARN, PDNA_XFER_PREP_L1, PDNA_XFER_PREP_L2);
+        boxoam_resume();
+        log_line("bank: up box %d slot %d -> bank box %d slot %d: backup gate refused", s_orig_box, s_orig_slot, box, cur);
+        app_log_flush();
+        return recs;                                          /* still holding */
+      }
+      /* decision 10: the ident32 collision refusal, NOT a re-pack -- the serial is
+       * monotonic and persisted before use, so a collision means the meta was lost
+       * or rolled back. Scan the destination box's 30 slots (this box only: `recs`
+       * is the box already paged in for this drop) for a record whose bytes 0..7
+       * (magic + ident32) equal the cell's -- a plain memcmp, not a recomputed
+       * bc_ident32() on the candidate (a match on bytes 0..3 alone already implies
+       * "GBC1", so no separate bc_is_native() check is needed). */
+      for (int s = 0; s < G3_BOX_SLOTS; s++) {
+        if (s == cur) continue;
+        if (memcmp(recs + (uint32_t)s * 80, s_held, 8) == 0) {
+          snd_error();
+          boxoam_resume();
+          log_line("bank: up box %d slot %d -> bank box %d slot %d: ident32 collision at slot %d, refusing", s_orig_box, s_orig_slot, box, cur, s);
+          app_log_flush();
+          return recs;                                        /* still holding */
+        }
+      }
+      memcpy(recs + (uint32_t)cur * 80, s_held, 80);
+      bool ok = src->commit();                                 /* verified bank box_save */
+      boxoam_resume();
+      if (!ok) {
+        memset(recs + (uint32_t)cur * 80, 0, 80);
+        snd_error();
+        log_line("bank: up box %d slot %d -> bank box %d slot %d: bank write failed", s_orig_box, s_orig_slot, box, cur);
+        app_log_flush();
+        return recs;                                          /* still holding */
+      }
+      int gb_box = s_orig_box, gb_slot = s_orig_slot;
+      uint8_t held_copy[80]; memcpy(held_copy, s_held, 80);
+      s_holding = false; *done = true;                         /* hand empties BEFORE source cleanup (§11.2 step 6) */
+      if (!s_xfer_peer->release_up(gb_box, gb_slot, held_copy)) {
+        snd_error();
+        msg_wait(PDNA_XFER_KEPT_TITLE, UI_WARN, PDNA_XFER_KEPT_L1, PDNA_XFER_KEPT_L2);
+        log_line("bank: up box %d slot %d -> bank box %d slot %d: release refused, duplicate", gb_box, gb_slot, box, cur);
+        app_log_flush();
+      } else {
+        snd_save();
+        log_line("bank: up box %d slot %d -> bank box %d slot %d: ok", gb_box, gb_slot, box, cur);
+      }
+      return recs;
+    }
     if (s_held_dup && s_orig_slot < 0) {                     /* a fresh DUPLICATE: placing it is loss-proof
                                                                  in either direction -> no confirm needed
                                                                  (also fixes the reversed "Copy to Bank?"
@@ -2106,8 +2184,13 @@ static uint8_t* begin_select(BoxSource* src, int box, uint8_t* recs, int cur, bo
   if (themed) boxoam_select_clear();                    /* un-whiten; grab/deny takes over */
   boxoam_hand_pose(BOXOAM_POSE_NORMAL);
   if (anchor == corner) {                               /* no drag: the classic single-mon grab */
-    if (g_box[anchor].species) {
-      start_carry(src, recs, box, anchor);
+    /* BACKLOG #150 S150-4 step 3: the caller's src_can_lift() gate (the CM_MOVE
+     * dispatch above begin_select's own call) only proves the cell was liftABLE at
+     * grab time -- lift_up() itself can still refuse at pack time (decision 5's
+     * ledger check, or pdna_bank_next_serial() failing on a write). start_carry()'s
+     * own return must be checked here too, or a refused GB lift would silently fall
+     * through into the grab animation with nothing actually held. */
+    if (g_box[anchor].species && start_carry(src, recs, box, anchor)) {
       if (themed) render_full(src, box, anchor, false, false, false);   /* only to undo the theme */
       play_grab_anim(src, box, anchor);                 /* hand stays on screen throughout */
       carry_move(src, box, anchor, anchor);
@@ -2999,8 +3082,12 @@ static int party_strip_overlay(BoxSource* src, int box, int* cur,
            * of 6 columns (boxoam_strip_open's occlusion), so a multi-cell
            * rectangle would reach into cells hidden under the panel's own
            * chrome. The popup stays open, same as the menu's own MOVE branch
-           * below, so the grabbed mon can be walked back to the panel. */
-          start_carry(src, recs, box, gcur);
+           * below, so the grabbed mon can be walked back to the panel.
+           * BACKLOG #150 S150-4: return ignored -- this is the party-strip FOCUS
+           * popup (boxoam_strip_open), which pdna_box.h's own is_bank comment says a
+           * GB source never opens (is_bank suppresses the PARTY tab this popup is
+           * reached through) -- PC/Bank-only, so start_carry always returns true here. */
+          (void)start_carry(src, recs, box, gcur);
           play_grab_anim(src, box, gcur);
         } else if (g_box[gcur].species || app_src_empty_action_offered()) {   /* GRAB / PASTE (GB):
                                             * the box's own action menu, same call the
@@ -3018,8 +3105,12 @@ static int party_strip_overlay(BoxSource* src, int box, int* cur,
           if (app_take_move_request()) {                    /* MOVE -> into the glove; the
                                                              * popup STAYS OPEN (CHANGE 2's
                                                              * whole point) so it can be
-                                                             * walked back to the panel      */
-            start_carry(src, recs, box, gcur);
+                                                             * walked back to the panel
+                                                             * BACKLOG #150 S150-4: same
+                                                             * party-strip-is-PC/Bank-only
+                                                             * reasoning as the tap-grab
+                                                             * above -- return ignored. */
+            (void)start_carry(src, recs, box, gcur);
             play_grab_anim(src, box, gcur);
           } else if (app_take_dup_request()) {                /* DUPLICATE -> a fresh copy;
                                                                 * both flags are consumed
@@ -3328,7 +3419,11 @@ int pdna_box(BoxSource* src) {
   s_oam_reload = true;                        /* first paint uploads the box's icon tiles */
   uint8_t* recs = src->records(box);          /* current box's 30*80 records */
   box_decode(src, recs, box);
-  if (pickup_ps >= 0) start_carry(src, recs, box, pickup_ps);   /* lift the parked mon */
+  /* BACKLOG #150 S150-4: return ignored -- app_take_pickup()'s flag is set ONLY by
+   * day-care withdraw (pdna_main.c, "withdraw->PC sets a pickup"), a Gen-3-only flow
+   * that never runs inside a GB session's own box grid -- PC-only, so start_carry
+   * always returns true here. */
+  if (pickup_ps >= 0) (void)start_carry(src, recs, box, pickup_ps);   /* lift the parked mon */
   /* Cursor-arrival hint when crossing the PC<->Bank edge: bottom row (carrying up into the
    * bank) or the top tabs (only when NOT carrying — you can't rest a held mon on a tab).
    * 3 = open straight onto the PARTY strip (pdna_main.c's NV_PARTY routing) -- see
@@ -3775,11 +3870,33 @@ int pdna_box(BoxSource* src) {
         box_decode(src, recs, box);                                  /* refresh after possible write */
         s_oam_reload = true;                                             /* contents may have changed */
         if (app_take_move_request()) {                                   /* picked MOVE -> into the glove */
-          start_carry(src, recs, box, cur);
-          render_full(src, box, cur, false, false, false);               /* repaint OVER the menu, no black flash */
-          play_grab_anim(src, box, cur);                                 /* grab cue (OAM lift) */
-          carry_move(src, box, cur, cur);                                /* lift into carry */
-          draw_footer(src->is_bank, false, true);                        /* move-mode footer */
+          /* BACKLOG #150 S150-4/5: the SECOND way to reach start_carry with a
+           * BOXSCOPE_GB source (the first is the CM_MOVE grab above, begin_select) --
+           * this menu's MOVE row is offered on ANY occupied, non-native, non-party
+           * cell regardless of scope (pdna_main.c's app_mon_menu row builder never
+           * sees `src`), so a Gen-1/2 cell a Gen-1-one-mon-party/Mail-holding-party
+           * can_lift refuses must be guarded here too, or G-M7 (the lift must be a
+           * vtable call, not the shipped memcpy of the synthesised grid) is violated
+           * through this second route -- the same SILENT-but-honest refusal decision
+           * 8's grab-site guards use (the menu has already closed here, so the grid
+           * is visible underneath, same as the CM_MOVE site's own refusal reads).
+           * render_full/play_grab_anim/carry_move/draw_footer must only run when the
+           * carry actually started -- moved into the else branch so a refusal leaves
+           * nothing held and no grab animation plays. */
+          /* src_can_lift() is the grab-time gate (parity with the CM_MOVE site above);
+           * start_carry()'s own return is ALSO checked (not just relied on) because
+           * lift_up() can still refuse things src_can_lift() never asks about --
+           * decision 5's ledger check (gb_has_sidecar) and pdna_bank_next_serial()'s
+           * own SD-write failure -- so a can_lift PASS does not guarantee the pack
+           * succeeds. Same defense added to begin_select's single-tap grab. */
+          if (!src_can_lift(src, box, cur) || !start_carry(src, recs, box, cur)) {
+            snd_deny();
+          } else {
+            render_full(src, box, cur, false, false, false);             /* repaint OVER the menu, no black flash */
+            play_grab_anim(src, box, cur);                               /* grab cue (OAM lift) */
+            carry_move(src, box, cur, cur);                              /* lift into carry */
+            draw_footer(src->is_bank, false, true);                      /* move-mode footer */
+          }
         } else if (app_take_dup_request()) {                            /* picked DUPLICATE -> a fresh COPY in the glove */
           memcpy(s_held, recs + (uint32_t)cur * 80, 80);                /* copy floats in-hand; no origin (cancel discards it) */
           s_holding = true; s_orig_box = box; s_orig_slot = -1; s_orig_scope = src->scope; s_held_dup = true; s_orig_party = false;
@@ -3791,7 +3908,9 @@ int pdna_box(BoxSource* src) {
           int pb, ps;
           if (app_take_pickup(&pb, &ps) && pb >= 0 && pb < nb && ps >= 0 && ps < 30) {
             box = pb; recs = src->records(box); box_decode(src, recs, box);   /* TO DAY-CARE->PC: carry the parked mon */
-            cur = ps; start_carry(src, recs, box, ps); s_oam_reload = true;
+            /* BACKLOG #150 S150-4: return ignored -- same day-care-is-Gen-3-only
+             * reasoning as the pdna_box() entry-point pickup above; PC-only. */
+            cur = ps; (void)start_carry(src, recs, box, ps); s_oam_reload = true;
             render_full(src, box, cur, false, false, false);
             play_grab_anim(src, box, cur);
             carry_move(src, box, cur, cur);

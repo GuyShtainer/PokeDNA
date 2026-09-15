@@ -470,6 +470,22 @@ static bool gbsrc_can_boxops_impl(int box);
 static bool gbsrc_export_all_impl(int box);
 static bool gbsrc_release_all_impl(int box);
 static bool gb_can_lift_hook_impl(int box, int slot);
+/* BACKLOG #150 S150-4 step 3: BoxXferOps.lift_up/release_up real bodies (defined
+ * further below, beside gb_release_hook/gb_lift_up_hook's own header comments) --
+ * forward-declared here so k_gb_xfer (this same guarded block) can name them before
+ * pdna_gen12_source() (which wires s.xfer) appears in file order. */
+static bool gb_lift_up_hook(const uint8_t* rec80, uint8_t* out80, XferCarry* xc);
+static bool gb_release_up_hook(int box, int slot, const uint8_t cell80[80]);
+/* The real xfer vtable -- replaces the earlier S2 marker-only table (every function
+ * pointer NULL) now that UP has a real lift/release. lift_up/release_up are the only
+ * two members this lane implements; preview_down/accept_down (DOWN) and move_within
+ * (within-GB) stay NULL -- not this lane's job. `.gen` is unread today (kept 0, same
+ * as the S2 marker it replaces). Declared `static const` at file scope like every
+ * other BoxXferOps/AppSrcOps table in this file (k_gb_ops_gen1/gen2/ro). */
+static const BoxXferOps k_gb_xfer = {
+  .gen = 0, .lift_up = gb_lift_up_hook, .preview_down = 0, .accept_down = 0,
+  .release_up = gb_release_up_hook, .move_within = 0,
+};
 #endif
 static bool gbsrc_can_boxops(int box) {
 #ifndef PDNA_GEN12_HOST
@@ -1404,6 +1420,142 @@ static int gb_pick_box(const Gb12Mount* m, int exclude) {
   }
 }
 
+/* BACKLOG #150 S150-4 decision 4/D-Q1: pre-select the origin prompt's default row
+ * from a REGISTERED Game Boy ROM of this generation's own header title -- never an
+ * auto-skip (D-Q1: "a save can come from a different cart than the ROM beside it").
+ * Reuses g_ed's own romspath/romfil/romgs/romscan scratch (gb_create_locate_rom's
+ * own fields, same registered-ROM-open shape at :2994-3010) -- no new statics.
+ * Returns one of BC_ORIGIN_RED/BLUE/YELLOW/GOLD/SILVER, or BC_ORIGIN_UNKNOWN when no
+ * registered ROM of this generation opens or its title matches none of the known
+ * names (D-Q2: Yellow has no detector of its own -- it only ever wins this match by
+ * its own distinct title substring, never inferred). */
+static uint8_t gb_pick_origin_default(uint8_t gen) {
+  const char* reg = app_gb_rom_path(gen);
+  if (!reg || !reg[0]) return BC_ORIGIN_UNKNOWN;
+  int i = 0;
+  for (; reg[i] && i < (int)sizeof(g_ed->romspath) - 1; i++) g_ed->romspath[i] = reg[i];
+  g_ed->romspath[i] = 0;
+  memset(&g_ed->romfil, 0, sizeof g_ed->romfil);
+  if (f_open(&g_ed->romfil, g_ed->romspath, FA_READ) != FR_OK) return BC_ORIGIN_UNKNOWN;
+  FSIZE_t fsz = f_size(&g_ed->romfil);
+  uint32_t sz = (fsz > (FSIZE_t)0xFFFFFFFFu) ? 0xFFFFFFFFu : (uint32_t)fsz;
+  int ok = rom_gbsprite_open(&g_ed->romgs, gb_read, &g_ed->romfil, sz,
+                             g_ed->romscan, sizeof g_ed->romscan);
+  f_close(&g_ed->romfil);
+  if (!ok || g_ed->romgs.gen != gen) return BC_ORIGIN_UNKNOWN;
+  const char* t = g_ed->romgs.title;
+  if (gen == GB_GEN1) {
+    if (strstr(t, "YELLOW")) return BC_ORIGIN_YELLOW;
+    if (strstr(t, "BLUE"))   return BC_ORIGIN_BLUE;
+    if (strstr(t, "RED"))    return BC_ORIGIN_RED;
+  } else {
+    if (strstr(t, "SILVER")) return BC_ORIGIN_SILVER;
+    if (strstr(t, "GOLD"))   return BC_ORIGIN_GOLD;
+  }
+  return BC_ORIGIN_UNKNOWN;
+}
+
+/* BACKLOG #150 S150-4 decision 4: the one-time origin prompt. Modelled verbatim on
+ * gb_pick_box() above (same ui_clear/ui_text/ui_panel/ui_hline shape, same
+ * s_wait(KEY_UP|KEY_DOWN|KEY_A|KEY_B) loop, same PDNA_GBEDIT_PICKBOX_* row metrics --
+ * Gen-1/2 UX parity: reuse the session's own picker idiom, do not invent a screen).
+ * Exactly the three games of the detected generation (Gen 2 non-Crystal is two
+ * rows). Returns the picked BC_ORIGIN_* value, or -1 on B (cancel -- the LIFT fails,
+ * nothing held, nothing written). */
+static int __attribute__((noinline)) gb_pick_origin(uint8_t gen, bool crystal) {
+  if (crystal) return BC_ORIGIN_CRYSTAL;   /* D-Q7: Crystal is not ambiguous -- no prompt at all */
+
+  const char* names[3];
+  uint8_t     vals[3];
+  int n;
+  if (gen == GB_GEN1) {
+    n = 3;
+    names[0] = PDNA_XFER_GAME_RED;    vals[0] = BC_ORIGIN_RED;
+    names[1] = PDNA_XFER_GAME_BLUE;   vals[1] = BC_ORIGIN_BLUE;
+    names[2] = PDNA_XFER_GAME_YELLOW; vals[2] = BC_ORIGIN_YELLOW;
+  } else {
+    n = 2;
+    names[0] = PDNA_XFER_GAME_GOLD;   vals[0] = BC_ORIGIN_GOLD;
+    names[1] = PDNA_XFER_GAME_SILVER; vals[1] = BC_ORIGIN_SILVER;
+  }
+
+  uint8_t def = gb_pick_origin_default(gen);
+  int sel = 0;
+  for (int i = 0; i < n; i++) if (vals[i] == def) { sel = i; break; }
+
+  for (;;) {
+    ui_clear();
+    ui_text(4, 3, UI_TITLE, PDNA_XFER_ORIGIN_TITLE);
+    ui_hline(0, 13, UI_SCR_W, UI_BORDER);
+    for (int i = 0; i < n; i++) {
+      int y = PDNA_GBEDIT_PICKBOX_Y0 + i * PDNA_GBEDIT_PICKBOX_ROW_H;
+      bool sh = (i == sel);
+      if (sh) ui_panel(2, y - 1, UI_SCR_W - 4, PDNA_GBEDIT_PICKBOX_ROW_H, UI_SEL, UI_TITLE);
+      ui_text(4, y, sh ? UI_SELTEXT : UI_TEXT, names[i]);
+    }
+    ui_hline(0, 147, UI_SCR_W, UI_BORDER);
+    ui_text(4, 150, UI_DIM, PDNA_XFER_ORIGIN_FOOT);
+
+    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    if (k & KEY_B) return -1;
+    if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : n - 1;
+    if (k & KEY_DOWN) sel = (sel + 1) % n;
+    if (k & KEY_A)    return (int)vals[sel];
+  }
+}
+
+/* BACKLOG #150 S150-4 decision 4: FNV-1a-64 over the save's own on-card path (the
+ * SAME constants gbsc_key() uses, gb_sidecar.c) -- "this save" is identified by its
+ * path, so a renamed/copied save simply re-asks (declared, decision 4's own text). */
+static uint64_t gb_origin_key(const char* path) {
+  uint64_t h = 14695981039346656037ULL;
+  for (int i = 0; path[i]; i++) { h ^= (uint64_t)(uint8_t)path[i]; h *= 1099511628211ULL; }
+  return h;
+}
+
+/* BACKLOG #150 S150-4 decision 4: read -> prompt -> write -> stamp, remembered ONCE
+ * PER SAVE under /PokeDNA/xfer/<16hex>.og (xr_path_for_name -- the resolver lives in
+ * the ledger folder with everything else, no new path rule). noinline: the FatFs
+ * path[GBSC_PATH_MAX] local is the same "keep it out of the caller's frame" reason
+ * gb_paste_write's own helper is noinline. Returns the BC_ORIGIN_* byte, or -1 if
+ * the user cancelled the prompt (the caller must fail the lift). A WRITE failure of
+ * the answer does NOT fail the lift (the cell still gets the answered byte; the next
+ * lift asks again, logged); a READ failure of an existing file re-prompts+rewrites. */
+static int __attribute__((noinline)) gb_origin_for_save(uint8_t gen, bool crystal) {
+  if (crystal) return BC_ORIGIN_CRYSTAL;
+
+  char name[24];
+  char hex[17];
+  gbsc_key_hex(gb_origin_key(g_ed->path), hex);
+  siprintf(name, "%s.og", hex);
+  char path[GBSC_PATH_MAX];
+  bool existed = xr_path_for_name(path, name);
+
+  if (existed) {
+    uint8_t buf[1]; uint32_t len = 0;
+    if (sf_read_full(path, buf, sizeof buf, &len) == SF_OK && len >= 1) {
+      bool ok = (gen == GB_GEN1)
+              ? (buf[0] == BC_ORIGIN_RED || buf[0] == BC_ORIGIN_BLUE || buf[0] == BC_ORIGIN_YELLOW)
+              : (buf[0] == BC_ORIGIN_GOLD || buf[0] == BC_ORIGIN_SILVER || buf[0] == BC_ORIGIN_CRYSTAL);
+      if (ok) return buf[0];   /* answered before -- no re-prompt */
+    }
+    /* absent, short, corrupt, or a value that doesn't belong to this gen -> re-prompt below */
+  }
+
+  int picked = gb_pick_origin(gen, false);
+  if (picked < 0) return -1;                          /* B cancels the lift */
+
+  FRESULT mkr = f_mkdir(PDNA_XFER_DIR);
+  if (mkr != FR_OK && mkr != FR_EXIST) {
+    log_line("gen12: origin mkdir %s failed (%d)", PDNA_XFER_DIR, (int)mkr);
+  } else {
+    uint8_t b = (uint8_t)picked;
+    if (sf_write_verified(path, &b, 1) != SF_OK)
+      log_line("gen12: origin write %s failed (kept the answer for this lift only)", path);
+  }
+  return picked;
+}
+
 /* app_src_ops_set() hook: MOVE TO on the read-only mon menu (S3). Picks a destination,
  * then gbs_move() -- see its header for the full refusal list and the atomicity
  * contract this function has to honour: a non-OK return can mean the DESTINATION half
@@ -1508,6 +1660,111 @@ static bool gb_release_hook(uint8_t* rec80) {
 
   log_line("=== gb release -> %s box %d slot %d ===", g_ed->path, box, slot);
   return gb_persist("release");
+}
+
+/* BoxXferOps.lift_up (BACKLOG #150 S150-4 decision 3/step 3): pack the record's
+ * NATIVE bytes -- G-M7's whole point. gb_copy_native_hook() already does
+ * gb_locate_addr + gbs_load_list + gb_load + gb_mark_caught and works on both GB
+ * entry points, so it is reused rather than re-derived (its own header comment).
+ * `xc` is unused (decision 6: no XferCarry static this lane -- s_held already holds
+ * the 80-byte result and s_orig_box/s_orig_slot hold the GB origin).
+ *
+ * Order: copy the native record -> decision 5's ledger refusal (a mon with a sidecar
+ * entry already has a restorable Gen-3 original via COPY/PASTE; refuse rather than
+ * merge) -> the origin byte (BC_ORIGIN_UNKNOWN placeholder here; step 4 replaces this
+ * with the real per-save-remembered prompt -- wiring order stated in the S150-4/5
+ * delivery report) -> pdna_bank_next_serial() (0 -> fail the lift, the serial is
+ * persisted before the cell that consumes it) -> flags derived from the SAME getters
+ * bank_plant.c's own test fixture uses (gb_is_egg / gb_get_held_item), never a new
+ * rule -> bc_pack(), which owns the party->box truncation itself (do not truncate
+ * here). epoch reuses gb_paste_write's own RTC source (gba_rtc_get), not a new clock
+ * call -- 0 when the RTC is absent, exactly as gb_paste_write already tolerates. */
+static bool gb_lift_up_hook(const uint8_t* rec80, uint8_t* out80, XferCarry* xc) {
+  (void)xc;
+  if (!out80) return false;
+  /* hard rule 4 / tests/host_gb_write_gate_test.py: this hook itself writes
+   * (pdna_bank_next_serial() persists bank.meta), so it carries its own
+   * app_can_edit() gate rather than relying only on the caller's can_lift check --
+   * the SD side of the write is this function's own responsibility, not begin_
+   * select's/the NORMAL-mode menu's, which merely decide whether to LOOK at a cell. */
+  if (!app_can_edit()) return false;
+
+  GbEditMon mon;
+  if (!gb_copy_native_hook(rec80, &mon, NULL)) return false;
+
+  /* decision 5 / G-F6: a GB record that already has a ledger entry refuses the lift --
+   * it is not merged here. The shipped COPY -> PASTE 3->GB->3 route
+   * (pdna_main.c app_paste_gb_merge) stays the way home for that mon. */
+  if (gb_has_sidecar(mon.gen, &mon)) return false;
+
+  /* decision 4/D-Q7: the one-time-per-save origin prompt (g_ed is non-NULL here --
+   * lift_up is only ever reachable through k_gb_xfer, which pdna_gen12_source()
+   * installs only when g_ed is set). -1 = B cancelled -> fail the lift, before any
+   * serial is spent. */
+  int origin = gb_origin_for_save(g_ed->s.gen, gb_session_is_crystal(&g_ed->s));
+  if (origin < 0) return false;
+  uint8_t origin_game = (uint8_t)origin;
+
+  uint32_t serial = pdna_bank_next_serial();
+  if (!serial) return false;                 /* meta write failed -> refuse the lift */
+
+  uint8_t flags = 0;
+  if (mon.is_party)          flags |= BC_FLAG_FROM_PARTY;
+  if (gb_is_egg(&mon))       flags |= BC_FLAG_EGG;
+  if (gb_get_held_item(&mon) != 0) flags |= BC_FLAG_HOLDS_ITEM;
+
+  GbaRtcTime t;
+  uint32_t epoch = 0;
+  if (gba_rtc_get(&t))
+    epoch = ((uint32_t)(t.year - 2000u) << 26) | ((uint32_t)t.month << 22) |
+            ((uint32_t)t.day << 17) | ((uint32_t)t.hour << 12) |
+            ((uint32_t)t.minute << 6) | (uint32_t)t.second;
+
+  return bc_pack(&mon, flags, origin_game, epoch, serial, out80) == 0;
+}
+
+/* BoxXferOps.release_up (BACKLOG #150 S150-4 decision 7): RE-VERIFIES before it
+ * deletes. Between the lift and the drop the user walked to another screen; deleting
+ * (box, slot) blind could delete a bystander -- so this reloads the slot and refuses
+ * unless its bytes still match `cell80` (the exact 80 bytes the Bank now holds).
+ * Same 8-byte-re-verify discipline pdna_bank_clear_slots uses, but a FULL match here
+ * (rec[0..meta.rec_len), otname, nick) since bc_unpack() hands back a whole
+ * GbEditMon to compare against, not just an 8-byte identity span. Any mismatch or
+ * refusal -> gb_rollback() + log, return false -- the caller (drop_held) shows the
+ * duplicate message; the Bank already has the mon either way. */
+static bool gb_release_up_hook(int box, int slot, const uint8_t cell80[80]) {
+  if (!g_ed) return false;
+  if (!app_can_edit()) return false;
+  if (gbs_box_writable(&g_ed->s, box) != GBS_OK) return false;
+
+  GbSession* s = &g_ed->s;
+  if (gbs_load_list(s, box, g_ed->list) != GBS_OK) { gb_rollback(); return false; }
+  if (slot >= gb_list_count(s->gen, g_ed->list, box)) { gb_rollback(); return false; }
+
+  GbEditMon have;
+  if (!gb_load(&have, s->gen, g_ed->list, box, slot)) { gb_rollback(); return false; }
+
+  GbEditMon want; BcMeta meta;
+  if (!bc_unpack(cell80, &want, &meta)) { gb_rollback(); return false; }
+
+  (void)meta;
+  if (have.gen != want.gen || have.rec_len != want.rec_len ||
+      memcmp(have.rec, want.rec, want.rec_len) != 0 ||
+      memcmp(have.otname, want.otname, GB_NAME_BYTES) != 0 ||
+      memcmp(have.nick, want.nick, GB_NAME_BYTES) != 0) {
+    gb_rollback();
+    log_line("gen12: xferup box %d slot %d: bystander mismatch, refusing delete", box, slot);
+    return false;
+  }
+
+  GbsStatus st = gbs_delete(s, box, slot, g_ed->list);
+  if (st != GBS_OK) {
+    gb_rollback();
+    log_line("gen12: xferup box %d slot %d refused: %s", box, slot, gbs_status_text(st));
+    return false;
+  }
+
+  return gb_persist("xferup");
 }
 
 /* BACKLOG #93: DUPLICATE on the read-only mon menu. Once-per-visit warning when the
@@ -3350,17 +3607,6 @@ static const AppSrcOps k_gb_ops_ro = {
   .paste = 0, .view = gb_view_hook, .editable = 0,
 };
 
-/* BACKLOG #120 S2 [decided here]: a MARKER-only xfer peer, installed session-wide (not
- * just inside a Bank visit -- see gb_session_core below) so the chunk-DOWN deny at
- * pdna_box.c:3178 (which keys on `s_xfer_peer` alone) does not depend on whether the
- * user has visited the Bank yet this session. Every function pointer is NULL -- S2
- * never dereferences one, so this has no stack_edges.txt row; S3 replaces this with a
- * real vtable once the UP mechanics land. `.gen` is set even though nothing reads it
- * yet, so a later slice does not have to remember to add it. */
-static const BoxXferOps k_gb_xfer_s2 = {
-  .gen = 0, .lift_up = 0, .preview_down = 0, .accept_down = 0, .release_up = 0, .move_within = 0,
-};
-
 /* BACKLOG #48 (Guy's hardware test, 2026-09-06): "the start button doesn't work, I
  * don't have the same menu" / "I can't enter settings". Root cause was NOT the box
  * screen returning a code this loop mishandled -- pdna_gen12_source() sets
@@ -3672,8 +3918,13 @@ static void gb_session_core(Gb12Mount* m, GbSession* ro) {
   /* BACKLOG #120 S2 [decided here]: the xfer peer is installed session-wide, not just
    * inside gb_bank_visit, so the chunk-DOWN deny at pdna_box.c:3178 (keyed on
    * `s_xfer_peer` alone) does not depend on whether the Bank has been visited yet --
-   * one uniform behaviour for the whole session, cleared in the exit block below. */
-  pdna_box_xfer_set(&k_gb_xfer_s2);
+   * one uniform behaviour for the whole session, cleared in the exit block below.
+   * BACKLOG #150 S150-4 step 3: k_gb_xfer replaces the marker-only k_gb_xfer_s2 here
+   * -- every existing predicate that keys on `s_xfer_peer` only reads its non-NULLness,
+   * never dereferences a member through it, so installing the real table changes no
+   * gate's verdict today; it is what makes start_carry's `src->xfer->lift_up` (this
+   * step) and drop_held's UP branch (`s_xfer_peer->release_up`, step 5) reachable. */
+  pdna_box_xfer_set(&k_gb_xfer);
   /* Returns 0 on B / the SAVE tab (leave); 2 on START, now reachable (BACKLOG #48,
    * BoxSource.has_start) -- handled by gb_nav_from_start above; 5 when the cursor
    * drops off the bottom row (the PC<->Bank hand-off, which has no PC to hand off to

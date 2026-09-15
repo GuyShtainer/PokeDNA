@@ -16,7 +16,12 @@ bool xg_inject_refuse(bool arena_held, bool vinfo_valid) { return arena_held || 
 
 bool xg_clear_carry_on_gb_exit(bool carry_is_gb) { return carry_is_gb; }
 
-bool xg_drop_denied(uint8_t dst_scope, uint8_t src_scope) {
+bool xg_drop_denied(uint8_t dst_scope, uint8_t src_scope, bool have_xfer) {
+  /* BACKLOG #150 S150-4 decision 9: exactly one allow-rule added to the S2 refusal --
+   * BANK<-GB, and only when both sides actually have an xfer vtable (the vtable half
+   * cannot be seen from a pure predicate, so the caller hands it in). Every other
+   * GB-involving pair (including GB<-BANK, which is DOWN, not this lane) stays denied. */
+  if (dst_scope == XG_SCOPE_BANK && src_scope == XG_SCOPE_GB && have_xfer) return false;
   return dst_scope == XG_SCOPE_GB || src_scope == XG_SCOPE_GB;
 }
 
