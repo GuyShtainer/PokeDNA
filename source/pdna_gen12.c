@@ -3019,6 +3019,7 @@ BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]) {
     return BANK_DOWN_REFUSED;
   }
 
+  loss.item_dropped |= notes.item_dropped;   /* S150-8 decision 15: the Gen-2 item stays behind */
   if (!gb_paste_loss_screen(&loss)) return BANK_DOWN_REFUSED;               /* decision 15: the shipped screen */
 
   uint8_t fix_from = 0, fix_to = 0;
