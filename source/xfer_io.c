@@ -52,12 +52,25 @@ bool xr_path_for_key(char out[GBSC_PATH_MAX], uint64_t key) {
     return true;
   }
 
-  if (!marker_present()) {
+  bool migrated = marker_present();
+  if (!migrated) {
     char spath[GBSC_PATH_MAX] = {0};
     if (gbsc_path(spath, GBSC_PATH_MAX, PDNA_SIDECAR_DIR, key) >= 0 &&
         f_stat(spath, &fi) == FR_OK) {
       memcpy(out, spath, GBSC_PATH_MAX);
       return true;
+    }
+  } else {
+    /* review R2 (LOW, accepted cost of decision (a)): a sidecar record arriving
+     * AFTER the marker exists is unreachable by this reader and never gets picked
+     * up by a later xr_migrate_once() either (that early-returns on the marker
+     * too). One extra f_stat, only on this miss, so at least the reason is
+     * visible in the log instead of the record silently never resolving. */
+    char spath[GBSC_PATH_MAX] = {0};
+    if (gbsc_path(spath, GBSC_PATH_MAX, PDNA_SIDECAR_DIR, key) >= 0 &&
+        f_stat(spath, &fi) == FR_OK) {
+      log_line("xfer: %s exists but migration already ran -- delete %s/MIGRATED to re-import",
+               spath, PDNA_XFER_DIR);
     }
   }
 
@@ -78,12 +91,21 @@ bool xr_path_for_name(char out[GBSC_PATH_MAX], const char* name) {
     return true;
   }
 
-  if (!marker_present()) {
+  bool migrated = marker_present();
+  if (!migrated) {
     char spath[GBSC_PATH_MAX] = {0};
     if (join_path(spath, GBSC_PATH_MAX, PDNA_SIDECAR_DIR, name) >= 0 &&
         f_stat(spath, &fi) == FR_OK) {
       memcpy(out, spath, GBSC_PATH_MAX);
       return true;
+    }
+  } else {
+    /* review R2 -- same shape as xr_path_for_key's own miss-only diagnostic. */
+    char spath[GBSC_PATH_MAX] = {0};
+    if (join_path(spath, GBSC_PATH_MAX, PDNA_SIDECAR_DIR, name) >= 0 &&
+        f_stat(spath, &fi) == FR_OK) {
+      log_line("xfer: %s exists but migration already ran -- delete %s/MIGRATED to re-import",
+               spath, PDNA_XFER_DIR);
     }
   }
 

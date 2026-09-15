@@ -222,6 +222,31 @@ int main(void) {
     CHECK(!exists("/PokeDNA/xfer/MIGRATED.tmp"), "(f) no leftover .tmp at the marker name either");
   }
 
+  /* ---- (c3) review R2/decision-(a): the EverDrive shape -- /PokeDNA/xfer exists
+   * (the dir was created by an earlier migrate call) but MIGRATED does not (this
+   * card can never write, so migration never completed) -- the sidecar fallback
+   * must still work and pass 2 must still be reachable. */
+  printf("== (c3) marker ABSENT, /PokeDNA/xfer dir exists (EverDrive shape) -- sidecar still resolves ==\n");
+  {
+    CHECK(!exists("/PokeDNA/xfer/MIGRATED"), "(c3) precondition: no marker (left absent by case (f))");
+    FILINFO xdirfi;
+    CHECK(f_stat("/PokeDNA/xfer", &xdirfi) == FR_OK, "(c3) precondition: /PokeDNA/xfer dir exists");
+    CHECK(!exists(xfer_path), "(c3) precondition: no xfer twin for this key");
+    CHECK(exists(sidecar_path), "(c3) precondition: the sidecar source still exists");
+
+    char out[GBSC_PATH_MAX];
+    bool found = xr_path_for_key(out, key);
+    CHECK(found, "(c3) xr_path_for_key finds a file (falls back to sidecar)");
+    CHECK(strcmp(out, sidecar_path) == 0,
+          "(c3) resolves to the SIDECAR path when unmigrated, even with /PokeDNA/xfer present (%s vs %s)",
+          out, sidecar_path);
+
+    uint32_t len = 0; char out2[GBSC_PATH_MAX];
+    SfStatus st = xr_open(key, readback, sizeof readback, &len, out2);
+    CHECK(st == SF_OK, "(c3) xr_open succeeds via the sidecar fallback (%s)", sf_status_str(st));
+    CHECK(len == clen && memcmp(readback, content, clen) == 0, "(c3) bytes match the sidecar original exactly");
+  }
+
   printf("\n%d check(s), %s\n", g_check, g_fail ? "FAIL" : "OK");
   return g_fail ? 1 : 0;
 }

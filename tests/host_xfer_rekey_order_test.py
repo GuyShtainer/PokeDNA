@@ -98,6 +98,32 @@ def swapped(window: str, a: str, b: str) -> str:
         return head + a + mid + b + tail
 
 
+def brace_block(text: str, anchor: str) -> tuple[str, int, int]:
+    """Find `anchor` (must appear exactly once in `text`), then the first `{`
+    at or after it, then its MATCHING `}` by brace counting (review R3:
+    order_ok() only checks textual order, not nesting -- a statement hoisted
+    OUT of a guarded `if { ... }` block but still textually after the anchor
+    would still pass a pure order check). Returns (block_text_between_braces,
+    open_index, close_index) -- both indices absolute into `text`, `open_index`
+    pointing at the `{` itself and `close_index` at the matching `}`."""
+    n = text.count(anchor)
+    if n != 1:
+        raise AssertionError(f"anchor {anchor!r} found {n} time(s), expected exactly 1")
+    i = text.index(anchor)
+    open_i = text.index("{", i)
+    depth = 0
+    j = open_i
+    while j < len(text):
+        if text[j] == "{":
+            depth += 1
+        elif text[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[open_i + 1 : j], open_i, j
+        j += 1
+    raise AssertionError(f"no matching close brace found for anchor {anchor!r}")
+
+
 def test_rekey_order_app_box_browse(text: str) -> None:
     print("== (1) app_box_browse: app_xfer_pid_rekey runs AFTER a successful app_commit_with_dex ==")
     w = window_after(text, "static bool app_box_browse(")
@@ -107,6 +133,33 @@ def test_rekey_order_app_box_browse(text: str) -> None:
     m = swapped(w, "app_commit_with_dex(rec, false, commit, block)", "app_xfer_pid_rekey(&plan)")
     check(not order_ok(m, "app_commit_with_dex(rec, false, commit, block)", "app_xfer_pid_rekey(&plan)"),
           "app_box_browse: self-mutation (order swapped) still reads as ok -- the check is vacuous")
+
+
+def test_rekey_nesting(text: str, if_anchor: str, call: str, label: str) -> None:
+    """review R3: order_ok() only checks textual order, not NESTING -- a rekey
+    call hoisted one brace OUT of the commit's if-block but still textually
+    after it would still pass a pure order check. This asserts `call` is
+    actually INSIDE the `if (if_anchor) { ... }` block found by brace
+    matching, then proves the check is not vacuous by moving `call`'s exact
+    source line one brace out (after the block's own closing brace) and
+    re-checking -- must now fail."""
+    block, open_i, close_i = brace_block(text, if_anchor)
+    check(call in block,
+          f"{label}: {call} is not INSIDE the {if_anchor!r} if-block "
+          "(order_ok() alone would miss a call hoisted one brace out but still textually after)")
+
+    lines = block.split("\n")
+    stmt_lines = [ln for ln in lines if call in ln]
+    if stmt_lines:
+        stmt_line = stmt_lines[0]
+        mutated_lines = list(lines)
+        mutated_lines.pop(mutated_lines.index(stmt_line))
+        mutated_block = "\n".join(mutated_lines)
+        mutated_text = (text[: open_i + 1] + mutated_block + text[close_i : close_i + 1]
+                        + stmt_line.strip() + text[close_i + 1 :])
+        m_block, _, _ = brace_block(mutated_text, if_anchor)
+        check(call not in m_block,
+              f"{label}: self-mutation (rekey hoisted one brace out) still reads as inside -- vacuous check")
 
 
 def test_rekey_order_party_browse(text: str) -> None:
@@ -120,13 +173,28 @@ def test_rekey_order_party_browse(text: str) -> None:
 
 
 def test_rekey_order_daycare(text: str) -> None:
-    print("== (3) day-care editable summary: app_xfer_pid_rekey runs AFTER app_stage_sb1 ==")
+    print("== (3) day-care editable summary: WARN only, no rekey (review R1) ==")
+    # BACKLOG #150 S150-6 review R1 (re-verify of F4): app_stage_sb1() is a RAM
+    # stage, not a verified commit -- flush_on_exit()'s B branch drops it outright
+    # ("disk untouched"), so re-keying at this site would unlink the old-key
+    # record for a PID change that may never land. This site therefore must call
+    # the guard (for its WARNING half) but must NEVER call app_xfer_pid_rekey.
     w = window_after(text, "if (app_xfer_pid_guard(recs[sel], out, &dplan)) {")
-    check(order_ok(w, "app_stage_sb1();", "app_xfer_pid_rekey(&dplan);"),
-          "day-care: app_xfer_pid_rekey(&dplan) does not appear after app_stage_sb1()")
-    m = swapped(w, "app_stage_sb1();", "app_xfer_pid_rekey(&dplan);")
-    check(not order_ok(m, "app_stage_sb1();", "app_xfer_pid_rekey(&dplan);"),
-          "day-care: self-mutation (order swapped) still reads as ok -- the check is vacuous")
+    check("app_xfer_pid_guard(recs[sel], out, &dplan)" in w,
+          "day-care: app_xfer_pid_guard(recs[sel], out, &dplan) not found in its own window")
+    check("app_xfer_pid_rekey(&dplan)" not in w,
+          "day-care: app_xfer_pid_rekey(&dplan) is called here -- R1 regression "
+          "(app_stage_sb1() is a RAM-only stage; flush_on_exit()'s B branch drops it, "
+          "so re-keying here would unlink the old-key record for a save that may never land)")
+    # self-mutation: INSERT the forbidden call right after app_stage_sb1(); -- the
+    # SAME "must not contain" predicate, re-run against the mutated text, must now
+    # read as violated (False), proving the check is not vacuously true.
+    marker = "app_stage_sb1();"
+    assert w.count(marker) == 1
+    mi = w.index(marker) + len(marker)
+    m = w[:mi] + " app_xfer_pid_rekey(&dplan);" + w[mi:]
+    check(not ("app_xfer_pid_rekey(&dplan)" not in m),
+          "day-care: self-mutation (rekey call inserted) still reads as ok -- the check is vacuous")
 
 
 def test_native_refusal_precedes_memcpy(text: str) -> None:
@@ -146,7 +214,13 @@ def main() -> int:
     text = PDNA_MAIN.read_text(errors="replace")
 
     test_rekey_order_app_box_browse(text)
+    print("== (1n) app_box_browse: app_xfer_pid_rekey is INSIDE the commit's if-block (review R3) ==")
+    test_rekey_nesting(text, "if (app_commit_with_dex(rec, false, commit, block)) {",
+                       "app_xfer_pid_rekey(&plan)", "app_box_browse")
     test_rekey_order_party_browse(text)
+    print("== (2n) party_browse: app_xfer_pid_rekey is INSIDE the commit's if-block (review R3) ==")
+    test_rekey_nesting(text, "if (app_commit_with_dex(rec, true, commit, g_sb1)) {",
+                       "app_xfer_pid_rekey(&plan)", "party_browse")
     test_rekey_order_daycare(text)
     test_native_refusal_precedes_memcpy(text)
 

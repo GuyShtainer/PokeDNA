@@ -6538,13 +6538,18 @@ static void pdna_daycare(void) {
             saved = false;
             nav = pdna_inspect(recs[sel], false, app_can_edit(), out, &saved, &card);
             if (saved) {
-              /* BACKLOG #150 S150-6 review F4: the third pdna_inspect->save route --
-               * mirrors app_box_browse/party_browse's guarded commit exactly. */
+              /* BACKLOG #150 S150-6 review F4 (re-verify R1): the WARNING half ONLY.
+               * app_stage_sb1() is a RAM stage, not a verified commit -- flush_on_exit()'s
+               * B branch drops it outright ("disk untouched", :8733), so re-keying here
+               * would unlink the old-key record for a PID change that may never land.
+               * D-Q3: never unlink before a VERIFIED persist. The record keeps its old
+               * key; S150-11's identity matcher (ident32 + OT + name) reconciles it. */
               XferRekeyPlan dplan;
               if (app_xfer_pid_guard(recs[sel], out, &dplan)) {
+                if (dplan.needs_rekey)
+                  log_line("xfer: daycare PID change staged, re-key deferred (old key kept)");
                 memcpy(recs[sel], out, 80);                      /* daycare mons are 80-byte BoxPokemon in SB1 */
                 app_stage_sb1();                                 /* deferred: saved when you leave the save */
-                app_xfer_pid_rekey(&dplan);
                 if (pk_decode_mon(recs[sel], false, &dc[sel])) pk_resolve(&dc[sel]);  /* refresh the scene copy */
               }
             }
