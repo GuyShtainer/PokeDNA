@@ -4986,15 +4986,21 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
      * covers the case pk_decode_mon (not reached here -- line :4830 above already
      * intercepts it) would otherwise mis-read as empty (G-H2): the EMPTY branch below
      * never runs for a native cell.
-     * VIEW reuses A_SUMMARY's own dispatch case: a native cell is never is_party, so
-     * that case always calls app_box_browse(), whose own bc_is_native() check (this
-     * file, gb_native_summary_open()) opens the REAL Gen-1/2 summary read-only instead
-     * of the lossy Gen-3-converted copy -- exactly what D-Q1 asks for, with no new
-     * dispatch case. Labelled VIEW (not VIEW/EDIT): read-only in this slice.
-     * An EDIT row arrives with S150-14 (Guy's MUST-HAVE-NOW answer,
-     * docs/BANK-CROSSGEN-DESIGN.md:456-458) -- appended to this SAME whitelist block
-     * (plus decision 9's dispatch list below), never a restructure. */
-    lab[n]=PDNA_LBL_VIEW; act[n++]=A_SUMMARY;
+     * VIEW / EDIT reuses A_SUMMARY's own dispatch case: a native cell is never
+     * is_party, so that case always calls app_box_browse(), whose own bc_is_native()
+     * check (this file, gb_native_summary_open()) opens the REAL Gen-1/2 summary
+     * instead of the lossy Gen-3-converted copy -- exactly what D-Q1 asks for.
+     * BACKLOG #150 S150-14 (orchestrator decision, 2026-09-15): rather than adding a
+     * fourth action constant, EDIT is routed through this SAME A_SUMMARY case with
+     * can_edit computed inside gb_native_summary_open (app_box_browse now calls
+     * app_native_cell_edit, which passes allow_edit=true) -- A_SUMMARY is ALREADY in
+     * the dispatch whitelist below, so no whitelist edit is needed either; the
+     * Gen-3 editor (gen3_edit_load/gen3_edit_commit/em_reroll) still never runs on a
+     * native cell, since this label only ever reaches app_box_browse's native
+     * branch, which never calls pdna_inspect() for a native rec. Relabelled to
+     * Gen 3's own PDNA_LBL_VIEW_EDIT (pdna_layout.h) -- same label, same position,
+     * same action as Gen 3's own occupied row -- no new string. */
+    lab[n]=PDNA_LBL_VIEW_EDIT; act[n++]=A_SUMMARY;
     if (!is_party) { lab[n]=PDNA_LBL_MOVE; act[n++]=A_MOVE; }         /* box: pick up + reposition */
     lab[n]=PDNA_LBL_RELEASE; act[n++]=A_RELEASE;
   } else if (occupied) {
