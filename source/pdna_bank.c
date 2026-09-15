@@ -100,7 +100,9 @@ static bool meta_save(void) {
 /* Read a box file -> g_bankbuf (absent/short/failed -> zeroed = an empty box, which is what
  * BROWSING wants). Returns whether the file was read IN FULL: any caller that intends to WRITE the
  * box back must gate on this — committing a zeroed buffer after a failed page-in would silently wipe
- * that box's untouched mons, and bank box files take NO immutable backup. */
+ * that box's untouched mons, and bank box files take only a single rolling .bak (box_save's
+ * sf_save_rolling, BACKLOG #150 S150-0), not an immutable backup — there is no earlier generation
+ * to fall back past that one file. */
 static bool box_load(int box) {
   char path[SF_PATH_MAX]; box_path(box, path);
   uint32_t sz = 0;
@@ -232,7 +234,9 @@ void pdna_bank_hide_pending(int box, PkMon g[BOX_RECS]) {
 /* Clear identity-matched `slots` in bank `box` and persist it (verified). For the cross-box MOVE —
  * called ONLY after the destination box is already committed. Pages the box in FIRST and REFUSES to
  * write when that read did not fully succeed, or when nothing matched: committing a zeroed/partial
- * buffer would wipe the box's untouched bystander mons, and bank box files take NO immutable backup.
+ * buffer would wipe the box's untouched bystander mons, and bank box files take only a single
+ * rolling .bak (box_save's sf_save_rolling, BACKLOG #150 S150-0), not an immutable backup — there
+ * is no earlier generation to fall back past that one file.
  * Returning false leaves the file untouched => the move degrades to a safe, recoverable DUPLICATE. */
 bool pdna_bank_clear_slots(int box, const uint8_t* slots, const uint8_t (*recs80)[80], int n) {
   if (box < 0 || box >= BANK_BOXES || n <= 0) return false;
