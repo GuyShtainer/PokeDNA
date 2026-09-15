@@ -56,7 +56,18 @@ DISPATCH_RE = re.compile(r"pdna_gb\w*\(\s*(?:gs|&g_ed->s)\s*,")
 # is no function to check for it.
 TABLE_NAMES = ("k_gb_ops_gen1", "k_gb_ops_gen2")
 FIELD_RE = re.compile(r"\.(\w+)\s*=\s*(\w+)")
-SKIP_FIELDS = {"edit", "copy_native", "view", "editable"}  # not mutating -- no cart gate required
+SKIP_FIELDS = {"edit", "copy_native", "editable"}  # not mutating -- no cart gate required
+# (`view` stays IN: gb_view_hook computes can_edit = app_can_edit() && ... and hands it to an
+#  editable summary -- b160 re-verify R5.)
+
+
+def strip_comments(text: str) -> str:
+    """Blank out /* ... */ and // comments but keep every newline, so line numbers
+    reported by the callers still point at the real source line. b160 re-verify R1:
+    the F2 fix's own comment mentions gb_locate() in prose, which kept check (b)
+    green after the gate itself was deleted -- tokens must be matched in CODE only."""
+    text = re.sub(r"/\*.*?\*/", lambda m: re.sub(r"[^\n]", " ", m.group(0)), text, flags=re.DOTALL)
+    return re.sub(r"//[^\n]*", " ", text)
 
 
 def extract_function_body(text: str, func_name: str) -> str:
@@ -94,6 +105,7 @@ def check_nav_dispatch(text: str) -> list[str]:
     body = extract_function_body(text, "gb_nav_from_start")
     if not body:
         return ["gb_nav_from_start() not found in source/pdna_gen12.c"]
+    body = strip_comments(body)   # R5: a trailing `/* app_can_edit() ... */` must not satisfy the check
     violations = []
     for lineno, line in enumerate(body.splitlines(), 1):
         stripped = line.strip()
@@ -130,8 +142,9 @@ def check_mutating_hooks(text: str) -> list[str]:
         if not body:
             violations.append(f".{fname} = {func}(): function body not found")
             continue
-        if "app_can_edit(" not in body and "gb_locate(" not in body:
-            violations.append(f".{fname} = {func}(): body has neither app_can_edit( nor gb_locate(")
+        code = strip_comments(body)
+        if "app_can_edit(" not in code and "gb_locate(" not in code:
+            violations.append(f".{fname} = {func}(): body has neither app_can_edit( nor gb_locate( (comments excluded)")
     return violations
 
 
@@ -181,10 +194,29 @@ def main() -> int:
               "correctly caught:")
         for v in mutation_violations:
             print(f"  (mutated-copy) FAIL: {v}")
+        # --- second self-mutation (b160 re-verify R1): delete the F2 gate block at the top
+        # of gb_create_hook. Its own comment mentions gb_locate() in prose, so a
+        # comment-blind check stayed green here -- this case pins the comment-stripping.
+        create_body = extract_function_body(original, "gb_create_hook")
+        gm = re.search(r"  if \(!app_can_edit\(\)\) \{\n(?:.*?\n)*?  \}\n", create_body)
+        if not create_body or not gm:
+            print("FAIL -- second self-mutation target (gb_create_hook's app_can_edit gate) not found "
+                  "(source drifted -- update this test)")
+            return 1
+        mutated2 = original.replace(create_body, create_body.replace(gm.group(0), "", 1), 1)
+        scratch.write_text(mutated2)
+        mutation2 = [v for v in run_all(scratch) if ".create" in v]
+        if not mutation2:
+            print("FAIL -- second self-mutation check: deleting gb_create_hook's app_can_edit() gate "
+                  "did NOT turn this test red (comment-blind check)")
+            return 1
+        print("self-mutation check 2: deleting gb_create_hook's gate -- correctly caught:")
+        for v in mutation2:
+            print(f"  (mutated-copy) FAIL: {v}")
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
-    print("\nhost_gb_write_gate_test: ok (shipped source clean, mutation caught)")
+    print("\nhost_gb_write_gate_test: ok (shipped source clean, both mutations caught)")
     return 0
 
 

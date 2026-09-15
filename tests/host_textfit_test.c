@@ -2290,6 +2290,11 @@ int main(void) {
   T("Needs EZ-Flash Omega.", 6);
   T(PDNA_ROMHACK_WHY, 6);
   T(PDNA_GB_VIEWONLY_WHY, 6);
+  /* b160 R2: still live at pdna_main.c:7120-7121 (the Gen-3 "SAVE CLOCK / RTC"
+   * !can branch). The GB clock stopped using them, the Gen-3 twin did not --
+   * and the first is 238 of 240 px at x=6. */
+  T("Read-only cart - fixing needs", 6);
+  T("an EZ-Flash Omega.", 6);
   /* M1 (BACKLOG #91) D6: the Gen-1 Map screen's own "D-PAD PAN" hint is
    * drawn with gbscr_text() (pdna_gbmap.c's gbmap_paint), the GB-screen
    * shell's own fixed one-glyph-per-cell font -- not ui_ptext/sys8 -- so the
