@@ -4099,21 +4099,18 @@ def run_s150_14_native_edit(core_mod, image_mod, rom: Path, out_dir: Path) -> gb
 
     s.tap("RIGHT", settle=CURSOR_SETTLE)                    # gbedit_adjust_checked: +1 on Atk's DV (GBE_DVA)
     s.shot("04_dv_changed", "S150-14: RIGHT on the Atk DV row -- gbedit_adjust_checked "
-           "incremented GBE_DVA by one; `dirty` is now true (memcmp against the pre-edit "
-           "shadow)")
+           "incremented GBE_DVA by one (DV 1 -> 2); `dirty` is now true (memcmp against "
+           "the pre-edit shadow). This step ALREADY crosses Chikorita's 87.5% female / "
+           "12.5% male ratio -- the header (species/level + gender/shiny, gbe_header, "
+           "reads live off `e`'s current DVs every frame) flips F -> M right here")
 
-    # A few more RIGHT presses on the SAME field to walk the Atk DV toward its 15
-    # ceiling -- gender is DERIVED from the Atk DV threshold and shininess from all
-    # four DVs together (gbe_header's own comment), so a single +1 step may or may
-    # not cross a visible threshold; walking further toward the extreme makes a
-    # crossing far more likely to actually show in this one screenshot. Caption
-    # states what the shot shows, not what it is assumed to.
+    # A few more RIGHT presses on the SAME field, past the threshold that already
+    # flipped gender at 04 above -- proves the header keeps tracking `e` live rather
+    # than freezing at the first change, not a second threshold crossing.
     s.press_n("RIGHT", 10, settle=CURSOR_SETTLE)
-    s.shot("05_header_flipped", "S150-14: after several more Atk-DV increments -- the "
-           "header line (species/level + gender/shiny, gbe_header) reads live off `e`'s "
-           "current DVs every frame; caption this against what the image actually shows "
-           "(a visible gender/shiny flip is expected but not guaranteed from this "
-           "specific planted CHIKORITA's starting DVs)")
+    s.shot("05_header_flipped", "S150-14: header still tracks `e` at DV 12 (the gender "
+           "flipped at 04 when DV 1 -> 2 crossed the ratio) -- confirms gbe_header reads "
+           "live off the edited DVs on every frame, not just the moment they changed")
 
     # B in EDIT mode (gbsum_edit_keys) only clears `editing` back to VIEW -- it does
     # NOT itself check `dirty` (that check lives in gbsum_view_keys, VIEW mode's own

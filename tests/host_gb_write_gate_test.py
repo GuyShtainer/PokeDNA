@@ -177,9 +177,22 @@ def check_named_write_hooks(text: str) -> list[str]:
     return violations
 
 
+def check_native_unpack_in_loop(text: str) -> list[str]:
+    """S150-14 decision 3: bc_unpack must sit INSIDE gb_native_summary_open's for(;;),
+    never hoisted above it -- pdna_gbsummary edits `e` in place and restores nothing."""
+    body = strip_comments(extract_function_body(text, "gb_native_summary_open"))
+    if not body:
+        return ["gb_native_summary_open(): function body not found"]
+    if "for (;;)" not in body or body.index("for (;;)") > body.index("bc_unpack("):
+        return ["gb_native_summary_open(): bc_unpack( is hoisted above the for(;;) "
+                "-- decision 3's discard trap is re-introduced"]
+    return []
+
+
 def run_all(path: Path) -> list[str]:
     text = path.read_text()
-    return check_nav_dispatch(text) + check_mutating_hooks(text) + check_named_write_hooks(text)
+    return (check_nav_dispatch(text) + check_mutating_hooks(text) + check_named_write_hooks(text)
+            + check_native_unpack_in_loop(text))
 
 
 def main() -> int:
