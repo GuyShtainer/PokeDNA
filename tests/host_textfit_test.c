@@ -464,6 +464,11 @@ int main(void) {
   PF("Bad level data", RO_PROSE_X, RO_PROSE_W);
   PF("No ID could fit", RO_PROSE_X, RO_PROSE_W);
   PF("Can't convert", RO_PROSE_X, RO_PROSE_W);
+  /* BACKLOG #54 T1: PDNA_ROMHACK_NOTE is the g_src_note this menu draws when a
+   * Gen-3 save is opened against a hack-flagged ROM (app_src_readonly_set(0,
+   * PDNA_ROMHACK_NOTE), pdna_main.c view_save()) — same prose geometry as the
+   * GB-import "why locked" strings above. */
+  PF(PDNA_ROMHACK_NOTE, RO_PROSE_X, RO_PROSE_W);
   chk("ro menu row", RO_ROW_X, PDNA_MONMENU_ROW_W,
       (int)strlen(PDNA_LBL_LEGALITY) * SYS8_W, PDNA_LBL_LEGALITY);
   chk("ro menu row", RO_ROW_X, PDNA_MONMENU_ROW_W,
@@ -2296,6 +2301,23 @@ int main(void) {
   PF(PDNA_DET_HDRONLY_TITLE, 28, 184);
   PF(PDNA_DET_HDRONLY_L1,    28, 184);
   PF(PDNA_DET_HDRONLY_L2,    28, 184);
+
+  /* ==== BACKLOG #54: the ROM-hack banner (source/pdna_main.c app_register_rom's
+   * verdict-specific refusal + view_save's once-per-open notice). msg_wait's own
+   * (28, 184) clamp, same as every other msg_wait check in this file. */
+  PF(PDNA_ROMHACK_TITLE, 28, 184);
+  PF(PDNA_ROMHACK_L1,    28, 184);
+  PF(PDNA_ROMHACK_L2,    28, 184);
+  /* Review fix F1: app_readonly_why()'s honest wording for the ~12 pdna_main.c
+   * "READ-ONLY" refusal sites that used to always say "Needs EZ-Flash Omega." even
+   * when the real reason is a hack-flagged ROM. Same msg_wait (28, 184) clamp. */
+  PF(PDNA_ROMHACK_WHY, 28, 184);
+  /* Review fix F3: the honest "can't say what this is" banner for a genuine non-US
+   * retail cart rule 1d would otherwise mislabel HACK -- same msg_wait clamp. */
+  PF(PDNA_ROMOTHER_TITLE, 28, 184);
+  PF(PDNA_ROMOTHER_L1,    28, 184);
+  PF(PDNA_ROMOTHER_L2,    28, 184);
+  /* ==== END BACKLOG #54 ROM-hack banner ======================================== */
 
   printf("\n%d checks, %d FAILED\n", checks, fails);
   return fails ? 1 : 0;

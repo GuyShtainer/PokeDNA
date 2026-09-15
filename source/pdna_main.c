@@ -1166,6 +1166,69 @@ static int  g_nparty = 0;
 static bool g_frlg = false, g_have_pc = false;
 static PkGame g_game = PK_EMERALD;
 
+/* ---- ROM-hack session verdict (BACKLOG #54, T0/T1) --------------------------
+ * One bit per PkGame slot (PK_RS/PK_EMERALD/PK_FRLG — the save-side granularity;
+ * RomKind's Ruby/Sapphire and FireRed/LeafGreen pairs both collapse into one slot
+ * each, same as app_rom_path_set()'s existing per-slot registration). Set when a
+ * Gen-3 ROM opened THIS SESSION classifies as ROM_ID_HACK with a known base kind;
+ * cleared when one classifies as ROM_ID_RETAIL for that same slot. An unknown-kind
+ * hack (rule 1d, RomKind ROM_NONE) touches no bit at all -- it cannot be attributed
+ * to a game, and guessing would lock a retail save of that game (decision 4). The
+ * ROM is the only signal that can ever set or clear this: a save carries no game
+ * identifier (Gen3SaveInfo has no field for one), so it can neither raise nor clear
+ * a verdict here. Only 1 byte, only static in this lane. */
+static uint8_t s_hack_mask;
+
+static PkGame pkgame_of_romkind(RomKind k) {
+  return (k == ROM_RUBY || k == ROM_SAPPHIRE) ? PK_RS
+       : (k == ROM_FIRERED || k == ROM_LEAFGREEN) ? PK_FRLG : PK_EMERALD;
+}
+
+static bool app_rom_is_hack(PkGame g) { return (s_hack_mask & (1u << (unsigned)g)) != 0; }
+
+/* Review fix F1: ~20 refusal sites share the literal "Needs EZ-Flash Omega." --
+ * correct for an Everdrive/pdna_romcheck_bad() refusal, a real LIE for an Omega
+ * owner whose cart is perfectly writable but whose currently-open game is
+ * hack-flagged (app_can_edit() now refuses for that reason too, BACKLOG #54).
+ * This picks the honest wording for the 12 pdna_main.c sites this lane owns; the
+ * other seven files' sites (pdna_box.c, pdna_frontier.c, pdna_fly.c,
+ * pdna_contest.c, pdna_map.c, pdna_gbfly.c, pdna_layout.h's own copy) are OUT OF
+ * SCOPE for this lane -- named in this lane's report as a follow-up BACKLOG item,
+ * not touched here. */
+static const char* app_readonly_why(void) {
+  return app_rom_is_hack(g_game) ? PDNA_ROMHACK_WHY : "Needs EZ-Flash Omega.";
+}
+
+static const char* romident_name(RomIdent id) {
+  switch (id) {
+    case ROM_ID_RETAIL:      return "RETAIL";
+    case ROM_ID_HACK:        return "HACK";
+    case ROM_ID_NOT_POKEMON: return "NOT_POKEMON";
+    default:                 return "NOT_GBA";
+  }
+}
+
+/* Called at every one of the three places a Gen-3 ROM handle gets opened
+ * (app_register_rom, app_icon_rom_open's fused open, its SD candidate loop) --
+ * whether rom_open() returned true or false. `rc` must already carry the verdict
+ * rom_open() sets before every return (rc->ident, rc->kind). `where` is a short tag
+ * for the log line only. */
+static void app_rom_note_verdict(const RomCtx* rc, const char* where) {
+  if (!rc) return;
+  if (rc->ident == ROM_ID_HACK && rc->kind != ROM_NONE) {
+    PkGame g = pkgame_of_romkind(rc->kind);
+    s_hack_mask |= (uint8_t)(1u << (unsigned)g);
+    log_line("romhack: %s -> HACK impersonating %s (read-only until verified)",
+             where, rom_kind_name(rc->kind));
+  } else if (rc->ident == ROM_ID_RETAIL) {
+    PkGame g = pkgame_of_romkind(rc->kind);
+    s_hack_mask &= (uint8_t)~(1u << (unsigned)g);
+    log_line("romhack: %s -> RETAIL %s", where, rom_kind_name(rc->kind));
+  } else {
+    log_line("romhack: %s -> %s", where, romident_name(rc->ident));
+  }
+}
+
 /* BACKLOG #114: narrow accessor for pdna_yard.c's dc_seed() (moved out of this file) --
  * see pdna_app.h's own comment on why this is the one field exposed, not g_vinfo itself. */
 uint16_t app_tid_public(void) { return g_vinfo.tid_public; }
@@ -1183,12 +1246,54 @@ static bool     g_item_held = false;
 
 /* ===================== edit / commit (V4) =============================== */
 
+/* BACKLOG #54 T1: a ROM hack registered for g_game's slot also parks editing, even
+ * though the save itself may parse as perfectly retail -- the ROM is the only signal
+ * that can raise this (decision 4), and app_can_edit() is the single chokepoint
+ * `pdna_romcheck_bad()` already fans out to 84 call sites from, so this one line
+ * covers every one of them, including the mon-menu edit gate this lane never touches
+ * directly. Named consequence (see this lane's report): this also parks the SD-side
+ * art/cache writes that consult app_can_edit() (gb_art_source.c:64,
+ * pdna_gbscreen.c:517) -- accepted, those are caches, never the save itself.
+ *
+ * Review fix F4 (over-lock, BACKLOG #54), corrected by review fix G1: g_game is the
+ * last Gen-3 slot a save was opened for and is NOT cleared on entering a Game Boy
+ * session (START > GB import) -- so a hack-flagged g_game would otherwise also lock
+ * Gen-1/2 editing, which never touched the flagged ROM at all.
+ *
+ * The discriminator is g_vinfo.valid, NOT app_arena_held() -- F4's original
+ * `!app_arena_held()` was right by luck and its own comment was false.
+ * app_arena_acquire() (pdna_main.c) sets g_arena_held for ANY borrower, not just a
+ * GB session: it has five non-GB callers that borrow the SAME arena mid-Gen-3-
+ * session -- icon_store.c:847 via app_icons_hold() on the party overlay (:4193),
+ * the party screen (:5040) and the day-care (:6253); pdna_pick.c:949, where
+ * pdna_dex_screen() holds the borrow for its WHOLE lifetime; pdna_map.c:1776/2006;
+ * pdna_main.c:8112; pdna_gbscreen.c:1141. On every one of those, app_can_edit()
+ * would have returned TRUE for a hack-flagged save purely because that unrelated
+ * borrow happened to be live -- it did not leak today only because every consumer
+ * of those borrows samples app_can_edit() BEFORE taking the borrow, not during it,
+ * a coincidence of call order, not a guarantee.
+ *
+ * g_vinfo.valid is the signal xfer_gate.h's xg_pc_live() already uses for this
+ * exact "is there a live Gen-3 save right now" question: a GB session clears it
+ * (`memset(&g_vinfo, 0, ...)`, "no Gen-3 save is loaded in a GB session" --
+ * view_save()'s own four early-refusal returns clear it too, :9096/:9159/:9214),
+ * and it stays true across every one of the five borrows above (none of them ever
+ * touches g_vinfo). Truth table: GB session (g_vinfo.valid == false) -> unlocked;
+ * a mid-Gen-3-session borrow (icon overlay / dex grid / map / party / day-care,
+ * g_vinfo.valid == true) -> still locked; an ordinary Gen-3 session -> locked; no
+ * save open at all (g_vinfo.valid == false) -> unlocked, but there is nothing to
+ * write anyway. */
 #ifdef PDNA_DELTA
 /* Emulator build: there is no flashcart to gate on — the save is our own flash chip,
  * which is always writable. */
-bool app_can_edit(void) { return !pdna_romcheck_bad(); }
+bool app_can_edit(void) {
+  return !pdna_romcheck_bad() && !(g_vinfo.valid && app_rom_is_hack(g_game));
+}
 #else
-bool app_can_edit(void) { return active_flashcart == EZ_FLASH_OMEGA && !pdna_romcheck_bad(); }
+bool app_can_edit(void) {
+  return active_flashcart == EZ_FLASH_OMEGA && !pdna_romcheck_bad() &&
+         !(g_vinfo.valid && app_rom_is_hack(g_game));
+}
 #endif
 
 /* Flush the RAM log to SD now — for anomaly sites (wallpaper/icon self-verify) whose
@@ -1495,6 +1600,17 @@ void app_note_boot_checksums(void) {
 }
 
 static bool app_save_finalize(void) {
+  /* Review fix F7 (defence in depth, BACKLOG #54): app_save_finalize() is the single
+   * funnel every Gen-3 whole-file write passes through (app_commit_all/app_commit_sb1/
+   * app_commit_sb2/app_commit_sb12/app_commit_block, all the way down). A no-op on
+   * every gated happy path -- every one of those callers already checks
+   * app_can_edit() (or the equivalent) before reaching here -- so this only ever
+   * fires if a future call site forgets to gate, catching the bug at the LAST
+   * possible moment instead of writing the flash chip. */
+  if (!app_can_edit()) {
+    log_line("BUG: app_save_finalize with editing disabled - refused");
+    return false;
+  }
   /* Fold any pending deferred PC-box edits into the image FIRST, so EVERY whole-file write
    * is internally consistent. A cross-buffer move (party<->box, PC<->Day-Care) stages its
    * SaveBlock1 half into g_save (app_stage_sb1) while its PC half lives only in g_pc; without
@@ -2544,7 +2660,13 @@ static void app_icon_rom_open(void) {
     return;
   }
   uint32_t fsz = 0;
-  if (fused_rom_present(&fsz) && rom_open(&s_iconrom_ctx, fused_rom_read, 0, fsz)) {
+  bool fused_present = fused_rom_present(&fsz);
+  bool fused_ok = fused_present && rom_open(&s_iconrom_ctx, fused_rom_read, 0, fsz);
+  /* Note the verdict whether or not rom_open() succeeded -- a HACK impersonating a
+   * retail game must set s_hack_mask even though the branch below never runs for it
+   * (rom_open() only ever returns true for ROM_ID_RETAIL). */
+  if (fused_present) app_rom_note_verdict(&s_iconrom_ctx, "fused");
+  if (fused_ok) {
     /* rom_chrome_open() does NOT need the GF header rom_mon_open() below checks
      * (Ruby/Sapphire have none) -- it is called unconditionally on every
      * successful rom_open() so a Ruby cart's card rung is reachable at all,
@@ -2642,7 +2764,13 @@ static void app_icon_rom_open(void) {
     s_iconrom_fil_open = true;
     fastseek_arm(&s_iconrom_fil, s_iconrom_clmt, sizeof s_iconrom_clmt / sizeof s_iconrom_clmt[0], "rom");
     uint32_t sz = (uint32_t)f_size(&s_iconrom_fil);
-    if (rom_open(&s_iconrom_ctx, iconrom_fatfs_read, 0, sz)) {
+    bool sd_ok = rom_open(&s_iconrom_ctx, iconrom_fatfs_read, 0, sz);
+    /* Each of up to three candidates gets its own verdict, attributed to the kind
+     * actually classified -- NOT necessarily order[i]'s intended slot, a hacked
+     * FireRed found while looking for Emerald icons must still flag PK_FRLG, not
+     * whatever this loop iteration was hoping to find (fallback-order trap). */
+    app_rom_note_verdict(&s_iconrom_ctx, "sd");
+    if (sd_ok) {
       /* Same reasoning as the fused branch above: rom_chrome_open() does not need
        * the GF header, so it runs on every successful rom_open() -- reaching Ruby,
        * which rom_mon_open() below always refuses (no GF header). */
@@ -2834,9 +2962,29 @@ static void app_register_rom(void) {
   fastseek_arm(&s_iconrom_fil, s_iconrom_clmt, sizeof s_iconrom_clmt / sizeof s_iconrom_clmt[0], "rom");
   uint32_t sz = (uint32_t)f_size(&s_iconrom_fil);
   RomCtx rc;
-  if (!rom_open(&rc, iconrom_fatfs_read, 0, sz)) {
+  bool reg_ok = rom_open(&rc, iconrom_fatfs_read, 0, sz);
+  app_rom_note_verdict(&rc, "register");   /* fires whether or not rom_open() accepted it */
+  if (!reg_ok) {
     f_close(&s_iconrom_fil); s_iconrom_fil_open = false;
-    msg_wait("NOT A POKEMON ROM", UI_WARN, "Retail R/S/E/FR/LG only.", 0);
+    /* BACKLOG #54 T1: verdict-specific refusal, not the flat "NOT A POKEMON ROM" for
+     * every non-retail case -- a hack the header can still identify (known or unknown
+     * base kind) gets the honest banner instead.
+     *
+     * Review fix F3: rule 1d (rom_identify(), source/rom_map.c) also catches genuine
+     * NON-US retail carts -- a French/German/Italian/Japanese/Spanish Ruby/Sapphire/
+     * Emerald/FireRed/LeafGreen has a real (code, version) pair that is simply not on
+     * k_versions (only the 11 US builds are pinned, decision 2), so it falls to "no
+     * k_versions match but title starts POKEMON" -> ROM_ID_HACK with kind == ROM_NONE.
+     * Calling a genuine retail cartridge from another region a "ROM HACK" is a false
+     * accusation this rule was never meant to make -- kind == ROM_NONE means "this
+     * lane cannot say WHAT it is" (unsupported region/build), not "this is a hack".
+     * kind != ROM_NONE still means a pinned US (code, version) whose title or size
+     * diverges -- THAT is the genuine hack case the ROM HACK banner is for. */
+    if (rc.ident == ROM_ID_HACK && rc.kind != ROM_NONE)
+      msg_wait(PDNA_ROMHACK_TITLE, UI_WARN, PDNA_ROMHACK_L1, PDNA_ROMHACK_L2);
+    else if (rc.ident == ROM_ID_HACK)
+      msg_wait(PDNA_ROMOTHER_TITLE, UI_WARN, PDNA_ROMOTHER_L1, PDNA_ROMOTHER_L2);
+    else msg_wait("NOT A POKEMON ROM", UI_WARN, "Retail R/S/E/FR/LG only.", 0);
     return;
   }
   PkGame rg = (rc.kind == ROM_EMERALD) ? PK_EMERALD
@@ -3996,7 +4144,7 @@ static void party_ov_cancel_paint(bool bsel) {
 
 static int app_party_overlay_inner(const uint8_t* held, int orig_box, int orig_slot, bool orig_bank,
                                    bool can_swap, uint8_t grab80[80], int* grab_slot, bool allow_move_to_box) {
-  if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); return 0; }
+  if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, app_readonly_why(), 0); return 0; }
   /* Same two-axis gate as app_mon_menu, and here it is a DATA-LOSS guard: a party mon
    * carried out through this overlay is removed from the party for real once it is
    * dropped (drop_held -> clear_origin -> app_party_remove_at), so dropping it into a
@@ -4498,6 +4646,31 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
   if (occupied) pk_resolve(&m0);
 
   if (!app_can_edit()) {                                 /* read-only carts: view only */
+    /* Review fix F2 (BACKLOG #54): a hack-flagged Gen-3 game's OWN box/party grid
+     * (no foreign source mounted, g_src_ops NULL) used to fall straight through to
+     * the bare pdna_inspect() below, skipping the richer read-only menu (VIEW /
+     * LEGALITY / COPY / CANCEL) and its why-note entirely -- ruling: keep the
+     * why-note (option a), do not delete it; app_src_readonly_set() also sets
+     * g_src_ro, which pdna_box.c/app_src_empty_action_offered() consult
+     * independently, so this needs to be the real gate, not a display-only tweak.
+     * `!g_src_ops` is the load-bearing guard: it is what keeps a MOUNTED GB session
+     * (which already owns g_src_ops via pdna_gen12.c's own app_src_readonly_set
+     * call) from being re-routed here a second time, and it is what keeps every
+     * other !app_can_edit() reason (Everdrive, pdna_romcheck_bad()) on the
+     * original bare-inspect path byte-identical -- neither of those ever calls
+     * app_src_readonly_set() itself, so g_src_ops is whatever the LAST real source
+     * left it (NULL on a fresh boot). Every row app_mon_menu_readonly() can offer
+     * here is g_src_ops-gated (ITEM/MOVE/PASTE/CREATE/RELEASE all read
+     * g_src_ops->*), and this call passes g_src_ops = NULL implicitly (set() nulls
+     * it), so VIEW/LEGALITY/COPY/CANCEL is the full reachable set -- nothing here
+     * can mutate g_pc/g_party/g_sb1. set() is idempotent (safe to call every visit)
+     * and re-arms the note after pdna_gen12.c:2843/3095's own clears, since this
+     * is reached again on the very next box-grid entry the GB fork returns to. */
+    if (app_rom_is_hack(g_game) && !g_src_ops) {
+      if (!occupied) return false;
+      app_src_readonly_set(0, PDNA_ROMHACK_NOTE);
+      return app_mon_menu_readonly(rec, is_party, &m0, false);
+    }
     if (occupied) { uint8_t d[100]; int card = 0; pdna_inspect(rec, is_party, false, d, 0, &card); }
     return false;
   }
@@ -5985,7 +6158,7 @@ static int dc_menu(bool can_take, bool can_put) {
  * a mon in the Party/PC first (universal clipboard), then puts it in here — a paste, so
  * the source keeps its copy (release it separately for a true move, like the PC). */
 static bool dc_deposit(uint32_t base, uint32_t stride) {
-  if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); return false; }
+  if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, app_readonly_why(), 0); return false; }
   if (!g_clip.occupied) { snd_deny(); msg_wait("NOTHING COPIED", UI_DIM, "Copy a mon in PC/Party,", "then Put in here."); return false; }
   int fi = dc_first_free(base, stride);
   if (fi < 0) { snd_deny(); msg_wait("DAY-CARE FULL", UI_WARN, "Take a Pokemon out first.", 0); return false; }
@@ -6005,7 +6178,7 @@ static bool dc_deposit(uint32_t base, uint32_t stride) {
  *   To PC    - place on the clipboard so the user PASTEs it onto any free PC slot
  *              (a "grab"-style placement of their choice). */
 static bool dc_withdraw(uint32_t base, uint32_t stride, uint8_t* rec, int physi) {
-  if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); return false; }
+  if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, app_readonly_why(), 0); return false; }
   static const char* const D[3] = { "To Party", "To PC", "Cancel" };
   int sel = 0;
   for (;;) {
@@ -6473,7 +6646,7 @@ static bool sb_detail(SbRecord* b, uint32_t off) {
     if (k & KEY_B) return dirty;
     else if (k & KEY_A) { if (b->partyCount > 0) sb_mon_edit(b, off, psel, &dirty); }
     else if (k & KEY_SELECT) {
-      if (!can)        { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); }
+      if (!can)        { snd_deny(); msg_wait("READ-ONLY", UI_WARN, app_readonly_why(), 0); }
       else if (b->own) { snd_deny(); msg_wait("OWN BASE", UI_DIM, "Its look comes from your", "trainer card."); }
       else sb_owner_pick(b, off, &dirty);
     }
@@ -6577,7 +6750,7 @@ static void pdna_secretbase(void) {
       }
     }
     else if (k & KEY_SELECT) {                          /* clear a base (Omega-only, verified write) */
-      if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); continue; }
+      if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, app_readonly_why(), 0); continue; }
       const SbRecord* b = &g_sb_recs[sel];
       char l2[40]; siprintf(l2, "%s%s", b->trainerName[0] ? b->trainerName : "?", b->own ? "  (YOUR base)" : "'s base");
       if (app_confirm("Clear this Secret Base?", l2)) {
@@ -6800,7 +6973,7 @@ static void pdna_mirage(void) {
     if (k & KEY_UP)   { sel = (sel > 0) ? sel - 1 : n - 1; continue; }
     if (k & KEY_DOWN) { sel = (sel + 1) % n;               continue; }
 
-    if (!app_can_edit()) { msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); continue; }
+    if (!app_can_edit()) { msg_wait("READ-ONLY", UI_WARN, app_readonly_why(), 0); continue; }
     /* app_confirm's panel is the same narrow one. */
     if (!have) {
       /* msg_wait's panel is narrower than the screen: ~22 chars a line, not 29. */
@@ -8039,7 +8212,7 @@ static void pdna_battle_record(void) {
     u16 k = wait_keys(KEY_A | KEY_SELECT | KEY_B);
     if (k & KEY_B) { snd_back(); return; }
     if (k & KEY_A) { rec_files_page(); continue; }      /* browse exports; no record needed */
-    if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); continue; }
+    if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, app_readonly_why(), 0); continue; }
     rec_import();                                      /* success -> the rescan shows it */
   }
   rmbl_fire(RCUE_ROOM);
@@ -8118,12 +8291,12 @@ static void pdna_battle_record(void) {
       return;
     }
     if (k & KEY_SELECT) {                              /* import an older .rec over this one */
-      if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); continue; }
+      if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, app_readonly_why(), 0); continue; }
       if (rec_import()) g3_record_scan(g_save, g_save_size, &ri);   /* show the imported battle */
       continue;
     }
     /* ---- A: export the raw 4 KiB sector (verified write, Omega-only) ---- */
-    if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); continue; }
+    if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, app_readonly_why(), 0); continue; }
     const char* who = ri.names[ri.multiplayer_id][0] ? ri.names[ri.multiplayer_id] : "?";
     char base[8]; int o = 0;
     for (int i = 0; who[i] && o < 7; i++) {              /* sanitize the trainer name for FAT */
@@ -9193,12 +9366,41 @@ static void view_save(const char* path) {
   load_phase_n(7, "pc storage");
   g_have_pc = (gen3_read_pc_storage(g_save, g_vinfo.slot, g_pc) == G3_PC_BYTES);
 
+  /* BACKLOG #54 T2 evidence, NO GATE (decision 6): a species field past the Gen-3
+   * ceiling is exactly the anomaly a per-hack SD profile (T2, still in BACKLOG) would
+   * want on record -- logged here because g_party is already resident and resolved,
+   * but this touches nothing else: no s_hack_mask bit, no UI, no app_can_edit()
+   * change. One glitch Pokemon must never turn a retail user's own save read-only --
+   * that is the ROM's call alone (decision 4), never the save's.
+   *
+   * Review fix F5 (speed): party only -- the PC sweep would cost 420 decryptions
+   * (pk_decode_mon per slot, G3_TOTAL_BOXES * G3_IN_BOX) on the boot path for every
+   * save open, a real cost with no signal this evidence-only, no-gate line needs to
+   * pay for (BACKLOG #73). g_party is already decoded (pk_resolve above), so this
+   * reads a field already in memory at zero extra decode cost, same spirit as the
+   * "free, already in memory" framing the PC sweep never actually delivered. */
+  {
+    int glitch = 0;
+    for (int i = 0; i < g_nparty; i++)
+      if (g_party[i].species > G3_MAX_SPECIES) glitch++;
+    if (glitch)
+      log_line("romhack evidence: %d mon(s) with species > %d (T2 signal, no gate)",
+               glitch, G3_MAX_SPECIES);
+  }
+
   /* SaveBlock2 (section 0) for the trainer card + per-game layout for stats */
   load_phase_n(8, "saveblock2");
   int s0 = gen3_find_section(g_save, g_vinfo.slot, 0);
   if (s0 >= 0)
     memcpy(g_sb2, g_save + (uint32_t)g_vinfo.slot * G3_SLOT_BYTES + (uint32_t)s0 * G3_SECTOR_SIZE,
            G3_SECTOR_DATA_SIZE);
+  /* Review fix F8 (info, BACKLOG #54): the ROM-hack banner/note set-or-clear below
+   * (app_icon_rom_open() then the app_rom_is_hack(g_game) branch) sits AFTER this
+   * point in view_save() -- four earlier `return;`s above (today: the truncated-read,
+   * bad-header, corrupt-slot and no-valid-slot refusals) all exit before g_game is
+   * even assigned. Any screen a future edit adds ABOVE this line must not read
+   * g_src_note/g_src_ro: this save hasn't been classified yet, and the note/ro state
+   * still reflects whatever the PREVIOUS save (or GB session) left behind. */
   g_game = g_frlg ? PK_FRLG : (g_vinfo.version_guess == G3_VER_RS ? PK_RS : PK_EMERALD);
   g_save_kind = se_kind_from_game((int)g_game);   /* E4: app_save_kind()'s Gen-3 half */
   /* The FIRST SD access after the read: f_open of the registered game ROM (artless) or
@@ -9207,6 +9409,25 @@ static void view_save(const char* path) {
    * the cart rather than the CPU. */
   load_phase_n(9, "art: open rom");
   app_icon_rom_open();                           /* fused or registered-SD icon source */
+  /* BACKLOG #54 T1: the banner, once per save open, AFTER app_icon_rom_open() rather
+   * than immediately at the g_game= line above -- app_icon_rom_open() is what actually
+   * runs THIS session's rom_open()/rom_identify() classification (the fused ROM path
+   * in particular never ran before this call), so checking app_rom_is_hack() any
+   * earlier would read last session's (empty, on a fresh boot) mask instead of the
+   * verdict this very open just produced. */
+  /* app_mon_menu_readonly() already tolerates g_src_why == NULL (pdna_main.c's own
+   * `(!empty && g_src_why) ? g_src_why(rec) : 0`) -- verified before wiring this in,
+   * per this lane's STOP-LICENCE clause -- so passing 0 here needs no wrapper
+   * function. Paired with app_src_readonly_clear() on the non-hack branch: the GB
+   * fork already clears on its own return paths (pdna_gen12.c:2843/3095), so between
+   * the two, no session can leak a stale read-only note into an unflagged save (a
+   * leak here is STOP-level, per this lane's brief). */
+  if (app_rom_is_hack(g_game)) {
+    app_src_readonly_set(0, PDNA_ROMHACK_NOTE);
+    msg_wait(PDNA_ROMHACK_TITLE, UI_WARN, PDNA_ROMHACK_L1, PDNA_ROMHACK_L2);
+  } else {
+    app_src_readonly_clear();
+  }
 #ifndef PDNA_DELTA
   /* The artless first run: offer the ROM registration ONCE per session, right where
    * its effect is about to be visible. B declines and the name chips carry on. */
@@ -9349,12 +9570,12 @@ static void view_save(const char* path) {
                          else msg_wait("BAG", UI_WARN, "Read-only cart.", "Writes need an Omega.");
                          break;
         case NV_DATA:    if (app_can_edit()) data_editor();
-                         else { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); } break;
+                         else { snd_deny(); msg_wait("READ-ONLY", UI_WARN, app_readonly_why(), 0); } break;
         case NV_SECRET:  rmbl_fire(RCUE_ROOM); pdna_secretbase(); break;
         case NV_POKEBLOCK: if (app_can_edit()) pdna_pokeblock();
-                           else { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); } break;
+                           else { snd_deny(); msg_wait("READ-ONLY", UI_WARN, app_readonly_why(), 0); } break;
         case NV_EVENTS:   if (app_can_edit()) pdna_events();
-                           else { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); } break;
+                           else { snd_deny(); msg_wait("READ-ONLY", UI_WARN, app_readonly_why(), 0); } break;
         case NV_BATTLEREC: pdna_battle_record(); break;  /* viewing is free; export gates on Omega inside */
         case NV_FRONTIER: pdna_frontier(g_sb1, g_sb2, g_game); break;   /* viewing free; editing gates on Omega inside */
         case NV_FLY:      pdna_fly(g_sb1, g_game); break;        /* viewing free; editing gates on Omega inside */

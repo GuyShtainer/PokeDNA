@@ -1805,4 +1805,36 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_DET_HDRONLY_L1    "Cart page matched by header only."
 #define PDNA_DET_HDRONLY_L2    "Re-copy this build if it misbehaves."
 
+/* ---- BACKLOG #54 T1: the ROM-hack banner ------------------------------------
+ * Shown by app_register_rom()'s verdict-specific refusal and once per save open
+ * in view_save() (right after app_icon_rom_open() runs this session's rom_open()/
+ * rom_identify() classification for g_game's slot) whenever that slot is flagged
+ * ROM_ID_HACK (source/rom_map.h). msg_wait's usual (28, 184) clamp, PF-checked in
+ * tests/host_textfit_test.c beside the rest of that file's msg_wait strings.
+ * Fixed strings, no siprintf (BACKLOG #34). */
+#define PDNA_ROMHACK_TITLE "ROM HACK"
+#define PDNA_ROMHACK_L1    "Read-only until verified."
+#define PDNA_ROMHACK_L2    "Edits could corrupt this save."
+/* app_src_readonly_set()'s why-note for the mon-menu refusal -- drawn at
+ * PDNA_MONMENU_PROSE_W (a narrower budget than msg_wait's 184), hence the
+ * shorter wording. PF-checked in tests/host_textfit_test.c beside the other
+ * "why locked" prose the read-only mon menu draws. */
+#define PDNA_ROMHACK_NOTE  "ROM hack: locked"
+/* Review fix F1: the flat "READ-ONLY / Needs EZ-Flash Omega." refusal at ~12
+ * app_can_edit()-gated sites in pdna_main.c is a real lie to an Omega owner whose
+ * cart is writable but whose ROM is hack-flagged -- app_readonly_why()
+ * (pdna_main.c) picks between this and the Omega message based on
+ * app_rom_is_hack(g_game). PF-checked at the same (28, 184) msg_wait clamp. */
+#define PDNA_ROMHACK_WHY "ROM hack: writes locked."
+/* Review fix F3: rule 1d (rom_identify()) also catches genuine non-US retail carts
+ * (AXVD/BPEJ/BPES/... -- a real (code, version) pair simply absent from k_versions,
+ * which only pins the 11 US builds) as ROM_ID_HACK with kind == ROM_NONE. Calling a
+ * real retail cartridge from another region a "ROM HACK" is a false accusation;
+ * app_register_rom() (pdna_main.c) now shows this honest "can't say what this is"
+ * banner instead whenever kind == ROM_NONE, reserving PDNA_ROMHACK_* for a pinned
+ * US (code, version) whose title/size genuinely diverges (kind != ROM_NONE). */
+#define PDNA_ROMOTHER_TITLE "UNSUPPORTED ROM"
+#define PDNA_ROMOTHER_L1    "Not a retail US R/S/E/FR/LG."
+#define PDNA_ROMOTHER_L2    "A hack, or another region."
+
 #endif /* PDNA_LAYOUT_H */
