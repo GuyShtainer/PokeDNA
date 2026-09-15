@@ -651,6 +651,9 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "gb_sidecar.h"    /* S5-B: the sidecar format + gbsc_path/gbsc_key            */
 #include "gen3_to_gb.h"    /* S5-B: the Gen-3 -> Game Boy down converter               */
 #include "gba_rtc.h"       /* S5-B: the sidecar entry's transfer-time RTC stamp        */
+#include "gb_item_names.h" /* BACKLOG #150 S150-8: gb2_item_name for gb_down_loss_screen */
+#include "xfer_rec.h"      /* BACKLOG #150 S150-8: xr_key_g3/xr_game_item_mask/xr_time_capsule_block */
+#include "item_map_g2g3.h" /* BACKLOG #150 S150-8: item_g2_to_g3 (bdc_convert_*_core's own use) */
 #include "rom_gbsprite.h"  /* S5-C: locates BaseStats in the user's own Gen-1 ROM      */
 #include "rom_gblearn.h"   /* BACKLOG #50: level-up learnsets + min-level for CREATE   */
 #include "gb_new_mon.h"    /* BACKLOG #50: gb_new_mon/gb_new_mon_g1_moves for CREATE   */
@@ -952,6 +955,9 @@ static Gb12Edit* g_ed;        /* pointer only: the block itself lives in the are
 /* Review fix F2(a): true while a resident, writable Game Boy edit session is open;
  * false for streamed/view-only sessions. */
 bool pdna_gen12_resident(void) { return g_ed != 0; }
+
+/* BACKLOG #150 S150-8: see the .h. */
+uint8_t gb_session_gen(void) { return g_ed ? g_ed->s.gen : 0; }
 
 /* BACKLOG #64 review Finding 6 (CRITICAL fix): gb12_arena_tail()'s ONLY tail before
  * this was the resident-image mount's own (g_ed's end); a streamed read-only session
@@ -2502,6 +2508,252 @@ static bool __attribute__((noinline)) gb_paste_write(const GbEditMon* mon, int b
   return ok;
 }
 
+/* BACKLOG #150 S150-8 decision 7: the DOWN-converting edge's own loss screen -- a
+ * NEW screen (not gb_paste_loss_screen, which is Gen3ToGbLoss-shaped and lists the
+ * wrong things for this direction), built from the SAME primitives (loss_row,
+ * PDNA_SIDECAR_LOSS_TITLE/ROW_H/A_TRANSFER/B_CANCEL, the same s_wait(KEY_A|KEY_B)
+ * return convention). `g2_item`/`item_travels` name the held-item row exactly as
+ * S11.18 Q8 words it. */
+static bool __attribute__((noinline))
+gb_down_loss_screen(const Gb12Notes* n, uint8_t g2_item, bool item_travels) {
+  ui_clear();
+  ui_text(4, 3, UI_TITLE, PDNA_SIDECAR_LOSS_TITLE);
+  ui_hline(0, 13, UI_SCR_W, UI_BORDER);
+
+  int y = PDNA_SIDECAR_LOSS_ROW_Y0;
+  if (g2_item != 0) {
+    char row[40];
+    siprintf(row, "Item: %s %s", gb2_item_name(g2_item), item_travels ? "travels" : "waits here");
+    y = loss_row(y, true, row);
+  }
+  y = loss_row(y, n->exp_clamped, "EXP clamped to level 100");
+  y = loss_row(y, n->gender_relaxed || n->letter_relaxed, "PID search relaxed");
+  y = loss_row(y, true, "IVs come from DVs, nature from EXP");
+  y = loss_row(y, true, "Met: this game, traded");
+
+  y += PDNA_SIDECAR_LOSS_ROW_H / 2;
+  ui_text(4, y, UI_TEXT, PDNA_SIDECAR_LOSS_A_TRANSFER); y += PDNA_SIDECAR_LOSS_ROW_H;
+  ui_text(4, y, UI_DIM,  PDNA_SIDECAR_LOSS_B_CANCEL);
+
+  u16 k = s_wait(KEY_A | KEY_B);
+  return (k & KEY_A) != 0;
+}
+
+/* Same cleanup gb_paste_sidecar_undo() performs, but against a CALLER-supplied
+ * scratch buffer (decision 8's own deviation note: gb_paste_write's model always
+ * has a resident GB session, g_ed->sidecar, to reuse; the native->Gen-3-PC arm can
+ * run with NO Game Boy session mounted at all -- app_gen3_pc_live()'s own gate
+ * requires !app_arena_held(), which is exactly the state a mounted GB session
+ * would never be in while donating its arena tail). */
+static void xfer_down_undo(const char* path, uint8_t* scratch) {
+  uint32_t len = 0;
+  if (sf_read_full(path, scratch, GBSC_FILE_MAX, &len) != SF_OK) {
+    log_line("gen12: xfer_down cleanup: could not re-read %s", path);
+    return;
+  }
+  int n = gbsc_count(scratch, len);
+  if (n <= 0) { log_line("gen12: xfer_down cleanup: %s is empty", path); return; }
+  if (gbsc_remove(scratch, &len, n - 1) != 0) {
+    log_line("gen12: xfer_down cleanup: remove failed in %s", path);
+    return;
+  }
+  rmbl_pause();
+  SfStatus wst;
+  if (gbsc_count(scratch, len) == 0) wst = (f_unlink(path) == FR_OK) ? SF_OK : SF_ERR_WRITE;
+  else                                wst = sf_write_verified(path, scratch, len);
+  rmbl_resume();
+  if (wst != SF_OK) log_line("gen12: xfer_down cleanup: rewrite failed for %s", path);
+}
+
+/* BACKLOG #150 S150-8 decision 8: steps (4) of S11.3 for a NATIVE-home transfer,
+ * modelled line-for-line on gb_paste_write() above. Differences: `original80` is
+ * the NATIVE CELL, not a Gen-3 record; the four S150-6 ledger fields are set
+ * explicitly and XR_STATE_CLAIMED is NEVER written here (G-F1, decision 9 promotes
+ * later); `nick_written` is overridden with the Gen-3 nickname bytes verbatim
+ * (D-8b-link); the lookup is REPLACE-not-append keyed on the cell's own first 8
+ * bytes (S11.6), with an evict-oldest retry when the file is full. `scratch` is a
+ * caller-owned GBSC_FILE_MAX buffer (see xfer_down_undo's own comment on why this
+ * cannot always be g_ed->sidecar). Returns the entry index (>=0) and fills
+ * *path_out (>= GBSC_PATH_MAX) on success; <0 on any refusal, with the message
+ * already shown. */
+static int __attribute__((noinline))
+xfer_down_write(uint64_t key, const uint8_t cell80[80], const GbEditMon* written,
+                uint8_t direction, uint8_t* scratch, char path_out[GBSC_PATH_MAX],
+                uint32_t* len_out) {
+  (void)xr_path_for_key(path_out, key);
+
+  FRESULT mkr = f_mkdir(PDNA_XFER_DIR);
+  if (mkr != FR_OK && mkr != FR_EXIST) {
+    log_line("gen12: xfer_down mkdir %s failed (%d)", PDNA_XFER_DIR, (int)mkr);
+    snd_error();
+    msg_wait(PDNA_SIDECAR_MKDIR_TITLE, UI_WARN, PDNA_SIDECAR_NOTWRITTEN_L2, 0);
+    return -1;
+  }
+
+  uint32_t len = 0;
+  SfStatus rst = sf_read_full(path_out, scratch, GBSC_FILE_MAX, &len);
+  if (rst == SF_OK && gbsc_count(scratch, len) < 0) {
+    char badpath[GBSC_PATH_MAX + 4];
+    int bp = 0;
+    while (path_out[bp] && bp < GBSC_PATH_MAX - 1) { badpath[bp] = path_out[bp]; bp++; }
+    badpath[bp++] = '.'; badpath[bp++] = 'b'; badpath[bp++] = 'a'; badpath[bp++] = 'd';
+    badpath[bp] = 0;
+    f_unlink(badpath);
+    FRESULT rr = f_rename(path_out, badpath);
+    log_line("gen12: xfer_down %s failed its CRC, renamed to %s (%s)",
+             path_out, badpath, rr == FR_OK ? "OK" : "FAILED");
+    if (rr != FR_OK) {
+      snd_error();
+      msg_wait(PDNA_SIDECAR_CORRUPT_TITLE, UI_WARN, PDNA_SIDECAR_NOTWRITTEN_L2, 0);
+      return -1;
+    }
+    snd_deny();
+    msg_wait(PDNA_SIDECAR_CORRUPT_TITLE, UI_WARN, PDNA_SIDECAR_CORRUPT_KEPT_L1, 0);
+    len = (uint32_t)gbsc_init(scratch, key);
+  } else if (rst == SF_ERR_OPEN) {
+    len = (uint32_t)gbsc_init(scratch, key);
+  } else if (rst != SF_OK) {
+    snd_error();
+    msg_wait(PDNA_SIDECAR_READFAIL_TITLE, UI_WARN, sf_status_str(rst), PDNA_SIDECAR_NOTWRITTEN_L2);
+    return -1;
+  }
+
+  GbaRtcTime t;
+  uint32_t epoch = 0;
+  if (gba_rtc_get(&t))
+    epoch = ((uint32_t)(t.year - 2000u) << 26) | ((uint32_t)t.month << 22) |
+            ((uint32_t)t.day << 17) | ((uint32_t)t.hour << 12) |
+            ((uint32_t)t.minute << 6) | (uint32_t)t.second;
+
+  GbscEntry e;
+  gbsc_entry_from(&e, written, cell80, epoch);
+  e.kind = XR_KIND_NATIVE_HOME;
+  e.state = XR_STATE_PENDING;
+  e.direction = direction;
+  e.claimed = 1;
+  memcpy(e.nick_written, written->nick, sizeof e.nick_written);   /* D-8b-link */
+
+  int old = gbsc_find_by_key(scratch, len, cell80);
+  if (old >= 0) gbsc_remove(scratch, &len, old);
+
+  int idx = gbsc_add(scratch, &len, GBSC_FILE_MAX, &e);
+  if (idx < 0 && gbsc_evict_oldest(scratch, &len) == 0)
+    idx = gbsc_add(scratch, &len, GBSC_FILE_MAX, &e);
+  if (idx < 0) {
+    snd_deny();
+    msg_wait(PDNA_XFER_TOOMANY_TITLE, UI_WARN, PDNA_XFER_TOOMANY_L1, PDNA_XFER_TOOMANY_L2);
+    return -1;
+  }
+
+  rmbl_pause();
+  SfStatus wst = sf_write_verified(path_out, scratch, len);
+  rmbl_resume();
+  log_line("gen12: xfer_down %s: %s", path_out, wst == SF_OK ? "OK" : sf_status_str(wst));
+  if (wst != SF_OK) {
+    snd_error();
+    msg_wait(PDNA_SIDECAR_NOTWRITTEN_TITLE, UI_WARN, sf_status_str(wst), PDNA_SIDECAR_NOTWRITTEN_L2);
+    return -1;
+  }
+  if (len_out) *len_out = len;
+  return idx;
+}
+
+/* BACKLOG #150 S150-8 decision 15: promote the entry xfer_down_write() just wrote
+ * (at index `idx`, still resident in `scratch`/`len`) to XR_STATE_CLAIMED
+ * immediately -- the bridge arm's write is NOT deferred like the Gen-3 arm's (no
+ * static is involved; gb_persist() below has already, or is about to, verify the
+ * destination on disk in the SAME gesture). Best-effort: a failure here leaves the
+ * entry PENDING, which is fail-safe (never removable, S11.8), so it only logs. */
+static void xfer_down_claim_now(uint8_t* scratch, uint32_t len, int idx, const char* path) {
+  GbscEntry e;
+  if (!gbsc_get(scratch, len, idx, &e)) { log_line("gen12: xfer_down claim: bad index"); return; }
+  e.state = XR_STATE_CLAIMED;
+  if (gbsc_remove(scratch, &len, idx) != 0) { log_line("gen12: xfer_down claim: remove failed"); return; }
+  int nidx = gbsc_add(scratch, &len, GBSC_FILE_MAX, &e);
+  if (nidx < 0) { log_line("gen12: xfer_down claim: re-add failed"); return; }
+  rmbl_pause();
+  SfStatus wst = sf_write_verified(path, scratch, len);
+  rmbl_resume();
+  if (wst != SF_OK) log_line("gen12: xfer_down claim: rewrite failed for %s", path);
+}
+
+/* BACKLOG #150 S150-8 decision 3/5/6/8/9/11/12/16, arm 2: a native cell converts
+ * into a real Gen-3 record for the Gen-3 PC box `dst_box`/`dst_cell` addresses.
+ * Deliberately touches no `src->*` member (bank_down_convert.h's own comment on
+ * this signature explains why -- the stack-budget walker's GATED-4 gate). `dstrec`
+ * is the 80 bytes already at the destination (read-only, the caller's own already-
+ * loaded box); on BANK_DOWN_CONVERTED `out80` holds the finished record and the
+ * CALLER places it (pdna_box.c's drop_held). The ledger write is DEFERRED-promoted
+ * (decision 9): the PC write itself stays the caller's own `mark_dirty()`, never
+ * committed here, and the entry stays XR_STATE_PENDING until flush_on_exit's own
+ * app_xfer_promote() sees the PC verified on disk. */
+BankDownResult gb_bank_down_gen3(BoxSource* src, int dst_box, int dst_cell,
+                                 const uint8_t cell80[80], const uint8_t dstrec[80],
+                                 uint8_t out80[80]) {
+  (void)src; (void)dst_cell;
+  if (!app_can_edit()) { snd_deny(); return BANK_DOWN_REFUSED; }             /* 16(a) */
+  if (!app_gen3_pc_live()) { snd_deny(); return BANK_DOWN_REFUSED; }         /* 16(b), G-F2 */
+
+  GbEditMon written;
+  Gb12Notes notes;
+  uint16_t g3item = 0;
+  uint8_t met_game = app_met_game();
+  Gb12Result cr = bdc_convert_gen3_core(cell80, met_game, out80, &written, &notes, &g3item);
+  if (cr != GB12_OK) {                                                      /* 16(c)/(d): egg/damaged/other */
+    snd_deny();
+    msg_wait(PDNA_SIDECAR_XFER_TITLE, UI_WARN, gen12_reason_text(cr), 0);
+    return BANK_DOWN_REFUSED;
+  }
+
+  if (app_bank_defer_full()) { snd_deny(); return BANK_DOWN_REFUSED; }      /* 16(f) */
+  if (app_xfer_pending()) {                                                 /* 16(g), decision 9 */
+    snd_deny();
+    msg_wait(PDNA_XFER_SAVEFIRST_TITLE, UI_WARN, PDNA_XFER_SAVEFIRST_L1, PDNA_XFER_SAVEFIRST_L2);
+    return BANK_DOWN_REFUSED;
+  }
+
+  bool occ = (dstrec[0] | dstrec[1] | dstrec[2] | dstrec[3]) != 0 || bc_is_native(dstrec);
+  if (occ) { snd_deny(); return BANK_DOWN_REFUSED; }                        /* 16(h) */
+
+  bool travels = (g3item != 0);
+  if (!gb_down_loss_screen(&notes, notes.item_g2, travels)) return BANK_DOWN_REFUSED;
+
+  /* decision 7's MAKE LEGAL correction: the mon standing below pk_evo_floor(dex). */
+  PkMon pk;
+  if (pk_decode_mon(out80, false, &pk)) {
+    pk_resolve(&pk);
+    uint16_t dex = pk_national_no(pk.species);
+    if (dex && pk_evo_have_data() && pk.level < (uint8_t)pk_evo_floor(dex)) {
+      uint8_t from_lvl = pk.level, to_lvl = (uint8_t)pk_evo_floor(dex);
+      GbXferChoice ch = gb_paste_legal_screen(dex, from_lvl, to_lvl);
+      if (ch == GB_XFER_CANCEL) return BANK_DOWN_REFUSED;
+      if (ch == GB_XFER_MAKE_LEGAL) {
+        EditMon em; gen3_edit_load(out80, false, &em);
+        em_set_level(&em, to_lvl);
+        gen3_edit_commit(&em, out80);
+      }
+    }
+  }
+  if (g3item != 0) {
+    EditMon em; gen3_edit_load(out80, false, &em);
+    em_set_item(&em, g3item);
+    gen3_edit_commit(&em, out80);
+  }
+
+  /* decision 8: the ledger write, BEFORE the PC write (verified first). No resident
+   * GB session is guaranteed here (see xfer_down_undo's own comment) -- this arm's
+   * own noinline frame carries the GBSC_FILE_MAX scratch (1042 B), never a new
+   * static of any kind. */
+  uint8_t scratch[GBSC_FILE_MAX];
+  char path[GBSC_PATH_MAX];
+  int idx = xfer_down_write(xr_key_g3(out80), cell80, &written, XR_DIR_ABROAD_G3, scratch, path, NULL);
+  if (idx < 0) return BANK_DOWN_REFUSED;
+
+  app_xfer_pending_set(xr_key_g3(out80), (int16_t)idx);                     /* decision 9 */
+  log_line("gen12: down->gen3 box %d slot %d: pending, %s", dst_box, dst_cell, path);
+  return BANK_DOWN_CONVERTED;
+}
+
 /* S5-C Part B1: Gen-1 targets. gen3_to_gb() itself already refuses everything a
  * missing base table has nothing to do with (egg, bad species/move, a corrupt
  * record) BEFORE it ever looks at g1base -- gen3_to_gb.c's screen() checks those in
@@ -2686,6 +2938,131 @@ static void __attribute__((noinline)) gb_gen1_norom_msg(void) {
   char l1[64];
   siprintf(l1, "Put %.48s.gb here", base_only);
   msg_wait(PDNA_SIDECAR_GEN1_TITLE, UI_WARN, l1, PDNA_SIDECAR_GEN1_L1);
+}
+
+/* BACKLOG #150 S150-8 decision 14/15, arm 1: a native cell bridges into the
+ * CURRENTLY MOUNTED Game Boy session's OTHER generation, under the time-capsule
+ * rules. `dst_box` is the box the cursor is on; gbs_insert() assigns the slot
+ * itself (no dst_cell -- a GB box is not slot-addressable the way a Gen-3 grid
+ * is, exactly as gb_paste_hook's own gb_locate()-free insert already works).
+ * Never returns BANK_DOWN_CONVERTED: on success the destination is already
+ * written and the ledger entry promoted to XR_STATE_CLAIMED (no deferred commit
+ * on this arm -- decision 15). */
+BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]) {
+  if (!app_can_edit() || !g_ed) { snd_deny(); return BANK_DOWN_REFUSED; }    /* 16(a)/(b) */
+  if (gb_box_is_party(g_ed->s.gen, dst_box)) {
+    snd_deny();
+    msg_wait(PDNA_SIDECAR_XFER_TITLE, UI_WARN, PDNA_SIDECAR_PARTY_L1, 0);
+    return BANK_DOWN_REFUSED;
+  }
+
+  uint8_t dst_gen = (g_ed->s.gen == GB_GEN1) ? GB_GEN2 : GB_GEN1;   /* the OTHER generation */
+
+  int tc; uint16_t tc_bad; Gb12Result g12; G3GbStatus g3gb;
+  GbEditMon mon; Gen3ToGbLoss loss; Gb12Notes notes;
+  bool crystal = gb_session_is_crystal(&g_ed->s);
+  bdc_convert_gb_core(cell80, dst_gen, crystal, NULL, &tc, &tc_bad, &g12, &g3gb, &mon, &loss, &notes);
+  if (tc == 1) {                                                            /* decision 14 */
+    snd_deny();
+    char l1[64]; siprintf(l1, PDNA_XFER_TC_SPECIES_FMT, pk_species_name(tc_bad));
+    msg_wait(PDNA_XFER_TC_TITLE, UI_WARN, l1, 0);
+    return BANK_DOWN_REFUSED;
+  }
+  if (tc == 2) {
+    snd_deny();
+    char l1[64]; siprintf(l1, PDNA_XFER_TC_MOVE_FMT, pk_move_name(tc_bad));
+    msg_wait(PDNA_XFER_TC_TITLE, UI_WARN, l1, 0);
+    return BANK_DOWN_REFUSED;
+  }
+  if (g12 != GB12_OK) {                                                     /* 16(c)/(d) */
+    snd_deny();
+    msg_wait(PDNA_SIDECAR_XFER_TITLE, UI_WARN, gen12_reason_text(g12), 0);
+    return BANK_DOWN_REFUSED;
+  }
+  if (g3gb == G3GB_ERR_NEEDS_BASE) {                                        /* S5-C's own retry, verbatim shape */
+    /* Re-derive the intermediate species dex the same way gb_clip_dex() would, off
+     * the cell's own view -- bdc_convert_gb_core() already decoded it once
+     * internally; re-unpack here rather than widening that function's signature
+     * just to smuggle one uint16_t out on the ONE refusal path that needs it. */
+    GbEditMon srcmon; BcMeta srcmeta;
+    uint16_t dex = 0;
+    if (bc_unpack(cell80, &srcmon, &srcmeta)) {
+      Gb12Mon view;
+      if (bc_view(&srcmon, &srcmeta, bc_ident32(cell80), &view)) dex = view.species_dex;
+    }
+    GbGen1Base g1base;
+    Gb1BaseStatus bst = dex ? gb_gen1_base_from_rom(dex, &g1base) : GB1BASE_BAD_ROM;
+    if (bst == GB1BASE_NO_ROM) { snd_deny(); gb_gen1_norom_msg(); return BANK_DOWN_REFUSED; }
+    if (bst != GB1BASE_OK) {
+      snd_deny();
+      msg_wait(PDNA_SIDECAR_XFER_TITLE, UI_WARN, PDNA_SIDECAR_GEN1_BADROM_L1, 0);
+      return BANK_DOWN_REFUSED;
+    }
+    bdc_convert_gb_core(cell80, dst_gen, crystal, &g1base, &tc, &tc_bad, &g12, &g3gb, &mon, &loss, &notes);
+  }
+  if (g3gb != G3GB_OK) {
+    snd_deny();
+    msg_wait(PDNA_SIDECAR_XFER_TITLE, UI_WARN, g3gb_status_text(g3gb), 0);
+    return BANK_DOWN_REFUSED;
+  }
+
+  if (!gb_paste_loss_screen(&loss)) return BANK_DOWN_REFUSED;               /* decision 15: the shipped screen */
+
+  uint8_t fix_from = 0, fix_to = 0;
+  if (gen3_to_gb_evo_needs_fix(&mon, &fix_from, &fix_to)) {                  /* R1 block, verbatim */
+    GbXferChoice ch = gb_paste_legal_screen(gb_get_species_dex(&mon), fix_from, fix_to);
+    if (ch == GB_XFER_CANCEL) return BANK_DOWN_REFUSED;
+    if (ch == GB_XFER_MAKE_LEGAL) gb_set_level(&mon, fix_to);
+  }
+
+  GbsStatus wst = gbs_box_writable(&g_ed->s, dst_box);
+  if (wst != GBS_OK) {
+    snd_deny();
+    msg_wait(PDNA_GBEDIT_BOXWR_TITLE, UI_WARN, gbs_status_text(wst),
+             wst == GBS_ERR_UNWRITABLE ? PDNA_GBEDIT_UNWRITABLE_HINT : 0);
+    return BANK_DOWN_REFUSED;
+  }
+  GbsStatus lst = gbs_load_list(&g_ed->s, dst_box, g_ed->list);
+  if (lst != GBS_OK) {
+    snd_deny();
+    msg_wait(PDNA_GBEDIT_BOXRD_TITLE, UI_WARN, gbs_status_text(lst), 0);
+    return BANK_DOWN_REFUSED;
+  }
+  int cnt = gb_list_count(g_ed->s.gen, g_ed->list, dst_box);
+  if (cnt < 0 || cnt >= gb_list_capacity(g_ed->s.gen, dst_box)) {
+    snd_deny();
+    msg_wait(PDNA_SIDECAR_XFER_REFUSED_TITLE, UI_WARN, gbs_status_text(GBS_ERR_FULL),
+             PDNA_GBEDIT_MOVE_FULL_L2);
+    return BANK_DOWN_REFUSED;
+  }
+
+  uint8_t dv4[4] = {
+    gb_get_dv(&mon, GB_ATK), gb_get_dv(&mon, GB_DEF),
+    gb_get_dv(&mon, GB_SPE), gb_get_dv(&mon, GB_SPC)
+  };
+  uint64_t key = gbsc_key(mon.gen, gb_get_otid(&mon), dv4, mon.otname);
+  char path[GBSC_PATH_MAX];
+  uint32_t wlen = 0;
+  int idx = xfer_down_write(key, cell80, &mon, XR_DIR_ABROAD_GB, g_ed->sidecar, path, &wlen);
+  if (idx < 0) return BANK_DOWN_REFUSED;
+
+  int newslot = -1;
+  GbsStatus ist = gbs_insert(&g_ed->s, dst_box, &mon, &newslot, g_ed->list);
+  if (ist != GBS_OK) {
+    gb_rollback();
+    log_line("gen12: down->bridge insert box %d refused: %s", dst_box, gbs_status_text(ist));
+    xfer_down_undo(path, g_ed->sidecar);
+    snd_error();
+    msg_wait(PDNA_SIDECAR_XFER_REFUSED_TITLE, UI_WARN, gbs_status_text(ist), PDNA_GBEDIT_UNCHANGED_L2);
+    return BANK_DOWN_REFUSED;
+  }
+
+  log_line("=== gen12 down->bridge -> %s box %d slot %d ===", g_ed->path, dst_box, newslot);
+  bool ok = gb_persist("xferdown");
+  if (!ok) { xfer_down_undo(path, g_ed->sidecar); return BANK_DOWN_REFUSED; }
+
+  xfer_down_claim_now(g_ed->sidecar, wlen, idx, path);                      /* decision 15: CLAIMED now */
+  return BANK_DOWN_LANDED;
 }
 
 /* AppSrcOps.paste: convert the CLIPBOARD's Gen-3 record and append it into `rec80`'s

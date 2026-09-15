@@ -1827,7 +1827,93 @@ bool app_arena_held(void) { return g_arena_held; }
  * makes the gate observable in mGBA as well as on hardware (§8, [decided here]). Every
  * Gen-3 write path a Bank visit from a GB session exposes (TO GAME / PASTE / inject /
  * commit) checks this, via xg_pc_live/xg_inject_refuse (source/xfer_gate.h). */
-static bool app_gen3_pc_live(void) { return xg_pc_live(g_vinfo.valid, app_arena_held()); }
+/* BACKLOG #150 S150-8 decision 16(b)/G-F2: no longer file-static -- the DOWN edge's
+ * native -> Gen-3-PC arm (source/pdna_gen12.c's gb_bank_down_gen3) needs the SAME
+ * gate a Bank visit's TO GAME/PASTE/CREATE rows already use. */
+bool app_gen3_pc_live(void) { return xg_pc_live(g_vinfo.valid, app_arena_held()); }
+
+/* BACKLOG #150 S150-8 decision 9/G-F1: the one unpromoted native->Gen-3 transfer of
+ * this session. Plain .bss (IWRAM), NOT EWRAM_BSS -- 16 B total (this lane may not
+ * spend one byte of EWRAM). 0/-1 == none pending. */
+static uint64_t g_xd_key;
+static int16_t  g_xd_idx = -1;
+
+bool app_xfer_pending(void) { return g_xd_key != 0 && g_xd_idx >= 0; }
+
+void app_xfer_pending_set(uint64_t key, int idx) {
+  g_xd_key = key;
+  g_xd_idx = (int16_t)idx;
+}
+
+void app_xfer_pending_drop(void) { g_xd_key = 0; g_xd_idx = -1; }
+
+/* Re-resolve the entry's path, re-read it, do a cheap identity re-check (still the
+ * right kind/direction/state at that index -- a mismatch means the file changed
+ * under us; log and give up rather than promote the wrong entry), flip it to
+ * XR_STATE_CLAIMED and rewrite -- verified. A failed promotion is NOT fatal: the
+ * entry stays XR_STATE_PENDING, which is fail-safe by construction (S11.8:
+ * "destination unproven", never removable). */
+bool __attribute__((noinline)) app_xfer_promote(void) {
+  if (!app_xfer_pending()) return false;
+  char path[GBSC_PATH_MAX];
+  (void)xr_path_for_key(path, g_xd_key);
+  uint8_t s_promote_buf[GBSC_FILE_MAX];   /* stack-local, this call's own frame -- no new static */
+  uint32_t len = 0;
+  if (sf_read_full(path, s_promote_buf, GBSC_FILE_MAX, &len) != SF_OK) {
+    log_line("xfer: promote: could not re-read %s", path);
+    return false;
+  }
+  GbscEntry e;
+  if (!gbsc_get(s_promote_buf, len, g_xd_idx, &e) ||
+      e.kind != XR_KIND_NATIVE_HOME || e.direction != XR_DIR_ABROAD_G3 ||
+      e.state != XR_STATE_PENDING) {
+    log_line("xfer: promote: entry %d in %s no longer matches -- giving up", (int)g_xd_idx, path);
+    app_xfer_pending_drop();
+    return false;
+  }
+  e.state = XR_STATE_CLAIMED;
+  if (gbsc_remove(s_promote_buf, &len, g_xd_idx) != 0) {
+    log_line("xfer: promote: remove failed in %s", path);
+    return false;
+  }
+  int nidx = gbsc_add(s_promote_buf, &len, GBSC_FILE_MAX, &e);
+  if (nidx < 0) { log_line("xfer: promote: re-add failed in %s", path); return false; }
+  rmbl_pause();
+  SfStatus wst = sf_write_verified(path, s_promote_buf, len);
+  rmbl_resume();
+  if (wst != SF_OK) { log_line("xfer: promote: rewrite failed for %s", path); return false; }
+  app_xfer_pending_drop();
+  return true;
+}
+
+/* Best-effort undo of a PENDING entry the user just declined to save (the transfer
+ * never happened, so the entry must not linger -- an orphan XR_PENDING entry can
+ * never be collected, S11.18 Q6). Same shape as gb_paste_sidecar_undo's own
+ * best-effort tail: log-only on failure. */
+void __attribute__((noinline)) app_xfer_pending_undo(void) {
+  if (!app_xfer_pending()) return;
+  char path[GBSC_PATH_MAX];
+  (void)xr_path_for_key(path, g_xd_key);
+  uint8_t s_promote_buf[GBSC_FILE_MAX];   /* stack-local -- no new static */
+  uint32_t len = 0;
+  if (sf_read_full(path, s_promote_buf, GBSC_FILE_MAX, &len) != SF_OK) {
+    log_line("xfer: undo: could not re-read %s", path);
+    app_xfer_pending_drop();
+    return;
+  }
+  if (gbsc_remove(s_promote_buf, &len, g_xd_idx) != 0) {
+    log_line("xfer: undo: remove failed in %s", path);
+    app_xfer_pending_drop();
+    return;
+  }
+  rmbl_pause();
+  SfStatus wst;
+  if (gbsc_count(s_promote_buf, len) == 0) wst = (f_unlink(path) == FR_OK) ? SF_OK : SF_ERR_WRITE;
+  else                                     wst = sf_write_verified(path, s_promote_buf, len);
+  rmbl_resume();
+  if (wst != SF_OK) log_line("xfer: undo: rewrite failed for %s", path);
+  app_xfer_pending_drop();
+}
 
 uint8_t* app_arena_acquire(uint32_t need) {
   if (g_arena_held || need > (uint32_t)G3_PC_BYTES) return NULL;
@@ -2252,7 +2338,7 @@ void app_bank_defer_delete(int box, int slot, const uint8_t* rec80) { pdna_bank_
 bool app_bank_defer_full(void) { return pdna_bank_defer_full(); }
 bool app_bank_defer_room(int n) { return pdna_bank_defer_room(n); }
 void app_bank_defer_pop(int n) { pdna_bank_defer_pop(n); }
-void app_bank_flush_deletions(void) { pdna_bank_flush_deletions(); }   /* delete queued Bank sources NOW (after the PC dest is committed) */
+int app_bank_flush_deletions(void) { return pdna_bank_flush_deletions(); }   /* delete queued Bank sources NOW (after the PC dest is committed) */
 /* A read-only FOREIGN source (a mounted GB save) sets is_bank so it inherits the
  * bank's safe navigation, but it is NOT the bank: its box indices mean nothing to the
  * deferred-deletion queue, and letting a queued Bank->PC delete blank one of its
@@ -8878,7 +8964,15 @@ static BoxSource pc_box_source(void) {
  * in one verified pass (app_commit_pc folds in the staged Day-Care sections); B discards
  * everything — the on-disk save was never touched and we're returning to the browser. */
 static void flush_on_exit(void) {
-  if (!app_pc_dirty() && !g_sb1_deferred) { pdna_bank_flush_deletions(); return; }  /* PC already saved; still delete carried bank originals */
+  if (!app_pc_dirty() && !g_sb1_deferred) {
+    app_xfer_promote();                    /* BACKLOG #150 S150-8 decision 9: the PC was already saved */
+    int kept = pdna_bank_flush_deletions();
+    if (kept) {
+      char l1[48]; siprintf(l1, PDNA_XFER_FLUSHFAIL_L1, kept);
+      msg_wait(PDNA_XFER_FLUSHFAIL_TITLE, UI_WARN, l1, PDNA_XFER_FLUSHFAIL_L2);
+    }
+    return;
+  }
   if (app_confirm("Save changes?", "Save the moved Pokemon?")) {
     /* GATE the Bank-source deletion on the PC write SUCCEEDING. app_commit_pc() can fail (EZ
      * writes have no retry / verify mismatch / backup-full); on failure the moved mons live only
@@ -8887,10 +8981,18 @@ static void flush_on_exit(void) {
      * deletions ONLY after the destination (PC) is verified on disk -> worst case a recoverable
      * duplicate (mons kept in the Bank), never a loss. g_pc_dirty stays set on failure, so the
      * moves are still pending and can be retried. */
-    if (app_commit_pc()) pdna_bank_flush_deletions();
+    if (app_commit_pc()) {
+      app_xfer_promote();                  /* decision 9: the PC is now verified on disk */
+      int kept = pdna_bank_flush_deletions();
+      if (kept) {
+        char l1[48]; siprintf(l1, PDNA_XFER_FLUSHFAIL_L1, kept);
+        msg_wait(PDNA_XFER_FLUSHFAIL_TITLE, UI_WARN, l1, PDNA_XFER_FLUSHFAIL_L2);
+      }
+    }
   } else {
     gen3_read_pc_storage(g_save, g_vinfo.slot, g_pc);   /* revert PC moves */
     g_pc_dirty = false; g_sb1_deferred = false;          /* drop staged Day-Care (disk untouched) */
+    app_xfer_pending_undo();                             /* decision 9: the transfer never happened */
     pdna_bank_clear_deletions();                         /* move cancelled -> keep the Bank originals */
   }
 }

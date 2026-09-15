@@ -8,6 +8,7 @@
 #include "gen2_save.h"
 #include "gen12_convert.h"
 #include "pdna_box.h"        /* BoxSource */
+#include "bank_down_convert.h"  /* BankDownResult -- BACKLOG #150 S150-8 */
 
 /*
  * pdna_gen12 — mount a Game Boy (R/B/Y, G/S, Crystal) battery save as a READ-ONLY
@@ -321,6 +322,26 @@ void gb12_arena_tail_release(void);
  * `allow_edit=false, out80=NULL` for a read-only view (there is then no prev/next
  * mon to scroll to from a single cell, and the return value is not meaningful). */
 bool gb_native_summary_open(const uint8_t rec80[80], bool allow_edit, uint8_t out80[80]);
+
+/* BACKLOG #150 S150-8 / D-Q1: the two DOWN-conversion arms' GBA-facing bodies --
+ * real card I/O (the ledger write, decision 8's xfer_down_write), the loss/legal
+ * screens, and either the Gen-3 PC write (through `src`) or the Game Boy session
+ * write (through g_ed/gbs_insert/gb_persist). Called ONLY from
+ * source/bank_down_convert.c's thin wrappers (bank_down_convert_gen3/
+ * bank_down_convert_gb), which pdna_box.c's minimal bank_down_dispatch calls; both
+ * live in this file (not bank_down_convert.c) because both need g_ed / the sidecar
+ * buffer / the loss+legal screens, which are this file's own statics -- see the
+ * S150-8 delivery report's dispatcher-reconciliation note. */
+BankDownResult gb_bank_down_gen3(BoxSource* src, int dst_box, int dst_cell,
+                                 const uint8_t cell80[80], const uint8_t dstrec[80],
+                                 uint8_t out80[80]);
+BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]);
+
+/* BACKLOG #150 S150-8: the currently mounted Game Boy session's own generation
+ * (GB_GEN1/GB_GEN2), for pdna_box.c's own minimal arm-selection predicate (this
+ * lane's stand-in for S150-7's xg_bank_down_arm(), which does not exist on disk --
+ * see the S150-8 delivery report). 0 when no session is mounted. */
+uint8_t gb_session_gen(void);
 
 #ifdef PDNA_DELTA
 /* BACKLOG #62: mount fused_gb_save(idx) directly out of cartridge space -- no FIL, no

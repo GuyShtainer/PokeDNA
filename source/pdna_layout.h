@@ -987,6 +987,32 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XFER_NATIVE_L1    "This Game Boy Pokemon can"
 #define PDNA_XFER_NATIVE_L2    "only move inside the Bank."
 
+/* BACKLOG #150 S150-8 decision 13 / D-Q2/D-Q3: the DOWN-converting edge's own
+ * strings -- native cell -> Gen-3 PC (decision 2's party refusal), one unpromoted
+ * transfer at a time (decision 9), the ledger-full evict-then-refuse case
+ * (decision 8), the Gen-1<->Gen-2 time-capsule refusal (decision 14), and the
+ * flush-failure report (decision 10). Same <=28-column discipline as every other
+ * fixed title in this file (tests/host_textfit_test.c's own PF(text, 28, 184) rows). */
+#define PDNA_XFER_PARTY_TITLE "PC BOX FIRST"
+#define PDNA_XFER_PARTY_L1    "Send it to a PC box, then"
+#define PDNA_XFER_PARTY_L2    "move it to the party."
+
+#define PDNA_XFER_SAVEFIRST_TITLE "SAVE FIRST"
+#define PDNA_XFER_SAVEFIRST_L1    "One transfer is waiting for"
+#define PDNA_XFER_SAVEFIRST_L2    "the game save. START > SAVE."
+
+#define PDNA_XFER_TOOMANY_TITLE "TOO MANY TRANSFERS"
+#define PDNA_XFER_TOOMANY_L1    "Too many transfer records"
+#define PDNA_XFER_TOOMANY_L2    "for this Pokemon."
+
+#define PDNA_XFER_TC_TITLE        "NO GEN 1 FORM"
+#define PDNA_XFER_TC_SPECIES_FMT  "%s did not exist in Gen 1."
+#define PDNA_XFER_TC_MOVE_FMT     "%s cannot be known in Gen 1."
+
+#define PDNA_XFER_FLUSHFAIL_TITLE "BANK NOT FULLY UPDATED"
+#define PDNA_XFER_FLUSHFAIL_L1    "%d Pokemon are still in the"
+#define PDNA_XFER_FLUSHFAIL_L2    "Bank. They are not lost."
+
 /* BACKLOG #150 S150-4 decision 11: the UP drop's own strings. PREP = the backup gate
  * refused (nothing moved); KEPT = the Bank write landed but release_up refused (a
  * duplicate, not a loss); REC = decision 5's ledger refusal (the mon already has a

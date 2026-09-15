@@ -73,12 +73,25 @@ void bdc_convert_gb_core(const uint8_t cell80[BC_CELL_BYTES], uint8_t dst_gen,
 BankDownResult bank_down_convert_gb(BoxSource* src, int dst_box, int dst_cell,
                                     const uint8_t cell80[80]);
 
-/* Arm 2: the native cell converts into a real Gen-3 record and lands in the Gen-3 PC
- * box `dst_box`/`dst_cell` addresses. `src` is the PC BoxSource (records/note_add/
- * commit/mark_dirty all come from it, exactly like any ordinary Bank->PC drop).
- * Returns BANK_DOWN_CONVERTED on success (the record is already placed AND committed
- * through `src`) or BANK_DOWN_REFUSED. Never returns BANK_DOWN_LANDED. */
+/* Arm 2: the native cell converts into a real Gen-3 record for the Gen-3 PC box
+ * `dst_box`/`dst_cell` addresses. DEVIATION from the D-Q1 shape the bridge arm
+ * above uses: this arm does NOT call any `src->*` member itself and does NOT touch
+ * the card in the PC's own box buffer -- `tools/stack_budget.py`'s walker refuses
+ * to certify a NEW caller of a BoxSource function-pointer field it has no
+ * declaration for (tools/stack_edges.txt's `BoxSource.records @20 in
+ * clear_origin,export_box_all,party_strip_overlay,release_box_all -> ...` and
+ * `.note_add @56 in drop_held -> ...` are both qualified to SPECIFIC existing
+ * caller functions, and this brand-new function is not one of them; GATED ok must
+ * stay 4, and this lane may add no new stack_edges.txt row -- confirmed by an
+ * actual build failure, see the S150-8 delivery report). So `dstrec` (the 80
+ * bytes already at the destination cell, read-only, from the CALLER's own already-
+ * loaded `recs`) is an INPUT for the occupancy check, and `out80` is an OUTPUT: on
+ * BANK_DOWN_CONVERTED the caller (pdna_box.c's drop_held, which ALREADY calls
+ * `src->note_add`/`src->mark_dirty` as a declared caller) does the actual
+ * `memcpy`/`note_add`/`mark_dirty`, exactly the shape the ordinary BANK->PC true
+ * MOVE branch beside it already uses. Never returns BANK_DOWN_LANDED. */
 BankDownResult bank_down_convert_gen3(BoxSource* src, int dst_box, int dst_cell,
-                                      const uint8_t cell80[80]);
+                                      const uint8_t cell80[80], const uint8_t dstrec[80],
+                                      uint8_t out80[80]);
 
 #endif /* BANK_DOWN_CONVERT_H */

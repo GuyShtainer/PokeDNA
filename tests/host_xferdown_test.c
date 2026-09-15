@@ -5,7 +5,7 @@
  * real card I/O (the ledger write, gbs_insert/gb_persist) and are proven by the
  * mGBA gesture at the hand-resolved second merge, not here.
  *
- *   cc -std=c11 -Wall -Wextra -I source tests/host_xferdown_test.c \
+ *   cc -std=c11 -Wall -Wextra -I source -DPDNA_GEN12_HOST tests/host_xferdown_test.c \
  *      source/xfer_rec.c source/bank_cell.c source/gen12_convert.c source/gb_edit.c \
  *      source/gen1_save.c source/gen1_write.c source/gen2_save.c source/gen2_write.c \
  *      source/gen3_to_gb.c source/gb_sidecar.c source/gen3_save.c source/gen3_mon.c \

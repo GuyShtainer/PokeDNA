@@ -4,6 +4,7 @@
 #include "xfer_rec.h"         /* xr_game_item_mask, xr_time_capsule_block */
 #include "item_map_g2g3.h"    /* item_g2_to_g3 */
 #include "data_tables.h"      /* pk_item_games */
+#include "pdna_gen12.h"       /* gb_bank_down_gen3/gb_bank_down_bridge -- GBA arms below */
 
 /* ---- pure core, arm 2 (decision 3+5+6) ------------------------------------- */
 
@@ -82,3 +83,30 @@ void bdc_convert_gb_core(const uint8_t cell80[BC_CELL_BYTES], uint8_t dst_gen,
   G3GbStatus st = gen3_to_gb(mid80, dst_gen, caught_available, g1base, out, loss);
   *g3gb = st;
 }
+
+/* ============================================================================
+ * GBA-facing arms -- thin wrappers, excluded from the host build (bank_down_convert.c
+ * is linked whole into tests/host_xferdown_test.c, so the FatFs/tonc-touching bodies
+ * this lane's real card I/O needs cannot live in THIS file the way pdna_gen12.c's own
+ * PDNA_GEN12_HOST guard hides its own GBA glue). gb_bank_down_gen3/gb_bank_down_bridge
+ * (source/pdna_gen12.c, declared in pdna_gen12.h) do the actual work: they need g_ed,
+ * the sidecar buffer and the loss/legal screens, which are that file's own statics --
+ * see the S150-8 delivery report's dispatcher-reconciliation note for why the D-Q1
+ * "arms in a NEW file" instruction is satisfied at this thin-wrapper layer rather than
+ * by re-exposing pdna_gen12.c's internals wholesale.
+ * ============================================================================ */
+#ifndef PDNA_GEN12_HOST
+
+BankDownResult bank_down_convert_gb(BoxSource* src, int dst_box, int dst_cell,
+                                    const uint8_t cell80[80]) {
+  (void)src; (void)dst_cell;
+  return gb_bank_down_bridge(dst_box, cell80);
+}
+
+BankDownResult bank_down_convert_gen3(BoxSource* src, int dst_box, int dst_cell,
+                                      const uint8_t cell80[80], const uint8_t dstrec[80],
+                                      uint8_t out80[80]) {
+  return gb_bank_down_gen3(src, dst_box, dst_cell, cell80, dstrec, out80);
+}
+
+#endif

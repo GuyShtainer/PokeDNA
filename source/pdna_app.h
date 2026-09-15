@@ -361,7 +361,25 @@ void app_bank_defer_delete(int box, int slot, const uint8_t* rec80);
 bool app_bank_defer_full(void);   /* 64-move queue full -> refuse the move (a silent drop would DUP) */
 bool app_bank_defer_room(int n);  /* room for a whole chunk of n deferred deletions? (Bank->PC multi-move) */
 void app_bank_defer_pop(int n);   /* undo the last n queued deletions (revert a Bank->PC move on write failure) */
-void app_bank_flush_deletions(void);  /* delete the queued Bank sources NOW — call ONLY after the PC destination is verified on disk */
+int  app_bank_flush_deletions(void);  /* delete the queued Bank sources NOW — call ONLY after the PC destination is verified on disk.
+                                        * BACKLOG #150 S150-8 decision 10: returns the number of
+                                        * deletions that FAILED and are still queued (0 = all
+                                        * flushed) instead of silently discarding failures. */
+
+/* BACKLOG #150 S150-8 decision 9/G-F1: the ONE unpromoted native->Gen-3 transfer of
+ * this session (16 B of plain .bss, pdna_main.c -- never EWRAM_BSS). `key`/`idx`
+ * are the /PokeDNA/xfer entry xfer_down_write() just wrote at XR_STATE_PENDING.
+ * app_xfer_promote() re-verifies the entry still matches before flipping it to
+ * XR_STATE_CLAIMED once the PC destination is confirmed on disk; a failed
+ * promotion just logs (the entry stays PENDING, fail-safe by construction).
+ * app_xfer_pending_drop()/_undo() clear the slot -- drop() on a successful
+ * promotion (nothing more to track), _undo() on a declined save (best-effort
+ * gbsc_remove of the orphaned PENDING entry). */
+bool app_xfer_pending(void);
+void app_xfer_pending_set(uint64_t key, int idx);
+bool app_xfer_promote(void);
+void app_xfer_pending_drop(void);
+void app_xfer_pending_undo(void);
 
 /* A mon carried Bank->PC is deleted from the bank only at the save, but must LOOK gone at once.
  * hide_pending blanks those slots in a DECODED box (display only); slot_pending says a slot still
@@ -474,6 +492,11 @@ void app_icons_drop(void);
 uint8_t* app_arena_acquire(uint32_t need);  /* NULL: too big, already held, or PC dirty */
 void     app_arena_release(void);
 bool     app_arena_held(void);
+
+/* BACKLOG #150 S150-8 decision 16(b)/G-F2: a live Gen-3 PC in g_pc right now --
+ * !app_arena_held() && a parsed save (g_vinfo.valid). False whenever a Game Boy
+ * session has borrowed this arena (xg_pc_live, source/xfer_gate.h). */
+bool app_gen3_pc_live(void);
 
 /* ---- borrowed EWRAM cache (the box screen's SD/cache-sourced pose-swap frame-1s) ----
  * The real Gen-3 2-frame icon pose swap needs a persistent 15,360 B cache (30 grid
