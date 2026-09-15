@@ -2680,9 +2680,19 @@ bool gb_native_summary_open(const uint8_t rec80[80]) {
   GbEditMon e; BcMeta meta;
   if (!bc_unpack(rec80, &e, &meta)) return false;
   bool saved = false; int card = 0;
-  pdna_gbsummary(&e, /*can_edit*/false, /*start_editing*/false,
-                meta.gen == GB_GEN1 ? "Gen 1 record" : "Gen 2 record",
-                /*has_sidecar*/false, /*create*/false, &saved, &card);
+  /* Review F5 (BACKLOG #150 S150-2): pdna_gbsummary()'s own contract (pdna_gbsummary.h)
+   * returns 0 (exit), +1 (next mon) or -1 (prev mon) -- "the caller loads that slot and
+   * calls again, same contract as pdna_inspect()". A single native Bank cell has no
+   * prev/next mon to load, so U/D inside the summary used to silently dump the user
+   * back to the grid, contradicting the read-only footer's own "U/D mon" promise. Loop
+   * on a non-zero return so U/D just re-opens the SAME cell -- can_edit stays false on
+   * every call, so this can never turn into an edit loop. S150-13 owns the real fix (a
+   * no-nav footer variant for a single-cell view); this is the smallest correct
+   * behaviour until then. */
+  while (pdna_gbsummary(&e, /*can_edit*/false, /*start_editing*/false,
+                        meta.gen == GB_GEN1 ? "Gen 1 record" : "Gen 2 record",
+                        /*has_sidecar*/false, /*create*/false, &saved, &card) != 0) {
+  }
   return true;   /* can_edit false => `saved` can never be true (see the comment above) */
 }
 
