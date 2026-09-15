@@ -932,6 +932,12 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_SIDECAR_EVS_GAP         4    /* extra gap before the always-shown EVs line */
 #define PDNA_SIDECAR_AB_GAP          10   /* extra gap before the A/B footer            */
 
+/* BACKLOG #120 S2: a cross-generation drop denied in drop_held (pdna_box.c) -- either
+ * side of the transfer is BOXSCOPE_GB and there is no lift path yet (S3/S4 add one). */
+#define PDNA_XFER_NOGEN_TITLE "NOT ACROSS GENERATIONS"
+#define PDNA_XFER_NOGEN_L1    "This Pokemon cannot move"
+#define PDNA_XFER_NOGEN_L2    "between these two saves yet."
+
 /* ---- S5-B Part D: PASTE (GB) on an empty Game Boy cell (pdna_gen12.c) ------------- */
 /* S5-C Part B1: Gen 1 is no longer refused outright -- a base-stat table now exists
  * (read live off the user's own ROM beside the .sav). GEN1_TITLE/L1 are repurposed

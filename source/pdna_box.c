@@ -9,6 +9,10 @@
 
 #include "sys.h"            /* EWRAM_BSS (after tonc.h so u8 macro doesn't clash) */
 #include "pdna_box.h"
+#include "xfer_gate.h"      /* BACKLOG #120 S2: xg_drop_denied gates cross-generation drops */
+_Static_assert(BOXSCOPE_GB == 2, "source/xfer_gate.c's XG_SCOPE_GB hard-codes 2 for "
+               "BOXSCOPE_GB -- keep them in step or the cross-generation drop deny "
+               "silently stops firing");
 #include "ui.h"
 #include "pdna_layout.h"    /* PDNA_PCP_*: the PC-box party strip's retail-measured geometry */
 #include "gen3_save.h"
@@ -999,6 +1003,18 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
    * on-card copy until the PC is saved — treat it as OCCUPIED so nothing overwrites it. */
   bool occupied = g_box[cur].species != 0 || (src->scope == BOXSCOPE_BANK && app_bank_slot_pending(box, cur));   /* the REAL Bank's deferred-delete queue, never a GB box index (S1 review D1) */
   if (!same_scope(src)) {                                    /* cross-scope drop */
+    /* BACKLOG #120 S2: no lift path exists yet for either side of a Game-Boy-scope
+     * transfer (S3/S4 add the real UP/DOWN mechanics) -- deny before the occupied
+     * check and before the DUPLICATE fast-path below, so a GB-scope carry can never
+     * land, dup or not. Bracketed like the PC->Bank commit below it uses for its
+     * own boxoam_suspend()/resume(). */
+    if (xg_drop_denied(src->scope, s_orig_scope)) {
+      boxoam_suspend();
+      snd_deny();
+      msg_wait(PDNA_XFER_NOGEN_TITLE, UI_WARN, PDNA_XFER_NOGEN_L1, PDNA_XFER_NOGEN_L2);
+      boxoam_resume();
+      return recs;
+    }
     if (occupied) { snd_deny(); return recs; }
     if (s_held_dup && s_orig_slot < 0) {                     /* a fresh DUPLICATE: placing it is loss-proof
                                                                  in either direction -> no confirm needed
@@ -3226,7 +3242,7 @@ int pdna_box(BoxSource* src) {
         else if (k & (KEY_B | KEY_DOWN)) { s_tab_focus = -1; need_full = true; }   /* back to the grid, still holding */
         else if (k & KEY_UP) {                       /* up past the PC tabs -> Bank, still holding */
           /* a party-origin carry stays in the PC (its undo = drop it / B returns it to the party) */
-          if (!src->is_bank) { if (homeless || s_orig_party) snd_deny(); else { s_tab_focus = -1; boxoam_exit(); return 4; } }
+          if (!src->is_bank || src->bank_edge) { if (homeless || s_orig_party) snd_deny(); else { s_tab_focus = -1; boxoam_exit(); return 4; } }
         }
         else if (k & KEY_A) {
           if (s_tab_focus == 1 && !src->is_bank && !s_orig_party) {  /* PARTY tab: place/swap the held box mon into the party
@@ -3328,7 +3344,7 @@ int pdna_box(BoxSource* src) {
 
     /* ---- TOP-TAB cursor (reached by pressing UP on the box name): pick a tab ---- */
     if (s_tab_focus >= 0) {
-      if      (k & KEY_UP) { if (!src->is_bank) { s_tab_focus = -1; boxoam_exit(); return 4; } }   /* up past the PC tabs -> Bank */
+      if      (k & KEY_UP) { if (!src->is_bank || src->bank_edge) { s_tab_focus = -1; boxoam_exit(); return 4; } }   /* up past the PC tabs -> Bank */
       else if (k & (KEY_B | KEY_DOWN)) { s_tab_focus = -1; need_full = true; }              /* back to box name */
       else if (k & KEY_LEFT)  { s_tab_focus = (s_tab_focus > 0) ? s_tab_focus - 1 : 2; need_full = true; }
       else if (k & KEY_RIGHT) { s_tab_focus = (s_tab_focus + 1) % 3; need_full = true; }
