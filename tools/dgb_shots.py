@@ -4134,6 +4134,161 @@ def run_s150_14_native_edit(core_mod, image_mod, rom: Path, out_dir: Path) -> gb
     return s
 
 
+def run_s150_7_down_edge(core_mod, image_mod, rom_gold: Path, rom_red: Path,
+                         out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #150 S150-7: the DOWN edge -- a native "GBC1" Bank cell back into a Game
+    Boy save of the SAME generation (the EXACT arm). Demonstrates the gesture from D-Q7:
+    MOVE from the Bank -> DOWN off the Bank's bottom -> A on the GB grid.
+
+    TWO images, both `tools/fuse_gb.py <pokedna-delta-artless.gba> <ROM> <SAV>` (a
+    single-directory-entry fusion, NOT tools/fuse_sav.py -- this needs a GB session
+    actually mounted so the Bank's bank_edge UP hop and DOWN-off-bottom land on the
+    session's OWN box grid, not a Gen-3 PC): `rom_gold` = Gold.gbc+Gold.sav (Gen 2),
+    `rom_red` = Red.gb+Red.sav (Gen 1). bank_plant.c's PDNA_DELTA-only box_load() hook
+    plants the SAME five directed cells into box 0 regardless of which generation's
+    session opened it (source/bank_plant.c, box0: CHIKORITA at slot 0 (Gen 2), PIKACHU
+    at slot 1 (Gen 1), an Egg, an item holder, the DMG chip) -- so the Gold session's own
+    Bank and the Red session's own Bank both show the identical CHIKORITA cell at slot 0,
+    which is what lets one image demonstrate EXACT (dropped on Gold, same gen) and the
+    other demonstrate GB_BRIDGE (dropped on Red, different gen) off the SAME cell.
+
+    Nav recipe, verified live against these exact fused images (settle counts found by
+    hand, same posture as every other run_* function in this file):
+      grid entry: `s.run(700); s.tap("A", settle=60); s.run(100)` -- boots to the S1 info
+        page, A opens the box grid (single-directory-entry fusion, gb_delta_pick_save()
+        auto-picks the lone slot).
+      grid -> Bank: UP x3 (cell -> title -> tabs -> the bank_edge hop, same three-press
+        count run_s2_bank()'s own docstring already measured) THEN UP x4 more (the Bank
+        opens with the cursor on the BOTTOM row -- "unless carrying", gb_bank_visit()'s
+        own comment -- and box 0's five planted cells sit in row 0, four rows up).
+      pick up CHIKORITA: A (whitelist menu, VIEW/MOVE/RELEASE/CANCEL) -> DOWN -> A
+        (selects MOVE, starts the carry).
+      Bank -> back onto the GB grid, STILL CARRYING: DOWN x5 (4 to walk down to the
+        Bank's own bottom row, a 5th off its bottom edge -- pdna_box.c's own
+        `else if (src->is_bank) { boxoam_exit(); return 5; }`, which gb_bank_visit()
+        turns into a plain re-entry of the GB grid's own pdna_box() loop).
+      landing: R switches storage boxes (both Gold and Red have several boxes at/near
+        capacity on Guy's real cartridges -- R until a box with room is found is more
+        robust than a hardcoded count, since the corpus is real save data whose exact
+        fill level was never a design invariant); R x15 from box 1 reaches the GB PARTY
+        pseudo-box (14 storage boxes + the party, Gen 2 -- Gen 1 has 12 + the party, so
+        the party index differs and is walked to separately below for panel (c))."""
+    print("== BACKLOG #150 S150-7: the DOWN edge (EXACT arm) ==")
+    UP_INTO_BANK = 3          # grid -> title -> tabs -> the bank_edge hop
+    UP_TO_ROW0 = 4            # Bank's own bottom row -> row 0 (the planted cells)
+    DOWN_OFF_BANK = 5         # row 0 -> Bank's own bottom row (4) -> off the bottom edge (1 more)
+
+    def boot_to_grid(s: gb_shots.Session) -> None:
+        s.run(700)
+        s.tap("A", settle=60)
+        s.run(100)
+
+    def pick_up_chikorita(s: gb_shots.Session) -> None:
+        s.press_n("UP", UP_INTO_BANK, settle=100)
+        s.press_n("UP", UP_TO_ROW0, settle=60)
+        s.tap("A", settle=150)                      # native-cell whitelist menu
+        s.tap("DOWN", settle=60)                    # VIEW/EDIT -> MOVE
+        s.tap("A", settle=150)                       # MOVE -> carrying
+        s.press_n("DOWN", DOWN_OFF_BANK, settle=150)  # back on the GB's own grid, still carrying
+
+    def find_room_and_drop(s: gb_shots.Session, max_boxes: int, label_room: str,
+                           label_drop: str) -> None:
+        """R through storage boxes until one shows room (`N/20` with N < 20), then A."""
+        for _ in range(max_boxes):
+            s.tap("R", settle=150)
+        s.shot(label_room, "S150-7: carrying CHIKORITA, R-ed to a storage box with "
+               "room (real cartridge data -- boxes are R-ed past, not assumed empty)")
+        s.tap("A", settle=250)
+        s.shot(label_drop, "S150-7: A to drop -- see this shot's own caller for what "
+               "arm this is expected to reach")
+
+    # ---- (a)+(d) Gen 2 exact: Gold, CHIKORITA -> a Gold storage box with room -----
+    sg = gb_shots.Session(core_mod, image_mod, rom_gold, out_dir, "s150_7_gold_")
+    boot_to_grid(sg)
+    sg.shot("00_gold_grid", "S150-7: Gold's own box grid, freshly entered")
+    pick_up_chikorita(sg)
+    sg.shot("01_gold_carrying", "S150-7: carrying the Gen-2 CHIKORITA cell, back on "
+            "Gold's own grid (box 1) -- xg_bank_down_arm will see cell_gen==dst_gen==2")
+    # Gold's own boxes 1..12 were all found FULL (20/20) against Guy's real cartridge
+    # on this exact recipe (a real-cartridge corpus, not a design invariant) -- R past
+    # them to box 13 (17/20), confirmed live.
+    for _ in range(13):
+        sg.tap("R", settle=150)
+    sg.shot("02_gold_box_with_room", "S150-7: R-ed off box 1 (full, 20/20 on this "
+            "cartridge) to a box with room")
+    sg.tap("A", settle=250)
+    sg.shot("03_gold_confirm", "S150-7 (a): the EXACT arm's confirm line -- "
+            "'MOVE TO THE GAME?' / the mon's own nickname -- NOT the 'STAYS IN THE "
+            "BANK' deny; a same-generation storage-box drop reaches bank_down_exact() "
+            "-> gb_accept_down_hook() -> the ONE confirm line (D11)")
+    sg.tap("A", settle=300)
+    sg.shot("04_gold_delta_wall", "S150-7 (d): A = yes -> gbs_insert() succeeds in RAM "
+            "-> gb_persist(\"bank-down\") hits pdna_gen12.c's #ifdef PDNA_DELTA refusal "
+            "(this build has no card to write) -- 'Edits are in-session only in the "
+            "emulator build', the PDNA_DELTA wall every write path in this tree shows. "
+            "Real hardware proves the actual write (XFER-C7, docs/HW-QUEUE.md)")
+    sg.tap("A", settle=200)                          # dismiss the wall
+    sg.tap("B", settle=200)                          # cancel the still-held carry
+    # Recovery + the D12 proof: navigate back into the Bank and confirm slot 0 (the
+    # Bank's own copy of CHIKORITA) is UNCHANGED -- accept_down's internal gb_persist()
+    # returned false, so bank_down_exact()'s own `if (!ok) return BANK_DOWN_REFUSED;`
+    # fired BEFORE the app_bank_clear_slots() consume ever ran (D7/D12: the consume is
+    # the LAST thing that happens, strictly after a TRUE persist).
+    for _ in range(13):
+        sg.tap("L", settle=150)                       # back to box 1
+    sg.press_n("UP", UP_INTO_BANK, settle=100)
+    sg.press_n("UP", UP_TO_ROW0, settle=60)
+    sg.shot("05_gold_bank_cell_still_there", "S150-7 (d): back in the Bank, slot 0 -- "
+            "CHIKORITA is STILL a native cell here (BANK 1  5/30, unchanged) -- the "
+            "visual proof that a refused persist consumes NOTHING: D12's ordering held")
+
+    # ---- (c) the 10(c) party-full offer + picker, on a FRESH carry off the same Bank -
+    sg2 = gb_shots.Session(core_mod, image_mod, rom_gold, out_dir, "s150_7_gold_party_")
+    boot_to_grid(sg2)
+    pick_up_chikorita(sg2)
+    # Gold's own party is 6/6 (full) on Guy's real cartridge -- R to the GB PARTY
+    # pseudo-box (the box past every storage box; 15 R presses from box 1 on this
+    # 14-storage-box corpus, confirmed live).
+    for _ in range(15):
+        sg2.tap("R", settle=150)
+    sg2.shot("06_gold_party_full", "S150-7 (c): carrying CHIKORITA, R-ed to the GB "
+             "PARTY pseudo-box -- GB PARTY 6/6, full on this cartridge")
+    sg2.tap("A", settle=250)
+    sg2.shot("07_gold_partyfull_offer", "S150-7 (c) SS11.20 item 10(c): the party-full "
+             "offer -- 'PARTY IS FULL / Send a party Pokemon to a box first?' -- NOT a "
+             "bare refusal (Q5's own answer)")
+    sg2.tap("A", settle=250)
+    sg2.shot("08_gold_party_picker", "S150-7 (c) D9: gb_pick_party_slot() -- 'SEND "
+             "WHICH PARTY MON?', rows are the six party members' own nicknames (ui_ptext, "
+             "gb_pick_box's own chrome), footer 'U/D pick  A ok  B cancel'")
+    sg2.tap("A", settle=250)                          # pick the top row
+    sg2.shot("09_gold_party_confirm", "S150-7 (c)+(D-Q2/D-Q3): the deposit ran RAM-only "
+             "(gbs_move, freeing a party slot), THEN the CHIKORITA landing's own confirm "
+             "-- the Gen-2 per-generation footer, 'New stats, full HP, healthy.', not a "
+             "nickname (D-Q3: this landing recomputes stats/HP/status, so the footer "
+             "says so rather than naming a mon the player already picked)")
+
+    # ---- (b) GB_BRIDGE: the SAME CHIKORITA cell, dropped on Red (a DIFFERENT gen) ----
+    sr = gb_shots.Session(core_mod, image_mod, rom_red, out_dir, "s150_7_red_")
+    boot_to_grid(sr)
+    sr.shot("10_red_grid", "S150-7 (b): Red's own box grid, freshly entered -- the "
+            "SAME box0 plant (bank_plant.c is generation-agnostic), so slot 0 is still "
+            "the Gen-2 CHIKORITA cell, cell_gen(2) != dst_gen(1) this time")
+    pick_up_chikorita(sr)
+    sr.shot("11_red_carrying", "S150-7 (b): carrying the Gen-2 CHIKORITA cell, back on "
+            "Red's own (Gen-1) grid -- xg_bank_down_arm resolves GB_BRIDGE, not EXACT")
+    sr.tap("A", settle=250)
+    sr.shot("12_red_downsoon", "S150-7 (b) S150-8 stub: 'COMING SOON / This Pokemon "
+            "needs a game of the OTHER generation.' -- the GB_BRIDGE arm's one-line "
+            "refusal (D-Q5: bank_down_dispatch's own case body stays a single `return "
+            "BANK_DOWN_REFUSED;`; this toast is drop_held's own re-derivation of the "
+            "arm, not code living inside the dispatcher's switch)")
+
+    sg.taken += sg2.taken + sr.taken
+    sg.skipped += sg2.skipped + sr.skipped
+    return sg
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -4345,6 +4500,18 @@ def main(argv=None) -> int:
                           "no PDNA_DELTA branch in box_save(), so this proves decision "
                           "7's rollback, not a real write -- see the run function's own "
                           "docstring).")
+    ap.add_argument("--s150-7", action="store_true",
+                     help="BACKLOG #150 S150-7: only run_s150_7_down_edge() -- the DOWN "
+                          "edge (a native cell back into a same-generation Game Boy "
+                          "save). Needs TWO images: --image MUST be tools/fuse_gb.py "
+                          "<pokedna-delta-artless.gba> Gold.gbc Gold.sav (Gen 2), and "
+                          "--s150-7-red MUST be tools/fuse_gb.py <pokedna-delta-"
+                          "artless.gba> Red.gb Red.sav (Gen 1) -- see the run function's "
+                          "own docstring for why a GB-session fusion (not fuse_sav.py) "
+                          "is required this time.")
+    ap.add_argument("--s150-7-red", type=Path,
+                     help="#150 S150-7: the Gen-1 (Red) fused image --s150-7 also needs "
+                          "-- see --s150-7's own help.")
     ap.add_argument("--b54-romhack", choices=("hack", "control"),
                      help="BACKLOG #54: only run_b54_romhack() against --image for the "
                           "named case -- the ROM-hack banner + the mon-menu refusal it "
@@ -4940,6 +5107,24 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] s150-14: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if getattr(a, "s150_7", False):
+        # BACKLOG #150 S150-7: append-only, same convention as --s150-2/3/14 above --
+        # needs a SECOND image (--s150-7-red), unlike every prior --s150-* flag.
+        ran = True
+        if not a.s150_7_red:
+            sys.exit("--s150-7 also needs --s150-7-red (see --s150-7's own --help)")
+        try:
+            sess = run_s150_7_down_edge(core_mod, image_mod, a.image, a.s150_7_red, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] s150-7: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
