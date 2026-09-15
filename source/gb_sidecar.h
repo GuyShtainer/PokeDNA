@@ -58,7 +58,16 @@
  *   +4    2   otid16
  *   +6    4   dv4 (Atk, Def, Spe, Spc, one byte each -- gb_edit.h's own DV order)
  *   +10   11  otname_written (raw GB bytes, exactly as GbEditMon.otname stores them)
- *   +21   11  nick_written   (raw GB bytes)
+ *   +21   11  nick_written   (BACKLOG #150 S150-8 F3: the nickname bytes IN THE
+ *             ABROAD FORMAT -- Gen-3 bytes (the converted record's own raw 10-byte
+ *             nickname field, its own encoding) for a NATIVE_HOME entry whose
+ *             direction is XR_DIR_ABROAD_G3; raw GB bytes, exactly as
+ *             GbEditMon.nick stores them, for XR_DIR_ABROAD_GB and every
+ *             pre-#150-S150-8 (XR_KIND_G3_HOME) entry. gbsc_entry_from() fills GB
+ *             bytes by default from `written`; a NATIVE_HOME/ABROAD_G3 caller
+ *             (source/pdna_gen12.c's xfer_down_write) overrides them with the
+ *             Gen-3 record's own bytes afterward, because `written` there is the
+ *             cell's own unpacked GB record, not what actually landed abroad)
  *   +32   4   exp_written
  *   +36   4   rtc_epoch of the transfer (0 if the RTC was absent)
  *   +40   80  ORIGINAL Gen-3 record (the box-shaped 80-byte core)
@@ -151,7 +160,8 @@ typedef struct {
   uint16_t otid16;
   uint8_t  dv4[4];                       /* Atk, Def, Spe, Spc */
   uint8_t  otname_written[GB_NAME_BYTES];
-  uint8_t  nick_written[GB_NAME_BYTES];
+  uint8_t  nick_written[GB_NAME_BYTES];   /* see the entry layout comment above (+21):
+                                           * ABROAD format, not always GB bytes */
   uint32_t exp_written;
   /* Not a UNIX epoch -- there is no RTC-epoch conversion anywhere in this tree and this
    * module will not invent one (same posture as GbGen1Base). PACKING (S5-B, the only

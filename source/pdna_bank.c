@@ -352,16 +352,28 @@ bool pdna_bank_clear_slots(int box, const uint8_t* slots, const uint8_t (*recs80
   g_dirty = true;
   return box_save();
 }
-void pdna_bank_flush_deletions(void) {
+/* BACKLOG #150 S150-8 decision 10/G-M3: KEEP failures queued instead of silently
+ * discarding them (the old unconditional `g_bank_ndel = 0` below lost a deletion
+ * forever on a failed box_save()). Compacts the queue in place, returns the number
+ * of deletions still queued (0 = every one flushed) -- a kept entry is harmless
+ * (worst case a recoverable duplicate on the next visit), never a loss. */
+int pdna_bank_flush_deletions(void) {
+  int kept = 0;
   for (int i = 0; i < g_bank_ndel; i++) {
     int box = g_bank_del[i].box, slot = g_bank_del[i].slot;
     if (g_loaded != box) { if (g_dirty) box_save(); box_load(box); }   /* page the box in (reads its file) */
     uint8_t* p = box_recs() + (uint32_t)slot * REC_BYTES;
     if (memcmp(p, g_bank_del[i].id, BANK_DEL_IDLEN) != 0) continue;    /* slot no longer holds OUR mon -> don't delete */
     memset(p, 0, REC_BYTES);
-    g_dirty = true; box_save();                                        /* write the box without that mon */
+    g_dirty = true;
+    if (!box_save()) {
+      log_line("bank: flush box %d slot %d failed", box, slot);
+      if (kept != i) g_bank_del[kept] = g_bank_del[i];
+      kept++;
+    }
   }
-  g_bank_ndel = 0;
+  g_bank_ndel = kept;
+  return kept;
 }
 
 /* ---- one-time migration from the old flat /PokeDNA/bank/*.pk3 layout ---- */
