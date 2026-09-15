@@ -3851,7 +3851,8 @@ def run_s150_2_bank_native(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_
     s.shot("00_planted_box0", "S150-2: BANK 1, box_load()'s PDNA_DELTA plant -- five "
            "native cells at slots 0-4 (CHIKORITA/2, PIKACHU/1, an Egg, an item "
            "holder, the DMG chip), the rest of the grid ordinary empty Gen-3 slots -- "
-           "no '?' badge anywhere, every native cell wears its era mark")
+           "no '?' badge anywhere; every native cell wears its era mark EXCEPT the "
+           "DMG cell (species 252 + isBadEgg, D-Q3 -- review F3: no era to claim)")
 
     # cursor on each of the five cells in turn -- the left DATA panel (species/level/
     # nickname) is the thing this shot list actually proves: a native cell decodes to
@@ -3891,8 +3892,10 @@ def run_s150_2_bank_native(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_
     s.press_n("RIGHT", 4, settle=CURSOR_SETTLE)             # slot 0 -> slot 4
     s.tap("A", settle=150)                                  # slot 4 -> its occupied-mon menu
     s.shot("09_cell4_menu", "S150-2: A on the DMG cell -- the same occupied-mon menu "
-           "shape (species 252 is a real, non-zero species, so this cell is never "
-           "treated as empty)")
+           "shape (review F1: app_mon_menu's occupancy for a native cell now comes "
+           "from bc_is_native() -- decoded via pdna_native_cell_decode(), the same "
+           "ladder the grid uses -- not from whether pk_decode_mon's meaningless-key "
+           "decrypt of the raw bytes happens to pass its checksum)")
     s.tap("A", settle=150)                                  # select the Summary row
     s.shot("10_cell4_summary_or_refuse", "S150-2: the Summary row on the DMG cell -- "
            "bc_unpack succeeds (the glitch species lives in list_species/rec, outside "
@@ -3903,9 +3906,12 @@ def run_s150_2_bank_native(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_
     # L/R once to the 30-NATIVE worst case (box 1, BANK 2)
     s.tap("R", settle=300)
     s.shot("11_bank2_30native", "S150-2: BANK 2 -- bank_plant_box_full()'s 30-NATIVE "
-           "worst case, every one of the 30 cells native and taking the FULL rung "
-           "(the expensive path, one gen12_convert PID search per cell) -- every "
-           "cell wears its era badge, no '?' anywhere")
+           "worst case (review F4: 27 FULL + 2 RELAXED + 1 NONE/DMG across the 30 "
+           "slots -- it reuses box0's own five directed cells at 0-4, then 25 fresh "
+           "FULL cells at 5-29 -- not 30 fresh FULL cells; every render still at "
+           "least attempts gen12_can_convert, and 27/30 pay the full PID search, "
+           "which is the worst case SS11.9 prices) -- every cell native, every one "
+           "wearing its era badge EXCEPT the DMG cell (D-Q3), no '?' anywhere")
     return s
 
 

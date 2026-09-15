@@ -30,11 +30,16 @@
 void bank_plant_box0(uint8_t* recs);
 
 /* The 30-NATIVE WORST CASE (SS11.9's Cost paragraph, SS11.13's S150-2 acceptance row):
- * slots 0-4 as bank_plant_box0 above; slots 5-29 = the Gen-2 CHIKORITA cell repacked
- * per slot (bank_serial 6..30, level 12 + (slot % 30) clamped to 1..100, distinct
- * bc_ident32 per cell, distinct level in the panel) -- every one of the 30 takes the
- * FULL rung, the expensive path (one gen12_convert -- a PID search -- per cell), which
- * is the point. No new static: built in the caller's own 80-byte scratch. */
+ * slots 0-4 as bank_plant_box0 above (BACKLOG #150 S150-2 review F4: that is 2 FULL +
+ * 2 RELAXED + 1 NONE/DMG, not five more FULL cells -- corrected here, this reuses
+ * box0's own five directed cells rather than five fresh FULL ones); slots 5-29 = the
+ * Gen-2 CHIKORITA cell repacked per slot (bank_serial 6..30, level 12 + (slot % 30)
+ * clamped to 1..100, distinct bc_ident32 per cell, distinct level in the panel) and
+ * EVERY ONE of those 25 takes the FULL rung, the expensive path (one gen12_convert --
+ * a PID search -- per cell). Box-wide: 27 FULL (2 + 25), 2 RELAXED, 1 NONE across all
+ * 30 native slots -- still the worst case §11.9 prices (every render at least attempts
+ * gen12_can_convert, and 27/30 pay the full PID search). No new static: built in the
+ * caller's own 80-byte scratch. */
 void bank_plant_box_full(uint8_t* recs);
 
 #else
