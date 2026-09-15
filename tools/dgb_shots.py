@@ -4134,6 +4134,90 @@ def run_s150_14_native_edit(core_mod, image_mod, rom: Path, out_dir: Path) -> gb
     return s
 
 
+def run_s150_4_uplift(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #150 S150-4/5 follow-up (lane s150-4-5b): the UP-lift gesture's grab
+    step end to end on `make delta-gb`'s own combined image (Emerald.sav +
+    Red/Gold/Crystal) -- boot picker -> Gold's box grid -> CM_MOVE grab -> the origin
+    prompt draws -> pick GOLD -> the grab is REFUSED at the serial step, cleanly.
+
+    BACKLOG #171b (this lane, a review finding on top of #171): start_carry()
+    (pdna_box.c:1077) gates the whole lift_up path on the per-BoxSource field
+    `src->xfer`, never on the file-static `s_xfer_peer` a Bank visit installs.
+    pdna_gen12_source() never assigned it, so every GB grab used to fall straight to
+    start_carry()'s plain-memcpy branch -- BoxXferOps.lift_up (the origin prompt, the
+    pack, pdna_bank_next_serial()) never ran at all, and this chain's OWN first cut
+    (before #171b) showed a "successful" grab with no prompt, which was the bug, not
+    a delta-vehicle quirk. Fixed: `s.xfer = &k_gb_xfer;` in pdna_gen12_source(). Now
+    verified live: the prompt draws, and the grab is correctly refused where the
+    vehicle cannot write bank.meta -- see the facts below.
+
+    THE ORIGIN PROMPT NOW DRAWS -- "WHICH GAME IS THIS?" / GOLD (selected) / SILVER,
+    footer "U/D pick  A ok  B cancel", no box sprites over it (boxoam_suspend() runs
+    before lift_up()). Confirmed stable across 200+ idle frames (a real blocking
+    wait_keys(), not a transient compositing frame).
+
+    THE GRAB IS THEN REFUSED, SILENTLY, AND THE SCREEN REPAINTS CLEANLY --
+    pdna_bank_next_serial() (source/pdna_bank.c) calls meta_save(), which fails (no
+    SD card on this delta vehicle: `if (!meta_save()) { g_bank_serial = prev; return
+    0; }`); gb_lift_up_hook logs "bank.meta write failed" and returns false;
+    start_carry() returns false; begin_select's refusal branch fires `snd_deny();
+    *pfull = true;` -- a BEEP ONLY, no on-screen dialog (matches this codebase's
+    existing silent-refusal convention elsewhere in pdna_box.c), but a FULL repaint
+    over gb_pick_origin's full-screen picker (a review fix on top of this same lane's
+    finding: the bare `else snd_deny();` this branch used to be left that repaint to
+    chance -- the very first cut of this chain caught the resulting stale-bitmap
+    frame live and needed a throwaway L/R box-switch to force a clean one; that
+    workaround is GONE now that the real fix sets *pfull itself). The log line is NOT
+    visible in this mGBA build (log_under_mgba() reports false here -- confirmed by
+    installing a Python log sink and capturing zero "gen12:" lines across the whole
+    run, only unrelated GBA-hardware-register noise) -- quoted from source, not shown
+    on screen. The very next frame is already clean: still CM_MOVE, empty-handed
+    ("MOVE  A grab  hold=set"), the same Bulbasaur still sitting at slot 0, untouched.
+
+    THIS REFUSAL IS THE HONEST DELTA DEMONSTRATION -- a landed, persisted native
+    cell (and therefore the #171 UP-into-tab-focus fix's own carry-navigation, which
+    needs an actual hold to begin) CANNOT be produced on this vehicle at all now that
+    #171b is fixed: a GB-scope hold can only ever begin through a successful
+    lift_up(), and lift_up() can only ever succeed where bank.meta is writable.
+    Proving the carry reaches the Bank, and VIEW/EDIT on a freshly-landed cell, are
+    BOTH hardware-only from here (XFER-UP1/XFER-UP2/XFER-UP5/XFER-UP6) -- not faked
+    with a pre-planted stand-in cell.
+
+    NOT in this chain: the Gen-1 last-party-mon (party-floor) refusal. Guy's own
+    Red.sav (the corpus `make delta-gb` fuses) carries a FULL 6/6 party -- lifting any
+    one of six never crosses the party floor, so the refusal is not reachable with
+    this exact corpus without save surgery this lane does not perform. Left for real
+    hardware (or a purpose-built 1-mon-party fixture), not faked here."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s150_4_")
+    print("== BACKLOG #150 S150-4/5 follow-up: the grab step, post-BACKLOG #171b ==")
+    boot_to_gb_session(s, rom, which="gold")
+    s.shot("00_gold_box_grid", "s150-4: Gold's box grid, freshly entered -- cursor on "
+           "slot 0 (No.1 BULBASAUR), footer 'A menu  SEL  L/R  B'")
+
+    s.tap("SEL", settle=100)
+    s.shot("01_cm_move", "s150-4: SELECT cycled the cursor mode to MOVE (a GB grid "
+           "cycles NORMAL<->MOVE only, decision 8(b)) -- footer 'MOVE  A grab  hold=set'")
+
+    s.tap("A", settle=150)
+    s.shot("02_origin_prompt", "s150-4/BACKLOG #171b: A grabbed slot 0 -- "
+           "start_carry() now genuinely reaches BoxXferOps.lift_up (gb_lift_up_hook), "
+           "whose gb_origin_for_save() opens the full-screen picker -- 'WHICH GAME IS "
+           "THIS?' GOLD (selected) / SILVER, no box sprites over it (boxoam_suspend() "
+           "ran first). BEFORE #171b this screen never appeared at all -- the grab "
+           "'succeeded' silently via the plain-memcpy fallback instead")
+
+    s.tap("A", settle=200)
+    s.shot("03_refused_clean", "s150-4/BACKLOG #171b: A picks GOLD (already selected) -- "
+           "gb_pick_origin() returns BC_ORIGIN_GOLD; gb_lift_up_hook then calls "
+           "pdna_bank_next_serial(), whose meta_save() fails (no SD card on this "
+           "delta vehicle) -- the grab is refused (a beep only, snd_deny(), no "
+           "dialog) and begin_select's refusal branch now sets *pfull = true, "
+           "forcing a clean repaint over the picker in the SAME frame: still "
+           "CM_MOVE, empty-handed ('MOVE  A grab  hold=set'), No.1 BULBASAUR still "
+           "at slot 0 -- no leftover picker text, no forced L/R workaround needed")
+    return s
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -4345,6 +4429,24 @@ def main(argv=None) -> int:
                           "no PDNA_DELTA branch in box_save(), so this proves decision "
                           "7's rollback, not a real write -- see the run function's own "
                           "docstring).")
+    ap.add_argument("--s150-4", action="store_true",
+                     help="BACKLOG #150 S150-4/5 follow-up (lane s150-4-5b, BACKLOG "
+                          "#171/#171b): only run_s150_4_uplift() against --image -- "
+                          "--image MUST be `make delta-gb`'s own combined image "
+                          "(Emerald.sav + Red/Gold/Crystal). The grab step end to "
+                          "end, post-#171b (pdna_gen12_source() now wires "
+                          "`s.xfer = &k_gb_xfer`, so BoxXferOps.lift_up genuinely "
+                          "runs): CM_MOVE grab, the origin prompt DRAWS (GOLD/SILVER), "
+                          "picking GOLD is then REFUSED at the serial step (no SD card "
+                          "on this vehicle -- meta_save() fails) -- a beep only, a "
+                          "clean repaint over the picker (review F1: begin_select's "
+                          "refusal branch now sets *pfull itself), the mon left "
+                          "untouched. A landed, persisted native cell needs "
+                          "real hardware from here (a GB-scope hold can only begin "
+                          "through a successful lift_up) -- see the run function's own "
+                          "docstring for the full explanation, not faked. The Gen-1 "
+                          "last-party-mon refusal is also NOT reachable on this "
+                          "corpus (Red.sav's party is a full 6/6).")
     ap.add_argument("--b54-romhack", choices=("hack", "control"),
                      help="BACKLOG #54: only run_b54_romhack() against --image for the "
                           "named case -- the ROM-hack banner + the mon-menu refusal it "
@@ -4940,6 +5042,22 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] s150-14: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if getattr(a, "s150_4", False):
+        # BACKLOG #150 S150-4/5 follow-up (lane s150-4-5b, BACKLOG #171): same
+        # append-only convention as --s150-2/--s150-3/--s150-14 above.
+        ran = True
+        try:
+            sess = run_s150_4_uplift(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] s150-4: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:

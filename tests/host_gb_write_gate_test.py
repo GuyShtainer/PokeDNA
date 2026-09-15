@@ -9,7 +9,7 @@ Pure-text checks, no mgba, no build -- this is the same "grep the shipped source
 don't re-type your own copy of it" posture tests/textfit_mutation_check.py proves
 for the layout tests, applied here to a write-safety gate instead of a pixel budget.
 
-Three checks:
+Four checks:
 
   (a) gb_nav_from_start() (the GB nav-menu dispatcher): every `pdna_gbXXX(gs, ...)`
       / `pdna_gbdaycare(gs, ...)` call inside it that passes a second (can_edit-
@@ -33,6 +33,14 @@ Three checks:
       function body. gb_native_summary_open has no `gb_locate()` fallback (decision
       10: there is no GB save mounted for a Bank cell, so gb_locate() is the WRONG
       gate here) -- the gate must be app_can_edit( itself, not either-or.
+
+  (d) BACKLOG #171b (lane s150-4-5b, post-#171 review finding): pdna_gen12_source()
+      assigns `s.xfer = &k_gb_xfer;` (comment-stripped) -- start_carry() (pdna_box.c
+      :1077) gates the whole lift_up path on `src->xfer`, a per-BoxSource field, never
+      on the file-static `s_xfer_peer` a Bank visit installs. Without this the whole
+      UP-lift feature (BACKLOG #150 S150-4/5) silently falls back to a plain memcpy on
+      every grab -- no origin prompt, no pack, no serial -- proven live: a "successful"
+      grab on a vehicle where every SD write fails is itself the proof lift_up never ran.
 
 Run directly:
 
@@ -177,6 +185,26 @@ def check_named_write_hooks(text: str) -> list[str]:
     return violations
 
 
+def check_xfer_wired(text: str) -> list[str]:
+    """BACKLOG #171b (lane s150-4-5b, post-#171 review finding): pdna_gen12_source()
+    must assign `s.xfer = &k_gb_xfer;` (comments excluded) -- start_carry() (pdna_box.c
+    :1077) gates the whole lift_up path on `src->xfer`, a per-BoxSource FIELD, never on
+    the file-static `s_xfer_peer` a Bank visit installs via pdna_box_xfer_set(). Without
+    this assignment every GB-scope grab falls straight to start_carry()'s plain memcpy
+    branch -- BoxXferOps.lift_up (the origin prompt, the pack, pdna_bank_next_serial())
+    NEVER RUNS, confirmed by lane s150-4-5b's own per-tap mGBA trace: a "successful"
+    grab on a vehicle where every SD write fails is proof by itself (had lift_up run,
+    next_serial -> meta_save would have failed and the grab would have been refused)."""
+    body = strip_comments(extract_function_body(text, "pdna_gen12_source"))
+    if not body:
+        return ["pdna_gen12_source(): function body not found"]
+    if not re.search(r"\bs\.xfer\s*=\s*&k_gb_xfer\s*;", body):
+        return ["pdna_gen12_source(): no `s.xfer = &k_gb_xfer;` assignment in its "
+                "(comment-stripped) body -- start_carry()'s src->xfer gate would stay "
+                "NULL and BoxXferOps.lift_up would never run"]
+    return []
+
+
 def check_native_unpack_in_loop(text: str) -> list[str]:
     """S150-14 decision 3: bc_unpack must sit INSIDE gb_native_summary_open's for(;;),
     never hoisted above it -- pdna_gbsummary edits `e` in place and restores nothing."""
@@ -192,7 +220,7 @@ def check_native_unpack_in_loop(text: str) -> list[str]:
 def run_all(path: Path) -> list[str]:
     text = path.read_text()
     return (check_nav_dispatch(text) + check_mutating_hooks(text) + check_named_write_hooks(text)
-            + check_native_unpack_in_loop(text))
+            + check_native_unpack_in_loop(text) + check_xfer_wired(text))
 
 
 def main() -> int:
@@ -206,6 +234,7 @@ def main() -> int:
     print(f"gb_nav_from_start dispatch check: {'ok' if not any('gb_nav_from_start' in v or 'app_can_edit()' in v for v in violations) else 'see violations below'}")
     print(f"mutating hooks checked ({len(fields)}): " + ", ".join(f".{k}={v}" for k, v in sorted(fields.items())))
     print(f"named write hooks checked ({len(NAMED_WRITE_HOOKS)}): " + ", ".join(NAMED_WRITE_HOOKS))
+    print(f"BACKLOG #171b xfer-wired check: {'ok' if not check_xfer_wired(SRC.read_text()) else 'see violations below'}")
     if violations:
         print("FAIL -- shipped source/pdna_gen12.c has a write-gate gap:")
         for v in violations:
@@ -276,10 +305,29 @@ def main() -> int:
               "gb_native_summary_open's gate line -- correctly caught:")
         for v in mutation3:
             print(f"  (mutated-copy) FAIL: {v}")
+
+        # --- fourth self-mutation (BACKLOG #171b): delete `s.xfer = &k_gb_xfer;` from
+        # pdna_gen12_source(), the exact regression the reviewer found live -- must go red.
+        target4 = "  s.xfer       = &k_gb_xfer;   /* BACKLOG #171b: start_carry reads src->xfer, not s_xfer_peer */\n"
+        if target4 not in original:
+            print(f"FAIL -- fourth self-mutation target line not found verbatim: {target4!r} "
+                  f"(source drifted -- update this test's target string)")
+            return 1
+        mutated4 = original.replace(target4, "", 1)
+        scratch.write_text(mutated4)
+        mutation4 = [v for v in run_all(scratch) if "pdna_gen12_source" in v]
+        if not mutation4:
+            print("FAIL -- fourth self-mutation check: deleting `s.xfer = &k_gb_xfer;` did "
+                  "NOT turn this test red (BACKLOG #171b's own regression would ship silently)")
+            return 1
+        print("self-mutation check 4: deleting `s.xfer = &k_gb_xfer;` from "
+              "pdna_gen12_source() -- correctly caught:")
+        for v in mutation4:
+            print(f"  (mutated-copy) FAIL: {v}")
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
-    print("\nhost_gb_write_gate_test: ok (shipped source clean, all three mutations caught)")
+    print("\nhost_gb_write_gate_test: ok (shipped source clean, all four mutations caught)")
     return 0
 
 

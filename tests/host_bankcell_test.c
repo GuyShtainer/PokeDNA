@@ -65,6 +65,7 @@
 #include "gen3_mon.h"
 #include "gen3_clip.h"
 #include "gb_sidecar.h"
+#include "gb_session.h"   /* gbs_open/gbs_load_list -- S150-4-5b section 11 (raw bytes) */
 
 #define GB_ROMS "/Users/guyshtainer/VSCodeProjects/gba-toolkit/roms/gb"
 
@@ -648,6 +649,238 @@ static void test_sidecar_kind_filter(void) {
   }
 }
 
+/* ============================================================================ */
+/* 11. BACKLOG #150 S150-4-5b item 1: raw-bytes section. gbs_open -> gbs_load_list
+ *     -> gb_load -- the SAME session-open path gb_lift_up_hook's own
+ *     gb_copy_native_hook uses (source/pdna_gen12.c) -- then bc_pack -> bc_unpack,
+ *     byte-compared against the corpus save's OWN bytes at the slot's FILE offset.
+ *     Offsets are independently re-derived HERE (never called out of
+ *     gen1_save.c/gen2_save.c) from the .sym symbol tables -- REFERENCE ONLY,
+ *     clean-room: numbers only, no symbol names carried into shipped code, no
+ *     decomp source copied. Cross-checked against this codebase's own already-
+ *     published constants:
+ *       Gen-1 (assets/upstream/pokered/symbols/pokered.sym), bank:addr -> file
+ *       offset = bank*0x2000 + (addr-0xA000):
+ *         01:af2c -> 0x2F2C (party list start)      == GEN1_OFF_PARTY
+ *         01:b0c0 -> 0x30C0 (live current-box copy)  == GEN1_OFF_CURRENT_BOX
+ *         02:a000 -> 0x4000 (box 1, SRAM bank 2)      == GEN1_OFF_BANK2
+ *       Gen-2 (assets/upstream/pokegold/symbols/pokegold.sym):
+ *         02:a000 -> 0x4000 (box 1, SRAM bank 2)      == gen2_save.c's k_box_off[0]
+ *     Per-slot placement within a list blob (species area / record / OT name /
+ *     nickname) reuses gb_off_species/gb_off_record/gb_off_otname/gb_off_nickname
+ *     (gb_edit.h) -- the SAME list-relative math gb_load itself already runs, so
+ *     it is not re-derived a second time; the part actually independent here is
+ *     the FILE-level list-start offset above, which gbs_load_list must land on
+ *     through a wholly different path (Gen1Save/G2Writer parsing) than a direct
+ *     img+off pointer (sections 1/2's sweep).
+ *
+ *     The Gen-1 party->box BOXLEVEL sync (G1R_BOXLEVEL <- G1R_LEVEL, gen1_write.h,
+ *     the same rule gbs_move() applies) is the ONE known, named, documented
+ *     difference between a party slot's raw box-shape prefix and its packed
+ *     cell -- a mon that leveled up in the field legitimately carries a stale
+ *     byte at G1R_BOXLEVEL in the raw save until its next deposit. Applied below
+ *     from raw file bytes only (never from gb_load's own fields), so the check
+ *     stays independent of bank_cell.c's own copy of the same rule.
+ *
+ *     NOT carried by the cell (BACKLOG #150 S150-1's own record shape) --
+ *     documented, not asserted, because there is nothing IN the cell to compare
+ *     it against:
+ *       - the party TAIL: Gen-1 rec[33..43] / Gen-2 rec[32..47] (status, HP, the
+ *         five battle stats) -- the cell only ever holds the box-shape PREFIX, so
+ *         a party slot's raw comparison below is a prefix match (33 / 32 bytes).
+ *       - Gen-2 Mail (sPartyMail and its five sPartyMonNMail sub-blocks, SRAM
+ *         bank 0 offset 0x600) -- a wholly separate SRAM block outside every
+ *         party/box record; gb_load never reads it and bc_pack never packs it.
+ * ============================================================================ */
+
+/* Gen-1 list-start FILE offset -- independently re-derived from the three .sym
+ * addresses in the header comment above, not called out of gen1_save.c. */
+static uint32_t raw_g1_list_off(int current_box, int box) {
+  if (box == GEN1_PARTY_BOX) return 0x2F2Cu;
+  if (box == current_box)    return 0x30C0u;
+  return (box < 6 ? 0x4000u : 0x6000u) + (uint32_t)(box % 6) * GEN1_BOX_BYTES;
+}
+
+/* One Gen-1 slot: raw file bytes at `list_off` vs. gb_load's `mon` vs. bc_pack's
+ * cell, all three compared. `cmp_len` is always the 33-byte box-shape prefix --
+ * even for a party slot, whose own rec[] is 44 bytes wide (the extra 11-byte tail
+ * is the documented exclusion above). */
+static void raw_check_g1_slot(const char* file, int box, int slot, uint32_t list_off,
+                              const uint8_t* img, uint32_t len, const GbEditMon* mon) {
+  char tag[96];
+  snprintf(tag, sizeof tag, "%s RAW box%d/slot%d", file, box, slot);
+
+  int sp_off  = gb_off_species(GB_GEN1, box, slot);
+  int rec_off = gb_off_record(GB_GEN1, box, slot);
+  int ot_off  = gb_off_otname(GB_GEN1, box, slot);
+  int nk_off  = gb_off_nickname(GB_GEN1, box, slot);
+  CHECK(sp_off >= 0 && rec_off >= 0 && ot_off >= 0 && nk_off >= 0,
+        "%s: gb_off_* resolved", tag);
+  if (sp_off < 0 || rec_off < 0 || ot_off < 0 || nk_off < 0) return;
+
+  uint32_t sp_file = list_off + (uint32_t)sp_off;
+  uint32_t rec_file = list_off + (uint32_t)rec_off;
+  uint32_t ot_file = list_off + (uint32_t)ot_off;
+  uint32_t nk_file = list_off + (uint32_t)nk_off;
+  CHECK(sp_file < len && rec_file + GEN1_PARTY_REC_BYTES <= len &&
+        ot_file + GB_NAME_BYTES <= len && nk_file + GB_NAME_BYTES <= len,
+        "%s: raw offsets in range", tag);
+  if (sp_file >= len || rec_file + GEN1_PARTY_REC_BYTES > len ||
+      ot_file + GB_NAME_BYTES > len || nk_file + GB_NAME_BYTES > len) return;
+
+  CHECK(img[sp_file] == mon->list_species, "%s: species (list) byte mismatch", tag);
+
+  /* Independently-built expected 33-byte box-shape prefix: raw bytes verbatim,
+   * with the ONE documented party->box transform applied from raw bytes only. */
+  uint8_t expect33[GEN1_BOX_REC_BYTES];
+  memcpy(expect33, img + rec_file, GEN1_BOX_REC_BYTES);
+  if (box == GEN1_PARTY_BOX) expect33[G1R_BOXLEVEL] = img[rec_file + G1R_LEVEL];
+
+  uint8_t cell[BC_CELL_BYTES];
+  CHECK(bc_pack(mon, mon->is_party ? BC_FLAG_FROM_PARTY : 0, BC_ORIGIN_RED, 0,
+               g_serial++, cell) == 0, "%s: bc_pack", tag);
+  GbEditMon back; BcMeta meta;
+  CHECK(bc_unpack(cell, &back, &meta), "%s: bc_unpack", tag);
+
+  CHECK(memcmp(expect33, back.rec, GEN1_BOX_REC_BYTES) == 0,
+        "%s: cell rec[0..33) mismatch vs. raw save bytes", tag);
+  CHECK(memcmp(img + ot_file, back.otname, GB_NAME_BYTES) == 0,
+        "%s: cell OT name mismatch vs. raw save bytes", tag);
+  CHECK(memcmp(img + nk_file, back.nick, GB_NAME_BYTES) == 0,
+        "%s: cell nickname mismatch vs. raw save bytes", tag);
+  printf("  RAW: %s box%d/slot%d ok\n", file, box, slot);
+}
+
+static void raw_sweep_gen1(const char* file) {
+  char path[512];
+  snprintf(path, sizeof path, "%s/%s", GB_ROMS, file);
+  FILE* f = fopen(path, "rb");
+  if (!f) { printf("  SKIP %s (raw-bytes, not present)\n", file); return; }
+  static uint8_t img[GEN1_SAVE_SIZE];
+  uint32_t len = (uint32_t)fread(img, 1, sizeof img, f);
+  fclose(f);
+
+  GbSession sess; memset(&sess, 0, sizeof sess);
+  static uint8_t scratch[GBS_SCRATCH_BYTES];
+  GbsStatus st = gbs_open(&sess, img, len, scratch, sizeof scratch);
+  CHECK(st == GBS_OK, "%s: raw gbs_open (%s)", file, gbs_status_text(st));
+  if (st != GBS_OK) return;
+
+  int nboxes = gbs_nboxes(&sess);
+  int party_box = gbs_party_box(&sess);
+  static uint8_t list[GBS_LIST_BYTES];
+  int n = 0;
+  for (int box = 0; box <= nboxes; box++) {
+    int b = (box == nboxes) ? party_box : box;
+    if (gbs_load_list(&sess, b, list) != GBS_OK) continue;
+    int count = gb_list_count(GB_GEN1, list, b);
+    if (count < 0) continue;
+    uint32_t list_off = raw_g1_list_off(sess.g1.current_box, b);
+    for (int slot = 0; slot < count; slot++) {
+      GbEditMon mon;
+      char tag[96]; snprintf(tag, sizeof tag, "%s box%d slot%d", file, b, slot);
+      CHECK(gb_load(&mon, GB_GEN1, list, b, slot), "%s: gb_load", tag);
+      raw_check_g1_slot(file, b, slot, list_off, img, len, &mon);
+      n++;
+    }
+  }
+  printf("  %s: %d raw-bytes Gen-1 slot(s) checked\n", file, n);
+}
+
+/* Gen-2 list-start FILE offset -- independently re-derived from the ONE .sym
+ * cross-check in the header comment (sBox1 -> 0x4000) plus the per-version
+ * header-field addresses g2_offsets() already exports (party_list/
+ * current_box_list are themselves read STRAIGHT off g2_offsets(), the only
+ * per-version constants this module has -- box 1..14's own stride, 0x450, is
+ * this codebase's own already-published constant, not re-derived a second time
+ * from raw .sym addresses within the time available). */
+static uint32_t raw_g2_list_off(G2Version ver, int current_box, int box) {
+  G2Offsets o; g2_offsets(ver, &o);
+  if (box == G2_BOX_PARTY) return o.party_list;
+  if (box == current_box)  return o.current_box_list;
+  uint32_t bank_base = (box < 7) ? 0x4000u : 0x6000u;
+  return bank_base + (uint32_t)(box % 7) * 0x450u;
+}
+
+static void raw_check_g2_slot(const char* file, int box, int slot, uint32_t list_off,
+                              const uint8_t* img, uint32_t len, const GbEditMon* mon) {
+  char tag[96];
+  snprintf(tag, sizeof tag, "%s RAW box%d/slot%d", file, box, slot);
+
+  int sp_off  = gb_off_species(GB_GEN2, box, slot);
+  int rec_off = gb_off_record(GB_GEN2, box, slot);
+  int ot_off  = gb_off_otname(GB_GEN2, box, slot);
+  int nk_off  = gb_off_nickname(GB_GEN2, box, slot);
+  CHECK(sp_off >= 0 && rec_off >= 0 && ot_off >= 0 && nk_off >= 0,
+        "%s: gb_off_* resolved", tag);
+  if (sp_off < 0 || rec_off < 0 || ot_off < 0 || nk_off < 0) return;
+
+  uint32_t sp_file = list_off + (uint32_t)sp_off;
+  uint32_t rec_file = list_off + (uint32_t)rec_off;
+  uint32_t ot_file = list_off + (uint32_t)ot_off;
+  uint32_t nk_file = list_off + (uint32_t)nk_off;
+  CHECK(sp_file < len && rec_file + G2_PARTY_ENTRY <= len &&
+        ot_file + GB_NAME_BYTES <= len && nk_file + GB_NAME_BYTES <= len,
+        "%s: raw offsets in range", tag);
+  if (sp_file >= len || rec_file + G2_PARTY_ENTRY > len ||
+      ot_file + GB_NAME_BYTES > len || nk_file + GB_NAME_BYTES > len) return;
+
+  CHECK(img[sp_file] == mon->list_species, "%s: species (list) byte mismatch", tag);
+
+  uint8_t cell[BC_CELL_BYTES];
+  CHECK(bc_pack(mon, mon->is_party ? BC_FLAG_FROM_PARTY : 0, BC_ORIGIN_GOLD, 0,
+               g_serial++, cell) == 0, "%s: bc_pack", tag);
+  GbEditMon back; BcMeta meta;
+  CHECK(bc_unpack(cell, &back, &meta), "%s: bc_unpack", tag);
+
+  /* Gen-2 keeps the first 32 bytes verbatim -- no boxlevel-style sync exists on
+   * this generation (bank_cell.h's own header comment), so the raw prefix
+   * compares directly with no transform. */
+  CHECK(memcmp(img + rec_file, back.rec, G2_BOX_ENTRY) == 0,
+        "%s: cell rec[0..32) mismatch vs. raw save bytes", tag);
+  CHECK(memcmp(img + ot_file, back.otname, GB_NAME_BYTES) == 0,
+        "%s: cell OT name mismatch vs. raw save bytes", tag);
+  CHECK(memcmp(img + nk_file, back.nick, GB_NAME_BYTES) == 0,
+        "%s: cell nickname mismatch vs. raw save bytes", tag);
+  printf("  RAW: %s box%d/slot%d ok\n", file, box, slot);
+}
+
+static void raw_sweep_gen2(const char* file) {
+  char path[512];
+  snprintf(path, sizeof path, "%s/%s", GB_ROMS, file);
+  FILE* f = fopen(path, "rb");
+  if (!f) { printf("  SKIP %s (raw-bytes, not present)\n", file); return; }
+  static uint8_t img[G2_SAVE_SIZE + G2_MAX_RTC_TAIL];
+  uint32_t len = (uint32_t)fread(img, 1, sizeof img, f);
+  fclose(f);
+
+  GbSession sess; memset(&sess, 0, sizeof sess);
+  static uint8_t scratch[GBS_SCRATCH_BYTES];
+  GbsStatus st = gbs_open(&sess, img, len, scratch, sizeof scratch);
+  CHECK(st == GBS_OK, "%s: raw gbs_open (%s)", file, gbs_status_text(st));
+  if (st != GBS_OK) return;
+
+  int nboxes = gbs_nboxes(&sess);
+  int party_box = gbs_party_box(&sess);
+  static uint8_t list[GBS_LIST_BYTES];
+  int n = 0;
+  for (int box = 0; box <= nboxes; box++) {
+    int b = (box == nboxes) ? party_box : box;
+    if (gbs_load_list(&sess, b, list) != GBS_OK) continue;
+    int count = gb_list_count(GB_GEN2, list, b);
+    if (count < 0) continue;
+    uint32_t list_off = raw_g2_list_off(sess.g2w.sv.version, sess.g2w.current_box, b);
+    for (int slot = 0; slot < count; slot++) {
+      GbEditMon mon;
+      char tag[96]; snprintf(tag, sizeof tag, "%s box%d slot%d", file, b, slot);
+      CHECK(gb_load(&mon, GB_GEN2, list, b, slot), "%s: gb_load", tag);
+      raw_check_g2_slot(file, b, slot, list_off, img, len, &mon);
+      n++;
+    }
+  }
+  printf("  %s: %d raw-bytes Gen-2 slot(s) checked\n", file, n);
+}
+
 /* 9. bank_plant (BACKLOG #150 S150-2 step 6): the PDNA_DELTA-only test plant.   */
 /*    Compiled in only when the cc line above defines -DPDNA_DELTA; the shipped  */
 /*    build never does, and D-Q7's own nm proof (the lane's delivery report)     */
@@ -903,6 +1136,12 @@ int main(int argc, char** argv) {
 
   printf("== 10. S150-14 native-cell EDIT round trip (editor API -> re-pack) ==\n");
   test_native_edit_roundtrip();
+
+  printf("== 11. raw-bytes: gbs_open -> gbs_load_list -> gb_load -> bc_pack vs. the save's own file bytes ==\n");
+  raw_sweep_gen1("Red.sav");
+  raw_sweep_gen1("Yellow.sav");
+  raw_sweep_gen2("Gold.sav");
+  raw_sweep_gen2("Crystal.sav");
 
   printf("\n%d check(s), %s\n", g_check, g_fail ? "FAIL" : "OK");
   return g_fail ? 1 : 0;

@@ -285,8 +285,34 @@ BoxSource.get_raw_name @72 in box_options_menu,pdna_box -> gbsrc_get_raw_name
 # is gone -- this plain row below now describes a real, reachable call, same as every
 # other row in this file. Deleting THIS row is still not an option: it makes the guard
 # refuse with "BLIND SPOT: src_can_lift ... struct-field load @80" (design doc §9).
-# `xfer@84` has no declaration: nothing dereferences it anywhere in this build (no `bl`
-# site exists to require one) -- it is wired starting S3.
+# BACKLOG #171b (lane s150-4-5b, post-#171 review finding): `xfer@84` is now WIRED --
+# pdna_gen12_source() assigns `s.xfer = &k_gb_xfer`, so start_carry()'s
+# `src->xfer && src->xfer->lift_up` really does read a non-NULL pointer and really does
+# call through it at runtime (before this fix the field was always NULL -- every GB
+# grab silently fell to the plain-memcpy branch, and BoxXferOps.lift_up/gb_lift_up_hook
+# never ran -- confirmed live in mGBA). `xfer@84` ITSELF still has no separate row here
+# on purpose: it is a plain pointer LOAD, not an indirect CALL (the walker only
+# requires a declaration at the site of an actual `bl`-through-a-register); the call
+# that load feeds -- `src->xfer->lift_up(...)` -- is exactly what the
+# `BoxXferOps.lift_up @4 in start_carry -> gb_lift_up_hook` row right below already
+# covers, and did before this fix (added pre-emptively, BACKLOG #150 S150-4 step 3/5).
+# CORRECTION (review, same lane): the load through `src->xfer` was ALWAYS emitted --
+# start_carry()'s `if (src->scope == BOXSCOPE_GB && src->xfer && ...)` check compiles
+# to a real load+branch regardless of what value the field holds at runtime; nothing
+# about this fix made a previously-dead branch live. The +8 B this fix actually costs
+# is a plain data-layout cost: `s.xfer = &k_gb_xfer;` is one more field written into
+# the BoxSource pdna_gen12_source() builds, and that struct is fully inlined into
+# gb_session_core's own frame -- 256 -> 264 B (confirmed in both gate builds' own
+# per-function .su listings), one pointer-sized store. start_carry/gb_lift_up_hook are
+# NOT on either build's deepest chain (TOP 5 CHAINS FROM main(), both builds --
+# grepped for start_carry/lift_up, zero hits): the reported chain runs
+# gb_session_core -> pdna_bank_show -> pdna_box -> pcp_open_party_strip -> ... ->
+# gb_art_fetch, a Bank-visit-then-daycare-art path unrelated to the GB grid's own
+# carry logic, so gb_session_core's own +8 B frame is what actually moved the total.
+# Rebuilt both gate targets after this fix: EWRAM still 800 B free, STACK 11,888 ->
+# 11,896 of 15,048 (artless, margin 3,160 -> 3,152) / 15,584 (normal), GATED still 4,
+# and the count-only list is BYTE-IDENTICAL, same 48 names in the same order -- no new
+# BLIND SPOT, no row needed here beyond this note.
 BoxSource.can_lift @80 in src_can_lift -> gb_can_lift_hook
 
 # BACKLOG #150 S150-4 step 3/5: BoxXferOps's two live members, once the real k_gb_xfer

@@ -296,6 +296,17 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     ("gb-mon-menu-dup-daycare-export", "BACKLOG #93 — DUPLICATE / TO DAY-CARE / "
      "EXPORT .pk on the mon menu, EXPORT ALL / RELEASE ALL on the GB box menu",
      ("BACKLOG #93",)),
+    # BACKLOG #150 S150-4/5 follow-up (lane s150-4-5b, BACKLOG #171/#171b): the grab
+    # step end to end -- CM_MOVE grab, the origin prompt DRAWS (post-#171b:
+    # pdna_gen12_source() now wires s.xfer, so BoxXferOps.lift_up genuinely runs),
+    # picking GOLD is then REFUSED at the serial step (no SD card on this vehicle).
+    # A landed, persisted native cell needs real hardware from here. Shots come from
+    # tools/dgb_shots.py's run_s150_4_uplift() (--s150-4), captions all start
+    # "s150-4:" or "s150-4/BACKLOG #171b:". Appended after
+    # "gb-mon-menu-dup-daycare-export" per this list's own append-only rule.
+    ("gb-uplift-s150-4", "BACKLOG #150 S150-4/5 follow-up — the grab step into the "
+     "Bank (BACKLOG #171b fix: BoxSource.xfer was never wired, so lift_up never ran)",
+     ("s150-4", "s150-4/BACKLOG #171b")),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
 FEATURE_TITLE = {fid: title for fid, title, _prefixes in FEATURE_TABLE}

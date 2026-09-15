@@ -565,8 +565,9 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
                                               * PARTY tab and the PC hand-off edges (codes
                                               * 1/4) -- neither applies to a raw GB save's
                                               * own box */
-  s.scope      = BOXSCOPE_GB;    /* BACKLOG #120 S1: can_lift/xfer stay NULL -- no GB body
-                                  * wired yet (this is the pure-refactor slice) */
+  s.scope      = BOXSCOPE_GB;    /* BACKLOG #171b: can_lift/xfer are wired below --
+                                  * start_carry() (pdna_box.c) reads src->xfer, not the
+                                  * file-static s_xfer_peer a Bank visit installs */
   s.bank_edge  = true;            /* BACKLOG #120 S2: the single-carry UP-past-the-tabs edge
                                    * now opens the Bank instead of staying dead */
   s.has_start  = true;                       /* BACKLOG #48: is_bank also suppresses START
@@ -592,6 +593,9 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
   s.set_wp     = gbsrc_set_wp;
   s.can_edit   = gbsrc_can_edit;
   s.can_lift   = gb_can_lift_hook;   /* BACKLOG #150 S150-5: the GB grid's own grab-time refusal */
+#ifndef PDNA_GEN12_HOST
+  s.xfer       = &k_gb_xfer;   /* BACKLOG #171b: start_carry reads src->xfer, not s_xfer_peer */
+#endif
   s.commit     = gbsrc_commit;
   s.mark_dirty = gbsrc_mark_dirty;
   s.note_add   = 0;                           /* nothing lands here; nothing to register */
@@ -1681,6 +1685,15 @@ static bool gb_release_hook(uint8_t* rec80) {
  * call -- 0 when the RTC is absent, exactly as gb_paste_write already tolerates. */
 static bool gb_lift_up_hook(const uint8_t* rec80, uint8_t* out80, XferCarry* xc) {
   (void)xc;
+  /* BACKLOG #171b review F3: since pdna_gen12_source() now wires s.xfer
+   * unconditionally (BACKLOG #171b), this hook is no longer reachable ONLY through a
+   * path that already implies g_ed is set -- today gb_can_lift_hook_impl's own
+   * `if (!g_ed) return false;` (this file) keeps a g_ed==NULL session out of CM_MOVE
+   * mode in the first place, and the CM_NORMAL reset on re-entry backs that up, but
+   * neither of those is THIS function's own responsibility to rely on. Self-
+   * sufficient: refuse up front rather than trust two other call sites forever
+   * staying in lock-step with this one. */
+  if (!g_ed) { log_line("gen12: xferup lift refused: no editable session"); return false; }
   if (!out80) { log_line("gen12: xferup lift refused: no destination buffer"); return false; }
   /* hard rule 4 / tests/host_gb_write_gate_test.py: this hook itself writes
    * (pdna_bank_next_serial() persists bank.meta), so it carries its own
@@ -1703,10 +1716,11 @@ static bool gb_lift_up_hook(const uint8_t* rec80, uint8_t* out80, XferCarry* xc)
     return false;
   }
 
-  /* decision 4/D-Q7: the one-time-per-save origin prompt (g_ed is non-NULL here --
-   * lift_up is only ever reachable through k_gb_xfer, which pdna_gen12_source()
-   * installs only when g_ed is set). -1 = B cancelled -> fail the lift, before any
-   * serial is spent. */
+  /* decision 4/D-Q7: the one-time-per-save origin prompt -- g_ed is non-NULL here
+   * because of THIS function's own guard above (BACKLOG #171b review F3), not
+   * because of how it was reached: pdna_gen12_source() now wires k_gb_xfer
+   * unconditionally, so this hook no longer depends on the caller for that. -1 = B
+   * cancelled -> fail the lift, before any serial is spent. */
   int origin = gb_origin_for_save(g_ed->s.gen, gb_session_is_crystal(&g_ed->s));
   if (origin < 0) { log_line("gen12: xferup lift refused: origin prompt cancelled"); return false; }
   uint8_t origin_game = (uint8_t)origin;
