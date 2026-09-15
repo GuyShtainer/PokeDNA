@@ -3219,20 +3219,20 @@ out:
  * (hardware-testing-protocol; the emulator cannot prove a stack-overflow refusal is
  * correct on real silicon, only that the code path the refusal message takes is
  * reachable and renders). */
-#define PDNA_PARTY_STRIP_NEED 7216   /* re-derived 2026-09-15 (BACKLOG #150 S150-2, D-Q1,
-                                      * growth 24 B artless / 32 B normal, both <= the
-                                      * orchestrator's 64 B ceiling): the #1 chain's own frame
-                                      * total grew from 7,128 to 7,152 B (artless, dominates
-                                      * over normal's 7,112 -> 7,144) -- box_decode() gained a
-                                      * local `uint8_t hint[30]` (decision 11's per-slot era
-                                      * hint) and inlines into its sole caller,
-                                      * party_strip_overlay, on THIS chain (pdna_box.c:~2771/
-                                      * 2806/2880), so the array's stack cost lands on
-                                      * party_strip_overlay's own frame (912 -> 936 B). New
-                                      * need = 7,152 + 64 ISR = 7,216. The chain's own shape is
+#define PDNA_PARTY_STRIP_NEED 7224   /* re-derived 2026-09-15 (BACKLOG #150 S150-3 review pass,
+                                      * D-Q4, growth 8 B artless / 8 B normal, both <= the 64 B
+                                      * ceiling): review F4 turned app_mon_menu_readonly's blunt
+                                      * early return into a `bool ro_native` + whitelist branch,
+                                      * on THIS chain (party_strip_overlay -> app_party_mon_menu
+                                      * -> app_mon_menu -> app_mon_menu_readonly, reached with
+                                      * g_src_ro true for the whole party-strip visit) -- the #1
+                                      * chain's own total grew from 7,152 to 7,160 B (artless,
+                                      * still dominates over normal's 7,144 -> 7,152). New need =
+                                      * 7,160 + 64 ISR = 7,224. The chain's own shape is
                                       * otherwise unchanged from the prior derivation below.
-                                      * (was 7,192 = 7,128 + 64 ISR, BACKLOG #93; was 6,616 =
-                                      * 6,552 + 64 from #102); #1 chain is still
+                                      * (was 7,216 = 7,152 + 64 ISR, S150-2 D-Q1; was 7,192 =
+                                      * 7,128 + 64 ISR, BACKLOG #93; was 6,616 = 6,552 + 64 from
+                                      * #102); #1 chain is still
                                       * gb_daycare_hook's (DUPLICATE/TO DAY-CARE/EXPORT rows
                                       * on the read-only GB mon menu, reachable through
                                       * app_mon_menu from this same root), not the old

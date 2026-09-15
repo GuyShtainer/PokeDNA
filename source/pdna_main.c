@@ -4650,18 +4650,22 @@ bool app_src_empty_action_offered(void) {
  * Pokemon that does not exist) that makes no sense, so the row list collapses to just
  * that one row + CANCEL. See pdna_app.h's AppSrcOps.paste for what the row does. */
 static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0, bool empty) {
-  /* BACKLOG #150 S150-3 decision 9: reachable on a Bank cell through the hack-ROM
-   * branch above (app_rom_is_hack(g_game) && !g_src_ops -> app_src_readonly_set ->
-   * this function), where RO_COPY would load the native bytes into g_clip -- a
-   * clipboard that outlives the save and can be pasted into a non-hack save later.
-   * Blunt refusal, not a whitelist: this read-only variant has no whitelist shape to
-   * reuse yet, so deny outright rather than build one for a hack-ROM-Bank edge case. */
-  if (!empty && bc_is_native(rec)) { snd_deny(); return false; }
   const char* locked = (!empty && g_src_why) ? g_src_why(rec) : 0;
   enum { RO_VIEW, RO_ITEM, RO_MOVE, RO_RELEASE, RO_LEGAL, RO_COPY, RO_PASTE, RO_CREATE,
          RO_DUP, RO_DAYCARE, RO_EXPORT, RO_CANCEL };
   int act[PDNA_ROMENU_MAX]; const char* lab[PDNA_ROMENU_MAX]; int n = 0;
-  if (empty) {
+  /* BACKLOG #150 S150-3 review F4: a WHITELIST, not the blunt early-return decision 9
+   * originally shipped here -- that refusal made S150-2's own RO_VIEW case (below,
+   * `if (bc_is_native(rec)) { gb_native_summary_open(rec); ... }`) unreachable, so a
+   * native Bank cell viewed through the hack-ROM branch (app_rom_is_hack(g_game) &&
+   * !g_src_ops -> app_src_readonly_set -> this function) got a bare beep instead of
+   * VIEW. RO_COPY's own g_clip leak (a clipboard that outlives the save, pastable into
+   * a non-hack save later) is the thing that actually needs refusing -- kept out by
+   * only ever building VIEW + CANCEL for a native cell, never by denying VIEW too. */
+  bool ro_native = !empty && bc_is_native(rec);
+  if (ro_native) {
+    lab[n] = PDNA_LBL_VIEW; act[n++] = RO_VIEW;
+  } else if (empty) {
     /* CREATE first, PASTE after -- the same order Gen-3's own empty-cell menu uses
      * (app_mon_menu's A_CREATE/A_PASTE, pdna_main.c:4288-4290). Gated on the source
      * actually offering one (pdna_app.h's AppSrcOps.create) rather than on !is_party
@@ -4794,6 +4798,10 @@ static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0, 
     else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : n - 1;
     else if (k & KEY_DOWN) sel = (sel + 1) % n;
     else if (k & KEY_A) {
+      /* BACKLOG #150 S150-3 review F4: defence in depth, same shape as app_mon_menu's
+       * own decision-9 statement -- cannot be out-of-sync with the row build above
+       * since it whitelists the exact same two actions. */
+      if (ro_native && act[sel] != RO_VIEW && act[sel] != RO_CANCEL) { snd_deny(); return false; }
       switch (act[sel]) {
         case RO_VIEW:
           /* BACKLOG #41: a source with its own native summary (today: GB sessions,
@@ -4867,6 +4875,11 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
       app_src_readonly_set(0, PDNA_ROMHACK_NOTE);
       return app_mon_menu_readonly(rec, is_party, &m0, false);
     }
+    /* BACKLOG #150 S150-3 review F7: the non-hack read-only path (Everdrive,
+     * pdna_romcheck_bad()) fell straight through to pdna_inspect()'s lossy Gen-3
+     * decode for a native cell too -- the same G-H2 fix RO_VIEW/app_box_browse
+     * already apply elsewhere in this file. */
+    if (native) { gb_native_summary_open(rec); return false; }
     if (occupied) { uint8_t d[100]; int card = 0; pdna_inspect(rec, is_party, false, d, 0, &card); }
     return false;
   }
