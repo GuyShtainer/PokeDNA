@@ -45,17 +45,20 @@ static GbGame g2pack_game(const GbSession* s) {
 
 /* D-Kris fix (review-opus ac9ffc0): a female Crystal save (Kris) still showed the
  * boy's (Chris's) pack picture -- 13/15 pic tiles differ on the real cartridge.
- * `s->img` is the whole resident save image (gb_session.h: "CALLER-OWNED, must
- * outlive the session"), so the gender byte g2_offsets() locates (G/S: 0, not
- * stored, always false; Crystal: file offset 0x3E3D, bit 0) is read directly out
- * of it -- the SAME field the trainer card already reads via gbt_read()'s own
- * has_gender/gender pair, just fetched here without pulling in the whole
- * GbTrainer struct for one bit. */
+ * The gender byte g2_offsets() locates (G/S: 0, not stored, always false;
+ * Crystal: file offset 0x3E3D, bit 0) is the SAME field the trainer card already
+ * reads via gbt_read()'s own has_gender/gender pair, just fetched here without
+ * pulling in the whole GbTrainer struct for one bit. BACKLOG #64 review Finding
+ * (HIGH): read through gbs_read_field(), not s->img directly -- a streamed
+ * read-only session (gb_session.h's own `img == NULL` invariant) has no resident
+ * image to index into at all; gbs_read_field() already does the bounds check and
+ * dispatches through the session's own `rd` callback when streamed. */
 static bool g2pack_is_female(const GbSession* s) {
   G2Offsets o;
   if (!g2_offsets(s->g2w.sv.version, &o) || !o.player_gender) return false;
-  if (o.player_gender >= s->len) return false;
-  return (s->img[o.player_gender] & 1u) != 0;
+  uint8_t g = 0;
+  if (gbs_read_field((GbSession*)s, o.player_gender, &g, 1) != GBS_OK) return false;
+  return (g & 1u) != 0;
 }
 
 /* N3 (BACKLOG #111): the description box was always drawn with frame 0, ignoring
