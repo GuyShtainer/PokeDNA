@@ -1741,6 +1741,14 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_GBSCR_REASON_AMBIGUOUS_ROM "two ROMs of this game fused; pick a save"
 #define PDNA_GBSCR_REASON_ORPHANED_ROM  "this save's ROM is not fused"
 #define PDNA_GBSCR_REASON_UNAVAILABLE "unavailable"
+/* BACKLOG #148: gbscr_open_inner()'s whole-tail scan now runs through the SAME
+ * cancel/timeout/read-error guard (gb_scan_guard.h) gb_art_source.c's registration
+ * scan already has, via gb_art_io.h's GbArtIo/gb_art_read. A stopped guard maps to
+ * one of these instead of the generic kReasonOpen -- same width budget
+ * (GBTR_HEADER2_MAXW), same kReason* convention as every reason above. */
+#define PDNA_GBSCR_REASON_CANCELLED   "Cancelled"
+#define PDNA_GBSCR_REASON_TIMED_OUT   "Timed out"
+#define PDNA_GBSCR_REASON_READ_ERR    "SD read error"
 /* Only reachable under -DPDNA_U2C_FORCE_FALLBACK (a build-time test flag,
  * pdna_gbtrainer.c) -- included here anyway so the same width test covers
  * the one shot harness the review actually re-shoots. */

@@ -606,6 +606,11 @@ int main(void) {
    * FusedGbFailReason mapped in pdna_gbscreen.c's gbscr_open_inner()). */
   PF(PDNA_GBSCR_REASON_AMBIGUOUS_ROM, 4, GBTR_HEADER2_MAXW);
   PF(PDNA_GBSCR_REASON_ORPHANED_ROM,  4, GBTR_HEADER2_MAXW);
+  /* BACKLOG #148: the three gb_scan_guard stop reasons gbscr_open_inner()'s
+   * widened scan can now report. */
+  PF(PDNA_GBSCR_REASON_CANCELLED, 4, GBTR_HEADER2_MAXW);
+  PF(PDNA_GBSCR_REASON_TIMED_OUT, 4, GBTR_HEADER2_MAXW);
+  PF(PDNA_GBSCR_REASON_READ_ERR,  4, GBTR_HEADER2_MAXW);
 
   /* BACKLOG #99 (b99 review P2): pdna_gbbag.c's plain-page fallback appends
    * " (key ids: list)" to whichever reason macro is live (siprintf("%.40s
@@ -619,6 +624,9 @@ int main(void) {
       PDNA_GBSCR_REASON_OPEN,        PDNA_GBSCR_REASON_BAD_GEN,
       PDNA_GBSCR_REASON_NO_TAIL,     PDNA_GBSCR_REASON_UNAVAILABLE,
       PDNA_GBSCR_REASON_FORCED_TEST,
+      /* BACKLOG #148 */
+      PDNA_GBSCR_REASON_CANCELLED,   PDNA_GBSCR_REASON_TIMED_OUT,
+      PDNA_GBSCR_REASON_READ_ERR,
     };
     for (unsigned i = 0; i < sizeof reasons / sizeof reasons[0]; i++) {
       char reason2[80];
