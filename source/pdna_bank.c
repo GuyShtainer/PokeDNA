@@ -224,36 +224,14 @@ static bool __attribute__((noinline)) native_invariant_ok(void) {
 static int8_t g_box_unsaved_box = -1;
 bool pdna_bank_box_unsaved(int box) { return box >= 0 && box == g_box_unsaved_box; }
 
-static bool box_save(void) {                    /* write the loaded box's records */
-  if (g_loaded < 0) return false;
-  if (!native_invariant_ok()) { g_box_unsaved_box = g_loaded; return false; }
-  char path[SF_PATH_MAX]; box_path(g_loaded, path);
-  /* Mirrors sf_save_rolling's own probe (savefile.c): a box file that already exists is
-   * exactly the case where sf_save_rolling takes its backup -- so "did the target exist
-   * before this call" IS "did this call back it up", without sf_save_rolling_ok needing
-   * to hand that bit back out (BACKLOG #158 keeps its signature to path/buf/len/out_where). */
-  FILINFO pre; bool backed_up = f_stat(path, &pre) == FR_OK;
-  /* Sentinel outside the enum's range: sf_save_rolling_ok only writes *out_where when
-   * sf_save_rolling actually returned SF_ERR_RENAME (savefile.h says so), so this value
-   * surviving the call means "no ambiguity" -- either a plain success or a hard failure,
-   * neither of which this function shows a dialog for (same as before this refactor). */
-  SfWhere w = (SfWhere)-1;
-  rmbl_pause();
-  bool ok = sf_save_rolling_ok(path, box_recs(), BOX_BYTES, &w);
-  rmbl_resume();
-  if (w == (SfWhere)-1) {
-    /* the backup-gate refusal, a plain write failure, or a clean success -- sf_save_rolling
-     * already logged the mechanical reason on a failure (savefile.c's own
-     * "save_rolling: ..." lines); this is just the bank-level line that says WHICH box. */
-    if (!ok) { log_line("bank: box save failed"); app_log_flush(); g_box_unsaved_box = g_loaded; }
-    else      { g_dirty = false; g_box_unsaved_box = -1; }
-    return ok;
-  }
-  /* The bytes were written AND read back byte-for-byte -- it is the final swap the
-   * card did not keep, a different piece of news from "the write failed". Ask the
-   * card which file the user is actually holding rather than guessing, same triage
-   * as gb_persist (pdna_gen12.c) and app_commit (pdna_main.c) -- and, per §11.13/
-   * XFER-C1 (review F4), SHOW it instead of only logging it silently. */
+/* The bytes were written AND read back byte-for-byte -- it is the final swap the card
+ * did not keep, a different piece of news from "the write failed". Ask the card which
+ * file the user is actually holding rather than guessing, same triage as gb_persist
+ * (pdna_gen12.c) and app_commit (pdna_main.c) -- and, per §11.13/XFER-C1 (review F4),
+ * SHOW it instead of only logging it silently. Split out of box_save() (rule 4: one
+ * printed page) -- this is the whole SF_ERR_RENAME branch, box_save() keeps only the
+ * dispatch to it. */
+static void box_save_rename_triage(const char* path, SfWhere w, bool ok, bool backed_up) {
   log_line("bank: box save rename unconfirmed, bytes at %d", (int)w);
   app_log_flush();
   /* review G4: unlike the box screen's own boxoam_suspend/resume bracket, box_save
@@ -288,16 +266,35 @@ static bool box_save(void) {                    /* write the loaded box's record
                   backed_up ? PDNA_BANKSAVE_LOST_L2 : PDNA_GBEDIT_SAVELOST_NOBAK);
         break;
     }
-    REG_DISPCNT = dc;
-    g_box_unsaved_box = g_loaded;
-    return false;                         /* anything but TARGET: a real failure */
+  } else {
+    msg_wait(PDNA_BANKSAVE_UNCONFIRMED_TITLE, UI_WARN,
+              PDNA_BANKSAVE_UNCONFIRMED_L1, PDNA_BANKSAVE_UNCONFIRMED_L2);
   }
-  msg_wait(PDNA_BANKSAVE_UNCONFIRMED_TITLE, UI_WARN,
-            PDNA_BANKSAVE_UNCONFIRMED_L1, PDNA_BANKSAVE_UNCONFIRMED_L2);
   REG_DISPCNT = dc;
-  g_dirty = false;
-  g_box_unsaved_box = -1;
-  return true;                             /* the bytes ARE at path -- this is a success */
+}
+
+static bool box_save(void) {                    /* write the loaded box's records */
+  if (g_loaded < 0) return false;
+  if (!native_invariant_ok()) { g_box_unsaved_box = g_loaded; return false; }
+  char path[SF_PATH_MAX]; box_path(g_loaded, path);
+  /* Mirrors sf_save_rolling's own probe (savefile.c): a box file that already exists is
+   * exactly the case where sf_save_rolling takes its backup -- so "did the target exist
+   * before this call" IS "did this call back it up", without sf_save_rolling_ok needing
+   * to hand that bit back out (BACKLOG #158 keeps its signature to path/buf/len/out_where). */
+  FILINFO pre; bool backed_up = f_stat(path, &pre) == FR_OK;
+  /* Sentinel outside the enum's range: sf_save_rolling_ok only writes *out_where when
+   * sf_save_rolling actually returned SF_ERR_RENAME (savefile.h says so), so this value
+   * surviving the call means "no ambiguity" -- either a plain success or a hard failure,
+   * neither of which this function shows a dialog for (same as before this refactor). */
+  SfWhere w = (SfWhere)-1;
+  rmbl_pause();
+  bool ok = sf_save_rolling_ok(path, box_recs(), BOX_BYTES, &w);
+  rmbl_resume();
+  if (w != (SfWhere)-1) box_save_rename_triage(path, w, ok, backed_up);
+  else if (!ok) { log_line("bank: box save failed"); app_log_flush(); }
+  g_box_unsaved_box = ok ? -1 : g_loaded;
+  if (ok) g_dirty = false;
+  return ok;
 }
 
 /* Deferred cross-screen deletions: a mon carried Bank->PC (or Bank->party) is removed from
