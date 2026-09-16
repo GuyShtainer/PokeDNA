@@ -1055,6 +1055,8 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * does not (D4: HP/status are the record's own bytes, preserved). */
 #define PDNA_XFER_DOWN_PARTYFOOT_G1 "Recomputes stats."
 #define PDNA_XFER_DOWN_PARTYFOOT_G2 "New stats, full HP, healthy."
+#define PDNA_XFER_DOWN_CL1_SZ 128     /* gb_accept_down_hook's confirm string buffer size */
+#define PDNA_XFER_DOWN_PAD_PX 180     /* ui_ptext_w padding target to force line wrap */
 
 #define PDNA_GBEDIT_PICKPARTY_TITLE "SEND WHICH PARTY MON?"
 #define PDNA_GBEDIT_PICKPARTY_FOOT  "U/D pick  A ok  B cancel"

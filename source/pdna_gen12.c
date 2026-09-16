@@ -3303,12 +3303,14 @@ static bool __attribute__((noinline)) gb_accept_down_hook(int dst_box, const uin
    * on line 1 without a second, separately-addressed line parameter. */
   char nm[GB_TEXT_MAX];
   gb_get_nickname(&mon, nm, sizeof nm);
-  char cl1[128];  /* REVIEW F6: name (<=20 cols) + padding spaces (until pwidth >= 180px
-                   * force-break) + the longest per-gen stat line. Worst case: 20 narrow
-                   * glyphs (name, ~40px) + 47 spaces (to reach 180px) + 30 B
-                   * "Lv 100 from EXP (box said 100)" (Gen-1 exp mismatch) = ~97 B.
-                   * room = 128 - 97 - 1 = 30 bytes minimum headroom guaranteed; 100 B
-                   * left only 2 B room, 112 B left 14 B (test: host_textfit_test.c #178). */
+  char cl1[PDNA_XFER_DOWN_CL1_SZ];  /* name (<=20 cols, up to 33 B with UTF-8 chars like ♀) +
+                                      * padding spaces (until pwidth >= PDNA_XFER_DOWN_PAD_PX
+                                      * force-break) + the longest per-gen stat line.
+                                      * Worst case: 11 × ♀ (GB_NAME_BYTES = 11) = 33 B /
+                                      * 66 px + 38 spaces (to reach 180px) + 30 B
+                                      * "Lv 100 from EXP (box said 100)" (Gen-1 exp) = 101 B.
+                                      * room = 128 - 101 - 1 = 26 bytes guaranteed minimum.
+                                      * Verified: host_textfit_test.c #178. */
   ui_truncate(cl1, nm[0] ? nm : PDNA_GBEDIT_RELEASE_FALLBACK, 20);
   if (to_party) {
     char stat_line[48];
@@ -3324,7 +3326,7 @@ static bool __attribute__((noinline)) gb_accept_down_hook(int dst_box, const uin
     }
     int n = 0;
     while (cl1[n]) n++;                                     /* end of the name */
-    while (n < (int)sizeof cl1 - 2 && ui_ptext_w(cl1) < 180) { cl1[n++] = ' '; cl1[n] = 0; }
+    while (n < (int)sizeof cl1 - 2 && ui_ptext_w(cl1) < PDNA_XFER_DOWN_PAD_PX) { cl1[n++] = ' '; cl1[n] = 0; }
     int room = (int)sizeof cl1 - n - 1;
     if (room > 0) {
       int k = 0;
