@@ -112,6 +112,16 @@ static void t_present_box_backs_up(void) {
   CHECK(holds(BOX, s_new, BOX_BYTES), "present: the card does not hold the new box");
   CHECK(holds(BAK, s_old, BOX_BYTES), "present: box.bak does not hold the pre-save bytes");
   CHECK(backed_up, "present: sf_save_rolling did not report the backup it made (review G2)");
+
+  /* review F4: sf_save_rolling_ok's contract (savefile.h) is *out_where left UNTOUCHED
+   * unless sf_save_rolling actually returned SF_ERR_RENAME -- box_save's own sentinel
+   * trick (pdna_bank.c, `SfWhere w = (SfWhere)-1;` before the call) depends on that
+   * holding on a plain SF_OK. A mutation that writes *out_where on every call (even
+   * SF_OK) would still pass every other check in this file (the return value is right,
+   * only the untouched-ness is wrong) and survived until this was added. */
+  SfWhere w = (SfWhere)-1;
+  CHECK(sf_save_rolling_ok(BOX, s_new, BOX_BYTES, &w) && w == (SfWhere)-1,
+        "present: out_where was written on a plain SF_OK success");
 }
 
 /* Backup fails on a present box: box_save must refuse and the ORIGINAL box must be
