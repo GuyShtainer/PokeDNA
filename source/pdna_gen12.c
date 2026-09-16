@@ -972,6 +972,15 @@ typedef struct {
                                * in: the SAVE path alone is not a key -- Settings can
                                * re-register a different same-generation ROM mid-session
                                * (G1 re-verify: a stale table built one wrong moveset). */
+  /* BACKLOG #172: when gb_origin_for_save()'s .og persist fails (mkdir or the
+   * verified write itself), the ANSWERED byte still has to hold for the rest of
+   * THIS mount -- re-reading the file would just fail again and re-prompt on
+   * every lift, and a second prompt could pick a DIFFERENT answer and mis-route
+   * S150-7's exact DOWN mid-mount. Explicitly cleared to false wherever a new
+   * g_ed is latched, same discipline as romgs_ready/learn_ready above (never
+   * left as whatever garbage the borrowed arena held). */
+  bool        origin_write_failed;
+  uint8_t     origin_cached;
 } Gb12Edit;
 static Gb12Edit* g_ed;        /* pointer only: the block itself lives in the arena */
 
@@ -1531,25 +1540,81 @@ static int __attribute__((noinline)) gb_pick_origin(uint8_t gen, bool crystal) {
   }
 }
 
-/* BACKLOG #150 S150-4 decision 4: FNV-1a-64 over the save's own on-card path (the
- * SAME constants gbsc_key() uses, gb_sidecar.c) -- "this save" is identified by its
- * path, so a renamed/copied save simply re-asks (declared, decision 4's own text). */
-static uint64_t gb_origin_key(const char* path) {
+/* BACKLOG #150 S150-4 decision 4 / BACKLOG #172: the FNV-1a-64 step both the path
+ * key and the save fingerprint below need (the SAME constants gbsc_key() uses,
+ * gb_sidecar.c) -- factored out so #172's fingerprint is not a second hash
+ * implementation living next to this one. */
+static uint64_t gb_fnv64(const uint8_t* buf, int len) {
   uint64_t h = 14695981039346656037ULL;
-  for (int i = 0; path[i]; i++) { h ^= (uint64_t)(uint8_t)path[i]; h *= 1099511628211ULL; }
+  for (int i = 0; i < len; i++) { h ^= (uint64_t)buf[i]; h *= 1099511628211ULL; }
   return h;
 }
 
-/* BACKLOG #150 S150-4 decision 4: read -> prompt -> write -> stamp, remembered ONCE
- * PER SAVE under /PokeDNA/xfer/<16hex>.og (xr_path_for_name -- the resolver lives in
- * the ledger folder with everything else, no new path rule). noinline: the FatFs
- * path[GBSC_PATH_MAX] local is the same "keep it out of the caller's frame" reason
- * gb_paste_write's own helper is noinline. Returns the BC_ORIGIN_* byte, or -1 if
- * the user cancelled the prompt (the caller must fail the lift). A WRITE failure of
- * the answer does NOT fail the lift (the cell still gets the answered byte; the next
- * lift asks again, logged); a READ failure of an existing file re-prompts+rewrites. */
+/* FNV-1a-64 over the save's own on-card path -- "this save" is identified by its
+ * path, so it selects WHICH .og file to look at; BACKLOG #172's fingerprint below
+ * is what proves the save actually sitting at that path is still the one that
+ * answered it. */
+static uint64_t gb_origin_key(const char* path) {
+  int n = 0;
+  while (path[n]) n++;
+  return gb_fnv64((const uint8_t*)path, n);
+}
+
+/* BACKLOG #172: a 4-byte fingerprint of THIS save's identity (player name + public
+ * trainer id), independent of its on-card path. g_m (the live mount, set by
+ * pdna_gen12_mount before any edit session or lift can run) already carries both
+ * as G2Header-shaped fields -- Gb12Mount.tid/.player, "public trainer id, both
+ * generations" per pdna_gen12.h -- populated once at mount time for the box-header
+ * UI, so this reads an existing cache rather than adding a second save parser.
+ * Truncated to the low 32 bits of the same FNV-1a-64 gb_origin_key() uses: a path
+ * key collision AND a fingerprint collision both landing on the same wrong file is
+ * astronomically unlikely, and a false MISMATCH only costs one re-prompt, never a
+ * mis-route. g_m == NULL (should not happen: no edit session opens without a
+ * mount) folds to a fixed sentinel input rather than dereferencing a null
+ * pointer -- the resulting fingerprint simply mismatches every stored file, so
+ * the failure mode is "always re-ask", not a crash. */
+static uint32_t gb_origin_fingerprint(void) {
+  uint8_t buf[2 + G2_NAME_BYTES];
+  int n = 0;
+  uint16_t tid = g_m ? g_m->tid : 0;
+  buf[n++] = (uint8_t)(tid & 0xFFu);
+  buf[n++] = (uint8_t)((tid >> 8) & 0xFFu);
+  if (g_m) {
+    for (int i = 0; i < G2_NAME_BYTES && g_m->player[i]; i++) buf[n++] = (uint8_t)g_m->player[i];
+  }
+  uint64_t h = gb_fnv64(buf, n);
+  return (uint32_t)(h & 0xFFFFFFFFu);
+}
+
+/* BACKLOG #150 S150-4 decision 4 / BACKLOG #172: read -> prompt -> write -> stamp,
+ * remembered ONCE PER SAVE under /PokeDNA/xfer/<16hex>.og (xr_path_for_name -- the
+ * resolver lives in the ledger folder with everything else, no new path rule).
+ * noinline: the FatFs path[GBSC_PATH_MAX] local is the same "keep it out of the
+ * caller's frame" reason gb_paste_write's own helper is noinline.
+ *
+ * File format (BACKLOG #172): 5 bytes -- byte 0 the BC_ORIGIN_* answer, bytes 1-4
+ * the LE gb_origin_fingerprint() of the save that answered it. The OLD 1-byte
+ * format (no fingerprint) and any other stray length both fail the `len >= 5`
+ * gate below and fall into the same re-prompt-and-rewrite path as a genuine
+ * fingerprint mismatch -- "old file" and "different save at this path" are the
+ * same bug from this function's point of view (#172), and both get the same fix:
+ * ask again, then persist the current save's own fingerprint.
+ *
+ * Returns the BC_ORIGIN_* byte, or -1 if the user cancelled the prompt (the
+ * caller must fail the lift). A PERSIST failure (mkdir or the verified write) does
+ * NOT fail the lift and does NOT re-prompt again this mount: the answered byte is
+ * cached in g_ed (origin_write_failed/origin_cached) and returned directly by
+ * every later call in the same mount, logged once here. A READ failure of an
+ * existing file re-prompts+rewrites, same as a fingerprint mismatch. */
 static int __attribute__((noinline)) gb_origin_for_save(uint8_t gen, bool crystal) {
   if (crystal) return BC_ORIGIN_CRYSTAL;
+
+  /* BACKLOG #172: an earlier lift this mount already answered and could not
+   * persist it -- honour that in-RAM answer rather than re-prompting (which
+   * could pick a DIFFERENT origin and mis-route S150-7's exact DOWN mid-mount). */
+  if (g_ed && g_ed->origin_write_failed) return g_ed->origin_cached;
+
+  uint32_t fp = gb_origin_fingerprint();
 
   char name[24];
   char hex[17];
@@ -1559,14 +1624,18 @@ static int __attribute__((noinline)) gb_origin_for_save(uint8_t gen, bool crysta
   bool existed = xr_path_for_name(path, name);
 
   if (existed) {
-    uint8_t buf[1]; uint32_t len = 0;
-    if (sf_read_full(path, buf, sizeof buf, &len) == SF_OK && len >= 1) {
+    uint8_t buf[5]; uint32_t len = 0;
+    if (sf_read_full(path, buf, sizeof buf, &len) == SF_OK && len >= 5) {
       bool ok = (gen == GB_GEN1)
               ? (buf[0] == BC_ORIGIN_RED || buf[0] == BC_ORIGIN_BLUE || buf[0] == BC_ORIGIN_YELLOW)
               : (buf[0] == BC_ORIGIN_GOLD || buf[0] == BC_ORIGIN_SILVER || buf[0] == BC_ORIGIN_CRYSTAL);
-      if (ok) return buf[0];   /* answered before -- no re-prompt */
+      uint32_t stored_fp = (uint32_t)buf[1] | ((uint32_t)buf[2] << 8) |
+                            ((uint32_t)buf[3] << 16) | ((uint32_t)buf[4] << 24);
+      if (ok && stored_fp == fp) return buf[0];   /* same save, answered before -- no re-prompt */
     }
-    /* absent, short, corrupt, or a value that doesn't belong to this gen -> re-prompt below */
+    /* absent, short (old 1-byte format or otherwise truncated), corrupt, a value
+     * that doesn't belong to this gen, or a fingerprint mismatch (a DIFFERENT
+     * save landed at this path, BACKLOG #172) -> re-prompt below and rewrite */
   }
 
   int picked = gb_pick_origin(gen, false);
@@ -1574,11 +1643,19 @@ static int __attribute__((noinline)) gb_origin_for_save(uint8_t gen, bool crysta
 
   FRESULT mkr = f_mkdir(PDNA_XFER_DIR);
   if (mkr != FR_OK && mkr != FR_EXIST) {
-    log_line("gen12: origin mkdir %s failed (%d)", PDNA_XFER_DIR, (int)mkr);
+    log_line("gen12: origin mkdir %s failed (%d) -- kept the answer for this mount", PDNA_XFER_DIR, (int)mkr);
+    if (g_ed) { g_ed->origin_write_failed = true; g_ed->origin_cached = (uint8_t)picked; }
   } else {
-    uint8_t b = (uint8_t)picked;
-    if (sf_write_verified(path, &b, 1) != SF_OK)
-      log_line("gen12: origin write %s failed (kept the answer for this lift only)", path);
+    uint8_t b[5];
+    b[0] = (uint8_t)picked;
+    b[1] = (uint8_t)(fp & 0xFFu);
+    b[2] = (uint8_t)((fp >> 8) & 0xFFu);
+    b[3] = (uint8_t)((fp >> 16) & 0xFFu);
+    b[4] = (uint8_t)((fp >> 24) & 0xFFu);
+    if (sf_write_verified(path, b, sizeof b) != SF_OK) {
+      log_line("gen12: origin write %s failed -- kept the answer for this mount", path);
+      if (g_ed) { g_ed->origin_write_failed = true; g_ed->origin_cached = (uint8_t)picked; }
+    }
   }
   return picked;
 }
@@ -4886,6 +4963,8 @@ int pdna_gen12_show_image(const char* path, uint8_t* img, uint32_t len,
       ed->romgs_ready = false;
       ed->learn_ready = false;
       ed->learn_rom_id = 0;
+      ed->origin_write_failed = false;      /* BACKLOG #172: fresh mount, fresh answer */
+      ed->origin_cached = 0;
       g_ed = ed;
     } else {
       log_line("gen12: edit session refused (%s, gen %d vs mount kind %d): read-only",
