@@ -133,10 +133,12 @@ def main() -> int:
     fp_body = extract_function_body(text, "gb_origin_fingerprint")
     check(bool(fp_body), "gb_origin_fingerprint() not found in source/pdna_gen12.c")
     if fp_body:
-        check("g_m" in fp_body and "tid" in fp_body,
+        # review F2: a bare "tid" substring survives a `uint16_t tid = 0;` mutant
+        # that never actually reads g_m->tid -- require the real member access.
+        check("g_m->tid" in fp_body,
               "gb_origin_fingerprint must read the live mount's tid (Gb12Mount.tid), not a new parse")
-        check("player" in fp_body,
-              "gb_origin_fingerprint must read the live mount's player name (Gb12Mount.player)")
+        check("g_m->player[i]" in fp_body,
+              "gb_origin_fingerprint must read the live mount's player name bytes (Gb12Mount.player[i])")
         check("gb_fnv64(" in fp_body,
               "gb_origin_fingerprint must reuse gb_fnv64 (the existing FNV helper), not a second hash")
 
@@ -162,8 +164,12 @@ def main() -> int:
               "the .og read gate must require the 5-byte format (answer + 4-byte fingerprint), not len >= 1")
         check("len >= 1" not in body,
               "the OLD 1-byte-only gate must be gone -- an old-format file is exactly what must now re-ask")
-        check("stored_fp == fp" in body or "fp == stored_fp" in body,
-              "gb_origin_for_save must compare the stored fingerprint against the current save's own")
+        # review F1: "stored_fp == fp" alone survives an `||` mutant (ok || stored_fp
+        # == fp would return buf[0] even on a MISMATCH) -- require the exact `&&`
+        # guard around the real return, not just the comparison substring.
+        check("if (ok && stored_fp == fp) return buf[0];" in body,
+              "gb_origin_for_save must return buf[0] ONLY when both the value belongs "
+              "to this gen AND the fingerprint matches (ok && stored_fp == fp), never ||")
         # Both persistence-failure branches (mkdir refusal, verified-write refusal)
         # must cache the answer for the rest of the mount.
         set_count = len(re.findall(r"origin_write_failed\s*=\s*true", body))
@@ -173,6 +179,16 @@ def main() -> int:
         cached_count = len(re.findall(r"origin_cached\s*=\s*\(uint8_t\)picked", body))
         check(cached_count >= 2,
               f"expected both failure branches to also cache the answered byte (found {cached_count} site(s))")
+        # review F3: a mutant that shrinks the persisted write to 1 byte (dropping
+        # the fingerprint on disk, defeating the whole fix) survived because nothing
+        # checked the write actually carries all 5 bytes.
+        check("uint8_t b[5];" in body and "sf_write_verified(path, b, sizeof b)" in body,
+              "the .og write must persist the full 5-byte record (answer + 4-byte fingerprint), not 1 byte")
+        # review F4: a mutant that replaced the mount-wide cache's early return with
+        # `return 0;` (silently answering BC_ORIGIN_UNKNOWN instead of the real
+        # cached byte) survived because nothing checked the exact return statement.
+        check("return g_ed->origin_cached;" in body,
+              "the mount-wide cache must return the ANSWERED byte (g_ed->origin_cached), not a stub value")
 
     end_struct = text.find("} Gb12Edit;")
     start_struct = max(0, end_struct - 800)
@@ -215,6 +231,12 @@ def main() -> int:
     # Scenario 4: no file at all (first-ever lift) -> re-ask (sanity: decide() must
     # not crash or silently answer on None).
     check(decide(GB_GEN2, fp_a, None) == "REASK", "no existing .og file must re-ask")
+
+    # Scenario 6 (review F5): a TRUNCATED fingerprint (a partial/torn write that
+    # still starts with the right answer byte and the right leading fingerprint
+    # bytes but is short) must never be trusted -- only a full, exact 5-byte match
+    # answers without a prompt.
+    check(decide(GB_GEN2, fp_a, stored[:3]) == "REASK", "a truncated fingerprint must never be trusted")
 
     # Scenario 5: a value that doesn't belong to this generation (corrupt / cross-
     # gen leftover) must also re-ask even with a matching fingerprint.
