@@ -987,6 +987,14 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XFER_NATIVE_L1    "This Game Boy Pokemon can"
 #define PDNA_XFER_NATIVE_L2    "only move inside the Bank."
 
+/* BACKLOG #150 S150-8b review F3: the RESTORE edge's own confirm, shown via the
+ * shared app_confirm() ONLY when the merge would actually lose or change something
+ * (a Gen-3-side evolution, level, move, rename/rename-refusal, a per-slot move
+ * refusal, or a Gen-3 held item that cannot travel back onto a native cell) --
+ * decision 6's own rule: a byte-identical restore stays silent. */
+#define PDNA_XFERRESTORE_TITLE  "BACK TO ITS ORIGINAL"
+#define PDNA_XFERRESTORE_L_LOSS "Gen 3 only data is dropped."
+
 /* BACKLOG #150 S150-8 decision 13 / D-Q2/D-Q3: the DOWN-converting edge's own
  * strings -- native cell -> Gen-3 PC (decision 2's party refusal), one unpromoted
  * transfer at a time (decision 9), the ledger-full evict-then-refuse case

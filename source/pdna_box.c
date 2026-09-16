@@ -1240,6 +1240,26 @@ pc_bank_restore_up(const uint8_t g3_rec80[80], uint8_t out_cell80[80]) {
   }
   if (best < 0) return 0;                     /* only Gen-3-home entries (or none) -- already exact */
 
+  /* review F3: a confirm BEFORE committing to a lossy restore -- without this,
+   * a Gen-3 held item is dropped silently (a native cell has no item slot: G-H7)
+   * and an evolution that happened abroad silently devolves back to what left.
+   * decision 6's own rule stands: a byte-identical restore (every field below
+   * false) stays completely silent, no dialog at all. B here refuses the WHOLE
+   * drop -- nothing written, the serial below is never even allocated. */
+  GbEditMon probe;
+  XrMergeReport rep;
+  if (!xr_merge_down(&e, g3_rec80, &probe, &rep)) {
+    log_line("bank: restore: xr_merge_down probe failed");
+    return -1;
+  }
+  PkMon pm;
+  bool g3_item = pk_decode_mon(g3_rec80, false, &pm) && pm.heldItem != 0;
+  if (rep.evolved || rep.level_changed || rep.moves_changed || rep.renamed || rep.rename_refused ||
+      rep.move_refused[0] || rep.move_refused[1] || rep.move_refused[2] || rep.move_refused[3] ||
+      g3_item) {
+    if (!app_confirm(PDNA_XFERRESTORE_TITLE, PDNA_XFERRESTORE_L_LOSS)) return -1;   /* B: nothing written, serial unspent */
+  }
+
   uint32_t serial = pdna_bank_next_serial();
   if (serial == 0) {
     log_line("bank: restore: bank_serial allocation failed");
