@@ -49,6 +49,11 @@ _Static_assert(BOXSCOPE_BANK == 1, "source/xfer_gate.c's XG_SCOPE_BANK hard-code
 #include "pdna_gen12.h"     /* BACKLOG #150 S150-8: BankDownResult, bank_down_convert_gb/gen3 */
 #include "gb12_render.h"    /* gb12_render_rec/GB_SHOW_* -- shared display ladder */
 #include "pdna_bank.h"      /* pdna_bank_prepare_native -- the UP drop's backup gate (BACKLOG #150 S150-4) */
+#include "gb_sidecar.h"     /* GbscEntry, gbsc_count/gbsc_get/gbsc_set_claimed -- the RESTORE edge's ledger (BACKLOG #150 S150-8b) */
+#include "xfer_io.h"        /* xr_open */
+#include "xfer_rec.h"       /* xr_key_g3 */
+#include "bank_restore.h"   /* bank_restore_from_entry */
+#include "savefile.h"       /* SfStatus, sf_write_verified, sf_status_str */
 
 #define COLS 6
 #define ROWS 5
@@ -1193,6 +1198,104 @@ bank_down_dispatch(BoxSource* src, int dst_box, int dst_cell, const uint8_t cell
   }
 }
 
+/* BACKLOG #150 S150-8b, D-Q5: no BoxSource.xfer vtable on the Bank (pdna_box.h:116-117's
+ * "NULL on every Gen-3 source, forever" stands) -- the RESTORE hook is called DIRECTLY
+ * from drop_held's PC->Bank arm below, gated on this ledger lookup. Both halves are
+ * noinline with their OWN GBSC_FILE_MAX (1042 B) frame -- D-Q6 asked for this to avoid
+ * that frame on drop_held's own deepest path; measured instead of assumed:
+ * `stack_budget.py --root drop_held` reports drop_held's own worst path at 4,560 of
+ * 15,032 B (10,472 B of local margin) on this lane's base, nowhere near the program's
+ * actual deepest root (11,912 B, a completely different call chain) -- adding 1042 B
+ * here cannot move either number. See the delivery report for the full measurement;
+ * this is a declared, numbers-backed deviation from D-Q6's literal wording, not an
+ * edit to the frozen source/xfer_io.* (which D-Q6's "add an accessor... if none
+ * exists" would otherwise have required). */
+static int __attribute__((noinline))
+pc_bank_restore_up(const uint8_t g3_rec80[80], uint8_t out_cell80[80]) {
+  if (!app_can_edit()) return 0;              /* decision 13: nothing to restore, read-only cart */
+  uint8_t buf[GBSC_FILE_MAX];
+  uint32_t len = 0;
+  uint64_t key = xr_key_g3(g3_rec80);
+  SfStatus rst = xr_open(key, buf, sizeof buf, &len, NULL);
+  if (rst == SF_ERR_OPEN) return 0;           /* no ledger entry -- an ordinary Gen-3 mon */
+  if (rst != SF_OK) {
+    log_line("bank: restore lookup: %s", sf_status_str(rst));
+    return -1;
+  }
+  int count = gbsc_count(buf, len);
+  if (count < 0) { log_line("bank: restore lookup: ledger file failed to validate"); return -1; }
+
+  /* decision 8's tiebreak: the HIGHEST index whose kind is XR_KIND_NATIVE_HOME (the
+   * newest cycle), belt-and-braces bc_is_native() since the kind byte is absent on
+   * pre-#150 entries. */
+  int best = -1;
+  GbscEntry e;
+  for (int i = 0; i < count; i++) {
+    GbscEntry cand;
+    if (!gbsc_get(buf, len, i, &cand)) continue;
+    if (cand.kind != XR_KIND_NATIVE_HOME) continue;
+    if (!bc_is_native(cand.original80)) continue;
+    best = i;
+    e = cand;
+  }
+  if (best < 0) return 0;                     /* only Gen-3-home entries (or none) -- already exact */
+
+  uint32_t serial = pdna_bank_next_serial();
+  if (serial == 0) {
+    log_line("bank: restore: bank_serial allocation failed");
+    return -1;
+  }
+  int rc = bank_restore_from_entry(&e, g3_rec80, serial, out_cell80, NULL);
+  if (rc != 1) { log_line("bank: restore: bank_restore_from_entry rc=%d", rc); return -1; }
+  return 1;
+}
+
+/* Marks the entry LAST, after the Bank write has already landed (D-Q1/D-Q2, decision
+ * 3's step 7 / §3.2's commit order). D-Q2: MARK, do not remove -- app_pc_release_slot
+ * only marks the PC dirty, so a user who then declines the exit save would keep a
+ * record-less Gen-3 duplicate if the entry were gone. gb_sidecar.h is frozen (S150-6/
+ * S150-8) and has no dedicated "RESTORED" flags-byte value; gbsc_set_claimed() is the
+ * one exported, frozen-file-safe primitive that marks without removing, and its
+ * `claimed` bit is unused by every existing reader for a NATIVE_HOME entry --
+ * gbsc_find()'s want_kind filter and gb_reconcile_on_load()'s own walk both operate on
+ * XR_KIND_G3_HOME entries only (grepped and confirmed, see the delivery report).
+ * DECLARED DEVIATION from the brief's literal "RESTORED" value: reusing `claimed`
+ * satisfies "mark, do not remove" without an edit to the frozen file; S150-11's own
+ * reconcile lane still decides how it wants to read this bit on a NATIVE_HOME entry. */
+static void __attribute__((noinline))
+pc_bank_restore_done(const uint8_t g3_rec80[80]) {
+  if (!app_can_edit()) return;                /* decision 13 */
+  uint8_t buf[GBSC_FILE_MAX];
+  uint32_t len = 0;
+  char path[GBSC_PATH_MAX];
+  uint64_t key = xr_key_g3(g3_rec80);
+  SfStatus rst = xr_open(key, buf, sizeof buf, &len, path);
+  if (rst != SF_OK) { log_line("bank: restore done: re-open failed (%s)", sf_status_str(rst)); return; }
+  int count = gbsc_count(buf, len);
+  if (count < 0) { log_line("bank: restore done: ledger file failed to validate"); return; }
+
+  int best = -1;                              /* re-resolve by the SAME rule the lookup used */
+  for (int i = 0; i < count; i++) {
+    GbscEntry cand;
+    if (!gbsc_get(buf, len, i, &cand)) continue;
+    if (cand.kind != XR_KIND_NATIVE_HOME) continue;
+    if (!bc_is_native(cand.original80)) continue;
+    best = i;
+  }
+  if (best < 0) { log_line("bank: restore done: entry vanished before marking"); return; }
+
+  if (gbsc_set_claimed(buf, len, best, true) != 0) {
+    log_line("bank: restore done: gbsc_set_claimed failed");
+    return;
+  }
+  /* A failure here is LOGGED and swallowed, never shown and never fatal -- decision 7's
+   * own posture: the native cell is already verified on the card, so a surviving,
+   * unmarked entry is a residual duplicate risk for a future lane, never a loss. */
+  if (sf_write_verified(path, buf, len) != SF_OK) {
+    log_line("bank: restore done: rewrite failed for %s", path);
+  }
+}
+
 /* Drop the held mon onto cursor cell `cur`. Within the origin's scope: true move (place +
  * clear origin; swap if occupied). Across the PC<->Bank boundary: COPY onto an empty cell
  * only (origin kept) so a mon can't be lost between two save scopes. *done=true when the
@@ -1395,13 +1498,32 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
      * mon into the (empty) bank cell, VERIFY the bank box on SD, and only then release the PC
      * source. On a write failure, revert the cell and keep holding so nothing is lost (learn:
      * commit the destination before clearing the source -> worst case a duplicate, never a
-     * loss; the PC clear is deferred to the one exit save, backed by the immutable backup). */
-    memcpy(recs + (uint32_t)cur * 80, s_held, 80);
+     * loss; the PC clear is deferred to the one exit save, backed by the immutable backup).
+     *
+     * BACKLOG #150 S150-8b, D-Q1 (the RESTORE edge, hop 2 of Guy's 2->3->1->2): if
+     * `s_held` (the Gen-3 mon in hand) has a native-home transfer-ledger entry --
+     * S150-8's DOWN edge wrote one when this exact mon left the Bank as a converted
+     * Gen-3 record -- this Gen-3 mon going BACK into the Bank restores that ORIGINAL
+     * native cell instead of landing as another Gen-3 cell. rc==-1 refuses the WHOLE
+     * drop: nothing written anywhere, the hand keeps holding (an unreadable record or
+     * a serial refusal). rc==0 is the ordinary, unchanged path: an ordinary Gen-3 mon,
+     * or one whose ledger entry is Gen-3-home, lands exactly as it did before this
+     * lane, byte for byte. */
+    uint8_t cell80[80];
+    int rc = pc_bank_restore_up(s_held, cell80);
+    if (rc < 0) { snd_error(); return recs; }                          /* still holding, nothing written */
+    if (rc == 1 && !pdna_bank_prepare_native()) {
+      snd_error();
+      msg_wait(PDNA_XFER_PREP_TITLE, UI_WARN, PDNA_XFER_PREP_L1, PDNA_XFER_PREP_L2);
+      return recs;                                                     /* still holding */
+    }
+    memcpy(recs + (uint32_t)cur * 80, rc == 1 ? cell80 : s_held, 80);
     boxoam_suspend();
     bool ok = src->commit();                                 /* verified bank box_save (banksrc_commit) */
     boxoam_resume();
     if (!ok) { memset(recs + (uint32_t)cur * 80, 0, 80); snd_error(); return recs; }   /* keep holding */
     if (s_orig_slot >= 0) app_pc_release_slot(s_orig_box, s_orig_slot, s_held);
+    if (rc == 1) pc_bank_restore_done(s_held);      /* entry marked LAST, after the Bank write landed */
     snd_save();
     s_holding = false; *done = true; return recs;
   }
