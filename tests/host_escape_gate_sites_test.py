@@ -163,6 +163,17 @@ RELEASE_UP_RE  = re.compile(r"s_xfer_peer->release_up\(")
 ZEROBACK_RE    = re.compile(r"memset\(recs \+ \(uint32_t\)cur \* 80, 0, 80\)")
 RETURN_RECS_RE = re.compile(r"^\s*return recs;")
 
+# BACKLOG #150 S150-8b: the RESTORE edge's ordering, drop_held's PC->Bank arm. Shared
+# by the real check (l) and its self-mutation demonstration (MUT K).
+RESTORE_UP_RE       = re.compile(r"\bpc_bank_restore_up\(")
+RESTORE_DONE_RE     = re.compile(r"\bpc_bank_restore_done\(")
+RESTORE_MEMCPY_RE   = re.compile(r"memcpy\(recs \+ \(uint32_t\)cur \* 80, rc == 1")
+PC_RELEASE_SLOT_RE  = re.compile(r"\bapp_pc_release_slot\(")
+APP_CAN_EDIT_RE     = re.compile(r"\bapp_can_edit\(")
+SF_WRITE_VERIFIED_RE = re.compile(r"\bsf_write_verified\(")
+BC_PACK_RE          = re.compile(r"\bbc_pack\(")
+XR_OPEN_RE          = re.compile(r"\bxr_open\(")
+
 # BACKLOG #171 (lane s150-4-5b): the dead-carry site guard. `TAB1_ASSIGN_RE` matches
 # only the literal `s_tab_focus = 1;` assignment (never the two ternary forms
 # `s_tab_focus = src->is_bank ? 2 : 1;` / `(s_tab_focus > 0) ? s_tab_focus - 1 : 2` --
@@ -261,6 +272,37 @@ def down_order_facts(lines, start, end):        # shared by the real check AND M
                                  f"come before app_bank_clear_slots() (line {c+1}, the Bank consume) "
                                  f"-- the Bank's own copy could be zeroed before the Game Boy save "
                                  f"has the mon")
+    return True, "ok"
+
+
+def restore_order_facts(lines, start, end):     # shared by the real check (l) AND MUT K
+    """BACKLOG #150 S150-8b decision 3 / §3.2's commit order: drop_held's PC->Bank arm
+    must call pc_bank_restore_up( BEFORE the ternary memcpy that writes either the
+    rebuilt native cell or the plain Gen-3 record, and pc_bank_restore_done( (the
+    entry-marking call) must come STRICTLY AFTER BOTH `ok = src->commit()` (the
+    verified Bank write) and `app_pc_release_slot(` (the source release) -- the
+    "destination first, verified; source only after; landed writes never undone" rule,
+    applied to marking the ledger entry: it must never be visible as done before the
+    Bank write it describes has actually landed."""
+    u = first_match_line(lines, start, end, RESTORE_UP_RE)
+    m = first_match_line(lines, start, end, RESTORE_MEMCPY_RE)
+    c = first_match_line(lines, start, end, COMMIT_RE)
+    r = first_match_line(lines, start, end, PC_RELEASE_SLOT_RE)
+    d = first_match_line(lines, start, end, RESTORE_DONE_RE)
+    if u is None: return False, "drop_held: no `pc_bank_restore_up(` call in the PC->Bank arm"
+    if m is None: return False, "drop_held: no PC->Bank ternary memcpy line found"
+    if c is None: return False, "drop_held: no `ok = src->commit()` line in the PC->Bank arm"
+    if r is None: return False, "drop_held: no `app_pc_release_slot(` call in the PC->Bank arm"
+    if d is None: return False, "drop_held: no `pc_bank_restore_done(` call in the PC->Bank arm"
+    if not u < m:
+        return False, (f"drop_held: pc_bank_restore_up() (line {u+1}) does NOT come before "
+                       f"the PC->Bank memcpy (line {m+1}) -- the rebuilt cell could not be "
+                       f"ready in time to be written")
+    if not (c < d and r < d):
+        return False, (f"drop_held: pc_bank_restore_done() (line {d+1}) must come AFTER BOTH "
+                       f"src->commit() (line {c+1}) and app_pc_release_slot() (line {r+1}) -- "
+                       f"the entry would be marked before the Bank write it describes has "
+                       f"actually landed")
     return True, "ok"
 
 
@@ -481,6 +523,24 @@ def main() -> int:
     ok, d = up_order_facts(box_lines, s, e)
     check(ok, d)
 
+    # ---- (l) BACKLOG #150 S150-8b: the RESTORE edge's ordering in drop_held's
+    # PC->Bank arm -- pc_bank_restore_up( before the write, pc_bank_restore_done(
+    # strictly after both the verified commit and the source release. ----
+    s, e = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
+    ok, d = restore_order_facts(box_lines, s, e)
+    check(ok, d)
+
+    # ---- (l') decision 13: app_can_edit( is the FIRST statement checked in both
+    # pc_bank_restore_up() and pc_bank_restore_done() -- before any sf_write_verified(/
+    # bc_pack( call, so a read-only cart refuses before touching the ledger at all. ----
+    for name, sig, write_pat in [
+        ("pc_bank_restore_up", r"^pc_bank_restore_up\(", XR_OPEN_RE),
+        ("pc_bank_restore_done", r"^pc_bank_restore_done\(", SF_WRITE_VERIFIED_RE),
+    ]:
+        s, e = extract_function(box_lines, sig)
+        ok, detail = gate_before_pattern(box_lines, s, e, APP_CAN_EDIT_RE, write_pat, name)
+        check(ok, detail)
+
     # ---- (j) BACKLOG #171: every is_bank-guarded `s_tab_focus = 1;` site in pdna_box()'s
     # carrying block also carries `|| src->bank_edge`, and there is exactly ONE such
     # site -- pinned so a second/third/fourth site added later without the clause is a
@@ -648,6 +708,24 @@ def self_test_mutation_detection(box_lines: list[str]) -> None:
         ok, detail = up_order_facts(mut_h, 0, len(mut_h))
         check(not ok, f"MUT H (release_up swapped before commit()) should have been caught but was not: {detail}")
         print(f"  MUT H demonstration -- release_up() line swapped above src->commit(): {detail}")
+
+    # MUT K (BACKLOG #150 S150-8b, step 5's own demonstration): move
+    # pc_bank_restore_done( ABOVE `ok = src->commit()` in a copy of drop_held's body --
+    # the entry would be marked as restored before the Bank write it describes has
+    # actually landed -- and assert restore_order_facts() reports failure.
+    s, e = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
+    body = box_lines[s:e]
+    commit_i2 = first_match_line(body, 0, len(body), COMMIT_RE)
+    done_i = first_match_line(body, 0, len(body), RESTORE_DONE_RE)
+    check(commit_i2 is not None and done_i is not None,
+          "MUT K: could not locate both the commit() and pc_bank_restore_done() lines in the real source -- fix this test")
+    if commit_i2 is not None and done_i is not None and commit_i2 < done_i:
+        mut_k = list(body)
+        done_line = mut_k.pop(done_i)
+        mut_k.insert(commit_i2, done_line)   # pc_bank_restore_done's line now sits BEFORE commit()
+        ok, detail = restore_order_facts(mut_k, 0, len(mut_k))
+        check(not ok, f"MUT K (pc_bank_restore_done swapped before commit()) should have been caught but was not: {detail}")
+        print(f"  MUT K demonstration -- pc_bank_restore_done() line swapped above src->commit(): {detail}")
 
     # MUT I (BACKLOG #171): revert the ONE real, clause-carrying `s_tab_focus = 1;`
     # site back to its pre-fix `else if (!src->is_bank) { s_tab_focus = 1; ... }` form
