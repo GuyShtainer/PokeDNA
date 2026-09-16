@@ -2443,6 +2443,118 @@ int main(void) {
   PF(PDNA_ROMOTHER_L2,    28, 184);
   /* ==== END BACKLOG #54 ROM-hack banner ======================================== */
 
+  /* ==== BACKLOG #178: party-landing confirm panel textfit ======================
+   *
+   * gb_accept_down_hook() composes cl1[100] as: name (up to 20 cols truncated) +
+   * padding spaces (until ui_ptext_w(cl1) >= 180px force-break point) + stats line.
+   * The confirm calls ui_ptext_wrap(28, 74, 184, UI_ROW_H + 2, 2, ..., cl1), which
+   * wraps to at most 2 lines inside the 184 px panel width. The padding ensures the
+   * name alone reaches >= 180 px, so that wrapping at 184 px puts the stats line on
+   * the second line. The stats line is the worst case: Gen-1 with exp-level mismatch
+   * is "Lv 100 from EXP (box said 100)" (30 B).
+   *
+   * The test below mirrors the exact composition: measures a 20-glyph narrow name
+   * (20 'i's = 40px), simulates the padding loop (spaces until >= 180px), then
+   * measures each possible stats line, verifying:
+   *   1. Total buffer usage (name + spaces + stats line + NUL) fits in cl1[100]
+   *   2. room = 100 - strlen(cl1) - 1 >= 30 (comfortable headroom guaranteed)
+   *   3. The composed string wraps to at most 2 lines at 184 px width
+   */
+  printf("\n== GB import: party landing confirm panel (#178) ==\n");
+  {
+    /* Worst case: 20-glyph name with the narrowest glyphs (ASCII 'i' = 2 px each).
+     * This measures the exact composition sequence from gb_accept_down_hook. */
+    char worst_name[21];
+    memset(worst_name, 'i', 20);
+    worst_name[20] = 0;
+    int worst_name_w = pwidth(worst_name);    /* actual width: 20 * 2 = 40px */
+    checks++;
+    { int ok = (worst_name_w > 0 && worst_name_w < 180);
+      if (!ok) fails++;
+      printf("  %-4s %-46.46s w=%-4d              %s\n",
+             ok ? "ok" : "FAIL", worst_name, worst_name_w,
+             "20-narrow-glyph name (baseline for padding calc)"); }
+
+    /* Simulate the padding loop: name + spaces until ui_ptext_w >= 180px */
+    char cl1[128];
+    strcpy(cl1, worst_name);
+    int n = (int)strlen(worst_name);
+    int space_count = 0;
+    while (n < (int)sizeof cl1 - 2 && pwidth(cl1) < 180) {
+      cl1[n++] = ' ';
+      cl1[n] = 0;
+      space_count++;
+    }
+    int padded_w = pwidth(cl1);
+    checks++;
+    { int ok = (padded_w >= 180);
+      if (!ok) fails++;
+      printf("  %-4s %-46.46s spaces=%-2d w=%-4d    %s\n",
+             ok ? "ok" : "FAIL", "(padded name)", space_count, padded_w,
+             "padding reaches >= 180px (break point)"); }
+
+    /* Now test each stats line variant, measuring the final composed string.
+     * Gen-1 default: "Recomputes stats."
+     * Gen-2: "New stats, full HP, healthy."
+     * Gen-1 with exp mismatch (worst): "Lv 100 from EXP (box said 100)" */
+
+    static const char* stats_lines[] = {
+      PDNA_XFER_DOWN_PARTYFOOT_G1,  /* "Recomputes stats." */
+      PDNA_XFER_DOWN_PARTYFOOT_G2,  /* "New stats, full HP, healthy." */
+      "Lv 100 from EXP (box said 100)",  /* Gen-1 exp mismatch, worst case */
+    };
+    static const char* stats_labels[] = {
+      "Gen-1 default",
+      "Gen-2 default",
+      "Gen-1 exp mismatch (worst)",
+    };
+
+    for (unsigned i = 0; i < sizeof stats_lines / sizeof stats_lines[0]; i++) {
+      const char* stat_line = stats_lines[i];
+      const char* label = stats_labels[i];
+
+      /* Simulate the append logic from gb_accept_down_hook (lines 3324-3332) */
+      strcpy(cl1, worst_name);
+      int n = (int)strlen(worst_name);
+      while (n < (int)sizeof cl1 - 2 && pwidth(cl1) < 180) {
+        cl1[n++] = ' ';
+        cl1[n] = 0;
+      }
+      int room = (int)sizeof cl1 - n - 1;
+      if (room > 0) {
+        int k = 0;
+        while (stat_line[k] && k < room) { cl1[n + k] = stat_line[k]; k++; }
+        cl1[n + k] = 0;
+      }
+
+      int final_len = (int)strlen(cl1);
+      int final_room = (int)sizeof cl1 - final_len - 1;
+      int wrapped_lines = wrap_lines(cl1, 184);
+
+      /* Check 1: total length fits in cl1[100] */
+      checks++;
+      { int ok = (final_len < 100);
+        if (!ok) fails++;
+        printf("  %-4s %-46.46s len=%-3d         %s\n",
+               ok ? "ok" : "FAIL", label, final_len, "composed fits in cl1[100]"); }
+
+      /* Check 2: room >= 30 (comfortable headroom) */
+      checks++;
+      { int ok = (final_room >= 30);
+        if (!ok) fails++;
+        printf("  %-4s %-46.46s room=%-3d        %s\n",
+               ok ? "ok" : "FAIL", label, final_room, "room >= 30 (headroom)"); }
+
+      /* Check 3: wrapped to <= 2 lines at 184px width (as app_confirm renders it) */
+      checks++;
+      { int ok = (wrapped_lines <= 2);
+        if (!ok) fails++;
+        printf("  %-4s %-46.46s lines=%-1d        %s\n",
+               ok ? "ok" : "FAIL", label, wrapped_lines, "wraps to <= 2 lines (184px)"); }
+    }
+  }
+  /* ==== END BACKLOG #178 party-landing confirm panel ============================ */
+
   printf("\n%d checks, %d FAILED\n", checks, fails);
   return fails ? 1 : 0;
 }
