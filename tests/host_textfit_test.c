@@ -131,11 +131,22 @@ static int wrap_lines(const char* s, int maxw) {
     int w = 0, last_space = -1;
     while (*p) {
       if (*p == ' ') last_space = (int)(p - s);
-      unsigned c = (unsigned char)*p;
+      /* Mirror pwidth's UTF-8 handling: e-acute / ASCII / other multi-byte */
+      unsigned c;
+      const unsigned char* up = (const unsigned char*)p;
+      if (up[0] == 0xC3u && up[1] == 0xA9u) {
+        c = 127; p += 2;
+      } else if (up[0] < 0x80u) {
+        c = (unsigned char)*p++;
+      } else {
+        p++; up = (const unsigned char*)p;
+        while ((up[0] & 0xC0u) == 0x80u) { p++; up++; }
+        c = '?';
+      }
       if (c < 32u || c > 127u) c = '?';
       int a = ui_font_w[c - 32];
       if (w + a > maxw) break;
-      w += a; p++;
+      w += a;
     }
     int i = (int)(p - s), skip;
     if (!s[i]) skip = i;                       /* the rest fits */
@@ -2442,6 +2453,125 @@ int main(void) {
   PF(PDNA_ROMOTHER_L1,    28, 184);
   PF(PDNA_ROMOTHER_L2,    28, 184);
   /* ==== END BACKLOG #54 ROM-hack banner ======================================== */
+
+  /* ==== BACKLOG #178: party-landing confirm panel textfit ======================
+   *
+   * gb_accept_down_hook() composes cl1[PDNA_XFER_DOWN_CL1_SZ] as: name (up to 20 cols
+   * truncated, up to 33 B with UTF-8 chars like ♀) + padding spaces (until
+   * ui_ptext_w(cl1) >= PDNA_XFER_DOWN_PAD_PX force-break point) + stats line.
+   * The confirm calls ui_ptext_wrap(28, 74, 184, UI_ROW_H + 2, 2, ..., cl1), which
+   * wraps to at most 2 lines inside the 184 px panel width. The padding ensures the
+   * name alone reaches >= PDNA_XFER_DOWN_PAD_PX, so wrapping at 184 px puts the stats
+   * line on the second line.
+   *
+   * The test below mirrors the exact composition sequence, measuring worst cases:
+   *   (a) 20-glyph narrow name (20 'i's = 40px); (b) 11 × ♀ (33 B, 66 px).
+   * For each, simulates the padding loop (spaces until >= PDNA_XFER_DOWN_PAD_PX) and
+   * all stats line variants, verifying:
+   *   1. Total fits in PDNA_XFER_DOWN_CL1_SZ buffer
+   *   2. No stat line truncation, room >= 24 bytes (11 × ♀ case is true worst)
+   *   3. Wrapped to at most 2 lines at 184 px width
+   */
+  printf("\n== GB import: party landing confirm panel (#178) ==\n");
+  {
+    /* Test both name shapes: narrow ASCII glyphs and UTF-8 multi-byte (♀). */
+    char worst_names[2][34];
+    const char* worst_labels[2];
+    worst_names[0][20] = 0; memset(worst_names[0], 'i', 20);
+    worst_labels[0] = "20 narrow glyphs (i)";
+    /* 11 × ♀ (0xE2 0x99 0x80 per female symbol, 3 bytes each = 33 bytes total) */
+    const char* female_sym = "\xE2\x99\x80";
+    strcpy(worst_names[1], "");
+    for (int j = 0; j < 11; j++) strcat(worst_names[1], female_sym);
+    worst_labels[1] = "11 × ♀ (UTF-8, worst)";
+
+    for (int name_idx = 0; name_idx < 2; name_idx++) {
+      const char* worst_name = worst_names[name_idx];
+      const char* name_label = worst_labels[name_idx];
+      int worst_name_w = pwidth(worst_name);
+      checks++;
+      { int ok = (worst_name_w > 0 && worst_name_w < PDNA_XFER_DOWN_PAD_PX);
+        if (!ok) fails++;
+        printf("  %-4s %-46.46s w=%-4d              %s\n",
+               ok ? "ok" : "FAIL", name_label, worst_name_w, "name width baseline"); }
+
+      /* Simulate padding loop: name + spaces until ui_ptext_w >= PDNA_XFER_DOWN_PAD_PX */
+      char cl1[PDNA_XFER_DOWN_CL1_SZ];
+      strcpy(cl1, worst_name);
+      int n = (int)strlen(worst_name);
+      int space_count = 0;
+      while (n < (int)sizeof cl1 - 2 && pwidth(cl1) < PDNA_XFER_DOWN_PAD_PX) {
+        cl1[n++] = ' ';
+        cl1[n] = 0;
+        space_count++;
+      }
+      int padded_w = pwidth(cl1);
+      checks++;
+      { int ok = (padded_w >= PDNA_XFER_DOWN_PAD_PX);
+        if (!ok) fails++;
+        printf("  %-4s %-46.46s spaces=%-2d w=%-4d    %s (%s)\n",
+               ok ? "ok" : "FAIL", "", space_count, padded_w, "padding reaches break point",
+               name_label); }
+
+      /* Now test each stats line variant. */
+      static const char* stats_lines[] = {
+        PDNA_XFER_DOWN_PARTYFOOT_G1,         /* "Recomputes stats." */
+        PDNA_XFER_DOWN_PARTYFOOT_G2,         /* "New stats, full HP, healthy." */
+        "Lv 100 from EXP (box said 100)",    /* Gen-1 exp mismatch, 30 B */
+      };
+      static const char* stats_labels[] = {
+        "Gen-1 default",
+        "Gen-2 default",
+        "Gen-1 exp mismatch",
+      };
+
+      for (unsigned i = 0; i < sizeof stats_lines / sizeof stats_lines[0]; i++) {
+        const char* stat_line = stats_lines[i];
+        const char* label = stats_labels[i];
+
+        /* Simulate composition from gb_accept_down_hook */
+        strcpy(cl1, worst_name);
+        int n = (int)strlen(worst_name);
+        while (n < (int)sizeof cl1 - 2 && pwidth(cl1) < PDNA_XFER_DOWN_PAD_PX) {
+          cl1[n++] = ' ';
+          cl1[n] = 0;
+        }
+        int room = (int)sizeof cl1 - n - 1;
+        int k = 0;
+        if (room > 0) {
+          while (stat_line[k] && k < room) { cl1[n + k] = stat_line[k]; k++; }
+          cl1[n + k] = 0;
+        }
+
+        int final_len = (int)strlen(cl1);
+        int final_room = (int)sizeof cl1 - final_len - 1;
+        int wrapped_lines = wrap_lines(cl1, 184);
+        int truncated = (stat_line[k] != 0);  /* stat_line not fully copied */
+
+        /* Check 1: fits in buffer */
+        checks++;
+        { int ok = (final_len < PDNA_XFER_DOWN_CL1_SZ);
+          if (!ok) fails++;
+          printf("  %-4s %-46.46s len=%-3d (%s) %s\n",
+                 ok ? "ok" : "FAIL", label, final_len, name_label, "fits buffer"); }
+
+        /* Check 2: no truncation, room >= 24 (worst case is 11×♀ with 26 room) */
+        checks++;
+        { int ok = (!truncated && final_room >= 24);
+          if (!ok) fails++;
+          printf("  %-4s %-46.46s room=%-3d truncated=%d %s\n",
+                 ok ? "ok" : "FAIL", label, final_room, truncated, "no truncation, room >= 24"); }
+
+        /* Check 3: wraps to <= 2 lines at 184px (as app_confirm renders) */
+        checks++;
+        { int ok = (wrapped_lines <= 2);
+          if (!ok) fails++;
+          printf("  %-4s %-46.46s lines=%-1d        %s\n",
+                 ok ? "ok" : "FAIL", label, wrapped_lines, "wraps to <= 2 lines"); }
+      }
+    }
+  }
+  /* ==== END BACKLOG #178 party-landing confirm panel ============================ */
 
   printf("\n%d checks, %d FAILED\n", checks, fails);
   return fails ? 1 : 0;
