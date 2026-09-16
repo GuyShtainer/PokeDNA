@@ -48,6 +48,19 @@
 static uint8_t EWRAM_BSS g_bankbuf[0x0004 + BOX_BYTES];
 static int  g_loaded = -1;                 /* which box g_bankbuf holds, or -1     */
 static bool g_dirty  = false;              /* loaded box has unsaved deferred moves */
+/* BACKLOG #163 review F1: g_box_unsaved_box's whole meaning is "the box g_dirty is
+ * about" -- it must never survive past a g_dirty clear (box_load re-reading the box
+ * from disk, or a discard) or the marker outlives the fact it describes: the NEXT time
+ * that box index is loaded (any box, since g_box_unsaved_box is a plain index, not tied
+ * to identity) it would wrongly show BOX NOT SAVED on a box nobody has touched, and
+ * SWITCH_BOX would refuse to page away from it while banksrc_records's own g_dirty
+ * check says there is nothing to flush -- the exact split-brain review F1 found live:
+ * a refused save, discarded on exit ("Its edits are lost", g_dirty cleared, marker
+ * left standing), then the NEXT Bank visit loads a DIFFERENT box into g_bankbuf while
+ * the screen still shows the OLD box's frame. Declared here (above box_load) so
+ * box_load's own g_dirty clear can clear it in the same breath -- see box_load below. */
+static int8_t g_box_unsaved_box = -1;
+bool pdna_bank_box_unsaved(int box) { return box >= 0 && box == g_box_unsaved_box; }
 static struct { uint8_t name[9]; uint8_t wp; } g_meta[BANK_BOXES];
 
 static uint8_t* box_recs(void) { return g_bankbuf + 0x0004; }
@@ -173,6 +186,8 @@ static bool box_load(int box) {
     if (bc_is_native(box_recs() + (uint32_t)s * REC_BYTES)) g_native_snap |= (1u << s);
   g_loaded = box;
   g_dirty = false;
+  g_box_unsaved_box = -1;   /* review F1: a fresh page-in re-reads the CARD's own copy --
+                             * whatever RAM-only edits g_box_unsaved_box was about are gone. */
   return st == SF_OK && sz >= BOX_BYTES;
 }
 
@@ -215,74 +230,85 @@ static bool __attribute__((noinline)) native_invariant_ok(void) {
   return true;
 }
 
-static bool box_save(void) {                    /* write the loaded box's records */
-  if (g_loaded < 0) return false;
-  if (!native_invariant_ok()) return false;
-  char path[SF_PATH_MAX]; box_path(g_loaded, path);
-  bool backed_up;
-  rmbl_pause();
-  SfStatus st = sf_save_rolling(path, box_recs(), BOX_BYTES, &backed_up);
-  rmbl_resume();
-  if (st != SF_OK && st != SF_ERR_RENAME) {
-    /* the backup-gate refusal or a plain write failure -- sf_save_rolling already
-     * logged the mechanical reason (savefile.c's own "save_rolling: ..." lines); this
-     * is the bank-level line that says WHICH box, same convention as app_commit's own
-     * "edit: backup failed (%s)" wrapping sf_backup_rolling's internal log. */
-    log_line("bank: box save failed (%s)", sf_status_str(st));
-    app_log_flush();
-    return false;
-  }
-  if (st == SF_ERR_RENAME) {
-    /* The bytes were written AND read back byte-for-byte -- it is the final swap the
-     * card did not keep, a different piece of news from "the write failed". Ask the
-     * card which file the user is actually holding rather than guessing, same triage
-     * as gb_persist (pdna_gen12.c) and app_commit (pdna_main.c) -- and, per §11.13/
-     * XFER-C1 (review F4), SHOW it instead of only logging it silently. */
-    SfWhere w = sf_where_are_the_bytes(path, box_recs(), BOX_BYTES);
-    log_line("bank: box save rename unconfirmed, bytes at %d", (int)w);
-    app_log_flush();
-    /* review G4: unlike the box screen's own boxoam_suspend/resume bracket, box_save
-     * has none of its own -- SWITCH_BOX's chain reaches here through banksrc_records
-     * with the box-cell sprites still enabled, but box_save ALSO runs from callers with
-     * no grid on screen at all (a blind boxoam_resume() here would be wrong in that
-     * case). msg_wait's blocking wait-for-A loop must not run with arbitrary leftover
-     * OBJ content still visible underneath it, so disable OBJ for exactly this UI block
-     * and restore whatever the caller had on every exit path. */
-    u16 dc = REG_DISPCNT;
-    REG_DISPCNT &= ~DCNT_OBJ;
-    if (w != SF_WHERE_TARGET) {
-      snd_error();
-      char l1[64];
-      switch (w) {
-        case SF_WHERE_TMP_ONLY: {           /* the loud one: no .box on the card */
-          const char* nm = strrchr(path, '/');
-          nm = nm ? nm + 1 : path;
-          siprintf(l1, "Box is in %.28s.tmp", nm);
-          msg_wait(PDNA_BANKSAVE_TMPONLY_TITLE, UI_WARN, l1, PDNA_BANKSAVE_TMPONLY_L2);
-          break;
-        }
-        case SF_WHERE_TMP_AND_OLD:          /* old box intact; edit not applied */
-          msg_wait(PDNA_BANKSAVE_TMPANDOLD_TITLE, UI_WARN,
-                    PDNA_BANKSAVE_TMPANDOLD_L1, PDNA_BANKSAVE_TMPANDOLD_L2);
-          break;
-        default:                            /* neither name matches */
-          /* review G2: a virgin box (this write's own backup step never ran, since
-           * there was nothing to back up) never made a .bak -- "restore the .bak"
-           * would send the user hunting a file that does not exist. */
-          msg_wait(PDNA_BANKSAVE_LOST_TITLE, UI_WARN, PDNA_BANKSAVE_LOST_L1,
-                    backed_up ? PDNA_BANKSAVE_LOST_L2 : PDNA_GBEDIT_SAVELOST_NOBAK);
-          break;
+/* The bytes were written AND read back byte-for-byte -- it is the final swap the card
+ * did not keep, a different piece of news from "the write failed". Ask the card which
+ * file the user is actually holding rather than guessing, same triage as gb_persist
+ * (pdna_gen12.c) and app_commit (pdna_main.c) -- and, per §11.13/XFER-C1 (review F4),
+ * SHOW it instead of only logging it silently. Split out of box_save() (rule 4: one
+ * printed page) -- this is the whole SF_ERR_RENAME branch, box_save() keeps only the
+ * dispatch to it. */
+static void box_save_rename_triage(const char* path, SfWhere w, bool ok, bool backed_up) {
+  log_line("bank: box save rename unconfirmed, bytes at %d", (int)w);
+  app_log_flush();
+  /* review G4: unlike the box screen's own boxoam_suspend/resume bracket, box_save
+   * has none of its own -- SWITCH_BOX's chain reaches here through banksrc_records
+   * with the box-cell sprites still enabled, but box_save ALSO runs from callers with
+   * no grid on screen at all (a blind boxoam_resume() here would be wrong in that
+   * case). msg_wait's blocking wait-for-A loop must not run with arbitrary leftover
+   * OBJ content still visible underneath it, so disable OBJ for exactly this UI block
+   * and restore whatever the caller had on every exit path. */
+  u16 dc = REG_DISPCNT;
+  REG_DISPCNT &= ~DCNT_OBJ;
+  if (!ok) {
+    snd_error();
+    char l1[64];
+    switch (w) {
+      case SF_WHERE_TMP_ONLY: {           /* the loud one: no .box on the card */
+        const char* nm = strrchr(path, '/');
+        nm = nm ? nm + 1 : path;
+        siprintf(l1, "Box is in %.28s.tmp", nm);
+        msg_wait(PDNA_BANKSAVE_TMPONLY_TITLE, UI_WARN, l1, PDNA_BANKSAVE_TMPONLY_L2);
+        break;
       }
-      REG_DISPCNT = dc;
-      return false;                         /* anything but TARGET: a real failure */
+      case SF_WHERE_TMP_AND_OLD:          /* old box intact; edit not applied */
+        msg_wait(PDNA_BANKSAVE_TMPANDOLD_TITLE, UI_WARN,
+                  PDNA_BANKSAVE_TMPANDOLD_L1, PDNA_BANKSAVE_TMPANDOLD_L2);
+        break;
+      default:                            /* neither name matches */
+        /* review G2: a virgin box (this write's own backup step never ran, since
+         * there was nothing to back up) never made a .bak -- "restore the .bak"
+         * would send the user hunting a file that does not exist. */
+        msg_wait(PDNA_BANKSAVE_LOST_TITLE, UI_WARN, PDNA_BANKSAVE_LOST_L1,
+                  backed_up ? PDNA_BANKSAVE_LOST_L2 : PDNA_GBEDIT_SAVELOST_NOBAK);
+        break;
     }
+  } else {
     msg_wait(PDNA_BANKSAVE_UNCONFIRMED_TITLE, UI_WARN,
               PDNA_BANKSAVE_UNCONFIRMED_L1, PDNA_BANKSAVE_UNCONFIRMED_L2);
-    REG_DISPCNT = dc;
-    st = SF_OK;                             /* the bytes ARE at path -- this is a success */
   }
-  bool ok = st == SF_OK;
-  if (ok) g_dirty = false;
+  REG_DISPCNT = dc;
+}
+
+static bool box_save(void) {                    /* write the loaded box's records */
+  if (g_loaded < 0) return false;
+  /* review F1: a refusal here still LEAVES the box dirty (it always did -- the invariant
+   * refusal never touched g_dirty at all before this fix, which is exactly how it could
+   * drift out of sync with g_box_unsaved_box: the marker said "unsaved", g_dirty could
+   * independently already be false from an unrelated path, and the two facts came
+   * apart). Setting both together here is the whole point of F1's invariant: marker set
+   * implies g_dirty true, always. */
+  if (!native_invariant_ok()) { g_box_unsaved_box = g_loaded; g_dirty = true; return false; }
+  char path[SF_PATH_MAX]; box_path(g_loaded, path);
+  /* Mirrors sf_save_rolling's own probe (savefile.c): a box file that already exists is
+   * exactly the case where sf_save_rolling takes its backup -- so "did the target exist
+   * before this call" IS "did this call back it up", without sf_save_rolling_ok needing
+   * to hand that bit back out (BACKLOG #158 keeps its signature to path/buf/len/out_where).
+   * review F2: f_stat(path, 0) like sf_save_rolling's own probe (savefile.c) -- no
+   * FILINFO on this frame (its LFN buffers cost ~280 B) and no second directory read. */
+  bool backed_up = f_stat(path, 0) == FR_OK;
+  /* Sentinel outside the enum's range: sf_save_rolling_ok only writes *out_where when
+   * sf_save_rolling actually returned SF_ERR_RENAME (savefile.h says so), so this value
+   * surviving the call means "no ambiguity" -- either a plain success or a hard failure,
+   * neither of which this function shows a dialog for (same as before this refactor). */
+  SfWhere w = (SfWhere)-1;
+  rmbl_pause();
+  bool ok = sf_save_rolling_ok(path, box_recs(), BOX_BYTES, &w);
+  rmbl_resume();
+  if (w != (SfWhere)-1) box_save_rename_triage(path, w, ok, backed_up);
+  else if (!ok) { log_line("bank: box save failed"); app_log_flush(); }
+  /* review F1's invariant: g_box_unsaved_box set <=> g_dirty true, for the SAME box. */
+  g_box_unsaved_box = ok ? -1 : g_loaded;
+  g_dirty = !ok;
   return ok;
 }
 
@@ -352,6 +378,31 @@ bool pdna_bank_clear_slots(int box, const uint8_t* slots, const uint8_t (*recs80
   g_dirty = true;
   return box_save();
 }
+/* BACKLOG #163: box_save()'s own refusal (native-invariant OR the backup/rename triage)
+ * used to be discarded silently by both dirty-flush callers below -- the UI kept going as
+ * if the flush had landed, the box stayed unsaveable, and later edits in it were dropped
+ * on the NEXT flip with only a log line. Retries box_save() with a blocking "try again?"
+ * choice (A retry / B keep editing) between attempts; box_save() itself already showed
+ * the specific reason on a failed rename (msg_wait, OBJ-bracketed) -- this is the one
+ * question it cannot ask on the caller's behalf (review G4: it runs with no grid on
+ * screen). false => the caller must NOT treat the box as flushed: g_dirty (or the
+ * deletion queue) is left exactly as box_save() last left it, and the box must not be
+ * paged away from (a silent flip would drop the very edits this exists to protect). A
+ * hard cap (rule 2: every loop needs a provable bound) that a real user session will
+ * never hit -- retries are gated on the user's own A/B choice, not a busy-loop. */
+static bool box_save_or_keep_dirty(void) {
+  for (int tries = 0; tries < 100; tries++) {
+    if (box_save()) return true;
+    if (!app_can_edit()) return false;              /* read-only cart: nothing to retry */
+    u16 dc = REG_DISPCNT;
+    REG_DISPCNT &= ~DCNT_OBJ;                        /* same OBJ bracket box_save's own msg_wait uses */
+    bool retry = app_confirm(PDNA_BANK_UNSAVED_BANNER, PDNA_BANK_RETRY_L1);
+    REG_DISPCNT = dc;
+    if (!retry) return false;                        /* B: keep editing -- box stays dirty */
+  }
+  return false;
+}
+
 /* BACKLOG #150 S150-8 decision 10/G-M3: KEEP failures queued instead of silently
  * discarding them (the old unconditional `g_bank_ndel = 0` below lost a deletion
  * forever on a failed box_save()). Compacts the queue in place, returns the number
@@ -361,7 +412,17 @@ int pdna_bank_flush_deletions(void) {
   int kept = 0;
   for (int i = 0; i < g_bank_ndel; i++) {
     int box = g_bank_del[i].box, slot = g_bank_del[i].slot;
-    if (g_loaded != box) { if (g_dirty) box_save(); box_load(box); }   /* page the box in (reads its file) */
+    if (g_loaded != box) {
+      /* BACKLOG #163: the box being LEFT must actually be saved before we page away from
+       * it -- ignoring this flush's own false silently dropped whatever it was carrying. */
+      if (g_dirty && !box_save_or_keep_dirty()) {
+        log_line("bank: flush box %d slot %d deferred, box %d still unsaved", box, slot, g_loaded);
+        if (kept != i) g_bank_del[kept] = g_bank_del[i];
+        kept++;
+        continue;                                    /* never page away from an unsaved box */
+      }
+      box_load(box);   /* page the box in (reads its file) */
+    }
     uint8_t* p = box_recs() + (uint32_t)slot * REC_BYTES;
     if (memcmp(p, g_bank_del[i].id, BANK_DEL_IDLEN) != 0) continue;    /* slot no longer holds OUR mon -> don't delete */
     memset(p, 0, REC_BYTES);
@@ -503,7 +564,10 @@ bool pdna_bank_prepare_native(void) { return bank_backup_v1(); }
 /* ---- BoxSource hooks (singleton state) ---- */
 static uint8_t* banksrc_records(int box) {
   if (box != g_loaded) {
-    if (g_dirty) box_save();                     /* flush deferred moves before paging out */
+    /* BACKLOG #163: ignoring this flush's own false used to page ahead anyway -- the box
+     * being left silently kept its edits only in RAM, gone the instant box_load(box)
+     * below overwrites the one shared buffer. Refuse to page: never silently flip. */
+    if (g_dirty && !box_save_or_keep_dirty()) return box_recs();
     box_load(box);
   }
   return box_recs();
@@ -534,7 +598,10 @@ int pdna_bank_show(void) {
 
   if (app_can_edit() && !layout_exists()) migrate_flat_pk3();   /* first run: import old .pk3 */
   meta_load();
-  g_loaded = -1; g_dirty = false;
+  /* review F1: a fresh session starts with no box resident and nothing pending -- the
+   * unsaved marker from any PRIOR session must not survive to describe a box this one
+   * has not touched yet. */
+  g_loaded = -1; g_dirty = false; g_box_unsaved_box = -1;
 
   BoxSource s; memset(&s, 0, sizeof s);
   s.nboxes     = BANK_BOXES;
@@ -556,13 +623,33 @@ int pdna_bank_show(void) {
 
   /* deferred moves: ask on leaving the bank. HONEST SCOPE: paging to another box
    * auto-saves the box being left (banksrc_records -> box_save; one shared buffer),
-   * so this prompt only covers the CURRENT box — say exactly that. */
+   * so this prompt only covers the CURRENT box — say exactly that.
+   *
+   * BACKLOG #163: on A this used to call box_save() and clear g_dirty UNCONDITIONALLY --
+   * a false was reported to the log only, while the screen carried on as if the save had
+   * landed. There is no "keep editing" to fall back to at this exit point (the box screen
+   * has already returned), so box_save_or_keep_dirty()'s own retry loop is this box's LAST
+   * chance; if the user gives up on it (or the save never succeeds), that really does mean
+   * the edits are gone the moment g_bankbuf is next reused -- say so plainly, both here
+   * and on a deliberate B-discard, instead of a bare silent reload. */
   if (g_dirty) {
-    if (app_can_edit() && app_confirm("Save this bank box?", "Prior boxes auto-saved."))
-      box_save();
-    else if (g_loaded >= 0)
-      box_load(g_loaded);                          /* discard: reload the box from its file */
+    if (app_can_edit() && app_confirm("Save this bank box?", "Prior boxes auto-saved.")) {
+      if (!box_save_or_keep_dirty())
+        msg_wait(PDNA_BANK_UNSAVED_BANNER, UI_WARN, PDNA_BANK_LOST_L1,
+                  PDNA_BANK_LOST_L2);
+    } else {
+      if (g_loaded >= 0) box_load(g_loaded);        /* discard: reload the box from its file */
+      msg_wait(PDNA_BANK_UNSAVED_BANNER, UI_WARN, PDNA_BANK_DISCARD_L1, PDNA_BANK_DISCARD_L2);
+    }
+    /* review F1: whatever box_save_or_keep_dirty()'s last attempt left in
+     * g_box_unsaved_box, this is the box's LAST chance (the screen has already
+     * returned) -- clear both together, or a failed-then-abandoned save here leaves
+     * the marker standing to wrongly flag a DIFFERENT box the next time this index is
+     * loaded (box_load's own g_box_unsaved_box clear only fires on the NEXT box_load,
+     * not retroactively for the one already resident). The on-card file is untouched
+     * (never a corruption, only the lost edits already said above) either way. */
     g_dirty = false;
+    g_box_unsaved_box = -1;
   }
   /* THE BANK IN PARALLEL — where this screen's part of Guy's request actually lives.
    *

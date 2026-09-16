@@ -658,6 +658,24 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_BANKSAVE_UNCONFIRMED_L1    "Box looks correct."
 #define PDNA_BANKSAVE_UNCONFIRMED_L2    "Could not re-check the card."
 
+/* BACKLOG #163: the Bank screen's persistent per-box banner (pdna_bank_box_unsaved) --
+ * drawn every frame the loaded box is the one box_save() most recently refused to write,
+ * so leaving it on screen is never mistaken for a save that landed. Deliberately the same
+ * text as PDNA_BANKSAVE_TMPANDOLD_TITLE (it is describing the same fact), kept as its own
+ * define since the banner and that one dialog can change independently. */
+#define PDNA_BANK_UNSAVED_BANNER        "BOX NOT SAVED"
+
+/* review F5 (hygiene): the flush-retry loop and the exit prompt's own follow-up
+ * messages (pdna_bank.c: box_save_or_keep_dirty, pdna_bank_show's exit block) were
+ * inline literals -- named here alongside the banner they share a title with, so
+ * tests/host_textfit_test.c can pin them the same way as every other on-screen string
+ * in this file. */
+#define PDNA_BANK_RETRY_L1              "Retry the save?"
+#define PDNA_BANK_LOST_L1               "Could not save this box."
+#define PDNA_BANK_LOST_L2               "Its edits are lost."
+#define PDNA_BANK_DISCARD_L1            "Edits discarded."
+#define PDNA_BANK_DISCARD_L2            "This box's edits are lost."
+
 /* gbs_box_writable's SF_ERR_UNWRITABLE hint (source/pdna_gen12.c gb_edit_hook step 2):
  * "Switch boxes in-game once, then retry." measures 195px, over the 184px clamp;
  * "Change box in-game once, then retry." measures 188px, STILL over; this one (161px)

@@ -1864,7 +1864,17 @@ static void draw_box_banner(BoxSource* src, int box, bool on_title) {
   int denom = party_slot ? 6 : (src->capacity ? src->capacity(box) : 30);
   siprintf(bnocc, "%s  %d/%d", bn[0] ? bn : "BOX", occ, denom);
   siprintf(bnum, "%d:", box + 1);
-  draw_banner(WP_X + 2, 13, WP_W - 4, party_slot ? 0 : bnum, bnocc);
+  /* BACKLOG #163: while THIS box is the one box_save() most recently refused to write,
+   * say so here instead of a name/occupancy line that would read as perfectly fine --
+   * box_save() itself runs from callers with no grid on screen (review G4) and its own
+   * msg_wait is a one-shot dialog the user can dismiss and forget, so the persistent
+   * banner is the thing that keeps saying it every time this box is drawn. Same rect,
+   * same draw_banner() call, so it is guaranteed to fit (pinned by
+   * tests/host_textfit_test.c) and can never drift out of sync with the normal row. */
+  if (src->is_bank && pdna_bank_box_unsaved(box))
+    draw_banner(WP_X + 2, 13, WP_W - 4, 0, PDNA_BANK_UNSAVED_BANNER);
+  else
+    draw_banner(WP_X + 2, 13, WP_W - 4, party_slot ? 0 : bnum, bnocc);
   /* Only when the cursor is ACTUALLY on the box name. `on_title` stays true while the cursor
    * is further up on the top tabs, so keying off it alone drew the identical frame in two
    * different focus states — a pixel diff of the banner band between "on box name" and "on
@@ -3665,12 +3675,26 @@ int pdna_box(BoxSource* src) {
    *    so on a box switch the clear buys nothing and costs a wipe. The menu-return
    *    paths already knew this and passed clear=false; `paint_over` plumbs the same
    *    thing into the need_full path. */
-  #define SWITCH_BOX(nbx) do { box = (nbx); recs = src->records(box); \
-                               box_decode(src, recs, box); \
-                               if (cur < 0 || cur >= COLS * ROWS) cur = 0; \
-                               bob = 0; anim_ctr = 0; \
-                               if (!src->is_bank) app_note_pc_box(box); \
-                               if (src->note_box) src->note_box(box); \
+  /* BACKLOG #163: `box` captured BEFORE the switch, so a refused flush (the OLD box's
+   * own box_save() failed and the user chose "keep editing" in banksrc_records's retry
+   * dialog) can be told apart from a clean flip -- banksrc_records() already refused to
+   * page in `nb__` and returned the OLD box's own records unchanged, so committing to
+   * `nb__` here would show the new box's name/wallpaper over the old box's still-loaded,
+   * still-dirty data (never a data loss, since g_bankbuf never actually paged, but a
+   * confusing display mismatch this skip avoids entirely). Never silently flip: stay on
+   * the old box, and still repaint so the leftover retry dialog and the persistent
+   * BOX NOT SAVED banner (draw_box_banner) get redrawn on top of it. */
+  #define SWITCH_BOX(nbx) do { \
+                               int nb__ = (nbx); \
+                               uint8_t* nr__ = src->records(nb__); \
+                               if (!(src->is_bank && pdna_bank_box_unsaved(box))) { \
+                                 box = nb__; recs = nr__; \
+                                 box_decode(src, recs, box); \
+                                 if (cur < 0 || cur >= COLS * ROWS) cur = 0; \
+                                 bob = 0; anim_ctr = 0; \
+                                 if (!src->is_bank) app_note_pc_box(box); \
+                                 if (src->note_box) src->note_box(box); \
+                               } \
                                s_oam_reload = true; need_full = true; paint_over = true; } while (0)
 
   for (;;) {

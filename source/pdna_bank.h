@@ -43,6 +43,13 @@ int  pdna_bank_flush_deletions(void);   /* apply pending deletions (call AFTER t
                                           * queued after a failed box_save() (0 = all flushed) */
 void pdna_bank_clear_deletions(void);   /* drop pending deletions (discard / fresh save) */
 
+/* BACKLOG #163: true while `box` is the one box_save() most recently refused to write --
+ * cleared the moment that SAME box saves clean. pdna_box.c's Bank header painter polls
+ * this to draw a persistent "BOX NOT SAVED" banner (box_save runs with no grid on screen,
+ * review G4, so it cannot draw its own). At most one box at a time: a different box's own
+ * unsaved marker was already true before this one and is unaffected. */
+bool pdna_bank_box_unsaved(int box);
+
 /* BACKLOG #150 S150-4 decision 2: allocate + persist (BEFORE returning) the next
  * bank_serial a native cell's bc_pack() needs. 0 = refuse the lift (a meta write
  * failure); otherwise non-zero and unique across every prior call that persisted. */

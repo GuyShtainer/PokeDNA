@@ -692,6 +692,26 @@ int main(void) {
   PF(PDNA_BANKSAVE_UNCONFIRMED_L1,    28, 184);
   PF(PDNA_BANKSAVE_UNCONFIRMED_L2,    28, 184);
 
+  /* BACKLOG #163: the Bank screen's persistent per-box "BOX NOT SAVED" banner
+   * (pdna_box.c's draw_box_banner, drawn through the SAME draw_banner() call as the
+   * normal box-name/occupancy row it replaces while the box is unsaved). GAP (per this
+   * file's own convention above): WP_X=78/WP_W=162 are private #defines inside
+   * pdna_box.c, not a shared header, so the (80, 158) budget below is typed out by hand
+   * rather than read from source -- draw_banner's own inner frame starts at
+   * WP_X+2..WP_X+WP_W-2, i.e. 80..238. */
+  PF(PDNA_BANK_UNSAVED_BANNER, 80, 158);
+
+  /* review F5: box_save_or_keep_dirty's retry confirm (app_confirm, same 28/184 clamp
+   * as its own ui_ptext_wrap call, source/pdna_main.c) and pdna_bank_show's exit-prompt
+   * follow-up messages (msg_wait, the (28, .., 184) clamp every other message on this
+   * screen uses) -- named PDNA_BANK_* in pdna_layout.h instead of the inline literals
+   * they used to be. */
+  PF(PDNA_BANK_RETRY_L1,    28, 184);
+  PF(PDNA_BANK_LOST_L1,     28, 184);
+  PF(PDNA_BANK_LOST_L2,     28, 184);
+  PF(PDNA_BANK_DISCARD_L1,  28, 184);
+  PF(PDNA_BANK_DISCARD_L2,  28, 184);
+
   /* gb_edit_hook / gb_edit_persist's own gate + verdict popups — everything else the
    * S2 edit path draws. s_busy's own line ("Saving - do not power off") and the
    * caller-supplied line draw via ui_text at x=28 (T(), fixed sys8); every msg_wait
