@@ -4467,7 +4467,7 @@ def run_s150_8_gen3_arm(core_mod, image_mod, rom_emerald: Path, out_dir: Path) -
            "(CHI/PIK/EGG/CHI/DMG); the cursor starts on slot 0")
     pick_up_item_cell(s)
     s.shot("01_landed_occupied", "S150-8: carrying the item-holding CHIKORITA cell, "
-           "landed on this save's own PC box 5 (30/30, full on this cartridge) -- "
+           "landed on this save's own PC box 1 (named '5.Unp09n', 30/30, full on this cartridge) -- "
            "cursor sits on an OCCUPIED cell by default, used as-is for the "
            "occupied-cell refusal below")
 
