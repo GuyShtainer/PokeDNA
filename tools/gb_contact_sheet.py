@@ -307,6 +307,23 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     ("gb-uplift-s150-4", "BACKLOG #150 S150-4/5 follow-up — the grab step into the "
      "Bank (BACKLOG #171b fix: BoxSource.xfer was never wired, so lift_up never ran)",
      ("s150-4", "s150-4/BACKLOG #171b")),
+    # BACKLOG #150 S150-7 + S150-8 (lane s150-78-shots): the DOWN edge's three arms,
+    # all reached off the SAME planted Bank cells -- EXACT (a native cell back into a
+    # same-generation Game Boy save, source/pdna_box.c bank_down_exact()), GB_BRIDGE
+    # (a Gen-1<->Gen-2 crossing, source/pdna_gen12.c bank_down_convert_gb()), and
+    # GEN3 (a converted copy into the Gen-3 PC, bank_down_convert_gen3()). Shots come
+    # from tools/dgb_shots.py's run_s150_7_down_edge() (--s150-7, captions all start
+    # "S150-7" -- several distinct parenthetical variants, listed below exactly as
+    # captured, since feature_for_caption() matches the text before the first colon
+    # EXACTLY, not by startswith), run_s150_8_gen3_arm() (--s150-8, captions start
+    # "S150-8"), and run_s150_8_bridge() (--s150-8-bridge, captions start
+    # "S150-8 bridge"). Appended after "gb-uplift-s150-4" per this list's own
+    # append-only rule.
+    ("gb-bank-down-edge", "BACKLOG #150 S150-7/S150-8 — the Bank's DOWN edge: EXACT, "
+     "GB_BRIDGE, and GEN3 arms off the same planted cells",
+     ("S150-7", "S150-7 (a)", "S150-7 (b)", "S150-7 (b), post-59dd45c", "S150-7 (c)",
+      "S150-7 (c) SS11.20 item 10(c)", "S150-7 (c) D9", "S150-7 (c)+(D-Q2/D-Q3)+F6",
+      "S150-7 (d)", "S150-8", "S150-8 bridge")),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
 FEATURE_TITLE = {fid: title for fid, title, _prefixes in FEATURE_TABLE}
