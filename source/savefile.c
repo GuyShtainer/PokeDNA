@@ -514,7 +514,14 @@ SfStatus __attribute__((noinline)) sf_save_rolling(const char* path, const uint8
 bool sf_save_rolling_ok(const char* path, const void* buf, uint32_t len, SfWhere* out_where) {
   SfStatus st = sf_save_rolling(path, (const uint8_t*)buf, len, NULL);
   if (st == SF_OK) return true;
-  if (st != SF_ERR_RENAME) return false;    /* hard failure: no ambiguity to report */
+  if (st != SF_ERR_RENAME) {
+    /* review F3: box_save() dropped sf_status_str(st) from its own log line when this
+     * verdict logic moved here (BACKLOG #158) -- SF_ERR_OPEN/SF_ERR_WRITE/SF_ERR_VERIFY
+     * (and sf_backup_rolling's own SF_ERR_BACKUP) used to name themselves and now log
+     * nothing at all. This is the one place that still has `st`. */
+    log_line("save_rolling: failed (%s)", sf_status_str(st));
+    return false;    /* hard failure: no ambiguity to report */
+  }
   SfWhere w = sf_where_are_the_bytes(path, (const uint8_t*)buf, len);
   if (out_where) *out_where = w;
   return w == SF_WHERE_TARGET;
