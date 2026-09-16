@@ -396,7 +396,7 @@ static bool box_save_or_keep_dirty(void) {
     if (!app_can_edit()) return false;              /* read-only cart: nothing to retry */
     u16 dc = REG_DISPCNT;
     REG_DISPCNT &= ~DCNT_OBJ;                        /* same OBJ bracket box_save's own msg_wait uses */
-    bool retry = app_confirm(PDNA_BANK_UNSAVED_BANNER, "Retry the save?");
+    bool retry = app_confirm(PDNA_BANK_UNSAVED_BANNER, PDNA_BANK_RETRY_L1);
     REG_DISPCNT = dc;
     if (!retry) return false;                        /* B: keep editing -- box stays dirty */
   }
@@ -635,11 +635,11 @@ int pdna_bank_show(void) {
   if (g_dirty) {
     if (app_can_edit() && app_confirm("Save this bank box?", "Prior boxes auto-saved.")) {
       if (!box_save_or_keep_dirty())
-        msg_wait(PDNA_BANK_UNSAVED_BANNER, UI_WARN, "Could not save this box.",
-                  "Its edits are lost.");
+        msg_wait(PDNA_BANK_UNSAVED_BANNER, UI_WARN, PDNA_BANK_LOST_L1,
+                  PDNA_BANK_LOST_L2);
     } else {
       if (g_loaded >= 0) box_load(g_loaded);        /* discard: reload the box from its file */
-      msg_wait(PDNA_BANK_UNSAVED_BANNER, UI_WARN, "Edits discarded.", "This box's edits are lost.");
+      msg_wait(PDNA_BANK_UNSAVED_BANNER, UI_WARN, PDNA_BANK_DISCARD_L1, PDNA_BANK_DISCARD_L2);
     }
     /* review F1: whatever box_save_or_keep_dirty()'s last attempt left in
      * g_box_unsaved_box, this is the box's LAST chance (the screen has already
