@@ -43,6 +43,13 @@ uint8_t app_met_game(void);
 /* Reason why writes are disabled (hack ROM vs. Omega cart). */
 const char* app_readonly_why(void);
 const char* app_readonly_footer(void);
+/* BACKLOG #166 review F1: the bare predicate app_readonly_why()'s own wording is
+ * built from -- true iff a Gen-3 ROM is loaded AND flagged hack, as opposed to an
+ * Everdrive/pdna_romcheck_bad() refusal. gb_lift_why_bs (pdna_gen12.c) uses this to
+ * pick its own, narrower-budget wording rather than reusing either of
+ * app_readonly_why()'s two strings verbatim (both sized for msg_wait's 184 px, not
+ * the 88 px read-only mon menu prose this draws in). */
+bool app_rom_hack_active(void);
 
 /* Game Boy (Gen-1/2) variants: also honest about a streamed/view-only session,
  * which is neither the cart nor a hack ROM (review fix F2). */

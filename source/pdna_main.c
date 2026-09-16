@@ -1192,6 +1192,17 @@ static PkGame pkgame_of_romkind(RomKind k) {
 
 static bool app_rom_is_hack(PkGame g) { return (s_hack_mask & (1u << (unsigned)g)) != 0; }
 
+/* BACKLOG #166 review F1: gb_lift_why_bs/gb_lift_why_hook (source/pdna_gen12.c) need
+ * to pick between PDNA_ROMHACK_NOTE and PDNA_GB_LIFT_WHY_OMEGA -- the SAME
+ * hack-vs-cart distinction app_readonly_why()/app_readonly_footer() (just below)
+ * already make, but app_rom_is_hack() itself is file-static (needs s_hack_mask/
+ * g_game, both file-static here) and neither of its two existing wordings fits the
+ * 88 px read-only-menu prose budget those two callers draw at (app_readonly_why()'s
+ * own PDNA_ROMHACK_WHY/"Needs EZ-Flash Omega." are sized for msg_wait's 184 px
+ * clamp). One thin public accessor over the identical predicate, not a third
+ * wording living here. */
+bool app_rom_hack_active(void) { return g_vinfo.valid && app_rom_is_hack(g_game); }
+
 /* Review fix F1: ~20 refusal sites share the literal "Needs EZ-Flash Omega." --
  * correct for an Everdrive/pdna_romcheck_bad() refusal, a real LIE for an Omega
  * owner whose cart is perfectly writable but whose currently-open game is

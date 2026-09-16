@@ -484,6 +484,16 @@ int main(void) {
    * PDNA_ROMHACK_NOTE), pdna_main.c view_save()) — same prose geometry as the
    * GB-import "why locked" strings above. */
   PF(PDNA_ROMHACK_NOTE, RO_PROSE_X, RO_PROSE_W);
+  /* BACKLOG #166 review F1: AppSrcOps.lift_why's grey line (RO_MOVE's own refusal
+   * reason) draws at this SAME prose geometry -- gb_lift_why_bs's coarse buckets
+   * (source/pdna_gen12.c), not gbs_status_text()'s verbatim wording (sized for
+   * msg_wait's 184 px, not this 88 px panel). */
+  PF(PDNA_GB_LIFT_WHY_FLOOR, RO_PROSE_X, RO_PROSE_W);
+  PF(PDNA_GB_LIFT_WHY_MAIL,  RO_PROSE_X, RO_PROSE_W);
+  PF(PDNA_GB_LIFT_WHY_BOX,   RO_PROSE_X, RO_PROSE_W);
+  PF(PDNA_GB_LIFT_WHY_OTHER, RO_PROSE_X, RO_PROSE_W);
+  PF(PDNA_GB_LIFT_WHY_VIEW,  RO_PROSE_X, RO_PROSE_W);
+  PF(PDNA_GB_LIFT_WHY_OMEGA, RO_PROSE_X, RO_PROSE_W);
   chk("ro menu row", RO_ROW_X, PDNA_MONMENU_ROW_W,
       (int)strlen(PDNA_LBL_LEGALITY) * SYS8_W, PDNA_LBL_LEGALITY);
   chk("ro menu row", RO_ROW_X, PDNA_MONMENU_ROW_W,

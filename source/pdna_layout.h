@@ -2006,6 +2006,23 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * a hack ROM caused the refusal. */
 #define PDNA_GB_VIEWONLY_WHY  "View-only session."
 #define PDNA_GB_VIEWONLY_FOOT "view-only  B back"
+/* BACKLOG #166 review F1: AppSrcOps.lift_why's grey line draws at
+ * PDNA_MONMENU_PROSE_W (88 px, the read-only mon menu's own prose budget --
+ * pdna_main.c's app_mon_menu_readonly, RO_PROSE_W in tests/host_textfit_test.c),
+ * NOT msg_wait's 184 px clamp gb_move_hook's own late refusal dialog uses (that
+ * text stays unchanged: this is a SECOND, narrower home for the same idea, shown
+ * before the row is even offered, not a replacement for the dialog after). Every
+ * string here is a short, coarse bucket (gb_lift_why_bs maps the GbsStatus that
+ * refused the lift onto one of these, source/pdna_gen12.c), not the verbatim
+ * gbs_status_text() wording, which does not fit: "the party needs one Pokemon"
+ * alone is 176 px, over TWICE this budget. PF-checked (max width in px) in
+ * tests/host_textfit_test.c beside the read-only menu's other "why" prose. */
+#define PDNA_GB_LIFT_WHY_FLOOR "Can't lift: last mon"   /* 87px: GBS_ERR_PARTY_FLOOR */
+#define PDNA_GB_LIFT_WHY_MAIL  "Party holds Mail"       /* 77px: GBS_ERR_MAIL */
+#define PDNA_GB_LIFT_WHY_BOX   "Box not writable"       /* 80px: GBS_ERR_UNWRITABLE/BOX/STRUCT */
+#define PDNA_GB_LIFT_WHY_OTHER "Lift refused"           /* 62px: every other refusal status */
+#define PDNA_GB_LIFT_WHY_VIEW  "View-only"              /* 46px: no open edit session (!g_ed) */
+#define PDNA_GB_LIFT_WHY_OMEGA "Needs Omega"             /* 63px: !app_can_edit(), not a hack ROM */
 /* Review fix F3: rule 1d (rom_identify()) also catches genuine non-US retail carts
  * (AXVD/BPEJ/BPES/... -- a real (code, version) pair simply absent from k_versions,
  * which only pins the 11 US builds) as ROM_ID_HACK with kind == ROM_NONE. Calling a

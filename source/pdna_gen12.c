@@ -1199,13 +1199,37 @@ static bool gb_editable_hook(const uint8_t* rec80) {
  * -- called by app_mon_menu_readonly, which only ever has a record ADDRESS) end up
  * running. One rule table, not two: whoever needs the bool (gb_can_lift_hook_impl)
  * just checks this for NULL. */
+/* BACKLOG #166 review F1: the panel this draws in (app_mon_menu_readonly's RO_MOVE
+ * gate) is 88 px wide (PDNA_MONMENU_PROSE_W), not msg_wait's 184 -- gbs_status_text()'s
+ * own wording is sized for the LATTER (gb_move_hook's own late-refusal dialog, kept
+ * unchanged) and overflows here ("the party needs one Pokemon" alone is 176 px, over
+ * twice this budget) -- ui_ptext_fit would truncate it into an illegible fragment.
+ * Buckets the GbsStatus into one of five short, fixed strings (pdna_layout.h)
+ * instead of quoting gbs_status_text() verbatim; PARTY_FLOOR and MAIL keep their own
+ * bucket (the two refusals worth a specific word), everything else structural
+ * (UNWRITABLE/BOX/STRUCT) collapses to "the box itself", and anything left over
+ * (ENGINE/VERIFY/FULL/NEEDS_BASE/SLOT/ARG/NOT_GB -- none of them reachable from
+ * gbs_can_delete's own documented return set, but a bucket, not a silent NULL, if
+ * that set ever grows) collapses to a generic "refused". */
+static const char* gb_lift_why_status(GbsStatus st) {
+  switch (st) {
+    case GBS_ERR_PARTY_FLOOR: return PDNA_GB_LIFT_WHY_FLOOR;
+    case GBS_ERR_MAIL:        return PDNA_GB_LIFT_WHY_MAIL;
+    case GBS_ERR_UNWRITABLE:
+    case GBS_ERR_BOX:
+    case GBS_ERR_STRUCT:      return PDNA_GB_LIFT_WHY_BOX;
+    default:                  return PDNA_GB_LIFT_WHY_OTHER;
+  }
+}
+
 static const char* gb_lift_why_bs(int box, int slot) {
-  if (!g_ed) return PDNA_GB_VIEWONLY_WHY;             /* no open edit session (the read-only nav-menu mount) */
-  if (!app_can_edit()) return app_gb_readonly_why();  /* cart/ROM-hack read-only */
+  if (!g_ed) return PDNA_GB_LIFT_WHY_VIEW;            /* no open edit session (the read-only nav-menu mount) */
+  if (!app_can_edit())                                /* cart/ROM-hack read-only */
+    return app_rom_hack_active() ? PDNA_ROMHACK_NOTE : PDNA_GB_LIFT_WHY_OMEGA;
   GbsStatus wst = gbs_box_writable(&g_ed->s, box);
-  if (wst != GBS_OK) return gbs_status_text(wst);     /* e.g. a virgin Gen-1 bank */
+  if (wst != GBS_OK) return gb_lift_why_status(wst);  /* e.g. a virgin Gen-1 bank */
   GbsStatus dst = gbs_can_delete(&g_ed->s, box, slot, g_ed->list, 0);
-  if (dst != GBS_OK) return gbs_status_text(dst);     /* party floor / Mail / ... */
+  if (dst != GBS_OK) return gb_lift_why_status(dst);  /* party floor / Mail / ... */
   return 0;
 }
 
@@ -1242,7 +1266,8 @@ static const char* gb_lift_why_hook(const uint8_t* rec80) {
    * mutating AppSrcOps hook must reach app_can_edit( in its own text) can see it
    * here too, not just one call away. Redundant, not wrong: gb_lift_why_bs checks
    * the identical predicate immediately below. */
-  if (!app_can_edit()) return app_gb_readonly_why();
+  if (!app_can_edit())
+    return app_rom_hack_active() ? PDNA_ROMHACK_NOTE : PDNA_GB_LIFT_WHY_OMEGA;
   return gb_lift_why_bs(box, slot);
 }
 
