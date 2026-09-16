@@ -900,6 +900,55 @@ static void test_bank_restore_from_entry(void) {
   }
 }
 
+/* ---- BACKLOG #150 S150-8b review F2: the RESTORED mark is a real state change --- */
+
+static void test_restored_mark_is_real(void) {
+  printf("\n-- D4. the RESTORED mark is a real state change, not a no-op (review F2) --\n");
+  if (!g_rt1_capture.have) {
+    printf("  SKIP (no Gen-2 record converted cleanly in RT-1 -- corpus absent?)\n");
+    return;
+  }
+  /* xfer_down_write() sets claimed=1 AND state=XR_STATE_PENDING at birth (pdna_gen12.c) --
+   * xr_build_entry_asdown() mirrors that exactly, so this entry starts life already
+   * claimed=1, state=PENDING, same as a real card entry after the DOWN edge wrote it. */
+  GbscEntry e = g_rt1_capture.e;
+  CHECK(e.claimed == 1, "precondition: xfer_down_write's own entry starts claimed=1");
+  CHECK(e.state == XR_STATE_PENDING, "precondition: xfer_down_write's own entry starts XR_STATE_PENDING");
+
+  uint8_t buf[GBSC_FILE_MAX];
+  uint32_t len = (uint32_t)gbsc_init(buf, xr_key_g3(g_rt1_capture.g3rec80));
+  int idx = gbsc_add(buf, &len, GBSC_FILE_MAX, &e);
+  CHECK(idx >= 0, "the entry adds into a fresh ledger file");
+
+  /* pc_bank_restore_done()'s own idiom: remove -> mutate state -> re-add. */
+  GbscEntry got;
+  CHECK(gbsc_get(buf, len, idx, &got), "the entry reads back before marking");
+  got.state = XR_STATE_RESTORED;
+  CHECK(gbsc_remove(buf, &len, idx) == 0, "the entry removes cleanly");
+  int idx2 = gbsc_add(buf, &len, GBSC_FILE_MAX, &got);
+  CHECK(idx2 >= 0, "the mutated entry re-adds cleanly");
+
+  GbscEntry after;
+  CHECK(gbsc_get(buf, len, idx2, &after), "the marked entry reads back");
+  CHECK(after.state == XR_STATE_RESTORED,
+        "the RESTORED mark is a REAL state change (got %u want %u) -- gbsc_set_claimed "
+        "alone would have left this at XR_STATE_PENDING, a byte-for-byte no-op",
+        after.state, (unsigned)XR_STATE_RESTORED);
+  CHECK(after.claimed == 1, "claimed stays 1 (unchanged by the state mutation)");
+  CHECK(after.kind == XR_KIND_NATIVE_HOME, "kind is unaffected by the state mutation");
+
+  /* app_xfer_promote()'s own guard (source/pdna_main.c) is
+   * `e.state != XR_STATE_PENDING` -> "no longer matches", give up (fail-safe). A
+   * RESTORED entry (3) can never equal PENDING (1) or CLAIMED (2), so that guard,
+   * UNCHANGED, already treats a restored entry as "no longer matches" and refuses to
+   * promote/undo it -- pinned here structurally since pdna_main.c does not compile
+   * on the host. */
+  CHECK(after.state != XR_STATE_PENDING,
+        "a RESTORED entry is != XR_STATE_PENDING -- app_xfer_promote's guard refuses it (fail-safe)");
+  CHECK(after.state != XR_STATE_CLAIMED,
+        "a RESTORED entry is != XR_STATE_CLAIMED -- distinguishable from an ordinary claim");
+}
+
 /* ============================================================================ */
 
 int main(int argc, char** argv) {
@@ -953,6 +1002,7 @@ int main(int argc, char** argv) {
 
   test_merge_and_refuse();
   test_bank_restore_from_entry();
+  test_restored_mark_is_real();
 
   printf("\n== summary: %d checks, %d fail(s) (fails mean the PIPELINE didn't run --\n"
          "   never that a round trip was lossy; see the tables above for that) ==\n",

@@ -1253,15 +1253,14 @@ pc_bank_restore_up(const uint8_t g3_rec80[80], uint8_t out_cell80[80]) {
 /* Marks the entry LAST, after the Bank write has already landed (D-Q1/D-Q2, decision
  * 3's step 7 / §3.2's commit order). D-Q2: MARK, do not remove -- app_pc_release_slot
  * only marks the PC dirty, so a user who then declines the exit save would keep a
- * record-less Gen-3 duplicate if the entry were gone. gb_sidecar.h is frozen (S150-6/
- * S150-8) and has no dedicated "RESTORED" flags-byte value; gbsc_set_claimed() is the
- * one exported, frozen-file-safe primitive that marks without removing, and its
- * `claimed` bit is unused by every existing reader for a NATIVE_HOME entry --
- * gbsc_find()'s want_kind filter and gb_reconcile_on_load()'s own walk both operate on
- * XR_KIND_G3_HOME entries only (grepped and confirmed, see the delivery report).
- * DECLARED DEVIATION from the brief's literal "RESTORED" value: reusing `claimed`
- * satisfies "mark, do not remove" without an edit to the frozen file; S150-11's own
- * reconcile lane still decides how it wants to read this bit on a NATIVE_HOME entry. */
+ * record-less Gen-3 duplicate if the entry were gone. Review F2: `gb_sidecar.h` is
+ * unfrozen for exactly one line (XR_STATE_RESTORED, S150-8b) -- gbsc_set_claimed()
+ * (the first cut of this function) was a byte-for-byte no-op, because
+ * xfer_down_write() already sets `claimed = 1` at BIRTH (source/pdna_gen12.c),
+ * so S150-11's reconcile had no signal to tell a restored entry apart from an
+ * ordinary pending/claimed one. This now writes the SAME remove-mutate-re-add idiom
+ * app_xfer_promote() uses (source/pdna_main.c:1856-1884) so the entry's own crc16
+ * stays correct. */
 static void __attribute__((noinline))
 pc_bank_restore_done(const uint8_t g3_rec80[80]) {
   if (!app_can_edit()) return;                /* decision 13 */
@@ -1284,10 +1283,11 @@ pc_bank_restore_done(const uint8_t g3_rec80[80]) {
   }
   if (best < 0) { log_line("bank: restore done: entry vanished before marking"); return; }
 
-  if (gbsc_set_claimed(buf, len, best, true) != 0) {
-    log_line("bank: restore done: gbsc_set_claimed failed");
-    return;
-  }
+  GbscEntry e;
+  if (!gbsc_get(buf, len, best, &e)) { log_line("bank: restore done: gbsc_get failed"); return; }
+  e.state = XR_STATE_RESTORED;
+  if (gbsc_remove(buf, &len, best) != 0) { log_line("bank: restore done: remove failed"); return; }
+  if (gbsc_add(buf, &len, GBSC_FILE_MAX, &e) < 0) { log_line("bank: restore done: re-add failed"); return; }
   /* A failure here is LOGGED and swallowed, never shown and never fatal -- decision 7's
    * own posture: the native cell is already verified on the card, so a surviving,
    * unmarked entry is a residual duplicate risk for a future lane, never a loss. */
