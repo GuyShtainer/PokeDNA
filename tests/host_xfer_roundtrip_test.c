@@ -808,6 +808,30 @@ static void test_merge_and_refuse(void) {
           "MERGE-3: slot 2 keeps the home's own move");
     CHECK(!rep3.move_refused[1] && gb_get_move(&merged3, 1) == (uint8_t)new_move,
           "MERGE-3: slot 1's legal move change still merges");
+
+    /* MERGE-3b (Fable review F1): move id 332 (> 255 -- (uint8_t)332 == 76, a
+     * PLAUSIBLE, in-range move id after truncation) in slot 2 must be refused and
+     * slot 2 must keep the home's own move, never silently truncate/apply 76 or
+     * delete the slot to 0. This is the exact shape the reviewer's harness caught:
+     * a Gen-3 move id above 255 was clamped to 0 BEFORE the "unchanged?" compare,
+     * so it read as "changed" and then failed the >gb_max_move check (0 is never
+     * > max), landing gb_set_move(out, i, 0) -- the home's real move DELETED. */
+    uint8_t illegal_g3b[80];
+    memcpy(illegal_g3b, g_rt1_capture.g3rec80, 80);
+    EditMon em3b;
+    gen3_edit_load(illegal_g3b, false, &em3b);
+    em_set_move(&em3b, 2, 332);
+    gen3_edit_commit(&em3b, illegal_g3b);
+
+    GbEditMon merged3b; XrMergeReport rep3b;
+    CHECK(xr_merge_down(&g_rt1_capture.e, illegal_g3b, &merged3b, &rep3b),
+          "MERGE-3b: xr_merge_down runs on the record with move 332 in slot 2");
+    CHECK(rep3b.move_refused[2], "MERGE-3b: slot 2 is refused (move 332 exceeds gb_max_move)");
+    CHECK(gb_get_move(&merged3b, 2) == gb_get_move(&g_rt1_capture.written, 2),
+          "MERGE-3b: slot 2 keeps the home's own move (got %u want %u)",
+          gb_get_move(&merged3b, 2), gb_get_move(&g_rt1_capture.written, 2));
+    CHECK(gb_get_move(&merged3b, 2) != 0 || gb_get_move(&g_rt1_capture.written, 2) == 0,
+          "MERGE-3b: slot 2 was not deleted to 0 unless the home's own slot 2 really was empty");
   }
 
   /* REFUSE-1: xr_merge_down on an entry whose original80 is a REAL Gen-3 corpus

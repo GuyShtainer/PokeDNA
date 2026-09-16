@@ -62,14 +62,13 @@ static void xr_merge_moves(GbEditMon* out, const GbEditMon* home, const GbscEntr
       base_up = gb_get_ppup(home, i);
     }
     uint16_t cur_mv16 = m->moves[i];
-    uint8_t cur_mv = (cur_mv16 > 255u) ? 0 : (uint8_t)cur_mv16;
     uint8_t cur_up = (uint8_t)((m->ppBonuses >> (i * 2)) & 0x3u);
-    if (cur_mv == base_mv && cur_up == base_up) continue;   /* this slot unchanged */
-
-    if (cur_mv != 0 && cur_mv > gb_max_move(home->gen)) {
+    if (cur_mv16 != 0 && cur_mv16 > gb_max_move(home->gen)) {   /* covers > 255 too */
       rep->move_refused[i] = true;
       continue;                                             /* keep the home's move */
     }
+    uint8_t cur_mv = (uint8_t)cur_mv16;
+    if (cur_mv == base_mv && cur_up == base_up) continue;
     /* Move first (gb_set_move resets PP/PP-Ups for the slot); PP-Ups next; current
      * PP clamped last -- the exact order gen3_to_gb.c:124-141's set_moves follows.
      * Neither of the last two for an empty slot. */
