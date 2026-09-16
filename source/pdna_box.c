@@ -1564,7 +1564,7 @@ static void oam_sync(int cur, bool on_title, int box, bool is_bank) {
 
 static void draw_footer(bool is_bank, bool on_title, bool moving) {
   const char* f;
-  if (s_tab_focus >= 0)    f = "L/R tab  A pick  DN";
+  if (s_tab_focus >= 0)    f = (s_holding && is_bank) ? PDNA_TAB_FOCUS_CARRY_FOOTER : "L/R tab  A pick  DN";
   else if (moving)         f = "A drop  B cancel";
   else if (s_item_held)    f = "A give  B put back";
   /* A now renames directly and SELECT opens the box menu (Guy, BACKLOG #33) -- "L/R

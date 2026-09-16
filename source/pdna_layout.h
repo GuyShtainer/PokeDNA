@@ -1803,6 +1803,11 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * tests/host_textfit_test.c's own check). */
 #define PDNA_LBL_PCP_FOOTER  "B back"
 
+/* BACKLOG #173: carry-aware tab-focus footer when a GB-source cell is held
+ * (s_holding && src->is_bank): A does nothing on the PARTY tab, so the footer
+ * mirrors the Gen-3 carry footer's pattern. */
+#define PDNA_TAB_FOCUS_CARRY_FOOTER  "L/R tab  UP bank  DN"
+
 /* ---------------------------------------------------------------------------
  * Description placeholder (BACKLOG #19 / docs/AUDIT-2026-09-05-backlog-3-19.md §B,
  * desc_gate.h / data_desc_shim.c): what pk_item_desc/pk_move_desc/pk_ability_desc
