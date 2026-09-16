@@ -292,8 +292,10 @@ static bool box_save(void) {                    /* write the loaded box's record
   /* Mirrors sf_save_rolling's own probe (savefile.c): a box file that already exists is
    * exactly the case where sf_save_rolling takes its backup -- so "did the target exist
    * before this call" IS "did this call back it up", without sf_save_rolling_ok needing
-   * to hand that bit back out (BACKLOG #158 keeps its signature to path/buf/len/out_where). */
-  FILINFO pre; bool backed_up = f_stat(path, &pre) == FR_OK;
+   * to hand that bit back out (BACKLOG #158 keeps its signature to path/buf/len/out_where).
+   * review F2: f_stat(path, 0) like sf_save_rolling's own probe (savefile.c) -- no
+   * FILINFO on this frame (its LFN buffers cost ~280 B) and no second directory read. */
+  bool backed_up = f_stat(path, 0) == FR_OK;
   /* Sentinel outside the enum's range: sf_save_rolling_ok only writes *out_where when
    * sf_save_rolling actually returned SF_ERR_RENAME (savefile.h says so), so this value
    * surviving the call means "no ambiguity" -- either a plain success or a hard failure,
