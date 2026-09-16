@@ -995,6 +995,12 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XFERRESTORE_TITLE  "BACK TO ITS ORIGINAL"
 #define PDNA_XFERRESTORE_L_LOSS "Gen 3 only data is dropped."
 
+/* review F5: the rc == -1 "unreadable record" refusal gets its own message instead of
+ * a bare snd_error() -- decision 9's own strings. */
+#define PDNA_XFERREC_TITLE "TRANSFER RECORD UNREADABLE"
+#define PDNA_XFERREC_L1    "Nothing was moved."
+#define PDNA_XFERREC_L2    "Try again, or check the card."
+
 /* BACKLOG #150 S150-8 decision 13 / D-Q2/D-Q3: the DOWN-converting edge's own
  * strings -- native cell -> Gen-3 PC (decision 2's party refusal), one unpromoted
  * transfer at a time (decision 9), the ledger-full evict-then-refuse case

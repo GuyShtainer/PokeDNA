@@ -1531,7 +1531,16 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
      * lane, byte for byte. */
     uint8_t cell80[80];
     int rc = pc_bank_restore_up(s_held, cell80);
-    if (rc < 0) { snd_error(); return recs; }                          /* still holding, nothing written */
+    if (rc < 0) {                                                      /* still holding, nothing written */
+      snd_error();
+      /* review F5: decision 9's own message -- an unreadable ledger record or a
+       * serial refusal, not silence. (Also shown after a plain B-decline on the
+       * F3 confirm above; a known, low-priority UX rough edge -- app_confirm's
+       * own "B = no" already said no, this adds a second dialog naming why
+       * nothing further happened.) */
+      msg_wait(PDNA_XFERREC_TITLE, UI_WARN, PDNA_XFERREC_L1, PDNA_XFERREC_L2);
+      return recs;
+    }
     if (rc == 1 && !pdna_bank_prepare_native()) {
       snd_error();
       msg_wait(PDNA_XFER_PREP_TITLE, UI_WARN, PDNA_XFER_PREP_L1, PDNA_XFER_PREP_L2);
