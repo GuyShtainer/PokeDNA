@@ -354,6 +354,99 @@ static void t_flush_callers_check_the_return(void) {
   }
 }
 
+/* ---- BACKLOG #163 review F1: g_box_unsaved_box outlives g_dirty. The marker's whole
+ * meaning is "the box g_dirty is currently about" -- SWITCH_BOX (pdna_box.c) refuses to
+ * page away from it while banksrc_records's own page-out check runs on g_dirty, so if
+ * the two ever come apart (marker set, g_dirty already false) the NEXT box_load of that
+ * index shows BOX NOT SAVED on a box nobody has touched, and every L/R from there loads
+ * a DIFFERENT box's file into g_bankbuf under the OLD box's still-displayed frame. Text
+ * checks (comment-stripped, same discipline as t_flush_callers_check_the_return above)
+ * pin the four sites review F1 named: box_load's page-in clear, box_save's
+ * native-invariant refusal, box_save's main verdict, and pdna_bank_show's entry AND
+ * exit (the exit is the box's last chance -- the screen has already returned). ---- */
+
+static bool box_load_clears_marker(const char* body) {
+  return strstr(body, "g_box_unsaved_box = -1;") != NULL;
+}
+
+static int count_occurrences(const char* haystack, const char* needle) {
+  int n = 0;
+  const char* p = haystack;
+  size_t nl = strlen(needle);
+  while ((p = strstr(p, needle)) != NULL) { n++; p += nl; }
+  return n;
+}
+
+static void t_marker_never_outlives_g_dirty(void) {
+  FILE* f = fopen("source/pdna_bank.c", "rb");
+  CHECK(f != NULL, "invariant: could not open source/pdna_bank.c (run from the repo root)");
+  if (!f) return;
+  char raw[131072];
+  size_t n = fread(raw, 1, sizeof raw - 1, f);
+  fclose(f);
+  raw[n] = 0;
+  static char stripped[131072];
+  strip_c_comments(raw, n, stripped, sizeof stripped);
+
+  char load_body[4096], save_body[4096], show_body[8192];
+  CHECK(slice_function(stripped, "static bool box_load(int box) {",
+                        "static bool __attribute__((noinline)) native_invariant_ok(void) {",
+                        load_body, sizeof load_body) != NULL,
+        "invariant: box_load( not found in source/pdna_bank.c");
+  CHECK(slice_function(stripped, "static bool box_save(void) {",
+                        "bool pdna_bank_defer_full(void)",
+                        save_body, sizeof save_body) != NULL,
+        "invariant: box_save( not found in source/pdna_bank.c");
+  CHECK(slice_function(stripped, "int pdna_bank_show(void) {", NULL,
+                        show_body, sizeof show_body) != NULL,
+        "invariant: pdna_bank_show( not found in source/pdna_bank.c");
+
+  CHECK(box_load_clears_marker(load_body),
+        "invariant: box_load() does not clear g_box_unsaved_box -- BACKLOG #163 review "
+        "F1's split-brain bug (marker outlives g_dirty across a fresh page-in)");
+
+  CHECK(strstr(save_body, "g_box_unsaved_box = g_loaded; g_dirty = true;") != NULL,
+        "invariant: box_save()'s native-invariant refusal does not set g_dirty alongside "
+        "the marker -- BACKLOG #163 review F1's marker/g_dirty split");
+  CHECK(strstr(save_body, "g_box_unsaved_box = ok ? -1 : g_loaded;") != NULL &&
+        strstr(save_body, "g_dirty = !ok;") != NULL,
+        "invariant: box_save()'s main verdict does not set g_box_unsaved_box and g_dirty "
+        "from the same `ok` -- BACKLOG #163 review F1's marker/g_dirty split");
+
+  CHECK(strstr(show_body, "g_loaded = -1; g_dirty = false; g_box_unsaved_box = -1;") != NULL,
+        "invariant: pdna_bank_show()'s entry does not clear g_box_unsaved_box alongside "
+        "g_dirty -- a marker from a PRIOR session could survive onto an untouched box");
+  /* the entry line above is ONE occurrence of each; the exit prompt's own clear (the
+   * box's last chance -- box_save_or_keep_dirty()'s retry loop has already given up by
+   * the time this runs) must be a SECOND. */
+  CHECK(count_occurrences(show_body, "g_dirty = false;") >= 2 &&
+        count_occurrences(show_body, "g_box_unsaved_box = -1;") >= 2,
+        "invariant: pdna_bank_show()'s exit prompt does not clear g_box_unsaved_box "
+        "alongside its own g_dirty = false -- a failed-then-abandoned save would leave "
+        "the marker standing to wrongly flag whatever box this index next holds");
+
+  /* self-mutation (review F1's own request: "a self-mutation that drops the :175
+   * clear"): revert box_load's real clear back to the pre-fix shape and prove
+   * box_load_clears_marker() -- the SAME function the real check above calls -- catches
+   * it, every run. */
+  {
+    const char* needle = "g_box_unsaved_box = -1;";
+    const char* hit = strstr(load_body, needle);
+    CHECK(hit != NULL, "MUT (review F1): the real box_load() clear has drifted -- update "
+                        "this test's expected shape before trusting the mutation");
+    if (hit) {
+      char mutated[4096];
+      size_t pre = (size_t)(hit - load_body);
+      snprintf(mutated, sizeof mutated, "%.*s%s", (int)pre, load_body, hit + strlen(needle));
+      CHECK(!box_load_clears_marker(mutated),
+            "MUT (review F1): dropping box_load's g_box_unsaved_box clear should have "
+            "been caught but was not");
+      printf("  MUT (review F1) demonstration -- box_load's g_box_unsaved_box clear "
+             "removed: correctly caught\n");
+    }
+  }
+}
+
 int main(void) {
   t_virgin_box_first_write();
   t_present_box_backs_up();
@@ -362,6 +455,7 @@ int main(void) {
   t_rename_target_counts_as_success();
   t_verdict_matches_the_card();
   t_flush_callers_check_the_return();
+  t_marker_never_outlives_g_dirty();
   printf("\n%s: %d failure(s)\n", fails ? "FAIL" : "OK", fails);
   return fails ? 1 : 0;
 }
