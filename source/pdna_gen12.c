@@ -4787,6 +4787,7 @@ int pdna_gen12_show(const char* path, uint8_t met_game) {
   log_line("gen12: %s mounted (%s) %d mons, %d ready, %d locked, %d bad",
            path, pdna_gen12_kind_name(m->kind), m->nstored, m->nready,
            m->nblocked, m->nunreadable);
+  app_box_resume_clear();   /* BACKLOG #188: a previous save/session's resume cell must not leak in */
 
   /* BACKLOG #64: a read-only STREAMED session over the SAME FIL/read-callback pair
    * the mount just used -- reachability + read parity for the eleven GB-screen nav
@@ -4872,6 +4873,7 @@ int pdna_gen12_show_fused(int idx, uint8_t met_game) {
   log_line("gen12: fused %s mounted (%s) %d mons, %d ready, %d locked, %d bad",
            name ? name : "?", pdna_gen12_kind_name(m->kind), m->nstored, m->nready,
            m->nblocked, m->nunreadable);
+  app_box_resume_clear();   /* BACKLOG #188: a previous save/session's resume cell must not leak in */
 
   /* BACKLOG #64 review Finding (F1 ruling): this entry does NOT set g_ed either
    * (only pdna_gen12_show_image() does) -- the comment this replaces claimed
@@ -4945,6 +4947,7 @@ int pdna_gen12_show_image(const char* path, uint8_t* img, uint32_t len,
   log_line("gen12: %s mounted from RAM (%s) %d mons, %d ready, %d locked, %d bad",
            path ? path : "(image)", pdna_gen12_kind_name(m->kind), m->nstored,
            m->nready, m->nblocked, m->nunreadable);
+  app_box_resume_clear();   /* BACKLOG #188: a previous save/session's resume cell must not leak in */
 
   /* S2: the editing session over the same bytes. gbs_open runs its own identification
    * (Gen 2 first, then Gen 1); the mount just succeeded on the same image, so a refusal

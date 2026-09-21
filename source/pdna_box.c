@@ -3656,6 +3656,16 @@ int pdna_box(BoxSource* src) {
      * every other grid visit. */
     else if (st == 2) cur = COLS * (ROWS - 1);
     else if (st == 3 && !s_holding && !src->is_bank) want_party_strip = true;
+    /* BACKLOG #188: no directional hint (st == 0) and no day-care pickup already
+     * placed the cursor -- resume the cell this same box was left on last time
+     * pdna_box() ran (app_box_resume_note() on every return below), bounds-checked
+     * against this call's own grid size; app_box_resume_take() itself already
+     * returns -1 on a box mismatch or before the first note, in which case `cur`
+     * stays at its declared 0 default, untouched. */
+    else if (st == 0 && pickup_ps < 0) {
+      int rc = app_box_resume_take(box);
+      if (rc >= 0 && rc < COLS * ROWS) cur = rc;
+    }
   }
   /* Switch to box `nbx` (wrapping), reload + redraw. Two things this gets right that
    * it used to get wrong, both visible on every single L/R:
@@ -3819,7 +3829,7 @@ int pdna_box(BoxSource* src) {
                                 /* §2.3: this edge does NOT gain `bank_edge` -- a GB chunk
                                  * (post-can_lift, a future slice) still cannot hop UP into
                                  * the Bank; only the single-carry UP edge is wired for that. */
-                                else if (!src->is_bank) { boxoam_exit(); return 4; }    /* up past PC top -> Bank */
+                                else if (!src->is_bank) { app_box_resume_note(box, cur); boxoam_exit(); return 4; }    /* up past PC top -> Bank */
                                 else snd_deny(); }
       else if (k & KEY_DOWN)  { if (s_ch_tr < chunk_anchor_rmax(&s_ch)) s_ch_tr++;
                                 /* §2.3: denied whenever an xfer peer is installed (always
@@ -3827,7 +3837,7 @@ int pdna_box(BoxSource* src) {
                                  * Bank chunk can never cross DOWN into the GB grid it opens
                                  * onto once a later slice installs the peer around a Bank
                                  * visit reached from a Game Boy session. */
-                                else if (src->is_bank && !s_xfer_peer) { boxoam_exit(); return 5; }     /* off Bank bottom -> PC */
+                                else if (src->is_bank && !s_xfer_peer) { app_box_resume_note(box, cur); boxoam_exit(); return 5; }     /* off Bank bottom -> PC */
                                 else snd_deny(); }
       if (!s_ch_hold) boxoam_chunk_end();            /* B-cancel / successful drop: restore the
                                                       * borrowed regions before the full repaint */
@@ -3844,7 +3854,7 @@ int pdna_box(BoxSource* src) {
         else if (k & (KEY_B | KEY_DOWN)) { s_tab_focus = -1; need_full = true; }   /* back to the grid, still holding */
         else if (k & KEY_UP) {                       /* up past the PC tabs -> Bank, still holding */
           /* a party-origin carry stays in the PC (its undo = drop it / B returns it to the party) */
-          if (!src->is_bank || src->bank_edge) { if (homeless || s_orig_party) snd_deny(); else { s_tab_focus = -1; boxoam_exit(); return 4; } }
+          if (!src->is_bank || src->bank_edge) { if (homeless || s_orig_party) snd_deny(); else { s_tab_focus = -1; app_box_resume_note(box, cur); boxoam_exit(); return 4; } }
         }
         else if (k & KEY_A) {
           if (s_tab_focus == 1 && !src->is_bank && !s_orig_party) {  /* PARTY tab: place/swap the held box mon into the party
@@ -3909,7 +3919,7 @@ int pdna_box(BoxSource* src) {
       else if (k & KEY_DOWN)  {
         if (cur < COLS * (ROWS - 1)) cur += COLS;
         else if (homeless) snd_deny();                          /* place the swapped mon before leaving */
-        else if (src->is_bank) { boxoam_exit(); return 5; }     /* off Bank bottom -> PC, still holding */
+        else if (src->is_bank) { app_box_resume_note(box, cur); boxoam_exit(); return 5; }     /* off Bank bottom -> PC, still holding */
       }
 
       /* cursor move while carrying -> partial redraw (no ui_clear), so it doesn't flicker */
@@ -3957,7 +3967,7 @@ int pdna_box(BoxSource* src) {
 
     /* ---- TOP-TAB cursor (reached by pressing UP on the box name): pick a tab ---- */
     if (s_tab_focus >= 0) {
-      if      (k & KEY_UP) { if (!src->is_bank || src->bank_edge) { s_tab_focus = -1; boxoam_exit(); return 4; } }   /* up past the PC tabs -> Bank */
+      if      (k & KEY_UP) { if (!src->is_bank || src->bank_edge) { s_tab_focus = -1; app_box_resume_note(box, cur); boxoam_exit(); return 4; } }   /* up past the PC tabs -> Bank */
       else if (k & (KEY_B | KEY_DOWN)) { s_tab_focus = -1; need_full = true; }              /* back to box name */
       else if (k & KEY_LEFT)  { s_tab_focus = (s_tab_focus > 0) ? s_tab_focus - 1 : 2; need_full = true; }
       else if (k & KEY_RIGHT) { s_tab_focus = (s_tab_focus + 1) % 3; need_full = true; }
@@ -3980,13 +3990,13 @@ int pdna_box(BoxSource* src) {
           pcp_open_party_strip(src, box, &cur, &need_full);
           on_title = false;
         }
-        else { s_tab_focus = -1; boxoam_exit(); return 0; }                                   /* SAVE -> exit (save prompt) */
+        else { s_tab_focus = -1; app_box_resume_note(box, cur); boxoam_exit(); return 0; }                                   /* SAVE -> exit (save prompt) */
       }
       continue;
     }
 
-    if (k & KEY_B) { if (s_cur_mode != CM_NORMAL && !on_title) { s_cur_mode = CM_NORMAL; need_full = true; } else { boxoam_exit(); return 0; } }
-    else if ((k & KEY_START) && (!src->is_bank || src->has_start)) { boxoam_exit(); return 2; }  /* BACKLOG #48: a GB session's own box sets has_start to opt back in */
+    if (k & KEY_B) { if (s_cur_mode != CM_NORMAL && !on_title) { s_cur_mode = CM_NORMAL; need_full = true; } else { app_box_resume_note(box, cur); boxoam_exit(); return 0; } }
+    else if ((k & KEY_START) && (!src->is_bank || src->has_start)) { app_box_resume_note(box, cur); boxoam_exit(); return 2; }  /* BACKLOG #48: a GB session's own box sets has_start to opt back in */
     else if (k & KEY_L) { SWITCH_BOX((box + nb - 1) % nb); }
     else if (k & KEY_R) { SWITCH_BOX((box + 1) % nb); }
     else if (k & KEY_SELECT) {
@@ -4064,7 +4074,7 @@ int pdna_box(BoxSource* src) {
     else if (k & KEY_LEFT)  cur = (cur % COLS == 0) ? cur + COLS - 1 : cur - 1;
     else if (k & KEY_RIGHT) cur = (cur % COLS == COLS - 1) ? cur - COLS + 1 : cur + 1;
     else if (k & KEY_UP)    { if (cur < COLS) on_title = true; else cur -= COLS; }
-    else if (k & KEY_DOWN)  { if (src->is_bank && cur >= COLS * (ROWS - 1)) { boxoam_exit(); return 5; }   /* off the bank bottom -> PC tabs */
+    else if (k & KEY_DOWN)  { if (src->is_bank && cur >= COLS * (ROWS - 1)) { app_box_resume_note(box, cur); boxoam_exit(); return 5; }   /* off the bank bottom -> PC tabs */
                               else cur = (cur >= COLS * (ROWS - 1)) ? cur - COLS * (ROWS - 1) : cur + COLS; }
     else if ((k & KEY_A) && s_cur_mode == CM_MOVE) {     /* orange hand: TAP = grab one; HOLD+DPAD = rubber-band multi-select */
       if (!src_can_lift(src, box, cur)) snd_deny();
