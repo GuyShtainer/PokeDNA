@@ -4718,10 +4718,12 @@ static void gb_session_core(Gb12Mount* m, GbSession* ro) {
    * with the SAME `s` used to replay whatever box the session originally opened on,
    * every single re-entry. gbsrc_note_box() (wired as s.note_box) keeps m->ui_box
    * current for every box the grid actually showed, so re-deriving `s` before each
-   * re-entry picks it back up. Only the BOX is restored, not the cursor CELL within
-   * it: pdna_box() always enters at cur=0 (or wherever app_box_start_take()'s 0..3
-   * directional hint puts it) for the PC/Bank too -- there is no existing "resume
-   * this exact cell" mechanism to mirror, so this does not invent one either. */
+   * re-entry picks it back up. BACKLOG #188: the cursor CELL within the box is now
+   * ALSO restored on this exact re-entry, via app_box_resume_take()/_note() --
+   * pdna_box() applies the recorded cell whenever app_box_start_take()'s hint is 0
+   * (every re-entry through this loop passes no directional hint) and the box
+   * matches, same generic mechanism the PC/Bank share (parity, not a GB special
+   * case; see app_box_resume_note()'s own header comment in pdna_app.h). */
   for (int r; (r = pdna_box(&s)) != 0; ) {
     if (r == 2) gb_nav_from_start(m, ro);
     else if (r == 4) gb_bank_visit(m, true);       /* BACKLOG #120 S2: bank_edge's UP hop */
