@@ -38,12 +38,16 @@ typedef enum {
 
 /* Every field is the CALLER's: `entries`/`cap` size the listing buffer (A3 -- the
  * launch browser hands in its own resident g_entries/MAX_ENTRIES; the three pdna_map.c
- * pickers below hand in an arena- or mon_decomp-borrowed buffer, because g_entries is
- * ALSO used as box_oam.c's icon pose-swap cache and the GB reconcile/migration
- * scratch (app_box_swap_acquire, pdna_app.h) whenever a box screen or GB session is
- * live -- exactly the window app_pick_rom/app_pick_gb_save/app_pick_gb_rom are
- * reachable from, so they may NOT alias it). `exts` is a NULL-terminated suffix list,
- * unused when match_mode is BR_MATCH_SAV. */
+ * pickers below hand in an arena- or mon_decomp-borrowed buffer instead, because
+ * g_entries is ALSO box_oam.c's icon pose-swap cache and the GB reconcile/migration
+ * scratch (app_box_swap_acquire, pdna_app.h). D6 correction: those two are NOT
+ * actually reachable at the same time today -- Settings (where app_pick_rom/
+ * app_pick_gb_save/app_pick_gb_rom are opened from) is reachable only from the Gen-3
+ * nav and the GB session's own top-level nav, never from inside pdna_box() while a
+ * box-screen borrow is live. This is a conservative separation, kept so a FUTURE
+ * caller reachable from that window cannot alias it by accident, not evidence of a
+ * proven conflict today. `exts` is a NULL-terminated suffix list, unused when
+ * match_mode is BR_MATCH_SAV. */
 typedef struct {
   const char*        title;          /* e.g. "Pick .sav" -- the browser's title prefix   */
   const char*        filter_label;   /* e.g. ".sav" -- the status line's filter tag       */

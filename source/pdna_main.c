@@ -684,10 +684,13 @@ static void sort_entries(BrowseEntry* ents) {      /* stable insertion sort, nev
 
 /* Scan g_cwd into `ents` (spec->entries, spec->cap -- A3: the launch browser's own
  * resident g_entries for the .sav spec, an arena/mon_decomp-borrowed buffer for every
- * other kind, since g_entries is ALSO box_oam.c's icon-cache/GB-reconcile borrow and
- * may not be aliased by a picker reachable from inside that window). The filter
- * (g_show_all / g_show_hidden / spec's own extension rule) and the sort are
- * sd-browser-style, identical for every kind. */
+ * other kind, since g_entries is ALSO box_oam.c's icon-cache/GB-reconcile borrow. D6
+ * correction: not because those two ARE reachable at once today -- Settings, where
+ * the other kinds open from, is never reachable from inside a live box-screen/GB-
+ * session borrow -- this is a conservative separation so a future caller cannot
+ * alias it by accident, not a proven conflict). The filter (g_show_all / g_show_hidden
+ * / spec's own extension rule) and the sort are sd-browser-style, identical for
+ * every kind. */
 static void __attribute__((noinline)) scan_dir(const BrowseSpec* spec, BrowseEntry* ents) {
   g_count = 0;
   DIR dir;
