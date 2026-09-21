@@ -3677,7 +3677,7 @@ static bool app_sidecar_confirm(const GbscMergeReport* rep) {
  * Gen-3-side item loss, review D2) -- it is the ONLY thing shown when none of the
  * named rows apply, so the user is never shown a blank "nothing changed" panel for a
  * confirm that was triggered for a real reason. */
-bool app_xferrestore_confirm(const XrMergeReport* rep) {
+bool app_xferrestore_confirm(const XrMergeReport* rep, bool g3_item_lost) {
   ui_clear();
   ui_panel(PDNA_SIDECAR_PANEL_X, PDNA_SIDECAR_PANEL_Y, PDNA_SIDECAR_PANEL_W,
            PDNA_SIDECAR_PANEL_H, UI_PANEL, UI_OK);
@@ -3692,7 +3692,8 @@ bool app_xferrestore_confirm(const XrMergeReport* rep) {
   if (rep->renamed)        { ui_ptext_fit(PDNA_SIDECAR_TEXT_X, y, PDNA_SIDECAR_TEXT_MAXW, UI_TEXT, PDNA_SIDECAR_L_RENAMED);        y += PDNA_SIDECAR_LINE_H; any_row = true; }
   if (rep->rename_refused) { ui_ptext_fit(PDNA_SIDECAR_TEXT_X, y, PDNA_SIDECAR_TEXT_MAXW, UI_TEXT, PDNA_SIDECAR_L_RENAME_REFUSED); y += PDNA_SIDECAR_LINE_H; any_row = true; }
   if (rep->gb_item_ignored){ ui_ptext_fit(PDNA_SIDECAR_TEXT_X, y, PDNA_SIDECAR_TEXT_MAXW, UI_TEXT, PDNA_SIDECAR_L_ITEM_IGNORED);   y += PDNA_SIDECAR_LINE_H; any_row = true; }
-  if (!any_row) { ui_ptext_fit(PDNA_SIDECAR_TEXT_X, y, PDNA_SIDECAR_TEXT_MAXW, UI_TEXT, PDNA_XFERRESTORE_L_LOSS); y += PDNA_SIDECAR_LINE_H; }
+  /* review R1: a Gen-3-side item loss is named even when the home holds an item (any_row alone hid it) */
+  if (g3_item_lost || !any_row) { ui_ptext_fit(PDNA_SIDECAR_TEXT_X, y, PDNA_SIDECAR_TEXT_MAXW, UI_TEXT, PDNA_XFERRESTORE_L_LOSS); y += PDNA_SIDECAR_LINE_H; }
   y += PDNA_SIDECAR_EVS_GAP;
   ui_text(PDNA_SIDECAR_TEXT_X, y, UI_TEXT, PDNA_XFERRESTORE_A_OK); y += PDNA_SIDECAR_LINE_H;
   ui_text(PDNA_SIDECAR_TEXT_X, y, UI_DIM, PDNA_SIDECAR_B_CANCEL);

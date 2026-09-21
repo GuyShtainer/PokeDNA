@@ -434,7 +434,7 @@ bool app_confirm(const char* title, const char* l1);
  * item loss, review D2) and every named row above is false. Never called for a
  * byte-identical restore (decision 6's own rule; the caller only shows this when at
  * least one field is true). true = A (restore), false = B (cancel, nothing written). */
-bool app_xferrestore_confirm(const XrMergeReport* rep);
+bool app_xferrestore_confirm(const XrMergeReport* rep, bool g3_item_lost);
 
 /* U2b item 3: writes config.cfg NOW (Omega-only, same app_can_edit() gate every
  * config write already carries) -- the GB-screen shell calls this from its own
