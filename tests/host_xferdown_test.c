@@ -571,14 +571,17 @@ static void test_bridge_real_corpus_2_to_1(void) {
     }
 
     /* (c) OT name / nickname. R2's own finding: byte 6 of box0 slot0's OT name is
-     * the "PK" ligature 0xE1; this is the documented, PRE-EXISTING loss BACKLOG
-     * #177 will add a loss-screen row for -- gen12_convert's own name decode/
-     * re-encode round trip does not preserve it (asserted below, not merely
-     * printed, for the pinned slot). Gb12Notes has no field to report this loss
-     * at all today (it is not even a tracked concept there), and neither
-     * loss.nick_lossy nor loss.ot_lossy fires for it -- gen3_to_gb's own encode
-     * succeeds on whatever text it is handed; the byte already changed one hop
-     * earlier, inside gen12_convert's own name round trip. */
+     * the "PK" ligature 0xE1 -- bc_view()'s own g2_decode_text has no case for it
+     * (g2_glyph's `default: return " ";`), so it silently decodes to a plain space
+     * one hop before gen12_convert ever runs, and neither loss.nick_lossy nor
+     * loss.ot_lossy (gen3_to_gb's OWN, unrelated, name-loss flags) ever fired for it --
+     * a real space re-encodes into Gen 1 as an ordinary space, no ambiguity left to
+     * catch by the time gen3_to_gb sees it. BACKLOG #177's notes.otname_lossy is the
+     * fix (review F1): bank_down_convert.c's static gb_name_changed() spells the
+     * SOURCE record's OT name and the WRITTEN record's OT name through the same
+     * lossless, generation-neutral speller (gb_get_otname) and compares the two --
+     * "PK" (the source spelling) vs " " (what byte 0x7F, an ordinary space, spells to
+     * on the written side) differ, so the flag fires without any byte-range table. */
     char written_ot[64], written_nick[64];
     gb_get_otname(&out, written_ot, sizeof written_ot);
     gb_get_nickname(&out, written_nick, sizeof written_nick);
@@ -587,6 +590,9 @@ static void test_bridge_real_corpus_2_to_1(void) {
             "BACKLOG #177 (documented, pre-existing loss): OT byte[6] 0xE1 -> 0x%02X after 2->1"
             " (want 0x7F, the current -- lossy -- behaviour; if this now reads 0xE1, #177 already fixed it,"
             " update this pin)", out.otname[6]);
+      CHECK(notes.otname_lossy,
+            "BACKLOG #177: notes.otname_lossy fires for the pinned Crystal.sav box0 slot0 "
+            "OT name (raw byte[6] == 0xE1, the 'PK' ligature bc_view()'s own decode drops)");
     } else {
       char src_ot[64], src_nick[64];
       gb_get_otname(&mon, src_ot, sizeof src_ot);
@@ -601,6 +607,118 @@ static void test_bridge_real_corpus_2_to_1(void) {
   }
   if (!ran) printf("  SKIP E2 (no real corpus slot both time-capsule-legal and Gen1-base-available)\n");
   else printf("  E2: %d real Crystal.sav slot(s) run through the 2->1 bridge\n", ran);
+}
+
+/* ============================================================================ */
+/* E3. BACKLOG #177: notes.otname_lossy / notes.nick_lossy, off two SYNTHETIC     */
+/*     records -- an ASCII-only name (never lossy) and a nickname holding a raw   */
+/*     GB glyph g2_decode_text's own switch has no case for (always lossy).      */
+/* ============================================================================ */
+static void test_name_glyph_loss_synthetic(void) {
+  GbGen1Base base = { .base = { 35, 55, 40, 90, 50 }, .type1 = 0x18, .type2 = 0x18 };
+
+  /* (a) plain ASCII OT name + nickname -- gb_set_otname/gb_set_nickname round-trip
+   * every byte through gen1_char_ascii/g2_glyph's explicit letter ranges, never their
+   * default fallback, so neither flag should ever fire for a name a player could type
+   * on a real keyboard-less Game Boy naming screen. */
+  {
+    uint8_t cell[80];
+    GbEditMon m; memset(&m, 0, sizeof m);
+    m.gen = GB_GEN2;
+    gb_set_species(&m, 25, NULL);
+    gb_set_level(&m, 20);
+    gb_set_dv(&m, GB_ATK, 12); gb_set_dv(&m, GB_DEF, 12);
+    gb_set_dv(&m, GB_SPE, 12); gb_set_dv(&m, GB_SPC, 12);
+    gb_set_move(&m, 0, 33);
+    gb_set_otid(&m, 12345);
+    CHECK(gb_set_otname(&m, "GUY"), "ascii fixture: OT name sets");
+    CHECK(gb_set_nickname(&m, "SPARKY"), "ascii fixture: nickname sets");
+    int rc = bc_pack(&m, 0, 0, 0, 970u, cell);
+    CHECK(rc == 0, "ascii fixture: bc_pack succeeds");
+    if (rc != 0) return;
+
+    int tc; uint16_t tc_bad; Gb12Result g12; G3GbStatus g3gb;
+    GbEditMon out; Gen3ToGbLoss loss; Gb12Notes notes;
+    bdc_convert_gb_core(cell, GB_GEN1, false, &base, &tc, &tc_bad, &g12, &g3gb, &out, &loss, &notes);
+    CHECK(tc == 0 && g12 == GB12_OK && g3gb == G3GB_OK,
+          "ascii fixture: 2->1 bridge converts (tc=%d g12=%s g3gb=%s)",
+          tc, gen12_reason_text(g12), g3gb_status_text(g3gb));
+    CHECK(!notes.otname_lossy, "BACKLOG #177: an ASCII-only OT name never sets otname_lossy");
+    CHECK(!notes.nick_lossy,   "BACKLOG #177: an ASCII-only nickname never sets nick_lossy");
+  }
+
+  /* (b) nickname case: plant the "MN" ligature (0xE2) directly via gb_set_nickname_raw
+   * -- the byte the standard ASCII setter could never produce (typing "MN" encodes as
+   * two ordinary letters, 0x82/0x8D, never the ligature) but a real GS/Crystal save can
+   * genuinely hold (the games' own "PKMN" abbreviation glyphs). g2_glyph has no case
+   * for 0xE2 either (the same gap as 0xE1's "PK" pair), so this is the nickname twin of
+   * the pinned Crystal.sav OT case above. */
+  {
+    uint8_t cell[80];
+    GbEditMon m; memset(&m, 0, sizeof m);
+    m.gen = GB_GEN2;
+    gb_set_species(&m, 25, NULL);
+    gb_set_level(&m, 20);
+    gb_set_dv(&m, GB_ATK, 12); gb_set_dv(&m, GB_DEF, 12);
+    gb_set_dv(&m, GB_SPE, 12); gb_set_dv(&m, GB_SPC, 12);
+    gb_set_move(&m, 0, 33);
+    gb_set_otid(&m, 12345);
+    CHECK(gb_set_otname(&m, "GUY"), "nick fixture: OT name sets");
+    uint8_t nick_raw[GB_NAME_BYTES] = { 0xE2, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50 };
+    gb_set_nickname_raw(&m, nick_raw);
+    int rc = bc_pack(&m, 0, 0, 0, 971u, cell);
+    CHECK(rc == 0, "nick fixture: bc_pack succeeds");
+    if (rc != 0) return;
+
+    GbEditMon back; BcMeta bmeta;
+    CHECK(bc_unpack(cell, &back, &bmeta) && back.nick[0] == 0xE2,
+          "nick fixture precondition: the raw 0xE2 byte actually landed in the cell");
+
+    int tc; uint16_t tc_bad; Gb12Result g12; G3GbStatus g3gb;
+    GbEditMon out; Gen3ToGbLoss loss; Gb12Notes notes;
+    bdc_convert_gb_core(cell, GB_GEN1, false, &base, &tc, &tc_bad, &g12, &g3gb, &out, &loss, &notes);
+    CHECK(tc == 0 && g12 == GB12_OK && g3gb == G3GB_OK,
+          "nick fixture: 2->1 bridge converts (tc=%d g12=%s g3gb=%s)",
+          tc, gen12_reason_text(g12), g3gb_status_text(g3gb));
+    CHECK(notes.nick_lossy,
+          "BACKLOG #177: notes.nick_lossy fires for a nickname whose raw byte 0xE2 "
+          "('MN' ligature) g2_decode_text has no case for");
+    CHECK(!notes.otname_lossy, "BACKLOG #177: the OT name (plain ASCII 'GUY') stays clean");
+  }
+
+  /* (c) review F1's own example: a nickname holding the male gender sign (raw byte
+   * 0xEF, gb_char_decode's shared case spells it U+2642 in EITHER generation) -- the
+   * mutation run below (temporarily reverting gb_name_changed to the old decoder-
+   * fallback rule) is what proves this is a REAL regression case, not a redundant one:
+   * the old rule never flagged it (0xEF decodes cleanly, never hits a decoder
+   * default), so this is exactly one of the 19 losses review F1 found. */
+  {
+    uint8_t cell[80];
+    GbEditMon m; memset(&m, 0, sizeof m);
+    m.gen = GB_GEN2;
+    gb_set_species(&m, 25, NULL);
+    gb_set_level(&m, 20);
+    gb_set_dv(&m, GB_ATK, 12); gb_set_dv(&m, GB_DEF, 12);
+    gb_set_dv(&m, GB_SPE, 12); gb_set_dv(&m, GB_SPC, 12);
+    gb_set_move(&m, 0, 33);
+    gb_set_otid(&m, 12345);
+    CHECK(gb_set_otname(&m, "GUY"), "gender fixture: OT name sets");
+    CHECK(gb_set_nickname(&m, "PIKA\xE2\x99\x82"), "gender fixture: nickname sets (PIKA-male sign)");
+
+    int rc = bc_pack(&m, 0, 0, 0, 972u, cell);
+    CHECK(rc == 0, "gender fixture: bc_pack succeeds");
+    if (rc != 0) return;
+
+    int tc; uint16_t tc_bad; Gb12Result g12; G3GbStatus g3gb;
+    GbEditMon out; Gen3ToGbLoss loss; Gb12Notes notes;
+    bdc_convert_gb_core(cell, GB_GEN1, false, &base, &tc, &tc_bad, &g12, &g3gb, &out, &loss, &notes);
+    CHECK(tc == 0 && g12 == GB12_OK && g3gb == G3GB_OK,
+          "gender fixture: 2->1 bridge converts (tc=%d g12=%s g3gb=%s)",
+          tc, gen12_reason_text(g12), g3gb_status_text(g3gb));
+    CHECK(notes.nick_lossy,
+          "BACKLOG #177 review F1: notes.nick_lossy fires for a nickname carrying the "
+          "male gender sign crossing the 2->1 bridge (written spelling != source spelling)");
+  }
 }
 
 /* ============================================================================ */
@@ -699,6 +817,7 @@ int main(void) {
   test_nick_written_nonascii_glyph(); printf("  (D2) nick_written, non-ASCII glyph ok\n");
   test_bridge_roundtrips();  printf("  (E) round trip 1<->2 bridge  ok\n");
   test_bridge_real_corpus_2_to_1(); printf("  (E2) real 2->1 corpus bridge ok\n");
+  test_name_glyph_loss_synthetic(); printf("  (E3) BACKLOG #177 name-glyph loss ok\n");
   test_time_capsule_refusal();printf("  (F) time-capsule refusal     ok\n");
   test_pending_identity_check(); printf("  (G) pending identity check   ok\n");
 
