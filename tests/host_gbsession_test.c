@@ -745,6 +745,104 @@ static void s3_full_destination(const char* file, uint8_t expect_gen) {
   s3_noop_after_surgery(&s, len, "S3 full: post-surgery check exercised a box");
 }
 
+/* ---- BACKLOG #187/#193: gbs_move's own box-8 matrix, pinned to Guy's REAL Yellow.sav
+ * corpus layout (docs/briefs/b187.md's own Step-1 census, re-derived here rather than
+ * trusted blind: current-box byte 0x284C=0x8B -> box 12 (0-based 11) is the live/current
+ * box; box counts 1..12 = 20,20,20,20,20,20,20 | 11,7,1,0,0(current); party 6/6).
+ * s3_move_box_to_box/s3_full_destination above already prove gbs_move generically on
+ * this same file -- this pins the EXACT scenario the F1-F4 fix batch was built against:
+ * box 8 (0-based index 7, 11/20, real room) moving into every box that has room (9-12 +
+ * party) succeeds, into every genuinely-full box (1-7, all 20/20) is refused FULL, and a
+ * box whose own count byte reads 0xFF is refused STRUCT, never FULL -- the split F4's
+ * "CAN'T READ BOX" vs "BOX is full (n/cap)" messages rely on, pinned at the engine layer
+ * so a regression there fails a host test, not just a screenshot. */
+static void s187_yellow_box8_matrix(void) {
+  const char* file = "Yellow.sav";
+  uint32_t len = load(file);
+  if (!len) { printf("  SKIP %s (BACKLOG #187 box-8 matrix)\n", file); return; }
+  printf("  -- BACKLOG #187 box-8 matrix: %s\n", file);
+
+  GbSession s;
+  CHECK(gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK,
+        "#187 matrix: session opens");
+  CHECK(s.gen == GB_GEN1, "#187 matrix: Yellow really is Gen 1");
+  int nb = gbs_nboxes(&s);
+  CHECK(nb == 12, "#187 matrix: 12 Gen-1 storage boxes (gbs_nboxes excludes the party)");
+  int party_box = gbs_party_box(&s);
+
+  const int SRC = 7;   /* box 8, 0-based -- Guy's own corpus's "has room" box */
+  CHECK(gbs_load_list(&s, SRC, g_list) == GBS_OK, "#187 matrix: box 8 loads");
+  int src_count0 = gb_list_count(s.gen, g_list, SRC);
+  CHECK(src_count0 == 11, "#187 matrix: box 8 really is 11/20 on Guy's own corpus");
+  if (src_count0 != 11) { printf("     (corpus layout drifted; matrix skipped)\n"); return; }
+
+  /* box 8 -> boxes 9..12 (0-based 8..11) and the party: real room -> OK, each moved
+   * straight back so the next sub-case starts from the same box-8 count again (no
+   * cumulative drift across the loop). */
+  for (int dst = 8; dst <= 11; dst++) {
+    int to_slot = -1;
+    GbsStatus st = gbs_move(&s, SRC, 0, dst, &to_slot, g_list, g_list3);
+    char msg[64]; snprintf(msg, sizeof msg, "#187 matrix: box 8 -> box %d accepted", dst + 1);
+    CHECK(st == GBS_OK, msg);
+    if (st == GBS_OK) {
+      int back_slot = -1;
+      CHECK(gbs_move(&s, dst, to_slot, SRC, &back_slot, g_list3, g_list4) == GBS_OK,
+            "#187 matrix: moved back to box 8");
+    }
+  }
+  {
+    /* Guy's own corpus has a full party (6/6, brief's own census) -- the EXPECTED
+     * verdict is derived from the image itself, not hardcoded, so this sub-case
+     * stays honest if the corpus ever changes. */
+    CHECK(gbs_load_list(&s, party_box, g_list3) == GBS_OK, "#187 matrix: party loads");
+    int pcount = gb_list_count(s.gen, g_list3, party_box);
+    int pcap = gb_list_capacity(s.gen, party_box);
+    bool party_full = pcount >= 0 && pcount >= pcap;
+    memcpy(g_snap, g_img, len);
+    int to_slot = -1;
+    GbsStatus st = gbs_move(&s, SRC, 0, party_box, &to_slot, g_list, g_list3);
+    if (party_full) {
+      CHECK(st == GBS_ERR_FULL, "#187 matrix: box 8 -> a full party is refused FULL");
+      CHECK(memcmp(g_img, g_snap, len) == 0, "#187 matrix: the refused party move changed nothing");
+    } else {
+      CHECK(st == GBS_OK, "#187 matrix: box 8 -> party (with room) accepted");
+      if (st == GBS_OK) {
+        int back_slot = -1;
+        CHECK(gbs_move(&s, party_box, to_slot, SRC, &back_slot, g_list3, g_list4) == GBS_OK,
+              "#187 matrix: moved back to box 8 from party");
+      }
+    }
+  }
+
+  /* box 8 -> boxes 1-7 (0-based 0-6): every one is 20/20 full on this corpus ->
+   * GBS_ERR_FULL, image untouched by the refusal. */
+  for (int dst = 0; dst <= 6; dst++) {
+    memcpy(g_snap, g_img, len);
+    int to_slot = -1;
+    GbsStatus st = gbs_move(&s, SRC, 0, dst, &to_slot, g_list, g_list3);
+    char msg[64]; snprintf(msg, sizeof msg, "#187 matrix: box 8 -> box %d refused FULL", dst + 1);
+    CHECK(st == GBS_ERR_FULL, msg);
+    CHECK(memcmp(g_img, g_snap, len) == 0, "#187 matrix: the FULL refusal changed nothing");
+  }
+
+  /* A corrupted count byte (0xFF) reads as GBS_ERR_STRUCT, never GBS_ERR_FULL -- box 9
+   * (0-based 8), a real writable box with room, corrupted just for this one call. */
+  {
+    uint32_t off = gen1_list_offset(&s.g1, 8);
+    CHECK(off != 0, "#187 matrix: box 9's list offset resolves");
+    if (off) {
+      uint8_t saved = g_img[off];
+      g_img[off] = 0xFF;
+      int to_slot = -1;
+      GbsStatus st = gbs_move(&s, SRC, 0, 8, &to_slot, g_list, g_list3);
+      CHECK(st == GBS_ERR_STRUCT, "#187 matrix: count 0xFF -> GBS_ERR_STRUCT, not FULL");
+      g_img[off] = saved;
+    }
+  }
+
+  s3_noop_after_surgery(&s, len, "#187 matrix: post-surgery check exercised a box");
+}
+
 /* ---- S5-B: gbs_insert() — append an already-built BOX-kind record ----------------
  * The design brief allows substituting "a copy of an existing GB slot" for a live
  * gen3_to_gb() conversion when pulling that converter's own dependencies into this
@@ -1401,6 +1499,8 @@ int main(void) {
   s3_full_destination("Yellow.sav",  GB_GEN1);
   s3_full_destination("Gold.sav",    GB_GEN2);
   s3_full_destination("Crystal.sav", GB_GEN2);
+
+  s187_yellow_box8_matrix();
 
   s5_insert("Red.sav",     GB_GEN1);
   s5_insert("Yellow.sav",  GB_GEN1);

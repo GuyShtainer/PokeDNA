@@ -768,6 +768,11 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 /* gb_pick_box's full-screen destination list -- same fixed sys8 layout as
  * gb_report_page/gb_info_page (title at x=4,y=3; footer at x=4,y=150; both 8px/glyph). */
 #define PDNA_GBEDIT_PICKBOX_TITLE  "MOVE TO"
+/* BACKLOG #187/#193, F3: DUPLICATE reuses gb_pick_box() (same layout/gating) for its
+ * own full-source-box destination picker -- a distinct title so the screen never
+ * reads "MOVE TO" while the mon is actually being copied, not relocated. */
+#define PDNA_GBEDIT_PICKBOX_DUP_TITLE "DUPLICATE TO"
+#define PDNA_GBEDIT_PICKBOX_CREATE_TITLE "CREATE IN"
 #define PDNA_GBEDIT_PICKBOX_FOOT   "A pick  B cancel"
 #define PDNA_GBEDIT_PICKBOX_Y0     20    /* first row's y, below the y=13 title rule */
 #define PDNA_GBEDIT_PICKBOX_ROW_H  10
@@ -1026,6 +1031,15 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XFERREC_TITLE "TRANSFER RECORD UNREADABLE"
 #define PDNA_XFERREC_L1    "Nothing was moved."
 #define PDNA_XFERREC_L2    "Try again, or check the card."
+/* BACKLOG #187/#191a, F2: dropping a held GB mon onto an OCCUPIED cell -- a Game Boy
+ * box is a packed, count-prefixed list (gb_session.c), not an addressable grid, so
+ * there is no swap primitive to land two mons at once the way the Gen-3 PC/Bank grid
+ * does. Not a silent beep (decision F2): the drop is refused with a dialog that says
+ * why, same posture PDNA_XFER_NOGEN/PDNA_XFER_NATIVE already use for their own
+ * cross-scope refusals. */
+#define PDNA_XFER_GBSWAP_TITLE "CAN'T SWAP HERE"
+#define PDNA_XFER_GBSWAP_L1    "A Game Boy box can't swap"
+#define PDNA_XFER_GBSWAP_L2    "two Pokemon at once."
 
 /* BACKLOG #150 S150-8 decision 13 / D-Q2/D-Q3: the DOWN-converting edge's own
  * strings -- native cell -> Gen-3 PC (decision 2's party refusal), one unpromoted
@@ -1140,6 +1154,31 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_GBCREATE_NOROM_L2       "(Settings > Game ROM)."
 #define PDNA_GBCREATE_FULL_TITLE     "BOX FULL"
 #define PDNA_GBCREATE_FULL_L1        "No empty slot here."
+/* BACKLOG #187, F4: l1 is overwritten at the call site with the actual box name +
+ * count ("BOX1 is full (20/20)."), siprintf'd into a stack buffer -- this L1 stays
+ * only as the (now-unused after F4) generic fallback string, kept for
+ * PDNA_GBCREATE_FULL_TITLE's own sizing convention comment above. l2 offers the
+ * picker that now actually opens right after this message is dismissed. */
+#define PDNA_GBCREATE_FULL_PICKHINT_L2 "Pick another box."
+/* BACKLOG #187, F4: split out of the old BOX_FULL fold -- an unreadable list
+ * (gb_list_count() returning <0, GBS_ERR_STRUCT's own condition) is a corrupt/
+ * malformed box, not a full one; conflating the two hid the 2026-09-07 index-bug
+ * class this backlog's own root-cause hunt re-derived from scratch (Step 1: every
+ * refusal Guy could still hit on his own Yellow.sav turned out to be a genuinely
+ * full box, not a misrouted index -- CREATE already resolves g_m->ui_box/
+ * current_box correctly; this split is the other, always-latent half of that
+ * same fold, caught while re-deriving the message rather than reproduced). */
+#define PDNA_GBCREATE_BADLIST_TITLE  "CAN'T READ BOX"
+#define PDNA_GBCREATE_BADLIST_L1     "This box's data looks corrupt."
+/* Review fix 3 (LOW), BACKLOG #187: CREATE via F4's picker lands in a box the grid
+ * is not currently showing (gb_create_hook reassigns `box = dst` before the
+ * species/level/insert pipeline runs) -- without this, the ONLY feedback after a
+ * successful create is the grid simply not gaining a new mon where the player is
+ * still looking, easy to misread as a silent failure. Shown only when box != the
+ * box the player actually opened CREATE from (the common case, staying in the same
+ * box, already shows it landing right there). */
+#define PDNA_GBCREATE_REDIRECTED_TITLE "CREATED"
+#define PDNA_GBCREATE_REDIRECTED_FMT   "Created in %s, slot %d."
 #define PDNA_GBCREATE_BUILDFAIL_L1   "Could not build a legal record."
 /* pdna_pick.c's pick_item(), restricted mode (UX-parity audit, Guy 2026-09-07:
  * the GB editor's item row now opens the SAME picker the Gen-3 flow uses,

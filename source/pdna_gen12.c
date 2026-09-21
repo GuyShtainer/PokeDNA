@@ -469,6 +469,7 @@ static bool gbsrc_can_edit(void) { return false; }
 static bool gbsrc_can_boxops_impl(int box);
 static bool gbsrc_export_all_impl(int box);
 static bool gbsrc_release_all_impl(int box);
+static bool gbsrc_can_enter_move_impl(int box);   /* BACKLOG #187/#192, F1 */
 static bool gb_can_lift_hook_impl(int box, int slot);
 /* BACKLOG #150 S150-4 step 3: BoxXferOps.lift_up/release_up real bodies (defined
  * further below, beside gb_release_hook/gb_lift_up_hook's own header comments) --
@@ -480,9 +481,15 @@ static bool gb_release_up_hook(int box, int slot, const uint8_t cell80[80]);
  * below, beside gb_paste_hook -- D8's own ordering comment), forward-declared for the
  * same reason as lift_up/release_up above. */
 static bool gb_accept_down_hook(int dst_box, const uint8_t cell80[80]);
+/* BACKLOG #187/#191a, F2: BoxXferOps.move_within's real body (defined further below,
+ * beside gb_move_hook -- both share gb_move_core), forward-declared for the same
+ * reason as lift_up/release_up/accept_down above. */
+static bool gb_move_within_hook(int box, int slot, int dst_box);
 /* The real xfer vtable -- replaces the earlier S2 marker-only table (every function
- * pointer NULL) now that UP has a real lift/release and DOWN has a real EXACT-arm
- * landing. preview_down and move_within stay NULL -- not this lane's job. `.gen` is
+ * pointer NULL) now that UP has a real lift/release, DOWN has a real EXACT-arm
+ * landing, and (BACKLOG #187/#191a, F2) a same-scope GB drop has a real move_within
+ * instead of pdna_box.c's own deny-beep stub. preview_down stays NULL -- not this
+ * lane's job. `.gen` is
  * unread today (kept 0, same as the S2 marker it replaces) -- BACKLOG #150 S150-7's
  * arm selector reads the session's generation through app_gb_session_gen() instead
  * (below), a computed value off the EXISTING g_m pointer, specifically so this table
@@ -492,7 +499,8 @@ static bool gb_accept_down_hook(int dst_box, const uint8_t cell80[80]);
  * (k_gb_ops_gen1/gen2/ro). */
 static const BoxXferOps k_gb_xfer = {
   .gen = 0, .lift_up = gb_lift_up_hook, .preview_down = 0, .accept_down = gb_accept_down_hook,
-  .release_up = gb_release_up_hook, .move_within = 0,
+  .release_up = gb_release_up_hook,
+  .move_within = gb_move_within_hook,   /* BACKLOG #187/#191a, F2: within-save GB drop */
 };
 
 /* BACKLOG #150 S150-7 D-Q7 plumbing fix: xg_bank_down_arm()'s `dst_gen` argument, for
@@ -509,6 +517,17 @@ uint8_t app_gb_session_gen(void) {
 static bool gbsrc_can_boxops(int box) {
 #ifndef PDNA_GEN12_HOST
   return gbsrc_can_boxops_impl(box);
+#else
+  (void)box; return false;
+#endif
+}
+/* BoxSource.can_enter_move (BACKLOG #187/#192, F1) thin wrapper -- real body
+ * (gbsrc_can_enter_move_impl) defined below, beside gbsrc_can_boxops_impl, same
+ * PDNA_GEN12_HOST reason as every other _impl pair on this source (app_can_edit()
+ * is GBA-only, not linked into tests/host_gen12_test.c's -DPDNA_GEN12_HOST build). */
+static bool gbsrc_can_enter_move(int box) {
+#ifndef PDNA_GEN12_HOST
+  return gbsrc_can_enter_move_impl(box);
 #else
   (void)box; return false;
 #endif
@@ -627,6 +646,7 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
   s.can_boxops  = gbsrc_can_boxops;
   s.export_all  = gbsrc_export_all;
   s.release_all = gbsrc_release_all;
+  s.can_enter_move = gbsrc_can_enter_move;   /* BACKLOG #187/#192, F1: box-level SELECT gate */
   return s;
 }
 
@@ -1467,7 +1487,14 @@ static bool gb_edit_commit(int box, int slot, const GbEditMon* e, const char* wh
  * m->party_box + 1 at call time so the array is a fixed frame slot, not a VLA. */
 #define GB12_PICKBOX_MAX 15
 
-static int gb_pick_box(const Gb12Mount* m, int exclude) {
+/* BACKLOG #187/#193, F3/F4 follow-on: `exclude_party` -- gbs_insert() (DUPLICATE's
+ * and CREATE's full-box retry, both below) refuses the party pseudo-box outright
+ * ("PARTY IS REFUSED HERE, ON PURPOSE", gb_session.c's own comment on gbs_insert) --
+ * offering it as a pickable row would only earn a generic "bad argument" a screen
+ * later. gb_move_hook's own call passes false: gbs_move() DOES support a party
+ * destination (species-limit/live-stat/Mail rules), so hiding it there would be a
+ * real feature loss, not a UX fix. */
+static int gb_pick_box(const Gb12Mount* m, int exclude, const char* title, bool exclude_party) {
   int n = m->party_box + 1;
   if (n <= 1) return -1;
   if (n > GB12_PICKBOX_MAX) n = GB12_PICKBOX_MAX;   /* defensive; never true today */
@@ -1476,11 +1503,29 @@ static int gb_pick_box(const Gb12Mount* m, int exclude) {
    * unreachable as `exclude` -- moving a Pokemon there would only bounce back off
    * gbs_move's own gbs_commit_list gate, so it is dimmed and skipped here instead of
    * offered and then refused a screen later. Computed ONCE, not per repaint: a box's
-   * writability cannot change while this picker is up (nothing else touches the image). */
+   * writability cannot change while this picker is up (nothing else touches the image).
+   *
+   * BACKLOG #187/#193, F3: also dim+skip a box that is genuinely FULL -- picking one
+   * used to be offered and only THEN refused a screen later by gbs_move/gbs_insert's
+   * own GBS_ERR_FULL; this picker now shows that up front instead (both the count and
+   * the skip), so "refuse only when NO box has room" (DUPLICATE's new full-box path,
+   * gb_dup_hook below) can just call this same picker and trust it never offers a
+   * full one. cnt[]/cap[] feed the row labels below. g_ed->list2 as scratch: same
+   * "safe here, nothing past this point touches list2 for real until the caller's
+   * OWN gbs_move/gbs_insert call after this function returns" reasoning
+   * gb_first_free_box's own comment documents for the identical pattern. */
   bool skip[GB12_PICKBOX_MAX];
+  int  cnt[GB12_PICKBOX_MAX], cap[GB12_PICKBOX_MAX];
   int selectable = 0;
   for (int b = 0; b < n; b++) {
-    skip[b] = (b == exclude) || (gbs_box_writable(&g_ed->s, b) != GBS_OK);
+    cap[b] = gb_list_capacity(g_ed->s.gen, b);
+    cnt[b] = -1;
+    bool writable = gbs_box_writable(&g_ed->s, b) == GBS_OK;
+    if (writable && gbs_load_list(&g_ed->s, b, g_ed->list2) == GBS_OK)
+      cnt[b] = gb_list_count(g_ed->s.gen, g_ed->list2, b);
+    bool full = cap[b] > 0 && cnt[b] >= 0 && cnt[b] >= cap[b];
+    bool party_excluded = exclude_party && gb_box_is_party(g_ed->s.gen, b);
+    skip[b] = (b == exclude) || !writable || full || party_excluded;
     if (!skip[b]) selectable++;
   }
   if (!selectable) {
@@ -1496,18 +1541,23 @@ static int gb_pick_box(const Gb12Mount* m, int exclude) {
     if (sel >= top + PDNA_GBEDIT_PICKBOX_ROWS) top = sel - PDNA_GBEDIT_PICKBOX_ROWS + 1;
 
     ui_clear();
-    ui_text(4, 3, UI_TITLE, PDNA_GBEDIT_PICKBOX_TITLE);
+    ui_text(4, 3, UI_TITLE, title);
     ui_hline(0, 13, UI_SCR_W, UI_BORDER);
     int shown = n - top;
     if (shown > PDNA_GBEDIT_PICKBOX_ROWS) shown = PDNA_GBEDIT_PICKBOX_ROWS;
     for (int i = 0; i < shown; i++) {
       int b = top + i;
-      char nm[12];
+      char nm[12], row[24];
       pdna_gen12_box_name(m, b, nm);
+      /* BACKLOG #187/#193, F3: "NAME  n/cap" -- cnt[b] < 0 means the count could not
+       * be read (an otherwise-writable box whose list came back malformed); shown as
+       * "?/cap" rather than a wrong number. */
+      if (cnt[b] >= 0) siprintf(row, "%s  %d/%d", nm, cnt[b], cap[b] > 0 ? cap[b] : 0);
+      else             siprintf(row, "%s  ?/%d", nm, cap[b] > 0 ? cap[b] : 0);
       int y = PDNA_GBEDIT_PICKBOX_Y0 + i * PDNA_GBEDIT_PICKBOX_ROW_H;
       bool sh = (b == sel);
       if (sh) ui_panel(2, y - 1, UI_SCR_W - 4, PDNA_GBEDIT_PICKBOX_ROW_H, UI_SEL, UI_TITLE);
-      ui_text(4, y, skip[b] ? UI_DIM : (sh ? UI_SELTEXT : UI_TEXT), nm);
+      ui_text(4, y, skip[b] ? UI_DIM : (sh ? UI_SELTEXT : UI_TEXT), row);
     }
     ui_hline(0, 147, UI_SCR_W, UI_BORDER);
     ui_text(4, 150, UI_DIM, PDNA_GBEDIT_PICKBOX_FOOT);
@@ -1751,13 +1801,16 @@ static int __attribute__((noinline)) gb_origin_for_save(uint8_t gen, bool crysta
  * contract this function has to honour: a non-OK return can mean the DESTINATION half
  * already committed (the source delete is what failed), so every non-OK here rolls the
  * whole image back, not just on the ones that look like they need it. */
-static bool gb_move_hook(uint8_t* rec80) {
-  int box, slot;
-  if (!gb_locate(rec80, &box, &slot)) return false;
-
-  int dst = gb_pick_box(g_m, box);
-  if (dst < 0) return false;                       /* B on the picker: nothing touched */
-
+/* BACKLOG #187/#191a, F2: the shared move-and-persist core gb_move_hook (the menu's
+ * MOVE TO BOX row, picker-driven) and gb_move_within_hook (drag-and-drop, the
+ * destination box already chosen by the drop cell -- see pdna_box.c's drop_held)
+ * both need: gbs_move() into `dst`, the SAME refusal wording/hint table, and the
+ * SAME gb_persist("move") reload/repaint on success (which invalidates g_m->loaded
+ * so the display mount re-pages from the just-committed image -- pdna_gen12_page's
+ * own `if (m->loaded == box) return recs;` early-out is why a fresh page is needed
+ * at all). One body, two thin callers, so a defect fixed here is fixed for both
+ * entry points -- not a second, drifting copy of the refusal table. */
+static bool gb_move_core(int box, int slot, int dst) {
   int to_slot = -1;
   GbsStatus st = gbs_move(&g_ed->s, box, slot, dst, &to_slot, g_ed->list, g_ed->list2);
   if (st != GBS_OK) {
@@ -1794,6 +1847,30 @@ static bool gb_move_hook(uint8_t* rec80) {
   log_line("=== gb move -> %s box %d slot %d -> box %d slot %d ===",
            g_ed->path, box, slot, dst, to_slot);
   return gb_persist("move");
+}
+
+static bool gb_move_hook(uint8_t* rec80) {
+  int box, slot;
+  if (!gb_locate(rec80, &box, &slot)) return false;
+
+  int dst = gb_pick_box(g_m, box, PDNA_GBEDIT_PICKBOX_TITLE, false);
+  if (dst < 0) return false;                       /* B on the picker: nothing touched */
+
+  return gb_move_core(box, slot, dst);
+}
+
+/* BoxXferOps.move_within (BACKLOG #187/#191a, F2): a same-generation GB drop across
+ * boxes -- pdna_box.h's own contract comment on the field. `box`/`slot` are the
+ * ORIGIN the drag started from (s_orig_box/s_orig_slot in pdna_box.c, already
+ * resolved by the caller); `dst_box` is the box the cursor dropped on -- NOT a
+ * destination slot, because gbs_move() (same primitive gb_move_hook's own picker
+ * uses) always lands at the box's own next free slot, exactly like a count-prefixed
+ * list has to. The caller (drop_held) has ALREADY refused an occupied destination
+ * cell and a same-box drop before calling this -- this only ever runs for a real
+ * cross-box, destination-empty drop. */
+static bool gb_move_within_hook(int box, int slot, int dst_box) {
+  if (!g_ed) return false;
+  return gb_move_core(box, slot, dst_box);
 }
 
 /* app_src_ops_set() hook: RELEASE on the read-only mon menu (S3). Confirms with the
@@ -2031,16 +2108,30 @@ static bool gb_dup_hook(uint8_t* rec80) {
   if (!gb_dup_confirm(s->gen, g_ed->list, box, slot, &e)) return false;
 
   int slot_out = -1;
-  GbsStatus ist = gbs_insert(s, box, &e, &slot_out, g_ed->list);
+  int dst = box;
+  GbsStatus ist = gbs_insert(s, dst, &e, &slot_out, g_ed->list);
+  /* BACKLOG #187/#193, F3: a full SOURCE box used to be a flat refusal with no
+   * alternative -- Guy's own words ("cant duplicate pokemon ... always errors with a
+   * full box") describe exactly this UX gap on a corpus where boxes 1-7 really are
+   * 20/20 full. Offer gb_pick_box (same picker MOVE TO BOX uses, now showing n/cap
+   * and dimming full boxes too, F3's other half) for a destination WITH room instead
+   * of refusing outright; B on the picker, or every other box also being full
+   * (gb_pick_box's own "NO DESTINATION" message), still refuses -- nothing is
+   * touched (gb_rollback below is a no-op over an untouched image either way). */
+  if (ist == GBS_ERR_FULL) {
+    dst = gb_pick_box(g_m, box, PDNA_GBEDIT_PICKBOX_DUP_TITLE, true);
+    if (dst < 0) { gb_rollback(); return false; }
+    ist = gbs_insert(s, dst, &e, &slot_out, g_ed->list);
+  }
   if (ist != GBS_OK) {
     gb_rollback();
-    log_line("gen12: dup box %d slot %d refused: %s", box, slot, gbs_status_text(ist));
+    log_line("gen12: dup box %d slot %d -> box %d refused: %s", box, slot, dst, gbs_status_text(ist));
     snd_error();
     msg_wait(PDNA_GBEDIT_REFUSED_TITLE, UI_WARN, gbs_status_text(ist), PDNA_GBEDIT_UNCHANGED_L2);
     return false;
   }
 
-  log_line("=== gb dup -> %s box %d slot %d -> slot %d ===", g_ed->path, box, slot, slot_out);
+  log_line("=== gb dup -> %s box %d slot %d -> box %d slot %d ===", g_ed->path, box, slot, dst, slot_out);
   bool ok = gb_persist("dup");
   if (ok) {
     char l1[32];
@@ -2277,6 +2368,20 @@ static bool gb_export_hook(uint8_t* rec80) {
 static bool gbsrc_can_boxops_impl(int box) {
   if (!g_ed) return false;
   if (gb_box_is_party(g_ed->s.gen, box)) return false;
+  return app_can_edit() && gbs_box_writable(&g_ed->s, box) == GBS_OK;
+}
+
+/* BoxSource.can_enter_move (BACKLOG #187/#192, F1): the box-level "may SELECT enter
+ * MOVE mode HERE at all" question -- deliberately NOT gbsrc_can_boxops_impl (that one
+ * refuses the party pseudo-box outright, and MOVE mode must still work there, e.g.
+ * lifting a party mon into another box) and deliberately NOT gbs_can_delete (that is
+ * per-SLOT -- party-floor, Mail-holder, the exact refusal a specific mon earns, which
+ * stays exactly where the brief puts it: the actual lift on A, via can_lift). This is
+ * the box-wide half only: is the session writable, and is this box's own list one the
+ * engine will accept a write into. Thin wrapper (gbsrc_can_enter_move) lives up by
+ * gbsrc_can_boxops, same PDNA_GEN12_HOST pattern. */
+static bool gbsrc_can_enter_move_impl(int box) {
+  if (!g_ed) return false;
   return app_can_edit() && gbs_box_writable(&g_ed->s, box) == GBS_OK;
 }
 
@@ -4244,6 +4349,8 @@ static bool gb_create_hook(void) {
   int box = (g_m->ui_box >= 0 && g_m->ui_box <= g_m->party_box) ? g_m->ui_box
           : (g_m->current_box >= 0 && g_m->current_box <= g_m->party_box) ? g_m->current_box
           : 0;
+  const int original_box = box;   /* review fix 3: named in the post-create message
+                                   * only when F4's picker actually redirected here */
   if (gb_box_is_party(g_ed->s.gen, box)) {
     snd_deny();
     msg_wait(PDNA_GBCREATE_TITLE, UI_WARN, PDNA_SIDECAR_PARTY_L1, 0);
@@ -4261,8 +4368,34 @@ static bool gb_create_hook(void) {
     snd_deny(); msg_wait(PDNA_GBEDIT_BOXRD_TITLE, UI_WARN, gbs_status_text(ld), 0); return false;
   }
   int count = gb_list_count(g_ed->s.gen, g_ed->list, box);
-  if (count < 0 || count >= gb_list_capacity(g_ed->s.gen, box)) {
-    snd_deny(); msg_wait(PDNA_GBCREATE_FULL_TITLE, UI_WARN, PDNA_GBCREATE_FULL_L1, 0); return false;
+  int cap   = gb_list_capacity(g_ed->s.gen, box);
+  /* BACKLOG #187, F4: split the old `count < 0 || count >= cap` fold in two --
+   * Step 1 (this backlog's own repro matrix, run against Guy's real Yellow.sav on
+   * the delta vehicle) found `box` here already correct on every box tried (12, 11,
+   * a has-room box) -- the ui_box/current_box fallback chain 2026-09-07's own fix
+   * put in place holds. Every CREATE refusal reachable today is a genuinely full
+   * box (Yellow's own boxes 1-7, 20/20 each); an unreadable list is a DIFFERENT,
+   * separately-worded problem (a corrupt box, not a full one) that was silently
+   * wearing the same "BOX FULL" words before this split. */
+  if (count < 0) {
+    snd_deny(); msg_wait(PDNA_GBCREATE_BADLIST_TITLE, UI_WARN, PDNA_GBCREATE_BADLIST_L1, 0);
+    return false;
+  }
+  if (count >= cap) {
+    /* Name the box and its count (brief's own wording: "Box 1 is full (20/20) --
+     * pick another box"), then offer the SAME destination picker DUPLICATE/MOVE TO
+     * BOX use (gb_pick_box, F3's n/cap+dim-full picker) instead of a flat refusal.
+     * `box` is reassigned to the pick -- everything below (species/level/insert)
+     * runs against the NEW destination; gbs_insert() reloads its own list for
+     * whatever box it is handed, so no stale state carries over from the full one. */
+    char nm[12], l1[32];
+    pdna_gen12_box_name(g_m, box, nm);
+    siprintf(l1, "%s is full (%d/%d).", nm, count, cap);
+    snd_deny();
+    msg_wait(PDNA_GBCREATE_FULL_TITLE, UI_WARN, l1, PDNA_GBCREATE_FULL_PICKHINT_L2);
+    int dst = gb_pick_box(g_m, box, PDNA_GBEDIT_PICKBOX_CREATE_TITLE, true);
+    if (dst < 0) return false;   /* B on the picker, or gb_pick_box's own "no room anywhere" */
+    box = dst;
   }
 
   /* Species picker: pdna_pick.c's own big icon-grid pick_species(), the EXACT
@@ -4401,7 +4534,18 @@ static bool gb_create_hook(void) {
     return false;
   }
   log_line("=== gb create -> %s box %d slot %d dex %u lv %d ===", g_ed->path, box, slot_out, dex, lvl);
-  return gb_persist("create");
+  bool ok = gb_persist("create");
+  /* Review fix 3 (LOW), BACKLOG #187: F4's picker can redirect `box` away from the
+   * one the grid is showing -- say so, or the new mon looks like it never landed. A
+   * plain in-place create (the common case) already shows it right where the
+   * player is looking; nothing new to say there. */
+  if (ok && box != original_box) {
+    char nm[12], l1[32];
+    pdna_gen12_box_name(g_m, box, nm);
+    siprintf(l1, PDNA_GBCREATE_REDIRECTED_FMT, nm, slot_out + 1);
+    msg_wait(PDNA_GBCREATE_REDIRECTED_TITLE, UI_OK, l1, 0);
+  }
+  return ok;
 }
 
 /* app_src_ops_set() hook: ITEM on the read-only mon menu (BACKLOG #92). Gen 2 only --

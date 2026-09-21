@@ -568,6 +568,18 @@ int main(void) {
   PF(PDNA_GBEDIT_DAYCARE_PARTY_TITLE, 28, 184);   /* D5, review-opus, BACKLOG #93 */
   PF(PDNA_GBEDIT_DUP_PARTY_L1,        28, 184);
 
+  PF(PDNA_GBCREATE_REDIRECTED_TITLE, 28, 184);   /* review fix 3, BACKLOG #187 */
+  { /* PDNA_GBCREATE_REDIRECTED_FMT is siprintf'd with the box's own display name
+     * (pdna_gen12_box_name(), a 12-byte buffer, max 11 real characters) and a 1-2
+     * digit slot number -- worst case, not the lucky one: every character of the
+     * name at its widest (a run of 'W', the widest glyph this font draws) and a
+     * 2-digit slot. */
+    char nm[12]; memset(nm, 'W', 11); nm[11] = 0;
+    char row[32];
+    snprintf(row, sizeof row, PDNA_GBCREATE_REDIRECTED_FMT, nm, 20);
+    PF(row, 28, 184);
+  }
+
   /* BACKLOG #95 review C2: msg_wait's (28, .., 184) clamp again -- these are pre-
    * split across l1/l2 rather than wrapped (msg_wait's l1/l2 are each a single
    * ui_ptext_fit, not a wrap), exactly the failure mode this whole file exists to

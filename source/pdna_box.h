@@ -157,6 +157,16 @@ typedef struct {
   bool (*can_boxops)(int box);
   bool (*export_all)(int box);
   bool (*release_all)(int box);
+  /* BACKLOG #187/#192, F1: appended at the END, same offset-stability rule as
+   * can_rename/can_boxops above. Gates SELECT's NORMAL->MOVE transition (entering
+   * only -- leaving is unconditional, see pdna_box.c). NULL => fall back to
+   * src_can_lift(src, box, cur), i.e. today's PC/Bank behaviour, byte-identical.
+   * `box`-level, not `slot`-level, ON PURPOSE: this answers "may this box's cursor
+   * enter move mode at all", not "can THIS cell be lifted" -- that second, narrower
+   * question is can_lift's job on the actual lift (A), unchanged by this field.
+   * A GB session wires gbsrc_can_enter_move (app_can_edit() + gbs_box_writable(box),
+   * no per-slot/party-floor check -- those still gate the lift itself). */
+  bool (*can_enter_move)(int box);
 } BoxSource;
 
 /* Game-faithful box screen over `src`: a left PKMN DATA panel + a 6x5 icon grid on
