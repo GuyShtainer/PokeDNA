@@ -3585,29 +3585,53 @@ def run_cold_start_compare(core_mod, image_mod, loc_image: Path, noloc_image: Pa
     return ok, []
 
 
-# BACKLOG #185 F1/F2/Step 1: the Gen-2 twin of _derive_checkerboard_ref()/
-# _measure_box_grid_cold_start() above -- those two are hand-anchored to Red.sav
-# (boot picker row 1, "DOWN once"); the boot picker's row order is Emerald(0),
-# Red(1), Gold(2), Crystal(3) (Makefile's delta-gb recipe fuses Red/Gold/Crystal in
-# that order), so Crystal is row 3 ("DOWN three times"). Otherwise byte-for-byte the
-# same navigation/polling shape, reused rather than parameterising the originals
-# (both are already load-bearing for #68b's own regression proof; a shared
-# `down_count` parameter would touch code nothing in THIS backlog item needs to
-# change).
-def _derive_checkerboard_ref_crystal(core_mod, image_mod, rom: Path) -> bytes:
-    s = gb_shots.Session(core_mod, image_mod, rom, Path("/tmp"), "measure_ref_crystal_")
-    s.run(700)
-    s.press_n("DOWN", 3, settle=gb_shots.SETTLE)
-    s.tap("A", settle=60)
-    s.tap("A", settle=300)
-    return _crop_bytes(s.screen)
+# BACKLOG #185 D4 (review fix): the Gen-2-specific _derive_checkerboard_ref_crystal()/
+# _measure_box_grid_cold_start_crystal() pair that used to live here is GONE --
+# folded into _measure_b185_auto() below (parameterised by `down_n`, and fixed to
+# auto-detect the F5 fast path instead of assuming every image is slow). Neither
+# function was called from anywhere except run_b185_cold_locate(), which now calls
+# _measure_b185_auto() directly for both generations.
 
 
-def _measure_box_grid_cold_start_crystal(core_mod, image_mod, rom: Path,
-                                         checkerboard_ref: bytes) -> tuple[int, bytes]:
-    s = gb_shots.Session(core_mod, image_mod, rom, Path("/tmp"), "measure_crystal_")
+# BACKLOG #185 D4 (review fix, second pass): the loading placeholder is a KNOWN,
+# FIXED 2-colour checkerboard -- (231,231,247) and (189,189,206) -- confirmed by a
+# direct probe of a genuinely slow (forced-scan) image's crop at frame 305 (both
+# colours, nothing else). Detecting it BY COLOUR, not by sampling a reference crop
+# from a separate session, is what actually fixes D4: the first attempt at this fix
+# (poll up to a short frame budget, accept whatever stabilizes) failed on the SLOW
+# image too, because the placeholder itself stabilizes well within any short probe
+# budget -- "stable" alone cannot tell "stable because painted" from "stable because
+# it is a persistent loading placeholder" without knowing what the placeholder looks
+# like. Colour detection sidesteps the whole fast-vs-slow timing question: a crop is
+# "not painted yet" iff it equals info_page_crop OR every pixel in it is one of the
+# two checkerboard colours, regardless of how many frames that state lasts -- 10
+# frames (F5 fast path) or 14,000+ (a real scan), the same test applies unchanged.
+_CHECKERBOARD_COLORS = frozenset({(231, 231, 247), (189, 189, 206)})
+
+
+def _is_checkerboard(crop: bytes) -> bool:
+    for i in range(0, len(crop), 3):
+        if (crop[i], crop[i + 1], crop[i + 2]) not in _CHECKERBOARD_COLORS:
+            return False
+    return True
+
+
+def _measure_b185_auto(core_mod, image_mod, rom: Path, down_n: int,
+                       label: str) -> tuple[int, bytes]:
+    """BACKLOG #185 D4 (review fix): measures the box-grid cold-locate cost
+    for EITHER the F5 known-ROM fast path (a table hit -- the portrait
+    paints within a handful of frames) or a real scan (hundreds to tens of
+    thousands of frames, depending on build), without needing to know ahead
+    of time which this image is. "Not painted yet" is either the S1 info
+    page's own crop (still mid-transition) or the known checkerboard
+    placeholder (_is_checkerboard() above, by colour, not by a
+    separately-sampled reference) -- whichever a given build actually shows
+    on its way to the real portrait, this is the first frame that is
+    neither, held stable for _STABLE_WINDOW frames. One session, one pass,
+    correct for any speed."""
+    s = gb_shots.Session(core_mod, image_mod, rom, Path("/tmp"), f"b185_{label}_")
     s.run(700)
-    s.press_n("DOWN", 3, settle=gb_shots.SETTLE)
+    s.press_n("DOWN", down_n, settle=gb_shots.SETTLE)
     s.tap("A", settle=60)
     info_page_crop = _crop_bytes(s.screen)
     s.core.set_keys(raw=gb_shots.KEY["A"])
@@ -3622,7 +3646,7 @@ def _measure_box_grid_cold_start_crystal(core_mod, image_mod, rom: Path,
         if frame % _SAMPLE_EVERY:
             continue
         cur = _crop_bytes(s.screen)
-        if cur == info_page_crop or cur == checkerboard_ref:
+        if cur == info_page_crop or _is_checkerboard(cur):
             candidate = None
             continue
         if cur == candidate:
@@ -3631,7 +3655,7 @@ def _measure_box_grid_cold_start_crystal(core_mod, image_mod, rom: Path,
         else:
             candidate = cur
             candidate_since = frame
-    raise RuntimeError(f"{rom}: Crystal box grid portrait never left its pre-paint state "
+    raise RuntimeError(f"{rom}: {label} box grid portrait never left its pre-paint state "
                        f"within {_MAX_FRAMES} frames")
 
 
@@ -3660,8 +3684,7 @@ def run_b185_cold_locate(core_mod, image_mod, noloc_image: Path,
     from PIL import Image
     ok: list[tuple[str, str]] = []
 
-    ref1 = _derive_checkerboard_ref(core_mod, image_mod, noloc_image)
-    frames1, px1 = _measure_box_grid_cold_start(core_mod, image_mod, noloc_image, ref1)
+    frames1, px1 = _measure_b185_auto(core_mod, image_mod, noloc_image, 1, "gen1")
     secs1 = frames1 / GBA_FPS
     bps1 = 0x100000 / secs1     # Red.gb is exactly 1 MiB (rom_gbsprite.c's own header check)
     print(f"  Gen 1 (Red.gb, 1,048,576 B)   : {frames1} frames, {secs1:.2f} s emulated, "
@@ -3674,8 +3697,7 @@ def run_b185_cold_locate(core_mod, image_mod, noloc_image: Path,
     ok.append((name1, cap1))
     print(f"  [ok]   {name1:32s} {cap1}")
 
-    ref2 = _derive_checkerboard_ref_crystal(core_mod, image_mod, noloc_image)
-    frames2, px2 = _measure_box_grid_cold_start_crystal(core_mod, image_mod, noloc_image, ref2)
+    frames2, px2 = _measure_b185_auto(core_mod, image_mod, noloc_image, 3, "gen2")
     secs2 = frames2 / GBA_FPS
     bps2 = 0x200000 / secs2     # Crystal.gbc is exactly 2 MiB
     print(f"  Gen 2 (Crystal.gbc, 2,097,152 B): {frames2} frames, {secs2:.2f} s emulated, "
