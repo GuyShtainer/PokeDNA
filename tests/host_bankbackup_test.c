@@ -255,15 +255,17 @@ static void t_verdict_matches_the_card(void) {
         "untested");
 }
 
-/* ---- BACKLOG #163: structural check -- both dirty-flush callers in pdna_bank.c
- * (banksrc_records and pdna_bank_flush_deletions) must CONSUME the flush's verdict at
- * their page-out site, not fire it and move on. pdna_bank.c is not host-linkable (it
- * includes <tonc.h> and "ui.h"), so this is a text-level check over its own source,
- * comment-stripped so a call sitting only in a comment cannot satisfy (or hide from)
- * it -- the same "comment-strip + text search" discipline
+/* ---- BACKLOG #163 (+ #181): structural check -- all THREE dirty-flush callers in
+ * pdna_bank.c (banksrc_records, pdna_bank_flush_deletions, and pdna_bank_clear_slots)
+ * must CONSUME the flush's verdict at their page-out site, not fire it and move on.
+ * pdna_bank_clear_slots was the one BACKLOG #163 left behind with the exact pre-fix
+ * `if (g_dirty) box_save();` shape -- #181 closes it the same way. pdna_bank.c is not
+ * host-linkable (it includes <tonc.h> and "ui.h"), so this is a text-level check over
+ * its own source, comment-stripped so a call sitting only in a comment cannot satisfy
+ * (or hide from) it -- the same "comment-strip + text search" discipline
  * tests/host_escape_gate_sites_test.py documents and uses on pdna_box.c. A
- * self-mutation (the exact PRE-FIX shape this ticket exists for, `if (g_dirty)
- * box_save();` with the return silently discarded) proves the check has teeth. ---- */
+ * self-mutation per site (the exact PRE-FIX shape this ticket exists for, `if (g_dirty)
+ * box_save();` with the return silently discarded) proves each check has teeth. ---- */
 
 /* Comment-stripped copy of `text` into `out` (blanks block and line comment spans,
  * keeps every other byte and all newlines, so a later strstr never matches inside dead
@@ -324,7 +326,7 @@ static void t_flush_callers_check_the_return(void) {
   static char stripped[131072];
   strip_c_comments(raw, n, stripped, sizeof stripped);
 
-  char records_body[4096], flush_body[4096];
+  char records_body[4096], flush_body[4096], clear_slots_body[4096];
   CHECK(slice_function(stripped, "static uint8_t* banksrc_records(int box) {",
                         "static void banksrc_get_name(int box, char out[12]) {",
                         records_body, sizeof records_body) != NULL,
@@ -332,6 +334,12 @@ static void t_flush_callers_check_the_return(void) {
   CHECK(slice_function(stripped, "int pdna_bank_flush_deletions(void) {", "static bool has_pk_ext(const char* n) {",
                         flush_body, sizeof flush_body) != NULL,
         "structural: pdna_bank_flush_deletions( not found in source/pdna_bank.c");
+  CHECK(slice_function(stripped,
+                        "bool pdna_bank_clear_slots(int box, const uint8_t* slots, "
+                        "const uint8_t (*recs80)[80], int n) {",
+                        "int pdna_bank_flush_deletions(void) {",
+                        clear_slots_body, sizeof clear_slots_body) != NULL,
+        "structural: pdna_bank_clear_slots( not found in source/pdna_bank.c");
 
   CHECK(flush_site_checked(records_body),
         "structural: banksrc_records() does not consume box_save_or_keep_dirty()'s "
@@ -340,6 +348,10 @@ static void t_flush_callers_check_the_return(void) {
         "structural: pdna_bank_flush_deletions() does not consume "
         "box_save_or_keep_dirty()'s return before paging out (BACKLOG #163's own "
         "refusal-goes-silent bug)");
+  CHECK(flush_site_checked(clear_slots_body),
+        "structural: pdna_bank_clear_slots() does not consume "
+        "box_save_or_keep_dirty()'s return before paging out (BACKLOG #181, the "
+        "third site BACKLOG #163 left behind)");
 
   /* self-mutation: revert banksrc_records's real, checked site back to the exact
    * pre-fix bug shape and prove flush_site_checked() catches it -- every run, not just
@@ -360,6 +372,29 @@ static void t_flush_callers_check_the_return(void) {
             "`if (g_dirty) box_save();` shape should have been caught but was not");
       printf("  MUT (BACKLOG #163) demonstration -- banksrc_records reverted to the "
              "pre-fix unchecked flush: correctly caught\n");
+    }
+  }
+
+  /* self-mutation, THIRD site (BACKLOG #181): revert pdna_bank_clear_slots's real,
+   * checked line back to the exact pre-fix bug shape and prove flush_site_checked()
+   * catches it too -- this is the one BACKLOG #163 left unchecked, so its own
+   * mutation demonstration is the whole point of this ticket, not an afterthought. */
+  {
+    const char* real_line = "if (g_dirty && !box_save_or_keep_dirty()) return false;";
+    CHECK(strstr(clear_slots_body, real_line) != NULL,
+          "MUT (BACKLOG #181): the real pdna_bank_clear_slots() line has drifted -- "
+          "update this test's expected shape before trusting the mutation demonstration");
+    char mutated[4096];
+    const char* hit = strstr(clear_slots_body, real_line);
+    if (hit) {
+      size_t pre = (size_t)(hit - clear_slots_body);
+      snprintf(mutated, sizeof mutated, "%.*s%s%s", (int)pre, clear_slots_body,
+               "if (g_dirty) box_save();", hit + strlen(real_line));
+      CHECK(!flush_site_checked(mutated),
+            "MUT (BACKLOG #181): reverting pdna_bank_clear_slots to the pre-fix "
+            "`if (g_dirty) box_save();` shape should have been caught but was not");
+      printf("  MUT (BACKLOG #181) demonstration -- pdna_bank_clear_slots reverted to "
+             "the pre-fix unchecked flush: correctly caught\n");
     }
   }
 }
