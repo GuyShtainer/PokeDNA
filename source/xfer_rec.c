@@ -158,7 +158,7 @@ bool xr_merge_down(const GbscEntry* e, const uint8_t g3_rec80[80], GbEditMon* ou
   /* The Gen-2 held item (a GB-only concept) always stays in the cell -- it was never
    * part of the Gen-3 record to begin with, so there is nothing to fold in here; the
    * confirm screen's shipped string just needs to say so (G-H7). */
-  rep->gb_item_ignored = (home.gen == GB_GEN2);
+  rep->gb_item_ignored = (home.gen == GB_GEN2) && gb_get_held_item(&home) != 0;
 
   return true;
 }

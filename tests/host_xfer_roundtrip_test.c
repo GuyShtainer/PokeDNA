@@ -579,6 +579,14 @@ static void xr_run_one(const char* tag, const GbEditMon* mon, uint8_t origin, Xr
   if (mon->gen == GB_GEN2) {
     uint8_t item = written.rec[0x03];   /* Gen-2 box record: held item byte           */
     if (item != 0) CHECK(merged.rec[0x03] == item, "%s: held item byte comes back (%u)", tag, item);
+    /* review D7: gb_item_ignored must be true only when the HOME actually holds an
+     * item, not merely "this is a Gen-2 cell" -- an empty-handed Gen-2 mon has
+     * nothing to ignore. */
+    CHECK(rep.gb_item_ignored == (gb_get_held_item(&written) != 0),
+          "%s: gb_item_ignored == (home holds an item) (got %d, home item=%u)",
+          tag, (int)rep.gb_item_ignored, gb_get_held_item(&written));
+  } else {
+    CHECK(!rep.gb_item_ignored, "%s: gb_item_ignored is false for a Gen-1 home (no items at all)", tag);
   }
 
   if (capture && !capture->have) {
