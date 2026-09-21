@@ -1423,7 +1423,7 @@ static bool gb_edit_commit(int box, int slot, const GbEditMon* e, const char* wh
  * m->party_box + 1 at call time so the array is a fixed frame slot, not a VLA. */
 #define GB12_PICKBOX_MAX 15
 
-static int gb_pick_box(const Gb12Mount* m, int exclude) {
+static int gb_pick_box(const Gb12Mount* m, int exclude, const char* title) {
   int n = m->party_box + 1;
   if (n <= 1) return -1;
   if (n > GB12_PICKBOX_MAX) n = GB12_PICKBOX_MAX;   /* defensive; never true today */
@@ -1432,11 +1432,28 @@ static int gb_pick_box(const Gb12Mount* m, int exclude) {
    * unreachable as `exclude` -- moving a Pokemon there would only bounce back off
    * gbs_move's own gbs_commit_list gate, so it is dimmed and skipped here instead of
    * offered and then refused a screen later. Computed ONCE, not per repaint: a box's
-   * writability cannot change while this picker is up (nothing else touches the image). */
+   * writability cannot change while this picker is up (nothing else touches the image).
+   *
+   * BACKLOG #187/#193, F3: also dim+skip a box that is genuinely FULL -- picking one
+   * used to be offered and only THEN refused a screen later by gbs_move/gbs_insert's
+   * own GBS_ERR_FULL; this picker now shows that up front instead (both the count and
+   * the skip), so "refuse only when NO box has room" (DUPLICATE's new full-box path,
+   * gb_dup_hook below) can just call this same picker and trust it never offers a
+   * full one. cnt[]/cap[] feed the row labels below. g_ed->list2 as scratch: same
+   * "safe here, nothing past this point touches list2 for real until the caller's
+   * OWN gbs_move/gbs_insert call after this function returns" reasoning
+   * gb_first_free_box's own comment documents for the identical pattern. */
   bool skip[GB12_PICKBOX_MAX];
+  int  cnt[GB12_PICKBOX_MAX], cap[GB12_PICKBOX_MAX];
   int selectable = 0;
   for (int b = 0; b < n; b++) {
-    skip[b] = (b == exclude) || (gbs_box_writable(&g_ed->s, b) != GBS_OK);
+    cap[b] = gb_list_capacity(g_ed->s.gen, b);
+    cnt[b] = -1;
+    bool writable = gbs_box_writable(&g_ed->s, b) == GBS_OK;
+    if (writable && gbs_load_list(&g_ed->s, b, g_ed->list2) == GBS_OK)
+      cnt[b] = gb_list_count(g_ed->s.gen, g_ed->list2, b);
+    bool full = cap[b] > 0 && cnt[b] >= 0 && cnt[b] >= cap[b];
+    skip[b] = (b == exclude) || !writable || full;
     if (!skip[b]) selectable++;
   }
   if (!selectable) {
@@ -1452,18 +1469,23 @@ static int gb_pick_box(const Gb12Mount* m, int exclude) {
     if (sel >= top + PDNA_GBEDIT_PICKBOX_ROWS) top = sel - PDNA_GBEDIT_PICKBOX_ROWS + 1;
 
     ui_clear();
-    ui_text(4, 3, UI_TITLE, PDNA_GBEDIT_PICKBOX_TITLE);
+    ui_text(4, 3, UI_TITLE, title);
     ui_hline(0, 13, UI_SCR_W, UI_BORDER);
     int shown = n - top;
     if (shown > PDNA_GBEDIT_PICKBOX_ROWS) shown = PDNA_GBEDIT_PICKBOX_ROWS;
     for (int i = 0; i < shown; i++) {
       int b = top + i;
-      char nm[12];
+      char nm[12], row[24];
       pdna_gen12_box_name(m, b, nm);
+      /* BACKLOG #187/#193, F3: "NAME  n/cap" -- cnt[b] < 0 means the count could not
+       * be read (an otherwise-writable box whose list came back malformed); shown as
+       * "?/cap" rather than a wrong number. */
+      if (cnt[b] >= 0) siprintf(row, "%s  %d/%d", nm, cnt[b], cap[b] > 0 ? cap[b] : 0);
+      else             siprintf(row, "%s  ?/%d", nm, cap[b] > 0 ? cap[b] : 0);
       int y = PDNA_GBEDIT_PICKBOX_Y0 + i * PDNA_GBEDIT_PICKBOX_ROW_H;
       bool sh = (b == sel);
       if (sh) ui_panel(2, y - 1, UI_SCR_W - 4, PDNA_GBEDIT_PICKBOX_ROW_H, UI_SEL, UI_TITLE);
-      ui_text(4, y, skip[b] ? UI_DIM : (sh ? UI_SELTEXT : UI_TEXT), nm);
+      ui_text(4, y, skip[b] ? UI_DIM : (sh ? UI_SELTEXT : UI_TEXT), row);
     }
     ui_hline(0, 147, UI_SCR_W, UI_BORDER);
     ui_text(4, 150, UI_DIM, PDNA_GBEDIT_PICKBOX_FOOT);
@@ -1737,7 +1759,7 @@ static bool gb_move_hook(uint8_t* rec80) {
   int box, slot;
   if (!gb_locate(rec80, &box, &slot)) return false;
 
-  int dst = gb_pick_box(g_m, box);
+  int dst = gb_pick_box(g_m, box, PDNA_GBEDIT_PICKBOX_TITLE);
   if (dst < 0) return false;                       /* B on the picker: nothing touched */
 
   return gb_move_core(box, slot, dst);
@@ -1992,16 +2014,30 @@ static bool gb_dup_hook(uint8_t* rec80) {
   if (!gb_dup_confirm(s->gen, g_ed->list, box, slot, &e)) return false;
 
   int slot_out = -1;
-  GbsStatus ist = gbs_insert(s, box, &e, &slot_out, g_ed->list);
+  int dst = box;
+  GbsStatus ist = gbs_insert(s, dst, &e, &slot_out, g_ed->list);
+  /* BACKLOG #187/#193, F3: a full SOURCE box used to be a flat refusal with no
+   * alternative -- Guy's own words ("cant duplicate pokemon ... always errors with a
+   * full box") describe exactly this UX gap on a corpus where boxes 1-7 really are
+   * 20/20 full. Offer gb_pick_box (same picker MOVE TO BOX uses, now showing n/cap
+   * and dimming full boxes too, F3's other half) for a destination WITH room instead
+   * of refusing outright; B on the picker, or every other box also being full
+   * (gb_pick_box's own "NO DESTINATION" message), still refuses -- nothing is
+   * touched (gb_rollback below is a no-op over an untouched image either way). */
+  if (ist == GBS_ERR_FULL) {
+    dst = gb_pick_box(g_m, box, PDNA_GBEDIT_PICKBOX_DUP_TITLE);
+    if (dst < 0) { gb_rollback(); return false; }
+    ist = gbs_insert(s, dst, &e, &slot_out, g_ed->list);
+  }
   if (ist != GBS_OK) {
     gb_rollback();
-    log_line("gen12: dup box %d slot %d refused: %s", box, slot, gbs_status_text(ist));
+    log_line("gen12: dup box %d slot %d -> box %d refused: %s", box, slot, dst, gbs_status_text(ist));
     snd_error();
     msg_wait(PDNA_GBEDIT_REFUSED_TITLE, UI_WARN, gbs_status_text(ist), PDNA_GBEDIT_UNCHANGED_L2);
     return false;
   }
 
-  log_line("=== gb dup -> %s box %d slot %d -> slot %d ===", g_ed->path, box, slot, slot_out);
+  log_line("=== gb dup -> %s box %d slot %d -> box %d slot %d ===", g_ed->path, box, slot, dst, slot_out);
   bool ok = gb_persist("dup");
   if (ok) {
     char l1[32];

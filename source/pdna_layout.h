@@ -768,6 +768,10 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 /* gb_pick_box's full-screen destination list -- same fixed sys8 layout as
  * gb_report_page/gb_info_page (title at x=4,y=3; footer at x=4,y=150; both 8px/glyph). */
 #define PDNA_GBEDIT_PICKBOX_TITLE  "MOVE TO"
+/* BACKLOG #187/#193, F3: DUPLICATE reuses gb_pick_box() (same layout/gating) for its
+ * own full-source-box destination picker -- a distinct title so the screen never
+ * reads "MOVE TO" while the mon is actually being copied, not relocated. */
+#define PDNA_GBEDIT_PICKBOX_DUP_TITLE "DUPLICATE TO"
 #define PDNA_GBEDIT_PICKBOX_FOOT   "A pick  B cancel"
 #define PDNA_GBEDIT_PICKBOX_Y0     20    /* first row's y, below the y=13 title rule */
 #define PDNA_GBEDIT_PICKBOX_ROW_H  10
