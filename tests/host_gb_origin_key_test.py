@@ -160,6 +160,33 @@ def main() -> int:
         xr_pos = body.find("xr_path_for_name")
         check(cache_pos != -1 and xr_pos != -1 and cache_pos < xr_pos,
               "the origin_write_failed cache check must run BEFORE xr_path_for_name/file I/O")
+
+        # BACKLOG #191b: the Gen-1 Yellow auto-detect must run BEFORE the #172
+        # sidecar logic (cache check AND the .og file I/O) -- same "no prompt, no
+        # sidecar" bypass shape the Crystal check already has at the top of this
+        # function. A regression that moved the detector call after cache_pos/xr_pos
+        # would still LOOK correct (all three calls present) without this ordering
+        # check.
+        detect_pos = body.find("gen1_detect_yellow_window")
+        win_pos = body.find("GEN1_YELLOW_WIN_OFF")
+        yellow_return_pos = body.find("return BC_ORIGIN_YELLOW")
+        check(detect_pos != -1, "gb_origin_for_save must call gen1_detect_yellow_window (BACKLOG #191b)")
+        check(win_pos != -1, "gb_origin_for_save must read the GEN1_YELLOW_WIN_OFF window off the live mount")
+        check(yellow_return_pos != -1 and detect_pos != -1 and yellow_return_pos > detect_pos,
+              "a detected-Yellow save must return BC_ORIGIN_YELLOW right after the detector call, "
+              "mirroring the Crystal bypass")
+        check(detect_pos != -1 and cache_pos != -1 and detect_pos < cache_pos,
+              "the Gen-1 detector must run BEFORE the #172 origin_write_failed cache check")
+        check(detect_pos != -1 and xr_pos != -1 and detect_pos < xr_pos,
+              "the Gen-1 detector must run BEFORE any .og sidecar file I/O (xr_path_for_name)")
+        # The detector's ambiguous case (-1) and the never-reached "proven not
+        # Yellow" case (0) must both still fall through to the existing prompt --
+        # only a hard `== 1` short-circuits it. A mutant loosening this to `!= 0`
+        # would wrongly skip the prompt on -1 (the common real-world case, per
+        # gen1_save.h's own "all-zero returns -1, never 0" rule).
+        check("if (yd == 1) return BC_ORIGIN_YELLOW;" in body,
+              "only detector result 1 (proven Yellow) may bypass the prompt -- -1/0 must still ask")
+
         check("len >= 5" in body,
               "the .og read gate must require the 5-byte format (answer + 4-byte fingerprint), not len >= 1")
         check("len >= 1" not in body,
@@ -189,6 +216,12 @@ def main() -> int:
         # cached byte) survived because nothing checked the exact return statement.
         check("return g_ed->origin_cached;" in body,
               "the mount-wide cache must return the ANSWERED byte (g_ed->origin_cached), not a stub value")
+
+    pick_sig = re.search(r"gb_pick_origin\s*\(\s*uint8_t\s+gen\s*,\s*bool\s+crystal\s*,\s*bool\s+yellow_possible\s*\)", text)
+    check(bool(pick_sig), "gb_pick_origin must take a yellow_possible parameter (BACKLOG #191b)")
+
+    call_site = re.search(r"gb_pick_origin\s*\(\s*gen\s*,\s*false\s*,\s*yellow_possible\s*\)", text)
+    check(bool(call_site), "gb_origin_for_save must pass its own yellow_possible through to gb_pick_origin")
 
     end_struct = text.find("} Gb12Edit;")
     start_struct = max(0, end_struct - 800)

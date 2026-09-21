@@ -1496,19 +1496,24 @@ static uint8_t gb_pick_origin_default(uint8_t gen) {
  * s_wait(KEY_UP|KEY_DOWN|KEY_A|KEY_B) loop, same PDNA_GBEDIT_PICKBOX_* row metrics --
  * Gen-1/2 UX parity: reuse the session's own picker idiom, do not invent a screen).
  * Exactly the three games of the detected generation (Gen 2 non-Crystal is two
- * rows). Returns the picked BC_ORIGIN_* value, or -1 on B (cancel -- the LIFT fails,
- * nothing held, nothing written). */
-static int __attribute__((noinline)) gb_pick_origin(uint8_t gen, bool crystal) {
+ * rows) -- EXCEPT `yellow_possible == false` (BACKLOG #191b: gen1_detect_yellow()
+ * came back 0, i.e. proved not-Yellow), which drops to the two Red/Blue rows only,
+ * same shape as Gen 2's two rows. gen1_detect_yellow() never actually returns 0
+ * today (see gen1_save.h), so this parameter has no live caller yet -- it exists so
+ * the call site is correct the day a 0-producing rule is found, rather than a second
+ * change needed then. Returns the picked BC_ORIGIN_* value, or -1 on B (cancel --
+ * the LIFT fails, nothing held, nothing written). */
+static int __attribute__((noinline)) gb_pick_origin(uint8_t gen, bool crystal, bool yellow_possible) {
   if (crystal) return BC_ORIGIN_CRYSTAL;   /* D-Q7: Crystal is not ambiguous -- no prompt at all */
 
   const char* names[3];
   uint8_t     vals[3];
   int n;
   if (gen == GB_GEN1) {
-    n = 3;
+    n = 2;
     names[0] = PDNA_XFER_GAME_RED;    vals[0] = BC_ORIGIN_RED;
     names[1] = PDNA_XFER_GAME_BLUE;   vals[1] = BC_ORIGIN_BLUE;
-    names[2] = PDNA_XFER_GAME_YELLOW; vals[2] = BC_ORIGIN_YELLOW;
+    if (yellow_possible) { names[n] = PDNA_XFER_GAME_YELLOW; vals[n] = BC_ORIGIN_YELLOW; n++; }
   } else {
     n = 2;
     names[0] = PDNA_XFER_GAME_GOLD;   vals[0] = BC_ORIGIN_GOLD;
@@ -1609,6 +1614,23 @@ static uint32_t gb_origin_fingerprint(void) {
 static int __attribute__((noinline)) gb_origin_for_save(uint8_t gen, bool crystal) {
   if (crystal) return BC_ORIGIN_CRYSTAL;
 
+  /* BACKLOG #191b: Gen-1 origin bypass, the same shape as the Crystal bypass above --
+   * BEFORE any sidecar/.og read, ask the save's own bytes whether it is Yellow
+   * (gen1_detect_yellow_window(), gen1_save.h). g_m->rd/g_m->ctx is the mount's
+   * streamed reader (Gb12Mount has no whole-image buffer to hand gen1_detect_yellow()
+   * itself -- see gen1_save.h's own note on the two entry points), so this reads only
+   * the 128-byte window the detector needs, not the full 32 KiB save. A read failure
+   * (should not happen mid-mount) folds to -1 (ambiguous), same as the detector's own
+   * "cannot cover the window" case -- never a crash, never a false "not Yellow". */
+  bool yellow_possible = true;
+  if (gen == GB_GEN1) {
+    uint8_t win[GEN1_YELLOW_WIN_LEN];
+    bool got = g_m && g_m->rd && g_m->rd(g_m->ctx, GEN1_YELLOW_WIN_OFF, win, GEN1_YELLOW_WIN_LEN);
+    int yd = got ? gen1_detect_yellow_window(win, GEN1_YELLOW_WIN_LEN) : -1;
+    if (yd == 1) return BC_ORIGIN_YELLOW;   /* proven Yellow: no prompt, no sidecar read/write */
+    yellow_possible = (yd != 0);            /* dead today (see gb_pick_origin's own note) */
+  }
+
   /* BACKLOG #172: an earlier lift this mount already answered and could not
    * persist it -- honour that in-RAM answer rather than re-prompting (which
    * could pick a DIFFERENT origin and mis-route S150-7's exact DOWN mid-mount). */
@@ -1638,7 +1660,7 @@ static int __attribute__((noinline)) gb_origin_for_save(uint8_t gen, bool crysta
      * save landed at this path, BACKLOG #172) -> re-prompt below and rewrite */
   }
 
-  int picked = gb_pick_origin(gen, false);
+  int picked = gb_pick_origin(gen, false, yellow_possible);
   if (picked < 0) return -1;                          /* B cancels the lift */
 
   FRESULT mkr = f_mkdir(PDNA_XFER_DIR);
