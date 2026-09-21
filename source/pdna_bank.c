@@ -119,7 +119,19 @@ static bool __attribute__((noinline)) meta_load(void) {
   return true;
 }
 
+/* Review fix 4 (BACKLOG #191a), hard rule 9: /PokeDNA/bank is otherwise created
+ * ONLY by pdna_bank_show() (below) -- on a card whose Bank screen was never opened
+ * yet, pdna_bank_next_serial()'s meta_save() (the ONLY other path that reaches this
+ * write) failed at the FatFs layer with no directory to write into, refusing the
+ * FIRST-EVER grab with a silent beep (Guy's own #191a report, traced by the review
+ * to here). Same idempotent, return-ignored idiom pdna_bank_show() already uses --
+ * f_mkdir on an existing directory returns FR_EXIST, which this (like that call)
+ * does not distinguish from success; either way the directory exists after this
+ * line. */
 static bool meta_save(void) {
+  f_mkdir("/PokeDNA");
+  f_mkdir(PDNA_BANK_DIR);
+
   uint8_t buf[META_BYTES];
   memset(buf, 0, sizeof buf);
   memcpy(buf, META_MAGIC, 6);

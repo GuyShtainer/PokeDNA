@@ -30,6 +30,21 @@ Four checks:
       whole point (both DUPLICATE's and CREATE's new full-box path trust it
       to show room, not just names) is silently lost if this regresses.
 
+  (e) review fix, MEDIUM: gb_move_within_hook's own body (source/pdna_gen12.c)
+      calls gb_move_core( -- checks (a)-(d) alone pin that the hook is WIRED,
+      not that it actually MOVES anything; a mutant that ignores its
+      arguments and returns true unconditionally left the whole suite green
+      before this check existed.
+
+  (f) review fix 4, BACKLOG #191a: source/pdna_bank.c's meta_save() -- the
+      ONLY path pdna_bank_next_serial() reaches to persist a new serial --
+      creates /PokeDNA/bank (f_mkdir, same return-ignored idiom
+      pdna_bank_show() already uses) before its own sf_write_verified() call.
+      Without this, the first-ever grab on a card whose Bank screen was never
+      opened refuses with a silent beep (meta_save's write fails at the
+      FatFs layer -- no directory to write into) -- Guy's own #191a report,
+      traced by the review to here.
+
 Run directly:
 
     python3 tests/host_gb_grid_ops_test.py
@@ -45,6 +60,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SRC_BOX = ROOT / "source" / "pdna_box.c"
 SRC_GEN12 = ROOT / "source" / "pdna_gen12.c"
+SRC_BANK = ROOT / "source" / "pdna_bank.c"
 
 
 def strip_comments(text: str) -> str:
@@ -168,23 +184,49 @@ def check_move_within_moves(gen12_text: str) -> list[str]:
     return []
 
 
-def run_all(box_text: str, gen12_text: str) -> list[str]:
+def check_meta_save_mkdirs(bank_text: str) -> list[str]:
+    """(f) review fix 4, BACKLOG #191a: meta_save()'s own body (comments stripped)
+    must call f_mkdir( at least twice (the "/PokeDNA" then PDNA_BANK_DIR pair
+    pdna_bank_show() already uses) BEFORE its own write call
+    (sf_write_verified() -- meta_save's real write; the assignment-only prep code
+    above it does not touch the card). Two separate f_mkdir( calls, not one,
+    because a straight-to-PDNA_BANK_DIR mkdir fails on a card where "/PokeDNA"
+    itself does not exist yet either (same two-level idiom pdna_bank_show() uses)."""
+    body = strip_comments(extract_function_body(bank_text, "meta_save"))
+    if not body:
+        return ["pdna_bank.c: meta_save() function body not found"]
+    wm = re.search(r"sf_write_verified\s*\(", body)
+    if not wm:
+        return ["pdna_bank.c: meta_save() no longer calls sf_write_verified( -- "
+                "check is stale, update it"]
+    head = body[:wm.start()]
+    if len(re.findall(r"\bf_mkdir\s*\(", head)) < 2:
+        return ["pdna_bank.c: meta_save() does not f_mkdir( the Bank directory "
+                "(both '/PokeDNA' and PDNA_BANK_DIR) before its own "
+                "sf_write_verified( call -- the first-ever grab on a virgin card "
+                "refuses with a silent beep again (BACKLOG #191a regression)"]
+    return []
+
+
+def run_all(box_text: str, gen12_text: str, bank_text: str) -> list[str]:
     return (check_select_gate(box_text)
             + check_move_within_wired(box_text, gen12_text)
             + check_dup_reaches_picker(gen12_text)
             + check_picker_paints_ncap(gen12_text)
-            + check_move_within_moves(gen12_text))
+            + check_move_within_moves(gen12_text)
+            + check_meta_save_mkdirs(bank_text))
 
 
 def main() -> int:
-    if not SRC_BOX.exists() or not SRC_GEN12.exists():
-        print("SKIP (source/pdna_box.c or source/pdna_gen12.c not found)")
+    if not SRC_BOX.exists() or not SRC_GEN12.exists() or not SRC_BANK.exists():
+        print("SKIP (source/pdna_box.c, source/pdna_gen12.c or source/pdna_bank.c not found)")
         return 0
 
     box_text = SRC_BOX.read_text()
     gen12_text = SRC_GEN12.read_text()
+    bank_text = SRC_BANK.read_text()
 
-    violations = run_all(box_text, gen12_text)
+    violations = run_all(box_text, gen12_text, bank_text)
     if violations:
         print("FAIL -- shipped source has a b187 regression:")
         for v in violations:
@@ -192,12 +234,14 @@ def main() -> int:
         return 1
     print("ok: shipped source -- F1's SELECT gate shape, F2's move_within wiring "
           "(both ends) AND its behavioural body, F3's DUPLICATE->gb_pick_box path, "
-          "and F3/F4's n/cap picker labels are all present")
+          "F3/F4's n/cap picker labels, and meta_save's Bank-directory mkdir are "
+          "all present")
 
     tmpdir = Path(tempfile.mkdtemp(prefix="gbgridops_"))
     try:
         box_scratch = tmpdir / "pdna_box.c"
         gen12_scratch = tmpdir / "pdna_gen12.c"
+        bank_scratch = tmpdir / "pdna_bank.c"
 
         # --- mutant 1: restore the SELECT gate (F1 regression) -----------------
         target1 = ("else if (s_cur_mode != CM_NORMAL ||\n"
@@ -278,10 +322,27 @@ def main() -> int:
               "correctly caught:")
         for v in m4:
             print(f"  (mutated-copy) FAIL: {v}")
+
+        # --- mutant 5 (review fix 4, BACKLOG #191a): drop the mkdir -------------
+        target5 = '  f_mkdir("/PokeDNA");\n  f_mkdir(PDNA_BANK_DIR);\n\n  uint8_t buf[META_BYTES];'
+        mutated_line5 = "  uint8_t buf[META_BYTES];"
+        if target5 not in bank_text:
+            print(f"FAIL -- mutant 5 target not found verbatim (source drifted -- "
+                  f"update this test's target string):\n{target5!r}")
+            return 1
+        bank_scratch.write_text(bank_text.replace(target5, mutated_line5, 1))
+        m5 = check_meta_save_mkdirs(bank_scratch.read_text())
+        if not m5:
+            print("FAIL -- mutant 5 (drop the mkdir) did NOT turn check (f) red "
+                  "(vacuous check)")
+            return 1
+        print("mutant 5 (drop the mkdir): correctly caught:")
+        for v in m5:
+            print(f"  (mutated-copy) FAIL: {v}")
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
-    print("\nhost_gb_grid_ops_test: ok (shipped source clean, all four mutations caught)")
+    print("\nhost_gb_grid_ops_test: ok (shipped source clean, all five mutations caught)")
     return 0
 
 
