@@ -232,6 +232,99 @@ static void expect_gen2(const char* file, uint8_t expect_gen,
   printf("     TM/HM owned (nonzero count): %d/57\n", owned);
 }
 
+/* ------------------------------------------------- P1: gbb_pocket_of() pin
+ *
+ * BACKLOG #195: independently re-derived from the SAME decomp source the
+ * brief cites (pokecrystal's data/items/attributes.asm pocket column) --
+ * NOT copied from gb_bag.c's own kBalls/kKey tables, so a shifted range or a
+ * dropped id in gb_bag.c actually shows up as a mismatch here rather than
+ * both sides agreeing by construction. Every id 1..0xBE (Gen 2's real-item
+ * range) and the TM/HM id block 0xBF..0xF9 are checked; Gen 1 gets its own
+ * (much simpler) ITEMS-vs-TM/HM check over 1..0xFA. */
+static const uint8_t kPinG2Balls[] = {
+  0x01, 0x02, 0x04, 0x05, 0x9D, 0x9F, 0xA0, 0xA1, 0xA4, 0xA5, 0xA6, 0xB1,
+};
+static const uint8_t kPinG2Key[] = {
+  0x07, 0x36, 0x37, 0x3A, 0x3B, 0x3D, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47,
+  0x73, 0x74, 0x7F, 0x80, 0x81, 0x82, 0x85, 0x86, 0xAF, 0xB2,
+};
+
+static bool pin_in(uint8_t id, const uint8_t* set, size_t n) {
+  for (size_t i = 0; i < n; i++) if (set[i] == id) return true;
+  return false;
+}
+
+/* Independently re-derived TM/HM admission test (same four ranges + two
+ * holes gb_bag.c's gbb_tmhm_index_of documents, re-checked here rather than
+ * called -- a pin calling the function it is pinning could never catch a
+ * bug IN that function). */
+static bool pin_g2_is_tmhm(uint8_t id) {
+  if (id >= 0xBFu && id <= 0xC2u) return true;   /* TM01-04 */
+  if (id == 0xC3u) return false;                 /* hole */
+  if (id >= 0xC4u && id <= 0xDBu) return true;   /* TM05-28 */
+  if (id == 0xDCu) return false;                 /* hole */
+  if (id >= 0xDDu && id <= 0xF2u) return true;   /* TM29-50 */
+  if (id >= 0xF3u && id <= 0xF9u) return true;   /* HM01-07 */
+  return false;
+}
+
+static void pocket_of_pin(void) {
+  g_ran++;
+  int mismatches = 0;
+  for (unsigned i = 1; i <= 0xF9u; i++) {
+    uint8_t id = (uint8_t)i;
+    GbBagPocket got = gbb_pocket_of(GBF_G_GS, id);
+    GbBagPocket want;
+    if (id > 0xBEu) want = pin_g2_is_tmhm(id) ? GBB_POCKET_TMHM : GBB_POCKET_COUNT;
+    else if (pin_in(id, kPinG2Balls, sizeof kPinG2Balls)) want = GBB_POCKET_BALLS;
+    else if (pin_in(id, kPinG2Key, sizeof kPinG2Key))     want = GBB_POCKET_KEY;
+    else                                                   want = GBB_POCKET_ITEMS;
+    if (got != want) {
+      mismatches++;
+      printf("  !! FAIL: gbb_pocket_of(GS, 0x%02X) = %d, want %d\n", id, got, want);
+    }
+  }
+  for (unsigned i = 0xFAu; i <= 0xFFu; i++) {   /* past HM07: never a valid Gen-2 id */
+    GbBagPocket got = gbb_pocket_of(GBF_G_GS, (uint8_t)i);
+    if (got != GBB_POCKET_COUNT) {
+      mismatches++;
+      printf("  !! FAIL: gbb_pocket_of(GS, 0x%02X) = %d, want GBB_POCKET_COUNT (invalid)\n", i, got);
+    }
+  }
+  CHECKF(gbb_pocket_of(GBF_G_GS, 0x00u) == GBB_POCKET_COUNT, "gbb_pocket_of(GS, 0x00) must be COUNT");
+  CHECKF(gbb_pocket_of(GBF_G_CRYSTAL, 0x73u) == GBB_POCKET_KEY, "GS_BALL (0x73) is a KEY item, not a Ball");
+
+  /* Gen 1: ITEMS vs TM/HM only (0xC4..0xFA, no holes -- gb_item_names.c's
+   * own gb1_tmhm_label range, re-checked independently here). */
+  for (unsigned i = 1; i <= 0xFAu; i++) {
+    uint8_t id = (uint8_t)i;
+    GbBagPocket got = gbb_pocket_of(GBF_G_RED, id);
+    GbBagPocket want = (id >= 0xC4u && id <= 0xFAu) ? GBB_POCKET_TMHM : GBB_POCKET_ITEMS;
+    if (got != want) {
+      mismatches++;
+      printf("  !! FAIL: gbb_pocket_of(RED, 0x%02X) = %d, want %d\n", id, got, want);
+    }
+  }
+  CHECKF(gbb_pocket_of(GBF_G_RED, 0xFBu) == GBB_POCKET_COUNT, "gbb_pocket_of(RED, 0xFB) must be COUNT (past 0xFA)");
+
+  /* gbb_tmhm_index_of(): the count-array index round-trips through the same
+   * four ranges, 0-based TM01..HM07, and returns -1 outside them or on Gen 1. */
+  CHECKF(gbb_tmhm_index_of(GBF_G_GS, 0xBFu) == 0,  "TM01 index");
+  CHECKF(gbb_tmhm_index_of(GBF_G_GS, 0xC2u) == 3,  "TM04 index");
+  CHECKF(gbb_tmhm_index_of(GBF_G_GS, 0xC3u) == -1, "hole 0xC3 index");
+  CHECKF(gbb_tmhm_index_of(GBF_G_GS, 0xC4u) == 4,  "TM05 index");
+  CHECKF(gbb_tmhm_index_of(GBF_G_GS, 0xDBu) == 27, "TM28 index");
+  CHECKF(gbb_tmhm_index_of(GBF_G_GS, 0xDCu) == -1, "hole 0xDC index");
+  CHECKF(gbb_tmhm_index_of(GBF_G_GS, 0xDDu) == 28, "TM29 index");
+  CHECKF(gbb_tmhm_index_of(GBF_G_GS, 0xF2u) == 49, "TM50 index");
+  CHECKF(gbb_tmhm_index_of(GBF_G_GS, 0xF3u) == 50, "HM01 index");
+  CHECKF(gbb_tmhm_index_of(GBF_G_GS, 0xF9u) == 56, "HM07 index");
+  CHECKF(gbb_tmhm_index_of(GBF_G_RED, 0xC9u) == -1, "Gen 1 has no TM/HM count array");
+
+  CHECK(mismatches == 0, "gbb_pocket_of()/gbb_tmhm_index_of() table pin (see FAILs above)");
+  printf("  P1: gbb_pocket_of() pinned over 1..0xFF (both gens), %d mismatch(es)\n", mismatches);
+}
+
 /* ---------------------------------------------------------------- B0: no-op */
 
 static void noop_zero_diff(const char* file) {
@@ -243,6 +336,63 @@ static void noop_zero_diff(const char* file) {
   CHECKF(gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "%s: open", file);
   GbBag bag;
   CHECKF(gbb_read(&s, &bag), "%s: gbb_read", file);
+
+  /* BACKLOG #195 F3: the pocket table's involvement in the no-op invariant --
+   * every id the REAL save currently has stored in a given pocket must
+   * classify into that SAME pocket via gbb_pocket_of(), cross-checked
+   * against actual cartridge data (not just the pin's own synthetic id
+   * sweep above). This runs BEFORE gbb_write() so it exercises gbb_read()'s
+   * output directly and can never itself perturb the no-op-diff check
+   * below. Gen 1 (Red/Yellow) has no separate Balls/Key pocket to cross-
+   * check -- Items entries there may legitimately be a Poke Ball or a key
+   * item (gbb_pocket_of()'s own Gen-1 ITEMS-vs-TM/HM-only contract), so
+   * only the TM/HM split is checked for that generation. */
+  GbGame g = session_game(&s);
+  bool gen2 = (g == GBF_G_GS || g == GBF_G_CRYSTAL);
+  static const GbBagPocket kRealPockets[3] = { GBB_POCKET_ITEMS, GBB_POCKET_BALLS, GBB_POCKET_KEY };
+  int real_checked = 0;
+  for (int p = 0; p < (gen2 ? 3 : 1); p++) {
+    GbBagPocket pocket = kRealPockets[p];
+    const GbBagList* l = &bag.pockets[pocket];
+    for (int i = 0; i < l->count; i++) {
+      uint8_t id = l->entries[i].id;
+      GbBagPocket classified = gbb_pocket_of(g, id);
+      if (gen2) {
+        CHECKF(classified == pocket,
+              "%s: id 0x%02X stored in pocket %d but gbb_pocket_of() says %d",
+              file, id, pocket, classified);
+      } else {
+        /* Gen 1's ONLY real storage pocket is Items -- a TM id legitimately
+         * lives there too (gb_bag.h's own "TMs are bag items" note), so
+         * gbb_pocket_of() correctly answers TMHM (the filter CATEGORY) for
+         * those, not ITEMS (the storage pocket) -- the invariant here is
+         * just "classifiable at all", same posture item_build()'s Gen-1
+         * category filter (BACKLOG #195 F1) already relies on. */
+        CHECKF(classified == GBB_POCKET_ITEMS || classified == GBB_POCKET_TMHM,
+              "%s: id 0x%02X stored in Gen-1 Items pocket but gbb_pocket_of() says %d (neither ITEMS nor TMHM)",
+              file, id, classified);
+      }
+      real_checked++;
+    }
+  }
+  for (int i = 0; i < GBB_TMHM_COUNT && gen2; i++) {
+    uint8_t c;
+    if (!gbb_tmhm_get(&bag, i, &c) || c == 0) continue;
+    /* Round-trip: the count array's own index i must map back to a real
+     * item id whose gbb_pocket_of() is GBB_POCKET_TMHM (there is no single
+     * canonical id per index -- TM01 and HM01 etc. sit at different id
+     * OFFSETS depending on which of the four ranges i falls in -- so this
+     * checks the INVERSE, gbb_tmhm_index_of() on the id that WOULD produce
+     * index i, via the same four-range arithmetic the pin above verified). */
+    uint8_t id;
+    if (i < 4)        id = (uint8_t)(0xBFu + i);
+    else if (i < 28)   id = (uint8_t)(0xC4u + (i - 4));
+    else if (i < 50)   id = (uint8_t)(0xDDu + (i - 28));
+    else               id = (uint8_t)(0xF3u + (i - 50));
+    CHECKF(gbb_tmhm_index_of(g, id) == i, "%s: tmhm[%d] (count %u) round-trip id 0x%02X", file, i, c, id);
+    real_checked++;
+  }
+  printf("  %s: pocket-table cross-check over %d real stored id(s)\n", file, real_checked);
 
   GbsStatus st = gbb_write(&s, &bag);
   CHECKF(st == GBS_OK, "%s: no-op gbb_write status %s", file, gbs_status_text(st));
@@ -793,6 +943,9 @@ int main(void) {
 
   printf("== P0: Gen-1 key-item composition (BACKLOG #99) ==\n");
   key_item_compose();
+
+  printf("== P1: gbb_pocket_of()/gbb_tmhm_index_of() table pin (BACKLOG #195) ==\n");
+  pocket_of_pin();
 
   printf("== B0: no-op read->write is a zero-byte diff ==\n");
   noop_zero_diff("Red.sav");
