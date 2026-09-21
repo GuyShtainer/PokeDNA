@@ -16,6 +16,7 @@
 #include "data_tables.h"    /* pk_species_name                                        */
 #include "pdna_pick.h"      /* pick_species / pick_species_set_max_dex (F2/F3)        */
 #include "osk.h"            /* osk_input (F2/F3 nickname)                             */
+#include "pdna_layout.h"    /* PDNA_GBEDIT_KEEP_TITLE (D4 discard-confirm)            */
 #include "ui.h"
 #include "snd.h"
 #include "pdna_app.h"       /* msg_wait / app_confirm / app_session_seed              */
@@ -184,8 +185,15 @@ static const char* const kHofEditLbl[HOFEDIT_N] = { "SPECIES", "LEVEL", "NICKNAM
  * level stays whatever it was before this call). s_wait's own repeat mask covers
  * only KEY_UP|KEY_DOWN (this file's s_wait, not the global key_repeat_mask), so
  * L/R here deliberately do not auto-repeat -- matching every other L/R page/step
- * key in this screen. */
-static void hof_level_editor(uint8_t* level) {
+ * key in this screen.
+ *
+ * D4 (b194 review): returns bool, same contract as hof_species_editor()/
+ * hof_nick_editor() -- true only on A (the level actually changed), false on B
+ * (cancelled, *level untouched). Previously void, so hof_edit_mon_menu()'s own
+ * caller unconditionally set `dirty = true` even when the user cancelled out of
+ * the stepper with no change at all -- DONE would then confirm+backup+write for
+ * an edit that never happened. */
+static bool hof_level_editor(uint8_t* level) {
   int v = *level;
   bool valid = false; int pv = -1; uint32_t g = 0;
   for (;;) {
@@ -205,8 +213,8 @@ static void hof_level_editor(uint8_t* level) {
     pv = v; valid = true; g = ui_clear_gen();
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B);
-    if (k & KEY_B) return;                       /* cancel: *level untouched */
-    if (k & KEY_A) { *level = (uint8_t)v; return; }
+    if (k & KEY_B) return false;                  /* cancel: *level untouched */
+    if (k & KEY_A) { *level = (uint8_t)v; return true; }
     if (k & (KEY_UP | KEY_DOWN)) v += (k & KEY_UP) ? 1 : -1;
     else if (k & (KEY_LEFT | KEY_RIGHT)) v += (k & KEY_RIGHT) ? 10 : -10;
     if (v < 1) v = 1;
@@ -263,12 +271,23 @@ static bool hof_edit_mon_menu(uint8_t gen, GbHofMon* staged) {
     ui_text(4, 152, UI_DIM, "U/D select  A choose  B cancel");
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
-    if (k & KEY_B) return false;   /* discard the WHOLE edit, staged or not */
+    if (k & KEY_B) {
+      /* D4 (b194 review): B with nothing staged discards silently (there is
+       * nothing to lose) -- same as before. B with `dirty` true now confirms
+       * first, the editor's own KEEP idiom (PDNA_GBEDIT_KEEP_TITLE, matching
+       * gbedit_confirm_keep()'s own title elsewhere) -- declining (B on the
+       * confirm) returns to the menu with every staged field intact instead
+       * of silently throwing a real edit away. */
+      if (dirty && !app_confirm(PDNA_GBEDIT_KEEP_TITLE,
+                                "Your changes to this mon will be lost."))
+        continue;
+      return false;
+    }
     else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : HOFEDIT_N - 1;
     else if (k & KEY_DOWN) sel = (sel + 1) % HOFEDIT_N;
     else if (k & KEY_A) {
       if (sel == HOFEDIT_SPECIES) { if (hof_species_editor(gen, &staged->dex)) dirty = true; }
-      else if (sel == HOFEDIT_LEVEL) { hof_level_editor(&staged->level); dirty = true; }
+      else if (sel == HOFEDIT_LEVEL) { if (hof_level_editor(&staged->level)) dirty = true; }
       else if (sel == HOFEDIT_NICK) { if (hof_nick_editor(staged->nick, GBH_NICK_CAP)) dirty = true; }
       else return dirty;   /* DONE: commit only if SOMETHING actually changed */
     }
