@@ -1263,7 +1263,10 @@ pc_bank_restore_up(const uint8_t g3_rec80[80], uint8_t out_cell80[80]) {
   if (rep.evolved || rep.level_changed || rep.moves_changed || rep.renamed || rep.rename_refused ||
       rep.move_refused[0] || rep.move_refused[1] || rep.move_refused[2] || rep.move_refused[3] ||
       g3_item) {
-    if (!app_confirm(PDNA_XFERRESTORE_TITLE, PDNA_XFERRESTORE_L_LOSS)) return -2;   /* review D3: B, user declined -- distinct from a genuine failure */
+    boxoam_suspend();
+    bool confirmed = app_confirm(PDNA_XFERRESTORE_TITLE, PDNA_XFERRESTORE_L_LOSS);
+    boxoam_resume();
+    if (!confirmed) return -2;   /* review D3: B, user declined -- distinct from a genuine failure */
   }
 
   uint32_t serial = pdna_bank_next_serial();
@@ -1544,13 +1547,19 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
     if (rc < 0) {                                                      /* still holding, nothing written */
       snd_error();
       /* review F5: decision 9's own message -- an unreadable ledger record or a
-       * serial refusal, not silence. */
+       * serial refusal, not silence. review D5: box sprites off around the panel,
+       * same as the escape-gate refusal above and the UP arm's own backup-gate
+       * message. */
+      boxoam_suspend();
       msg_wait(PDNA_XFERREC_TITLE, UI_WARN, PDNA_XFERREC_L1, PDNA_XFERREC_L2);
+      boxoam_resume();
       return recs;
     }
     if (rc == 1 && !pdna_bank_prepare_native()) {
       snd_error();
+      boxoam_suspend();
       msg_wait(PDNA_XFER_PREP_TITLE, UI_WARN, PDNA_XFER_PREP_L1, PDNA_XFER_PREP_L2);
+      boxoam_resume();
       return recs;                                                     /* still holding */
     }
     memcpy(recs + (uint32_t)cur * 80, rc == 1 ? cell80 : s_held, 80);
