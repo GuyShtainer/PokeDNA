@@ -47,7 +47,7 @@ FIXTURES = ROOT / "tests" / "fixtures"
 PY_TESTS = ["tests/host_stack_budget_test.py", "tests/host_gb_write_gate_test.py", "tests/host_xfer_rekey_order_test.py",
             "tests/host_itemmap_gen_test.py", "tests/host_escape_gate_sites_test.py",
             "tests/host_gb_oracle_selftest_test.py", "tests/host_gb_origin_key_test.py",
-            "tests/host_lift_why_gate_test.py"]
+            "tests/host_lift_why_gate_test.py", "tests/host_first_lift_repage_test.py"]
 
 VERBOSE = "-v" in sys.argv
 
