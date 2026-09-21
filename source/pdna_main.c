@@ -1192,6 +1192,17 @@ static PkGame pkgame_of_romkind(RomKind k) {
 
 static bool app_rom_is_hack(PkGame g) { return (s_hack_mask & (1u << (unsigned)g)) != 0; }
 
+/* BACKLOG #166 review F1: gb_lift_why_bs/gb_lift_why_hook (source/pdna_gen12.c) need
+ * to pick between PDNA_ROMHACK_NOTE and PDNA_GB_LIFT_WHY_OMEGA -- the SAME
+ * hack-vs-cart distinction app_readonly_why()/app_readonly_footer() (just below)
+ * already make, but app_rom_is_hack() itself is file-static (needs s_hack_mask/
+ * g_game, both file-static here) and neither of its two existing wordings fits the
+ * 88 px read-only-menu prose budget those two callers draw at (app_readonly_why()'s
+ * own PDNA_ROMHACK_WHY/"Needs EZ-Flash Omega." are sized for msg_wait's 184 px
+ * clamp). One thin public accessor over the identical predicate, not a third
+ * wording living here. */
+bool app_rom_hack_active(void) { return g_vinfo.valid && app_rom_is_hack(g_game); }
+
 /* Review fix F1: ~20 refusal sites share the literal "Needs EZ-Flash Omega." --
  * correct for an Everdrive/pdna_romcheck_bad() refusal, a real LIE for an Omega
  * owner whose cart is perfectly writable but whose currently-open game is
@@ -4816,6 +4827,19 @@ bool app_src_empty_action_offered(void) {
  * that one row + CANCEL. See pdna_app.h's AppSrcOps.paste for what the row does. */
 static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0, bool empty) {
   const char* locked = (!empty && g_src_why) ? g_src_why(rec) : 0;
+  /* BACKLOG #166: the reason RO_MOVE would be refused, or NULL when it may proceed --
+   * set only in the occupied branch below (the only one that ever draws RO_MOVE), so
+   * a NULL AppSrcOps.lift_why (every source before this field existed, or a source
+   * that has no opinion) leaves this NULL and the row unchanged. `lift_why` takes
+   * `rec80` (the same record ADDRESS every other AppSrcOps hook here takes), not a
+   * (box, slot) pair: app_mon_menu's own `box` parameter is zeroed for any is_bank
+   * source (pdna_box.c's call site passes `mbox = src->is_bank ? 0 : box`, and a GB
+   * session always sets is_bank true), so it is not the real Game Boy box index --
+   * only the record's own address survives that zeroing. gb_lift_why_hook
+   * (pdna_gen12.c) re-derives the real (box, slot) from the address itself, via
+   * gb_locate_addr(), exactly like gb_move_hook/gb_release_hook/every other hook in
+   * this vtable already does. */
+  const char* move_why = 0;
   enum { RO_VIEW, RO_ITEM, RO_MOVE, RO_RELEASE, RO_LEGAL, RO_COPY, RO_PASTE, RO_CREATE,
          RO_DUP, RO_DAYCARE, RO_EXPORT, RO_CANCEL };
   int act[PDNA_ROMENU_MAX]; const char* lab[PDNA_ROMENU_MAX]; int n = 0;
@@ -4913,7 +4937,19 @@ static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0, 
      * shown-then-refused row. */
     if (g_src_ops && g_src_ops->item) { lab[n] = PDNA_LBL_ITEM; act[n++] = RO_ITEM; }
     lab[n] = PDNA_LBL_LEGALITY; act[n++] = RO_LEGAL;
-    if (g_src_ops && g_src_ops->move) { lab[n] = PDNA_LBL_MOVE_TO_BOX; act[n++] = RO_MOVE; }
+    /* BACKLOG #166: MOVE TO BOX used to be offered on ANY cell with a `move` hook,
+     * regardless of whether THIS box/slot could actually be lifted -- a Gen-1
+     * one-mon party / Mail-holding Gen-2 party / unwritable-box cell only learned
+     * that after picking it, walking the box picker, and having gbs_move() bounce
+     * (gb_move_hook's own msg_wait). `lift_why` answers the same can_lift question
+     * as a reason instead of a bare bool: NULL (or no lift_why at all, e.g. a source
+     * with no opinion) draws the row exactly as before; a reason hides the row and
+     * is shown as one more grey line below, the same drawing rule `locked` already
+     * uses for the COPY veto. */
+    if (g_src_ops && g_src_ops->move) {
+      move_why = g_src_ops->lift_why ? g_src_ops->lift_why(rec) : 0;
+      if (!move_why) { lab[n] = PDNA_LBL_MOVE_TO_BOX; act[n++] = RO_MOVE; }
+    }
     if (!locked) { lab[n] = PDNA_LBL_COPY; act[n++] = RO_COPY; }
     /* BACKLOG #93: Gen-3's own occupied-mon order is …COPY, DUPLICATE, TO DAY-CARE,
      * EXPORT, RELEASE (app_mon_menu above) -- mirrored here, before RELEASE so RELEASE
@@ -4933,7 +4969,8 @@ static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0, 
   if (empty) ui_truncate(title, "EMPTY", 11);
   else       ui_truncate(title, m0->nickname[0] ? m0->nickname : pk_species_name(m0->species), 11);
   const int hdr = PDNA_ROMENU_HDR + (!empty && g_src_note ? PDNA_ROMENU_LINE : 0)
-                                  + (locked                ? PDNA_ROMENU_LINE : 0);
+                                  + (locked                ? PDNA_ROMENU_LINE : 0)
+                                  + (move_why              ? PDNA_ROMENU_LINE : 0);
   /* Laid out ABOVE the screen's footer row, and windowed if it ever stops fitting —
    * the same rule as the full action menu below. */
   int my, mh;
@@ -4951,6 +4988,7 @@ static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0, 
      * inside its border (tests/host_textfit_test.c pins both). */
     if (!empty && g_src_note) { ui_ptext_fit(mx + PDNA_MONMENU_PAD, y, PDNA_MONMENU_PROSE_W, UI_WARN, g_src_note); y += PDNA_ROMENU_LINE; }
     if (locked)     { ui_ptext_fit(mx + PDNA_MONMENU_PAD, y, PDNA_MONMENU_PROSE_W, UI_WARN, locked);     y += PDNA_ROMENU_LINE; }
+    if (move_why)   { ui_ptext_fit(mx + PDNA_MONMENU_PAD, y, PDNA_MONMENU_PROSE_W, UI_WARN, move_why);   y += PDNA_ROMENU_LINE; }
     ui_hline(mx + 2, y, mw - 4, UI_BORDER);
     for (int i = 0; i < vis && top + i < n; i++) {
       int ry = y + PDNA_ROMENU_HEAD_PAD + i * PDNA_MONMENU_ROW_H; bool s = (top + i == sel);

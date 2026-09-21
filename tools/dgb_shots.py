@@ -4216,6 +4216,52 @@ def run_s150_4_uplift(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots
            "CM_MOVE, empty-handed ('MOVE  A grab  hold=set'), No.1 BULBASAUR still "
            "at slot 0 -- no leftover picker text, no forced L/R workaround needed")
     return s
+
+
+def run_b166(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #166: a Gen-1/2 grid cell whose lift would be refused must not offer
+    MOVE TO BOX at all, and one grey line in the panel must name why
+    (AppSrcOps.lift_why, source/pdna_app.h; gb_lift_why_hook/gb_lift_why_bs,
+    source/pdna_gen12.c; app_mon_menu_readonly's RO_MOVE row, source/pdna_main.c).
+
+    THE REFUSED-LIFT CASE COULD NOT BE PRODUCED WITH THIS CORPUS -- checked, not
+    guessed: a standalone C harness (/tmp/probe_lift.c, this lane, not shipped)
+    linked straight against source/gb_session.c + source/gen1_save.c +
+    source/gen2_save.c + source/gen1_write.c + source/gen2_write.c + source/gb_edit.c
+    opened Guy's own Red.sav/Gold.sav/Crystal.sav (the exact saves `make delta-gb`
+    fuses) and called gbs_box_writable()/gbs_can_delete() -- the SAME two functions
+    gb_lift_why_bs calls -- for every box (0..nboxes) and the party pseudo-box, every
+    occupied slot in each: ZERO refusals anywhere in any of the three saves. This
+    matches run_s150_4_uplift()'s own documented finding for Red.sav alone ("Guy's
+    own Red.sav carries a FULL 6/6 party -- lifting any one of six never crosses the
+    party floor") and extends it: Gold.sav/Crystal.sav have no Mail-holding party
+    member and no unwritable box either, in this corpus. A GBS_ERR_PARTY_FLOOR /
+    GBS_ERR_MAIL / GBS_ERR_UNWRITABLE demonstration needs a purpose-built 1-mon-party
+    (or Mail-holding, or virgin-Gen-1-bank) fixture, or real hardware with such a
+    save -- left for hardware/a future fixture, NOT faked here (the same posture
+    run_s150_4_uplift's own party-floor note already set for this corpus).
+
+    What IS shown, live: a NORMAL (liftable) cell's occupied-cell menu is byte-for-
+    byte the shape it was before this lane -- MOVE TO BOX still offered, no grey
+    line -- proving the new lift_why gate is a pure ADDITION on the refusal path,
+    not a regression on the everyday one."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b166_")
+    print("== BACKLOG #166: RO_MOVE's lift_why gate -- normal cell unchanged; "
+          "refused-lift case not reproducible with this corpus (see docstring) ==")
+    boot_to_gb_session(s, rom, which="red")
+    s.shot("00_box_grid", "b166: Red's box grid, freshly entered -- cursor on slot 0")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.shot("01_normal_cell_menu", "b166: A on slot 0 (a normal, liftable cell) -- "
+           "the occupied-cell menu is UNCHANGED by this lane: VIEW/EDIT, LEGALITY, "
+           "MOVE TO BOX, COPY, RELEASE, CANCEL, no grey reason line -- lift_why "
+           "returned NULL (gbs_can_delete == GBS_OK for this slot, verified above), "
+           "so the row-omission path in app_mon_menu_readonly never triggers here")
+    s.tap("B", settle=100)
+    s.shot("02_back_to_grid", "b166: B backs out of the menu, box grid unchanged")
+    return s
+
+
 def run_s150_7_down_edge(core_mod, image_mod, rom_gold: Path, rom_red: Path,
                          out_dir: Path) -> gb_shots.Session:
     """BACKLOG #150 S150-7: the DOWN edge -- a native "GBC1" Bank cell back into a Game
@@ -4974,6 +5020,12 @@ def main(argv=None) -> int:
                           "no PDNA_DELTA branch in box_save(), so this proves decision "
                           "7's rollback, not a real write -- see the run function's own "
                           "docstring).")
+    ap.add_argument("--b166", action="store_true",
+                     help="BACKLOG #166: only run_b166() against --image -- "
+                          "--image MUST be `make delta-gb`'s own combined image "
+                          "(Emerald.sav + Red/Gold/Crystal). A normal cell's "
+                          "occupied-cell menu, per tap -- see run_b166()'s own "
+                          "docstring for why the refused-lift case is not shown live.")
     ap.add_argument("--s150-4", action="store_true",
                      help="BACKLOG #150 S150-4/5 follow-up (lane s150-4-5b, BACKLOG "
                           "#171/#171b): only run_s150_4_uplift() against --image -- "
@@ -5627,6 +5679,21 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] s150-14: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if getattr(a, "b166", False):
+        # BACKLOG #166: append-only, same convention as --s2-bank-control above.
+        ran = True
+        try:
+            sess = run_b166(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b166: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:

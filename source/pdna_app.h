@@ -43,6 +43,13 @@ uint8_t app_met_game(void);
 /* Reason why writes are disabled (hack ROM vs. Omega cart). */
 const char* app_readonly_why(void);
 const char* app_readonly_footer(void);
+/* BACKLOG #166 review F1: the bare predicate app_readonly_why()'s own wording is
+ * built from -- true iff a Gen-3 ROM is loaded AND flagged hack, as opposed to an
+ * Everdrive/pdna_romcheck_bad() refusal. gb_lift_why_bs (pdna_gen12.c) uses this to
+ * pick its own, narrower-budget wording rather than reusing either of
+ * app_readonly_why()'s two strings verbatim (both sized for msg_wait's 184 px, not
+ * the 88 px read-only mon menu prose this draws in). */
+bool app_rom_hack_active(void);
 
 /* Game Boy (Gen-1/2) variants: also honest about a streamed/view-only session,
  * which is neither the cart nor a hack ROM (review fix F2). */
@@ -227,6 +234,29 @@ typedef struct {
   bool (*dup)(uint8_t* rec80);
   bool (*daycare)(uint8_t* rec80);
   bool (*export_one)(uint8_t* rec80);
+  /* BACKLOG #166 (b166): appended at the end, same append-only convention as `dup`/
+   * `daycare`/`export_one` above -- the read-only MOVE TO BOX row (RO_MOVE,
+   * pdna_main.c's app_mon_menu_readonly) used to offer itself on ANY cell with a
+   * `move` hook, regardless of whether THIS box/slot could actually be lifted --
+   * the user only learned a Gen-1 one-mon party / Mail-holding Gen-2 party / an
+   * unwritable box refused it after picking MOVE TO BOX, walking the box picker,
+   * and having gbs_move() bounce (gb_move_hook's own msg_wait). `lift_why(rec80)`
+   * answers the SAME question BoxSource.can_lift(box, slot) does, but as a reason
+   * instead of a bare bool, so the row can be hidden up front with a one-line why
+   * instead of a round trip to a refusal. Takes `rec80` (the record ADDRESS), the
+   * same argument shape as `move`/`view`/`edit` above -- NOT (box, slot): the
+   * caller (app_mon_menu_readonly) only ever has the address and app_mon_menu's own
+   * `box` parameter, which pdna_box.c zeroes for any is_bank source (`mbox =
+   * src->is_bank ? 0 : box`, and a GB session always sets is_bank true) -- so a
+   * (box, slot)-shaped hook would silently read the wrong box for every box but 0.
+   * The real body (gb_lift_why_hook, pdna_gen12.c) re-derives (box, slot) from the
+   * address itself via gb_locate_addr(), exactly like every other hook here. NULL =
+   * liftable (or the source has no opinion -- the row shows as it did before this
+   * field existed); non-NULL = the reason text to show in place of the row.
+   * gb_can_lift_hook_impl (BoxSource.can_lift's real body) now delegates to
+   * gb_lift_why_hook too, so the bool and this reason can never disagree (one
+   * source of truth, not two copies of the same rule table). */
+  const char* (*lift_why)(const uint8_t* rec80);
 } AppSrcOps;
 void app_src_ops_set(const AppSrcOps* ops);
 

@@ -1193,6 +1193,46 @@ static bool gb_editable_hook(const uint8_t* rec80) {
   return app_can_edit() && gbs_box_writable(&g_ed->s, box) == GBS_OK;
 }
 
+/* The reason `box`/`slot` cannot be lifted, or NULL when it can -- the shared core
+ * both gb_can_lift_hook_impl (BoxSource.can_lift, called by pdna_box.c with the
+ * REAL box/slot it already tracks) and gb_lift_why_hook (AppSrcOps.lift_why, below
+ * -- called by app_mon_menu_readonly, which only ever has a record ADDRESS) end up
+ * running. One rule table, not two: whoever needs the bool (gb_can_lift_hook_impl)
+ * just checks this for NULL. */
+/* BACKLOG #166 review F1: the panel this draws in (app_mon_menu_readonly's RO_MOVE
+ * gate) is 88 px wide (PDNA_MONMENU_PROSE_W), not msg_wait's 184 -- gbs_status_text()'s
+ * own wording is sized for the LATTER (gb_move_hook's own late-refusal dialog, kept
+ * unchanged) and overflows here ("the party needs one Pokemon" alone is 176 px, over
+ * twice this budget) -- ui_ptext_fit would truncate it into an illegible fragment.
+ * Buckets the GbsStatus into one of five short, fixed strings (pdna_layout.h)
+ * instead of quoting gbs_status_text() verbatim; PARTY_FLOOR and MAIL keep their own
+ * bucket (the two refusals worth a specific word), everything else structural
+ * (UNWRITABLE/BOX/STRUCT) collapses to "the box itself", and anything left over
+ * (ENGINE/VERIFY/FULL/NEEDS_BASE/SLOT/ARG/NOT_GB -- none of them reachable from
+ * gbs_can_delete's own documented return set, but a bucket, not a silent NULL, if
+ * that set ever grows) collapses to a generic "refused". */
+static const char* gb_lift_why_status(GbsStatus st) {
+  switch (st) {
+    case GBS_ERR_PARTY_FLOOR: return PDNA_GB_LIFT_WHY_FLOOR;
+    case GBS_ERR_MAIL:        return PDNA_GB_LIFT_WHY_MAIL;
+    case GBS_ERR_UNWRITABLE:
+    case GBS_ERR_BOX:
+    case GBS_ERR_STRUCT:      return PDNA_GB_LIFT_WHY_BOX;
+    default:                  return PDNA_GB_LIFT_WHY_OTHER;
+  }
+}
+
+static const char* gb_lift_why_bs(int box, int slot) {
+  if (!g_ed) return PDNA_GB_LIFT_WHY_VIEW;            /* no open edit session (the read-only nav-menu mount) */
+  if (!app_can_edit())                                /* cart/ROM-hack read-only */
+    return app_rom_hack_active() ? PDNA_ROMHACK_NOTE : PDNA_GB_LIFT_WHY_OMEGA;
+  GbsStatus wst = gbs_box_writable(&g_ed->s, box);
+  if (wst != GBS_OK) return gb_lift_why_status(wst);  /* e.g. a virgin Gen-1 bank */
+  GbsStatus dst = gbs_can_delete(&g_ed->s, box, slot, g_ed->list, 0);
+  if (dst != GBS_OK) return gb_lift_why_status(dst);  /* party floor / Mail / ... */
+  return 0;
+}
+
 /* BoxSource.can_lift real body (BACKLOG #150 S150-5): the GB grid's own grab-time
  * refusal. Same two gates gb_editable_hook takes (the cart and the box), PLUS
  * gbs_can_delete()'s whole refusal table (gb_session.c) -- a Gen-1 one-mon party or a
@@ -1200,11 +1240,35 @@ static bool gb_editable_hook(const uint8_t* rec80) {
  * succeed and the drop fail late (S150-5's whole acceptance). No open edit session
  * (g_ed NULL: the read-only nav-menu mount) means no GbSession to check against --
  * refuse. GBA-only (needs gbs_can_delete's own frame); gb_can_lift_hook() above is
- * the thin wrapper the host build actually links. */
+ * the thin wrapper the host build actually links. BACKLOG #166: delegates to
+ * gb_lift_why_bs (immediately above) rather than re-deriving the same verdict a
+ * second way, so this bool and AppSrcOps.lift_why's reason text can never diverge. */
 static bool gb_can_lift_hook_impl(int box, int slot) {
-  if (!g_ed) return false;
-  if (!(app_can_edit() && gbs_box_writable(&g_ed->s, box) == GBS_OK)) return false;
-  return gbs_can_delete(&g_ed->s, box, slot, g_ed->list, 0) == GBS_OK;
+  return gb_lift_why_bs(box, slot) == NULL;
+}
+
+/* AppSrcOps.lift_why real body (BACKLOG #166): same question as gb_can_lift_hook_impl
+ * above, but for a caller that only has the record's own ADDRESS -- app_mon_menu's
+ * `box` parameter is zeroed for any is_bank source (pdna_box.c's `mbox = src->is_bank
+ * ? 0 : box`, and a GB session always sets is_bank true), so app_mon_menu_readonly
+ * cannot pass a real box index through; it derives one from `rec80` here via
+ * gb_locate_addr(), exactly like gb_move_hook/gb_release_hook/every other AppSrcOps
+ * hook in this file already does. A record this mount cannot locate returns NULL
+ * (no reason to show) rather than guessing -- the same silent-defensive shape
+ * gb_move_hook's own `if (!gb_locate(...)) return false;` already uses; a genuinely
+ * unlocatable record cannot reach a real MOVE press either, so there is nothing to
+ * warn about NOW that would not also fail silently there, unchanged from today. */
+static const char* gb_lift_why_hook(const uint8_t* rec80) {
+  int box, slot;
+  if (!gb_locate_addr(rec80, &box, &slot)) return 0;
+  /* Same cart gate gb_lift_why_bs applies (called next) -- restated in THIS
+   * function's own body so host_gb_write_gate_test.py's per-hook scan (every
+   * mutating AppSrcOps hook must reach app_can_edit( in its own text) can see it
+   * here too, not just one call away. Redundant, not wrong: gb_lift_why_bs checks
+   * the identical predicate immediately below. */
+  if (!app_can_edit())
+    return app_rom_hack_active() ? PDNA_ROMHACK_NOTE : PDNA_GB_LIFT_WHY_OMEGA;
+  return gb_lift_why_bs(box, slot);
 }
 
 /* AppSrcOps.copy_native (S5-B): capture the record in its own Game Boy shape for the
@@ -4352,12 +4416,14 @@ static const AppSrcOps k_gb_ops_gen1 = {
   .copy_native = gb_copy_native_hook, .paste = gb_paste_hook, .view = gb_view_hook,
   .editable = gb_editable_hook, .create = gb_create_hook,
   .dup = gb_dup_hook, .daycare = gb_daycare_hook, .export_one = gb_export_hook,   /* BACKLOG #93 */
+  .lift_why = gb_lift_why_hook,                                                  /* BACKLOG #166 */
 };
 static const AppSrcOps k_gb_ops_gen2 = {
   .edit = 0, .move = gb_move_hook, .release = gb_release_hook,
   .copy_native = gb_copy_native_hook, .paste = gb_paste_hook, .view = gb_view_hook,
   .editable = gb_editable_hook, .create = gb_create_hook, .item = gb_item_hook,
   .dup = gb_dup_hook, .daycare = gb_daycare_hook, .export_one = gb_export_hook,   /* BACKLOG #93 */
+  .lift_why = gb_lift_why_hook,                                                  /* BACKLOG #166 */
 };
 
 /* Bag/menu review fix (the nav-menu-copy-lossy finding): the read-only nav-menu mount

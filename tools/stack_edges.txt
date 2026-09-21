@@ -206,7 +206,24 @@ BoxSource.set_wp     @40 in box_options_menu -> banksrc_set_wp gbsrc_set_wp pcsr
 # (pdna_box.c), the `can_lift ? can_lift(...) : src->can_edit()` wrapper every lift-gate
 # caller in that file goes through.
 BoxSource.can_edit   @44 in src_can_lift -> banksrc_can_edit gbsrc_can_edit app_can_edit
-BoxSource.commit     @48 -> banksrc_commit gbsrc_commit app_commit_pc app_commit_sb1
+# BACKLOG #166: offset 48 is now ALSO AppSrcOps.lift_why (source/pdna_app.h's 13th
+# field, appended after export_one @44) -- D5a requires every declaration at a
+# shared offset to be qualified `in <caller>` the moment a second struct.field
+# claims it, so the one bare BoxSource.commit line above is split into its real
+# callers and the new AppSrcOps.lift_why site is declared alongside it. BoxSource.commit's
+# real callers (--dump-sites against a clean artless build): drop_held (two sites,
+# both landing on offset 48) and release_box_all -- `commit` is just AppCommitFn
+# called through two different code paths in pdna_box.c, same four implementations
+# at each. app_mon_menu_readonly (source/pdna_main.c) is NOT one of them -- it takes
+# no BoxSource at all (its signature is `(rec, is_party, m0, empty)`), so it can
+# never dereference `src->commit`; review F2 caught an earlier revision of this file
+# crediting it to BoxSource.commit anyway (a fabricated caller, carried over
+# uncritically from --dump-sites' own offset-only "field @48 in app_mon_menu_readonly"
+# line, which was actually the new lift_why call below, not commit). Its one real
+# field-48 site is AppSrcOps.lift_why (the RO_MOVE row's gate, gb_lift_why_hook).
+BoxSource.commit     @48 in drop_held -> banksrc_commit gbsrc_commit app_commit_pc app_commit_sb1
+BoxSource.commit     @48 in release_box_all -> banksrc_commit gbsrc_commit app_commit_pc app_commit_sb1
+AppSrcOps.lift_why   @48 in app_mon_menu_readonly -> gb_lift_why_hook
 BoxSource.mark_dirty @52 -> banksrc_mark_dirty gbsrc_mark_dirty app_mark_pc_dirty
 BoxSource.note_add @56 in drop_held -> pcsrc_note_add
 # D5a (BACKLOG #84b seventh pass): qualified to drop_held (pdna_box.c) -- offset 56
