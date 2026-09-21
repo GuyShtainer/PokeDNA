@@ -209,13 +209,18 @@ BoxSource.can_edit   @44 in src_can_lift -> banksrc_can_edit gbsrc_can_edit app_
 # BACKLOG #166: offset 48 is now ALSO AppSrcOps.lift_why (source/pdna_app.h's 13th
 # field, appended after export_one @44) -- D5a requires every declaration at a
 # shared offset to be qualified `in <caller>` the moment a second struct.field
-# claims it, so the one bare BoxSource.commit line above is split into its three
-# real callers (--dump-sites against a clean artless build: app_mon_menu_readonly,
-# drop_held, release_box_all -- same four implementations at every site, `commit`
-# is just AppCommitFn called through three different code paths) and the new
-# AppSrcOps.lift_why site (app_mon_menu_readonly's RO_MOVE row, the only caller)
-# is declared alongside it.
-BoxSource.commit     @48 in app_mon_menu_readonly -> banksrc_commit gbsrc_commit app_commit_pc app_commit_sb1
+# claims it, so the one bare BoxSource.commit line above is split into its real
+# callers and the new AppSrcOps.lift_why site is declared alongside it. BoxSource.commit's
+# real callers (--dump-sites against a clean artless build): drop_held (two sites,
+# both landing on offset 48) and release_box_all -- `commit` is just AppCommitFn
+# called through two different code paths in pdna_box.c, same four implementations
+# at each. app_mon_menu_readonly (source/pdna_main.c) is NOT one of them -- it takes
+# no BoxSource at all (its signature is `(rec, is_party, m0, empty)`), so it can
+# never dereference `src->commit`; review F2 caught an earlier revision of this file
+# crediting it to BoxSource.commit anyway (a fabricated caller, carried over
+# uncritically from --dump-sites' own offset-only "field @48 in app_mon_menu_readonly"
+# line, which was actually the new lift_why call below, not commit). Its one real
+# field-48 site is AppSrcOps.lift_why (the RO_MOVE row's gate, gb_lift_why_hook).
 BoxSource.commit     @48 in drop_held -> banksrc_commit gbsrc_commit app_commit_pc app_commit_sb1
 BoxSource.commit     @48 in release_box_all -> banksrc_commit gbsrc_commit app_commit_pc app_commit_sb1
 AppSrcOps.lift_why   @48 in app_mon_menu_readonly -> gb_lift_why_hook
