@@ -422,7 +422,18 @@ GbsStatus gbh_append_team(GbSession* s, const GbHofTeam* team) {
   uint32_t stride = hof_team_bytes(s);
   int cap = hof_capacity(s);
   int old_count = gbh_count(s);
-  int new_count = (old_count < 255) ? old_count + 1 : 255;   /* saturating, both gens */
+  /* D2 (b194 review, MEDIUM): Gen 1 saturates at 255 (AnimateHallOfFame's own
+   * "inc a / jr z, skip" guard, gb_hof.h's header). Gen 2 is DIFFERENT --
+   * pokecrystal's halloffame.asm (HOF_MASTER_COUNT, lines 19-23) does NOT
+   * increment past 200 at all; the count is simply HELD once it reaches 200,
+   * not incremented-then-clamped. Since the new record's own win-count byte is
+   * this SAME `new_count` value, the old "saturate at 255" formula would have
+   * written a win byte the real game's own counter can never reach (a Gen-2
+   * cart's count field is capped at 200 everywhere else in this file, D1/
+   * gbh_set_count's own clamp) -- held at 200, not merely clamped after the
+   * increment. */
+  int new_count = (s->gen == GB_GEN1) ? ((old_count < 255) ? old_count + 1 : 255)
+                                       : ((old_count < 200) ? old_count + 1 : old_count);
 
   int slot;
   if (s->gen == GB_GEN1) {

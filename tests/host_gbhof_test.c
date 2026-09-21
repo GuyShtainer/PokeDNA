@@ -780,6 +780,44 @@ static void append_gen2_boundary(const char* file) {
   CHECKF(present == 30, "%s: present after 31 appends = %d, want 30", file, present);
 }
 
+/* ---- O2: b194 review D2 -- Gen 2's count is HELD at 200 once reached, never
+ * incremented past it (pokecrystal halloffame.asm HOF_MASTER_COUNT), and the
+ * newly-appended record's own win-count byte carries that SAME held value. ---- */
+
+static void append_g2_count_hold(const char* file) {
+  uint32_t len = load(file);
+  if (!len) { printf("  SKIP %s (not present)\n", file); return; }
+  GbSession s;
+  if (gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) != GBS_OK || s.gen != GB_GEN2) {
+    printf("  SKIP %s (not a Gen-2 save)\n", file);
+    return;
+  }
+  g_ran++;
+
+  CHECKF(gbh_set_count(&s, 200) == GBS_OK, "%s: set_count(200)", file);
+  CHECKF(gbh_count(&s) == 200, "%s: readback after set_count(200) = %d, want 200",
+        file, gbh_count(&s));
+
+  GbGame g = (s.g2w.sv.version == G2_VER_CRYSTAL) ? GBF_G_CRYSTAL : GBF_G_GS;
+  uint32_t base = gbf_off(g, GBF_HOF_TEAMS);
+
+  GbHofTeam t;
+  build_team(&t, 1, 5, "HELD200");
+  CHECKF(gbh_append_team(&s, &t) == GBS_OK, "%s: append at count=200", file);
+
+  CHECKF(gbh_count(&s) == 200, "%s: count after append at 200 = %d, want STILL 200 "
+        "(D2: held, not incremented to 201)", file, gbh_count(&s));
+
+  uint8_t win_byte = g_img[base];   /* slot 0's own win-count byte, the newly-appended team */
+  CHECKF(win_byte == 200, "%s: newest team's own win-count byte = %d, want 200 "
+        "(the SAME held value the count field carries)", file, (int)win_byte);
+
+  GbHofTeam newest;
+  CHECKF(gbh_team(&s, 0, &newest), "%s: read newest after append at count=200", file);
+  CHECKF(newest.win_count == 200, "%s: gbh_team()'s own decoded win_count = %d, "
+        "want 200", file, (int)newest.win_count);
+}
+
 /* ---- P: BACKLOG #194 F3 -- gbh_delete_team is a byte-exact inverse of
  * gbh_append_team in the plain (no-eviction) case, on both gens ---- */
 
@@ -869,6 +907,9 @@ int main(void) {
   printf("== O: BACKLOG #194 F3 -- gbh_append_team capacity boundaries ==\n");
   for (size_t i = 0; i < sizeof saves / sizeof saves[0]; i++) append_gen1_boundary(saves[i]);
   for (size_t i = 0; i < sizeof saves / sizeof saves[0]; i++) append_gen2_boundary(saves[i]);
+
+  printf("== O2: b194 review D2 -- Gen-2 count held at 200, never incremented past it ==\n");
+  for (size_t i = 0; i < sizeof saves / sizeof saves[0]; i++) append_g2_count_hold(saves[i]);
 
   printf("== P: BACKLOG #194 F3 -- gbh_delete_team is append's byte-exact inverse ==\n");
   for (size_t i = 0; i < sizeof saves / sizeof saves[0]; i++) delete_inverse(saves[i]);

@@ -45,7 +45,11 @@
  *   0x321A (GS) / 0x32C0 (Crystal). AddHallOfFameEntry inserts the newest team at
  *   index 0 and shifts the rest down (eggs skipped) -- so Gen 2 is ALREADY
  *   newest-first in storage order, unlike Gen 1. wHallOfFameCount (file 0x24EB GS /
- *   0x24EC Crystal) is capped at 200, sits INSIDE the checksummed+mirrored span. The
+ *   0x24EC Crystal) is HELD AT 200, sits INSIDE the checksummed+mirrored span --
+ *   b194 review D2: pokecrystal's halloffame.asm (HOF_MASTER_COUNT, lines 19-23)
+ *   does NOT increment the counter past 200 at all once it is reached; this is a
+ *   HOLD, not an increment-then-clamp (Gen 1's own saturate-at-255 shape, above,
+ *   IS an increment-then-clamp -- the two games do not share this rule). The
  *   backup-checksum run starts at sHallOfFameEnd = file 0x3D96 (GS) -- a clear must
  *   stop at 0x3D95 inclusive; the blob's own 2940 B width (30*98) already lands
  *   exactly there, so a straight team-by-team zero-fill never overruns it.
