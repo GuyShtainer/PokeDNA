@@ -1539,7 +1539,12 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
      * or one whose ledger entry is Gen-3-home, lands exactly as it did before this
      * lane, byte for byte. */
     uint8_t cell80[80];
-    int rc = pc_bank_restore_up(s_held, cell80);
+    /* review D9: defensive -- this "PC -> Bank" comment block is reached by the
+     * homeless-carry fall-through too (s_orig_box == -1, decision 2's own footgun
+     * note), which is NOT guaranteed to have src->scope == BOXSCOPE_BANK. Never call
+     * the restore lookup, and never let a native cell land, on any destination that
+     * is not actually the Bank. */
+    int rc = (src->scope == BOXSCOPE_BANK) ? pc_bank_restore_up(s_held, cell80) : 0;
     /* review D3: rc == -2 is a plain user decline on the F3 confirm -- app_confirm
      * already drew its own "B = no", so nothing further is shown; still holding,
      * nothing written, same as every other refusal here. */
