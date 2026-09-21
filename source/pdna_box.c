@@ -54,6 +54,7 @@ _Static_assert(BOXSCOPE_BANK == 1, "source/xfer_gate.c's XG_SCOPE_BANK hard-code
 #include "xfer_rec.h"       /* xr_key_g3 */
 #include "bank_restore.h"   /* bank_restore_from_entry */
 #include "savefile.h"       /* SfStatus, sf_write_verified, sf_status_str */
+#include "item_map_g2g3.h"  /* item_g2_to_g3 -- review D2's item-loss comparison */
 
 #define COLS 6
 #define ROWS 5
@@ -1253,7 +1254,12 @@ pc_bank_restore_up(const uint8_t g3_rec80[80], uint8_t out_cell80[80]) {
     return -1;
   }
   PkMon pm;
-  bool g3_item = pk_decode_mon(g3_rec80, false, &pm) && pm.heldItem != 0;
+  /* review D2: only a GEN-3-SIDE item is actually lost -- an item holder restored
+   * UNCHANGED (the Gen-3 item still equals what the native cell's own held item maps
+   * to) must stay silent; comparing against the mapped native item, not bare
+   * "heldItem != 0", is what tells the two apart. */
+  bool g3_item = pk_decode_mon(g3_rec80, false, &pm) && pm.heldItem != 0 &&
+                 pm.heldItem != item_g2_to_g3(gb_get_held_item(&probe));
   if (rep.evolved || rep.level_changed || rep.moves_changed || rep.renamed || rep.rename_refused ||
       rep.move_refused[0] || rep.move_refused[1] || rep.move_refused[2] || rep.move_refused[3] ||
       g3_item) {

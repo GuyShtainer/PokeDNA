@@ -5,7 +5,7 @@
  *      source/gen3_save.c source/gen3_mon.c source/gen3_box.c source/gen3_edit.c \
  *      source/gen3_daycare.c source/data_tables.c source/evolutions.c \
  *      source/gb_edit.c source/gen1_save.c source/gen2_save.c \
- *      source/xfer_rec.c source/bank_restore.c \
+ *      source/xfer_rec.c source/bank_restore.c source/item_map_g2g3.c \
  *      -o /tmp/hxfer
  *   /tmp/hxfer /Users/guyshtainer/VSCodeProjects/gba-toolkit/roms/ (.sav files)
  *
@@ -75,6 +75,7 @@
 #include "xfer_rec.h"
 #include "bank_restore.h"
 #include "data_tables.h"   /* pk_national_no */
+#include "item_map_g2g3.h" /* item_g2_to_g3 -- review D2's item-loss comparison */
 
 /* Same convention as host_gen3gb_test.c/host_gbsession_test.c: the Game Boy corpus
  * lives OUTSIDE the repo at a fixed path (gitignored, never published), not on argv
@@ -1064,6 +1065,88 @@ static void test_merge4_make_legal_written_level(void) {
         applied, checked, checked);
 }
 
+/* ---- BACKLOG #150 S150-8b review D2: the confirm's item-loss comparison. ------ */
+/* pc_bank_restore_up (pdna_box.c) is not host-buildable; this pins the underlying
+ * comparison it relies on -- pm.heldItem vs item_g2_to_g3(gb_get_held_item(&home)) --
+ * against a real corpus item holder, both unchanged (must read as "nothing lost")
+ * and changed (must read as "something lost"). */
+static void test_d2_item_confirm_logic(void) {
+  printf("\n-- D7. review D2's item-loss comparison, pinned against a real item holder --\n");
+  char path[512];
+  snprintf(path, sizeof path, "%s/Gold.sav", GB_ROMS);
+  FILE* f = fopen(path, "rb");
+  if (!f) { printf("  SKIP (Gold.sav not present)\n"); return; }
+  static uint8_t img[G2_SAVE_SIZE + G2_MAX_RTC_TAIL];
+  uint32_t len = (uint32_t)fread(img, 1, sizeof img, f);
+  fclose(f);
+  G2Save sv;
+  if (!g2_detect(img, len, &sv) || !sv.supported) { printf("  SKIP (unsupported)\n"); return; }
+  G2Header hd;
+  if (!g2_read_header(img, &sv, &hd)) { printf("  SKIP (header)\n"); return; }
+
+  for (int box = 0; box <= G2_BOX_PARTY; box++) {
+    uint32_t off = g2_list_offset(&sv, box, hd.current_box);
+    if (off == 0) continue;
+    int count = gb_list_count(GB_GEN2, img + off, box);
+    if (count < 0) continue;
+    for (int slot = 0; slot < count; slot++) {
+      GbEditMon mon;
+      if (!gb_load(&mon, GB_GEN2, img + off, box, slot)) continue;
+      if (mon.list_species == G2_LIST_EGG) continue;
+      if (gb_get_held_item(&mon) == 0) continue;   /* need an item holder */
+
+      uint8_t cell[80]; GbEditMon written; uint8_t out80[80];
+      if (!xr_down_sim(&mon, BC_ORIGIN_GOLD, g_xr_serial++, cell, &written, out80)) continue;
+
+      GbEditMon home; BcMeta meta;
+      CHECK(bc_unpack(cell, &home, &meta), "D2: the native cell unpacks");
+      uint16_t mapped = item_g2_to_g3(gb_get_held_item(&home));
+      if (mapped == 0) continue;   /* this item has no Gen-3 mapping -- try the next holder */
+
+      /* xr_down_sim() (this file's own item-relax stand-in) always zeroes the item on
+       * the conversion view -- unlike the real DOWN edge's decision 5/6, it never
+       * simulates a TRAVELLED item landing in the Gen-3 record. Do that here: write
+       * `mapped` into out80 directly, the exact outcome a real travels=true DOWN
+       * would have produced. */
+      EditMon em0; gen3_edit_load(out80, false, &em0);
+      em_set_item(&em0, mapped);
+      gen3_edit_commit(&em0, out80);
+      PkMon pm;
+      CHECK(pk_decode_mon(out80, false, &pm), "D2: the converted record decodes");
+      CHECK(pm.heldItem == mapped, "D2: the simulated travelled item landed (got %u want %u)",
+            pm.heldItem, mapped);
+
+      /* Unchanged: the Gen-3 record's own item is exactly what the native cell maps
+       * to -- pdna_box.c's OWN g3_item formula (D2's fix), literally reproduced here,
+       * must read false. Before D2 this was a bare `pm.heldItem != 0`, which fires
+       * for EVERY item-travelling mon even on a nothing-changed restore -- the exact
+       * false-positive confirm the review caught. */
+      bool g3_item_unchanged = pm.heldItem != 0 && pm.heldItem != mapped;
+      CHECK(!g3_item_unchanged,
+            "D2: unchanged case -- Gen-3 item (%u) matches the native cell's mapped "
+            "item (%u), g3_item must read false (D2's fix)", pm.heldItem, mapped);
+
+      /* Changed: edit the Gen-3 record's item to something that provably differs
+       * from `mapped`, and confirm the comparison now reads "something was lost". */
+      uint16_t other_item = (mapped == 1) ? 2 : 1;   /* MASTER BALL vs ULTRA BALL --
+                                                       * any two distinct real item ids */
+      uint8_t edited[80]; memcpy(edited, out80, 80);
+      EditMon em; gen3_edit_load(edited, false, &em);
+      em_set_item(&em, other_item);
+      gen3_edit_commit(&em, edited);
+      PkMon pm2;
+      CHECK(pk_decode_mon(edited, false, &pm2), "D2: the edited record decodes");
+      CHECK(pm2.heldItem == other_item, "D2: the item edit landed");
+      bool g3_item_changed = pm2.heldItem != 0 && pm2.heldItem != mapped;
+      CHECK(g3_item_changed,
+            "D2: changed case -- a distinct Gen-3 item (%u != mapped %u) reads as lost",
+            pm2.heldItem, mapped);
+      return;   /* one real item holder is enough -- named single-record check */
+    }
+  }
+  printf("  SKIP (no item holder found in Gold.sav)\n");
+}
+
 /* ============================================================================ */
 
 int main(int argc, char** argv) {
@@ -1120,6 +1203,7 @@ int main(int argc, char** argv) {
   test_restored_mark_is_real();
   test_nickname_unmappable_glyph();
   test_merge4_make_legal_written_level();
+  test_d2_item_confirm_logic();
 
   printf("\n== summary: %d checks, %d fail(s) (fails mean the PIPELINE didn't run --\n"
          "   never that a round trip was lossy; see the tables above for that) ==\n",
