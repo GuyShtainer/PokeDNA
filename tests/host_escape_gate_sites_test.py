@@ -286,7 +286,14 @@ def restore_order_facts(lines, start, end):     # shared by the real check (l) A
     Bank write it describes has actually landed."""
     u = first_match_line(lines, start, end, RESTORE_UP_RE)
     m = first_match_line(lines, start, end, RESTORE_MEMCPY_RE)
-    c = first_match_line(lines, start, end, COMMIT_RE)
+    # review D4: COMMIT_RE's FIRST match in drop_held's whole body is the UP path's
+    # OWN `ok = src->commit()` (the earlier, unrelated Bank<-GB arm) -- anchoring the
+    # search there let the PC->Bank arm's own commit call be moved anywhere relative
+    # to it and still "pass" (a real regression: app_pc_release_slot + pc_bank_
+    # restore_done moved ABOVE the ARM's commit still reads as after the UP path's
+    # commit). Anchor the search at `m` (the PC->Bank arm's own memcpy) instead, so
+    # `c` resolves to the arm's OWN commit call.
+    c = first_match_line(lines, m if m is not None else start, end, COMMIT_RE)
     r = first_match_line(lines, start, end, PC_RELEASE_SLOT_RE)
     d = first_match_line(lines, start, end, RESTORE_DONE_RE)
     if u is None: return False, "drop_held: no `pc_bank_restore_up(` call in the PC->Bank arm"
@@ -298,11 +305,12 @@ def restore_order_facts(lines, start, end):     # shared by the real check (l) A
         return False, (f"drop_held: pc_bank_restore_up() (line {u+1}) does NOT come before "
                        f"the PC->Bank memcpy (line {m+1}) -- the rebuilt cell could not be "
                        f"ready in time to be written")
-    if not (c < d and r < d):
-        return False, (f"drop_held: pc_bank_restore_done() (line {d+1}) must come AFTER BOTH "
-                       f"src->commit() (line {c+1}) and app_pc_release_slot() (line {r+1}) -- "
-                       f"the entry would be marked before the Bank write it describes has "
-                       f"actually landed")
+    if not (m < c and c < r and c < d and r < d):
+        return False, (f"drop_held: pc_bank_restore_done() (line {d+1}) and "
+                       f"app_pc_release_slot() (line {r+1}) must both come AFTER the PC->Bank "
+                       f"arm's OWN src->commit() (line {c+1}, found after the arm's memcpy at "
+                       f"line {m+1}) -- the entry would be marked (or the source released) "
+                       f"before the Bank write it describes has actually landed")
     return True, "ok"
 
 
@@ -726,6 +734,35 @@ def self_test_mutation_detection(box_lines: list[str]) -> None:
         ok, detail = restore_order_facts(mut_k, 0, len(mut_k))
         check(not ok, f"MUT K (pc_bank_restore_done swapped before commit()) should have been caught but was not: {detail}")
         print(f"  MUT K demonstration -- pc_bank_restore_done() line swapped above src->commit(): {detail}")
+
+    # MUT N (review D4): move BOTH app_pc_release_slot( AND pc_bank_restore_done(
+    # above the PC->Bank ARM's own `ok = src->commit()` (found via RESTORE_MEMCPY_RE,
+    # the same anchor the fixed restore_order_facts() uses) -- the exact shape the
+    # PRE-D4 checker (anchored on the UP path's FIRST commit() match, much earlier in
+    # the function) could not catch, because both moved lines would still sit textually
+    # AFTER that earlier, unrelated commit() line and read as "ok".
+    s, e = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
+    body = box_lines[s:e]
+    m_i = first_match_line(body, 0, len(body), RESTORE_MEMCPY_RE)
+    arm_commit_i = first_match_line(body, m_i if m_i is not None else 0, len(body), COMMIT_RE)
+    release_i2 = first_match_line(body, 0, len(body), PC_RELEASE_SLOT_RE)
+    done_i2 = first_match_line(body, 0, len(body), RESTORE_DONE_RE)
+    check(m_i is not None and arm_commit_i is not None and release_i2 is not None and done_i2 is not None,
+          "MUT N: could not locate the memcpy/arm-commit/release/done lines in the real source -- fix this test")
+    if (m_i is not None and arm_commit_i is not None and release_i2 is not None and done_i2 is not None
+            and arm_commit_i < release_i2 and arm_commit_i < done_i2):
+        mut_n = list(body)
+        # pop the LATER index first so the earlier index stays valid.
+        first_pop, second_pop = sorted([release_i2, done_i2], reverse=True)
+        line_a = mut_n.pop(first_pop)
+        line_b = mut_n.pop(second_pop)
+        mut_n.insert(arm_commit_i, line_a)
+        mut_n.insert(arm_commit_i, line_b)
+        ok, detail = restore_order_facts(mut_n, 0, len(mut_n))
+        check(not ok, f"MUT N (both app_pc_release_slot and pc_bank_restore_done swapped "
+                       f"above the ARM's own commit()) should have been caught but was not: {detail}")
+        print(f"  MUT N demonstration -- app_pc_release_slot() AND pc_bank_restore_done() "
+              f"both swapped above the PC->Bank arm's own src->commit(): {detail}")
 
     # MUT I (BACKLOG #171): revert the ONE real, clause-carrying `s_tab_focus = 1;`
     # site back to its pre-fix `else if (!src->is_bank) { s_tab_focus = 1; ... }` form
