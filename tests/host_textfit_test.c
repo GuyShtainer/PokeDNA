@@ -211,6 +211,7 @@ int main(void) {
   printf("\n== PC box footers (#23/#27 neighbourhood) ==\n");
   /* pdna_box.c draw_footer(): drawn at WP_X + 2 = 80 */
   T("L/R tab  A pick  DN", 80);
+  T(PDNA_TAB_FOCUS_CARRY_FOOTER, 80);
   T("A drop  B cancel", 80);
   T("A give  B put back", 80);
   T("L/R box  A edit  DN", 80);

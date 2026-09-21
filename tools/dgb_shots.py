@@ -4215,6 +4215,63 @@ def run_s150_4_uplift(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots
            "forcing a clean repaint over the picker in the SAME frame: still "
            "CM_MOVE, empty-handed ('MOVE  A grab  hold=set'), No.1 BULBASAUR still "
            "at slot 0 -- no leftover picker text, no forced L/R workaround needed")
+
+    # BACKLOG #173 F3 (review-sonnet A5, 2026-09-21): the brief asks this chain to
+    # lift a GB mon then press UP to reach tab focus WHILE HOLDING, to capture the
+    # carry-aware footer (PDNA_TAB_FOCUS_CARRY_FOOTER, "L/R tab  UP bank  DN"). That
+    # literal sequence is attempted below -- but shot 03 just proved (and every prior
+    # run of this exact chain has proved, going back to the S150-4/5 lane) that the
+    # grab is REFUSED before s_holding is ever set true: start_carry() (pdna_box.c
+    # :1078-1086) routes every BOXSCOPE_GB grab through src->xfer->lift_up
+    # (gb_lift_up_hook), which calls pdna_bank_next_serial() -> meta_save() ->
+    # sf_write_verified() -- a real SD write. mGBA never emulates a flashcart/SD card
+    # under ANY shot vehicle this repo builds (delta, delta-artless, artless, or
+    # normal) -- confirmed unconditional, not save-specific, by this exact file's own
+    # decade of "no SD card" citations elsewhere (search dgb_shots.py for "no SD
+    # card"). So a genuine s_holding==true with pdna_box_carry_is_gb()==true CANNOT be
+    # produced by any screenshot chain -- the carry-aware footer frame is HARDWARE-
+    # ONLY, not faked here (CLAUDE.md rule 17). What follows presses UP anyway and
+    # shows exactly what happens on THIS vehicle: still empty-handed (the grab never
+    # held anything), so KEY_UP takes the ORDINARY (non-holding) grid-navigation path
+    # (pdna_box.c:4067 `if (cur < COLS) on_title = true`, then :4026 `s_tab_focus =
+    # src->is_bank ? 2 : 1`) rather than the holding-only tab-focus edge (pdna_box.c
+    # :3906-3909) the brief had in mind. Both UP presses use settle=100, matching
+    # run_b142_tab_focus_arrival's own established idiom just above this function
+    # (its own comment: entering tab focus triggers a full repaint, which the
+    # default SETTLE=12 "simple cursor move" budget is too short to catch cleanly --
+    # confirmed live: a first pass at SETTLE=12 captured three consecutive frames
+    # with an unchanged footer despite the title bar's icons visibly changing
+    # underneath, i.e. the repaint's regions land on different frames; settle=100
+    # closes that gap, exactly as the existing b142/s150-7/s150-8 chains already do
+    # for every tab-focus-entering UP in this file).
+    s.tap("UP", settle=100)
+    s.shot("04_up_after_refusal_title_row", "s150-4/BACKLOG #173 F3: still empty-handed "
+           "after the refused grab (shot 03) -- UP from grid row 0 takes the ORDINARY "
+           "non-holding path (on_title = true), NOT the holding-only tab-focus edge; "
+           "footer 'L/R  A name  SEL  menu' (on_title's own line, not tab_focus_footer's) "
+           "-- cursor now on the box title row")
+
+    s.tap("UP", settle=100)
+    s.shot("05_tabfocus_emptyhanded", "s150-4/BACKLOG #173 F3: a second UP from the "
+           "title row reaches tab focus (s_tab_focus = src->is_bank ? 2 : 1; a GB "
+           "source is is_bank=true, so this lands on tab 2/SAVE) -- empty-handed, so "
+           "draw_footer() calls tab_focus_footer(s_holding=false, ...), which always "
+           "returns the plain 'L/R tab  A pick  DN' regardless of carry_is_gb (see "
+           "source/tab_focus_footer.c) -- footer confirmed live as exactly that text. "
+           "This is the reachable half of F1's fix: the holding=false branch, unchanged "
+           "by the A1 fix, rendering correctly in situ. The holding=true branch (the "
+           "line F1 actually changed, PDNA_TAB_FOCUS_CARRY_FOOTER) needs a real held "
+           "GB-origin carry to exercise on screen -- HARDWARE-ONLY, see above; "
+           "host_tabfocusfooter_test.c pins both branches directly instead (0 failed, "
+           "plus the mutation run reverting the fix fails 1/4 checks on the real "
+           "source -- see this lane's report).")
+
+    s.tap("B", settle=100)
+    s.shot("06_footer_restored", "s150-4/BACKLOG #173 F3: B backs out of tab focus -- "
+           "pdna_box.c:3962 `s_tab_focus = -1` returns to the box TITLE row (on_title "
+           "stays true, this branch never touches it), so the footer is on_title's own "
+           "'L/R  A name  SEL  menu' again, matching shot 04 -- s_tab_focus is back to "
+           "-1, confirming the footer-restore edge itself is intact and live")
     return s
 
 
