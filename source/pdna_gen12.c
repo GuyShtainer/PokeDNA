@@ -4241,6 +4241,8 @@ static bool gb_create_hook(void) {
   int box = (g_m->ui_box >= 0 && g_m->ui_box <= g_m->party_box) ? g_m->ui_box
           : (g_m->current_box >= 0 && g_m->current_box <= g_m->party_box) ? g_m->current_box
           : 0;
+  const int original_box = box;   /* review fix 3: named in the post-create message
+                                   * only when F4's picker actually redirected here */
   if (gb_box_is_party(g_ed->s.gen, box)) {
     snd_deny();
     msg_wait(PDNA_GBCREATE_TITLE, UI_WARN, PDNA_SIDECAR_PARTY_L1, 0);
@@ -4424,7 +4426,18 @@ static bool gb_create_hook(void) {
     return false;
   }
   log_line("=== gb create -> %s box %d slot %d dex %u lv %d ===", g_ed->path, box, slot_out, dex, lvl);
-  return gb_persist("create");
+  bool ok = gb_persist("create");
+  /* Review fix 3 (LOW), BACKLOG #187: F4's picker can redirect `box` away from the
+   * one the grid is showing -- say so, or the new mon looks like it never landed. A
+   * plain in-place create (the common case) already shows it right where the
+   * player is looking; nothing new to say there. */
+  if (ok && box != original_box) {
+    char nm[12], l1[32];
+    pdna_gen12_box_name(g_m, box, nm);
+    siprintf(l1, PDNA_GBCREATE_REDIRECTED_FMT, nm, slot_out + 1);
+    msg_wait(PDNA_GBCREATE_REDIRECTED_TITLE, UI_OK, l1, 0);
+  }
+  return ok;
 }
 
 /* app_src_ops_set() hook: ITEM on the read-only mon menu (BACKLOG #92). Gen 2 only --

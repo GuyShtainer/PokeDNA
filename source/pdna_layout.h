@@ -1149,6 +1149,15 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * same fold, caught while re-deriving the message rather than reproduced). */
 #define PDNA_GBCREATE_BADLIST_TITLE  "CAN'T READ BOX"
 #define PDNA_GBCREATE_BADLIST_L1     "This box's data looks corrupt."
+/* Review fix 3 (LOW), BACKLOG #187: CREATE via F4's picker lands in a box the grid
+ * is not currently showing (gb_create_hook reassigns `box = dst` before the
+ * species/level/insert pipeline runs) -- without this, the ONLY feedback after a
+ * successful create is the grid simply not gaining a new mon where the player is
+ * still looking, easy to misread as a silent failure. Shown only when box != the
+ * box the player actually opened CREATE from (the common case, staying in the same
+ * box, already shows it landing right there). */
+#define PDNA_GBCREATE_REDIRECTED_TITLE "CREATED"
+#define PDNA_GBCREATE_REDIRECTED_FMT   "Created in %s, slot %d."
 #define PDNA_GBCREATE_BUILDFAIL_L1   "Could not build a legal record."
 /* pdna_pick.c's pick_item(), restricted mode (UX-parity audit, Guy 2026-09-07:
  * the GB editor's item row now opens the SAME picker the Gen-3 flow uses,
