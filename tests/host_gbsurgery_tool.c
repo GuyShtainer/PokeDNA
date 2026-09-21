@@ -269,6 +269,12 @@ static void usage(const char* prog) {
     "  --op hofcount N               BACKLOG #89: gbh_set_count(N) -- the lifetime\n"
     "                               win counter (Gen 1 clamped to the teams present,\n"
     "                               <= 50; Gen 2 <= 200).\n"
+    "  --op hofappend                BACKLOG #194 F3: gbh_append_team() -- one canned\n"
+    "                               1-mon team (dex 1, level 5), the lifetime win\n"
+    "                               counter's own +1 (saturating).\n"
+    "  --op hofdelete                BACKLOG #194 F3: gbh_delete_team(0) -- delete the\n"
+    "                               newest team, the lifetime win counter's own -1\n"
+    "                               (floored at 0).\n"
 "BOX is 0..n-1 or the literal \"party\".\n", prog, prog);
 }
 
@@ -296,6 +302,8 @@ static int parse_args(int argc, char** argv, const char** in, const char** out,
     {"counter", 2},    /* BACKLOG #88: FIELD(safari|lucky) VALUE */
     {"hofclear", 0},   /* BACKLOG #89: gbh_clear() -- erase every Hall of Fame team + count */
     {"hofcount", 1},   /* BACKLOG #89: gbh_set_count() N -- the lifetime win counter */
+    {"hofappend", 0},  /* BACKLOG #194 F3: gbh_append_team() -- one canned 1-mon team */
+    {"hofdelete", 0},  /* BACKLOG #194 F3: gbh_delete_team(0) -- delete the newest team */
     {"dexset", 2},     /* BACKLOG #87 item 6 retail-gate case: DEX STATE (0/1/2) */
     {"unownreset", 0}, /* BACKLOG #87 D4 retail-gate setup: force the Unown-dex gate clear */
     {"warp2", 4},      /* M1-G2 fix-pass shot-retake gate: GROUP NUMBER X Y, Gen 2 only */
@@ -645,6 +653,35 @@ static int do_hofcount(GbSession* s, const char* n_tok) {
    * post-clamp count so tools/gb_retail_gate.py's own hofcount case can check
    * against what this call ACTUALLY wrote, not the token it was handed. */
   printf("hofcount result: %d\n", gbh_count(s));
+  return 0;
+}
+
+/* BACKLOG #194 F3 retail gate: gbh_append_team() -- proves the append (and, on Gen 1
+ * once the table is full, its eviction shift) reaches a REAL booted Red/Gold/Crystal,
+ * not just the host test's in-memory image. One canned 1-mon team (dex 1, level 5,
+ * nickname "TESTMON") -- species/level are validated by gbh_append_team() itself
+ * (gb_hof.h's own contract), so any bad token here would refuse before ever reaching
+ * the card, same posture as every other surgery op. */
+static int do_hofappend(GbSession* s) {
+  GbHofTeam t; memset(&t, 0, sizeof t);
+  t.n = 1;
+  t.mon[0].present = true;
+  t.mon[0].dex = 1;
+  t.mon[0].level = 5;
+  snprintf(t.mon[0].nick, sizeof t.mon[0].nick, "TESTMON");
+  GbsStatus st = gbh_append_team(s, &t);
+  if (st != GBS_OK) return refuse(gbs_status_text(st));
+  printf("hofappend result: %d\n", gbh_count(s));
+  return 0;
+}
+
+/* BACKLOG #194 F3 retail gate: gbh_delete_team(0) -- deletes the newest team (UI
+ * index 0 on both gens); proves the delete (the shift-and-decrement inverse of
+ * append) reaches a real booted game the same way. */
+static int do_hofdelete(GbSession* s) {
+  GbsStatus st = gbh_delete_team(s, 0);
+  if (st != GBS_OK) return refuse(gbs_status_text(st));
+  printf("hofdelete result: %d\n", gbh_count(s));
   return 0;
 }
 
@@ -1275,6 +1312,12 @@ static int apply_op(GbSession* s, const Op* o) {
   }
   if (!strcmp(o->kind, "hofcount")) {
     return do_hofcount(s, o->a[0]);
+  }
+  if (!strcmp(o->kind, "hofappend")) {
+    return do_hofappend(s);
+  }
+  if (!strcmp(o->kind, "hofdelete")) {
+    return do_hofdelete(s);
   }
   if (!strcmp(o->kind, "dexset")) {
     return do_dexset(s, o->a[0], o->a[1]);
