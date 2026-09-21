@@ -302,7 +302,25 @@ static GbsStatus hof_write_mon(GbSession* s, uint32_t mon_off, const GbHofMon* m
   rec[3] = (uint8_t)(((mon->dv[0] & 0x0Fu) << 4) | (mon->dv[1] & 0x0Fu));
   rec[4] = (uint8_t)(((mon->dv[2] & 0x0Fu) << 4) | (mon->dv[3] & 0x0Fu));
   rec[5] = mon->level;
-  gb_name_encode(GB_GEN2, rec + 6, 10, GB_NICK_GLYPHS, mon->nick);
+  /* D1 (b194 review, HIGH): the real Gen-2 HOF nickname field is 10 bytes with NO
+   * reserved terminator (pokecrystal HOF_MON_LENGTH = 1+2+2+1+(MON_NAME_LENGTH-1)
+   * = 1+2+2+1+9... i.e. 10 raw bytes, all glyphs, never a trailing 0x50) -- but
+   * gb_name_encode(dst, cap, ...) ALWAYS reserves its own last byte for a
+   * terminator (gb_edit.c's own "Terminator + padding" contract: `for (; n < cap;
+   * n++) dst[n] = NAME_TERM;`), so calling it with cap=10 directly kept only 9
+   * real glyphs + one 0x50 -- a LEVEL-ONLY edit (nickname untouched by the
+   * caller, but re-encoded from the decoded string every write) silently
+   * truncated a 10-glyph nickname by one character every time (TYPHLOSION ->
+   * TYPHLOSIO, caught live in this lane's own g2_06 shot). Encode into an
+   * 11-byte scratch (cap=11, matching GB_NICK_GLYPHS=10 max glyphs -- room for
+   * all 10 real glyphs plus gb_name_encode's own terminator byte), then copy
+   * only the first 10 bytes into the real field -- dropping the terminator byte
+   * gb_name_encode wrote at index 10, which the real 10-byte field has no room
+   * for and gb_name_decode's own 10-byte read (gb_hof.c's hof_decode_mon_g2)
+   * never expected in the first place. */
+  uint8_t nb[11];
+  gb_name_encode(GB_GEN2, nb, sizeof nb, GB_NICK_GLYPHS, mon->nick);
+  memcpy(rec + 6, nb, 10);
   return gbs_write_field(s, mon_off, rec, sizeof rec);
 }
 

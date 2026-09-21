@@ -611,6 +611,68 @@ static void set_mon_roundtrip(const char* file) {
         "(%u byte diff)", file, d);
 }
 
+/* ---- N2: b194 review D1 -- the Gen-2 nickname field is 10 raw bytes with NO
+ * reserved terminator; a LEVEL-ONLY edit (nickname re-encoded from the decoded
+ * string every write, even when the caller never touched it) must not silently
+ * drop the 10th glyph. Gold AND Crystal (both Gen-2 games in the corpus). ---- */
+
+static void set_mon_nick10_g2(const char* file) {
+  uint32_t len = load(file);
+  if (!len) { printf("  SKIP %s (not present)\n", file); return; }
+  GbSession s;
+  if (gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) != GBS_OK || s.gen != GB_GEN2) {
+    printf("  SKIP %s (not a Gen-2 save)\n", file);
+    return;
+  }
+  int present = gbh_team_count_present(&s);
+  if (present < 1) { printf("  SKIP %s (no HoF teams to edit)\n", file); return; }
+  g_ran++;
+
+  GbHofTeam t0;
+  CHECKF(gbh_team(&s, 0, &t0), "%s: read team 0", file);
+
+  /* First write: a full 10-glyph nickname (exactly GBH_NICK_CAP-6 -- GBH_NICK_CAP
+   * is 16, but the real field caps at 10 raw bytes/glyphs, GB_NICK_GLYPHS). */
+  GbHofMon m1 = t0.mon[0];
+  m1.level = 50;
+  strncpy(m1.nick, "ABCDEFGHIJ", sizeof m1.nick - 1);   /* exactly 10 glyphs */
+  m1.nick[sizeof m1.nick - 1] = 0;
+  CHECKF(gbh_set_mon(&s, 0, 0, &m1) == GBS_OK, "%s: set_mon 10-glyph nick", file);
+
+  GbHofTeam t1;
+  CHECKF(gbh_team(&s, 0, &t1), "%s: reread after 10-glyph write", file);
+  CHECKF(strcmp(t1.mon[0].nick, "ABCDEFGHIJ") == 0,
+        "%s: 10-glyph nick readback '%s', want 'ABCDEFGHIJ' (%zu chars)",
+        file, t1.mon[0].nick, strlen(t1.mon[0].nick));
+
+  /* The actual D1 regression: a LEVEL-ONLY edit (nickname carried through
+   * unchanged from the just-read-back value, exactly what hof_edit_mon's own
+   * "stage a copy" idiom does) must not truncate the 10th glyph. */
+  GbHofMon m2 = t1.mon[0];
+  m2.level = 51;
+  CHECKF(gbh_set_mon(&s, 0, 0, &m2) == GBS_OK, "%s: set_mon level-only (nick carried through)", file);
+  GbHofTeam t2;
+  CHECKF(gbh_team(&s, 0, &t2), "%s: reread after level-only edit", file);
+  CHECKF(t2.mon[0].level == 51, "%s: level after level-only edit = %d, want 51",
+        file, t2.mon[0].level);
+  CHECKF(strcmp(t2.mon[0].nick, "ABCDEFGHIJ") == 0,
+        "%s: D1 regression -- nick after a LEVEL-ONLY edit is '%s', want the "
+        "full 'ABCDEFGHIJ' unchanged (a 9-glyph 'ABCDEFGHI' means the 10th "
+        "glyph was silently dropped)", file, t2.mon[0].nick);
+
+  /* An 11-CHARACTER input must land as exactly 10 glyphs (GB_NICK_GLYPHS' own
+   * cap), not 9 (the old cap=10-including-terminator bug) and not 11. */
+  GbHofMon m3 = t2.mon[0];
+  strncpy(m3.nick, "ABCDEFGHIJK", sizeof m3.nick - 1);
+  m3.nick[sizeof m3.nick - 1] = 0;
+  CHECKF(gbh_set_mon(&s, 0, 0, &m3) == GBS_OK, "%s: set_mon 11-char input", file);
+  GbHofTeam t3;
+  CHECKF(gbh_team(&s, 0, &t3), "%s: reread after 11-char input", file);
+  CHECKF(strcmp(t3.mon[0].nick, "ABCDEFGHIJ") == 0,
+        "%s: 11-char input truncates to '%s', want the 10-glyph cap 'ABCDEFGHIJ'",
+        file, t3.mon[0].nick);
+}
+
 /* ---- O: BACKLOG #194 F3 -- gbh_append_team at the Gen-1 (cap 50) and Gen-2
  * (cap 30) capacity boundaries, shift correctness ---- */
 
@@ -800,6 +862,9 @@ int main(void) {
 
   printf("== N: BACKLOG #194 F2 -- gbh_set_mon round-trip/pad/OT-DV/refusals ==\n");
   for (size_t i = 0; i < sizeof saves / sizeof saves[0]; i++) set_mon_roundtrip(saves[i]);
+
+  printf("== N2: b194 review D1 -- Gen-2 10-glyph nickname survives a level-only edit ==\n");
+  for (size_t i = 0; i < sizeof saves / sizeof saves[0]; i++) set_mon_nick10_g2(saves[i]);
 
   printf("== O: BACKLOG #194 F3 -- gbh_append_team capacity boundaries ==\n");
   for (size_t i = 0; i < sizeof saves / sizeof saves[0]; i++) append_gen1_boundary(saves[i]);
