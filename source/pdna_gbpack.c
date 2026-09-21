@@ -197,6 +197,87 @@ static bool pdna_gbpack_plain(GbBag* bag, GbGame game, bool can_edit, const char
   }
 }
 
+/* BACKLOG #195 F2, split out of gbpack_start_menu (golden rule 4, ~60 lines/
+ * function) -- ADD ITEM into the PC store: D7's own rule, unchanged, the
+ * store is undifferentiated, any id goes straight in, no routing.
+ * Returns false iff the QUANTITY prompt was cancelled (caller's own
+ * `continue` back to the still-open menu, no insert attempted at all);
+ * true for every completed attempt, success or refused alike (the caller's
+ * unconditional "close the menu" tail applies to those). */
+static bool gbpack_add_to_pc(GbBag* bag, GbGame game, uint8_t id8) {
+  uint32_t qty;
+  if (!num_entry_opt("QUANTITY", 1, 999, &qty)) return false;
+  bool qty_in_range = qty >= 1u && qty <= GBB_QTY_CAP;
+  uint8_t qty8 = (uint8_t)(qty > 0xFFu ? 0xFFu : qty);
+  GbBagOpStatus st = gbb_insert(game, bag, GBB_POCKET_PC, id8, qty8);
+  if (st == GBB_ERR_FULL)
+    msg_wait("BAG FULL", UI_WARN, "This pocket has no free slot.", 0);
+  else if (st == GBB_ERR_BADID)
+    msg_wait("BAD ID", UI_WARN, "That item id does not exist.", 0);
+  else if (st == GBB_ERR_QTY) {
+    if (qty_in_range) msg_wait("SATURATED", UI_WARN, "Quantity clamped to the cap.", 0);
+    else msg_wait("BAD QUANTITY", UI_WARN, "Quantity must be 1-99.", 0);
+  }
+  return true;
+}
+
+/* BACKLOG #195 F2: ADD ITEM into one of the four real pockets -- auto-routes
+ * to the picked id's OWN pocket via gbb_pocket_of(), the Gen-3 bag's own
+ * shape (pdna_bag.c:445-452), NOT necessarily the pocket this menu was
+ * opened from. The old "WRONG POCKET / no per-item table yet" refusal is
+ * gone: gbb_pocket_of() IS that table now. Same false/true cancel contract
+ * as gbpack_add_to_pc() above (Key items have no quantity prompt to cancel,
+ * so this branch always returns true for a Key item -- it never reaches
+ * the point where a cancel is even possible). */
+static bool gbpack_add_routed(GbBag* bag, GbGame game, uint8_t id8) {
+  GbBagPocket target = gbb_pocket_of(game, id8);
+  if (target == GBB_POCKET_TMHM) {
+    /* Not a list slot -- its own count array (gb_bag.h's own contract). A
+     * count, not a "+N" quantity, matching the existing TM/HM row-edit
+     * prompt elsewhere in this file. */
+    int tmi = gbb_tmhm_index_of(game, id8);
+    if (tmi < 0) msg_wait("BAD ID", UI_WARN, "That item id does not exist.", 0);
+    else {
+      uint32_t q = num_entry("COUNT", 0, GBB_TMHM_CAP);
+      gbb_tmhm_set(game, bag, tmi, (uint8_t)q);
+    }
+    return true;
+  }
+  if (target == GBB_POCKET_KEY) {
+    /* Key items carry no stored quantity -- always 1, no prompt (BACKLOG
+     * #195 F2's own rule; gbb_insert() itself also refuses any other qty
+     * for this pocket, gb_bag.h's own contract). */
+    GbBagOpStatus st = gbb_insert(game, bag, GBB_POCKET_KEY, id8, 1u);
+    if (st == GBB_ERR_FULL)
+      msg_wait("BAG FULL", UI_WARN, "This pocket has no free slot.", 0);
+    else if (st == GBB_ERR_ARG)
+      msg_wait("ALREADY HELD", UI_WARN, "You already have this key item.", 0);
+    return true;
+  }
+  if (target == GBB_POCKET_ITEMS || target == GBB_POCKET_BALLS) {
+    uint32_t qty;
+    if (!num_entry_opt("QUANTITY", 1, 999, &qty)) return false;
+    bool qty_in_range = qty >= 1u && qty <= GBB_QTY_CAP;
+    uint8_t qty8 = (uint8_t)(qty > 0xFFu ? 0xFFu : qty);
+    GbBagOpStatus st = gbb_insert(game, bag, target, id8, qty8);
+    if (st == GBB_ERR_FULL)
+      msg_wait("BAG FULL", UI_WARN, "This pocket has no free slot.", 0);
+    else if (st == GBB_ERR_BADID)
+      msg_wait("BAD ID", UI_WARN, "That item id does not exist.", 0);
+    else if (st == GBB_ERR_QTY) {
+      if (qty_in_range) msg_wait("SATURATED", UI_WARN, "Quantity clamped to the cap.", 0);
+      else msg_wait("BAD QUANTITY", UI_WARN, "Quantity must be 1-99.", 0);
+    }
+    return true;
+  }
+  /* target == GBB_POCKET_COUNT: unreachable in practice (the picker only
+   * ever returns an id its OWN ceiling/TM-HM admission test already
+   * accepted, item_build()'s own comment) -- say so rather than silently
+   * drop the pick if it ever is. */
+  msg_wait("BAD ID", UI_WARN, "That item id does not exist.", 0);
+  return true;
+}
+
 /* START menu: ADD ITEM / REMOVE / SWAP / PC STORE toggle / CANCEL. REMOVE/
  * SWAP are still not offered for the TM/HM pocket (a fixed 57-slot count
  * array has no slot to remove/swap, gb_bag.h's own contract) -- but ADD IS
@@ -252,72 +333,9 @@ static int gbpack_start_menu(GbBag* bag, GbBagPocket pocket, GbGame game, int* s
       if (id16 == 0xFFFFu) continue;
       uint8_t id8 = (uint8_t)id16;
 
-      if (pocket == GBB_POCKET_PC) {
-        /* D7's own rule, unchanged by BACKLOG #195: the PC store is its own
-         * separate, UNDIFFERENTIATED list -- ANY item id goes straight in,
-         * no pocket routing (gbb_insert()'s own id8 range check is what
-         * actually bounds a bad id here, same as every other pocket). */
-        uint32_t qty;
-        if (!num_entry_opt("QUANTITY", 1, 999, &qty)) continue;
-        bool qty_in_range = qty >= 1u && qty <= GBB_QTY_CAP;
-        uint8_t qty8 = (uint8_t)(qty > 0xFFu ? 0xFFu : qty);
-        GbBagOpStatus st = gbb_insert(game, bag, GBB_POCKET_PC, id8, qty8);
-        if (st == GBB_ERR_FULL)
-          msg_wait("BAG FULL", UI_WARN, "This pocket has no free slot.", 0);
-        else if (st == GBB_ERR_BADID)
-          msg_wait("BAD ID", UI_WARN, "That item id does not exist.", 0);
-        else if (st == GBB_ERR_QTY) {
-          if (qty_in_range) msg_wait("SATURATED", UI_WARN, "Quantity clamped to the cap.", 0);
-          else msg_wait("BAD QUANTITY", UI_WARN, "Quantity must be 1-99.", 0);
-        }
-      } else {
-        /* BACKLOG #195 F2: the four real pockets auto-route -- a picked id
-         * lands in ITS OWN pocket (gbb_pocket_of()), the Gen-3 bag's own
-         * shape (pdna_bag.c:445-452), NOT necessarily the one this menu was
-         * opened from. The "WRONG POCKET / no per-item table yet" refusal
-         * this used to print is gone: gbb_pocket_of() IS that table now. */
-        GbBagPocket target = gbb_pocket_of(game, id8);
-        if (target == GBB_POCKET_TMHM) {
-          /* Not a list slot -- its own count array (gb_bag.h's own
-           * contract). A count, not a "+N" quantity, matching the existing
-           * TM/HM row-edit prompt elsewhere in this file. */
-          int tmi = gbb_tmhm_index_of(game, id8);
-          if (tmi < 0) msg_wait("BAD ID", UI_WARN, "That item id does not exist.", 0);
-          else {
-            uint32_t q = num_entry("COUNT", 0, GBB_TMHM_CAP);
-            gbb_tmhm_set(game, bag, tmi, (uint8_t)q);
-          }
-        } else if (target == GBB_POCKET_KEY) {
-          /* Key items carry no stored quantity -- always 1, no prompt
-           * (BACKLOG #195 F2's own rule; gbb_insert() itself also refuses
-           * any other qty for this pocket, gb_bag.h's own contract). */
-          GbBagOpStatus st = gbb_insert(game, bag, GBB_POCKET_KEY, id8, 1u);
-          if (st == GBB_ERR_FULL)
-            msg_wait("BAG FULL", UI_WARN, "This pocket has no free slot.", 0);
-          else if (st == GBB_ERR_ARG)
-            msg_wait("ALREADY HELD", UI_WARN, "You already have this key item.", 0);
-        } else if (target == GBB_POCKET_ITEMS || target == GBB_POCKET_BALLS) {
-          uint32_t qty;
-          if (!num_entry_opt("QUANTITY", 1, 999, &qty)) continue;
-          bool qty_in_range = qty >= 1u && qty <= GBB_QTY_CAP;
-          uint8_t qty8 = (uint8_t)(qty > 0xFFu ? 0xFFu : qty);
-          GbBagOpStatus st = gbb_insert(game, bag, target, id8, qty8);
-          if (st == GBB_ERR_FULL)
-            msg_wait("BAG FULL", UI_WARN, "This pocket has no free slot.", 0);
-          else if (st == GBB_ERR_BADID)
-            msg_wait("BAD ID", UI_WARN, "That item id does not exist.", 0);
-          else if (st == GBB_ERR_QTY) {
-            if (qty_in_range) msg_wait("SATURATED", UI_WARN, "Quantity clamped to the cap.", 0);
-            else msg_wait("BAD QUANTITY", UI_WARN, "Quantity must be 1-99.", 0);
-          }
-        } else {
-          /* target == GBB_POCKET_COUNT: unreachable in practice (the picker
-           * only ever returns an id its OWN ceiling/TM-HM admission test
-           * already accepted, item_build()'s own comment) -- say so rather
-           * than silently drop the pick if it ever is. */
-          msg_wait("BAD ID", UI_WARN, "That item id does not exist.", 0);
-        }
-      }
+      bool did_add = (pocket == GBB_POCKET_PC) ? gbpack_add_to_pc(bag, game, id8)
+                                                : gbpack_add_routed(bag, game, id8);
+      if (!did_add) continue;   /* QUANTITY prompt was cancelled -- nothing attempted */
       *sel = l->count > 0 ? l->count - 1 : 0;
     } else if (csel == 1) {   /* REMOVE */
       if (l->count > 0) gbb_remove(game, bag, pocket, *sel);
