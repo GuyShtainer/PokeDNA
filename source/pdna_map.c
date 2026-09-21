@@ -142,8 +142,8 @@ static const char* const k_gbrom_exts[]  = { ".gb", ".gbc", 0 };
  * same core). */
 static bool rom_pick(char* out, int out_cap, BrowseEntry* ents, int cap) {
   const BrowseSpec spec = {
-    .title = "Pick .gba", .filter_label = ".gba", .match_mode = BR_MATCH_SUFFIX,
-    .exts = k_rom_exts, .cfg_key = "dir_rom", .menu_extra = false,
+    .title = "Pick .gba", .filter_label = ".gba", .root_hint = "Open the folder with your ROMs.",
+    .match_mode = BR_MATCH_SUFFIX, .exts = k_rom_exts, .cfg_key = "dir_rom", .menu_extra = false,
     .entries = ents, .cap = cap,
   };
   return browse_pick_spec(&spec, out, out_cap);
@@ -1905,8 +1905,8 @@ bool app_pick_gb_save(char* out, int out_cap) {
   BrowseEntry* ents = pick_mem_acquire(&cap, &from_artbuf);
   if (!ents) return false;
   const BrowseSpec spec = {
-    .title = "Pick GB save", .filter_label = ".sav/.srm", .match_mode = BR_MATCH_SUFFIX,
-    .exts = k_gbsav_exts, .cfg_key = "dir_gbsav", .menu_extra = false,
+    .title = "Pick GB save", .filter_label = ".sav/.srm", .root_hint = "Open the folder with your saves.",
+    .match_mode = BR_MATCH_SUFFIX, .exts = k_gbsav_exts, .cfg_key = "dir_gbsav", .menu_extra = false,
     .entries = ents, .cap = cap,
   };
   bool ok = browse_pick_spec(&spec, out, out_cap);
@@ -1924,8 +1924,8 @@ bool app_pick_gb_rom(char* out, int out_cap) {
   BrowseEntry* ents = pick_mem_acquire(&cap, &from_artbuf);
   if (!ents) return false;
   const BrowseSpec spec = {
-    .title = "Pick .gb/.gbc", .filter_label = ".gb/.gbc", .match_mode = BR_MATCH_SUFFIX,
-    .exts = k_gbrom_exts, .cfg_key = "dir_gb", .menu_extra = false,
+    .title = "Pick .gb/.gbc", .filter_label = ".gb/.gbc", .root_hint = "Open the folder with your ROMs.",
+    .match_mode = BR_MATCH_SUFFIX, .exts = k_gbrom_exts, .cfg_key = "dir_gb", .menu_extra = false,
     .entries = ents, .cap = cap,
   };
   bool ok = browse_pick_spec(&spec, out, out_cap);

@@ -51,6 +51,7 @@ typedef enum {
 typedef struct {
   const char*        title;          /* e.g. "Pick .sav" -- the browser's title prefix   */
   const char*        filter_label;   /* e.g. ".sav" -- the status line's filter tag       */
+  const char*        root_hint;      /* D4: root empty-state hint, e.g. "Open the folder with your saves." */
   BrMatchMode        match_mode;
   const char* const* exts;
   const char*        cfg_key;        /* "dir" | "dir_rom" | "dir_gb" | "dir_gbsav"        */

@@ -1131,7 +1131,7 @@ static void __attribute__((noinline)) render_browser(BrowseEntry* ents, int sel,
     if (g_count == 0) {
       char empty[40]; siprintf(empty, "(no folders or %s files here)", spec->filter_label);
       ui_text(6, 40, UI_WARN, empty);
-      ui_text(6, 52, UI_DIM,  at_root() ? "Open the folder with your saves."
+      ui_text(6, 52, UI_DIM,  at_root() ? spec->root_hint
                                         : "B = go up a folder.");
     }
     /* UI_FOOTER_Y, not a hard 150: this row is what every popup is laid out to clear, and
@@ -1401,8 +1401,8 @@ bool browse_pick_spec(const BrowseSpec* spec, char* out, int cap) {
 static const char* const k_sav_exts_unused[1] = { 0 };  /* BR_MATCH_SAV never reads exts */
 static bool browse_pick(char* out, int cap) {
   const BrowseSpec spec = {
-    .title = "Pick .sav", .filter_label = ".sav", .match_mode = BR_MATCH_SAV,
-    .exts = k_sav_exts_unused, .cfg_key = "dir", .menu_extra = true,
+    .title = "Pick .sav", .filter_label = ".sav", .root_hint = "Open the folder with your saves.",
+    .match_mode = BR_MATCH_SAV, .exts = k_sav_exts_unused, .cfg_key = "dir", .menu_extra = true,
     .entries = g_entries, .cap = MAX_ENTRIES,
   };
   return browse_pick_spec(&spec, out, cap);
