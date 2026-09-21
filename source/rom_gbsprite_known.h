@@ -6,10 +6,12 @@
  * roms/gb/{Red.gb,Yellow.gb,Gold.gbc,Crystal.gbc} -- never committed, never
  * read by anything except this one-off generator and the tests). NO address
  * here was copied from a decomp or typed by hand -- see
- * tests/host_romgbsprite_known_test.c, which re-runs the SAME scan on the
- * SAME corpus on every test run and asserts byte-for-byte equality against
- * every entry below, so a hand-edit or a scanner change that would make this
- * table WRONG fails loudly instead of silently.
+ * tests/host_gbscan_test.c's part_b_f5_one() (BACKLOG #185 D2), which
+ * re-runs the SAME scan on the SAME corpus on every test run (via a
+ * checksum-poisoned re-open that forces this table's own known_rom_lookup()
+ * to miss) and asserts byte-for-byte equality against every entry below, so
+ * a hand-edit or a scanner change that would make this table WRONG fails
+ * loudly instead of silently.
  *
  * Every hit is still re-verified through try_loc() (rom_gbsprite.c) before
  * use -- g1_bs_verify/g1_mew_verify or g2_bd_verify+g2_pp_verify+g2_pal_verify,

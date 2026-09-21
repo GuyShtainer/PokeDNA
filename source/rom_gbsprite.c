@@ -626,10 +626,11 @@ static int try_loc(RomGbSprite* gs, const RomGbSpriteLoc* loc, uint8_t gen_hint)
 
 /* BACKLOG #185 F5: a static const table of (title, version, global_checksum)
  * -> the located offsets, populated ONLY from what THIS scanner finds on the
- * four ROMs Guy actually owns (tests/host_romgbsprite_known_test.c re-derives
- * every entry from the live scanner on every run and asserts byte-equality,
- * so the table can never drift from it -- see that file for the generator
- * this table was pasted from). Blue/Silver (no corpus ROM) simply have no
+ * four ROMs Guy actually owns (tests/host_gbscan_test.c's part_b_f5_one(),
+ * BACKLOG #185 D2, re-derives every entry from the live scanner on every run
+ * and asserts byte-equality, so the table can never drift from it -- see
+ * that function for the generator this table was pasted from). Blue/Silver
+ * (no corpus ROM) simply have no
  * entry -- they fall straight through to the full scan below, same as any
  * hack or unknown revision. A HIT here still runs the exact same try_loc()
  * verify-before-use gate as a .loc cache hit -- this table is a candidate,

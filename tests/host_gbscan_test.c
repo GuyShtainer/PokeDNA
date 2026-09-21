@@ -504,6 +504,37 @@ static void part_b_f5_one(const char* name, uint8_t gen, const Want* want) {
   chk(who, "a table hit costs far fewer reads than a scan",
       r.calls < (gen == 1 ? 200u : 600u));
   printf("  %-12s fast-path open: %u reads (vs a full scan's hundreds)\n", name, r.calls);
+
+  /* BACKLOG #185 D2 (review fix): the brief's own requirement -- "a host test
+   * regenerates the table from the scanner and asserts equality (so the
+   * table can never drift from the scanner)" -- was never actually written.
+   * `ok` from the table-hit open above already gives the table's own
+   * RomGbSpriteLoc; re-open the SAME ROM with the checksum poisoned (forces
+   * known_rom_lookup() to miss, so this second open runs the REAL scan, same
+   * mechanism part_b_rom() already uses) and compare, byte for byte. id_hash
+   * is copied across first: it is FNV1a of the WHOLE header (parse_header()),
+   * so the poison byte that forces the scan miss also changes id_hash
+   * between the two opens -- a field the table's own contract (title +
+   * version + global_checksum, not id_hash) never claimed to match anyway. */
+  if (ok) {
+    RomGbSpriteLoc from_table; rom_gbsprite_save_loc(&gs, &from_table);
+    Rd r2;
+    if (rd_open(&r2, name)) {
+      r2.poison_checksum = 1;
+      RomGbSprite gs2;
+      int ok2 = rom_gbsprite_open(&gs2, rd_read, &r2, r2.size, b_scratch, 8192, GB_ROM_NONE);
+      chk(who, "D2: the poisoned re-open (forced scan) also locates the ROM", ok2);
+      if (ok2) {
+        RomGbSpriteLoc from_scan; rom_gbsprite_save_loc(&gs2, &from_scan);
+        from_scan.id_hash = from_table.id_hash;   /* the one field the table never claims */
+        chk(who, "D2: the known-ROM table entry equals the scanner's own output, byte for byte",
+            memcmp(&from_table, &from_scan, sizeof from_table) == 0);
+      }
+      r2.fail_at = -1;
+      fclose(r2.f);
+    }
+  }
+
   r.fail_at = -1;
   fclose(r.f);
 }
