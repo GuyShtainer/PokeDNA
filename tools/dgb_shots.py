@@ -168,13 +168,23 @@ def nav_to_gb_import(s: gb_shots.Session) -> None:
     s.tap("A", settle=gb_shots.BIG_SETTLE)                    # NV_GB -> the (separate) nested-import picker
     assert_screen(s, "pick_a_save")
 
-# #62 review D9: rides out the one-time, per-generation cold ROM scan (see module
-# docstring). Gen 1 (a single sprite-portrait scan) measured ~258 s; Gen 2 pays TWO
-# independent cold scans the first time a box grid needs BOTH the left-panel portrait
-# (gb_art_fetch, its own s_dsprite_loc cache) and the grid's own 16x16 menu icons
-# (gb_art_fetch_icon, its own separate s_dicon_loc cache) -- measured ~500 s. 32,000
-# frames = ~533 s of emulated GBA time, comfortably over the Gen-2 worst case.
-GB_ART_COLD_SETTLE = 32000
+# BACKLOG #185 (F1 gen-aware jobs + F2 inline prefilter gates) re-measured the
+# SPRITE/PORTRAIT half of this cold scan directly in THIS emulator, same harness as
+# run_cold_start_compare()/_measure_box_grid_cold_start() below (a --no-loc fused
+# image, so no baked .loc seed short-circuits it): Red.sav's cold portrait fetch
+# dropped from 14,935 frames (250.05 s, the OLD 6-job unrestricted scan -- matches
+# this comment's prior "~258 s" almost exactly) to 1,280 frames (21.43 s) after F1+F2;
+# Crystal.sav's dropped from 17,785 frames (297.77 s) to 2,915 frames (48.80 s). This
+# lane did NOT touch rom_gbicon.c's menu-icon scan (a separate locator, separate
+# job set) -- so the OLD combined "Gen 2 pays TWO independent cold scans ... ~500 s"
+# figure's ICON half is assumed UNCHANGED: 500 - 297.77 (the old portrait-only
+# share measured here) ~= 202 s of icon-scan cost, not independently re-measured
+# this lane. New Gen-2 worst case estimate = 48.80 (new portrait) + 202 (unchanged
+# icon, carried over) ~= 251 s = 14,991 frames; +50% margin (this file's own
+# convention) rounds to 22,500 frames = ~377 s, comfortably over that estimate
+# while still ~30% of the old 32,000/533 s provision -- the actual per-screen
+# savings this backlog item was for.
+GB_ART_COLD_SETTLE = 22500
 
 # BACKLOG #118 (orchestrator ruling 2026-09-12, after an h118 STOP on the brief's
 # original oracle.py-based design -- oracle.py's compose() reads Game Boy PPU
@@ -3575,6 +3585,112 @@ def run_cold_start_compare(core_mod, image_mod, loc_image: Path, noloc_image: Pa
     return ok, []
 
 
+# BACKLOG #185 F1/F2/Step 1: the Gen-2 twin of _derive_checkerboard_ref()/
+# _measure_box_grid_cold_start() above -- those two are hand-anchored to Red.sav
+# (boot picker row 1, "DOWN once"); the boot picker's row order is Emerald(0),
+# Red(1), Gold(2), Crystal(3) (Makefile's delta-gb recipe fuses Red/Gold/Crystal in
+# that order), so Crystal is row 3 ("DOWN three times"). Otherwise byte-for-byte the
+# same navigation/polling shape, reused rather than parameterising the originals
+# (both are already load-bearing for #68b's own regression proof; a shared
+# `down_count` parameter would touch code nothing in THIS backlog item needs to
+# change).
+def _derive_checkerboard_ref_crystal(core_mod, image_mod, rom: Path) -> bytes:
+    s = gb_shots.Session(core_mod, image_mod, rom, Path("/tmp"), "measure_ref_crystal_")
+    s.run(700)
+    s.press_n("DOWN", 3, settle=gb_shots.SETTLE)
+    s.tap("A", settle=60)
+    s.tap("A", settle=300)
+    return _crop_bytes(s.screen)
+
+
+def _measure_box_grid_cold_start_crystal(core_mod, image_mod, rom: Path,
+                                         checkerboard_ref: bytes) -> tuple[int, bytes]:
+    s = gb_shots.Session(core_mod, image_mod, rom, Path("/tmp"), "measure_crystal_")
+    s.run(700)
+    s.press_n("DOWN", 3, settle=gb_shots.SETTLE)
+    s.tap("A", settle=60)
+    info_page_crop = _crop_bytes(s.screen)
+    s.core.set_keys(raw=gb_shots.KEY["A"])
+    s.run(gb_shots.HOLD)
+    s.core.set_keys(raw=0)
+    frame = 0
+    candidate = None
+    candidate_since = 0
+    while frame < _MAX_FRAMES:
+        s.core.run_frame()
+        frame += 1
+        if frame % _SAMPLE_EVERY:
+            continue
+        cur = _crop_bytes(s.screen)
+        if cur == info_page_crop or cur == checkerboard_ref:
+            candidate = None
+            continue
+        if cur == candidate:
+            if frame - candidate_since >= _STABLE_WINDOW:
+                return candidate_since, s.screen.to_pil().convert("RGB").tobytes()
+        else:
+            candidate = cur
+            candidate_since = frame
+    raise RuntimeError(f"{rom}: Crystal box grid portrait never left its pre-paint state "
+                       f"within {_MAX_FRAMES} frames")
+
+
+def run_b185_cold_locate(core_mod, image_mod, noloc_image: Path,
+                         out_dir: Path) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """BACKLOG #185 Step 1: the emulator floor for locate()'s scan cost alone -- a
+    --no-loc fused image has no baked rom_gb*_open_loc() seed, so gb_art_fetch()'s
+    cold path (source/gb_art_source.c) runs the REAL scan (F1's gen-restricted 3-job
+    scan_multi + F2's inline gates, on the code currently checked out) with ZERO SD
+    I/O (PDNA_DELTA reads cart-mapped memory, tools/fuse_gb.py's corpus) -- so
+    whatever this measures is CPU cost alone, and the "SD card exonerated" claim in
+    the brief can be checked directly: if this floor is already >= ~10 KB/s, the SD
+    card was never the bottleneck.
+
+    Measures BOTH generations (Red.sav for Gen 1, Crystal.sav for Gen 2) the same
+    way run_cold_start_compare()'s Gen-1-only measurement does, reports frames /
+    emulated seconds / bytes-per-second for each, and saves both final frames as
+    shots. `noloc_image` must be built the SAME way run_cold_start_compare()'s own
+    NOLOC_IMAGE is (`fuse_gb.py --no-loc`), against WHATEVER pokedna-delta.gba the
+    caller has just built (i.e. re-run this against a --before and an --after ELF to
+    get the comparison the brief's report wants; this function only measures ONE
+    image at a time, same as run_cold_start_compare() measures two given images, not
+    two builds it builds itself -- building is the caller's job, exactly like that
+    function)."""
+    print("== BACKLOG #185 Step 1: locate() emulator-floor cold-scan measurement ==")
+    from PIL import Image
+    ok: list[tuple[str, str]] = []
+
+    ref1 = _derive_checkerboard_ref(core_mod, image_mod, noloc_image)
+    frames1, px1 = _measure_box_grid_cold_start(core_mod, image_mod, noloc_image, ref1)
+    secs1 = frames1 / GBA_FPS
+    bps1 = 0x100000 / secs1     # Red.gb is exactly 1 MiB (rom_gbsprite.c's own header check)
+    print(f"  Gen 1 (Red.gb, 1,048,576 B)   : {frames1} frames, {secs1:.2f} s emulated, "
+          f"{bps1:.0f} B/s ({bps1/1024:.1f} KB/s) floor")
+    name1 = "dgb_b185_gen1_coldscan.png"
+    Image.frombytes("RGB", (240, 160), px1).save(out_dir / name1)
+    cap1 = (f"#185 Step 1: Red.sav box grid, cold locate() (no .loc seed) -- "
+            f"{frames1} frames ({secs1:.2f} s emulated, {bps1/1024:.1f} KB/s floor) "
+            f"to first stable portrait paint")
+    ok.append((name1, cap1))
+    print(f"  [ok]   {name1:32s} {cap1}")
+
+    ref2 = _derive_checkerboard_ref_crystal(core_mod, image_mod, noloc_image)
+    frames2, px2 = _measure_box_grid_cold_start_crystal(core_mod, image_mod, noloc_image, ref2)
+    secs2 = frames2 / GBA_FPS
+    bps2 = 0x200000 / secs2     # Crystal.gbc is exactly 2 MiB
+    print(f"  Gen 2 (Crystal.gbc, 2,097,152 B): {frames2} frames, {secs2:.2f} s emulated, "
+          f"{bps2:.0f} B/s ({bps2/1024:.1f} KB/s) floor")
+    name2 = "dgb_b185_gen2_coldscan.png"
+    Image.frombytes("RGB", (240, 160), px2).save(out_dir / name2)
+    cap2 = (f"#185 Step 1: Crystal.sav box grid, cold locate() (no .loc seed) -- "
+            f"{frames2} frames ({secs2:.2f} s emulated, {bps2/1024:.1f} KB/s floor) "
+            f"to first stable portrait paint")
+    ok.append((name2, cap2))
+    print(f"  [ok]   {name2:32s} {cap2}")
+
+    return ok, []
+
+
 def _write_manifest(out_dir: Path, ok: list[tuple[str, str]], skipped: list[tuple[str, str]]) -> None:
     """Same merge-by-file/merge-by-name block tools/gb_shots.py's own main() uses
     (BACKLOG #62 review D3: this script never wrote one at all before). Merged, not
@@ -5089,6 +5205,12 @@ def main(argv=None) -> int:
                           "vs NOLOC_IMAGE (fused with `fuse_gb.py --no-loc`), diff their final "
                           "frames, and write both as shots into --out. Skips the normal "
                           "--image shot run entirely.")
+    ap.add_argument("--b185-cold-locate", type=Path, metavar="NOLOC_IMAGE",
+                     help="BACKLOG #185 Step 1: measure locate()'s emulator-floor cold-scan "
+                          "cost (Red.sav Gen 1 + Crystal.sav Gen 2) on NOLOC_IMAGE (fused "
+                          "with `fuse_gb.py --no-loc`, same convention as --cold-start-compare) "
+                          "-- run this against a --before and an --after build to get the "
+                          "brief's own comparison. Skips the normal --image shot run entirely.")
     a = ap.parse_args(argv)
     a.out.mkdir(parents=True, exist_ok=True)
 
@@ -5106,6 +5228,15 @@ def main(argv=None) -> int:
         if not noloc_image.is_file():
             sys.exit(f"--cold-start-compare: {noloc_image}: not a file")
         ok, skipped = run_cold_start_compare(core_mod, image_mod, loc_image, noloc_image, a.out)
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        return 0
+
+    if a.b185_cold_locate:
+        noloc_image = a.b185_cold_locate
+        if not noloc_image.is_file():
+            sys.exit(f"--b185-cold-locate: {noloc_image}: not a file")
+        ok, skipped = run_b185_cold_locate(core_mod, image_mod, noloc_image, a.out)
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         return 0
