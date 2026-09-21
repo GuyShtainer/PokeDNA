@@ -1208,7 +1208,14 @@ static void ui_menu_row(int y, const char* text, bool sel) {
   ui_text(10, y, sel ? UI_SELTEXT : UI_TEXT, text);
 }
 
-static bool browse_menu(const BrowseEntry* fe, const BrowseSpec* spec) {
+/* D3 (fix pass): the ROM/GB pickers had no visible cancel once START stopped meaning
+ * "cancel" and started opening this menu (A1's unified chrome) -- the old footer's
+ * "START cancel" text is gone, "Close" only closes the MENU (back to the browser, not
+ * out of the whole picker), and B only cancels at the root, which nothing on screen
+ * says. Return: 0 = nothing changed, 1 = changed (re-scan), -1 = "Cancel picking"
+ * chosen (only offered when !spec->menu_extra -- the .sav spec has nothing to cancel
+ * TO, same reasoning as its B-at-root no-op). */
+static int browse_menu(const BrowseEntry* fe, const BrowseSpec* spec) {
   int sel = 0;
   bool changed = false;
   bool can_fileops = (fe && !fe->is_dir);
@@ -1230,7 +1237,7 @@ static bool browse_menu(const BrowseEntry* fe, const BrowseSpec* spec) {
     /* BACKLOG #186: A_VERIFY/A_REBOOT are conditional now (spec->menu_extra), so the
      * enum can no longer fix their slots -- act[] carries which action each BUILT row
      * means, same as before, just no longer implied by array position. */
-    enum { A_FILEOPS, A_SORTKEY, A_ORDER, A_FILES, A_HIDDEN, A_VERIFY, A_REBOOT, A_CLOSE };
+    enum { A_FILEOPS, A_SORTKEY, A_ORDER, A_FILES, A_HIDDEN, A_VERIFY, A_REBOOT, A_CLOSE, A_CANCEL };
     if (can_fileops) {
       /* 16 cols needs 65 B per ui.h's contract (fe->name is real UTF-8); nm[24] was a
        * ui_truncate stack-smash next to prev_rows[] above -- "a smash silently poisons
@@ -1250,6 +1257,10 @@ static bool browse_menu(const BrowseEntry* fe, const BrowseSpec* spec) {
     if (spec->menu_extra) {
       strcpy(rows[n], "Verify ROM image..."); act[n++] = A_VERIFY;
       strcpy(rows[n], "Reboot to flashcart menu..."); act[n++] = A_REBOOT;
+    } else {
+      /* D3: the ROM/GB pickers' only way out otherwise is B at the root (unsaid
+       * anywhere on screen) -- this row is the one visible, discoverable cancel. */
+      strcpy(rows[n], "Cancel picking"); act[n++] = A_CANCEL;
     }
     strcpy(rows[n], "Close"); act[n++] = A_CLOSE;
 
@@ -1276,19 +1287,20 @@ static bool browse_menu(const BrowseEntry* fe, const BrowseSpec* spec) {
     prev_sel = sel; valid = true; gen = ui_clear_gen();
 
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
-    if (k & KEY_B) return changed;
+    if (k & KEY_B) return changed ? 1 : 0;
     else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : n - 1;
     else if (k & KEY_DOWN) sel = (sel + 1) % n;
     else if (k & KEY_A) {
       switch (act[sel]) {
-        case A_FILEOPS: if (file_actions(fe)) return true; break;   /* re-scan after a file op */
+        case A_FILEOPS: if (file_actions(fe)) return 1; break;   /* re-scan after a file op */
         case A_SORTKEY: g_sort = (BrSortKey)((g_sort + 1) % 3); changed = true; break;
         case A_ORDER:   g_sortrev = !g_sortrev; changed = true; break;
         case A_FILES:   g_show_all = !g_show_all; changed = true; break;
         case A_HIDDEN:  g_show_hidden = !g_show_hidden; changed = true; break;
+        case A_CANCEL:  return -1;                     /* D3: whole picker cancels, not just this menu */
         case A_VERIFY:  pdna_romfull_screen(); app_log_flush(); break;  /* its verdict on the card too */
         case A_REBOOT:  do_reboot(); break;            /* returns only if cancelled */
-        case A_CLOSE:   return changed;
+        case A_CLOSE:   return changed ? 1 : 0;
       }
     }
   }
@@ -1371,7 +1383,11 @@ bool browse_pick_spec(const BrowseSpec* spec, char* out, int cap) {
       g_sort = (BrSortKey)(s / 2); g_sortrev = (s & 1) != 0;
       sort_entries(ents); sel = 0; top = 0; cfg_save_for(spec, is_dir_key ? 0 : saved_cwd); relist = true;   /* remember the sort */
     }
-    else if (k & KEY_START) { if (browse_menu(g_count ? &ents[sel] : 0, spec)) { scan_dir(spec, ents); sel = 0; top = 0; cfg_save_for(spec, is_dir_key ? 0 : saved_cwd); relist = true; } }
+    else if (k & KEY_START) {
+      int r = browse_menu(g_count ? &ents[sel] : 0, spec);
+      if (r < 0 && !is_dir_key) break;                 /* D3: "Cancel picking" -- picked stays false */
+      if (r > 0) { scan_dir(spec, ents); sel = 0; top = 0; cfg_save_for(spec, is_dir_key ? 0 : saved_cwd); relist = true; }
+    }
     else if (k & KEY_B) {
       if (!at_root()) { path_up(); scan_dir(spec, ents); sel = 0; top = 0; cfg_save_for(spec, is_dir_key ? 0 : saved_cwd); relist = true; }
       /* At root, the .sav (launch) spec's B is a deliberate no-op -- browse_pick()
