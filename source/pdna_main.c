@@ -2547,7 +2547,10 @@ void app_note_pc_box(int b) { if (b >= 0 && b < G3_TOTAL_BOXES) g_pc_last_box = 
 
 /* BACKLOG #188: the resume-cell slot -- <= 8 bytes, cleared on a fresh save/session
  * mount (app_box_resume_clear()'s own callers: view_save() for Gen 3, pdna_gen12_mount()
- * for a Game Boy save). -1/-1 means "nothing recorded yet". */
+ * for a Game Boy save). -1/-1 means "nothing recorded yet". IWRAM by design (same
+ * placement as the sibling g_box_start/g_pickup_box/g_pc_last_box scalars) -- costs
+ * 8 B of STACK budget (denominator 15,032->15,024 artless, 15,568->15,560 normal),
+ * not EWRAM (b188 review A1, 2026-09-21). */
 static int g_resume_box = -1, g_resume_cell = -1;
 void app_box_resume_note(int box, int cur) { g_resume_box = box; g_resume_cell = cur; }
 int  app_box_resume_take(int box) {

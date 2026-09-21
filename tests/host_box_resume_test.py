@@ -155,8 +155,22 @@ def run_all(app_h, main_c, box_c, gen12_c) -> tuple[list[str], int]:
     v += rs_violations
     v += check_entry_gated(box_c)
     v += check_clear_sites(main_c, gen12_c)
+    v += check_take_body_guards(main_c)
     return v, n_sites
 
+
+
+def check_take_body_guards(main_c: str) -> list[str]:
+    """app_box_resume_take(box) must refuse a recorded cell from a DIFFERENT box
+    (brief case (d): a stale cell from box 2 must never apply when box 5 is entered)."""
+    m = re.search(r"int\s+app_box_resume_take\(int box\)\s*\{(.*?)\n\}", main_c, re.S)
+    if not m:
+        return ["app_box_resume_take() not found in source/pdna_main.c"]
+    body = m.group(1)
+    if "g_resume_box != box" not in body:
+        return ["app_box_resume_take() has no box mismatch guard (g_resume_box != box) -- "
+                "a stale cell recorded in another box would apply"]
+    return []
 
 def main() -> int:
     if not (APP_H.exists() and MAIN_C.exists() and BOX_C.exists() and GEN12_C.exists()):
@@ -233,6 +247,24 @@ def main() -> int:
         for x in v3:
             if "host-compiled mount function" in x:
                 print(f"  (mutated-copy) FAIL: {x}")
+
+        # --- self-mutation 4: drop the box-mismatch guard in app_box_resume_take ---
+        target4 = "  if (g_resume_box != box) return -1;\n"
+        if target4 not in main_c:
+            print(f"FAIL -- self-mutation 4 target line not found verbatim: {target4!r} "
+                  f"(source drifted -- update this test)")
+            return 1
+        mutated4 = main_c.replace(target4, "", 1)
+        v4 = check_take_body_guards(mutated4)
+        if not any("box mismatch" in x for x in v4):
+            print("FAIL -- self-mutation 4: dropping the box-mismatch guard did NOT "
+                  "turn this test red (vacuous check)")
+            return 1
+        print("self-mutation 4: dropping app_box_resume_take's box-mismatch guard -- "
+              "correctly caught:")
+        for x in v4:
+            print("  (mutated-copy) FAIL:", x)
+
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
