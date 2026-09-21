@@ -228,6 +228,7 @@ static void gb_art_fill_info(GbArtRegInfo* info, const GbArtIo* io) {
   info->fr         = io->fr;
   info->err        = io->err;
   info->stop       = io->g.stop;
+  info->stop_ceiling = io->g.stop_ceiling;   /* BACKLOG #185 D3 */
 }
 
 /* ---- open + identify: shared by an explicit Settings registration and the lazy

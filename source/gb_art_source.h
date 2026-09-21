@@ -222,6 +222,10 @@ typedef struct GbArtRegInfo {
   uint8_t  fr;           /* FatFs FRESULT of the failing call (READ_ERR only)        */
   uint8_t  err;          /* FIL.err latched after it (READ_ERR only)                 */
   uint8_t  stop;         /* gb_scan_guard.h GB_SCAN_* reason (0 = none)              */
+  uint8_t  stop_ceiling;  /* BACKLOG #185 D3: 1 iff `stop`==GB_SCAN_STOP_TIMEOUT came *
+                          * from the 15-min hard ceiling (GbScanGuard.stop_ceiling),  *
+                          * not the 10-s stall clock -- the two need different UI     *
+                          * (STALLED vs GAVE UP) and log wording.                     */
 } GbArtRegInfo;
 
 /* `progress`/`progress_ctx` may be NULL (silent: boot, tests); `info` may be NULL.

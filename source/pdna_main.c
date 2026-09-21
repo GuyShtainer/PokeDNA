@@ -3406,16 +3406,26 @@ static void app_register_gb_rom(uint8_t gen) {
       msg_wait("CANCELLED", UI_WARN, "Nothing was changed.", 0);
       break;
     case GB_ART_REG_TIMEOUT: {
-      /* BACKLOG #185 F4: STALLED, not TIMED OUT -- this is now a progress-based
-       * watchdog (gb_scan_guard.h), so the honest claim is "no data arrived for
-       * GB_ART_STALL_S seconds", not "took too long overall" (info.stop tells
-       * stall vs the rare 15-minute hard-ceiling backstop, but both still read
-       * from the same GB_ART_REG_TIMEOUT case -- the KB figure is what a cart
-       * run actually needs to diagnose either one). */
+      /* BACKLOG #185 F4/D3: STALLED, not TIMED OUT -- this is now a
+       * progress-based watchdog (gb_scan_guard.h). Two genuinely different
+       * conditions share this ONE GbArtRegStatus (info.stop_ceiling, filled
+       * from GbScanGuard.stop_ceiling by gb_art_fill_info(), tells them
+       * apart): the common case is a real STALL (no read completed for
+       * GB_ART_STALL_S seconds -- likely a bad card, re-copy the ROM); the
+       * rare case is the 15-minute hard ceiling firing on a run that kept
+       * completing reads but never actually finished -- that is not "no
+       * data", it is "this will never end", so it gets its own honest
+       * title/wording instead of quoting the 10 s stall figure it never hit. */
       char l1[40];
-      siprintf(l1, "STALLED %us, no data after %lu KB", (unsigned)GB_ART_STALL_S,
-               (unsigned long)(info.covered >> 10));
-      msg_wait("STALLED", UI_WARN, l1, "Re-copy the ROM to the card, retry.");
+      if (info.stop_ceiling) {
+        siprintf(l1, "Still scanning after 15 min at %lu KB",
+                 (unsigned long)(info.covered >> 10));
+        msg_wait("GAVE UP", UI_WARN, l1, "Re-copy the ROM to the card, retry.");
+      } else {
+        siprintf(l1, "STALLED %us, no data after %lu KB", (unsigned)GB_ART_STALL_S,
+                 (unsigned long)(info.covered >> 10));
+        msg_wait("STALLED", UI_WARN, l1, "Re-copy the ROM to the card, retry.");
+      }
       break;
     }
     case GB_ART_REG_READ_ERR: {
