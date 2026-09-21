@@ -824,7 +824,16 @@ static void __attribute__((noinline)) cfg_read_old_dirkeys(char* dirrom, char* d
   find_key_in_text(buf, br, "dir_gbsav", dirgbsav, GB_ROM_PATH_MAX);
 }
 
-static void cfg_save_ex(const char* active_key, const char* active_val) {
+/* D1 (fix pass, review-caught real regression): `dir_val`, when non-NULL, is what
+ * the "dir=" line writes instead of the LIVE g_cwd. A non-.sav browse_pick_spec()
+ * session temporarily repurposes g_cwd for its OWN folder (see cfg_save_for()) --
+ * every earlier cfg_save_ex() call from inside one of those sessions wrote THAT
+ * borrowed value out under the "dir" key, so a cancel or power-off left the boot
+ * (.sav) browser pointed at wherever the ROM/GB picker last was. dir_val is the
+ * caller's own saved_cwd (the REAL .sav folder, stashed before the repurpose) for
+ * every non-.sav call; NULL (meaning "use live g_cwd") only for the .sav spec's own
+ * calls, where g_cwd genuinely IS the thing being remembered. */
+static void cfg_save_ex(const char* active_key, const char* active_val, const char* dir_val) {
   if (!app_can_edit()) return;
   char old_dirrom[GB_ROM_PATH_MAX];
   char old_dirgb[GB_ROM_PATH_MAX];
@@ -843,7 +852,7 @@ static void cfg_save_ex(const char* active_key, const char* active_val) {
 
   int n = sniprintf(buf, sizeof buf,
                    "dir=%s\nsort=%d\nrev=%d\nall=%d\nhidden=%d\nanim=%u\nrumble=%u\nrstr=%d\nrdur=%d\npcbox=%d\nyard=%d\nbak=%d\nromoff=%d\ngbscale=%d\n",
-                   g_cwd, (int)g_sort, g_sortrev ? 1 : 0, g_show_all ? 1 : 0, g_show_hidden ? 1 : 0,
+                   dir_val ? dir_val : g_cwd, (int)g_sort, g_sortrev ? 1 : 0, g_show_all ? 1 : 0, g_show_hidden ? 1 : 0,
                    g_anim_mask, rmbl_get_mask(), rmbl_get_strength(), rmbl_get_duration(), g_pc_last_box,
                    g_yard_visitors ? 1 : 0, g_backup_mode, g_rom_art_off ? 1 : 0, (int)gb_scale_mode);
   bool truncated = (n < 0 || n >= (int)sizeof buf);
@@ -915,7 +924,7 @@ static void cfg_save_ex(const char* active_key, const char* active_val) {
 
 /* The plain, argument-less save every existing call site in this file already makes
  * -- unchanged shape, so A5's "byte-for-byte unchanged .sav behaviour" holds. */
-static void cfg_save(void) { cfg_save_ex(NULL, NULL); }
+static void cfg_save(void) { cfg_save_ex(NULL, NULL, NULL); }
 
 /* U2b item 3: exported so the GB-screen shell (pdna_gbscreen.c) can persist a
  * SELECT scale-mode change from ANY GB screen's own exit path, not just
@@ -1274,13 +1283,17 @@ static bool browse_menu(const BrowseEntry* fe, const BrowseSpec* spec) {
   }
 }
 
-/* BACKLOG #186: dispatches the "remember this folder" write per spec->cfg_key --
- * "dir" (the .sav spec) goes through the plain, unchanged cfg_save() (A5: byte-for-
- * byte .sav behaviour); every other kind goes through the lighter cfg_save_ex(),
- * which touches ONLY its own dir_* line and round-trips the rest from disk. */
-static void cfg_save_for(const BrowseSpec* spec) {
+/* BACKLOG #186 / D1 fix: dispatches the "remember this folder" write per
+ * spec->cfg_key -- "dir" (the .sav spec) goes through the plain, unchanged
+ * cfg_save() (A5: byte-for-byte .sav behaviour); every other kind goes through the
+ * lighter cfg_save_ex(), which touches ONLY its own dir_* line and round-trips the
+ * rest from disk. `sav_dir` is the caller's saved_cwd (the REAL .sav folder,
+ * stashed before g_cwd was repurposed) -- passed straight through as cfg_save_ex's
+ * dir_val so "dir=" never gets written from the borrowed g_cwd. Unused (0) for the
+ * "dir" spec itself, which never repurposes anything. */
+static void cfg_save_for(const BrowseSpec* spec, const char* sav_dir) {
   if (!strcmp(spec->cfg_key, "dir")) cfg_save();
-  else cfg_save_ex(spec->cfg_key, g_cwd);
+  else cfg_save_ex(spec->cfg_key, g_cwd, sav_dir);
 }
 
 /* Seeds g_cwd from spec's own remembered folder (A1). Split out of browse_pick_spec
@@ -1345,11 +1358,11 @@ bool browse_pick_spec(const BrowseSpec* spec, char* out, int cap) {
     else if (k & KEY_SELECT) {           /* cycle the 6 sort states (key x order) */
       int s = ((int)g_sort * 2 + (g_sortrev ? 1 : 0) + 1) % 6;
       g_sort = (BrSortKey)(s / 2); g_sortrev = (s & 1) != 0;
-      sort_entries(ents); sel = 0; top = 0; cfg_save_for(spec); relist = true;   /* remember the sort */
+      sort_entries(ents); sel = 0; top = 0; cfg_save_for(spec, is_dir_key ? 0 : saved_cwd); relist = true;   /* remember the sort */
     }
-    else if (k & KEY_START) { if (browse_menu(g_count ? &ents[sel] : 0, spec)) { scan_dir(spec, ents); sel = 0; top = 0; cfg_save_for(spec); relist = true; } }
+    else if (k & KEY_START) { if (browse_menu(g_count ? &ents[sel] : 0, spec)) { scan_dir(spec, ents); sel = 0; top = 0; cfg_save_for(spec, is_dir_key ? 0 : saved_cwd); relist = true; } }
     else if (k & KEY_B) {
-      if (!at_root()) { path_up(); scan_dir(spec, ents); sel = 0; top = 0; cfg_save_for(spec); relist = true; }
+      if (!at_root()) { path_up(); scan_dir(spec, ents); sel = 0; top = 0; cfg_save_for(spec, is_dir_key ? 0 : saved_cwd); relist = true; }
       /* At root, the .sav (launch) spec's B is a deliberate no-op -- browse_pick()
        * is main()'s own outer loop, so there is nothing to cancel back to (unchanged,
        * A5). Every OTHER kind is opened mid-session from Settings and its caller
@@ -1367,9 +1380,9 @@ bool browse_pick_spec(const BrowseSpec* spec, char* out, int cap) {
       if (e->is_dir) {
         strcpy(g_cwd, np);
         scan_dir(spec, ents);
-        sel = 0; top = 0; cfg_save_for(spec); relist = true;             /* remember the folder */
+        sel = 0; top = 0; cfg_save_for(spec, is_dir_key ? 0 : saved_cwd); relist = true;             /* remember the folder */
       } else if ((int)strlen(np) < cap) {
-        cfg_save_for(spec);                                   /* remember where this file was picked from */
+        cfg_save_for(spec, is_dir_key ? 0 : saved_cwd);                                   /* remember where this file was picked from */
         strcpy(out, np);
         picked = true;
         break;
