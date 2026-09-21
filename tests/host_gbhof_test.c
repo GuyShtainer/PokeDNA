@@ -518,6 +518,242 @@ static void gen2_not_clamped_by_count(const char* file) {
         "Gen 1 would), got %d", file, raw, gbh_team_count_present(&s));
 }
 
+/* ---- N: BACKLOG #194 F2 -- gbh_set_mon round-trip, pad preservation, OT/DV
+ * preservation, out-of-range refusal ---- */
+
+static void set_mon_roundtrip(const char* file) {
+  uint32_t len = load(file);
+  if (!len) { printf("  SKIP %s (not present)\n", file); return; }
+  g_ran++;
+  GbSession s;
+  CHECKF(gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "%s: open", file);
+
+  int present = gbh_team_count_present(&s);
+  if (present < 1) { printf("  SKIP %s (no HoF teams to edit)\n", file); return; }
+  GbHofTeam t0;
+  CHECKF(gbh_team(&s, 0, &t0), "%s: read team 0", file);
+
+  /* Snapshot the mon-0 record's own 16 raw bytes (whichever storage slot that is)
+   * BEFORE the edit, so pad bytes (Gen 1) can be checked byte-exact afterward. */
+  GbGame g = (s.gen == GB_GEN1) ? GBF_G_RED
+                                  : ((s.g2w.sv.version == G2_VER_CRYSTAL) ? GBF_G_CRYSTAL : GBF_G_GS);
+  uint32_t base = gbf_off(g, GBF_HOF_TEAMS);
+  uint32_t stride = (s.gen == GB_GEN1) ? GEN1_HOF_TEAM_BYTES : 98u;
+  int slot0 = (s.gen == GB_GEN1) ? present - 1 : 0;   /* hof_storage_index(0, present) */
+  uint32_t team_off = base + (uint32_t)slot0 * stride;
+  uint32_t mon0_off = (s.gen == GB_GEN1) ? team_off : team_off + 1u;
+  uint8_t before[16];
+  memcpy(before, g_img + mon0_off, sizeof before);
+
+  GbHofMon edit; memset(&edit, 0, sizeof edit);
+  edit.dex = t0.mon[0].dex;   /* SAME species: Gen-2 OT id/DVs must be preserved */
+  edit.level = (uint8_t)((t0.mon[0].level % 100) + 1);   /* always changes, stays 1..100 */
+  edit.otid = t0.mon[0].otid;
+  memcpy(edit.dv, t0.mon[0].dv, sizeof edit.dv);
+  strncpy(edit.nick, "EDITMON", sizeof edit.nick - 1);
+
+  CHECKF(gbh_set_mon(&s, 0, 0, &edit) == GBS_OK, "%s: set_mon(team0,mon0)", file);
+
+  GbHofTeam t1;
+  CHECKF(gbh_team(&s, 0, &t1), "%s: reread team 0 after edit", file);
+  CHECKF(t1.mon[0].dex == edit.dex, "%s: dex readback %d, want %d", file, t1.mon[0].dex, edit.dex);
+  CHECKF(t1.mon[0].level == edit.level, "%s: level readback %d, want %d", file, t1.mon[0].level, edit.level);
+  CHECKF(strcmp(t1.mon[0].nick, "EDITMON") == 0, "%s: nick readback '%s', want EDITMON", file, t1.mon[0].nick);
+  if (s.gen == GB_GEN2) {
+    CHECKF(t1.mon[0].otid == t0.mon[0].otid, "%s: OT id changed on a same-species edit "
+          "(%u -> %u)", file, (unsigned)t0.mon[0].otid, (unsigned)t1.mon[0].otid);
+    CHECKF(memcmp(t1.mon[0].dv, t0.mon[0].dv, sizeof t0.mon[0].dv) == 0,
+          "%s: DVs changed on a same-species edit", file);
+  }
+
+  /* Pad-byte preservation (Gen 1 only: offsets +13..+15 of the 16-byte record). */
+  if (s.gen == GB_GEN1) {
+    uint8_t after[16];
+    memcpy(after, g_img + mon0_off, sizeof after);
+    CHECKF(memcmp(after + 13, before + 13, 3) == 0,
+          "%s: pad bytes +13..+15 changed by gbh_set_mon (got %02X %02X %02X, "
+          "want %02X %02X %02X)", file, after[13], after[14], after[15],
+          before[13], before[14], before[15]);
+  }
+
+  /* Species change on Gen 2: gbh_roll_dv() gives a fresh quad; readback must carry
+   * exactly that quad (and the shininess it derives). */
+  if (s.gen == GB_GEN2) {
+    uint16_t new_dex = (edit.dex == 1) ? 4 : 1;
+    uint8_t rolled[4];
+    gbh_roll_dv(0xC0FFEEu, rolled);
+    GbHofMon edit2 = edit;
+    edit2.dex = new_dex;
+    memcpy(edit2.dv, rolled, sizeof rolled);
+    CHECKF(gbh_set_mon(&s, 0, 0, &edit2) == GBS_OK, "%s: set_mon species-change", file);
+    GbHofTeam t2;
+    CHECKF(gbh_team(&s, 0, &t2), "%s: reread after species-change edit", file);
+    CHECKF(t2.mon[0].dex == new_dex, "%s: dex after species change %d, want %d",
+          file, t2.mon[0].dex, new_dex);
+    CHECKF(memcmp(t2.mon[0].dv, rolled, sizeof rolled) == 0,
+          "%s: DVs after species change do not match the rolled quad", file);
+  }
+
+  /* Refusals: out-of-range species/level leave the image untouched. */
+  uint8_t snapshot[G2_SAVE_SIZE + G2_MAX_RTC_TAIL];
+  memcpy(snapshot, g_img, len);
+  GbHofMon bad = edit;
+  bad.dex = 0;
+  CHECKF(gbh_set_mon(&s, 0, 0, &bad) == GBS_ERR_ARG, "%s: dex=0 refused", file);
+  bad = edit; bad.level = 0;
+  CHECKF(gbh_set_mon(&s, 0, 0, &bad) == GBS_ERR_ARG, "%s: level=0 refused", file);
+  bad = edit; bad.level = 101;
+  CHECKF(gbh_set_mon(&s, 0, 0, &bad) == GBS_ERR_ARG, "%s: level=101 refused", file);
+  CHECKF(gbh_set_mon(&s, 0, 6, &edit) == GBS_ERR_ARG, "%s: mon_idx past GBH_NUM_MONS refused", file);
+  CHECKF(gbh_set_mon(&s, present, 0, &edit) == GBS_ERR_ARG, "%s: team_idx==present refused", file);
+  uint32_t d = diff_count(g_img, snapshot, len, NULL);
+  CHECKF(d == 0, "%s: every refused set_mon() call above left the image untouched "
+        "(%u byte diff)", file, d);
+}
+
+/* ---- O: BACKLOG #194 F3 -- gbh_append_team at the Gen-1 (cap 50) and Gen-2
+ * (cap 30) capacity boundaries, shift correctness ---- */
+
+static void build_team(GbHofTeam* t, uint16_t dex, uint8_t lvl, const char* nick) {
+  memset(t, 0, sizeof *t);
+  t->n = 1;
+  t->mon[0].present = true;
+  t->mon[0].dex = dex;
+  t->mon[0].level = lvl;
+  strncpy(t->mon[0].nick, nick, sizeof t->mon[0].nick - 1);
+}
+
+static void append_gen1_boundary(const char* file) {
+  uint32_t len = load(file);
+  if (!len) { printf("  SKIP %s (not present)\n", file); return; }
+  GbSession s;
+  if (gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) != GBS_OK || s.gen != GB_GEN1) {
+    printf("  SKIP %s (not a Gen-1 save)\n", file);
+    return;
+  }
+  g_ran++;
+  CHECKF(gbh_clear(&s) == GBS_OK, "%s: clear before append run", file);
+
+  for (int i = 0; i < 51; i++) {
+    int old_count = gbh_count(&s);
+    CHECKF(old_count == i, "%s: append #%d expected old_count %d, got %d", file, i, i, old_count);
+    GbHofTeam t;
+    char nick[16]; snprintf(nick, sizeof nick, "GT%03d", i);
+    build_team(&t, 1, 5, nick);
+    CHECKF(gbh_append_team(&s, &t) == GBS_OK, "%s: append #%d", file, i);
+
+    int want_count = (i + 1 < 255) ? i + 1 : 255;
+    CHECKF(gbh_count(&s) == want_count, "%s: after append #%d count=%d, want %d",
+          file, i, gbh_count(&s), want_count);
+
+    GbHofTeam newest;
+    CHECKF(gbh_team(&s, 0, &newest), "%s: read newest after append #%d", file, i);
+    CHECKF(strcmp(newest.mon[0].nick, nick) == 0, "%s: newest after append #%d is "
+          "'%s', want '%s' (counts 0/1/49/50 boundary: i=%d)", file, i, newest.mon[0].nick, nick, i);
+  }
+
+  /* 51 appends into a 50-slot table: the FIRST team (GT000) must have been evicted;
+   * the oldest surviving team is the SECOND append (GT001). present clamps to the
+   * capacity (50, D1/D2's own Gen-1 clamp: count=51 > cap so present=min(51,50)=50). */
+  int present = gbh_team_count_present(&s);
+  CHECKF(present == 50, "%s: present after 51 appends = %d, want 50", file, present);
+  GbHofTeam oldest;
+  CHECKF(gbh_team(&s, present - 1, &oldest), "%s: read oldest surviving team", file);
+  CHECKF(strcmp(oldest.mon[0].nick, "GT001") == 0, "%s: oldest surviving team is '%s', "
+        "want 'GT001' (GT000 must have been evicted by the 51st append)", file, oldest.mon[0].nick);
+}
+
+static void append_gen2_boundary(const char* file) {
+  uint32_t len = load(file);
+  if (!len) { printf("  SKIP %s (not present)\n", file); return; }
+  GbSession s;
+  if (gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) != GBS_OK || s.gen != GB_GEN2) {
+    printf("  SKIP %s (not a Gen-2 save)\n", file);
+    return;
+  }
+  g_ran++;
+  CHECKF(gbh_clear(&s) == GBS_OK, "%s: clear before append run", file);
+
+  GbGame g = (s.g2w.sv.version == G2_VER_CRYSTAL) ? GBF_G_CRYSTAL : GBF_G_GS;
+  uint32_t base = gbf_off(g, GBF_HOF_TEAMS);
+  const uint32_t stride = 98u;
+  uint8_t pre_slot0[98], pre_last[98];
+
+  for (int i = 0; i < 31; i++) {
+    int old_count = gbh_count(&s);
+    CHECKF(old_count == i, "%s: append #%d expected old_count %d, got %d", file, i, i, old_count);
+    memcpy(pre_slot0, g_img + base, stride);                       /* slot 0, pre-append */
+    memcpy(pre_last, g_img + base + 29u * stride, stride);         /* slot 29, pre-append */
+
+    GbHofTeam t;
+    char nick[16]; snprintf(nick, sizeof nick, "GT%03d", i);
+    build_team(&t, 1, 5, nick);
+    CHECKF(gbh_append_team(&s, &t) == GBS_OK, "%s: append #%d", file, i);
+
+    /* Shift correctness (brief's own wording): the PREVIOUS slot 0 (whatever win-
+     * count byte it already carried) is now slot 1, byte-for-byte -- the shift
+     * itself never rewrites a byte, only the NEW slot 0 record gets a fresh
+     * win-count byte. */
+    uint8_t post_slot1[98];
+    memcpy(post_slot1, g_img + base + stride, stride);
+    CHECKF(memcmp(post_slot1, pre_slot0, stride) == 0, "%s: append #%d: old slot 0 "
+          "is not byte-identical in the new slot 1", file, i);
+
+    GbHofTeam newest;
+    CHECKF(gbh_team(&s, 0, &newest), "%s: read newest after append #%d", file, i);
+    CHECKF(strcmp(newest.mon[0].nick, nick) == 0, "%s: newest after append #%d is "
+          "'%s', want '%s'", file, i, newest.mon[0].nick, nick);
+  }
+
+  /* The last slot's PRE-append content (from the 31st append) must have dropped:
+   * a real record (GT028's team, non-zero win-count) cannot still be at slot 29. */
+  CHECKF(pre_last[0] != 0, "%s: sanity -- pre_last must be a real (non-zero win-count) "
+        "record for the drop check to mean anything", file);
+  uint8_t post_last[98];
+  memcpy(post_last, g_img + base + 29u * stride, stride);
+  CHECKF(memcmp(post_last, pre_last, stride) != 0, "%s: the last slot (29) still holds "
+        "its pre-append content -- the oldest team was NOT dropped", file);
+
+  int present = gbh_team_count_present(&s);
+  CHECKF(present == 30, "%s: present after 31 appends = %d, want 30", file, present);
+}
+
+/* ---- P: BACKLOG #194 F3 -- gbh_delete_team is a byte-exact inverse of
+ * gbh_append_team in the plain (no-eviction) case, on both gens ---- */
+
+static void delete_inverse(const char* file) {
+  uint32_t len = load(file);
+  if (!len) { printf("  SKIP %s (not present)\n", file); return; }
+  g_ran++;
+  GbSession s;
+  CHECKF(gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "%s: open", file);
+  CHECKF(gbh_clear(&s) == GBS_OK, "%s: clear", file);
+
+  GbHofTeam a, b;
+  build_team(&a, 1, 5, "TEAMA");
+  build_team(&b, 4, 10, "TEAMB");
+  CHECKF(gbh_append_team(&s, &a) == GBS_OK, "%s: append A", file);
+
+  uint8_t after_a[G2_SAVE_SIZE + G2_MAX_RTC_TAIL];
+  memcpy(after_a, g_img, len);
+
+  CHECKF(gbh_append_team(&s, &b) == GBS_OK, "%s: append B", file);
+  CHECKF(gbh_delete_team(&s, 0) == GBS_OK, "%s: delete newest (B)", file);   /* B is UI index 0 */
+
+  uint32_t first = 0;
+  uint32_t d = diff_count(g_img, after_a, len, &first);
+  CHECKF(d == 0, "%s: append(B) then delete(newest) is not a byte-exact inverse of "
+        "append(A) alone -- %u byte(s) differ, first at 0x%04X (0x%02X -> 0x%02X)",
+        file, d, first, after_a[first], g_img[first]);
+
+  /* Deleting past `present` refuses; count floors at 0, never negative. */
+  int present = gbh_team_count_present(&s);
+  CHECKF(gbh_delete_team(&s, present) == GBS_ERR_ARG, "%s: delete at index==present refused", file);
+  CHECKF(gbh_delete_team(&s, 0) == GBS_OK, "%s: delete the last remaining team (A)", file);
+  CHECKF(gbh_count(&s) == 0, "%s: count after deleting the only team = %d, want 0", file, gbh_count(&s));
+  CHECKF(gbh_delete_team(&s, 0) == GBS_ERR_ARG, "%s: delete on an empty HoF refused", file);
+}
+
 int main(void) {
   const char* saves[] = { "Red.sav", "Yellow.sav", "Gold.sav", "Crystal.sav" };
   printf("== A: decode real corpus teams ==\n");
@@ -561,6 +797,16 @@ int main(void) {
         "level discriminator, gbh_set_count(9000) leaves the count at 0 ==\n");
   for (size_t i = 0; i < sizeof saves / sizeof saves[0]; i++)
     raw_scan_rejects_full_noise(saves[i]);
+
+  printf("== N: BACKLOG #194 F2 -- gbh_set_mon round-trip/pad/OT-DV/refusals ==\n");
+  for (size_t i = 0; i < sizeof saves / sizeof saves[0]; i++) set_mon_roundtrip(saves[i]);
+
+  printf("== O: BACKLOG #194 F3 -- gbh_append_team capacity boundaries ==\n");
+  for (size_t i = 0; i < sizeof saves / sizeof saves[0]; i++) append_gen1_boundary(saves[i]);
+  for (size_t i = 0; i < sizeof saves / sizeof saves[0]; i++) append_gen2_boundary(saves[i]);
+
+  printf("== P: BACKLOG #194 F3 -- gbh_delete_team is append's byte-exact inverse ==\n");
+  for (size_t i = 0; i < sizeof saves / sizeof saves[0]; i++) delete_inverse(saves[i]);
 
   if (g_ran == 0) printf("  (no corpus present -- structural checks only, none ran)\n");
   printf("\n%d checks, %d failed (%d save(s) loaded)\n", g_check, g_fail, g_ran);

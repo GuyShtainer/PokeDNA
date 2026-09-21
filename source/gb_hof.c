@@ -272,3 +272,215 @@ GbsStatus gbh_set_count(GbSession* s, int n) {
   if (st != GBS_OK) return st;
   return gbs_finish(s);
 }
+
+/* --- BACKLOG #194: edit / append / delete ---------------------------------------- */
+
+static bool hof_mon_valid(const GbSession* s, const GbHofMon* mon) {
+  if (!mon) return false;
+  if (gb_index_from_dex(s->gen, mon->dex) == 0) return false;   /* unmapped species */
+  if (mon->level < 1 || mon->level > 100) return false;
+  return true;
+}
+
+/* Writes ONE mon record at `mon_off` -- Gen 1: species+level+nickname (13 of the 16
+ * bytes; the 3 reserved pad bytes at +13..+15 are never touched). Gen 2: the whole
+ * 16-byte record (species/OT id/DVs/level/nickname; no per-mon pad on Gen 2). Does
+ * NOT call gbs_finish -- callers batch one or many of these and finish once, per
+ * gbs_write_field's own "call gbs_finish once after the LAST write" contract. */
+static GbsStatus hof_write_mon(GbSession* s, uint32_t mon_off, const GbHofMon* mon) {
+  if (s->gen == GB_GEN1) {
+    uint8_t rec[13];
+    rec[0] = gb_index_from_dex(GB_GEN1, mon->dex);
+    rec[1] = mon->level;
+    gb_name_encode(GB_GEN1, rec + 2, GEN1_NAME_BYTES, GB_NICK_GLYPHS, mon->nick);
+    return gbs_write_outside_sum(s, mon_off, rec, sizeof rec);
+  }
+  uint8_t rec[16];
+  rec[0] = gb_index_from_dex(GB_GEN2, mon->dex);
+  rec[1] = (uint8_t)(mon->otid >> 8);
+  rec[2] = (uint8_t)(mon->otid & 0xFFu);
+  rec[3] = (uint8_t)(((mon->dv[0] & 0x0Fu) << 4) | (mon->dv[1] & 0x0Fu));
+  rec[4] = (uint8_t)(((mon->dv[2] & 0x0Fu) << 4) | (mon->dv[3] & 0x0Fu));
+  rec[5] = mon->level;
+  gb_name_encode(GB_GEN2, rec + 6, 10, GB_NICK_GLYPHS, mon->nick);
+  return gbs_write_field(s, mon_off, rec, sizeof rec);
+}
+
+void gbh_roll_dv(uint32_t seed, uint8_t dv[4]) {
+  /* Same LCG (glibc's own constants) and same "advance then take the NEW high
+   * nibble" shape as gb_new_mon.c's lcg_nibble -- see that file's comment for why
+   * the high nibble, not the low one. Deliberately re-derived here rather than
+   * calling across the module boundary (gb_hof.h's own doc comment). */
+  uint32_t s = seed;
+  if (!dv) return;
+  for (int i = 0; i < 4; i++) {
+    s = s * 1103515245u + 12345u;
+    dv[i] = (uint8_t)((s >> 24) & 0x0Fu);
+  }
+}
+
+GbsStatus gbh_set_mon(GbSession* s, int team_idx, int mon_idx, const GbHofMon* mon) {
+  if (!s || !s->open || !mon) return GBS_ERR_ARG;
+  if (mon_idx < 0 || mon_idx >= GBH_NUM_MONS) return GBS_ERR_ARG;
+  if (!hof_mon_valid(s, mon)) return GBS_ERR_ARG;
+
+  int present = gbh_team_count_present(s);
+  if (team_idx < 0 || team_idx >= present) return GBS_ERR_ARG;
+  GbHofTeam t;
+  if (!gbh_team(s, team_idx, &t)) return GBS_ERR_ARG;
+  if (mon_idx >= t.n) return GBS_ERR_ARG;   /* only an EXISTING mon slot is editable */
+
+  GbGame g = hof_game(s);
+  uint32_t base = gbf_off(g, GBF_HOF_TEAMS);
+  if (!base) return GBS_ERR_ARG;
+  uint32_t stride = hof_team_bytes(s);
+  int slot = hof_storage_index(s, team_idx, present);
+  if (slot < 0) return GBS_ERR_ARG;
+  uint32_t team_off = base + (uint32_t)slot * stride;
+  uint32_t mon_off = (s->gen == GB_GEN1) ? team_off + (uint32_t)mon_idx * 16u
+                                          : team_off + 1u + (uint32_t)mon_idx * 16u;
+
+  GbsStatus st = hof_write_mon(s, mon_off, mon);
+  if (st != GBS_OK) return st;
+  return gbs_finish(s);
+}
+
+/* Shift the WHOLE table down by one slot (dst=i, src=i-1, i from cap-1 downto 1),
+ * discarding whatever was in the bottom slot (cap-1) before the call, and leaving
+ * slot 0 UNTOUCHED (the caller overwrites it next) -- "make room at the front" for
+ * Gen 2's own AddHallOfFameEntry, which always inserts the newest team at slot 0. */
+static GbsStatus hof_shift_down(GbSession* s, uint32_t base, uint32_t stride, int cap) {
+  uint8_t buf[98];
+  for (int i = cap - 1; i >= 1; i--) {
+    uint32_t src = base + (uint32_t)(i - 1) * stride;
+    uint32_t dst = base + (uint32_t)i * stride;
+    if (gbs_read_field(s, src, buf, stride) != GBS_OK) return GBS_ERR_ARG;
+    GbsStatus st = (s->gen == GB_GEN1) ? gbs_write_outside_sum(s, dst, buf, stride)
+                                        : gbs_write_field(s, dst, buf, stride);
+    if (st != GBS_OK) return st;
+  }
+  return GBS_OK;
+}
+
+/* Close the gap at `from`: shift every slot ABOVE `from` DOWN by one (dst=i,
+ * src=i+1, i ascending from `from` to cap-2), leaving slot cap-1's OLD content
+ * duplicated into cap-2's old spot and the table's own logical length one shorter
+ * -- the opposite direction from hof_shift_down above. Two callers, two different
+ * meanings of "the gap": gbh_delete_team closes a gap in the MIDDLE (a team just
+ * removed) and leaves the vacated top slot for the caller to zero; Gen 1's own
+ * gbh_append_team, once its 50 slots are already full, closes the gap at `from=0`
+ * (SaveHallOfFameTeams discards slot 0, the OLDEST team, to make room at the far
+ * end, slot 49) and the caller overwrites slot cap-1 with the new team right
+ * after -- unlike hof_shift_down, which makes room at the FRONT for Gen 2's own
+ * insert-at-0 rule, this makes room at the BACK, which is where Gen 1 always
+ * appends. (b194 mutation run caught this: reusing hof_shift_down verbatim for
+ * Gen 1's overflow case left slot 0 untouched and DUPLICATED the oldest team into
+ * slot 1 instead of evicting it -- test O/append_gen1_boundary's own "GT001 must
+ * survive, GT000 must not" check failed until this function was added.) */
+static GbsStatus hof_shift_close_gap(GbSession* s, uint32_t base, uint32_t stride,
+                                     int cap, int from) {
+  uint8_t buf[98];
+  for (int i = from; i < cap - 1; i++) {
+    uint32_t src = base + (uint32_t)(i + 1) * stride;
+    uint32_t dst = base + (uint32_t)i * stride;
+    if (gbs_read_field(s, src, buf, stride) != GBS_OK) return GBS_ERR_ARG;
+    GbsStatus st = (s->gen == GB_GEN1) ? gbs_write_outside_sum(s, dst, buf, stride)
+                                        : gbs_write_field(s, dst, buf, stride);
+    if (st != GBS_OK) return st;
+  }
+  return GBS_OK;
+}
+
+GbsStatus gbh_append_team(GbSession* s, const GbHofTeam* team) {
+  if (!s || !s->open || !team) return GBS_ERR_ARG;
+  if (team->n < 1 || team->n > GBH_NUM_MONS) return GBS_ERR_ARG;
+  for (int m = 0; m < team->n; m++)
+    if (!hof_mon_valid(s, &team->mon[m])) return GBS_ERR_ARG;   /* whole call refuses first */
+
+  GbGame g = hof_game(s);
+  uint32_t base = gbf_off(g, GBF_HOF_TEAMS);
+  uint32_t count_off = gbf_off(g, GBF_HOF_COUNT);
+  if (!base || !count_off) return GBS_ERR_ARG;
+  uint32_t stride = hof_team_bytes(s);
+  int cap = hof_capacity(s);
+  int old_count = gbh_count(s);
+  int new_count = (old_count < 255) ? old_count + 1 : 255;   /* saturating, both gens */
+
+  int slot;
+  if (s->gen == GB_GEN1) {
+    if (old_count < cap) {
+      slot = old_count;                          /* not yet full: next empty slot */
+    } else {
+      /* Full: discard slot 0 (the oldest), close the gap, append at the far end --
+       * NOT hof_shift_down (that makes room at the FRONT, Gen 2's own rule). */
+      GbsStatus sst = hof_shift_close_gap(s, base, stride, cap, 0);
+      if (sst != GBS_OK) return sst;
+      slot = cap - 1;                              /* full: always the last slot */
+    }
+  } else {
+    GbsStatus sst = hof_shift_down(s, base, stride, cap);   /* Gen 2 always shifts */
+    if (sst != GBS_OK) return sst;
+    slot = 0;
+  }
+  uint32_t team_off = base + (uint32_t)slot * stride;
+
+  /* Zero the whole team block first: a fresh record's unused mon slots (and, Gen 1,
+   * the pad bytes) must read back as the retail "empty" pattern -- reuses gbh_clear's
+   * own k_zero shape, GBH_NUM_MONS*16(+1 win-count byte on Gen 2) always <= 98. */
+  static const uint8_t k_zero[98] = {0};
+  GbsStatus zst = (s->gen == GB_GEN1) ? gbs_write_outside_sum(s, team_off, k_zero, stride)
+                                       : gbs_write_field(s, team_off, k_zero, stride);
+  if (zst != GBS_OK) return zst;
+
+  if (s->gen == GB_GEN2) {
+    uint8_t wc = (uint8_t)new_count;
+    GbsStatus wst = gbs_write_field(s, team_off, &wc, 1);
+    if (wst != GBS_OK) return wst;
+  }
+
+  for (int m = 0; m < team->n; m++) {
+    uint32_t mon_off = (s->gen == GB_GEN1) ? team_off + (uint32_t)m * 16u
+                                            : team_off + 1u + (uint32_t)m * 16u;
+    GbsStatus mst = hof_write_mon(s, mon_off, &team->mon[m]);
+    if (mst != GBS_OK) return mst;
+  }
+
+  uint8_t cv = (uint8_t)new_count;
+  GbsStatus cst = gbs_write_field(s, count_off, &cv, 1);
+  if (cst != GBS_OK) return cst;
+
+  return gbs_finish(s);
+}
+
+GbsStatus gbh_delete_team(GbSession* s, int team_idx) {
+  if (!s || !s->open) return GBS_ERR_ARG;
+  int present = gbh_team_count_present(s);
+  if (team_idx < 0 || team_idx >= present) return GBS_ERR_ARG;
+
+  GbGame g = hof_game(s);
+  uint32_t base = gbf_off(g, GBF_HOF_TEAMS);
+  uint32_t count_off = gbf_off(g, GBF_HOF_COUNT);
+  if (!base || !count_off) return GBS_ERR_ARG;
+  uint32_t stride = hof_team_bytes(s);
+  int cap = hof_capacity(s);
+  int slot = hof_storage_index(s, team_idx, present);
+  if (slot < 0) return GBS_ERR_ARG;
+
+  /* Close the gap at `slot` (hof_shift_close_gap -- the SAME primitive Gen 1's own
+   * gbh_append_team uses once its table is full), then zero the vacated top slot. */
+  GbsStatus gst = hof_shift_close_gap(s, base, stride, cap, slot);
+  if (gst != GBS_OK) return gst;
+  static const uint8_t k_zero[98] = {0};
+  uint32_t last_off = base + (uint32_t)(cap - 1) * stride;
+  GbsStatus zst = (s->gen == GB_GEN1) ? gbs_write_outside_sum(s, last_off, k_zero, stride)
+                                       : gbs_write_field(s, last_off, k_zero, stride);
+  if (zst != GBS_OK) return zst;
+
+  int old_count = gbh_count(s);
+  int new_count = (old_count > 0) ? old_count - 1 : 0;
+  uint8_t cv = (uint8_t)new_count;
+  GbsStatus cst = gbs_write_field(s, count_off, &cv, 1);
+  if (cst != GBS_OK) return cst;
+
+  return gbs_finish(s);
+}

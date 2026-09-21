@@ -136,4 +136,62 @@ GbsStatus gbh_clear(GbSession* s);
  * clamped to 0. GBS_ERR_ARG on a closed/malformed session. */
 GbsStatus gbh_set_count(GbSession* s, int n);
 
+/* --- BACKLOG #194: edit / append / delete ---------------------------------------- */
+
+/* Set mon `mon_idx` (0..GBH_NUM_MONS-1) of team `team_idx` (0 = newest, gbh_team()'s
+ * own UI numbering) to `mon`. Only an EXISTING mon slot may be edited (mon_idx must
+ * be < that team's own t.n, i.e. this never grows a team -- see gbh_append_team for
+ * that); species must map to a real index for the session's generation
+ * (gb_index_from_dex), level 1..100. Gen 1 writes species+level+nickname (13 of the
+ * 16-byte record) through the outside-sum allowlist, leaving the record's own 3
+ * reserved pad bytes (offsets 13..15) untouched; Gen 2 writes the whole 16-byte
+ * record (species/OT id/DVs/level/nickname) through gbs_write_field -- there is no
+ * per-mon pad on Gen 2 to preserve. Nickname is encoded with the generation's own
+ * charset (gb_name_encode); OT id and DVs are exactly whatever `mon` carries --
+ * callers that want "DVs re-roll when species changes" (matching CREATE's own
+ * contract) call gbh_roll_dv() themselves before this, the same way the screen
+ * stages every other field into its own copy first. GBS_ERR_ARG on a bad team/mon
+ * index, unmapped species, or bad level; nothing is written on refusal. */
+GbsStatus gbh_set_mon(GbSession* s, int team_idx, int mon_idx, const GbHofMon* mon);
+
+/* Roll a fresh Gen-2 DV quad (order Atk/Def/Spd/Spc, matching GbHofMon.dv) with the
+ * SAME linear congruential generator gb_new_mon() uses for a from-scratch mon
+ * (gb_new_mon.c's own lcg_nibble -- duplicated here rather than exported across a
+ * module boundary neither side otherwise needs, matching this tree's own rd16be
+ * precedent in gb_hof.c). `seed` is caller-supplied entropy (app_session_seed()
+ * plus a per-call salt, the same source CREATE already uses) so results are
+ * reproducible for a given seed and never touch any GBA-only RNG (this file stays
+ * pure C, gb_hof.h's own contract). */
+void gbh_roll_dv(uint32_t seed, uint8_t dv[4]);
+
+/* Append `team` (1..GBH_NUM_MONS mons, team->win_count ignored -- Gen 2's own
+ * win-count byte is always derived from gbh_count()+1, see below) as the
+ * MOST-RECENTLY-WON team, mirroring each generation's own record-writing rule
+ * exactly (re-derived from the decomp, gb_hof.h's big comment above):
+ *   Gen 1: while the lifetime count is < GBH_G1_CAPACITY (50), the new team lands
+ *   at slot `count` (0-based) with no shift, and count increments by one. Once the
+ *   count has reached 50, EVERY team shifts down one slot (discarding slot 0, the
+ *   oldest) and the new team always lands at slot 49; the count still increments
+ *   (saturating at 255, AnimateHallOfFame's own "inc a / jr z, skip" guard -- never
+ *   wraps to 0) but the SLOT stops moving.
+ *   Gen 2: AddHallOfFameEntry always shifts every slot down one (discarding slot
+ *   29, the oldest) and writes the new team at slot 0; its win-count BYTE is the
+ *   INCREMENTED gbh_count() value (the trainer's own then-current tally, not
+ *   `team->win_count`), and the count FIELD is written through the same clamp
+ *   gbh_set_count() uses (<=200).
+ * Each mon is validated exactly like gbh_set_mon (species maps, level 1..100) --
+ * ANY invalid mon refuses the WHOLE call (GBS_ERR_ARG) before any byte is written.
+ * Partial-write atomicity on a later failure follows the same whole-image-rollback
+ * convention as gbh_clear (gb_hof.h's own note): the caller restores from its own
+ * pristine copy on any non-GBS_OK. */
+GbsStatus gbh_append_team(GbSession* s, const GbHofTeam* team);
+
+/* Inverse of gbh_append_team: delete team `team_idx` (0 = newest, gbh_team()'s own
+ * numbering), shifting every OLDER team (every occupied slot on the far side of the
+ * deleted one from the table's growth direction) up to fill the gap, zero-filling
+ * the vacated end slot, and decrementing the lifetime count by one (floored at 0 --
+ * a count that already undercounts the blob, D2's own Gen-1 clamp, never goes
+ * negative). GBS_ERR_ARG on a bad index or a closed/malformed session. */
+GbsStatus gbh_delete_team(GbSession* s, int team_idx);
+
 #endif /* GB_HOF_H */
