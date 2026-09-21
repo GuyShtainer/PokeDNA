@@ -1263,7 +1263,7 @@ pc_bank_restore_up(const uint8_t g3_rec80[80], uint8_t out_cell80[80]) {
   if (rep.evolved || rep.level_changed || rep.moves_changed || rep.renamed || rep.rename_refused ||
       rep.move_refused[0] || rep.move_refused[1] || rep.move_refused[2] || rep.move_refused[3] ||
       g3_item) {
-    if (!app_confirm(PDNA_XFERRESTORE_TITLE, PDNA_XFERRESTORE_L_LOSS)) return -1;   /* B: nothing written, serial unspent */
+    if (!app_confirm(PDNA_XFERRESTORE_TITLE, PDNA_XFERRESTORE_L_LOSS)) return -2;   /* review D3: B, user declined -- distinct from a genuine failure */
   }
 
   uint32_t serial = pdna_bank_next_serial();
@@ -1537,13 +1537,14 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
      * lane, byte for byte. */
     uint8_t cell80[80];
     int rc = pc_bank_restore_up(s_held, cell80);
+    /* review D3: rc == -2 is a plain user decline on the F3 confirm -- app_confirm
+     * already drew its own "B = no", so nothing further is shown; still holding,
+     * nothing written, same as every other refusal here. */
+    if (rc == -2) return recs;
     if (rc < 0) {                                                      /* still holding, nothing written */
       snd_error();
       /* review F5: decision 9's own message -- an unreadable ledger record or a
-       * serial refusal, not silence. (Also shown after a plain B-decline on the
-       * F3 confirm above; a known, low-priority UX rough edge -- app_confirm's
-       * own "B = no" already said no, this adds a second dialog naming why
-       * nothing further happened.) */
+       * serial refusal, not silence. */
       msg_wait(PDNA_XFERREC_TITLE, UI_WARN, PDNA_XFERREC_L1, PDNA_XFERREC_L2);
       return recs;
     }
