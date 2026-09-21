@@ -4903,6 +4903,20 @@ def main(argv=None) -> int:
                           "be a ONE-ROM fused image matching the choice (Gold.gbc+"
                           "Gold.sav or Red.gb+Red.sav, tools/fuse_gb.py, no "
                           "Emerald.sav -- BACKLOG #98)")
+    ap.add_argument("--b187-chains", action="store_true",
+                     help="BACKLOG #187/#193/#191a/#192, review fix 2: runs "
+                          "run_b187_chain_a/b/c() against --image in sequence -- "
+                          "Chain A (SELECT toggles NORMAL<->MOVE on an empty "
+                          "cell), Chain B (DUPLICATE on a full box opens F3's "
+                          "picker and lands), Chain C (CREATE in a box with "
+                          "room). --image MUST be the flight-shaped image "
+                          "(Emerald.sav + a GB corpus, tools/fuse_gb.py) fused "
+                          "with GUY'S OWN Yellow.sav copied to /tmp first (the "
+                          "corpus at gba-toolkit/roms/gb/Yellow.sav is read-"
+                          "only). Chain D (drag-and-drop) is not here -- see "
+                          "this file's own comment right after "
+                          "run_b187_chain_c() for why it is impossible on any "
+                          "emulator vehicle.")
     ap.add_argument("--b89-hof", choices=("red", "crystal"),
                      help="BACKLOG #89: only run_b89_hof() against --image for the "
                           "named game (Red's or Crystal's own Hall of Fame screen) "
@@ -5513,6 +5527,21 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] b93 menu ({a.b93_menu}): {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        ran = True
+
+    if a.b187_chains:
+        for label, fn in (("A", run_b187_chain_a), ("B", run_b187_chain_b),
+                          ("C", run_b187_chain_c)):
+            try:
+                sess = fn(core_mod, image_mod, a.image, a.out)
+                ok += sess.taken
+                skipped += sess.skipped
+            except RuntimeError as e:
+                print(f"  [STOPPED] b187 chain {label}: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
@@ -6542,6 +6571,140 @@ def run_s2_control(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Se
            "so both rows present on the empty cell (TO GAME is absent because the "
            "cell is empty, not because of a gate)")
     return s
+
+
+def run_b187_chain_a(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #187/#192, review fix 2, Chain A: SELECT toggles NORMAL -> MOVE ->
+    NORMAL on an EMPTY cell (box 12, the current box, boots 0/20 -- current-box
+    byte 0x284C=0x8B on Guy's own Yellow.sav).
+
+    Before F1 (source/pdna_box.c's SELECT dispatch), ENTERING MOVE mode required
+    an OCCUPIED cell (gb_can_lift_hook_impl -> gbs_can_delete refuses
+    slot >= count on an empty one), and LEAVING it used the exact SAME gate -- so
+    moving the cursor onto an empty cell while already in MOVE, then pressing
+    SELECT again, hit that same refusal and did nothing: #192, "stuck on orange
+    (grab)". Proven live against the PRE-fix build (this lane's own repro run):
+    a second SELECT produced a pixel-identical frame to the one before it (this
+    file's own identical-frame shot guard raised a RuntimeError).
+
+    F1 makes leaving any non-NORMAL mode unconditional, and makes ENTERING
+    box-level (BoxSource.can_enter_move, gbsrc_can_enter_move =
+    app_can_edit() && gbs_box_writable(box)) instead of per-cell -- so this
+    chain now demonstrates something that was IMPOSSIBLE before the fix at all:
+    entering MOVE from an empty cell in the first place, not just leaving it.
+
+    `rom` MUST be the flight-shaped image (Emerald.sav + a GB corpus fused with
+    tools/fuse_gb.py) with Guy's OWN Yellow.sav as its Gen-1 payload (copy it to
+    /tmp first -- the corpus at gba-toolkit/roms/gb/Yellow.sav is read-only)."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b187a_")
+    print("== BACKLOG #187/#192, Chain A: SELECT NORMAL<->MOVE on an empty cell ==")
+    boot_to_gb_session(s, rom, which="yellow")
+    s.shot("00_box12_normal", "tap0 (boot): box12 (current box, 0/20), cell(0,0) "
+           "empty, NORMAL mode -- footer 'A menu SEL L/R B'")
+    s.tap("SEL", settle=gb_shots.BIG_SETTLE)
+    s.shot("01_select_to_move", "tap1 (SELECT): entering MOVE is now box-level "
+           "(gbsrc_can_enter_move), not per-cell -- footer changes to 'MOVE A "
+           "grab hold=set', cursor icon changes -- IMPOSSIBLE pre-fix on an "
+           "empty cell (gbs_can_delete would have refused)")
+    s.tap("SEL", settle=gb_shots.BIG_SETTLE)
+    s.shot("02_select_back_to_normal", "tap2 (SELECT): leaving is now "
+           "unconditional -- footer back to 'A menu SEL L/R B' -- pre-fix, this "
+           "EXACT second SELECT on an empty cell was #192's stuck case (proven "
+           "live: pixel-identical frame before/after on the pre-fix build)")
+    return s
+
+
+def run_b187_chain_b(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #187/#193, review fix 2, Chain B: DUPLICATE on box 1 (genuinely
+    20/20 full on Guy's own Yellow.sav) opens F3's destination picker instead of
+    refusing flat, defaults to BOX8 (11/20, the first box with room), and lands
+    there (box 8's count visibly goes 11/20 -> 12/20).
+
+    Navigation notes (re-derived by incremental probing against this exact
+    image, not assumed -- this file's own module docstring already documents
+    the d-pad auto-repeat gotcha that makes a fixed L/R press count unreliable
+    across runs): 17x L from the box-12 boot landing reaches box 1 on this
+    build (verified: box 12 -1L-> box 11 -1L-> box 10 ... continuing past box 1
+    wraps to the party, so 17 is the count that lands ON box 1, not past it);
+    7x R from box 1, after the DUPLICATE flow below, reaches box 8. A generous
+    settle (60 frames) after every L/R tap plus a trailing 60-frame idle run
+    avoids the missed-input failure mode a shorter settle hit during this
+    lane's own repro work.
+
+    `rom` MUST be the same flight-shaped Yellow.sav image run_b187_chain_a()
+    uses."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b187b_")
+    print("== BACKLOG #187/#193, Chain B: DUPLICATE box1(full) -> picker -> box8 ==")
+    boot_to_gb_session(s, rom, which="yellow")
+    for _ in range(17):
+        s.tap("L", settle=60)
+    s.run(60)
+    s.shot("00_box1_grid", "tap0 (17xL, settled): box1 grid -- '1:GB BOX1 20/20'")
+    s.tap("A", settle=100)
+    s.shot("01_mon_menu", "tap1 (A on cell(0,0), Bulbasaur): mon menu opens, "
+           "row0 VIEW/EDIT selected")
+    s.press_n("DOWN", 4, settle=30)
+    s.shot("02_dup_selected", "tap2 (DOWN x4): cursor on DUPLICATE (Gen-1 row "
+           "order: VIEW/EDIT, LEGALITY, MOVE TO BOX, COPY, DUPLICATE)")
+    s.tap("A", settle=100)
+    s.shot("03_picker_opens", "tap3 (A on DUPLICATE): F3 -- box1 is 20/20 full, "
+           "so the 'DUPLICATE TO' picker opens instead of a flat refusal; BOX1-7 "
+           "all show 20/20 and are dimmed (full, per F3's own gb_pick_box "
+           "change), BOX8 11/20 is pre-selected (the first selectable box)")
+    s.tap("A", settle=150)
+    s.shot("04_delta_wall", "tap4 (A picks BOX8): the PDNA_DELTA honest wall "
+           "('Edits are in-session only in the emulator build.') -- hardware-"
+           "only for the actual persisted confirmation ('Landed in slot N'), "
+           "same posture every other GB write path hits under mGBA (no SD "
+           "card in the emulator)")
+    s.tap("A", settle=150)
+    for _ in range(7):
+        s.tap("R", settle=60)
+        s.run(40)
+    s.shot("05_box8_after", "tap5 (7xR from box1, settled): box8 grid -- "
+           "'8:GB BOX8 12/20' -- count went 11/20 -> 12/20, the duplicate "
+           "landed there (gb_persist's PDNA_DELTA branch re-baselines "
+           "g_ed->img to the post-edit bytes even though the CARD write is "
+           "refused -- the in-session image IS updated, same posture every "
+           "other GB write path takes under mGBA)")
+    return s
+
+
+def run_b187_chain_c(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #187, review fix 2, Chain C: CREATE in box 12 (the current box,
+    0/20, real room) opens the species picker -- the unmodified, already-working
+    path (F4 only changes the FULL-box case; this chain demonstrates F4 did not
+    regress the ordinary one). `rom` MUST be the same flight-shaped Yellow.sav
+    image run_b187_chain_a() uses."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b187c_")
+    print("== BACKLOG #187, Chain C: CREATE in box12 (current, 0/20) ==")
+    boot_to_gb_session(s, rom, which="yellow")
+    s.shot("00_box12_boot", "tap0 (boot): box12 (current box, 0/20)")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.shot("01_empty_menu", "tap1 (A on cell(0,0), empty): EMPTY/CREATE/CANCEL "
+           "menu")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.shot("02_species_picker", "tap2 (A on CREATE): species picker opens, "
+           "No.001 BULBASAUR pre-selected -- F4's own full-box retry path never "
+           "triggers here (box12 has real room)")
+    return s
+
+
+# BACKLOG #187/#193/#191a/#192, review fix 2: chain D (drag-and-drop, SELECT ->
+# MOVE -> A to lift -> L/R to another box -> A to drop on an empty cell) is NOT
+# added here -- it is impossible to demonstrate on ANY emulator vehicle. The
+# lift half of a GB-scope carry (start_carry -> BoxXferOps.lift_up ->
+# gb_lift_up_hook, source/pdna_box.c/pdna_gen12.c) always calls
+# pdna_bank_next_serial(), which always calls meta_save() -> sf_write_verified()
+# against /PokeDNA/bank/bank.meta -- a REAL SD write. PDNA_DELTA has no SD card
+# (the same "no flashcart in mGBA" wall every other GB write hook in this file
+# hits), so the lift refuses before a single cell moves, on every fused image,
+# always. F2's DROP half (move_within itself) is proven working end-to-end by
+# Chain B above via the picker-driven gb_move_core/gbs_move path DUPLICATE
+# shares with it, by tests/host_gbsession_test.c's s187_yellow_box8_matrix
+# (real Yellow.sav, the engine level), and by tests/host_gb_grid_ops_test.py's
+# structural checks (b)/(e) with four real mutations -- what mGBA specifically
+# cannot ever show is the LIFT gesture's own SD-write-gated start. HW-QUEUE row.
 
 
 if __name__ == "__main__":
