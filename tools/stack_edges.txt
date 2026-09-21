@@ -800,6 +800,12 @@ Gb12Mount.rd @4 in gb_list_read.constprop.0 -> gb_read fused_gb_slice_read gb_im
 # load surfaces under THAT caller's name instead of its own.
 Gb12Mount.rd @4 in gbsrc_set_name -> gb_read fused_gb_slice_read gb_img_read
 
+# BACKLOG #191b: gb_origin_for_save's own `g_m->rd(g_m->ctx, GEN1_YELLOW_WIN_OFF, win,
+# GEN1_YELLOW_WIN_LEN)` (pdna_gen12.c) -- reads the 128-byte Yellow-detector window off
+# the live mount before any #172 sidecar logic runs. Same Gb12Mount.rd@4 dispatch, same
+# implementation family as every other declaration in this block.
+Gb12Mount.rd @4 in gb_origin_for_save -> gb_read fused_gb_slice_read gb_img_read
+
 # gen2_write.h's G2Writer.wr (wr@4, img_wr -- the SAME single registration site,
 # gb_session.c:69, as G2Writer.rd@0 above) is what refresh_checksums/write_patch.
 # part.0 actually dispatch through (both take `G2Writer* w` and write out a patched
