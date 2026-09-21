@@ -185,6 +185,9 @@ def main() -> int:
         check('dir_val ? dir_val : g_cwd' in re.sub(r"\s+", " ", cse_body),
               'cfg_save_ex()\'s "dir=" line must read `dir_val ? dir_val : g_cwd` (D1 fix) -- '
               "a plain `g_cwd` here is exactly the regression the review caught")
+        check(main_text.count("cfg_save_for(spec, is_dir_key ? 0 : saved_cwd)") == 5,
+              "all five in-picker cfg_save_for() sites must pass saved_cwd (D1) -- a site passing 0 "
+              "reintroduces the dir= clobber (re-verify one-liner, 2026-09-21)")
 
     crod_m = re.search(r"static void __attribute__\(\(noinline\)\) cfg_read_old_dirkeys\s*\([^)]*\)\s*\{(.*?)\n\}",
                         main_text, re.DOTALL)
