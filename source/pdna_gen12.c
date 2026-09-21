@@ -1423,7 +1423,14 @@ static bool gb_edit_commit(int box, int slot, const GbEditMon* e, const char* wh
  * m->party_box + 1 at call time so the array is a fixed frame slot, not a VLA. */
 #define GB12_PICKBOX_MAX 15
 
-static int gb_pick_box(const Gb12Mount* m, int exclude, const char* title) {
+/* BACKLOG #187/#193, F3/F4 follow-on: `exclude_party` -- gbs_insert() (DUPLICATE's
+ * and CREATE's full-box retry, both below) refuses the party pseudo-box outright
+ * ("PARTY IS REFUSED HERE, ON PURPOSE", gb_session.c's own comment on gbs_insert) --
+ * offering it as a pickable row would only earn a generic "bad argument" a screen
+ * later. gb_move_hook's own call passes false: gbs_move() DOES support a party
+ * destination (species-limit/live-stat/Mail rules), so hiding it there would be a
+ * real feature loss, not a UX fix. */
+static int gb_pick_box(const Gb12Mount* m, int exclude, const char* title, bool exclude_party) {
   int n = m->party_box + 1;
   if (n <= 1) return -1;
   if (n > GB12_PICKBOX_MAX) n = GB12_PICKBOX_MAX;   /* defensive; never true today */
@@ -1453,7 +1460,8 @@ static int gb_pick_box(const Gb12Mount* m, int exclude, const char* title) {
     if (writable && gbs_load_list(&g_ed->s, b, g_ed->list2) == GBS_OK)
       cnt[b] = gb_list_count(g_ed->s.gen, g_ed->list2, b);
     bool full = cap[b] > 0 && cnt[b] >= 0 && cnt[b] >= cap[b];
-    skip[b] = (b == exclude) || !writable || full;
+    bool party_excluded = exclude_party && gb_box_is_party(g_ed->s.gen, b);
+    skip[b] = (b == exclude) || !writable || full || party_excluded;
     if (!skip[b]) selectable++;
   }
   if (!selectable) {
@@ -1759,7 +1767,7 @@ static bool gb_move_hook(uint8_t* rec80) {
   int box, slot;
   if (!gb_locate(rec80, &box, &slot)) return false;
 
-  int dst = gb_pick_box(g_m, box, PDNA_GBEDIT_PICKBOX_TITLE);
+  int dst = gb_pick_box(g_m, box, PDNA_GBEDIT_PICKBOX_TITLE, false);
   if (dst < 0) return false;                       /* B on the picker: nothing touched */
 
   return gb_move_core(box, slot, dst);
@@ -2025,7 +2033,7 @@ static bool gb_dup_hook(uint8_t* rec80) {
    * (gb_pick_box's own "NO DESTINATION" message), still refuses -- nothing is
    * touched (gb_rollback below is a no-op over an untouched image either way). */
   if (ist == GBS_ERR_FULL) {
-    dst = gb_pick_box(g_m, box, PDNA_GBEDIT_PICKBOX_DUP_TITLE);
+    dst = gb_pick_box(g_m, box, PDNA_GBEDIT_PICKBOX_DUP_TITLE, true);
     if (dst < 0) { gb_rollback(); return false; }
     ist = gbs_insert(s, dst, &e, &slot_out, g_ed->list);
   }
@@ -4250,8 +4258,34 @@ static bool gb_create_hook(void) {
     snd_deny(); msg_wait(PDNA_GBEDIT_BOXRD_TITLE, UI_WARN, gbs_status_text(ld), 0); return false;
   }
   int count = gb_list_count(g_ed->s.gen, g_ed->list, box);
-  if (count < 0 || count >= gb_list_capacity(g_ed->s.gen, box)) {
-    snd_deny(); msg_wait(PDNA_GBCREATE_FULL_TITLE, UI_WARN, PDNA_GBCREATE_FULL_L1, 0); return false;
+  int cap   = gb_list_capacity(g_ed->s.gen, box);
+  /* BACKLOG #187, F4: split the old `count < 0 || count >= cap` fold in two --
+   * Step 1 (this backlog's own repro matrix, run against Guy's real Yellow.sav on
+   * the delta vehicle) found `box` here already correct on every box tried (12, 11,
+   * a has-room box) -- the ui_box/current_box fallback chain 2026-09-07's own fix
+   * put in place holds. Every CREATE refusal reachable today is a genuinely full
+   * box (Yellow's own boxes 1-7, 20/20 each); an unreadable list is a DIFFERENT,
+   * separately-worded problem (a corrupt box, not a full one) that was silently
+   * wearing the same "BOX FULL" words before this split. */
+  if (count < 0) {
+    snd_deny(); msg_wait(PDNA_GBCREATE_BADLIST_TITLE, UI_WARN, PDNA_GBCREATE_BADLIST_L1, 0);
+    return false;
+  }
+  if (count >= cap) {
+    /* Name the box and its count (brief's own wording: "Box 1 is full (20/20) --
+     * pick another box"), then offer the SAME destination picker DUPLICATE/MOVE TO
+     * BOX use (gb_pick_box, F3's n/cap+dim-full picker) instead of a flat refusal.
+     * `box` is reassigned to the pick -- everything below (species/level/insert)
+     * runs against the NEW destination; gbs_insert() reloads its own list for
+     * whatever box it is handed, so no stale state carries over from the full one. */
+    char nm[12], l1[32];
+    pdna_gen12_box_name(g_m, box, nm);
+    siprintf(l1, "%s is full (%d/%d).", nm, count, cap);
+    snd_deny();
+    msg_wait(PDNA_GBCREATE_FULL_TITLE, UI_WARN, l1, PDNA_GBCREATE_FULL_PICKHINT_L2);
+    int dst = gb_pick_box(g_m, box, PDNA_GBEDIT_PICKBOX_CREATE_TITLE, true);
+    if (dst < 0) return false;   /* B on the picker, or gb_pick_box's own "no room anywhere" */
+    box = dst;
   }
 
   /* Species picker: pdna_pick.c's own big icon-grid pick_species(), the EXACT

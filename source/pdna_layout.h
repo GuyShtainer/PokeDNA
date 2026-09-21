@@ -772,6 +772,7 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * own full-source-box destination picker -- a distinct title so the screen never
  * reads "MOVE TO" while the mon is actually being copied, not relocated. */
 #define PDNA_GBEDIT_PICKBOX_DUP_TITLE "DUPLICATE TO"
+#define PDNA_GBEDIT_PICKBOX_CREATE_TITLE "CREATE IN"
 #define PDNA_GBEDIT_PICKBOX_FOOT   "A pick  B cancel"
 #define PDNA_GBEDIT_PICKBOX_Y0     20    /* first row's y, below the y=13 title rule */
 #define PDNA_GBEDIT_PICKBOX_ROW_H  10
@@ -1132,6 +1133,22 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_GBCREATE_NOROM_L2       "(Settings > Game ROM)."
 #define PDNA_GBCREATE_FULL_TITLE     "BOX FULL"
 #define PDNA_GBCREATE_FULL_L1        "No empty slot here."
+/* BACKLOG #187, F4: l1 is overwritten at the call site with the actual box name +
+ * count ("BOX1 is full (20/20)."), siprintf'd into a stack buffer -- this L1 stays
+ * only as the (now-unused after F4) generic fallback string, kept for
+ * PDNA_GBCREATE_FULL_TITLE's own sizing convention comment above. l2 offers the
+ * picker that now actually opens right after this message is dismissed. */
+#define PDNA_GBCREATE_FULL_PICKHINT_L2 "Pick another box."
+/* BACKLOG #187, F4: split out of the old BOX_FULL fold -- an unreadable list
+ * (gb_list_count() returning <0, GBS_ERR_STRUCT's own condition) is a corrupt/
+ * malformed box, not a full one; conflating the two hid the 2026-09-07 index-bug
+ * class this backlog's own root-cause hunt re-derived from scratch (Step 1: every
+ * refusal Guy could still hit on his own Yellow.sav turned out to be a genuinely
+ * full box, not a misrouted index -- CREATE already resolves g_m->ui_box/
+ * current_box correctly; this split is the other, always-latent half of that
+ * same fold, caught while re-deriving the message rather than reproduced). */
+#define PDNA_GBCREATE_BADLIST_TITLE  "CAN'T READ BOX"
+#define PDNA_GBCREATE_BADLIST_L1     "This box's data looks corrupt."
 #define PDNA_GBCREATE_BUILDFAIL_L1   "Could not build a legal record."
 /* pdna_pick.c's pick_item(), restricted mode (UX-parity audit, Guy 2026-09-07:
  * the GB editor's item row now opens the SAME picker the Gen-3 flow uses,
