@@ -118,6 +118,21 @@ typedef struct {
    * carries it (S11.20 item 11) -- no new ledger field is added for this. */
   bool    item_dropped;
   uint8_t item_g2;        /* the Gen-2 item id that was dropped, for the loss row */
+  /* BACKLOG #177: also CALLER-SET, but for a DIFFERENT reason than item_dropped's --
+   * gen12_convert() converts ONE record at a time and never sees the WRITTEN Gen-1/2
+   * record the bridge eventually produces (that only exists after a LATER call,
+   * gen3_to_gb(), on this module's own output), so it has no "before" and "after" to
+   * compare even in principle. bank_down_convert.c's own gb_name_changed() (static
+   * there, review F1) is the detector: it spells the SOURCE record's name and the
+   * WRITTEN record's name through the same lossless, generation-neutral speller
+   * (gb_get_otname/gb_get_nickname, gb_edit.c) and flags a difference -- a spelling
+   * compare catches every real loss (accented letters folded flat, gender signs and
+   * lookalike punctuation Gen 3's charset has no case for, the GB-only ligature glyphs)
+   * that an earlier decoder-fallback-byte rule missed, with no byte-range table to keep
+   * in sync with gen3_encode_char/g2_glyph. Re-applied here after gen3_to_gb() returns
+   * G3GB_OK, same "caller sets it after the call" shape item_dropped already uses. */
+  bool    otname_lossy;   /* the OT name's spelling changed crossing the bridge */
+  bool    nick_lossy;     /* same, for the nickname */
 } Gb12Notes;
 
 /* Can this record convert, and if not why? Pure, cheap (no PID search) -- safe to call

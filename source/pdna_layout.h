@@ -1162,6 +1162,17 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_SIDECAR_LOSS_SHINY      "Shiny not preserved"
 #define PDNA_SIDECAR_LOSS_GENDER     "Gender not preserved"
 #define PDNA_SIDECAR_LOSS_NAME       "Nickname/OT changed"
+/* BACKLOG #177: gb_paste_loss_screen's own text picker (pdna_gen12.c loss_name_text())
+ * shows ONE of these two in place of the generic line above when only the OT name or
+ * only the nickname is the one that lost a glyph -- row-count-neutral (same one
+ * conditional row, still 10 total, the screen's 2 px of slack survives). review F2:
+ * the bridge is bidirectional (gb_bank_down_bridge's dst_gen can be either Gen-1 or
+ * Gen-2 -- the mounted session is whichever generation is NOT the source cell's own),
+ * so naming "Gen 1" specifically was wrong on a 1->2 transfer; generation-neutral
+ * wording reads correctly either way. Both measured at 4/UI_SCR_W-8 like every other
+ * row here (158 px / 162 px, host_textfit_test.c). */
+#define PDNA_SIDECAR_LOSS_OTNAME     "OT name: a glyph didn't transfer"
+#define PDNA_SIDECAR_LOSS_NICKNAME   "Nickname: a glyph didn't transfer"
 #define PDNA_SIDECAR_LOSS_KEPT_L1    "Kept in /PokeDNA/xfer;"   /* BACKLOG #150 S150-6: was /PokeDNA/sidecar */
 #define PDNA_SIDECAR_LOSS_KEPT_L2    "restored when it comes back."
 #define PDNA_SIDECAR_LOSS_STAYS      "The copy in your Gen-3 save stays."

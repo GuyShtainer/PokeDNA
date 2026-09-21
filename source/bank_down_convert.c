@@ -6,6 +6,33 @@
 #include "data_tables.h"      /* pk_item_games */
 #include "pdna_gen12.h"       /* gb_bank_down_gen3/gb_bank_down_bridge -- GBA arms below */
 
+/* ---- BACKLOG #177: the GB-side name-glyph-loss oracle -------------------------- */
+/* review F1 (Fable pin): the earlier decoder-fallback rule (did a byte's own decode
+ * land on the decoder's "unmapped" fallback glyph?) missed every lookalike loss --
+ * accented letters folded to their plain ASCII form (C0-C5), the gender signs folded
+ * to '?' (EF/F5), the Yen sign / times sign (F0/F1), '&' (E9), e-acute (EA), and the
+ * eight bracket/punctuation glyphs (9A-9F) that decode cleanly but that gen3_encode_char
+ * has NO case for and silently drops to a Gen-3 space on the way into the intermediate
+ * record (gb_sidecar.c:440-461's own gb_nick_char_ok_for_gen3 lists that exact set) --
+ * 19 real losses in a full 0x00-0xFF sweep. None of those trip a decoder default; all
+ * of them are still a genuine "the name that comes out is not the name that went in".
+ *
+ * The fix compares SPELLING, not decode-path: gb_char_decode (gb_edit.c:800-870) is the
+ * lossless, generation-neutral speller (it never guesses -- every GB byte spells to
+ * its own distinct escape or glyph, byte-exact, both directions, swept 255/255 in a
+ * scratch copy). Decode the SOURCE record's name and the WRITTEN record's name through
+ * the SAME speller (gb_get_otname/gb_get_nickname, gb_edit.c's own public wrappers over
+ * gb_char_decode) and compare the two spellings: any difference beyond what the target
+ * generation's own more limited species-name default already explains is loss, full
+ * stop -- no byte-range table to keep in sync with gen3_encode_char/g2_glyph ever again. */
+static bool gb_name_changed(const GbEditMon* src, const GbEditMon* dst, bool ot) {
+  char a[GB_NAME_BYTES * GB_GLYPH_MAX + 1], b[GB_NAME_BYTES * GB_GLYPH_MAX + 1];
+  if (!src || !dst) return false;
+  if (ot) { gb_get_otname(src, a, (int)sizeof a);   gb_get_otname(dst, b, (int)sizeof b); }
+  else    { gb_get_nickname(src, a, (int)sizeof a); gb_get_nickname(dst, b, (int)sizeof b); }
+  return strcmp(a, b) != 0;
+}
+
 /* ---- pure core, arm 2 (decision 3+5+6) ------------------------------------- */
 
 Gb12Result bdc_convert_gen3_core(const uint8_t cell80[BC_CELL_BYTES], uint8_t met_game,
@@ -82,6 +109,15 @@ void bdc_convert_gb_core(const uint8_t cell80[BC_CELL_BYTES], uint8_t dst_gen,
 
   G3GbStatus st = gen3_to_gb(mid80, dst_gen, caught_available, g1base, out, loss);
   *g3gb = st;
+  /* BACKLOG #177 (review F1): compare the SOURCE record's own name spelling against the
+   * WRITTEN record's -- `out` is only meaningfully populated on G3GB_OK, so this runs
+   * after `st` is known, not alongside the item-drop re-apply above (which does not
+   * depend on gen3_to_gb having run at all). src_mon (bc_unpack's raw GbEditMon) is
+   * still in scope here. */
+  if (st == G3GB_OK) {   /* `out` is only written on G3GB_OK */
+    notes->otname_lossy = gb_name_changed(&src_mon, out, true);
+    notes->nick_lossy   = gb_name_changed(&src_mon, out, false);
+  }
 }
 
 /* ============================================================================
