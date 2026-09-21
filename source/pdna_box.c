@@ -18,6 +18,7 @@ _Static_assert(BOXSCOPE_BANK == 1, "source/xfer_gate.c's XG_SCOPE_BANK hard-code
                "silently stops firing (BACKLOG #150 S150-3)");
 #include "ui.h"
 #include "pdna_layout.h"    /* PDNA_PCP_*: the PC-box party strip's retail-measured geometry */
+#include "tab_focus_footer.h" /* BACKLOG #173 F2: pure tab_focus_footer() decision */
 #include "gen3_save.h"
 #include "gen3_mon.h"
 #include "gen3_box.h"
@@ -1564,7 +1565,7 @@ static void oam_sync(int cur, bool on_title, int box, bool is_bank) {
 
 static void draw_footer(bool is_bank, bool on_title, bool moving) {
   const char* f;
-  if (s_tab_focus >= 0)    f = (s_holding && is_bank) ? PDNA_TAB_FOCUS_CARRY_FOOTER : "L/R tab  A pick  DN";
+  if (s_tab_focus >= 0)    f = tab_focus_footer(s_holding, pdna_box_carry_is_gb());
   else if (moving)         f = "A drop  B cancel";
   else if (s_item_held)    f = "A give  B put back";
   /* A now renames directly and SELECT opens the box menu (Guy, BACKLOG #33) -- "L/R
