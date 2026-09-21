@@ -10,7 +10,7 @@
  * itself are declared ONCE, not copied.
  *
  * #include "gb_art_source.h" for GbArtProgressFn and the pre-existing GB_ART_LOC_SPRITES/
- * GB_ART_LOC_ICONS/GB_ART_SCAN_LIMIT_S — this header does not redefine any of those, it
+ * GB_ART_LOC_ICONS/GB_ART_STALL_S/GB_ART_HARD_CEILING_S — this header does not redefine any of those, it
  * only ADDS GB_ART_LOC_UI (the gbscreen tail-window scan) alongside them. gb_art_source.h
  * itself is unchanged (it has no FatFs dependency and stays that way — see BACKLOG #148's
  * brief: source/pdna_gbscreen.c includes THIS header only inside its own
@@ -70,7 +70,7 @@ bool gb_reg_progress(void* vctx, uint8_t locator, uint32_t done, uint32_t total,
 /* Start (or restart, for a second locator on the same handle) the guard: `size` is the
  * ROM's total byte length (the progress bar's `total`), `fn`/`fn_ctx` the caller's
  * progress callback (NULL = silent), `locator` a GB_ART_LOC_* id, `limited` whether the
- * GB_ART_SCAN_LIMIT_S wall-clock timeout applies (every real caller passes true; only
+ * GB_ART_STALL_S/GB_ART_HARD_CEILING_S progress watchdog applies (every real caller passes true; only
  * the host-side reuse of this shim would ever want false). */
 void gb_art_io_init(GbArtIo* io, FIL* f, uint32_t size, GbArtProgressFn fn, void* fn_ctx,
                     uint8_t locator, bool limited);

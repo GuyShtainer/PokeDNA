@@ -160,6 +160,17 @@ typedef enum {
 
 typedef enum { ROM_GBSPRITE_FRONT = 0, ROM_GBSPRITE_BACK = 1 } RomGbSide;
 
+#ifdef ROM_GBSPRITE_JOB_COUNTERS
+/* BACKLOG #185 Step 1 / T2: six per-job scan_multi callback-INVOCATION counters
+ * (not hits -- every time a job's gate lets a position through to its cb, win or
+ * lose), in this order, for a host benchmark/test to reset and read. Only exists
+ * when the host test build defines ROM_GBSPRITE_JOB_COUNTERS on the compile line
+ * -- the GBA Makefile never does, so this costs the cart build nothing. */
+enum { ROM_GBSPRITE_JOB_G1_BS = 0, ROM_GBSPRITE_JOB_G1_DEX, ROM_GBSPRITE_JOB_G1_MEW,
+       ROM_GBSPRITE_JOB_G2_BD, ROM_GBSPRITE_JOB_G2_PP, ROM_GBSPRITE_JOB_G2_PAL };
+extern uint32_t g_rgs_cb_calls[6];
+#endif
+
 /* The RGB15 destination rom_gbsprite_to_rgb15() needs, at worst (7x7 tiles). */
 #define ROM_GBSPRITE_MAX_PIXELS    GB_SPRITE_MAX_PX          /* 56*56 = 3136   */
 #define ROM_GBSPRITE_RGB15_BYTES   (GB_SPRITE_MAX_PX * 2u)   /* 6272 B         */
@@ -231,16 +242,29 @@ typedef struct RomGbPic {
  * (>= ROM_GBSPRITE_SCRATCH_MIN; bigger scans faster) and is used ONLY inside the
  * open calls -- it may be released afterwards, and it may be the same buffer a
  * fetch later writes to. Returns 1, or 0 (fail closed) for a non-GB image, a
- * truncated one, or a ROM whose tables are missing or ambiguous. */
+ * truncated one, or a ROM whose tables are missing or ambiguous.
+ *
+ * `gen_hint` (BACKLOG #185 F1): GB_ROM_NONE (0) runs all six scan jobs and
+ * identifies whichever generation matches -- the original, still-default
+ * behaviour every gen-less caller (pdna_gen12.c's session opens, the PDNA_DELTA
+ * fetch path, every generic test/tool) keeps using unchanged. GB_ROM_GEN1 or
+ * GB_ROM_GEN2 restricts the scan to that generation's three jobs ONLY (half the
+ * per-position work, the whole point of #185) and first cross-checks the
+ * already-parsed header (size + cgb flag) against the hint -- a ROM whose header
+ * says the OTHER generation is refused (fail closed, same as any other locate
+ * failure) before a single scan byte is offered to a callback, so a Gen-2 ROM
+ * registered as Gen 1 cannot silently "succeed" by being fed only Gen-1 jobs. */
 int rom_gbsprite_open(RomGbSprite* gs, GbReadFn read, void* ctx, uint32_t size,
-                      uint8_t* scratch, uint32_t scratch_len);
+                      uint8_t* scratch, uint32_t scratch_len, uint8_t gen_hint);
 
 /* Same, but start from a cached RomGbSpriteLoc. The header is still parsed and
  * the cache is REJECTED (falling back to a full scan) unless its id_hash, size
- * and every offset it names still check out. */
+ * and every offset it names still check out -- and, with a non-NONE `gen_hint`,
+ * unless the cache's own recorded gen matches the hint too (a foreign-gen cache
+ * cannot leak through as a silent success any more than a foreign-gen scan can). */
 int rom_gbsprite_open_loc(RomGbSprite* gs, GbReadFn read, void* ctx, uint32_t size,
                           uint8_t* scratch, uint32_t scratch_len,
-                          const RomGbSpriteLoc* loc);
+                          const RomGbSpriteLoc* loc, uint8_t gen_hint);
 
 /* Snapshot what open() found. Safe to call only when gs->ok. */
 void rom_gbsprite_save_loc(const RomGbSprite* gs, RomGbSpriteLoc* out);

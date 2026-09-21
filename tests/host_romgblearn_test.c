@@ -111,7 +111,7 @@ static bool open_rom(const char* file, uint8_t gen, RomGbLearn* rl, RomGbSprite*
 
   memset(gs, 0, sizeof *gs);
   GbRomGen want_rom_gen = (gen == GB_GEN1) ? GB_ROM_GEN1 : GB_ROM_GEN2;
-  CHECK(rom_gbsprite_open(gs, file_read, f, sz, g_scratch, sizeof g_scratch)
+  CHECK(rom_gbsprite_open(gs, file_read, f, sz, g_scratch, sizeof g_scratch, GB_ROM_NONE)
         && gs->gen == want_rom_gen, "%s: rom_gbsprite_open", file);
 
   return rl->ok && gs->ok;

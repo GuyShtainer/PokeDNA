@@ -176,7 +176,8 @@ typedef enum {
   GB_ART_REG_WRONG_GEN,     /* opened and identified, but as the OTHER generation       */
   GB_ART_REG_BAD_ROM,       /* opened, but not a valid/locatable Game Boy image        */
   GB_ART_REG_CANCELLED,     /* the progress callback said stop (B) -- nothing persisted */
-  GB_ART_REG_TIMEOUT,       /* one locator exceeded GB_ART_SCAN_LIMIT_S -- nothing persisted */
+  GB_ART_REG_TIMEOUT,       /* one locator stalled past GB_ART_STALL_S (or hit the  *
+                             * GB_ART_HARD_CEILING_S backstop) -- nothing persisted */
   GB_ART_REG_READ_ERR       /* an SD read failed (GbArtRegInfo has fr/err/offset) --  *
                              * nothing persisted                                       */
 } GbArtRegStatus;
@@ -185,11 +186,20 @@ typedef enum {
 #define GB_ART_LOC_SPRITES 1
 #define GB_ART_LOC_ICONS   2
 
-/* Per-locator wall-clock limit. The clock is perf_ticks() (a hardware timer that
- * keeps counting while the EZ-Flash driver holds IRQs off), not a VBlank frame count
- * -- no VBlank IRQ is delivered during a transfer, which is exactly when a stuck
- * card needs the limit to fire. See gb_scan_guard.h. */
-#define GB_ART_SCAN_LIMIT_S 60u
+/* BACKLOG #185 F3: a per-locator PROGRESS-based watchdog, not a flat wall clock --
+ * the old GB_ART_SCAN_LIMIT_S (a flat 60 s from locator start) aborted a scan that
+ * was still making progress (Guy's hardware run: Yellow.gb, ~428 KB read in 60 s,
+ * killed mid-read). GB_ART_STALL_S is how long with NO READ COMPLETING is treated
+ * as stuck; every completed read resets that clock (gb_scan_guard.h's
+ * gb_scan_guard_progress()). GB_ART_HARD_CEILING_S is the last-resort backstop for
+ * a scan that keeps completing reads but never finishes at all -- 15 minutes, not
+ * a minute, because it is the "this will never end" catch, not the everyday bound.
+ * The clock is perf_ticks() (a hardware timer that keeps counting while the
+ * EZ-Flash driver holds IRQs off), not a VBlank frame count -- no VBlank IRQ is
+ * delivered during a transfer, which is exactly when a stuck card needs a limit to
+ * fire. See gb_scan_guard.h. */
+#define GB_ART_STALL_S        10u
+#define GB_ART_HARD_CEILING_S 900u
 
 /* Progress callback, invoked from INSIDE the ROM read shim between SD reads (never
  * during a transfer): every 8th read, and on the first. `done`/`total` are bytes
@@ -212,6 +222,10 @@ typedef struct GbArtRegInfo {
   uint8_t  fr;           /* FatFs FRESULT of the failing call (READ_ERR only)        */
   uint8_t  err;          /* FIL.err latched after it (READ_ERR only)                 */
   uint8_t  stop;         /* gb_scan_guard.h GB_SCAN_* reason (0 = none)              */
+  uint8_t  stop_ceiling;  /* BACKLOG #185 D3: 1 iff `stop`==GB_SCAN_STOP_TIMEOUT came *
+                          * from the 15-min hard ceiling (GbScanGuard.stop_ceiling),  *
+                          * not the 10-s stall clock -- the two need different UI     *
+                          * (STALLED vs GAVE UP) and log wording.                     */
 } GbArtRegInfo;
 
 /* `progress`/`progress_ctx` may be NULL (silent: boot, tests); `info` may be NULL.

@@ -948,7 +948,17 @@ RomGbIcon.read @0 in locate@rom_gbicon,scan_one.constprop.0@rom_gbicon -> gb_art
 # matches the already-declared rom_gbicon_open_loc registration sites (gb_art_source.c:
 # 362/547) plus gb_read (pdna_gen12.c's own mount path for a fused image).
 
-RomGbSprite.read @0 in parse_header@rom_gbsprite,g1_mew_verify,g2_pal_verify,g2_peers,g2_size,rom_gbsprite_pal,rom_gbsprite_pic_buf,g1_bs_verify,g2_bd_verify,g2_pp_verify -> gb_art_read fused_gb_slice_read gb_read
+RomGbSprite.read @0 in parse_header@rom_gbsprite,g1_mew_verify,g2_pal_verify,g2_peers,g2_size,rom_gbsprite_pal,rom_gbsprite_pic_buf,g1_bs_verify,g2_bd_verify,g2_pp_verify,identify_g1,identify_g2 -> gb_art_read fused_gb_slice_read gb_read
+# BACKLOG #185 F1: identify_g1/identify_g2 added -- the
+# locate() refactor that gives gen-restricted registration its own 3-job scan split
+# the old single locate() body into locate()+identify_g1()+identify_g2(), and -O2
+# now inlines g1_bs_verify()/g1_mew_verify() (resp. g2_bd_verify/g2_pp_verify/
+# g2_pal_verify) -- and through them gs->read(...) -- directly into these two new
+# callers instead of into locate() as before. Same field, same impl set, just a
+# wider caller list after the split; g1_bs_verify etc. keep their own separate
+# entry above because they are STILL real, separately-called functions too (the
+# read-failure-unwind loop in rom_gbsprite_open() calls them through their own
+# symbol, not through identify_g1/g2).
 # g1_bs_verify/g2_bd_verify/g2_pp_verify (rom_gbsprite.c) were previously declared
 # `argsites=1` -- the OLD linear-disassembly resolver's backward scan from their own
 # `bl <thunk>` site walked through code it could not attribute to a clean field, the
@@ -966,6 +976,21 @@ RomGbSprite.read @0 in locate@rom_gbsprite -> gb_art_read fused_gb_slice_read gb
 # can't-cheaply-split-the-merge reasoning as rom_gbui_open/RomGbIcon.read above.
 # source/rom_gbsprite.h:173-174: `GbReadFn read;` is RomGbSprite's first member. Every
 # caller above takes `RomGbSprite*`/`const RomGbSprite*` (grepped rom_gbsprite.c).
+# ^ kept as-is: the GB_ROM_NONE (gen-less) branch of the post-#185 locate() still
+# builds all six jobs and calls the shared scan_multi() the same shape as before, and
+# -O2 still inlines that whole path into locate() at this call site (a THIRD,
+# independent scan_multi inlining/clone alongside the two below).
+
+# BACKLOG #185 F2: scan_multi() is no longer ALWAYS inlined -- the gen-restricted
+# 3-job branches (locate()'s GB_ROM_GEN1/GB_ROM_GEN2 cases) call the SAME scan_multi()
+# with njobs=3 (a compile-time constant at those two call sites, vs the 6-job branch's
+# call), and -O2 keeps (two clones of) scan_multi as real out-of-line functions rather
+# than inlining every call site, so its OWN `jobs[j].cb(p)` dispatch (ScanJob.cb @
+# offset 0, ScanJob's first member) now needs its own declaration, separate from the
+# RomGbSprite.read dispatch above (which is a DIFFERENT field of a DIFFERENT struct
+# that happens to also sit at offset 0 of its own type -- the tool resolves by
+# address pattern, not by C type, so the two must stay declared as two entries).
+ScanJob.cb @0 in scan_multi -> g1_bs_cb g1_dex_cb g1_mew_cb g2_bd_cb g2_pal_cb g2_pp_cb
 
 # BACKLOG #91 M1: source/rom_gbmap.h's `GbReadFn read;` is RomGbMap1's first member
 # (rom_gbmap.h: "GbReadFn read;" at offset 0). Every caller below takes a

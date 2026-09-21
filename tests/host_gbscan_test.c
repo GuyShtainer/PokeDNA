@@ -3,7 +3,7 @@
  * plus the FatFs transaction count that fix exists to cut, measured on the real
  * lib/fatfs over tests/hostfat's RAM disk.
  *
- *   cc -std=c11 -DFF_USE_MKFS=1 -Dsiprintf=sprintf -Dsniprintf=snprintf -Dvsniprintf=vsnprintf -I tests/hostfat -I lib/fatfs -I source \
+ *   cc -std=c11 -DFF_USE_MKFS=1 -DROM_GBSPRITE_JOB_COUNTERS=1 -Dsiprintf=sprintf -Dsniprintf=snprintf -Dvsniprintf=vsnprintf -I tests/hostfat -I lib/fatfs -I source \
  *      tests/host_gbscan_test.c source/rom_gbsprite.c source/rom_gbicon.c source/rom_gbui.c \
  *      source/gb_sprite_codec.c lib/fatfs/ff.c lib/fatfs/ffunicode.c tests/hostfat/ramdisk.c -o /tmp/hgbscan && /tmp/hgbscan
  *
@@ -14,9 +14,14 @@
  * B. the three locators on Guy's real dumps (SKIPs without them): a 2 KB, an 8 KB and a
  *    64 KB scratch locate byte-identical tables, at the addresses rom_gbsprite.h
  *    documents; the scan's reads are forward and aligned; a read failure unwinds
- *    without another read.
- * C. gb_scan_guard with a fake clock, never skips: ticks, the timeout edge, wrap
- *    safety, first-reason-wins latching, hi as a high-water mark.
+ *    without another read. BACKLOG #185 T1/T2/T4/T5: the gen-restricted open (F1)
+ *    locates the SAME offsets as the gen-less open (T1 equivalence, T4 corpus
+ *    locate), a Gen-1-restricted open invokes zero Gen-2 callbacks and vice versa
+ *    (T2, ROM_GBSPRITE_JOB_COUNTERS), and a ROM whose header disagrees with the
+ *    requested generation is refused (T5).
+ * C. gb_scan_guard with a fake clock, never skips: ticks, the STALL/ceiling edges
+ *    (BACKLOG #185 F3/T3), wrap safety, first-reason-wins latching, hi as a
+ *    high-water mark.
  * D. FatFs transactions for Gold.gbc's sprite scan through a shim identical to
  *    gb_art_source.c's (f_lseek + f_read): the number the EZ-Flash actually charges
  *    for. BEFORE this fix, same harness, 2 KB scratch: 8,592 disk_read calls, 12,954
@@ -144,6 +149,18 @@ typedef struct {
   uint32_t last_big_end;
   int      fail_at;          /* >=0: return false from this call on, forever */
   int      calls_after_fail;
+  int      poison_checksum;  /* BACKLOG #185 F5: flip one byte of the header's own
+                              * global_checksum field (0x14E) in flight so
+                              * known_rom_lookup() MISSES a corpus ROM that would
+                              * otherwise hit the F5 fast-path table -- forces the
+                              * real scan to run, for tests that need to observe
+                              * scan_multi's own behaviour (T1/T2/T4/T5, the
+                              * read-failure-unwind test). The header CHECKSUM
+                              * bytes themselves are never read by parse_header()'s
+                              * own boot-logo/header-checksum validation (those
+                              * cover 0x104-0x14D), so flipping 0x14E cannot make a
+                              * genuinely valid ROM fail to open -- only the F5
+                              * table match, which is exactly the point. */
 } Rd;
 
 static bool rd_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
@@ -157,7 +174,10 @@ static bool rd_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
     r->big_calls++;
   }
   if (fseek(r->f, (long)off, SEEK_SET) != 0) return false;
-  return fread(dst, 1, len, r->f) == len;
+  if (fread(dst, 1, len, r->f) != len) return false;
+  if (r->poison_checksum && 0x14E >= off && 0x14E < off + len)
+    ((uint8_t*)dst)[0x14E - off] ^= 0xFF;
+  return true;
 }
 
 static int rd_open(Rd* r, const char* name) {
@@ -175,6 +195,16 @@ typedef struct { uint32_t base_stats, mew_stats, base_data, pic_ptrs, palettes; 
 static void part_b_rom(const char* name, uint8_t gen, const Want* want, int has_icons) {
   Rd r;
   if (!rd_open(&r, name)) { printf("  %s: SKIP (dump not present)\n", name); return; }
+  /* BACKLOG #185 F5: poisoned for this WHOLE function -- Red/Yellow/Gold/Crystal
+   * now all have a known-ROM fast-path table entry (source/rom_gbsprite_known.h),
+   * so an UNPOISONED open of any of them would skip scan_multi() entirely via
+   * try_loc(), and every assertion below about the SCAN's own behaviour (chunk
+   * alignment, forward-only reads, per-job callback counts, the read-failure
+   * unwind) would either go vacuously true (nothing ran) or test the wrong code
+   * path. Poisoning here forces every open in this function through the real
+   * scan, unchanged in meaning from before F5 existed; part_b_f5() below is the
+   * SEPARATE, UNPOISONED test that the fast path itself actually engages. */
+  r.poison_checksum = 1;
   char who[48]; snprintf(who, sizeof who, "B %s", name);
   static const uint32_t caps[] = { 2048, 8192, 65536 };
   RomGbSpriteLoc sl[3]; RomGbIconLoc il[3]; RomGbUiLoc ul[3];
@@ -182,7 +212,7 @@ static void part_b_rom(const char* name, uint8_t gen, const Want* want, int has_
   for (int c = 0; c < 3; c++) {
     RomGbSprite gs;
     r.calls = r.big_calls = r.back_big = r.last_big_end = 0;
-    int ok = rom_gbsprite_open(&gs, rd_read, &r, r.size, b_scratch, caps[c]);
+    int ok = rom_gbsprite_open(&gs, rd_read, &r, r.size, b_scratch, caps[c], GB_ROM_NONE);
     chk(who, "sprite locator opens", ok);
     if (ok) {
       chk(who, "generation as expected", (uint8_t)gs.gen == gen);
@@ -222,11 +252,117 @@ static void part_b_rom(const char* name, uint8_t gen, const Want* want, int has_
       chk(who, "Palettes where documented", sl[0].palettes == want->palettes);
     }
   }
+
+  /* ---- BACKLOG #185 F1/F2, T1 + T2 + T4 -------------------------------
+   * T4 (corpus locate): the offsets above (sl[0], from the gen-LESS, six-job
+   * open -- unchanged code path, "main's own offsets") are the ground truth.
+   * T1 (prefilter equivalence): the gen-RESTRICTED open (F1's 3-job scan with
+   * F2's inline gates active) must locate the EXACT SAME offsets -- if the F2
+   * gate on this generation's jobs ever rejected a position the real callback
+   * would have accepted, this diverges or fails outright. T2 (gen-aware
+   * selection): reset the per-job call counters, run the restricted open, and
+   * assert every OTHER generation's three counters stayed at zero -- a Gen-1
+   * open must never even ask a Gen-2 callback about a byte position. */
+  {
+    uint8_t hint = (gen == 1) ? GB_ROM_GEN1 : GB_ROM_GEN2;
+    RomGbSprite gsr;
+#ifdef ROM_GBSPRITE_JOB_COUNTERS
+    memset(g_rgs_cb_calls, 0, sizeof g_rgs_cb_calls);
+#endif
+    int rok = rom_gbsprite_open(&gsr, rd_read, &r, r.size, b_scratch, 8192, hint);
+    chk(who, "T1/T4: gen-restricted open locates the ROM", rok);
+    if (rok) {
+      RomGbSpriteLoc rl; rom_gbsprite_save_loc(&gsr, &rl);
+      chk(who, "T1: gen-restricted (F1+F2) offsets == gen-less offsets (main's own)",
+          memcmp(&rl, &sl[0], sizeof rl) == 0);
+    }
+#ifdef ROM_GBSPRITE_JOB_COUNTERS
+    if (gen == 1) {
+      chk(who, "T2: a Gen-1-restricted open invokes ZERO Gen-2 callbacks",
+          g_rgs_cb_calls[ROM_GBSPRITE_JOB_G2_BD] == 0 &&
+          g_rgs_cb_calls[ROM_GBSPRITE_JOB_G2_PP] == 0 &&
+          g_rgs_cb_calls[ROM_GBSPRITE_JOB_G2_PAL] == 0);
+      chk(who, "T2: its own three Gen-1 jobs WERE invoked",
+          g_rgs_cb_calls[ROM_GBSPRITE_JOB_G1_BS] > 0 &&
+          g_rgs_cb_calls[ROM_GBSPRITE_JOB_G1_DEX] > 0);
+    } else {
+      chk(who, "T2: a Gen-2-restricted open invokes ZERO Gen-1 callbacks",
+          g_rgs_cb_calls[ROM_GBSPRITE_JOB_G1_BS] == 0 &&
+          g_rgs_cb_calls[ROM_GBSPRITE_JOB_G1_DEX] == 0 &&
+          g_rgs_cb_calls[ROM_GBSPRITE_JOB_G1_MEW] == 0);
+      chk(who, "T2: its own three Gen-2 jobs WERE invoked",
+          g_rgs_cb_calls[ROM_GBSPRITE_JOB_G2_BD] > 0 &&
+          g_rgs_cb_calls[ROM_GBSPRITE_JOB_G2_PP] > 0);
+    }
+    /* THE NAMED MUTANT (brief's T2): "run all six -> fails". Reproduced here by
+     * exercising the SAME ROM through the gen-LESS (all-six-jobs) open and
+     * showing the other generation's counters now DO move -- proving the
+     * assertions above are actually discriminating, not vacuously true because
+     * this ROM's bytes never light up the other generation's gates anyway. */
+    memset(g_rgs_cb_calls, 0, sizeof g_rgs_cb_calls);
+    RomGbSprite gsn;
+    rom_gbsprite_open(&gsn, rd_read, &r, r.size, b_scratch, 8192, GB_ROM_NONE);
+    if (gen == 1)
+      chk(who, "T2 mutant check: the gen-LESS (all six jobs) open DOES invoke Gen-2 callbacks "
+          "on this same ROM (proves the zero counts above are real, not vacuous)",
+          g_rgs_cb_calls[ROM_GBSPRITE_JOB_G2_BD] > 0);
+    else
+      chk(who, "T2 mutant check: the gen-LESS (all six jobs) open DOES invoke Gen-1 callbacks "
+          "on this same ROM (proves the zero counts above are real, not vacuous)",
+          g_rgs_cb_calls[ROM_GBSPRITE_JOB_G1_BS] > 0);
+#endif
+  }
+
+  /* T5: a ROM registered under the OTHER generation's hint is refused
+   * (GB_ROM_NONE's identify still finds it -- sl[0] above proves the ROM is
+   * genuinely valid -- so this isolates the header cross-check, not a bad dump). */
+  {
+    uint8_t wrong_hint = (gen == 1) ? GB_ROM_GEN2 : GB_ROM_GEN1;
+    RomGbSprite gsw;
+#ifdef ROM_GBSPRITE_JOB_COUNTERS
+    memset(g_rgs_cb_calls, 0, sizeof g_rgs_cb_calls);
+#endif
+    int wok = rom_gbsprite_open(&gsw, rd_read, &r, r.size, b_scratch, 8192, wrong_hint);
+    chk(who, "T5: registering under the WRONG generation hint is refused (header cross-check)",
+        !wok);
+    /* BACKLOG #185 D1 (review fix): the refusal must NAME the real generation
+     * (header_matches_gen() already proved boot logo + header checksum pass --
+     * this IS a Game Boy ROM, just the other size), not just say "not a Game
+     * Boy image". gsw.gen should come back as the ROM's OWN true generation --
+     * i.e. `gen` itself, the parameter already in scope, since
+     * GB_ROM_GEN1/GB_ROM_GEN2's enum values (1/2) numerically coincide with
+     * this function's own gen(1|2) convention (the SAME coincidence
+     * part_b_rom's "generation as expected" check above already relies on).
+     * NOTE: the coordinator's literal formula for this local,
+     * `(gen == 1) ? GB_ROM_GEN2 : GB_ROM_GEN1`, recomputes wrong_hint's OWN
+     * value, not the ROM's true generation -- hand-traced against
+     * rom_gbsprite.c's actual D1 fix (gs->gen = size==0x200000 ? GEN2 :
+     * size==0x100000 ? GEN1 : NONE) for both corpus cases (Red.gb registered
+     * under GEN2 comes back GEN1; Gold.gbc registered under GEN1 comes back
+     * GEN2) -- both disagree with that literal formula, so this uses the
+     * corrected value instead of reproducing the mismatch. */
+    uint8_t wrong_hint_other = gen;
+    chk(who, "T5: the refusal names the header-implied generation",
+        (uint8_t)gsw.gen == wrong_hint_other);
+#ifdef ROM_GBSPRITE_JOB_COUNTERS
+    /* Isolates the HEADER check from a mere data-level scan failure: every real
+     * corpus ROM would also fail the wrong generation's scan on its DATA (Gold.gbc
+     * genuinely has no Gen-1 tables either), so "!wok" alone does not prove the
+     * header check ran -- it would pass even with header_matches_gen() deleted.
+     * Zero callback invocations proves the header check refused BEFORE scan_multi
+     * ever ran, not merely that the (also correct) data-level scan failed too. */
+    uint32_t total_calls = 0;
+    for (int k = 0; k < 6; k++) total_calls += g_rgs_cb_calls[k];
+    chk(who, "T5: the header cross-check refuses BEFORE a single byte position is "
+        "scanned (zero callback invocations)", total_calls == 0);
+#endif
+  }
+
   /* a read failure unwinds: no read is attempted after the failing one */
   for (int at = 0; at < 40; at += 13) {
     RomGbSprite gs;
     r.calls = 0; r.calls_after_fail = 0; r.fail_at = at;
-    int ok = rom_gbsprite_open(&gs, rd_read, &r, r.size, b_scratch, 8192);
+    int ok = rom_gbsprite_open(&gs, rd_read, &r, r.size, b_scratch, 8192, GB_ROM_NONE);
     chk(who, "open fails when a read fails", !ok);
     chk(who, "no read follows the failing one (scanner unwinds)", r.calls_after_fail == 1);
   }
@@ -328,11 +464,100 @@ static void part_b(void) {
   part_b_real_sizes();
 }
 
+/* BACKLOG #185 F5: the known-ROM fast-path table itself (source/
+ * rom_gbsprite_known.h) -- UNPOISONED opens, unlike part_b_rom() above, so a
+ * table hit actually engages. Every corpus ROM has an entry (Blue/Silver do
+ * not, and are not host-tested here for the same reason -- no dump exists). */
+static void part_b_f5_one(const char* name, uint8_t gen, const Want* want) {
+  Rd r;
+  if (!rd_open(&r, name)) { printf("  %s: SKIP (dump not present)\n", name); return; }
+  char who[48]; snprintf(who, sizeof who, "B-f5 %s", name);
+#ifdef ROM_GBSPRITE_JOB_COUNTERS
+  memset(g_rgs_cb_calls, 0, sizeof g_rgs_cb_calls);
+#endif
+  RomGbSprite gs;
+  int ok = rom_gbsprite_open(&gs, rd_read, &r, r.size, b_scratch, 8192, GB_ROM_NONE);
+  chk(who, "the fast-path open locates the ROM", ok);
+  if (ok) {
+    chk(who, "generation as expected", (uint8_t)gs.gen == gen);
+    chk(who, "BaseStats/BaseData at the documented address",
+        gen == 1 ? gs.base_stats == want->base_stats : gs.base_data == want->base_data);
+    if (gen == 1) chk(who, "Mew record where documented", gs.mew_stats == want->mew_stats);
+    if (gen == 2) {
+      chk(who, "PicPointers where documented", gs.pic_ptrs == want->pic_ptrs);
+      chk(who, "Palettes where documented", gs.palettes == want->palettes);
+    }
+  }
+#ifdef ROM_GBSPRITE_JOB_COUNTERS
+  uint32_t total_calls = 0;
+  for (int k = 0; k < 6; k++) total_calls += g_rgs_cb_calls[k];
+  chk(who, "the fast path never runs scan_multi (zero job-callback invocations)",
+      total_calls == 0);
+#endif
+  /* a table hit costs only try_loc()'s own verify reads: ~150 for Gen 1
+   * (g1_bs_verify's 150 rows), ~503 for Gen 2 (g2_bd_verify's 251 rows +
+   * g2_pp_verify's 251 rows + g2_pal_verify's 1 big read) -- measured 153/151
+   * (Red/Yellow) and 504/504 (Gold/Crystal). Either way this is a HANDFUL of
+   * small reads, not a scan's forward chunk sweep (511 x 4 KB reads for a
+   * 2 MB ROM through mon_decomp alone, part A's own closed form) -- bounded
+   * generously per generation rather than one number for both. */
+  chk(who, "a table hit costs far fewer reads than a scan",
+      r.calls < (gen == 1 ? 200u : 600u));
+  printf("  %-12s fast-path open: %u reads (vs a full scan's hundreds)\n", name, r.calls);
+
+  /* BACKLOG #185 D2 (review fix): the brief's own requirement -- "a host test
+   * regenerates the table from the scanner and asserts equality (so the
+   * table can never drift from the scanner)" -- was never actually written.
+   * `ok` from the table-hit open above already gives the table's own
+   * RomGbSpriteLoc; re-open the SAME ROM with the checksum poisoned (forces
+   * known_rom_lookup() to miss, so this second open runs the REAL scan, same
+   * mechanism part_b_rom() already uses) and compare, byte for byte. id_hash
+   * is copied across first: it is FNV1a of the WHOLE header (parse_header()),
+   * so the poison byte that forces the scan miss also changes id_hash
+   * between the two opens -- a field the table's own contract (title +
+   * version + global_checksum, not id_hash) never claimed to match anyway. */
+  if (ok) {
+    RomGbSpriteLoc from_table; rom_gbsprite_save_loc(&gs, &from_table);
+    Rd r2;
+    if (rd_open(&r2, name)) {
+      r2.poison_checksum = 1;
+      RomGbSprite gs2;
+      int ok2 = rom_gbsprite_open(&gs2, rd_read, &r2, r2.size, b_scratch, 8192, GB_ROM_NONE);
+      chk(who, "D2: the poisoned re-open (forced scan) also locates the ROM", ok2);
+      if (ok2) {
+        RomGbSpriteLoc from_scan; rom_gbsprite_save_loc(&gs2, &from_scan);
+        from_scan.id_hash = from_table.id_hash;   /* the one field the table never claims */
+        chk(who, "D2: the known-ROM table entry equals the scanner's own output, byte for byte",
+            memcmp(&from_table, &from_scan, sizeof from_table) == 0);
+      }
+      r2.fail_at = -1;
+      fclose(r2.f);
+    }
+  }
+
+  r.fail_at = -1;
+  fclose(r.f);
+}
+
+static void part_b_f5(void) {
+  static const Want red     = { 0x383DE, 0x0425B, 0, 0, 0 };
+  static const Want yellow  = { 0x383DE, 0,       0, 0, 0 };
+  static const Want gold    = { 0, 0, 0x51B0B, 0x48000,  0x0AD3D };
+  static const Want crystal = { 0, 0, 0x51424, 0x120000, 0x0A8CE };
+  part_b_f5_one("Red.gb",      1, &red);
+  part_b_f5_one("Yellow.gb",   1, &yellow);
+  part_b_f5_one("Gold.gbc",    2, &gold);
+  part_b_f5_one("Crystal.gbc", 2, &crystal);
+}
+
 /* ------------------------------------------------------------------ part C */
 
 static void part_c(void) {
+  /* ---- basic admit/tick/hi mechanics, over the hard ceiling only (stall=0,
+   * disabled) -- the same shape the pre-#185 single-limit guard had, so this
+   * block is the "nothing else about the guard broke" half of the proof. */
   GbScanGuard g; int tick;
-  gb_scan_guard_init(&g, 1000, 100, 50, 7);
+  gb_scan_guard_init(&g, 1000, 100, 0, 50, 7);
   chk("C", "fresh guard is green", g.stop == GB_SCAN_OK && g.reads == 0 && g.hi == 0);
   chk("C", "first read admitted with a tick", gb_scan_guard_admit(&g, 0, 10, 100, &tick) && tick == 1);
   chk("C", "hi tracks off+len", g.hi == 10 && g.reads == 1);
@@ -341,9 +566,10 @@ static void part_c(void) {
   chk("C", "a backward read does not lower hi", gb_scan_guard_admit(&g, 20, 5, 102, &tick) && g.hi == 510);
   for (int i = 3; i < 8; i++) chk("C", "reads 4..8: no tick", gb_scan_guard_admit(&g, 0, 1, 103, &tick) && tick == 0);
   chk("C", "9th read (reads==8) ticks", gb_scan_guard_admit(&g, 0, 1, 104, &tick) && tick == 1);
-  chk("C", "elapsed == limit is still allowed", gb_scan_guard_admit(&g, 0, 1, 150, &tick));
-  chk("C", "elapsed > limit refuses with TIMEOUT",
-      !gb_scan_guard_admit(&g, 0, 1, 151, &tick) && g.stop == GB_SCAN_STOP_TIMEOUT && tick == 0);
+  chk("C", "elapsed == hard_limit is still allowed", gb_scan_guard_admit(&g, 0, 1, 150, &tick));
+  chk("C", "elapsed > hard_limit refuses with TIMEOUT (ceiling)",
+      !gb_scan_guard_admit(&g, 0, 1, 151, &tick) && g.stop == GB_SCAN_STOP_TIMEOUT &&
+      g.stop_ceiling && tick == 0);
   uint32_t reads_then = g.reads;
   chk("C", "latched: an earlier clock does not revive it",
       !gb_scan_guard_admit(&g, 0, 1, 100, &tick) && g.reads == reads_then);
@@ -352,13 +578,13 @@ static void part_c(void) {
   gb_scan_guard_cancel(&g);
   chk("C", "first reason wins: cancel() after TIMEOUT keeps TIMEOUT", g.stop == GB_SCAN_STOP_TIMEOUT);
 
-  gb_scan_guard_init(&g, 1000, 0, 50, 7);
+  gb_scan_guard_init(&g, 1000, 0, 0, 50, 7);
   gb_scan_guard_cancel(&g);
   chk("C", "cancel latches", !gb_scan_guard_admit(&g, 0, 1, 0, &tick) && g.stop == GB_SCAN_STOP_CANCEL);
   gb_scan_guard_fail(&g);
   chk("C", "fail() after cancel keeps CANCEL", g.stop == GB_SCAN_STOP_CANCEL);
 
-  gb_scan_guard_init(&g, 1000, 0, 50, 7);
+  gb_scan_guard_init(&g, 1000, 0, 0, 50, 7);
   chk("C", "one admitted read", gb_scan_guard_admit(&g, 0, 1, 0, &tick));
   gb_scan_guard_fail(&g);
   chk("C", "fail latches READ_ERR", !gb_scan_guard_admit(&g, 0, 1, 0, &tick) && g.stop == GB_SCAN_STOP_READ_ERR);
@@ -366,18 +592,95 @@ static void part_c(void) {
   gb_scan_guard_cancel(&g);
   chk("C", "cancel() after fail keeps READ_ERR", g.stop == GB_SCAN_STOP_READ_ERR);
 
-  gb_scan_guard_init(&g, 1000, 0xFFFFFF00u, 0, 7);
-  chk("C", "limit 0 never times out, even across a clock wrap", gb_scan_guard_admit(&g, 0, 1, 0x100, &tick));
-  gb_scan_guard_init(&g, 1000, 0xFFFFFFF0u, 50, 7);
+  gb_scan_guard_init(&g, 1000, 0xFFFFFF00u, 0, 0, 7);
+  chk("C", "hard_limit 0 never times out, even across a clock wrap", gb_scan_guard_admit(&g, 0, 1, 0x100, &tick));
+  gb_scan_guard_init(&g, 1000, 0xFFFFFFF0u, 0, 50, 7);
   chk("C", "wrap-safe elapsed: 32 units across the wrap is under 50", gb_scan_guard_admit(&g, 0, 1, 0x10, &tick));
   chk("C", "wrap-safe elapsed: 80 units across the wrap times out",
       !gb_scan_guard_admit(&g, 0, 1, 0x40, &tick) && g.stop == GB_SCAN_STOP_TIMEOUT);
 
-  gb_scan_guard_init(&g, 0xFFFFFFFFu, 0, 0, 0);
+  gb_scan_guard_init(&g, 0xFFFFFFFFu, 0, 0, 0, 0);
   chk("C", "off+len overflow saturates hi", gb_scan_guard_admit(&g, 0xFFFFFFF0u, 0x20, 0, &tick) && g.hi == 0xFFFFFFFFu);
   chk("C", "tick_mask 0 ticks every read", gb_scan_guard_admit(&g, 0, 1, 0, &tick) && tick == 1);
   chk("C", "NULL tick pointer is fine", gb_scan_guard_admit(&g, 0, 1, 0, 0));
-  chk("C", "the cart's limit is 60 s of 16,384 Hz ticks", 60u * 16384u == 983040u);
+  chk("C", "the cart's stall figure is 10 s of 16,384 Hz ticks", 10u * 16384u == 163840u);
+  chk("C", "the cart's hard ceiling is 900 s (15 min) of 16,384 Hz ticks", 900u * 16384u == 14745600u);
+
+  /* ---- BACKLOG #185 F3 / T3: the STALL guard, replacing the flat wall clock.
+   * Clock units are plain seconds here -- gb_scan_guard.h takes "any monotonic
+   * unit the caller likes", and seconds make the scenarios below read directly
+   * off the brief's own wording ("reads every 1 s for 5 min", "no read for
+   * 11 s"). gb_scan_guard_progress() is what a real read COMPLETING calls
+   * (gb_art_read() in source/gb_art_source.c); admit() alone must NOT reset the
+   * stall clock -- an admitted-but-not-yet-finished read is not progress. */
+  {
+    GbScanGuard g2; int t2; uint32_t t = 0; int aborted = 0;
+    gb_scan_guard_init(&g2, 1u << 20, 0, 10, 900, 7);          /* real cart figures */
+    for (int i = 0; i < 300; i++) {                            /* 1 read/s for 5 min */
+      t += 1;
+      if (!gb_scan_guard_admit(&g2, 0, 4096, t, &t2)) { aborted = 1; break; }
+      gb_scan_guard_progress(&g2, t);                          /* this read completed */
+    }
+    chk("C stall", "a read every 1 s for 5 min never stalls (progress resets the clock)",
+        !aborted && g2.stop == GB_SCAN_OK && g2.reads == 300);
+
+    /* THE NAMED MUTANT (brief's own wording): the OLD flat design this replaces
+     * would compare TOTAL elapsed since init against a flat 60 s limit --
+     * exactly `elapsed(now) > 60`, reproduced literally (not re-derived from
+     * the new code) so this is a real comparison against the bug, not a
+     * restatement of the fix. It would have wrongly killed this same
+     * still-succeeding run once t passed 60. */
+    int old_flat_60s_would_abort = (t > 60u);
+    chk("C stall",
+        "the OLD flat 60s wall-clock design (elapsed(now) > 60) WOULD have aborted "
+        "this identical 300 s run -- the bug BACKLOG #185(a) fixes",
+        old_flat_60s_would_abort);
+  }
+  {
+    GbScanGuard g2; int t2;
+    gb_scan_guard_init(&g2, 1u << 20, 0, 10, 900, 7);
+    chk("C stall", "first read admitted", gb_scan_guard_admit(&g2, 0, 4096, 0, &t2));
+    gb_scan_guard_progress(&g2, 0);
+    chk("C stall", "10 s since the last completed read: still allowed (== stall_limit)",
+        gb_scan_guard_admit(&g2, 4096, 4096, 10, &t2));
+    gb_scan_guard_progress(&g2, 10);
+    chk("C stall", "11 s since the last completed read: STALL abort",
+        !gb_scan_guard_admit(&g2, 8192, 4096, 21, &t2) &&
+        g2.stop == GB_SCAN_STOP_TIMEOUT && !g2.stop_ceiling);
+  }
+  {
+    /* an admitted read that never calls progress() (still "in flight") must not
+     * look like progress -- the stall clock keeps counting from the LAST
+     * COMPLETED read (t0, since there isn't one yet), not from the admit. */
+    GbScanGuard g2; int t2;
+    gb_scan_guard_init(&g2, 1u << 20, 0, 10, 900, 7);
+    chk("C stall", "admitted (no progress() call -- simulates a read still in flight)",
+        gb_scan_guard_admit(&g2, 0, 4096, 5, &t2));
+    chk("C stall", "11 s after init with NO completed read at all: STALL abort",
+        !gb_scan_guard_admit(&g2, 4096, 4096, 11, &t2) && g2.stop == GB_SCAN_STOP_TIMEOUT);
+  }
+  {
+    /* the hard ceiling still fires on a run that never actually finishes, even
+     * though progress keeps resetting the stall clock every read. */
+    GbScanGuard g2; int t2; uint32_t t = 0; int stopped_at = -1;
+    gb_scan_guard_init(&g2, 1u << 20, 0, 5, 20, 7);
+    for (int i = 0; i < 100; i++) {
+      t += 1;
+      if (!gb_scan_guard_admit(&g2, 0, 4096, t, &t2)) { stopped_at = (int)t; break; }
+      gb_scan_guard_progress(&g2, t);
+    }
+    chk("C stall", "the hard ceiling fires on a run that keeps completing reads but never finishes",
+        stopped_at == 21 && g2.stop == GB_SCAN_STOP_TIMEOUT && g2.stop_ceiling);
+  }
+  {
+    GbScanGuard g2; int t2;
+    gb_scan_guard_init(&g2, 1u << 20, 0, 10, 900, 7);
+    gb_scan_guard_admit(&g2, 0, 4096, 0, &t2);
+    gb_scan_guard_progress(&g2, 0);
+    gb_scan_guard_cancel(&g2);
+    chk("C stall", "cancel still latches and refuses the next read, even mid-progress",
+        !gb_scan_guard_admit(&g2, 4096, 4096, 1, &t2) && g2.stop == GB_SCAN_STOP_CANCEL);
+  }
 }
 
 /* ------------------------------------------------------------------ part D */
@@ -458,7 +761,7 @@ static void part_d(void) {
     chk("D", "open for read", f_open(&fil, "/rom.bin", FA_READ) == FR_OK);
     rd_read_calls = rd_reads = rd_read_back = 0;
     RomGbSprite gs;
-    int ok = rom_gbsprite_open(&gs, shim_read, &s, n, b_scratch, bound[i].cap);
+    int ok = rom_gbsprite_open(&gs, shim_read, &s, n, b_scratch, bound[i].cap, GB_ROM_NONE);
     char who[48]; snprintf(who, sizeof who, "D scratch=%u", bound[i].cap);
     chk(who, "locates Gold", ok);
     printf("  %s: %lu f_reads -> %lu disk_read calls, %lu sectors, %lu backward seeks\n",
@@ -475,7 +778,7 @@ static void part_d(void) {
     f_open(&fil, "/rom.bin", FA_READ);
     rd_read_calls = rd_reads = rd_read_back = 0;
     RomGbSprite gs;
-    int ok = rom_gbsprite_open_loc(&gs, shim_read, &s, n, b_scratch, 8192, &loc);
+    int ok = rom_gbsprite_open_loc(&gs, shim_read, &s, n, b_scratch, 8192, &loc, GB_ROM_NONE);
     printf("  D loc-hit: %lu f_reads -> %lu disk_read calls\n", s.calls, rd_read_calls);
     chk("D loc-hit", "validates from the cache", ok);
     chk("D loc-hit", "under 40 transactions (measured 26)", rd_read_calls <= 40);
@@ -546,7 +849,7 @@ static void part_d(void) {
   {
     FIL fil; GuardedShim gs = { &fil, {0}, 0, 20 };
     chk("D read-err", "open for read", f_open(&fil, "/rom.bin", FA_READ) == FR_OK);
-    gb_scan_guard_init(&gs.g, n, 0, 0, 7);
+    gb_scan_guard_init(&gs.g, n, 0, 0, 0, 7);
     RomGbUi gu;
     int ok = rom_gbui_open(&gu, guarded_shim_read, &gs, n, b_scratch, 8192);
     chk("D read-err", "rom_gbui_open returns 0 when the Nth read fails", ok == 0);
@@ -565,6 +868,7 @@ static void part_d(void) {
 int main(void) {
   part_a();
   part_b();
+  part_b_f5();
   part_c();
   part_d();
   printf("%d checks, %d failures\n", g_check, g_fail);

@@ -167,7 +167,7 @@ static void test_oracle(const char* savfile, const char* romfile) {
   fseek(romf, 0, SEEK_END);
   uint32_t romsz = (uint32_t)ftell(romf);
   RomGbSprite gs;
-  if (!rom_gbsprite_open(&gs, file_read, romf, romsz, g_romscratch, sizeof g_romscratch) ||
+  if (!rom_gbsprite_open(&gs, file_read, romf, romsz, g_romscratch, sizeof g_romscratch, GB_ROM_NONE) ||
       gs.gen != GB_ROM_GEN1) {
     printf("  SKIP %s (%s did not open as a Gen-1 ROM)\n", savfile, romfile);
     fclose(romf);

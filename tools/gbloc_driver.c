@@ -102,7 +102,7 @@ int main(int argc, char** argv) {
   int wrote = 0;
 
   RomGbSprite gs;
-  if (rom_gbsprite_open(&gs, rd, NULL, size, scratch, sizeof scratch)) {
+  if (rom_gbsprite_open(&gs, rd, NULL, size, scratch, sizeof scratch, GB_ROM_NONE)) {
     RomGbSpriteLoc loc;
     rom_gbsprite_save_loc(&gs, &loc);
     write_payload(out, LOC_KIND_SPRITE, (uint8_t)gs.gen, gs.id_hash, size, &loc,

@@ -770,7 +770,7 @@ static int do_create(GbSession* s, const char* box_tok, const char* dex_tok) {
 
   RomGbSprite gs;
   int gsok = rom_gbsprite_open(&gs, tool_rom_read, rf, (uint32_t)rsz,
-                               g_romscratch, sizeof g_romscratch);
+                               g_romscratch, sizeof g_romscratch, GB_ROM_NONE);
   GbRomGen want = (s->gen == GB_GEN1) ? GB_ROM_GEN1 : GB_ROM_GEN2;
   if (!gsok || gs.gen != want) { fclose(rf); return refuse("--rom did not open as SAVE's own generation"); }
 

@@ -168,13 +168,23 @@ def nav_to_gb_import(s: gb_shots.Session) -> None:
     s.tap("A", settle=gb_shots.BIG_SETTLE)                    # NV_GB -> the (separate) nested-import picker
     assert_screen(s, "pick_a_save")
 
-# #62 review D9: rides out the one-time, per-generation cold ROM scan (see module
-# docstring). Gen 1 (a single sprite-portrait scan) measured ~258 s; Gen 2 pays TWO
-# independent cold scans the first time a box grid needs BOTH the left-panel portrait
-# (gb_art_fetch, its own s_dsprite_loc cache) and the grid's own 16x16 menu icons
-# (gb_art_fetch_icon, its own separate s_dicon_loc cache) -- measured ~500 s. 32,000
-# frames = ~533 s of emulated GBA time, comfortably over the Gen-2 worst case.
-GB_ART_COLD_SETTLE = 32000
+# BACKLOG #185 (F1 gen-aware jobs + F2 inline prefilter gates) re-measured the
+# SPRITE/PORTRAIT half of this cold scan directly in THIS emulator, same harness as
+# run_cold_start_compare()/_measure_box_grid_cold_start() below (a --no-loc fused
+# image, so no baked .loc seed short-circuits it): Red.sav's cold portrait fetch
+# dropped from 14,935 frames (250.05 s, the OLD 6-job unrestricted scan -- matches
+# this comment's prior "~258 s" almost exactly) to 1,280 frames (21.43 s) after F1+F2;
+# Crystal.sav's dropped from 17,785 frames (297.77 s) to 2,915 frames (48.80 s). This
+# lane did NOT touch rom_gbicon.c's menu-icon scan (a separate locator, separate
+# job set) -- so the OLD combined "Gen 2 pays TWO independent cold scans ... ~500 s"
+# figure's ICON half is assumed UNCHANGED: 500 - 297.77 (the old portrait-only
+# share measured here) ~= 202 s of icon-scan cost, not independently re-measured
+# this lane. New Gen-2 worst case estimate = 48.80 (new portrait) + 202 (unchanged
+# icon, carried over) ~= 251 s = 14,991 frames; +50% margin (this file's own
+# convention) rounds to 22,500 frames = ~377 s, comfortably over that estimate
+# while still ~30% of the old 32,000/533 s provision -- the actual per-screen
+# savings this backlog item was for.
+GB_ART_COLD_SETTLE = 22500
 
 # BACKLOG #118 (orchestrator ruling 2026-09-12, after an h118 STOP on the brief's
 # original oracle.py-based design -- oracle.py's compose() reads Game Boy PPU
@@ -3575,6 +3585,134 @@ def run_cold_start_compare(core_mod, image_mod, loc_image: Path, noloc_image: Pa
     return ok, []
 
 
+# BACKLOG #185 D4 (review fix): the Gen-2-specific _derive_checkerboard_ref_crystal()/
+# _measure_box_grid_cold_start_crystal() pair that used to live here is GONE --
+# folded into _measure_b185_auto() below (parameterised by `down_n`, and fixed to
+# auto-detect the F5 fast path instead of assuming every image is slow). Neither
+# function was called from anywhere except run_b185_cold_locate(), which now calls
+# _measure_b185_auto() directly for both generations.
+
+
+# BACKLOG #185 D4 (review fix, second pass): the loading placeholder is a KNOWN,
+# FIXED 2-colour checkerboard -- (231,231,247) and (189,189,206) -- confirmed by a
+# direct probe of a genuinely slow (forced-scan) image's crop at frame 305 (both
+# colours, nothing else). Detecting it BY COLOUR, not by sampling a reference crop
+# from a separate session, is what actually fixes D4: the first attempt at this fix
+# (poll up to a short frame budget, accept whatever stabilizes) failed on the SLOW
+# image too, because the placeholder itself stabilizes well within any short probe
+# budget -- "stable" alone cannot tell "stable because painted" from "stable because
+# it is a persistent loading placeholder" without knowing what the placeholder looks
+# like. Colour detection sidesteps the whole fast-vs-slow timing question: a crop is
+# "not painted yet" iff it equals info_page_crop OR every pixel in it is one of the
+# two checkerboard colours, regardless of how many frames that state lasts -- 10
+# frames (F5 fast path) or 14,000+ (a real scan), the same test applies unchanged.
+_CHECKERBOARD_COLORS = frozenset({(231, 231, 247), (189, 189, 206)})
+
+
+def _is_checkerboard(crop: bytes) -> bool:
+    for i in range(0, len(crop), 3):
+        if (crop[i], crop[i + 1], crop[i + 2]) not in _CHECKERBOARD_COLORS:
+            return False
+    return True
+
+
+def _measure_b185_auto(core_mod, image_mod, rom: Path, down_n: int,
+                       label: str) -> tuple[int, bytes]:
+    """BACKLOG #185 D4 (review fix): measures the box-grid cold-locate cost
+    for EITHER the F5 known-ROM fast path (a table hit -- the portrait
+    paints within a handful of frames) or a real scan (hundreds to tens of
+    thousands of frames, depending on build), without needing to know ahead
+    of time which this image is. "Not painted yet" is either the S1 info
+    page's own crop (still mid-transition) or the known checkerboard
+    placeholder (_is_checkerboard() above, by colour, not by a
+    separately-sampled reference) -- whichever a given build actually shows
+    on its way to the real portrait, this is the first frame that is
+    neither, held stable for _STABLE_WINDOW frames. One session, one pass,
+    correct for any speed."""
+    s = gb_shots.Session(core_mod, image_mod, rom, Path("/tmp"), f"b185_{label}_")
+    s.run(700)
+    s.press_n("DOWN", down_n, settle=gb_shots.SETTLE)
+    s.tap("A", settle=60)
+    info_page_crop = _crop_bytes(s.screen)
+    s.core.set_keys(raw=gb_shots.KEY["A"])
+    s.run(gb_shots.HOLD)
+    s.core.set_keys(raw=0)
+    frame = 0
+    candidate = None
+    candidate_since = 0
+    while frame < _MAX_FRAMES:
+        s.core.run_frame()
+        frame += 1
+        if frame % _SAMPLE_EVERY:
+            continue
+        cur = _crop_bytes(s.screen)
+        if cur == info_page_crop or _is_checkerboard(cur):
+            candidate = None
+            continue
+        if cur == candidate:
+            if frame - candidate_since >= _STABLE_WINDOW:
+                return candidate_since, s.screen.to_pil().convert("RGB").tobytes()
+        else:
+            candidate = cur
+            candidate_since = frame
+    raise RuntimeError(f"{rom}: {label} box grid portrait never left its pre-paint state "
+                       f"within {_MAX_FRAMES} frames")
+
+
+def run_b185_cold_locate(core_mod, image_mod, noloc_image: Path,
+                         out_dir: Path) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """BACKLOG #185 Step 1: the emulator floor for locate()'s scan cost alone -- a
+    --no-loc fused image has no baked rom_gb*_open_loc() seed, so gb_art_fetch()'s
+    cold path (source/gb_art_source.c) runs the REAL scan (F1's gen-restricted 3-job
+    scan_multi + F2's inline gates, on the code currently checked out) with ZERO SD
+    I/O (PDNA_DELTA reads cart-mapped memory, tools/fuse_gb.py's corpus) -- so
+    whatever this measures is CPU cost alone, and the "SD card exonerated" claim in
+    the brief can be checked directly: if this floor is already >= ~10 KB/s, the SD
+    card was never the bottleneck.
+
+    Measures BOTH generations (Red.sav for Gen 1, Crystal.sav for Gen 2) the same
+    way run_cold_start_compare()'s Gen-1-only measurement does, reports frames /
+    emulated seconds / bytes-per-second for each, and saves both final frames as
+    shots. `noloc_image` must be built the SAME way run_cold_start_compare()'s own
+    NOLOC_IMAGE is (`fuse_gb.py --no-loc`), against WHATEVER pokedna-delta.gba the
+    caller has just built (i.e. re-run this against a --before and an --after ELF to
+    get the comparison the brief's report wants; this function only measures ONE
+    image at a time, same as run_cold_start_compare() measures two given images, not
+    two builds it builds itself -- building is the caller's job, exactly like that
+    function)."""
+    print("== BACKLOG #185 Step 1: locate() emulator-floor cold-scan measurement ==")
+    from PIL import Image
+    ok: list[tuple[str, str]] = []
+
+    frames1, px1 = _measure_b185_auto(core_mod, image_mod, noloc_image, 1, "gen1")
+    secs1 = frames1 / GBA_FPS
+    bps1 = 0x100000 / secs1     # Red.gb is exactly 1 MiB (rom_gbsprite.c's own header check)
+    print(f"  Gen 1 (Red.gb, 1,048,576 B)   : {frames1} frames, {secs1:.2f} s emulated, "
+          f"{bps1:.0f} B/s ({bps1/1024:.1f} KB/s) floor")
+    name1 = "dgb_b185_gen1_coldscan.png"
+    Image.frombytes("RGB", (240, 160), px1).save(out_dir / name1)
+    cap1 = (f"#185 Step 1: Red.sav box grid, cold locate() (no .loc seed) -- "
+            f"{frames1} frames ({secs1:.2f} s emulated, {bps1/1024:.1f} KB/s floor) "
+            f"to first stable portrait paint")
+    ok.append((name1, cap1))
+    print(f"  [ok]   {name1:32s} {cap1}")
+
+    frames2, px2 = _measure_b185_auto(core_mod, image_mod, noloc_image, 3, "gen2")
+    secs2 = frames2 / GBA_FPS
+    bps2 = 0x200000 / secs2     # Crystal.gbc is exactly 2 MiB
+    print(f"  Gen 2 (Crystal.gbc, 2,097,152 B): {frames2} frames, {secs2:.2f} s emulated, "
+          f"{bps2:.0f} B/s ({bps2/1024:.1f} KB/s) floor")
+    name2 = "dgb_b185_gen2_coldscan.png"
+    Image.frombytes("RGB", (240, 160), px2).save(out_dir / name2)
+    cap2 = (f"#185 Step 1: Crystal.sav box grid, cold locate() (no .loc seed) -- "
+            f"{frames2} frames ({secs2:.2f} s emulated, {bps2/1024:.1f} KB/s floor) "
+            f"to first stable portrait paint")
+    ok.append((name2, cap2))
+    print(f"  [ok]   {name2:32s} {cap2}")
+
+    return ok, []
+
+
 def _write_manifest(out_dir: Path, ok: list[tuple[str, str]], skipped: list[tuple[str, str]]) -> None:
     """Same merge-by-file/merge-by-name block tools/gb_shots.py's own main() uses
     (BACKLOG #62 review D3: this script never wrote one at all before). Merged, not
@@ -5368,6 +5506,12 @@ def main(argv=None) -> int:
                           "vs NOLOC_IMAGE (fused with `fuse_gb.py --no-loc`), diff their final "
                           "frames, and write both as shots into --out. Skips the normal "
                           "--image shot run entirely.")
+    ap.add_argument("--b185-cold-locate", type=Path, metavar="NOLOC_IMAGE",
+                     help="BACKLOG #185 Step 1: measure locate()'s emulator-floor cold-scan "
+                          "cost (Red.sav Gen 1 + Crystal.sav Gen 2) on NOLOC_IMAGE (fused "
+                          "with `fuse_gb.py --no-loc`, same convention as --cold-start-compare) "
+                          "-- run this against a --before and an --after build to get the "
+                          "brief's own comparison. Skips the normal --image shot run entirely.")
     a = ap.parse_args(argv)
     a.out.mkdir(parents=True, exist_ok=True)
 
@@ -5385,6 +5529,15 @@ def main(argv=None) -> int:
         if not noloc_image.is_file():
             sys.exit(f"--cold-start-compare: {noloc_image}: not a file")
         ok, skipped = run_cold_start_compare(core_mod, image_mod, loc_image, noloc_image, a.out)
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        return 0
+
+    if a.b185_cold_locate:
+        noloc_image = a.b185_cold_locate
+        if not noloc_image.is_file():
+            sys.exit(f"--b185-cold-locate: {noloc_image}: not a file")
+        ok, skipped = run_b185_cold_locate(core_mod, image_mod, noloc_image, a.out)
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         return 0

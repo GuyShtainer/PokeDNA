@@ -138,24 +138,28 @@ static void gb_icon_save_loc(const RomGbIconLoc* loc) {
  * gbscr_open_inner can drive the same guard over its own whole-tail scan instead of the
  * plain, unguarded gbscr_sd_read() shim it used to open with (now deleted). */
 
-#define GB_ART_TICK_MASK   7u                                   /* poll/draw every 8 reads */
-#define GB_ART_LIMIT_TICKS (GB_ART_SCAN_LIMIT_S * 16384u)      /* perf_ticks() is 16,384 Hz */
+#define GB_ART_TICK_MASK    7u                                        /* poll/draw every 8 reads */
+/* BACKLOG #185 F3: a stall clock, not a flat one -- see gb_scan_guard.h/gb_art_source.h
+ * for why. perf_ticks() is 16,384 Hz. */
+#define GB_ART_STALL_TICKS        (GB_ART_STALL_S        * 16384u)
+#define GB_ART_HARD_CEILING_TICKS (GB_ART_HARD_CEILING_S * 16384u)
 
 void gb_art_io_init(GbArtIo* io, FIL* f, uint32_t size, GbArtProgressFn fn, void* fn_ctx,
                     uint8_t locator, bool limited) {
   memset(io, 0, sizeof *io);
   io->f = f; io->fn = fn; io->fn_ctx = fn_ctx; io->locator = locator;
   io->t_start = perf_ticks();
-  gb_scan_guard_init(&io->g, size, io->t_start, limited ? GB_ART_LIMIT_TICKS : 0u, GB_ART_TICK_MASK);
+  gb_scan_guard_init(&io->g, size, io->t_start, limited ? GB_ART_STALL_TICKS : 0u,
+                     limited ? GB_ART_HARD_CEILING_TICKS : 0u, GB_ART_TICK_MASK);
 }
 
-/* Start the next locator on the same handle: a fresh time limit and progress
- * fraction, the read count carried forward. */
+/* Start the next locator on the same handle: a fresh stall/ceiling clock and
+ * progress fraction, the read count carried forward. */
 static void gb_art_io_next(GbArtIo* io, uint8_t locator) {
   io->reads_done += io->g.reads;
   io->locator = locator;
-  uint32_t limit = io->g.limit;
-  gb_scan_guard_init(&io->g, io->g.total, perf_ticks(), limit, GB_ART_TICK_MASK);
+  uint32_t stall = io->g.stall_limit, ceiling = io->g.hard_limit;
+  gb_scan_guard_init(&io->g, io->g.total, perf_ticks(), stall, ceiling, GB_ART_TICK_MASK);
 }
 
 bool gb_art_read(void* ctx, uint32_t off, void* buf, uint32_t len) {
@@ -187,6 +191,10 @@ bool gb_art_read(void* ctx, uint32_t off, void* buf, uint32_t len) {
     gb_scan_guard_fail(&io->g);
     return false;
   }
+  /* BACKLOG #185 F3: this read COMPLETED -- reset the stall clock. Admitting a
+   * read is not the same as it succeeding (gb_scan_guard_admit() itself never
+   * touches `last`); only a real, successful transfer counts as progress. */
+  gb_scan_guard_progress(&io->g, perf_ticks());
   return true;
 }
 
@@ -220,6 +228,7 @@ static void gb_art_fill_info(GbArtRegInfo* info, const GbArtIo* io) {
   info->fr         = io->fr;
   info->err        = io->err;
   info->stop       = io->g.stop;
+  info->stop_ceiling = io->g.stop_ceiling;   /* BACKLOG #185 D3 */
 }
 
 /* ---- open + identify: shared by an explicit Settings registration and the lazy
@@ -284,10 +293,21 @@ gb_art_open_and_identify(uint8_t gen, const char* path, RomGbSpriteLoc* out_loc,
   bool have_loc = gb_art_load_loc(gen, out_loc);
   artbuf_claim();
   RomGbSprite gs;
+  /* BACKLOG #185 F1: `gen` is already known here (the caller is registering
+   * THIS generation), so the scan runs only that gen's three jobs instead of
+   * all six -- and a ROM whose header says the other generation is refused
+   * before a single position is scanned. */
   int ok = rom_gbsprite_open_loc(&gs, gb_art_read, &io, sz, (uint8_t*)mon_decomp, MON_DECOMP_BYTES,
-                                 have_loc ? out_loc : 0);
+                                 have_loc ? out_loc : 0, gen);
   GbArtRegStatus st = GB_ART_REG_OK;
-  if (!ok)                          st = gb_art_stop_status(&io.g, GB_ART_REG_BAD_ROM);
+  /* BACKLOG #185 D1 (review fix): rom_gbsprite_open(_loc)() now sets gs.gen to
+   * the HEADER-IMPLIED generation (not just NONE) when a hint mismatch is
+   * what refused it (locate()'s own header_matches_gen() check) -- so a
+   * refusal that named a real generation is a WRONG_GEN, not a generic
+   * BAD_ROM; a refusal that left gs.gen at NONE (a genuinely unlocatable
+   * image, or a read/guard stop) still goes through gb_art_stop_status(). */
+  if (!ok)                          st = (gs.gen != GB_ROM_NONE) ? GB_ART_REG_WRONG_GEN
+                                                                  : gb_art_stop_status(&io.g, GB_ART_REG_BAD_ROM);
   else if ((uint8_t)gs.gen != gen)  st = GB_ART_REG_WRONG_GEN;
   *out_have_iloc = false;
   if (st == GB_ART_REG_OK) {
@@ -328,19 +348,28 @@ GbArtRegStatus gb_art_register(uint8_t gen, const char* path, GbArtProgressFn pr
    * means "whatever the memo remembers for this gen may no longer be true" (the old
    * ROM might already be gone/replaced even though the new one didn't validate). */
   pdna_origin_art_invalidate();
+  /* BACKLOG #185 F4: "so Guy's next cart run reports the real rate" -- one integer
+   * KB/s figure, bytes/elapsed_ms rounded to the nearest KB/s, folded into the
+   * SAME log_line() this code already writes on every outcome rather than a
+   * second line. 0 ms (a near-instant loc-cache hit) reports 0, not a divide. */
+  uint32_t kbps = (info && info->elapsed_ms)
+                    ? (uint32_t)(((uint64_t)info->covered * 1000u) / ((uint64_t)info->elapsed_ms * 1024u))
+                    : 0u;
   if (st != GB_ART_REG_OK) {
     if (info)
       log_line("gb art: gen%u registration failed (%d) for %s: loc%u stop=%u fr=%u err=%u off=%lu "
-               "reads=%lu %lums", (unsigned)gen, (int)st, path, (unsigned)info->locator,
-               (unsigned)info->stop, (unsigned)info->fr, (unsigned)info->err,
+               "reads=%lu %lums %luKB/s %luKB covered", (unsigned)gen, (int)st, path,
+               (unsigned)info->locator, (unsigned)info->stop, (unsigned)info->fr, (unsigned)info->err,
                (unsigned long)info->fail_off, (unsigned long)info->reads,
-               (unsigned long)info->elapsed_ms);
+               (unsigned long)info->elapsed_ms, (unsigned long)kbps,
+               (unsigned long)(info->covered >> 10));
     else
       log_line("gb art: gen%u registration failed (%d) for %s", (unsigned)gen, (int)st, path);
   } else if (info) {
-    log_line("gb art: gen%u registered %s: icons %s, %lu reads, %lu ms", (unsigned)gen, path,
-             have_iloc ? "cached" : (gen == PDNA_GEN2 ? "NOT located" : "n/a"),
-             (unsigned long)info->reads, (unsigned long)info->elapsed_ms);
+    log_line("gb art: gen%u registered %s: icons %s, %lu reads, %lu ms, %luKB/s, %luKB",
+             (unsigned)gen, path, have_iloc ? "cached" : (gen == PDNA_GEN2 ? "NOT located" : "n/a"),
+             (unsigned long)info->reads, (unsigned long)info->elapsed_ms, (unsigned long)kbps,
+             (unsigned long)(info->covered >> 10));
   }
   return st;
 }
@@ -452,8 +481,12 @@ gb_art_fetch(uint8_t gen, uint16_t dex, uint8_t form, uint8_t back, uint8_t shin
   gb_art_io_init(&io, &fil, sz, 0, 0, GB_ART_LOC_SPRITES, false);
   artbuf_claim();
   RomGbSprite gs;
+  /* BACKLOG #185 F1: same gen-restricted scan as the registration path above --
+   * this is the per-fetch cache-miss fallback (box-full-of-strangers, a stale
+   * .loc), so restricting it to `gen`'s three jobs matters on exactly the box
+   * repaint the module header's own HARDWARE-ONLY PERFORMANCE NOTE flags. */
   int ok = rom_gbsprite_open_loc(&gs, gb_art_read, &io, sz, (uint8_t*)mon_decomp, MON_DECOMP_BYTES,
-                                 have_loc ? &loc : 0);
+                                 have_loc ? &loc : 0, gen);
   /* Re-save the loc whenever it does NOT already match this exact ROM -- not just
    * when the file was missing. E3 review item 4: a STALE loc (the file at `path`
    * was SWAPPED for a different ROM since it was cached) still makes have_loc true
@@ -665,8 +698,14 @@ static const uint16_t* gb_art_fetch(uint8_t gen, uint16_t dex, uint8_t form, uin
   if (!have_loc)
     have_loc = gb_art_loc_seed(FUSED_GB_LOC_SPRITE, gen, size, &s_dsprite_loc[gen],
                                (uint32_t)sizeof s_dsprite_loc[gen]);
+  /* BACKLOG #185 F1: deliberately GB_ROM_NONE here, not `gen` -- this is the
+   * PDNA_DELTA fused-corpus path (no SD, tools/dgb_shots.py's own cold-scan
+   * measurements), kept running the original six-job scan unchanged rather than
+   * gaining a second behaviour to verify on a build with no hardware to test it
+   * against. */
   int ok = rom_gbsprite_open_loc(&gs, fused_gb_slice_read, &slice, size, scratch,
-                                 (uint32_t)sizeof scratch, have_loc ? &s_dsprite_loc[gen] : 0);
+                                 (uint32_t)sizeof scratch, have_loc ? &s_dsprite_loc[gen] : 0,
+                                 GB_ROM_NONE);
   if (ok) {
     /* Always (re)snapshot what open_loc() actually validated on success -- cheap (a
      * 260 B struct copy) and simpler than tracking "did this particular open come
