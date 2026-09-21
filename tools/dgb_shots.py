@@ -4134,6 +4134,147 @@ def run_s150_14_native_edit(core_mod, image_mod, rom: Path, out_dir: Path) -> gb
     return s
 
 
+def run_b190_move_refusal(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #190: Guy's cart report -- "after that promt the screen glitched to show
+    both promt and attacks of wigglytuff" -- a move-picker refusal on the GB editor's
+    MOVES card left the refusal panel ghosted over the redrawn card underneath it.
+
+    --image MUST be a STANDALONE fuse_gb.py image, ONE payload: a plain `tools/fuse_gb.py
+    <pokedna-delta-artless.gba> Yellow.gb Yellow.sav -o out.gba` (Guy's own save/ROM,
+    gba-toolkit/roms/gb/ -- copy both to /tmp first, the corpus is read-only). A single
+    fused GB payload means gb_delta_pick_save() (pdna_main.c) auto-picks it (n==1), so
+    boot lands straight on the info screen -- no boot picker to navigate through, same
+    convention every other --s150-* flag here documents for ITS own vehicle.
+
+    RECIPE (found live against Yellow.sav's own real box contents, not guessed):
+    the box grid opens on whatever box the SAVE's own "current box" field names --
+    for this exact Yellow.sav that is the LAST storage box (displayed "12:GB BOX12"),
+    empty (0/20). 11 L presses cycle to "1:GB BOX1" (20/20), cursor already on slot 0
+    -- Yellow.sav's own #1 BULBASAUR, Lv10, moves TACKLE(33)/GROWL(45)/LEECH SEED(73)/--.
+    Mon menu -> VIEW/EDIT (already selected) -> A again enters edit mode (Gen-3 parity,
+    same as run_red()'s own 12c step) -> R,R switches INFO -> SKILLS -> MOVES (CARD_MOVES
+    == 2, pdna_gbsummary.c) -> fsel 0 is the TACKLE row. A opens pick_move(current=33).
+
+    The DUP refusal (not LATE -- BACKLOG #189 lands first in this lane, so the picker's
+    own ceiling already hides every move past gb_max_move(GB_GEN1)==165 and the LATE
+    over-range branch in gbedit_press is unreachable from here; move_taken() in
+    gb_editor.c excludes the field's OWN slot, so picking TACKLE back into slot 0 is a
+    no-op, not a refusal -- GROWL(45), already in slot 1, IS a refusal): sorted by id
+    (the picker's default sort), TACKLE(33) and GROWL(45) are 12 ids apart with no
+    filtered-out names between them (checked against the real move table, ids 30-50 all
+    have real names) -- 12 DOWN presses from the picker's own current-move starting
+    selection lands exactly on GROWL, both before and after BACKLOG #189's ceiling
+    (filtering only removes ids > 165, never re-orders or removes anything at 33-45).
+
+    THE BUG, confirmed by this exact chain (see the lane's own report for the traced
+    root cause): pdna_gbsummary.c's render() only redraws the left mon-portrait rect
+    (pdna_summary_draw_left_hint, called when `draw_left` is true) when the CONVERTED
+    PkMon actually changed bytes -- `reconv = !shadow_valid || conv_ok != left_ok ||
+    memcmp(...)`. A refused edit changes nothing, so `reconv` (and therefore `draw_left`)
+    stayed false even though msg_wait()'s own ui_clear() had bumped ui_clear_gen() and
+    the outer loop's `full` was correctly true. msg_wait()'s dialog panel (16,48)-(224,
+    118) overlaps pdna_summary_bg()'s own excluded left-panel rect (0,11)-(92,150) --
+    exactly the #119 trap class (a local partial-repaint shadow not keyed to
+    ui_clear_gen()) already fixed three other times in this codebase (pdna_gbflags.c,
+    pdna_fly.c, pdna_gbfly.c). THE FIX: `reconv` now ORs in `full` -- whenever a real
+    full repaint is due (gen bumped, card changed, editing toggled, first run), the left
+    panel redraws unconditionally, the same way pdna_summary_bg()/card body already do.
+
+    Shots: 00 the picker (BACKLOG #189's ceiling header, "MOVES 1-165", visible), 01 the
+    cursor moved onto GROWL, 02 the DUP refusal panel, 03 the frame after dismissing it
+    -- BEFORE the fix this is where the ghost (ALREADY KNOWN text still on screen,
+    MOVES/TACKLE/GROWL/LEECH SEED also on screen) showed up; AFTER the fix it must be a
+    clean single screen."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b190_")
+    print("== BACKLOG #190: MOVE-PICKER REFUSAL GHOSTING (Yellow.sav, standalone) ==")
+    SETTLE = 200
+    s.tap("A", settle=SETTLE)                                # info screen -> box grid
+    # boots on the save's own "current box" (this Yellow.sav: BOX12, empty) -- 11 L
+    # presses cycle to BOX1 (20/20), cursor already on slot 0 (#1 BULBASAUR).
+    s.press_n("L", 11, settle=100)
+    s.tap("A", settle=SETTLE)                                # slot 0 -> mon menu
+    s.tap("A", settle=SETTLE)                                # VIEW/EDIT (already selected) -> summary, VIEW
+    s.tap("A", settle=SETTLE)                                # A inside VIEW -> edit mode (Gen-3 parity)
+    s.tap("R", settle=SETTLE)                                # INFO -> SKILLS
+    s.tap("R", settle=SETTLE)                                # SKILLS -> MOVES; fsel 0 == TACKLE
+    s.tap("A", settle=250)                                   # opens pick_move(current=TACKLE/33)
+    s.shot("00_picker", "BACKLOG #190 repro: pick_move open on slot 0 (current TACKLE) "
+           "-- BACKLOG #189's ceiling header reads \"MOVES 1-165\"")
+    s.press_n("DOWN", 12, settle=120)                        # id 33 (TACKLE) -> id 45 (GROWL), 12 ids apart
+    s.shot("01_on_growl", "cursor moved 12 rows to GROWL (id 45) -- already in this "
+           "mon's slot 1, the move that triggers the DUP refusal, not the LATE one "
+           "(BACKLOG #189 makes ids > 165 unreachable from this picker)")
+    s.tap("A", settle=250)                                   # pick GROWL -> gbe_set_move refuses (move_taken)
+    s.shot("02_refusal", "ALREADY KNOWN / \"This Pokemon has that move in another "
+           "slot.\" -- gbedit_press's DUP branch, msg_wait()'s own panel")
+    s.tap("A", settle=250)                                   # dismiss (msg_wait's wait_keys(KEY_A))
+    s.shot("03_after_dismiss", "the frame after dismissing the refusal -- BEFORE the "
+           "repaint-contract fix this showed BOTH the refusal panel's leftover text AND "
+           "the MOVES card redrawn underneath it (the #190 ghost); AFTER the fix this "
+           "is a clean single MOVES-card screen, nothing left over")
+    return s
+
+
+def run_b188_resume_cell(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #188: Guy's cart report -- "tried changing editing wigglytuff... it opens
+    on the first pokemkn in the box instead of wigglytuff" -- pdna_box()'s new resume-
+    cell hint (app_box_resume_note/_take, pdna_app.h). Same standalone Yellow.gb +
+    Yellow.sav image and BOX1 (20/20) navigation as run_b190_move_refusal() -- see that
+    function's own docstring for how the 11 L presses land on BOX1 with the cursor on
+    slot 0 (#1 BULBASAUR).
+
+    TWO PATHS, both required by the brief:
+
+    (a) SAME-INVOCATION: A on an occupied cell opens the mon menu; B closes it. Both
+        happen inside the SAME pdna_box() call (no re-entry through the outer loop) --
+        pdna_box.c's own `cur` is simply never reset for this path (BACKLOG #23's own
+        shape), so this is a PRE-EXISTING behaviour, pinned here as a control: the
+        resume-cell hint must not be needed for it to keep working.
+
+    (b) OUTER RE-ENTRY (the actual #188 fix): START opens the GB nav menu
+        (gb_nav_from_start); B backs out of it WITHOUT picking a row. pdna_gen12.c's
+        own loop (`for (int r; (r = pdna_box(&s)) != 0; ) { if (r == 2)
+        gb_nav_from_start(...); ... s = pdna_gen12_source(m); }`) then calls pdna_box(&s)
+        AGAIN -- a genuine new invocation, cur re-declared to 0 at the top of the
+        function -- exactly the path whose own comment used to say "there is no
+        existing resume this exact cell mechanism" (now updated). Before this fix the
+        cursor reset to slot 0 (Bulbasaur) on this return; after it, app_box_resume_take
+        (applied because app_box_start_take()'s hint is 0 on every re-entry through this
+        loop, and the box matches) resumes slot 3 -- the cell BACKLOG #188 says was lost.
+
+    Shots: 00 cursor on slot 0, 01 three RIGHTs move it to slot 3 (#4 CHARMANDER,
+    distinct art from Bulbasaur -- the box art itself proves which cell is selected,
+    not just the cursor's own highlight), 02 the mon menu open on slot 3 (path a), 03
+    B closes it -- SAME invocation, cursor still slot 3 (the control), 04 START opens
+    the nav menu, 05 B backs out of it -- OUTER RE-ENTRY, cursor resumes on slot 3
+    (the fix)."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b188_")
+    print("== BACKLOG #188: pdna_box() RESUME-CELL HINT (Yellow.sav, standalone) ==")
+    SETTLE = 200
+    s.tap("A", settle=SETTLE)                                # info screen -> box grid
+    s.press_n("L", 11, settle=100)                            # BOX12 (empty) -> BOX1 (20/20), cursor slot 0
+    s.shot("00_box1_cursor0", "box1, cursor on slot 0 (#1 BULBASAUR)")
+    s.press_n("RIGHT", 3, settle=150)
+    s.shot("01_cursor_slot3", "cursor moved to slot 3 (#4 CHARMANDER, distinct art -- "
+           "proves the cell, not just the highlight)")
+    s.tap("A", settle=SETTLE)                                 # mon menu on slot 3 (same invocation)
+    s.shot("02_menu_open", "mon menu opened on slot 3, same pdna_box() invocation")
+    s.tap("B", settle=250)                                    # close the menu -- SAME invocation
+    s.shot("03_same_invocation_back", "(a) B closed the menu, same invocation -- cursor "
+           "still slot 3 (CHARMANDER art visible) -- pre-existing behaviour, pinned as "
+           "a control, not the fix itself")
+    s.tap("START", settle=SETTLE)                             # open the GB nav menu
+    s.shot("04_start_menu", "START opened the nav menu -- about to trigger the outer "
+           "re-entry loop (pdna_gen12.c's `for (r = pdna_box(&s)) != 0`)")
+    s.tap("B", settle=250)                                    # back out with no row picked -> outer re-entry
+    s.shot("05_outer_reentry_resumed", "(b) B backed out of the nav menu with no row "
+           "picked -- pdna_box() was RE-ENTERED (a genuine new call, cur re-declared "
+           "to 0) via the outer loop; BACKLOG #188: the cursor resumes on slot 3 "
+           "(CHARMANDER art) instead of resetting to slot 0 (BULBASAUR) the way it did "
+           "before app_box_resume_note/_take existed")
+    return s
+
+
 def run_s150_4_uplift(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
     """BACKLOG #150 S150-4/5 follow-up (lane s150-4-5b): the UP-lift gesture's grab
     step end to end on `make delta-gb`'s own combined image (Emerald.sav +
@@ -5083,6 +5224,21 @@ def main(argv=None) -> int:
                           "(Emerald.sav + Red/Gold/Crystal). A normal cell's "
                           "occupied-cell menu, per tap -- see run_b166()'s own "
                           "docstring for why the refused-lift case is not shown live.")
+    ap.add_argument("--b190", action="store_true",
+                     help="BACKLOG #190: only run_b190_move_refusal() against --image -- "
+                          "--image MUST be a STANDALONE tools/fuse_gb.py image, ONE "
+                          "payload (Yellow.gb + Yellow.sav, no Gen-3 save fused): the "
+                          "move-picker DUP refusal on the GB editor's MOVES card, "
+                          "reproducing (or, after the fix, not reproducing) the ghosted "
+                          "refusal-panel-over-redrawn-card glitch -- see the run "
+                          "function's own docstring for the full recipe and root cause.")
+    ap.add_argument("--b188", action="store_true",
+                     help="BACKLOG #188: only run_b188_resume_cell() against --image -- "
+                          "--image MUST be the SAME STANDALONE tools/fuse_gb.py image as "
+                          "--b190 (Yellow.gb + Yellow.sav, no Gen-3 save fused): pdna_box()'s "
+                          "resume-cell hint, both the same-invocation control and the "
+                          "outer-re-entry fix (START -> nav menu -> B) -- see the run "
+                          "function's own docstring for the full recipe.")
     ap.add_argument("--s150-4", action="store_true",
                      help="BACKLOG #150 S150-4/5 follow-up (lane s150-4-5b, BACKLOG "
                           "#171/#171b): only run_s150_4_uplift() against --image -- "
@@ -5751,6 +5907,30 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] b166: {e}")
+    if getattr(a, "b190", False):
+        # BACKLOG #190: same append-only convention as --s150-2/--s150-3/--s150-14 above.
+        ran = True
+        try:
+            sess = run_b190_move_refusal(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b190: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if getattr(a, "b188", False):
+        # BACKLOG #188: same append-only convention as --b190/--s150-14 above.
+        ran = True
+        try:
+            sess = run_b188_resume_cell(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b188: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:

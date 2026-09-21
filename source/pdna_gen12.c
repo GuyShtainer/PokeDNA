@@ -4805,10 +4805,12 @@ static void gb_session_core(Gb12Mount* m, GbSession* ro) {
    * with the SAME `s` used to replay whatever box the session originally opened on,
    * every single re-entry. gbsrc_note_box() (wired as s.note_box) keeps m->ui_box
    * current for every box the grid actually showed, so re-deriving `s` before each
-   * re-entry picks it back up. Only the BOX is restored, not the cursor CELL within
-   * it: pdna_box() always enters at cur=0 (or wherever app_box_start_take()'s 0..3
-   * directional hint puts it) for the PC/Bank too -- there is no existing "resume
-   * this exact cell" mechanism to mirror, so this does not invent one either. */
+   * re-entry picks it back up. BACKLOG #188: the cursor CELL within the box is now
+   * ALSO restored on this exact re-entry, via app_box_resume_take()/_note() --
+   * pdna_box() applies the recorded cell whenever app_box_start_take()'s hint is 0
+   * (every re-entry through this loop passes no directional hint) and the box
+   * matches, same generic mechanism the PC/Bank share (parity, not a GB special
+   * case; see app_box_resume_note()'s own header comment in pdna_app.h). */
   for (int r; (r = pdna_box(&s)) != 0; ) {
     if (r == 2) gb_nav_from_start(m, ro);
     else if (r == 4) gb_bank_visit(m, true);       /* BACKLOG #120 S2: bank_edge's UP hop */
@@ -4874,6 +4876,7 @@ int pdna_gen12_show(const char* path, uint8_t met_game) {
   log_line("gen12: %s mounted (%s) %d mons, %d ready, %d locked, %d bad",
            path, pdna_gen12_kind_name(m->kind), m->nstored, m->nready,
            m->nblocked, m->nunreadable);
+  app_box_resume_clear();   /* BACKLOG #188: a previous save/session's resume cell must not leak in */
 
   /* BACKLOG #64: a read-only STREAMED session over the SAME FIL/read-callback pair
    * the mount just used -- reachability + read parity for the eleven GB-screen nav
@@ -4959,6 +4962,7 @@ int pdna_gen12_show_fused(int idx, uint8_t met_game) {
   log_line("gen12: fused %s mounted (%s) %d mons, %d ready, %d locked, %d bad",
            name ? name : "?", pdna_gen12_kind_name(m->kind), m->nstored, m->nready,
            m->nblocked, m->nunreadable);
+  app_box_resume_clear();   /* BACKLOG #188: a previous save/session's resume cell must not leak in */
 
   /* BACKLOG #64 review Finding (F1 ruling): this entry does NOT set g_ed either
    * (only pdna_gen12_show_image() does) -- the comment this replaces claimed
@@ -5032,6 +5036,7 @@ int pdna_gen12_show_image(const char* path, uint8_t* img, uint32_t len,
   log_line("gen12: %s mounted from RAM (%s) %d mons, %d ready, %d locked, %d bad",
            path ? path : "(image)", pdna_gen12_kind_name(m->kind), m->nstored,
            m->nready, m->nblocked, m->nunreadable);
+  app_box_resume_clear();   /* BACKLOG #188: a previous save/session's resume cell must not leak in */
 
   /* S2: the editing session over the same bytes. gbs_open runs its own identification
    * (Gen 2 first, then Gen 1); the mount just succeeded on the same image, so a refusal

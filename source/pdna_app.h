@@ -307,6 +307,20 @@ void app_box_start_set(int s);
 int  app_box_start_take(void);
 void app_note_pc_box(int b);              /* PC box screen reports its current box so the app remembers it */
 
+/* BACKLOG #188: generic "resume cell" hint for pdna_box() -- scope-agnostic (the Bank,
+ * the Gen-3 PC and a GB session's own grid all share it; parity, not a GB special
+ * case). pdna_box() records its own (box, cur) here on every return (app_box_resume_note)
+ * and, at entry, when app_box_start_take()'s directional hint is 0 (no hint) and the
+ * entered box equals the recorded box, resumes at the recorded cell instead of the
+ * hardcoded cur=0 (app_box_resume_take -- returns -1 on a box mismatch or before the
+ * first note, meaning "no resume", the caller's own cur=0 default stands unchanged).
+ * app_box_resume_clear() is called once by whatever mounts a save/session fresh (Gen-3
+ * view_save(), a GB pdna_gen12_mount()) so a stale resume from a PREVIOUS save/session
+ * never leaks into a new one (box numbering could otherwise coincidentally collide). */
+void app_box_resume_note(int box, int cur);
+int  app_box_resume_take(int box);        /* -1 = no resume (box mismatch or none recorded) */
+void app_box_resume_clear(void);
+
 /* BACKLOG #48: pdna_main.c's box-screen START menu (nav_menu, source/pdna_layout.h's
  * PDNA_NAV_ITEMS), reusable by any caller that owns its own BoxSource + pdna_box()
  * loop — namely pdna_gen12.c's gb_session_core, which wants the SAME menu for a raw

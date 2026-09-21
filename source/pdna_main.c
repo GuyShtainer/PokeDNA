@@ -2556,6 +2556,21 @@ void app_box_start_set(int s) { g_box_start = s; }
 int  app_box_start_take(void) { int s = g_box_start; g_box_start = 0; return s; }
 void app_note_pc_box(int b) { if (b >= 0 && b < G3_TOTAL_BOXES) g_pc_last_box = b; }   /* remember the PC box the user is on */
 
+/* BACKLOG #188: the resume-cell slot -- <= 8 bytes, cleared on a fresh save/session
+ * mount (app_box_resume_clear()'s own callers: view_save() for Gen 3, pdna_gen12_mount()
+ * for a Game Boy save). -1/-1 means "nothing recorded yet". IWRAM by design (same
+ * placement as the sibling g_box_start/g_pickup_box/g_pc_last_box scalars) -- costs
+ * 8 B of STACK budget (denominator 15,032->15,024 artless, 15,568->15,560 normal),
+ * not EWRAM (b188 review A1, 2026-09-21). */
+static int g_resume_box = -1, g_resume_cell = -1;
+void app_box_resume_note(int box, int cur) { g_resume_box = box; g_resume_cell = cur; }
+int  app_box_resume_take(int box) {
+  if (g_resume_box != box) return -1;
+  if (g_resume_cell < 0) return -1;
+  return g_resume_cell;
+}
+void app_box_resume_clear(void) { g_resume_box = -1; g_resume_cell = -1; }
+
 bool app_confirm(const char* title, const char* l1) {
   ui_clear();
   ui_panel(16, 44, 208, 74, UI_PANEL, UI_WARN);    /* framed destructive-confirm */
@@ -9552,6 +9567,7 @@ static void view_save(const char* path) {
   strncpy(g_path, path, sizeof(g_path) - 1);
   g_path[sizeof(g_path) - 1] = 0;
   gb_art_session_reset();  /* new save -- the "beside the save" fallback forgets the old one */
+  app_box_resume_clear();  /* BACKLOG #188: a previous save's resume cell must not leak in */
   uint32_t sz = 0;
   const char* err = 0;
   /* Breadcrumb #1 of 3. This is the boundary the 2026-08-18 hang had no record of:
