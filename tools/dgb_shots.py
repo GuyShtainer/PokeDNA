@@ -4215,6 +4215,66 @@ def run_b190_move_refusal(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
     return s
 
 
+def run_b188_resume_cell(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #188: Guy's cart report -- "tried changing editing wigglytuff... it opens
+    on the first pokemkn in the box instead of wigglytuff" -- pdna_box()'s new resume-
+    cell hint (app_box_resume_note/_take, pdna_app.h). Same standalone Yellow.gb +
+    Yellow.sav image and BOX1 (20/20) navigation as run_b190_move_refusal() -- see that
+    function's own docstring for how the 11 L presses land on BOX1 with the cursor on
+    slot 0 (#1 BULBASAUR).
+
+    TWO PATHS, both required by the brief:
+
+    (a) SAME-INVOCATION: A on an occupied cell opens the mon menu; B closes it. Both
+        happen inside the SAME pdna_box() call (no re-entry through the outer loop) --
+        pdna_box.c's own `cur` is simply never reset for this path (BACKLOG #23's own
+        shape), so this is a PRE-EXISTING behaviour, pinned here as a control: the
+        resume-cell hint must not be needed for it to keep working.
+
+    (b) OUTER RE-ENTRY (the actual #188 fix): START opens the GB nav menu
+        (gb_nav_from_start); B backs out of it WITHOUT picking a row. pdna_gen12.c's
+        own loop (`for (int r; (r = pdna_box(&s)) != 0; ) { if (r == 2)
+        gb_nav_from_start(...); ... s = pdna_gen12_source(m); }`) then calls pdna_box(&s)
+        AGAIN -- a genuine new invocation, cur re-declared to 0 at the top of the
+        function -- exactly the path whose own comment used to say "there is no
+        existing resume this exact cell mechanism" (now updated). Before this fix the
+        cursor reset to slot 0 (Bulbasaur) on this return; after it, app_box_resume_take
+        (applied because app_box_start_take()'s hint is 0 on every re-entry through this
+        loop, and the box matches) resumes slot 3 -- the cell BACKLOG #188 says was lost.
+
+    Shots: 00 cursor on slot 0, 01 three RIGHTs move it to slot 3 (#4 CHARMANDER,
+    distinct art from Bulbasaur -- the box art itself proves which cell is selected,
+    not just the cursor's own highlight), 02 the mon menu open on slot 3 (path a), 03
+    B closes it -- SAME invocation, cursor still slot 3 (the control), 04 START opens
+    the nav menu, 05 B backs out of it -- OUTER RE-ENTRY, cursor resumes on slot 3
+    (the fix)."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b188_")
+    print("== BACKLOG #188: pdna_box() RESUME-CELL HINT (Yellow.sav, standalone) ==")
+    SETTLE = 200
+    s.tap("A", settle=SETTLE)                                # info screen -> box grid
+    s.press_n("L", 11, settle=100)                            # BOX12 (empty) -> BOX1 (20/20), cursor slot 0
+    s.shot("00_box1_cursor0", "box1, cursor on slot 0 (#1 BULBASAUR)")
+    s.press_n("RIGHT", 3, settle=150)
+    s.shot("01_cursor_slot3", "cursor moved to slot 3 (#4 CHARMANDER, distinct art -- "
+           "proves the cell, not just the highlight)")
+    s.tap("A", settle=SETTLE)                                 # mon menu on slot 3 (same invocation)
+    s.shot("02_menu_open", "mon menu opened on slot 3, same pdna_box() invocation")
+    s.tap("B", settle=250)                                    # close the menu -- SAME invocation
+    s.shot("03_same_invocation_back", "(a) B closed the menu, same invocation -- cursor "
+           "still slot 3 (CHARMANDER art visible) -- pre-existing behaviour, pinned as "
+           "a control, not the fix itself")
+    s.tap("START", settle=SETTLE)                             # open the GB nav menu
+    s.shot("04_start_menu", "START opened the nav menu -- about to trigger the outer "
+           "re-entry loop (pdna_gen12.c's `for (r = pdna_box(&s)) != 0`)")
+    s.tap("B", settle=250)                                    # back out with no row picked -> outer re-entry
+    s.shot("05_outer_reentry_resumed", "(b) B backed out of the nav menu with no row "
+           "picked -- pdna_box() was RE-ENTERED (a genuine new call, cur re-declared "
+           "to 0) via the outer loop; BACKLOG #188: the cursor resumes on slot 3 "
+           "(CHARMANDER art) instead of resetting to slot 0 (BULBASAUR) the way it did "
+           "before app_box_resume_note/_take existed")
+    return s
+
+
 def run_s150_4_uplift(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
     """BACKLOG #150 S150-4/5 follow-up (lane s150-4-5b): the UP-lift gesture's grab
     step end to end on `make delta-gb`'s own combined image (Emerald.sav +
@@ -5063,6 +5123,13 @@ def main(argv=None) -> int:
                           "reproducing (or, after the fix, not reproducing) the ghosted "
                           "refusal-panel-over-redrawn-card glitch -- see the run "
                           "function's own docstring for the full recipe and root cause.")
+    ap.add_argument("--b188", action="store_true",
+                     help="BACKLOG #188: only run_b188_resume_cell() against --image -- "
+                          "--image MUST be the SAME STANDALONE tools/fuse_gb.py image as "
+                          "--b190 (Yellow.gb + Yellow.sav, no Gen-3 save fused): pdna_box()'s "
+                          "resume-cell hint, both the same-invocation control and the "
+                          "outer-re-entry fix (START -> nav menu -> B) -- see the run "
+                          "function's own docstring for the full recipe.")
     ap.add_argument("--s150-4", action="store_true",
                      help="BACKLOG #150 S150-4/5 follow-up (lane s150-4-5b, BACKLOG "
                           "#171/#171b): only run_s150_4_uplift() against --image -- "
@@ -5731,6 +5798,21 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] b190: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if getattr(a, "b188", False):
+        # BACKLOG #188: same append-only convention as --b190/--s150-14 above.
+        ran = True
+        try:
+            sess = run_b188_resume_cell(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b188: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
