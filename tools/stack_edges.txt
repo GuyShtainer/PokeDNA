@@ -333,6 +333,13 @@ BoxSource.can_lift @80 in src_can_lift -> gb_can_lift_hook
 BoxXferOps.lift_up @4 in start_carry -> gb_lift_up_hook
 BoxXferOps.release_up @16 in drop_held -> gb_release_up_hook
 
+# BACKLOG #187/#191a, F2: BoxXferOps.move_within (@20, see the layout comment just
+# above) -- src->xfer->move_within(...), drop_held's own same-scope GB branch,
+# same "src->xfer not s_xfer_peer" reasoning start_carry's lift_up call already
+# uses (a SAME-scope carry reads the vtable off `src` itself; s_xfer_peer is only
+# for the cross-scope Bank<->GB drop further up drop_held).
+BoxXferOps.move_within @20 in drop_held -> gb_move_within_hook
+
 # BACKLOG #150 S150-7 step 3/4: bank_down_dispatch's EXACT arm (bank_down_exact, inlined
 # into bank_down_dispatch.constprop.0 by -O2 -- the walker's own BLIND SPOT report named
 # the caller as bank_down_dispatch.constprop.0) calls s_xfer_peer->accept_down(dst_box,

@@ -1427,11 +1427,44 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
     snd_save();
     s_holding = false; *done = true; return recs;
   }
-  /* BACKLOG #150 S150-5 decision 8(c): a within-GB move is move_within's job (NOT in
-   * this lane) -- the same-scope empty-place and SWAP branches below stay refused for
-   * a GB-scope source. Dropping the mon back on its OWN cell is handled by the
-   * top-of-function check above and is unaffected (it returns before reaching here). */
-  if (src->scope == BOXSCOPE_GB) { snd_deny(); return recs; }
+  /* BACKLOG #187/#191a, F2: a within-GB move, via BoxXferOps.move_within -- the
+   * deny-beep stub decision 8(c) left here is now wired. Dropping the mon back on
+   * its OWN cell is handled by the top-of-function check above and never reaches
+   * here; this covers every OTHER cell of a same-scope GB drop.
+   *   occupied cell (any box): a GB box cannot swap two mons at once (no addressable
+   *     slots, just a packed list) -- refuse with a dialog that says why, not a beep.
+   *   empty cell, SAME box: the mon is already in this box's own list; nothing to do
+   *     -- put back silently (no beep), matching the "put back on own cell" idiom
+   *     just above.
+   *   empty cell, ANOTHER box: gbs_move() via move_within -- lands at the
+   *     destination's own next free slot (a count-prefixed list has no other
+   *     addressing), reusing gb_move_hook's exact refusal table/persist/reload so
+   *     the display mount matches the save afterwards. */
+  if (src->scope == BOXSCOPE_GB) {
+    if (occupied) {
+      boxoam_suspend();
+      snd_deny();
+      msg_wait(PDNA_XFER_GBSWAP_TITLE, UI_WARN, PDNA_XFER_GBSWAP_L1, PDNA_XFER_GBSWAP_L2);
+      boxoam_resume();
+      return recs;
+    }
+    if (box == s_orig_box) {
+      s_holding = false; *done = true; return recs;         /* already in this list */
+    }
+    /* src->xfer, NOT s_xfer_peer -- #171b's own rule (see k_gb_xfer's comment in
+     * pdna_gen12.c): a SAME-scope carry (this is one -- src->scope == s_orig_scope
+     * got it here) reads the vtable off `src` itself, exactly like start_carry()
+     * does; s_xfer_peer is the OTHER scope's table, only meaningful for a
+     * cross-scope drop (the branch above this whole same-scope block). */
+    if (!(src->xfer && src->xfer->move_within)) { snd_deny(); return recs; }
+    boxoam_suspend();
+    bool ok = src->xfer->move_within(s_orig_box, s_orig_slot, box);
+    boxoam_resume();
+    if (!ok) return recs;             /* move_within's own hook already reported why */
+    s_holding = false; *done = true; s_oam_reload = true;
+    recs = src->records(box);         /* repaint from the just-committed image */
+    return recs;
+  }
   if (!occupied) {                                           /* empty -> place, clear origin */
     if (src->note_add) src->note_add(s_held);
     memcpy(recs + (uint32_t)cur * 80, s_held, 80); src->mark_dirty();

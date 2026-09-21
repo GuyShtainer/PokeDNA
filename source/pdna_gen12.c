@@ -481,9 +481,15 @@ static bool gb_release_up_hook(int box, int slot, const uint8_t cell80[80]);
  * below, beside gb_paste_hook -- D8's own ordering comment), forward-declared for the
  * same reason as lift_up/release_up above. */
 static bool gb_accept_down_hook(int dst_box, const uint8_t cell80[80]);
+/* BACKLOG #187/#191a, F2: BoxXferOps.move_within's real body (defined further below,
+ * beside gb_move_hook -- both share gb_move_core), forward-declared for the same
+ * reason as lift_up/release_up/accept_down above. */
+static bool gb_move_within_hook(int box, int slot, int dst_box);
 /* The real xfer vtable -- replaces the earlier S2 marker-only table (every function
- * pointer NULL) now that UP has a real lift/release and DOWN has a real EXACT-arm
- * landing. preview_down and move_within stay NULL -- not this lane's job. `.gen` is
+ * pointer NULL) now that UP has a real lift/release, DOWN has a real EXACT-arm
+ * landing, and (BACKLOG #187/#191a, F2) a same-scope GB drop has a real move_within
+ * instead of pdna_box.c's own deny-beep stub. preview_down stays NULL -- not this
+ * lane's job. `.gen` is
  * unread today (kept 0, same as the S2 marker it replaces) -- BACKLOG #150 S150-7's
  * arm selector reads the session's generation through app_gb_session_gen() instead
  * (below), a computed value off the EXISTING g_m pointer, specifically so this table
@@ -493,7 +499,8 @@ static bool gb_accept_down_hook(int dst_box, const uint8_t cell80[80]);
  * (k_gb_ops_gen1/gen2/ro). */
 static const BoxXferOps k_gb_xfer = {
   .gen = 0, .lift_up = gb_lift_up_hook, .preview_down = 0, .accept_down = gb_accept_down_hook,
-  .release_up = gb_release_up_hook, .move_within = 0,
+  .release_up = gb_release_up_hook,
+  .move_within = gb_move_within_hook,   /* BACKLOG #187/#191a, F2: within-save GB drop */
 };
 
 /* BACKLOG #150 S150-7 D-Q7 plumbing fix: xg_bank_down_arm()'s `dst_gen` argument, for
@@ -1678,13 +1685,16 @@ static int __attribute__((noinline)) gb_origin_for_save(uint8_t gen, bool crysta
  * contract this function has to honour: a non-OK return can mean the DESTINATION half
  * already committed (the source delete is what failed), so every non-OK here rolls the
  * whole image back, not just on the ones that look like they need it. */
-static bool gb_move_hook(uint8_t* rec80) {
-  int box, slot;
-  if (!gb_locate(rec80, &box, &slot)) return false;
-
-  int dst = gb_pick_box(g_m, box);
-  if (dst < 0) return false;                       /* B on the picker: nothing touched */
-
+/* BACKLOG #187/#191a, F2: the shared move-and-persist core gb_move_hook (the menu's
+ * MOVE TO BOX row, picker-driven) and gb_move_within_hook (drag-and-drop, the
+ * destination box already chosen by the drop cell -- see pdna_box.c's drop_held)
+ * both need: gbs_move() into `dst`, the SAME refusal wording/hint table, and the
+ * SAME gb_persist("move") reload/repaint on success (which invalidates g_m->loaded
+ * so the display mount re-pages from the just-committed image -- pdna_gen12_page's
+ * own `if (m->loaded == box) return recs;` early-out is why a fresh page is needed
+ * at all). One body, two thin callers, so a defect fixed here is fixed for both
+ * entry points -- not a second, drifting copy of the refusal table. */
+static bool gb_move_core(int box, int slot, int dst) {
   int to_slot = -1;
   GbsStatus st = gbs_move(&g_ed->s, box, slot, dst, &to_slot, g_ed->list, g_ed->list2);
   if (st != GBS_OK) {
@@ -1721,6 +1731,30 @@ static bool gb_move_hook(uint8_t* rec80) {
   log_line("=== gb move -> %s box %d slot %d -> box %d slot %d ===",
            g_ed->path, box, slot, dst, to_slot);
   return gb_persist("move");
+}
+
+static bool gb_move_hook(uint8_t* rec80) {
+  int box, slot;
+  if (!gb_locate(rec80, &box, &slot)) return false;
+
+  int dst = gb_pick_box(g_m, box);
+  if (dst < 0) return false;                       /* B on the picker: nothing touched */
+
+  return gb_move_core(box, slot, dst);
+}
+
+/* BoxXferOps.move_within (BACKLOG #187/#191a, F2): a same-generation GB drop across
+ * boxes -- pdna_box.h's own contract comment on the field. `box`/`slot` are the
+ * ORIGIN the drag started from (s_orig_box/s_orig_slot in pdna_box.c, already
+ * resolved by the caller); `dst_box` is the box the cursor dropped on -- NOT a
+ * destination slot, because gbs_move() (same primitive gb_move_hook's own picker
+ * uses) always lands at the box's own next free slot, exactly like a count-prefixed
+ * list has to. The caller (drop_held) has ALREADY refused an occupied destination
+ * cell and a same-box drop before calling this -- this only ever runs for a real
+ * cross-box, destination-empty drop. */
+static bool gb_move_within_hook(int box, int slot, int dst_box) {
+  if (!g_ed) return false;
+  return gb_move_core(box, slot, dst_box);
 }
 
 /* app_src_ops_set() hook: RELEASE on the read-only mon menu (S3). Confirms with the

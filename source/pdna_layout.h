@@ -1005,6 +1005,16 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XFER_NATIVE_L1    "This Game Boy Pokemon can"
 #define PDNA_XFER_NATIVE_L2    "only move inside the Bank."
 
+/* BACKLOG #187/#191a, F2: dropping a held GB mon onto an OCCUPIED cell -- a Game Boy
+ * box is a packed, count-prefixed list (gb_session.c), not an addressable grid, so
+ * there is no swap primitive to land two mons at once the way the Gen-3 PC/Bank grid
+ * does. Not a silent beep (decision F2): the drop is refused with a dialog that says
+ * why, same posture PDNA_XFER_NOGEN/PDNA_XFER_NATIVE already use for their own
+ * cross-scope refusals. */
+#define PDNA_XFER_GBSWAP_TITLE "CAN'T SWAP HERE"
+#define PDNA_XFER_GBSWAP_L1    "A Game Boy box can't swap"
+#define PDNA_XFER_GBSWAP_L2    "two Pokemon at once."
+
 /* BACKLOG #150 S150-8 decision 13 / D-Q2/D-Q3: the DOWN-converting edge's own
  * strings -- native cell -> Gen-3 PC (decision 2's party refusal), one unpromoted
  * transfer at a time (decision 9), the ledger-full evict-then-refuse case
