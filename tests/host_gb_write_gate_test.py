@@ -280,10 +280,33 @@ def check_accept_down_rollback(text: str) -> list[str]:
     return violations
 
 
+
+def check_make_legal_stamp(text: str) -> list[str]:
+    """S150-8b review D1/R2: gb_bank_down_gen3's MAKE-LEGAL branch must stamp the corrected
+    level into the ledger's `written` record (`gb_set_level(&written, to_lvl)`) AFTER the
+    Gen-3 edit is committed, or a later restore reads the correction as an in-game level-up."""
+    body = extract_function_body(text, "gb_bank_down_gen3")
+    if not body:
+        return ["gb_bank_down_gen3() not found in source/pdna_gen12.c"]
+    body = strip_comments(body)
+    i = body.find("if (ch == GB_XFER_MAKE_LEGAL) {")
+    if i < 0:
+        return ["gb_bank_down_gen3(): no MAKE-LEGAL branch found"]
+    j = body.find("}", i)
+    branch = body[i:j]
+    if "gen3_edit_commit(&em, out80);" not in branch:
+        return ["gb_bank_down_gen3(): the MAKE-LEGAL branch no longer commits the Gen-3 edit"]
+    k = branch.find("gb_set_level(&written, to_lvl)")
+    if k < 0 or k < branch.find("gen3_edit_commit(&em, out80);"):
+        return ["gb_bank_down_gen3(): the MAKE-LEGAL branch does not stamp gb_set_level(&written, to_lvl) "
+                "after gen3_edit_commit -- a restore would read the correction as a level-up (S150-8b D1)"]
+    return []
+
 def run_all(path: Path) -> list[str]:
     text = path.read_text()
     return (check_nav_dispatch(text) + check_mutating_hooks(text) + check_named_write_hooks(text)
-            + check_native_unpack_in_loop(text) + check_xfer_wired(text) + check_accept_down_rollback(text))
+            + check_native_unpack_in_loop(text) + check_xfer_wired(text) + check_accept_down_rollback(text)
+            + check_make_legal_stamp(text))
 
 
 def main() -> int:

@@ -2930,6 +2930,7 @@ BankDownResult gb_bank_down_gen3(BoxSource* src, int dst_box, int dst_cell,
         EditMon em; gen3_edit_load(out80, false, &em);
         em_set_level(&em, to_lvl);
         gen3_edit_commit(&em, out80);
+        (void)gb_set_level(&written, to_lvl);   /* the ledger's written_level = the level ACTUALLY written abroad (G-H9/R1) */
       }
     }
   }

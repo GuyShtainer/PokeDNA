@@ -1005,6 +1005,28 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XFER_NATIVE_L1    "This Game Boy Pokemon can"
 #define PDNA_XFER_NATIVE_L2    "only move inside the Bank."
 
+/* BACKLOG #150 S150-8b review F3: the RESTORE edge's own confirm, shown via the
+ * shared app_confirm() ONLY when the merge would actually lose or change something
+ * (a Gen-3-side evolution, level, move, rename/rename-refusal, a per-slot move
+ * refusal, or a Gen-3 held item that cannot travel back onto a native cell) --
+ * decision 6's own rule: a byte-identical restore stays silent. */
+#define PDNA_XFERRESTORE_TITLE  "BACK TO ITS ORIGINAL"
+#define PDNA_XFERRESTORE_L_LOSS "Gen 3 only data is dropped."
+/* review D6, UX parity with the Gen-3 sidecar twin (docs/BANK-CROSSGEN-DESIGN.md
+ * decision 6/9): the per-row confirm reuses PDNA_SIDECAR_L_LEVEL/L_MOVES/L_RENAMED/
+ * L_RENAME_REFUSED/L_ITEM_IGNORED (:958-962) UNCHANGED and PDNA_SIDECAR_B_CANCEL
+ * (:965) unchanged; only the title, the evolved row and the A-line are direction-
+ * specific (species goes the OPPOSITE way here -- reported, never applied, decision
+ * 10 -- so the wording says so). */
+#define PDNA_XFERRESTORE_L_EVOLVED "It evolved in Gen 3."
+#define PDNA_XFERRESTORE_A_OK      "A = restore"
+
+/* review F5: the rc == -1 "unreadable record" refusal gets its own message instead of
+ * a bare snd_error() -- decision 9's own strings. */
+#define PDNA_XFERREC_TITLE "TRANSFER RECORD UNREADABLE"
+#define PDNA_XFERREC_L1    "Nothing was moved."
+#define PDNA_XFERREC_L2    "Try again, or check the card."
+
 /* BACKLOG #150 S150-8 decision 13 / D-Q2/D-Q3: the DOWN-converting edge's own
  * strings -- native cell -> Gen-3 PC (decision 2's party refusal), one unpromoted
  * transfer at a time (decision 9), the ledger-full evict-then-refuse case

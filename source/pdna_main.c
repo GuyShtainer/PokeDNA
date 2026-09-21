@@ -3691,6 +3691,45 @@ static bool app_sidecar_confirm(const GbscMergeReport* rep) {
   return yes;
 }
 
+/* BACKLOG #150 S150-8b review D6: the RESTORE edge's own per-row confirm, UX parity
+ * with app_sidecar_confirm() above (same panel geometry, same row-per-changed-field
+ * shape) rather than the generic one-liner app_confirm() pc_bank_restore_up used
+ * before this fix. level/moves/renamed/rename_refused/gb_item_ignored reuse the
+ * shipped PDNA_SIDECAR_* strings verbatim (decision 9); only the title, the evolved
+ * row and the A-line are direction-specific (species is REPORTED here, never
+ * applied -- decision 10, the opposite of the UP direction's own evolved row). The
+ * generic PDNA_XFERRESTORE_L_LOSS fallback covers whatever triggered the confirm but
+ * has no row of its own (a per-slot move refusal, a missing nickname baseline, or a
+ * Gen-3-side item loss, review D2) -- it is the ONLY thing shown when none of the
+ * named rows apply, so the user is never shown a blank "nothing changed" panel for a
+ * confirm that was triggered for a real reason. */
+bool app_xferrestore_confirm(const XrMergeReport* rep, bool g3_item_lost) {
+  ui_clear();
+  ui_panel(PDNA_SIDECAR_PANEL_X, PDNA_SIDECAR_PANEL_Y, PDNA_SIDECAR_PANEL_W,
+           PDNA_SIDECAR_PANEL_H, UI_PANEL, UI_OK);
+  ui_ptext_fit(PDNA_SIDECAR_TEXT_X, PDNA_SIDECAR_PANEL_Y + 8, PDNA_SIDECAR_TEXT_MAXW,
+               UI_OK, PDNA_XFERRESTORE_TITLE);
+
+  int y = PDNA_SIDECAR_LINE_Y0;
+  bool any_row = false;
+  if (rep->evolved)        { ui_ptext_fit(PDNA_SIDECAR_TEXT_X, y, PDNA_SIDECAR_TEXT_MAXW, UI_TEXT, PDNA_XFERRESTORE_L_EVOLVED);    y += PDNA_SIDECAR_LINE_H; any_row = true; }
+  if (rep->level_changed)  { ui_ptext_fit(PDNA_SIDECAR_TEXT_X, y, PDNA_SIDECAR_TEXT_MAXW, UI_TEXT, PDNA_SIDECAR_L_LEVEL);          y += PDNA_SIDECAR_LINE_H; any_row = true; }
+  if (rep->moves_changed)  { ui_ptext_fit(PDNA_SIDECAR_TEXT_X, y, PDNA_SIDECAR_TEXT_MAXW, UI_TEXT, PDNA_SIDECAR_L_MOVES);          y += PDNA_SIDECAR_LINE_H; any_row = true; }
+  if (rep->renamed)        { ui_ptext_fit(PDNA_SIDECAR_TEXT_X, y, PDNA_SIDECAR_TEXT_MAXW, UI_TEXT, PDNA_SIDECAR_L_RENAMED);        y += PDNA_SIDECAR_LINE_H; any_row = true; }
+  if (rep->rename_refused) { ui_ptext_fit(PDNA_SIDECAR_TEXT_X, y, PDNA_SIDECAR_TEXT_MAXW, UI_TEXT, PDNA_SIDECAR_L_RENAME_REFUSED); y += PDNA_SIDECAR_LINE_H; any_row = true; }
+  if (rep->gb_item_ignored){ ui_ptext_fit(PDNA_SIDECAR_TEXT_X, y, PDNA_SIDECAR_TEXT_MAXW, UI_TEXT, PDNA_SIDECAR_L_ITEM_IGNORED);   y += PDNA_SIDECAR_LINE_H; any_row = true; }
+  /* review R1: a Gen-3-side item loss is named even when the home holds an item (any_row alone hid it) */
+  if (g3_item_lost || !any_row) { ui_ptext_fit(PDNA_SIDECAR_TEXT_X, y, PDNA_SIDECAR_TEXT_MAXW, UI_TEXT, PDNA_XFERRESTORE_L_LOSS); y += PDNA_SIDECAR_LINE_H; }
+  y += PDNA_SIDECAR_EVS_GAP;
+  ui_text(PDNA_SIDECAR_TEXT_X, y, UI_TEXT, PDNA_XFERRESTORE_A_OK); y += PDNA_SIDECAR_LINE_H;
+  ui_text(PDNA_SIDECAR_TEXT_X, y, UI_DIM, PDNA_SIDECAR_B_CANCEL);
+
+  u16 k; do { vsync(); k = key_hit(KEY_A | KEY_B); } while (!k);
+  bool yes = (k & KEY_A) != 0;
+  if (yes) snd_ok(); else snd_back();
+  return yes;
+}
+
 /* Lookup + merge half of app_paste_gb_merge (S5-B review fix #11: split so the outer
  * noinline frame's own comment stays honest about what it holds). `buf`/`len` are the
  * caller's own GBSC_FILE_MAX buffer; read fresh from `path` here. On success fills

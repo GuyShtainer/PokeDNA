@@ -132,6 +132,7 @@
 #define XR_STATE_NONE         0
 #define XR_STATE_PENDING      1
 #define XR_STATE_CLAIMED      2
+#define XR_STATE_RESTORED     3   /* BACKLOG #150 S150-8b: the native home is back in the Bank; the abroad copy is a duplicate */
 
 #define XR_DIR_ABROAD_GB       0
 #define XR_DIR_ABROAD_G3       1

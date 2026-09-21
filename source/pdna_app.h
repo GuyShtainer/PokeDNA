@@ -7,6 +7,7 @@
 #include "gen3_trainer.h"  /* PkGame (app_rom_path)         */
 #include "gb_edit.h"       /* GbEditMon (AppSrcOps.copy_native)         */
 #include "sprite_era.h"    /* SeRoms, SeSaveKind (app_era_roms/app_save_kind, E4) */
+#include "xfer_rec.h"       /* XrMergeReport (app_xferrestore_confirm, BACKLOG #150 S150-8b review D6) */
 
 /* Shared app glue so the party list and box grid can open the editor and persist
  * safely. Implemented in pdna_main.c (which owns the loaded save + path). */
@@ -465,6 +466,19 @@ bool app_set_walda(uint8_t pattern);
 
 /* Shared framed yes/no confirm (A = yes, B = no). */
 bool app_confirm(const char* title, const char* l1);
+
+/* BACKLOG #150 S150-8b review D6, UX parity with the Gen-3 sidecar confirm twin
+ * (app_sidecar_confirm, pdna_main.c, static): per-row lines for a RESTORE's own
+ * XrMergeReport (source/xfer_rec.h) -- level/moves/renamed/rename_refused/
+ * gb_item_ignored rows reuse the shipped sidecar strings unchanged; the evolved row
+ * and the A-line use the direction-specific PDNA_XFERRESTORE_* strings (decision 10:
+ * species is reported here, never applied). A generic "Gen 3 only data is dropped."
+ * fallback row is shown when the confirm was triggered by something with no row of
+ * its own (a per-slot move refusal, a missing nickname baseline, or a Gen-3-side
+ * item loss, review D2) and every named row above is false. Never called for a
+ * byte-identical restore (decision 6's own rule; the caller only shows this when at
+ * least one field is true). true = A (restore), false = B (cancel, nothing written). */
+bool app_xferrestore_confirm(const XrMergeReport* rep, bool g3_item_lost);
 
 /* U2b item 3: writes config.cfg NOW (Omega-only, same app_can_edit() gate every
  * config write already carries) -- the GB-screen shell calls this from its own
