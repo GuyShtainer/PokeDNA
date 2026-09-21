@@ -173,6 +173,7 @@ APP_CAN_EDIT_RE     = re.compile(r"\bapp_can_edit\(")
 SF_WRITE_VERIFIED_RE = re.compile(r"\bsf_write_verified\(")
 BC_PACK_RE          = re.compile(r"\bbc_pack\(")
 XR_OPEN_RE          = re.compile(r"\bxr_open\(")
+XR_STATE_RESTORED_RE = re.compile(r"\be\.state = XR_STATE_RESTORED;")
 
 # BACKLOG #171 (lane s150-4-5b): the dead-carry site guard. `TAB1_ASSIGN_RE` matches
 # only the literal `s_tab_focus = 1;` assignment (never the two ternary forms
@@ -549,6 +550,16 @@ def main() -> int:
         ok, detail = gate_before_pattern(box_lines, s, e, APP_CAN_EDIT_RE, write_pat, name)
         check(ok, detail)
 
+    # ---- (l'') review D8/F2: pc_bank_restore_done() must actually assign
+    # XR_STATE_RESTORED -- pinned against the source directly, so a revert to the
+    # gbsc_set_claimed() no-op (F2's original bug) is caught structurally, not just by
+    # a host test that could itself regress unnoticed. ----
+    s, e = extract_function(box_lines, r"^pc_bank_restore_done\(")
+    pbrd_body = box_lines[s:e]
+    check(any(XR_STATE_RESTORED_RE.search(ln) for ln in pbrd_body),
+          "pc_bank_restore_done(): no `e.state = XR_STATE_RESTORED;` assignment found -- "
+          "the RESTORED mark regressed to a no-op (review F2's original bug)")
+
     # ---- (j) BACKLOG #171: every is_bank-guarded `s_tab_focus = 1;` site in pdna_box()'s
     # carrying block also carries `|| src->bank_edge`, and there is exactly ONE such
     # site -- pinned so a second/third/fourth site added later without the clause is a
@@ -763,6 +774,21 @@ def self_test_mutation_detection(box_lines: list[str]) -> None:
                        f"above the ARM's own commit()) should have been caught but was not: {detail}")
         print(f"  MUT N demonstration -- app_pc_release_slot() AND pc_bank_restore_done() "
               f"both swapped above the PC->Bank arm's own src->commit(): {detail}")
+
+    # MUT O (review D8/F2): revert pc_bank_restore_done()'s `e.state = XR_STATE_RESTORED;`
+    # line to a bare `gbsc_set_claimed(buf, len, best, true)` call (F2's original,
+    # byte-for-byte no-op bug -- xfer_down_write already sets claimed=1 at birth) and
+    # assert the (l'') check catches it.
+    s, e = extract_function(box_lines, r"^pc_bank_restore_done\(")
+    pbrd_body = list(box_lines[s:e])
+    mut_o = [ln for ln in pbrd_body if not XR_STATE_RESTORED_RE.search(ln)]
+    found_state_line = len(mut_o) != len(pbrd_body)
+    check(found_state_line, "MUT O: could not find `e.state = XR_STATE_RESTORED;` in the real source -- fix this test")
+    if found_state_line:
+        ok = any(XR_STATE_RESTORED_RE.search(ln) for ln in mut_o)
+        check(not ok, "MUT O (XR_STATE_RESTORED assignment removed) should have been caught but was not")
+        print(f"  MUT O demonstration -- `e.state = XR_STATE_RESTORED;` removed from "
+              f"pc_bank_restore_done(): correctly caught (no such assignment found)")
 
     # MUT I (BACKLOG #171): revert the ONE real, clause-carrying `s_tab_focus = 1;`
     # site back to its pre-fix `else if (!src->is_bank) { s_tab_focus = 1; ... }` form
