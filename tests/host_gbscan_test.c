@@ -325,6 +325,25 @@ static void part_b_rom(const char* name, uint8_t gen, const Want* want, int has_
     int wok = rom_gbsprite_open(&gsw, rd_read, &r, r.size, b_scratch, 8192, wrong_hint);
     chk(who, "T5: registering under the WRONG generation hint is refused (header cross-check)",
         !wok);
+    /* BACKLOG #185 D1 (review fix): the refusal must NAME the real generation
+     * (header_matches_gen() already proved boot logo + header checksum pass --
+     * this IS a Game Boy ROM, just the other size), not just say "not a Game
+     * Boy image". gsw.gen should come back as the ROM's OWN true generation --
+     * i.e. `gen` itself, the parameter already in scope, since
+     * GB_ROM_GEN1/GB_ROM_GEN2's enum values (1/2) numerically coincide with
+     * this function's own gen(1|2) convention (the SAME coincidence
+     * part_b_rom's "generation as expected" check above already relies on).
+     * NOTE: the coordinator's literal formula for this local,
+     * `(gen == 1) ? GB_ROM_GEN2 : GB_ROM_GEN1`, recomputes wrong_hint's OWN
+     * value, not the ROM's true generation -- hand-traced against
+     * rom_gbsprite.c's actual D1 fix (gs->gen = size==0x200000 ? GEN2 :
+     * size==0x100000 ? GEN1 : NONE) for both corpus cases (Red.gb registered
+     * under GEN2 comes back GEN1; Gold.gbc registered under GEN1 comes back
+     * GEN2) -- both disagree with that literal formula, so this uses the
+     * corrected value instead of reproducing the mismatch. */
+    uint8_t wrong_hint_other = gen;
+    chk(who, "T5: the refusal names the header-implied generation",
+        (uint8_t)gsw.gen == wrong_hint_other);
 #ifdef ROM_GBSPRITE_JOB_COUNTERS
     /* Isolates the HEADER check from a mere data-level scan failure: every real
      * corpus ROM would also fail the wrong generation's scan on its DATA (Gold.gbc

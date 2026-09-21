@@ -299,7 +299,14 @@ gb_art_open_and_identify(uint8_t gen, const char* path, RomGbSpriteLoc* out_loc,
   int ok = rom_gbsprite_open_loc(&gs, gb_art_read, &io, sz, (uint8_t*)mon_decomp, MON_DECOMP_BYTES,
                                  have_loc ? out_loc : 0, gen);
   GbArtRegStatus st = GB_ART_REG_OK;
-  if (!ok)                          st = gb_art_stop_status(&io.g, GB_ART_REG_BAD_ROM);
+  /* BACKLOG #185 D1 (review fix): rom_gbsprite_open(_loc)() now sets gs.gen to
+   * the HEADER-IMPLIED generation (not just NONE) when a hint mismatch is
+   * what refused it (locate()'s own header_matches_gen() check) -- so a
+   * refusal that named a real generation is a WRONG_GEN, not a generic
+   * BAD_ROM; a refusal that left gs.gen at NONE (a genuinely unlocatable
+   * image, or a read/guard stop) still goes through gb_art_stop_status(). */
+  if (!ok)                          st = (gs.gen != GB_ROM_NONE) ? GB_ART_REG_WRONG_GEN
+                                                                  : gb_art_stop_status(&io.g, GB_ART_REG_BAD_ROM);
   else if ((uint8_t)gs.gen != gen)  st = GB_ART_REG_WRONG_GEN;
   *out_have_iloc = false;
   if (st == GB_ART_REG_OK) {

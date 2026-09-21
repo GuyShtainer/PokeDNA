@@ -539,7 +539,17 @@ static int identify_g2(RomGbSprite* gs, const ScanJob* bd, const ScanJob* pp, co
  * GB_ROM_NONE keeps the original "try Gen 1, then Gen 2" behaviour every
  * gen-less caller relies on. */
 static int locate(RomGbSprite* gs, uint8_t gen_hint) {
-  if (gen_hint != GB_ROM_NONE && !header_matches_gen(gs, gen_hint)) return 0;
+  if (gen_hint != GB_ROM_NONE && !header_matches_gen(gs, gen_hint)) {
+    /* BACKLOG #185 D1 (review fix): boot logo + header checksum already
+     * passed (parse_header() refused otherwise) -- this really is a Game Boy
+     * ROM, just of the OTHER size than the hint asked for. Name it, don't
+     * just say "not a Game Boy image": a Gen-2 ROM registered under the
+     * Gen-1 hint (Gold in the Gen-1 slot, the most common user mistake) must
+     * come back as "that's a Gen 2 ROM", not the generic BAD_ROM refusal a
+     * genuinely unlocatable image gets. */
+    gs->gen = (gs->size == 0x200000u) ? GB_ROM_GEN2 : (gs->size == 0x100000u) ? GB_ROM_GEN1 : GB_ROM_NONE;
+    return 0;
+  }
 
   if (gen_hint == GB_ROM_GEN1) {
     ScanJob jobs[3];
@@ -662,7 +672,7 @@ int rom_gbsprite_open(RomGbSprite* gs, GbReadFn read, void* ctx, uint32_t size,
    * already knows (gen_hint != GB_ROM_NONE), in which case locate() restricts
    * itself to that generation's jobs and fails closed on a header mismatch
    * (BACKLOG #185 F1). */
-  if (!locate(gs, gen_hint)) { gs->gen = GB_ROM_NONE; return 0; }
+  if (!locate(gs, gen_hint)) return 0;   /* gs->gen: NONE, or the header-implied gen on a hint mismatch */
   gs->ok = 1;
   return 1;
 }
