@@ -16,8 +16,6 @@
 #include "data_tables.h"    /* pk_species_name                                        */
 #include "pdna_pick.h"      /* pick_species / pick_species_set_max_dex (F2/F3)        */
 #include "osk.h"            /* osk_input (F2/F3 nickname)                             */
-#include "pdna_gbscreen.h"  /* gbscr_open/_cell/_text/_flush/_close (F1 card shell)   */
-#include "pdna_layout.h"    /* PDNA_GBSCR_ACT_BACK                                    */
 #include "ui.h"
 #include "snd.h"
 #include "pdna_app.h"       /* msg_wait / app_confirm / app_session_seed              */
@@ -65,17 +63,13 @@ static void hof_list_row_paint(const GbSession* s, int idx, int y, bool sel) {
 typedef struct { int sel; int top; bool valid; uint32_t gen; } HofListPaint;
 
 static void hof_list_render(const GbSession* s, int present, int count, bool can_edit,
-                            int sel, HofListPaint* pv, bool art_off) {
+                            int sel, HofListPaint* pv) {
   int top = (sel / ROWS_PER_PAGE) * ROWS_PER_PAGE;
   bool full = !pv->valid || pv->gen != ui_clear_gen() || top != pv->top;
 
   if (full) {
     ui_clear();
-    /* F1 fallback marker (design sec 3.5's own honest-header rule): the shell
-     * refused, so this plain screen -- unlike a real refusal-only screen -- must
-     * say so, sharing the title row (there is no other free row above the list,
-     * ROW_Y0=34 already starts right after the header line below). */
-    ui_text(4, 4, UI_TITLE, art_off ? "HALL OF FAME (GB ART: OFF)" : "HALL OF FAME");
+    ui_text(4, 4, UI_TITLE, "HALL OF FAME");
     ui_hline(0, 14, UI_SCR_W, UI_BORDER);
     char hdr[40];
     siprintf(hdr, "%d teams (lifetime count %d)", present, count);
@@ -540,35 +534,12 @@ static void hof_start_menu(GbSession* s, uint8_t gen, int team_sel) {
 
 /* ---- entry ----------------------------------------------------------------------- */
 
-/* One team's detail visit (view + F2 per-mon edit), extracted so BOTH the plain
- * list (below) and the F1 card list (further below) drive the SAME code -- there
- * is no art-shell twin of the detail/edit screen to keep in sync (matching the
- * trainer card's own "sub-editors are shared with the plain page" shape). */
-static void hof_detail_visit(GbSession* s, int team_idx, bool can_edit) {
-  int mon_sel = 0;
-  for (;;) {
-    GbHofTeam t;
-    if (!gbh_team(s, team_idx, &t)) break;
-    if (mon_sel >= t.n) mon_sel = (t.n > 0) ? t.n - 1 : 0;
-    hof_detail_render(&t, s->gen, team_idx + 1, can_edit, can_edit ? mon_sel : -1);
-    u16 mask = can_edit ? (KEY_UP | KEY_DOWN | KEY_A | KEY_B) : KEY_B;
-    u16 k = s_wait(mask);
-    if (k & KEY_B) break;
-    else if (k & KEY_UP)   mon_sel = (mon_sel > 0) ? mon_sel - 1 : t.n - 1;
-    else if (k & KEY_DOWN) mon_sel = (mon_sel + 1) % t.n;
-    else if (k & KEY_A)    hof_edit_mon(s, team_idx, mon_sel, &t.mon[mon_sel]);
-    /* the top of the loop re-reads gbh_team(): a committed edit shows up
-     * immediately, exactly like every other GB edit screen's own resume. */
+void pdna_gbhof(GbSession* s, bool can_edit) {
+  if (!s || !s->open) {
+    msg_wait("HALL OF FAME", UI_WARN, "Could not read this save.", 0);
+    return;
   }
-}
 
-/* Today's plain row list (unchanged behaviour) -- the F1 fallback, reached when
- * gbscr_open() refuses the card shell (no ROM registered, bad ROM, non-English
- * release, or no tile-bank memory -- pdna_gbtrainer's own list of reasons).
- * `art_off` prints the same honest "GB ART: OFF" header every other GB-art
- * screen's plain fallback shows, so a refusal never looks like the finished
- * design -- design sec 3.5 / pdna_gbtrainer_plain's own D7 header contract. */
-static void hof_plain_screen(GbSession* s, bool can_edit, bool art_off) {
   int sel = 0;
   bool in_detail = false;
   HofListPaint pv; memset(&pv, 0, sizeof pv);
@@ -580,13 +551,27 @@ static void hof_plain_screen(GbSession* s, bool can_edit, bool art_off) {
     else if (sel >= present) sel = present - 1;
 
     if (in_detail) {
-      hof_detail_visit(s, sel, can_edit);
+      int mon_sel = 0;
+      for (;;) {
+        GbHofTeam t;
+        if (!gbh_team(s, sel, &t)) break;
+        if (mon_sel >= t.n) mon_sel = (t.n > 0) ? t.n - 1 : 0;
+        hof_detail_render(&t, s->gen, sel + 1, can_edit, can_edit ? mon_sel : -1);
+        u16 mask = can_edit ? (KEY_UP | KEY_DOWN | KEY_A | KEY_B) : KEY_B;
+        u16 k = s_wait(mask);
+        if (k & KEY_B) break;
+        else if (k & KEY_UP)   mon_sel = (mon_sel > 0) ? mon_sel - 1 : t.n - 1;
+        else if (k & KEY_DOWN) mon_sel = (mon_sel + 1) % t.n;
+        else if (k & KEY_A)    hof_edit_mon(s, sel, mon_sel, &t.mon[mon_sel]);
+        /* the top of the loop re-reads gbh_team(): a committed edit shows up
+         * immediately, exactly like every other GB edit screen's own resume. */
+      }
       in_detail = false;
       pv.valid = false;
       continue;
     }
 
-    hof_list_render(s, present, count, can_edit, sel, &pv, art_off);
+    hof_list_render(s, present, count, can_edit, sel, &pv);
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B | KEY_START);
     if (k & KEY_B) return;
     else if (k & KEY_UP)   sel = (present > 0) ? ((sel > 0) ? sel - 1 : present - 1) : 0;
@@ -608,146 +593,4 @@ static void hof_plain_screen(GbSession* s, bool can_edit, bool art_off) {
       pv.valid = false;
     }
   }
-}
-
-/* ---- F1: the card look ----------------------------------------------------------
- *
- * There is NO real in-game Hall-of-Fame "card" on the cartridge (unlike the
- * trainer card, which pdna_gbtrainer.c reproduces cell-for-cell against a real
- * BG-tilemap capture) -- the Records screen the brief's own anchor cites
- * (gb_hof.h:12-14) is a NEW shape this tool invented. F1's donor is therefore
- * only the trainer card's SHELL (gbscr_open + the text-box frame + the ROM's own
- * font), not its forensic layout: this uses GBSCR_NEED_TEXTBOX alone (the SAME
- * primitive gbscr_run_demo() already proves resolves on BOTH gens,
- * pdna_gbscreen.c's own gen branch at GBSCR_SRC_TEXTBOX -- Gen 1's message-box
- * frame, Gen 2's own "frames" block), not GBSCR_NEED_CARDFRAME/CARDGFX (the
- * trainer card's OWN forensically-verified, gen-specific layouts -- CARDFRAME is
- * unproven to even be located for a Gen-2 ROM, since Gen 2's real card has no
- * generic corner/edge tileset the way Gen 1's does). Falls back to
- * hof_plain_screen() with an honest header on ANY refusal.
- *
- * Detail viewing/per-mon editing and the START menu are NOT re-rendered inside
- * the shell (mon portraits, gb_art_fetch(), are also NOT wired here) -- both are
- * BACKLOG follow-ups (this lane's own report says so plainly); this shell closes
- * for those sub-screens and reopens on return, the same round-trip shape the
- * trainer card's own START handoff to the plain page uses one-way. */
-#define HOF_CARD_ROWS_PER_PAGE 8
-
-static void hof_card_row(GbScreen* gs, const GbSession* s, int idx, int ty, bool sel) {
-  GbHofTeam t;
-  char label[26];
-  if (gbh_team(s, idx, &t) && t.n > 0) {
-    int lo = 100, hi = 0;
-    for (int m = 0; m < t.n; m++) {
-      if (t.mon[m].level < lo) lo = t.mon[m].level;
-      if (t.mon[m].level > hi) hi = t.mon[m].level;
-    }
-    siprintf(label, "%c#%-3d %dmon Lv%d-%d", sel ? '>' : ' ', idx + 1, t.n, lo, hi);
-  } else {
-    siprintf(label, "%c#%-3d --", sel ? '>' : ' ', idx + 1);
-  }
-  gbscr_text(gs, 1, ty, label);
-}
-
-/* A plain rectangle of TEXTBOX-block tile 0 all the way round -- the SAME border
- * gbscr_run_demo() already draws and documents as "not a real dialogue-box
- * frame... only has to prove the shell fetches and blits a NON-font ROM block
- * correctly" (pdna_gbscreen.c); reused verbatim rather than re-derived. */
-static void hof_card_border(GbScreen* gs) {
-  for (int x = 0; x < GBSCR_COLS; x++) {
-    gbscr_cell(gs, x, 0, GBSCR_SRC_TEXTBOX, 0);
-    gbscr_cell(gs, x, GBSCR_ROWS - 1, GBSCR_SRC_TEXTBOX, 0);
-  }
-  for (int y = 0; y < GBSCR_ROWS; y++) {
-    gbscr_cell(gs, 0, y, GBSCR_SRC_TEXTBOX, 0);
-    gbscr_cell(gs, GBSCR_COLS - 1, y, GBSCR_SRC_TEXTBOX, 0);
-  }
-}
-
-static void hof_card_list_paint(GbScreen* gs, const GbSession* s, int present,
-                                int count, int sel) {
-  hof_card_border(gs);
-  gbscr_text(gs, 2, 1, "HALL OF FAME");
-  char hdr[24];
-  siprintf(hdr, "%d teams (life %d)", present, count);
-  gbscr_text(gs, 1, 2, hdr);
-  int top = (sel / HOF_CARD_ROWS_PER_PAGE) * HOF_CARD_ROWS_PER_PAGE;
-  if (present == 0) {
-    gbscr_text(gs, 1, 5, "No teams recorded yet.");
-  } else {
-    int shown = present - top;
-    if (shown > HOF_CARD_ROWS_PER_PAGE) shown = HOF_CARD_ROWS_PER_PAGE;
-    for (int i = 0; i < shown; i++)
-      hof_card_row(gs, s, top + i, 4 + i, (top + i) == sel);
-  }
-}
-
-static bool hof_card_open(uint8_t gen, GbScreen* gs) {
-  uint32_t need = gbscr_tail_need(gen, GBSCR_NEED_TEXTBOX, 0);
-  uint8_t* tail = gb12_arena_tail(need);
-  const char* reason = 0;
-  if (!gbscr_open(gen, gs, tail, need, GBSCR_NEED_TEXTBOX, 0, &reason)) {
-    gb12_arena_tail_release();
-    return false;
-  }
-  static const char* const kLegend[4] = { 0, PDNA_GBSCR_ACT_BACK, 0, 0 };
-  gbscr_set_legend(gs, kLegend);
-  return true;
-}
-
-/* Returns true once the shell has run (to completion, B pressed, OR handed off to
- * a sub-screen and could not re-open afterward -- either way nothing left for the
- * caller to fall back to); false only if the shell never opened at all, meaning
- * the caller must show the plain screen instead. */
-static bool hof_card_screen(GbSession* s, bool can_edit) {
-  GbScreen gs;
-  if (!hof_card_open(s->gen, &gs)) return false;
-
-  int sel = 0;
-  for (;;) {
-    int present = gbh_team_count_present(s);
-    int count = gbh_count(s);
-    if (present == 0) sel = 0;
-    else if (sel >= present) sel = present - 1;
-
-    hof_card_list_paint(&gs, s, present, count, sel);
-    gbscr_flush(&gs, 0);
-
-    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B | KEY_START);
-    if (k & KEY_B) break;
-    else if (k & KEY_UP)   sel = (present > 0) ? ((sel > 0) ? sel - 1 : present - 1) : 0;
-    else if (k & KEY_DOWN) sel = (present > 0) ? ((sel + 1) % present) : 0;
-    else if (k & (KEY_LEFT | KEY_RIGHT)) {
-      if (present > 0) {
-        int dir = (k & KEY_LEFT) ? -1 : 1;
-        sel += dir * HOF_CARD_ROWS_PER_PAGE;
-        if (sel < 0) sel = 0;
-        if (sel >= present) sel = present - 1;
-      }
-    } else if (k & KEY_A) {
-      if (present == 0) { snd_deny(); continue; }
-      gbscr_close(&gs);
-      gb12_arena_tail_release();
-      hof_detail_visit(s, sel, can_edit);
-      if (!hof_card_open(s->gen, &gs)) return true;
-    } else if (k & KEY_START) {
-      if (!can_edit) { snd_deny(); continue; }
-      gbscr_close(&gs);
-      gb12_arena_tail_release();
-      hof_start_menu(s, s->gen, sel);
-      if (!hof_card_open(s->gen, &gs)) return true;
-    }
-  }
-  gbscr_close(&gs);
-  gb12_arena_tail_release();
-  return true;
-}
-
-void pdna_gbhof(GbSession* s, bool can_edit) {
-  if (!s || !s->open) {
-    msg_wait("HALL OF FAME", UI_WARN, "Could not read this save.", 0);
-    return;
-  }
-  if (hof_card_screen(s, can_edit)) return;
-  hof_plain_screen(s, can_edit, true);   /* gbscr refused: honest "GB ART: OFF" header */
 }
