@@ -149,6 +149,18 @@ typedef struct {
   uint32_t last_big_end;
   int      fail_at;          /* >=0: return false from this call on, forever */
   int      calls_after_fail;
+  int      poison_checksum;  /* BACKLOG #185 F5: flip one byte of the header's own
+                              * global_checksum field (0x14E) in flight so
+                              * known_rom_lookup() MISSES a corpus ROM that would
+                              * otherwise hit the F5 fast-path table -- forces the
+                              * real scan to run, for tests that need to observe
+                              * scan_multi's own behaviour (T1/T2/T4/T5, the
+                              * read-failure-unwind test). The header CHECKSUM
+                              * bytes themselves are never read by parse_header()'s
+                              * own boot-logo/header-checksum validation (those
+                              * cover 0x104-0x14D), so flipping 0x14E cannot make a
+                              * genuinely valid ROM fail to open -- only the F5
+                              * table match, which is exactly the point. */
 } Rd;
 
 static bool rd_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
@@ -162,7 +174,10 @@ static bool rd_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
     r->big_calls++;
   }
   if (fseek(r->f, (long)off, SEEK_SET) != 0) return false;
-  return fread(dst, 1, len, r->f) == len;
+  if (fread(dst, 1, len, r->f) != len) return false;
+  if (r->poison_checksum && 0x14E >= off && 0x14E < off + len)
+    ((uint8_t*)dst)[0x14E - off] ^= 0xFF;
+  return true;
 }
 
 static int rd_open(Rd* r, const char* name) {
@@ -180,6 +195,16 @@ typedef struct { uint32_t base_stats, mew_stats, base_data, pic_ptrs, palettes; 
 static void part_b_rom(const char* name, uint8_t gen, const Want* want, int has_icons) {
   Rd r;
   if (!rd_open(&r, name)) { printf("  %s: SKIP (dump not present)\n", name); return; }
+  /* BACKLOG #185 F5: poisoned for this WHOLE function -- Red/Yellow/Gold/Crystal
+   * now all have a known-ROM fast-path table entry (source/rom_gbsprite_known.h),
+   * so an UNPOISONED open of any of them would skip scan_multi() entirely via
+   * try_loc(), and every assertion below about the SCAN's own behaviour (chunk
+   * alignment, forward-only reads, per-job callback counts, the read-failure
+   * unwind) would either go vacuously true (nothing ran) or test the wrong code
+   * path. Poisoning here forces every open in this function through the real
+   * scan, unchanged in meaning from before F5 existed; part_b_f5() below is the
+   * SEPARATE, UNPOISONED test that the fast path itself actually engages. */
+  r.poison_checksum = 1;
   char who[48]; snprintf(who, sizeof who, "B %s", name);
   static const uint32_t caps[] = { 2048, 8192, 65536 };
   RomGbSpriteLoc sl[3]; RomGbIconLoc il[3]; RomGbUiLoc ul[3];
@@ -418,6 +443,61 @@ static void part_b(void) {
   part_b_rom("Gold.gbc",    2, &gold,    1);
   part_b_rom("Crystal.gbc", 2, &crystal, 1);
   part_b_real_sizes();
+}
+
+/* BACKLOG #185 F5: the known-ROM fast-path table itself (source/
+ * rom_gbsprite_known.h) -- UNPOISONED opens, unlike part_b_rom() above, so a
+ * table hit actually engages. Every corpus ROM has an entry (Blue/Silver do
+ * not, and are not host-tested here for the same reason -- no dump exists). */
+static void part_b_f5_one(const char* name, uint8_t gen, const Want* want) {
+  Rd r;
+  if (!rd_open(&r, name)) { printf("  %s: SKIP (dump not present)\n", name); return; }
+  char who[48]; snprintf(who, sizeof who, "B-f5 %s", name);
+#ifdef ROM_GBSPRITE_JOB_COUNTERS
+  memset(g_rgs_cb_calls, 0, sizeof g_rgs_cb_calls);
+#endif
+  RomGbSprite gs;
+  int ok = rom_gbsprite_open(&gs, rd_read, &r, r.size, b_scratch, 8192, GB_ROM_NONE);
+  chk(who, "the fast-path open locates the ROM", ok);
+  if (ok) {
+    chk(who, "generation as expected", (uint8_t)gs.gen == gen);
+    chk(who, "BaseStats/BaseData at the documented address",
+        gen == 1 ? gs.base_stats == want->base_stats : gs.base_data == want->base_data);
+    if (gen == 1) chk(who, "Mew record where documented", gs.mew_stats == want->mew_stats);
+    if (gen == 2) {
+      chk(who, "PicPointers where documented", gs.pic_ptrs == want->pic_ptrs);
+      chk(who, "Palettes where documented", gs.palettes == want->palettes);
+    }
+  }
+#ifdef ROM_GBSPRITE_JOB_COUNTERS
+  uint32_t total_calls = 0;
+  for (int k = 0; k < 6; k++) total_calls += g_rgs_cb_calls[k];
+  chk(who, "the fast path never runs scan_multi (zero job-callback invocations)",
+      total_calls == 0);
+#endif
+  /* a table hit costs only try_loc()'s own verify reads: ~150 for Gen 1
+   * (g1_bs_verify's 150 rows), ~503 for Gen 2 (g2_bd_verify's 251 rows +
+   * g2_pp_verify's 251 rows + g2_pal_verify's 1 big read) -- measured 153/151
+   * (Red/Yellow) and 504/504 (Gold/Crystal). Either way this is a HANDFUL of
+   * small reads, not a scan's forward chunk sweep (511 x 4 KB reads for a
+   * 2 MB ROM through mon_decomp alone, part A's own closed form) -- bounded
+   * generously per generation rather than one number for both. */
+  chk(who, "a table hit costs far fewer reads than a scan",
+      r.calls < (gen == 1 ? 200u : 600u));
+  printf("  %-12s fast-path open: %u reads (vs a full scan's hundreds)\n", name, r.calls);
+  r.fail_at = -1;
+  fclose(r.f);
+}
+
+static void part_b_f5(void) {
+  static const Want red     = { 0x383DE, 0x0425B, 0, 0, 0 };
+  static const Want yellow  = { 0x383DE, 0,       0, 0, 0 };
+  static const Want gold    = { 0, 0, 0x51B0B, 0x48000,  0x0AD3D };
+  static const Want crystal = { 0, 0, 0x51424, 0x120000, 0x0A8CE };
+  part_b_f5_one("Red.gb",      1, &red);
+  part_b_f5_one("Yellow.gb",   1, &yellow);
+  part_b_f5_one("Gold.gbc",    2, &gold);
+  part_b_f5_one("Crystal.gbc", 2, &crystal);
 }
 
 /* ------------------------------------------------------------------ part C */
@@ -738,6 +818,7 @@ static void part_d(void) {
 int main(void) {
   part_a();
   part_b();
+  part_b_f5();
   part_c();
   part_d();
   printf("%d checks, %d failures\n", g_check, g_fail);

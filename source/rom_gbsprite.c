@@ -536,6 +536,88 @@ static int locate(RomGbSprite* gs, uint8_t gen_hint) {
   return identify_g2(gs, &jobs[J_G2_BD], &jobs[J_G2_PP], &jobs[J_G2_PAL]);
 }
 
+/* BACKLOG #185 F5 / open_loc()'s own file-cache validation: attempt to trust a
+ * CANDIDATE RomGbSpriteLoc -- from the .loc cache file (open_loc()) or the
+ * known-ROM fast-path table below (open()) -- by re-running the SAME
+ * independent *_verify reads a fresh scan's own candidates get. A wrong,
+ * stale, or foreign candidate is REJECTED here, not used, so neither source
+ * can ever silently hand back the wrong offsets: a hand-typed or
+ * scanner-drifted known-ROM entry, or a .loc file swapped onto a different
+ * ROM, both degrade to "fall through to a full scan", never a wrong picture.
+ * Returns 1 (gs fully populated, gs->ok=1, gs->gen set) or 0 (gs is
+ * UNCHANGED beyond whatever a rejected candidate's own verify reads already
+ * touched -- the caller must fall through to a full scan). */
+static int try_loc(RomGbSprite* gs, const RomGbSpriteLoc* loc, uint8_t gen_hint) {
+  if (!loc) return 0;
+  if (gen_hint != GB_ROM_NONE && loc->gen != gen_hint) return 0;
+  if (loc->gen == GB_ROM_GEN1 && g1_bs_verify(gs, loc->base_stats)) {
+    gs->base_stats = loc->base_stats;
+    memcpy(gs->dex_order, loc->dex_order, sizeof gs->dex_order);
+    uint8_t seen[G1_SPECIES + 1];
+    memset(seen, 0, sizeof seen);
+    uint32_t nz = 0, dup = 0;
+    for (uint32_t i = 0; i < G1_DEXORDER; i++) {
+      uint8_t v = gs->dex_order[i];
+      if (!v) continue;
+      if (v > G1_SPECIES || seen[v]) { dup = 1; break; }
+      seen[v] = 1; nz++;
+    }
+    if (!dup && nz == G1_SPECIES) {
+      gs->mew_stats = loc->mew_stats; gs->mew_bank = loc->mew_bank;
+      int mew_ok = 1;
+      if (gs->mew_stats) {
+        uint8_t bank;
+        mew_ok = g1_mew_verify(gs, gs->mew_stats, &bank) && bank == gs->mew_bank;
+      }
+      if (mew_ok) { gs->gen = GB_ROM_GEN1; gs->ok = 1; return 1; }
+    }
+  } else if (loc->gen == GB_ROM_GEN2) {
+    uint8_t lo, hi;
+    if (g2_bd_verify(gs, loc->base_data) && g2_pp_verify(gs, loc->pic_ptrs, &lo, &hi) &&
+        lo == loc->stored_lo && g2_pal_verify(gs, loc->palettes)) {
+      gs->base_data  = loc->base_data;
+      gs->pic_ptrs   = loc->pic_ptrs;
+      gs->palettes   = loc->palettes;
+      gs->stored_lo  = loc->stored_lo;
+      gs->unown_ptrs = 0;                 /* re-earned, like the bank map    */
+      memcpy(gs->bank_map, loc->bank_map, sizeof gs->bank_map);
+      gs->bank_ok = 0;
+      gs->gen = GB_ROM_GEN2; gs->ok = 1; return 1;
+    }
+  }
+  return 0;
+}
+
+/* BACKLOG #185 F5: a static const table of (title, version, global_checksum)
+ * -> the located offsets, populated ONLY from what THIS scanner finds on the
+ * four ROMs Guy actually owns (tests/host_romgbsprite_known_test.c re-derives
+ * every entry from the live scanner on every run and asserts byte-equality,
+ * so the table can never drift from it -- see that file for the generator
+ * this table was pasted from). Blue/Silver (no corpus ROM) simply have no
+ * entry -- they fall straight through to the full scan below, same as any
+ * hack or unknown revision. A HIT here still runs the exact same try_loc()
+ * verify-before-use gate as a .loc cache hit -- this table is a candidate,
+ * never a trusted source. */
+typedef struct {
+  char           title[16];
+  uint8_t        version;
+  uint16_t       global_checksum;
+  RomGbSpriteLoc loc;
+} RomGbSpriteKnown;
+
+#include "rom_gbsprite_known.h"
+
+static const RomGbSpriteLoc* known_rom_lookup(const char* title, uint8_t version,
+                                              uint16_t global_checksum) {
+  for (uint32_t i = 0; i < sizeof k_known_gbsprite / sizeof k_known_gbsprite[0]; i++) {
+    const RomGbSpriteKnown* k = &k_known_gbsprite[i];
+    if (k->version == version && k->global_checksum == global_checksum &&
+        memcmp(k->title, title, sizeof k->title) == 0)
+      return &k->loc;
+  }
+  return 0;
+}
+
 int rom_gbsprite_open(RomGbSprite* gs, GbReadFn read, void* ctx, uint32_t size,
                       uint8_t* scratch, uint32_t scratch_len, uint8_t gen_hint) {
   if (!gs) return 0;
@@ -544,6 +626,11 @@ int rom_gbsprite_open(RomGbSprite* gs, GbReadFn read, void* ctx, uint32_t size,
   gs->scratch = scratch; gs->scratch_len = scratch_len;
   if (!read || !scratch || scratch_len < ROM_GBSPRITE_SCRATCH_MIN) return 0;
   if (!parse_header(gs)) return 0;
+  /* BACKLOG #185 F5: a known ROM's own table entry, verified before use, skips
+   * the whole-ROM scan entirely -- checked before locate() so a hit costs
+   * only the handful of *_verify reads, not one scan byte. */
+  if (try_loc(gs, known_rom_lookup(gs->title, gs->version, gs->global_checksum), gen_hint))
+    return 1;
   /* Which generation is decided by what is IN the ROM, never by the title, so
    * Blue, Silver and localised builds work the same way -- unless the caller
    * already knows (gen_hint != GB_ROM_NONE), in which case locate() restricts
@@ -583,52 +670,19 @@ int rom_gbsprite_open_loc(RomGbSprite* gs, GbReadFn read, void* ctx, uint32_t si
   if (!parse_header(gs)) return 0;
 
   /* A cache is a hint, never a source of truth: it has to survive the same
-   * verification the scan's own candidates do. bank_ok is deliberately NOT
-   * restored — every stored bank byte re-earns its mapping on first use.
-   * BACKLOG #185 F1: a cache whose OWN recorded gen disagrees with a non-NONE
-   * gen_hint is not even consulted -- it falls straight to the gen-restricted
-   * rom_gbsprite_open() below, which fails closed on the header mismatch,
-   * exactly like a wrong-gen scan. Without this a foreign-gen cache could
-   * validate (its fields are genuinely self-consistent) and silently hand
-   * back the OTHER generation's tables under a hint that promised otherwise. */
+   * verification the scan's own candidates do (try_loc(), shared with F5's
+   * known-ROM table below -- same gate, two candidate sources). bank_ok is
+   * deliberately NOT restored — every stored bank byte re-earns its mapping
+   * on first use. BACKLOG #185 F1: a cache whose OWN recorded gen disagrees
+   * with a non-NONE gen_hint is not even consulted -- it falls straight to
+   * the gen-restricted rom_gbsprite_open() below (which itself now also
+   * tries the F5 known-ROM table before a full scan), exactly like a
+   * wrong-gen scan. Without this a foreign-gen cache could validate (its
+   * fields are genuinely self-consistent) and silently hand back the OTHER
+   * generation's tables under a hint that promised otherwise. */
   if (loc && loc->id_hash == gs->id_hash && loc->size == size &&
-      (gen_hint == GB_ROM_NONE || loc->gen == gen_hint)) {
-    if (loc->gen == GB_ROM_GEN1 && g1_bs_verify(gs, loc->base_stats)) {
-      gs->base_stats = loc->base_stats;
-      memcpy(gs->dex_order, loc->dex_order, sizeof gs->dex_order);
-      uint8_t seen[G1_SPECIES + 1];
-      memset(seen, 0, sizeof seen);
-      uint32_t nz = 0, dup = 0;
-      for (uint32_t i = 0; i < G1_DEXORDER; i++) {
-        uint8_t v = gs->dex_order[i];
-        if (!v) continue;
-        if (v > G1_SPECIES || seen[v]) { dup = 1; break; }
-        seen[v] = 1; nz++;
-      }
-      if (!dup && nz == G1_SPECIES) {
-        gs->mew_stats = loc->mew_stats; gs->mew_bank = loc->mew_bank;
-        int mew_ok = 1;
-        if (gs->mew_stats) {
-          uint8_t bank;
-          mew_ok = g1_mew_verify(gs, gs->mew_stats, &bank) && bank == gs->mew_bank;
-        }
-        if (mew_ok) { gs->gen = GB_ROM_GEN1; gs->ok = 1; return 1; }
-      }
-    } else if (loc->gen == GB_ROM_GEN2) {
-      uint8_t lo, hi;
-      if (g2_bd_verify(gs, loc->base_data) && g2_pp_verify(gs, loc->pic_ptrs, &lo, &hi) &&
-          lo == loc->stored_lo && g2_pal_verify(gs, loc->palettes)) {
-        gs->base_data  = loc->base_data;
-        gs->pic_ptrs   = loc->pic_ptrs;
-        gs->palettes   = loc->palettes;
-        gs->stored_lo  = loc->stored_lo;
-        gs->unown_ptrs = 0;                 /* re-earned, like the bank map    */
-        memcpy(gs->bank_map, loc->bank_map, sizeof gs->bank_map);
-        gs->bank_ok = 0;
-        gs->gen = GB_ROM_GEN2; gs->ok = 1; return 1;
-      }
-    }
-  }
+      try_loc(gs, loc, gen_hint))
+    return 1;
   return rom_gbsprite_open(gs, read, ctx, size, scratch, scratch_len, gen_hint);
 }
 
