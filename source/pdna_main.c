@@ -121,16 +121,12 @@ _Static_assert(ART_ICONS_ROW_BYTES <= SF_STREAM_CHUNK_MAX, "icon extraction stre
 #define LOG_PATH      "/PokeDNA/log.txt"
 #define PATH_MAX      256
 #define MAX_ENTRIES   256
-#define NAME_MAX      64
+#define NAME_MAX      BR_NAME_MAX /* BACKLOG #186: BrowseEntry/BR_NAME_MAX moved to
+                                   * pdna_map.h (shared with pdna_map.c's pickers) --
+                                   * kept as an alias so every existing NAME_MAX site
+                                   * below needs no rename. */
 #define LIST_COLS     28          /* display columns for a list row                 */
 #define VIS_ROWS      12          /* visible rows in the framed browser panel        */
-
-typedef struct {
-  char     name[NAME_MAX];
-  uint32_t size;                  /* file size in bytes (0 for folders)              */
-  uint32_t dosdt;                 /* (fdate<<16)|ftime, for the date sort            */
-  bool     is_dir;
-} BrowseEntry;
 
 /* file-browser sort + filter state (sd-browser style) */
 typedef enum { SORT_NAME = 0, SORT_SIZE = 1, SORT_DATE = 2 } BrSortKey;
@@ -607,6 +603,28 @@ static int has_sav_ext(const char* n) {
   return 0;
 }
 
+/* BACKLOG #186: every OTHER kind (BR_MATCH_SUFFIX) wants a plain case-insensitive
+ * suffix match against spec->exts, ported from pdna_map.c's old pick_rom()
+ * ext_matches() -- the .sav kind keeps has_sav_ext's looser "contains" rule (backups
+ * included) unchanged, so A5's byte-for-byte .sav behaviour never routes through here. */
+static bool spec_ext_match(const BrowseSpec* spec, const char* name) {
+  if (spec->match_mode == BR_MATCH_SAV) return has_sav_ext(name) != 0;
+  int l = (int)strlen(name);
+  for (int e = 0; spec->exts[e]; e++) {
+    int el = (int)strlen(spec->exts[e]);
+    if (l <= el) continue;
+    const char* t = name + l - el;
+    bool ok = true;
+    for (int i = 0; i < el && ok; i++) {
+      char a = t[i], b = spec->exts[e][i];
+      if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+      if (a != b) ok = false;
+    }
+    if (ok) return true;
+  }
+  return false;
+}
+
 /* ---- path helpers (ported from the record-mixer browser) ---------------- */
 static bool at_root(void) { return g_cwd[0] == '/' && g_cwd[1] == 0; }
 
@@ -655,35 +673,42 @@ static int entry_cmp(const BrowseEntry* x, const BrowseEntry* y) {
   return g_sortrev ? -c : c;
 }
 
-static void sort_entries(void) {                  /* stable insertion sort, never mid-transfer */
+static void sort_entries(BrowseEntry* ents) {      /* stable insertion sort, never mid-transfer */
   for (int i = 1; i < g_count; i++) {
-    BrowseEntry tmp = g_entries[i];
+    BrowseEntry tmp = ents[i];
     int j = i - 1;
-    while (j >= 0 && entry_cmp(&g_entries[j], &tmp) > 0) { g_entries[j + 1] = g_entries[j]; j--; }
-    g_entries[j + 1] = tmp;
+    while (j >= 0 && entry_cmp(&ents[j], &tmp) > 0) { ents[j + 1] = ents[j]; j--; }
+    ents[j + 1] = tmp;
   }
 }
 
-/* Scan g_cwd into g_entries: subdirectories + (by default) *.sav files. The
- * filter (g_show_all / g_show_hidden) and the sort are sd-browser-style. */
-static void scan_dir(void) {
+/* Scan g_cwd into `ents` (spec->entries, spec->cap -- A3: the launch browser's own
+ * resident g_entries for the .sav spec, an arena/mon_decomp-borrowed buffer for every
+ * other kind, since g_entries is ALSO box_oam.c's icon-cache/GB-reconcile borrow. D6
+ * correction: not because those two ARE reachable at once today -- Settings, where
+ * the other kinds open from, is never reachable from inside a live box-screen/GB-
+ * session borrow -- this is a conservative separation so a future caller cannot
+ * alias it by accident, not a proven conflict). The filter (g_show_all / g_show_hidden
+ * / spec's own extension rule) and the sort are sd-browser-style, identical for
+ * every kind. */
+static void __attribute__((noinline)) scan_dir(const BrowseSpec* spec, BrowseEntry* ents) {
   g_count = 0;
   DIR dir;
   FILINFO fno;
   if (f_opendir(&dir, g_cwd) != FR_OK) { log_line("opendir %s failed", g_cwd); return; }
-  while (g_count < MAX_ENTRIES && f_readdir(&dir, &fno) == FR_OK && fno.fname[0]) {
+  while (g_count < spec->cap && f_readdir(&dir, &fno) == FR_OK && fno.fname[0]) {
     bool is_dir = (fno.fattrib & AM_DIR) != 0;
     if (!g_show_hidden && (fno.fattrib & (AM_HID | AM_SYS))) continue;
-    if (!is_dir && !g_show_all && !has_sav_ext(fno.fname)) continue;  /* folders + .sav unless show-all */
-    strncpy(g_entries[g_count].name, fno.fname, NAME_MAX - 1);
-    g_entries[g_count].name[NAME_MAX - 1] = 0;
-    g_entries[g_count].size = is_dir ? 0 : (uint32_t)fno.fsize;
-    g_entries[g_count].dosdt = ((uint32_t)fno.fdate << 16) | (uint32_t)fno.ftime;
-    g_entries[g_count].is_dir = is_dir;
+    if (!is_dir && !g_show_all && !spec_ext_match(spec, fno.fname)) continue;  /* folders + filter unless show-all */
+    strncpy(ents[g_count].name, fno.fname, NAME_MAX - 1);
+    ents[g_count].name[NAME_MAX - 1] = 0;
+    ents[g_count].size = is_dir ? 0 : (uint32_t)fno.fsize;
+    ents[g_count].dosdt = ((uint32_t)fno.fdate << 16) | (uint32_t)fno.ftime;
+    ents[g_count].is_dir = is_dir;
     g_count++;
   }
   f_closedir(&dir);
-  sort_entries();
+  sort_entries(ents);
   log_line("scan %s: %d entries", g_cwd, g_count);
 }
 
@@ -701,6 +726,51 @@ static void scan_dir(void) {
  * below (each a handful of bytes) with room to spare. */
 #define CFG_BUF_BYTES (PATH_MAX * 4 + GB_ROM_PATH_MAX * 2 + 20 * 22 + 256)
 
+/* BACKLOG #186: scan an ALREADY-LOADED config.cfg buffer (no file I/O, no locals
+ * bigger than a couple of pointers -- STACK ok review: an earlier version of this
+ * lane had cfg_save_ex() call a full read-the-file helper for each of its three
+ * round-tripped keys, stacking a SECOND CFG_BUF_BYTES frame on top of cfg_save_ex's
+ * own and blowing the stack budget by 24 B; this non-mutating, I/O-free scan is what
+ * both callers below actually need) for `key`'s value into `out` (capped, always
+ * NUL-terminated). `text` need not be NUL-terminated; `len` is the real byte count
+ * f_read returned. */
+static bool find_key_in_text(const char* text, uint32_t len, const char* key, char* out, int cap) {
+  out[0] = 0;
+  size_t klen = strlen(key);
+  const char* p = text; const char* end = text + len;
+  while (p < end) {
+    const char* eol = p;
+    while (eol < end && *eol != '\n' && *eol != '\r') eol++;
+    if ((size_t)(eol - p) > klen && p[klen] == '=' && strncmp(p, key, klen) == 0) {
+      const char* v = p + klen + 1;
+      size_t vlen = (size_t)(eol - v);
+      if (vlen > (size_t)cap - 1) vlen = (size_t)cap - 1;
+      memcpy(out, v, vlen); out[vlen] = 0;
+      return true;
+    }
+    p = eol;
+    while (p < end && (*p == '\n' || *p == '\r')) p++;
+  }
+  return false;
+}
+
+/* BACKLOG #186: read ONE key's value out of config.cfg into `out`. Used by
+ * browse_pick_spec() to seed a non-.sav picker's remembered folder at open time.
+ * Transient: `buf` is a plain stack local (same CFG_BUF_BYTES class cfg_load()
+ * already puts on the stack once at boot), freed on return -- no new EWRAM static
+ * either way (A3's "no new EWRAM statics either way" applies to the whole lane, not
+ * just the g_entries question). cfg_save_ex() below does its OWN, separate read
+ * rather than calling this -- see its own comment for why. */
+static bool cfg_read_raw_key(const char* key, char* out, int cap) {
+  out[0] = 0;
+  FIL f;
+  if (f_open(&f, CFG_PATH, FA_READ) != FR_OK) return false;
+  char buf[CFG_BUF_BYTES]; UINT br = 0;
+  FRESULT fr = f_read(&f, buf, sizeof(buf) - 1, &br); f_close(&f);
+  if (fr != FR_OK || br == 0) return false;
+  return find_key_in_text(buf, br, key, out, cap);
+}
+
 /* Persist the browser state so the next launch reopens the same folder with the
  * same sort/filter. Writes are EZ-Flash-Omega-only (EverDrive write isn't wired),
  * so this is a no-op on a read-only cart; best-effort, any failure is ignored.
@@ -711,17 +781,98 @@ static void scan_dir(void) {
  * the original uncapped `n += siprintf(buf + n, ...)` loop left for whichever key
  * eventually pushed the total over CFG_BUF_BYTES (E3 review). A truncation is logged,
  * never silent: nothing here is safety-critical (a missing key just falls back to its
- * compiled default), so "say so and drop the rest" is enough. */
-static void cfg_save(void) {
+ * compiled default), so "say so and drop the rest" is enough.
+ *
+ * BACKLOG #186: `active_key`/`active_val`, when non-NULL, is a dir_rom/dir_gb/
+ * dir_gbsav folder-memory key this call is actively updating from a LIVE value --
+ * used by a non-.sav browse_pick_spec() session, which temporarily repurposes g_cwd
+ * for its OWN folder (see that function), so g_cwd cannot be trusted for "dir" while
+ * one of those sessions is open. The .sav spec never passes an override ("dir" is
+ * always live in g_cwd, so cfg_save() below -- the plain, argument-less call every
+ * OTHER site in this file already makes -- is untouched, preserving A5's byte-for-
+ * byte .sav behaviour). Whichever of the three dir_* keys this call is NOT actively
+ * writing is round-tripped from the file on disk rather than assumed empty, so an
+ * unrelated settings change elsewhere (e.g. toggling rumble) can never erase a
+ * folder memory this call didn't touch. That read reuses `buf` below (one
+ * CFG_BUF_BYTES frame, not a second one from a nested helper call -- STACK ok
+ * review: calling cfg_read_raw_key() three times here used to stack ITS OWN
+ * CFG_BUF_BYTES frame on top of this function's, 24 B over budget). */
+/* BACKLOG #186: split out of cfg_save_ex (noinline) -- its own FIL + a CFG_BUF_BYTES
+ * read buffer are only needed transiently, to harvest the 3 dir_* keys from the OLD
+ * file before cfg_save_ex overwrites it; keeping them in a separate function lets the
+ * compiler free that stack space before cfg_save_ex's OWN buf (used for the NEW
+ * content) is even touched, instead of the two staying resident together for cfg_
+ * save_ex's whole body (STACK ok review: this + browse_seed_cwd's extraction are
+ * what bring the deepest chain back under budget). */
+/* This writer's own layout always puts "dir=" + the dozen small flag/int keys + the
+ * three dir_* keys FIRST (see the sniprintf/loop below), well within this bound at
+ * their worst case (256+150+3*140 = 819 B) -- a 1024 B scan window, not the full
+ * CFG_BUF_BYTES (1976 B), is what actually shrinks this function's frame enough to
+ * clear the stack budget (STACK ok review, 24 B over at CFG_BUF_BYTES). A file that
+ * was hand-edited to move a dir_* key past this window degrades exactly like any
+ * other unreadable dir_* key already does here (round-trips as absent, next write
+ * drops it) -- nothing here is safety-critical (cfg_save_ex's own header comment). */
+#define CFG_DIRKEY_SCAN_BYTES 1024
+static void __attribute__((noinline)) cfg_read_old_dirkeys(char* dirrom, char* dirgb, char* dirgbsav) {
+  dirrom[0] = dirgb[0] = dirgbsav[0] = 0;
+  FIL f;
+  if (f_open(&f, CFG_PATH, FA_READ) != FR_OK) return;
+  char buf[CFG_DIRKEY_SCAN_BYTES];
+  UINT br = 0;
+  FRESULT fr = f_read(&f, buf, sizeof(buf) - 1, &br);
+  f_close(&f);
+  if (fr != FR_OK || br == 0) return;
+  find_key_in_text(buf, br, "dir_rom", dirrom, GB_ROM_PATH_MAX);
+  find_key_in_text(buf, br, "dir_gb", dirgb, GB_ROM_PATH_MAX);
+  find_key_in_text(buf, br, "dir_gbsav", dirgbsav, GB_ROM_PATH_MAX);
+}
+
+/* D1 (fix pass, review-caught real regression): `dir_val`, when non-NULL, is what
+ * the "dir=" line writes instead of the LIVE g_cwd. A non-.sav browse_pick_spec()
+ * session temporarily repurposes g_cwd for its OWN folder (see cfg_save_for()) --
+ * every earlier cfg_save_ex() call from inside one of those sessions wrote THAT
+ * borrowed value out under the "dir" key, so a cancel or power-off left the boot
+ * (.sav) browser pointed at wherever the ROM/GB picker last was. dir_val is the
+ * caller's own saved_cwd (the REAL .sav folder, stashed before the repurpose) for
+ * every non-.sav call; NULL (meaning "use live g_cwd") only for the .sav spec's own
+ * calls, where g_cwd genuinely IS the thing being remembered. */
+static void cfg_save_ex(const char* active_key, const char* active_val, const char* dir_val) {
   if (!app_can_edit()) return;
-  char buf[CFG_BUF_BYTES];
+  char old_dirrom[GB_ROM_PATH_MAX];
+  char old_dirgb[GB_ROM_PATH_MAX];
+  char old_dirgbsav[GB_ROM_PATH_MAX];
+  cfg_read_old_dirkeys(old_dirrom, old_dirgb, old_dirgbsav);
+
+  char buf[CFG_BUF_BYTES];   /* built fresh below -- the OLD file's bytes never touch this one */
+  const char* dirrom = old_dirrom;
+  const char* dirgb = old_dirgb;
+  const char* dirgbsav = old_dirgbsav;
+  if (active_key) {
+    if      (!strcmp(active_key, "dir_rom"))   dirrom = active_val;
+    else if (!strcmp(active_key, "dir_gb"))    dirgb = active_val;
+    else if (!strcmp(active_key, "dir_gbsav")) dirgbsav = active_val;
+  }
+
   int n = sniprintf(buf, sizeof buf,
                    "dir=%s\nsort=%d\nrev=%d\nall=%d\nhidden=%d\nanim=%u\nrumble=%u\nrstr=%d\nrdur=%d\npcbox=%d\nyard=%d\nbak=%d\nromoff=%d\ngbscale=%d\n",
-                   g_cwd, (int)g_sort, g_sortrev ? 1 : 0, g_show_all ? 1 : 0, g_show_hidden ? 1 : 0,
+                   dir_val ? dir_val : g_cwd, (int)g_sort, g_sortrev ? 1 : 0, g_show_all ? 1 : 0, g_show_hidden ? 1 : 0,
                    g_anim_mask, rmbl_get_mask(), rmbl_get_strength(), rmbl_get_duration(), g_pc_last_box,
                    g_yard_visitors ? 1 : 0, g_backup_mode, g_rom_art_off ? 1 : 0, (int)gb_scale_mode);
   bool truncated = (n < 0 || n >= (int)sizeof buf);
   if (truncated) n = (int)sizeof buf - 1;
+
+  /* dir_rom/dir_gb/dir_gbsav (BACKLOG #186): only non-empty entries are written,
+   * same rule as the ROM-path keys below -- a card that has never used a given
+   * picker kind simply has no line for it, so an existing card's config.cfg is
+   * byte-for-byte unchanged until that picker is used for the first time. */
+  static const char* const k_dirkey[3] = { "dir_rom", "dir_gb", "dir_gbsav" };
+  const char* dirval[3]; dirval[0] = dirrom; dirval[1] = dirgb; dirval[2] = dirgbsav;
+  for (int i = 0; i < 3 && !truncated; i++) {
+    if (!dirval[i][0]) continue;
+    int w = sniprintf(buf + n, sizeof(buf) - (size_t)n, "%s=%s\n", k_dirkey[i], dirval[i]);
+    if (w < 0 || w >= (int)(sizeof(buf) - (size_t)n)) { truncated = true; break; }
+    n += w;
+  }
 
   /* One ROM path per game — RS/Emerald/FRLG map data differs, so each needs its own
    * ROM file (Guy's requirement). Only non-empty entries are written. */
@@ -774,6 +925,10 @@ static void cfg_save(void) {
   if (cst != SF_OK) log_line("cfg: save failed (%s)", sf_status_str(cst));
 }
 
+/* The plain, argument-less save every existing call site in this file already makes
+ * -- unchanged shape, so A5's "byte-for-byte unchanged .sav behaviour" holds. */
+static void cfg_save(void) { cfg_save_ex(NULL, NULL, NULL); }
+
 /* U2b item 3: exported so the GB-screen shell (pdna_gbscreen.c) can persist a
  * SELECT scale-mode change from ANY GB screen's own exit path, not just
  * Settings' own B key (which already called the file-local cfg_save() directly
@@ -825,6 +980,16 @@ static void cfg_load(void) {
         log_line("cfg: romgb1 value too long (>%d), ignored", GB_ROM_PATH_MAX - 1);
       else if (!strcmp(k, "romgb2") && v[0] && !app_gb_rom_path_set(PDNA_GEN2, v))
         log_line("cfg: romgb2 value too long (>%d), ignored", GB_ROM_PATH_MAX - 1);
+      /* BACKLOG #186: dir_rom/dir_gb/dir_gbsav (the three new picker-kind folder
+       * memories) have no resident global to load into -- unlike "dir" (g_cwd),
+       * each is only needed at the moment ITS OWN picker kind opens, so
+       * browse_pick_spec() re-reads its one key on demand (cfg_read_raw_key()) instead
+       * of this function holding all three in RAM for the whole session (A3/the
+       * lane's "no new EWRAM statics" constraint). Recognised here only so they don't
+       * fall into se_config_apply()'s catch-all below -- nothing to apply, they are
+       * read straight back off disk when needed. A missing key there falls back to
+       * the SAVE folder g_cwd, per A1. */
+      else if (!strcmp(k, "dir_rom") || !strcmp(k, "dir_gb") || !strcmp(k, "dir_gbsav")) { /* no-op: read on demand */ }
       /* E4: "era_<kind>_<place>=<era>" -- se_config_apply() recognises the key
        * itself (the "era_" prefix + a valid kind/place pair) and returns false for
        * anything else, so this is a catch-all with no separate strncmp gate. An
@@ -872,10 +1037,10 @@ typedef struct {
  * tail from surviving under a shorter new one (lesson: text that can shorten needs an
  * explicit wipe). Row height matches ui_text_sel's own highlight rect exactly
  * (UI_ROW_H on a UI_ROW_H pitch), so neighbouring rows never share a scanline. */
-static void br_row_paint(int idx, int i, bool sel) {
+static void br_row_paint(const BrowseEntry* ents, int idx, int i, bool sel) {
   int y = 14 + i * UI_ROW_H;
   ui_fill_rect(3, y, UI_SCR_W - 6, UI_ROW_H, UI_PANEL);
-  const BrowseEntry* e = &g_entries[idx];
+  const BrowseEntry* e = &ents[idx];
   /* nm is a ui_truncate OUTPUT for up to 21 display columns; ui.h's contract wants
    * max_cols*4+1 (85) to be UTF-8-safe (FF_LFN_UNICODE means e->name can be real
    * multi-byte). NAME_MAX+2 (66) was under that -- it only stayed safe today via
@@ -898,10 +1063,10 @@ static void br_row_paint(int idx, int i, bool sel) {
 /* The per-selection detail block + status line, both pure functions of `sel` (plus the
  * filter/sort/count state folded into the caller's `full`/relist decision) -- a cursor
  * move alone must repaint them even when no row content changed. */
-static void br_detail_paint(int sel) {
+static void br_detail_paint(const BrowseEntry* ents, int sel, const BrowseSpec* spec) {
   ui_fill_rect(0, 116, UI_SCR_W, UI_FOOTER_RULE_Y - 116, UI_BG);
   if (g_count > 0) {
-    const BrowseEntry* e = &g_entries[sel];
+    const BrowseEntry* e = &ents[sel];
     /* 29 cols needs 117 B per ui.h's contract (e->name is real UTF-8 under
      * FF_LFN_UNICODE); dn[40] silently violated it. */
     char dn[128]; ui_truncate(dn, e->name, 29);
@@ -912,8 +1077,16 @@ static void br_detail_paint(int sel) {
     ui_text(2, 128, UI_DIM, meta);
   }
   char status[64], stc[40];
-  siprintf(status, "%d/%d  %s  %s", g_count ? sel + 1 : 0, g_count,
-           sort_label(), g_show_all ? "all" : ".sav");
+  /* D5: the "List full - some files not shown." warning pick_rom() used to show got
+   * lost when that implementation was deleted (BACKLOG #186) -- the GB-session ROM
+   * picker's cap (PICK_MAX_ART, mon_decomp-backed) is only ~107 entries, so a folder
+   * that busy needs SOME visible sign it isn't showing everything. " FULL" on the
+   * status line (already ui_truncate'd to 29 cols below, so a long path/sort label
+   * just drops it the same safe way it already drops anything else over budget,
+   * never overruns). */
+  siprintf(status, "%d/%d  %s  %s%s", g_count ? sel + 1 : 0, g_count,
+           sort_label(), g_show_all ? "all" : spec->filter_label,
+           g_count >= spec->cap ? " FULL" : "");
   ui_truncate(stc, status, 29);
   ui_text(2, 138, UI_OK, stc);
 }
@@ -928,7 +1101,7 @@ static void br_detail_paint(int sel) {
  * or touching ui_clear_gen() (sort_entries()/scan_dir() paint nothing themselves), so
  * a scalar-derived gate would miss it (the exact bug class an earlier repaint batch
  * shipped twice). Explicit invalidation at the mutation site is what closes that. */
-static void render_browser(int sel, int top, bool relist, BrowsePaint* pv) {
+static void __attribute__((noinline)) render_browser(BrowseEntry* ents, int sel, int top, bool relist, BrowsePaint* pv, const BrowseSpec* spec) {
   /* `top` is deliberately NOT part of `full` -- see the row loop below. Folding it in
    * here would pay the 76,800 B ui_clear() on every scroll, and wait_keys() DOES
    * auto-repeat the d-pad, so held-DOWN past VIS_ROWS is the single most common way
@@ -956,13 +1129,17 @@ static void render_browser(int sel, int top, bool relist, BrowsePaint* pv) {
      * long path) rather than an intentional margin. BACKLOG #36 item 6: 192 gives this
      * shallow, one-frame-deep buffer real headroom instead of landing exactly on the
      * edge of its own known-worst-case math. */
-    char title[192]; siprintf(title, "Pick .sav: %s", cwdt);
+    /* BACKLOG #186: spec->title ("Pick .sav" today, "Pick .gba"/"Pick .gb/.gbc"/
+     * "Pick GB save" for the other kinds) replaces the old hardcoded "Pick .sav" --
+     * for the .sav spec this composes the IDENTICAL string as before (A5). */
+    char title[192]; siprintf(title, "%s: %s", spec->title, cwdt);
     char cwdc[128]; ui_truncate(cwdc, title, 29);
     ui_text(2, 2, UI_TITLE, cwdc);
     ui_panel(0, 11, UI_SCR_W, 104, UI_PANEL, UI_BORDER);
     if (g_count == 0) {
-      ui_text(6, 40, UI_WARN, "(no folders or .sav files here)");
-      ui_text(6, 52, UI_DIM,  at_root() ? "Open the folder with your saves."
+      char empty[40]; siprintf(empty, "(no folders or %s files here)", spec->filter_label);
+      ui_text(6, 40, UI_WARN, empty);
+      ui_text(6, 52, UI_DIM,  at_root() ? spec->root_hint
                                         : "B = go up a folder.");
     }
     /* UI_FOOTER_Y, not a hard 150: this row is what every popup is laid out to clear, and
@@ -987,10 +1164,10 @@ static void render_browser(int sel, int top, bool relist, BrowsePaint* pv) {
       if (full || of != f || s != os) dirty |= 1u << i;
     }
     for (int i = 0; i < VIS_ROWS && top + i < g_count; i++)
-      if (dirty & (1u << i)) br_row_paint(top + i, i, top + i == sel);
+      if (dirty & (1u << i)) br_row_paint(ents, top + i, i, top + i == sel);
   }
 
-  if (full || sel != pv->sel) br_detail_paint(sel);
+  if (full || sel != pv->sel) br_detail_paint(ents, sel, spec);
 
   pv->top = top; pv->sel = sel; pv->valid = true; pv->gen = ui_clear_gen();
 }
@@ -1031,7 +1208,14 @@ static void ui_menu_row(int y, const char* text, bool sel) {
   ui_text(10, y, sel ? UI_SELTEXT : UI_TEXT, text);
 }
 
-static bool browse_menu(const BrowseEntry* fe) {
+/* D3 (fix pass): the ROM/GB pickers had no visible cancel once START stopped meaning
+ * "cancel" and started opening this menu (A1's unified chrome) -- the old footer's
+ * "START cancel" text is gone, "Close" only closes the MENU (back to the browser, not
+ * out of the whole picker), and B only cancels at the root, which nothing on screen
+ * says. Return: 0 = nothing changed, 1 = changed (re-scan), -1 = "Cancel picking"
+ * chosen (only offered when !spec->menu_extra -- the .sav spec has nothing to cancel
+ * TO, same reasoning as its B-at-root no-op). */
+static int browse_menu(const BrowseEntry* fe, const BrowseSpec* spec) {
   int sel = 0;
   bool changed = false;
   bool can_fileops = (fe && !fe->is_dir);
@@ -1050,7 +1234,10 @@ static bool browse_menu(const BrowseEntry* fe) {
   int  prev_sel = -1; bool valid = false; uint32_t gen = 0;
   for (;;) {
     int  n = 0;
-    enum { A_FILEOPS, A_SORTKEY, A_ORDER, A_FILES, A_HIDDEN, A_VERIFY, A_REBOOT, A_CLOSE };
+    /* BACKLOG #186: A_VERIFY/A_REBOOT are conditional now (spec->menu_extra), so the
+     * enum can no longer fix their slots -- act[] carries which action each BUILT row
+     * means, same as before, just no longer implied by array position. */
+    enum { A_FILEOPS, A_SORTKEY, A_ORDER, A_FILES, A_HIDDEN, A_VERIFY, A_REBOOT, A_CLOSE, A_CANCEL };
     if (can_fileops) {
       /* 16 cols needs 65 B per ui.h's contract (fe->name is real UTF-8); nm[24] was a
        * ui_truncate stack-smash next to prev_rows[] above -- "a smash silently poisons
@@ -1060,12 +1247,21 @@ static bool browse_menu(const BrowseEntry* fe) {
     }
     siprintf(rows[n], "Sort key:  %s", g_sort == SORT_NAME ? "Name" : g_sort == SORT_SIZE ? "Size" : "Date"); act[n++] = A_SORTKEY;
     siprintf(rows[n], "Order:     %s", g_sortrev ? "descending" : "ascending"); act[n++] = A_ORDER;
-    siprintf(rows[n], "Files:     %s", g_show_all ? "all files" : ".sav only"); act[n++] = A_FILES;
+    { char fonly[24]; siprintf(fonly, "%s only", spec->filter_label);
+      siprintf(rows[n], "Files:     %s", g_show_all ? "all files" : fonly); act[n++] = A_FILES; }
     siprintf(rows[n], "Hidden:    %s", g_show_hidden ? "shown" : "hidden"); act[n++] = A_HIDDEN;
     /* Reachable from the browser, i.e. WITHOUT opening a save — the boot hold (R+SELECT)
-     * covers the case where even this menu cannot be reached. */
-    strcpy(rows[n], "Verify ROM image..."); act[n++] = A_VERIFY;
-    strcpy(rows[n], "Reboot to flashcart menu..."); act[n++] = A_REBOOT;
+     * covers the case where even this menu cannot be reached. Only the .sav (launch)
+     * spec offers these two -- the ROM/GB pickers are opened mid-session from Settings,
+     * where "reboot" or "verify the whole ROM image" make no sense as menu items. */
+    if (spec->menu_extra) {
+      strcpy(rows[n], "Verify ROM image..."); act[n++] = A_VERIFY;
+      strcpy(rows[n], "Reboot to flashcart menu..."); act[n++] = A_REBOOT;
+    } else {
+      /* D3: the ROM/GB pickers' only way out otherwise is B at the root (unsaid
+       * anywhere on screen) -- this row is the one visible, discoverable cancel. */
+      strcpy(rows[n], "Cancel picking"); act[n++] = A_CANCEL;
+    }
     strcpy(rows[n], "Close"); act[n++] = A_CLOSE;
 
     /* Building rows[] above is pure string formatting (no SD I/O) -- cheap enough to
@@ -1091,38 +1287,88 @@ static bool browse_menu(const BrowseEntry* fe) {
     prev_sel = sel; valid = true; gen = ui_clear_gen();
 
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
-    if (k & KEY_B) return changed;
+    if (k & KEY_B) return changed ? 1 : 0;
     else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : n - 1;
     else if (k & KEY_DOWN) sel = (sel + 1) % n;
     else if (k & KEY_A) {
       switch (act[sel]) {
-        case A_FILEOPS: if (file_actions(fe)) return true; break;   /* re-scan after a file op */
+        case A_FILEOPS: if (file_actions(fe)) return 1; break;   /* re-scan after a file op */
         case A_SORTKEY: g_sort = (BrSortKey)((g_sort + 1) % 3); changed = true; break;
         case A_ORDER:   g_sortrev = !g_sortrev; changed = true; break;
         case A_FILES:   g_show_all = !g_show_all; changed = true; break;
         case A_HIDDEN:  g_show_hidden = !g_show_hidden; changed = true; break;
+        case A_CANCEL:  return -1;                     /* D3: whole picker cancels, not just this menu */
         case A_VERIFY:  pdna_romfull_screen(); app_log_flush(); break;  /* its verdict on the card too */
         case A_REBOOT:  do_reboot(); break;            /* returns only if cancelled */
-        case A_CLOSE:   return changed;
+        case A_CLOSE:   return changed ? 1 : 0;
       }
     }
   }
 }
 
-/* Browse the SD for a .sav. Writes the chosen full path to out and returns true;
- * navigation never leaves the browser (A enters a folder, B goes up). */
-static bool browse_pick(char* out, int cap) {
-  scan_dir();
+/* BACKLOG #186 / D1 fix: dispatches the "remember this folder" write per
+ * spec->cfg_key -- "dir" (the .sav spec) goes through the plain, unchanged
+ * cfg_save() (A5: byte-for-byte .sav behaviour); every other kind goes through the
+ * lighter cfg_save_ex(), which touches ONLY its own dir_* line and round-trips the
+ * rest from disk. `sav_dir` is the caller's saved_cwd (the REAL .sav folder,
+ * stashed before g_cwd was repurposed) -- passed straight through as cfg_save_ex's
+ * dir_val so "dir=" never gets written from the borrowed g_cwd. Unused (0) for the
+ * "dir" spec itself, which never repurposes anything. */
+static void cfg_save_for(const BrowseSpec* spec, const char* sav_dir) {
+  if (!strcmp(spec->cfg_key, "dir")) cfg_save();
+  else cfg_save_ex(spec->cfg_key, g_cwd, sav_dir);
+}
+
+/* Seeds g_cwd from spec's own remembered folder (A1). Split out of browse_pick_spec
+ * (noinline) so `remembered`/`DIR d` -- only needed once, at entry -- don't sit in
+ * browse_pick_spec's OWN frame for that function's entire lifetime (STACK ok
+ * review: browse_pick_spec's reported frame was 4,080 B, 264 B over budget on the
+ * deepest chain; a temporary that is dead before the loop even starts should not
+ * cost anything once it returns). */
+static void __attribute__((noinline)) browse_seed_cwd(const BrowseSpec* spec) {
+  char remembered[GB_ROM_PATH_MAX] = {0};
+  bool have = cfg_read_raw_key(spec->cfg_key, remembered, sizeof remembered) && remembered[0];
+  DIR d;
+  if (have && f_opendir(&d, remembered) == FR_OK) { f_closedir(&d); strcpy(g_cwd, remembered); }
+  /* else: leave g_cwd as whatever the caller already set it to (the SAVE folder) --
+   * A1's "a missing key starts in the SAVE folder g_cwd, not /" rule, and the same
+   * fallback a stale/deleted remembered folder gets. */
+}
+
+/* The ONE file browser core (BACKLOG #186): the launch (.sav) browser IS this,
+ * parameterised; the three pdna_map.c pickers (app_pick_rom/app_pick_gb_save/
+ * app_pick_gb_rom) call it too, each with their own BrowseSpec. Writes the chosen
+ * full path to `out` and returns true; navigation never leaves the browser (A enters
+ * a folder, B goes up).
+ *
+ * g_cwd is shared scratch across every kind (only one picker is ever open at a time
+ * -- they are all modal), so a non-"dir" spec seeds it from ITS OWN remembered
+ * folder (cfg_read_raw_key(), falling back to the SAVE folder per A1 when that key
+ * is absent) and restores the REAL .sav folder before returning, so a later re-entry
+ * into the launch browser is never left pointed at wherever the ROM/GB picker last
+ * was. The .sav spec (cfg_key == "dir") skips all of this: g_cwd IS its own memory,
+ * exactly as before this lane. */
+bool browse_pick_spec(const BrowseSpec* spec, char* out, int cap) {
+  bool is_dir_key = !strcmp(spec->cfg_key, "dir");
+  char saved_cwd[PATH_MAX];
+  if (!is_dir_key) {
+    strcpy(saved_cwd, g_cwd);
+    browse_seed_cwd(spec);
+  }
+
+  BrowseEntry* ents = spec->entries;
+  scan_dir(spec, ents);
   int sel = 0, top = 0;
   bool relist = false;                /* the very first frame is covered by !pv.valid */
   BrowsePaint bp = {0};
+  bool picked = false;
   for (;;) {
     if (sel >= g_count) sel = g_count > 0 ? g_count - 1 : 0;
     if (sel < 0) sel = 0;
     if (sel < top) top = sel;
     if (sel >= top + VIS_ROWS) top = sel - VIS_ROWS + 1;
 
-    render_browser(sel, top, relist, &bp);
+    render_browser(ents, sel, top, relist, &bp, spec);
     relist = false;
 
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B | KEY_L | KEY_R | KEY_SELECT | KEY_START);
@@ -1135,26 +1381,55 @@ static bool browse_pick(char* out, int cap) {
     else if (k & KEY_SELECT) {           /* cycle the 6 sort states (key x order) */
       int s = ((int)g_sort * 2 + (g_sortrev ? 1 : 0) + 1) % 6;
       g_sort = (BrSortKey)(s / 2); g_sortrev = (s & 1) != 0;
-      sort_entries(); sel = 0; top = 0; cfg_save(); relist = true;   /* remember the sort */
+      sort_entries(ents); sel = 0; top = 0; cfg_save_for(spec, is_dir_key ? 0 : saved_cwd); relist = true;   /* remember the sort */
     }
-    else if (k & KEY_START) { if (browse_menu(g_count ? &g_entries[sel] : 0)) { scan_dir(); sel = 0; top = 0; cfg_save(); relist = true; } }
-    else if (k & KEY_B)    { if (!at_root()) { path_up(); scan_dir(); sel = 0; top = 0; cfg_save(); relist = true; } }   /* remember the folder */
+    else if (k & KEY_START) {
+      int r = browse_menu(g_count ? &ents[sel] : 0, spec);
+      if (r < 0 && !is_dir_key) break;                 /* D3: "Cancel picking" -- picked stays false */
+      if (r > 0) { scan_dir(spec, ents); sel = 0; top = 0; cfg_save_for(spec, is_dir_key ? 0 : saved_cwd); relist = true; }
+    }
+    else if (k & KEY_B) {
+      if (!at_root()) { path_up(); scan_dir(spec, ents); sel = 0; top = 0; cfg_save_for(spec, is_dir_key ? 0 : saved_cwd); relist = true; }
+      /* At root, the .sav (launch) spec's B is a deliberate no-op -- browse_pick()
+       * is main()'s own outer loop, so there is nothing to cancel back to (unchanged,
+       * A5). Every OTHER kind is opened mid-session from Settings and its caller
+       * (app_register_rom() etc.) expects a false return on cancel -- the old
+       * pick_rom() had an explicit START-cancel for this; the unified menu's START now
+       * opens the FILE MENU instead (A1), so B-at-root is what is left to mean
+       * "cancel" for these, and it is the same key the old picker's own "B up" used. */
+      else if (!is_dir_key) break;                              /* picked stays false */
+    }
     else if (k & KEY_A) {
       if (g_count == 0) continue;
-      const BrowseEntry* e = &g_entries[sel];
+      const BrowseEntry* e = &ents[sel];
       char np[PATH_MAX];
       if (!path_join(g_cwd, e->name, np)) continue;
       if (e->is_dir) {
         strcpy(g_cwd, np);
-        scan_dir();
-        sel = 0; top = 0; cfg_save(); relist = true;             /* remember the folder */
+        scan_dir(spec, ents);
+        sel = 0; top = 0; cfg_save_for(spec, is_dir_key ? 0 : saved_cwd); relist = true;             /* remember the folder */
       } else if ((int)strlen(np) < cap) {
-        cfg_save();                                           /* remember where this save was picked from */
+        cfg_save_for(spec, is_dir_key ? 0 : saved_cwd);                                   /* remember where this file was picked from */
         strcpy(out, np);
-        return true;
+        picked = true;
+        break;
       }
     }
   }
+
+  if (!is_dir_key) strcpy(g_cwd, saved_cwd);   /* g_cwd is shared scratch -- give the real folder back */
+  return picked;
+}
+
+/* browse_pick() is the .sav instance of the core above -- A1. */
+static const char* const k_sav_exts_unused[1] = { 0 };  /* BR_MATCH_SAV never reads exts */
+static bool browse_pick(char* out, int cap) {
+  const BrowseSpec spec = {
+    .title = "Pick .sav", .filter_label = ".sav", .root_hint = "Open the folder with your saves.",
+    .match_mode = BR_MATCH_SAV, .exts = k_sav_exts_unused, .cfg_key = "dir", .menu_extra = true,
+    .entries = g_entries, .cap = MAX_ENTRIES,
+  };
+  return browse_pick_spec(&spec, out, cap);
 }
 
 static const char* ver_label(Gen3Version v, bool frlg) {

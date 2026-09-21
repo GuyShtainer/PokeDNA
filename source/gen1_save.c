@@ -416,3 +416,21 @@ Gen1Status gen1_check_banks(Gen1ReadFn rd, void* ctx, Gen1Save* io) {
   io->banks_checked = true;
   return GEN1_OK;
 }
+
+/* BACKLOG #191b: see gen1_detect_yellow()'s own header comment (gen1_save.h) for the
+ * rule this implements. Assertions: `window` non-NULL whenever `len` claims coverage
+ * (rule 7 -- every parameter is validated, not trusted); the loop's bound is the fixed
+ * GEN1_YELLOW_WIN_LEN, never `len` itself, so a caller reporting a longer buffer never
+ * walks past the window this rule actually checks. */
+int gen1_detect_yellow_window(const uint8_t* window, uint32_t len) {
+  if (len < GEN1_YELLOW_WIN_LEN) return -1;         /* can't cover the window: ambiguous */
+  if (!window) return -1;
+  for (uint32_t i = 0; i < GEN1_YELLOW_WIN_LEN; i++)
+    if (window[i] != 0) return 1;
+  return -1;                                        /* all zero: never claimed "not Yellow" */
+}
+
+int gen1_detect_yellow(const uint8_t* sav, uint32_t len) {
+  if (!sav || len < GEN1_YELLOW_WIN_OFF + GEN1_YELLOW_WIN_LEN) return -1;
+  return gen1_detect_yellow_window(sav + GEN1_YELLOW_WIN_OFF, GEN1_YELLOW_WIN_LEN);
+}

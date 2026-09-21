@@ -2,6 +2,7 @@
 #define PDNA_MAP_H
 
 #include <stdint.h>
+#include <stdbool.h>
 #include "gen3_trainer.h"   /* PkGame */
 
 /* Overworld map screen. Reads map data live out of the user's OWN Pokemon ROM on the
@@ -11,6 +12,55 @@
  * `sb1`/`sb2` are the open save's blocks (sb1 for the player position and event
  * flags; sb2 for the teleport's specialSaveWarpFlags). B returns. */
 void pdna_map(uint8_t* sb1, uint8_t* sb2, PkGame game);
+
+/* ---- the ONE file browser (BACKLOG #186) ---------------------------------------
+ * The launch (.sav) browser and the three pickers below (app_pick_rom/app_pick_gb_save/
+ * app_pick_gb_rom) are the SAME code now: same chrome, same sort/filter/hidden toggles,
+ * same file ops, same detail line and footer -- only the title, the extension filter,
+ * the remembered-folder config key, and whether the START menu's Verify-ROM/Reboot
+ * rows apply differ per kind. `browse_pick_spec()` (implemented in pdna_main.c, which
+ * owns the shared chrome + g_cwd/g_sort/... state) is the one core; pdna_main.c's own
+ * private browse_pick() is just its ".sav" instance. */
+
+#define BR_NAME_MAX 64   /* one strncpy cap for every entry's FatFs LFN, every kind    */
+
+typedef struct {
+  char     name[BR_NAME_MAX];
+  uint32_t size;                  /* file size in bytes (0 for folders)              */
+  uint32_t dosdt;                 /* (fdate<<16)|ftime, for the date sort            */
+  bool     is_dir;
+} BrowseEntry;
+
+typedef enum {
+  BR_MATCH_SAV,      /* has_sav_ext(): any name CONTAINING ".sav" (backups included) */
+  BR_MATCH_SUFFIX,   /* plain case-insensitive suffix match against `exts`           */
+} BrMatchMode;
+
+/* Every field is the CALLER's: `entries`/`cap` size the listing buffer (A3 -- the
+ * launch browser hands in its own resident g_entries/MAX_ENTRIES; the three pdna_map.c
+ * pickers below hand in an arena- or mon_decomp-borrowed buffer instead, because
+ * g_entries is ALSO box_oam.c's icon pose-swap cache and the GB reconcile/migration
+ * scratch (app_box_swap_acquire, pdna_app.h). D6 correction: those two are NOT
+ * actually reachable at the same time today -- Settings (where app_pick_rom/
+ * app_pick_gb_save/app_pick_gb_rom are opened from) is reachable only from the Gen-3
+ * nav and the GB session's own top-level nav, never from inside pdna_box() while a
+ * box-screen borrow is live. This is a conservative separation, kept so a FUTURE
+ * caller reachable from that window cannot alias it by accident, not evidence of a
+ * proven conflict today. `exts` is a NULL-terminated suffix list, unused when
+ * match_mode is BR_MATCH_SAV. */
+typedef struct {
+  const char*        title;          /* e.g. "Pick .sav" -- the browser's title prefix   */
+  const char*        filter_label;   /* e.g. ".sav" -- the status line's filter tag       */
+  const char*        root_hint;      /* D4: root empty-state hint, e.g. "Open the folder with your saves." */
+  BrMatchMode        match_mode;
+  const char* const* exts;
+  const char*        cfg_key;        /* "dir" | "dir_rom" | "dir_gb" | "dir_gbsav"        */
+  bool                menu_extra;    /* Verify ROM / Reboot rows in the START menu         */
+  BrowseEntry*        entries;
+  int                 cap;
+} BrowseSpec;
+
+bool browse_pick_spec(const BrowseSpec* spec, char* out, int cap);
 
 /* Browse the SD for a .gba (the map's own picker, arena-backed). Returns true with
  * the full path in out. Fails (false) when the arena is unavailable — i.e. unsaved

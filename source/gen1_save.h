@@ -57,6 +57,38 @@
 #define GEN1_SUM_FIRST       0x2598u   /* checksum covers [FIRST, LAST] inclusive */
 #define GEN1_SUM_LAST        0x3522u
 
+/* BACKLOG #191b: the 128-byte window Yellow alone writes real data into, Red/Blue
+ * never does. Derivation (numbers only, clean-room, from pokeyellow's/pokered's own
+ * ram/wram.asm + ram/sram.asm, assets/upstream/ — every figure below is re-derivable
+ * from those two files' `ds`/`db`/`dw` sizes and macro definitions, nothing here
+ * copies their code or prose):
+ *   - ram/sram.asm's "Save Data" section: `ds $598` then `sGameData:: sPlayerName::
+ *     ds NAME_LENGTH(11) / sMainData:: ds wMainDataEnd-wMainDataStart / ...` — so
+ *     sMainData (== GEN1_SUM_FIRST's "Main data" block) begins at GEN1_OFF_PLAYER_NAME
+ *     + 11 = 0x2598 + 0xB = 0x25A3. (Cross-checked: summing every field in
+ *     wMainDataStart's own declared order up to wPlayerID reproduces the EXISTING
+ *     GEN1_OFF_TRAINER_ID (0x2605) above exactly — 0x25A3 + 98 == 0x2605 — so this
+ *     base is right, not a fresh guess.)
+ *   - Both games' wram.asm agree byte-for-byte from wMainDataStart through
+ *     wDestinationWarpID (313 bytes: NUM_POKEMON=151 dex flag arrays, bag, badges,
+ *     map header, 4 map_connection_struct(11B), sprite set, warp table...).
+ *   - Right there pokered's wram.asm has one anonymous `ds 128` with no field name
+ *     (never written by any Red/Blue code — nothing in that source references an
+ *     address inside it). pokeyellow's wram.asm inserts its ENTIRE Pikachu-follower
+ *     block in EXACTLY that same 128 bytes (summing every wPikachu-prefixed/wd4xx field
+ *     Yellow adds between wDestinationWarpID and wNumSigns — the same symbol both
+ *     games resume at — totals exactly 128), so the two games' layouts re-converge
+ *     one byte apart: this window is where they differ, unaccounted for by anything
+ *     else PokeDNA already reads.
+ *   - SRAM offset = 0x25A3 + 313 = 0x26DC..0x275C (128 bytes). Confirmed against the
+ *     real corpus: Yellow.sav has 0xCC at 0x271C (== 0x26DC+0x40, wPikachuHappiness's
+ *     own slot) and 0x80 immediately after (0x271D, wPikachuMood's slot — 0x80 is
+ *     pokeyellow's own documented init value for that field, engine/movie/
+ *     oak_speech/init_player_data.asm: "ld a,$80 ... ld [wPikachuMood],a"); Red.sav
+ *     is all zero across the whole window. */
+#define GEN1_YELLOW_WIN_OFF  0x26DCu
+#define GEN1_YELLOW_WIN_LEN  128u
+
 /* sHallOfFame (SRAM bank 0, BACKLOG #89) -- 50 teams x 96 B, ENTIRELY BELOW
  * GEN1_SUM_FIRST: outside the main checksum window, so a write here goes through
  * gen1_write_outside_sum's explicit allowlist (gen1_write.h), never gen1_write_range_ex. */
@@ -211,5 +243,27 @@ int gen1_char_ascii(uint8_t c, char out[3]);
 /* Decode an `nbytes`-long GB name field into `out` (cap includes the NUL). Stops at
  * the 0x50 terminator. Returns the ASCII length written. */
 int gen1_decode_name(char* out, int cap, const uint8_t* src, int nbytes);
+
+/* BACKLOG #191b: is this Western Gen-1 save a Yellow save, going only by bytes that
+ * are meaningful padding in Red/Blue and Yellow-exclusive data in Yellow (see
+ * GEN1_YELLOW_WIN_OFF's own comment for the derivation)?
+ *   1  = Yellow: at least one byte in the window is non-zero. Every real Yellow save
+ *        writes non-zero data there from the moment the file is created (happiness
+ *        and mood are both initialised non-zero, engine/movie/oak_speech's own
+ *        InitPlayerData), and nothing in Red/Blue's code ever touches that address
+ *        range, so a non-zero byte there cannot come from anywhere else.
+ *  -1  = ambiguous: the whole window reads zero, OR `sav`/`len` cannot cover it.
+ *        This is deliberately never claimed as "not Yellow" (0): Pikachu's happiness
+ *        is clamped down to 0x00 by neglect during play (its own update routine),
+ *        so an all-zero window does not prove Red/Blue — only that this detector
+ *        cannot tell. A caller that needs a firm "not Yellow" answer still has to
+ *        ask (Red vs Blue is genuinely ambiguous from the save alone anyway).
+ *   0  is defined by the signature but this implementation never returns it, for the
+ *      reason above — there is no byte pattern this file can prove is Red/Blue-only.
+ * `sav`/`len` is the FULL SRAM image indexed from offset 0 (host tests: the whole
+ * 32 KiB .sav). gen1_detect_yellow_window() below is the same check for a caller
+ * that has only read the 128-byte window itself (the GBA build's streamed mount). */
+int gen1_detect_yellow(const uint8_t* sav, uint32_t len);
+int gen1_detect_yellow_window(const uint8_t* window, uint32_t len);
 
 #endif /* GEN1_SAVE_H */
