@@ -312,6 +312,35 @@ static bool box_save(void) {                    /* write the loaded box's record
   return ok;
 }
 
+/* BACKLOG #163: box_save()'s own refusal (native-invariant OR the backup/rename triage)
+ * used to be discarded silently by both dirty-flush callers below -- the UI kept going as
+ * if the flush had landed, the box stayed unsaveable, and later edits in it were dropped
+ * on the NEXT flip with only a log line. Retries box_save() with a blocking "try again?"
+ * choice (A retry / B keep editing) between attempts; box_save() itself already showed
+ * the specific reason on a failed rename (msg_wait, OBJ-bracketed) -- this is the one
+ * question it cannot ask on the caller's behalf (review G4: it runs with no grid on
+ * screen). false => the caller must NOT treat the box as flushed: g_dirty (or the
+ * deletion queue) is left exactly as box_save() last left it, and the box must not be
+ * paged away from (a silent flip would drop the very edits this exists to protect). A
+ * hard cap (rule 2: every loop needs a provable bound) that a real user session will
+ * never hit -- retries are gated on the user's own A/B choice, not a busy-loop.
+ * Moved above pdna_bank_clear_slots (BACKLOG #181) so its own page-out flush can call
+ * this directly instead of the bare, unchecked `if (g_dirty) box_save();` it used to
+ * have -- pdna_bank_clear_slots is the THIRD site this discipline reaches (after
+ * banksrc_records / pdna_bank_flush_deletions, both below, fixed by BACKLOG #163). */
+static bool box_save_or_keep_dirty(void) {
+  for (int tries = 0; tries < 100; tries++) {
+    if (box_save()) return true;
+    if (!app_can_edit()) return false;              /* read-only cart: nothing to retry */
+    u16 dc = REG_DISPCNT;
+    REG_DISPCNT &= ~DCNT_OBJ;                        /* same OBJ bracket box_save's own msg_wait uses */
+    bool retry = app_confirm(PDNA_BANK_UNSAVED_BANNER, PDNA_BANK_RETRY_L1);
+    REG_DISPCNT = dc;
+    if (!retry) return false;                        /* B: keep editing -- box stays dirty */
+  }
+  return false;
+}
+
 /* Deferred cross-screen deletions: a mon carried Bank->PC (or Bank->party) is removed from
  * the bank only at the overall save phase (AFTER the PC is written), so the move needs no
  * prompt and can't lose the mon — worst case a duplicate if interrupted between the two
@@ -365,7 +394,19 @@ void pdna_bank_hide_pending(int box, PkMon g[BOX_RECS]) {
  * Returning false leaves the file untouched => the move degrades to a safe, recoverable DUPLICATE. */
 bool pdna_bank_clear_slots(int box, const uint8_t* slots, const uint8_t (*recs80)[80], int n) {
   if (box < 0 || box >= BANK_BOXES || n <= 0) return false;
-  if (g_loaded != box) { if (g_dirty) box_save(); if (!box_load(box)) return false; }   /* page-in must be COMPLETE */
+  if (g_loaded != box) {
+    /* BACKLOG #181: same discipline banksrc_records / pdna_bank_flush_deletions already
+     * got from BACKLOG #163 -- the box being LEFT must actually be saved before this
+     * pages away from it. The old `if (g_dirty) box_save();` fired the flush and moved
+     * on regardless of its verdict, so a failed flush's edits were gone the instant
+     * box_load(box) below overwrote the one shared buffer, with only a log line to show
+     * for it. box_save_or_keep_dirty() already leaves g_dirty (and the marker) set
+     * exactly as box_save()'s own verdict would on failure -- refusing here just means
+     * this function's own false (every caller already treats it as a safe D7 duplicate,
+     * pdna_box.c:1153/1268/2216) instead of silently discarding the OLD box's edits. */
+    if (g_dirty && !box_save_or_keep_dirty()) return false;
+    if (!box_load(box)) return false;                           /* page-in must be COMPLETE */
+  }
   int cleared = 0;
   for (int i = 0; i < n; i++) {
     if (slots[i] >= BOX_RECS) continue;
@@ -377,30 +418,6 @@ bool pdna_bank_clear_slots(int box, const uint8_t* slots, const uint8_t (*recs80
   if (!cleared) return false;                                  /* nothing matched -> do NOT rewrite the box */
   g_dirty = true;
   return box_save();
-}
-/* BACKLOG #163: box_save()'s own refusal (native-invariant OR the backup/rename triage)
- * used to be discarded silently by both dirty-flush callers below -- the UI kept going as
- * if the flush had landed, the box stayed unsaveable, and later edits in it were dropped
- * on the NEXT flip with only a log line. Retries box_save() with a blocking "try again?"
- * choice (A retry / B keep editing) between attempts; box_save() itself already showed
- * the specific reason on a failed rename (msg_wait, OBJ-bracketed) -- this is the one
- * question it cannot ask on the caller's behalf (review G4: it runs with no grid on
- * screen). false => the caller must NOT treat the box as flushed: g_dirty (or the
- * deletion queue) is left exactly as box_save() last left it, and the box must not be
- * paged away from (a silent flip would drop the very edits this exists to protect). A
- * hard cap (rule 2: every loop needs a provable bound) that a real user session will
- * never hit -- retries are gated on the user's own A/B choice, not a busy-loop. */
-static bool box_save_or_keep_dirty(void) {
-  for (int tries = 0; tries < 100; tries++) {
-    if (box_save()) return true;
-    if (!app_can_edit()) return false;              /* read-only cart: nothing to retry */
-    u16 dc = REG_DISPCNT;
-    REG_DISPCNT &= ~DCNT_OBJ;                        /* same OBJ bracket box_save's own msg_wait uses */
-    bool retry = app_confirm(PDNA_BANK_UNSAVED_BANNER, PDNA_BANK_RETRY_L1);
-    REG_DISPCNT = dc;
-    if (!retry) return false;                        /* B: keep editing -- box stays dirty */
-  }
-  return false;
 }
 
 /* BACKLOG #150 S150-8 decision 10/G-M3: KEEP failures queued instead of silently
@@ -529,7 +546,7 @@ static bool __attribute__((noinline)) bank_backup_v1(void) {
     return false;
   }
 
-  if (g_dirty) box_save();   /* flush whatever is resident before backing up */
+  if (g_dirty && !box_save_or_keep_dirty()) return false;   /* BACKLOG #181: never page away from an unsaved box */
 
   int count = 0;
   for (int b = 0; b < BANK_BOXES; b++) {
