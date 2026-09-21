@@ -723,6 +723,21 @@ static void append_gen1_boundary(const char* file) {
   CHECKF(gbh_team(&s, present - 1, &oldest), "%s: read oldest surviving team", file);
   CHECKF(strcmp(oldest.mon[0].nick, "GT001") == 0, "%s: oldest surviving team is '%s', "
         "want 'GT001' (GT000 must have been evicted by the 51st append)", file, oldest.mon[0].nick);
+
+  /* b194 review D3: the single oldest-survivor check above is too weak to catch a
+   * general shift-index error (e.g. an off-by-one that duplicates or drops teams
+   * somewhere in the MIDDLE of the table without disturbing either end) -- check
+   * the FULL sequence. UI index i_ui (0=newest) must read GT(50-i_ui) for every
+   * i_ui in 0..49: newest (i_ui=0) is GT050 (the 51st append, 0-based i=50),
+   * oldest surviving (i_ui=49) is GT001 (the 2nd append, i=1) -- GT000 (the very
+   * first append) is the one team evicted. */
+  for (int i_ui = 0; i_ui < 50; i_ui++) {
+    GbHofTeam t;
+    char want[16]; snprintf(want, sizeof want, "GT%03d", 50 - i_ui);
+    CHECKF(gbh_team(&s, i_ui, &t), "%s: read UI index %d in the full-sequence check", file, i_ui);
+    CHECKF(strcmp(t.mon[0].nick, want) == 0, "%s: UI index %d is '%s', want '%s' "
+          "(full post-eviction sequence check)", file, i_ui, t.mon[0].nick, want);
+  }
 }
 
 static void append_gen2_boundary(const char* file) {
@@ -778,6 +793,19 @@ static void append_gen2_boundary(const char* file) {
 
   int present = gbh_team_count_present(&s);
   CHECKF(present == 30, "%s: present after 31 appends = %d, want 30", file, present);
+
+  /* b194 review D3: same full-sequence check as append_gen1_boundary's own --
+   * UI index i_ui (0=newest) must read GT(30-i_ui) for every i_ui in 0..29:
+   * newest (i_ui=0) is GT030 (the 31st append, 0-based i=30), oldest surviving
+   * (i_ui=29) is GT001 (the 2nd append, i=1) -- GT000 was evicted by the 31st
+   * append's own shift (Gen 2 shifts on EVERY append, not just once full). */
+  for (int i_ui = 0; i_ui < 30; i_ui++) {
+    GbHofTeam t;
+    char want[16]; snprintf(want, sizeof want, "GT%03d", 30 - i_ui);
+    CHECKF(gbh_team(&s, i_ui, &t), "%s: read UI index %d in the full-sequence check", file, i_ui);
+    CHECKF(strcmp(t.mon[0].nick, want) == 0, "%s: UI index %d is '%s', want '%s' "
+          "(full post-eviction sequence check)", file, i_ui, t.mon[0].nick, want);
+  }
 }
 
 /* ---- O2: b194 review D2 -- Gen 2's count is HELD at 200 once reached, never
@@ -852,6 +880,40 @@ static void delete_inverse(const char* file) {
   CHECKF(gbh_delete_team(&s, 0) == GBS_OK, "%s: delete the last remaining team (A)", file);
   CHECKF(gbh_count(&s) == 0, "%s: count after deleting the only team = %d, want 0", file, gbh_count(&s));
   CHECKF(gbh_delete_team(&s, 0) == GBS_ERR_ARG, "%s: delete on an empty HoF refused", file);
+
+  /* b194 review D3: the two-team scenario above only ever deletes the NEWEST
+   * team (UI index 0), which a shift-off-by-one that only breaks a MIDDLE
+   * removal could pass unnoticed. Append A, B, C (storage order oldest-first
+   * on Gen 1: A, B, C; newest-first on Gen 2: C, B, A -- UI order is ALWAYS
+   * newest-first: C, B, A) and delete UI index 1 (B, the middle one), then
+   * check the FULL remaining sequence is exactly (C, A) -- not just that B is
+   * gone, but that C stayed at UI index 0 and A landed at UI index 1. */
+  CHECKF(gbh_clear(&s) == GBS_OK, "%s: re-clear for the 3-team middle-delete scenario", file);
+  GbHofTeam a2, b2, c2;
+  build_team(&a2, 1, 5, "TEAMA");
+  build_team(&b2, 4, 10, "TEAMB");
+  build_team(&c2, 7, 15, "TEAMC");
+  CHECKF(gbh_append_team(&s, &a2) == GBS_OK, "%s: 3-team: append A", file);
+  CHECKF(gbh_append_team(&s, &b2) == GBS_OK, "%s: 3-team: append B", file);
+  CHECKF(gbh_append_team(&s, &c2) == GBS_OK, "%s: 3-team: append C", file);
+
+  GbHofTeam pre_del;
+  CHECKF(gbh_team(&s, 1, &pre_del), "%s: 3-team: read UI index 1 before delete", file);
+  CHECKF(strcmp(pre_del.mon[0].nick, "TEAMB") == 0, "%s: 3-team: UI index 1 before "
+        "delete is '%s', want 'TEAMB' (sanity -- the scenario deletes the right slot)",
+        file, pre_del.mon[0].nick);
+
+  CHECKF(gbh_delete_team(&s, 1) == GBS_OK, "%s: 3-team: delete UI index 1 (B, the middle team)", file);
+  CHECKF(gbh_team_count_present(&s) == 2, "%s: 3-team: present after deleting the "
+        "middle team = %d, want 2", file, gbh_team_count_present(&s));
+
+  GbHofTeam seq0, seq1;
+  CHECKF(gbh_team(&s, 0, &seq0), "%s: 3-team: read UI index 0 after delete", file);
+  CHECKF(gbh_team(&s, 1, &seq1), "%s: 3-team: read UI index 1 after delete", file);
+  CHECKF(strcmp(seq0.mon[0].nick, "TEAMC") == 0, "%s: 3-team full-sequence after "
+        "deleting B: UI index 0 is '%s', want 'TEAMC'", file, seq0.mon[0].nick);
+  CHECKF(strcmp(seq1.mon[0].nick, "TEAMA") == 0, "%s: 3-team full-sequence after "
+        "deleting B: UI index 1 is '%s', want 'TEAMA'", file, seq1.mon[0].nick);
 }
 
 int main(void) {
