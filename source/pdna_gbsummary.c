@@ -731,7 +731,17 @@ static int pdna_gbsummary_inner(GbEditMon* e, bool can_edit, bool start_editing,
        * shows is still exactly right. */
       PkMon conv;
       bool conv_ok = gbsum_convert_left(c.e, &conv);
-      bool reconv = !shadow_valid || conv_ok != left_ok ||
+      /* BACKLOG #190: `full` (not just !shadow_valid) must force a left-panel redraw
+       * too -- msg_wait()'s refusal dialog (pdna_main.c, (16,48)-(224,118)) overlaps
+       * pdna_summary_bg()'s own excluded left-panel rect ((0,11)-(92,150), see its
+       * header comment), and a REFUSED edit changes zero bytes of `c.e`, so the old
+       * `!shadow_valid || conv_ok != left_ok || memcmp(...)` never noticed the panel
+       * needed erasing even though `full` (this loop's own repaint gate, keyed to
+       * ui_clear_gen()) was already true -- the #119 trap class (a local partial-
+       * repaint shadow not keyed to the same counter the rest of the screen uses),
+       * already fixed this same way in pdna_gbflags.c/pdna_fly.c/pdna_gbfly.c.
+       * `full` is a strict superset of the old `!shadow_valid` term. */
+      bool reconv = full || conv_ok != left_ok ||
                     (conv_ok && memcmp(&conv, &left_mon, sizeof conv) != 0);
       if (reconv) { left_mon = conv; left_ok = conv_ok; }
 
