@@ -546,7 +546,7 @@ static bool __attribute__((noinline)) bank_backup_v1(void) {
     return false;
   }
 
-  if (g_dirty) box_save();   /* flush whatever is resident before backing up */
+  if (g_dirty && !box_save_or_keep_dirty()) return false;   /* BACKLOG #181: never page away from an unsaved box */
 
   int count = 0;
   for (int b = 0; b < BANK_BOXES; b++) {
