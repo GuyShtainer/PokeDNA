@@ -136,20 +136,44 @@ typedef int (*ScanCb)(const uint8_t* w);
  * at a fixed offset -- picked by reading the callback, not guessed -- so the gate
  * can never reject a position the real callback would have accepted: it is a
  * strict pre-check of one of the callback's own early conditions, not a new,
- * independent one. `two_step` is g1_dex_cb's own special case (no single fixed
- * byte -- PokedexOrder's SHAPE is "every byte a valid dex number", so the gate
- * checks the cheapest two bytes of that shape instead of one). */
+ * independent one.
+ *
+ * `two_step` is g1_dex_cb's own special case, TIGHTENED (coordinator direction,
+ * BACKLOG #185 second pass): the original two_step gate was a permissive RANGE
+ * check (both of the first two bytes merely "a valid dex number, 1..151"),
+ * which the coordinator measured still let ~30% of positions through to the
+ * 190-byte walk. PokedexOrder's own first two entries are fixed game-data
+ * facts, not per-ROM addresses: VERIFIED (not trusted) against this exact
+ * scanner's own located table on all four corpus ROMs (dump below) --
+ * index 0 = 112 (Rhydon), index 1 = 115 (Kangaskhan), identical in Red AND
+ * Yellow (a shared data table, unrelated to which cart it is):
+ *
+ *   Red.gb/Yellow.gb dex_order[0..2] = { 112, 115, 32, ... } (Nidoran-M, 32,
+ *   confirms the coordinator's own claim too, though only the first two bytes
+ *   are gated here -- see G1_DEXORDER_B0/B1 below).
+ *
+ * Trade-off, stated plainly: a hack that hand-edits BOTH of PokedexOrder's
+ * first two entries to different values would no longer be found by this
+ * job's gate (the shape-scan's whole point was surviving exactly that kind
+ * of edit) -- accepted deliberately for the CPU win on every hack/unknown-
+ * revision scan, which is what tightening this gate is FOR. g1_dex_cb itself
+ * (the full 190-byte bijection check) is UNCHANGED and remains the real
+ * verifier for whatever the gate lets through. */
 typedef struct {
   ScanCb   cb;
   uint32_t look;                        /* bytes of context the cb reads      */
-  uint32_t a_off;                       /* gate byte offset (two_step: unused) */
-  uint8_t  a_val;                       /* gate byte value  (two_step: unused) */
-  uint8_t  two_step;                    /* 1 = use the g1_dex two-byte gate    */
+  uint32_t a_off;                       /* gate byte offset                   */
+  uint8_t  a_val;                       /* gate byte value                    */
+  uint8_t  a_val2;                      /* two_step: p[a_off+1] must equal this too */
+  uint8_t  two_step;                    /* 1 = also check a_val2 at a_off+1   */
   uint8_t  job_id;                      /* J_G1_BS.. below, for the host-only
                                          * ROM_GBSPRITE_JOB_COUNTERS instrumentation */
   uint32_t off[SCAN_MAX_HITS];
   uint32_t n;                           /* > SCAN_MAX_HITS means "too many"   */
 } ScanJob;
+
+#define G1_DEXORDER_B0 112u   /* PokedexOrder[0]: Rhydon (national dex 112)      */
+#define G1_DEXORDER_B1 115u   /* PokedexOrder[1]: Kangaskhan (national dex 115)  */
 
 #ifdef ROM_GBSPRITE_JOB_COUNTERS
 /* BACKLOG #185 Step 1: per-job CALLBACK invocation counts (not gate tests), so a
@@ -175,7 +199,7 @@ static int scan_multi(RomGbSprite* gs, ScanJob* jobs, uint32_t njobs) {
       const uint8_t* p = w + i;
       for (uint32_t j = 0; j < njobs; j++) {
         if (jobs[j].two_step) {
-          if (p[0] == 0 || p[0] > G1_SPECIES || p[1] == 0 || p[1] > G1_SPECIES) continue;
+          if (p[jobs[j].a_off] != jobs[j].a_val || p[jobs[j].a_off + 1] != jobs[j].a_val2) continue;
         } else if (p[jobs[j].a_off] != jobs[j].a_val) continue;
 #ifdef ROM_GBSPRITE_JOB_COUNTERS
         g_rgs_cb_calls[jobs[j].job_id]++;
@@ -385,7 +409,9 @@ enum { J_G1_BS = 0, J_G1_DEX, J_G1_MEW, J_G2_BD, J_G2_PP, J_G2_PAL, J_COUNT };
 static void job_g1_bs(ScanJob* j)  { memset(j, 0, sizeof *j); j->cb = g1_bs_cb;  j->look = 10 * G1_ROW;
                                      j->a_off = 0; j->a_val = 1; j->job_id = J_G1_BS; }
 static void job_g1_dex(ScanJob* j) { memset(j, 0, sizeof *j); j->cb = g1_dex_cb; j->look = G1_DEXORDER;
-                                     j->two_step = 1; j->job_id = J_G1_DEX; }
+                                     j->a_off = 0; j->a_val = (uint8_t)G1_DEXORDER_B0;
+                                     j->a_val2 = (uint8_t)G1_DEXORDER_B1; j->two_step = 1;
+                                     j->job_id = J_G1_DEX; }
 static void job_g1_mew(ScanJob* j) { memset(j, 0, sizeof *j); j->cb = g1_mew_cb; j->look = G1_ROW;
                                      j->a_off = 0; j->a_val = (uint8_t)G1_SPECIES; j->job_id = J_G1_MEW; }
 static void job_g2_bd(ScanJob* j)  { memset(j, 0, sizeof *j); j->cb = g2_bd_cb;  j->look = 10 * G2_ROW;
