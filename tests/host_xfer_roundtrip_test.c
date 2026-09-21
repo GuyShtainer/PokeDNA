@@ -949,6 +949,35 @@ static void test_restored_mark_is_real(void) {
         "a RESTORED entry is != XR_STATE_CLAIMED -- distinguishable from an ordinary claim");
 }
 
+/* ---- BACKLOG #150 S150-8b review F4: an unmappable Gen-3 glyph must refuse, ---- */
+/* ---- never silently become a literal '?' in the home's nickname.           ---- */
+
+static void test_nickname_unmappable_glyph(void) {
+  printf("\n-- D5. an unmappable Gen-3 nickname glyph refuses, never becomes '?' (review F4) --\n");
+  if (!g_rt1_capture.have) {
+    printf("  SKIP (no Gen-2 record converted cleanly in RT-1 -- corpus absent?)\n");
+    return;
+  }
+  uint8_t g3_bad[80];
+  memcpy(g3_bad, g_rt1_capture.g3rec80, 80);
+  /* 0x01 has no case in gen3_decode_char() -- its `default:` folds it to '?', the
+   * SAME character the legitimate 0xAC decodes to. Change byte 0 of the nickname so
+   * it differs from e->nick_written (forcing xr_merge_nickname past its
+   * memcmp-unchanged early-out) and terminate right after so the rest of the field
+   * does not confuse gb_text_lossy(). */
+  g3_bad[0x08] = 0x01;
+  g3_bad[0x09] = 0xFF;   /* terminator -- a short, deliberately-glitched nickname */
+
+  GbEditMon merged; XrMergeReport rep;
+  CHECK(xr_merge_down(&g_rt1_capture.e, g3_bad, &merged, &rep),
+        "F4: xr_merge_down runs on a nickname containing an unmappable glyph (0x01)");
+  CHECK(rep.rename_refused,
+        "F4: rename_refused fires for an unmappable glyph (0x01), not silently '?'");
+  CHECK(memcmp(merged.nick, g_rt1_capture.written.nick, GB_NAME_BYTES) == 0,
+        "F4: the home nickname survives byte-for-byte -- never overwritten with '?'");
+  CHECK(!rep.renamed, "F4: renamed is NOT set when the rename was refused");
+}
+
 /* ============================================================================ */
 
 int main(int argc, char** argv) {
@@ -1003,6 +1032,7 @@ int main(int argc, char** argv) {
   test_merge_and_refuse();
   test_bank_restore_from_entry();
   test_restored_mark_is_real();
+  test_nickname_unmappable_glyph();
 
   printf("\n== summary: %d checks, %d fail(s) (fails mean the PIPELINE didn't run --\n"
          "   never that a round trip was lossy; see the tables above for that) ==\n",

@@ -5,6 +5,7 @@
 #include "gen3_mon.h"     /* PkMon, pk_decode_mon                                    */
 #include "gen3_box.h"     /* pk_resolve                                              */
 #include "data_tables.h"  /* pk_national_no                                          */
+#include "gen3_save.h"    /* gen3_decode_char -- review F4's unmappable-glyph guard  */
 
 /* Same constants gb_sidecar.c's gbsc_key() uses (source/gb_sidecar.h:68-70). */
 uint64_t xr_key_g3(const uint8_t rec80[80]) {
@@ -94,6 +95,20 @@ static void xr_merge_nickname(GbEditMon* out, const GbEditMon* home, const GbscE
     return;
   }
   if (memcmp(g3_rec80 + 0x08, e->nick_written, 10) == 0) return;   /* unchanged */
+
+  /* Fable review F4: gen3_decode_char() folds every UNMAPPABLE Gen-3 glyph (0x01,
+   * 0x1B, 0xB0, 0xF7, ...) to '?' by its own `default:` case -- the SAME character
+   * 0xAC legitimately decodes to. Without this check, gb_text_lossy() sees a
+   * perfectly GB-spellable '?' and never refuses, so an unmappable byte silently
+   * becomes a literal question mark in the home's nickname instead of refusing the
+   * rename. Scan the raw Gen-3 bytes directly: a decoded '?' whose raw byte is NOT
+   * the genuine 0xAC is an unmappable glyph -- refuse, keep the home name. */
+  for (int k = 0; k < 10 && g3_rec80[8 + k] != 0xFF; k++) {
+    if (gen3_decode_char(g3_rec80[8 + k]) == '?' && g3_rec80[8 + k] != 0xAC) {
+      rep->rename_refused = true;
+      return;
+    }
+  }
 
   char bad[GB_GLYPH_MAX];
   if (gb_text_lossy(home->gen, m->nickname, GB_NICK_GLYPHS, bad) == 0) {
