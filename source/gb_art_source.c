@@ -340,19 +340,28 @@ GbArtRegStatus gb_art_register(uint8_t gen, const char* path, GbArtProgressFn pr
    * means "whatever the memo remembers for this gen may no longer be true" (the old
    * ROM might already be gone/replaced even though the new one didn't validate). */
   pdna_origin_art_invalidate();
+  /* BACKLOG #185 F4: "so Guy's next cart run reports the real rate" -- one integer
+   * KB/s figure, bytes/elapsed_ms rounded to the nearest KB/s, folded into the
+   * SAME log_line() this code already writes on every outcome rather than a
+   * second line. 0 ms (a near-instant loc-cache hit) reports 0, not a divide. */
+  uint32_t kbps = (info && info->elapsed_ms)
+                    ? (uint32_t)(((uint64_t)info->covered * 1000u) / ((uint64_t)info->elapsed_ms * 1024u))
+                    : 0u;
   if (st != GB_ART_REG_OK) {
     if (info)
       log_line("gb art: gen%u registration failed (%d) for %s: loc%u stop=%u fr=%u err=%u off=%lu "
-               "reads=%lu %lums", (unsigned)gen, (int)st, path, (unsigned)info->locator,
-               (unsigned)info->stop, (unsigned)info->fr, (unsigned)info->err,
+               "reads=%lu %lums %luKB/s %luKB covered", (unsigned)gen, (int)st, path,
+               (unsigned)info->locator, (unsigned)info->stop, (unsigned)info->fr, (unsigned)info->err,
                (unsigned long)info->fail_off, (unsigned long)info->reads,
-               (unsigned long)info->elapsed_ms);
+               (unsigned long)info->elapsed_ms, (unsigned long)kbps,
+               (unsigned long)(info->covered >> 10));
     else
       log_line("gb art: gen%u registration failed (%d) for %s", (unsigned)gen, (int)st, path);
   } else if (info) {
-    log_line("gb art: gen%u registered %s: icons %s, %lu reads, %lu ms", (unsigned)gen, path,
-             have_iloc ? "cached" : (gen == PDNA_GEN2 ? "NOT located" : "n/a"),
-             (unsigned long)info->reads, (unsigned long)info->elapsed_ms);
+    log_line("gb art: gen%u registered %s: icons %s, %lu reads, %lu ms, %luKB/s, %luKB",
+             (unsigned)gen, path, have_iloc ? "cached" : (gen == PDNA_GEN2 ? "NOT located" : "n/a"),
+             (unsigned long)info->reads, (unsigned long)info->elapsed_ms, (unsigned long)kbps,
+             (unsigned long)(info->covered >> 10));
   }
   return st;
 }
