@@ -314,3 +314,52 @@ GbBagOpStatus gbb_tmhm_set(GbGame game, GbBag* bag, int tmhm_index, uint8_t coun
   bag->tmhm_counts[tmhm_index] = count;
   return GBB_OK;
 }
+
+/* ---- BACKLOG #195: per-item pocket membership --------------------------- */
+
+/* See gb_bag.h for the full derivation comment (attributes.asm's own pocket
+ * column). Sorted-enough-to-not-matter linear scans, same posture
+ * gbb_is_g1_key_item() already uses for its own short id list. */
+static bool is_g2_ball(uint8_t id) {
+  static const uint8_t kBalls[] = {
+    0x01, 0x02, 0x04, 0x05, 0x9D, 0x9F, 0xA0, 0xA1, 0xA4, 0xA5, 0xA6, 0xB1,
+  };
+  for (unsigned i = 0; i < sizeof kBalls / sizeof kBalls[0]; i++)
+    if (kBalls[i] == id) return true;
+  return false;
+}
+
+static bool is_g2_key(uint8_t id) {
+  static const uint8_t kKey[] = {
+    0x07, 0x36, 0x37, 0x3A, 0x3B, 0x3D, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47,
+    0x73, 0x74, 0x7F, 0x80, 0x81, 0x82, 0x85, 0x86, 0xAF, 0xB2,
+  };
+  for (unsigned i = 0; i < sizeof kKey / sizeof kKey[0]; i++)
+    if (kKey[i] == id) return true;
+  return false;
+}
+
+int gbb_tmhm_index_of(GbGame game, uint8_t id) {
+  if (game != GBF_G_GS && game != GBF_G_CRYSTAL) return -1;
+  if (id >= 0xBFu && id <= 0xC2u) return (int)(id - 0xBFu);         /* TM01-04 -> 0-3   */
+  if (id >= 0xC4u && id <= 0xDBu) return (int)(id - 0xC4u) + 4;     /* TM05-28 -> 4-27  */
+  if (id >= 0xDDu && id <= 0xF2u) return (int)(id - 0xDDu) + 28;    /* TM29-50 -> 28-49 */
+  if (id >= 0xF3u && id <= 0xF9u) return (int)(id - 0xF3u) + 50;    /* HM01-07 -> 50-56 */
+  return -1;   /* includes the 0xC3/0xDC holes -- real but unused ids */
+}
+
+GbBagPocket gbb_pocket_of(GbGame game, uint8_t id) {
+  if (id == 0x00u || id == 0xFFu) return GBB_POCKET_COUNT;
+  bool gen2 = (game == GBF_G_GS || game == GBF_G_CRYSTAL);
+  if (gen2) {
+    if (gbb_tmhm_index_of(game, id) >= 0) return GBB_POCKET_TMHM;
+    if (id > gbb_max_item_id(game)) return GBB_POCKET_COUNT;   /* holes + past HM07 */
+    if (is_g2_ball(id)) return GBB_POCKET_BALLS;
+    if (is_g2_key(id))  return GBB_POCKET_KEY;
+    return GBB_POCKET_ITEMS;
+  }
+  /* Gen 1: ITEMS vs TM/HM only -- see gb_bag.h's header comment. */
+  if (id > gbb_max_item_id(game)) return GBB_POCKET_COUNT;
+  if (id >= 0xC4u && id <= 0xFAu) return GBB_POCKET_TMHM;
+  return GBB_POCKET_ITEMS;
+}

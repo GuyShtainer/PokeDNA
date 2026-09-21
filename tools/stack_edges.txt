@@ -1187,6 +1187,14 @@ AppSrcOps.editable @24 in pdna_dex_screen -> dex_state dex_set_state dex_get_nat
 AppSrcOps.editable @24 in fetch_pic_ex.constprop.0 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
 AppSrcOps.create @28 in app_mon_menu_readonly -> gb_create_hook
 AppSrcOps.create @28 in pdna_dex_screen -> dex_state dex_set_state dex_get_national dex_set_national
+# BACKLOG #195: same "coincidental spilled section-anchor" shape as the
+# offset-8/20/24/28 lines above for this exact caller (pdna_pick.c's new
+# BACKLOG #195 statics -- rcm_row/ritem_cat_menu/the RICAT_* tables -- shifted
+# this build's link layout enough that pdna_dex_screen's dex_state/
+# dex_set_state/dex_get_national/dex_set_national spill now also lands at
+# offset 32, the same class of collision, not a new real call edge (this
+# function never touches AppSrcOps.item/gb_item_hook at all).
+AppSrcOps.item @32 in pdna_dex_screen -> dex_state dex_set_state dex_get_national dex_set_national
 AppSrcOps.create @28 in pdna_origin_box_art,pdna_origin_box_art_wanted -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
 BoxSource.get_name @28 in draw_box_banner -> banksrc_get_name gbsrc_get_name pcsrc_get_name
 BoxSource.can_edit @44 in pdna_origin_art_portrait,pdna_origin_box_art -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb

@@ -227,4 +227,43 @@ GbBagOpStatus gbb_set_qty(GbGame game, GbBag* bag, GbBagPocket pocket,
 bool gbb_tmhm_get(const GbBag* bag, int tmhm_index, uint8_t* count_out);
 GbBagOpStatus gbb_tmhm_set(GbGame game, GbBag* bag, int tmhm_index, uint8_t count);
 
+/* BACKLOG #195: which pocket `id` structurally belongs to, in THIS game.
+ * Ground truth (numbers only, re-derived from the decomp's own ITEM TABLE --
+ * never its code): assets/upstream/pokecrystal/data/items/attributes.asm's
+ * per-entry pocket column (BALL / KEY_ITEM / TM_HM / ITEM), entries 1..0xBE
+ * (NUM_ITEMS) for the real-item block and 0xBF..0xF9 for the TM/HM block
+ * (identical shape to gb_item_names.c's own gb2_tmhm_label ranges, two holes
+ * at 0xC3/0xDC -- both cross-derivations agree). pokegold's own copy of the
+ * same file has the identical pocket column for every id (G/S just lack four
+ * Crystal-only items, per gb_item_names.c's own comment -- this does not
+ * change which pocket an id WOULD be in, only whether it ever occurs).
+ *   Gen 2 (Gold/Silver, Crystal): BALLS = {0x01,0x02,0x04,0x05,0x9D,0x9F,0xA0,
+ *     0xA1,0xA4,0xA5,0xA6,0xB1} (12 ids, matches GBB_CAP_BALLS); KEY = {0x07,
+ *     0x36,0x37,0x3A,0x3B,0x3D,0x42..0x47,0x73,0x74,0x7F..0x82,0x85,0x86,0xAF,
+ *     0xB2} (22 ids); TM/HM = the 0xBF-0xF9 block (see gbb_tmhm_index_of);
+ *     every other valid id (1..0xBE, not a Ball/Key id) = ITEMS.
+ *   Gen 1 (Red/Blue, Yellow): the real cartridge has only ONE bag pocket
+ *     (Items) plus the PC store -- Balls and "key" items are ordinary Items-
+ *     pocket entries there (gb_bag.h's own pocket table, "Gen 1: no" for
+ *     Key items/Balls/TM-HM-as-a-pocket). This function therefore only
+ *     splits Gen 1 into ITEMS vs TM/HM (0xC4..0xFA, gb_item_names.c's own
+ *     gb1_tmhm_label range -- no holes) for the PICKER's category filter
+ *     (BACKLOG #195 F1); it never returns GBB_POCKET_KEY/BALLS for a Gen-1
+ *     game, and gbb_insert() itself has no Gen-1 routing notion either.
+ * Returns GBB_POCKET_COUNT (the enum's own "none" sentinel, gbb_body_field's
+ * idiom) for id 0x00/0xFF or any id past this game's real range -- never a
+ * default/best-guess pocket for an invalid id. */
+GbBagPocket gbb_pocket_of(GbGame game, uint8_t id);
+
+/* BACKLOG #195: Gen-2's TM/HM COUNT-ARRAY index (0..GBB_TMHM_COUNT-1, TM01..
+ * HM07) for a real TM/HM ITEM id (0xBF..0xF9), independently re-derived from
+ * the same attributes.asm pocket-column pass gbb_pocket_of's header comment
+ * cites (both this function's ranges and gb_item_names.c's gb2_tmhm_label's
+ * ranges were derived from that file and agree). -1 for a non-TM/HM id, one
+ * of the two holes (0xC3 ITEM_C3, 0xDC ITEM_DC -- real but unused ids, never
+ * a valid TM/HM), or any `game` that is not Gold/Silver/Crystal (Gen 1 has
+ * no TM/HM count array at all -- its TM ids are ordinary Items-pocket
+ * entries, gb_bag.h's own pocket table). */
+int gbb_tmhm_index_of(GbGame game, uint8_t id);
+
 #endif /* GB_BAG_H */

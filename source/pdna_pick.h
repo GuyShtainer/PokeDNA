@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "gb_bag.h"   /* GbBagPocket -- pick_item_set_gen1_2_cat's parameter    */
+
 /* Rich pickers for the editor. Each returns the chosen id, or 0xFFFF if the user
  * cancelled (B). `current` pre-selects the starting entry.
  *
@@ -28,8 +30,31 @@ uint16_t pick_item(uint16_t current_item);
  * caller sees). The Gen-1/2 held-item field's own use (UX-parity audit, Guy
  * 2026-09-07); see source/pdna_pick.c's header comment on g_item_max_id for
  * why this is not merely a ceiling the way pick_species_set_max_dex() is.
- * Set it right before the call and clear it (pass 0) right after. */
+ * Set it right before the call and clear it (pass 0) right after.
+ *
+ * BACKLOG #195: a thin wrapper over pick_item_set_gen1_2(0, max_id) -- kept
+ * so the held-item callers (pdna_gbedit.c, pdna_gen12.c) that want the OLD
+ * "#n" raw-byte behaviour (no name table: a held item is any raw byte
+ * 0..255, no legality gate) need no change. */
 void     pick_item_set_gen1_2_max(uint16_t max_id);
+/* BACKLOG #195: like pick_item_set_gen1_2_max(), but `gen` (GBIN_GEN1/
+ * GBIN_GEN2, gb_item_names.h) also turns on REAL names (gb_item_label) and a
+ * pocket CATEGORY filter (gbb_pocket_of) in the restricted picker -- see
+ * pdna_pick.c's header comment on g_item_max_id/g_item_gen for the full
+ * behaviour matrix. `gen` 0 is the old raw "#n" mode (identical to
+ * pick_item_set_gen1_2_max()); GBIN_GEN1/GBIN_GEN2 are the Gen-1/2 bag/pack
+ * ADD ITEM sites' own use. Set right before the call, clear (0, 0) right
+ * after -- same one-shot-per-call contract as every other picker restrictor
+ * here. */
+void     pick_item_set_gen1_2(int gen, uint16_t max_id);
+/* BACKLOG #195: primes the NEXT pick_item() call's STARTING category filter
+ * when gen1_2 mode is active (ignored otherwise) -- GBB_POCKET_ITEMS/KEY/
+ * BALLS/TMHM opens pre-filtered to that pocket's category; GBB_POCKET_COUNT
+ * (or any value pick_item()'s own gen doesn't offer as a category, e.g.
+ * GBB_POCKET_PC) opens on "All". Auto-consumed (reset to GBB_POCKET_COUNT)
+ * the instant pick_item() reads it, so -- unlike the ceiling above -- a
+ * caller does NOT need to clear it after the call. */
+void     pick_item_set_gen1_2_cat(GbBagPocket pocket0);
 /* BACKLOG #189: restricts the NEXT pick_move() call's list to ids 1..max_id (0 =
  * unrestricted, the default every existing caller sees). Mirrors
  * pick_item_set_gen1_2_max() exactly: file-scope static, consulted in build_moves(),
