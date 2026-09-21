@@ -978,6 +978,92 @@ static void test_nickname_unmappable_glyph(void) {
   CHECK(!rep.renamed, "F4: renamed is NOT set when the rename was refused");
 }
 
+/* ---- BACKLOG #150 S150-8b review D1: written_level must reflect a MAKE-LEGAL --- */
+/* ---- correction, or a later restore reads it as an in-game level-up.        --- */
+
+/* Mirrors gb_bank_down_gen3()'s own decision-7 MAKE LEGAL step (source/pdna_gen12.c)
+ * on every corpus record whose converted Gen-3 level sits below its species'
+ * evolution floor: raises the Gen-3 record (gen3_edit) exactly as the shipped path
+ * does, THEN (the D1 fix) raises `written` (the ledger's own species_written/
+ * written_level source) the same way -- so xfer_down_write's entry records the level
+ * ACTUALLY WRITTEN, not the pre-correction one. Then proves the restore reads this
+ * as "nothing changed abroad" (level_changed == false) and comes home byte-identical. */
+static void sweep_make_legal_gen2(const char* file, uint8_t origin, int* n_checked, int* n_applied) {
+  char path[512];
+  snprintf(path, sizeof path, "%s/%s", GB_ROMS, file);
+  FILE* f = fopen(path, "rb");
+  if (!f) { printf("  SKIP MERGE-4 %s (not present)\n", file); return; }
+  static uint8_t img[G2_SAVE_SIZE + G2_MAX_RTC_TAIL];
+  uint32_t len = (uint32_t)fread(img, 1, sizeof img, f);
+  fclose(f);
+  G2Save sv;
+  if (!g2_detect(img, len, &sv) || !sv.supported) { printf("  SKIP MERGE-4 %s (unsupported)\n", file); return; }
+  G2Header hd;
+  if (!g2_read_header(img, &sv, &hd)) { printf("  SKIP MERGE-4 %s (header)\n", file); return; }
+  if (!pk_evo_have_data()) { printf("  SKIP MERGE-4 %s (no evolutions table linked)\n", file); return; }
+
+  for (int box = 0; box <= G2_BOX_PARTY; box++) {
+    uint32_t off = g2_list_offset(&sv, box, hd.current_box);
+    if (off == 0) continue;
+    int count = gb_list_count(GB_GEN2, img + off, box);
+    if (count < 0) continue;
+    for (int slot = 0; slot < count; slot++) {
+      GbEditMon mon;
+      if (!gb_load(&mon, GB_GEN2, img + off, box, slot)) continue;
+      if (mon.list_species == G2_LIST_EGG) continue;
+
+      uint8_t cell[80]; GbEditMon written; uint8_t out80[80];
+      if (!xr_down_sim(&mon, origin, g_xr_serial++, cell, &written, out80)) continue;
+      (*n_checked)++;
+
+      PkMon pk;
+      if (!pk_decode_mon(out80, false, &pk)) continue;
+      pk_resolve(&pk);
+      uint16_t dex = pk_national_no(pk.species);
+      int floor = dex ? pk_evo_floor(dex) : PK_EVO_NO_DATA;
+      if (floor == PK_EVO_NO_DATA || pk.level >= (uint8_t)floor) continue;   /* does not qualify */
+      (*n_applied)++;
+      uint8_t to_lvl = (uint8_t)floor;
+      GbEditMon home_orig = written;   /* the NATIVE CELL's own bytes (`cell`, already
+                                        * packed above) never change -- only `written`
+                                        * (the ledger's own source) and `out80` (the
+                                        * Gen-3 record) do. Compare the restore against
+                                        * THIS, not the post-correction `written`. */
+
+      /* decision 7's exact sequence, plus the D1 fix. */
+      EditMon em; gen3_edit_load(out80, false, &em);
+      em_set_level(&em, to_lvl);
+      gen3_edit_commit(&em, out80);
+      (void)gb_set_level(&written, to_lvl);   /* D1 fix */
+
+      GbscEntry e;
+      xr_build_entry_asdown(&e, &written, cell, out80);
+      CHECK(e.written_level == to_lvl,
+            "MERGE-4 %s box%d slot%d: written_level reflects the MAKE-LEGAL level (got %u want %u)",
+            file, box, slot, e.written_level, to_lvl);
+
+      /* Unchanged abroad life: g3_rec80 == out80 (the just-corrected record, never
+       * further edited). xr_merge_down must see NOTHING changed. */
+      GbEditMon merged; XrMergeReport rep;
+      CHECK(xr_merge_down(&e, out80, &merged, &rep),
+            "MERGE-4 %s box%d slot%d: xr_merge_down runs", file, box, slot);
+      CHECK(!rep.level_changed,
+            "MERGE-4 %s box%d slot%d: level_changed is FALSE -- a MAKE-LEGAL correction, "
+            "not an in-game level-up (D1)", file, box, slot);
+      xr_check_roundtrip("MERGE-4", &home_orig, &merged);
+    }
+  }
+}
+
+static void test_merge4_make_legal_written_level(void) {
+  printf("\n-- D6. MERGE-4: written_level survives a MAKE-LEGAL DOWN (review D1) --\n");
+  int checked = 0, applied = 0;
+  sweep_make_legal_gen2("Gold.sav", BC_ORIGIN_GOLD, &checked, &applied);
+  sweep_make_legal_gen2("Crystal.sav", BC_ORIGIN_CRYSTAL, &checked, &applied);
+  printf("  MERGE-4: %d/%d corpus record(s) needed the MAKE-LEGAL correction (checked %d)\n",
+        applied, checked, checked);
+}
+
 /* ============================================================================ */
 
 int main(int argc, char** argv) {
@@ -1033,6 +1119,7 @@ int main(int argc, char** argv) {
   test_bank_restore_from_entry();
   test_restored_mark_is_real();
   test_nickname_unmappable_glyph();
+  test_merge4_make_legal_written_level();
 
   printf("\n== summary: %d checks, %d fail(s) (fails mean the PIPELINE didn't run --\n"
          "   never that a round trip was lossy; see the tables above for that) ==\n",
