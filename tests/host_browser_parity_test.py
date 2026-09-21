@@ -170,6 +170,33 @@ def main() -> int:
             check(key_pos != -1 and era_pos != -1 and key_pos < era_pos,
                   f'"{key}"\'s recognition must come before the se_config_apply() catch-all in cfg_load()')
 
+    # ---- 9. D1 fix (real regression a Fable review caught): "dir=" must never be
+    # written from the LIVE g_cwd while a non-.sav picker has borrowed it for its own
+    # folder -- cfg_save_ex()'s dir_val parameter is what fixes that, and this pins
+    # both halves of the fix (the round-trip AND the write) rather than just "the
+    # function still exists". -----------------------------------------------------
+    cse_m = re.search(r"static void cfg_save_ex\s*\([^)]*\)\s*\{(.*?)\n\}", main_text, re.DOTALL)
+    check(bool(cse_m), "cfg_save_ex() not found in pdna_main.c")
+    if cse_m:
+        cse_body = cse_m.group(1)
+        check('k_dirkey[3] = { "dir_rom", "dir_gb", "dir_gbsav" }' in re.sub(r"\s+", " ", cse_body),
+              'cfg_save_ex() must declare k_dirkey[3] = { "dir_rom", "dir_gb", "dir_gbsav" } '
+              '(D2: all three round-tripped keys, in this exact order)')
+        check('dir_val ? dir_val : g_cwd' in re.sub(r"\s+", " ", cse_body),
+              'cfg_save_ex()\'s "dir=" line must read `dir_val ? dir_val : g_cwd` (D1 fix) -- '
+              "a plain `g_cwd` here is exactly the regression the review caught")
+
+    crod_m = re.search(r"static void __attribute__\(\(noinline\)\) cfg_read_old_dirkeys\s*\([^)]*\)\s*\{(.*?)\n\}",
+                        main_text, re.DOTALL)
+    check(bool(crod_m), "cfg_read_old_dirkeys() not found in pdna_main.c")
+    if crod_m:
+        crod_body = crod_m.group(1)
+        for key, out_var in (("dir_rom", "dirrom"), ("dir_gb", "dirgb"), ("dir_gbsav", "dirgbsav")):
+            check(f'find_key_in_text(buf, br, "{key}", {out_var}, GB_ROM_PATH_MAX)' in re.sub(r"\s+", " ", crod_body),
+                  f'cfg_read_old_dirkeys() must round-trip "{key}" into its own {out_var} output '
+                  "(D2: a dropped key here is exactly what a card's OTHER two folder memories "
+                  "would silently lose the next time any unrelated setting is saved)")
+
     if FAILS:
         print(f"host_browser_parity_test: {len(FAILS)} FAIL(s)")
         for f in FAILS:
