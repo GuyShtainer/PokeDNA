@@ -1045,6 +1045,9 @@ int main(void) {
   PF(PDNA_SIDECAR_LOSS_SHINY,       4, UI_SCR_W - 8);
   PF(PDNA_SIDECAR_LOSS_GENDER,      4, UI_SCR_W - 8);
   PF(PDNA_SIDECAR_LOSS_NAME,        4, UI_SCR_W - 8);
+  /* BACKLOG #177: the two more-specific row texts loss_name_text() picks between. */
+  PF(PDNA_SIDECAR_LOSS_OTNAME,      4, UI_SCR_W - 8);
+  PF(PDNA_SIDECAR_LOSS_NICKNAME,    4, UI_SCR_W - 8);
   PF(PDNA_SIDECAR_LOSS_KEPT_L1,     4, UI_SCR_W - 8);
   PF(PDNA_SIDECAR_LOSS_KEPT_L2,     4, UI_SCR_W - 8);
   PF(PDNA_SIDECAR_LOSS_STAYS,       4, UI_SCR_W - 8);

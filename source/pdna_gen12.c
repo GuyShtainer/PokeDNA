@@ -2297,6 +2297,20 @@ static int loss_row(int y, bool cond, const char* text) {
   ui_ptext_fit(4, y, UI_SCR_W - 8, UI_TEXT, text);
   return y + PDNA_SIDECAR_LOSS_ROW_H;
 }
+
+/* BACKLOG #177: gb_paste_loss_screen's own fit has exactly 2 px of slack
+ * (host_textfit_test.c's "loss screen worst-case height" check, pdna_layout.h:1126-1133
+ * says so too) -- there is no room for an 11th conditional row, so ot_lossy/nick_lossy
+ * stay ONE row exactly as they already were; only the TEXT gets more specific when only
+ * one of the two actually fired (the common case for this backlog item -- the source
+ * record's OT name or nickname, never usually both, holds the byte a decoder couldn't
+ * spell). Both fired, or the pre-existing gen3_to_gb-side loss also set the other flag,
+ * falls back to the original combined wording. */
+static const char* loss_name_text(const Gen3ToGbLoss* loss) {
+  if (loss->ot_lossy && !loss->nick_lossy)   return PDNA_SIDECAR_LOSS_OTNAME;
+  if (loss->nick_lossy && !loss->ot_lossy)   return PDNA_SIDECAR_LOSS_NICKNAME;
+  return PDNA_SIDECAR_LOSS_NAME;
+}
 static bool __attribute__((noinline)) gb_paste_loss_screen(const Gen3ToGbLoss* loss) {
   ui_clear();
   ui_text(4, 3, UI_TITLE, PDNA_SIDECAR_LOSS_TITLE);
@@ -2315,7 +2329,7 @@ static bool __attribute__((noinline)) gb_paste_loss_screen(const Gen3ToGbLoss* l
   y = loss_row(y, loss->pokerus_dropped || loss->friendship_dropped, PDNA_SIDECAR_LOSS_POKERUS);
   y = loss_row(y, loss->shiny_lost,                   PDNA_SIDECAR_LOSS_SHINY);
   y = loss_row(y, loss->gender_lost,                  PDNA_SIDECAR_LOSS_GENDER);
-  y = loss_row(y, loss->nick_lossy || loss->ot_lossy, PDNA_SIDECAR_LOSS_NAME);
+  y = loss_row(y, loss->nick_lossy || loss->ot_lossy, loss_name_text(loss));
 
   y += PDNA_SIDECAR_LOSS_ROW_H / 2;
   ui_ptext_fit(4, y, UI_SCR_W - 8, UI_DIM, PDNA_SIDECAR_LOSS_KEPT_L1); y += PDNA_SIDECAR_LOSS_ROW_H;
@@ -3056,6 +3070,13 @@ BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]) {
   }
 
   loss.item_dropped |= notes.item_dropped;   /* S150-8 decision 15: the Gen-2 item stays behind */
+  /* BACKLOG #177: gb_name_changed() (bank_down_convert.c, review F1) already compared
+   * the SOURCE record's name spelling against the WRITTEN record's; fold the verdict
+   * into Gen3ToGbLoss's own ot_lossy/nick_lossy so the pre-existing PDNA_SIDECAR_LOSS_NAME
+   * row (gb_paste_loss_screen below) fires for this loss too, exactly the way it
+   * already fires for gen3_to_gb's own (different) name loss. */
+  loss.ot_lossy   |= notes.otname_lossy;
+  loss.nick_lossy |= notes.nick_lossy;
   if (!gb_paste_loss_screen(&loss)) return BANK_DOWN_REFUSED;               /* decision 15: the shipped screen */
 
   uint8_t fix_from = 0, fix_to = 0;
