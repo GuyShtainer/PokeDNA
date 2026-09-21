@@ -149,7 +149,7 @@ static uint8_t  g_scratch[4096];
 static int open_rom(RomGbSprite* gs, FileCtx* fc, const char* path) {
   fc->f = fopen(path, "rb");
   if (!fc->f) return 0;
-  return rom_gbsprite_open(gs, file_read, fc, file_size(path), g_scratch, sizeof g_scratch);
+  return rom_gbsprite_open(gs, file_read, fc, file_size(path), g_scratch, sizeof g_scratch, GB_ROM_NONE);
 }
 
 /* ------------------------------------------------------------------ Gen 1 */
@@ -276,7 +276,7 @@ static void run_gen1(const char* file, const G1Want* want, uint32_t nwant) {
   rom_gbsprite_save_loc(&gs, &loc);
   RomGbSprite gs2;
   chk(file, "the location cache round-trips",
-      rom_gbsprite_open_loc(&gs2, file_read, &fc, gs.size, g_scratch, sizeof g_scratch, &loc) &&
+      rom_gbsprite_open_loc(&gs2, file_read, &fc, gs.size, g_scratch, sizeof g_scratch, &loc, GB_ROM_NONE) &&
       gs2.base_stats == gs.base_stats && gs2.mew_stats == gs.mew_stats);
   chk(file, "a cache-opened ROM renders the identical Bulbasaur",
       live && rom_gbsprite_pic(&gs2, ROM_GBSPRITE_FRONT, 1, 0, &g_spr, &p) &&
@@ -284,7 +284,7 @@ static void run_gen1(const char* file, const G1Want* want, uint32_t nwant) {
   RomGbSpriteLoc bad_loc = loc;
   bad_loc.base_stats ^= 0x20;
   chk(file, "a tampered cache is rejected and the full scan re-runs",
-      rom_gbsprite_open_loc(&gs2, file_read, &fc, gs.size, g_scratch, sizeof g_scratch, &bad_loc) &&
+      rom_gbsprite_open_loc(&gs2, file_read, &fc, gs.size, g_scratch, sizeof g_scratch, &bad_loc, GB_ROM_NONE) &&
       gs2.base_stats == gs.base_stats);
 
   fclose(fc.f);
@@ -447,14 +447,14 @@ static void run_gen2(const char* file, const G2Want* want, uint32_t nwant) {
   fc.poison_off = gs.pic_ptrs + 200 * 6;   /* the Unown FF FF FF FF FF FF hole */
   fc.poison_xor = 0x01;
   chk(file, "NEGATIVE: open REFUSES a ROM whose Unown hole is not all-FF",
-      !rom_gbsprite_open(&gs3, file_read, &fc, gs.size, g_scratch, sizeof g_scratch));
+      !rom_gbsprite_open(&gs3, file_read, &fc, gs.size, g_scratch, sizeof g_scratch, GB_ROM_NONE));
   fc.poison_off = 0x104;                   /* the boot logo */
   chk(file, "NEGATIVE: open REFUSES a ROM whose boot logo is wrong",
-      !rom_gbsprite_open(&gs3, file_read, &fc, gs.size, g_scratch, sizeof g_scratch));
+      !rom_gbsprite_open(&gs3, file_read, &fc, gs.size, g_scratch, sizeof g_scratch, GB_ROM_NONE));
   fc.poison_off = gs.palettes + 9;         /* the high byte of a palette colour */
   fc.poison_xor = 0x80;                    /* sets bit 15, impossible in RGB15 */
   chk(file, "NEGATIVE: open REFUSES a palette table with bit 15 set",
-      !rom_gbsprite_open(&gs3, file_read, &fc, gs.size, g_scratch, sizeof g_scratch));
+      !rom_gbsprite_open(&gs3, file_read, &fc, gs.size, g_scratch, sizeof g_scratch, GB_ROM_NONE));
   fc.poison_off = 0;
 
   /* 7) location cache */
@@ -463,7 +463,7 @@ static void run_gen2(const char* file, const G2Want* want, uint32_t nwant) {
   RomGbSpriteLoc loc;
   rom_gbsprite_save_loc(&gs, &loc);
   chk(file, "the location cache round-trips",
-      rom_gbsprite_open_loc(&gs3, file_read, &fc, gs.size, g_scratch, sizeof g_scratch, &loc) &&
+      rom_gbsprite_open_loc(&gs3, file_read, &fc, gs.size, g_scratch, sizeof g_scratch, &loc, GB_ROM_NONE) &&
       gs3.pic_ptrs == gs.pic_ptrs && gs3.palettes == gs.palettes &&
       gs3.base_data == gs.base_data);
   chk(file, "a cache-opened ROM renders the identical Bulbasaur",
@@ -475,7 +475,7 @@ static void run_gen2(const char* file, const G2Want* want, uint32_t nwant) {
   RomGbSpriteLoc bad = loc;
   bad.palettes ^= 0x08;
   chk(file, "a tampered cache is rejected and the full scan re-runs",
-      rom_gbsprite_open_loc(&gs3, file_read, &fc, gs.size, g_scratch, sizeof g_scratch, &bad) &&
+      rom_gbsprite_open_loc(&gs3, file_read, &fc, gs.size, g_scratch, sizeof g_scratch, &bad, GB_ROM_NONE) &&
       gs3.palettes == gs.palettes);
 
   fclose(fc.f);
@@ -490,7 +490,7 @@ static void refuse(const char* label, const char* path, uint32_t size_override) 
   uint32_t sz = size_override ? size_override : file_size(path);
   RomGbSprite gs;
   chk(label, "is REFUSED by rom_gbsprite_open",
-      !rom_gbsprite_open(&gs, file_read, &fc, sz, g_scratch, sizeof g_scratch));
+      !rom_gbsprite_open(&gs, file_read, &fc, sz, g_scratch, sizeof g_scratch, GB_ROM_NONE));
   fclose(fc.f);
 }
 
@@ -510,7 +510,7 @@ int main(void) {
       RomGbSprite gs; uint8_t tiny[512];
       chk("a 512-byte scratch", "is REFUSED (below ROM_GBSPRITE_SCRATCH_MIN)",
           !rom_gbsprite_open(&gs, file_read, &fc, file_size(ROMS "/Crystal.gbc"),
-                             tiny, sizeof tiny));
+                             tiny, sizeof tiny, GB_ROM_NONE));
       fclose(fc.f);
     }
   }

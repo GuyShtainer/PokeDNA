@@ -284,8 +284,12 @@ gb_art_open_and_identify(uint8_t gen, const char* path, RomGbSpriteLoc* out_loc,
   bool have_loc = gb_art_load_loc(gen, out_loc);
   artbuf_claim();
   RomGbSprite gs;
+  /* BACKLOG #185 F1: `gen` is already known here (the caller is registering
+   * THIS generation), so the scan runs only that gen's three jobs instead of
+   * all six -- and a ROM whose header says the other generation is refused
+   * before a single position is scanned. */
   int ok = rom_gbsprite_open_loc(&gs, gb_art_read, &io, sz, (uint8_t*)mon_decomp, MON_DECOMP_BYTES,
-                                 have_loc ? out_loc : 0);
+                                 have_loc ? out_loc : 0, gen);
   GbArtRegStatus st = GB_ART_REG_OK;
   if (!ok)                          st = gb_art_stop_status(&io.g, GB_ART_REG_BAD_ROM);
   else if ((uint8_t)gs.gen != gen)  st = GB_ART_REG_WRONG_GEN;
@@ -452,8 +456,12 @@ gb_art_fetch(uint8_t gen, uint16_t dex, uint8_t form, uint8_t back, uint8_t shin
   gb_art_io_init(&io, &fil, sz, 0, 0, GB_ART_LOC_SPRITES, false);
   artbuf_claim();
   RomGbSprite gs;
+  /* BACKLOG #185 F1: same gen-restricted scan as the registration path above --
+   * this is the per-fetch cache-miss fallback (box-full-of-strangers, a stale
+   * .loc), so restricting it to `gen`'s three jobs matters on exactly the box
+   * repaint the module header's own HARDWARE-ONLY PERFORMANCE NOTE flags. */
   int ok = rom_gbsprite_open_loc(&gs, gb_art_read, &io, sz, (uint8_t*)mon_decomp, MON_DECOMP_BYTES,
-                                 have_loc ? &loc : 0);
+                                 have_loc ? &loc : 0, gen);
   /* Re-save the loc whenever it does NOT already match this exact ROM -- not just
    * when the file was missing. E3 review item 4: a STALE loc (the file at `path`
    * was SWAPPED for a different ROM since it was cached) still makes have_loc true
@@ -665,8 +673,14 @@ static const uint16_t* gb_art_fetch(uint8_t gen, uint16_t dex, uint8_t form, uin
   if (!have_loc)
     have_loc = gb_art_loc_seed(FUSED_GB_LOC_SPRITE, gen, size, &s_dsprite_loc[gen],
                                (uint32_t)sizeof s_dsprite_loc[gen]);
+  /* BACKLOG #185 F1: deliberately GB_ROM_NONE here, not `gen` -- this is the
+   * PDNA_DELTA fused-corpus path (no SD, tools/dgb_shots.py's own cold-scan
+   * measurements), kept running the original six-job scan unchanged rather than
+   * gaining a second behaviour to verify on a build with no hardware to test it
+   * against. */
   int ok = rom_gbsprite_open_loc(&gs, fused_gb_slice_read, &slice, size, scratch,
-                                 (uint32_t)sizeof scratch, have_loc ? &s_dsprite_loc[gen] : 0);
+                                 (uint32_t)sizeof scratch, have_loc ? &s_dsprite_loc[gen] : 0,
+                                 GB_ROM_NONE);
   if (ok) {
     /* Always (re)snapshot what open_loc() actually validated on success -- cheap (a
      * 260 B struct copy) and simpler than tracking "did this particular open come

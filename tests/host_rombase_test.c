@@ -113,7 +113,7 @@ static bool open_rom(const char* file, RomGbSprite* gs, FILE** f_out) {
   FILE* f = fopen(path, "rb");
   if (!f) { printf("  SKIP %s (not present)\n", file); return false; }
   uint32_t sz = file_size(path);
-  int ok = rom_gbsprite_open(gs, file_read, f, sz, g_scratch, sizeof g_scratch);
+  int ok = rom_gbsprite_open(gs, file_read, f, sz, g_scratch, sizeof g_scratch, GB_ROM_NONE);
   if (!ok || gs->gen != GB_ROM_GEN1) {
     printf("  !! FAIL [%s] rom_gbsprite_open (Gen-1 ROM expected)\n", file);
     g_fail++; g_check++;

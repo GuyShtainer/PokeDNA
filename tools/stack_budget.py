@@ -1531,6 +1531,10 @@ STRUCT_HEADERS = {
     "BoxXferOps": "pdna_box.h",
     "RomGbUi": "rom_gbui.h",
     "Scan": "rom_gbui.c",     # file-local struct; struct_field_offsets() greps .c too
+    "ScanJob": "rom_gbsprite.c",   # BACKLOG #185 F1/F2: file-local struct (rom_gbsprite.c's
+                                   # own job table, `cb` at offset 0), same convention as
+                                   # rom_gbui.c's `Scan` above -- struct_field_offsets()
+                                   # greps .c files too, not just headers.
     "AppSrcOps": "pdna_app.h",
     "RomGbIcon": "rom_gbicon.h",
     "RomGbLearn": "rom_gblearn.h",

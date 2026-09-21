@@ -127,12 +127,37 @@ static int parse_header(RomGbSprite* gs) {
 
 typedef int (*ScanCb)(const uint8_t* w);
 
+/* BACKLOG #185 F2: an inline prefilter, tested BEFORE the indirect callback call --
+ * scan_multi's inner loop runs once per byte position per job over a whole ROM (up
+ * to 2M positions x 3-6 jobs), so a cheap `p[a_off] == a_val` byte compare that
+ * rejects the overwhelming majority of positions is worth far more there than
+ * inside the callback itself (which the compiler cannot inline across a function
+ * pointer). Each job's gate is the CHEAPEST byte its own pattern already requires
+ * at a fixed offset -- picked by reading the callback, not guessed -- so the gate
+ * can never reject a position the real callback would have accepted: it is a
+ * strict pre-check of one of the callback's own early conditions, not a new,
+ * independent one. `two_step` is g1_dex_cb's own special case (no single fixed
+ * byte -- PokedexOrder's SHAPE is "every byte a valid dex number", so the gate
+ * checks the cheapest two bytes of that shape instead of one). */
 typedef struct {
   ScanCb   cb;
   uint32_t look;                        /* bytes of context the cb reads      */
+  uint32_t a_off;                       /* gate byte offset (two_step: unused) */
+  uint8_t  a_val;                       /* gate byte value  (two_step: unused) */
+  uint8_t  two_step;                    /* 1 = use the g1_dex two-byte gate    */
+  uint8_t  job_id;                      /* J_G1_BS.. below, for the host-only
+                                         * ROM_GBSPRITE_JOB_COUNTERS instrumentation */
   uint32_t off[SCAN_MAX_HITS];
   uint32_t n;                           /* > SCAN_MAX_HITS means "too many"   */
 } ScanJob;
+
+#ifdef ROM_GBSPRITE_JOB_COUNTERS
+/* BACKLOG #185 Step 1: per-job CALLBACK invocation counts (not gate tests), so a
+ * host benchmark can report exactly how much less work the F2 gate leaves for the
+ * expensive indirect callback to do. Never defined by the GBA build (the Makefile
+ * never passes this macro) -- six uint32_t only exist in a host test binary. */
+uint32_t g_rgs_cb_calls[6];
+#endif
 
 /* Forward-only, sector-aligned reads through gb_scanwin.h -- see that header for
  * the measured reason (the old backward-hopping window cost 8,592 FatFs
@@ -149,6 +174,12 @@ static int scan_multi(RomGbSprite* gs, ScanJob* jobs, uint32_t njobs) {
     for (uint32_t i = sw.first; i < sw.first + cnt; i++) {
       const uint8_t* p = w + i;
       for (uint32_t j = 0; j < njobs; j++) {
+        if (jobs[j].two_step) {
+          if (p[0] == 0 || p[0] > G1_SPECIES || p[1] == 0 || p[1] > G1_SPECIES) continue;
+        } else if (p[jobs[j].a_off] != jobs[j].a_val) continue;
+#ifdef ROM_GBSPRITE_JOB_COUNTERS
+        g_rgs_cb_calls[jobs[j].job_id]++;
+#endif
         if (!jobs[j].cb(p)) continue;
         if (jobs[j].n < SCAN_MAX_HITS) jobs[j].off[jobs[j].n] = sw.base + i;
         jobs[j].n++;
@@ -188,20 +219,28 @@ static int g1_bs_verify(RomGbSprite* gs, uint32_t off) {
 }
 
 /* PokedexOrder: 190 bytes, 151 non-zero forming a bijection onto 1..151, and 39
- * MissingNo holes. The range loop bails on the first out-of-range byte, which is
- * what keeps a per-byte scan of a 1 MB ROM cheap. */
+ * MissingNo holes. BACKLOG #185 F2: scan_multi's own two-byte gate (p[0] and
+ * p[1] both in [1,151]) already rejects almost every position before this is
+ * even called, so the ONE remaining pass below does the range check, the
+ * bijection check and the hole count together instead of three separate passes
+ * over the same 190 bytes -- `seen` is memset exactly once, and a running zero
+ * count lets a position that can no longer possibly reach 39 holes (or 151
+ * distinct species) bail before the full 190-byte walk finishes. Bailing on the
+ * first out-of-range byte or the first duplicate is what keeps a per-byte scan
+ * of a 1 MB ROM cheap on whatever positions the gate still lets through. */
 static int g1_dex_cb(const uint8_t* w) {
-  for (uint32_t i = 0; i < G1_DEXORDER; i++) if (w[i] > G1_SPECIES) return 0;
   uint8_t seen[G1_SPECIES + 1];
   memset(seen, 0, sizeof seen);
-  uint32_t nz = 0;
+  uint32_t nz = 0, zeros = 0;
+  const uint32_t max_zeros = G1_DEXORDER - G1_SPECIES;      /* 39 */
   for (uint32_t i = 0; i < G1_DEXORDER; i++) {
     uint8_t v = w[i];
-    if (!v) continue;
+    if (v > G1_SPECIES) return 0;
+    if (!v) { if (++zeros > max_zeros) return 0; continue; }
     if (seen[v]) return 0;
     seen[v] = 1; nz++;
   }
-  return nz == G1_SPECIES;
+  return nz == G1_SPECIES && zeros == max_zeros;
 }
 
 /* Red/Blue keep Mew's record alone in the bank that holds its pics
@@ -343,63 +382,98 @@ static int g2_pal_verify(RomGbSprite* gs, uint32_t off) {
 
 enum { J_G1_BS = 0, J_G1_DEX, J_G1_MEW, J_G2_BD, J_G2_PP, J_G2_PAL, J_COUNT };
 
-static int locate(RomGbSprite* gs) {
-  ScanJob jobs[J_COUNT];
-  memset(jobs, 0, sizeof jobs);
-  jobs[J_G1_BS ].cb = g1_bs_cb;  jobs[J_G1_BS ].look = 10 * G1_ROW;
-  jobs[J_G1_DEX].cb = g1_dex_cb; jobs[J_G1_DEX].look = G1_DEXORDER;
-  jobs[J_G1_MEW].cb = g1_mew_cb; jobs[J_G1_MEW].look = G1_ROW;
-  jobs[J_G2_BD ].cb = g2_bd_cb;  jobs[J_G2_BD ].look = 10 * G2_ROW;
-  jobs[J_G2_PP ].cb = g2_pp_cb;  jobs[J_G2_PP ].look = G2_PP_LOOK;
-  jobs[J_G2_PAL].cb = g2_pal_cb; jobs[J_G2_PAL].look = G2_PAL_SIG_LEN;
-  if (!scan_multi(gs, jobs, J_COUNT)) return 0;
+static void job_g1_bs(ScanJob* j)  { memset(j, 0, sizeof *j); j->cb = g1_bs_cb;  j->look = 10 * G1_ROW;
+                                     j->a_off = 0; j->a_val = 1; j->job_id = J_G1_BS; }
+static void job_g1_dex(ScanJob* j) { memset(j, 0, sizeof *j); j->cb = g1_dex_cb; j->look = G1_DEXORDER;
+                                     j->two_step = 1; j->job_id = J_G1_DEX; }
+static void job_g1_mew(ScanJob* j) { memset(j, 0, sizeof *j); j->cb = g1_mew_cb; j->look = G1_ROW;
+                                     j->a_off = 0; j->a_val = (uint8_t)G1_SPECIES; j->job_id = J_G1_MEW; }
+static void job_g2_bd(ScanJob* j)  { memset(j, 0, sizeof *j); j->cb = g2_bd_cb;  j->look = 10 * G2_ROW;
+                                     j->a_off = 0; j->a_val = 1; j->job_id = J_G2_BD; }
+static void job_g2_pp(ScanJob* j)  { memset(j, 0, sizeof *j); j->cb = g2_pp_cb;  j->look = G2_PP_LOOK;
+                                     /* the Unown hole's own first byte -- the cheapest byte g2_pp_cb
+                                      * itself demands first (its very first check). */
+                                     j->a_off = G2_UNOWN_IDX * G2_ENTRY; j->a_val = 0xFF; j->job_id = J_G2_PP; }
+static void job_g2_pal(ScanJob* j) { memset(j, 0, sizeof *j); j->cb = g2_pal_cb; j->look = G2_PAL_SIG_LEN;
+                                     j->a_off = 0; j->a_val = G2_PAL_SIG[0]; j->job_id = J_G2_PAL; }
 
-  /* ---- Gen 1 ---------------------------------------------------------- */
+/* Gen-1 ROMs are 1 MiB (32 KiB << size-code 5); Gen-2 ROMs are 2 MiB (size-code
+ * 6). Size ALONE, not cgb: the brief this fix comes from (BACKLOG #185) assumed
+ * cgb 0x00 for every Gen-1 ROM, but the real corpus disagrees -- measured
+ * directly off Guy's own dumps (xxd -s 0x143 -l 1), Yellow.gb (Gen 1) is cgb=0x80,
+ * the SAME "GBC-enhanced" value Gold.gbc (Gen 2) uses:
+ *
+ *     Red.gb      1,048,576 B  cgb=0x00
+ *     Yellow.gb   1,048,576 B  cgb=0x80   <- would have been wrongly REFUSED by
+ *                                              a cgb==0x00 check
+ *     Gold.gbc    2,097,152 B  cgb=0x80
+ *     Crystal.gbc 2,097,152 B  cgb=0xC0
+ *
+ * cgb cannot discriminate Gen 1 from Gen 2 (0x80 appears on both sides), so this
+ * checks size only -- verified sufficient across all four corpus ROMs (1 MiB vs
+ * 2 MiB, no overlap) and structurally sound: Pan Docs' size-code byte 0x148 is
+ * exactly the same "how many banks does the boot ROM expect" byte parse_header()
+ * already turned into gs->size, so a wrong-generation ROM of the SAME size as
+ * the requested generation still fails the real scan/verify a moment later --
+ * this check's job is only to reject the CHEAP, common case (a 2 MB ROM handed
+ * to the Gen-1 slot) before spending a single scan byte on it, not to be the
+ * only line of defense. Checked against the already-parsed header BEFORE a
+ * restricted scan runs -- BACKLOG #185 F1's "must not silently succeed". */
+static int header_matches_gen(const RomGbSprite* gs, uint8_t gen_hint) {
+  if (gen_hint == GB_ROM_GEN1) return gs->size == 0x100000u;
+  if (gen_hint == GB_ROM_GEN2) return gs->size == 0x200000u;
+  return 1;                                        /* GB_ROM_NONE: no constraint */
+}
+
+/* Gen-1 identification from three already-scanned jobs (base stats, dex order,
+ * Mew). Returns 1 and fills gs (gen = GB_ROM_GEN1) on success, 0 otherwise --
+ * gs->base_stats is left at 0 on failure so a caller that falls through to
+ * Gen-2 never sees a stale Gen-1 offset. */
+static int identify_g1(RomGbSprite* gs, const ScanJob* bs, const ScanJob* dex, const ScanJob* mew) {
   uint32_t found = 0, off = 0;
-  if (jobs[J_G1_BS].n && jobs[J_G1_BS].n <= SCAN_MAX_HITS) {
-    for (uint32_t i = 0; i < jobs[J_G1_BS].n; i++)
-      if (g1_bs_verify(gs, jobs[J_G1_BS].off[i])) { found++; off = jobs[J_G1_BS].off[i]; }
+  if (bs->n && bs->n <= SCAN_MAX_HITS) {
+    for (uint32_t i = 0; i < bs->n; i++)
+      if (g1_bs_verify(gs, bs->off[i])) { found++; off = bs->off[i]; }
   }
-  if (found == 1 && jobs[J_G1_DEX].n == 1) {
-    gs->base_stats = off;
-    if (!rd(gs, jobs[J_G1_DEX].off[0], gs->dex_order, G1_DEXORDER)) return 0;
+  if (found != 1 || dex->n != 1) { gs->base_stats = 0; return 0; }
+  gs->base_stats = off;
+  if (!rd(gs, dex->off[0], gs->dex_order, G1_DEXORDER)) { gs->base_stats = 0; return 0; }
 
-    /* Is dex 151 an ordinary 151st row (Yellow) or a lone record (Red/Blue)? */
-    uint8_t row[G1_ROW];
-    if (rd(gs, gs->base_stats + G1_ROWS * G1_ROW, row, G1_ROW) && row[0] == G1_SPECIES) {
-      gs->mew_stats = 0; gs->mew_bank = 0;          /* the ladder covers it     */
-    } else {
-      if (jobs[J_G1_MEW].n > SCAN_MAX_HITS) return 0;
-      uint32_t mfound = 0;
-      for (uint32_t i = 0; i < jobs[J_G1_MEW].n; i++) {
-        uint8_t bank;
-        if (g1_mew_verify(gs, jobs[J_G1_MEW].off[i], &bank)) {
-          mfound++; gs->mew_stats = jobs[J_G1_MEW].off[i]; gs->mew_bank = bank;
-        }
+  /* Is dex 151 an ordinary 151st row (Yellow) or a lone record (Red/Blue)? */
+  uint8_t row[G1_ROW];
+  if (rd(gs, gs->base_stats + G1_ROWS * G1_ROW, row, G1_ROW) && row[0] == G1_SPECIES) {
+    gs->mew_stats = 0; gs->mew_bank = 0;          /* the ladder covers it     */
+  } else {
+    if (mew->n > SCAN_MAX_HITS) { gs->base_stats = 0; return 0; }
+    uint32_t mfound = 0;
+    for (uint32_t i = 0; i < mew->n; i++) {
+      uint8_t bank;
+      if (g1_mew_verify(gs, mew->off[i], &bank)) {
+        mfound++; gs->mew_stats = mew->off[i]; gs->mew_bank = bank;
       }
-      if (mfound != 1) return 0;
     }
-    gs->gen = GB_ROM_GEN1;
-    return 1;
+    if (mfound != 1) { gs->base_stats = 0; return 0; }
   }
-  gs->base_stats = 0;
+  gs->gen = GB_ROM_GEN1;
+  return 1;
+}
 
-  /* ---- Gen 2 ---------------------------------------------------------- */
-  found = 0; off = 0;
-  if (jobs[J_G2_BD].n > SCAN_MAX_HITS) return 0;
-  for (uint32_t i = 0; i < jobs[J_G2_BD].n; i++)
-    if (g2_bd_verify(gs, jobs[J_G2_BD].off[i])) { found++; off = jobs[J_G2_BD].off[i]; }
+/* Gen-2 identification from three already-scanned jobs (base data, pic
+ * pointers, palettes). Same success/failure contract as identify_g1(). */
+static int identify_g2(RomGbSprite* gs, const ScanJob* bd, const ScanJob* pp, const ScanJob* pal) {
+  uint32_t found = 0, off = 0;
+  if (bd->n > SCAN_MAX_HITS) return 0;
+  for (uint32_t i = 0; i < bd->n; i++)
+    if (g2_bd_verify(gs, bd->off[i])) { found++; off = bd->off[i]; }
   if (found != 1) return 0;
   gs->base_data = off;
 
   found = 0;
   uint8_t lo = 0, hi = 0;
-  if (jobs[J_G2_PP].n > SCAN_MAX_HITS) return 0;
-  for (uint32_t i = 0; i < jobs[J_G2_PP].n; i++) {
+  if (pp->n > SCAN_MAX_HITS) return 0;
+  for (uint32_t i = 0; i < pp->n; i++) {
     uint8_t a, b;
-    if (g2_pp_verify(gs, jobs[J_G2_PP].off[i], &a, &b)) {
-      found++; off = jobs[J_G2_PP].off[i]; lo = a; hi = b;
-    }
+    if (g2_pp_verify(gs, pp->off[i], &a, &b)) { found++; off = pp->off[i]; lo = a; hi = b; }
   }
   if (found != 1) return 0;
   gs->pic_ptrs = off;
@@ -417,11 +491,11 @@ static int locate(RomGbSprite* gs) {
   }
 
   found = 0;
-  if (jobs[J_G2_PAL].n > SCAN_MAX_HITS) return 0;
-  for (uint32_t i = 0; i < jobs[J_G2_PAL].n; i++) {
+  if (pal->n > SCAN_MAX_HITS) return 0;
+  for (uint32_t i = 0; i < pal->n; i++) {
     uint8_t sig[G2_PAL_SIG_LEN];
-    if (!rd(gs, jobs[J_G2_PAL].off[i], sig, sizeof sig)) continue;
-    uint32_t p = bank_off(gs, jobs[J_G2_PAL].off[i] / GB_BANK, rd16(sig + 7));
+    if (!rd(gs, pal->off[i], sig, sizeof sig)) continue;
+    uint32_t p = bank_off(gs, pal->off[i] / GB_BANK, rd16(sig + 7));
     if (!p || !g2_pal_verify(gs, p)) continue;
     found++; off = p;
   }
@@ -433,8 +507,37 @@ static int locate(RomGbSprite* gs) {
   return 1;
 }
 
+/* BACKLOG #185 F1: `gen_hint` narrows the scan to ONE generation's three jobs
+ * (half the per-position callback/gate work of the original six-job pass) when
+ * the caller already knows which generation it is registering/fetching.
+ * GB_ROM_NONE keeps the original "try Gen 1, then Gen 2" behaviour every
+ * gen-less caller relies on. */
+static int locate(RomGbSprite* gs, uint8_t gen_hint) {
+  if (gen_hint != GB_ROM_NONE && !header_matches_gen(gs, gen_hint)) return 0;
+
+  if (gen_hint == GB_ROM_GEN1) {
+    ScanJob jobs[3];
+    job_g1_bs(&jobs[0]); job_g1_dex(&jobs[1]); job_g1_mew(&jobs[2]);
+    if (!scan_multi(gs, jobs, 3)) return 0;
+    return identify_g1(gs, &jobs[0], &jobs[1], &jobs[2]);
+  }
+  if (gen_hint == GB_ROM_GEN2) {
+    ScanJob jobs[3];
+    job_g2_bd(&jobs[0]); job_g2_pp(&jobs[1]); job_g2_pal(&jobs[2]);
+    if (!scan_multi(gs, jobs, 3)) return 0;
+    return identify_g2(gs, &jobs[0], &jobs[1], &jobs[2]);
+  }
+
+  ScanJob jobs[J_COUNT];
+  job_g1_bs(&jobs[J_G1_BS]);   job_g1_dex(&jobs[J_G1_DEX]); job_g1_mew(&jobs[J_G1_MEW]);
+  job_g2_bd(&jobs[J_G2_BD]);   job_g2_pp(&jobs[J_G2_PP]);   job_g2_pal(&jobs[J_G2_PAL]);
+  if (!scan_multi(gs, jobs, J_COUNT)) return 0;
+  if (identify_g1(gs, &jobs[J_G1_BS], &jobs[J_G1_DEX], &jobs[J_G1_MEW])) return 1;
+  return identify_g2(gs, &jobs[J_G2_BD], &jobs[J_G2_PP], &jobs[J_G2_PAL]);
+}
+
 int rom_gbsprite_open(RomGbSprite* gs, GbReadFn read, void* ctx, uint32_t size,
-                      uint8_t* scratch, uint32_t scratch_len) {
+                      uint8_t* scratch, uint32_t scratch_len, uint8_t gen_hint) {
   if (!gs) return 0;
   memset(gs, 0, sizeof *gs);
   gs->read = read; gs->ctx = ctx; gs->size = size;
@@ -442,8 +545,11 @@ int rom_gbsprite_open(RomGbSprite* gs, GbReadFn read, void* ctx, uint32_t size,
   if (!read || !scratch || scratch_len < ROM_GBSPRITE_SCRATCH_MIN) return 0;
   if (!parse_header(gs)) return 0;
   /* Which generation is decided by what is IN the ROM, never by the title, so
-   * Blue, Silver and localised builds work the same way. */
-  if (!locate(gs)) { gs->gen = GB_ROM_NONE; return 0; }
+   * Blue, Silver and localised builds work the same way -- unless the caller
+   * already knows (gen_hint != GB_ROM_NONE), in which case locate() restricts
+   * itself to that generation's jobs and fails closed on a header mismatch
+   * (BACKLOG #185 F1). */
+  if (!locate(gs, gen_hint)) { gs->gen = GB_ROM_NONE; return 0; }
   gs->ok = 1;
   return 1;
 }
@@ -468,7 +574,7 @@ void rom_gbsprite_save_loc(const RomGbSprite* gs, RomGbSpriteLoc* out) {
 
 int rom_gbsprite_open_loc(RomGbSprite* gs, GbReadFn read, void* ctx, uint32_t size,
                           uint8_t* scratch, uint32_t scratch_len,
-                          const RomGbSpriteLoc* loc) {
+                          const RomGbSpriteLoc* loc, uint8_t gen_hint) {
   if (!gs) return 0;
   memset(gs, 0, sizeof *gs);
   gs->read = read; gs->ctx = ctx; gs->size = size;
@@ -478,8 +584,15 @@ int rom_gbsprite_open_loc(RomGbSprite* gs, GbReadFn read, void* ctx, uint32_t si
 
   /* A cache is a hint, never a source of truth: it has to survive the same
    * verification the scan's own candidates do. bank_ok is deliberately NOT
-   * restored — every stored bank byte re-earns its mapping on first use. */
-  if (loc && loc->id_hash == gs->id_hash && loc->size == size) {
+   * restored — every stored bank byte re-earns its mapping on first use.
+   * BACKLOG #185 F1: a cache whose OWN recorded gen disagrees with a non-NONE
+   * gen_hint is not even consulted -- it falls straight to the gen-restricted
+   * rom_gbsprite_open() below, which fails closed on the header mismatch,
+   * exactly like a wrong-gen scan. Without this a foreign-gen cache could
+   * validate (its fields are genuinely self-consistent) and silently hand
+   * back the OTHER generation's tables under a hint that promised otherwise. */
+  if (loc && loc->id_hash == gs->id_hash && loc->size == size &&
+      (gen_hint == GB_ROM_NONE || loc->gen == gen_hint)) {
     if (loc->gen == GB_ROM_GEN1 && g1_bs_verify(gs, loc->base_stats)) {
       gs->base_stats = loc->base_stats;
       memcpy(gs->dex_order, loc->dex_order, sizeof gs->dex_order);
@@ -516,7 +629,7 @@ int rom_gbsprite_open_loc(RomGbSprite* gs, GbReadFn read, void* ctx, uint32_t si
       }
     }
   }
-  return rom_gbsprite_open(gs, read, ctx, size, scratch, scratch_len);
+  return rom_gbsprite_open(gs, read, ctx, size, scratch, scratch_len, gen_hint);
 }
 
 /* ------------------------------------------------------------------ Gen 1 */

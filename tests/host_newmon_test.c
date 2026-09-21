@@ -81,7 +81,7 @@ static bool rig_open(Rig* r, const char* file, uint8_t gen) {
   uint32_t sz = file_size(path);
   bool a = rom_gblearn_open(&r->rl, gen, file_read, r->f, sz);
   GbRomGen want = (gen == GB_GEN1) ? GB_ROM_GEN1 : GB_ROM_GEN2;
-  bool b = rom_gbsprite_open(&r->gs, file_read, r->f, sz, g_scratch, sizeof g_scratch)
+  bool b = rom_gbsprite_open(&r->gs, file_read, r->f, sz, g_scratch, sizeof g_scratch, GB_ROM_NONE)
         && r->gs.gen == want;
   CHECK(a, "%s: rom_gblearn_open", file);
   CHECK(b, "%s: rom_gbsprite_open", file);
