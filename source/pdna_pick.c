@@ -1162,6 +1162,12 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
 #define g_mv g_idx
 static int g_mvn;
 
+/* BACKLOG #189: same ceiling shape as g_item_max_id (pick_item_set_gen1_2_max's own
+ * header comment) -- 0 = unrestricted, every existing caller's default. Set by
+ * pick_move_set_gen_max(), consulted by build_moves() below. */
+static uint16_t g_move_max_id = 0;
+void pick_move_set_gen_max(uint16_t max_id) { g_move_max_id = max_id; }
+
 /* sort modes for the move list */
 #define NMVSORT 6
 static const char* const MV_SORT[NMVSORT] = { "No.", "Name", "Power", "Acc", "PP", "Type" };
@@ -1183,6 +1189,7 @@ static bool move_gt(uint16_t a, uint16_t b, int sort) {
 static void build_moves(int type_filter, int sort, const char* search) {
   g_mvn = 0;
   for (uint16_t m = 1; m < NMOVE; m++) {
+    if (g_move_max_id && m > g_move_max_id) continue;   /* BACKLOG #189: the gen ceiling */
     const char* nm = pk_move_name(m);
     if (nm[0] == '-' || nm[0] == '?') continue;
     if (type_filter >= 0 && pk_move_type(m) != type_filter) continue;
@@ -1265,8 +1272,17 @@ uint16_t pick_move(uint16_t current) {
     if (full) {
       ui_clear();
       char h[48];
-      siprintf(h, "MOVES [%.3s] %s %d", tf < 0 ? "All" : pk_type_name((uint8_t)tf),
-               MV_SORT[sort], g_mvn);
+      /* BACKLOG #189: when a ceiling is set, replace the type-filter chip with the
+       * ceiling itself ("MOVES 1-165") so the filtering that made a later-gen move
+       * disappear is visible, not silent -- Guy's own stated preference ("at least
+       * flag which minimum gen each attk is available", read as "just filter" per
+       * the brief). g_move_max_id==0 (every Gen-3 caller) keeps the old header,
+       * byte for byte -- pinned by a host test. */
+      if (g_move_max_id)
+        siprintf(h, "MOVES 1-%u %s %d", (unsigned)g_move_max_id, MV_SORT[sort], g_mvn);
+      else
+        siprintf(h, "MOVES [%.3s] %s %d", tf < 0 ? "All" : pk_type_name((uint8_t)tf),
+                 MV_SORT[sort], g_mvn);
       ui_text(4, 1, UI_TITLE, h);
       ui_hline(0, 11, UI_SCR_W, UI_BORDER);
       ui_text(4, 152, UI_DIM, "A pick  L/R type  SEL find");

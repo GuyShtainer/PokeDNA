@@ -30,6 +30,16 @@ uint16_t pick_item(uint16_t current_item);
  * why this is not merely a ceiling the way pick_species_set_max_dex() is.
  * Set it right before the call and clear it (pass 0) right after. */
 void     pick_item_set_gen1_2_max(uint16_t max_id);
+/* BACKLOG #189: restricts the NEXT pick_move() call's list to ids 1..max_id (0 =
+ * unrestricted, the default every existing caller sees). Mirrors
+ * pick_item_set_gen1_2_max() exactly: file-scope static, consulted in build_moves(),
+ * set right before the call and cleared (pass 0) right after so it never leaks into
+ * the next, unrelated pick_move() caller. Unlike the item ceiling, move names/data
+ * ARE real at every id shown (pk_move_name/pk_move_power/etc. already cover the
+ * whole NMOVE range) -- this ceiling exists to hide moves the mon's OWN generation
+ * cannot learn (gb_max_move(gen): 165 for Gen 1, 251 for Gen 2), not because the
+ * data would be wrong, so nothing else about the row/detail rendering changes. */
+void     pick_move_set_gen_max(uint16_t max_id);
 uint8_t  pick_nature(uint8_t current_nature);
 int      pick_unown_form(int current_form);     /* 0..27 = A..?, -1 cancel */
 

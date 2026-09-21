@@ -277,7 +277,13 @@ void gbedit_press(GbEditMon* e, int f, bool has_sidecar, bool* dv_warned) {
     return;
   }
   if (kind == GBE_K_MOVE) {
+    /* BACKLOG #189: the picker itself only offers moves this mon's own generation
+     * can learn (gb_max_move(e->gen): 165 Gen 1, 251 Gen 2) -- the LATE refusal
+     * below stays as a defence (gbe_set_move's own over-range check, pinned by
+     * tests/host_gbeditor_test.c) but is unreachable from this picker now. */
+    pick_move_set_gen_max(gb_max_move(e->gen));
     uint16_t id = pick_move(gb_get_move(e, f - GBE_MV0));
+    pick_move_set_gen_max(0);
     if (id == 0xFFFF) return;
     if (gbe_set_move(e, f, id)) { snd_edit(); return; }
     snd_deny();
