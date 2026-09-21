@@ -4017,7 +4017,22 @@ int pdna_box(BoxSource* src) {
        * take-the-held-item branch mutates the SYNTHESISED Gen-3 grid via box_set_held() +
        * mark_dirty() and can never persist (a UX lie), now that can_lift going true
        * switches on machinery that was unreachable before this lane. */
-      else if (src_can_lift(src, box, cur)) { s_cur_mode = (s_cur_mode + 1) % (src->scope == BOXSCOPE_GB ? 2 : 3); need_full = true; }  /* cycle cursor mode (Omega-only edit modes) */
+      /* BACKLOG #187/#192, F1: leaving a non-NORMAL mode is now UNCONDITIONAL (the
+       * `s_cur_mode != CM_NORMAL` clause) -- before this fix, moving the cursor onto
+       * an empty cell while in MOVE (or ITEM) mode made src_can_lift(box,cur) false
+       * (gbs_can_delete refuses slot>=count on an empty GB cell), so the SAME gate
+       * that ADMITS a mode also, wrongly, GATED leaving it -- SELECT there just beeped
+       * forever (#192: "stuck on orange (grab)"). Entering (NORMAL -> anything) still
+       * needs a real capability check, but now box-level (can_enter_move, falling
+       * back to the old per-cell src_can_lift when a source leaves it NULL -- every
+       * source before this field existed, PC/Bank included, is byte-identical): the
+       * per-cell question ("can THIS one mon be lifted") stays exactly where it
+       * belongs, the actual lift on A (src_can_lift is still called there,
+       * untouched). */
+      else if (s_cur_mode != CM_NORMAL ||
+               (src->can_enter_move ? src->can_enter_move(box) : src_can_lift(src, box, cur))) {
+        s_cur_mode = (s_cur_mode + 1) % (src->scope == BOXSCOPE_GB ? 2 : 3); need_full = true;
+      }  /* cycle cursor mode (Omega-only edit modes) */
       else snd_deny();
     }
     else if (on_title) {                           /* TITLE row: limited controls */

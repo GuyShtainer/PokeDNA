@@ -177,6 +177,14 @@ AppSrcOps.export_one @44 in app_mon_menu_readonly -> gb_export_hook
 BoxSource.can_boxops  @88 in pdna_box -> gbsrc_can_boxops
 BoxSource.export_all  @92 in box_options_menu -> gbsrc_export_all
 BoxSource.release_all @96 in box_options_menu -> gbsrc_release_all
+
+# BACKLOG #187/#192, F1: BoxSource.can_enter_move, appended at the struct's END
+# (pdna_box.h, same offset-stability rule as can_boxops above) -- offset 100,
+# release_all@96 (a pointer, the struct's previous last field) + 4 = 100. Only
+# pdna_gen12_source() assigns it (gbsrc_can_enter_move); pcsrc/banksrc leave it
+# NULL, so pdna_box.c's SELECT gate falls back to src_can_lift(src,box,cur) there,
+# byte-identical to before this field existed.
+BoxSource.can_enter_move @100 in pdna_box -> gbsrc_can_enter_move
 # 2026-09-14 (the "stuck choosing the .gbc" cart fix): gb_art_source.c's SD read shim
 # calls its GbArtIo.fn progress callback between reads. pdna_main.c's gb_reg_progress
 # is the ONLY implementation ever stored there (app_register_gb_rom, its restore

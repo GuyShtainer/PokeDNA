@@ -469,6 +469,7 @@ static bool gbsrc_can_edit(void) { return false; }
 static bool gbsrc_can_boxops_impl(int box);
 static bool gbsrc_export_all_impl(int box);
 static bool gbsrc_release_all_impl(int box);
+static bool gbsrc_can_enter_move_impl(int box);   /* BACKLOG #187/#192, F1 */
 static bool gb_can_lift_hook_impl(int box, int slot);
 /* BACKLOG #150 S150-4 step 3: BoxXferOps.lift_up/release_up real bodies (defined
  * further below, beside gb_release_hook/gb_lift_up_hook's own header comments) --
@@ -509,6 +510,17 @@ uint8_t app_gb_session_gen(void) {
 static bool gbsrc_can_boxops(int box) {
 #ifndef PDNA_GEN12_HOST
   return gbsrc_can_boxops_impl(box);
+#else
+  (void)box; return false;
+#endif
+}
+/* BoxSource.can_enter_move (BACKLOG #187/#192, F1) thin wrapper -- real body
+ * (gbsrc_can_enter_move_impl) defined below, beside gbsrc_can_boxops_impl, same
+ * PDNA_GEN12_HOST reason as every other _impl pair on this source (app_can_edit()
+ * is GBA-only, not linked into tests/host_gen12_test.c's -DPDNA_GEN12_HOST build). */
+static bool gbsrc_can_enter_move(int box) {
+#ifndef PDNA_GEN12_HOST
+  return gbsrc_can_enter_move_impl(box);
 #else
   (void)box; return false;
 #endif
@@ -627,6 +639,7 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
   s.can_boxops  = gbsrc_can_boxops;
   s.export_all  = gbsrc_export_all;
   s.release_all = gbsrc_release_all;
+  s.can_enter_move = gbsrc_can_enter_move;   /* BACKLOG #187/#192, F1: box-level SELECT gate */
   return s;
 }
 
@@ -2191,6 +2204,20 @@ static bool gb_export_hook(uint8_t* rec80) {
 static bool gbsrc_can_boxops_impl(int box) {
   if (!g_ed) return false;
   if (gb_box_is_party(g_ed->s.gen, box)) return false;
+  return app_can_edit() && gbs_box_writable(&g_ed->s, box) == GBS_OK;
+}
+
+/* BoxSource.can_enter_move (BACKLOG #187/#192, F1): the box-level "may SELECT enter
+ * MOVE mode HERE at all" question -- deliberately NOT gbsrc_can_boxops_impl (that one
+ * refuses the party pseudo-box outright, and MOVE mode must still work there, e.g.
+ * lifting a party mon into another box) and deliberately NOT gbs_can_delete (that is
+ * per-SLOT -- party-floor, Mail-holder, the exact refusal a specific mon earns, which
+ * stays exactly where the brief puts it: the actual lift on A, via can_lift). This is
+ * the box-wide half only: is the session writable, and is this box's own list one the
+ * engine will accept a write into. Thin wrapper (gbsrc_can_enter_move) lives up by
+ * gbsrc_can_boxops, same PDNA_GEN12_HOST pattern. */
+static bool gbsrc_can_enter_move_impl(int box) {
+  if (!g_ed) return false;
   return app_can_edit() && gbs_box_writable(&g_ed->s, box) == GBS_OK;
 }
 
