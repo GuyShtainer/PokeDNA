@@ -147,11 +147,33 @@ def check_picker_paints_ncap(gen12_text: str) -> list[str]:
     return []
 
 
+def check_move_within_moves(gen12_text: str) -> list[str]:
+    """(e) review finding, MEDIUM: checks (a)-(d) above pin that move_within is
+    WIRED (a non-NULL function pointer reachable from the right call site), but
+    none of them pin that the function actually MOVES anything -- a mutant
+    `gb_move_within_hook` that ignores its arguments and returns true unconditionally
+    left the whole suite green (caught by review, not by this test, before this
+    check existed). gb_move_core( is the one primitive that actually calls
+    gbs_move()/gb_persist() (see gb_move_hook's own identical call just above it in
+    source) -- gb_move_within_hook's body must reach it, not just return a bare
+    `true`."""
+    body = strip_comments(extract_function_body(gen12_text, "gb_move_within_hook"))
+    if not body:
+        return ["pdna_gen12.c: gb_move_within_hook() function body not found"]
+    if "gb_move_core(" not in body:
+        return ["pdna_gen12.c: gb_move_within_hook()'s body no longer calls "
+                "gb_move_core( -- it can return success without moving anything "
+                "(BACKLOG #191a regression: a same-scope GB drag-and-drop would "
+                "silently do nothing while claiming to work)"]
+    return []
+
+
 def run_all(box_text: str, gen12_text: str) -> list[str]:
     return (check_select_gate(box_text)
             + check_move_within_wired(box_text, gen12_text)
             + check_dup_reaches_picker(gen12_text)
-            + check_picker_paints_ncap(gen12_text))
+            + check_picker_paints_ncap(gen12_text)
+            + check_move_within_moves(gen12_text))
 
 
 def main() -> int:
@@ -169,8 +191,8 @@ def main() -> int:
             print(f"  FAIL: {v}")
         return 1
     print("ok: shipped source -- F1's SELECT gate shape, F2's move_within wiring "
-          "(both ends), F3's DUPLICATE->gb_pick_box path, and F3/F4's n/cap picker "
-          "labels are all present")
+          "(both ends) AND its behavioural body, F3's DUPLICATE->gb_pick_box path, "
+          "and F3/F4's n/cap picker labels are all present")
 
     tmpdir = Path(tempfile.mkdtemp(prefix="gbgridops_"))
     try:
@@ -235,10 +257,31 @@ def main() -> int:
         print("mutant 3 (restore the deny): correctly caught:")
         for v in m3:
             print(f"  (mutated-copy) FAIL: {v}")
+
+        # --- mutant 4 (review MEDIUM): gb_move_within_hook returns true without
+        # moving anything -- checks (a)-(d) alone left this green; check (e) exists
+        # to catch exactly this. ---------------------------------------------
+        target4 = "  return gb_move_core(box, slot, dst_box);\n}"
+        mutated_line4 = "  (void)box; (void)slot; (void)dst_box; return true;\n}"
+        if target4 not in gen12_text:
+            print(f"FAIL -- mutant 4 target not found verbatim (source drifted -- "
+                  f"update this test's target string):\n{target4!r}")
+            return 1
+        gen12_scratch.write_text(gen12_text.replace(target4, mutated_line4, 1))
+        box_scratch.write_text(box_text)
+        m4 = check_move_within_moves(gen12_scratch.read_text())
+        if not m4:
+            print("FAIL -- mutant 4 (gb_move_within_hook returns true without "
+                  "moving) did NOT turn check (e) red (vacuous check)")
+            return 1
+        print("mutant 4 (gb_move_within_hook returns true without moving): "
+              "correctly caught:")
+        for v in m4:
+            print(f"  (mutated-copy) FAIL: {v}")
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
-    print("\nhost_gb_grid_ops_test: ok (shipped source clean, all three mutations caught)")
+    print("\nhost_gb_grid_ops_test: ok (shipped source clean, all four mutations caught)")
     return 0
 
 
