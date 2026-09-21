@@ -100,6 +100,12 @@ def check_ro_move_gate(text: str) -> list[str]:
     if lift_idx > move_idx:
         return ["app_mon_menu_readonly() consults lift_why AFTER already adding "
                 "the RO_MOVE row -- too late to hide it"]
+    # The row-add must be CONDITIONED on move_why, not merely preceded by the
+    # call (re-verify 2026-09-21: `(void)move_why; { ... RO_MOVE }` passed).
+    guard = re.search(r"if\s*\(\s*!\s*move_why\s*\)\s*\{[^}]*act\[n\+\+\]\s*=\s*RO_MOVE", body)
+    if not guard:
+        return ["app_mon_menu_readonly()'s RO_MOVE row is not actually gated on "
+                "move_why -- lift_why is consulted but its result is ignored"]
     return []
 
 
