@@ -1077,8 +1077,16 @@ static void br_detail_paint(const BrowseEntry* ents, int sel, const BrowseSpec* 
     ui_text(2, 128, UI_DIM, meta);
   }
   char status[64], stc[40];
-  siprintf(status, "%d/%d  %s  %s", g_count ? sel + 1 : 0, g_count,
-           sort_label(), g_show_all ? "all" : spec->filter_label);
+  /* D5: the "List full - some files not shown." warning pick_rom() used to show got
+   * lost when that implementation was deleted (BACKLOG #186) -- the GB-session ROM
+   * picker's cap (PICK_MAX_ART, mon_decomp-backed) is only ~107 entries, so a folder
+   * that busy needs SOME visible sign it isn't showing everything. " FULL" on the
+   * status line (already ui_truncate'd to 29 cols below, so a long path/sort label
+   * just drops it the same safe way it already drops anything else over budget,
+   * never overruns). */
+  siprintf(status, "%d/%d  %s  %s%s", g_count ? sel + 1 : 0, g_count,
+           sort_label(), g_show_all ? "all" : spec->filter_label,
+           g_count >= spec->cap ? " FULL" : "");
   ui_truncate(stc, status, 29);
   ui_text(2, 138, UI_OK, stc);
 }
