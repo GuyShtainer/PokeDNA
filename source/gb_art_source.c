@@ -138,24 +138,28 @@ static void gb_icon_save_loc(const RomGbIconLoc* loc) {
  * gbscr_open_inner can drive the same guard over its own whole-tail scan instead of the
  * plain, unguarded gbscr_sd_read() shim it used to open with (now deleted). */
 
-#define GB_ART_TICK_MASK   7u                                   /* poll/draw every 8 reads */
-#define GB_ART_LIMIT_TICKS (GB_ART_SCAN_LIMIT_S * 16384u)      /* perf_ticks() is 16,384 Hz */
+#define GB_ART_TICK_MASK    7u                                        /* poll/draw every 8 reads */
+/* BACKLOG #185 F3: a stall clock, not a flat one -- see gb_scan_guard.h/gb_art_source.h
+ * for why. perf_ticks() is 16,384 Hz. */
+#define GB_ART_STALL_TICKS        (GB_ART_STALL_S        * 16384u)
+#define GB_ART_HARD_CEILING_TICKS (GB_ART_HARD_CEILING_S * 16384u)
 
 void gb_art_io_init(GbArtIo* io, FIL* f, uint32_t size, GbArtProgressFn fn, void* fn_ctx,
                     uint8_t locator, bool limited) {
   memset(io, 0, sizeof *io);
   io->f = f; io->fn = fn; io->fn_ctx = fn_ctx; io->locator = locator;
   io->t_start = perf_ticks();
-  gb_scan_guard_init(&io->g, size, io->t_start, limited ? GB_ART_LIMIT_TICKS : 0u, GB_ART_TICK_MASK);
+  gb_scan_guard_init(&io->g, size, io->t_start, limited ? GB_ART_STALL_TICKS : 0u,
+                     limited ? GB_ART_HARD_CEILING_TICKS : 0u, GB_ART_TICK_MASK);
 }
 
-/* Start the next locator on the same handle: a fresh time limit and progress
- * fraction, the read count carried forward. */
+/* Start the next locator on the same handle: a fresh stall/ceiling clock and
+ * progress fraction, the read count carried forward. */
 static void gb_art_io_next(GbArtIo* io, uint8_t locator) {
   io->reads_done += io->g.reads;
   io->locator = locator;
-  uint32_t limit = io->g.limit;
-  gb_scan_guard_init(&io->g, io->g.total, perf_ticks(), limit, GB_ART_TICK_MASK);
+  uint32_t stall = io->g.stall_limit, ceiling = io->g.hard_limit;
+  gb_scan_guard_init(&io->g, io->g.total, perf_ticks(), stall, ceiling, GB_ART_TICK_MASK);
 }
 
 bool gb_art_read(void* ctx, uint32_t off, void* buf, uint32_t len) {
@@ -187,6 +191,10 @@ bool gb_art_read(void* ctx, uint32_t off, void* buf, uint32_t len) {
     gb_scan_guard_fail(&io->g);
     return false;
   }
+  /* BACKLOG #185 F3: this read COMPLETED -- reset the stall clock. Admitting a
+   * read is not the same as it succeeding (gb_scan_guard_admit() itself never
+   * touches `last`); only a real, successful transfer counts as progress. */
+  gb_scan_guard_progress(&io->g, perf_ticks());
   return true;
 }
 
