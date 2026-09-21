@@ -1339,6 +1339,20 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
         app_log_flush();
         return recs;                                          /* still holding */
       }
+      /* BACKLOG #197: pdna_bank_prepare_native() -> bank_backup_v1() sets g_loaded =
+       * -1 on its FIRST-EVER-run success path (pdna_bank.c, "force a fresh page-in"),
+       * discarding whatever box g_bankbuf held. `recs` here is a plain pointer into
+       * that same buffer, still holding the STALE contents from before prepare ran
+       * (or garbage, on the very first entry) -- src->records(box) (box_load) must
+       * re-page box's real records before the collision scan below reads them and
+       * before the commit below writes into them, or the commit sees g_loaded < 0
+       * and box_save() refuses outright ("bank write failed", still holding) even
+       * though the write itself was never attempted on real data. On every call
+       * AFTER the first (marker already DONE), bank_backup_v1's O(1) early return
+       * never touches g_loaded, so this re-page is a same-box no-op paging call --
+       * cheap, and required unconditionally since the caller cannot tell which case
+       * it is in. */
+      recs = src->records(box);
       /* decision 10: the ident32 collision refusal, NOT a re-pack -- the serial is
        * monotonic and persisted before use, so a collision means the meta was lost
        * or rolled back. Scan the destination box's 30 slots (this box only: `recs`
