@@ -994,6 +994,14 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * decision 6's own rule: a byte-identical restore stays silent. */
 #define PDNA_XFERRESTORE_TITLE  "BACK TO ITS ORIGINAL"
 #define PDNA_XFERRESTORE_L_LOSS "Gen 3 only data is dropped."
+/* review D6, UX parity with the Gen-3 sidecar twin (docs/BANK-CROSSGEN-DESIGN.md
+ * decision 6/9): the per-row confirm reuses PDNA_SIDECAR_L_LEVEL/L_MOVES/L_RENAMED/
+ * L_RENAME_REFUSED/L_ITEM_IGNORED (:958-962) UNCHANGED and PDNA_SIDECAR_B_CANCEL
+ * (:965) unchanged; only the title, the evolved row and the A-line are direction-
+ * specific (species goes the OPPOSITE way here -- reported, never applied, decision
+ * 10 -- so the wording says so). */
+#define PDNA_XFERRESTORE_L_EVOLVED "It evolved in Gen 3."
+#define PDNA_XFERRESTORE_A_OK      "A = restore"
 
 /* review F5: the rc == -1 "unreadable record" refusal gets its own message instead of
  * a bare snd_error() -- decision 9's own strings. */

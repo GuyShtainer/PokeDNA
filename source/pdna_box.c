@@ -1264,7 +1264,7 @@ pc_bank_restore_up(const uint8_t g3_rec80[80], uint8_t out_cell80[80]) {
       rep.move_refused[0] || rep.move_refused[1] || rep.move_refused[2] || rep.move_refused[3] ||
       g3_item) {
     boxoam_suspend();
-    bool confirmed = app_confirm(PDNA_XFERRESTORE_TITLE, PDNA_XFERRESTORE_L_LOSS);
+    bool confirmed = app_xferrestore_confirm(&rep);   /* review D6: the per-row twin, UX parity */
     boxoam_resume();
     if (!confirmed) return -2;   /* review D3: B, user declined -- distinct from a genuine failure */
   }

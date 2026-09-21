@@ -910,6 +910,9 @@ int main(void) {
   /* BACKLOG #150 S150-8b review F3: the RESTORE edge's own confirm. */
   PF(PDNA_XFERRESTORE_TITLE,  28, 184);
   PF(PDNA_XFERRESTORE_L_LOSS, 28, 184);
+  /* review D6: the per-row confirm's own two remaining new strings. */
+  PF(PDNA_XFERRESTORE_L_EVOLVED, 28, 184);
+  PF(PDNA_XFERRESTORE_A_OK,      28, 184);
   /* BACKLOG #150 S150-8b review F5: the "unreadable record" refusal message. */
   PF(PDNA_XFERREC_TITLE,      28, 184);
   PF(PDNA_XFERREC_L1,         28, 184);
