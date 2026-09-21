@@ -122,165 +122,31 @@ static bool rom_fatfs_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
   return br == len;
 }
 
-/* ---- a minimal .gba picker (kept local so the .sav browser stays untouched) -- */
+/* ---- BACKLOG #186: the ROM/GB pickers are the SAME core as the .sav browser now --
+ * pdna_map.h's browse_pick_spec(). PICK_MAX stays (it sizes the entry buffers below
+ * and the _Static_assert further down); everything that used to be a second, minimal
+ * picker implementation (ext_matches/pick_row_paint/pick_rom/PickEnt/PickPaint/
+ * s_pick_ext) is GONE -- same chrome, same sort/filter/hidden toggles, same file ops,
+ * same detail line and footer as the launch browser, only the title/extension-filter/
+ * folder-memory-key/menu-extras differ per kind (A1). */
 #define PICK_MAX 128
-#define PICK_NAME 64
-typedef struct { char name[PICK_NAME]; bool dir; } PickEnt;
 
-/* The picker's extension filter. `pick_rom` wants .gba; the GB-import picker wants
- * .sav/.srm (Game Boy battery files), so the wanted extension is a parameter now and
- * the two entry points below just say which they mean. */
-static const char* s_pick_ext[3] = { ".gba", 0, 0 };
-static bool ext_matches(const char* n) {
-  int l = (int)strlen(n);
-  for (int e = 0; e < 3 && s_pick_ext[e]; e++) {
-    int el = (int)strlen(s_pick_ext[e]);
-    if (l <= el) continue;
-    const char* t = n + l - el;
-    int ok = 1;
-    for (int i = 0; i < el && ok; i++) {
-      char a = t[i], b = s_pick_ext[e][i];
-      if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
-      if (a != b) ok = 0;
-    }
-    if (ok) return true;
-  }
-  return false;
-}
+static const char* const k_rom_exts[]    = { ".gba", 0 };
+static const char* const k_gbsav_exts[]  = { ".sav", ".srm", 0 };
+static const char* const k_gbrom_exts[]  = { ".gb", ".gbc", 0 };
 
-
-/* What is on screen. The directory listing (`ents`/`n`) is rebuilt only by the rescan
- * branch below, so between two rescans `top`/`sel` are the whole state a keypress
- * moves on its own -- same shape as pdna_legality.c's SweepPaint. Stack-local, not a
- * static: a fresh browse session always starts invalid (first pass paints in full). */
-typedef struct { uint32_t gen; int top, sel; bool valid; } PickPaint;
-
-/* One row. Self-contained: wipes its own UI_ROW_H-tall strip to UI_BG first, same
- * ghost-ink guard fly_row_paint (pdna_fly.c) uses for the identical ui_text_sel shape
- * -- ui_text_sel only fills its UI_SEL highlight rect on the SELECTED path. No pairing
- * trap: 8 px content on a 10 px pitch, same clean gap as pdna_fly.c's list. */
-static void pick_row_paint(const PickEnt* ents, int idx, int y, bool sel) {
-  char row[PICK_NAME + 2];   /* marker + name[63] + NUL. Was 40: name comes from a real
-                              * FatFs LFN (FF_MAX_LFN 255, strncpy-capped to 63 bytes at
-                              * scan time), so any >=39-char filename overran the frame --
-                              * e.g. "Pokemon - Emerald Version (USA, Europe).gba" (43). */
-  siprintf(row, "%s%s", ents[idx].dir ? "/" : " ", ents[idx].name);
-  char rt[128]; ui_truncate(rt, row, 28);   /* ui.h contract: out >= max_cols*4+1 (113) --
-                                             * 28 cols of multi-byte UTF-8 don't fit 40 */
-  ui_fill_rect(4, y, 232, UI_ROW_H, UI_BG);
-  ui_text_sel(4, y, 232, sel, ents[idx].dir ? UI_DIRCLR : UI_TEXT, rt);
-}
-
-/* Browse for a .gba. `cwd` is updated in place. Returns true with the full path in
- * `out`. Entries live in the caller's buffer so this adds no EWRAM of its own.
- * `ent_cap` is the true size of `ents` in ELEMENTS — PICK_MAX for an arena-backed
- * caller, PICK_MAX_ART for the mon_decomp fallback below (BACKLOG #55): the two
- * buffers are different sizes, so the scan bound can no longer be the PICK_MAX
- * constant. */
-static bool pick_rom(char* cwd, int cwd_cap, char* out, int out_cap, PickEnt* ents, int ent_cap) {
-  int sel = 0, top = 0, n = 0;
-  bool rescan = true;
-  const int vis = 11;
-  PickPaint pv;
-  memset(&pv, 0, sizeof pv);           /* .valid = false: the first pass paints in full */
-  for (;;) {
-    bool did_rescan = false;
-    if (rescan) {
-      rescan = false; did_rescan = true; n = 0; sel = 0; top = 0;
-      DIR d; FILINFO fi;
-      rmbl_pause();
-      if (f_opendir(&d, cwd) == FR_OK) {
-        while (n < ent_cap && f_readdir(&d, &fi) == FR_OK && fi.fname[0]) {
-          bool isdir = (fi.fattrib & AM_DIR) != 0;
-          if (!isdir && !ext_matches(fi.fname)) continue;
-          if (fi.fname[0] == '.') continue;
-          strncpy(ents[n].name, fi.fname, PICK_NAME - 1);
-          ents[n].name[PICK_NAME - 1] = 0;
-          ents[n].dir = isdir;
-          n++;
-        }
-        f_closedir(&d);
-      }
-      rmbl_resume();
-    }
-
-    if (sel < top) top = sel; else if (sel >= top + vis) top = sel - vis + 1;
-    if (top > n - vis) top = n - vis;
-    if (top < 0) top = 0;
-
-    /* A rescan just rebuilt `ents`/`n`/cwd -- even if `top` happens to land back on 0
-     * by coincidence, the row content underneath it can be entirely different, so it
-     * is its own full-repaint trigger, not folded into the `top != pv.top` check. */
-    bool full = !pv.valid || pv.gen != ui_clear_gen() || did_rescan || top != pv.top;
-
-    if (full) {
-      ui_clear();
-      /* The title/empty-state text used to hardcode ".gba" even when s_pick_ext[] was
-       * set to .gb/.gbc or .sav/.srm (app_pick_gb_rom/app_pick_gb_save) -- cosmetic,
-       * but confusing on a screen that is genuinely filtering for something else. */
-      char title[32];
-      if (s_pick_ext[1]) siprintf(title, "PICK A FILE (%s/%s)", s_pick_ext[0], s_pick_ext[1]);
-      else siprintf(title, "PICK YOUR ROM (%s)", s_pick_ext[0]);
-      ui_text(4, 4, UI_TITLE, title);
-      ui_hline(0, 14, UI_SCR_W, UI_BORDER);
-      char ct[40]; ui_truncate(ct, cwd, 29);
-      ui_text(4, 18, UI_DIM, ct);
-      for (int i = 0; i < vis && top + i < n; i++)
-        pick_row_paint(ents, top + i, 30 + i * 10, top + i == sel);
-      if (!n) { char empty[40]; siprintf(empty, "No %s here. B goes up.", s_pick_ext[0]);
-                ui_text(4, 40, UI_DIM, empty); }
-      /* #55 review: the listing is capped (PICK_MAX, or PICK_MAX_ART on the art-buffer
-       * fallback) and the cap drops DIRECTORIES too, so a target in a busy folder can
-       * be unreachable -- say so instead of silently showing a partial list. */
-      if (n >= ent_cap) ui_text(4, 140, UI_WARN, "List full - some files not shown.");
-      ui_text(4, 152, UI_DIM, "A pick  B up  START cancel");
-    } else if (sel != pv.sel) {
-      /* `top` unchanged also proves `sel` (old and new) is still inside the visible
-       * window -- see pdna_legality.c's sweep_screen for why that makes this safe
-       * without a bounds check. */
-      pick_row_paint(ents, pv.sel, 30 + (pv.sel - top) * 10, false);
-      pick_row_paint(ents, sel,    30 + (sel    - top) * 10, true);
-    }
-
-    pv.top = top; pv.sel = sel; pv.gen = ui_clear_gen(); pv.valid = true;
-
-    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B | KEY_START);
-    if (k & KEY_START) return false;
-    if (k & KEY_UP)    sel = sel ? sel - 1 : (n ? n - 1 : 0);
-    if (k & KEY_DOWN)  sel = n ? (sel + 1) % n : 0;
-    if (k & KEY_B) {
-      int l = (int)strlen(cwd);
-      if (l <= 1) return false;                       /* already at root */
-      while (l > 1 && cwd[l - 1] != '/') l--;
-      if (l > 1) l--;
-      cwd[l ? l : 1] = 0;
-      rescan = true;
-      continue;
-    }
-    if ((k & KEY_A) && n) {
-      int l = (int)strlen(cwd);
-      if (ents[sel].dir) {
-        if (l + 1 + (int)strlen(ents[sel].name) < cwd_cap - 1) {
-          if (l > 1) { cwd[l++] = '/'; }
-          strcpy(cwd + l, ents[sel].name);
-          rescan = true;
-        }
-        continue;
-      }
-      /* Pre-existing hole (found by the #55 review): the descend guard lets `cwd` grow
-       * to cwd_cap-2, so cwd + '/' + a 63-char name could overrun the caller's `out`
-       * (PATH_MAX 256) by up to 63 bytes. Refuse instead of clipping -- a clipped path
-       * names a different file. */
-      { int nl = l + ((l > 1) ? 1 : 0) + (int)strlen(ents[sel].name);
-        if (nl >= out_cap - 1) {
-          s_msg("PATH TOO LONG", UI_WARN, "That file's path does not fit.",
-                "Move it nearer the root.");
-          continue;               /* s_msg's ui_clear bumps ui_clear_gen -> full repaint */
-        } }
-      siprintf(out, "%s%s%s", cwd, (l > 1) ? "/" : "", ents[sel].name);
-      return true;
-    }
-  }
+/* Thin helper shared by app_pick_rom() below AND pdna_map()'s own inline "ask for
+ * this game's ROM" flow further down (three call sites that used to call pick_rom()
+ * directly with a hand-rolled `cwd` reset to "/" every time -- BACKLOG #186's A1
+ * folder-memory fix reaches those too now, for free, since they go through the
+ * same core). */
+static bool rom_pick(char* out, int out_cap, BrowseEntry* ents, int cap) {
+  const BrowseSpec spec = {
+    .title = "Pick .gba", .filter_label = ".gba", .match_mode = BR_MATCH_SUFFIX,
+    .exts = k_rom_exts, .cfg_key = "dir_rom", .menu_extra = false,
+    .entries = ents, .cap = cap,
+  };
+  return browse_pick_spec(&spec, out, out_cap);
 }
 
 /* ---- STAGE A/B: the scrolling map view -------------------------------------
@@ -1779,7 +1645,11 @@ void pdna_map(uint8_t* sb1, uint8_t* sb2, PkGame game) {
     return;
   }
 
-  static char EWRAM_BSS cwd[PATH_MAX];
+  /* BACKLOG #186: the local `cwd[PATH_MAX]` this used to carry between pick_rom()
+   * calls is GONE -- browse_pick_spec() now owns the "dir_rom" folder memory itself
+   * (persisted, not reset to "/" every time -- an actual improvement over the old
+   * per-call `strcpy(cwd, "/")` this function used to need before every pick_rom()
+   * call below). 256 B of EWRAM back. */
   static char EWRAM_BSS path[PATH_MAX];
   RomCtx rc;
   bool have = false;
@@ -1790,8 +1660,8 @@ void pdna_map(uint8_t* sb1, uint8_t* sb2, PkGame game) {
   perf_span_begin("map");
 
   /* The picker's entry list lives INSIDE the borrowed arena — no new EWRAM. */
-  PickEnt* ents = (PickEnt*)arena;
-  const uint32_t ents_bytes = (uint32_t)sizeof(PickEnt) * PICK_MAX;
+  BrowseEntry* ents = (BrowseEntry*)arena;
+  const uint32_t ents_bytes = (uint32_t)sizeof(BrowseEntry) * PICK_MAX;
 
   /* ---- the emulator path: a ROM fused into our own cartridge -----------------
    * When tools/fuse_rom.py has appended the user's Pokemon ROM to this image there is no
@@ -1827,11 +1697,11 @@ void pdna_map(uint8_t* sb1, uint8_t* sb2, PkGame game) {
       if (remembered && remembered[0]) {
         strncpy(path, remembered, PATH_MAX - 1); path[PATH_MAX - 1] = 0;
       } else {
-        /* First time for this game: ask. Start where the user last browsed saves. */
-        strcpy(cwd, "/");
+        /* First time for this game: ask. rom_pick() opens on ITS OWN remembered
+         * "dir_rom" folder (BACKLOG #186), not "/" -- an actual improvement here. */
         ui_clear();
         s_msg("MAP NEEDS YOUR ROM", UI_TITLE, "Pick the .gba you play.", "Nothing is copied.");
-        if (!pick_rom(cwd, PATH_MAX, path, PATH_MAX, ents, PICK_MAX)) { app_arena_release(); perf_span_end(); return; }
+        if (!rom_pick(path, PATH_MAX, ents, PICK_MAX)) { app_arena_release(); perf_span_end(); return; }
       }
 
       /* ---- open + identify. No drawing happens between here and rmbl_resume. ---- */
@@ -1851,8 +1721,7 @@ void pdna_map(uint8_t* sb1, uint8_t* sb2, PkGame game) {
         else         siprintf(l1, "%u MB - not a known ROM", (unsigned)(sz >> 20));
         s_msg("UNSUPPORTED ROM", UI_WARN, l1, "Pick another (A).");
         app_rom_path_set(game, "");           /* forget it so we ask again */
-        strcpy(cwd, "/");
-        if (!pick_rom(cwd, PATH_MAX, path, PATH_MAX, ents, PICK_MAX)) { app_arena_release(); perf_span_end(); return; }
+        if (!rom_pick(path, PATH_MAX, ents, PICK_MAX)) { app_arena_release(); perf_span_end(); return; }
         continue;
       }
 
@@ -1863,8 +1732,7 @@ void pdna_map(uint8_t* sb1, uint8_t* sb2, PkGame game) {
         siprintf(l1, "That ROM is %s.", rom_kind_name(rc.kind));
         s_msg("WRONG GAME", UI_WARN, l1, "Need this save's game.");
         rmbl_pause(); f_close(&s_rf.f); rmbl_resume(); s_rf.open = false;
-        strcpy(cwd, "/");
-        if (!pick_rom(cwd, PATH_MAX, path, PATH_MAX, ents, PICK_MAX)) { app_arena_release(); perf_span_end(); return; }
+        if (!rom_pick(path, PATH_MAX, ents, PICK_MAX)) { app_arena_release(); perf_span_end(); return; }
         continue;
       }
 
@@ -1969,7 +1837,6 @@ void pdna_map(uint8_t* sb1, uint8_t* sb2, PkGame game) {
       rmbl_pause(); f_close(&s_rf.f); rmbl_resume(); s_rf.open = false;
       app_rom_path_set(game, "");
       have = false;
-      strcpy(cwd, "/");
       continue;
     }
     if (k & KEY_B) break;
@@ -1986,7 +1853,7 @@ void pdna_map(uint8_t* sb1, uint8_t* sb2, PkGame game) {
  * app_arena_acquire() therefore always returns NULL. Falling back to mon_decomp (the
  * one 8 KiB EWRAM scratch buffer every single-frame sprite decoder shares, artbuf.h)
  * costs no new EWRAM: the picker is a full-screen modal that paints only text rows
- * (pick_row_paint above never touches mon_decomp), so nothing else needs the buffer
+ * (the shared core's row/detail painters never touch mon_decomp), so nothing else needs the buffer
  * while it runs, and the next screen re-fetches its art after artbuf_claim() bumps
  * the epoch and invalidates whatever was memoised there.
  *
@@ -1998,17 +1865,21 @@ void pdna_map(uint8_t* sb1, uint8_t* sb2, PkGame game) {
  * PC-dirty is a DIFFERENT acquire failure (unsaved Gen-3 box moves, unrelated to a
  * GB session) and app_arena_held() stays false for it (app_arena_acquire sets
  * g_arena_held only on success) — that case still refuses, exactly as before. */
-#define PICK_MAX_ART 120
-_Static_assert(PICK_MAX_ART * sizeof(PickEnt) <= MON_DECOMP_BYTES,
-               "PICK_MAX_ART * sizeof(PickEnt) must fit the shared 8 KiB art buffer");
+/* BACKLOG #186: BrowseEntry is bigger than the old PickEnt (it also carries size/
+ * dosdt, for the shared sort/detail-line code) -- PICK_MAX_ART shrinks to what the
+ * SAME 8 KiB mon_decomp buffer actually holds at the new element size. The
+ * _Static_assert is the host-compilable proof; the number is derived, not guessed. */
+#define PICK_MAX_ART (int)(MON_DECOMP_BYTES / sizeof(BrowseEntry))
+_Static_assert(PICK_MAX_ART * sizeof(BrowseEntry) <= MON_DECOMP_BYTES,
+               "PICK_MAX_ART * sizeof(BrowseEntry) must fit the shared 8 KiB art buffer");
 
-static PickEnt* pick_mem_acquire(int* cap, bool* from_artbuf) {
-  uint8_t* mem = app_arena_acquire(PICK_MAX * (uint32_t)sizeof(PickEnt));
-  if (mem) { *cap = PICK_MAX; *from_artbuf = false; return (PickEnt*)mem; }
+static BrowseEntry* pick_mem_acquire(int* cap, bool* from_artbuf) {
+  uint8_t* mem = app_arena_acquire(PICK_MAX * (uint32_t)sizeof(BrowseEntry));
+  if (mem) { *cap = PICK_MAX; *from_artbuf = false; return (BrowseEntry*)mem; }
   if (!app_arena_held()) { *cap = 0; *from_artbuf = false; return NULL; }  /* PC dirty: real refusal */
   artbuf_claim();          /* about to overwrite mon_decomp -- claim BEFORE the first write */
   *cap = PICK_MAX_ART; *from_artbuf = true;
-  return (PickEnt*)mon_decomp;
+  return (BrowseEntry*)mon_decomp;
 }
 
 static void pick_mem_release(bool from_artbuf) {
@@ -2019,12 +1890,9 @@ static void pick_mem_release(bool from_artbuf) {
 /* Public wrapper for Settings > Game ROM: same picker, arena- or artbuf-backed. */
 bool app_pick_rom(char* out, int out_cap) {
   int cap; bool from_artbuf;
-  PickEnt* ents = pick_mem_acquire(&cap, &from_artbuf);
+  BrowseEntry* ents = pick_mem_acquire(&cap, &from_artbuf);
   if (!ents) return false;                   /* PC dirty: caller explains */
-  char cwd[PATH_MAX];
-  strcpy(cwd, "/");
-  s_pick_ext[0] = ".gba"; s_pick_ext[1] = 0;
-  bool ok = pick_rom(cwd, sizeof cwd, out, out_cap, ents, cap);
+  bool ok = rom_pick(out, out_cap, ents, cap);
   pick_mem_release(from_artbuf);
   return ok;
 }
@@ -2034,13 +1902,14 @@ bool app_pick_rom(char* out, int out_cap) {
  * loose and pdna_gen12_mount does the real identification. */
 bool app_pick_gb_save(char* out, int out_cap) {
   int cap; bool from_artbuf;
-  PickEnt* ents = pick_mem_acquire(&cap, &from_artbuf);
+  BrowseEntry* ents = pick_mem_acquire(&cap, &from_artbuf);
   if (!ents) return false;
-  char cwd[PATH_MAX];
-  strcpy(cwd, "/");
-  s_pick_ext[0] = ".sav"; s_pick_ext[1] = ".srm"; s_pick_ext[2] = 0;
-  bool ok = pick_rom(cwd, sizeof cwd, out, out_cap, ents, cap);
-  s_pick_ext[0] = ".gba"; s_pick_ext[1] = 0; s_pick_ext[2] = 0;   /* restore the default */
+  const BrowseSpec spec = {
+    .title = "Pick GB save", .filter_label = ".sav/.srm", .match_mode = BR_MATCH_SUFFIX,
+    .exts = k_gbsav_exts, .cfg_key = "dir_gbsav", .menu_extra = false,
+    .entries = ents, .cap = cap,
+  };
+  bool ok = browse_pick_spec(&spec, out, out_cap);
   pick_mem_release(from_artbuf);
   return ok;
 }
@@ -2052,13 +1921,14 @@ bool app_pick_gb_save(char* out, int out_cap) {
  * trusting a byte of it. The extension only narrows the list; it proves nothing. */
 bool app_pick_gb_rom(char* out, int out_cap) {
   int cap; bool from_artbuf;
-  PickEnt* ents = pick_mem_acquire(&cap, &from_artbuf);
+  BrowseEntry* ents = pick_mem_acquire(&cap, &from_artbuf);
   if (!ents) return false;
-  char cwd[PATH_MAX];
-  strcpy(cwd, "/");
-  s_pick_ext[0] = ".gb"; s_pick_ext[1] = ".gbc"; s_pick_ext[2] = 0;
-  bool ok = pick_rom(cwd, sizeof cwd, out, out_cap, ents, cap);
-  s_pick_ext[0] = ".gba"; s_pick_ext[1] = 0; s_pick_ext[2] = 0;   /* restore the default */
+  const BrowseSpec spec = {
+    .title = "Pick .gb/.gbc", .filter_label = ".gb/.gbc", .match_mode = BR_MATCH_SUFFIX,
+    .exts = k_gbrom_exts, .cfg_key = "dir_gb", .menu_extra = false,
+    .entries = ents, .cap = cap,
+  };
+  bool ok = browse_pick_spec(&spec, out, out_cap);
   pick_mem_release(from_artbuf);
   return ok;
 }
