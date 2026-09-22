@@ -5276,19 +5276,28 @@ def run_b190_move_refusal(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
     s.tap("R", settle=SETTLE)                                # SKILLS -> MOVES; fsel 0 == TACKLE
     s.tap("A", settle=250)                                   # opens pick_move(current=TACKLE/33)
     s.shot("00_picker", "BACKLOG #190 repro: pick_move open on slot 0 (current TACKLE) "
-           "-- BACKLOG #189's ceiling header reads \"MOVES 1-165\"")
+           "-- BACKLOG #189's ceiling header reads \"MOVES 1-165\"",
+           claim=["MOVES 1-165"])   # BACKLOG #214 item 3 retrofit
     s.press_n("DOWN", 12, settle=120)                        # id 33 (TACKLE) -> id 45 (GROWL), 12 ids apart
     s.shot("01_on_growl", "cursor moved 12 rows to GROWL (id 45) -- already in this "
            "mon's slot 1, the move that triggers the DUP refusal, not the LATE one "
-           "(BACKLOG #189 makes ids > 165 unreachable from this picker)")
+           "(BACKLOG #189 makes ids > 165 unreachable from this picker)",
+           claim=["PP 40"])   # BACKLOG #214 item 3 retrofit: GROWL's own detail-panel PP
+           # readout, updated by the cursor move this shot's caption claims -- the
+           # highlighted row's own inverse-video "GROWL" text is not a stable claim=
+           # target (find() could not match it at any colour on this exact frame,
+           # unlike every OTHER row's plain text on the same picker -- left for a
+           # future harness-hardening lane, not asserted here without proof)
     s.tap("A", settle=250)                                   # pick GROWL -> gbe_set_move refuses (move_taken)
     s.shot("02_refusal", "ALREADY KNOWN / \"This Pokemon has that move in another "
-           "slot.\" -- gbedit_press's DUP branch, msg_wait()'s own panel")
+           "slot.\" -- gbedit_press's DUP branch, msg_wait()'s own panel",
+           claim=["ALREADY KNOWN"])   # BACKLOG #214 item 3 retrofit
     s.tap("A", settle=250)                                   # dismiss (msg_wait's wait_keys(KEY_A))
     s.shot("03_after_dismiss", "the frame after dismissing the refusal -- BEFORE the "
            "repaint-contract fix this showed BOTH the refusal panel's leftover text AND "
            "the MOVES card redrawn underneath it (the #190 ghost); AFTER the fix this "
-           "is a clean single MOVES-card screen, nothing left over")
+           "is a clean single MOVES-card screen, nothing left over",
+           claim=["BULBASAUR"], claim_absent="ALREADY KNOWN")   # BACKLOG #214 item 3 retrofit
     return s
 
 
@@ -5330,12 +5339,15 @@ def run_b188_resume_cell(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_sh
     SETTLE = 200
     s.tap("A", settle=SETTLE)                                # info screen -> box grid
     s.press_n("L", 11, settle=100)                            # BOX12 (empty) -> BOX1 (20/20), cursor slot 0
-    s.shot("00_box1_cursor0", "box1, cursor on slot 0 (#1 BULBASAUR)")
+    s.shot("00_box1_cursor0", "box1, cursor on slot 0 (#1 BULBASAUR)",
+           claim=["BULBASAUR"])   # BACKLOG #214 item 3 retrofit
     s.press_n("RIGHT", 3, settle=150)
     s.shot("01_cursor_slot3", "cursor moved to slot 3 (#4 CHARMANDER, distinct art -- "
-           "proves the cell, not just the highlight)")
+           "proves the cell, not just the highlight)",
+           claim=["CHARMANDER"])   # BACKLOG #214 item 3 retrofit
     s.tap("A", settle=SETTLE)                                 # mon menu on slot 3 (same invocation)
-    s.shot("02_menu_open", "mon menu opened on slot 3, same pdna_box() invocation")
+    s.shot("02_menu_open", "mon menu opened on slot 3, same pdna_box() invocation",
+           claim=["CHARMANDER"])   # BACKLOG #214 item 3 retrofit
     s.tap("B", settle=250)                                    # close the menu -- SAME invocation
     s.shot("03_same_invocation_back", "(a) B closed the menu, same invocation -- cursor "
            "still slot 3 (CHARMANDER art visible) -- pre-existing behaviour, pinned as "
@@ -5348,7 +5360,10 @@ def run_b188_resume_cell(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_sh
            "picked -- pdna_box() was RE-ENTERED (a genuine new call, cur re-declared "
            "to 0) via the outer loop; BACKLOG #188: the cursor resumes on slot 3 "
            "(CHARMANDER art) instead of resetting to slot 0 (BULBASAUR) the way it did "
-           "before app_box_resume_note/_take existed")
+           "before app_box_resume_note/_take existed",
+           claim=["CHARMANDER"], claim_absent="BULBASAUR")   # BACKLOG #214 item 3 retrofit --
+           # the actual #188 fix frame: mechanically proves the resumed cell, not the
+           # reset-to-slot-0 regression
     return s
 
 
