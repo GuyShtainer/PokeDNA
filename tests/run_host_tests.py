@@ -53,7 +53,8 @@ PY_TESTS = ["tests/host_stack_budget_test.py", "tests/host_gb_write_gate_test.py
             "tests/host_browser_parity_test.py",
             "tests/host_gb_grid_ops_test.py",
             "tests/host_gb_item_pick_test.py",
-            "tests/host_gb_grid_blocked_test.py"]
+            "tests/host_gb_grid_blocked_test.py",
+            "tests/host_stack_edges_hygiene_test.py"]
 
 VERBOSE = "-v" in sys.argv
 
