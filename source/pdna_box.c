@@ -1431,7 +1431,7 @@ static uint8_t* __attribute__((noinline)) drop_held_up(BoxSource* src, int box, 
    * an older /PokeDNA/bank copied back, or box files from a second card dropped
    * in beside this card's meta. Pay the full 16-box scan ONCE per session (15
    * extra 2,400-B reads, on a deliberate user action), then trust it. */
-  static bool s_up_scan_done;
+  static EWRAM_BSS bool s_up_scan_done;   /* EWRAM: an IWRAM static would cost 8 B of stack budget (re-verify) */
   if (!pdna_bank_serial_trusted() || !s_up_scan_done) {
     int coll_box = -1, coll_slot = -1;
     if (bank_ident32_collision(bank_scan_get, NULL, PDNA_BANK_BOXES, G3_BOX_SLOTS, box, cur,
