@@ -574,11 +574,12 @@ static DexSetNat   s_setnat;   /* enable/disable national dex (may be NULL) */
  * "no new statics" line means) -- pushing the stack margin from 2,080 to 2,072,
  * a STOP-worthy shrink caught by tools/stack_budget.py. EWRAM has 1,172 B free and
  * does not feed the stack ceiling at all, so the SAME 8 bytes cost nothing there. */
-typedef struct { PdnaDexCellArtFn fn; void* ctx; bool serves_page; } DexCellArtOverride;
+typedef struct { PdnaDexCellArtFn fn; void* ctx; bool serves_page; PdnaDexCellArtPageFn page_fn; } DexCellArtOverride;
 static EWRAM_BSS DexCellArtOverride s_cell_art;
 
-void pdna_dex_set_cell_art(PdnaDexCellArtFn fn, void* ctx, bool serves_page) {
+void pdna_dex_set_cell_art(PdnaDexCellArtFn fn, void* ctx, bool serves_page, PdnaDexCellArtPageFn page_fn) {
   s_cell_art.fn = fn; s_cell_art.ctx = ctx; s_cell_art.serves_page = serves_page;
+  s_cell_art.page_fn = page_fn;
 }
 
 /* Review A5 cross-review finding: "does the override serve THIS PAGE at all" (used to
@@ -612,6 +613,18 @@ static __attribute__((noinline)) bool
 dex_cell_art_call(uint16_t dex, int x, int y, int w, int h) {
   if (!s_cell_art.fn) return false;
   return s_cell_art.fn(dex, x, y, w, h, s_cell_art.ctx);
+}
+
+/* BACKLOG #196: the page-level twin of dex_cell_art_call() above -- same noinline-
+ * wrapper reasoning (a single, address-stable dispatch site for tools/stack_edges.txt
+ * and the artless/normal call-count parity this file's own review history cares
+ * about). Guarded on `s_cell_art.fn` too, matching dex_cell_art_page_served()'s own
+ * "nothing installed -> nothing to ask" posture -- an installer that only sets
+ * page_fn without fn would be a caller bug, not something this file has to guess
+ * about. */
+static __attribute__((noinline)) void
+dex_cell_art_declare_page(int top, int vis) {
+  if (s_cell_art.fn && s_cell_art.page_fn) s_cell_art.page_fn(s_cell_art.ctx, top, vis);
 }
 
 /* Species cap for the shared screen (BACKLOG #87): the Gen-3 dex is a fixed 386,
@@ -998,6 +1011,9 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
        * occurrence -- a held D-pad produces one of these every few frames. */
       perf_rep_begin(PERF_REP_PAGE, "dex.page");
       dex_declare_page(grid, top, vis);
+      dex_cell_art_declare_page(top, vis);   /* BACKLOG #196: BEFORE the paint loop
+                                              * below, never inside the bob tick --
+                                              * see PdnaDexCellArtPageFn's own contract */
       ui_clear();
       ui_hline(0, 22, UI_SCR_W, UI_BORDER);
       ui_hline(0, 147, UI_SCR_W, UI_BORDER);
