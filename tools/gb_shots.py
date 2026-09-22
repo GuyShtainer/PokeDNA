@@ -103,12 +103,18 @@ from __future__ import annotations
 
 import argparse
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 import gb_claims  # noqa: E402 -- BACKLOG #184: claim=/claim_absent= mechanical check.
                    # No mgba import at module level in gb_claims.py (numpy/PIL only).
+import fuse_gb  # noqa: E402 -- BACKLOG #214 item 2: claim_gb= extracts the embedded GB
+                # ROM (TYPE_ROM_GEN1/2) straight out of the SAME fused .gba image this
+                # Session booted, via fuse_gb's own directory parser (never a second
+                # implementation of the fuse format). No mgba import at module level here
+                # either (fuse_gb.py only touches struct/zlib/tempfile).
 
 KEY = dict(A=0x1, B=0x2, SEL=0x4, START=0x8, RIGHT=0x10, LEFT=0x20,
            UP=0x40, DOWN=0x80, R=0x100, L=0x200)
@@ -138,6 +144,11 @@ class Session:
         self.screen = image_mod.Image(*self.core.desired_video_dimensions())
         self.core.set_video_buffer(self.screen)   # BEFORE reset()
         self.core.reset()
+        self.rom_path = Path(rom_path)   # BACKLOG #214: the FUSED .gba image this Session
+                                          # booted -- claim_gb= extracts the embedded GB
+                                          # ROM out of THIS file (see _gb_rom_file()), never
+                                          # a separately-supplied corpus ROM that might not
+                                          # be the exact bytes the app actually rendered from.
         self.out_dir = out_dir
         self.prefix = prefix
         self.taken = []     # (filename, caption, claim_info) -- BACKLOG #184: claim_info is a
@@ -149,7 +160,39 @@ class Session:
                                          # takes -- main()'s exit status reads this, not a per-shot
                                          # return value, so no CLI dispatch branch needs editing.
         self._last_shot = None    # (name, raw RGB bytes) -- for the consecutive-differ check
+        self._gb_rom_file_cache: Path | None = None   # BACKLOG #214: lazy, memoized per Session
         self.run(180)       # let the boot screen (info page) fully settle
+
+    def _gb_rom_file(self) -> Path:
+        """BACKLOG #214 item 2: the embedded GB ROM (TYPE_ROM_GEN1/2) this Session's own
+        fused image carries, extracted to a temp file ONCE (memoized) so claim_gb='s
+        matcher reads the EXACT bytes gbscr_text()/rom_gbui_glyph() rendered from on this
+        run -- never a separately-supplied corpus ROM that might be a different dump.
+        Raises ValueError (a setup error, never a silent claim result) if the image has
+        zero or more than one embedded ROM entry -- claim_gb= is only meaningful against
+        a single-ROM fused image (the same "must be a ONE-ROM fused image" contract
+        run_b89_hof()/run_b194_hof()'s own docstrings already state)."""
+        if self._gb_rom_file_cache is not None:
+            return self._gb_rom_file_cache
+        blob = self.rom_path.read_bytes()
+        rec_off = fuse_gb.locate_record_permissive(blob, str(self.rom_path))
+        dir_off, dir_size = fuse_gb.read_record(blob, rec_off)
+        if not dir_size:
+            raise ValueError(f"claim_gb=: {self.rom_path} has no fused GB directory at all "
+                              "(this Session's image was never fused with a ROM)")
+        entries = fuse_gb.parse_directory(blob, dir_off, dir_size)
+        rom_entries = [e for e in entries if e["type"] in (fuse_gb.TYPE_ROM_GEN1, fuse_gb.TYPE_ROM_GEN2)]
+        if len(rom_entries) != 1:
+            raise ValueError(f"claim_gb=: {self.rom_path} carries {len(rom_entries)} embedded "
+                              "GB ROM(s), expected exactly 1 (a single-ROM fused image)")
+        e = rom_entries[0]
+        rom_bytes = blob[e["offset"]:e["offset"] + e["size"]]
+        tmp_dir = Path(tempfile.mkdtemp(prefix="gb_shots_claimgb_"))
+        ext = ".gbc" if e["type"] == fuse_gb.TYPE_ROM_GEN2 else ".gb"
+        tmp_path = tmp_dir / f"embedded{ext}"
+        tmp_path.write_bytes(rom_bytes)
+        self._gb_rom_file_cache = tmp_path
+        return tmp_path
 
     def run(self, n: int) -> None:
         for _ in range(n):
@@ -175,7 +218,8 @@ class Session:
 
     def shot(self, name: str, caption: str, settle: int = 0, allow_same: bool = False,
               claim: "str | list[str] | None" = None,
-              claim_absent: "str | list[str] | None" = None) -> Path:
+              claim_absent: "str | list[str] | None" = None,
+              claim_gb: "str | list[str] | None" = None) -> Path:
         # allow_same: the caller KNOWS this frame is expected to equal the previous
         # shot (e.g. the same refusal dialog reached by a different input) and says
         # so in the caption; the identical-frame guard below is then skipped.
@@ -188,6 +232,13 @@ class Session:
         # still evidence, possibly of a real bug) -- it is recorded on the entry as
         # `claim_failed` and printed loudly; Session.any_claim_failed then makes the
         # RUN's exit status non-zero (main() checks it once at the end).
+        #
+        # claim_gb (BACKLOG #214 item 2): the SAME contract as claim=, for text drawn
+        # by the GB-shell's own composited tile font (gbscr_text(), the Hall of
+        # Fame/trainer-card screens) -- gb_claims.check() cannot read that font at all
+        # (see gb_claims.py's claim_gb= design comment), so this goes through
+        # gb_claims.check_gb() against the GB ROM embedded in THIS Session's own fused
+        # image (_gb_rom_file()) instead.
         if settle:
             self.run(settle)
         img = self.screen.to_pil().convert("RGB")
@@ -230,6 +281,22 @@ class Session:
                 claim_info["claim_failed"] = claim_failed
                 self.any_claim_failed = True
                 for f in claim_failed:
+                    print(f"  [CLAIM FAILED] {path.name}: {f}")
+
+        if claim_gb is not None:
+            claim_info["claim_gb"] = claim_gb
+            # BACKLOG #214: the fused image path is recorded too -- not for this
+            # live check (which already has self.rom_path in hand) but so a future
+            # offline re-check (item 5's own scope note) can re-extract the exact
+            # same embedded ROM from a STABLE path, rather than a temp file that
+            # dies with this process.
+            claim_info["claim_gb_image"] = str(self.rom_path)
+            claim_gb_failed = gb_claims.check_gb(img, self._gb_rom_file(), claim_gb=claim_gb)
+            if claim_gb_failed:
+                existing = claim_info.get("claim_failed", [])
+                claim_info["claim_failed"] = existing + claim_gb_failed
+                self.any_claim_failed = True
+                for f in claim_gb_failed:
                     print(f"  [CLAIM FAILED] {path.name}: {f}")
 
         self.taken.append((path.name, caption, claim_info))

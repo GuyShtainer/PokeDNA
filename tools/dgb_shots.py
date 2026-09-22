@@ -1977,11 +1977,21 @@ def run_b89_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     # nickname (real, unedited saves) -- do not claim either in THIS shot's own
     # caption. Both are proven on dedicated poked-.sav shots kept alongside this
     # set (b89_{red,crystal}_08_nick.png, b89_crystal_09_shiny.png), not implied here.
+    # BACKLOG #214 item 2: this row list is gbscr_text() -- the ROM's OWN composited
+    # tile font (source/pdna_gbhof.c's hof_card_paint_detail(), no source/ui_font.c/
+    # tonc sys8 involved) -- previously OUT of gb_claims.py's scope (b184 reverted
+    # this exact class of retrofit, see that lane's own comment on run_b89_hof/03_menu
+    # below). gb_claims.check_gb()/find_gb() now read the ROM this Session actually
+    # booted from (Session._gb_rom_file(), extracted from THIS image's own fused GB
+    # ROM entry) -- the first species row of each corpus save's real HoF team,
+    # per-game since Red's and Crystal's own corpus teams differ.
+    claim_species = {"red": "MEWTWO", "crystal": "TYPHLOSION"}[which]
     s.shot("02_detail", "BACKLOG #202 F1: the team detail CARD -- 6 mon rows "
                         "(species/level), still inside the SAME open shell (no "
                         "reopen, no rescan cost) -- OT id is dropped from the "
                         "card view (no room for a 3rd row/mon); it stays on the "
-                        "plain fallback page")
+                        "plain fallback page",
+                        claim_gb=claim_species)
     s.tap("B", settle=gb_shots.BIG_SETTLE)                  # detail -> back to the list (same shell)
 
     s.tap("START", settle=gb_shots.BIG_SETTLE)              # the Hall of Fame's own START menu (same shell)
@@ -2193,13 +2203,13 @@ def run_b194_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> g
     # ever replaced, re-verify these two numbers rather than trust them frozen).
     count_after_add = {"red": 10, "crystal": 7}[which]
     count_before_add = count_after_add - 1
-    # BACKLOG #184 retrofit attempted here and REVERTED: same finding as
-    # run_b89_hof's "03_menu" -- this header is hof_card_text_fit() inside the
-    # gbscr card shell (source/pdna_gbhof.c ~:760, "%d teams (life %d)"), the
-    # ROM's own tile font, not source/ui_font.c/tonc's sys8Font. Confirmed by
-    # the SAME live-mGBA [CLAIM FAILED] result run_b89_hof's 03_menu got before
-    # its claim= was reverted -- out of scope for gb_claims.py's v1 (see that
-    # shot's own comment for the full reasoning).
+    # BACKLOG #184 retrofit attempted here and REVERTED, now FIXED by BACKLOG #214
+    # item 2: same finding as run_b89_hof's "03_menu" -- this header is
+    # hof_card_text_fit() inside the gbscr card shell (source/pdna_gbhof.c ~:760,
+    # "%d teams (life %d)"), the ROM's own composited tile font, not
+    # source/ui_font.c/tonc's sys8Font. gb_claims.py's claim_gb= (Session._gb_rom_file()
+    # extracts the embedded ROM out of THIS image) reads that font directly instead --
+    # proven live on this exact frame (the brief's own target proof).
     s.shot("10_add_back_on_list", "BACKLOG #202 A2: dismissed -- back on the "
                                    "LIST card (the SAME shell), now showing "
                                    f"{count_after_add} teams (was {count_before_add}) "
@@ -2208,7 +2218,8 @@ def run_b194_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> g
                                    "in-session (RAM); only the FLASH persist "
                                    "leg of gb_persist() refuses in the "
                                    "emulator build, same as every other GB "
-                                   "screen's own commit")
+                                   "screen's own commit",
+                                   claim_gb=f"{count_after_add} teams")
 
     # ---- DELETE TEAM -----------------------------------------------------------------
     s.tap("START", settle=gb_shots.BIG_SETTLE)                # list -> menu (same shell)

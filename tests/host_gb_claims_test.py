@@ -27,6 +27,7 @@ Registered in tests/run_host_tests.py's PY_TESTS list (BACKLOG #184).
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -35,6 +36,11 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import numpy as np  # noqa: E402
 import gb_claims  # noqa: E402
+
+# Same corpus convention tests/run_host_tests.py itself uses (BACKLOG #214's
+# claim_gb= self-test): overridable via $ROMS, defaulting to Guy's own
+# machine-local dump directory -- READ-ONLY, never opened for write.
+ROMS = Path(os.environ.get("ROMS", "/Users/guyshtainer/VSCodeProjects/gba-toolkit/roms"))
 
 
 def make_noisy_frame(rng, h=160, w=240, palette_size=24):
@@ -220,6 +226,91 @@ def check_many_colours(rng, failures):
           "text-present frame matched, text-absent frame returned []")
 
 
+def check_claim_gb(failures):
+    """BACKLOG #214 item 2: claim_gb='s matcher against a REAL corpus ROM's
+    own font (never a literal in this repo -- see gb_claims.py's claim_gb=
+    design comment). Skips with a clear print (not a silent pass) if the
+    corpus isn't present on this machine.
+
+    (a) render_gb(rom, text) produces an (8, 8*n) bool mask whose glyph count
+        matches the text's own length (no lossy/blank glyphs for plain
+        ASCII).
+    (b) find_gb() locates that mask painted at a KNOWN gbscr 1:1-grid cell
+        position (GBSCR_ORIGIN_X/Y + col/row*8) on a synthetic 240x160
+        frame, and does NOT locate it at a position one pixel off that grid
+        (proving the grid-alignment requirement is real, not accidental).
+    (c) a text this ROM's font cannot possibly show (letters the corpus ROM
+        was never asked to draw are still just its own charmap -- so the
+        negative control here is a position with NO painted glyphs at all)
+        returns [] via find_gb(), never an exception.
+    (d) check_gb() wraps this with claim_gb='s check()-shaped failure list."""
+    rom = ROMS / "gb" / "Red.gb"
+    if not rom.is_file():
+        print(f"  skip: check_claim_gb -- corpus ROM not present at {rom} "
+              "(set $ROMS to point at a gba-toolkit roms/ checkout)")
+        return
+
+    text = "7 teams"
+    mask = gb_claims.render_gb(rom, text)
+    if mask is None:
+        failures.append(f"check_claim_gb: render_gb({rom}, {text!r}) returned None "
+                         "(font locate or gb_char_encode failed on a corpus ROM "
+                         "that should locate cleanly)")
+        return
+    expect_glyphs = len(text)   # every char here is plain ASCII -> 1 glyph each
+    if mask.shape != (gb_claims.GB_CELL, gb_claims.GB_CELL * expect_glyphs):
+        failures.append(f"check_claim_gb: render_gb mask shape {mask.shape}, "
+                         f"expected (8, {gb_claims.GB_CELL * expect_glyphs})")
+        return
+
+    col, row = 3, 5
+    x0 = gb_claims.GBSCR_ORIGIN_X + col * gb_claims.GB_CELL
+    y0 = gb_claims.GBSCR_ORIGIN_Y + row * gb_claims.GB_CELL
+    frame = np.full((160, 240, 3), 255, dtype=np.uint8)   # gbscr's own blank colour
+    crop = frame[y0:y0 + mask.shape[0], x0:x0 + mask.shape[1]]
+    crop[mask] = (16, 16, 16)   # DMG's darkest shade -- rom_gbui.c's own DMG_SHADE[3]
+
+    hits = gb_claims.find_gb(frame, rom, text)
+    if (x0, y0) not in hits:
+        failures.append(f"check_claim_gb: {text!r} painted at ({x0},{y0}) on the "
+                         f"real gbscr grid was NOT found by find_gb(); hits={hits}")
+        return
+
+    # Off-grid: shift the SAME painted glyphs one pixel right of their true
+    # cell boundary -- find_gb() only tries cell-aligned x/y, so this frame
+    # must report NO hit at the (now wrong) grid position, proving the
+    # search is grid-locked rather than accidentally sliding.
+    frame_off = np.full((160, 240, 3), 255, dtype=np.uint8)
+    frame_off[y0:y0 + mask.shape[0], x0 + 1:x0 + 1 + mask.shape[1]][mask] = (16, 16, 16)
+    hits_off = gb_claims.find_gb(frame_off, rom, text)
+    if (x0, y0) in hits_off:
+        failures.append("check_claim_gb: a 1px-off-grid paint incorrectly matched "
+                         f"at the true grid cell ({x0},{y0}); hits={hits_off}")
+        return
+
+    # A blank frame (nothing painted) must report no hit and no exception.
+    blank = np.full((160, 240, 3), 255, dtype=np.uint8)
+    hits_blank = gb_claims.find_gb(blank, rom, text)
+    if hits_blank:
+        failures.append(f"check_claim_gb: blank frame incorrectly matched; "
+                         f"hits={hits_blank}")
+        return
+
+    fails = gb_claims.check_gb(frame, rom, claim_gb=text)
+    if fails:
+        failures.append(f"check_claim_gb: check_gb() reported a failure on the "
+                         f"correctly-painted frame: {fails}")
+        return
+    fails = gb_claims.check_gb(blank, rom, claim_gb=text)
+    if not fails:
+        failures.append("check_claim_gb: check_gb() did not fail on a blank frame")
+        return
+
+    print(f"  ok: claim_gb= against the real corpus ROM {rom.name} -- {text!r} "
+          f"found at its true grid cell, rejected 1px off-grid, absent on a "
+          f"blank frame, check_gb() failure semantics hold")
+
+
 def main() -> int:
     failures: list[str] = []
     rng = np.random.default_rng(20260922)
@@ -229,6 +320,7 @@ def main() -> int:
     check_claim_absent(rng, failures)
     check_real_fixture(failures)
     check_many_colours(rng, failures)
+    check_claim_gb(failures)
 
     if failures:
         print(f"\nhost_gb_claims_test: {len(failures)} FAILURE(S):", file=sys.stderr)
