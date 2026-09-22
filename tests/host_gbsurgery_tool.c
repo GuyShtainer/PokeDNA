@@ -33,6 +33,14 @@
  *      source/gb_flags_rw.c \
  *      source/gb_hof.c \
  *      source/gb_dex.c \
+ *      source/gen3_to_gb.c \
+ *      source/gb_moves_legal.c \
+ *      source/gen3_mon.c \
+ *      source/gen3_box.c \
+ *      source/evolutions.c \
+ *      source/gen3_save.c \
+ *      source/gen3_edit.c \
+ *      source/gen3_daycare.c \
  *      -o /tmp/hgbsurg
  *
  * (gb_fields.c is also required -- gb_trainer.c already needs it -- but was already
@@ -153,6 +161,12 @@
 #include "gb_flags_rw.h"
 #include "gb_hof.h"
 #include "gb_dex.h"
+/* BACKLOG #211: --op paste80, the Gen-3 -> Game Boy PASTE path (gen3_to_gb_fixed +
+ * the per-slot move fill, BACKLOG #150 S150-10) for the retail-gate, mirroring
+ * gb_paste_hook (source/pdna_gen12.c) end to end without the UI. */
+#include "gen3_mon.h"
+#include "gen3_to_gb.h"
+#include "gb_moves_legal.h"
 
 #define MAX_FILE_BYTES 65536u
 #define MAX_OPS        64
@@ -166,6 +180,7 @@ static uint8_t g_list2[GBS_LIST_BYTES];
  * locate_rom reuses arena-resident storage for the identical reason). */
 static uint8_t g_romscratch[ROM_GBSPRITE_SCRATCH_MIN];
 static const char* g_rom_path;   /* set once in main() from --rom, read by do_create */
+static bool g_list_moves;        /* BACKLOG #211: set once from --moves, read by list_box */
 
 typedef struct {
   const char* kind;   /* "nick" / "ot" / "level" / "dv" / "delete" / "move" / "create" */
@@ -176,7 +191,7 @@ typedef struct {
 static void usage(const char* prog) {
   fprintf(stderr,
     "usage: %s --in SAVE --out EDITED [--rom ROM] [--op ...]...\n"
-    "       %s --in SAVE --list\n"
+    "       %s --in SAVE --list [--moves]\n"
     "  --op nick BOX SLOT TEXT\n"
     "  --op ot BOX SLOT TEXT\n"
     "  --op level BOX SLOT N\n"
@@ -284,6 +299,14 @@ static void usage(const char* prog) {
     "                               BACKLOG #198 item 7: same shape as hofnick above,\n"
     "                               over one DV stat (atk|def|spe|spc, 0..15). Gen 2\n"
     "                               only -- GbHofMon.dv is always 0 on Gen 1.\n"
+    "  --op paste80 BOX REC80FILE  BACKLOG #211: gen3_to_gb_fixed() + the per-slot\n"
+    "                               move fill (BACKLOG #150 S150-10), mirroring\n"
+    "                               gb_paste_hook -- box only. REC80FILE is an exact\n"
+    "                               80-byte raw Gen-3 box record (tools/\n"
+    "                               extract_gen3_record.c --moves). --rom is OPTIONAL\n"
+    "                               here (a Gen-2 target needs no base-stats table);\n"
+    "                               Gen 1 without --rom is refused\n"
+    "                               (G3GB_ERR_NEEDS_BASE, same as production).\n"
 "BOX is 0..n-1 or the literal \"party\".\n", prog, prog);
 }
 
@@ -318,6 +341,7 @@ static int parse_args(int argc, char** argv, const char** in, const char** out,
     {"warp2", 4},      /* M1-G2 fix-pass shot-retake gate: GROUP NUMBER X Y, Gen 2 only */
     {"hofnick", 3},    /* BACKLOG #198 item 7: TEAM_IDX MON_IDX TEXT, via gbh_set_mon */
     {"hofdv", 4},      /* BACKLOG #198 item 7: TEAM_IDX MON_IDX STAT V, Gen 2 only */
+    {"paste80", 2},    /* BACKLOG #211: BOX REC80FILE, via gen3_to_gb_fixed + the fill */
   };
   *in = NULL; *out = NULL; *list_mode = false; *nops = 0;
   for (int i = 1; i < argc; i++) {
@@ -325,6 +349,7 @@ static int parse_args(int argc, char** argv, const char** in, const char** out,
     if (!strcmp(argv[i], "--out") && i + 1 < argc) { *out = argv[++i]; continue; }
     if (!strcmp(argv[i], "--rom") && i + 1 < argc) { g_rom_path = argv[++i]; continue; }
     if (!strcmp(argv[i], "--list")) { *list_mode = true; continue; }
+    if (!strcmp(argv[i], "--moves")) { g_list_moves = true; continue; }
     if (!strcmp(argv[i], "--op") && i + 1 < argc) {
       const char* kind = argv[++i];
       int need = -1;
@@ -945,6 +970,117 @@ static int do_create(GbSession* s, const char* box_tok, const char* dex_tok) {
   return 0;
 }
 
+/* BACKLOG #211: --op paste80 BOX REC80FILE -- gen3_to_gb_fixed() + (when a ROM was
+ * given) the SAME per-slot fill gb_paste_fill_moves()/g3gb_moves_fill() apply in
+ * production (BACKLOG #150 S150-10), then gbs_insert() into `box`. Mirrors
+ * gb_paste_hook's own hook order end to end, minus the UI:
+ *   1. g3gb_moves_ok_rec(rec80, gen, bad4) -- the SAME per-slot predicate
+ *      gb_clip_moves() wraps in production.
+ *   2. gen3_to_gb_fixed(rec80, gen, crystal, g1base_or_NULL, bad4_or_NULL, &mon, &loss)
+ *      -- refuses G3GB_ERR_NEEDS_BASE if gen is GB_GEN1 and no --rom was given (same
+ *      as production's own retry gate; this tool never retries mid-op, --rom is
+ *      resolved up front instead of gb_paste_hook's two-call dance, since a host CLI
+ *      has no cost pressure to defer the ROM open).
+ *   3. nbad > 0 -- fill from the ROM's learnset AT THE WRITTEN LEVEL (gb_get_level of
+ *      the just-converted `mon`, since this tool never applies an evolution-level fix)
+ *      via g3gb_moves_fill(); no --rom means learn4 stays {0,0,0,0}, the documented
+ *      "never block" input (decision 3) -- every bad slot is simply left empty.
+ *   4. decision 8.7's ONE exception: nbad == 4 && nfill == 0 refuses outright (nothing
+ *      written) -- the same zero-move guard gb_paste_hook applies.
+ *   5. gbs_insert(box) -- gen3_to_gb_fixed's own gb_load_parts(..., false, ...) already
+ *      built `mon` box-shaped (is_party = false), so no party->box copy is needed
+ *      here, unlike do_create() above (which starts from a party record). */
+static int do_paste80(GbSession* s, const char* box_tok, const char* rec_path) {
+  int box = resolve_box(s, box_tok);
+  if (box < 0) return 2;
+
+  FILE* recf = fopen(rec_path, "rb");
+  if (!recf) return refuse("cannot open the 80-byte record file");
+  uint8_t rec80[80];
+  size_t got = fread(rec80, 1, sizeof rec80, recf);
+  fclose(recf);
+  if (got != sizeof rec80) return refuse("record file is not exactly 80 bytes");
+
+  uint8_t bad4[4] = { 0, 0, 0, 0 };
+  int nbad = g3gb_moves_ok_rec(rec80, s->gen, bad4);
+  if (nbad < 0) return refuse("g3gb_moves_ok_rec: decode failure or an Egg");
+
+  GbGen1Base g1base_buf;
+  const GbGen1Base* g1base = NULL;
+  RomGbSprite gs;
+  RomGbLearn rl;
+  bool have_rom = false;
+  FILE* rf = NULL;
+  uint8_t g1_start_buf[4]; const uint8_t* g1_start = NULL;
+
+  if (g_rom_path) {
+    rf = fopen(g_rom_path, "rb");
+    if (!rf) return refuse("cannot open --rom file");
+    if (fseek(rf, 0, SEEK_END) != 0) { fclose(rf); return refuse("cannot seek --rom file"); }
+    long rsz = ftell(rf);
+    if (rsz <= 0) { fclose(rf); return refuse("empty --rom file"); }
+    rewind(rf);
+
+    int gsok = rom_gbsprite_open(&gs, tool_rom_read, rf, (uint32_t)rsz,
+                                 g_romscratch, sizeof g_romscratch, GB_ROM_NONE);
+    GbRomGen want = (s->gen == GB_GEN1) ? GB_ROM_GEN1 : GB_ROM_GEN2;
+    if (!gsok || gs.gen != want) { fclose(rf); return refuse("--rom did not open as SAVE's own generation"); }
+
+    if (s->gen == GB_GEN1) {
+      PkMon m;
+      if (!pk_decode_mon(rec80, false, &m) || m.isEgg || m.isBadEgg) {
+        fclose(rf); return refuse("record decode failure or an Egg");
+      }
+      uint16_t dex = pk_national_no(m.species);
+      RomGb1Species sp;
+      if (!rom_gbbase_gen1(&gs, tool_rom_read, rf, dex, &sp)) {
+        fclose(rf); return refuse("rom_gbbase_gen1: no row for that dex");
+      }
+      g1base_buf = sp.base;
+      g1base = &g1base_buf;
+      memcpy(g1_start_buf, sp.start, 4);
+      g1_start = g1_start_buf;
+    }
+
+    if (!rom_gblearn_open(&rl, s->gen, tool_rom_read, rf, (uint32_t)rsz)) {
+      fclose(rf); return refuse("rom_gblearn_open: no learnset table located");
+    }
+    have_rom = true;
+  }
+
+  GbEditMon mon;
+  Gen3ToGbLoss loss;
+  G3GbStatus cst = gen3_to_gb_fixed(rec80, s->gen, gb_session_is_crystal(s), g1base,
+                                    nbad > 0 ? bad4 : NULL, &mon, &loss);
+  if (cst != G3GB_OK) { if (rf) fclose(rf); return refuse(g3gb_status_text(cst)); }
+
+  int nfill = 0;
+  if (nbad > 0) {
+    uint8_t learn4[4] = { 0, 0, 0, 0 };
+    if (have_rom) {
+      uint16_t dex = gb_get_species_dex(&mon);
+      uint8_t lvl = gb_get_level(&mon);
+      int kept = g1_start
+        ? rom_gblearn_moves_at_seeded(&rl, dex, lvl, g1_start, learn4)
+        : rom_gblearn_moves_at(&rl, dex, lvl, learn4);
+      if (kept < 0) memset(learn4, 0, sizeof learn4);   /* decision 3: no eligible fill -> empty */
+    }
+    uint8_t fill4[4] = { 0, 0, 0, 0 };
+    nfill = g3gb_moves_fill(&mon, bad4, learn4, fill4);
+    if (nbad == 4 && nfill == 0) {
+      if (rf) fclose(rf);
+      return refuse("zero-move refusal (decision 8.7): all four slots bad, nothing filled");
+    }
+  }
+  if (rf) fclose(rf);
+
+  int slot_out = 0;
+  GbsStatus ist = gbs_insert(s, box, &mon, &slot_out, g_list);
+  if (ist != GBS_OK) return refuse(gbs_status_text(ist));
+  printf("paste80: %d bad slot(s), %d filled, into box %d slot %d\n", nbad, nfill, box, slot_out);
+  return 0;
+}
+
 /* BACKLOG #49 P1a — via gb_trainer.h, not a raw byte poke: read the whole trainer
  * record, change only the field this op names, write the whole record back. Every
  * other field lands back at its own current value, which is what
@@ -1412,10 +1548,21 @@ static int apply_op(GbSession* s, const Op* o) {
   if (!strcmp(o->kind, "hofdv")) {
     return do_hofdv(s, o->a[0], o->a[1], o->a[2], o->a[3]);
   }
+  if (!strcmp(o->kind, "paste80")) {
+    return do_paste80(s, o->a[0], o->a[1]);
+  }
   fprintf(stderr, "unknown op %s\n", o->kind);   /* unreachable: parse_args validated */
   return 2;
 }
 
+/* BACKLOG #211: `--list --moves` appends one extra line per slot with the four raw
+ * move ids, current PP, and PP-Ups -- a SEPARATE line (never appended to the existing
+ * "  slot N: dex=... level=... nick=..." line), so tools/gb_retail_gate.py's own
+ * LIST_SLOT_RE keeps matching byte-for-byte and every existing caller of --list is
+ * unaffected; only a caller that also passes --moves ever sees the new line. Read
+ * straight off the DUMP the real game wrote after booting (gb_retail_gate.py boots
+ * `--in` on the real ROM, mGBA then dumps SRAM back out) -- this is "the gate's own
+ * readback path", not a re-check of what the surgery tool itself computed. */
 static void list_box(GbSession* s, int box, const char* label) {
   GbsStatus ls = gbs_load_list(s, box, g_list);
   if (ls != GBS_OK) { printf("%s: %s\n", label, gbs_status_text(ls)); return; }
@@ -1431,6 +1578,22 @@ static void list_box(GbSession* s, int box, const char* label) {
     gb_get_nickname(&e, nick, sizeof nick);
     printf("  slot %d: dex=%u level=%u nick=%s\n", slot,
            (unsigned)gb_get_species_dex(&e), (unsigned)gb_get_level(&e), nick);
+    if (g_list_moves) {
+      /* ppmax = pk_move_pp(move id) -- the table this SAME tool already links
+       * (data_tables.c) -- so a Python-side check can assert "pp == base PP"
+       * without keeping a second copy of the PP table. ppmax is 0 for an empty
+       * slot (pk_move_pp(0) -- never asserted on there, an empty slot's pp/ppup
+       * are always 0 too). */
+      printf("    moves=%u,%u,%u,%u pp=%u,%u,%u,%u ppmax=%u,%u,%u,%u ppup=%u,%u,%u,%u\n",
+             (unsigned)gb_get_move(&e, 0), (unsigned)gb_get_move(&e, 1),
+             (unsigned)gb_get_move(&e, 2), (unsigned)gb_get_move(&e, 3),
+             (unsigned)gb_get_pp(&e, 0), (unsigned)gb_get_pp(&e, 1),
+             (unsigned)gb_get_pp(&e, 2), (unsigned)gb_get_pp(&e, 3),
+             (unsigned)pk_move_pp(gb_get_move(&e, 0)), (unsigned)pk_move_pp(gb_get_move(&e, 1)),
+             (unsigned)pk_move_pp(gb_get_move(&e, 2)), (unsigned)pk_move_pp(gb_get_move(&e, 3)),
+             (unsigned)gb_get_ppup(&e, 0), (unsigned)gb_get_ppup(&e, 1),
+             (unsigned)gb_get_ppup(&e, 2), (unsigned)gb_get_ppup(&e, 3));
+    }
   }
 }
 

@@ -105,6 +105,13 @@ SURGERY_SRCS = [
     "source/gb_hof.c",
     # BACKLOG #87 item 6: --op dexset's own dependency (gb_dex.h's owned/seen core).
     "source/gb_dex.c",
+    # BACKLOG #211: --op paste80's own dependencies (gen3_to_gb_fixed + the per-slot
+    # move fill, BACKLOG #150 S150-10's own pure-C modules) -- gen3_mon.c/gen3_box.c
+    # for pk_decode_mon/pk_resolve, evolutions.c for pk_evo_have_data/pk_evo_floor
+    # (gen3_to_gb.c's own #include), gb_moves_legal.c for g3gb_moves_ok_rec/_fill.
+    "source/gen3_to_gb.c", "source/gb_moves_legal.c", "source/gen3_mon.c",
+    "source/gen3_box.c", "source/evolutions.c", "source/gen3_save.c",
+    "source/gen3_edit.c", "source/gen3_daycare.c",
 ]
 
 # gen: 1 = Gen-1 numbering (no primary/backup mirror split in gb_roundtrip's classifier,
@@ -162,6 +169,189 @@ HELDITEM_WRAM = {"gold": 0xDA2B, "crystal": 0xDCE0}
 CAUGHT_TIME, CAUGHT_LEVEL, CAUGHT_LOC, CAUGHT_GENDER = 1, 40, 5, 0   # 1 = morning
 CAUGHT_WANT_BYTE = (CAUGHT_TIME << 6) | CAUGHT_LEVEL                 # 0x68
 CAUGHT_WRAM = {"crystal": 0xDCFC}
+
+# BACKLOG #211: --op paste80's own case (tests/host_gbsurgery_tool.c's gen3_to_gb_fixed
+# + per-slot fill, BACKLOG #150 S150-10). SURF(57)/BITE(44) are in range on both
+# generations (kept as-is); ROCK TOMB(317) exceeds gb_max_move() on BOTH (165 Gen 1 /
+# 251 Gen 2, source/gb_edit.c:68); PROTECT(182) exceeds ONLY the Gen-1 bound -- so this
+# ONE seed produces the mixed case S150-10/G-H8 describes on both targets: one bad slot
+# on Gold, two on Red (never Struggle=165, never a hole before a kept/filled move).
+PASTE_MOVES = (57, 44, 317, 182)
+PASTE_OUT_RE = re.compile(
+    r"paste80: (\d+) bad slot\(s\), (\d+) filled, into box (\d+) slot (\d+)")
+LIST_MOVES_RE = re.compile(
+    r"^    moves=([\d,]+) pp=([\d,]+) ppmax=([\d,]+) ppup=([\d,]+)$")
+
+
+def parse_list_moves(text: str, box: int, slot: int):
+    """One slot's moves/pp/ppmax/ppup out of `--list --moves`' stdout (BACKLOG #211) --
+    the new line sits immediately after the matching "  slot N: ..." line inside the
+    matching "box B: count=" section. LIST_BOX_RE/LIST_SLOT_RE (above) stay the parser
+    of record for everything they already covered; this only reads the one new line
+    neither of them looks at. None if the (box, slot) pair, or its moves line, is not
+    found (a caller must treat that as a hard failure, not an empty result)."""
+    lines = text.splitlines()
+    cur_box = None
+    for i, line in enumerate(lines):
+        m = LIST_BOX_RE.match(line)
+        if m:
+            cur_box = int(m.group(1))
+            continue
+        if cur_box != box:
+            continue
+        m2 = LIST_SLOT_RE.match(line)
+        if m2 and int(m2.group(1)) == slot:
+            if i + 1 >= len(lines):
+                return None
+            mv = LIST_MOVES_RE.match(lines[i + 1])
+            if not mv:
+                return None
+            to4 = lambda s: [int(x) for x in s.split(",")]
+            return {"moves": to4(mv.group(1)), "pp": to4(mv.group(2)),
+                    "ppmax": to4(mv.group(3)), "ppup": to4(mv.group(4))}
+    return None
+
+
+def build_extract_tool(scratch: Path) -> Path | None:
+    """cc tools/extract_gen3_record.c's own recipe (its own header comment) -- the
+    SAME real-record-from-a-real-.sav generator tools/dgb_shots.py's --s150-10 shot
+    chain uses, so this gate's corpus mon/move mix (BACKLOG #211's PASTE_MOVES re-move,
+    re-using its own --moves flag from BACKLOG #150 S150-10 step 5) is never hand-built.
+    Returns None (not a hard exit) on a build failure -- the paste case then skips,
+    same "explicit skip, never a silent pass" convention every other corpus-dependent
+    case in this file already follows."""
+    binary = scratch / "extract_gen3_record"
+    cmd = ["cc", "-std=c11", "-O2", "-I", "source", "tools/extract_gen3_record.c",
+           "source/gen3_mon.c", "source/gen3_save.c", "source/gen3_box.c",
+           "source/gen3_clip.c", "source/gen3_edit.c", "source/gen3_daycare.c",
+           "source/data_tables.c", "-o", str(binary)]
+    proc = subprocess.run(cmd, cwd=PROJECT_ROOT, capture_output=True, text=True)
+    if proc.returncode != 0:
+        print("[skip] paste (BACKLOG #211): tools/extract_gen3_record.c build failed:",
+              file=sys.stderr)
+        print((proc.stdout + proc.stderr).strip(), file=sys.stderr)
+        return None
+    return binary
+
+
+def extract_paste_record(extract_binary: Path, emerald_sav: Path, out_path: Path) -> bool:
+    """One real corpus record (box 0 slot 0, per extract_gen3_record.c's own picker),
+    re-moved to PASTE_MOVES. False on any failure (missing Emerald.sav, a decode
+    refusal) -- the caller skips, it never falls back to a hand-built record."""
+    if not emerald_sav.exists():
+        return False
+    moves_arg = ",".join(str(m) for m in PASTE_MOVES)
+    proc = subprocess.run([str(extract_binary), str(emerald_sav), str(out_path),
+                           "--moves", moves_arg], capture_output=True, text=True)
+    return proc.returncode == 0 and out_path.exists()
+
+
+def run_paste_case(name, info, rom, sav, work, binary, python, vendor, tally,
+                   sections, rec_path):
+    """BACKLOG #211: PASTE (Gen 3 -> Game Boy) through the retail gate -- the SAME
+    per-slot move rule S150-10 gives gb_paste_hook (source/pdna_gen12.c), exercised end
+    to end by tests/host_gbsurgery_tool.c's --op paste80 (this backlog item's own
+    addition: gen3_to_gb_fixed() + g3gb_moves_fill(), source/gen3_to_gb.c /
+    source/gb_moves_legal.c), on a REAL ROM+save boot.
+
+    THREE independent checks, all required:
+      PRE  -- an independent re-parse (`--list --moves`, a fresh subprocess) of the
+              .sav the surgery step just wrote: the kept slots hold PASTE_MOVES
+              unchanged, every bad slot (over gb_max_move() for this generation) is
+              either swapped for a different, non-zero, non-Struggle move or correctly
+              left empty (only if the fill legitimately ran dry), no gap precedes any
+              kept/filled move, PP == base PP, PP-Ups == 0 -- decision 3/4's own
+              contract, read back from bytes, not trusted from the op's own exit code.
+      CONTENT -- the edited save boots and the REAL GAME accepts it (verdict=accept) --
+              proves the record this pipeline built is not silently rejected/corrupted
+              by Gold's or Red's own engine.
+      POST -- "the gate's own readback path" the brief names: after boot, mGBA's own
+              SRAM dump (gb_roundtrip.py's --dump-save, the same mechanism edited_case()
+              uses for its own SRAM-diff check) is re-parsed the identical way and must
+              match the PRE snapshot byte-for-byte -- proving the real game's own load/
+              save cycle did not quietly alter what this gate already checked.
+
+    Skip-safe (BACKLOG #211's own ask): no `rec_path` (Emerald.sav or the extract tool
+    itself was unavailable) or no free storage box both skip, never fail."""
+    label = f"paste (BACKLOG #211{'a' if info['gen'] == 2 else 'b'})"
+    if rec_path is None:
+        tally.skip_case(label, "no corpus Emerald.sav / tools/extract_gen3_record.c build")
+        return
+    box = first_room_box(sections)
+    if box is None:
+        tally.skip_case(label, "every storage box this --list saw is full")
+        return
+
+    edited = work / "paste.sav"
+    rc, out, err = run_surgery(binary, sav, edited, [["paste80", str(box), str(rec_path)]],
+                               rom=rom)
+    if rc != 0:
+        tally.record(label, False, f"surgery refused: {err.strip()}")
+        return
+
+    m = PASTE_OUT_RE.search(out)
+    if not m:
+        tally.record(label, False, f"could not parse --op paste80 stdout: {out!r}")
+        return
+    nbad, nfill, box_got, slot = (int(m.group(i)) for i in range(1, 5))
+
+    bound = 165 if info["gen"] == 1 else 251
+    bad4 = [1 if (mv != 0 and mv > bound) else 0 for mv in PASTE_MOVES]
+    nbad_want = sum(bad4)
+
+    pre_list = subprocess.run([str(binary), "--in", str(edited), "--list", "--moves"],
+                              capture_output=True, text=True).stdout
+    pre = parse_list_moves(pre_list, box_got, slot)
+    if pre is None:
+        tally.record(label, False,
+                    f"could not re-parse box {box_got} slot {slot} out of --list --moves")
+        return
+
+    no_struggle = 165 not in pre["moves"]
+    ppup_zero = all(u == 0 for u in pre["ppup"])
+    pp_is_base = pre["pp"] == pre["ppmax"]
+    seen_zero, packed_ok = False, True
+    for mv in pre["moves"]:
+        if mv == 0:
+            seen_zero = True
+        elif seen_zero:
+            packed_ok = False
+    bad_ok = True
+    for i in range(4):
+        if bad4[i]:
+            if pre["moves"][i] == 0:
+                bad_ok = bad_ok and (nfill < nbad)   # only legitimate if the fill ran dry
+            else:
+                bad_ok = bad_ok and (pre["moves"][i] != PASTE_MOVES[i])
+        else:
+            bad_ok = bad_ok and (pre["moves"][i] == PASTE_MOVES[i])
+    pre_ok = (nbad == nbad_want and no_struggle and ppup_zero and pp_is_base and
+             packed_ok and bad_ok)
+
+    dump_path = work / "paste_dump.sav"
+    rc2, rep, out2, err2 = boot(python, rom, edited, work / "paste", vendor,
+                                work / "paste.json", dump_path=dump_path,
+                                extra_args=["--expect", "accept"])
+    content_ok = (rc2 == 0) and rep.get("verdict") == "accept"
+
+    post = None
+    if dump_path.exists():
+        post_list = subprocess.run([str(binary), "--in", str(dump_path), "--list", "--moves"],
+                                   capture_output=True, text=True).stdout
+        post = parse_list_moves(post_list, box_got, slot)
+    post_ok = post == pre
+
+    ok = pre_ok and content_ok and post_ok
+    detail = (f"nbad={nbad}/{nbad_want} filled={nfill} box={box_got} slot={slot} "
+             f"pre={pre} content_ok={content_ok} verdict={rep.get('verdict')} post={post}")
+    if not ok:
+        fails = [f.strip() for f in out2.splitlines() if f.strip().startswith("FAIL:")]
+        if fails:
+            detail += " | " + "; ".join(fails)
+        tail = stderr_tail(err2)
+        if tail:
+            detail += " | stderr: " + tail
+    tally.record(label, ok, detail)
 
 # BACKLOG #49 P1a — gb_trainer.h's badges/name setters (source/gb_trainer.c), via the
 # surgery tool's new --op badges / --op name. WRAM anchors from
@@ -1931,7 +2121,7 @@ def create_case(python, vendor, work, rom, gen, sav, orig, sections, party_count
                tally, label, extra_check=extra_check)
 
 
-def run_game(name, info, rom, sav, scratch, binary, python, vendor):
+def run_game(name, info, rom, sav, scratch, binary, python, vendor, paste_rec_path=None):
     tally = Tally(sav.name)
     work = scratch / name
     work.mkdir(parents=True, exist_ok=True)
@@ -2049,6 +2239,17 @@ def run_game(name, info, rom, sav, scratch, binary, python, vendor):
     # ---- 2l. D6 (BACKLOG #88 review) — the COUNTERS tab's lucky-number show flag,
     # Gen 2 only (run_counter_case itself skips Gen 1) ----
     run_counter_case(name, info, rom, sav, work, binary, python, vendor, tally)
+
+    # ---- 2m. BACKLOG #211 — PASTE (Gen 3 -> Game Boy)'s per-slot move rule
+    # (BACKLOG #150 S150-10), on a real boot. `sections` is this SAME run's own
+    # baseline --list (box occupancy for first_room_box()), never re-derived. The
+    # brief names exactly two cases (Gold: one bad slot; Red: two, against the 165
+    # bound) -- Yellow/Crystal are the SAME code path (gen 1 / gen 2 respectively)
+    # already proven by Red/Gold, so this stays scoped to the two named games rather
+    # than adding two more "ok" lines the brief's own expected count does not carry. ----
+    if name in ("gold", "red"):
+        run_paste_case(name, info, rom, sav, work, binary, python, vendor, tally,
+                       sections, paste_rec_path)
 
     if party_count0 < 2:
         tally.skip_case("nickname/level/delete/move",
@@ -2236,6 +2437,22 @@ def main(argv=None):
     t0 = time.time()
     binary = build_tool(scratch)
 
+    # BACKLOG #211: one real Gen-3 corpus record, re-moved to PASTE_MOVES, built ONCE
+    # (not per game -- gen3_to_gb_fixed()'s own `gen` argument is what varies the
+    # bad-slot count between Gold and Red, not the input record) -- skip-safe: any
+    # failure here (no Emerald.sav, extract build failure) leaves paste_rec_path None,
+    # and every game's own paste case then skips rather than failing.
+    paste_rec_path = None
+    extract_binary = build_extract_tool(scratch)
+    if extract_binary is not None:
+        emerald_sav = corpus.parent / "Emerald.sav"
+        candidate = scratch / "paste_record.bin"
+        if extract_paste_record(extract_binary, emerald_sav, candidate):
+            paste_rec_path = candidate
+        else:
+            print(f"[skip] paste (BACKLOG #211): could not extract a record from "
+                  f"{emerald_sav} -- every game's paste case will skip", file=sys.stderr)
+
     names = [a.only] if a.only else list(GAMES)
     total_ok = total_fail = total_skip = 0
     for name in names:
@@ -2246,7 +2463,8 @@ def main(argv=None):
             print(f"[skip] {name} -- {rom.name}/{sav.name} not found in {a.corpus}")
             total_skip += 1
             continue
-        tally = run_game(name, info, rom, sav, scratch, binary, a.python, a.mgba_vendor)
+        tally = run_game(name, info, rom, sav, scratch, binary, a.python, a.mgba_vendor,
+                         paste_rec_path=paste_rec_path)
         total_ok += tally.ok
         total_fail += tally.fail
         total_skip += tally.skip
