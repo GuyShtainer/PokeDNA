@@ -36,7 +36,17 @@ static const uint8_t k_substruct_pos[24][3] = {
  * upper bound, not lean on the caller's field-size intuition. A corrupt/crafted
  * save COULD have every glyph be a gender sign; degrading to gen3_decode_char's
  * plain '?' once the buffer is nearly full is a safe, bounded fallback -- never a
- * silent overflow (golden rule 2: every loop proves its own bound). */
+ * silent overflow (golden rule 2: every loop proves its own bound).
+ *
+ * BACKLOG #216: 0x1B (lowercase e-acute, pokeemerald charmap.txt) gets the SAME
+ * treatment for the SAME reason -- it needs the 2-byte UTF-8 sequence "\xC3\xA9",
+ * which is exactly the spelling source/ui.c's own pnext() already special-cases at
+ * font code 127 (the ONE non-ASCII glyph PokeDNA's font can draw), so a decoded
+ * name carrying it renders correctly instead of falling to gen3_decode_char's
+ * plain '?'. The other 39 codes in the accented block (0x01-0x2B minus 0x1B) have
+ * no glyph in this app's font at all and stay '?' -- there is no UTF-8 spelling to
+ * insert for them, unlike this one. decode_name stays the only place that owns
+ * BOTH special cases -- one thin function, not duplicated logic. */
 static void decode_name(char* out, int outcap, const uint8_t* src, int maxlen) {
   int k = 0, oi = 0;
   for (; k < maxlen; k++) {
@@ -44,6 +54,10 @@ static void decode_name(char* out, int outcap, const uint8_t* src, int maxlen) {
     if ((b == 0xB5u || b == 0xB6u) && oi + 3 < outcap) {
       out[oi++] = (char)0xE2; out[oi++] = (char)0x99;
       out[oi++] = (char)(b == 0xB5u ? 0x82 : 0x80);
+      continue;
+    }
+    if (b == 0x1Bu && oi + 2 < outcap) {          /* e-acute -> pnext()'s own "\xC3\xA9" */
+      out[oi++] = (char)0xC3; out[oi++] = (char)0xA9;
       continue;
     }
     char ch = gen3_decode_char(b);

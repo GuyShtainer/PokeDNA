@@ -118,19 +118,34 @@ typedef struct {
    * carries it (S11.20 item 11) -- no new ledger field is added for this. */
   bool    item_dropped;
   uint8_t item_g2;        /* the Gen-2 item id that was dropped, for the loss row */
-  /* BACKLOG #177: also CALLER-SET, but for a DIFFERENT reason than item_dropped's --
-   * gen12_convert() converts ONE record at a time and never sees the WRITTEN Gen-1/2
-   * record the bridge eventually produces (that only exists after a LATER call,
-   * gen3_to_gb(), on this module's own output), so it has no "before" and "after" to
-   * compare even in principle. bank_down_convert.c's own gb_name_changed() (static
-   * there, review F1) is the detector: it spells the SOURCE record's name and the
-   * WRITTEN record's name through the same lossless, generation-neutral speller
-   * (gb_get_otname/gb_get_nickname, gb_edit.c) and flags a difference -- a spelling
-   * compare catches every real loss (accented letters folded flat, gender signs and
-   * lookalike punctuation Gen 3's charset has no case for, the GB-only ligature glyphs)
-   * that an earlier decoder-fallback-byte rule missed, with no byte-range table to keep
-   * in sync with gen3_encode_char/g2_glyph. Re-applied here after gen3_to_gb() returns
-   * G3GB_OK, same "caller sets it after the call" shape item_dropped already uses. */
+  /* BACKLOG #177/#204/#216: UPDATE -- this pair used to be caller-set for BOTH
+   * conversion directions (see the DOWN-arm shape below, still true for that one).
+   * As of b204 gen12_convert() itself SETS these for the hop it owns (GB name ->
+   * Gen-3 bytes, the UP arm, source/gen12_convert.c's static note_spelling_loss):
+   * it re-decodes the just-encoded out80 bytes through gen3_decode_name (the SAME
+   * table encode_name/em_set_nickname just used) and diffs that against the
+   * caller's intended string, at the Gen-3 byte level -- catches every glyph this
+   * app's Gen-3 charset genuinely cannot store (brackets, the 58 accented/symbol
+   * codes with no font glyph) AND a length overflow (e.g. a Gen-1 nickname built
+   * entirely of <PK>/<MN> ligature bytes, which gen1_decode_name expands to 2 ASCII
+   * chars each and can exceed the Gen-3 field's 10/7-glyph cap --
+   * tests/host_gen3_codec_lossy_test.c's ligature case pins this truncation as
+   * lossy=true).
+   *
+   * WHAT STAYS UNDETECTABLE HERE, STRUCTURALLY (BACKLOG #216, not closed by this
+   * lane): a loss that happens BEFORE gen12_convert() ever sees the string -- e.g.
+   * gen1_save.c's own 0xBA (e-acute) folding to a plain 'e', documented and decided
+   * in that file, or any future GB-decode simplification. Gb12Mon carries only the
+   * ALREADY-decoded ot_name/nickname (gen12_convert.h's own header comment: "this
+   * module never sees a raw GB save"), so this function has no earlier byte to
+   * re-derive from, even in principle -- a real boundary, not an oversight.
+   *
+   * The DOWN arm (Gen-3 -> GB, the OTHER hop) is a completely separate check,
+   * unaffected by any of the above: bank_down_convert.c's own gb_name_changed()
+   * (static there, review F1) spells the SOURCE record's name and the WRITTEN
+   * record's name through the same lossless, generation-neutral speller
+   * (gb_get_otname/gb_get_nickname, gb_edit.c) and flags a difference. Still
+   * caller-set for that direction, applied after gen3_to_gb() returns G3GB_OK. */
   bool    otname_lossy;   /* the OT name's spelling changed crossing the bridge */
   bool    nick_lossy;     /* same, for the nickname */
 } Gb12Notes;

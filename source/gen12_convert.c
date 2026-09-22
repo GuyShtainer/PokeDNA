@@ -290,7 +290,22 @@ static bool same_name(const char* a, const char* b) {
  * point for either) as a loss row instead of a silent space. The intended
  * nickname is the species name whenever gen12_convert's own em_set_nickname call
  * was skipped -- comparing against the ORIGINAL `nick` there would
- * false-positive every unnamed import. */
+ * false-positive every unnamed import.
+ *
+ * BACKLOG #216 CLOSURE: `written` is decoded straight from `out80` (the Gen-3
+ * bytes THIS conversion just produced) through gen3_decode_name -- the SAME
+ * table encode_name/em_set_nickname used to build those bytes -- so the
+ * comparison already runs at the Gen-3 byte level, not a mismatched
+ * GB-string-vs-Gen-3-string compare. That is what catches a length overflow too:
+ * a Gen-1 nickname built entirely of <PK>/<MN> ligature bytes (gen1_decode_name
+ * expands each to 2 ASCII chars) can exceed the Gen-3 field's 10/7-glyph cap, and
+ * the resulting truncation makes `written` shorter than `otname`/`nick`, which
+ * strcmp catches (tests/host_gen3_codec_lossy_test.c pins this). What stays
+ * OUT OF REACH here, structurally: a loss already baked into `otname`/`nick`
+ * before this function runs -- gen1_save.c/gen2_save.c own that decode and this
+ * module "never sees a raw GB save" (this file's own top-of-file comment); see
+ * gen12_convert.h's Gb12Notes.otname_lossy/nick_lossy comment for the full
+ * before/after. */
 static void note_spelling_loss(Gb12Notes* notes, const uint8_t out80[80],
                                const char* otname, const char* nick, uint16_t species) {
   /* Worst case is 10 Gen-3 bytes that are ALL gender signs -- 3 UTF-8 bytes each
