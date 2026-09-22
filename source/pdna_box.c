@@ -1429,34 +1429,39 @@ static uint8_t* __attribute__((noinline)) drop_held_up(BoxSource* src, int box, 
    * extra 2,400-B reads, on a deliberate user action), then trust it. */
   static EWRAM_BSS bool s_up_scan_done;   /* EWRAM: an IWRAM static would cost 8 B of stack budget (re-verify) */
   if (!pdna_bank_serial_trusted() || !s_up_scan_done) {
-    /* BACKLOG #223 review D4/D5: the resync runs BEFORE the collision check, not
-     * only after one is already found -- a rolled-back counter (BACKLOG #219's
-     * .bak recovery) can hand serial S to a DIFFERENT mon than the one that
-     * originally held it: no ident32 clash results (the two cells' other 76 bytes
-     * differ), so the OLD collided-only gate never noticed and silently
-     * duplicated the serial, #168's own hazard. One walk, both answers: the
-     * high-water mark repairs a rolled-back counter even when the stale serial
-     * lands on a mon that does NOT collide.
-     * D5's correction of this comment's earlier (FALSE) claim: on the
-     * stale-counter path (pdna_bank_serial_resync returns true), the clash below
-     * is REPAIRED by re-serialising s_held -- a fresh bank_serial changes ident32
-     * BY CONSTRUCTION (bc_pack folds it into the hash), so this clears whatever
-     * `collided` would otherwise have found, regardless of what caused it. The
-     * CLASH refusal below only survives when there was nothing to resync (the
-     * counter is already healthy -- pdna_bank_serial_resync returns false, so
-     * s_held's ident32 is untouched) or when bc_unpack / pdna_bank_next_serial /
-     * bc_pack failed technically -- never because "a true clash resists a fresh
-     * serial", which is not how ident32 is computed. */
-    uint32_t stored_max = bank_serial_max(bank_scan_get, NULL, PDNA_BANK_BOXES, G3_BOX_SLOTS);
+    /* BACKLOG #223 review D4/D5, fused into one pass by #206 fixes2 R2
+     * (bank_scan_serial_and_clash, bank_collision.c): a rolled-back counter
+     * (BACKLOG #219's .bak recovery) can hand serial S to a DIFFERENT mon than the
+     * one that originally held it -- no ident32 clash results (the two cells' other
+     * 76 bytes differ), so a collided-only gate would never notice and would
+     * silently duplicate the serial, #168's own hazard. The high-water mark
+     * (stored_max) repairs a rolled-back counter even when the stale serial lands
+     * on a mon that does NOT collide -- computed by the SAME scan that answers
+     * `collided`, so the resync decision below always sees a mark from BEFORE
+     * s_held was touched. */
+    uint32_t stored_max = 0;
+    int coll_box = -1, coll_slot = -1;
+    bool collided = bank_scan_serial_and_clash(bank_scan_get, NULL, PDNA_BANK_BOXES, G3_BOX_SLOTS,
+                                               box, cur, s_held, &stored_max, &coll_box, &coll_slot);
     GbEditMon rmon; BcMeta rmeta;
+    bool repacked = false;
     if (pdna_bank_serial_resync(stored_max) && bc_unpack(s_held, &rmon, &rmeta)) {
       uint32_t fresh = pdna_bank_next_serial();
-      if (fresh != 0)
+      if (fresh != 0) {
         (void)bc_pack(&rmon, rmeta.flags, rmeta.origin_game, rmeta.rtc_epoch, fresh, s_held);
+        repacked = true;
+      }
     }
-    int coll_box = -1, coll_slot = -1;
-    bool collided = bank_ident32_collision(bank_scan_get, NULL, PDNA_BANK_BOXES, G3_BOX_SLOTS,
-                                           box, cur, s_held, &coll_box, &coll_slot);
+    /* re-serialising changes ident32 BY CONSTRUCTION (bc_pack folds bank_serial
+     * into the hash) -- the fused pass's `collided` verdict above described the
+     * PRE-repack s_held and no longer applies. Re-probe ONLY when a repack
+     * actually happened (rare: only a rolled-back counter reaches here); the
+     * ordinary case (no resync, or resync declined/failed) reuses the first
+     * pass's verdict untouched, same one-scan cost as before this fix. */
+    if (repacked) {
+      collided = bank_ident32_collision(bank_scan_get, NULL, PDNA_BANK_BOXES, G3_BOX_SLOTS,
+                                        box, cur, s_held, &coll_box, &coll_slot);
+    }
     if (collided) {
       snd_error();
       /* BACKLOG #219b: was a log line + snd_error() only -- the player saw nothing.
