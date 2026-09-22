@@ -5539,14 +5539,18 @@ def run_b166(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
     print("== BACKLOG #166: RO_MOVE's lift_why gate -- normal cell unchanged; "
           "refused-lift case not reproducible with this corpus (see docstring) ==")
     boot_to_gb_session(s, rom, which="red")
-    s.shot("00_box_grid", "b166: Red's box grid, freshly entered -- cursor on slot 0")
+    s.shot("00_box_grid", "b166: Red's box grid, freshly entered -- cursor on slot 0",
+           claim=["SLOWBRO"])   # BACKLOG #214 item 3 retrofit
 
     s.tap("A", settle=gb_shots.BIG_SETTLE)
     s.shot("01_normal_cell_menu", "b166: A on slot 0 (a normal, liftable cell) -- "
            "the occupied-cell menu is UNCHANGED by this lane: VIEW/EDIT, LEGALITY, "
            "MOVE TO BOX, COPY, RELEASE, CANCEL, no grey reason line -- lift_why "
            "returned NULL (gbs_can_delete == GBS_OK for this slot, verified above), "
-           "so the row-omission path in app_mon_menu_readonly never triggers here")
+           "so the row-omission path in app_mon_menu_readonly never triggers here",
+           claim=["MOVE TO BOX", "RELEASE"])   # BACKLOG #214 item 3 retrofit -- both rows
+           # this lane's gate could have hidden are mechanically proven still present
+           # on a normal (unrefused) cell
     s.tap("B", settle=100)
     s.shot("02_back_to_grid", "b166: B backs out of the menu, box grid unchanged")
     return s
@@ -8780,17 +8784,20 @@ def run_b187_chain_a(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.
     print("== BACKLOG #187/#192, Chain A: SELECT NORMAL<->MOVE on an empty cell ==")
     boot_to_gb_session(s, rom, which="yellow")
     s.shot("00_box12_normal", "tap0 (boot): box12 (current box, 0/20), cell(0,0) "
-           "empty, NORMAL mode -- footer 'A menu SEL L/R B'")
+           "empty, NORMAL mode -- footer 'A menu SEL L/R B'",
+           claim=["A menu  SEL  L/R  B"])   # BACKLOG #214 item 3 retrofit
     s.tap("SEL", settle=gb_shots.BIG_SETTLE)
     s.shot("01_select_to_move", "tap1 (SELECT): entering MOVE is now box-level "
            "(gbsrc_can_enter_move), not per-cell -- footer changes to 'MOVE A "
            "grab hold=set', cursor icon changes -- IMPOSSIBLE pre-fix on an "
-           "empty cell (gbs_can_delete would have refused)")
+           "empty cell (gbs_can_delete would have refused)",
+           claim=["MOVE A grab hold=set"])   # BACKLOG #214 item 3 retrofit
     s.tap("SEL", settle=gb_shots.BIG_SETTLE)
     s.shot("02_select_back_to_normal", "tap2 (SELECT): leaving is now "
            "unconditional -- footer back to 'A menu SEL L/R B' -- pre-fix, this "
            "EXACT second SELECT on an empty cell was #192's stuck case (proven "
-           "live: pixel-identical frame before/after on the pre-fix build)")
+           "live: pixel-identical frame before/after on the pre-fix build)",
+           claim=["A menu  SEL  L/R  B"])   # BACKLOG #214 item 3 retrofit
     return s
 
 
