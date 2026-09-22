@@ -145,20 +145,28 @@ void bank_plant_box0(uint8_t* recs) {
  * chain's own demonstration of the per-slot swap-row modal (BACKLOG #150 S150-10's
  * rule, applied to the bridge by #212) when the record has TWO bad slots, not the
  * ONE reachable refusal box0's own CHIKORITA plant (dex 152, always caught by the
- * species-floor check first) can ever show. Species dex 25 (Pikachu) clears the
- * Gen-1 species floor (<= gb_max_species(GB_GEN1)=151), so bdc_convert_gb_core
- * actually reaches the per-slot move clip instead of refusing before it. */
+ * species-floor check first) can ever show.
+ *
+ * Species dex 1 (Bulbasaur), NOT dex 25 (Pikachu): box0/box1 slot 1 already plants
+ * a Gen-1 PIKACHU with the SAME OT "PLANT"/id 12345/level 20 bank_plant_box0() uses
+ * everywhere else in this file, so a same-species badmoves cell would be visually
+ * indistinguishable from that unrelated cell in a screenshot (same name/level/OT --
+ * only the GB1/GB2 badge and move list would differ). Bulbasaur (dex 1, well under
+ * gb_max_species(GB_GEN1)=151) clears the Gen-1 species floor exactly the same way,
+ * with a distinct OT ("BADMOVE"/id 9999) so a shot's caption never has to lean on
+ * the badge alone to prove which cell is on screen. */
+#define PLANT_DEX_BADMOVES 1
 void bank_plant_gen2_badmoves_cell(uint8_t out80[80]) {
   if (!out80) return;
   GbNewMonSrc src; memset(&src, 0, sizeof src);
-  src.growth = gb_growth_rate(PLANT_DEX_PIKACHU);
+  src.growth = gb_growth_rate(PLANT_DEX_BADMOVES);
   src.moves[0] = 200;    /* > gb_max_move(GB_GEN1)=165, <= gb_max_move(GB_GEN2)=251 */
   src.moves[1] = 230;    /* > gb_max_move(GB_GEN1)=165, <= gb_max_move(GB_GEN2)=251 */
-  src.species_name = pk_species_name(PLANT_DEX_PIKACHU);
-  src.ot_name = "PLANT";
-  src.ot_id = 12345;
+  src.species_name = pk_species_name(PLANT_DEX_BADMOVES);
+  src.ot_name = "BADMOVE";
+  src.ot_id = 9999;   /* uint16_t field -- 99999 overflowed it (caught by -Wconstant-conversion) */
   GbEditMon e;
-  gb_new_mon(GB_GEN2, PLANT_DEX_PIKACHU, 20, &src, 8u, &e);
+  gb_new_mon(GB_GEN2, PLANT_DEX_BADMOVES, 20, &src, 8u, &e);
   bc_pack(&e, 0, BC_ORIGIN_GOLD, 0, 8u, out80);
 }
 

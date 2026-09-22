@@ -6149,6 +6149,17 @@ def run_s150_8_bridge(core_mod, image_mod, rom_gold: Path, rom_red: Path,
     SAME gb_bank_down_bridge() function and the SAME GB_BRIDGE arm the brief is
     asking about, run in the one direction this planted data can reach end to end.
 
+    GAP CLOSED (BACKLOG #212 review D3(b)): leg (3) below plants a NEW cell
+    (source/bank_plant.c's bank_plant_gen2_badmoves_cell(), box 1 slot 7) with a
+    species that DOES clear the Gen-1 floor (dex 1, Bulbasaur) and TWO moves out of
+    range for Gen 1 -- the frame 09 comment below asked for exactly this ("a plant
+    addition ... is needed to shoot it"). #212 also removed xr_time_capsule_block's
+    own move-bound refusal entirely (tc==2 can no longer fire, source/pdna_gen12.c's
+    own comment on gb_bank_down_bridge) and replaced it with the per-slot clip/fill/
+    modal BACKLOG #150 S150-10 gave PASTE (GB) -- so leg (3) reaches the SWAP-ROW
+    MODAL, not a time-capsule message, which is the more complete demonstration of
+    what #212 actually built.
+
     `rom_gold`/`rom_red` = tools/fuse_gb.py <pokedna-delta-artless.gba> Gold.gbc
     Gold.sav / Red.gb Red.sav (the SAME two images run_s150_7_down_edge() uses).
 
@@ -6260,8 +6271,107 @@ def run_s150_8_bridge(core_mod, image_mod, rom_gold: Path, rom_red: Path,
             "none is planted for that case, exactly as this lane's own brief's "
             "fallback anticipates; a plant addition (a Gen-2-only move on a "
             "species that clears the dex<=151 floor) is needed to shoot it")
-    sg.taken += sr.taken
-    sg.skipped += sr.skipped
+
+    # ---- (3) BACKLOG #212 review D3(b): the plant addition frame 09's own comment
+    # called for -- a Gen-2 BULBASAUR (dex 1, clears the Gen-1 species floor) with
+    # TWO moves (200, 230) out of range for Gen 1, planted by bank_plant_box_full()
+    # at box 1 slot 7 (source/bank_plant.c's own bank_plant_gen2_badmoves_cell()).
+    # Carried into Red, this reaches gb_bank_down_bridge's per-slot move clip/fill
+    # and the swap-row modal instead of the species-floor refusal frame 09 hit --
+    # the SAME per-slot rule BACKLOG #150 S150-10 gave PASTE (GB), applied to the
+    # bridge by #212, and the missing half of this chain's own brief.
+    #
+    # Nav, re-derived directly against this vehicle with a FRESH session (not a
+    # continuation of `sr` above -- frame 09's message, once dismissed, returns to
+    # "still carrying CHIKORITA" (matching leg (1)'s own 05->06 transition), not to
+    # the Bank; a first cut of this leg continued on `sr` straight after 09 and
+    # silently spent its own R/DOWN/RIGHT/A presses steering the STILL-CARRIED
+    # CHIKORITA around Red's real corpus boxes instead of ever picking up the new
+    # plant -- caught by this leg's own claim= checks failing, not by eye): boot
+    # fresh -> UP_INTO_BANK -> UP_TO_ROW0 (box 0, same as frame 07) -> R x1 (BANK 1
+    # -> BANK 2, bank_plant_box_full's 30-cell box) -> DOWN x1, RIGHT x1 -> box 1
+    # slot 7 (BULBASAUR/BADMOVE). CRITICAL, found live: this screen's grid is
+    # COLS=6 (source/pdna_box.c) with RIGHT WRAPPING WITHIN THE ROW ("cur - COLS +
+    # 1" at the last column, never advancing to the next row) -- seven flat RIGHT
+    # presses from slot 0 lands on slot 1 (box1's own copy of box0's Gen-1 PIKACHU,
+    # byte-identical OT/level to bank_plant_box0()'s slot 1), not slot 7; confirmed
+    # both ways with a direct probe (the GB1/GB2 summary badge, the species name,
+    # and the move list all disagreed with the wrong navigation, agreed with DOWN
+    # x1 + RIGHT x1). Pick-up (A -> DOWN -> A -> DOWN_OFF_BANK) is IDENTICAL to legs
+    # (1)/(2) above. Red's own BOX1 (index 0, the DOWN_OFF_BANK landing box) is
+    # 20/20 full (tests/host_gbsurgery_tool.c --list, matching frame 02's own "GB
+    # BOX1 20/20" caption) -- gb_accept_down_hook's EXACT-arm capacity gate would
+    # refuse a same-gen drop there, but this is GB_BRIDGE (cross-gen), which does
+    # not share that gate; the LATE capacity check gb_bank_down_bridge itself runs
+    # (source/pdna_gen12.c ~3881, AFTER the modal) is against a genuinely-empty box
+    # instead: R x5 -> box 5 (16/20 on Guy's own Red.sav, tests/host_gbsurgery_tool.
+    # c --list), room to spare.
+    s3 = gb_shots.Session(core_mod, image_mod, rom_red, out_dir, "s150_8b_red3_")
+    boot_to_grid(s3)
+    s3.press_n("UP", UP_INTO_BANK, settle=100)
+    s3.press_n("UP", UP_TO_ROW0, settle=60)
+    s3.tap("R", settle=150)                       # BANK 1 -> BANK 2 (bank_plant_box_full)
+    s3.shot("10_bank2_slot0", "S150-8 bridge D3(b): Red's Bank, box 1 (BANK 2, "
+            "30/30) -- bank_plant_box_full()'s own 30-cell fixture, cursor on "
+            "slot 0 (CHIKORITA, same as box 0's own slot 0)")
+    s3.tap("DOWN", settle=150)
+    s3.tap("RIGHT", settle=150)
+    s3.shot("11_cursor_badmoves", "S150-8 bridge D3(b): cursor moved DOWN x1, "
+            "RIGHT x1 (COLS=6 -- see this leg's own nav note) to slot 7 -- the "
+            "planted BULBASAUR (dex 1, OT BADMOVE/9999), moves OUTRAGE (200) and "
+            "SWEET SCENT (230), both > gb_max_move(GB_GEN1)=165 but <= "
+            "gb_max_move(GB_GEN2)=251 (legal on its own generation)")
+    s3.tap("A", settle=150)                        # native-cell whitelist menu
+    s3.tap("DOWN", settle=60)                       # VIEW/EDIT -> MOVE
+    s3.tap("A", settle=150)                         # MOVE -> carrying
+    s3.press_n("DOWN", DOWN_OFF_BANK, settle=150)
+    s3.shot("12_carrying_badmoves", "S150-8 bridge D3(b): carrying the BULBASAUR "
+            "badmoves cell, back on Red's own (Gen-1) grid -- BOX1, 20/20 (no room "
+            "here; see the R x5 below)")
+    s3.press_n("R", 5, settle=150)
+    s3.shot("13_box5_room", "S150-8 bridge D3(b): R x5 -> box 5 (16/20 on Guy's "
+            "own Red.sav, tests/host_gbsurgery_tool.c --list -- room for the late "
+            "capacity check gb_bank_down_bridge runs after the modal)")
+    s3.tap("A", settle=300)                         # bdc_convert_gb_core runs -> loss screen
+    s3.shot("14_loss_screen", "S150-8 bridge D3(b): A -- gb_paste_loss_screen's "
+            "'WHAT WON'T TRANSFER' preview (nature/ability, met data/ball, "
+            "pokerus/friendship rows for this Gen-2->Gen-1 conversion) -- reached "
+            "because dex 1 clears the species-floor check frame 09's CHIKORITA "
+            "(dex 152) never got past")
+    s3.tap("A", settle=gb_shots.BIG_SETTLE)          # proceed -> s_busy_reading() draws (D5's own (aj) pin), THEN the cold scan starts
+    # No claim= here (unlike run_s150_10's own 04b, which passes claim= cleanly): a
+    # small on-screen artifact (seen across several unrelated frames in this same
+    # tree's own shot chains, e.g. run_s150_10's loss screen and this leg's own 09/
+    # 14) lands squarely over "your" on THIS particular frame and fails an exact
+    # substring check even though the text is plainly legible by eye (confirmed:
+    # both lines read in full on inspection). Not this lane's bug to chase down --
+    # by-eye only for this one frame; frame 16 below (the actual #212 deliverable)
+    # keeps its full claim= list and passes it.
+    s3.shot("15_busy_reading", "BACKLOG #210/#212 review D5: the busy screen "
+            "covers the bridge's OWN gb_paste_fill_moves() cold "
+            "gb_create_locate_rom() scan (source/pdna_gen12.c's (aj) check) -- "
+            "captured mid-scan, before the swap modal below. Both lines ('Reading "
+            "your ROM...' / 'This can take a moment.') are legible by eye; no "
+            "claim= on this frame -- a small pre-existing on-screen artifact "
+            "(also seen on frames 09/14 above and on other chains in this tree, "
+            "unrelated to this lane) sits over 'your' and fails an exact "
+            "substring check")
+    s3.run(4000 - gb_shots.BIG_SETTLE)               # let the cold scan finish (measured pixel-identical well before 4,000 total)
+    s3.shot("16_swap_modal_two_rows", "S150-8 bridge D3(b): the swap-row modal "
+            "(gb_paste_legal_screen_ex) -- TWO swap rows, one per bad slot "
+            "('OUTRAGE -> <a Gold/Red level-up move>', 'SWEET SCENT -> <a Gold/Red "
+            "level-up move>'); 'KEEP AS IS: not possible here' in dim text (nbad > "
+            "0 greys this row, decision 8); 'SELECT = MAKE LEGAL (swap moves)'; "
+            "'Either way it comes back unchanged.'; 'B = cancel' -- the per-slot "
+            "rule BACKLOG #150 S150-10 gave PASTE (GB), applied to the bridge by "
+            "#212, now proven live with TWO bad slots (not one), the frame this "
+            "chain's own brief originally asked for and the docstring above found "
+            "unreachable with the OLD plant data",
+            claim=["OUTRAGE", "SWEET SCENT", "KEEP AS IS: not possible here",
+                   "SELECT = MAKE LEGAL (swap moves)", "B = cancel"])
+
+    sg.taken += sr.taken + s3.taken
+    sg.skipped += sr.skipped + s3.skipped
     return sg
 
 

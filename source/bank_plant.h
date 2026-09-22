@@ -58,11 +58,11 @@ void bank_plant_cell0_serial(uint8_t out80[80], uint32_t serial);
  * caller's own 80-byte scratch.
  *
  * BACKLOG #212 review D3(b): slot 7 (part of the generic 25-cell sweep above) is then
- * overwritten with bank_plant_gen2_badmoves_cell()'s own two-bad-move Pikachu -- the
+ * overwritten with bank_plant_gen2_badmoves_cell()'s own two-bad-move Bulbasaur -- the
  * --s150-8-bridge shot chain's move-swap-modal demonstration. */
 void bank_plant_box_full(uint8_t* recs);
 
-/* BACKLOG #212 review D3(b): a Gen-2 PIKACHU (dex 25, clears the Gen-1 species
+/* BACKLOG #212 review D3(b): a Gen-2 BULBASAUR (dex 1, clears the Gen-1 species
  * floor) with TWO moves (200, 230) out of range for Gen 1 (> gb_max_move(GB_GEN1)
  * =165) but legal on its own generation (<= gb_max_move(GB_GEN2)=251) -- bridged
  * to a Gen-1 session, this reaches gb_bank_down_bridge's per-slot move clip and
