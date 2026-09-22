@@ -10,8 +10,14 @@
  *      source/bank_cell.c source/gb_edit.c source/gen1_save.c source/gen1_write.c \
  *      source/gen2_save.c source/gen2_write.c source/gen3_edit.c source/gen3_mon.c \
  *      source/gen3_box.c source/gen3_save.c source/gen3_daycare.c \
- *      source/data_tables.c source/savefile.c source/log.c lib/fatfs/ff.c \
- *      lib/fatfs/ffunicode.c tests/hostfat/ramdisk.c -o /tmp/hxview && /tmp/hxview
+ *      source/data_tables.c source/savefile.c source/log.c source/item_map_g2g3.c \
+ *      lib/fatfs/ff.c lib/fatfs/ffunicode.c tests/hostfat/ramdisk.c \
+ *      -o /tmp/hxview && /tmp/hxview
+ *
+ * source/item_map_g2g3.c: BACKLOG #150 S150-9 (merged into this lane after S150-15
+ * landed) added xr_merge_down_sel() to xfer_rec.c, which calls item_g2_to_g3() --
+ * xfer_rec.c's own object needs this symbol at link time even though this test
+ * never calls xr_merge_down_sel itself.
  *
  * app_can_edit() is stubbed to `true` here (source/pdna_main.c, the real definition,
  * is not linked -- it needs the whole app), same posture as host_xferio_test.c.

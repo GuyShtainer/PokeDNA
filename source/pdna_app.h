@@ -467,18 +467,20 @@ bool app_set_walda(uint8_t pattern);
 /* Shared framed yes/no confirm (A = yes, B = no). */
 bool app_confirm(const char* title, const char* l1);
 
-/* BACKLOG #150 S150-8b review D6, UX parity with the Gen-3 sidecar confirm twin
- * (app_sidecar_confirm, pdna_main.c, static): per-row lines for a RESTORE's own
- * XrMergeReport (source/xfer_rec.h) -- level/moves/renamed/rename_refused/
- * gb_item_ignored rows reuse the shipped sidecar strings unchanged; the evolved row
- * and the A-line use the direction-specific PDNA_XFERRESTORE_* strings (decision 10:
- * species is reported here, never applied). A generic "Gen 3 only data is dropped."
- * fallback row is shown when the confirm was triggered by something with no row of
- * its own (a per-slot move refusal, a missing nickname baseline, or a Gen-3-side
- * item loss, review D2) and every named row above is false. Never called for a
- * byte-identical restore (decision 6's own rule; the caller only shows this when at
- * least one field is true). true = A (restore), false = B (cancel, nothing written). */
-bool app_xferrestore_confirm(const XrMergeReport* rep, bool g3_item_lost);
+/* app_xferrestore_confirm (S150-8b review D6) is DELETED -- BACKLOG #150 S150-9
+ * decision 6/13: its only call site (pdna_box.c's pc_bank_restore_up) now calls
+ * app_xfer_merge_screen below. */
+
+/* BACKLOG #150 S150-9 decision 6: the per-field merge screen (pdna_main.c), shared by
+ * both directions. XR_MERGE_UP (Gen-3 home, PASTE: species/level/moves/nick toggles +
+ * the EVs line) or XR_MERGE_DOWN (native home, RESTORE from a Gen-3 save or a GB
+ * lift: level/moves/nick toggles + read-only species/item/refusal lines). Every
+ * toggle starts at KEEP (bit clear). Returns true with *accept = the bits the user
+ * turned on (START), false on B (nothing applied, the caller writes nothing). NEVER
+ * draws when the report has no row at all for XR_MERGE_DOWN -- returns true with
+ * *accept = 0 (decision 7: XR_MERGE_UP always draws, its EVs line counts as a row). */
+enum { XR_MERGE_UP = 0, XR_MERGE_DOWN = 1 };
+bool app_xfer_merge_screen(const XrMergeReport* rep, uint8_t dir, uint8_t* accept);
 
 /* U2b item 3: writes config.cfg NOW (Omega-only, same app_can_edit() gate every
  * config write already carries) -- the GB-screen shell calls this from its own
