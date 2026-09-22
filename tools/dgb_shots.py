@@ -5560,8 +5560,7 @@ def run_b182_release_gate(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
     print("== BACKLOG #182: RO_RELEASE's lift_why gate -- 1-mon party PARTY_FLOOR "
           "refuses both MOVE TO BOX and RELEASE, no shown-then-refused row ==")
     s.tap("A", settle=gb_shots.BIG_SETTLE)                   # info screen -> box grid (BOX1)
-    s.shot("00_box_grid", "b182: Red-1mon's box grid, freshly entered -- BOX1 "
-           "unaffected by the party trim (still 20/20), cursor on slot 0")
+    s.shot("00_box_grid", "b182: Red-1mon's box grid on entry (pre-settle: the box header band is not painted yet) -- the preview panel reads SLOWBRO, so the party trim left the storage boxes alone", claim=["SLOWBRO"])
 
     s.press_n("L", 2, settle=150)                            # box grid -> (settle) -> wraps to the party
     s.shot("01_party_pseudo_box", "b182: two L presses from BOX1 wrap to the party "
