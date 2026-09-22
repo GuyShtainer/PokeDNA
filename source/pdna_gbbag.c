@@ -18,6 +18,7 @@
 #include "pdna_origin_art.h" /* PDNA_GEN1                                             */
 #include "pdna_layout.h"    /* PDNA_GBSCR_ACT_*, PDNA_GBTR_ACT_*, GBTR_HEADER2_MAXW   */
 #include "pdna_trainer.h"   /* num_entry                                              */
+#include "pdna_pick.h"      /* pick_item / pick_item_set_gen1_2 (BACKLOG #195 F2)     */
 #include "ui.h"
 #include "snd.h"
 #include "pdna_app.h"       /* msg_wait / app_confirm                                 */
@@ -404,23 +405,27 @@ static bool gbbag_start_menu(GbBag* bag, GbBagPocket pocket, int* sel, int* top,
     const GbBagList* l = &bag->pockets[pocket];
     if (csel == 3) return false;
     if (csel == 0) {
-      /* D5 (review): num_entry() returns `cur` on OSK cancel, indistinguishable
-       * from "the user typed the same value" -- ADD ITEM used to insert id 1
-       * x1 whenever B'd out of either prompt. num_entry_opt() (pdna_trainer.h)
-       * tells cancel apart, and both prompts now abort the whole ADD on it.
-       * QUANTITY's own maxv is deliberately NOT GBB_QTY_CAP: clamping the OSK
+      /* BACKLOG #195 F2: ADD ITEM now goes through the real picker (names +
+       * category filter, BACKLOG #195 F1) instead of a raw "ITEM ID 1..999"
+       * prompt -- Guy's own ask ("there should be a way to add items"). The
+       * picker itself already refuses to return anything past
+       * gbb_max_item_id(GBF_G_RED) (0xFA, the Gen-1 ceiling), so there is no
+       * "typed 999, silently became a different legal item" class left to
+       * guard against here the way the old ID prompt needed to (R1's own
+       * fix, no longer reachable: pick_item() never returns an out-of-range
+       * id at all). Cancel (B) aborts the whole ADD, same as the old
+       * num_entry_opt() cancel contract. */
+      pick_item_set_gen1_2(GBIN_GEN1, GBF_G_RED, gbb_max_item_id(GBF_G_RED));
+      uint16_t id16 = pick_item(1);
+      pick_item_set_gen1_2(0, GBF_G_RED, 0);
+      if (id16 == 0xFFFFu) continue;
+      uint8_t id8 = (uint8_t)id16;
+      /* QUANTITY's own maxv is deliberately NOT GBB_QTY_CAP: clamping the OSK
        * value to 99 up front would make a typed 100 silently become 99 and
        * never reach gbb_insert()'s own validation, so an out-of-range type-in
-       * could never be told apart from a legal saturating merge below. */
-      /* R1 (re-verify 3): the ID prompt used to pass gbb_max_item_id() as the
-       * OSK cap, so a typed 251 was rewritten to 250 (TM50, a legal item) and
-       * INSERTED -- the same silent-rewrite class as the quantity case above.
-       * Same cure: a wide cap, then clamp to 0xFF (never a plain (uint8_t)
-       * truncation -- 300 would become 44, a different legal item) so every
-       * out-of-range id reaches gbb_insert()'s own BAD ID refusal. */
-      uint32_t id, qty;
-      if (!num_entry_opt("ITEM ID", 1, 999, &id)) continue;
-      uint8_t id8 = (uint8_t)(id > 0xFFu ? 0xFFu : id);
+       * could never be told apart from a legal saturating merge below
+       * (D5/R1's own reasoning, unchanged by the id prompt's replacement). */
+      uint32_t qty;
       if (!num_entry_opt("QUANTITY", 1, 999, &qty)) continue;
       bool qty_in_range = qty >= 1u && qty <= GBB_QTY_CAP;
       uint8_t qty8 = (uint8_t)(qty > 0xFFu ? 0xFFu : qty);

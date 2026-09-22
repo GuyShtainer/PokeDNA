@@ -1010,104 +1010,114 @@ def run_u4_bag(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_
                                 "move the cursor to a second row and A swaps the two, "
                                 "or B drops the mark with nothing moved (see the "
                                 "armed-SWAP shots below)")
-        s.tap("A", settle=gb_shots.BIG_SETTLE)                # ADD ITEM -> id entry (osk_search)
-        s.shot("08_add_item_id", "U4: ADD ITEM asks for a raw item id (1-250) -- no "
-                                  "item-name table this slice (time-boxed, see "
-                                  "pdna_gbbag.h); the list itself already prints "
-                                  "'ITEM-n' for the same reason ('-' not '#': "
-                                  "'#' has no Gen-1 glyph, D9). Cancelling either "
-                                  "prompt now aborts the whole ADD (num_entry_opt, D5) "
-                                  "instead of silently inserting id 1 x1.")
+        # BACKLOG #195: ADD ITEM now opens the real item picker (pick_item(),
+        # restricted to GBIN_GEN1 with the Gen-1 ceiling) instead of a raw numeric
+        # "ITEM ID" prompt -- real names, a category filter (All/Items/TM-HM,
+        # gbb_pocket_of()), list-view navigation. The picker's own admission test
+        # (item_build()'s ceiling) means an out-of-range id (e.g. the old "251"
+        # demo) can no longer even be SELECTED, so that refusal demo is gone from
+        # this chain -- BAD ID/BAD QUANTITY are still exercised by
+        # tests/host_gbbag_test.c's own gbb_insert() unit coverage (unchanged by
+        # this lane), not a UI demo here anymore. QUANTITY itself is still the
+        # SAME raw num_entry_opt prompt as before (BACKLOG #195 F2 only replaced
+        # the id half), so that half of the old tap recipe (B clear seeded "1",
+        # digit-row RIGHT/A, START confirm) is reused verbatim below.
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                # ADD ITEM -> pick_item() opens
+        s.shot("08_picker_open", "U4 (BACKLOG #195): ADD ITEM now opens the real "
+                                  "item picker -- REAL Gen-1 names (gb_item_label, "
+                                  "not '#n'), a category header ('ITEM [All] 251': "
+                                  "251 = ids 0..250, gbb_max_item_id(RED)=250 "
+                                  "inclusive), list view, cursor on MASTER BALL "
+                                  "(pick_item(1)'s own `current` -- '#0' NO_ITEM's "
+                                  "own row is visible just above it, still "
+                                  "selectable, gbb_insert() refuses it as BAD ID "
+                                  "the same as before)")
 
-        # osk_search's own key contract (source/osk.c): A INSERTS the on-screen
-        # keyboard's currently-highlighted glyph (row 0 is the digit row "1234567890",
-        # cursor starts at (0,0) == '1'), B is BACKSPACE, START confirms, SELECT
-        # cancels -- NOT "A confirms" (an earlier version of this script got that
-        # wrong and silently mistyped every field; caught by looking at shot 07,
-        # which showed the bag list with a corrupted quantity instead of the item
-        # menu). N4 (review): the ORIGINAL version of this demo used id 77 (GOOD
-        # ROD), already at qty 99 in Red.sav -- but id 77 is a Gen-1 KEY item
-        # (gbb_is_g1_key_item(), 4a1afc8), so its row prints NO quantity at all;
-        # "09b shows the row reading x99" was never true of that capture. id 20
-        # (POTION) is an ORDINARY item, not in Red.sav's pocket yet -- ADD ITEM it
-        # straight in at qty 99 below (typed directly, the brief's "qty editor, or
-        # an edge save" alternative is not needed since ADD ITEM's own num_entry
-        # IS a qty editor), so the saturating merge right after lands on a row
-        # that actually prints a quantity.
-        s.tap("B", settle=gb_shots.SETTLE)                     # clear the seeded "1"
-        s.press_n("RIGHT", 1, settle=gb_shots.SETTLE)          # keyboard cursor: col0 '1' -> col1 '2'
-        s.tap("A", settle=gb_shots.SETTLE)                     # type '2' -> field "2"
-        s.press_n("RIGHT", 8, settle=gb_shots.SETTLE)          # col1 '2' -> col9 '0' (no B: '2' must stay typed)
-        s.tap("A", settle=gb_shots.SETTLE)                     # type '0' -> field "20"
-        s.tap("START", settle=gb_shots.BIG_SETTLE)             # confirm id=20 (POTION) -> quantity entry
-        s.shot("08b_add_item_qty", "U4: then a quantity (1-99), the same num_entry -- "
-                                    "id 20 (POTION, an ORDINARY item) typed via the "
-                                    "digit row")
-        s.tap("B", settle=gb_shots.SETTLE)                     # clear the seeded "1"
-        s.press_n("RIGHT", 8, settle=gb_shots.SETTLE)          # '1' -> '9' (row 0, col 8)
-        s.tap("A", settle=gb_shots.SETTLE)                     # type '9' -> field "9"
-        s.tap("A", settle=gb_shots.SETTLE)                     # type '9' again (cursor unmoved) -> field "99"
-        s.tap("START", settle=gb_shots.BIG_SETTLE)             # confirm qty=99 -> gbb_insert(...,20,99): new entry
-        s.shot("08c_potion_planted", "U4: id 20 (POTION) inserted fresh at qty 99 -- "
-                                      "gbb_insert() takes the FREE-SLOT path (no "
-                                      "existing id-20 entry to merge into), landing "
-                                      "on the list's own last row; the qty editor "
-                                      "step the N4 brief also allows (A on a row) is "
-                                      "therefore not separately needed here -- ADD "
-                                      "ITEM was typed straight to the cap")
+        s.tap("START", settle=gb_shots.BIG_SETTLE)            # -> ritem_cat_menu (BACKLOG #195 F1)
+        s.shot("08b_category_menu", "U4: START opens the restricted picker's OWN "
+                                     "category menu -- Gen 1 offers only All/"
+                                     "Items/TM-HM (gbb_pocket_of()'s own Gen-1 "
+                                     "contract: no separate Key/Balls pocket on "
+                                     "this cartridge), cursor on 'All'")
+        s.tap("DOWN", settle=gb_shots.SETTLE)                 # All -> Items
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                # pick Items -> re-filters, closes menu
+        s.shot("08c_items_filtered", "U4: picking 'Items' re-filters the list "
+                                      "through gbb_pocket_of() -- the header now "
+                                      "reads 'ITEM [Items]', and id 0 (NO_ITEM, "
+                                      "invalid for every pocket) is gone from the "
+                                      "top of the list -- MASTER BALL is now row 0")
 
-        s.tap("START", settle=gb_shots.BIG_SETTLE)             # -> the item menu again, cursor still on POTION
-        s.tap("A", settle=gb_shots.BIG_SETTLE)                 # ADD ITEM -> id entry again
-        s.tap("B", settle=gb_shots.SETTLE)                     # clear seeded "1"
-        s.press_n("RIGHT", 1, settle=gb_shots.SETTLE)          # col0 -> col1 '2'
-        s.tap("A", settle=gb_shots.SETTLE)                     # type '2' -> field "2"
-        s.press_n("RIGHT", 8, settle=gb_shots.SETTLE)          # col1 -> col9 '0' (no B: keep the '2')
-        s.tap("A", settle=gb_shots.SETTLE)                     # type '0' -> field "20" again
-        s.tap("START", settle=gb_shots.BIG_SETTLE)             # confirm id=20 -> quantity entry
-        s.tap("B", settle=gb_shots.SETTLE)                     # clear seeded "1"
-        s.press_n("RIGHT", 4, settle=gb_shots.SETTLE)          # '1' -> '5' (row 0, col 4)
-        s.tap("A", settle=gb_shots.SETTLE)                     # type '5'
-        s.tap("START", settle=gb_shots.BIG_SETTLE)             # confirm qty=5 -> gbb_insert(...,20,5): MERGE path
-        s.shot("09_saturation_refusal", "U4: merging qty 5 into id 20/POTION (already "
-                                         "at the 99 cap from the ADD above) saturates "
-                                         "and refuses -- gbb_insert() SETS the "
-                                         "existing stack to the cap (99) and returns "
-                                         "GBB_ERR_QTY (gb_bag.c's own 'sum > cap' "
-                                         "branch WRITES list->entries[i].qty = "
-                                         "GBB_QTY_CAP, it does not merely refuse); "
-                                         "gbbag_start_menu's own msg_wait('SATURATED', "
-                                         "...) reports it. The WRITE still happens "
-                                         "here (99 -> 99) -- it is a no-op only "
-                                         "because POTION was already at the cap; nothing "
-                                         "about the mechanism itself skips the write.")
-        s.tap("A", settle=gb_shots.BIG_SETTLE)                 # dismiss the msg_wait -- back on the list
-        # ADD ITEM's own `*sel = l->count - 1` leaves the cursor on the LAST entry --
-        # POTION is that last entry (it was appended fresh above and nothing since
-        # has added/removed a row), so it is already in frame with no scrolling.
-        s.shot("09b_after_add", "U4: after dismissing the refusal, the cursor is "
+        # Navigate to POTION (id 20/0x14): 19 DOWN presses from MASTER_BALL (id 1,
+        # now row 0 under the Items filter) -- ids 1..20 have no TM/HM ids in
+        # range (Gen 1's TM/HM block starts at 0xC4/196) and no other exclusion,
+        # so the Items-filtered list and the unfiltered list agree on this stretch;
+        # 19 DOWNs is exactly "one row per id from 1 to 20".
+        s.press_n("DOWN", 19, settle=gb_shots.SETTLE)
+        s.shot("08d_potion_selected", "U4: 19 DOWNs from MASTER_BALL lands on "
+                                       "POTION (id 20) -- a real name from the "
+                                       "table, not '#20'")
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                # pick POTION -> QUANTITY prompt (unchanged UI)
+        s.shot("08e_add_item_qty", "U4: picking an item goes straight to the SAME "
+                                    "quantity prompt as before (num_entry_opt, "
+                                    "1-99) -- BACKLOG #195 F2 only replaced the id "
+                                    "half of ADD ITEM")
+        s.tap("B", settle=gb_shots.SETTLE)                    # clear the seeded "1"
+        s.press_n("RIGHT", 8, settle=gb_shots.SETTLE)         # digit row: col0 '1' -> col8 '9'
+        s.tap("A", settle=gb_shots.SETTLE)                    # type '9' -> field "9"
+        s.tap("A", settle=gb_shots.SETTLE)                    # type '9' again (cursor unmoved) -> "99"
+        s.tap("START", settle=gb_shots.BIG_SETTLE)            # confirm qty=99 -> gbb_insert(...,20,99): fresh slot
+        s.shot("09_potion_added", "U4 (BACKLOG #195, 'Gen 1 add -> row appears'): "
+                                   "POTION x99 -- a brand-new row, appended at the "
+                                   "list's own last slot (ADD ITEM's own "
+                                   "'*sel = l->count-1' rule, unchanged), through "
+                                   "the picker end to end")
+
+        # N4's own saturation-refusal demo, reused verbatim except for HOW the id
+        # is chosen: ADD ITEM POTION again (a fresh pick_item() call always opens
+        # at cat=All, current=1 -- the Gen-1 ADD site never calls
+        # pick_item_set_gen1_2_cat(), so this is the SAME 19-DOWNs-from-MASTER_BALL
+        # trip as above, just over the unfiltered 251-row list instead of the
+        # 250-row Items-filtered one -- id 0's own extra row exactly cancels out
+        # id 20 also shifting up by one, so the DOWN count is unchanged).
+        s.tap("START", settle=gb_shots.BIG_SETTLE)            # -> item menu, cursor still on POTION (last row)
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                # ADD ITEM -> picker opens fresh (cat=All again)
+        s.press_n("DOWN", 19, settle=gb_shots.SETTLE)         # MASTER_BALL -> POTION (All list)
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                # pick POTION again -> QUANTITY prompt
+        s.tap("B", settle=gb_shots.SETTLE)                    # clear seeded "1"
+        s.press_n("RIGHT", 4, settle=gb_shots.SETTLE)         # col0 -> col4 '5'
+        s.tap("A", settle=gb_shots.SETTLE)                    # type '5' -> field "5"
+        s.tap("START", settle=gb_shots.BIG_SETTLE)            # confirm qty=5 -> gbb_insert(...,20,5): MERGE path
+        s.shot("09b_saturation_refusal", "U4: merging qty 5 into POTION (already "
+                                          "at the 99 cap from the ADD above) "
+                                          "saturates and refuses -- gbb_insert() "
+                                          "SETS the existing stack to the cap (99) "
+                                          "and returns GBB_ERR_QTY (gb_bag.c's own "
+                                          "'sum > cap' branch); gbbag_start_menu's "
+                                          "own msg_wait('SATURATED', ...) reports "
+                                          "it")
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                # dismiss the msg_wait -- back on the list
+        s.shot("09c_after_add", "U4: after dismissing the refusal, the cursor is "
                                  "already on POTION's own row (ADD ITEM's own "
-                                 "'*sel = last entry' rule, unchanged since POTION "
-                                 "was appended) -- it reads x99, confirming the "
-                                 "saturating write landed exactly where it started "
-                                 "(99 -> 99, see the 09 caption above); an ORDINARY "
-                                 "item's row, unlike id 77/GOOD ROD (a Gen-1 KEY "
-                                 "item, prints no quantity at all).")
+                                 "'*sel = last entry' rule) -- it reads x99, "
+                                 "confirming the saturating write landed exactly "
+                                 "where it started (99 -> 99)")
 
-        # The saturation refusal above made NO byte change (99 -> clamped-to-99 is a
-        # true no-op), so B here would take the silent memcmp-no-op path, not the
-        # commit prompt -- a REAL edit is needed first. REMOVE the currently selected
-        # entry (POTION, left selected by the ADD ITEM path above) via the item menu.
-        s.tap("START", settle=gb_shots.BIG_SETTLE)             # -> the item menu again
-        s.tap("DOWN", settle=gb_shots.SETTLE)                  # ADD ITEM -> REMOVE
-        s.tap("A", settle=gb_shots.BIG_SETTLE)                 # REMOVE the selected entry -- a REAL change
-        s.shot("09c_removed", "U4: REMOVE deletes POTION -- a real, "
-                               "persisted-if-confirmed change (unlike the saturation "
-                               "attempt above)")
-
-        s.tap("B", settle=gb_shots.BIG_SETTLE)                # B -> the commit prompt (a real edit pending)
-        s.shot("10_commit_prompt", "U4: B with a real pending edit -> 'Save bag "
-                                    "changes?' (app_confirm), the same dialog every "
-                                    "other GB screen's own commit uses")
+        # BACKLOG #195 re-derivation (measured, not assumed): the OLD chain here
+        # used to REMOVE the just-added POTION before leaving, on the theory that
+        # the saturation merge above made no byte change so a further edit was
+        # needed to reach the commit prompt. Verified against the real screen
+        # (throwaway diagnostic script, not shipped): ADD-then-REMOVE of the SAME
+        # freshly-appended slot is mathematically a NO-OP against t0 (gbb_remove()
+        # zeros the vacated tail slot, restoring the decoded model byte-for-byte),
+        # so that old B afterward silently fell into the NO-OP path, not the
+        # commit prompt -- leaving straight after POTION's own ADD (no REMOVE) is
+        # the one edit still pending relative to t0, and IS what actually reaches
+        # 'Save bag changes?' below.
+        s.tap("B", settle=gb_shots.BIG_SETTLE)                # B -> the commit prompt (POTION's ADD is still pending)
+        s.shot("10_commit_prompt", "U4: B with a real pending edit (POTION x99, "
+                                    "still unsaved) -> 'Save bag changes?' "
+                                    "(app_confirm), the same dialog every other "
+                                    "GB screen's own commit uses")
         s.tap("B", settle=gb_shots.BIG_SETTLE)                # decline -- discard the edit
         s.shot("11_declined", "U4: declining discards the edit -- gbb_write never ran, "
                                "back at the box grid")
@@ -1115,7 +1125,9 @@ def run_u4_bag(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_
         # N6(a): the armed-SWAP state (D10) -- START > SWAP on a row ARMS a mark,
         # it does not swap on the spot. Re-enter the bag screen (declining above
         # never persisted anything, so gbb_read() below re-reads the ORIGINAL
-        # unedited pocket -- row 0/row 1 are back to their pristine ids).
+        # unedited pocket -- POTION is gone again, row 0/row 1 are back to their
+        # pristine ids). None of this touches pick_item() at all -- reused
+        # verbatim from before BACKLOG #195.
         # D-reentry (this pass, empirically): BIG_SETTLE alone is NOT enough idle
         # time for the box grid to accept a fresh START right after RETURNING
         # from the bag screen -- measured with a throwaway diagnostic script: the
@@ -1130,8 +1142,7 @@ def run_u4_bag(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_
         s.tap("A", settle=GB_ART_COLD_SETTLE)                   # Bag -> pdna_gbbag_gen1_screen()
         s.shot("12_reentry_pristine", "U4: N6(a) setup -- re-entering the bag screen "
                                        "after declining shows the ORIGINAL, unedited "
-                                       "Items list (the 09c/10/11 REMOVE was never "
-                                       "written)")
+                                       "Items list (POTION was never written)")
         s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> item menu, cursor on row 0
         s.press_n("DOWN", 2, settle=gb_shots.SETTLE)            # ADD ITEM -> REMOVE -> SWAP (csel 2)
         s.tap("A", settle=gb_shots.BIG_SETTLE)                  # SWAP: arms row 0 as swap_src, returns
@@ -1154,8 +1165,8 @@ def run_u4_bag(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_
         # baseline: swap row 0/row 1 back, then leave. The cursor is CURRENTLY on
         # row 1 (12b_swap_done's own A-on-destination left `sel` there, unchanged
         # by the swap itself) -- SWAP arms whatever row the cursor is ON, so
-        # arming here grabs row 1 (id 206, post-swap) as the source; move UP to
-        # row 0 (id 205) as the destination, not DOWN, to swap the SAME pair back.
+        # arming here grabs row 1 (post-swap) as the source; move UP to row 0 as
+        # the destination, not DOWN, to swap the SAME pair back.
         s.tap("START", settle=gb_shots.BIG_SETTLE)
         s.press_n("DOWN", 2, settle=gb_shots.SETTLE)
         s.tap("A", settle=gb_shots.BIG_SETTLE)                  # re-arm SWAP on row 1 (cursor's current row)
@@ -1170,19 +1181,7 @@ def run_u4_bag(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_
                                    "silent no-op path as an unedited visit, straight "
                                    "back to the box grid, no confirm dialog")
 
-        # N6(a) part 2: B drops an armed mark WITHOUT moving anything -- the KEY_B
-        # handler's own g1_swap_active branch never touches bag->pockets at all
-        # (source/pdna_gbbag.c pdna_gbbag_gen1_screen, the `if (g1_swap_active) {
-        # g1_swap_active = false; ...; continue; }` arm under KEY_B) -- a true
-        # 0-byte change, provable from the code path itself: that branch contains
-        # no assignment to any bag field, only the repaint. Demonstrated here by
-        # what the emulator CAN show: leaving the screen right after affords no
-        # confirm dialog at all, the same silent path 12c above takes for a real
-        # no-op -- if B-drop-mark had mutated anything, `want_commit && memcmp(...)
-        # != 0` would have popped 'Save bag changes?' instead.
-        # 12c_swap_undone above already LEFT the bag screen (its own B fell
-        # through to the box grid, the same "no-op path" 11_declined took) -- a
-        # full re-entry is needed here, not just an item-menu re-open.
+        # N6(a) part 2: B drops an armed mark WITHOUT moving anything.
         s.run(250)                                              # re-entry idle (see the D-reentry note above)
         s.tap("START", settle=gb_shots.BIG_SETTLE)              # box grid -> nav menu
         s.press_n("DOWN", 7, settle=gb_shots.SETTLE)            # Party -> ... -> Bag (index 7)
@@ -1202,136 +1201,73 @@ def run_u4_bag(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_
         s.tap("B", settle=gb_shots.BIG_SETTLE)                  # B again (nothing armed) -> leave
         s.shot("13c_left_no_prompt", "U4: leaving right after -- straight back to "
                                       "the box grid, no 'Save bag changes?' prompt "
-                                      "at all. That prompt only ever fires when "
-                                      "memcmp(bag,t0)!=0 (pdna_gbbag() below "
-                                      "pdna_gbbag_gen1_screen); its absence here IS "
-                                      "the byte-compare proof for the B-cancel-mark "
-                                      "path: 0 bytes changed, not merely 'looks "
-                                      "unchanged on screen'.")
+                                      "at all -- that prompt only ever fires when "
+                                      "memcmp(bag,t0)!=0; its absence here IS the "
+                                      "byte-compare proof for the B-cancel-mark "
+                                      "path")
 
-        # N6(b): BAD ID refusals -- ADD ITEM with id 0 and id 251 (Gen 1's own
-        # range is 0x01..0xFA == 1..250, gb_bag.h's own VALID ITEM IDS comment;
-        # 0 and 0xFB==251 are both one step outside either edge).
+        # BACKLOG #195 F2, "TM add": ADD ITEM through the picker's OWN TM-HM
+        # category -- picking a TM/HM item sets it via the SAME gbb_insert() path
+        # a Gen-1 Items entry uses (Gen 1 has no separate TM/HM pocket at all,
+        # "TMs are bag items", gb_bag.h's own note) -- the category filter is a
+        # PICKER-side convenience, not a different storage/routing rule the way
+        # Gen 2's ADD ITEM needs (that is BACKLOG #195 F2's OTHER half, u5_pack
+        # below).
         s.run(250)                                              # re-entry idle (see the D-reentry note above)
-        s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> nav menu
-        s.press_n("DOWN", 7, settle=gb_shots.SETTLE)
-        s.tap("A", settle=GB_ART_COLD_SETTLE)                   # back into the bag screen
-        s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> item menu (csel 0 == ADD ITEM)
-        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM -> id entry, seeded "1"
-        s.tap("B", settle=gb_shots.SETTLE)                      # clear seeded "1" -> field empty
-        s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm id="" -- num_entry_opt treats an
-                                                                 # empty field as 0, the refused id below --
-                                                                 # -> QUANTITY prompt next (seeded "1", already
-                                                                 # valid; gbb_insert() only runs after BOTH
-                                                                 # prompts confirm, so id alone shows nothing yet)
-        s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm qty=1 (seeded, unedited) -> NOW
-                                                                 # gbb_insert(id=0, qty=1) actually runs
-        s.shot("14_bad_id_zero", "U4: N6(b) -- ADD ITEM with id 0 (the field left "
-                                  "empty, which num_entry_opt reads back as 0) -> "
-                                  "gbb_insert() returns GBB_ERR_BADID -- "
-                                  "msg_wait('BAD ID', ..., 'That item id does not "
-                                  "exist.')")
-        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss
-
-        # N6(b) part 2 -- id 251: one past Gen 1's last legal id (250). R1 (the
-        # re-verify-3 one-liner): the ID prompt's OSK cap is 999 and the value is
-        # clamped to 0xFF, so 251 reaches gbb_insert() as 251 and lands on its own
-        # GBB_ERR_BADID branch -> the same 'BAD ID' dialog as id 0. (Before R1 the
-        # prompt clamped to 250 = TM50 and INSERTED it silently.)
-        s.tap("START", settle=gb_shots.BIG_SETTLE)              # item menu again
-        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM -> id entry, seeded "1", cursor col0
-        s.tap("B", settle=gb_shots.SETTLE)                      # clear seeded "1" -> field empty, cursor col0
-        s.press_n("RIGHT", 1, settle=gb_shots.SETTLE)           # col0 -> col1 '2'
-        s.tap("A", settle=gb_shots.SETTLE)                      # type '2' -> field "2"
-        s.press_n("RIGHT", 3, settle=gb_shots.SETTLE)           # col1 -> col4 '5'
-        s.tap("A", settle=gb_shots.SETTLE)                      # type '5' -> field "25"
-        s.press_n("RIGHT", 6, settle=gb_shots.SETTLE)           # col4 -> col10 mod 10 == col0 '1' (osk.c's
-                                                                 # own KEY_RIGHT wraps `(cc + 1) % rowlen`,
-                                                                 # source/osk.c line 223 -- the digit row is
-                                                                 # 10-wide, so RIGHT wraps circularly)
-        s.tap("A", settle=gb_shots.SETTLE)                      # type '1' -> field "251"
-        s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm id "251" -> QUANTITY prompt (seeded "1")
-        s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm qty=1 -> gbb_insert(id=251) -> GBB_ERR_BADID
-        s.shot("15_id251_bad_id", "U4: N6(b) -- typing id 251 (one past Gen 1's last "
-                                   "legal id) now reaches gbb_insert() unchanged and is "
-                                   "refused with the same 'BAD ID / That item id does not "
-                                   "exist.' dialog as id 0 -- this frame is pixel-identical "
-                                   "to shot 14 BY DESIGN (the dialog never echoes the typed "
-                                   "id; allow_same) -- R1: the ID prompt no longer clamps "
-                                   "to 250; nothing was inserted.", allow_same=True)
-        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss; nothing to undo
-
-        # N6(c): BAD QUANTITY refusals -- qty 0 and qty 100 (valid range 1..99).
-        # A valid id is needed to reach the quantity prompt at all; id 20 (POTION,
-        # not currently in the pocket, same id N4 used) keeps this an INSERT, not
-        # a merge, so the refusal is unambiguously about the typed quantity.
-        s.tap("START", settle=gb_shots.BIG_SETTLE)
-        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM -> id entry
-        s.tap("B", settle=gb_shots.SETTLE)
-        s.press_n("RIGHT", 1, settle=gb_shots.SETTLE)           # -> '2'
-        s.tap("A", settle=gb_shots.SETTLE)
-        s.press_n("RIGHT", 8, settle=gb_shots.SETTLE)           # -> '0'
-        s.tap("A", settle=gb_shots.SETTLE)                      # id "20"
-        s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> quantity entry
-        s.tap("B", settle=gb_shots.SETTLE)                      # clear seeded "1" -> empty (reads back as 0)
-        s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm qty=0
-        s.shot("16_bad_qty_zero", "U4: N6(c) -- qty 0 (the field left empty) -> "
-                                   "gbb_insert() returns GBB_ERR_QTY, and because "
-                                   "the TYPED value (0) was itself outside 1..99 "
-                                   "(qty_in_range false), gbbag_start_menu's own "
-                                   "branch reports 'BAD QUANTITY' / 'Quantity must "
-                                   "be 1-99.' -- NOT 'SATURATED' (that wording is "
-                                   "reserved for a legal typed value that overflowed "
-                                   "an existing stack on merge, see the N4 shots)")
-        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss
-        s.run(80)                                               # extra margin -- this stretch flaked during
-                                                                 # authoring under BIG_SETTLE alone (mGBA
-                                                                 # timing, the same class the 04/blink-marker
-                                                                 # caption already documents)
-
-        s.tap("START", settle=gb_shots.BIG_SETTLE)
-        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM -> id entry
-        s.tap("B", settle=gb_shots.SETTLE)
-        s.press_n("RIGHT", 1, settle=gb_shots.SETTLE)
-        s.tap("A", settle=gb_shots.SETTLE)
-        s.press_n("RIGHT", 8, settle=gb_shots.SETTLE)
-        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # id "20" again
-        s.run(80)
-        s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> quantity entry, seeded "1", cursor col0
-        s.tap("B", settle=gb_shots.SETTLE)                      # clear seeded "1" -> field empty, cursor col0
-        s.tap("A", settle=gb_shots.SETTLE)                      # col0 IS '1' -- type it directly -> "1"
-        s.press_n("RIGHT", 9, settle=gb_shots.SETTLE)           # col0 -> col9 '0'
-        s.tap("A", settle=gb_shots.SETTLE)                      # type '0' -> "10"
-        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # cursor unmoved (still col9 '0') -> "100"
-        s.shot("17_bad_qty_100_typed", "U4: N6(c) -- '100' typed into the SAME "
-                                        "quantity prompt as 16 (one past the 99 "
-                                        "cap, not clamped by the OSK -- num_entry_"
-                                        "opt's own maxv for THIS prompt is 999, "
-                                        "not 99, exactly so a typed 100 reaches "
-                                        "gbb_insert()'s own validation instead of "
-                                        "being silently clamped first, D5)")
-        s.run(80)
-        s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm qty=100 -> gbb_insert() returns
-                                                                 # GBB_ERR_QTY, qty_in_range false again -- the
-                                                                 # SAME 'BAD QUANTITY' / 'Quantity must be
-                                                                 # 1-99.' dialog as 16 (msg_wait's own text
-                                                                 # never echoes the typed value, so the two
-                                                                 # dialogs are PIXEL-IDENTICAL -- not
-                                                                 # re-captured here on purpose: gb_shots.py's
-                                                                 # own Session.shot() refuses a pixel-identical
-                                                                 # repeat as a likely driver bug, and here it
-                                                                 # would be right to be suspicious of a NEW
-                                                                 # bug except this one really is the same
-                                                                 # dialog by design; 17_bad_qty_100_typed above
-                                                                 # is the honest proof of what was actually
-                                                                 # typed instead)
-        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss (msg_wait's own "Press A")
-        s.tap("B", settle=gb_shots.BIG_SETTLE)                  # leave -- every refusal above made no edit,
-                                                                 # so this is the silent no-op path again
-        s.shot("18_left_after_refusals", "U4: leaving after every N6(b)/(c) refusal "
-                                          "-- no confirm dialog, same no-op-path "
-                                          "proof as 13c above: none of the BAD ID / "
-                                          "BAD QUANTITY attempts wrote anything")
+        s.tap("START", settle=gb_shots.BIG_SETTLE)              # box grid -> nav menu
+        s.press_n("DOWN", 7, settle=gb_shots.SETTLE)            # Party -> ... -> Bag (index 7)
+        s.tap("A", settle=GB_ART_COLD_SETTLE)                   # Bag -> pdna_gbbag_gen1_screen()
+        s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> item menu, cursor row 0 (ADD ITEM)
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM -> picker opens (cat=All)
+        s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> category menu
+        s.press_n("DOWN", 2, settle=gb_shots.SETTLE)            # All -> Items -> TM-HM
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # pick TM-HM -> re-filters, closes menu
+        s.shot("14_tmhm_filtered", "U4 ('TM add'): the TM-HM category (gbb_pocket_"
+                                    "of()'s Gen-1 TM/HM range, 0xC4-0xFA) filters "
+                                    "the SAME picker to just those ids -- header "
+                                    "'ITEM [TM-HM]', first row HM01 (id 0xC4, "
+                                    "Gen 1's HM01-05 come before TM01-50 in id "
+                                    "order -- gb_item_names.c's own gb1_tmhm_label "
+                                    "range), a SYNTHESIZED name, not a table entry")
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # pick HM01 -> QUANTITY prompt
+        s.shot("14b_tm_qty_prompt", "U4: picking a TM/HM item goes through the "
+                                     "SAME quantity prompt as any other Gen-1 item "
+                                     "-- Gen 1 has no count-array pocket, HM01 is "
+                                     "just another Items-pocket entry with a real "
+                                     "(synthesized) name")
+        # B cancels this pick (HM01 is a Gen-1 KEY item -- gbb_is_g1_key_item()'s
+        # own "HM01-05 are always key items in both games" fact -- the list's OWN
+        # row paint hides the quantity column for those, gbbag_row_paint's real
+        # rule, unrelated to BACKLOG #195; picking TM01 instead keeps this demo
+        # showing an ordinary '×N' row like every other add above) and moves 5
+        # rows down (HM01..HM05, 5 rows) to TM01 (id 0xC9), an ordinary TM row.
+        s.tap("SEL", settle=gb_shots.BIG_SETTLE)                # osk_search's own CANCEL key (SELECT, not B --
+                                                                 # B is backspace) -- num_entry_opt() returns
+                                                                 # false, aborting the whole ADD; gbbag_start_
+                                                                 # menu's own `continue` redraws ITEM MENU,
+                                                                 # csel still 0 (ADD ITEM) -- no re-open needed
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM again -> picker opens fresh (cat=All)
+        s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> category menu
+        s.press_n("DOWN", 2, settle=gb_shots.SETTLE)            # All -> Items -> TM-HM
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # pick TM-HM -> filtered list, cursor on HM01
+        s.press_n("DOWN", 5, settle=gb_shots.SETTLE)            # HM01..HM05 (5 rows) -> TM01
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # pick TM01 -> QUANTITY prompt
+        s.tap("B", settle=gb_shots.SETTLE)                      # clear seeded "1"
+        s.press_n("RIGHT", 2, settle=gb_shots.SETTLE)           # col0 -> col2 '3'
+        s.tap("A", settle=gb_shots.SETTLE)                      # type '3' -> field "3"
+        s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm qty=3 -> gbb_insert(...,0xC9,3): fresh slot
+        s.shot("15_tm_added", "U4 ('TM add', BACKLOG #195): TM01 x3 -- a brand-new "
+                               "row with its SYNTHESIZED name (gb1_tmhm_label) AND "
+                               "a real quantity column (a TM, unlike HM01 above, "
+                               "is not a Gen-1 key item), appended at the list's "
+                               "own last slot, through the picker's TM-HM category "
+                               "end to end")
+        s.tap("B", settle=gb_shots.BIG_SETTLE)                  # -> commit prompt (a real edit pending)
+        s.tap("B", settle=gb_shots.BIG_SETTLE)                  # decline -- discard the edit (leave the
+                                                                 # fixture's own pristine bag for any later run)
+        s.shot("16_tm_declined", "U4: declining the TM add discards it -- gbb_write "
+                                  "never ran, back at the box grid, fixture stays "
+                                  "pristine for a later run of this script")
 
     return s
 
@@ -1696,8 +1632,11 @@ def run_u5_pack(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
                                     "tracking the cursor one row at a time")
     s.press_n("UP", 8, settle=gb_shots.SETTLE)              # back to row 0 for the rest of the flow
 
-    s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> PACK MENU (TM/HM: PC STORE/CANCEL only,
-                                                              # csel starts on PC STORE, no DOWN needed)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> PACK MENU (TM/HM: ADD ITEM/PC STORE/CANCEL --
+                                                              # BACKLOG #195 F2 now offers ADD ITEM here too,
+                                                              # gbb_tmhm_set() path -- PC STORE moved from
+                                                              # csel 0 to csel 1, ONE DOWN needed)
+    s.tap("DOWN", settle=gb_shots.SETTLE)                   # ADD ITEM -> PC STORE
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # toggle -> PC store
     s.shot("05_pc_store", "U5: START > PC STORE toggles to the PC item store -- "
                            "the nameplate label under the picture still reads "
@@ -1708,28 +1647,32 @@ def run_u5_pack(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
                            "earlier draft's empty box left the store visually "
                            "identical to the Items pocket")
 
-    # D7 fix (review-opus ac9ffc0): ADD ITEM from the PC store is no longer
-    # refused -- it is its own undifferentiated list, not one of the four
-    # real bag pockets the Items-only fallback rule was meant to guard. This
-    # save's PC store is already at capacity (BAG FULL on a completed add is
-    # a real, expected refusal -- a full pocket, not a wrong one) so the demo
-    # only needs to show the id-ENTRY screen opening (proof ADD ITEM is no
-    # longer refused outright), then cancel out with SELECT (osk_search's own
-    # cancel, same as shot 08's qty editor) rather than complete the insert --
-    # osk_search's `continue` lands back in the SAME open PACK MENU (csel
-    # still 0), so no extra START tap is needed before the DOWN x3 below.
+    # BACKLOG #195 F2: ADD ITEM now opens the real item picker (pick_item(),
+    # restricted to GBIN_GEN2 with the Gen-2 ceiling, PRE-FILTERED to the pocket
+    # the menu was opened from via pick_item_set_gen1_2_cat) instead of a raw
+    # numeric "ITEM ID" prompt. The old "WRONG POCKET / no per-item pocket table
+    # yet" refusal (D9's own fix, ac9ffc0) is GONE -- gbb_pocket_of() IS that
+    # table now: a picked id auto-routes to its OWN real pocket (Items/Balls/
+    # Key/TM-HM), the Gen-3 bag's own shape (pdna_bag.c:445-452), regardless of
+    # which pocket's ADD ITEM menu opened it. The PC store keeps its D7 rule
+    # unchanged (any id, no routing -- it is its own undifferentiated list).
     s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> PACK MENU (PC store, csel=0=ADD ITEM)
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM -> id entry (seeded "1")
-    s.shot("05b_pc_store_add_item", "U5 D7 fix: START > ADD ITEM from the PC "
-                                     "ITEM STORE opens the id entry instead of "
-                                     "refusing 'WRONG POCKET' (the earlier "
-                                     "draft's behaviour) -- this save's PC "
-                                     "store happens to already be full, so "
-                                     "this demo cancels out rather than "
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM -> pick_item() opens (cat=All: the PC
+                                                              # store is not one of the 4 real-pocket categories)
+    s.shot("05b_pc_store_add_item", "U5 (BACKLOG #195): ADD ITEM from the PC "
+                                     "ITEM STORE opens the SAME real picker as "
+                                     "every other pocket -- names + header "
+                                     "'ITEM [All]' (the store has no category "
+                                     "of its own, D7's 'any id' rule) -- this "
+                                     "save's PC store happens to already be "
+                                     "full, so this demo cancels out (B, the "
+                                     "picker's own cancel key) rather than "
                                      "complete an insert that would correctly "
                                      "show BAG FULL, a different, expected "
                                      "refusal")
-    s.tap("SEL", settle=gb_shots.BIG_SETTLE)                # osk_search: SELECT cancels -> back in the menu
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # pick_item()'s own cancel (B, NOT SELECT --
+                                                              # SELECT opens the picker's search box instead)
+                                                              # -> back in the SAME open PACK MENU (csel still 0)
 
     s.press_n("DOWN", 3, settle=gb_shots.SETTLE)
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # toggle back -> Pack (still on TM/HM's own cyc)
@@ -1748,79 +1691,104 @@ def run_u5_pack(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
                              "use")
     s.tap("SEL", settle=gb_shots.BIG_SETTLE)                # osk_search: SELECT cancels
 
-    s.tap("RIGHT", settle=gb_shots.BIG_SETTLE)              # Items -> Balls
-    s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> PACK MENU (ADD ITEM/REMOVE/SWAP/PC STORE/CANCEL)
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM on Balls -> WRONG POCKET refusal
-    s.shot("09_wrong_pocket_refusal", "U5: START > ADD ITEM from the BALLS "
-                                       "pocket refuses outright -- 'WRONG "
-                                       "POCKET' / 'Add items from the Items "
-                                       "pocket.' / 'No per-item pocket table "
-                                       "yet.' (the dim third line; per-item "
-                                       "pocket membership was not located "
-                                       "this slice; the brief's own "
-                                       "sanctioned fallback is Items-only "
-                                       "ADD ITEM, not a silent wrong-pocket "
-                                       "accept)")
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss -> back in the PACK MENU (msg_wait's
-                                                              # own `continue` loops the menu, does NOT
-                                                              # close it -- gbpack_start_menu's own ADD ITEM
-                                                              # branch, csel unchanged at 0)
-    s.press_n("DOWN", 4, settle=gb_shots.SETTLE)            # ADD ITEM -> REMOVE -> SWAP -> PC STORE -> CANCEL
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # CANCEL -> back to the list (still Balls)
-    s.tap("LEFT", settle=gb_shots.BIG_SETTLE)               # Balls -> Items
-
-    # Saturation refusal on an ORDINARY item: ADD ITEM the currently-selected
-    # pocket's own id 1 (not present yet) at qty 99 (a SILENT success -- no
-    # message, gbb_insert() returns GBB_OK -- so the menu loop's own `continue`
-    # lands right back on ADD ITEM with NO extra tap needed), then ADD ITEM id
-    # 1 again at qty 5, which MERGES into the fresh 99 stack and overflows the
-    # cap -- THIS one does show SATURATED. osk_search's own contract: row 0 is
-    # the digit row "1234567890", cursor starts at (0,0) == '1', A inserts the
-    # highlighted glyph, B backspaces, START confirms, SELECT cancels (U4's
-    # own precedent, run_u4_bag() above).
+    # BACKLOG #195 F2, "pick a Ball from the Items pocket -> lands in Balls":
+    # ADD ITEM from the ITEMS pocket, pick a Poke Ball through the picker's OWN
+    # category filter, and prove the auto-route by switching to the BALLS
+    # pocket afterward. gold_ball_ids (tests/host_gbbag_test.c's own corpus
+    # constants) confirms Gold.sav's REAL Balls pocket already holds MASTER/
+    # ULTRA/GREAT/POKE (0x01/0x02/0x04/0x05) -- HEAVY_BALL (0x9D) is NOT among
+    # them, so adding it is a fresh insert (a new row appears), not a merge
+    # into an existing stack (which BALLS support just as well, but a fresh
+    # row is the clearer demo).
     s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> PACK MENU (Items, csel=0=ADD ITEM)
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM -> id entry (seeded "1")
-    s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm id=1 -> quantity entry
-    s.tap("B", settle=gb_shots.SETTLE)                      # clear seeded "1"
-    s.press_n("RIGHT", 8, settle=gb_shots.SETTLE)           # col0 -> col8 '9'
-    s.tap("A", settle=gb_shots.SETTLE)                      # type '9'
-    s.tap("A", settle=gb_shots.SETTLE)                      # type '9' again -> field "99"
-    s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm qty=99 -> gbb_insert(id=1,99): FREE-SLOT
-                                                              # path, GBB_OK, NO message -- gbpack_start_menu's
-                                                              # own ADD ITEM branch falls through to `return 0`
-                                                              # unconditionally after a COMPLETED add (success
-                                                              # OR an error message dismissed), closing the
-                                                              # menu straight back to the LIST -- only the
-                                                              # WRONG-POCKET early-refuse `continue`s and stays
-                                                              # in the menu; this is NOT that case.
-    s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> PACK MENU again (fresh open, csel=0=ADD ITEM)
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM AGAIN -> id entry (seeded "1")
-    s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm id=1 -> quantity entry
-    s.tap("B", settle=gb_shots.SETTLE)
-    s.press_n("RIGHT", 4, settle=gb_shots.SETTLE)           # col0 -> col4 '5'
-    s.tap("A", settle=gb_shots.SETTLE)                      # type '5'
-    s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm qty=5 -> merge overflows 99 -> SATURATED
-    s.shot("10_saturation_refusal", "U5: re-adding id 1 at qty 5 merges into "
-                                     "the existing (already-99) stack -- "
-                                     "gbb_insert() saturates it at the cap and "
-                                     "reports SATURATED (same mechanism as "
-                                     "U4's own N6(c))")
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss -> gbpack_start_menu's own ADD ITEM
-                                                              # branch falls through to `return 0` after this
-                                                              # (a COMPLETED add, message or not) -- back at
-                                                              # the LIST, not the menu.
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM -> picker opens, PRE-FILTERED to Items
+                                                              # (pick_item_set_gen1_2_cat(GBB_POCKET_ITEMS))
+    s.shot("09_picker_open_items", "U5 (BACKLOG #195): ADD ITEM from the Items "
+                                    "pocket opens the picker PRE-FILTERED to "
+                                    "'Items' -- real Gen-2 names + a category "
+                                    "header ('ITEM [Items]'), same picker U4's "
+                                    "Gen-1 screen uses, Gen-2's own pocket set")
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> the picker's OWN category menu
+    s.shot("09b_category_menu", "U4: the restricted picker's category menu -- "
+                                 "Gen 2 offers All/Items/Poke Balls/Key items/"
+                                 "TM-HM (gbb_pocket_of()'s full Gen-2 pocket "
+                                 "set, unlike Gen 1's ITEMS-vs-TM/HM-only), "
+                                 "cursor on 'Items' (the pre-filter this menu "
+                                 "opened with, not 'All')")
+    s.tap("DOWN", settle=gb_shots.SETTLE)                   # Items -> Poke Balls
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # pick Poke Balls -> re-filters, closes menu
+    s.shot("09c_balls_filtered", "U5: picking 'Poke Balls' re-filters the SAME "
+                                  "picker through gbb_pocket_of() -- header "
+                                  "'ITEM [Poke Balls]', only the 12 real Ball "
+                                  "ids, cursor back on MASTER BALL (row 0)")
+    s.press_n("DOWN", 4, settle=gb_shots.SETTLE)            # MASTER/ULTRA/GREAT/POKE (4 rows) -> HEAVY BALL
+    s.shot("09d_heavyball_selected", "U5: 4 DOWNs from MASTER BALL (the 4 "
+                                      "ordinary balls, id order 0x01/0x02/0x04/"
+                                      "0x05) lands on HEAVY BALL (0x9D, the "
+                                      "next Ball id) -- a real name, not '#157'")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # pick HEAVY BALL -> QUANTITY prompt
+    s.shot("09e_add_item_qty", "U5: picking a Ball goes straight to the SAME "
+                                "quantity prompt as any other Gen-2 item -- "
+                                "BACKLOG #195 F2 only replaced the id half of "
+                                "ADD ITEM")
+    s.tap("B", settle=gb_shots.SETTLE)                      # clear the seeded "1"
+    s.tap("A", settle=gb_shots.SETTLE)                      # col0 IS '1' -- type it directly -> field "1"
+    s.press_n("RIGHT", 9, settle=gb_shots.SETTLE)           # col0 -> col9 '0'
+    s.tap("A", settle=gb_shots.SETTLE)                      # type '0' -> field "10"
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm qty=10 -> gbb_pocket_of(game,0x9D)=BALLS
+                                                              # != ITEMS (the pocket this menu opened from) ->
+                                                              # AUTO-ROUTES: gbb_insert(game,bag,BALLS,0x9D,10),
+                                                              # a fresh slot, GBB_OK -- Review D4: a SUCCESSFUL
+                                                              # route to a DIFFERENT pocket than this menu opened
+                                                              # from now tells the player where it landed
+                                                              # (pdna_bag.c:447-451's own "RIGHT POCKET" shape).
+    s.shot("09f_right_pocket", "U5 (Review D4, UX parity with pdna_bag.c's "
+                                "own Gen-3 routing feedback): 'RIGHT POCKET / "
+                                "Put in BALLS.' -- the SAME pocket name "
+                                "pocket_name_of() gives every other message "
+                                "in this file, now also telling the player "
+                                "the item did NOT stay in Items")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss the msg_wait -- back on the Items list
+    s.tap("RIGHT", settle=gb_shots.BIG_SETTLE)              # Items -> Balls: does the row actually land there?
+    s.shot("10_lands_in_balls", "U5 (BACKLOG #195, 'a Ball picked from the "
+                                 "Items pocket -> lands in Balls'): switching "
+                                 "to the BALLS pocket shows HEAVY BALL x10 -- a "
+                                 "brand-new row, auto-routed by gbb_pocket_of() "
+                                 "even though ADD ITEM was opened from Items, "
+                                 "not Balls")
 
-    # SWAP: arm row 0, move down, confirm the destination. The cursor is
-    # currently on the LAST real row (the fresh id-1 insert, ADD ITEM's own
-    # `*sel = l->count - 1` rule) -- move it UP first so SWAP arms a row with
-    # a REAL row below it, not the trailing CANCEL row (arming the last real
-    # row and pressing DOWN would land on CANCEL, which the destination guard
-    # correctly refuses -- sel < cnt is false for it -- but that is a
-    # different, less illustrative demo than an actual two-item swap).
-    s.press_n("UP", 2, settle=gb_shots.SETTLE)
-    s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> PACK MENU (fresh open, csel=0=ADD ITEM)
+    # Review D2: pokegold's OWN data/items/attributes.asm differs from
+    # pokecrystal's at exactly four ids (CLEAR_BELL/GS_BALL/BLUE_CARD/
+    # EGG_TICKET, 0x46/0x73/0x74/0x81) -- KEY_ITEM on Crystal, an unused
+    # pocket-ITEM placeholder on Gold/Silver. The picker's "Key items"
+    # category must show a DIFFERENT count/list on Gold vs Crystal even
+    # though this is the exact same code path -- proving `game`, not merely
+    # `gen`, now threads all the way to gbb_pocket_of(). Cancelled out (B,
+    # not committed) so it leaves no pending edit for the demos after it.
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> PACK MENU (Balls, fresh open, csel=0=ADD ITEM)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM -> picker, pre-filtered to Poke Balls
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> category menu (cursor on Poke Balls)
+    s.tap("DOWN", settle=gb_shots.SETTLE)                   # Poke Balls -> Key items
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # pick Key items -> re-filters, closes menu
+    s.shot("10b_key_items_filtered", f"U5 (Review D2): the picker's 'Key "
+                                      f"items' category on {which} -- Gold "
+                                      f"shows 18 (no CLEAR BELL/GS BALL/"
+                                      f"BLUE CARD/EGG TICKET), Crystal shows "
+                                      f"22 (all four present, interleaved in "
+                                      f"id order between MYSTERY EGG/SILVER "
+                                      f"WING and after SILVER WING) -- the "
+                                      f"SAME code path, a real per-game "
+                                      f"difference (pokegold's own "
+                                      f"attributes.asm, not pokecrystal's)")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # cancel the picker -- no id picked, no pending edit
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # close PACK MENU -> back to the Balls list
+
+    # SWAP: arm row 0 (MASTER BALL), move down, confirm the destination --
+    # unrelated to pick_item()/gbb_pocket_of() at all, same mechanism U4's own
+    # Gen-1 SWAP demo already proved; reused here over the Balls pocket instead.
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> PACK MENU (Balls, fresh open, csel=0=ADD ITEM)
     s.press_n("DOWN", 2, settle=gb_shots.SETTLE)            # ADD ITEM -> REMOVE -> SWAP
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # SWAP: arms row 0, returns to the list
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # SWAP: arms row 0 (MASTER BALL), returns
     s.tap("DOWN", settle=gb_shots.SETTLE)                   # cursor off the source row
     s.shot("11_swap_armed", "U5: SWAP arms row 0 (the mark stays lit there) "
                              "and returns to the list -- pick-source-then-"
@@ -1829,25 +1797,94 @@ def run_u5_pack(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # A on the destination -> the actual swap
     s.shot("11b_swap_done", "U5: A on the destination performs the swap -- "
                              "both rows traded places, the mark is gone")
-    # Arm again and drop with B instead of swapping.
+    # Undo the swap so this pocket's ORDINARY rows are back where the fixture
+    # had them (only HEAVY BALL, appended at the tail, is a real pending edit
+    # left for the commit-prompt demo below).
     s.tap("START", settle=gb_shots.BIG_SETTLE)
     s.press_n("DOWN", 2, settle=gb_shots.SETTLE)
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # re-arm on the current row
-    s.tap("DOWN", settle=gb_shots.SETTLE)
-    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # B drops the mark, nothing moves
-    s.shot("11c_swap_dropped", "U5: B drops an armed SWAP mark without leaving "
-                                "the screen or moving anything -- the row's own "
-                                "0xEC armed-swap marker is gone (0xED is the "
-                                "plain cursor, a different glyph), no entries "
-                                "changed")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # re-arm SWAP on row 1 (cursor's current row)
+    s.tap("UP", settle=gb_shots.SETTLE)                     # cursor -> row 0 (the OTHER half of the pair)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # swap back -> pristine order restored
+    s.shot("11c_swap_undone", "U5: swapping row 0/row 1 back -- MASTER BALL/"
+                               "ULTRA BALL are back in their original order; "
+                               "HEAVY BALL (this pocket's real pending edit) "
+                               "is untouched by any of the swap demos")
 
-    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # B with a real pending edit -> commit prompt
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # B with a real pending edit (HEAVY BALL, still
+                                                              # unsaved) -> commit prompt
     s.shot("12_commit_prompt", "U5: B with a real pending edit -> 'Save pack "
                                 "changes?' (app_confirm), the same dialog "
                                 "every other GB screen's own commit uses")
     s.tap("B", settle=gb_shots.BIG_SETTLE)                  # decline
     s.shot("13_declined", "U5: declining discards the edit -- gbb_write never "
                            "ran, back at the box grid")
+
+    # Review D1 (HIGH, data loss): gbpack_add_routed()'s TM/HM branch used to
+    # call num_entry() (cancel-blind: returns `cur`, pdna_trainer.c:47-50)
+    # SEEDED AT 0, so opening COUNT on an ALREADY-OWNED TM showed 0 instead of
+    # its real count, and cancelling (osk_search's own cancel key -- SELECT,
+    # not B; B is backspace, same contract every other prompt in this file
+    # already uses) SET that TM's count to 0 instead of leaving it alone --
+    # an owned TM01 x1 became x0 on a cancelled ADD. Fixed to num_entry_opt()
+    # seeded at the REAL current count (gbb_tmhm_get()), cancel now returns
+    # false (nothing attempted, same contract gbpack_add_to_pc() already
+    # gives its own caller). No shot of this whole path existed before this
+    # fix -- added here (rule-17 blocker: a gesture/data-path with no shot
+    # proof is not merged).
+    s.run(250)                                              # re-entry idle (see U4's own D-reentry note)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # box grid -> nav menu
+    s.press_n("DOWN", 7, settle=gb_shots.SETTLE)            # Party -> ... -> Bag (index 7)
+    s.tap("A", settle=GB_ART_COLD_SETTLE)                   # Bag -> pdna_gbpack_gen2_screen()
+    s.tap("RIGHT", settle=gb_shots.BIG_SETTLE)              # Items -> Balls
+    s.tap("RIGHT", settle=gb_shots.BIG_SETTLE)              # Balls -> Key items
+    s.tap("RIGHT", settle=gb_shots.BIG_SETTLE)              # Key items -> TM/HM
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> PACK MENU (TM/HM: ADD ITEM/PC STORE/CANCEL)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM -> picker, pre-filtered to TM-HM
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # pick TM01 (id 0xBF, the lowest TM/HM id --
+                                                              # row 0 of the TM-HM filtered list) -> COUNT
+    s.shot("14_count_seeded_current", "U5 (Review D1 fix): the COUNT prompt "
+                                       "for an ALREADY-OWNED TM (TM01, this "
+                                       "save's own real count) now seeds at "
+                                       "'1' -- its ACTUAL current count, not "
+                                       "the old bug's hardcoded 0")
+    s.tap("B", settle=gb_shots.SETTLE)                      # backspace the seeded '1'
+    s.press_n("RIGHT", 2, settle=gb_shots.SETTLE)           # digit row: col0 -> col2 '3'
+    s.tap("A", settle=gb_shots.SETTLE)                      # type '3' -> field "3"
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm -> gbb_tmhm_set(tm01,3): GBB_OK
+    s.shot("15_tm01_count3", "U5 (Review D1, 'TM01 COUNT 3 -> row'): TM01's "
+                              "row now reads x3 -- a real, persisted-if-"
+                              "confirmed change")
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> PACK MENU again, fresh open
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM -> picker, TM-HM filtered
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # pick TM01 again -> COUNT seeded at the NEW
+                                                              # current count (3, not the old bug's 0)
+    s.shot("16_count_reseeded_3", "U5 (Review D1): re-opening COUNT on TM01 "
+                                   "now seeds '3' -- the count this ADD "
+                                   "chain itself just wrote, not 0")
+    s.tap("SEL", settle=gb_shots.BIG_SETTLE)                # osk_search's own CANCEL key (SELECT, not
+                                                              # B -- B is backspace) -- num_entry_opt()
+                                                              # returns false, gbpack_add_routed() returns
+                                                              # false, the caller's own `continue` re-opens
+                                                              # PACK MENU with NOTHING written
+    s.shot("17_cancel_no_zero", "U5 (Review D1, 'B at COUNT -> count "
+                                 "unchanged'): cancelling lands back on PACK "
+                                 "MENU (its own `continue`, not the list) "
+                                 "with NO gbb_tmhm_set() call made at all -- "
+                                 "the fix's whole point, provable only by "
+                                 "the NEXT shot still reading x3, not x0")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # close PACK MENU -> back to the list
+    s.shot("18_still_x3", "U5 (Review D1): TM01 still reads x3 -- the cancel "
+                           "above did NOT zero it (the old bug's exact "
+                           "failure mode)")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # leave -- the x1->x3 ADD is still a real
+                                                              # pending edit (the cancel demo added nothing
+                                                              # further) -> commit prompt
+    s.shot("19_commit_prompt", "U5: leaving with TM01's real x1->x3 edit "
+                                "still pending -> the same 'Save pack "
+                                "changes?' dialog every other commit uses")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # decline -- fixture stays pristine
+    s.shot("20_declined", "U5: declining discards TM01's edit -- gbb_write "
+                           "never ran, fixture pristine for a later run")
 
     return s
 

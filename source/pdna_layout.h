@@ -1189,6 +1189,10 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * here rather than merely a gap. */
 #define PDNA_ITEM_NO_DESC_YET  "No description yet (ROM names coming)"
 #define PDNA_ITEM_GB_FOOT      "A pick  SEL find  B cancel"
+/* BACKLOG #195: the NAMED restricted picker (g_item_gen set -- real Gen-1/2
+ * item names + a gbb_pocket_of() category filter) adds ST for that filter,
+ * same length (28 cols) as the unrestricted picker's own footer above it. */
+#define PDNA_ITEM_GB2_FOOT     "A pick  ST filt  SEL find  B"
 #define PDNA_SIDECAR_MKDIR_TITLE     "SIDECAR FOLDER"
 #define PDNA_SIDECAR_FULL_TITLE      "SIDECAR FULL"
 #define PDNA_SIDECAR_FULL_L1         "Too many clones of this Pokemon."
