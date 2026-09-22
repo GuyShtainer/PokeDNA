@@ -1121,7 +1121,7 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 /* BACKLOG #150 S150-11 decision 11 (#176) -- a failed PC commit leaves the Bank
  * cell untouched; this tells the player their Pokemon is still safe. */
 #define PDNA_XFER_NOTSAVED_TITLE "TRANSFER NOT SAVED"
-#define PDNA_XFER_NOTSAVED_L1    "The game was not written."
+#define PDNA_XFER_NOTSAVED_L1    "The save was not confirmed."
 #define PDNA_XFER_NOTSAVED_L2    "Your Pokemon is still in the Bank."
 
 /* BACKLOG #150 S150-11 decision 18/13/14 -- the TRANSFERS screen (start-menu row,

@@ -9607,15 +9607,18 @@ static void flush_on_exit(void) {
         msg_wait(PDNA_XFER_FLUSHFAIL_TITLE, UI_WARN, l1, PDNA_XFER_FLUSHFAIL_L2);
       }
     } else {
-      /* BACKLOG #150 S150-11 decision 11(i)/#176: app_commit_pc() returns false only
-       * when NOTHING landed (an SF_ERR_RENAME with SF_WHERE_TARGET counts as success
-       * inside app_commit_block) -- the Bank cell was never consumed (the flush above
-       * is gated on this same bool) and the PENDING entry describes a transfer that
-       * did not happen, so the undo here is the SAME correct cleanup the DECLINE
-       * branch below already does. Without this, g_xd_key stayed set for the rest of
-       * the boot and every later native->Gen-3 drop refused with SAVE FIRST
-       * (pdna_gen12.c's xfer_down_write gate) -- the bug #176 names. */
-      app_xfer_pending_undo();
+      /* BACKLOG #150 S150-11 decision 11(i)/#176 (review D2): app_commit_pc() returning
+       * false does NOT mean nothing landed -- app_save_finalize()'s SF_WHERE_TARGET
+       * branch (~:2028) returns false for a write that IS on the card, only unconfirmed.
+       * Calling app_xfer_pending_undo() here would REMOVE the ledger's PENDING entry
+       * while the Gen-3 copy may have actually landed -> an uncollectable duplicate (the
+       * record describing the transfer is gone, but the copy exists). Only clear the RAM
+       * key (app_xfer_pending_drop()): the TRANSFERS screen's own XRC_PENDING_* rows
+       * still see the ledger entry either way and can collect/reconcile it later. Without
+       * clearing the key at all, g_xd_key stayed set for the rest of the boot and every
+       * later native->Gen-3 drop refused with SAVE FIRST (pdna_gen12.c's xfer_down_write
+       * gate) -- the bug #176 names. */
+      app_xfer_pending_drop();
       msg_wait(PDNA_XFER_NOTSAVED_TITLE, UI_WARN, PDNA_XFER_NOTSAVED_L1, PDNA_XFER_NOTSAVED_L2);
     }
   } else {

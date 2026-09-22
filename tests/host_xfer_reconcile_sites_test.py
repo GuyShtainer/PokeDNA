@@ -10,9 +10,11 @@ source/pdna_bank.c instead of source/pdna_gen12.c.
 Five checks, each with an in-memory mutation that must turn it red:
 
   (g) flush_on_exit()'s app_commit_pc() FAILURE branch (the `else` this slice adds)
-      calls app_xfer_pending_undo() -- without it, BACKLOG #176 reproduces: a failed
-      save leaves g_xd_key set for the rest of the boot and every later native->Gen-3
-      drop refuses with SAVE FIRST.
+      calls app_xfer_pending_drop() (review D2 -- NOT app_xfer_pending_undo(), which
+      would remove the ledger's PENDING entry even for a landed-but-unconfirmed write,
+      an uncollectable duplicate) -- without clearing the RAM key at all, BACKLOG #176
+      reproduces: a failed save leaves g_xd_key set for the rest of the boot and every
+      later native->Gen-3 drop refuses with SAVE FIRST.
 
   (h) every `pdna_bank_clear_deletions();` call site in source/pdna_main.c is within
       2 lines of `app_xfer_pending_drop();`/`app_xfer_pending_undo();` -- a fresh
@@ -149,10 +151,15 @@ def check_g_flush_on_exit_undo(text: str) -> list[str]:
         j += 1
     else_body = rest[em.end():j]
     out = []
-    if "app_xfer_pending_undo(" not in else_body:
+    # review D2: app_commit_pc() returning false does NOT mean nothing landed
+    # (app_save_finalize()'s SF_WHERE_TARGET branch returns false for a write that
+    # IS on the card, only unconfirmed) -- app_xfer_pending_undo() would then REMOVE
+    # the ledger's PENDING entry over a copy that actually landed, an uncollectable
+    # duplicate. Only the RAM key is cleared here: app_xfer_pending_drop(), not undo.
+    if "app_xfer_pending_drop(" not in else_body:
         out.append("flush_on_exit(): the app_commit_pc() FAILURE branch does not call "
-                    "app_xfer_pending_undo( -- BACKLOG #176 (a failed save leaves the "
-                    "pending transfer set)")
+                    "app_xfer_pending_drop( -- BACKLOG #176/review D2 (a failed-or-"
+                    "unconfirmed save must not remove the ledger's PENDING entry)")
     if "PDNA_XFER_NOTSAVED_TITLE" not in else_body:
         out.append("flush_on_exit(): the app_commit_pc() FAILURE branch does not show "
                     "PDNA_XFER_NOTSAVED_TITLE (decision 11(i))")
@@ -287,7 +294,7 @@ def main() -> int:
         for v in violations:
             print(f"  FAIL: {v}")
         return 1
-    print("ok: (g) flush_on_exit's failure branch undoes the pending transfer, "
+    print("ok: (g) flush_on_exit's failure branch drops the pending-transfer key, "
           f"(h) all {h_sites} load sites drop it, (i) the Bank-open gate runs first, "
           "(j) pdna_bank_put_cell gates on app_can_edit, (k) the scoped apply "
           "function never rewrites the ledger, (l) the TRANSFERS screen's own "
@@ -296,9 +303,9 @@ def main() -> int:
     # --- self-mutation proofs -----------------------------------------------------
     fails = 0
 
-    # (g): delete the undo call from the else branch.
+    # (g): delete the drop call from the else branch.
     mutated = main_text.replace(
-        "      app_xfer_pending_undo();\n"
+        "      app_xfer_pending_drop();\n"
         "      msg_wait(PDNA_XFER_NOTSAVED_TITLE, UI_WARN, PDNA_XFER_NOTSAVED_L1, PDNA_XFER_NOTSAVED_L2);\n",
         "      msg_wait(PDNA_XFER_NOTSAVED_TITLE, UI_WARN, PDNA_XFER_NOTSAVED_L1, PDNA_XFER_NOTSAVED_L2);\n",
         1)
@@ -307,11 +314,11 @@ def main() -> int:
         fails += 1
     else:
         v, _ = run_all(mutated, bank_text)
-        if not any("app_xfer_pending_undo(" in x for x in v):
-            print("FAIL -- self-mutation (g): removing the undo call did NOT turn check (g) red")
+        if not any("app_xfer_pending_drop(" in x for x in v):
+            print("FAIL -- self-mutation (g): removing the drop call did NOT turn check (g) red")
             fails += 1
         else:
-            print("self-mutation (g): removing the undo call -- correctly caught")
+            print("self-mutation (g): removing the drop call -- correctly caught")
 
     # (h): delete ONE of THIS SLICE's own app_xfer_pending_drop() sites (tagged with
     # the S150-11 decision 11(ii) comment -- the pre-existing app_xfer_pending_drop()
