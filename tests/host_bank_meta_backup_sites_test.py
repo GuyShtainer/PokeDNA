@@ -121,7 +121,7 @@ META_FROM_BAK_GUARD_RE = re.compile(r"if\s*\(\s*g_meta_from_bak\s*\)")
 UNLINK_META_RE = re.compile(r"f_unlink\(\s*meta_path\(\)")
 BACKUPV1_META_PATH_RE = re.compile(r'"/backup-v1/bank\.meta"')
 BACKUPV1_META_WRITE_RE = re.compile(r"sf_write_verified\(\s*meta_bak\s*,")
-BOXES_DONE_SHORT_CIRCUIT_RE = re.compile(r"if\s*\(\s*boxes_done\s*\)\s*return\s*meta_done\s*;")
+BOXES_DONE_SHORT_CIRCUIT_RE = re.compile(r"if\s*\(\s*boxes_done\s*\)\s*\{?")
 BOX_LOOP_RE = re.compile(r"for\s*\(\s*int\s+b\s*=\s*0\s*;\s*b\s*<\s*BANK_BOXES\s*;\s*b\+\+\s*\)")
 
 
@@ -216,9 +216,8 @@ def check_backupv1_no_redo(body: list[str]) -> tuple[bool, str]:
 
 
 def self_test_mutation_detection_219c(lines: list[str]) -> None:
-    """MUT M3 (BACKLOG #219c): drop the `if (boxes_done) return meta_done;` short-
-    circuit from bank_backup_v1() -- check_backupv1_no_redo() must then fail. Applied
-    to an IN-MEMORY copy only."""
+    """MUT M3 (BACKLOG #219c): drop the `if (boxes_done)` guard from bank_backup_v1()
+    -- check_backupv1_no_redo() must then fail. Applied to an IN-MEMORY copy only."""
     s, e = extract_function(lines, r"^static bool __attribute__\(\(noinline\)\) bank_backup_v1\(void\) \{")
     mutated = list(lines)
     for i in range(s, e):
