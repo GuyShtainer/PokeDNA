@@ -1420,12 +1420,14 @@ static uint8_t* __attribute__((noinline)) drop_held_up(BoxSource* src, int box, 
    * invisible here, and S150-6/S150-7 would mis-target it. One box buffer at a
    * time through pdna_bank_peek_box() (never a second 2,400-B buffer on the
    * stack): bank_scan_get()/bank_ident32_collision() (bank_collision.c, a pure
-   * host-tested core; tests/host_bank_collision_test.c). Short-circuits the 15
-   * extra box reads when pdna_bank_serial_trusted() says this session's serial
-   * is known fresh (see its doc comment, pdna_bank.c) -- a fresh serial can only
-   * collide when the meta itself was lost/rolled back, which is exactly what
-   * that flag tracks. */
-  if (!pdna_bank_serial_trusted()) {
+   * host-tested core; tests/host_bank_collision_test.c).
+   * BACKLOG #168a review D2: `trusted` says only that the LAST meta_load() this
+   * session saw a clean primary -- it cannot see a bank.meta restored from .bak,
+   * an older /PokeDNA/bank copied back, or box files from a second card dropped
+   * in beside this card's meta. Pay the full 16-box scan ONCE per session (15
+   * extra 2,400-B reads, on a deliberate user action), then trust it. */
+  static bool s_up_scan_done;
+  if (!pdna_bank_serial_trusted() || !s_up_scan_done) {
     int coll_box = -1, coll_slot = -1;
     if (bank_ident32_collision(bank_scan_get, NULL, 16, G3_BOX_SLOTS, box, cur,
                                 s_held, &coll_box, &coll_slot)) {
@@ -1435,6 +1437,7 @@ static uint8_t* __attribute__((noinline)) drop_held_up(BoxSource* src, int box, 
       app_log_flush();
       return recs;                                        /* still holding */
     }
+    s_up_scan_done = true;   /* latch only on a scan that found nothing */
     /* pdna_bank_peek_box() re-pages the ONE shared bank buffer for whichever
      * box it last read (S150-11 decision 19's own contract) -- if the scan
      * touched any OTHER box, `recs` (same pointer value) now aliases THAT
