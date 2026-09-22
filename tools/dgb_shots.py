@@ -1905,12 +1905,14 @@ def run_b89_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
                        "#194 F3's two newer rows, recaptioned here -- this frame "
                        "used to show only the first two)")
 
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # CLEAR ALL -> app_confirm (shell already closed)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # CLEAR ALL -> app_confirm (A2: shell stays
+                                                              # OPEN underneath; this full-screen ui_*
+                                                              # dialog just paints over it for now)
     s.shot("04_clear_confirm", "BACKLOG #89: CLEAR ALL -> the real consequence -- "
                                 "\"The PC's HALL OF FAME option disappears until "
-                                "you win again.\" (app_confirm, full-screen -- F3: "
-                                "the shell closed before this and reopens only "
-                                "after the whole CLEAR ALL flow returns)")
+                                "you win again.\" (app_confirm, full-screen -- A2: "
+                                "the shell is never closed for this, only "
+                                "repainted once the whole CLEAR ALL flow returns)")
     # gbh_clear() on Gen 1 chunks its write over up to 50 gen1_write_outside_sum
     # calls (one per team slot), each re-opening/re-parsing the whole 32 KiB image
     # to verify -- genuinely more CPU work than any other GB screen's single-field
@@ -1928,11 +1930,12 @@ def run_b89_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
                              "proved by the retail gate's hofclear/hofcount cases "
                              "(tools/gb_retail_gate.py), not this shot. The edit "
                              "already landed in-session, shown by the NEXT shot.")
-    s.tap("A", settle=GB_ART_COLD_SETTLE)                   # dismiss gb_persist's dialog -> hof_card_menu_key
-                                                              # REOPENS the shell (F3 close/run/reopen posture)
-                                                              # -> another full gbscr_open() rescan
-    s.shot("06_empty", "BACKLOG #202 F1: after CLEAR ALL -- the CARD reopened -- "
-                        "'0 teams (life 0)', 'No teams yet.'")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss gb_persist's dialog -- A2: no
+                                                              # reopen, hof_card_menu_key just repaints
+                                                              # the SAME still-open shell
+    s.shot("06_empty", "BACKLOG #202 A2: after CLEAR ALL -- back on the SAME "
+                        "card (never closed) -- '0 teams (life 0)', "
+                        "'No teams yet.'")
 
     s.tap("START", settle=gb_shots.BIG_SETTLE)              # menu again, on the now-empty list (same shell)
     s.tap("DOWN", settle=gb_shots.SETTLE)                   # SET COUNT row
@@ -1962,19 +1965,19 @@ def run_b194_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> g
     TEAM through to the SAME refusal, and DELETE TEAM. `rom` MUST be the SAME
     kind of ONE-ROM fused image run_b89_hof() takes.
 
-    Mon portraits/icons at each detail row are NOT wired in this lane (STACK
-    margin, see source/pdna_gbhof.c's own F1 comment) -- 02_detail's caption
-    says so plainly rather than implying they are there.
+    A1 (review re-verify): Gen 2's detail rows now draw each mon's real 16x16
+    ROM menu icon at the row's left (hof_card_icon_refresh/_blit,
+    source/pdna_gbhof.c) -- 02_detail's own caption says so for `which ==
+    "crystal"`; Gen 1 stays text-only (a real gap, not a placeholder-icon
+    omission -- that function's own comment has the honest reason).
 
-    Every gbscr_open() call in the PDNA_DELTA build re-runs the whole-ROM UI
-    locator (~3,240 frames, the b194/f93cf5a review's own measurement) -- this
-    runner rides out GB_ART_COLD_SETTLE after EVERY shell (re)open (the first
-    Records entry, and every return from a full-screen sub-editor that closed
-    the shell around itself: EDIT MON's LEVEL field, ADD TEAM, DELETE TEAM).
-    On real hardware, with the .loc cache actually wired (BACKLOG #202 anchor
-    notes), this cost is a cart-only concern, not an emulator one -- accepted
-    as the brief's own explicit instruction: 'do not fix it by skipping the
-    locator.'"""
+    A2 (review re-verify): the shell now stays OPEN across EVERY full-screen
+    sub-editor too (EDIT MON's fields, CLEAR ALL/SET COUNT/ADD TEAM/DELETE
+    TEAM) -- there is only ONE gbscr_open() in this whole run, the FIRST
+    Records entry below; every dismiss/return shot's own caption says
+    "back on the card" now, not "reopened" (the old two-open-per-edit
+    behaviour this runner's captions used to describe was itself A2's bug).
+    GB_ART_COLD_SETTLE is still used ONLY after that one open."""
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b194_{which}_")
     print(f"== BACKLOG #202 F4: {which}'s own HoF card -- cold open, menu, edit, "
           "add, delete ==")
@@ -1990,12 +1993,16 @@ def run_b194_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> g
                             f"b194/f93cf5a review measured at ~3,240 frames")
 
     s.tap("A", settle=gb_shots.BIG_SETTLE)                    # row 1 -> detail (same open shell)
-    s.shot("02_detail", "BACKLOG #202 F4: the detail card, same open shell (no "
-                         "reopen) -- mon portraits/icons at each row are NOT "
-                         "wired in this lane (gb_art_fetch's own 3,672 B frame "
-                         "vs this lane's 1,928 B STACK margin), left for a "
-                         "follow-up BACKLOG item; this shot is text rows only, "
-                         "honestly, not a placeholder icon")
+    if which == "crystal":
+        cap02 = ("BACKLOG #202 A1: the detail card, same open shell -- each "
+                 "mon's real 16x16 Gen-2 ROM menu icon at the row's left "
+                 "(hof_card_icon_refresh/_blit), text shifted to column 3 to "
+                 "leave room")
+    else:
+        cap02 = ("BACKLOG #202 F4: the detail card, same open shell -- Gen 1 "
+                 "stays TEXT ONLY (a real gap: no per-species front-pic cache "
+                 "yet, BACKLOG #196), not a placeholder icon")
+    s.shot("02_detail", cap02)
 
     s.tap("B", settle=gb_shots.BIG_SETTLE)                    # detail -> list (same shell)
     s.tap("START", settle=gb_shots.BIG_SETTLE)                # list -> the in-frame START menu
@@ -2022,19 +2029,20 @@ def run_b194_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> g
     # Two SEPARATE taps, same shape as run_b89_hof's own CLEAR ALL sequence:
     # (1) yes -> gbh_set_mon() -> gb_persist() -> the PDNA_DELTA refusal dialog
     # appears (own settle to let the write finish before the dialog draws);
-    # (2) a SECOND tap dismisses THAT dialog, which is when hof_card_detail_key
-    # actually reopens the shell (F3).
+    # (2) a SECOND tap dismisses THAT dialog -- A2: the shell was NEVER
+    # closed for this edit, so there is nothing to reopen; the card is simply
+    # repainted (hof_card_detail_key's own gbscr_mark_all_dirty()).
     s.tap("A", settle=gb_shots.BIG_SETTLE)                    # yes -> gb_persist()
     s.run(200)                                                 # ride out the single gen1_write_outside_sum
     s.shot("06_edit_refusal", "BACKLOG #202 F4: gb_persist()'s PDNA_DELTA "
                                "refusal, same #62 D2/D5 branch as every other "
                                "GB screen's own commit -- the edit already "
                                "landed in-session, shown by the NEXT shot")
-    s.tap("A", settle=GB_ART_COLD_SETTLE)                     # dismiss -> hof_card_detail_key REOPENS
-                                                                # the shell (F3 close/run/reopen)
-    s.shot("07_edit_reopened", "BACKLOG #202 F4: dismissed -- the DETAIL card "
-                                "REOPENED (F3's close/run/reopen posture) "
-                                "showing the edit already landed in-session")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # dismiss -- A2: the SAME still-open shell
+                                                                # just repaints, no reopen at all
+    s.shot("07_edit_back_on_card", "BACKLOG #202 A2: dismissed -- back on the "
+                                    "DETAIL card (the SAME shell, never closed) "
+                                    "showing the edit already landed in-session")
 
     # ---- ADD TEAM, through to the SAME in-session refusal --------------------------
     s.tap("B", settle=gb_shots.BIG_SETTLE)                    # detail -> list
@@ -2054,15 +2062,15 @@ def run_b194_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> g
     s.run(200)
     s.shot("09_add_refusal", "BACKLOG #202 F4: ADD TEAM hits the SAME "
                               "in-session-only refusal as CLEAR ALL/EDIT")
-    s.tap("A", settle=GB_ART_COLD_SETTLE)                     # dismiss -> hof_card_menu_key REOPENS
-                                                                # the shell
-    s.shot("10_add_reopened", "BACKLOG #202 F4: dismissed -- the shell "
-                               "REOPENED back on the LIST card (F3), now "
-                               "showing 10 teams (was 9) with the new team "
-                               "'1: Lv5-5' on top -- the write DID land "
-                               "in-session (RAM); only the FLASH persist leg "
-                               "of gb_persist() refuses in the emulator build, "
-                               "same as every other GB screen's own commit")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # dismiss -- A2: no reopen, same shell
+    s.shot("10_add_back_on_list", "BACKLOG #202 A2: dismissed -- back on the "
+                                   "LIST card (the SAME shell), now showing "
+                                   "10 teams (was 9) with the new team "
+                                   "'1: Lv5-5' on top -- the write DID land "
+                                   "in-session (RAM); only the FLASH persist "
+                                   "leg of gb_persist() refuses in the "
+                                   "emulator build, same as every other GB "
+                                   "screen's own commit")
 
     # ---- DELETE TEAM -----------------------------------------------------------------
     s.tap("START", settle=gb_shots.BIG_SETTLE)                # list -> menu (same shell)
@@ -2075,9 +2083,9 @@ def run_b194_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> g
     s.run(200)
     s.shot("12_delete_refusal", "BACKLOG #202 F4: DELETE TEAM hits the SAME "
                                  "in-session-only refusal")
-    s.tap("A", settle=GB_ART_COLD_SETTLE)                     # dismiss -> shell reopens
-    s.shot("13_delete_reopened", "BACKLOG #202 F4: dismissed -- the shell "
-                                  "REOPENED back on the LIST card")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # dismiss -- A2: no reopen, same shell
+    s.shot("13_delete_back_on_list", "BACKLOG #202 A2: dismissed -- back on "
+                                      "the LIST card (the SAME shell)")
 
     return s
 
