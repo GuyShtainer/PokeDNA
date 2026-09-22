@@ -627,14 +627,29 @@ def run_standalone(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Se
                            "(D9: ~258 s of emulated GBA time) already ridden out")
 
     # This corpus's every box is full -- RELEASE the box's own first mon (top-left) to
-    # open a slot CREATE can use. Menu order: VIEW/EDIT, LEGALITY, MOVE TO BOX, COPY,
-    # RELEASE, CANCEL (4 DOWNs from the top to RELEASE).
+    # open a slot CREATE can use. BACKLOG #198 item 4: this menu's row list predates
+    # BACKLOG #93's DUPLICATE / TO DAY-CARE / EXPORT .pk rows -- app_mon_menu_readonly's
+    # own occupied-cell order (source/pdna_main.c ~5290-5313, k_gb_ops_gen1's hooks:
+    # .item=NULL Gen-1-only, .dup/.daycare/.export_one all set) is now VIEW/EDIT,
+    # LEGALITY, MOVE TO BOX, COPY, DUPLICATE, TO DAY-CARE, EXPORT .pk, RELEASE, CANCEL --
+    # a flat `DOWN x4` (the pre-#93 row count) now lands on DUPLICATE instead. Navigate
+    # by ROW NAME (this constant's own .index(), not a bare magic number) so a future
+    # row insertion/removal here breaks loudly (a ValueError) instead of silently
+    # landing on the wrong row again.
+    GB_STANDALONE_OCCUPIED_ROWS = [
+        "VIEW/EDIT", "LEGALITY", "MOVE TO BOX", "COPY",
+        "DUPLICATE", "TO DAY-CARE", "EXPORT .pk", "RELEASE", "CANCEL",
+    ]
+    down_to_release = GB_STANDALONE_OCCUPIED_ROWS.index("RELEASE")   # 7, not the old 4
     s.tap("A", settle=gb_shots.BIG_SETTLE)                # cell menu
-    s.press_n("DOWN", 4, settle=gb_shots.SETTLE)          # -> RELEASE
-    s.shot("04_release_menu", "#62 A3: the occupied-cell menu the STANDALONE mount offers -- "
-                               "VIEW/EDIT, LEGALITY, MOVE TO BOX, COPY, RELEASE, CANCEL (the "
-                               "nested-import mount's VIEW/LEGALITY/COPY/CANCEL, plus every "
-                               "write action, since this session can actually edit)")
+    s.press_n("DOWN", down_to_release, settle=gb_shots.SETTLE)   # -> RELEASE
+    s.shot("04_release_menu", "#62 A3 (BACKLOG #198 item 4 recaption): the occupied-cell "
+                               "menu the STANDALONE mount offers -- VIEW/EDIT, LEGALITY, "
+                               "MOVE TO BOX, COPY, DUPLICATE, TO DAY-CARE, EXPORT .pk, "
+                               "RELEASE, CANCEL (BACKLOG #93's three newer rows included; "
+                               "the nested-import mount's own VIEW/LEGALITY/COPY/CANCEL, "
+                               "plus every write action, since this session can actually "
+                               "edit) -- cursor on RELEASE, the row this shot means to show")
     s.tap("A", settle=gb_shots.BIG_SETTLE)                # "Release this Pokemon?"
     s.shot("05_release_confirm", "#62: the release confirm dialog")
     s.tap("A", settle=gb_shots.BIG_SETTLE)                # A = yes -> gb_persist() -> PDNA_DELTA refusal
@@ -643,16 +658,25 @@ def run_standalone(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Se
                           "(there is no SD card, and this build's flash chip stays blank "
                           "either way), but D2's fix means it also is NOT lost: pristine is "
                           "re-baselined to the post-release image right here.")
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                # dismiss -> back at the box, now 19/20
-
-    # Navigate to the freed cell: this cursor position is this specific corpus's own
-    # empty slot after ONE release from the box's top-left mon -- calibrated by hand
-    # against Guy's real Red.gb/Red.sav dump, not a general rule about box layout.
-    s.tap("UP", settle=gb_shots.SETTLE)
-    s.tap("UP", settle=gb_shots.SETTLE)
-    s.press_n("LEFT", 6, settle=gb_shots.SETTLE)
+    # BACKLOG #198 item 4 renav: dismissing the wall needed a LONGER settle than
+    # BIG_SETTLE to finish repainting the box grid (found live: BIG_SETTLE's own 40
+    # frames landed mid-repaint, a stale "RELEASED"-adjacent frame) -- 400 is what a
+    # probe against this build confirmed settles it fully. Gen-1/2 boxes are LIST-
+    # COMPACTED on delete (gbs_delete -> delete_from_list, source/gb_session.c:449),
+    # unlike Gen 3's fixed-grid PC -- releasing the top-left mon (index 0) shifts
+    # every later mon DOWN one index, so the newly-empty slot lands at the END of the
+    # occupied range (index 19 of the original 20: row 3, col 1, six-column grid),
+    # never at index 0 where SLOWBRO used to be. Confirmed live: without this nav,
+    # the cursor (still at grid position 0,0) shows DUGTRIO (the mon that shifted
+    # into slot 0), not an empty cell. DOWN x3 + RIGHT x1 from the cursor's post-
+    # dismiss position (still slot 0) reaches index 19.
+    s.tap("A", settle=400)                                 # dismiss -> back at the box, now 19/20
     s.press_n("DOWN", 3, settle=gb_shots.SETTLE)
-    s.shot("07_empty_cell", "#62: cursor on the freshly-released, now-empty cell (19/20)")
+    s.tap("RIGHT", settle=gb_shots.SETTLE)
+    s.shot("07_empty_cell", "#62 (BACKLOG #198 item 4 renav): cursor on the freshly-"
+           "released, now-empty cell (19/20) -- index 19 (row 3, col 1), the END of "
+           "the compacted list, not index 0 where SLOWBRO (the released mon) used "
+           "to be")
 
     s.tap("A", settle=gb_shots.BIG_SETTLE)                # empty-cell menu: EMPTY / CREATE / CANCEL
     s.shot("08_create_menu", "#62 A3: the empty-cell menu -- EMPTY (header) / CREATE / CANCEL")
@@ -680,7 +704,10 @@ def run_standalone(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Se
     s.tap("A", settle=gb_shots.BIG_SETTLE)                # A = write (session only) -> refusal
     s.shot("13_refusal_2", "#62 D2/D5: the same in-session-only refusal as 06 -- CREATE goes "
                             "through gb_persist() too")
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                # dismiss -> box grid, new mon showing
+    s.tap("A", settle=400)                # dismiss -> box grid, new mon showing (BACKLOG #198
+                                            # item 4: same "BIG_SETTLE lands mid-repaint" bug
+                                            # found live at frame 07's own dismiss -- 400 confirmed
+                                            # live to settle this repaint fully too)
     s.shot("14_mon_in_grid", "#62 A3: the box grid re-paged with the newly created Bulbasaur "
                               "showing in the slot RELEASE freed -- CREATE end to end, on real "
                               "fused-ROM art, kept in-session per D2's fix")
