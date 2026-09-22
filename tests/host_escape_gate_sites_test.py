@@ -436,16 +436,16 @@ def up_order_facts(lines, start, end):           # shared by the real check AND 
     c = first_match_line(lines, start, end, COMMIT_RE)
     r = first_match_line(lines, start, end, RELEASE_UP_RE)
     z = first_match_line(lines, start, end, ZEROBACK_RE)
-    if c is None: return False, "drop_held: no `ok = src->commit()` line in the UP branch"
-    if r is None: return False, "drop_held: no `s_xfer_peer->release_up(` call"
-    if z is None: return False, "drop_held: no zero-back memset of the destination cell"
-    if not c < r: return False, (f"drop_held: src->commit() (line {c+1}) does NOT come before "
+    if c is None: return False, "drop_held_up: no `ok = src->commit()` line in the UP branch"
+    if r is None: return False, "drop_held_up: no `s_xfer_peer->release_up(` call"
+    if z is None: return False, "drop_held_up: no zero-back memset of the destination cell"
+    if not c < r: return False, (f"drop_held_up: src->commit() (line {c+1}) does NOT come before "
                                  f"release_up() (line {r+1}) -- the Game Boy save would lose the "
                                  f"mon before the Bank has it")
-    if not c < z < r: return False, (f"drop_held: the zero-back memset (line {z+1}) is not between "
+    if not c < z < r: return False, (f"drop_held_up: the zero-back memset (line {z+1}) is not between "
                                      f"commit() ({c+1}) and release_up() ({r+1})")
     if first_match_line(lines, z, r, RETURN_RECS_RE) is None:
-        return False, (f"drop_held: no `return recs;` between the zero-back memset (line {z+1}) and "
+        return False, (f"drop_held_up: no `return recs;` between the zero-back memset (line {z+1}) and "
                        f"release_up() (line {r+1}) -- release_up is not dominated by the "
                        f"commit-failure early-out")
     return True, "ok"

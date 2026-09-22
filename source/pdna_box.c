@@ -1367,9 +1367,14 @@ static const uint8_t* bank_scan_get(int b, void* ctx) {
  * helper -- same signature as drop_held itself (BoxSource*, box, cur, recs, done),
  * so drop_held's own call site is a plain one-line tail return and every
  * s_orig_box/s_orig_slot/s_orig_scope/s_xfer_peer/s_held file-static this branch
- * reads/writes needs no plumbing. Sheds held_copy[80] (80 B) plus this whole
- * branch's own locals from drop_held's frame on every drop that is NOT an UP
- * carry -- drop_held runs on every grid A-press.
+ * reads/writes needs no plumbing. BACKLOG #168a review D4: the measured truth,
+ * not "sheds held_copy[80] (80 B)" -- drop_held's own frame went 240 -> 232 B
+ * (GCC overlapped the locals it still has), and the UP path itself is +144 B net
+ * (4,640 -> 4,784 B guarded, no sibcall: drop_held_up is a real, separate frame on
+ * the stack). The deepest chain is unchanged at 13,112 of 15,024 (Settings ->
+ * register-ROM browser, 8.3 KB above this path either way) -- the extraction is
+ * for readability and pin anchoring (BACKLOG #170's own point), not for a stack
+ * saving.
  *
  * ORDER (decision 1, unchanged by this extraction): the Bank write is committed
  * and VERIFIED first; only then does the Game Boy save lose the mon (release_up).
