@@ -503,6 +503,11 @@ static void pc_accepts_tmhm(void) {
   GbBag bag2; memset(&bag2, 0, sizeof bag2);
   CHECK(gbb_insert(GBF_G_GS, &bag2, GBB_POCKET_ITEMS, 0xBFu, 1u) == GBB_ERR_BADID,
         "gbb_insert(GS, ITEMS, TM01, 1) must stay GBB_ERR_BADID -- only the PC pocket accepts TM/HM ids");
+  CHECK(gbb_insert(GBF_G_GS, &bag2, GBB_POCKET_KEY, 0x46u, 1u) == GBB_ERR_BADID,
+        "Review D2: gbb_insert(GS, KEY, 0x46) must refuse -- ITEM_46 is not an item on Gold/Silver");
+  GbBag bag3; memset(&bag3, 0, sizeof bag3);   /* own bag: independent of the GS refusal above */
+  CHECK(gbb_insert(GBF_G_CRYSTAL, &bag3, GBB_POCKET_KEY, 0x46u, 1u) == GBB_OK,
+        "Review D2: gbb_insert(CRYSTAL, KEY, 0x46 CLEAR_BELL) must succeed");
 }
 
 /* D3 zero-diff: the real-corpus half -- deposit a TM into an ACTUAL save's PC
