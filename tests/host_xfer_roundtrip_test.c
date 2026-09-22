@@ -1213,6 +1213,13 @@ static void run_rt4_one(const char* tag, const GbEditMon* mon, uint8_t origin) {
   int rc2 = bank_restore_from_entry(&e1, g3, 0, g_xr_serial++, N2p, &rep1);
   CHECK(rc2 == 1, "%s: RT-4 hop 2 (bank_restore_from_entry) succeeds (rc=%d)", tag, rc2);
   if (rc2 != 1) return;
+  /* review D5 (c): e1.direction (XR_DIR_ABROAD_G3, xr_entry_for_down's own stamp)
+   * must have survived into the merge -- a dropped direction stamp reads as a
+   * pre-#150/mis-stamped entry (xr_merge_nickname's own nick_baseline_missing
+   * fallback), silently degrading instead of merging the nickname for real. */
+  CHECK(!rep1.nick_baseline_missing,
+        "%s: RT-4 hop 2 report has nick_baseline_missing == false (the direction "
+        "stamp survived into the merge)", tag);
 
   GbEditMon home2; BcMeta meta2;
   CHECK(bc_unpack(N2p, &home2, &meta2), "%s: RT-4 hop 3 bc_unpack(N2') succeeds", tag);
@@ -1628,6 +1635,27 @@ static void test_gb_merge_down_gb(void) {
   CHECK(gb_get_level(&out1all) == new_level, "GB-1: accept=ALL applies the new level");
   CHECK(gb_get_move(&out1all, 1) == new_mv, "GB-1: accept=ALL applies the new move");
 
+  /* GB-4 (review D5): the Gen-1 residence renamed -- accept=0 reports (renamed,
+   * nick byte-identical to the home); accept=NICK applies the rename and ONLY the
+   * nick differs from accept=0's own output. */
+  GbEditMon now4 = home;
+  CHECK(gb_set_nickname(&now4, "RENAMED"), "GB-4: gb_set_nickname on the residence copy");
+  GbEditMon out4_0; XrMergeReport rep4_0;
+  CHECK(xr_merge_down_gb_sel(&e, &now4, 0, &out4_0, &rep4_0), "GB-4: accept=0 runs");
+  CHECK(memcmp(out4_0.nick, home.nick, GB_NAME_BYTES) == 0,
+        "GB-4: accept=0 nick is byte-identical to the home");
+  CHECK(rep4_0.renamed, "GB-4: accept=0 still reports renamed (mask-independent)");
+  GbEditMon out4_nick; XrMergeReport rep4_nick;
+  CHECK(xr_merge_down_gb_sel(&e, &now4, XR_ACCEPT_NICK, &out4_nick, &rep4_nick),
+        "GB-4: accept=NICK runs");
+  CHECK(memcmp(out4_nick.nick, out4_0.nick, GB_NAME_BYTES) != 0,
+        "GB-4: accept=NICK nick differs from accept=0's");
+  CHECK(gb_get_level(&out4_nick) == gb_get_level(&out4_0),
+        "GB-4: accept=NICK leaves level unaffected (only the nick differs)");
+  for (int i = 0; i < 4; i++)
+    CHECK(gb_get_move(&out4_nick, i) == gb_get_move(&out4_0, i),
+          "GB-4: accept=NICK leaves move slot %d unaffected", i);
+
   /* GB-2/GB-3 need a GENUINE Gen-2 record for `now` (a residence copy of a different
    * generation than the Gen-1 `home`) -- mutating `.gen` on a copy of a Gen-1-shaped
    * GbEditMon would leave its raw `rec[]` bytes in the WRONG layout for a Gen-2
@@ -1710,6 +1738,19 @@ static void test_gb_merge_down_gb(void) {
         "GB-3: now->gen != e->gen refuses");
   CHECK(memcmp(&out_wronggen, &sentinel, sizeof out_wronggen) == 0,
         "GB-3: `out` is left untouched on the gen-mismatch refusal");
+
+  /* review D5 (b): bank_restore_from_entry_gb's own "not this edge's job" defensive
+   * return -- a Gen-3-home entry (kind XR_KIND_G3_HOME) must return 0, never 1 or
+   * -1, and must never touch out_cell80. */
+  GbscEntry e_g3home = e;
+  e_g3home.kind = XR_KIND_G3_HOME;
+  uint8_t out_g3home[80]; memset(out_g3home, 0xAA, sizeof out_g3home);
+  uint8_t sentinel_g3home[80]; memcpy(sentinel_g3home, out_g3home, 80);
+  int rc_g3home = bank_restore_from_entry_gb(&e_g3home, &home, XR_ACCEPT_ALL,
+                                             g_xr_serial++, out_g3home, NULL);
+  CHECK(rc_g3home == 0, "D5(b): bank_restore_from_entry_gb(kind=G3_HOME) returns 0, not 1 or -1 (rc=%d)", rc_g3home);
+  CHECK(memcmp(out_g3home, sentinel_g3home, 80) == 0,
+        "D5(b): out_cell80 is left untouched when kind != XR_KIND_NATIVE_HOME");
 }
 
 /* ---- ENTRY-1: xr_entry_for_down matches the pre-refactor xfer_down_write ------ */
