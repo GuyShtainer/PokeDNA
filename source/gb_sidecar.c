@@ -128,7 +128,8 @@ enum {
   EF_STATE_SH = 1, EF_STATE_MASK = 0x03u,       /* b1-b2, shifted */
   EF_KIND     = 0x08u,           /* b3 */
   EF_DIR      = 0x10u,           /* b4 */
-  EF_HASMOVES = 0x20u            /* b5 */
+  EF_HASMOVES = 0x20u,           /* b5 */
+  EF_BANKKEEP = 0x40u            /* b6 -- BACKLOG #150 S150-11 decision 7 */
 };
 
 static uint8_t ef_compose(uint8_t claimed, uint8_t state, uint8_t kind, uint8_t dir,
@@ -228,6 +229,7 @@ bool gbsc_get(const uint8_t* buf, uint32_t len, int idx, GbscEntry* out) {
   out->kind            = (uint8_t)((flags & EF_KIND) ? 1 : 0);
   out->direction       = (uint8_t)((flags & EF_DIR) ? 1 : 0);
   out->has_written_moves = (uint8_t)((flags & EF_HASMOVES) ? 1 : 0);
+  out->bank_keep        = (uint8_t)((flags & EF_BANKKEEP) ? 1 : 0);
   out->species_written = rd16(e + E_SPECIES);
   out->otid16          = rd16(e + E_OTID);
   memcpy(out->dv4, e + E_DV4, 4);
@@ -302,6 +304,36 @@ int gbsc_set_claimed(uint8_t* buf, uint32_t len, int idx, bool claimed) {
   else         e[E_CLAIMED] &= (uint8_t)~EF_CLAIMED;   /* bit 0 ONLY -- preserve kind/state/direction/b5 */
   wr16(e + E_CRC, crc16(e, GBSC_ENTRY - 2));
   return 0;
+}
+
+/* BACKLOG #150 S150-11 decision 10. */
+int gbsc_set_state(uint8_t* buf, uint32_t len, int idx, uint8_t state) {
+  int count = gbsc_count(buf, len);
+  if (count < 0 || idx < 0 || idx >= count || state > EF_STATE_MASK) return -1;
+  uint8_t* e = buf + GBSC_HEADER + (uint32_t)idx * GBSC_ENTRY;
+  e[E_CLAIMED] = (uint8_t)((e[E_CLAIMED] & (uint8_t)~(EF_STATE_MASK << EF_STATE_SH)) |
+                           (uint8_t)((state & EF_STATE_MASK) << EF_STATE_SH));
+  wr16(e + E_CRC, crc16(e, GBSC_ENTRY - 2));
+  return 0;
+}
+
+/* BACKLOG #150 S150-11 decision 7/10. */
+int gbsc_set_bank_keep(uint8_t* buf, uint32_t len, int idx, bool keep) {
+  int count = gbsc_count(buf, len);
+  if (count < 0 || idx < 0 || idx >= count) return -1;
+  uint8_t* e = buf + GBSC_HEADER + (uint32_t)idx * GBSC_ENTRY;
+  if (keep) e[E_CLAIMED] |= EF_BANKKEEP;
+  else      e[E_CLAIMED] &= (uint8_t)~EF_BANKKEEP;   /* bit 6 ONLY */
+  wr16(e + E_CRC, crc16(e, GBSC_ENTRY - 2));
+  return 0;
+}
+
+/* BACKLOG #150 S150-11 decision 10 -- the gbsc_flags_get "absent == 0" convention. */
+uint64_t gbsc_file_key(const uint8_t* buf, uint32_t len) {
+  if (gbsc_count(buf, len) < 0) return 0;
+  uint64_t k = 0;
+  for (int i = 0; i < 8; i++) k |= (uint64_t)buf[8 + i] << (8 * i);
+  return k;
 }
 
 uint16_t gbsc_flags_get(const uint8_t* buf, uint32_t len) {

@@ -195,6 +195,10 @@ typedef struct {
   uint8_t  state;                        /* XR_STATE_* */
   uint8_t  direction;                    /* XR_DIR_ABROAD_* */
   uint8_t  has_written_moves;            /* 0/1 -- entry flags byte b5 */
+  /* BACKLOG #150 S150-11 decision 7/10 -- entry flags byte b6, placed LAST for the
+   * same struct-padding reason written_level/moves_written were: a whole-struct
+   * memcmp elsewhere in the tree stays valid without knowing this field exists. */
+  uint8_t  bank_keep;                    /* 0/1 -- KEEP BOTH was chosen for this row */
 } GbscEntry;
 
 /* Fills every field of `e` from the record `gen3_to_gb` just built (`written`) and the
@@ -273,6 +277,30 @@ int gbsc_evict_oldest(uint8_t* buf, uint32_t* len);
  * failure. Does NOT touch the header (count/flags/header crc16 are unaffected by a
  * claim -- only gbsc_add/gbsc_remove change the entry count). */
 int gbsc_set_claimed(uint8_t* buf, uint32_t len, int idx, bool claimed);
+
+/* BACKLOG #150 S150-11 decision 10 -- three in-place accessors, unfrozen for exactly
+ * these three plus bit b6 (bank_keep). In-place mutation keeps every OTHER entry's
+ * index stable within the file, which decision 9's single verified rewrite per file
+ * needs -- the alternative (remove+re-add, the only way `state` could change before
+ * this slice) moves an entry to the end and would invalidate every other pending
+ * hit's index in the same file.
+ *
+ * Set entry `idx`'s state (b1-b2, XR_STATE_*) and rewrite its crc16, same shape as
+ * gbsc_set_claimed. 0 on success, -1 on a bad index/state or a file that does not
+ * validate; `buf` unchanged on failure. */
+int gbsc_set_state(uint8_t* buf, uint32_t len, int idx, uint8_t state);
+
+/* Set/clear entry `idx`'s bank_keep bit (b6) and rewrite its crc16, same shape as
+ * gbsc_set_claimed -- touches ONLY b6, every other bit (claimed included) survives.
+ * A pre-#150-S150-11 gbsc_get() reader (one that does not know about b6) still reads
+ * `claimed` correctly either way, because b6 lives outside EF_CLAIMED/EF_STATE_MASK/
+ * EF_KIND/EF_DIR/EF_HASMOVES. */
+int gbsc_set_bank_keep(uint8_t* buf, uint32_t len, int idx, bool keep);
+
+/* The file's own fingerprint (header bytes 8..15, little-endian) -- what the
+ * filename encodes, read back without re-parsing hex. 0 when the file does not
+ * validate (the gbsc_flags_get "absent == 0" convention). */
+uint64_t gbsc_file_key(const uint8_t* buf, uint32_t len);
 
 /* Header `flags` (bit 0 GBSC_FLAG_KEEP_ASKED, see the header layout above). Rewrites
  * the header crc16 on set. gbsc_flags_get returns 0 for a file that does not
