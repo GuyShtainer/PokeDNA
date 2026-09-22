@@ -290,14 +290,23 @@ def run_b218_gender_glyph(core_mod, image_mod, rom: Path, out_dir: Path) -> Sess
 
     s.tap("A", settle=BIG_SETTLE)          # CREATE -> pick_species(1); real-art build -> icon grid
     s.press_n("DOWN", 4)                   # GCOLS=7: 0 -> 7 -> 14 -> 21 -> 28 = NIDORAN (F), #029
-    s.shot("01_picker_nidoran", "#218 BEFORE-evidence: the species picker cursor on "
-                                 "NIDORAN (F), national #029 -- the header is drawn by the "
-                                 "raw ui_text/tte path this item is about, and the frame "
-                                 "shows \"NIDORAN\" followed by an OUT-OF-BOUNDS GARBAGE "
-                                 "CELL, not a gender sign and not '?' (BACKLOG #222 tracks "
-                                 "the same fix for this call site)")
-                                 # no claim= here: this frame is the real-art icon grid (many
-                                 # colours), not the GB-shell font gb_claims.py's matcher reads
+    p01 = s.shot("01_picker_nidoran", "#222 FIXED (was #218's own BEFORE-evidence frame on "
+                                 "this picker header): the species picker cursor on NIDORAN "
+                                 "(F), national #029 -- the header (pdna_pick.c's hdr, drawn "
+                                 "by ui_text/tte) now shows \"NIDORAN?\" (one safe '?' glyph "
+                                 "for the 3-byte gender sign, source/ui.c's central "
+                                 "ui_ascii_bound), not the out-of-bounds garbage cell this "
+                                 "same frame used to show before BACKLOG #222's fix landed",
+           claim=["NIDORAN?"])
+    # DISCRIMINATING pin, same idea as b218_02's sys8 check below: the header is drawn by
+    # ui_text (sys8/tte), so proportional=False must find the LITERAL "NIDORAN?" pixels.
+    # An unfixed build reads an out-of-bounds glyph cell there instead -- essentially
+    # arbitrary VRAM/font-table bytes, not the real '?' glyph -- so this claim only holds
+    # once the bound is actually in the code path that drew this frame.
+    if not gb_claims.find(p01, "NIDORAN?", proportional=False):
+        raise RuntimeError("b218_01/#222: the species picker header does not show the "
+                           "bounded \"NIDORAN?\" -- the central ui_text fix (BACKLOG #222) "
+                           "is not in this build")
 
     s.tap("A", settle=BIG_SETTLE)          # confirm species -> builds the mon, opens the SUMMARY
     p = s.shot("02_summary_fixed", "#218 FIXED: SUMMARY, POKEMON INFO card -- Spec. and Name "
