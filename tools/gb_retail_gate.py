@@ -805,6 +805,49 @@ def check_level_slot(slot_idx, gen, nick, want_level):
     return _check
 
 
+def run_cafe_case(name, info, rom, sav, work, binary, python, vendor, tally, base_name, orig):
+    """BACKLOG #216b: rename a Gold/Crystal party mon to "CAFé" (UTF-8 e-acute) through
+    the surgery tool's --op nick -- gb_edit.c's enc_one encodes it to the real Gen-2
+    byte 0xEA, exactly the byte this lane's gen2_save.c fix now decodes back to "CAFé"
+    instead of folding it to a plain 'e'. Boots on the real ROM and checks TWO
+    independent things:
+      (a) the screen the game itself drew, via the SAME check_nick_slot() every other
+          nickname case here uses -- against "CAFe", not "CAFé": gb_roundtrip.py's own
+          CHARMAP (tools/gb_roundtrip.py, its own comment) deliberately flattens tile
+          0xEA to plain 'e' for grep-friendly test assertions, independently of and
+          unrelated to this lane's fix (that flattening is the Python test harness's
+          own long-standing convention for every accented tile, not a bug this lane
+          touches -- OTHER cases in this file rely on it the same way).
+      (b) the POST-BOOT dump, re-read through this tree's own --list (gb_edit.c's
+          gb_get_nickname, unaffected by this lane -- already UTF-8-correct before it)
+          -- must decode as the exact UTF-8 "CAFé", proving the game did not touch,
+          re-encode, or corrupt the byte across a real save/load cycle."""
+    if info["gen"] != 2:
+        return
+    nick = "CAFé"
+    cafe_sav = work / "cafe.sav"
+    rc, out, err = run_surgery(binary, sav, cafe_sav, [["nick", "party", "0", nick]])
+    if rc != 0:
+        tally.record("nickname e-acute (BACKLOG #216b)", False, f"surgery refused: {err.strip()}")
+        return
+    ok = edited_case(python, vendor, work, rom, info["gen"], cafe_sav, len(orig), "cafe",
+                     ["--expect-party", "CAFe", "--expect-name", base_name],
+                     tally, "nickname e-acute (BACKLOG #216b)",
+                     extra_check=check_nick_slot(0, "CAFe"))
+    if not ok:
+        return
+    dump_path = work / "cafe_dump.sav"
+    if not dump_path.exists():
+        tally.record("nickname e-acute readback (BACKLOG #216b)", False, "no post-boot dump")
+        return
+    list_out = subprocess.run([str(binary), "--in", str(dump_path), "--list"],
+                              capture_output=True, text=True).stdout
+    slots = parse_list(list_out).get("party", {}).get("slots", [])
+    got = slots[0]["nick"] if slots else None
+    tally.record("nickname e-acute readback (BACKLOG #216b)", got == nick,
+                f"post-boot --list decodes party slot 0 nick as {got!r}, want {nick!r}")
+
+
 def diff_dump(edited_path: Path, dump_path: Path):
     """Independent, file-level cross-check of gb_roundtrip's own SRAM figures: read the
     dump and the file we actually fed the emulator, and compare their SRAM spans
@@ -2269,6 +2312,10 @@ def run_game(name, info, rom, sav, scratch, binary, python, vendor, paste_rec_pa
                    tally, "nickname", extra_check=check_nick_slot(0, NEW_NICK))
     else:
         tally.record("nickname", False, f"surgery refused: {err.strip()}")
+
+    # ---- 3b. BACKLOG #216b — e-acute survives a real boot (Gen 2 only) ----
+    if gen == 2:
+        run_cafe_case(name, info, rom, sav, work, binary, python, vendor, tally, base_name, orig)
 
     # ---- 4. level edit, party slot 0 ----
     new_level = 50 if slot0["level"] != 50 else 40

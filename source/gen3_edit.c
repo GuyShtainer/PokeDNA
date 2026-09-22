@@ -613,6 +613,22 @@ void em_set_party_flag(EditMon* e, bool is_party) {
  * three trailing SPACES instead of the single charset byte. Retail stores the symbol:
  * a NIDORAN♂ caught in FireRed reads C8 C3 BE C9 CC BB C8 B5 FF — "NIDORAN" then 0xB5.
  * (0xB5 = ♂, 0xB6 = ♀.) */
+
+/* BACKLOG #216b: exact inverse of gen3_mon.c's decode_2byte_accent -- the umlauts
+ * (0xF1-0xF6) and × (0xB9), each a 2-byte UTF-8 "\xC3\x__" sequence with exactly one
+ * Gen-3 byte on the other side, same shape as the é case just below this table. */
+static bool encode_2byte_accent(uint8_t lo, uint8_t* out) {
+  static const struct { uint8_t lo, code; } k[] = {
+    { 0x84u, 0xF1u }, { 0x96u, 0xF2u }, { 0x9Cu, 0xF3u },
+    { 0xA4u, 0xF4u }, { 0xB6u, 0xF5u }, { 0xBCu, 0xF6u },
+    { 0x97u, 0xB9u },   /* × (U+00D7) */
+  };
+  for (size_t i = 0; i < sizeof k / sizeof k[0]; i++) {
+    if (k[i].lo == lo) { *out = k[i].code; return true; }
+  }
+  return false;
+}
+
 static void encode_name(uint8_t* dst, int cap, const char* s) {
   const unsigned char* p = (const unsigned char*)s;
   int i = 0;
@@ -628,6 +644,8 @@ static void encode_name(uint8_t* dst, int cap, const char* s) {
                                                     * inverse of decode_name's own
                                                     * 0x1B case (source/gen3_mon.c) */
       b = 0x1Bu; p += 2;
+    } else if (p[0] == 0xC3u && encode_2byte_accent(p[1], &b)) {
+      p += 2;
     } else if (p[0] >= 0x80u) {                  /* any other non-ASCII -> space */
       b = 0x00u; p++;
       while ((*p & 0xC0u) == 0x80u) p++;         /* skip its continuation bytes */

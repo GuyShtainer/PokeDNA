@@ -66,10 +66,13 @@ const char* g2w_status_text(G2WStatus st) {
 /* ============================================================== text encoding */
 
 /* Inverse of gen2_save.c's g2_glyph. Where the decoder maps two codes onto one character
- * (0x80/0xC0 both decode to 'A', 0xE8/0xF2 both to '.', 0xB7 'x' and 0xF1 the times sign)
- * the encoder picks the letter/plain form, so decode(encode(s)) == s while
- * encode(decode(b)) may differ for the decorative codes. That asymmetry is exactly why
- * every name setter below re-decodes what it just encoded and refuses on a mismatch. */
+ * (0x80/0xC0 both used to decode to 'A' before BACKLOG #216b gave 0xC0 its own UTF-8
+ * spelling "Ä"; 0xE8/0xF2 still both decode to '.') the encoder picks the letter/plain
+ * form, so decode(encode(s)) == s while encode(decode(b)) may differ for the remaining
+ * decorative codes (0xF2's decimal point has no spelling of its own here). That
+ * asymmetry is exactly why every name setter below re-decodes what it just encoded and
+ * refuses on a mismatch. The umlauts/é/× are NOT decorative any more: each UTF-8
+ * spelling now has exactly one Gen-2 byte, so they round-trip byte-exact, both ways. */
 static const struct { const char* s; uint8_t code; } k_multi[] = {
   /* Two-character contraction glyphs first — the games store these as ONE byte, so
    * matching them greedily is what lets a 10-glyph field hold "FARFETCH'D". */
@@ -77,6 +80,14 @@ static const struct { const char* s; uint8_t code; } k_multi[] = {
   { "'s", 0xD4 }, { "'t", 0xD5 }, { "'v", 0xD6 },
   /* The gender signs, spelled the way g2_decode_text emits them (UTF-8, 3 bytes). */
   { "\xE2\x99\x82", 0xEF }, { "\xE2\x99\x80", 0xF5 },
+  /* BACKLOG #216b: e-acute, the umlauts and the times sign, spelled the way
+   * g2_decode_text now emits them (source/gen2_save.c) -- each of these 8 UTF-8
+   * spellings has exactly ONE Gen-2 byte that decodes to it, so there is no ambiguity
+   * to pick a "plain form" for the way 0x80/0xC0 both decoding to 'A' has. */
+  { "\xC3\xA9", 0xEA },                                    /* é */
+  { "\xC3\x84", 0xC0 }, { "\xC3\x96", 0xC1 }, { "\xC3\x9C", 0xC2 },
+  { "\xC3\xA4", 0xC3 }, { "\xC3\xB6", 0xC4 }, { "\xC3\xBC", 0xC5 },
+  { "\xC3\x97", 0xF1 },                                    /* U+00D7 ×, not the letter x */
 };
 
 /* One glyph. Returns the input bytes consumed (0 = end of string or unrepresentable). */

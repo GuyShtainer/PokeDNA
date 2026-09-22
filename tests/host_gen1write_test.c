@@ -164,11 +164,14 @@ static void test_charset(void) {
   static const char* const ok[] = {
     "PIKACHU", "Mr Mime", "ABCDEFGHIJ", "A", "12345", "N.T", "IT'S", "HE'LL",
     "(A):B;", "[X]", "A-B", "WHY?", "YES!", "A/B", "A,B", "M\xE2\x99\x82", "F\xE2\x99\x80",
+    "CAF\xC3\xA9",                /* BACKLOG #216b: UTF-8 e-acute -> Gen-1 0xBA now round-trips */
+    "10\xC3\x97" "5",             /* BACKLOG #216b review D1: UTF-8 times sign -> Gen-1 0xF1 round-trips */
   };
   static const char* const bad[] = {
     "", "ABCDEFGHIJK",           /* empty / 11 glyphs                       */
     "A#B", "A@B", "A*B", "A+B", "A=B", "A\"B", "A_B", "A%B", "A&B", "A$B",
-    "caf\xC3\xA9",               /* UTF-8 e-acute: the charset has no letter for it */
+    "\xC3\x84",                  /* BACKLOG #216b: UTF-8 A-umlaut -- Gen 1 has NO umlaut
+                                   * code points at all (pokered's charmap.asm has none) */
   };
   uint8_t f[GEN1_NAME_BYTES];
   char back[64];

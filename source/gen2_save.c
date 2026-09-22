@@ -392,10 +392,13 @@ bool g2_list_species(const uint8_t* list, int box, int slot, uint8_t* species, b
  *   0x7F   space
  *   0x80-0x99 A-Z   0x9A-0x9F ( ) : ; [ ]
  *   0xA0-0xB9 a-z
- *   0xC0-0xC5 A O U a o u with umlauts   0xD0-0xD6 'd 'l 'm 'r 's 't 'v
- *   0xE0 '  0xE3 -  0xE6 ?  0xE7 !  0xE8 .  0xE9 &  0xEA e-acute  0xEF male
- *   0xF0 currency  0xF1 x  0xF2 .  0xF3 /  0xF4 ,  0xF5 female  0xF6-0xFF 0-9
- * Untranslatable glyphs become spaces, the policy gen3_decode_char uses. */
+ *   0xC0-0xC5 A O U a o u with umlauts (UTF-8 Ä Ö Ü ä ö ü)  0xD0-0xD6 'd 'l 'm 'r 's 't 'v
+ *   0xE0 '  0xE3 -  0xE6 ?  0xE7 !  0xE8 .  0xE9 &  0xEA e-acute (UTF-8 é)  0xEF male
+ *   0xF0 currency  0xF1 x (UTF-8 U+00D7 ×, not the letter)  0xF2 .  0xF3 /  0xF4 ,
+ *   0xF5 female  0xF6-0xFF 0-9
+ * Untranslatable glyphs become spaces, the policy gen3_decode_char uses. BACKLOG #216b:
+ * the umlauts/é/× are spelled as multi-byte UTF-8, the same spellings gb_edit.c's
+ * enc_one already round-trips (source/gb_edit.c:682, 834-860). */
 static int put(char* out, int cap, int n, const char* s) {
   int len = (int)strlen(s);
   if (n + len >= cap) return -1;         /* leave room for the NUL */
@@ -412,16 +415,22 @@ static const char* g2_glyph(uint8_t c, char* tmp) {
     case 0x7F: return " ";
     case 0x9A: return "("; case 0x9B: return ")"; case 0x9C: return ":";
     case 0x9D: return ";"; case 0x9E: return "["; case 0x9F: return "]";
-    case 0xC0: return "A"; case 0xC1: return "O"; case 0xC2: return "U";
-    case 0xC3: return "a"; case 0xC4: return "o"; case 0xC5: return "u";
+    /* BACKLOG #216b: the umlauts, e-acute and the times sign are now spelled the SAME
+     * UTF-8 gb_edit.c's enc_one already round-trips back to these exact bytes
+     * (source/gb_edit.c:682/834-860) -- they used to fold onto the plain letter / 'e' /
+     * the letter 'x', which is what silently turned a Game Boy "MULLER" and "MÜLLER"
+     * into the same text one hop before gen12_convert ever ran. */
+    case 0xC0: return "\xC3\x84"; case 0xC1: return "\xC3\x96"; case 0xC2: return "\xC3\x9C";
+    case 0xC3: return "\xC3\xA4"; case 0xC4: return "\xC3\xB6"; case 0xC5: return "\xC3\xBC";
     case 0xD0: return "'d"; case 0xD1: return "'l"; case 0xD2: return "'m";
     case 0xD3: return "'r"; case 0xD4: return "'s"; case 0xD5: return "'t";
     case 0xD6: return "'v";
     case 0xE0: return "'";  case 0xE3: return "-";
     case 0xE6: return "?";  case 0xE7: return "!";  case 0xE8: return ".";
-    case 0xE9: return "&";  case 0xEA: return "e";
+    case 0xE9: return "&";  case 0xEA: return "\xC3\xA9";   /* e-acute */
     case 0xEF: return "\xE2\x99\x82";   /* male sign, spelled as in data_tables.c   */
-    case 0xF0: return "$";  case 0xF1: return "x";  case 0xF2: return ".";
+    case 0xF0: return "$";  case 0xF1: return "\xC3\x97";   /* U+00D7 x, NOT the letter x */
+    case 0xF2: return ".";
     case 0xF3: return "/";  case 0xF4: return ",";
     case 0xF5: return "\xE2\x99\x80";   /* female sign */
     default:   return " ";

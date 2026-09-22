@@ -115,6 +115,50 @@ static void test_eacute_roundtrip(void) {
   expect(!notes.nick_lossy, "notes.nick_lossy is false -- e-acute round-trips exactly");
 }
 
+/* ---- (1e) BACKLOG #216b: the umlauts + x round-trip through decode_name/encode_name */
+static void test_umlaut_times_roundtrip(void) {
+  printf("\n== (1e) the umlauts (F1-F6) and x (0xB9) round-trip through "
+         "gen3_decode_name/encode_name ==\n");
+  /* Same shape as test_eacute_roundtrip: gen3_decode_char itself is untouched for
+   * these 7 codes (a `char` return cannot carry 2 UTF-8 bytes), so decode_name /
+   * encode_name are the functions that actually own this, and this is what exercises
+   * the real path a nickname takes rather than the raw byte table test_full_sweep
+   * covers. Mutate any one of gen3_mon.c's decode_2byte_accent table entries (or
+   * gen3_edit.c's encode_2byte_accent inverse) and this fails. */
+  static const struct { uint8_t code; const char* utf8; const char* what; } k[] = {
+    { 0xF1u, "\xC3\x84", "A-umlaut" }, { 0xF2u, "\xC3\x96", "O-umlaut" },
+    { 0xF3u, "\xC3\x9C", "U-umlaut" }, { 0xF4u, "\xC3\xA4", "a-umlaut" },
+    { 0xF5u, "\xC3\xB6", "o-umlaut" }, { 0xF6u, "\xC3\xBC", "u-umlaut" },
+    { 0xB9u, "\xC3\x97", "times sign (U+00D7, not the letter x)" },
+  };
+  for (size_t i = 0; i < sizeof k / sizeof k[0]; i++) {
+    Gb12Mon in;
+    memset(&in, 0, sizeof in);
+    in.gen = 1;
+    in.species_dex = 1;      /* Bulbasaur */
+    in.exp = 0; in.level = 1;
+    in.dv_atk = in.dv_def = in.dv_spd = in.dv_spc = 8;
+    in.moves[0] = 1;
+    in.ot_id = 1;
+    snprintf(in.nickname, sizeof in.nickname, "CAF%s", k[i].utf8);
+    strcpy(in.ot_name, "GUY");
+
+    Gb12Target tgt = { .met_game = 3 };
+    uint8_t rec[80];
+    Gb12Notes notes;
+    Gb12Result r = gen12_convert(&in, &tgt, rec, &notes);
+    char what[80];
+    snprintf(what, sizeof what, "%s fixture converts", k[i].what);
+    expect(r == GB12_OK, what);
+    if (r != GB12_OK) continue;
+
+    snprintf(what, sizeof what, "nickname's 4th glyph is 0x%02X (%s)", k[i].code, k[i].what);
+    expect(rec[0x0B] == k[i].code, what);
+    snprintf(what, sizeof what, "notes.nick_lossy is false -- %s round-trips exactly", k[i].what);
+    expect(!notes.nick_lossy, what);
+  }
+}
+
 /* ---- (1d) BACKLOG #216: a Gen-1 <PK> ligature name overflowing the Gen-3 field - */
 static void test_ligature_overflow_lossy(void) {
   printf("\n== (1d) a Gen-1 <PK> ligature nickname that overflows the Gen-3 cap is "
@@ -249,6 +293,7 @@ int main(void) {
   test_full_sweep();
   test_new_ascii_codes();
   test_eacute_roundtrip();
+  test_umlaut_times_roundtrip();
   test_ligature_overflow_lossy();
   test_nidoran_female_lossless();
   test_nidoran_male_lossless();

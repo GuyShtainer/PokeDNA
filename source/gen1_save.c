@@ -96,7 +96,15 @@ int gen1_char_ascii(uint8_t c, char out[3]) {
     case 0x9Du: out[0] = ';';  return 1;
     case 0x9Eu: out[0] = '[';  return 1;
     case 0x9Fu: out[0] = ']';  return 1;
-    case 0xBAu: out[0] = 'e';  return 1;   /* e-acute; ASCII has no accent to keep */
+    /* BACKLOG #216b: e-acute, spelled the same "\xC3\xA9" UTF-8 gb_edit.c's enc_one
+     * already round-trips back to 0xBA (source/gb_edit.c:682) -- was folded to a plain
+     * 'e' here, which is what silently turned a Game Boy "CAFe" (typo, sic) into the
+     * SAME text as a genuine "CAFé", so gen12_convert.c's note_spelling_loss (which
+     * compares at the Gen-3 byte level) could never tell the two apart. Gen 1 has NO
+     * umlaut code points at all (pokered/constants/charmap.asm has no umlaut entry;
+     * confirmed against the checkout at assets/upstream/pokered) -- é and × cross. */
+    case 0xBAu: out[0] = (char)0xC3; out[1] = (char)0xA9; return 2;   /* é, UTF-8 */
+    case 0xF1u: out[0] = (char)0xC3; out[1] = (char)0x97; return 2;   /* ×, UTF-8 -- pokered charmap.asm:181 (review D1) */
     /* The five lowercase contractions ('d 'l 's 't 'v — "you'd", "he'll", "it's",
      * "don't", "we've") are ONE byte on the GB and two characters in ASCII, so
      * decoding a name can produce more characters than it read. The Gen1Mon name

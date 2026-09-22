@@ -1291,6 +1291,8 @@ static void t_text(void) {
   static const char* ok[] = {
     "PIKACHU", "FARFETCH'D", "MR.MIME", "NIDORAN\xE2\x99\x82", "NIDORAN\xE2\x99\x80",
     "A B-C", "abc XYZ 09", "HO-OH", "(A):[B];", "IT'S 100$", "a,b/c&d", "WHAT?!",
+    /* BACKLOG #216b: e-acute, the umlauts and the times sign now round-trip too. */
+    "CAF\xC3\xA9", "M\xC3\x9CLLER", ("10\xC3\x97" "5"),
   };
   uint8_t field[11];
   char back[G2_NAME_BYTES];
@@ -1331,7 +1333,9 @@ static void t_text(void) {
   CHECK(strcmp(back, "you'd") == 0, "...and decodes straight back");
   CHECK(g2w_text_glyphs("NIDORAN\xE2\x99\x82") == 8, "a gender sign counts as one glyph");
 
-  static const char* nope[] = { "caf\xC3\xA9", "A#B", "TAB\tX", "\xE2\x98\x85", "a+b", "%", };
+  /* BACKLOG #216b: "caf\xC3\xA9" used to be here (the charset had no byte for e-acute);
+   * it now belongs in `ok` above. "\xE2\x98\x85" (a star) still has no Gen-2 byte at all. */
+  static const char* nope[] = { "\xE2\x98\x85", "A#B", "TAB\tX", "a+b", "%", };
   for (unsigned i = 0; i < sizeof nope / sizeof nope[0]; i++) {
     char msg[128];
     snprintf(msg, sizeof msg, "refuses unrepresentable input #%u", i);
@@ -1375,7 +1379,7 @@ static void t_text(void) {
   int box = pick_box(&w, list, 1, false);
   if (box < 0) { printf("     SKIP (no banked box with a Pokemon in it)\n"); return; }
   memcpy(copy, list, (size_t)g2_list_size(box));
-  CHECK_ST(g2w_set_nickname(list, box, 0, "caf\xC3\xA9"), G2W_ERR_TEXT,
+  CHECK_ST(g2w_set_nickname(list, box, 0, "\xE2\x98\x85"), G2W_ERR_TEXT,
            "an unrepresentable nickname is refused");
   CHECK(memcmp(list, copy, (size_t)g2_list_size(box)) == 0,
         "...and the refused write left the buffer untouched");
@@ -1383,6 +1387,13 @@ static void t_text(void) {
   G2Mon m;
   CHECK(g2_list_mon(list, box, 0, &m) && strcmp(m.nickname, "FARFETCH'D") == 0,
         "the reader reads it back exactly");
+  /* BACKLOG #216b: café is no longer unrepresentable -- e-acute has a real Gen-2 byte. */
+  CHECK_ST(g2w_set_nickname(list, box, 0, "CAF\xC3\xA9"), G2W_OK,
+           "a nickname holding e-acute now round-trips");
+  CHECK(g2_list_mon(list, box, 0, &m) && strcmp(m.nickname, "CAF\xC3\xA9") == 0,
+        "...and the reader reads it back exactly");
+  CHECK_ST(g2w_set_nickname(list, box, 0, "FARFETCH'D"), G2W_OK,
+           "restore the slot for whatever runs after this");
   CHECK_ST(g2w_set_box_name(&w, 0, "\xE2\x98\x85"), G2W_ERR_TEXT,
            "an unrepresentable box name is refused");
 }

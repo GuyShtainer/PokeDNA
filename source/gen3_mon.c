@@ -46,10 +46,13 @@ static const uint8_t k_substruct_pos[24][3] = {
  * plain '?'. The other 39 codes in the accented block (0x01-0x2B minus 0x1B) have
  * no glyph in this app's font at all and stay '?' -- this app's font has no
  * glyph for them, so they would render as '?' anyway -- a DISPLAY limit, not a
- * data one: the umlauts F1-F6 and 0xB9 '×' do have UTF-8 spellings gb_edit.c's
- * enc_one already round-trips, so decoding them would preserve them across the
- * GB bridge (BACKLOG #216b). decode_name stays the only place that owns
- * BOTH special cases -- one thin function, not duplicated logic. */
+ * data one. BACKLOG #216b: the umlauts F1-F6 and 0xB9 '×' get the SAME
+ * treatment below (decode_2byte_accent) -- they have UTF-8 spellings gb_edit.c's
+ * enc_one already round-trips, so decoding them preserves them across the GB
+ * bridge; ui_ascii.c's pnext() has NO glyph slot for them (unlike é at font
+ * code 127), so they still render '?' on screen -- a display limit, not a data
+ * one, the same as the other 39. decode_name stays the only place that owns
+ * ALL of these special cases -- one thin function, not duplicated logic. */
 /* BACKLOG #217: `degraded` (may be NULL) is set true when a multi-byte glyph (the
  * gender sign or e-acute) hit the `oi + N < outcap` bound above and fell through
  * to gen3_decode_char(b) instead -- which has no case for 0xB5/0xB6/0x1B, so that
@@ -60,6 +63,25 @@ static const uint8_t k_substruct_pos[24][3] = {
  * once true within one call: a caller passes a fresh bool (pk_decode_mon zeroes
  * the whole PkMon first), so "true" only ever means "this field's whole decoded
  * string is a fresh output, and truncation was in it." */
+/* BACKLOG #216b: the umlauts (0xF1-0xF6, pokeemerald charmap.txt: Ä Ö Ü ä ö ü) and ×
+ * (0xB9) get the SAME 2-byte-UTF-8-insertion treatment as 0x1B (e-acute) above, for the
+ * same reason -- gen3_decode_char's `char` return cannot carry 2 output bytes. Every
+ * one of these 7 spellings shares the "\xC3" lead byte, so one small table plus the
+ * existing bound check covers all seven with no new control-flow shape. This is what
+ * closes the GB bridge for names carrying them (gb_edit.c's enc_one already round-trips
+ * these same spellings to Gen 1/2 bytes -- see gen1_save.c:99, gen2_save.c's g2_glyph). */
+static bool decode_2byte_accent(uint8_t b, char out2[2]) {
+  static const struct { uint8_t code, lo; } k[] = {
+    { 0xF1u, 0x84u },  /* Ä */ { 0xF2u, 0x96u },  /* Ö */ { 0xF3u, 0x9Cu },  /* Ü */
+    { 0xF4u, 0xA4u },  /* ä */ { 0xF5u, 0xB6u },  /* ö */ { 0xF6u, 0xBCu },  /* ü */
+    { 0xB9u, 0x97u },  /* × (U+00D7), NOT the letter x */
+  };
+  for (size_t i = 0; i < sizeof k / sizeof k[0]; i++) {
+    if (k[i].code == b) { out2[0] = (char)0xC3; out2[1] = (char)k[i].lo; return true; }
+  }
+  return false;
+}
+
 static void decode_name(char* out, int outcap, const uint8_t* src, int maxlen, bool* degraded) {
   int k = 0, oi = 0;
   for (; k < maxlen; k++) {
@@ -73,7 +95,13 @@ static void decode_name(char* out, int outcap, const uint8_t* src, int maxlen, b
       out[oi++] = (char)0xC3; out[oi++] = (char)0xA9;
       continue;
     }
-    if ((b == 0xB5u || b == 0xB6u || b == 0x1Bu) && degraded) *degraded = true;
+    char accent[2];
+    if (decode_2byte_accent(b, accent) && oi + 2 < outcap) {
+      out[oi++] = accent[0]; out[oi++] = accent[1];
+      continue;
+    }
+    if ((b == 0xB5u || b == 0xB6u || b == 0x1Bu || decode_2byte_accent(b, accent)) && degraded)
+      *degraded = true;
     char ch = gen3_decode_char(b);
     if (ch == 0) break;
     if (oi + 1 >= outcap) break;
