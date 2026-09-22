@@ -5119,7 +5119,8 @@ def run_s150_15_view_original(core_mod, image_mod, rom: Path, out_dir: Path) -> 
            "-- the PARITY REFERENCE for 05_original_info_card below. Footer reads "
            "'A edit' (can_edit is TRUE here, S150-14) -- GB ORIGINAL's own entry is "
            "structurally read-only instead (decision 7), so that ONE line is the "
-           "expected, correct difference, not a bug")
+           "expected, correct difference, not a bug",
+           claim=["CHIKORITA", "A edit"])   # BACKLOG #214 item 3 retrofit
     s.tap("B", settle=150)                                   # VIEW -> Bank grid
     s.tap("B", settle=150)                                   # Bank -> PC box view
 
@@ -5147,7 +5148,8 @@ def run_s150_15_view_original(core_mod, image_mod, rom: Path, out_dir: Path) -> 
            "MOVE, COPY, PASTE, DUPLICATE, TO DAY-CARE)",
            claim=["GB ORIGINAL"])  # BACKLOG #221 retrofit
     s.press_n("DOWN", 3, settle=80)
-    s.shot("04_row_selected", "S150-15: DOWN x3 -- GB ORIGINAL highlighted")
+    s.shot("04_row_selected", "S150-15: DOWN x3 -- GB ORIGINAL highlighted",
+           claim=["GB ORIGINAL"])   # BACKLOG #214 item 3 retrofit
     s.tap("A", settle=300)
     s.shot("05_original_info_card", "S150-15: A -- the REAL Gen-1/2 summary opens over "
            "the ledger's original80, chip reads VIEW, GB2 -- compare to 00 above "
@@ -5182,7 +5184,8 @@ def run_s150_15_view_original(core_mod, image_mod, rom: Path, out_dir: Path) -> 
     s.shot("10_control_no_row", "S150-15: A on an ORDINARY box-1 mon (no ledger entry) "
            "-- the same menu family, without GB ORIGINAL (control; not byte-identical "
            "to 03/04 -- this PC (not Bank) mon also carries its own EXPORT .pk row, "
-           "TO GAME/EXPORT's own is_bank branch)")
+           "TO GAME/EXPORT's own is_bank branch)",
+           claim=["MAGNEMITE", "EXPORT .pk"], claim_absent="GB ORIGINAL")   # BACKLOG #214 item 3 retrofit
     s.tap("B", settle=150)
 
     # ---- a Bank Gen-3 cell that is abroad also shows the row ----------------------
@@ -5203,7 +5206,8 @@ def run_s150_15_view_original(core_mod, image_mod, rom: Path, out_dir: Path) -> 
     s.tap("A", settle=250)                                   # A on the Bank-pasted mon -> menu
     s.shot("11_bank_abroad_menu_row", "S150-15: a Bank Gen-3 cell that is abroad "
            "(the pasted CHIKORITA, COPIEd then PASTEd into an empty Bank slot) also "
-           "shows GB ORIGINAL -- decision 1's 'a Bank cell that is abroad' scope")
+           "shows GB ORIGINAL -- decision 1's 'a Bank cell that is abroad' scope",
+           claim=["GB ORIGINAL"])   # BACKLOG #214 item 3 retrofit
     return s
 
 
