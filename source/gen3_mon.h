@@ -16,6 +16,12 @@
 
 enum { PK_HP = 0, PK_ATK, PK_DEF, PK_SPE, PK_SPA, PK_SPD, PK_NSTATS };
 
+/* PkMon.nameFlags bits (BACKLOG #217) -- a field's DECODED string carries a
+ * literal '?' standing in for a real glyph (gender sign / e-acute) that could
+ * not fit the fixed-width nickname[11]/otName[8] buffer. */
+#define PK_NAME_NICK_DEGRADED 0x01u
+#define PK_NAME_OT_DEGRADED   0x02u
+
 typedef struct {
   uint16_t species;           /* INTERNAL Gen-3 index (1..411); 0 = none        */
   char     nickname[11];      /* decoded, 10 chars + NUL                         */
@@ -42,6 +48,23 @@ typedef struct {
   uint16_t stats[PK_NSTATS];  /* party: plaintext; box: computed                 */
   uint8_t  gender;            /* 0=M, 1=F, 2=genderless (filled by pk_resolve)   */
   uint8_t  form;              /* Unown letter 0..27 (A..?), else 0               */
+  /* BACKLOG #217: set by decode_name (source/gen3_mon.c) when a 2/3-byte glyph
+   * (the gender sign, or e-acute -- BACKLOG #216) ran out of room in the FIXED
+   * nickname[11]/otName[8] field and fell back to a literal '?' in that field's
+   * DECODED string. DO NOT widen nickname/otName to fit the worst case: PkMon is
+   * copied into g_box[30] (pdna_box.c) and every other per-slot array this app
+   * has, all EWRAM, and this project's whole EWRAM budget was 912 B free at the
+   * time this bit was added -- a wider PkMon was priced at ~1.1 KB, more than the
+   * entire remaining budget. This byte sits in what was PkMon's own trailing
+   * padding (host: the 6 bytes between `form` and the 8-byte-aligned `raw`;
+   * ON THE GBA, which is what the EWRAM budget counts, sizeof(PkMon) is 112 with
+   * `form`@105 and `raw`@108 -- so this byte took one of TWO spare bytes and
+   * exactly ONE is left. A second flag byte still fits; a third moves sizeof and
+   * costs 30 B per g_box slot. tests/host_gen3_codec_lossy_test.c and every
+   * existing PkMon array site were checked against this; if sizeof(PkMon) ever
+   * moves off its expected value, something about that padding assumption broke
+   * and needs re-deriving, not just re-measuring. */
+  uint8_t  nameFlags;
   const uint8_t* raw;         /* back-ref to the 80/100-byte record (edit later).
                                * NULL = the caller's copy is gone; never dereference.
                                * pk_decode_mon() always sets this to whatever buffer it

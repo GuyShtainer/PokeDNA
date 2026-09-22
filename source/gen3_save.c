@@ -65,6 +65,29 @@ char gen3_decode_char(uint8_t c) {
      * this. See tests/host_charmap_test.c for the round-trip regression test. */
     case 0xB8: return ',';
     case 0xBA: return '/';
+    /* BACKLOG #216: of the 64 English-keyboard-adjacent Gen-3 glyphs that fell to
+     * the default '?' (the accented block 0x01-0x2B, + = ¿ ¡ Í % â í < > · … curly
+     * quotes ¥ × ▶ and the umlauts F1-F6 -- pokeemerald/pokeruby/pokefirered
+     * charmap.txt cross-checked against source/data_tables.c's own species-name
+     * spellings, e.g. NIDORAN's gender sign), only these five are PLAIN ASCII
+     * (32..127) -- PokeDNA's own font (source/ui_font.c) already has a glyph for
+     * every one of them with no UTF-8 or multi-byte trick needed, unlike the
+     * lowercase e-acute at 0x1B (source/gen3_mon.c's decode_name has that one, the
+     * same 2-byte-UTF-8-insertion shape the gender sign already uses) or the other
+     * 58 codes, which genuinely have no representation in this app's font and stay
+     * '?' -- this app's font has no glyph for them, so they would render as '?'
+     * anyway -- a DISPLAY limit, not a data one: the umlauts F1-F6 and 0xB9 '×' do
+     * have UTF-8 spellings gb_edit.c's enc_one already round-trips, so decoding
+     * them would preserve them across the GB bridge (BACKLOG #216b).
+     * tests/host_gen3_codec_lossy_test.c's full sweep pins the exact
+     * before/after unmapped count so a future glyph addition here is a deliberate,
+     * counted change, not a silent drift. gen3_encode_char (source/gen3_edit.c) is
+     * this function's exact inverse for all five. */
+    case 0x2E: return '+';
+    case 0x35: return '=';
+    case 0x5B: return '%';
+    case 0x85: return '<';
+    case 0x86: return '>';
     default:   return '?';
   }
 }

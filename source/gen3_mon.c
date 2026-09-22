@@ -36,8 +36,31 @@ static const uint8_t k_substruct_pos[24][3] = {
  * upper bound, not lean on the caller's field-size intuition. A corrupt/crafted
  * save COULD have every glyph be a gender sign; degrading to gen3_decode_char's
  * plain '?' once the buffer is nearly full is a safe, bounded fallback -- never a
- * silent overflow (golden rule 2: every loop proves its own bound). */
-static void decode_name(char* out, int outcap, const uint8_t* src, int maxlen) {
+ * silent overflow (golden rule 2: every loop proves its own bound).
+ *
+ * BACKLOG #216: 0x1B (lowercase e-acute, pokeemerald charmap.txt) gets the SAME
+ * treatment for the SAME reason -- it needs the 2-byte UTF-8 sequence "\xC3\xA9",
+ * which is exactly the spelling source/ui.c's own pnext() already special-cases at
+ * font code 127 (the ONE non-ASCII glyph PokeDNA's font can draw), so a decoded
+ * name carrying it renders correctly instead of falling to gen3_decode_char's
+ * plain '?'. The other 39 codes in the accented block (0x01-0x2B minus 0x1B) have
+ * no glyph in this app's font at all and stay '?' -- this app's font has no
+ * glyph for them, so they would render as '?' anyway -- a DISPLAY limit, not a
+ * data one: the umlauts F1-F6 and 0xB9 '×' do have UTF-8 spellings gb_edit.c's
+ * enc_one already round-trips, so decoding them would preserve them across the
+ * GB bridge (BACKLOG #216b). decode_name stays the only place that owns
+ * BOTH special cases -- one thin function, not duplicated logic. */
+/* BACKLOG #217: `degraded` (may be NULL) is set true when a multi-byte glyph (the
+ * gender sign or e-acute) hit the `oi + N < outcap` bound above and fell through
+ * to gen3_decode_char(b) instead -- which has no case for 0xB5/0xB6/0x1B, so that
+ * fallthrough is ALWAYS a literal '?' standing in for a real glyph that just
+ * didn't fit, never a genuine '?' byte (0xAC) typed by a player: gen3_decode_char
+ * DOES have a case for 0xAC, so 0xAC never reaches this fallthrough at all --
+ * `b` here is provably always one of the three multi-byte codes. Never set false
+ * once true within one call: a caller passes a fresh bool (pk_decode_mon zeroes
+ * the whole PkMon first), so "true" only ever means "this field's whole decoded
+ * string is a fresh output, and truncation was in it." */
+static void decode_name(char* out, int outcap, const uint8_t* src, int maxlen, bool* degraded) {
   int k = 0, oi = 0;
   for (; k < maxlen; k++) {
     uint8_t b = src[k];
@@ -46,6 +69,11 @@ static void decode_name(char* out, int outcap, const uint8_t* src, int maxlen) {
       out[oi++] = (char)(b == 0xB5u ? 0x82 : 0x80);
       continue;
     }
+    if (b == 0x1Bu && oi + 2 < outcap) {          /* e-acute -> pnext()'s own "\xC3\xA9" */
+      out[oi++] = (char)0xC3; out[oi++] = (char)0xA9;
+      continue;
+    }
+    if ((b == 0xB5u || b == 0xB6u || b == 0x1Bu) && degraded) *degraded = true;
     char ch = gen3_decode_char(b);
     if (ch == 0) break;
     if (oi + 1 >= outcap) break;
@@ -63,7 +91,7 @@ static void decode_name(char* out, int outcap, const uint8_t* src, int maxlen) {
  * logic duplicated: `decode_name` stays the only place that owns the gender-sign
  * special case. */
 void gen3_decode_name(char* out, int outcap, const uint8_t* src, int maxlen) {
-  decode_name(out, outcap, src, maxlen);
+  decode_name(out, outcap, src, maxlen, NULL);
 }
 
 uint8_t pk_nature(uint32_t personality) { return (uint8_t)(personality % 25); }
@@ -193,8 +221,12 @@ bool pk_decode_mon(const uint8_t* mon, bool is_party, PkMon* out) {
   out->nature  = pk_nature(pers);
   out->isShiny = pk_is_shiny(pers, (uint16_t)(otid & 0xFFFF), (uint16_t)(otid >> 16));
 
-  decode_name(out->nickname, (int)sizeof out->nickname, mon + 0x08, 10);
-  decode_name(out->otName,   (int)sizeof out->otName,   mon + 0x14, 7);
+  /* BACKLOG #217: out->nameFlags starts 0 (pk_decode_mon's own memset above). */
+  bool nickDegraded = false, otDegraded = false;
+  decode_name(out->nickname, (int)sizeof out->nickname, mon + 0x08, 10, &nickDegraded);
+  decode_name(out->otName,   (int)sizeof out->otName,   mon + 0x14, 7,  &otDegraded);
+  if (nickDegraded) out->nameFlags |= PK_NAME_NICK_DEGRADED;
+  if (otDegraded)   out->nameFlags |= PK_NAME_OT_DEGRADED;
 
   if (is_party) {
     out->level = mon[0x54];

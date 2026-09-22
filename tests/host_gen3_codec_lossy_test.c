@@ -23,6 +23,7 @@
 #include <string.h>
 #include "gen3_save.h"      /* gen3_decode_char */
 #include "gen3_edit.h"      /* gen3_encode_char */
+#include "gen3_mon.h"       /* gen3_decode_name */
 #include "gen12_convert.h"  /* gen12_convert, Gb12Mon, Gb12Notes */
 
 static int fails = 0, checks = 0;
@@ -55,7 +56,101 @@ static void test_full_sweep(void) {
     }
   }
   printf("  swept %d codes, %d unmapped\n", tested, unmapped);
-  expect(unmapped == 179, "the unmapped-code population has not moved");
+  /* BACKLOG #216: 179 -> 174 -- gen3_decode_char gained 5 plain-ASCII cases
+   * (0x2E '+', 0x35 '=', 0x5B '%', 0x85 '<', 0x86 '>'; source/gen3_save.c). The
+   * lowercase e-acute (0x1B) is NOT one of these five: gen3_decode_char itself
+   * stays untouched for it (same reason the gender signs do -- a `char` return
+   * cannot carry 2 UTF-8 bytes), so it is still counted "unmapped" by THIS sweep
+   * even though source/gen3_mon.c's decode_name now special-cases it, exactly
+   * like 0xB5/0xB6 already are (see test_eacute_roundtrip below, which exercises
+   * that path directly instead of through gen3_decode_char). */
+  expect(unmapped == 174, "the unmapped-code population moved by exactly the 5 "
+                          "new plain-ASCII cases (BACKLOG #216)");
+}
+
+/* ---- (1b) BACKLOG #216: the 5 new plain-ASCII codes round-trip too -------------- */
+static void test_new_ascii_codes(void) {
+  printf("\n== (1b) the 5 new plain-ASCII Gen-3 codes round-trip ==\n");
+  static const struct { char ch; uint8_t code; } NEW[] = {
+    {'+', 0x2E}, {'=', 0x35}, {'%', 0x5B}, {'<', 0x85}, {'>', 0x86},
+  };
+  for (size_t i = 0; i < sizeof NEW / sizeof NEW[0]; i++) {
+    char what[64];
+    snprintf(what, sizeof what, "decode(0x%02x) == '%c'", NEW[i].code, NEW[i].ch);
+    checks++;
+    if (gen3_decode_char(NEW[i].code) != NEW[i].ch) { fails++; printf("  FAIL %s\n", what); }
+    else printf("  ok   %s\n", what);
+    snprintf(what, sizeof what, "encode('%c') == 0x%02x", NEW[i].ch, NEW[i].code);
+    checks++;
+    if (gen3_encode_char(NEW[i].ch) != NEW[i].code) { fails++; printf("  FAIL %s\n", what); }
+    else printf("  ok   %s\n", what);
+  }
+}
+
+/* ---- (1c) BACKLOG #216: e-acute round-trips through decode_name/encode_name --- */
+static void test_eacute_roundtrip(void) {
+  printf("\n== (1c) e-acute (0x1B) round-trips through gen3_decode_name/encode_name ==\n");
+  /* decode_name/encode_name are the functions that actually own this special case
+   * (same shape as the gender signs) -- gen3_decode_char itself is untouched for
+   * 0x1B, so this exercises the real path a nickname takes, not the byte table. */
+  Gb12Mon in;
+  memset(&in, 0, sizeof in);
+  in.gen = 1;
+  in.species_dex = 1;      /* Bulbasaur */
+  in.exp = 0; in.level = 1;
+  in.dv_atk = in.dv_def = in.dv_spd = in.dv_spc = 8;
+  in.moves[0] = 1;
+  in.ot_id = 1;
+  strcpy(in.nickname, "CAF\xC3\xA9");   /* "CAFé" -- e-acute, UTF-8 C3 A9 */
+  strcpy(in.ot_name, "GUY");
+
+  Gb12Target tgt = { .met_game = 3 };
+  uint8_t rec[80];
+  Gb12Notes notes;
+  Gb12Result r = gen12_convert(&in, &tgt, rec, &notes);
+  expect(r == GB12_OK, "e-acute fixture converts");
+  if (r != GB12_OK) return;
+
+  expect(rec[0x0B] == 0x1B, "nickname's 4th glyph (offset 0x0B, after C-A-F) is 0x1B (e-acute)");
+  expect(!notes.nick_lossy, "notes.nick_lossy is false -- e-acute round-trips exactly");
+}
+
+/* ---- (1d) BACKLOG #216: a Gen-1 <PK> ligature name overflowing the Gen-3 field - */
+static void test_ligature_overflow_lossy(void) {
+  printf("\n== (1d) a Gen-1 <PK> ligature nickname that overflows the Gen-3 cap is "
+         "flagged lossy ==\n");
+  /* gen1_decode_name expands 0xE1 (<PK>) to 2 ASCII chars ('P','K') each -- 6 raw
+   * GB bytes decode to "PKPKPKPKPKPK" (12 chars), past the Gen-3 nickname field's
+   * 10-glyph cap. This is what "note_spelling_loss is blind to the GB-decode hop"
+   * (BACKLOG #216) asks to be proven NOT blind to: the comparison already runs at
+   * the Gen-3 byte level (`written` is decoded straight from out80), so the
+   * truncation shows up as written != intended and gets flagged. */
+  Gb12Mon in;
+  memset(&in, 0, sizeof in);
+  in.gen = 1;
+  in.species_dex = 25;      /* Pikachu */
+  in.exp = 1000; in.level = 10;
+  in.dv_atk = in.dv_def = in.dv_spd = in.dv_spc = 10;
+  in.moves[0] = 33;
+  in.ot_id = 12345;
+  strcpy(in.nickname, "PKPKPKPKPKPK");
+  strcpy(in.ot_name, "GUY");
+
+  Gb12Target tgt = { .met_game = 3 };
+  uint8_t rec[80];
+  Gb12Notes notes;
+  Gb12Result r = gen12_convert(&in, &tgt, rec, &notes);
+  expect(r == GB12_OK, "ligature-overflow fixture converts");
+  if (r != GB12_OK) return;
+
+  char written[32];
+  gen3_decode_name(written, sizeof written, rec + 0x08, 10);
+  checks++;
+  if (strlen(written) != 10) { fails++; printf("  FAIL written nickname is %d chars, want 10 "
+                                                "(truncated at the Gen-3 field cap)\n", (int)strlen(written)); }
+  else printf("  ok   written nickname truncated to 10 chars: \"%s\"\n", written);
+  expect(notes.nick_lossy, "notes.nick_lossy is true -- the ligature expansion overflowed "
+                            "the Gen-3 field and got silently truncated");
 }
 
 /* ---- shared fixture: a minimal, always-convertible Gb12Mon ------------------ */
@@ -152,6 +247,9 @@ static void test_punctuation_is_lossless(void) {
 
 int main(void) {
   test_full_sweep();
+  test_new_ascii_codes();
+  test_eacute_roundtrip();
+  test_ligature_overflow_lossy();
   test_nidoran_female_lossless();
   test_nidoran_male_lossless();
   test_bracket_is_lossy();
