@@ -1041,15 +1041,17 @@ def main() -> int:
           "occupancy check -- a refused GB lift could fall through unnoticed")
 
     # ---- (i) REVIEW F2: drop_held's UP branch commits the Bank write BEFORE it ever
-    # calls release_up (the Game Boy delete) -- pins the order, not just presence. ----
-    s, e = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
+    # calls release_up (the Game Boy delete) -- pins the order, not just presence.
+    # BACKLOG #170: the UP branch is now its own noinline helper, drop_held_up --
+    # re-anchored here in the same commit that moved it. ----
+    s, e = extract_function(box_lines, r"^static uint8_t\* __attribute__\(\(noinline\)\) drop_held_up\(")
     ok, d = up_order_facts(box_lines, s, e)
     check(ok, d)
 
     # ---- (n1) BACKLOG #150 S150-12 decision 6: the release_up-optional wrap --
     # `if (s_xfer_peer->release_up)` after commit()/hand-empty, and app_pc_queue_note(
-    # in its else, in that line order. ----
-    s, e = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
+    # in its else, in that line order. BACKLOG #170: re-anchored to drop_held_up. ----
+    s, e = extract_function(box_lines, r"^static uint8_t\* __attribute__\(\(noinline\)\) drop_held_up\(")
     ok, d = n1_order_facts(box_lines, s, e)
     check(ok, d)
 
@@ -1373,10 +1375,11 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str]) -
           f"start_carry: count dropped to {lift_count_mut} (expected 3, was 4)")
 
     # MUT H (REVIEW F2): swap the release_up() line to ABOVE the `ok = src->commit()`
-    # line in a copy of drop_held's body -- the exact defect the reviewer demonstrated
-    # (the Game Boy save would lose the mon before the Bank has committed it) -- and
-    # assert up_order_facts() reports failure.
-    s, e = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
+    # line in a copy of drop_held_up's body (BACKLOG #170: re-anchored -- the UP
+    # branch moved into its own noinline helper) -- the exact defect the reviewer
+    # demonstrated (the Game Boy save would lose the mon before the Bank has
+    # committed it) -- and assert up_order_facts() reports failure.
+    s, e = extract_function(box_lines, r"^static uint8_t\* __attribute__\(\(noinline\)\) drop_held_up\(")
     body = box_lines[s:e]
     commit_i = first_match_line(body, 0, len(body), COMMIT_RE)
     release_i = first_match_line(body, 0, len(body), RELEASE_UP_RE)
@@ -1391,10 +1394,11 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str]) -
         print(f"  MUT H demonstration -- release_up() line swapped above src->commit(): {detail}")
 
     # MUT N1 (BACKLOG #150 S150-12 decision 6): move the `app_pc_queue_note(` line to
-    # ABOVE `ok = src->commit()` in a copy of drop_held's body -- the copy would be
-    # queued for the PC offer before the Bank write that supposedly landed it has even
-    # been attempted -- and assert n1_order_facts() reports failure.
-    s, e = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
+    # ABOVE `ok = src->commit()` in a copy of drop_held_up's body (BACKLOG #170:
+    # re-anchored, same reason as MUT H above) -- the copy would be queued for the PC
+    # offer before the Bank write that supposedly landed it has even been attempted --
+    # and assert n1_order_facts() reports failure.
+    s, e = extract_function(box_lines, r"^static uint8_t\* __attribute__\(\(noinline\)\) drop_held_up\(")
     body = box_lines[s:e]
     commit_i3 = first_match_line(body, 0, len(body), COMMIT_RE)
     queue_i = first_match_line(body, 0, len(body), PC_QUEUE_NOTE_RE)

@@ -239,6 +239,12 @@ BoxSource.can_edit   @44 in src_can_lift -> banksrc_can_edit gbsrc_can_edit app_
 # field-48 site is AppSrcOps.lift_why (the RO_MOVE row's gate, gb_lift_why_hook).
 BoxSource.commit     @48 in drop_held -> banksrc_commit gbsrc_commit app_commit_pc app_commit_sb1
 BoxSource.commit     @48 in release_box_all -> banksrc_commit gbsrc_commit app_commit_pc app_commit_sb1
+# BACKLOG #170: drop_held's UP branch's own `bool ok = src->commit();` (the verified
+# Bank write) moved into drop_held_up, its own noinline helper -- drop_held's
+# REMAINING commit@48 site is the PC->Bank RESTORE arm's own commit call, unmoved
+# and still qualified to drop_held above; this is the UP branch's site, same offset,
+# same four implementations.
+BoxSource.commit     @48 in drop_held_up -> banksrc_commit gbsrc_commit app_commit_pc app_commit_sb1
 AppSrcOps.lift_why   @48 in app_mon_menu_readonly -> gb_lift_why_hook
 BoxSource.mark_dirty @52 -> banksrc_mark_dirty gbsrc_mark_dirty app_mark_pc_dirty
 BoxSource.note_add @56 in drop_held -> pcsrc_note_add
@@ -362,7 +368,10 @@ BoxSource.can_lift @80 in src_can_lift -> gb_can_lift_hook
 # the identical struct-field load; only which TABLE is installed differs at runtime
 # (pdna_gen12.c's g_ed ? &k_gb_xfer : &k_gb_xfer_ro selector).
 BoxXferOps.lift_up @4 in start_carry -> gb_lift_up_hook gb_lift_copy_hook
-BoxXferOps.release_up @16 in drop_held -> gb_release_up_hook
+# BACKLOG #170: drop_held's UP branch (the only `s_xfer_peer->release_up(...)` call
+# site in pdna_box.c) was extracted into its own noinline helper, drop_held_up --
+# re-qualified from `in drop_held` to `in drop_held_up`, the same offset/targets.
+BoxXferOps.release_up @16 in drop_held_up -> gb_release_up_hook
 
 # BACKLOG #187/#191a, F2: BoxXferOps.move_within (@20, see the layout comment just
 # above) -- src->xfer->move_within(...), drop_held's own same-scope GB branch,
@@ -890,6 +899,25 @@ G2Writer.wr @4 in refresh_checksums,write_patch.part.0 -> img_wr str_wr
 # walk_entry/gbl_verify above (all the same struct).
 RomGbLearn.read @4 in rom_gblearn_moves_at_seeded -> fused_gb_slice_read gb_read
 
+# BACKLOG #170: bank_collision.c's bank_ident32_collision() (a pure, host-tested
+# core with no tonc/FatFs dependency -- BACKLOG #168a) takes a plain function-
+# pointer PARAMETER, BankBoxGetter get_box, and calls `get_box(b, ctx)` once per
+# box scanned. Its ONE real caller (drop_held_up, pdna_box.c) always passes the
+# same file-static wrapper, bank_scan_get -- there is no dispatch table and no
+# second implementation anywhere in the tree (grep: bank_scan_get is defined once,
+# address-taken once, at this one call site). Not the coincidental-address-literal
+# class the two entries above this comment document (gen1_encode_name et al) --
+# bank_scan_get IS genuinely address-taken AND genuinely dispatched, the exact
+# shape the ArtIconsGen.progress note below warns must NOT be marked
+# `addrtaken-ok` (F1's own lesson: a function that is truly reachable only through
+# an indirect call must be DECLARED, not exempted, or the walker cannot trace
+# depth through it -- pdna_bank_peek_box's own subtree, box_load/sf_read_full/
+# f_read/disk_read, would silently drop out of any chain that goes through this
+# call). Declared as a single-site argsites class, same idiom as
+# rom_mon_icon_at's own `argsites=1 -> gb_art_read fused_gb_slice_read gb_read`
+# two-level-indirect dispatch a few lines above.
+bank_ident32_collision argsites=1 -> bank_scan_get
+
 # art_icons_extract.h's ArtIconsGen.progress (progress@4, `const RomMon* rm;
 # ArtIconsProgressFn progress;`) -- art_icons_stream's TWO `g->progress(...)` calls
 # (art_icons_extract.c, the write-pass and verify-pass branches) both resolve here.
@@ -1264,11 +1292,16 @@ AppSrcOps.release @8 in app_mon_menu_readonly -> gb_release_hook gb_move_hook gb
 AppSrcOps.move @4 in app_mon_menu_readonly -> gb_move_hook
 AppSrcOps.copy_native @12 in app_copy.isra.0 -> gb_copy_native_hook
 AppSrcOps.view @20 in app_mon_menu_readonly -> gb_view_hook
-BoxSource.records @20 in clear_origin,drop_held,export_box_all,party_strip_overlay,release_box_all -> banksrc_records gbsrc_records pcsrc_records
+BoxSource.records @20 in clear_origin,drop_held,drop_held_up,export_box_all,party_strip_overlay,release_box_all -> banksrc_records gbsrc_records pcsrc_records
 # drop_held's own offset-20 call site (BACKLOG #150 S150-7 step 3): `recs =
 # src->records(box);` after bank_down_dispatch() lands the EXACT arm, repainting the
 # grid from the image the GB list just grew into -- added to the existing caller list
 # above, not a new row (same offset, same targets).
+# BACKLOG #170: drop_held_up added to this line's caller list -- its own TWO
+# `recs = src->records(box);` sites (the BACKLOG #197 re-page after
+# pdna_bank_prepare_native() succeeds, and the re-page after the BACKLOG #168a
+# 16-box collision scan) are the UP branch's own offset-20 sites, extracted out of
+# drop_held's body into this noinline helper, same offset, same targets.
 # release_box_all's offset-20 site is the exact one the third review pass named:
 # BoxSource.records(), never AppSrcOps.view -- this is the fix for "release_box_all no
 # longer reaches gb_view_hook".

@@ -1358,12 +1358,133 @@ pc_bank_restore_done(const uint8_t g3_rec80[80]) {
  * every OTHER box is paged on demand through pdna_bank_peek_box(), which re-pages
  * that SAME shared buffer -- so `recs` (the pointer value in the ctx) stops being
  * self_box's data the instant this getter is asked for a different box. The caller
- * (drop_held) re-pages self_box back in with src->records(box) after the scan,
+ * (drop_held_up) re-pages self_box back in with src->records(box) after the scan,
  * before writing or committing. */
 typedef struct { const uint8_t* recs; int self_box; } BankScanCtx;
 static const uint8_t* bank_scan_get(int b, void* ctx) {
   const BankScanCtx* c = (const BankScanCtx*)ctx;
   return (b == c->self_box) ? c->recs : pdna_bank_peek_box(b);
+}
+
+/* BACKLOG #170 (from the s150-4-5 review A11): drop_held's UP branch (a Game Boy
+ * mon carried into an empty Bank cell), extracted verbatim into its own noinline
+ * helper -- same signature as drop_held itself (BoxSource*, box, cur, recs, done),
+ * so drop_held's own call site is a plain one-line tail return and every
+ * s_orig_box/s_orig_slot/s_orig_scope/s_xfer_peer/s_held file-static this branch
+ * reads/writes needs no plumbing. Sheds held_copy[80] (80 B) plus this whole
+ * branch's own locals from drop_held's frame on every drop that is NOT an UP
+ * carry -- drop_held runs on every grid A-press.
+ *
+ * ORDER (decision 1, unchanged by this extraction): the Bank write is committed
+ * and VERIFIED first; only then does the Game Boy save lose the mon (release_up).
+ * A failed Bank write reverts the cell and KEEPS HOLDING (never touches the GB
+ * save); a failed release_up leaves a DUPLICATE (the Bank already has it, the GB
+ * save still has it too) -- a duplicate is visible and repairable, a loss is not.
+ * BACKLOG #150 S150-12 decision 6: `s_xfer_peer->lift_up`, not `->release_up` --
+ * this branch also carries a COPY (no release_up at all) all the way to the
+ * commit; the release_up call further down is itself gated (else: queue for the
+ * PC instead of deleting).
+ *
+ * tests/host_escape_gate_sites_test.py's structural pins (i)/(n1) and their MUT
+ * H/MUT N1 self-mutation demonstrations now anchor on THIS function's body
+ * (re-anchored in the same commit that moved the code -- BACKLOG #170's own
+ * requirement: a move without re-anchoring must fail loudly, not silently stop
+ * checking anything). */
+static uint8_t* __attribute__((noinline)) drop_held_up(BoxSource* src, int box, int cur, uint8_t* recs, bool* done) {
+  boxoam_suspend();
+  if (!pdna_bank_prepare_native()) {
+    snd_error();
+    msg_wait(PDNA_XFER_PREP_TITLE, UI_WARN, PDNA_XFER_PREP_L1, PDNA_XFER_PREP_L2);
+    boxoam_resume();
+    log_line("bank: up box %d slot %d -> bank box %d slot %d: backup gate refused", s_orig_box, s_orig_slot, box, cur);
+    app_log_flush();
+    return recs;                                          /* still holding */
+  }
+  /* BACKLOG #197: pdna_bank_prepare_native() -> bank_backup_v1() sets g_loaded =
+   * -1 on its FIRST-EVER-run success path (pdna_bank.c, "force a fresh page-in"),
+   * discarding whatever box g_bankbuf held. `recs` here is a plain pointer into
+   * that same buffer, still holding the STALE contents from before prepare ran
+   * (or garbage, on the very first entry) -- src->records(box) (box_load) must
+   * re-page box's real records before the collision scan below reads them and
+   * before the commit below writes into them, or the commit sees g_loaded < 0
+   * and box_save() refuses outright ("bank write failed", still holding) even
+   * though the write itself was never attempted on real data. On every call
+   * AFTER the first (marker already DONE), bank_backup_v1's O(1) early return
+   * never touches g_loaded, so this re-page is a same-box no-op paging call --
+   * cheap, and required unconditionally since the caller cannot tell which case
+   * it is in. */
+  recs = src->records(box);
+  /* decision 10: the ident32 collision refusal, NOT a re-pack -- the serial is
+   * monotonic and persisted before use, so a collision means the meta was lost
+   * or rolled back. A plain memcmp on bytes 0..7 (magic + ident32), not a
+   * recomputed bc_ident32() on the candidate (a match on bytes 0..3 alone
+   * already implies "GBC1", so no separate bc_is_native() check is needed).
+   * BACKLOG #168a (REVIEW F5's own follow-up): scans ALL 16 Bank boxes, not just
+   * the destination -- a duplicate serial landing in another box used to be
+   * invisible here, and S150-6/S150-7 would mis-target it. One box buffer at a
+   * time through pdna_bank_peek_box() (never a second 2,400-B buffer on the
+   * stack): bank_scan_get()/bank_ident32_collision() (bank_collision.c, a pure
+   * host-tested core; tests/host_bank_collision_test.c). Short-circuits the 15
+   * extra box reads when pdna_bank_serial_trusted() says this session's serial
+   * is known fresh (see its doc comment, pdna_bank.c) -- a fresh serial can only
+   * collide when the meta itself was lost/rolled back, which is exactly what
+   * that flag tracks. */
+  if (!pdna_bank_serial_trusted()) {
+    BankScanCtx sctx = { recs, box };
+    int coll_box = -1, coll_slot = -1;
+    if (bank_ident32_collision(bank_scan_get, &sctx, 16, G3_BOX_SLOTS, box, cur,
+                                s_held, &coll_box, &coll_slot)) {
+      snd_error();
+      boxoam_resume();
+      log_line("bank: up box %d slot %d -> bank box %d slot %d: ident32 collision at box %d slot %d, refusing", s_orig_box, s_orig_slot, box, cur, coll_box, coll_slot);
+      app_log_flush();
+      return recs;                                        /* still holding */
+    }
+    /* pdna_bank_peek_box() re-pages the ONE shared bank buffer for whichever
+     * box it last read (S150-11 decision 19's own contract) -- if the scan
+     * touched any OTHER box, `recs` (same pointer value) now aliases THAT
+     * box's bytes, not `box`'s. Re-page the destination before writing. */
+    recs = src->records(box);
+  }
+  memcpy(recs + (uint32_t)cur * 80, s_held, 80);
+  bool ok = src->commit();                                 /* verified bank box_save */
+  if (!ok) {
+    memset(recs + (uint32_t)cur * 80, 0, 80);
+    /* REVIEW F4: resume here, not right after commit() -- the caller (gb_persist,
+     * via release_up below) draws its own "Saving -- do not power off" panels and
+     * msg_wait draws PDNA_XFER_KEPT_*; both must render with the box sprites OFF,
+     * same as the backup-gate/collision refusals above. */
+    boxoam_resume();
+    snd_error();
+    log_line("bank: up box %d slot %d -> bank box %d slot %d: bank write failed", s_orig_box, s_orig_slot, box, cur);
+    app_log_flush();
+    return recs;                                          /* still holding */
+  }
+  int gb_box = s_orig_box, gb_slot = s_orig_slot;
+  uint8_t held_copy[80]; memcpy(held_copy, s_held, 80);
+  s_holding = false; *done = true;                         /* hand empties BEFORE source cleanup (§11.2 step 6) */
+  /* BACKLOG #150 S150-12 decision 6: a vtable with no release_up (the read-only
+   * mount's k_gb_xfer_ro) never deletes -- the Bank commit above already landed
+   * the copy; queue it for the PC offer instead of trying to delete a GB save
+   * this session structurally cannot write. */
+  if (s_xfer_peer->release_up) {
+    if (!s_xfer_peer->release_up(gb_box, gb_slot, held_copy)) {
+      snd_error();
+      msg_wait(PDNA_XFER_KEPT_TITLE, UI_WARN, PDNA_XFER_KEPT_L1, PDNA_XFER_KEPT_L2);
+      log_line("bank: up box %d slot %d -> bank box %d slot %d: release refused, duplicate", gb_box, gb_slot, box, cur);
+      app_log_flush();
+    } else {
+      snd_save();
+      log_line("bank: up box %d slot %d -> bank box %d slot %d: ok", gb_box, gb_slot, box, cur);
+    }
+  } else {
+    app_pc_queue_note(box);
+    snd_save();
+    msg_wait(PDNA_XFER_COPIED_TITLE, UI_TEXT, PDNA_XFER_COPIED_L1, PDNA_XFER_COPIED_L2);
+    log_line("bank: copy box %d slot %d -> bank box %d slot %d: ok, queued for the PC", gb_box, gb_slot, box, cur);
+  }
+  boxoam_resume();                                         /* REVIEW F4: covers gb_persist's own panels + PDNA_XFER_KEPT_* above */
+  return recs;
 }
 
 /* Drop the held mon onto cursor cell `cur`. Within the origin's scope: true move (place +
@@ -1499,112 +1620,15 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
       return recs;
     }
     if (occupied) { snd_deny(); return recs; }
-    /* BACKLOG #150 S150-4 decisions 1/7/9/10: the UP drop -- a Game Boy mon carried
-     * into an empty Bank cell. ORDER (decision 1): the Bank write is committed and
-     * VERIFIED first; only then does the Game Boy save lose the mon (release_up).
-     * A failed Bank write reverts the cell and KEEPS HOLDING (never touches the GB
-     * save); a failed release_up leaves a DUPLICATE (the Bank already has it, the GB
-     * save still has it too) -- a duplicate is visible and repairable, a loss is not. */
-    /* BACKLOG #150 S150-12 decision 6: `s_xfer_peer->lift_up`, not `->release_up` --
-     * this branch now also carries a COPY (no release_up at all) all the way to the
-     * commit; the release_up call further down is itself gated (else: queue for the
-     * PC instead of deleting). */
+    /* BACKLOG #150 S150-4 decisions 1/7/9/10 / BACKLOG #170: the UP drop -- a Game
+     * Boy mon carried into an empty Bank cell -- extracted into its own noinline
+     * helper (drop_held_up, above) so its held_copy[80] and its own frame are shed
+     * from drop_held's worst-case stack path on every OTHER drop (drop_held runs on
+     * every grid A-press, not just a carry). See drop_held_up's own doc comment for
+     * the ORDER contract (decision 1) this call site does not touch. */
     if (src->scope == BOXSCOPE_BANK && s_orig_scope == BOXSCOPE_GB &&
         s_orig_slot >= 0 && s_xfer_peer && s_xfer_peer->lift_up) {
-      boxoam_suspend();
-      if (!pdna_bank_prepare_native()) {
-        snd_error();
-        msg_wait(PDNA_XFER_PREP_TITLE, UI_WARN, PDNA_XFER_PREP_L1, PDNA_XFER_PREP_L2);
-        boxoam_resume();
-        log_line("bank: up box %d slot %d -> bank box %d slot %d: backup gate refused", s_orig_box, s_orig_slot, box, cur);
-        app_log_flush();
-        return recs;                                          /* still holding */
-      }
-      /* BACKLOG #197: pdna_bank_prepare_native() -> bank_backup_v1() sets g_loaded =
-       * -1 on its FIRST-EVER-run success path (pdna_bank.c, "force a fresh page-in"),
-       * discarding whatever box g_bankbuf held. `recs` here is a plain pointer into
-       * that same buffer, still holding the STALE contents from before prepare ran
-       * (or garbage, on the very first entry) -- src->records(box) (box_load) must
-       * re-page box's real records before the collision scan below reads them and
-       * before the commit below writes into them, or the commit sees g_loaded < 0
-       * and box_save() refuses outright ("bank write failed", still holding) even
-       * though the write itself was never attempted on real data. On every call
-       * AFTER the first (marker already DONE), bank_backup_v1's O(1) early return
-       * never touches g_loaded, so this re-page is a same-box no-op paging call --
-       * cheap, and required unconditionally since the caller cannot tell which case
-       * it is in. */
-      recs = src->records(box);
-      /* decision 10: the ident32 collision refusal, NOT a re-pack -- the serial is
-       * monotonic and persisted before use, so a collision means the meta was lost
-       * or rolled back. A plain memcmp on bytes 0..7 (magic + ident32), not a
-       * recomputed bc_ident32() on the candidate (a match on bytes 0..3 alone
-       * already implies "GBC1", so no separate bc_is_native() check is needed).
-       * BACKLOG #168a (REVIEW F5's own follow-up): scans ALL 16 Bank boxes, not just
-       * the destination -- a duplicate serial landing in another box used to be
-       * invisible here, and S150-6/S150-7 would mis-target it. One box buffer at a
-       * time through pdna_bank_peek_box() (never a second 2,400-B buffer on the
-       * stack): bank_scan_get()/bank_ident32_collision() (bank_collision.c, a pure
-       * host-tested core; tests/host_bank_collision_test.c). Short-circuits the 15
-       * extra box reads when pdna_bank_serial_trusted() says this session's serial
-       * is known fresh (see its doc comment, pdna_bank.c) -- a fresh serial can only
-       * collide when the meta itself was lost/rolled back, which is exactly what
-       * that flag tracks. */
-      if (!pdna_bank_serial_trusted()) {
-        BankScanCtx sctx = { recs, box };
-        int coll_box = -1, coll_slot = -1;
-        if (bank_ident32_collision(bank_scan_get, &sctx, 16, G3_BOX_SLOTS, box, cur,
-                                    s_held, &coll_box, &coll_slot)) {
-          snd_error();
-          boxoam_resume();
-          log_line("bank: up box %d slot %d -> bank box %d slot %d: ident32 collision at box %d slot %d, refusing", s_orig_box, s_orig_slot, box, cur, coll_box, coll_slot);
-          app_log_flush();
-          return recs;                                        /* still holding */
-        }
-        /* pdna_bank_peek_box() re-pages the ONE shared bank buffer for whichever
-         * box it last read (S150-11 decision 19's own contract) -- if the scan
-         * touched any OTHER box, `recs` (same pointer value) now aliases THAT
-         * box's bytes, not `box`'s. Re-page the destination before writing. */
-        recs = src->records(box);
-      }
-      memcpy(recs + (uint32_t)cur * 80, s_held, 80);
-      bool ok = src->commit();                                 /* verified bank box_save */
-      if (!ok) {
-        memset(recs + (uint32_t)cur * 80, 0, 80);
-        /* REVIEW F4: resume here, not right after commit() -- the caller (gb_persist,
-         * via release_up below) draws its own "Saving -- do not power off" panels and
-         * msg_wait draws PDNA_XFER_KEPT_*; both must render with the box sprites OFF,
-         * same as the backup-gate/collision refusals above. */
-        boxoam_resume();
-        snd_error();
-        log_line("bank: up box %d slot %d -> bank box %d slot %d: bank write failed", s_orig_box, s_orig_slot, box, cur);
-        app_log_flush();
-        return recs;                                          /* still holding */
-      }
-      int gb_box = s_orig_box, gb_slot = s_orig_slot;
-      uint8_t held_copy[80]; memcpy(held_copy, s_held, 80);
-      s_holding = false; *done = true;                         /* hand empties BEFORE source cleanup (§11.2 step 6) */
-      /* BACKLOG #150 S150-12 decision 6: a vtable with no release_up (the read-only
-       * mount's k_gb_xfer_ro) never deletes -- the Bank commit above already landed
-       * the copy; queue it for the PC offer instead of trying to delete a GB save
-       * this session structurally cannot write. */
-      if (s_xfer_peer->release_up) {
-        if (!s_xfer_peer->release_up(gb_box, gb_slot, held_copy)) {
-          snd_error();
-          msg_wait(PDNA_XFER_KEPT_TITLE, UI_WARN, PDNA_XFER_KEPT_L1, PDNA_XFER_KEPT_L2);
-          log_line("bank: up box %d slot %d -> bank box %d slot %d: release refused, duplicate", gb_box, gb_slot, box, cur);
-          app_log_flush();
-        } else {
-          snd_save();
-          log_line("bank: up box %d slot %d -> bank box %d slot %d: ok", gb_box, gb_slot, box, cur);
-        }
-      } else {
-        app_pc_queue_note(box);
-        snd_save();
-        msg_wait(PDNA_XFER_COPIED_TITLE, UI_TEXT, PDNA_XFER_COPIED_L1, PDNA_XFER_COPIED_L2);
-        log_line("bank: copy box %d slot %d -> bank box %d slot %d: ok, queued for the PC", gb_box, gb_slot, box, cur);
-      }
-      boxoam_resume();                                         /* REVIEW F4: covers gb_persist's own panels + PDNA_XFER_KEPT_* above */
-      return recs;
+      return drop_held_up(src, box, cur, recs, done);
     }
     if (s_held_dup && s_orig_slot < 0) {                     /* a fresh DUPLICATE: placing it is loss-proof
                                                                  in either direction -> no confirm needed

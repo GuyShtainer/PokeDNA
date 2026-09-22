@@ -80,8 +80,12 @@ def extract_function_body(text: str, func_name: str) -> str:
     """Return the full body (signature through matching close-brace) of the
     top-level function `func_name` defined in `text`, or "" if not found.
     Brace-depth walk, robust to the function growing/shrinking as other
-    lanes land -- same idiom tests/host_lift_why_gate_test.py uses."""
-    m = re.search(r"^\w[\w \*]*\b" + re.escape(func_name) + r"\s*\([^;]*?\)\s*\{",
+    lanes land -- same idiom tests/host_lift_why_gate_test.py uses.
+
+    The return-type prefix charset includes `(` `)` so a signature carrying
+    `__attribute__((noinline))` (BACKLOG #170: drop_held_up) still matches --
+    plain `[\\w \\*]*` stops dead at the first paren in that attribute."""
+    m = re.search(r"^\w[\w \*\(\)]*\b" + re.escape(func_name) + r"\s*\([^;]*?\)\s*\{",
                   text, re.MULTILINE)
     if not m:
         return ""
@@ -104,13 +108,13 @@ def check_up_drop_repages(body: str) -> list[str]:
     on a FRESH page-in, not the stale `recs` the block started with."""
     failures: list[str] = []
     if PREPARE_CALL not in body:
-        return [f"drop_held() does not call {PREPARE_CALL!r} -- BACKLOG #197's UP-drop "
+        return [f"drop_held_up() does not call {PREPARE_CALL!r} -- BACKLOG #197's UP-drop "
                  "block has moved or been removed"]
     if COLLISION_LOOP not in body:
-        return [f"drop_held() does not contain the ident32 collision scan "
+        return [f"drop_held_up() does not contain the ident32 collision scan "
                  f"({COLLISION_LOOP!r}) -- has it moved?"]
     if COMMIT_CALL not in body:
-        return [f"drop_held() does not contain {COMMIT_CALL!r} -- has the commit call moved?"]
+        return [f"drop_held_up() does not contain {COMMIT_CALL!r} -- has the commit call moved?"]
 
     prepare_idx = body.index(PREPARE_CALL)
     # The failure-return block closes with the FIRST `}` after the prepare call whose
@@ -125,7 +129,7 @@ def check_up_drop_repages(body: str) -> list[str]:
     loop_idx = body.index(COLLISION_LOOP)
     commit_idx = body.index(COMMIT_CALL)
     if not (scan_start < loop_idx < commit_idx):
-        failures.append("drop_held()'s prepare-failure block, collision scan and "
+        failures.append("drop_held_up()'s prepare-failure block, collision scan and "
                          "commit call are not in the expected text order -- update "
                          "this check's anchors before trusting it")
         return failures
@@ -134,7 +138,7 @@ def check_up_drop_repages(body: str) -> list[str]:
     repage_between = [p for p in repage_positions if scan_start <= p < loop_idx]
     if not repage_between:
         failures.append(
-            "drop_held()'s UP-drop block does not re-page `recs` "
+            "drop_held_up()'s UP-drop block does not re-page `recs` "
             f"({REPAGE_CALL!r}) between pdna_bank_prepare_native()'s success and the "
             "ident32 collision scan / commit -- BACKLOG #197: the first-ever prepare "
             "success sets g_loaded = -1 (bank_backup_v1's own 'force a fresh page-in' "
@@ -148,25 +152,28 @@ def check_failure_path_unchanged(body: str) -> list[str]:
     """The prepare-failure branch itself must be untouched by this fix: still
     returns `recs` (still holding), still logs the backup-gate refusal."""
     if PREPARE_CALL not in body:
-        return [f"drop_held() does not call {PREPARE_CALL!r}"]
+        return [f"drop_held_up() does not call {PREPARE_CALL!r}"]
     idx = body.index(PREPARE_CALL)
     window = body[idx:idx + 600]
     failures: list[str] = []
     if "backup gate refused" not in window:
-        failures.append("drop_held()'s prepare-failure branch no longer logs "
+        failures.append("drop_held_up()'s prepare-failure branch no longer logs "
                          "\"backup gate refused\" -- BACKLOG #197 must not touch this path")
     if "return recs;" not in window:
-        failures.append("drop_held()'s prepare-failure branch no longer returns "
+        failures.append("drop_held_up()'s prepare-failure branch no longer returns "
                          "`recs` (still holding) -- BACKLOG #197 must not touch this path")
     return failures
 
 
 def revert_repage(text: str) -> str:
     """Mutated copy: BACKLOG #197's exact PRE-FIX shape -- the re-page call
-    deleted, `recs` stays stale across the prepare call."""
-    old = "      recs = src->records(box);\n      /* decision 10:"
-    new = "      /* decision 10:"
-    assert text.count(old) == 1, ("drop_held()'s re-page call not found verbatim -- "
+    deleted, `recs` stays stale across the prepare call. BACKLOG #170 moved this
+    code from drop_held's UP-branch (6-space indent, nested inside two `if`s) into
+    drop_held_up's own top level (2-space indent) -- the expected text updated to
+    match, same bytes otherwise."""
+    old = "  recs = src->records(box);\n  /* decision 10:"
+    new = "  /* decision 10:"
+    assert text.count(old) == 1, ("drop_held_up()'s re-page call not found verbatim -- "
                                     "update this test's expected shape before trusting "
                                     "the mutation demonstration")
     return text.replace(old, new)
@@ -174,9 +181,13 @@ def revert_repage(text: str) -> str:
 
 def main() -> int:
     box_text = PDNA_BOX.read_text()
-    body = strip_comments(extract_function_body(box_text, "drop_held"))
+    # BACKLOG #170: drop_held's UP branch (this whole check's subject) was extracted
+    # into its own noinline helper, drop_held_up -- re-anchored here in the same
+    # commit that moved it (a move without re-anchoring must fail loudly, not
+    # silently stop checking anything).
+    body = strip_comments(extract_function_body(box_text, "drop_held_up"))
     if not body:
-        print("  FAIL: drop_held() not found in source/pdna_box.c")
+        print("  FAIL: drop_held_up() not found in source/pdna_box.c")
         return 1
 
     failures = check_up_drop_repages(body) + check_failure_path_unchanged(body)
@@ -185,14 +196,14 @@ def main() -> int:
     if failures:
         print(f"host_first_lift_repage_test: {len(failures)} failure(s) on shipped source")
         return 1
-    print("shipped source clean: drop_held()'s UP-drop block re-pages `recs` between "
+    print("shipped source clean: drop_held_up()'s UP-drop block re-pages `recs` between "
           "pdna_bank_prepare_native()'s success and the ident32 collision scan / "
           "commit; the prepare-failure branch is untouched")
 
     # Self-mutation: revert the re-page call to BACKLOG #197's exact pre-fix shape and
     # prove check_up_drop_repages() catches it -- every run, not just when someone
     # remembers to demonstrate it by hand.
-    box_body_raw = extract_function_body(box_text, "drop_held")
+    box_body_raw = extract_function_body(box_text, "drop_held_up")
     mutated_raw = revert_repage(box_body_raw)
     mutated_body = strip_comments(mutated_raw)
     mut_failures = check_up_drop_repages(mutated_body)
