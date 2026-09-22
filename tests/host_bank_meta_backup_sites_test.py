@@ -183,9 +183,8 @@ def check_meta_save_heal(body: list[str]) -> tuple[bool, str]:
 
 
 def self_test_mutation_detection_219a(lines: list[str]) -> None:
-    """MUT M2 (BACKLOG #219a): drop the `if (g_meta_from_bak)` guard from meta_save()
-    (the f_unlink call would then run unconditionally, or the check simply can't see a
-    guarded heal) -- check_meta_save_heal() must then fail. Applied to an IN-MEMORY
+    """MUT M2 (BACKLOG #219a): replace the `if (g_meta_from_bak)` guard with `if (0)` in meta_save()
+    (the f_unlink call would then never run) -- check_meta_save_heal() must then fail. Applied to an IN-MEMORY
     copy only."""
     s, e = extract_function(lines, r"^static bool meta_save\(void\) \{")
     mutated = list(lines)

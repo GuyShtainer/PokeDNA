@@ -222,7 +222,18 @@ static bool meta_save(void) {
    * an unlink failure just leaves sf_save_rolling's normal FR_OK path in force, which
    * is this function's pre-fix (still safe, if single-shot) behavior. */
   if (g_meta_from_bak) {
-    f_unlink(meta_path());
+    FRESULT ur = f_unlink(meta_path());
+    if (ur != FR_OK && ur != FR_NO_FILE && ur != FR_NO_PATH) {
+      /* BACKLOG #219a review F1: the corrupt primary is STILL on the card (an AM_RDO
+       * object -> FR_DENIED, ff.c:5011; a write-protected volume; a disk error).
+       * Proceeding would let sf_save_rolling's FR_OK path copy THAT file over the good
+       * bank.meta.bak this session recovered from -- measured on real FatFs: the .bak
+       * ends up holding the corrupt bytes, the exact single-shot loss this fix exists
+       * to stop. Refuse, and KEEP the flag so a later meta_save() can still heal. */
+      log_line("bank: meta heal unlink failed (fr=%d) - refusing to write unbacked", (int)ur);
+      app_log_flush();
+      return false;
+    }
     g_meta_from_bak = false;
   }
   rmbl_pause();
@@ -661,7 +672,7 @@ static bool __attribute__((noinline)) bank_backup_v1(void) {
 
   if (!meta_done) {
     uint8_t metabuf[META_BYTES]; uint32_t msz = 0;
-    if (sf_read_full(meta_path(), metabuf, sizeof metabuf, &msz) == SF_OK && msz >= META_BYTES) {
+    if (sf_read_full(meta_path(), metabuf, sizeof metabuf, &msz) == SF_OK && msz >= META_BYTES && memcmp(metabuf, META_MAGIC, 6) == 0) {
       if (sf_write_verified(meta_bak, metabuf, META_BYTES) != SF_OK) {
         log_line("bank: backup-v1 meta write failed");
         app_log_flush();
@@ -673,8 +684,13 @@ static bool __attribute__((noinline)) bank_backup_v1(void) {
      * session) -- nothing to snapshot, not a failure; the NEXT call (once a serial
      * mint or a box open has written the primary) backs it up then. */
   }
-  if (boxes_done) return meta_done;   /* boxes already covered by an older backup-v1 --
-                                        * only the meta gap could still be missing. */
+  if (boxes_done) {
+    if (!meta_done) { log_line("bank: backup-v1 meta snapshot skipped (bank.meta unreadable/absent)"); app_log_flush(); }
+    return true;   /* review F3: the boxes ARE covered by the older backup-v1, and bank.meta
+                    * carries its own rolling .bak (#168b) -- a missing meta snapshot is a
+                    * best-effort gap, not grounds to refuse the write. A FAILED verified
+                    * write above already returned false. */
+  }
 
   if (g_dirty && !box_save_or_keep_dirty()) return false;   /* BACKLOG #181: never page away from an unsaved box */
 
