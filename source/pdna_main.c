@@ -10415,6 +10415,7 @@ static uint8_t xrc_action_popup(uint8_t actions) {
  * destination write is never undone by a later failure -- a failed step just leaves
  * its own row's entry in place, to be reconsidered on the next visit. */
 static void __attribute__((noinline)) xfer_reconcile_apply(GbReconBuf* rb) {
+  if (!app_can_edit()) { log_line("BUG: xfer_reconcile_apply with editing disabled - refused"); return; }
   bool remove_entry[GB_RECON_MAX_HITS];
   memset(remove_entry, 0, sizeof remove_entry);
   int removed = 0, released = 0, restored = 0, deleted = 0, rekeyed = 0, failed = 0;

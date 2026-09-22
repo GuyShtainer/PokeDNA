@@ -7,7 +7,7 @@ decision 11 (#176 recovery) and the write-ordering the Bank-open reconcile depen
 build -- same posture as host_gb_write_gate_test.py, applied to source/pdna_main.c and
 source/pdna_bank.c instead of source/pdna_gen12.c.
 
-Five checks, each with an in-memory mutation that must turn it red:
+Seven checks, each with an in-memory mutation that must turn it red:
 
   (g) flush_on_exit()'s app_commit_pc() FAILURE branch (the `else` this slice adds)
       calls app_xfer_pending_drop() (review D2 -- NOT app_xfer_pending_undo(), which
@@ -55,6 +55,11 @@ Five checks, each with an in-memory mutation that must turn it red:
       A power cut between a landed destination write and its file's rewrite must
       leave a duplicate or an entry, never a loss; writing the ledger first would
       let it drop a copy that was never actually moved/removed/restored.
+
+  (m) xfer_reconcile_apply()'s body has app_can_edit( strictly before its first
+      destination/ledger write (hard rule 4 applied to the TRANSFERS screen's own
+      APPLY -- review D5; a Game Boy session or read-only cart must refuse, not
+      silently write).
 
 Run directly:
 
@@ -271,6 +276,28 @@ def check_l_screen_apply_order(text: str) -> list[str]:
     return out
 
 
+def check_m_apply_gate(text: str) -> list[str]:
+    """(m) xfer_reconcile_apply()'s body calls app_can_edit( strictly before its
+    first destination/ledger write -- hard rule 4 (writes are Omega-only) applied
+    to the TRANSFERS screen's own APPLY, review D5."""
+    body = extract_function_body(text, "xfer_reconcile_apply")
+    if not body:
+        return ["xfer_reconcile_apply() not found in source/pdna_main.c"]
+    stripped = strip_comments(body)
+    can_edit_pos = [m.start() for m in re.finditer(r"app_can_edit\s*\(", stripped)]
+    guard_pos = [m.start() for m in re.finditer(
+        r"pdna_bank_clear_slots\s*\(|gb_reconcile_release\s*\(|pdna_bank_put_cell\s*\(|"
+        r"sf_write_verified\s*\(|f_unlink\s*\(",
+        stripped)]
+    out = []
+    if not can_edit_pos:
+        out.append("xfer_reconcile_apply(): never calls app_can_edit( (hard rule 4, review D5)")
+    elif guard_pos and min(can_edit_pos) >= min(guard_pos):
+        out.append("xfer_reconcile_apply(): app_can_edit( must appear before the first "
+                    "destination/ledger write (hard rule 4, review D5)")
+    return out
+
+
 def run_all(main_text: str, bank_text: str) -> tuple[list[str], int]:
     violations = list(check_g_flush_on_exit_undo(main_text))
     h_violations, h_sites = check_h_load_sites(main_text)
@@ -279,6 +306,7 @@ def run_all(main_text: str, bank_text: str) -> tuple[list[str], int]:
     violations += check_j_put_cell_gate(bank_text)
     violations += check_k_apply_no_ledger_write(main_text)
     violations += check_l_screen_apply_order(main_text)
+    violations += check_m_apply_gate(main_text)
     return violations, h_sites
 
 
@@ -303,7 +331,8 @@ def main() -> int:
           f"(h) all {h_sites} load sites drop it, (i) the Bank-open gate runs first, "
           "(j) pdna_bank_put_cell gates on app_can_edit, (k) the scoped apply "
           "function never rewrites the ledger, (l) the TRANSFERS screen's own "
-          "apply orders every destination write before the first ledger write")
+          "apply orders every destination write before the first ledger write, "
+          "(m) that same apply gates on app_can_edit before any write")
 
     # --- self-mutation proofs -----------------------------------------------------
     fails = 0
@@ -438,6 +467,21 @@ def main() -> int:
             fails += 1
         else:
             print("self-mutation (l)-D3: block (2) moved above block (1c) -- correctly caught")
+
+    # (m): delete xfer_reconcile_apply()'s own leading app_can_edit( guard (review D5).
+    target_m = ('  if (!app_can_edit()) { log_line("BUG: xfer_reconcile_apply with editing '
+                'disabled - refused"); return; }\n')
+    if target_m not in main_text:
+        print("FAIL -- self-mutation (m) target not found verbatim (source drifted)")
+        fails += 1
+    else:
+        mutated_m = main_text.replace(target_m, "", 1)
+        v, _ = run_all(mutated_m, bank_text)
+        if not any("xfer_reconcile_apply(): never calls app_can_edit(" in x for x in v):
+            print("FAIL -- self-mutation (m): removing the leading app_can_edit( guard did NOT turn check (m) red")
+            fails += 1
+        else:
+            print("self-mutation (m): the leading app_can_edit( guard removed -- correctly caught")
 
     if fails:
         print(f"FAIL -- {fails} self-mutation proof(s) did not fire")
