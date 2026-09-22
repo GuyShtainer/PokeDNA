@@ -583,19 +583,49 @@ static void test_rename_refused(void) {
           "gender sign: record byte-identical (name never applied)");
   }
   {
-    /* A third reason, caught by review: '(' (GB byte 0x9A) is representable in BOTH
-     * generations' own charsets, but gen3_edit.c's gen3_encode_char has no case for it
-     * and falls to `default: return 0x00` ("unknown -> space") -- so letting it through
-     * to em_set_nickname would silently rewrite the name to a space rather than refuse.
-     * Same for ')' ':' ';' '[' ']' '&' '$'; '(' stands in for all eight here. */
+    /* After BACKLOG #183, gen3_encode_char has code points for '(' ')' ':' ';' '&'.
+     * '(' (GB byte 0x9A) is now accepted. Test it alone, then in a multi-char name. */
     GbEditMon chg = out;
     uint8_t nick[GB_NAME_BYTES] = { 0x9Au, 0x50u, 0x50u, 0x50u, 0x50u,
                                     0x50u, 0x50u, 0x50u, 0x50u, 0x50u, 0x50u };
     gb_set_nickname_raw(&chg, nick);
     uint8_t back80[80]; GbscMergeReport rep;
-    CHECK(gbsc_merge_up(&e, &chg, back80, &rep), "'(' : merge up succeeds");
-    CHECK(rep.rename_refused && !rep.renamed, "'(' : rename_refused set, renamed not set");
-    CHECK(memcmp(back80, rec, 80) == 0, "'(' : record byte-identical (name never applied)");
+    CHECK(gbsc_merge_up(&e, &chg, back80, &rep), "'(' alone: merge up succeeds");
+    CHECK(!rep.rename_refused && rep.renamed, "'(' alone: rename_refused NOT set, renamed IS set");
+  }
+  {
+    /* '[' (GB byte 0x9E) has NO Gen-3 code point at all — still refused. */
+    GbEditMon chg = out;
+    uint8_t nick[GB_NAME_BYTES] = { 0x9Eu, 0x50u, 0x50u, 0x50u, 0x50u,
+                                    0x50u, 0x50u, 0x50u, 0x50u, 0x50u, 0x50u };
+    gb_set_nickname_raw(&chg, nick);
+    uint8_t back80[80]; GbscMergeReport rep;
+    CHECK(gbsc_merge_up(&e, &chg, back80, &rep), "'[' alone: merge up succeeds");
+    CHECK(rep.rename_refused && !rep.renamed, "'[' alone: rename_refused set, renamed not set");
+    CHECK(memcmp(back80, rec, 80) == 0, "'[' alone: record byte-identical (name never applied)");
+  }
+  {
+    /* Multi-char test: "A(B)" (0x80, 0x9A, 0x81) should accept because '(' is now
+     * representable and 'A' and 'B' are always fine. */
+    GbEditMon chg = out;
+    uint8_t nick[GB_NAME_BYTES] = { 0x80u, 0x9Au, 0x81u, 0x50u, 0x50u,
+                                    0x50u, 0x50u, 0x50u, 0x50u, 0x50u, 0x50u };
+    gb_set_nickname_raw(&chg, nick);
+    uint8_t back80[80]; GbscMergeReport rep;
+    CHECK(gbsc_merge_up(&e, &chg, back80, &rep), "\"A(B)\": merge up succeeds");
+    CHECK(!rep.rename_refused, "\"A(B)\": rename_refused NOT set");
+  }
+  {
+    /* Multi-char test: "A[B]" (0x80, 0x9E, 0x81) should refuse because '[' has no
+     * Gen-3 code point. */
+    GbEditMon chg = out;
+    uint8_t nick[GB_NAME_BYTES] = { 0x80u, 0x9Eu, 0x81u, 0x50u, 0x50u,
+                                    0x50u, 0x50u, 0x50u, 0x50u, 0x50u, 0x50u };
+    gb_set_nickname_raw(&chg, nick);
+    uint8_t back80[80]; GbscMergeReport rep;
+    CHECK(gbsc_merge_up(&e, &chg, back80, &rep), "\"A[B]\": merge up succeeds");
+    CHECK(rep.rename_refused && !rep.renamed, "\"A[B]\": rename_refused set, renamed not set");
+    CHECK(memcmp(back80, rec, 80) == 0, "\"A[B]\": record byte-identical (name never applied)");
   }
 }
 
