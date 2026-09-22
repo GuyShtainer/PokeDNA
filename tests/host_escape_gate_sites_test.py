@@ -363,6 +363,68 @@ def down_order_facts(lines, start, end):        # shared by the real check AND M
     return True, "ok"
 
 
+# BACKLOG #150 S150-12 decision 9: a COPY cell's DOWN writes no ledger entry -- the
+# `copy` derivation must precede the first ledger write, and every ledger-mutating
+# call in gb_bank_down_gen3/gb_bank_down_bridge must sit inside an `if (!copy`
+# guard (either form: a one-line `if (!copy) call(...);` or a brace-balanced
+# `if (!copy) { ... call(...); ... }` block). Shared by the real check (n3) and its
+# self-mutation demonstration (MUT N3).
+COPY_DERIVE_RE       = re.compile(r"const bool copy = xg_cell_is_copy\(")
+COPY_GUARD_RE        = re.compile(r"if\s*\(\s*!copy\b")
+XFER_DOWN_WRITE_RE   = re.compile(r"\bxfer_down_write\(")
+XFER_PENDING_SET_RE  = re.compile(r"\bapp_xfer_pending_set\(")
+XFER_CLAIM_NOW_RE    = re.compile(r"\bxfer_down_claim_now\(")
+XFER_UNDO_RE         = re.compile(r"\bxfer_down_undo\(")
+N3_TARGET_RES = (XFER_DOWN_WRITE_RE, XFER_PENDING_SET_RE, XFER_CLAIM_NOW_RE, XFER_UNDO_RE)
+
+
+def n3_facts_over_body(body, func_name):
+    """The core of n3_facts(), operating on an already-extracted (and possibly
+    mutated) function body list -- shared by the real check (n3) and MUT N3, same
+    "real check and its self-mutation demonstration call the identical logic"
+    posture as gate_before_pattern(). Approximates "is this call inside an
+    `if (!copy` guard" with a brace-depth walk: a same-line guard (`if (!copy)
+    call(...);`, no `{`) covers only its own line; a block guard (`if (!copy) {`)
+    covers every line from the NEXT line until depth returns to the depth measured
+    just before that guard line. This is a heuristic, not a real block-scope parser
+    (documented per the brief) -- as precise as gate_before_pattern()'s own
+    line-order approximation elsewhere in this file, applied to "inside a guard"
+    instead of "before a line". Returns (ok, detail)."""
+    copy_i = first_match_line(body, 0, len(body), COPY_DERIVE_RE)
+    if copy_i is None:
+        return False, f"{func_name}: no `const bool copy = xg_cell_is_copy(` derivation found"
+    write_i = first_match_line(body, 0, len(body), XFER_DOWN_WRITE_RE)
+    if write_i is not None and not copy_i < write_i:
+        return False, (f"{func_name}: the `copy` derivation (line {copy_i+1}) does not precede "
+                        f"the first xfer_down_write( (line {write_i+1})")
+
+    depth = 0
+    guard_stack = []   # depths at which an `if (!copy) {` block's own body sits
+    violations = []
+    for i, ln in enumerate(body):
+        depth_before = depth
+        has_guard = bool(COPY_GUARD_RE.search(ln))
+        same_line_guard = has_guard and "{" not in ln
+        opens_block = has_guard and "{" in ln
+        guarded = same_line_guard or bool(guard_stack)
+        if any(p.search(ln) for p in N3_TARGET_RES) and not guarded:
+            violations.append(f"{func_name} line {i+1}: {ln.strip()!r} is not inside an `if (!copy` guard")
+        if opens_block:
+            guard_stack.append(depth_before)
+        depth += ln.count("{") - ln.count("}")
+        while guard_stack and depth <= guard_stack[-1]:
+            guard_stack.pop()
+    if violations:
+        return False, "; ".join(violations)
+    return True, "ok"
+
+
+def n3_facts(lines, func_name):
+    s, e = extract_function(lines, r"^BankDownResult " + re.escape(func_name) + r"\(")
+    body = lines[s:e]
+    return n3_facts_over_body(body, func_name)
+
+
 def restore_order_facts(lines, start, end):     # shared by the real check (l) AND MUT K
     """BACKLOG #150 S150-8b decision 3 / §3.2's commit order: drop_held's PC->Bank arm
     must call pc_bank_restore_up( BEFORE the ternary memcpy that writes either the
@@ -912,6 +974,13 @@ def main() -> int:
     check(sum(1 for ln in bridge_body if re.search(r"\bdst_gen\s*=", ln)) == 1,
           "gb_bank_down_bridge: dst_gen must be assigned exactly once (its declaration)")   # Fable review F1
 
+    # ---- (n3) BACKLOG #150 S150-12 decision 9: gb_bank_down_gen3/gb_bank_down_bridge
+    # -- the `copy` derivation precedes the first ledger write, and every ledger call
+    # in each body sits inside an `if (!copy` guard. ----
+    for fn in ("gb_bank_down_gen3", "gb_bank_down_bridge"):
+        ok, d = n3_facts(gen12_lines, fn)
+        check(ok, d)
+
     # ---- (f) review F3: the self-mutation harness, every run ----
     self_test_mutation_detection(box_lines, gen12_lines)
 
@@ -1310,6 +1379,39 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str]) -
                        "been caught but was not")
         print("  MUT R demonstration -- gb_bank_down_bridge's dst_gen line reverted to "
               "the inverted `? GB_GEN2 : GB_GEN1` form: correctly caught")
+
+    # MUT N3 (BACKLOG #150 S150-12 decision 9): delete the `if (!copy)` guard around
+    # gb_bank_down_gen3's Gen-3 ledger-write arm on a copy of gb_bank_down_gen3's
+    # body -- the exact regression the brief's STOP-LICENCE item 6 names (a copy cell
+    # reaching xfer_down_write on any arm) -- and assert n3_facts() reports failure.
+    s, e = extract_function(gen12_lines, r"^BankDownResult gb_bank_down_gen3\(")
+    gen3_body = gen12_lines[s:e]
+    # the guard that actually ENCLOSES xfer_down_write( -- not the earlier, unrelated
+    # `if (!copy && app_xfer_pending())` SAVE-FIRST pre-flight, which also matches
+    # COPY_GUARD_RE but guards a REFUSAL, not the ledger write. Search backward from
+    # the write call for the nearest block-opening `if (!copy) {`.
+    write_i = first_match_line(gen3_body, 0, len(gen3_body), XFER_DOWN_WRITE_RE)
+    check(write_i is not None, "MUT N3: could not locate xfer_down_write( in gb_bank_down_gen3's real source -- fix this test")
+    guard_i = None
+    if write_i is not None:
+        for j in range(write_i, -1, -1):
+            if COPY_GUARD_RE.search(gen3_body[j]) and "{" in gen3_body[j]:
+                guard_i = j
+                break
+    check(guard_i is not None,
+          "MUT N3: could not locate the `if (!copy) {` guard enclosing xfer_down_write( in gb_bank_down_gen3's real source -- fix this test")
+    if guard_i is not None and "{" in gen3_body[guard_i]:
+        # delete just the guard LINE itself (leaving its `{`-opened block's own lines
+        # and its matching `}` in place) -- an unbalanced brace is fine for this
+        # heuristic checker (it only re-scans the same 4 call patterns against a
+        # depth walk that starts from 0 regardless), and matches the shape of every
+        # other single-line-deletion MUT in this file.
+        mut_n3 = gen3_body[:guard_i] + gen3_body[guard_i + 1:]
+        ok, detail = n3_facts_over_body(mut_n3, "gb_bank_down_gen3")
+        check(not ok, f"MUT N3 (the `if (!copy) {{` guard deleted around the Gen-3 ledger "
+                       f"write) should have been caught but was not: {detail}")
+        print(f"  MUT N3 demonstration -- `if (!copy) {{` guard deleted from "
+              f"gb_bank_down_gen3's ledger-write arm: {detail}")
 
     # MUT W (merged-tree reviewer): drop the non-EXACT LANDED tail's repaint lines
     # (s_oam_reload = true; and the recs = src->records(box) reassignment) on a copy,

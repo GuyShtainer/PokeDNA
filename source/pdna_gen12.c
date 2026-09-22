@@ -2674,7 +2674,17 @@ static const char* loss_name_text(const Gen3ToGbLoss* loss) {
   if (loss->nick_lossy && !loss->ot_lossy)   return PDNA_SIDECAR_LOSS_NICKNAME;
   return PDNA_SIDECAR_LOSS_NAME;
 }
-static bool __attribute__((noinline)) gb_paste_loss_screen(const Gen3ToGbLoss* loss) {
+/* BACKLOG #150 S150-12 decision 10 (folds BACKLOG #180): the shared PASTE/bridge
+ * screen's footer, by which caller. PASTE keeps the original three lines verbatim
+ * (there really is a ledger entry the PASTE route can restore from); BRIDGE gets
+ * the honest "the slot empties" wording instead of PASTE's stale "it stays in the
+ * Bank" claim (the bridge arm DOES consume the source Bank slot); COPY prints the
+ * NOBACK rows instead -- a copy cell has no ledger entry at all, so there is
+ * nothing to "keep". A local enum, not a new file-static override: three callers,
+ * one screen. */
+typedef enum { LOSS_FOOT_PASTE = 0, LOSS_FOOT_BRIDGE, LOSS_FOOT_COPY } GbLossFooter;
+
+static bool __attribute__((noinline)) gb_paste_loss_screen(const Gen3ToGbLoss* loss, GbLossFooter footer) {
   ui_clear();
   ui_text(4, 3, UI_TITLE, PDNA_SIDECAR_LOSS_TITLE);
   ui_hline(0, 13, UI_SCR_W, UI_BORDER);
@@ -2695,9 +2705,16 @@ static bool __attribute__((noinline)) gb_paste_loss_screen(const Gen3ToGbLoss* l
   y = loss_row(y, loss->nick_lossy || loss->ot_lossy, loss_name_text(loss));
 
   y += PDNA_SIDECAR_LOSS_ROW_H / 2;
-  ui_ptext_fit(4, y, UI_SCR_W - 8, UI_DIM, PDNA_SIDECAR_LOSS_KEPT_L1); y += PDNA_SIDECAR_LOSS_ROW_H;
-  ui_ptext_fit(4, y, UI_SCR_W - 8, UI_DIM, PDNA_SIDECAR_LOSS_KEPT_L2); y += PDNA_SIDECAR_LOSS_ROW_H;
-  ui_ptext_fit(4, y, UI_SCR_W - 8, UI_DIM, PDNA_SIDECAR_LOSS_STAYS);   y += PDNA_SIDECAR_LOSS_ROW_H;
+  if (footer == LOSS_FOOT_COPY) {
+    ui_ptext_fit(4, y, UI_SCR_W - 8, UI_DIM, PDNA_XFER_COPY_NOBACK_L1); y += PDNA_SIDECAR_LOSS_ROW_H;
+    ui_ptext_fit(4, y, UI_SCR_W - 8, UI_DIM, PDNA_XFER_COPY_NOBACK_L2); y += PDNA_SIDECAR_LOSS_ROW_H;
+  } else {
+    ui_ptext_fit(4, y, UI_SCR_W - 8, UI_DIM, PDNA_SIDECAR_LOSS_KEPT_L1); y += PDNA_SIDECAR_LOSS_ROW_H;
+    ui_ptext_fit(4, y, UI_SCR_W - 8, UI_DIM, PDNA_SIDECAR_LOSS_KEPT_L2); y += PDNA_SIDECAR_LOSS_ROW_H;
+    ui_ptext_fit(4, y, UI_SCR_W - 8, UI_DIM,
+                 footer == LOSS_FOOT_BRIDGE ? PDNA_XFER_BRIDGE_STAYS : PDNA_SIDECAR_LOSS_STAYS);
+    y += PDNA_SIDECAR_LOSS_ROW_H;
+  }
   y += PDNA_SIDECAR_LOSS_ROW_H / 2;
   ui_text(4, y, UI_TEXT, PDNA_SIDECAR_LOSS_A_TRANSFER); y += PDNA_SIDECAR_LOSS_ROW_H;
   ui_text(4, y, UI_DIM,  PDNA_SIDECAR_LOSS_B_CANCEL);
@@ -2922,8 +2939,14 @@ static bool __attribute__((noinline)) gb_paste_write(const GbEditMon* mon, int b
  * PDNA_SIDECAR_LOSS_TITLE/ROW_H/A_TRANSFER/B_CANCEL, the same s_wait(KEY_A|KEY_B)
  * return convention). `g2_item`/`item_travels` name the held-item row exactly as
  * S11.18 Q8 words it. */
+/* BACKLOG #150 S150-12 decision 10: `is_copy` adds one extra dim row before
+ * A_TRANSFER -- a copy cell's DOWN never reaches the ledger (decision 9), so this
+ * is the honest replacement for "there is a transfer record" that every other DOWN
+ * implicitly promises. Row budget (decision 10's own header note): Item + all four
+ * conditional rows + these two + the two hint rows = 10 rows of PDNA_SIDECAR_LOSS_
+ * ROW_H (9 px) from y=PDNA_SIDECAR_LOSS_ROW_Y0 (16) -> 106 px, inside UI_SCR_H (160). */
 static bool __attribute__((noinline))
-gb_down_loss_screen(const Gb12Notes* n, uint8_t g2_item, bool item_travels) {
+gb_down_loss_screen(const Gb12Notes* n, uint8_t g2_item, bool item_travels, bool is_copy) {
   ui_clear();
   ui_text(4, 3, UI_TITLE, PDNA_SIDECAR_LOSS_TITLE);
   ui_hline(0, 13, UI_SCR_W, UI_BORDER);
@@ -2938,6 +2961,10 @@ gb_down_loss_screen(const Gb12Notes* n, uint8_t g2_item, bool item_travels) {
   y = loss_row(y, n->gender_relaxed || n->letter_relaxed, "PID search relaxed");
   y = loss_row(y, true, "IVs come from DVs, nature from EXP");
   y = loss_row(y, true, "Met: this game, traded");
+  if (is_copy) {
+    y = loss_row(y, true, PDNA_XFER_COPY_NOBACK_L1);
+    y = loss_row(y, true, PDNA_XFER_COPY_NOBACK_L2);
+  }
 
   y += PDNA_SIDECAR_LOSS_ROW_H / 2;
   ui_text(4, y, UI_TEXT, PDNA_SIDECAR_LOSS_A_TRANSFER); y += PDNA_SIDECAR_LOSS_ROW_H;
@@ -3115,6 +3142,12 @@ BankDownResult gb_bank_down_gen3(BoxSource* src, int dst_box, int dst_cell,
   if (!app_can_edit()) { snd_deny(); return BANK_DOWN_REFUSED; }             /* 16(a) */
   if (!app_gen3_pc_live()) { snd_deny(); return BANK_DOWN_REFUSED; }         /* 16(b), G-F2 */
 
+  /* BACKLOG #150 S150-12 decision 9: a COPY cell (its GB original still exists,
+   * BC_FLAG_COPY) never reaches xfer_down_write/app_xfer_pending_set below -- an
+   * entry keyed by this cell's gbsc_key would collide with the entry the STILL-LIVING
+   * original would derive (SS11.7 G-L3, the clone-claims-the-original hole). */
+  const bool copy = xg_cell_is_copy(cell80);
+
   GbEditMon written;
   Gb12Notes notes;
   uint16_t g3item = 0;
@@ -3127,7 +3160,10 @@ BankDownResult gb_bank_down_gen3(BoxSource* src, int dst_box, int dst_cell,
   }
 
   if (app_bank_defer_full()) { snd_deny(); return BANK_DOWN_REFUSED; }      /* 16(f) */
-  if (app_xfer_pending()) {                                                 /* 16(g), decision 9 */
+  /* S150-12 decision 9: a copy has no ledger entry to promote, so N copies may land
+   * in one session without a SAVE-FIRST wall -- the S150-8d constraint this pre-
+   * flight guards is about ledger entries, never about cells. */
+  if (!copy && app_xfer_pending()) {                                        /* 16(g), decision 9 */
     snd_deny();
     msg_wait(PDNA_XFER_SAVEFIRST_TITLE, UI_WARN, PDNA_XFER_SAVEFIRST_L1, PDNA_XFER_SAVEFIRST_L2);
     return BANK_DOWN_REFUSED;
@@ -3137,7 +3173,7 @@ BankDownResult gb_bank_down_gen3(BoxSource* src, int dst_box, int dst_cell,
   if (occ) { snd_deny(); return BANK_DOWN_REFUSED; }                        /* 16(h) */
 
   bool travels = (g3item != 0);
-  if (!gb_down_loss_screen(&notes, notes.item_g2, travels)) return BANK_DOWN_REFUSED;
+  if (!gb_down_loss_screen(&notes, notes.item_g2, travels, copy)) return BANK_DOWN_REFUSED;
 
   /* decision 7's MAKE LEGAL correction: the mon standing below pk_evo_floor(dex). */
   PkMon pk;
@@ -3172,12 +3208,16 @@ BankDownResult gb_bank_down_gen3(BoxSource* src, int dst_box, int dst_cell,
    * decode_name(out->nickname, mon + 0x08, 10) call site names the offset) -- the
    * nickname AS WRITTEN ABROAD, not the GB bytes gbsc_entry_from() would otherwise
    * copy from `written` (the cell's own unpacked GB record). */
-  int idx = xfer_down_write(xr_key_g3(out80), cell80, &written, XR_DIR_ABROAD_G3,
-                            out80 + 0x08, scratch, path, NULL);
-  if (idx < 0) return BANK_DOWN_REFUSED;
+  if (!copy) {
+    int idx = xfer_down_write(xr_key_g3(out80), cell80, &written, XR_DIR_ABROAD_G3,
+                              out80 + 0x08, scratch, path, NULL);
+    if (idx < 0) return BANK_DOWN_REFUSED;
 
-  app_xfer_pending_set(xr_key_g3(out80), (int16_t)idx);                     /* decision 9 */
-  log_line("gen12: down->gen3 box %d slot %d: pending, %s", dst_box, dst_cell, path);
+    app_xfer_pending_set(xr_key_g3(out80), (int16_t)idx);                   /* decision 9 */
+    log_line("gen12: down->gen3 box %d slot %d: pending, %s", dst_box, dst_cell, path);
+  } else {
+    log_line("gen12: down->gen3 box %d slot %d: copy cell, no ledger entry", dst_box, dst_cell);
+  }
   return BANK_DOWN_CONVERTED;
 }
 
@@ -3377,6 +3417,10 @@ static void __attribute__((noinline)) gb_gen1_norom_msg(void) {
  * on this arm -- decision 15). */
 BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]) {
   if (!app_can_edit() || !g_ed) { snd_deny(); return BANK_DOWN_REFUSED; }    /* 16(a)/(b) */
+  /* BACKLOG #150 S150-12 decision 9: same derivation as gb_bank_down_gen3 -- a COPY
+   * cell's GB original still exists, so this arm must not write a ledger entry for
+   * it either. */
+  const bool copy = xg_cell_is_copy(cell80);
   if (gb_box_is_party(g_ed->s.gen, dst_box)) {
     snd_deny();
     msg_wait(PDNA_SIDECAR_XFER_TITLE, UI_WARN, PDNA_SIDECAR_PARTY_L1, 0);
@@ -3441,7 +3485,9 @@ BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]) {
    * already fires for gen3_to_gb's own (different) name loss. */
   loss.ot_lossy   |= notes.otname_lossy;
   loss.nick_lossy |= notes.nick_lossy;
-  if (!gb_paste_loss_screen(&loss)) return BANK_DOWN_REFUSED;               /* decision 15: the shipped screen */
+  /* decision 10: COPY prints the NOBACK rows instead of KEPT/STAYS -- there is no
+   * ledger entry to keep. */
+  if (!gb_paste_loss_screen(&loss, copy ? LOSS_FOOT_COPY : LOSS_FOOT_BRIDGE)) return BANK_DOWN_REFUSED;  /* decision 15: the shipped screen */
 
   uint8_t fix_from = 0, fix_to = 0;
   if (gen3_to_gb_evo_needs_fix(&mon, &fix_from, &fix_to)) {                  /* R1 block, verbatim */
@@ -3476,17 +3522,24 @@ BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]) {
     gb_get_dv(&mon, GB_SPE), gb_get_dv(&mon, GB_SPC)
   };
   uint64_t key = gbsc_key(mon.gen, gb_get_otid(&mon), dv4, mon.otname);
+  /* decision 9: a copy writes NO ledger entry -- idx stays -1 and path/wlen stay
+   * unused, so every guard below (undo/claim) must key on `copy`, never on `idx`
+   * alone (idx == -1 is ALSO gbsc_insert's own "the ledger is full" failure shape
+   * for a non-copy cell, which must still refuse the whole drop). */
   char path[GBSC_PATH_MAX];
   uint32_t wlen = 0;
-  int idx = xfer_down_write(key, cell80, &mon, XR_DIR_ABROAD_GB, NULL, g_ed->sidecar, path, &wlen);
-  if (idx < 0) return BANK_DOWN_REFUSED;
+  int idx = -1;
+  if (!copy) {
+    idx = xfer_down_write(key, cell80, &mon, XR_DIR_ABROAD_GB, NULL, g_ed->sidecar, path, &wlen);
+    if (idx < 0) return BANK_DOWN_REFUSED;
+  }
 
   int newslot = -1;
   GbsStatus ist = gbs_insert(&g_ed->s, dst_box, &mon, &newslot, g_ed->list);
   if (ist != GBS_OK) {
     gb_rollback();
     log_line("gen12: down->bridge insert box %d refused: %s", dst_box, gbs_status_text(ist));
-    xfer_down_undo(path, g_ed->sidecar);
+    if (!copy) xfer_down_undo(path, g_ed->sidecar);
     snd_error();
     msg_wait(PDNA_SIDECAR_XFER_REFUSED_TITLE, UI_WARN, gbs_status_text(ist), PDNA_GBEDIT_UNCHANGED_L2);
     return BANK_DOWN_REFUSED;
@@ -3494,9 +3547,13 @@ BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]) {
 
   log_line("=== gen12 down->bridge -> %s box %d slot %d ===", g_ed->path, dst_box, newslot);
   bool ok = gb_persist("xferdown");
-  if (!ok) { xfer_down_undo(path, g_ed->sidecar); return BANK_DOWN_REFUSED; }
+  if (!ok) {
+    if (!copy) xfer_down_undo(path, g_ed->sidecar);
+    return BANK_DOWN_REFUSED;
+  }
 
-  xfer_down_claim_now(g_ed->sidecar, wlen, idx, path);                      /* decision 15: CLAIMED now */
+  if (!copy) xfer_down_claim_now(g_ed->sidecar, wlen, idx, path);           /* decision 15: CLAIMED now */
+  else       log_line("gen12: down->bridge box %d slot %d: copy cell, no ledger entry", dst_box, newslot);
   return BANK_DOWN_LANDED;
 }
 
@@ -3805,7 +3862,7 @@ static bool gb_paste_hook(uint8_t* rec80) {
     return false;
   }
 
-  if (!gb_paste_loss_screen(&loss)) return false;                           /* 4 */
+  if (!gb_paste_loss_screen(&loss, LOSS_FOOT_PASTE)) return false;          /* 4 */
 
   /* BACKLOG #104 R1 (docs/TRANSFER-ROUNDTRIP-DESIGN.md section 3c/4): KEEP AS IS vs
    * MAKE LEGAL, additive between the loss screen and the box-writable check -- most
