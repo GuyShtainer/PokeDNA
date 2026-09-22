@@ -56,11 +56,14 @@ typedef struct {
    * has, all EWRAM, and this project's whole EWRAM budget was 912 B free at the
    * time this bit was added -- a wider PkMon was priced at ~1.1 KB, more than the
    * entire remaining budget. This byte sits in what was PkMon's own trailing
-   * padding (the 6 bytes between `form` and the 8-byte-aligned `raw` pointer
-   * below), so it costs sizeof(PkMon) NOTHING -- tests/host_gen3_codec_lossy_test.c
-   * and every existing PkMon array site were checked against this; if
-   * sizeof(PkMon) ever moves off 120, something about that padding assumption
-   * broke and needs re-deriving, not just re-measuring. */
+   * padding (host: the 6 bytes between `form` and the 8-byte-aligned `raw`;
+   * ON THE GBA, which is what the EWRAM budget counts, sizeof(PkMon) is 112 with
+   * `form`@105 and `raw`@108 -- so this byte took one of TWO spare bytes and
+   * exactly ONE is left. A second flag byte still fits; a third moves sizeof and
+   * costs 30 B per g_box slot. tests/host_gen3_codec_lossy_test.c and every
+   * existing PkMon array site were checked against this; if sizeof(PkMon) ever
+   * moves off its expected value, something about that padding assumption broke
+   * and needs re-deriving, not just re-measuring. */
   uint8_t  nameFlags;
   const uint8_t* raw;         /* back-ref to the 80/100-byte record (edit later).
                                * NULL = the caller's copy is gone; never dereference.
