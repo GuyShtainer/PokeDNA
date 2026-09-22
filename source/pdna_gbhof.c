@@ -278,7 +278,7 @@ static bool hof_edit_mon_menu(uint8_t gen, GbHofMon* staged) {
        * gbedit_confirm_keep()'s own title elsewhere) -- declining (B on the
        * confirm) returns to the menu with every staged field intact instead
        * of silently throwing a real edit away. */
-      if (dirty && !app_confirm(PDNA_GBEDIT_KEEP_TITLE,
+      if (dirty && !app_confirm(PDNA_GBHOF_DISCARD_TITLE,
                                 "Your changes to this mon will be lost."))
         continue;
       return false;
