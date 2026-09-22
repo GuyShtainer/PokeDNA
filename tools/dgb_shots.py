@@ -50,7 +50,9 @@ import argparse
 import functools
 import json
 import re
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -6515,6 +6517,38 @@ def run_s150_8_bridge(core_mod, image_mod, rom_gold: Path, rom_red: Path,
     return sg
 
 
+def _extract_gb_rom_offline(fused_image_path: Path) -> Path:
+    """BACKLOG #214b: the offline twin of gb_shots.Session._gb_rom_file() -- same
+    directory-parse, same "exactly one embedded ROM" contract -- but standalone
+    (no live Session/core, --selftest-captions never boots mGBA), called against
+    a STORED `claim_gb_image` path (the fused .gba the ORIGINAL capture used,
+    manifest.json's own record of it) rather than a Session's in-memory
+    self.rom_path. A plain passthrough of that fused path to check_gb() is WRONG
+    (BACKLOG #214 review item 5): the C driver's rom_gbui_open() expects a raw
+    .gb/.gbc, and handing it a multi-megabyte fused .gba fails with a locate
+    error even on a genuinely correct shot -- this function does the exact same
+    extraction the live capture did, so the offline re-check reads the identical
+    bytes gbscr_text()/rom_gbui_glyph() actually rendered from."""
+    blob = fused_image_path.read_bytes()
+    rec_off = fuse_gb.locate_record_permissive(blob, str(fused_image_path))
+    dir_off, dir_size = fuse_gb.read_record(blob, rec_off)
+    if not dir_size:
+        raise ValueError(f"claim_gb offline re-check: {fused_image_path} has no fused "
+                          "GB directory at all")
+    entries = fuse_gb.parse_directory(blob, dir_off, dir_size)
+    rom_entries = [e for e in entries if e["type"] in (fuse_gb.TYPE_ROM_GEN1, fuse_gb.TYPE_ROM_GEN2)]
+    if len(rom_entries) != 1:
+        raise ValueError(f"claim_gb offline re-check: {fused_image_path} carries "
+                          f"{len(rom_entries)} embedded GB ROM(s), expected exactly 1")
+    e = rom_entries[0]
+    rom_bytes = blob[e["offset"]:e["offset"] + e["size"]]
+    tmp_dir = Path(tempfile.mkdtemp(prefix="dgb_shots_claimgb_offline_"))
+    ext = ".gbc" if e["type"] == fuse_gb.TYPE_ROM_GEN2 else ".gb"
+    tmp_path = tmp_dir / f"embedded{ext}"
+    tmp_path.write_bytes(rom_bytes)
+    return tmp_path
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -6986,6 +7020,19 @@ def main(argv=None) -> int:
                           "with `fuse_gb.py --no-loc`, same convention as --cold-start-compare) "
                           "-- run this against a --before and an --after build to get the "
                           "brief's own comparison. Skips the normal --image shot run entirely.")
+    ap.add_argument("--b222", nargs=3, type=Path,
+                     metavar=("NICK_IMAGE", "HOFNICK_NOROM_IMAGE", "ITEM_NOROM_IMAGE"),
+                     help="BACKLOG #222 review R3: the three missing fixed-font-collapse "
+                          "site frames (R1's ui_ascii_next_fixed()). Each image is a "
+                          "separately-fused `make delta-artless` base -- NICK_IMAGE = Red.gb "
+                          "+ an edited Red.sav (box slot 0 nicknamed PIKA♂ via "
+                          "host_gbsurgery_tool's --op nick 0 0), HOFNICK_NOROM_IMAGE and "
+                          "ITEM_NOROM_IMAGE = the edited Red.sav ALONE, no ROM fused at all "
+                          "(hofnick: team 0 mon 0 renamed PIKA♂ via --op hofnick 0 0; item: "
+                          "id 4 qty 10 inserted via --op item items 4 10). Runs "
+                          "run_b222_summary_nick()/run_b222_hof_ot()/run_b222_bag_item() in "
+                          "that order against their own image. Skips the normal --image shot "
+                          "run entirely.")
     ap.add_argument("--b200", action="store_true",
                      help="BACKLOG #200: runs run_b200_chain() against --image -- the "
                           "Gen-1/2 grid's phantom cells (blocked-cell paint, cursor "
@@ -7022,6 +7069,7 @@ def main(argv=None) -> int:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         failures: list[str] = []
         claims_checked = 0
+        gb_claims_checked = 0
         for entry in manifest.get("shots", []):
             name = entry.get("file", "<no file key>")
             caption = entry.get("caption", "")
@@ -7037,6 +7085,41 @@ def main(argv=None) -> int:
                 claims_checked += 1
                 for f in gb_claims.check(frame_path, claim=claim, claim_absent=claim_absent):
                     failures.append(f"{name}: {f}")
+
+            # BACKLOG #214b: claim_gb= cannot go through gb_claims.check() above --
+            # it needs the RAW embedded .gb/.gbc, not the fused .gba path check()
+            # would otherwise be handed (rom_gbui_open() fails to locate anything
+            # useful in a multi-megabyte fused image; a naive passthrough produced
+            # a false claim failure on a correct shot, review item 5). Re-derive
+            # the embedded ROM from claim_gb_image (Session.shot()'s own record of
+            # the fused image THIS capture used) via the same directory-parse
+            # _gb_rom_file() uses, into a throwaway temp file, then delete it
+            # whether the check passed or not -- this loop can run over hundreds
+            # of shots and must not leave one temp ROM per entry behind.
+            claim_gb = entry.get("claim_gb")
+            if claim_gb is not None:
+                claim_gb_image = entry.get("claim_gb_image")
+                if not claim_gb_image:
+                    failures.append(f"{name}: claim_gb present but no claim_gb_image "
+                                     "recorded in the manifest -- cannot re-derive the ROM")
+                else:
+                    gb_claims_checked += 1
+                    image_path = Path(claim_gb_image)
+                    if not image_path.is_file():
+                        failures.append(f"{name}: claim_gb_image {image_path} not a file "
+                                         "(offline re-check needs the SAME fused image the "
+                                         "live capture used, still present on disk)")
+                    else:
+                        extracted_rom = None
+                        try:
+                            extracted_rom = _extract_gb_rom_offline(image_path)
+                            for f in gb_claims.check_gb(frame_path, extracted_rom, claim_gb=claim_gb):
+                                failures.append(f"{name}: {f}")
+                        except ValueError as exc:
+                            failures.append(f"{name}: claim_gb offline re-check setup failed: {exc}")
+                        finally:
+                            if extracted_rom is not None:
+                                shutil.rmtree(extracted_rom.parent, ignore_errors=True)
         if failures:
             print(f"--selftest-captions: {len(failures)} failure(s):", file=sys.stderr)
             for f in failures:
@@ -7044,7 +7127,9 @@ def main(argv=None) -> int:
             return 1
         print(f"--selftest-captions: ok -- {len(manifest.get('shots', []))} shot(s), "
               f"every caption non-empty, every frame file present, "
-              f"{claims_checked} shot(s)' claim(s) re-verified against their own PNG")
+              f"{claims_checked} shot(s)' claim(s) re-verified against their own PNG, "
+              f"{gb_claims_checked} shot(s)' claim_gb(s) re-verified via a freshly "
+              f"re-extracted embedded ROM (BACKLOG #214b)")
         return 0
 
     core_mod, image_mod = gb_shots.load_mgba()
@@ -7072,6 +7157,38 @@ def main(argv=None) -> int:
         ok, skipped = run_b185_cold_locate(core_mod, image_mod, noloc_image, a.out)
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        return 0
+
+    if a.b222:
+        nick_image, hofnick_norom_image, item_norom_image = a.b222
+        for label, p in (("NICK_IMAGE", nick_image),
+                          ("HOFNICK_NOROM_IMAGE", hofnick_norom_image),
+                          ("ITEM_NOROM_IMAGE", item_norom_image)):
+            if not p.is_file():
+                sys.exit(f"--b222: {label} {p}: not a file")
+        ok, skipped = [], []
+        try:
+            sess = run_b222_summary_nick(core_mod, image_mod, nick_image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b222 summary nick: {e}")
+        try:
+            sess = run_b222_hof_ot(core_mod, image_mod, hofnick_norom_image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b222 hof ot: {e}")
+        try:
+            sess = run_b222_bag_item(core_mod, image_mod, item_norom_image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b222 bag item: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
         return 0
 
     if not a.image:
@@ -9393,6 +9510,111 @@ def run_s150_11_reconcile(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
            "so app_xfer_reconcile_bank_open() always sees zero candidates here; "
            "the log-line assertion (XFER-C13/C14) is hardware-only, not "
            "producible on the emulator")
+    return s
+
+
+def run_b222_summary_nick(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #222 review R1/R3(a): the Gen-1/2 summary's own Nickname row through the
+    NEW fixed-font e-acute/gender-sign collapse (ui_ascii_next_fixed(), source/
+    ui_ascii.c). `rom` must be a single-ROM fused image (tools/fuse_gb.py, one Red.gb +
+    one edited Red.sav, on a `make delta-artless` base -- no Emerald.sav, so the boot
+    picker is skipped) whose box slot 0 was renamed PIKA♂ via tests/
+    host_gbsurgery_tool.c's `--op nick 0 0 "PIKA♂"` (gb_edit.c's enc_one() maps the
+    UTF-8 gender-sign pair E2 99 82 to the Game Boy raw nickname byte 0xEF -- a save-
+    format encoding, unrelated to ui_ascii's own collapse, which only runs on the
+    DECODED UTF-8 string source/pdna_gbsummary.c hands to ui_text()).
+
+    Nav: boot_to_gb_session() lands on the box grid (single-ROM image, no picker, the
+    rom_gbsprite cold scan already ridden out). Slot 0 is occupied (this corpus's every
+    box is full) -- A opens its own cell menu (VIEW/EDIT already selected, row 0), A
+    again enters the summary in VIEW mode, Card 0 INFO (gb_shots.py's run_red/run_gold
+    calibrate the identical two-A nav). card_info() (source/pdna_gbsummary.c) draws
+    Nickname first via field_row() -> ui_text(), which since review R1 bounds through
+    ui_ascii_next_fixed() -- sys8's own cell 127 is a blank 8x8 tile (BACKLOG #222 R1),
+    so PIKA♂'s decoded gender sign collapses to '?': "PIKA?"."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b222_nick_")
+    print("== BACKLOG #222 review R3(a): the Gen-1/2 summary's Nickname row, PIKA? ==")
+    boot_to_gb_session(s, rom)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)   # box grid, slot 0 occupied -> its own cell menu
+    s.tap("A", settle=gb_shots.BIG_SETTLE)   # VIEW/EDIT (row 0, already selected) -> the summary
+    s.shot("01_nick_row", "BACKLOG #222 R1/R3(a): Card 0 INFO, Nickname row -- "
+           "PIKA♂ (stored as Game Boy raw byte 0xEF) decodes to UTF-8 and "
+           "collapses through ui_ascii_next_fixed() to 'PIKA?' (sys8's cell 127 is "
+           "blank, so the FIXED-font path can show neither e-acute nor the gender "
+           "signs -- only '?', unlike the proportional font's own real 127 glyph)",
+           claim=["PIKA?"])
+    return s
+
+
+def run_b222_hof_ot(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #222 review R1/R3(b): the Hall of Fame team detail's own nickname line,
+    through the SAME fixed-font collapse as R3(a) above, but reached via the NO-ROM
+    plain fallback this time (source/pdna_gbhof.c's hof_plain_screen() ->
+    hof_detail_visit() -> hof_detail_render(), plain ui_text(), NOT the GB-shell's own
+    composited gbscr_text() font). `rom` must be fused with NO Gen ROM at all
+    (tools/fuse_gb.py fed only the edited Red.sav -- the same 'no ROM' construction
+    run_b194_hof_no_rom() above uses) so gbscr_open() refuses (kReasonNoRom) and
+    pdna_gbhof() falls straight through to the plain page. The embedded save's Hall of
+    Fame team 0 mon 0 (MEW, verified against this exact corpus by run_b89_hof_detail_
+    only()'s own docstring) was renamed PIKA♂ via tests/host_gbsurgery_tool.c's
+    `--op hofnick 0 0 "PIKA♂"`.
+
+    Nav: boot_to_gb_session() lands on the box grid (single-save image, no picker) ->
+    START -> nav menu -> DOWN x12 (Records, PDNA_NAV_ITEMS index 12 -- the same count
+    run_b194_hof_no_rom() uses) -> A (Records -> pdna_gbhof() -> gbscr_open() refuses
+    immediately, no ROM to scan, straight to hof_plain_screen()'s own row list) -> A
+    (team 1's row, sel=0 by default -> hof_detail_visit() -> hof_detail_render())."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b222_hof_")
+    print("== BACKLOG #222 review R3(b): the HoF detail's nickname line, no ROM, PIKA? ==")
+    boot_to_gb_session(s, rom)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)
+    s.press_n("DOWN", 12)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)   # Records -> pdna_gbhof() -> refuses (no ROM) -> plain list
+    s.tap("A", settle=gb_shots.BIG_SETTLE)   # team 1's row -> hof_detail_visit() -> hof_detail_render()
+    s.shot("01_hof_nick", "BACKLOG #222 R1/R3(b): hof_detail_render's nickname line "
+           "for team 1 mon 0 (MEW, renamed PIKA♂) -- the SAME "
+           "ui_ascii_next_fixed() collapse as the summary screen, drawn through "
+           "plain ui_text() (no GB-shell composited font here at all, since no ROM "
+           "is fused) -- 'PIKA?'",
+           claim=["PIKA?"])
+    return s
+
+
+def run_b222_bag_item(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #222 review R1/R3(c): the Gen-1/2 Item bag's own no-ROM plain fallback
+    (pdna_gbbag_plain() -> gbbag_row_paint(), source/pdna_gbbag.c) drawing a REAL item
+    name through ui_text() -- R1's fixed-font collapse applies here too, on a name this
+    tree ships itself (gb_item_names.c, GREEN per licensing), not a planted string.
+    `rom` must be fused with NO Gen ROM at all (the same 'no ROM' construction R3(b)
+    above uses) so gbscr_open() refuses and pdna_gbbag() falls back to pdna_gbbag_
+    plain(). The embedded save's ITEMS pocket had id 4 ("POKé BALL",
+    gb_item_names.c index 4) inserted at qty 10 via tests/host_gbsurgery_tool.c's
+    `--op item items 4 10`: gbb_insert() (source/gb_bag.c) always APPENDS a new id at
+    list->count, never sorts -- verified against this exact fixture with a throwaway
+    gbb_read()/gb_item_label() dump (not shipped): the corpus's Items pocket already
+    held 19 entries, so the new POKé BALL landed at row 19 of 20 (0-based), the
+    LAST row, not anywhere earlier.
+
+    Nav: boot_to_gb_session() lands on the box grid (single-save image, no picker) ->
+    START -> nav menu -> DOWN x7 (Bag, PDNA_NAV_ITEMS index 7 -- the same count run_
+    u4_bag() uses) -> A (Bag -> pdna_gbbag() -> gbscr_open() refuses (no ROM),
+    straight to pdna_gbbag_plain(), no cold-scan settle needed since there is no ROM
+    to scan -- BIG_SETTLE, not GB_ART_COLD_SETTLE, matching run_b194_hof_no_rom()'s
+    own no-ROM reasoning) -> DOWN x19 (row 0 -> row 19; gbbag_row_paint()'s own top-
+    follows-sel scroll keeps the selected row on screen throughout, landing on the
+    inserted entry as the LAST visible row once top settles at 8)."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b222_bag_")
+    print("== BACKLOG #222 review R3(c): the bag's plain fallback, POKé BALL -> POK? BALL ==")
+    boot_to_gb_session(s, rom)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)
+    s.press_n("DOWN", 7)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)   # Bag -> pdna_gbbag() -> refuses (no ROM) -> plain list
+    s.press_n("DOWN", 19)                    # row 0 -> row 19 (the newly-inserted POKe BALL)
+    s.shot("01_bag_item", "BACKLOG #222 R1/R3(c): the plain fallback's row 19, id 4 "
+           "(\"POKé BALL\", gb_item_label()) drawn through gbbag_row_paint()'s "
+           "ui_text() -- collapses to 'POK? BALL' (the SAME sys8-blank-127 fact R1 "
+           "documents, so the fixed font cannot show e-acute here either)",
+           claim=["POK? BALL"])
     return s
 
 
