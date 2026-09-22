@@ -1268,6 +1268,23 @@ static void test_moves_per_slot(void) {
     CHECK(g3gb_moves_ok(one, GB_GEN1, bad4) == 0, "7a: one in-range move -> 0 bad");
     CHECK(g3gb_moves_ok(moves, 0, bad4) == -1, "7a: gen 0 -> -1");
     CHECK(g3gb_moves_ok(moves, 3, bad4) == -1, "7a: gen 3 -> -1");
+
+    /* review D2(a): the exact bound value itself, both ways -- catches `>` silently
+     * becoming `>=` in either direction. gb_max_move(GEN2) == 251, gb_max_move(GEN1)
+     * == 165 (source/gb_edit.c:68): 251 must be LEGAL for GEN2 (== bound, not over
+     * it) and 165 must be LEGAL for GEN1 (== bound too) -- only 252 (one past GEN2's
+     * bound) is bad for both. */
+    uint16_t moves2[4] = {251, 252, 165, 1};
+    n = g3gb_moves_ok(moves2, GB_GEN2, bad4);
+    CHECK(n == 1, "7a boundary: GEN2 bad count == 1 (got %d)", n);
+    CHECK(bad4[0] == 0 && bad4[1] == 1 && bad4[2] == 0 && bad4[3] == 0,
+          "7a boundary: GEN2 bad4 == {0,1,0,0} -- 251 (== bound) is legal (got {%u,%u,%u,%u})",
+          bad4[0], bad4[1], bad4[2], bad4[3]);
+    n = g3gb_moves_ok(moves2, GB_GEN1, bad4);
+    CHECK(n == 2, "7a boundary: GEN1 bad count == 2 (got %d)", n);
+    CHECK(bad4[0] == 1 && bad4[1] == 1 && bad4[2] == 0 && bad4[3] == 0,
+          "7a boundary: GEN1 bad4 == {1,1,0,0} -- 165 (== bound) is legal (got {%u,%u,%u,%u})",
+          bad4[0], bad4[1], bad4[2], bad4[3]);
   }
 
   printf("-- 7b. g3gb_moves_fill --\n");
@@ -1329,6 +1346,42 @@ static void test_moves_per_slot(void) {
     CHECK(n3 == 0, "7b: Struggle is never invented even as the only candidate (filled=%d)", n3);
     CHECK(fill_struggle[3] == 0, "7b: bad slot stays empty rather than Struggle (got %u)", fill_struggle[3]);
     CHECK(gb_get_move(&out, 3) == 0, "7b: slot 3 on `out` is still empty (Struggle never written)");
+  }
+
+  printf("-- 7b review D2(c): g3gb_moves_fill packs even when NOTHING was filled --\n");
+  {
+    /* {57, BAD, 44, 0} down-converted with bad4 = {0,1,0,0} (decision 1's own
+     * contract: the caller -- here, gen3_to_gb_fixed's set_moves -- has already
+     * written the flagged slot empty) yields out = {57,0,44,0}: a hole at index 1
+     * in front of a real move at index 2. g3gb_moves_fill with an all-empty learn4
+     * finds NO fill for the bad slot -- but it must still PACK the pre-existing hole
+     * away, because it calls g3gb_moves_pack() unconditionally at the end, not only
+     * when something was filled. */
+    GbGen1Base g1c = test_g1base();
+    uint8_t rec2[80];
+    gen3_build_mon(7, 10, 0x99990000u, 0xD0000005u, "PACKFL", 3, rec2);
+    EditMon em2; gen3_edit_load(rec2, false, &em2);
+    em_set_move(&em2, 0, 57); em_set_move(&em2, 1, 317); em_set_move(&em2, 2, 44); em_set_move(&em2, 3, 0);
+    gen3_edit_commit(&em2, rec2);
+
+    uint8_t bad4c[4] = {0, 1, 0, 0};
+    GbEditMon out2; Gen3ToGbLoss loss2;
+    G3GbStatus st2 = gen3_to_gb_fixed(rec2, GB_GEN1, true, &g1c, bad4c, &out2, &loss2);
+    CHECK(st2 == G3GB_OK, "7b D2(c) setup: gen3_to_gb_fixed accepts (%s)", g3gb_status_text(st2));
+    if (st2 == G3GB_OK) {
+      CHECK(gb_get_move(&out2, 0) == 57 && gb_get_move(&out2, 1) == 0 &&
+            gb_get_move(&out2, 2) == 44 && gb_get_move(&out2, 3) == 0,
+            "7b D2(c) setup: {57,0,44,0} (got {%u,%u,%u,%u})",
+            gb_get_move(&out2, 0), gb_get_move(&out2, 1), gb_get_move(&out2, 2), gb_get_move(&out2, 3));
+
+      uint8_t learn4c[4] = {0, 0, 0, 0}, fill4c[4];
+      int nc = g3gb_moves_fill(&out2, bad4c, learn4c, fill4c);
+      CHECK(nc == 0, "7b D2(c): nothing filled (got %d)", nc);
+      CHECK(gb_get_move(&out2, 0) == 57 && gb_get_move(&out2, 1) == 44 &&
+            gb_get_move(&out2, 2) == 0 && gb_get_move(&out2, 3) == 0,
+            "7b D2(c): result packs to {57,44,0,0} even with zero fills (got {%u,%u,%u,%u})",
+            gb_get_move(&out2, 0), gb_get_move(&out2, 1), gb_get_move(&out2, 2), gb_get_move(&out2, 3));
+    }
   }
 
   printf("-- 7c. g3gb_moves_pack --\n");
@@ -1479,6 +1532,11 @@ static void test_merge_moves_per_slot(void) {
   {
     GbEditMon now = out;
     CHECK(gb_set_move(&now, 2, 52), "7h: set slot 2 to Ember (52) in-game");
+    /* review D2(b): drain slot 2's PP to a value gb_set_move's own fresh-base-PP
+     * default would never produce on its own -- proves merge_moves calls em_set_pp
+     * for the CHANGED slot (not just em_set_move/em_set_ppups), by making the wrong
+     * PP unmistakable in the merged record. */
+    CHECK(gb_set_pp(&now, 2, 4), "7h D2(b): drain slot 2's PP to 4");
     uint8_t back80[80]; GbscMergeReport rep;
     CHECK(gbsc_merge_up(&back, &now, back80, &rep), "7h: merge up succeeds");
     CHECK(rep.moves_changed, "7h: moves_changed is TRUE");
@@ -1487,6 +1545,8 @@ static void test_merge_moves_per_slot(void) {
     CHECK(merged.moves[0] == 57 && merged.moves[1] == 44 && merged.moves[2] == 52 && merged.moves[3] == 182,
           "7h: {57,44,52,182} -- PROTECT SURVIVES because slot 3 was only re-encoded (got {%u,%u,%u,%u})",
           merged.moves[0], merged.moves[1], merged.moves[2], merged.moves[3]);
+    CHECK(merged.pp[2] == 4, "7h D2(b): slot 2's PP == 4, the drained value -- merge_moves wrote it (got %u)",
+          merged.pp[2]);
   }
 
   printf("-- 7i. one PP-Up used on slot 0 in-game; the other three stay byte-identical --\n");
