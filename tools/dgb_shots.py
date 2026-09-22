@@ -7789,14 +7789,19 @@ def run_b200_chain(core_mod, image_mod, rom: Path, out_dir: Path) -> list[gb_sho
          (2 blocked cells) and 4 (all 6), even though the box is EMPTY of mons
          (capacity, not occupancy, drives the paint). Also demonstrates F2's
          DOWN behaviour on column 0 (cells 0/6/12/18 real, 24 blocked): DOWN x3
-         reaches the deepest real cell (18, row 3 col 0), a 4th DOWN does NOT
-         linger on/wrap toward the blocked row 4 -- `cur + COLS >= cap` fires
-         the SAME off-bank-bottom edge (return 5) the physical bottom row
-         already used (is_bank is unconditionally true for a GB source), so
-         the screen LEAVES the box grid entirely (into the Bank hand-off,
-         bank_plant.c's PDNA_DELTA-only planted cells make that landing
-         screenshot-able with no real SD card -- same fixture run_s150_7_
-         down_edge() already relies on).
+         reaches the deepest real cell (18, row 3 col 0), a 4th DOWN WRAPS to
+         cell 0 (row 1 col 1 in 1-based row/col terms) -- BACKLOG #198 item 8
+         (the b200 review's own "wrap" one-liner): the NOT-CARRYING KEY_DOWN
+         handler (source/pdna_box.c:4463-4464) is `if (src->is_bank && cur +
+         COLS >= COLS*ROWS) { ...; return 5; } else cur = (cur+COLS >= cap) ?
+         cur % COLS : cur + COLS;` -- at cur=18, cap=20, COLS=6, COLS*ROWS=30:
+         cur+COLS=24, and 24 >= 30 is FALSE, so the off-bank-bottom `return 5`
+         does NOT fire here; the else branch runs instead, and 24 >= cap(20)
+         is true, so `cur = cur % COLS = 0`. The `return 5` / leave-the-grid
+         reading a previous pass of this file gave belonged to a DIFFERENT
+         handler entirely (:4278-4285, the CARRYING/MOVE-mode KEY_DOWN, gated
+         inside `if (s_holding)`) -- box 12 chain A never picks anything up,
+         so that handler is never even reached here.
       B: the GB PARTY pseudo-box (index 12, capacity 6) -- 24 of 30 cells
          blocked (every cell but row 0).
       C: box 1 (index 0, 20/20 full) -- same blocked rows 3 (partial)/4 (full)
@@ -7820,26 +7825,34 @@ def run_b200_chain(core_mod, image_mod, rom: Path, out_dir: Path) -> list[gb_sho
             "0, is blocked); F2's grid_lr_step/DOWN clamp got it here one real "
             "cell at a time, same as before this lane for every cell that IS real")
     sa.tap("DOWN", settle=gb_shots.BIG_SETTLE)
-    sa.shot("02_down_off_edge", "tap2 (DOWN once more): `cur + COLS (24) >= cap "
-            "(20)` fires the SAME off-bank-bottom edge (return 5) the PHYSICAL "
-            "bottom row already used, is_bank being unconditionally true for a "
-            "GB source. For this STANDALONE session (pdna_gen12.c's own re-entry "
-            "loop, `for (int r; (r = pdna_box(&s)) != 0; )`) return 5 is not the "
-            "PC<->Bank hand-off (that reading applies to the NV_GB import path, "
-            "pdna_main.c's own PC/Bank loop) -- it is caught by the loop's plain "
-            "`else app_box_start_set(1)` and pdna_box() is re-entered immediately "
-            "on the SAME box. Pixel-identical to tap0's own boot frame here (no "
-            "cursor sprite has synced onto a fresh cell yet) -- tap3 below moves "
-            "RIGHT to prove where the re-entry actually parked the cursor.")
+    sa.shot("02_down_off_edge", "tap2 (DOWN once more, BACKLOG #198 item 8 recaption): "
+            "WRAPPED to cell 0 (row 1 col 1, 1-based) -- source/pdna_box.c's own "
+            "NOT-CARRYING KEY_DOWN handler (:4463-4464) is `if (src->is_bank && "
+            "cur+COLS >= COLS*ROWS) return 5; else cur = (cur+COLS>=cap) ? "
+            "cur%COLS : cur+COLS;`; at cur=18 the off-bank-bottom test (24>=30) "
+            "is false, so the else branch fires and cur%COLS=0. VISUAL PROOF (not "
+            "just the arithmetic): the L/R box-switch cursor arrow at top-left "
+            "(the only visible cursor landmark -- box 12 is EMPTY, 0/20, so no "
+            "mon sprite exists for a selection highlight to sit over) is back in "
+            "the EXACT SAME top-left position as tap0's own boot frame (pixel-diff "
+            "bbox against tap0 is a short y=22-41 strip, the top-row arrow's own "
+            "bounding box -- against tap1's own cell-18 frame the diff bbox is "
+            "y=22-107, spanning the full row0-to-row3 travel); confirmed by direct "
+            "pixel comparison (PIL ImageChops.difference), not eyeballing alone. "
+            "tap3 below moves RIGHT to make the wrap unambiguous on its own (cell "
+            "0 -> cell 1), independent of the diff-bbox argument.")
     sa.tap("RIGHT", settle=gb_shots.SETTLE)
-    sa.shot("03_after_reentry", "tap3 (RIGHT, to reveal the re-entered cursor): "
-            "confirms where the DOWN-off-edge re-entry actually left the cursor "
-            "-- see this shot next to tap1's own cell-18 cursor to tell the two "
-            "landings apart. Answering the brief's open question plainly: DOWN "
-            "past the last real row does not stay AND does not wrap into a "
-            "blocked cell -- it re-enters the whole box screen instead, and F2's "
-            "own clamp then keeps the fresh cursor off every blocked cell exactly "
-            "as everywhere else.")
+    sa.shot("03_after_reentry", "tap3 (RIGHT, BACKLOG #198 item 8 recaption): "
+            "the wrapped cursor (cell 0) moves one RIGHT to cell 1 (the arrow "
+            "sits under the box name's '1', one column right of tap2's own "
+            "top-left landing) -- the SAME grid the whole chain has been in the "
+            "entire time (this session never left pdna_box() at all: is_bank's "
+            "own `return 5` branch, which WOULD have exited to the Bank hand-off, "
+            "never fired -- see tap2's own caption for the exact arithmetic). "
+            "Answering the brief's open question plainly: DOWN past the last "
+            "real row in a capacity-bounded column WRAPS to row 0 of the SAME "
+            "column (here, column 0 -> cell 0), not a leave-and-re-enter and not "
+            "a stay-put.")
     sessions.append(sa)
 
     # ---- B: the GB PARTY pseudo-box (index 12, capacity 6) ---------------------
