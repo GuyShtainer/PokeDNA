@@ -823,11 +823,42 @@ static void hof_card_paint_detail(GbScreen* gs, uint8_t gen, const GbHofTeam* t,
     int y = HOF_CARD_ROW0 + m * 2;
     const GbHofMon* mn = &t->mon[m];
     const char* nm = (mn->dex >= 1 && mn->dex <= 251) ? pk_species_name(mn->dex) : "?";
-    char line[28];
-    siprintf(line, "%s Lv%d%s", nm, mn->level, (gen == GB_GEN2 && mn->shiny) ? " (S)" : "");
-    hof_card_text_fit(gs, gen, tx, y, line, nm);
-    if (mn->nick[0] != '\0' && strcmp(mn->nick, nm) != 0)
+    char plain[24];
+    siprintf(plain, "%s Lv%d", nm, mn->level);
+    hof_card_text_fit(gs, gen, tx, y, plain, nm);
+    /* A4: the shiny mark lives on the SAME row as the species/level whenever
+     * there is room (species+Lv+" (S)" fits, e.g. any species <= 6 chars at
+     * any level); a 10-char worst-case species at Lv100 does not (10+1+2+3+
+     * 4=20 > this row's 16-col budget at tx=3) -- rather than silently drop
+     * the mark, it falls back to the nickname row (y+1) instead, appended
+     * after a real nickname if one is already there and room allows, or
+     * alone if there is no nickname. This is the SAME row a shiny mon with a
+     * long nickname already risked losing its mark on before this fix (the
+     * old bare "*" never showed at all, on EITHER row) -- now it is only
+     * ever lost in the genuine double-overflow case (10-char species AND a
+     * full 10-char nickname AND shiny, all three at once), never silently. */
+    bool has_nick = mn->nick[0] != '\0' && strcmp(mn->nick, nm) != 0;
+    bool shiny_on_row0 = false;
+    if (gen == GB_GEN2 && mn->shiny) {
+      char shiny_line[28];
+      siprintf(shiny_line, "%s (S)", plain);
+      int budget0 = HOF_CARD_COLS + 1 - tx;
+      if (gbscr_text_cols(gen, shiny_line) <= budget0) {
+        gbscr_text(gs, tx, y, shiny_line);
+        shiny_on_row0 = true;
+      }
+    }
+    if (has_nick && (gen != GB_GEN2 || !mn->shiny || shiny_on_row0)) {
       hof_card_text_fit(gs, gen, tx, y + 1, mn->nick, 0);
+    } else if (has_nick) {
+      char nick_line[24];
+      siprintf(nick_line, "%s (S)", mn->nick);
+      int budget1 = HOF_CARD_COLS + 1 - tx;
+      if (gbscr_text_cols(gen, nick_line) <= budget1) gbscr_text(gs, tx, y + 1, nick_line);
+      else hof_card_text_fit(gs, gen, tx, y + 1, mn->nick, 0);   /* mark lost: double overflow */
+    } else if (gen == GB_GEN2 && mn->shiny && !shiny_on_row0) {
+      hof_card_text_fit(gs, gen, tx, y + 1, "(S)", 0);
+    }
   }
 }
 
