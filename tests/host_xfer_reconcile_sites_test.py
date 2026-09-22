@@ -14,14 +14,20 @@ Five checks, each with an in-memory mutation that must turn it red:
       save leaves g_xd_key set for the rest of the boot and every later native->Gen-3
       drop refuses with SAVE FIRST.
 
-  (h) every `pdna_bank_clear_deletions();` load site in source/pdna_main.c is within
-      2 lines of `app_xfer_pending_drop();` -- a fresh session/save-switch must never
-      inherit a PREVIOUS save's pending transfer. NOTE: the brief's own citation says
-      there are four such sites; this tree has FIVE (source/pdna_main.c's normal load
-      path at the tail of the boot sequence is a genuine fifth "a new save is now
-      live" site the brief's DRIFT section did not enumerate) -- flagged in the S150-11
-      delivery report per the brief's own STOP-LICENCE ("a fifth load site... report,
-      do not silently gate"); this check covers all five actually found, not just four.
+  (h) every `pdna_bank_clear_deletions();` call site in source/pdna_main.c is within
+      2 lines of `app_xfer_pending_drop();`/`app_xfer_pending_undo();` -- a fresh
+      session/save-switch must never inherit a PREVIOUS save's pending transfer, and
+      a CANCELLED flush (flush_on_exit's DECLINE branch) must not leave one behind
+      either. NOTE: the brief's own citation says there are four LOAD sites; this
+      tree has SIX total occurrences -- four decision-11(ii)-tagged load sites, a
+      genuine fifth "a new save is now live" site at the tail of the boot sequence
+      the brief's DRIFT section did not enumerate, and a sixth, pre-#150-S150-11 site
+      inside flush_on_exit's own DECLINE branch ("move cancelled -- keep the Bank
+      originals", already paired with app_xfer_pending_undo() one line above) --
+      flagged in the S150-11 delivery report per the brief's own STOP-LICENCE
+      ("a fifth load site... report, do not silently gate"); this check's regex is
+      intentionally broad (every occurrence, not just load sites) so a future site
+      of either kind is caught the same way.
 
   (i) app_xfer_reconcile_bank_open()'s body has app_can_edit( AND app_gen3_pc_live(
       strictly BEFORE any f_opendir(/sf_read_full(/log_line( -- G-F2: a Game Boy
@@ -39,6 +45,14 @@ Five checks, each with an in-memory mutation that must turn it red:
       TRANSFERS screen (decision 13/14) lands; this check pins what this lane's
       SCOPED apply function actually does today, so a later commit that adds a
       sidecar rewrite to it without re-deriving the ordering is caught.
+
+  (l) BACKLOG #150 S150-11 step 5 -- the TRANSFERS screen's own xfer_reconcile_apply()
+      (decision 8/9, §3.2 in full): every destination write --
+      pdna_bank_clear_slots(/gb_reconcile_release(/pdna_bank_put_cell( -- appears
+      strictly BEFORE the first sf_write_verified(/f_unlink( in the function body.
+      A power cut between a landed destination write and its file's rewrite must
+      leave a duplicate or an entry, never a loss; writing the ledger first would
+      let it drop a copy that was never actually moved/removed/restored.
 
 Run directly:
 
@@ -222,6 +236,29 @@ def check_k_apply_no_ledger_write(text: str) -> list[str]:
     return out
 
 
+def check_l_screen_apply_order(text: str) -> list[str]:
+    body = extract_function_body(text, "xfer_reconcile_apply")
+    if not body:
+        return ["xfer_reconcile_apply() not found in source/pdna_main.c"]
+    stripped = strip_comments(body)
+    dest_pos = [m.start() for m in re.finditer(
+        r"pdna_bank_clear_slots\s*\(|gb_reconcile_release\s*\(|pdna_bank_put_cell\s*\(",
+        stripped)]
+    ledger_pos = [m.start() for m in re.finditer(
+        r"sf_write_verified\s*\(|f_unlink\s*\(", stripped)]
+    out = []
+    if not dest_pos:
+        out.append("xfer_reconcile_apply(): never calls pdna_bank_clear_slots(/"
+                    "gb_reconcile_release(/pdna_bank_put_cell( (decision 8a/8b/8c)")
+    if not ledger_pos:
+        out.append("xfer_reconcile_apply(): never calls sf_write_verified(/f_unlink( "
+                    "(decision 9's per-file rewrite)")
+    if dest_pos and ledger_pos and min(dest_pos) >= min(ledger_pos):
+        out.append("xfer_reconcile_apply(): a ledger write (sf_write_verified(/f_unlink() "
+                    "appears before every destination write -- §3.2 order violated")
+    return out
+
+
 def run_all(main_text: str, bank_text: str) -> tuple[list[str], int]:
     violations = list(check_g_flush_on_exit_undo(main_text))
     h_violations, h_sites = check_h_load_sites(main_text)
@@ -229,6 +266,7 @@ def run_all(main_text: str, bank_text: str) -> tuple[list[str], int]:
     violations += check_i_bank_open_gate(main_text)
     violations += check_j_put_cell_gate(bank_text)
     violations += check_k_apply_no_ledger_write(main_text)
+    violations += check_l_screen_apply_order(main_text)
     return violations, h_sites
 
 
@@ -252,7 +290,8 @@ def main() -> int:
     print("ok: (g) flush_on_exit's failure branch undoes the pending transfer, "
           f"(h) all {h_sites} load sites drop it, (i) the Bank-open gate runs first, "
           "(j) pdna_bank_put_cell gates on app_can_edit, (k) the scoped apply "
-          "function never rewrites the ledger")
+          "function never rewrites the ledger, (l) the TRANSFERS screen's own "
+          "apply orders every destination write before the first ledger write")
 
     # --- self-mutation proofs -----------------------------------------------------
     fails = 0
@@ -343,6 +382,25 @@ def main() -> int:
             fails += 1
         else:
             print("self-mutation (k): an sf_write_verified( call spliced into the scoped apply -- correctly caught")
+
+    # (l): splice an sf_write_verified( call to the very TOP of xfer_reconcile_apply(),
+    # ahead of every destination write -- proves check (l) actually re-derives the
+    # ORDER, not just presence (the way check (k)'s own mutation only proves presence
+    # for the bank-open variant).
+    target_l = "  bool remove_entry[GB_RECON_MAX_HITS];\n  memset(remove_entry, 0, sizeof remove_entry);\n"
+    if target_l not in main_text:
+        print("FAIL -- self-mutation (l) target not found verbatim (source drifted)")
+        fails += 1
+    else:
+        mutated_l = main_text.replace(
+            target_l,
+            target_l + "  sf_write_verified(rb->path, rb->sidecar, 0);\n", 1)
+        v, _ = run_all(mutated_l, bank_text)
+        if not any("xfer_reconcile_apply(): a ledger write" in x for x in v):
+            print("FAIL -- self-mutation (l): an early sf_write_verified( call did NOT turn check (l) red")
+            fails += 1
+        else:
+            print("self-mutation (l): sf_write_verified( spliced ahead of every destination write -- correctly caught")
 
     if fails:
         print(f"FAIL -- {fails} self-mutation proof(s) did not fire")
