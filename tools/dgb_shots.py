@@ -6062,8 +6062,41 @@ def main(argv=None) -> int:
                           "flight-shaped image --b187-chains uses (Emerald.sav + a "
                           "fused Yellow.gb/Yellow.sav, GUY'S OWN Yellow.sav copied to "
                           "/tmp first).")
+    ap.add_argument("--selftest-captions", action="store_true",
+                     help="BACKLOG #198 method note (a mechanical floor for BACKLOG "
+                          "#184, NOT #184's own pixel verification): read --out's "
+                          "manifest.json and check every shot's caption is non-empty "
+                          "and every shot's own frame file actually exists on disk. "
+                          "No mGBA/--image needed. Exits 1 and prints every failure "
+                          "if any caption is empty/whitespace-only or any frame file "
+                          "is missing; exits 0 (and prints the shot count) otherwise.")
     a = ap.parse_args(argv)
     a.out.mkdir(parents=True, exist_ok=True)
+
+    if a.selftest_captions:
+        manifest_path = a.out / "manifest.json"
+        if not manifest_path.is_file():
+            sys.exit(f"--selftest-captions: {manifest_path}: not a file "
+                      "(run this tool with --out pointed at a directory that "
+                      "already has a manifest.json)")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        failures: list[str] = []
+        for entry in manifest.get("shots", []):
+            name = entry.get("file", "<no file key>")
+            caption = entry.get("caption", "")
+            if not caption or not caption.strip():
+                failures.append(f"{name}: empty/whitespace-only caption")
+            frame_path = a.out / name
+            if not frame_path.is_file():
+                failures.append(f"{name}: frame file missing ({frame_path})")
+        if failures:
+            print(f"--selftest-captions: {len(failures)} failure(s):", file=sys.stderr)
+            for f in failures:
+                print(f"  {f}", file=sys.stderr)
+            return 1
+        print(f"--selftest-captions: ok -- {len(manifest.get('shots', []))} shot(s), "
+              "every caption non-empty, every frame file present")
+        return 0
 
     core_mod, image_mod = gb_shots.load_mgba()
 
