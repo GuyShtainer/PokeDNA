@@ -158,6 +158,13 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * performs is explained in the confirm dialog the user sees before any
  * write, not in the row's own two words. */
 
+/* BACKLOG #200 F3: A on a blocked grid cell (index >= the source's own capacity --
+ * F1's dim/X-marked cells, F2's cursor already skips/clamps around them; this is
+ * the defensive backstop for the one path F2 does not cover, an A press that
+ * lands here anyway) -- never the EMPTY/CREATE/CANCEL menu, which has nothing
+ * real to create there. */
+#define PDNA_BOX_NO_SLOT     "No such slot in this game."
+
 /* Every label either action popup can show, so the host test measures the strings the
  * menus actually draw. The X() entries are the macros above, not fresh literals. */
 #define PDNA_MONMENU_LABELS(X)                                                        \
