@@ -650,7 +650,10 @@ def run_standalone(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Se
                                "RELEASE, CANCEL (BACKLOG #93's three newer rows included; "
                                "the nested-import mount's own VIEW/LEGALITY/COPY/CANCEL, "
                                "plus every write action, since this session can actually "
-                               "edit) -- cursor on RELEASE, the row this shot means to show")
+                               "edit) -- cursor on RELEASE, the row this shot means to show",
+                               claim=["RELEASE"])  # BACKLOG #184 retrofit: exactly the class
+                               # of caption lie #198 item 4 found (a stale DOWN-count landed
+                               # on DUPLICATE, not RELEASE) -- a mechanical claim is the floor
     s.tap("A", settle=gb_shots.BIG_SETTLE)                # "Release this Pokemon?"
     s.shot("05_release_confirm", "#62: the release confirm dialog")
     s.tap("A", settle=gb_shots.BIG_SETTLE)                # A = yes -> gb_persist() -> PDNA_DELTA refusal
@@ -677,7 +680,9 @@ def run_standalone(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Se
     s.shot("07_empty_cell", "#62 (BACKLOG #198 item 4 renav): cursor on the freshly-"
            "released, now-empty cell (19/20) -- index 19 (row 3, col 1), the END of "
            "the compacted list, not index 0 where SLOWBRO (the released mon) used "
-           "to be")
+           "to be",
+           claim=["19/20"])  # BACKLOG #184 retrofit: pdna_box.c's own
+           # siprintf(bnocc, "%s  %d/%d", ...) banner
 
     s.tap("A", settle=gb_shots.BIG_SETTLE)                # empty-cell menu: EMPTY / CREATE / CANCEL
     s.shot("08_create_menu", "#62 A3: the empty-cell menu -- EMPTY (header) / CREATE / CANCEL")
@@ -2185,7 +2190,10 @@ def run_b194_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> g
                                    "in-session (RAM); only the FLASH persist "
                                    "leg of gb_persist() refuses in the "
                                    "emulator build, same as every other GB "
-                                   "screen's own commit")
+                                   "screen's own commit",
+                                   # BACKLOG #184 retrofit: pdna_gbhof.c's own
+                                   # siprintf(hdr, "%d teams (life %d)", present, count)
+                                   claim=[f"{count_after_add} teams"])
 
     # ---- DELETE TEAM -----------------------------------------------------------------
     s.tap("START", settle=gb_shots.BIG_SETTLE)                # list -> menu (same shell)
@@ -4269,7 +4277,11 @@ def run_s2_bank_control(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_sho
     s.shot("03_empty_menu_create_and_paste", "#120 F1 control: slot 7's (the first "
            "genuinely empty, non-native cell) menu -- CREATE, PASTE HERE, CANCEL -- "
            "BOTH present, unchanged by the F1 gate (xg_create_row/xg_paste_row are "
-           "true throughout an ordinary Gen-3 session)")
+           "true throughout an ordinary Gen-3 session)",
+           claim=["CREATE", "PASTE HERE", "CANCEL"])  # BACKLOG #184 retrofit: this is exactly
+           # the shot BACKLOG #198 item 1 had to fix (it used to caption a bank_plant.c
+           # native cell's VIEW-only menu as this one) -- a mechanical claim is the floor
+           # that class of caption lie needs.
     return s
 
 
@@ -8298,7 +8310,9 @@ def run_s150_12_copy_edge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
     s.shot("04_gold_box_grid", "s150-12 (BACKLOG #198 item 10 recaption): Gold's "
            "box grid on the read-only mount -- cursor on slot 0 (No.1 BULBASAUR), "
            "footer 'A menu  SEL  L/R  B' (the footer never shows 'A pokeball' -- "
-           "SELECT has never entered MOVE here before this lane)")
+           "SELECT has never entered MOVE here before this lane)",
+           claim=["A menu  SEL  L/R  B"])  # BACKLOG #184 retrofit: pdna_box.c's own
+           # `f = is_bank ? "A menu  SEL  L/R  B" : ...` literal (ui_text, fixed font)
 
     s.tap("SEL", settle=100)
     s.shot("05_cm_move", "s150-12 WIRING PROOF: SELECT cycles to MOVE on the "
@@ -8352,7 +8366,9 @@ def run_s150_12_copy_edge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
     s.shot("11_bank_box0", "s150-12: START > Bank -- 'BANK 1  7/30', box 0's "
            "PDNA_DELTA-only auto-plant (bank_plant_box0(), decision 17) already "
            "includes the two new COPY cells at slots 5/6 -- no live SD-writing "
-           "lift needed to get them here")
+           "lift needed to get them here",
+           claim=["7/30"])  # BACKLOG #184 retrofit: pdna_box.c's own
+           # siprintf(bnocc, "%s  %d/%d", ...) -- 7 occupied of 30 capacity
 
     s.press_n("RIGHT", 5, settle=60)
     s.shot("12_cursor_slot5", "s150-12: cursor on slot 5 -- 'No.152 CHIKORITA "
@@ -8371,7 +8387,8 @@ def run_s150_12_copy_edge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
            "sprite with its DMG-style badge (the S150-13 lift tint -- BANK 1 "
            "still reads 7/30 here, unchanged), footer 'A drop  B cancel'; slot 5 "
            "only actually blanks ('(empty)', 6/30) after the drop lands, shown "
-           "in frame 18 below")
+           "in frame 18 below",
+           claim=["7/30", "A drop  B cancel"])  # BACKLOG #184 retrofit
 
     s.press_n("DOWN", 5, settle=150)                      # row0 -> Bank's own bottom row -> off the edge
     s.shot("15_pc_grid_carrying", "s150-12: DOWN x5 off the Bank's own bottom "
