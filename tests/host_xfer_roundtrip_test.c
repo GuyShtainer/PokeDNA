@@ -601,6 +601,10 @@ static void xr_run_one(const char* tag, const GbEditMon* mon, uint8_t origin, Xr
 }
 
 static XrCapture g_rt1_capture;   /* first Gen-2 record that converted cleanly */
+static XrCapture g_rt2_capture;   /* BACKLOG #224: first Gen-1 record that converted
+                                   * cleanly -- same idea as g_rt1_capture, Gen 1 side,
+                                   * for the umlaut-refuses-on-Gen-1 DOWN-merge case
+                                   * (Gen 1 has no umlaut tiles, gb_edit.c's enc_one) */
 
 static void run_rt_gen1(const char* file) {
   char path[512];
@@ -623,7 +627,7 @@ static void run_rt_gen1(const char* file) {
       char tag[96];
       snprintf(tag, sizeof tag, "RT-2 %s box%d slot%d", file, box, slot);
       if (!gb_load(&mon, GB_GEN1, img + off, box, slot)) continue;
-      xr_run_one(tag, &mon, origin, NULL);
+      xr_run_one(tag, &mon, origin, &g_rt2_capture);
       n++;
     }
   }
@@ -996,6 +1000,61 @@ static void test_nickname_unmappable_glyph(void) {
   CHECK(memcmp(merged.nick, g_rt1_capture.written.nick, GB_NAME_BYTES) == 0,
         "F4: the home nickname survives byte-for-byte -- never overwritten with '?'");
   CHECK(!rep.renamed, "F4: renamed is NOT set when the rename was refused");
+}
+
+/* ---- BACKLOG #224 (from b216b review N1): the DOWN-merge guard used to refuse --- */
+/* ---- 0x1B/F1-F6/B9 outright (gen3_decode_char folds every one of them to '?'), - */
+/* ---- even though Gen 2 spells all seven exactly and only Gen 1 genuinely loses - */
+/* ---- them (gb_edit.c's enc_one transliterates onto the plain letter there).    - */
+
+/* Gen-3 bytes for "M{u-umlaut}LLER" (gen3_encode_char: M=0xC7, L=0xC6, E=0xBF,
+ * R=0xCC; the umlaut is gen3_edit.c's encode_2byte_accent table, 0xF3 = u-umlaut). */
+static const uint8_t kMullerG3[7] = { 0xC7u, 0xF3u, 0xC6u, 0xC6u, 0xBFu, 0xCCu, 0xFFu };
+
+static void test_nickname_umlaut_down_gen2_accepts(void) {
+  printf("\n-- BACKLOG #224: a Gen-3 umlaut nickname (\"M\\xC3\\x9CLLER\") merges DOWN "
+        "into Gen 2 -- accepted, not refused --\n");
+  if (!g_rt1_capture.have) {
+    printf("  SKIP (no Gen-2 record converted cleanly in RT-1 -- corpus absent?)\n");
+    return;
+  }
+  uint8_t g3_muller[80];
+  memcpy(g3_muller, g_rt1_capture.g3rec80, 80);
+  memcpy(g3_muller + 0x08, kMullerG3, sizeof kMullerG3);
+  for (size_t k = sizeof kMullerG3; k < 10; k++) g3_muller[0x08 + k] = 0xFFu;
+
+  GbEditMon merged; XrMergeReport rep;
+  CHECK(xr_merge_down(&g_rt1_capture.e, g3_muller, &merged, &rep),
+        "#224 Gen2: xr_merge_down runs on a Gen-3 umlaut nickname");
+  CHECK(!rep.rename_refused && rep.renamed,
+        "#224 Gen2: umlaut nickname is ACCEPTED (rename_refused NOT set, renamed IS set)");
+  char back_nick[64];
+  int bn = gb_get_nickname(&merged, back_nick, sizeof back_nick);
+  CHECK(bn > 0 && strcmp(back_nick, "M\xC3\x9CLLER") == 0,
+        "#224 Gen2: the merged GB nickname reads back \"M\\xC3\\x9CLLER\" exactly (got %s)",
+        back_nick);
+}
+
+static void test_nickname_umlaut_down_gen1_refuses(void) {
+  printf("\n-- BACKLOG #224: the SAME umlaut nickname merges DOWN into Gen 1 -- refused, "
+        "the loss row, home kept --\n");
+  if (!g_rt2_capture.have) {
+    printf("  SKIP (no Gen-1 record converted cleanly in RT-2 -- corpus absent?)\n");
+    return;
+  }
+  uint8_t g3_muller[80];
+  memcpy(g3_muller, g_rt2_capture.g3rec80, 80);
+  memcpy(g3_muller + 0x08, kMullerG3, sizeof kMullerG3);
+  for (size_t k = sizeof kMullerG3; k < 10; k++) g3_muller[0x08 + k] = 0xFFu;
+
+  GbEditMon merged; XrMergeReport rep;
+  CHECK(xr_merge_down(&g_rt2_capture.e, g3_muller, &merged, &rep),
+        "#224 Gen1: xr_merge_down runs on a Gen-3 umlaut nickname");
+  CHECK(rep.rename_refused && !rep.renamed,
+        "#224 Gen1: umlaut nickname is REFUSED (Gen 1 has no umlaut tiles -- gb_edit.c's "
+        "enc_one would transliterate, a real loss)");
+  CHECK(memcmp(merged.nick, g_rt2_capture.written.nick, GB_NAME_BYTES) == 0,
+        "#224 Gen1: the home nickname survives byte-for-byte -- kept, never transliterated");
 }
 
 /* ---- BACKLOG #150 S150-8b review D1: written_level must reflect a MAKE-LEGAL --- */
@@ -2064,6 +2123,8 @@ int main(int argc, char** argv) {
   test_bank_restore_from_entry();
   test_restored_mark_is_real();
   test_nickname_unmappable_glyph();
+  test_nickname_umlaut_down_gen2_accepts();
+  test_nickname_umlaut_down_gen1_refuses();
   test_merge4_make_legal_written_level();
   test_d2_item_confirm_logic();
   test_backlog_206_regression();

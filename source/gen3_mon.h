@@ -88,6 +88,15 @@ bool pk_decode_mon(const uint8_t* mon, bool is_party, PkMon* out);
  * maxlen). Always NUL-terminates within outcap. */
 void gen3_decode_name(char* out, int outcap, const uint8_t* src, int maxlen);
 
+/* BACKLOG #224: public wrapper around decode_name's own 7-entry umlaut/x table
+ * (Ä Ö Ü ä ö ü ×, pokeemerald charmap.txt F1-F6/B9), so a caller outside this
+ * file (xfer_rec.c's DOWN-merge glyph guard) can ask "does raw Gen-3 byte `b`
+ * spell one of these seven glyphs" WITHOUT re-deriving the table. Returns false
+ * (out2 untouched) for any other byte, including 0x1B (e-acute) -- that one is
+ * its own single-code special case in decode_name, not part of this table; a
+ * caller that also needs it checks `b == 0x1B` itself, same as decode_name does. */
+bool gen3_decode_2byte_accent(uint8_t b, char out2[2]);
+
 /* Read the live party from a reassembled SaveBlock1. FRLG moved the party block
  * to the start of SaveBlock1 (count@0x034/data@0x038) vs R/S/E (0x234/0x238). */
 int  pk_read_party(const uint8_t* sb1, bool frlg, PkMon out[6]);

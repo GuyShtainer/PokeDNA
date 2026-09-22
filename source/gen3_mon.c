@@ -82,6 +82,12 @@ static bool decode_2byte_accent(uint8_t b, char out2[2]) {
   return false;
 }
 
+/* BACKLOG #224: public wrapper (see gen3_mon.h's own comment) -- thin, no logic
+ * duplicated. */
+bool gen3_decode_2byte_accent(uint8_t b, char out2[2]) {
+  return decode_2byte_accent(b, out2);
+}
+
 static void decode_name(char* out, int outcap, const uint8_t* src, int maxlen, bool* degraded) {
   int k = 0, oi = 0;
   for (; k < maxlen; k++) {

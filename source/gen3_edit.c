@@ -636,6 +636,19 @@ static bool encode_2byte_accent(uint8_t lo, uint8_t* out) {
   return false;
 }
 
+/* BACKLOG #224: public wrapper (see gen3_edit.h's own comment) -- reuses
+ * encode_2byte_accent's table directly, plus the same "\xC3\xA9" special case
+ * encode_name checks above it; no logic duplicated. */
+bool gen3_utf8_storable(const char* p, int* adv) {
+  const unsigned char* u = (const unsigned char*)p;
+  if (u[0] != 0xC3u) return false;    /* every glyph this codec owns is a 2-byte
+                                       * 0xC3 __ sequence (Latin-1 Supplement) */
+  if (u[1] == 0xA9u) { *adv = 2; return true; }         /* e-acute -> 0x1B */
+  uint8_t code;
+  if (encode_2byte_accent(u[1], &code)) { *adv = 2; return true; }   /* umlauts/x */
+  return false;
+}
+
 static void encode_name(uint8_t* dst, int cap, const char* s) {
   const unsigned char* p = (const unsigned char*)s;
   int i = 0;

@@ -513,17 +513,21 @@ static void merge_moves(EditMon* em, const GbEditMon* now, const GbscEntry* e,
    * way back up. */
 }
 
-/* The Gen-3 charset can only spell ASCII (gen3_edit.h's gen3_encode_char), so a decoded
- * Game Boy name is refused here for ANY of two reasons: it needed a "{XX}" escape (a
- * byte with no text spelling at all -- gb_edit.h NAMES); or it decoded to a glyph Gen 3
- * cannot spell. Three classes of unrepresentable glyphs: real non-ASCII the Game Boy CAN
- * spell but Gen 3 cannot (the gender signs 0xEF/0xF5, e/x/umlauts...); glyphs without a
- * Gen-3 code point ([, ], and $ which maps to FF the string terminator); or glyphs that
- * gen3_encode_char stored under code points (5C/5D/F0/36/2D for '(' ')' ':' ';' '&'
- * respectively in BACKLOG #183). Keep the sidecar's own nickname untouched rather than
- * silently substitute a space for a character the player actually typed. */
+/* The Gen-3 charset can only spell ASCII PLUS the 8 non-ASCII glyphs
+ * gen3_utf8_storable() owns (e-acute, the 6 umlauts, x -- BACKLOG #224), so a
+ * decoded Game Boy PLAIN-ASCII byte is refused here for ANY of two reasons: it
+ * needed a "{XX}" escape (a byte with no text spelling at all -- gb_edit.h
+ * NAMES); or it is one of the three ASCII glyphs with no Gen-3 code point ([, ],
+ * and $ which maps to FF the string terminator -- '(' ')' ':' ';' '&' got real
+ * code points in BACKLOG #183 and are fine). Non-ASCII bytes (>= 0x80) are NOT
+ * decided here at all -- merge_nickname's own loop below walks those by UTF-8
+ * SEQUENCE, through gen3_utf8_storable(), never by lone byte (a lone byte from
+ * inside a 2-byte sequence is never >= 0x80 on its own -- \xC3 is, but the second
+ * byte generally is too, so this function is simply never called on a
+ * continuation byte at all). Keep the sidecar's own nickname untouched rather
+ * than silently substitute a space for a character the player actually typed. */
 static bool gb_nick_char_ok_for_gen3(unsigned char c) {
-  if (c == '{' || c >= 0x80u) return false;
+  if (c == '{') return false;
   switch (c) {
     /* BACKLOG #183 gave gen3_encode_char real code points for ( ) : ; & (charmap
      * 5C/5D/F0/36/2D), so only these three are still unrepresentable: '[' and ']'
@@ -535,17 +539,37 @@ static bool gb_nick_char_ok_for_gen3(unsigned char c) {
   }
 }
 
+/* BACKLOG #224 (gb_nick_char_ok_for_gen3's old body): a byte >= 0x80 used to be an
+ * automatic refusal, which blocked the SAME 8 non-ASCII glyphs BACKLOG #216b/#224
+ * taught Gen 3 to store exactly (e-acute, the 6 umlauts, x -- gen3_utf8_storable(),
+ * gen3_edit.c/.h, routed through the SAME table gen3_encode_char's own 2-byte
+ * accents live in). Walk `text` by UTF-8 sequence, not by byte: plain ASCII goes
+ * through gb_nick_char_ok_for_gen3 unchanged; a lead byte (>= 0x80) is checked
+ * against gen3_utf8_storable -- storable advances past the whole sequence,
+ * anything else (the gender signs, or a byte gen3_utf8_storable does not
+ * recognise) refuses, the same conservative posture as '[' ']' '$'. */
+static bool gb_nick_text_ok_for_gen3(const char* text, int n) {
+  for (int i = 0; i < n; ) {
+    unsigned char c = (unsigned char)text[i];
+    if (c < 0x80u) {
+      if (!gb_nick_char_ok_for_gen3(c)) return false;
+      i++;
+      continue;
+    }
+    int adv = 0;
+    if (!gen3_utf8_storable(&text[i], &adv)) return false;
+    i += adv;
+  }
+  return true;
+}
+
 static void merge_nickname(EditMon* em, const GbscEntry* e, const GbEditMon* now,
                            bool apply, GbscMergeReport* rep) {
   if (memcmp(now->nick, e->nick_written, GB_NAME_BYTES) == 0) return;
 
   char text[GB_TEXT_MAX];
   int n = gb_name_decode(now->gen, text, (int)sizeof text, now->nick, GB_NAME_BYTES);
-  bool unrepresentable = false;
-  for (int i = 0; i < n; i++) {
-    if (!gb_nick_char_ok_for_gen3((unsigned char)text[i])) { unrepresentable = true; break; }
-  }
-  if (unrepresentable) {
+  if (!gb_nick_text_ok_for_gen3(text, n)) {
     rep->rename_refused = true;
   } else {
     rep->renamed = true;                                  /* report is mask-independent */
