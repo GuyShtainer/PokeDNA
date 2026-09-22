@@ -280,6 +280,34 @@ static bool same_name(const char* a, const char* b) {
   }
 }
 
+/* BACKLOG #183: spelling-compare, same shape as b177's gb_name_changed
+ * (bank_down_convert.c) but for THIS hop (GB name -> Gen-3 bytes) -- decode what
+ * actually landed in `out80` and diff it against what the caller meant to write.
+ * Name fields (nickname @0x08, otName @0x14) are plaintext regardless of the
+ * encrypt pass gen3_edit_commit already ran, so gen3_decode_name can read out80
+ * directly. Catches every glyph gen3_encode_char still cannot store (the
+ * brackets, per gen3_save.c's own comment -- Gen 3's real charmap has no code
+ * point for either) as a loss row instead of a silent space. The intended
+ * nickname is the species name whenever gen12_convert's own em_set_nickname call
+ * was skipped -- comparing against the ORIGINAL `nick` there would
+ * false-positive every unnamed import. */
+static void note_spelling_loss(Gb12Notes* notes, const uint8_t out80[80],
+                               const char* otname, const char* nick, uint16_t species) {
+  /* Worst case is 10 Gen-3 bytes that are ALL gender signs -- 3 UTF-8 bytes each
+   * (30) plus the NUL. 32 covers both the 10-byte nickname and the 7-byte otName
+   * with room to spare; gen3_decode_name's own `outcap` bound (not `maxlen`)
+   * means a too-small buffer here would read as a false loss, not a real one, so
+   * this must never shrink without re-deriving the worst case. */
+  char written[32];
+  gen3_decode_name(written, (int)sizeof written, out80 + 0x14, 7);
+  notes->otname_lossy = strcmp(written, otname) != 0;
+
+  const char* intended_nick = (nick[0] && !same_name(nick, pk_species_name(species)))
+                               ? nick : pk_species_name(species);
+  gen3_decode_name(written, (int)sizeof written, out80 + 0x08, 10);
+  notes->nick_lossy = strcmp(written, intended_nick) != 0;
+}
+
 Gb12Result gen12_convert(const Gb12Mon* in, const Gb12Target* tgt,
                          uint8_t out[80], Gb12Notes* notes) {
   Gb12Notes local;
@@ -429,6 +457,7 @@ Gb12Result gen12_convert(const Gb12Mon* in, const Gb12Target* tgt,
   if (species == 151) put_fateful(&e);   /* Mew only; see put_fateful */
 
   gen3_edit_commit(&e, out);
+  note_spelling_loss(notes, out, otname, nick, species);
   return GB12_OK;
 }
 

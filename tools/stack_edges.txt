@@ -154,7 +154,7 @@ impl-optional gbmap2_sd_read       variants=delta
 impl-optional gbmap_sd_read        variants=delta
 impl-optional iconrom_fatfs_read   variants=delta
 # records@20/get_name@28 moved below (BACKLOG #84b seventh pass): offset 20 is ALSO
-# AppSrcOps.view (app_mon_menu_readonly/pdna_dex_screen) and offset 28 is ALSO
+# AppSrcOps.view (app_mon_menu_readonly) and offset 28 is ALSO
 # AppSrcOps.create -- both are now qualified per-caller further down (search
 # "BoxSource.records @20 in" / "BoxSource.get_name @28 in") instead of living here
 # unqualified, which the D5a parser now refuses the moment a second struct shares
@@ -472,22 +472,49 @@ draw_wallpaper.constprop.0 argsites=3 -> wp_copy_verified
 under_blit argsites=1 -> wp_copy_verified
 wp_fold_region argsites=1 -> wp_copy_verified
 
-# pdna_pick.c's dex-screen family (s_dget/s_dset/s_getnat/s_setnat, file-static
-# DexGetState/DexSetState/DexGetNat/DexSetNat globals set once by pdna_dex_screen,
-# pdna_pick.c:546-547) -- global function-pointer dispatch, not a struct field
-# (matches g_src_why's shape below: a section-anchor global load, not an instance
-# field). TWO call sites now register (dex_get_national/dex_set_national are Gen-3
-# only -- BACKLOG #87 item 3's GB caller passes NULL for both, hiding the National-Dex
-# row, per pdna_gbdex.h/pdna_dex_screen's own NULL contract):
+# pdna_pick.c's dex-screen family: file-static DexGetState/DexSetState/DexGetNat/
+# DexSetNat, set once by pdna_dex_screen. TWO call sites register (dex_get_national/
+# dex_set_national are Gen-3 only -- BACKLOG #87 item 3's GB caller passes NULL for
+# both, hiding the National-Dex row, per pdna_gbdex.h/pdna_dex_screen's own NULL
+# contract):
 #   pdna_main.c:5197 pdna_dex_screen(dex_state, dex_set_state, dex_get_national, dex_set_national, ...)
 #   pdna_gbdex.c      pdna_dex_screen(gbdex_shim_get, gbdex_shim_set, NULL, NULL, ...) -- twice
 #                      (the Gen-2 chooser's ROW_DEX branch and pdna_gbdex()'s own Gen-1 direct call)
-# Declared as the union of all SIX per site rather than trying to disambiguate which
-# specific one each site dispatches (all six are small leaf-ish functions -- the extra
-# conservatism costs nothing). Site counts verified against this build's disassembly.
-dex_build argsites=1 -> dex_state dex_set_state dex_get_national dex_set_national gbdex_shim_get gbdex_shim_set
-dex_cell_grid argsites=1 -> dex_state dex_set_state dex_get_national dex_set_national gbdex_shim_get gbdex_shim_set
-dex_cell_list argsites=1 -> dex_state dex_set_state dex_get_national dex_set_national gbdex_shim_get gbdex_shim_set
+#
+# BACKLOG #204: the four function pointers used to be four SEPARATE file-static
+# globals, each dispatched INLINE at every one of dex_build/dex_counts/dex_bulk/
+# dex_cell_grid/dex_cell_list/pdna_dex_screen's own body -- every unrelated static
+# pdna_pick.c gained ahead of them shifted their individual -fsection-anchors
+# offsets and needed a fresh "coincidental spilled section-anchor" line here (b195
+# added two just for one new static and one new parameter), AND the artless/normal
+# builds inlined dex_bulk()/dex_counts() into pdna_dex_screen differently enough
+# that the two variants disagreed on the bare-vs-field SPLIT of the resulting
+# indirect-call sites (3 bare + 12 field in artless, 1 bare + 14 field in normal --
+# `caller argsites=N` is a single count with no per-variant knob, so that was a
+# genuine unrepresentable conflict, not a declaration bug).
+#
+# Fixed in two steps: (1) packed into one struct `s_dex` (get/set/getnat/setnat, in
+# that order) given its OWN single-member section
+# (`__attribute__((section(".bss.pdna_pick_s_dex")))`) so GCC's per-section anchor
+# pass can never fold it in with a neighboring static -- confirmed empirically:
+# packing alone still left s_dex's fields riding g_species_max_dex/g_n (whatever
+# -fsection-anchors happened to place immediately before it) at offsets 8/12/16/20;
+# the section attribute pins them at s_dex's own natural 0/4/8/12 instead, always.
+# (2) EVERY internal dispatch (all 6 functions above, all 6 call sites) now goes
+# through four noinline wrapper functions -- dex_dget/dex_dset/dex_getnat_live/
+# dex_setnat_call (pdna_pick.c, right after the s_dex struct) -- the exact same
+# technique as dex_cell_art_call() below for s_cell_art.fn (BACKLOG #124), for the
+# same reason: it moves the ONLY indirect-call site for each field into a function
+# whose own compiled shape cannot be perturbed by how anything else in the file
+# inlines, so the artless/normal split disappeared entirely (both now show a
+# single, identical `argsite 1/1` in each of the four wrappers, confirmed via
+# --dump-sites). dex_build/dex_counts/dex_bulk/dex_cell_grid/dex_cell_list/
+# pdna_dex_screen make ordinary direct calls to the wrappers now and need no
+# stack_edges.txt line of their own at all.
+dex_dget argsites=1 -> dex_state gbdex_shim_get
+dex_dset argsites=1 -> dex_set_state gbdex_shim_set
+dex_getnat_live argsites=1 -> dex_get_national
+dex_setnat_call argsites=1 -> dex_set_national
 # BACKLOG #124: dex_cell_grid()'s NEW call (the GB-session cell-art override) does not
 # dispatch through s_cell_art.fn directly -- review ruling: it goes through ONE
 # noinline wrapper, dex_cell_art_call() (pdna_pick.c), so this dispatch compiles to
@@ -503,21 +530,6 @@ dex_cell_list argsites=1 -> dex_state dex_set_state dex_get_national dex_set_nat
 # Compiled name carries a clone suffix (matches fetch_pic_ex.constprop.0's own
 # precedent above) -- re-check the exact suffix with --dump-sites if this ever drifts.
 dex_cell_art_call.constprop.0 argsites=1 -> gbdex_cell_art
-# pdna_dex_screen: BACKLOG #87 item 1 (the species cap, pdna_pick.c's s_dex_max /
-# pdna_dex_set_max()) rewrote dex_counts()'s and dex_bulk()'s three ALL-loops from a
-# fixed DEX_NAT_MAX bound to the runtime s_dex_max variable and replaced the literal
-# "All 386." string with a siprintf -- register pressure/scheduling in those callees
-# shifted enough that -O2 now classifies 3 of the previously-bare dispatch
-# instructions as 'field @N' hits (the AppSrcOps.records/view/editable/create classes
-# declared just below) instead of bare argsites. The TOTAL nonfield+field indirect-
-# call count through dex_state/dex_set_state/dex_get_national/dex_set_national inside
-# this function is unchanged (15: was 4 bare + 11 field, now 1 bare + 14 field --
-# `--dump-sites` on this build confirms 14 field hits at offsets 8/20/24/28), so the
-# set of exempted implementations and the guard's worst-case bound are unaffected;
-# only which bucket 3 sites fall in moved. Verified against THIS build's disassembly
-# (both artless and normal) after the #87 item-1 edit -- re-verify if pdna_pick.c's
-# dex_counts/dex_bulk/dex_build shapes change again.
-pdna_dex_screen argsites=1 -> dex_state dex_set_state dex_get_national dex_set_national gbdex_shim_get gbdex_shim_set
 
 # pdna_origin_art.c's PdnaGbArtSource (source/pdna_origin_art.h:215-251, s_gb --
 # pic/have/icon function-pointer fields, accessed through fetch_pic_ex()'s s_gb.pic/
@@ -1250,10 +1262,8 @@ wait_keys_bob_p argsites=1 -> party_overlay_bob
 # not need to be repeated on every offset's line.
 AppSrcOps.release @8 in app_mon_menu_readonly -> gb_release_hook gb_move_hook gb_paste_hook
 AppSrcOps.move @4 in app_mon_menu_readonly -> gb_move_hook
-AppSrcOps.release @8 in pdna_dex_screen -> dex_state dex_set_state dex_get_national dex_set_national
 AppSrcOps.copy_native @12 in app_copy.isra.0 -> gb_copy_native_hook
 AppSrcOps.view @20 in app_mon_menu_readonly -> gb_view_hook
-AppSrcOps.view @20 in pdna_dex_screen -> dex_state dex_set_state dex_get_national dex_set_national
 BoxSource.records @20 in clear_origin,drop_held,export_box_all,party_strip_overlay,release_box_all -> banksrc_records gbsrc_records pcsrc_records
 # drop_held's own offset-20 call site (BACKLOG #150 S150-7 step 3): `recs =
 # src->records(box);` after bank_down_dispatch() lands the EXACT arm, repainting the
@@ -1263,32 +1273,16 @@ BoxSource.records @20 in clear_origin,drop_held,export_box_all,party_strip_overl
 # BoxSource.records(), never AppSrcOps.view -- this is the fix for "release_box_all no
 # longer reaches gb_view_hook".
 AppSrcOps.editable @24 in app_mon_menu_readonly -> gb_editable_hook
-AppSrcOps.editable @24 in pdna_dex_screen -> dex_state dex_set_state dex_get_national dex_set_national
-# fetch_pic_ex.constprop.0's two offset-24 sites are the SAME "spilled section-anchor,
-# coincidental numeric offset" shape as the dex-screen family (pdna_origin_art.c's
-# static `s_gb` PdnaGbArtSource, not AppSrcOps -- piggybacked on AppSrcOps.editable's
-# REAL header offset the same way dex-screen already was, since there is no separate
-# struct to name a spilled-global collision after). D9's own note above already
-# predicted this: "D5's per-caller rewrite... replaces this whole global-offset
-# mechanism, at which point these two lines get re-derived properly".
+# fetch_pic_ex.constprop.0's offset-24 sites are the SAME "spilled section-anchor,
+# coincidental numeric offset" shape the dex-screen family USED to have before
+# BACKLOG #204 gave s_dex its own section (pdna_origin_art.c's static `s_gb`
+# PdnaGbArtSource, not AppSrcOps -- piggybacked on AppSrcOps.editable's REAL header
+# offset since there is no separate struct to name a spilled-global collision
+# after). D9's own note above already predicted this: "D5's per-caller rewrite...
+# replaces this whole global-offset mechanism, at which point these two lines get
+# re-derived properly".
 AppSrcOps.editable @24 in fetch_pic_ex.constprop.0 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
 AppSrcOps.create @28 in app_mon_menu_readonly -> gb_create_hook
-AppSrcOps.create @28 in pdna_dex_screen -> dex_state dex_set_state dex_get_national dex_set_national
-# BACKLOG #195: same "coincidental spilled section-anchor" shape as the
-# offset-8/20/24/28 lines above for this exact caller (pdna_pick.c's new
-# BACKLOG #195 statics -- rcm_row/ritem_cat_menu/the RICAT_* tables -- shifted
-# this build's link layout enough that pdna_dex_screen's dex_state/
-# dex_set_state/dex_get_national/dex_set_national spill now also lands at
-# offset 32, the same class of collision, not a new real call edge (this
-# function never touches AppSrcOps.item/gb_item_hook at all).
-AppSrcOps.item @32 in pdna_dex_screen -> dex_state dex_set_state dex_get_national dex_set_national
-# Review D2: pick_item_set_gen1_2()'s new `GbGame game` parameter (threaded
-# through so gbb_pocket_of() answers correctly for Gold vs Crystal, gb_bag.h's
-# own header comment) shifted this build's link layout again -- same
-# "coincidental spilled section-anchor" class as offset 32 just above, now
-# also landing on offset 36 (AppSrcOps.dup) for this exact caller. Not a new
-# real call edge (this function never touches AppSrcOps.dup either).
-AppSrcOps.dup @36 in pdna_dex_screen -> dex_state dex_set_state dex_get_national dex_set_national
 AppSrcOps.create @28 in pdna_origin_box_art,pdna_origin_box_art_wanted -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
 BoxSource.get_name @28 in draw_box_banner -> banksrc_get_name gbsrc_get_name pcsrc_get_name
 BoxSource.can_edit @44 in pdna_origin_art_portrait,pdna_origin_box_art,pdna_origin_art_portrait_by_dex -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb

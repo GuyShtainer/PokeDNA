@@ -562,10 +562,29 @@ static const char* const DV_NAME[DV_N] = { "Grid", "List", "Type" };
 #define DS_N      4
 static const char* const DS_NAME[DS_N] = { "All", "Caught", "Seen", "Unseen" };
 
-static DexGetState s_dget;
-static DexSetState s_dset;
-static DexGetNat   s_getnat;   /* national-dex live? (may be NULL) */
-static DexSetNat   s_setnat;   /* enable/disable national dex (may be NULL) */
+/* BACKLOG #204: packed into one struct (was four separate file-static function
+ * pointers) so the stack walker's struct-field classifier has ONE stable section
+ * anchor for this dispatch family -- every new static ahead of these four used to
+ * shift their individual section-anchor offsets and need another "coincidental
+ * spilled section-anchor" line in tools/stack_edges.txt (b195 added @32/@36; see
+ * that file's git history). A plain file-static struct is STILL not enough on its
+ * own: -fsection-anchors (default at -O2 for this target) groups every small
+ * .bss/.data static in a TRANSLATION UNIT under ONE shared base register and
+ * reaches each by a #offset from it, so s_dex's four fields would still ride
+ * whatever unrelated statics the compiler happens to place immediately before it
+ * (g_species_max_dex/g_n measured on this build) -- the exact same class of
+ * collision, just now contiguous instead of scattered. The section attribute below
+ * gives s_dex its OWN single-member input section, so GCC's per-section anchor
+ * pass can never fold it in with a neighbor: s_dex.get/set/getnat/setnat are then
+ * ALWAYS at offsets 0/4/8/12 from s_dex's own anchor, and no other static's
+ * addition or removal in this file can ever move them again. Confirmed empirically
+ * (see the walker's own --dump-sites report before/after this attribute). */
+static struct {
+  DexGetState get;
+  DexSetState set;
+  DexGetNat   getnat;   /* national-dex live? (may be NULL) */
+  DexSetNat   setnat;   /* enable/disable national dex (may be NULL) */
+} s_dex __attribute__((section(".bss.pdna_pick_s_dex")));
 /* BACKLOG #124: optional cell-art override, installed by pdna_gbdex.c around a
  * GB-session dex visit only -- see pdna_pick.h's own comment on pdna_dex_set_cell_art
  * for the full contract (NULL by default, so an ordinary Gen-3 dex visit is
@@ -636,7 +655,32 @@ static int8_t s_dex_snap[DEX_NAT_MAX];
 static bool   s_dex_snap_valid = false;
 static bool   s_dex_snap_natl = false;   /* National-Dex state at snapshot time (Catch ALL flips it) */
 
-static int dstate(uint16_t internal) { return s_dget((int)pk_national_no(internal)); }
+/* BACKLOG #204: every internal caller dispatches s_dex's four fields through these
+ * four noinline wrappers instead of touching s_dex.FIELD directly -- same technique
+ * as dex_cell_art_call() above for s_cell_art.fn (BACKLOG #124), for the same
+ * reason: the artless and full-art builds inline dex_bulk()/dex_counts() etc. into
+ * pdna_dex_screen differently enough that the RAW field-dispatch site count/split
+ * (bare vs struct-field-classified) measurably disagreed between the two variants
+ * on this exact struct (3 bare + 12 field in artless, 1 bare + 14 field in normal,
+ * both summing to 15 -- confirmed via --dump-sites) even though the section
+ * attribute above already pins s_dex's OWN offsets stable. tools/stack_budget.py's
+ * `caller argsites=N` declaration is a single GLOBAL count with no per-variant
+ * knob, so two different bare-argsite counts for the same symbol name is a hard
+ * conflict, not a matter of picking the "right" number. Routing every dispatch
+ * through one noinline call site per field removes the variance by construction
+ * (matches this file's OWN prior fix for the exact same class of problem): every
+ * caller sees a plain direct `bl dex_dget`/etc., and each wrapper's own single
+ * field-classified access is unaffected by how any OTHER function inlines around
+ * it. dex_getnat_live()/dex_setnat_call() also fold in the NULL-checks every call
+ * site used to repeat by hand (getnat/setnat may be NULL -- see the struct's own
+ * field comments), so behaviour is unchanged at every existing site — except the one
+ * NULL-presence test at the Undo branch, a value read, not a dispatch. */
+static __attribute__((noinline)) int  dex_dget(int nat) { return s_dex.get(nat); }
+static __attribute__((noinline)) void dex_dset(int nat, int st) { s_dex.set(nat, st); }
+static __attribute__((noinline)) bool dex_getnat_live(void) { return s_dex.getnat && s_dex.getnat(); }
+static __attribute__((noinline)) void dex_setnat_call(bool on) { if (s_dex.setnat) s_dex.setnat(on); }
+
+static int dstate(uint16_t internal) { return dex_dget((int)pk_national_no(internal)); }
 
 /* Build g_list for the dex: species filter (build_species) -> caught-status filter
  * -> (Type view only) a stable sort by primary type. */
@@ -670,7 +714,7 @@ static void dex_build(int filter, int sort, const char* search, int status, int 
 
 static void dex_counts(int* seen, int* caught) {
   int s = 0, c = 0;
-  for (int nat = 1; nat <= s_dex_max; nat++) { int st = s_dget(nat); if (st >= 1) s++; if (st >= 2) c++; }
+  for (int nat = 1; nat <= s_dex_max; nat++) { int st = dex_dget(nat); if (st >= 1) s++; if (st >= 2) c++; }
   *seen = s; *caught = c;
 }
 
@@ -743,7 +787,7 @@ static void dex_cell_grid(int x, int y, uint16_t in, int bob) {
 
 /* one list row text, coloured by state (or the selection colour) */
 static void dex_cell_list(int x, int y, uint16_t in, bool sel) {
-  int nat = pk_national_no(in), st = s_dget(nat);
+  int nat = pk_national_no(in), st = dex_dget(nat);
   char row[44], rt[44];
   siprintf(row, "%03d %-11s %s", nat, pk_species_name(in), st == 2 ? "CAUGHT" : st == 1 ? "seen" : "-");
   ui_truncate(rt, row, 28);
@@ -777,11 +821,11 @@ static bool dex_bulk(void) {
   for (;;) {
     /* options: Catch/See/Wipe ALL (state 2/1/0), National-Dex toggle (3), Undo (-1), Cancel (-2) */
     const char* L[PDNA_DEXBULK_MAX]; int act[PDNA_DEXBULK_MAX], n = 0;
-    bool natl = (s_getnat && s_getnat());
+    bool natl = dex_getnat_live();
     L[n] = "Catch ALL"; act[n++] = 2;
     L[n] = "See ALL";   act[n++] = 1;
     L[n] = "Wipe ALL";  act[n++] = 0;
-    if (s_setnat) { L[n] = natl ? "Natl Dex: ON" : "Natl Dex: OFF"; act[n++] = 3; }
+    if (s_dex.setnat) { L[n] = natl ? "Natl Dex: ON" : "Natl Dex: OFF"; act[n++] = 3; }
     if (s_dex_snap_valid) { L[n] = "Undo last"; act[n++] = -1; }
     L[n] = "Cancel"; act[n++] = -2;
     if (sel >= n) sel = n - 1;
@@ -810,26 +854,29 @@ static bool dex_bulk(void) {
         if (!app_confirm(now ? "Enable National Dex?" : "Disable National Dex?",
                          now ? "Reveals #152-386 in-game." : "Hides #152-386 in-game."))
           return false;
-        s_setnat(now);
+        dex_setnat_call(now);
         return true;
       }
       if (a == -1) {                                              /* Undo the last bulk op */
-        for (int nat = 1; nat <= s_dex_max; nat++) s_dset(nat, s_dex_snap[nat - 1]);
-        if (s_setnat && s_getnat && s_getnat() != s_dex_snap_natl)
-          s_setnat(s_dex_snap_natl);                              /* Catch ALL auto-unlocked natl -> revert too */
+        for (int nat = 1; nat <= s_dex_max; nat++) dex_dset(nat, s_dex_snap[nat - 1]);
+        /* This is equivalent to the old setnat && getnat guard because s_dex_snap_natl
+         * is seeded from dex_getnat_live() in the same session and s_dex_snap_valid
+         * resets on entry. */
+        if (dex_getnat_live() != s_dex_snap_natl)
+          dex_setnat_call(s_dex_snap_natl);                              /* Catch ALL auto-unlocked natl -> revert too */
         s_dex_snap_valid = false;
         return true;
       }
       { char amsg[28]; siprintf(amsg, "All %d. (Undo available.)", s_dex_max);
         if (!app_confirm(a == 2 ? "Catch every species?" : a == 1 ? "See every species?" : "Wipe the whole dex?",
                          amsg)) return false; }
-      for (int nat = 1; nat <= s_dex_max; nat++) s_dex_snap[nat - 1] = (int8_t)s_dget(nat);   /* snapshot first */
-      s_dex_snap_natl = (s_getnat && s_getnat());                 /* incl. the National-Dex state */
+      for (int nat = 1; nat <= s_dex_max; nat++) s_dex_snap[nat - 1] = (int8_t)dex_dget(nat);   /* snapshot first */
+      s_dex_snap_natl = dex_getnat_live();                 /* incl. the National-Dex state */
       s_dex_snap_valid = true;
-      for (int nat = 1; nat <= s_dex_max; nat++) s_dset(nat, a);
+      for (int nat = 1; nat <= s_dex_max; nat++) dex_dset(nat, a);
       /* Catching every species is meaningless without National mode (the dex caps at the
        * regional list otherwise), so unlock it too — matches the user's expectation. */
-      if (a == 2 && s_setnat) s_setnat(true);
+      if (a == 2) dex_setnat_call(true);
       return true;
     }
   }
@@ -923,8 +970,8 @@ static int dex_menu(int* filter, int* sort, int* status, bool can_edit) {
 
 bool pdna_dex_screen(DexGetState get, DexSetState set,
                      DexGetNat getnat, DexSetNat setnat, bool can_edit) {
-  s_dget = get; s_dset = set;
-  s_getnat = getnat; s_setnat = can_edit ? setnat : NULL;   /* read-only carts can't toggle it */
+  s_dex.get = get; s_dex.set = set;
+  s_dex.getnat = getnat; s_dex.setnat = can_edit ? setnat : NULL;   /* read-only carts can't toggle it */
   s_dex_snap_valid = false;        /* fresh session: no bulk op to undo yet */
   /* Rent 32 more icon rows for the WHOLE life of this screen -- the one screen in the
    * app that can hold the borrow that long, and the reason it matters is the SCROLL.
@@ -1106,7 +1153,7 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
     else if (k & KEY_A) {
       if (can_edit && g_n) {
         uint16_t in = g_list[sel]; int nat = pk_national_no(in);
-        s_dset(nat, (s_dget(nat) + 1) % 3);
+        dex_dset(nat, (dex_dget(nat) + 1) % 3);
         dirty = true; dex_counts(&seen, &caught);
         if (status != DS_ALL) { dex_build(filter, sort, search, status, view); relist = true; }  /* may drop out */
         else if (grid) {                               /* repaint this cell's new state */
@@ -1164,10 +1211,32 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
 #define g_mv g_idx
 static int g_mvn;
 
-/* BACKLOG #189: same ceiling shape as g_item_max_id (pick_item_set_gen1_2_max's own
- * header comment) -- 0 = unrestricted, every existing caller's default. Set by
- * pick_move_set_gen_max(), consulted by build_moves() below. */
-static uint16_t g_move_max_id = 0;
+/* BACKLOG #204: the five GB-picker scalars (this move ceiling plus the four item
+ * ones declared further down -- g_item_max_id/g_item_gen/g_item_game/
+ * g_item_open_pocket, pick_item_set_gen1_2()'s own header comment) packed into one
+ * file-static struct instead of five separate file-scope statics, so the stack
+ * walker's struct-field classifier has one stable section anchor for this whole
+ * family (each new bare static used to shift the others' individual anchors --
+ * b195 added two "coincidental spilled section-anchor" lines for exactly this).
+ * uint16_t for the two ceilings (max_id values run past 255 -- items go to ~0xFF
+ * but moves/species do not), uint8_t for the rest (gen/game/pocket_plus_one -- see
+ * the _Static_assert pinned at their point of use for the range proof). g_item_gen
+ * stays a plain small int (0 / GBIN_GEN1 / GBIN_GEN2, gb_item_names.h #defines),
+ * g_item_game/g_item_open_pocket keep their enum semantics through the packed
+ * uint8_t -- C's implicit int<->enum conversion makes this transparent at every
+ * existing call site. Field order matches declaration order below for a stable,
+ * predictable layout. */
+static struct {
+  uint16_t move_max_id;    /* BACKLOG #189: 0 = unrestricted, every existing caller's default */
+  uint16_t item_max_id;    /* BACKLOG #189/#195: 0 = unrestricted (raw "#n" held-item mode) */
+  uint8_t  item_gen;       /* 0 / GBIN_GEN1 / GBIN_GEN2 */
+  uint8_t  item_game;      /* GbGame: GBF_G_RED/YELLOW/GS/CRYSTAL */
+  uint8_t  item_open_pocket; /* GbBagPocket, one-shot; sentinel GBB_POCKET_COUNT */
+} s_gb_pick = { 0, 0, 0, GBF_G_RED, GBB_POCKET_COUNT };
+/* Range proof for the two enum-into-uint8_t fields above (BACKLOG #204). */
+_Static_assert(GBB_POCKET_COUNT < 256, "GbBagPocket must fit item_open_pocket's uint8_t");
+_Static_assert(GBF_G_COUNT < 256, "GbGame must fit item_game's uint8_t");
+#define g_move_max_id       s_gb_pick.move_max_id
 void pick_move_set_gen_max(uint16_t max_id) { g_move_max_id = max_id; }
 
 /* sort modes for the move list */
@@ -1587,11 +1656,15 @@ static uint16_t list_pick(const char* title, int count, const char* (*name_fn)(u
  * (pokegold's own attributes.asm differs from pokecrystal's there, gb_bag.h's
  * own header comment on gbb_pocket_of has the derivation), so a "pick any
  * representative Gen-2 game" shortcut silently mis-filters Gold. Every
- * caller threads its own real game through now. */
-static uint16_t g_item_max_id = 0;
-static int      g_item_gen = 0;
-static GbGame   g_item_game = GBF_G_RED;
-static GbBagPocket g_item_open_pocket = GBB_POCKET_COUNT;   /* one-shot; see header */
+ * caller threads its own real game through now.
+ *
+ * BACKLOG #204: these four scalars are packed into s_gb_pick (declared near
+ * g_move_max_id above, this file) -- see that struct's own comment. */
+_Static_assert(GBIN_GEN2 < 256, "item_gen fits uint8_t");
+#define g_item_max_id       s_gb_pick.item_max_id
+#define g_item_gen          s_gb_pick.item_gen
+#define g_item_game         s_gb_pick.item_game
+#define g_item_open_pocket  s_gb_pick.item_open_pocket
 void pick_item_set_gen1_2_max(uint16_t max_id) { pick_item_set_gen1_2(0, GBF_G_RED, max_id); }
 void pick_item_set_gen1_2(int gen, GbGame game, uint16_t max_id) {
   g_item_gen = gen; g_item_game = game; g_item_max_id = max_id;

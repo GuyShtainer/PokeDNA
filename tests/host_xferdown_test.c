@@ -687,11 +687,23 @@ static void test_name_glyph_loss_synthetic(void) {
   }
 
   /* (c) review F1's own example: a nickname holding the male gender sign (raw byte
-   * 0xEF, gb_char_decode's shared case spells it U+2642 in EITHER generation) -- the
-   * mutation run below (temporarily reverting gb_name_changed to the old decoder-
-   * fallback rule) is what proves this is a REAL regression case, not a redundant one:
-   * the old rule never flagged it (0xEF decodes cleanly, never hits a decoder
-   * default), so this is exactly one of the 19 losses review F1 found. */
+   * 0xEF, gb_char_decode's shared case spells it U+2642 in EITHER generation).
+   *
+   * BACKLOG #183 (source/gen3_mon.c's decode_name) changed this case's expected
+   * outcome from lossy to CLEAN: before #183, the Gen-3 intermediate's own PkMon
+   * decode had no case for 0xB5/0xB6 (gen3_decode_char's single-`char` return can't
+   * carry a 3-byte UTF-8 glyph) and fell to '?', so gen3_to_gb wrote a literal '?'
+   * into the Gen-1 record -- a real, silent spelling change that gb_name_changed
+   * correctly caught as lossy. #183 gave decode_name its own gender-sign cases (the
+   * same UTF-8 spelling gb_edit.c/gen1_save.c/gen2_save.c already use for 0xEF/0xF5),
+   * so the Gen-3 intermediate now carries a real U+2642, gen3_to_gb's gb_set_nickname
+   * writes Gen 1's own 0xEF byte for it (gb_edit.c:676), and gb_get_nickname reads it
+   * back as U+2642 again -- source and written spelling now genuinely match, because
+   * Gen 1 always could store this glyph; only the Gen-3 hop was silently corrupting
+   * it. Confirmed by mutating decode_name back to the pre-#183 cases (dropping the
+   * 0xB5/0xB6 special-case so it falls through to gen3_decode_char's '?'): this CHECK
+   * flips (nick_lossy becomes false -> true), proving the assertion below is
+   * exercising the real fixed path, not a vacuous one. */
   {
     uint8_t cell[80];
     GbEditMon m; memset(&m, 0, sizeof m);
@@ -715,9 +727,10 @@ static void test_name_glyph_loss_synthetic(void) {
     CHECK(tc == 0 && g12 == GB12_OK && g3gb == G3GB_OK,
           "gender fixture: 2->1 bridge converts (tc=%d g12=%s g3gb=%s)",
           tc, gen12_reason_text(g12), g3gb_status_text(g3gb));
-    CHECK(notes.nick_lossy,
-          "BACKLOG #177 review F1: notes.nick_lossy fires for a nickname carrying the "
-          "male gender sign crossing the 2->1 bridge (written spelling != source spelling)");
+    CHECK(!notes.nick_lossy,
+          "BACKLOG #183: notes.nick_lossy stays clean for a nickname carrying the male "
+          "gender sign crossing the 2->1 bridge -- Gen 1 genuinely stores 0xEF, so once "
+          "the Gen-3 intermediate decodes 0xB5 correctly the round trip is lossless");
   }
 }
 

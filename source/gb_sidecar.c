@@ -482,22 +482,21 @@ static void merge_moves(EditMon* em, const GbEditMon* now, const GbscEntry* e,
 }
 
 /* The Gen-3 charset can only spell ASCII (gen3_edit.h's gen3_encode_char), so a decoded
- * Game Boy name is refused here for ANY of three reasons: it needed a "{XX}" escape (a
- * byte with no text spelling at all -- gb_edit.h NAMES); it decoded to a real non-ASCII
- * glyph the Game Boy charset CAN spell but Gen 3's cannot (the gender signs 0xEF/0xF5,
- * e/x/umlauts...); or it is one of the eight ASCII punctuation glyphs the Game Boy CAN
- * spell but gen3_encode_char has no case for and silently falls through to its
- * "default: return 0x00, unknown -> space" -- '(' ')' ':' ';' '[' ']' '&' '$'. That
- * third case was originally missed here (an earlier revision let these eight straight
- * through to em_set_nickname, which then quietly turned each into a Gen-3 space rather
- * than refusing) -- caught by review. All three keep the sidecar's own nickname
- * untouched rather than silently substitute a space for a character the player actually
- * typed. */
+ * Game Boy name is refused here for ANY of two reasons: it needed a "{XX}" escape (a
+ * byte with no text spelling at all -- gb_edit.h NAMES); or it decoded to a glyph Gen 3
+ * cannot spell. Three classes of unrepresentable glyphs: real non-ASCII the Game Boy CAN
+ * spell but Gen 3 cannot (the gender signs 0xEF/0xF5, e/x/umlauts...); glyphs without a
+ * Gen-3 code point ([, ], and $ which maps to FF the string terminator); or glyphs that
+ * gen3_encode_char stored under code points (5C/5D/F0/36/2D for '(' ')' ':' ';' '&'
+ * respectively in BACKLOG #183). Keep the sidecar's own nickname untouched rather than
+ * silently substitute a space for a character the player actually typed. */
 static bool gb_nick_char_ok_for_gen3(unsigned char c) {
   if (c == '{' || c >= 0x80u) return false;
   switch (c) {
-    case '(': case ')': case ':': case ';':
-    case '[': case ']': case '&': case '$':
+    /* BACKLOG #183 gave gen3_encode_char real code points for ( ) : ; & (charmap
+     * 5C/5D/F0/36/2D), so only these three are still unrepresentable: '[' and ']'
+     * have no Gen-3 code point at all, and '$' maps to FF, the string terminator. */
+    case '[': case ']': case '$':
       return false;
     default:
       return true;

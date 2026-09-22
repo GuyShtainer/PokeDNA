@@ -38,6 +38,22 @@ char gen3_decode_char(uint8_t c) {
     case 0xAC: return '?';
     case 0xAD: return '.';
     case 0xAE: return '-';
+    /* BACKLOG #183: & ; ( ) : were unmapped here (fell to the default '?'), even
+     * though the real Gen-3 charset has real codes for all five (pokeemerald
+     * charmap.txt: '&'=2D, ';'=36, '('=5C, ')'=5D, ':'=F0 -- cross-checked against
+     * this file's own existing digit/letter ranges above, which match the same
+     * charmap exactly). gen3_encode_char (source/gen3_edit.c) is this function's
+     * exact inverse for these five. NOTE: '[' and ']' are NOT in this list --
+     * verified against the real pokeemerald/pokeruby/pokefirered charmap.txt: Gen 3
+     * has no code point for either bracket at all, so a nickname containing one
+     * genuinely cannot cross into Gen 3 losslessly; it correctly falls to the
+     * existing default (space) and gen12_convert.c's spelling-compare (BACKLOG
+     * #177) flags that as a real loss instead of silently inventing a byte for it. */
+    case 0x2D: return '&';
+    case 0x36: return ';';
+    case 0x5C: return '(';
+    case 0x5D: return ')';
+    case 0xF0: return ':';
     case 0xB3: return '\'';
     case 0xB4: return '\'';
     /* 0xB8 = ',' and 0xBA = '/' in the real Gen-3 charmap (pokeemerald charmap.txt;

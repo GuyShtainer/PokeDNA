@@ -18,14 +18,52 @@ static const uint8_t k_substruct_pos[24][3] = {
   {1,2,3},{1,3,2},{2,1,3},{3,1,2},{2,3,1},{3,2,1},
 };
 
-static void decode_name(char* out, const uint8_t* src, int maxlen) {
-  int k = 0;
+/* BACKLOG #183: ♂ (Gen-3 0xB5) / ♀ (0xB6) need 3 UTF-8 bytes ("\xE2\x99\x82" /
+ * "\xE2\x99\x80"), not the 1 gen3_decode_char's own `char` return can carry -- that
+ * function stays untouched (it has ~15 other callers throughout this tree, several
+ * outside this fix's scope, all assuming its existing one-byte-in/one-char-out
+ * shape; widening ITS signature would ripple into every one of them). This is the
+ * ONE caller that matters for round-trip correctness: PkMon.nickname/otName feed
+ * gen3_to_gb.c's BACKLOG #177 spelling-compare (gb_text_lossy), so a NIDORAN♀
+ * caught in Gen 3 must decode back to a real ♀, not '?', or a lossless transfer
+ * gets falsely flagged lossy. Same "tree's own representation" encode_name()
+ * (gen3_edit.c) and gen1_save.c's own GB decoder already use for this exact glyph
+ * pair -- not a new encoding.
+ *
+ * `outcap` is `out`'s real capacity (NOT `maxlen`, the Gen-3 byte count) because 3
+ * output bytes for 1 input byte can outrun a fixed-size field -- PkMon.nickname[11]/
+ * otName[8] (gen3_mon.h) have zero slack today, so this caller must be its own
+ * upper bound, not lean on the caller's field-size intuition. A corrupt/crafted
+ * save COULD have every glyph be a gender sign; degrading to gen3_decode_char's
+ * plain '?' once the buffer is nearly full is a safe, bounded fallback -- never a
+ * silent overflow (golden rule 2: every loop proves its own bound). */
+static void decode_name(char* out, int outcap, const uint8_t* src, int maxlen) {
+  int k = 0, oi = 0;
   for (; k < maxlen; k++) {
-    char ch = gen3_decode_char(src[k]);
+    uint8_t b = src[k];
+    if ((b == 0xB5u || b == 0xB6u) && oi + 3 < outcap) {
+      out[oi++] = (char)0xE2; out[oi++] = (char)0x99;
+      out[oi++] = (char)(b == 0xB5u ? 0x82 : 0x80);
+      continue;
+    }
+    char ch = gen3_decode_char(b);
     if (ch == 0) break;
-    out[k] = ch;
+    if (oi + 1 >= outcap) break;
+    out[oi++] = ch;
   }
-  out[k] = 0;
+  out[oi] = 0;
+}
+
+/* BACKLOG #183: public wrapper so a caller outside this file (gen12_convert.c's
+ * own spelling-compare, item 2(b)) can decode a raw Gen-3 name field -- nickname
+ * (0x08, 10 bytes) or otName (0x14, 7 bytes) -- the exact same way pk_decode_mon
+ * does, WITHOUT decrypting the whole 80-byte record first (both fields sit
+ * outside the encrypted substructs, so this is safe on a record mid-build, before
+ * gen3_edit_commit's checksum/encrypt pass has even run). One thin function, no
+ * logic duplicated: `decode_name` stays the only place that owns the gender-sign
+ * special case. */
+void gen3_decode_name(char* out, int outcap, const uint8_t* src, int maxlen) {
+  decode_name(out, outcap, src, maxlen);
 }
 
 uint8_t pk_nature(uint32_t personality) { return (uint8_t)(personality % 25); }
@@ -155,8 +193,8 @@ bool pk_decode_mon(const uint8_t* mon, bool is_party, PkMon* out) {
   out->nature  = pk_nature(pers);
   out->isShiny = pk_is_shiny(pers, (uint16_t)(otid & 0xFFFF), (uint16_t)(otid >> 16));
 
-  decode_name(out->nickname, mon + 0x08, 10);
-  decode_name(out->otName, mon + 0x14, 7);
+  decode_name(out->nickname, (int)sizeof out->nickname, mon + 0x08, 10);
+  decode_name(out->otName,   (int)sizeof out->otName,   mon + 0x14, 7);
 
   if (is_party) {
     out->level = mon[0x54];
