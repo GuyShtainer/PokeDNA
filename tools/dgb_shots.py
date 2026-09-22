@@ -1853,11 +1853,21 @@ def run_u5_pack(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
 
 
 def run_b89_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
-    """BACKLOG #89: the Gen-1/2 Hall of Fame screen (source/pdna_gbhof.c) over
-    gb_hof.h's core -- the same single-ROM-image / nav-menu-DOWN shape run_b90_fly()
-    above uses, reused for a plain list->detail screen. `rom` must be a ONE-ROM
-    fused image (Red-only for `which == "red"`, Crystal-only for `which ==
-    "crystal"`, same BACKLOG #98 harness-gap reasoning as U4/U5/b90's own images).
+    """BACKLOG #89 (BACKLOG #202 F1 recaption): the Gen-1/2 Hall of Fame screen
+    (source/pdna_gbhof.c) -- the same single-ROM-image / nav-menu-DOWN shape
+    run_b90_fly() above uses. `rom` must be a ONE-ROM fused image (Red-only for
+    `which == "red"`, Crystal-only for `which == "crystal"`, same BACKLOG #98
+    harness-gap reasoning as U4/U5/b90's own images).
+
+    #202 F1: pdna_gbhof() now opens the SAME gbscr card shell the trainer card
+    uses (GBSCR_NEED_TEXTBOX only) and keeps it open across list<->detail<->the
+    START menu; every gbscr_open() call pays the PDNA_DELTA leg's whole-ROM UI
+    locator cost again (~3,240 frames measured, review of b194/f93cf5a) --
+    EVERY settle below that follows a shell (re)open (the very first Records
+    entry, and returning to the list after CLEAR ALL/SET COUNT close+reopen the
+    shell around their own full-screen editors) now rides out GB_ART_COLD_SETTLE,
+    not BIG_SETTLE; list<->detail<->menu transitions stay on the shell that is
+    ALREADY open (no rescan) and only need BIG_SETTLE.
 
     Nav: A (S1 info) -> box grid -> START -> nav menu -> DOWN x12 (Party=0, Bank=1,
     Daycare=2, Trainer=3, Clock fix=4, Mirage=5, Pokedex=6, Bag=7, Flags&counters=8,
@@ -1870,27 +1880,37 @@ def run_b89_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     boot_to_gb_session(s, rom, which=which)
     s.tap("START", settle=gb_shots.BIG_SETTLE)              # box grid -> nav menu
     s.press_n("DOWN", 12)                                    # Party -> ... -> Records (index 12)
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # Records -> pdna_gbhof()
-    s.shot("01_list", f"BACKLOG #89: {which}'s own Hall of Fame list -- the "
-                       "'N teams (lifetime count C)' header, one row per recorded "
-                       "team newest-first, cursor on row 1")
+    s.tap("A", settle=GB_ART_COLD_SETTLE)                   # Records -> pdna_gbhof() -> FIRST gbscr_open()
+    s.shot("01_list", f"BACKLOG #202 F1: {which}'s own Hall of Fame CARD -- the "
+                       "'N teams (life C)' header drawn with the ROM's own font "
+                       "inside the shared gbscr text-box frame, one 'N: ...' row "
+                       "per recorded team newest-first (F2: no '#', no '>' -- the "
+                       "row cursor is the gbscr_cell_rect() highlight on row 1)")
 
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # row 1 -> the team detail
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # row 1 -> the team detail (SAME shell, no reopen)
     # D6: this corpus save's own HoF teams carry no shiny DV quad and no custom
     # nickname (real, unedited saves) -- do not claim either in THIS shot's own
     # caption. Both are proven on dedicated poked-.sav shots kept alongside this
     # set (b89_{red,crystal}_08_nick.png, b89_crystal_09_shiny.png), not implied here.
-    s.shot("02_detail", "BACKLOG #89: the team detail page -- 6 mon rows"
-                        + (" (species/level, OT id)" if which == "crystal" else " (species/level)"))
-    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # detail -> back to the list
+    s.shot("02_detail", "BACKLOG #202 F1: the team detail CARD -- 6 mon rows "
+                        "(species/level), still inside the SAME open shell (no "
+                        "reopen, no rescan cost) -- OT id is dropped from the "
+                        "card view (no room for a 3rd row/mon); it stays on the "
+                        "plain fallback page")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # detail -> back to the list (same shell)
 
-    s.tap("START", settle=gb_shots.BIG_SETTLE)              # the Hall of Fame's own START menu
-    s.shot("03_menu", "BACKLOG #89: START -> CLEAR ALL / SET COUNT")
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # the Hall of Fame's own START menu (same shell)
+    s.shot("03_menu", "BACKLOG #202 F1: START -> the shell's own in-frame menu -- "
+                       "CLEAR ALL / SET COUNT / ADD TEAM / DELETE TEAM (BACKLOG "
+                       "#194 F3's two newer rows, recaptioned here -- this frame "
+                       "used to show only the first two)")
 
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # CLEAR ALL -> app_confirm
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # CLEAR ALL -> app_confirm (shell already closed)
     s.shot("04_clear_confirm", "BACKLOG #89: CLEAR ALL -> the real consequence -- "
                                 "\"The PC's HALL OF FAME option disappears until "
-                                "you win again.\" (app_confirm)")
+                                "you win again.\" (app_confirm, full-screen -- F3: "
+                                "the shell closed before this and reopens only "
+                                "after the whole CLEAR ALL flow returns)")
     # gbh_clear() on Gen 1 chunks its write over up to 50 gen1_write_outside_sum
     # calls (one per team slot), each re-opening/re-parsing the whole 32 KiB image
     # to verify -- genuinely more CPU work than any other GB screen's single-field
@@ -1908,11 +1928,13 @@ def run_b89_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
                              "proved by the retail gate's hofclear/hofcount cases "
                              "(tools/gb_retail_gate.py), not this shot. The edit "
                              "already landed in-session, shown by the NEXT shot.")
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss gb_persist's own dialog -> back to the list
-    s.shot("06_empty", "BACKLOG #89: after CLEAR ALL -- '0 teams (lifetime count "
-                        "0)', 'No teams recorded yet.'")
+    s.tap("A", settle=GB_ART_COLD_SETTLE)                   # dismiss gb_persist's dialog -> hof_card_menu_key
+                                                              # REOPENS the shell (F3 close/run/reopen posture)
+                                                              # -> another full gbscr_open() rescan
+    s.shot("06_empty", "BACKLOG #202 F1: after CLEAR ALL -- the CARD reopened -- "
+                        "'0 teams (life 0)', 'No teams yet.'")
 
-    s.tap("START", settle=gb_shots.BIG_SETTLE)              # menu again, on the now-empty list
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # menu again, on the now-empty list (same shell)
     s.tap("DOWN", settle=gb_shots.SETTLE)                   # SET COUNT row
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # -> the stepper, starts at 0 (never confirmed,
                                                               # so gb_persist()'s own dialog never fires here)
@@ -1930,6 +1952,159 @@ def run_b89_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
                           f"is empty, R1), not a flat 255, so 3 UP presses land at "
                           f"{want} ('Lifetime wins: {want} / {cap}')")
 
+    return s
+
+
+def run_b194_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
+    """BACKLOG #202 F4: the deeper card-shell flows run_b89_hof() above does not
+    reach -- a cold list open, the detail card, the in-frame START menu, an
+    EDIT of one mon's level through to the emulator's in-session refusal, ADD
+    TEAM through to the SAME refusal, and DELETE TEAM. `rom` MUST be the SAME
+    kind of ONE-ROM fused image run_b89_hof() takes.
+
+    Mon portraits/icons at each detail row are NOT wired in this lane (STACK
+    margin, see source/pdna_gbhof.c's own F1 comment) -- 02_detail's caption
+    says so plainly rather than implying they are there.
+
+    Every gbscr_open() call in the PDNA_DELTA build re-runs the whole-ROM UI
+    locator (~3,240 frames, the b194/f93cf5a review's own measurement) -- this
+    runner rides out GB_ART_COLD_SETTLE after EVERY shell (re)open (the first
+    Records entry, and every return from a full-screen sub-editor that closed
+    the shell around itself: EDIT MON's LEVEL field, ADD TEAM, DELETE TEAM).
+    On real hardware, with the .loc cache actually wired (BACKLOG #202 anchor
+    notes), this cost is a cart-only concern, not an emulator one -- accepted
+    as the brief's own explicit instruction: 'do not fix it by skipping the
+    locator.'"""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b194_{which}_")
+    print(f"== BACKLOG #202 F4: {which}'s own HoF card -- cold open, menu, edit, "
+          "add, delete ==")
+
+    boot_to_gb_session(s, rom, which=which)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)               # box grid -> nav menu
+    s.press_n("DOWN", 12)                                     # Party -> ... -> Records
+    s.tap("A", settle=GB_ART_COLD_SETTLE)                     # Records -> pdna_gbhof() -> FIRST gbscr_open()
+    s.shot("01_cold_list", f"BACKLOG #202 F4: {which}'s HoF card, COLD open -- "
+                            f"the FIRST gbscr_open() this session, ridden out with "
+                            f"GB_ART_COLD_SETTLE ({GB_ART_COLD_SETTLE} frames) -- "
+                            f"the same PDNA_DELTA whole-ROM locator cost the "
+                            f"b194/f93cf5a review measured at ~3,240 frames")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # row 1 -> detail (same open shell)
+    s.shot("02_detail", "BACKLOG #202 F4: the detail card, same open shell (no "
+                         "reopen) -- mon portraits/icons at each row are NOT "
+                         "wired in this lane (gb_art_fetch's own 3,672 B frame "
+                         "vs this lane's 1,928 B STACK margin), left for a "
+                         "follow-up BACKLOG item; this shot is text rows only, "
+                         "honestly, not a placeholder icon")
+
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                    # detail -> list (same shell)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)                # list -> the in-frame START menu
+    s.shot("03_menu_in_frame", "BACKLOG #202 F1: the START menu drawn INSIDE "
+                                "the SAME card frame (no ui_clear() screen swap) "
+                                "-- CLEAR ALL / SET COUNT / ADD TEAM / DELETE TEAM")
+
+    # ---- EDIT a level, through to the emulator's own in-session refusal -----------
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                    # menu -> list
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # row 1 -> detail
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # mon 0 -> EDIT MON menu (full-screen,
+                                                                # shell closed for this sub-editor -- F3)
+    s.tap("DOWN", settle=gb_shots.SETTLE)                     # SPECIES -> LEVEL
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # -> the level stepper
+    s.press_n("UP", 3, settle=gb_shots.SETTLE)                # +3 levels (clamped at 100 if already there)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # set -> back on EDIT MON, dirty=true
+    s.shot("04_level_staged", "BACKLOG #202 F4: LEVEL stepper committed (+3, "
+                               "clamped at 100) -- back on the EDIT MON menu, "
+                               "staged, nothing written yet")
+    s.press_n("DOWN", 2, settle=gb_shots.SETTLE)              # LEVEL -> NICKNAME -> DONE
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # DONE (dirty) -> "Save changes to slot 1?"
+    s.shot("05_edit_confirm", "BACKLOG #202 F4: DONE with a real staged change -- "
+                               "'Save changes to slot 1?' (app_confirm)")
+    # Two SEPARATE taps, same shape as run_b89_hof's own CLEAR ALL sequence:
+    # (1) yes -> gbh_set_mon() -> gb_persist() -> the PDNA_DELTA refusal dialog
+    # appears (own settle to let the write finish before the dialog draws);
+    # (2) a SECOND tap dismisses THAT dialog, which is when hof_card_detail_key
+    # actually reopens the shell (F3).
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # yes -> gb_persist()
+    s.run(200)                                                 # ride out the single gen1_write_outside_sum
+    s.shot("06_edit_refusal", "BACKLOG #202 F4: gb_persist()'s PDNA_DELTA "
+                               "refusal, same #62 D2/D5 branch as every other "
+                               "GB screen's own commit -- the edit already "
+                               "landed in-session, shown by the NEXT shot")
+    s.tap("A", settle=GB_ART_COLD_SETTLE)                     # dismiss -> hof_card_detail_key REOPENS
+                                                                # the shell (F3 close/run/reopen)
+    s.shot("07_edit_reopened", "BACKLOG #202 F4: dismissed -- the DETAIL card "
+                                "REOPENED (F3's close/run/reopen posture) "
+                                "showing the edit already landed in-session")
+
+    # ---- ADD TEAM, through to the SAME in-session refusal --------------------------
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                    # detail -> list
+    s.tap("START", settle=gb_shots.BIG_SETTLE)                # list -> menu
+    s.press_n("DOWN", 2, settle=gb_shots.SETTLE)              # CLEAR ALL -> SET COUNT -> ADD TEAM
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # ADD TEAM -> the full-screen builder
+                                                                # (shell closed -- F3)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # + ADD MON -> the species picker
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # pick the default species -> the level stepper
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                    # cancel (keep the Lv5 default)
+    s.tap("SEL", settle=gb_shots.BIG_SETTLE)                  # cancel the nickname OSK (keep the default)
+    s.shot("08_add_one_mon", "BACKLOG #202 F4: ADD TEAM's builder with 1 mon "
+                              "staged (default species, Lv5, default nickname)")
+    s.tap("DOWN", settle=gb_shots.SETTLE)                     # + ADD MON -> DONE
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # DONE -> "Add this 1-mon team?"
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # yes -> gbh_append_team -> gb_persist()
+    s.run(200)
+    s.shot("09_add_refusal", "BACKLOG #202 F4: ADD TEAM hits the SAME "
+                              "in-session-only refusal as CLEAR ALL/EDIT")
+    s.tap("A", settle=GB_ART_COLD_SETTLE)                     # dismiss -> hof_card_menu_key REOPENS
+                                                                # the shell
+    s.shot("10_add_reopened", "BACKLOG #202 F4: dismissed -- the shell "
+                               "REOPENED back on the LIST card (F3), now "
+                               "showing 10 teams (was 9) with the new team "
+                               "'1: Lv5-5' on top -- the write DID land "
+                               "in-session (RAM); only the FLASH persist leg "
+                               "of gb_persist() refuses in the emulator build, "
+                               "same as every other GB screen's own commit")
+
+    # ---- DELETE TEAM -----------------------------------------------------------------
+    s.tap("START", settle=gb_shots.BIG_SETTLE)                # list -> menu (same shell)
+    s.press_n("DOWN", 3, settle=gb_shots.SETTLE)              # CLEAR ALL -> ... -> DELETE TEAM
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # DELETE TEAM -> "Delete team #1?"
+    s.shot("11_delete_confirm", "BACKLOG #202 F4: DELETE TEAM acts on the list "
+                                 "cursor's own row directly (no second picker) -- "
+                                 "'Delete team #1?'")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # yes -> gbh_delete_team -> gb_persist()
+    s.run(200)
+    s.shot("12_delete_refusal", "BACKLOG #202 F4: DELETE TEAM hits the SAME "
+                                 "in-session-only refusal")
+    s.tap("A", settle=GB_ART_COLD_SETTLE)                     # dismiss -> shell reopens
+    s.shot("13_delete_reopened", "BACKLOG #202 F4: dismissed -- the shell "
+                                  "REOPENED back on the LIST card")
+
+    return s
+
+
+def run_b194_hof_no_rom(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
+    """BACKLOG #202 F1's own honest fallback: `rom` MUST be a fused image
+    carrying a HoF-bearing save (Red.sav or Crystal.sav) with NO MATCHING GEN
+    ROM fused at all (fuse_gb.py invoked with only the .sav payload, the same
+    'no ROM at all' construction run_m1_map_gen2_no_rom() above uses for the
+    Gen-2 map screen) -- app_gb_rom_path()/gb_rom_path_beside() both fail,
+    gbscr_open()'s own kReasonNoRom refusal fires, and pdna_gbhof() falls back
+    to hof_plain_screen() with the honest 'HALL OF FAME (GB ART: OFF)' header
+    -- the SAME plain rows this screen drew before BACKLOG #194/#202 existed."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b194_{which}_norom_")
+    print(f"== BACKLOG #202 F1: {which}'s HoF, no ROM fused -- the honest plain fallback ==")
+    boot_to_gb_session(s, rom, which=which)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)
+    s.press_n("DOWN", 12)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # Records -> pdna_gbhof() -> gbscr_open()
+                                                                # refuses (no ROM) -> hof_plain_screen()
+                                                                # immediately, no cold-scan cost at all
+    s.shot("01_plain_fallback", "BACKLOG #202 F1: no Gen ROM fused at all -- "
+                                 "gbscr_open() refuses (kReasonNoRom) and "
+                                 "pdna_gbhof() falls back to the ORIGINAL plain "
+                                 "row list with the honest 'HALL OF FAME (GB ART: "
+                                 "OFF)' title, exactly the trainer card's own D7 "
+                                 "header contract")
     return s
 
 
@@ -5311,6 +5486,18 @@ def main(argv=None) -> int:
                           "byte-poked first (a nicknamed mon for *-nick, a shiny DV "
                           "quad for crystal-shiny) -- see run_b89_hof_detail_only()'s "
                           "own docstring")
+    ap.add_argument("--b194-hof", choices=("red", "crystal"),
+                     help="BACKLOG #202 F4: only run_b194_hof() against --image -- "
+                          "the cold card open, in-frame menu, an EDIT-a-level round "
+                          "trip, ADD TEAM, and DELETE TEAM, each through to the "
+                          "emulator's own in-session refusal and the shell's "
+                          "reopen -- --image MUST be a ONE-ROM fused image matching "
+                          "this choice, same posture as --b89-hof")
+    ap.add_argument("--b194-hof-no-rom", choices=("red", "crystal"),
+                     help="BACKLOG #202 F1: only run_b194_hof_no_rom() against "
+                          "--image -- --image MUST be a fused image carrying the "
+                          "named game's HoF save with NO Gen ROM fused at all (the "
+                          "honest plain-fallback shot)")
     ap.add_argument("--s2-bank", choices=("gold", "red"),
                      help="#120: only run_s2_bank() against --image for the "
                           "named game -- the Bank, reachable from a Game Boy session "
@@ -5658,6 +5845,32 @@ def main(argv=None) -> int:
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name2, reason in skipped:
             print(f"  [skip] {name2}: {reason}")
+        return 0
+
+    if a.b194_hof:
+        try:
+            sess = run_b194_hof(core_mod, image_mod, a.image, a.out, a.b194_hof)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b194 hof ({a.b194_hof}): {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if a.b194_hof_no_rom:
+        try:
+            sess = run_b194_hof_no_rom(core_mod, image_mod, a.image, a.out, a.b194_hof_no_rom)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b194 hof no-rom ({a.b194_hof_no_rom}): {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
         return 0
 
     if a.b90_fly:
