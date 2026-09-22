@@ -6,6 +6,7 @@
  *      source/gen3_daycare.c source/data_tables.c source/evolutions.c \
  *      source/gb_edit.c source/gen1_save.c source/gen2_save.c \
  *      source/xfer_rec.c source/bank_restore.c source/item_map_g2g3.c \
+ *      source/gb_moves_legal.c \
  *      -o /tmp/hxfer
  *   /tmp/hxfer /Users/guyshtainer/VSCodeProjects/gba-toolkit/roms/ (.sav files)
  *
@@ -74,6 +75,7 @@
 #include "bank_cell.h"
 #include "xfer_rec.h"
 #include "bank_restore.h"
+#include "gb_moves_legal.h"   /* BACKLOG #220a: g3gb_moves_ok_rec -- RT-4's per-slot clip gate */
 #include "data_tables.h"   /* pk_national_no */
 #include "item_map_g2g3.h" /* item_g2_to_g3 -- review D2's item-loss comparison */
 
@@ -1181,12 +1183,16 @@ static GbGen1Base xr_fake_g1base(void) {
 /* ---- RT-4: the flagship 2->3->1->2, byte-identical via the ledger ------------- */
 
 static int g_rt4_completed = 0, g_rt4_skipped_capsule = 0, g_rt4_skipped_other = 0;
+static int g_rt4_clipped = 0;   /* BACKLOG #220a: completed records whose hop 3 clipped >=1 move */
 
 static void run_rt4_one(const char* tag, const GbEditMon* mon, uint8_t origin) {
-  uint16_t moves4[4];
-  for (int i = 0; i < 4; i++) moves4[i] = gb_get_move(mon, i);
-  uint16_t bad;
-  if (xr_time_capsule_block(GB_GEN2, GB_GEN1, gb_get_species_dex(mon), moves4, &bad) != 0) {
+  /* BACKLOG #220a: species-only gate, mirroring bank_down_convert.c's bdc_convert_gb_core
+   * (xr_time_capsule_block(..., NULL, tc_bad) -- moves4 == NULL there means "species only,
+   * this arm handles moves itself" per that file's own comment). The old all-or-nothing
+   * predicate (moves4 non-NULL) refused every record with even one out-of-range move,
+   * which is exactly what BACKLOG #212 already taught the shipped bridge arm not to do --
+   * RT-4 had simply never been updated to match. */
+  if (xr_time_capsule_block(GB_GEN2, GB_GEN1, gb_get_species_dex(mon), NULL, NULL) != 0) {
     g_rt4_skipped_capsule++;
     return;
   }
@@ -1231,15 +1237,32 @@ static void run_rt4_one(const char* tag, const GbEditMon* mon, uint8_t origin) {
   CHECK(conv2, "%s: RT-4 hop 3 gen12_convert(N2') succeeds", tag);
   if (!conv2) return;
 
+  /* BACKLOG #220a: per-slot clip (gb_moves_legal.h's g3gb_moves_ok_rec -- the SAME
+   * predicate bdc_convert_gb_core (source/bank_down_convert.c) uses) instead of
+   * refusing the whole record on one bad move. bad4[i] slots are written EMPTY by
+   * gen3_to_gb_fixed rather than blocking hop 3 -- the ledger entry below is keyed
+   * off N2p (the UNCLIPPED Gen-3 record from hop 2, xr_entry_for_down's `cell80`
+   * argument), so hop 4's restore rebuilds from the pre-clip bytes regardless of
+   * what hop 3 had to empty; the final byte-identical assertions below are
+   * unaffected by the clip. This lane does not call gb_paste_fill_moves() (the
+   * production bridge's own fill step, source/pdna_gen12.c) -- it needs a real ROM's
+   * learnset (g_ed/gb_create_locate_rom), which is not host-compilable; the no-ROM
+   * path is simply to leave a clipped slot EMPTY, same as CREATE's own no-ROM
+   * fallback. */
+  uint8_t bad4[4];
+  int nb2 = g3gb_moves_ok_rec(g3b, GB_GEN1, bad4);
+  if (nb2 < 0) { g_rt4_skipped_other++; return; }
+
   GbGen1Base g1base = xr_fake_g1base();
   GbEditMon R1; Gen3ToGbLoss loss;
-  G3GbStatus st = gen3_to_gb(g3b, GB_GEN1, true, &g1base, &R1, &loss);
+  G3GbStatus st = gen3_to_gb_fixed(g3b, GB_GEN1, true, &g1base, nb2 > 0 ? bad4 : NULL, &R1, &loss);
   if (st != G3GB_OK) {
-    /* A real refusal (e.g. a move outside Gen 1's own historical subset even though
-     * it passed the time-capsule species/move-id gate above) -- tallied, not failed. */
+    /* A real refusal for another reason entirely (species floor already gated above;
+     * moves are now clipped, not refused) -- tallied, not failed. */
     g_rt4_skipped_other++;
     return;
   }
+  if (nb2 > 0) g_rt4_clipped++;
 
   GbscEntry e2;
   xr_entry_for_down(&e2, &R1, N2p, 0, XR_DIR_ABROAD_GB, NULL);
@@ -1978,9 +2001,10 @@ int main(int argc, char** argv) {
     snprintf(pathbuf, sizeof pathbuf, "%s", kGb2[i]);
     run_rt4_file(kGb2[i]);
   }
-  printf("  RT-4: %d record(s) completed all four hops byte-identical, %d skipped by the\n"
+  printf("  RT-4: %d record(s) completed all four hops byte-identical (%d of them with >=1\n"
+         "        move clipped at hop 3, BACKLOG #220a), %d skipped by the species-only\n"
          "        time-capsule gate, %d skipped for another real reason (refusal/conversion)\n",
-         g_rt4_completed, g_rt4_skipped_capsule, g_rt4_skipped_other);
+         g_rt4_completed, g_rt4_clipped, g_rt4_skipped_capsule, g_rt4_skipped_other);
 
   printf("== E0b. RT-5 (1->3->1) / RT-6 (2->3->2), the accept=0 mask path ==\n");
   for (size_t i = 0; i < sizeof kGb1 / sizeof kGb1[0]; i++) run_rt5_gen1(kGb1[i]);
