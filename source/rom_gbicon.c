@@ -136,8 +136,16 @@ static uint32_t scan_one(RomGbIcon* gi, int (*cb)(const uint8_t*), uint32_t look
         if (!(p[0] == p[1] && p[1] == p[2] && p[0] >= 1 && p[0] <= ROM_GBICON_MAX_KINDS))
           continue;
       } else {
-        /* icon_ptrs_cb's own first check: entry[0] == entry[1]. */
-        if (rd16(p) != rd16(p + 2)) continue;
+        /* BACKLOG #201 D3 (review fix, perf): icon_ptrs_cb's own first TWO
+         * checks -- entry[0] == entry[1], AND entry[0] in [GB_WIN_LO,
+         * GB_WIN_HI) -- not just the equality half. Measured: adding the
+         * range half cuts post-gate icon_ptrs_cb calls Gold 985,614 -> 4,723,
+         * Crystal 530,741 -> 6,396 (real ROM padding runs are FULL of
+         * equal-halves u16 pairs outside the ROMX window, e.g. long 0x0000/
+         * 0xFFFF fills; the range check rejects almost all of them here
+         * instead of inside the callback). */
+        uint16_t v0 = rd16(p);
+        if (v0 != rd16(p + 2) || v0 < GB_WIN_LO || v0 >= GB_WIN_HI) continue;
       }
 #ifdef ROM_GBICON_JOB_COUNTERS
       g_rgi_cb_calls[gate_kind]++;
