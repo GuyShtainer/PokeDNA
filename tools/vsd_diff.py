@@ -17,6 +17,14 @@ Usage:
 Exit code 0 always (this is a report, not a gate by itself -- a runner's own
 `expect_changed=[...]` check is the gate; see tools/dgb_shots.py). Prints one line per
 added/removed/changed path, plus a one-line summary, to stdout.
+
+BACKLOG #179 A3 review D13: DIRECTORIES ARE INVISIBLE to this diff. `vsd_img list`
+(tools/vsd_img.c's vsdimg_list(), via list_walk()) walks and prints only regular
+files -- an empty directory that appears, is renamed, or vanishes between the two
+`list` outputs produces NO line in either list and therefore never shows as added/
+removed/changed here. A chain whose only observable effect is a new/deleted empty
+directory (e.g. a bare `f_mkdir` with nothing written into it yet) needs a different
+assertion than `expect_changed=[...]`; this diff is a per-FILE contract only.
 """
 from __future__ import annotations
 
