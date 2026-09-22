@@ -2218,26 +2218,52 @@ def run_b89_hof_detail_only(core_mod, image_mod, rom: Path, out_dir: Path, which
                             shot_name: str, caption: str) -> gb_shots.Session:
     """BACKLOG #89 D6/NICK proof shots: navigate straight to the team detail page
     and shoot it once, nothing else. `rom` must be the SAME kind of ONE-ROM fused
-    image run_b89_hof() takes, except its embedded .sav has been byte-poked first
-    -- see this slice's own commit message for the exact offsets poked and why
-    re-fusing the poked .sav (not poking the already-fused .gba's SAV payload
-    directly) is required: fuse_gb.py's directory records a CRC32 per payload, and
-    poking the fused output invalidates it, which reads back as 'not a valid save'
-    at boot.
+    image run_b89_hof() takes, except its embedded .sav has been edited first --
+    fuse the OUTPUT of one of the recipes below, never poke the already-fused
+    .gba's SAV payload directly: fuse_gb.py's directory records a CRC32 per
+    payload, and poking the fused output invalidates it, which reads back as
+    'not a valid save' at boot.
 
-    which=red/crystal + kind=nick: mon 0 nicknamed (gb_name_encode).
-    which=crystal + kind=shiny (R2 re-verify): mon 0 poked BOTH nicknamed AND
-    shiny-capable (g2_dv_shiny's Atk&2/Def=Spe=Spc=10 quad) at Lv 100 -- the exact
-    worst-case suffix (" Lv.100 *", 9 chars + NUL) that overflowed the old
-    char[8] (R2); a shiny-only fixture with no nickname, as the first fix pass
-    shipped, never exercised that branch at all."""
+    BACKLOG #198 item 7: the fixtures used to come from an undocumented byte
+    poke ("see this slice's own commit message for the exact offsets" -- a
+    reference that named no commit and no offsets). Replaced with a
+    reproducible recipe through tests/host_gbsurgery_tool.c's own --op
+    hofnick/--op hofdv (BACKLOG #198 item 7's own additions, gbh_team()+
+    gbh_set_mon() -- the SAME core the live EDIT MON screen edits through, not
+    a hand-found file offset). Team/mon index 0/0 both games (verified live:
+    Red.sav's own team 0 mon 0 is MEW, Crystal.sav's is TYPHLOSION -- real
+    corpus data, not planted):
+      which=red,   kind=nick:  `hgbsurg --in Red.sav --out red-nick.sav
+        --op hofnick 0 0 SPARKY` -- mon 0 (MEW) nicknamed.
+      which=crystal, kind=nick: `hgbsurg --in Crystal.sav --out
+        crystal-nick.sav --op hofnick 0 0 FLAMETHROW` -- mon 0 (TYPHLOSION)
+        nicknamed with the FULL 10-char budget (Gen 2's own raw nickname cap),
+        the non-shiny worst case for the fit-vs-truncate caption below.
+      which=crystal, kind=shiny (R2 re-verify): `hgbsurg --in Crystal.sav
+        --out crystal-shiny.sav --op hofdv 0 0 atk 2 --op hofdv 0 0 def 10
+        --op hofdv 0 0 spe 10 --op hofdv 0 0 spc 10 --op hofnick 0 0
+        FLAMETHROW` -- mon 0 (TYPHLOSION) BOTH shiny-capable (g2_dv_shiny's
+        own Atk&2/Def=Spe=Spc=10 quad -- atk=2 satisfies the Atk&2 bit test,
+        atk=0 does NOT, confirmed live: atk=0 read back shiny=0) AND
+        nicknamed at Lv 100 -- the exact worst-case suffix (" Lv.100 *", 9
+        chars + NUL) that overflowed the old char[8] (R2).
+    Each recipe verified live end to end: hgbsurg's own exit code 0, then a
+    throwaway gbh_team()-dump readback confirmed the exact nick/dv/shiny
+    fields landed, before ever fusing or booting."""
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b89_{which}_")
     print(f"== BACKLOG #89 D6/NICK: {which}'s Hall of Fame detail, poked-.sav proof shot ==")
     boot_to_gb_session(s, rom, which=which)
     s.tap("START", settle=gb_shots.BIG_SETTLE)
     s.press_n("DOWN", 12)
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # Records -> pdna_gbhof()
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # row 1 -> the team detail
+    # BACKLOG #198 item 7 fix: this was BIG_SETTLE, but Records -> pdna_gbhof() is a
+    # COLD gbscr_open() scan (the FIRST shell open this session, same ~3,240-frame
+    # PDNA_DELTA whole-ROM locator cost run_b89_hof()'s own docstring measures) --
+    # BIG_SETTLE (40 frames) left the nav menu on screen, cursor still on Records
+    # (found live re-verifying this function for item 7: the shot showed the MENU,
+    # not the HoF card). GB_ART_COLD_SETTLE, the SAME constant run_b89_hof() already
+    # uses for this exact same first-entry cost, is what actually rides it out.
+    s.tap("A", settle=GB_ART_COLD_SETTLE)                   # Records -> pdna_gbhof() -> FIRST gbscr_open()
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # row 1 -> the team detail (same open shell)
     s.shot(shot_name, caption)
     return s
 
@@ -5770,9 +5796,12 @@ def main(argv=None) -> int:
     ap.add_argument("--b89-hof-extra", choices=("red-nick", "crystal-nick", "crystal-shiny"),
                      help="BACKLOG #89 D6/NICK: only run_b89_hof_detail_only() -- "
                           "--image MUST be a ONE-ROM fused image whose .sav was "
-                          "byte-poked first (a nicknamed mon for *-nick, a shiny DV "
-                          "quad for crystal-shiny) -- see run_b89_hof_detail_only()'s "
-                          "own docstring")
+                          "edited first via tests/host_gbsurgery_tool.c's --op "
+                          "hofnick/--op hofdv (a nicknamed mon for *-nick, a shiny "
+                          "DV quad + nickname for crystal-shiny; BACKLOG #198 item "
+                          "7 replaced the old undocumented byte poke with this "
+                          "reproducible recipe) -- see run_b89_hof_detail_only()'s "
+                          "own docstring for the exact commands")
     ap.add_argument("--b194-hof", choices=("red", "crystal"),
                      help="BACKLOG #202 F4: only run_b194_hof() against --image -- "
                           "the cold card open, in-frame menu, an EDIT-a-level round "
@@ -6137,7 +6166,8 @@ def main(argv=None) -> int:
         if kind == "nick":
             name, cap = "08_nick", (
                 f"BACKLOG #89: (D6/NICK, R4) {which}'s team detail with mon 0 "
-                "nicknamed via a byte-poked .sav (gb_name_encode) -- proves "
+                "nicknamed via tests/host_gbsurgery_tool.c's --op hofnick "
+                "(gb_name_encode) -- proves "
                 "hof_detail_render draws GbHofMon.nick, measured against "
                 "sys8Font's 8px cells so it NEVER overflows the 240px screen or "
                 "the OT-id column. A 10-char species + a full 10-char nickname + "
@@ -6148,7 +6178,8 @@ def main(argv=None) -> int:
             name, cap = "09_shiny", (
                 "BACKLOG #89: (D6, R2) crystal's team detail with mon 0 BOTH "
                 "shiny-capable (Atk&2, Def/Spe/Spc=10, g2_dv_shiny's own formula) "
-                "AND nicknamed at Lv 100 via a byte-poked .sav -- the exact worst "
+                "AND nicknamed at Lv 100 via --op hofdv x4 + --op hofnick "
+                "(tests/host_gbsurgery_tool.c) -- the exact worst "
                 "case for the suffix buffer (\" Lv.100 *\" is 9 chars + NUL; the "
                 "old char[8] overflowed here, R2); no crash, the shiny mark "
                 "renders, and the nickname is trimmed to fit (R4) rather than "
