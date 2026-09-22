@@ -1455,7 +1455,7 @@ static uint8_t* __attribute__((noinline)) drop_held_up(BoxSource* src, int box, 
       app_log_flush();
       return recs;                                        /* still holding */
     }
-    s_up_scan_done = true;   /* latch only on a scan that found nothing */
+    if (pdna_bank_serial_trusted()) s_up_scan_done = true;   /* review B1: a scan forced by an untrusted serial never latches -- the next lift re-scans until a session started trusted */
     /* pdna_bank_peek_box() re-pages the ONE shared bank buffer for whichever
      * box it last read (S150-11 decision 19's own contract) -- if the scan
      * touched any OTHER box, `recs` (same pointer value) now aliases THAT
