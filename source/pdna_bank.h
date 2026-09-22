@@ -55,6 +55,12 @@ bool pdna_bank_box_unsaved(int box);
  * failure); otherwise non-zero and unique across every prior call that persisted. */
 uint32_t pdna_bank_next_serial(void);
 
+/* BACKLOG #150 S150-12 decision 8: sets the box pdna_bank_show()'s NEXT call opens on
+ * (out-of-range clamps to 0); consumed and reset to 0 by that one call. Used by the
+ * read-only mount's exit offer so YES opens the Bank on the box the last copy landed
+ * in, cursor at cell 0 (there is no "resume this exact cell" mechanism). */
+void pdna_bank_start_box_set(int box);
+
 /* BACKLOG #150 S150-4 decision 3: the one-shot immutable pre-#150 backup gate. Call
  * BEFORE writing a native cell into the Bank; false => refuse the lift (nothing was
  * moved). O(1) once /PokeDNA/bank/backup-v1/DONE exists. */

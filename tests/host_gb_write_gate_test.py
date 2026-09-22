@@ -82,6 +82,15 @@ SKIP_FIELDS = {"edit", "copy_native", "editable", "gen", "preview_down", "move_w
 # BACKLOG #150 S150-14, check (c): named write hooks outside the k_gb_ops_* tables and
 # outside gb_nav_from_start's dispatch -- checked individually by name, not by table scan.
 NAMED_WRITE_HOOKS = ("gb_native_summary_open",
+                     # BACKLOG #150 S150-12: the read-only mount's COPY-flavoured
+                     # lift -- installed as BoxXferOps.lift_up on k_gb_xfer_ro, which
+                     # check (b)'s table scan does not cover (TABLE_NAMES lists only
+                     # k_gb_ops_gen1/gen2/k_gb_xfer, not k_gb_xfer_ro). It persists
+                     # (pdna_bank_next_serial() writes bank.meta through the shared
+                     # gb_lift_pack() body it calls), so it needs its own
+                     # app_can_edit( in ITS OWN body -- the checker scans each named
+                     # function's own text, never the shared callee it delegates to.
+                     "gb_lift_copy_hook",
                      # BACKLOG #150 S150-8 step 7: the two DOWN-converting arms --
                      # neither is a k_gb_ops_* table hook (check (b) never sees
                      # them) and neither takes a `gs` argument (check (a) never
@@ -200,19 +209,24 @@ def check_named_write_hooks(text: str) -> list[str]:
 
 def check_xfer_wired(text: str) -> list[str]:
     """BACKLOG #171b (lane s150-4-5b, post-#171 review finding): pdna_gen12_source()
-    must assign `s.xfer = &k_gb_xfer;` (comments excluded) -- start_carry() (pdna_box.c
+    must assign `s.xfer` to `&k_gb_xfer` (comments excluded) -- start_carry() (pdna_box.c
     :1077) gates the whole lift_up path on `src->xfer`, a per-BoxSource FIELD, never on
     the file-static `s_xfer_peer` a Bank visit installs via pdna_box_xfer_set(). Without
     this assignment every GB-scope grab falls straight to start_carry()'s plain memcpy
     branch -- BoxXferOps.lift_up (the origin prompt, the pack, pdna_bank_next_serial())
     NEVER RUNS, confirmed by lane s150-4-5b's own per-tap mGBA trace: a "successful"
     grab on a vehicle where every SD write fails is proof by itself (had lift_up run,
-    next_serial -> meta_save would have failed and the grab would have been refused)."""
+    next_serial -> meta_save would have failed and the grab would have been refused).
+    BACKLOG #150 S150-12: the assignment is now a ternary (`pdna_gen12_resident() ?
+    &k_gb_xfer : &k_gb_xfer_ro`), since the read-only mount installs a second,
+    delete-free table -- `&k_gb_xfer` must still appear somewhere on the `s.xfer =`
+    line, in either the bare or the ternary form."""
     body = strip_comments(extract_function_body(text, "pdna_gen12_source"))
     if not body:
         return ["pdna_gen12_source(): function body not found"]
-    if not re.search(r"\bs\.xfer\s*=\s*&k_gb_xfer\s*;", body):
-        return ["pdna_gen12_source(): no `s.xfer = &k_gb_xfer;` assignment in its "
+    xfer_line = re.search(r"\bs\.xfer\s*=[^;]*;", body)
+    if not xfer_line or not re.search(r"&k_gb_xfer\s*[;:]", xfer_line.group(0)):
+        return ["pdna_gen12_source(): no `s.xfer = ... &k_gb_xfer ...;` assignment in its "
                 "(comment-stripped) body -- start_carry()'s src->xfer gate would stay "
                 "NULL and BoxXferOps.lift_up would never run"]
     return []
@@ -394,7 +408,8 @@ def main() -> int:
 
         # --- fourth self-mutation (BACKLOG #171b): delete `s.xfer = &k_gb_xfer;` from
         # pdna_gen12_source(), the exact regression the reviewer found live -- must go red.
-        target4 = "  s.xfer       = &k_gb_xfer;   /* BACKLOG #171b: start_carry reads src->xfer, not s_xfer_peer */\n"
+        target4 = ("  s.xfer       = pdna_gen12_resident() ? &k_gb_xfer : &k_gb_xfer_ro;   "
+                    "/* BACKLOG #171b: start_carry reads src->xfer, not s_xfer_peer */\n")
         if target4 not in original:
             print(f"FAIL -- fourth self-mutation target line not found verbatim: {target4!r} "
                   f"(source drifted -- update this test's target string)")

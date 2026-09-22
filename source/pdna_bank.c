@@ -621,6 +621,17 @@ static bool banksrc_commit(void) {               /* immediate edits: persist box
 }
 static void banksrc_mark_dirty(void) { g_dirty = true; }   /* moves: deferred to box-switch/exit */
 
+/* BACKLOG #150 S150-12 decision 8: which box the Bank opens on -- consumed ONCE by
+ * pdna_bank_show() below, then reset, so it never sticks past the visit it was set
+ * for. 1 B plain .bss. Out-of-range values (a defensive clamp, never expected in
+ * practice: the only writer is gb_ro_exit_offer with a box index the drop itself
+ * just wrote into) fall back to box 0 rather than an out-of-bounds start_box. */
+static uint8_t s_start_box;
+
+void pdna_bank_start_box_set(int box) {
+  s_start_box = (box >= 0 && box < BANK_BOXES) ? (uint8_t)box : 0;
+}
+
 int pdna_bank_show(void) {
   f_mkdir("/PokeDNA");
   f_mkdir(PDNA_BANK_DIR);
@@ -634,7 +645,11 @@ int pdna_bank_show(void) {
 
   BoxSource s; memset(&s, 0, sizeof s);
   s.nboxes     = BANK_BOXES;
-  s.start_box  = 0;
+  /* BACKLOG #150 S150-12 decision 8: the box the last COPY landed in, if the read-only
+   * mount's exit offer just opened the Bank for its A-branch; box 0 otherwise (the
+   * shipped default). Consumed once -- a later ordinary Bank visit does not inherit it. */
+  s.start_box  = (s_start_box < BANK_BOXES) ? s_start_box : 0;
+  s_start_box  = 0;
   s.is_bank    = true;
   s.scope      = BOXSCOPE_BANK;  /* BACKLOG #120 S1: can_lift/xfer stay NULL (memset above) */
   s.wp_count   = G3_BOX_WALLPAPER_COUNT;          /* bank has no Walda */
