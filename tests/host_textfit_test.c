@@ -533,6 +533,7 @@ int main(void) {
   T(PDNA_GBEDIT_BAK_L1, 20);
   T(PDNA_GBEDIT_BAK_L2, 20);
   T(PDNA_GBEDIT_KEEP_TITLE, 20);   /* G1 review LOW-6 */
+  T(PDNA_GBHOF_DISCARD_TITLE, 20); /* b194 re-verify: the HoF discard confirm */
   T(PDNA_GBEDIT_KEEP_A, 20);
   T(PDNA_GBEDIT_KEEP_B, 20);
   {
