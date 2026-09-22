@@ -4224,9 +4224,12 @@ def run_s150_2_bank_native(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_
     NO fused payload is needed because the cells themselves come from source/
     bank_plant.c's PDNA_DELTA-only hook in box_load() (source/pdna_bank.c): on this
     build there is never a real box file to read (no SD card at all in a delta image),
-    so box 0 plants bank_plant_box0()'s five directed cells and box 1 plants
-    bank_plant_box_full()'s 30-NATIVE worst case, automatically, the first time either
-    is paged in.
+    so box 0 plants bank_plant_box0()'s seven directed cells (the five original
+    slots 0-4, plus BACKLOG #150 S150-12 decision 17's two COPY cells at slots 5-6)
+    and box 1 plants bank_plant_box_full()'s 30-NATIVE worst case (which reuses only
+    box0's own five ORIGINAL slots 0-4, then plants 25 fresh non-copy FULL cells at
+    5-29 -- box 1 never gets the two COPY cells), automatically, the first time
+    either is paged in.
 
     Same boot/nav recipe as run_s2_bank_control's own docstring: START, DOWN, A ->
     pdna_bank_show(), landing on box 0 (BANK 1 in the on-screen banner) -- ALREADY the
@@ -4979,9 +4982,10 @@ def run_s150_7_down_edge(core_mod, image_mod, rom_gold: Path, rom_red: Path,
     actually mounted so the Bank's bank_edge UP hop and DOWN-off-bottom land on the
     session's OWN box grid, not a Gen-3 PC): `rom_gold` = Gold.gbc+Gold.sav (Gen 2),
     `rom_red` = Red.gb+Red.sav (Gen 1). bank_plant.c's PDNA_DELTA-only box_load() hook
-    plants the SAME five directed cells into box 0 regardless of which generation's
+    plants the SAME seven directed cells into box 0 regardless of which generation's
     session opened it (source/bank_plant.c, box0: CHIKORITA at slot 0 (Gen 2), PIKACHU
-    at slot 1 (Gen 1), an Egg, an item holder, the DMG chip) -- so the Gold session's own
+    at slot 1 (Gen 1), an Egg, an item holder, the DMG chip, plus BACKLOG #150 S150-12
+    decision 17's two COPY cells at slots 5-6) -- so the Gold session's own
     Bank and the Red session's own Bank both show the identical CHIKORITA cell at slot 0,
     which is what lets one image demonstrate EXACT (dropped on Gold, same gen) and the
     other demonstrate GB_BRIDGE (dropped on Red, different gen) off the SAME cell.
@@ -4994,7 +4998,9 @@ def run_s150_7_down_edge(core_mod, image_mod, rom_gold: Path, rom_red: Path,
       grid -> Bank: UP x3 (cell -> title -> tabs -> the bank_edge hop, same three-press
         count run_s2_bank()'s own docstring already measured) THEN UP x4 more (the Bank
         opens with the cursor on the BOTTOM row -- "unless carrying", gb_bank_visit()'s
-        own comment -- and box 0's five planted cells sit in row 0, four rows up).
+        own comment -- and box 0's seven planted cells (slots 0-6, S150-12 decision
+        17's two COPY cells included) sit in row 0 (six cells, the box is 6 columns
+        wide) plus one cell at row 1 col 0, four rows up).
       pick up CHIKORITA: A (whitelist menu, VIEW/MOVE/RELEASE/CANCEL) -> DOWN -> A
         (selects MOVE, starts the carry).
       Bank -> back onto the GB grid, STILL CARRYING: DOWN x5 (4 to walk down to the
@@ -5229,16 +5235,17 @@ def run_s150_8_gen3_arm(core_mod, image_mod, rom_emerald: Path, out_dir: Path) -
     PLAIN Gen-3 fusion, no --gb -- the SAME vehicle shape run_s2_bank_control() above
     already uses for an ordinary Gen-3 Bank visit). bank_plant.c's box_load() hook is
     generation-agnostic (its own comment, quoted in run_s150_7_down_edge's docstring
-    above): the Bank's box 0 plants the identical five native cells regardless of
+    above): the Bank's box 0 plants the identical seven native cells regardless of
     which generation's session opened it, so this Emerald session's own Bank shows
     slot 3 (0-indexed) holding a CHIKORITA carrying item id 19 (ESCAPE ROPE) --
     the ONE planted cell with BOTH an item (for the loss screen's "Item: ... travels"
     row, per this lane's own brief) and, since it is a base-form species at any
-    level, no evolution-floor violation. NONE of bank_plant_box0()'s five cells
-    (Gen-2 CHIKORITA plain/egg/item-holding, Gen-1 PIKACHU, the DMG glitch chip) is
-    an EVOLVED species below pk_evo_floor() -- Gen 1/2 base forms are legal at any
-    level -- so the brief's own "(pick such a cell if one exists; else say none is
-    planted)" instruction applies: none is planted, and the KEEP AS IS / MAKE LEGAL
+    level, no evolution-floor violation. NONE of bank_plant_box0()'s seven cells
+    (Gen-2 CHIKORITA plain/egg/item-holding, Gen-1 PIKACHU, the DMG glitch chip, and
+    S150-12's two COPY CHIKORITAs at slots 5-6) is an EVOLVED species below
+    pk_evo_floor() -- Gen 1/2 base forms are legal at any level -- so the brief's
+    own "(pick such a cell if one exists; else say none is planted)" instruction
+    applies: none is planted, and the KEEP AS IS / MAKE LEGAL
     screen (source/pdna_gen12.c gb_bank_down_gen3():2765-2780) is never reached by
     this chain.
 
@@ -5290,8 +5297,9 @@ def run_s150_8_gen3_arm(core_mod, image_mod, rom_emerald: Path, out_dir: Path) -
     s = gb_shots.Session(core_mod, image_mod, rom_emerald, out_dir, "s150_8_")
     enter_bank(s)
     s.shot("00_bank", "S150-8: the Bank, opened from an ordinary Emerald session -- "
-           "box 0 shows bank_plant.c's five generation-agnostic native cells "
-           "(CHI/PIK/EGG/CHI/DMG); the cursor starts on slot 0")
+           "box 0 shows bank_plant.c's seven generation-agnostic native cells "
+           "(CHI/PIK/EGG/CHI/DMG at slots 0-4, plus S150-12's two COPY CHIKORITAs "
+           "at slots 5-6); the cursor starts on slot 0")
     pick_up_item_cell(s)
     s.shot("01_landed_occupied", "S150-8: carrying the item-holding CHIKORITA cell, "
            "landed on this save's own PC box 1 (named '5.Unp09n', 30/30, full on this cartridge) -- "
