@@ -1865,6 +1865,46 @@ static void artless_cells(void) {
   }
 }
 
+/* F1: cells at/after the source's own capacity don't exist in this game (a Game
+ * Boy box holds 20, its party 6; the grid always draws 30). box_oam.c's OBJ tile
+ * budget is spent in full already -- 30 icons x 16 tiles + the hand + region B is
+ * exactly the 512 tiles bitmap-mode OBJ VRAM has (that file's boxoam_set_frame
+ * header) -- so there is no spare tile for a new BLOCKED graphic; this paints a
+ * dim hatch (the retail-style banded fill ui_panel_striped already uses
+ * elsewhere) plus a small "X" straight onto the BG bitmap, the same layer
+ * artless_cells()/era_cells() paint into, so it rides every full repaint of the
+ * wallpaper for free. Drawn for every blocked cell regardless of the artless/
+ * real-art build -- a cell with no species never gets an OBJ icon either way, so
+ * there is nothing for this to hide behind.
+ *
+ * `cap` is computed with the SAME inline ternary draw_box_banner's own occupancy
+ * denominator already uses (:2084 below), not a shared helper function -- a
+ * stack_budget.py walker requirement (BACKLOG #200 review): a separate helper
+ * gets IPA-SRA-cloned by -O2 into an `.isra.0` whose `bl src->capacity(box)`
+ * site loses the plain `ldr rN,[rY,#64]`-right-before-`bl` shape the walker's
+ * struct-field classifier looks for, so the call falls through to the
+ * uncounted-argsites bucket and pushes count-only callers over budget. The
+ * inline shape below is proven clean (draw_box_banner already ships it). The
+ * inline shape alone was NOT enough -- IPA-SRA still cloned this exact function
+ * into a `.isra.0` (its only two uses are `box` inside a for-loop index and the
+ * single `src->capacity` field, so the optimizer rewrote its three call sites to
+ * pass the already-loaded capacity function pointer directly instead of `src`,
+ * which moves the offset-64 field load into the CALLER and leaves the clone
+ * dispatching through a bare parameter -- invisible as a struct-field access
+ * from inside the clone's own instruction stream). `noipa` forces a real,
+ * unspecialized function so the field load stays local to it, matching every
+ * other src->capacity(box) site's already-working shape. */
+static void __attribute__((noipa)) blocked_cells(BoxSource* src, int box) {
+  int cap = src->capacity ? src->capacity(box) : COLS * ROWS;
+  if (cap >= COLS * ROWS) return;                  /* Gen-3 PC/Bank: every cell real */
+  for (int i = cap; i < COLS * ROWS; i++) {
+    int cx = GRID_X + (i % COLS) * CELL_W, cy = GRID_Y + (i / COLS) * CELL_H;
+    for (int r = 0; r < CELL_H; r++)
+      m3_line(cx, cy + r, cx + CELL_W - 1, cy + r, (r & 1) ? UI_BG : UI_DIM);
+    ui_ptext(cx + (CELL_W - ui_ptext_w("X")) / 2, cy + (CELL_H - 7) / 2, UI_WARN, "X");
+  }
+}
+
 /* ---- THE BANK IN PARALLEL --------------------------------------------------------
  *
  * Guy: "if a pokemon is from gen 1, use a gen 1 sprite, if its from gen 2, use its gen 2
@@ -2126,6 +2166,7 @@ static void render_full(BoxSource* src, int box, int cur, bool on_title, bool mo
    * to decide, per cell, whether the chip is still needed. */
   era_cells();                  /* each cell in the art of the era it came from */
   artless_cells();
+  blocked_cells(src, box);      /* BACKLOG #200 F1: mark cells past this source's capacity */
   draw_box_banner(src, box, on_title);
   draw_footer(src->is_bank, on_title, moving);
 
@@ -2245,6 +2286,7 @@ static void move_cursor(BoxSource* src, int box, int old_cur, bool old_title,
      * this box's fresh state, not the previous box's. */
     era_cells();
     artless_cells();                                  /* clear stale title frame */
+    blocked_cells(src, box);      /* BACKLOG #200 F1: mark cells past this source's capacity */
     draw_box_banner(src, box, on_title);
     draw_footer(src->is_bank, on_title, false);
   }
@@ -2317,7 +2359,10 @@ static void chunk_draw(BoxSource* src, int box, bool clear, const uint8_t* recs)
    * first so artless_cells()'s per-cell s_era_drawn check is fresh. */
   era_cells();                     /* same pairing as move_cursor: BG repaint owes both */
   artless_cells();
-  draw_box_banner(src, box, false);
+  blocked_cells(src, box);      /* BACKLOG #200 F1: mark cells past this source's capacity
+                                  * (a no-op today -- chunk carry refuses BOXSCOPE_GB, see
+                                  * begin_select -- but keeps the "every wallpaper repaint
+                                  * owes every BG cell layer" invariant true everywhere) */
 
   /* no footprint frame — the block itself carries the fit cue (whitened/darkened).
    * Budget is 20 columns (WP_W=162px fill, text at WP_X+2 -> 160px/8). The double-
