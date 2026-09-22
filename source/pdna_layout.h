@@ -1227,7 +1227,7 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * refused UP move just silently stayed held. l2 is deliberately NULL at the call site
  * (msg_wait's own if (l2) guard) -- one body line reads better than a padded second. */
 #define PDNA_BANK_COLL_TITLE "BANK RECORD CLASH"
-#define PDNA_BANK_COLL_L1    "See log.txt."
+#define PDNA_BANK_COLL_L1    "Nothing was moved. See log.txt."
 
 #define PDNA_XFER_REC_TITLE  "IT CAME FROM GEN 3"
 #define PDNA_XFER_REC_L1     "Use COPY here, then PASTE in"
