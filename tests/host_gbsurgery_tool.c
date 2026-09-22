@@ -275,6 +275,15 @@ static void usage(const char* prog) {
     "  --op hofdelete                BACKLOG #194 F3: gbh_delete_team(0) -- delete the\n"
     "                               newest team, the lifetime win counter's own -1\n"
     "                               (floored at 0).\n"
+    "  --op hofnick TEAM_IDX MON_IDX TEXT\n"
+    "                               BACKLOG #198 item 7: gbh_team()+gbh_set_mon() --\n"
+    "                               set one Hall of Fame mon's nickname (both gens).\n"
+    "                               TEAM_IDX/MON_IDX use gbh_team()'s own newest-first\n"
+    "                               UI numbering (0 = newest team; 0..5 within it).\n"
+    "  --op hofdv TEAM_IDX MON_IDX STAT V\n"
+    "                               BACKLOG #198 item 7: same shape as hofnick above,\n"
+    "                               over one DV stat (atk|def|spe|spc, 0..15). Gen 2\n"
+    "                               only -- GbHofMon.dv is always 0 on Gen 1.\n"
 "BOX is 0..n-1 or the literal \"party\".\n", prog, prog);
 }
 
@@ -307,6 +316,8 @@ static int parse_args(int argc, char** argv, const char** in, const char** out,
     {"dexset", 2},     /* BACKLOG #87 item 6 retail-gate case: DEX STATE (0/1/2) */
     {"unownreset", 0}, /* BACKLOG #87 D4 retail-gate setup: force the Unown-dex gate clear */
     {"warp2", 4},      /* M1-G2 fix-pass shot-retake gate: GROUP NUMBER X Y, Gen 2 only */
+    {"hofnick", 3},    /* BACKLOG #198 item 7: TEAM_IDX MON_IDX TEXT, via gbh_set_mon */
+    {"hofdv", 4},      /* BACKLOG #198 item 7: TEAM_IDX MON_IDX STAT V, Gen 2 only */
   };
   *in = NULL; *out = NULL; *list_mode = false; *nops = 0;
   for (int i = 1; i < argc; i++) {
@@ -682,6 +693,76 @@ static int do_hofdelete(GbSession* s) {
   GbsStatus st = gbh_delete_team(s, 0);
   if (st != GBS_OK) return refuse(gbs_status_text(st));
   printf("hofdelete result: %d\n", gbh_count(s));
+  return 0;
+}
+
+/* BACKLOG #198 item 7: --op hofnick TEAM_IDX MON_IDX TEXT -- gbh_team() (read) ->
+ * gbh_set_mon() (write), the SAME two-call shape the live EDIT MON screen uses
+ * (hof_edit_mon, source/pdna_gbhof.c) to stage a nickname edit. Replaces
+ * --b89-hof-extra's own undocumented byte-poked .sav fixtures (D6/NICK,
+ * BACKLOG #89) with a reproducible, scriptable recipe: any Hall of Fame mon's
+ * nickname can now be set through the same core the game itself edits through,
+ * not a hand-found file offset. TEAM_IDX/MON_IDX use gbh_team()'s own UI
+ * numbering (0 = newest team; 0..GBH_NUM_MONS-1 within it). */
+static int do_hofnick(GbSession* s, const char* team_tok, const char* mon_tok, const char* text) {
+  int team_idx = resolve_uint(team_tok, "hofnick team index");
+  int mon_idx = resolve_uint(mon_tok, "hofnick mon index");
+  if (team_idx < 0 || mon_idx < 0) return 2;
+  if (mon_idx >= GBH_NUM_MONS) {
+    fprintf(stderr, "bad hofnick mon index %s (want 0..%d)\n", mon_tok, GBH_NUM_MONS - 1);
+    return 2;
+  }
+  GbHofTeam t;
+  if (!gbh_team(s, team_idx, &t)) return refuse("gbh_team: bad team index or malformed session");
+  if (mon_idx >= t.n) {
+    fprintf(stderr, "hofnick mon index %d is past this team's own %d mon(s)\n", mon_idx, t.n);
+    return 2;
+  }
+  if (strlen(text) >= sizeof t.mon[mon_idx].nick) {
+    fprintf(stderr, "hofnick text too long (max %d chars)\n", (int)sizeof(t.mon[mon_idx].nick) - 1);
+    return 2;
+  }
+  snprintf(t.mon[mon_idx].nick, sizeof t.mon[mon_idx].nick, "%s", text);
+  GbsStatus st = gbh_set_mon(s, team_idx, mon_idx, &t.mon[mon_idx]);
+  if (st != GBS_OK) return refuse(gbs_status_text(st));
+  return 0;
+}
+
+/* BACKLOG #198 item 7: --op hofdv TEAM_IDX MON_IDX STAT V -- same gbh_team()/
+ * gbh_set_mon() shape as do_hofnick() above, over GbHofMon.dv[4] instead of
+ * .nick. Gen 2 only: gb_hof.h documents GbHofMon.dv as "always-0 Gen1" (Gen 1's
+ * Hall of Fame record has no DV field at all), matching gbh_set_mon()'s own
+ * Gen-1 write (species+level+nickname only, the 13-of-16-byte outside-sum
+ * allowlist -- DVs are never part of that write on Gen 1). STAT reuses do_dv()'s
+ * own resolve_stat() (atk|def|spe|spc, GB_ATK..GB_SPC) -- GbHofMon.dv's own
+ * documented order is Atk/Def/Spd/Spc, i.e. index `stat - GB_ATK`, matching the
+ * enum's own GB_ATK=1..GB_SPC=4 layout (gb_edit.h). Reproduces --b89-hof-extra's
+ * own shiny-DV fixture (crystal-shiny, g2_dv_shiny's Atk&2/Def=Spe=Spc=10 quad)
+ * as four ordinary --op hofdv calls instead of an undocumented byte poke. */
+static int do_hofdv(GbSession* s, const char* team_tok, const char* mon_tok,
+                     const char* stok, const char* vtok) {
+  if (s->gen != GB_GEN2) return refuse("hofdv is Gen 2 only (GbHofMon.dv is always 0 on Gen 1)");
+  int team_idx = resolve_uint(team_tok, "hofdv team index");
+  int mon_idx = resolve_uint(mon_tok, "hofdv mon index");
+  if (team_idx < 0 || mon_idx < 0) return 2;
+  if (mon_idx >= GBH_NUM_MONS) {
+    fprintf(stderr, "bad hofdv mon index %s (want 0..%d)\n", mon_tok, GBH_NUM_MONS - 1);
+    return 2;
+  }
+  int stat = resolve_stat(stok);
+  if (stat < 0) return 2;
+  int v = resolve_uint(vtok, "hofdv value");
+  if (v < 0) return 2;
+  if (v > 15) { fprintf(stderr, "bad hofdv value %s (want 0..15)\n", vtok); return 2; }
+  GbHofTeam t;
+  if (!gbh_team(s, team_idx, &t)) return refuse("gbh_team: bad team index or malformed session");
+  if (mon_idx >= t.n) {
+    fprintf(stderr, "hofdv mon index %d is past this team's own %d mon(s)\n", mon_idx, t.n);
+    return 2;
+  }
+  t.mon[mon_idx].dv[stat - GB_ATK] = (uint8_t)v;
+  GbsStatus st = gbh_set_mon(s, team_idx, mon_idx, &t.mon[mon_idx]);
+  if (st != GBS_OK) return refuse(gbs_status_text(st));
   return 0;
 }
 
@@ -1324,6 +1405,12 @@ static int apply_op(GbSession* s, const Op* o) {
   }
   if (!strcmp(o->kind, "unownreset")) {
     return do_unownreset(s);
+  }
+  if (!strcmp(o->kind, "hofnick")) {
+    return do_hofnick(s, o->a[0], o->a[1], o->a[2]);
+  }
+  if (!strcmp(o->kind, "hofdv")) {
+    return do_hofdv(s, o->a[0], o->a[1], o->a[2], o->a[3]);
   }
   fprintf(stderr, "unknown op %s\n", o->kind);   /* unreachable: parse_args validated */
   return 2;
