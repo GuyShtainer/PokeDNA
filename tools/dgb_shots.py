@@ -2074,6 +2074,25 @@ def run_b194_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> g
     s.shot("04_level_staged", "BACKLOG #202 F4: LEVEL stepper committed (+3, "
                                "clamped at 100) -- back on the EDIT MON menu, "
                                "staged, nothing written yet")
+    # ---- D4 (b194 review): B on a DIRTY edit confirms before discarding ----------
+    # hof_edit_mon_menu's own KEY_B handler (source/pdna_gbhof.c:288-298): with
+    # dirty==true (the level stage above set it), B no longer discards silently --
+    # it opens PDNA_GBHOF_DISCARD_TITLE ("Discard changes?" / "Your changes to
+    # this mon will be lost.", A = discard, B = stay). BACKLOG #198 item 6: this
+    # arm had no shot coverage anywhere in this runner -- the pre-existing flow
+    # only ever reached DONE (committing), never B-with-dirty (discarding).
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                    # B, dirty=true -> the discard confirm
+    s.shot("04b_discard_confirm", "BACKLOG #198 item 6 (D4, b194 review): B on "
+                                   "the DIRTY LEVEL edit -- 'Discard changes?' / "
+                                   "'Your changes to this mon will be lost.' "
+                                   "(app_confirm, A = discard, B = stay)")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                    # decline (stay) -> back on EDIT MON,
+                                                                # the staged LEVEL change still intact
+    s.shot("04c_discard_declined", "BACKLOG #198 item 6 (D4): B on the confirm "
+                                    "(decline/stay) -- back on the EDIT MON menu "
+                                    "with the staged +3 LEVEL change INTACT, "
+                                    "nothing thrown away (the confirm's own "
+                                    "`continue`, not a `return false`)")
     s.press_n("DOWN", 2, settle=gb_shots.SETTLE)              # LEVEL -> NICKNAME -> DONE
     s.tap("A", settle=gb_shots.BIG_SETTLE)                    # DONE (dirty) -> "Save changes to slot 1?"
     s.shot("05_edit_confirm", "BACKLOG #202 F4: DONE with a real staged change -- "
