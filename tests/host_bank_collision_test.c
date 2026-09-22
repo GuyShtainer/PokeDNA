@@ -269,6 +269,27 @@ int main(void) {
       CHECK(bank_serial_max(get_box, NULL, NUM_BOXES, SLOTS) == 999u,
             "223: a lower serial elsewhere does not pull the max down");
 
+      /* 11b) BACKLOG #223 review D6: the reviewer's own mutant -- `if (serial > max)
+       * max = serial;` weakened to an unconditional `max = serial;` -- survives every
+       * case above unnoticed, because (9)/(10) always leave the HIGHEST serial (999)
+       * in the LAST slot the walker visits (box 15 slot 29), so an unconditional
+       * last-write-wins assignment happens to land on the same answer a correct
+       * max-tracking walk would. This case inverts that: the HIGHER serial (999) sits
+       * in an EARLIER box (3, slot 5), the LOWER serial (7) sits in the LAST slot of
+       * the LAST box (15, slot 29) -- the unconditional mutant ends the scan having
+       * just overwritten max with 7, while the real `>` comparison correctly keeps
+       * 999. */
+      reset_bank();
+      uint8_t cell11b_hi[BC_CELL_BYTES];
+      CHECK(bc_pack(&mon, 0, BC_ORIGIN_RED, 0, 999u, cell11b_hi) == 0, "223 (11b): bc_pack serial 999");
+      memcpy(g_bank[3][5], cell11b_hi, BC_CELL_BYTES);
+      uint8_t cell11b_lo[BC_CELL_BYTES];
+      CHECK(bc_pack(&mon, 0, BC_ORIGIN_RED, 0, 7u, cell11b_lo) == 0, "223 (11b): bc_pack serial 7");
+      memcpy(g_bank[NUM_BOXES - 1][SLOTS - 1], cell11b_lo, BC_CELL_BYTES);
+      CHECK(bank_serial_max(get_box, NULL, NUM_BOXES, SLOTS) == 999u,
+            "223 (11b): an earlier-box higher serial (999) beats a lower one in the "
+            "LAST slot of the LAST box (7) -- kills the `max = serial;` mutant");
+
       /* 12) A non-native slot (bank_ident32_collision's own plant() -- an arbitrary
        * "GBC1"+ident32 with no valid bc_ident32() hash over the rest of the record)
        * must be IGNORED, never misread as a serial -- bc_is_native() is the gate.
