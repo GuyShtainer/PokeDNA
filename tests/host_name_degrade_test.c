@@ -46,6 +46,81 @@ static void build_degraded_ot_record(uint8_t rec[80]) {
   gen3_edit_commit(&e, rec);
 }
 
+/* Same shape as build_degraded_ot_record, for the OTHER field (BACKLOG #217's
+ * name_field_press F_NICK branch, source/pdna_edit.c). nickname's outcap is 11
+ * (char nickname[11]) and its raw field is 10 bytes (rec offset 0x08) -- 8
+ * letters then the gender sign: oi reaches 8 after the letters, needs oi+3 < 11
+ * to fit the 3-byte UTF-8 insert -- 8+3=11, 11<11 is false, so decode_name
+ * degrades it to "ABCDEFGH?", and the 9 raw bytes (8 letters + 1 gender byte)
+ * fit inside the 10-byte raw field. */
+static void build_degraded_nick_record(uint8_t rec[80]) {
+  gen3_build_mon(1 /* Bulbasaur */, 5, 0x12345678u, 0xABCDu, "NICK", 3, rec);
+  EditMon e;
+  gen3_edit_load(rec, false, &e);
+  em_set_nickname(&e, "ABCDEFGH\xE2\x99\x82");
+  gen3_edit_commit(&e, rec);
+}
+
+/* Mirror of ot_noop_should_skip, for the nickname bit -- the EXACT predicate
+ * source/pdna_edit.c's em_field_press (name_field_press) uses for F_NICK. */
+static bool nick_noop_should_skip(const PkMon* c, const char* buf) {
+  return (c->nameFlags & PK_NAME_NICK_DEGRADED) && strcmp(buf, c->nickname) == 0;
+}
+
+static void test_nick_decode_is_degraded(void) {
+  printf("\n== (4) the built record decodes nickname as \"ABCDEFGH?\", flagged degraded ==\n");
+  uint8_t rec[80];
+  build_degraded_nick_record(rec);
+
+  PkMon c;
+  bool ok = pk_decode_mon(rec, false, &c);
+  expect(ok, "record decodes");
+  expect(strcmp(c.nickname, "ABCDEFGH?") == 0, "nickname decoded as \"ABCDEFGH?\"");
+  expect((c.nameFlags & PK_NAME_NICK_DEGRADED) != 0, "PK_NAME_NICK_DEGRADED is set");
+  expect((c.nameFlags & PK_NAME_OT_DEGRADED) == 0, "OT name is NOT flagged (unrelated field)");
+
+  /* raw byte check: offset 0x08 is nickname's field start. Byte 8 (after
+   * A..H) must be 0xB5, the real gender sign -- not yet touched by this test. */
+  expect(rec[0x08 + 8] == 0xB5, "raw nickname field byte 8 is 0xB5 (the real gender sign)");
+}
+
+static void test_nick_noop_ok_keeps_original_byte(void) {
+  printf("\n== (5) OK with NO edit (nickname) -- guard fires, 0xB5 survives ==\n");
+  uint8_t rec[80];
+  build_degraded_nick_record(rec);
+  PkMon c; pk_decode_mon(rec, false, &c);
+
+  char buf[11]; strcpy(buf, c.nickname);   /* "ABCDEFGH?" -- the exact noop */
+
+  EditMon e; gen3_edit_load(rec, false, &e);
+  if (!nick_noop_should_skip(&c, buf)) em_set_nickname(&e, buf);   /* the guarded call */
+  uint8_t out[80]; gen3_edit_commit(&e, out);
+
+  expect(nick_noop_should_skip(&c, buf), "guard fires for the exact noop");
+  expect(out[0x08 + 8] == 0xB5, "nickname field byte 8 is STILL 0xB5 -- the noop did not "
+                                 "overwrite the real gender sign with 0xAC ('?')");
+  expect(memcmp(rec, out, 80) == 0, "the whole 80-byte record is byte-identical -- "
+                                     "truly no write happened");
+}
+
+static void test_nick_real_edit_still_writes(void) {
+  printf("\n== (6) OK with a REAL edit (nickname) -- guard does NOT fire, the new name writes ==\n");
+  uint8_t rec[80];
+  build_degraded_nick_record(rec);
+  PkMon c; pk_decode_mon(rec, false, &c);
+
+  char buf[11]; strcpy(buf, "ABCDEFGHI");   /* the user actually typed something new */
+
+  EditMon e; gen3_edit_load(rec, false, &e);
+  if (!nick_noop_should_skip(&c, buf)) em_set_nickname(&e, buf);
+  uint8_t out[80]; gen3_edit_commit(&e, out);
+
+  expect(!nick_noop_should_skip(&c, buf), "guard does NOT fire -- buf differs from the seed");
+  PkMon after; pk_decode_mon(out, false, &after);
+  expect(strcmp(after.nickname, "ABCDEFGHI") == 0, "nickname is now \"ABCDEFGHI\" -- the real edit landed");
+  expect(memcmp(rec, out, 80) != 0, "the record actually changed");
+}
+
 static void test_decode_is_degraded(void) {
   printf("== (1) the built record decodes OT as \"ABCDE?\", flagged degraded ==\n");
   uint8_t rec[80];
@@ -114,6 +189,9 @@ int main(void) {
   test_decode_is_degraded();
   test_noop_ok_keeps_original_byte();
   test_real_edit_still_writes();
+  test_nick_decode_is_degraded();
+  test_nick_noop_ok_keeps_original_byte();
+  test_nick_real_edit_still_writes();
   printf("\n%d checks, %d FAILED\n", checks, fails);
   return fails ? 1 : 0;
 }
