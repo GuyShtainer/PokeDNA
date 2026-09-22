@@ -10,8 +10,8 @@
 /* ---- decision 2: xrc_classify ---------------------------------------------------- */
 
 void xrc_classify(const XrcInput* in, XrcResult* out) {
+  if (!in || !out) return;   /* review D6(3): the NULL check must precede the memset */
   memset(out, 0, sizeof *out);
-  if (!in || !out) return;
   out->kept = in->bank_keep;
 
   if (in->kind != XR_KIND_NATIVE_HOME) { out->kind = XRC_G3HOME; return; }

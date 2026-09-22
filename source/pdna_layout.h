@@ -1136,11 +1136,6 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XRC_MORE       "More records not shown."
 #define PDNA_XRC_FOOT       "A act  SEL info  START apply"
 
-/* Bank-open prompt (decision 1a/6) -- the %d-bearing suffix, worst case measured
- * as "64 POKEMON IN TWO PLACES" (tests/host_textfit_test.c). */
-#define PDNA_XRC_DUP_TITLE_SUFFIX "POKEMON IN TWO PLACES"
-#define PDNA_XRC_DUP_L1           "Remove the duplicates?"
-
 /* Per-row action labels (decision 8), listed on the action popup. */
 #define PDNA_XRC_ACT_REMOVE  "Remove duplicate"
 #define PDNA_XRC_ACT_RELEASE "Release Gen-3 copy"
@@ -1163,13 +1158,11 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XRC_APPLY_TITLE   "APPLY CHANGES?"
 #define PDNA_XRC_DISCARD_TITLE "DISCARD CHOICES?"
 
-/* Re-key duplicate/failure follow-ups (RE-KEY, decision 8e) -- reuses the reroll
- * guard's own wording family (PDNA_XFER_REKEY_*) but scoped to this screen's own
- * action so a caption never has to guess which flow produced it. */
+/* Re-key duplicate follow-up (RE-KEY, decision 8e) -- reuses the reroll guard's own
+ * wording family (PDNA_XFER_REKEY_*) but scoped to this screen's own action so a
+ * caption never has to guess which flow produced it. */
 #define PDNA_XRC_REKEY_DUP_TITLE "ALREADY LINKED"
 #define PDNA_XRC_REKEY_DUP_L1    "A record already exists there."
-#define PDNA_XRC_REKEY_FAIL_TITLE "RE-LINK FAILED"
-#define PDNA_XRC_REKEY_FAIL_L1    "The old record was kept."
 
 /* The 12 detail phrases of decision 2's table (SELECT's three-line detail view),
  * indexed by XrcRowKind in pdna_main.c's xrc_detail_line(). Several row kinds

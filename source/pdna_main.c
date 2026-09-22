@@ -10419,6 +10419,7 @@ static void __attribute__((noinline)) xfer_reconcile_apply(GbReconBuf* rb) {
   bool remove_entry[GB_RECON_MAX_HITS];
   memset(remove_entry, 0, sizeof remove_entry);
   int removed = 0, released = 0, restored = 0, deleted = 0, rekeyed = 0, failed = 0;
+  bool any_noroom = false;   /* review D6(2): RESTORE hit a genuinely full Bank */
   uint32_t dc_base, dc_stride; dc_layout(&dc_base, &dc_stride);
 
   /* (1a) REMOVE DUPLICATE -- entry stays CLAIMED (decision 8a), no ledger mutation. */
@@ -10485,16 +10486,22 @@ static void __attribute__((noinline)) xfer_reconcile_apply(GbReconBuf* rb) {
       got = gbsc_get(rb->sidecar, len, h->entry_idx, &e);
     bool ok = false;
     if (got && pdna_bank_prepare_native()) {
-      uint32_t serial = pdna_bank_next_serial();
-      if (serial != 0) {
-        uint8_t out80[80];
-        if (xrc_rebuild_cell(&e, serial, out80) == 0) {
-          int fb = -1, fs = -1;
-          if (xrc_find_empty_slot(&fb, &fs) && pdna_bank_put_cell(fb, fs, out80)) {
+      /* review D6(4): find the slot BEFORE burning a serial -- pdna_bank_next_serial()
+       * persists bank.meta on every call (meta_save()), so checking room FIRST means
+       * a full Bank costs neither a burned serial nor a wasted meta write. Serial
+       * still comes before the write itself (xrc_rebuild_cell needs it baked in). */
+      int fb = -1, fs = -1;
+      if (xrc_find_empty_slot(&fb, &fs)) {
+        uint32_t serial = pdna_bank_next_serial();
+        if (serial != 0) {
+          uint8_t out80[80];
+          if (xrc_rebuild_cell(&e, serial, out80) == 0 && pdna_bank_put_cell(fb, fs, out80)) {
             ok = true; restored++;
             log_line("xfer: reconcile: row %d RESTORE box=%d slot=%d", i, fb, fs);
           }
         }
+      } else {
+        any_noroom = true;   /* review D6(2): the Bank is genuinely full */
       }
     }
     if (ok) remove_entry[i] = true; else failed++;
@@ -10577,7 +10584,9 @@ static void __attribute__((noinline)) xfer_reconcile_apply(GbReconBuf* rb) {
   if (failed > 0) {
     char l1[40];
     siprintf(l1, "%d of %d failed", failed, removed + released + restored + deleted + rekeyed + failed);
-    msg_wait("SOME NOT APPLIED", UI_WARN, l1, PDNA_XRC_NOBANK_L1);
+    /* review D6(2): a genuinely full Bank gets its own, more accurate line -- other
+     * failures keep the generic "nothing was written" wording. */
+    msg_wait("SOME NOT APPLIED", UI_WARN, l1, any_noroom ? PDNA_XRC_NOROOM_L1 : PDNA_XRC_NOBANK_L1);
   }
 }
 
