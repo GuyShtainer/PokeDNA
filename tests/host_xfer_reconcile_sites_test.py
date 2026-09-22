@@ -1,0 +1,356 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Guy Shtainer
+"""host_xfer_reconcile_sites_test.py -- structural guard for BACKLOG #150 S150-11's
+decision 11 (#176 recovery) and the write-ordering the Bank-open reconcile depends on
+(decision 4/8a/9, §3.2). Pure-text checks against the shipped source, no mgba, no
+build -- same posture as host_gb_write_gate_test.py, applied to source/pdna_main.c and
+source/pdna_bank.c instead of source/pdna_gen12.c.
+
+Five checks, each with an in-memory mutation that must turn it red:
+
+  (g) flush_on_exit()'s app_commit_pc() FAILURE branch (the `else` this slice adds)
+      calls app_xfer_pending_undo() -- without it, BACKLOG #176 reproduces: a failed
+      save leaves g_xd_key set for the rest of the boot and every later native->Gen-3
+      drop refuses with SAVE FIRST.
+
+  (h) every `pdna_bank_clear_deletions();` load site in source/pdna_main.c is within
+      2 lines of `app_xfer_pending_drop();` -- a fresh session/save-switch must never
+      inherit a PREVIOUS save's pending transfer. NOTE: the brief's own citation says
+      there are four such sites; this tree has FIVE (source/pdna_main.c's normal load
+      path at the tail of the boot sequence is a genuine fifth "a new save is now
+      live" site the brief's DRIFT section did not enumerate) -- flagged in the S150-11
+      delivery report per the brief's own STOP-LICENCE ("a fifth load site... report,
+      do not silently gate"); this check covers all five actually found, not just four.
+
+  (i) app_xfer_reconcile_bank_open()'s body has app_can_edit( AND app_gen3_pc_live(
+      strictly BEFORE any f_opendir(/sf_read_full(/log_line( -- G-F2: a Game Boy
+      session's Bank visit must perform zero ledger reads, zero box reads, zero log
+      lines.
+
+  (j) pdna_bank_put_cell()'s body has app_can_edit( strictly before memcpy( and
+      box_save_or_keep_dirty( -- hard rule 4 (writes are Omega-only) applied to the
+      RESTORE TO BANK write path.
+
+  (k) xfer_reconcile_apply_bank_open()'s body never calls sf_write_verified( or
+      f_unlink( at all (decision 8a: REMOVE DUPLICATE leaves the entry CLAIMED,
+      no ledger rewrite) -- the full §3.2 destination-before-ledger ORDER check (the
+      brief's xfer_reconcile_apply, covering RESTORE/DELETE/REKEY) applies once the
+      TRANSFERS screen (decision 13/14) lands; this check pins what this lane's
+      SCOPED apply function actually does today, so a later commit that adds a
+      sidecar rewrite to it without re-deriving the ordering is caught.
+
+Run directly:
+
+    python3 tests/host_xfer_reconcile_sites_test.py
+
+Registered in tests/run_host_tests.py's PY_TESTS list.
+"""
+import re
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+MAIN_SRC = ROOT / "source" / "pdna_main.c"
+BANK_SRC = ROOT / "source" / "pdna_bank.c"
+
+
+def strip_comments(text: str) -> str:
+    """Blank out /* ... */ and // comments but keep every newline, so a line number
+    reported here still points at the real source line, and a comment mentioning a
+    gate/call by name in prose cannot satisfy a check that requires the CODE to call
+    it (same discipline host_gb_write_gate_test.py's own strip_comments documents)."""
+    out = []
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i:i + 2] == "/*":
+            j = text.find("*/", i + 2)
+            j = n if j < 0 else j + 2
+            out.append("\n" * text.count("\n", i, j))
+            i = j
+        elif text[i:i + 2] == "//":
+            j = text.find("\n", i)
+            j = n if j < 0 else j
+            out.append(text[i:j])
+            i = j
+        else:
+            out.append(text[i])
+            i += 1
+    return "".join(out)
+
+
+def extract_function_body(text: str, func_name: str) -> str:
+    """Same brace-depth walk as host_gb_write_gate_test.py's own helper."""
+    m = re.search(r"^\w[\w \*]*\b" + re.escape(func_name) + r"\s*\([^;]*?\)\s*\{",
+                  text, re.MULTILINE)
+    if not m:
+        m = re.search(r"\b" + re.escape(func_name) + r"\s*\([^;{]*\)\s*\{", text)
+        if not m:
+            return ""
+    start = m.start()
+    i = m.end() - 1
+    assert text[i] == "{"
+    depth = 1
+    j = i + 1
+    while j < len(text) and depth > 0:
+        if text[j] == "{":
+            depth += 1
+        elif text[j] == "}":
+            depth -= 1
+        j += 1
+    return text[start:j]
+
+
+def check_g_flush_on_exit_undo(text: str) -> list[str]:
+    body = extract_function_body(text, "flush_on_exit")
+    if not body:
+        return ["flush_on_exit() not found in source/pdna_main.c"]
+    stripped = strip_comments(body)
+    m = re.search(r"if\s*\(\s*app_commit_pc\s*\(\s*\)\s*\)\s*\{", stripped)
+    if not m:
+        return ["flush_on_exit(): no `if (app_commit_pc())` found"]
+    # the else branch: from the matching close-brace of the if-block to the next
+    # `else {` ... matching close-brace.
+    depth = 1
+    i = m.end()
+    while i < len(stripped) and depth > 0:
+        if stripped[i] == "{":
+            depth += 1
+        elif stripped[i] == "}":
+            depth -= 1
+        i += 1
+    rest = stripped[i:]
+    em = re.match(r"\s*else\s*\{", rest)
+    if not em:
+        return ["flush_on_exit(): app_commit_pc()'s if-block has no `else` -- BACKLOG #176 "
+                "regression: a failed commit never clears the pending transfer"]
+    depth = 1
+    j = em.end()
+    while j < len(rest) and depth > 0:
+        if rest[j] == "{":
+            depth += 1
+        elif rest[j] == "}":
+            depth -= 1
+        j += 1
+    else_body = rest[em.end():j]
+    out = []
+    if "app_xfer_pending_undo(" not in else_body:
+        out.append("flush_on_exit(): the app_commit_pc() FAILURE branch does not call "
+                    "app_xfer_pending_undo( -- BACKLOG #176 (a failed save leaves the "
+                    "pending transfer set)")
+    if "PDNA_XFER_NOTSAVED_TITLE" not in else_body:
+        out.append("flush_on_exit(): the app_commit_pc() FAILURE branch does not show "
+                    "PDNA_XFER_NOTSAVED_TITLE (decision 11(i))")
+    return out
+
+
+CLEAR_DEL_RE = re.compile(r"pdna_bank_clear_deletions\s*\(\s*\)\s*;")
+# app_xfer_pending_undo() ALSO clears g_xd_key (its own last statement is
+# app_xfer_pending_drop()) -- flush_on_exit's DECLINE branch already calls it right
+# before its own pdna_bank_clear_deletions(), so either call satisfies "this save's
+# pending transfer does not survive past this point".
+PENDING_DROP_RE = re.compile(r"app_xfer_pending_drop\s*\(\s*\)\s*;|app_xfer_pending_undo\s*\(\s*\)\s*;")
+
+
+def check_h_load_sites(text: str) -> tuple[list[str], int]:
+    """Returns (violations, sites_found) -- sites_found is reported by main() so a
+    drift in the SITE COUNT itself (not just a missing drop) is visible, not silent."""
+    stripped_lines = strip_comments(text).split("\n")
+    sites = [i for i, l in enumerate(stripped_lines) if CLEAR_DEL_RE.search(l)]
+    violations = []
+    for i in sites:
+        window = stripped_lines[max(0, i - 2):i] + stripped_lines[i + 1:i + 3]
+        if not any(PENDING_DROP_RE.search(l) for l in window):
+            violations.append(f"pdna_main.c:{i + 1}: `pdna_bank_clear_deletions();` has no "
+                              f"`app_xfer_pending_drop();`/`app_xfer_pending_undo();` within 2 "
+                              f"lines -- decision 11(ii)")
+    return violations, len(sites)
+
+
+def check_i_bank_open_gate(text: str) -> list[str]:
+    body = extract_function_body(text, "app_xfer_reconcile_bank_open")
+    if not body:
+        return ["app_xfer_reconcile_bank_open() not found in source/pdna_main.c"]
+    stripped = strip_comments(body)
+    can_edit_pos = [m.start() for m in re.finditer(r"app_can_edit\s*\(", stripped)]
+    pc_live_pos = [m.start() for m in re.finditer(r"app_gen3_pc_live\s*\(", stripped)]
+    guard_pos = [m.start() for m in re.finditer(r"f_opendir\s*\(|sf_read_full\s*\(|log_line\s*\(", stripped)]
+    out = []
+    if not can_edit_pos:
+        out.append("app_xfer_reconcile_bank_open(): never calls app_can_edit( (G-F2)")
+    if not pc_live_pos:
+        out.append("app_xfer_reconcile_bank_open(): never calls app_gen3_pc_live( (G-F2)")
+    if can_edit_pos and pc_live_pos and guard_pos:
+        first_guard = min(guard_pos)
+        if min(can_edit_pos) >= first_guard or min(pc_live_pos) >= first_guard:
+            out.append("app_xfer_reconcile_bank_open(): app_can_edit(/app_gen3_pc_live( must "
+                        "both appear before the first f_opendir(/sf_read_full(/log_line( (G-F2)")
+    return out
+
+
+def check_j_put_cell_gate(text: str) -> list[str]:
+    body = extract_function_body(text, "pdna_bank_put_cell")
+    if not body:
+        return ["pdna_bank_put_cell() not found in source/pdna_bank.c"]
+    stripped = strip_comments(body)
+    can_edit_pos = [m.start() for m in re.finditer(r"app_can_edit\s*\(", stripped)]
+    guard_pos = [m.start() for m in re.finditer(r"memcpy\s*\(|box_save_or_keep_dirty\s*\(", stripped)]
+    out = []
+    if not can_edit_pos:
+        out.append("pdna_bank_put_cell(): never calls app_can_edit( (hard rule 4)")
+    elif guard_pos and min(can_edit_pos) >= min(guard_pos):
+        out.append("pdna_bank_put_cell(): app_can_edit( must appear before the first "
+                    "memcpy(/box_save_or_keep_dirty( (hard rule 4)")
+    return out
+
+
+def check_k_apply_no_ledger_write(text: str) -> list[str]:
+    body = extract_function_body(text, "xfer_reconcile_apply_bank_open")
+    if not body:
+        return ["xfer_reconcile_apply_bank_open() not found in source/pdna_main.c"]
+    stripped = strip_comments(body)
+    out = []
+    if "pdna_bank_clear_slots(" not in stripped:
+        out.append("xfer_reconcile_apply_bank_open(): never calls pdna_bank_clear_slots( "
+                    "(decision 8a)")
+    if "sf_write_verified(" in stripped or "f_unlink(" in stripped:
+        out.append("xfer_reconcile_apply_bank_open(): calls sf_write_verified(/f_unlink( -- "
+                    "decision 8a says REMOVE DUPLICATE never rewrites the ledger (the entry "
+                    "stays CLAIMED); if a later commit adds one, its ORDER relative to "
+                    "pdna_bank_clear_slots( must be re-derived (§3.2), not assumed safe")
+    return out
+
+
+def run_all(main_text: str, bank_text: str) -> tuple[list[str], int]:
+    violations = list(check_g_flush_on_exit_undo(main_text))
+    h_violations, h_sites = check_h_load_sites(main_text)
+    violations += h_violations
+    violations += check_i_bank_open_gate(main_text)
+    violations += check_j_put_cell_gate(bank_text)
+    violations += check_k_apply_no_ledger_write(main_text)
+    return violations, h_sites
+
+
+def main() -> int:
+    if not MAIN_SRC.exists() or not BANK_SRC.exists():
+        print("SKIP (source/pdna_main.c or source/pdna_bank.c not found)")
+        return 0
+
+    main_text = MAIN_SRC.read_text()
+    bank_text = BANK_SRC.read_text()
+
+    violations, h_sites = run_all(main_text, bank_text)
+    print(f"(h) pdna_bank_clear_deletions() load sites found: {h_sites} "
+          f"(the brief's own citation says 4 -- this tree has {h_sites}, see the "
+          f"module docstring)")
+    if violations:
+        print("FAIL -- shipped source has an S150-11 #176/site gap:")
+        for v in violations:
+            print(f"  FAIL: {v}")
+        return 1
+    print("ok: (g) flush_on_exit's failure branch undoes the pending transfer, "
+          f"(h) all {h_sites} load sites drop it, (i) the Bank-open gate runs first, "
+          "(j) pdna_bank_put_cell gates on app_can_edit, (k) the scoped apply "
+          "function never rewrites the ledger")
+
+    # --- self-mutation proofs -----------------------------------------------------
+    fails = 0
+
+    # (g): delete the undo call from the else branch.
+    mutated = main_text.replace(
+        "      app_xfer_pending_undo();\n"
+        "      msg_wait(PDNA_XFER_NOTSAVED_TITLE, UI_WARN, PDNA_XFER_NOTSAVED_L1, PDNA_XFER_NOTSAVED_L2);\n",
+        "      msg_wait(PDNA_XFER_NOTSAVED_TITLE, UI_WARN, PDNA_XFER_NOTSAVED_L1, PDNA_XFER_NOTSAVED_L2);\n",
+        1)
+    if mutated == main_text:
+        print("FAIL -- self-mutation (g) target not found verbatim (source drifted)")
+        fails += 1
+    else:
+        v, _ = run_all(mutated, bank_text)
+        if not any("app_xfer_pending_undo(" in x for x in v):
+            print("FAIL -- self-mutation (g): removing the undo call did NOT turn check (g) red")
+            fails += 1
+        else:
+            print("self-mutation (g): removing the undo call -- correctly caught")
+
+    # (h): delete ONE of THIS SLICE's own app_xfer_pending_drop() sites (tagged with
+    # the S150-11 decision 11(ii) comment -- the pre-existing app_xfer_pending_drop()
+    # calls inside app_xfer_promote/app_xfer_pending_undo are a different mechanism
+    # entirely and must not be the mutation target).
+    site_re = re.compile(r"[ \t]*app_xfer_pending_drop\(\);   /\* BACKLOG #150 S150-11 decision 11\(ii\).*\n")
+    m = site_re.search(main_text)
+    if not m:
+        print("FAIL -- self-mutation (h): no tagged decision-11(ii) drop site found to remove")
+        fails += 1
+    else:
+        mutated_h = main_text[:m.start()] + main_text[m.end():]
+        v, sites = run_all(mutated_h, bank_text)
+        if not any("decision 11(ii)" in x for x in v):
+            print("FAIL -- self-mutation (h): removing one tagged drop-site call did NOT turn check (h) red")
+            fails += 1
+        else:
+            print(f"self-mutation (h): removing one of {sites} tagged drop calls -- correctly caught")
+
+    # (i): swap the gate order (guard call before the app_can_edit/app_gen3_pc_live checks).
+    target_i = "  if (!app_can_edit()) return;\n  if (!app_gen3_pc_live()) return;\n"
+    if target_i not in main_text:
+        print("FAIL -- self-mutation (i) target not found verbatim (source drifted)")
+        fails += 1
+    else:
+        mutated_i = main_text.replace(
+            target_i,
+            "  log_line(\"xfer: reconcile(bank-open): entered\");\n" + target_i,
+            1)
+        v, _ = run_all(mutated_i, bank_text)
+        if not any("app_xfer_reconcile_bank_open" in x for x in v):
+            print("FAIL -- self-mutation (i): a log_line before the gate did NOT turn check (i) red")
+            fails += 1
+        else:
+            print("self-mutation (i): a log_line() spliced before the gate -- correctly caught")
+
+    # (j): delete the early app_can_edit( gate entirely, WITHIN pdna_bank_put_cell's
+    # own body only (the string appears 3x in pdna_bank.c -- box_save_or_keep_dirty
+    # and pdna_bank_prepare_native's own callees have their own, unrelated copies).
+    body_j = extract_function_body(bank_text, "pdna_bank_put_cell")
+    target_j = "  if (!app_can_edit()) return false;\n"
+    if not body_j or target_j not in body_j:
+        print("FAIL -- self-mutation (j) target not found verbatim inside pdna_bank_put_cell (source drifted)")
+        fails += 1
+    else:
+        mutated_body_j = body_j.replace(target_j, "", 1)
+        mutated_j = bank_text.replace(body_j, mutated_body_j, 1)
+        v, _ = run_all(main_text, mutated_j)
+        if not any("pdna_bank_put_cell" in x for x in v):
+            print("FAIL -- self-mutation (j): removing the early app_can_edit( gate did NOT turn check (j) red")
+            fails += 1
+        else:
+            print("self-mutation (j): the early app_can_edit( gate removed -- correctly caught")
+
+    # (k): splice an sf_write_verified( call into the apply function.
+    body_k = extract_function_body(main_text, "xfer_reconcile_apply_bank_open")
+    if not body_k or "return removed;" not in body_k:
+        print("FAIL -- self-mutation (k) target not found verbatim (source drifted)")
+        fails += 1
+    else:
+        mutated_body = body_k.replace(
+            "return removed;",
+            "sf_write_verified(rb->path, rb->sidecar, 0); return removed;", 1)
+        mutated_k = main_text.replace(body_k, mutated_body, 1)
+        v, _ = run_all(mutated_k, bank_text)
+        if not any("sf_write_verified" in x for x in v):
+            print("FAIL -- self-mutation (k): splicing an sf_write_verified( call did NOT turn check (k) red")
+            fails += 1
+        else:
+            print("self-mutation (k): an sf_write_verified( call spliced into the scoped apply -- correctly caught")
+
+    if fails:
+        print(f"FAIL -- {fails} self-mutation proof(s) did not fire")
+        return 1
+
+    print("ok: all self-mutation proofs fired")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

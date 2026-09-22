@@ -9557,6 +9557,17 @@ static void flush_on_exit(void) {
         char l1[48]; siprintf(l1, PDNA_XFER_FLUSHFAIL_L1, kept);
         msg_wait(PDNA_XFER_FLUSHFAIL_TITLE, UI_WARN, l1, PDNA_XFER_FLUSHFAIL_L2);
       }
+    } else {
+      /* BACKLOG #150 S150-11 decision 11(i)/#176: app_commit_pc() returns false only
+       * when NOTHING landed (an SF_ERR_RENAME with SF_WHERE_TARGET counts as success
+       * inside app_commit_block) -- the Bank cell was never consumed (the flush above
+       * is gated on this same bool) and the PENDING entry describes a transfer that
+       * did not happen, so the undo here is the SAME correct cleanup the DECLINE
+       * branch below already does. Without this, g_xd_key stayed set for the rest of
+       * the boot and every later native->Gen-3 drop refused with SAVE FIRST
+       * (pdna_gen12.c's xfer_down_write gate) -- the bug #176 names. */
+      app_xfer_pending_undo();
+      msg_wait(PDNA_XFER_NOTSAVED_TITLE, UI_WARN, PDNA_XFER_NOTSAVED_L1, PDNA_XFER_NOTSAVED_L2);
     }
   } else {
     gen3_read_pc_storage(g_save, g_vinfo.slot, g_pc);   /* revert PC moves */
@@ -10388,6 +10399,7 @@ static void view_save(const char* path) {
       g_save_size = fsz;
       pdna_box_clear_carry();
       pdna_bank_clear_deletions();   /* BACKLOG #120 S2: drop any PREVIOUS save's queued Bank->PC deletions -- illegitimate once this fork's save/session is gone */
+      app_xfer_pending_drop();   /* BACKLOG #150 S150-11 decision 11(ii): a fresh session never inherits a pending transfer */
       hb_off();
       /* Optional clipboard seed (fuse_sav.py --clip): a real 80-byte Gen-3 box record
        * so an empty GB cell's mon-menu offers PASTE (GB) -- app_mon_menu's own gate is
@@ -10451,6 +10463,7 @@ static void view_save(const char* path) {
         g_save_size = psz;
         pdna_box_clear_carry();
         pdna_bank_clear_deletions();   /* BACKLOG #120 S2: drop any PREVIOUS save's queued Bank->PC deletions -- illegitimate once this fork's save/session is gone */
+        app_xfer_pending_drop();   /* BACKLOG #150 S150-11 decision 11(ii): a fresh session never inherits a pending transfer */
         hb_off();
         { uint8_t rec80[80]; uint32_t csz = 0;
           if (fused_clip_present(&csz) && csz == sizeof rec80 && fused_clip_read(rec80, csz) &&
@@ -10506,6 +10519,7 @@ static void view_save(const char* path) {
         g_save_size = psz;
         pdna_box_clear_carry();
         pdna_bank_clear_deletions();   /* BACKLOG #120 S2: drop any PREVIOUS save's queued Bank->PC deletions -- illegitimate once this fork's save/session is gone */
+        app_xfer_pending_drop();   /* BACKLOG #150 S150-11 decision 11(ii): a fresh session never inherits a pending transfer */
         hb_off();
         { uint8_t rec80[80]; uint32_t csz = 0;
           if (fused_clip_present(&csz) && csz == sizeof rec80 && fused_clip_read(rec80, csz) &&
@@ -10570,6 +10584,7 @@ static void view_save(const char* path) {
      * Game Boy boxes is exactly the kind of thing that reads as corruption. */
     pdna_box_clear_carry();
     pdna_bank_clear_deletions();   /* BACKLOG #120 S2: drop any PREVIOUS save's queued Bank->PC deletions -- illegitimate once this fork's save/session is gone */
+    app_xfer_pending_drop();   /* BACKLOG #150 S150-11 decision 11(ii): a fresh session never inherits a pending transfer */
     hb_off();
     /* met_game 3 = Emerald: with no Gen-3 save open there is no destination cartridge
      * to claim, and Emerald is the same default pdna_gen12_show() uses for 0. */
@@ -10795,6 +10810,7 @@ static void view_save(const char* path) {
   BoxSource pcs = pc_box_source();
   pdna_box_clear_carry();                          /* no mon in hand when a save opens */
   pdna_bank_clear_deletions();                     /* no stale Bank->PC deletions from a prior save */
+  app_xfer_pending_drop();                        /* BACKLOG #150 S150-11 decision 11(ii): a fresh session never inherits a pending transfer */
   rmbl_fire(RCUE_ROOM);                            /* entering the save's home "room" */
   /* app_icon_rom_open() above may have opened the user's ROM off the SD; from here on
    * it is the box paint (wallpaper staging + 30 verified icon copies + tile uploads).
