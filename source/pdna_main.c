@@ -5627,8 +5627,8 @@ static void __attribute__((noinline)) app_view_original(const uint8_t* rec) {
  * so every write site gets the call whether or not this particular write could have
  * touched the SAME key currently cached. */
 static XrMissCache EWRAM_BSS s_xv_miss;       /* pure logic in xfer_io.c; storage here */
-static bool                  s_xv_dir_checked; /* xr_dir_exists() has run this session  */
-static bool                  s_xv_dir_absent;  /* /PokeDNA/xfer does not exist (valid iff
+static bool EWRAM_BSS s_xv_dir_checked; /* xr_dir_exists() has run this session  */
+static bool EWRAM_BSS s_xv_dir_absent;  /* /PokeDNA/xfer does not exist (valid iff
                                                 * s_xv_dir_checked)                     */
 
 void app_xv_cache_invalidate(void) {
