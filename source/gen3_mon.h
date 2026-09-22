@@ -56,6 +56,15 @@ typedef struct {
  * AND eggs/bad-eggs (with isEgg/isBadEgg set) so the viewer can surface them. */
 bool pk_decode_mon(const uint8_t* mon, bool is_party, PkMon* out);
 
+/* Decode a raw Gen-3 name field (nickname or otName) into UTF-8, gender signs and
+ * all -- the same decoder pk_decode_mon uses for PkMon.nickname/otName, exposed so
+ * a caller that only has raw bytes (not a whole decoded record) can spelling-
+ * compare what actually got written. `maxlen` is the field's Gen-3 byte count (10
+ * nickname / 7 otName); `outcap` is out's real capacity in bytes (a gender sign
+ * costs 3 UTF-8 bytes for 1 input byte, so this must be the buffer's own size, not
+ * maxlen). Always NUL-terminates within outcap. */
+void gen3_decode_name(char* out, int outcap, const uint8_t* src, int maxlen);
+
 /* Read the live party from a reassembled SaveBlock1. FRLG moved the party block
  * to the start of SaveBlock1 (count@0x034/data@0x038) vs R/S/E (0x234/0x238). */
 int  pk_read_party(const uint8_t* sb1, bool frlg, PkMon out[6]);

@@ -35,6 +35,18 @@ uint8_t gen3_encode_char(char c) {
     case '?':  return 0xAC;
     case '.':  return 0xAD;
     case '-':  return 0xAE;
+    /* BACKLOG #183: exact inverse of the five new gen3_decode_char cases
+     * (source/gen3_save.c) -- '[' and ']' are deliberately NOT here: the real
+     * Gen-3 charmap has no code point for either (verified against
+     * assets/upstream/pokeemerald/charmap.txt), so they fall through to the
+     * default (space) below, same as any other glyph Gen 3 genuinely cannot
+     * store -- gen12_convert.c's spelling-compare (BACKLOG #177) is what turns
+     * that into an honest loss flag instead of a silent, undetected change. */
+    case '&':  return 0x2D;
+    case ';':  return 0x36;
+    case '(':  return 0x5C;
+    case ')':  return 0x5D;
+    case ':':  return 0xF0;
     /* The real charmap's own compiler aliases a bare apostrophe to 0xB4 (the closing
      * curly quote), not 0xB3 (the opening one, which has no ASCII alias at all) --
      * charmap.txt carries both `'''' = B4` AND `'\''  = B4` for exactly this. Encoding
