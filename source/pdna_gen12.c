@@ -3433,7 +3433,12 @@ BankDownResult gb_bank_down_gen3(BoxSource* src, int dst_box, int dst_cell,
   Gb12Result cr = bdc_convert_gen3_core(cell80, met_game, out80, &written, &notes, &g3item);
   if (cr != GB12_OK) {                                                      /* 16(c)/(d): egg/damaged/other */
     snd_deny();
+    /* BACKLOG #168a review D6: this dialog is drawn with the PC box's OBJ icons
+     * still live, same class of bug as #207's loss screen (gb_down_loss_screen,
+     * above) -- bracket it the same way. */
+    boxoam_suspend();
     msg_wait(PDNA_SIDECAR_XFER_TITLE, UI_WARN, gen12_reason_text(cr), 0);
+    boxoam_resume();
     return BANK_DOWN_REFUSED;
   }
 
@@ -3443,7 +3448,11 @@ BankDownResult gb_bank_down_gen3(BoxSource* src, int dst_box, int dst_cell,
    * flight guards is about ledger entries, never about cells. */
   if (!copy && app_xfer_pending()) {                                        /* 16(g), decision 9 */
     snd_deny();
+    /* BACKLOG #168a review D6: same class as the gen12_reason_text dialog above --
+     * bracket it so the PC box's OBJ icons do not sit over the SAVE FIRST text. */
+    boxoam_suspend();
     msg_wait(PDNA_XFER_SAVEFIRST_TITLE, UI_WARN, PDNA_XFER_SAVEFIRST_L1, PDNA_XFER_SAVEFIRST_L2);
+    boxoam_resume();
     return BANK_DOWN_REFUSED;
   }
 
