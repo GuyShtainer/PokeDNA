@@ -400,10 +400,16 @@ int rom_gbicon_open_loc(RomGbIcon* gi, GbReadFn read, void* ctx, uint32_t size,
    * still check out, or every species would silently get the wrong icon KIND. */
   if (try_loc(gi, loc)) return 1;
 
-  if (!scratch || scratch_len < ROM_GBICON_SCRATCH_MIN) return 0;
-  if (!locate(gi, scratch, scratch_len, pass2_cb, pass2_ctx)) return 0;
-  gi->ok = 1;
-  return 1;
+  /* BACKLOG #201 D1 (review fix): a cache miss used to fall straight to
+   * locate()'s full scan here, so the known-ROM table (F2) was NEVER consulted
+   * by any production caller -- every one of them enters through THIS function
+   * (gb_art_source.c:279/604/796), never rom_gbicon_open() directly (only
+   * tests and tools/gbloc_driver.c call that). Measured: open_loc(NULL) on
+   * Crystal.gbc cost 4,172 reads (a full scan) where open() costs 78 (a table
+   * hit). Same delegation rom_gbsprite.c:723 already uses: a cache miss falls
+   * through to open() -- known-ROM table, THEN the full scan -- open() owns
+   * both, so this function no longer duplicates either. */
+  return rom_gbicon_open(gi, read, ctx, size, scratch, scratch_len, pass2_cb, pass2_ctx);
 }
 
 /* -------------------------------------------------------------- accessors */
