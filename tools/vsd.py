@@ -62,6 +62,7 @@ import argparse
 import struct
 import sys
 from dataclasses import dataclass
+from dataclasses import fields as dc_fields
 from pathlib import Path
 
 # ---- VsdBox field offsets (source/vsd.h) -----------------------------------------
@@ -114,6 +115,14 @@ def find_mailbox(rom_bytes: bytes) -> tuple[int, int]:
     if off % 4:
         raise VsdError(f"PDNAVSD1 locator record at 0x{off:X} is not 4-byte aligned")
     addr, size = struct.unpack_from("<II", rom_bytes, off + 8)
+    # BACKLOG #179 A3 review D12: the locator record carries sizeof(VsdBox) precisely
+    # so a scanner can sanity-check the hit (vsd_img.h/source/vsd.h's own comment) --
+    # nothing was actually reading it. A wrong size means either a stale build (an
+    # older VsdBox shape) or a false-positive magic hit; serving through either would
+    # read/write the wrong mailbox fields silently.
+    if size != 32:
+        raise VsdError(f"PDNAVSD1 locator record at 0x{off:X} claims size={size}, "
+                        f"expected 32 (sizeof(VsdBox)) -- stale build or a false hit")
     return addr, size
 
 
@@ -320,9 +329,21 @@ def attach_server(core, rom_bytes: bytes, img_path: Path, **knobs) -> VsdServer:
     `protect=True`, `fail_write_in=3`). Used by gb_shots.Session's --vsd hook."""
     addr, size = find_mailbox(rom_bytes)
     image = VsdImage.load(img_path)
+    # BACKLOG #179 A3 review D12: a mistyped or renamed knob (e.g. a caller still
+    # passing `fail_at_n=` after a rename) used to silently become a NEW, dead
+    # instance attribute via plain setattr() -- the actual VsdImage field it meant to
+    # set stayed at its default, and the caller's whole failure-injection scenario
+    # never fired, with no error anywhere. Checked against the DATACLASS FIELD names
+    # specifically (dataclasses.fields(), not hasattr()) -- hasattr() would also be
+    # True for `read`/`write`/`flush` (bound methods), and setattr()ing one of those
+    # would silently replace a method with whatever value a caller passed.
+    field_names = {f.name for f in dc_fields(image)}
     for k, v in knobs.items():
         if v is None:
             continue
+        if k not in field_names:
+            raise VsdError(f"attach_server(): unknown VSD knob {k!r} -- not a "
+                            f"VsdImage field")
         setattr(image, k, v)
     return VsdServer(core, addr, image)
 
