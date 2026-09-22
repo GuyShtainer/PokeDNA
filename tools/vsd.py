@@ -47,6 +47,16 @@ Omega this is the documented rom-load-lab bug class: f_write from a ROM-resident
 buffer silently writes the BOOTLOADER to the card. No emulator has ever been able to
 see it; this server is the first vehicle that can.
 
+BACKLOG #179 A3 review D8's own gap, closed on the GBA side instead of here: this
+check reads the MAILBOX's `addr` field, which for a 2-mod-4-aligned ROM buffer is
+ALWAYS fc_bounce (D7's own bounce buffer, EWRAM, always 4-aligned) by the time a
+served transaction reaches this server -- never the caller's real ROM pointer. This
+check therefore only ever catches an ALIGNED ROM-sourced write. The unaligned case is
+caught earlier, at the true source, by a delta-only pre-bounce check in
+lib/fatfs/diskio_write.c's own disk_write() (grep "vsd: REFUSED disk_write from ROM"
+in /PokeDNA/log.txt) -- a real disk_write from an unaligned ROM buffer never even
+reaches this server at all; FatFs sees RES_ERROR at the GBA side directly.
+
 FAILURE INJECTION (S4.7) -- tests/hostfat/ramdisk.c's own knob set, one layer further
 out, so they are drivable through the app's REAL screens for the first time. BACKLOG
 #179 A3 review D6: every N below counts what ramdisk.c itself counts -- SECTORS for

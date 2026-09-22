@@ -38,6 +38,20 @@ DRESULT disk_write(BYTE pdrv, const BYTE* buff, LBA_t sector, UINT count) {
    * transfer, at the one choke point. */
   PERF_SD_WRITE(count);
 
+#ifdef PDNA_DELTA
+  /* BACKLOG #179 A3 review D8: tools/vsd.py's S7.4 ROM-source check reads the
+   * MAILBOX's `addr` field -- which, for a 2-mod-4 `buff`, is always fc_bounce
+   * (EWRAM) by the time it gets there (D7's own bounce), never the caller's real ROM
+   * pointer. Checked here too, on the pre-bounce `buff` itself, so the "f_write from
+   * ROM writes the BOOTLOADER" bug class rom-load-lab found is caught for an
+   * unaligned source too, not only an aligned one. */
+  if ((u32)buff >= 0x08000000u && (u32)buff <= 0x0DFFFFFFu) {
+    log_line("vsd: REFUSED disk_write from ROM buff=0x%08x sector=%lu", (unsigned)buff,
+             (unsigned long)sector);
+    return RES_ERROR;
+  }
+#endif
+
   /* WORD alignment, not halfword -- see the long note in disk_read(). The EZ-Flash write
    * path is the same DMA32 copy in the opposite direction, so a 2-mod-4 SOURCE reads two
    * bytes early and writes shifted data to the card. On the write side that is a
