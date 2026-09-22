@@ -981,9 +981,11 @@ static int do_create(GbSession* s, const char* box_tok, const char* dex_tok) {
  *      as production's own retry gate; this tool never retries mid-op, --rom is
  *      resolved up front instead of gb_paste_hook's two-call dance, since a host CLI
  *      has no cost pressure to defer the ROM open).
- *   3. nbad > 0 -- fill from the ROM's learnset AT THE WRITTEN LEVEL (gb_get_level of
- *      the just-converted `mon`, since this tool never applies an evolution-level fix)
- *      via g3gb_moves_fill(); no --rom means learn4 stays {0,0,0,0}, the documented
+ *   3. nbad > 0 -- fill from the ROM's learnset AT THE LEVEL THAT WILL BE WRITTEN
+ *      (review D7: gen3_to_gb_evo_needs_fix(&mon, ...) ? fix_to : gb_get_level(&mon),
+ *      mirroring gb_paste_hook exactly -- this tool does not itself SET the mon's
+ *      level to fix_to, same as production before its own MAKE LEGAL choice) via
+ *      g3gb_moves_fill(); no --rom means learn4 stays {0,0,0,0}, the documented
  *      "never block" input (decision 3) -- every bad slot is simply left empty.
  *   4. decision 8.7's ONE exception: the record would be WRITTEN with no moves left
  *      at all (nleft == 0, review D1) refuses outright (nothing written) -- the same
@@ -1055,12 +1057,21 @@ static int do_paste80(GbSession* s, const char* box_tok, const char* rec_path) {
                                     nbad > 0 ? bad4 : NULL, &mon, &loss);
   if (cst != G3GB_OK) { if (rf) fclose(rf); return refuse(g3gb_status_text(cst)); }
 
+  /* review D7: fetch at the level that WILL be written, mirroring gb_paste_hook
+   * exactly (pdna_gen12.c ~4260) -- fix_to when an evolution correction applies,
+   * else the mon's own current level. Computed once, used only by the learnset
+   * lookup below; this tool never itself sets mon's level to fix_to (no MAKE LEGAL
+   * choice exists here, same as production before that choice is made). */
+  uint8_t fix_from = 0, fix_to = 0;
+  bool fix = gen3_to_gb_evo_needs_fix(&mon, &fix_from, &fix_to);
+  (void)fix_from;
+
   int nfill = 0;
   if (nbad > 0) {
     uint8_t learn4[4] = { 0, 0, 0, 0 };
     if (have_rom) {
       uint16_t dex = gb_get_species_dex(&mon);
-      uint8_t lvl = gb_get_level(&mon);
+      uint8_t lvl = fix ? fix_to : gb_get_level(&mon);
       int kept = g1_start
         ? rom_gblearn_moves_at_seeded(&rl, dex, lvl, g1_start, learn4)
         : rom_gblearn_moves_at(&rl, dex, lvl, learn4);
