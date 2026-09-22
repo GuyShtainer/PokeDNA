@@ -244,10 +244,18 @@ static void expect_gen2(const char* file, uint8_t expect_gen,
 static const uint8_t kPinG2Balls[] = {
   0x01, 0x02, 0x04, 0x05, 0x9D, 0x9F, 0xA0, 0xA1, 0xA4, 0xA5, 0xA6, 0xB1,
 };
-static const uint8_t kPinG2Key[] = {
-  0x07, 0x36, 0x37, 0x3A, 0x3B, 0x3D, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47,
-  0x73, 0x74, 0x7F, 0x80, 0x81, 0x82, 0x85, 0x86, 0xAF, 0xB2,
+/* Review D2: pokegold's own data/items/attributes.asm -- independently
+ * parsed the same way pokecrystal's was -- differs at exactly these four
+ * ids: KEY_ITEM (CLEAR_BELL/GS_BALL/BLUE_CARD/EGG_TICKET) in pokecrystal's
+ * table, but an unused pocket-ITEM placeholder (ITEM_46/73/74/81) in
+ * pokegold's. Split out of the shared Key list so the pin can want
+ * GBB_POCKET_KEY on Crystal and GBB_POCKET_COUNT (invalid id) on Gold/
+ * Silver for the SAME four ids. */
+static const uint8_t kPinG2KeyBoth[] = {
+  0x07, 0x36, 0x37, 0x3A, 0x3B, 0x3D, 0x42, 0x43, 0x44, 0x45, 0x47,
+  0x7F, 0x80, 0x82, 0x85, 0x86, 0xAF, 0xB2,
 };
+static const uint8_t kPinG2KeyCrystalOnly[] = { 0x46, 0x73, 0x74, 0x81 };
 
 static bool pin_in(uint8_t id, const uint8_t* set, size_t n) {
   for (size_t i = 0; i < n; i++) if (set[i] == id) return true;
@@ -268,31 +276,52 @@ static bool pin_g2_is_tmhm(uint8_t id) {
   return false;
 }
 
+/* Review D2: gb_pocket_of()'s Gen-2 answer for one id, per the OTHER game's
+ * own attributes.asm (pokegold's, checked separately from pokecrystal's) --
+ * `game` must be GBF_G_GS or GBF_G_CRYSTAL. The four Crystal-only ids are
+ * the ONE place the two games' own tables disagree; everything else is
+ * identical between them. */
+static GbBagPocket pin_g2_pocket_of(GbGame game, uint8_t id) {
+  if (id > 0xBEu) return pin_g2_is_tmhm(id) ? GBB_POCKET_TMHM : GBB_POCKET_COUNT;
+  if (pin_in(id, kPinG2KeyCrystalOnly, sizeof kPinG2KeyCrystalOnly))
+    return (game == GBF_G_CRYSTAL) ? GBB_POCKET_KEY : GBB_POCKET_COUNT;
+  if (pin_in(id, kPinG2Balls, sizeof kPinG2Balls))      return GBB_POCKET_BALLS;
+  if (pin_in(id, kPinG2KeyBoth, sizeof kPinG2KeyBoth))  return GBB_POCKET_KEY;
+  return GBB_POCKET_ITEMS;
+}
+
 static void pocket_of_pin(void) {
   g_ran++;
   int mismatches = 0;
-  for (unsigned i = 1; i <= 0xF9u; i++) {
-    uint8_t id = (uint8_t)i;
-    GbBagPocket got = gbb_pocket_of(GBF_G_GS, id);
-    GbBagPocket want;
-    if (id > 0xBEu) want = pin_g2_is_tmhm(id) ? GBB_POCKET_TMHM : GBB_POCKET_COUNT;
-    else if (pin_in(id, kPinG2Balls, sizeof kPinG2Balls)) want = GBB_POCKET_BALLS;
-    else if (pin_in(id, kPinG2Key, sizeof kPinG2Key))     want = GBB_POCKET_KEY;
-    else                                                   want = GBB_POCKET_ITEMS;
-    if (got != want) {
-      mismatches++;
-      printf("  !! FAIL: gbb_pocket_of(GS, 0x%02X) = %d, want %d\n", id, got, want);
+  static const GbGame kG2Games[2] = { GBF_G_GS, GBF_G_CRYSTAL };
+  static const char* const kG2Names[2] = { "GS", "CRYSTAL" };
+  for (int g = 0; g < 2; g++) {
+    GbGame game = kG2Games[g];
+    for (unsigned i = 1; i <= 0xF9u; i++) {
+      uint8_t id = (uint8_t)i;
+      GbBagPocket got = gbb_pocket_of(game, id);
+      GbBagPocket want = pin_g2_pocket_of(game, id);
+      if (got != want) {
+        mismatches++;
+        printf("  !! FAIL: gbb_pocket_of(%s, 0x%02X) = %d, want %d\n", kG2Names[g], id, got, want);
+      }
     }
-  }
-  for (unsigned i = 0xFAu; i <= 0xFFu; i++) {   /* past HM07: never a valid Gen-2 id */
-    GbBagPocket got = gbb_pocket_of(GBF_G_GS, (uint8_t)i);
-    if (got != GBB_POCKET_COUNT) {
-      mismatches++;
-      printf("  !! FAIL: gbb_pocket_of(GS, 0x%02X) = %d, want GBB_POCKET_COUNT (invalid)\n", i, got);
+    for (unsigned i = 0xFAu; i <= 0xFFu; i++) {   /* past HM07: never a valid Gen-2 id */
+      GbBagPocket got = gbb_pocket_of(game, (uint8_t)i);
+      if (got != GBB_POCKET_COUNT) {
+        mismatches++;
+        printf("  !! FAIL: gbb_pocket_of(%s, 0x%02X) = %d, want GBB_POCKET_COUNT (invalid)\n", kG2Names[g], i, got);
+      }
     }
   }
   CHECKF(gbb_pocket_of(GBF_G_GS, 0x00u) == GBB_POCKET_COUNT, "gbb_pocket_of(GS, 0x00) must be COUNT");
-  CHECKF(gbb_pocket_of(GBF_G_CRYSTAL, 0x73u) == GBB_POCKET_KEY, "GS_BALL (0x73) is a KEY item, not a Ball");
+  CHECKF(gbb_pocket_of(GBF_G_CRYSTAL, 0x73u) == GBB_POCKET_KEY, "GS_BALL (0x73) is a KEY item on Crystal");
+  CHECKF(gbb_pocket_of(GBF_G_GS, 0x73u) == GBB_POCKET_COUNT,
+        "Review D2: GS_BALL's id (0x73) is NOT a valid item at all on Gold/Silver "
+        "(pokegold's own attributes.asm: an unused ITEM_73 placeholder)");
+  CHECKF(gbb_pocket_of(GBF_G_GS, 0x46u) == GBB_POCKET_COUNT, "Review D2: CLEAR_BELL's id invalid on G/S");
+  CHECKF(gbb_pocket_of(GBF_G_GS, 0x74u) == GBB_POCKET_COUNT, "Review D2: BLUE_CARD's id invalid on G/S");
+  CHECKF(gbb_pocket_of(GBF_G_GS, 0x81u) == GBB_POCKET_COUNT, "Review D2: EGG_TICKET's id invalid on G/S");
 
   /* Gen 1: ITEMS vs TM/HM only (0xC4..0xFA, no holes -- gb_item_names.c's
    * own gb1_tmhm_label range, re-checked independently here). */

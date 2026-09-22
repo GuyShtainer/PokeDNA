@@ -1195,6 +1195,13 @@ AppSrcOps.create @28 in pdna_dex_screen -> dex_state dex_set_state dex_get_natio
 # offset 32, the same class of collision, not a new real call edge (this
 # function never touches AppSrcOps.item/gb_item_hook at all).
 AppSrcOps.item @32 in pdna_dex_screen -> dex_state dex_set_state dex_get_national dex_set_national
+# Review D2: pick_item_set_gen1_2()'s new `GbGame game` parameter (threaded
+# through so gbb_pocket_of() answers correctly for Gold vs Crystal, gb_bag.h's
+# own header comment) shifted this build's link layout again -- same
+# "coincidental spilled section-anchor" class as offset 32 just above, now
+# also landing on offset 36 (AppSrcOps.dup) for this exact caller. Not a new
+# real call edge (this function never touches AppSrcOps.dup either).
+AppSrcOps.dup @36 in pdna_dex_screen -> dex_state dex_set_state dex_get_national dex_set_national
 AppSrcOps.create @28 in pdna_origin_box_art,pdna_origin_box_art_wanted -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
 BoxSource.get_name @28 in draw_box_banner -> banksrc_get_name gbsrc_get_name pcsrc_get_name
 BoxSource.can_edit @44 in pdna_origin_art_portrait,pdna_origin_box_art -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb

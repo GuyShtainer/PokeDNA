@@ -415,9 +415,9 @@ static bool gbbag_start_menu(GbBag* bag, GbBagPocket pocket, int* sel, int* top,
        * fix, no longer reachable: pick_item() never returns an out-of-range
        * id at all). Cancel (B) aborts the whole ADD, same as the old
        * num_entry_opt() cancel contract. */
-      pick_item_set_gen1_2(GBIN_GEN1, gbb_max_item_id(GBF_G_RED));
+      pick_item_set_gen1_2(GBIN_GEN1, GBF_G_RED, gbb_max_item_id(GBF_G_RED));
       uint16_t id16 = pick_item(1);
-      pick_item_set_gen1_2(0, 0);
+      pick_item_set_gen1_2(0, GBF_G_RED, 0);
       if (id16 == 0xFFFFu) continue;
       uint8_t id8 = (uint8_t)id16;
       /* QUANTITY's own maxv is deliberately NOT GBB_QTY_CAP: clamping the OSK

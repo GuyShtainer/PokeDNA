@@ -47,8 +47,22 @@ uint8_t gbb_max_item_id(GbGame game) {
   return (game == GBF_G_RED || game == GBF_G_YELLOW) ? 0xFAu : 0xBEu;
 }
 
+/* Review D2: pokegold's OWN data/items/attributes.asm (independently checked
+ * against pokecrystal's copy, both files parsed the same way gb_bag.h's own
+ * derivation comment describes) differs from pokecrystal's at exactly four
+ * ids -- 0x46/0x73/0x74/0x81 (CLEAR_BELL/GS_BALL/BLUE_CARD/EGG_TICKET on
+ * Crystal) are pocket ITEM (an unused ITEM_46/73/74/81 placeholder, the same
+ * shape as every other never-distributed id) on Gold/Silver, not KEY_ITEM.
+ * gb_item_names.c's own comment already knew these four NAMES are Crystal-
+ * only ("G/S just lack 4 Crystal-only items... shipped anyway since the
+ * byte never occurs in a real G/S bag") -- what it did NOT carry through is
+ * that a G/S save therefore has NO valid item at these four ids at all, not
+ * merely an unnamed one: is_valid_id() must refuse them on GBF_G_GS so
+ * gbb_insert() and the picker's own admission test agree the id does not
+ * exist there, the same as any other out-of-range id. */
 static bool is_valid_id(GbGame game, uint8_t id) {
   if (id == 0x00u || id == 0xFFu) return false;
+  if (game == GBF_G_GS && (id == 0x46u || id == 0x73u || id == 0x74u || id == 0x81u)) return false;
   return id <= gbb_max_item_id(game);
 }
 
@@ -353,6 +367,12 @@ GbBagPocket gbb_pocket_of(GbGame game, uint8_t id) {
   bool gen2 = (game == GBF_G_GS || game == GBF_G_CRYSTAL);
   if (gen2) {
     if (gbb_tmhm_index_of(game, id) >= 0) return GBB_POCKET_TMHM;
+    /* Review D2: pokegold's attributes.asm, not pokecrystal's -- ITEM_46/73/
+     * 74/81 are unused ITEM-pocket placeholders on Gold/Silver (is_valid_id()'s
+     * own header comment has the full derivation); only Crystal actually has
+     * CLEAR_BELL/GS_BALL/BLUE_CARD/EGG_TICKET as Key items at these ids. */
+    if (game == GBF_G_GS && (id == 0x46u || id == 0x73u || id == 0x74u || id == 0x81u))
+      return GBB_POCKET_COUNT;
     if (id > gbb_max_item_id(game)) return GBB_POCKET_COUNT;   /* holes + past HM07 */
     if (is_g2_ball(id)) return GBB_POCKET_BALLS;
     if (is_g2_key(id))  return GBB_POCKET_KEY;

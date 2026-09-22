@@ -335,10 +335,10 @@ static int gbpack_start_menu(GbBag* bag, GbBagPocket pocket, GbGame game, int* s
        * itself never returns an id its own admission test did not already
        * accept (same "no more silent-rewrite" guarantee R1 gave the old
        * numeric ID prompt, see pdna_gbbag.c's own comment on this). */
-      pick_item_set_gen1_2(GBIN_GEN2, gbb_max_item_id(game));
+      pick_item_set_gen1_2(GBIN_GEN2, game, gbb_max_item_id(game));
       pick_item_set_gen1_2_cat(pocket);
       uint16_t id16 = pick_item(1);
-      pick_item_set_gen1_2(0, 0);
+      pick_item_set_gen1_2(0, GBF_G_RED, 0);
       if (id16 == 0xFFFFu) continue;
       uint8_t id8 = (uint8_t)id16;
 

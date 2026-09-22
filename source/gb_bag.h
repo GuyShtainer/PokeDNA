@@ -233,15 +233,26 @@ GbBagOpStatus gbb_tmhm_set(GbGame game, GbBag* bag, int tmhm_index, uint8_t coun
  * per-entry pocket column (BALL / KEY_ITEM / TM_HM / ITEM), entries 1..0xBE
  * (NUM_ITEMS) for the real-item block and 0xBF..0xF9 for the TM/HM block
  * (identical shape to gb_item_names.c's own gb2_tmhm_label ranges, two holes
- * at 0xC3/0xDC -- both cross-derivations agree). pokegold's own copy of the
- * same file has the identical pocket column for every id (G/S just lack four
- * Crystal-only items, per gb_item_names.c's own comment -- this does not
- * change which pocket an id WOULD be in, only whether it ever occurs).
+ * at 0xC3/0xDC -- both cross-derivations agree). Review D2 CORRECTION
+ * (2026-09-22): pokegold's own copy of the same file is NOT identical --
+ * checked directly (both files parsed the same way), it differs at exactly
+ * the four ids gb_item_names.c's own comment already flagged as "Crystal-
+ * only": 0x46/0x73/0x74/0x81 (CLEAR_BELL/GS_BALL/BLUE_CARD/EGG_TICKET) are
+ * KEY_ITEM in pokecrystal's table but pocket ITEM (an unused ITEM_46/73/74/
+ * 81 placeholder) in pokegold's -- on Gold/Silver these four ids are NOT
+ * valid items at all (is_valid_id()'s own comment has the derivation), not
+ * merely unnamed ones, so gbb_pocket_of(GBF_G_GS, ...) answers
+ * GBB_POCKET_COUNT for them while gbb_pocket_of(GBF_G_CRYSTAL, ...) answers
+ * GBB_POCKET_KEY -- the ONE place this function's answer depends on which
+ * Gen-2 game, not just which generation.
  *   Gen 2 (Gold/Silver, Crystal): BALLS = {0x01,0x02,0x04,0x05,0x9D,0x9F,0xA0,
  *     0xA1,0xA4,0xA5,0xA6,0xB1} (12 ids, matches GBB_CAP_BALLS); KEY = {0x07,
- *     0x36,0x37,0x3A,0x3B,0x3D,0x42..0x47,0x73,0x74,0x7F..0x82,0x85,0x86,0xAF,
- *     0xB2} (22 ids); TM/HM = the 0xBF-0xF9 block (see gbb_tmhm_index_of);
- *     every other valid id (1..0xBE, not a Ball/Key id) = ITEMS.
+ *     0x36,0x37,0x3A,0x3B,0x3D,0x42,0x43,0x44,0x45,0x47,0x7F,0x80,0x82,0x85,
+ *     0x86,0xAF,0xB2} on Gold/Silver (18 ids -- 0x46/0x73/0x74/0x81 removed)
+ *     or that same set PLUS 0x46,0x73,0x74,0x81 on Crystal (22 ids); TM/HM =
+ *     the 0xBF-0xF9 block (see gbb_tmhm_index_of); every other valid id
+ *     (1..0xBE, not a Ball/Key id, and on Gold/Silver not one of the four
+ *     Crystal-only ids either) = ITEMS.
  *   Gen 1 (Red/Blue, Yellow): the real cartridge has only ONE bag pocket
  *     (Items) plus the PC store -- Balls and "key" items are ordinary Items-
  *     pocket entries there (gb_bag.h's own pocket table, "Gen 1: no" for

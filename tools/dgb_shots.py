@@ -1739,6 +1739,32 @@ def run_u5_pack(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
                                  "even though ADD ITEM was opened from Items, "
                                  "not Balls")
 
+    # Review D2: pokegold's OWN data/items/attributes.asm differs from
+    # pokecrystal's at exactly four ids (CLEAR_BELL/GS_BALL/BLUE_CARD/
+    # EGG_TICKET, 0x46/0x73/0x74/0x81) -- KEY_ITEM on Crystal, an unused
+    # pocket-ITEM placeholder on Gold/Silver. The picker's "Key items"
+    # category must show a DIFFERENT count/list on Gold vs Crystal even
+    # though this is the exact same code path -- proving `game`, not merely
+    # `gen`, now threads all the way to gbb_pocket_of(). Cancelled out (B,
+    # not committed) so it leaves no pending edit for the demos after it.
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> PACK MENU (Balls, fresh open, csel=0=ADD ITEM)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM -> picker, pre-filtered to Poke Balls
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> category menu (cursor on Poke Balls)
+    s.tap("DOWN", settle=gb_shots.SETTLE)                   # Poke Balls -> Key items
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # pick Key items -> re-filters, closes menu
+    s.shot("10b_key_items_filtered", f"U5 (Review D2): the picker's 'Key "
+                                      f"items' category on {which} -- Gold "
+                                      f"shows 18 (no CLEAR BELL/GS BALL/"
+                                      f"BLUE CARD/EGG TICKET), Crystal shows "
+                                      f"22 (all four present, interleaved in "
+                                      f"id order between MYSTERY EGG/SILVER "
+                                      f"WING and after SILVER WING) -- the "
+                                      f"SAME code path, a real per-game "
+                                      f"difference (pokegold's own "
+                                      f"attributes.asm, not pokecrystal's)")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # cancel the picker -- no id picked, no pending edit
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # close PACK MENU -> back to the Balls list
+
     # SWAP: arm row 0 (MASTER BALL), move down, confirm the destination --
     # unrelated to pick_item()/gbb_pocket_of() at all, same mechanism U4's own
     # Gen-1 SWAP demo already proved; reused here over the Balls pocket instead.

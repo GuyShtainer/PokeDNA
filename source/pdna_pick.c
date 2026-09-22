@@ -1579,12 +1579,23 @@ static uint16_t list_pick(const char* title, int count, const char* (*name_fn)(u
  * description upgrade the comment above describes is still a later phase;
  * this one is the NAME phase Guy's own ask ("there should be a way to add
  * items") needed. g_item_gen == 0 (the held-item fields' own use, unchanged)
- * keeps the exact old "#n"-only, numeric-search-only behaviour. */
+ * keeps the exact old "#n"-only, numeric-search-only behaviour.
+ *
+ * Review D2: `g_item_game` is the ACTUAL GbGame (GBF_G_RED/YELLOW/GS/
+ * CRYSTAL), not merely the generation -- gbb_pocket_of()'s answer for four
+ * ids (0x46/0x73/0x74/0x81) depends on Gold/Silver vs Crystal specifically
+ * (pokegold's own attributes.asm differs from pokecrystal's there, gb_bag.h's
+ * own header comment on gbb_pocket_of has the derivation), so a "pick any
+ * representative Gen-2 game" shortcut silently mis-filters Gold. Every
+ * caller threads its own real game through now. */
 static uint16_t g_item_max_id = 0;
 static int      g_item_gen = 0;
+static GbGame   g_item_game = GBF_G_RED;
 static GbBagPocket g_item_open_pocket = GBB_POCKET_COUNT;   /* one-shot; see header */
-void pick_item_set_gen1_2_max(uint16_t max_id) { pick_item_set_gen1_2(0, max_id); }
-void pick_item_set_gen1_2(int gen, uint16_t max_id) { g_item_gen = gen; g_item_max_id = max_id; }
+void pick_item_set_gen1_2_max(uint16_t max_id) { pick_item_set_gen1_2(0, GBF_G_RED, max_id); }
+void pick_item_set_gen1_2(int gen, GbGame game, uint16_t max_id) {
+  g_item_gen = gen; g_item_game = game; g_item_max_id = max_id;
+}
 void pick_item_set_gen1_2_cat(GbBagPocket pocket0) { g_item_open_pocket = pocket0; }
 
 static void item_label_for(uint16_t id, char* out, int cap) {
@@ -1651,12 +1662,22 @@ static int item_build(u16* idx, const char* search, int sort, int cat, int gamef
        * re-derived so the two can never silently drift apart). */
       bool in_ceiling = ((uint16_t)i <= g_item_max_id);
       bool g2_tmhm = (!in_ceiling && g_item_gen == GBIN_GEN2 && i <= 0xF9 &&
-                      gbb_tmhm_index_of(GBF_G_GS, (uint8_t)i) >= 0);
+                      gbb_tmhm_index_of(g_item_game, (uint8_t)i) >= 0);
       if (!in_ceiling && !g2_tmhm) continue;
+      /* Review D2: an id that is not a real item AT ALL for this specific
+       * game (id 0/0xFF always; on Gold/Silver, also the four ids
+       * pokecrystal's own table has as Key items but pokegold's has as
+       * unused ITEM placeholders -- gbb_pocket_of()'s own header comment)
+       * never belongs in ANY category, "All" included -- this is also what
+       * makes the stray "#0" (NO_ITEM) row disappear from the unfiltered
+       * list. TM/HM ids are checked separately (g2_tmhm above already
+       * proved admission; gbb_pocket_of() agrees for those, so this is not
+       * a second, possibly-diverging test, just skipped to avoid a
+       * redundant call). */
+      if (g_item_gen && !g2_tmhm && gbb_pocket_of(g_item_game, (uint8_t)i) == GBB_POCKET_COUNT) continue;
       if (g_item_gen && cat) {
-        GbGame repg = (g_item_gen == GBIN_GEN2) ? GBF_G_GS : GBF_G_RED;
         GbBagPocket want = (g_item_gen == GBIN_GEN2) ? RICAT_POCKET_G2[cat] : RICAT_POCKET_G1[cat];
-        if (gbb_pocket_of(repg, (uint8_t)i) != want) continue;
+        if (gbb_pocket_of(g_item_game, (uint8_t)i) != want) continue;
       }
       if (search[0]) {
         /* Names exist only when g_item_gen is set -- search those too, on

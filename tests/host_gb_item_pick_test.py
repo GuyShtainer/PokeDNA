@@ -12,7 +12,9 @@ unit test. Three things must all hold:
   (a) Both GB ADD ITEM sites (source/pdna_gbbag.c's Gen-1 screen, source/pdna_gbpack.c's
       Gen-2 screen) call pick_item( -- NOT num_entry_opt("ITEM ID" -- and that call is
       bracketed by pick_item_set_gen1_2(GBIN_GEN1/GBIN_GEN2, ...) immediately before it
-      and pick_item_set_gen1_2(0, 0) immediately after.
+      and pick_item_set_gen1_2(0, GBF_G_RED, 0) immediately after (review D2: `game` is
+      now a real, threaded GbGame, not merely the generation -- gbb_pocket_of() answers
+      differently for Gold/Silver vs Crystal at four ids).
   (b) The Gen-3 bag's own ADD ITEM site (source/pdna_bag.c, the brief's own "parity
       reference") keeps ceiling 0 -- its pick_item( call is NOT bracketed by any
       pick_item_set_gen1_2*( call, so its behaviour with ceiling 0 stays exactly what it
@@ -71,7 +73,8 @@ def check_bracketed_gen(name: str, text: str, gen_token: str) -> list[str]:
     """Every pick_item( call site is bracketed by pick_item_set_gen1_2(<gen_token>, ...)
     within the 3 lines immediately before it (the ADD ITEM sites also call
     pick_item_set_gen1_2_cat( in between, BACKLOG #195 F2's own pre-filter) and
-    pick_item_set_gen1_2(0, 0) immediately after."""
+    pick_item_set_gen1_2(0, GBF_G_RED, 0) immediately after (review D2's own 3-arg
+    signature -- `game` is a real, threaded GbGame now, not merely the generation)."""
     code = strip_comments(text)
     lines = code.splitlines()
     violations = []
@@ -82,11 +85,12 @@ def check_bracketed_gen(name: str, text: str, gen_token: str) -> list[str]:
         before_window = "\n".join(lines[max(0, lineno - 4):lineno - 1]).replace(" ", "")
         after = lines[lineno] if lineno < len(lines) else ""
         has_set = f"pick_item_set_gen1_2({gen_token}," in before_window
-        has_clear = "pick_item_set_gen1_2(0,0)" in after.replace(" ", "")
+        has_clear = "pick_item_set_gen1_2(0,GBF_G_RED,0)" in after.replace(" ", "")
         if not (has_set and has_clear):
             violations.append(f"{name}:{lineno}: pick_item( call is not bracketed by "
                               f"pick_item_set_gen1_2({gen_token}, ...) (within the 3 lines "
-                              f"before it) and pick_item_set_gen1_2(0, 0) (immediately after)")
+                              f"before it) and pick_item_set_gen1_2(0, GBF_G_RED, 0) "
+                              f"(immediately after)")
     return violations
 
 
@@ -182,7 +186,7 @@ def main() -> int:
 
         # --- self-mutation 2: drop the bracket around pdna_gbbag.c's pick_item( call ------
         gbbag_c = GBBAG_C.read_text()
-        target2 = "      pick_item_set_gen1_2(GBIN_GEN1, gbb_max_item_id(GBF_G_RED));\n"
+        target2 = "      pick_item_set_gen1_2(GBIN_GEN1, GBF_G_RED, gbb_max_item_id(GBF_G_RED));\n"
         if target2 not in gbbag_c:
             print(f"FAIL -- self-mutation 2 target line not found verbatim: {target2!r} "
                   f"(source drifted -- update this test)")
