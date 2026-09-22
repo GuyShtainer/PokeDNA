@@ -47,6 +47,19 @@ static int parse_header(RomGbIcon* gi) {
   if (gi->size != (0x8000u << code)) return 0;
   if (gi->size % GB_BANK) return 0;
 
+  /* BACKLOG #201 F2: the same title/version/global_checksum extraction
+   * rom_gbsprite.c's own parse_header() does, byte-identical fields (this is
+   * the same 0x100..0x14F header) -- the identity a known-ROM table looks up
+   * by. Never used to locate anything; locate() below is unchanged, shape-only. */
+  memcpy(gi->title, h + (0x134 - 0x100), 15);
+  gi->title[15] = 0;
+  for (int i = 0; i < 15; i++) {
+    uint8_t c = (uint8_t)gi->title[i];
+    if (c && (c < 0x20 || c > 0x7E)) { gi->title[i] = 0; break; }
+  }
+  gi->version         = h[0x14C - 0x100];
+  gi->global_checksum = (uint16_t)((h[0x14E - 0x100] << 8) | h[0x14F - 0x100]);
+
   gi->id_hash = fnv1a(h, sizeof h, 0x811C9DC5u);
   return 1;
 }
@@ -77,15 +90,35 @@ static void tiles_to_px(const uint8_t t[ROM_GBICON_FRAME_BYTES], uint8_t px[ROM_
 
 /* ------------------------------------------------------------------- scanning */
 
+/* BACKLOG #201 F1: which inline gate scan_one() runs before calling its (indirect,
+ * un-inlinable) callback. Each gate is a STRICT PREFIX of its own callback's own
+ * first real check, verified against the two real callbacks below (never a new,
+ * independent condition), so it can never reject a position the callback itself
+ * would have accepted -- same contract as rom_gbsprite.c's ScanJob gate. */
+enum { GB_ICON_GATE_MENU = 0, GB_ICON_GATE_PTR = 1 };
+
+#ifdef ROM_GBICON_JOB_COUNTERS
+/* BACKLOG #201 Step 1: per-callback (post-gate) invocation counts, mirroring
+ * rom_gbsprite.c's ROM_GBSPRITE_JOB_COUNTERS -- never defined by the GBA build
+ * (the Makefile never passes this macro); only a host test binary sees it. */
+uint32_t g_rgi_cb_calls[2];
+#endif
+
 /*
  * One pass over the whole file, offering a `look`-byte window at every offset to
  * `cb`. Mirrors rom_gbsprite.c's own scan_walk idiom (independent
  * implementation — this module owns no static state to share with it). Returns
  * the number of hits (capped reporting at 2, since every caller here only cares
  * about "exactly one"), and writes the first hit's offset to *out_off.
+ *
+ * BACKLOG #201 F1: `gate_kind` picks an inline, un-indirected prefilter tested
+ * BEFORE `cb` -- see rom_gbsprite.c scan_multi's own ScanJob comment for the
+ * measured reason a function-pointer call cannot be inlined across, so a cheap
+ * byte compare ahead of it is worth far more here than inside the callback.
  */
 static uint32_t scan_one(RomGbIcon* gi, int (*cb)(const uint8_t*), uint32_t look,
-                         uint8_t* scratch, uint32_t scratch_len, uint32_t* out_off) {
+                         uint8_t* scratch, uint32_t scratch_len, uint32_t* out_off,
+                         int gate_kind) {
   /* Forward-only, sector-aligned reads (gb_scanwin.h) -- the same window rule as
    * rom_gbsprite.c's scan_multi, for the same measured reason. */
   GbScanWin sw;
@@ -95,7 +128,29 @@ static uint32_t scan_one(RomGbIcon* gi, int (*cb)(const uint8_t*), uint32_t look
     if (!rd(gi, sw.rd_off, scratch + sw.rd_dst, sw.rd_len)) return 0;
     uint32_t cnt = gb_scanwin_filled(&sw);
     for (uint32_t i = sw.first; i < sw.first + cnt; i++) {
-      if (!cb(scratch + i)) continue;
+      const uint8_t* p = scratch + i;
+      if (gate_kind == GB_ICON_GATE_MENU) {
+        /* menu_icons_cb's own w[0]==w[1]==w[2] triad (Bulbasaur/Ivysaur/Venusaur)
+         * plus the per-byte [1,63] range every one of its 251 bytes must pass --
+         * cheapest to check on w[0] alone here, before the full 251-byte body. */
+        if (!(p[0] == p[1] && p[1] == p[2] && p[0] >= 1 && p[0] <= ROM_GBICON_MAX_KINDS))
+          continue;
+      } else {
+        /* BACKLOG #201 D3 (review fix, perf): icon_ptrs_cb's own first TWO
+         * checks -- entry[0] == entry[1], AND entry[0] in [GB_WIN_LO,
+         * GB_WIN_HI) -- not just the equality half. Measured: adding the
+         * range half cuts post-gate icon_ptrs_cb calls Gold 985,614 -> 4,723,
+         * Crystal 530,741 -> 6,396 (real ROM padding runs are FULL of
+         * equal-halves u16 pairs outside the ROMX window, e.g. long 0x0000/
+         * 0xFFFF fills; the range check rejects almost all of them here
+         * instead of inside the callback). */
+        uint16_t v0 = rd16(p);
+        if (v0 != rd16(p + 2) || v0 < GB_WIN_LO || v0 >= GB_WIN_HI) continue;
+      }
+#ifdef ROM_GBICON_JOB_COUNTERS
+      g_rgi_cb_calls[gate_kind]++;
+#endif
+      if (!cb(p)) continue;
       hits++;
       if (hits == 1) *out_off = sw.base + i;
       if (hits > 1) return hits;      /* ambiguous — no need to keep counting  */
@@ -171,9 +226,11 @@ static int icon_ptrs_cb(const uint8_t* w) {
 
 /* ------------------------------------------------------------------- open() */
 
-static int locate(RomGbIcon* gi, uint8_t* scratch, uint32_t scratch_len) {
+static int locate(RomGbIcon* gi, uint8_t* scratch, uint32_t scratch_len,
+                  RomGbIconPassFn pass2_cb, void* pass2_ctx) {
   uint32_t menu_off = 0;
-  if (scan_one(gi, menu_icons_cb, ROM_GBICON_SPECIES, scratch, scratch_len, &menu_off) != 1)
+  if (scan_one(gi, menu_icons_cb, ROM_GBICON_SPECIES, scratch, scratch_len, &menu_off,
+              GB_ICON_GATE_MENU) != 1)
     return 0;
 
   uint8_t window[ROM_GBICON_SPECIES];
@@ -181,11 +238,18 @@ static int locate(RomGbIcon* gi, uint8_t* scratch, uint32_t scratch_len) {
   uint8_t n = window_max(window, sizeof window);
   if (n < 8 || n > ROM_GBICON_MAX_KINDS) return 0;
 
+  /* BACKLOG #201 F3: pass 1 (MonMenuIcons) is done -- one callback, before pass 2
+   * (IconPointers) starts its OWN whole-ROM scan, so the caller can reset its own
+   * progress bookkeeping and report pass 2's own done/total instead of inheriting
+   * pass 1's already-maxed high-water mark. */
+  if (pass2_cb) pass2_cb(pass2_ctx);
+
   /* icon_ptrs_cb needs (n+2) entries of look-ahead to prove maximality. */
   s_scan_n = n;
   uint32_t ptr_off = 0;
   uint32_t look = ((uint32_t)n + 2u) * 2u;
-  uint32_t hits = scan_one(gi, icon_ptrs_cb, look, scratch, scratch_len, &ptr_off);
+  uint32_t hits = scan_one(gi, icon_ptrs_cb, look, scratch, scratch_len, &ptr_off,
+                           GB_ICON_GATE_PTR);
   s_scan_n = 0;
   if (hits != 1) return 0;
 
@@ -217,14 +281,110 @@ static int locate(RomGbIcon* gi, uint8_t* scratch, uint32_t scratch_len) {
   return 1;
 }
 
+/* BACKLOG #201 F2 (factored out of rom_gbicon_open_loc()'s own body, D3's fix
+ * unchanged in meaning): re-validate a CANDIDATE RomGbIconLoc -- from the .loc
+ * cache file (open_loc()'s caller) or the known-ROM fast-path table below
+ * (open()) -- with a HANDFUL of reads: id_hash/size, then the SAME shape check
+ * locate() itself runs (menu_icons_cb's ten structural invariants plus
+ * window_max() matching the candidate's own n exactly), then the per-kind
+ * decode sanity net. Returns 1 (gi fully populated, gi->ok=1) or 0 (gi is
+ * UNCHANGED beyond whatever a rejected candidate's own verify reads already
+ * touched -- the caller must fall through to a full scan). Same contract as
+ * rom_gbsprite.c's own try_loc(): a wrong, stale or foreign candidate degrades
+ * to "scan for real", never a wrong picture. */
+static int try_loc(RomGbIcon* gi, const RomGbIconLoc* loc) {
+  if (!loc) return 0;
+  if (!(loc->id_hash == gi->id_hash && loc->size == gi->size &&
+        loc->n >= 8 && loc->n <= ROM_GBICON_MAX_KINDS && loc->icon_bank != 0))
+    return 0;
+
+  uint8_t menu_window[ROM_GBICON_SPECIES];
+  if (!rd(gi, loc->mon_menu_icons, menu_window, sizeof menu_window)) return 0;
+  if (!menu_icons_cb(menu_window)) return 0;
+  if (window_max(menu_window, sizeof menu_window) != loc->n) return 0;
+
+  /* BACKLOG #201 D2 (review fix): mirrors icon_ptrs_cb's OWN chain shape, not
+   * just "every entry is pointer-shaped" -- the old version here accepted a
+   * candidate whose icon_pointers was shifted ONE ENTRY EARLIER (-2 bytes):
+   * entry[0]==entry[1] still held (by coincidence of the shifted window), so
+   * the old per-k range-only check passed at 78 reads while 37 of the 38
+   * icons silently decoded the WRONG tile. entry[0]==entry[1] (k==1) and
+   * entry[k]==entry[k-1]+128 for k>=2 are the exact two invariants
+   * icon_ptrs_cb requires; a candidate that only coincidentally satisfies
+   * entry[0]==entry[1] without the chain now fails here and falls through to
+   * a full scan, exactly like any other bad candidate. */
+  uint16_t prev = 0;
+  for (uint32_t k = 0; k <= loc->n; k++) {
+    uint8_t raw[2];
+    if (!rd(gi, loc->icon_pointers + k * 2u, raw, 2)) return 0;
+    uint16_t v = rd16(raw);
+    if (v < GB_WIN_LO || v >= GB_WIN_HI) return 0;
+    if (k == 1) { if (v != prev) return 0; }
+    else if (k >= 2) { if (v != (uint16_t)(prev + 128u)) return 0; }
+    prev = v;
+    if (k == 0) continue;   /* entry[0] is the alias slot only -- not a kind */
+
+    uint32_t foff = (uint32_t)loc->icon_bank * GB_BANK + (uint32_t)(v - GB_WIN_LO);
+    uint8_t tile[ROM_GBICON_FRAME_BYTES];
+    if (!rd(gi, foff, tile, sizeof tile)) return 0;
+    uint8_t px[ROM_GBICON_PX];
+    tiles_to_px(tile, px);
+    uint8_t first = px[0]; int mixed = 0;
+    for (int i = 1; i < ROM_GBICON_PX; i++) if (px[i] != first) { mixed = 1; break; }
+    if (!mixed) return 0;
+  }
+
+  gi->mon_menu_icons = loc->mon_menu_icons;
+  gi->icon_pointers  = loc->icon_pointers;
+  gi->n              = loc->n;
+  gi->icon_bank      = loc->icon_bank;
+  gi->ok = 1;
+  return 1;
+}
+
+/* BACKLOG #201 F2: a static const table of (title, version, global_checksum) ->
+ * the located offsets, populated ONLY from what THIS scanner finds on Guy's own
+ * two Gen-2 corpus ROMs (tests/host_gbicon_test.c's part_f2_known_table(),
+ * BACKLOG #201, re-derives every entry from the live scanner on every run and
+ * asserts byte-equality, so the table can never drift from it -- see that
+ * function for the generator this table was pasted from). No Silver entry (no
+ * corpus dump exists): it, and any hack/unknown revision, fall straight through
+ * to the full scan. A HIT here still runs the exact same try_loc() gate a .loc
+ * cache hit gets -- this table is a candidate, never a trusted source. */
+typedef struct {
+  char          title[16];
+  uint8_t       version;
+  uint16_t      global_checksum;
+  RomGbIconLoc  loc;
+} RomGbIconKnown;
+
+#include "rom_gbicon_known.h"
+
+static const RomGbIconLoc* known_icon_lookup(const char* title, uint8_t version,
+                                             uint16_t global_checksum) {
+  for (uint32_t i = 0; i < sizeof k_known_gbicon / sizeof k_known_gbicon[0]; i++) {
+    const RomGbIconKnown* k = &k_known_gbicon[i];
+    if (k->version == version && k->global_checksum == global_checksum &&
+        memcmp(k->title, title, sizeof k->title) == 0)
+      return &k->loc;
+  }
+  return 0;
+}
+
 int rom_gbicon_open(RomGbIcon* gi, GbReadFn read, void* ctx, uint32_t size,
-                    uint8_t* scratch, uint32_t scratch_len) {
+                    uint8_t* scratch, uint32_t scratch_len,
+                    RomGbIconPassFn pass2_cb, void* pass2_ctx) {
   if (!gi) return 0;
   memset(gi, 0, sizeof *gi);
   gi->read = read; gi->ctx = ctx; gi->size = size;
   if (!read || !scratch || scratch_len < ROM_GBICON_SCRATCH_MIN) return 0;
   if (!parse_header(gi)) return 0;
-  if (!locate(gi, scratch, scratch_len)) return 0;
+  /* BACKLOG #201 F2: a known ROM's own table entry, verified before use, skips
+   * the whole-ROM scan entirely -- checked before locate() so a hit costs only
+   * the handful of try_loc() reads, not one scan byte. */
+  if (try_loc(gi, known_icon_lookup(gi->title, gi->version, gi->global_checksum)))
+    return 1;
+  if (!locate(gi, scratch, scratch_len, pass2_cb, pass2_ctx)) return 0;
   gi->ok = 1;
   return 1;
 }
@@ -249,61 +409,31 @@ void rom_gbicon_save_loc(const RomGbIcon* gi, RomGbIconLoc* out) {
  * rom_gbicon_open() scan whenever the cache does not check out. */
 int rom_gbicon_open_loc(RomGbIcon* gi, GbReadFn read, void* ctx, uint32_t size,
                         uint8_t* scratch, uint32_t scratch_len,
-                        const RomGbIconLoc* loc) {
+                        const RomGbIconLoc* loc,
+                        RomGbIconPassFn pass2_cb, void* pass2_ctx) {
   if (!gi) return 0;
   memset(gi, 0, sizeof *gi);
   gi->read = read; gi->ctx = ctx; gi->size = size;
   if (!read) return 0;
   if (!parse_header(gi)) return 0;
 
-  if (loc && loc->id_hash == gi->id_hash && loc->size == size &&
-      loc->n >= 8 && loc->n <= ROM_GBICON_MAX_KINDS && loc->icon_bank != 0) {
-    int ok = 1;
-    /* D3 (E5 fix, adversarial review): re-check loc->mon_menu_icons too, not just
-     * loc->icon_pointers -- this header comment used to claim the cached path
-     * "re-checks ... every named offset", but it never re-read the menu-icons
-     * window at all, so a stale/tampered mon_menu_icons offset (same id_hash/
-     * size, e.g. a hand-edited RomGbIconLoc, or a future caller that persists the
-     * struct across a ROM edit) would sail through: the icon_pointers sanity net
-     * below decodes graphics from loc->icon_bank/loc->icon_pointers alone and
-     * never touches loc->mon_menu_icons, so a wrong offset there would silently
-     * label every species with the wrong icon KIND while every other check
-     * passed. Runs the SAME shape check locate() runs on a fresh scan:
-     * menu_icons_cb's ten structural invariants plus window_max() matching the
-     * cached n exactly (not just "no larger than" -- a window whose real max
-     * differs from loc->n is not the window this loc came from, even if it
-     * happens to still look like a valid table). */
-    uint8_t menu_window[ROM_GBICON_SPECIES];
-    if (!rd(gi, loc->mon_menu_icons, menu_window, sizeof menu_window)) ok = 0;
-    else if (!menu_icons_cb(menu_window)) ok = 0;
-    else if (window_max(menu_window, sizeof menu_window) != loc->n) ok = 0;
-    for (uint32_t k = 1; k <= loc->n && ok; k++) {
-      uint8_t raw[2];
-      if (!rd(gi, loc->icon_pointers + k * 2u, raw, 2)) { ok = 0; break; }
-      uint16_t v = rd16(raw);
-      if (v < GB_WIN_LO || v >= GB_WIN_HI) { ok = 0; break; }
-      uint32_t foff = (uint32_t)loc->icon_bank * GB_BANK + (uint32_t)(v - GB_WIN_LO);
-      uint8_t tile[ROM_GBICON_FRAME_BYTES];
-      if (!rd(gi, foff, tile, sizeof tile)) { ok = 0; break; }
-      uint8_t px[ROM_GBICON_PX];
-      tiles_to_px(tile, px);
-      uint8_t first = px[0]; int mixed = 0;
-      for (int i = 1; i < ROM_GBICON_PX; i++) if (px[i] != first) { mixed = 1; break; }
-      if (!mixed) { ok = 0; break; }
-    }
-    if (ok) {
-      gi->mon_menu_icons = loc->mon_menu_icons;
-      gi->icon_pointers = loc->icon_pointers;
-      gi->n = loc->n;
-      gi->icon_bank = loc->icon_bank;
-      gi->ok = 1;
-      return 1;
-    }
-  }
-  if (!scratch || scratch_len < ROM_GBICON_SCRATCH_MIN) return 0;
-  if (!locate(gi, scratch, scratch_len)) return 0;
-  gi->ok = 1;
-  return 1;
+  /* D3 (E5 fix, adversarial review) unchanged in meaning, now shared with F2's
+   * known-ROM table via try_loc() above: re-checks loc->mon_menu_icons too, not
+   * just loc->icon_pointers -- a stale/tampered mon_menu_icons offset (same
+   * id_hash/size) must not sail through just because icon_pointers/icon_bank
+   * still check out, or every species would silently get the wrong icon KIND. */
+  if (try_loc(gi, loc)) return 1;
+
+  /* BACKLOG #201 D1 (review fix): a cache miss used to fall straight to
+   * locate()'s full scan here, so the known-ROM table (F2) was NEVER consulted
+   * by any production caller -- every one of them enters through THIS function
+   * (gb_art_source.c:279/604/796), never rom_gbicon_open() directly (only
+   * tests and tools/gbloc_driver.c call that). Measured: open_loc(NULL) on
+   * Crystal.gbc cost 4,172 reads (a full scan) where open() costs 78 (a table
+   * hit). Same delegation rom_gbsprite.c:723 already uses: a cache miss falls
+   * through to open() -- known-ROM table, THEN the full scan -- open() owns
+   * both, so this function no longer duplicates either. */
+  return rom_gbicon_open(gi, read, ctx, size, scratch, scratch_len, pass2_cb, pass2_ctx);
 }
 
 /* -------------------------------------------------------------- accessors */

@@ -1589,8 +1589,13 @@ static uint8_t gb_pick_origin_default(uint8_t gen) {
   if (f_open(&g_ed->romfil, g_ed->romspath, FA_READ) != FR_OK) return BC_ORIGIN_UNKNOWN;
   FSIZE_t fsz = f_size(&g_ed->romfil);
   uint32_t sz = (fsz > (FSIZE_t)0xFFFFFFFFu) ? 0xFFFFFFFFu : (uint32_t)fsz;
+  /* BACKLOG #201 F4: `gen` (GB_GEN1/GB_GEN2, this function's own caller already
+   * picked one) is the SAME numbering as GB_ROM_GEN1/GB_ROM_GEN2 -- passing it as
+   * the hint runs only that generation's three scan jobs on a cold (uncached)
+   * registered ROM, instead of all six. */
   int ok = rom_gbsprite_open(&g_ed->romgs, gb_read, &g_ed->romfil, sz,
-                             g_ed->romscan, sizeof g_ed->romscan, GB_ROM_NONE);
+                             g_ed->romscan, sizeof g_ed->romscan,
+                             (gen == GB_GEN1) ? GB_ROM_GEN1 : GB_ROM_GEN2);
   f_close(&g_ed->romfil);
   if (!ok || g_ed->romgs.gen != gen) return BC_ORIGIN_UNKNOWN;
   const char* t = g_ed->romgs.title;
@@ -3160,8 +3165,10 @@ static Gb1BaseStatus __attribute__((noinline)) gb_gen1_locate_rom(void) {
   }
   s_gb_create_slice.base = base;
   s_gb_create_slice.size = size;
+  /* BACKLOG #201 F4: this whole function is Gen-1-only (gb_gen1_locate_rom) -- the
+   * hint is known before the call, not just after it. */
   int ok = rom_gbsprite_open(&g_ed->romgs, fused_gb_slice_read, &s_gb_create_slice, size,
-                             g_ed->romscan, sizeof g_ed->romscan, GB_ROM_NONE);
+                             g_ed->romscan, sizeof g_ed->romscan, GB_ROM_GEN1);
   if (!ok || g_ed->romgs.gen != GB_ROM_GEN1) {
     log_line("gen12: gen-1 rom: fused rom did not open as a Gen-1 rom");
     return GB1BASE_BAD_ROM;
@@ -3194,8 +3201,9 @@ static Gb1BaseStatus __attribute__((noinline)) gb_gen1_locate_rom(void) {
 
   FSIZE_t fsz = f_size(&g_ed->romfil);
   uint32_t sz = (fsz > (FSIZE_t)0xFFFFFFFFu) ? 0xFFFFFFFFu : (uint32_t)fsz;
+  /* BACKLOG #201 F4: same Gen-1-only function as the fused-path call above. */
   int ok = rom_gbsprite_open(&g_ed->romgs, gb_read, &g_ed->romfil, sz,
-                             g_ed->romscan, sizeof g_ed->romscan, GB_ROM_NONE);
+                             g_ed->romscan, sizeof g_ed->romscan, GB_ROM_GEN1);
   f_close(&g_ed->romfil);
   if (!ok || g_ed->romgs.gen != GB_ROM_GEN1) {
     log_line("gen12: gen-1 rom: %s did not open as a Gen-1 ROM", g_ed->romspath);
@@ -4162,8 +4170,10 @@ static bool __attribute__((noinline)) gb_create_locate_rom(uint8_t want_gen) {
   }
   s_gb_create_slice.base = base;
   s_gb_create_slice.size = size;
+  /* BACKLOG #201 F4: `want` (computed above from `want_gen`) is known before the
+   * call -- runs only that generation's three scan jobs on a cold scan. */
   int ok = rom_gbsprite_open(&g_ed->romgs, fused_gb_slice_read, &s_gb_create_slice, size,
-                             g_ed->romscan, sizeof g_ed->romscan, GB_ROM_NONE);
+                             g_ed->romscan, sizeof g_ed->romscan, want);
   if (ok && g_ed->romgs.gen == want) {
     log_line("gen12 create: fused rom (gen %u)", want_gen);
     return true;
@@ -4180,8 +4190,9 @@ static bool __attribute__((noinline)) gb_create_locate_rom(uint8_t want_gen) {
     if (f_open(&g_ed->romfil, g_ed->romspath, FA_READ) == FR_OK) {
       FSIZE_t fsz = f_size(&g_ed->romfil);
       uint32_t sz = (fsz > (FSIZE_t)0xFFFFFFFFu) ? 0xFFFFFFFFu : (uint32_t)fsz;
+      /* BACKLOG #201 F4: `want` known before the call. */
       int ok = rom_gbsprite_open(&g_ed->romgs, gb_read, &g_ed->romfil, sz,
-                                 g_ed->romscan, sizeof g_ed->romscan, GB_ROM_NONE);
+                                 g_ed->romscan, sizeof g_ed->romscan, want);
       f_close(&g_ed->romfil);
       if (ok && g_ed->romgs.gen == want) {
         log_line("gen12 create: registered rom %s (gen %u)", g_ed->romspath, want_gen);
@@ -4203,8 +4214,9 @@ static bool __attribute__((noinline)) gb_create_locate_rom(uint8_t want_gen) {
     if (f_open(&g_ed->romfil, g_ed->romspath, FA_READ) != FR_OK) { g_ed->romspath[baselen] = 0; continue; }
     FSIZE_t fsz = f_size(&g_ed->romfil);
     uint32_t sz = (fsz > (FSIZE_t)0xFFFFFFFFu) ? 0xFFFFFFFFu : (uint32_t)fsz;
+    /* BACKLOG #201 F4: `want` known before the call. */
     int ok = rom_gbsprite_open(&g_ed->romgs, gb_read, &g_ed->romfil, sz,
-                               g_ed->romscan, sizeof g_ed->romscan, GB_ROM_NONE);
+                               g_ed->romscan, sizeof g_ed->romscan, want);
     f_close(&g_ed->romfil);
     if (ok && g_ed->romgs.gen == want) {
       log_line("gen12 create: rom beside the save %s (gen %u)", g_ed->romspath, want_gen);

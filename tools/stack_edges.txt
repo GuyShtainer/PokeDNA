@@ -127,9 +127,15 @@
 # count on main at the time these lines were added; raise it (with a dated
 # comment explaining why) when a genuine new count-only site is added on
 # purpose, never to silence an unexplained increase.
-count-only-max 48 variant=nor artless=1
-count-only-max 48 variant=nor
-count-only-max 48 variant=delta
+# 2026-09-22 (BACKLOG #201 F3): +1 on all three variants for the new
+# `locate@rom_gbicon argsites=1 -> gb_art_icon_pass2` declaration above (the
+# rom_gbicon.c pass-1/pass-2 progress-reset hook) -- a genuine new indirect
+# call site, compiled into every variant since rom_gbicon.c is shared source,
+# and the walker cannot trace its register to a literal-pool target (same
+# "site count only" shape every other argsites= line in this file already has).
+count-only-max 49 variant=nor artless=1
+count-only-max 49 variant=nor
+count-only-max 49 variant=delta
 
 # Delta-only -- the artless/normal (PDNA_TARGET=nor) links do not contain it:
 # Listing EVERY variant in variants= re-creates a blanket exemption -- if the symbol exists
@@ -935,8 +941,23 @@ RomGbUi.read @0 in rom_gbui_open,rom_gbui_open_loc,rom_gbui_tile,gbscr_open_inne
 # RomGbUi as GbScreen's first embedded member (same offset-0 shape) and dispatches the
 # same way while filling it in.
 
-RomGbIcon.read @0 in parse_header@rom_gbicon,rom_gbicon_kind,rom_gbicon_open_loc,rom_gbicon_tiles -> gb_art_read fused_gb_slice_read gb_read
+RomGbIcon.read @0 in parse_header@rom_gbicon,rom_gbicon_kind,rom_gbicon_open_loc,rom_gbicon_tiles,try_loc@rom_gbicon -> gb_art_read fused_gb_slice_read gb_read
 RomGbIcon.read @0 in locate@rom_gbicon,scan_one.constprop.0@rom_gbicon -> gb_art_read fused_gb_slice_read gb_read icon_ptrs_cb
+# BACKLOG #201 F2: try_loc@rom_gbicon added to the first group above -- the
+# id_hash/size/menu-window/per-kind-decode verify reads that used to be inlined
+# directly in rom_gbicon_open_loc()'s own body (still declared there, harmlessly
+# unused now) are factored into this new file-local function, shared by
+# open_loc()'s cache path AND open()'s new known-ROM-table path (rom_gbicon.c);
+# it dispatches gi->read(...) through the SAME RomGbIcon.read@0 field, no cb
+# parameter involved, so it belongs in the plain (non-widened) group.
+#
+# BACKLOG #201 F3: locate@rom_gbicon's own `if (pass2_cb) pass2_cb(pass2_ctx);`
+# (rom_gbicon.c, between pass 1 and pass 2) is a NEW, separate parameter-threaded
+# dispatch (RomGbIconPassFn, not RomGbIcon.read@0 -- a distinct site from the
+# struct-field union just above), one call site, one real implementation
+# (gb_art_source.c's gb_art_icon_pass2, the only caller that ever passes a
+# non-NULL pass2_cb -- every other rom_gbicon_open(_loc)() caller passes 0/0).
+locate@rom_gbicon argsites=1 -> gb_art_icon_pass2
 # locate@rom_gbicon/scan_one.constprop.0 widened to include icon_ptrs_cb (rom_gbicon.c:
 # 187, `scan_one(gi, icon_ptrs_cb, ...)`, previously `addrtaken-ok` below) -- rom_
 # gbicon.c's scan_one() takes the callback as a PARAMETER (not a struct field) but its
