@@ -1486,6 +1486,16 @@ addrtaken-ok __aeabi_idiv0        # libgcc: division-by-zero trap, taken by the 
 addrtaken-ok __boot_method        # crt0: multiboot/cart boot-method DATA byte, not a function -- see the D5 note above
 addrtaken-ok __do_global_dtors_aux # crtstuff: static-destructor runner, taken via .fini_array
 addrtaken-ok __libc_init_array    # newlib crt: constructor runner, taken by crt0/_start
+addrtaken-ok gen1_write_status_text layout-fragile  # 2026-09-23 (the b216b merge onto 8766d09, NORMAL variant
+                                  # only): the same G3_SIGNATURE coincidence as g1e_set_otname/g1e_set_exp below --
+                                  # gen1_write_status_text linked at 0x08012024 and its Thumb address 0x08012025 equals
+                                  # the literal `.word 0x08012025` (source/gen3_save.h:27, the Gen-3 save-section
+                                  # footer magic) at exactly TWO aligned sites, 0x0801e874 inside gen3_find_section
+                                  # and 0x0801f3cc inside gen3_parse_into (objcopy -O binary + a raw aligned scan of
+                                  # PokeDNA.elf built with PDNA_STACK_CHECK=0). It is called by nobody in the ROM
+                                  # (objdump: zero `bl <gen1_write_status_text>`; its only callers are
+                                  # tests/host_gen1write_test.c), so it is unreached by construction. Layout-fragile:
+                                  # the constant is fixed and .text keeps moving.
 addrtaken-ok g1e_set_otname layout-fragile  # 2026-09-22 (the s150-10-13 merge onto ada7449): the walker FATALed
                                   # "ADDRESS-TAKEN, UNREACHED, UNDECLARED: g1e_set_otname frame 8" on the
                                   # merged artless image only. Evidence (objcopy -O binary + a raw aligned
