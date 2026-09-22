@@ -452,18 +452,42 @@ def up_order_facts(lines, start, end):           # shared by the real check AND 
     c = first_match_line(lines, start, end, COMMIT_RE)
     r = first_match_line(lines, start, end, RELEASE_UP_RE)
     z = first_match_line(lines, start, end, ZEROBACK_RE)
-    if c is None: return False, "drop_held: no `ok = src->commit()` line in the UP branch"
-    if r is None: return False, "drop_held: no `s_xfer_peer->release_up(` call"
-    if z is None: return False, "drop_held: no zero-back memset of the destination cell"
-    if not c < r: return False, (f"drop_held: src->commit() (line {c+1}) does NOT come before "
+    if c is None: return False, "drop_held_up: no `ok = src->commit()` line in the UP branch"
+    if r is None: return False, "drop_held_up: no `s_xfer_peer->release_up(` call"
+    if z is None: return False, "drop_held_up: no zero-back memset of the destination cell"
+    if not c < r: return False, (f"drop_held_up: src->commit() (line {c+1}) does NOT come before "
                                  f"release_up() (line {r+1}) -- the Game Boy save would lose the "
                                  f"mon before the Bank has it")
-    if not c < z < r: return False, (f"drop_held: the zero-back memset (line {z+1}) is not between "
+    if not c < z < r: return False, (f"drop_held_up: the zero-back memset (line {z+1}) is not between "
                                      f"commit() ({c+1}) and release_up() ({r+1})")
     if first_match_line(lines, z, r, RETURN_RECS_RE) is None:
-        return False, (f"drop_held: no `return recs;` between the zero-back memset (line {z+1}) and "
+        return False, (f"drop_held_up: no `return recs;` between the zero-back memset (line {z+1}) and "
                        f"release_up() (line {r+1}) -- release_up is not dominated by the "
                        f"commit-failure early-out")
+    return True, "ok"
+
+
+# BACKLOG #168a review D2 (check (ad), shared by the real check and MUT AD below):
+# `pdna_bank_serial_trusted()` says only that the LAST meta_load() this session parsed
+# a clean primary -- it cannot see a bank.meta restored from .bak, an older
+# /PokeDNA/bank copied back, or a second card's boxes dropped in beside this card's
+# meta. The fix pays the full 16-box scan ONCE per session regardless of `trusted`,
+# via a `!s_up_scan_done` latch OR'd onto the same guard line the reviewer's original
+# bare `if (!pdna_bank_serial_trusted())` used -- a revert to the bare form silently
+# skips the WHOLE scan on an ordinary card (trusted stays true all session) even
+# though it has never actually run once.
+UP_SCAN_GUARD_RE = re.compile(r"if\s*\(\s*!pdna_bank_serial_trusted\(\)")
+UP_SCAN_LATCH_RE = re.compile(r"s_up_scan_done")
+
+
+def up_scan_latch_facts(lines, start, end):      # shared by the real check AND MUT AD
+    g = first_match_line(lines, start, end, UP_SCAN_GUARD_RE)
+    if g is None:
+        return False, "drop_held_up: no `if (!pdna_bank_serial_trusted()` guard line found"
+    if not UP_SCAN_LATCH_RE.search(lines[g]):
+        return False, (f"drop_held_up: the scan guard (line {g+1}) does not also check "
+                       f"`s_up_scan_done` -- on an ordinary card `trusted` stays true all "
+                       f"session and the 16-box scan would never run even once")
     return True, "ok"
 
 
@@ -1069,15 +1093,17 @@ def main() -> int:
           "occupancy check -- a refused GB lift could fall through unnoticed")
 
     # ---- (i) REVIEW F2: drop_held's UP branch commits the Bank write BEFORE it ever
-    # calls release_up (the Game Boy delete) -- pins the order, not just presence. ----
-    s, e = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
+    # calls release_up (the Game Boy delete) -- pins the order, not just presence.
+    # BACKLOG #170: the UP branch is now its own noinline helper, drop_held_up --
+    # re-anchored here in the same commit that moved it. ----
+    s, e = extract_function(box_lines, r"^static uint8_t\* __attribute__\(\(noinline\)\) drop_held_up\(")
     ok, d = up_order_facts(box_lines, s, e)
     check(ok, d)
 
     # ---- (n1) BACKLOG #150 S150-12 decision 6: the release_up-optional wrap --
     # `if (s_xfer_peer->release_up)` after commit()/hand-empty, and app_pc_queue_note(
-    # in its else, in that line order. ----
-    s, e = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
+    # in its else, in that line order. BACKLOG #170: re-anchored to drop_held_up. ----
+    s, e = extract_function(box_lines, r"^static uint8_t\* __attribute__\(\(noinline\)\) drop_held_up\(")
     ok, d = n1_order_facts(box_lines, s, e)
     check(ok, d)
 
@@ -1286,24 +1312,32 @@ def main() -> int:
                                    PASTE_WRITE_CALL_RE, "gb_paste_hook")
     check(ok, msg)
 
-    # (ad) BACKLOG #210: s_busy_reading( is called BEFORE gb_paste_fill_moves( -- the
+    # ---- (ad) BACKLOG #168a review D2: drop_held_up's ident32-collision scan runs
+    # once per session regardless of pdna_bank_serial_trusted() -- the `s_up_scan_done`
+    # latch must be part of the same guard line, not a bare `!pdna_bank_serial_trusted()`
+    # check. MUT AD below reverts it and must be caught. ----
+    s, e = extract_function(box_lines, r"^static uint8_t\* __attribute__\(\(noinline\)\) drop_held_up\(")
+    ok, d = up_scan_latch_facts(box_lines, s, e)
+    check(ok, d)
+
+    # (ag) BACKLOG #210: s_busy_reading( is called BEFORE gb_paste_fill_moves( -- the
     # fill's own gb_create_locate_rom() call is a cold, uncached, ~185,000-read scan
     # (same as CREATE's, which CREATE masks the same way).
     ok, msg = gate_before_pattern(hook_body, 0, len(hook_body), BUSY_READING_RE,
                                    PASTE_FILL_MOVES_RE, "gb_paste_hook")
     check(ok, msg)
 
-    # ---- (ae)/(af) BACKLOG #212: gb_bank_down_bridge's own per-slot move rule --
+    # ---- (ah)/(ai) BACKLOG #212: gb_bank_down_bridge's own per-slot move rule --
     # the fill before the modal, the modal before the write. ----
     sbr, ebr = extract_function(gen12_lines, r"^BankDownResult gb_bank_down_bridge\(")
     bridge_body = gen12_lines[sbr:ebr]
 
-    # (ae) gb_paste_fill_moves( is called BEFORE gb_paste_legal_screen_ex( (the modal).
+    # (ah) gb_paste_fill_moves( is called BEFORE gb_paste_legal_screen_ex( (the modal).
     ok, msg = gate_before_pattern(bridge_body, 0, len(bridge_body), PASTE_FILL_MOVES_RE,
                                    LEGAL_SCREEN_EX_RE, "gb_bank_down_bridge")
     check(ok, msg)
 
-    # (af) gb_paste_legal_screen_ex( is called BEFORE gbs_insert( (the box write).
+    # (ai) gb_paste_legal_screen_ex( is called BEFORE gbs_insert( (the box write).
     ok, msg = gate_before_pattern(bridge_body, 0, len(bridge_body), LEGAL_SCREEN_EX_RE,
                                    GBS_INSERT_CALL_RE, "gb_bank_down_bridge")
     check(ok, msg)
@@ -1423,10 +1457,11 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str]) -
           f"start_carry: count dropped to {lift_count_mut} (expected 3, was 4)")
 
     # MUT H (REVIEW F2): swap the release_up() line to ABOVE the `ok = src->commit()`
-    # line in a copy of drop_held's body -- the exact defect the reviewer demonstrated
-    # (the Game Boy save would lose the mon before the Bank has committed it) -- and
-    # assert up_order_facts() reports failure.
-    s, e = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
+    # line in a copy of drop_held_up's body (BACKLOG #170: re-anchored -- the UP
+    # branch moved into its own noinline helper) -- the exact defect the reviewer
+    # demonstrated (the Game Boy save would lose the mon before the Bank has
+    # committed it) -- and assert up_order_facts() reports failure.
+    s, e = extract_function(box_lines, r"^static uint8_t\* __attribute__\(\(noinline\)\) drop_held_up\(")
     body = box_lines[s:e]
     commit_i = first_match_line(body, 0, len(body), COMMIT_RE)
     release_i = first_match_line(body, 0, len(body), RELEASE_UP_RE)
@@ -1441,10 +1476,11 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str]) -
         print(f"  MUT H demonstration -- release_up() line swapped above src->commit(): {detail}")
 
     # MUT N1 (BACKLOG #150 S150-12 decision 6): move the `app_pc_queue_note(` line to
-    # ABOVE `ok = src->commit()` in a copy of drop_held's body -- the copy would be
-    # queued for the PC offer before the Bank write that supposedly landed it has even
-    # been attempted -- and assert n1_order_facts() reports failure.
-    s, e = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
+    # ABOVE `ok = src->commit()` in a copy of drop_held_up's body (BACKLOG #170:
+    # re-anchored, same reason as MUT H above) -- the copy would be queued for the PC
+    # offer before the Bank write that supposedly landed it has even been attempted --
+    # and assert n1_order_facts() reports failure.
+    s, e = extract_function(box_lines, r"^static uint8_t\* __attribute__\(\(noinline\)\) drop_held_up\(")
     body = box_lines[s:e]
     commit_i3 = first_match_line(body, 0, len(body), COMMIT_RE)
     queue_i = first_match_line(body, 0, len(body), PC_QUEUE_NOTE_RE)
@@ -1967,60 +2003,79 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str]) -
         print(f"  MUT Z demonstration -- gb_paste_fill_moves( line moved after "
               f"gb_paste_write(: {detail}")
 
-    # MUT AA (BACKLOG #210): delete the `s_busy_reading();` line on a copy -- (ad) must
+    # MUT AD (BACKLOG #168a review D2, check (ad)'s own demonstration): revert
+    # drop_held_up's scan guard back to the reviewer's original bare
+    # `if (!pdna_bank_serial_trusted()) {` -- on a copy -- and assert
+    # up_scan_latch_facts() catches the missing `s_up_scan_done` latch.
+    s, e = extract_function(box_lines, r"^static uint8_t\* __attribute__\(\(noinline\)\) drop_held_up\(")
+    body = box_lines[s:e]
+    guard_i = first_match_line(body, 0, len(body), UP_SCAN_GUARD_RE)
+    check(guard_i is not None, "MUT AD: could not locate drop_held_up's scan guard line "
+                                "in the real source -- fix this test")
+    if guard_i is not None:
+        mut_ad = list(body)
+        mut_ad[guard_i] = "  if (!pdna_bank_serial_trusted()) {"
+        ok9, detail = up_scan_latch_facts(mut_ad, 0, len(mut_ad))
+        check(not ok9, f"MUT AD (scan guard reverted to the bare "
+                        f"`!pdna_bank_serial_trusted()` form) should have been caught but "
+                        f"was not: {detail}")
+        print(f"  MUT AD demonstration -- drop_held_up's scan guard reverted to the bare "
+              f"`if (!pdna_bank_serial_trusted())` form: {detail}")
+
+    # MUT AG (BACKLOG #210): delete the `s_busy_reading();` line on a copy -- (ag) must
     # fail to find any busy call before the fill's cold ROM scan.
     busy_i = first_match_line(hook_body, 0, len(hook_body), BUSY_READING_RE)
-    check(busy_i is not None, "MUT AA: could not locate the real s_busy_reading() call "
+    check(busy_i is not None, "MUT AG: could not locate the real s_busy_reading() call "
                                "in gb_paste_hook -- fix this test")
     if busy_i is not None:
-        mut_aa = [ln for i, ln in enumerate(hook_body) if i != busy_i]
-        ok9, detail = gate_before_pattern(mut_aa, 0, len(mut_aa), BUSY_READING_RE,
-                                           PASTE_FILL_MOVES_RE, "gb_paste_hook (MUT AA)")
-        check(not ok9, f"MUT AA (s_busy_reading() deleted) should have been caught but "
+        mut_ag = [ln for i, ln in enumerate(hook_body) if i != busy_i]
+        ok12, detail = gate_before_pattern(mut_ag, 0, len(mut_ag), BUSY_READING_RE,
+                                           PASTE_FILL_MOVES_RE, "gb_paste_hook (MUT AG)")
+        check(not ok12, f"MUT AG (s_busy_reading() deleted) should have been caught but "
                         f"was not: {detail}")
-        print(f"  MUT AA demonstration -- s_busy_reading() call deleted from "
+        print(f"  MUT AG demonstration -- s_busy_reading() call deleted from "
               f"gb_paste_hook: {detail}")
 
-    # BACKLOG #212: gb_bank_down_bridge's own per-slot move rule -- MUT AB/MUT AC.
+    # BACKLOG #212: gb_bank_down_bridge's own per-slot move rule -- MUT AH/MUT AI.
     sbr, ebr = extract_function(gen12_lines, r"^BankDownResult gb_bank_down_bridge\(")
     bridge_body = gen12_lines[sbr:ebr]
 
-    # MUT AB: move the `gb_paste_fill_moves(` call line to AFTER
-    # `gb_paste_legal_screen_ex(` on a copy -- (ae) must fail: the modal would list
+    # MUT AH: move the `gb_paste_fill_moves(` call line to AFTER
+    # `gb_paste_legal_screen_ex(` on a copy -- (ah) must fail: the modal would list
     # swap rows for fills that have not happened yet.
     fill_i = first_match_line(bridge_body, 0, len(bridge_body), PASTE_FILL_MOVES_RE)
     modal_i = first_match_line(bridge_body, 0, len(bridge_body), LEGAL_SCREEN_EX_RE)
     check(fill_i is not None and modal_i is not None and fill_i < modal_i,
-          "MUT AB: could not locate gb_paste_fill_moves( before gb_paste_legal_screen_ex( "
+          "MUT AH: could not locate gb_paste_fill_moves( before gb_paste_legal_screen_ex( "
           "in the real source -- fix this test")
     if fill_i is not None and modal_i is not None and fill_i < modal_i:
-        mut_ab = list(bridge_body)
-        fill_line = mut_ab.pop(fill_i)
-        mut_ab.insert(modal_i, fill_line)
-        ok10, detail = gate_before_pattern(mut_ab, 0, len(mut_ab), PASTE_FILL_MOVES_RE,
-                                           LEGAL_SCREEN_EX_RE, "gb_bank_down_bridge (MUT AB)")
-        check(not ok10, f"MUT AB (gb_paste_fill_moves( moved after gb_paste_legal_screen_ex() "
+        mut_ah = list(bridge_body)
+        fill_line = mut_ah.pop(fill_i)
+        mut_ah.insert(modal_i, fill_line)
+        ok10, detail = gate_before_pattern(mut_ah, 0, len(mut_ah), PASTE_FILL_MOVES_RE,
+                                           LEGAL_SCREEN_EX_RE, "gb_bank_down_bridge (MUT AH)")
+        check(not ok10, f"MUT AH (gb_paste_fill_moves( moved after gb_paste_legal_screen_ex() "
                          f"should have been caught but was not: {detail}")
-        print(f"  MUT AB demonstration -- gb_paste_fill_moves( line moved after "
+        print(f"  MUT AH demonstration -- gb_paste_fill_moves( line moved after "
               f"gb_paste_legal_screen_ex( in gb_bank_down_bridge: {detail}")
 
-    # MUT AC: move the `gb_paste_legal_screen_ex(` call line to AFTER `gbs_insert(`
-    # on a copy -- (af) must fail: a CANCEL choice would arrive too late to stop the
+    # MUT AI: move the `gb_paste_legal_screen_ex(` call line to AFTER `gbs_insert(`
+    # on a copy -- (ai) must fail: a CANCEL choice would arrive too late to stop the
     # box write.
     modal_i2 = first_match_line(bridge_body, 0, len(bridge_body), LEGAL_SCREEN_EX_RE)
     write_i = first_match_line(bridge_body, 0, len(bridge_body), GBS_INSERT_CALL_RE)
     check(modal_i2 is not None and write_i is not None and modal_i2 < write_i,
-          "MUT AC: could not locate gb_paste_legal_screen_ex( before gbs_insert( in "
+          "MUT AI: could not locate gb_paste_legal_screen_ex( before gbs_insert( in "
           "the real source -- fix this test")
     if modal_i2 is not None and write_i is not None and modal_i2 < write_i:
-        mut_ac = list(bridge_body)
-        modal_line = mut_ac.pop(modal_i2)
-        mut_ac.insert(write_i, modal_line)
-        ok11, detail = gate_before_pattern(mut_ac, 0, len(mut_ac), LEGAL_SCREEN_EX_RE,
-                                           GBS_INSERT_CALL_RE, "gb_bank_down_bridge (MUT AC)")
-        check(not ok11, f"MUT AC (gb_paste_legal_screen_ex( moved after gbs_insert() should "
+        mut_ai = list(bridge_body)
+        modal_line = mut_ai.pop(modal_i2)
+        mut_ai.insert(write_i, modal_line)
+        ok11, detail = gate_before_pattern(mut_ai, 0, len(mut_ai), LEGAL_SCREEN_EX_RE,
+                                           GBS_INSERT_CALL_RE, "gb_bank_down_bridge (MUT AI)")
+        check(not ok11, f"MUT AI (gb_paste_legal_screen_ex( moved after gbs_insert() should "
                          f"have been caught but was not: {detail}")
-        print(f"  MUT AC demonstration -- gb_paste_legal_screen_ex( line moved after "
+        print(f"  MUT AI demonstration -- gb_paste_legal_screen_ex( line moved after "
               f"gbs_insert( in gb_bank_down_bridge: {detail}")
 
 # ---- (m) 2026-09-16 (merged-tree shot lane): the DOWN dispatch's `occupied` refusal is scoped to
