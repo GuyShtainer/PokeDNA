@@ -75,7 +75,11 @@ char gen3_decode_char(uint8_t c) {
      * lowercase e-acute at 0x1B (source/gen3_mon.c's decode_name has that one, the
      * same 2-byte-UTF-8-insertion shape the gender sign already uses) or the other
      * 58 codes, which genuinely have no representation in this app's font and stay
-     * '?' -- tests/host_gen3_codec_lossy_test.c's full sweep pins the exact
+     * '?' -- this app's font has no glyph for them, so they would render as '?'
+     * anyway -- a DISPLAY limit, not a data one: the umlauts F1-F6 and 0xB9 '×' do
+     * have UTF-8 spellings gb_edit.c's enc_one already round-trips, so decoding
+     * them would preserve them across the GB bridge (BACKLOG #216b).
+     * tests/host_gen3_codec_lossy_test.c's full sweep pins the exact
      * before/after unmapped count so a future glyph addition here is a deliberate,
      * counted change, not a silent drift. gen3_encode_char (source/gen3_edit.c) is
      * this function's exact inverse for all five. */

@@ -303,9 +303,16 @@ static bool same_name(const char* a, const char* b) {
  * strcmp catches (tests/host_gen3_codec_lossy_test.c pins this). What stays
  * OUT OF REACH here, structurally: a loss already baked into `otname`/`nick`
  * before this function runs -- gen1_save.c/gen2_save.c own that decode and this
- * module "never sees a raw GB save" (this file's own top-of-file comment); see
- * gen12_convert.h's Gb12Notes.otname_lossy/nick_lossy comment for the full
- * before/after. */
+ * module "never sees a raw GB save" (this file's own top-of-file comment).
+ * NOTE (b216 review): this is a boundary for THIS FUNCTION only, not for the
+ * tree -- gen1_save.c:99 / gen2_save.c:422 fold e-acute (0xBA / 0xEA) to a plain
+ * 'e' BEFORE this runs, and both halves needed to carry it now exist (gen3 0x1B,
+ * this lane; gb_edit.c:682's "\xC3\xA9" <-> 0xBA/0xEA, already there). Emitting
+ * "\xC3\xA9" from those two decoders closes it -- measured lossless on a scratch
+ * patch, deliberately NOT done here: it changes GB decode tree-wide (UI, retail
+ * gate, sidecar, box names) and needs its own lane + full retail gate
+ * (BACKLOG #216b). See gen12_convert.h's Gb12Notes.otname_lossy/nick_lossy
+ * comment for the full before/after. */
 static void note_spelling_loss(Gb12Notes* notes, const uint8_t out80[80],
                                const char* otname, const char* nick, uint16_t species) {
   /* Worst case is 10 Gen-3 bytes that are ALL gender signs -- 3 UTF-8 bytes each

@@ -44,8 +44,11 @@ static const uint8_t k_substruct_pos[24][3] = {
  * font code 127 (the ONE non-ASCII glyph PokeDNA's font can draw), so a decoded
  * name carrying it renders correctly instead of falling to gen3_decode_char's
  * plain '?'. The other 39 codes in the accented block (0x01-0x2B minus 0x1B) have
- * no glyph in this app's font at all and stay '?' -- there is no UTF-8 spelling to
- * insert for them, unlike this one. decode_name stays the only place that owns
+ * no glyph in this app's font at all and stay '?' -- this app's font has no
+ * glyph for them, so they would render as '?' anyway -- a DISPLAY limit, not a
+ * data one: the umlauts F1-F6 and 0xB9 '×' do have UTF-8 spellings gb_edit.c's
+ * enc_one already round-trips, so decoding them would preserve them across the
+ * GB bridge (BACKLOG #216b). decode_name stays the only place that owns
  * BOTH special cases -- one thin function, not duplicated logic. */
 /* BACKLOG #217: `degraded` (may be NULL) is set true when a multi-byte glyph (the
  * gender sign or e-acute) hit the `oi + N < outcap` bound above and fell through

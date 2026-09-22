@@ -138,7 +138,14 @@ typedef struct {
    * in that file, or any future GB-decode simplification. Gb12Mon carries only the
    * ALREADY-decoded ot_name/nickname (gen12_convert.h's own header comment: "this
    * module never sees a raw GB save"), so this function has no earlier byte to
-   * re-derive from, even in principle -- a real boundary, not an oversight.
+   * re-derive from, even in principle -- NOTE (b216 review): this is a
+   * boundary for THIS FUNCTION only, not for the tree -- gen1_save.c:99 / gen2_save.c:422
+   * fold e-acute (0xBA / 0xEA) to a plain 'e' BEFORE this runs, and both halves needed to
+   * carry it now exist (gen3 0x1B, this lane; gb_edit.c:682's "\xC3\xA9" <-> 0xBA/0xEA,
+   * already there). Emitting "\xC3\xA9" from those two decoders closes it -- measured
+   * lossless on a scratch patch, deliberately NOT done here: it changes GB decode
+   * tree-wide (UI, retail gate, sidecar, box names) and needs its own lane + full
+   * retail gate (BACKLOG #216b).
    *
    * The DOWN arm (Gen-3 -> GB, the OTHER hop) is a completely separate check,
    * unaffected by any of the above: bank_down_convert.c's own gb_name_changed()
