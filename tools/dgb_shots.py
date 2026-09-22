@@ -2073,10 +2073,16 @@ def run_b194_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> g
 
     s.tap("A", settle=gb_shots.BIG_SETTLE)                    # row 1 -> detail (same open shell)
     if which == "crystal":
-        cap02 = ("BACKLOG #202 A1: the detail card, same open shell -- each "
-                 "mon's real 16x16 Gen-2 ROM menu icon at the row's left "
-                 "(hof_card_icon_refresh/_blit), text shifted to column 3 to "
-                 "leave room")
+        cap02 = ("BACKLOG #202 A1 (BACKLOG #198 item 12 recaption): the detail "
+                 "card, same open shell -- each mon's real 16x16 Gen-2 ROM menu "
+                 "icon at the row's left (hof_card_icon_refresh/_blit), text "
+                 "shifted to column 3 to leave room -- this is the ROM's own "
+                 "ICON CLASS per species, not a per-species portrait: rows 4-6 "
+                 "(TYRANITAR/DELIBIRD/GRANBULL) render the SAME icon by design "
+                 "(Gen 2 has ~36 shared icon classes, pokecrystal's own data/"
+                 "pokemon/menu_icons.asm, reference only -- those three all map "
+                 "to ICON_MONSTER; TYPHLOSION=ICON_FOX, NOCTOWL=ICON_BIRD, "
+                 "MANTINE=ICON_FISH are each their own class), not a bug")
     else:
         cap02 = ("BACKLOG #202 F4: the detail card, same open shell -- Gen 1 "
                  "stays TEXT ONLY (a real gap: no per-species front-pic cache "
@@ -2161,9 +2167,19 @@ def run_b194_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> g
     s.shot("09_add_refusal", "BACKLOG #202 F4: ADD TEAM hits the SAME "
                               "in-session-only refusal as CLEAR ALL/EDIT")
     s.tap("A", settle=gb_shots.BIG_SETTLE)                    # dismiss -- A2: no reopen, same shell
+    # BACKLOG #198 item 13: the team count is this corpus save's own baseline +1
+    # (ADD TEAM's real append), NOT a flat number -- Red's own Red.sav starts at
+    # 9 teams (-> 10 after this add), Crystal's own Crystal.sav starts at 6 (-> 7)
+    # -- a RED-only hardcode ("10 teams (was 9)") silently mislabelled crystal's
+    # own "7 teams (life 7)" header (verified live, both games, both corpus
+    # saves; real cartridge data, not a design invariant -- if this corpus is
+    # ever replaced, re-verify these two numbers rather than trust them frozen).
+    count_after_add = {"red": 10, "crystal": 7}[which]
+    count_before_add = count_after_add - 1
     s.shot("10_add_back_on_list", "BACKLOG #202 A2: dismissed -- back on the "
                                    "LIST card (the SAME shell), now showing "
-                                   "10 teams (was 9) with the new team "
+                                   f"{count_after_add} teams (was {count_before_add}) "
+                                   "with the new team "
                                    "'1: Lv5-5' on top -- the write DID land "
                                    "in-session (RAM); only the FLASH persist "
                                    "leg of gb_persist() refuses in the "
