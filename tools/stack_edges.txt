@@ -127,15 +127,17 @@
 # count on main at the time these lines were added; raise it (with a dated
 # comment explaining why) when a genuine new count-only site is added on
 # purpose, never to silence an unexplained increase.
-# 2026-09-22 (BACKLOG #201 F3): +1 on all three variants for the new
-# `locate@rom_gbicon argsites=1 -> gb_art_icon_pass2` declaration above (the
-# rom_gbicon.c pass-1/pass-2 progress-reset hook) -- a genuine new indirect
-# call site, compiled into every variant since rom_gbicon.c is shared source,
-# and the walker cannot trace its register to a literal-pool target (same
-# "site count only" shape every other argsites= line in this file already has).
-count-only-max 49 variant=nor artless=1
-count-only-max 49 variant=nor
-count-only-max 49 variant=delta
+# BACKLOG #196 (2026-09-22, fix pass): main's own baseline moved 48 -> 49 (an
+# unrelated lane, b201, merged first). This lane's F2 (a per-page cache) was pulled
+# after review found it inert (see pdna_gbdex.c's own comment on gbdex_cell_art) --
+# only ONE genuinely new count-only dispatch site remains from this backlog,
+# pdna_origin_art_portrait_by_dex (the Gen-1 twin of pdna_origin_art_icon,
+# dispatching s_gb.pic through the same inlined fetch_pic_ex shape fetch_icon
+# already does, declared below with its own dated reasoning). 49 + 1 = 50.
+# Re-measured on all three variants after the strip.
+count-only-max 50 variant=nor artless=1
+count-only-max 50 variant=nor
+count-only-max 50 variant=delta
 
 # Delta-only -- the artless/normal (PDNA_TARGET=nor) links do not contain it:
 # Listing EVERY variant in variants= re-creates a blanket exemption -- if the symbol exists
@@ -585,6 +587,18 @@ fetch_pic_ex.constprop.0 argsites=1 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_
 # "parameter/register dispatch" with no field offset, i.e. the argsite bucket).
 # Verify by address before trusting this count on a future rebuild.
 fetch_icon argsites=2 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
+# BACKLOG #196: fetch_portrait_by_dex() is fetch_icon()'s Gen-1 twin (pdna_origin_
+# art.c) -- factored out of pdna_origin_art_portrait_by_dex() the same way fetch_icon
+# was factored out of pdna_origin_art_icon(), calling fetch_pic_ex() with icon=0 (the
+# ordinary portrait rung, s_gb.pic) instead of icon=1 (s_gb.icon). -O2 inlines it into
+# pdna_origin_art_portrait_by_dex's own compiled body (same "constprop clone" shape as
+# fetch_pic_ex.constprop.0's own precedent) -- --dump-sites shows exactly TWO sites
+# attributed to pdna_origin_art_portrait_by_dex itself: one plain argsite (this line)
+# and one field hit at the SAME collision offset (44) fetch_pic_ex.constprop.0 and
+# pdna_origin_art_portrait already piggyback on -- see the `BoxSource.can_edit @44`
+# line below, which now also names this function. Verify by address on BOTH ELFs
+# before trusting this count on a future rebuild.
+pdna_origin_art_portrait_by_dex argsites=1 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
 
 # gen1_save.c's Gen1ReadFn `rd` parameter (gen1_open_ranged) and rom_gblearn.c's
 # GbReadFn `read` parameter (rom_gblearn_open -> gbl_verify -> walk_entry), both
@@ -1271,7 +1285,7 @@ AppSrcOps.item @32 in pdna_dex_screen -> dex_state dex_set_state dex_get_nationa
 AppSrcOps.dup @36 in pdna_dex_screen -> dex_state dex_set_state dex_get_national dex_set_national
 AppSrcOps.create @28 in pdna_origin_box_art,pdna_origin_box_art_wanted -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
 BoxSource.get_name @28 in draw_box_banner -> banksrc_get_name gbsrc_get_name pcsrc_get_name
-BoxSource.can_edit @44 in pdna_origin_art_portrait,pdna_origin_box_art -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
+BoxSource.can_edit @44 in pdna_origin_art_portrait,pdna_origin_box_art,pdna_origin_art_portrait_by_dex -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
 # BoxSource.can_edit@44 has no field site of its OWN anywhere in this build (every
 # real can_edit() dispatch goes through pdna_box's declared argsites=4 spilled class
 # below) -- the offset is real (source/pdna_box.h, verified against the header) but

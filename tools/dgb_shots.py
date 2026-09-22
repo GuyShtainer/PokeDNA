@@ -186,6 +186,21 @@ def nav_to_gb_import(s: gb_shots.Session) -> None:
 # savings this backlog item was for.
 GB_ART_COLD_SETTLE = 22500
 
+# BACKLOG #196 (fix pass, 2026-09-22): a GB-served dex PAGE PAINT is 21 real per-cell
+# ROM fetches (pdna_origin_art_portrait_by_dex() for Gen 1, pdna_origin_art_icon() for
+# Gen 2) -- before this backlog Red's dex grid drew instant name-chip text (no ROM I/O
+# at all), so BIG_SETTLE (40 frames) was always enough for Red; it is NOT enough now.
+# Measured (frame-diff probe, after the whole-ROM cold scan was already paid via
+# GB_ART_COLD_SETTLE earlier in the SAME navigation): Red's grid area is still 3,814
+# nonzero px at +60 frames after the L-press and 0 at +90; 180 is that measured
+# stabilization point (~150 frames) plus ~20% margin, not a guess. Crystal's OWN page
+# was already stable well inside BIG_SETTLE when probed the same way -- applied here
+# too anyway (a fix-pass review finding: keeping BOTH games on the SAME settle,
+# gated only on "a ROM is actually present" (`not fallback`), is simpler and more
+# robust than a per-generation special case that assumes Gen 2 will always stay
+# cheap -- costs a little extra emulated time on Crystal, changes nothing it shows).
+GB196_GB_PAGE_SETTLE = 180
+
 # BACKLOG #118 (orchestrator ruling 2026-09-12, after an h118 STOP on the brief's
 # original oracle.py-based design -- oracle.py's compose() reads Game Boy PPU
 # registers/VRAM off a bare `GbDriver` GB/GBC core (tools/gb_roundtrip.py:356);
@@ -3130,16 +3145,22 @@ def run_b124_dexicons(core_mod, image_mod, rom: Path, out_dir: Path, which: str,
 
     # ARTLESS DEFAULT IS LIST (mon_icon_for(1) is NULL in this shot vehicle) --
     # L once -> DV_GRID, the view dex_cell_grid()'s override actually paints.
-    s.tap("L", settle=gb_shots.BIG_SETTLE)
-    s.shot("02_dex_grid", "#124: DV_GRID page 1 -- " +
+    # BACKLOG #196: a GB-served page (a ROM is present, `not fallback`) does 21 REAL
+    # per-cell ROM fetches on this one repaint -- GB196_GB_PAGE_SETTLE, not
+    # BIG_SETTLE, or "02_dex_grid" (and bobcheck's own frame A, which reuses this
+    # exact session state with no further settle of its own) can be captured
+    # mid-paint. Applied to BOTH games (see the constant's own comment for why).
+    settle = GB196_GB_PAGE_SETTLE if not fallback else gb_shots.BIG_SETTLE
+    s.tap("L", settle=settle)
+    s.shot("02_dex_grid", "#124/#196: DV_GRID page 1 -- " +
            ("GB ROM icons via gbdex_cell_art() for every seen/caught species (this "
             "backlog's own render)" if (which == "crystal" and not fallback) else
-            "Gen 1: unchanged icon-store/mon_icon_for grid (gb_art_source.c's own "
-            "rule -- Gen 1 has no menu icons, gbdex_cell_art() self-gates on "
-            "s->gen != GB_GEN2)" if which == "red" else
-            "no GB ROM registered (fallback image) -- pdna_origin_art_have(PDNA_GEN2) "
+            "BACKLOG #196: the ROM's own Gen-1 front sprites (4 DMG greys), via "
+            "pdna_origin_art_portrait_by_dex() -- Red no longer falls to the "
+            "icon-store/name-chip ladder" if (which == "red" and not fallback) else
+            "no GB ROM registered (fallback image) -- pdna_origin_art_have() "
             "refuses, dex_cell_grid() falls straight back to the unchanged icon-store "
-            "ladder, byte-identical to a pre-#124 build"))
+            "ladder, byte-identical to a pre-#124/#196 build"))
     return s
 
 
@@ -3190,18 +3211,37 @@ def run_b124_bobcheck(core_mod, image_mod, rom: Path, out_dir: Path, which: str)
           f"({'BOBBING (differs)' if max_nonzero else 'STATIC (identical) -- would be the bug if this session should serve GB'})")
 
 
-def measure_dex_sd_reads(core_mod, image_mod, rom: Path, out_dir: Path) -> None:
-    """BACKLOG #124 step 2: the 'perf dex:' log line's own `sd Xr/...` field for ONE
-    Crystal dex-grid page (run_b124_dexicons's exact navigation, GB ROM registered,
-    no fallback) against the SAME image's box-grid 'perf box:'/'perf bank:' line for
-    a comparable single-page paint -- both spans already exist in this tree
-    (pdna_pick.c's pdna_dex_screen() and pdna_box.c's own span), so this reuses them
-    rather than adding new instrumentation. Installs a capturing logger (same
-    mechanism as tools/perf_parity.py's load_mgba_capturing) instead of taking
-    screenshots, and just prints every 'perf ' line captured during the run -- read
-    the LAST 'perf dex: ... sd Nr/...' and 'perf box:'/'perf bank: ... sd Nr/...'
-    lines by hand off stdout (no parser here: this is a one-off measurement, not a
-    gate this tool enforces)."""
+def measure_dex_sd_reads(core_mod, image_mod, rom: Path, out_dir: Path, which: str = "crystal") -> None:
+    """BACKLOG #124 step 2 (BACKLOG #196: `which` generalised from a Crystal-only
+    hardcode so the SAME measurement can run against a single-ROM Red image too --
+    Red's dex grid drew NOTHING from the GB rung before #196 (Gen 1 self-refused and
+    fell to the icon-store ladder), so a `which="red"` run before #196 is the "before"
+    half of that feature's own report; after #196 it exercises the new Gen-1 front-
+    pic rung). The 'perf dex:' log line's own `sd Xr/...` field for ONE dex-grid page
+    (run_b124_dexicons's exact navigation, GB ROM registered, no fallback) against
+    the SAME image's box-grid 'perf box:'/'perf bank:' line for a comparable
+    single-page paint -- both spans already exist in this tree (pdna_pick.c's
+    pdna_dex_screen() and pdna_box.c's own span), so this reuses them rather than
+    adding new instrumentation. Installs a capturing logger (same mechanism as
+    tools/perf_parity.py's load_mgba_capturing) instead of taking screenshots, and
+    just prints every 'perf ' line captured during the run -- read the LAST
+    'perf dex: ... sd Nr/...' and 'perf box:'/'perf bank: ... sd Nr/...' lines by
+    hand off stdout (no parser here: this is a one-off measurement, not a gate this
+    tool enforces).
+
+    HARDWARE-ONLY CAVEAT (BACKLOG #196 report): this `--image` is always a `make
+    delta-artless` + fuse_gb.py single-ROM fuse, i.e. the PDNA_DELTA build variant --
+    gb_art_source.c's PDNA_DELTA half reads the GB ROM straight out of cart address
+    space via fused_gb_rom() (fused_gb.h), NEVER through FatFs/`f_open`/disk_read, so
+    `perf_sd.rd` (the counter 'perf dex: sd Nr' actually reads) is architecturally
+    fixed at 0 on this vehicle no matter what the dex screen does -- the emulator
+    cannot exercise the real SD path at all (no SD card is emulated; the ONLY
+    non-PDNA_DELTA build is the hardware SD-mode build, `make`/`make sd`, which this
+    harness cannot run). The real per-page SD-read cost this feature actually changes
+    is therefore a hardware-only number -- see the BACKLOG #196 report's own fetch-
+    CALL-COUNT proxy (which maps 1:1 to f_open count on the real SD build, per
+    gb_art_source.h's own header comment) for the provable, non-hardware-only
+    evidence that this feature reduces I/O."""
     lines: list[str] = []
     log_mod = getattr(core_mod, "log", None)
     if log_mod is None:
@@ -3216,10 +3256,10 @@ def measure_dex_sd_reads(core_mod, image_mod, rom: Path, out_dir: Path) -> None:
             lines.append(m)
 
     log_mod.install_default(Capture())
-    s = run_b124_dexicons(core_mod, image_mod, rom, out_dir, "crystal", fallback=False)
+    s = run_b124_dexicons(core_mod, image_mod, rom, out_dir, which, fallback=False)
     s.run(150)   # let perf's rate-limited flush land (perf_parity.py's own FLUSH_SETTLE)
-    print("== BACKLOG #124 step 2: captured perf lines (read 'perf dex:'/'perf box:'"
-          "/'perf bank:' sd Nr by hand) ==")
+    print(f"== BACKLOG #124/#196 step 2: captured perf lines ({which}) -- read 'perf dex:'/"
+          "'perf box:'/'perf bank:' sd Nr by hand ==")
     for l in lines:
         if l.startswith("perf "):
             print(f"  {l}")
@@ -5358,6 +5398,16 @@ def main(argv=None) -> int:
                           "--image (a Crystal single-ROM fused image, GB ROM present) "
                           "and print every captured 'perf ' log line instead of taking "
                           "screenshots.")
+    ap.add_argument("--b196-sdreads", choices=("red", "crystal"),
+                     help="BACKLOG #196: measure_dex_sd_reads() against --image (a "
+                          "ONE-ROM fused image of the NAMED game, GB ROM present) -- "
+                          "the generalised (Red or Crystal) form of --b124-sdcount, "
+                          "for the before/after 'perf dex: sd Nr' comparison this "
+                          "backlog's report needs on BOTH generations, not just "
+                          "Crystal. See measure_dex_sd_reads()'s own docstring for "
+                          "why this counter is architecturally 0 on this (PDNA_DELTA) "
+                          "vehicle regardless of what this feature does -- hardware-"
+                          "only.")
     ap.add_argument("--b85-daycare", choices=("red", "gold"),
                      help="BACKLOG #85: only run_b85_daycare() against --image for "
                           "the named game (Red's one-slot Day Care, or Gold's "
@@ -5926,6 +5976,9 @@ def main(argv=None) -> int:
         ran = True
     if a.b124_sdcount:
         measure_dex_sd_reads(core_mod, image_mod, a.image, a.out)
+        ran = True
+    if a.b196_sdreads:
+        measure_dex_sd_reads(core_mod, image_mod, a.image, a.out, which=a.b196_sdreads)
         ran = True
     if a.b124_bobcheck:
         run_b124_bobcheck(core_mod, image_mod, a.image, a.out, a.b124_bobcheck)

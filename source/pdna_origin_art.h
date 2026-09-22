@@ -636,6 +636,26 @@ int pdna_origin_box_art(int slot, const PkMon* m, PdnaArt* out);
  * enough stack room right now, or the ROM cannot serve this species. */
 int pdna_origin_art_icon(uint16_t dex, PdnaArt* out);
 
+/* BACKLOG #196: the Gen-1 TWIN of pdna_origin_art_icon() directly above -- a caller
+ * with no PkMon / place / era question of its own, just a raw national dex number
+ * 1..151, wants the Gen-1 ROM's own FRONT SPRITE for it (the Pokedex grid's Gen-1
+ * cells; Gen 1 has no menu icons at all, so this is the portrait rung, not the icon
+ * one). pdna_origin_art_portrait() ABOVE cannot serve this caller: its era decision
+ * needs a REAL owned PkMon carrying a provable Gen-1/2-import signature
+ * (pdna_origin_of()'s signature_miss gate refuses a synthetic/zeroed mon outright)
+ * and a registered SE_PLACE_* (sprite_era.h) the Pokedex screen has no entry in --
+ * see pdna_gbdex.c's own header comment for the full story of why this needed a NEW
+ * entry point rather than reusing pdna_origin_art_portrait() the way era_cell_blit()
+ * (pdna_box.c) does for an OWNED box mon. Same have()/stack-room/fetch sequence as
+ * pdna_origin_art_icon(), through the portrait rung (fetch_pic_ex's icon=0 branch)
+ * instead of the icon rung, gated on PDNA_GB_FETCH_NEED (the portrait rung's own
+ * measured need, gb_art_source.h) rather than PDNA_GB_ICON_NEED. Always the plain
+ * front sprite, form 0, never shiny, never back -- a dex-grid reference picture has
+ * no "which specific owned mon" question to answer. Same refusal semantics as every
+ * other rung: 0 and `out` left zeroed when no Gen-1 ROM is registered, there is not
+ * enough stack room right now, or the ROM cannot serve this species. */
+int pdna_origin_art_portrait_by_dex(uint16_t dex, PdnaArt* out);
+
 /*
  * Scale one era picture into a CELL-SIZED image the UI can blit, in exactly the format
  * ui_sprite() takes: dw*dh RGB15 pixels, row-major, 0 = transparent and 0x8000|RGB15

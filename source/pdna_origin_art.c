@@ -859,6 +859,35 @@ int pdna_origin_art_icon(uint16_t dex, PdnaArt* out) {
   return fetch_icon(dex, out);
 }
 
+/* BACKLOG #196: the Gen-1 TWIN of fetch_icon() above -- same shape, same reason to
+ * exist (a caller with no PkMon / place / era question of its own, just a raw
+ * national dex number 1..151, wants the Gen-1 ROM's own front sprite for it: the
+ * Pokedex grid's Gen-1 cells). Gated on PDNA_GB_FETCH_NEED (the PORTRAIT rung's own
+ * measured need, gb_art_source.h), not PDNA_GB_ICON_NEED -- this goes through
+ * fetch_pic_ex's icon=0 branch (s_gb.pic, the same rung pdna_origin_art_portrait()'s
+ * own ERA_GEN1 branch uses below), never s_gb.icon (Gen 1 has no menu icons at all,
+ * gb_art_source.c's own rule -- unreachable here by construction: PDNA_GEN1 is
+ * never the `gen` fetch_icon()'s icon=1 call passes). Always form 0, never back,
+ * never shiny -- a dex-grid reference picture has no "which specific owned mon"
+ * question to answer, exactly like fetch_icon()'s own Gen-2 icon has none either. */
+static int fetch_portrait_by_dex(uint16_t dex, PdnaArt* out) {
+  if (!s_gb_on || !s_gb.pic) return 0;
+  if (!pdna_origin_art_have(PDNA_GEN1)) return 0;
+  if (!pdna_origin_art_stack_room(PDNA_GB_FETCH_NEED)) return 0;
+  uint8_t w = 0, h = 0;
+  const uint16_t* px = fetch_pic_ex(PDNA_GEN1, dex, /*form=*/0, /*want_back=*/0,
+                                    /*shiny=*/0, /*icon=*/0, &w, &h);
+  if (!px || !w || !h) return 0;
+  out->px = px; out->w = w; out->h = h; out->gen = PDNA_GEN1;
+  return 1;
+}
+
+int pdna_origin_art_portrait_by_dex(uint16_t dex, PdnaArt* out) {
+  if (out) memset(out, 0, sizeof *out);
+  if (!out) return 0;
+  return fetch_portrait_by_dex(dex, out);
+}
+
 int pdna_origin_box_art(int slot, const PkMon* m, PdnaArt* out) {
   (void)slot;   /* the cache decides the MARKER; the art is always recomputed from the
                  * record, so a stale cache can never put the wrong picture on screen */
