@@ -65,6 +65,15 @@
 #define G3_MON_SIZE           100     /* sizeof(struct Pokemon)                   */
 #define G3_PARTY_SIZE         6
 
+/* BACKLOG #225: struct Pokemon's plaintext `mail` byte -- pokeemerald's own
+ * include/pokemon.h:219-232 (struct BoxPokemon box[80]; u32 status; u8 level;
+ * u8 mail; ...), so it sits at offset 80+4+1 = 85 = 0x55 within the 100-byte
+ * party record. "No mail" is MAIL_NONE, NOT 0 -- 0 is mail slot 0 (a real
+ * held mail item index). assets/upstream/pokeemerald/include/constants/
+ * items.h:448 `#define MAIL_NONE 0xFF`. */
+#define G3_PARTY_MAIL_OFF     0x55
+#define G3_MAIL_NONE          0xFF
+
 typedef enum {
   G3_VER_UNKNOWN = 0,
   G3_VER_RS      = 1,   /* Ruby AND Sapphire (identical save format) */

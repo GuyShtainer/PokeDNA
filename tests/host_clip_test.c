@@ -61,6 +61,15 @@ int main(int argc, char** argv) {
     PkMon m; pk_decode_mon(p100, true, &m);
     printf("(1) box->party->box ok; derived party Lv=%u\n", m.level);
     CHECK(!m.isBadEgg && m.level >= 1, "box->party derives a valid level/stats");
+    /* BACKLOG #225: retail's "no mail" is MAIL_NONE (0xFF), not 0 -- 0 is a
+     * real mail-slot index. Every box->party expansion in the tree routes
+     * through em_set_party_flag(e, true) (gen3_edit.c), so pinning it here
+     * (via clip_to_record, the clipboard's own box->party path) covers
+     * box_to_party/party_append/the Day-Care return/party_place_held too --
+     * they all call the same function. */
+    CHECK(p100[G3_PARTY_MAIL_OFF] == G3_MAIL_NONE,
+          "box->party writes MAIL_NONE (0xFF) at 0x55, not 0x00");
+    printf("(1b) party mail byte 0x55 = 0x%02X\n", p100[G3_PARTY_MAIL_OFF]);
   }
 
   /* (2) party -> box == the party record's first 80 bytes */

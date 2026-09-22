@@ -601,6 +601,13 @@ void em_set_party_flag(EditMon* e, bool is_party) {
     uint16_t species = rd16(e->sub[0] + 0);
     uint32_t exp = rd32(e->sub[0] + 4);
     e->raw[0x54] = pk_level_from_exp(pk_species_growth(species), exp);
+    /* BACKLOG #225: a box(80) record has no plaintext tail, so e->raw[0x55]
+     * came out of gen3_edit_load's memset(e,0,...) as 0x00 -- retail's own
+     * "no mail" is MAIL_NONE (0xFF); 0x00 is mail slot 0, a real held mail
+     * item index (see gen3_save.h's G3_PARTY_MAIL_OFF/G3_MAIL_NONE citation).
+     * This is the ONE box->party expansion point (every caller in the tree
+     * routes through it), so this is the one place that needs the write. */
+    e->raw[G3_PARTY_MAIL_OFF] = G3_MAIL_NONE;
     recompute_party_stats(e);
   }
 }
