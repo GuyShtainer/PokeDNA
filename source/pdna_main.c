@@ -3958,35 +3958,208 @@ static bool app_copy(uint8_t* rec, bool is_party) {
   return false;                                          /* no save change */
 }
 
-/* S5-B section 10: the merge confirm screen shown once app_paste_gb_merge() has found a
- * matching sidecar entry. Lists what gbsc_merge_up() actually changed -- all-false is
- * the common case, the Game Boy record is exactly what gen3_to_gb() produced -- plus
- * the one line that is true for every merge: the sidecar's OWN EVs land, not whatever
- * the Game Boy's stat exp happens to show. */
-static bool app_sidecar_confirm(const GbscMergeReport* rep) {
-  ui_clear();
-  ui_panel(PDNA_SIDECAR_PANEL_X, PDNA_SIDECAR_PANEL_Y, PDNA_SIDECAR_PANEL_W,
-           PDNA_SIDECAR_PANEL_H, UI_PANEL, UI_OK);
-  ui_ptext_fit(PDNA_SIDECAR_TEXT_X, PDNA_SIDECAR_PANEL_Y + 8, PDNA_SIDECAR_TEXT_MAXW,
-               UI_OK, PDNA_SIDECAR_CONFIRM_TITLE);
+/* BACKLOG #150 S150-9 decision 5: the Gen-3-home direction's own report shape
+ * (GbscMergeReport) adapted into the shared XrMergeReport the merge screen reads --
+ * same six field names (s150-8b decision 12 designed them for exactly this), so this
+ * is a straight copy plus the two new S150-9 numbers gb_sidecar.c's
+ * merge_species_and_level() already fills. */
+static void xr_report_from_gbsc(const GbscMergeReport* g, XrMergeReport* x) {
+  memset(x, 0, sizeof *x);
+  x->evolved = g->evolved;
+  x->level_changed = g->level_changed;
+  x->moves_changed = g->moves_changed;
+  x->renamed = g->renamed;
+  x->rename_refused = g->rename_refused;
+  x->gb_item_ignored = g->gb_item_ignored;
+  x->level_from = g->level_from;
+  x->level_to = g->level_to;
+}
 
-  int y = PDNA_SIDECAR_LINE_Y0;
-  if (rep->evolved)        { ui_ptext_fit(PDNA_SIDECAR_TEXT_X, y, PDNA_SIDECAR_TEXT_MAXW, UI_TEXT, PDNA_SIDECAR_L_EVOLVED);        y += PDNA_SIDECAR_LINE_H; }
-  if (rep->level_changed)  { ui_ptext_fit(PDNA_SIDECAR_TEXT_X, y, PDNA_SIDECAR_TEXT_MAXW, UI_TEXT, PDNA_SIDECAR_L_LEVEL);          y += PDNA_SIDECAR_LINE_H; }
-  if (rep->moves_changed)  { ui_ptext_fit(PDNA_SIDECAR_TEXT_X, y, PDNA_SIDECAR_TEXT_MAXW, UI_TEXT, PDNA_SIDECAR_L_MOVES);          y += PDNA_SIDECAR_LINE_H; }
-  if (rep->renamed)        { ui_ptext_fit(PDNA_SIDECAR_TEXT_X, y, PDNA_SIDECAR_TEXT_MAXW, UI_TEXT, PDNA_SIDECAR_L_RENAMED);        y += PDNA_SIDECAR_LINE_H; }
-  if (rep->rename_refused) { ui_ptext_fit(PDNA_SIDECAR_TEXT_X, y, PDNA_SIDECAR_TEXT_MAXW, UI_TEXT, PDNA_SIDECAR_L_RENAME_REFUSED); y += PDNA_SIDECAR_LINE_H; }
-  if (rep->gb_item_ignored){ ui_ptext_fit(PDNA_SIDECAR_TEXT_X, y, PDNA_SIDECAR_TEXT_MAXW, UI_TEXT, PDNA_SIDECAR_L_ITEM_IGNORED);   y += PDNA_SIDECAR_LINE_H; }
-  y += PDNA_SIDECAR_EVS_GAP;
-  ui_ptext_fit(PDNA_SIDECAR_TEXT_X, y, PDNA_SIDECAR_TEXT_MAXW, UI_DIM, PDNA_SIDECAR_L_EVS);
-  y += PDNA_SIDECAR_LINE_H + PDNA_SIDECAR_AB_GAP;
-  ui_text(PDNA_SIDECAR_TEXT_X, y, UI_TEXT, PDNA_SIDECAR_A_PASTE); y += PDNA_SIDECAR_LINE_H;
-  ui_text(PDNA_SIDECAR_TEXT_X, y, UI_DIM, PDNA_SIDECAR_B_CANCEL);
+/* BACKLOG #150 S150-9 decision 6: one row of the shared merge screen. A toggle row
+ * (KEEP/TAKE, cursor can land on it) or a fixed read-only line -- never both. */
+#define XFERMERGE_MAX_ROWS 7
+typedef struct {
+  bool     toggle;
+  uint8_t  bit;          /* XR_ACCEPT_* -- valid iff toggle */
+  char     text[40];
+} XferMergeRow;
 
-  u16 k; do { vsync(); k = key_hit(KEY_A | KEY_B); } while (!k);
-  bool yes = (k & KEY_A) != 0;
-  if (yes) snd_ok(); else snd_back();
-  return yes;
+/* A bounded, literal-only copy (never snprintf's "%s" path -- BACKLOG #150 S150-9
+ * finding: newlib's full vfprintf drags in __sbprintf/_vfiprintf_r, an UNDECLARED
+ * mutually-recursive pair the stack walker cannot bound, which fails the gate outright
+ * ("STACK_BUDGET UNDECLARED RECURSION"). Every row string here is either a literal
+ * constant (this helper) or the one %u,%u format (siprintf, the tree's own lightweight
+ * integer-only printf, used throughout for exactly this reason). */
+static void xfermerge_setrow(char* dst, size_t cap, const char* src) {
+  size_t i = 0;
+  for (; i + 1 < cap && src[i]; i++) dst[i] = src[i];
+  dst[i] = 0;
+}
+
+/* Builds up to XFERMERGE_MAX_ROWS rows for `rep`/`dir` (decision 6's row list, per
+ * direction). Returns the row count. A hard cap (golden rule 2: every loop has a
+ * provable bound) -- in practice UP shows at most species+level+moves+(nick-or-
+ * RO_RENAME)+RO_ITEM_BACK+EVS == 6, DOWN at most level+moves+(nick-or-RO_RENAME)+
+ * RO_EVOLVED+(RO_ITEM_DROP-or-RO_ITEM_BACK)+RO_MOVE == 6 -- one row under the cap
+ * either way (the mutual exclusions noted above), so the panel's own bottom border
+ * (checked by the _Static_assert on app_xfer_merge_screen below) is never at risk. */
+static int xfermerge_build_rows(const XrMergeReport* rep, uint8_t dir, XferMergeRow rows[XFERMERGE_MAX_ROWS]) {
+  int n = 0;
+  if (dir == XR_MERGE_UP) {
+    if (rep->evolved && n < XFERMERGE_MAX_ROWS) {
+      rows[n].toggle = true; rows[n].bit = XR_ACCEPT_SPECIES;
+      xfermerge_setrow(rows[n].text, sizeof rows[n].text, PDNA_XFERMERGE_ROW_SPECIES);
+      n++;
+    }
+    if (rep->level_changed && n < XFERMERGE_MAX_ROWS) {
+      rows[n].toggle = true; rows[n].bit = XR_ACCEPT_LEVEL;
+      siprintf(rows[n].text, PDNA_XFERMERGE_ROW_LEVEL_FMT,
+               (unsigned)rep->level_from, (unsigned)rep->level_to);
+      n++;
+    }
+    if (rep->moves_changed && n < XFERMERGE_MAX_ROWS) {
+      rows[n].toggle = true; rows[n].bit = XR_ACCEPT_MOVES;
+      xfermerge_setrow(rows[n].text, sizeof rows[n].text, PDNA_XFERMERGE_ROW_MOVES);
+      n++;
+    }
+    if (rep->renamed && n < XFERMERGE_MAX_ROWS) {
+      rows[n].toggle = true; rows[n].bit = XR_ACCEPT_NICK;
+      xfermerge_setrow(rows[n].text, sizeof rows[n].text, PDNA_XFERMERGE_ROW_NICK);
+      n++;
+    } else if (rep->rename_refused && n < XFERMERGE_MAX_ROWS) {
+      rows[n].toggle = false;
+      xfermerge_setrow(rows[n].text, sizeof rows[n].text, PDNA_XFERMERGE_RO_RENAME);
+      n++;
+    }
+    if (rep->gb_item_ignored && n < XFERMERGE_MAX_ROWS) {
+      rows[n].toggle = false;
+      xfermerge_setrow(rows[n].text, sizeof rows[n].text, PDNA_XFERMERGE_RO_ITEM_BACK);
+      n++;
+    }
+    if (n < XFERMERGE_MAX_ROWS) {   /* decision 7: always shown for XR_MERGE_UP */
+      rows[n].toggle = false;
+      xfermerge_setrow(rows[n].text, sizeof rows[n].text, PDNA_SIDECAR_L_EVS);
+      n++;
+    }
+  } else {   /* XR_MERGE_DOWN -- decision 4: species is read-only here, never a toggle */
+    if (rep->level_changed && n < XFERMERGE_MAX_ROWS) {
+      rows[n].toggle = true; rows[n].bit = XR_ACCEPT_LEVEL;
+      siprintf(rows[n].text, PDNA_XFERMERGE_ROW_LEVEL_FMT,
+               (unsigned)rep->level_from, (unsigned)rep->level_to);
+      n++;
+    }
+    if (rep->moves_changed && n < XFERMERGE_MAX_ROWS) {
+      rows[n].toggle = true; rows[n].bit = XR_ACCEPT_MOVES;
+      xfermerge_setrow(rows[n].text, sizeof rows[n].text, PDNA_XFERMERGE_ROW_MOVES);
+      n++;
+    }
+    if (rep->renamed && n < XFERMERGE_MAX_ROWS) {
+      rows[n].toggle = true; rows[n].bit = XR_ACCEPT_NICK;
+      xfermerge_setrow(rows[n].text, sizeof rows[n].text, PDNA_XFERMERGE_ROW_NICK);
+      n++;
+    } else if (rep->rename_refused && n < XFERMERGE_MAX_ROWS) {
+      rows[n].toggle = false;
+      xfermerge_setrow(rows[n].text, sizeof rows[n].text, PDNA_XFERMERGE_RO_RENAME);
+      n++;
+    }
+    if (rep->evolved && n < XFERMERGE_MAX_ROWS) {
+      rows[n].toggle = false;
+      xfermerge_setrow(rows[n].text, sizeof rows[n].text, PDNA_XFERMERGE_RO_EVOLVED);
+      n++;
+    }
+    if (rep->abroad_item_dropped && n < XFERMERGE_MAX_ROWS) {
+      rows[n].toggle = false;
+      xfermerge_setrow(rows[n].text, sizeof rows[n].text, PDNA_XFERMERGE_RO_ITEM_DROP);
+      n++;
+    } else if (rep->gb_item_ignored && n < XFERMERGE_MAX_ROWS) {
+      rows[n].toggle = false;
+      xfermerge_setrow(rows[n].text, sizeof rows[n].text, PDNA_XFERMERGE_RO_ITEM_BACK);
+      n++;
+    }
+    bool any_move_refused = rep->move_refused[0] || rep->move_refused[1] ||
+                            rep->move_refused[2] || rep->move_refused[3];
+    if (any_move_refused && n < XFERMERGE_MAX_ROWS) {
+      rows[n].toggle = false;
+      xfermerge_setrow(rows[n].text, sizeof rows[n].text, PDNA_XFERMERGE_RO_MOVE);
+      n++;
+    }
+  }
+  return n;
+}
+
+/* Geometry guard (decision 6): the worst case this builder can produce is
+ * XFERMERGE_MAX_ROWS (7) rows -- one more than either direction's real maximum (6,
+ * see xfermerge_build_rows' own comment), kept as a defensive margin. 7 rows plus one
+ * gap must clear the fixed footer at PANEL_Y + PANEL_H - 24 (134). Chosen option
+ * (decision 6's "pick one"): cap the row count (already enforced above), NOT drop
+ * EVS_GAP -- 44 + 7*10 + 4 = 118 <= 134, no need to touch the gap at all. */
+_Static_assert(PDNA_SIDECAR_LINE_Y0 + XFERMERGE_MAX_ROWS * PDNA_SIDECAR_LINE_H +
+               PDNA_SIDECAR_EVS_GAP <= PDNA_SIDECAR_PANEL_Y + PDNA_SIDECAR_PANEL_H - 24,
+               "merge screen rows overflow the panel");
+
+/* BACKLOG #150 S150-9 decision 6: the shared per-field merge screen, both directions.
+ * Every key does a FULL panel repaint (a modal, no OAM, <= 7 rows -- no partial-
+ * repaint tricks, memory "four trap classes of partial repaint"). */
+bool app_xfer_merge_screen(const XrMergeReport* rep, uint8_t dir, uint8_t* accept) {
+  if (accept) *accept = 0;
+  XferMergeRow rows[XFERMERGE_MAX_ROWS];
+  int n = xfermerge_build_rows(rep, dir, rows);
+  if (dir == XR_MERGE_DOWN && n == 0) return true;   /* decision 7: nothing to say, stay silent */
+
+  bool state[XFERMERGE_MAX_ROWS];
+  memset(state, 0, sizeof state);                     /* every toggle starts at KEEP */
+  int toggle_idx[XFERMERGE_MAX_ROWS];
+  int ntoggle = 0;
+  for (int i = 0; i < n; i++) if (rows[i].toggle) toggle_idx[ntoggle++] = i;
+  int cur = 0;   /* index into toggle_idx, cursor position */
+
+  const char* title = (dir == XR_MERGE_UP) ? PDNA_XFERMERGE_TITLE_UP : PDNA_XFERMERGE_TITLE_DOWN;
+
+  for (;;) {
+    ui_clear();
+    ui_panel(PDNA_SIDECAR_PANEL_X, PDNA_SIDECAR_PANEL_Y, PDNA_SIDECAR_PANEL_W,
+             PDNA_SIDECAR_PANEL_H, UI_PANEL, UI_OK);
+    ui_ptext_fit(PDNA_SIDECAR_TEXT_X, PDNA_SIDECAR_PANEL_Y + 8, PDNA_SIDECAR_TEXT_MAXW,
+                 UI_OK, title);
+
+    int y = PDNA_SIDECAR_LINE_Y0;
+    for (int i = 0; i < n; i++) {
+      if (rows[i].toggle) {
+        bool is_cursor = ntoggle > 0 && toggle_idx[cur] == i;
+        ui_text(PDNA_SIDECAR_TEXT_X, y, is_cursor ? UI_OK : UI_TEXT, is_cursor ? ">" : " ");
+        ui_ptext_fit(PDNA_SIDECAR_TEXT_X + 8, y, PDNA_SIDECAR_TEXT_MAXW - 40, UI_TEXT, rows[i].text);
+        bool taken = state[i];
+        ui_ptext_right(PDNA_SIDECAR_TEXT_X + PDNA_SIDECAR_TEXT_MAXW, y,
+                       taken ? UI_OK : UI_DIM, taken ? PDNA_XFERMERGE_TAKE : PDNA_XFERMERGE_KEEP);
+      } else {
+        ui_ptext_fit(PDNA_SIDECAR_TEXT_X, y, PDNA_SIDECAR_TEXT_MAXW, UI_DIM, rows[i].text);
+      }
+      y += PDNA_SIDECAR_LINE_H;
+    }
+
+    const char* hint = ntoggle > 0 ? PDNA_XFERMERGE_HINT_TOGGLE : PDNA_XFERMERGE_HINT_RO;
+    ui_ptext_fit(PDNA_SIDECAR_TEXT_X, PDNA_SIDECAR_PANEL_Y + PDNA_SIDECAR_PANEL_H - 24,
+                 PDNA_SIDECAR_TEXT_MAXW, UI_DIM, hint);
+
+    u16 k;
+    do { vsync(); k = key_hit(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B | KEY_START); } while (!k);
+    if (k & KEY_B) { snd_back(); return false; }
+    if (k & KEY_START) {
+      uint8_t acc = 0;
+      for (int t = 0; t < ntoggle; t++) if (state[toggle_idx[t]]) acc |= rows[toggle_idx[t]].bit;
+      if (accept) *accept = acc;
+      snd_ok();
+      return true;
+    }
+    if (ntoggle > 0) {
+      if (k & KEY_UP)   cur = cur ? cur - 1 : ntoggle - 1;
+      if (k & KEY_DOWN) cur = (cur + 1) % ntoggle;
+      if (k & (KEY_A | KEY_LEFT | KEY_RIGHT)) {
+        state[toggle_idx[cur]] = !state[toggle_idx[cur]];
+        snd_move();
+      }
+    }
+  }
 }
 
 /* BACKLOG #150 S150-8b review D6: the RESTORE edge's own per-row confirm, UX parity
@@ -4096,8 +4269,13 @@ static bool app_paste_gb_lookup(uint8_t* buf, uint32_t* len, const char* path,
     return false;
   }
 
+  /* BACKLOG #150 S150-9 decision 7: `out80` is now only the PROBE -- accept=0, the
+   * pure original -- used solely to build the report for the merge screen.
+   * app_paste_gb_commit() re-reads `e` and re-merges with the user's actual accept
+   * mask before committing. gbsc_merge_up_sel(..., 0, ...) is cheaper than the old
+   * gbsc_merge_up() call here: its output is never the commit's own record. */
   GbscEntry e;
-  if (!gbsc_get(buf, *len, found, &e) || !gbsc_merge_up(&e, &g_clip.gb, out80, rep)) {
+  if (!gbsc_get(buf, *len, found, &e) || !gbsc_merge_up_sel(&e, &g_clip.gb, 0, out80, rep)) {
     *handled = true;
     snd_error();
     msg_wait(PDNA_SIDECAR_MERGEFAIL_TITLE, UI_WARN, PDNA_SIDECAR_MERGEFAIL_L1, 0);
@@ -4109,14 +4287,33 @@ static bool app_paste_gb_lookup(uint8_t* buf, uint32_t* len, const char* path,
 
 /* Confirm + commit + sidecar-cleanup half of app_paste_gb_merge (S5-B review fix #11).
  * `buf`/`len` are the same GBSC_FILE_MAX buffer app_paste_gb_lookup() just filled;
- * `idx`/`merged`/`rep` are its output. Returns whatever app_commit_with_dex() returned
- * (false only for B on the confirm screen, or a downstream commit refusal -- both mean
- * "nothing landed", so the caller's *handled stays at its default true either way). */
+ * `idx`/`rep` are its output; `probe80` is app_paste_gb_lookup's DISCARDED accept=0
+ * probe (BACKLOG #150 S150-9 decision 7) -- never committed, only `merged`
+ * below (re-merged with the user's actual accept mask) is. Returns whatever
+ * app_commit_with_dex() returned (false only for B on the merge screen, or a
+ * downstream commit refusal -- both mean "nothing landed", so the caller's *handled
+ * stays at its default true either way). */
 static bool app_paste_gb_commit(uint8_t* buf, uint32_t* len, const char* path, int idx,
-                                const uint8_t merged[80], uint8_t* rec, bool is_party,
+                                const uint8_t probe80[80], uint8_t* rec, bool is_party,
                                 AppCommitFn commit, uint8_t* block,
                                 const GbscMergeReport* rep) {
-  if (!app_sidecar_confirm(rep)) return false;
+  (void)probe80;   /* the probe -- decision 7's own note; never committed */
+  XrMergeReport xrep;
+  xr_report_from_gbsc(rep, &xrep);
+  uint8_t accept = 0;
+  if (!app_xfer_merge_screen(&xrep, XR_MERGE_UP, &accept)) return false;
+
+  /* Re-read `e` (the lookup's find already validated the ledger once; a second
+   * gbsc_get() here is a cheap re-fetch of the same 128-byte entry, not a second
+   * search) and re-merge with the ACTUAL accept mask -- into a LOCAL frame buffer,
+   * never through `probe80`, which stays the lookup's own accept=0 probe. */
+  GbscEntry e;
+  uint8_t merged[80];
+  if (!gbsc_get(buf, *len, idx, &e) || !gbsc_merge_up_sel(&e, &g_clip.gb, accept, merged, NULL)) {
+    snd_error();
+    msg_wait(PDNA_SIDECAR_MERGEFAIL_TITLE, UI_WARN, PDNA_SIDECAR_MERGEFAIL_L1, 0);
+    return false;
+  }
 
   /* G-H6, the SECOND independent guard (belt is gbsc_merge_up's own native refusal,
    * source/gb_sidecar.c) -- BACKLOG #150 S150-6, §11.6/§11.12/§11.13's required
@@ -4219,12 +4416,12 @@ app_paste_gb_merge(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* blo
 
   uint8_t buf[GBSC_FILE_MAX];
   uint32_t len = 0;
-  uint8_t merged[80];
+  uint8_t probe80[80];   /* BACKLOG #150 S150-9 decision 7: discarded after the screen -- see app_paste_gb_commit */
   GbscMergeReport rep;
   int idx = -1;
-  if (!app_paste_gb_lookup(buf, &len, path, merged, &rep, &idx, handled)) return false;
+  if (!app_paste_gb_lookup(buf, &len, path, probe80, &rep, &idx, handled)) return false;
 
-  return app_paste_gb_commit(buf, &len, path, idx, merged, rec, is_party, commit, block, &rep);
+  return app_paste_gb_commit(buf, &len, path, idx, probe80, rec, is_party, commit, block, &rep);
 }
 
 static bool app_paste(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* block, bool occupied) {

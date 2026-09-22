@@ -974,17 +974,25 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * been made instead of being asked. */
 #define PDNA_SIDECAR_CORRUPT_MERGE_L1  "Paste the converted copy anyway?"
 
-/* The merge confirm screen (app_sidecar_confirm, pdna_main.c): one panel, up to six
- * conditional GbscMergeReport lines, then the always-shown EVs line, then A/B. */
+/* The merge confirm screen -- BACKLOG #150 S150-9 decision 6: app_sidecar_confirm
+ * (which owned this comment) is DELETED this slice, replaced by the shared
+ * app_xfer_merge_screen (pdna_main.c); the panel geometry below is that screen's
+ * chrome now. PDNA_SIDECAR_L_EVOLVED and PDNA_SIDECAR_A_PASTE were
+ * app_sidecar_confirm's own (never shared with app_xferrestore_confirm) and are
+ * DELETED with it, decision 13's "delete the dead ones... no orphan strings" --
+ * PDNA_XFERMERGE_ROW_SPECIES/KEEP/TAKE below replace the first, the new screen's
+ * hint strings replace the second. Every OTHER string here (L_LEVEL/L_MOVES/
+ * L_RENAMED/L_RENAME_REFUSED/L_ITEM_IGNORED/L_EVS/B_CANCEL/CONFIRM_TITLE) stays --
+ * app_xferrestore_confirm still uses them until this screen replaces ITS call site
+ * too (a later commit), and PDNA_SIDECAR_L_EVS/CONFIRM_TITLE are reused directly by
+ * the new screen (decision 7/13). */
 #define PDNA_SIDECAR_CONFIRM_TITLE   "RESTORED FROM THE SIDECAR"
-#define PDNA_SIDECAR_L_EVOLVED       "It evolved on the Game Boy."
 #define PDNA_SIDECAR_L_LEVEL         "Its level changed."
 #define PDNA_SIDECAR_L_MOVES         "Its moves changed."
 #define PDNA_SIDECAR_L_RENAMED       "It was renamed."
 #define PDNA_SIDECAR_L_RENAME_REFUSED "Rename refused, kept the old name."
 #define PDNA_SIDECAR_L_ITEM_IGNORED  "GB item ignored; kept the original."
 #define PDNA_SIDECAR_L_EVS           "EVs restored from the sidecar."
-#define PDNA_SIDECAR_A_PASTE         "A = paste"
 #define PDNA_SIDECAR_B_CANCEL        "B = cancel"
 #define PDNA_SIDECAR_PANEL_X         16
 #define PDNA_SIDECAR_PANEL_Y         14
@@ -1025,6 +1033,36 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * 10 -- so the wording says so). */
 #define PDNA_XFERRESTORE_L_EVOLVED "It evolved in Gen 3."
 #define PDNA_XFERRESTORE_A_OK      "A = restore"
+
+/* BACKLOG #150 S150-9 decision 6/13: the shared per-field MERGE screen
+ * (app_xfer_merge_screen, pdna_main.c) -- replaces app_sidecar_confirm (this commit)
+ * and app_xferrestore_confirm's call site in pc_bank_restore_up (a later commit).
+ * Same panel chrome as the two screens it replaces (PDNA_SIDECAR_PANEL_x, TEXT_x,
+ * LINE_x, EVS_GAP above). PDNA_SIDECAR_L_EVS is reused verbatim as the UP direction's
+ * always-shown read-only row (decision 7); PDNA_SIDECAR_B_CANCEL is reused for the
+ * one-row-only degenerate footer case is not needed here -- the new hint strings
+ * below always carry both keys on one line. */
+#define PDNA_XFERMERGE_TITLE_UP      PDNA_SIDECAR_CONFIRM_TITLE   /* reuse, decision 13 */
+#define PDNA_XFERMERGE_TITLE_DOWN    PDNA_XFERRESTORE_TITLE       /* reuse, decision 13 */
+#define PDNA_XFERMERGE_ROW_SPECIES   "Evolved abroad"
+#define PDNA_XFERMERGE_ROW_LEVEL_FMT "Level %u > %u"
+#define PDNA_XFERMERGE_ROW_MOVES     "Moves changed"
+#define PDNA_XFERMERGE_ROW_NICK      "Nickname changed"
+#define PDNA_XFERMERGE_KEEP          "KEEP"
+#define PDNA_XFERMERGE_TAKE          "TAKE"
+#define PDNA_XFERMERGE_RO_EVOLVED    "Evolved abroad; kept as it left."
+#define PDNA_XFERMERGE_RO_ITEM_DROP  "Held item stays behind."
+#define PDNA_XFERMERGE_RO_ITEM_BACK  "Its GB item comes back with it."
+#define PDNA_XFERMERGE_RO_RENAME     "New name can't be spelled; kept."
+#define PDNA_XFERMERGE_RO_MOVE       "A move can't exist here; kept."
+#define PDNA_XFERMERGE_HINT_TOGGLE   "A flip  START apply  B cancel"
+#define PDNA_XFERMERGE_HINT_RO       "START ok  B cancel"
+
+/* BACKLOG #150 S150-9 decision 8: the ledger's RESTORED/PENDING state refusals at a
+ * restore lookup (site 1, pc_bank_restore_up; site 2, the GB lift, a later commit). */
+#define PDNA_XFERDUP_TITLE   "ALREADY RESTORED"
+#define PDNA_XFERDUP_L1      "The Bank has its original."
+#define PDNA_XFERDUP_L2      "Release this copy instead."
 
 /* review F5: the rc == -1 "unreadable record" refusal gets its own message instead of
  * a bare snd_error() -- decision 9's own strings. */
