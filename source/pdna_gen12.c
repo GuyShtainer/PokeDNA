@@ -4001,7 +4001,11 @@ bool gb_native_summary_open(const uint8_t rec80[80], bool allow_edit, uint8_t ou
        * free inside bc_pack; re-derive only the two flag bits a GbEditMon can carry
        * (b3 egg, b4 held-item) -- b0/b1/b2 are Bank/ledger state bank_cell.h says a
        * GbEditMon has no home for, and must survive verbatim. */
-      uint8_t nf = (uint8_t)(meta.flags & (BC_FLAG_FROM_PARTY | BC_FLAG_HAS_XFER_REC | BC_FLAG_QUEUED_PC));
+      /* S150-12 decision 3: BC_FLAG_COPY (b5) is permanent while the cell lives, so it
+       * must survive an edit's re-pack too -- an unmarked copy would silently start
+       * writing ledger entries on its next DOWN (G-L3 reached through the editor). */
+      uint8_t nf = (uint8_t)(meta.flags & (BC_FLAG_FROM_PARTY | BC_FLAG_HAS_XFER_REC |
+                                            BC_FLAG_QUEUED_PC | BC_FLAG_COPY));
       if (gb_is_egg(&e))        nf |= BC_FLAG_EGG;          /* gb_edit.h -- Gen 2 list byte 0xFD   */
       if (gb_get_held_item(&e)) nf |= BC_FLAG_HOLDS_ITEM;   /* gb_edit.h -- Gen 2 only, 0 on Gen 1 */
       if (bc_pack(&e, nf, meta.origin_game, meta.rtc_epoch, meta.bank_serial, out80) != 0) return false;

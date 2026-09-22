@@ -89,4 +89,15 @@ enum { XG_DOWN_ARM_NONE = 0,   /* not a native DOWN at all -- drop_held's own pa
        XG_DOWN_ARM_GEN3 };     /* native cell -> Gen-3 PC / party          (S150-8)           */
 uint8_t xg_bank_down_arm(uint8_t cell_gen, uint8_t dst_scope, uint8_t dst_gen);
 
+/* BACKLOG #150 S150-12 decision 9: a native cell marked BC_FLAG_COPY (b5) never lost
+ * its GB original, so a DOWN of it must skip the Gen-3 ledger write entirely -- see
+ * bank_cell.h's own BC_FLAG_COPY comment. bc_is_native() gates it first (a non-native
+ * cell's byte 11 means something unrelated). */
+bool xg_cell_is_copy(const uint8_t rec80[80]);
+
+/* BACKLOG #150 S150-12 decision 13: the read-only mount's exit offer ("WAITING FOR
+ * THE PC / N Pokemon. Put them in now?") fires only when `queued` copies are pending
+ * AND a live Gen-3 PC (`pc_live`, xg_pc_live()) exists to receive them. */
+bool xg_pc_offer(uint8_t queued, bool pc_live);
+
 #endif
