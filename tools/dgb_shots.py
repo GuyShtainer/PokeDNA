@@ -6042,6 +6042,98 @@ def run_s150_9_merge_screen(core_mod, image_mod, rom_emerald: Path, out_dir: Pat
     return s
 
 
+def run_s150_9_site2(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #209: site 2 of the restore -- gb_lift_restore (source/pdna_gen12.c),
+    a GB-grid lift of a mon whose ledger entry has a NATIVE home. Until this lane,
+    gb_has_sidecar's own f_stat pre-check (xr_path_for_key) always missed on the
+    delta (no FAT at all), so gb_lift_restore had NEVER executed on any vehicle --
+    the whole point of this chain is to PROVE it now does.
+
+    `rom` MUST be `make delta-gb`'s own combined image (Emerald.sav + Red/Gold/
+    Crystal) -- the SAME vehicle --s150-4 uses. boot_to_gb_session(which="red")
+    takes gb_delta_boot_pick()'s "PICK A SAVE" -> Red.sav row (this image's flash
+    is never blank, Emerald.sav seeds it, so the blank-flash GB fork's own seed call
+    never runs -- source/pdna_main.c's OTHER seed call site, right before THIS
+    boot path's own pdna_gen12_show_image(), is the one that actually fires),
+    landing on Red's box grid with box 0 slot 0 seeded by bank_plant_site2_seed()
+    from whatever that exact cell decodes to at mount time.
+
+    THE PROOF IS THE MISSING ORIGIN PROMPT, not a log line: log_under_mgba() is
+    false on this vehicle (run_s150_4_uplift's own documented finding, confirmed
+    again independently by this chain -- see the delivery report), so no "gen12:"
+    log line is visible in mGBA's own stdout capture here. What IS visible: an
+    ORDINARY GB-grid lift (no ledger entry, run_s150_4_uplift's own Gold/slot-0
+    Bulbasaur) always shows gb_pick_origin()'s full-screen "WHICH GAME IS THIS?"
+    prompt before any refusal -- gb_lift_pack() only reaches that prompt when
+    gb_has_sidecar() answered false. THIS slot (seeded, gb_has_sidecar() now true)
+    takes the OTHER branch instead: gb_lift_restore() runs directly (decision 10's
+    own comment: "the origin prompt is SKIPPED -- the home cell carries its own
+    origin_game already") -- so the prompt's ABSENCE, on the exact same SEL->A grab
+    gesture that shows it for an unseeded cell, is a frame gb_lift_pack's ordinary
+    (non-restore) path structurally CANNOT produce. bank_plant_site2_seed() marks
+    the entry CLAIMED and unaltered (byte-identical to the mon itself), so
+    xr_merge_down_gb_sel's own probe reports no differing rows and decision 7's
+    "nothing changed" skip means app_xfer_merge_screen never draws either --
+    gb_lift_restore proceeds straight to pdna_bank_next_serial(), which fails for
+    the SAME reason run_s150_4_uplift's own chain already documents (meta_save()
+    needs a writable FAT this vehicle does not have): a clean, silent refusal,
+    mon still sitting at slot 0, footer back to 'MOVE  A grab  hold=set'.
+
+    A landed, persisted native cell (bank.meta writable) is hardware-only from
+    here, same as run_s150_4_uplift's own chain -- not faked with a pre-planted
+    stand-in cell."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s150_9_site2_")
+    print("== BACKLOG #209: site 2 of the restore (gb_lift_restore) ==")
+    boot_to_gb_session(s, rom, which="red")
+    s.shot("00_red_box_grid", "s150-9-site2: Red's box grid, freshly entered -- "
+           "cursor on slot 0, the SEEDED cell (bank_plant_site2_seed() keyed this "
+           "exact mon's identity at mount time), footer 'A menu  SEL  L/R  B'")
+
+    s.tap("SEL", settle=100)
+    s.shot("01_cm_move", "s150-9-site2: SELECT cycles the cursor mode to MOVE -- "
+           "footer 'MOVE  A grab  hold=set'")
+
+    s.tap("A", settle=150)
+    s.shot("02_after_grab", "s150-9-site2: A grabs slot 0 -- THE PROOF: no "
+           "'WHICH GAME IS THIS?' origin prompt (contrast run_s150_4_uplift's own "
+           "02_origin_prompt shot, an UNSEEDED Gold slot 0 grab, which always shows "
+           "it) -- gb_has_sidecar() found this seeded entry, so gb_lift_pack() took "
+           "the restore branch (gb_lift_restore) directly instead, skipping the "
+           "prompt by design (decision 10's own comment). gb_lift_restore then ran "
+           "its own full chain (xr_open via the new site-2 shim, the state check, "
+           "the xr_merge_down_gb_sel probe, decision 7's 'nothing changed' skip) "
+           "and was refused only at pdna_bank_next_serial() -- the SAME no-writable-"
+           "FAT wall run_s150_4_uplift's own chain already documents, not a new "
+           "one this lane introduced. Still CM_MOVE, empty-handed, the seeded mon "
+           "untouched at slot 0.")
+
+    # ---- A/B proof, SAME image/session shape, ONE cell over: slot 1 (unseeded) --
+    # DOES show the origin prompt, exactly where slot 0 (seeded) does not -- the
+    # direct demonstration that gb_has_sidecar()/xr_path_for_key's own PDNA_DELTA
+    # shim is what changed frame 02's outcome above, not some vehicle-wide inability
+    # to ever draw the prompt at all (a real risk to rule out on a build with no
+    # writable FAT anywhere near this path).
+    s2 = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s150_9_site2_cmp_")
+    boot_to_gb_session(s2, rom, which="red")
+    s2.tap("RIGHT", settle=100)
+    s2.shot("00_slot1", "s150-9-site2 A/B: cursor moved one cell right, to slot 1 "
+            "-- UNSEEDED (bank_plant_site2_seed only ever seeds box 0 slot 0)")
+    s2.tap("SEL", settle=100)
+    s2.tap("A", settle=150)
+    s2.shot("01_prompt_shows", "s150-9-site2 A/B: A grabs slot 1 -- 'WHICH GAME IS "
+            "THIS?' RED (selected) / BLUE / YELLOW DOES draw here, on the exact same "
+            "image/session/gesture that skipped it for slot 0 -- gb_has_sidecar() "
+            "answers false for this ordinary, unseeded cell, so gb_lift_pack() takes "
+            "the normal (non-restore) path instead. This is the direct proof that "
+            "slot 0's missing prompt is the seed/shim working, not a vehicle-wide "
+            "inability to ever draw this screen.",
+            claim=["WHICH GAME IS THIS", "RED", "YELLOW"])
+
+    s.taken += s2.taken
+    s.skipped += s2.skipped
+    return s
+
+
 def run_s150_8_gen3_arm(core_mod, image_mod, rom_emerald: Path, out_dir: Path) -> gb_shots.Session:
     """BACKLOG #150 S150-8: the CONVERTING DOWN edge's GEN3 arm -- a native "GBC1"
     Bank cell converts into a real Gen-3 record and lands in the CURRENT Gen-3
@@ -6859,6 +6951,17 @@ def main(argv=None) -> int:
                           "--image MUST be tools/fuse_sav.py <pokedna-delta-"
                           "artless.gba> Emerald.sav (a plain Gen-3 fusion, no --gb -- "
                           "same vehicle shape as --s150-8).")
+    ap.add_argument("--s150-9-site2", action="store_true",
+                     help="BACKLOG #209: only run_s150_9_site2() -- gb_lift_restore, "
+                          "site 2 of the restore (a GB-grid lift of a mon whose "
+                          "ledger entry has a NATIVE home), reached via the NEW "
+                          "PDNA_DELTA shim on xr_path_for_key plus a mount-time seed "
+                          "keyed to whatever Red.sav's own box 0 slot 0 mon actually "
+                          "is. --image MUST be `make delta-gb`'s own combined image "
+                          "(Emerald.sav + Red/Gold/Crystal) -- the SAME vehicle "
+                          "--s150-4 uses; the boot-picker path taken to reach Red.sav "
+                          "is the one that carries bank_plant_site2_seed(), not the "
+                          "blank-flash fork (this image's flash is never blank).")
     ap.add_argument("--s150-8-bridge", action="store_true",
                      help="BACKLOG #150 S150-8: only run_s150_8_bridge() -- the "
                           "CONVERTING DOWN edge's GB_BRIDGE arm (Gen 1 <-> Gen 2). "
@@ -7795,6 +7898,20 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] s150-9: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+    if getattr(a, "s150_9_site2", False):
+        # BACKLOG #209: append-only, same convention as --s150-4/--s150-9 above.
+        ran = True
+        try:
+            sess = run_s150_9_site2(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] s150-9-site2: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
