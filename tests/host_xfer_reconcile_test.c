@@ -19,6 +19,12 @@
  * BANK-1: a synthetic 2400-B box with three bc_pack()ed cells -- by-bytes finds the
  *   PENDING entry's own cell; a fresh-serial re-pack of the SAME mon (RESTORED case)
  *   is 0 by bytes, 1 by identity; two identical-identity cells are refused (2).
+ * PHASE2-1 (review D1): a transcription of xfer_reconcile_bank_phase2()'s own
+ *   per-box "touched" loop (pdna_main.c is not host-compilable) -- a target cell
+ *   planted only in box 5, decoys in boxes 0-4, proves the FIXED `bank_matches < 2`
+ *   condition scans through and finds it; the ORIGINAL `< 0 || == 1` condition stops
+ *   after box 0 and never finds it (a zero-match box lands bank_matches at 0, which
+ *   neither branch of the old condition reads as "keep scanning").
  * ID-1: a corpus record with its PID rewritten in a RAM copy is found by identity,
  *   not by key (species/otid/nickname bytes are the identity; PID never enters it).
  * REBUILD-1: xrc_rebuild_cell() round-trips a corpus-derived native cell through
@@ -190,6 +196,88 @@ static void test_bank1(void) {
   CHECK(xrc_bank_match(box, &e, true, &slot) == 2, "BANK-1: two identical-identity cells -> refused (2)");
 }
 
+/* ==== PHASE2-1: transcribed touched-loop pin (BACKLOG #150 S150-11 review D1) ======
+ * xfer_reconcile_bank_phase2() (source/pdna_main.c ~10117) is static in pdna_main.c
+ * and not host-compilable (tonc deps), so this transcribes its own per-box "touched"
+ * loop exactly, driven by the real xrc_bank_match() over 16 synthetic 2400-byte boxes.
+ * The bug: after a box scan finds NO match, bank_matches lands at 0 (h->bank_matches
+ * < 0 ? 0 : ...) -- neither < 0 nor == 1, so the ORIGINAL condition
+ * `bank_matches < 0 || bank_matches == 1` reads that hit as already resolved and the
+ * scan breaks after box 0 whenever box 0 itself had no match. The fix,
+ * `bank_matches < 2`, keeps scanning through every box until the candidate is either
+ * found unique (1, and a later box could still make it ambiguous) or capped at 2. */
+
+static bool phase2_touched_fixed(int8_t bank_matches) { return bank_matches < 2; }
+static bool phase2_touched_buggy(int8_t bank_matches) {
+  return bank_matches < 0 || bank_matches == 1;
+}
+
+/* One candidate's worth of the real loop body, single-hit version (the real loop's
+ * `for (i...) if (cond(xrc[i].bank_matches)) touched=true;break;` collapses to
+ * `touched_fn(h->bank_matches)` for exactly one candidate). */
+static void phase2_scan(uint8_t box2400[16][2400], XrcHit* h, bool (*touched_fn)(int8_t)) {
+  for (int box = 0; box < 16; box++) {
+    if (!touched_fn(h->bank_matches)) break;
+    GbscEntry e2; memset(&e2, 0, sizeof e2);
+    e2.gen = h->gen; e2.otid16 = h->otid16;
+    memcpy(e2.dv4, h->dv4, 4);
+    memcpy(e2.otname_written, h->otname, GB_NAME_BYTES);
+    memcpy(e2.original80, h->orig8, 8);
+    int slot = -1;
+    int m = xrc_bank_match(box2400[box], &e2, false, &slot);
+    if (h->bank_matches < 0) h->bank_matches = 0;
+    int total = h->bank_matches + m;
+    h->bank_matches = (int8_t)(total > 2 ? 2 : total);
+    if (m == 1 && h->bank_matches == 1) { h->bank_box = (int8_t)box; h->bank_slot = (int8_t)slot; }
+  }
+}
+
+static void test_phase2(void) {
+  printf("== PHASE2-1: xfer_reconcile_bank_phase2 touched-loop pin (review D1) ==\n");
+  uint8_t t_otname[GB_NAME_BYTES] = "P2\x50\x50\x50\x50\x50\x50\x50\x50\x50";
+  GbEditMon target; mk_gb_mon(&target, GB_GEN2, 0x4321, 1, 2, 3, 4, t_otname);
+  uint8_t target_cell[80];
+  CHECK(bc_pack(&target, 0, BC_ORIGIN_GOLD, 0, 500u, target_cell) == 0, "PHASE2-1: target cell packed");
+
+  uint8_t d_otname[GB_NAME_BYTES] = "DE\x50\x50\x50\x50\x50\x50\x50\x50\x50";
+  GbEditMon decoy; mk_gb_mon(&decoy, GB_GEN2, 0x9999, 9, 9, 9, 9, d_otname);
+  uint8_t decoy_cell[80];
+  CHECK(bc_pack(&decoy, 0, BC_ORIGIN_GOLD, 0, 501u, decoy_cell) == 0, "PHASE2-1: decoy cell packed");
+
+  static uint8_t boxes[16][2400];
+  for (int b = 0; b < 16; b++) memset(boxes[b], 0, 2400);
+  for (int b = 0; b < 5; b++) memcpy(boxes[b] + 0 * 80, decoy_cell, 80);  /* boxes 0-4: no match, m==0 */
+  memcpy(boxes[5] + 3 * 80, target_cell, 80);                            /* box 5 slot 3: the real match */
+
+  XrcHit h; memset(&h, 0, sizeof h);
+  h.bank_matches = -1; h.bank_box = -1; h.bank_slot = -1;
+  h.gen = GB_GEN2; h.otid16 = 0x4321;
+  h.dv4[0] = 1; h.dv4[1] = 2; h.dv4[2] = 3; h.dv4[3] = 4;
+  memcpy(h.otname, t_otname, GB_NAME_BYTES);
+  memcpy(h.orig8, target_cell, 8);
+
+  phase2_scan(boxes, &h, phase2_touched_fixed);
+  CHECK(h.bank_matches == 1 && h.bank_box == 5 && h.bank_slot == 3,
+        "PHASE2-1: FIXED condition scans through box 5 and finds the match "
+        "(got matches=%d box=%d slot=%d)", h.bank_matches, h.bank_box, h.bank_slot);
+
+  /* MUTATION: the ORIGINAL `< 0 || == 1` condition breaks after box 0 (a decoy-only
+   * scan leaves bank_matches at 0, read as "already resolved") -- box 5 is never
+   * reached, so a CLAIMED entry with its real Bank copy in box 5 would mis-classify
+   * as *_LOST (RESTORE clones it, DELETE's confirm lies). */
+  XrcHit hb; memset(&hb, 0, sizeof hb);
+  hb.bank_matches = -1; hb.bank_box = -1; hb.bank_slot = -1;
+  hb.gen = GB_GEN2; hb.otid16 = 0x4321;
+  hb.dv4[0] = 1; hb.dv4[1] = 2; hb.dv4[2] = 3; hb.dv4[3] = 4;
+  memcpy(hb.otname, t_otname, GB_NAME_BYTES);
+  memcpy(hb.orig8, target_cell, 8);
+  phase2_scan(boxes, &hb, phase2_touched_buggy);
+  CHECK(hb.bank_matches == 0 && hb.bank_box == -1,
+        "PHASE2-1 MUTATION: the buggy condition stops at box 0 and never reaches "
+        "box 5 (got matches=%d box=%d) -- proves the D1 fix is load-bearing",
+        hb.bank_matches, hb.bank_box);
+}
+
 /* ==== ORDER-1 ======================================================================= */
 
 static void test_order1(void) {
@@ -359,6 +447,7 @@ int main(int argc, char** argv) {
   printf("== xfer_reconcile ==\n");
   test_cls1();
   test_bank1();
+  test_phase2();
   test_order1();
   test_row1();
   test_rebuild1();

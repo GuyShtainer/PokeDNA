@@ -10121,7 +10121,7 @@ static void __attribute__((noinline)) xfer_reconcile_bank_phase2(GbReconBuf* rb)
 
   for (int box = 0; box < 16; box++) {
     bool touched = false;
-    for (int i = 0; i < rb->nxrc; i++) if (rb->xrc[i].bank_matches < 0 || rb->xrc[i].bank_matches == 1) { touched = true; break; }
+    for (int i = 0; i < rb->nxrc; i++) if (rb->xrc[i].bank_matches < 2) { touched = true; break; }
     if (!touched) break;   /* every candidate already ambiguous or already resolved  */
     const uint8_t* recs = pdna_bank_peek_box(box);
     if (!recs) continue;
