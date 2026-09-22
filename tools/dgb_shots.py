@@ -7987,7 +7987,11 @@ def run_s150_12_copy_edge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
     s.shot("00_emerald_box_grid", "s150-12: Emerald's own box grid, freshly booted")
 
     s.tap("START", settle=gb_shots.BIG_SETTLE)
-    s.shot("01_start_menu", "s150-12: the nav menu -- 'GB import' sits in column 1")
+    s.shot("01_start_menu", "s150-12 (BACKLOG #198 item 9 recaption): the nav menu "
+           "-- 'GB import' sits in column 2 (the RIGHT column: Blocks, Tickets, "
+           "Records, Frontier, Fly, Contests, Map, GB import, Settings, Back), "
+           "not column 1 -- this chain's own next tap is RIGHT before descending, "
+           "which only makes sense if the target is in the second column")
 
     s.tap("RIGHT")
     s.press_n("DOWN", nav_down_from_col_top("NV_GB"))
@@ -8004,9 +8008,10 @@ def run_s150_12_copy_edge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
 
     s.tap("A", settle=60)                                 # info -> box grid (cold fetch)
     s.run(GB_ART_COLD_SETTLE)
-    s.shot("04_gold_box_grid", "s150-12: Gold's box grid on the read-only mount -- "
-           "cursor on slot 0 (No.1 BULBASAUR), footer 'A pokeball  A menu  SEL  "
-           "L/R  B' (SELECT has never entered MOVE here before this lane)")
+    s.shot("04_gold_box_grid", "s150-12 (BACKLOG #198 item 10 recaption): Gold's "
+           "box grid on the read-only mount -- cursor on slot 0 (No.1 BULBASAUR), "
+           "footer 'A menu  SEL  L/R  B' (the footer never shows 'A pokeball' -- "
+           "SELECT has never entered MOVE here before this lane)")
 
     s.tap("SEL", settle=100)
     s.shot("05_cm_move", "s150-12 WIRING PROOF: SELECT cycles to MOVE on the "
@@ -8074,8 +8079,12 @@ def run_s150_12_copy_edge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
 
     s.tap("DOWN", settle=60)                              # VIEW/EDIT -> MOVE
     s.tap("A", settle=150)                                # MOVE -> carrying
-    s.shot("14_carrying", "s150-12: carrying the COPY cell -- slot 5 now empty "
-           "in the grid, footer 'A drop  B cancel'")
+    s.shot("14_carrying", "s150-12 (BACKLOG #198 item 11 recaption): carrying "
+           "the COPY cell -- the source cell (slot 5) STAYS the tinted CHIKORITA "
+           "sprite with its DMG-style badge (the S150-13 lift tint -- BANK 1 "
+           "still reads 7/30 here, unchanged), footer 'A drop  B cancel'; slot 5 "
+           "only actually blanks ('(empty)', 6/30) after the drop lands, shown "
+           "in frame 18 below")
 
     s.press_n("DOWN", 5, settle=150)                      # row0 -> Bank's own bottom row -> off the edge
     s.shot("15_pc_grid_carrying", "s150-12: DOWN x5 off the Bank's own bottom "
