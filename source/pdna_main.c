@@ -2163,17 +2163,19 @@ bool __attribute__((noinline)) app_xfer_promote(void) {
     app_xfer_pending_drop();
     return false;
   }
-  e.state = XR_STATE_CLAIMED;
-  if (gbsc_remove(s_promote_buf, &len, g_xd_idx) != 0) {
-    log_line("xfer: promote: remove failed in %s", path);
+  /* BACKLOG #215(c): gbsc_set_state flips the state byte (and its crc16) in place
+   * -- no remove/re-add, so the entry keeps its own index. Was ~previously~ the
+   * same remove-mutate-re-add idiom app_xfer_pid_rekey's neighbours still use;
+   * this is the one shipped caller gbsc_set_state was missing (BACKLOG #215). */
+  if (gbsc_set_state(s_promote_buf, len, g_xd_idx, XR_STATE_CLAIMED) != 0) {
+    log_line("xfer: promote: set_state failed in %s", path);
     return false;
   }
-  int nidx = gbsc_add(s_promote_buf, &len, GBSC_FILE_MAX, &e);
-  if (nidx < 0) { log_line("xfer: promote: re-add failed in %s", path); return false; }
   rmbl_pause();
   SfStatus wst = sf_write_verified(path, s_promote_buf, len);
   rmbl_resume();
   if (wst != SF_OK) { log_line("xfer: promote: rewrite failed for %s", path); return false; }
+  app_xv_cache_invalidate();   /* BACKLOG #213: a ledger write -- the next lookup must re-verify */
   app_xfer_pending_drop();
   return true;
 }
@@ -2611,6 +2613,7 @@ static void __attribute__((noinline)) app_xfer_pid_rekey(const XferRekeyPlan* pl
   uint32_t len = 0;
   bool ok = sf_read_full(plan->old_path, buf, sizeof buf, &len) == SF_OK;
   if (ok) ok = sf_write_verified(plan->new_path, buf, len) == SF_OK;
+  if (ok) app_xv_cache_invalidate();   /* BACKLOG #213: new_path now holds this key's ledger */
   if (ok) ok = f_unlink(plan->old_path) == FR_OK;
 
   if (!ok) {
@@ -5598,6 +5601,57 @@ static void __attribute__((noinline)) app_view_original(const uint8_t* rec) {
   msg_wait(PDNA_SIDECAR_READFAIL_TITLE, UI_WARN, "Could not read the ledger.", 0);
 }
 
+/* BACKLOG #213: the GB ORIGINAL row's own two caches over xv_has_original(). Live
+ * here (not xfer_io.c/xfer_view.c) because those two files never include tonc.h/
+ * sys.h (their own header comments), so the EWRAM_BSS placement the brief asks for
+ * has to sit in a file that already uses it.
+ *
+ * (a) folder-absent latch: xr_dir_exists() (one f_stat) runs at most once per
+ *     session/save-load; when it says /PokeDNA/xfer does not exist, every lookup
+ *     for the rest of the session skips BOTH the xfer-file f_stat and the
+ *     MIGRATED-marker f_stat (xr_path_for_key_hint's own contract) and goes
+ *     straight to the one remaining sidecar f_stat.
+ * (b) negative cache: an 8-entry ring of xr_key_g3 keys that missed EVERYTHING
+ *     (no xfer file, no sidecar file) -- a repeat A on the same ordinary mon in
+ *     the same visit costs 0 f_stat.
+ *
+ * Both are cleared by app_xv_cache_invalidate() (pdna_app.h), called from every
+ * ledger-write site this lane could reach: xfer_io.c's migration marker, this
+ * file's RE-KEY (app_xfer_pid_rekey) and promote (app_xfer_promote) and the
+ * TRANSFERS-screen apply (xfer_reconcile_apply), and one call added at each of
+ * pdna_gen12.c's/pdna_box.c's own ledger-write sites (xfer_down_write and its
+ * claim/cleanup companions, gb_release_up_hook's RESTORED mark, pc_bank_restore_done)
+ * -- plus once on every fresh Gen-3 save load (a stale miss from a DIFFERENT card
+ * session must never leak into this one). Over-invalidating only costs one extra
+ * card round trip on the next lookup; under-invalidating would be a correctness bug,
+ * so every write site gets the call whether or not this particular write could have
+ * touched the SAME key currently cached. */
+static XrMissCache EWRAM_BSS s_xv_miss;       /* pure logic in xfer_io.c; storage here */
+static bool                  s_xv_dir_checked; /* xr_dir_exists() has run this session  */
+static bool                  s_xv_dir_absent;  /* /PokeDNA/xfer does not exist (valid iff
+                                                * s_xv_dir_checked)                     */
+
+void app_xv_cache_invalidate(void) {
+  xr_miss_cache_reset(&s_xv_miss);
+  s_xv_dir_checked = false;
+  s_xv_dir_absent = false;
+}
+
+/* The GB ORIGINAL row's own call site (app_mon_menu, occupied branch, below) uses
+ * this instead of xv_has_original() directly. */
+static bool xv_has_original_cached(const uint8_t rec80[80]) {
+  if (!rec80) return false;
+  uint64_t key = xr_key_g3(rec80);
+  if (xr_miss_cache_has(&s_xv_miss, key)) return false;
+  if (!s_xv_dir_checked) {
+    s_xv_dir_absent = !xr_dir_exists();
+    s_xv_dir_checked = true;
+  }
+  bool has = xv_has_original_hint(rec80, s_xv_dir_absent);
+  if (!has) xr_miss_cache_remember(&s_xv_miss, key);
+  return has;
+}
+
 bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit, uint8_t* block, int box, int slot, int footer_y) {
   PkMon m0;
   bool occupied = pk_decode_mon(rec, is_party, &m0);
@@ -5718,7 +5772,7 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
      * after training/an edit and hide a row whose entry is real) -- only the ledger
      * file itself decides. A file that exists but holds no NATIVE_HOME entry still
      * shows the row (decision 4's caveat); A then answers with decision 11's plaque. */
-    if (app_gen3_pc_live() && xv_has_original(rec)) { lab[n]=PDNA_LBL_ORIGINAL; act[n++]=A_ORIGINAL; }
+    if (app_gen3_pc_live() && xv_has_original_cached(rec)) { lab[n]=PDNA_LBL_ORIGINAL; act[n++]=A_ORIGINAL; }
     if (m0.isEgg && !m0.isBadEgg) { lab[n]=PDNA_LBL_HATCH; act[n++]=A_HATCH; }   /* eggs only: reveal + level 5 */
     if (!is_party) { lab[n]=PDNA_LBL_MOVE; act[n++]=A_MOVE; }                    /* box: pick up + reposition */
     else if (g_party_tobox_allowed) { lab[n]=PDNA_LBL_MOVE_TO_BOX; act[n++]=A_TOBOX; }  /* party popup: carry out to a box */
@@ -10306,7 +10360,12 @@ static const char* xrc_detail_line(uint8_t row_kind) {
  * (decision 17: "every GbscEntry needed for a detail view is re-decoded from
  * rb->sidecar after a re-read of that file" -- never cached wholesale in a new
  * static or a per-row buffer array). noinline: the 1042 B sidecar re-read buffer
- * already lives in *rb; this keeps the local GbscEntry off the caller's frame too. */
+ * already lives in *rb; this keeps the local GbscEntry off the caller's frame too.
+ * Decision 17 was about ENTRIES (the full GbscEntry, decoded from raw bytes) never
+ * being cached wholesale -- it says nothing about the short display TEXT this
+ * function reduces an entry down to. BACKLOG #215(a) caches exactly that text (see
+ * xrc_visible_text() below), so this function itself is unchanged and still the
+ * only place that ever reads a sidecar file to build a row string. */
 static void __attribute__((noinline)) xrc_row_build(GbReconBuf* rb, int i, char out[40]) {
   XrcHit* h = &rb->xrc[i];
   gb_recon_path(rb->path, rb->names[h->file_idx]);
@@ -10317,6 +10376,62 @@ static void __attribute__((noinline)) xrc_row_build(GbReconBuf* rb, int i, char 
   const char* sp = ok ? pk_species_name(e.species_written) : "?";
   const char* gm = ok ? xrc_origin_name(e.original80) : "?";
   xrc_row_text((XrcRowKind)h->row_kind, sp, gm, out);
+}
+
+/* BACKLOG #215(a): xrc_row_build's own 40-byte output, cached for the VISIBLE
+ * WINDOW only (vis_full = (XRC_LIST_Y1-XRC_LIST_Y0)/XRC_ROW_H = 9 -- the geometry
+ * pdna_xfer_reconcile_screen already computes; XRC_VIS_CACHE_N mirrors it as a
+ * compile-time constant so a future geometry change that grows past 9 fails loud
+ * via the _Static_assert below rather than silently thrashing the cache every
+ * frame). Keyed by (file_idx, entry_idx) -- rb->xrc[] entries are appended once by
+ * the walk and never reordered by pure navigation, but the key is the pair the
+ * entry ITSELF carries, not the row index, so an apply that changes which xrc[]
+ * slot a given file/entry pair lives at still matches correctly (moot in practice:
+ * xrc_visible_text() is invalidated on every apply anyway, see below). */
+#define XRC_VIS_CACHE_N 9
+_Static_assert(XRC_VIS_CACHE_N >= (146 - 18) / 13, "XRC_VIS_CACHE_N must cover XRC_LIST geometry's vis_full");
+static uint8_t s_xrc_cache_file[XRC_VIS_CACHE_N];
+static uint8_t s_xrc_cache_entry[XRC_VIS_CACHE_N];
+static bool    s_xrc_cache_valid[XRC_VIS_CACHE_N];
+static char    EWRAM_BSS s_xrc_cache_text[XRC_VIS_CACHE_N][40];
+
+/* Screen entry (pdna_xfer_reconcile_screen) and xfer_reconcile_apply both call
+ * this -- a fresh walk can renumber file_idx/entry_idx, and an apply can change
+ * what an entry's own row_kind/species reads as, so a cached hit from before
+ * either must never survive them. */
+static void xrc_cache_invalidate(void) {
+  memset(s_xrc_cache_valid, 0, sizeof s_xrc_cache_valid);
+}
+
+/* Returns the row text for rb->xrc[idx] into out[40] -- from the cache when a
+ * slot already holds this exact (file_idx, entry_idx) pair, else decodes via
+ * xrc_row_build() and stores the result. `claimed[XRC_VIS_CACHE_N]` marks the
+ * slots already spoken for THIS paint (by an earlier row in the same call to
+ * xrc_paint_list) so a decode never evicts a slot another visible row still
+ * needs before this frame finishes -- with cache capacity == the geometry's own
+ * vis_full, every row in one frame fits without eviction, so scrolling by one row
+ * (top changes by 1) reuses `vis - 1` cached slots and decodes exactly the one
+ * newly exposed row; staying on the same window (only `sel` moves) decodes 0. */
+static void xrc_visible_text(GbReconBuf* rb, int idx, bool claimed[XRC_VIS_CACHE_N], char out[40]) {
+  XrcHit* h = &rb->xrc[idx];
+  int found = -1;
+  for (int s = 0; s < XRC_VIS_CACHE_N; s++) {
+    if (!claimed[s] && s_xrc_cache_valid[s] &&
+        s_xrc_cache_file[s] == h->file_idx && s_xrc_cache_entry[s] == h->entry_idx) {
+      found = s; break;
+    }
+  }
+  if (found < 0) {
+    for (int s = 0; s < XRC_VIS_CACHE_N; s++) if (!claimed[s]) { found = s; break; }
+    /* found is always >= 0 here: vis <= XRC_VIS_CACHE_N (the _Static_assert above),
+     * so a frame can never claim more slots than exist before every row has one. */
+    xrc_row_build(rb, idx, s_xrc_cache_text[found]);
+    s_xrc_cache_file[found] = h->file_idx;
+    s_xrc_cache_entry[found] = h->entry_idx;
+    s_xrc_cache_valid[found] = true;
+  }
+  claimed[found] = true;
+  memcpy(out, s_xrc_cache_text[found], 40);
 }
 
 /* decision 19: the first raw-all-zero slot of the lowest box with room, for RESTORE
@@ -10345,13 +10460,14 @@ static void __attribute__((noinline)) xrc_paint_list(GbReconBuf* rb, int sel, in
   ui_clear();
   ui_text(4, 2, UI_TITLE, PDNA_XRC_TITLE);
   ui_hline(0, 13, UI_SCR_W, UI_BORDER);
+  bool claimed[XRC_VIS_CACHE_N]; memset(claimed, 0, sizeof claimed);
   for (int i = 0; i < vis && top + i < rb->nxrc; i++) {
     int idx = top + i;
     int y = XRC_LIST_Y0 + i * XRC_ROW_H;
     bool s = (idx == sel);
     if (s) ui_panel(2, y - 1, UI_SCR_W - 4, XRC_ROW_H - 1, UI_SEL, UI_TITLE);
     char buf[40];
-    xrc_row_build(rb, idx, buf);
+    xrc_visible_text(rb, idx, claimed, buf);   /* BACKLOG #215(a): cached, not re-read */
     bool kept = rb->xrc[idx].bank_keep;
     bool pending = rb->xrc[idx].action != 0;
     u16 ink = s ? UI_SELTEXT : (pending ? UI_OK : (kept ? UI_DIM : UI_TEXT));
@@ -10556,10 +10672,30 @@ static void __attribute__((noinline)) xfer_reconcile_apply(GbReconBuf* rb) {
   /* (3) re-keys -- AFTER every per-file rewrite, since a re-key moves the WHOLE
    * file (decision 8e), reusing the app_xfer_pid_rekey idiom (read old -> write
    * verified new -> unlink old) with the same duplicate-target refusal
-   * app_xfer_pid_guard applies to the reroll case. */
+   * app_xfer_pid_guard applies to the reroll case.
+   *
+   * BACKLOG #215(b): a .pds file's identity is its NAME, not any one entry inside
+   * it -- two stale-key rows that both point at file_idx f both name the SAME
+   * physical file. The first row to run this loop body moves that file to ITS OWN
+   * new_key; the file only has one name, so a second stale row for the same
+   * f cannot ALSO move it to a different new_key in this pass. The old code's
+   * success test (`f_stat(old_path) != FR_OK`) could not tell "I just moved this"
+   * from "a PRIOR row in this loop already moved this out from under me" -- the
+   * second row's old_path is gone either way, so it reported rekeyed++ for a
+   * rename that never happened. file_rekeyed[] tracks per-FILE outcome: once a
+   * row has genuinely moved file f (rekeyed++ below), every later row for the
+   * same f is left PENDING for the next reconcile visit instead of being counted
+   * at all -- a plan that has already moved a file counts once. */
+  bool file_rekeyed[GB_RECON_MAX_FILES];
+  memset(file_rekeyed, 0, sizeof file_rekeyed);
   for (int i = 0; i < rb->nxrc; i++) {
     XrcHit* h = &rb->xrc[i];
     if (h->action != XRC_ACT_REKEY) continue;
+    if (!xrc_rekey_should_attempt(file_rekeyed, GB_RECON_MAX_FILES, h->file_idx)) {
+      log_line("xfer: reconcile: row %d RE-KEY skipped, file %d already moved this pass",
+               i, h->file_idx);
+      continue;                     /* no-op: not counted as rekeyed OR failed */
+    }
     const uint8_t* rec = xrc_rec_ptr(h->g3_box, h->g3_slot, dc_base, dc_stride);
     if (!rec) { failed++; continue; }
     XferRekeyPlan plan; memset(&plan, 0, sizeof plan);
@@ -10576,8 +10712,21 @@ static void __attribute__((noinline)) xfer_reconcile_apply(GbReconBuf* rb) {
     app_xfer_pid_rekey(&plan);
     FILINFO fno;
     if (f_stat(plan.old_path, &fno) == FR_OK) { failed++; log_line("xfer: reconcile: row %d RE-KEY failed", i); }
-    else                                       { rekeyed++; log_line("xfer: reconcile: row %d RE-KEY", i); }
+    else {
+      rekeyed++;
+      xrc_rekey_mark_done(file_rekeyed, GB_RECON_MAX_FILES, h->file_idx);
+      log_line("xfer: reconcile: row %d RE-KEY", i);
+    }
   }
+
+  /* BACKLOG #213: at least one of REMOVE/RELEASE/RESTORE/DELETE/RE-KEY above may
+   * have just written a ledger file (app_xfer_pid_rekey already invalidates its own
+   * write, but the per-file rewrite loop (2) and gb_reconcile_release's own claim
+   * writes do not) -- one unconditional call here is cheap and covers all of them,
+   * even the branches that never got this far because everything failed. */
+  app_xv_cache_invalidate();
+  xrc_cache_invalidate();   /* BACKLOG #215(a): any of the writes above can change what
+                             * a still-pending row's own text would decode to */
 
   log_line("xfer: reconcile: apply removed=%d released=%d restored=%d deleted=%d rekeyed=%d failed=%d",
           removed, released, restored, deleted, rekeyed, failed);
@@ -10599,6 +10748,7 @@ static void __attribute__((noinline)) pdna_xfer_reconcile_screen(void) {
 
   GbReconBuf* rb = (GbReconBuf*)app_box_swap_acquire(sizeof(GbReconBuf));
   if (!rb) { log_line("xfer: reconcile: swap buffer unavailable, screen skipped"); return; }
+  xrc_cache_invalidate();   /* BACKLOG #215(a): a fresh walk can renumber file_idx/entry_idx */
 
   xfer_reconcile_walk(rb, GB_RECON_MAX_FILES, false);
   if (rb->nxrc > 0) xfer_reconcile_bank_phase2(rb);
@@ -11110,6 +11260,10 @@ static void view_save(const char* path) {
   if (parsed && g_vinfo.valid) {
     load_phase_n(3, "checksums");
     app_note_boot_checksums();          /* BEFORE anything can edit it */
+    /* BACKLOG #213: a fresh Gen-3 save load -- a stale miss cached against a
+     * DIFFERENT card session (or a different save on the same card) must never
+     * leak into this one. */
+    app_xv_cache_invalidate();
   }
   load_phase_n(4, "saveblock1");
   if (!parsed || !g_vinfo.valid || !g_vinfo.sb1_ok ||
