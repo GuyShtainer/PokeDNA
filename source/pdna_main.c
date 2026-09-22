@@ -10312,15 +10312,23 @@ static uint8_t* xrc_rec_ptr(int box, int slot, uint32_t dc_base, uint32_t dc_str
   return g_have_pc ? pk_box_slot(g_pc, box, slot) : NULL;
 }
 
-/* decision 18/14 -- the origin-game name for a native cell's own meta, decoded from
+/* decision 18/14 -- the origin-game id for a native cell's own meta, decoded from
  * the entry's original80 (bc_unpack(), the SAME call xrc_rebuild_cell() makes) --
  * never re-derived from GbscEntry.gen (a Gen-1/2 selector, not a specific title).
- * "?" on an original80 that no longer unpacks (should not happen -- a NATIVE_HOME
- * entry's original80 IS a native cell by construction). */
-static const char* xrc_origin_name(const uint8_t original80[80]) {
+ * Returns 0xFF ("unknown") on an original80 that no longer unpacks (should not
+ * happen -- a NATIVE_HOME entry's original80 IS a native cell by construction).
+ * Split from the old xrc_origin_name() (BACKLOG #213/#215 review F1) so the 6 B
+ * row cache below can store this uint8_t id instead of a rendered string;
+ * xrc_origin_name_id() renders it back via a pointer into the static table below,
+ * never a per-call buffer, so callers may keep the pointer past this call. */
+static uint8_t xrc_origin_id(const uint8_t original80[80]) {
   GbEditMon mon; BcMeta meta;
-  if (!bc_unpack(original80, &mon, &meta)) return "?";
-  switch (meta.origin_game) {
+  if (!bc_unpack(original80, &mon, &meta)) return 0xFFu;
+  return meta.origin_game;
+}
+
+static const char* xrc_origin_name_id(uint8_t id) {
+  switch (id) {
     case BC_ORIGIN_RED:     return "RED";
     case BC_ORIGIN_BLUE:    return "BLUE";
     case BC_ORIGIN_YELLOW:  return "YELLOW";
@@ -10356,68 +10364,79 @@ static const char* xrc_detail_line(uint8_t row_kind) {
   }
 }
 
-/* One row's display text, re-decoded from the card each time it is painted
+/* One row's SPECIES + ORIGIN, decoded from the card each time this is called
  * (decision 17: "every GbscEntry needed for a detail view is re-decoded from
  * rb->sidecar after a re-read of that file" -- never cached wholesale in a new
  * static or a per-row buffer array). noinline: the 1042 B sidecar re-read buffer
  * already lives in *rb; this keeps the local GbscEntry off the caller's frame too.
  * Decision 17 was about ENTRIES (the full GbscEntry, decoded from raw bytes) never
- * being cached wholesale -- it says nothing about the short display TEXT this
- * function reduces an entry down to. BACKLOG #215(a) caches exactly that text (see
- * xrc_visible_text() below), so this function itself is unchanged and still the
- * only place that ever reads a sidecar file to build a row string. */
-static void __attribute__((noinline)) xrc_row_build(GbReconBuf* rb, int i, char out[40]) {
+ * being cached wholesale -- it says nothing about the short (species, origin) pair
+ * this function reduces an entry down to. BACKLOG #213/#215 review F1 caches
+ * exactly that pair (6 B/row, XrcTextCache below), never the rendered text: every
+ * paint re-renders via xrc_row_text() from the LIVE row_kind (xrc_visible_text()
+ * below), so a changed row_kind can never paint stale. On an unreadable sidecar
+ * or entry: *species = 0xFFFF, *origin = 0xFF (both render as "?"). */
+static void __attribute__((noinline)) xrc_row_decode(GbReconBuf* rb, int i,
+                                                       uint16_t* species, uint8_t* origin) {
   XrcHit* h = &rb->xrc[i];
   gb_recon_path(rb->path, rb->names[h->file_idx]);
   uint32_t len = 0;
   GbscEntry e; memset(&e, 0, sizeof e);
   bool ok = sf_read_full(rb->path, rb->sidecar, GBSC_FILE_MAX, &len) == SF_OK &&
            gbsc_get(rb->sidecar, len, h->entry_idx, &e);
-  const char* sp = ok ? pk_species_name(e.species_written) : "?";
-  const char* gm = ok ? xrc_origin_name(e.original80) : "?";
-  xrc_row_text((XrcRowKind)h->row_kind, sp, gm, out);
+  *species = ok ? e.species_written : 0xFFFFu;
+  *origin  = ok ? xrc_origin_id(e.original80) : 0xFFu;
 }
 
-/* BACKLOG #215(a): xrc_row_build's own 40-byte output, cached for the VISIBLE
- * WINDOW only (vis_full = (XRC_LIST_Y1-XRC_LIST_Y0)/XRC_ROW_H = 9 -- the geometry
- * pdna_xfer_reconcile_screen already computes; XRC_VIS_CACHE_N mirrors it as a
- * compile-time constant so a future geometry change that grows past 9 fails loud
- * via the _Static_assert below rather than silently thrashing the cache every
- * frame). Keyed by (file_idx, entry_idx) -- rb->xrc[] entries are appended once by
- * the walk and never reordered by pure navigation, but the key is the pair the
- * entry ITSELF carries, not the row index, so an apply that changes which xrc[]
- * slot a given file/entry pair lives at still matches correctly (moot in practice:
- * xrc_visible_text() is invalidated on every apply anyway, see below). */
-#define XRC_VIS_CACHE_N 9
-_Static_assert(XRC_VIS_CACHE_N >= (146 - 18) / 13, "XRC_VIS_CACHE_N must cover XRC_LIST geometry's vis_full");
-static uint8_t s_xrc_cache_file[XRC_VIS_CACHE_N];
-static uint8_t s_xrc_cache_entry[XRC_VIS_CACHE_N];
-static bool    s_xrc_cache_valid[XRC_VIS_CACHE_N];
-static char    EWRAM_BSS s_xrc_cache_text[XRC_VIS_CACHE_N][40];
+#define XRC_ROW_H   13
+#define XRC_LIST_Y0 18
+#define XRC_LIST_Y1 146
+
+/* BACKLOG #213/#215 review F1: a 6 B FIELD cache (species + origin ids, never the
+ * rendered text) for the VISIBLE WINDOW only. XRC_VIS_CACHE_N derives from the
+ * ACTUAL geometry macros above (not hard-coded literals) so a future geometry
+ * change that grows the visible row count fails loud at compile time via the
+ * _Static_assert below, instead of the old hard-coded assert silently passing
+ * while the miss path wrote past the array (review F3). Keyed by (file_idx,
+ * entry_idx) -- rb->xrc[] entries are appended once by the walk and never
+ * reordered by pure navigation, but the key is the pair the entry ITSELF carries,
+ * not the row index, so an apply that changes which xrc[] slot a given file/entry
+ * pair lives at still matches correctly (moot in practice: xrc_visible_text() is
+ * invalidated on every apply anyway, see below). */
+#define XRC_VIS_CACHE_N ((XRC_LIST_Y1 - XRC_LIST_Y0) / XRC_ROW_H)
+_Static_assert(XRC_VIS_CACHE_N >= 1, "XRC_VIS_CACHE_N must cover the list geometry");
+typedef struct {
+  uint16_t species;   /* 0xFFFF == this row's SD read failed ("?") */
+  uint8_t  origin;    /* xrc_origin_id(); 0xFF == unknown ("?")    */
+  uint8_t  file_idx, entry_idx, valid;
+} XrcTextCache;                                   /* 6 B a row */
+static XrcTextCache EWRAM_BSS s_xrc_cache[XRC_VIS_CACHE_N];
 
 /* Screen entry (pdna_xfer_reconcile_screen) and xfer_reconcile_apply both call
  * this -- a fresh walk can renumber file_idx/entry_idx, and an apply can change
  * what an entry's own row_kind/species reads as, so a cached hit from before
  * either must never survive them. */
 static void xrc_cache_invalidate(void) {
-  memset(s_xrc_cache_valid, 0, sizeof s_xrc_cache_valid);
+  memset(s_xrc_cache, 0, sizeof s_xrc_cache);   /* .valid == 0 for every slot */
 }
 
-/* Returns the row text for rb->xrc[idx] into out[40] -- from the cache when a
- * slot already holds this exact (file_idx, entry_idx) pair, else decodes via
- * xrc_row_build() and stores the result. `claimed[XRC_VIS_CACHE_N]` marks the
- * slots already spoken for THIS paint (by an earlier row in the same call to
- * xrc_paint_list) so a decode never evicts a slot another visible row still
- * needs before this frame finishes -- with cache capacity == the geometry's own
- * vis_full, every row in one frame fits without eviction, so scrolling by one row
- * (top changes by 1) reuses `vis - 1` cached slots and decodes exactly the one
- * newly exposed row; staying on the same window (only `sel` moves) decodes 0. */
+/* Renders rb->xrc[idx]'s row text into out[40] -- from the cache's (species,
+ * origin) ids when a slot already holds this exact (file_idx, entry_idx) pair,
+ * else decodes via xrc_row_decode() and stores the ids. `claimed[XRC_VIS_CACHE_N]`
+ * marks the slots already spoken for THIS paint (by an earlier row in the same
+ * call to xrc_paint_list) so a decode never evicts a slot another visible row
+ * still needs before this frame finishes -- with cache capacity == the geometry's
+ * own vis_full, every row in one frame fits without eviction, so scrolling by one
+ * row (top changes by 1) reuses `vis - 1` cached slots and decodes exactly the one
+ * newly exposed row; staying on the same window (only `sel` moves) decodes 0.
+ * The text itself is ALWAYS re-rendered from the LIVE row_kind, cache hit or
+ * miss: only the SD decode of species/origin is ever skipped. */
 static void xrc_visible_text(GbReconBuf* rb, int idx, bool claimed[XRC_VIS_CACHE_N], char out[40]) {
   XrcHit* h = &rb->xrc[idx];
   int found = -1;
   for (int s = 0; s < XRC_VIS_CACHE_N; s++) {
-    if (!claimed[s] && s_xrc_cache_valid[s] &&
-        s_xrc_cache_file[s] == h->file_idx && s_xrc_cache_entry[s] == h->entry_idx) {
+    if (!claimed[s] && s_xrc_cache[s].valid &&
+        s_xrc_cache[s].file_idx == h->file_idx && s_xrc_cache[s].entry_idx == h->entry_idx) {
       found = s; break;
     }
   }
@@ -10425,13 +10444,16 @@ static void xrc_visible_text(GbReconBuf* rb, int idx, bool claimed[XRC_VIS_CACHE
     for (int s = 0; s < XRC_VIS_CACHE_N; s++) if (!claimed[s]) { found = s; break; }
     /* found is always >= 0 here: vis <= XRC_VIS_CACHE_N (the _Static_assert above),
      * so a frame can never claim more slots than exist before every row has one. */
-    xrc_row_build(rb, idx, s_xrc_cache_text[found]);
-    s_xrc_cache_file[found] = h->file_idx;
-    s_xrc_cache_entry[found] = h->entry_idx;
-    s_xrc_cache_valid[found] = true;
+    uint16_t sp; uint8_t og;
+    xrc_row_decode(rb, idx, &sp, &og);
+    XrcTextCache* c = &s_xrc_cache[found];
+    c->species = sp; c->origin = og;
+    c->file_idx = h->file_idx; c->entry_idx = h->entry_idx; c->valid = 1;
   }
   claimed[found] = true;
-  memcpy(out, s_xrc_cache_text[found], 40);
+  XrcTextCache* c = &s_xrc_cache[found];
+  xrc_row_text((XrcRowKind)h->row_kind, c->species == 0xFFFFu ? "?" : pk_species_name(c->species),
+               xrc_origin_name_id(c->origin), out);
 }
 
 /* decision 19: the first raw-all-zero slot of the lowest box with room, for RESTORE
@@ -10450,10 +10472,6 @@ static bool __attribute__((noinline)) xrc_find_empty_slot(int* out_box, int* out
   }
   return false;
 }
-
-#define XRC_ROW_H   13
-#define XRC_LIST_Y0 18
-#define XRC_LIST_Y1 146
 
 static void __attribute__((noinline)) xrc_paint_list(GbReconBuf* rb, int sel, int top,
                                                       int vis, bool capped) {
