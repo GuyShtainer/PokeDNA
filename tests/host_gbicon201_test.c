@@ -163,6 +163,34 @@ static void part_f2_table_equals_scanner(const char* name, const ExpectLoc* expe
   fclose(fc.f);
 }
 
+/* ---------------------------------------- F2/D1: open_loc(NULL) uses the table */
+
+/* BACKLOG #201 D1 (review fix): open_loc()'s own tail now delegates a cache miss
+ * to open() (known-ROM table, THEN the full scan -- see rom_gbicon.c's own
+ * comment at that call site), instead of jumping straight to locate()'s full
+ * scan as it did before this fix -- every PRODUCTION caller (gb_art_source.c)
+ * enters through open_loc(), never open() directly, so THIS was the path that
+ * actually mattered and had never exercised the table at all. Regression:
+ * open_loc(NULL) must cost close to a table hit (~80 reads for n=38), nowhere
+ * near a full scan's ~4,172. */
+static void part_d1_openloc_null_uses_table(const char* name) {
+  char path[256]; snprintf(path, sizeof path, "%s/%s", ROMS, name);
+  FileCtx fc; memset(&fc, 0, sizeof fc);
+  fc.f = fopen(path, "rb");
+  if (!fc.f) { printf("  SKIP %s (no %s)\n", name, path); return; }
+  uint32_t sz = file_size(path);
+
+  RomGbIcon gi;
+  fc.reads = 0;
+  int ok = rom_gbicon_open_loc(&gi, file_read, &fc, sz, g_scratch, sizeof g_scratch, 0, 0, 0);
+  chk(name, "D1: open_loc(NULL) succeeds", ok);
+  printf("  %s: open_loc(NULL) cost %lu reads (table hit expected, ~80; a full scan is ~4,172)\n",
+         name, (unsigned long)fc.reads);
+  chk(name, "D1: open_loc(NULL) uses the known-ROM table, not a full scan (<200 reads)",
+      fc.reads < 200);
+  fclose(fc.f);
+}
+
 /* ------------------------------------------------- F2: wrong-offset fallback */
 
 static void part_f2_wrong_offset_fallback(const char* name, const ExpectLoc* expect) {
@@ -173,17 +201,24 @@ static void part_f2_wrong_offset_fallback(const char* name, const ExpectLoc* exp
   uint32_t sz = file_size(path);
 
   /* A genuine known-table/cache hit costs a HANDFUL of reads (try_loc()'s own
-   * id_hash/menu-window/per-kind decode reads: 1 header + 1 menu window + n
-   * per-kind tile reads, well under 50 for n=38). Baseline that first. */
+   * id_hash/menu-window/per-kind decode reads: 1 header + n+1 icon_pointers
+   * chain reads (D2) + n per-kind tile reads, well under 100 for n=38).
+   * Baseline that first. */
   RomGbIcon warm;
   fc.reads = 0;
   int wok = rom_gbicon_open(&warm, file_read, &fc, sz, g_scratch, sizeof g_scratch, 0, 0);
   chk(name, "warm known-table open succeeds", wok);
   uint32_t warm_reads = fc.reads;
 
-  /* Now a deliberately WRONG RomGbIconLoc (icon_pointers offset corrupted) --
-   * try_loc() must reject it and rom_gbicon_open_loc() must fall through to a
-   * full scan, landing on the SAME correct offsets a fresh scan would. */
+  /* (ii) rejected cache -> the known-ROM table (NOT a full scan): a bad .loc
+   * (icon_pointers corrupted) is rejected by try_loc(), but D1's fix means the
+   * fallback is open()'s OWN table-then-scan chain, which hits the table for
+   * these two corpus ROMs -- so this case now costs a TABLE hit's ~80 reads,
+   * not a full scan's ~4,172. Both are legitimate ("rejected cache" and "cache
+   * miss" collapse to the SAME open() call as of D1), so this proves the
+   * REJECTION itself (offsets end up correct, not the corrupted ones) while
+   * leaving the "prove a REAL SCAN ran" claim to (iii) below, which forces the
+   * table to miss too. */
   RomGbIconLoc bad; memset(&bad, 0, sizeof bad);
   bad.id_hash = warm.id_hash; bad.size = warm.size;
   bad.mon_menu_icons = warm.mon_menu_icons;
@@ -193,13 +228,100 @@ static void part_f2_wrong_offset_fallback(const char* name, const ExpectLoc* exp
   RomGbIcon gi;
   fc.reads = 0;
   int ok = rom_gbicon_open_loc(&gi, file_read, &fc, sz, g_scratch, sizeof g_scratch, &bad, 0, 0);
-  chk(name, "F2: a wrong-offset loc falls back to a full scan and still succeeds", ok);
+  chk(name, "F2: a rejected (wrong-offset) cache still lands on the correct tables", ok);
   if (ok) chk_loc_matches(name, &gi, expect);
-  printf("  %s: warm hit %lu reads, wrong-offset fallback %lu reads (%s)\n",
-         name, (unsigned long)warm_reads, (unsigned long)fc.reads,
-         fc.reads > warm_reads * 4 ? "fallback confirmed: reads jumped" : "SUSPICIOUS: reads did not jump");
-  chk(name, "F2: the fallback's read count is much larger than a warm hit's (proves a real scan ran)",
-      fc.reads > warm_reads * 4);
+  printf("  %s: warm hit %lu reads, rejected-cache->table %lu reads\n",
+         name, (unsigned long)warm_reads, (unsigned long)fc.reads);
+  chk(name, "F2: a rejected cache costs about a table hit, not a full scan (<200 reads)",
+      fc.reads < 200);
+  fclose(fc.f);
+
+  /* (iii) checksum-POISONED wrong-offset case: forces the KNOWN-ROM TABLE to
+   * miss too (same 0x14F poison as part_f2_table_equals_scanner), so the
+   * corrupted .loc's rejection genuinely falls through to locate()'s full
+   * scan -- proving D1's fallback chain still reaches a real scan when the
+   * table itself does not apply, not just when it does. */
+  FileCtx pfc; memset(&pfc, 0, sizeof pfc);
+  pfc.f = fopen(path, "rb");
+  if (!pfc.f) { printf("  SKIP %s (poisoned reopen)\n", name); return; }
+  pfc.poison_off = 0x14F; pfc.poison_xor = 0xFF;
+  RomGbIcon pwarm;
+  pfc.reads = 0;
+  int pwok = rom_gbicon_open(&pwarm, file_read, &pfc, sz, g_scratch, sizeof g_scratch, 0, 0);
+  chk(name, "F2(iii): poisoned open (forced scan) succeeds", pwok);
+  uint32_t pwarm_reads = pfc.reads;
+
+  RomGbIconLoc pbad; memset(&pbad, 0, sizeof pbad);
+  pbad.id_hash = pwarm.id_hash; pbad.size = pwarm.size;   /* the POISONED id_hash */
+  pbad.mon_menu_icons = pwarm.mon_menu_icons;
+  pbad.icon_pointers = pwarm.icon_pointers ^ 0x40;
+  pbad.n = pwarm.n; pbad.icon_bank = pwarm.icon_bank;
+
+  RomGbIcon pgi;
+  pfc.reads = 0;
+  int pok = rom_gbicon_open_loc(&pgi, file_read, &pfc, sz, g_scratch, sizeof g_scratch, &pbad, 0, 0);
+  chk(name, "F2(iii): a wrong-offset loc on a table-miss ROM falls back to a REAL full scan", pok);
+  if (pok) {
+    chk(name, "F2(iii): the real scan lands on the correct mon_menu_icons", pgi.mon_menu_icons == expect->mon_menu_icons);
+    chk(name, "F2(iii): the real scan lands on the correct icon_pointers",   pgi.icon_pointers == expect->icon_pointers);
+    chk(name, "F2(iii): the real scan lands on the correct n",              pgi.n == expect->n);
+    chk(name, "F2(iii): the real scan lands on the correct icon_bank",      pgi.icon_bank == expect->icon_bank);
+  }
+  /* (iii)'s own "warm" baseline is the UNPOISONED warm_reads captured at the
+   * top of this function (~79 reads, an ordinary table hit) -- NOT pwarm_reads
+   * (the poisoned open() used only to obtain the poisoned id_hash pbad needs
+   * to match; that call is itself a full scan, ~4,172 reads, so comparing
+   * against IT would trivially never show a jump). */
+  printf("  %s: warm (unpoisoned) %lu reads, poisoned-id_hash open() %lu reads, "
+         "poisoned wrong-offset (forced real scan) %lu reads (%s)\n",
+         name, (unsigned long)warm_reads, (unsigned long)pwarm_reads, (unsigned long)pfc.reads,
+         pfc.reads > warm_reads * 4 ? "real scan confirmed: reads jumped" : "SUSPICIOUS: reads did not jump");
+  chk(name, "F2(iii): the forced real scan costs far more reads than the unpoisoned warm hit (>4x)",
+      pfc.reads > warm_reads * 4);
+  pfc.poison_off = 0;
+  fclose(pfc.f);
+}
+
+/* --------------------------------------- D2: a one-entry-early shift is rejected */
+
+/* BACKLOG #201 D2 (review fix): try_loc() used to accept a candidate icon_
+ * pointers shifted ONE ENTRY EARLIER (-2 bytes) at ~78 reads -- entry[0]==
+ * entry[1] still coincidentally held in the shifted window, so the old
+ * range-only per-entry check never caught it, and 37 of 38 icons would have
+ * silently decoded the WRONG tile. Poisons the checksum first (0x14F, same
+ * as F2(iii) above) so the known-ROM table ALSO misses -- isolating D2's own
+ * chain-check fix from D1's table fallback: a genuinely rejected candidate
+ * must fall all the way to a real rescan (>1,000 reads), landing back on the
+ * correct (unshifted) icon_pointers, not silently accept the shift. */
+static void part_d2_shift_rejected(const char* name) {
+  char path[256]; snprintf(path, sizeof path, "%s/%s", ROMS, name);
+  FileCtx fc; memset(&fc, 0, sizeof fc);
+  fc.f = fopen(path, "rb");
+  if (!fc.f) { printf("  SKIP %s (no %s)\n", name, path); return; }
+  uint32_t sz = file_size(path);
+
+  fc.poison_off = 0x14F; fc.poison_xor = 0xFF;
+  RomGbIcon warm;
+  int wok = rom_gbicon_open(&warm, file_read, &fc, sz, g_scratch, sizeof g_scratch, 0, 0);
+  chk(name, "D2: poisoned warm open (table miss, real scan) succeeds", wok);
+  uint32_t correct_ptrs = warm.icon_pointers;
+
+  RomGbIconLoc shifted; memset(&shifted, 0, sizeof shifted);
+  shifted.id_hash = warm.id_hash; shifted.size = warm.size;   /* the POISONED id_hash */
+  shifted.mon_menu_icons = warm.mon_menu_icons;
+  shifted.icon_pointers = warm.icon_pointers - 2;              /* shifted ONE ENTRY EARLIER */
+  shifted.n = warm.n; shifted.icon_bank = warm.icon_bank;
+
+  RomGbIcon gi;
+  fc.reads = 0;
+  int ok = rom_gbicon_open_loc(&gi, file_read, &fc, sz, g_scratch, sizeof g_scratch, &shifted, 0, 0);
+  chk(name, "D2: the shifted candidate is rejected and a real rescan succeeds", ok);
+  printf("  %s: shifted-by-2 candidate -> %lu reads, icon_pointers=0x%X (correct=0x%X)\n",
+         name, (unsigned long)fc.reads, gi.icon_pointers, correct_ptrs);
+  chk(name, "D2: the rescan costs far more than a table/cache hit (>1,000 reads)", fc.reads > 1000);
+  chk(name, "D2: the rescan lands on the CORRECT (unshifted) icon_pointers, not the shifted one",
+      gi.icon_pointers == correct_ptrs);
+  fc.poison_off = 0;
   fclose(fc.f);
 }
 
@@ -241,17 +363,22 @@ static void part_f1_gate_evidence(const char* name) {
          (unsigned long)g_rgi_cb_calls[1], 100.0 * g_rgi_cb_calls[1] / offered);
   /* MEASURED (not assumed): the menu-icon triad gate (w[0]==w[1]==w[2] in
    * [1,63]) is very selective on real ROM data (~1% of positions here). The
-   * icon-pointer gate (rd16(w)==rd16(w+2)) is markedly weaker in practice --
-   * long runs of 0x00/0xFF padding, common in a real ROM, trivially satisfy
-   * "two u16 halves equal" throughout the whole padded region, so it only
-   * roughly halves the callback's own work rather than the >99% cut the
-   * triad gate gets. Both are still real, both are still a strict prefix of
-   * their own callback's first check (never a false rejection), and both are
-   * asserted here against their OWN measured ceiling, not an assumed one. */
+   * icon-pointer gate was ORIGINALLY just rd16(w)==rd16(w+2) -- markedly
+   * weaker in practice, since long runs of 0x00/0xFF padding trivially
+   * satisfy "two u16 halves equal" throughout the whole padded region
+   * (measured ~25-47% there). BACKLOG #201 D3 (review fix) added the same
+   * ROMX-window range check icon_ptrs_cb itself makes right after ([GB_WIN_LO,
+   * GB_WIN_HI)), which most padding (0x0000/0xFFFF, both outside the window)
+   * fails immediately -- measured post-fix: Gold 4,723/2,097,152 (0.23%),
+   * Crystal 6,396/2,097,152 (0.30%), now comparable to the triad gate's own
+   * selectivity. Both are still a strict prefix of their own callback's first
+   * checks (never a false rejection), and both are asserted here against
+   * their OWN measured ceiling, not an assumed one. */
   chk(name, "F1: the menu-icon gate rejects the overwhelming majority of positions (<5%)",
       g_rgi_cb_calls[0] * 20u < offered);
-  chk(name, "F1: the icon-pointer gate rejects a real majority of positions (<75%)",
-      g_rgi_cb_calls[1] * 4u < offered * 3u);
+  chk(name, "F1: D3: the icon-pointer gate (with the range check) rejects the overwhelming "
+      "majority of positions too (<1%)",
+      g_rgi_cb_calls[1] * 100u < offered);
   /* Both callbacks must still fire on the real hit (gate cannot be so tight it
    * starves the true match): at least 1 call each. */
   chk(name, "F1: the menu-icon callback still fires on the real hit", g_rgi_cb_calls[0] >= 1);
@@ -309,9 +436,17 @@ int main(void) {
   part_f2_table_equals_scanner("Gold.gbc", &EXPECT_GOLD);
   part_f2_table_equals_scanner("Crystal.gbc", &EXPECT_CRYSTAL);
 
-  printf("\n-- F2: a wrong-offset loc falls back to a full scan --\n");
+  printf("\n-- D1: open_loc(NULL) uses the known-ROM table (production entry point) --\n");
+  part_d1_openloc_null_uses_table("Gold.gbc");
+  part_d1_openloc_null_uses_table("Crystal.gbc");
+
+  printf("\n-- F2/D1/D2: a wrong-offset loc is rejected and falls back correctly --\n");
   part_f2_wrong_offset_fallback("Gold.gbc", &EXPECT_GOLD);
   part_f2_wrong_offset_fallback("Crystal.gbc", &EXPECT_CRYSTAL);
+
+  printf("\n-- D2: a one-entry-early icon_pointers shift is rejected, not silently accepted --\n");
+  part_d2_shift_rejected("Gold.gbc");
+  part_d2_shift_rejected("Crystal.gbc");
 
   printf("\n-- F1: gate evidence (post-gate callback counts vs. positions offered) --\n");
   part_f1_gate_evidence("Gold.gbc");
