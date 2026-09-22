@@ -32,11 +32,24 @@
  *         own dispatch is wrong if it got here (defensive; the real "no entry"
  *         case is the caller simply never finding one to pass in).
  *  -1  -- refuse: `e->original80` is not actually a native cell (G-F4/G-H6 belt and
- *         braces), `bank_serial` is 0, `bc_unpack`/`xr_merge_down`/`bc_pack` failed.
+ *         braces), `bank_serial` is 0, `bc_unpack`/`xr_merge_down_sel`/`bc_pack` failed.
  *         `out_cell80` is left untouched; nothing is written anywhere by this
- *         function -- the caller keeps holding the mon exactly as it was. */
-int bank_restore_from_entry(const GbscEntry* e, const uint8_t g3_rec80[80],
+ *         function -- the caller keeps holding the mon exactly as it was.
+ *
+ * S150-9 decision 3: `accept` is the XR_ACCEPT_* mask (source/xfer_rec.h) applied as
+ * a patch to the rebuilt cell -- `XR_ACCEPT_ALL` reproduces the s150-8b behaviour
+ * exactly, `0` returns the home byte-for-byte. The packed cell's flags always gain
+ * `BC_FLAG_HAS_XFER_REC` (informational only in this slice -- S150-11/S150-15 read
+ * it later; no reader depends on it here). */
+int bank_restore_from_entry(const GbscEntry* e, const uint8_t g3_rec80[80], uint8_t accept,
                             uint32_t bank_serial, uint8_t out_cell80[80],
                             XrMergeReport* rep_out);
+
+/* S150-9 decision 3/2: site 2's twin -- rebuilds the NATIVE cell from a GB `now`
+ * (xr_merge_down_gb_sel) instead of a Gen-3 record. Same tri-state contract, same
+ * `BC_FLAG_HAS_XFER_REC` stamp, same meta carry-forward. */
+int bank_restore_from_entry_gb(const GbscEntry* e, const GbEditMon* now, uint8_t accept,
+                               uint32_t bank_serial, uint8_t out_cell80[80],
+                               XrMergeReport* rep_out);
 
 #endif

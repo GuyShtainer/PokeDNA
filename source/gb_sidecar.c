@@ -347,11 +347,12 @@ int gbsc_remove(uint8_t* buf, uint32_t* len, int idx) {
 
 static void merge_species_and_level(EditMon* em, const GbscEntry* e, const GbEditMon* now,
                                     const PkMon* orig, bool have_orig,
+                                    bool apply_species, bool apply_level,
                                     GbscMergeReport* rep) {
   uint16_t dex_now = gb_get_species_dex(now);
   if (dex_now != 0 && dex_now != e->species_written) {
-    em_set_species(em, dex_now);
-    rep->evolved = true;
+    rep->evolved = true;                                  /* report is mask-independent */
+    if (apply_species) em_set_species(em, dex_now);
   }
 
   /* Gated on LEVEL, not EXP: Gen 2 shows a player only the level, and em_set_level()
@@ -393,8 +394,10 @@ static void merge_species_and_level(EditMon* em, const GbscEntry* e, const GbEdi
                                                              * fall back, never manufacture a level change (r1 review D2) */
   if (!have_baseline && have_orig) { baseline = (uint8_t)orig->level; have_baseline = true; }
   if (have_baseline && level_now != baseline) {
-    em_set_level(em, level_now);
-    rep->level_changed = true;
+    rep->level_changed = true;                            /* report is mask-independent */
+    rep->level_from = baseline;
+    rep->level_to = level_now;
+    if (apply_level) em_set_level(em, level_now);
   }
 }
 
@@ -407,7 +410,8 @@ static void merge_species_and_level(EditMon* em, const GbscEntry* e, const GbEdi
  * merge_species_and_level() above follows. Only a pre-#150 entry (has_written_moves
  * clear) falls back to decoding `original80` -- today's exact, pre-#150 behaviour. */
 static void merge_moves(EditMon* em, const GbEditMon* now, const GbscEntry* e,
-                        const PkMon* orig, bool have_orig, GbscMergeReport* rep) {
+                        const PkMon* orig, bool have_orig, bool apply,
+                        GbscMergeReport* rep) {
   bool have_baseline = e->has_written_moves || have_orig;
   if (!have_baseline) return;
   bool differ = false;
@@ -426,6 +430,8 @@ static void merge_moves(EditMon* em, const GbEditMon* now, const GbscEntry* e,
     }
   }
   if (!differ) return;
+  rep->moves_changed = true;                              /* report is mask-independent */
+  if (!apply) return;
 
   /* Moves first: em_set_move resets PP/PP-Ups for the slot, so setting PP Ups (and
    * then current PP) has to follow it, not precede it. */
@@ -434,7 +440,6 @@ static void merge_moves(EditMon* em, const GbEditMon* now, const GbscEntry* e,
     em_set_ppups(em, i, gb_get_ppup(now, i));
     em_set_pp(em, i, gb_get_pp(now, i));
   }
-  rep->moves_changed = true;
 }
 
 /* The Gen-3 charset can only spell ASCII (gen3_edit.h's gen3_encode_char), so a decoded
@@ -461,7 +466,7 @@ static bool gb_nick_char_ok_for_gen3(unsigned char c) {
 }
 
 static void merge_nickname(EditMon* em, const GbscEntry* e, const GbEditMon* now,
-                           GbscMergeReport* rep) {
+                           bool apply, GbscMergeReport* rep) {
   if (memcmp(now->nick, e->nick_written, GB_NAME_BYTES) == 0) return;
 
   char text[GB_TEXT_MAX];
@@ -473,8 +478,8 @@ static void merge_nickname(EditMon* em, const GbscEntry* e, const GbEditMon* now
   if (unrepresentable) {
     rep->rename_refused = true;
   } else {
-    em_set_nickname(em, text);
-    rep->renamed = true;
+    rep->renamed = true;                                  /* report is mask-independent */
+    if (apply) em_set_nickname(em, text);
   }
 }
 
@@ -482,8 +487,13 @@ static void merge_nickname(EditMon* em, const GbscEntry* e, const GbEditMon* now
  * shininess, gender, met data, ball, ribbons, contest, markings, secret ID and EVs
  * all come back exactly), then fold in what changed on the Game Boy between the
  * conversion and now. See gb_sidecar.h for the full contract. */
-bool gbsc_merge_up(const GbscEntry* e, const GbEditMon* now, uint8_t out80[80],
-                   GbscMergeReport* rep) {
+/* BACKLOG #150 S150-9 decision 1: `accept` (the XR_ACCEPT_* bits, source/xfer_rec.h --
+ * not included here on purpose, see that header's own circular-include note) gates
+ * which fields the walk APPLIES; `rep` is filled identically no matter what `accept`
+ * is. `gbsc_merge_up` is the ACCEPT_ALL wrapper every existing caller and test keeps
+ * using unchanged. */
+bool gbsc_merge_up_sel(const GbscEntry* e, const GbEditMon* now, uint8_t accept,
+                       uint8_t out80[80], GbscMergeReport* rep) {
   GbscMergeReport local;
   if (!rep) rep = &local;
   memset(rep, 0, sizeof *rep);
@@ -504,9 +514,13 @@ bool gbsc_merge_up(const GbscEntry* e, const GbEditMon* now, uint8_t out80[80],
   bool have_orig = pk_decode_mon(e->original80, false, &orig);
   if (have_orig) pk_resolve(&orig);
 
-  merge_species_and_level(&em, e, now, &orig, have_orig, rep);
-  merge_moves(&em, now, e, &orig, have_orig, rep);
-  merge_nickname(&em, e, now, rep);
+  /* XR_ACCEPT_SPECIES = 0x08, XR_ACCEPT_LEVEL = 0x01, XR_ACCEPT_MOVES = 0x02,
+   * XR_ACCEPT_NICK = 0x04 (source/xfer_rec.h) -- literal bits, not the macro, to
+   * avoid the circular include. */
+  merge_species_and_level(&em, e, now, &orig, have_orig,
+                          (accept & 0x08u) != 0, (accept & 0x01u) != 0, rep);
+  merge_moves(&em, now, e, &orig, have_orig, (accept & 0x02u) != 0, rep);
+  merge_nickname(&em, e, now, (accept & 0x04u) != 0, rep);
 
   /* DVs are deliberately NOT re-checked here. dv4 is part of the sidecar's own
    * fingerprint (gbsc_key/gbsc_find), so a DV edit on the Game Boy already changes
@@ -526,4 +540,10 @@ bool gbsc_merge_up(const GbscEntry* e, const GbEditMon* now, uint8_t out80[80],
 
   gen3_edit_commit(&em, out80);
   return true;
+}
+
+bool gbsc_merge_up(const GbscEntry* e, const GbEditMon* now, uint8_t out80[80],
+                   GbscMergeReport* rep) {
+  return gbsc_merge_up_sel(e, now, 0x0Fu /* XR_ACCEPT_ALL, source/xfer_rec.h */,
+                           out80, rep);
 }

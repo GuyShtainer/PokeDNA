@@ -2938,26 +2938,13 @@ xfer_down_write(uint64_t key, const uint8_t cell80[80], const GbEditMon* written
             ((uint32_t)t.day << 17) | ((uint32_t)t.hour << 12) |
             ((uint32_t)t.minute << 6) | (uint32_t)t.second;
 
+  /* BACKLOG #150 S150-9 decision 11: the entry build itself now lives in
+   * source/xfer_rec.c's xr_entry_for_down() -- pure gbsc_entry_from() + the five
+   * field stores + the nick_written override this comment used to explain -- so the
+   * flagship host round-trip test exercises the exact artefact this DOWN edge
+   * writes, not a synthetic copy. */
   GbscEntry e;
-  gbsc_entry_from(&e, written, cell80, epoch);
-  e.kind = XR_KIND_NATIVE_HOME;
-  e.state = XR_STATE_PENDING;
-  e.direction = direction;
-  e.claimed = 1;
-  /* D-8b-link / F3 (review): nick_written holds the nickname bytes IN THE ABROAD
-   * FORMAT (gb_sidecar.h's own contract comment) -- Gen-3 bytes for ABROAD_G3
-   * (`nick_g3`, the 10 raw bytes at the converted record's own +0x08, gen3_mon.c's
-   * own decode_name() call site), GB bytes (`written->nick`) for ABROAD_GB. Passing
-   * the wrong one for ABROAD_G3 was a no-op copy of GB bytes S150-8b's nickname
-   * merge on the way back cannot use -- gbsc_entry_from() itself already fills GB
-   * bytes by default, so this only OVERRIDES for the Gen-3 case. */
-  /* R1 (review): the Gen-3 nickname field is only 10 bytes (gen3_mon.c's own
-   * decode_name(out->nickname, mon + 0x08, 10)) -- byte 11 at +0x12 is the PLAINTEXT
-   * language byte, not part of the name at all. Copying sizeof(e.nick_written) (11,
-   * GB_NAME_BYTES) read one byte too far into `nick_g3` and stored the language
-   * byte in nick_written[10]. */
-  if (nick_g3) { memcpy(e.nick_written, nick_g3, 10); e.nick_written[10] = 0; }
-  else         memcpy(e.nick_written, written->nick, sizeof e.nick_written);
+  xr_entry_for_down(&e, written, cell80, epoch, direction, nick_g3);
 
   int old = gbsc_find_by_key(scratch, len, cell80);
   if (old >= 0) gbsc_remove(scratch, &len, old);

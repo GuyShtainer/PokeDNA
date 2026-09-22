@@ -1275,7 +1275,10 @@ pc_bank_restore_up(const uint8_t g3_rec80[80], uint8_t out_cell80[80]) {
     log_line("bank: restore: bank_serial allocation failed");
     return -1;
   }
-  int rc = bank_restore_from_entry(&e, g3_rec80, serial, out_cell80, NULL);
+  /* S150-9 decision 3: bank_restore_from_entry() now takes the accept mask; this call
+   * site passes XR_ACCEPT_ALL for now (step 1/2's minimal compile fix) -- step 4
+   * replaces this whole block with the per-field merge screen (decisions 6/7/8). */
+  int rc = bank_restore_from_entry(&e, g3_rec80, XR_ACCEPT_ALL, serial, out_cell80, NULL);
   if (rc != 1) { log_line("bank: restore: bank_restore_from_entry rc=%d", rc); return -1; }
   return 1;
 }

@@ -308,6 +308,8 @@ typedef struct {
                             * exists (source/item_map_g2g3.h, BACKLOG #150 S150-8-CORE)
                             * but has no callers yet -- S150-8 is the slice that wires
                             * it into this merge and into the DOWN edge.              */
+  uint8_t level_from, level_to;  /* S150-9 decision 5 -- baseline / abroad level, 0/0
+                                  * when there is no level row                        */
 } GbscMergeReport;
 
 /* NOTE ON DVs, DELIBERATELY ABSENT FROM GbscMergeReport (design decision,
@@ -334,5 +336,14 @@ typedef struct {
  * merged 80-byte record. */
 bool gbsc_merge_up(const GbscEntry* e, const GbEditMon* now, uint8_t out80[80],
                    GbscMergeReport* rep);
+
+/* BACKLOG #150 S150-9 decision 1: `accept` gates which fields the walk APPLIES to
+ * `out80` (the XR_ACCEPT_* bits, source/xfer_rec.h -- not included here, it would be
+ * a circular include: xfer_rec.h already includes this header for GbscEntry. Pass the
+ * literal bits or xfer_rec.h's macros from a caller that already includes both).
+ * `rep` is filled identically no matter what `accept` is (mask-independent); only the
+ * apply is gated. `gbsc_merge_up` is the ACCEPT_ALL (0x0F) wrapper above. */
+bool gbsc_merge_up_sel(const GbscEntry* e, const GbEditMon* now, uint8_t accept,
+                       uint8_t out80[80], GbscMergeReport* rep);
 
 #endif /* GB_SIDECAR_H */
