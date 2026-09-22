@@ -41,7 +41,7 @@ PokeDNA draws text through exactly two code paths (source/ui.c):
     sys8 (ui_font.c's header comment cites it directly: "same order as tonc's
     sys8"). Advance is FIXED at 8 px (no per-glyph width table for this font --
     TFont.widths is NULL for sys8Font, so tte falls back to `font->charW`, tonc's
-    own 8px cell -- tonc_tte.h's TEXT_WIDTH macro, `font->widths ? ... :
+    own 8px cell -- tonc_tte.h's TTE_CHAR_VARS macro, `font->widths ? ... :
     font->charW`).
     render(text, proportional=False) reproduces this.
 
@@ -151,8 +151,8 @@ def _load_tonc_bits() -> bytes:
                 data = (tdp / "sys8font.bin").read_bytes()
                 if len(data) == NUM_GLYPHS * GLYPH_ROWS:
                     return data
-        except Exception:
-            pass  # fall through to the frozen literal
+        except (OSError, subprocess.CalledProcessError, AssertionError):
+            pass  # no toolchain / no objcopy here: fall through to the frozen literal
     return bytes.fromhex(TONC_SYS8_HEX)
 
 
@@ -236,7 +236,8 @@ def render(text: str, proportional: bool = True) -> np.ndarray:
     return mask
 
 
-def find(frame_png, text: str, proportional: bool | None = None) -> list[tuple[int, int, tuple[int, int, int]]]:
+def find(frame_png: str | Path | Image.Image | np.ndarray, text: str,
+         proportional: bool | None = None) -> list[tuple[int, int, tuple[int, int, int]]]:
     """Search `frame_png` (a path or an already-loaded PIL Image / ndarray) for an
     EXACT pixel match of render(text, proportional). proportional=None tries
     BOTH renderers (ui_ptext's and ui_text's fonts) since the caller does not
@@ -275,7 +276,9 @@ def find(frame_png, text: str, proportional: bool | None = None) -> list[tuple[i
     return hits
 
 
-def check(frame_png, claim=None, claim_absent=None, proportional: bool | None = None) -> list[str]:
+def check(frame_png: str | Path | Image.Image | np.ndarray,
+          claim: str | list[str] | None = None, claim_absent: str | list[str] | None = None,
+          proportional: bool | None = None) -> list[str]:
     """The shared gate used by both Session.shot() (live, BACKLOG #184 item 2) and
     --selftest-captions's offline re-check (item 2's extension): returns a list
     of human-readable failure strings (empty = every claim/claim_absent held).
