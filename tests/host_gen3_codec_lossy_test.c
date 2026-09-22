@@ -6,7 +6,9 @@
  *
  * Three things this pins:
  *   (1) gen3_decode_char / gen3_encode_char are exact inverses of each other for every
- *       byte the decoder maps to a printable glyph -- a full 0..254 sweep (255 is the
+ *       byte the decoder maps to a printable glyph (no decoder glyph without an encoder
+ *       inverse), plus the unmapped-code population (190 codes that gen3_decode_char
+ *       maps to '?', not matching any encoder case) -- a full 0..254 sweep (255 is the
  *       Gen-3 string terminator, not a glyph), not just the handful host_charmap_test.c
  *       already names.
  *   (2) gen12_convert()'s up-conversion (Gen 1/2 -> Gen 3) now round-trips the gender
@@ -35,12 +37,14 @@ static void expect(bool cond, const char* what) {
 static void test_full_sweep(void) {
   printf("== (1) 256-code decode->encode->decode idempotence (0x00..0xFE) ==\n");
   int tested = 0;
+  int unmapped = 0;
   for (int c = 0; c <= 0xFE; c++) {
     char ch1 = gen3_decode_char((uint8_t)c);
     /* Every non-terminator byte decodes to SOME printable glyph -- gen3_decode_char
      * has no other path to 0. A code that broke this would mean a new terminator
      * alias snuck in, which is its own bug. */
     if (ch1 == 0) { fails++; checks++; printf("  FAIL 0x%02x decoded to NUL (not a terminator)\n", c); continue; }
+    if (ch1 == '?' && c != 0xAC) { unmapped++; continue; }   /* not an inverse claim */
     uint8_t b2  = gen3_encode_char(ch1);
     char    ch2 = gen3_decode_char(b2);
     checks++; tested++;
@@ -50,7 +54,8 @@ static void test_full_sweep(void) {
              c, ch1, b2, ch2 ? ch2 : '_', ch1);
     }
   }
-  printf("  swept %d codes\n", tested);
+  printf("  swept %d codes, %d unmapped\n", tested, unmapped);
+  expect(unmapped == 179, "the unmapped-code population has not moved");
 }
 
 /* ---- shared fixture: a minimal, always-convertible Gb12Mon ------------------ */
