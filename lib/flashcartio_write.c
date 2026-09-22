@@ -3,11 +3,23 @@
 #include "flashcartio.h"
 #include "flashcartio_write.h"
 
+#ifdef PDNA_DELTA
+#include "vsd.h"   /* BACKLOG #179: the harness-hosted virtual SD, delta-only seam */
+#endif
+
 #if FLASHCARTIO_EZFO_ENABLE != 0
 #include "ezflashomega/io_ezfo.h"
 #endif
 
 bool flashcartio_write_sector(u32 sector, const u8* source, u16 count) {
+#ifdef PDNA_DELTA
+  if (vsd_attached()) {
+    flashcartio_is_reading = true;   /* exercise the same OS-mode gate real writes do */
+    bool ok = vsd_xfer(VSD_OP_WRITE, sector, (u32)source, count);
+    flashcartio_is_reading = false;
+    return ok;
+  }
+#endif
   switch (active_flashcart) {
 #if FLASHCARTIO_EZFO_ENABLE != 0
     case EZ_FLASH_OMEGA: {

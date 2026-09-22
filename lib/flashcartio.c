@@ -2,6 +2,10 @@
 
 #include "flashcartio.h"
 
+#ifdef PDNA_DELTA
+#include "vsd.h"   /* BACKLOG #179: the harness-hosted virtual SD, delta-only seam */
+#endif
+
 #if FLASHCARTIO_ED_ENABLE != 0
 #include "everdrivegbax5/disk.h"
 #include "everdrivegbax5/everdrive.h"
@@ -378,6 +382,14 @@ static bool flashcartio_activate_inner(void) {
 }
 
 bool flashcartio_read_sector(u32 sector, u8* destination, u16 count) {
+#ifdef PDNA_DELTA
+  if (vsd_attached()) {
+    flashcartio_is_reading = true;   /* exercise the same OS-mode gate real reads do */
+    bool ok = vsd_xfer(VSD_OP_READ, sector, (u32)destination, count);
+    flashcartio_is_reading = false;
+    return ok;
+  }
+#endif
   switch (active_flashcart) {
 #if FLASHCARTIO_ED_ENABLE != 0
     case EVERDRIVE_GBA_X5: {
