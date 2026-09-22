@@ -6574,6 +6574,11 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] b166: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
     if getattr(a, "b190", False):
         # BACKLOG #190: same append-only convention as --s150-2/--s150-3/--s150-14 above.
         ran = True
@@ -6614,6 +6619,11 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] s150-4: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
     if getattr(a, "s150_7", False):
         # BACKLOG #150 S150-7: append-only, same convention as --s150-2/3/14 above --
         # needs a SECOND image (--s150-7-red), unlike every prior --s150-* flag.
