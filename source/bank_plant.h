@@ -29,6 +29,14 @@
  */
 void bank_plant_box0(uint8_t* recs);
 
+/* BACKLOG #150 S150-15 decision 13: slot 0's own cell (Gen-2 CHIKORITA @ L12, origin
+ * GOLD), built the SAME way bank_plant_box0() builds it -- called BY bank_plant_box0()
+ * for its own slot 0, so the two can never drift apart. `out80` (80 bytes) receives
+ * the packed cell. Exists so source/xfer_plant.c can convert the IDENTICAL bytes the
+ * Bank's slot-0 VIEW shows, making S150-15's shot-chain pixel-parity pair
+ * (00_bank_cell0_view vs 05_original_info_card) a real equality, not a coincidence. */
+void bank_plant_cell0(uint8_t out80[80]);
+
 /* The 30-NATIVE WORST CASE (SS11.9's Cost paragraph, SS11.13's S150-2 acceptance row):
  * slots 0-4 as bank_plant_box0 above (BACKLOG #150 S150-2 review F4: that is 2 FULL +
  * 2 RELAXED + 1 NONE/DMG, not five more FULL cells -- corrected here, this reuses

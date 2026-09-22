@@ -15,6 +15,11 @@
 #include <string.h>
 #include <stdio.h>          /* siprintf (host: -Dsiprintf=sprintf)                    */
 
+#ifdef PDNA_DELTA
+#include "xfer_plant.h"     /* decision 13, finding (e): the delta-only fallback       */
+#include "pdna_app.h"       /* app_met_game -- called ONLY inside this #ifdef          */
+#endif
+
 /* out <- e.original80, e.rtc_epoch, e.original80[8]/[BC_OFF_ORIGIN_GAME], e.state. */
 static void fill_from_entry(const GbscEntry* e, XvOriginal* out) {
   memcpy(out->original80, e->original80, 80);
@@ -29,7 +34,16 @@ static void fill_from_entry(const GbscEntry* e, XvOriginal* out) {
 bool xv_has_original(const uint8_t rec80[80]) {
   if (!rec80) return false;
   char path[GBSC_PATH_MAX];
-  return xr_path_for_key(path, xr_key_g3(rec80));
+  if (xr_path_for_key(path, xr_key_g3(rec80))) return true;
+#ifdef PDNA_DELTA
+  /* decision 13 consumer (i): consulted ONLY after the real lookup found nothing.
+   * A plain `false` from the real check above IS "no file" -- there is no read
+   * error here to mask. */
+  GbscEntry tmp;
+  return xfer_plant_entry(app_met_game(), rec80, &tmp);
+#else
+  return false;
+#endif
 }
 
 /* decision 5/8: the s150-8b walk verbatim (source/pdna_box.c's pc_bank_restore_up),
@@ -41,7 +55,15 @@ int __attribute__((noinline)) xv_find_original(const uint8_t rec80[80], XvOrigin
   uint32_t len = 0;
   uint64_t key = xr_key_g3(rec80);
   SfStatus rst = xr_open(key, buf, sizeof buf, &len, NULL);
-  if (rst == SF_ERR_OPEN) return 0;              /* no ledger file at all -- an ordinary mon */
+  if (rst == SF_ERR_OPEN) {
+#ifdef PDNA_DELTA
+    /* decision 13 consumer (i), the xv_find_original half: only after the real
+     * lookup's own "no file" -- never after a real -1 read/validate error below. */
+    GbscEntry e;
+    if (xfer_plant_entry(app_met_game(), rec80, &e)) { fill_from_entry(&e, out); return 1; }
+#endif
+    return 0;                                     /* no ledger file at all -- an ordinary mon */
+  }
   if (rst != SF_OK) {
     log_line("xfer: view: open: %s", sf_status_str(rst));
     return -1;
@@ -62,7 +84,13 @@ int __attribute__((noinline)) xv_find_original(const uint8_t rec80[80], XvOrigin
     best = i;
     e = cand;
   }
-  if (best < 0) return 0;   /* only G3_HOME entries, or the file is empty -- decision 4's caveat */
+  if (best < 0) {
+#ifdef PDNA_DELTA
+    GbscEntry pe;
+    if (xfer_plant_entry(app_met_game(), rec80, &pe)) { fill_from_entry(&pe, out); return 1; }
+#endif
+    return 0;   /* only G3_HOME entries, or the file is empty -- decision 4's caveat */
+  }
 
   fill_from_entry(&e, out);
   return 1;

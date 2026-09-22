@@ -39,6 +39,9 @@
 #include "xfer_io.h"        /* BACKLOG #150 S150-6: xr_path_for_key/xr_path_for_name/xr_migrate_once */
 #include "xfer_rec.h"       /* BACKLOG #150 S150-6: xr_key_g3 -- the reroll re-key guard             */
 #include "xfer_view.h"      /* BACKLOG #150 S150-15: xv_has_original/xv_find_original -- GB ORIGINAL */
+#ifdef PDNA_DELTA
+#include "xfer_plant.h"     /* BACKLOG #150 S150-15 decision 13: the delta-only seam hook, below */
+#endif
 #include "gen3_trainer.h"
 #include "gen3_record.h"    /* Emerald Battle Record (save sector 31) info + export */
 #include "gen3_frontier.h"  /* g3f_streak_get/g3f_modes/g3f_mode_name for the record screen's streaks page */
@@ -10011,6 +10014,21 @@ static void view_save(const char* path) {
       sz = fsz; err = 0;
       g3_from_fused_sav = true;
       log_line("save: flash blank/invalid -> using the fused save (%lu B)", (unsigned long)fsz);
+#ifdef PDNA_DELTA
+      /* BACKLOG #150 S150-15 decision 13(ii)/#179: the plain single-slot Gen-3
+       * fused-save path (the one every s150 shot chain actually boots through) has
+       * no clip_copy_from call today, so the delta vehicle can never manufacture a
+       * converted mon with a ledger entry -- every DOWN drop stops at "SIDECAR
+       * FOLDER / Nothing transferred." Same clip_copy_from(&g_clip, rec80, false)
+       * shape the three real fused-GB-image sites use, but built from a FRESH
+       * converted CHIKORITA (xfer_plant_converted) instead of read from a fused
+       * `--clip` file -- so an empty PC cell's menu offers PASTE HERE and the
+       * pasted mon's own ledger entry (xfer_plant_entry, consulted by xfer_view.c's
+       * PDNA_DELTA fallback) has the SAME bytes as bank_plant_box0's own slot 0.
+       * PDNA_DELTA-only: `nm | grep -c xfer_plant` proves 0 in both gate ELFs. */
+      { uint8_t r[80];
+        if (xfer_plant_converted(app_met_game(), r)) clip_copy_from(&g_clip, r, false); }
+#endif
     } else if (!flash_ok && fused_sav_present(&fsz) && pdna_gen12_size_is_gb(fsz) &&
                fused_sav_read(g_save, fsz)) {
       /* SCREENSHOT VEHICLE ONLY (docs/HANDOFF.md 2026-09-05): the GB fork below this
