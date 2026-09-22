@@ -258,6 +258,24 @@ char pdna_origin_mark(const PdnaOrigin* o) {
   return (o->gen == PDNA_GEN2) ? '2' : '1';
 }
 
+/* BACKLOG #150 S150-13: the ONE source of truth for the gen-1/gen-2 tint, keyed by the
+ * raw gen byte (1 or 2) rather than a PdnaOrigin/box slot -- box_oam.c's carry-badge
+ * only has bc_kind()'s gen byte to hand. Any other value (0/3+) is "no origin" -> 0,
+ * same convention pdna_origin_box_color() uses. */
+uint16_t pdna_origin_native_color(uint8_t gen) {
+  return (gen == 2) ? COL_GEN2 : (gen == 1) ? COL_GEN1 : 0;
+}
+
+/* BACKLOG #150 S150-13: bc_kind()'s gen byte -> the glove badge's digit. A pure,
+ * testable unit rather than inlining `bc_kind(s_held) == 2 ? '2' : '1'` at the
+ * pdna_box.c render call site (golden-rules preference for a testable mapping over an
+ * inline literal) -- and bank_cell.* itself is frozen (S150-1), so this small mapping
+ * lives beside pdna_origin_native_color() instead of growing that file. Anything other
+ * than 1/2 (0 = not native, per bc_kind()'s own contract) -> 0 = "no badge". */
+char pdna_origin_native_mark(uint8_t gen) {
+  return (gen == 2) ? '2' : (gen == 1) ? '1' : 0;
+}
+
 uint16_t pdna_origin_color(const PdnaOrigin* o) {
   if (!o || o->verdict != PDNA_ORIGIN_GB) return 0;
   if (!o->gen_certain) return COL_GBQ;

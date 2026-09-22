@@ -1752,9 +1752,25 @@ static void oam_sync(int cur, bool on_title, int box, bool is_bank) {
     int tr = cursor_title_row(on_title);
     boxoam_cursor(cur, tr, cursor_look(), cursor_label_cx(tr));   /* the descending open hand */
   } else if (s_holding) {
-    PkMon hm; pk_decode_mon(s_held, false, &hm);
     int tr = cursor_title_row(on_title);
-    boxoam_carry_held(cur, tr, cursor_label_cx(tr), hm.species, hm.form, hm.isEgg && !hm.isBadEgg);   /* held mon (or Egg) front-most + orange fist */
+    /* BACKLOG #150 S150-13 / #164: a carried NATIVE Bank cell is not Gen-3-shaped, so
+     * pk_decode_mon() cannot resolve a real species for it (undefined-in-practice on
+     * non-Gen-3 bytes -- "fixing" pk_decode_mon to tolerate native bytes is out of
+     * scope, it would hide the real bug class #164 is about). badge-only (decision a
+     * of the brief): species 0 makes boxoam_carry_held() fall into its own
+     * hide(OE_CARRY) arm (the fist rides empty), and the glove shows the era badge
+     * instead -- cheaper and safer than laying the badge atop pk_decode_mon()'s
+     * undefined output. */
+    if (bc_is_native(s_held)) {
+      boxoam_carry_held(cur, tr, cursor_label_cx(tr), 0, 0, false);
+      uint8_t gen = bc_kind(s_held);
+      boxoam_carry_badge(cur, tr, cursor_label_cx(tr), pdna_origin_native_mark(gen),
+                          pdna_origin_native_color(gen));
+    } else {
+      PkMon hm; pk_decode_mon(s_held, false, &hm);
+      boxoam_carry_held(cur, tr, cursor_label_cx(tr), hm.species, hm.form, hm.isEgg && !hm.isBadEgg);   /* held mon (or Egg) front-most + orange fist */
+      boxoam_carry_badge(cur, tr, cursor_label_cx(tr), 0, 0);   /* no badge on an ordinary Gen-3 carry */
+    }
     if (s_orig_slot >= 0 && (s_orig_scope == BOXSCOPE_BANK) == is_bank && s_orig_box == box)
       boxoam_hide_slot(s_orig_slot);                         /* lift-hide the origin cell */
     boxoam_item_markers(g_box, false);
