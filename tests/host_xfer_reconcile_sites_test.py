@@ -260,7 +260,12 @@ def check_l_screen_apply_order(text: str) -> list[str]:
     if not ledger_pos:
         out.append("xfer_reconcile_apply(): never calls sf_write_verified(/f_unlink( "
                     "(decision 9's per-file rewrite)")
-    if dest_pos and ledger_pos and min(dest_pos) >= min(ledger_pos):
+    # max(dest_pos), not min(dest_pos): comparing only the FIRST destination write
+    # (min) misses a LATER destination write that landed after the first ledger
+    # rewrite -- every destination write must precede every ledger write, so the
+    # LAST destination write is the one that must still come before the ledger
+    # (BACKLOG #150 S150-11 review D3).
+    if dest_pos and ledger_pos and max(dest_pos) >= min(ledger_pos):
         out.append("xfer_reconcile_apply(): a ledger write (sf_write_verified(/f_unlink() "
                     "appears before every destination write -- §3.2 order violated")
     return out
@@ -408,6 +413,31 @@ def main() -> int:
             fails += 1
         else:
             print("self-mutation (l): sf_write_verified( spliced ahead of every destination write -- correctly caught")
+
+    # (l)-D3: move block (2) (the per-file rewrite loop, its own ledger write) to
+    # directly ABOVE block (1c) (RESTORE TO BANK, a destination write) inside
+    # xfer_reconcile_apply() itself -- (1a)/(1b) stay first, so min(dest_pos) is
+    # UNCHANGED and a min(dest_pos)-based check would miss this; only comparing
+    # max(dest_pos) (the now-late (1c) RESTORE call) against min(ledger_pos) (the
+    # now-early block-(2) rewrite) catches the real violation (review D3).
+    body_l = extract_function_body(main_text, "xfer_reconcile_apply")
+    m_1c = re.search(r"  /\* \(1c\) RESTORE TO BANK", body_l)
+    m_2 = re.search(r"  /\* \(2\) one verified rewrite", body_l)
+    m_3 = re.search(r"  /\* \(3\) re-keys", body_l)
+    if not (m_1c and m_2 and m_3 and m_1c.start() < m_2.start() < m_3.start()):
+        print("FAIL -- self-mutation (l)-D3 markers not found/ordered verbatim (source drifted)")
+        fails += 1
+    else:
+        block_1c = body_l[m_1c.start():m_2.start()]
+        block_2 = body_l[m_2.start():m_3.start()]
+        swapped_body = body_l[:m_1c.start()] + block_2 + block_1c + body_l[m_3.start():]
+        mutated_l2 = main_text.replace(body_l, swapped_body, 1)
+        v, _ = run_all(mutated_l2, bank_text)
+        if not any("xfer_reconcile_apply(): a ledger write" in x for x in v):
+            print("FAIL -- self-mutation (l)-D3: moving block (2) above block (1c) did NOT turn check (l) red")
+            fails += 1
+        else:
+            print("self-mutation (l)-D3: block (2) moved above block (1c) -- correctly caught")
 
     if fails:
         print(f"FAIL -- {fails} self-mutation proof(s) did not fire")
