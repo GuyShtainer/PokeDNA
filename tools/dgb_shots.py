@@ -1985,15 +1985,21 @@ def run_b89_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     s.tap("B", settle=gb_shots.BIG_SETTLE)                  # detail -> back to the list (same shell)
 
     s.tap("START", settle=gb_shots.BIG_SETTLE)              # the Hall of Fame's own START menu (same shell)
+    # BACKLOG #184 retrofit attempted here and REVERTED: this screen is
+    # hof_card_paint_menu() (source/pdna_gbhof.c), which paints INSIDE the gbscr
+    # card shell via gbscr_text()/hof_card_text_fit() -- the ROM's OWN composited
+    # tile font, not source/ui_font.c's ui_font_bits nor tonc's sys8Font. A live
+    # mGBA run with claim=["CLEAR ALL","SET COUNT","ADD TEAM","DELETE TEAM"]
+    # proved this empirically ([CLAIM FAILED] on all four against the real frame,
+    # even though the text is plainly visible by eye -- see the b184 executor
+    # report's pixel dump). This is exactly the GB-shell case the brief scoped
+    # out of gb_claims.py's v1 (tools/gb_oracle/oracle.py's tile->glyph map needs
+    # a live GB core session this Session/PNG-only harness does not have) -- no
+    # claim= here until that lands.
     s.shot("03_menu", "BACKLOG #202 F1: START -> the shell's own in-frame menu -- "
                        "CLEAR ALL / SET COUNT / ADD TEAM / DELETE TEAM (BACKLOG "
                        "#194 F3's two newer rows, recaptioned here -- this frame "
-                       "used to show only the first two)",
-                       claim=["CLEAR ALL", "SET COUNT", "ADD TEAM", "DELETE TEAM"])
-                       # BACKLOG #184 retrofit: this is exactly the caption BACKLOG #198
-                       # item 5 found stale (predating the ADD/DELETE TEAM rows) --
-                       # pdna_gbhof.c's own kHofMenuLbl[], drawn via trainer_row_paint's
-                       # ui_text (fixed font)
+                       "used to show only the first two)")
 
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # CLEAR ALL -> app_confirm (A2: shell stays
                                                               # OPEN underneath; this full-screen ui_*
@@ -2187,6 +2193,13 @@ def run_b194_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> g
     # ever replaced, re-verify these two numbers rather than trust them frozen).
     count_after_add = {"red": 10, "crystal": 7}[which]
     count_before_add = count_after_add - 1
+    # BACKLOG #184 retrofit attempted here and REVERTED: same finding as
+    # run_b89_hof's "03_menu" -- this header is hof_card_text_fit() inside the
+    # gbscr card shell (source/pdna_gbhof.c ~:760, "%d teams (life %d)"), the
+    # ROM's own tile font, not source/ui_font.c/tonc's sys8Font. Confirmed by
+    # the SAME live-mGBA [CLAIM FAILED] result run_b89_hof's 03_menu got before
+    # its claim= was reverted -- out of scope for gb_claims.py's v1 (see that
+    # shot's own comment for the full reasoning).
     s.shot("10_add_back_on_list", "BACKLOG #202 A2: dismissed -- back on the "
                                    "LIST card (the SAME shell), now showing "
                                    f"{count_after_add} teams (was {count_before_add}) "
@@ -2195,10 +2208,7 @@ def run_b194_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> g
                                    "in-session (RAM); only the FLASH persist "
                                    "leg of gb_persist() refuses in the "
                                    "emulator build, same as every other GB "
-                                   "screen's own commit",
-                                   # BACKLOG #184 retrofit: pdna_gbhof.c's own
-                                   # siprintf(hdr, "%d teams (life %d)", present, count)
-                                   claim=[f"{count_after_add} teams"])
+                                   "screen's own commit")
 
     # ---- DELETE TEAM -----------------------------------------------------------------
     s.tap("START", settle=gb_shots.BIG_SETTLE)                # list -> menu (same shell)
@@ -8215,11 +8225,20 @@ def run_b200_chain(core_mod, image_mod, rom: Path, out_dir: Path) -> list[gb_sho
     boot_to_gb_session(sc, rom, which="yellow")
     sc.tap("R", settle=gb_shots.BIG_SETTLE)          # box 12 -> party (index 12)
     sc.tap("R", settle=gb_shots.BIG_SETTLE)          # party -> box 1 (index 0, (12+1)%13)
+    # BACKLOG #184 retrofit ATTEMPTED here (claim=["20/20"]) and REVERTED: a live
+    # mGBA run against the CORPUS gba-toolkit/roms/gb/Yellow.sav (read-only, copied
+    # to /tmp -- the function's own docstring warns this is NOT necessarily "GUY'S
+    # OWN Yellow.sav", a different file with unverified contents) landed on a frame
+    # with NO banner text at all in the top strip (a flat navy band -- the tab row
+    # "<BANK>"/"SAVE" is focused/highlighted instead) -- claim_failed, but NOT
+    # proven to be a caption lie: this could be the corpus save genuinely not
+    # having box 1 at 20/20, or the R,R navigation landing in a tab-focused state
+    # one frame earlier than this caption assumes, or a real bug. Flagged for
+    # BACKLOG follow-up rather than asserted either way from this lane.
     sc.shot("00_box1_full", "tap2 (R, R from box 12): box 1, '1:GB BOX1 20/20' -- "
             "the SAME blocked rows 3 (partial)/4 (full) chain A showed on the "
             "EMPTY box 12, but every real cell (0-19) now shows an occupied "
-            "Pokemon -- F1's blocked tiles are driven by capacity, not fill level",
-            claim=["20/20"])  # BACKLOG #184 retrofit: pdna_box.c's own banner siprintf
+            "Pokemon -- F1's blocked tiles are driven by capacity, not fill level")
     sessions.append(sc)
 
     # ---- D: the Emerald Gen-3 PC box (unaffected, capacity NULL -> 30) --------
