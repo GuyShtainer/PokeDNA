@@ -860,7 +860,7 @@ def landed_consume_after_dispatch(dh_body: list[str]) -> tuple[bool, str]:
     return True, "ok"
 
 
-# BACKLOG #213 (aj): every ledger-write function this lane could reach must call
+# BACKLOG #213 (al): every ledger-write function this lane could reach must call
 # app_xv_cache_invalidate( somewhere in its own (comment-stripped) body -- the GB
 # ORIGINAL row's negative cache promises "after ANY ledger write, the next lookup
 # goes to the card", and this is the only site where THAT can be checked for the
@@ -870,8 +870,8 @@ INVALIDATE_RE = re.compile(r"\bapp_xv_cache_invalidate\(")
 
 
 def invalidate_call_facts(lines: list[str], sig_re: str, fn_label: str) -> tuple[bool, str]:
-    """(aj): extract_function(lines, sig_re)'s body must contain INVALIDATE_RE at
-    least once. MUT AJ (self_test_mutation_detection) blanks the one real call line
+    """(al): extract_function(lines, sig_re)'s body must contain INVALIDATE_RE at
+    least once. MUT AL (self_test_mutation_detection) blanks the one real call line
     on a synthetic copy of app_xfer_promote's body and asserts this reports FAIL."""
     s, e = extract_function(lines, sig_re)
     body = lines[s:e]
@@ -1316,12 +1316,12 @@ def main() -> int:
     ok, d = up_scan_latch_facts(box_lines, s, e)
     check(ok, d)
 
-    # ---- (aj) BACKLOG #213: every ledger-write function this lane could reach calls
+    # ---- (al) BACKLOG #213: every ledger-write function this lane could reach calls
     # app_xv_cache_invalidate( -- the GB ORIGINAL row's negative cache promises "after
     # ANY ledger write the next lookup goes to the card"; this is the only place that
     # can prove it for the write sites living in files with no host-compile path
     # (pdna_gen12.c/pdna_box.c) or that are pdna_main.c statics with no runtime test of
-    # their own. MUT AJ below (self_test_mutation_detection) blanks the one real call
+    # their own. MUT AL below (self_test_mutation_detection) blanks the one real call
     # line in a synthetic copy of app_xfer_promote's body and must be caught. ----
     for lines, sig_re, label in (
         (main_lines, r"^bool __attribute__\(\(noinline\)\) app_xfer_promote\(void\) \{", "app_xfer_promote"),
@@ -1343,7 +1343,7 @@ def main() -> int:
 
     # ---- (f) review F3: the self-mutation harness, every run ----
     self_test_mutation_detection(box_lines, gen12_lines)
-    self_test_aj_mutation(main_lines)
+    self_test_al_mutation(main_lines)
 
     print(f"{checks} checks, {len(fails)} failed")
     for f in fails:
@@ -2023,8 +2023,8 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str]) -
               f"`if (!pdna_bank_serial_trusted())` form: {detail}")
 
 
-def self_test_aj_mutation(main_lines: list[str]) -> None:
-    """BACKLOG #213 (aj): prove invalidate_call_facts() actually has teeth. Takes
+def self_test_al_mutation(main_lines: list[str]) -> None:
+    """BACKLOG #213 (al): prove invalidate_call_facts() actually has teeth. Takes
     app_xfer_promote's real (comment-stripped) body and deletes its one
     app_xv_cache_invalidate( line on an in-memory copy -- the exact shape of the bug
     this check exists to catch (a write site whose invalidation call was never added,
@@ -2032,15 +2032,15 @@ def self_test_aj_mutation(main_lines: list[str]) -> None:
     any(...) scan reports failure on that copy."""
     s, e = extract_function(main_lines, r"^bool __attribute__\(\(noinline\)\) app_xfer_promote\(void\) \{")
     body = main_lines[s:e]
-    mut_aj = [ln for ln in body if not INVALIDATE_RE.search(ln)]
+    mut_al = [ln for ln in body if not INVALIDATE_RE.search(ln)]
     check(any(INVALIDATE_RE.search(ln) for ln in body),
-          "MUT AJ: app_xfer_promote's real body has no app_xv_cache_invalidate( call to "
+          "MUT AL: app_xfer_promote's real body has no app_xv_cache_invalidate( call to "
           "delete -- fix this test, the real source regressed")
-    still_present = any(INVALIDATE_RE.search(ln) for ln in mut_aj)
+    still_present = any(INVALIDATE_RE.search(ln) for ln in mut_al)
     check(not still_present,
-          "MUT AJ (app_xfer_promote's invalidate call deleted) should have been caught "
+          "MUT AL (app_xfer_promote's invalidate call deleted) should have been caught "
           "but was not -- the mutated copy still reports a call present")
-    print("  MUT AJ demonstration -- app_xfer_promote's app_xv_cache_invalidate( call "
+    print("  MUT AL demonstration -- app_xfer_promote's app_xv_cache_invalidate( call "
           f"deleted: {'still (wrongly) found' if still_present else 'correctly absent, check would fail'}")
 
 
