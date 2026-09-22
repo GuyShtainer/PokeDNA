@@ -1352,18 +1352,14 @@ pc_bank_restore_done(const uint8_t g3_rec80[80]) {
   }
 }
 
-/* BACKLOG #168a: BankBoxGetter for the UP branch's collision scan (bank_collision.c,
- * a pure core with no tonc/FatFs dependency). `self_box`'s records are already paged
- * into the shared bank buffer (the caller's own `recs`, handed through unchanged);
- * every OTHER box is paged on demand through pdna_bank_peek_box(), which re-pages
- * that SAME shared buffer -- so `recs` (the pointer value in the ctx) stops being
- * self_box's data the instant this getter is asked for a different box. The caller
- * (drop_held_up) re-pages self_box back in with src->records(box) after the scan,
- * before writing or committing. */
-typedef struct { const uint8_t* recs; int self_box; } BankScanCtx;
+/* BACKLOG #168a review D1: pdna_bank_peek_box() re-pages the ONE shared box buffer,
+ * which is the SAME buffer `recs` points into -- handing the cached pointer back for
+ * self_box made the scan compare the destination box against box (self_box-1)'s bytes,
+ * i.e. never scan the destination box at all unless it was box 0. Page every box,
+ * self included, through the one reader. The re-page below restores `recs`. */
 static const uint8_t* bank_scan_get(int b, void* ctx) {
-  const BankScanCtx* c = (const BankScanCtx*)ctx;
-  return (b == c->self_box) ? c->recs : pdna_bank_peek_box(b);
+  (void)ctx;
+  return pdna_bank_peek_box(b);
 }
 
 /* BACKLOG #170 (from the s150-4-5 review A11): drop_held's UP branch (a Game Boy
@@ -1430,9 +1426,8 @@ static uint8_t* __attribute__((noinline)) drop_held_up(BoxSource* src, int box, 
    * collide when the meta itself was lost/rolled back, which is exactly what
    * that flag tracks. */
   if (!pdna_bank_serial_trusted()) {
-    BankScanCtx sctx = { recs, box };
     int coll_box = -1, coll_slot = -1;
-    if (bank_ident32_collision(bank_scan_get, &sctx, 16, G3_BOX_SLOTS, box, cur,
+    if (bank_ident32_collision(bank_scan_get, NULL, 16, G3_BOX_SLOTS, box, cur,
                                 s_held, &coll_box, &coll_slot)) {
       snd_error();
       boxoam_resume();
