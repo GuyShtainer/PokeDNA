@@ -10442,8 +10442,17 @@ static void xrc_visible_text(GbReconBuf* rb, int idx, bool claimed[XRC_VIS_CACHE
   }
   if (found < 0) {
     for (int s = 0; s < XRC_VIS_CACHE_N; s++) if (!claimed[s]) { found = s; break; }
-    /* found is always >= 0 here: vis <= XRC_VIS_CACHE_N (the _Static_assert above),
-     * so a frame can never claim more slots than exist before every row has one. */
+    /* found is expected >= 0 here: vis <= XRC_VIS_CACHE_N (the _Static_assert
+     * above), so a frame should never claim more slots than exist before every
+     * row has one -- but review F3: give the impossible branch a REAL exit
+     * instead of trusting that invariant with a negative array index. */
+    if (found < 0) {                       /* unreachable: vis <= XRC_VIS_CACHE_N */
+      uint16_t sp; uint8_t og;
+      xrc_row_decode(rb, idx, &sp, &og);
+      xrc_row_text((XrcRowKind)h->row_kind,
+                   sp == 0xFFFFu ? "?" : pk_species_name(sp), xrc_origin_name_id(og), out);
+      return;                              /* uncached, but NEVER a negative index */
+    }
     uint16_t sp; uint8_t og;
     xrc_row_decode(rb, idx, &sp, &og);
     XrcTextCache* c = &s_xrc_cache[found];
