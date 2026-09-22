@@ -994,6 +994,10 @@ int main(void) {
   PF(PDNA_XFER_KEPT_TITLE,   28, 184);
   PF(PDNA_XFER_KEPT_L1,      28, 184);
   PF(PDNA_XFER_KEPT_L2,      28, 184);
+  /* BACKLOG #219b: the UP drop's ident32 collision refusal (pdna_box.c decision 10) --
+   * l2 is NULL at the call site, so only the title + l1 rows are measured. */
+  PF(PDNA_BANK_COLL_TITLE,   28, 184);
+  PF(PDNA_BANK_COLL_L1,      28, 184);
   /* BACKLOG #150 S150-12 decision 16: drop_held's UP branch, read-only-mount COPY
    * shape -- msg_wait's own (28, .., 184) clamp. */
   PF(PDNA_XFER_COPIED_TITLE, 28, 184);

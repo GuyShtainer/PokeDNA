@@ -1445,6 +1445,11 @@ static uint8_t* __attribute__((noinline)) drop_held_up(BoxSource* src, int box, 
     if (bank_ident32_collision(bank_scan_get, NULL, PDNA_BANK_BOXES, G3_BOX_SLOTS, box, cur,
                                 s_held, &coll_box, &coll_slot)) {
       snd_error();
+      /* BACKLOG #219b: was a log line + snd_error() only -- the player saw nothing.
+       * msg_wait BEFORE boxoam_resume(), same as the backup-gate refusal above (the
+       * comment on the write-failure branch below says this bracket's own reason:
+       * sprites must be off while a dialog draws). */
+      msg_wait(PDNA_BANK_COLL_TITLE, UI_WARN, PDNA_BANK_COLL_L1, NULL);
       boxoam_resume();
       log_line("bank: up box %d slot %d -> bank box %d slot %d: ident32 collision at box %d slot %d, refusing", s_orig_box, s_orig_slot, box, cur, coll_box, coll_slot);
       app_log_flush();

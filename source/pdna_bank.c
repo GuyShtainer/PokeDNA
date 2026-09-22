@@ -94,6 +94,23 @@ static uint32_t g_bank_serial;
 static bool g_serial_trusted;
 bool pdna_bank_serial_trusted(void) { return g_serial_trusted; }
 
+/* BACKLOG #219a: true only immediately after a meta_load() that fell back to
+ * bank.meta.bak because the PRIMARY was unreadable/corrupt -- i.e. the primary on
+ * the card right now is the corrupt file that fallback recovered PAST, not the good
+ * bytes RAM holds. sf_save_rolling's own f_stat(primary) cannot tell "present but
+ * corrupt" from "present and fine": it sees FR_OK either way and backs the PRIMARY
+ * up over the still-good bank.meta.bak before writing -- so the very next meta_save()
+ * after a bak recovery clobbered the one good copy with the corrupt one, making
+ * recovery single-shot (a second corruption before another clean write would have
+ * no good .bak left). Consumed by meta_save() below: one f_unlink(meta_path()) BEFORE
+ * the save call turns the corrupt primary into "absent" from sf_save_rolling's own
+ * FR_NO_FILE probe (savefile.c), which skips the backup step entirely -- bank.meta.bak
+ * is left holding the good recovered bytes while the primary is rewritten fresh from
+ * RAM. Consumed (cleared) unconditionally by the next meta_save() call, whether or not
+ * that save succeeds -- a failed save leaves the primary absent/partial, which the next
+ * meta_load() already detects on its own via the normal FR_OK+magic probe. */
+static bool g_meta_from_bak;
+
 /* ---- paths ---- */
 static void box_path(int box, char* out) { siprintf(out, PDNA_BANK_DIR "/box%02d.box", box); }
 static const char* meta_path(void) { return PDNA_BANK_DIR "/bank.meta"; }
@@ -106,6 +123,7 @@ static void meta_defaults(void) {
   }
   g_bank_serial = 0;   /* decision 2: zero it too, same as every other meta_defaults() field */
   g_serial_trusted = false;   /* BACKLOG #168: a defaulted serial can never be trusted */
+  g_meta_from_bak = false;   /* BACKLOG #219a: a fresh default has no corrupt primary to heal */
 }
 
 /* noinline (BACKLOG #81): meta_load's 176-byte buf[] would otherwise be inlined into
@@ -153,6 +171,10 @@ static bool __attribute__((noinline)) meta_load(void) {
    * exactly the "meta was lost or rolled back" case the drop_held() 16-box scan
    * exists to catch, so it must NOT short-circuit that scan. */
   g_serial_trusted = !from_bak;
+  /* BACKLOG #219a: mark that the CARD's primary is currently the corrupt file this
+   * load fell back past -- meta_save()'s next call must heal it before it can safely
+   * take its usual rolling backup. */
+  g_meta_from_bak = from_bak;
   return true;
 }
 
@@ -188,6 +210,21 @@ static bool meta_save(void) {
    * guarantee rests on) had none, so a bad write left it unrecoverable. Same rolling
    * discipline as the boxes now: one "bank.meta.bak", built+verified before it
    * replaces the previous one. */
+  /* BACKLOG #219a: heal a corrupt primary BEFORE sf_save_rolling gets to it. Its own
+   * f_stat(meta_path()) probe (savefile.c) cannot distinguish "present and corrupt"
+   * from "present and fine" -- FR_OK either way -- so left alone it would back the
+   * corrupt primary up OVER the still-good bank.meta.bak this session's meta_load()
+   * just recovered from, making a second recovery impossible. f_unlink() first turns
+   * the corrupt file into FR_NO_FILE, sf_save_rolling's own "nothing to back up" case
+   * (savefile.c), which skips the backup step and writes straight from RAM -- .bak
+   * keeps the good recovered bytes. One-shot: consumed here whether or not this save
+   * itself succeeds. Return value ignored on purpose (same idiom as f_mkdir above):
+   * an unlink failure just leaves sf_save_rolling's normal FR_OK path in force, which
+   * is this function's pre-fix (still safe, if single-shot) behavior. */
+  if (g_meta_from_bak) {
+    f_unlink(meta_path());
+    g_meta_from_bak = false;
+  }
   rmbl_pause();
   bool ok = sf_save_rolling(meta_path(), buf, META_BYTES, NULL) == SF_OK;
   rmbl_resume();
@@ -587,11 +624,32 @@ static bool layout_exists(void) {
  * SS11.1's prose): nothing here counts files, so a stray backup-v1/*.box left over
  * from an interrupted run cannot fool anything -- the marker is the only thing this
  * function or box_save() ever trusts, and the marker is written LAST. */
+/* BACKLOG #219c: bank.meta (box names, wallpapers, the serial) shipped with NO copy in
+ * backup-v1 -- only box*.box was ever snapshotted, so a bad meta write left the whole
+ * ident32-uniqueness guarantee (G-M4) unrecoverable even though the boxes themselves
+ * were safe. Backed up the same way (sf_write_verified, byte-compared as part of its
+ * own contract -- same "the rewrite IS the validation" reasoning above), keyed by the
+ * backup copy's OWN file existence rather than a second marker: a card whose boxes'
+ * DONE marker already exists (an older card upgraded to this build) must NOT redo the
+ * 16-box loop below, so `boxes_done` short-circuits it, but the meta gap on that same
+ * card is healed by this direct probe regardless. This is the one deliberate exception
+ * to "the marker is the only thing this function trusts" (declared deviation above):
+ * bank.meta's own presence at the backup path IS its marker, because sf_write_verified
+ * never leaves a partial file there (tmp -> byte-compare -> rename) -- there is no
+ * "half-written" state to distrust, the same fact the box loop below already leans on
+ * per file. */
 static bool __attribute__((noinline)) bank_backup_v1(void) {
   char marker[SF_PATH_MAX];
   siprintf(marker, PDNA_BANK_DIR "/backup-v1/DONE");
   FILINFO fno;
-  if (f_stat(marker, &fno) == FR_OK) return true;      /* already done -> O(1) */
+  bool boxes_done = f_stat(marker, &fno) == FR_OK;
+
+  char meta_bak[SF_PATH_MAX];
+  siprintf(meta_bak, PDNA_BANK_DIR "/backup-v1/bank.meta");
+  FILINFO mfno;
+  bool meta_done = f_stat(meta_bak, &mfno) == FR_OK;
+
+  if (boxes_done && meta_done) return true;             /* fully done -> O(1) */
   if (!app_can_edit()) return false;
 
   FRESULT mkr = f_mkdir(PDNA_BANK_DIR "/backup-v1");
@@ -600,6 +658,23 @@ static bool __attribute__((noinline)) bank_backup_v1(void) {
     app_log_flush();
     return false;
   }
+
+  if (!meta_done) {
+    uint8_t metabuf[META_BYTES]; uint32_t msz = 0;
+    if (sf_read_full(meta_path(), metabuf, sizeof metabuf, &msz) == SF_OK && msz >= META_BYTES) {
+      if (sf_write_verified(meta_bak, metabuf, META_BYTES) != SF_OK) {
+        log_line("bank: backup-v1 meta write failed");
+        app_log_flush();
+        return false;
+      }
+      meta_done = true;
+    }
+    /* else: primary bank.meta doesn't exist yet (no Bank write has happened this
+     * session) -- nothing to snapshot, not a failure; the NEXT call (once a serial
+     * mint or a box open has written the primary) backs it up then. */
+  }
+  if (boxes_done) return meta_done;   /* boxes already covered by an older backup-v1 --
+                                        * only the meta gap could still be missing. */
 
   if (g_dirty && !box_save_or_keep_dirty()) return false;   /* BACKLOG #181: never page away from an unsaved box */
 

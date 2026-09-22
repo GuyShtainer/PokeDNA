@@ -25,6 +25,38 @@ Checks:
   (e) self_test_mutation_detection(): reverting meta_save() to its pre-fix
       sf_write_verified( form, on an in-memory copy of the real text, makes check (a)
       fail -- proves the checker has teeth, not just a coincidental pass.
+
+BACKLOG #219a (single-shot recovery): sf_save_rolling's own f_stat(meta_path()) probe
+(savefile.c) cannot tell "primary present but corrupt" from "primary present and fine"
+-- both are FR_OK -- so the meta_save() that follows a .bak-fallback load backed the
+corrupt primary up OVER the still-good bank.meta.bak, and a second corruption before
+another clean write had no good .bak left to recover from.
+  (f) meta_load() sets a `g_meta_from_bak = from_bak;` (or equivalent) assignment on
+      its successful-parse path, AFTER the g_serial_trusted assignment.
+  (g) meta_save()'s body, BEFORE its sf_save_rolling(meta_path(), ...) call, guards an
+      `f_unlink(meta_path())` call on the from-bak flag (an `if (g_meta_from_bak)`
+      block containing `f_unlink(meta_path())`) -- turning a corrupt primary into
+      "absent" so sf_save_rolling skips the backup step and bank.meta.bak keeps the
+      good recovered bytes.
+  (h) self_test_mutation_detection_219a(): dropping the `if (g_meta_from_bak)` guard
+      from meta_save() (un-indenting the f_unlink call to always run, or deleting the
+      block) makes check (g) fail on an in-memory copy of the real text.
+
+BACKLOG #219c (backup-v1 missing bank.meta): backup-v1 copied box*.box only -- a bad
+meta write was unrecoverable even on a card whose boxes were safe. bank_backup_v1()
+now also writes a verified copy to backup-v1/bank.meta, keyed by that file's OWN
+existence (not a second marker) so a card whose boxes' DONE marker already exists
+(upgraded from an older build) gets ONLY the missing meta copy, never a redo of the
+16-box loop.
+  (i) bank_backup_v1()'s body builds a `PDNA_BANK_DIR "/backup-v1/bank.meta"` path and
+      calls `sf_write_verified(meta_bak, ...)` (or equivalent, matching the same
+      `sf_write_verified(` + a name built from that backup-v1/bank.meta path) to copy it.
+  (j) bank_backup_v1()'s body contains an `if (boxes_done) return meta_done;` (or
+      equivalent early-return keyed on the boxes marker) BEFORE the
+      `for (int b = 0; b < BANK_BOXES; b++)` box loop -- an already-done card's boxes
+      are never redone just to add the meta copy.
+  (k) self_test_mutation_detection_219c(): dropping the `if (boxes_done) return
+      meta_done;` line from bank_backup_v1() makes check (j) fail.
 """
 from __future__ import annotations
 
@@ -84,6 +116,13 @@ SF_READ_FULL_RE = re.compile(r"sf_read_full\(")
 META_DEFAULTS_CALL_RE = re.compile(r"\bmeta_defaults\(\)\s*;")
 SERIAL_TRUSTED_TRUE_RE = re.compile(r"g_serial_trusted\s*=\s*!from_bak\s*;")
 SERIAL_TRUSTED_FALSE_RE = re.compile(r"g_serial_trusted\s*=\s*false\s*;")
+META_FROM_BAK_SET_RE = re.compile(r"g_meta_from_bak\s*=\s*from_bak\s*;")
+META_FROM_BAK_GUARD_RE = re.compile(r"if\s*\(\s*g_meta_from_bak\s*\)")
+UNLINK_META_RE = re.compile(r"f_unlink\(\s*meta_path\(\)")
+BACKUPV1_META_PATH_RE = re.compile(r'"/backup-v1/bank\.meta"')
+BACKUPV1_META_WRITE_RE = re.compile(r"sf_write_verified\(\s*meta_bak\s*,")
+BOXES_DONE_SHORT_CIRCUIT_RE = re.compile(r"if\s*\(\s*boxes_done\s*\)\s*return\s*meta_done\s*;")
+BOX_LOOP_RE = re.compile(r"for\s*\(\s*int\s+b\s*=\s*0\s*;\s*b\s*<\s*BANK_BOXES\s*;\s*b\+\+\s*\)")
 
 
 def check_meta_save(body: list[str]) -> tuple[bool, str]:
@@ -116,6 +155,78 @@ def check_trust_flag(load_body: list[str], defaults_body: list[str]) -> tuple[bo
     if not any(SERIAL_TRUSTED_FALSE_RE.search(ln) for ln in defaults_body):
         return False, "meta_defaults(): no `g_serial_trusted = false;` -- a defaulted serial must never be trusted"
     return True, ""
+
+
+def check_from_bak_flag(load_body: list[str]) -> tuple[bool, str]:
+    if not any(META_FROM_BAK_SET_RE.search(ln) for ln in load_body):
+        return False, "meta_load(): no `g_meta_from_bak = from_bak;` assignment found"
+    return True, ""
+
+
+def check_meta_save_heal(body: list[str]) -> tuple[bool, str]:
+    guard_lines = [i for i, ln in enumerate(body) if META_FROM_BAK_GUARD_RE.search(ln)]
+    if not guard_lines:
+        return False, "meta_save(): no `if (g_meta_from_bak)` guard found"
+    unlink_lines = [i for i, ln in enumerate(body) if UNLINK_META_RE.search(ln)]
+    if not unlink_lines:
+        return False, "meta_save(): no f_unlink(meta_path() call found"
+    rolling_lines = [i for i, ln in enumerate(body) if SF_SAVE_ROLLING_META_RE.search(ln)]
+    if not rolling_lines:
+        return False, "meta_save(): no sf_save_rolling(meta_path(), ...) call found"
+    guard = guard_lines[0]
+    after_guard = [u for u in unlink_lines if u >= guard]
+    if not after_guard:
+        return False, "meta_save(): f_unlink(meta_path() call not found at/after the g_meta_from_bak guard"
+    if not (min(after_guard) < rolling_lines[0]):
+        return False, "meta_save(): f_unlink(meta_path() call is not BEFORE the sf_save_rolling(...) call"
+    return True, ""
+
+
+def self_test_mutation_detection_219a(lines: list[str]) -> None:
+    """MUT M2 (BACKLOG #219a): drop the `if (g_meta_from_bak)` guard from meta_save()
+    (the f_unlink call would then run unconditionally, or the check simply can't see a
+    guarded heal) -- check_meta_save_heal() must then fail. Applied to an IN-MEMORY
+    copy only."""
+    s, e = extract_function(lines, r"^static bool meta_save\(void\) \{")
+    mutated = list(lines)
+    for i in range(s, e):
+        mutated[i] = META_FROM_BAK_GUARD_RE.sub("if (0)", mutated[i])
+    ok, detail = check_meta_save_heal(mutated[s:e])
+    check(not ok, "MUT M2 (meta_save's g_meta_from_bak guard dropped) was NOT caught -- "
+                  f"checker reported ok anyway ({detail!r})")
+
+
+def check_backupv1_meta_copy(body: list[str]) -> tuple[bool, str]:
+    if not any(BACKUPV1_META_PATH_RE.search(ln) for ln in body):
+        return False, 'bank_backup_v1(): no "/backup-v1/bank.meta" path construction found'
+    if not any(BACKUPV1_META_WRITE_RE.search(ln) for ln in body):
+        return False, "bank_backup_v1(): no sf_write_verified(meta_bak, ...) call found"
+    return True, ""
+
+
+def check_backupv1_no_redo(body: list[str]) -> tuple[bool, str]:
+    guard_lines = [i for i, ln in enumerate(body) if BOXES_DONE_SHORT_CIRCUIT_RE.search(ln)]
+    if not guard_lines:
+        return False, "bank_backup_v1(): no `if (boxes_done) return meta_done;` short-circuit found"
+    loop_lines = [i for i, ln in enumerate(body) if BOX_LOOP_RE.search(ln)]
+    if not loop_lines:
+        return False, "bank_backup_v1(): no `for (int b = 0; b < BANK_BOXES; b++)` box loop found"
+    if not (guard_lines[0] < loop_lines[0]):
+        return False, "bank_backup_v1(): the boxes_done short-circuit is not BEFORE the box loop"
+    return True, ""
+
+
+def self_test_mutation_detection_219c(lines: list[str]) -> None:
+    """MUT M3 (BACKLOG #219c): drop the `if (boxes_done) return meta_done;` short-
+    circuit from bank_backup_v1() -- check_backupv1_no_redo() must then fail. Applied
+    to an IN-MEMORY copy only."""
+    s, e = extract_function(lines, r"^static bool __attribute__\(\(noinline\)\) bank_backup_v1\(void\) \{")
+    mutated = list(lines)
+    for i in range(s, e):
+        mutated[i] = BOXES_DONE_SHORT_CIRCUIT_RE.sub("/* removed by MUT M3 */", mutated[i])
+    ok, detail = check_backupv1_no_redo(mutated[s:e])
+    check(not ok, "MUT M3 (bank_backup_v1's boxes_done short-circuit dropped) was NOT caught -- "
+                  f"checker reported ok anyway ({detail!r})")
 
 
 def self_test_mutation_detection(lines: list[str]) -> None:
@@ -157,7 +268,25 @@ def main() -> int:
     check(any(re.search(r"\breturn g_serial_trusted\s*;", ln) for ln in lines),
           "pdna_bank_serial_trusted(): no `return g_serial_trusted;` found")
 
+    ok, detail = check_from_bak_flag(load_body)
+    check(ok, detail)
+
+    s, e = extract_function(lines, r"^static bool meta_save\(void\) \{")
+    save_body = lines[s:e]
+    ok, detail = check_meta_save_heal(save_body)
+    check(ok, detail)
+
+    s, e = extract_function(
+        lines, r"^static bool __attribute__\(\(noinline\)\) bank_backup_v1\(void\) \{")
+    backupv1_body = lines[s:e]
+    ok, detail = check_backupv1_meta_copy(backupv1_body)
+    check(ok, detail)
+    ok, detail = check_backupv1_no_redo(backupv1_body)
+    check(ok, detail)
+
     self_test_mutation_detection(lines)
+    self_test_mutation_detection_219a(lines)
+    self_test_mutation_detection_219c(lines)
 
     print(f"host_bank_meta_backup_sites: {checks} checks, {len(fails)} failed")
     for f in fails:
