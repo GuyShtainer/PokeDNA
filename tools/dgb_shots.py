@@ -8161,7 +8161,8 @@ def run_b200_chain(core_mod, image_mod, rom: Path, out_dir: Path) -> list[gb_sho
     sa.shot("00_box12_boot", "tap0 (boot): box 12 (current box, 0/20) -- F1's dim/X "
             "blocked tiles cover row 3's last 4 cells (indices 20-23) and all of "
             "row 4 (24-29), even though the box has NO Pokemon at all -- capacity "
-            "(20), not occupancy, drives the paint")
+            "(20), not occupancy, drives the paint",
+            claim=["0/20"])  # BACKLOG #184 retrofit: pdna_box.c's own banner siprintf
     sa.press_n("DOWN", 3, settle=gb_shots.SETTLE)
     sa.shot("01_col0_row3", "tap1 (DOWN x3, column 0): cursor at index 18 (row 3 "
             "col 0) -- the deepest REAL cell in this column (index 24, row 4 col "
@@ -8217,7 +8218,8 @@ def run_b200_chain(core_mod, image_mod, rom: Path, out_dir: Path) -> list[gb_sho
     sc.shot("00_box1_full", "tap2 (R, R from box 12): box 1, '1:GB BOX1 20/20' -- "
             "the SAME blocked rows 3 (partial)/4 (full) chain A showed on the "
             "EMPTY box 12, but every real cell (0-19) now shows an occupied "
-            "Pokemon -- F1's blocked tiles are driven by capacity, not fill level")
+            "Pokemon -- F1's blocked tiles are driven by capacity, not fill level",
+            claim=["20/20"])  # BACKLOG #184 retrofit: pdna_box.c's own banner siprintf
     sessions.append(sc)
 
     # ---- D: the Emerald Gen-3 PC box (unaffected, capacity NULL -> 30) --------
