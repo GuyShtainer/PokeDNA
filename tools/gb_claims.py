@@ -63,19 +63,36 @@ pixel, given both PokeDNA fonts never draw anything into the gap.
 FIND
 ----
 find(frame_png, text, proportional=None) treats the frame as a stack of binary
-planes, one per distinct colour present (<=256 in an indexed GBA framebuffer
-capture), and slides the rendered mask over each plane with
-numpy.lib.stride_tricks.sliding_window_view, looking for an EXACT match (every
-ink pixel of the mask equals that colour, every gap/background pixel of the
-mask's footprint does NOT). Text colour is not known a priori (menus, footers,
-selected-row inverse video, and the HOF crystal-card panel all use different
-ink colours) -- trying every distinct colour in the frame is the only
-caller-agnostic way to find it. A drop-shadow/outline variant (ui_ptext_shadow,
-ui.c:439-441, draws the SAME string twice at a 1px offset in two different
-colours) still matches on its own main-ink colour plane: the shadow copy is a
-different colour, so it is invisible on the main colour's binary plane except
-where it happens to overlap real background pixels of that colour, which the
-exact-gap-match requirement then rejects same as any other stray ink.
+planes, one per distinct colour present, and slides the rendered mask over
+each plane with numpy.lib.stride_tricks.sliding_window_view, looking for an
+EXACT match (every ink pixel of the mask equals that colour, every
+gap/background pixel of the mask's footprint does NOT). Text colour is not
+known a priori (menus, footers, selected-row inverse video, and the HOF
+crystal-card panel all use different ink colours) -- trying every distinct
+colour in the frame is the only caller-agnostic way to find it. A
+drop-shadow/outline variant (ui_ptext_shadow, ui.c:439-441, draws the SAME
+string twice at a 1px offset in two different colours) still matches on its
+own main-ink colour plane: the shadow copy is a different colour, so it is
+invisible on the main colour's binary plane except where it happens to
+overlap real background pixels of that colour, which the exact-gap-match
+requirement then rejects same as any other stray ink.
+
+A normal GBA UI capture is indexed 15-bit colour and never has more than a
+few dozen distinct RGB values, but a sprite/gameplay frame (icons, box art,
+dithered gradients) can legitimately exceed 256 -- BACKLOG #214. Raising in
+that case turned "this claim doesn't hold on this kind of frame" into a
+crash that aborted the whole runner instead of a normal `[CLAIM FAILED]`.
+find() therefore never raises on colour count: it bounds the search to the
+MAX_COLOURS_SCANNED most FREQUENT colours in the frame (by pixel count).
+Rendered text is always a solid run of many same-coloured ink pixels (a
+"text-sized run"), so its ink colour is high-frequency even against a busy
+sprite frame's many low-frequency (often singleton) art colours; this is a
+bounded per-colour search over the most-frequent colours, not quantisation,
+so it never distorts the exact bitmap match. When the frame has
+<=MAX_COLOURS_SCANNED colours this is exactly the old exhaustive search
+(every colour is "most frequent" by definition); above the cap it is a
+best-effort search that can miss a low-frequency ink colour, which is
+reported as an ordinary empty result (claim failure), never an exception.
 """
 from __future__ import annotations
 
@@ -88,6 +105,11 @@ from PIL import Image
 
 ROOT = Path(__file__).resolve().parent.parent
 UI_FONT_C = ROOT / "source" / "ui_font.c"
+
+# Bound on find()'s per-colour plane search (module docstring, "FIND"): above
+# this many distinct colours in a frame, only the this-many MOST FREQUENT
+# colours are searched -- never a crash, see BACKLOG #214.
+MAX_COLOURS_SCANNED = 256
 
 FIRST_CP = 0x20   # space -- ui_font.c's own header comment: "96 glyphs, ASCII 32..127"
 NUM_GLYPHS = 96
@@ -259,13 +281,14 @@ def find(frame_png: str | Path | Image.Image | np.ndarray, text: str,
         h, w = mask.shape
         if h == 0 or w == 0 or h > arr.shape[0] or w > arr.shape[1]:
             continue
-        colours = np.unique(arr.reshape(-1, arr.shape[-1]), axis=0)
-        if len(colours) > 256:
-            raise ValueError(
-                f"find(): {len(colours)} distinct colours in the frame (expected <=256 -- "
-                "a real GBA capture is a 15-bit-colour UI render, not a photograph; a "
-                "synthetic test frame should draw from a small fixed palette, not "
-                "per-pixel random noise)")
+        colours, counts = np.unique(arr.reshape(-1, arr.shape[-1]), axis=0, return_counts=True)
+        if len(colours) > MAX_COLOURS_SCANNED:
+            # Bounded fallback for a >256-colour frame (a sprite/gameplay screen,
+            # not a UI render) -- see the module docstring's FIND section and
+            # MAX_COLOURS_SCANNED above. Never raise: search only the most
+            # frequent colours and let a miss fall out as a normal empty result.
+            order = np.argsort(-counts)[:MAX_COLOURS_SCANNED]
+            colours = colours[order]
         for colour in colours:
             plane = np.all(arr == colour, axis=-1)
             windows = sliding_window_view(plane, (h, w))

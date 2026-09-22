@@ -165,6 +165,61 @@ def check_real_fixture(failures):
               "gitignored) -- stand-in file-path round trip passed instead")
 
 
+def check_many_colours(rng, failures):
+    """BACKLOG #214: a >256-distinct-colour frame (a sprite/gameplay screen)
+    must never raise -- find() bounds its per-colour search to the most
+    frequent colours (gb_claims.MAX_COLOURS_SCANNED) instead. A 300-colour
+    frame with "PASTE HERE" drawn in one (high-frequency, since it is many
+    ink pixels) colour is still found; the same frame WITHOUT the text
+    returns [] with no exception."""
+    h, w = 160, 240
+    # 300 distinct colours: a smooth-ish gradient so no colour repeats often
+    # on its own, keeping every art colour's pixel count low relative to the
+    # text ink (which will cover dozens of pixels in one colour).
+    n_colours = 300
+    palette = rng.integers(0, 256, size=(n_colours, 3), dtype=np.uint8)
+    idx = rng.integers(0, n_colours, size=(h, w))
+    frame_with_text = palette[idx].copy()
+    frame_without_text = palette[idx].copy()
+
+    text_colour = (255, 255, 255)
+    x0, y0 = 40, 60
+    paint_text(frame_with_text, "PASTE HERE", x0, y0, text_colour, proportional=True,
+               bg=(0, 0, 0))
+
+    n_actual = len(np.unique(frame_with_text.reshape(-1, 3), axis=0))
+    if n_actual <= 256:
+        failures.append(f"check_many_colours: fixture only has {n_actual} distinct "
+                         "colours (need >256) -- test setup is not exercising the "
+                         "bounded-scan path")
+        return
+
+    try:
+        hits = gb_claims.find(frame_with_text, "PASTE HERE", proportional=True)
+    except Exception as exc:  # noqa: BLE001 -- proving find() never raises here
+        failures.append(f"check_many_colours: find() RAISED on a {n_actual}-colour "
+                         f"frame instead of returning a bounded result: {exc!r}")
+        return
+    if not any(x == x0 and y == y0 for x, y, c in hits):
+        failures.append(f"check_many_colours: 'PASTE HERE' on a {n_actual}-colour "
+                         f"frame was not found at ({x0},{y0}); hits={hits}")
+        return
+
+    try:
+        hits_absent = gb_claims.find(frame_without_text, "PASTE HERE", proportional=True)
+    except Exception as exc:  # noqa: BLE001
+        failures.append(f"check_many_colours: find() RAISED on a >256-colour frame "
+                         f"without the claim text instead of returning []: {exc!r}")
+        return
+    if hits_absent:
+        failures.append(f"check_many_colours: 'PASTE HERE' incorrectly found on the "
+                         f"frame that never drew it; hits={hits_absent}")
+        return
+
+    print(f"  ok: >256-colour frame ({n_actual} colours) -- find() never raises; "
+          "text-present frame matched, text-absent frame returned []")
+
+
 def main() -> int:
     failures: list[str] = []
     rng = np.random.default_rng(20260922)
@@ -173,6 +228,7 @@ def main() -> int:
     check_random_position(rng, "PASTE HERE", False, "fixed (tonc sys8)", failures)
     check_claim_absent(rng, failures)
     check_real_fixture(failures)
+    check_many_colours(rng, failures)
 
     if failures:
         print(f"\nhost_gb_claims_test: {len(failures)} FAILURE(S):", file=sys.stderr)
