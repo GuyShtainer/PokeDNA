@@ -78,8 +78,12 @@ void ui_hline(int x, int y, int w, u16 color) {
  * glyph cell (garbage tile) instead of failing safely -- confirmed on a live frame
  * (NIDORAN female's gender-sign glyph in the species picker header). Every ui_text/
  * ui_text_sel draw now goes through ui_ascii_bound() first, which maps the string
- * through the SAME collapse ui_ptext's pnext() uses (below) into an ASCII-only local
- * buffer, so tte_write only ever sees bytes < 0x80. 64 bytes covers every literal and
+ * through ui_ascii_next_fixed() (source/ui_ascii.c) into an ASCII-only local buffer, so
+ * tte_write (libtonc's sys8 fixed font) only ever sees bytes < 0x80. This is a
+ * DIFFERENT collapse than pnext() below uses for the proportional font: sys8's glyph
+ * cell 127 is blank (8 bytes of 0x00), so ui_ascii_next_fixed() sends e-acute to '?'
+ * here, while pnext()'s ui_ascii_next() sends it to 127 because ui_font.c's
+ * proportional face DOES carry a real glyph there. 64 bytes covers every literal and
  * formatted string this app draws through ui_text (the longest source literal is 40
  * bytes; local siprintf staging buffers feeding ui_text top out at 48; the one 192 B
  * composed title is itself re-truncated to 29 display columns into a 128 B buffer

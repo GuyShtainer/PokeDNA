@@ -23,16 +23,36 @@ static void t_ascii_untouched(void) {
   CHECK(strcmp(out, "Hello, PokeDNA!") == 0, "ascii mismatch: \"%s\"", out);
 }
 
-/* 2) every 2-byte UTF-8 e-acute sequence (C3 A9, "POKe" -> "POK\xC3\xA9") collapses to
- * EXACTLY one output byte: code 127 (DEL) -- the same cell pnext()/ui_ptext already use,
- * and a cell sys8Font actually has (tonc_tte.h:339, ' '-127 inclusive). */
+/* 2) every 2-byte UTF-8 e-acute sequence (C3 A9, "POKe" -> "POK\xC3\xA9") through
+ * ui_ascii_bound() (the FIXED-font path, libtonc's sys8) collapses to EXACTLY one
+ * output byte: '?' -- sys8's cell 127 is 8 bytes of 0x00 (blank), not a real glyph, so
+ * the fixed font cannot show e-acute at all and must fall back to '?' like every other
+ * non-ASCII lead byte (BACKLOG #222 review R1). The 127 cell is real only in the
+ * PROPORTIONAL face (ui_font.c) via ui_ascii_next() directly -- see
+ * t_next_eacute_127_on_proportional_path below. */
 static void t_eacute_one_byte(void) {
   char out[64];
   size_t n = ui_ascii_bound(out, sizeof out, "POK\xC3\xA9MON");
-  CHECK(n == 7, "e-acute output length: got %zu want 7 (\"POK\", 127, \"MON\")", n);
+  CHECK(n == 7, "e-acute output length: got %zu want 7 (\"POK\", '?', \"MON\")", n);
   CHECK(out[0] == 'P' && out[1] == 'O' && out[2] == 'K', "prefix wrong: \"%.3s\"", out);
-  CHECK((unsigned char)out[3] == 127u, "e-acute glyph: got %u want 127", (unsigned char)out[3]);
+  CHECK(out[3] == '?', "e-acute on fixed-font path: got 0x%02x want '?'", (unsigned char)out[3]);
   CHECK(strcmp(out + 4, "MON") == 0, "suffix wrong: \"%s\"", out + 4);
+}
+
+/* 2b) ui_ascii_next() directly (the PROPORTIONAL-font path, ui.c's pnext()): the same
+ * e-acute sequence collapses to code 127 -- ui_font.c's proportional face has a real
+ * glyph there (the generated font's last entry, source/ui_font.c). This is the contract
+ * ui_ascii_next_fixed() must NOT share (see t_eacute_one_byte above). */
+static void t_next_eacute_127_on_proportional_path(void) {
+  const char* s = "POK\xC3\xA9MON";
+  const char* p = s;
+  unsigned c;
+  c = ui_ascii_next(&p); CHECK(c == (unsigned)'P', "P");
+  c = ui_ascii_next(&p); CHECK(c == (unsigned)'O', "O");
+  c = ui_ascii_next(&p); CHECK(c == (unsigned)'K', "K");
+  c = ui_ascii_next(&p);
+  CHECK(c == 127u, "ui_ascii_next e-acute: got %u want 127 (proportional font's real glyph)", c);
+  c = ui_ascii_next(&p); CHECK(c == (unsigned)'M', "M");
 }
 
 /* 3) every OTHER non-ASCII lead byte collapses to exactly one '?', and every UTF-8
@@ -93,10 +113,11 @@ static void t_truncation_keeps_nul(void) {
   CHECK(memcmp(out, "ABCD", 4) == 0 && out[4] == '\0', "plain truncation content: \"%s\"", out);
 
   /* the same 4-byte cap, but the 4th SOURCE glyph is the 2-byte e-acute pair -- must
-   * still land as ONE output byte at out[3], not a half-consumed lead byte. */
+   * still land as ONE output byte at out[3] (the fixed-font path's '?', since sys8's
+   * cell 127 is blank -- BACKLOG #222 review R1), not a half-consumed lead byte. */
   n = ui_ascii_bound(out, sizeof out, "AB\xC3\xA9""CDEF");
   CHECK(n == 4, "mid-sequence truncation length: got %zu want 4", n);
-  CHECK(out[0] == 'A' && out[1] == 'B' && (unsigned char)out[2] == 127u && out[3] == 'C' && out[4] == '\0',
+  CHECK(out[0] == 'A' && out[1] == 'B' && out[2] == '?' && out[3] == 'C' && out[4] == '\0',
         "mid-sequence truncation content: %02x %02x %02x %02x nul=%d",
         (unsigned char)out[0], (unsigned char)out[1], (unsigned char)out[2], (unsigned char)out[3], out[4] == '\0');
 
@@ -132,8 +153,13 @@ static void t_next_matches_old_pnext_contract(void) {
 }
 
 /* MUTATION: flip the e-acute lead-byte check from 0xC3 to 0xC2 (a real, easy-to-make
- * off-by-one on the UTF-8 lead byte) and show the e-acute test above would then fail --
- * proves t_eacute_one_byte is actually discriminating, not vacuously true. Run manually:
+ * off-by-one on the UTF-8 lead byte, in the now-shared ascii_next_impl()) and show
+ * t_next_eacute_127_on_proportional_path would then fail -- proves that test is
+ * actually discriminating, not vacuously true. (t_eacute_one_byte does NOT catch this
+ * mutation: under C3->C2, ui_ascii_next_fixed() still emits '?' for the e-acute pair,
+ * same as its correct output, because the mutated byte falls through to the generic
+ * >=0x80 "unknown sequence -> '?'" branch either way -- only the proportional path's
+ * 127 contract is sensitive to which lead byte gets recognised.) Run manually:
  *   sed -e 's/c == 0xC3u/c == 0xC2u/' source/ui_ascii.c > /tmp/ui_ascii_mut.c
  *   cc -std=c11 -Wall -Wextra -I source -I /tmp -o /tmp/huat_mut \
  *      tests/host_ui_ascii_test.c /tmp/ui_ascii_mut.c && /tmp/huat_mut
@@ -144,6 +170,7 @@ static void t_next_matches_old_pnext_contract(void) {
 int main(void) {
   t_ascii_untouched();
   t_eacute_one_byte();
+  t_next_eacute_127_on_proportional_path();
   t_gender_signs_one_qmark();
   t_truncated_sequence_safe();
   t_sweep_0x00_0xff();
