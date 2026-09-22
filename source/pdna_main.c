@@ -5486,7 +5486,20 @@ static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0, 
     if (g_src_ops && g_src_ops->dup)         { lab[n] = PDNA_LBL_DUPLICATE;  act[n++] = RO_DUP; }
     if (g_src_ops && g_src_ops->daycare)     { lab[n] = PDNA_LBL_TO_DAYCARE; act[n++] = RO_DAYCARE; }
     if (g_src_ops && g_src_ops->export_one)  { lab[n] = PDNA_LBL_EXPORT_PK;  act[n++] = RO_EXPORT; }
-    if (g_src_ops && g_src_ops->release) { lab[n] = PDNA_LBL_RELEASE;   act[n++] = RO_RELEASE; }
+    /* BACKLOG #182: mirrors the #166 RO_MOVE gate above -- RELEASE ends in gbs_delete()
+     * (gb_release_hook, pdna_gen12.c), the exact same gbs_can_delete() refusal table
+     * gb_lift_why_bs already wraps for lift_why (party floor / Mail / an unwritable
+     * box), so no separate AppSrcOps.release_why hook is needed: a NULL lift_why (no
+     * opinion) leaves the row drawn exactly as before; a reason hides it, same as MOVE.
+     * Unlike MOVE, no grey why-line is added here — MOVE's own line already covers the
+     * identical reason whenever a source offers both (every source today pairs move
+     * and release), and a hypothetical release-only source simply gets a silently
+     * omitted row, the same "omitted, not shown-then-refused" convention every other
+     * row in this function already follows. */
+    if (g_src_ops && g_src_ops->release) {
+      const char* release_why = g_src_ops->lift_why ? g_src_ops->lift_why(rec) : 0;
+      if (!release_why) { lab[n] = PDNA_LBL_RELEASE; act[n++] = RO_RELEASE; }
+    }
   }
   lab[n] = PDNA_LBL_CANCEL;   act[n++] = RO_CANCEL;
 

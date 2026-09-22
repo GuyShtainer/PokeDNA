@@ -5515,6 +5515,85 @@ def run_b166(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
     return s
 
 
+def run_b182_release_gate(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #182 (b219, RELEASE mirrors #166's RO_MOVE gate): a Gen-1/2 party cell
+    whose delete would be refused (PARTY_FLOOR -- a 1-mon party, gbs_can_delete's own
+    "the party needs one Pokemon" rule) must not offer RELEASE either -- it used to
+    open the flow (gb_release_hook -> gb_release_confirm -> gbs_delete) and only get
+    refused at the very end, the exact same late-bounce shape #166 fixed for MOVE.
+    The fix (source/pdna_main.c, app_mon_menu_readonly's RO_RELEASE row) reuses
+    AppSrcOps.lift_why (no separate release_why hook needed: gb_release_hook ends in
+    the identical gbs_can_delete() table gb_lift_why_bs already wraps for lift_why) --
+    a `release_why` local gates the row exactly like MOVE's own `move_why`.
+
+    run_b166()'s own docstring documented that Guy's real corpus saves (Red/Gold/
+    Crystal, all full 6-mon parties) can never reach the PARTY_FLOOR branch, and left
+    a purpose-built 1-mon-party fixture for later -- this is that fixture:
+    tests/host_gbsurgery_tool.c trimmed a /tmp copy of Red.sav's party from 6 to 1
+    (`--op delete party 5/4/3/2/1`, deleting from the END so earlier slot indices
+    stay valid; MEW, the party's own slot 0, is the one mon left) via `--out`, then
+    tools/fuse_gb.py fused it standalone onto pokedna-delta-artless.gba with Red.gb
+    (ONE payload, same shape run_b190_move_refusal() uses -- gb_delta_pick_save()
+    auto-picks it, no boot picker to navigate).
+
+    --image MUST be that standalone fusion (delta-artless + Red.gb + the trimmed
+    1-mon Red.sav), not any corpus image -- a full-party save cannot reproduce this.
+
+    RECIPE (found live, not guessed -- a probe run corrected both the brief's assumed
+    tap count and the header text): info screen (auto-picked) -> A -> box grid (BOX1,
+    cursor slot 0) -> L,L (TWO presses -- the first L only finishes the box grid's
+    own initial paint/settle, still on BOX1; the SECOND L is the real wrap to the
+    party pseudo-box) -> header reads "GB PARTY 1/6" (the "/6" is the party's fixed
+    CAPACITY, gb_edit.h's own party-slot ceiling, not this save's trimmed count --
+    the brief's guessed "1/1" was wrong), cursor already ON the one remaining mon
+    (MEW), no separate DOWN needed (unlike a multi-box grid's title row, the party
+    pseudo-box's own cursor lands directly on slot 0 when only one slot is
+    occupied) -> A opens its mon menu. Expected rows, Gen-1 occupied-mon order
+    (source/pdna_main.c, k_gb_ops_gen1 pdna_gen12.c): VIEW/EDIT, LEGALITY, COPY,
+    DUPLICATE, TO DAY-CARE, EXPORT .pk, CANCEL -- MOVE TO BOX (PARTY_FLOOR, #166's
+    existing gate) and RELEASE (PARTY_FLOOR, #182's new gate) BOTH omitted; ONE grey
+    reason line shows ("Can't lift: last mon" -- PDNA_GB_LIFT_WHY_FLOOR, gb_lift_why_
+    status()'s own bucket for GBS_ERR_PARTY_FLOOR), which is move_why's own line
+    (RELEASE's fix deliberately adds no second line, per the fix's own comment --
+    the same reason, worded once)."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b182_")
+    print("== BACKLOG #182: RO_RELEASE's lift_why gate -- 1-mon party PARTY_FLOOR "
+          "refuses both MOVE TO BOX and RELEASE, no shown-then-refused row ==")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # info screen -> box grid (BOX1)
+    s.shot("00_box_grid", "b182: Red-1mon's box grid on entry (pre-settle: the box header band is not painted yet) -- the preview panel reads SLOWBRO, so the party trim left the storage boxes alone", claim=["SLOWBRO"])
+
+    s.press_n("L", 2, settle=150)                            # box grid -> (settle) -> wraps to the party
+    s.shot("01_party_pseudo_box", "b182: two L presses from BOX1 wrap to the party "
+           "pseudo-box -- header reads 'GB PARTY 1/6' ('/6' is the party's fixed "
+           "capacity, not the trimmed count) -- cursor already on the one remaining "
+           "mon, MEW (Red.sav's own party slot 0, the only slot this fixture kept)",
+           claim=["GB PARTY", "1/6"])  # split in two: gb_claims.find's bitmap match
+           # on the combined string fails on this exact kerning (checked live --
+           # "GB PARTY" alone and "1/6" alone both match; "GB PARTY 1/6" and
+           # "PARTY 1/6" do not -- a spacing quirk between the Y/1 glyphs, not a
+           # missing-text defect; the PNG shows the full string plainly by eye)
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # A on the one remaining party mon -> its menu
+    s.shot("02_party_mon_menu", "b182 THE FIX: MEW's occupied-mon menu on a 1-mon "
+           "party -- VIEW/EDIT, LEGALITY, COPY, DUPLICATE, TO DAY-CARE, EXPORT .pk, "
+           "CANCEL, plus ONE grey reason line ('Can't lift: last mon'). MOVE TO BOX "
+           "(#166) and RELEASE (#182) are BOTH absent -- gb_lift_why_hook -> "
+           "gb_lift_why_bs -> gbs_can_delete returns GBS_ERR_PARTY_FLOOR for this "
+           "slot, and this fix's own `release_why` local (mirroring move_why) hides "
+           "the RELEASE row the same way `move_why` already hid MOVE TO BOX. Before "
+           "this fix RELEASE would still be in this list, opening gb_release_hook's "
+           "confirm dialog and only bouncing off gbs_delete's own PARTY_FLOOR "
+           "refusal at the end.",
+           claim=["VIEW / EDIT", "LEGALITY", "COPY", "DUPLICATE", "TO DAY-CARE",
+                  "CANCEL", "Can't lift: last mon"],
+           claim_absent=["MOVE TO BOX", "RELEASE"])
+
+    s.tap("B", settle=100)
+    s.shot("03_back_to_party_box", "b182: B backs out of the menu, party pseudo-box "
+           "unchanged")
+    return s
+
+
 def run_s150_7_down_edge(core_mod, image_mod, rom_gold: Path, rom_red: Path,
                          out_dir: Path) -> gb_shots.Session:
     """BACKLOG #150 S150-7: the DOWN edge -- a native "GBC1" Bank cell back into a Game
@@ -6232,7 +6311,15 @@ def run_s150_8_bridge(core_mod, image_mod, rom_gold: Path, rom_red: Path,
             "this specific mon -- the brief's own 'friendship row' is conditional, "
             "PDNA_SIDECAR_LOSS_POKERUS, and does not apply to every bridge "
             "transfer, only when gen3_to_gb's own conversion actually drops it); "
-            "no dropped-item row (PIKACHU carries no item)")
+            "no dropped-item row (PIKACHU carries no item)",
+            # BACKLOG #180 retrofit: the bridge arm must show its OWN honest footer
+            # (PDNA_XFER_BRIDGE_STAYS, "the Bank slot is emptied when it lands"), NOT
+            # PASTE's stale PDNA_SIDECAR_LOSS_STAYS ("the copy in your Gen-3 save
+            # stays") -- there is no Gen-3 copy on a bridge transfer, the Bank slot IS
+            # the only copy and it is consumed on landing (59dd45c). claim_absent
+            # proves the old wording is gone, not just that the new wording is present.
+            claim=["The Bank slot is emptied when it lands."],
+            claim_absent=["The copy in your Gen-3 save stays."])
     sg.tap("A", settle=300)                     # A = transfer
     sg.shot("05_sidecar_folder_wall", "S150-8 bridge: A = transfer -> the panel "
             "reads 'SIDECAR FOLDER' / 'Nothing transferred.' / 'Press A' "
@@ -6690,6 +6777,16 @@ def main(argv=None) -> int:
                           "(Emerald.sav + Red/Gold/Crystal). A normal cell's "
                           "occupied-cell menu, per tap -- see run_b166()'s own "
                           "docstring for why the refused-lift case is not shown live.")
+    ap.add_argument("--b182", action="store_true",
+                     help="BACKLOG #182 (b219): only run_b182_release_gate() against "
+                          "--image -- --image MUST be a STANDALONE tools/fuse_gb.py "
+                          "image, ONE payload (Red.gb + a /tmp copy of Red.sav whose "
+                          "party was trimmed to 1 mon via tests/host_gbsurgery_tool.c "
+                          "--op delete party 5/4/3/2/1, fused onto pokedna-delta-"
+                          "artless.gba -- same vehicle shape as --b190). Proves the "
+                          "1-mon-party PARTY_FLOOR case #166's own corpus could never "
+                          "reach: the party cell menu omits BOTH MOVE TO BOX (#166) "
+                          "and RELEASE (#182), no shown-then-refused row.")
     ap.add_argument("--b190", action="store_true",
                      help="BACKLOG #190: only run_b190_move_refusal() against --image -- "
                           "--image MUST be a STANDALONE tools/fuse_gb.py image, ONE "
@@ -7593,6 +7690,20 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] b166: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+    if getattr(a, "b182", False):
+        # BACKLOG #182 (b219): append-only, same convention as --b166 above.
+        ran = True
+        try:
+            sess = run_b182_release_gate(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b182: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:

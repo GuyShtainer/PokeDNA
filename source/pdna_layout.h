@@ -1222,6 +1222,13 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XFER_KEPT_L1    "It is still in the Game Boy"
 #define PDNA_XFER_KEPT_L2    "save too - remove it there."
 
+/* BACKLOG #219b: the ident32 collision refusal (drop_held_up, pdna_box.c decision 10)
+ * used to be a log line + snd_error() only -- the player saw nothing on screen and a
+ * refused UP move just silently stayed held. l2 is deliberately NULL at the call site
+ * (msg_wait's own if (l2) guard) -- one body line reads better than a padded second. */
+#define PDNA_BANK_COLL_TITLE "BANK RECORD CLASH"
+#define PDNA_BANK_COLL_L1    "Nothing was moved. See log.txt."
+
 #define PDNA_XFER_REC_TITLE  "IT CAME FROM GEN 3"
 #define PDNA_XFER_REC_L1     "Use COPY here, then PASTE in"
 #define PDNA_XFER_REC_L2     "the Gen 3 save to bring it back."

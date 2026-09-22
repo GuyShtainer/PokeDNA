@@ -495,6 +495,11 @@ def up_order_facts(lines, start, end):           # shared by the real check AND 
 # though it has never actually run once.
 UP_SCAN_GUARD_RE = re.compile(r"if\s*\(\s*!pdna_bank_serial_trusted\(\)")
 UP_SCAN_LATCH_RE = re.compile(r"s_up_scan_done")
+# BACKLOG #219 review B1 (lane b219 F6): the latch may only be SET when the serial was
+# trusted -- a scan forced by a .bak rollback must not latch, or lift #2 (after the
+# heal) skips the scan while the box serials may still exceed the recovered one.
+UP_SCAN_LATCH_SET_RE = re.compile(r"if\s*\(\s*pdna_bank_serial_trusted\(\)\s*\)\s*s_up_scan_done\s*=\s*true")
+UP_SCAN_LATCH_BARE_RE = re.compile(r"^\s*s_up_scan_done\s*=\s*true")
 
 
 def up_scan_latch_facts(lines, start, end):      # shared by the real check AND MUT AD
@@ -505,6 +510,13 @@ def up_scan_latch_facts(lines, start, end):      # shared by the real check AND 
         return False, (f"drop_held_up: the scan guard (line {g+1}) does not also check "
                        f"`s_up_scan_done` -- on an ordinary card `trusted` stays true all "
                        f"session and the 16-box scan would never run even once")
+    if first_match_line(lines, g, end, UP_SCAN_LATCH_SET_RE) is None:
+        return False, (f"drop_held_up: the latch after the guard (line {g+1}) is not "
+                       f"`if (pdna_bank_serial_trusted()) s_up_scan_done = true;` -- a scan "
+                       f"forced by an untrusted serial must never latch (review B1)")
+    if first_match_line(lines, g, end, UP_SCAN_LATCH_BARE_RE) is not None:
+        return False, (f"drop_held_up: a bare `s_up_scan_done = true;` survives after the "
+                       f"guard (line {g+1}) -- the latch must be conditioned on a trusted serial")
     return True, "ok"
 
 
