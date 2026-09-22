@@ -58,6 +58,9 @@ typedef struct {
   uint32_t poison_off;
   uint8_t  poison_xor;
   uint32_t reads;          /* F3: counts every completed rom_gbicon read      */
+  uint32_t overlay_off;    /* D2 chain proof: bytes the READER sees at this   */
+  uint32_t overlay_len;    /* offset instead of the file's own (0 = none)     */
+  uint8_t  overlay[2 * (ROM_GBICON_MAX_KINDS + 1)];
 } FileCtx;
 
 static bool file_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
@@ -66,6 +69,10 @@ static bool file_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
   if (fread(dst, 1, len, fc->f) != len) return false;
   if (fc->poison_off && fc->poison_off >= off && fc->poison_off < off + len)
     ((uint8_t*)dst)[fc->poison_off - off] ^= fc->poison_xor;
+  for (uint32_t i = 0; i < fc->overlay_len; i++) {
+    uint32_t o = fc->overlay_off + i;
+    if (o >= off && o < off + len) ((uint8_t*)dst)[o - off] = fc->overlay[i];
+  }
   fc->reads++;
   return true;
 }
@@ -327,6 +334,44 @@ static void part_d2_shift_rejected(const char* name) {
 
 /* --------------------------------------------------------------- F1: gates */
 
+/* (review re-verify) D2's CHAIN check has its own mutant: on both corpus ROMs
+ * the two bytes before IconPointers are MonMenuIcons' tail (0x21 0x0E = 0x0E21,
+ * out of [0x4000,0x8000)), so part_d2_shift_rejected() above is caught by the
+ * k==0 RANGE read alone and passes with the +128 chain lines deleted. Here a
+ * FAKE table -- the real entries reversed, entry[0]==entry[1] forced, every
+ * entry in range and every target decoding non-uniform -- is overlaid at 0x200
+ * and offered as the candidate: only the chain can reject it (measured: without
+ * the chain it is accepted at ~231 reads with 37 of 38 kinds decoding the wrong
+ * tile). Checksum poisoned so the known table misses and the fallback is a real
+ * rescan. */
+static void part_d2_chain_only(const char* name) {
+  char path[256]; snprintf(path, sizeof path, "%s/%s", ROMS, name);
+  FileCtx fc; memset(&fc, 0, sizeof fc);
+  fc.f = fopen(path, "rb");
+  if (!fc.f) { printf("  SKIP %s (no %s)\n", name, path); return; }
+  uint32_t sz = file_size(path);
+  fc.poison_off = 0x14F; fc.poison_xor = 0xFF;
+  RomGbIcon warm;
+  int wok = rom_gbicon_open(&warm, file_read, &fc, sz, g_scratch, sizeof g_scratch, 0, 0);
+  chk(name, "D2 chain: poisoned warm open succeeds", wok);
+  if (!wok) { fclose(fc.f); return; }
+  uint8_t real[2 * (ROM_GBICON_MAX_KINDS + 1)];
+  fseek(fc.f, (long)warm.icon_pointers, SEEK_SET);
+  chk(name, "D2 chain: read the real table", fread(real, 1, ((size_t)warm.n + 1u) * 2u, fc.f) == ((size_t)warm.n + 1u) * 2u);
+  for (uint32_t k = 0; k <= warm.n; k++) memcpy(fc.overlay + k * 2u, real + (warm.n - k) * 2u, 2);
+  memcpy(fc.overlay, fc.overlay + 2, 2);                 /* entry[0] == entry[1] */
+  fc.overlay_off = 0x200; fc.overlay_len = ((uint32_t)warm.n + 1u) * 2u;
+  RomGbIconLoc fake; rom_gbicon_save_loc(&warm, &fake); fake.icon_pointers = 0x200;
+  RomGbIcon gi; fc.reads = 0;
+  int ok = rom_gbicon_open_loc(&gi, file_read, &fc, sz, g_scratch, sizeof g_scratch, &fake, 0, 0);
+  printf("  %s: reversed fake table candidate -> %lu reads, icon_pointers=0x%X (correct=0x%X)\n",
+         name, (unsigned long)fc.reads, gi.icon_pointers, warm.icon_pointers);
+  chk(name, "D2 chain: the fake (unchained) table is rejected and a real rescan runs (>1,000 reads)",
+      ok && fc.reads > 1000);
+  chk(name, "D2 chain: the rescan lands on the real icon_pointers, not the fake", ok && gi.icon_pointers == warm.icon_pointers);
+  fclose(fc.f);
+}
+
 static void part_f1_gate_evidence(const char* name) {
 #ifndef ROM_GBICON_JOB_COUNTERS
   (void)name;
@@ -447,6 +492,8 @@ int main(void) {
   printf("\n-- D2: a one-entry-early icon_pointers shift is rejected, not silently accepted --\n");
   part_d2_shift_rejected("Gold.gbc");
   part_d2_shift_rejected("Crystal.gbc");
+  part_d2_chain_only("Gold.gbc");
+  part_d2_chain_only("Crystal.gbc");
 
   printf("\n-- F1: gate evidence (post-gate callback counts vs. positions offered) --\n");
   part_f1_gate_evidence("Gold.gbc");
