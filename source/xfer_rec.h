@@ -37,6 +37,21 @@ uint8_t xr_game_item_mask(uint8_t met_game);
 int xr_time_capsule_block(uint8_t src_gen, uint8_t dst_gen, uint16_t species_dex,
                           const uint16_t moves[4], uint16_t* bad);
 
+/* BACKLOG #150 S150-9, decision 1: accept masks -- a per-field PATCH applied to a COPY
+ * of the home bytes through the shipped setters, never by rebuilding the record. The
+ * REPORT is mask-independent (rep->level_changed etc. mean "the field differs abroad
+ * from the written baseline", whether or not the bit is set); only the APPLY is gated.
+ * `accept == 0` therefore returns the home byte-for-byte, structurally. XR_ACCEPT_SPECIES
+ * is meaningful ONLY to gbsc_merge_up_sel (the Gen-3-home direction) -- both
+ * xr_merge_down_sel and xr_merge_down_gb_sel ignore it (decision 4: species is always
+ * reported-only on the native-home side). */
+#define XR_ACCEPT_LEVEL   0x01u   /* level (+EXP recomputed under the home growth rate) */
+#define XR_ACCEPT_MOVES   0x02u   /* moves + PP-Ups (+ current PP clamped)              */
+#define XR_ACCEPT_NICK    0x04u   /* nickname                                            */
+#define XR_ACCEPT_SPECIES 0x08u   /* Gen-3-home direction ONLY (gbsc_merge_up_sel);
+                                   * xr_merge_down*_sel IGNORE it -- decision 4        */
+#define XR_ACCEPT_ALL     0x0Fu
+
 /* BACKLOG #150 S150-8b, decision 12: gb_sidecar.h's GbscMergeReport (the UP direction's
  * report) is not reused here on purpose -- extending it would drag gb_sidecar.h (frozen
  * by S150-6/S150-8) into a change it does not need. Same six field names so the confirm
@@ -44,7 +59,10 @@ int xr_time_capsule_block(uint8_t src_gen, uint8_t dst_gen, uint16_t species_dex
  * direction alone needs: a legality refusal is PER MOVE SLOT (G-H8, the mixed case is
  * the common one), a missing nickname baseline degrades instead of refusing (decision
  * 11's `direction != XR_DIR_ABROAD_G3` case), and species is only ever REPORTED
- * (decision 10 -- xr_merge_down never applies an evolution). */
+ * (decision 10 -- xr_merge_down never applies an evolution).
+ * S150-9 decision 5 adds level_from/level_to (baseline / abroad, 0 when no level row)
+ * and abroad_item_dropped (a GB-side held item that cannot ride onto the OTHER Game Boy
+ * generation -- xr_merge_down_gb only; folds the lane's out-of-band g3_item probe). */
 typedef struct {
   bool evolved;               /* species_written differs from the Gen-3 record's own
                                * national dex number -- REPORTED ONLY, never applied  */
@@ -60,6 +78,8 @@ typedef struct {
                                * mis-stamped entry) -- the nickname row is skipped,
                                * never refused (an un-merged nickname is cosmetic)     */
   bool species_kept;          /* always true on a successful call -- decision 10       */
+  uint8_t level_from, level_to; /* S150-9 decision 5 -- 0/0 when there is no level row */
+  bool abroad_item_dropped;   /* S150-9 decision 2 -- xr_merge_down_gb only            */
 } XrMergeReport;
 
 /* BACKLOG #150 S150-8b, decisions 10 + 11: rebuild the NATIVE cell's Game Boy record
@@ -84,8 +104,42 @@ typedef struct {
  * cell (`bc_is_native` false -- REFUSE-1), `bc_unpack` fails, or `pk_decode_mon`
  * fails on `g3_rec80`. Never calls gbsc_merge_up, gen3_edit_load or any `em_*` --
  * this is a `bc_unpack` -> patch -> hand-back-a-GbEditMon core; the caller does the
- * `bc_pack`. */
+ * `bc_pack`.
+ *
+ * S150-9 decision 1: `accept` gates which fields the walk APPLIES (species is never
+ * applied regardless of `accept` -- decision 4); `rep` is filled identically no matter
+ * what `accept` is. `xr_merge_down` is the ACCEPT_ALL wrapper every s150-8b caller and
+ * test already expects. */
+bool xr_merge_down_sel(const GbscEntry* e, const uint8_t g3_rec80[80], uint8_t accept,
+                       GbEditMon* out, XrMergeReport* rep);
 bool xr_merge_down(const GbscEntry* e, const uint8_t g3_rec80[80], GbEditMon* out,
                    XrMergeReport* rep);
+
+/* BACKLOG #150 S150-9 decision 2: site 2 of the restore (a GB lift of a mon whose
+ * ledger entry has a NATIVE home) -- rebuild the NATIVE home from e->original80
+ * folding in whatever changed in the OTHER-generation Game Boy save `now` lives in
+ * (the bridge wrote it: direction XR_DIR_ABROAD_GB, written = the GB record as
+ * written, nick_written/otname_written = raw GB bytes). Mirrors xr_merge_down_sel
+ * field for field; see source/xfer_rec.c's table comment for the exact per-field
+ * baseline/compare/apply rules. otname_written is NOT compared (identity field).
+ *
+ * Refuses (false, `out` untouched, `rep` zeroed) on NULL, on
+ * `!bc_is_native(e->original80)`, on a `bc_unpack` failure, on
+ * `e->direction != XR_DIR_ABROAD_GB`, or on `now->gen != e->gen` (the entry's `gen`
+ * is the RESIDENCE generation -- gbsc_entry_from() copies `written->gen`). */
+bool xr_merge_down_gb_sel(const GbscEntry* e, const GbEditMon* now, uint8_t accept,
+                          GbEditMon* out, XrMergeReport* rep);
+bool xr_merge_down_gb(const GbscEntry* e, const GbEditMon* now, GbEditMon* out,
+                      XrMergeReport* rep); /* ACCEPT_ALL wrapper */
+
+/* BACKLOG #150 S150-9 decision 11: the entry builder xfer_down_write() inlined
+ * (source/pdna_gen12.c) -- pure gbsc_entry_from() + five field stores + one memcpy,
+ * moved here so the flagship host round-trip test runs the SAME logic the DOWN edge
+ * really writes, not a synthetic copy. `nick_g3` is the 10 raw Gen-3 nickname bytes
+ * for XR_DIR_ABROAD_G3 (NULL for XR_DIR_ABROAD_GB, where `written->nick` is used
+ * instead -- gbsc_entry_from()'s own default). Sets kind = XR_KIND_NATIVE_HOME,
+ * state = XR_STATE_PENDING, claimed = 1, direction = `direction`. */
+void xr_entry_for_down(GbscEntry* e, const GbEditMon* written, const uint8_t cell80[80],
+                       uint32_t epoch, uint8_t direction, const uint8_t nick_g3[10]);
 
 #endif

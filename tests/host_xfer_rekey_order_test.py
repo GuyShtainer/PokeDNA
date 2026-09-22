@@ -204,8 +204,14 @@ def test_rekey_order_daycare(text: str) -> None:
 
 def test_native_refusal_precedes_memcpy(text: str) -> None:
     print("== (4) app_paste_gb_commit: bc_is_native(merged) refusal precedes the clipboard memcpy (G-H6) ==")
+    # BACKLOG #150 S150-9 decision 7: app_paste_gb_commit() grew (the merge-screen
+    # call, the re-read of `e`, the re-merge with the user's accept mask all now
+    # precede this same guard) -- the guard itself is untouched, still named `merged`
+    # on purpose (decision 7's own wording) so this window just needs to reach
+    # further into the function; 1300 -> 2200 chars, re-measured against the real
+    # source (offset ~1830 to `memcpy(tmp.rec, merged, 80);` as of this commit).
     w = window_after(text, "static bool app_paste_gb_commit(uint8_t* buf, uint32_t* len, const char* path, int idx,",
-                     size=1300)
+                     size=2200)
     before = "if (bc_is_native(merged)) {"
     after = "memcpy(tmp.rec, merged, 80);"
     check(order_ok(w, before, after),

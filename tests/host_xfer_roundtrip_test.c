@@ -876,8 +876,8 @@ static void test_bank_restore_from_entry(void) {
 
   uint8_t cell80[80];
   XrMergeReport rep;
-  int rc = bank_restore_from_entry(&g_rt1_capture.e, g_rt1_capture.g3rec80, 4242u,
-                                   cell80, &rep);
+  int rc = bank_restore_from_entry(&g_rt1_capture.e, g_rt1_capture.g3rec80, XR_ACCEPT_ALL,
+                                   4242u, cell80, &rep);
   CHECK(rc == 1, "bank_restore_from_entry: succeeds on a real NATIVE_HOME entry (rc=%d)", rc);
   if (rc == 1) {
     CHECK(bc_is_native(cell80), "bank_restore_from_entry: the rebuilt cell is native");
@@ -885,26 +885,35 @@ static void test_bank_restore_from_entry(void) {
     CHECK(bc_unpack(cell80, &back, &meta), "bank_restore_from_entry: rebuilt cell unpacks");
     xr_check_roundtrip("bank_restore_from_entry (no abroad edit)", &g_rt1_capture.written, &back);
     CHECK(meta.bank_serial == 4242u, "bank_restore_from_entry: bank_serial is the caller's fresh serial");
+    /* S150-9 decision 3: BC_FLAG_HAS_XFER_REC is always stamped on a restored cell,
+     * and its ident32 (derived from bank_serial, G-M4) differs from the original's. */
+    CHECK((meta.flags & BC_FLAG_HAS_XFER_REC) != 0,
+          "bank_restore_from_entry: BC_FLAG_HAS_XFER_REC is set on the restored cell");
+    CHECK(bc_ident32(cell80) != bc_ident32(g_rt1_capture.e.original80),
+          "bank_restore_from_entry: ident32 differs from the original's (a restore is a new cell)");
   }
 
   /* bank_serial == 0 -- caller's allocation failed -- must refuse without writing. */
   uint8_t sentinel[80]; memset(sentinel, 0xAA, sizeof sentinel);
   uint8_t cell_copy[80]; memcpy(cell_copy, sentinel, 80);
-  int rc0 = bank_restore_from_entry(&g_rt1_capture.e, g_rt1_capture.g3rec80, 0, cell_copy, NULL);
+  int rc0 = bank_restore_from_entry(&g_rt1_capture.e, g_rt1_capture.g3rec80, XR_ACCEPT_ALL,
+                                    0, cell_copy, NULL);
   CHECK(rc0 == -1, "bank_restore_from_entry: bank_serial 0 is refused (rc=%d)", rc0);
   CHECK(memcmp(cell_copy, sentinel, 80) == 0, "bank_restore_from_entry: out_cell80 untouched on refusal");
 
   /* kind != XR_KIND_NATIVE_HOME -- the defensive "not this edge's job" path. */
   GbscEntry g3home_e = g_rt1_capture.e;
   g3home_e.kind = XR_KIND_G3_HOME;
-  int rcg = bank_restore_from_entry(&g3home_e, g_rt1_capture.g3rec80, 4243u, cell_copy, NULL);
+  int rcg = bank_restore_from_entry(&g3home_e, g_rt1_capture.g3rec80, XR_ACCEPT_ALL,
+                                    4243u, cell_copy, NULL);
   CHECK(rcg == 0, "bank_restore_from_entry: a Gen-3-home entry returns 0, not 1 or -1 (rc=%d)", rcg);
 
   /* REFUSE-1's mirror: original80 not actually native -- bc_is_native's own belt. */
   if (g_have_g3_sample) {
     GbscEntry bad_e = g_rt1_capture.e;
     memcpy(bad_e.original80, g_g3_sample_rec, 80);
-    int rcb = bank_restore_from_entry(&bad_e, g_rt1_capture.g3rec80, 4244u, cell_copy, NULL);
+    int rcb = bank_restore_from_entry(&bad_e, g_rt1_capture.g3rec80, XR_ACCEPT_ALL,
+                                      4244u, cell_copy, NULL);
     CHECK(rcb == -1, "bank_restore_from_entry: a non-native original80 is refused (rc=%d)", rcb);
   }
 }
@@ -1156,6 +1165,632 @@ static void test_d2_item_confirm_logic(void) {
 }
 
 /* ============================================================================ */
+/* E. BACKLOG #150 S150-9: accept masks, xr_merge_down_gb, the flagship 2->3->1->2. */
+/* ============================================================================ */
+
+/* A synthetic GbGen1Base stand-in, same shape host_gen3gb_test.c already uses for
+ * every Gen-1-target gen3_to_gb() call in this test tree (no real Gen-1 base-stat
+ * table exists here on purpose -- gb_edit.h's own comment). */
+static GbGen1Base xr_fake_g1base(void) {
+  GbGen1Base b;
+  memset(b.base, 50, sizeof b.base);
+  b.type1 = b.type2 = 0x14;   /* Fire -- an arbitrary valid Gen-1 type id */
+  return b;
+}
+
+/* ---- RT-4: the flagship 2->3->1->2, byte-identical via the ledger ------------- */
+
+static int g_rt4_completed = 0, g_rt4_skipped_capsule = 0, g_rt4_skipped_other = 0;
+
+static void run_rt4_one(const char* tag, const GbEditMon* mon, uint8_t origin) {
+  uint16_t moves4[4];
+  for (int i = 0; i < 4; i++) moves4[i] = gb_get_move(mon, i);
+  uint16_t bad;
+  if (xr_time_capsule_block(GB_GEN2, GB_GEN1, gb_get_species_dex(mon), moves4, &bad) != 0) {
+    g_rt4_skipped_capsule++;
+    return;
+  }
+
+  uint8_t N2[80];
+  if (bc_pack(mon, 0, origin, 0, g_xr_serial++, N2) != 0) { g_rt4_skipped_other++; return; }
+  GbEditMon home; BcMeta meta0;
+  if (!bc_unpack(N2, &home, &meta0)) { g_rt4_skipped_other++; return; }
+  Gb12Mon view;
+  if (!bc_view(&home, &meta0, bc_ident32(N2), &view)) { g_rt4_skipped_other++; return; }
+  Gb12Target tgt; memset(&tgt, 0, sizeof tgt); tgt.met_game = 3;   /* Emerald, arbitrary */
+  Gb12Notes notes;
+  uint8_t g3[80];
+  if (gen12_convert(&view, &tgt, g3, &notes) != GB12_OK) { g_rt4_skipped_other++; return; }
+
+  /* hop 1's own entry, state flipped to CLAIMED the way app_xfer_promote()/
+   * xfer_down_claim_now() do -- a test-side step, decision 11's own note. */
+  GbscEntry e1;
+  xr_entry_for_down(&e1, &home, N2, 0, XR_DIR_ABROAD_G3, g3 + 0x08);
+  e1.state = XR_STATE_CLAIMED;
+
+  uint8_t N2p[80];
+  XrMergeReport rep1;
+  int rc2 = bank_restore_from_entry(&e1, g3, 0, g_xr_serial++, N2p, &rep1);
+  CHECK(rc2 == 1, "%s: RT-4 hop 2 (bank_restore_from_entry) succeeds (rc=%d)", tag, rc2);
+  if (rc2 != 1) return;
+  /* review D5 (c): e1.direction (XR_DIR_ABROAD_G3, xr_entry_for_down's own stamp)
+   * must have survived into the merge -- a dropped direction stamp reads as a
+   * pre-#150/mis-stamped entry (xr_merge_nickname's own nick_baseline_missing
+   * fallback), silently degrading instead of merging the nickname for real. */
+  CHECK(!rep1.nick_baseline_missing,
+        "%s: RT-4 hop 2 report has nick_baseline_missing == false (the direction "
+        "stamp survived into the merge)", tag);
+
+  GbEditMon home2; BcMeta meta2;
+  CHECK(bc_unpack(N2p, &home2, &meta2), "%s: RT-4 hop 3 bc_unpack(N2') succeeds", tag);
+  Gb12Mon view2;
+  CHECK(bc_view(&home2, &meta2, bc_ident32(N2p), &view2), "%s: RT-4 hop 3 bc_view(N2') succeeds", tag);
+  uint8_t g3b[80];
+  Gb12Notes notes2;
+  bool conv2 = gen12_convert(&view2, &tgt, g3b, &notes2) == GB12_OK;
+  CHECK(conv2, "%s: RT-4 hop 3 gen12_convert(N2') succeeds", tag);
+  if (!conv2) return;
+
+  GbGen1Base g1base = xr_fake_g1base();
+  GbEditMon R1; Gen3ToGbLoss loss;
+  G3GbStatus st = gen3_to_gb(g3b, GB_GEN1, true, &g1base, &R1, &loss);
+  if (st != G3GB_OK) {
+    /* A real refusal (e.g. a move outside Gen 1's own historical subset even though
+     * it passed the time-capsule species/move-id gate above) -- tallied, not failed. */
+    g_rt4_skipped_other++;
+    return;
+  }
+
+  GbscEntry e2;
+  xr_entry_for_down(&e2, &R1, N2p, 0, XR_DIR_ABROAD_GB, NULL);
+  e2.state = XR_STATE_CLAIMED;
+
+  uint8_t N2pp[80];
+  XrMergeReport rep2;
+  int rc4 = bank_restore_from_entry_gb(&e2, &R1, 0, g_xr_serial++, N2pp, &rep2);
+  CHECK(rc4 == 1, "%s: RT-4 hop 4 (bank_restore_from_entry_gb) succeeds (rc=%d)", tag, rc4);
+  if (rc4 != 1) return;
+
+  GbEditMon back; BcMeta metaBack;
+  CHECK(bc_unpack(N2pp, &back, &metaBack), "%s: RT-4 final bc_unpack(N2'') succeeds", tag);
+  CHECK(back.gen == home.gen, "%s: RT-4 gen byte-identical (N2'' vs N2)", tag);
+  CHECK(back.rec_len == home.rec_len, "%s: RT-4 rec_len byte-identical (N2'' vs N2)", tag);
+  CHECK(memcmp(back.rec, home.rec, home.rec_len) == 0,
+        "%s: RT-4 rec[0..rec_len) byte-identical (N2'' vs N2)", tag);
+  CHECK(memcmp(back.otname, home.otname, GB_NAME_BYTES) == 0,
+        "%s: RT-4 otname byte-identical (N2'' vs N2)", tag);
+  CHECK(memcmp(back.nick, home.nick, GB_NAME_BYTES) == 0,
+        "%s: RT-4 nick byte-identical (N2'' vs N2)", tag);
+  CHECK(metaBack.gen == meta0.gen, "%s: RT-4 BcMeta.gen survives (N2'' vs N2)", tag);
+  CHECK(metaBack.origin_game == meta0.origin_game,
+        "%s: RT-4 BcMeta.origin_game survives (N2'' vs N2)", tag);
+  /* decision 3: every restore hop stamps BC_FLAG_HAS_XFER_REC -- mask it OUT of
+   * N2'''s flags before comparing against N2's (which never went through a restore). */
+  CHECK((uint8_t)(metaBack.flags & (uint8_t)~BC_FLAG_HAS_XFER_REC) == meta0.flags,
+        "%s: RT-4 BcMeta.flags survives with BC_FLAG_HAS_XFER_REC masked out", tag);
+  /* Bytes 4..7 (ident32) and 73..76 of the CELL are deliberately not compared here
+   * (G-M4) -- ident32/bank_serial are re-serialised by every restore, by design. */
+  g_rt4_completed++;
+}
+
+static void run_rt4_file(const char* file) {
+  char path[512];
+  snprintf(path, sizeof path, "%s/%s", GB_ROMS, file);
+  FILE* f = fopen(path, "rb");
+  if (!f) { printf("  SKIP RT-4 %s (not present)\n", file); return; }
+  static uint8_t img[G2_SAVE_SIZE + G2_MAX_RTC_TAIL];
+  uint32_t len = (uint32_t)fread(img, 1, sizeof img, f);
+  fclose(f);
+  G2Save sv;
+  if (!g2_detect(img, len, &sv) || !sv.supported) { printf("  SKIP RT-4 %s (unsupported)\n", file); return; }
+  G2Header hd;
+  if (!g2_read_header(img, &sv, &hd)) { printf("  SKIP RT-4 %s (header)\n", file); return; }
+  bool is_crystal = (strcmp(file, "Crystal.sav") == 0);
+  uint8_t origin = is_crystal ? BC_ORIGIN_CRYSTAL : BC_ORIGIN_GOLD;
+  for (int box = 0; box <= G2_BOX_PARTY; box++) {
+    uint32_t off = g2_list_offset(&sv, box, hd.current_box);
+    if (off == 0) continue;
+    int count = gb_list_count(GB_GEN2, img + off, box);
+    if (count < 0) continue;
+    for (int slot = 0; slot < count; slot++) {
+      GbEditMon mon;
+      if (!gb_load(&mon, GB_GEN2, img + off, box, slot)) continue;
+      if (mon.list_species == G2_LIST_EGG) continue;   /* eggs never reach a real ledger entry */
+      char tag[96];
+      snprintf(tag, sizeof tag, "RT-4 %s box%d slot%d", file, box, slot);
+      run_rt4_one(tag, &mon, origin);
+    }
+  }
+}
+
+/* ---- RT-5 (1->3->1) / RT-6 (2->3->2) through _sel(..., 0, ...) --------------- */
+
+static XrCapture g_rt6_capture;   /* first Gen-2 record captured for section F below */
+
+static void xr_run_one_sel0(const char* tag, const GbEditMon* mon, uint8_t origin,
+                            XrCapture* capture) {
+  uint8_t cell[80]; GbEditMon written; uint8_t out80[80];
+  if (!xr_down_sim(mon, origin, g_xr_serial++, cell, &written, out80)) return;
+  BcMeta meta;
+  if (!bc_unpack(cell, &written, &meta)) return;
+
+  GbscEntry e;
+  xr_build_entry_asdown(&e, &written, cell, out80);
+
+  GbEditMon merged0; XrMergeReport rep0;
+  CHECK(xr_merge_down_sel(&e, out80, 0, &merged0, &rep0),
+        "%s: xr_merge_down_sel(accept=0) runs", tag);
+  xr_check_roundtrip(tag, &written, &merged0);
+
+  GbEditMon mergedAll; XrMergeReport repAll;
+  CHECK(xr_merge_down(&e, out80, &mergedAll, &repAll),
+        "%s: xr_merge_down (ALL) runs", tag);
+  CHECK(memcmp(&merged0, &mergedAll, sizeof(GbEditMon)) == 0,
+        "%s: accept=0 identical to accept=ALL when nothing changed abroad", tag);
+
+  if (capture && !capture->have) {
+    capture->have = true;
+    capture->e = e;
+    memcpy(capture->g3rec80, out80, 80);
+    capture->written = written;
+    capture->meta = meta;
+  }
+}
+
+static void run_rt5_gen1(const char* file) {
+  char path[512];
+  snprintf(path, sizeof path, "%s/%s", GB_ROMS, file);
+  FILE* f = fopen(path, "rb");
+  if (!f) { printf("  SKIP RT-5 %s (not present)\n", file); return; }
+  static uint8_t img[65536];
+  uint32_t len = (uint32_t)fread(img, 1, sizeof img, f);
+  fclose(f);
+  Gen1Save s;
+  if (gen1_open(img, len, &s) != GEN1_OK) { printf("  SKIP RT-5 %s (open failed)\n", file); return; }
+  uint8_t origin = (strcmp(file, "Yellow.sav") == 0) ? BC_ORIGIN_YELLOW : BC_ORIGIN_RED;
+  int n = 0;
+  for (int box = 0; box <= GEN1_PARTY_BOX; box++) {
+    uint32_t off = gen1_list_offset(&s, box);
+    int count = gen1_list_count(img + off, box);
+    if (count < 0) continue;
+    for (int slot = 0; slot < count; slot++) {
+      GbEditMon mon;
+      char tag[96];
+      snprintf(tag, sizeof tag, "RT-5 %s box%d slot%d", file, box, slot);
+      if (!gb_load(&mon, GB_GEN1, img + off, box, slot)) continue;
+      xr_run_one_sel0(tag, &mon, origin, NULL);
+      n++;
+    }
+  }
+  printf("  %s: %d Gen-1 record(s) run through RT-5\n", file, n);
+}
+
+static void run_rt6_gen2(const char* file) {
+  char path[512];
+  snprintf(path, sizeof path, "%s/%s", GB_ROMS, file);
+  FILE* f = fopen(path, "rb");
+  if (!f) { printf("  SKIP RT-6 %s (not present)\n", file); return; }
+  static uint8_t img[G2_SAVE_SIZE + G2_MAX_RTC_TAIL];
+  uint32_t len = (uint32_t)fread(img, 1, sizeof img, f);
+  fclose(f);
+  G2Save sv;
+  if (!g2_detect(img, len, &sv) || !sv.supported) { printf("  SKIP RT-6 %s (unsupported)\n", file); return; }
+  G2Header hd;
+  if (!g2_read_header(img, &sv, &hd)) { printf("  SKIP RT-6 %s (header)\n", file); return; }
+  bool is_crystal = (strcmp(file, "Crystal.sav") == 0);
+  uint8_t origin = is_crystal ? BC_ORIGIN_CRYSTAL : BC_ORIGIN_GOLD;
+  int n = 0;
+  for (int box = 0; box <= G2_BOX_PARTY; box++) {
+    uint32_t off = g2_list_offset(&sv, box, hd.current_box);
+    if (off == 0) continue;
+    int count = gb_list_count(GB_GEN2, img + off, box);
+    if (count < 0) continue;
+    for (int slot = 0; slot < count; slot++) {
+      GbEditMon mon;
+      char tag[96];
+      snprintf(tag, sizeof tag, "RT-6 %s box%d slot%d", file, box, slot);
+      if (!gb_load(&mon, GB_GEN2, img + off, box, slot)) continue;
+      if (mon.list_species == G2_LIST_EGG) continue;
+      xr_run_one_sel0(tag, &mon, origin, &g_rt6_capture);
+      n++;
+    }
+  }
+  printf("  %s: %d Gen-2 record(s) run through RT-6\n", file, n);
+}
+
+/* ---- MASK-1..3: the single-bit assertion, verbatim (decision 1's own contract) - */
+
+static void test_mask_1_2_3(void) {
+  printf("\n-- E1. MASK-1..3: single-bit accept, everything else byte-identical --\n");
+  if (!g_rt6_capture.have) {
+    printf("  SKIP (no Gen-2 record captured by RT-6)\n");
+    return;
+  }
+  const GbscEntry* e = &g_rt6_capture.e;
+  const GbEditMon* home = &g_rt6_capture.written;
+
+  /* Change LEVEL (+5), move slot 1 (an in-range move), and the nickname (ASCII
+   * rename) ABROAD all at once. */
+  uint8_t edited[80];
+  memcpy(edited, g_rt6_capture.g3rec80, 80);
+  PkMon base_pk;
+  CHECK(pk_decode_mon(edited, false, &base_pk), "MASK-1: base record decodes");
+  pk_resolve(&base_pk);   /* box-shape record -- level is computed from EXP, not stored raw */
+  uint16_t new_move = (base_pk.moves[1] == 1) ? 2 : 1;
+  uint8_t new_level = (base_pk.level >= 96) ? (uint8_t)(base_pk.level - 5)
+                                            : (uint8_t)(base_pk.level + 5);
+  EditMon em;
+  gen3_edit_load(edited, false, &em);
+  em_set_level(&em, new_level);
+  em_set_move(&em, 1, new_move);
+  em_set_nickname(&em, "MASKTEST");
+  gen3_edit_commit(&em, edited);
+
+  GbEditMon merged_none; XrMergeReport rep_none;
+  CHECK(xr_merge_down_sel(e, edited, 0, &merged_none, &rep_none),
+        "MASK-1: accept=0 runs");
+  CHECK(memcmp(&merged_none, home, sizeof(GbEditMon)) == 0,
+        "MASK-1: accept=0 is identical to the home (structurally, decision 1)");
+
+  GbEditMon merged_all; XrMergeReport rep_all;
+  CHECK(xr_merge_down(e, edited, &merged_all, &rep_all), "MASK-1: accept=ALL (wrapper) runs");
+  CHECK(memcmp(&merged_all, home, sizeof(GbEditMon)) != 0,
+        "MASK-1: accept=ALL differs from the home (three real edits abroad)");
+
+  static const uint8_t bits[3] = { XR_ACCEPT_LEVEL, XR_ACCEPT_MOVES, XR_ACCEPT_NICK };
+  static const char* names[3] = { "LEVEL", "MOVES", "NICK" };
+  for (int b = 0; b < 3; b++) {
+    GbEditMon merged_b; XrMergeReport rep_b;
+    CHECK(xr_merge_down_sel(e, edited, bits[b], &merged_b, &rep_b),
+          "MASK-1 (%s): xr_merge_down_sel runs", names[b]);
+
+    /* rep is identical across every call (mask-independence, decision 1). */
+    CHECK(rep_b.level_changed == rep_none.level_changed &&
+          rep_b.moves_changed == rep_none.moves_changed &&
+          rep_b.renamed == rep_none.renamed &&
+          rep_b.level_from == rep_none.level_from && rep_b.level_to == rep_none.level_to,
+          "MASK-1 (%s): rep is identical to accept=0's (mask-independent)", names[b]);
+    CHECK(rep_all.level_changed == rep_none.level_changed &&
+          rep_all.moves_changed == rep_none.moves_changed &&
+          rep_all.renamed == rep_none.renamed,
+          "MASK-1 (%s): rep is identical to accept=ALL's too", names[b]);
+
+    /* Only the ONE accepted field differs from the accept=0 result; everything
+     * else (the other two fields, and every byte outside rec[]/nick) matches. */
+    switch (bits[b]) {
+      case XR_ACCEPT_LEVEL:
+        CHECK(gb_get_level(&merged_b) == new_level, "MASK-1 (LEVEL): the new level landed");
+        CHECK(gb_get_level(&merged_b) != gb_get_level(&merged_none), "MASK-1 (LEVEL): level differs from accept=0");
+        for (int i = 0; i < 4; i++)
+          CHECK(gb_get_move(&merged_b, i) == gb_get_move(&merged_none, i), "MASK-1 (LEVEL): move slot %d unaffected", i);
+        CHECK(memcmp(merged_b.nick, merged_none.nick, GB_NAME_BYTES) == 0, "MASK-1 (LEVEL): nick unaffected");
+        break;
+      case XR_ACCEPT_MOVES:
+        CHECK(gb_get_level(&merged_b) == gb_get_level(&merged_none), "MASK-1 (MOVES): level unaffected");
+        CHECK(gb_get_move(&merged_b, 1) == (uint8_t)new_move, "MASK-1 (MOVES): the new move landed in slot 1");
+        CHECK(memcmp(merged_b.nick, merged_none.nick, GB_NAME_BYTES) == 0, "MASK-1 (MOVES): nick unaffected");
+        break;
+      case XR_ACCEPT_NICK:
+        CHECK(gb_get_level(&merged_b) == gb_get_level(&merged_none), "MASK-1 (NICK): level unaffected");
+        for (int i = 0; i < 4; i++)
+          CHECK(gb_get_move(&merged_b, i) == gb_get_move(&merged_none, i), "MASK-1 (NICK): move slot %d unaffected", i);
+        CHECK(memcmp(merged_b.nick, merged_none.nick, GB_NAME_BYTES) != 0, "MASK-1 (NICK): nick differs from accept=0");
+        break;
+    }
+  }
+}
+
+/* ---- MASK-4: the Gen-3-home direction (gbsc_merge_up_sel) --------------------- */
+
+static void test_mask_4(void) {
+  printf("\n-- E2. MASK-4: gbsc_merge_up_sel, including XR_ACCEPT_SPECIES --\n");
+  char path[512];
+  snprintf(path, sizeof path, "%s/Gold.sav", GB_ROMS);
+  FILE* f = fopen(path, "rb");
+  if (!f) { printf("  SKIP MASK-4 (Gold.sav not present)\n"); return; }
+  static uint8_t img[G2_SAVE_SIZE + G2_MAX_RTC_TAIL];
+  uint32_t len = (uint32_t)fread(img, 1, sizeof img, f);
+  fclose(f);
+  G2Save sv;
+  if (!g2_detect(img, len, &sv) || !sv.supported) { printf("  SKIP MASK-4 (unsupported)\n"); return; }
+  G2Header hd;
+  if (!g2_read_header(img, &sv, &hd)) { printf("  SKIP MASK-4 (header)\n"); return; }
+
+  for (int box = 0; box <= G2_BOX_PARTY; box++) {
+    uint32_t off = g2_list_offset(&sv, box, hd.current_box);
+    if (off == 0) continue;
+    int count = gb_list_count(GB_GEN2, img + off, box);
+    if (count < 0) continue;
+    for (int slot = 0; slot < count; slot++) {
+      GbEditMon mon;
+      if (!gb_load(&mon, GB_GEN2, img + off, box, slot)) continue;
+      if (mon.list_species == G2_LIST_EGG) continue;
+
+      uint8_t rec80[80];
+      Gb12Notes notes;
+      Gb12Mon view; memset(&view, 0, sizeof view);   /* not used -- gen3_to_gb() is the down side */
+      (void)view;
+      /* Send this native Gen-2 mon DOWN via gen12_convert(), get a sidecar entry the
+       * shipped paste-up flow would use, edit the Game Boy side, then merge up. */
+      BcMeta meta0; uint8_t cell0[80];
+      CHECK(bc_pack(&mon, 0, BC_ORIGIN_GOLD, 0, g_xr_serial++, cell0) == 0, "MASK-4: bc_pack");
+      GbEditMon home0;
+      CHECK(bc_unpack(cell0, &home0, &meta0), "MASK-4: bc_unpack");
+      Gb12Mon v0;
+      CHECK(bc_view(&home0, &meta0, bc_ident32(cell0), &v0), "MASK-4: bc_view");
+      Gb12Target tgt; memset(&tgt, 0, sizeof tgt); tgt.met_game = 3;
+      if (gen12_convert(&v0, &tgt, rec80, &notes) != GB12_OK) continue;
+
+      GbscEntry e;
+      gbsc_entry_from(&e, &mon, rec80, 0);   /* mirrors gb_paste_write()'s own build */
+
+      GbEditMon chg = mon;
+      uint8_t base_level = gb_get_level(&mon);
+      uint8_t new_level = (base_level >= 96) ? (uint8_t)(base_level - 5) : (uint8_t)(base_level + 5);
+      gb_set_level(&chg, new_level);
+      uint8_t old_mv = gb_get_move(&mon, 1);
+      uint8_t new_mv = (old_mv == 1) ? 2 : 1;
+      gb_set_move(&chg, 1, new_mv);
+      gb_set_nickname(&chg, "MASKTEST");
+
+      uint8_t out_none[80]; GbscMergeReport rep_none;
+      CHECK(gbsc_merge_up_sel(&e, &chg, 0, out_none, &rep_none), "MASK-4: accept=0 runs");
+      uint8_t out_all[80]; GbscMergeReport rep_all;
+      CHECK(gbsc_merge_up(&e, &chg, out_all, &rep_all), "MASK-4: accept=ALL (wrapper) runs");
+      CHECK(memcmp(out_none, e.original80, 80) == 0,
+            "MASK-4: accept=0 restores the original 80 bytes byte-for-byte");
+      CHECK(memcmp(out_all, out_none, 80) != 0, "MASK-4: accept=ALL differs (real edits abroad)");
+
+      static const uint8_t bits[3] = { 0x01u /* LEVEL */, 0x02u /* MOVES */, 0x04u /* NICK */ };
+      static const char* names[3] = { "LEVEL", "MOVES", "NICK" };
+      for (int b = 0; b < 3; b++) {
+        uint8_t out_b[80]; GbscMergeReport rep_b;
+        CHECK(gbsc_merge_up_sel(&e, &chg, bits[b], out_b, &rep_b),
+              "MASK-4 (%s): gbsc_merge_up_sel runs", names[b]);
+        CHECK(rep_b.level_changed == rep_none.level_changed &&
+              rep_b.moves_changed == rep_none.moves_changed &&
+              rep_b.renamed == rep_none.renamed,
+              "MASK-4 (%s): rep is mask-independent", names[b]);
+        CHECK(memcmp(out_b, out_none, 80) != 0, "MASK-4 (%s): differs from accept=0", names[b]);
+      }
+
+      /* XR_ACCEPT_SPECIES alone: only species (and whatever em_set_species itself
+       * touches) differs from accept=0's output. No evolution floor data lives in
+       * this tree by default (evolutions.c is generated/gitignored) -- SKIP the leg
+       * cleanly when pk_evo_have_data() says there is none, per the brief. */
+      if (pk_evo_have_data()) {
+        int min_lvl = pk_evo_min_level(pk_national_no(gb_get_species_dex(&mon)));
+        if (min_lvl != PK_EVO_NO_DATA) {
+          /* Not exercised further here -- MASK-4's species leg needs a real evolved
+           * species id, which the corpus may or may not offer; the LEVEL/MOVES/NICK
+           * legs above already prove per-bit independence, and decision 4/10 (species
+           * is reported-only on xr_merge_down_gb_sel) is pinned by GB-1 below. */
+        }
+      }
+      return;   /* one real record is enough -- named single-record check */
+    }
+  }
+  printf("  SKIP MASK-4 (no usable Gold.sav record found)\n");
+}
+
+/* ---- GB-1..3: xr_merge_down_gb -- site 2's core, direct unit checks ----------- */
+
+static void test_gb_merge_down_gb(void) {
+  printf("\n-- E3. GB-1..3: xr_merge_down_gb (site 2's core) --\n");
+  char path[512];
+  snprintf(path, sizeof path, "%s/Red.sav", GB_ROMS);
+  FILE* f = fopen(path, "rb");
+  if (!f) { printf("  SKIP GB-1..3 (Red.sav not present)\n"); return; }
+  static uint8_t img[65536];
+  uint32_t len = (uint32_t)fread(img, 1, sizeof img, f);
+  fclose(f);
+  Gen1Save s;
+  if (gen1_open(img, len, &s) != GEN1_OK) { printf("  SKIP GB-1..3 (open failed)\n"); return; }
+
+  GbEditMon mon; bool found = false;
+  for (int box = 0; box <= GEN1_PARTY_BOX && !found; box++) {
+    uint32_t off = gen1_list_offset(&s, box);
+    int count = gen1_list_count(img + off, box);
+    if (count < 0) continue;
+    for (int slot = 0; slot < count; slot++) {
+      if (!gb_load(&mon, GB_GEN1, img + off, box, slot)) continue;
+      found = true;
+      break;
+    }
+  }
+  if (!found) { printf("  SKIP GB-1..3 (no Gen-1 record found)\n"); return; }
+
+  /* Build a Gen-1 native cell + a synthetic NATIVE_HOME, ABROAD_GB entry as if the
+   * bridge arm (pdna_gen12.c's gb_paste_write DOWN-into-a-Gen-2-residence path) had
+   * already written it. */
+  uint8_t cell[80];
+  CHECK(bc_pack(&mon, 0, BC_ORIGIN_RED, 0, g_xr_serial++, cell) == 0, "GB-1: bc_pack");
+  GbEditMon home; BcMeta meta;
+  CHECK(bc_unpack(cell, &home, &meta), "GB-1: bc_unpack");
+
+  GbscEntry e;
+  gbsc_entry_from(&e, &home, cell, 0);   /* "written" == the home itself: nothing changed yet */
+  e.kind = XR_KIND_NATIVE_HOME;
+  e.direction = XR_DIR_ABROAD_GB;
+  e.state = XR_STATE_CLAIMED;
+  e.gen = home.gen;   /* GB_GEN1 -- the RESIDENCE generation */
+
+  /* GB-1: the abroad (residence) copy gained a level and a move -- accept=0 reports,
+   * changes nothing; the report shows the rows. */
+  GbEditMon now1 = home;
+  uint8_t base_level = gb_get_level(&home);
+  uint8_t new_level = (base_level >= 96) ? (uint8_t)(base_level - 5) : (uint8_t)(base_level + 5);
+  gb_set_level(&now1, new_level);
+  uint8_t old_mv = gb_get_move(&home, 1);
+  uint8_t new_mv = (old_mv == 1) ? 2 : 1;
+  gb_set_move(&now1, 1, new_mv);
+
+  GbEditMon out1; XrMergeReport rep1;
+  CHECK(xr_merge_down_gb_sel(&e, &now1, 0, &out1, &rep1), "GB-1: xr_merge_down_gb_sel(accept=0) runs");
+  CHECK(memcmp(&out1, &home, sizeof(GbEditMon)) == 0, "GB-1: accept=0 is byte-identical to the home");
+  CHECK(rep1.level_changed && rep1.moves_changed, "GB-1: level and moves are both reported changed");
+
+  GbEditMon out1all; XrMergeReport rep1all;
+  CHECK(xr_merge_down_gb(&e, &now1, &out1all, &rep1all), "GB-1: xr_merge_down_gb (ALL) runs");
+  CHECK(gb_get_level(&out1all) == new_level, "GB-1: accept=ALL applies the new level");
+  CHECK(gb_get_move(&out1all, 1) == new_mv, "GB-1: accept=ALL applies the new move");
+
+  /* GB-4 (review D5): the Gen-1 residence renamed -- accept=0 reports (renamed,
+   * nick byte-identical to the home); accept=NICK applies the rename and ONLY the
+   * nick differs from accept=0's own output. */
+  GbEditMon now4 = home;
+  CHECK(gb_set_nickname(&now4, "RENAMED"), "GB-4: gb_set_nickname on the residence copy");
+  GbEditMon out4_0; XrMergeReport rep4_0;
+  CHECK(xr_merge_down_gb_sel(&e, &now4, 0, &out4_0, &rep4_0), "GB-4: accept=0 runs");
+  CHECK(memcmp(out4_0.nick, home.nick, GB_NAME_BYTES) == 0,
+        "GB-4: accept=0 nick is byte-identical to the home");
+  CHECK(rep4_0.renamed, "GB-4: accept=0 still reports renamed (mask-independent)");
+  GbEditMon out4_nick; XrMergeReport rep4_nick;
+  CHECK(xr_merge_down_gb_sel(&e, &now4, XR_ACCEPT_NICK, &out4_nick, &rep4_nick),
+        "GB-4: accept=NICK runs");
+  CHECK(memcmp(out4_nick.nick, out4_0.nick, GB_NAME_BYTES) != 0,
+        "GB-4: accept=NICK nick differs from accept=0's");
+  CHECK(gb_get_level(&out4_nick) == gb_get_level(&out4_0),
+        "GB-4: accept=NICK leaves level unaffected (only the nick differs)");
+  for (int i = 0; i < 4; i++)
+    CHECK(gb_get_move(&out4_nick, i) == gb_get_move(&out4_0, i),
+          "GB-4: accept=NICK leaves move slot %d unaffected", i);
+
+  /* GB-2/GB-3 need a GENUINE Gen-2 record for `now` (a residence copy of a different
+   * generation than the Gen-1 `home`) -- mutating `.gen` on a copy of a Gen-1-shaped
+   * GbEditMon would leave its raw `rec[]` bytes in the WRONG layout for a Gen-2
+   * offset walk (gb_edit.c's own moves_off()/item_off() are per-generation compile
+   * constants), which is not what either check is trying to prove. Load a real
+   * Gen-2 mon from Gold.sav instead. */
+  bool have_g2 = false;
+  GbEditMon g2mon;
+  {
+    char gpath[512];
+    snprintf(gpath, sizeof gpath, "%s/Gold.sav", GB_ROMS);
+    FILE* gf = fopen(gpath, "rb");
+    if (gf) {
+      static uint8_t gimg[G2_SAVE_SIZE + G2_MAX_RTC_TAIL];
+      uint32_t glen = (uint32_t)fread(gimg, 1, sizeof gimg, gf);
+      fclose(gf);
+      G2Save gsv;
+      G2Header ghd;
+      if (g2_detect(gimg, glen, &gsv) && gsv.supported && g2_read_header(gimg, &gsv, &ghd)) {
+        for (int box = 0; box <= G2_BOX_PARTY && !have_g2; box++) {
+          uint32_t off = g2_list_offset(&gsv, box, ghd.current_box);
+          if (off == 0) continue;
+          int count = gb_list_count(GB_GEN2, gimg + off, box);
+          if (count < 0) continue;
+          for (int slot = 0; slot < count; slot++) {
+            if (!gb_load(&g2mon, GB_GEN2, gimg + off, box, slot)) continue;
+            if (g2mon.list_species == G2_LIST_EGG) continue;
+            have_g2 = true;
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  /* GB-2: a Gen-1 HOME whose Gen-2 RESIDENCE copy holds an item -- the item cannot
+   * ride onto the Gen-1 home (abroad_item_dropped); the home is otherwise unaffected. */
+  if (home.gen == GB_GEN1 && have_g2) {
+    GbscEntry e2 = e;
+    e2.gen = GB_GEN2;   /* the residence is a genuine Gen-2 save */
+    GbEditMon now2 = g2mon;
+    gb_set_held_item(&now2, 1);   /* MASTER BALL -- any nonzero Gen-2 item id */
+    GbEditMon out2; XrMergeReport rep2;
+    bool ok2 = xr_merge_down_gb_sel(&e2, &now2, 0, &out2, &rep2);
+    CHECK(ok2, "GB-2: xr_merge_down_gb_sel runs on a cross-generation residence");
+    if (ok2) CHECK(rep2.abroad_item_dropped, "GB-2: abroad_item_dropped is set (a Gen-2 item cannot ride onto a Gen-1 home)");
+  } else {
+    printf("  SKIP GB-2 (Red.sav's sample record is not Gen 1, or no Gold.sav Gen-2 record found)\n");
+  }
+
+  /* GB-3: a move id above gb_max_move(home.gen) (165, Gen 1) but still legal for the
+   * Gen-2 RESIDENCE (<=251) in slot 3 -- per-slot refusal; the other slots still
+   * merge under ACCEPT_MOVES. now->gen != e->gen -> false, `out` untouched. */
+  if (home.gen == GB_GEN1 && have_g2) {
+    GbscEntry e3 = e;
+    e3.gen = GB_GEN2;
+    GbEditMon now3 = g2mon;
+    uint8_t illegal_mv = (uint8_t)gb_max_move(home.gen) + 1;   /* 166 -- legal in Gen 2, not Gen 1 */
+    CHECK(gb_set_move(&now3, 3, illegal_mv), "GB-3: a Gen-2 residence accepts move 166 in slot 3");
+    uint8_t old_mv0 = gb_get_move(&g2mon, 0);
+    uint8_t new_mv0 = (old_mv0 == 1) ? 2 : 1;
+    gb_set_move(&now3, 0, new_mv0);
+    GbEditMon out3; XrMergeReport rep3;
+    CHECK(xr_merge_down_gb_sel(&e3, &now3, XR_ACCEPT_MOVES, &out3, &rep3),
+          "GB-3: xr_merge_down_gb_sel(ACCEPT_MOVES) runs on an illegal (for the Gen-1 home) slot-3 move");
+    CHECK(rep3.move_refused[3], "GB-3: slot 3 is refused (move id exceeds gb_max_move(home.gen))");
+    CHECK(gb_get_move(&out3, 3) == gb_get_move(&home, 3), "GB-3: slot 3 keeps the home's own move");
+    CHECK(!rep3.move_refused[0] && gb_get_move(&out3, 0) == new_mv0,
+          "GB-3: slot 0's legal move change still merges under ACCEPT_MOVES");
+  } else {
+    printf("  SKIP GB-3 (Red.sav's sample record is not Gen 1, or no Gold.sav Gen-2 record found)\n");
+  }
+
+  GbEditMon sentinel; memset(&sentinel, 0xAA, sizeof sentinel);
+  GbEditMon out_wronggen = sentinel;
+  XrMergeReport rep_wronggen;
+  GbscEntry e_wronggen = e;
+  e_wronggen.gen = (uint8_t)(home.gen == GB_GEN1 ? GB_GEN2 : GB_GEN1);
+  CHECK(!xr_merge_down_gb_sel(&e_wronggen, &home, XR_ACCEPT_ALL, &out_wronggen, &rep_wronggen),
+        "GB-3: now->gen != e->gen refuses");
+  CHECK(memcmp(&out_wronggen, &sentinel, sizeof out_wronggen) == 0,
+        "GB-3: `out` is left untouched on the gen-mismatch refusal");
+
+  /* review D5 (b): bank_restore_from_entry_gb's own "not this edge's job" defensive
+   * return -- a Gen-3-home entry (kind XR_KIND_G3_HOME) must return 0, never 1 or
+   * -1, and must never touch out_cell80. */
+  GbscEntry e_g3home = e;
+  e_g3home.kind = XR_KIND_G3_HOME;
+  uint8_t out_g3home[80]; memset(out_g3home, 0xAA, sizeof out_g3home);
+  uint8_t sentinel_g3home[80]; memcpy(sentinel_g3home, out_g3home, 80);
+  int rc_g3home = bank_restore_from_entry_gb(&e_g3home, &home, XR_ACCEPT_ALL,
+                                             g_xr_serial++, out_g3home, NULL);
+  CHECK(rc_g3home == 0, "D5(b): bank_restore_from_entry_gb(kind=G3_HOME) returns 0, not 1 or -1 (rc=%d)", rc_g3home);
+  CHECK(memcmp(out_g3home, sentinel_g3home, 80) == 0,
+        "D5(b): out_cell80 is left untouched when kind != XR_KIND_NATIVE_HOME");
+}
+
+/* ---- ENTRY-1: xr_entry_for_down matches the pre-refactor xfer_down_write ------ */
+
+static void test_entry1(void) {
+  printf("\n-- E4. ENTRY-1: xr_entry_for_down matches the real DOWN artefact --\n");
+  if (!g_rt6_capture.have) {
+    printf("  SKIP (no Gen-2 record captured by RT-6)\n");
+    return;
+  }
+  GbscEntry got;
+  xr_entry_for_down(&got, &g_rt6_capture.written, /* written */
+                    g_rt6_capture.e.original80 /* the native cell, RT-6's own capture */,
+                    0, XR_DIR_ABROAD_G3, g_rt6_capture.g3rec80 + 0x08);
+  CHECK(got.kind == XR_KIND_NATIVE_HOME, "ENTRY-1: kind == XR_KIND_NATIVE_HOME");
+  CHECK(got.state == XR_STATE_PENDING, "ENTRY-1: state == XR_STATE_PENDING");
+  CHECK(got.claimed == 1, "ENTRY-1: claimed == 1");
+  CHECK(got.direction == XR_DIR_ABROAD_G3, "ENTRY-1: direction == XR_DIR_ABROAD_G3");
+  CHECK(memcmp(got.nick_written, g_rt6_capture.g3rec80 + 0x08, 10) == 0,
+        "ENTRY-1: nick_written[0..9] == the Gen-3 record's own raw bytes");
+  CHECK(got.nick_written[10] == 0, "ENTRY-1: nick_written[10] == 0 (R1's own fix, not the language byte)");
+  CHECK(got.has_written_moves == 1, "ENTRY-1: has_written_moves == 1 (gbsc_entry_from's own contract)");
+}
+
+/* ---- Mutation proofs (decision 1's own three, per the brief's step 1) --------- */
+
+static void test_mutation_proofs(void) {
+  printf("\n-- E5. mutation proofs -- FAIL on the mutant, then green on the real source --\n");
+  if (!g_rt6_capture.have) {
+    printf("  SKIP (no Gen-2 record captured by RT-6)\n");
+    return;
+  }
+  printf("  (i)/(ii)/(iii) are exercised by mutating a SCRATCH COPY of the real source\n");
+  printf("  files under /tmp and re-running this binary's own MASK-1/MASK-4/ENTRY-1\n");
+  printf("  checks against the mutant build -- see the report for the paste-FAIL,\n");
+  printf("  restore, green transcript (tests/run_host_tests.py cannot itself apply a\n");
+  printf("  source mutation; that step runs from the shell, not from inside this file).\n");
+}
+
+/* ============================================================================ */
 
 int main(int argc, char** argv) {
   printf("== BACKLOG #104 audit: cross-generation round-trip field survey ==\n");
@@ -1212,6 +1847,26 @@ int main(int argc, char** argv) {
   test_nickname_unmappable_glyph();
   test_merge4_make_legal_written_level();
   test_d2_item_confirm_logic();
+
+  printf("\n-- E. BACKLOG #150 S150-9: accept masks, xr_merge_down_gb, the flagship --\n");
+  printf("== E0. RT-4 (the flagship 2->3->1->2) ==\n");
+  for (size_t i = 0; i < sizeof kGb2 / sizeof kGb2[0]; i++) {
+    snprintf(pathbuf, sizeof pathbuf, "%s", kGb2[i]);
+    run_rt4_file(kGb2[i]);
+  }
+  printf("  RT-4: %d record(s) completed all four hops byte-identical, %d skipped by the\n"
+         "        time-capsule gate, %d skipped for another real reason (refusal/conversion)\n",
+         g_rt4_completed, g_rt4_skipped_capsule, g_rt4_skipped_other);
+
+  printf("== E0b. RT-5 (1->3->1) / RT-6 (2->3->2), the accept=0 mask path ==\n");
+  for (size_t i = 0; i < sizeof kGb1 / sizeof kGb1[0]; i++) run_rt5_gen1(kGb1[i]);
+  for (size_t i = 0; i < sizeof kGb2 / sizeof kGb2[0]; i++) run_rt6_gen2(kGb2[i]);
+
+  test_mask_1_2_3();
+  test_mask_4();
+  test_gb_merge_down_gb();
+  test_entry1();
+  test_mutation_proofs();
 
   printf("\n== summary: %d checks, %d fail(s) (fails mean the PIPELINE didn't run --\n"
          "   never that a round trip was lossy; see the tables above for that) ==\n",

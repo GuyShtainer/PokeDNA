@@ -5219,6 +5219,182 @@ def run_b142_tab_focus_arrival(core_mod, image_mod, rom_after: Path, rom_before:
     sb.taken += sa.taken
     sb.skipped += sa.skipped
     return sb
+def run_s150_9_merge_screen(core_mod, image_mod, rom_emerald: Path, out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #150 S150-9: the shared per-field MERGE screen (app_xfer_merge_screen,
+    source/pdna_main.c), both the real-rows case and decision 7's "nothing changed"
+    skip, plus decision 8's RESTORED/PENDING refusals -- all four reachable only
+    because of decision 12's planted-ledger read shim (source/bank_plant.c/
+    xfer_io.c): this vehicle's flash chip has no writable FAT at all, confirmed live
+    by an earlier lane's own S150-8 chain (every real DOWN ledger write hits
+    "SIDECAR FOLDER / Nothing transferred." at the f_mkdir step) -- there is no way
+    to reach a REAL ledger entry on the delta without planting one directly in RAM.
+
+    `rom_emerald` MUST be `tools/fuse_sav.py <pokedna-delta-artless.gba> Emerald.sav`
+    (a plain Gen-3 fusion, no --gb -- same vehicle shape as --s2-bank-control/--s150-8).
+    bank_plant_xfer_seed_all()'s PC-storage mount hook (source/pdna_main.c) plants
+    FOUR Gen-3 records into THIS session's own PC box 0 (storage index 0 -- the
+    box shown by default at boot; PokeDNA's own box title reads "1:<name>", the
+    LEADING digit is the 1-based storage index, everything after the colon is the
+    save's own custom box name -- verified live, not assumed, after an initial
+    misread of "1:5.Unp09n" as box "5") at slots 29/28/27/26:
+      29 (idx 0): CLAIMED, ALTERED (written_level -3, a moves[1] swap) -- the main
+          chain, a real LEVEL/MOVES row pair.
+      28 (idx 1): CLAIMED, unaltered -- decision 7's "nothing changed" skip.
+      27 (idx 2): XR_STATE_RESTORED -- decision 8's ALREADY RESTORED refusal.
+      26 (idx 3): XR_STATE_PENDING -- decision 8's SAVE FIRST refusal.
+    All four are Gen-2 CHIKORITA (species 152), distinguishable on screen only by
+    their level (12/14/15/18) -- the info panel after grabbing each cell is this
+    chain's own confirmation of which planted slot is currently held.
+
+    Nav recipe, verified live against this exact fused image (probe screenshots
+    under /tmp/s150-9-trace/s150_9*_*.png, not guessed -- an EARLIER attempt tried
+    UP once off the PC grid's top row expecting a "(BANK)" tab (by analogy with
+    S150-8's own PARTY-tab note) and found none: a Gen-3 PC source's middle tab is
+    permanently labelled PARTY, never becomes "(BANK)". The real route is
+    pdna_box()'s own `r == 4` return code ("up past the PC tabs -> Bank, cursor
+    from below", source/pdna_main.c ~:10568) -- ONE MORE UP past the tab row itself,
+    not a tab cycle):
+      grid entry: box 1 (storage index 0) is already on screen at boot -- cursor
+        starts at slot 0 (top-left).
+      to slot N: DOWN x(N//6), RIGHT x(N%6) -- e.g. slot 29 is DOWNx4, RIGHTx5.
+      pick up: A (the cell's own menu -- VIEW/EDIT, ITEM, LEGALITY, MOVE, COPY,
+        DUPLICATE, TO DAY-CARE, EXPORT .pk, RELEASE) -> DOWN x3 (-> MOVE) -> A
+        (starts the carry, footer becomes "A drop  B cancel").
+      into the Bank, STILL CARRYING: UP x6 -- 4 to reach row 0 (box 1 has 5 rows,
+        cursor starts on row 4 after grabbing slot 29; fewer UPs are needed from a
+        higher slot, this function always grabs a bottom-row slot so 4 is exact),
+        1 more off the grid onto the tab row (lands on PKMN DATA, the leftmost),
+        1 more off the TOP of the tab row -> `pdna_box()` returns 4 -> the caller
+        opens `pdna_bank_show()` directly, still carrying. Box 1 of the Bank shows
+        bank_plant_box0()'s own five cells (CHI/PIK/EGG/CHI/DMG); the cursor lands
+        past them on an empty cell -- no further navigation needed to drop.
+      drop: A. The merge screen (when it draws): U/D moves the row cursor, A flips
+        KEEP/TAKE, START applies, B cancels back to the Bank grid still carrying."""
+    print("== BACKLOG #150 S150-9: the per-field MERGE screen ==")
+
+    def goto_slot_and_grab(s: gb_shots.Session, slot: int) -> None:
+        row, col = divmod(slot, 6)
+        s.press_n("DOWN", row, settle=100)
+        s.press_n("RIGHT", col, settle=100)
+        s.tap("A", settle=200)              # the cell's own menu
+        s.press_n("DOWN", 3, settle=80)     # -> MOVE
+        s.tap("A", settle=200)              # pick up -> carrying
+
+    def into_bank(s: gb_shots.Session) -> None:
+        s.press_n("UP", 6, settle=100)      # row0, tab row, off the top -> the Bank
+
+    s = gb_shots.Session(core_mod, image_mod, rom_emerald, out_dir, "s150_9_")
+    s.run(700)
+    s.shot("00_boot", "S150-9: Emerald boots into the PC box view, box 1 (storage "
+           "index 0) shown by default -- the last row's four planted CHIKORITA "
+           "cells (slots 26-29) are visible at the bottom-right")
+    s.press_n("DOWN", 4, settle=100)
+    s.press_n("RIGHT", 5, settle=100)
+    s.shot("01_cursor_slot29", "S150-9: cursor moved to slot 29 (DOWNx4, RIGHTx5) "
+           "-- info panel shows No.152 CHIKORITA Lv12, the main-chain planted cell")
+    s.tap("A", settle=200)
+    s.shot("02_menu", "S150-9: A opens the cell's menu (VIEW/EDIT, ITEM, "
+           "LEGALITY, MOVE, COPY, DUPLICATE, TO DAY-CARE, EXPORT .pk, RELEASE)")
+    s.press_n("DOWN", 3, settle=80)
+    s.shot("03_on_move", "S150-9: DOWNx3 -> cursor on MOVE")
+    s.tap("A", settle=200)
+    s.shot("04_carrying", "S150-9: A -> picked up, carrying (footer 'A drop B "
+           "cancel')")
+    into_bank(s)
+    s.shot("05_in_bank", "S150-9: UPx6 (off the grid, past the tab row, off the "
+           "top) -> the Bank itself, still carrying -- box 1 shows "
+           "bank_plant_box0's own SEVEN cells (CHI/PIK/EGG/CHI/DMG/CHI/CHI -- "
+           "S150-12 review decision 17, merged after this lane's first pass, "
+           "added two COPY cells at slots 5/6; was five cells pre-merge), "
+           "cursor past them on an empty cell")
+    s.tap("A", settle=300)
+    s.shot("06_merge_screen", "S150-9: A to drop -> the per-field MERGE screen -- "
+           "'BACK TO ITS ORIGINAL' / 'Level 9 > 12  KEEP' (cursor here) / "
+           "'Moves changed  KEEP' / 'A flip  START apply  B cancel'")
+    s.tap("A", settle=200)
+    s.shot("07_level_take", "S150-9: A flips the cursor row -- LEVEL now TAKE")
+    s.tap("DOWN", settle=150)
+    s.shot("08_cursor_moves", "S150-9: DOWN moves the cursor to the MOVES row")
+    s.tap("A", settle=200)
+    s.shot("09_moves_take", "S150-9: A flips MOVES to TAKE (both rows now TAKE)")
+    s.tap("A", settle=200)
+    s.shot("10_moves_keep_again", "S150-9: A again flips MOVES back to KEEP")
+    s.tap("B", settle=250)
+    s.shot("11_cancel_still_holding", "S150-9: B cancels the screen -- back on "
+           "the Bank grid, STILL carrying (footer 'A drop B cancel'), nothing "
+           "applied")
+    s.tap("A", settle=300)
+    s.shot("12_redrop_menu", "S150-9: A again on the same empty cell -- the "
+           "screen reappears")
+    s.shot("13_both_keep_again", "S150-9: both rows read KEEP again -- toggle "
+           "state is NOT remembered across a cancel", allow_same=True)
+    s.tap("A", settle=200)
+    s.shot("14_level_take_again", "S150-9: A -- LEVEL -> TAKE (MOVES stays KEEP)")
+    s.tap("START", settle=300)
+    s.shot("15_write_result", "S150-9: START applies (accept=LEVEL only) -- "
+           "'TRANSFER RECORD UNREADABLE / Nothing was moved.' (PDNA_XFERREC_*). "
+           "The real mechanism (review D6, corrected from an earlier guess): "
+           "pc_bank_restore_up's own pdna_bank_next_serial() call fails (it "
+           "writes bank.meta -- no writable FAT on this vehicle at all), so "
+           "`serial == 0` and pc_bank_restore_up returns -1 BEFORE "
+           "bank_restore_from_entry is ever called -- the restore itself never "
+           "ran here. drop_held's own rc<0 branch shows this same message for "
+           "any negative pc_bank_restore_up return (source/pdna_box.c ~:1633-1642). "
+           "Hardware-owed (docs/HW-QUEUE.md): whether the merge lands correctly "
+           "when a real card CAN allocate a serial is untested here.")
+
+    # ---- decision 7: slot 28 -- the "nothing changed" skip -----------------------
+    s2 = gb_shots.Session(core_mod, image_mod, rom_emerald, out_dir, "s150_9b_")
+    s2.run(700)
+    goto_slot_and_grab(s2, 28)
+    s2.shot("00_carrying_slot28", "S150-9 decision 7: carrying the slot-28 "
+            "planted cell (CLAIMED, unaltered -- byte-identical to its own "
+            "ledger baseline)")
+    into_bank(s2)
+    s2.tap("A", settle=300)
+    s2.shot("01_no_screen", "S150-9 decision 7: A to drop -- NO merge screen "
+            "(nothing changed abroad, decision 7's own rule; app_xfer_merge_screen "
+            "returns true with *accept=0 without drawing), straight to the SAME "
+            "pdna_bank_next_serial() failure frame 15 reaches (review D6)")
+
+    # ---- decision 8: slot 27 -- XR_STATE_RESTORED, the ALREADY RESTORED refusal --
+    s3 = gb_shots.Session(core_mod, image_mod, rom_emerald, out_dir, "s150_9c_")
+    s3.run(700)
+    goto_slot_and_grab(s3, 27)
+    s3.shot("00_carrying_slot27", "S150-9 decision 8: carrying the slot-27 "
+            "planted cell (its ledger entry is already XR_STATE_RESTORED)")
+    into_bank(s3)
+    s3.tap("A", settle=300)
+    s3.shot("01_already_restored", "S150-9 decision 8: A to drop -- 'ALREADY "
+            "RESTORED / The Bank has its original. / Release this copy "
+            "instead.' (PDNA_XFERDUP_*), the state refusal BEFORE the screen -- "
+            "nothing written, still holding")
+    s3.tap("A", settle=200)
+    s3.shot("02_still_holding", "S150-9 decision 8: dismiss -- still carrying "
+            "the slot-27 cell, footer 'A drop B cancel'")
+
+    # ---- decision 8: slot 26 -- XR_STATE_PENDING, the SAVE FIRST refusal ---------
+    s4 = gb_shots.Session(core_mod, image_mod, rom_emerald, out_dir, "s150_9d_")
+    s4.run(700)
+    goto_slot_and_grab(s4, 26)
+    s4.shot("00_carrying_slot26", "S150-9 decision 8: carrying the slot-26 "
+            "planted cell (its ledger entry is XR_STATE_PENDING)")
+    into_bank(s4)
+    s4.tap("A", settle=300)
+    s4.shot("01_save_first", "S150-9 decision 8: A to drop -- 'SAVE FIRST / One "
+            "transfer is waiting for / the game save. START > SAVE.' "
+            "(PDNA_XFER_SAVEFIRST_*) -- nothing written, still holding")
+    s4.tap("A", settle=200)
+    s4.shot("02_still_holding", "S150-9 decision 8: dismiss -- still carrying "
+            "the slot-26 cell, footer 'A drop B cancel'")
+
+    # Fold the three follow-on sessions' shots into the first session's own lists
+    # so the caller's manifest/exit-code accounting sees all four.
+    s.taken += s2.taken + s3.taken + s4.taken
+    s.skipped += s2.skipped + s3.skipped + s4.skipped
+    return s
+
+
 def run_s150_8_gen3_arm(core_mod, image_mod, rom_emerald: Path, out_dir: Path) -> gb_shots.Session:
     """BACKLOG #150 S150-8: the CONVERTING DOWN edge's GEN3 arm -- a native "GBC1"
     Bank cell converts into a real Gen-3 record and lands in the CURRENT Gen-3
@@ -5844,6 +6020,14 @@ def main(argv=None) -> int:
                           "box). --image MUST be tools/fuse_sav.py <pokedna-delta-"
                           "artless.gba> Emerald.sav (a plain Gen-3 fusion, no --gb -- "
                           "same vehicle shape as --s2-bank-control).")
+    ap.add_argument("--s150-9", action="store_true",
+                     help="BACKLOG #150 S150-9: only run_s150_9_merge_screen() -- the "
+                          "shared per-field MERGE screen (both real-rows and the "
+                          "'nothing changed' skip) plus the RESTORED/PENDING refusals, "
+                          "all reached via decision 12's planted-ledger read shim. "
+                          "--image MUST be tools/fuse_sav.py <pokedna-delta-"
+                          "artless.gba> Emerald.sav (a plain Gen-3 fusion, no --gb -- "
+                          "same vehicle shape as --s150-8).")
     ap.add_argument("--s150-8-bridge", action="store_true",
                      help="BACKLOG #150 S150-8: only run_s150_8_bridge() -- the "
                           "CONVERTING DOWN edge's GB_BRIDGE arm (Gen 1 <-> Gen 2). "
@@ -6641,6 +6825,20 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] s150-8: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+    if getattr(a, "s150_9", False):
+        # BACKLOG #150 S150-9: append-only, same convention as --s150-8 above.
+        ran = True
+        try:
+            sess = run_s150_9_merge_screen(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] s150-9: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:

@@ -962,12 +962,13 @@ int main(void) {
   PF(PDNA_XFER_NATIVE_TITLE, 28, 184);
   PF(PDNA_XFER_NATIVE_L1,    28, 184);
   PF(PDNA_XFER_NATIVE_L2,    28, 184);
-  /* BACKLOG #150 S150-8b review F3: the RESTORE edge's own confirm. */
-  PF(PDNA_XFERRESTORE_TITLE,  28, 184);
-  PF(PDNA_XFERRESTORE_L_LOSS, 28, 184);
-  /* review D6: the per-row confirm's own two remaining new strings. */
-  PF(PDNA_XFERRESTORE_L_EVOLVED, 28, 184);
-  PF(PDNA_XFERRESTORE_A_OK,      28, 184);
+  /* BACKLOG #150 S150-9 decision 6/13: app_xferrestore_confirm is DELETED this
+   * commit (its only call site, pc_bank_restore_up, now calls the shared
+   * app_xfer_merge_screen) -- PDNA_XFERRESTORE_L_LOSS/L_EVOLVED/A_OK were its own
+   * (never reused) and are deleted with it. PDNA_XFERRESTORE_TITLE STAYS: it is
+   * reused verbatim as PDNA_XFERMERGE_TITLE_DOWN (already measured above, decision
+   * 13's own "reuse" note), so a bare PF() here would double-measure it -- covered
+   * by the PDNA_XFERMERGE_TITLE_DOWN row instead. */
   /* BACKLOG #150 S150-8b review F5: the "unreadable record" refusal message. */
   PF(PDNA_XFERREC_TITLE,      28, 184);
   PF(PDNA_XFERREC_L1,         28, 184);
@@ -1067,25 +1068,51 @@ int main(void) {
   PF(PDNA_SIDECAR_CORRUPT_KEPT_L1,   28, 184);
   PF(PDNA_SIDECAR_CORRUPT_MERGE_L1,  28, 184);
 
+  /* BACKLOG #150 S150-9 decision 6: app_sidecar_confirm is DELETED, replaced by the
+   * shared app_xfer_merge_screen -- PDNA_SIDECAR_L_EVOLVED/A_PASTE (that screen's own
+   * dead strings) are gone with it (decision 13); every string below still lives,
+   * either reused directly by the new screen or still used by app_xferrestore_confirm
+   * (deleted in a later commit). */
   PF(PDNA_SIDECAR_CONFIRM_TITLE,   PDNA_SIDECAR_TEXT_X, PDNA_SIDECAR_TEXT_MAXW);
-  PF(PDNA_SIDECAR_L_EVOLVED,       PDNA_SIDECAR_TEXT_X, PDNA_SIDECAR_TEXT_MAXW);
   PF(PDNA_SIDECAR_L_LEVEL,         PDNA_SIDECAR_TEXT_X, PDNA_SIDECAR_TEXT_MAXW);
   PF(PDNA_SIDECAR_L_MOVES,         PDNA_SIDECAR_TEXT_X, PDNA_SIDECAR_TEXT_MAXW);
   PF(PDNA_SIDECAR_L_RENAMED,       PDNA_SIDECAR_TEXT_X, PDNA_SIDECAR_TEXT_MAXW);
   PF(PDNA_SIDECAR_L_RENAME_REFUSED,PDNA_SIDECAR_TEXT_X, PDNA_SIDECAR_TEXT_MAXW);
   PF(PDNA_SIDECAR_L_ITEM_IGNORED,  PDNA_SIDECAR_TEXT_X, PDNA_SIDECAR_TEXT_MAXW);
   PF(PDNA_SIDECAR_L_EVS,           PDNA_SIDECAR_TEXT_X, PDNA_SIDECAR_TEXT_MAXW);
-  /* A/B footer is fixed sys8 (ui_text), same convention as PDNA_GBEDIT_A_WRITE/B_CANCEL. */
-  T(PDNA_SIDECAR_A_PASTE,  PDNA_SIDECAR_TEXT_X);
   T(PDNA_SIDECAR_B_CANCEL, PDNA_SIDECAR_TEXT_X);
-  /* All six conditional lines plus the always-shown EVs line, plus the A/B footer,
-   * must clear the panel's own bottom border. */
-  chk("sidecar confirm worst-case height", 0,
-      PDNA_SIDECAR_PANEL_Y + PDNA_SIDECAR_PANEL_H - 1,
-      PDNA_SIDECAR_LINE_Y0 + 6 * PDNA_SIDECAR_LINE_H + PDNA_SIDECAR_EVS_GAP +
-        PDNA_SIDECAR_LINE_H + PDNA_SIDECAR_AB_GAP + 2 * PDNA_SIDECAR_LINE_H + UI_ROW_H - 1,
-      "sidecar confirm: worst case (all 6 flags) clears the panel");
   /* ==== END S5-B sidecar (Part C) ============================================ */
+
+  /* ==== BACKLOG #150 S150-9 decision 13: the shared per-field MERGE screen ====== */
+  PF(PDNA_XFERMERGE_TITLE_UP,      PDNA_SIDECAR_TEXT_X, PDNA_SIDECAR_TEXT_MAXW);
+  PF(PDNA_XFERMERGE_TITLE_DOWN,    PDNA_SIDECAR_TEXT_X, PDNA_SIDECAR_TEXT_MAXW);
+  /* Label rows draw in TEXT_MAXW - 40 (room for the cursor glyph + right-aligned
+   * KEEP/TAKE, decision 6's own geometry). */
+  PF(PDNA_XFERMERGE_ROW_SPECIES,   PDNA_SIDECAR_TEXT_X + 8, PDNA_SIDECAR_TEXT_MAXW - 40);
+  { char row[48]; snprintf(row, sizeof row, PDNA_XFERMERGE_ROW_LEVEL_FMT, 100u, 100u);
+    chk("ptext_fit", PDNA_SIDECAR_TEXT_X + 8, PDNA_SIDECAR_TEXT_MAXW - 40, pwidth(row), row); }
+  PF(PDNA_XFERMERGE_ROW_MOVES,     PDNA_SIDECAR_TEXT_X + 8, PDNA_SIDECAR_TEXT_MAXW - 40);
+  PF(PDNA_XFERMERGE_ROW_NICK,      PDNA_SIDECAR_TEXT_X + 8, PDNA_SIDECAR_TEXT_MAXW - 40);
+  PF(PDNA_XFERMERGE_KEEP,          PDNA_SIDECAR_TEXT_X, PDNA_SIDECAR_TEXT_MAXW);
+  PF(PDNA_XFERMERGE_TAKE,          PDNA_SIDECAR_TEXT_X, PDNA_SIDECAR_TEXT_MAXW);
+  PF(PDNA_XFERMERGE_RO_EVOLVED,    PDNA_SIDECAR_TEXT_X, PDNA_SIDECAR_TEXT_MAXW);
+  PF(PDNA_XFERMERGE_RO_ITEM_DROP,  PDNA_SIDECAR_TEXT_X, PDNA_SIDECAR_TEXT_MAXW);
+  PF(PDNA_XFERMERGE_RO_ITEM_BACK,  PDNA_SIDECAR_TEXT_X, PDNA_SIDECAR_TEXT_MAXW);
+  PF(PDNA_XFERMERGE_RO_RENAME,     PDNA_SIDECAR_TEXT_X, PDNA_SIDECAR_TEXT_MAXW);
+  PF(PDNA_XFERMERGE_RO_MOVE,       PDNA_SIDECAR_TEXT_X, PDNA_SIDECAR_TEXT_MAXW);
+  PF(PDNA_XFERMERGE_HINT_TOGGLE,   PDNA_SIDECAR_TEXT_X, PDNA_SIDECAR_TEXT_MAXW);
+  PF(PDNA_XFERMERGE_HINT_RO,       PDNA_SIDECAR_TEXT_X, PDNA_SIDECAR_TEXT_MAXW);
+  /* Worst-case row count (7, app_xfer_merge_screen's own XFERMERGE_MAX_ROWS/
+   * _Static_assert) clears the panel's own fixed footer -- a host-side pin
+   * alongside the compile-time _Static_assert in pdna_main.c (defense in depth). */
+  chk("merge screen worst-case row block", 0,
+      PDNA_SIDECAR_PANEL_Y + PDNA_SIDECAR_PANEL_H - 24,
+      PDNA_SIDECAR_LINE_Y0 + 7 * PDNA_SIDECAR_LINE_H + PDNA_SIDECAR_EVS_GAP,
+      "merge screen: 7 rows clear the fixed footer at PANEL_Y+PANEL_H-24");
+  PF(PDNA_XFERDUP_TITLE, 28, 184);
+  PF(PDNA_XFERDUP_L1,    28, 184);
+  PF(PDNA_XFERDUP_L2,    28, 184);
+  /* ==== END S150-9 merge screen ================================================ */
 
   /* ==== S5-B Part D: PASTE, source/pdna_gen12.c gb_paste_hook/gb_paste_write ===
    * The empty-cell PASTE row now reuses PDNA_LBL_PASTE_HERE (G1 review BLOCKING-1,
