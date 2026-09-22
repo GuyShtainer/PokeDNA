@@ -3,6 +3,7 @@
 #include <string.h>
 #include "rumble.h"   /* rumble_io_suspend/resume: mute the cart-bus motor toggle while a blit reads ROM */
 #include "ui_font.h"  /* our proportional 5x7 face (generated) — see ui_ptext below */
+#include "ui_ascii.h" /* the UTF-8 collapse shared by pnext() below and the bounded ui_text() (BACKLOG #222) */
 
 void ui_init(void) {
   REG_DISPCNT = DCNT_MODE3 | DCNT_BG2;
@@ -72,17 +73,47 @@ void ui_hline(int x, int y, int w, u16 color) {
   m3_line(x, y, x + w - 1, y, color);
 }
 
+/* BACKLOG #222: libtonc's tte_get_glyph_id (tonc_tte.h:611) has no charCount bound
+ * check, so a raw byte >= 0x80 reaching tte_write's UTF-8 decode reads an out-of-range
+ * glyph cell (garbage tile) instead of failing safely -- confirmed on a live frame
+ * (NIDORAN female's gender-sign glyph in the species picker header). Every ui_text/
+ * ui_text_sel draw now goes through ui_ascii_bound() first, which maps the string
+ * through ui_ascii_next_fixed() (source/ui_ascii.c) into an ASCII-only local buffer, so
+ * tte_write (libtonc's sys8 fixed font) only ever sees bytes < 0x80. This is a
+ * DIFFERENT collapse than pnext() below uses for the proportional font: sys8's glyph
+ * cell 127 is blank (8 bytes of 0x00), so ui_ascii_next_fixed() sends e-acute to '?'
+ * here, while pnext()'s ui_ascii_next() sends it to 127 because ui_font.c's
+ * proportional face DOES carry a real glyph there. 64 bytes covers every literal and
+ * formatted string this app draws through ui_text (the longest source literal is 40
+ * bytes; local siprintf staging buffers feeding ui_text top out at 48; the one 192 B
+ * composed title is itself re-truncated to 29 display columns into a 128 B buffer
+ * BEFORE reaching ui_text -- see pdna_main.c's cwdc -- so 64 still clamps it, never
+ * corrupts it) with headroom; longer input truncates cleanly (ui_ascii_bound never
+ * cuts a multi-byte sequence in half and always NUL-terminates -- see
+ * tests/host_ui_ascii_test.c).
+ *
+ * Cost: one extra stack buffer + a linear byte copy per draw, no heap, no growth of the
+ * function's own local footprint beyond the 64 B array (STACK ok — see the gate's
+ * before/after numbers in the lane report; this file is not on the Settings ->
+ * register-ROM chain that sets the deepest stack budget, so a local buffer here does
+ * not move that chain's total). */
+#define UI_TEXT_BOUND 64
+
 void ui_text(int x, int y, u16 ink, const char* s) {
+  char buf[UI_TEXT_BOUND];
+  (void)ui_ascii_bound(buf, sizeof buf, s);
   tte_set_ink(ink);
   tte_set_pos(x, y);
-  tte_write(s);
+  tte_write(buf);
 }
 
 void ui_text_sel(int x, int y, int w, bool selected, u16 ink, const char* s) {
+  char buf[UI_TEXT_BOUND];
+  (void)ui_ascii_bound(buf, sizeof buf, s);
   if (selected) m3_rect(x, y, x + w, y + UI_ROW_H, UI_SEL);
   tte_set_ink(selected ? UI_SELTEXT : ink);
   tte_set_pos(x + 1, y);
-  tte_write(s);
+  tte_write(buf);
 }
 
 void ui_icon16(int x, int y, const u16* icon) {
@@ -314,21 +345,12 @@ static inline unsigned pchar(unsigned char c) {
   return (c >= 32 && c <= 127) ? c : (unsigned)'?';
 }
 
-/* Next glyph, advancing `*ps` past the bytes it consumed. The only non-ASCII the data
- * tables contain is 'e'-acute, because the games spell it "POKeMON" with an accent — that
- * arrives as the two-byte UTF-8 sequence C3 A9 and gets the glyph parked at code 127.
- * Any other non-ASCII collapses to '?' with its continuation bytes skipped, so a corrupt
- * string can never desynchronise the walk. */
+/* Next glyph, advancing `*ps` past the bytes it consumed. BACKLOG #222: this walk moved
+ * to source/ui_ascii.c (ui_ascii_next, pure C, no tonc headers) so the exact same
+ * collapse also backs the bounded ui_text()/ui_text_sel() above -- one definition, not
+ * two that could drift. See ui_ascii.h for the full contract. */
 static unsigned pnext(const char** ps) {
-  const unsigned char* p = (const unsigned char*)*ps;
-  unsigned c = *p++;
-  if (c == 0xC3u && *p == 0xA9u) { c = 127u; p++; }
-  else if (c >= 0x80u) {
-    while ((*p & 0xC0u) == 0x80u) p++;
-    c = (unsigned)'?';
-  }
-  *ps = (const char*)p;
-  return c;
+  return ui_ascii_next(ps);
 }
 
 int ui_ptext_w(const char* s) {
