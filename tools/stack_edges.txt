@@ -1401,6 +1401,21 @@ addrtaken-ok __aeabi_idiv0        # libgcc: division-by-zero trap, taken by the 
 addrtaken-ok __boot_method        # crt0: multiboot/cart boot-method DATA byte, not a function -- see the D5 note above
 addrtaken-ok __do_global_dtors_aux # crtstuff: static-destructor runner, taken via .fini_array
 addrtaken-ok __libc_init_array    # newlib crt: constructor runner, taken by crt0/_start
+addrtaken-ok g1e_set_otname layout-fragile  # 2026-09-22 (the s150-10-13 merge onto ada7449): the walker FATALed
+                                  # "ADDRESS-TAKEN, UNREACHED, UNDECLARED: g1e_set_otname frame 8" on the
+                                  # merged artless image only. Evidence (objcopy -O binary + a raw aligned
+                                  # 4-byte scan, Thumb bit masked): exactly TWO hits, 0x0801e040 inside
+                                  # gen3_find_section and 0x0801eb9c inside gen3_parse_into, both the
+                                  # literal `.word 0x08012025` = G3_SIGNATURE (source/gen3_save.h:27, the
+                                  # Gen-3 save-section footer magic), NOT a function pointer -- the merge
+                                  # shifted .text so g1e_set_otname (gen1_write.c:281) linked at exactly
+                                  # 0x08012024 and its Thumb address equals that constant. g1e_set_otname
+                                  # is called by nobody in the tree (grep: only its definition and
+                                  # prototype; objdump: zero `bl <g1e_set_otname>`), so it is unreached by
+                                  # construction. Same coincidence class as gen1_encode_name below; the
+                                  # constant is fixed and .text keeps moving, so this can land on ANY
+                                  # function near 0x08012024 on a future rebuild -- re-derive with
+                                  # `nm -Sn <elf> | grep <fn>` + `objdump -d <elf> | grep 0x08012025`.
 # Kept on purpose because the address coincidence comes and goes with the link layout;
 # the walker does not nag about it; drop the layout-fragile qualifier to be reminded again.
 addrtaken-ok gen1_encode_name layout-fragile  # BACKLOG #148/#152 (review-opus fix pass corrected this entry's own
