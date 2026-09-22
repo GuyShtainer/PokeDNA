@@ -50,7 +50,10 @@ int g3gb_moves_fill(GbEditMon* out, const uint8_t bad4[4], const uint8_t learn4[
   }
   for (int i = 0; i < 4; i++) {
     if (!bad4[i] || !fill4[i]) continue;
-    gb_set_move(out, i, fill4[i]);            /* fresh base PP, 0 PP-Ups */
+    /* Cannot fail (rule 7 -- checked, not silently ignored): fill4[i] only ever holds
+     * a `cand` already screened `cand <= bound` above, and i is one of this loop's own
+     * fixed 0..3 indices -- gb_set_move's only two refusal conditions. */
+    (void)gb_set_move(out, i, fill4[i]);      /* fresh base PP, 0 PP-Ups */
   }
   g3gb_moves_pack(out);
   return filled;
@@ -65,10 +68,13 @@ bool g3gb_moves_pack(GbEditMon* e) {
     if (!mv) continue;
     if (src != dst) {
       uint8_t pp = gb_get_pp(e, src), ups = gb_get_ppup(e, src);
-      gb_set_move(e, dst, mv);
+      /* Cannot fail: `mv` was just read back via gb_get_move from a slot that already
+       * held it (never invents a move), and dst/src are this loop's own bounded 0..3
+       * indices -- gb_set_move's only two refusal conditions. */
+      (void)gb_set_move(e, dst, mv);
       gb_set_ppup(e, dst, ups);
       gb_set_pp(e, dst, pp);
-      gb_set_move(e, src, 0);
+      (void)gb_set_move(e, src, 0);            /* 0 is never > any gb_max_move() bound */
       moved = true;
     }
     dst++;

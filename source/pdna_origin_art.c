@@ -49,7 +49,7 @@
  *   Gen 1 = the DMG's olive-green LCD;  Gen 2 = a Game Boy Color berry/violet;
  *   unproven = a neutral Game Boy grey that is neither of them, so an unproven era is
  *   never BRANDED as one. */
-#define COL_GEN1  ((uint16_t)(11u | (21u << 5) | (9u  << 10)))   /* 0x25CB */
+#define COL_GEN1  ((uint16_t)(11u | (21u << 5) | (9u  << 10)))   /* 0x26AB */
 #define COL_GEN2  ((uint16_t)(21u | (10u << 5) | (25u << 10)))   /* 0x6555 */
 #define COL_GBQ   ((uint16_t)(17u | (17u << 5) | (17u << 10)))   /* 0x4631 */
 
