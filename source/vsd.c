@@ -106,7 +106,15 @@ bool vsd_xfer(uint32_t op, uint32_t sector, uint32_t addr, uint32_t count) {
       }
     }
   }
-  return s_vsd.status == VSD_ST_OK;
+  bool ok = (s_vsd.status == VSD_ST_OK);
+  /* Mailbox goes idle once served -- also step A1's own proof-of-return signal: this
+   * write happens ONLY on the loop's normal-exit path (the 16-frame timeout above
+   * returns straight out without reaching here), so a harness watching `op` flip back
+   * to VSD_OP_NONE knows the CPU-side spin loop actually noticed the ack and resumed,
+   * independent of re-reading ack/seq (which stay stable either way). Costs no new
+   * storage: reuses a field already inside the 32-byte mailbox. */
+  s_vsd.op = VSD_OP_NONE;
+  return ok;
 }
 
 #endif /* PDNA_DELTA */
