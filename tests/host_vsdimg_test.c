@@ -71,8 +71,10 @@ static void make_template(void) {
 int main(void) {
   make_template();
 
-  /* --- mkimg: fresh 2 MiB volume + the template tree ------------------------- */
-  CHECK(vsdimg_mkimg(IMG, 2, TMPL_DIR) == 0, "mkimg failed");
+  /* --- mkimg: fresh 16 MiB volume (BACKLOG #179 A3 review D5: the harness's own
+   * default chain-image size -- small enough that a 2 MiB image quietly built FAT12,
+   * which no real SD card is ever formatted as) + the template tree ------------- */
+  CHECK(vsdimg_mkimg(IMG, 16, TMPL_DIR) == 0, "mkimg failed");
 
   /* --- list #1: the template's two files, plus /PokeDNA itself is a dir (not listed) */
   FILE* l1 = fopen("/tmp/host_vsdimg_before.list", "w");
@@ -123,6 +125,12 @@ int main(void) {
     free(raw);
 
     CHECK(f_mount(&fs2, "", 1) == FR_OK, "GBA-side remount failed to mount");
+    /* BACKLOG #179 A3 review D5: pin the shape mkimg's own f_mkfs is meant to
+     * produce -- FAT16 (never FAT12, which no real card ships as) with TWO FATs
+     * (the ubiquitous real-card default; a lone FAT here would mean a corrupted
+     * card silently loses redundancy). */
+    CHECK(fs2.fs_type == FS_FAT16, "expected FS_FAT16, got fs_type=%d", fs2.fs_type);
+    CHECK(fs2.n_fats == 2, "expected 2 FATs, got n_fats=%d", fs2.n_fats);
     DIR d;
     CHECK(f_opendir(&d, "/PokeDNA") == FR_OK, "GBA-side f_opendir /PokeDNA failed");
     int seen = 0;

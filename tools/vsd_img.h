@@ -13,11 +13,15 @@
  * this file with -DVSD_IMG_NO_MAIN and call them directly, without picking up main().
  */
 
-/* f_mkfs a fresh FAT16 volume of `size_mb` MiB, f_mkdir "/PokeDNA", and if
- * `template_dir` is non-NULL, recursively copy its tree in (host path -> image path,
- * 1:1, '/' separators, rooted at the image's "/"). Dumps the resulting volume to
- * `out_path` as a flat 512-byte-sector raw image (no partition table -- disk_ioctl's
- * GET_SECTOR_SIZE is 512, matching FF_MAX_SS). */
+/* f_mkfs a fresh FAT16 volume (two FATs, matching the ubiquitous real-card default)
+ * of `size_mb` MiB, f_mkdir "/PokeDNA", and if `template_dir` is non-NULL, recursively
+ * copy its tree in (host path -> image path, 1:1, '/' separators, rooted at the
+ * image's "/"). Dumps the resulting volume to `out_path` as a flat 512-byte-sector raw
+ * image (no partition table -- disk_ioctl's GET_SECTOR_SIZE is 512, matching
+ * FF_MAX_SS). BACKLOG #179 A3 review D5: a small `size_mb` (roughly < 16) makes f_mkfs
+ * build FAT12 instead -- no real SD card is ever formatted that way, so this REFUSES
+ * (returns nonzero, a message on stderr) unless the mounted result is FS_FAT16; use
+ * >= 16 MiB. */
 int vsdimg_mkimg(const char* out_path, unsigned size_mb, const char* template_dir);
 
 /* Mount `img_path`, walk every regular file under "/", print one "path size crc32"

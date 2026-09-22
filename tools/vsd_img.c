@@ -175,12 +175,25 @@ int vsdimg_mkimg(const char* out_path, unsigned size_mb, const char* template_di
   /* FM_FAT forces FAT12/16 (never FAT32/exFAT) -- FF_FS_EXFAT is on in ffconf.h, but
    * the design (S4.6) says FAT16, and #179's delta build links a FAT12/16-only path
    * today (no exFAT symbols in the shipped ELF). FM_SFD = no partition table, matching
-   * load_image's flat-sector-0-is-the-volume-boot-record assumption above. */
-  MKFS_PARM opt = { FM_FAT | FM_SFD, 1, 1, 0, 0 };
+   * load_image's flat-sector-0-is-the-volume-boot-record assumption above.
+   *
+   * BACKLOG #179 A3 review D5: n_fat=1 (the third field) at a small size_mb quietly
+   * built FAT12, not FAT16 -- a real SD card is never FAT12 (every one Guy owns ships
+   * FAT16 or FAT32), so a small fixture image was testing a filesystem variant the
+   * delta build has never once run against. n_fat=2 (two FATs, the ubiquitous real-
+   * card default) and an explicit post-mount FS_FAT16 check below now make "this
+   * mounted, so it must be a real card's shape" load-bearing instead of assumed. */
+  MKFS_PARM opt = { FM_FAT | FM_SFD, 2, 1, 0, 0 };
   FRESULT fr = f_mkfs("", &opt, s_work, sizeof s_work);
   if (fr != FR_OK) { fprintf(stderr, "vsd_img: f_mkfs failed (fr=%d)\n", fr); return 1; }
   fr = f_mount(&s_fs, "", 1);
   if (fr != FR_OK) { fprintf(stderr, "vsd_img: f_mount failed (fr=%d)\n", fr); return 1; }
+  if (s_fs.fs_type != FS_FAT16) {
+    fprintf(stderr, "vsd_img: mkimg built fs_type=%d, not FAT16 -- use >= 16 MiB "
+                     "(a real card is never FAT12)\n", s_fs.fs_type);
+    f_mount(0, "", 0);
+    return 1;
+  }
 
   fr = f_mkdir("/PokeDNA");
   if (fr != FR_OK && fr != FR_EXIST) {
