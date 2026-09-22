@@ -743,6 +743,98 @@ static void test_name_glyph_loss_synthetic(void) {
           "gender sign crossing the 2->1 bridge -- Gen 1 genuinely stores 0xEF, so once "
           "the Gen-3 intermediate decodes 0xB5 correctly the round trip is lossless");
   }
+
+  /* (d) BACKLOG #216b: a Gen-2 nickname carrying an umlaut (Ü, U+00DC) bridged DOWN to
+   * Gen 1 -- Gen 1 has no umlaut code point at all (pokered's charmap.asm has none),
+   * so this must raise nick_lossy, the same shape as (b)'s "MN" ligature case above,
+   * not silently transliterate or drop the glyph. */
+  {
+    uint8_t cell[80];
+    GbEditMon m; memset(&m, 0, sizeof m);
+    m.gen = GB_GEN2;
+    gb_set_species(&m, 25, NULL);
+    gb_set_level(&m, 20);
+    gb_set_dv(&m, GB_ATK, 12); gb_set_dv(&m, GB_DEF, 12);
+    gb_set_dv(&m, GB_SPE, 12); gb_set_dv(&m, GB_SPC, 12);
+    gb_set_move(&m, 0, 33);
+    gb_set_otid(&m, 12345);
+    CHECK(gb_set_otname(&m, "GUY"), "umlaut fixture: OT name sets");
+    CHECK(gb_set_nickname(&m, "M\xC3\x9CLLER"), "umlaut fixture: nickname (M\xC3\x9CLLER) sets");
+    int rc = bc_pack(&m, 0, 0, 0, 972u, cell);
+    CHECK(rc == 0, "umlaut fixture: bc_pack succeeds");
+    if (rc != 0) return;
+
+    int tc; uint16_t tc_bad; Gb12Result g12; G3GbStatus g3gb;
+    GbEditMon out; Gen3ToGbLoss loss; Gb12Notes notes;
+    uint16_t from4[4]; uint8_t bad4[4]; int nbad;
+    bdc_convert_gb_core(cell, GB_GEN1, false, &base, &tc, &tc_bad, &g12, &g3gb, &out, &loss,
+                        &notes, from4, bad4, &nbad);
+    CHECK(tc == 0 && g12 == GB12_OK && g3gb == G3GB_OK,
+          "umlaut fixture: 2->1 bridge converts (tc=%d g12=%s g3gb=%s)",
+          tc, gen12_reason_text(g12), g3gb_status_text(g3gb));
+    CHECK(notes.nick_lossy,
+          "BACKLOG #216b: notes.nick_lossy fires for a nickname carrying U-umlaut "
+          "crossing the 2->1 bridge -- Gen 1 has no umlaut code point at all");
+    CHECK(!notes.otname_lossy, "BACKLOG #216b: the OT name ('GUY', plain ASCII) stays clean");
+  }
+}
+
+/* ============================================================================ */
+/* E2. BACKLOG #216b: a Gen-2 "CAF\xC3\xA9" / "M\xC3\x9CLLER" bridged UP to Gen 3   */
+/* (through bc_view()/gen12_convert(), the SAME hop test_roundtrip_2_3_2 exercises) */
+/* and back DOWN to a fresh Gen-2 record (through gb_set_nickname/gb_set_otname,   */
+/* gb_edit.c's own canonical, unchanged encoder) must be byte-identical, both ways. */
+/* ============================================================================ */
+static void test_cafe_umlaut_bridge_2_3_2(void) {
+  uint8_t cell[80];
+  GbEditMon m; memset(&m, 0, sizeof m);
+  m.gen = GB_GEN2;
+  gb_set_species(&m, 25, NULL);
+  gb_set_level(&m, 20);
+  gb_set_dv(&m, GB_ATK, 12); gb_set_dv(&m, GB_DEF, 12);
+  gb_set_dv(&m, GB_SPE, 12); gb_set_dv(&m, GB_SPC, 12);
+  gb_set_move(&m, 0, 33);
+  gb_set_otid(&m, 12345);
+  CHECK(gb_set_otname(&m, "M\xC3\x9CLLER"), "cafe/muller fixture: OT name (M\xC3\x9CLLER) sets");
+  CHECK(gb_set_nickname(&m, "CAF\xC3\xA9"), "cafe/muller fixture: nickname (CAF\xC3\xA9) sets");
+  int rc = bc_pack(&m, 0, 0, 0, 973u, cell);
+  CHECK(rc == 0, "cafe/muller fixture: bc_pack succeeds");
+  if (rc != 0) return;
+
+  GbEditMon orig; BcMeta origmeta;
+  CHECK(bc_unpack(cell, &orig, &origmeta), "cafe/muller fixture: cell unpacks");
+
+  /* UP: bc_view() (gen2_save.c's g2_decode_text -- BACKLOG #216b's decoder fix) then
+   * gen12_convert() (gen3_edit.c's encode_name -- BACKLOG #216b's encoder fix). */
+  uint8_t out80[80]; GbEditMon written; Gb12Notes notes; uint16_t g3item;
+  Gb12Result r = bdc_convert_gen3_core(cell, 3, out80, &written, &notes, &g3item);
+  CHECK(r == GB12_OK, "cafe/muller fixture: 2->3 bridge converts (got %s)", gen12_reason_text(r));
+  if (r != GB12_OK) return;
+  CHECK(!notes.nick_lossy, "BACKLOG #216b: notes.nick_lossy is false -- CAF\xC3\xA9 round-trips into Gen 3");
+  CHECK(!notes.otname_lossy, "BACKLOG #216b: notes.otname_lossy is false -- M\xC3\x9CLLER round-trips into Gen 3");
+
+  /* Decode the Gen-3 record's own bytes (gen3_mon.c's decode_name -- BACKLOG #216b's
+   * third fix) and require the EXACT same UTF-8 spelling the source cell held. */
+  char g3_nick[32], g3_ot[32];
+  gen3_decode_name(g3_nick, sizeof g3_nick, out80 + 0x08, 10);
+  gen3_decode_name(g3_ot, sizeof g3_ot, out80 + 0x14, 7);
+  CHECK(strcmp(g3_nick, "CAF\xC3\xA9") == 0,
+        "BACKLOG #216b: the Gen-3 nickname decodes to CAF\xC3\xA9 exactly (got %s)", g3_nick);
+  CHECK(strcmp(g3_ot, "M\xC3\x9CLLER") == 0,
+        "BACKLOG #216b: the Gen-3 OT name decodes to M\xC3\x9CLLER exactly (got %s)", g3_ot);
+
+  /* DOWN: re-encode that SAME decoded text into a fresh Gen-2 record through
+   * gb_edit.c's gb_set_nickname/gb_set_otname (the canonical, unchanged encoder this
+   * lane did not touch) and require the raw bytes to equal the ORIGINAL cell's raw
+   * bytes -- "bridged to Gen 3 and back must be byte-identical". */
+  GbEditMon back; memset(&back, 0, sizeof back);
+  back.gen = GB_GEN2;
+  CHECK(gb_set_nickname(&back, g3_nick), "cafe/muller fixture: the decoded nickname re-encodes into Gen 2");
+  CHECK(gb_set_otname(&back, g3_ot), "cafe/muller fixture: the decoded OT name re-encodes into Gen 2");
+  CHECK(memcmp(back.nick, orig.nick, GB_NAME_BYTES) == 0,
+        "BACKLOG #216b: the nickname's raw GB bytes are byte-identical after the 2->3->2 round trip");
+  CHECK(memcmp(back.otname, orig.otname, GB_NAME_BYTES) == 0,
+        "BACKLOG #216b: the OT name's raw GB bytes are byte-identical after the 2->3->2 round trip");
 }
 
 /* ============================================================================ */
@@ -1030,6 +1122,7 @@ int main(void) {
   test_bridge_roundtrips();  printf("  (E) round trip 1<->2 bridge  ok\n");
   test_bridge_real_corpus_2_to_1(); printf("  (E2) real 2->1 corpus bridge ok\n");
   test_name_glyph_loss_synthetic(); printf("  (E3) BACKLOG #177 name-glyph loss ok\n");
+  test_cafe_umlaut_bridge_2_3_2(); printf("  (E2b) BACKLOG #216b cafe/muller 2->3->2 ok\n");
   test_time_capsule_refusal();printf("  (F) time-capsule refusal     ok\n");
   test_bridge_corpus_no_move_refusal(); printf("  (F2) BACKLOG #212 corpus, no whole-record move refusal ok\n");
   test_caller_zero_move_refusal_two_bad(); printf("  (F2b) review D1, 2-bad-move zero-move refusal ok\n");
