@@ -1018,21 +1018,12 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XFER_NATIVE_L1    "This Game Boy Pokemon can"
 #define PDNA_XFER_NATIVE_L2    "only move inside the Bank."
 
-/* BACKLOG #150 S150-8b review F3: the RESTORE edge's own confirm, shown via the
- * shared app_confirm() ONLY when the merge would actually lose or change something
- * (a Gen-3-side evolution, level, move, rename/rename-refusal, a per-slot move
- * refusal, or a Gen-3 held item that cannot travel back onto a native cell) --
- * decision 6's own rule: a byte-identical restore stays silent. */
+/* BACKLOG #150 S150-9 decision 6/13: app_xferrestore_confirm (S150-8b review F3/D6)
+ * is DELETED this commit -- its only call site (pc_bank_restore_up) now shows the
+ * shared app_xfer_merge_screen. PDNA_XFERRESTORE_L_LOSS/L_EVOLVED/A_OK were that
+ * screen's own (never reused) and are deleted with it. PDNA_XFERRESTORE_TITLE
+ * STAYS: it is reused verbatim as PDNA_XFERMERGE_TITLE_DOWN (decision 13). */
 #define PDNA_XFERRESTORE_TITLE  "BACK TO ITS ORIGINAL"
-#define PDNA_XFERRESTORE_L_LOSS "Gen 3 only data is dropped."
-/* review D6, UX parity with the Gen-3 sidecar twin (docs/BANK-CROSSGEN-DESIGN.md
- * decision 6/9): the per-row confirm reuses PDNA_SIDECAR_L_LEVEL/L_MOVES/L_RENAMED/
- * L_RENAME_REFUSED/L_ITEM_IGNORED (:958-962) UNCHANGED and PDNA_SIDECAR_B_CANCEL
- * (:965) unchanged; only the title, the evolved row and the A-line are direction-
- * specific (species goes the OPPOSITE way here -- reported, never applied, decision
- * 10 -- so the wording says so). */
-#define PDNA_XFERRESTORE_L_EVOLVED "It evolved in Gen 3."
-#define PDNA_XFERRESTORE_A_OK      "A = restore"
 
 /* BACKLOG #150 S150-9 decision 6/13: the shared per-field MERGE screen
  * (app_xfer_merge_screen, pdna_main.c) -- replaces app_sidecar_confirm (this commit)

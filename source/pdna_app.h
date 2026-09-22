@@ -467,18 +467,9 @@ bool app_set_walda(uint8_t pattern);
 /* Shared framed yes/no confirm (A = yes, B = no). */
 bool app_confirm(const char* title, const char* l1);
 
-/* BACKLOG #150 S150-8b review D6, UX parity with the Gen-3 sidecar confirm twin
- * (app_sidecar_confirm, pdna_main.c, static): per-row lines for a RESTORE's own
- * XrMergeReport (source/xfer_rec.h) -- level/moves/renamed/rename_refused/
- * gb_item_ignored rows reuse the shipped sidecar strings unchanged; the evolved row
- * and the A-line use the direction-specific PDNA_XFERRESTORE_* strings (decision 10:
- * species is reported here, never applied). A generic "Gen 3 only data is dropped."
- * fallback row is shown when the confirm was triggered by something with no row of
- * its own (a per-slot move refusal, a missing nickname baseline, or a Gen-3-side
- * item loss, review D2) and every named row above is false. Never called for a
- * byte-identical restore (decision 6's own rule; the caller only shows this when at
- * least one field is true). true = A (restore), false = B (cancel, nothing written). */
-bool app_xferrestore_confirm(const XrMergeReport* rep, bool g3_item_lost);
+/* app_xferrestore_confirm (S150-8b review D6) is DELETED -- BACKLOG #150 S150-9
+ * decision 6/13: its only call site (pdna_box.c's pc_bank_restore_up) now calls
+ * app_xfer_merge_screen below. */
 
 /* BACKLOG #150 S150-9 decision 6: the per-field merge screen (pdna_main.c), shared by
  * both directions. XR_MERGE_UP (Gen-3 home, PASTE: species/level/moves/nick toggles +

@@ -55,7 +55,9 @@ _Static_assert(BOXSCOPE_BANK == 1, "source/xfer_gate.c's XG_SCOPE_BANK hard-code
 #include "xfer_rec.h"       /* xr_key_g3 */
 #include "bank_restore.h"   /* bank_restore_from_entry */
 #include "savefile.h"       /* SfStatus, sf_write_verified, sf_status_str */
-#include "item_map_g2g3.h"  /* item_g2_to_g3 -- review D2's item-loss comparison */
+/* item_map_g2g3.h's item_g2_to_g3 moved into xfer_rec.c's xr_merge_down_sel
+ * (BACKLOG #150 S150-9 decision 5 -- the g3_item probe that used to live here is
+ * now rep->abroad_item_dropped); no longer needed in this file. */
 
 #define COLS 6
 #define ROWS 5
@@ -1242,43 +1244,55 @@ pc_bank_restore_up(const uint8_t g3_rec80[80], uint8_t out_cell80[80]) {
   }
   if (best < 0) return 0;                     /* only Gen-3-home entries (or none) -- already exact */
 
-  /* review F3: a confirm BEFORE committing to a lossy restore -- without this,
-   * a Gen-3 held item is dropped silently (a native cell has no item slot: G-H7)
-   * and an evolution that happened abroad silently devolves back to what left.
-   * decision 6's own rule stands: a byte-identical restore (every field below
-   * false) stays completely silent, no dialog at all. B here refuses the WHOLE
-   * drop -- nothing written, the serial below is never even allocated. */
+  /* S150-9 decision 8: the state branch runs BEFORE the screen -- a RESTORED or
+   * PENDING entry is refused outright, never even probed for a report (§3.2's
+   * order; check (o) pins "state refusals precede app_xfer_merge_screen"). */
+  if (e.state == XR_STATE_RESTORED) {
+    log_line("bank: restore: entry already RESTORED -- refusing a second restore");
+    boxoam_suspend();
+    snd_deny();
+    msg_wait(PDNA_XFERDUP_TITLE, UI_WARN, PDNA_XFERDUP_L1, PDNA_XFERDUP_L2);
+    boxoam_resume();
+    return -2;   /* review D3's convention: a declined/refused restore, not a genuine failure */
+  }
+  if (e.state == XR_STATE_PENDING) {
+    log_line("bank: restore: entry still PENDING -- the Bank slot is not proven yet");
+    boxoam_suspend();
+    snd_deny();
+    msg_wait(PDNA_XFER_SAVEFIRST_TITLE, UI_WARN, PDNA_XFER_SAVEFIRST_L1, PDNA_XFER_SAVEFIRST_L2);
+    boxoam_resume();
+    return -2;
+  }
+  if (e.state == XR_STATE_NONE) {
+    /* A pre-state-byte entry cannot exist for a NATIVE_HOME kind -- xfer_down_write
+     * always stamps PENDING (decision 8's own note). Treat as CLAIMED and restore. */
+    log_line("restore: native-home entry with state NONE");
+  }
+
+  /* decision 6/7: probe with accept=0 (nothing applied, the report alone) to decide
+   * whether the screen needs to show at all -- decision 7's own rule: XR_MERGE_DOWN
+   * draws only when at least one row exists (app_xfer_merge_screen returns true with
+   * *accept=0 itself when there is nothing to say, so a byte-identical restore stays
+   * silent exactly as it did before this commit). */
   GbEditMon probe;
   XrMergeReport rep;
-  if (!xr_merge_down(&e, g3_rec80, &probe, &rep)) {
-    log_line("bank: restore: xr_merge_down probe failed");
+  if (!xr_merge_down_sel(&e, g3_rec80, 0, &probe, &rep)) {
+    log_line("bank: restore: xr_merge_down_sel probe failed");
     return -1;
   }
-  PkMon pm;
-  /* review D2: only a GEN-3-SIDE item is actually lost -- an item holder restored
-   * UNCHANGED (the Gen-3 item still equals what the native cell's own held item maps
-   * to) must stay silent; comparing against the mapped native item, not bare
-   * "heldItem != 0", is what tells the two apart. */
-  bool g3_item = pk_decode_mon(g3_rec80, false, &pm) && pm.heldItem != 0 &&
-                 pm.heldItem != item_g2_to_g3(gb_get_held_item(&probe));
-  if (rep.evolved || rep.level_changed || rep.moves_changed || rep.renamed || rep.rename_refused ||
-      rep.move_refused[0] || rep.move_refused[1] || rep.move_refused[2] || rep.move_refused[3] ||
-      g3_item) {
-    boxoam_suspend();
-    bool confirmed = app_xferrestore_confirm(&rep, g3_item);   /* review D6: the per-row twin, UX parity */
-    boxoam_resume();
-    if (!confirmed) return -2;   /* review D3: B, user declined -- distinct from a genuine failure */
-  }
+
+  boxoam_suspend();
+  uint8_t accept = 0;
+  bool confirmed = app_xfer_merge_screen(&rep, XR_MERGE_DOWN, &accept);
+  boxoam_resume();
+  if (!confirmed) return -2;   /* review D3: B, user declined -- distinct from a genuine failure */
 
   uint32_t serial = pdna_bank_next_serial();
   if (serial == 0) {
     log_line("bank: restore: bank_serial allocation failed");
     return -1;
   }
-  /* S150-9 decision 3: bank_restore_from_entry() now takes the accept mask; this call
-   * site passes XR_ACCEPT_ALL for now (step 1/2's minimal compile fix) -- step 4
-   * replaces this whole block with the per-field merge screen (decisions 6/7/8). */
-  int rc = bank_restore_from_entry(&e, g3_rec80, XR_ACCEPT_ALL, serial, out_cell80, NULL);
+  int rc = bank_restore_from_entry(&e, g3_rec80, accept, serial, out_cell80, NULL);
   if (rc != 1) { log_line("bank: restore: bank_restore_from_entry rc=%d", rc); return -1; }
   return 1;
 }
@@ -1318,6 +1332,14 @@ pc_bank_restore_done(const uint8_t g3_rec80[80]) {
 
   GbscEntry e;
   if (!gbsc_get(buf, len, best, &e)) { log_line("bank: restore done: gbsc_get failed"); return; }
+  /* S150-9 decision 8: mark RESTORED only an entry that is CLAIMED/NONE -- a
+   * RESTORED entry re-resolved here (defensive; pc_bank_restore_up's own state
+   * branch already refuses this case before the write) is left alone, never
+   * re-marked, never a second time. */
+  if (e.state == XR_STATE_RESTORED) {
+    log_line("bank: restore done: entry already RESTORED -- left alone");
+    return;
+  }
   e.state = XR_STATE_RESTORED;
   if (gbsc_remove(buf, &len, best) != 0) { log_line("bank: restore done: remove failed"); return; }
   if (gbsc_add(buf, &len, GBSC_FILE_MAX, &e) < 0) { log_line("bank: restore done: re-add failed"); return; }

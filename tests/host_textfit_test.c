@@ -961,12 +961,13 @@ int main(void) {
   PF(PDNA_XFER_NATIVE_TITLE, 28, 184);
   PF(PDNA_XFER_NATIVE_L1,    28, 184);
   PF(PDNA_XFER_NATIVE_L2,    28, 184);
-  /* BACKLOG #150 S150-8b review F3: the RESTORE edge's own confirm. */
-  PF(PDNA_XFERRESTORE_TITLE,  28, 184);
-  PF(PDNA_XFERRESTORE_L_LOSS, 28, 184);
-  /* review D6: the per-row confirm's own two remaining new strings. */
-  PF(PDNA_XFERRESTORE_L_EVOLVED, 28, 184);
-  PF(PDNA_XFERRESTORE_A_OK,      28, 184);
+  /* BACKLOG #150 S150-9 decision 6/13: app_xferrestore_confirm is DELETED this
+   * commit (its only call site, pc_bank_restore_up, now calls the shared
+   * app_xfer_merge_screen) -- PDNA_XFERRESTORE_L_LOSS/L_EVOLVED/A_OK were its own
+   * (never reused) and are deleted with it. PDNA_XFERRESTORE_TITLE STAYS: it is
+   * reused verbatim as PDNA_XFERMERGE_TITLE_DOWN (already measured above, decision
+   * 13's own "reuse" note), so a bare PF() here would double-measure it -- covered
+   * by the PDNA_XFERMERGE_TITLE_DOWN row instead. */
   /* BACKLOG #150 S150-8b review F5: the "unreadable record" refusal message. */
   PF(PDNA_XFERREC_TITLE,      28, 184);
   PF(PDNA_XFERREC_L1,         28, 184);

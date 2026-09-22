@@ -9,6 +9,7 @@
  *      source/gb_edit.c source/gen1_save.c source/gen1_write.c source/gen2_save.c \
  *      source/gen2_write.c source/gen3_edit.c source/gen3_mon.c source/gen3_box.c \
  *      source/gen3_save.c source/gen3_daycare.c source/data_tables.c \
+ *      source/item_map_g2g3.c \
  *      source/savefile.c source/log.c lib/fatfs/ff.c lib/fatfs/ffunicode.c \
  *      tests/hostfat/ramdisk.c -o /tmp/hxio && /tmp/hxio
  *

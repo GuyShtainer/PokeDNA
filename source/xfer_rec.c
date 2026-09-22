@@ -6,6 +6,7 @@
 #include "gen3_box.h"     /* pk_resolve                                              */
 #include "data_tables.h"  /* pk_national_no                                          */
 #include "gen3_save.h"    /* gen3_decode_char -- review F4's unmappable-glyph guard  */
+#include "item_map_g2g3.h" /* item_g2_to_g3 -- S150-9 decision 5's abroad_item_dropped */
 
 /* Same constants gb_sidecar.c's gbsc_key() uses (source/gb_sidecar.h:68-70). */
 uint64_t xr_key_g3(const uint8_t rec80[80]) {
@@ -167,6 +168,14 @@ bool xr_merge_down_sel(const GbscEntry* e, const uint8_t g3_rec80[80], uint8_t a
    * confirm screen's shipped string just needs to say so (G-H7). Not gated by
    * `accept` -- there is nothing to apply, only to report. */
   rep->gb_item_ignored = (home.gen == GB_GEN2) && gb_get_held_item(&home) != 0;
+
+  /* S150-9 decision 5: folds pdna_box.c's own out-of-band g3_item probe into the
+   * report -- only a GEN-3-SIDE item is actually lost (an item holder restored
+   * UNCHANGED, i.e. the Gen-3 item still equals what the native cell's own held
+   * item maps to, must read as unchanged, never as a loss). Not gated by `accept`
+   * -- a native cell has no item slot to receive it either way (G-H7). */
+  uint16_t mapped_item = item_g2_to_g3(gb_get_held_item(&home));
+  rep->abroad_item_dropped = (m.heldItem != 0 && m.heldItem != mapped_item);
 
   return true;
 }
