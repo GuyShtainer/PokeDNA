@@ -381,7 +381,7 @@ def arrival_never_saves_check(pdna_box_body: list[str]) -> tuple[bool, list[str]
     """BACKLOG #142: exactly one `st == 1 && !s_holding` site must exist in
     pdna_box()'s own body, and none of its matching lines may carry the
     `is_bank ? 2 : 1` ternary that sends an is_bank arrival to the SAVE tab.
-    Shared by the real check (l) and its self-mutation demonstration (MUT S)."""
+    Shared by the real check (am) and its self-mutation demonstration (MUT S)."""
     sites = [ln for ln in pdna_box_body if ARRIVAL_ST1_RE.search(ln)]
     bad = [ln for ln in sites if SAVE_TAB_TERNARY_RE.search(ln)]
     return (len(sites) == 1 and not bad), sites
@@ -1215,9 +1215,13 @@ def main() -> int:
     ok, details = bank_edge_sites_check(block)
     check(ok, "BACKLOG #171: " + "; ".join(d for d in details if "missing" in d))
 
-    # ---- (l) BACKLOG #142: the entry-time (non-carrying) `st == 1` arrival site
+    # ---- (am) BACKLOG #142: the entry-time (non-carrying) `st == 1` arrival site
     # never sends an is_bank source to the SAVE tab -- see ARRIVAL_ST1_RE's own
-    # comment above for why is_bank at this site always means a Game Boy session. ----
+    # comment above for why is_bank at this site always means a Game Boy session.
+    # Re-lettered from a duplicate (l) (BACKLOG #214 item 4 -- (l) already named the
+    # RESTORE-edge-ordering block above; "am" is the next label this scheme has never
+    # used at all, not one of the retired (ae)/(af) letters this file's own history
+    # notes still mention, to avoid any ambiguity with those). ----
     ok, sites = arrival_never_saves_check(pdna_box_body)
     check(ok, f"BACKLOG #142: the st==1 arrival site sends an is_bank source to the "
           f"SAVE tab (expected exactly 1 clean site, found {sites})")

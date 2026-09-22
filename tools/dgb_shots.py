@@ -1977,11 +1977,21 @@ def run_b89_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     # nickname (real, unedited saves) -- do not claim either in THIS shot's own
     # caption. Both are proven on dedicated poked-.sav shots kept alongside this
     # set (b89_{red,crystal}_08_nick.png, b89_crystal_09_shiny.png), not implied here.
+    # BACKLOG #214 item 2: this row list is gbscr_text() -- the ROM's OWN composited
+    # tile font (source/pdna_gbhof.c's hof_card_paint_detail(), no source/ui_font.c/
+    # tonc sys8 involved) -- previously OUT of gb_claims.py's scope (b184 reverted
+    # this exact class of retrofit, see that lane's own comment on run_b89_hof/03_menu
+    # below). gb_claims.check_gb()/find_gb() now read the ROM this Session actually
+    # booted from (Session._gb_rom_file(), extracted from THIS image's own fused GB
+    # ROM entry) -- the first species row of each corpus save's real HoF team,
+    # per-game since Red's and Crystal's own corpus teams differ.
+    claim_species = {"red": "MEWTWO", "crystal": "TYPHLOSION"}[which]
     s.shot("02_detail", "BACKLOG #202 F1: the team detail CARD -- 6 mon rows "
                         "(species/level), still inside the SAME open shell (no "
                         "reopen, no rescan cost) -- OT id is dropped from the "
                         "card view (no room for a 3rd row/mon); it stays on the "
-                        "plain fallback page")
+                        "plain fallback page",
+                        claim_gb=claim_species)
     s.tap("B", settle=gb_shots.BIG_SETTLE)                  # detail -> back to the list (same shell)
 
     s.tap("START", settle=gb_shots.BIG_SETTLE)              # the Hall of Fame's own START menu (same shell)
@@ -2193,13 +2203,13 @@ def run_b194_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> g
     # ever replaced, re-verify these two numbers rather than trust them frozen).
     count_after_add = {"red": 10, "crystal": 7}[which]
     count_before_add = count_after_add - 1
-    # BACKLOG #184 retrofit attempted here and REVERTED: same finding as
-    # run_b89_hof's "03_menu" -- this header is hof_card_text_fit() inside the
-    # gbscr card shell (source/pdna_gbhof.c ~:760, "%d teams (life %d)"), the
-    # ROM's own tile font, not source/ui_font.c/tonc's sys8Font. Confirmed by
-    # the SAME live-mGBA [CLAIM FAILED] result run_b89_hof's 03_menu got before
-    # its claim= was reverted -- out of scope for gb_claims.py's v1 (see that
-    # shot's own comment for the full reasoning).
+    # BACKLOG #184 retrofit attempted here and REVERTED, now FIXED by BACKLOG #214
+    # item 2: same finding as run_b89_hof's "03_menu" -- this header is
+    # hof_card_text_fit() inside the gbscr card shell (source/pdna_gbhof.c ~:760,
+    # "%d teams (life %d)"), the ROM's own composited tile font, not
+    # source/ui_font.c/tonc's sys8Font. gb_claims.py's claim_gb= (Session._gb_rom_file()
+    # extracts the embedded ROM out of THIS image) reads that font directly instead --
+    # proven live on this exact frame (the brief's own target proof).
     s.shot("10_add_back_on_list", "BACKLOG #202 A2: dismissed -- back on the "
                                    "LIST card (the SAME shell), now showing "
                                    f"{count_after_add} teams (was {count_before_add}) "
@@ -2208,7 +2218,8 @@ def run_b194_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> g
                                    "in-session (RAM); only the FLASH persist "
                                    "leg of gb_persist() refuses in the "
                                    "emulator build, same as every other GB "
-                                   "screen's own commit")
+                                   "screen's own commit",
+                                   claim_gb=f"{count_after_add} teams")
 
     # ---- DELETE TEAM -----------------------------------------------------------------
     s.tap("START", settle=gb_shots.BIG_SETTLE)                # list -> menu (same shell)
@@ -3846,7 +3857,8 @@ def run_s150_10(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessi
                            "re-moved to SURF/BITE/ROCK TOMB/PROTECT -- "
                            "extract_gen3_record --moves, screenshot-only, no Gen-3 "
                            "session ever opened). BOX1, 20/20 -- no room here, see "
-                           "the R x13 below.")
+                           "the R x13 below.",
+           claim=["20/20"])   # BACKLOG #214 item 3 retrofit
 
     # Re-verified directly against this corpus file (see the docstring above): slot
     # 18 (row 2 col 6), NOT slot 17 -- and settle=150, not 80, or a RIGHT press
@@ -3863,7 +3875,8 @@ def run_s150_10(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessi
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # empty-cell action menu
     s.shot("03_empty_cell_menu", "BACKLOG #150 S150-10: the empty-cell action menu "
                                   "(CREATE / PASTE HERE / CANCEL), cursor on CREATE "
-                                  "(default)")
+                                  "(default)",
+           claim=["CREATE", "PASTE HERE", "CANCEL"])   # BACKLOG #214 item 3 retrofit
 
     s.press_n("DOWN", 1, settle=80)                         # CREATE (default) -> PASTE HERE
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # PASTE HERE -> gb_clip_moves+gen3_to_gb_fixed -> loss screen
@@ -3871,7 +3884,8 @@ def run_s150_10(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessi
                               "unchanged by this lane -- gen3_to_gb_fixed() already "
                               "ran with bad4={0,0,1,0} (only ROCK TOMB out of range "
                               "for Gen 2) and emptied that ONE slot rather than "
-                              "refusing the whole record with G3GB_ERR_MOVE")
+                              "refusing the whole record with G3GB_ERR_MOVE",
+           claim=["WHAT WON'T TRANSFER"])   # BACKLOG #214 item 3 retrofit
 
     # BACKLOG #150 S150-10 own finding, FIXED by BACKLOG #210: this ONE transition
     # also runs the fill step (decision 8 step 7, gb_paste_fill_moves ->
@@ -3903,7 +3917,8 @@ def run_s150_10(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessi
                              "text (nbad > 0 greys this row); 'SELECT = MAKE LEGAL "
                              "(swap moves)' (no level correction alongside this "
                              "paste, so the moves-only wording); 'Either way it "
-                             "comes back unchanged.'; 'B = cancel'")
+                             "comes back unchanged.'; 'B = cancel'",
+           claim=["ROCK TOMB", "SELECT = MAKE LEGAL", "B = cancel"])   # BACKLOG #214 item 3 retrofit
 
     # Decision 7: A is not even in the wait mask once any slot is bad -- this tap
     # must be a genuine no-op, asserted by pixel-equality (allow_same=True), not by
@@ -3939,7 +3954,8 @@ def run_s150_10(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessi
                                "record's fills/pack (decision 8 step 7) are proven "
                                "byte-for-byte by the host tests instead -- "
                                "tests/host_gen3gb_test.c section 7 -- "
-                               "HARDWARE-ONLY proof, not faked here.")
+                               "HARDWARE-ONLY proof, not faked here.",
+           claim=["SIDECAR FOLDER", "Nothing transferred."])   # BACKLOG #214 item 3 retrofit
 
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss -> back to the box grid
     s.shot("08_cell_still_empty_no_corruption", "BACKLOG #150 S150-10: the cell is "
@@ -4743,7 +4759,8 @@ def run_s150_13_carry_badge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb
     s.tap("DOWN", settle=60)                                # Party -> Bank (index 1, one DOWN)
     s.tap("A", settle=150)                                  # -> pdna_bank_show(), box 0 (BANK 1)
     p00 = s.shot("00_box0", "S150-13: box 0, box_load()'s PDNA_DELTA plant -- slot 0 "
-           "CHIKORITA (Gen 2), slot 1 PIKACHU (Gen 1); cursor on slot 0")
+           "CHIKORITA (Gen 2), slot 1 PIKACHU (Gen 1); cursor on slot 0",
+           claim=["CHIKORITA", "No.152"])
     base_gen1 = _count_exact_color(p00, _COL_GEN1_RGB)
     base_gen2 = _count_exact_color(p00, _COL_GEN2_RGB)
     print(f"  (pixel baseline, no carry) gen1-tint={base_gen1} gen2-tint={base_gen2}")
@@ -4788,7 +4805,8 @@ def run_s150_13_carry_badge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb
 
     p03b = s.shot("03b_settled_gen1", "S150-13 review D1: same carry, >= 60 vblanks "
            "later -- pinned by an exact pixel count below (expected pixel-identical "
-           "to 03 when the badge and cursor are both stable)", settle=60, allow_same=True)
+           "to 03 when the badge and cursor are both stable)", settle=60, allow_same=True,
+           claim=["PIKACHU"])
     after_gen1 = _count_exact_color(p03b, _COL_GEN1_RGB)
     delta_gen1 = after_gen1 - base_gen1
     print(f"  (03b) gen1-tint after settle: {after_gen1} (delta {delta_gen1:+d} vs baseline {base_gen1})")
@@ -5101,7 +5119,8 @@ def run_s150_15_view_original(core_mod, image_mod, rom: Path, out_dir: Path) -> 
            "-- the PARITY REFERENCE for 05_original_info_card below. Footer reads "
            "'A edit' (can_edit is TRUE here, S150-14) -- GB ORIGINAL's own entry is "
            "structurally read-only instead (decision 7), so that ONE line is the "
-           "expected, correct difference, not a bug")
+           "expected, correct difference, not a bug",
+           claim=["CHIKORITA", "A edit"])   # BACKLOG #214 item 3 retrofit
     s.tap("B", settle=150)                                   # VIEW -> Bank grid
     s.tap("B", settle=150)                                   # Bank -> PC box view
 
@@ -5129,7 +5148,8 @@ def run_s150_15_view_original(core_mod, image_mod, rom: Path, out_dir: Path) -> 
            "MOVE, COPY, PASTE, DUPLICATE, TO DAY-CARE)",
            claim=["GB ORIGINAL"])  # BACKLOG #221 retrofit
     s.press_n("DOWN", 3, settle=80)
-    s.shot("04_row_selected", "S150-15: DOWN x3 -- GB ORIGINAL highlighted")
+    s.shot("04_row_selected", "S150-15: DOWN x3 -- GB ORIGINAL highlighted",
+           claim=["GB ORIGINAL"])   # BACKLOG #214 item 3 retrofit
     s.tap("A", settle=300)
     s.shot("05_original_info_card", "S150-15: A -- the REAL Gen-1/2 summary opens over "
            "the ledger's original80, chip reads VIEW, GB2 -- compare to 00 above "
@@ -5164,7 +5184,8 @@ def run_s150_15_view_original(core_mod, image_mod, rom: Path, out_dir: Path) -> 
     s.shot("10_control_no_row", "S150-15: A on an ORDINARY box-1 mon (no ledger entry) "
            "-- the same menu family, without GB ORIGINAL (control; not byte-identical "
            "to 03/04 -- this PC (not Bank) mon also carries its own EXPORT .pk row, "
-           "TO GAME/EXPORT's own is_bank branch)")
+           "TO GAME/EXPORT's own is_bank branch)",
+           claim=["MAGNEMITE", "EXPORT .pk"], claim_absent="GB ORIGINAL")   # BACKLOG #214 item 3 retrofit
     s.tap("B", settle=150)
 
     # ---- a Bank Gen-3 cell that is abroad also shows the row ----------------------
@@ -5185,7 +5206,8 @@ def run_s150_15_view_original(core_mod, image_mod, rom: Path, out_dir: Path) -> 
     s.tap("A", settle=250)                                   # A on the Bank-pasted mon -> menu
     s.shot("11_bank_abroad_menu_row", "S150-15: a Bank Gen-3 cell that is abroad "
            "(the pasted CHIKORITA, COPIEd then PASTEd into an empty Bank slot) also "
-           "shows GB ORIGINAL -- decision 1's 'a Bank cell that is abroad' scope")
+           "shows GB ORIGINAL -- decision 1's 'a Bank cell that is abroad' scope",
+           claim=["GB ORIGINAL"])   # BACKLOG #214 item 3 retrofit
     return s
 
 
@@ -5254,19 +5276,28 @@ def run_b190_move_refusal(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
     s.tap("R", settle=SETTLE)                                # SKILLS -> MOVES; fsel 0 == TACKLE
     s.tap("A", settle=250)                                   # opens pick_move(current=TACKLE/33)
     s.shot("00_picker", "BACKLOG #190 repro: pick_move open on slot 0 (current TACKLE) "
-           "-- BACKLOG #189's ceiling header reads \"MOVES 1-165\"")
+           "-- BACKLOG #189's ceiling header reads \"MOVES 1-165\"",
+           claim=["MOVES 1-165"])   # BACKLOG #214 item 3 retrofit
     s.press_n("DOWN", 12, settle=120)                        # id 33 (TACKLE) -> id 45 (GROWL), 12 ids apart
     s.shot("01_on_growl", "cursor moved 12 rows to GROWL (id 45) -- already in this "
            "mon's slot 1, the move that triggers the DUP refusal, not the LATE one "
-           "(BACKLOG #189 makes ids > 165 unreachable from this picker)")
+           "(BACKLOG #189 makes ids > 165 unreachable from this picker)",
+           claim=["PP 40"])   # BACKLOG #214 item 3 retrofit: GROWL's own detail-panel PP
+           # readout, updated by the cursor move this shot's caption claims -- the
+           # highlighted row's own inverse-video "GROWL" text is not a stable claim=
+           # target (find() could not match it at any colour on this exact frame,
+           # unlike every OTHER row's plain text on the same picker -- left for a
+           # future harness-hardening lane, not asserted here without proof)
     s.tap("A", settle=250)                                   # pick GROWL -> gbe_set_move refuses (move_taken)
     s.shot("02_refusal", "ALREADY KNOWN / \"This Pokemon has that move in another "
-           "slot.\" -- gbedit_press's DUP branch, msg_wait()'s own panel")
+           "slot.\" -- gbedit_press's DUP branch, msg_wait()'s own panel",
+           claim=["ALREADY KNOWN"])   # BACKLOG #214 item 3 retrofit
     s.tap("A", settle=250)                                   # dismiss (msg_wait's wait_keys(KEY_A))
     s.shot("03_after_dismiss", "the frame after dismissing the refusal -- BEFORE the "
            "repaint-contract fix this showed BOTH the refusal panel's leftover text AND "
            "the MOVES card redrawn underneath it (the #190 ghost); AFTER the fix this "
-           "is a clean single MOVES-card screen, nothing left over")
+           "is a clean single MOVES-card screen, nothing left over",
+           claim=["BULBASAUR"], claim_absent="ALREADY KNOWN")   # BACKLOG #214 item 3 retrofit
     return s
 
 
@@ -5308,12 +5339,15 @@ def run_b188_resume_cell(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_sh
     SETTLE = 200
     s.tap("A", settle=SETTLE)                                # info screen -> box grid
     s.press_n("L", 11, settle=100)                            # BOX12 (empty) -> BOX1 (20/20), cursor slot 0
-    s.shot("00_box1_cursor0", "box1, cursor on slot 0 (#1 BULBASAUR)")
+    s.shot("00_box1_cursor0", "box1, cursor on slot 0 (#1 BULBASAUR)",
+           claim=["BULBASAUR"])   # BACKLOG #214 item 3 retrofit
     s.press_n("RIGHT", 3, settle=150)
     s.shot("01_cursor_slot3", "cursor moved to slot 3 (#4 CHARMANDER, distinct art -- "
-           "proves the cell, not just the highlight)")
+           "proves the cell, not just the highlight)",
+           claim=["CHARMANDER"])   # BACKLOG #214 item 3 retrofit
     s.tap("A", settle=SETTLE)                                 # mon menu on slot 3 (same invocation)
-    s.shot("02_menu_open", "mon menu opened on slot 3, same pdna_box() invocation")
+    s.shot("02_menu_open", "mon menu opened on slot 3, same pdna_box() invocation",
+           claim=["CHARMANDER"])   # BACKLOG #214 item 3 retrofit
     s.tap("B", settle=250)                                    # close the menu -- SAME invocation
     s.shot("03_same_invocation_back", "(a) B closed the menu, same invocation -- cursor "
            "still slot 3 (CHARMANDER art visible) -- pre-existing behaviour, pinned as "
@@ -5326,7 +5360,10 @@ def run_b188_resume_cell(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_sh
            "picked -- pdna_box() was RE-ENTERED (a genuine new call, cur re-declared "
            "to 0) via the outer loop; BACKLOG #188: the cursor resumes on slot 3 "
            "(CHARMANDER art) instead of resetting to slot 0 (BULBASAUR) the way it did "
-           "before app_box_resume_note/_take existed")
+           "before app_box_resume_note/_take existed",
+           claim=["CHARMANDER"], claim_absent="BULBASAUR")   # BACKLOG #214 item 3 retrofit --
+           # the actual #188 fix frame: mechanically proves the resumed cell, not the
+           # reset-to-slot-0 regression
     return s
 
 
@@ -5502,14 +5539,18 @@ def run_b166(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
     print("== BACKLOG #166: RO_MOVE's lift_why gate -- normal cell unchanged; "
           "refused-lift case not reproducible with this corpus (see docstring) ==")
     boot_to_gb_session(s, rom, which="red")
-    s.shot("00_box_grid", "b166: Red's box grid, freshly entered -- cursor on slot 0")
+    s.shot("00_box_grid", "b166: Red's box grid, freshly entered -- cursor on slot 0",
+           claim=["SLOWBRO"])   # BACKLOG #214 item 3 retrofit
 
     s.tap("A", settle=gb_shots.BIG_SETTLE)
     s.shot("01_normal_cell_menu", "b166: A on slot 0 (a normal, liftable cell) -- "
            "the occupied-cell menu is UNCHANGED by this lane: VIEW/EDIT, LEGALITY, "
            "MOVE TO BOX, COPY, RELEASE, CANCEL, no grey reason line -- lift_why "
            "returned NULL (gbs_can_delete == GBS_OK for this slot, verified above), "
-           "so the row-omission path in app_mon_menu_readonly never triggers here")
+           "so the row-omission path in app_mon_menu_readonly never triggers here",
+           claim=["MOVE TO BOX", "RELEASE"])   # BACKLOG #214 item 3 retrofit -- both rows
+           # this lane's gate could have hidden are mechanically proven still present
+           # on a normal (unrefused) cell
     s.tap("B", settle=100)
     s.shot("02_back_to_grid", "b166: B backs out of the menu, box grid unchanged")
     return s
@@ -8860,17 +8901,20 @@ def run_b187_chain_a(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.
     print("== BACKLOG #187/#192, Chain A: SELECT NORMAL<->MOVE on an empty cell ==")
     boot_to_gb_session(s, rom, which="yellow")
     s.shot("00_box12_normal", "tap0 (boot): box12 (current box, 0/20), cell(0,0) "
-           "empty, NORMAL mode -- footer 'A menu SEL L/R B'")
+           "empty, NORMAL mode -- footer 'A menu SEL L/R B'",
+           claim=["A menu  SEL  L/R  B"])   # BACKLOG #214 item 3 retrofit
     s.tap("SEL", settle=gb_shots.BIG_SETTLE)
     s.shot("01_select_to_move", "tap1 (SELECT): entering MOVE is now box-level "
            "(gbsrc_can_enter_move), not per-cell -- footer changes to 'MOVE A "
            "grab hold=set', cursor icon changes -- IMPOSSIBLE pre-fix on an "
-           "empty cell (gbs_can_delete would have refused)")
+           "empty cell (gbs_can_delete would have refused)",
+           claim=["MOVE A grab hold=set"])   # BACKLOG #214 item 3 retrofit
     s.tap("SEL", settle=gb_shots.BIG_SETTLE)
     s.shot("02_select_back_to_normal", "tap2 (SELECT): leaving is now "
            "unconditional -- footer back to 'A menu SEL L/R B' -- pre-fix, this "
            "EXACT second SELECT on an empty cell was #192's stuck case (proven "
-           "live: pixel-identical frame before/after on the pre-fix build)")
+           "live: pixel-identical frame before/after on the pre-fix build)",
+           claim=["A menu  SEL  L/R  B"])   # BACKLOG #214 item 3 retrofit
     return s
 
 
