@@ -1230,25 +1230,13 @@ pc_bank_restore_up(const uint8_t g3_rec80[80], uint8_t out_cell80[80]) {
   int count = gbsc_count(buf, len);
   if (count < 0) { log_line("bank: restore lookup: ledger file failed to validate"); return -1; }
 
-  /* decision 8's tiebreak: the HIGHEST index whose kind is XR_KIND_NATIVE_HOME (the
-   * newest cycle), belt-and-braces bc_is_native() since the kind byte is absent on
-   * pre-#150 entries. */
-  int best = -1;
+  /* BACKLOG #206 review R1: pick loop + RESTORED/PENDING refusals moved to
+   * source/xfer_rec.c's xr_restore_pick_basic (see its contract comment) --
+   * behaviour byte-identical, same S150-9 decision 8 tiebreak/order. */
   GbscEntry e;
-  for (int i = 0; i < count; i++) {
-    GbscEntry cand;
-    if (!gbsc_get(buf, len, i, &cand)) continue;
-    if (cand.kind != XR_KIND_NATIVE_HOME) continue;
-    if (!bc_is_native(cand.original80)) continue;
-    best = i;
-    e = cand;
-  }
-  if (best < 0) return 0;                     /* only Gen-3-home entries (or none) -- already exact */
-
-  /* S150-9 decision 8: the state branch runs BEFORE the screen -- a RESTORED or
-   * PENDING entry is refused outright, never even probed for a report (§3.2's
-   * order; check (o) pins "state refusals precede app_xfer_merge_screen"). */
-  if (e.state == XR_STATE_RESTORED) {
+  XrRestorePick pick = xr_restore_pick_basic(buf, len, count, &e);
+  if (pick == XR_PICK_NONE) return 0;         /* only Gen-3-home entries (or none) -- already exact */
+  if (pick == XR_PICK_REFUSE_RESTORED) {
     log_line("bank: restore: entry already RESTORED -- refusing a second restore");
     boxoam_suspend();
     snd_deny();
@@ -1256,7 +1244,7 @@ pc_bank_restore_up(const uint8_t g3_rec80[80], uint8_t out_cell80[80]) {
     boxoam_resume();
     return -2;   /* review D3's convention: a declined/refused restore, not a genuine failure */
   }
-  if (e.state == XR_STATE_PENDING) {
+  if (pick == XR_PICK_REFUSE_PENDING) {
     log_line("bank: restore: entry still PENDING -- the Bank slot is not proven yet");
     boxoam_suspend();
     snd_deny();

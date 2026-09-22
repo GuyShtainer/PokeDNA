@@ -1183,14 +1183,24 @@ static void test_d2_item_confirm_logic(void) {
  * xr_open's "0 = ok" idiom) so the two CHECK sites below read the same way trip 1/2
  * of the pre-#206 two-trips shape did.
  *
- * MUTATION: reintroduce a274651's identity gate (xr_restore_pick, refusing an entry
- * whose nick_written/species_written no longer match the incoming record) and either
+ * MUTATION: reintroduce a274651's identity gate INSIDE xr_restore_pick_basic
+ * (source/xfer_rec.c) -- refusing the picked entry whenever its own stored
+ * nick_written/species_written no longer match the incoming record -- and either
  * of the two CHECK(rc == 0 && ...) lines below fails -- the renamed/evolved case is
- * refused instead of reaching the merge path, the exact regression this pins. */
-static int xr_restore_regression_case(const uint8_t g3_edited[80], GbscEntry* e,
-                                      XrMergeReport* rep_out) {
+ * refused instead of reaching the merge path, the exact regression this pins. BACKLOG
+ * #206 review R1: this case now drives the REAL pick (xr_restore_pick_basic against a
+ * real ledger buffer, exactly what pc_bank_restore_up calls), not a hand-picked
+ * GbscEntry handed straight to bank_restore_from_entry -- the original D1 test never
+ * touched the pick loop at all, so a274651's gate (which lived INSIDE the old pick
+ * loop, source/pdna_box.c pre-revert) could not have failed it. */
+static int xr_restore_regression_case(const uint8_t* ledger, uint32_t llen, int lcount,
+                                      const uint8_t g3_edited[80], XrMergeReport* rep_out) {
+  GbscEntry picked;
+  XrRestorePick pick = xr_restore_pick_basic(ledger, llen, lcount, &picked);
+  if (pick != XR_PICK_LIVE) return -1;
   uint8_t out_cell80[80];
-  int rc = bank_restore_from_entry(e, g3_edited, XR_ACCEPT_ALL, g_xr_serial++, out_cell80, rep_out);
+  int rc = bank_restore_from_entry(&picked, g3_edited, XR_ACCEPT_ALL, g_xr_serial++, out_cell80,
+                                   rep_out);
   return (rc == 1) ? 0 : -1;   /* this test's own convention: 0 = reached the merge path */
 }
 
@@ -1234,6 +1244,18 @@ static void test_backlog_206_regression(void) {
   xr_build_entry_asdown(&e, &written, cell, g3rec80);
   e.state = XR_STATE_CLAIMED;
 
+  /* BACKLOG #206 review R1: a REAL ledger buffer, the same shape xr_open() hands
+   * pc_bank_restore_up -- xr_restore_pick_basic is driven against this, not against
+   * a hand-picked GbscEntry, so the pick loop itself (which a274651's identity gate
+   * lived inside) is actually exercised. */
+  uint8_t ledger[GBSC_FILE_MAX];
+  uint32_t llen = (uint32_t)gbsc_init(ledger, xr_key_g3(g3rec80));
+  CHECK(llen > 0, "D1: gbsc_init succeeds");
+  int aidx = gbsc_add(ledger, &llen, sizeof ledger, &e);
+  CHECK(aidx == 0, "D1: gbsc_add lands the CLAIMED entry at index 0");
+  int lcount = gbsc_count(ledger, llen);
+  CHECK(lcount == 1, "D1: the ledger validates with exactly one entry");
+
   /* Case 1: renamed abroad -- the Gen-3 record's own nickname bytes no longer match
    * e.nick_written (a real edit, not a synthetic flip: a different, validly-encoded
    * nickname), everything else unchanged. */
@@ -1248,7 +1270,7 @@ static void test_backlog_206_regression(void) {
           "D1: the renamed record's nickname bytes really do differ from the entry's own");
 
     XrMergeReport rep;
-    int rc = xr_restore_regression_case(g3_renamed, &e, &rep);
+    int rc = xr_restore_regression_case(ledger, llen, lcount, g3_renamed, &rep);
     CHECK(rc == 0 && rep.renamed,
           "D1: a renamed-abroad record reaches the merge path, never refused (rc=%d renamed=%d)",
           rc, (int)rep.renamed);
@@ -1275,10 +1297,40 @@ static void test_backlog_206_regression(void) {
           "D1: the evolved record's species really does differ from the entry's own");
 
     XrMergeReport rep;
-    int rc = xr_restore_regression_case(g3_evolved, &e, &rep);
+    int rc = xr_restore_regression_case(ledger, llen, lcount, g3_evolved, &rep);
     CHECK(rc == 0 && rep.evolved,
           "D1: an evolved-abroad record reaches the merge path, never refused (rc=%d evolved=%d)",
           rc, (int)rep.evolved);
+  }
+
+  /* Case 3/4 (S150-9 decision 8, review R1): a RESTORED or PENDING entry is a pure
+   * pick-time refusal, before any identity/merge concern -- separate ledgers so case
+   * 3's state doesn't leak into case 4. */
+  {
+    GbscEntry restored = e;
+    restored.state = XR_STATE_RESTORED;
+    uint8_t rledger[GBSC_FILE_MAX];
+    uint32_t rlen = (uint32_t)gbsc_init(rledger, xr_key_g3(g3rec80));
+    CHECK(gbsc_add(rledger, &rlen, sizeof rledger, &restored) == 0,
+          "D1: RESTORED-state ledger add succeeds");
+    int rcount = gbsc_count(rledger, rlen);
+    GbscEntry picked;
+    XrRestorePick pick = xr_restore_pick_basic(rledger, rlen, rcount, &picked);
+    CHECK(pick == XR_PICK_REFUSE_RESTORED,
+          "D1: a RESTORED entry refuses at pick time (pick=%d)", (int)pick);
+  }
+  {
+    GbscEntry pending = e;
+    pending.state = XR_STATE_PENDING;
+    uint8_t pledger[GBSC_FILE_MAX];
+    uint32_t plen = (uint32_t)gbsc_init(pledger, xr_key_g3(g3rec80));
+    CHECK(gbsc_add(pledger, &plen, sizeof pledger, &pending) == 0,
+          "D1: PENDING-state ledger add succeeds");
+    int pcount = gbsc_count(pledger, plen);
+    GbscEntry picked;
+    XrRestorePick pick = xr_restore_pick_basic(pledger, plen, pcount, &picked);
+    CHECK(pick == XR_PICK_REFUSE_PENDING,
+          "D1: a PENDING entry refuses at pick time (pick=%d)", (int)pick);
   }
 }
 

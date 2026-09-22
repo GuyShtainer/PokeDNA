@@ -296,8 +296,12 @@ BANK_RESTORE_GB_RE       = re.compile(r"\bbank_restore_from_entry_gb\(")
 GBS_DELETE_RE            = re.compile(r"\bgbs_delete\(")
 GB_PERSIST_RE            = re.compile(r"\bgb_persist\(")
 RELEASE_VERIFY_CALL_RE   = re.compile(r"\bgb_release_restored_verify\(")
-RESTORE_UP_RESTORED_CHECK_RE = re.compile(r"e\.state == XR_STATE_RESTORED")
-RESTORE_UP_PENDING_CHECK_RE  = re.compile(r"e\.state == XR_STATE_PENDING")
+# BACKLOG #206 review R1: the state refusals themselves moved into
+# xr_restore_pick_basic (source/xfer_rec.c) -- pc_bank_restore_up now branches on
+# the enum result it returns, so these two anchors are re-pointed at that branch
+# (`pick == XR_PICK_REFUSE_RESTORED`/`PENDING`), same ordering guarantee as before.
+RESTORE_UP_RESTORED_CHECK_RE = re.compile(r"pick == XR_PICK_REFUSE_RESTORED")
+RESTORE_UP_PENDING_CHECK_RE  = re.compile(r"pick == XR_PICK_REFUSE_PENDING")
 
 
 def lift_order_facts_hook(hook_body: list[str]) -> tuple[bool, str]:
