@@ -5110,7 +5110,12 @@ def run_s150_15_view_original(core_mod, image_mod, rom: Path, out_dir: Path) -> 
     s.tap("A", settle=250)
     s.shot("01_empty_menu_paste_here", "S150-15: A on an empty PC cell -- PASTE HERE "
            "is offered (decision 13's seam: view_save()'s PDNA_DELTA hook seeded "
-           "g_clip with a freshly-converted CHIKORITA the moment this save loaded)")
+           "g_clip with a freshly-converted CHIKORITA the moment this save loaded)",
+           claim=["CREATE", "PASTE HERE"])  # BACKLOG #221 retrofit: the wrong build
+           # vehicle (make delta-gb's combined GB-corpus image instead of this
+           # function's own required plain `fuse_sav.py ... --image`, no --gb) lands
+           # on a DIFFERENT menu here with no visible symptom until several taps
+           # later -- a mechanical claim fails loudly on frame 01 instead.
     s.tap("DOWN", settle=100)                                # CREATE -> PASTE HERE
     s.tap("A", settle=400)                                   # paste -> flash write ("Saving...")
     s.tap("A", settle=250)                                   # dismiss "SAVED / Flash written + verified"
@@ -5121,18 +5126,24 @@ def run_s150_15_view_original(core_mod, image_mod, rom: Path, out_dir: Path) -> 
     s.tap("A", settle=250)
     s.shot("03_menu_with_row", "S150-15: A on the pasted mon -- the occupied-cell menu "
            "now lists GB ORIGINAL fourth (VIEW/EDIT, ITEM, LEGALITY, GB ORIGINAL, "
-           "MOVE, COPY, PASTE, DUPLICATE, TO DAY-CARE)")
+           "MOVE, COPY, PASTE, DUPLICATE, TO DAY-CARE)",
+           claim=["GB ORIGINAL"])  # BACKLOG #221 retrofit
     s.press_n("DOWN", 3, settle=80)
     s.shot("04_row_selected", "S150-15: DOWN x3 -- GB ORIGINAL highlighted")
     s.tap("A", settle=300)
     s.shot("05_original_info_card", "S150-15: A -- the REAL Gen-1/2 summary opens over "
            "the ledger's original80, chip reads VIEW, GB2 -- compare to 00 above "
-           "(card bodies identical; footer differs by design, see 00's own caption)")
+           "(card bodies identical; footer differs by design, see 00's own caption)",
+           claim=["VIEW", "GB2"])  # BACKLOG #221 retrofit: PDNA_GBSUM_VIEW_CHIP
+           # (pdna_layout.h) + pdna_origin_tag()'s "GB2" (source/pdna_origin_art.c)
     s.press_n("R", 3, settle=SETTLE)                         # INFO -> SKILLS -> MOVES -> ORIGIN
     s.shot("06_original_origin_card", "S150-15: R x3 -- the ORIGIN card, note reads "
            "'GOLD 26-09-16' (decision 13's PLANT_EPOCH date, the origin game the cell "
            "was planted with), 'Sidecar: No' (parity with the native VIEW, open "
-           "question 5)")
+           "question 5)",
+           claim=["GOLD"])  # BACKLOG #221 retrofit: this exact shot is where the wrong
+           # build vehicle (make delta-gb) first produces a same-frame [STOPPED] even
+           # at 9e84ec5 (s150-15's own merge) -- see run's own docstring, "no --gb"
 
     # ---- read-only proof: A and SELECT are both inert -----------------------------
     s.tap("A", settle=250)
