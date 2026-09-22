@@ -89,7 +89,20 @@ bool vsd_attach(void) {
     if (vsd_wrap_frame(&last_vc)) {
       frames++;
       if (frames >= 4) {
+        /* BACKLOG #179 A3 review D3, mirrored from vsd_xfer's own timeout below:
+         * active_flashcart is never set to EZ_FLASH_OMEGA before this loop exits
+         * (that happens only on the success path just past it), so this assignment
+         * is a no-op on THIS path today -- but it is set explicitly anyway, exactly
+         * like vsd_xfer's timeout, so the invariant "a timed-out VSD path always
+         * leaves active_flashcart == NO_FLASHCART" holds by construction rather than
+         * by accident of call order, and a future edit that moves the
+         * active_flashcart assignment earlier cannot silently reopen the real-EZFO
+         * fallback this review exists to close. The mailbox itself is disowned the
+         * same way: a half-attached host that starts serving late must never be
+         * answered by a GBA side that has already moved on. */
         s_attached = false;
+        active_flashcart = NO_FLASHCART;
+        s_vsd.magic = 0;
         return false;
       }
     }
@@ -119,7 +132,17 @@ bool vsd_xfer(uint32_t op, uint32_t sector, uint32_t addr, uint32_t count) {
     if (vsd_wrap_frame(&last_vc)) {
       frames++;
       if (frames >= 16) {
+        /* BACKLOG #179 A3 review D3 (HIGH): a timed-out vsd_xfer() used to leave
+         * active_flashcart == EZ_FLASH_OMEGA (set by vsd_attach()'s own success path
+         * before this transaction was even issued), so the NEXT SD op after a dead
+         * harness fell through flashcartio's dispatch into the REAL
+         * _EZFO_readSectors -- Visoly unlock, WAITCNT, DMA from 0x09xxxxxx -- inside
+         * mGBA, which has no such hardware. Degrade to NO_FLASHCART (no card at
+         * all), never silently back to the real EZFO driver this vehicle was never
+         * meant to run. */
         s_attached = false;
+        active_flashcart = NO_FLASHCART;  /* degrade to no card, not to the real EZFO driver */
+        s_vsd.magic = 0;                  /* the host must not serve this abandoned request */
         return false;
       }
     }
