@@ -424,6 +424,12 @@ bool app_xfer_pending(void);
 void app_xfer_pending_set(uint64_t key, int idx);
 bool app_xfer_promote(void);
 void app_xfer_pending_drop(void);
+
+/* BACKLOG #150 S150-11 decision 4: the §11.8 Bank-open reconcile -- gated on
+ * app_can_edit() && app_gen3_pc_live() as its own FIRST two statements (G-F2: a
+ * Game Boy session's Bank visit performs zero ledger reads, zero box reads, zero
+ * log lines). Called once from pdna_bank_show(). */
+void app_xfer_reconcile_bank_open(void);
 void app_xfer_pending_undo(void);
 
 /* A mon carried Bank->PC is deleted from the bank only at the save, but must LOOK gone at once.

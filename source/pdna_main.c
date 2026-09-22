@@ -107,6 +107,7 @@ _Static_assert(ART_ICONS_ROW_BYTES <= SF_STREAM_CHUNK_MAX, "icon extraction stre
 #include "gba_rtc.h"       /* live cartridge RTC reader (clock check & fix) */
 #include "gb_sidecar.h"    /* S5-B: the Gen-3 <-> Game Boy sidecar format + merge-up */
 #include "gb_reconcile.h"  /* S5-C Part B2: the pure-C identity-match core for reconcile-on-load */
+#include "xfer_reconcile.h" /* BACKLOG #150 S150-11: the NATIVE_HOME transfer-ledger reconcile */
 #include "pdna_app.h"
 #include "savefile.h"
 #include "log.h"
@@ -9625,6 +9626,11 @@ typedef struct {
                          * per-call local would let a two-pass walk examine up to
                          * 2x GB_RECON_MAX_EXAMINE entries total, unbounded across the
                          * pair the way the old single-pass code never had to consider. */
+  /* BACKLOG #150 S150-11 decision 5: a PARALLEL array, not an extension of the
+   * GbReconHit block above (that one stays G3_HOME-shaped, untouched). Every
+   * NATIVE_HOME entry the reconcile walk finds, one XrcHit each. */
+  XrcHit     xrc[GB_RECON_MAX_HITS];
+  int        nxrc;
 } GbReconBuf;
 _Static_assert(sizeof(GbReconBuf) <= sizeof(g_entries),
               "gb_reconcile buffer no longer fits the borrowed g_entries cache");
@@ -9947,6 +9953,235 @@ static void __attribute__((noinline)) gb_reconcile_on_load(void) {
   }
   app_box_swap_release();
 }
+
+/* ==== BACKLOG #150 S150-11: the NATIVE_HOME transfer-ledger reconcile ============
+ * §11.8's Bank-open check (decision 4) and the shared walk/apply the future TRANSFERS
+ * screen (decision 13/14, not built in this slice) will also call. This block never
+ * touches rb->hits/nhits/nunique/names-dedupe above -- gb_reconcile_on_load's own
+ * G3_HOME walk is unchanged, byte for byte (files_you_may_touch's own promise). */
+
+/* Phase 1 (decision 4): duplicated from gb_reconcile_walk's own file-iteration shape,
+ * not a shared extraction -- this walk filters on kind==XR_KIND_NATIVE_HOME instead
+ * of !claimed, keys a file by gbsc_file_key() instead of matching an entry's
+ * original80 AS a Gen-3 record, and never touches rb->hits/nunique. The two walks'
+ * bodies diverge in exactly the fields that matter, so factoring them together would
+ * just be an if/else in disguise (decision 4's own instruction).
+ *
+ * `cap_files`: 32 for the Bank-open check (decision 5); the shipped GB_RECON_MAX_
+ * FILES/EXAMINE caps otherwise. Captures each candidate's identity fields (gen/
+ * otid16/dv4/otname/orig8) into its XrcHit right here, while the file is already
+ * open -- xrc_bank_match() needs them and phase 2 must not re-open a file per
+ * candidate per box (that would turn "page each box once" into "page it once per
+ * candidate", exactly the stall §11.8/XFER-C14 the cap exists to prevent).
+ * `bank_open` is unused here (the informational degrade it names, decision 6's
+ * "plus" clause, is consulted by the CALLER after classification, not by the walk
+ * itself) -- kept as a parameter for the brief's own signature. */
+static void __attribute__((noinline)) xfer_reconcile_walk(GbReconBuf* rb, int cap_files,
+                                                           bool bank_open) {
+  (void)bank_open;
+  rb->nfiles = 0;
+  rb->nxrc = 0;
+  int examined = 0;
+  uint32_t dc_base, dc_stride; dc_layout(&dc_base, &dc_stride);
+
+  DIR dir; FILINFO fi;
+  if (f_opendir(&dir, PDNA_XFER_DIR) != FR_OK) return;
+  while (rb->nxrc < GB_RECON_MAX_HITS && rb->nfiles < GB_RECON_MAX_FILES &&
+        rb->nfiles < cap_files && examined < GB_RECON_MAX_EXAMINE &&
+        f_readdir(&dir, &fi) == FR_OK && fi.fname[0]) {
+    examined++;
+    if (fi.fattrib & AM_DIR) continue;
+    int L = 0; while (fi.fname[L]) L++;
+    if (L < 5 || L >= GB_RECON_NAME_MAX) continue;
+    const char* e = fi.fname + L - 4;
+    if (e[0] != '.' || (e[1] | 32) != 'p' || (e[2] | 32) != 'd' || (e[3] | 32) != 's') continue;
+
+    int fidx = rb->nfiles;
+    int cn = 0; while (fi.fname[cn] && cn < GB_RECON_NAME_MAX - 1) { rb->names[fidx][cn] = fi.fname[cn]; cn++; }
+    rb->names[fidx][cn] = 0;
+    rb->nfiles++;
+
+    gb_recon_path(rb->path, rb->names[fidx]);
+    uint32_t len = 0;
+    if (sf_read_full(rb->path, rb->sidecar, GBSC_FILE_MAX, &len) != SF_OK) {
+      log_line("xfer: reconcile: could not read %s", rb->path);
+      continue;
+    }
+    int count = gbsc_count(rb->sidecar, len);
+    if (count < 0) {
+      log_line("xfer: reconcile: %s fails its own crc, skipped", rb->path);
+      continue;
+    }
+    uint64_t file_key = gbsc_file_key(rb->sidecar, len);
+
+    for (int i = 0; i < count && rb->nxrc < GB_RECON_MAX_HITS; i++) {
+      GbscEntry e2;
+      if (!gbsc_get(rb->sidecar, len, i, &e2) || e2.kind != XR_KIND_NATIVE_HOME) continue;
+
+      XrcHit* h = &rb->xrc[rb->nxrc];
+      memset(h, 0, sizeof *h);
+      h->file_idx = (uint8_t)fidx; h->entry_idx = (uint8_t)i;
+      h->kind = e2.kind; h->state = e2.state; h->direction = e2.direction;
+      h->bank_keep = e2.bank_keep != 0;
+      h->bank_matches = -1; h->bank_box = -1; h->bank_slot = -1;
+      h->g3_key_matches = -1; h->g3_identity_matches = -1; h->g3_box = -1; h->g3_slot = -1;
+      h->gen = e2.gen; h->otid16 = e2.otid16;
+      memcpy(h->dv4, e2.dv4, 4);
+      memcpy(h->otname, e2.otname_written, GB_NAME_BYTES);
+      memcpy(h->orig8, e2.original80, 8);
+
+      if (e2.direction == XR_DIR_ABROAD_G3) {
+        int wb, ws;
+        int gk = xrc_g3_match_key(g_sb1, g_frlg, g_have_pc ? g_pc : NULL, dc_base, dc_stride,
+                                  file_key, &wb, &ws);
+        h->g3_key_matches = (int8_t)gk;
+        if (gk == 1) { h->g3_box = (int8_t)wb; h->g3_slot = (int8_t)ws; h->g3_in_daycare = (wb == -2); }
+        if (gk == 0) {
+          int iwb, iws;
+          int gi = xrc_g3_match_identity(g_sb1, g_frlg, g_have_pc ? g_pc : NULL, dc_base, dc_stride,
+                                         e2.species_written, e2.otid16, e2.nick_written, &iwb, &iws);
+          h->g3_identity_matches = (int8_t)gi;
+          if (gi == 1) { h->g3_box = (int8_t)iwb; h->g3_slot = (int8_t)iws; }
+        }
+      }
+      rb->nxrc++;
+    }
+  }
+  f_closedir(&dir);
+}
+
+/* Phase 2 (decision 3(ii)/(iii)/5/19): pages every Bank box ONCE and, for each box,
+ * runs xrc_bank_match() against every hit still unresolved -- never re-opens a box
+ * once its bytes have been scanned for every candidate. Skips the whole pass (zero
+ * box reads, XFER-C14) when phase 1 found nothing that needs a Bank answer. */
+static void __attribute__((noinline)) xfer_reconcile_bank_phase2(GbReconBuf* rb) {
+  bool any = false;
+  for (int i = 0; i < rb->nxrc; i++) if (rb->xrc[i].bank_matches < 0) { any = true; break; }
+  if (!any) return;
+
+  for (int box = 0; box < 16; box++) {
+    bool touched = false;
+    for (int i = 0; i < rb->nxrc; i++) if (rb->xrc[i].bank_matches < 0 || rb->xrc[i].bank_matches == 1) { touched = true; break; }
+    if (!touched) break;   /* every candidate already ambiguous or already resolved  */
+    const uint8_t* recs = pdna_bank_peek_box(box);
+    if (!recs) continue;
+    log_line("xfer: reconcile: box %d paged", box);
+    for (int i = 0; i < rb->nxrc; i++) {
+      XrcHit* h = &rb->xrc[i];
+      if (h->bank_matches >= 2) continue;
+      GbscEntry e2; memset(&e2, 0, sizeof e2);
+      e2.gen = h->gen; e2.otid16 = h->otid16;
+      memcpy(e2.dv4, h->dv4, 4);
+      memcpy(e2.otname_written, h->otname, GB_NAME_BYTES);
+      memcpy(e2.original80, h->orig8, 8);
+      bool by_identity = (h->state == XR_STATE_RESTORED);
+      int slot = -1;
+      int m = xrc_bank_match(recs, &e2, by_identity, &slot);
+      if (h->bank_matches < 0) h->bank_matches = 0;
+      int total = h->bank_matches + m;
+      h->bank_matches = (int8_t)(total > 2 ? 2 : total);
+      if (m == 1 && h->bank_matches == 1) { h->bank_box = (int8_t)box; h->bank_slot = (int8_t)slot; }
+      if (h->bank_matches == 1 && h->bank_box == (int8_t)box)
+        h->bank_slot_pending = pdna_bank_slot_pending(box, slot);
+    }
+  }
+}
+
+/* Bank-open prompt (decision 1(a)/4/6): classify every NATIVE_HOME hit, then act
+ * ONLY on XRC_DUP_BANK (REMOVE DUPLICATE) -- §11.8's own text ("one N POKEMON IN TWO
+ * PLACES prompt with REMOVE THE DUPLICATE / KEEP BOTH, nothing else offered there")
+ * is the literal spec; whether a RESTORED/XRC_DUP_G3 row's RELEASE COPY also belongs
+ * on this silent prompt is OPEN QUESTION 4 in the brief, unresolved by the
+ * orchestrator -- the conservative reading (less destructive reachable silently) is
+ * taken here: RESTORED rows are classified (so the log line's counts are honest) but
+ * never offered anything at Bank-open. A KEPT row (bank_keep) is never offered
+ * either (decision 2's own table). */
+static void __attribute__((noinline)) xfer_reconcile_classify_all(GbReconBuf* rb) {
+  for (int i = 0; i < rb->nxrc; i++) {
+    XrcHit* h = &rb->xrc[i];
+    XrcInput in; memset(&in, 0, sizeof in);
+    in.kind = h->kind; in.state = h->state; in.direction = h->direction;
+    in.g3_key_matches = h->g3_key_matches < 0 ? 0 : h->g3_key_matches;
+    in.g3_in_daycare = h->g3_in_daycare;
+    in.g3_identity_matches = h->g3_identity_matches < 0 ? 0 : h->g3_identity_matches;
+    in.bank_matches = h->bank_matches < 0 ? 0 : h->bank_matches;
+    in.bank_slot_pending = h->bank_slot_pending;
+    in.bank_keep = h->bank_keep;
+    XrcResult out;
+    xrc_classify(&in, &out);
+    h->row_kind = (uint8_t)out.kind;
+    h->actions = out.actions;
+  }
+}
+
+/* Applies REMOVE DUPLICATE (decision 8a) to every XRC_DUP_BANK hit -- the Bank-open
+ * prompt's only destructive action. Returns the count actually removed. A false
+ * pdna_bank_clear_slots() return is "duplicate kept" (logged), never a loss: the
+ * entry stays CLAIMED, which IS the normal end state either way. */
+static int __attribute__((noinline)) xfer_reconcile_apply_bank_open(GbReconBuf* rb) {
+  int removed = 0, failed = 0;
+  for (int i = 0; i < rb->nxrc; i++) {
+    XrcHit* h = &rb->xrc[i];
+    if (h->row_kind != XRC_DUP_BANK || h->bank_keep) continue;
+    uint8_t slot = (uint8_t)h->bank_slot;
+    uint8_t cell80[80]; memset(cell80, 0, sizeof cell80);
+    memcpy(cell80, h->orig8, 8);
+    if (pdna_bank_clear_slots(h->bank_box, &slot, (const uint8_t (*)[80])cell80, 1)) {
+      removed++;
+    } else {
+      failed++;
+      log_line("xfer: reconcile: box %d slot %d REMOVE refused, duplicate kept", h->bank_box, h->bank_slot);
+    }
+  }
+  log_line("xfer: reconcile: apply removed=%d released=0 restored=0 deleted=0 rekeyed=0 failed=%d",
+          removed, failed);
+  return removed;
+}
+
+/* BACKLOG #150 S150-11 decision 4: the §11.8 Bank-open reconcile. FIRST two
+ * statements are the gate (G-F2/hard rule 4) -- called from a Game Boy session
+ * (gb_bank_visit, source/pdna_gen12.c), app_arena_held() makes app_gen3_pc_live()
+ * false, so this returns before any f_opendir/sf_read_full/log_line runs: zero
+ * ledger reads, zero box reads, zero log lines on that path (XFER-C16b). */
+void __attribute__((noinline)) app_xfer_reconcile_bank_open(void) {
+  if (!app_can_edit()) return;
+  if (!app_gen3_pc_live()) return;
+
+  GbReconBuf* rb = (GbReconBuf*)app_box_swap_acquire(sizeof(GbReconBuf));
+  if (!rb) { log_line("xfer: reconcile(bank-open): swap buffer unavailable, skipped"); return; }
+
+  xfer_reconcile_walk(rb, 32, true);
+  if (rb->nxrc > 0) xfer_reconcile_bank_phase2(rb);
+  xfer_reconcile_classify_all(rb);
+
+  int cand = 0;
+  for (int i = 0; i < rb->nxrc; i++) if (rb->xrc[i].row_kind == XRC_DUP_BANK && !rb->xrc[i].bank_keep) cand++;
+  log_line("xfer: reconcile(bank-open): files=%d entries=%d cand=%d", rb->nfiles, rb->nxrc, cand);
+
+  if (cand > 0) {
+    char title[40]; siprintf(title, "%d %s", cand, PDNA_XRC_DUP_TITLE_SUFFIX);
+    if (app_confirm(title, PDNA_XRC_DUP_L1)) {
+      xfer_reconcile_apply_bank_open(rb);
+    } else {
+      /* KEEP BOTH (decision 7): mark bank_keep on every offered entry so this prompt
+       * never asks about it again -- claimed is untouched (G-H4). */
+      for (int i = 0; i < rb->nxrc; i++) {
+        XrcHit* h = &rb->xrc[i];
+        if (h->row_kind != XRC_DUP_BANK || h->bank_keep) continue;
+        gb_recon_path(rb->path, rb->names[h->file_idx]);
+        uint32_t len = 0;
+        if (sf_read_full(rb->path, rb->sidecar, GBSC_FILE_MAX, &len) != SF_OK) continue;
+        if (gbsc_set_bank_keep(rb->sidecar, len, h->entry_idx, true) != 0) continue;
+        rmbl_pause();
+        SfStatus wst = sf_write_verified(rb->path, rb->sidecar, len);
+        rmbl_resume();
+        if (wst != SF_OK) log_line("xfer: reconcile: KEEP BOTH rewrite failed for %s", rb->path);
+      }
+    }
+  }
+  app_box_swap_release();
+}
+/* ==== END BACKLOG #150 S150-11 Bank-open reconcile ================================ */
 
 #ifdef PDNA_DELTA
 /* BACKLOG #62: pick ONE of possibly several fused Game Boy saves -- tools/fuse_gb.py's

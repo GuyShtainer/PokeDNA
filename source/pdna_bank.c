@@ -684,6 +684,8 @@ int pdna_bank_show(void) {
    * has not touched yet. */
   g_loaded = -1; g_dirty = false; g_box_unsaved_box = -1;
 
+  app_xfer_reconcile_bank_open();   /* BACKLOG #150 S150-11 decision 4/§11.8 */
+
   BoxSource s; memset(&s, 0, sizeof s);
   s.nboxes     = BANK_BOXES;
   /* BACKLOG #150 S150-12 decision 8: the box the last COPY landed in, if the read-only

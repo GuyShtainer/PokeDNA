@@ -145,4 +145,37 @@ void xrc_apply_order(uint8_t* idx, int n);
  * text. Returns the length written (excluding NUL). */
 int xrc_row_text(XrcRowKind kind, const char* species, const char* game, char out[40]);
 
+/* ---- the caller's row bookkeeping (decision 5) ----------------------------------- */
+
+/* One row's-worth of bookkeeping for the Bank-open walk / TRANSFERS screen, carried
+ * in the caller's GbReconBuf (pdna_main.c) alongside the shipped GbReconHit array --
+ * NOT an extension of GbReconHit itself (decision 5: a parallel array). Beyond the
+ * classification result (row_kind/actions/kept) this also snapshots exactly the
+ * identity fields xrc_bank_match() needs (gen/otid16/dv4/otname/orig8), captured
+ * ONCE while the entry's file is already open -- the alternative (re-opening a
+ * file per box during the two-phase Bank scan) would turn "page each box once"
+ * into "page each box once PER CANDIDATE", which is the stall §11.8/XFER-C14 the
+ * cap exists to prevent. */
+typedef struct {
+  uint8_t file_idx;
+  uint8_t entry_idx;
+  uint8_t kind, state, direction;      /* XR_KIND_*, XR_STATE_*, XR_DIR_*           */
+  int8_t  g3_key_matches;              /* -1 not yet run (ABROAD_GB entries)         */
+  int8_t  g3_identity_matches;
+  bool    g3_in_daycare;
+  int8_t  bank_matches;                /* -1 unresolved until phase 2                */
+  bool    bank_slot_pending;
+  bool    bank_keep;
+  int8_t  bank_box, bank_slot, g3_box, g3_slot;
+  uint8_t row_kind;                    /* XrcRowKind, filled by xrc_classify         */
+  uint8_t actions;                     /* the allowed-action mask                    */
+  uint8_t action;                      /* the ONE action chosen this visit, 0 = none */
+  /* identity snapshot for xrc_bank_match(), captured at the walk: */
+  uint8_t gen;
+  uint16_t otid16;
+  uint8_t dv4[4];
+  uint8_t otname[GB_NAME_BYTES];
+  uint8_t orig8[8];                    /* original80[0..7]                          */
+} XrcHit;
+
 #endif /* XFER_RECONCILE_H */

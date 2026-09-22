@@ -1096,6 +1096,19 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XFER_TOOMANY_L1    "Too many transfer records"
 #define PDNA_XFER_TOOMANY_L2    "for this Pokemon."
 
+/* BACKLOG #150 S150-11 decision 18 -- the Bank-open reconcile prompt's own strings
+ * (a %d-bearing suffix, same siprintf("%d %s") shape as PDNA_SIDECAR_RECON_TITLE_
+ * SUFFIX above). Worst case measured in tests/host_textfit_test.c: "64 POKEMON IN
+ * TWO PLACES". */
+#define PDNA_XRC_DUP_TITLE_SUFFIX "POKEMON IN TWO PLACES"
+#define PDNA_XRC_DUP_L1           "Remove the duplicates?"
+
+/* BACKLOG #150 S150-11 decision 11 (#176) -- a failed PC commit leaves the Bank
+ * cell untouched; this tells the player their Pokemon is still safe. */
+#define PDNA_XFER_NOTSAVED_TITLE "TRANSFER NOT SAVED"
+#define PDNA_XFER_NOTSAVED_L1    "The game was not written."
+#define PDNA_XFER_NOTSAVED_L2    "Your Pokemon is still in the Bank."
+
 #define PDNA_XFER_TC_TITLE        "NO GEN 1 FORM"
 /* BACKLOG #150 S150-8: shortened from the brief's original "%s did not exist in
  * Gen 1." / "%s cannot be known in Gen 1." -- host_textfit_test.c found the real
