@@ -1328,10 +1328,18 @@ def main() -> int:
                                    PASTE_FILL_MOVES_RE, "gb_paste_hook")
     check(ok, msg)
 
-    # ---- (ah)/(ai) BACKLOG #212: gb_bank_down_bridge's own per-slot move rule --
-    # the fill before the modal, the modal before the write. ----
+    # ---- (aj)/(ah)/(ai) BACKLOG #212: gb_bank_down_bridge's own per-slot move rule --
+    # the busy screen before the fill's cold ROM scan, the fill before the modal, the
+    # modal before the write. ----
     sbr, ebr = extract_function(gen12_lines, r"^BankDownResult gb_bank_down_bridge\(")
     bridge_body = gen12_lines[sbr:ebr]
+
+    # (aj) review D5: s_busy_reading( is called BEFORE gb_paste_fill_moves( in the
+    # bridge too -- the bridge shares gb_paste_fill_moves' own cold, uncached,
+    # ~185,000-read ROM scan (see (ag) above, gb_paste_hook's own copy of this check).
+    ok, msg = gate_before_pattern(bridge_body, 0, len(bridge_body), BUSY_READING_RE,
+                                   PASTE_FILL_MOVES_RE, "gb_bank_down_bridge")
+    check(ok, msg)
 
     # (ah) gb_paste_fill_moves( is called BEFORE gb_paste_legal_screen_ex( (the modal).
     ok, msg = gate_before_pattern(bridge_body, 0, len(bridge_body), PASTE_FILL_MOVES_RE,
@@ -2037,9 +2045,23 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str]) -
         print(f"  MUT AG demonstration -- s_busy_reading() call deleted from "
               f"gb_paste_hook: {detail}")
 
-    # BACKLOG #212: gb_bank_down_bridge's own per-slot move rule -- MUT AH/MUT AI.
+    # BACKLOG #212: gb_bank_down_bridge's own per-slot move rule -- MUT AJ/MUT AH/MUT AI.
     sbr, ebr = extract_function(gen12_lines, r"^BankDownResult gb_bank_down_bridge\(")
     bridge_body = gen12_lines[sbr:ebr]
+
+    # MUT AJ (review D5): delete the bridge's own `s_busy_reading();` line on a copy --
+    # (aj) must fail to find any busy call before the fill's cold ROM scan.
+    busy_i2 = first_match_line(bridge_body, 0, len(bridge_body), BUSY_READING_RE)
+    check(busy_i2 is not None, "MUT AJ: could not locate the real s_busy_reading() call "
+                                "in gb_bank_down_bridge -- fix this test")
+    if busy_i2 is not None:
+        mut_aj = [ln for i, ln in enumerate(bridge_body) if i != busy_i2]
+        ok13, detail = gate_before_pattern(mut_aj, 0, len(mut_aj), BUSY_READING_RE,
+                                           PASTE_FILL_MOVES_RE, "gb_bank_down_bridge (MUT AJ)")
+        check(not ok13, f"MUT AJ (s_busy_reading() deleted) should have been caught but "
+                        f"was not: {detail}")
+        print(f"  MUT AJ demonstration -- s_busy_reading() call deleted from "
+              f"gb_bank_down_bridge: {detail}")
 
     # MUT AH: move the `gb_paste_fill_moves(` call line to AFTER
     # `gb_paste_legal_screen_ex(` on a copy -- (ah) must fail: the modal would list
