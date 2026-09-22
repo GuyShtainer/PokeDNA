@@ -10,13 +10,16 @@
 
 #include "pdna_gbhof.h"
 #include "gb_hof.h"
-#include "gb_edit.h"        /* GB_GEN1/GB_GEN2                                       */
+#include "gb_edit.h"        /* GB_GEN1/GB_GEN2, gb_max_species                       */
 #include "pdna_gen12.h"     /* gb_persist / gb_rollback -- the verified-write path    */
 #include "pdna_trainer.h"   /* trainer_row_paint / trainer_key_legend                 */
 #include "data_tables.h"    /* pk_species_name                                        */
+#include "pdna_pick.h"      /* pick_species / pick_species_set_max_dex (F2/F3)        */
+#include "osk.h"            /* osk_input (F2/F3 nickname)                             */
+#include "pdna_layout.h"    /* PDNA_GBEDIT_KEEP_TITLE (D4 discard-confirm)            */
 #include "ui.h"
 #include "snd.h"
-#include "pdna_app.h"       /* msg_wait / app_confirm                                 */
+#include "pdna_app.h"       /* msg_wait / app_confirm / app_session_seed              */
 
 static void s_vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
 
@@ -100,7 +103,12 @@ static void hof_list_render(const GbSession* s, int present, int count, bool can
 
 /* ---- DETAIL -------------------------------------------------------------------- */
 
-static void hof_detail_render(const GbHofTeam* t, uint8_t gen, int team_no) {
+/* `mon_sel` (-1 = none, e.g. read-only) highlights one mon row with a leading '>'
+ * marker (the same idiom trainer_row_paint's own sel argument implies, but this
+ * screen draws its own multi-line rows directly rather than through that helper --
+ * BACKLOG #194 F2). */
+static void hof_detail_render(const GbHofTeam* t, uint8_t gen, int team_no,
+                              bool can_edit, int mon_sel) {
   ui_clear();
   char title[24];
   siprintf(title, "TEAM #%d", team_no);
@@ -146,6 +154,7 @@ static void hof_detail_render(const GbHofTeam* t, uint8_t gen, int team_no) {
       siprintf(line, "%-10s Lv%-3d%s", nm, mn->level, mn->shiny ? " *" : "");
     else
       siprintf(line, "%-10s Lv%-3d", nm, mn->level);
+    if (can_edit && m == mon_sel) ui_text(0, y, UI_TITLE, ">");
     ui_text(6, y, UI_TEXT, line);
     if (gen == GB_GEN2) {
       char ot[16];
@@ -163,7 +172,156 @@ static void hof_detail_render(const GbHofTeam* t, uint8_t gen, int team_no) {
     }
   }
   ui_hline(0, 151, UI_SCR_W, UI_BORDER);
-  trainer_key_legend("B back");
+  trainer_key_legend(can_edit ? "U/D sel A edit B back" : "B back");
+}
+
+/* ---- F2: edit one mon of a team (species/level/nickname) ----------------------- */
+
+enum { HOFEDIT_SPECIES = 0, HOFEDIT_LEVEL, HOFEDIT_NICK, HOFEDIT_DONE, HOFEDIT_N };
+static const char* const kHofEditLbl[HOFEDIT_N] = { "SPECIES", "LEVEL", "NICKNAME", "DONE" };
+
+/* Same shape as hof_set_count_editor's own stepper (pdna_gbhof.c above): U/D +-1,
+ * L/R +-10 (brief's own "L/R x10" ask), A confirms THIS field, B cancels it (the
+ * level stays whatever it was before this call). s_wait's own repeat mask covers
+ * only KEY_UP|KEY_DOWN (this file's s_wait, not the global key_repeat_mask), so
+ * L/R here deliberately do not auto-repeat -- matching every other L/R page/step
+ * key in this screen.
+ *
+ * D4 (b194 review): returns bool, same contract as hof_species_editor()/
+ * hof_nick_editor() -- true only on A (the level actually changed), false on B
+ * (cancelled, *level untouched). Previously void, so hof_edit_mon_menu()'s own
+ * caller unconditionally set `dirty = true` even when the user cancelled out of
+ * the stepper with no change at all -- DONE would then confirm+backup+write for
+ * an edit that never happened. */
+static bool hof_level_editor(uint8_t* level) {
+  int v = *level;
+  bool valid = false; int pv = -1; uint32_t g = 0;
+  for (;;) {
+    bool full = !valid || g != ui_clear_gen();
+    char b[24];
+    siprintf(b, "Level: %d", v);
+    if (full) {
+      ui_clear();
+      ui_text(4, 4, UI_TITLE, "LEVEL");
+      ui_hline(0, 14, UI_SCR_W, UI_BORDER);
+      ui_text(10, 60, UI_TEXT, b);
+      ui_text(4, 152, UI_DIM, "U/D +-1  L/R +-10  A set  B cancel");
+    } else if (v != pv) {
+      ui_fill_rect(8, 52, 200, 16, UI_BG);
+      ui_text(10, 60, UI_TEXT, b);
+    }
+    pv = v; valid = true; g = ui_clear_gen();
+
+    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B);
+    if (k & KEY_B) return false;                  /* cancel: *level untouched */
+    if (k & KEY_A) { *level = (uint8_t)v; return true; }
+    if (k & (KEY_UP | KEY_DOWN)) v += (k & KEY_UP) ? 1 : -1;
+    else if (k & (KEY_LEFT | KEY_RIGHT)) v += (k & KEY_RIGHT) ? 10 : -10;
+    if (v < 1) v = 1;
+    if (v > 100) v = 100;
+  }
+}
+
+/* Species: the SAME icon-grid picker + generation ceiling CREATE uses (pdna_gen12.c
+ * gb_create_hook, BACKLOG #50 UX-parity) -- pick_species_set_max_dex() is a
+ * file-static that must be cleared right after, or it leaks into the next,
+ * unrelated pick_species() caller (pdna_pick.h's own contract). Cancel (0xFFFF or
+ * 0) leaves *dex untouched and returns false. */
+static bool hof_species_editor(uint8_t gen, uint16_t* dex) {
+  pick_species_set_max_dex(gb_max_species(gen));
+  uint16_t d = pick_species(*dex);
+  pick_species_set_max_dex(0);
+  if (d == 0xFFFFu || d == 0) return false;
+  *dex = d;
+  return true;
+}
+
+/* Nickname: the same osk_input() the party editor's GBE_K_TEXT branch uses
+ * (pdna_gbedit.c). osk_input rejects an empty result on its own (osk.h's own
+ * contract), so this only needs to copy a non-empty result back. */
+static bool hof_nick_editor(char* nick, int cap) {
+  char out[GBH_NICK_CAP];
+  if (!osk_input("NICKNAME", nick, out, sizeof out)) return false;
+  int n = cap - 1;
+  if (n > (int)sizeof out - 1) n = (int)sizeof out - 1;
+  int i = 0;
+  for (; i < n && out[i]; i++) nick[i] = out[i];
+  nick[i] = 0;
+  return true;
+}
+
+/* One mon's edit menu: SPECIES/LEVEL/NICKNAME/DONE, each field staged directly into
+ * `staged` (the caller's own copy of the mon, never the live session). Returns true
+ * iff DONE was chosen -- exactly like pdna_gbtrainer's own "B always discards, the
+ * ONE call site above decides whether to commit" contract; the caller still runs
+ * its own confirm + gbh_set_mon + gb_persist, this function only stages fields. */
+static bool hof_edit_mon_menu(uint8_t gen, GbHofMon* staged) {
+  int sel = 0;
+  bool dirty = false;
+  for (;;) {
+    ui_clear();
+    ui_text(4, 4, UI_TITLE, "EDIT MON");
+    ui_hline(0, 14, UI_SCR_W, UI_BORDER);
+    char l1[32];
+    const char* nm = (staged->dex >= 1 && staged->dex <= 251) ? pk_species_name(staged->dex) : "?";
+    siprintf(l1, "%s Lv%d", nm, staged->level);
+    ui_text(6, 20, UI_DIM, l1);
+    for (int i = 0; i < HOFEDIT_N; i++)
+      trainer_row_paint(40 + i * 16, i == sel, kHofEditLbl[i], "", UI_TEXT);
+    ui_text(4, 152, UI_DIM, "U/D select  A choose  B cancel");
+
+    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    if (k & KEY_B) {
+      /* D4 (b194 review): B with nothing staged discards silently (there is
+       * nothing to lose) -- same as before. B with `dirty` true now confirms
+       * first, the editor's own KEEP idiom (PDNA_GBEDIT_KEEP_TITLE, matching
+       * gbedit_confirm_keep()'s own title elsewhere) -- declining (B on the
+       * confirm) returns to the menu with every staged field intact instead
+       * of silently throwing a real edit away. */
+      if (dirty && !app_confirm(PDNA_GBHOF_DISCARD_TITLE,
+                                "Your changes to this mon will be lost."))
+        continue;
+      return false;
+    }
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : HOFEDIT_N - 1;
+    else if (k & KEY_DOWN) sel = (sel + 1) % HOFEDIT_N;
+    else if (k & KEY_A) {
+      if (sel == HOFEDIT_SPECIES) { if (hof_species_editor(gen, &staged->dex)) dirty = true; }
+      else if (sel == HOFEDIT_LEVEL) { if (hof_level_editor(&staged->level)) dirty = true; }
+      else if (sel == HOFEDIT_NICK) { if (hof_nick_editor(staged->nick, GBH_NICK_CAP)) dirty = true; }
+      else return dirty;   /* DONE: commit only if SOMETHING actually changed */
+    }
+  }
+}
+
+/* The ONE call site that stages -> confirms -> writes -> persists an edited mon
+ * (mirrors hof_do_clear/hof_set_count_editor's own shape, and pdna_gbtrainer's
+ * "commit lives at one call site" rule). `team_idx` is the UI (newest-first) team
+ * index this detail page is showing; `mon_idx` the selected mon row. */
+static void hof_edit_mon(GbSession* s, int team_idx, int mon_idx, const GbHofMon* orig) {
+  GbHofMon staged = *orig;
+  if (!hof_edit_mon_menu(s->gen, &staged)) return;   /* B or DONE-with-no-change */
+
+  /* Gen 2: a species change re-rolls DVs (and therefore shininess) exactly like
+   * CREATE's own contract -- gb_hof.h's own doc comment on gbh_set_mon. OT id is
+   * never rerolled (still the save's own trainer, untouched either way). */
+  if (s->gen == GB_GEN2 && staged.dex != orig->dex) {
+    uint8_t dv[4];
+    gbh_roll_dv(app_session_seed() ^ (uint32_t)(team_idx * 97 + mon_idx), dv);
+    memcpy(staged.dv, dv, sizeof dv);
+  }
+
+  char l1[40];
+  siprintf(l1, "Save changes to slot %d?", mon_idx + 1);
+  if (!app_confirm("EDIT ENTRY", l1)) return;
+
+  GbsStatus st = gbh_set_mon(s, team_idx, mon_idx, &staged);
+  if (st != GBS_OK) {
+    gb_rollback();
+    msg_wait("REFUSED", UI_WARN, gbs_status_text(st), "Nothing was changed.");
+    return;
+  }
+  gb_persist("hof edit");
 }
 
 /* ---- START menu: CLEAR ALL / SET COUNT ------------------------------------------ */
@@ -256,10 +414,120 @@ static void hof_set_count_editor(GbSession* s, uint8_t gen) {
   key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);   /* restore the global set */
 }
 
-enum { HOFMENU_CLEAR = 0, HOFMENU_SETCOUNT, HOFMENU_N };
-static const char* const kHofMenuLbl[HOFMENU_N] = { "CLEAR ALL", "SET COUNT" };
+/* ---- F3: ADD TEAM (build 1-6 mons with the same pickers) + DELETE TEAM --------- */
 
-static void hof_start_menu(GbSession* s, uint8_t gen) {
+static void hof_add_team_row_paint(const GbHofTeam* t) {
+  for (int i = 0; i < t->n; i++) {
+    char l[32];
+    const char* nm = (t->mon[i].dex >= 1 && t->mon[i].dex <= 251)
+                     ? pk_species_name(t->mon[i].dex) : "?";
+    siprintf(l, "%d. %s Lv%d", i + 1, nm, t->mon[i].level);
+    ui_text(6, 20 + i * 10, UI_TEXT, l);
+  }
+}
+
+/* Builds ONE new mon via the same three pickers hof_edit_mon_menu uses (species,
+ * level, nickname), defaulting level 5 and nickname = the species name (CREATE's
+ * own default, pdna_gen12.c gb_create_hook -- uppercase already, gb_new_mon.c's own
+ * uppercase_ascii comment). Cancelling the SPECIES step (the only one that can
+ * genuinely mean "changed my mind") adds nothing; cancelling level/nickname simply
+ * keeps their defaults. Gen 2 DVs are rolled fresh here -- there is no "existing"
+ * mon to preserve them from, unlike an edit. Returns false (nothing added) only on
+ * a species cancel. */
+static bool hof_build_one_mon(uint8_t gen, int slot_for_seed, GbHofMon* out) {
+  memset(out, 0, sizeof *out);
+  out->dex = 1;
+  if (!hof_species_editor(gen, &out->dex)) return false;
+  out->level = 5;
+  hof_level_editor(&out->level);
+  const char* nm = pk_species_name(out->dex);
+  int i = 0;
+  for (; i < GBH_NICK_CAP - 1 && nm && nm[i]; i++) out->nick[i] = nm[i];
+  out->nick[i] = 0;
+  (void)hof_nick_editor(out->nick, GBH_NICK_CAP);   /* optional rename */
+  if (gen == GB_GEN2) {
+    uint8_t dv[4];
+    gbh_roll_dv(app_session_seed() ^ (uint32_t)(slot_for_seed * 131 + 7), dv);
+    memcpy(out->dv, dv, sizeof dv);
+  }
+  out->present = true;
+  return true;
+}
+
+static void hof_do_add_team(GbSession* s) {
+  GbHofTeam t; memset(&t, 0, sizeof t);
+  int sel = 0;
+  for (;;) {
+    const char* items[2]; int nitems = 0, add_idx = -1, done_idx = -1;
+    if (t.n < GBH_NUM_MONS) { add_idx = nitems; items[nitems++] = "+ ADD MON"; }
+    if (t.n >= 1)           { done_idx = nitems; items[nitems++] = "DONE"; }
+    if (sel >= nitems) sel = nitems - 1;
+    if (sel < 0) sel = 0;
+
+    ui_clear();
+    ui_text(4, 4, UI_TITLE, "ADD TEAM");
+    ui_hline(0, 14, UI_SCR_W, UI_BORDER);
+    char hdr[24];
+    siprintf(hdr, "%d/%d mons", t.n, GBH_NUM_MONS);
+    ui_text(6, 18, UI_DIM, hdr);
+    hof_add_team_row_paint(&t);
+    ui_hline(0, 96, UI_SCR_W, UI_BORDER);
+    for (int i = 0; i < nitems; i++)
+      trainer_row_paint(100 + i * 16, i == sel, items[i], "", UI_TEXT);
+    ui_text(4, 152, UI_DIM, "U/D select  A choose  B cancel");
+
+    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    if (k & KEY_B) return;   /* discard: nothing written, no matter how many staged */
+    else if (k & KEY_UP)   sel = (nitems > 0) ? ((sel > 0) ? sel - 1 : nitems - 1) : 0;
+    else if (k & KEY_DOWN) sel = (nitems > 0) ? (sel + 1) % nitems : 0;
+    else if (k & KEY_A) {
+      if (sel == add_idx) {
+        GbHofMon m;
+        if (hof_build_one_mon(s->gen, t.n, &m)) t.mon[t.n++] = m;
+      } else if (sel == done_idx) {
+        char l1[32];
+        siprintf(l1, "Add this %d-mon team?", t.n);
+        if (app_confirm("ADD TEAM", l1)) {
+          GbsStatus st = gbh_append_team(s, &t);
+          if (st != GBS_OK) {
+            gb_rollback();
+            msg_wait("REFUSED", UI_WARN, gbs_status_text(st), "Nothing was changed.");
+          } else {
+            gb_persist("hof add");
+          }
+        }
+        return;
+      }
+    }
+  }
+}
+
+/* Inverse of add: delete the team currently highlighted on the LIST screen (the
+ * `team_idx` the caller passed in when START was pressed) -- cheap and symmetric
+ * (brief's own wording), no separate picker needed since the list cursor already
+ * names the team. */
+static void hof_do_delete_team(GbSession* s, int team_idx) {
+  int present = gbh_team_count_present(s);
+  if (team_idx < 0 || team_idx >= present) { snd_deny(); return; }
+  char l1[32];
+  siprintf(l1, "Delete team #%d?", team_idx + 1);
+  if (!app_confirm("DELETE TEAM", l1)) return;
+  GbsStatus st = gbh_delete_team(s, team_idx);
+  if (st != GBS_OK) {
+    gb_rollback();
+    msg_wait("REFUSED", UI_WARN, gbs_status_text(st), "Nothing was changed.");
+    return;
+  }
+  gb_persist("hof delete");
+}
+
+enum { HOFMENU_CLEAR = 0, HOFMENU_SETCOUNT, HOFMENU_ADD, HOFMENU_DELETE, HOFMENU_N };
+static const char* const kHofMenuLbl[HOFMENU_N] =
+  { "CLEAR ALL", "SET COUNT", "ADD TEAM", "DELETE TEAM" };
+
+/* `team_sel` is the list screen's own current cursor position -- DELETE TEAM acts
+ * on it directly (F3's own design: no second picker). */
+static void hof_start_menu(GbSession* s, uint8_t gen, int team_sel) {
   int sel = 0;
   for (;;) {
     ui_clear();
@@ -275,7 +543,9 @@ static void hof_start_menu(GbSession* s, uint8_t gen) {
     else if (k & KEY_DOWN) sel = (sel + 1) % HOFMENU_N;
     else if (k & KEY_A) {
       if (sel == HOFMENU_CLEAR) hof_do_clear(s);
-      else                      hof_set_count_editor(s, gen);
+      else if (sel == HOFMENU_SETCOUNT) hof_set_count_editor(s, gen);
+      else if (sel == HOFMENU_ADD) hof_do_add_team(s);
+      else hof_do_delete_team(s, team_sel);
       return;   /* back to the list either way; it re-reads count/present fresh */
     }
   }
@@ -300,10 +570,20 @@ void pdna_gbhof(GbSession* s, bool can_edit) {
     else if (sel >= present) sel = present - 1;
 
     if (in_detail) {
-      GbHofTeam t;
-      if (gbh_team(s, sel, &t)) {
-        hof_detail_render(&t, s->gen, sel + 1);
-        s_wait(KEY_B);
+      int mon_sel = 0;
+      for (;;) {
+        GbHofTeam t;
+        if (!gbh_team(s, sel, &t)) break;
+        if (mon_sel >= t.n) mon_sel = (t.n > 0) ? t.n - 1 : 0;
+        hof_detail_render(&t, s->gen, sel + 1, can_edit, can_edit ? mon_sel : -1);
+        u16 mask = can_edit ? (KEY_UP | KEY_DOWN | KEY_A | KEY_B) : KEY_B;
+        u16 k = s_wait(mask);
+        if (k & KEY_B) break;
+        else if (k & KEY_UP)   mon_sel = (mon_sel > 0) ? mon_sel - 1 : t.n - 1;
+        else if (k & KEY_DOWN) mon_sel = (mon_sel + 1) % t.n;
+        else if (k & KEY_A)    hof_edit_mon(s, sel, mon_sel, &t.mon[mon_sel]);
+        /* the top of the loop re-reads gbh_team(): a committed edit shows up
+         * immediately, exactly like every other GB edit screen's own resume. */
       }
       in_detail = false;
       pv.valid = false;
@@ -328,7 +608,7 @@ void pdna_gbhof(GbSession* s, bool can_edit) {
       else { snd_deny(); }
     } else if (k & KEY_START) {
       if (!can_edit) { snd_deny(); continue; }
-      hof_start_menu(s, s->gen);
+      hof_start_menu(s, s->gen, sel);
       pv.valid = false;
     }
   }

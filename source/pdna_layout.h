@@ -555,6 +555,7 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * are an independent byte-for-byte copy, not a cross-file #include). Same
  * panel positions as PDNA_GBEDIT_CONFIRM_TITLE/A_WRITE/B_CANCEL. */
 #define PDNA_GBEDIT_KEEP_TITLE     "Keep this Pokemon?"
+#define PDNA_GBHOF_DISCARD_TITLE   "Discard changes?"       /* HoF EDIT MON: A = discard, B = stay (b194 review) */
 #define PDNA_GBEDIT_KEEP_A         "A = write (backup first)"
 #define PDNA_GBEDIT_KEEP_B         "B = discard it"
 
