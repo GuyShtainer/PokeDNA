@@ -4127,10 +4127,10 @@ def run_s150_13_carry_badge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb
     after_gen2 = _count_exact_color(p01b, _COL_GEN2_RGB)
     delta_gen2 = after_gen2 - base_gen2
     print(f"  (01b) gen2-tint after settle: {after_gen2} (delta {delta_gen2:+d} vs baseline {base_gen2})")
-    if delta_gen2 <= 0:
-        raise RuntimeError(f"s150_13_01b_settled_gen2: gen2-tint pixel count did not increase "
-                            f"past the settle beat ({base_gen2} -> {after_gen2}) -- the badge "
-                            f"was clobbered (review D1's exact bug)")
+    if delta_gen2 != 22:   # exact index-2 count of s150_13_badge_tiles[1] (the '2'); +7 = a clobbered fragment (review D1 re-verify)
+        raise RuntimeError(f"s150_13_01b_settled_gen2: gen2-tint delta {delta_gen2:+d} != expected +22 "
+                            f"({base_gen2} -> {after_gen2}) -- the badge is missing or a clobbered "
+                            f"fragment (review D1's exact bug)")
 
     # drop it back on its own slot (self-drop, no write) before moving to slot 1.
     s.tap("A", settle=150)
@@ -4153,10 +4153,10 @@ def run_s150_13_carry_badge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb
     after_gen1 = _count_exact_color(p03b, _COL_GEN1_RGB)
     delta_gen1 = after_gen1 - base_gen1
     print(f"  (03b) gen1-tint after settle: {after_gen1} (delta {delta_gen1:+d} vs baseline {base_gen1})")
-    if delta_gen1 <= 0:
-        raise RuntimeError(f"s150_13_03b_settled_gen1: gen1-tint pixel count did not increase "
-                            f"past the settle beat ({base_gen1} -> {after_gen1}) -- the badge "
-                            f"was clobbered (review D1's exact bug)")
+    if delta_gen1 != 21:   # exact index-2 count of s150_13_badge_tiles[0] (the '1')
+        raise RuntimeError(f"s150_13_03b_settled_gen1: gen1-tint delta {delta_gen1:+d} != expected +21 "
+                            f"({base_gen1} -> {after_gen1}) -- the badge is missing or a clobbered "
+                            f"fragment (review D1's exact bug)")
 
     s.tap("A", settle=150)                                  # drop it back on its own slot
     s.shot("04_dropped_back", "S150-13: dropped back, badge gone again")
