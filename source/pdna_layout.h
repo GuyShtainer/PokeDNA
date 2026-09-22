@@ -1134,7 +1134,7 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XRC_EMPTY_L2   "Records appear after a"
 #define PDNA_XRC_EMPTY_L3   "Bank transfer."
 #define PDNA_XRC_MORE       "More records not shown."
-#define PDNA_XRC_FOOT       "A act  SEL info  START apply  B"
+#define PDNA_XRC_FOOT       "A act  SEL info  START apply"
 
 /* Bank-open prompt (decision 1a/6) -- the %d-bearing suffix, worst case measured
  * as "64 POKEMON IN TWO PLACES" (tests/host_textfit_test.c). */
