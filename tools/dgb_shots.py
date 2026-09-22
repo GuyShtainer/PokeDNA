@@ -3857,7 +3857,8 @@ def run_s150_10(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessi
                            "re-moved to SURF/BITE/ROCK TOMB/PROTECT -- "
                            "extract_gen3_record --moves, screenshot-only, no Gen-3 "
                            "session ever opened). BOX1, 20/20 -- no room here, see "
-                           "the R x13 below.")
+                           "the R x13 below.",
+           claim=["20/20"])   # BACKLOG #214 item 3 retrofit
 
     # Re-verified directly against this corpus file (see the docstring above): slot
     # 18 (row 2 col 6), NOT slot 17 -- and settle=150, not 80, or a RIGHT press
@@ -3874,7 +3875,8 @@ def run_s150_10(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessi
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # empty-cell action menu
     s.shot("03_empty_cell_menu", "BACKLOG #150 S150-10: the empty-cell action menu "
                                   "(CREATE / PASTE HERE / CANCEL), cursor on CREATE "
-                                  "(default)")
+                                  "(default)",
+           claim=["CREATE", "PASTE HERE", "CANCEL"])   # BACKLOG #214 item 3 retrofit
 
     s.press_n("DOWN", 1, settle=80)                         # CREATE (default) -> PASTE HERE
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # PASTE HERE -> gb_clip_moves+gen3_to_gb_fixed -> loss screen
@@ -3882,7 +3884,8 @@ def run_s150_10(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessi
                               "unchanged by this lane -- gen3_to_gb_fixed() already "
                               "ran with bad4={0,0,1,0} (only ROCK TOMB out of range "
                               "for Gen 2) and emptied that ONE slot rather than "
-                              "refusing the whole record with G3GB_ERR_MOVE")
+                              "refusing the whole record with G3GB_ERR_MOVE",
+           claim=["WHAT WON'T TRANSFER"])   # BACKLOG #214 item 3 retrofit
 
     # BACKLOG #150 S150-10 own finding, FIXED by BACKLOG #210: this ONE transition
     # also runs the fill step (decision 8 step 7, gb_paste_fill_moves ->
@@ -3914,7 +3917,8 @@ def run_s150_10(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessi
                              "text (nbad > 0 greys this row); 'SELECT = MAKE LEGAL "
                              "(swap moves)' (no level correction alongside this "
                              "paste, so the moves-only wording); 'Either way it "
-                             "comes back unchanged.'; 'B = cancel'")
+                             "comes back unchanged.'; 'B = cancel'",
+           claim=["ROCK TOMB", "SELECT = MAKE LEGAL", "B = cancel"])   # BACKLOG #214 item 3 retrofit
 
     # Decision 7: A is not even in the wait mask once any slot is bad -- this tap
     # must be a genuine no-op, asserted by pixel-equality (allow_same=True), not by
@@ -3950,7 +3954,8 @@ def run_s150_10(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessi
                                "record's fills/pack (decision 8 step 7) are proven "
                                "byte-for-byte by the host tests instead -- "
                                "tests/host_gen3gb_test.c section 7 -- "
-                               "HARDWARE-ONLY proof, not faked here.")
+                               "HARDWARE-ONLY proof, not faked here.",
+           claim=["SIDECAR FOLDER", "Nothing transferred."])   # BACKLOG #214 item 3 retrofit
 
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss -> back to the box grid
     s.shot("08_cell_still_empty_no_corruption", "BACKLOG #150 S150-10: the cell is "
@@ -4754,7 +4759,8 @@ def run_s150_13_carry_badge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb
     s.tap("DOWN", settle=60)                                # Party -> Bank (index 1, one DOWN)
     s.tap("A", settle=150)                                  # -> pdna_bank_show(), box 0 (BANK 1)
     p00 = s.shot("00_box0", "S150-13: box 0, box_load()'s PDNA_DELTA plant -- slot 0 "
-           "CHIKORITA (Gen 2), slot 1 PIKACHU (Gen 1); cursor on slot 0")
+           "CHIKORITA (Gen 2), slot 1 PIKACHU (Gen 1); cursor on slot 0",
+           claim=["CHIKORITA", "No.152"])
     base_gen1 = _count_exact_color(p00, _COL_GEN1_RGB)
     base_gen2 = _count_exact_color(p00, _COL_GEN2_RGB)
     print(f"  (pixel baseline, no carry) gen1-tint={base_gen1} gen2-tint={base_gen2}")
@@ -4799,7 +4805,8 @@ def run_s150_13_carry_badge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb
 
     p03b = s.shot("03b_settled_gen1", "S150-13 review D1: same carry, >= 60 vblanks "
            "later -- pinned by an exact pixel count below (expected pixel-identical "
-           "to 03 when the badge and cursor are both stable)", settle=60, allow_same=True)
+           "to 03 when the badge and cursor are both stable)", settle=60, allow_same=True,
+           claim=["PIKACHU"])
     after_gen1 = _count_exact_color(p03b, _COL_GEN1_RGB)
     delta_gen1 = after_gen1 - base_gen1
     print(f"  (03b) gen1-tint after settle: {after_gen1} (delta {delta_gen1:+d} vs baseline {base_gen1})")
