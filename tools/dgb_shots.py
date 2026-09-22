@@ -5303,8 +5303,10 @@ def run_s150_9_merge_screen(core_mod, image_mod, rom_emerald: Path, out_dir: Pat
     into_bank(s)
     s.shot("05_in_bank", "S150-9: UPx6 (off the grid, past the tab row, off the "
            "top) -> the Bank itself, still carrying -- box 1 shows "
-           "bank_plant_box0's own five cells (CHI/PIK/EGG/CHI/DMG), cursor past "
-           "them on an empty cell")
+           "bank_plant_box0's own SEVEN cells (CHI/PIK/EGG/CHI/DMG/CHI/CHI -- "
+           "S150-12 review decision 17, merged after this lane's first pass, "
+           "added two COPY cells at slots 5/6; was five cells pre-merge), "
+           "cursor past them on an empty cell")
     s.tap("A", settle=300)
     s.shot("06_merge_screen", "S150-9: A to drop -> the per-field MERGE screen -- "
            "'BACK TO ITS ORIGINAL' / 'Level 9 > 12  KEEP' (cursor here) / "
@@ -5330,12 +5332,16 @@ def run_s150_9_merge_screen(core_mod, image_mod, rom_emerald: Path, out_dir: Pat
     s.shot("14_level_take_again", "S150-9: A -- LEVEL -> TAKE (MOVES stays KEEP)")
     s.tap("START", settle=300)
     s.shot("15_write_result", "S150-9: START applies (accept=LEVEL only) -- "
-           "'TRANSFER RECORD UNREADABLE / Nothing was moved.' (PDNA_XFERREC_*): "
-           "the honest result on a vehicle with no writable FAT at all -- the "
-           "rebuilt cell is correct in RAM (bank_restore_from_entry_gb succeeded), "
-           "but the ledger re-open/re-write downstream of it cannot land on this "
-           "vehicle. Hardware-owed (docs/HW-QUEUE.md): whether the Bank cell "
-           "itself would show the merged mon on a real card is untested here.")
+           "'TRANSFER RECORD UNREADABLE / Nothing was moved.' (PDNA_XFERREC_*). "
+           "The real mechanism (review D6, corrected from an earlier guess): "
+           "pc_bank_restore_up's own pdna_bank_next_serial() call fails (it "
+           "writes bank.meta -- no writable FAT on this vehicle at all), so "
+           "`serial == 0` and pc_bank_restore_up returns -1 BEFORE "
+           "bank_restore_from_entry is ever called -- the restore itself never "
+           "ran here. drop_held's own rc<0 branch shows this same message for "
+           "any negative pc_bank_restore_up return (source/pdna_box.c ~:1633-1642). "
+           "Hardware-owed (docs/HW-QUEUE.md): whether the merge lands correctly "
+           "when a real card CAN allocate a serial is untested here.")
 
     # ---- decision 7: slot 28 -- the "nothing changed" skip -----------------------
     s2 = gb_shots.Session(core_mod, image_mod, rom_emerald, out_dir, "s150_9b_")
@@ -5347,8 +5353,9 @@ def run_s150_9_merge_screen(core_mod, image_mod, rom_emerald: Path, out_dir: Pat
     into_bank(s2)
     s2.tap("A", settle=300)
     s2.shot("01_no_screen", "S150-9 decision 7: A to drop -- NO merge screen "
-            "(nothing changed abroad, decision 7's own rule), straight to the "
-            "SAME write-attempt result frame 15 above reaches")
+            "(nothing changed abroad, decision 7's own rule; app_xfer_merge_screen "
+            "returns true with *accept=0 without drawing), straight to the SAME "
+            "pdna_bank_next_serial() failure frame 15 reaches (review D6)")
 
     # ---- decision 8: slot 27 -- XR_STATE_RESTORED, the ALREADY RESTORED refusal --
     s3 = gb_shots.Session(core_mod, image_mod, rom_emerald, out_dir, "s150_9c_")
