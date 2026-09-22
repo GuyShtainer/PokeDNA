@@ -1154,6 +1154,15 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XFER_GAME_SILVER  "SILVER"
 #define PDNA_XFER_GAME_CRYSTAL "CRYSTAL"
 
+/* BACKLOG #150 S150-15, decision 8: the ORIGIN card's note line for a converted mon's
+ * GB ORIGINAL view. Two-digit year -- the ORIGIN card draws this fixed sys8,
+ * untruncated, in PDNA_SUM_CARD_W (138 px); worst cases "CRYSTAL 26-09-16" (16
+ * glyphs = 128 px) and "CRYSTAL (no date)" (17 = 136 px) both fit, a four-digit year
+ * would not (host_textfit_test.c proves both worst cases). */
+#define PDNA_XFER_ORIG_NOTE_FMT   "%s %02u-%02u-%02u"
+#define PDNA_XFER_ORIG_NODATE_FMT "%s (no date)"
+#define PDNA_XFER_ORIG_GEN_FMT    "GEN %u"          /* origin_game unknown -- xv_origin_name() NULL */
+
 /* ---- S5-B Part D: PASTE (GB) on an empty Game Boy cell (pdna_gen12.c) ------------- */
 /* S5-C Part B1: Gen 1 is no longer refused outright -- a base-stat table now exists
  * (read live off the user's own ROM beside the .sav). GEN1_TITLE/L1 are repurposed
