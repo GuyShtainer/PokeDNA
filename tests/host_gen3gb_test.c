@@ -1423,6 +1423,127 @@ static void test_gen3_to_gb_fixed(void) {
          "   naming '7d: gen3_to_gb_fixed accepts with bad4 flagged', restored -> green)\n");
 }
 
+/* (7g-k) source/gb_sidecar.c's merge_moves -- decision 9 (G-H8/G-H9), the ROUND TRIP
+ * through the real writer (gbsc_entry_from) and the real merge (gbsc_merge_up), not
+ * a re-implementation. */
+static void test_merge_moves_per_slot(void) {
+  printf("-- 7g-k. merge_moves per slot (round trip) --\n");
+  GbGen1Base g1 = test_g1base();
+
+  /* rec = Blastoise {SURF, BITE, ROCK TOMB, PROTECT}; out = the DOWN conversion with
+   * slots 2/3 emptied (bad4), then filled {33 Tackle, 45 Growl} by g3gb_moves_fill --
+   * same shape as 7d/7b, built fresh here so this section is self-contained. */
+  uint8_t rec[80];
+  gen3_build_mon(9, 50, 0x77778888u, 0xC0000004u, "MERGE3", 3, rec);
+  EditMon em0; gen3_edit_load(rec, false, &em0);
+  em_set_move(&em0, 0, 57); em_set_move(&em0, 1, 44); em_set_move(&em0, 2, 317); em_set_move(&em0, 3, 182);
+  gen3_edit_commit(&em0, rec);
+
+  uint8_t bad4[4] = {0, 0, 1, 1};
+  GbEditMon out; Gen3ToGbLoss loss;
+  G3GbStatus st = gen3_to_gb_fixed(rec, GB_GEN1, true, &g1, bad4, &out, &loss);
+  CHECK(st == G3GB_OK, "7g setup: gen3_to_gb_fixed accepts (%s)", g3gb_status_text(st));
+  if (st != G3GB_OK) return;
+  uint8_t learn4[4] = {33, 45, 0, 0}, fill4[4];
+  int nfill = g3gb_moves_fill(&out, bad4, learn4, fill4);
+  CHECK(nfill == 2, "7g setup: 2 slots filled (got %d)", nfill);
+  CHECK(gb_get_move(&out, 0) == 57 && gb_get_move(&out, 1) == 44 &&
+        gb_get_move(&out, 2) == 33 && gb_get_move(&out, 3) == 45,
+        "7g setup: {57,44,33,45}");
+
+  printf("-- 7g. round trip, nothing changed abroad --\n");
+  GbscEntry e; gbsc_entry_from(&e, &out, rec, 0);
+  CHECK(e.has_written_moves == 1, "7g: gbsc_entry_from sets has_written_moves");
+  CHECK(e.moves_written[0] == 57 && e.moves_written[1] == 44 &&
+        e.moves_written[2] == 33 && e.moves_written[3] == 45,
+        "7g: moves_written == {57,44,33,45} (got {%u,%u,%u,%u})",
+        e.moves_written[0], e.moves_written[1], e.moves_written[2], e.moves_written[3]);
+
+  static uint8_t filebuf[GBSC_FILE_MAX];
+  uint32_t flen = (uint32_t)gbsc_init(filebuf, 0xABCDEF01u);
+  CHECK(gbsc_add(filebuf, &flen, sizeof filebuf, &e) == 0, "7g: sidecar add");
+  CHECK((gbsc_flags_get(filebuf, flen) & GBSC_FLAG_HAS_WRITTEN_MOVES) != 0,
+        "7g (decision 13): the header mirror bit is set after adding a has_written_moves entry");
+  GbscEntry back;
+  CHECK(gbsc_get(filebuf, flen, 0, &back), "7g: sidecar get");
+
+  {
+    uint8_t back80[80]; GbscMergeReport rep;
+    CHECK(gbsc_merge_up(&back, &out, back80, &rep), "7g: merge up succeeds");
+    CHECK(!rep.moves_changed, "7g: moves_changed is FALSE -- nothing differs from the written baseline");
+    CHECK(memcmp(back80, rec, 80) == 0,
+          "7g: the ORIGINAL four bytes are back exactly -- Rock Tomb and Protect included");
+  }
+
+  printf("-- 7h. slot 2 changed abroad; slot 3 (only re-encoded) survives --\n");
+  {
+    GbEditMon now = out;
+    CHECK(gb_set_move(&now, 2, 52), "7h: set slot 2 to Ember (52) in-game");
+    uint8_t back80[80]; GbscMergeReport rep;
+    CHECK(gbsc_merge_up(&back, &now, back80, &rep), "7h: merge up succeeds");
+    CHECK(rep.moves_changed, "7h: moves_changed is TRUE");
+    PkMon merged;
+    CHECK(pk_decode_mon(back80, false, &merged), "7h: merged record decodes");
+    CHECK(merged.moves[0] == 57 && merged.moves[1] == 44 && merged.moves[2] == 52 && merged.moves[3] == 182,
+          "7h: {57,44,52,182} -- PROTECT SURVIVES because slot 3 was only re-encoded (got {%u,%u,%u,%u})",
+          merged.moves[0], merged.moves[1], merged.moves[2], merged.moves[3]);
+  }
+
+  printf("-- 7i. one PP-Up used on slot 0 in-game; the other three stay byte-identical --\n");
+  {
+    GbEditMon now = out;
+    CHECK(gb_set_ppup(&now, 0, 1), "7i: give slot 0 (Surf) one PP-Up");
+    uint8_t back80[80]; GbscMergeReport rep;
+    CHECK(gbsc_merge_up(&back, &now, back80, &rep), "7i: merge up succeeds");
+    CHECK(rep.moves_changed, "7i: moves_changed is TRUE (slot 0 differs)");
+    PkMon merged, orig;
+    CHECK(pk_decode_mon(back80, false, &merged), "7i: merged record decodes");
+    CHECK(pk_decode_mon(rec, false, &orig), "7i: original decodes");
+    CHECK(((merged.ppBonuses >> 0) & 0x3u) == 1, "7i: slot 0's ppBonuses bits == 1");
+    for (int i = 1; i < 4; i++) {
+      CHECK(merged.moves[i] == orig.moves[i], "7i: slot %d move byte-identical to the original", i);
+      CHECK(merged.pp[i] == orig.pp[i], "7i: slot %d PP byte-identical to the original", i);
+      CHECK(((merged.ppBonuses >> (i * 2)) & 0x3u) == ((orig.ppBonuses >> (i * 2)) & 0x3u),
+            "7i: slot %d PP-Ups byte-identical to the original", i);
+    }
+  }
+
+  printf("-- 7j. the pre-#150 legacy shape still reads a correction as a change --\n");
+  {
+    GbscEntry pre = e;
+    pre.has_written_moves = 0;
+    memset(pre.moves_written, 0, 4);
+    pre.ppup_written = 0;
+    uint8_t back80[80]; GbscMergeReport rep;
+    CHECK(gbsc_merge_up(&pre, &out, back80, &rep), "7j: merge up succeeds");
+    CHECK(rep.moves_changed, "7j: a legacy entry reads the correction as a genuine move change (documented behaviour)");
+    PkMon merged;
+    CHECK(pk_decode_mon(back80, false, &merged), "7j: merged record decodes");
+    CHECK(merged.moves[2] == 33, "7j: legacy merge writes 33 into slot 2 (got %u)", merged.moves[2]);
+  }
+
+  printf("-- 7k. clearing the header mirror bit does not change the merge -- it keys on the entry --\n");
+  {
+    CHECK(gbsc_flags_set(filebuf, flen, 0) == 0, "7k: clear the header flags");
+    CHECK((gbsc_flags_get(filebuf, flen) & GBSC_FLAG_HAS_WRITTEN_MOVES) == 0, "7k: header bit now clear");
+    GbscEntry back2;
+    CHECK(gbsc_get(filebuf, flen, 0, &back2), "7k: re-get the entry");
+    uint8_t back80[80]; GbscMergeReport rep;
+    CHECK(gbsc_merge_up(&back2, &out, back80, &rep), "7k: merge up succeeds");
+    CHECK(!rep.moves_changed, "7k: identical result to 7g -- the merge keys on the ENTRY bit, not the header mirror");
+    CHECK(memcmp(back80, rec, 80) == 0, "7k: original bytes back, same as 7g");
+  }
+
+  printf("-- Mutation proof M3: restore the all-four write --\n");
+  printf("  (see the report: applied to a scratch copy of source/gb_sidecar.c,\n"
+         "   7h fails naming '7h: {57,44,52,182}...', getting {57,44,52,45} instead\n"
+         "   (slot 3's fill overwritten even though only slot 0/2 changed); restored -> green)\n");
+  printf("-- Mutation proof M4: baseline always from orig->moves (ignore has_written_moves) --\n");
+  printf("  (see the report: applied to a scratch copy of source/gb_sidecar.c,\n"
+         "   7g fails naming 'moves_changed is FALSE' (now true: Protect 182 vs the\n"
+         "   corrected 45 look like a genuine change); restored -> green)\n");
+}
+
 static void test_moves_baseline(void) {
   printf("== 6. BACKLOG #150 S150-6 G-H9: merge_moves baselines from moves_written ==\n");
 
@@ -1507,6 +1628,7 @@ int main(int argc, char** argv) {
   test_moves_baseline();
   test_moves_per_slot();
   test_gen3_to_gb_fixed();
+  test_merge_moves_per_slot();
 
   printf("== 2. the Gen-3 corpus, both target generations ==\n");
   for (int i = 1; i < argc; i++) run_corpus_file(argv[i]);
