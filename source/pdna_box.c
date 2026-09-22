@@ -1441,8 +1441,33 @@ static uint8_t* __attribute__((noinline)) drop_held_up(BoxSource* src, int box, 
   static EWRAM_BSS bool s_up_scan_done;   /* EWRAM: an IWRAM static would cost 8 B of stack budget (re-verify) */
   if (!pdna_bank_serial_trusted() || !s_up_scan_done) {
     int coll_box = -1, coll_slot = -1;
-    if (bank_ident32_collision(bank_scan_get, NULL, PDNA_BANK_BOXES, G3_BOX_SLOTS, box, cur,
-                                s_held, &coll_box, &coll_slot)) {
+    bool collided = bank_ident32_collision(bank_scan_get, NULL, PDNA_BANK_BOXES, G3_BOX_SLOTS, box, cur,
+                                           s_held, &coll_box, &coll_slot);
+    if (collided) {
+      /* BACKLOG #223: after a bank.meta .bak rollback (BACKLOG #219) the recovered
+       * serial counter can sit at or below serials the boxes already hold -- s_held
+       * (bc_pack()ed with that stale counter, wherever this lift's own serial was
+       * allocated) then collides with something genuinely already there, and a plain
+       * refusal makes the player retry, burning one stale serial per attempt until
+       * the counter finally passes the highest stored one. Resync ONCE to the real
+       * high-water mark (the same 16-box scan the collision check just ran), pull a
+       * FRESH serial and re-pack s_held with it, then re-check: a TRUE ident32 clash
+       * (two cells sharing an identity for a reason other than a stale counter --
+       * real corruption) survives this unchanged, because nothing this branch does
+       * can make a genuine duplicate stop colliding, and `collided` simply stays
+       * true below. */
+      uint32_t stored_max = bank_serial_max(bank_scan_get, NULL, PDNA_BANK_BOXES, G3_BOX_SLOTS);
+      GbEditMon rmon; BcMeta rmeta;
+      if (pdna_bank_serial_resync(stored_max) && bc_unpack(s_held, &rmon, &rmeta)) {
+        uint32_t fresh = pdna_bank_next_serial();
+        if (fresh != 0 &&
+            bc_pack(&rmon, rmeta.flags, rmeta.origin_game, rmeta.rtc_epoch, fresh, s_held) == 0) {
+          collided = bank_ident32_collision(bank_scan_get, NULL, PDNA_BANK_BOXES, G3_BOX_SLOTS,
+                                            box, cur, s_held, &coll_box, &coll_slot);
+        }
+      }
+    }
+    if (collided) {
       snd_error();
       /* BACKLOG #219b: was a log line + snd_error() only -- the player saw nothing.
        * msg_wait BEFORE boxoam_resume(), same as the backup-gate refusal above (the

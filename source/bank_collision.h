@@ -32,4 +32,16 @@ bool bank_ident32_collision(BankBoxGetter get_box, void* ctx,
                              const uint8_t ident8[8],
                              int* out_box, int* out_slot);
 
+/* BACKLOG #223: the same shared getter, one more pure walk -- the HIGHEST
+ * bank_serial (BC_OFF_BANK_SERIAL, bank_cell.h) stored in any native cell across
+ * every box. After a bank.meta .bak rollback (BACKLOG #219) the recovered serial
+ * counter can sit below serials already written into the boxes; every UP landing
+ * then computes a serial the collision scan above immediately refuses, burning one
+ * serial per retry forever. Callers resync by raising the RAM counter to
+ * bank_serial_max(...) + 1 before allocating the next serial. Returns 0 when no box
+ * holds a native cell (a fresh Bank, or every get_box(b, ctx) returned NULL) --
+ * 0 is never a valid allocated bank_serial (pdna_bank_next_serial() never returns
+ * it), so "0 = nothing stored" cannot be confused with a genuine high-water mark. */
+uint32_t bank_serial_max(BankBoxGetter get_box, void* ctx, int num_boxes, int slots_per_box);
+
 #endif /* BANK_COLLISION_H */

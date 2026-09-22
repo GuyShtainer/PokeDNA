@@ -501,6 +501,12 @@ UP_SCAN_LATCH_RE = re.compile(r"s_up_scan_done")
 UP_SCAN_LATCH_SET_RE = re.compile(r"if\s*\(\s*pdna_bank_serial_trusted\(\)\s*\)\s*s_up_scan_done\s*=\s*true")
 UP_SCAN_LATCH_BARE_RE = re.compile(r"^\s*s_up_scan_done\s*=\s*true")
 
+# BACKLOG #223: the serial-resync attempt (pdna_bank_serial_resync() + the re-pack +
+# re-check) must run BEFORE the CLASH refusal message -- otherwise a stale (post-.bak-
+# rollback) serial counter refuses every UP landing forever instead of resyncing once.
+SERIAL_RESYNC_CALL_RE = re.compile(r"\bpdna_bank_serial_resync\(")
+BANK_COLL_REFUSAL_RE = re.compile(r"\bPDNA_BANK_COLL_TITLE\b")
+
 
 def up_scan_latch_facts(lines, start, end):      # shared by the real check AND MUT AD
     g = first_match_line(lines, start, end, UP_SCAN_GUARD_RE)
@@ -1380,6 +1386,15 @@ def main() -> int:
     ok, d = up_scan_latch_facts(box_lines, s, e)
     check(ok, d)
 
+    # (am) BACKLOG #223: pdna_bank_serial_resync( runs BEFORE the PDNA_BANK_COLL_TITLE
+    # refusal in drop_held_up's body -- a stale serial counter (post-.bak-rollback) must
+    # get ONE chance to resync and retry before the CLASH message fires, not after.
+    s, e = extract_function(box_lines, r"^static uint8_t\* __attribute__\(\(noinline\)\) drop_held_up\(")
+    dh_body_am = box_lines[s:e]
+    ok, msg = gate_before_pattern(dh_body_am, 0, len(dh_body_am), SERIAL_RESYNC_CALL_RE,
+                                   BANK_COLL_REFUSAL_RE, "drop_held_up")
+    check(ok, msg)
+
     # (ag) BACKLOG #210: s_busy_reading( is called BEFORE gb_paste_fill_moves( -- the
     # fill's own gb_create_locate_rom() call is a cold, uncached, ~185,000-read scan
     # (same as CREATE's, which CREATE masks the same way).
@@ -2123,6 +2138,28 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str]) -
                         f"was not: {detail}")
         print(f"  MUT AD demonstration -- drop_held_up's scan guard reverted to the bare "
               f"`if (!pdna_bank_serial_trusted())` form: {detail}")
+
+    # MUT AM (BACKLOG #223, check (am)'s own demonstration): move the
+    # pdna_bank_serial_resync( call line to AFTER the PDNA_BANK_COLL_TITLE refusal on a
+    # copy -- gate_before_pattern must fail: a stale serial counter would then never get
+    # a chance to resync before the CLASH message fires.
+    s, e = extract_function(box_lines, r"^static uint8_t\* __attribute__\(\(noinline\)\) drop_held_up\(")
+    body_am = box_lines[s:e]
+    resync_i = first_match_line(body_am, 0, len(body_am), SERIAL_RESYNC_CALL_RE)
+    refusal_i = first_match_line(body_am, 0, len(body_am), BANK_COLL_REFUSAL_RE)
+    check(resync_i is not None and refusal_i is not None and resync_i < refusal_i,
+          "MUT AM: could not locate pdna_bank_serial_resync( before PDNA_BANK_COLL_TITLE "
+          "in the real source -- fix this test")
+    if resync_i is not None and refusal_i is not None and resync_i < refusal_i:
+        mut_am = list(body_am)
+        resync_line = mut_am.pop(resync_i)
+        mut_am.insert(refusal_i, resync_line)   # the resync call now sits AFTER the refusal
+        ok10, detail = gate_before_pattern(mut_am, 0, len(mut_am), SERIAL_RESYNC_CALL_RE,
+                                           BANK_COLL_REFUSAL_RE, "drop_held_up (MUT AM)")
+        check(not ok10, f"MUT AM (pdna_bank_serial_resync( moved after the CLASH refusal) "
+                         f"should have been caught but was not: {detail}")
+        print(f"  MUT AM demonstration -- pdna_bank_serial_resync( line moved after the "
+              f"PDNA_BANK_COLL_TITLE refusal: {detail}")
 
     # MUT AG (BACKLOG #210): delete the `s_busy_reading();` line on a copy -- (ag) must
     # fail to find any busy call before the fill's cold ROM scan.

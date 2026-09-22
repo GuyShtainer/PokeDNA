@@ -55,6 +55,18 @@ bool pdna_bank_box_unsaved(int box);
  * failure); otherwise non-zero and unique across every prior call that persisted. */
 uint32_t pdna_bank_next_serial(void);
 
+/* BACKLOG #223: after a bank.meta .bak rollback (BACKLOG #219) the recovered serial
+ * counter can sit at or below serials already stored in the boxes -- every UP landing
+ * then allocates a serial the collision scan refuses, burning one per retry forever.
+ * Caller passes bank_serial_max() (source/bank_collision.h) over all 16 boxes; if the
+ * live counter is not already strictly ahead of it, this raises it to stored_max + 1
+ * and persists through meta_save() (verified, same idiom as pdna_bank_next_serial())
+ * before returning. Returns true on a real resync (and logs "bank: serial resynced
+ * N -> M"); false when nothing needed resyncing or the meta write failed (counter
+ * reverted -- the caller's own collision refusal still applies, exactly as before
+ * this existed). */
+bool pdna_bank_serial_resync(uint32_t stored_max);
+
 /* BACKLOG #150 S150-12 decision 8: sets the box pdna_bank_show()'s NEXT call opens on
  * (out-of-range clamps to 0); consumed and reset to 0 by that one call. Used by the
  * read-only mount's exit offer so YES opens the Bank on the box the last copy landed

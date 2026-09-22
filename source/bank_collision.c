@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "bank_collision.h"
+#include "bank_cell.h"   /* BACKLOG #223: BC_OFF_BANK_SERIAL, bc_is_native -- pure C, same class of module */
 
 bool bank_ident32_collision(BankBoxGetter get_box, void* ctx,
                              int num_boxes, int slots_per_box,
@@ -29,4 +30,23 @@ bool bank_ident32_collision(BankBoxGetter get_box, void* ctx,
     }
   }
   return false;
+}
+
+uint32_t bank_serial_max(BankBoxGetter get_box, void* ctx, int num_boxes, int slots_per_box) {
+  uint32_t max = 0;
+  if (!get_box || num_boxes <= 0 || slots_per_box <= 0) return 0;   /* rule 7 */
+  for (int b = 0; b < num_boxes; b++) {                             /* rule 2: bounded by num_boxes (16) */
+    const uint8_t* recs = get_box(b, ctx);
+    if (!recs) continue;
+    for (int s = 0; s < slots_per_box; s++) {                       /* rule 2: bounded by slots_per_box (30) */
+      const uint8_t* rec = recs + (uint32_t)s * 80;
+      if (!bc_is_native(rec)) continue;   /* an empty/foreign slot carries no real serial */
+      uint32_t serial = (uint32_t)rec[BC_OFF_BANK_SERIAL]
+                       | ((uint32_t)rec[BC_OFF_BANK_SERIAL + 1] << 8)
+                       | ((uint32_t)rec[BC_OFF_BANK_SERIAL + 2] << 16)
+                       | ((uint32_t)rec[BC_OFF_BANK_SERIAL + 3] << 24);
+      if (serial > max) max = serial;
+    }
+  }
+  return max;
 }
