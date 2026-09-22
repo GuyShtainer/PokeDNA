@@ -9003,7 +9003,7 @@ def run_s150_11_reconcile(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
            "'Transfers' now sits between 'GB import' and 'Settings' in column 2, "
            "cursor already on it (PDNA_NAV_ROW_H 11 -> 10 fits the 21st row -- the "
            "hint line at the bottom of the panel sits clear of the last row, not "
-           "overlapping it)")
+           "overlapping it)", claim="Transfers")
 
     s.tap("A", settle=gb_shots.BIG_SETTLE)
     s.shot("03_transfers_empty", "s150-11 decision 16: A on Transfers -- the "
@@ -9011,7 +9011,8 @@ def run_s150_11_reconcile(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
            "Bank transfer.') -- this delta vehicle has no readable FAT "
            "(source/xfer_io.c), so xfer_reconcile_walk()'s f_opendir() always "
            "fails here regardless of what is planted in the Bank; this is the "
-           "ONLY reachable frame for this screen on the emulator (decision 16)")
+           "ONLY reachable frame for this screen on the emulator (decision 16)",
+           claim="TRANSFER RECORDS")
 
     s.tap("B", settle=gb_shots.BIG_SETTLE)
     s.shot("04_transfers_back", "s150-11: B backs out of the empty-state screen "
@@ -9046,7 +9047,9 @@ def run_s150_11_reconcile(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
            "message nav_avail.c's [NV_XFER] table entry carries); nothing was "
            "read from the ledger and nothing was logged (G-F2 -- verified "
            "structurally by tests/host_xfer_reconcile_sites_test.py's check (i), "
-           "not re-provable from a screenshot alone)")
+           "not re-provable from a screenshot alone). Dialog title is 'COMING "
+           "SOON' (app_nav_refuse()'s NAV_COMING_SOON branch, source/pdna_main.c "
+           "~9528), NOT the body line quoted above.", claim="COMING SOON")
 
     # A dismisses msg_wait (source/pdna_main.c: "Press A", KEY_A only -- verified
     # live, NOT KEY_B). The nav menu already returned one level up (gb_nav_from_
