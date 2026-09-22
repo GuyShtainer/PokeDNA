@@ -909,13 +909,18 @@ RomGbLearn.read @4 in rom_gblearn_moves_at_seeded -> fused_gb_slice_read gb_read
 # class the two entries above this comment document (gen1_encode_name et al) --
 # bank_scan_get IS genuinely address-taken AND genuinely dispatched, the exact
 # shape the ArtIconsGen.progress note below warns must NOT be marked
-# `addrtaken-ok` (F1's own lesson: a function that is truly reachable only through
-# an indirect call must be DECLARED, not exempted, or the walker cannot trace
-# depth through it -- pdna_bank_peek_box's own subtree, box_load/sf_read_full/
-# f_read/disk_read, would silently drop out of any chain that goes through this
-# call). Declared as a single-site argsites class, same idiom as
-# rom_mon_icon_at's own `argsites=1 -> gb_art_read fused_gb_slice_read gb_read`
-# two-level-indirect dispatch a few lines above.
+# `addrtaken-ok`.
+# BACKLOG #168a review D5: this declaration does NOT make the walker trace depth
+# through bank_scan_get's own subtree -- it only silences the address-taken sweep
+# (the entry below reports 60 B, the argsites class's own flat per-call cost,
+# never the callee's frame). The real collision-path depth was hand-measured
+# separately: drop_held_up 152 B + bank_ident32_collision 48 B + bank_scan_get's
+# own subtree (pdna_bank_peek_box -> box_load -> sf_read_full -> f_read ->
+# disk_read) 2,984 B = ~3,184 B, which is 1,304 B BELOW the deepest chain the
+# walker already guards via pdna_bank_prepare_native -> bank_backup_v1 (the
+# Settings -> register-ROM browser chain, 13,112 of 15,024). No budget impact --
+# a future lane that deepens bank_scan_get's own subtree past that 1,304 B margin
+# needs a fresh hand measurement, not a reread of this comment.
 bank_ident32_collision argsites=1 -> bank_scan_get
 
 # art_icons_extract.h's ArtIconsGen.progress (progress@4, `const RomMon* rm;
