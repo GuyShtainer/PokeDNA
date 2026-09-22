@@ -139,6 +139,29 @@ void bank_plant_box0(uint8_t* recs) {
   memcpy(recs + (uint32_t)6 * 80, cell, 80);
 }
 
+/* BACKLOG #212 review D3(b): a Gen-2 cell with TWO moves out of range for Gen 1
+ * (200 and 230, both > gb_max_move(GB_GEN1)=165 but still <= gb_max_move(GB_GEN2)
+ * =251, i.e. legal on this cell's own generation) -- the --s150-8-bridge shot
+ * chain's own demonstration of the per-slot swap-row modal (BACKLOG #150 S150-10's
+ * rule, applied to the bridge by #212) when the record has TWO bad slots, not the
+ * ONE reachable refusal box0's own CHIKORITA plant (dex 152, always caught by the
+ * species-floor check first) can ever show. Species dex 25 (Pikachu) clears the
+ * Gen-1 species floor (<= gb_max_species(GB_GEN1)=151), so bdc_convert_gb_core
+ * actually reaches the per-slot move clip instead of refusing before it. */
+void bank_plant_gen2_badmoves_cell(uint8_t out80[80]) {
+  if (!out80) return;
+  GbNewMonSrc src; memset(&src, 0, sizeof src);
+  src.growth = gb_growth_rate(PLANT_DEX_PIKACHU);
+  src.moves[0] = 200;    /* > gb_max_move(GB_GEN1)=165, <= gb_max_move(GB_GEN2)=251 */
+  src.moves[1] = 230;    /* > gb_max_move(GB_GEN1)=165, <= gb_max_move(GB_GEN2)=251 */
+  src.species_name = pk_species_name(PLANT_DEX_PIKACHU);
+  src.ot_name = "PLANT";
+  src.ot_id = 12345;
+  GbEditMon e;
+  gb_new_mon(GB_GEN2, PLANT_DEX_PIKACHU, 20, &src, 8u, &e);
+  bc_pack(&e, 0, BC_ORIGIN_GOLD, 0, 8u, out80);
+}
+
 void bank_plant_box_full(uint8_t* recs) {
   if (!recs) return;
   /* BACKLOG #150 S150-12: bank_plant_box0() now plants 7 slots (0-6, the two new
@@ -162,6 +185,18 @@ void bank_plant_box_full(uint8_t* recs) {
                                                         * (bank_serial is inside its
                                                         * hashed span) */
     memcpy(recs + (uint32_t)slot * 80, cell, 80);
+  }
+
+  /* BACKLOG #212 review D3(b): slot 7 -- overwrites the generic sweep's own plain
+   * Chikorita there (no shot chain names box 1's generic sweep slots individually;
+   * they are only ever described in bulk, "25 fresh non-copy FULL cells") with the
+   * two-bad-move cell above. Box 0's own slots 0-6 (bank_plant_box0) and PC-storage
+   * slots 26-29 (bank_plant_xfer_seed_all) are both already taken -- this is the
+   * free slot the brief's own fallback names. */
+  {
+    uint8_t cell[80];
+    bank_plant_gen2_badmoves_cell(cell);
+    memcpy(recs + (uint32_t)7 * 80, cell, 80);
   }
 }
 
