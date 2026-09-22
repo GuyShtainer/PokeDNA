@@ -6113,12 +6113,21 @@ def run_s150_9_site2(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.
     gesture that shows it for an unseeded cell, is a frame gb_lift_pack's ordinary
     (non-restore) path structurally CANNOT produce. bank_plant_site2_seed() marks
     the entry CLAIMED and unaltered (byte-identical to the mon itself), so
-    xr_merge_down_gb_sel's own probe reports no differing rows and decision 7's
-    "nothing changed" skip means app_xfer_merge_screen never draws either --
-    gb_lift_restore proceeds straight to pdna_bank_next_serial(), which fails for
-    the SAME reason run_s150_4_uplift's own chain already documents (meta_save()
-    needs a writable FAT this vehicle does not have): a clean, silent refusal,
-    mon still sitting at slot 0, footer back to 'MOVE  A grab  hold=set'.
+    xr_merge_down_gb_sel's own probe reports DIFFERING rows (BACKLOG #206/#209
+    review D2: the seed's home cell is now a CHANGED copy of the live mon --
+    renamed "OLDNAME" and 5 levels lower -- so gb_lift_restore's probe reads
+    renamed=1/level_changed=1 and decision 6/7's screen DRAWS instead of skipping)
+    -- app_xfer_merge_screen ("BACK TO ITS ORIGINAL") shows two toggle rows, both
+    defaulting to KEEP. B cancels it (nothing spent, mon still sitting at slot 0);
+    re-grabbing and pressing START instead applies nothing (both rows left at
+    KEEP) and runs into pdna_bank_next_serial(), which fails for the SAME reason
+    run_s150_4_uplift's own chain already documents (meta_save() needs a
+    writable FAT this vehicle does not have) -- a SILENT refusal: no msg_wait
+    fires on that specific failure (only xr_open/gbsc_count failures show
+    PDNA_XFERREC_TITLE "TRANSFER RECORD UNREADABLE"; a meta-write failure is
+    log-only, "gen12: xferup lift refused: restore refused"), so the frame is
+    pixel-identical to the grid state B already reached -- captioned as exactly
+    that, not as a message that never appears.
 
     A landed, persisted native cell (bank.meta writable) is hardware-only from
     here, same as run_s150_4_uplift's own chain -- not faked with a pre-planted
@@ -6135,18 +6144,38 @@ def run_s150_9_site2(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.
            "footer 'MOVE  A grab  hold=set'")
 
     s.tap("A", settle=150)
-    s.shot("02_after_grab", "s150-9-site2: A grabs slot 0 -- THE PROOF: no "
-           "'WHICH GAME IS THIS?' origin prompt (contrast run_s150_4_uplift's own "
-           "02_origin_prompt shot, an UNSEEDED Gold slot 0 grab, which always shows "
-           "it) -- gb_has_sidecar() found this seeded entry, so gb_lift_pack() took "
-           "the restore branch (gb_lift_restore) directly instead, skipping the "
-           "prompt by design (decision 10's own comment). gb_lift_restore then ran "
-           "its own full chain (xr_open via the new site-2 shim, the state check, "
-           "the xr_merge_down_gb_sel probe, decision 7's 'nothing changed' skip) "
-           "and was refused only at pdna_bank_next_serial() -- the SAME no-writable-"
-           "FAT wall run_s150_4_uplift's own chain already documents, not a new "
-           "one this lane introduced. Still CM_MOVE, empty-handed, the seeded mon "
-           "untouched at slot 0.")
+    s.shot("02_after_grab", "s150-9-site2: A grabs slot 0 -- no origin prompt: "
+           "gb_has_sidecar found the seeded entry, so gb_lift_pack took the "
+           "restore branch. gb_lift_restore's probe (xr_merge_down_gb_sel) "
+           "found two differing rows against the seeded home (BACKLOG #206/"
+           "#209 review D2: the seed's home is a CHANGED copy, renamed + 5 "
+           "levels lower) -- app_xfer_merge_screen draws straight away, 'BACK "
+           "TO ITS ORIGINAL' with a Level and a Nickname row, both KEEP, "
+           "footer 'A flip  START apply  B cancel'.",
+           claim=["BACK TO ITS ORIGINAL", "Level", "Nickname", "KEEP"])
+
+    s.tap("B", settle=150)
+    s.shot("03_cancel_back_to_grid", "s150-9-site2: B cancels the merge screen "
+           "-- nothing spent, back on the grid, still CM_MOVE, empty-handed, "
+           "the seeded mon untouched at slot 0 (same frame 01 already showed).",
+           allow_same=True)
+
+    s.tap("A", settle=150)
+    s.shot("04_regrab_merge_screen", "s150-9-site2: A re-grabs slot 0 -- the "
+           "SAME merge screen again (pixel-identical to frame 02: nothing was "
+           "applied or persisted by the B cancel above).", allow_same=True,
+           claim=["BACK TO ITS ORIGINAL", "Level", "Nickname", "KEEP"])
+
+    s.tap("START", settle=150)
+    s.shot("05_start_refused", "s150-9-site2: START confirms the merge screen "
+           "(both rows left at KEEP, nothing accepted) -- gb_lift_restore then "
+           "reaches pdna_bank_next_serial(), which fails on this vehicle (no "
+           "writable FAT, the SAME wall run_s150_4_uplift's own chain "
+           "documents). No msg_wait fires for THIS specific failure (that only "
+           "happens for an xr_open/gbsc_count failure) -- the refusal is "
+           "log-only ('gen12: xferup lift refused: restore refused'), so the "
+           "frame is pixel-identical to 01/03: still CM_MOVE, empty-handed, "
+           "the seeded mon untouched at slot 0.", allow_same=True)
 
     # ---- A/B proof, SAME image/session shape, ONE cell over: slot 1 (unseeded) --
     # DOES show the origin prompt, exactly where slot 0 (seeded) does not -- the

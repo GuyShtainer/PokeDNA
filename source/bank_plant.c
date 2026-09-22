@@ -323,9 +323,24 @@ int bank_plant_xfer_seed_all(uint8_t g3_out[4][80]) {
 
 void bank_plant_site2_seed(const GbEditMon* mon) {
   if (!mon) return;
+  /* BACKLOG #206/#209 review D2: the entry's HOME must be a CHANGED copy of the
+   * live mon, not the live mon itself -- gb_lift_restore's probe compares the
+   * entry's baseline (written_level / nick_written) against the mon still ON THE
+   * CARD (unedited by this seed); if both sides are built from the same `mon`,
+   * nothing ever reads as changed and app_xfer_merge_screen never draws (decision
+   * 7: XR_MERGE_DOWN skips the screen when no row exists). Renaming to "OLDNAME"
+   * and dropping the level by 5 gives the probe two real rows (renamed=1,
+   * level_changed=1) without touching gbsc_key's own fields (gen/otid16/dv4/
+   * otname) -- the key this entry is looked up by stays the live mon's own. */
+  GbEditMon seed_mon = *mon;
+  (void)gb_set_nickname(&seed_mon, "OLDNAME");
+  uint8_t live_level = gb_get_level(mon);
+  uint8_t seed_level = (live_level > 5) ? (uint8_t)(live_level - 5) : live_level;
+  (void)gb_set_level(&seed_mon, seed_level);
+
   uint8_t cell[80];
   uint8_t origin = (mon->gen == GB_GEN1) ? BC_ORIGIN_RED : BC_ORIGIN_GOLD;
-  if (bc_pack(mon, 0, origin, 0, XFER_PLANT_SITE2_SERIAL, cell) != 0) return;
+  if (bc_pack(&seed_mon, 0, origin, 0, XFER_PLANT_SITE2_SERIAL, cell) != 0) return;
   GbEditMon written; BcMeta meta;
   if (!bc_unpack(cell, &written, &meta)) return;
 
@@ -340,7 +355,14 @@ void bank_plant_site2_seed(const GbEditMon* mon) {
   gbsc_entry_from(&e, &written, cell, 0);
   e.kind = XR_KIND_NATIVE_HOME;
   e.state = XR_STATE_CLAIMED;
-  e.direction = XR_DIR_ABROAD_G3;
+  /* BACKLOG #206/#209 review D2: gb_lift_restore's probe is xr_merge_down_gb_sel
+   * (source/xfer_rec.c:245 `if (e->direction != XR_DIR_ABROAD_GB) return false;`),
+   * not xr_merge_down_sel -- site 2 is a GB lift, so the seeded entry must claim to
+   * have come from the OTHER Game Boy generation, never XR_DIR_ABROAD_G3 (that tag
+   * is site 1's, a Gen-3 record). The old XR_DIR_ABROAD_G3 here meant every --s150-
+   * 9-site2 run died silently at this probe, never at pdna_bank_next_serial as
+   * frame 02's caption claimed. */
+  e.direction = XR_DIR_ABROAD_GB;
   e.claimed = 1;
 
   uint8_t dv4[4] = {
