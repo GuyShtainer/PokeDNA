@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Guy Shtainer
 """host_stack_edges_hygiene_test.py -- pins BACKLOG #204: tools/stack_edges.txt must
-carry no "section-anchor" line for source/pdna_pick.c.
+carry no "section-anchor" line for source/pdna_pick.c, and no lines naming the dex
+display family (pdna_dex_screen, dex_build, dex_counts, dex_bulk, dex_cell_grid,
+dex_cell_list).
 
 Before #204, pdna_pick.c's dex-dispatch family (s_dget/s_dset/s_getnat/s_setnat, four
 separate file-static function pointers) rode GCC's -fsection-anchors codegen: every
@@ -50,9 +52,9 @@ def check_no_pdna_pick_section_anchor_lines() -> list[str]:
         if not DECL_RE.match(line):
             continue
         # A live declaration line (Struct.field @OFF -> ... / caller argsites=N ->
-        # ...) is NEVER allowed to name pdna_pick.c's own s_dex/pdna_dex_screen
-        # symbols by definition of the #204 fix.
-        if 's_dex.' in line or re.search(r'\bpdna_dex_screen\b', line):
+        # ...) is NEVER allowed to name pdna_pick.c's s_dex struct or the dex display
+        # family symbols by definition of the #204 fix.
+        if 's_dex.' in line or re.search(r'\b(pdna_dex_screen|dex_build|dex_counts|dex_bulk|dex_cell_grid|dex_cell_list)\b', line):
             offenders.append(f"{lineno}: {raw}")
     return offenders
 
