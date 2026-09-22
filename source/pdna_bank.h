@@ -73,6 +73,13 @@ bool pdna_bank_prepare_native(void);
  * only valid until the next call that pages a box in. */
 const uint8_t* pdna_bank_peek_box(int box);
 
+/* BACKLOG #168: true only right after a meta_load() whose PRIMARY bank.meta parsed
+ * clean this session (never after a .bak fallback or a default reset). Lets
+ * drop_held()'s UP-branch ident32 collision scan (source/pdna_box.c) skip its 15
+ * extra box reads when the serial a native cell's ident32 is built from is known
+ * fresh -- see the doc comment on the static it mirrors in pdna_bank.c. */
+bool pdna_bank_serial_trusted(void);
+
 /* BACKLOG #150 S150-11 decision 8c/19: write a fresh native cell into an all-zero
  * slot (RESTORE TO BANK's write path -- a genuinely new Bank write, no merge).
  * Omega-only (app_can_edit() first); refuses on a non-zero target slot, an

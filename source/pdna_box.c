@@ -50,6 +50,7 @@ _Static_assert(BOXSCOPE_BANK == 1, "source/xfer_gate.c's XG_SCOPE_BANK hard-code
 #include "pdna_gen12.h"     /* BACKLOG #150 S150-8: BankDownResult, bank_down_convert_gb/gen3 */
 #include "gb12_render.h"    /* gb12_render_rec/GB_SHOW_* -- shared display ladder */
 #include "pdna_bank.h"      /* pdna_bank_prepare_native -- the UP drop's backup gate (BACKLOG #150 S150-4) */
+#include "bank_collision.h" /* BACKLOG #168a: drop_held's UP-branch 16-box ident32 collision scan */
 #include "gb_sidecar.h"     /* GbscEntry, gbsc_count/gbsc_get/gbsc_set_claimed -- the RESTORE edge's ledger (BACKLOG #150 S150-8b) */
 #include "xfer_io.h"        /* xr_open */
 #include "xfer_rec.h"       /* xr_key_g3 */
@@ -1351,6 +1352,20 @@ pc_bank_restore_done(const uint8_t g3_rec80[80]) {
   }
 }
 
+/* BACKLOG #168a: BankBoxGetter for the UP branch's collision scan (bank_collision.c,
+ * a pure core with no tonc/FatFs dependency). `self_box`'s records are already paged
+ * into the shared bank buffer (the caller's own `recs`, handed through unchanged);
+ * every OTHER box is paged on demand through pdna_bank_peek_box(), which re-pages
+ * that SAME shared buffer -- so `recs` (the pointer value in the ctx) stops being
+ * self_box's data the instant this getter is asked for a different box. The caller
+ * (drop_held) re-pages self_box back in with src->records(box) after the scan,
+ * before writing or committing. */
+typedef struct { const uint8_t* recs; int self_box; } BankScanCtx;
+static const uint8_t* bank_scan_get(int b, void* ctx) {
+  const BankScanCtx* c = (const BankScanCtx*)ctx;
+  return (b == c->self_box) ? c->recs : pdna_bank_peek_box(b);
+}
+
 /* Drop the held mon onto cursor cell `cur`. Within the origin's scope: true move (place +
  * clear origin; swap if occupied). Across the PC<->Bank boundary: COPY onto an empty cell
  * only (origin kept) so a mon can't be lost between two save scopes. *done=true when the
@@ -1521,24 +1536,35 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
       recs = src->records(box);
       /* decision 10: the ident32 collision refusal, NOT a re-pack -- the serial is
        * monotonic and persisted before use, so a collision means the meta was lost
-       * or rolled back. Scan the destination box's 30 slots (this box only: `recs`
-       * is the box already paged in for this drop) for a record whose bytes 0..7
-       * (magic + ident32) equal the cell's -- a plain memcmp, not a recomputed
-       * bc_ident32() on the candidate (a match on bytes 0..3 alone already implies
-       * "GBC1", so no separate bc_is_native() check is needed).
-       * REVIEW F5: this box only -- a collision with a native cell sitting in one
-       * of the OTHER 15 boxes is not caught here (each of those has its own
-       * bank_serial history this scan never pages in to check). The log line says
-       * so explicitly; widening to all 16 boxes is BACKLOG, not this lane. */
-      for (int s = 0; s < G3_BOX_SLOTS; s++) {
-        if (s == cur) continue;
-        if (memcmp(recs + (uint32_t)s * 80, s_held, 8) == 0) {
+       * or rolled back. A plain memcmp on bytes 0..7 (magic + ident32), not a
+       * recomputed bc_ident32() on the candidate (a match on bytes 0..3 alone
+       * already implies "GBC1", so no separate bc_is_native() check is needed).
+       * BACKLOG #168a (REVIEW F5's own follow-up): scans ALL 16 Bank boxes, not just
+       * the destination -- a duplicate serial landing in another box used to be
+       * invisible here, and S150-6/S150-7 would mis-target it. One box buffer at a
+       * time through pdna_bank_peek_box() (never a second 2,400-B buffer on the
+       * stack): bank_scan_get()/bank_ident32_collision() (bank_collision.c, a pure
+       * host-tested core; tests/host_bank_collision_test.c). Short-circuits the 15
+       * extra box reads when pdna_bank_serial_trusted() says this session's serial
+       * is known fresh (see its doc comment, pdna_bank.c) -- a fresh serial can only
+       * collide when the meta itself was lost/rolled back, which is exactly what
+       * that flag tracks. */
+      if (!pdna_bank_serial_trusted()) {
+        BankScanCtx sctx = { recs, box };
+        int coll_box = -1, coll_slot = -1;
+        if (bank_ident32_collision(bank_scan_get, &sctx, 16, G3_BOX_SLOTS, box, cur,
+                                    s_held, &coll_box, &coll_slot)) {
           snd_error();
           boxoam_resume();
-          log_line("bank: up box %d slot %d -> bank box %d slot %d: ident32 collision at slot %d (scan: box %d only), refusing", s_orig_box, s_orig_slot, box, cur, s, box);
+          log_line("bank: up box %d slot %d -> bank box %d slot %d: ident32 collision at box %d slot %d, refusing", s_orig_box, s_orig_slot, box, cur, coll_box, coll_slot);
           app_log_flush();
           return recs;                                        /* still holding */
         }
+        /* pdna_bank_peek_box() re-pages the ONE shared bank buffer for whichever
+         * box it last read (S150-11 decision 19's own contract) -- if the scan
+         * touched any OTHER box, `recs` (same pointer value) now aliases THAT
+         * box's bytes, not `box`'s. Re-page the destination before writing. */
+        recs = src->records(box);
       }
       memcpy(recs + (uint32_t)cur * 80, s_held, 80);
       bool ok = src->commit();                                 /* verified bank box_save */

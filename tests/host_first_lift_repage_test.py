@@ -35,8 +35,10 @@ already use on this exact file. Two things are checked:
   (a) drop_held's UP-drop block (source/pdna_box.c) contains a
       `recs = src->records(box);` re-page call, textually AFTER
       `pdna_bank_prepare_native()`'s failure-return block and BEFORE both
-      the ident32 collision scan's `for (int s = 0; s < G3_BOX_SLOTS; s++)`
-      loop and the `bool ok = src->commit();` line that follows it.
+      the ident32 collision scan's `if (!pdna_bank_serial_trusted()) {`
+      guard (BACKLOG #168a: the scan itself moved into the pure
+      bank_ident32_collision() core, source/bank_collision.c) and the
+      `bool ok = src->commit();` line that follows it.
   (b) the failure path (`if (!pdna_bank_prepare_native())`) is unchanged:
       still returns `recs` (still holding), still logs "backup gate
       refused" -- this fix must not touch that branch at all.
@@ -62,7 +64,7 @@ PDNA_BOX = ROOT / "source" / "pdna_box.c"
 
 PREPARE_CALL = "if (!pdna_bank_prepare_native()) {"
 REPAGE_CALL = "recs = src->records(box);"
-COLLISION_LOOP = "for (int s = 0; s < G3_BOX_SLOTS; s++) {"
+COLLISION_LOOP = "if (!pdna_bank_serial_trusted()) {"
 COMMIT_CALL = "bool ok = src->commit();"
 
 

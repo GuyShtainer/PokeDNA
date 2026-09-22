@@ -80,6 +80,19 @@ static uint32_t g_native_snap;
  * every other meta_load() field. */
 static uint32_t g_bank_serial;
 
+/* BACKLOG #168: true only immediately after a meta_load() whose PRIMARY bank.meta
+ * parsed clean (magic + length ok) -- never after a .bak fallback or a default reset.
+ * pdna_bank_next_serial() calls meta_load() fresh right before it derives+persists
+ * every serial a native cell's ident32 is ever built from, so at the moment a lift
+ * mints a serial this flag says whether that serial came off a card that has NOT
+ * been rolled back since. The drop_held() UP collision scan (BACKLOG #168a) treats
+ * "trusted" as "no other box can hold this ident32" and skips its 15 extra box
+ * reads; the moment ANY later meta_load() in the session falls back to the .bak or
+ * defaults (the exact "meta was lost or rolled back" scenario the scan exists for),
+ * this drops to false and the full 16-box scan resumes for every drop after it. */
+static bool g_serial_trusted;
+bool pdna_bank_serial_trusted(void) { return g_serial_trusted; }
+
 /* ---- paths ---- */
 static void box_path(int box, char* out) { siprintf(out, PDNA_BANK_DIR "/box%02d.box", box); }
 static const char* meta_path(void) { return PDNA_BANK_DIR "/bank.meta"; }
@@ -91,6 +104,7 @@ static void meta_defaults(void) {
     g_meta[b].wp = (uint8_t)(b % G3_BOX_WALLPAPER_COUNT);   /* each box a different look */
   }
   g_bank_serial = 0;   /* decision 2: zero it too, same as every other meta_defaults() field */
+  g_serial_trusted = false;   /* BACKLOG #168: a defaulted serial can never be trusted */
 }
 
 /* noinline (BACKLOG #81): meta_load's 176-byte buf[] would otherwise be inlined into
@@ -101,8 +115,26 @@ static void meta_defaults(void) {
  * stack-layout change, no behavior change (same code, same order). */
 static bool __attribute__((noinline)) meta_load(void) {
   uint8_t buf[META_BYTES]; uint32_t sz = 0;
-  if (sf_read_full(meta_path(), buf, sizeof buf, &sz) != SF_OK || sz < META_BYTES ||
-      memcmp(buf, META_MAGIC, 6) != 0) { meta_defaults(); return false; }
+  bool ok = sf_read_full(meta_path(), buf, sizeof buf, &sz) == SF_OK && sz >= META_BYTES &&
+            memcmp(buf, META_MAGIC, 6) == 0;
+  /* BACKLOG #168b: meta_save() now takes a rolling .bak (sf_save_rolling, same as
+   * box_save()) -- fall back to it when the primary bank.meta is unreadable or
+   * fails to parse. `bak[40]` is sized to the fixed, known path
+   * (PDNA_BANK_DIR "/bank.meta.bak" is well under 40 bytes), not SF_PATH_MAX (272 B):
+   * this is a noinline leaf, but there is no reason to pay for a general path buffer
+   * to hold one constant-shaped string. */
+  bool from_bak = false;
+  if (!ok) {
+    char bak[40]; siprintf(bak, "%s.bak", meta_path());
+    ok = sf_read_full(bak, buf, sizeof buf, &sz) == SF_OK && sz >= META_BYTES &&
+         memcmp(buf, META_MAGIC, 6) == 0;
+    if (ok) {
+      from_bak = true;
+      log_line("bank: meta primary unreadable/corrupt, restored from bank.meta.bak");
+      app_log_flush();
+    }
+  }
+  if (!ok) { meta_defaults(); return false; }
   for (int b = 0; b < BANK_BOXES; b++) {
     const uint8_t* p = buf + META_HDR + b * 10;
     memcpy(g_meta[b].name, p, 9); g_meta[b].name[8] = 0;
@@ -116,6 +148,10 @@ static bool __attribute__((noinline)) meta_load(void) {
    * would be dead code. */
   g_bank_serial = (uint32_t)buf[10] | ((uint32_t)buf[11] << 8) |
                   ((uint32_t)buf[12] << 16) | ((uint32_t)buf[13] << 24);
+  /* BACKLOG #168: only a clean PRIMARY parse is "trusted" -- a .bak fallback is
+   * exactly the "meta was lost or rolled back" case the drop_held() 16-box scan
+   * exists to catch, so it must NOT short-circuit that scan. */
+  g_serial_trusted = !from_bak;
   return true;
 }
 
@@ -145,8 +181,14 @@ static bool meta_save(void) {
     memcpy(p, g_meta[b].name, 9);
     p[9] = g_meta[b].wp;
   }
+  /* BACKLOG #168b: was sf_write_verified (no backup at all) -- box_save() already
+   * takes one rolling .bak per box file (sf_save_rolling_ok); bank.meta (box names,
+   * wallpapers, and the serial pdna_bank_next_serial's whole G-M4 uniqueness
+   * guarantee rests on) had none, so a bad write left it unrecoverable. Same rolling
+   * discipline as the boxes now: one "bank.meta.bak", built+verified before it
+   * replaces the previous one. */
   rmbl_pause();
-  bool ok = sf_write_verified(meta_path(), buf, META_BYTES) == SF_OK;
+  bool ok = sf_save_rolling(meta_path(), buf, META_BYTES, NULL) == SF_OK;
   rmbl_resume();
   return ok;
 }
