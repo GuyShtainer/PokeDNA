@@ -3794,7 +3794,7 @@ BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]) {
     }
     GbGen1Base g1base;
     Gb1BaseStatus bst = dex ? gb_gen1_base_from_rom(dex, &g1base) : GB1BASE_BAD_ROM;
-    if (bst == GB1BASE_NO_ROM) { snd_deny(); gb_gen12_norom_msg(GB_GEN1); return BANK_DOWN_REFUSED; }
+    if (bst == GB1BASE_NO_ROM) { snd_deny(); boxoam_suspend(); gb_gen12_norom_msg(GB_GEN1); boxoam_resume(); return BANK_DOWN_REFUSED; }
     if (bst != GB1BASE_OK) {
       snd_deny();
       msg_wait(PDNA_SIDECAR_XFER_TITLE, UI_WARN, PDNA_SIDECAR_GEN1_BADROM_L1, 0);
@@ -3820,7 +3820,9 @@ BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]) {
   /* decision 10: COPY prints the NOBACK rows instead of KEPT/STAYS -- there is no
    * ledger entry to keep. BACKLOG #212 decision 6 (mirrored from S150-10): "say so"
    * lives on the swap-row modal below, not a new row here -- no change to this call. */
-  if (!gb_paste_loss_screen(&loss, copy ? LOSS_FOOT_COPY : LOSS_FOOT_BRIDGE)) return BANK_DOWN_REFUSED;  /* decision 15: the shipped screen */
+  boxoam_suspend();
+  if (!gb_paste_loss_screen(&loss, copy ? LOSS_FOOT_COPY : LOSS_FOOT_BRIDGE)) { boxoam_resume(); return BANK_DOWN_REFUSED; }  /* decision 15: the shipped screen */
+  boxoam_resume();
 
   uint8_t fix_from = 0, fix_to = 0;
   bool fix = gen3_to_gb_evo_needs_fix(&mon, &fix_from, &fix_to);            /* R1 block, verbatim */
@@ -3841,6 +3843,7 @@ BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]) {
      * ~185,000-read ROM scan CREATE's own s_busy_reading() masks -- see #210's fix
      * on gb_paste_hook's own call to it, applied here too since the bridge now shares
      * the same function. */
+    boxoam_suspend();
     s_busy_reading();
     nfill = gb_paste_fill_moves(gb_get_species_dex(&mon), wlvl, &mon, bad4, fill4);
     log_line("gen12: bridge moves: gen %u, %d bad slot(s), %d filled",
@@ -3854,13 +3857,17 @@ BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]) {
     if (nleft == 0) {
       snd_deny();
       gb_gen12_nomoves_msg(dst_gen);   /* D9: the base-stats gate already proved a ROM */
+      boxoam_resume();
       return BANK_DOWN_REFUSED;
     }
+    boxoam_resume();
   }
 
   if (fix || nbad > 0) {
+    boxoam_suspend();
     GbXferChoice ch = gb_paste_legal_screen_ex(gb_get_species_dex(&mon), fix_from,
                                                 fix ? fix_to : 0, from4, bad4, fill4, nbad);
+    boxoam_resume();
     if (ch == GB_XFER_CANCEL) return BANK_DOWN_REFUSED;
     if (ch == GB_XFER_MAKE_LEGAL && fix) gb_set_level(&mon, fix_to);
   }

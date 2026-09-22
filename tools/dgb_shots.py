@@ -6339,25 +6339,23 @@ def run_s150_8_bridge(core_mod, image_mod, rom_gold: Path, rom_red: Path,
             "because dex 1 clears the species-floor check frame 09's CHIKORITA "
             "(dex 152) never got past")
     s3.tap("A", settle=gb_shots.BIG_SETTLE)          # proceed -> s_busy_reading() draws (D5's own (aj) pin), THEN the cold scan starts
-    # No claim= here (unlike run_s150_10's own 04b, which passes claim= cleanly): a
-    # small on-screen artifact (seen across several unrelated frames in this same
-    # tree's own shot chains, e.g. run_s150_10's loss screen and this leg's own 09/
-    # 14) lands squarely over "your" on THIS particular frame and fails an exact
-    # substring check even though the text is plainly legible by eye (confirmed:
-    # both lines read in full on inspection). Not this lane's bug to chase down --
-    # by-eye only for this one frame; frame 16 below (the actual #212 deliverable)
-    # keeps its full claim= list and passes it.
-    s3.shot("15_busy_reading", "BACKLOG #210/#212 review D5: the busy screen "
+    # BACKLOG #212 re-verify R1: the artifact that used to sit over "your" and fail
+    # an exact substring check was NOT unrelated -- it was the #207 class of bug on
+    # THIS arm: gb_bank_down_bridge() had no boxoam_suspend()/boxoam_resume() around
+    # its dialogs, so the carry cursor (art_fallbacks.c hand OAM) and the glove's
+    # era badge (box_oam.c boxoam_carry_badge, purple '2') were drawn over the busy
+    # screen. Now bracketed (source/pdna_gen12.c gb_bank_down_bridge, ~:3844-3857),
+    # so the claim is restored.
+    s3.shot("15_busy_reading", "BACKLOG #210/#212 review D5, R1: the busy screen "
             "covers the bridge's OWN gb_paste_fill_moves() cold "
             "gb_create_locate_rom() scan (source/pdna_gen12.c's (aj) check) -- "
             "captured mid-scan, before the swap modal below. Both lines ('Reading "
-            "your ROM...' / 'This can take a moment.') are legible by eye; no "
-            "claim= on this frame -- a small pre-existing on-screen artifact "
-            "(also seen on frames 09/14 above and on other chains in this tree, "
-            "unrelated to this lane) sits over 'your' and fails an exact "
-            "substring check")
+            "your ROM...' / 'This can take a moment.') are legible, no cursor/badge "
+            "pixels over the text now that gb_bank_down_bridge brackets this dialog "
+            "with boxoam_suspend()/boxoam_resume()",
+            claim=["Reading your ROM...", "This can take a moment."])
     s3.run(4000 - gb_shots.BIG_SETTLE)               # let the cold scan finish (measured pixel-identical well before 4,000 total)
-    s3.shot("16_swap_modal_two_rows", "S150-8 bridge D3(b): the swap-row modal "
+    s3.shot("16_swap_modal_two_rows", "S150-8 bridge D3(b), R1: the swap-row modal "
             "(gb_paste_legal_screen_ex) -- TWO swap rows, one per bad slot "
             "('OUTRAGE -> <a Gold/Red level-up move>', 'SWEET SCENT -> <a Gold/Red "
             "level-up move>'); 'KEEP AS IS: not possible here' in dim text (nbad > "
@@ -6366,9 +6364,12 @@ def run_s150_8_bridge(core_mod, image_mod, rom_gold: Path, rom_red: Path,
             "rule BACKLOG #150 S150-10 gave PASTE (GB), applied to the bridge by "
             "#212, now proven live with TWO bad slots (not one), the frame this "
             "chain's own brief originally asked for and the docstring above found "
-            "unreachable with the OLD plant data",
+            "unreachable with the OLD plant data. No cursor/badge pixels over "
+            "'Either way it comes back unchanged.' (the row the badge used to sit "
+            "on) now that this dialog is bracketed too (~:3862-3865)",
             claim=["OUTRAGE", "SWEET SCENT", "KEEP AS IS: not possible here",
-                   "SELECT = MAKE LEGAL (swap moves)", "B = cancel"])
+                   "SELECT = MAKE LEGAL (swap moves)", "B = cancel",
+                   "Either way it comes back unchanged."])
 
     sg.taken += sr.taken + s3.taken
     sg.skipped += sr.skipped + s3.skipped
