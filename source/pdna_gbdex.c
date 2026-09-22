@@ -210,56 +210,90 @@ static void cache_insert_gen2(uint16_t dex, const u16 icon16[16 * 16]) {
          DEXCACHE_PAYLOAD - 16 * 16 * sizeof(u16));   /* the unused half: deterministic, never read */
 }
 
-/* Gen 1's own dispatcher (BACKLOG #208): a HIT skips both the fetch and the resample
- * (the cache already holds the rendered cell); a MISS fetches + renders exactly as
- * the pre-#208 code did, then captures the SAME rendered buffer into the cache
- * before blitting it -- one `cell` buffer, never two. Kept a SEPARATE noinline
- * function from the Gen-2 one below for the same frame-isolation reason
- * gbdex_cell_blit's own header comment gives: only ONE of the two ever executes per
- * call (session_gen is fixed for the whole visit), so the deepest call chain never
- * has to account for both frames at once. */
+/* Gen 1 (BACKLOG #208 fixes review D1): the review found the ORIGINAL single dispatcher
+ * kept the 2,048 B `cell` buffer live across the fetch call (pdna_origin_art_portrait_
+ * by_dex(), whose own chain runs up to PDNA_GB_ICON_NEED=6,144 B under pdna_origin_art_
+ * stack_room()) -- the dex chain went 2,728 -> 4,808 B, 2,104 B of the fetch's own
+ * headroom spent on a buffer the fetch itself never touches. Splitting fetch/hit/render
+ * into THREE separate noinline frames restores gbdex_cell_blit's own header-comment
+ * invariant (the 2 KB buffer never coexists with the fetch chain's frame): the
+ * dispatcher below only ever has ONE of the three frames open on the stack at a time. */
 static bool __attribute__((noinline))
+gbdex_fetch_gen1(uint16_t dex, PdnaArt* a) {
+  return pdna_origin_art_portrait_by_dex(dex, a) && a->px;
+}
+
+static bool __attribute__((noinline))
+gbdex_hit_gen1(uint16_t dex, int x, int y) {
+  u16 cell[32 * 32];                          /* this frame's cell buffer never overlaps
+                                                * gbdex_fetch_gen1's frame -- HIT never
+                                                * calls the fetch at all */
+  if (!cache_lookup_gen1(dex, cell)) return false;
+  ui_sprite(x, y, 32, 32, cell);
+  return true;
+}
+
+static bool __attribute__((noinline))
+gbdex_render_gen1(uint16_t dex, const PdnaArt* a, int x, int y) {
+  u16 cell[32 * 32];                          /* called AFTER gbdex_fetch_gen1 has
+                                                * already returned and popped -- never
+                                                * live at the same time as its frame */
+  if (!pdna_origin_cell_render(a, cell, 32, 32)) return false;
+  cache_insert_gen1(dex, cell);
+  ui_sprite(x, y, 32, 32, cell);
+  return true;
+}
+
+static bool
 gbdex_cell_art_gen1(uint16_t dex, int x, int y, int w, int h) {
   if (w != 32 || h != 32) {                 /* the record format is fixed to the
                                              * grid's own cell size; nothing calls
                                              * this with any other geometry today */
     PdnaArt a;
-    return (pdna_origin_art_portrait_by_dex(dex, &a) && a.px) && gbdex_cell_blit(&a, x, y, w, h);
+    return gbdex_fetch_gen1(dex, &a) && gbdex_cell_blit(&a, x, y, w, h);
   }
-  u16 cell[32 * 32];
-  if (cache_lookup_gen1(dex, cell)) {
+  if (gbdex_hit_gen1(dex, x, y)) {
 #ifdef PDNA_DELTA
     s_page_hit++;
 #endif
-    ui_sprite(x, y, 32, 32, cell);
     return true;
   }
 #ifdef PDNA_DELTA
   s_page_fetch++;
 #endif
   PdnaArt a;
-  if (!(pdna_origin_art_portrait_by_dex(dex, &a) && a.px)) return false;
-  if (!pdna_origin_cell_render(&a, cell, 32, 32)) return false;
-  cache_insert_gen1(dex, cell);
-  ui_sprite(x, y, 32, 32, cell);
-  return true;
+  if (!gbdex_fetch_gen1(dex, &a)) return false;
+  return gbdex_render_gen1(dex, &a, x, y);
 }
 
-/* Gen 2's own dispatcher: a HIT reconstructs the raw 16x16 icon into a LOCAL buffer
- * and still calls pdna_origin_cell_render() (the cache buys back the fetch, not the
- * centring -- see this cache's own header comment); a MISS fetches, caches the raw
- * icon (only when it really is the expected 16x16 native shape -- rule 7), then
- * blits through the ordinary gbdex_cell_blit() path unchanged. */
+/* Gen 2 (BACKLOG #208 fixes review D1): same frame-isolation reasoning as Gen 1 above --
+ * the HIT path's raw-icon buffer gets its OWN noinline frame (gbdex_hit_gen2), never
+ * live across pdna_origin_art_icon()'s own fetch frame on a MISS. A HIT reconstructs the
+ * raw 16x16 icon into a LOCAL buffer and still calls pdna_origin_cell_render() (the
+ * cache buys back the fetch, not the centring -- see this cache's own header comment);
+ * a MISS fetches, caches the raw icon (only when it really is the expected 16x16 native
+ * shape -- rule 7), then blits through the ordinary gbdex_cell_blit() path unchanged.
+ * NOTE: a `false` from gbdex_hit_gen2 conflates "not cached" with "cached but the blit
+ * was refused" (gbdex_cell_blit() can itself fail its own geometry/render validation) --
+ * both fall through to the fetch below, which is safe (a spurious refetch, never a
+ * corrupted picture) but worth knowing if the fetch tally ever runs higher than the
+ * miss count alone would predict. */
 static bool __attribute__((noinline))
-gbdex_cell_art_gen2(uint16_t dex, int x, int y, int w, int h) {
+gbdex_hit_gen2(uint16_t dex, int x, int y, int w, int h) {
   u16 icon16[16 * 16];
-  if (cache_lookup_gen2(dex, icon16)) {
+  if (!cache_lookup_gen2(dex, icon16)) return false;
+  PdnaArt a; memset(&a, 0, sizeof a);
+  a.px = icon16; a.w = 16; a.h = 16; a.gen = PDNA_GEN2;
+  return gbdex_cell_blit(&a, x, y, w, h);
+}
+
+static bool
+gbdex_cell_art_gen2(uint16_t dex, int x, int y, int w, int h) {
+  if (gbdex_hit_gen2(dex, x, y, w, h)) {
 #ifdef PDNA_DELTA
     s_page_hit++;
 #endif
-    PdnaArt a; memset(&a, 0, sizeof a);
-    a.px = icon16; a.w = 16; a.h = 16; a.gen = PDNA_GEN2;
-    return gbdex_cell_blit(&a, x, y, w, h);
+    return true;
   }
 #ifdef PDNA_DELTA
   s_page_fetch++;
