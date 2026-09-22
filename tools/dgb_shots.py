@@ -50,7 +50,9 @@ import argparse
 import functools
 import json
 import re
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -6515,6 +6517,38 @@ def run_s150_8_bridge(core_mod, image_mod, rom_gold: Path, rom_red: Path,
     return sg
 
 
+def _extract_gb_rom_offline(fused_image_path: Path) -> Path:
+    """BACKLOG #214b: the offline twin of gb_shots.Session._gb_rom_file() -- same
+    directory-parse, same "exactly one embedded ROM" contract -- but standalone
+    (no live Session/core, --selftest-captions never boots mGBA), called against
+    a STORED `claim_gb_image` path (the fused .gba the ORIGINAL capture used,
+    manifest.json's own record of it) rather than a Session's in-memory
+    self.rom_path. A plain passthrough of that fused path to check_gb() is WRONG
+    (BACKLOG #214 review item 5): the C driver's rom_gbui_open() expects a raw
+    .gb/.gbc, and handing it a multi-megabyte fused .gba fails with a locate
+    error even on a genuinely correct shot -- this function does the exact same
+    extraction the live capture did, so the offline re-check reads the identical
+    bytes gbscr_text()/rom_gbui_glyph() actually rendered from."""
+    blob = fused_image_path.read_bytes()
+    rec_off = fuse_gb.locate_record_permissive(blob, str(fused_image_path))
+    dir_off, dir_size = fuse_gb.read_record(blob, rec_off)
+    if not dir_size:
+        raise ValueError(f"claim_gb offline re-check: {fused_image_path} has no fused "
+                          "GB directory at all")
+    entries = fuse_gb.parse_directory(blob, dir_off, dir_size)
+    rom_entries = [e for e in entries if e["type"] in (fuse_gb.TYPE_ROM_GEN1, fuse_gb.TYPE_ROM_GEN2)]
+    if len(rom_entries) != 1:
+        raise ValueError(f"claim_gb offline re-check: {fused_image_path} carries "
+                          f"{len(rom_entries)} embedded GB ROM(s), expected exactly 1")
+    e = rom_entries[0]
+    rom_bytes = blob[e["offset"]:e["offset"] + e["size"]]
+    tmp_dir = Path(tempfile.mkdtemp(prefix="dgb_shots_claimgb_offline_"))
+    ext = ".gbc" if e["type"] == fuse_gb.TYPE_ROM_GEN2 else ".gb"
+    tmp_path = tmp_dir / f"embedded{ext}"
+    tmp_path.write_bytes(rom_bytes)
+    return tmp_path
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -7022,6 +7056,7 @@ def main(argv=None) -> int:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         failures: list[str] = []
         claims_checked = 0
+        gb_claims_checked = 0
         for entry in manifest.get("shots", []):
             name = entry.get("file", "<no file key>")
             caption = entry.get("caption", "")
@@ -7037,6 +7072,41 @@ def main(argv=None) -> int:
                 claims_checked += 1
                 for f in gb_claims.check(frame_path, claim=claim, claim_absent=claim_absent):
                     failures.append(f"{name}: {f}")
+
+            # BACKLOG #214b: claim_gb= cannot go through gb_claims.check() above --
+            # it needs the RAW embedded .gb/.gbc, not the fused .gba path check()
+            # would otherwise be handed (rom_gbui_open() fails to locate anything
+            # useful in a multi-megabyte fused image; a naive passthrough produced
+            # a false claim failure on a correct shot, review item 5). Re-derive
+            # the embedded ROM from claim_gb_image (Session.shot()'s own record of
+            # the fused image THIS capture used) via the same directory-parse
+            # _gb_rom_file() uses, into a throwaway temp file, then delete it
+            # whether the check passed or not -- this loop can run over hundreds
+            # of shots and must not leave one temp ROM per entry behind.
+            claim_gb = entry.get("claim_gb")
+            if claim_gb is not None:
+                claim_gb_image = entry.get("claim_gb_image")
+                if not claim_gb_image:
+                    failures.append(f"{name}: claim_gb present but no claim_gb_image "
+                                     "recorded in the manifest -- cannot re-derive the ROM")
+                else:
+                    gb_claims_checked += 1
+                    image_path = Path(claim_gb_image)
+                    if not image_path.is_file():
+                        failures.append(f"{name}: claim_gb_image {image_path} not a file "
+                                         "(offline re-check needs the SAME fused image the "
+                                         "live capture used, still present on disk)")
+                    else:
+                        extracted_rom = None
+                        try:
+                            extracted_rom = _extract_gb_rom_offline(image_path)
+                            for f in gb_claims.check_gb(frame_path, extracted_rom, claim_gb=claim_gb):
+                                failures.append(f"{name}: {f}")
+                        except ValueError as exc:
+                            failures.append(f"{name}: claim_gb offline re-check setup failed: {exc}")
+                        finally:
+                            if extracted_rom is not None:
+                                shutil.rmtree(extracted_rom.parent, ignore_errors=True)
         if failures:
             print(f"--selftest-captions: {len(failures)} failure(s):", file=sys.stderr)
             for f in failures:
@@ -7044,7 +7114,9 @@ def main(argv=None) -> int:
             return 1
         print(f"--selftest-captions: ok -- {len(manifest.get('shots', []))} shot(s), "
               f"every caption non-empty, every frame file present, "
-              f"{claims_checked} shot(s)' claim(s) re-verified against their own PNG")
+              f"{claims_checked} shot(s)' claim(s) re-verified against their own PNG, "
+              f"{gb_claims_checked} shot(s)' claim_gb(s) re-verified via a freshly "
+              f"re-extracted embedded ROM (BACKLOG #214b)")
         return 0
 
     core_mod, image_mod = gb_shots.load_mgba()
