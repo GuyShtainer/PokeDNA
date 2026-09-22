@@ -3,6 +3,13 @@
 #include "log.h"
 #include "ff.h"
 #include <string.h>
+#ifdef PDNA_DELTA
+#include "bank_plant.h"    /* BACKLOG #150 S150-9 decision 12: bank_plant_xfer_open -- the
+                            * delta vehicle has no readable FAT, so a planted in-RAM
+                            * ledger entry is the only way the merge screen is
+                            * reachable on the emulator. Zero effect on either gate
+                            * build (PDNA_DELTA is never defined there). */
+#endif
 
 /* ---- path resolution (decision 4/D-Q7) --------------------------------------- */
 
@@ -119,6 +126,17 @@ SfStatus xr_open(uint64_t key, uint8_t* buf, uint32_t cap, uint32_t* len, char* 
   char path[GBSC_PATH_MAX] = {0};
   bool exists = xr_path_for_key(path, key);
   if (path_out) memcpy(path_out, path, GBSC_PATH_MAX);
+#ifdef PDNA_DELTA
+  /* BACKLOG #150 S150-9 review D4 (LOW): moved to AFTER path_out is filled --
+   * pc_bank_restore_done()/gb_release_restored_verify() both hand path_out to
+   * sf_write_verified() later using whatever xr_open() gave them, even on a shim
+   * hit; the shim used to `return SF_OK` before path_out was ever touched,
+   * handing those callers an uninitialised path. PDNA_DELTA only. A hit means
+   * the merge screen's own probe reads real (in-RAM, never-written-to-SD) bytes
+   * instead of the SF_ERR_OPEN every real read on this vehicle returns (confirmed
+   * live: S150-8's own "06_sidecar_folder_wall" shot). */
+  if (bank_plant_xfer_open(key, buf, cap, len)) return SF_OK;
+#endif
   if (!exists) return SF_ERR_OPEN;
   uint32_t sz = 0;
   SfStatus st = sf_read_full(path, buf, cap, &sz);
