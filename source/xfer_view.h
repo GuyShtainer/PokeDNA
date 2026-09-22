@@ -33,6 +33,10 @@ typedef struct {
  * reads only bytes 0..7. */
 bool xv_has_original(const uint8_t rec80[80]);
 
+/* BACKLOG #213: xv_has_original with xr_path_for_key_hint's own `xfer_dir_absent`
+ * passthrough -- xv_has_original(rec80) == xv_has_original_hint(rec80, false). */
+bool xv_has_original_hint(const uint8_t rec80[80], bool xfer_dir_absent);
+
 /* Resolve `rec80`'s ORIGINAL, if any. Walks every entry in the ledger file, keeping
  * the HIGHEST index whose kind is XR_KIND_NATIVE_HOME and whose original80 passes
  * bc_is_native() (decision 5/8, the s150-8b walk verbatim, belt-and-braces since the

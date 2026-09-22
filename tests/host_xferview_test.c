@@ -39,6 +39,10 @@
 #include "xfer_view.h"
 
 bool app_can_edit(void) { return true; }
+/* BACKLOG #213: xfer_io.c's write_marker() now invalidates the caller-side GB
+ * ORIGINAL cache on every successful write; that cache lives in pdna_main.c, not
+ * linked here, so a no-op stub stands in for it exactly like app_can_edit() above. */
+void app_xv_cache_invalidate(void) {}
 
 static int g_check = 0, g_fail = 0;
 #define CHECK(c, ...) do { \

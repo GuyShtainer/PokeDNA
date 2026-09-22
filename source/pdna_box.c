@@ -1349,6 +1349,8 @@ pc_bank_restore_done(const uint8_t g3_rec80[80]) {
    * unmarked entry is a residual duplicate risk for a future lane, never a loss. */
   if (sf_write_verified(path, buf, len) != SF_OK) {
     log_line("bank: restore done: rewrite failed for %s", path);
+  } else {
+    app_xv_cache_invalidate();   /* BACKLOG #213: a real ledger write */
   }
 }
 

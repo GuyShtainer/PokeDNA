@@ -130,6 +130,7 @@ BOX_C = ROOT / "source" / "pdna_box.c"
 MAIN_C = ROOT / "source" / "pdna_main.c"
 BANK_C = ROOT / "source" / "pdna_bank.c"
 GEN12_C = ROOT / "source" / "pdna_gen12.c"
+XFER_IO_C = ROOT / "source" / "xfer_io.c"
 
 checks = 0
 fails: list[str] = []
@@ -859,6 +860,28 @@ def landed_consume_after_dispatch(dh_body: list[str]) -> tuple[bool, str]:
     return True, "ok"
 
 
+# BACKLOG #213 (aj): every ledger-write function this lane could reach must call
+# app_xv_cache_invalidate( somewhere in its own (comment-stripped) body -- the GB
+# ORIGINAL row's negative cache promises "after ANY ledger write, the next lookup
+# goes to the card", and this is the only site where THAT can be checked for the
+# write functions that live in files with no host-compile path (pdna_gen12.c,
+# pdna_box.c) or that are pdna_main.c statics with no runtime host test of their own.
+INVALIDATE_RE = re.compile(r"\bapp_xv_cache_invalidate\(")
+
+
+def invalidate_call_facts(lines: list[str], sig_re: str, fn_label: str) -> tuple[bool, str]:
+    """(aj): extract_function(lines, sig_re)'s body must contain INVALIDATE_RE at
+    least once. MUT AJ (self_test_mutation_detection) blanks the one real call line
+    on a synthetic copy of app_xfer_promote's body and asserts this reports FAIL."""
+    s, e = extract_function(lines, sig_re)
+    body = lines[s:e]
+    if not any(INVALIDATE_RE.search(ln) for ln in body):
+        return False, (f"{fn_label}: no app_xv_cache_invalidate( call in its "
+                        f"(comment-stripped) body -- a write here would leave the GB "
+                        f"ORIGINAL row's cache stale after a real ledger change")
+    return True, "ok"
+
+
 def arm_derived_once_above_dispatch(dh_body: list[str]) -> tuple[bool, str]:
     """(t) merged-tree reviewer: drop_held derives `arm` via xg_bank_down_arm( exactly
     ONCE, above the bank_down_dispatch( call -- the union's original bug class was a
@@ -883,6 +906,7 @@ def main() -> int:
     main_lines = strip_comments(MAIN_C.read_text()).splitlines()
     bank_lines = strip_comments(BANK_C.read_text()).splitlines()
     gen12_lines = strip_comments(GEN12_C.read_text()).splitlines()
+    xferio_lines = strip_comments(XFER_IO_C.read_text()).splitlines()
 
     # ---- (h) REVIEW F1: pdna_bank_next_serial() calls meta_load( before meta_save( ----
     s, e = extract_function(bank_lines, r"^uint32_t pdna_bank_next_serial\(void\)")
@@ -1292,8 +1316,33 @@ def main() -> int:
     ok, d = up_scan_latch_facts(box_lines, s, e)
     check(ok, d)
 
+    # ---- (aj) BACKLOG #213: every ledger-write function this lane could reach calls
+    # app_xv_cache_invalidate( -- the GB ORIGINAL row's negative cache promises "after
+    # ANY ledger write the next lookup goes to the card"; this is the only place that
+    # can prove it for the write sites living in files with no host-compile path
+    # (pdna_gen12.c/pdna_box.c) or that are pdna_main.c statics with no runtime test of
+    # their own. MUT AJ below (self_test_mutation_detection) blanks the one real call
+    # line in a synthetic copy of app_xfer_promote's body and must be caught. ----
+    for lines, sig_re, label in (
+        (main_lines, r"^bool __attribute__\(\(noinline\)\) app_xfer_promote\(void\) \{", "app_xfer_promote"),
+        (main_lines, r"^static void __attribute__\(\(noinline\)\) app_xfer_pid_rekey\(",
+         "app_xfer_pid_rekey"),
+        (main_lines, r"^static void __attribute__\(\(noinline\)\) xfer_reconcile_apply\(",
+         "xfer_reconcile_apply"),
+        (xferio_lines, r"^static bool write_marker\(uint32_t copied\) \{", "xfer_io.c write_marker"),
+        (gen12_lines, r"^xfer_down_write\(uint64_t key", "xfer_down_write"),
+        (gen12_lines, r"^static void xfer_down_claim_now\(", "xfer_down_claim_now"),
+        (gen12_lines, r"^static void xfer_down_undo\(", "xfer_down_undo"),
+        (gen12_lines, r"^static bool gb_release_up_hook\(int box, int slot, const uint8_t cell80\[80\]\) \{",
+         "gb_release_up_hook"),
+        (box_lines, r"^pc_bank_restore_done\(const uint8_t g3_rec80\[80\]\) \{", "pc_bank_restore_done"),
+    ):
+        ok, d = invalidate_call_facts(lines, sig_re, label)
+        check(ok, d)
+
     # ---- (f) review F3: the self-mutation harness, every run ----
     self_test_mutation_detection(box_lines, gen12_lines)
+    self_test_aj_mutation(main_lines)
 
     print(f"{checks} checks, {len(fails)} failed")
     for f in fails:
@@ -1971,6 +2020,28 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str]) -
                         f"was not: {detail}")
         print(f"  MUT AD demonstration -- drop_held_up's scan guard reverted to the bare "
               f"`if (!pdna_bank_serial_trusted())` form: {detail}")
+
+
+def self_test_aj_mutation(main_lines: list[str]) -> None:
+    """BACKLOG #213 (aj): prove invalidate_call_facts() actually has teeth. Takes
+    app_xfer_promote's real (comment-stripped) body and deletes its one
+    app_xv_cache_invalidate( line on an in-memory copy -- the exact shape of the bug
+    this check exists to catch (a write site whose invalidation call was never added,
+    or got deleted in a later edit) -- and asserts invalidate_call_facts()'s own
+    any(...) scan reports failure on that copy."""
+    s, e = extract_function(main_lines, r"^bool __attribute__\(\(noinline\)\) app_xfer_promote\(void\) \{")
+    body = main_lines[s:e]
+    mut_aj = [ln for ln in body if not INVALIDATE_RE.search(ln)]
+    check(any(INVALIDATE_RE.search(ln) for ln in body),
+          "MUT AJ: app_xfer_promote's real body has no app_xv_cache_invalidate( call to "
+          "delete -- fix this test, the real source regressed")
+    still_present = any(INVALIDATE_RE.search(ln) for ln in mut_aj)
+    check(not still_present,
+          "MUT AJ (app_xfer_promote's invalidate call deleted) should have been caught "
+          "but was not -- the mutated copy still reports a call present")
+    print("  MUT AJ demonstration -- app_xfer_promote's app_xv_cache_invalidate( call "
+          f"deleted: {'still (wrongly) found' if still_present else 'correctly absent, check would fail'}")
+
 
 # ---- (m) 2026-09-16 (merged-tree shot lane): the DOWN dispatch's `occupied` refusal is scoped to
 # the GEN3 arm. An unscoped `&& !occupied` on the dispatch condition made the EXACT arm refuse

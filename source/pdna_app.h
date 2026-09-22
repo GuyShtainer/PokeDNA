@@ -425,6 +425,15 @@ void app_xfer_pending_set(uint64_t key, int idx);
 bool app_xfer_promote(void);
 void app_xfer_pending_drop(void);
 
+/* BACKLOG #213: the GB ORIGINAL row's two caches over xv_has_original() (folder-
+ * absent latch + a small ring of miss keys, both EWRAM_BSS, both owned/defined in
+ * pdna_main.c because xfer_io.c/xfer_view.c never include tonc.h/sys.h). Call this
+ * after ANY write to a /PokeDNA/xfer or /PokeDNA/sidecar ledger file (xfer_io.c's
+ * own migration marker calls it already) and on every fresh Gen-3 save load --
+ * cheap and side-effect-free to call an extra time; the only bug this guards
+ * against is NOT calling it after a real write. */
+void app_xv_cache_invalidate(void);
+
 /* BACKLOG #150 S150-11 decision 4: the §11.8 Bank-open reconcile -- gated on
  * app_can_edit() && app_gen3_pc_live() as its own FIRST two statements (G-F2: a
  * Game Boy session's Bank visit performs zero ledger reads, zero box reads, zero

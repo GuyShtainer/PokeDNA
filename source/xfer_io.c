@@ -11,6 +11,28 @@
                             * build (PDNA_DELTA is never defined there). */
 #endif
 
+/* ---- BACKLOG #213: the negative-key ring (pure logic, caller-owned storage) --- */
+
+void xr_miss_cache_reset(XrMissCache* c) {
+  if (!c) return;
+  c->n = 0;
+  c->next = 0;
+}
+
+bool xr_miss_cache_has(const XrMissCache* c, uint64_t key) {
+  if (!c) return false;
+  for (int i = 0; i < c->n; i++) if (c->keys[i] == key) return true;
+  return false;
+}
+
+void xr_miss_cache_remember(XrMissCache* c, uint64_t key) {
+  if (!c) return;
+  if (xr_miss_cache_has(c, key)) return;   /* golden rule 2: the ring never grows past N */
+  c->keys[c->next] = key;
+  c->next = (uint8_t)((c->next + 1) % XR_MISS_RING_N);
+  if (c->n < XR_MISS_RING_N) c->n++;
+}
+
 /* ---- path resolution (decision 4/D-Q7) --------------------------------------- */
 
 /* out[GBSC_PATH_MAX] <- "<dir>/<name>", the same shape gbsc_path() builds from a
@@ -48,18 +70,35 @@ static bool marker_present(void) {
 
 bool xr_migrated(void) { return marker_present(); }
 
+/* BACKLOG #213: one f_stat, no cached state (see xfer_io.h's own comment). */
+bool xr_dir_exists(void) {
+  FILINFO fi;
+  return f_stat(PDNA_XFER_DIR, &fi) == FR_OK;
+}
+
 bool xr_path_for_key(char out[GBSC_PATH_MAX], uint64_t key) {
+  return xr_path_for_key_hint(out, key, false);
+}
+
+bool xr_path_for_key_hint(char out[GBSC_PATH_MAX], uint64_t key, bool xfer_dir_absent) {
   if (!out) return false;
   char xpath[GBSC_PATH_MAX] = {0};
   if (gbsc_path(xpath, GBSC_PATH_MAX, PDNA_XFER_DIR, key) < 0) return false;
 
   FILINFO fi;
-  if (f_stat(xpath, &fi) == FR_OK) {
-    memcpy(out, xpath, GBSC_PATH_MAX);
-    return true;
+  bool migrated = false;
+  if (!xfer_dir_absent) {
+    if (f_stat(xpath, &fi) == FR_OK) {
+      memcpy(out, xpath, GBSC_PATH_MAX);
+      return true;
+    }
+    migrated = marker_present();
   }
-
-  bool migrated = marker_present();
+  /* xfer_dir_absent == true: xpath and the MIGRATED marker are both children of
+   * PDNA_XFER_DIR, so a caller who already knows that directory does not exist
+   * (xr_dir_exists()) has proven both f_stat calls above would miss without
+   * asking the card again -- migrated stays false, the exact value the calls
+   * would have produced. */
   if (!migrated) {
     char spath[GBSC_PATH_MAX] = {0};
     if (gbsc_path(spath, GBSC_PATH_MAX, PDNA_SIDECAR_DIR, key) >= 0 &&
@@ -194,7 +233,13 @@ static bool write_marker(uint32_t copied) {
   if (join_path(path, GBSC_PATH_MAX, PDNA_XFER_DIR, "MIGRATED") < 0) return false;
   char body[16] = {0};
   int n = u32_to_dec(copied, body);
-  return sf_write_verified(path, (const uint8_t*)body, (uint32_t)n) == SF_OK;
+  bool ok = sf_write_verified(path, (const uint8_t*)body, (uint32_t)n) == SF_OK;
+  /* BACKLOG #213: the marker's own existence flips xr_path_for_key's `migrated`
+   * answer for every key -- and xr_migrate_once() may also have copied sidecar
+   * files into xfer just above, moving keys that used to resolve to sidecar. Both
+   * invalidate app_xv_cache_invalidate()'s caller-side latch/ring (pdna_main.c). */
+  if (ok) app_xv_cache_invalidate();
+  return ok;
 }
 
 int __attribute__((noinline)) xr_migrate_once(uint8_t* scratch, uint32_t cap) {

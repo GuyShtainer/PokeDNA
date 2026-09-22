@@ -2362,6 +2362,7 @@ static bool gb_release_up_hook(int box, int slot, const uint8_t cell80[80]) {
                       (sf_write_verified(path, g_ed->sidecar, len2) == SF_OK);
         rmbl_resume();
         if (!marked) log_line("gen12: xferup box %d slot %d: RESTORED mark failed", box, slot);
+        else         app_xv_cache_invalidate();   /* BACKLOG #213: a real ledger write */
       } else {
         log_line("gen12: xferup box %d slot %d: RESTORED mark: gbsc_get failed", box, slot);
       }
@@ -3289,6 +3290,7 @@ static void xfer_down_undo(const char* path, uint8_t* scratch) {
   else                                wst = sf_write_verified(path, scratch, len);
   rmbl_resume();
   if (wst != SF_OK) log_line("gen12: xfer_down cleanup: rewrite failed for %s", path);
+  else              app_xv_cache_invalidate();   /* BACKLOG #213: a real ledger write */
 }
 
 /* BACKLOG #150 S150-8 decision 8: steps (4) of S11.3 for a NATIVE-home transfer,
@@ -3380,6 +3382,7 @@ xfer_down_write(uint64_t key, const uint8_t cell80[80], const GbEditMon* written
     msg_wait(PDNA_SIDECAR_NOTWRITTEN_TITLE, UI_WARN, sf_status_str(wst), PDNA_SIDECAR_NOTWRITTEN_L2);
     return -1;
   }
+  app_xv_cache_invalidate();   /* BACKLOG #213: a real ledger write */
   if (len_out) *len_out = len;
   return idx;
 }
@@ -3401,6 +3404,7 @@ static void xfer_down_claim_now(uint8_t* scratch, uint32_t len, int idx, const c
   SfStatus wst = sf_write_verified(path, scratch, len);
   rmbl_resume();
   if (wst != SF_OK) log_line("gen12: xfer_down claim: rewrite failed for %s", path);
+  else              app_xv_cache_invalidate();   /* BACKLOG #213: a real ledger write */
 }
 
 /* BACKLOG #150 S150-8 decision 3/5/6/8/9/11/12/16, arm 2: a native cell converts
