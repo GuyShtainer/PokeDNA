@@ -327,6 +327,16 @@ void gb12_arena_tail_release(void);
  * mon to scroll to from a single cell, and the return value is not meaningful). */
 bool gb_native_summary_open(const uint8_t rec80[80], bool allow_edit, uint8_t out80[80]);
 
+/* BACKLOG #150 S150-15 decision 7: gb_native_summary_open's READ-ONLY twin, over a
+ * ledger entry's `original80` (a converted mon's Game Boy home, not a live Bank
+ * cell) instead of `rec80` -- shares gb_native_summary_open's own re-open loop
+ * (native_summary_run, pdna_gen12.c, static) so the write gate and every card
+ * behaviour are IDENTICAL to the native VIEW; the only difference visible to the
+ * user is `note` (decision 8's composed origin-game + transfer-date string) in
+ * place of the hard-coded "Gen 1/2 record" pair. can_edit is a literal `false` and
+ * out80 is NULL -- structurally read-only, not policy-gated. */
+bool gb_original_summary_open(const uint8_t original80[80], const char* note);
+
 /* BACKLOG #150 S150-8 / D-Q1: the two DOWN-conversion arms' GBA-facing bodies --
  * real card I/O (the ledger write, decision 8's xfer_down_write), the loss/legal
  * screens, and either the Gen-3 PC write (through `src`) or the Game Boy session
