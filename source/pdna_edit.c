@@ -29,6 +29,7 @@
 #include "pdna_pick.h"
 #include "pdna_layout.h"   /* labels/geometry shared with tests/host_textfit_test.c */
 #include "snd.h"
+#include "log.h"           /* BACKLOG #217: log the noop-write refusal below */
 
 static const char* const FLABEL[F_NUM] = {
   "Species", "Nickname", "Level", "Nature", "Ability", "Shiny", "Gender",
@@ -374,6 +375,28 @@ void em_field_adjust(int f, int dir, bool big, EditMon* e, const PkMon* c) {
   }
 }
 
+/* F_NICK / F_OT share one shape: seed the OSK from the decoded field, and refuse the
+ * exact noop when that decode was degraded (BACKLOG #217): c->nickname/c->otName can
+ * already be a DEGRADED decode -- a gender sign (or e-acute, BACKLOG #216) that didn't
+ * fit the field shows up here as a literal '?' (c->nameFlags, set by gen3_mon.c's
+ * decode_name). If the user presses OK with NO edit at all, osk_input returns true
+ * with `buf` identical to the seed -- re-encoding that seed would write the '?' byte
+ * (0xAC) over whatever the record actually held (e.g. 0xB5, the real gender sign), a
+ * silent, unasked-for change. Refuse ONLY that exact case (degraded AND buf unchanged
+ * from the seed); any real edit -- even typing the same text back after deleting and
+ * retyping it -- still goes through, because osk_input's `buf` is what the user
+ * confirmed, and a degraded seed re-typed verbatim is, byte for byte, the same noop. */
+static void name_field_press(EditMon* e, const PkMon* c, bool is_ot, char* buf) {
+  const char* seed = is_ot ? c->otName : c->nickname;
+  const uint8_t bit = is_ot ? PK_NAME_OT_DEGRADED : PK_NAME_NICK_DEGRADED;
+  if (!osk_input(is_ot ? "OT NAME" : "NICKNAME", seed, buf, is_ot ? 8 : 11)) return;
+  if ((c->nameFlags & bit) && strcmp(buf, seed) == 0)
+    log_line(is_ot ? "OT name unchanged, original glyphs kept"
+                   : "nickname unchanged, original glyphs kept");
+  else if (is_ot) em_set_otname(e, buf);
+  else            em_set_nickname(e, buf);
+}
+
 void em_field_press(int f, EditMon* e, const PkMon* c) {
   char buf[20];
   switch (f) {
@@ -397,8 +420,8 @@ void em_field_press(int f, EditMon* e, const PkMon* c) {
     }
     case F_PP0: case F_PP1: case F_PP2: case F_PP3:                          /* A = restore to max PP */
       em_set_pp(e, f - F_PP0, pp_max(c, f - F_PP0)); break;
-    case F_NICK: if (osk_input("NICKNAME", c->nickname, buf, 11)) em_set_nickname(e, buf); break;
-    case F_OT:   if (osk_input("OT NAME", c->otName, buf, 8))    em_set_otname(e, buf); break;
+    case F_NICK: name_field_press(e, c, false, buf); break;
+    case F_OT:   name_field_press(e, c, true, buf); break;
     case F_ABILITY: em_set_ability(e, pick_ability(c->species, c->abilityNum)); break;
     case F_SHINY:   reroll_to(e, c, c->nature, c->isShiny ? 0 : 1, c->gender < 2 ? c->gender : -1); break;
     case F_GENDER: { uint8_t r = pk_species_gender_ratio(c->species);

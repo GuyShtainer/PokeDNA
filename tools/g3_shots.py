@@ -60,6 +60,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # so `import gb_shots` finds its sibling
 
 from gb_shots import Session, load_mgba, BIG_SETTLE, SETTLE   # noqa: E402  (Session helpers only — gb_shots.py itself is untouched)
+import gb_claims   # noqa: E402 -- BACKLOG #184/#218: discriminating claim= checks below.
 
 
 def run_osk_rename(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
@@ -252,6 +253,73 @@ def run_contests(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     return s
 
 
+def run_b218_gender_glyph(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
+    """BACKLOG #218: the SUMMARY's POKEMON INFO card's Spec./OT rows used to call
+    ui_text() directly, which runs libtonc's tte_write -> real UTF-8 decode ->
+    tte_putc's gid = ch - charOffset with NO bound check against the 96-glyph sys8
+    font. pk_species_name() encodes NIDORAN's gender sign as the 3-byte UTF-8
+    sequence E2 99 80/82 (data_tables.c:14), so that row hit an out-of-bounds glyph
+    read on every Nidoran (F) or (M) SUMMARY -- proven on a delta frame BEFORE this
+    fix: "Spec. NIDORAN" followed by a garbage glyph (not blank, not '?').
+
+    The fix moved the Spec. and OT rows onto ui_ptext_fit -- the SAME bounded font
+    (source/ui.c's pnext()) the Name row two lines below already used, so this
+    shot is parity, not new behaviour: the gender sign now renders as one safe '?'
+    glyph on every row, no garbage cell anywhere on the card.
+
+    Nav: box screen -> R x7 (lands on the 20/30-occupied box the corpus save
+    happens to have at that position) -> DOWN x3, RIGHT x2 (row 3 col 2 -- the
+    first EMPTY cell after the box's 20 occupied slots, verified by a probe shot
+    before this script existed) -> A (EMPTY/CREATE/PASTE/CANCEL menu) -> A
+    (CREATE -> pick_species(1), sel=0 Bulbasaur) -> the picker is the real-art
+    7-wide ICON GRID on this build (mon_icon_for(1) != 0), so DOWN moves by
+    GCOLS=7 per press, not by list rows -- DOWN x4 (0 -> 7 -> 14 -> 21 -> 28)
+    lands exactly on sel=28 = NIDORAN (F), national dex #29, the lowest-dex
+    entry with a gender sign in its name -- then A picks it, builds the mon
+    (gen3_build_mon_spread), and opens the SIX-CARD SUMMARY on card 0 directly
+    (pdna_inspect_create)."""
+    s = Session(core_mod, image_mod, rom, out_dir, "b218_")
+    print("== BACKLOG #218: SUMMARY Spec./OT rows vs a 3-byte gender sign ==")
+
+    s.press_n("R", 7, settle=BIG_SETTLE)   # box screen -> the box with 10 empty cells
+    s.press_n("DOWN", 3)                   # row 0 -> row 3
+    s.press_n("RIGHT", 2)                  # col 0 -> col 2 (first empty cell, index 20)
+    s.tap("A", settle=BIG_SETTLE)          # empty cell -> EMPTY/CREATE/PASTE HERE/CANCEL
+    s.shot("00_empty_cell_menu", "#218 setup: an empty box cell's menu -- CREATE is the "
+                                  "second row, already selected")
+
+    s.tap("A", settle=BIG_SETTLE)          # CREATE -> pick_species(1); real-art build -> icon grid
+    s.press_n("DOWN", 4)                   # GCOLS=7: 0 -> 7 -> 14 -> 21 -> 28 = NIDORAN (F), #029
+    s.shot("01_picker_nidoran", "#218 BEFORE-evidence: the species picker cursor on "
+                                 "NIDORAN (F), national #029 -- the header is drawn by the "
+                                 "raw ui_text/tte path this item is about, and the frame "
+                                 "shows \"NIDORAN\" followed by an OUT-OF-BOUNDS GARBAGE "
+                                 "CELL, not a gender sign and not '?' (BACKLOG #222 tracks "
+                                 "the same fix for this call site)")
+                                 # no claim= here: this frame is the real-art icon grid (many
+                                 # colours), not the GB-shell font gb_claims.py's matcher reads
+
+    s.tap("A", settle=BIG_SETTLE)          # confirm species -> builds the mon, opens the SUMMARY
+    p = s.shot("02_summary_fixed", "#218 FIXED: SUMMARY, POKEMON INFO card -- Spec. and Name "
+                                "both render \"NIDORAN?\" (one safe '?' glyph for the 3-byte "
+                                "gender sign, ui_ptext_fit's pnext() bound), no garbage cell "
+                                "anywhere on the card; BEFORE this fix the Spec. row showed "
+                                "\"NIDORAN\" plus an out-of-bounds glyph instead",
+           claim=["NIDORAN?"])
+
+    # DISCRIMINATING pin (a claim that also passes on the unfixed build is not a pin):
+    # ui_ptext_fit draws with ui_font; the OLD ui_text path drew with tonc's sys8. A
+    # sys8 "NIDORAN" anywhere on this card means the fix is NOT in this build.
+    if gb_claims.find(p, "NIDORAN", proportional=False):
+        raise RuntimeError("b218_02: the Spec. row is still drawn by the FIXED sys8 font "
+                           "(ui_text) -- BACKLOG #218's fix is not in this build")
+
+    s.tap("B", settle=BIG_SETTLE)          # leave the summary without keeping the created mon
+    s.shot("03_discard_confirm", "#218: leaving the summary without pressing START -- the "
+                                  "usual discard confirm, so the box stays untouched")
+    return s
+
+
 def run_b107_contest_picker(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     """BACKLOG #107: the Contests donor picker on pdna_pick.c's shared pick_rows()
     engine -- source list, a box's mon list with the icon column, a live search
@@ -339,7 +407,7 @@ def main(argv=None) -> int:
                           "(default --shots) picks these up with no extra flags")
     ap.add_argument("--only",
                      choices=("osk", "flags", "contests", "daycare",
-                              "b107-contest", "b107-contest-artless"),
+                              "b107-contest", "b107-contest-artless", "b218-gender-glyph"),
                      default=None,
                      help="run just ONE of this script's shot functions (BACKLOG #114's "
                           "pixel-parity proof uses --only daycare against a private --out "
@@ -357,7 +425,8 @@ def main(argv=None) -> int:
     fn_by_name = {"osk": run_osk_rename, "flags": run_flags_sections,
                   "contests": run_contests, "daycare": run_daycare,
                   "b107-contest": run_b107_contest_picker,
-                  "b107-contest-artless": run_b107_contest_picker_artless}
+                  "b107-contest-artless": run_b107_contest_picker_artless,
+                  "b218-gender-glyph": run_b218_gender_glyph}
     fns = (fn_by_name[a.only],) if a.only else (run_osk_rename, run_flags_sections, run_contests)
 
     ok, skipped = [], []
@@ -375,8 +444,15 @@ def main(argv=None) -> int:
     if manifest_path.is_file():
         existing = json.loads(manifest_path.read_text(encoding="utf-8"))
     by_file = {e["file"]: e for e in existing.get("shots", [])}
-    for n, c in ok:
-        by_file[n] = {"file": n, "caption": c}
+    for n, c, claim_info in ok:
+        # BACKLOG #218 fix: Session.taken is a 3-tuple (BACKLOG #184's claim_info,
+        # tools/gb_shots.py's own main() already merges it this way at line 778 --
+        # this file's main() was never updated when Session grew claim_info, so
+        # every run with a claim=/claim_absent= shot crashed here with "too many
+        # values to unpack" before writing its manifest entry.
+        entry = {"file": n, "caption": c}
+        entry.update(claim_info)
+        by_file[n] = entry
     by_name = {e["name"]: e for e in existing.get("skipped", [])}
     for n, r in skipped:
         by_name[n] = {"name": n, "reason": r}

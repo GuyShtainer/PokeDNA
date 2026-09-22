@@ -370,13 +370,23 @@ static void card_info(const PkMon* p) {
   }
 
   ui_text(x, y, C_KEY, "Spec."); reg(F_SPECIES, x + 48, y, 88);
-  ui_text(x + 48, y, C_VAL, pk_species_name(p->species)); y += 9;
+  /* BACKLOG #218: ui_text -> tte_write decodes real UTF-8 and tte_putc has no bound
+   * check against the 96-glyph sys8 font, so a 3-byte gender sign (pk_species_name's
+   * NIDORAN\xE2\x99\x80/\x82) reads an out-of-bounds glyph cell -- proven on a delta
+   * frame (docs/shots/*_218_*): "Spec. NIDORAN" followed by a garbage glyph, not a
+   * blank. ui_ptext_fit uses the app's OWN bounded font (ui.c's pnext(), same one the
+   * Name row two lines below already uses) and turns any non-ASCII glyph into a single
+   * '?' instead of an OOB read -- parity with that row, not new behaviour. */
+  ui_ptext_fit(x + 48, y, 88, C_VAL, pk_species_name(p->species)); y += 9;
 
   ui_text(x, y, C_KEY, "Name"); reg(F_NICK, x + 48, y, 88);
   ui_ptext_fit(x + 48, y, INFO_W - 48, C_VAL, p->nickname[0] ? p->nickname : "-"); y += 9;
 
   ui_text(x, y, C_KEY, "OT"); reg(F_OT, x + 48, y, 88);
-  ui_text(x + 48, y, C_VAL, p->otName); y += 9;               /* TID on its own row (was off-screen) */
+  /* Same OOB-glyph bound as the Spec. row above (BACKLOG #218) -- an OT name can carry
+   * a gender sign too (b204 widened decode_name's field set), so this row needs the
+   * same bounded pnext() font, not the raw tte_write UTF-8 path. */
+  ui_ptext_fit(x + 48, y, 88, C_VAL, p->otName); y += 9;       /* TID on its own row (was off-screen) */
   siprintf(b, "TID %05u", (unsigned)(p->otId & 0xFFFF)); ui_text(x, y, UI_DIM, b); y += 9;
 
   uint8_t t1 = pk_species_type1(p->species), t2 = pk_species_type2(p->species);

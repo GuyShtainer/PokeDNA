@@ -60,6 +60,14 @@ uint8_t gen3_encode_char(char c) {
      * silently produced a slash. 0xB8 = ',' and 0xBA = '/' in the real Gen-3 charmap. */
     case ',':  return 0xB8;
     case '/':  return 0xBA;
+    /* BACKLOG #216: exact inverse of gen3_decode_char's five new plain-ASCII
+     * cases (source/gen3_save.c) -- the only five of the 64 previously-unmapped
+     * Gen-3 glyphs that are plain ASCII and need no multi-byte encoding. */
+    case '+':  return 0x2E;
+    case '=':  return 0x35;
+    case '%':  return 0x5B;
+    case '<':  return 0x85;
+    case '>':  return 0x86;
     default:   return 0x00;   /* unknown -> space */
   }
 }
@@ -614,6 +622,12 @@ static void encode_name(uint8_t* dst, int cap, const char* s) {
     if (p[0] == 0xE2u && p[1] == 0x99u && (p[2] == 0x80u || p[2] == 0x82u)) {
       b = (p[2] == 0x80u) ? 0xB6u : 0xB5u;       /* U+2640 ♀ / U+2642 ♂ */
       p += 3;
+    } else if (p[0] == 0xC3u && p[1] == 0xA9u) {  /* BACKLOG #216: e-acute, the SAME
+                                                    * "\xC3\xA9" source/ui.c's pnext()
+                                                    * already special-cases -- exact
+                                                    * inverse of decode_name's own
+                                                    * 0x1B case (source/gen3_mon.c) */
+      b = 0x1Bu; p += 2;
     } else if (p[0] >= 0x80u) {                  /* any other non-ASCII -> space */
       b = 0x00u; p++;
       while ((*p & 0xC0u) == 0x80u) p++;         /* skip its continuation bytes */
