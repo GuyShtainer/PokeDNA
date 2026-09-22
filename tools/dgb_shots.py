@@ -3573,6 +3573,90 @@ def measure_dex_sd_reads(core_mod, image_mod, rom: Path, out_dir: Path, which: s
             print(f"  {l}")
 
 
+def run_b208_dexcache(core_mod, image_mod, rom: Path, out_dir: Path, which: str = "crystal") -> None:
+    """BACKLOG #208 step 3: proves the real per-page GB-art cache's HIT/MISS shape
+    by capturing every 'dexart: page N fetch=X hit=Y' log line (source/pdna_gbdex.c's
+    PDNA_DELTA-only page-begin hook, pdna_pick.h's PdnaDexPageFn) across a fixed
+    navigation script, the same log-capturing technique measure_dex_sd_reads() above
+    already uses (Capture installed as mgba's default logger BEFORE the session
+    boots). `rom` must be a ONE-ROM fused delta-artless image (fuse_gb.py), same
+    posture as --b124-dexicons.
+
+    `run_b124_dexicons()`'s own navigation lands on the dex grid's page 1 with L
+    already pressed (DV_GRID) -- that first full repaint is this bench's own "cold
+    entry" page (page 1: 21 fetch / 0 hit expected, the cache starts empty every
+    visit). From there:
+
+      same-page repaint -- START opens dex_menu's filter overlay, B cancels it with
+        NEITHER the view nor top changed (pdna_pick.c's own `gen != ui_clear_gen()`
+        term is what forces the next `full` repaint here, not a real navigation) --
+        expect page 2: fetch=0 hit=21 (every cell of the SAME page is still cached).
+
+      cursor move (no scroll) -- RIGHT then LEFT moves the selection within the
+        page without crossing a row edge -- dex_declare_page() is only called on a
+        FULL repaint (a fresh page_begin), so this step is expected to add NO new
+        'dexart:' line at all (0 fetches, trivially, because nothing re-declares a
+        page) -- this is BACKLOG #208's own "open a cell then return -> 0" case,
+        read literally: no per-cell detail screen exists yet (BACKLOG #203), so the
+        closest equivalent this build has is moving onto a cell and back.
+
+      row scroll -- DOWN x3 moves the cursor down one full row (cols=7 in the grid
+        view), crossing the bottom edge and forcing a one-row scroll -- expect a new
+        'dexart:' line with fetch <= 7 (this cache's own 23-slot/21-cell geometry
+        gives exactly 5 -- see tests/host_dexgbartcache_test.c part E).
+
+      page flip -- DOWN further (past the row already scrolled to) until the WHOLE
+        original page 1 has scrolled off screen (21 cells further) -- expect
+        fetch=21 (every cell on the new page is new, the #208 report's own "page
+        flip -> 21" case), same as a cold entry.
+
+    Prints every captured 'dexart:' line, per phase, for a human (or a future
+    machine parser -- BACKLOG #184's own aspiration) to read the counts off -- same
+    "no parser here" posture as measure_dex_sd_reads() above."""
+    lines: list[str] = []
+    log_mod = getattr(core_mod, "log", None)
+    if log_mod is None:
+        import mgba.log as log_mod  # noqa: E402
+
+    class Capture(log_mod.Logger):
+        def log(self, category, level, message):  # noqa: A002
+            try:
+                m = log_mod.ffi.string(message).decode("utf-8", "replace")
+            except TypeError:
+                m = str(message)
+            lines.append(m)
+
+    log_mod.install_default(Capture())
+    s = run_b124_dexicons(core_mod, image_mod, rom, out_dir, which, fallback=False)
+    s.run(150)
+
+    def dump(phase: str, mark: int) -> int:
+        new = [l for l in lines[mark:] if l.startswith("dexart:")]
+        print(f"  -- {phase} --")
+        for l in new:
+            print(f"    {l}")
+        if not new:
+            print("    (no dexart: line -- expected iff this step never triggers a full repaint)")
+        return len(lines)
+
+    print(f"== BACKLOG #208 step 3: dexcache HIT/MISS ({which}) ==")
+    mark = dump("cold entry (page 1)", 0)
+
+    s.tap("START", settle=gb_shots.BIG_SETTLE)   # dex_menu's own filter overlay
+    s.tap("B", settle=gb_shots.BIG_SETTLE)       # cancel -- same page, forces a repaint
+    mark = dump("same-page repaint (START then B)", mark)
+
+    s.tap("RIGHT", settle=gb_shots.SETTLE)
+    s.tap("LEFT", settle=gb_shots.SETTLE)
+    mark = dump("cursor move, no scroll (RIGHT then LEFT)", mark)
+
+    s.press_n("DOWN", 3, settle=gb_shots.SETTLE)  # one full row, cols=7
+    mark = dump("row scroll (DOWN x3)", mark)
+
+    s.press_n("DOWN", 21, settle=gb_shots.SETTLE)  # scroll the ORIGINAL page fully off screen
+    dump("page flip (DOWN x21 more)", mark)
+
+
 # ---------------------------------------------------------------------------------
 # BACKLOG #104 R1: KEEP AS IS / MAKE LEGAL on a Gen 3 -> Game Boy paste.
 # ---------------------------------------------------------------------------------
@@ -6748,6 +6832,14 @@ def main(argv=None) -> int:
                           "why this counter is architecturally 0 on this (PDNA_DELTA) "
                           "vehicle regardless of what this feature does -- hardware-"
                           "only.")
+    ap.add_argument("--b208-dexcache", choices=("red", "crystal"),
+                     help="BACKLOG #208 step 3: run_b208_dexcache() against --image "
+                          "(a ONE-ROM fused image of the NAMED game, GB ROM present) "
+                          "-- captures every 'dexart: page N fetch=X hit=Y' log line "
+                          "across cold entry / same-page repaint / a no-scroll "
+                          "cursor move / a row scroll / a page flip, printed per "
+                          "phase for the HIT/MISS proof (see that function's own "
+                          "docstring for the exact navigation and expected counts).")
     ap.add_argument("--b85-daycare", choices=("red", "gold"),
                      help="BACKLOG #85: only run_b85_daycare() against --image for "
                           "the named game (Red's one-slot Day Care, or Gold's "
@@ -7600,6 +7692,9 @@ def main(argv=None) -> int:
         ran = True
     if a.b196_sdreads:
         measure_dex_sd_reads(core_mod, image_mod, a.image, a.out, which=a.b196_sdreads)
+        ran = True
+    if a.b208_dexcache:
+        run_b208_dexcache(core_mod, image_mod, a.image, a.out, which=a.b208_dexcache)
         ran = True
     if a.b124_bobcheck:
         run_b124_bobcheck(core_mod, image_mod, a.image, a.out, a.b124_bobcheck)
