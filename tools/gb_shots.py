@@ -102,6 +102,8 @@ extra settle on top before the next tap is sent.
 from __future__ import annotations
 
 import argparse
+import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -118,6 +120,9 @@ import fuse_gb  # noqa: E402 -- BACKLOG #214 item 2: claim_gb= extracts the embe
 import vsd  # noqa: E402 -- BACKLOG #179 Phase A step A3: the harness-hosted virtual SD
             # server. No mgba import at module level here either (vsd.py only touches
             # struct/dataclasses/pathlib) -- see vsd.py's own header for the protocol.
+import vsd_diff  # noqa: E402 -- BACKLOG #179 A3 review D1: Session.vsd_report()'s own
+                  # diff, reusing vsd_diff.py's parser/differ rather than a second
+                  # implementation. Pure stdlib (dataclasses/sys) -- no mgba import here either.
 
 KEY = dict(A=0x1, B=0x2, SEL=0x4, START=0x8, RIGHT=0x10, LEFT=0x20,
            UP=0x40, DOWN=0x80, R=0x100, L=0x200)
@@ -145,6 +150,62 @@ def set_default_vsd(img: "Path | None", **knobs) -> None:
     global _DEFAULT_VSD_IMG, _DEFAULT_VSD_KNOBS
     _DEFAULT_VSD_IMG = img
     _DEFAULT_VSD_KNOBS = knobs
+
+
+# BACKLOG #179 A3 review D1 (BLOCKER): VsdImage.flush() had no caller anywhere in this
+# tree -- every --vsd write lived only in the in-process bytearray and died with the
+# script. Every Session that attaches a VSD registers itself here; dgb_shots.main()
+# (and this module's own main() below) drains the list in a try/finally wrapped around
+# its ENTIRE dispatch, so a flush happens exactly once per process regardless of which
+# runner(s) ran, whether one raised, or whether --selftest-captions' own sys.exit(1)
+# fired on the way out -- finally still runs before a SystemExit propagates.
+_LIVE_VSD_SESSIONS: "list[Session]" = []
+
+
+def flush_live_vsd_sessions() -> None:
+    """Flush and forget every Session on the module's live-VSD registry -- call once,
+    from a try/finally wrapped around a script's WHOLE dispatch (dgb_shots.main(),
+    this file's own main()). A no-op if nothing attached --vsd this run."""
+    global _LIVE_VSD_SESSIONS
+    for s in _LIVE_VSD_SESSIONS:
+        s.vsd_flush()
+    _LIVE_VSD_SESSIONS = []
+
+
+_vsd_img_bin_cache: "Path | None" = None
+_vsd_img_build_failed: "str | None" = None
+
+
+def _vsd_img_bin() -> Path:
+    """Compile tools/vsd_img.c once per process -- design S4.6's own recipe, the same
+    host-`cc` posture tools/gb_claims.py's _gb_driver() already uses for its own driver
+    binary. Session.vsd_report() is the only caller. Raises vsd.VsdError (never a silent
+    skip, golden rule 3) if this host has no C compiler or the build fails."""
+    global _vsd_img_bin_cache, _vsd_img_build_failed
+    if _vsd_img_bin_cache is not None:
+        return _vsd_img_bin_cache
+    if _vsd_img_build_failed is not None:
+        raise vsd.VsdError(_vsd_img_build_failed)
+    cc = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
+    if not cc:
+        _vsd_img_build_failed = "vsd_report(): no host C compiler (cc/gcc/clang) found"
+        raise vsd.VsdError(_vsd_img_build_failed)
+    bin_dir = Path(tempfile.mkdtemp(prefix="vsd_img_bin_"))
+    binp = bin_dir / "vsd_img"
+    cmd = [cc, "-std=c11", "-DFF_USE_MKFS=1", "-Dsiprintf=sprintf",
+           "-I", str(ROOT / "tests" / "hostfat"), "-I", str(ROOT / "lib" / "fatfs"),
+           "-I", str(ROOT / "source"), "-I", str(ROOT / "tools"),
+           str(ROOT / "tools" / "vsd_img.c"), str(ROOT / "tools" / "host_walk.c"),
+           str(ROOT / "source" / "pdna_romver.c"),
+           str(ROOT / "lib" / "fatfs" / "ff.c"), str(ROOT / "lib" / "fatfs" / "ffunicode.c"),
+           str(ROOT / "tests" / "hostfat" / "ramdisk.c"),
+           "-o", str(binp)]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0 or not binp.is_file():
+        _vsd_img_build_failed = f"vsd_report(): vsd_img build failed: {r.stderr.strip()[-2000:]}"
+        raise vsd.VsdError(_vsd_img_build_failed)
+    _vsd_img_bin_cache = binp
+    return _vsd_img_bin_cache
 
 
 def load_mgba():
@@ -191,11 +252,19 @@ class Session:
         # any runner run without --vsd) leaves self.vsd None and run()/tap() below are
         # exactly their pre-A3 selves -- no mgba call, no extra frame cost.
         self.vsd: "vsd.VsdServer | None" = None
+        self._vsd_pre_path: "Path | None" = None   # BACKLOG #179 A3 review D1: the
+                                                     # <img>.pre snapshot vsd_snapshot()
+                                                     # takes below, vsd_report()'s "before"
         chosen_img = vsd_img if vsd_img is not None else _DEFAULT_VSD_IMG
         if chosen_img is not None:
             chosen_knobs = vsd_knobs if vsd_knobs is not None else _DEFAULT_VSD_KNOBS
             rom_bytes = self.rom_path.read_bytes()
             self.vsd = vsd.attach_server(self.core, rom_bytes, Path(chosen_img), **chosen_knobs)
+            self.vsd_snapshot()          # BACKLOG #179 A3 review D1: the "before" side of
+                                          # a chain's diff, taken at attach, before a single
+                                          # frame of this run has been served.
+            _LIVE_VSD_SESSIONS.append(self)   # flushed by flush_live_vsd_sessions() in a
+                                               # try/finally around the caller's dispatch
 
         self.run(180)       # let the boot screen (info page) fully settle; also where
                              # vsd_attach()'s 4-frame handshake gets served, if attached
@@ -232,16 +301,100 @@ class Session:
         return tmp_path
 
     def run(self, n: int) -> None:
-        """The single funnel for every frame in both gb_shots.py and dgb_shots.py
-        (S4.5 -- dgb_shots.py constructs Session objects directly and never advances
-        the core any other way). When self.vsd is attached, service() is called once
-        per frame, AFTER run_frame() so the emulated CPU is stopped for the whole call
-        (S4.4 -- no barriers needed for that reason). Unattached, this branch is never
-        taken: byte-identical to every runner's pre-A3 timing (S4.3's own gate)."""
+        """The single funnel every frame in both gb_shots.py and dgb_shots.py is meant
+        to advance the core through (S4.5 -- dgb_shots.py constructs Session objects
+        directly and is meant to never advance the core any other way). That
+        "never" was not enforced anywhere until BACKLOG #179 A3 review D2: two
+        long-poll loops in tools/dgb_shots.py called `s.core.run_frame()` directly,
+        bypassing this method's own vsd.service() call -- an in-flight VSD request
+        then timed out mid-poll and the eventual stale reply landed in an abandoned
+        buffer. Both are fixed (now call `s.run(1)`) and
+        tests/host_vsd_funnel_sites_test.py greps tools/*.py for any remaining
+        `\\.core\\.run_frame(` outside this file, so a regression fails the host
+        suite instead of silently reintroducing the bypass.
+
+        When self.vsd is attached, service() is called once per frame, AFTER
+        run_frame() so the emulated CPU is stopped for the whole call (S4.4 -- no
+        barriers needed for that reason). Unattached, this branch is never taken:
+        byte-identical to every runner's pre-A3 timing (S4.3's own gate)."""
         for _ in range(n):
             self.core.run_frame()
             if self.vsd is not None:
                 self.vsd.service()
+
+    def vsd_flush(self) -> None:
+        """BACKLOG #179 A3 review D1 (BLOCKER): VsdImage.flush() had no caller anywhere
+        in this tree -- every --vsd write lived only in the server's in-process
+        bytearray and died with the process the instant it exited, so nothing a chain
+        wrote was ever actually on disk for a later `vsd_img list`/`vsd_diff` to see.
+        No-op unless this Session attached --vsd."""
+        if self.vsd is not None:
+            self.vsd.image.flush()
+
+    def vsd_snapshot(self) -> None:
+        """S4.6/A3's own per-chain diff hook, "before" half: copy the just-attached
+        image file to `<img>.pre` -- vsd_report()'s own comparison point. Called once,
+        automatically, from __init__ right after attach (before this Session has run a
+        single frame), so a runner never has to remember to call it itself. No-op
+        unless this Session attached --vsd."""
+        if self.vsd is None:
+            return
+        pre = Path(str(self.vsd.image.path) + ".pre")
+        shutil.copyfile(self.vsd.image.path, pre)
+        self._vsd_pre_path = pre
+
+    def vsd_report(self, expect_changed: "list[str] | None" = None) -> "set[str]":
+        """S4.6's own per-chain diff hook, "after" half: flush the live image, run
+        tools/vsd_img.c's `list` mode against BOTH the `<img>.pre` snapshot
+        vsd_snapshot() took at attach and the just-flushed live image, diff them with
+        tools/vsd_diff.py's own parser (never a second implementation), print the
+        result, and return the union of added|changed paths.
+
+        If `expect_changed` is given, a mismatch is a loud, mechanical failure --
+        BACKLOG #184's own contract for a caption-shaped assertion (claim=): print
+        [VSD DIFF FAILED] and exit the process with status 1, rather than let a runner
+        silently claim success while writing the wrong files (or nothing).
+
+        Raises vsd.VsdError if this Session never attached --vsd (nothing to diff) --
+        a runner calling this without --vsd is a setup error, not a skip."""
+        if self.vsd is None or self._vsd_pre_path is None:
+            raise vsd.VsdError(
+                f"{self.prefix}vsd_report(): no attached --vsd session -- nothing to diff")
+        self.vsd_flush()
+        binp = _vsd_img_bin()
+        tmp_dir = Path(tempfile.mkdtemp(prefix="vsd_report_"))
+        before_path = tmp_dir / "before.list"
+        after_path = tmp_dir / "after.list"
+        before_r = subprocess.run([str(binp), "list", str(self._vsd_pre_path)],
+                                   capture_output=True, text=True)
+        if before_r.returncode != 0:
+            raise vsd.VsdError(f"vsd_report(): vsd_img list {self._vsd_pre_path} failed: "
+                                f"{before_r.stderr.strip()}")
+        after_r = subprocess.run([str(binp), "list", str(self.vsd.image.path)],
+                                  capture_output=True, text=True)
+        if after_r.returncode != 0:
+            raise vsd.VsdError(f"vsd_report(): vsd_img list {self.vsd.image.path} failed: "
+                                f"{after_r.stderr.strip()}")
+        before_path.write_text(before_r.stdout, encoding="ascii")
+        after_path.write_text(after_r.stdout, encoding="ascii")
+        before = vsd_diff.parse_list(str(before_path))
+        after = vsd_diff.parse_list(str(after_path))
+        added, removed, changed = vsd_diff.diff_lists(before, after)
+        for p in added:
+            print(f"  [VSD] + {p} {after[p].size} {after[p].crc}")
+        for p in removed:
+            print(f"  [VSD] - {p} {before[p].size} {before[p].crc}")
+        for p in changed:
+            print(f"  [VSD] ~ {p} {before[p].size} {before[p].crc} -> {after[p].size} {after[p].crc}")
+        changed_set = set(added) | set(changed)
+        if expect_changed is not None:
+            want = set(expect_changed)
+            if changed_set != want:
+                print(f"[VSD DIFF FAILED] {self.prefix}: expected changed={sorted(want)} "
+                      f"got={sorted(changed_set)} (added={added} removed={removed} "
+                      f"changed={changed})", file=sys.stderr)
+                sys.exit(1)
+        return changed_set
 
     def _io_quiesce(self) -> None:
         """S4.5: after tap()'s own settle, keep running extra frames while the VSD is
@@ -889,11 +1042,18 @@ def main(argv=None) -> int:
 
     ok, skipped = [], []
     any_claim_failed = False
-    for _label, p, fns in active:
-        for fn in fns:
-            sess = fn(core_mod, image_mod, p, a.out)
-            ok += sess.taken; skipped += sess.skipped
-            any_claim_failed = any_claim_failed or sess.any_claim_failed
+    try:
+        for _label, p, fns in active:
+            for fn in fns:
+                sess = fn(core_mod, image_mod, p, a.out)
+                ok += sess.taken; skipped += sess.skipped
+                any_claim_failed = any_claim_failed or sess.any_claim_failed
+    finally:
+        # BACKLOG #179 A3 review D1: flush every Session that attached --vsd, no matter
+        # how the loop above exited (a no-op today -- this script takes no --vsd flag of
+        # its own -- but a Session built with vsd_img= directly would otherwise still
+        # lose its writes, same blocker dgb_shots.main() had).
+        flush_live_vsd_sessions()
 
     # A manifest, not just a list printed to stdout: tools/gb_contact_sheet.py reads this
     # so a shot's caption lives in exactly one place (this file) instead of being

@@ -4125,7 +4125,10 @@ def _measure_box_grid_cold_start(core_mod, image_mod, rom: Path,
     candidate = None
     candidate_since = 0
     while frame < _MAX_FRAMES:
-        s.core.run_frame()
+        s.run(1)   # BACKLOG #179 A3 review D2: never advance the core past the VSD
+                   # service hook -- a bare core.run_frame() here bypassed
+                   # Session.run()'s single funnel, so an in-flight VSD request timed
+                   # out and the stale reply then landed in an abandoned buffer.
         frame += 1
         if frame % _SAMPLE_EVERY:
             continue
@@ -4252,7 +4255,10 @@ def _measure_b185_auto(core_mod, image_mod, rom: Path, down_n: int,
     candidate = None
     candidate_since = 0
     while frame < _MAX_FRAMES:
-        s.core.run_frame()
+        s.run(1)   # BACKLOG #179 A3 review D2: never advance the core past the VSD
+                   # service hook -- a bare core.run_frame() here bypassed
+                   # Session.run()'s single funnel, so an in-flight VSD request timed
+                   # out and the stale reply then landed in an abandoned buffer.
         frame += 1
         if frame % _SAMPLE_EVERY:
             continue
@@ -6671,6 +6677,23 @@ def _extract_gb_rom_offline(fused_image_path: Path) -> Path:
 
 
 def main(argv=None) -> int:
+    """BACKLOG #179 A3 review D1 (BLOCKER): _main_dispatch() below constructs every
+    Session this process will build; whichever of its many CLI branches ran (or a
+    --selftest-captions sys.exit(1) fired instead of returning at all), every
+    attached --vsd write must reach disk before the process exits. finally still runs
+    when SystemExit propagates through it, so this covers every exit path without
+    touching any of _main_dispatch()'s own dozens of `return 0`/`return 1` lines
+    (deliberately: other lanes add new CLI branches to that function constantly, and
+    a touched `return` in each one would be a guaranteed merge conflict with every
+    one of them -- the same reasoning _write_manifest()'s own sys.exit(1) docstring
+    already gives for not editing every dispatch branch)."""
+    try:
+        return _main_dispatch(argv)
+    finally:
+        gb_shots.flush_live_vsd_sessions()
+
+
+def _main_dispatch(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--image", type=Path,
