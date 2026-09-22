@@ -106,6 +106,9 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "tools"))
+import gb_claims  # noqa: E402 -- BACKLOG #184: claim=/claim_absent= mechanical check.
+                   # No mgba import at module level in gb_claims.py (numpy/PIL only).
 
 KEY = dict(A=0x1, B=0x2, SEL=0x4, START=0x8, RIGHT=0x10, LEFT=0x20,
            UP=0x40, DOWN=0x80, R=0x100, L=0x200)
@@ -137,8 +140,14 @@ class Session:
         self.core.reset()
         self.out_dir = out_dir
         self.prefix = prefix
-        self.taken = []     # (filename, caption)
+        self.taken = []     # (filename, caption, claim_info) -- BACKLOG #184: claim_info is a
+                             # dict (possibly empty) merged straight into the manifest entry --
+                             # "claim"/"claim_absent" (the original strings, for an offline
+                             # re-check) and "claim_failed" (this capture's own failures, if any)
         self.skipped = []   # (label, reason)
+        self.any_claim_failed = False   # BACKLOG #184: sticky across every shot() this Session
+                                         # takes -- main()'s exit status reads this, not a per-shot
+                                         # return value, so no CLI dispatch branch needs editing.
         self._last_shot = None    # (name, raw RGB bytes) -- for the consecutive-differ check
         self.run(180)       # let the boot screen (info page) fully settle
 
@@ -164,10 +173,21 @@ class Session:
         for _ in range(n):
             self.tap(name, settle=settle)
 
-    def shot(self, name: str, caption: str, settle: int = 0, allow_same: bool = False) -> Path:
+    def shot(self, name: str, caption: str, settle: int = 0, allow_same: bool = False,
+              claim: "str | list[str] | None" = None,
+              claim_absent: "str | list[str] | None" = None) -> Path:
         # allow_same: the caller KNOWS this frame is expected to equal the previous
         # shot (e.g. the same refusal dialog reached by a different input) and says
         # so in the caption; the identical-frame guard below is then skipped.
+        #
+        # claim/claim_absent (BACKLOG #184): a caption is a CLAIM about pixels -- these
+        # make the claim mechanical. Every string in `claim` must be found on the saved
+        # frame (gb_claims.find(), tried against BOTH PokeDNA fonts unless the caller
+        # narrows it -- see gb_claims.py); every string in `claim_absent` must NOT be.
+        # A failure never blocks the PNG/manifest entry from being written (the frame is
+        # still evidence, possibly of a real bug) -- it is recorded on the entry as
+        # `claim_failed` and printed loudly; Session.any_claim_failed then makes the
+        # RUN's exit status non-zero (main() checks it once at the end).
         if settle:
             self.run(settle)
         img = self.screen.to_pil().convert("RGB")
@@ -193,7 +213,26 @@ class Session:
         self._last_shot = (name, raw)
 
         img.save(path)
-        self.taken.append((path.name, caption))
+
+        # claim_info becomes the manifest entry's EXTRA keys (merged in verbatim by the
+        # manifest writer below): the original claim/claim_absent strings are kept, not
+        # just this capture's pass/fail, so --selftest-captions can independently
+        # RE-DERIVE pass/fail from the PNG later (offline, no mGBA) instead of trusting
+        # a stale claim_failed nobody re-ran.
+        claim_info: dict = {}
+        if claim is not None:
+            claim_info["claim"] = claim
+        if claim_absent is not None:
+            claim_info["claim_absent"] = claim_absent
+        if claim is not None or claim_absent is not None:
+            claim_failed = gb_claims.check(img, claim=claim, claim_absent=claim_absent)
+            if claim_failed:
+                claim_info["claim_failed"] = claim_failed
+                self.any_claim_failed = True
+                for f in claim_failed:
+                    print(f"  [CLAIM FAILED] {path.name}: {f}")
+
+        self.taken.append((path.name, caption, claim_info))
         print(f"  [ok]   {path.name:32s} {caption}")
         return path
 
@@ -714,10 +753,12 @@ def main(argv=None) -> int:
     core_mod, image_mod = load_mgba()
 
     ok, skipped = [], []
+    any_claim_failed = False
     for _label, p, fns in active:
         for fn in fns:
             sess = fn(core_mod, image_mod, p, a.out)
             ok += sess.taken; skipped += sess.skipped
+            any_claim_failed = any_claim_failed or sess.any_claim_failed
 
     # A manifest, not just a list printed to stdout: tools/gb_contact_sheet.py reads this
     # so a shot's caption lives in exactly one place (this file) instead of being
@@ -734,8 +775,10 @@ def main(argv=None) -> int:
     if manifest_path.is_file():
         existing = json.loads(manifest_path.read_text(encoding="utf-8"))
     by_file = {e["file"]: e for e in existing.get("shots", [])}
-    for n, c in ok:
-        by_file[n] = {"file": n, "caption": c}
+    for n, c, claim_info in ok:
+        entry = {"file": n, "caption": c}
+        entry.update(claim_info)
+        by_file[n] = entry
     by_name = {e["name"]: e for e in existing.get("skipped", [])}
     for n, r in skipped:
         by_name[n] = {"name": n, "reason": r}
@@ -746,6 +789,12 @@ def main(argv=None) -> int:
     print(f"\n{len(ok)} shot(s) saved to {a.out}")
     for name, reason in skipped:
         print(f"[skip] {name}: {reason}")
+    # BACKLOG #184: a claim= failure is never silent -- the PNG/manifest entry above are
+    # still written (the frame is evidence either way), but the RUN reports failure.
+    if any_claim_failed:
+        print("\n[CLAIM FAILED] one or more shots -- see [CLAIM FAILED] lines above "
+              "and each entry's manifest.json \"claim_failed\" list", file=sys.stderr)
+        return 1
     return 0
 
 

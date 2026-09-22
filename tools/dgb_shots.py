@@ -56,6 +56,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 import gb_shots  # noqa: E402 -- Session, load_mgba, KEY, HOLD/SETTLE/BIG_SETTLE
+import gb_claims  # noqa: E402 -- BACKLOG #184: --selftest-captions's offline claim re-check
 import gen_gbfields  # noqa: E402 -- BACKLOG #129: GROUPS_GEN1's own header order,
                      # imported directly rather than a second hand-copied list
 import fuse_gb   # noqa: E402 -- BACKLOG #98 D3: reads the fused image's OWN directory
@@ -649,7 +650,10 @@ def run_standalone(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Se
                                "RELEASE, CANCEL (BACKLOG #93's three newer rows included; "
                                "the nested-import mount's own VIEW/LEGALITY/COPY/CANCEL, "
                                "plus every write action, since this session can actually "
-                               "edit) -- cursor on RELEASE, the row this shot means to show")
+                               "edit) -- cursor on RELEASE, the row this shot means to show",
+                               claim=["RELEASE"])  # BACKLOG #184 retrofit: exactly the class
+                               # of caption lie #198 item 4 found (a stale DOWN-count landed
+                               # on DUPLICATE, not RELEASE) -- a mechanical claim is the floor
     s.tap("A", settle=gb_shots.BIG_SETTLE)                # "Release this Pokemon?"
     s.shot("05_release_confirm", "#62: the release confirm dialog")
     s.tap("A", settle=gb_shots.BIG_SETTLE)                # A = yes -> gb_persist() -> PDNA_DELTA refusal
@@ -676,7 +680,9 @@ def run_standalone(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Se
     s.shot("07_empty_cell", "#62 (BACKLOG #198 item 4 renav): cursor on the freshly-"
            "released, now-empty cell (19/20) -- index 19 (row 3, col 1), the END of "
            "the compacted list, not index 0 where SLOWBRO (the released mon) used "
-           "to be")
+           "to be",
+           claim=["19/20"])  # BACKLOG #184 retrofit: pdna_box.c's own
+           # siprintf(bnocc, "%s  %d/%d", ...) banner
 
     s.tap("A", settle=gb_shots.BIG_SETTLE)                # empty-cell menu: EMPTY / CREATE / CANCEL
     s.shot("08_create_menu", "#62 A3: the empty-cell menu -- EMPTY (header) / CREATE / CANCEL")
@@ -1979,6 +1985,17 @@ def run_b89_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     s.tap("B", settle=gb_shots.BIG_SETTLE)                  # detail -> back to the list (same shell)
 
     s.tap("START", settle=gb_shots.BIG_SETTLE)              # the Hall of Fame's own START menu (same shell)
+    # BACKLOG #184 retrofit attempted here and REVERTED: this screen is
+    # hof_card_paint_menu() (source/pdna_gbhof.c), which paints INSIDE the gbscr
+    # card shell via gbscr_text()/hof_card_text_fit() -- the ROM's OWN composited
+    # tile font, not source/ui_font.c's ui_font_bits nor tonc's sys8Font. A live
+    # mGBA run with claim=["CLEAR ALL","SET COUNT","ADD TEAM","DELETE TEAM"]
+    # proved this empirically ([CLAIM FAILED] on all four against the real frame,
+    # even though the text is plainly visible by eye -- see the b184 executor
+    # report's pixel dump). This is exactly the GB-shell case the brief scoped
+    # out of gb_claims.py's v1 (tools/gb_oracle/oracle.py's tile->glyph map needs
+    # a live GB core session this Session/PNG-only harness does not have) -- no
+    # claim= here until that lands.
     s.shot("03_menu", "BACKLOG #202 F1: START -> the shell's own in-frame menu -- "
                        "CLEAR ALL / SET COUNT / ADD TEAM / DELETE TEAM (BACKLOG "
                        "#194 F3's two newer rows, recaptioned here -- this frame "
@@ -2176,6 +2193,13 @@ def run_b194_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> g
     # ever replaced, re-verify these two numbers rather than trust them frozen).
     count_after_add = {"red": 10, "crystal": 7}[which]
     count_before_add = count_after_add - 1
+    # BACKLOG #184 retrofit attempted here and REVERTED: same finding as
+    # run_b89_hof's "03_menu" -- this header is hof_card_text_fit() inside the
+    # gbscr card shell (source/pdna_gbhof.c ~:760, "%d teams (life %d)"), the
+    # ROM's own tile font, not source/ui_font.c/tonc's sys8Font. Confirmed by
+    # the SAME live-mGBA [CLAIM FAILED] result run_b89_hof's 03_menu got before
+    # its claim= was reverted -- out of scope for gb_claims.py's v1 (see that
+    # shot's own comment for the full reasoning).
     s.shot("10_add_back_on_list", "BACKLOG #202 A2: dismissed -- back on the "
                                    "LIST card (the SAME shell), now showing "
                                    f"{count_after_add} teams (was {count_before_add}) "
@@ -4130,7 +4154,7 @@ def run_cold_start_compare(core_mod, image_mod, loc_image: Path, noloc_image: Pa
 
     # Save both final frames as shots, captioned for gb_contact_sheet.py's "#68b:"
     # prefix match (FEATURE_TABLE's own new "delta-gb-loc" row, appended separately).
-    ok: list[tuple[str, str]] = []
+    ok: list[tuple[str, str, dict]] = []
     from PIL import Image
     for label, px, frames in (("loc", loc_px, loc_frames), ("noloc", noloc_px, noloc_frames)):
         name = f"dgb_coldstart_{label}.png"
@@ -4139,7 +4163,7 @@ def run_cold_start_compare(core_mod, image_mod, loc_image: Path, noloc_image: Pa
         caption = (f"#68b: Red.sav box grid, cold start {'WITH' if label == 'loc' else 'WITHOUT'} "
                    f"the fused rom_gb*_open_loc() record -- {frames} frames "
                    f"({frames / GBA_FPS:.2f} s emulated) to first stable paint")
-        ok.append((name, caption))
+        ok.append((name, caption, {}))
         print(f"  [ok]   {name:32s} {caption}")
     return ok, []
 
@@ -4241,7 +4265,7 @@ def run_b185_cold_locate(core_mod, image_mod, noloc_image: Path,
     function)."""
     print("== BACKLOG #185 Step 1: locate() emulator-floor cold-scan measurement ==")
     from PIL import Image
-    ok: list[tuple[str, str]] = []
+    ok: list[tuple[str, str, dict]] = []
 
     frames1, px1 = _measure_b185_auto(core_mod, image_mod, noloc_image, 1, "gen1")
     secs1 = frames1 / GBA_FPS
@@ -4253,7 +4277,7 @@ def run_b185_cold_locate(core_mod, image_mod, noloc_image: Path,
     cap1 = (f"#185 Step 1: Red.sav box grid, cold locate() (no .loc seed) -- "
             f"{frames1} frames ({secs1:.2f} s emulated, {bps1/1024:.1f} KB/s floor) "
             f"to first stable portrait paint")
-    ok.append((name1, cap1))
+    ok.append((name1, cap1, {}))
     print(f"  [ok]   {name1:32s} {cap1}")
 
     frames2, px2 = _measure_b185_auto(core_mod, image_mod, noloc_image, 3, "gen2")
@@ -4266,30 +4290,54 @@ def run_b185_cold_locate(core_mod, image_mod, noloc_image: Path,
     cap2 = (f"#185 Step 1: Crystal.sav box grid, cold locate() (no .loc seed) -- "
             f"{frames2} frames ({secs2:.2f} s emulated, {bps2/1024:.1f} KB/s floor) "
             f"to first stable portrait paint")
-    ok.append((name2, cap2))
+    ok.append((name2, cap2, {}))
     print(f"  [ok]   {name2:32s} {cap2}")
 
     return ok, []
 
 
-def _write_manifest(out_dir: Path, ok: list[tuple[str, str]], skipped: list[tuple[str, str]]) -> None:
+def _write_manifest(out_dir: Path, ok: list[tuple[str, str, dict]],
+                     skipped: list[tuple[str, str]]) -> None:
     """Same merge-by-file/merge-by-name block tools/gb_shots.py's own main() uses
     (BACKLOG #62 review D3: this script never wrote one at all before). Merged, not
     overwritten, for the identical reason: a partial run must not erase captions a
-    separate prior run already wrote."""
+    separate prior run already wrote.
+
+    BACKLOG #184: `ok` entries are now 3-tuples (file, caption, claim_info) -- claim_info
+    is gb_shots.Session.shot()'s own claim_info dict (possibly empty), merged straight
+    into the manifest entry: "claim"/"claim_absent" (the original strings, kept so
+    --selftest-captions can re-derive pass/fail from the PNG later, offline) and
+    "claim_failed" (this capture's own failures, if any -- tools/gb_claims.py). The PNG
+    and this manifest entry are written EITHER WAY (a claim failure is still evidence),
+    but this function is the ONE place every CLI branch's `_write_manifest(...)` call
+    already runs through unconditionally without inspecting a return value -- calling
+    sys.exit(1) HERE, after writing, makes a claim failure end the whole process
+    non-zero without editing any of the dispatch chain's own `return 0` lines
+    (deliberately: other lanes are appending new flags to that chain right now, and a
+    touched `return 0` in every existing branch would be a guaranteed merge conflict
+    with every one of them)."""
     manifest_path = out_dir / "manifest.json"
     existing = {"shots": [], "skipped": []}
     if manifest_path.is_file():
         existing = json.loads(manifest_path.read_text(encoding="utf-8"))
     by_file = {e["file"]: e for e in existing.get("shots", [])}
-    for n, c in ok:
-        by_file[n] = {"file": n, "caption": c}
+    any_claim_failed = False
+    for n, c, claim_info in ok:
+        entry = {"file": n, "caption": c}
+        entry.update(claim_info)
+        if claim_info.get("claim_failed"):
+            any_claim_failed = True
+        by_file[n] = entry
     by_name = {e["name"]: e for e in existing.get("skipped", [])}
     for n, r in skipped:
         by_name[n] = {"name": n, "reason": r}
     manifest_path.write_text(
         json.dumps({"shots": list(by_file.values()), "skipped": list(by_name.values())}, indent=2),
         encoding="utf-8")
+    if any_claim_failed:
+        print("\n[CLAIM FAILED] one or more shots -- see [CLAIM FAILED] lines above "
+              "and each failing entry's manifest.json \"claim_failed\" list", file=sys.stderr)
+        sys.exit(1)
 
 
 def run_s2_bank(core_mod, image_mod, rom: Path, out_dir: Path, which: str,
@@ -4455,7 +4503,11 @@ def run_s2_bank_control(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_sho
     s.shot("03_empty_menu_create_and_paste", "#120 F1 control: slot 7's (the first "
            "genuinely empty, non-native cell) menu -- CREATE, PASTE HERE, CANCEL -- "
            "BOTH present, unchanged by the F1 gate (xg_create_row/xg_paste_row are "
-           "true throughout an ordinary Gen-3 session)")
+           "true throughout an ordinary Gen-3 session)",
+           claim=["CREATE", "PASTE HERE", "CANCEL"])  # BACKLOG #184 retrofit: this is exactly
+           # the shot BACKLOG #198 item 1 had to fix (it used to caption a bank_plant.c
+           # native cell's VIEW-only menu as this one) -- a mechanical claim is the floor
+           # that class of caption lie needs.
     return s
 
 
@@ -5797,7 +5849,9 @@ def run_s150_9_merge_screen(core_mod, image_mod, rom_emerald: Path, out_dir: Pat
     s.tap("A", settle=300)
     s.shot("06_merge_screen", "S150-9: A to drop -> the per-field MERGE screen -- "
            "'BACK TO ITS ORIGINAL' / 'Level 9 > 12  KEEP' (cursor here) / "
-           "'Moves changed  KEEP' / 'A flip  START apply  B cancel'")
+           "'Moves changed  KEEP' / 'A flip  START apply  B cancel'",
+           claim=["BACK TO ITS ORIGINAL", "KEEP"])  # BACKLOG #184 retrofit:
+           # pdna_layout.h's PDNA_XFERRESTORE_TITLE / PDNA_XFERMERGE_KEEP literals
     s.tap("A", settle=200)
     s.shot("07_level_take", "S150-9: A flips the cursor row -- LEVEL now TAKE")
     s.tap("DOWN", settle=150)
@@ -5828,7 +5882,9 @@ def run_s150_9_merge_screen(core_mod, image_mod, rom_emerald: Path, out_dir: Pat
            "ran here. drop_held's own rc<0 branch shows this same message for "
            "any negative pc_bank_restore_up return (source/pdna_box.c ~:1633-1642). "
            "Hardware-owed (docs/HW-QUEUE.md): whether the merge lands correctly "
-           "when a real card CAN allocate a serial is untested here.")
+           "when a real card CAN allocate a serial is untested here.",
+           claim=["TRANSFER RECORD UNREADABLE"])  # BACKLOG #184 retrofit:
+           # pdna_layout.h's PDNA_XFERREC_TITLE literal
 
     # ---- decision 7: slot 28 -- the "nothing changed" skip -----------------------
     s2 = gb_shots.Session(core_mod, image_mod, rom_emerald, out_dir, "s150_9b_")
@@ -5855,7 +5911,9 @@ def run_s150_9_merge_screen(core_mod, image_mod, rom_emerald: Path, out_dir: Pat
     s3.shot("01_already_restored", "S150-9 decision 8: A to drop -- 'ALREADY "
             "RESTORED / The Bank has its original. / Release this copy "
             "instead.' (PDNA_XFERDUP_*), the state refusal BEFORE the screen -- "
-            "nothing written, still holding")
+            "nothing written, still holding",
+            claim=["ALREADY RESTORED"])  # BACKLOG #184 retrofit:
+            # pdna_layout.h's PDNA_XFERDUP_TITLE literal
     s3.tap("A", settle=200)
     s3.shot("02_still_holding", "S150-9 decision 8: dismiss -- still carrying "
             "the slot-27 cell, footer 'A drop B cancel'")
@@ -5870,7 +5928,9 @@ def run_s150_9_merge_screen(core_mod, image_mod, rom_emerald: Path, out_dir: Pat
     s4.tap("A", settle=300)
     s4.shot("01_save_first", "S150-9 decision 8: A to drop -- 'SAVE FIRST / One "
             "transfer is waiting for / the game save. START > SAVE.' "
-            "(PDNA_XFER_SAVEFIRST_*) -- nothing written, still holding")
+            "(PDNA_XFER_SAVEFIRST_*) -- nothing written, still holding",
+            claim=["SAVE FIRST"])  # BACKLOG #184 retrofit:
+            # pdna_layout.h's PDNA_XFER_SAVEFIRST_TITLE literal
     s4.tap("A", settle=200)
     s4.shot("02_still_holding", "S150-9 decision 8: dismiss -- still carrying "
             "the slot-26 cell, footer 'A drop B cancel'")
@@ -6657,13 +6717,19 @@ def main(argv=None) -> int:
                           "fused Yellow.gb/Yellow.sav, GUY'S OWN Yellow.sav copied to "
                           "/tmp first).")
     ap.add_argument("--selftest-captions", action="store_true",
-                     help="BACKLOG #198 method note (a mechanical floor for BACKLOG "
-                          "#184, NOT #184's own pixel verification): read --out's "
-                          "manifest.json and check every shot's caption is non-empty "
-                          "and every shot's own frame file actually exists on disk. "
-                          "No mGBA/--image needed. Exits 1 and prints every failure "
-                          "if any caption is empty/whitespace-only or any frame file "
-                          "is missing; exits 0 (and prints the shot count) otherwise.")
+                     help="BACKLOG #198's original floor (a caption is non-empty and its "
+                          "frame file exists) EXTENDED for BACKLOG #184: read --out's "
+                          "manifest.json, check every shot's caption is non-empty and its "
+                          "frame file exists, AND for every entry carrying \"claim\"/"
+                          "\"claim_absent\" (gb_shots.Session.shot()'s own claim= kwarg, "
+                          "tools/gb_claims.py) RE-RUN the pixel search against that PNG "
+                          "right now, offline (no mGBA/--image needed) -- this is an "
+                          "independent re-derivation, not a re-print of whatever "
+                          "claim_failed the capture itself already wrote, so a hand-edited "
+                          "manifest or a stale PNG is caught too. Exits 1 and prints every "
+                          "failure if any caption is empty/whitespace-only, any frame file "
+                          "is missing, or any claim/claim_absent fails on re-check; exits 0 "
+                          "(and prints the shot + claim-checked counts) otherwise.")
     a = ap.parse_args(argv)
     a.out.mkdir(parents=True, exist_ok=True)
 
@@ -6675,6 +6741,7 @@ def main(argv=None) -> int:
                       "already has a manifest.json)")
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         failures: list[str] = []
+        claims_checked = 0
         for entry in manifest.get("shots", []):
             name = entry.get("file", "<no file key>")
             caption = entry.get("caption", "")
@@ -6683,13 +6750,21 @@ def main(argv=None) -> int:
             frame_path = a.out / name
             if not frame_path.is_file():
                 failures.append(f"{name}: frame file missing ({frame_path})")
+                continue  # nothing to re-check a claim against
+            claim = entry.get("claim")
+            claim_absent = entry.get("claim_absent")
+            if claim is not None or claim_absent is not None:
+                claims_checked += 1
+                for f in gb_claims.check(frame_path, claim=claim, claim_absent=claim_absent):
+                    failures.append(f"{name}: {f}")
         if failures:
             print(f"--selftest-captions: {len(failures)} failure(s):", file=sys.stderr)
             for f in failures:
                 print(f"  {f}", file=sys.stderr)
             return 1
         print(f"--selftest-captions: ok -- {len(manifest.get('shots', []))} shot(s), "
-              "every caption non-empty, every frame file present")
+              f"every caption non-empty, every frame file present, "
+              f"{claims_checked} shot(s)' claim(s) re-verified against their own PNG")
         return 0
 
     core_mod, image_mod = gb_shots.load_mgba()
@@ -8573,7 +8648,8 @@ def run_b200_chain(core_mod, image_mod, rom: Path, out_dir: Path) -> list[gb_sho
     sa.shot("00_box12_boot", "tap0 (boot): box 12 (current box, 0/20) -- F1's dim/X "
             "blocked tiles cover row 3's last 4 cells (indices 20-23) and all of "
             "row 4 (24-29), even though the box has NO Pokemon at all -- capacity "
-            "(20), not occupancy, drives the paint")
+            "(20), not occupancy, drives the paint",
+            claim=["0/20"])  # BACKLOG #184 retrofit: pdna_box.c's own banner siprintf
     sa.press_n("DOWN", 3, settle=gb_shots.SETTLE)
     sa.shot("01_col0_row3", "tap1 (DOWN x3, column 0): cursor at index 18 (row 3 "
             "col 0) -- the deepest REAL cell in this column (index 24, row 4 col "
@@ -8626,6 +8702,16 @@ def run_b200_chain(core_mod, image_mod, rom: Path, out_dir: Path) -> list[gb_sho
     boot_to_gb_session(sc, rom, which="yellow")
     sc.tap("R", settle=gb_shots.BIG_SETTLE)          # box 12 -> party (index 12)
     sc.tap("R", settle=gb_shots.BIG_SETTLE)          # party -> box 1 (index 0, (12+1)%13)
+    # BACKLOG #184 retrofit ATTEMPTED here (claim=["20/20"]) and REVERTED: a live
+    # mGBA run against the CORPUS gba-toolkit/roms/gb/Yellow.sav (read-only, copied
+    # to /tmp -- the function's own docstring warns this is NOT necessarily "GUY'S
+    # OWN Yellow.sav", a different file with unverified contents) landed on a frame
+    # with NO banner text at all in the top strip (a flat navy band -- the tab row
+    # "<BANK>"/"SAVE" is focused/highlighted instead) -- claim_failed, but NOT
+    # proven to be a caption lie: this could be the corpus save genuinely not
+    # having box 1 at 20/20, or the R,R navigation landing in a tab-focused state
+    # one frame earlier than this caption assumes, or a real bug. Flagged for
+    # BACKLOG follow-up rather than asserted either way from this lane.
     sc.shot("00_box1_full", "tap2 (R, R from box 12): box 1, '1:GB BOX1 20/20' -- "
             "the SAME blocked rows 3 (partial)/4 (full) chain A showed on the "
             "EMPTY box 12, but every real cell (0-19) now shows an occupied "
@@ -8735,7 +8821,9 @@ def run_s150_12_copy_edge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
     s.shot("04_gold_box_grid", "s150-12 (BACKLOG #198 item 10 recaption): Gold's "
            "box grid on the read-only mount -- cursor on slot 0 (No.1 BULBASAUR), "
            "footer 'A menu  SEL  L/R  B' (the footer never shows 'A pokeball' -- "
-           "SELECT has never entered MOVE here before this lane)")
+           "SELECT has never entered MOVE here before this lane)",
+           claim=["A menu  SEL  L/R  B"])  # BACKLOG #184 retrofit: pdna_box.c's own
+           # `f = is_bank ? "A menu  SEL  L/R  B" : ...` literal (ui_text, fixed font)
 
     s.tap("SEL", settle=100)
     s.shot("05_cm_move", "s150-12 WIRING PROOF: SELECT cycles to MOVE on the "
@@ -8789,7 +8877,9 @@ def run_s150_12_copy_edge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
     s.shot("11_bank_box0", "s150-12: START > Bank -- 'BANK 1  7/30', box 0's "
            "PDNA_DELTA-only auto-plant (bank_plant_box0(), decision 17) already "
            "includes the two new COPY cells at slots 5/6 -- no live SD-writing "
-           "lift needed to get them here")
+           "lift needed to get them here",
+           claim=["7/30"])  # BACKLOG #184 retrofit: pdna_box.c's own
+           # siprintf(bnocc, "%s  %d/%d", ...) -- 7 occupied of 30 capacity
 
     s.press_n("RIGHT", 5, settle=60)
     s.shot("12_cursor_slot5", "s150-12: cursor on slot 5 -- 'No.152 CHIKORITA "
@@ -8808,7 +8898,8 @@ def run_s150_12_copy_edge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
            "sprite with its DMG-style badge (the S150-13 lift tint -- BANK 1 "
            "still reads 7/30 here, unchanged), footer 'A drop  B cancel'; slot 5 "
            "only actually blanks ('(empty)', 6/30) after the drop lands, shown "
-           "in frame 18 below")
+           "in frame 18 below",
+           claim=["7/30", "A drop  B cancel"])  # BACKLOG #184 retrofit
 
     s.press_n("DOWN", 5, settle=150)                      # row0 -> Bank's own bottom row -> off the edge
     s.shot("15_pc_grid_carrying", "s150-12: DOWN x5 off the Bank's own bottom "
