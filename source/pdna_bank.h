@@ -66,6 +66,13 @@ void pdna_bank_start_box_set(int box);
  * moved). O(1) once /PokeDNA/bank/backup-v1/DONE exists. */
 bool pdna_bank_prepare_native(void);
 
+/* BACKLOG #168a review D3: the Bank's box count, mirrored from pdna_bank.c's own
+ * BANK_BOXES (an internal #define, not exported) so a call site like drop_held_up's
+ * 16-box ident32 scan (source/pdna_box.c) never carries its own unpinned `16`
+ * literal -- rewriting that literal to 1 was caught by nothing until this. The
+ * _Static_assert in pdna_bank.c keeps the two in lockstep. */
+#define PDNA_BANK_BOXES 16
+
 /* BACKLOG #150 S150-11 decision 19: read box `box`'s 2400-byte raw records without
  * opening the box screen (flushes the currently-loaded box first, via the same
  * b163 verdict path banksrc_records() uses). NULL on a page-in failure or an

@@ -1429,7 +1429,7 @@ static uint8_t* __attribute__((noinline)) drop_held_up(BoxSource* src, int box, 
   static bool s_up_scan_done;
   if (!pdna_bank_serial_trusted() || !s_up_scan_done) {
     int coll_box = -1, coll_slot = -1;
-    if (bank_ident32_collision(bank_scan_get, NULL, 16, G3_BOX_SLOTS, box, cur,
+    if (bank_ident32_collision(bank_scan_get, NULL, PDNA_BANK_BOXES, G3_BOX_SLOTS, box, cur,
                                 s_held, &coll_box, &coll_slot)) {
       snd_error();
       boxoam_resume();

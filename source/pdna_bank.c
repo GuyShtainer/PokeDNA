@@ -35,6 +35,7 @@
 #include "rmbl.h"          /* rumble must not toggle the cart bus during an SD write */
 
 #define BANK_BOXES   16
+_Static_assert(BANK_BOXES == PDNA_BANK_BOXES, "pdna_bank.h's PDNA_BANK_BOXES must track BANK_BOXES");
 #define BOX_RECS     G3_IN_BOX            /* 30 */
 #define REC_BYTES    80
 #define BOX_BYTES    (BOX_RECS * REC_BYTES)   /* 2400 */
