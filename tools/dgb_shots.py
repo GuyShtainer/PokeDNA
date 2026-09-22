@@ -7033,6 +7033,14 @@ def main(argv=None) -> int:
                           "run_b222_summary_nick()/run_b222_hof_ot()/run_b222_bag_item() in "
                           "that order against their own image. Skips the normal --image shot "
                           "run entirely.")
+    ap.add_argument("--b216b", type=Path, metavar="CAFE_IMAGE",
+                     help="BACKLOG #216b: the Gen-1/2 summary's Nickname row on a Gold "
+                          "box mon renamed CAFé -- the SAME site --b222's NICK_IMAGE "
+                          "shoots. CAFE_IMAGE is a separately-fused `make delta-artless` "
+                          "base -- Gold.gbc + an edited Gold.sav (box slot 0 renamed via "
+                          "host_gbsurgery_tool's --op nick 0 0 \"CAFé\"). Runs "
+                          "run_b216b_summary_cafe() against it. Skips the normal --image "
+                          "shot run entirely.")
     ap.add_argument("--b200", action="store_true",
                      help="BACKLOG #200: runs run_b200_chain() against --image -- the "
                           "Gen-1/2 grid's phantom cells (blocked-cell paint, cursor "
@@ -7185,6 +7193,22 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] b222 bag item: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if a.b216b:
+        if not a.b216b.is_file():
+            sys.exit(f"--b216b: {a.b216b}: not a file")
+        ok, skipped = [], []
+        try:
+            sess = run_b216b_summary_cafe(core_mod, image_mod, a.b216b, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b216b summary cafe: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
@@ -9543,6 +9567,62 @@ def run_b222_summary_nick(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
            "blank, so the FIXED-font path can show neither e-acute nor the gender "
            "signs -- only '?', unlike the proportional font's own real 127 glyph)",
            claim=["PIKA?"])
+    return s
+
+
+def run_b216b_summary_cafe(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #216b: the same site run_b222_summary_nick() shoots, now on a Gold box
+    mon renamed "CAFé" via tests/host_gbsurgery_tool.c's `--op nick 0 0` (gb_edit.c's
+    enc_one encodes the UTF-8 "\xC3\xA9" to the real Gen-2 byte 0xEA, exactly the byte
+    this lane's gen2_save.c fix now decodes back to "CAFé" instead of folding it to a
+    plain 'e'). `rom` must be a single-ROM fused image (tools/fuse_gb.py, one Gold.gbc
+    + that edited Gold.sav, on a `make delta-artless` base -- no Emerald.sav, so the
+    boot picker is skipped).
+
+    CORRECTED FROM THE FIRST DRAFT (this docstring claimed no proportional row exists
+    here; the captured frame proved otherwise -- read it, don't guess): this SCREEN
+    draws the nickname TWICE, through two independently-fed paths. (1) The RIGHT panel
+    Card 0 INFO's own Nickname row -- card_info()'s field_row() -> ui_text() (the fixed
+    font) -- collapses to "CAF?" (BACKLOG #222's ui_ascii_next_fixed(), sys8 cell 127
+    is blank). (2) The LEFT panel is a THROWAWAY Gen-3-style conversion shared with
+    every Gen-3 summary (pdna_gbsummary.c's gbsum_convert_left() -> pdna_summary.c's
+    draw_left_ex(), source/pdna_summary.c:213 `ui_ptext_fit(..., p->nickname, ...)`,
+    the PROPORTIONAL font) and shows the real "CAFé" -- font code 127 is a real glyph
+    on that path (BACKLOG #216's own pnext() special case), not blank.
+
+    NEITHER draw site reads through gen1_save.c/gen2_save.c (this lane's changed
+    files): both panels feed off gbsum_convert_left()'s own `gb_get_nickname(e, ...)`
+    (source/pdna_gbsummary.c:172), which is gb_edit.c's gb_name_decode -- already
+    UTF-8-correct before this lane touched anything. So this frame demonstrates the
+    PREDICTED fixed-vs-proportional split (the brief's own question, "what does ui_ptext
+    draw for the umlauts/é" -- answered: é, yes; the umlauts still render '?', no font
+    glyph for them at all, display-only, unrelated to this lane's decoder fix) but is
+    NOT itself evidence for the gen1_save.c/gen2_save.c change -- that is what tests/
+    host_xferdown_test.c's test_cafe_umlaut_bridge_2_3_2 and tools/gb_retail_gate.py's
+    run_cafe_case (the real boot readback via --list, gb_edit.c's own decoder) prove.
+
+    Nav: identical to run_b222_summary_nick() -- boot_to_gb_session() lands on the box
+    grid (single-ROM image, no picker), A opens slot 0's own cell menu (VIEW/EDIT
+    already selected, row 0), A again enters the summary in VIEW mode, Card 0 INFO."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b216b_cafe_")
+    print("== BACKLOG #216b: the Gen-1/2 summary's Nickname row, a Gold CAFé mon ==")
+    boot_to_gb_session(s, rom)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)   # box grid, slot 0 occupied -> its own cell menu
+    s.tap("A", settle=gb_shots.BIG_SETTLE)   # VIEW/EDIT (row 0, already selected) -> the summary
+    s.shot("01_nick_row", "BACKLOG #216b: Card 0 INFO -- a Gold box mon renamed CAFé "
+           "(Gen-2 raw byte 0xEA). The RIGHT panel's own Nickname row (fixed font, "
+           "ui_text) shows 'CAF?' (BACKLOG #222's sys8-cell-127-is-blank collapse). "
+           "The LEFT panel (a throwaway Gen-3-style preview, proportional font, "
+           "ui_ptext_fit) shows the real 'CAFé' -- font code 127 IS a real glyph on "
+           "that path. Both panels read the SAME already-correct gb_edit.c decoder "
+           "(unrelated to this lane's gen1_save.c/gen2_save.c fix); the fix itself is "
+           "proven by tests/host_xferdown_test.c + tools/gb_retail_gate.py's readback, "
+           "not by this screen.",
+           # NOTE: gb_claims.py's render() only covers ASCII 0x20-0x7f (its own
+           # ValueError, hit while drafting this case) -- "CAFé" cannot be an
+           # automated claim= target at all; the left panel's real é is verified BY
+           # EYE (docs/briefs/b216b.md's own executor report), not mechanically here.
+           claim=["CAF?"])
     return s
 
 
