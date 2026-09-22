@@ -224,7 +224,7 @@ static void part_b_rom(const char* name, uint8_t gen, const Want* want, int has_
     }
     RomGbIcon gi;
     r.calls = r.big_calls = r.back_big = r.last_big_end = 0;
-    iok[c] = rom_gbicon_open(&gi, rd_read, &r, r.size, b_scratch, caps[c]);
+    iok[c] = rom_gbicon_open(&gi, rd_read, &r, r.size, b_scratch, caps[c], 0, 0);
     chk(who, "icon locator answers as expected", iok[c] == has_icons);
     if (iok[c]) rom_gbicon_save_loc(&gi, &il[c]);
     RomGbUi gu;

@@ -50,8 +50,13 @@ static uint8_t iv_to_dv(uint8_t iv) { return (uint8_t)(iv / 2u); }
  * silently wrong record), and it stays, but the earlier comment's explanation for
  * *why* a setter might refuse here was wrong and has been corrected to this one. */
 
+/* `bad4` (BACKLOG #150 S150-10, decision 1): NULL -> refuse any out-of-range move
+ * slot, exactly the pre-#150 behaviour. Non-NULL -> the caller has already run
+ * g3gb_moves_ok/_rec and is telling us which slots it will accept empty; a `bad4[i]`
+ * that DISAGREES with gb_max_move(gen) either way is a caller bug (refused loudly,
+ * never silently emptied or silently accepted). */
 static G3GbStatus screen(const uint8_t* rec80, uint8_t gen, const GbGen1Base* g1base,
-                         PkMon* m, uint16_t* dex_out) {
+                         const uint8_t* bad4, PkMon* m, uint16_t* dex_out) {
   if (!pk_decode_mon(rec80, false, m)) return G3GB_ERR_GLITCH;
   if (m->isEgg || m->isBadEgg) return G3GB_ERR_EGG;
   pk_resolve(m);   /* fills m->level (box mons decode with level 0) and m->gender */
@@ -64,8 +69,12 @@ static G3GbStatus screen(const uint8_t* rec80, uint8_t gen, const GbGen1Base* g1
   uint16_t dex = pk_national_no(m->species);
   if (dex < 1 || dex > gb_max_species(gen)) return G3GB_ERR_SPECIES;
 
-  for (int i = 0; i < 4; i++)
-    if (m->moves[i] != 0 && m->moves[i] > gb_max_move(gen)) return G3GB_ERR_MOVE;
+  for (int i = 0; i < 4; i++) {
+    bool out_of_range = m->moves[i] != 0 && m->moves[i] > gb_max_move(gen);
+    bool flagged = bad4 && bad4[i];
+    if (flagged && !out_of_range) return G3GB_ERR_ARG;      /* caller flagged a legal slot -- a bug */
+    if (out_of_range && !flagged) return G3GB_ERR_MOVE;     /* unflagged (or bad4==NULL): refuse as before */
+  }
 
   if (gen == GB_GEN1 && !g1base) return G3GB_ERR_NEEDS_BASE;
 
@@ -121,10 +130,16 @@ static G3GbStatus set_dvs_and_statexp(GbEditMon* e, const PkMon* m, Gen3ToGbLoss
  * to whatever maximum those Ups now allow — and NEITHER of the last two for an empty
  * slot: gb_set_ppup() refuses a non-zero PP-Up count with no move to buy it for, and
  * an empty slot's PP byte has to stay 0 (see the note above this file's helpers). */
-static G3GbStatus set_moves(GbEditMon* e, uint8_t gen, const PkMon* m) {
+static G3GbStatus set_moves(GbEditMon* e, uint8_t gen, const PkMon* m, const uint8_t* bad4) {
   for (int i = 0; i < 4; i++) {
     uint16_t mv = m->moves[i];
-    uint8_t mv8 = (mv > 255u) ? 0 : (uint8_t)mv;   /* screened <= gb_max_move above */
+    /* A flagged slot (decision 1) is written empty -- screen() has already refused
+     * ARG if bad4 disagreed with the bound, so `flagged` here always means "out of
+     * range, caller accepted the empty write". Otherwise mv is already <=
+     * gb_max_move(gen) (screened above), so the (mv > 255u) guard below can only ever
+     * fire for a FLAGGED slot -- kept anyway as the documented defensive fallback. */
+    bool flagged = bad4 && bad4[i];
+    uint8_t mv8 = (flagged || mv > 255u) ? 0 : (uint8_t)mv;
     if (!gb_set_move(e, i, mv8)) return G3GB_ERR_GLITCH;
     if (mv8 == 0) continue;
 
@@ -217,8 +232,9 @@ static void set_remaining_loss_flags(const GbEditMon* e, const uint8_t* rec80,
 /* Every field is built into a LOCAL record and only copied to `out` on the final
  * G3GB_OK — never into the caller's `out` directly — so "on refusal `out` is untouched"
  * holds even for a defensive mid-function refusal, not only for the up-front screening. */
-G3GbStatus gen3_to_gb(const uint8_t* rec80, uint8_t gen, bool caught_available,
-                     const GbGen1Base* g1base, GbEditMon* out, Gen3ToGbLoss* loss) {
+G3GbStatus gen3_to_gb_fixed(const uint8_t* rec80, uint8_t gen, bool caught_available,
+                            const GbGen1Base* g1base, const uint8_t* bad4,
+                            GbEditMon* out, Gen3ToGbLoss* loss) {
   Gen3ToGbLoss local_loss;
   if (!loss) loss = &local_loss;
   memset(loss, 0, sizeof *loss);
@@ -227,7 +243,7 @@ G3GbStatus gen3_to_gb(const uint8_t* rec80, uint8_t gen, bool caught_available,
 
   PkMon m;
   uint16_t dex;
-  G3GbStatus st = screen(rec80, gen, g1base, &m, &dex);
+  G3GbStatus st = screen(rec80, gen, g1base, bad4, &m, &dex);
   if (st != G3GB_OK) return st;
 
   GbEditMon e;
@@ -252,7 +268,7 @@ G3GbStatus gen3_to_gb(const uint8_t* rec80, uint8_t gen, bool caught_available,
   st = set_dvs_and_statexp(&e, &m, loss);
   if (st != G3GB_OK) return st;
 
-  st = set_moves(&e, gen, &m);
+  st = set_moves(&e, gen, &m, bad4);
   if (st != G3GB_OK) return st;
 
   st = set_names(&e, gen, &m, loss);
@@ -265,6 +281,11 @@ G3GbStatus gen3_to_gb(const uint8_t* rec80, uint8_t gen, bool caught_available,
 
   *out = e;
   return G3GB_OK;
+}
+
+G3GbStatus gen3_to_gb(const uint8_t* rec80, uint8_t gen, bool caught_available,
+                     const GbGen1Base* g1base, GbEditMon* out, Gen3ToGbLoss* loss) {
+  return gen3_to_gb_fixed(rec80, gen, caught_available, g1base, NULL, out, loss);
 }
 
 /* ---- BACKLOG #104 R1: the MAKE LEGAL correction --------------------------------

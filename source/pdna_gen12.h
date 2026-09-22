@@ -230,8 +230,12 @@ BoxSource pdna_gen12_source(Gb12Mount* m);
  * shared box screen until the user backs out. `met_game` is the Gen-3 origin id to
  * stamp on converted records (1 Sapphire .. 5 LeafGreen; 0 -> Emerald) — pass the
  * LOADED save's game so a copied mon claims the cartridge it is going into.
- * Borrows the EWRAM arena for the duration; returns 0 always (a screen, not a
- * chooser). Safe on every cart: it only ever reads. */
+ * Borrows the EWRAM arena for the duration. Safe on every cart: it only ever reads
+ * the Game Boy save (a COPY lift only ever writes the Bank, never this save).
+ * BACKLOG #150 S150-12: returns 1 when the user accepted the "WAITING FOR THE PC"
+ * exit offer (the caller should open the Bank, cursor on the box the last copy
+ * landed in); 0 otherwise (nothing was queued, no live Gen-3 PC, or the offer was
+ * declined). */
 int pdna_gen12_show(const char* path, uint8_t met_game);
 
 /* What pdna_gen12_show_image() did. The file browser needs to tell these apart: it

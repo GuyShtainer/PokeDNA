@@ -162,6 +162,50 @@ static void test_xg_native_escape_denied(void) {
   printf("(H) xg_native_escape_denied: 3 cells x 3 dst scopes = 9 assertions, true only native x {PC, GB}\n");
 }
 
+/* ---- BACKLOG #150 S150-12 decision 9: xg_cell_is_copy -- false on every non-native
+ * cell (all-zero, Gen-3-like, native-but-not-flagged), true only once BC_FLAG_COPY
+ * (0x20) is set in byte 11 (alone or alongside BC_FLAG_QUEUED_PC, 0x24). ---------- */
+static void test_xg_cell_is_copy(void) {
+  uint8_t native[80]; make_native_fixture(native);
+  uint8_t allzero[80]; memset(allzero, 0, 80);
+  uint8_t gen3like[80]; make_gen3_like_fixture(gen3like);
+
+  CHECK(xg_cell_is_copy(allzero) == false, "xg_cell_is_copy: all-zero cell -> false");
+  CHECK(xg_cell_is_copy(gen3like) == false, "xg_cell_is_copy: Gen-3-like cell (no GBC1 magic) -> false");
+  CHECK(xg_cell_is_copy(native) == false, "xg_cell_is_copy: native cell, flags 0 -> false");
+
+  uint8_t queued_only[80]; memcpy(queued_only, native, 80);
+  queued_only[BC_OFF_FLAGS] = 0x04u;   /* BC_FLAG_QUEUED_PC, no COPY */
+  CHECK(xg_cell_is_copy(queued_only) == false, "xg_cell_is_copy: native cell, flags 0x04 (QUEUED_PC only) -> false");
+
+  uint8_t copy_only[80]; memcpy(copy_only, native, 80);
+  copy_only[BC_OFF_FLAGS] = 0x20u;   /* BC_FLAG_COPY alone */
+  CHECK(xg_cell_is_copy(copy_only) == true, "xg_cell_is_copy: native cell, flags 0x20 (COPY alone) -> true");
+
+  uint8_t copy_queued[80]; memcpy(copy_queued, native, 80);
+  copy_queued[BC_OFF_FLAGS] = 0x24u;   /* BC_FLAG_COPY | BC_FLAG_QUEUED_PC, the shipped shape */
+  CHECK(xg_cell_is_copy(copy_queued) == true, "xg_cell_is_copy: native cell, flags 0x24 (COPY|QUEUED_PC) -> true");
+
+  printf("(XG-COPY-1) xg_cell_is_copy: all-zero/gen3-like/native-unflagged -> false; 0x20/0x24 -> true\n");
+}
+
+/* ---- BACKLOG #150 S150-12 decision 13: xg_pc_offer's full truth table over
+ * queued in {0,1,2,255} x pc_live in {0,1} -- exactly the four `queued>0 && pc_live`
+ * rows are true. -------------------------------------------------------------- */
+static void test_xg_pc_offer(void) {
+  const uint8_t queued_vals[4] = { 0u, 1u, 2u, 255u };
+  for (int qi = 0; qi < 4; qi++)
+    for (int pc_live = 0; pc_live <= 1; pc_live++) {
+      uint8_t queued = queued_vals[qi];
+      bool want = (queued > 0) && pc_live;
+      char msg[96];
+      snprintf(msg, sizeof msg, "xg_pc_offer: queued=%u pc_live=%d", queued, pc_live);
+      CHECK(xg_pc_offer(queued, (bool)pc_live) == want, msg);
+    }
+  printf("(XG-OFFER-1) xg_pc_offer: full queued{0,1,2,255} x pc_live{0,1} table, exactly the "
+         "4 queued>0 rows true\n");
+}
+
 static void test_xg_chunk_crossgen_denied(void) {
   /* Matches pdna_box.c's own `if (src->scope == BOXSCOPE_GB || s_ch_scope == BOXSCOPE_GB)`
    * (drop_chunk's cross-generation refusal) exactly -- all 9 scope pairs. */
@@ -378,6 +422,8 @@ int main(void) {
   test_xg_clear_carry_on_gb_exit();
   test_xg_drop_denied();
   test_xg_native_escape_denied();
+  test_xg_cell_is_copy();
+  test_xg_pc_offer();
   test_xg_chunk_crossgen_denied();
   test_xg_bank_down_arm();
   test_gbs_can_delete_table();

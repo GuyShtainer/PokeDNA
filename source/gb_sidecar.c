@@ -433,13 +433,52 @@ static void merge_moves(EditMon* em, const GbEditMon* now, const GbscEntry* e,
   rep->moves_changed = true;                              /* report is mask-independent */
   if (!apply) return;
 
-  /* Moves first: em_set_move resets PP/PP-Ups for the slot, so setting PP Ups (and
-   * then current PP) has to follow it, not precede it. */
+  /* BACKLOG #150 S150-10, decision 9 (G-H8/G-H9): PER SLOT, not all four. Only a slot
+   * whose move id or PP-Ups differs from its own baseline is written into the Gen-3
+   * record -- every other slot keeps the ORIGINAL's move, PP and PP-Ups untouched.
+   * Before this fix, `differ` (any slot differing) triggered an all-four overwrite
+   * from `now`: a MAKE-LEGAL fill applied to slot 2 would get written into the Gen-3
+   * record the moment the player changed slot 0 in-game, silently discarding the
+   * original's slot-2 move (Rock Tomb, say) even though slot 2 was never touched
+   * abroad -- "distinguishes moves the user changed abroad from moves that were only
+   * re-encoded" is the property this loop restores.
+   * Moves first: em_set_move resets PP/PP-Ups for the slot, so setting PP Ups (and
+   * then current PP) has to follow it, not precede it -- and neither for an emptied
+   * slot (cur_mv == 0), same rule set_moves() in gen3_to_gb.c follows. */
   for (int i = 0; i < 4; i++) {
-    em_set_move(em, i, gb_get_move(now, i));
-    em_set_ppups(em, i, gb_get_ppup(now, i));
-    em_set_pp(em, i, gb_get_pp(now, i));
+    uint8_t base_mv, base_up;
+    if (e->has_written_moves) {
+      base_mv = e->moves_written[i];
+      base_up = (uint8_t)((e->ppup_written >> (i * 2)) & 0x3u);
+    } else {
+      base_mv = (orig->moves[i] > 255u) ? 0 : (uint8_t)orig->moves[i];
+      base_up = (uint8_t)((orig->ppBonuses >> (i * 2)) & 0x3u);
+    }
+    uint8_t cur_mv = gb_get_move(now, i), cur_up = gb_get_ppup(now, i);
+    if (cur_mv == base_mv && cur_up == base_up) continue;   /* unchanged slot: keep the original */
+    em_set_move(em, i, cur_mv);
+    if (cur_mv) {
+      em_set_ppups(em, i, cur_up);
+      em_set_pp(em, i, gb_get_pp(now, i));
+    }
+    rep->moves_changed = true;
   }
+  /* BACKLOG #150 S150-10, decision (orchestrator, review D3): this loop never packs.
+   * A slot the player emptied abroad (cur_mv == 0, a changed slot) is written EMPTY
+   * into the Gen-3 record even when a LATER slot the player never touched still
+   * holds a kept-or-filled move -- the merged record can therefore carry a mid-list
+   * hole in front of a real move. This is deliberate, not an oversight: original
+   * wins where the user changed nothing (a slot merge_moves did not touch keeps the
+   * ORIGINAL's move exactly, packed or not, wherever it already sat), and Gen 3
+   * itself tolerates a MOVE_NONE hole mid-list -- pokemon_summary_screen.c's own
+   * move list simply skips a zero id, and the next level-up (or move-relearner) fills
+   * the hole the normal way any Gen-3 mon with fewer than four moves already does.
+   * Packing here would mean relocating a move the player never touched to a new slot
+   * index, which is its own small lie about "the original, restored" -- decision 4's
+   * pack on the DOWN direction (source/gb_moves_legal.c's g3gb_moves_pack) exists for
+   * a DIFFERENT reason (the Game Boy's own move-list walker stops at the first zero,
+   * so a hole there hides a real move in-game); nothing forces the same rule on the
+   * way back up. */
 }
 
 /* The Gen-3 charset can only spell ASCII (gen3_edit.h's gen3_encode_char), so a decoded

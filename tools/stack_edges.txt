@@ -127,9 +127,17 @@
 # count on main at the time these lines were added; raise it (with a dated
 # comment explaining why) when a genuine new count-only site is added on
 # purpose, never to silence an unexplained increase.
-count-only-max 48 variant=nor artless=1
-count-only-max 48 variant=nor
-count-only-max 48 variant=delta
+# BACKLOG #196 (2026-09-22, fix pass): main's own baseline moved 48 -> 49 (an
+# unrelated lane, b201, merged first). This lane's F2 (a per-page cache) was pulled
+# after review found it inert (see pdna_gbdex.c's own comment on gbdex_cell_art) --
+# only ONE genuinely new count-only dispatch site remains from this backlog,
+# pdna_origin_art_portrait_by_dex (the Gen-1 twin of pdna_origin_art_icon,
+# dispatching s_gb.pic through the same inlined fetch_pic_ex shape fetch_icon
+# already does, declared below with its own dated reasoning). 49 + 1 = 50.
+# Re-measured on all three variants after the strip.
+count-only-max 50 variant=nor artless=1
+count-only-max 50 variant=nor
+count-only-max 50 variant=delta
 
 # Delta-only -- the artless/normal (PDNA_TARGET=nor) links do not contain it:
 # Listing EVERY variant in variants= re-creates a blanket exemption -- if the symbol exists
@@ -347,7 +355,13 @@ BoxSource.can_lift @80 in src_can_lift -> gb_can_lift_hook
 # drop_held's `s_xfer_peer->release_up(...)` call (release_up @16) -- both match the
 # natural ARM EABI layout of BoxXferOps (gen@0 padded to 4, lift_up@4, preview_down@8,
 # accept_down@12, release_up@16, move_within@20).
-BoxXferOps.lift_up @4 in start_carry -> gb_lift_up_hook
+# BACKLOG #150 S150-12: the read-only mount's k_gb_xfer_ro table installs a SECOND
+# lift_up implementation (gb_lift_copy_hook, the COPY-flavoured lift) at the same
+# offset 4 -- the multi-target idiom of BoxSource.can_edit @44 in src_can_lift below
+# (-> banksrc_can_edit gbsrc_can_edit app_can_edit). Both hooks are reachable through
+# the identical struct-field load; only which TABLE is installed differs at runtime
+# (pdna_gen12.c's g_ed ? &k_gb_xfer : &k_gb_xfer_ro selector).
+BoxXferOps.lift_up @4 in start_carry -> gb_lift_up_hook gb_lift_copy_hook
 BoxXferOps.release_up @16 in drop_held -> gb_release_up_hook
 
 # BACKLOG #187/#191a, F2: BoxXferOps.move_within (@20, see the layout comment just
@@ -579,6 +593,18 @@ fetch_pic_ex.constprop.0 argsites=1 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_
 # "parameter/register dispatch" with no field offset, i.e. the argsite bucket).
 # Verify by address before trusting this count on a future rebuild.
 fetch_icon argsites=2 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
+# BACKLOG #196: fetch_portrait_by_dex() is fetch_icon()'s Gen-1 twin (pdna_origin_
+# art.c) -- factored out of pdna_origin_art_portrait_by_dex() the same way fetch_icon
+# was factored out of pdna_origin_art_icon(), calling fetch_pic_ex() with icon=0 (the
+# ordinary portrait rung, s_gb.pic) instead of icon=1 (s_gb.icon). -O2 inlines it into
+# pdna_origin_art_portrait_by_dex's own compiled body (same "constprop clone" shape as
+# fetch_pic_ex.constprop.0's own precedent) -- --dump-sites shows exactly TWO sites
+# attributed to pdna_origin_art_portrait_by_dex itself: one plain argsite (this line)
+# and one field hit at the SAME collision offset (44) fetch_pic_ex.constprop.0 and
+# pdna_origin_art_portrait already piggyback on -- see the `BoxSource.can_edit @44`
+# line below, which now also names this function. Verify by address on BOTH ELFs
+# before trusting this count on a future rebuild.
+pdna_origin_art_portrait_by_dex argsites=1 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
 
 # gen1_save.c's Gen1ReadFn `rd` parameter (gen1_open_ranged) and rom_gblearn.c's
 # GbReadFn `read` parameter (rom_gblearn_open -> gbl_verify -> walk_entry), both
@@ -935,8 +961,23 @@ RomGbUi.read @0 in rom_gbui_open,rom_gbui_open_loc,rom_gbui_tile,gbscr_open_inne
 # RomGbUi as GbScreen's first embedded member (same offset-0 shape) and dispatches the
 # same way while filling it in.
 
-RomGbIcon.read @0 in parse_header@rom_gbicon,rom_gbicon_kind,rom_gbicon_open_loc,rom_gbicon_tiles -> gb_art_read fused_gb_slice_read gb_read
+RomGbIcon.read @0 in parse_header@rom_gbicon,rom_gbicon_kind,rom_gbicon_open_loc,rom_gbicon_tiles,try_loc@rom_gbicon -> gb_art_read fused_gb_slice_read gb_read
 RomGbIcon.read @0 in locate@rom_gbicon,scan_one.constprop.0@rom_gbicon -> gb_art_read fused_gb_slice_read gb_read icon_ptrs_cb
+# BACKLOG #201 F2: try_loc@rom_gbicon added to the first group above -- the
+# id_hash/size/menu-window/per-kind-decode verify reads that used to be inlined
+# directly in rom_gbicon_open_loc()'s own body (still declared there, harmlessly
+# unused now) are factored into this new file-local function, shared by
+# open_loc()'s cache path AND open()'s new known-ROM-table path (rom_gbicon.c);
+# it dispatches gi->read(...) through the SAME RomGbIcon.read@0 field, no cb
+# parameter involved, so it belongs in the plain (non-widened) group.
+#
+# BACKLOG #201 F3: locate@rom_gbicon's own `if (pass2_cb) pass2_cb(pass2_ctx);`
+# (rom_gbicon.c, between pass 1 and pass 2) is a NEW, separate parameter-threaded
+# dispatch (RomGbIconPassFn, not RomGbIcon.read@0 -- a distinct site from the
+# struct-field union just above), one call site, one real implementation
+# (gb_art_source.c's gb_art_icon_pass2, the only caller that ever passes a
+# non-NULL pass2_cb -- every other rom_gbicon_open(_loc)() caller passes 0/0).
+locate@rom_gbicon argsites=1 -> gb_art_icon_pass2
 # locate@rom_gbicon/scan_one.constprop.0 widened to include icon_ptrs_cb (rom_gbicon.c:
 # 187, `scan_one(gi, icon_ptrs_cb, ...)`, previously `addrtaken-ok` below) -- rom_
 # gbicon.c's scan_one() takes the callback as a PARAMETER (not a struct field) but its
@@ -1233,9 +1274,24 @@ AppSrcOps.editable @24 in pdna_dex_screen -> dex_state dex_set_state dex_get_nat
 AppSrcOps.editable @24 in fetch_pic_ex.constprop.0 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
 AppSrcOps.create @28 in app_mon_menu_readonly -> gb_create_hook
 AppSrcOps.create @28 in pdna_dex_screen -> dex_state dex_set_state dex_get_national dex_set_national
+# BACKLOG #195: same "coincidental spilled section-anchor" shape as the
+# offset-8/20/24/28 lines above for this exact caller (pdna_pick.c's new
+# BACKLOG #195 statics -- rcm_row/ritem_cat_menu/the RICAT_* tables -- shifted
+# this build's link layout enough that pdna_dex_screen's dex_state/
+# dex_set_state/dex_get_national/dex_set_national spill now also lands at
+# offset 32, the same class of collision, not a new real call edge (this
+# function never touches AppSrcOps.item/gb_item_hook at all).
+AppSrcOps.item @32 in pdna_dex_screen -> dex_state dex_set_state dex_get_national dex_set_national
+# Review D2: pick_item_set_gen1_2()'s new `GbGame game` parameter (threaded
+# through so gbb_pocket_of() answers correctly for Gold vs Crystal, gb_bag.h's
+# own header comment) shifted this build's link layout again -- same
+# "coincidental spilled section-anchor" class as offset 32 just above, now
+# also landing on offset 36 (AppSrcOps.dup) for this exact caller. Not a new
+# real call edge (this function never touches AppSrcOps.dup either).
+AppSrcOps.dup @36 in pdna_dex_screen -> dex_state dex_set_state dex_get_national dex_set_national
 AppSrcOps.create @28 in pdna_origin_box_art,pdna_origin_box_art_wanted -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
 BoxSource.get_name @28 in draw_box_banner -> banksrc_get_name gbsrc_get_name pcsrc_get_name
-BoxSource.can_edit @44 in pdna_origin_art_portrait,pdna_origin_box_art -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
+BoxSource.can_edit @44 in pdna_origin_art_portrait,pdna_origin_box_art,pdna_origin_art_portrait_by_dex -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
 # BoxSource.can_edit@44 has no field site of its OWN anywhere in this build (every
 # real can_edit() dispatch goes through pdna_box's declared argsites=4 spilled class
 # below) -- the offset is real (source/pdna_box.h, verified against the header) but
@@ -1365,6 +1421,21 @@ addrtaken-ok __aeabi_idiv0        # libgcc: division-by-zero trap, taken by the 
 addrtaken-ok __boot_method        # crt0: multiboot/cart boot-method DATA byte, not a function -- see the D5 note above
 addrtaken-ok __do_global_dtors_aux # crtstuff: static-destructor runner, taken via .fini_array
 addrtaken-ok __libc_init_array    # newlib crt: constructor runner, taken by crt0/_start
+addrtaken-ok g1e_set_otname layout-fragile  # 2026-09-22 (the s150-10-13 merge onto ada7449): the walker FATALed
+                                  # "ADDRESS-TAKEN, UNREACHED, UNDECLARED: g1e_set_otname frame 8" on the
+                                  # merged artless image only. Evidence (objcopy -O binary + a raw aligned
+                                  # 4-byte scan, Thumb bit masked): exactly TWO hits, 0x0801e040 inside
+                                  # gen3_find_section and 0x0801eb9c inside gen3_parse_into, both the
+                                  # literal `.word 0x08012025` = G3_SIGNATURE (source/gen3_save.h:27, the
+                                  # Gen-3 save-section footer magic), NOT a function pointer -- the merge
+                                  # shifted .text so g1e_set_otname (gen1_write.c:281) linked at exactly
+                                  # 0x08012024 and its Thumb address equals that constant. g1e_set_otname
+                                  # is called by nobody in the tree (grep: only its definition and
+                                  # prototype; objdump: zero `bl <g1e_set_otname>`), so it is unreached by
+                                  # construction. Same coincidence class as gen1_encode_name below; the
+                                  # constant is fixed and .text keeps moving, so this can land on ANY
+                                  # function near 0x08012024 on a future rebuild -- re-derive with
+                                  # `nm -Sn <elf> | grep <fn>` + `objdump -d <elf> | grep 0x08012025`.
 # Kept on purpose because the address coincidence comes and goes with the link layout;
 # the walker does not nag about it; drop the layout-fragile qualifier to be reminded again.
 addrtaken-ok gen1_encode_name layout-fragile  # BACKLOG #148/#152 (review-opus fix pass corrected this entry's own

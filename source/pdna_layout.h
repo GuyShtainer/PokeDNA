@@ -158,6 +158,13 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * performs is explained in the confirm dialog the user sees before any
  * write, not in the row's own two words. */
 
+/* BACKLOG #200 F3: A on a blocked grid cell (index >= the source's own capacity --
+ * F1's dim/X-marked cells, F2's cursor already skips/clamps around them; this is
+ * the defensive backstop for the one path F2 does not cover, an A press that
+ * lands here anyway) -- never the EMPTY/CREATE/CANCEL menu, which has nothing
+ * real to create there. */
+#define PDNA_BOX_NO_SLOT     "No such slot in this game."
+
 /* Every label either action popup can show, so the host test measures the strings the
  * menus actually draw. The X() entries are the macros above, not fresh literals. */
 #define PDNA_MONMENU_LABELS(X)                                                        \
@@ -555,6 +562,7 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * are an independent byte-for-byte copy, not a cross-file #include). Same
  * panel positions as PDNA_GBEDIT_CONFIRM_TITLE/A_WRITE/B_CANCEL. */
 #define PDNA_GBEDIT_KEEP_TITLE     "Keep this Pokemon?"
+#define PDNA_GBHOF_DISCARD_TITLE   "Discard changes?"       /* HoF EDIT MON: A = discard, B = stay (b194 review) */
 #define PDNA_GBEDIT_KEEP_A         "A = write (backup first)"
 #define PDNA_GBEDIT_KEEP_B         "B = discard it"
 
@@ -1119,6 +1127,28 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XFER_REC_L1     "Use COPY here, then PASTE in"
 #define PDNA_XFER_REC_L2     "the Gen 3 save to bring it back."
 
+/* BACKLOG #150 S150-12 decision 16: the read-only mount's COPY lift (the Game Boy
+ * save keeps the mon; only the Bank gets a copy) and the once-per-exit "waiting for
+ * the PC" offer. PCQ_L1_FMT is measured at its worst-case COMPOSED string (255
+ * Pokemon, the counter's saturation ceiling), never at the bare format -- the b178
+ * pattern (tests/host_textfit_test.c). COPY_NOBACK is the honest DOWN loss-screen
+ * footer for a copy cell: there is no ledger entry, so there is nothing to keep. */
+#define PDNA_XFER_COPIED_TITLE "COPIED TO THE BANK"
+#define PDNA_XFER_COPIED_L1    "Your Game Boy save keeps it"
+#define PDNA_XFER_COPIED_L2    "too. It waits for the PC."
+
+#define PDNA_XFER_PCQ_TITLE    "WAITING FOR THE PC"
+#define PDNA_XFER_PCQ_L1_FMT   "%d Pokemon. Put them in now?"
+
+#define PDNA_XFER_COPY_NOBACK_L1 "No transfer record: this copy"
+#define PDNA_XFER_COPY_NOBACK_L2 "cannot be sent back."
+
+/* BACKLOG #150 S150-12 decision 10 (folds BACKLOG #180): the bridge DOWN loss
+ * screen's own "the Bank slot stays" line was a stale claim for the bridge arm
+ * (the Bank slot IS emptied once the mon lands) -- LOSS_FOOT_BRIDGE replaces it
+ * with this honest wording; LOSS_FOOT_PASTE keeps the original three unchanged. */
+#define PDNA_XFER_BRIDGE_STAYS "The Bank slot is emptied when it lands."
+
 /* BACKLOG #150 S150-7: the DOWN edge -- a native Bank cell back into a Game Boy save. */
 
 #define PDNA_XFER_DOWN_CONFIRM_TITLE "MOVE TO THE GAME?"
@@ -1217,6 +1247,10 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * here rather than merely a gap. */
 #define PDNA_ITEM_NO_DESC_YET  "No description yet (ROM names coming)"
 #define PDNA_ITEM_GB_FOOT      "A pick  SEL find  B cancel"
+/* BACKLOG #195: the NAMED restricted picker (g_item_gen set -- real Gen-1/2
+ * item names + a gbb_pocket_of() category filter) adds ST for that filter,
+ * same length (28 cols) as the unrestricted picker's own footer above it. */
+#define PDNA_ITEM_GB2_FOOT     "A pick  ST filt  SEL find  B"
 #define PDNA_SIDECAR_MKDIR_TITLE     "SIDECAR FOLDER"
 #define PDNA_SIDECAR_FULL_TITLE      "SIDECAR FULL"
 #define PDNA_SIDECAR_FULL_L1         "Too many clones of this Pokemon."
@@ -1981,6 +2015,12 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_GBTR_ACT_EDIT   "EDIT"
 #define PDNA_GBTR_ACT_SAVE   "SAVE"
 #define PDNA_GBTR_ACT_MORE   "MORE"
+
+/* BACKLOG #202 F1: the HoF card's own START legend word -- the trainer card's
+ * own PDNA_GBTR_ACT_MORE means "the rest of THIS card's fields, plain page";
+ * the HoF card's START instead opens the CLEAR/SET-COUNT/ADD/DELETE menu, a
+ * different action that deserves its own word rather than borrowing MORE. */
+#define PDNA_GBHOF_ACT_MENU  "MENU"
 
 /* D2 fix (U2c 2nd re-verify): the GB-screen shell's open-refusal reasons
  * (pdna_gbscreen.c's kReasonNoRom/kReasonNoStack/kReasonOpen/kReasonBadGen/

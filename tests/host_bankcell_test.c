@@ -540,6 +540,88 @@ static void test_egg_and_item_directed(void) {
 }
 
 /* ============================================================================ */
+/* 6b. BACKLOG #150 S150-12 BC-COPY-1: BC_FLAG_COPY (b5) round-trips through      */
+/*     bc_pack/bc_unpack, and (b5 is byte 11, outside the ident32 span) its       */
+/*     presence never changes ident32 -- a COPY cell and a plain cell of the      */
+/*     SAME mon/bank_serial must hash identically. One real Gen-1 (Red.sav) and   */
+/*     one real Gen-2 (Gold.sav) corpus record; missing corpus SKIPs.             */
+/* ============================================================================ */
+
+static void test_copy_flag_one_gen1(const char* file) {
+  char path[512];
+  snprintf(path, sizeof path, "%s/%s", GB_ROMS, file);
+  FILE* f = fopen(path, "rb");
+  if (!f) { printf("  SKIP %s (BC-COPY-1, not present)\n", file); return; }
+  static uint8_t img[GEN1_SAVE_SIZE];
+  uint32_t len = (uint32_t)fread(img, 1, sizeof img, f);
+  fclose(f);
+
+  Gen1Save s;
+  if (gen1_open(img, len, &s) != GEN1_OK) { printf("  SKIP %s (BC-COPY-1, gen1_open failed)\n", file); return; }
+
+  uint32_t off = gen1_list_offset(&s, 0);
+  int count = gen1_list_count(img + off, 0);
+  CHECK(count > 0, "%s: BC-COPY-1 needs at least one box-0 record", file);
+  if (count <= 0) return;
+
+  GbEditMon mon;
+  CHECK(gb_load(&mon, GB_GEN1, img + off, 0, 0), "%s: BC-COPY-1 gb_load box0 slot0", file);
+
+  uint8_t copy_cell[BC_CELL_BYTES], plain_cell[BC_CELL_BYTES];
+  CHECK(bc_pack(&mon, (uint8_t)(BC_FLAG_QUEUED_PC | BC_FLAG_COPY), BC_ORIGIN_RED, 0x1111u, 500u, copy_cell) == 0,
+        "%s: BC-COPY-1 bc_pack (COPY|QUEUED_PC)", file);
+  CHECK(bc_pack(&mon, 0, BC_ORIGIN_RED, 0x1111u, 500u, plain_cell) == 0,
+        "%s: BC-COPY-1 bc_pack (flags=0, same bank_serial)", file);
+
+  GbEditMon back; BcMeta meta;
+  CHECK(bc_unpack(copy_cell, &back, &meta), "%s: BC-COPY-1 bc_unpack", file);
+  CHECK(meta.flags == 0x24u, "%s: BC-COPY-1 meta.flags == 0x24 (COPY|QUEUED_PC)", file);
+  CHECK(bc_is_native(copy_cell), "%s: BC-COPY-1 copy cell is native", file);
+  CHECK(memcmp(copy_cell + BC_OFF_IDENT32, plain_cell + BC_OFF_IDENT32, 4) == 0,
+        "%s: BC-COPY-1 ident32 unchanged by BC_FLAG_COPY (byte 11 is outside the hashed span)", file);
+  printf("  %s: BC-COPY-1 Gen-1 directed case ok\n", file);
+}
+
+static void test_copy_flag_one_gen2(const char* file) {
+  char path[512];
+  snprintf(path, sizeof path, "%s/%s", GB_ROMS, file);
+  FILE* f = fopen(path, "rb");
+  if (!f) { printf("  SKIP %s (BC-COPY-1, not present)\n", file); return; }
+  static uint8_t img[G2_SAVE_SIZE + G2_MAX_RTC_TAIL];
+  uint32_t len = (uint32_t)fread(img, 1, sizeof img, f);
+  fclose(f);
+
+  G2Save sv;
+  if (!g2_detect(img, len, &sv) || !sv.supported) { printf("  SKIP %s (BC-COPY-1, unsupported)\n", file); return; }
+  G2Header hd;
+  CHECK(g2_read_header(img, &sv, &hd), "%s: BC-COPY-1 g2_read_header", file);
+
+  uint32_t off = g2_list_offset(&sv, 0, hd.current_box);
+  CHECK(off != 0, "%s: BC-COPY-1 needs box 0's list offset", file);
+  if (off == 0) return;
+  int count = gb_list_count(GB_GEN2, img + off, 0);
+  CHECK(count > 0, "%s: BC-COPY-1 needs at least one box-0 record", file);
+  if (count <= 0) return;
+
+  GbEditMon mon;
+  CHECK(gb_load(&mon, GB_GEN2, img + off, 0, 0), "%s: BC-COPY-1 gb_load box0 slot0", file);
+
+  uint8_t copy_cell[BC_CELL_BYTES], plain_cell[BC_CELL_BYTES];
+  CHECK(bc_pack(&mon, (uint8_t)(BC_FLAG_QUEUED_PC | BC_FLAG_COPY), BC_ORIGIN_GOLD, 0x2222u, 501u, copy_cell) == 0,
+        "%s: BC-COPY-1 bc_pack (COPY|QUEUED_PC)", file);
+  CHECK(bc_pack(&mon, 0, BC_ORIGIN_GOLD, 0x2222u, 501u, plain_cell) == 0,
+        "%s: BC-COPY-1 bc_pack (flags=0, same bank_serial)", file);
+
+  GbEditMon back; BcMeta meta;
+  CHECK(bc_unpack(copy_cell, &back, &meta), "%s: BC-COPY-1 bc_unpack", file);
+  CHECK(meta.flags == 0x24u, "%s: BC-COPY-1 meta.flags == 0x24 (COPY|QUEUED_PC)", file);
+  CHECK(bc_is_native(copy_cell), "%s: BC-COPY-1 copy cell is native", file);
+  CHECK(memcmp(copy_cell + BC_OFF_IDENT32, plain_cell + BC_OFF_IDENT32, 4) == 0,
+        "%s: BC-COPY-1 ident32 unchanged by BC_FLAG_COPY (byte 11 is outside the hashed span)", file);
+  printf("  %s: BC-COPY-1 Gen-2 directed case ok\n", file);
+}
+
+/* ============================================================================ */
 /* 7. bc_pack refuses the 0xFF list terminator (gb_commit's own rule).          */
 /* ============================================================================ */
 
@@ -896,11 +978,12 @@ static void check_plant_box0(const uint8_t recs[PLANT_BOX_BYTES]) {
   /* slots 0,1,2,3 are native and each converts to something (FULL/RELAXED); slot 4
    * is native but unrepresentable (GB_SHOW_NONE) -- bc_is_native is still true for
    * ALL FIVE (that is the whole point of G-H2: occupancy comes from the raw bytes,
-   * not from whether a stand-in could be built). Slots 5..29 are untouched (all-zero
-   * -- ordinary empty Gen-3 slots). */
-  for (int s = 0; s < 5; s++)
+   * not from whether a stand-in could be built). BACKLOG #150 S150-12 decision 17:
+   * slots 5/6 are the two planted COPY cells (b2|b5, serials 6/7). Slots 7..29 are
+   * untouched (all-zero -- ordinary empty Gen-3 slots). */
+  for (int s = 0; s < 7; s++)
     CHECK(bc_is_native(recs + (uint32_t)s * BC_CELL_BYTES), "plant box0 slot %d must be native", s);
-  for (int s = 5; s < 30; s++) {
+  for (int s = 7; s < 30; s++) {
     uint8_t zero[BC_CELL_BYTES]; memset(zero, 0, sizeof zero);
     CHECK(memcmp(recs + (uint32_t)s * BC_CELL_BYTES, zero, BC_CELL_BYTES) == 0,
           "plant box0 slot %d must be untouched (all-zero)", s);
@@ -912,6 +995,23 @@ static void check_plant_box0(const uint8_t recs[PLANT_BOX_BYTES]) {
   CHECK(bc_unpack(recs + (uint32_t)4 * BC_CELL_BYTES, &back, &meta), "plant box0 slot 4: bc_unpack");
   CHECK(back.list_species == 0xFE, "plant box0 slot 4: list_species must be the 0xFE glitch index");
   CHECK(meta.origin_game == BC_ORIGIN_GOLD, "plant box0 slot 4: origin_game must be GOLD");
+
+  /* decision 17: slots 5/6 are COPY cells (0x24 = BC_FLAG_QUEUED_PC|BC_FLAG_COPY),
+   * levels 13/14, serials 6/7 -- distinct ident32 from every other planted slot
+   * (bank_serial is inside the hashed span) and from each other. */
+  for (int s = 5; s <= 6; s++) {
+    GbEditMon cb; BcMeta cm;
+    CHECK(bc_unpack(recs + (uint32_t)s * BC_CELL_BYTES, &cb, &cm), "plant box0 slot %d: bc_unpack", s);
+    CHECK(cm.flags == (BC_FLAG_QUEUED_PC | BC_FLAG_COPY),
+          "plant box0 slot %d: flags must be 0x24 (QUEUED_PC|COPY)", s);
+    CHECK(cm.origin_game == BC_ORIGIN_GOLD, "plant box0 slot %d: origin_game must be GOLD", s);
+    CHECK(cm.bank_serial == (uint32_t)(s + 1), "plant box0 slot %d: bank_serial must be %d", s, s + 1);
+  }
+  uint32_t idents[7];
+  for (int s = 0; s < 7; s++) idents[s] = bc_ident32(recs + (uint32_t)s * BC_CELL_BYTES);
+  for (int a = 0; a < 7; a++)
+    for (int b = a + 1; b < 7; b++)
+      CHECK(idents[a] != idents[b], "plant box0: slots %d and %d share an ident32", a, b);
 }
 
 static void check_plant_box_full(const uint8_t recs[PLANT_BOX_BYTES]) {
@@ -970,7 +1070,10 @@ static void test_bank_plant(void) {
 /* decision 4's re-pack, verbatim -- kept as one helper so every case below runs
  * the SAME flag-derivation gb_native_summary_open() itself uses. */
 static int native_repack(const GbEditMon* e, const BcMeta* meta, uint8_t out80[BC_CELL_BYTES]) {
-  uint8_t nf = (uint8_t)(meta->flags & (BC_FLAG_FROM_PARTY | BC_FLAG_HAS_XFER_REC | BC_FLAG_QUEUED_PC));
+  /* S150-12 decision 3: mirrors gb_native_summary_open()'s own re-pack mask
+   * (source/pdna_gen12.c) -- BC_FLAG_COPY must survive an edit too. */
+  uint8_t nf = (uint8_t)(meta->flags & (BC_FLAG_FROM_PARTY | BC_FLAG_HAS_XFER_REC |
+                                        BC_FLAG_QUEUED_PC | BC_FLAG_COPY));
   if (gb_is_egg(e))        nf |= BC_FLAG_EGG;
   if (gb_get_held_item(e)) nf |= BC_FLAG_HOLDS_ITEM;
   return bc_pack(e, nf, meta->origin_game, meta->rtc_epoch, meta->bank_serial, out80);
@@ -1095,6 +1198,40 @@ static void test_native_edit_roundtrip(void) {
     CHECK(memcmp(before + BC_OFF_IDENT32, after + BC_OFF_IDENT32, 4) == 0,
           "10 flags-only: ident32 unchanged by a flags/epoch-only re-pack (G-M4)");
   }
+
+  /* ---- S150-12 decision 3: BC_FLAG_COPY survives a real editor edit's re-pack --
+   * XFER-C15d's own host-side proof. A DV edit through gbe_press touches rec[] (so
+   * ident32 changes) but must never touch byte 11's b5 (COPY, permanent while the
+   * cell lives) or b2 (QUEUED_PC, this cell's own copy of the offer trigger). */
+  {
+    GbEditMon mon;
+    memset(&mon, 0, sizeof mon);
+    mon.gen = GB_GEN2;
+    mon.is_party = false;
+    for (int i = 0; i < G2_BOX_ENTRY; i++) mon.rec[i] = (uint8_t)(i * 11 + 6);
+    mon.rec[0] = 152;      /* Chikoritan */
+    mon.list_species = 152;
+    memcpy(mon.otname, "PLANT\x50\x50\x50\x50\x50\x50", GB_NAME_BYTES);
+    memcpy(mon.nick,   "CHIKO\x50\x50\x50\x50\x50\x50", GB_NAME_BYTES);
+
+    uint8_t before[BC_CELL_BYTES];
+    uint8_t flags_in = (uint8_t)(BC_FLAG_QUEUED_PC | BC_FLAG_COPY);
+    CHECK(bc_pack(&mon, flags_in, BC_ORIGIN_GOLD, 0u, 6u, before) == 0, "10 copy: bc_pack base");
+    CHECK((before[BC_OFF_FLAGS] & BC_FLAG_COPY) != 0, "10 copy: base cell has b5 (COPY) set");
+
+    GbEditMon e; BcMeta meta;
+    CHECK(bc_unpack(before, &e, &meta), "10 copy: bc_unpack");
+    CHECK(gbe_press(&e, GBE_DVA), "10 copy: gbe_press(GBE_DVA) must change the record");
+
+    uint8_t after[BC_CELL_BYTES];
+    CHECK(native_repack(&e, &meta, after) == 0, "10 copy: re-pack");
+    CHECK((after[BC_OFF_FLAGS] & BC_FLAG_COPY) != 0,
+          "10 copy: b5 (COPY) survives a real editor edit's re-pack (XFER-C15d)");
+    CHECK((after[BC_OFF_FLAGS] & BC_FLAG_QUEUED_PC) != 0,
+          "10 copy: b2 (QUEUED_PC) also survives");
+    CHECK(memcmp(before + BC_OFF_IDENT32, after + BC_OFF_IDENT32, 4) != 0,
+          "10 copy: ident32 CHANGED by the DV edit (rec[] is inside the hashed span)");
+  }
 }
 
 int main(int argc, char** argv) {
@@ -1118,6 +1255,10 @@ int main(int argc, char** argv) {
 
   printf("== 5. mutation ==\n");
   test_mutation();
+
+  printf("== 6b. BC-COPY-1: BC_FLAG_COPY round-trips, ident32 unchanged ==\n");
+  test_copy_flag_one_gen1("Red.sav");
+  test_copy_flag_one_gen2("Gold.sav");
 
   printf("== 6. fresh bank_serial vs. flags/epoch-only re-pack ==\n");
   test_serial_and_flags();

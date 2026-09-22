@@ -14,43 +14,58 @@
 #include "pdna_gen12.h"    /* gb_persist -- the verified-write commit path            */
 #include "pdna_trainer.h"  /* trainer_flag_row_paint / trainer_key_legend             */
 #include "pdna_app.h"      /* app_confirm                                            */
-#include "pdna_origin_art.h" /* BACKLOG #124: pdna_origin_art_icon, pdna_origin_cell_render */
+#include "pdna_origin_art.h" /* BACKLOG #124/#196: pdna_origin_art_icon,
+                              * pdna_origin_art_portrait_by_dex, pdna_origin_cell_render */
 #include "dex_cell_art_rule.h" /* BACKLOG #124: the pure-C selection rule this callback gates on */
 #include "ui.h"
 #include "snd.h"
 
-/* ---- BACKLOG #124: the dex screen's cell-art override, GB ROM sprites -------------
+/* ---- BACKLOG #124/#196: the dex screen's cell-art override, GB ROM sprites --------
  * The dex grid's cell painter (dex_cell_grid(), pdna_pick.c, shared verbatim with the
  * Gen-3 dex) draws through mon_icon_for()/the icon store by default. That is a
  * PokeDNA-internal icon set, not the species' own Gen-1/2 ROM art -- the box grid two
  * screens away already shows the REAL Gen-2 party-menu icon for a GB-era cell
  * (pdna_origin_art.c's pdna_origin_box_art(), ERA_GEN2 branch, called from
  * pdna_box.c:~1343's era_cell_draw()). This installs the SAME fetch, reused (not
- * copied): pdna_origin_art_icon() is a new public entry point in pdna_origin_art.c
+ * copied): pdna_origin_art_icon() is a public entry point in pdna_origin_art.c
  * that factors that branch's own have()/stack-room/fetch/pack sequence
  * (pdna_origin_art_have(PDNA_GEN2) -> pdna_origin_art_stack_room(PDNA_GB_ICON_NEED) ->
  * fetch_pic_ex(...,icon=1,...) -> s_gb.icon() -> gb_art_icon_cb() ->
  * gb_art_fetch_icon()) into ONE function pdna_origin_box_art() now also calls, so the
- * dex becomes that chain's SECOND caller, never a second implementation.
+ * dex is that chain's SECOND caller, never a second implementation.
  *
  * Reached through pdna_pick.h's pdna_dex_set_cell_art() process-wide override (its own
  * comment there has the full contract) rather than a new pdna_dex_screen() parameter,
  * because a parameter would touch the Gen-3 caller's (pdna_main.c's) call site for a
- * feature it never uses. GEN 1 ONLY REFUSES (Gen 1 has no menu icons,
- * gb_art_source.c's own rule) via the ctx-carried session gen check below, not by
- * skipping installation for a Gen-1 visit: installing at BOTH call sites
- * unconditionally and self-gating inside the callback means a Gen-1 session can never
- * accidentally borrow a SEPARATELY-registered Gen-2 ROM's icon for a same-numbered
- * Kanto species (both generations' ROMs may be registered at once, exactly like the
- * box grid tolerates for imports of both eras in one save) -- the callback's own `s->
- * gen != GB_GEN2` check is the actual safety boundary, not caller discipline. */
+ * feature it never uses.
+ *
+ * BACKLOG #196: Gen 1 gets its OWN GB rung now too, through pdna_origin_art_portrait_
+ * by_dex() (pdna_origin_art.h) -- the front-pic TWIN of pdna_origin_art_icon(), NOT
+ * pdna_origin_art_portrait() (the portrait router used for an OWNED box/party/summary
+ * mon): that router's era decision needs a real PkMon carrying a provable Gen-1/2-
+ * import signature and a registered sprite_era.h SE_PLACE_*, neither of which a bare
+ * national dex number (this screen's whole input) has -- era_cell_blit() (pdna_box.c)
+ * can lean on pdna_origin_art_portrait() because it is handed a REAL owned PkMon from
+ * g_box[]; this screen never has one, it draws every species 1..151/251 regardless of
+ * whether the player owns it. See pdna_origin_art_portrait_by_dex()'s own header
+ * comment in pdna_origin_art.h for why that needed a genuinely new entry point rather
+ * than reusing the router.
+ *
+ * NEITHER generation leaks into the other's session (a Gen-1 session must never draw
+ * a Kanto species from a separately-registered Gen-2 ROM's icon, or vice versa): both
+ * generations install this same override UNCONDITIONALLY at their own call site in
+ * pdna_gbdex() below, and gbdex_cell_art()'s own per-cell gate (via dex_cell_art_
+ * source(), which sees the SESSION'S OWN generation and the have() answer for THAT
+ * SAME generation, never the other one) is the actual safety boundary, not caller
+ * discipline -- both generations' ROMs may be registered at once (Settings tolerates
+ * it, exactly like the box grid does for imports of both eras in one save). */
 
 /* Split exactly like pdna_box.c's era_cell_draw()/era_cell_blit(): the scale+blit
  * buffer (2,048 B for a 32x32 RGB15 cell) must never coexist on the stack with the
  * fetch chain's own frame (gb_art_fetch_icon's ~5.6 KB tail, gated on
  * PDNA_GB_ICON_NEED=6,144) -- noinline so an inlined copy cannot silently merge the
- * two frames back together. Called only AFTER pdna_origin_art_icon()'s fetch has
- * already returned and popped. */
+ * two frames back together. Called only AFTER the fetch (icon or portrait-by-dex)
+ * has already returned and popped. */
 static bool __attribute__((noinline))
 gbdex_cell_blit(const PdnaArt* a, int x, int y, int w, int h) {
   u16 cell[32 * 32];             /* 2,048 B of STACK -- never a static, never EWRAM */
@@ -63,41 +78,61 @@ gbdex_cell_blit(const PdnaArt* a, int x, int y, int w, int h) {
   return true;
 }
 
-/* The ONE place `gb_session && gb_have` is computed -- gbdex_cell_art()'s own per-cell
+/* The ONE place `session_gen && gb_have` is computed -- gbdex_cell_art()'s own per-cell
  * gate below AND pdna_gbdex()'s two install sites (which need the SAME answer at the
  * PAGE level, for pdna_dex_set_cell_art()'s `serves_page` -- see that function's own
- * header comment in pdna_pick.h for why it must not be re-derived from
- * pdna_origin_art_have(PDNA_GEN2) alone: that global is boot-sticky and independent
- * per era, so a Gen-1 session with a Gen-2 ROM ALSO registered would wrongly answer
- * "yes" from have(GEN2) alone). One implementation, never two definitions of the same
- * question that could quietly re-diverge. */
+ * header comment in pdna_pick.h for why it must not be re-derived from a live
+ * pdna_origin_art_have() read: that global is boot-sticky and independent per era, so
+ * a Gen-1 session with a Gen-2 ROM ALSO registered would wrongly answer "yes" from
+ * have(GEN2) alone). One implementation, never two definitions of the same question
+ * that could quietly re-diverge. BACKLOG #196: `have` is now computed for THIS
+ * SESSION'S OWN generation (GEN1 for a GB_GEN1 session, GEN2 for a GB_GEN2 one) --
+ * the exact per-generation discipline dex_cell_art_rule.h's own header comment
+ * requires of every caller. */
 static bool gbdex_serves_dex(const GbSession* s) {
-  return s && dex_cell_art_serves_page(s->gen == GB_GEN2, pdna_origin_art_have(PDNA_GEN2));
+  if (!s) return false;
+  uint8_t want_gen = (s->gen == GB_GEN1) ? (uint8_t)PDNA_GEN1
+                    : (s->gen == GB_GEN2) ? (uint8_t)PDNA_GEN2 : 0;
+  bool have = want_gen && pdna_origin_art_have(want_gen);
+  return dex_cell_art_serves_page((int)s->gen, have);
 }
 
 /* The PdnaDexCellArtFn itself: `ctx` is the GbSession* the caller is visiting (never
- * NULL -- pdna_gbdex() below only installs this while `s` is in scope). No fetch is
- * attempted for a Gen-1 session (see the file header comment above for why this check
- * lives here and not at the install site) or when the species is out of the Gen-1/2
- * range (`dex` is pdna_pick.c's own pk_national_no() result, so this is defensive, not
- * load-bearing -- pdna_dex_set_max() already caps the visible list at 151/251).
+ * NULL -- pdna_gbdex() below only installs this while `s` is in scope), or when the
+ * species is out of the Gen-1/2 range (`dex` is pdna_pick.c's own pk_national_no()
+ * result, so this is defensive, not load-bearing -- pdna_dex_set_max() already caps
+ * the visible list at 151/251).
  *
- * dex_cell_art_source() (BACKLOG #124, source/dex_cell_art_rule.h) is the pure-C gate:
- * this function computes the three real-world inputs and asks the RULE what to do,
- * rather than encoding the decision inline -- tests/host_dexcellart_test.c exercises
- * the exact same function against the whole truth table, so a review can check the
- * gate's LOGIC on the host without a GBA build. `store_ok` is always true here (the
- * caller, pdna_pick.c's dex_cell_grid(), always has its own unchanged fallback ready
- * for a `false` return) -- passed explicitly so the rule states its whole contract. */
+ * dex_cell_art_source() (BACKLOG #124/#196, source/dex_cell_art_rule.h) is the
+ * pure-C gate: this function computes the real-world inputs and asks the RULE what
+ * to do, rather than encoding the decision inline -- tests/host_dexcellart_test.c
+ * exercises the exact same function against the whole truth table, so a review can
+ * check the gate's LOGIC on the host without a GBA build. `store_ok` is always true
+ * here (the caller, pdna_pick.c's dex_cell_grid(), always has its own unchanged
+ * fallback ready for a `false` return) -- passed explicitly so the rule states its
+ * whole contract.
+ *
+ * Every call fetches: the per-generation fetch this file has always used (icon rung
+ * for Gen 2, portrait-by-dex rung for Gen 1) runs on every cell, every repaint -- a
+ * BACKLOG #196 per-page cache was tried here and pulled (Fable review, 2026-09-22:
+ * an 11-slot FIFO over a 21-cell page painted in order evicts exactly the next cell
+ * needed, on a cold page, a row scroll, scrolling back AND a same-page repaint --
+ * instrumented 21 MISS / 0 HIT in every one of those; LRU has the identical
+ * pathology against this access pattern). The real fix (a cache whose capacity
+ * actually covers a page -- 1 B/px greys for Gen 1 giving ~23 slots, or Gen 2's
+ * native 16x16 icons -- is filed as its own backlog item, not attempted here. */
 static bool gbdex_cell_art(uint16_t dex, int x, int y, int w, int h, void* ctx) {
   const GbSession* s = (const GbSession*)ctx;
-  bool gb_session = s && s->gen == GB_GEN2;
+  int session_gen = s ? (int)s->gen : 0;
   bool gb_have = gbdex_serves_dex(s);
-  if (dex_cell_art_source(gb_session, gb_have, /*store_ok=*/true) != DEX_CELL_ART_GB)
+  if (dex_cell_art_source(session_gen, gb_have, /*store_ok=*/true) != DEX_CELL_ART_GB)
     return false;
   if (dex < 1 || dex > 251) return false;
+
   PdnaArt a;
-  if (!pdna_origin_art_icon(dex, &a) || !a.px) return false;
+  bool ok = (session_gen == GB_GEN1) ? (pdna_origin_art_portrait_by_dex(dex, &a) && a.px)
+                                     : (pdna_origin_art_icon(dex, &a) && a.px);
+  if (!ok) return false;
   return gbdex_cell_blit(&a, x, y, w, h);
 }
 
@@ -286,10 +321,13 @@ bool pdna_gbdex(GbSession* s, bool can_edit) {
   } else {
     key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);
     /* BACKLOG #124: installed here too (a Gen-1 visit) so gbdex_cell_art's own
-     * `s->gen != GB_GEN2` check is the ONE place that decides Gen 1 gets no GB-ROM
-     * icons -- see this file's header comment for why that must not be "just don't
-     * install it here" (a separately-registered Gen-2 ROM must not leak into a Gen-1
-     * dex's Kanto-range cells). */
+     * session-gen check is the ONE place that decides which generation's ROM (if
+     * any) serves this visit -- see this file's header comment for why that must
+     * not be "just don't install it here" (a separately-registered Gen-2 ROM must
+     * not leak into a Gen-1 dex's Kanto-range cells, or vice versa). BACKLOG #196:
+     * Gen 1 now draws its own front sprites through this SAME override (previously
+     * this branch's `s->gen != GB_GEN2` self-gate meant Gen 1 always fell through
+     * to the icon-store ladder). */
     pdna_dex_set_cell_art(gbdex_cell_art, s, gbdex_serves_dex(s));
     dirty = pdna_dex_screen(gbdex_shim_get, gbdex_shim_set, NULL, NULL, can_edit);
     pdna_dex_set_cell_art(NULL, NULL, false);

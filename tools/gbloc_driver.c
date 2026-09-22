@@ -112,7 +112,11 @@ int main(int argc, char** argv) {
 
     if (gs.gen == GB_ROM_GEN2) {
       RomGbIcon gi;
-      if (rom_gbicon_open(&gi, rd, NULL, size, scratch, sizeof scratch)) {
+      /* BACKLOG #201 F3: rom_gbicon_open()'s two new trailing params are the
+       * pass-1/pass-2 progress-reset hook -- this offline generator drives no
+       * progress screen, so 0/0 ("no callback"), same as every other silent
+       * caller (gb_art_source.c's fetch paths). */
+      if (rom_gbicon_open(&gi, rd, NULL, size, scratch, sizeof scratch, 0, 0)) {
         RomGbIconLoc iloc;
         rom_gbicon_save_loc(&gi, &iloc);
         write_payload(out, LOC_KIND_ICON, 2, gi.id_hash, size, &iloc, (uint16_t)sizeof iloc);

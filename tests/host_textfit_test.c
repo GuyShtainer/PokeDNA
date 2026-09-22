@@ -533,6 +533,7 @@ int main(void) {
   T(PDNA_GBEDIT_BAK_L1, 20);
   T(PDNA_GBEDIT_BAK_L2, 20);
   T(PDNA_GBEDIT_KEEP_TITLE, 20);   /* G1 review LOW-6 */
+  T(PDNA_GBHOF_DISCARD_TITLE, 20); /* b194 re-verify: the HoF discard confirm */
   T(PDNA_GBEDIT_KEEP_A, 20);
   T(PDNA_GBEDIT_KEEP_B, 20);
   {
@@ -979,6 +980,21 @@ int main(void) {
   PF(PDNA_XFER_KEPT_TITLE,   28, 184);
   PF(PDNA_XFER_KEPT_L1,      28, 184);
   PF(PDNA_XFER_KEPT_L2,      28, 184);
+  /* BACKLOG #150 S150-12 decision 16: drop_held's UP branch, read-only-mount COPY
+   * shape -- msg_wait's own (28, .., 184) clamp. */
+  PF(PDNA_XFER_COPIED_TITLE, 28, 184);
+  PF(PDNA_XFER_COPIED_L1,    28, 184);
+  PF(PDNA_XFER_COPIED_L2,    28, 184);
+  /* BACKLOG #150 S150-12 decision 16: the mount-exit offer -- app_confirm's own
+   * (28, 54, 184) title clamp / (28, 74, 184, 2-line) WRAP for l1. Measured at the
+   * COMPOSED worst case (255, the g_pcq_count saturation ceiling), not the bare
+   * format string -- the b178 pattern (a %d format alone tells you nothing about
+   * whether the widest real substitution still fits). */
+  PF(PDNA_XFER_PCQ_TITLE, 28, 184);
+  { char b[40]; snprintf(b, sizeof b, PDNA_XFER_PCQ_L1_FMT, 255);
+    int lines = wrap_lines(b, 184);
+    chkv("PDNA_XFER_PCQ_L1_FMT composed at n=255 wraps to <= 2 lines (app_confirm's own cap)",
+         lines, 2); }
   PF(PDNA_XFER_REC_TITLE,    28, 184);
   PF(PDNA_XFER_REC_L1,       28, 184);
   PF(PDNA_XFER_REC_L2,       28, 184);
@@ -1144,6 +1160,18 @@ int main(void) {
   PF(PDNA_SIDECAR_LOSS_STAYS,       4, UI_SCR_W - 8);
   T(PDNA_SIDECAR_LOSS_A_TRANSFER, 4);
   T(PDNA_SIDECAR_LOSS_B_CANCEL,   4);
+  /* BACKLOG #150 S150-12 decisions 9/10: gb_paste_loss_screen's own footer rows,
+   * same x=4/UI_SCR_W-8 convention -- COPY replaces KEPT_L1/KEPT_L2/STAYS with these
+   * two (there is no ledger entry to keep); BRIDGE replaces STAYS alone with the
+   * honest "the slot empties" wording (folds BACKLOG #180). */
+  PF(PDNA_XFER_COPY_NOBACK_L1, 4, UI_SCR_W - 8);
+  PF(PDNA_XFER_COPY_NOBACK_L2, 4, UI_SCR_W - 8);
+  PF(PDNA_XFER_BRIDGE_STAYS,   4, UI_SCR_W - 8);
+  /* Worst case for the DOWN loss screen (gb_down_loss_screen, decision 10): the Item
+   * row + all four conditional rows + these two NOBACK rows + the two hint rows --
+   * checked here by string width only (the per-screen row-count/height budget is the
+   * source's own responsibility, decision 10's header comment measures it at
+   * y=16 -> 106 px, inside 160). */
   /* Worst case: all 10 conditional rows + the 3 fixed lines + the 2 A/B lines (14 total)
    * at ROW_H apart, plus the two ROW_H/2 gaps, then the last line's own ink (UI_ROW_H
    * tall) -- mirrors gb_paste_loss_screen's exact sequence of y increments. */

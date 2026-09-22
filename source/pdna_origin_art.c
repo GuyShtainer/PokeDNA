@@ -49,7 +49,7 @@
  *   Gen 1 = the DMG's olive-green LCD;  Gen 2 = a Game Boy Color berry/violet;
  *   unproven = a neutral Game Boy grey that is neither of them, so an unproven era is
  *   never BRANDED as one. */
-#define COL_GEN1  ((uint16_t)(11u | (21u << 5) | (9u  << 10)))   /* 0x25CB */
+#define COL_GEN1  ((uint16_t)(11u | (21u << 5) | (9u  << 10)))   /* 0x26AB */
 #define COL_GEN2  ((uint16_t)(21u | (10u << 5) | (25u << 10)))   /* 0x6555 */
 #define COL_GBQ   ((uint16_t)(17u | (17u << 5) | (17u << 10)))   /* 0x4631 */
 
@@ -256,6 +256,24 @@ char pdna_origin_mark(const PdnaOrigin* o) {
   if (!o || o->verdict != PDNA_ORIGIN_GB) return 0;
   if (!o->gen_certain) return '?';
   return (o->gen == PDNA_GEN2) ? '2' : '1';
+}
+
+/* BACKLOG #150 S150-13: the ONE source of truth for the gen-1/gen-2 tint, keyed by the
+ * raw gen byte (1 or 2) rather than a PdnaOrigin/box slot -- box_oam.c's carry-badge
+ * only has bc_kind()'s gen byte to hand. Any other value (0/3+) is "no origin" -> 0,
+ * same convention pdna_origin_box_color() uses. */
+uint16_t pdna_origin_native_color(uint8_t gen) {
+  return (gen == 2) ? COL_GEN2 : (gen == 1) ? COL_GEN1 : 0;
+}
+
+/* BACKLOG #150 S150-13: bc_kind()'s gen byte -> the glove badge's digit. A pure,
+ * testable unit rather than inlining `bc_kind(s_held) == 2 ? '2' : '1'` at the
+ * pdna_box.c render call site (golden-rules preference for a testable mapping over an
+ * inline literal) -- and bank_cell.* itself is frozen (S150-1), so this small mapping
+ * lives beside pdna_origin_native_color() instead of growing that file. Anything other
+ * than 1/2 (0 = not native, per bc_kind()'s own contract) -> 0 = "no badge". */
+char pdna_origin_native_mark(uint8_t gen) {
+  return (gen == 2) ? '2' : (gen == 1) ? '1' : 0;
 }
 
 uint16_t pdna_origin_color(const PdnaOrigin* o) {
@@ -839,6 +857,35 @@ int pdna_origin_art_icon(uint16_t dex, PdnaArt* out) {
   if (out) memset(out, 0, sizeof *out);
   if (!out) return 0;
   return fetch_icon(dex, out);
+}
+
+/* BACKLOG #196: the Gen-1 TWIN of fetch_icon() above -- same shape, same reason to
+ * exist (a caller with no PkMon / place / era question of its own, just a raw
+ * national dex number 1..151, wants the Gen-1 ROM's own front sprite for it: the
+ * Pokedex grid's Gen-1 cells). Gated on PDNA_GB_FETCH_NEED (the PORTRAIT rung's own
+ * measured need, gb_art_source.h), not PDNA_GB_ICON_NEED -- this goes through
+ * fetch_pic_ex's icon=0 branch (s_gb.pic, the same rung pdna_origin_art_portrait()'s
+ * own ERA_GEN1 branch uses below), never s_gb.icon (Gen 1 has no menu icons at all,
+ * gb_art_source.c's own rule -- unreachable here by construction: PDNA_GEN1 is
+ * never the `gen` fetch_icon()'s icon=1 call passes). Always form 0, never back,
+ * never shiny -- a dex-grid reference picture has no "which specific owned mon"
+ * question to answer, exactly like fetch_icon()'s own Gen-2 icon has none either. */
+static int fetch_portrait_by_dex(uint16_t dex, PdnaArt* out) {
+  if (!s_gb_on || !s_gb.pic) return 0;
+  if (!pdna_origin_art_have(PDNA_GEN1)) return 0;
+  if (!pdna_origin_art_stack_room(PDNA_GB_FETCH_NEED)) return 0;
+  uint8_t w = 0, h = 0;
+  const uint16_t* px = fetch_pic_ex(PDNA_GEN1, dex, /*form=*/0, /*want_back=*/0,
+                                    /*shiny=*/0, /*icon=*/0, &w, &h);
+  if (!px || !w || !h) return 0;
+  out->px = px; out->w = w; out->h = h; out->gen = PDNA_GEN1;
+  return 1;
+}
+
+int pdna_origin_art_portrait_by_dex(uint16_t dex, PdnaArt* out) {
+  if (out) memset(out, 0, sizeof *out);
+  if (!out) return 0;
+  return fetch_portrait_by_dex(dex, out);
 }
 
 int pdna_origin_box_art(int slot, const PkMon* m, PdnaArt* out) {

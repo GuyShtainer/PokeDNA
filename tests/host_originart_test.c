@@ -1534,6 +1534,33 @@ static void part_i(void) {
  * g_gb1_on/g_gb2_on) must survive the flip untouched. g_gb_artoff above gives the
  * fakes that exact shape (checked first, ahead of the registration, in all three
  * callbacks) so that contract is asserted directly rather than merely trusted. */
+
+/* K. BACKLOG #150 S150-13: the glove's era-badge mapping, pure and testable rather
+ * than inlined at the pdna_box.c carry render site (bc_kind(s_held) == 2 ? '2' : '1').
+ * The predicate pdna_box.c actually guards on is bc_is_native() -- 0 for anything that
+ * is not a native cell (a real Gen-3 record must never reach this mapping with a
+ * nonzero gen byte in the first place; bc_kind()'s own magic+ident32+guard-byte check
+ * already refuses that, source/bank_cell.h:130-133 -- this part pins the MARK/COLOR
+ * side: given whatever bc_kind() returns, the mapping is exactly 1->'1', 2->'2',
+ * anything else (0, or a corrupt >2 byte a caller must never pass) -> 0/no-badge. */
+static void part_k(void) {
+  printf("K. BACKLOG #150 S150-13: pdna_origin_native_mark/color\n");
+  CHECK_EQ(pdna_origin_native_mark(1), '1', "K1 gen 1 -> mark '1'");
+  CHECK_EQ(pdna_origin_native_mark(2), '2', "K2 gen 2 -> mark '2'");
+  CHECK_EQ(pdna_origin_native_mark(0), 0, "K3 gen 0 (not native) -> no badge");
+  CHECK_EQ(pdna_origin_native_mark(3), 0, "K4 an out-of-range gen byte -> no badge, never a stray digit");
+  CHECK(pdna_origin_native_color(1) == pdna_origin_native_color(1), "K5 gen 1 color is stable");
+  CHECK(pdna_origin_native_color(1) != pdna_origin_native_color(2),
+        "K6 gen 1 and gen 2 tints must differ (else the badge can't tell them apart)");
+  CHECK_EQ(pdna_origin_native_color(0), 0, "K7 gen 0 -> color 0 (no badge, matches the mark)");
+  /* K8: the mark and the grid's own era pad (pdna_origin_box_color's caller,
+   * pdna_origin_box_mark) must agree on which raw byte means which digit -- '2' is
+   * PDNA_GEN2 (byte 2) in both, checked against the box-side constant so the two
+   * badges (grid + glove) can never silently drift onto different bytes for the
+   * same gen. */
+  CHECK_EQ((int)PDNA_GEN2, 2, "K8 PDNA_GEN2's raw byte must be 2, the same byte bc_kind() returns for Gen 2");
+}
+
 static void part_j(void) {
   printf("J. BACKLOG #47: the off switch covers Game Boy art too\n");
 
@@ -2119,6 +2146,7 @@ int main(int argc, char** argv) {
   part_f();             /* the grid the bank draws */
   part_d(argc, argv);   /* argv[1..] = saves */
   part_e();
+  part_k();             /* BACKLOG #150 S150-13: the glove's era-badge mapping */
   printf("== %d checks, %d failures ==\n", g_checks, g_fail);
   return g_fail ? 1 : 0;
 }

@@ -10050,6 +10050,19 @@ static int gb_delta_boot_pick(const char* g3_label) {
 }
 #endif
 
+/* BACKLOG #150 S150-12 decision 7: the shipped NV_BANK idiom (rumble cue, the
+ * `== 5` bottom-out -> PC tabs hand-off, the party refresh), factored out so the
+ * NV_GB case can reuse it verbatim when the read-only mount's exit offer is
+ * accepted -- opening the Bank from inside pdna_gen12.c is the wrong layer (that
+ * file has no rumble/tabs/refresh_party idiom of its own; pdna_gen12_show() already
+ * returns an int nobody read before this decision). `*refresh_party` is the
+ * caller's own local (view_save()'s nav-menu loop). */
+static void nav_open_bank(int* refresh_party) {
+  rmbl_fire(RCUE_ROOM);
+  if (pdna_bank_show() == 5) app_box_start_set(1);
+  *refresh_party = 1;
+}
+
 /* Load the picked save and show it: start in the PC boxes; SELECT toggles to the
  * party list and back; B from either returns to the file browser. */
 static void view_save(const char* path) {
@@ -10608,7 +10621,7 @@ static void view_save(const char* path) {
                           else { uint8_t dmy[80]; app_party_overlay(0, 0, 0, false, false, dmy, 0, false);
                                  refresh_party = 1; }
                           } break;
-        case NV_BANK:    rmbl_fire(RCUE_ROOM); if (pdna_bank_show() == 5) app_box_start_set(1); refresh_party = 1; break;   /* bottom-out -> PC tabs; a paste may hit the party */
+        case NV_BANK:    nav_open_bank(&refresh_party); break;   /* bottom-out -> PC tabs; a paste may hit the party */
         case NV_DAYCARE: pdna_daycare(); break;
         case NV_TRAINER: pdna_trainer(g_sb1, g_sb2, &g_vinfo, g_game); break;
         case NV_CLOCK:   pdna_clock(); break;
@@ -10649,7 +10662,7 @@ static void view_save(const char* path) {
               msg_wait("GB IMPORT", UI_DIM, "No fused GB saves.", "Rebuild with tools/fuse_gb.py.");
           } else {
             fused_gb_set_active_save(pick);   /* the third pick site: the nested import (b98 re-verify) */
-            pdna_gen12_show_fused(pick, app_met_game());
+            if (pdna_gen12_show_fused(pick, app_met_game()) == 1) nav_open_bank(&refresh_party);
           }
 #else
           /* Browse for a Gen-1/2 .sav and mount it READ-ONLY as a box source. The
@@ -10657,7 +10670,7 @@ static void view_save(const char* path) {
            * converted mon claims the cartridge it is actually going into. */
           char gp[PATH_MAX];
           if (app_pick_gb_save(gp, sizeof gp))
-            pdna_gen12_show(gp, app_met_game());
+            if (pdna_gen12_show(gp, app_met_game()) == 1) nav_open_bank(&refresh_party);
 #endif
           break;
         }

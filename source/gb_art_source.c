@@ -257,13 +257,39 @@ static void gb_art_fill_info(GbArtRegInfo* info, const GbArtIo* io) {
  * to the whole-ROM scan when it does not describe this exact file -- so a boot, or
  * re-registering the same ROM, no longer pays the 2 MB scan the old rom_gbsprite_open()
  * call here always did. */
+/* BACKLOG #201 F3: rom_gbicon.h's RomGbIconPassFn -- rom_gbicon.c's locate() calls
+ * this once, between pass 1 (MonMenuIcons) and pass 2 (IconPointers), so pass 2
+ * gets its OWN fresh gb_scan_guard (hi=0, elapsed reset from now) via the SAME
+ * gb_art_io_next() a locator-to-locator transition already uses, instead of
+ * inheriting pass 1's already-maxed high-water mark (the "parks at 2048/2048
+ * while KB/s falls" bug -- pass 1 alone can read the WHOLE ROM to prove
+ * MonMenuIcons unique before pass 2 even starts). Same locator id
+ * (GB_ART_LOC_ICONS): both passes are still "2/2 menu icon tables" from the
+ * registration screen's own point of view, only the progress bookkeeping
+ * restarts. */
+static void gb_art_icon_pass2(void* ctx) {
+  gb_art_io_next((GbArtIo*)ctx, GB_ART_LOC_ICONS);
+}
+
 static GbArtRegStatus __attribute__((noinline))
 gb_art_warm_icons(GbArtIo* io, uint32_t sz, RomGbIconLoc* out_iloc, bool* out_have_iloc) {
   gb_art_io_next(io, GB_ART_LOC_ICONS);
   bool have = gb_icon_load_loc(out_iloc);
   RomGbIcon gi;
   int ok = rom_gbicon_open_loc(&gi, gb_art_read, io, sz, (uint8_t*)mon_decomp, MON_DECOMP_BYTES,
-                               have ? out_iloc : 0);
+                               have ? out_iloc : 0, gb_art_icon_pass2, io);
+  /* BACKLOG #201 F4 (log-line extension, "F4 exists for locator 1"): a dedicated
+   * per-locator line for the icon locator specifically -- reads/elapsed/KB-s are
+   * PASS 2's own numbers when a full scan ran (gb_art_icon_pass2 above reset them),
+   * or the whole cache/known-table hit's own tiny handful of reads when it did not. */
+  {
+    uint32_t elapsed = perf_ms(gb_scan_guard_elapsed(&io->g, perf_ticks()));
+    uint32_t kbps = elapsed ? (uint32_t)(((uint64_t)io->g.hi * 1000u) / ((uint64_t)elapsed * 1024u)) : 0u;
+    log_line("gb art: loc%u (icons) %s: %lu reads, %lu ms, %luKB/s, %luKB covered",
+             (unsigned)GB_ART_LOC_ICONS, ok ? "located" : "not located",
+             (unsigned long)io->g.reads, (unsigned long)elapsed,
+             (unsigned long)kbps, (unsigned long)(io->g.hi >> 10));
+  }
   if (!ok) {
     if (io->g.stop != GB_SCAN_OK) return gb_art_stop_status(&io->g, GB_ART_REG_BAD_ROM);
     /* Icons are optional (Gen 1 has none at all): a Gen-2 ROM whose icon tables do
@@ -299,6 +325,18 @@ gb_art_open_and_identify(uint8_t gen, const char* path, RomGbSpriteLoc* out_loc,
    * before a single position is scanned. */
   int ok = rom_gbsprite_open_loc(&gs, gb_art_read, &io, sz, (uint8_t*)mon_decomp, MON_DECOMP_BYTES,
                                  have_loc ? out_loc : 0, gen);
+  /* BACKLOG #201 F4 (log-line extension): the sprite locator's own per-locator
+   * reads/elapsed/KB-s, captured before gb_art_io_next() (inside gb_art_warm_icons,
+   * below) resets io.g for the icon locator -- so this line always reflects
+   * locator 1 alone, never a mix of both. */
+  {
+    uint32_t elapsed = perf_ms(gb_scan_guard_elapsed(&io.g, perf_ticks()));
+    uint32_t kbps = elapsed ? (uint32_t)(((uint64_t)io.g.hi * 1000u) / ((uint64_t)elapsed * 1024u)) : 0u;
+    log_line("gb art: loc%u (sprites) %s: %lu reads, %lu ms, %luKB/s, %luKB covered",
+             (unsigned)GB_ART_LOC_SPRITES, ok ? "located" : "not located",
+             (unsigned long)io.g.reads, (unsigned long)elapsed,
+             (unsigned long)kbps, (unsigned long)(io.g.hi >> 10));
+  }
   GbArtRegStatus st = GB_ART_REG_OK;
   /* BACKLOG #185 D1 (review fix): rom_gbsprite_open(_loc)() now sets gs.gen to
    * the HEADER-IMPLIED generation (not just NONE) when a hint mismatch is
@@ -564,7 +602,7 @@ gb_art_fetch_icon(uint8_t gen, uint16_t dex, uint8_t* out_w, uint8_t* out_h) {
   artbuf_claim();
   RomGbIcon gi;
   int ok = rom_gbicon_open_loc(&gi, gb_art_read, &io, sz, (uint8_t*)mon_decomp, MON_DECOMP_BYTES,
-                               have_loc ? &loc : 0);
+                               have_loc ? &loc : 0, 0, 0);
   /* Same "re-save whenever it does not already match" rule as gb_art_fetch()'s own
    * loc handling above -- a swapped ROM behind the same path/size must not pay a full
    * rescan on every fetch forever. */
@@ -756,7 +794,7 @@ static const uint16_t* gb_art_fetch_icon(uint8_t gen, uint16_t dex, uint8_t* out
     have_loc = gb_art_loc_seed(FUSED_GB_LOC_ICON, gen, size, &s_dicon_loc,
                                (uint32_t)sizeof s_dicon_loc);
   int ok = rom_gbicon_open_loc(&gi, fused_gb_slice_read, &slice, size, scratch,
-                               (uint32_t)sizeof scratch, have_loc ? &s_dicon_loc : 0);
+                               (uint32_t)sizeof scratch, have_loc ? &s_dicon_loc : 0, 0, 0);
   if (ok) {
     rom_gbicon_save_loc(&gi, &s_dicon_loc);
     s_dicon_loc_ok = true;

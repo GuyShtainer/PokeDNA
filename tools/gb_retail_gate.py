@@ -996,6 +996,111 @@ def run_hofcount_case(name, info, rom, sav, work, binary, python, vendor, tally)
     tally.record("hofcount (BACKLOG #89)", ok, detail)
 
 
+def run_hofappend_case(name, info, rom, sav, work, binary, python, vendor, tally):
+    """gbh_append_team() (BACKLOG #194 F3): one canned 1-mon team appended to the
+    corpus save via --op hofappend (do_hofappend, tests/host_gbsurgery_tool.c),
+    read back the SAME way run_hofcount_case() does -- the lifetime count off a
+    REAL booted Red/Gold/Crystal's own WRAM, not just the host test's in-memory
+    image. Proves the append (and, on Gen 1, a full-table eviction shift, though
+    none of Guy's corpus saves are anywhere near 50 teams so this case only ever
+    exercises the "not yet full" branch -- the eviction branch is proven by
+    tests/host_gbhof_test.c's own append_gen1_boundary(), a real boot cannot
+    reach 50 real HoF wins without literally playing the game that many times)
+    reaches the card the same way gbh_clear()/gbh_set_count() already do."""
+    edited = work / "hofappend.sav"
+    rc, out, err = run_surgery(binary, sav, edited, [["hofappend"]])
+    if rc != 0:
+        tally.record("hofappend (BACKLOG #194)", False, f"surgery refused: {err.strip()}")
+        return
+
+    m = re.search(r"hofappend result: (\d+)", out)
+    if not m:
+        tally.record("hofappend (BACKLOG #194)", False,
+                     f"surgery gave no 'hofappend result: N' line to check against "
+                     f"-- stdout: {out.strip()!r}")
+        return
+    actual_count = int(m.group(1))
+
+    addr = HOF_COUNT_WRAM[name]
+    want = f"{actual_count:02x}"
+    rc, rep, out, err = boot(python, rom, edited, work / "hofappend", vendor,
+                             work / "hofappend.json",
+                             extra_args=["--expect", "accept",
+                                         "--read-mem", f"{addr:#06x}:{HOF_COUNT_LEN}"])
+    mem = rep.get("mem") or {}
+    svbk_ok = bool(mem.get("svbk_ok", True))
+    got = mem.get(f"{addr:#06x}")
+    ok = (rc == 0) and svbk_ok and got == want
+    detail = (f"verdict={rep.get('verdict')} svbk={mem.get('svbk')} svbk_ok={svbk_ok} "
+             f"{addr:#06x}={got!r} want={want!r} (post-append count {actual_count})")
+    if not ok:
+        fails = [f.strip() for f in out.splitlines() if f.strip().startswith("FAIL:")]
+        if fails:
+            detail += " | " + "; ".join(fails)
+        tail = stderr_tail(err)
+        if tail:
+            detail += " | stderr: " + tail
+    tally.record("hofappend (BACKLOG #194)", ok, detail)
+
+
+def run_hofdelete_case(name, info, rom, sav, work, binary, python, vendor, tally):
+    """gbh_delete_team(0) (BACKLOG #194 F3): deletes the newest team off the SAME
+    edited save run_hofappend_case() just produced (chained, not the raw corpus
+    save -- so this case proves the delete on top of a real append, the shape the
+    screen's own DELETE TEAM row is reached in), read back the same WRAM count
+    address once more; the count must be back down to the ORIGINAL corpus value
+    (append then delete is a no-op on the count -- tests/host_gbhof_test.c's own
+    delete_inverse() already proves this byte-exact off-card; this case only
+    proves the count-field half of it survives a real boot)."""
+    appended = work / "hofappend.sav"
+    if not appended.exists():
+        # Independent re-run (case ordering safety): re-produce the same edited
+        # save this case chains onto rather than assume run_hofappend_case() ran
+        # first in THIS process (tally order is fixed below, but a future re-order
+        # should not silently misfire on a missing file).
+        rc, out, err = run_surgery(binary, sav, appended, [["hofappend"]])
+        if rc != 0:
+            tally.record("hofdelete (BACKLOG #194)", False,
+                         f"setup (hofappend) refused: {err.strip()}")
+            return
+
+    edited = work / "hofdelete.sav"
+    rc, out, err = run_surgery(binary, appended, edited, [["hofdelete"]])
+    if rc != 0:
+        tally.record("hofdelete (BACKLOG #194)", False, f"surgery refused: {err.strip()}")
+        return
+
+    m = re.search(r"hofdelete result: (\d+)", out)
+    if not m:
+        tally.record("hofdelete (BACKLOG #194)", False,
+                     f"surgery gave no 'hofdelete result: N' line to check against "
+                     f"-- stdout: {out.strip()!r}")
+        return
+    actual_count = int(m.group(1))
+
+    addr = HOF_COUNT_WRAM[name]
+    want = f"{actual_count:02x}"
+    rc, rep, out, err = boot(python, rom, edited, work / "hofdelete", vendor,
+                             work / "hofdelete.json",
+                             extra_args=["--expect", "accept",
+                                         "--read-mem", f"{addr:#06x}:{HOF_COUNT_LEN}"])
+    mem = rep.get("mem") or {}
+    svbk_ok = bool(mem.get("svbk_ok", True))
+    got = mem.get(f"{addr:#06x}")
+    ok = (rc == 0) and svbk_ok and got == want
+    detail = (f"verdict={rep.get('verdict')} svbk={mem.get('svbk')} svbk_ok={svbk_ok} "
+             f"{addr:#06x}={got!r} want={want!r} (post-append-then-delete count "
+             f"{actual_count}, expected back at the original corpus count)")
+    if not ok:
+        fails = [f.strip() for f in out.splitlines() if f.strip().startswith("FAIL:")]
+        if fails:
+            detail += " | " + "; ".join(fails)
+        tail = stderr_tail(err)
+        if tail:
+            detail += " | stderr: " + tail
+    tally.record("hofdelete (BACKLOG #194)", ok, detail)
+
+
 # BACKLOG #85/#86/#90/#94 — WRAM anchors, one .sym lookup each, same posture as
 # MONEY_WRAM above (a live symbol address, not a save-file offset): the save-file
 # offsets these four cores already use (source/gb_fields.c) live in SRAM/the file;
@@ -1880,6 +1985,10 @@ def run_game(name, info, rom, sav, scratch, binary, python, vendor):
     # ---- 2c1b. BACKLOG #89 — the Hall of Fame: clear then a plain count set ----
     run_hofclear_case(name, info, rom, sav, work, binary, python, vendor, tally)
     run_hofcount_case(name, info, rom, sav, work, binary, python, vendor, tally)
+    # BACKLOG #194 F3 — append then delete (chained: delete acts on append's own
+    # edited save, "work / hofappend.sav", so ORDER MATTERS -- append must run first).
+    run_hofappend_case(name, info, rom, sav, work, binary, python, vendor, tally)
+    run_hofdelete_case(name, info, rom, sav, work, binary, python, vendor, tally)
 
     # ---- 2c2. BACKLOG #95 review gate case — the held-item Pokemon-setter write ----
     run_helditem_case(name, info, rom, sav, work, binary, python, vendor, tally,

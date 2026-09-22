@@ -1471,7 +1471,11 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
      * allow-rule (BANK<-GB) through once k_gb_xfer (this lane) is session-wide.
      * Bracketed like the PC->Bank commit below it uses for its own
      * boxoam_suspend()/resume(). */
-    bool have_xfer = s_xfer_peer && s_xfer_peer->lift_up && s_xfer_peer->release_up;
+    /* BACKLOG #150 S150-12 decision 6: release_up is no longer required for
+     * `have_xfer` -- the read-only mount's k_gb_xfer_ro table has a real lift_up
+     * (the COPY-flavoured one) but no release_up at all, and its drop must still be
+     * admitted (as a COPY, never a delete) rather than refused by xg_drop_denied. */
+    bool have_xfer = s_xfer_peer && s_xfer_peer->lift_up;
     if (xg_drop_denied(src->scope, s_orig_scope, have_xfer)) {
       boxoam_suspend();
       snd_deny();
@@ -1486,8 +1490,12 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
      * A failed Bank write reverts the cell and KEEPS HOLDING (never touches the GB
      * save); a failed release_up leaves a DUPLICATE (the Bank already has it, the GB
      * save still has it too) -- a duplicate is visible and repairable, a loss is not. */
+    /* BACKLOG #150 S150-12 decision 6: `s_xfer_peer->lift_up`, not `->release_up` --
+     * this branch now also carries a COPY (no release_up at all) all the way to the
+     * commit; the release_up call further down is itself gated (else: queue for the
+     * PC instead of deleting). */
     if (src->scope == BOXSCOPE_BANK && s_orig_scope == BOXSCOPE_GB &&
-        s_orig_slot >= 0 && s_xfer_peer && s_xfer_peer->release_up) {
+        s_orig_slot >= 0 && s_xfer_peer && s_xfer_peer->lift_up) {
       boxoam_suspend();
       if (!pdna_bank_prepare_native()) {
         snd_error();
@@ -1549,14 +1557,25 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
       int gb_box = s_orig_box, gb_slot = s_orig_slot;
       uint8_t held_copy[80]; memcpy(held_copy, s_held, 80);
       s_holding = false; *done = true;                         /* hand empties BEFORE source cleanup (§11.2 step 6) */
-      if (!s_xfer_peer->release_up(gb_box, gb_slot, held_copy)) {
-        snd_error();
-        msg_wait(PDNA_XFER_KEPT_TITLE, UI_WARN, PDNA_XFER_KEPT_L1, PDNA_XFER_KEPT_L2);
-        log_line("bank: up box %d slot %d -> bank box %d slot %d: release refused, duplicate", gb_box, gb_slot, box, cur);
-        app_log_flush();
+      /* BACKLOG #150 S150-12 decision 6: a vtable with no release_up (the read-only
+       * mount's k_gb_xfer_ro) never deletes -- the Bank commit above already landed
+       * the copy; queue it for the PC offer instead of trying to delete a GB save
+       * this session structurally cannot write. */
+      if (s_xfer_peer->release_up) {
+        if (!s_xfer_peer->release_up(gb_box, gb_slot, held_copy)) {
+          snd_error();
+          msg_wait(PDNA_XFER_KEPT_TITLE, UI_WARN, PDNA_XFER_KEPT_L1, PDNA_XFER_KEPT_L2);
+          log_line("bank: up box %d slot %d -> bank box %d slot %d: release refused, duplicate", gb_box, gb_slot, box, cur);
+          app_log_flush();
+        } else {
+          snd_save();
+          log_line("bank: up box %d slot %d -> bank box %d slot %d: ok", gb_box, gb_slot, box, cur);
+        }
       } else {
+        app_pc_queue_note(box);
         snd_save();
-        log_line("bank: up box %d slot %d -> bank box %d slot %d: ok", gb_box, gb_slot, box, cur);
+        msg_wait(PDNA_XFER_COPIED_TITLE, UI_TEXT, PDNA_XFER_COPIED_L1, PDNA_XFER_COPIED_L2);
+        log_line("bank: copy box %d slot %d -> bank box %d slot %d: ok, queued for the PC", gb_box, gb_slot, box, cur);
       }
       boxoam_resume();                                         /* REVIEW F4: covers gb_persist's own panels + PDNA_XFER_KEPT_* above */
       return recs;
@@ -1777,9 +1796,25 @@ static void oam_sync(int cur, bool on_title, int box, bool is_bank) {
     int tr = cursor_title_row(on_title);
     boxoam_cursor(cur, tr, cursor_look(), cursor_label_cx(tr));   /* the descending open hand */
   } else if (s_holding) {
-    PkMon hm; pk_decode_mon(s_held, false, &hm);
     int tr = cursor_title_row(on_title);
-    boxoam_carry_held(cur, tr, cursor_label_cx(tr), hm.species, hm.form, hm.isEgg && !hm.isBadEgg);   /* held mon (or Egg) front-most + orange fist */
+    /* BACKLOG #150 S150-13 / #164: a carried NATIVE Bank cell is not Gen-3-shaped, so
+     * pk_decode_mon() cannot resolve a real species for it (undefined-in-practice on
+     * non-Gen-3 bytes -- "fixing" pk_decode_mon to tolerate native bytes is out of
+     * scope, it would hide the real bug class #164 is about). badge-only (decision a
+     * of the brief): species 0 makes boxoam_carry_held() fall into its own
+     * hide(OE_CARRY) arm (the fist rides empty), and the glove shows the era badge
+     * instead -- cheaper and safer than laying the badge atop pk_decode_mon()'s
+     * undefined output. */
+    if (bc_is_native(s_held)) {
+      boxoam_carry_held(cur, tr, cursor_label_cx(tr), 0, 0, false);
+      uint8_t gen = bc_kind(s_held);
+      boxoam_carry_badge(cur, tr, cursor_label_cx(tr), pdna_origin_native_mark(gen),
+                          pdna_origin_native_color(gen));
+    } else {
+      PkMon hm; pk_decode_mon(s_held, false, &hm);
+      boxoam_carry_held(cur, tr, cursor_label_cx(tr), hm.species, hm.form, hm.isEgg && !hm.isBadEgg);   /* held mon (or Egg) front-most + orange fist */
+      boxoam_carry_badge(cur, tr, cursor_label_cx(tr), 0, 0);   /* no badge on an ordinary Gen-3 carry */
+    }
     if (s_orig_slot >= 0 && (s_orig_scope == BOXSCOPE_BANK) == is_bank && s_orig_box == box)
       boxoam_hide_slot(s_orig_slot);                         /* lift-hide the origin cell */
     boxoam_item_markers(g_box, false);
@@ -1887,6 +1922,72 @@ static void artless_cells(void) {
     else
       ui_name_chip(cx, cy + 5, CELL_W - 2, 12, UI_PANEL, UI_TEXT,
                    pk_species_name(g_box[i].species));
+  }
+}
+
+/* BACKLOG #200: how many of the 30 drawn cells this box's SOURCE actually has.
+ * NULL src->capacity (every Gen-3 PC/Bank source) means the grid's own 30 --
+ * unchanged, same fallback draw_box_banner's own occupancy denominator already
+ * uses (:2084 below). The one place every OTHER capacity-aware call in this file
+ * (F1's blocked_cells, F2's cursor clamps in pdna_box() itself) goes through,
+ * instead of each repeating the ternary inline.
+ *
+ * `noipa`: a stack_budget.py walker requirement (BACKLOG #200 review). A plain
+ * static helper here gets IPA-SRA-cloned by -O2 into a `.isra.0`/specialized
+ * form whose `bl src->capacity(box)` site loses the plain `ldr rN,[rY,#64]`-
+ * right-before-`bl` shape the walker's struct-field classifier looks for --
+ * the call then falls through to the uncounted-argsites bucket and silently
+ * pushes count-only callers over the gate's declared budget. `noipa` forces a
+ * real, unspecialized function so the field load stays local and resolvable,
+ * matching every other src->capacity(box) site's already-working shape (the
+ * global `BoxSource.capacity @64 -> gbsrc_capacity` entry in
+ * tools/stack_edges.txt, unchanged by this lane). Calling this helper is
+ * itself an ordinary DIRECT call (not a struct-field dispatch) from every
+ * site that uses it, including inside pdna_box() -- it adds no new indirect
+ * call site there at all, so pdna_box()'s own already-declared argsites count
+ * is untouched. */
+static int __attribute__((noipa)) box_cap(BoxSource* src, int box) {
+  return src->capacity ? src->capacity(box) : COLS * ROWS;
+}
+
+/* BACKLOG #200 F2: one LEFT/RIGHT press within the current row, re-applying the
+ * grid's own existing wrap rule until it lands on a real slot. Blocked cells are
+ * a strict INDEX-INCREASING tail (index >= cap): moving further RIGHT from a
+ * valid cell only ever walks INTO higher, still-blocked indices until the
+ * COLS-1 wrap fires and drops back to this row's own column 0 -- which is
+ * always real, because the caller never starts a press already sitting on a
+ * blocked cell (F2's whole point) and a row only holds the cursor at all once
+ * DOWN has already refused to enter a row with no real cells in it (see the
+ * DOWN sites below). Symmetric argument for LEFT's col-0 wrap. Bounded by COLS
+ * (golden rule 2): at most one full lap of the row before landing on column 0. */
+static int grid_lr_step(int cur, int cap, bool right) {
+  for (int i = 0; i < COLS; i++) {
+    cur = right ? ((cur % COLS == COLS - 1) ? cur - COLS + 1 : cur + 1)
+                : ((cur % COLS == 0) ? cur + COLS - 1 : cur - 1);
+    if (cur < cap) break;
+  }
+  return cur;
+}
+
+/* F1: cells at/after the source's own capacity don't exist in this game (a Game
+ * Boy box holds 20, its party 6; the grid always draws 30). box_oam.c's OBJ tile
+ * budget is spent in full already -- 30 icons x 16 tiles + the hand + region B is
+ * exactly the 512 tiles bitmap-mode OBJ VRAM has (that file's boxoam_set_frame
+ * header) -- so there is no spare tile for a new BLOCKED graphic; this paints a
+ * dim hatch (the retail-style banded fill ui_panel_striped already uses
+ * elsewhere) plus a small "X" straight onto the BG bitmap, the same layer
+ * artless_cells()/era_cells() paint into, so it rides every full repaint of the
+ * wallpaper for free. Drawn for every blocked cell regardless of the artless/
+ * real-art build -- a cell with no species never gets an OBJ icon either way, so
+ * there is nothing for this to hide behind. */
+static void blocked_cells(BoxSource* src, int box) {
+  int cap = box_cap(src, box);
+  if (cap >= COLS * ROWS) return;                  /* Gen-3 PC/Bank: every cell real */
+  for (int i = cap; i < COLS * ROWS; i++) {
+    int cx = GRID_X + (i % COLS) * CELL_W, cy = GRID_Y + (i / COLS) * CELL_H;
+    for (int r = 0; r < CELL_H; r++)
+      m3_line(cx, cy + r, cx + CELL_W - 1, cy + r, (r & 1) ? UI_BG : UI_DIM);
+    ui_ptext(cx + (CELL_W - ui_ptext_w("X")) / 2, cy + (CELL_H - 7) / 2, UI_WARN, "X");
   }
 }
 
@@ -2151,6 +2252,7 @@ static void render_full(BoxSource* src, int box, int cur, bool on_title, bool mo
    * to decide, per cell, whether the chip is still needed. */
   era_cells();                  /* each cell in the art of the era it came from */
   artless_cells();
+  blocked_cells(src, box);      /* BACKLOG #200 F1: mark cells past this source's capacity */
   draw_box_banner(src, box, on_title);
   draw_footer(src->is_bank, on_title, moving);
 
@@ -2270,6 +2372,7 @@ static void move_cursor(BoxSource* src, int box, int old_cur, bool old_title,
      * this box's fresh state, not the previous box's. */
     era_cells();
     artless_cells();                                  /* clear stale title frame */
+    blocked_cells(src, box);      /* BACKLOG #200 F1: mark cells past this source's capacity */
     draw_box_banner(src, box, on_title);
     draw_footer(src->is_bank, on_title, false);
   }
@@ -2342,7 +2445,10 @@ static void chunk_draw(BoxSource* src, int box, bool clear, const uint8_t* recs)
    * first so artless_cells()'s per-cell s_era_drawn check is fresh. */
   era_cells();                     /* same pairing as move_cursor: BG repaint owes both */
   artless_cells();
-  draw_box_banner(src, box, false);
+  blocked_cells(src, box);      /* BACKLOG #200 F1: mark cells past this source's capacity
+                                  * (a no-op today -- chunk carry refuses BOXSCOPE_GB, see
+                                  * begin_select -- but keeps the "every wallpaper repaint
+                                  * owes every BG cell layer" invariant true everywhere) */
 
   /* no footprint frame — the block itself carries the fit cue (whitened/darkened).
    * Budget is 20 columns (WP_W=162px fill, text at WP_X+2 -> 160px/8). The double-
@@ -3872,6 +3978,11 @@ int pdna_box(BoxSource* src) {
   s_oam_reload = true;                        /* first paint uploads the box's icon tiles */
   uint8_t* recs = src->records(box);          /* current box's 30*80 records */
   box_decode(src, recs, box);
+  /* BACKLOG #200 F2: how many of the 30 grid cells `box` actually has (30 for
+   * every Gen-3 PC/Bank source; 20 or 6 for a GB source's storage/party pseudo-
+   * box). Recomputed by SWITCH_BOX below on every box change; this is the value
+   * for the box the function is entering with, right after it settled. */
+  int cap = box_cap(src, box);
   /* BACKLOG #150 S150-4: return ignored -- app_take_pickup()'s flag is set ONLY by
    * day-care withdraw (pdna_main.c, "withdraw->PC sets a pickup"), a Gen-3-only flow
    * that never runs inside a GB session's own box grid -- PC-only, so start_carry
@@ -3899,7 +4010,13 @@ int pdna_box(BoxSource* src) {
      * mirroring the real PC grid's own st==1 arrival (which lands in its tabs, not
      * possible here since GB's tab 1 is inert) -- tabs stay reachable via UP, same as
      * every other grid visit. */
-    else if (st == 2) cur = COLS * (ROWS - 1);
+    else if (st == 2) { cur = COLS * (ROWS - 1);
+                        if (cur >= cap) cur = cap - 1; }  /* BACKLOG #200 F2: the physical
+                                                           * bottom row can itself be
+                                                           * blocked on a small-capacity
+                                                           * source (e.g. the GB party
+                                                           * pseudo-box, cap 6) -- land on
+                                                           * the last REAL slot instead */
     else if (st == 3 && !s_holding && !src->is_bank) want_party_strip = true;
     /* BACKLOG #188: no directional hint (st == 0) and no day-care pickup already
      * placed the cursor -- resume the cell this same box was left on last time
@@ -3909,7 +4026,11 @@ int pdna_box(BoxSource* src) {
      * stays at its declared 0 default, untouched. */
     else if (st == 0 && pickup_ps < 0) {
       int rc = app_box_resume_take(box);
-      if (rc >= 0 && rc < COLS * ROWS) cur = rc;
+      if (rc >= 0 && rc < cap) cur = rc;   /* BACKLOG #200 F2: bounds-checked against
+                                            * capacity too -- a box that shrank (or a
+                                            * resume cell from a different source
+                                            * entirely) must never resume onto a
+                                            * blocked cell */
     }
   }
   /* Switch to box `nbx` (wrapping), reload + redraw. Two things this gets right that
@@ -3945,7 +4066,13 @@ int pdna_box(BoxSource* src) {
                                if (!(src->is_bank && pdna_bank_box_unsaved(box))) { \
                                  box = nb__; recs = nr__; \
                                  box_decode(src, recs, box); \
+                                 cap = box_cap(src, box); \
                                  if (cur < 0 || cur >= COLS * ROWS) cur = 0; \
+                                 /* BACKLOG #200 F2: a box switch that would land the \
+                                  * cursor on a blocked cell (a smaller-capacity box, \
+                                  * or the GB party pseudo-box) clamps to the last \
+                                  * real slot instead of resting past it. */ \
+                                 if (cur >= cap) cur = cap - 1; \
                                  bob = 0; anim_ctr = 0; \
                                  if (!src->is_bank) app_note_pc_box(box); \
                                  if (src->note_box) src->note_box(box); \
@@ -4039,7 +4166,19 @@ int pdna_box(BoxSource* src) {
          } else if (bob) { bob = 0; boxoam_hand_pose(BOXOAM_POSE_NORMAL);
                            if (!boxoam_set_frame(0)) boxoam_set_bob(0);   /* settle the grid */
                            int tr = cursor_title_row(on_title);
-                           boxoam_cursor(cur, tr, cursor_look(), cursor_label_cx(tr)); }
+                           /* BACKLOG #150 S150-13, review D1: NOT while s_holding -- this
+                            * settle-the-grid beat can fire the instant a carry begins (bob
+                            * was mid-animation when MOVE picked the cell up), and
+                            * boxoam_cursor() -> load_rega_hand() re-uploads the hand pose
+                            * over TID_HAND (region A), clobbering the carry badge's own
+                            * tiles there (boxoam_carry_badge reuses that region while it is
+                            * otherwise idle -- see its own comment) and re-showing OE_HAND,
+                            * which hides OE_GRAB/OE_CARRY outright. The carry render arm
+                            * (the `else if (s_holding)` branch above) already draws its own
+                            * cursor/fist/badge every frame; this settle beat has nothing to
+                            * do while holding. */
+                           if (!s_holding)
+                             boxoam_cursor(cur, tr, cursor_look(), cursor_label_cx(tr)); }
          boxoam_commit();                       /* flush the OAM shadow in the vblank window */
          fresh = key_hit(KEY_FULL);
          k = fresh | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);
@@ -4154,17 +4293,21 @@ int pdna_box(BoxSource* src) {
         int nbx = (k & KEY_R) ? (box + 1) % nb : (box + nb - 1) % nb;
         SWITCH_BOX(nbx);                             /* held mon floats along; no slot needed */
       }
-      else if (k & KEY_LEFT)  cur = (cur % COLS == 0) ? cur + COLS - 1 : cur - 1;
-      else if (k & KEY_RIGHT) cur = (cur % COLS == COLS - 1) ? cur - COLS + 1 : cur + 1;
+      else if (k & KEY_LEFT)  cur = grid_lr_step(cur, cap, false);   /* BACKLOG #200 F2 */
+      else if (k & KEY_RIGHT) cur = grid_lr_step(cur, cap, true);    /* BACKLOG #200 F2 */
       else if (k & KEY_UP)    {
         if (cur >= COLS) cur -= COLS;
         /* BACKLOG #171: a GB source is is_bank+bank_edge, so the carry must be allowed to enter tab focus */
         else if (!src->is_bank || src->bank_edge) { s_tab_focus = 1; need_full = true; }  /* off PC top -> top tabs (PARTY), still holding */
       }
       else if (k & KEY_DOWN)  {
-        if (cur < COLS * (ROWS - 1)) cur += COLS;
+        /* BACKLOG #200 F2: `cur + COLS >= cap` (not the physical bottom row) is
+         * "no real cell below" -- once blocked in a column every cell further
+         * down it is blocked too (index only grows going down), so there is
+         * nothing to skip TO; treat it the same as the physical-bottom case. */
+        if (cur + COLS < cap) cur += COLS;
         else if (homeless) snd_deny();                          /* place the swapped mon before leaving */
-        else if (src->is_bank) { app_box_resume_note(box, cur); boxoam_exit(); return 5; }     /* off Bank bottom -> PC, still holding */
+        else if (src->is_bank && cur + COLS >= COLS * ROWS) { app_box_resume_note(box, cur); boxoam_exit(); return 5; }     /* off the PHYSICAL Bank bottom -> PC, still holding; a capacity edge stays put (b200 review A1) */
       }
 
       /* cursor move while carrying -> partial redraw (no ui_clear), so it doesn't flicker */
@@ -4331,11 +4474,19 @@ int pdna_box(BoxSource* src) {
         else { snd_deny(); }
       }
     }
-    else if (k & KEY_LEFT)  cur = (cur % COLS == 0) ? cur + COLS - 1 : cur - 1;
-    else if (k & KEY_RIGHT) cur = (cur % COLS == COLS - 1) ? cur - COLS + 1 : cur + 1;
+    else if (k & KEY_LEFT)  cur = grid_lr_step(cur, cap, false);   /* BACKLOG #200 F2 */
+    else if (k & KEY_RIGHT) cur = grid_lr_step(cur, cap, true);    /* BACKLOG #200 F2 */
     else if (k & KEY_UP)    { if (cur < COLS) on_title = true; else cur -= COLS; }
-    else if (k & KEY_DOWN)  { if (src->is_bank && cur >= COLS * (ROWS - 1)) { app_box_resume_note(box, cur); boxoam_exit(); return 5; }   /* off the bank bottom -> PC tabs */
-                              else cur = (cur >= COLS * (ROWS - 1)) ? cur - COLS * (ROWS - 1) : cur + COLS; }
+    /* BACKLOG #200 F2: `cur + COLS >= cap` replaces the physical-bottom-row test
+     * `cur >= COLS*(ROWS-1)` on BOTH branches below -- identical to the old test
+     * whenever cap==30 (every Gen-3 PC/Bank source, box_cap()'s NULL fallback),
+     * and on a smaller-capacity GB source it fires as soon as the NEXT row down
+     * in this column would be blocked, since (established above) everything
+     * below a blocked cell in the same column is blocked too -- there is
+     * nothing further to skip to. The wrap target `cur - COLS*(ROWS-1)` is
+     * `cur % COLS` (row 0, same column), always real by the same argument. */
+    else if (k & KEY_DOWN)  { if (src->is_bank && cur + COLS >= COLS * ROWS) { app_box_resume_note(box, cur); boxoam_exit(); return 5; }   /* off the PHYSICAL bank bottom -> PC tabs; a capacity edge mid-grid (GB source) wraps below instead (b200 review A1) */
+                              else cur = (cur + COLS >= cap) ? cur % COLS : cur + COLS; }
     else if ((k & KEY_A) && s_cur_mode == CM_MOVE) {     /* orange hand: TAP = grab one; HOLD+DPAD = rubber-band multi-select */
       if (!src_can_lift(src, box, cur)) snd_deny();
       else recs = begin_select(src, box, recs, cur, &need_full);
@@ -4358,6 +4509,21 @@ int pdna_box(BoxSource* src) {
       } else snd_deny();                                 /* empty slot or no item */
     }
     else if (k & KEY_A) {
+      /* BACKLOG #200 F3: defensive backstop -- F2 already keeps the cursor off
+       * every blocked cell, so this should be unreachable, but A on one (index
+       * >= cap) must never open the EMPTY/CREATE/CANCEL menu: there is no real
+       * slot here to create into. Same one-line-dialog shape the chunk-carry
+       * BANK WRITE FAILED popup above uses (ui_panel + a text row + wait for A). */
+      if (cur >= cap) {
+        snd_deny();
+        ui_clear();
+        ui_panel(20, 60, 200, 44, UI_PANEL, UI_WARN);
+        ui_ptext_fit(26, 70, 188, UI_WARN, PDNA_BOX_NO_SLOT);
+        ui_text(30, 86, UI_DIM, "Press A");
+        u16 kk; do { s_vsync(); kk = key_hit(KEY_A); } while (!kk);
+        need_full = true;
+        continue;
+      }
       /* NORMAL: open the action menu on an occupied slot, or on an empty slot when
        * editable (CREATE a mon, or PASTE if the clipboard holds one) -- or, S5-B review
        * fix (BLOCKING #1), when a read-only GB source is offering PASTE (GB): that
@@ -4411,6 +4577,10 @@ int pdna_box(BoxSource* src) {
           int pb, ps;
           if (app_take_pickup(&pb, &ps) && pb >= 0 && pb < nb && ps >= 0 && ps < 30) {
             box = pb; recs = src->records(box); box_decode(src, recs, box);   /* TO DAY-CARE->PC: carry the parked mon */
+            cap = box_cap(src, box);   /* BACKLOG #200 F2: keep `cap` in lockstep with
+                                        * `box` at every reassignment, same as SWITCH_BOX --
+                                        * day-care is Gen-3-only so this is always 30, but
+                                        * a stale cap here would be a live trap for later */
             /* BACKLOG #150 S150-4: return ignored -- same day-care-is-Gen-3-only
              * reasoning as the pdna_box() entry-point pickup above; PC-only. */
             cur = ps; (void)start_carry(src, recs, box, ps); s_oam_reload = true;

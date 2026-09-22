@@ -193,8 +193,8 @@ def main() -> int:
     # --- self-mutation 1: delete ONE resume_note call from a return site -----------
     tmpdir = Path(tempfile.mkdtemp(prefix="boxresume_"))
     try:
-        target = ("else if (src->is_bank) { app_box_resume_note(box, cur); boxoam_exit(); "
-                  "return 5; }     /* off Bank bottom -> PC, still holding */")
+        target = ("else if (src->is_bank && cur + COLS >= COLS * ROWS) { app_box_resume_note(box, cur); boxoam_exit(); "
+                  "return 5; }     /* off the PHYSICAL Bank bottom -> PC, still holding; a capacity edge stays put (b200 review A1) */")
         if target not in box_c:
             print(f"FAIL -- self-mutation 1 target line not found verbatim: {target!r} "
                   f"(source drifted -- update this test)")

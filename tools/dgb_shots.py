@@ -186,6 +186,21 @@ def nav_to_gb_import(s: gb_shots.Session) -> None:
 # savings this backlog item was for.
 GB_ART_COLD_SETTLE = 22500
 
+# BACKLOG #196 (fix pass, 2026-09-22): a GB-served dex PAGE PAINT is 21 real per-cell
+# ROM fetches (pdna_origin_art_portrait_by_dex() for Gen 1, pdna_origin_art_icon() for
+# Gen 2) -- before this backlog Red's dex grid drew instant name-chip text (no ROM I/O
+# at all), so BIG_SETTLE (40 frames) was always enough for Red; it is NOT enough now.
+# Measured (frame-diff probe, after the whole-ROM cold scan was already paid via
+# GB_ART_COLD_SETTLE earlier in the SAME navigation): Red's grid area is still 3,814
+# nonzero px at +60 frames after the L-press and 0 at +90; 180 is that measured
+# stabilization point (~150 frames) plus ~20% margin, not a guess. Crystal's OWN page
+# was already stable well inside BIG_SETTLE when probed the same way -- applied here
+# too anyway (a fix-pass review finding: keeping BOTH games on the SAME settle,
+# gated only on "a ROM is actually present" (`not fallback`), is simpler and more
+# robust than a per-generation special case that assumes Gen 2 will always stay
+# cheap -- costs a little extra emulated time on Crystal, changes nothing it shows).
+GB196_GB_PAGE_SETTLE = 180
+
 # BACKLOG #118 (orchestrator ruling 2026-09-12, after an h118 STOP on the brief's
 # original oracle.py-based design -- oracle.py's compose() reads Game Boy PPU
 # registers/VRAM off a bare `GbDriver` GB/GBC core (tools/gb_roundtrip.py:356);
@@ -1010,104 +1025,114 @@ def run_u4_bag(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_
                                 "move the cursor to a second row and A swaps the two, "
                                 "or B drops the mark with nothing moved (see the "
                                 "armed-SWAP shots below)")
-        s.tap("A", settle=gb_shots.BIG_SETTLE)                # ADD ITEM -> id entry (osk_search)
-        s.shot("08_add_item_id", "U4: ADD ITEM asks for a raw item id (1-250) -- no "
-                                  "item-name table this slice (time-boxed, see "
-                                  "pdna_gbbag.h); the list itself already prints "
-                                  "'ITEM-n' for the same reason ('-' not '#': "
-                                  "'#' has no Gen-1 glyph, D9). Cancelling either "
-                                  "prompt now aborts the whole ADD (num_entry_opt, D5) "
-                                  "instead of silently inserting id 1 x1.")
+        # BACKLOG #195: ADD ITEM now opens the real item picker (pick_item(),
+        # restricted to GBIN_GEN1 with the Gen-1 ceiling) instead of a raw numeric
+        # "ITEM ID" prompt -- real names, a category filter (All/Items/TM-HM,
+        # gbb_pocket_of()), list-view navigation. The picker's own admission test
+        # (item_build()'s ceiling) means an out-of-range id (e.g. the old "251"
+        # demo) can no longer even be SELECTED, so that refusal demo is gone from
+        # this chain -- BAD ID/BAD QUANTITY are still exercised by
+        # tests/host_gbbag_test.c's own gbb_insert() unit coverage (unchanged by
+        # this lane), not a UI demo here anymore. QUANTITY itself is still the
+        # SAME raw num_entry_opt prompt as before (BACKLOG #195 F2 only replaced
+        # the id half), so that half of the old tap recipe (B clear seeded "1",
+        # digit-row RIGHT/A, START confirm) is reused verbatim below.
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                # ADD ITEM -> pick_item() opens
+        s.shot("08_picker_open", "U4 (BACKLOG #195): ADD ITEM now opens the real "
+                                  "item picker -- REAL Gen-1 names (gb_item_label, "
+                                  "not '#n'), a category header ('ITEM [All] 251': "
+                                  "251 = ids 0..250, gbb_max_item_id(RED)=250 "
+                                  "inclusive), list view, cursor on MASTER BALL "
+                                  "(pick_item(1)'s own `current` -- '#0' NO_ITEM's "
+                                  "own row is visible just above it, still "
+                                  "selectable, gbb_insert() refuses it as BAD ID "
+                                  "the same as before)")
 
-        # osk_search's own key contract (source/osk.c): A INSERTS the on-screen
-        # keyboard's currently-highlighted glyph (row 0 is the digit row "1234567890",
-        # cursor starts at (0,0) == '1'), B is BACKSPACE, START confirms, SELECT
-        # cancels -- NOT "A confirms" (an earlier version of this script got that
-        # wrong and silently mistyped every field; caught by looking at shot 07,
-        # which showed the bag list with a corrupted quantity instead of the item
-        # menu). N4 (review): the ORIGINAL version of this demo used id 77 (GOOD
-        # ROD), already at qty 99 in Red.sav -- but id 77 is a Gen-1 KEY item
-        # (gbb_is_g1_key_item(), 4a1afc8), so its row prints NO quantity at all;
-        # "09b shows the row reading x99" was never true of that capture. id 20
-        # (POTION) is an ORDINARY item, not in Red.sav's pocket yet -- ADD ITEM it
-        # straight in at qty 99 below (typed directly, the brief's "qty editor, or
-        # an edge save" alternative is not needed since ADD ITEM's own num_entry
-        # IS a qty editor), so the saturating merge right after lands on a row
-        # that actually prints a quantity.
-        s.tap("B", settle=gb_shots.SETTLE)                     # clear the seeded "1"
-        s.press_n("RIGHT", 1, settle=gb_shots.SETTLE)          # keyboard cursor: col0 '1' -> col1 '2'
-        s.tap("A", settle=gb_shots.SETTLE)                     # type '2' -> field "2"
-        s.press_n("RIGHT", 8, settle=gb_shots.SETTLE)          # col1 '2' -> col9 '0' (no B: '2' must stay typed)
-        s.tap("A", settle=gb_shots.SETTLE)                     # type '0' -> field "20"
-        s.tap("START", settle=gb_shots.BIG_SETTLE)             # confirm id=20 (POTION) -> quantity entry
-        s.shot("08b_add_item_qty", "U4: then a quantity (1-99), the same num_entry -- "
-                                    "id 20 (POTION, an ORDINARY item) typed via the "
-                                    "digit row")
-        s.tap("B", settle=gb_shots.SETTLE)                     # clear the seeded "1"
-        s.press_n("RIGHT", 8, settle=gb_shots.SETTLE)          # '1' -> '9' (row 0, col 8)
-        s.tap("A", settle=gb_shots.SETTLE)                     # type '9' -> field "9"
-        s.tap("A", settle=gb_shots.SETTLE)                     # type '9' again (cursor unmoved) -> field "99"
-        s.tap("START", settle=gb_shots.BIG_SETTLE)             # confirm qty=99 -> gbb_insert(...,20,99): new entry
-        s.shot("08c_potion_planted", "U4: id 20 (POTION) inserted fresh at qty 99 -- "
-                                      "gbb_insert() takes the FREE-SLOT path (no "
-                                      "existing id-20 entry to merge into), landing "
-                                      "on the list's own last row; the qty editor "
-                                      "step the N4 brief also allows (A on a row) is "
-                                      "therefore not separately needed here -- ADD "
-                                      "ITEM was typed straight to the cap")
+        s.tap("START", settle=gb_shots.BIG_SETTLE)            # -> ritem_cat_menu (BACKLOG #195 F1)
+        s.shot("08b_category_menu", "U4: START opens the restricted picker's OWN "
+                                     "category menu -- Gen 1 offers only All/"
+                                     "Items/TM-HM (gbb_pocket_of()'s own Gen-1 "
+                                     "contract: no separate Key/Balls pocket on "
+                                     "this cartridge), cursor on 'All'")
+        s.tap("DOWN", settle=gb_shots.SETTLE)                 # All -> Items
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                # pick Items -> re-filters, closes menu
+        s.shot("08c_items_filtered", "U4: picking 'Items' re-filters the list "
+                                      "through gbb_pocket_of() -- the header now "
+                                      "reads 'ITEM [Items]', and id 0 (NO_ITEM, "
+                                      "invalid for every pocket) is gone from the "
+                                      "top of the list -- MASTER BALL is now row 0")
 
-        s.tap("START", settle=gb_shots.BIG_SETTLE)             # -> the item menu again, cursor still on POTION
-        s.tap("A", settle=gb_shots.BIG_SETTLE)                 # ADD ITEM -> id entry again
-        s.tap("B", settle=gb_shots.SETTLE)                     # clear seeded "1"
-        s.press_n("RIGHT", 1, settle=gb_shots.SETTLE)          # col0 -> col1 '2'
-        s.tap("A", settle=gb_shots.SETTLE)                     # type '2' -> field "2"
-        s.press_n("RIGHT", 8, settle=gb_shots.SETTLE)          # col1 -> col9 '0' (no B: keep the '2')
-        s.tap("A", settle=gb_shots.SETTLE)                     # type '0' -> field "20" again
-        s.tap("START", settle=gb_shots.BIG_SETTLE)             # confirm id=20 -> quantity entry
-        s.tap("B", settle=gb_shots.SETTLE)                     # clear seeded "1"
-        s.press_n("RIGHT", 4, settle=gb_shots.SETTLE)          # '1' -> '5' (row 0, col 4)
-        s.tap("A", settle=gb_shots.SETTLE)                     # type '5'
-        s.tap("START", settle=gb_shots.BIG_SETTLE)             # confirm qty=5 -> gbb_insert(...,20,5): MERGE path
-        s.shot("09_saturation_refusal", "U4: merging qty 5 into id 20/POTION (already "
-                                         "at the 99 cap from the ADD above) saturates "
-                                         "and refuses -- gbb_insert() SETS the "
-                                         "existing stack to the cap (99) and returns "
-                                         "GBB_ERR_QTY (gb_bag.c's own 'sum > cap' "
-                                         "branch WRITES list->entries[i].qty = "
-                                         "GBB_QTY_CAP, it does not merely refuse); "
-                                         "gbbag_start_menu's own msg_wait('SATURATED', "
-                                         "...) reports it. The WRITE still happens "
-                                         "here (99 -> 99) -- it is a no-op only "
-                                         "because POTION was already at the cap; nothing "
-                                         "about the mechanism itself skips the write.")
-        s.tap("A", settle=gb_shots.BIG_SETTLE)                 # dismiss the msg_wait -- back on the list
-        # ADD ITEM's own `*sel = l->count - 1` leaves the cursor on the LAST entry --
-        # POTION is that last entry (it was appended fresh above and nothing since
-        # has added/removed a row), so it is already in frame with no scrolling.
-        s.shot("09b_after_add", "U4: after dismissing the refusal, the cursor is "
+        # Navigate to POTION (id 20/0x14): 19 DOWN presses from MASTER_BALL (id 1,
+        # now row 0 under the Items filter) -- ids 1..20 have no TM/HM ids in
+        # range (Gen 1's TM/HM block starts at 0xC4/196) and no other exclusion,
+        # so the Items-filtered list and the unfiltered list agree on this stretch;
+        # 19 DOWNs is exactly "one row per id from 1 to 20".
+        s.press_n("DOWN", 19, settle=gb_shots.SETTLE)
+        s.shot("08d_potion_selected", "U4: 19 DOWNs from MASTER_BALL lands on "
+                                       "POTION (id 20) -- a real name from the "
+                                       "table, not '#20'")
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                # pick POTION -> QUANTITY prompt (unchanged UI)
+        s.shot("08e_add_item_qty", "U4: picking an item goes straight to the SAME "
+                                    "quantity prompt as before (num_entry_opt, "
+                                    "1-99) -- BACKLOG #195 F2 only replaced the id "
+                                    "half of ADD ITEM")
+        s.tap("B", settle=gb_shots.SETTLE)                    # clear the seeded "1"
+        s.press_n("RIGHT", 8, settle=gb_shots.SETTLE)         # digit row: col0 '1' -> col8 '9'
+        s.tap("A", settle=gb_shots.SETTLE)                    # type '9' -> field "9"
+        s.tap("A", settle=gb_shots.SETTLE)                    # type '9' again (cursor unmoved) -> "99"
+        s.tap("START", settle=gb_shots.BIG_SETTLE)            # confirm qty=99 -> gbb_insert(...,20,99): fresh slot
+        s.shot("09_potion_added", "U4 (BACKLOG #195, 'Gen 1 add -> row appears'): "
+                                   "POTION x99 -- a brand-new row, appended at the "
+                                   "list's own last slot (ADD ITEM's own "
+                                   "'*sel = l->count-1' rule, unchanged), through "
+                                   "the picker end to end")
+
+        # N4's own saturation-refusal demo, reused verbatim except for HOW the id
+        # is chosen: ADD ITEM POTION again (a fresh pick_item() call always opens
+        # at cat=All, current=1 -- the Gen-1 ADD site never calls
+        # pick_item_set_gen1_2_cat(), so this is the SAME 19-DOWNs-from-MASTER_BALL
+        # trip as above, just over the unfiltered 251-row list instead of the
+        # 250-row Items-filtered one -- id 0's own extra row exactly cancels out
+        # id 20 also shifting up by one, so the DOWN count is unchanged).
+        s.tap("START", settle=gb_shots.BIG_SETTLE)            # -> item menu, cursor still on POTION (last row)
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                # ADD ITEM -> picker opens fresh (cat=All again)
+        s.press_n("DOWN", 19, settle=gb_shots.SETTLE)         # MASTER_BALL -> POTION (All list)
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                # pick POTION again -> QUANTITY prompt
+        s.tap("B", settle=gb_shots.SETTLE)                    # clear seeded "1"
+        s.press_n("RIGHT", 4, settle=gb_shots.SETTLE)         # col0 -> col4 '5'
+        s.tap("A", settle=gb_shots.SETTLE)                    # type '5' -> field "5"
+        s.tap("START", settle=gb_shots.BIG_SETTLE)            # confirm qty=5 -> gbb_insert(...,20,5): MERGE path
+        s.shot("09b_saturation_refusal", "U4: merging qty 5 into POTION (already "
+                                          "at the 99 cap from the ADD above) "
+                                          "saturates and refuses -- gbb_insert() "
+                                          "SETS the existing stack to the cap (99) "
+                                          "and returns GBB_ERR_QTY (gb_bag.c's own "
+                                          "'sum > cap' branch); gbbag_start_menu's "
+                                          "own msg_wait('SATURATED', ...) reports "
+                                          "it")
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                # dismiss the msg_wait -- back on the list
+        s.shot("09c_after_add", "U4: after dismissing the refusal, the cursor is "
                                  "already on POTION's own row (ADD ITEM's own "
-                                 "'*sel = last entry' rule, unchanged since POTION "
-                                 "was appended) -- it reads x99, confirming the "
-                                 "saturating write landed exactly where it started "
-                                 "(99 -> 99, see the 09 caption above); an ORDINARY "
-                                 "item's row, unlike id 77/GOOD ROD (a Gen-1 KEY "
-                                 "item, prints no quantity at all).")
+                                 "'*sel = last entry' rule) -- it reads x99, "
+                                 "confirming the saturating write landed exactly "
+                                 "where it started (99 -> 99)")
 
-        # The saturation refusal above made NO byte change (99 -> clamped-to-99 is a
-        # true no-op), so B here would take the silent memcmp-no-op path, not the
-        # commit prompt -- a REAL edit is needed first. REMOVE the currently selected
-        # entry (POTION, left selected by the ADD ITEM path above) via the item menu.
-        s.tap("START", settle=gb_shots.BIG_SETTLE)             # -> the item menu again
-        s.tap("DOWN", settle=gb_shots.SETTLE)                  # ADD ITEM -> REMOVE
-        s.tap("A", settle=gb_shots.BIG_SETTLE)                 # REMOVE the selected entry -- a REAL change
-        s.shot("09c_removed", "U4: REMOVE deletes POTION -- a real, "
-                               "persisted-if-confirmed change (unlike the saturation "
-                               "attempt above)")
-
-        s.tap("B", settle=gb_shots.BIG_SETTLE)                # B -> the commit prompt (a real edit pending)
-        s.shot("10_commit_prompt", "U4: B with a real pending edit -> 'Save bag "
-                                    "changes?' (app_confirm), the same dialog every "
-                                    "other GB screen's own commit uses")
+        # BACKLOG #195 re-derivation (measured, not assumed): the OLD chain here
+        # used to REMOVE the just-added POTION before leaving, on the theory that
+        # the saturation merge above made no byte change so a further edit was
+        # needed to reach the commit prompt. Verified against the real screen
+        # (throwaway diagnostic script, not shipped): ADD-then-REMOVE of the SAME
+        # freshly-appended slot is mathematically a NO-OP against t0 (gbb_remove()
+        # zeros the vacated tail slot, restoring the decoded model byte-for-byte),
+        # so that old B afterward silently fell into the NO-OP path, not the
+        # commit prompt -- leaving straight after POTION's own ADD (no REMOVE) is
+        # the one edit still pending relative to t0, and IS what actually reaches
+        # 'Save bag changes?' below.
+        s.tap("B", settle=gb_shots.BIG_SETTLE)                # B -> the commit prompt (POTION's ADD is still pending)
+        s.shot("10_commit_prompt", "U4: B with a real pending edit (POTION x99, "
+                                    "still unsaved) -> 'Save bag changes?' "
+                                    "(app_confirm), the same dialog every other "
+                                    "GB screen's own commit uses")
         s.tap("B", settle=gb_shots.BIG_SETTLE)                # decline -- discard the edit
         s.shot("11_declined", "U4: declining discards the edit -- gbb_write never ran, "
                                "back at the box grid")
@@ -1115,7 +1140,9 @@ def run_u4_bag(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_
         # N6(a): the armed-SWAP state (D10) -- START > SWAP on a row ARMS a mark,
         # it does not swap on the spot. Re-enter the bag screen (declining above
         # never persisted anything, so gbb_read() below re-reads the ORIGINAL
-        # unedited pocket -- row 0/row 1 are back to their pristine ids).
+        # unedited pocket -- POTION is gone again, row 0/row 1 are back to their
+        # pristine ids). None of this touches pick_item() at all -- reused
+        # verbatim from before BACKLOG #195.
         # D-reentry (this pass, empirically): BIG_SETTLE alone is NOT enough idle
         # time for the box grid to accept a fresh START right after RETURNING
         # from the bag screen -- measured with a throwaway diagnostic script: the
@@ -1130,8 +1157,7 @@ def run_u4_bag(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_
         s.tap("A", settle=GB_ART_COLD_SETTLE)                   # Bag -> pdna_gbbag_gen1_screen()
         s.shot("12_reentry_pristine", "U4: N6(a) setup -- re-entering the bag screen "
                                        "after declining shows the ORIGINAL, unedited "
-                                       "Items list (the 09c/10/11 REMOVE was never "
-                                       "written)")
+                                       "Items list (POTION was never written)")
         s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> item menu, cursor on row 0
         s.press_n("DOWN", 2, settle=gb_shots.SETTLE)            # ADD ITEM -> REMOVE -> SWAP (csel 2)
         s.tap("A", settle=gb_shots.BIG_SETTLE)                  # SWAP: arms row 0 as swap_src, returns
@@ -1154,8 +1180,8 @@ def run_u4_bag(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_
         # baseline: swap row 0/row 1 back, then leave. The cursor is CURRENTLY on
         # row 1 (12b_swap_done's own A-on-destination left `sel` there, unchanged
         # by the swap itself) -- SWAP arms whatever row the cursor is ON, so
-        # arming here grabs row 1 (id 206, post-swap) as the source; move UP to
-        # row 0 (id 205) as the destination, not DOWN, to swap the SAME pair back.
+        # arming here grabs row 1 (post-swap) as the source; move UP to row 0 as
+        # the destination, not DOWN, to swap the SAME pair back.
         s.tap("START", settle=gb_shots.BIG_SETTLE)
         s.press_n("DOWN", 2, settle=gb_shots.SETTLE)
         s.tap("A", settle=gb_shots.BIG_SETTLE)                  # re-arm SWAP on row 1 (cursor's current row)
@@ -1170,19 +1196,7 @@ def run_u4_bag(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_
                                    "silent no-op path as an unedited visit, straight "
                                    "back to the box grid, no confirm dialog")
 
-        # N6(a) part 2: B drops an armed mark WITHOUT moving anything -- the KEY_B
-        # handler's own g1_swap_active branch never touches bag->pockets at all
-        # (source/pdna_gbbag.c pdna_gbbag_gen1_screen, the `if (g1_swap_active) {
-        # g1_swap_active = false; ...; continue; }` arm under KEY_B) -- a true
-        # 0-byte change, provable from the code path itself: that branch contains
-        # no assignment to any bag field, only the repaint. Demonstrated here by
-        # what the emulator CAN show: leaving the screen right after affords no
-        # confirm dialog at all, the same silent path 12c above takes for a real
-        # no-op -- if B-drop-mark had mutated anything, `want_commit && memcmp(...)
-        # != 0` would have popped 'Save bag changes?' instead.
-        # 12c_swap_undone above already LEFT the bag screen (its own B fell
-        # through to the box grid, the same "no-op path" 11_declined took) -- a
-        # full re-entry is needed here, not just an item-menu re-open.
+        # N6(a) part 2: B drops an armed mark WITHOUT moving anything.
         s.run(250)                                              # re-entry idle (see the D-reentry note above)
         s.tap("START", settle=gb_shots.BIG_SETTLE)              # box grid -> nav menu
         s.press_n("DOWN", 7, settle=gb_shots.SETTLE)            # Party -> ... -> Bag (index 7)
@@ -1202,136 +1216,73 @@ def run_u4_bag(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_
         s.tap("B", settle=gb_shots.BIG_SETTLE)                  # B again (nothing armed) -> leave
         s.shot("13c_left_no_prompt", "U4: leaving right after -- straight back to "
                                       "the box grid, no 'Save bag changes?' prompt "
-                                      "at all. That prompt only ever fires when "
-                                      "memcmp(bag,t0)!=0 (pdna_gbbag() below "
-                                      "pdna_gbbag_gen1_screen); its absence here IS "
-                                      "the byte-compare proof for the B-cancel-mark "
-                                      "path: 0 bytes changed, not merely 'looks "
-                                      "unchanged on screen'.")
+                                      "at all -- that prompt only ever fires when "
+                                      "memcmp(bag,t0)!=0; its absence here IS the "
+                                      "byte-compare proof for the B-cancel-mark "
+                                      "path")
 
-        # N6(b): BAD ID refusals -- ADD ITEM with id 0 and id 251 (Gen 1's own
-        # range is 0x01..0xFA == 1..250, gb_bag.h's own VALID ITEM IDS comment;
-        # 0 and 0xFB==251 are both one step outside either edge).
+        # BACKLOG #195 F2, "TM add": ADD ITEM through the picker's OWN TM-HM
+        # category -- picking a TM/HM item sets it via the SAME gbb_insert() path
+        # a Gen-1 Items entry uses (Gen 1 has no separate TM/HM pocket at all,
+        # "TMs are bag items", gb_bag.h's own note) -- the category filter is a
+        # PICKER-side convenience, not a different storage/routing rule the way
+        # Gen 2's ADD ITEM needs (that is BACKLOG #195 F2's OTHER half, u5_pack
+        # below).
         s.run(250)                                              # re-entry idle (see the D-reentry note above)
-        s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> nav menu
-        s.press_n("DOWN", 7, settle=gb_shots.SETTLE)
-        s.tap("A", settle=GB_ART_COLD_SETTLE)                   # back into the bag screen
-        s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> item menu (csel 0 == ADD ITEM)
-        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM -> id entry, seeded "1"
-        s.tap("B", settle=gb_shots.SETTLE)                      # clear seeded "1" -> field empty
-        s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm id="" -- num_entry_opt treats an
-                                                                 # empty field as 0, the refused id below --
-                                                                 # -> QUANTITY prompt next (seeded "1", already
-                                                                 # valid; gbb_insert() only runs after BOTH
-                                                                 # prompts confirm, so id alone shows nothing yet)
-        s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm qty=1 (seeded, unedited) -> NOW
-                                                                 # gbb_insert(id=0, qty=1) actually runs
-        s.shot("14_bad_id_zero", "U4: N6(b) -- ADD ITEM with id 0 (the field left "
-                                  "empty, which num_entry_opt reads back as 0) -> "
-                                  "gbb_insert() returns GBB_ERR_BADID -- "
-                                  "msg_wait('BAD ID', ..., 'That item id does not "
-                                  "exist.')")
-        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss
-
-        # N6(b) part 2 -- id 251: one past Gen 1's last legal id (250). R1 (the
-        # re-verify-3 one-liner): the ID prompt's OSK cap is 999 and the value is
-        # clamped to 0xFF, so 251 reaches gbb_insert() as 251 and lands on its own
-        # GBB_ERR_BADID branch -> the same 'BAD ID' dialog as id 0. (Before R1 the
-        # prompt clamped to 250 = TM50 and INSERTED it silently.)
-        s.tap("START", settle=gb_shots.BIG_SETTLE)              # item menu again
-        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM -> id entry, seeded "1", cursor col0
-        s.tap("B", settle=gb_shots.SETTLE)                      # clear seeded "1" -> field empty, cursor col0
-        s.press_n("RIGHT", 1, settle=gb_shots.SETTLE)           # col0 -> col1 '2'
-        s.tap("A", settle=gb_shots.SETTLE)                      # type '2' -> field "2"
-        s.press_n("RIGHT", 3, settle=gb_shots.SETTLE)           # col1 -> col4 '5'
-        s.tap("A", settle=gb_shots.SETTLE)                      # type '5' -> field "25"
-        s.press_n("RIGHT", 6, settle=gb_shots.SETTLE)           # col4 -> col10 mod 10 == col0 '1' (osk.c's
-                                                                 # own KEY_RIGHT wraps `(cc + 1) % rowlen`,
-                                                                 # source/osk.c line 223 -- the digit row is
-                                                                 # 10-wide, so RIGHT wraps circularly)
-        s.tap("A", settle=gb_shots.SETTLE)                      # type '1' -> field "251"
-        s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm id "251" -> QUANTITY prompt (seeded "1")
-        s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm qty=1 -> gbb_insert(id=251) -> GBB_ERR_BADID
-        s.shot("15_id251_bad_id", "U4: N6(b) -- typing id 251 (one past Gen 1's last "
-                                   "legal id) now reaches gbb_insert() unchanged and is "
-                                   "refused with the same 'BAD ID / That item id does not "
-                                   "exist.' dialog as id 0 -- this frame is pixel-identical "
-                                   "to shot 14 BY DESIGN (the dialog never echoes the typed "
-                                   "id; allow_same) -- R1: the ID prompt no longer clamps "
-                                   "to 250; nothing was inserted.", allow_same=True)
-        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss; nothing to undo
-
-        # N6(c): BAD QUANTITY refusals -- qty 0 and qty 100 (valid range 1..99).
-        # A valid id is needed to reach the quantity prompt at all; id 20 (POTION,
-        # not currently in the pocket, same id N4 used) keeps this an INSERT, not
-        # a merge, so the refusal is unambiguously about the typed quantity.
-        s.tap("START", settle=gb_shots.BIG_SETTLE)
-        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM -> id entry
-        s.tap("B", settle=gb_shots.SETTLE)
-        s.press_n("RIGHT", 1, settle=gb_shots.SETTLE)           # -> '2'
-        s.tap("A", settle=gb_shots.SETTLE)
-        s.press_n("RIGHT", 8, settle=gb_shots.SETTLE)           # -> '0'
-        s.tap("A", settle=gb_shots.SETTLE)                      # id "20"
-        s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> quantity entry
-        s.tap("B", settle=gb_shots.SETTLE)                      # clear seeded "1" -> empty (reads back as 0)
-        s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm qty=0
-        s.shot("16_bad_qty_zero", "U4: N6(c) -- qty 0 (the field left empty) -> "
-                                   "gbb_insert() returns GBB_ERR_QTY, and because "
-                                   "the TYPED value (0) was itself outside 1..99 "
-                                   "(qty_in_range false), gbbag_start_menu's own "
-                                   "branch reports 'BAD QUANTITY' / 'Quantity must "
-                                   "be 1-99.' -- NOT 'SATURATED' (that wording is "
-                                   "reserved for a legal typed value that overflowed "
-                                   "an existing stack on merge, see the N4 shots)")
-        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss
-        s.run(80)                                               # extra margin -- this stretch flaked during
-                                                                 # authoring under BIG_SETTLE alone (mGBA
-                                                                 # timing, the same class the 04/blink-marker
-                                                                 # caption already documents)
-
-        s.tap("START", settle=gb_shots.BIG_SETTLE)
-        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM -> id entry
-        s.tap("B", settle=gb_shots.SETTLE)
-        s.press_n("RIGHT", 1, settle=gb_shots.SETTLE)
-        s.tap("A", settle=gb_shots.SETTLE)
-        s.press_n("RIGHT", 8, settle=gb_shots.SETTLE)
-        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # id "20" again
-        s.run(80)
-        s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> quantity entry, seeded "1", cursor col0
-        s.tap("B", settle=gb_shots.SETTLE)                      # clear seeded "1" -> field empty, cursor col0
-        s.tap("A", settle=gb_shots.SETTLE)                      # col0 IS '1' -- type it directly -> "1"
-        s.press_n("RIGHT", 9, settle=gb_shots.SETTLE)           # col0 -> col9 '0'
-        s.tap("A", settle=gb_shots.SETTLE)                      # type '0' -> "10"
-        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # cursor unmoved (still col9 '0') -> "100"
-        s.shot("17_bad_qty_100_typed", "U4: N6(c) -- '100' typed into the SAME "
-                                        "quantity prompt as 16 (one past the 99 "
-                                        "cap, not clamped by the OSK -- num_entry_"
-                                        "opt's own maxv for THIS prompt is 999, "
-                                        "not 99, exactly so a typed 100 reaches "
-                                        "gbb_insert()'s own validation instead of "
-                                        "being silently clamped first, D5)")
-        s.run(80)
-        s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm qty=100 -> gbb_insert() returns
-                                                                 # GBB_ERR_QTY, qty_in_range false again -- the
-                                                                 # SAME 'BAD QUANTITY' / 'Quantity must be
-                                                                 # 1-99.' dialog as 16 (msg_wait's own text
-                                                                 # never echoes the typed value, so the two
-                                                                 # dialogs are PIXEL-IDENTICAL -- not
-                                                                 # re-captured here on purpose: gb_shots.py's
-                                                                 # own Session.shot() refuses a pixel-identical
-                                                                 # repeat as a likely driver bug, and here it
-                                                                 # would be right to be suspicious of a NEW
-                                                                 # bug except this one really is the same
-                                                                 # dialog by design; 17_bad_qty_100_typed above
-                                                                 # is the honest proof of what was actually
-                                                                 # typed instead)
-        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss (msg_wait's own "Press A")
-        s.tap("B", settle=gb_shots.BIG_SETTLE)                  # leave -- every refusal above made no edit,
-                                                                 # so this is the silent no-op path again
-        s.shot("18_left_after_refusals", "U4: leaving after every N6(b)/(c) refusal "
-                                          "-- no confirm dialog, same no-op-path "
-                                          "proof as 13c above: none of the BAD ID / "
-                                          "BAD QUANTITY attempts wrote anything")
+        s.tap("START", settle=gb_shots.BIG_SETTLE)              # box grid -> nav menu
+        s.press_n("DOWN", 7, settle=gb_shots.SETTLE)            # Party -> ... -> Bag (index 7)
+        s.tap("A", settle=GB_ART_COLD_SETTLE)                   # Bag -> pdna_gbbag_gen1_screen()
+        s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> item menu, cursor row 0 (ADD ITEM)
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM -> picker opens (cat=All)
+        s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> category menu
+        s.press_n("DOWN", 2, settle=gb_shots.SETTLE)            # All -> Items -> TM-HM
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # pick TM-HM -> re-filters, closes menu
+        s.shot("14_tmhm_filtered", "U4 ('TM add'): the TM-HM category (gbb_pocket_"
+                                    "of()'s Gen-1 TM/HM range, 0xC4-0xFA) filters "
+                                    "the SAME picker to just those ids -- header "
+                                    "'ITEM [TM-HM]', first row HM01 (id 0xC4, "
+                                    "Gen 1's HM01-05 come before TM01-50 in id "
+                                    "order -- gb_item_names.c's own gb1_tmhm_label "
+                                    "range), a SYNTHESIZED name, not a table entry")
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # pick HM01 -> QUANTITY prompt
+        s.shot("14b_tm_qty_prompt", "U4: picking a TM/HM item goes through the "
+                                     "SAME quantity prompt as any other Gen-1 item "
+                                     "-- Gen 1 has no count-array pocket, HM01 is "
+                                     "just another Items-pocket entry with a real "
+                                     "(synthesized) name")
+        # B cancels this pick (HM01 is a Gen-1 KEY item -- gbb_is_g1_key_item()'s
+        # own "HM01-05 are always key items in both games" fact -- the list's OWN
+        # row paint hides the quantity column for those, gbbag_row_paint's real
+        # rule, unrelated to BACKLOG #195; picking TM01 instead keeps this demo
+        # showing an ordinary '×N' row like every other add above) and moves 5
+        # rows down (HM01..HM05, 5 rows) to TM01 (id 0xC9), an ordinary TM row.
+        s.tap("SEL", settle=gb_shots.BIG_SETTLE)                # osk_search's own CANCEL key (SELECT, not B --
+                                                                 # B is backspace) -- num_entry_opt() returns
+                                                                 # false, aborting the whole ADD; gbbag_start_
+                                                                 # menu's own `continue` redraws ITEM MENU,
+                                                                 # csel still 0 (ADD ITEM) -- no re-open needed
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM again -> picker opens fresh (cat=All)
+        s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> category menu
+        s.press_n("DOWN", 2, settle=gb_shots.SETTLE)            # All -> Items -> TM-HM
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # pick TM-HM -> filtered list, cursor on HM01
+        s.press_n("DOWN", 5, settle=gb_shots.SETTLE)            # HM01..HM05 (5 rows) -> TM01
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # pick TM01 -> QUANTITY prompt
+        s.tap("B", settle=gb_shots.SETTLE)                      # clear seeded "1"
+        s.press_n("RIGHT", 2, settle=gb_shots.SETTLE)           # col0 -> col2 '3'
+        s.tap("A", settle=gb_shots.SETTLE)                      # type '3' -> field "3"
+        s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm qty=3 -> gbb_insert(...,0xC9,3): fresh slot
+        s.shot("15_tm_added", "U4 ('TM add', BACKLOG #195): TM01 x3 -- a brand-new "
+                               "row with its SYNTHESIZED name (gb1_tmhm_label) AND "
+                               "a real quantity column (a TM, unlike HM01 above, "
+                               "is not a Gen-1 key item), appended at the list's "
+                               "own last slot, through the picker's TM-HM category "
+                               "end to end")
+        s.tap("B", settle=gb_shots.BIG_SETTLE)                  # -> commit prompt (a real edit pending)
+        s.tap("B", settle=gb_shots.BIG_SETTLE)                  # decline -- discard the edit (leave the
+                                                                 # fixture's own pristine bag for any later run)
+        s.shot("16_tm_declined", "U4: declining the TM add discards it -- gbb_write "
+                                  "never ran, back at the box grid, fixture stays "
+                                  "pristine for a later run of this script")
 
     return s
 
@@ -1696,8 +1647,11 @@ def run_u5_pack(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
                                     "tracking the cursor one row at a time")
     s.press_n("UP", 8, settle=gb_shots.SETTLE)              # back to row 0 for the rest of the flow
 
-    s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> PACK MENU (TM/HM: PC STORE/CANCEL only,
-                                                              # csel starts on PC STORE, no DOWN needed)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> PACK MENU (TM/HM: ADD ITEM/PC STORE/CANCEL --
+                                                              # BACKLOG #195 F2 now offers ADD ITEM here too,
+                                                              # gbb_tmhm_set() path -- PC STORE moved from
+                                                              # csel 0 to csel 1, ONE DOWN needed)
+    s.tap("DOWN", settle=gb_shots.SETTLE)                   # ADD ITEM -> PC STORE
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # toggle -> PC store
     s.shot("05_pc_store", "U5: START > PC STORE toggles to the PC item store -- "
                            "the nameplate label under the picture still reads "
@@ -1708,28 +1662,32 @@ def run_u5_pack(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
                            "earlier draft's empty box left the store visually "
                            "identical to the Items pocket")
 
-    # D7 fix (review-opus ac9ffc0): ADD ITEM from the PC store is no longer
-    # refused -- it is its own undifferentiated list, not one of the four
-    # real bag pockets the Items-only fallback rule was meant to guard. This
-    # save's PC store is already at capacity (BAG FULL on a completed add is
-    # a real, expected refusal -- a full pocket, not a wrong one) so the demo
-    # only needs to show the id-ENTRY screen opening (proof ADD ITEM is no
-    # longer refused outright), then cancel out with SELECT (osk_search's own
-    # cancel, same as shot 08's qty editor) rather than complete the insert --
-    # osk_search's `continue` lands back in the SAME open PACK MENU (csel
-    # still 0), so no extra START tap is needed before the DOWN x3 below.
+    # BACKLOG #195 F2: ADD ITEM now opens the real item picker (pick_item(),
+    # restricted to GBIN_GEN2 with the Gen-2 ceiling, PRE-FILTERED to the pocket
+    # the menu was opened from via pick_item_set_gen1_2_cat) instead of a raw
+    # numeric "ITEM ID" prompt. The old "WRONG POCKET / no per-item pocket table
+    # yet" refusal (D9's own fix, ac9ffc0) is GONE -- gbb_pocket_of() IS that
+    # table now: a picked id auto-routes to its OWN real pocket (Items/Balls/
+    # Key/TM-HM), the Gen-3 bag's own shape (pdna_bag.c:445-452), regardless of
+    # which pocket's ADD ITEM menu opened it. The PC store keeps its D7 rule
+    # unchanged (any id, no routing -- it is its own undifferentiated list).
     s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> PACK MENU (PC store, csel=0=ADD ITEM)
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM -> id entry (seeded "1")
-    s.shot("05b_pc_store_add_item", "U5 D7 fix: START > ADD ITEM from the PC "
-                                     "ITEM STORE opens the id entry instead of "
-                                     "refusing 'WRONG POCKET' (the earlier "
-                                     "draft's behaviour) -- this save's PC "
-                                     "store happens to already be full, so "
-                                     "this demo cancels out rather than "
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM -> pick_item() opens (cat=All: the PC
+                                                              # store is not one of the 4 real-pocket categories)
+    s.shot("05b_pc_store_add_item", "U5 (BACKLOG #195): ADD ITEM from the PC "
+                                     "ITEM STORE opens the SAME real picker as "
+                                     "every other pocket -- names + header "
+                                     "'ITEM [All]' (the store has no category "
+                                     "of its own, D7's 'any id' rule) -- this "
+                                     "save's PC store happens to already be "
+                                     "full, so this demo cancels out (B, the "
+                                     "picker's own cancel key) rather than "
                                      "complete an insert that would correctly "
                                      "show BAG FULL, a different, expected "
                                      "refusal")
-    s.tap("SEL", settle=gb_shots.BIG_SETTLE)                # osk_search: SELECT cancels -> back in the menu
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # pick_item()'s own cancel (B, NOT SELECT --
+                                                              # SELECT opens the picker's search box instead)
+                                                              # -> back in the SAME open PACK MENU (csel still 0)
 
     s.press_n("DOWN", 3, settle=gb_shots.SETTLE)
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # toggle back -> Pack (still on TM/HM's own cyc)
@@ -1748,79 +1706,104 @@ def run_u5_pack(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
                              "use")
     s.tap("SEL", settle=gb_shots.BIG_SETTLE)                # osk_search: SELECT cancels
 
-    s.tap("RIGHT", settle=gb_shots.BIG_SETTLE)              # Items -> Balls
-    s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> PACK MENU (ADD ITEM/REMOVE/SWAP/PC STORE/CANCEL)
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM on Balls -> WRONG POCKET refusal
-    s.shot("09_wrong_pocket_refusal", "U5: START > ADD ITEM from the BALLS "
-                                       "pocket refuses outright -- 'WRONG "
-                                       "POCKET' / 'Add items from the Items "
-                                       "pocket.' / 'No per-item pocket table "
-                                       "yet.' (the dim third line; per-item "
-                                       "pocket membership was not located "
-                                       "this slice; the brief's own "
-                                       "sanctioned fallback is Items-only "
-                                       "ADD ITEM, not a silent wrong-pocket "
-                                       "accept)")
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss -> back in the PACK MENU (msg_wait's
-                                                              # own `continue` loops the menu, does NOT
-                                                              # close it -- gbpack_start_menu's own ADD ITEM
-                                                              # branch, csel unchanged at 0)
-    s.press_n("DOWN", 4, settle=gb_shots.SETTLE)            # ADD ITEM -> REMOVE -> SWAP -> PC STORE -> CANCEL
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # CANCEL -> back to the list (still Balls)
-    s.tap("LEFT", settle=gb_shots.BIG_SETTLE)               # Balls -> Items
-
-    # Saturation refusal on an ORDINARY item: ADD ITEM the currently-selected
-    # pocket's own id 1 (not present yet) at qty 99 (a SILENT success -- no
-    # message, gbb_insert() returns GBB_OK -- so the menu loop's own `continue`
-    # lands right back on ADD ITEM with NO extra tap needed), then ADD ITEM id
-    # 1 again at qty 5, which MERGES into the fresh 99 stack and overflows the
-    # cap -- THIS one does show SATURATED. osk_search's own contract: row 0 is
-    # the digit row "1234567890", cursor starts at (0,0) == '1', A inserts the
-    # highlighted glyph, B backspaces, START confirms, SELECT cancels (U4's
-    # own precedent, run_u4_bag() above).
+    # BACKLOG #195 F2, "pick a Ball from the Items pocket -> lands in Balls":
+    # ADD ITEM from the ITEMS pocket, pick a Poke Ball through the picker's OWN
+    # category filter, and prove the auto-route by switching to the BALLS
+    # pocket afterward. gold_ball_ids (tests/host_gbbag_test.c's own corpus
+    # constants) confirms Gold.sav's REAL Balls pocket already holds MASTER/
+    # ULTRA/GREAT/POKE (0x01/0x02/0x04/0x05) -- HEAVY_BALL (0x9D) is NOT among
+    # them, so adding it is a fresh insert (a new row appears), not a merge
+    # into an existing stack (which BALLS support just as well, but a fresh
+    # row is the clearer demo).
     s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> PACK MENU (Items, csel=0=ADD ITEM)
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM -> id entry (seeded "1")
-    s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm id=1 -> quantity entry
-    s.tap("B", settle=gb_shots.SETTLE)                      # clear seeded "1"
-    s.press_n("RIGHT", 8, settle=gb_shots.SETTLE)           # col0 -> col8 '9'
-    s.tap("A", settle=gb_shots.SETTLE)                      # type '9'
-    s.tap("A", settle=gb_shots.SETTLE)                      # type '9' again -> field "99"
-    s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm qty=99 -> gbb_insert(id=1,99): FREE-SLOT
-                                                              # path, GBB_OK, NO message -- gbpack_start_menu's
-                                                              # own ADD ITEM branch falls through to `return 0`
-                                                              # unconditionally after a COMPLETED add (success
-                                                              # OR an error message dismissed), closing the
-                                                              # menu straight back to the LIST -- only the
-                                                              # WRONG-POCKET early-refuse `continue`s and stays
-                                                              # in the menu; this is NOT that case.
-    s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> PACK MENU again (fresh open, csel=0=ADD ITEM)
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM AGAIN -> id entry (seeded "1")
-    s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm id=1 -> quantity entry
-    s.tap("B", settle=gb_shots.SETTLE)
-    s.press_n("RIGHT", 4, settle=gb_shots.SETTLE)           # col0 -> col4 '5'
-    s.tap("A", settle=gb_shots.SETTLE)                      # type '5'
-    s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm qty=5 -> merge overflows 99 -> SATURATED
-    s.shot("10_saturation_refusal", "U5: re-adding id 1 at qty 5 merges into "
-                                     "the existing (already-99) stack -- "
-                                     "gbb_insert() saturates it at the cap and "
-                                     "reports SATURATED (same mechanism as "
-                                     "U4's own N6(c))")
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss -> gbpack_start_menu's own ADD ITEM
-                                                              # branch falls through to `return 0` after this
-                                                              # (a COMPLETED add, message or not) -- back at
-                                                              # the LIST, not the menu.
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM -> picker opens, PRE-FILTERED to Items
+                                                              # (pick_item_set_gen1_2_cat(GBB_POCKET_ITEMS))
+    s.shot("09_picker_open_items", "U5 (BACKLOG #195): ADD ITEM from the Items "
+                                    "pocket opens the picker PRE-FILTERED to "
+                                    "'Items' -- real Gen-2 names + a category "
+                                    "header ('ITEM [Items]'), same picker U4's "
+                                    "Gen-1 screen uses, Gen-2's own pocket set")
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> the picker's OWN category menu
+    s.shot("09b_category_menu", "U4: the restricted picker's category menu -- "
+                                 "Gen 2 offers All/Items/Poke Balls/Key items/"
+                                 "TM-HM (gbb_pocket_of()'s full Gen-2 pocket "
+                                 "set, unlike Gen 1's ITEMS-vs-TM/HM-only), "
+                                 "cursor on 'Items' (the pre-filter this menu "
+                                 "opened with, not 'All')")
+    s.tap("DOWN", settle=gb_shots.SETTLE)                   # Items -> Poke Balls
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # pick Poke Balls -> re-filters, closes menu
+    s.shot("09c_balls_filtered", "U5: picking 'Poke Balls' re-filters the SAME "
+                                  "picker through gbb_pocket_of() -- header "
+                                  "'ITEM [Poke Balls]', only the 12 real Ball "
+                                  "ids, cursor back on MASTER BALL (row 0)")
+    s.press_n("DOWN", 4, settle=gb_shots.SETTLE)            # MASTER/ULTRA/GREAT/POKE (4 rows) -> HEAVY BALL
+    s.shot("09d_heavyball_selected", "U5: 4 DOWNs from MASTER BALL (the 4 "
+                                      "ordinary balls, id order 0x01/0x02/0x04/"
+                                      "0x05) lands on HEAVY BALL (0x9D, the "
+                                      "next Ball id) -- a real name, not '#157'")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # pick HEAVY BALL -> QUANTITY prompt
+    s.shot("09e_add_item_qty", "U5: picking a Ball goes straight to the SAME "
+                                "quantity prompt as any other Gen-2 item -- "
+                                "BACKLOG #195 F2 only replaced the id half of "
+                                "ADD ITEM")
+    s.tap("B", settle=gb_shots.SETTLE)                      # clear the seeded "1"
+    s.tap("A", settle=gb_shots.SETTLE)                      # col0 IS '1' -- type it directly -> field "1"
+    s.press_n("RIGHT", 9, settle=gb_shots.SETTLE)           # col0 -> col9 '0'
+    s.tap("A", settle=gb_shots.SETTLE)                      # type '0' -> field "10"
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm qty=10 -> gbb_pocket_of(game,0x9D)=BALLS
+                                                              # != ITEMS (the pocket this menu opened from) ->
+                                                              # AUTO-ROUTES: gbb_insert(game,bag,BALLS,0x9D,10),
+                                                              # a fresh slot, GBB_OK -- Review D4: a SUCCESSFUL
+                                                              # route to a DIFFERENT pocket than this menu opened
+                                                              # from now tells the player where it landed
+                                                              # (pdna_bag.c:447-451's own "RIGHT POCKET" shape).
+    s.shot("09f_right_pocket", "U5 (Review D4, UX parity with pdna_bag.c's "
+                                "own Gen-3 routing feedback): 'RIGHT POCKET / "
+                                "Put in BALLS.' -- the SAME pocket name "
+                                "pocket_name_of() gives every other message "
+                                "in this file, now also telling the player "
+                                "the item did NOT stay in Items")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss the msg_wait -- back on the Items list
+    s.tap("RIGHT", settle=gb_shots.BIG_SETTLE)              # Items -> Balls: does the row actually land there?
+    s.shot("10_lands_in_balls", "U5 (BACKLOG #195, 'a Ball picked from the "
+                                 "Items pocket -> lands in Balls'): switching "
+                                 "to the BALLS pocket shows HEAVY BALL x10 -- a "
+                                 "brand-new row, auto-routed by gbb_pocket_of() "
+                                 "even though ADD ITEM was opened from Items, "
+                                 "not Balls")
 
-    # SWAP: arm row 0, move down, confirm the destination. The cursor is
-    # currently on the LAST real row (the fresh id-1 insert, ADD ITEM's own
-    # `*sel = l->count - 1` rule) -- move it UP first so SWAP arms a row with
-    # a REAL row below it, not the trailing CANCEL row (arming the last real
-    # row and pressing DOWN would land on CANCEL, which the destination guard
-    # correctly refuses -- sel < cnt is false for it -- but that is a
-    # different, less illustrative demo than an actual two-item swap).
-    s.press_n("UP", 2, settle=gb_shots.SETTLE)
-    s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> PACK MENU (fresh open, csel=0=ADD ITEM)
+    # Review D2: pokegold's OWN data/items/attributes.asm differs from
+    # pokecrystal's at exactly four ids (CLEAR_BELL/GS_BALL/BLUE_CARD/
+    # EGG_TICKET, 0x46/0x73/0x74/0x81) -- KEY_ITEM on Crystal, an unused
+    # pocket-ITEM placeholder on Gold/Silver. The picker's "Key items"
+    # category must show a DIFFERENT count/list on Gold vs Crystal even
+    # though this is the exact same code path -- proving `game`, not merely
+    # `gen`, now threads all the way to gbb_pocket_of(). Cancelled out (B,
+    # not committed) so it leaves no pending edit for the demos after it.
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> PACK MENU (Balls, fresh open, csel=0=ADD ITEM)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM -> picker, pre-filtered to Poke Balls
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> category menu (cursor on Poke Balls)
+    s.tap("DOWN", settle=gb_shots.SETTLE)                   # Poke Balls -> Key items
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # pick Key items -> re-filters, closes menu
+    s.shot("10b_key_items_filtered", f"U5 (Review D2): the picker's 'Key "
+                                      f"items' category on {which} -- Gold "
+                                      f"shows 18 (no CLEAR BELL/GS BALL/"
+                                      f"BLUE CARD/EGG TICKET), Crystal shows "
+                                      f"22 (all four present, interleaved in "
+                                      f"id order between MYSTERY EGG/SILVER "
+                                      f"WING and after SILVER WING) -- the "
+                                      f"SAME code path, a real per-game "
+                                      f"difference (pokegold's own "
+                                      f"attributes.asm, not pokecrystal's)")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # cancel the picker -- no id picked, no pending edit
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # close PACK MENU -> back to the Balls list
+
+    # SWAP: arm row 0 (MASTER BALL), move down, confirm the destination --
+    # unrelated to pick_item()/gbb_pocket_of() at all, same mechanism U4's own
+    # Gen-1 SWAP demo already proved; reused here over the Balls pocket instead.
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> PACK MENU (Balls, fresh open, csel=0=ADD ITEM)
     s.press_n("DOWN", 2, settle=gb_shots.SETTLE)            # ADD ITEM -> REMOVE -> SWAP
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # SWAP: arms row 0, returns to the list
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # SWAP: arms row 0 (MASTER BALL), returns
     s.tap("DOWN", settle=gb_shots.SETTLE)                   # cursor off the source row
     s.shot("11_swap_armed", "U5: SWAP arms row 0 (the mark stays lit there) "
                              "and returns to the list -- pick-source-then-"
@@ -1829,19 +1812,21 @@ def run_u5_pack(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # A on the destination -> the actual swap
     s.shot("11b_swap_done", "U5: A on the destination performs the swap -- "
                              "both rows traded places, the mark is gone")
-    # Arm again and drop with B instead of swapping.
+    # Undo the swap so this pocket's ORDINARY rows are back where the fixture
+    # had them (only HEAVY BALL, appended at the tail, is a real pending edit
+    # left for the commit-prompt demo below).
     s.tap("START", settle=gb_shots.BIG_SETTLE)
     s.press_n("DOWN", 2, settle=gb_shots.SETTLE)
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # re-arm on the current row
-    s.tap("DOWN", settle=gb_shots.SETTLE)
-    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # B drops the mark, nothing moves
-    s.shot("11c_swap_dropped", "U5: B drops an armed SWAP mark without leaving "
-                                "the screen or moving anything -- the row's own "
-                                "0xEC armed-swap marker is gone (0xED is the "
-                                "plain cursor, a different glyph), no entries "
-                                "changed")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # re-arm SWAP on row 1 (cursor's current row)
+    s.tap("UP", settle=gb_shots.SETTLE)                     # cursor -> row 0 (the OTHER half of the pair)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # swap back -> pristine order restored
+    s.shot("11c_swap_undone", "U5: swapping row 0/row 1 back -- MASTER BALL/"
+                               "ULTRA BALL are back in their original order; "
+                               "HEAVY BALL (this pocket's real pending edit) "
+                               "is untouched by any of the swap demos")
 
-    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # B with a real pending edit -> commit prompt
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # B with a real pending edit (HEAVY BALL, still
+                                                              # unsaved) -> commit prompt
     s.shot("12_commit_prompt", "U5: B with a real pending edit -> 'Save pack "
                                 "changes?' (app_confirm), the same dialog "
                                 "every other GB screen's own commit uses")
@@ -1849,15 +1834,92 @@ def run_u5_pack(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     s.shot("13_declined", "U5: declining discards the edit -- gbb_write never "
                            "ran, back at the box grid")
 
+    # Review D1 (HIGH, data loss): gbpack_add_routed()'s TM/HM branch used to
+    # call num_entry() (cancel-blind: returns `cur`, pdna_trainer.c:47-50)
+    # SEEDED AT 0, so opening COUNT on an ALREADY-OWNED TM showed 0 instead of
+    # its real count, and cancelling (osk_search's own cancel key -- SELECT,
+    # not B; B is backspace, same contract every other prompt in this file
+    # already uses) SET that TM's count to 0 instead of leaving it alone --
+    # an owned TM01 x1 became x0 on a cancelled ADD. Fixed to num_entry_opt()
+    # seeded at the REAL current count (gbb_tmhm_get()), cancel now returns
+    # false (nothing attempted, same contract gbpack_add_to_pc() already
+    # gives its own caller). No shot of this whole path existed before this
+    # fix -- added here (rule-17 blocker: a gesture/data-path with no shot
+    # proof is not merged).
+    s.run(250)                                              # re-entry idle (see U4's own D-reentry note)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # box grid -> nav menu
+    s.press_n("DOWN", 7, settle=gb_shots.SETTLE)            # Party -> ... -> Bag (index 7)
+    s.tap("A", settle=GB_ART_COLD_SETTLE)                   # Bag -> pdna_gbpack_gen2_screen()
+    s.tap("RIGHT", settle=gb_shots.BIG_SETTLE)              # Items -> Balls
+    s.tap("RIGHT", settle=gb_shots.BIG_SETTLE)              # Balls -> Key items
+    s.tap("RIGHT", settle=gb_shots.BIG_SETTLE)              # Key items -> TM/HM
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> PACK MENU (TM/HM: ADD ITEM/PC STORE/CANCEL)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM -> picker, pre-filtered to TM-HM
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # pick TM01 (id 0xBF, the lowest TM/HM id --
+                                                              # row 0 of the TM-HM filtered list) -> COUNT
+    s.shot("14_count_seeded_current", "U5 (Review D1 fix): the COUNT prompt "
+                                       "for an ALREADY-OWNED TM (TM01, this "
+                                       "save's own real count) now seeds at "
+                                       "'1' -- its ACTUAL current count, not "
+                                       "the old bug's hardcoded 0")
+    s.tap("B", settle=gb_shots.SETTLE)                      # backspace the seeded '1'
+    s.press_n("RIGHT", 2, settle=gb_shots.SETTLE)           # digit row: col0 -> col2 '3'
+    s.tap("A", settle=gb_shots.SETTLE)                      # type '3' -> field "3"
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm -> gbb_tmhm_set(tm01,3): GBB_OK
+    s.shot("15_tm01_count3", "U5 (Review D1, 'TM01 COUNT 3 -> row'): TM01's "
+                              "row now reads x3 -- a real, persisted-if-"
+                              "confirmed change")
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> PACK MENU again, fresh open
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM -> picker, TM-HM filtered
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # pick TM01 again -> COUNT seeded at the NEW
+                                                              # current count (3, not the old bug's 0)
+    s.shot("16_count_reseeded_3", "U5 (Review D1): re-opening COUNT on TM01 "
+                                   "now seeds '3' -- the count this ADD "
+                                   "chain itself just wrote, not 0")
+    s.tap("SEL", settle=gb_shots.BIG_SETTLE)                # osk_search's own CANCEL key (SELECT, not
+                                                              # B -- B is backspace) -- num_entry_opt()
+                                                              # returns false, gbpack_add_routed() returns
+                                                              # false, the caller's own `continue` re-opens
+                                                              # PACK MENU with NOTHING written
+    s.shot("17_cancel_no_zero", "U5 (Review D1, 'B at COUNT -> count "
+                                 "unchanged'): cancelling lands back on PACK "
+                                 "MENU (its own `continue`, not the list) "
+                                 "with NO gbb_tmhm_set() call made at all -- "
+                                 "the fix's whole point, provable only by "
+                                 "the NEXT shot still reading x3, not x0")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # close PACK MENU -> back to the list
+    s.shot("18_still_x3", "U5 (Review D1): TM01 still reads x3 -- the cancel "
+                           "above did NOT zero it (the old bug's exact "
+                           "failure mode)")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # leave -- the x1->x3 ADD is still a real
+                                                              # pending edit (the cancel demo added nothing
+                                                              # further) -> commit prompt
+    s.shot("19_commit_prompt", "U5: leaving with TM01's real x1->x3 edit "
+                                "still pending -> the same 'Save pack "
+                                "changes?' dialog every other commit uses")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # decline -- fixture stays pristine
+    s.shot("20_declined", "U5: declining discards TM01's edit -- gbb_write "
+                           "never ran, fixture pristine for a later run")
+
     return s
 
 
 def run_b89_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
-    """BACKLOG #89: the Gen-1/2 Hall of Fame screen (source/pdna_gbhof.c) over
-    gb_hof.h's core -- the same single-ROM-image / nav-menu-DOWN shape run_b90_fly()
-    above uses, reused for a plain list->detail screen. `rom` must be a ONE-ROM
-    fused image (Red-only for `which == "red"`, Crystal-only for `which ==
-    "crystal"`, same BACKLOG #98 harness-gap reasoning as U4/U5/b90's own images).
+    """BACKLOG #89 (BACKLOG #202 F1 recaption): the Gen-1/2 Hall of Fame screen
+    (source/pdna_gbhof.c) -- the same single-ROM-image / nav-menu-DOWN shape
+    run_b90_fly() above uses. `rom` must be a ONE-ROM fused image (Red-only for
+    `which == "red"`, Crystal-only for `which == "crystal"`, same BACKLOG #98
+    harness-gap reasoning as U4/U5/b90's own images).
+
+    #202 F1: pdna_gbhof() now opens the SAME gbscr card shell the trainer card
+    uses (GBSCR_NEED_TEXTBOX only) and keeps it open across list<->detail<->the
+    START menu; every gbscr_open() call pays the PDNA_DELTA leg's whole-ROM UI
+    locator cost again (~3,240 frames measured, review of b194/f93cf5a) --
+    EVERY settle below that follows a shell (re)open (the very first Records
+    entry, and returning to the list after CLEAR ALL/SET COUNT close+reopen the
+    shell around their own full-screen editors) now rides out GB_ART_COLD_SETTLE,
+    not BIG_SETTLE; list<->detail<->menu transitions stay on the shell that is
+    ALREADY open (no rescan) and only need BIG_SETTLE.
 
     Nav: A (S1 info) -> box grid -> START -> nav menu -> DOWN x12 (Party=0, Bank=1,
     Daycare=2, Trainer=3, Clock fix=4, Mirage=5, Pokedex=6, Bag=7, Flags&counters=8,
@@ -1870,27 +1932,39 @@ def run_b89_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     boot_to_gb_session(s, rom, which=which)
     s.tap("START", settle=gb_shots.BIG_SETTLE)              # box grid -> nav menu
     s.press_n("DOWN", 12)                                    # Party -> ... -> Records (index 12)
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # Records -> pdna_gbhof()
-    s.shot("01_list", f"BACKLOG #89: {which}'s own Hall of Fame list -- the "
-                       "'N teams (lifetime count C)' header, one row per recorded "
-                       "team newest-first, cursor on row 1")
+    s.tap("A", settle=GB_ART_COLD_SETTLE)                   # Records -> pdna_gbhof() -> FIRST gbscr_open()
+    s.shot("01_list", f"BACKLOG #202 F1: {which}'s own Hall of Fame CARD -- the "
+                       "'N teams (life C)' header drawn with the ROM's own font "
+                       "inside the shared gbscr text-box frame, one 'N: ...' row "
+                       "per recorded team newest-first (F2: no '#', no '>' -- the "
+                       "row cursor is the gbscr_cell_rect() highlight on row 1)")
 
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # row 1 -> the team detail
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # row 1 -> the team detail (SAME shell, no reopen)
     # D6: this corpus save's own HoF teams carry no shiny DV quad and no custom
     # nickname (real, unedited saves) -- do not claim either in THIS shot's own
     # caption. Both are proven on dedicated poked-.sav shots kept alongside this
     # set (b89_{red,crystal}_08_nick.png, b89_crystal_09_shiny.png), not implied here.
-    s.shot("02_detail", "BACKLOG #89: the team detail page -- 6 mon rows"
-                        + (" (species/level, OT id)" if which == "crystal" else " (species/level)"))
-    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # detail -> back to the list
+    s.shot("02_detail", "BACKLOG #202 F1: the team detail CARD -- 6 mon rows "
+                        "(species/level), still inside the SAME open shell (no "
+                        "reopen, no rescan cost) -- OT id is dropped from the "
+                        "card view (no room for a 3rd row/mon); it stays on the "
+                        "plain fallback page")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # detail -> back to the list (same shell)
 
-    s.tap("START", settle=gb_shots.BIG_SETTLE)              # the Hall of Fame's own START menu
-    s.shot("03_menu", "BACKLOG #89: START -> CLEAR ALL / SET COUNT")
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # the Hall of Fame's own START menu (same shell)
+    s.shot("03_menu", "BACKLOG #202 F1: START -> the shell's own in-frame menu -- "
+                       "CLEAR ALL / SET COUNT / ADD TEAM / DELETE TEAM (BACKLOG "
+                       "#194 F3's two newer rows, recaptioned here -- this frame "
+                       "used to show only the first two)")
 
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # CLEAR ALL -> app_confirm
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # CLEAR ALL -> app_confirm (A2: shell stays
+                                                              # OPEN underneath; this full-screen ui_*
+                                                              # dialog just paints over it for now)
     s.shot("04_clear_confirm", "BACKLOG #89: CLEAR ALL -> the real consequence -- "
                                 "\"The PC's HALL OF FAME option disappears until "
-                                "you win again.\" (app_confirm)")
+                                "you win again.\" (app_confirm, full-screen -- A2: "
+                                "the shell is never closed for this, only "
+                                "repainted once the whole CLEAR ALL flow returns)")
     # gbh_clear() on Gen 1 chunks its write over up to 50 gen1_write_outside_sum
     # calls (one per team slot), each re-opening/re-parsing the whole 32 KiB image
     # to verify -- genuinely more CPU work than any other GB screen's single-field
@@ -1908,11 +1982,14 @@ def run_b89_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
                              "proved by the retail gate's hofclear/hofcount cases "
                              "(tools/gb_retail_gate.py), not this shot. The edit "
                              "already landed in-session, shown by the NEXT shot.")
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss gb_persist's own dialog -> back to the list
-    s.shot("06_empty", "BACKLOG #89: after CLEAR ALL -- '0 teams (lifetime count "
-                        "0)', 'No teams recorded yet.'")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss gb_persist's dialog -- A2: no
+                                                              # reopen, hof_card_menu_key just repaints
+                                                              # the SAME still-open shell
+    s.shot("06_empty", "BACKLOG #202 A2: after CLEAR ALL -- back on the SAME "
+                        "card (never closed) -- '0 teams (life 0)', "
+                        "'No teams yet.'")
 
-    s.tap("START", settle=gb_shots.BIG_SETTLE)              # menu again, on the now-empty list
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # menu again, on the now-empty list (same shell)
     s.tap("DOWN", settle=gb_shots.SETTLE)                   # SET COUNT row
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # -> the stepper, starts at 0 (never confirmed,
                                                               # so gb_persist()'s own dialog never fires here)
@@ -1930,6 +2007,164 @@ def run_b89_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
                           f"is empty, R1), not a flat 255, so 3 UP presses land at "
                           f"{want} ('Lifetime wins: {want} / {cap}')")
 
+    return s
+
+
+def run_b194_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
+    """BACKLOG #202 F4: the deeper card-shell flows run_b89_hof() above does not
+    reach -- a cold list open, the detail card, the in-frame START menu, an
+    EDIT of one mon's level through to the emulator's in-session refusal, ADD
+    TEAM through to the SAME refusal, and DELETE TEAM. `rom` MUST be the SAME
+    kind of ONE-ROM fused image run_b89_hof() takes.
+
+    A1 (review re-verify): Gen 2's detail rows now draw each mon's real 16x16
+    ROM menu icon at the row's left (hof_card_icon_refresh/_blit,
+    source/pdna_gbhof.c) -- 02_detail's own caption says so for `which ==
+    "crystal"`; Gen 1 stays text-only (a real gap, not a placeholder-icon
+    omission -- that function's own comment has the honest reason).
+
+    A2 (review re-verify): the shell now stays OPEN across EVERY full-screen
+    sub-editor too (EDIT MON's fields, CLEAR ALL/SET COUNT/ADD TEAM/DELETE
+    TEAM) -- there is only ONE gbscr_open() in this whole run, the FIRST
+    Records entry below; every dismiss/return shot's own caption says
+    "back on the card" now, not "reopened" (the old two-open-per-edit
+    behaviour this runner's captions used to describe was itself A2's bug).
+    GB_ART_COLD_SETTLE is still used ONLY after that one open."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b194_{which}_")
+    print(f"== BACKLOG #202 F4: {which}'s own HoF card -- cold open, menu, edit, "
+          "add, delete ==")
+
+    boot_to_gb_session(s, rom, which=which)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)               # box grid -> nav menu
+    s.press_n("DOWN", 12)                                     # Party -> ... -> Records
+    s.tap("A", settle=GB_ART_COLD_SETTLE)                     # Records -> pdna_gbhof() -> FIRST gbscr_open()
+    s.shot("01_cold_list", f"BACKLOG #202 F4: {which}'s HoF card, COLD open -- "
+                            f"the FIRST gbscr_open() this session, ridden out with "
+                            f"GB_ART_COLD_SETTLE ({GB_ART_COLD_SETTLE} frames) -- "
+                            f"the same PDNA_DELTA whole-ROM locator cost the "
+                            f"b194/f93cf5a review measured at ~3,240 frames")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # row 1 -> detail (same open shell)
+    if which == "crystal":
+        cap02 = ("BACKLOG #202 A1: the detail card, same open shell -- each "
+                 "mon's real 16x16 Gen-2 ROM menu icon at the row's left "
+                 "(hof_card_icon_refresh/_blit), text shifted to column 3 to "
+                 "leave room")
+    else:
+        cap02 = ("BACKLOG #202 F4: the detail card, same open shell -- Gen 1 "
+                 "stays TEXT ONLY (a real gap: no per-species front-pic cache "
+                 "yet, BACKLOG #196), not a placeholder icon")
+    s.shot("02_detail", cap02)
+
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                    # detail -> list (same shell)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)                # list -> the in-frame START menu
+    s.shot("03_menu_in_frame", "BACKLOG #202 F1: the START menu drawn INSIDE "
+                                "the SAME card frame (no ui_clear() screen swap) "
+                                "-- CLEAR ALL / SET COUNT / ADD TEAM / DELETE TEAM")
+
+    # ---- EDIT a level, through to the emulator's own in-session refusal -----------
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                    # menu -> list
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # row 1 -> detail
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # mon 0 -> EDIT MON menu (full-screen,
+                                                                # shell closed for this sub-editor -- F3)
+    s.tap("DOWN", settle=gb_shots.SETTLE)                     # SPECIES -> LEVEL
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # -> the level stepper
+    s.press_n("UP", 3, settle=gb_shots.SETTLE)                # +3 levels (clamped at 100 if already there)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # set -> back on EDIT MON, dirty=true
+    s.shot("04_level_staged", "BACKLOG #202 F4: LEVEL stepper committed (+3, "
+                               "clamped at 100) -- back on the EDIT MON menu, "
+                               "staged, nothing written yet")
+    s.press_n("DOWN", 2, settle=gb_shots.SETTLE)              # LEVEL -> NICKNAME -> DONE
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # DONE (dirty) -> "Save changes to slot 1?"
+    s.shot("05_edit_confirm", "BACKLOG #202 F4: DONE with a real staged change -- "
+                               "'Save changes to slot 1?' (app_confirm)")
+    # Two SEPARATE taps, same shape as run_b89_hof's own CLEAR ALL sequence:
+    # (1) yes -> gbh_set_mon() -> gb_persist() -> the PDNA_DELTA refusal dialog
+    # appears (own settle to let the write finish before the dialog draws);
+    # (2) a SECOND tap dismisses THAT dialog -- A2: the shell was NEVER
+    # closed for this edit, so there is nothing to reopen; the card is simply
+    # repainted (hof_card_detail_key's own gbscr_mark_all_dirty()).
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # yes -> gb_persist()
+    s.run(200)                                                 # ride out the single gen1_write_outside_sum
+    s.shot("06_edit_refusal", "BACKLOG #202 F4: gb_persist()'s PDNA_DELTA "
+                               "refusal, same #62 D2/D5 branch as every other "
+                               "GB screen's own commit -- the edit already "
+                               "landed in-session, shown by the NEXT shot")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # dismiss -- A2: the SAME still-open shell
+                                                                # just repaints, no reopen at all
+    s.shot("07_edit_back_on_card", "BACKLOG #202 A2: dismissed -- back on the "
+                                    "DETAIL card (the SAME shell, never closed) "
+                                    "showing the edit already landed in-session")
+
+    # ---- ADD TEAM, through to the SAME in-session refusal --------------------------
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                    # detail -> list
+    s.tap("START", settle=gb_shots.BIG_SETTLE)                # list -> menu
+    s.press_n("DOWN", 2, settle=gb_shots.SETTLE)              # CLEAR ALL -> SET COUNT -> ADD TEAM
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # ADD TEAM -> the full-screen builder
+                                                                # (shell closed -- F3)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # + ADD MON -> the species picker
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # pick the default species -> the level stepper
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                    # cancel (keep the Lv5 default)
+    s.tap("SEL", settle=gb_shots.BIG_SETTLE)                  # cancel the nickname OSK (keep the default)
+    s.shot("08_add_one_mon", "BACKLOG #202 F4: ADD TEAM's builder with 1 mon "
+                              "staged (default species, Lv5, default nickname)")
+    s.tap("DOWN", settle=gb_shots.SETTLE)                     # + ADD MON -> DONE
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # DONE -> "Add this 1-mon team?"
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # yes -> gbh_append_team -> gb_persist()
+    s.run(200)
+    s.shot("09_add_refusal", "BACKLOG #202 F4: ADD TEAM hits the SAME "
+                              "in-session-only refusal as CLEAR ALL/EDIT")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # dismiss -- A2: no reopen, same shell
+    s.shot("10_add_back_on_list", "BACKLOG #202 A2: dismissed -- back on the "
+                                   "LIST card (the SAME shell), now showing "
+                                   "10 teams (was 9) with the new team "
+                                   "'1: Lv5-5' on top -- the write DID land "
+                                   "in-session (RAM); only the FLASH persist "
+                                   "leg of gb_persist() refuses in the "
+                                   "emulator build, same as every other GB "
+                                   "screen's own commit")
+
+    # ---- DELETE TEAM -----------------------------------------------------------------
+    s.tap("START", settle=gb_shots.BIG_SETTLE)                # list -> menu (same shell)
+    s.press_n("DOWN", 3, settle=gb_shots.SETTLE)              # CLEAR ALL -> ... -> DELETE TEAM
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # DELETE TEAM -> "Delete team #1?"
+    s.shot("11_delete_confirm", "BACKLOG #202 F4: DELETE TEAM acts on the list "
+                                 "cursor's own row directly (no second picker) -- "
+                                 "'Delete team #1?'")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # yes -> gbh_delete_team -> gb_persist()
+    s.run(200)
+    s.shot("12_delete_refusal", "BACKLOG #202 F4: DELETE TEAM hits the SAME "
+                                 "in-session-only refusal")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # dismiss -- A2: no reopen, same shell
+    s.shot("13_delete_back_on_list", "BACKLOG #202 A2: dismissed -- back on "
+                                      "the LIST card (the SAME shell)")
+
+    return s
+
+
+def run_b194_hof_no_rom(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
+    """BACKLOG #202 F1's own honest fallback: `rom` MUST be a fused image
+    carrying a HoF-bearing save (Red.sav or Crystal.sav) with NO MATCHING GEN
+    ROM fused at all (fuse_gb.py invoked with only the .sav payload, the same
+    'no ROM at all' construction run_m1_map_gen2_no_rom() above uses for the
+    Gen-2 map screen) -- app_gb_rom_path()/gb_rom_path_beside() both fail,
+    gbscr_open()'s own kReasonNoRom refusal fires, and pdna_gbhof() falls back
+    to hof_plain_screen() with the honest 'HALL OF FAME (GB ART: OFF)' header
+    -- the SAME plain rows this screen drew before BACKLOG #194/#202 existed."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b194_{which}_norom_")
+    print(f"== BACKLOG #202 F1: {which}'s HoF, no ROM fused -- the honest plain fallback ==")
+    boot_to_gb_session(s, rom, which=which)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)
+    s.press_n("DOWN", 12)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # Records -> pdna_gbhof() -> gbscr_open()
+                                                                # refuses (no ROM) -> hof_plain_screen()
+                                                                # immediately, no cold-scan cost at all
+    s.shot("01_plain_fallback", "BACKLOG #202 F1: no Gen ROM fused at all -- "
+                                 "gbscr_open() refuses (kReasonNoRom) and "
+                                 "pdna_gbhof() falls back to the ORIGINAL plain "
+                                 "row list with the honest 'HALL OF FAME (GB ART: "
+                                 "OFF)' title, exactly the trainer card's own D7 "
+                                 "header contract")
     return s
 
 
@@ -3093,16 +3328,22 @@ def run_b124_dexicons(core_mod, image_mod, rom: Path, out_dir: Path, which: str,
 
     # ARTLESS DEFAULT IS LIST (mon_icon_for(1) is NULL in this shot vehicle) --
     # L once -> DV_GRID, the view dex_cell_grid()'s override actually paints.
-    s.tap("L", settle=gb_shots.BIG_SETTLE)
-    s.shot("02_dex_grid", "#124: DV_GRID page 1 -- " +
+    # BACKLOG #196: a GB-served page (a ROM is present, `not fallback`) does 21 REAL
+    # per-cell ROM fetches on this one repaint -- GB196_GB_PAGE_SETTLE, not
+    # BIG_SETTLE, or "02_dex_grid" (and bobcheck's own frame A, which reuses this
+    # exact session state with no further settle of its own) can be captured
+    # mid-paint. Applied to BOTH games (see the constant's own comment for why).
+    settle = GB196_GB_PAGE_SETTLE if not fallback else gb_shots.BIG_SETTLE
+    s.tap("L", settle=settle)
+    s.shot("02_dex_grid", "#124/#196: DV_GRID page 1 -- " +
            ("GB ROM icons via gbdex_cell_art() for every seen/caught species (this "
             "backlog's own render)" if (which == "crystal" and not fallback) else
-            "Gen 1: unchanged icon-store/mon_icon_for grid (gb_art_source.c's own "
-            "rule -- Gen 1 has no menu icons, gbdex_cell_art() self-gates on "
-            "s->gen != GB_GEN2)" if which == "red" else
-            "no GB ROM registered (fallback image) -- pdna_origin_art_have(PDNA_GEN2) "
+            "BACKLOG #196: the ROM's own Gen-1 front sprites (4 DMG greys), via "
+            "pdna_origin_art_portrait_by_dex() -- Red no longer falls to the "
+            "icon-store/name-chip ladder" if (which == "red" and not fallback) else
+            "no GB ROM registered (fallback image) -- pdna_origin_art_have() "
             "refuses, dex_cell_grid() falls straight back to the unchanged icon-store "
-            "ladder, byte-identical to a pre-#124 build"))
+            "ladder, byte-identical to a pre-#124/#196 build"))
     return s
 
 
@@ -3153,18 +3394,37 @@ def run_b124_bobcheck(core_mod, image_mod, rom: Path, out_dir: Path, which: str)
           f"({'BOBBING (differs)' if max_nonzero else 'STATIC (identical) -- would be the bug if this session should serve GB'})")
 
 
-def measure_dex_sd_reads(core_mod, image_mod, rom: Path, out_dir: Path) -> None:
-    """BACKLOG #124 step 2: the 'perf dex:' log line's own `sd Xr/...` field for ONE
-    Crystal dex-grid page (run_b124_dexicons's exact navigation, GB ROM registered,
-    no fallback) against the SAME image's box-grid 'perf box:'/'perf bank:' line for
-    a comparable single-page paint -- both spans already exist in this tree
-    (pdna_pick.c's pdna_dex_screen() and pdna_box.c's own span), so this reuses them
-    rather than adding new instrumentation. Installs a capturing logger (same
-    mechanism as tools/perf_parity.py's load_mgba_capturing) instead of taking
-    screenshots, and just prints every 'perf ' line captured during the run -- read
-    the LAST 'perf dex: ... sd Nr/...' and 'perf box:'/'perf bank: ... sd Nr/...'
-    lines by hand off stdout (no parser here: this is a one-off measurement, not a
-    gate this tool enforces)."""
+def measure_dex_sd_reads(core_mod, image_mod, rom: Path, out_dir: Path, which: str = "crystal") -> None:
+    """BACKLOG #124 step 2 (BACKLOG #196: `which` generalised from a Crystal-only
+    hardcode so the SAME measurement can run against a single-ROM Red image too --
+    Red's dex grid drew NOTHING from the GB rung before #196 (Gen 1 self-refused and
+    fell to the icon-store ladder), so a `which="red"` run before #196 is the "before"
+    half of that feature's own report; after #196 it exercises the new Gen-1 front-
+    pic rung). The 'perf dex:' log line's own `sd Xr/...` field for ONE dex-grid page
+    (run_b124_dexicons's exact navigation, GB ROM registered, no fallback) against
+    the SAME image's box-grid 'perf box:'/'perf bank:' line for a comparable
+    single-page paint -- both spans already exist in this tree (pdna_pick.c's
+    pdna_dex_screen() and pdna_box.c's own span), so this reuses them rather than
+    adding new instrumentation. Installs a capturing logger (same mechanism as
+    tools/perf_parity.py's load_mgba_capturing) instead of taking screenshots, and
+    just prints every 'perf ' line captured during the run -- read the LAST
+    'perf dex: ... sd Nr/...' and 'perf box:'/'perf bank: ... sd Nr/...' lines by
+    hand off stdout (no parser here: this is a one-off measurement, not a gate this
+    tool enforces).
+
+    HARDWARE-ONLY CAVEAT (BACKLOG #196 report): this `--image` is always a `make
+    delta-artless` + fuse_gb.py single-ROM fuse, i.e. the PDNA_DELTA build variant --
+    gb_art_source.c's PDNA_DELTA half reads the GB ROM straight out of cart address
+    space via fused_gb_rom() (fused_gb.h), NEVER through FatFs/`f_open`/disk_read, so
+    `perf_sd.rd` (the counter 'perf dex: sd Nr' actually reads) is architecturally
+    fixed at 0 on this vehicle no matter what the dex screen does -- the emulator
+    cannot exercise the real SD path at all (no SD card is emulated; the ONLY
+    non-PDNA_DELTA build is the hardware SD-mode build, `make`/`make sd`, which this
+    harness cannot run). The real per-page SD-read cost this feature actually changes
+    is therefore a hardware-only number -- see the BACKLOG #196 report's own fetch-
+    CALL-COUNT proxy (which maps 1:1 to f_open count on the real SD build, per
+    gb_art_source.h's own header comment) for the provable, non-hardware-only
+    evidence that this feature reduces I/O."""
     lines: list[str] = []
     log_mod = getattr(core_mod, "log", None)
     if log_mod is None:
@@ -3179,10 +3439,10 @@ def measure_dex_sd_reads(core_mod, image_mod, rom: Path, out_dir: Path) -> None:
             lines.append(m)
 
     log_mod.install_default(Capture())
-    s = run_b124_dexicons(core_mod, image_mod, rom, out_dir, "crystal", fallback=False)
+    s = run_b124_dexicons(core_mod, image_mod, rom, out_dir, which, fallback=False)
     s.run(150)   # let perf's rate-limited flush land (perf_parity.py's own FLUSH_SETTLE)
-    print("== BACKLOG #124 step 2: captured perf lines (read 'perf dex:'/'perf box:'"
-          "/'perf bank:' sd Nr by hand) ==")
+    print(f"== BACKLOG #124/#196 step 2: captured perf lines ({which}) -- read 'perf dex:'/"
+          "'perf box:'/'perf bank:' sd Nr by hand ==")
     for l in lines:
         if l.startswith("perf "):
             print(f"  {l}")
@@ -3986,11 +4246,13 @@ def run_s150_2_bank_native(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_
     s.tap("START", settle=80)                              # nav menu
     s.tap("DOWN", settle=60)                                # Party -> Bank (index 1, one DOWN)
     s.tap("A", settle=150)                                  # -> pdna_bank_show(), box 0 (BANK 1)
-    s.shot("00_planted_box0", "S150-2: BANK 1, box_load()'s PDNA_DELTA plant -- five "
-           "native cells at slots 0-4 (CHIKORITA/2, PIKACHU/1, an Egg, an item "
-           "holder, the DMG chip), the rest of the grid ordinary empty Gen-3 slots -- "
-           "no '?' badge anywhere; every native cell wears its era mark EXCEPT the "
-           "DMG cell (species 252 + isBadEgg, D-Q3 -- review F3: no era to claim)")
+    s.shot("00_planted_box0", "S150-2: BANK 1, box_load()'s PDNA_DELTA plant -- seven "
+           "native cells at slots 0-6 (CHIKORITA/2, PIKACHU/1, an Egg, an item "
+           "holder, the DMG chip at slots 0-4, plus BACKLOG #150 S150-12 decision "
+           "17's two COPY cells at slots 5/6), the rest of the grid ordinary empty "
+           "Gen-3 slots -- no '?' badge anywhere; every native cell wears its era "
+           "mark EXCEPT the DMG cell (species 252 + isBadEgg, D-Q3 -- review F3: no "
+           "era to claim)")
 
     # cursor on each of the five cells in turn -- the left DATA panel (species/level/
     # nickname) is the thing this shot list actually proves: a native cell decodes to
@@ -4052,6 +4314,114 @@ def run_s150_2_bank_native(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_
            "least attempts gen12_can_convert, and 27/30 pay the full PID search, "
            "which is the worst case SS11.9 prices) -- every cell native, every one "
            "wearing its era badge EXCEPT the DMG cell (D-Q3), no '?' anywhere")
+    return s
+
+
+def _count_exact_color(png_path: Path, rgb: tuple) -> int:
+    """Exact-match pixel count of `rgb` anywhere in the PNG at `png_path`. Used to pin
+    the carry badge's presence quantitatively (BACKLOG #150 S150-13, review D1) --
+    counting the grid's own era_cell_mark() fill colour (COL_GEN1/COL_GEN2) is more
+    reliable than eyeballing a small OBJ sprite whose fill can read faintly against
+    the grass background at a glance."""
+    from PIL import Image
+    img = Image.open(png_path).convert("RGB")
+    return sum(1 for p in img.getdata() if p == rgb)
+
+
+# COL_GEN1/COL_GEN2 (source/pdna_origin_art.c:52-53) as 8-bit RGB, RGB15 5-bit
+# channels scaled by 255/31 and truncated -- the SAME conversion this tool's own
+# mGBA/PIL screenshot path produces (confirmed by direct pixel sampling, review D1).
+_COL_GEN1_RGB = (90, 173, 74)     # RGB15 11|21<<5|9<<10
+_COL_GEN2_RGB = (173, 82, 206)    # RGB15 21|10<<5|25<<10
+
+
+def run_s150_13_carry_badge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #150 S150-13 (#164): the glove shows a carried native Bank cell's era
+    badge. Reuses S150-2/S150-3's exact fixture and nav recipe (same box0 plant, same
+    --image requirements: a plain tools/fuse_sav.py fusion of an Emerald.sav onto
+    pokedna-delta-artless.gba, no --gb, no --clip -- see run_s150_2_bank_native()'s own
+    docstring for why no fused payload is needed).
+
+    box0 slot 0 = the Gen-2 CHIKORITA plant (bc_kind() == 2), slot 1 = the Gen-1
+    PIKACHU plant (bc_kind() == 1) -- shooting BOTH proves the badge follows bc_kind(),
+    not a hardcoded '1'. Before S150-13 this exact sequence's carry frame showed the
+    glove with an empty/garbage hand (BACKLOG #164); after, a small badge rides the
+    glove's bottom-right corner with the cell's own gen digit in its own gen tint.
+
+    Review D1 (2026-09-22): the settle-the-grid beat in pdna_box.c's idle-bob loop
+    could fire the instant a carry began (bob mid-animation at pickup time) and
+    re-uploaded the cursor hand pose over the SAME tile ids the badge borrows,
+    clobbering it on roughly half of all pickups -- a capture taken immediately after
+    MOVE (settle=150, one bob period at most) was parity-blind to this. Frames 01/03
+    below are kept for the per-tap trace, but 01b/03b wait >= 60 vblanks (two full bob
+    periods) after the pickup, past any settle beat, and PIN the badge's presence by
+    an exact pixel count of the grid's own era-tint colour: the grid always contributes
+    its own baseline (multiple cells can share a tint), and the badge's own pixels are
+    the same exact quantized colour, so badge-present must read STRICTLY higher than
+    the pre-carry baseline (00), by the exact number of gen-tint pixels in this file's
+    own hand-authored tile (source/box_oam.c's s150_13_badge_tiles)."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s150_13_")
+    print("== BACKLOG #150 S150-13 (#164): the glove's carried-native-cell era badge ==")
+    s.tap("START", settle=80)                              # nav menu
+    s.tap("DOWN", settle=60)                                # Party -> Bank (index 1, one DOWN)
+    s.tap("A", settle=150)                                  # -> pdna_bank_show(), box 0 (BANK 1)
+    p00 = s.shot("00_box0", "S150-13: box 0, box_load()'s PDNA_DELTA plant -- slot 0 "
+           "CHIKORITA (Gen 2), slot 1 PIKACHU (Gen 1); cursor on slot 0")
+    base_gen1 = _count_exact_color(p00, _COL_GEN1_RGB)
+    base_gen2 = _count_exact_color(p00, _COL_GEN2_RGB)
+    print(f"  (pixel baseline, no carry) gen1-tint={base_gen1} gen2-tint={base_gen2}")
+
+    # slot 0 (CHIKORITA, gen 2): menu -> MOVE -> carrying.
+    s.tap("A", settle=150)                                  # slot 0 -> its whitelist menu
+    s.tap("DOWN", settle=60)                                # VIEW -> MOVE
+    s.tap("A", settle=150)                                  # select MOVE -> start_carry
+    s.shot("01_carrying_gen2", "S150-13: MOVE picked up the Gen-2 CHIKORITA cell, "
+           "captured immediately (per-tap trace only -- review D1: this timing is "
+           "parity-blind to the settle-beat clobber, see 01b for the pinned proof)")
+
+    # D1: wait past the settle beat (>= 60 vblanks = 2 bob periods) before pinning.
+    p01b = s.shot("01b_settled_gen2", "S150-13 review D1: same carry, >= 60 vblanks "
+           "later (past any settle-the-grid beat) -- the badge must still be there; "
+           "pinned by an exact pixel count below, not eyeballed. Expected to be "
+           "pixel-identical to 01 when the cursor itself has not moved (a stable "
+           "badge at a stable position is the GOOD outcome, not a stuck frame)",
+           settle=60, allow_same=True)
+    after_gen2 = _count_exact_color(p01b, _COL_GEN2_RGB)
+    delta_gen2 = after_gen2 - base_gen2
+    print(f"  (01b) gen2-tint after settle: {after_gen2} (delta {delta_gen2:+d} vs baseline {base_gen2})")
+    if delta_gen2 != 22:   # exact index-2 count of s150_13_badge_tiles[1] (the '2'); +7 = a clobbered fragment (review D1 re-verify)
+        raise RuntimeError(f"s150_13_01b_settled_gen2: gen2-tint delta {delta_gen2:+d} != expected +22 "
+                            f"({base_gen2} -> {after_gen2}) -- the badge is missing or a clobbered "
+                            f"fragment (review D1's exact bug)")
+
+    # drop it back on its own slot (self-drop, no write) before moving to slot 1.
+    s.tap("A", settle=150)
+    s.shot("02_dropped_back", "S150-13: A on the same cell -- drop_held's self-drop "
+           "early return, no longer carrying, badge gone")
+
+    # slot 1 (PIKACHU, gen 1): same recipe, one RIGHT first.
+    s.tap("RIGHT", settle=300)                              # slot 0 -> slot 1
+    s.tap("A", settle=150)                                  # slot 1 -> its whitelist menu
+    s.tap("DOWN", settle=60)                                # VIEW -> MOVE
+    s.tap("A", settle=150)                                  # select MOVE -> start_carry
+    s.shot("03_carrying_gen1", "S150-13: MOVE picked up the Gen-1 PIKACHU cell, "
+           "captured immediately (per-tap trace only -- see 03b for the pinned proof; "
+           "review D1 found THIS exact frame, on the pre-fix build, showed no badge at "
+           "all -- the earlier caption claiming one was FALSE, corrected here)")
+
+    p03b = s.shot("03b_settled_gen1", "S150-13 review D1: same carry, >= 60 vblanks "
+           "later -- pinned by an exact pixel count below (expected pixel-identical "
+           "to 03 when the badge and cursor are both stable)", settle=60, allow_same=True)
+    after_gen1 = _count_exact_color(p03b, _COL_GEN1_RGB)
+    delta_gen1 = after_gen1 - base_gen1
+    print(f"  (03b) gen1-tint after settle: {after_gen1} (delta {delta_gen1:+d} vs baseline {base_gen1})")
+    if delta_gen1 != 21:   # exact index-2 count of s150_13_badge_tiles[0] (the '1')
+        raise RuntimeError(f"s150_13_03b_settled_gen1: gen1-tint delta {delta_gen1:+d} != expected +21 "
+                            f"({base_gen1} -> {after_gen1}) -- the badge is missing or a clobbered "
+                            f"fragment (review D1's exact bug)")
+
+    s.tap("A", settle=150)                                  # drop it back on its own slot
+    s.shot("04_dropped_back", "S150-13: dropped back, badge gone again")
     return s
 
 
@@ -4703,8 +5073,10 @@ def run_s150_7_down_edge(core_mod, image_mod, rom_gold: Path, rom_red: Path,
     sg.press_n("UP", UP_INTO_BANK, settle=100)
     sg.press_n("UP", UP_TO_ROW0, settle=60)
     sg.shot("05_gold_bank_cell_still_there", "S150-7 (d): back in the Bank, slot 0 -- "
-            "CHIKORITA is STILL a native cell here (BANK 1  5/30, unchanged) -- the "
-            "visual proof that a refused persist consumes NOTHING: D12's ordering held")
+            "CHIKORITA is STILL a native cell here (BANK 1  7/30 -- BACKLOG #150 "
+            "S150-12's decision 17 added two more planted COPY cells at slots 5/6, "
+            "unchanged from this lane's own box0 plant) -- the visual proof that a "
+            "refused persist consumes NOTHING: D12's ordering held")
 
     # ---- (c) the 10(c) party-full offer + picker, on a FRESH carry off the same Bank -
     sg2 = gb_shots.Session(core_mod, image_mod, rom_gold, out_dir, "s150_7_gold_party_")
@@ -5121,7 +5493,9 @@ def run_s150_8_gen3_arm(core_mod, image_mod, rom_emerald: Path, out_dir: Path) -
            "KEEP AS IS / MAKE LEGAL row: CHIKORITA is a base-form species, never "
            "below pk_evo_floor() at any level, so gb_bank_down_gen3's decision-7 "
            "check (pdna_gen12.c:2765-2780) never fires for any of bank_plant.c's "
-           "five planted cells -- none qualifies, per this lane's own brief")
+           "seven planted cells (five native slots 0-4 + two COPY cells at slots "
+           "5/6, BACKLOG #150 S150-12 decision 17) -- none qualifies, per this "
+           "lane's own brief")
 
     # ---- confirm: the ledger write is refused on this vehicle (no SD card) -------
     s.tap("A", settle=300)
@@ -5230,8 +5604,9 @@ def run_s150_8_bridge(core_mod, image_mod, rom_gold: Path, rom_red: Path,
     boot_to_grid(sg)
     sg.press_n("UP", UP_INTO_BANK, settle=100)
     sg.press_n("UP", UP_TO_ROW0, settle=60)
-    sg.shot("00_bank", "S150-8 bridge: Gold's own Bank, box 0's five planted cells "
-            "(CHI/PIK/EGG/CHI/DMG), cursor on slot 0")
+    sg.shot("00_bank", "S150-8 bridge: Gold's own Bank, box 0's seven planted cells "
+            "(CHI/PIK/EGG/CHI/DMG at slots 0-4, plus BACKLOG #150 S150-12 decision "
+            "17's two COPY cells at slots 5/6), cursor on slot 0")
     sg.tap("RIGHT", settle=100)
     sg.shot("01_cursor_pikachu", "S150-8 bridge: cursor moved RIGHT x1 to slot 1 -- "
             "the Gen-1 PIKACHU cell (dex 25, no species/move ever blocks a "
@@ -5382,6 +5757,16 @@ def main(argv=None) -> int:
                           "--image (a Crystal single-ROM fused image, GB ROM present) "
                           "and print every captured 'perf ' log line instead of taking "
                           "screenshots.")
+    ap.add_argument("--b196-sdreads", choices=("red", "crystal"),
+                     help="BACKLOG #196: measure_dex_sd_reads() against --image (a "
+                          "ONE-ROM fused image of the NAMED game, GB ROM present) -- "
+                          "the generalised (Red or Crystal) form of --b124-sdcount, "
+                          "for the before/after 'perf dex: sd Nr' comparison this "
+                          "backlog's report needs on BOTH generations, not just "
+                          "Crystal. See measure_dex_sd_reads()'s own docstring for "
+                          "why this counter is architecturally 0 on this (PDNA_DELTA) "
+                          "vehicle regardless of what this feature does -- hardware-"
+                          "only.")
     ap.add_argument("--b85-daycare", choices=("red", "gold"),
                      help="BACKLOG #85: only run_b85_daycare() against --image for "
                           "the named game (Red's one-slot Day Care, or Gold's "
@@ -5480,6 +5865,18 @@ def main(argv=None) -> int:
                           "byte-poked first (a nicknamed mon for *-nick, a shiny DV "
                           "quad for crystal-shiny) -- see run_b89_hof_detail_only()'s "
                           "own docstring")
+    ap.add_argument("--b194-hof", choices=("red", "crystal"),
+                     help="BACKLOG #202 F4: only run_b194_hof() against --image -- "
+                          "the cold card open, in-frame menu, an EDIT-a-level round "
+                          "trip, ADD TEAM, and DELETE TEAM, each through to the "
+                          "emulator's own in-session refusal and the shell's "
+                          "reopen -- --image MUST be a ONE-ROM fused image matching "
+                          "this choice, same posture as --b89-hof")
+    ap.add_argument("--b194-hof-no-rom", choices=("red", "crystal"),
+                     help="BACKLOG #202 F1: only run_b194_hof_no_rom() against "
+                          "--image -- --image MUST be a fused image carrying the "
+                          "named game's HoF save with NO Gen ROM fused at all (the "
+                          "honest plain-fallback shot)")
     ap.add_argument("--s2-bank", choices=("gold", "red"),
                      help="#120: only run_s2_bank() against --image for the "
                           "named game -- the Bank, reachable from a Game Boy session "
@@ -5528,6 +5925,13 @@ def main(argv=None) -> int:
                           "whitelist (VIEW/MOVE/RELEASE/CANCEL), the deny toast when a "
                           "native cell in hand is dropped into the PC, and VIEW opening "
                           "the real Gen-1/2 summary.")
+    ap.add_argument("--s150-13", action="store_true",
+                     help="BACKLOG #150 S150-13 (#164): only run_s150_13_carry_badge() "
+                          "against --image -- --image MUST be a plain tools/fuse_sav.py "
+                          "fusion of an Emerald.sav onto pokedna-delta-artless.gba (no "
+                          "--gb, no --clip -- same vehicle as --s150-2/--s150-3). The "
+                          "glove's era badge on a carried native Bank cell, both gens "
+                          "(slot 0 CHIKORITA/2, slot 1 PIKACHU/1).")
     ap.add_argument("--s150-14", action="store_true",
                      help="BACKLOG #150 S150-14: only run_s150_14_native_edit() against "
                           "--image -- --image MUST be a plain tools/fuse_sav.py fusion "
@@ -5626,6 +6030,20 @@ def main(argv=None) -> int:
                           "artless.gba> Red.gb Red.sav (Gen 1) -- the SAME two images "
                           "--s150-7 uses (reuses --s150-7-red rather than adding a "
                           "third flag name for the identical Red image).")
+    ap.add_argument("--s150-12", action="store_true",
+                     help="BACKLOG #150 S150-12: only run_s150_12_copy_edge() against "
+                          "--image -- --image MUST be `make delta-gb`'s own combined "
+                          "image (Emerald.sav + Red/Gold/Crystal). The read-only "
+                          "START > GB import mount's COPY lift (SELECT enters MOVE, "
+                          "the origin prompt draws, the lift is then refused cleanly "
+                          "at the same no-SD-card wall run_s150_4_uplift() already "
+                          "documents for the MOVE lift), then bank_plant.c's two "
+                          "PDNA_DELTA-only planted COPY cells (box 0 slots 5/6) prove "
+                          "decision 9's DOWN-skips-the-ledger claim live: both land in "
+                          "the Emerald PC with the honest NOBACK loss-screen rows and "
+                          "no SAVE FIRST wall between them, and the Bank slot reads "
+                          "blank afterwards -- see the run function's own docstring "
+                          "for the full per-tap trace.")
     ap.add_argument("--b54-romhack", choices=("hack", "control"),
                      help="BACKLOG #54: only run_b54_romhack() against --image for the "
                           "named case -- the ROM-hack banner + the mon-menu refusal it "
@@ -5689,6 +6107,16 @@ def main(argv=None) -> int:
                           "with `fuse_gb.py --no-loc`, same convention as --cold-start-compare) "
                           "-- run this against a --before and an --after build to get the "
                           "brief's own comparison. Skips the normal --image shot run entirely.")
+    ap.add_argument("--b200", action="store_true",
+                     help="BACKLOG #200: runs run_b200_chain() against --image -- the "
+                          "Gen-1/2 grid's phantom cells (blocked-cell paint, cursor "
+                          "skip/clamp, the A refusal), four sub-chains: box 12 (0/20) + "
+                          "the DOWN-off-blocked-row edge, the GB PARTY pseudo-box "
+                          "(capacity 6), box 1 (20/20 full, same blocked rows), and "
+                          "Emerald's own PC box (unaffected). --image MUST be the same "
+                          "flight-shaped image --b187-chains uses (Emerald.sav + a "
+                          "fused Yellow.gb/Yellow.sav, GUY'S OWN Yellow.sav copied to "
+                          "/tmp first).")
     a = ap.parse_args(argv)
     a.out.mkdir(parents=True, exist_ok=True)
 
@@ -5837,6 +6265,32 @@ def main(argv=None) -> int:
             print(f"  [skip] {name2}: {reason}")
         return 0
 
+    if a.b194_hof:
+        try:
+            sess = run_b194_hof(core_mod, image_mod, a.image, a.out, a.b194_hof)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b194 hof ({a.b194_hof}): {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if a.b194_hof_no_rom:
+        try:
+            sess = run_b194_hof_no_rom(core_mod, image_mod, a.image, a.out, a.b194_hof_no_rom)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b194 hof no-rom ({a.b194_hof_no_rom}): {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
     if a.b90_fly:
         try:
             sess = run_b90_fly(core_mod, image_mod, a.image, a.out, a.b90_fly)
@@ -5941,6 +6395,9 @@ def main(argv=None) -> int:
         ran = True
     if a.b124_sdcount:
         measure_dex_sd_reads(core_mod, image_mod, a.image, a.out)
+        ran = True
+    if a.b196_sdreads:
+        measure_dex_sd_reads(core_mod, image_mod, a.image, a.out, which=a.b196_sdreads)
         ran = True
     if a.b124_bobcheck:
         run_b124_bobcheck(core_mod, image_mod, a.image, a.out, a.b124_bobcheck)
@@ -6143,6 +6600,19 @@ def main(argv=None) -> int:
             print(f"  [skip] {name}: {reason}")
         ran = True
 
+    if a.b200:
+        try:
+            for sess in run_b200_chain(core_mod, image_mod, a.image, a.out):
+                ok += sess.taken
+                skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b200 chain: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        ran = True
+
     if ran:
         return 0
 
@@ -6236,6 +6706,21 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] s150-3: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if getattr(a, "s150_13", False):
+        # BACKLOG #150 S150-13: same append-only convention as --s150-2/--s150-3 above.
+        ran = True
+        try:
+            sess = run_s150_13_carry_badge(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] s150-13: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
@@ -6365,6 +6850,21 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] s150-8-bridge: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+    if getattr(a, "s150_12", False):
+        # BACKLOG #150 S150-12: append-only, same convention as --s150-4/7/8 above --
+        # single image (make delta-gb's own combined image).
+        ran = True
+        try:
+            sess = run_s150_12_copy_edge(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] s150-12: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
@@ -6975,9 +7475,12 @@ def run_b93_menu(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> g
     s2.run(GB_ART_COLD_SETTLE)
     s2.press_n("UP", 3, settle=100)
     s2.shot("26_bank_hop", "BACKLOG #93: the bank_edge UP hop opens the Bank -- "
-                            "'BANK 1  5/30' -- the five PDNA_DELTA-planted native cells in slots 0-4, the rest empty (#120 S2's F1 fix: "
-                            "no write surface survives into a GB session's Bank "
-                            "visit, so nothing can ever land here in mGBA)")
+                            "'BANK 1  7/30' -- the seven PDNA_DELTA-planted native "
+                            "cells (five in slots 0-4, plus BACKLOG #150 S150-12 "
+                            "decision 17's two COPY cells in slots 5/6), the rest "
+                            "empty (#120 S2's F1 fix: no write surface survives "
+                            "into a GB session's Bank visit, so nothing can ever "
+                            "land here in mGBA)")
     s2.tap("A", settle=150)
     # D9 (review-opus, BACKLOG #93): this shot shows an EMPTY Bank cell -- there is
     # no occupied one to press A on in mGBA (#120 S2's F1 fix already closed the
@@ -7151,18 +7654,27 @@ def run_s2_control(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Se
     app correctly routed it through app_mon_menu_readonly()'s native whitelist (VIEW
     only) -- a real behaviour, just the WRONG control (a native cell, not a Gen-3 one;
     the brief calls this out explicitly: "a native cell is not [an acceptable
-    control]"). bank_plant.c plants NO Gen-3 cells anywhere -- slots 5-29 of box 0 are
-    left genuinely empty (ordinary zeroed Gen-3 box slots, per bank_plant.h's own
-    doc), so the only way to see an OCCUPIED Gen-3 Bank cell's menu is to put a real
-    Gen-3 record there first: COPY a mon off the save's own box (box 0 of the SAVE's
-    PC, not the Bank -- app_mon_menu's ordinary occupied-cell menu, reached straight
-    off the boot cursor) into the clipboard, then PASTE HERE into an empty (non-
-    native) Bank slot. This run does exactly that, entirely through taps a player has
-    -- no ROM/save file is edited directly.
+    control]"). bank_plant.c plants Gen-3 records nowhere -- but as of BACKLOG #150
+    S150-12 decision 17 it plants TWO MORE native cells (COPY cells) at slots 5/6, so
+    slots 0-6 are ALL native now, not just 0-4; slots 7-29 of box 0 are the first
+    genuinely empty ones (ordinary zeroed Gen-3 box slots) -- so the only way to see
+    an OCCUPIED Gen-3 Bank cell's menu is to put a real Gen-3 record there first: COPY
+    a mon off the save's own box (box 0 of the SAVE's PC, not the Bank -- app_mon_
+    menu's ordinary occupied-cell menu, reached straight off the boot cursor) into the
+    clipboard, then PASTE HERE into an empty (non-native) Bank slot. This run does
+    exactly that, entirely through taps a player has -- no ROM/save file is edited
+    directly.
 
     Bank grid layout confirmed live (source/pdna_bank.c's BOX_RECS=30, pdna_box.c's
-    5-column grid): slot 5 is row 2, column 0 (one DOWN from slot 0); slot 6 is row 2,
-    column 1 (one more RIGHT). Both non-native, non-planted.
+    6-column grid, COLS=6): slot 6 is row 1, column 0 (one DOWN from slot 0) -- now
+    OCCUPIED by decision 17's second planted COPY cell (found live while re-verifying
+    this chain after decision 17 landed: the original "DOWN then A" recipe silently
+    opened that native cell's own whitelist menu instead of CREATE/PASTE HERE, and
+    the two unrelated taps that followed cascaded into leaving the Bank entirely and
+    editing a PARTY mon's menu -- not this lane's own gate, a stale navigation count
+    in this test script, fixed here). Slot 7 is row 1, column 1 (one more RIGHT) --
+    the first genuinely empty Gen-3 slot; slot 8 (row 1, column 2, one more RIGHT
+    again) is the second.
 
     Unlike run_s2_bank() which probes the Bank from a GB session (showing why F1 closed
     it off: no CREATE, no PASTE HERE on an empty cell), this run shows the Gen-3
@@ -7192,26 +7704,30 @@ def run_s2_control(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Se
     s.tap("DOWN", settle=60)                                   # Party -> Bank (index 1, one DOWN)
     s.tap("A", settle=150)                                     # -> pdna_bank_show(), box 0 (BANK 1)
     s.shot("01_bank_grid", "#143: the Bank, from a Gen-3 session -- BANK 1 (box 0) "
-           "shows the PDNA_DELTA plant's 5 native cells (CHI1/PIK/EGG/CHI2/DMG, "
-           "bank_plant_box0) across its top row and genuinely empty Gen-3 slots "
-           "everywhere else (5/30 occupied); cursor on slot 0 (CHI1, native)")
+           "shows the PDNA_DELTA plant's 7 native cells (CHI1/PIK/EGG/CHI2/DMG at "
+           "slots 0-4, bank_plant_box0, plus BACKLOG #150 S150-12 decision 17's two "
+           "COPY cells at slots 5/6) across its top row and genuinely empty Gen-3 "
+           "slots everywhere else (7/30 occupied); cursor on slot 0 (CHI1, native)")
 
-    s.tap("DOWN", settle=gb_shots.SETTLE)                      # slot 0 -> slot 5 (row 2, col 0): empty, non-native
+    s.tap("DOWN", settle=gb_shots.SETTLE)                      # slot 0 -> slot 6 (row 1, col 0): NATIVE (decision 17's copy cell)
+    s.tap("RIGHT", settle=gb_shots.SETTLE)                     # slot 6 -> slot 7 (row 1, col 1): empty, non-native
     s.tap("A", settle=150)                                     # A on the empty Gen-3 slot
     s.tap("DOWN", settle=gb_shots.SETTLE)                      # CREATE -> PASTE HERE
-    s.tap("A", settle=150)                                     # PASTE HERE -> commits the clipboard mon into slot 5
+    s.tap("A", settle=150)                                     # PASTE HERE -> commits the clipboard mon into slot 7
 
-    s.tap("A", settle=150)                                     # A again on the now-OCCUPIED slot 5
+    s.tap("A", settle=150)                                     # A again on the now-OCCUPIED slot 7
     s.shot("02_occupied_cell_menu", "#143: an OCCUPIED Gen-3 Bank cell's menu (slot "
-           "5, just pasted from the save's own PC) from a Gen-3 session -- VIEW/EDIT, "
-           "ITEM, LEGALITY, MOVE, COPY, PASTE, DUPLICATE, TO GAME, RELEASE -- TO GAME "
-           "is the Gen-3-only row (send the mon into the loaded save), present "
-           "because app_mon_menu (not the read-only variant) is driving this cell")
+           "7, just pasted from the save's own PC -- slots 5/6 are decision 17's own "
+           "planted COPY cells now, so this chain targets the first genuinely empty "
+           "slot instead) from a Gen-3 session -- VIEW/EDIT, ITEM, LEGALITY, MOVE, "
+           "COPY, PASTE, DUPLICATE, TO GAME, RELEASE -- TO GAME is the Gen-3-only row "
+           "(send the mon into the loaded save), present because app_mon_menu (not "
+           "the read-only variant) is driving this cell")
 
     s.tap("B", settle=100)                                     # back to the grid
-    s.tap("RIGHT", settle=gb_shots.SETTLE)                     # slot 5 -> slot 6 (row 2, col 1): still empty
+    s.tap("RIGHT", settle=gb_shots.SETTLE)                     # slot 7 -> slot 8 (row 1, col 2): still empty
     s.tap("A", settle=150)                                     # A on the empty Gen-3 slot
-    s.shot("03_empty_cell_menu", "#143: an EMPTY Gen-3 Bank cell's menu (slot 6, "
+    s.shot("03_empty_cell_menu", "#143: an EMPTY Gen-3 Bank cell's menu (slot 8, "
            "distinct from the slot the previous shot just filled) from a Gen-3 "
            "session -- CREATE / PASTE HERE / CANCEL -- xg_create_row and xg_paste_row "
            "are both true in an ordinary Gen-3 session (pc_live is true, parsed save, "
@@ -7353,6 +7869,333 @@ def run_b187_chain_c(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.
 # (real Yellow.sav, the engine level), and by tests/host_gb_grid_ops_test.py's
 # structural checks (b)/(e) with four real mutations -- what mGBA specifically
 # cannot ever show is the LIFT gesture's own SD-write-gated start. HW-QUEUE row.
+
+
+def run_b200_chain(core_mod, image_mod, rom: Path, out_dir: Path) -> list[gb_shots.Session]:
+    """BACKLOG #200: the Gen-1/2 grid's phantom cells. `rom` MUST be the same
+    flight-shaped image run_b187_chain_a() uses (Emerald.sav + a fused Yellow.gb/
+    Yellow.sav, tools/fuse_sav.py then tools/fuse_gb.py, GUY'S OWN Yellow.sav
+    copied to /tmp first -- the corpus at gba-toolkit/roms/gb/Yellow.sav is
+    read-only) -- current box (display "12") boots 0/20 (byte 0x284C=0x8B, same
+    fact run_b187_chain_a()'s own docstring records).
+
+    Box index math (GEN1_NUM_BOXES=12, source/gen1_save.h): storage boxes are
+    index 0..11 (display "1".."12"), the party pseudo-box is index 12 (13
+    positions total). The boot landing is index 11 (display "12"). SWITCH_BOX's
+    `(box+1) % nb` means ONE R reaches the party pseudo-box (11+1=12) and a
+    SECOND R from there reaches box 1 (12+1=13 mod 13=0) -- no need to hunt for
+    a full box by trial; Guy's Yellow.sav has box 1 at 20/20 (verified against
+    this exact file, same as run_b187_chain_b()'s own "box1 ... genuinely 20/20
+    full" claim).
+
+    Four sub-chains, each its own Session (same posture as run_b187_chain_a/b/c):
+      A: box 12 (0/20, the boot landing) -- F1's dim/X blocked cells on rows 3
+         (2 blocked cells) and 4 (all 6), even though the box is EMPTY of mons
+         (capacity, not occupancy, drives the paint). Also demonstrates F2's
+         DOWN behaviour on column 0 (cells 0/6/12/18 real, 24 blocked): DOWN x3
+         reaches the deepest real cell (18, row 3 col 0), a 4th DOWN does NOT
+         linger on/wrap toward the blocked row 4 -- `cur + COLS >= cap` fires
+         the SAME off-bank-bottom edge (return 5) the physical bottom row
+         already used (is_bank is unconditionally true for a GB source), so
+         the screen LEAVES the box grid entirely (into the Bank hand-off,
+         bank_plant.c's PDNA_DELTA-only planted cells make that landing
+         screenshot-able with no real SD card -- same fixture run_s150_7_
+         down_edge() already relies on).
+      B: the GB PARTY pseudo-box (index 12, capacity 6) -- 24 of 30 cells
+         blocked (every cell but row 0).
+      C: box 1 (index 0, 20/20 full) -- same blocked rows 3 (partial)/4 (full)
+         as box 12, but every real cell (0-19) shows an occupied Pokemon.
+      D: the Emerald Gen-3 PC box (row 0 of the SAME image's boot picker,
+         capacity NULL -> 30) -- unaffected: no blocked cells anywhere.
+    """
+    sessions: list[gb_shots.Session] = []
+
+    # ---- A: box 12 (0/20, boot landing) + the DOWN-off-blocked-row edge -------
+    sa = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b200a_")
+    print("== BACKLOG #200 Chain A: box 12 (0/20) blocked cells + DOWN edge ==")
+    boot_to_gb_session(sa, rom, which="yellow")
+    sa.shot("00_box12_boot", "tap0 (boot): box 12 (current box, 0/20) -- F1's dim/X "
+            "blocked tiles cover row 3's last 4 cells (indices 20-23) and all of "
+            "row 4 (24-29), even though the box has NO Pokemon at all -- capacity "
+            "(20), not occupancy, drives the paint")
+    sa.press_n("DOWN", 3, settle=gb_shots.SETTLE)
+    sa.shot("01_col0_row3", "tap1 (DOWN x3, column 0): cursor at index 18 (row 3 "
+            "col 0) -- the deepest REAL cell in this column (index 24, row 4 col "
+            "0, is blocked); F2's grid_lr_step/DOWN clamp got it here one real "
+            "cell at a time, same as before this lane for every cell that IS real")
+    sa.tap("DOWN", settle=gb_shots.BIG_SETTLE)
+    sa.shot("02_down_off_edge", "tap2 (DOWN once more): `cur + COLS (24) >= cap "
+            "(20)` fires the SAME off-bank-bottom edge (return 5) the PHYSICAL "
+            "bottom row already used, is_bank being unconditionally true for a "
+            "GB source. For this STANDALONE session (pdna_gen12.c's own re-entry "
+            "loop, `for (int r; (r = pdna_box(&s)) != 0; )`) return 5 is not the "
+            "PC<->Bank hand-off (that reading applies to the NV_GB import path, "
+            "pdna_main.c's own PC/Bank loop) -- it is caught by the loop's plain "
+            "`else app_box_start_set(1)` and pdna_box() is re-entered immediately "
+            "on the SAME box. Pixel-identical to tap0's own boot frame here (no "
+            "cursor sprite has synced onto a fresh cell yet) -- tap3 below moves "
+            "RIGHT to prove where the re-entry actually parked the cursor.")
+    sa.tap("RIGHT", settle=gb_shots.SETTLE)
+    sa.shot("03_after_reentry", "tap3 (RIGHT, to reveal the re-entered cursor): "
+            "confirms where the DOWN-off-edge re-entry actually left the cursor "
+            "-- see this shot next to tap1's own cell-18 cursor to tell the two "
+            "landings apart. Answering the brief's open question plainly: DOWN "
+            "past the last real row does not stay AND does not wrap into a "
+            "blocked cell -- it re-enters the whole box screen instead, and F2's "
+            "own clamp then keeps the fresh cursor off every blocked cell exactly "
+            "as everywhere else.")
+    sessions.append(sa)
+
+    # ---- B: the GB PARTY pseudo-box (index 12, capacity 6) ---------------------
+    sb = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b200b_")
+    print("== BACKLOG #200 Chain B: the GB PARTY pseudo-box (capacity 6) ==")
+    boot_to_gb_session(sb, rom, which="yellow")
+    sb.tap("R", settle=gb_shots.BIG_SETTLE)
+    sb.shot("00_party", "tap1 (R from box 12): the GB PARTY pseudo-box (index 12, "
+            "SWITCH_BOX's (11+1)%13) -- capacity 6, so F1 blocks 24 of the 30 "
+            "cells (everything past row 0)")
+    sessions.append(sb)
+
+    # ---- C: box 1 (index 0, 20/20 full) ----------------------------------------
+    sc = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b200c_")
+    print("== BACKLOG #200 Chain C: box 1 (20/20, full) -- same blocked rows ==")
+    boot_to_gb_session(sc, rom, which="yellow")
+    sc.tap("R", settle=gb_shots.BIG_SETTLE)          # box 12 -> party (index 12)
+    sc.tap("R", settle=gb_shots.BIG_SETTLE)          # party -> box 1 (index 0, (12+1)%13)
+    sc.shot("00_box1_full", "tap2 (R, R from box 12): box 1, '1:GB BOX1 20/20' -- "
+            "the SAME blocked rows 3 (partial)/4 (full) chain A showed on the "
+            "EMPTY box 12, but every real cell (0-19) now shows an occupied "
+            "Pokemon -- F1's blocked tiles are driven by capacity, not fill level")
+    sessions.append(sc)
+
+    # ---- D: the Emerald Gen-3 PC box (unaffected, capacity NULL -> 30) --------
+    sd = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b200d_")
+    print("== BACKLOG #200 Chain D: Emerald's own PC box -- unaffected ==")
+    sd.run(700)
+    sd.tap("A", settle=gb_shots.BIG_SETTLE)          # boot picker, row 0 (Emerald, default) -> PC box
+    sd.shot("00_emerald_pc", "tap0 (boot, A on the default Emerald row): Emerald's "
+            "own PC box screen -- BoxSource.capacity is NULL here (the Gen-3 PC/"
+            "Bank source, pdna_box.h's own doc comment), so grid_capacity()/"
+            "box_cap() falls back to COLS*ROWS (30) and blocked_cells() returns "
+            "immediately -- no dim/X tiles anywhere, F4's 'no behaviour change "
+            "for capacity == 30' claim")
+    sessions.append(sd)
+
+    return sessions
+def run_s150_12_copy_edge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #150 S150-12: the read-only START > GB import mount's COPY lift, and
+    a planted COPY cell's ledger-free DOWN into the Emerald PC. `rom` MUST be
+    `make delta-gb`'s own combined image (Emerald.sav + Red/Gold/Crystal).
+
+    THE WIRING PROOF (frames 05-07) -- SELECT enters MOVE on the read-only mount
+    (before this lane, src_can_lift was flatly false there; decision 4's
+    gb_lift_why_bs RO branch and the DRIFT-flagged gbsrc_can_enter_move_impl fix
+    both had to land for this), A grabs slot 0 and the origin prompt genuinely
+    draws (decision 5's g_ro_path, no NULL deref), and A picking GOLD is then
+    REFUSED CLEANLY -- pdna_bank_next_serial()'s meta_save() fails (no SD card in
+    mGBA, the identical wall run_s150_4_uplift() already documents for the MOVE
+    lift), gb_lift_pack returns false, begin_select's refusal branch fires a beep
+    only and repaints cleanly. This is the SAME "no SD card in mGBA" wall every
+    write path in this tree hits -- not a delta-vehicle quirk of this lane.
+
+    WHAT DEVIATES FROM THIS LANE'S OWN BRIEF (found live, not guessed): the brief's
+    frame list expected B to first back out to the Gold info page, then a second B
+    to reach Emerald's own grid with no prompt. What the vehicle actually does:
+    the FIRST B only drops CM_MOVE back to CM_NORMAL (still on Gold's own grid, the
+    footer changes from "MOVE A grab hold=set" back to the plain occupied-cell
+    footer) -- pdna_box.c's own `if (k & KEY_B) { if (s_cur_mode != CM_NORMAL &&
+    !on_title) { s_cur_mode = CM_NORMAL; ... } else { ...; return 0; } }` needs
+    CM_NORMAL before B actually leaves the grid. The SECOND B then exits the whole
+    GB session in one step -- pdna_box() returning 0 unwinds gb_session_core's own
+    loop straight past the info page to `if (m->nblocked || m->nunreadable)
+    gb_report_page(m);` (source/pdna_gen12.c), because THIS corpus's real Gold.sav
+    has locked/unreadable records (the same report row-source count 5's info page
+    (frame 03) already prints: "Ready to copy: 265 / Shown but locked: 15"). A
+    THIRD B dismisses that report and lands on Emerald's own box grid -- with NO
+    PC-offer prompt (decision 7's negative case: the lift never queued anything,
+    g_pcq_count stayed 0). None of this is a defect in this lane's own code --
+    gb_report_page is pre-existing, unrelated machinery this real save happens to
+    trigger; captured here so the trace is honest, not force-fit to the brief's
+    own guess.
+
+    THE PLANTED-CELL DOWN EDGE (frames 11-18) proves decision 9 without needing
+    the no-SD wall at all: bank_plant.c's box_load() PDNA_DELTA-only hook auto-
+    plants box 0 (bank_plant_box0(), decision 17) the instant a real box0.box read
+    fails -- which it always does with no SD card -- so the Bank opens showing
+    "BANK 1 7/30" with the two new COPY cells already sitting at slots 5 (CHIKORITA
+    L13) and 6 (L14), no live SD-writing lift required. MOVE-carrying one off the
+    Bank's own bottom edge onto the Emerald PC grid and dropping it on an EMPTY
+    cell (an occupied cell instead reaches drop_held's OTHER gate,
+    xg_native_escape_denied, and shows "STAYS IN THE BANK" -- found live while
+    probing this chain, not this lane's own gate) reaches the loss screen with the
+    NOBACK rows this lane's decision 10 added, and the drop lands with no SD write
+    at all (the PC placement is RAM-only until a real save, exactly like every
+    other Bank->PC drop in this tree). The SECOND copy (slot 6) lands right after
+    the first with NO SAVE FIRST wall between them -- decision 9's own claim that a
+    copy cell has nothing to promote, so N copies may share one session.
+
+    NOT shown here (hardware-only, not faked): a landed COPY cell surviving a real
+    save, XFER-C15a's own md5-of-the-.sav proof, and the RO-mount refusal on an
+    EverDrive/read-only cart (XFER-C15e) -- none of these are producible in mGBA,
+    which has no SD card and no EverDrive emulation at all."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s150_12_")
+    print("== BACKLOG #150 S150-12: the read-only mount's COPY lift + planted-cell DOWN edge ==")
+    idx = gb_save_pick_index(rom)["gold"]
+
+    s.run(700)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)              # #68a boot picker, Emerald row (default) -> box
+    s.shot("00_emerald_box_grid", "s150-12: Emerald's own box grid, freshly booted")
+
+    s.tap("START", settle=gb_shots.BIG_SETTLE)
+    s.shot("01_start_menu", "s150-12: the nav menu -- 'GB import' sits in column 1")
+
+    s.tap("RIGHT")
+    s.press_n("DOWN", nav_down_from_col_top("NV_GB"))
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    assert_screen(s, "pick_a_save")
+    s.shot("02_nv_gb_picker", "s150-12: NV_GB -> 'PICK A SAVE' -- Red.sav/Gold.sav/"
+           "Crystal.sav, Red selected by default")
+
+    for _ in range(idx):
+        s.tap("DOWN", settle=gb_shots.SETTLE)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                # picked Gold -> S1 info page
+    s.shot("03_gold_info", "s150-12: Gold.sav's own S1 info page -- the read-only "
+           "mount, no edit session (g_ed stays NULL for this whole visit)")
+
+    s.tap("A", settle=60)                                 # info -> box grid (cold fetch)
+    s.run(GB_ART_COLD_SETTLE)
+    s.shot("04_gold_box_grid", "s150-12: Gold's box grid on the read-only mount -- "
+           "cursor on slot 0 (No.1 BULBASAUR), footer 'A pokeball  A menu  SEL  "
+           "L/R  B' (SELECT has never entered MOVE here before this lane)")
+
+    s.tap("SEL", settle=100)
+    s.shot("05_cm_move", "s150-12 WIRING PROOF: SELECT cycles to MOVE on the "
+           "read-only mount -- footer 'MOVE  A grab  hold=set'. Before this lane "
+           "src_can_lift was flatly false here (gb_lift_why_bs's own !g_ed branch "
+           "returned PDNA_GB_LIFT_WHY_VIEW unconditionally) and the box-level "
+           "gbsrc_can_enter_move_impl gate (BACKLOG #187/#192) refused independently "
+           "-- SELECT did nothing at all. This frame IS the wiring proof both fixes "
+           "landed.")
+
+    s.tap("A", settle=150)
+    s.shot("06_origin_prompt", "s150-12: A grabs slot 0 -- gb_lift_copy_hook -> "
+           "gb_lift_pack -> gb_origin_for_save() opens 'WHICH GAME IS THIS?' GOLD "
+           "(selected) / SILVER, no box sprites over it (boxoam_suspend() ran "
+           "first). Before decision 5's g_ro_path this would have dereferenced "
+           "NULL (g_ed->path with g_ed == NULL) -- it does not.")
+
+    s.tap("A", settle=250)
+    s.shot("07_refused_clean", "s150-12: A picks GOLD -- gb_origin_for_save() "
+           "returns BC_ORIGIN_GOLD (the .og persist fails silently, no SD card, "
+           "decision 5's own tolerance), then pdna_bank_next_serial()'s "
+           "meta_save() fails (the SAME no-SD-card wall run_s150_4_uplift() "
+           "already found for the MOVE lift) -- refused, a beep only, clean "
+           "repaint: still CM_MOVE, empty-handed, BULBASAUR still at slot 0")
+
+    s.tap("B", settle=200)
+    s.shot("08_move_to_normal", "s150-12 (found live, not in the brief): the "
+           "FIRST B only drops CM_MOVE back to CM_NORMAL -- still Gold's own box "
+           "grid, footer back to the plain occupied-cell hint. pdna_box.c's own "
+           "`if (s_cur_mode != CM_NORMAL && !on_title) { s_cur_mode = CM_NORMAL; "
+           "...}` needs CM_NORMAL before B actually leaves the grid")
+
+    s.tap("B", settle=200)
+    s.shot("09_report_page", "s150-12 (found live, not in the brief): the SECOND "
+           "B exits the whole GB session in one step -- pdna_box() returning 0 "
+           "reaches gb_session_core's own `if (m->nblocked || m->nunreadable) "
+           "gb_report_page(m);` (unrelated, pre-existing machinery this real "
+           "Gold.sav happens to trigger: 15 records 'Shown but locked', matching "
+           "frame 03's own info-page count) -- not skipped over, not this lane's "
+           "own gate")
+
+    s.tap("B", settle=200)
+    s.shot("10_emerald_grid_noprompt", "s150-12: a THIRD B dismisses the report "
+           "-- back on Emerald's own box grid with NO 'WAITING FOR THE PC' "
+           "prompt (decision 7's negative case: g_pcq_count stayed 0, the lift "
+           "was refused before anything was ever queued)")
+
+    s.tap("START", settle=gb_shots.BIG_SETTLE)
+    s.tap("DOWN", settle=gb_shots.SETTLE)                 # NV_PARTY -> NV_BANK (column 0, row 1)
+    s.tap("A", settle=150)
+    s.shot("11_bank_box0", "s150-12: START > Bank -- 'BANK 1  7/30', box 0's "
+           "PDNA_DELTA-only auto-plant (bank_plant_box0(), decision 17) already "
+           "includes the two new COPY cells at slots 5/6 -- no live SD-writing "
+           "lift needed to get them here")
+
+    s.press_n("RIGHT", 5, settle=60)
+    s.shot("12_cursor_slot5", "s150-12: cursor on slot 5 -- 'No.152 CHIKORITA "
+           "Lv13 M', the first planted COPY cell (BC_FLAG_QUEUED_PC|BC_FLAG_COPY, "
+           "serial 6)")
+
+    s.tap("A", settle=150)
+    s.shot("13_menu", "s150-12: the ordinary Bank-cell menu -- VIEW/EDIT, MOVE, "
+           "RELEASE, CANCEL (this is a real Bank cell now, not the read-only "
+           "mount's whitelist)")
+
+    s.tap("DOWN", settle=60)                              # VIEW/EDIT -> MOVE
+    s.tap("A", settle=150)                                # MOVE -> carrying
+    s.shot("14_carrying", "s150-12: carrying the COPY cell -- slot 5 now empty "
+           "in the grid, footer 'A drop  B cancel'")
+
+    s.press_n("DOWN", 5, settle=150)                      # row0 -> Bank's own bottom row -> off the edge
+    s.shot("15_pc_grid_carrying", "s150-12: DOWN x5 off the Bank's own bottom "
+           "edge -- back on Emerald's PC grid, still carrying, box '1 5.Unp09n "
+           "30/30' (full on this cartridge)")
+
+    for _ in range(7):
+        s.tap("R", settle=150)                            # R to a box with real room (found live)
+    s.tap("RIGHT", settle=60)                             # slot 0 of this box may already be occupied
+    s.tap("A", settle=200)                                # A on the empty cell -> the loss screen opens
+    s.shot("16_loss_screen", "s150-12 decisions 9/10: A dropped on an empty PC "
+           "cell reaches the honest DOWN loss screen -- 'No transfer record: "
+           "this copy / cannot be sent back.' (PDNA_XFER_COPY_NOBACK_L1/_L2), "
+           "alongside the ordinary 'IVs come from DVs...'/'Met: this game, "
+           "traded' rows -- no ledger entry was ever written for this cell "
+           "(xg_cell_is_copy() true, decision 9's own guard)")
+
+    s.tap("A", settle=250)
+    s.shot("17_landed", "s150-12: A lands the copy -- the PC box count went up "
+           "by one, no SD write involved (RAM-only until a real save, same as "
+           "every other Bank->PC drop)")
+
+    s.tap("START", settle=gb_shots.BIG_SETTLE)
+    s.tap("DOWN", settle=gb_shots.SETTLE)
+    s.tap("A", settle=150)
+    s.press_n("RIGHT", 5, settle=60)
+    s.shot("18_bank_slot5_blank", "s150-12: re-entering the Bank confirms slot "
+           "5 reads blank ('(empty)') and the box count dropped from 7/30 to "
+           "6/30 -- the SD-less deferred-consume path this decision reuses "
+           "already ran without needing a save")
+
+    s.tap("DOWN", settle=60)
+    s.press_n("LEFT", 5, settle=60)
+    s.shot("19_slot6_cursor", "s150-12: cursor on slot 6 -- 'No.152 CHIKORITA "
+           "Lv14 M', the SECOND planted COPY cell (serial 7)")
+
+    s.tap("A", settle=150)
+    s.tap("DOWN", settle=60)
+    s.tap("A", settle=150)
+    s.press_n("DOWN", 4, settle=150)                      # row1 -> off the Bank's own bottom edge
+    for _ in range(7):
+        s.tap("R", settle=150)
+    # NOTE (found live): unlike the first drop, the box's own remembered cursor
+    # already rests on an empty cell here (the first copy's landing slot shifted
+    # it) -- no extra RIGHT needed; an extra RIGHT here would land back on an
+    # OCCUPIED cell and hit xg_native_escape_denied's "STAYS IN THE BANK" refusal
+    # instead (found live while building this chain, not this lane's own gate).
+    s.tap("A", settle=200)
+    s.shot("20_second_loss_screen", "s150-12 decision 9: the SECOND copy's own "
+           "DOWN reaches the SAME honest loss screen -- critically, NO 'SAVE "
+           "FIRST' wall between the two drops (a copy has nothing to promote, "
+           "so N copies may land in one session, unlike an ordinary S150-8d "
+           "ledger-pending cell)")
+
+    s.tap("A", settle=250)
+    s.shot("21_second_landed", "s150-12: the second copy lands too -- both "
+           "planted cells now sit in the Emerald PC, proving decision 9's DOWN-"
+           "skips-the-ledger claim end to end on the emulator")
+
+    return s
 
 
 if __name__ == "__main__":
