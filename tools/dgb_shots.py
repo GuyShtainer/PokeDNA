@@ -5150,9 +5150,19 @@ def run_s150_7_down_edge(core_mod, image_mod, rom_gold: Path, rom_red: Path,
     # ---- (b) GB_BRIDGE: the SAME CHIKORITA cell, dropped on Red (a DIFFERENT gen) ----
     sr = gb_shots.Session(core_mod, image_mod, rom_red, out_dir, "s150_7_red_")
     boot_to_grid(sr)
-    sr.shot("10_red_grid", "S150-7 (b): Red's own box grid, freshly entered -- the "
-            "SAME box0 plant (bank_plant.c is generation-agnostic), so slot 0 is still "
-            "the Gen-2 CHIKORITA cell, cell_gen(2) != dst_gen(1) this time")
+    # BACKLOG #198 item 2: boot_to_grid() lands on Red's own SAVE box grid (GB BOX1),
+    # NOT the Bank -- bank_plant.c's box0 plant only exists inside pdna_bank_show(),
+    # which pick_up_chikorita() below is what actually navigates into (UP_INTO_BANK
+    # then UP_TO_ROW0). This shot is taken BEFORE that navigation, so it shows Red's
+    # own real box 1 (20/20, this cartridge's own Gen-1 mons -- SLOWBRO et al, no
+    # CHIKORITA anywhere), not the Bank plant; recaptioned to say so honestly rather
+    # than moved after the navigation (moving it would erase the "freshly entered,
+    # nothing carried yet" baseline the rest of this chain's captions lean on).
+    sr.shot("10_red_grid", "S150-7 (b): Red's OWN PC box grid (GB BOX1, 20/20), "
+            "freshly entered, cursor top-left -- this is Red's real save data (this "
+            "cartridge's own Gen-1 mons), NOT the Bank -- the Bank's own box0 plant "
+            "(bank_plant.c) is only shown once pick_up_chikorita() below navigates "
+            "into pdna_bank_show()")
     pick_up_chikorita(sr)
     sr.shot("11_red_carrying", "S150-7 (b): carrying the Gen-2 CHIKORITA cell, back on "
             "Red's own (Gen-1) grid -- xg_bank_down_arm resolves GB_BRIDGE, not EXACT")
