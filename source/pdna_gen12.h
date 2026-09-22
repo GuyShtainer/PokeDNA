@@ -304,6 +304,14 @@ bool gb_persist(const char* what_for_log);
  * screen that needs more than one region (U2c: the shell's own tile cache AND
  * the Gen-1 player-pic decode) takes ONE slice sized for everything it needs
  * and carves its own sub-regions out of it -- it does not call this twice. */
+/* BACKLOG #208 fixes review D3: the 23,744 B figure every caller's own comment
+ * cites (this header's own comment above, pdna_gbdex.c's DEXCACHE_SLOTS comment)
+ * is APP_ARENA_BYTES - GB12_ARENA_NEED_IMG, pinned here as a build-checked
+ * constant instead of a number every caller must independently keep in sync by
+ * hand -- pdna_gen12.c has the _Static_assert that proves this macro is still
+ * the true slack (beside GB12_ARENA_NEED_IMG's own assert), and pdna_gbdex.c
+ * has the one that proves its own DEXCACHE_NEED still fits under it. */
+#define GB12_ARENA_TAIL_SLACK 23744u
 uint8_t* gb12_arena_tail(uint32_t need);
 
 /* Give the slice back (U2b review item 0b). Safe to call even when nothing was

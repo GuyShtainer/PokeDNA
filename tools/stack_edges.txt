@@ -162,7 +162,11 @@
 # byte-identical).
 count-only-max 51 variant=nor artless=1
 count-only-max 51 variant=nor
-count-only-max 51 variant=delta
+# BACKLOG #208 (2026-09-23): dex_page_begin_call is PDNA_DELTA-only (pdna_pick.h's own
+# comment on PdnaDexPageFn), so it only ever adds a count-only site on the delta
+# variant -- nor/nor-artless/sd are untouched by this lane, hence only this one line
+# moves, 51 -> 52.
+count-only-max 52 variant=delta
 
 # Delta-only -- the artless/normal (PDNA_TARGET=nor) links do not contain it:
 # Listing EVERY variant in variants= re-creates a blanket exemption -- if the symbol exists
@@ -564,6 +568,16 @@ dex_setnat_call argsites=1 -> dex_set_national
 # Compiled name carries a clone suffix (matches fetch_pic_ex.constprop.0's own
 # precedent above) -- re-check the exact suffix with --dump-sites if this ever drifts.
 dex_cell_art_call.constprop.0 argsites=1 -> gbdex_cell_art
+
+# BACKLOG #208: pdna_pick.c's s_page_begin_fn (PDNA_DELTA-only, see pdna_pick.h's own
+# comment on PdnaDexPageFn), same one-noinline-dispatcher discipline as s_cell_art.fn
+# above (dex_page_begin_call() is the only place that reads it). The only function
+# ever assigned to it is pdna_gbdex.c's gbdex_dex_page_begin (pdna_dex_set_page_begin()'s
+# two install sites in pdna_gbdex(); NULL is the default and never dispatches). Only
+# reachable in the delta variant (artless/normal/sd never compile the hook at all --
+# PdnaDexPageFn's own header comment explains why), so this entry only ever needs
+# checking against the delta ELF.
+dex_page_begin_call argsites=1 -> gbdex_dex_page_begin
 
 # pdna_origin_art.c's PdnaGbArtSource (source/pdna_origin_art.h:215-251, s_gb --
 # pic/have/icon function-pointer fields, accessed through fetch_pic_ex()'s s_gb.pic/

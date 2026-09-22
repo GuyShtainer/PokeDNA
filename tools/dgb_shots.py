@@ -3573,6 +3573,130 @@ def measure_dex_sd_reads(core_mod, image_mod, rom: Path, out_dir: Path, which: s
             print(f"  {l}")
 
 
+def run_b208_dexcache(core_mod, image_mod, rom: Path, out_dir: Path, which: str = "crystal") -> None:
+    """BACKLOG #208 step 3: proves the real per-page GB-art cache's HIT/MISS shape
+    by capturing every 'dexart: page N fetch=X hit=Y' log line (source/pdna_gbdex.c's
+    PDNA_DELTA-only page-begin hook, pdna_pick.h's PdnaDexPageFn) across a fixed
+    navigation script, the same log-capturing technique measure_dex_sd_reads() above
+    already uses (Capture installed as mgba's default logger BEFORE the session
+    boots). `rom` must be a ONE-ROM fused delta-artless image (fuse_gb.py), same
+    posture as --b124-dexicons.
+
+    BACKLOG #208 fixes review D2: gbdex_dex_page_begin() (pdna_gbdex.c) prints a
+    page's tally at the START of the NEXT page, not at the end of its own -- every
+    line `dump()` prints below therefore belongs to the phase BEFORE the one it is
+    printed under, never the phase named in the dump() call that surfaces it. Read
+    each printed line as "the tally of the page number IT names, flushed now" -- not
+    as evidence about the step that triggered the print.
+
+    `run_b124_dexicons()`'s own navigation lands on the dex grid's page 1 with L
+    already pressed (DV_GRID) -- that first full repaint is this bench's own "cold
+    entry" page (page 1: 21 fetch / 0 hit expected, the cache starts empty every
+    visit; nothing prints yet -- there is no earlier page to flush).
+
+      same-page repaint -- START opens dex_menu's filter overlay, B cancels it with
+        NEITHER the view nor top changed (pdna_pick.c's own `gen != ui_clear_gen()`
+        term is what forces the next `full` repaint here, not a real navigation) --
+        this step's own dexart: line is page 1's flush: fetch=21 hit=0 (the COLD
+        ENTRY tally above, only visible now).
+
+      cursor move (no scroll) -- RIGHT then LEFT moves the selection within the
+        page without crossing a row edge -- dex_declare_page() is only called on a
+        FULL repaint (a fresh page_begin), so this step is expected to add NO new
+        'dexart:' line at all (0 fetches, trivially, because nothing re-declares a
+        page) -- this is BACKLOG #208's own "open a cell then return -> 0" case,
+        read literally: no per-cell detail screen exists yet (BACKLOG #203), so the
+        closest equivalent this build has is moving onto a cell and back.
+
+      row scroll -- DOWN x3 moves the cursor down one full row (cols=7 in the grid
+        view), crossing the bottom edge and forcing a one-row scroll -- this step's
+        own dexart: line is page 2's flush: fetch=0 hit=21 (the SAME-PAGE REPAINT
+        tally). The scroll's OWN tally (fetch=7 hit=14: 7 cells scrolled off the top
+        get evicted and refetched, the other 14 still on screen stay cached) only
+        shows up at the NEXT full repaint this bench does not trigger -- 5 is this
+        cache's own FIFO eviction count for that scroll (tests/host_dexgbartcache_test.c
+        part E), not the fetch count; do not conflate the two.
+
+    A "page flip" (scroll a WHOLE further page, 21 cells, off screen) is not
+    exercised as a separate step here: this cache's own page (vis) is exactly 21
+    cells and its capacity is 23 slots -- 21 <= 23 unconditionally caps a single
+    repaint's fetch count at 21 (there are never more than 21 cells on screen to
+    fetch), so "page flip -> 21" is a ceiling this bench's cold-entry step (also 21)
+    already demonstrates, not a distinct scenario worth a fourth navigation phase.
+
+    Captures three frames (BACKLOG #208 fixes review D2) at the SAME points the
+    fetch/hit counts above are being reasoned about: the cold entry, the same-page
+    repaint, and the row scroll -- for a byte-compare against main's frames from the
+    same fused inputs.
+
+    Prints every captured 'dexart:' line, per phase, for a human (or a future
+    machine parser -- BACKLOG #184's own aspiration) to read the counts off -- same
+    "no parser here" posture as measure_dex_sd_reads() above."""
+    lines: list[str] = []
+    log_mod = getattr(core_mod, "log", None)
+    if log_mod is None:
+        import mgba.log as log_mod  # noqa: E402
+
+    class Capture(log_mod.Logger):
+        def log(self, category, level, message):  # noqa: A002
+            try:
+                m = log_mod.ffi.string(message).decode("utf-8", "replace")
+            except TypeError:
+                m = str(message)
+            lines.append(m)
+
+    log_mod.install_default(Capture())
+    s = run_b124_dexicons(core_mod, image_mod, rom, out_dir, which, fallback=False)
+    s.run(150)
+
+    def dump(phase: str, mark: int) -> int:
+        new = [l for l in lines[mark:] if l.startswith("dexart:")]
+        print(f"  -- {phase} --")
+        for l in new:
+            print(f"    {l}   (tally of the page named in the line, flushed now -- "
+                  f"belongs to the PREVIOUS phase, not '{phase}')")
+        if not new:
+            print("    (no dexart: line -- expected iff this step never triggers a full repaint)")
+        return len(lines)
+
+    print(f"== BACKLOG #208 step 3: dexcache HIT/MISS ({which}) ==")
+    mark = dump("cold entry (page 1)", 0)
+    s.shot("03_b208_cold", "#208 fixes D2: cold entry, page 1 -- 21 fetch / 0 hit "
+           "(this frame's own tally has not been flushed yet -- it prints at the "
+           "next full repaint, see the dexart: line under the NEXT phase below); "
+           "pixel-identical to run_b124_dexicons()'s own 02_dex_grid by design -- "
+           "no navigation happened between them, this is the SAME state re-captured "
+           "as this bench's own frame 1", allow_same=True)
+
+    s.tap("START", settle=gb_shots.BIG_SETTLE)   # dex_menu's own filter overlay
+    s.tap("B", settle=gb_shots.BIG_SETTLE)       # cancel -- same page, forces a repaint
+    mark = dump("same-page repaint (START then B)", mark)
+    s.shot("04_b208_repaint", "#208 fixes D2: same-page repaint (START then B) -- "
+           "the frame itself is unchanged pixels (every cell re-served from cache); "
+           "the dexart: line just printed above it is COLD ENTRY's own flushed "
+           "tally (fetch=21 hit=0), not this step's", allow_same=True)
+
+    s.tap("RIGHT", settle=gb_shots.SETTLE)
+    s.tap("LEFT", settle=gb_shots.SETTLE)
+    mark = dump("cursor move, no scroll (RIGHT then LEFT)", mark)
+
+    s.press_n("DOWN", 3, settle=gb_shots.SETTLE)  # one full row, cols=7
+    mark = dump("row scroll (DOWN x3)", mark)
+    s.shot("05_b208_scroll", "#208 fixes D2: one-row scroll (DOWN x3) -- 7 of the "
+           "21 visible cells are newly fetched, 14 stay cached; the dexart: line "
+           "just printed above it is the SAME-PAGE REPAINT's own flushed tally "
+           "(fetch=0 hit=21), not this step's")
+
+    # One more forced repaint (same START/B trick as the "same-page repaint" step
+    # above) purely to FLUSH the row scroll's own tally -- gbdex_dex_page_begin()
+    # never prints a page's numbers until the NEXT page begins, so without this
+    # the scroll's real fetch=7/hit=14 count would only ever be asserted in prose,
+    # never actually observed from the bench's own output.
+    s.tap("START", settle=gb_shots.BIG_SETTLE)
+    s.tap("B", settle=gb_shots.BIG_SETTLE)
+    dump("flush (START then B) -- surfaces the row scroll's own tally", mark)
+
+
 # ---------------------------------------------------------------------------------
 # BACKLOG #104 R1: KEEP AS IS / MAKE LEGAL on a Gen 3 -> Game Boy paste.
 # ---------------------------------------------------------------------------------
@@ -6748,6 +6872,14 @@ def main(argv=None) -> int:
                           "why this counter is architecturally 0 on this (PDNA_DELTA) "
                           "vehicle regardless of what this feature does -- hardware-"
                           "only.")
+    ap.add_argument("--b208-dexcache", choices=("red", "crystal"),
+                     help="BACKLOG #208 step 3: run_b208_dexcache() against --image "
+                          "(a ONE-ROM fused image of the NAMED game, GB ROM present) "
+                          "-- captures every 'dexart: page N fetch=X hit=Y' log line "
+                          "across cold entry / same-page repaint / a no-scroll "
+                          "cursor move / a row scroll (each line prints one phase "
+                          "LATE -- see that function's own docstring), plus three "
+                          "repaint frames for a byte-compare against main.")
     ap.add_argument("--b85-daycare", choices=("red", "gold"),
                      help="BACKLOG #85: only run_b85_daycare() against --image for "
                           "the named game (Red's one-slot Day Care, or Gold's "
@@ -7600,6 +7732,9 @@ def main(argv=None) -> int:
         ran = True
     if a.b196_sdreads:
         measure_dex_sd_reads(core_mod, image_mod, a.image, a.out, which=a.b196_sdreads)
+        ran = True
+    if a.b208_dexcache:
+        run_b208_dexcache(core_mod, image_mod, a.image, a.out, which=a.b208_dexcache)
         ran = True
     if a.b124_bobcheck:
         run_b124_bobcheck(core_mod, image_mod, a.image, a.out, a.b124_bobcheck)

@@ -4499,6 +4499,15 @@ bool gb_persist(const char* what_for_log) {
                              GB12_RECS_BYTES + GB12_STAGE_BYTES + GB12_A4(sizeof(Gb12Edit)) + 4u)
 _Static_assert(GB12_ARENA_NEED_IMG <= APP_ARENA_BYTES,
                "GB import (resident image) no longer fits the borrowed EWRAM arena");
+/* BACKLOG #208 fixes review D3: pins the arena-tail slack every gb12_arena_tail()
+ * caller's own comment cites as a literal (pdna_gen12.h's GB12_ARENA_TAIL_SLACK)
+ * to the SAME arithmetic gb12_arena_tail() itself runs at call time -- a future
+ * change to GB12_ARENA_NEED_IMG or APP_ARENA_BYTES that silently drifts the real
+ * slack away from the number every caller's comment assumes now fails the build
+ * instead of only being caught (or not) by eyeballing bytes on a review. */
+_Static_assert((uint32_t)APP_ARENA_BYTES - (uint32_t)GB12_ARENA_NEED_IMG == GB12_ARENA_TAIL_SLACK,
+               "gb12_arena_tail()'s real slack drifted from GB12_ARENA_TAIL_SLACK -- "
+               "update the constant (and every caller's cited figure) together");
 
 /* U2b item 0: the arena TAIL past Gb12Edit, for a GB screen shell (pdna_gbscreen.c)
  * riding the resident-image mount. pdna_gen12_show_image()'s own carve-out puts
