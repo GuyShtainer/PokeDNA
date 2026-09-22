@@ -4030,7 +4030,19 @@ int pdna_box(BoxSource* src) {
          } else if (bob) { bob = 0; boxoam_hand_pose(BOXOAM_POSE_NORMAL);
                            if (!boxoam_set_frame(0)) boxoam_set_bob(0);   /* settle the grid */
                            int tr = cursor_title_row(on_title);
-                           boxoam_cursor(cur, tr, cursor_look(), cursor_label_cx(tr)); }
+                           /* BACKLOG #150 S150-13, review D1: NOT while s_holding -- this
+                            * settle-the-grid beat can fire the instant a carry begins (bob
+                            * was mid-animation when MOVE picked the cell up), and
+                            * boxoam_cursor() -> load_rega_hand() re-uploads the hand pose
+                            * over TID_HAND (region A), clobbering the carry badge's own
+                            * tiles there (boxoam_carry_badge reuses that region while it is
+                            * otherwise idle -- see its own comment) and re-showing OE_HAND,
+                            * which hides OE_GRAB/OE_CARRY outright. The carry render arm
+                            * (the `else if (s_holding)` branch above) already draws its own
+                            * cursor/fist/badge every frame; this settle beat has nothing to
+                            * do while holding. */
+                           if (!s_holding)
+                             boxoam_cursor(cur, tr, cursor_look(), cursor_label_cx(tr)); }
          boxoam_commit();                       /* flush the OAM shadow in the vblank window */
          fresh = key_hit(KEY_FULL);
          k = fresh | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);

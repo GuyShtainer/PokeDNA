@@ -4055,6 +4055,24 @@ def run_s150_2_bank_native(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_
     return s
 
 
+def _count_exact_color(png_path: Path, rgb: tuple) -> int:
+    """Exact-match pixel count of `rgb` anywhere in the PNG at `png_path`. Used to pin
+    the carry badge's presence quantitatively (BACKLOG #150 S150-13, review D1) --
+    counting the grid's own era_cell_mark() fill colour (COL_GEN1/COL_GEN2) is more
+    reliable than eyeballing a small OBJ sprite whose fill can read faintly against
+    the grass background at a glance."""
+    from PIL import Image
+    img = Image.open(png_path).convert("RGB")
+    return sum(1 for p in img.getdata() if p == rgb)
+
+
+# COL_GEN1/COL_GEN2 (source/pdna_origin_art.c:52-53) as 8-bit RGB, RGB15 5-bit
+# channels scaled by 255/31 and truncated -- the SAME conversion this tool's own
+# mGBA/PIL screenshot path produces (confirmed by direct pixel sampling, review D1).
+_COL_GEN1_RGB = (90, 173, 74)     # RGB15 11|21<<5|9<<10
+_COL_GEN2_RGB = (173, 82, 206)    # RGB15 21|10<<5|25<<10
+
+
 def run_s150_13_carry_badge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
     """BACKLOG #150 S150-13 (#164): the glove shows a carried native Bank cell's era
     badge. Reuses S150-2/S150-3's exact fixture and nav recipe (same box0 plant, same
@@ -4066,22 +4084,53 @@ def run_s150_13_carry_badge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb
     PIKACHU plant (bc_kind() == 1) -- shooting BOTH proves the badge follows bc_kind(),
     not a hardcoded '1'. Before S150-13 this exact sequence's carry frame showed the
     glove with an empty/garbage hand (BACKLOG #164); after, a small badge rides the
-    glove's bottom-right corner with the cell's own gen digit in its own gen tint."""
+    glove's bottom-right corner with the cell's own gen digit in its own gen tint.
+
+    Review D1 (2026-09-22): the settle-the-grid beat in pdna_box.c's idle-bob loop
+    could fire the instant a carry began (bob mid-animation at pickup time) and
+    re-uploaded the cursor hand pose over the SAME tile ids the badge borrows,
+    clobbering it on roughly half of all pickups -- a capture taken immediately after
+    MOVE (settle=150, one bob period at most) was parity-blind to this. Frames 01/03
+    below are kept for the per-tap trace, but 01b/03b wait >= 60 vblanks (two full bob
+    periods) after the pickup, past any settle beat, and PIN the badge's presence by
+    an exact pixel count of the grid's own era-tint colour: the grid always contributes
+    its own baseline (multiple cells can share a tint), and the badge's own pixels are
+    the same exact quantized colour, so badge-present must read STRICTLY higher than
+    the pre-carry baseline (00), by the exact number of gen-tint pixels in this file's
+    own hand-authored tile (source/box_oam.c's s150_13_badge_tiles)."""
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s150_13_")
     print("== BACKLOG #150 S150-13 (#164): the glove's carried-native-cell era badge ==")
     s.tap("START", settle=80)                              # nav menu
     s.tap("DOWN", settle=60)                                # Party -> Bank (index 1, one DOWN)
     s.tap("A", settle=150)                                  # -> pdna_bank_show(), box 0 (BANK 1)
-    s.shot("00_box0", "S150-13: box 0, box_load()'s PDNA_DELTA plant -- slot 0 "
+    p00 = s.shot("00_box0", "S150-13: box 0, box_load()'s PDNA_DELTA plant -- slot 0 "
            "CHIKORITA (Gen 2), slot 1 PIKACHU (Gen 1); cursor on slot 0")
+    base_gen1 = _count_exact_color(p00, _COL_GEN1_RGB)
+    base_gen2 = _count_exact_color(p00, _COL_GEN2_RGB)
+    print(f"  (pixel baseline, no carry) gen1-tint={base_gen1} gen2-tint={base_gen2}")
 
     # slot 0 (CHIKORITA, gen 2): menu -> MOVE -> carrying.
     s.tap("A", settle=150)                                  # slot 0 -> its whitelist menu
     s.tap("DOWN", settle=60)                                # VIEW -> MOVE
     s.tap("A", settle=150)                                  # select MOVE -> start_carry
-    s.shot("01_carrying_gen2", "S150-13: MOVE picked up the Gen-2 CHIKORITA cell -- "
-           "the glove should now show a small '2' badge, gen-2 tint, at its bottom-"
-           "right corner (BACKLOG #164: before this lane, an empty/garbage hand)")
+    s.shot("01_carrying_gen2", "S150-13: MOVE picked up the Gen-2 CHIKORITA cell, "
+           "captured immediately (per-tap trace only -- review D1: this timing is "
+           "parity-blind to the settle-beat clobber, see 01b for the pinned proof)")
+
+    # D1: wait past the settle beat (>= 60 vblanks = 2 bob periods) before pinning.
+    p01b = s.shot("01b_settled_gen2", "S150-13 review D1: same carry, >= 60 vblanks "
+           "later (past any settle-the-grid beat) -- the badge must still be there; "
+           "pinned by an exact pixel count below, not eyeballed. Expected to be "
+           "pixel-identical to 01 when the cursor itself has not moved (a stable "
+           "badge at a stable position is the GOOD outcome, not a stuck frame)",
+           settle=60, allow_same=True)
+    after_gen2 = _count_exact_color(p01b, _COL_GEN2_RGB)
+    delta_gen2 = after_gen2 - base_gen2
+    print(f"  (01b) gen2-tint after settle: {after_gen2} (delta {delta_gen2:+d} vs baseline {base_gen2})")
+    if delta_gen2 <= 0:
+        raise RuntimeError(f"s150_13_01b_settled_gen2: gen2-tint pixel count did not increase "
+                            f"past the settle beat ({base_gen2} -> {after_gen2}) -- the badge "
+                            f"was clobbered (review D1's exact bug)")
 
     # drop it back on its own slot (self-drop, no write) before moving to slot 1.
     s.tap("A", settle=150)
@@ -4093,9 +4142,22 @@ def run_s150_13_carry_badge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb
     s.tap("A", settle=150)                                  # slot 1 -> its whitelist menu
     s.tap("DOWN", settle=60)                                # VIEW -> MOVE
     s.tap("A", settle=150)                                  # select MOVE -> start_carry
-    s.shot("03_carrying_gen1", "S150-13: MOVE picked up the Gen-1 PIKACHU cell -- the "
-           "glove should now show a small '1' badge, gen-1 tint -- proves the badge "
-           "follows bc_kind(), not a hardcoded digit (differs from 01's '2')")
+    s.shot("03_carrying_gen1", "S150-13: MOVE picked up the Gen-1 PIKACHU cell, "
+           "captured immediately (per-tap trace only -- see 03b for the pinned proof; "
+           "review D1 found THIS exact frame, on the pre-fix build, showed no badge at "
+           "all -- the earlier caption claiming one was FALSE, corrected here)")
+
+    p03b = s.shot("03b_settled_gen1", "S150-13 review D1: same carry, >= 60 vblanks "
+           "later -- pinned by an exact pixel count below (expected pixel-identical "
+           "to 03 when the badge and cursor are both stable)", settle=60, allow_same=True)
+    after_gen1 = _count_exact_color(p03b, _COL_GEN1_RGB)
+    delta_gen1 = after_gen1 - base_gen1
+    print(f"  (03b) gen1-tint after settle: {after_gen1} (delta {delta_gen1:+d} vs baseline {base_gen1})")
+    if delta_gen1 <= 0:
+        raise RuntimeError(f"s150_13_03b_settled_gen1: gen1-tint pixel count did not increase "
+                            f"past the settle beat ({base_gen1} -> {after_gen1}) -- the badge "
+                            f"was clobbered (review D1's exact bug)")
+
     s.tap("A", settle=150)                                  # drop it back on its own slot
     s.shot("04_dropped_back", "S150-13: dropped back, badge gone again")
     return s
