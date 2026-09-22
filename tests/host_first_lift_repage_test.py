@@ -35,8 +35,9 @@ already use on this exact file. Two things are checked:
   (a) drop_held's UP-drop block (source/pdna_box.c) contains a
       `recs = src->records(box);` re-page call, textually AFTER
       `pdna_bank_prepare_native()`'s failure-return block and BEFORE both
-      the ident32 collision scan's `if (!pdna_bank_serial_trusted()) {`
-      guard (BACKLOG #168a: the scan itself moved into the pure
+      the ident32 collision scan's `if (!pdna_bank_serial_trusted() ||
+      !s_up_scan_done) {` guard (BACKLOG #168a review D2: the one-scan-per-
+      session latch; the scan itself moved into the pure
       bank_ident32_collision() core, source/bank_collision.c) and the
       `bool ok = src->commit();` line that follows it.
   (b) the failure path (`if (!pdna_bank_prepare_native())`) is unchanged:
@@ -64,7 +65,7 @@ PDNA_BOX = ROOT / "source" / "pdna_box.c"
 
 PREPARE_CALL = "if (!pdna_bank_prepare_native()) {"
 REPAGE_CALL = "recs = src->records(box);"
-COLLISION_LOOP = "if (!pdna_bank_serial_trusted()) {"
+COLLISION_LOOP = "if (!pdna_bank_serial_trusted() || !s_up_scan_done) {"
 COMMIT_CALL = "bool ok = src->commit();"
 
 
