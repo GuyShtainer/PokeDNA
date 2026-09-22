@@ -2243,6 +2243,7 @@ gb_release_restored_verify(const GbEditMon* have, const GbEditMon* want,
   uint16_t wotid = gb_get_otid(want);
 
   int best = -1;
+  bool best_sp = false;
   for (int i = 0; i < count; i++) {
     GbscEntry cand;
     if (!gbsc_get(g_ed->sidecar, len, i, &cand)) continue;
@@ -2258,7 +2259,12 @@ gb_release_restored_verify(const GbEditMon* have, const GbEditMon* want,
     };
     if (memcmp(odv4, wdv4, 4) != 0) continue;
     if (memcmp(ohome.otname, want->otname, GB_NAME_BYTES) != 0) continue;
-    best = i;   /* highest index wins -- keep walking to the end */
+    /* review D3 (LOW): the lift's own species tiebreak (app_paste_gb_lookup /
+     * gb_lift_restore) mirrored here -- prefer a species match over a bare
+     * highest-index win, so a released-then-relanded duplicate with the SAME
+     * identity but a DIFFERENT (evolved) species does not shadow the real match. */
+    bool sp = gb_get_species_dex(&ohome) == gb_get_species_dex(want);
+    if (best < 0 || sp || !best_sp) { best = i; best_sp = sp; }
   }
   if (best < 0) return false;
   *idx_out = best;
