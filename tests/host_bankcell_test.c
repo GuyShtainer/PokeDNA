@@ -9,7 +9,8 @@
  *      source/gen12_convert.c source/data_tables.c source/bank_plant.c \
  *      source/gb_new_mon.c source/gb_editor.c source/gb_session.c source/rom_gblearn.c \
  *      source/rom_gbbase.c source/rom_gbsprite.c source/gb_sprite_codec.c \
- *      source/ui_font.c source/gb_sidecar.c -o /tmp/hbc
+ *      source/ui_font.c source/gb_sidecar.c source/xfer_rec.c source/item_map_g2g3.c \
+ *      -o /tmp/hbc
  *   /tmp/hbc (Guy's five Gen-3 .sav files, positional argv -- run_host_tests.py hands
  *             them over automatically). -DPDNA_DELTA compiles section 8 (bank_plant,
  *             BACKLOG #150 S150-2 step 6) IN; it never affects the shipped GBA build

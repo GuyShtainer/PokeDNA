@@ -38,6 +38,9 @@
 #include "bank_cell.h"      /* BACKLOG #150 S150-6: bc_is_native -- app_paste_gb_commit's G-H6 guard */
 #include "xfer_io.h"        /* BACKLOG #150 S150-6: xr_path_for_key/xr_path_for_name/xr_migrate_once */
 #include "xfer_rec.h"       /* BACKLOG #150 S150-6: xr_key_g3 -- the reroll re-key guard             */
+#ifdef PDNA_DELTA
+#include "bank_plant.h"     /* BACKLOG #150 S150-9 decision 12(c): the PC box0 slot29 seed          */
+#endif
 #include "gen3_trainer.h"
 #include "gen3_record.h"    /* Emerald Battle Record (save sector 31) info + export */
 #include "gen3_frontier.h"  /* g3f_streak_get/g3f_modes/g3f_mode_name for the record screen's streaks page */
@@ -10382,6 +10385,21 @@ static void view_save(const char* path) {
   for (int i = 0; i < g_nparty; i++) pk_resolve(&g_party[i]);
   load_phase_n(7, "pc storage");
   g_have_pc = (gen3_read_pc_storage(g_save, g_vinfo.slot, g_pc) == G3_PC_BYTES);
+#ifdef PDNA_DELTA
+  /* BACKLOG #150 S150-9 decision 12(c): plant FOUR converted Gen-3 records (slot 0
+   * is the SAME planted CHIKORITA cell bank_plant_box0() seeds into Bank box 0 slot
+   * 0, via gen12_convert -- exactly what the shipped Gen-3 DOWN arm does) into THIS
+   * session's own PC box 0 slots 29/28/27/26 in RAM, and seed their matching
+   * planted ledger entries -- the only way the merge screen (both the real-rows
+   * case and the "nothing changed" skip) and the RESTORED/PENDING refusals are
+   * reachable on a vehicle with no writable FAT at all. Best-effort: a partial
+   * seed (n < 4) just means that many fewer probe cells exist, never a crash. */
+  if (g_have_pc) {
+    uint8_t g3_out[4][80];
+    int n = bank_plant_xfer_seed_all(g3_out);
+    for (int i = 0; i < n; i++) memcpy(pcsrc_records(0) + (29 - i) * 80, g3_out[i], 80);
+  }
+#endif
 
   /* BACKLOG #54 T2 evidence, NO GATE (decision 6): a species field past the Gen-3
    * ceiling is exactly the anomaly a per-hack SD profile (T2, still in BACKLOG) would

@@ -11,6 +11,22 @@
 #include "gb_new_mon.h"
 #include "bank_cell.h"
 #include "data_tables.h"   /* pk_species_name */
+#include "gen12_convert.h" /* gen12_convert -- decision 12(c)'s own conversion */
+#include "gb_sidecar.h"    /* GbscEntry, gbsc_init/gbsc_add */
+#include "xfer_rec.h"      /* xr_key_g3, xr_entry_for_down, XR_KIND_NATIVE_HOME/XR_STATE_CLAIMED */
+/* decision 12's own note: this static belongs in EWRAM, not IWRAM (32 KiB,
+ * stack-critical even on the delta build) -- EWRAM_BSS lives in lib/sys.h, which is
+ * NOT on host_bankcell_test.c's own `-I source` include path (that test dual-
+ * compiles this whole file with -DPDNA_DELTA on the host to exercise bank_plant_box0
+ * -- see this file's own header comment). __arm__ is defined by devkitARM's real
+ * compiler and nothing else on this tree's host toolchains, so this stays a no-op
+ * off-target. */
+#ifdef __arm__
+#include "sys.h"           /* EWRAM_BSS */
+#define BANK_PLANT_EWRAM_BSS EWRAM_BSS
+#else
+#define BANK_PLANT_EWRAM_BSS
+#endif
 
 #define PLANT_DEX_CHIKORITA 152
 #define PLANT_DEX_PIKACHU    25
@@ -100,6 +116,111 @@ void bank_plant_box_full(uint8_t* recs) {
                                                         * hashed span) */
     memcpy(recs + (uint32_t)slot * 80, cell, 80);
   }
+}
+
+/* ---- BACKLOG #150 S150-9 decision 12: the planted-ledger read shim (#179(a)) ---
+ * Three keyed slots, not one: the chain also needs the RESTORED/PENDING refusals
+ * (decision 8) and the "nothing changed" skip (decision 7), each its own ledger
+ * file keyed to its OWN Gen-3 record -- a single shared key could only ever show
+ * one state at a time. */
+#define BANK_PLANT_XFER_SLOTS 4
+/* Each seeded ledger file ever holds exactly ONE entry (gbsc_init + one gbsc_add),
+ * never GBSC_MAX_ENTRIES (8) -- header + one entry is the real footprint, not the
+ * worst-case 1042 B GBSC_FILE_MAX four of would overflow EWRAM by ~3 KB on this
+ * vehicle (found live: the first build of this shim did exactly that). The shim's
+ * own caller (xr_open) still passes its OWN GBSC_FILE_MAX-sized buffer as `cap` --
+ * only the STATIC storage here shrinks. */
+#define BANK_PLANT_XFER_SLOT_CAP (GBSC_HEADER + GBSC_ENTRY)
+
+static uint8_t  BANK_PLANT_EWRAM_BSS s_xfer_buf[BANK_PLANT_XFER_SLOTS][BANK_PLANT_XFER_SLOT_CAP];
+static uint32_t s_xfer_len[BANK_PLANT_XFER_SLOTS];
+static uint64_t s_xfer_key[BANK_PLANT_XFER_SLOTS];
+static bool     s_xfer_valid[BANK_PLANT_XFER_SLOTS];
+
+bool bank_plant_xfer_open(uint64_t key, uint8_t* buf, uint32_t cap, uint32_t* len) {
+  if (!buf) return false;
+  for (int i = 0; i < BANK_PLANT_XFER_SLOTS; i++) {
+    if (!s_xfer_valid[i] || key != s_xfer_key[i]) continue;
+    if (s_xfer_len[i] > cap) return false;
+    memcpy(buf, s_xfer_buf[i], s_xfer_len[i]);
+    if (len) *len = s_xfer_len[i];
+    return true;
+  }
+  return false;
+}
+
+/* Builds a fresh Gen-2 CHIKORITA cell + its gen12_convert()'d Gen-3 record, `serial`
+ * apart from bank_plant_box0()'s own slot 0 so every planted key is distinct (bc_
+ * ident32 hashes the serial). `level` lets the caller vary the mon so slots 27/28/29
+ * (below) are never byte-identical to each other. */
+static bool plant_g3_pair(uint8_t g3_rec80[80], uint8_t cell80[80], uint8_t level,
+                          uint32_t serial) {
+  GbEditMon e;
+  plant_gen2_chikorita(&e, level, serial);
+  bc_pack(&e, 0, BC_ORIGIN_GOLD, 0, serial, cell80);
+  GbEditMon home; BcMeta meta;
+  if (!bc_unpack(cell80, &home, &meta)) return false;
+  Gb12Mon view;
+  if (!bc_view(&home, &meta, bc_ident32(cell80), &view)) return false;
+  Gb12Target tgt; memset(&tgt, 0, sizeof tgt);
+  tgt.met_game = 3;   /* Emerald -- this chain's own vehicle */
+  Gb12Notes notes;
+  return gen12_convert(&view, &tgt, g3_rec80, &notes) == GB12_OK;
+}
+
+/* Seeds slot `idx`'s ledger file, one entry, keyed by xr_key_g3(g3_rec80). `state`
+ * is the entry's XR_STATE_* (decision 8); `alter` requests decision 12(b)'s
+ * written_level-3/moves-swap so the screen has real toggle rows (false leaves the
+ * entry byte-identical to the home -- decision 7's "nothing changed" skip case). */
+static void plant_xfer_slot(int idx, const uint8_t g3_rec80[80], const uint8_t cell80[80],
+                            uint8_t state, bool alter) {
+  if (idx < 0 || idx >= BANK_PLANT_XFER_SLOTS) return;
+  GbEditMon written; BcMeta meta;
+  if (!bc_unpack(cell80, &written, &meta)) return;
+
+  GbscEntry e;
+  xr_entry_for_down(&e, &written, cell80, 0, XR_DIR_ABROAD_G3, g3_rec80 + 0x08);
+  e.state = state;
+
+  if (alter) {
+    uint8_t lvl = e.written_level;
+    e.written_level = (lvl > 3) ? (uint8_t)(lvl - 3) : lvl;
+    e.moves_written[1] = (e.moves_written[1] == 1) ? 2 : 1;
+  }
+
+  uint64_t key = xr_key_g3(g3_rec80);
+  uint32_t len = (uint32_t)gbsc_init(s_xfer_buf[idx], key);
+  if (gbsc_add(s_xfer_buf[idx], &len, BANK_PLANT_XFER_SLOT_CAP, &e) < 0) return;
+  s_xfer_key[idx] = key;
+  s_xfer_len[idx] = len;
+  s_xfer_valid[idx] = true;
+}
+
+/* Builds and seeds all four planted ledger slots, filling g3_out[0..3][80] with
+ * their own converted Gen-3 records -- the caller (pdna_main.c's PC-storage mount
+ * hook) places g3_out[i] at PC box 0 slot (29 - i):
+ *   0 (slot 29): CLAIMED, ALTERED  -- the main chain, real LEVEL/MOVES rows
+ *   1 (slot 28): CLAIMED, unaltered -- decision 7's "nothing changed" skip
+ *   2 (slot 27): RESTORED           -- the ALREADY RESTORED refusal (decision 8)
+ *   3 (slot 26): PENDING            -- the SAVE FIRST refusal (decision 8)
+ * Slot 0's cell (level 12, serial 1) is byte-identical to bank_plant_box0()'s own
+ * Bank box 0 slot 0 cell (same construction) -- decision 12(b)'s own requirement.
+ * Returns the count of slots successfully seeded (0..4). */
+int bank_plant_xfer_seed_all(uint8_t g3_out[4][80]) {
+  static const uint8_t  levels[4]  = {12, 14, 15, 18};
+  static const uint32_t serials[4] = {1u, 2u, 27u, 26u};
+  static const uint8_t  states[4]  = {XR_STATE_CLAIMED, XR_STATE_CLAIMED,
+                                      XR_STATE_RESTORED, XR_STATE_PENDING};
+  static const bool     alters[4]  = {true, false, false, false};
+  if (!g3_out) return 0;
+  int n = 0;
+  for (int i = 0; i < 4; i++) {
+    uint8_t cell80[80];
+    if (!plant_g3_pair(g3_out[i], cell80, levels[i], serials[i])) continue;
+    plant_xfer_slot(i, g3_out[i], cell80, states[i], alters[i]);
+    n++;
+  }
+  return n;
 }
 
 #else
