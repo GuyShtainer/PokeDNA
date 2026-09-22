@@ -17,6 +17,9 @@
 #include "diskio.h" /* DRESULT, command codes */
 #include "gba_rtc.h" /* cartridge RTC (resolved via -Isource) */
 #include "perf.h"    /* PERF_SD_WRITE -- see the note in diskio.c's disk_read */
+#ifdef PDNA_DELTA
+#include "log.h"     /* BACKLOG #179 A3 review D7's own unaligned-write log line, -Isource */
+#endif
 
 #define ALIGNED __attribute__((aligned(4)))
 
@@ -40,6 +43,14 @@ DRESULT disk_write(BYTE pdrv, const BYTE* buff, LBA_t sector, UINT count) {
    * bytes early and writes shifted data to the card. On the write side that is a
    * data-loss bug, not just a display one. */
   if ((u32)buff & 0x3) {
+#ifdef PDNA_DELTA
+    /* BACKLOG #179 A3 review D7: same fix as diskio.c's disk_read -- vsd.py's own
+     * unaligned_count is structurally 0 (the mailbox only ever sees fc_bounce, always
+     * 4-aligned), so log the real unaligned SOURCE once per disk_write CALL, before
+     * it is bounced away, at the one place that still has the caller's own buff. */
+    log_line("vsd: unaligned write buff=0x%08x sector=%lu count=%u", (unsigned)buff,
+             (unsigned long)sector, (unsigned)count);
+#endif
     /* Unaligned source: stage through the aligned buffer, 4 sectors at a time. */
     for (UINT i = 0; i < count; i += 4) {
       const u16 blocks = (count - i > 4) ? 4 : (u16)(count - i);

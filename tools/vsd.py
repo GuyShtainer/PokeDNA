@@ -299,7 +299,17 @@ class VsdServer:
         self.image = image
         self.last_seq_acked = 0
         self.attached = False
-        self.unaligned_count = 0
+        self.unaligned_count = 0   # BACKLOG #179 A3 review D7: structurally 0 on this
+                                    # vehicle -- fc_bounce (lib/fatfs/diskio.c/
+                                    # diskio_write.c) always stages an unaligned CALLER
+                                    # buffer through a 4-byte-aligned bounce buffer
+                                    # BEFORE the mailbox's own `addr` field is ever
+                                    # written, so this counter can never see the fact it
+                                    # was meant to watch for. The real signal is
+                                    # diskio.c/diskio_write.c's own delta-only
+                                    # `log_line("vsd: unaligned read/write ...")` at the
+                                    # `(u32)buff & 0x3` branch, above the bounce -- grep
+                                    # /PokeDNA/log.txt for "vsd: unaligned" instead.
         self.transactions_served = 0
         self.roundtrip_disk_write_calls = 0   # every served READ or WRITE, incl. attach
 
