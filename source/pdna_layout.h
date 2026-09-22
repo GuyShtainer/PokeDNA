@@ -1954,6 +1954,12 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_GBTR_ACT_SAVE   "SAVE"
 #define PDNA_GBTR_ACT_MORE   "MORE"
 
+/* BACKLOG #202 F1: the HoF card's own START legend word -- the trainer card's
+ * own PDNA_GBTR_ACT_MORE means "the rest of THIS card's fields, plain page";
+ * the HoF card's START instead opens the CLEAR/SET-COUNT/ADD/DELETE menu, a
+ * different action that deserves its own word rather than borrowing MORE. */
+#define PDNA_GBHOF_ACT_MENU  "MENU"
+
 /* D2 fix (U2c 2nd re-verify): the GB-screen shell's open-refusal reasons
  * (pdna_gbscreen.c's kReasonNoRom/kReasonNoStack/kReasonOpen/kReasonBadGen/
  * kReasonNoTail) used to be concatenated onto the plain trainer page's title
