@@ -22,6 +22,13 @@ unit test. Three things must all hold:
   (c) The restricted picker's row-label helper (item_label_for in pdna_pick.c) labels
       through gb_item_label() when a generation is set, not merely a raw "#n" (the OLD
       unconditional behaviour this lane replaced).
+  (d) Review D5: source/pdna_gbpack.c's gbpack_add_routed() calls gbb_pocket_of( (the
+      auto-routing decision) and its Items/Balls branch inserts into `target` (the
+      picked item's OWN pocket) -- NOT `pocket` (the pocket ADD ITEM was opened from).
+      A mutant that silently swaps `target` for `pocket` there defeats auto-routing
+      entirely (every pick lands back wherever the menu opened, e.g. a picked Ball
+      stays in Items) without touching gbb_pocket_of() itself or any name/string this
+      file's other checks look at -- it passed every check here before (d) existed.
 
 Run directly:
 
@@ -132,6 +139,45 @@ def check_label_uses_gb_item_label(pick_c: str) -> list[str]:
     return []
 
 
+def _extract_function_body(text: str, sig_re: str, label: str) -> str | None:
+    m = re.search(sig_re, text)
+    if not m:
+        return None
+    start = m.end() - 1
+    depth = 1
+    i = start + 1
+    while i < len(text) and depth > 0:
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+        i += 1
+    return text[start:i]
+
+
+def check_routes_to_target(gbpack_c: str) -> list[str]:
+    """Review D5: gbpack_add_routed()'s Items/Balls branch must insert into `target`
+    (the picked item's OWN pocket, from gbb_pocket_of()) -- not `pocket` (the pocket
+    ADD ITEM was opened from). Swapping the two silently defeats auto-routing: every
+    pick would land back in the ADD-ITEM-opened-from pocket instead of its real one,
+    with no crash and no other check here noticing (gbb_pocket_of() itself is still
+    called, item_label_for()/the bracket checks never look at gbb_insert()'s
+    arguments at all)."""
+    body = _extract_function_body(gbpack_c, r"static bool gbpack_add_routed\([^)]*\)\s*\{",
+                                  "gbpack_add_routed")
+    if body is None:
+        return ["pdna_gbpack.c: gbpack_add_routed() not found"]
+    if "gbb_pocket_of(" not in body:
+        return ["pdna_gbpack.c: gbpack_add_routed() never calls gbb_pocket_of() -- "
+                "BACKLOG #195 F2's auto-routing has no effect"]
+    if not re.search(r"gbb_insert\(\s*game\s*,\s*bag\s*,\s*target\s*,\s*id8\s*,\s*qty8\s*\)", body):
+        return ["pdna_gbpack.c: gbpack_add_routed()'s Items/Balls branch does not pass "
+                "`target` (the picked item's OWN pocket) as gbb_insert()'s pocket "
+                "argument -- a mutant routing to `pocket` instead would defeat "
+                "auto-routing silently (a picked Ball would stay in Items)"]
+    return []
+
+
 def run_all() -> list[str]:
     pick_c = PICK_C.read_text()
     gbbag_c = GBBAG_C.read_text()
@@ -145,6 +191,7 @@ def run_all() -> list[str]:
     v += check_bracketed_gen("pdna_gbpack.c", gbpack_c, "GBIN_GEN2")
     v += check_unbracketed("pdna_bag.c", bag_c)
     v += check_label_uses_gb_item_label(pick_c)
+    v += check_routes_to_target(gbpack_c)
     return v
 
 
@@ -219,10 +266,42 @@ def main() -> int:
               "correctly caught:")
         for mv in m3:
             print(f"  (mutated-copy) FAIL: {mv}")
+
+        # --- self-mutation 4 (Review D5): gbpack_add_routed()'s Items/Balls branch
+        # routes to `pocket` (the pocket ADD ITEM was opened from) instead of `target`
+        # (the picked item's OWN pocket) -- silently defeats auto-routing, e.g. a
+        # picked Ball would stay in Items instead of landing in Balls. The review's
+        # own claim: this mutant passes every check that existed before (d) -- proven
+        # here, not assumed, by running the OTHER checks against it first.
+        gbpack_c = GBPACK_C.read_text()
+        target4 = "    GbBagOpStatus st = gbb_insert(game, bag, target, id8, qty8);\n"
+        if target4 not in gbpack_c:
+            print(f"FAIL -- self-mutation 4 target line not found verbatim: {target4!r} "
+                  f"(source drifted -- update this test)")
+            return 1
+        mutated4 = gbpack_c.replace(
+            target4, "    GbBagOpStatus st = gbb_insert(game, bag, pocket, id8, qty8);\n", 1)
+        other_violations = (check_no_raw_id_prompt("pdna_gbpack.c", mutated4) +
+                            check_bracketed_gen("pdna_gbpack.c", mutated4, "GBIN_GEN2"))
+        if other_violations:
+            print(f"FAIL -- self-mutation 4: an unrelated check already flags this mutant "
+                  f"({other_violations!r}) -- the D5 brief's own premise ('passes every "
+                  f"test today') no longer holds; update this test's own comment")
+            return 1
+        m4 = check_routes_to_target(mutated4)
+        if not m4:
+            print("FAIL -- self-mutation 4: routing to `pocket` instead of `target` did NOT "
+                  "turn check (d) red (vacuous check)")
+            return 1
+        print("self-mutation 4 (Review D5): gbpack_add_routed() routes to `pocket` instead "
+              "of `target` -- invisible to every OTHER check here (confirmed above), "
+              "correctly caught by check (d):")
+        for mv in m4:
+            print(f"  (mutated-copy) FAIL: {mv}")
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
-    print("\nhost_gb_item_pick_test: ok (shipped source clean, all three mutations caught)")
+    print("\nhost_gb_item_pick_test: ok (shipped source clean, all four mutations caught)")
     return 0
 
 
