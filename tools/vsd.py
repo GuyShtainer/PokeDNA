@@ -47,14 +47,35 @@ Omega this is the documented rom-load-lab bug class: f_write from a ROM-resident
 buffer silently writes the BOOTLOADER to the card. No emulator has ever been able to
 see it; this server is the first vehicle that can.
 
-FAILURE INJECTION (S4.7) -- tests/hostfat/ramdisk.h's own knob set, one layer further
-out, so they are drivable through the app's REAL screens for the first time:
-  --vsd-protect          every WRITE fails (a write-protected volume)
-  --vsd-fail-write-in N  the Nth served WRITE (counting from now) fails, then heals
-  --vsd-fail-at N        after N successful writes, ONE write fails, then heals
-  --vsd-lie-after N      after N successful writes, every WRITE reports OK and keeps
-                          nothing (the card that ACKs and stores nothing)
-  --vsd-fail-read-at N   after N successful reads, ONE read fails, then heals
+FAILURE INJECTION (S4.7) -- tests/hostfat/ramdisk.c's own knob set, one layer further
+out, so they are drivable through the app's REAL screens for the first time. BACKLOG
+#179 A3 review D6: every N below counts what ramdisk.c itself counts -- SECTORS for
+fail_at/lie_after/fail_read_at (a multi-sector FatFs call can cross the threshold mid-
+call), CALLS for fail_write_in/fail_reads_after (ramdisk.c decrements those by 1 per
+call, never by the call's sector count):
+  --vsd-protect          every WRITE fails, unconditionally, forever (a write-
+                          protected volume -- see VsdImage's own docstring for the one
+                          genuine gap: this cannot reach FatFs' separate
+                          FR_WRITE_PROTECTED disk_status() path, which nothing in this
+                          codebase, real hardware or virtual, has ever wired up)
+  --vsd-fail-all-writes   every WRITE fails, unconditionally, forever (an EverDrive,
+                          by design -- distinct from --vsd-protect only in NAME, same
+                          effect on this wire protocol)
+  --vsd-fail-write-in N   the NEXT N served WRITE calls all fail, then heal (NOT just
+                          the Nth -- ramdisk.c's rd_fail_write_in decrements by 1 on
+                          every call while it is still >0, so it fails a RUN of N)
+  --vsd-fail-at N         after N successful write SECTORS, the write call that
+                          crosses that threshold fails once, then heals
+  --vsd-lie-after N       after N successful write SECTORS, every WRITE reports OK
+                          and keeps nothing forever (the card that ACKs and stores
+                          nothing)
+  --vsd-lie-writes        every WRITE reports OK and keeps nothing, from the very
+                          first call (no countdown -- the card that was already bad)
+  --vsd-fail-read-at N    after N successful read SECTORS, the read call that crosses
+                          that threshold fails once, then heals
+  --vsd-fail-reads-after N  after N successful read CALLS, every read fails forever
+                          (never heals -- lets a test sweep a read error across every
+                          step of a flush, ramdisk.h's own rationale for this knob)
 """
 from __future__ import annotations
 
@@ -134,21 +155,51 @@ class VsdImage:
     a few MiB of image, so this is simpler and faster than seeking a file handle per
     transaction and matches design S4.6's "images live under /tmp/pokedna-vsd/" scale.
 
-    Implements tests/hostfat/ramdisk.h's failure-injection knob set VERBATIM (S4.7) so
-    the same fault vocabulary the host tests already use is drivable through mGBA.
+    Implements tests/hostfat/ramdisk.c's disk_read()/disk_write() failure-injection
+    checks VERBATIM (S4.7, BACKLOG #179 A3 review D6 fix) -- same knob names, same
+    per-call check order, same sector-vs-call counting per knob -- so the same fault
+    vocabulary the host tests already use is drivable through mGBA.
+
+    ONE genuine gap, not "verbatim": ramdisk.c's `rd_protect` is read by disk_STATUS()
+    too (`disk_status` returns STA_PROTECT), which is what makes FatFs' f_open()
+    refuse with FR_WRITE_PROTECTED *before* ever calling disk_write() at all
+    (ff.c:3417-3418/3432-3433). The VSD wire protocol has no STATUS op and no third
+    VsdBox status code to carry that distinction (VSD_ST_BUSY/OK/ERR only, source/
+    vsd.h) -- and neither, on THIS project, does real hardware: lib/fatfs/diskio.c's
+    disk_status() is `return driveId == 0 ? 0 : STA_NOINIT;`, unconditionally, on
+    every build including the shipped Omega one, so STA_PROTECT/FR_WRITE_PROTECTED
+    has never once fired anywhere in this codebase, real card or virtual. `protect`
+    here therefore mirrors disk_write()'s OWN protect check (`if (rd_protect) return
+    RES_WRPRT;`) -- every write fails -- exactly like every other write-fail knob
+    (VSD_ST_ERR, not a WRPRT-specific code that nothing downstream of it, real or
+    virtual, has ever distinguished from any other write error).
     """
 
     path: Path
     data: bytearray
     sectors: int
 
-    # failure injection knobs (all off by default)
-    protect: bool = False
-    fail_write_in: int = 0        # >0: fail that many writes from now, then heal
-    fail_at: int = -1             # >=0: let that many writes land, fail exactly one
-    lie_after: int = -1           # >=0: let that many land, then lie forever
-    lying: bool = False
-    fail_read_at: int = -1        # >=0: let that many reads land, fail exactly one
+    # failure injection knobs (all off by default). BACKLOG #179 A3 review D6: every
+    # knob below is now SECTOR-counted, matching tests/hostfat/ramdisk.c's own
+    # disk_read/disk_write exactly (`rd_fail_at`/`rd_lie_after`/`rd_fail_read_at` all
+    # decrement by the served CALL's `count`, not by 1 -- the earlier per-CALL
+    # decrement meant "the Nth write" actually meant "the Nth disk_write CALL",
+    # which silently changes meaning every time FatFs batches a different number of
+    # sectors into one call). `fail_write_in`/`fail_reads_after` stay CALL-counted --
+    # that is what ramdisk.c itself does for those two (`rd_fail_write_in--`/
+    # `rd_fail_reads_after--`, both by 1, never by `count`).
+    protect: bool = False           # rd_protect: every write fails (mirrors RES_WRPRT's
+                                     # EFFECT -- see this class's own docstring note on
+                                     # WHY it cannot mirror the CODE, below)
+    fail_all_writes: bool = False   # rd_fail_all_writes: every write fails, unconditionally
+    fail_write_in: int = 0          # rd_fail_write_in: >0, fails that many CALLS from now
+    fail_at: int = -1               # rd_fail_at: >=0, let that many SECTORS land, fail one call
+    lie_after: int = -1             # rd_lie_after: >=0, let that many SECTORS land, then lie forever
+    lie_writes: bool = False        # rd_lie_writes: every write lies from the very first call
+    lying: bool = False             # derived: set True once lie_after's countdown reaches it
+    fail_reads_after: int = -1      # rd_fail_reads_after: >=0, let that many CALLS through,
+                                     # then fail every read forever (never heals)
+    fail_read_at: int = -1          # rd_fail_read_at: >=0, let that many SECTORS land, fail one call
 
     # counters (mirror ramdisk.c's rd_* globals)
     writes_served: int = 0
@@ -168,27 +219,36 @@ class VsdImage:
         Path(out_path or self.path).write_bytes(bytes(self.data))
 
     def read(self, sector: int, count: int) -> "bytes | None":
-        """Returns the sector data, or None if the read-fail knob fired (mirrors
+        """Returns the sector data, or None if a read-fail knob fired (mirrors
         ramdisk.c's disk_read returning RES_ERROR -- the caller maps None to
-        VSD_ST_ERR)."""
+        VSD_ST_ERR). Check order mirrors disk_read() exactly: fail_reads_after (call-
+        counted, never heals) before fail_read_at (sector-counted, heals once)."""
         if sector + count > self.sectors:
             raise VsdError(f"read out of range: sector={sector} count={count} "
                             f"sectors={self.sectors}")
+        if self.fail_reads_after >= 0:
+            if self.fail_reads_after == 0:
+                self.read_fails += 1
+                return None
+            self.fail_reads_after -= 1
         if self.fail_read_at >= 0:
-            if self.fail_read_at == 0:
+            if self.fail_read_at < count:
                 self.fail_read_at = -1
                 self.read_fails += 1
                 return None
-            self.fail_read_at -= 1
+            self.fail_read_at -= count
         self.reads_served += 1
         off = sector * SECTOR
         return bytes(self.data[off:off + count * SECTOR])
 
     def write(self, sector: int, payload: bytes) -> bool:
         """Returns False if the write was refused/lost (mirrors ramdisk.c's disk_write
-        returning RES_ERROR, or RES_OK-but-discarded for the lying knob -- the CALLER
+        returning RES_ERROR, or RES_OK-but-discarded for a lying knob -- the CALLER
         still sees VSD_ST_OK for a lie, exactly like a real card that ACKs and keeps
-        nothing; that asymmetry is the whole point of --vsd-lie-after, S4.7)."""
+        nothing; that asymmetry is the whole point of --vsd-lie-after, S4.7). Check
+        order mirrors disk_write() exactly: protect/fail_all_writes/fail_write_in
+        (all unconditional or call-counted) before the sector-counted fail_at, before
+        lie_after/lie_writes."""
         if len(payload) % SECTOR:
             raise VsdError(f"write payload not sector-sized ({len(payload)} bytes)")
         count = len(payload) // SECTOR
@@ -198,22 +258,27 @@ class VsdImage:
         if self.protect:
             self.write_fails += 1
             return False
+        if self.fail_all_writes:
+            self.write_fails += 1
+            return False
         if self.fail_write_in > 0:
             self.fail_write_in -= 1
             self.write_fails += 1
             return False
         if self.fail_at >= 0:
-            if self.fail_at == 0:
+            if self.fail_at < count:
                 self.fail_at = -1
                 self.write_fails += 1
                 return False
-            self.fail_at -= 1
+            self.fail_at -= count
         if self.lie_after >= 0:
             if self.lie_after == 0:
                 self.lying = True
             else:
-                self.lie_after -= 1
-        if self.lying:
+                self.lie_after -= count
+                if self.lie_after < 0:
+                    self.lie_after = 0
+        if self.lie_writes or self.lying:
             self.lied_sectors += count
             return True   # ACKs, keeps nothing
         off = sector * SECTOR

@@ -7227,20 +7227,38 @@ def _main_dispatch(argv=None) -> int:
                           "tools/vsd_img.c-built .img file. Absent (the default), "
                           "every Session behaves byte-identically to before this "
                           "lane -- see A4's parity gate.")
+    # BACKLOG #179 A3 review D6: units are SECTORS for fail_at/lie_after/fail_read_at
+    # (a multi-sector FatFs call can cross the threshold mid-call, exactly like
+    # tests/hostfat/ramdisk.c's own rd_fail_at/rd_lie_after/rd_fail_read_at) and CALLS
+    # for fail_write_in/fail_reads_after (ramdisk.c decrements those by 1 per call,
+    # never by the call's sector count) -- see tools/vsd.py's own module docstring for
+    # the full per-knob rationale this help text summarizes.
     ap.add_argument("--vsd-protect", action="store_true",
-                     help="S4.7 failure injection: every VSD write fails (a "
-                          "write-protected volume).")
+                     help="S4.7 failure injection: every VSD write fails, "
+                          "unconditionally, forever (a write-protected volume).")
+    ap.add_argument("--vsd-fail-all-writes", action="store_true",
+                     help="S4.7: every VSD write fails, unconditionally, forever "
+                          "(an EverDrive, by design).")
     ap.add_argument("--vsd-fail-write-in", type=int, default=None,
-                     help="S4.7: the Nth served VSD write from now fails, then heals.")
+                     help="S4.7: the NEXT N served VSD write CALLS all fail, then "
+                          "heal (not just the Nth -- a run of N).")
     ap.add_argument("--vsd-fail-at", type=int, default=None,
-                     help="S4.7: after N successful VSD writes, exactly one more "
-                          "fails, then heals.")
+                     help="S4.7: after N successful VSD write SECTORS, the write "
+                          "call that crosses that threshold fails once, then heals.")
     ap.add_argument("--vsd-lie-after", type=int, default=None,
-                     help="S4.7: after N successful VSD writes, every write reports "
-                          "OK and discards (the card that ACKs and keeps nothing).")
+                     help="S4.7: after N successful VSD write SECTORS, every write "
+                          "reports OK and discards, forever (the card that ACKs and "
+                          "keeps nothing).")
+    ap.add_argument("--vsd-lie-writes", action="store_true",
+                     help="S4.7: every VSD write reports OK and discards, from the "
+                          "very first call (no countdown -- the card that was "
+                          "already bad).")
     ap.add_argument("--vsd-fail-read-at", type=int, default=None,
-                     help="S4.7: after N successful VSD reads, exactly one more "
-                          "fails, then heals.")
+                     help="S4.7: after N successful VSD read SECTORS, the read call "
+                          "that crosses that threshold fails once, then heals.")
+    ap.add_argument("--vsd-fail-reads-after", type=int, default=None,
+                     help="S4.7: after N successful VSD read CALLS, every read "
+                          "fails, forever (never heals).")
     a = ap.parse_args(argv)
     a.out.mkdir(parents=True, exist_ok=True)
 
@@ -7251,10 +7269,13 @@ def _main_dispatch(argv=None) -> int:
     gb_shots.set_default_vsd(
         a.vsd,
         protect=a.vsd_protect if a.vsd_protect else None,
+        fail_all_writes=a.vsd_fail_all_writes if a.vsd_fail_all_writes else None,
         fail_write_in=a.vsd_fail_write_in,
         fail_at=a.vsd_fail_at,
         lie_after=a.vsd_lie_after,
+        lie_writes=a.vsd_lie_writes if a.vsd_lie_writes else None,
         fail_read_at=a.vsd_fail_read_at,
+        fail_reads_after=a.vsd_fail_reads_after,
     )
 
     if a.selftest_captions:
