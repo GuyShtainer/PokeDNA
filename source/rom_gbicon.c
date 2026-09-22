@@ -295,11 +295,27 @@ static int try_loc(RomGbIcon* gi, const RomGbIconLoc* loc) {
   if (!menu_icons_cb(menu_window)) return 0;
   if (window_max(menu_window, sizeof menu_window) != loc->n) return 0;
 
-  for (uint32_t k = 1; k <= loc->n; k++) {
+  /* BACKLOG #201 D2 (review fix): mirrors icon_ptrs_cb's OWN chain shape, not
+   * just "every entry is pointer-shaped" -- the old version here accepted a
+   * candidate whose icon_pointers was shifted ONE ENTRY EARLIER (-2 bytes):
+   * entry[0]==entry[1] still held (by coincidence of the shifted window), so
+   * the old per-k range-only check passed at 78 reads while 37 of the 38
+   * icons silently decoded the WRONG tile. entry[0]==entry[1] (k==1) and
+   * entry[k]==entry[k-1]+128 for k>=2 are the exact two invariants
+   * icon_ptrs_cb requires; a candidate that only coincidentally satisfies
+   * entry[0]==entry[1] without the chain now fails here and falls through to
+   * a full scan, exactly like any other bad candidate. */
+  uint16_t prev = 0;
+  for (uint32_t k = 0; k <= loc->n; k++) {
     uint8_t raw[2];
     if (!rd(gi, loc->icon_pointers + k * 2u, raw, 2)) return 0;
     uint16_t v = rd16(raw);
     if (v < GB_WIN_LO || v >= GB_WIN_HI) return 0;
+    if (k == 1) { if (v != prev) return 0; }
+    else if (k >= 2) { if (v != (uint16_t)(prev + 128u)) return 0; }
+    prev = v;
+    if (k == 0) continue;   /* entry[0] is the alias slot only -- not a kind */
+
     uint32_t foff = (uint32_t)loc->icon_bank * GB_BANK + (uint32_t)(v - GB_WIN_LO);
     uint8_t tile[ROM_GBICON_FRAME_BYTES];
     if (!rd(gi, foff, tile, sizeof tile)) return 0;
