@@ -3986,11 +3986,13 @@ def run_s150_2_bank_native(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_
     s.tap("START", settle=80)                              # nav menu
     s.tap("DOWN", settle=60)                                # Party -> Bank (index 1, one DOWN)
     s.tap("A", settle=150)                                  # -> pdna_bank_show(), box 0 (BANK 1)
-    s.shot("00_planted_box0", "S150-2: BANK 1, box_load()'s PDNA_DELTA plant -- five "
-           "native cells at slots 0-4 (CHIKORITA/2, PIKACHU/1, an Egg, an item "
-           "holder, the DMG chip), the rest of the grid ordinary empty Gen-3 slots -- "
-           "no '?' badge anywhere; every native cell wears its era mark EXCEPT the "
-           "DMG cell (species 252 + isBadEgg, D-Q3 -- review F3: no era to claim)")
+    s.shot("00_planted_box0", "S150-2: BANK 1, box_load()'s PDNA_DELTA plant -- seven "
+           "native cells at slots 0-6 (CHIKORITA/2, PIKACHU/1, an Egg, an item "
+           "holder, the DMG chip at slots 0-4, plus BACKLOG #150 S150-12 decision "
+           "17's two COPY cells at slots 5/6), the rest of the grid ordinary empty "
+           "Gen-3 slots -- no '?' badge anywhere; every native cell wears its era "
+           "mark EXCEPT the DMG cell (species 252 + isBadEgg, D-Q3 -- review F3: no "
+           "era to claim)")
 
     # cursor on each of the five cells in turn -- the left DATA panel (species/level/
     # nickname) is the thing this shot list actually proves: a native cell decodes to
@@ -4703,8 +4705,10 @@ def run_s150_7_down_edge(core_mod, image_mod, rom_gold: Path, rom_red: Path,
     sg.press_n("UP", UP_INTO_BANK, settle=100)
     sg.press_n("UP", UP_TO_ROW0, settle=60)
     sg.shot("05_gold_bank_cell_still_there", "S150-7 (d): back in the Bank, slot 0 -- "
-            "CHIKORITA is STILL a native cell here (BANK 1  5/30, unchanged) -- the "
-            "visual proof that a refused persist consumes NOTHING: D12's ordering held")
+            "CHIKORITA is STILL a native cell here (BANK 1  7/30 -- BACKLOG #150 "
+            "S150-12's decision 17 added two more planted COPY cells at slots 5/6, "
+            "unchanged from this lane's own box0 plant) -- the visual proof that a "
+            "refused persist consumes NOTHING: D12's ordering held")
 
     # ---- (c) the 10(c) party-full offer + picker, on a FRESH carry off the same Bank -
     sg2 = gb_shots.Session(core_mod, image_mod, rom_gold, out_dir, "s150_7_gold_party_")
@@ -4952,7 +4956,9 @@ def run_s150_8_gen3_arm(core_mod, image_mod, rom_emerald: Path, out_dir: Path) -
            "KEEP AS IS / MAKE LEGAL row: CHIKORITA is a base-form species, never "
            "below pk_evo_floor() at any level, so gb_bank_down_gen3's decision-7 "
            "check (pdna_gen12.c:2765-2780) never fires for any of bank_plant.c's "
-           "five planted cells -- none qualifies, per this lane's own brief")
+           "seven planted cells (five native slots 0-4 + two COPY cells at slots "
+           "5/6, BACKLOG #150 S150-12 decision 17) -- none qualifies, per this "
+           "lane's own brief")
 
     # ---- confirm: the ledger write is refused on this vehicle (no SD card) -------
     s.tap("A", settle=300)
@@ -5061,8 +5067,9 @@ def run_s150_8_bridge(core_mod, image_mod, rom_gold: Path, rom_red: Path,
     boot_to_grid(sg)
     sg.press_n("UP", UP_INTO_BANK, settle=100)
     sg.press_n("UP", UP_TO_ROW0, settle=60)
-    sg.shot("00_bank", "S150-8 bridge: Gold's own Bank, box 0's five planted cells "
-            "(CHI/PIK/EGG/CHI/DMG), cursor on slot 0")
+    sg.shot("00_bank", "S150-8 bridge: Gold's own Bank, box 0's seven planted cells "
+            "(CHI/PIK/EGG/CHI/DMG at slots 0-4, plus BACKLOG #150 S150-12 decision "
+            "17's two COPY cells at slots 5/6), cursor on slot 0")
     sg.tap("RIGHT", settle=100)
     sg.shot("01_cursor_pikachu", "S150-8 bridge: cursor moved RIGHT x1 to slot 1 -- "
             "the Gen-1 PIKACHU cell (dex 25, no species/move ever blocks a "
@@ -6813,9 +6820,12 @@ def run_b93_menu(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> g
     s2.run(GB_ART_COLD_SETTLE)
     s2.press_n("UP", 3, settle=100)
     s2.shot("26_bank_hop", "BACKLOG #93: the bank_edge UP hop opens the Bank -- "
-                            "'BANK 1  5/30' -- the five PDNA_DELTA-planted native cells in slots 0-4, the rest empty (#120 S2's F1 fix: "
-                            "no write surface survives into a GB session's Bank "
-                            "visit, so nothing can ever land here in mGBA)")
+                            "'BANK 1  7/30' -- the seven PDNA_DELTA-planted native "
+                            "cells (five in slots 0-4, plus BACKLOG #150 S150-12 "
+                            "decision 17's two COPY cells in slots 5/6), the rest "
+                            "empty (#120 S2's F1 fix: no write surface survives "
+                            "into a GB session's Bank visit, so nothing can ever "
+                            "land here in mGBA)")
     s2.tap("A", settle=150)
     # D9 (review-opus, BACKLOG #93): this shot shows an EMPTY Bank cell -- there is
     # no occupied one to press A on in mGBA (#120 S2's F1 fix already closed the
@@ -6989,18 +6999,27 @@ def run_s2_control(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Se
     app correctly routed it through app_mon_menu_readonly()'s native whitelist (VIEW
     only) -- a real behaviour, just the WRONG control (a native cell, not a Gen-3 one;
     the brief calls this out explicitly: "a native cell is not [an acceptable
-    control]"). bank_plant.c plants NO Gen-3 cells anywhere -- slots 5-29 of box 0 are
-    left genuinely empty (ordinary zeroed Gen-3 box slots, per bank_plant.h's own
-    doc), so the only way to see an OCCUPIED Gen-3 Bank cell's menu is to put a real
-    Gen-3 record there first: COPY a mon off the save's own box (box 0 of the SAVE's
-    PC, not the Bank -- app_mon_menu's ordinary occupied-cell menu, reached straight
-    off the boot cursor) into the clipboard, then PASTE HERE into an empty (non-
-    native) Bank slot. This run does exactly that, entirely through taps a player has
-    -- no ROM/save file is edited directly.
+    control]"). bank_plant.c plants Gen-3 records nowhere -- but as of BACKLOG #150
+    S150-12 decision 17 it plants TWO MORE native cells (COPY cells) at slots 5/6, so
+    slots 0-6 are ALL native now, not just 0-4; slots 7-29 of box 0 are the first
+    genuinely empty ones (ordinary zeroed Gen-3 box slots) -- so the only way to see
+    an OCCUPIED Gen-3 Bank cell's menu is to put a real Gen-3 record there first: COPY
+    a mon off the save's own box (box 0 of the SAVE's PC, not the Bank -- app_mon_
+    menu's ordinary occupied-cell menu, reached straight off the boot cursor) into the
+    clipboard, then PASTE HERE into an empty (non-native) Bank slot. This run does
+    exactly that, entirely through taps a player has -- no ROM/save file is edited
+    directly.
 
     Bank grid layout confirmed live (source/pdna_bank.c's BOX_RECS=30, pdna_box.c's
-    5-column grid): slot 5 is row 2, column 0 (one DOWN from slot 0); slot 6 is row 2,
-    column 1 (one more RIGHT). Both non-native, non-planted.
+    6-column grid, COLS=6): slot 6 is row 1, column 0 (one DOWN from slot 0) -- now
+    OCCUPIED by decision 17's second planted COPY cell (found live while re-verifying
+    this chain after decision 17 landed: the original "DOWN then A" recipe silently
+    opened that native cell's own whitelist menu instead of CREATE/PASTE HERE, and
+    the two unrelated taps that followed cascaded into leaving the Bank entirely and
+    editing a PARTY mon's menu -- not this lane's own gate, a stale navigation count
+    in this test script, fixed here). Slot 7 is row 1, column 1 (one more RIGHT) --
+    the first genuinely empty Gen-3 slot; slot 8 (row 1, column 2, one more RIGHT
+    again) is the second.
 
     Unlike run_s2_bank() which probes the Bank from a GB session (showing why F1 closed
     it off: no CREATE, no PASTE HERE on an empty cell), this run shows the Gen-3
@@ -7030,26 +7049,30 @@ def run_s2_control(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Se
     s.tap("DOWN", settle=60)                                   # Party -> Bank (index 1, one DOWN)
     s.tap("A", settle=150)                                     # -> pdna_bank_show(), box 0 (BANK 1)
     s.shot("01_bank_grid", "#143: the Bank, from a Gen-3 session -- BANK 1 (box 0) "
-           "shows the PDNA_DELTA plant's 5 native cells (CHI1/PIK/EGG/CHI2/DMG, "
-           "bank_plant_box0) across its top row and genuinely empty Gen-3 slots "
-           "everywhere else (5/30 occupied); cursor on slot 0 (CHI1, native)")
+           "shows the PDNA_DELTA plant's 7 native cells (CHI1/PIK/EGG/CHI2/DMG at "
+           "slots 0-4, bank_plant_box0, plus BACKLOG #150 S150-12 decision 17's two "
+           "COPY cells at slots 5/6) across its top row and genuinely empty Gen-3 "
+           "slots everywhere else (7/30 occupied); cursor on slot 0 (CHI1, native)")
 
-    s.tap("DOWN", settle=gb_shots.SETTLE)                      # slot 0 -> slot 5 (row 2, col 0): empty, non-native
+    s.tap("DOWN", settle=gb_shots.SETTLE)                      # slot 0 -> slot 6 (row 1, col 0): NATIVE (decision 17's copy cell)
+    s.tap("RIGHT", settle=gb_shots.SETTLE)                     # slot 6 -> slot 7 (row 1, col 1): empty, non-native
     s.tap("A", settle=150)                                     # A on the empty Gen-3 slot
     s.tap("DOWN", settle=gb_shots.SETTLE)                      # CREATE -> PASTE HERE
-    s.tap("A", settle=150)                                     # PASTE HERE -> commits the clipboard mon into slot 5
+    s.tap("A", settle=150)                                     # PASTE HERE -> commits the clipboard mon into slot 7
 
-    s.tap("A", settle=150)                                     # A again on the now-OCCUPIED slot 5
+    s.tap("A", settle=150)                                     # A again on the now-OCCUPIED slot 7
     s.shot("02_occupied_cell_menu", "#143: an OCCUPIED Gen-3 Bank cell's menu (slot "
-           "5, just pasted from the save's own PC) from a Gen-3 session -- VIEW/EDIT, "
-           "ITEM, LEGALITY, MOVE, COPY, PASTE, DUPLICATE, TO GAME, RELEASE -- TO GAME "
-           "is the Gen-3-only row (send the mon into the loaded save), present "
-           "because app_mon_menu (not the read-only variant) is driving this cell")
+           "7, just pasted from the save's own PC -- slots 5/6 are decision 17's own "
+           "planted COPY cells now, so this chain targets the first genuinely empty "
+           "slot instead) from a Gen-3 session -- VIEW/EDIT, ITEM, LEGALITY, MOVE, "
+           "COPY, PASTE, DUPLICATE, TO GAME, RELEASE -- TO GAME is the Gen-3-only row "
+           "(send the mon into the loaded save), present because app_mon_menu (not "
+           "the read-only variant) is driving this cell")
 
     s.tap("B", settle=100)                                     # back to the grid
-    s.tap("RIGHT", settle=gb_shots.SETTLE)                     # slot 5 -> slot 6 (row 2, col 1): still empty
+    s.tap("RIGHT", settle=gb_shots.SETTLE)                     # slot 7 -> slot 8 (row 1, col 2): still empty
     s.tap("A", settle=150)                                     # A on the empty Gen-3 slot
-    s.shot("03_empty_cell_menu", "#143: an EMPTY Gen-3 Bank cell's menu (slot 6, "
+    s.shot("03_empty_cell_menu", "#143: an EMPTY Gen-3 Bank cell's menu (slot 8, "
            "distinct from the slot the previous shot just filled) from a Gen-3 "
            "session -- CREATE / PASTE HERE / CANCEL -- xg_create_row and xg_paste_row "
            "are both true in an ordinary Gen-3 session (pc_live is true, parsed save, "
