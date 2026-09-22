@@ -163,6 +163,36 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
 typedef bool (*PdnaDexCellArtFn)(uint16_t dex, int x, int y, int w, int h, void* ctx);
 void pdna_dex_set_cell_art(PdnaDexCellArtFn fn, void* ctx, bool serves_page);
 
+/* BACKLOG #208: an optional hook fired once per FULL repaint of the grid, BEFORE the
+ * `vis` dex_cell_grid() calls that follow it -- a cold entry, a view/filter change,
+ * or a one-row scroll step, exactly the same events dex_declare_page() itself reacts
+ * to (see that function's own comment), never the bob-animation tick (a page the
+ * cell-art override serves never bobs at all -- pdna_dex_screen's own per-cell
+ * dex_cell_art_page_served() guard). Same installer contract as
+ * pdna_dex_set_cell_art() above (installed/cleared around the SAME call, NULL is the
+ * default, never a pdna_dex_screen() parameter): gives the GB cell-art override's
+ * owner (pdna_gbdex.c) a page boundary to declare its own per-page art cache against
+ * and to roll up a fetch/hit tally per page, without pdna_pick.c (the Gen-3 dex's
+ * own shared screen) knowing anything about a cache that exists only on the GB side.
+ * Called only when the page being declared is the GRID view (list view draws no art
+ * at all -- dex_declare_page()'s own rule).
+ *
+ * PDNA_DELTA-only, entirely (declaration AND the call site in pdna_pick.c) -- this
+ * hook exists ONLY to drive BACKLOG #208's measurement (a fetch/hit tally per page,
+ * printed through log_line), which is itself PDNA_DELTA-only per that item's own
+ * design. Gating the whole mechanism out of the artless/normal/sd variants (not just
+ * the counters it would otherwise drive) means those variants compile no indirect
+ * call through a pointer nothing in them ever assigns -- tools/stack_budget.py's
+ * whole-graph sweep would otherwise have to be told, in EVERY variant, that a
+ * pointer only PDNA_DELTA ever writes is unreachable in the others; leaving the
+ * whole feature out of their translation units is the simpler, harder-to-drift
+ * way to say the same thing. The GB art CACHE itself (pdna_gbdex.c's
+ * gbdex_cell_art_gen1/gen2) is unaffected -- it never calls through this hook. */
+#ifdef PDNA_DELTA
+typedef void (*PdnaDexPageFn)(void);
+void pdna_dex_set_page_begin(PdnaDexPageFn fn);
+#endif
+
 /* ---- pick_rows: the generic searchable/sortable row-list engine (BACKLOG #107) ---
  * list_pick's own loop (source/pdna_pick.c), extracted so any leaf picker screen can
  * get the same chrome (dirty-row repaint, L/R paging, SELECT search, START A-Z sort)

@@ -11,12 +11,16 @@
 #include "gb_dex.h"
 #include "gb_edit.h"       /* gb_max_species */
 #include "pdna_pick.h"     /* pdna_dex_screen, pdna_dex_set_max, pdna_dex_set_cell_art */
-#include "pdna_gen12.h"    /* gb_persist -- the verified-write commit path            */
+#include "pdna_gen12.h"    /* gb_persist, gb12_arena_tail(_release) -- BACKLOG #208's cache */
 #include "pdna_trainer.h"  /* trainer_flag_row_paint / trainer_key_legend             */
 #include "pdna_app.h"      /* app_confirm                                            */
 #include "pdna_origin_art.h" /* BACKLOG #124/#196: pdna_origin_art_icon,
                               * pdna_origin_art_portrait_by_dex, pdna_origin_cell_render */
 #include "dex_cell_art_rule.h" /* BACKLOG #124: the pure-C selection rule this callback gates on */
+#include "dex_gbart_cache.h" /* BACKLOG #208: the pure-C FIFO cache core (key/find/claim)       */
+#include "log.h"           /* BACKLOG #208: PDNA_DELTA-only "dexart: page N fetch=X hit=Y" */
+#include "sys.h"           /* BACKLOG #208: EWRAM_BSS -- the cache's own head/count/pointer must
+                             * not cost IWRAM .bss (the stack ceiling reads that, not EWRAM) */
 #include "ui.h"
 #include "snd.h"
 
@@ -65,7 +69,8 @@
  * fetch chain's own frame (gb_art_fetch_icon's ~5.6 KB tail, gated on
  * PDNA_GB_ICON_NEED=6,144) -- noinline so an inlined copy cannot silently merge the
  * two frames back together. Called only AFTER the fetch (icon or portrait-by-dex)
- * has already returned and popped. */
+ * has already returned and popped, or for any geometry the cache below does not
+ * cover (nothing calls this with w/h != 32 today, but it stays the honest fallback). */
 static bool __attribute__((noinline))
 gbdex_cell_blit(const PdnaArt* a, int x, int y, int w, int h) {
   u16 cell[32 * 32];             /* 2,048 B of STACK -- never a static, never EWRAM */
@@ -77,6 +82,215 @@ gbdex_cell_blit(const PdnaArt* a, int x, int y, int w, int h) {
   ui_sprite(x, y, w, h, cell);
   return true;
 }
+
+/* ---- BACKLOG #208: a REAL per-page GB-art cache -----------------------------------
+ * The #196 review instrumented the naive ladder above (every cell, every repaint,
+ * unconditionally) at 21 MISS / 0 HIT on a cold page, a row scroll, scrolling back
+ * AND a same-page repaint -- an 11-slot FIFO/LRU over a 21-cell page evicts exactly
+ * the next cell needed, on every one of those access patterns. The fix is capacity,
+ * not a smarter policy: a plain FIFO whose slot count is >= one page (21 cells, the
+ * grid's own vrows*cols) cannot exhibit that pathology -- a same-page repaint asks
+ * for nothing new (0 evictions, 0 misses) and a one-row scroll only evicts the
+ * cells that just scrolled OFF screen (the 7 oldest, list order matches paint
+ * order under the default No.-sort filter).
+ *
+ * STORAGE. Both generations share ONE record shape (2-byte key + 1,024-byte
+ * payload = 1,026 B/slot) rather than the two different per-generation formats a
+ * fully space-optimal design would use (Gen 1's 1,026 B/slot giving 23 slots, Gen
+ * 2's smaller 512 B/slot giving 46) -- a session is always ONE generation for its
+ * whole visit (GbSession.gen never changes mid-visit), so the two formats are never
+ * live at once, and a single fixed layout means gb12_arena_tail() is borrowed with
+ * ONE constant NEED regardless of which generation is open, with no per-generation
+ * branch in the borrow/release pair. 23 slots (DEXCACHE_SLOTS * sizeof(DexArtSlot)
+ * = 23,598 B) still clears the review's own bar (>= one 21-cell page) for BOTH
+ * generations, just with less spare margin for Gen 2 than a two-tier design would
+ * have bought -- documented, not hidden, in the BACKLOG #208 report.
+ *
+ * GEN 1 (portrait_by_dex): the record holds the FINAL RENDERED 32x32 CELL, not the
+ * raw ROM sprite (which is up to 56x56 RGB15 = 6,272 B, far past this slot's
+ * budget) -- caching post-render also means a HIT skips pdna_origin_cell_render's
+ * own resample work, not just the fetch. 1 B/px: a Gen-1 sprite's opaque pixels are
+ * R=G=B by construction (4 DMG greys through the same RGB15 expansion every other
+ * Gen-1 picture in this codebase uses), so `0x80 | v` (v = the 5-bit grey, always
+ * nonzero as an encoded byte) exactly reconstructs the RGB15 pixel; transparent
+ * pixels are the literal byte 0. cache_insert_gen1() SCANS FIRST and refuses to
+ * cache the whole cell if any opaque pixel is not grey (rule 7: never trust an
+ * invariant across a module boundary silently) -- that dex number then simply
+ * misses every time, the same "not enough memory right now" posture every other
+ * gate in this file already has, never a corrupted cached picture.
+ *
+ * GEN 2 (icon): the record holds the RAW 16x16 NATIVE ROM ICON verbatim RGB15 (512
+ * of the slot's 1,024 payload bytes; the rest is zeroed and never read) -- Gen-2
+ * icons are real 4-colour GBC palette pictures, not grey, so they cannot be
+ * quantised the way Gen 1's cell is. A HIT still calls pdna_origin_cell_render()
+ * (it only centres a source already <= the destination cell -- see that function's
+ * own header comment) -- the cache buys back the FETCH (an SD read on the real
+ * cart), not the cheap centring loop.
+ *
+ * LIFETIME. Borrowed once per pdna_gbdex() VISIT (gb12_arena_tail(), "one slice at a
+ * time" -- see that function's own header comment for why nothing else can hold it
+ * at the same time: the dex screen is the only screen on the stack while it is
+ * open), not re-borrowed per repaint -- a per-repaint re-borrow would immediately
+ * fail (g_tail_lent already true) and disable the cache on its own second use. This
+ * is narrower than "cleared on pdna_origin_art_invalidate() and on place change"
+ * asks for, which is fine: a cache whose whole lifetime is one screen visit is
+ * cleared at LEAST as often as either of those events could ever fire while that
+ * screen is open (neither a ROM re-registration nor a place change can happen while
+ * the dex screen has focus), so no separate hook into either signal is needed. If
+ * the borrow fails (should never happen; defensive) every cell just misses forever
+ * -- s_cache.slots stays NULL, dexcache_find()/dexcache_claim() (dex_gbart_cache.h)
+ * short-circuit to "always miss, insert disabled" on their own.
+ *
+ * The FIFO bookkeeping itself (key packing, find, claim/evict) is BACKLOG #208's
+ * pure-C core, source/dex_gbart_cache.{c,h} -- host-tested directly
+ * (tests/host_dexgbartcache_test.c) without a GBA build. This file only owns the
+ * GBA-specific half: borrowing the arena, and packing/unpacking pixels into the
+ * generic DexArtSlot.payload bytes that module never itself looks inside. */
+#define DEXCACHE_SLOTS 23   /* 23 * 1,026 = 23,598 B <= the arena tail's 23,744 B slack */
+#define DEXCACHE_NEED ((uint32_t)DEXCACHE_SLOTS * (uint32_t)sizeof(DexArtSlot))
+
+/* EWRAM_BSS (same review posture as pdna_pick.c's s_cell_art): a plain file static
+ * here would be IWRAM .bss, which the stack budget's ceiling counts against; EWRAM
+ * does not and has slack for it (896 B free per the current EWRAM ok line). */
+static EWRAM_BSS DexArtCache s_cache;
+
+#ifdef PDNA_DELTA
+/* BACKLOG #208 step 1: a PDNA_DELTA-only tally, reset once per full repaint
+ * (pdna_pick.c's dex_page_begin hook) and printed as the PREVIOUS page's line the
+ * next time a page begins (plus a final flush at visit exit for the last page --
+ * see gbdex_dex_page_flush_last()). Compiled out entirely in every other variant:
+ * no counter storage, no log_line call, matching this codebase's existing
+ * PDNA_DELTA-only test-hook posture (bank_plant.h/xfer_plant.h). */
+static int      s_page_no;
+static uint32_t s_page_fetch, s_page_hit;
+#endif
+
+static bool cache_lookup_gen1(uint16_t dex, u16 cell[32 * 32]) {
+  int slot = dexcache_find(&s_cache, dexcache_key(PDNA_GEN1, dex));
+  if (slot < 0) return false;
+  const uint8_t* p = s_cache.slots[slot].payload;
+  for (int i = 0; i < 32 * 32; i++) {
+    uint8_t b = p[i];
+    cell[i] = b ? (u16)(0x8000u | (b & 0x1Fu) | ((uint16_t)(b & 0x1Fu) << 5) |
+                        ((uint16_t)(b & 0x1Fu) << 10))
+               : 0u;
+  }
+  return true;
+}
+
+static void cache_insert_gen1(uint16_t dex, const u16 cell[32 * 32]) {
+  for (int i = 0; i < 32 * 32; i++) {          /* validate FIRST: refuse the whole
+                                                 * cell rather than cache a lie */
+    uint16_t px = cell[i];
+    if (!(px & 0x8000u)) continue;
+    uint16_t r = px & 0x1Fu, g = (px >> 5) & 0x1Fu, b = (px >> 10) & 0x1Fu;
+    if (r != g || g != b) return;
+  }
+  int slot = dexcache_claim(&s_cache, dexcache_key(PDNA_GEN1, dex));
+  if (slot < 0) return;                        /* cache disabled this visit */
+  uint8_t* p = s_cache.slots[slot].payload;
+  for (int i = 0; i < 32 * 32; i++) {
+    uint16_t px = cell[i];
+    p[i] = (px & 0x8000u) ? (uint8_t)(0x80u | (px & 0x1Fu)) : 0u;
+  }
+}
+
+static bool cache_lookup_gen2(uint16_t dex, u16 icon16[16 * 16]) {
+  int slot = dexcache_find(&s_cache, dexcache_key(PDNA_GEN2, dex));
+  if (slot < 0) return false;
+  memcpy(icon16, s_cache.slots[slot].payload, 16 * 16 * sizeof(u16));
+  return true;
+}
+
+static void cache_insert_gen2(uint16_t dex, const u16 icon16[16 * 16]) {
+  int slot = dexcache_claim(&s_cache, dexcache_key(PDNA_GEN2, dex));
+  if (slot < 0) return;                        /* cache disabled this visit */
+  memcpy(s_cache.slots[slot].payload, icon16, 16 * 16 * sizeof(u16));
+  memset(s_cache.slots[slot].payload + 16 * 16 * sizeof(u16), 0,
+         DEXCACHE_PAYLOAD - 16 * 16 * sizeof(u16));   /* the unused half: deterministic, never read */
+}
+
+/* Gen 1's own dispatcher (BACKLOG #208): a HIT skips both the fetch and the resample
+ * (the cache already holds the rendered cell); a MISS fetches + renders exactly as
+ * the pre-#208 code did, then captures the SAME rendered buffer into the cache
+ * before blitting it -- one `cell` buffer, never two. Kept a SEPARATE noinline
+ * function from the Gen-2 one below for the same frame-isolation reason
+ * gbdex_cell_blit's own header comment gives: only ONE of the two ever executes per
+ * call (session_gen is fixed for the whole visit), so the deepest call chain never
+ * has to account for both frames at once. */
+static bool __attribute__((noinline))
+gbdex_cell_art_gen1(uint16_t dex, int x, int y, int w, int h) {
+  if (w != 32 || h != 32) {                 /* the record format is fixed to the
+                                             * grid's own cell size; nothing calls
+                                             * this with any other geometry today */
+    PdnaArt a;
+    return (pdna_origin_art_portrait_by_dex(dex, &a) && a.px) && gbdex_cell_blit(&a, x, y, w, h);
+  }
+  u16 cell[32 * 32];
+  if (cache_lookup_gen1(dex, cell)) {
+#ifdef PDNA_DELTA
+    s_page_hit++;
+#endif
+    ui_sprite(x, y, 32, 32, cell);
+    return true;
+  }
+#ifdef PDNA_DELTA
+  s_page_fetch++;
+#endif
+  PdnaArt a;
+  if (!(pdna_origin_art_portrait_by_dex(dex, &a) && a.px)) return false;
+  if (!pdna_origin_cell_render(&a, cell, 32, 32)) return false;
+  cache_insert_gen1(dex, cell);
+  ui_sprite(x, y, 32, 32, cell);
+  return true;
+}
+
+/* Gen 2's own dispatcher: a HIT reconstructs the raw 16x16 icon into a LOCAL buffer
+ * and still calls pdna_origin_cell_render() (the cache buys back the fetch, not the
+ * centring -- see this cache's own header comment); a MISS fetches, caches the raw
+ * icon (only when it really is the expected 16x16 native shape -- rule 7), then
+ * blits through the ordinary gbdex_cell_blit() path unchanged. */
+static bool __attribute__((noinline))
+gbdex_cell_art_gen2(uint16_t dex, int x, int y, int w, int h) {
+  u16 icon16[16 * 16];
+  if (cache_lookup_gen2(dex, icon16)) {
+#ifdef PDNA_DELTA
+    s_page_hit++;
+#endif
+    PdnaArt a; memset(&a, 0, sizeof a);
+    a.px = icon16; a.w = 16; a.h = 16; a.gen = PDNA_GEN2;
+    return gbdex_cell_blit(&a, x, y, w, h);
+  }
+#ifdef PDNA_DELTA
+  s_page_fetch++;
+#endif
+  PdnaArt a;
+  if (!(pdna_origin_art_icon(dex, &a) && a.px)) return false;
+  if (a.w == 16 && a.h == 16) cache_insert_gen2(dex, a.px);
+  return gbdex_cell_blit(&a, x, y, w, h);
+}
+
+#ifdef PDNA_DELTA
+/* BACKLOG #208 step 1: the page-begin hook installed via pdna_dex_set_page_begin()
+ * (pdna_pick.h) -- fires once per full repaint, BEFORE that repaint's dex_cell_grid()
+ * calls (see pdna_pick.c's dex_declare_page()). Prints the tally the PREVIOUS page
+ * just finished (page 0 has none), then starts counting the new one. The very last
+ * page's tally never gets a "next page begins" call to flush it from inside this
+ * hook -- gbdex_dex_page_flush_last() below covers that at visit exit. */
+static void gbdex_dex_page_begin(void) {
+  if (s_page_no > 0)
+    log_line("dexart: page %d fetch=%lu hit=%lu", s_page_no,
+             (unsigned long)s_page_fetch, (unsigned long)s_page_hit);
+  s_page_no++;
+  s_page_fetch = 0; s_page_hit = 0;
+}
+
+static void gbdex_dex_page_flush_last(void) {
+  if (s_page_no > 0)
+    log_line("dexart: page %d fetch=%lu hit=%lu", s_page_no,
+             (unsigned long)s_page_fetch, (unsigned long)s_page_hit);
+}
+#endif
 
 /* The ONE place `session_gen && gb_have` is computed -- gbdex_cell_art()'s own per-cell
  * gate below AND pdna_gbdex()'s two install sites (which need the SAME answer at the
@@ -112,15 +326,13 @@ static bool gbdex_serves_dex(const GbSession* s) {
  * fallback ready for a `false` return) -- passed explicitly so the rule states its
  * whole contract.
  *
- * Every call fetches: the per-generation fetch this file has always used (icon rung
- * for Gen 2, portrait-by-dex rung for Gen 1) runs on every cell, every repaint -- a
- * BACKLOG #196 per-page cache was tried here and pulled (Fable review, 2026-09-22:
- * an 11-slot FIFO over a 21-cell page painted in order evicts exactly the next cell
- * needed, on a cold page, a row scroll, scrolling back AND a same-page repaint --
- * instrumented 21 MISS / 0 HIT in every one of those; LRU has the identical
- * pathology against this access pattern). The real fix (a cache whose capacity
- * actually covers a page -- 1 B/px greys for Gen 1 giving ~23 slots, or Gen 2's
- * native 16x16 icons -- is filed as its own backlog item, not attempted here. */
+ * BACKLOG #196 shipped this callback fetching on EVERY cell, every repaint, with an
+ * 11-slot FIFO cache that the #196 review found inert (21 MISS / 0 HIT against a
+ * 21-cell page, on a cold page, a row scroll, scrolling back AND a same-page
+ * repaint -- capacity smaller than the page, not the eviction policy, was the
+ * defect). BACKLOG #208 replaces that with the real cache above (gbdex_cell_art_
+ * gen1/gen2, DEXCACHE_SLOTS = 23 >= one page): this function is now just the gate +
+ * the per-generation dispatch. */
 static bool gbdex_cell_art(uint16_t dex, int x, int y, int w, int h, void* ctx) {
   const GbSession* s = (const GbSession*)ctx;
   int session_gen = s ? (int)s->gen : 0;
@@ -129,11 +341,8 @@ static bool gbdex_cell_art(uint16_t dex, int x, int y, int w, int h, void* ctx) 
     return false;
   if (dex < 1 || dex > 251) return false;
 
-  PdnaArt a;
-  bool ok = (session_gen == GB_GEN1) ? (pdna_origin_art_portrait_by_dex(dex, &a) && a.px)
-                                     : (pdna_origin_art_icon(dex, &a) && a.px);
-  if (!ok) return false;
-  return gbdex_cell_blit(&a, x, y, w, h);
+  return (session_gen == GB_GEN1) ? gbdex_cell_art_gen1(dex, x, y, w, h)
+                                  : gbdex_cell_art_gen2(dex, x, y, w, h);
 }
 
 static u16 s_wait(u16 mask) {
@@ -299,7 +508,14 @@ static bool gbdex_chooser(GbSession* s, bool can_edit) {
          * pointer this function received, as ctx) after gbdex_chooser() itself
          * returns. */
         pdna_dex_set_cell_art(gbdex_cell_art, s, gbdex_serves_dex(s));
+#ifdef PDNA_DELTA
+        pdna_dex_set_page_begin(gbdex_dex_page_begin);
+#endif
         bool dex_dirty = pdna_dex_screen(gbdex_shim_get, gbdex_shim_set, NULL, NULL, can_edit);
+#ifdef PDNA_DELTA
+        gbdex_dex_page_flush_last();
+        pdna_dex_set_page_begin(NULL);
+#endif
         pdna_dex_set_cell_art(NULL, NULL, false);
         if (dex_dirty) dirty = true;
       } else {
@@ -312,6 +528,19 @@ static bool gbdex_chooser(GbSession* s, bool can_edit) {
 bool pdna_gbdex(GbSession* s, bool can_edit) {
   if (!s || !s->open) return false;
   s_gbdex_session = s;
+
+  /* BACKLOG #208: borrow the GB12 arena's tail slack for the WHOLE visit (a real
+   * per-page cache has to survive a row scroll, not just one repaint) -- see the
+   * cache's own header comment above gbdex_cell_blit() for the full rationale,
+   * including why nothing else can be holding this slice at the same time.
+   * Defensive: a failed borrow (should never happen) just leaves the cache
+   * disabled (dexcache_reset(NULL, 0)), and every cache_lookup_gen1/2 or
+   * cache_insert_gen1/2 call below degrades to an ordinary miss. */
+  uint8_t* tail = gb12_arena_tail(DEXCACHE_NEED);
+  dexcache_reset(&s_cache, (DexArtSlot*)tail, DEXCACHE_SLOTS);
+#ifdef PDNA_DELTA
+  s_page_no = 0; s_page_fetch = 0; s_page_hit = 0;
+#endif
 
   pdna_dex_set_max((int)gb_max_species(s->gen));   /* Gen 1 -> 151, Gen 2 -> 251 */
 
@@ -329,9 +558,22 @@ bool pdna_gbdex(GbSession* s, bool can_edit) {
      * this branch's `s->gen != GB_GEN2` self-gate meant Gen 1 always fell through
      * to the icon-store ladder). */
     pdna_dex_set_cell_art(gbdex_cell_art, s, gbdex_serves_dex(s));
+#ifdef PDNA_DELTA
+    pdna_dex_set_page_begin(gbdex_dex_page_begin);
+#endif
     dirty = pdna_dex_screen(gbdex_shim_get, gbdex_shim_set, NULL, NULL, can_edit);
+#ifdef PDNA_DELTA
+    gbdex_dex_page_flush_last();
+    pdna_dex_set_page_begin(NULL);
+#endif
     pdna_dex_set_cell_art(NULL, NULL, false);
   }
+
+  /* BACKLOG #208: release the arena tail borrowed above -- both branches above are
+   * done touching the cache by this point (the whole VISIT's cache lifetime, not
+   * just one repaint -- see the cache's own header comment for why). */
+  if (s_cache.slots) gb12_arena_tail_release();
+  dexcache_reset(&s_cache, 0, 0);
 
   s_gbdex_session = NULL;
 

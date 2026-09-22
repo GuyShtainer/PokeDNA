@@ -602,6 +602,27 @@ void pdna_dex_set_cell_art(PdnaDexCellArtFn fn, void* ctx, bool serves_page) {
   s_cell_art.fn = fn; s_cell_art.ctx = ctx; s_cell_art.serves_page = serves_page;
 }
 
+/* BACKLOG #208: the page-begin hook, PDNA_DELTA-only end to end (see pdna_pick.h's
+ * own comment on PdnaDexPageFn for why) -- same EWRAM_BSS posture as s_cell_art
+ * above (a plain file-static pointer here costs IWRAM .bss the stack ceiling counts
+ * against; EWRAM does not). NULL by default -- an ordinary Gen-3 dex visit never
+ * installs this, so dex_page_begin_call() below is simply never true for it. */
+#ifdef PDNA_DELTA
+static EWRAM_BSS PdnaDexPageFn s_page_begin_fn;
+
+void pdna_dex_set_page_begin(PdnaDexPageFn fn) { s_page_begin_fn = fn; }
+
+/* Same discipline as dex_cell_art_call() below (BACKLOG #124's own review ruling):
+ * the ONE place that dispatches through the stored pointer, out of line, so the
+ * compiled indirect-call-site count for this dispatch cannot silently disagree
+ * between the artless and normal build variants. Declared in tools/stack_edges.txt
+ * (the walker's whole-graph sweep cannot see through a value loaded from a file
+ * static). */
+static __attribute__((noinline)) void dex_page_begin_call(void) {
+  if (s_page_begin_fn) s_page_begin_fn();
+}
+#endif
+
 /* Review A5 cross-review finding: "does the override serve THIS PAGE at all" (used to
  * skip the icon-store plan and the bob-animation refresh) must NOT be re-derived here
  * from pdna_origin_art_have(PDNA_GEN2) -- that global is boot-sticky and independent
@@ -748,6 +769,14 @@ static void dex_geom(int view, int* cols, int* cw, int* ch, int* x0, int* y0, in
  *
  * List view declares nothing: dex_cell_list is text only, zero rows, zero I/O. */
 static void dex_declare_page(bool grid, int top, int vis) {
+  /* BACKLOG #208: PDNA_DELTA-only (see pdna_pick.h's own comment on PdnaDexPageFn),
+   * independent of PDNA_MON_ICONS_ART_COMPILED (icon_store below is a Gen-3 concern;
+   * the GB ROM art path runs the same in every build). List view draws no art at all
+   * (this function's own rule, both branches below), so the hook only fires for
+   * grid. */
+#ifdef PDNA_DELTA
+  if (grid) dex_page_begin_call();
+#endif
 #if PDNA_MON_ICONS_ART_COMPILED
   (void)grid; (void)top; (void)vis;
 #else
