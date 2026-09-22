@@ -17,6 +17,7 @@
  * a `typedef int bank_plant_no_empty_tu;` below keeps the shipped TU non-empty. */
 
 #ifdef PDNA_DELTA
+#include "gb_edit.h"   /* GbEditMon -- bank_plant_site2_seed's own argument */
 
 /* Five directed cells at slots 0..4 (the rest of `recs` untouched -- the caller's own
  * memset(0, BOX_BYTES) on a failed read already left slots 5..29 as ordinary empty
@@ -71,8 +72,9 @@ void bank_plant_box_full(uint8_t* recs);
 void bank_plant_gen2_badmoves_cell(uint8_t out80[80]);
 
 /* BACKLOG #150 S150-9 decision 12: the planted-ledger read shim (#179(a), the READ
- * half only -- the write side stays S150-13's). Serves up to FOUR in-RAM ".pds"
- * files (four 1042-B slots inside #ifdef PDNA_DELTA -- the delta image is not a
+ * half only -- the write side stays S150-13's). Serves up to FIVE in-RAM ".pds"
+ * files (BACKLOG #209 added the fifth; five 1042-B slots inside #ifdef PDNA_DELTA
+ * -- the delta image is not a
  * gate build, so this is not the 1,056-B EWRAM budget both gate builds share; both
  * gate ELFs' .bss/.sbss are byte-unchanged by this file, proven in the delivery
  * report with arm-none-eabi-size). `bank_plant_xfer_open` is xr_open()'s own shim
@@ -92,6 +94,27 @@ bool bank_plant_xfer_open(uint64_t key, uint8_t* buf, uint32_t cap, uint32_t* le
  * changed" skip, the ALREADY RESTORED refusal, the SAVE FIRST refusal). Returns
  * the count of slots successfully seeded (0..4). */
 int bank_plant_xfer_seed_all(uint8_t g3_out[4][80]);
+
+/* BACKLOG #209: a FIFTH planted ledger slot, keyed by gbsc_key() (gen/otid16/dv4/
+ * otname -- the NATIVE identity gb_lift_restore() itself computes from a Game Boy
+ * grid mon, source/pdna_gen12.c), never xr_key_g3() (the four slots above, keyed by
+ * a Gen-3 record's PID+otId) -- a completely different key space, so none of those
+ * four could ever serve site 2 (the Red-grid restore lift). Seeded at MOUNT TIME
+ * (not a boot-time constant): `mon` must be whatever the fused save ACTUALLY holds
+ * at its own box 0 slot 0 (tools/fuse_sav.py's choice, not this file's), or the key
+ * this plants would not match what gb_lift_restore() computes when the player lifts
+ * that exact cell. Call once, right after the fused save's bytes are decoded and
+ * before the session mounts (source/pdna_main.c). A byte-identical restore (CLAIMED,
+ * unaltered) -- the simplest, most legible first proof that gb_lift_restore ever
+ * ran on this vehicle at all. */
+void bank_plant_site2_seed(const GbEditMon* mon);
+
+/* BACKLOG #209: bank_plant_xfer_open()'s own existence-only twin -- true iff `key`
+ * matches ONE of the (now five) seeded slots, touching neither `buf` nor `len`. Lets
+ * xr_path_for_key_hint() (source/xfer_io.c) answer gb_has_sidecar()'s plain "does a
+ * ledger file exist for this key" question without needing a scratch buffer of its
+ * own (xr_path_for_key_hint has none to spare -- it only ever builds a path string). */
+bool bank_plant_xfer_has(uint64_t key);
 
 #else
 typedef int bank_plant_no_empty_tu;

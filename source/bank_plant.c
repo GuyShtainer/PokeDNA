@@ -213,7 +213,7 @@ void bank_plant_box_full(uint8_t* recs) {
  * (decision 8) and the "nothing changed" skip (decision 7), each its own ledger
  * file keyed to its OWN Gen-3 record -- a single shared key could only ever show
  * one state at a time. */
-#define BANK_PLANT_XFER_SLOTS 4
+#define BANK_PLANT_XFER_SLOTS 5   /* was 4 -- slot 4 = BACKLOG #209 site 2, gbsc_key-keyed */
 /* Each seeded ledger file ever holds exactly ONE entry (gbsc_init + one gbsc_add),
  * never GBSC_MAX_ENTRIES (8) -- header + one entry is the real footprint, not the
  * worst-case 1042 B GBSC_FILE_MAX four of would overflow EWRAM by ~3 KB on this
@@ -311,6 +311,54 @@ int bank_plant_xfer_seed_all(uint8_t g3_out[4][80]) {
     n++;
   }
   return n;
+}
+
+/* BACKLOG #209: an arbitrary label distinct from every other PDNA_DELTA fixture's own
+ * planted bank_serial (box0 1..7, box_full 6..30, S150-9 xfer {1,2,26,27}, S150-15
+ * xfer_plant 150) -- purely documentation here, since this cell is never memcpy'd
+ * into any real Bank box buffer (unlike those), so it cannot actually collide with
+ * any of them inside a bank_ident32_collision() scan; only s_xfer_key[]'s own exact-
+ * match lookup (a completely different hash domain, gbsc_key vs xr_key_g3) matters. */
+#define XFER_PLANT_SITE2_SERIAL 200u
+
+void bank_plant_site2_seed(const GbEditMon* mon) {
+  if (!mon) return;
+  uint8_t cell[80];
+  uint8_t origin = (mon->gen == GB_GEN1) ? BC_ORIGIN_RED : BC_ORIGIN_GOLD;
+  if (bc_pack(mon, 0, origin, 0, XFER_PLANT_SITE2_SERIAL, cell) != 0) return;
+  GbEditMon written; BcMeta meta;
+  if (!bc_unpack(cell, &written, &meta)) return;
+
+  /* gbsc_entry_from() alone (not xr_entry_for_down()) -- there is no companion
+   * converted Gen-3 record for this entry (gb_lift_restore() merges directly
+   * between the entry and the Game Boy mon being lifted, never consults a Gen-3
+   * side at all), so xr_entry_for_down()'s nick_g3 override does not apply; its
+   * default (nick_written = written->nick) is exactly what gbsc_entry_from() does
+   * on its own. kind/state/direction/claimed mirror plant_xfer_slot()'s own stamps
+   * for a CLAIMED, unaltered NATIVE_HOME entry. */
+  GbscEntry e;
+  gbsc_entry_from(&e, &written, cell, 0);
+  e.kind = XR_KIND_NATIVE_HOME;
+  e.state = XR_STATE_CLAIMED;
+  e.direction = XR_DIR_ABROAD_G3;
+  e.claimed = 1;
+
+  uint8_t dv4[4] = {
+    gb_get_dv(mon, GB_ATK), gb_get_dv(mon, GB_DEF),
+    gb_get_dv(mon, GB_SPE), gb_get_dv(mon, GB_SPC)
+  };
+  uint64_t key = gbsc_key(mon->gen, gb_get_otid(mon), dv4, mon->otname);
+  uint32_t len = (uint32_t)gbsc_init(s_xfer_buf[4], key);
+  if (gbsc_add(s_xfer_buf[4], &len, BANK_PLANT_XFER_SLOT_CAP, &e) < 0) return;
+  s_xfer_key[4] = key;
+  s_xfer_len[4] = len;
+  s_xfer_valid[4] = true;
+}
+
+bool bank_plant_xfer_has(uint64_t key) {
+  for (int i = 0; i < BANK_PLANT_XFER_SLOTS; i++)
+    if (s_xfer_valid[i] && key == s_xfer_key[i]) return true;
+  return false;
 }
 
 #else

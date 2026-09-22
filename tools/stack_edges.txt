@@ -135,9 +135,21 @@
 # dispatching s_gb.pic through the same inlined fetch_pic_ex shape fetch_icon
 # already does, declared below with its own dated reasoning). 49 + 1 = 50.
 # Re-measured on all three variants after the strip.
-count-only-max 50 variant=nor artless=1
-count-only-max 50 variant=nor
-count-only-max 50 variant=delta
+# BACKLOG #223 (2026-09-22): 50 -> 51. bank_serial_max()'s new call site sits right
+# beside bank_ident32_collision()'s own call in drop_held_up (both pass the SAME
+# bank_scan_get, sequentially, same reasoning as the two argsites declarations just
+# above) -- adding it shifted the codegen enough that the disassembly-based literal-
+# pool tracer can no longer independently resolve bank_ident32_collision's own
+# target either (empirically confirmed: reverted on a scratch copy, target-verified
+# again; re-applied, count-only again). Both sites are declared with an explicit
+# `argsites=1 -> bank_scan_get` above, so this is not a NEW blind spot, only one
+# more site the tracer itself cannot auto-resolve -- the same subtree depth
+# (2,984 B via bank_scan_get) was already hand-measured and budgeted for
+# bank_ident32_collision; bank_serial_max is a sibling leaf call through the exact
+# same subtree, not a deeper one.
+count-only-max 51 variant=nor artless=1
+count-only-max 51 variant=nor
+count-only-max 51 variant=delta
 
 # Delta-only -- the artless/normal (PDNA_TARGET=nor) links do not contain it:
 # Listing EVERY variant in variants= re-creates a blanket exemption -- if the symbol exists
@@ -922,6 +934,17 @@ RomGbLearn.read @4 in rom_gblearn_moves_at_seeded -> fused_gb_slice_read gb_read
 # a future lane that deepens bank_scan_get's own subtree past that 1,304 B margin
 # needs a fresh hand measurement, not a reread of this comment.
 bank_ident32_collision argsites=1 -> bank_scan_get
+
+# BACKLOG #223 (2026-09-22): bank_collision.c's bank_serial_max() is the SAME shape,
+# same file, same reasoning as bank_ident32_collision immediately above -- a plain
+# BankBoxGetter function-pointer parameter, called from the SAME site in drop_held_up
+# (the collision-path resync attempt, sequentially AFTER bank_ident32_collision's own
+# call, never nested inside a deeper frame) with the SAME file-static bank_scan_get,
+# no second implementation anywhere in the tree. Not a new depth: drop_held_up calls
+# bank_ident32_collision and bank_serial_max one after another, both leaf-ish through
+# the same bank_scan_get subtree already hand-measured above (2,984 B); this entry
+# only silences the address-taken sweep, exactly like its neighbour.
+bank_serial_max argsites=1 -> bank_scan_get
 
 # art_icons_extract.h's ArtIconsGen.progress (progress@4, `const RomMon* rm;
 # ArtIconsProgressFn progress;`) -- art_icons_stream's TWO `g->progress(...)` calls
