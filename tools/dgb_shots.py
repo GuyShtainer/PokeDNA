@@ -4699,7 +4699,27 @@ def run_s150_15_view_original(core_mod, image_mod, rom: Path, out_dir: Path) -> 
         (no flash-write dialog this time -- a Bank cell write defers to the box's own
         "BOX NOT SAVED" banner, not an immediate flash commit); DOWN, A pastes; A on
         the result opens its menu, which also lists GB ORIGINAL (decision 1's own
-        "a Bank cell that is abroad" scope)."""
+        "a Bank cell that is abroad" scope).
+
+    POST-S150-9-MERGE FINDING (found re-running this exact chain after merging main,
+    per the standing rule that a hand-resolved merge re-runs every touched feature's
+    own shot chain): shot 06's note now reads "GOLD (no date)", not decision 13's own
+    "GOLD 26-09-16" -- a LEDGER-KEY collision (not a box-slot one) between this lane's
+    own PDNA_DELTA seam and S150-9's own bank_plant_xfer_seed_all(). Both independently
+    convert bank_plant_cell0()'s IDENTICAL bytes (level 12, serial 1, GOLD -- S150-9's
+    own header comment: "byte-identical to bank_plant_box0()'s own Bank box 0 slot 0
+    cell", chosen for THEIR OWN decision 12(b), unrelated to this lane), so both
+    fixtures resolve to the SAME xr_key_g3(). source/xfer_io.c's xr_open() checks
+    S150-9's bank_plant_xfer_open() shim BEFORE this lane's own xv_find_original ever
+    reaches its SF_ERR_OPEN fallback (decision 13 (ii)) -- so S150-9's own entry
+    (rtc_epoch 0) is what this lane's row surfaces for this specific pasted mon, not
+    this lane's PLANT_EPOCH. The row's own correctness (visibility, read-only-ness,
+    INFO/SKILLS/MOVES card content -- original80's BYTES are identical either way)
+    is completely unaffected; only the illustrative ORIGIN-card date differs, and it
+    differs the same way on every future re-run (deterministic, not flaky). Not fixed
+    here: the fix is a choice of which lane's delta-only test fixture moves to a
+    non-colliding seed, and neither lane's file-ownership rules let this lane make
+    that call unilaterally -- flagged for the orchestrator, not silently patched."""
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s150_15_")
     print("== BACKLOG #150 S150-15: the GB ORIGINAL row ==")
     SETTLE = 200
@@ -4743,9 +4763,22 @@ def run_s150_15_view_original(core_mod, image_mod, rom: Path, out_dir: Path) -> 
            "(card bodies identical; footer differs by design, see 00's own caption)")
     s.press_n("R", 3, settle=SETTLE)                         # INFO -> SKILLS -> MOVES -> ORIGIN
     s.shot("06_original_origin_card", "S150-15: R x3 -- the ORIGIN card, note reads "
-           "'GOLD 26-09-16' (decision 13's PLANT_EPOCH date, the origin game the cell "
-           "was planted with), 'Sidecar: No' (parity with the native VIEW, open "
-           "question 5)")
+           "'GOLD (no date)', 'Sidecar: No' (parity with the native VIEW, open "
+           "question 5). NOT decision 13's own PLANT_EPOCH ('GOLD 26-09-16') -- since "
+           "the S150-9 merge, xr_open()'s bank_plant_xfer_open() shim (source/"
+           "xfer_io.c) intercepts THIS exact key first: S150-9's own bank_plant_xfer_"
+           "seed_all() converts the SAME bank_plant_cell0() bytes (level 12, serial 1, "
+           "GOLD -- their own header comment: 'byte-identical to bank_plant_box0()'s "
+           "own Bank box 0 slot 0 cell') for ITS OWN PC-box-29 fixture, with rtc_epoch "
+           "0 (S150-9's own xr_entry_for_down(..., 0, ...) call). xr_open() checks the "
+           "shim BEFORE this lane's own xv_find_original ever reaches its SF_ERR_OPEN "
+           "fallback branch (decision 13 (ii)), so S150-9's entry, not this lane's "
+           "PLANT_EPOCH one, is what surfaces here -- a ledger-KEY collision between "
+           "two lanes' delta-only test fixtures (not a box-slot collision), found "
+           "during the merge's own re-verification, reported not silently patched over "
+           "(original80's actual BYTES are identical either way, since both fixtures "
+           "convert the identical native cell -- only the epoch metadata differs, "
+           "which is why every other card/footer/row on this whole chain is untouched)")
 
     # ---- read-only proof: A and SELECT are both inert -----------------------------
     s.tap("A", settle=250)
