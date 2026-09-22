@@ -16,8 +16,14 @@
 typedef int (*host_walk_cb)(const char* relpath, int is_dir, void* userdata);
 
 /* Returns 0 on success, the first nonzero value `cb` returned, or -1 if `root` could
- * not be opened at all. Symlinks and anything that is neither a regular file nor a
- * directory are skipped (image-worthy fixtures never need them). */
+ * not be opened at all (including nesting deeper than host_walk.c's own bounded
+ * recursion cap). Symlinks and anything that is neither a regular file nor a
+ * directory are skipped (image-worthy fixtures never need them) -- BACKLOG #179 A3
+ * review D10: this was true in NAME only until host_walk.c's own classification
+ * switched from stat() (which FOLLOWS a symlink, so one pointing at a regular file or
+ * directory was silently walked as if it WERE that file/directory) to lstat() (which
+ * reports the link itself, matched by neither S_ISDIR nor S_ISREG, and is therefore
+ * actually skipped). */
 int host_walk_tree(const char* root, host_walk_cb cb, void* userdata);
 
 #endif /* HOST_WALK_H */
