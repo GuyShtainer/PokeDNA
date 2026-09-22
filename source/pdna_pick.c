@@ -673,7 +673,8 @@ static bool   s_dex_snap_natl = false;   /* National-Dex state at snapshot time 
  * field-classified access is unaffected by how any OTHER function inlines around
  * it. dex_getnat_live()/dex_setnat_call() also fold in the NULL-checks every call
  * site used to repeat by hand (getnat/setnat may be NULL -- see the struct's own
- * field comments), so behaviour is unchanged at every existing site. */
+ * field comments), so behaviour is unchanged at every existing site — except the one
+ * NULL-presence test at the Undo branch, a value read, not a dispatch. */
 static __attribute__((noinline)) int  dex_dget(int nat) { return s_dex.get(nat); }
 static __attribute__((noinline)) void dex_dset(int nat, int st) { s_dex.set(nat, st); }
 static __attribute__((noinline)) bool dex_getnat_live(void) { return s_dex.getnat && s_dex.getnat(); }
@@ -858,6 +859,9 @@ static bool dex_bulk(void) {
       }
       if (a == -1) {                                              /* Undo the last bulk op */
         for (int nat = 1; nat <= s_dex_max; nat++) dex_dset(nat, s_dex_snap[nat - 1]);
+        /* This is equivalent to the old setnat && getnat guard because s_dex_snap_natl
+         * is seeded from dex_getnat_live() in the same session and s_dex_snap_valid
+         * resets on entry. */
         if (dex_getnat_live() != s_dex_snap_natl)
           dex_setnat_call(s_dex_snap_natl);                              /* Catch ALL auto-unlocked natl -> revert too */
         s_dex_snap_valid = false;
@@ -1656,6 +1660,7 @@ static uint16_t list_pick(const char* title, int count, const char* (*name_fn)(u
  *
  * BACKLOG #204: these four scalars are packed into s_gb_pick (declared near
  * g_move_max_id above, this file) -- see that struct's own comment. */
+_Static_assert(GBIN_GEN2 < 256, "item_gen fits uint8_t");
 #define g_item_max_id       s_gb_pick.item_max_id
 #define g_item_gen          s_gb_pick.item_gen
 #define g_item_game         s_gb_pick.item_game
