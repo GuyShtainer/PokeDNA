@@ -8915,7 +8915,16 @@ def run_s150_12_copy_edge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
            "this copy / cannot be sent back.' (PDNA_XFER_COPY_NOBACK_L1/_L2), "
            "alongside the ordinary 'IVs come from DVs...'/'Met: this game, "
            "traded' rows -- no ledger entry was ever written for this cell "
-           "(xg_cell_is_copy() true, decision 9's own guard)")
+           "(xg_cell_is_copy() true, decision 9's own guard)",
+           # BACKLOG #207: gb_down_loss_screen (source/pdna_gen12.c) had no
+           # boxoam_suspend/resume bracket, so the PC box's live OBJ icons sat
+           # over this dialog's text. claim= is the correct primitive here, not
+           # claim_absent= -- gb_claims.find() only detects TEXT PokeDNA's own
+           # font renders, it cannot "see" a sprite pixel directly, so an icon
+           # drawn over this row would corrupt its EXACT glyph bitmap and make
+           # this claim fail to find a match; a passing claim= is therefore
+           # equally strong proof that no foreign (icon) pixels sit on this row.
+           claim="No transfer record: this copy")
 
     s.tap("A", settle=250)
     s.shot("17_landed", "s150-12: A lands the copy -- the PC box count went up "
@@ -8952,7 +8961,10 @@ def run_s150_12_copy_edge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
            "DOWN reaches the SAME honest loss screen -- critically, NO 'SAVE "
            "FIRST' wall between the two drops (a copy has nothing to promote, "
            "so N copies may land in one session, unlike an ordinary S150-8d "
-           "ledger-pending cell)")
+           "ledger-pending cell)",
+           # BACKLOG #207 (same proof as frame 16 above, re-run on the SECOND
+           # copy's own loss screen).
+           claim="No transfer record: this copy")
 
     s.tap("A", settle=250)
     s.shot("21_second_landed", "s150-12: the second copy lands too -- both "

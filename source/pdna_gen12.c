@@ -3230,6 +3230,13 @@ static bool __attribute__((noinline)) gb_paste_write(const GbEditMon* mon, int b
  * ROW_H (9 px) from y=PDNA_SIDECAR_LOSS_ROW_Y0 (16) -> 106 px, inside UI_SCR_H (160). */
 static bool __attribute__((noinline))
 gb_down_loss_screen(const Gb12Notes* n, uint8_t g2_item, bool item_travels, bool is_copy) {
+  /* BACKLOG #207 (from the s150-12 review): this dialog had no boxoam_suspend/resume
+   * bracket, so the PC box's live OBJ icons sat over the dialog text (visible in the
+   * --s150-12 chain's frames 16/20). Bracketed exactly like the same idiom elsewhere
+   * in this file (release_box_all, above) and in pdna_box.c (:1089-1091 / :1253-1264):
+   * suspend before the FIRST draw, resume after the last key read -- the ONE return
+   * below is covered either way. */
+  boxoam_suspend();
   ui_clear();
   ui_text(4, 3, UI_TITLE, PDNA_SIDECAR_LOSS_TITLE);
   ui_hline(0, 13, UI_SCR_W, UI_BORDER);
@@ -3254,6 +3261,7 @@ gb_down_loss_screen(const Gb12Notes* n, uint8_t g2_item, bool item_travels, bool
   ui_text(4, y, UI_DIM,  PDNA_SIDECAR_LOSS_B_CANCEL);
 
   u16 k = s_wait(KEY_A | KEY_B);
+  boxoam_resume();
   return (k & KEY_A) != 0;
 }
 
