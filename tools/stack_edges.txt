@@ -1928,6 +1928,38 @@ gated pcp_open_party_strip_inner need=7224 from=pdna_box.c:PDNA_PARTY_STRIP_NEED
 # frame on this vehicle (design docs/briefs/s179-design.md S4.2's own table) rather
 # than adding to an existing chain -- the call-graph walker's declared-target list
 # above has nothing to say about it either way; it is a straight-line replacement,
-# not an indirect dispatch this file resolves. Carried forward from the A3 review
-# rather than independently re-derived here: the true deepest-chain figure for a
-# served VSD transaction is the reported number + 16 B (e.g. 11,264 -> 11,280).
+# not an indirect dispatch this file resolves. The true deepest-chain figure for a
+# served VSD transaction is the reported number + 16 B.
+#
+# Lane s179-a2 (2026-09-23), independently re-derived, not carried forward: after the
+# log_line_bs/log_line_bsc fix below (disk_read()/disk_write()'s own D7/D8 diagnostic
+# log lines no longer pull vsniprintf's ~740 B reentrant tail onto the party-strip-save
+# gated subtree), the gate's own `--root main --variant delta` figure is
+# "STACK ok: deepest 11,232 of 15,488" (pokedna-delta.elf, build-delta, measured by
+# hand with tools/stack_budget.py, matching the Makefile's own invocation exactly) --
+# so the true worst case for a served VSD transaction is 11,232 + 16 = 11,248 B, 4,240 B
+# of margin below the 15,488 B stack room on this vehicle. This deepest chain does not
+# itself route through vsd_xfer (it is the EverDrive ed_sd_dma_to_rom tail via
+# disk_read/move_window, unrelated to the VSD mailbox), so vsd_xfer's own frame really
+# is additive-nowhere-but-additive-everywhere the way the paragraph above describes,
+# not already counted in the 11,232.
+#
+# BACKLOG #179 A3 review, fix pass (lane s179-a2, 2026-09-23): D7's/D8's own
+# `log_line("vsd: unaligned read/write ...")` and `log_line("vsd: REFUSED disk_write
+# from ROM ...")` calls (lib/fatfs/diskio.c, lib/fatfs/diskio_write.c, both
+# PDNA_DELTA-only) put pcp_open_party_strip_inner's own gated subtree over its 7,224 B
+# declared need (measured 7,568 -- disk_write()'s unaligned branch became the walker's
+# new deepest child of move_window(), ahead of disk_read()'s previous 696 B
+# ed_sd_dma_to_rom tail, because log_line()'s first-ever-use of vsniprintf drags in
+# newlib's reentrant _svfiprintf_r/_realloc_r/_malloc_r/_free_r chain, ~1,432 B, onto
+# ANY chain that reaches it for the first time -- not something specific to the VSD
+# mailbox seam itself). Per the brief's fix order (docs/briefs/s179-a2-delta-stack.md
+# step 3(a), shrink the added frames rather than raise need=, which mirrors a runtime
+# constant): source/log.c/log.h gained log_line_bs()/log_line_bsc(), hand-formatting
+# "prefix 0xHEXHEX decimal[ decimal]" with no va_list and no vsniprintf, and all three
+# D7/D8 call sites now use them. Re-measured (this build): the gated subtree is back to
+# 6,824 B (identical to the pre-D7/D8 chain, main@e251394 -- disk_read()'s
+# ed_sd_dma_to_rom tail dominates disk_write() again), 400 B of margin below need=7,224,
+# and the artless/normal shipped variants are untouched (log_line_bs/log_line_bsc are
+# reachable in every build, but the shipped gate ELFs never call them -- these three
+# call sites are the only callers, all `#ifdef PDNA_DELTA`).
