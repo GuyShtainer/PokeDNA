@@ -38,6 +38,13 @@ void bank_plant_box0(uint8_t* recs);
  * (00_bank_cell0_view vs 05_original_info_card) a real equality, not a coincidence. */
 void bank_plant_cell0(uint8_t out80[80]);
 
+/* BACKLOG #150 S150-15 review (fixture fix 1): bank_plant_cell0's own construction
+ * (Gen-2 CHIKORITA @ L12, origin GOLD), with a CALLER-CHOSEN bank_serial instead of
+ * the hard-coded 1u -- lets a caller pick a serial that gives a distinct xr_key_g3()
+ * from every other PDNA_DELTA fixture's own planted key, without touching any byte a
+ * summary card draws (the serial lives outside every drawn field). */
+void bank_plant_cell0_serial(uint8_t out80[80], uint32_t serial);
+
 /* The 30-NATIVE WORST CASE (SS11.9's Cost paragraph, SS11.13's S150-2 acceptance row):
  * slots 0-4 as bank_plant_box0 above (BACKLOG #150 S150-2 review F4: that is 2 FULL +
  * 2 RELAXED + 1 NONE/DMG, not five more FULL cells -- corrected here, this reuses

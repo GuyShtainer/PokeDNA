@@ -894,7 +894,7 @@ int main(void) {
    * line reuses this SAME "note" slot, so it is bound by the SAME PDNA_SUM_CARD_W
    * (138 px) the card itself draws in -- not the whole-screen T() helper's looser
    * SCR_W - x bound. Four composed worst cases: known game + date, known game no
-   * date (widest: 18 chars), unknown game + date, unknown game no date. */
+   * date (widest: 17 chars), unknown game + date, unknown game no date. */
   chk("gbsum origin note", PDNA_SUM_CARD_X, PDNA_SUM_CARD_W,
       (int)strlen("CRYSTAL 26-09-16") * SYS8_W, "CRYSTAL 26-09-16");
   chk("gbsum origin note", PDNA_SUM_CARD_X, PDNA_SUM_CARD_W,

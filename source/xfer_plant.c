@@ -16,10 +16,22 @@
  * day << 17. The date this lane's shot chain was cut on. */
 #define PLANT_EPOCH ((uint32_t)((26u << 26) | (9u << 22) | (16u << 17)))
 
+/* BACKLOG #150 S150-15 review (fixture fix 1): a serial OUTSIDE every other
+ * PDNA_DELTA fixture's own planted range -- bank_plant_box0() uses 1..7,
+ * bank_plant_box_full() uses 6..30, S150-9's bank_plant_xfer_seed_all() uses
+ * {1, 2, 26, 27} -- so this seam's own converted record's xr_key_g3() cannot
+ * collide with any of theirs (reviewer-verified: serial 150 -> key
+ * 7dba5240d2bd8fa2, pk3_validate 1, distinct from all four S150-9 slots). Differs
+ * from bank_plant_cell0()'s own bytes only at cell offsets 4..7/73..76 (the
+ * ident32/bank_serial span), which no summary card draws -- the 00-vs-05 shot-
+ * chain parity (bank_plant_cell0's own slot-0 VIEW vs this seam's GB ORIGINAL)
+ * still holds byte-for-byte on every DRAWN field. */
+#define XFER_PLANT_SERIAL 150u /* outside box0 1..7, box_full 6..30, S150-9 {1,2,26,27} */
+
 bool xfer_plant_converted(uint8_t met_game, uint8_t out80[80]) {
   if (!out80) return false;
   uint8_t cell[80];
-  bank_plant_cell0(cell);
+  bank_plant_cell0_serial(cell, XFER_PLANT_SERIAL);
   GbEditMon written; Gb12Notes notes; uint16_t g3_item = 0;
   Gb12Result r = bdc_convert_gen3_core(cell, met_game, out80, &written, &notes, &g3_item);
   if (r != GB12_OK) return false;
@@ -29,7 +41,7 @@ bool xfer_plant_converted(uint8_t met_game, uint8_t out80[80]) {
 bool xfer_plant_entry(uint8_t met_game, const uint8_t rec80[80], GbscEntry* e) {
   if (!rec80 || !e) return false;
   uint8_t cell[80], converted[80];
-  bank_plant_cell0(cell);
+  bank_plant_cell0_serial(cell, XFER_PLANT_SERIAL);
   GbEditMon written; Gb12Notes notes; uint16_t g3_item = 0;
   Gb12Result r = bdc_convert_gen3_core(cell, met_game, converted, &written, &notes, &g3_item);
   if (r != GB12_OK) return false;

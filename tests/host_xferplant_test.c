@@ -47,6 +47,7 @@
 #include "bank_plant.h"
 #include "bank_cell.h"
 #include "gen3_clip.h"
+#include "xfer_rec.h"       /* xr_key_g3 -- review fixture-fix 1's regression pin */
 
 uint8_t app_met_game(void) { return 3; }   /* Emerald -- see header comment */
 
@@ -83,7 +84,15 @@ int main(void) {
   CHECK(e.claimed == 1, "e.claimed == 1 (got %u)", e.claimed);
   CHECK(e.rtc_epoch == (uint32_t)((26u << 26) | (9u << 22) | (16u << 17)),
         "e.rtc_epoch == PLANT_EPOCH (2026-09-16, got 0x%08X)", e.rtc_epoch);
-  CHECK(memcmp(e.original80, cell0, 80) == 0, "e.original80 byte-equals bank_plant_cell0()");
+  /* BACKLOG #150 S150-15 review (fixture fix 1): the seam's own cell now uses
+   * XFER_PLANT_SERIAL (150), not cell0's serial (1) -- e.original80 and cell0
+   * therefore differ at bytes 4..7/73..76 (the ident32/bank_serial span) BY
+   * DESIGN, so a whole-80-byte memcmp is no longer the right check. What must
+   * still hold, and does, is byte-for-byte equality on the DRAWN span (bytes
+   * 8..72, everything pdna_gbsummary.c's cards actually read) -- the 00-vs-05
+   * shot-chain parity's real requirement. */
+  CHECK(memcmp(e.original80 + 8, cell0 + 8, 65) == 0,
+        "e.original80 byte-equals bank_plant_cell0() on the drawn span (bytes 8..72)");
 
   /* a different record (an unrelated Gen-3 mon) does NOT match. */
   printf("== xfer_plant_entry: a different record refuses ==\n");
@@ -91,6 +100,18 @@ int main(void) {
   other[0] = 0xAA; other[1] = 0xBB; other[2] = 0xCC; other[3] = 0xDD;
   GbscEntry e2; memset(&e2, 0, sizeof e2);
   CHECK(!xfer_plant_entry(3, other, &e2), "xfer_plant_entry on an unrelated record -> false");
+
+  /* BACKLOG #150 S150-15 review (fixture fix 1) regression pin: the seam's own
+   * key must stay distinct from S150-9's own planted slot 29 (bank_plant_xfer_
+   * seed_all's g3_out[0]) -- the exact collision this fixture fix exists to kill.
+   * If this ever fires again, xr_open()'s S150-9 shim will answer before this
+   * seam's own SF_ERR_OPEN fallback, and the GB ORIGINAL row's ORIGIN card will
+   * silently show S150-9's epoch instead of this seam's own PLANT_EPOCH. */
+  printf("== regression pin: seam key distinct from S150-9 slot 29 ==\n");
+  uint8_t g3[4][80];
+  int n = bank_plant_xfer_seed_all(g3);
+  CHECK(n == 4, "bank_plant_xfer_seed_all() seeds all four S150-9 slots (got %d)", n);
+  CHECK(xr_key_g3(r) != xr_key_g3(g3[0]), "seam key distinct from S150-9 slot 29");
 
   printf("\nxferplant: %d checks, %d failed\n", g_check, g_fail);
   return g_fail ? 1 : 0;
