@@ -806,71 +806,105 @@ static void test_time_capsule_refusal(void) {
 }
 
 /* ============================================================================ */
-/* F2. BACKLOG #212: the real Crystal.sav corpus, every box-0 record with a      */
-/* species Gen 1 can represent, bridged with a real base -- "one bucket" proof:  */
-/* every record either lands with >= 1 move (empty or filled -- this pure core   */
-/* only clips, so a bad slot is 0 here) or the base-stats/species/glitch/egg     */
-/* refusal that predates this fix; G3GB_ERR_MOVE is NEVER reachable through this */
-/* call site again (the whole point of the fix -- confirmed over real data, not  */
-/* just the two synthetic fixtures above). */
+/* F2. BACKLOG #212 (review D4: ALL boxes, both corpus saves -- was box 0 of      */
+/* Crystal.sav only): every box's record with a species Gen 1 can represent,     */
+/* bridged with a real base -- "one bucket" proof: every record either lands     */
+/* with >= 1 move (empty or filled -- this pure core only clips, so a bad slot   */
+/* is 0 here) or the base-stats/species/glitch/egg refusal that predates this    */
+/* fix; G3GB_ERR_MOVE is NEVER reachable through this call site again (the whole */
+/* point of the fix -- confirmed over real data, not just the two synthetic      */
+/* fixtures above). g2_list_offset()'s own `box` argument (looped 0..           */
+/* G2_NUM_BOXES-1 here) is the box actually being read; its separate            */
+/* `current_box` argument (hd.current_box, constant across the loop) only tells  */
+/* it which ONE of those boxes is stored at the save's "current box" SRAM        */
+/* location instead of the uniform per-box table -- it is not itself a box       */
+/* index, so the old single-box call's "box-0" framing named the wrong one of    */
+/* its two int arguments. Also review D1/D4: every bad slot filled with NO ROM   */
+/* (an empty learn table, same as --op paste80 with no --rom) must never leave a */
+/* record with zero moves total -- if the caller-level `nleft == 0` predicate    */
+/* would ever fire on real corpus data, that is this fix's own bug reappearing.  */
 /* ============================================================================ */
 static void test_bridge_corpus_no_move_refusal(void) {
-  size_t len;
-  char path[512];
-  snprintf(path, sizeof path, "%s/Crystal.sav", GB_ROMS);
-  if (!load_file(path, g_gen2_img, sizeof g_gen2_img, &len)) { printf("  SKIP F2 (no %s)\n", path); return; }
-  G2Save sv;
-  if (!g2_detect(g_gen2_img, (uint32_t)len, &sv) || !sv.supported) { printf("  SKIP F2 (detect failed)\n"); return; }
-  G2Header hd;
-  if (!g2_read_header(g_gen2_img, &sv, &hd)) { printf("  SKIP F2 (header)\n"); return; }
-  uint32_t off = g2_list_offset(&sv, 0, hd.current_box);
-  if (off == 0) { printf("  SKIP F2 (no box0 list)\n"); return; }
-  int n = gb_list_count(GB_GEN2, g_gen2_img + off, 0);
-  if (n <= 0) { printf("  SKIP F2 (box 0 empty)\n"); return; }
-
+  static const char* k_files[] = { "Crystal.sav", "Gold.sav" };
   GbGen1Base base = { .base = { 35, 55, 40, 90, 50 }, .type1 = 0x18, .type2 = 0x18 };
-  int checked = 0, with_bad = 0;
-  for (int slot = 0; slot < n; slot++) {
-    GbEditMon mon;
-    if (!gb_load(&mon, GB_GEN2, g_gen2_img + off, 0, slot)) continue;
-    if (mon.list_species == G2_LIST_EGG) continue;
-    uint16_t dex = gb_get_species_dex(&mon);
-    if (dex < 1 || dex > gb_max_species(GB_GEN1)) continue;   /* the species-floor bucket -- tested separately above */
+  int checked = 0, with_bad = 0, zero_move = 0, files_loaded = 0;
 
-    uint8_t cell[80];
-    if (bc_pack(&mon, 0, BC_ORIGIN_CRYSTAL, 0, 3000u + (uint32_t)slot, cell) != 0) continue;
+  for (size_t fi = 0; fi < sizeof k_files / sizeof k_files[0]; fi++) {
+    size_t len;
+    char path[512];
+    snprintf(path, sizeof path, "%s/%s", GB_ROMS, k_files[fi]);
+    if (!load_file(path, g_gen2_img, sizeof g_gen2_img, &len)) { printf("  SKIP F2 (no %s)\n", path); continue; }
+    G2Save sv;
+    if (!g2_detect(g_gen2_img, (uint32_t)len, &sv) || !sv.supported) { printf("  SKIP F2 (%s detect failed)\n", k_files[fi]); continue; }
+    G2Header hd;
+    if (!g2_read_header(g_gen2_img, &sv, &hd)) { printf("  SKIP F2 (%s header)\n", k_files[fi]); continue; }
+    files_loaded++;
 
-    int tc; uint16_t tc_bad; Gb12Result g12; G3GbStatus g3gb;
-    GbEditMon out; Gen3ToGbLoss loss; Gb12Notes notes;
-    uint16_t from4[4]; uint8_t bad4[4]; int nbad;
-    bdc_convert_gb_core(cell, GB_GEN1, false, &base, &tc, &tc_bad, &g12, &g3gb, &out, &loss,
-                        &notes, from4, bad4, &nbad);
-    checked++;
-    if (tc != 0 || g12 != GB12_OK) continue;   /* a different bucket (species/glitch), unrelated to this fix */
+    for (int box = 0; box < G2_NUM_BOXES; box++) {
+      uint32_t off = g2_list_offset(&sv, box, hd.current_box);
+      if (off == 0) continue;
+      int n = gb_list_count(GB_GEN2, g_gen2_img + off, 0);
+      if (n <= 0) continue;
 
-    CHECK(g3gb != G3GB_ERR_MOVE,
-          "corpus slot %d: G3GB_ERR_MOVE must be UNREACHABLE through this call site "
-          "(BACKLOG #212's whole point) -- got it anyway", slot);
-    if (g3gb != G3GB_OK) continue;   /* GLITCH/EGG/ARG -- not this fix's edge either */
+      for (int slot = 0; slot < n; slot++) {
+        GbEditMon mon;
+        if (!gb_load(&mon, GB_GEN2, g_gen2_img + off, 0, slot)) continue;
+        if (mon.list_species == G2_LIST_EGG) continue;
+        uint16_t dex = gb_get_species_dex(&mon);
+        if (dex < 1 || dex > gb_max_species(GB_GEN1)) continue;   /* the species-floor bucket -- tested separately above */
 
-    if (nbad > 0) {
-      with_bad++;
-      for (int i = 0; i < 4; i++) {
-        if (bad4[i]) {
-          CHECK(gb_get_move(&out, i) == 0,
-                "corpus slot %d: bad4[%d] flagged but out's move[%d] is %u, not clipped "
-                "to empty", slot, i, i, gb_get_move(&out, i));
-        } else if (from4[i] != 0) {
-          CHECK(gb_get_move(&out, i) == (uint8_t)from4[i],
-                "corpus slot %d: a KEPT slot's move changed under conversion (from4[%d]=%u "
-                "out=%u)", slot, i, from4[i], gb_get_move(&out, i));
+        uint8_t cell[80];
+        uint32_t serial = 3000u + (uint32_t)fi * 10000u + (uint32_t)box * 100u + (uint32_t)slot;
+        if (bc_pack(&mon, 0, BC_ORIGIN_CRYSTAL, 0, serial, cell) != 0) continue;
+
+        int tc; uint16_t tc_bad; Gb12Result g12; G3GbStatus g3gb;
+        GbEditMon out; Gen3ToGbLoss loss; Gb12Notes notes;
+        uint16_t from4[4]; uint8_t bad4[4]; int nbad;
+        bdc_convert_gb_core(cell, GB_GEN1, false, &base, &tc, &tc_bad, &g12, &g3gb, &out, &loss,
+                            &notes, from4, bad4, &nbad);
+        checked++;
+        if (tc != 0 || g12 != GB12_OK) continue;   /* a different bucket (species/glitch), unrelated to this fix */
+
+        CHECK(g3gb != G3GB_ERR_MOVE,
+              "%s box %d slot %d: G3GB_ERR_MOVE must be UNREACHABLE through this call "
+              "site (BACKLOG #212's whole point) -- got it anyway", k_files[fi], box, slot);
+        if (g3gb != G3GB_OK) continue;   /* GLITCH/EGG/ARG -- not this fix's edge either */
+
+        if (nbad > 0) {
+          with_bad++;
+          for (int i = 0; i < 4; i++) {
+            if (bad4[i]) {
+              CHECK(gb_get_move(&out, i) == 0,
+                    "%s box %d slot %d: bad4[%d] flagged but out's move[%d] is %u, not "
+                    "clipped to empty", k_files[fi], box, slot, i, i, gb_get_move(&out, i));
+            } else if (from4[i] != 0) {
+              CHECK(gb_get_move(&out, i) == (uint8_t)from4[i],
+                    "%s box %d slot %d: a KEPT slot's move changed under conversion "
+                    "(from4[%d]=%u out=%u)", k_files[fi], box, slot, i, from4[i], gb_get_move(&out, i));
+            }
+          }
+
+          /* review D1/D4: no ROM (an empty learn table) -- the caller-level fill
+           * (mirroring gb_bank_down_bridge/gb_paste_hook/do_paste80) must never
+           * silently leave a real corpus record with zero moves total. */
+          uint8_t learn4[4] = { 0, 0, 0, 0 };
+          uint8_t fill4[4] = { 0, 0, 0, 0 };
+          (void)g3gb_moves_fill(&out, bad4, learn4, fill4);
+          int nleft = 0;
+          for (int i = 0; i < 4; i++) if (gb_get_move(&out, i)) nleft++;
+          if (nleft == 0) zero_move++;
         }
       }
     }
   }
-  CHECK(checked > 0, "F2: at least one real Crystal.sav box-0 record was checked (got %d)", checked);
-  printf("  F2: %d record(s) checked, %d had >= 1 bad slot (per-slot clip proven, no "
-         "whole-record move refusal)\n", checked, with_bad);
+  CHECK(files_loaded > 0, "F2: at least one of Crystal.sav/Gold.sav was found under %s", GB_ROMS);
+  CHECK(checked > 0, "F2: at least one real corpus box record was checked (got %d)", checked);
+  CHECK(zero_move == 0, "F2: %d real corpus record(s) would land with zero moves under "
+        "the no-ROM fill -- the caller-level refusal exists precisely to catch this "
+        "(got %d, want 0)", zero_move, zero_move);
+  printf("  F2: %d record(s) checked across %d file(s) x %d boxes, %d had >= 1 bad slot "
+         "(per-slot clip proven, no whole-record move refusal, %d zero-move)\n",
+         checked, files_loaded, G2_NUM_BOXES, with_bad, zero_move);
 }
 
 /* ============================================================================ */
