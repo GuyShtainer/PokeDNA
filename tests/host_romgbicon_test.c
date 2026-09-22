@@ -107,7 +107,7 @@ static void run_gen2(const char* name, int with_pixel_checks) {
   uint32_t sz = file_size(path);
 
   RomGbIcon gi;
-  int ok = rom_gbicon_open(&gi, file_read, &fc, sz, g_scratch, sizeof g_scratch);
+  int ok = rom_gbicon_open(&gi, file_read, &fc, sz, g_scratch, sizeof g_scratch, 0, 0);
   chk(name, "opens and locates the icon tables", ok);
   if (!ok) { fclose(fc.f); return; }
 
@@ -212,14 +212,14 @@ static void run_gen2(const char* name, int with_pixel_checks) {
   rom_gbicon_save_loc(&gi, &loc);
   RomGbIcon gi2;
   chk(name, "the location cache round-trips",
-      rom_gbicon_open_loc(&gi2, file_read, &fc, sz, g_scratch, sizeof g_scratch, &loc) &&
+      rom_gbicon_open_loc(&gi2, file_read, &fc, sz, g_scratch, sizeof g_scratch, &loc, 0, 0) &&
       gi2.mon_menu_icons == gi.mon_menu_icons && gi2.icon_pointers == gi.icon_pointers &&
       gi2.n == gi.n && gi2.icon_bank == gi.icon_bank);
   RomGbIconLoc bad = loc;
   bad.icon_pointers ^= 0x40;   /* now points at the wrong offset entirely */
   RomGbIcon gi3;
   chk(name, "a tampered cache is rejected and the full scan re-runs",
-      rom_gbicon_open_loc(&gi3, file_read, &fc, sz, g_scratch, sizeof g_scratch, &bad) &&
+      rom_gbicon_open_loc(&gi3, file_read, &fc, sz, g_scratch, sizeof g_scratch, &bad, 0, 0) &&
       gi3.icon_pointers == gi.icon_pointers && gi3.mon_menu_icons == gi.mon_menu_icons);
 
   /* D3 (E5 fix): a tampered mon_menu_icons must be caught too -- before this
@@ -230,7 +230,7 @@ static void run_gen2(const char* name, int with_pixel_checks) {
   bad_menu.mon_menu_icons ^= 0x40;   /* points at the wrong window entirely */
   RomGbIcon gi3b;
   chk(name, "D3: a tampered mon_menu_icons is rejected and the full scan re-runs",
-      rom_gbicon_open_loc(&gi3b, file_read, &fc, sz, g_scratch, sizeof g_scratch, &bad_menu) &&
+      rom_gbicon_open_loc(&gi3b, file_read, &fc, sz, g_scratch, sizeof g_scratch, &bad_menu, 0, 0) &&
       gi3b.mon_menu_icons == gi.mon_menu_icons && gi3b.icon_pointers == gi.icon_pointers &&
       gi3b.n == gi.n && gi3b.icon_bank == gi.icon_bank);
 
@@ -241,7 +241,7 @@ static void run_gen2(const char* name, int with_pixel_checks) {
   fc.poison_xor = 0xFF;
   RomGbIcon gi4;
   chk(name, "NEGATIVE: a corrupted MonMenuIcons byte makes open() refuse",
-      !rom_gbicon_open(&gi4, file_read, &fc, sz, g_scratch, sizeof g_scratch));
+      !rom_gbicon_open(&gi4, file_read, &fc, sz, g_scratch, sizeof g_scratch, 0, 0));
   fc.poison_off = 0;
 
   fclose(fc.f);
@@ -254,7 +254,7 @@ static void refuse(const char* label, const char* path, uint32_t size_override) 
   uint32_t sz = size_override ? size_override : file_size(path);
   RomGbIcon gi;
   chk(label, "is REFUSED by rom_gbicon_open",
-      !rom_gbicon_open(&gi, file_read, &fc, sz, g_scratch, sizeof g_scratch));
+      !rom_gbicon_open(&gi, file_read, &fc, sz, g_scratch, sizeof g_scratch, 0, 0));
   fclose(fc.f);
 }
 
@@ -273,7 +273,7 @@ int main(void) {
     if (fc.f) {
       RomGbIcon gi; uint8_t tiny[512];
       chk("a 512-byte scratch", "is REFUSED (below ROM_GBICON_SCRATCH_MIN)",
-          !rom_gbicon_open(&gi, file_read, &fc, file_size(ROMS "/Crystal.gbc"), tiny, sizeof tiny));
+          !rom_gbicon_open(&gi, file_read, &fc, file_size(ROMS "/Crystal.gbc"), tiny, sizeof tiny, 0, 0));
       fclose(fc.f);
     }
   }

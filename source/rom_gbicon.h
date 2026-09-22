@@ -176,6 +176,15 @@ typedef struct RomGbIcon {
   void*    ctx;
   uint32_t size;
 
+  /* BACKLOG #201 F2: the same three header fields rom_gbsprite.c's RomGbSprite
+   * already carries -- the identity key a known-ROM fast-path table looks up
+   * by (title, version, global_checksum), same posture as rom_gbsprite.h's own
+   * table. Filled by parse_header(), never used to LOCATE anything (locate()
+   * still works purely by shape). */
+  char     title[16];
+  uint8_t  version;
+  uint16_t global_checksum;
+
   uint32_t mon_menu_icons;   /* file offset, ROM_GBICON_SPECIES bytes            */
   uint32_t icon_pointers;    /* file offset, (n+1) little-endian u16 entries     */
   uint8_t  n;                /* highest valid kind (1..n); 0 is never valid      */
@@ -209,20 +218,40 @@ typedef struct RomGbIconLoc {
   uint8_t  pad[2];
 } RomGbIconLoc;
 
+/* BACKLOG #201 F3: called exactly once, right after pass 1 (the MonMenuIcons
+ * whole-ROM scan) succeeds and before pass 2 (the IconPointers whole-ROM scan)
+ * starts its own reads -- gives the caller a chance to reset ITS OWN progress
+ * bookkeeping (gb_art_source.c's GbArtIo/GbScanGuard) so pass 2 reports its own
+ * done/total and KB/s instead of inheriting pass 1's already-maxed high-water
+ * mark (the "parks at 2048/2048 while KB/s falls" bug). NULL = no callback --
+ * every caller that does not drive a progress screen (a silent fetch, a test,
+ * the PDNA_DELTA fused path). rom_gbicon.c stays pure C either way: it never
+ * looks inside `ctx`, only calls it. */
+typedef void (*RomGbIconPassFn)(void* ctx);
+
 /* Identify a Gen-2 Game Boy ROM and locate its menu-icon tables. `scratch` is the
  * caller's scan window (>= ROM_GBICON_SCRATCH_MIN; the SAME buffer
  * rom_gbsprite_open() uses is fine -- both only touch it during their own open
  * call). Returns 1, or 0 (fail closed) for: a non-GB image, a truncated one, a
  * Gen-1 ROM (no matching icon-table shape exists there), or any ROM whose tables
- * are missing, ambiguous, or fail the derived-bank sanity check. */
+ * are missing, ambiguous, or fail the derived-bank sanity check.
+ *
+ * BACKLOG #201 F2: a known ROM's own table entry (source/rom_gbicon_known.h),
+ * verified before use through the SAME re-checks a cached loc gets, is tried
+ * FIRST -- a hit skips the whole-ROM scan entirely. `pass2_cb`/`pass2_ctx`: see
+ * RomGbIconPassFn above; pass 0/0 for "no progress screen". */
 int rom_gbicon_open(RomGbIcon* gi, GbReadFn read, void* ctx, uint32_t size,
-                    uint8_t* scratch, uint32_t scratch_len);
+                    uint8_t* scratch, uint32_t scratch_len,
+                    RomGbIconPassFn pass2_cb, void* pass2_ctx);
 
 /* Same, but start from a cached RomGbIconLoc. Rejected (falling back to a full
- * scan) unless its id_hash, size and every offset it names still check out. */
+ * scan) unless its id_hash, size and every offset it names still check out.
+ * `pass2_cb`/`pass2_ctx`: see RomGbIconPassFn above (only reached on a cache
+ * miss, when the full scan actually runs). */
 int rom_gbicon_open_loc(RomGbIcon* gi, GbReadFn read, void* ctx, uint32_t size,
                         uint8_t* scratch, uint32_t scratch_len,
-                        const RomGbIconLoc* loc);
+                        const RomGbIconLoc* loc,
+                        RomGbIconPassFn pass2_cb, void* pass2_ctx);
 
 /* Snapshot what open() found. Safe to call only when gi->ok. */
 void rom_gbicon_save_loc(const RomGbIcon* gi, RomGbIconLoc* out);
