@@ -5512,6 +5512,16 @@ def main(argv=None) -> int:
                           "with `fuse_gb.py --no-loc`, same convention as --cold-start-compare) "
                           "-- run this against a --before and an --after build to get the "
                           "brief's own comparison. Skips the normal --image shot run entirely.")
+    ap.add_argument("--b200", action="store_true",
+                     help="BACKLOG #200: runs run_b200_chain() against --image -- the "
+                          "Gen-1/2 grid's phantom cells (blocked-cell paint, cursor "
+                          "skip/clamp, the A refusal), four sub-chains: box 12 (0/20) + "
+                          "the DOWN-off-blocked-row edge, the GB PARTY pseudo-box "
+                          "(capacity 6), box 1 (20/20 full, same blocked rows), and "
+                          "Emerald's own PC box (unaffected). --image MUST be the same "
+                          "flight-shaped image --b187-chains uses (Emerald.sav + a "
+                          "fused Yellow.gb/Yellow.sav, GUY'S OWN Yellow.sav copied to "
+                          "/tmp first).")
     a = ap.parse_args(argv)
     a.out.mkdir(parents=True, exist_ok=True)
 
@@ -5960,6 +5970,19 @@ def main(argv=None) -> int:
                 skipped += sess.skipped
             except RuntimeError as e:
                 print(f"  [STOPPED] b187 chain {label}: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        ran = True
+
+    if a.b200:
+        try:
+            for sess in run_b200_chain(core_mod, image_mod, a.image, a.out):
+                ok += sess.taken
+                skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b200 chain: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
@@ -7162,6 +7185,119 @@ def run_b187_chain_c(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.
 # (real Yellow.sav, the engine level), and by tests/host_gb_grid_ops_test.py's
 # structural checks (b)/(e) with four real mutations -- what mGBA specifically
 # cannot ever show is the LIFT gesture's own SD-write-gated start. HW-QUEUE row.
+
+
+def run_b200_chain(core_mod, image_mod, rom: Path, out_dir: Path) -> list[gb_shots.Session]:
+    """BACKLOG #200: the Gen-1/2 grid's phantom cells. `rom` MUST be the same
+    flight-shaped image run_b187_chain_a() uses (Emerald.sav + a fused Yellow.gb/
+    Yellow.sav, tools/fuse_sav.py then tools/fuse_gb.py, GUY'S OWN Yellow.sav
+    copied to /tmp first -- the corpus at gba-toolkit/roms/gb/Yellow.sav is
+    read-only) -- current box (display "12") boots 0/20 (byte 0x284C=0x8B, same
+    fact run_b187_chain_a()'s own docstring records).
+
+    Box index math (GEN1_NUM_BOXES=12, source/gen1_save.h): storage boxes are
+    index 0..11 (display "1".."12"), the party pseudo-box is index 12 (13
+    positions total). The boot landing is index 11 (display "12"). SWITCH_BOX's
+    `(box+1) % nb` means ONE R reaches the party pseudo-box (11+1=12) and a
+    SECOND R from there reaches box 1 (12+1=13 mod 13=0) -- no need to hunt for
+    a full box by trial; Guy's Yellow.sav has box 1 at 20/20 (verified against
+    this exact file, same as run_b187_chain_b()'s own "box1 ... genuinely 20/20
+    full" claim).
+
+    Four sub-chains, each its own Session (same posture as run_b187_chain_a/b/c):
+      A: box 12 (0/20, the boot landing) -- F1's dim/X blocked cells on rows 3
+         (2 blocked cells) and 4 (all 6), even though the box is EMPTY of mons
+         (capacity, not occupancy, drives the paint). Also demonstrates F2's
+         DOWN behaviour on column 0 (cells 0/6/12/18 real, 24 blocked): DOWN x3
+         reaches the deepest real cell (18, row 3 col 0), a 4th DOWN does NOT
+         linger on/wrap toward the blocked row 4 -- `cur + COLS >= cap` fires
+         the SAME off-bank-bottom edge (return 5) the physical bottom row
+         already used (is_bank is unconditionally true for a GB source), so
+         the screen LEAVES the box grid entirely (into the Bank hand-off,
+         bank_plant.c's PDNA_DELTA-only planted cells make that landing
+         screenshot-able with no real SD card -- same fixture run_s150_7_
+         down_edge() already relies on).
+      B: the GB PARTY pseudo-box (index 12, capacity 6) -- 24 of 30 cells
+         blocked (every cell but row 0).
+      C: box 1 (index 0, 20/20 full) -- same blocked rows 3 (partial)/4 (full)
+         as box 12, but every real cell (0-19) shows an occupied Pokemon.
+      D: the Emerald Gen-3 PC box (row 0 of the SAME image's boot picker,
+         capacity NULL -> 30) -- unaffected: no blocked cells anywhere.
+    """
+    sessions: list[gb_shots.Session] = []
+
+    # ---- A: box 12 (0/20, boot landing) + the DOWN-off-blocked-row edge -------
+    sa = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b200a_")
+    print("== BACKLOG #200 Chain A: box 12 (0/20) blocked cells + DOWN edge ==")
+    boot_to_gb_session(sa, rom, which="yellow")
+    sa.shot("00_box12_boot", "tap0 (boot): box 12 (current box, 0/20) -- F1's dim/X "
+            "blocked tiles cover row 3's last 4 cells (indices 20-23) and all of "
+            "row 4 (24-29), even though the box has NO Pokemon at all -- capacity "
+            "(20), not occupancy, drives the paint")
+    sa.press_n("DOWN", 3, settle=gb_shots.SETTLE)
+    sa.shot("01_col0_row3", "tap1 (DOWN x3, column 0): cursor at index 18 (row 3 "
+            "col 0) -- the deepest REAL cell in this column (index 24, row 4 col "
+            "0, is blocked); F2's grid_lr_step/DOWN clamp got it here one real "
+            "cell at a time, same as before this lane for every cell that IS real")
+    sa.tap("DOWN", settle=gb_shots.BIG_SETTLE)
+    sa.shot("02_down_off_edge", "tap2 (DOWN once more): `cur + COLS (24) >= cap "
+            "(20)` fires the SAME off-bank-bottom edge (return 5) the PHYSICAL "
+            "bottom row already used, is_bank being unconditionally true for a "
+            "GB source. For this STANDALONE session (pdna_gen12.c's own re-entry "
+            "loop, `for (int r; (r = pdna_box(&s)) != 0; )`) return 5 is not the "
+            "PC<->Bank hand-off (that reading applies to the NV_GB import path, "
+            "pdna_main.c's own PC/Bank loop) -- it is caught by the loop's plain "
+            "`else app_box_start_set(1)` and pdna_box() is re-entered immediately "
+            "on the SAME box. Pixel-identical to tap0's own boot frame here (no "
+            "cursor sprite has synced onto a fresh cell yet) -- tap3 below moves "
+            "RIGHT to prove where the re-entry actually parked the cursor.")
+    sa.tap("RIGHT", settle=gb_shots.SETTLE)
+    sa.shot("03_after_reentry", "tap3 (RIGHT, to reveal the re-entered cursor): "
+            "confirms where the DOWN-off-edge re-entry actually left the cursor "
+            "-- see this shot next to tap1's own cell-18 cursor to tell the two "
+            "landings apart. Answering the brief's open question plainly: DOWN "
+            "past the last real row does not stay AND does not wrap into a "
+            "blocked cell -- it re-enters the whole box screen instead, and F2's "
+            "own clamp then keeps the fresh cursor off every blocked cell exactly "
+            "as everywhere else.")
+    sessions.append(sa)
+
+    # ---- B: the GB PARTY pseudo-box (index 12, capacity 6) ---------------------
+    sb = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b200b_")
+    print("== BACKLOG #200 Chain B: the GB PARTY pseudo-box (capacity 6) ==")
+    boot_to_gb_session(sb, rom, which="yellow")
+    sb.tap("R", settle=gb_shots.BIG_SETTLE)
+    sb.shot("00_party", "tap1 (R from box 12): the GB PARTY pseudo-box (index 12, "
+            "SWITCH_BOX's (11+1)%13) -- capacity 6, so F1 blocks 24 of the 30 "
+            "cells (everything past row 0)")
+    sessions.append(sb)
+
+    # ---- C: box 1 (index 0, 20/20 full) ----------------------------------------
+    sc = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b200c_")
+    print("== BACKLOG #200 Chain C: box 1 (20/20, full) -- same blocked rows ==")
+    boot_to_gb_session(sc, rom, which="yellow")
+    sc.tap("R", settle=gb_shots.BIG_SETTLE)          # box 12 -> party (index 12)
+    sc.tap("R", settle=gb_shots.BIG_SETTLE)          # party -> box 1 (index 0, (12+1)%13)
+    sc.shot("00_box1_full", "tap2 (R, R from box 12): box 1, '1:GB BOX1 20/20' -- "
+            "the SAME blocked rows 3 (partial)/4 (full) chain A showed on the "
+            "EMPTY box 12, but every real cell (0-19) now shows an occupied "
+            "Pokemon -- F1's blocked tiles are driven by capacity, not fill level")
+    sessions.append(sc)
+
+    # ---- D: the Emerald Gen-3 PC box (unaffected, capacity NULL -> 30) --------
+    sd = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b200d_")
+    print("== BACKLOG #200 Chain D: Emerald's own PC box -- unaffected ==")
+    sd.run(700)
+    sd.tap("A", settle=gb_shots.BIG_SETTLE)          # boot picker, row 0 (Emerald, default) -> PC box
+    sd.shot("00_emerald_pc", "tap0 (boot, A on the default Emerald row): Emerald's "
+            "own PC box screen -- BoxSource.capacity is NULL here (the Gen-3 PC/"
+            "Bank source, pdna_box.h's own doc comment), so grid_capacity()/"
+            "box_cap() falls back to COLS*ROWS (30) and blocked_cells() returns "
+            "immediately -- no dim/X tiles anywhere, F4's 'no behaviour change "
+            "for capacity == 30' claim")
+    sessions.append(sd)
+
+    return sessions
 
 
 if __name__ == "__main__":
