@@ -1188,12 +1188,22 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XFER_TC_TITLE        "NO GEN 1 FORM"
 /* BACKLOG #150 S150-8: shortened from the brief's original "%s did not exist in
  * Gen 1." / "%s cannot be known in Gen 1." -- host_textfit_test.c found the real
- * worst-case move name in xr_time_capsule_block's reachable range (166..251, e.g.
- * "EXTREMESPEED") overflows the 184 px budget with the longer wording (200 px
- * measured); the species side is tight but passes. Shortened uniformly rather than
- * leaving the species/move rows differently worded. */
+ * worst-case move name in what was then xr_time_capsule_block's own move-bound
+ * range (166..251, e.g. "EXTREMESPEED") overflows the 184 px budget with the
+ * longer wording (200 px measured); the species side is tight but passes.
+ * Shortened uniformly rather than leaving the species/move rows differently
+ * worded.
+ *
+ * BACKLOG #212 review D6: xr_time_capsule_block's own move-bound refusal
+ * (`tc == 2`) can no longer fire -- bdc_convert_gb_core (source/bank_down_convert.c)
+ * now passes NULL moves into it (species-floor only) and clips the move bound
+ * itself, per slot, via g3gb_moves_ok()/bad4/nbad instead (pdna_gen12.c's
+ * gb_bank_down_bridge, right after the loss screen). PDNA_XFER_TC_MOVE_FMT has
+ * had no production reader since that change -- tests/host_textfit_test.c's own
+ * worst-case-width pin (kept, since the format string itself is unchanged and
+ * still ships in the binary) is its only remaining caller. */
 #define PDNA_XFER_TC_SPECIES_FMT  "%s: no Gen 1 form."
-#define PDNA_XFER_TC_MOVE_FMT     "%s: not in Gen 1."
+#define PDNA_XFER_TC_MOVE_FMT     "%s: not in Gen 1."   /* no production reader since #212 (D6) */
 
 #define PDNA_XFER_FLUSHFAIL_TITLE "BANK NOT FULLY UPDATED"
 #define PDNA_XFER_FLUSHFAIL_L1    "%d Pokemon are still in the"

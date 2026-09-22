@@ -1048,14 +1048,21 @@ int main(void) {
   PF(PDNA_XFER_TOOMANY_L1,      28, 184);
   PF(PDNA_XFER_TOOMANY_L2,      28, 184);
   PF(PDNA_XFER_TC_TITLE,        28, 184);
-  { /* PDNA_XFER_TC_SPECIES_FMT/MOVE_FMT are siprintf'd with a species/move name --
-     * xr_time_capsule_block() can only ever name a species > gb_max_species(GB_GEN1)
-     * (151) or a move > gb_max_move(GB_GEN1) (165), so the REAL worst case is the
-     * widest name in exactly that reachable range, not the widest name in the whole
-     * table (a species/move this refusal can never actually name, like a Gen-1-legal
-     * THUNDERPUNCH, would overstate the budget it needs). Scan the real tables
-     * (data_tables.c) rather than guessing a literal, same convention as
-     * PDNA_SIDECAR_LEGAL_WHY_FMT above. */
+  { /* PDNA_XFER_TC_SPECIES_FMT/MOVE_FMT are siprintf'd with a species/move name.
+     * SPECIES_FMT: xr_time_capsule_block() can only ever name a species >
+     * gb_max_species(GB_GEN1) (151), so the REAL worst case is the widest name in
+     * exactly that range, not the widest name in the whole table (a species this
+     * refusal can never actually name would overstate the budget it needs).
+     *
+     * MOVE_FMT (BACKLOG #212 review D6): the move range 166..251 is NO LONGER
+     * reachable through xr_time_capsule_block at all -- bdc_convert_gb_core now
+     * passes NULL moves into it and clips the move bound per slot instead
+     * (g3gb_moves_ok, pdna_gen12.c's gb_bank_down_bridge). PDNA_XFER_TC_MOVE_FMT
+     * has no production reader any more; this pin stays only because the format
+     * string still ships in the binary (kept for a possible future caller) and a
+     * width regression there would still be worth catching before one exists.
+     * Scan the real tables (data_tables.c) rather than guessing a literal, same
+     * convention as PDNA_SIDECAR_LEGAL_WHY_FMT above. */
     char row[64];
     int worst_sp = 0, worst_mv = 0;
     for (int dex = gb_max_species(GB_GEN1) + 1; dex <= 251; dex++) {
