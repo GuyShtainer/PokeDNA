@@ -3901,8 +3901,8 @@ _Static_assert(GB12_ARENA_NEED_IMG <= APP_ARENA_BYTES,
  * Gb12Edit LAST in the block (Mount, Gb12Image, recs, stage, Gb12Edit -- see that
  * function, ~pdna_gen12.c:2671-2711) and nothing else in this file claims arena
  * bytes past it for the rest of the session: `ed`'s own end IS the arena's used
- * high-water mark. GB12_ARENA_NEED_IMG (~11,952 of APP_ARENA_BYTES' 35,712) already
- * counts every byte up to and including Gb12Edit, so the slack below (~23.7 KB) is
+ * high-water mark. GB12_ARENA_NEED_IMG (11,968 of APP_ARENA_BYTES' 35,712) already
+ * counts every byte up to and including Gb12Edit, so the slack below (23,744 B) is
  * exactly what a caller may still take.
  *
  * `need <= slack` is the one runtime check. BACKLOG #64 review Finding 6 (CRITICAL
