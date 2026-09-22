@@ -91,7 +91,7 @@ static uint32_t g_bank_serial;
  * reads; the moment ANY later meta_load() in the session falls back to the .bak or
  * defaults (the exact "meta was lost or rolled back" scenario the scan exists for),
  * this drops to false and the full 16-box scan resumes for every drop after it. */
-static bool g_serial_trusted;
+static bool EWRAM_BSS g_serial_trusted;
 bool pdna_bank_serial_trusted(void) { return g_serial_trusted; }
 
 /* BACKLOG #219a: true only immediately after a meta_load() that fell back to
@@ -109,7 +109,7 @@ bool pdna_bank_serial_trusted(void) { return g_serial_trusted; }
  * RAM. Consumed (cleared) unconditionally by the next meta_save() call, whether or not
  * that save succeeds -- a failed save leaves the primary absent/partial, which the next
  * meta_load() already detects on its own via the normal FR_OK+magic probe. */
-static bool g_meta_from_bak;
+static bool EWRAM_BSS g_meta_from_bak;
 
 /* ---- paths ---- */
 static void box_path(int box, char* out) { siprintf(out, PDNA_BANK_DIR "/box%02d.box", box); }
