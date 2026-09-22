@@ -45,14 +45,35 @@ static void plant_gen2_chikorita(GbEditMon* e, uint8_t level, uint32_t seed) {
   gb_new_mon(GB_GEN2, PLANT_DEX_CHIKORITA, level, &src, seed, e);
 }
 
+/* BACKLOG #150 S150-15 review (fixture fix 1): same mon (species/level/DVs/moves/
+ * OT), a CALLER-CHOSEN bank_serial -- bc_pack's ident32 hashes the serial, so a
+ * distinct serial gives a distinct xr_key_g3() without changing any byte a summary
+ * card draws (serial lives at cell bytes 4..7/73..76, outside every drawn field).
+ * Exists so xfer_plant.c can pick a serial that does not collide with any other
+ * PDNA_DELTA fixture's own planted key (source/xfer_plant.c's own XFER_PLANT_SERIAL,
+ * distinct from S150-9's bank_plant_xfer_seed_all() slots). */
+void bank_plant_cell0_serial(uint8_t out80[80], uint32_t serial) {
+  if (!out80) return;
+  GbEditMon e;
+  plant_gen2_chikorita(&e, 12, 1u);
+  bc_pack(&e, 0, BC_ORIGIN_GOLD, 0, serial, out80);
+}
+
+/* BACKLOG #150 S150-15 decision 13: the exact bytes bank_plant_box0() plants at slot
+ * 0 -- extracted so xfer_plant.c can convert the SAME cell (not a fresh, potentially
+ * divergent one) into the DOWN arm's shot-chain fixture. serial 1u, bank_plant_box0's
+ * own slot-0 value. */
+void bank_plant_cell0(uint8_t out80[80]) {
+  bank_plant_cell0_serial(out80, 1u);
+}
+
 void bank_plant_box0(uint8_t* recs) {
   if (!recs) return;
   GbEditMon e;
   uint8_t cell[80];
 
   /* slot 0: Gen-2 CHIKORITA @ L12, origin GOLD -> FULL */
-  plant_gen2_chikorita(&e, 12, 1u);
-  bc_pack(&e, 0, BC_ORIGIN_GOLD, 0, 1u, cell);
+  bank_plant_cell0(cell);
   memcpy(recs + (uint32_t)0 * 80, cell, 80);
 
   /* slot 1: Gen-1 PIKACHU @ L20, origin YELLOW -> FULL. Real Gen-1 base stats

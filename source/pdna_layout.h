@@ -129,6 +129,10 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_LBL_VIEW_EDIT   "VIEW / EDIT"
 #define PDNA_LBL_ITEM        "ITEM"
 #define PDNA_LBL_LEGALITY    "LEGALITY"
+/* BACKLOG #150 S150-15, decision 2: 11 glyphs = 88 px = exactly PDNA_MONMENU_ROW_W --
+ * Guy's wording "ORIGINAL DATA" (13 glyphs) does not fit (mismatch 4). Grouped with
+ * LEGALITY, the other "look at it" row (decision 1). */
+#define PDNA_LBL_ORIGINAL    "GB ORIGINAL"
 #define PDNA_LBL_HATCH       "HATCH"
 #define PDNA_LBL_MOVE        "MOVE"
 #define PDNA_LBL_MOVE_TO_BOX "MOVE TO BOX"
@@ -168,7 +172,8 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 /* Every label either action popup can show, so the host test measures the strings the
  * menus actually draw. The X() entries are the macros above, not fresh literals. */
 #define PDNA_MONMENU_LABELS(X)                                                        \
-  X(PDNA_LBL_VIEW_EDIT) X(PDNA_LBL_ITEM) X(PDNA_LBL_LEGALITY) X(PDNA_LBL_HATCH)       \
+  X(PDNA_LBL_VIEW_EDIT) X(PDNA_LBL_ITEM) X(PDNA_LBL_LEGALITY) X(PDNA_LBL_ORIGINAL)    \
+  X(PDNA_LBL_HATCH)                                                                  \
   X(PDNA_LBL_MOVE) X(PDNA_LBL_MOVE_TO_BOX) X(PDNA_LBL_COPY) X(PDNA_LBL_PASTE)         \
   X(PDNA_LBL_DUPLICATE) X(PDNA_LBL_TO_DAYCARE) X(PDNA_LBL_TO_GAME)                    \
   X(PDNA_LBL_EXPORT_PK) X(PDNA_LBL_TAKE_ITEM) X(PDNA_LBL_GIVE_ITEM)                   \
@@ -1183,6 +1188,22 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XFER_GAME_SILVER  "SILVER"
 #define PDNA_XFER_GAME_CRYSTAL "CRYSTAL"
 
+/* BACKLOG #150 S150-15, decision 8: the ORIGIN card's note line for a converted mon's
+ * GB ORIGINAL view. Two-digit year -- the ORIGIN card draws this fixed sys8,
+ * untruncated, in PDNA_SUM_CARD_W (138 px); worst cases "CRYSTAL 26-09-16" (16
+ * glyphs = 128 px) and "CRYSTAL (no date)" (17 = 136 px) both fit, a four-digit year
+ * would not (host_textfit_test.c proves both worst cases). */
+#define PDNA_XFER_ORIG_NOTE_FMT   "%s %02u-%02u-%02u"
+#define PDNA_XFER_ORIG_NODATE_FMT "%s (no date)"
+#define PDNA_XFER_ORIG_GEN_FMT    "GEN %u"          /* origin_game unknown -- xv_origin_name() NULL */
+
+/* decision 11: the "no original" plaque -- a row that was visible (a ledger file
+ * exists, decision 4's caveat) but the walk found no NATIVE_HOME entry. PF(text, 28,
+ * 184) discipline, same as every other msg_wait string in this file. */
+#define PDNA_XFER_ORIG_NONE_TITLE "NO ORIGINAL DATA"
+#define PDNA_XFER_ORIG_NONE_L1    "The transfer record holds no"
+#define PDNA_XFER_ORIG_NONE_L2    "Game Boy original."
+
 /* ---- S5-B Part D: PASTE (GB) on an empty Game Boy cell (pdna_gen12.c) ------------- */
 /* S5-C Part B1: Gen 1 is no longer refused outright -- a base-stat table now exists
  * (read live off the user's own ROM beside the .sav). GEN1_TITLE/L1 are repurposed
@@ -1334,6 +1355,21 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_SIDECAR_LEGAL_BACK       "Either way it comes back unchanged."
 #define PDNA_SIDECAR_LEGAL_KEEP_ROW   "A = KEEP AS IS"
 #define PDNA_SIDECAR_LEGAL_FIX_FMT    "SELECT = MAKE LEGAL (%u -> %u)"
+
+/* BACKLOG #150 S150-10 decision 7: gb_paste_legal_screen_ex's extra rows -- shown when
+ * one or more move slots are out of range for the destination generation (G-H8). One
+ * swap row per bad slot ("ROCK TOMB -> WHIRLPOOL", or "-> (no move)" when nothing
+ * eligible was found); KEEP AS IS is greyed the moment any slot is bad (decision 8: A
+ * is not even in the wait mask then, so no row needs "why" beyond this text itself). */
+#define PDNA_XFER_SWAP_FMT           "%s -> %s"
+#define PDNA_XFER_SWAP_NONE          "(no move)"
+#define PDNA_SIDECAR_LEGAL_KEEP_OFF  "KEEP AS IS: not possible here"
+#define PDNA_SIDECAR_LEGAL_FIX_MOVES "SELECT = MAKE LEGAL (swap moves)"
+/* BACKLOG #150 S150-10 decision 10: gb_gen12_norom_msg's Gen-2 title -- Gen 1's own
+ * PDNA_SIDECAR_GEN1_TITLE/_L1 are reused for both generations otherwise (L1's wording
+ * -- "beside the .sav to transfer." -- never named an extension, so it needs no
+ * Gen-2 twin). */
+#define PDNA_SIDECAR_GEN2_TITLE      "NO GEN-2 ROM"
 /* Full-screen list (gb_pick_box's own geometry: title y=3, rule y=13), not a scrolling
  * picker -- rows are drawn only for flags actually set, so the common case is much
  * shorter than the worst case the host test pins: 10 conditional Gen3ToGbLoss lines +
