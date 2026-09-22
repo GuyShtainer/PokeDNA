@@ -234,13 +234,22 @@ static bool gbpack_add_routed(GbBag* bag, GbGame game, uint8_t id8) {
   if (target == GBB_POCKET_TMHM) {
     /* Not a list slot -- its own count array (gb_bag.h's own contract). A
      * count, not a "+N" quantity, matching the existing TM/HM row-edit
-     * prompt elsewhere in this file. */
+     * prompt elsewhere in this file. Review D1 fix: this used to call the
+     * cancel-blind num_entry() seeded at 0, so B at the COUNT prompt SET the
+     * TM's count to 0 (data loss on an already-owned TM) instead of
+     * cancelling, and the prompt opened at 0 instead of the CURRENT count;
+     * gbb_tmhm_set()'s own status was also dropped. num_entry_opt() seeded
+     * at the real current count, cancel returns false (nothing attempted,
+     * same contract every other branch here already gives its caller), and
+     * a non-GBB_OK status is reported instead of silently swallowed. */
     int tmi = gbb_tmhm_index_of(game, id8);
-    if (tmi < 0) msg_wait("BAD ID", UI_WARN, "That item id does not exist.", 0);
-    else {
-      uint32_t q = num_entry("COUNT", 0, GBB_TMHM_CAP);
-      gbb_tmhm_set(game, bag, tmi, (uint8_t)q);
-    }
+    if (tmi < 0) { msg_wait("BAD ID", UI_WARN, "That item id does not exist.", 0); return true; }
+    uint8_t cur = 0;
+    (void)gbb_tmhm_get(bag, tmi, &cur);
+    uint32_t q;
+    if (!num_entry_opt("COUNT", cur, GBB_TMHM_CAP, &q)) return false;   /* cancel: nothing attempted */
+    if (gbb_tmhm_set(game, bag, tmi, (uint8_t)q) != GBB_OK)
+      msg_wait("BAD ID", UI_WARN, "That item id does not exist.", 0);
     return true;
   }
   if (target == GBB_POCKET_KEY) {

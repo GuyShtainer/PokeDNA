@@ -1775,6 +1775,73 @@ def run_u5_pack(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     s.shot("13_declined", "U5: declining discards the edit -- gbb_write never "
                            "ran, back at the box grid")
 
+    # Review D1 (HIGH, data loss): gbpack_add_routed()'s TM/HM branch used to
+    # call num_entry() (cancel-blind: returns `cur`, pdna_trainer.c:47-50)
+    # SEEDED AT 0, so opening COUNT on an ALREADY-OWNED TM showed 0 instead of
+    # its real count, and cancelling (osk_search's own cancel key -- SELECT,
+    # not B; B is backspace, same contract every other prompt in this file
+    # already uses) SET that TM's count to 0 instead of leaving it alone --
+    # an owned TM01 x1 became x0 on a cancelled ADD. Fixed to num_entry_opt()
+    # seeded at the REAL current count (gbb_tmhm_get()), cancel now returns
+    # false (nothing attempted, same contract gbpack_add_to_pc() already
+    # gives its own caller). No shot of this whole path existed before this
+    # fix -- added here (rule-17 blocker: a gesture/data-path with no shot
+    # proof is not merged).
+    s.run(250)                                              # re-entry idle (see U4's own D-reentry note)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # box grid -> nav menu
+    s.press_n("DOWN", 7, settle=gb_shots.SETTLE)            # Party -> ... -> Bag (index 7)
+    s.tap("A", settle=GB_ART_COLD_SETTLE)                   # Bag -> pdna_gbpack_gen2_screen()
+    s.tap("RIGHT", settle=gb_shots.BIG_SETTLE)              # Items -> Balls
+    s.tap("RIGHT", settle=gb_shots.BIG_SETTLE)              # Balls -> Key items
+    s.tap("RIGHT", settle=gb_shots.BIG_SETTLE)              # Key items -> TM/HM
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> PACK MENU (TM/HM: ADD ITEM/PC STORE/CANCEL)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM -> picker, pre-filtered to TM-HM
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # pick TM01 (id 0xBF, the lowest TM/HM id --
+                                                              # row 0 of the TM-HM filtered list) -> COUNT
+    s.shot("14_count_seeded_current", "U5 (Review D1 fix): the COUNT prompt "
+                                       "for an ALREADY-OWNED TM (TM01, this "
+                                       "save's own real count) now seeds at "
+                                       "'1' -- its ACTUAL current count, not "
+                                       "the old bug's hardcoded 0")
+    s.tap("B", settle=gb_shots.SETTLE)                      # backspace the seeded '1'
+    s.press_n("RIGHT", 2, settle=gb_shots.SETTLE)           # digit row: col0 -> col2 '3'
+    s.tap("A", settle=gb_shots.SETTLE)                      # type '3' -> field "3"
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm -> gbb_tmhm_set(tm01,3): GBB_OK
+    s.shot("15_tm01_count3", "U5 (Review D1, 'TM01 COUNT 3 -> row'): TM01's "
+                              "row now reads x3 -- a real, persisted-if-"
+                              "confirmed change")
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> PACK MENU again, fresh open
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM -> picker, TM-HM filtered
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # pick TM01 again -> COUNT seeded at the NEW
+                                                              # current count (3, not the old bug's 0)
+    s.shot("16_count_reseeded_3", "U5 (Review D1): re-opening COUNT on TM01 "
+                                   "now seeds '3' -- the count this ADD "
+                                   "chain itself just wrote, not 0")
+    s.tap("SEL", settle=gb_shots.BIG_SETTLE)                # osk_search's own CANCEL key (SELECT, not
+                                                              # B -- B is backspace) -- num_entry_opt()
+                                                              # returns false, gbpack_add_routed() returns
+                                                              # false, the caller's own `continue` re-opens
+                                                              # PACK MENU with NOTHING written
+    s.shot("17_cancel_no_zero", "U5 (Review D1, 'B at COUNT -> count "
+                                 "unchanged'): cancelling lands back on PACK "
+                                 "MENU (its own `continue`, not the list) "
+                                 "with NO gbb_tmhm_set() call made at all -- "
+                                 "the fix's whole point, provable only by "
+                                 "the NEXT shot still reading x3, not x0")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # close PACK MENU -> back to the list
+    s.shot("18_still_x3", "U5 (Review D1): TM01 still reads x3 -- the cancel "
+                           "above did NOT zero it (the old bug's exact "
+                           "failure mode)")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # leave -- the x1->x3 ADD is still a real
+                                                              # pending edit (the cancel demo added nothing
+                                                              # further) -> commit prompt
+    s.shot("19_commit_prompt", "U5: leaving with TM01's real x1->x3 edit "
+                                "still pending -> the same 'Save pack "
+                                "changes?' dialog every other commit uses")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # decline -- fixture stays pristine
+    s.shot("20_declined", "U5: declining discards TM01's edit -- gbb_write "
+                           "never ran, fixture pristine for a later run")
+
     return s
 
 
