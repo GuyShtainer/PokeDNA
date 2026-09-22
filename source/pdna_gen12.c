@@ -3725,6 +3725,15 @@ static void __attribute__((noinline)) gb_gen12_norom_msg(uint8_t gen) {
            UI_WARN, l1, PDNA_SIDECAR_GEN1_L1);
 }
 
+/* BACKLOG #212 review D9: the bridge's zero-move refusal runs AFTER the base-stats
+ * gate has already proved a ROM is present (gb_gen12_norom_msg above would be a
+ * false "the ROM is missing" claim there) -- the true reason is that no eligible
+ * move was found anywhere in that ROM's learnset for this species/level. */
+static void __attribute__((noinline)) gb_gen12_nomoves_msg(uint8_t gen) {
+  msg_wait(gen == GB_GEN1 ? PDNA_SIDECAR_NOMOVES_TITLE1 : PDNA_SIDECAR_NOMOVES_TITLE2,
+           UI_WARN, PDNA_SIDECAR_NOMOVES_L1, 0);
+}
+
 /* BACKLOG #150 S150-8 decision 14/15, arm 1: a native cell bridges into the
  * CURRENTLY MOUNTED Game Boy session's OTHER generation, under the time-capsule
  * rules. `dst_box` is the box the cursor is on; gbs_insert() assigns the slot
@@ -3749,20 +3758,24 @@ BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]) {
 
   int tc; uint16_t tc_bad; Gb12Result g12; G3GbStatus g3gb;
   GbEditMon mon; Gen3ToGbLoss loss; Gb12Notes notes;
+  /* BACKLOG #212: bad4/nbad are bdc_convert_gb_core's own per-slot verdict (S150-10's
+   * g3gb_moves_ok, applied to dst_gen's own bound); from4 is the cell's raw move ids,
+   * for the swap-row modal below (mirrors gb_paste_hook's own from4/bad4, decision 8
+   * step 2). */
+  uint16_t from4[4]; uint8_t bad4[4]; int nbad;
   bool crystal = gb_session_is_crystal(&g_ed->s);
-  bdc_convert_gb_core(cell80, dst_gen, crystal, NULL, &tc, &tc_bad, &g12, &g3gb, &mon, &loss, &notes);
+  bdc_convert_gb_core(cell80, dst_gen, crystal, NULL, &tc, &tc_bad, &g12, &g3gb, &mon, &loss,
+                      &notes, from4, bad4, &nbad);
   if (tc == 1) {                                                            /* decision 14 */
     snd_deny();
     char l1[64]; siprintf(l1, PDNA_XFER_TC_SPECIES_FMT, pk_species_name(tc_bad));
     msg_wait(PDNA_XFER_TC_TITLE, UI_WARN, l1, 0);
     return BANK_DOWN_REFUSED;
   }
-  if (tc == 2) {
-    snd_deny();
-    char l1[64]; siprintf(l1, PDNA_XFER_TC_MOVE_FMT, pk_move_name(tc_bad));
-    msg_wait(PDNA_XFER_TC_TITLE, UI_WARN, l1, 0);
-    return BANK_DOWN_REFUSED;
-  }
+  /* BACKLOG #212: `tc == 2` (the move-bound whole-cell refusal) can no longer fire --
+   * bdc_convert_gb_core now passes NULL moves into xr_time_capsule_block (species-floor
+   * only) and clips the move bound itself via bad4/nbad instead (handled below, after
+   * the loss screen, the same place gb_paste_hook applies its own fill). */
   if (g12 != GB12_OK) {                                                     /* 16(c)/(d) */
     snd_deny();
     msg_wait(PDNA_SIDECAR_XFER_TITLE, UI_WARN, gen12_reason_text(g12), 0);
@@ -3781,13 +3794,14 @@ BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]) {
     }
     GbGen1Base g1base;
     Gb1BaseStatus bst = dex ? gb_gen1_base_from_rom(dex, &g1base) : GB1BASE_BAD_ROM;
-    if (bst == GB1BASE_NO_ROM) { snd_deny(); gb_gen12_norom_msg(GB_GEN1); return BANK_DOWN_REFUSED; }
+    if (bst == GB1BASE_NO_ROM) { snd_deny(); boxoam_suspend(); gb_gen12_norom_msg(GB_GEN1); boxoam_resume(); return BANK_DOWN_REFUSED; }
     if (bst != GB1BASE_OK) {
       snd_deny();
       msg_wait(PDNA_SIDECAR_XFER_TITLE, UI_WARN, PDNA_SIDECAR_GEN1_BADROM_L1, 0);
       return BANK_DOWN_REFUSED;
     }
-    bdc_convert_gb_core(cell80, dst_gen, crystal, &g1base, &tc, &tc_bad, &g12, &g3gb, &mon, &loss, &notes);
+    bdc_convert_gb_core(cell80, dst_gen, crystal, &g1base, &tc, &tc_bad, &g12, &g3gb, &mon, &loss,
+                        &notes, from4, bad4, &nbad);
   }
   if (g3gb != G3GB_OK) {
     snd_deny();
@@ -3804,14 +3818,58 @@ BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]) {
   loss.ot_lossy   |= notes.otname_lossy;
   loss.nick_lossy |= notes.nick_lossy;
   /* decision 10: COPY prints the NOBACK rows instead of KEPT/STAYS -- there is no
-   * ledger entry to keep. */
-  if (!gb_paste_loss_screen(&loss, copy ? LOSS_FOOT_COPY : LOSS_FOOT_BRIDGE)) return BANK_DOWN_REFUSED;  /* decision 15: the shipped screen */
+   * ledger entry to keep. BACKLOG #212 decision 6 (mirrored from S150-10): "say so"
+   * lives on the swap-row modal below, not a new row here -- no change to this call. */
+  boxoam_suspend();
+  if (!gb_paste_loss_screen(&loss, copy ? LOSS_FOOT_COPY : LOSS_FOOT_BRIDGE)) { boxoam_resume(); return BANK_DOWN_REFUSED; }  /* decision 15: the shipped screen */
+  boxoam_resume();
 
   uint8_t fix_from = 0, fix_to = 0;
-  if (gen3_to_gb_evo_needs_fix(&mon, &fix_from, &fix_to)) {                  /* R1 block, verbatim */
-    GbXferChoice ch = gb_paste_legal_screen(gb_get_species_dex(&mon), fix_from, fix_to);
+  bool fix = gen3_to_gb_evo_needs_fix(&mon, &fix_from, &fix_to);            /* R1 block, verbatim */
+
+  /* BACKLOG #212: the SAME per-slot fill BACKLOG #150 S150-10 gives PASTE (decision 8
+   * step 7) -- fetched at the level that will be WRITTEN (`to` when the evolution fix
+   * above will also apply, else the mon's current level), off dst_gen's own ROM
+   * (gb_paste_fill_moves' CREATE resolution, decision 5). `mon` is mutated in place
+   * BEFORE the modal, same reasoning as gb_paste_hook: once a slot is bad, MAKE LEGAL
+   * is the only accepting choice, and CANCEL discards `mon` entirely (nothing is
+   * written on any `return BANK_DOWN_REFUSED` below -- the box write further down is
+   * the only writer). */
+  uint8_t fill4[4] = { 0, 0, 0, 0 };
+  int nfill = 0;
+  if (nbad > 0) {
+    uint8_t wlvl = fix ? fix_to : gb_get_level(&mon);
+    /* BACKLOG #210/#212: gb_paste_fill_moves() below is the SAME cold, uncached,
+     * ~185,000-read ROM scan CREATE's own s_busy_reading() masks -- see #210's fix
+     * on gb_paste_hook's own call to it, applied here too since the bridge now shares
+     * the same function. */
+    boxoam_suspend();
+    s_busy_reading();
+    nfill = gb_paste_fill_moves(gb_get_species_dex(&mon), wlvl, &mon, bad4, fill4);
+    log_line("gen12: bridge moves: gen %u, %d bad slot(s), %d filled",
+             (unsigned)dst_gen, nbad, nfill);
+    /* Decision 8.7's real predicate (review D1): "the record would be WRITTEN with
+     * no moves at all". `nbad == 4` misses the 1-3-bad case where every non-empty
+     * slot was out of range and the fill ran dry -- that lands a Struggle-forever
+     * record just as illegally. */
+    int nleft = 0;
+    for (int i = 0; i < 4; i++) if (gb_get_move(&mon, i)) nleft++;
+    if (nleft == 0) {
+      snd_deny();
+      gb_gen12_nomoves_msg(dst_gen);   /* D9: the base-stats gate already proved a ROM */
+      boxoam_resume();
+      return BANK_DOWN_REFUSED;
+    }
+    boxoam_resume();
+  }
+
+  if (fix || nbad > 0) {
+    boxoam_suspend();
+    GbXferChoice ch = gb_paste_legal_screen_ex(gb_get_species_dex(&mon), fix_from,
+                                                fix ? fix_to : 0, from4, bad4, fill4, nbad);
+    boxoam_resume();
     if (ch == GB_XFER_CANCEL) return BANK_DOWN_REFUSED;
-    if (ch == GB_XFER_MAKE_LEGAL) gb_set_level(&mon, fix_to);
+    if (ch == GB_XFER_MAKE_LEGAL && fix) gb_set_level(&mon, fix_to);
   }
 
   GbsStatus wst = gbs_box_writable(&g_ed->s, dst_box);
@@ -4219,6 +4277,16 @@ static bool gb_paste_hook(uint8_t* rec80) {
   int nfill = 0;
   if (nbad > 0) {
     uint8_t wlvl = fix ? fix_to : gb_get_level(&mon);
+    /* BACKLOG #210: gb_paste_fill_moves() below calls gb_create_locate_rom() (decision
+     * 5's own choice, deliberately bypassing romgs_ready -- see that function's MEDIUM-1
+     * comment: CREATE's resolution is ALWAYS a cold, ~185,000-read full-ROM scan, never
+     * cached). CREATE masks that exact scan with s_busy_reading() (see gb_create_hook's
+     * own MEDIUM-2 comment) before it ever calls gb_create_locate_rom; the fill's call to
+     * the SAME function had no such cover, so a cold session's loss screen -> modal
+     * transition looked frozen for the whole scan. The very next screen (the modal below,
+     * or gb_gen12_norom_msg's msg_wait on 8.7's refusal) does its own ui_clear(), so no
+     * explicit "restore" call is needed here -- it simply draws over this busy panel. */
+    s_busy_reading();
     nfill = gb_paste_fill_moves(gb_get_species_dex(&mon), wlvl, &mon, bad4, fill4);
     /* "packed": did any KEPT (non-bad) slot's move end up at a different index than
      * it started at? g3gb_moves_fill's own contract writes a fill AT its bad slot's
@@ -4231,11 +4299,14 @@ static bool gb_paste_hook(uint8_t* rec80) {
       if (!bad4[i] && from4[i] != 0 && gb_get_move(&mon, i) != (uint8_t)from4[i]) packed = true;
     log_line("gen12: paste moves: gen %u, %d bad slot(s), %d filled, packed=%d",
              (unsigned)g_ed->s.gen, nbad, nfill, (int)packed);
-    /* Decision 8.7 -- the ONE exception to Guy's "never block": all four slots were
-     * bad and none got a fill, so `mon` would arrive with literally zero moves (an
-     * illegal Game Boy record -- it would Struggle forever). Refused here, nothing
-     * written; the modal below is never shown. */
-    if (nbad == 4 && nfill == 0) {
+    /* Decision 8.7's real predicate (review D1): "the record would be WRITTEN with
+     * no moves at all". `nbad == 4` misses the 1-3-bad case where every non-empty
+     * slot was out of range and the fill ran dry -- that lands a Struggle-forever
+     * record just as illegally. Refused here, nothing written; the modal below is
+     * never shown. */
+    int nleft = 0;
+    for (int i = 0; i < 4; i++) if (gb_get_move(&mon, i)) nleft++;
+    if (nleft == 0) {
       snd_deny();
       gb_gen12_norom_msg(g_ed->s.gen);
       return false;

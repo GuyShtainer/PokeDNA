@@ -55,8 +55,20 @@ void bank_plant_cell0_serial(uint8_t out80[80], uint32_t serial);
  * a PID search -- per cell). Box-wide: 27 FULL (2 + 25), 2 RELAXED, 1 NONE across all
  * 30 native slots -- still the worst case §11.9 prices (every render at least attempts
  * gen12_can_convert, and 27/30 pay the full PID search). No new static: built in the
- * caller's own 80-byte scratch. */
+ * caller's own 80-byte scratch.
+ *
+ * BACKLOG #212 review D3(b): slot 7 (part of the generic 25-cell sweep above) is then
+ * overwritten with bank_plant_gen2_badmoves_cell()'s own two-bad-move Bulbasaur -- the
+ * --s150-8-bridge shot chain's move-swap-modal demonstration. */
 void bank_plant_box_full(uint8_t* recs);
+
+/* BACKLOG #212 review D3(b): a Gen-2 BULBASAUR (dex 1, clears the Gen-1 species
+ * floor) with TWO moves (200, 230) out of range for Gen 1 (> gb_max_move(GB_GEN1)
+ * =165) but legal on its own generation (<= gb_max_move(GB_GEN2)=251) -- bridged
+ * to a Gen-1 session, this reaches gb_bank_down_bridge's per-slot move clip and
+ * fill instead of the species-floor refusal box0's CHIKORITA plant always hits.
+ * Planted by bank_plant_box_full() at box 1 slot 7. */
+void bank_plant_gen2_badmoves_cell(uint8_t out80[80]);
 
 /* BACKLOG #150 S150-9 decision 12: the planted-ledger read shim (#179(a), the READ
  * half only -- the write side stays S150-13's). Serves up to FOUR in-RAM ".pds"

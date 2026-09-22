@@ -1188,12 +1188,22 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XFER_TC_TITLE        "NO GEN 1 FORM"
 /* BACKLOG #150 S150-8: shortened from the brief's original "%s did not exist in
  * Gen 1." / "%s cannot be known in Gen 1." -- host_textfit_test.c found the real
- * worst-case move name in xr_time_capsule_block's reachable range (166..251, e.g.
- * "EXTREMESPEED") overflows the 184 px budget with the longer wording (200 px
- * measured); the species side is tight but passes. Shortened uniformly rather than
- * leaving the species/move rows differently worded. */
+ * worst-case move name in what was then xr_time_capsule_block's own move-bound
+ * range (166..251, e.g. "EXTREMESPEED") overflows the 184 px budget with the
+ * longer wording (200 px measured); the species side is tight but passes.
+ * Shortened uniformly rather than leaving the species/move rows differently
+ * worded.
+ *
+ * BACKLOG #212 review D6: xr_time_capsule_block's own move-bound refusal
+ * (`tc == 2`) can no longer fire -- bdc_convert_gb_core (source/bank_down_convert.c)
+ * now passes NULL moves into it (species-floor only) and clips the move bound
+ * itself, per slot, via g3gb_moves_ok()/bad4/nbad instead (pdna_gen12.c's
+ * gb_bank_down_bridge, right after the loss screen). PDNA_XFER_TC_MOVE_FMT has
+ * had no production reader since that change -- tests/host_textfit_test.c's own
+ * worst-case-width pin (kept, since the format string itself is unchanged and
+ * still ships in the binary) is its only remaining caller. */
 #define PDNA_XFER_TC_SPECIES_FMT  "%s: no Gen 1 form."
-#define PDNA_XFER_TC_MOVE_FMT     "%s: not in Gen 1."
+#define PDNA_XFER_TC_MOVE_FMT     "%s: not in Gen 1."   /* no production reader since #212 (D6) */
 
 #define PDNA_XFER_FLUSHFAIL_TITLE "BANK NOT FULLY UPDATED"
 #define PDNA_XFER_FLUSHFAIL_L1    "%d Pokemon are still in the"
@@ -1454,6 +1464,14 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * -- "beside the .sav to transfer." -- never named an extension, so it needs no
  * Gen-2 twin). */
 #define PDNA_SIDECAR_GEN2_TITLE      "NO GEN-2 ROM"
+/* BACKLOG #212 review D9: the bridge's OWN zero-move refusal (gb_bank_down_bridge)
+ * runs strictly after the base-stats gate already proved a <base>.gb/.gbc ROM sits
+ * beside the save (GB1BASE_NO_ROM is refused earlier, at the base-stats lookup) --
+ * "NO GEN-1 ROM" would be a false claim there. This pair says the true reason: the
+ * fill found no eligible move in the destination generation's learnset at all. */
+#define PDNA_SIDECAR_NOMOVES_TITLE1  "NO MOVES FOR GEN 1"
+#define PDNA_SIDECAR_NOMOVES_TITLE2  "NO MOVES FOR GEN 2"
+#define PDNA_SIDECAR_NOMOVES_L1      "Learnset not found."
 /* Full-screen list (gb_pick_box's own geometry: title y=3, rule y=13), not a scrolling
  * picker -- rows are drawn only for flags actually set, so the common case is much
  * shorter than the worst case the host test pins: 10 conditional Gen3ToGbLoss lines +

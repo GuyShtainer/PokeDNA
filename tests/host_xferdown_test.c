@@ -11,7 +11,7 @@
  *      source/gen3_to_gb.c source/gb_sidecar.c source/gen3_save.c source/gen3_mon.c \
  *      source/gen3_box.c source/gen3_edit.c source/gen3_daycare.c source/data_tables.c \
  *      source/evolutions.c source/item_map_g2g3.c source/gb_item_names.c \
- *      source/bank_down_convert.c \
+ *      source/bank_down_convert.c source/gb_moves_legal.c \
  *      -o /tmp/hxdown && /tmp/hxdown
  *
  * source/evolutions.c is GENERATED and gitignored -- sections that need a real
@@ -50,6 +50,7 @@
 #include "gen1_save.h"
 #include "gen2_save.h"
 #include "bank_down_convert.h"
+#include "gb_moves_legal.h"   /* F2b: g3gb_moves_fill -- the caller-level fill review D1 pins */
 #include "gen3_edit.h"   /* F3 (review): gen3_edit_load -- an INDEPENDENT reader of the
                           * converted record's own raw nickname bytes, for the
                           * nick_written-override assertion below */
@@ -421,12 +422,14 @@ static void test_bridge_one_case(uint16_t species_dex, uint8_t src_gen, uint8_t 
 
   int tc; uint16_t tc_bad; Gb12Result g12; G3GbStatus g3gb;
   GbEditMon out; Gen3ToGbLoss loss; Gb12Notes notes;
+  uint16_t from4[4]; uint8_t bad4[4]; int nbad;   /* BACKLOG #212 */
   /* the Gen-1 base table gen3_to_gb() needs for a Gen-1 destination -- the same
    * synthetic table build_gen1_cell() uses, exercising the retry path a real
    * gb_gen1_base_from_rom() lookup would feed on the GBA (decision 15). */
   GbGen1Base base = { .base = { 35, 55, 40, 90, 50 }, .type1 = 0x18, .type2 = 0x18 };
   const GbGen1Base* g1base = (dst_gen == GB_GEN1) ? &base : NULL;
-  bdc_convert_gb_core(cell, dst_gen, false, g1base, &tc, &tc_bad, &g12, &g3gb, &out, &loss, &notes);
+  bdc_convert_gb_core(cell, dst_gen, false, g1base, &tc, &tc_bad, &g12, &g3gb, &out, &loss,
+                      &notes, from4, bad4, &nbad);
   CHECK(tc == 0, "%s: time capsule passes (tc=%d bad=%u)", label, tc, tc_bad);
   CHECK(g12 == GB12_OK, "%s: intermediate conversion ok (got %s)", label, gen12_reason_text(g12));
   if (tc != 0 || g12 != GB12_OK) return;
@@ -520,7 +523,9 @@ static void test_bridge_real_corpus_2_to_1(void) {
 
     int tc; uint16_t tc_bad; Gb12Result g12; G3GbStatus g3gb;
     GbEditMon out; Gen3ToGbLoss loss; Gb12Notes notes;
-    bdc_convert_gb_core(cell, GB_GEN1, false, &base, &tc, &tc_bad, &g12, &g3gb, &out, &loss, &notes);
+    uint16_t from4[4]; uint8_t bad4[4]; int nbad;   /* BACKLOG #212 */
+    bdc_convert_gb_core(cell, GB_GEN1, false, &base, &tc, &tc_bad, &g12, &g3gb, &out, &loss,
+                        &notes, from4, bad4, &nbad);
     CHECK(tc == 0, "real 2->1 slot %d: time capsule passes", slot);
     CHECK(g12 == GB12_OK, "real 2->1 slot %d: intermediate conversion ok (%s)", slot, gen12_reason_text(g12));
     CHECK(g3gb == G3GB_OK, "real 2->1 slot %d: gen3_to_gb succeeds (%s)", slot, g3gb_status_text(g3gb));
@@ -639,7 +644,9 @@ static void test_name_glyph_loss_synthetic(void) {
 
     int tc; uint16_t tc_bad; Gb12Result g12; G3GbStatus g3gb;
     GbEditMon out; Gen3ToGbLoss loss; Gb12Notes notes;
-    bdc_convert_gb_core(cell, GB_GEN1, false, &base, &tc, &tc_bad, &g12, &g3gb, &out, &loss, &notes);
+    uint16_t from4[4]; uint8_t bad4[4]; int nbad;   /* BACKLOG #212 */
+    bdc_convert_gb_core(cell, GB_GEN1, false, &base, &tc, &tc_bad, &g12, &g3gb, &out, &loss,
+                        &notes, from4, bad4, &nbad);
     CHECK(tc == 0 && g12 == GB12_OK && g3gb == G3GB_OK,
           "ascii fixture: 2->1 bridge converts (tc=%d g12=%s g3gb=%s)",
           tc, gen12_reason_text(g12), g3gb_status_text(g3gb));
@@ -676,7 +683,9 @@ static void test_name_glyph_loss_synthetic(void) {
 
     int tc; uint16_t tc_bad; Gb12Result g12; G3GbStatus g3gb;
     GbEditMon out; Gen3ToGbLoss loss; Gb12Notes notes;
-    bdc_convert_gb_core(cell, GB_GEN1, false, &base, &tc, &tc_bad, &g12, &g3gb, &out, &loss, &notes);
+    uint16_t from4[4]; uint8_t bad4[4]; int nbad;   /* BACKLOG #212 */
+    bdc_convert_gb_core(cell, GB_GEN1, false, &base, &tc, &tc_bad, &g12, &g3gb, &out, &loss,
+                        &notes, from4, bad4, &nbad);
     CHECK(tc == 0 && g12 == GB12_OK && g3gb == G3GB_OK,
           "nick fixture: 2->1 bridge converts (tc=%d g12=%s g3gb=%s)",
           tc, gen12_reason_text(g12), g3gb_status_text(g3gb));
@@ -723,7 +732,9 @@ static void test_name_glyph_loss_synthetic(void) {
 
     int tc; uint16_t tc_bad; Gb12Result g12; G3GbStatus g3gb;
     GbEditMon out; Gen3ToGbLoss loss; Gb12Notes notes;
-    bdc_convert_gb_core(cell, GB_GEN1, false, &base, &tc, &tc_bad, &g12, &g3gb, &out, &loss, &notes);
+    uint16_t from4[4]; uint8_t bad4[4]; int nbad;   /* BACKLOG #212 */
+    bdc_convert_gb_core(cell, GB_GEN1, false, &base, &tc, &tc_bad, &g12, &g3gb, &out, &loss,
+                        &notes, from4, bad4, &nbad);
     CHECK(tc == 0 && g12 == GB12_OK && g3gb == G3GB_OK,
           "gender fixture: 2->1 bridge converts (tc=%d g12=%s g3gb=%s)",
           tc, gen12_reason_text(g12), g3gb_status_text(g3gb));
@@ -735,27 +746,215 @@ static void test_name_glyph_loss_synthetic(void) {
 }
 
 /* ============================================================================ */
-/* F. the time-capsule refusal -- no ledger entry is ever built.                 */
+/* F. the time-capsule refusal -- species still refuses whole; moves no longer   */
+/* do (BACKLOG #212) -- no ledger entry is ever built either way.                */
 /* ============================================================================ */
 static void test_time_capsule_refusal(void) {
   uint8_t cell[80];
   build_gen2_cell(cell, 152 /* Chikorita, > Gen-1's 151 */, 0, 33, 900);
   int tc; uint16_t tc_bad; Gb12Result g12; G3GbStatus g3gb;
   GbEditMon out; Gen3ToGbLoss loss; Gb12Notes notes;
-  bdc_convert_gb_core(cell, GB_GEN1, false, NULL, &tc, &tc_bad, &g12, &g3gb, &out, &loss, &notes);
+  uint16_t from4[4]; uint8_t bad4[4]; int nbad;
+  bdc_convert_gb_core(cell, GB_GEN1, false, NULL, &tc, &tc_bad, &g12, &g3gb, &out, &loss,
+                      &notes, from4, bad4, &nbad);
   /* bdc_convert_gb_core returns *tc != 0 (checked FIRST, before gen12_convert or
-   * gen3_to_gb ever run -- both g12/g3gb are left at their initial "not attempted"
-   * sentinel) -- the FIRST line that could write anything is the caller's ledger
-   * write in bank_down_convert.c's GBA-facing arm, never reached here at all. */
+   * gen3_to_gb_fixed ever run -- both g12/g3gb are left at their initial "not
+   * attempted" sentinel) -- the FIRST line that could write anything is the caller's
+   * ledger write in bank_down_convert.c's GBA-facing arm, never reached here at all.
+   * The species-floor check (BACKLOG #150 S150-8 decision 14) is UNCHANGED by
+   * BACKLOG #212 -- a species Gen 1 cannot represent at all has no per-slot fix. */
   CHECK(tc == 1, "dex 152 refuses before conversion (tc=%d)", tc);
   CHECK(tc_bad == 152, "tc_bad names the species");
   CHECK(g12 == GB12_ERR_EMPTY, "g12 stays at its initial sentinel (never attempted)");
 
+  /* BACKLOG #212: a lone bad move no longer refuses via `tc` at all -- g3gb_moves_ok()
+   * flags it (bad4[0]=1, nbad=1) and xr_time_capsule_block is called with moves4==NULL
+   * (species-floor only), so `tc` stays 0 and conversion proceeds. With g1base == NULL
+   * (this test's own precondition, matching the ORIGINAL "before conversion" case
+   * above), the Gen-1 base-stats gate still fires (screen()'s own check ORDER: move
+   * screening happens BEFORE the g1base check, so a caller-flagged bad move never
+   * masks the separate base-stats requirement) -- G3GB_ERR_NEEDS_BASE, exactly the
+   * same "needs a located ROM" outcome gb_bank_down_bridge's own retry handles. */
   uint8_t cell2[80];
   build_gen2_cell(cell2, 25, 0, 250 /* > gb_max_move(GB_GEN1)=165 */, 901);
-  bdc_convert_gb_core(cell2, GB_GEN1, false, NULL, &tc, &tc_bad, &g12, &g3gb, &out, &loss, &notes);
-  CHECK(tc == 2, "move 250 refuses before conversion (tc=%d)", tc);
-  CHECK(tc_bad == 250, "tc_bad names the move");
+  bdc_convert_gb_core(cell2, GB_GEN1, false, NULL, &tc, &tc_bad, &g12, &g3gb, &out, &loss,
+                      &notes, from4, bad4, &nbad);
+  CHECK(tc == 0, "move 250 no longer refuses via tc (tc=%d)", tc);
+  CHECK(g12 == GB12_OK, "move 250: intermediate conversion still ok (%s)", gen12_reason_text(g12));
+  CHECK(nbad == 1 && bad4[0] == 1 && bad4[1] == 0 && bad4[2] == 0 && bad4[3] == 0,
+        "move 250: bad4 flags exactly slot 0 (nbad=%d bad4=%u,%u,%u,%u)",
+        nbad, bad4[0], bad4[1], bad4[2], bad4[3]);
+  CHECK(from4[0] == 250, "move 250: from4[0] carries the raw source move id (got %u)", from4[0]);
+  CHECK(g3gb == G3GB_ERR_NEEDS_BASE,
+        "move 250, no g1base: the base-stats gate still fires (got %s)", g3gb_status_text(g3gb));
+
+  /* Supplying a base (the retry gb_bank_down_bridge itself performs) now SUCCEEDS --
+   * the whole point of BACKLOG #212: `out`'s slot 0 is EMPTY (this pure core only
+   * clips, per its own header comment; the caller fills it), the other three slots
+   * (all 0 in build_gen2_cell's fixture -- see its own single gb_set_move(&m, 0, ...)
+   * call) stay untouched. */
+  GbGen1Base base = { .base = { 35, 55, 40, 90, 50 }, .type1 = 0x18, .type2 = 0x18 };
+  bdc_convert_gb_core(cell2, GB_GEN1, false, &base, &tc, &tc_bad, &g12, &g3gb, &out, &loss,
+                      &notes, from4, bad4, &nbad);
+  CHECK(tc == 0 && g12 == GB12_OK, "move 250 with a base: still converts to the intermediate");
+  CHECK(g3gb == G3GB_OK, "move 250 with a base: gen3_to_gb_fixed accepts (got %s)",
+        g3gb_status_text(g3gb));
+  CHECK(gb_get_move(&out, 0) == 0,
+        "move 250 with a base: bdc_convert_gb_core's own `out` has slot 0 CLIPPED "
+        "(empty) rather than the whole record refused -- G-H8, this pure core does "
+        "not fill (got %u)", gb_get_move(&out, 0));
+}
+
+/* ============================================================================ */
+/* F2. BACKLOG #212 (review D4: ALL boxes, both corpus saves -- was box 0 of      */
+/* Crystal.sav only): every box's record with a species Gen 1 can represent,     */
+/* bridged with a real base -- "one bucket" proof: every record either lands     */
+/* with >= 1 move (empty or filled -- this pure core only clips, so a bad slot   */
+/* is 0 here) or the base-stats/species/glitch/egg refusal that predates this    */
+/* fix; G3GB_ERR_MOVE is NEVER reachable through this call site again (the whole */
+/* point of the fix -- confirmed over real data, not just the two synthetic      */
+/* fixtures above). g2_list_offset()'s own `box` argument (looped 0..           */
+/* G2_NUM_BOXES-1 here) is the box actually being read; its separate            */
+/* `current_box` argument (hd.current_box, constant across the loop) only tells  */
+/* it which ONE of those boxes is stored at the save's "current box" SRAM        */
+/* location instead of the uniform per-box table -- it is not itself a box       */
+/* index, so the old single-box call's "box-0" framing named the wrong one of    */
+/* its two int arguments. Also review D1/D4: every bad slot filled with NO ROM   */
+/* (an empty learn table, same as --op paste80 with no --rom) must never leave a */
+/* record with zero moves total -- if the caller-level `nleft == 0` predicate    */
+/* would ever fire on real corpus data, that is this fix's own bug reappearing.  */
+/* ============================================================================ */
+static void test_bridge_corpus_no_move_refusal(void) {
+  static const char* k_files[] = { "Crystal.sav", "Gold.sav" };
+  GbGen1Base base = { .base = { 35, 55, 40, 90, 50 }, .type1 = 0x18, .type2 = 0x18 };
+  int checked = 0, with_bad = 0, zero_move = 0, files_loaded = 0;
+
+  for (size_t fi = 0; fi < sizeof k_files / sizeof k_files[0]; fi++) {
+    size_t len;
+    char path[512];
+    snprintf(path, sizeof path, "%s/%s", GB_ROMS, k_files[fi]);
+    if (!load_file(path, g_gen2_img, sizeof g_gen2_img, &len)) { printf("  SKIP F2 (no %s)\n", path); continue; }
+    G2Save sv;
+    if (!g2_detect(g_gen2_img, (uint32_t)len, &sv) || !sv.supported) { printf("  SKIP F2 (%s detect failed)\n", k_files[fi]); continue; }
+    G2Header hd;
+    if (!g2_read_header(g_gen2_img, &sv, &hd)) { printf("  SKIP F2 (%s header)\n", k_files[fi]); continue; }
+    files_loaded++;
+
+    for (int box = 0; box < G2_NUM_BOXES; box++) {
+      uint32_t off = g2_list_offset(&sv, box, hd.current_box);
+      if (off == 0) continue;
+      int n = gb_list_count(GB_GEN2, g_gen2_img + off, 0);
+      if (n <= 0) continue;
+
+      for (int slot = 0; slot < n; slot++) {
+        GbEditMon mon;
+        if (!gb_load(&mon, GB_GEN2, g_gen2_img + off, 0, slot)) continue;
+        if (mon.list_species == G2_LIST_EGG) continue;
+        uint16_t dex = gb_get_species_dex(&mon);
+        if (dex < 1 || dex > gb_max_species(GB_GEN1)) continue;   /* the species-floor bucket -- tested separately above */
+
+        uint8_t cell[80];
+        uint32_t serial = 3000u + (uint32_t)fi * 10000u + (uint32_t)box * 100u + (uint32_t)slot;
+        if (bc_pack(&mon, 0, BC_ORIGIN_CRYSTAL, 0, serial, cell) != 0) continue;
+
+        int tc; uint16_t tc_bad; Gb12Result g12; G3GbStatus g3gb;
+        GbEditMon out; Gen3ToGbLoss loss; Gb12Notes notes;
+        uint16_t from4[4]; uint8_t bad4[4]; int nbad;
+        bdc_convert_gb_core(cell, GB_GEN1, false, &base, &tc, &tc_bad, &g12, &g3gb, &out, &loss,
+                            &notes, from4, bad4, &nbad);
+        checked++;
+        if (tc != 0 || g12 != GB12_OK) continue;   /* a different bucket (species/glitch), unrelated to this fix */
+
+        CHECK(g3gb != G3GB_ERR_MOVE,
+              "%s box %d slot %d: G3GB_ERR_MOVE must be UNREACHABLE through this call "
+              "site (BACKLOG #212's whole point) -- got it anyway", k_files[fi], box, slot);
+        if (g3gb != G3GB_OK) continue;   /* GLITCH/EGG/ARG -- not this fix's edge either */
+
+        if (nbad > 0) {
+          with_bad++;
+          for (int i = 0; i < 4; i++) {
+            if (bad4[i]) {
+              CHECK(gb_get_move(&out, i) == 0,
+                    "%s box %d slot %d: bad4[%d] flagged but out's move[%d] is %u, not "
+                    "clipped to empty", k_files[fi], box, slot, i, i, gb_get_move(&out, i));
+            } else if (from4[i] != 0) {
+              CHECK(gb_get_move(&out, i) == (uint8_t)from4[i],
+                    "%s box %d slot %d: a KEPT slot's move changed under conversion "
+                    "(from4[%d]=%u out=%u)", k_files[fi], box, slot, i, from4[i], gb_get_move(&out, i));
+            }
+          }
+
+          /* review D1/D4: no ROM (an empty learn table) -- the caller-level fill
+           * (mirroring gb_bank_down_bridge/gb_paste_hook/do_paste80) must never
+           * silently leave a real corpus record with zero moves total. */
+          uint8_t learn4[4] = { 0, 0, 0, 0 };
+          uint8_t fill4[4] = { 0, 0, 0, 0 };
+          (void)g3gb_moves_fill(&out, bad4, learn4, fill4);
+          int nleft = 0;
+          for (int i = 0; i < 4; i++) if (gb_get_move(&out, i)) nleft++;
+          if (nleft == 0) zero_move++;
+        }
+      }
+    }
+  }
+  CHECK(files_loaded > 0, "F2: at least one of Crystal.sav/Gold.sav was found under %s", GB_ROMS);
+  CHECK(checked > 0, "F2: at least one real corpus box record was checked (got %d)", checked);
+  CHECK(zero_move == 0, "F2: %d real corpus record(s) would land with zero moves under "
+        "the no-ROM fill -- the caller-level refusal exists precisely to catch this "
+        "(got %d, want 0)", zero_move, zero_move);
+  printf("  F2: %d record(s) checked across %d file(s) x %d boxes, %d had >= 1 bad slot "
+         "(per-slot clip proven, no whole-record move refusal, %d zero-move)\n",
+         checked, files_loaded, G2_NUM_BOXES, with_bad, zero_move);
+}
+
+/* ============================================================================ */
+/* F2b. review D1 pin: a cell whose only non-empty moves are BOTH out of range for  */
+/* the destination generation (no learn table) -- 2 of 4 slots bad, not 4 of 4. The */
+/* OLD predicate `nbad == 4 && nfill == 0` is FALSE here (nbad == 2) even though the */
+/* record would land with zero moves left -- the exact case review D1 found reachable*/
+/* through --op paste80 in production. Proves the caller-level `nleft == 0` predicate*/
+/* (source/pdna_gen12.c's gb_paste_hook / gb_bank_down_bridge, tests/host_gbsurgery_  */
+/* tool.c's do_paste80) is the one that must fire, not the old nbad==4 shortcut. */
+/* ============================================================================ */
+static void test_caller_zero_move_refusal_two_bad(void) {
+  GbEditMon m; memset(&m, 0, sizeof m);
+  m.gen = GB_GEN2;
+  gb_set_species(&m, 25, NULL);            /* Pikachu -- Gen 1 can represent it */
+  gb_set_level(&m, 20);
+  gb_set_dv(&m, GB_ATK, 12); gb_set_dv(&m, GB_DEF, 12);
+  gb_set_dv(&m, GB_SPE, 12); gb_set_dv(&m, GB_SPC, 12);
+  gb_set_move(&m, 0, 200);                 /* > 165, out of Gen-1 range */
+  gb_set_move(&m, 1, 230);                 /* > 165, out of Gen-1 range */
+  gb_set_otid(&m, 12345);
+  uint8_t cell[80];
+  int rc = bc_pack(&m, 0, 0, 0, 9001u, cell);
+  CHECK(rc == 0, "F2b: bc_pack builds the two-bad-move fixture (rc=%d)", rc);
+
+  GbGen1Base base = { .base = { 35, 55, 40, 90, 50 }, .type1 = 0x18, .type2 = 0x18 };
+  int tc; uint16_t tc_bad; Gb12Result g12; G3GbStatus g3gb;
+  GbEditMon out; Gen3ToGbLoss loss; Gb12Notes notes;
+  uint16_t from4[4]; uint8_t bad4[4]; int nbad;
+  bdc_convert_gb_core(cell, GB_GEN1, false, &base, &tc, &tc_bad, &g12, &g3gb, &out, &loss,
+                      &notes, from4, bad4, &nbad);
+  CHECK(tc == 0 && g12 == GB12_OK, "F2b: converts to the intermediate");
+  CHECK(g3gb == G3GB_OK, "F2b: gen3_to_gb_fixed accepts (got %s)", g3gb_status_text(g3gb));
+  CHECK(nbad == 2, "F2b: exactly 2 of 4 slots flagged bad (got %d)", nbad);
+
+  /* No ROM (the "--rom absent" equivalent) -- the caller-level fill (mirroring
+   * pdna_gen12.c's gb_bank_down_bridge/gb_paste_hook) gets an all-empty learn
+   * table, so nfill stays 0. */
+  uint8_t learn4[4] = { 0, 0, 0, 0 };
+  uint8_t fill4[4] = { 0, 0, 0, 0 };
+  int nfill = g3gb_moves_fill(&out, bad4, learn4, fill4);
+  CHECK(nfill == 0, "F2b: no learn table -> nothing filled (got %d)", nfill);
+
+  int nleft = 0;
+  for (int i = 0; i < 4; i++) if (gb_get_move(&out, i)) nleft++;
+  CHECK(nleft == 0, "F2b: the record would be WRITTEN with zero moves left (got %d) -- "
+        "the caller-level refusal (review D1's `nleft == 0`) must fire here", nleft);
+  CHECK(!(nbad == 4 && nfill == 0), "F2b: demonstrates the review D1 bug -- the OLD "
+        "predicate `nbad == 4 && nfill == 0` is FALSE here (nbad=%d) even though the "
+        "record has zero moves left; only `nleft == 0` catches this case", nbad);
 }
 
 /* ============================================================================ */
@@ -832,6 +1031,8 @@ int main(void) {
   test_bridge_real_corpus_2_to_1(); printf("  (E2) real 2->1 corpus bridge ok\n");
   test_name_glyph_loss_synthetic(); printf("  (E3) BACKLOG #177 name-glyph loss ok\n");
   test_time_capsule_refusal();printf("  (F) time-capsule refusal     ok\n");
+  test_bridge_corpus_no_move_refusal(); printf("  (F2) BACKLOG #212 corpus, no whole-record move refusal ok\n");
+  test_caller_zero_move_refusal_two_bad(); printf("  (F2b) review D1, 2-bad-move zero-move refusal ok\n");
   test_pending_identity_check(); printf("  (G) pending identity check   ok\n");
 
   printf("%d checks, %d failed\n", g_check, g_fail);

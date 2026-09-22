@@ -14,7 +14,7 @@
  *      source/gb_sidecar.c source/gen3_save.c source/gen3_mon.c source/gen3_box.c \
  *      source/gen3_edit.c source/gen3_daycare.c source/data_tables.c \
  *      source/evolutions.c source/item_map_g2g3.c source/gb_item_names.c \
- *      source/gen3_clip.c \
+ *      source/gen3_clip.c source/gb_moves_legal.c \
  *      -o /tmp/hxplant && /tmp/hxplant
  *
  * Not a second `cc` line inside host_xferview_test.c: run_host_tests.py extracts
