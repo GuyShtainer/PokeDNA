@@ -186,17 +186,20 @@ def nav_to_gb_import(s: gb_shots.Session) -> None:
 # savings this backlog item was for.
 GB_ART_COLD_SETTLE = 22500
 
-# BACKLOG #196: a Gen-1-served dex PAGE PAINT is 21 real per-cell ROM decode+downscale
-# fetches through pdna_origin_art_portrait_by_dex() -- before this backlog Red's dex
-# grid drew instant name-chip text (no ROM I/O at all), so BIG_SETTLE (40 frames) was
-# always enough; it is NOT enough now. Measured (tools/dgb_shots.py probe, 2026-09-22,
-# after the whole-ROM cold scan was already paid via GB_ART_COLD_SETTLE earlier in the
-# SAME navigation): frame-to-frame diff on the grid area is still 3,814 nonzero px at
-# +60 frames after the L-press and 0 at +90; 180 is that measured stabilization point
-# (~150 frames) plus ~20% margin, not a guess. Crystal's own icon-rung page (16x16
-# source, much cheaper per cell) stays on BIG_SETTLE, unmodified, proven fine since
-# BACKLOG #124 -- only the Gen-1 (real ROM front-pic) branch below uses this.
-GB196_G1_PAGE_SETTLE = 180
+# BACKLOG #196 (fix pass, 2026-09-22): a GB-served dex PAGE PAINT is 21 real per-cell
+# ROM fetches (pdna_origin_art_portrait_by_dex() for Gen 1, pdna_origin_art_icon() for
+# Gen 2) -- before this backlog Red's dex grid drew instant name-chip text (no ROM I/O
+# at all), so BIG_SETTLE (40 frames) was always enough for Red; it is NOT enough now.
+# Measured (frame-diff probe, after the whole-ROM cold scan was already paid via
+# GB_ART_COLD_SETTLE earlier in the SAME navigation): Red's grid area is still 3,814
+# nonzero px at +60 frames after the L-press and 0 at +90; 180 is that measured
+# stabilization point (~150 frames) plus ~20% margin, not a guess. Crystal's OWN page
+# was already stable well inside BIG_SETTLE when probed the same way -- applied here
+# too anyway (a fix-pass review finding: keeping BOTH games on the SAME settle,
+# gated only on "a ROM is actually present" (`not fallback`), is simpler and more
+# robust than a per-generation special case that assumes Gen 2 will always stay
+# cheap -- costs a little extra emulated time on Crystal, changes nothing it shows).
+GB196_GB_PAGE_SETTLE = 180
 
 # BACKLOG #118 (orchestrator ruling 2026-09-12, after an h118 STOP on the brief's
 # original oracle.py-based design -- oracle.py's compose() reads Game Boy PPU
@@ -3105,13 +3108,13 @@ def run_b124_dexicons(core_mod, image_mod, rom: Path, out_dir: Path, which: str,
 
     # ARTLESS DEFAULT IS LIST (mon_icon_for(1) is NULL in this shot vehicle) --
     # L once -> DV_GRID, the view dex_cell_grid()'s override actually paints.
-    # BACKLOG #196: a Gen-1-served page (which=="red", ROM present) now does 21 REAL
-    # per-cell ROM fetches on this one repaint -- GB196_G1_PAGE_SETTLE, not
+    # BACKLOG #196: a GB-served page (a ROM is present, `not fallback`) does 21 REAL
+    # per-cell ROM fetches on this one repaint -- GB196_GB_PAGE_SETTLE, not
     # BIG_SETTLE, or "02_dex_grid" (and bobcheck's own frame A, which reuses this
-    # exact session state with no further settle of its own) is captured mid-paint,
-    # showing only however many of the 3 rows had finished decoding.
-    settle_g1 = GB196_G1_PAGE_SETTLE if (which == "red" and not fallback) else gb_shots.BIG_SETTLE
-    s.tap("L", settle=settle_g1)
+    # exact session state with no further settle of its own) can be captured
+    # mid-paint. Applied to BOTH games (see the constant's own comment for why).
+    settle = GB196_GB_PAGE_SETTLE if not fallback else gb_shots.BIG_SETTLE
+    s.tap("L", settle=settle)
     s.shot("02_dex_grid", "#124/#196: DV_GRID page 1 -- " +
            ("GB ROM icons via gbdex_cell_art() for every seen/caught species (this "
             "backlog's own render)" if (which == "crystal" and not fallback) else
