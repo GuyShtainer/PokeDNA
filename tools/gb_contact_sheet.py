@@ -324,6 +324,16 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
      ("S150-7", "S150-7 (a)", "S150-7 (b)", "S150-7 (b), post-59dd45c", "S150-7 (c)",
       "S150-7 (c) SS11.20 item 10(c)", "S150-7 (c) D9", "S150-7 (c)+(D-Q2/D-Q3)+F6",
       "S150-7 (d)", "S150-8", "S150-8 bridge")),
+    # BACKLOG #150 S150-15 (this lane): the GB ORIGINAL row -- a converted Gen-1/2
+    # mon's Gen-3 menu opens its Game Boy original read-only, with the true origin
+    # game and the transfer date (source/xfer_view.*, source/pdna_gen12.c's
+    # gb_original_summary_open, the PDNA_DELTA-only source/xfer_plant.* seam). Shots
+    # come from tools/dgb_shots.py's run_s150_15_view_original() (--s150-15), captions
+    # all start "S150-15:". Appended after "gb-bank-down-edge" per this list's own
+    # append-only rule.
+    ("gb-original-s150-15", "BACKLOG #150 S150-15 — GB ORIGINAL: view a converted "
+     "mon's Game Boy original, read-only",
+     ("S150-15",)),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
 FEATURE_TITLE = {fid: title for fid, title, _prefixes in FEATURE_TABLE}
