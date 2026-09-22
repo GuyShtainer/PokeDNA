@@ -166,9 +166,15 @@ static EWRAM_BSS DexArtCache s_cache;
  * next time a page begins (plus a final flush at visit exit for the last page --
  * see gbdex_dex_page_flush_last()). Compiled out entirely in every other variant:
  * no counter storage, no log_line call, matching this codebase's existing
- * PDNA_DELTA-only test-hook posture (bank_plant.h/xfer_plant.h). */
-static int      s_page_no;
-static uint32_t s_page_fetch, s_page_hit;
+ * PDNA_DELTA-only test-hook posture (bank_plant.h/xfer_plant.h).
+ *
+ * BACKLOG #208 fixes review D4: EWRAM_BSS, not a plain file static -- these three
+ * scalars are PDNA_DELTA-only (never compiled into the stack-budgeted variants at
+ * all), but the delta build has its OWN stack ceiling this file's s_cache already
+ * follows the same posture for (see s_cache's comment above); a plain static here
+ * would cost IWRAM .bss instead, which that ceiling counts against. */
+static EWRAM_BSS int      s_page_no;
+static EWRAM_BSS uint32_t s_page_fetch, s_page_hit;
 #endif
 
 static bool cache_lookup_gen1(uint16_t dex, u16 cell[32 * 32]) {
