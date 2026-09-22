@@ -6051,7 +6051,14 @@ def run_s150_8_gen3_arm(core_mod, image_mod, rom_emerald: Path, out_dir: Path) -
            "check (pdna_gen12.c:2765-2780) never fires for any of bank_plant.c's "
            "seven planted cells (five native slots 0-4 + two COPY cells at slots "
            "5/6, BACKLOG #150 S150-12 decision 17) -- none qualifies, per this "
-           "lane's own brief")
+           "lane's own brief",
+           # BACKLOG #168a review (claims pass): the same #207 boxoam bracket
+           # covers this screen too (it is gb_down_loss_screen, the identical
+           # function s150-12's copy-loss frames draw). Not a copy cell here, so
+           # PDNA_XFER_COPY_NOBACK_L1 never draws -- the always-drawn middle row
+           # is "Met: this game, traded" instead, plus the same fixed top row and
+           # bottom-row cancel prompt.
+           claim=["IVs come from DVs, nature from EXP", "Met: this game, traded", "B = cancel"])
 
     # ---- confirm: the ledger write is refused on this vehicle (no SD card) -------
     s.tap("A", settle=300)
@@ -6082,7 +6089,10 @@ def run_s150_8_gen3_arm(core_mod, image_mod, rom_emerald: Path, out_dir: Path) -
            "(allow_same: this repeat IS the point -- app_xfer_pending() never "
            "became true on this vehicle, so PDNA_XFER_SAVEFIRST_TITLE is "
            "HARDWARE-ONLY, reachable only once a real card write actually lands)",
-           allow_same=True)
+           allow_same=True,
+           # BACKLOG #168a review (claims pass): pixel-identical to frame 05 (the
+           # reviewer's own proof), so the same claim.
+           claim=["IVs come from DVs, nature from EXP", "Met: this game, traded", "B = cancel"])
     s.tap("B", settle=200)                            # cancel the loss screen, still carrying
 
     # ---- drop on the PARTY: 'PC BOX FIRST' -----------------------------------
@@ -8924,7 +8934,12 @@ def run_s150_12_copy_edge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
            # drawn over this row would corrupt its EXACT glyph bitmap and make
            # this claim fail to find a match; a passing claim= is therefore
            # equally strong proof that no foreign (icon) pixels sit on this row.
-           claim="No transfer record: this copy")
+           # BACKLOG #168a review (claims pass): three rows this screen always
+           # draws for a copy cell -- a fixed "IVs come from DVs..." row (always
+           # true), the copy-specific PDNA_XFER_COPY_NOBACK_L1 row, and the
+           # bottom-row PDNA_SIDECAR_LOSS_B_CANCEL prompt -- span the icon band
+           # top to bottom, same proof as the single string, three times over.
+           claim=["IVs come from DVs, nature from EXP", "No transfer record: this copy", "B = cancel"])
 
     s.tap("A", settle=250)
     s.shot("17_landed", "s150-12: A lands the copy -- the PC box count went up "
@@ -8964,7 +8979,7 @@ def run_s150_12_copy_edge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
            "ledger-pending cell)",
            # BACKLOG #207 (same proof as frame 16 above, re-run on the SECOND
            # copy's own loss screen).
-           claim="No transfer record: this copy")
+           claim=["IVs come from DVs, nature from EXP", "No transfer record: this copy", "B = cancel"])
 
     s.tap("A", settle=250)
     s.shot("21_second_landed", "s150-12: the second copy lands too -- both "
