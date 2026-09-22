@@ -1752,9 +1752,25 @@ static void oam_sync(int cur, bool on_title, int box, bool is_bank) {
     int tr = cursor_title_row(on_title);
     boxoam_cursor(cur, tr, cursor_look(), cursor_label_cx(tr));   /* the descending open hand */
   } else if (s_holding) {
-    PkMon hm; pk_decode_mon(s_held, false, &hm);
     int tr = cursor_title_row(on_title);
-    boxoam_carry_held(cur, tr, cursor_label_cx(tr), hm.species, hm.form, hm.isEgg && !hm.isBadEgg);   /* held mon (or Egg) front-most + orange fist */
+    /* BACKLOG #150 S150-13 / #164: a carried NATIVE Bank cell is not Gen-3-shaped, so
+     * pk_decode_mon() cannot resolve a real species for it (undefined-in-practice on
+     * non-Gen-3 bytes -- "fixing" pk_decode_mon to tolerate native bytes is out of
+     * scope, it would hide the real bug class #164 is about). badge-only (decision a
+     * of the brief): species 0 makes boxoam_carry_held() fall into its own
+     * hide(OE_CARRY) arm (the fist rides empty), and the glove shows the era badge
+     * instead -- cheaper and safer than laying the badge atop pk_decode_mon()'s
+     * undefined output. */
+    if (bc_is_native(s_held)) {
+      boxoam_carry_held(cur, tr, cursor_label_cx(tr), 0, 0, false);
+      uint8_t gen = bc_kind(s_held);
+      boxoam_carry_badge(cur, tr, cursor_label_cx(tr), pdna_origin_native_mark(gen),
+                          pdna_origin_native_color(gen));
+    } else {
+      PkMon hm; pk_decode_mon(s_held, false, &hm);
+      boxoam_carry_held(cur, tr, cursor_label_cx(tr), hm.species, hm.form, hm.isEgg && !hm.isBadEgg);   /* held mon (or Egg) front-most + orange fist */
+      boxoam_carry_badge(cur, tr, cursor_label_cx(tr), 0, 0);   /* no badge on an ordinary Gen-3 carry */
+    }
     if (s_orig_slot >= 0 && (s_orig_scope == BOXSCOPE_BANK) == is_bank && s_orig_box == box)
       boxoam_hide_slot(s_orig_slot);                         /* lift-hide the origin cell */
     boxoam_item_markers(g_box, false);
@@ -4106,7 +4122,19 @@ int pdna_box(BoxSource* src) {
          } else if (bob) { bob = 0; boxoam_hand_pose(BOXOAM_POSE_NORMAL);
                            if (!boxoam_set_frame(0)) boxoam_set_bob(0);   /* settle the grid */
                            int tr = cursor_title_row(on_title);
-                           boxoam_cursor(cur, tr, cursor_look(), cursor_label_cx(tr)); }
+                           /* BACKLOG #150 S150-13, review D1: NOT while s_holding -- this
+                            * settle-the-grid beat can fire the instant a carry begins (bob
+                            * was mid-animation when MOVE picked the cell up), and
+                            * boxoam_cursor() -> load_rega_hand() re-uploads the hand pose
+                            * over TID_HAND (region A), clobbering the carry badge's own
+                            * tiles there (boxoam_carry_badge reuses that region while it is
+                            * otherwise idle -- see its own comment) and re-showing OE_HAND,
+                            * which hides OE_GRAB/OE_CARRY outright. The carry render arm
+                            * (the `else if (s_holding)` branch above) already draws its own
+                            * cursor/fist/badge every frame; this settle beat has nothing to
+                            * do while holding. */
+                           if (!s_holding)
+                             boxoam_cursor(cur, tr, cursor_look(), cursor_label_cx(tr)); }
          boxoam_commit();                       /* flush the OAM shadow in the vblank window */
          fresh = key_hit(KEY_FULL);
          k = fresh | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);

@@ -582,6 +582,15 @@ void pdna_origin_box_set_hint(uint8_t gen);
 int      pdna_origin_box_gen(int slot);     /* 1/2/3; 3 (or 0 for an empty slot)     */
 char     pdna_origin_box_mark(int slot);    /* '1' / '2' / '?' / 0 = draw no marker  */
 uint16_t pdna_origin_box_color(int slot);   /* RGB15 pad tint, 0 = none              */
+
+/* Gen-tint by raw gen byte (1/2), for a caller that only has bc_kind()'s value and no
+ * PdnaOrigin/box slot -- BACKLOG #150 S150-13's glove badge. Same COL_GEN1/COL_GEN2
+ * constants pdna_origin_box_color() uses; 0 for anything else. */
+uint16_t pdna_origin_native_color(uint8_t gen);
+
+/* bc_kind()'s gen byte (0/1/2) -> the glove badge's digit ('1'/'2'), 0 = no badge.
+ * Pure mapping, host-tested -- BACKLOG #150 S150-13. */
+char pdna_origin_native_mark(uint8_t gen);
 int      pdna_origin_box_count(uint8_t gen);/* how many cells are from that era      */
 
 /* Is this cell a Game Boy import at all? Cache only, so it is free to ask for all 30

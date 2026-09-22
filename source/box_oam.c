@@ -151,11 +151,24 @@
 #define TID_REGB    1008                /* region B: grab fist OR full-size item  */
 #define TID_GRAB    TID_REGB            /* 32x32 grab fist (16 tiles)            */
 #define TID_CITEM   TID_REGB            /* 32x32 full-size item, real icon (16 tiles) */
+/* BACKLOG #150 S150-13: the glove's era badge (bc_kind() '1'/'2' on a carried native
+ * cell) reuses region A's own tile ids (TID_HAND..TID_HAND+1). Region A is otherwise
+ * IDLE at the one moment the badge draws: boxoam_carry_badge is only ever called from
+ * the native-carry arm, which passes species 0 to boxoam_carry_held so upload_icon()
+ * is never reached and OE_CARRY (TID_HAND) stays hidden -- see the call site. This
+ * keeps the file's own "exactly 512 tiles, fits the window" budget exact: no new tile
+ * ids are claimed. boxoam_carry_badge() invalidates s_rega afterwards (see below) so a
+ * later real hand-pose/held-icon upload never trusts the stale cache tag and skips its
+ * own re-upload. */
+#define TID_CERABADGE TID_HAND          /* 2 tiles: TID_HAND+0 = '1', TID_HAND+1 = '2' */
 
 /* OBJ palette banks */
 #define PB_HAND     13                  /* hand(normal)+grab+item glyph           */
 #define PB_HANDORG  14                  /* hand orange (MOVE)                     */
 #define PB_CITEM    15                  /* carried item icon                      */
+#define PB_CERABADGE 12                 /* glove era badge -- ART_ICONS_PALS==3 (banks
+                                          * 0..2) + PB_HAND/HANDORG/CITEM (13..15) are
+                                          * the only other OBJ banks in use; 12 is free */
 
 /* Retail Emerald's PC transparency, taken from the decomp rather than eyeballed:
  * SetMonIconTransparency (pokemon_storage_system.c) writes BLDCNT = BLDCNT_TGT2_ALL
@@ -179,7 +192,8 @@
 #define OE_CARRY    32                  /* carried icon (move carry)              */
 #define OE_CITEM    33                  /* carried item (ITEM carry)              */
 #define OE_MARK0    34                  /* 34..63 ITEM-mode held-item markers     */
-#define OE_COUNT    64
+#define OE_CERABADGE 64                 /* BACKLOG #150 S150-13: glove era badge  */
+#define OE_COUNT    65
 
 static OBJ_ATTR s_shadow[128];          /* OAM shadow; flushed in vblank          */
 static uint8_t  s_iconbank[30];         /* palette bank per grid slot (0=empty)   */
@@ -1634,7 +1648,61 @@ void boxoam_carry_held(int cur, int title_row, int label_cx, uint16_t species, u
   hide(OE_HAND);                                     /* hand hidden while carrying */
 }
 
-void boxoam_carry_end(void) { hide(OE_CARRY); hide(OE_GRAB); }   /* stop carrying */
+/* BACKLOG #150 S150-13: the glove's era badge -- a small OBJ that rides the carried
+ * mon, showing bc_kind()'s gen digit for a carried NATIVE Bank cell (BACKLOG #164: a
+ * native carry today shows an empty hand, because pk_decode_mon() on non-Gen-3 bytes
+ * cannot resolve a species and the origin cell's own BG-drawn era art is suppressed
+ * while lifted, source/pdna_box.c:1744-1748). This is a SECOND badge instance for the
+ * glove -- it does not touch era_cell_mark()'s grid badge (pdna_box.c:1926-1935),
+ * whose Mode-3 bitmap draw would leave a trail if used for something that moves every
+ * frame the cursor moves; an OBJ sprite is the only layer that can follow the cursor
+ * cleanly, the same reason boxoam_carry_item's HOVER arm (below) is an OBJ too.
+ *
+ * Hand-authored 8x8 4bpp tiles, one per digit, 5-row glyphs on a 1px black border with
+ * a caller-supplied gen-tint fill (index 2) -- visually the same look as
+ * era_cell_mark()'s pad (black border + gen tint + digit), just OBJ instead of BG. */
+static const uint8_t s150_13_badge_tiles[2 * 32] = {
+  /* '1' */
+  0x11,0x11,0x11,0x11, 0x21,0x42,0x24,0x12, 0x21,0x44,0x24,0x12, 0x21,0x42,0x24,0x12,
+  0x21,0x42,0x24,0x12, 0x21,0x42,0x24,0x12, 0x21,0x44,0x44,0x12, 0x11,0x11,0x11,0x11,
+  /* '2' */
+  0x11,0x11,0x11,0x11, 0x21,0x44,0x24,0x12, 0x41,0x22,0x44,0x12, 0x21,0x22,0x24,0x12,
+  0x21,0x42,0x22,0x12, 0x21,0x24,0x22,0x12, 0x41,0x44,0x44,0x12, 0x11,0x11,0x11,0x11,
+};
+
+/* mark == '1'/'2' -> show the badge at the glove's bottom-right corner (mirrors where
+ * era_cell_mark() sits in a grid cell); anything else (0, or an unrecognised char) ->
+ * hide it. `color` is the caller's gen tint (pdna_origin_native_color()) -- written
+ * into the badge's own OBJ palette bank each call, so ONE tile pair serves both gens.
+ * Position mirrors boxoam_carry_held()'s own anchor math (same title_row cases). */
+void boxoam_carry_badge(int cur, int title_row, int label_cx, char mark, uint16_t color) {
+  if (mark != '1' && mark != '2') { hide(OE_CERABADGE); return; }
+  int hx, hy;
+  if (title_row == 1)      { hx = label_cx - 13; hy = 13; }
+  else if (title_row >= 2) { hx = label_cx - 13; hy = 2; }
+  else                     { hand_xy(cur, &hx, &hy); }
+  int fx = hx, fy = hy;
+  if (title_row == 0) { fx += s_cur_dx; fy += s_cur_dy; if (fy < WP_Y) fy = WP_Y; }
+  int bx = fx + 24, by = fy + 24;                    /* bottom-right of the 32x32 fist/mon spot */
+  /* Plain CPU copy (upload_tiles), not the staged-verify path (upload_tiles_verified):
+   * the badge's source bytes are this ROM's own .rodata, exactly as reliable to read as
+   * any instruction in this binary -- the verify path exists for flashcart ROM data
+   * staged through a separate read, which does not apply here. */
+  upload_tiles(TID_CERABADGE, s150_13_badge_tiles, sizeof(s150_13_badge_tiles));
+  s_rega = -1;                              /* region A's cache tag no longer describes its
+                                              * content -- force the next hand-pose/held-icon
+                                              * upload to re-stage rather than trust a stale tag */
+  pal_obj_mem[PB_CERABADGE * 16 + 1] = RGB15(0, 0, 0);   /* border  */
+  pal_obj_mem[PB_CERABADGE * 16 + 2] = color;            /* gen fill */
+  pal_obj_mem[PB_CERABADGE * 16 + 4] = RGB15(31, 31, 31);/* digit   */
+  obj_set_attr(oe(OE_CERABADGE),
+               ATTR0_SQUARE | ATTR0_4BPP | (by & ATTR0_Y_MASK),
+               ATTR1_SIZE_8 | (bx & ATTR1_X_MASK),
+               ATTR2_ID(TID_CERABADGE + (mark == '2' ? 1 : 0)) | ATTR2_PRIO(0) |
+               ATTR2_PALBANK(PB_CERABADGE));
+}
+
+void boxoam_carry_end(void) { hide(OE_CARRY); hide(OE_GRAB); hide(OE_CERABADGE); }   /* stop carrying */
 void boxoam_hide_slot(int s) { if (s >= 0 && s < 30) hide(OE_ICON0 + s); }  /* lift-hide the origin */
 /* Undo a lift-hide WITHOUT re-uploading: a plain hide only touched the OAM entry, the
  * slot's tiles are still in VRAM, so re-placing the attrs is enough. The grab dip uses

@@ -170,6 +170,13 @@ void boxoam_cursor_dxy(int dx, int dy); /* the 6-frame cursor slide (retail #4) 
  * boxoam_carry_end() stops carrying; boxoam_hide_slot() lift-hides the origin cell. */
 void boxoam_carry_held(int cur, int title_row, int label_cx, uint16_t species, uint8_t form, bool egg);   /* title_row/label_cx as boxoam_cursor; egg=1 -> the Egg icon rides the glove */
 void boxoam_carry_end(void);
+
+/* BACKLOG #150 S150-13: a carried NATIVE Bank cell's era digit ('1'/'2' from
+ * bc_kind()), riding the glove at its bottom-right corner. mark==0 (or anything
+ * other than '1'/'2') hides it. Call alongside boxoam_carry_held() from the same
+ * s_holding render arm; boxoam_carry_end() already hides it on every carry-ending
+ * path. */
+void boxoam_carry_badge(int cur, int title_row, int label_cx, char mark, uint16_t color);
 void boxoam_hide_slot(int s);
 void boxoam_show_slot(int s);   /* undo a lift-hide (grab-dip: mon stays visible) */
 
