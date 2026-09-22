@@ -6232,7 +6232,15 @@ def run_s150_8_bridge(core_mod, image_mod, rom_gold: Path, rom_red: Path,
             "this specific mon -- the brief's own 'friendship row' is conditional, "
             "PDNA_SIDECAR_LOSS_POKERUS, and does not apply to every bridge "
             "transfer, only when gen3_to_gb's own conversion actually drops it); "
-            "no dropped-item row (PIKACHU carries no item)")
+            "no dropped-item row (PIKACHU carries no item)",
+            # BACKLOG #180 retrofit: the bridge arm must show its OWN honest footer
+            # (PDNA_XFER_BRIDGE_STAYS, "the Bank slot is emptied when it lands"), NOT
+            # PASTE's stale PDNA_SIDECAR_LOSS_STAYS ("the copy in your Gen-3 save
+            # stays") -- there is no Gen-3 copy on a bridge transfer, the Bank slot IS
+            # the only copy and it is consumed on landing (59dd45c). claim_absent
+            # proves the old wording is gone, not just that the new wording is present.
+            claim=["The Bank slot is emptied when it lands."],
+            claim_absent=["The copy in your Gen-3 save stays."])
     sg.tap("A", settle=300)                     # A = transfer
     sg.shot("05_sidecar_folder_wall", "S150-8 bridge: A = transfer -> the panel "
             "reads 'SIDECAR FOLDER' / 'Nothing transferred.' / 'Press A' "
