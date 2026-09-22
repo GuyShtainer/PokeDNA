@@ -127,12 +127,14 @@
 # count on main at the time these lines were added; raise it (with a dated
 # comment explaining why) when a genuine new count-only site is added on
 # purpose, never to silence an unexplained increase.
-# BACKLOG #196 (2026-09-22): raised 48 -> 50 on purpose -- two genuinely NEW dispatch
-# sites, both declared above with their own dated reasoning: dex_cell_art_declare_page
-# (the page-level twin of dex_cell_art_call, dispatching the new s_cell_art.page_fn
-# field) and pdna_origin_art_portrait_by_dex (the Gen-1 twin of pdna_origin_art_icon,
-# dispatching s_gb.pic through the same inlined fetch_pic_ex shape fetch_icon already
-# does). Re-measured on all three variants after adding the declarations above.
+# BACKLOG #196 (2026-09-22, fix pass): main's own baseline moved 48 -> 49 (an
+# unrelated lane, b201, merged first). This lane's F2 (a per-page cache) was pulled
+# after review found it inert (see pdna_gbdex.c's own comment on gbdex_cell_art) --
+# only ONE genuinely new count-only dispatch site remains from this backlog,
+# pdna_origin_art_portrait_by_dex (the Gen-1 twin of pdna_origin_art_icon,
+# dispatching s_gb.pic through the same inlined fetch_pic_ex shape fetch_icon
+# already does, declared below with its own dated reasoning). 49 + 1 = 50.
+# Re-measured on all three variants after the strip.
 count-only-max 50 variant=nor artless=1
 count-only-max 50 variant=nor
 count-only-max 50 variant=delta
@@ -495,15 +497,6 @@ dex_cell_list argsites=1 -> dex_state dex_set_state dex_get_national dex_set_nat
 # Compiled name carries a clone suffix (matches fetch_pic_ex.constprop.0's own
 # precedent above) -- re-check the exact suffix with --dump-sites if this ever drifts.
 dex_cell_art_call.constprop.0 argsites=1 -> gbdex_cell_art
-# BACKLOG #196: the page-level twin of the site directly above -- same s_cell_art
-# struct, same "exactly one noinline wrapper dispatches it" review ruling, this time
-# for the new `page_fn` field (PdnaDexCellArtPageFn). --dump-sites shows exactly one
-# argsite (not a field hit) inside dex_cell_art_declare_page, unsuffixed (no clone) on
-# this build. The only function ever assigned to s_cell_art.page_fn is pdna_gbdex.c's
-# gbdex_cell_art_declare_page (pdna_dex_set_cell_art()'s two install call sites; NULL
-# on both reset call sites, never dispatches). Verify by address on BOTH ELFs before
-# trusting this count on a future rebuild.
-dex_cell_art_declare_page argsites=1 -> gbdex_cell_art_declare_page
 # pdna_dex_screen: BACKLOG #87 item 1 (the species cap, pdna_pick.c's s_dex_max /
 # pdna_dex_set_max()) rewrote dex_counts()'s and dex_bulk()'s three ALL-loops from a
 # fixed DEX_NAT_MAX bound to the runtime s_dex_max variable and replaced the literal

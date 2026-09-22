@@ -11,15 +11,12 @@
 #include "gb_dex.h"
 #include "gb_edit.h"       /* gb_max_species */
 #include "pdna_pick.h"     /* pdna_dex_screen, pdna_dex_set_max, pdna_dex_set_cell_art */
-#include "pdna_gen12.h"    /* gb_persist / gb12_arena_tail(_release) -- the verified-write
-                            * commit path AND (BACKLOG #196) the arena-tail cache memory */
+#include "pdna_gen12.h"    /* gb_persist -- the verified-write commit path            */
 #include "pdna_trainer.h"  /* trainer_flag_row_paint / trainer_key_legend             */
 #include "pdna_app.h"      /* app_confirm                                            */
 #include "pdna_origin_art.h" /* BACKLOG #124/#196: pdna_origin_art_icon,
-                              * pdna_origin_art_portrait_by_dex, pdna_origin_cell_render,
-                              * pdna_origin_art_invalidate_epoch */
+                              * pdna_origin_art_portrait_by_dex, pdna_origin_cell_render */
 #include "dex_cell_art_rule.h" /* BACKLOG #124: the pure-C selection rule this callback gates on */
-#include "dex_gb_art_cache.h"  /* BACKLOG #196: the pure-C per-page cache policy          */
 #include "ui.h"
 #include "snd.h"
 
@@ -63,97 +60,14 @@
  * discipline -- both generations' ROMs may be registered at once (Settings tolerates
  * it, exactly like the box grid does for imports of both eras in one save). */
 
-/* BACKLOG #196: the per-page cache's underlying storage. Rented from gb12_arena_tail()
- * (pdna_gen12.h) -- NOT icon_store's own g_pc/APP_ARENA_BYTES Tier-B borrow, which the
- * brief's own first draft named: pdna_dex_screen() (pdna_pick.c) calls
- * icon_store_borrow(true) UNCONDITIONALLY at the top of every artless-build visit,
- * which calls app_arena_acquire() -- but during a REAL Gen-1/2 GB session that arena
- * block is ALREADY held (g_ed's own resident-image mount, or g_ro_tail's streamed
- * one, acquired by pdna_gen12.c before this screen is ever reached), so icon_store's
- * OWN acquire always fails ("arena in use") and icon_store falls back to its 6-row
- * Tier A with no g_pc claim at all -- there is no spare capacity in "the borrow the
- * dex already holds" to rent a second time. gb12_arena_tail() is the mechanism every
- * OTHER GB screen (pdna_gbflags.c, pdna_gbbag.c, pdna_gbdaycare.c, pdna_gbmap.c,
- * pdna_gbtrainer.c, pdna_gbpack.c) already uses for exactly this "one slice of the
- * SAME arena block's unused tail, for the life of one screen" need, and pdna_gbdex.c
- * had never used it before this feature.
- *
- * SIZE: measured (BACKLOG #196 report) at 23,760 B of slack behind the TIGHTER of the
- * two mount kinds (the resident-image one, GB12_ARENA_NEED_IMG ~11,952 of
- * APP_ARENA_BYTES' 35,712 -- the streamed read-only mount's own GB12_ARENA_NEED_RO is
- * smaller, so its slack is never tighter). A slot is sizeof(DexGbArtSlot) = 2 + 2,048
- * = 2,050 B; 23,760 / 2,050 = 11.58, so GBDEX_CACHE_SLOTS is 11, not the "one full
- * 21-cell page" the brief's own ideal capacity asked for -- 21 slots would need
- * 43,050 B, nearly double what is actually free. gb12_arena_tail() itself re-checks
- * `need <= slack` at runtime and returns NULL if this ever stops fitting (a future
- * GB12_ARENA_NEED_IMG growth, say), so a wrong estimate here degrades to "cache off,
- * every cell fetches uncached" rather than corrupting anything. */
-#define GBDEX_CACHE_SLOTS 11
-#define GBDEX_CACHE_BYTES (GBDEX_CACHE_SLOTS * (uint32_t)sizeof(DexGbArtSlot))
-
-static DexGbArtCache s_gbdex_cache;         /* tiny (ptr + 2 ints): ordinary IWRAM
-                                             * .bss, not a new EWRAM static and not
-                                             * a new large static of any kind -- the
-                                             * 22,550 B of actual pixel storage lives
-                                             * in the rented arena tail, never here */
-static uint32_t      s_gbdex_cache_epoch;
-
-/* Rent the tail slice for the whole life of this screen's override (mirrors icon_
- * store_borrow(true)'s own "for the whole life of the screen, because of the
- * scroll" reasoning) and mark the cache empty. A NULL gb12_arena_tail() (no GB
- * session mount active right now, or genuinely no slack left) leaves the cache
- * closed -- dex_gb_art_cache_open()'s own contract makes every other cache call a
- * safe no-op in that case, so every cell just falls through to the ordinary
- * uncached fetch, exactly BACKLOG #124's own behaviour before this feature. */
-static void gbdex_art_cache_open(void) {
-  uint8_t* mem = gb12_arena_tail(GBDEX_CACHE_BYTES);
-  dex_gb_art_cache_open(&s_gbdex_cache, mem ? (DexGbArtSlot*)mem : 0,
-                        mem ? GBDEX_CACHE_SLOTS : 0);
-  s_gbdex_cache_epoch = pdna_origin_art_invalidate_epoch();
-}
-
-/* Give the tail slice back. Safe to call even when open() never actually got a
- * slice (gb12_arena_tail_release() is itself a safe no-op on nothing lent, per its
- * own header comment) -- matches every other gb12_arena_tail() caller's own
- * "release once, unconditionally, on the one exit path" shape. */
-static void gbdex_art_cache_close(void) {
-  gb12_arena_tail_release();
-  dex_gb_art_cache_open(&s_gbdex_cache, 0, 0);   /* back to the closed/empty state */
-}
-
-/* The declare-page hook (PdnaDexCellArtPageFn, pdna_pick.h): called from pdna_pick.c
- * ONCE per full repaint, BEFORE the per-cell paint loop, NEVER from the bob tick
- * (tests/host_dex_gb_cache_order_test.py pins the call site's own text position --
- * see that test's header for why a runtime check cannot substitute for a source-
- * position check here). Its only job is staleness: poll pdna_origin_art_invalidate_
- * epoch() (bumped on a ROM registration/deregistration, NEVER by an ordinary fetch)
- * and drop every cached entry if it moved since the last time this ran, so a Gen-1
- * ROM swap mid-session cannot leave dex #4's OLD sprite resident under the NEW ROM's
- * dex #4. Deliberately NOT a full "clear on every page" reset: the cache is keyed by
- * dex number (immutable derived art, see dex_gb_art_cache.h's own header comment),
- * so a scroll/filter/view change that brings the SAME species back onto screen is
- * exactly the case this cache exists to serve without re-fetching. */
-static void gbdex_cell_art_declare_page(void* ctx, int top, int vis) {
-  (void)ctx; (void)top; (void)vis;
-  uint32_t e = pdna_origin_art_invalidate_epoch();
-  if (e != s_gbdex_cache_epoch) { dex_gb_art_cache_clear(&s_gbdex_cache); s_gbdex_cache_epoch = e; }
-}
-
 /* Split exactly like pdna_box.c's era_cell_draw()/era_cell_blit(): the scale+blit
  * buffer (2,048 B for a 32x32 RGB15 cell) must never coexist on the stack with the
  * fetch chain's own frame (gb_art_fetch_icon's ~5.6 KB tail, gated on
  * PDNA_GB_ICON_NEED=6,144) -- noinline so an inlined copy cannot silently merge the
  * two frames back together. Called only AFTER the fetch (icon or portrait-by-dex)
- * has already returned and popped, i.e. never on a cache HIT -- a hit skips this
- * function's own decode work entirely, reusing the cached cell's already-scaled
- * pixels straight into ui_sprite() at the call site below.
- *
- * BACKLOG #196: also feeds the freshly-rendered cell into the per-page cache (a
- * no-op on an unopened cache, or when w/h is not the cache's fixed 32x32 shape --
- * the dex grid's own cell size, dex_cell_grid()'s literal `32, 32` call, but this
- * function stays defensive rather than assuming its only caller never changes). */
+ * has already returned and popped. */
 static bool __attribute__((noinline))
-gbdex_cell_blit(uint16_t dex, const PdnaArt* a, int x, int y, int w, int h) {
+gbdex_cell_blit(const PdnaArt* a, int x, int y, int w, int h) {
   u16 cell[32 * 32];             /* 2,048 B of STACK -- never a static, never EWRAM */
   if (w <= 0 || h <= 0 || w > 32 || h > 32) return false;   /* validate: the only
                                                              * caller passes 32x32
@@ -161,7 +75,6 @@ gbdex_cell_blit(uint16_t dex, const PdnaArt* a, int x, int y, int w, int h) {
                                                              * cannot cover more */
   if (!pdna_origin_cell_render(a, cell, w, h)) return false;
   ui_sprite(x, y, w, h, cell);
-  if (w == 32 && h == 32) dex_gb_art_cache_put(&s_gbdex_cache, dex, cell);
   return true;
 }
 
@@ -199,12 +112,15 @@ static bool gbdex_serves_dex(const GbSession* s) {
  * fallback ready for a `false` return) -- passed explicitly so the rule states its
  * whole contract.
  *
- * BACKLOG #196: a cache hit (dex_gb_art_cache_find()) skips the fetch chain
- * entirely -- have()/stack-room/f_open/decode, the SD read this feature exists to
- * save -- and blits the cached pixels straight through ui_sprite(). A miss falls
- * through to the SAME per-generation fetch this file has always used (icon rung for
- * Gen 2, portrait-by-dex rung for Gen 1), then gbdex_cell_blit() populates the
- * cache on its way out. */
+ * Every call fetches: the per-generation fetch this file has always used (icon rung
+ * for Gen 2, portrait-by-dex rung for Gen 1) runs on every cell, every repaint -- a
+ * BACKLOG #196 per-page cache was tried here and pulled (Fable review, 2026-09-22:
+ * an 11-slot FIFO over a 21-cell page painted in order evicts exactly the next cell
+ * needed, on a cold page, a row scroll, scrolling back AND a same-page repaint --
+ * instrumented 21 MISS / 0 HIT in every one of those; LRU has the identical
+ * pathology against this access pattern). The real fix (a cache whose capacity
+ * actually covers a page -- 1 B/px greys for Gen 1 giving ~23 slots, or Gen 2's
+ * native 16x16 icons -- is filed as its own backlog item, not attempted here. */
 static bool gbdex_cell_art(uint16_t dex, int x, int y, int w, int h, void* ctx) {
   const GbSession* s = (const GbSession*)ctx;
   int session_gen = s ? (int)s->gen : 0;
@@ -213,16 +129,11 @@ static bool gbdex_cell_art(uint16_t dex, int x, int y, int w, int h, void* ctx) 
     return false;
   if (dex < 1 || dex > 251) return false;
 
-  if (w == 32 && h == 32) {
-    const uint16_t* hit = dex_gb_art_cache_find(&s_gbdex_cache, dex);
-    if (hit) { ui_sprite(x, y, w, h, hit); return true; }
-  }
-
   PdnaArt a;
   bool ok = (session_gen == GB_GEN1) ? (pdna_origin_art_portrait_by_dex(dex, &a) && a.px)
                                      : (pdna_origin_art_icon(dex, &a) && a.px);
   if (!ok) return false;
-  return gbdex_cell_blit(dex, &a, x, y, w, h);
+  return gbdex_cell_blit(&a, x, y, w, h);
 }
 
 static u16 s_wait(u16 mask) {
@@ -386,14 +297,10 @@ static bool gbdex_chooser(GbSession* s, bool can_edit) {
          * loop -- unown_forms_screen() (the ROW_UNOWN branch below) never needs it, and
          * a bracket that outlived this call would still be live (with `s`, a stack
          * pointer this function received, as ctx) after gbdex_chooser() itself
-         * returns. BACKLOG #196: the cache is opened/closed in the SAME bracket, for
-         * the same reason -- its rented arena-tail slice must not outlive this call
-         * either. */
-        gbdex_art_cache_open();
-        pdna_dex_set_cell_art(gbdex_cell_art, s, gbdex_serves_dex(s), gbdex_cell_art_declare_page);
+         * returns. */
+        pdna_dex_set_cell_art(gbdex_cell_art, s, gbdex_serves_dex(s));
         bool dex_dirty = pdna_dex_screen(gbdex_shim_get, gbdex_shim_set, NULL, NULL, can_edit);
-        pdna_dex_set_cell_art(NULL, NULL, false, NULL);
-        gbdex_art_cache_close();
+        pdna_dex_set_cell_art(NULL, NULL, false);
         if (dex_dirty) dirty = true;
       } else {
         if (unown_forms_screen(s, can_edit)) dirty = true;
@@ -420,12 +327,10 @@ bool pdna_gbdex(GbSession* s, bool can_edit) {
      * not leak into a Gen-1 dex's Kanto-range cells, or vice versa). BACKLOG #196:
      * Gen 1 now draws its own front sprites through this SAME override (previously
      * this branch's `s->gen != GB_GEN2` self-gate meant Gen 1 always fell through
-     * to the icon-store ladder) -- the cache is opened/closed around this call too. */
-    gbdex_art_cache_open();
-    pdna_dex_set_cell_art(gbdex_cell_art, s, gbdex_serves_dex(s), gbdex_cell_art_declare_page);
+     * to the icon-store ladder). */
+    pdna_dex_set_cell_art(gbdex_cell_art, s, gbdex_serves_dex(s));
     dirty = pdna_dex_screen(gbdex_shim_get, gbdex_shim_set, NULL, NULL, can_edit);
-    pdna_dex_set_cell_art(NULL, NULL, false, NULL);
-    gbdex_art_cache_close();
+    pdna_dex_set_cell_art(NULL, NULL, false);
   }
 
   s_gbdex_session = NULL;

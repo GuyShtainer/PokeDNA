@@ -475,16 +475,6 @@ void pdna_origin_art_place(const PdnaArt* a, int x, int y, int w, int h,
  * there. Costs nothing; the next request re-fetches. */
 void pdna_origin_art_invalidate(void);
 
-/* BACKLOG #196: a cheap epoch a consumer OTHER than this module's own memo can poll
- * to learn "something changed since I last looked", bumped every time
- * pdna_origin_art_invalidate() runs (ROM registration/deregistration, art-session
- * resets) and never otherwise. NOT the same thing as artbuf.h's artbuf_epoch (that
- * one guards a shared DECODE-buffer pointer; this one guards a consumer's own COPIED
- * pixels, which artbuf reuse cannot stale but a ROM swap still can) -- used by
- * pdna_gbdex.c's per-page GB-art cache (source/dex_gb_art_cache.h) so a Gen-1 ROM
- * swap cannot leave dex #4's OLD sprite resident under the NEW ROM's dex #4. */
-uint32_t pdna_origin_art_invalidate_epoch(void);
-
 /* ---- (3) THE BANK IN PARALLEL ----------------------------------------------------
  *
  * The bank (pdna_bank.c) is 16 SD-backed boxes where mons from all three eras sit side

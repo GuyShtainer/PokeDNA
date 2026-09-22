@@ -127,25 +127,7 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
  * ANSWER instead of the codebase re-deriving (and risking re-diverging) it in two
  * more places. Ignored/false when `fn` is NULL. */
 typedef bool (*PdnaDexCellArtFn)(uint16_t dex, int x, int y, int w, int h, void* ctx);
-
-/*
- * page_fn (BACKLOG #196, optional -- NULL means "no page-level hook", exactly like a
- * NULL `fn` means "no override" above): called ONCE per FULL repaint (a fresh entry,
- * a view/filter/scroll change, or an overlay that painted over this screen -- the
- * SAME `full` trigger dex_declare_page() already reacts to), BEFORE the per-cell
- * paint loop, and NEVER from the bob-animation tick -- an installer that wants a
- * page-scoped cache to stay fresh (e.g. drop entries after a ROM swap) does that
- * work here, not inside `fn` itself, so the cost never lands on the per-tick path
- * BACKLOG #124's own bob-skip already protects. `top`/`vis` are the SAME visible-
- * window bounds dex_declare_page() receives (top-left cell index, visible cell
- * count) -- an installer that needs to know WHICH species are about to be painted
- * has no way to learn that from this call alone (this module's own g_list is never
- * exposed), by design: a page-hook that reacted to species identity would be a
- * second place species-selection logic could diverge from dex_cell_grid()'s own
- * loop. `ctx` is the SAME pointer `fn` receives. */
-typedef void (*PdnaDexCellArtPageFn)(void* ctx, int top, int vis);
-
-void pdna_dex_set_cell_art(PdnaDexCellArtFn fn, void* ctx, bool serves_page, PdnaDexCellArtPageFn page_fn);
+void pdna_dex_set_cell_art(PdnaDexCellArtFn fn, void* ctx, bool serves_page);
 
 /* ---- pick_rows: the generic searchable/sortable row-list engine (BACKLOG #107) ---
  * list_pick's own loop (source/pdna_pick.c), extracted so any leaf picker screen can

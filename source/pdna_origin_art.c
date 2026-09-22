@@ -305,14 +305,7 @@ void pdna_origin_art_register(const PdnaGbArtSource* src) {
   else { memset(&s_gb, 0, sizeof s_gb); s_gb_on = 0; }
 }
 
-/* BACKLOG #196: bumped alongside the existing memo clear -- see this counter's own
- * header comment in pdna_origin_art.h for why it exists as a SEPARATE thing from
- * artbuf_epoch. */
-static uint32_t s_invalidate_epoch;
-
-void pdna_origin_art_invalidate(void) { memo_clear(); s_invalidate_epoch++; }
-
-uint32_t pdna_origin_art_invalidate_epoch(void) { return s_invalidate_epoch; }
+void pdna_origin_art_invalidate(void) { memo_clear(); }
 
 int pdna_origin_art_have(uint8_t gen) {
   if (!s_gb_on) return 0;
