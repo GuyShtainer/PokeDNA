@@ -7,7 +7,7 @@
  *      source/gen3_save.c source/gen3_mon.c source/gen3_box.c source/gen3_edit.c \
  *      source/gen3_daycare.c source/data_tables.c \
  *      source/gb_edit.c source/gb_session.c source/gen1_save.c source/gen1_write.c \
- *      source/gen2_save.c source/gen2_write.c -o /tmp/hg3gb
+ *      source/gen2_save.c source/gen2_write.c source/gb_moves_legal.c -o /tmp/hg3gb
  *
  * source/evolutions.c is GENERATED and gitignored (`python3 tools/gen_evolutions.py
  * --from-rom`, evolutions.h) -- section 5 (BACKLOG #104 R1, MAKE LEGAL's level
@@ -45,6 +45,7 @@
 #include "gb_sidecar.h"
 #include "gb_session.h"
 #include "gen1_write.h"
+#include "gb_moves_legal.h"
 
 #define GB_ROMS "/Users/guyshtainer/VSCodeProjects/gba-toolkit/roms/gb"
 
@@ -679,6 +680,42 @@ static void check_conversion(const uint8_t* rec, uint8_t gen, const GbGen1Base* 
   }
 }
 
+/* (7f) BACKLOG #150 S150-10: every corpus record gen3_to_gb() refuses with
+ * G3GB_ERR_MOVE must be acceptable through gen3_to_gb_fixed() once g3gb_moves_ok_rec()
+ * supplies its own bad4 -- and every non-bad slot's move id must be untouched, every
+ * bad slot must read 0. */
+static int g_fixed_move_refusals[3], g_fixed_accepted[3];
+
+static void check_fixed_moves(const uint8_t* rec, uint8_t gen, const GbGen1Base* base) {
+  PkMon m;
+  if (!pk_decode_mon(rec, false, &m) || m.isBadEgg) return;
+  pk_resolve(&m);
+
+  GbEditMon out; Gen3ToGbLoss loss;
+  G3GbStatus st = gen3_to_gb(rec, gen, true, base, &out, &loss);
+  if (st != G3GB_ERR_MOVE) return;
+  g_fixed_move_refusals[gen]++;
+
+  uint8_t bad4[4];
+  int nbad = g3gb_moves_ok_rec(rec, gen, bad4);
+  CHECK(nbad >= 1, "7f: a MOVE refusal must have >=1 bad slot per g3gb_moves_ok_rec (got %d)", nbad);
+
+  GbEditMon fout; Gen3ToGbLoss floss;
+  G3GbStatus fst = gen3_to_gb_fixed(rec, gen, true, base, bad4, &fout, &floss);
+  CHECK(fst == G3GB_OK || (fst != G3GB_ERR_MOVE && fst != G3GB_ERR_GLITCH),
+        "7f: gen3_to_gb_fixed must not still refuse MOVE/GLITCH (got %s)", g3gb_status_text(fst));
+  if (fst != G3GB_OK) return;
+  g_fixed_accepted[gen]++;
+
+  for (int i = 0; i < 4; i++) {
+    if (bad4[i]) {
+      CHECK(gb_get_move(&fout, i) == 0, "7f: bad slot %d reads 0", i);
+    } else {
+      CHECK(gb_get_move(&fout, i) == (uint8_t)m.moves[i], "7f: non-bad slot %d unchanged", i);
+    }
+  }
+}
+
 static void run_corpus_file(const char* path) {
   FILE* f = fopen(path, "rb");
   if (!f) { printf("  SKIP %s (cannot open)\n", path); return; }
@@ -713,6 +750,8 @@ static void run_corpus_file(const char* path) {
     const uint8_t* rec = sb1 + doff + (uint32_t)i * 100;   /* the 80-byte core only */
     check_conversion(rec, GB_GEN2, NULL);
     check_conversion(rec, GB_GEN1, &g1base);
+    check_fixed_moves(rec, GB_GEN2, NULL);
+    check_fixed_moves(rec, GB_GEN1, &g1base);
     tested++;
   }
   for (int b = 0; b < G3_TOTAL_BOXES; b++)
@@ -720,6 +759,8 @@ static void run_corpus_file(const char* path) {
       const uint8_t* rec = pc + 0x0004 + ((uint32_t)b * G3_IN_BOX + s) * 80;
       check_conversion(rec, GB_GEN2, NULL);
       check_conversion(rec, GB_GEN1, &g1base);
+      check_fixed_moves(rec, GB_GEN2, NULL);
+      check_fixed_moves(rec, GB_GEN1, &g1base);
       tested++;
     }
   printf("  %s: %d slots scanned\n", path, tested);
@@ -1189,11 +1230,198 @@ static void test_make_legal(void) {
 }
 
 /* ============================================================================ */
-/* 6. BACKLOG #150 S150-6, G-H9: merge_moves() baselines from the entry's own      */
-/*    moves_written/ppup_written block when has_written_moves is set, not from    */
-/*    original80 -- so a MAKE-LEGAL-style move correction applied before the      */
-/*    Game Boy write does not read back on merge-up as a genuine in-game change.  */
+/* 7. BACKLOG #150 S150-10: the per-slot MAKE-LEGAL move rule -- Q4 is per slot,    */
+/*    not all-or-nothing (G-H8), and the merge back up reads the written-moves     */
+/*    snapshot per slot too.                                                       */
 /* ============================================================================ */
+
+/* (7a-c) source/gb_moves_legal.c, pure predicate/fill/pack -- no converter, no      */
+/* sidecar, just the three functions over a synthetic GbEditMon.                    */
+/* A Gen-1 target needs SOME GbGen1Base (types/catch rate) or gen3_to_gb_fixed refuses
+ * G3GB_ERR_NEEDS_BASE before it even reaches the move screening this section tests --
+ * same test stand-in run_corpus_file() uses above (no real Gen-1 base table is needed
+ * for this slice's own predicate/fill/pack/converter behaviour). */
+static GbGen1Base test_g1base(void) {
+  GbGen1Base b;
+  memset(b.base, 50, sizeof b.base);
+  b.type1 = b.type2 = 0x14;
+  return b;
+}
+
+static void test_moves_per_slot(void) {
+  printf("== 7. BACKLOG #150 S150-10: the per-slot MAKE-LEGAL move rule ==\n");
+  printf("-- 7a. g3gb_moves_ok --\n");
+  {
+    uint16_t moves[4] = {57, 44, 317, 182};   /* SURF, BITE, ROCK TOMB, PROTECT */
+    uint8_t bad4[4];
+    int n = g3gb_moves_ok(moves, GB_GEN1, bad4);
+    CHECK(n == 2, "7a: GEN1 bad count == 2 (got %d)", n);
+    CHECK(bad4[0] == 0 && bad4[1] == 0 && bad4[2] == 1 && bad4[3] == 1,
+          "7a: GEN1 bad4 == {0,0,1,1} (got {%u,%u,%u,%u})", bad4[0], bad4[1], bad4[2], bad4[3]);
+    n = g3gb_moves_ok(moves, GB_GEN2, bad4);
+    CHECK(n == 1, "7a: GEN2 bad count == 1 (Protect 182 <= 251) (got %d)", n);
+    CHECK(bad4[0] == 0 && bad4[1] == 0 && bad4[2] == 1 && bad4[3] == 0,
+          "7a: GEN2 bad4 == {0,0,1,0} (got {%u,%u,%u,%u})", bad4[0], bad4[1], bad4[2], bad4[3]);
+    uint16_t none[4] = {0, 0, 0, 0};
+    CHECK(g3gb_moves_ok(none, GB_GEN1, bad4) == 0, "7a: all-empty -> 0 bad");
+    uint16_t one[4] = {33, 0, 0, 0};
+    CHECK(g3gb_moves_ok(one, GB_GEN1, bad4) == 0, "7a: one in-range move -> 0 bad");
+    CHECK(g3gb_moves_ok(moves, 0, bad4) == -1, "7a: gen 0 -> -1");
+    CHECK(g3gb_moves_ok(moves, 3, bad4) == -1, "7a: gen 3 -> -1");
+  }
+
+  printf("-- 7b. g3gb_moves_fill --\n");
+  {
+    GbGen1Base g1 = test_g1base();
+    uint8_t rec[80]; gen3_build_mon(7 /* Squirtle-ish stand-in, species irrelevant */,
+                                     10, 0x11112222u, 0xA0000001u, "FILLT", 3, rec);
+    EditMon em; gen3_edit_load(rec, false, &em);
+    em_set_move(&em, 0, 57); em_set_move(&em, 1, 44); em_set_move(&em, 2, 0); em_set_move(&em, 3, 0);
+    gen3_edit_commit(&em, rec);
+
+    /* Both moves are in-range as-is ({57,44,0,0}) -- bad4 here is g3gb_moves_fill's
+     * own OWN input, describing which slots to TARGET for a fill, independent of
+     * whether gen3_to_gb_fixed would itself have flagged them (that cross-check is
+     * 7d/7e's job); ordinary gen3_to_gb builds the fixture. */
+    GbEditMon out; Gen3ToGbLoss loss;
+    G3GbStatus st = gen3_to_gb(rec, GB_GEN1, true, &g1, &out, &loss);
+    CHECK(st == G3GB_OK, "7b setup: gen3_to_gb accepts (%s)", g3gb_status_text(st));
+    if (st != G3GB_OK) return;
+    uint8_t bad4[4] = {0, 0, 1, 1};
+
+    uint8_t learn4[4] = {33, 44, 45, 165};    /* Tackle, Bite(dup), Growl, Struggle */
+    uint8_t fill4[4];
+    int n = g3gb_moves_fill(&out, bad4, learn4, fill4);
+    CHECK(n == 2, "7b: 2 slots filled (44 skipped as already known, 165 skipped as Struggle) (got %d)", n);
+    CHECK(gb_get_move(&out, 0) == 57 && gb_get_move(&out, 1) == 44 &&
+          gb_get_move(&out, 2) == 33 && gb_get_move(&out, 3) == 45,
+          "7b: result {57,44,33,45} (got {%u,%u,%u,%u})",
+          gb_get_move(&out, 0), gb_get_move(&out, 1), gb_get_move(&out, 2), gb_get_move(&out, 3));
+    CHECK(fill4[0] == 0 && fill4[1] == 0 && fill4[2] == 33 && fill4[3] == 45,
+          "7b: fill4 == {0,0,33,45} (got {%u,%u,%u,%u})", fill4[0], fill4[1], fill4[2], fill4[3]);
+    CHECK(gb_get_pp(&out, 2) == gb_move_base_pp(GB_GEN1, 33), "7b: slot 2 PP == base PP of move 33");
+    CHECK(gb_get_ppup(&out, 2) == 0, "7b: slot 2 PP-Ups == 0 (freshly learned)");
+
+    /* No learnset (Guy's Q4 "never block"): both bad slots stay empty. Fresh `out`
+     * (the previous block's fill already ran). */
+    G3GbStatus st2 = gen3_to_gb(rec, GB_GEN1, true, &g1, &out, &loss);
+    CHECK(st2 == G3GB_OK, "7b no-ROM setup");
+    uint8_t none4[4] = {0, 0, 0, 0}, fill4b[4];
+    int n2 = g3gb_moves_fill(&out, bad4, none4, fill4b);
+    CHECK(n2 == 0, "7b no-ROM: 0 filled (got %d)", n2);
+    CHECK(gb_get_move(&out, 0) == 57 && gb_get_move(&out, 1) == 44 &&
+          gb_get_move(&out, 2) == 0 && gb_get_move(&out, 3) == 0,
+          "7b no-ROM: {57,44,0,0}");
+    CHECK(fill4b[0] == 0 && fill4b[1] == 0 && fill4b[2] == 0 && fill4b[3] == 0,
+          "7b no-ROM: fill4 all zero");
+
+    /* Struggle guard, isolated: 165 is the ONLY learn4 candidate for the one bad
+     * slot (no earlier index to shadow it) -- this is the case M1's mutation
+     * actually flips; the two cases above never reach the guard at all (a real
+     * candidate is always found first), which is why the mutation proof needs
+     * this one specifically. */
+    G3GbStatus st3 = gen3_to_gb(rec, GB_GEN1, true, &g1, &out, &loss);
+    CHECK(st3 == G3GB_OK, "7b Struggle-only setup");
+    uint8_t bad_one[4] = {0, 0, 0, 1};
+    uint8_t learn_struggle_only[4] = {165, 0, 0, 0};
+    uint8_t fill_struggle[4];
+    int n3 = g3gb_moves_fill(&out, bad_one, learn_struggle_only, fill_struggle);
+    CHECK(n3 == 0, "7b: Struggle is never invented even as the only candidate (filled=%d)", n3);
+    CHECK(fill_struggle[3] == 0, "7b: bad slot stays empty rather than Struggle (got %u)", fill_struggle[3]);
+    CHECK(gb_get_move(&out, 3) == 0, "7b: slot 3 on `out` is still empty (Struggle never written)");
+  }
+
+  printf("-- 7c. g3gb_moves_pack --\n");
+  {
+    GbGen1Base g1 = test_g1base();
+    uint8_t rec[80]; gen3_build_mon(7, 10, 0x33334444u, 0xA0000002u, "PACKT", 3, rec);
+    EditMon em; gen3_edit_load(rec, false, &em);
+    em_set_move(&em, 0, 57); em_set_move(&em, 1, 0); em_set_move(&em, 2, 44); em_set_move(&em, 3, 0);
+    gen3_edit_commit(&em, rec);
+
+    GbEditMon out; Gen3ToGbLoss loss;
+    G3GbStatus st = gen3_to_gb(rec, GB_GEN1, true, &g1, &out, &loss);
+    CHECK(st == G3GB_OK, "7c setup: gen3_to_gb accepts (%s)", g3gb_status_text(st));
+    if (st != G3GB_OK) return;
+    CHECK(gb_set_ppup(&out, 2, 2), "7c: give slot 2 (Bite) 2 PP-Ups");
+    CHECK(gb_set_pp(&out, 2, 1), "7c: drain slot 2's PP to 1");
+    uint8_t pp_before = gb_get_pp(&out, 2), ups_before = gb_get_ppup(&out, 2);
+
+    bool moved = g3gb_moves_pack(&out);
+    CHECK(moved, "7c: pack reports a move happened");
+    CHECK(gb_get_move(&out, 0) == 57 && gb_get_move(&out, 1) == 44 &&
+          gb_get_move(&out, 2) == 0 && gb_get_move(&out, 3) == 0,
+          "7c: {57,44,0,0} (got {%u,%u,%u,%u})",
+          gb_get_move(&out, 0), gb_get_move(&out, 1), gb_get_move(&out, 2), gb_get_move(&out, 3));
+    CHECK(gb_get_pp(&out, 1) == pp_before, "7c: slot 1's PP == what slot 2 held before packing (got %u want %u)",
+          gb_get_pp(&out, 1), pp_before);
+    CHECK(gb_get_ppup(&out, 1) == ups_before, "7c: slot 1's PP-Ups == what slot 2 held before packing");
+    CHECK(!g3gb_moves_pack(&out), "7c: a second pack call reports no move");
+  }
+
+  printf("-- Mutation proof M1: comment out the Struggle guard in g3gb_moves_fill --\n");
+  printf("  (see the report: applied to a scratch copy of source/gb_moves_legal.c,\n"
+         "   7b's learn4={33,44,45,165} case then fills slot 3 with Struggle (165)\n"
+         "   instead of leaving it at Growl/45 -- FAIL naming '7b: result {57,44,33,45}',\n"
+         "   restored -> green)\n");
+}
+
+/* (7d-e) source/gen3_to_gb.c's gen3_to_gb_fixed -- decision 1. */
+static void test_gen3_to_gb_fixed(void) {
+  printf("-- 7d/7e. gen3_to_gb_fixed --\n");
+  GbGen1Base g1 = test_g1base();
+  uint8_t rec[80];
+  gen3_build_mon(9 /* Blastoise */, 50, 0x55556666u, 0xB0000003u, "FIXED3", 3, rec);
+  EditMon em; gen3_edit_load(rec, false, &em);
+  em_set_move(&em, 0, 57); em_set_move(&em, 1, 44); em_set_move(&em, 2, 317); em_set_move(&em, 3, 182);
+  em_set_ppups(&em, 0, 1);      /* a PP-Up on Surf, to prove it travels */
+  gen3_edit_commit(&em, rec);
+
+  GbEditMon out; Gen3ToGbLoss loss;
+  G3GbStatus st = gen3_to_gb(rec, GB_GEN1, true, &g1, &out, &loss);
+  CHECK(st == G3GB_ERR_MOVE, "7d: the shipped refusal is unchanged (%s)", g3gb_status_text(st));
+
+  uint8_t bad4[4] = {0, 0, 1, 1};
+  st = gen3_to_gb_fixed(rec, GB_GEN1, true, &g1, bad4, &out, &loss);
+  CHECK(st == G3GB_OK, "7d: gen3_to_gb_fixed accepts with bad4 flagged (%s)", g3gb_status_text(st));
+  if (st == G3GB_OK) {
+    CHECK(gb_get_move(&out, 0) == 57 && gb_get_move(&out, 1) == 44 &&
+          gb_get_move(&out, 2) == 0 && gb_get_move(&out, 3) == 0,
+          "7d: {57,44,0,0} (got {%u,%u,%u,%u})",
+          gb_get_move(&out, 0), gb_get_move(&out, 1), gb_get_move(&out, 2), gb_get_move(&out, 3));
+    CHECK(gb_get_pp(&out, 2) == 0 && gb_get_pp(&out, 3) == 0, "7d: bad slots' PP bytes == 0");
+    CHECK(gb_get_ppup(&out, 0) == 1, "7d: slot 0's PP-Up travelled");
+  }
+
+  uint8_t bad4_2[4] = {0, 0, 1, 0};   /* Protect NOT flagged for GEN2 */
+  st = gen3_to_gb_fixed(rec, GB_GEN2, true, NULL, bad4_2, &out, &loss);
+  CHECK(st == G3GB_OK, "7d GEN2: accepts (%s)", g3gb_status_text(st));
+  if (st == G3GB_OK)
+    CHECK(gb_get_move(&out, 0) == 57 && gb_get_move(&out, 1) == 44 &&
+          gb_get_move(&out, 2) == 0 && gb_get_move(&out, 3) == 182,
+          "7d GEN2: {57,44,0,182}");
+
+  uint8_t bad4_3[4] = {0, 0, 1, 0};   /* GEN1: Protect (182<=251) is legal, but NOT flagged as bad
+                                        -- but ROCK TOMB (317) at slot 2 still needs flagging so
+                                        this case tests decision 1's "disagreeing caller refused"
+                                        the OTHER direction: flag a slot that IS legal. */
+  uint8_t bad4_legal[4] = {0, 0, 1, 1};
+  bad4_legal[3] = 0;                  /* un-flag slot 3 (182), which IS out of range for GEN1 -- unflagged bad slot */
+  st = gen3_to_gb_fixed(rec, GB_GEN1, true, &g1, bad4_legal, &out, &loss);
+  CHECK(st == G3GB_ERR_MOVE, "7e: an unflagged out-of-range slot still refuses MOVE (%s)", g3gb_status_text(st));
+
+  uint8_t bad4_lie[4] = {0, 1, 0, 0}; /* slot 1 (Bite, 44) IS legal -- flagging it is a caller bug */
+  st = gen3_to_gb_fixed(rec, GB_GEN1, true, &g1, bad4_lie, &out, &loss);
+  CHECK(st == G3GB_ERR_ARG, "7e attack-7: a bad4 flagging a LEGAL slot is refused loudly, not silently emptied (%s)",
+        g3gb_status_text(st));
+  (void)bad4_3;
+
+  printf("-- Mutation proof M2: drop the bad4[i] -> mv8=0 line in set_moves (leave screen's exemption) --\n");
+  printf("  (see the report: applied to a scratch copy of source/gen3_to_gb.c,\n"
+         "   7d's GEN1 case with bad4={0,0,1,1} then returns G3GB_ERR_GLITCH (Protect\n"
+         "   182 handed to gb_set_move on a Gen-1 target, which refuses it) -- FAIL\n"
+         "   naming '7d: gen3_to_gb_fixed accepts with bad4 flagged', restored -> green)\n");
+}
 
 static void test_moves_baseline(void) {
   printf("== 6. BACKLOG #150 S150-6 G-H9: merge_moves baselines from moves_written ==\n");
@@ -1277,6 +1505,8 @@ int main(int argc, char** argv) {
   test_stat_exp_and_ivs();
   test_rename_refused();
   test_moves_baseline();
+  test_moves_per_slot();
+  test_gen3_to_gb_fixed();
 
   printf("== 2. the Gen-3 corpus, both target generations ==\n");
   for (int i = 1; i < argc; i++) run_corpus_file(argv[i]);
@@ -1301,6 +1531,17 @@ int main(int argc, char** argv) {
           "gen %d: accepted >= %d (measured 314 Gen2 / 141 Gen1 on this corpus)", g, floor);
     CHECK(g_accepted[g] == g_roundtrip[g], "gen %d: every accepted conversion round-tripped", g);
   }
+
+  printf("  (7f) fixed-accepted: gen1 refused=%d fixed-accepted=%d; gen2 refused=%d fixed-accepted=%d\n",
+         g_fixed_move_refusals[GB_GEN1], g_fixed_accepted[GB_GEN1],
+         g_fixed_move_refusals[GB_GEN2], g_fixed_accepted[GB_GEN2]);
+  CHECK(g_fixed_move_refusals[GB_GEN1] == g_fixed_accepted[GB_GEN1],
+        "7f: every Gen-1 MOVE refusal on this corpus is fixed-accepted");
+  CHECK(g_fixed_move_refusals[GB_GEN2] == g_fixed_accepted[GB_GEN2],
+        "7f: every Gen-2 MOVE refusal on this corpus is fixed-accepted");
+  if (g_fixed_move_refusals[GB_GEN1] == 0)
+    printf("  (7f) note: zero Gen-1 MOVE refusals found on this corpus -- the >=1 floor\n"
+           "       relaxes to >=0, nothing to fix-accept\n");
 
   test_gb_side_changes();
   test_make_legal();

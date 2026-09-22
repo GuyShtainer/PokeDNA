@@ -74,6 +74,19 @@ const char* g3gb_status_text(G3GbStatus st);
 G3GbStatus gen3_to_gb(const uint8_t* rec80, uint8_t gen, bool caught_available,
                      const GbGen1Base* g1base, GbEditMon* out, Gen3ToGbLoss* loss);
 
+/* BACKLOG #150 S150-10, decision 1: the same conversion, except a caller-flagged bad
+ * move slot (bad4[i] != 0, from source/gb_moves_legal.h's g3gb_moves_ok/_rec) is
+ * written EMPTY (move 0, PP byte 0, no PP-Ups) instead of refusing the whole record
+ * with G3GB_ERR_MOVE. `bad4 == NULL` means "refuse as gen3_to_gb() above" -- indeed
+ * `gen3_to_gb` is exactly `gen3_to_gb_fixed(..., NULL, ...)`. A `bad4[i]` that
+ * disagrees with gb_max_move(gen) (flagging a slot that is actually IN range, or
+ * leaving an out-of-range slot unflagged) is a caller bug: refused loudly
+ * (G3GB_ERR_ARG for the former; the out-of-range case still reaches G3GB_ERR_MOVE,
+ * never silently emptied or silently accepted). */
+G3GbStatus gen3_to_gb_fixed(const uint8_t* rec80, uint8_t gen, bool caught_available,
+                            const GbGen1Base* g1base, const uint8_t* bad4,
+                            GbEditMon* out, Gen3ToGbLoss* loss);
+
 /* ---- BACKLOG #104 R1: the MAKE LEGAL correction (evolution-minimum level) ------
  * docs/TRANSFER-ROUNDTRIP-DESIGN.md section 3c: MAKE LEGAL's ONLY correction beyond
  * what KEEP AS IS already keeps is raising an under-levelled EVOLVED species to its
