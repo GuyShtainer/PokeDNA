@@ -148,9 +148,12 @@ static void test_every_row_covered(void) {
    * BACKLOG #87: NV_DEX moved OUT too -- gb_dex.c + pdna_gbdex.c wire the
    * shared Pokedex screen on both kinds, checked in ok_both below. */
   static const int coming_soon_both[] = {
-    NV_PARTY, NV_GB   /* 2: NV_FLY (#90), NV_DATA (#88), NV_BATTLEREC (#89), NV_DEX (#87),
+    NV_PARTY, NV_GB,   /* 2: NV_FLY (#90), NV_DATA (#88), NV_BATTLEREC (#89), NV_DEX (#87),
                                * NV_MAP (#91 M1-G2) and NV_BANK (#120 S2) all moved to
                                * ok_both below */
+    NV_XFER   /* BACKLOG #150 S150-11: the TRANSFERS screen only reads a Gen-3 PC
+              * (app_gen3_pc_live()), which a raw Game Boy session never has --
+              * same "open it from the other side" shape as NV_GB above */
   };
   for (int i = 0; i < (int)(sizeof coming_soon_both / sizeof coming_soon_both[0]); i++) {
     CHECK(nav_avail(coming_soon_both[i], SE_KIND_GEN1) == NAV_COMING_SOON,

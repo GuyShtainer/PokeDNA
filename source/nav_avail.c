@@ -109,6 +109,11 @@ static const NavCell GB_TABLE[NV_COUNT][2] = {
                      { NAV_OK, "OK" } },
   [NV_GB]        = { { NAV_COMING_SOON, "Open the Bank instead." },
                      { NAV_COMING_SOON, "Open the Bank instead." } },
+  /* BACKLOG #150 S150-11 decision 13: the TRANSFERS screen only reads a Gen-3 PC
+   * (app_gen3_pc_live()) -- a raw Game Boy session has none, so it's the same
+   * "open it from the other side" honesty as NV_GB above, not NAV_OK. */
+  [NV_XFER]      = { { NAV_COMING_SOON, "Open it from a Gen-3 save." },
+                     { NAV_COMING_SOON, "Open it from a Gen-3 save." } },
   [NV_SETTINGS]  = { { NAV_OK, "OK" }, { NAV_OK, "OK" } },
   [NV_BACK]      = { { NAV_OK, "OK" }, { NAV_OK, "OK" } },
 };
