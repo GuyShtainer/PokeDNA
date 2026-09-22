@@ -38,20 +38,36 @@ Gb12Result bdc_convert_gen3_core(const uint8_t cell80[BC_CELL_BYTES], uint8_t me
                                  uint8_t out80[80], GbEditMon* written, Gb12Notes* notes,
                                  uint16_t* g3_item);
 
-/* Arm 1's pure core (decision 14+15): the time-capsule check first (dst_gen's floor),
- * then the item relax (a Gen-2 item can never reach Gen 1; zeroed, noted, named on the
- * loss screen -- the record keeps it), then gen12_convert(tgt.met_game=0, "the
- * intermediate never lands anywhere") into a scratch Gen-3 record, then gen3_to_gb.
- * `*tc` is xr_time_capsule_block's own return (0 = passed, checked FIRST -- everything
- * below is untouched when `*tc != 0`); `*g12` is gen12_can_convert's refusal (GB12_OK on
- * success); `*g3gb` is gen3_to_gb's status, including G3GB_ERR_NEEDS_BASE (Gen-1 target
- * with `g1base == NULL` -- the caller retries with a located base table, exactly
+/* Arm 1's pure core (decision 14+15): the species-floor check first (dst_gen's own
+ * xr_time_capsule_block, species only as of BACKLOG #212 -- see below), then the item
+ * relax (a Gen-2 item can never reach Gen 1; zeroed, noted, named on the loss screen --
+ * the record keeps it), then gen12_convert(tgt.met_game=0, "the intermediate never
+ * lands anywhere") into a scratch Gen-3 record, then gen3_to_gb_fixed. `*tc` is
+ * xr_time_capsule_block's own return (0 = passed, checked FIRST -- everything below is
+ * untouched when `*tc != 0`); `*g12` is gen12_can_convert's refusal (GB12_OK on
+ * success); `*g3gb` is gen3_to_gb_fixed's status, including G3GB_ERR_NEEDS_BASE (Gen-1
+ * target with `g1base == NULL` -- the caller retries with a located base table, exactly
  * gb_paste_hook's own two-try shape). `out`/`loss`/`notes` are meaningful only when
- * `*tc == 0 && *g12 == GB12_OK && *g3gb == G3GB_OK`. */
+ * `*tc == 0 && *g12 == GB12_OK && *g3gb == G3GB_OK`.
+ *
+ * BACKLOG #212: `from4`/`bad4`/`nbad` are ALWAYS written (like `*tc`/`*tc_bad` above --
+ * every caller must pass real storage, never NULL). `from4` is the cell's own four raw
+ * move ids (view.moves, before conversion -- gen3_to_gb_hook's own `from4`, for the
+ * caller's swap-row modal); `bad4`/`nbad` are gb_moves_legal.h's g3gb_moves_ok() over
+ * `from4` against `dst_gen`'s own bound (S150-10's per-slot predicate, the SAME one
+ * gb_clip_moves wraps for PASTE) -- a slot this generation cannot hold is written
+ * EMPTY by gen3_to_gb_fixed instead of refusing the whole cell; the CALLER (source/
+ * pdna_gen12.c's gb_bank_down_bridge) does the fill, off the destination ROM's
+ * learnset, the same way gb_paste_fill_moves() does for PASTE -- this function only
+ * clips, it never fills (no ROM access of its own, matching every other pure core in
+ * this file). The species-floor check (xr_time_capsule_block's `tc == 1`) is
+ * UNCHANGED -- only its own move-bound check (`tc == 2`) is retired from this call
+ * site (moves4 == NULL passed below), superseded by bad4/nbad. */
 void bdc_convert_gb_core(const uint8_t cell80[BC_CELL_BYTES], uint8_t dst_gen,
                          bool caught_available, const GbGen1Base* g1base,
                          int* tc, uint16_t* tc_bad, Gb12Result* g12, G3GbStatus* g3gb,
-                         GbEditMon* out, Gen3ToGbLoss* loss, Gb12Notes* notes);
+                         GbEditMon* out, Gen3ToGbLoss* loss, Gb12Notes* notes,
+                         uint16_t from4[4], uint8_t bad4[4], int* nbad);
 
 /* ============================================================================
  * GBA-facing arms -- called ONLY from pdna_box.c's bank_down_dispatch, one per

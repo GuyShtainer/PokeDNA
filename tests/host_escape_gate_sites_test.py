@@ -125,6 +125,15 @@ Checks:
       missing, or sitting after the fill call, would leave a cold paste's loss screen
       -> modal transition looking frozen for the whole scan. MUT AA deletes the
       s_busy_reading( line and must be caught.
+  (ae) BACKLOG #212: gb_bank_down_bridge (source/pdna_gen12.c) calls gb_paste_fill_moves(
+      (the fill, S150-10's own function reused for the bridge) BEFORE
+      gb_paste_legal_screen_ex( (the modal) -- the fills must already be in `mon` when
+      the swap-row modal lists them, exactly gb_paste_hook's own step 7/8 order. MUT AB
+      moves the fill call after the modal and must be caught.
+  (af) BACKLOG #212: gb_bank_down_bridge calls gb_paste_legal_screen_ex( (the modal)
+      BEFORE gbs_insert( (the box write) -- CANCEL must be able to discard `mon`
+      before anything lands on the card. MUT AC moves the modal call after the write
+      and must be caught.
 """
 from __future__ import annotations
 
@@ -787,6 +796,12 @@ PASTE_WRITE_CALL_RE = re.compile(r"\bgb_paste_write\(")
 # busy screen. Shared by the real check (ad) and its MUT AA self-mutation. ----------
 BUSY_READING_RE = re.compile(r"\bs_busy_reading\(\)")
 
+# ---- (ae)/(af) BACKLOG #212: gb_bank_down_bridge's own per-slot move rule -- the fill
+# before the modal, the modal before the write. Shared by the real checks and their
+# MUT AB/MUT AC self-mutation demonstrations. ---------------------------------------
+LEGAL_SCREEN_EX_RE = re.compile(r"\bgb_paste_legal_screen_ex\(")
+GBS_INSERT_CALL_RE = re.compile(r"\bgbs_insert\(")
+
 # ---- (q)/(r) merged-tree reviewer: the non-EXACT LANDED tail must both repaint (q)
 # and never re-admit a deferred delete even alongside a kept consume (r). Shared with
 # MUT S / MUT T. -----------------------------------------------------------------
@@ -1276,6 +1291,21 @@ def main() -> int:
     # (same as CREATE's, which CREATE masks the same way).
     ok, msg = gate_before_pattern(hook_body, 0, len(hook_body), BUSY_READING_RE,
                                    PASTE_FILL_MOVES_RE, "gb_paste_hook")
+    check(ok, msg)
+
+    # ---- (ae)/(af) BACKLOG #212: gb_bank_down_bridge's own per-slot move rule --
+    # the fill before the modal, the modal before the write. ----
+    sbr, ebr = extract_function(gen12_lines, r"^BankDownResult gb_bank_down_bridge\(")
+    bridge_body = gen12_lines[sbr:ebr]
+
+    # (ae) gb_paste_fill_moves( is called BEFORE gb_paste_legal_screen_ex( (the modal).
+    ok, msg = gate_before_pattern(bridge_body, 0, len(bridge_body), PASTE_FILL_MOVES_RE,
+                                   LEGAL_SCREEN_EX_RE, "gb_bank_down_bridge")
+    check(ok, msg)
+
+    # (af) gb_paste_legal_screen_ex( is called BEFORE gbs_insert( (the box write).
+    ok, msg = gate_before_pattern(bridge_body, 0, len(bridge_body), LEGAL_SCREEN_EX_RE,
+                                   GBS_INSERT_CALL_RE, "gb_bank_down_bridge")
     check(ok, msg)
 
     # ---- (f) review F3: the self-mutation harness, every run ----
@@ -1950,6 +1980,48 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str]) -
                         f"was not: {detail}")
         print(f"  MUT AA demonstration -- s_busy_reading() call deleted from "
               f"gb_paste_hook: {detail}")
+
+    # BACKLOG #212: gb_bank_down_bridge's own per-slot move rule -- MUT AB/MUT AC.
+    sbr, ebr = extract_function(gen12_lines, r"^BankDownResult gb_bank_down_bridge\(")
+    bridge_body = gen12_lines[sbr:ebr]
+
+    # MUT AB: move the `gb_paste_fill_moves(` call line to AFTER
+    # `gb_paste_legal_screen_ex(` on a copy -- (ae) must fail: the modal would list
+    # swap rows for fills that have not happened yet.
+    fill_i = first_match_line(bridge_body, 0, len(bridge_body), PASTE_FILL_MOVES_RE)
+    modal_i = first_match_line(bridge_body, 0, len(bridge_body), LEGAL_SCREEN_EX_RE)
+    check(fill_i is not None and modal_i is not None and fill_i < modal_i,
+          "MUT AB: could not locate gb_paste_fill_moves( before gb_paste_legal_screen_ex( "
+          "in the real source -- fix this test")
+    if fill_i is not None and modal_i is not None and fill_i < modal_i:
+        mut_ab = list(bridge_body)
+        fill_line = mut_ab.pop(fill_i)
+        mut_ab.insert(modal_i, fill_line)
+        ok10, detail = gate_before_pattern(mut_ab, 0, len(mut_ab), PASTE_FILL_MOVES_RE,
+                                           LEGAL_SCREEN_EX_RE, "gb_bank_down_bridge (MUT AB)")
+        check(not ok10, f"MUT AB (gb_paste_fill_moves( moved after gb_paste_legal_screen_ex() "
+                         f"should have been caught but was not: {detail}")
+        print(f"  MUT AB demonstration -- gb_paste_fill_moves( line moved after "
+              f"gb_paste_legal_screen_ex( in gb_bank_down_bridge: {detail}")
+
+    # MUT AC: move the `gb_paste_legal_screen_ex(` call line to AFTER `gbs_insert(`
+    # on a copy -- (af) must fail: a CANCEL choice would arrive too late to stop the
+    # box write.
+    modal_i2 = first_match_line(bridge_body, 0, len(bridge_body), LEGAL_SCREEN_EX_RE)
+    write_i = first_match_line(bridge_body, 0, len(bridge_body), GBS_INSERT_CALL_RE)
+    check(modal_i2 is not None and write_i is not None and modal_i2 < write_i,
+          "MUT AC: could not locate gb_paste_legal_screen_ex( before gbs_insert( in "
+          "the real source -- fix this test")
+    if modal_i2 is not None and write_i is not None and modal_i2 < write_i:
+        mut_ac = list(bridge_body)
+        modal_line = mut_ac.pop(modal_i2)
+        mut_ac.insert(write_i, modal_line)
+        ok11, detail = gate_before_pattern(mut_ac, 0, len(mut_ac), LEGAL_SCREEN_EX_RE,
+                                           GBS_INSERT_CALL_RE, "gb_bank_down_bridge (MUT AC)")
+        check(not ok11, f"MUT AC (gb_paste_legal_screen_ex( moved after gbs_insert() should "
+                         f"have been caught but was not: {detail}")
+        print(f"  MUT AC demonstration -- gb_paste_legal_screen_ex( line moved after "
+              f"gbs_insert( in gb_bank_down_bridge: {detail}")
 
 # ---- (m) 2026-09-16 (merged-tree shot lane): the DOWN dispatch's `occupied` refusal is scoped to
 # the GEN3 arm. An unscoped `&& !occupied` on the dispatch condition made the EXACT arm refuse
