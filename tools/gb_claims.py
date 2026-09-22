@@ -63,23 +63,43 @@ pixel, given both PokeDNA fonts never draw anything into the gap.
 FIND
 ----
 find(frame_png, text, proportional=None) treats the frame as a stack of binary
-planes, one per distinct colour present (<=256 in an indexed GBA framebuffer
-capture), and slides the rendered mask over each plane with
-numpy.lib.stride_tricks.sliding_window_view, looking for an EXACT match (every
-ink pixel of the mask equals that colour, every gap/background pixel of the
-mask's footprint does NOT). Text colour is not known a priori (menus, footers,
-selected-row inverse video, and the HOF crystal-card panel all use different
-ink colours) -- trying every distinct colour in the frame is the only
-caller-agnostic way to find it. A drop-shadow/outline variant (ui_ptext_shadow,
-ui.c:439-441, draws the SAME string twice at a 1px offset in two different
-colours) still matches on its own main-ink colour plane: the shadow copy is a
-different colour, so it is invisible on the main colour's binary plane except
-where it happens to overlap real background pixels of that colour, which the
-exact-gap-match requirement then rejects same as any other stray ink.
+planes, one per distinct colour present, and slides the rendered mask over
+each plane with numpy.lib.stride_tricks.sliding_window_view, looking for an
+EXACT match (every ink pixel of the mask equals that colour, every
+gap/background pixel of the mask's footprint does NOT). Text colour is not
+known a priori (menus, footers, selected-row inverse video, and the HOF
+crystal-card panel all use different ink colours) -- trying every distinct
+colour in the frame is the only caller-agnostic way to find it. A
+drop-shadow/outline variant (ui_ptext_shadow, ui.c:439-441, draws the SAME
+string twice at a 1px offset in two different colours) still matches on its
+own main-ink colour plane: the shadow copy is a different colour, so it is
+invisible on the main colour's binary plane except where it happens to
+overlap real background pixels of that colour, which the exact-gap-match
+requirement then rejects same as any other stray ink.
+
+A normal GBA UI capture is indexed 15-bit colour and never has more than a
+few dozen distinct RGB values, but a sprite/gameplay frame (icons, box art,
+dithered gradients) can legitimately exceed 256 -- BACKLOG #214. Raising in
+that case turned "this claim doesn't hold on this kind of frame" into a
+crash that aborted the whole runner instead of a normal `[CLAIM FAILED]`.
+find() therefore never raises on colour count: it bounds the search to the
+MAX_COLOURS_SCANNED most FREQUENT colours in the frame (by pixel count).
+Rendered text is always a solid run of many same-coloured ink pixels (a
+"text-sized run"), so its ink colour is high-frequency even against a busy
+sprite frame's many low-frequency (often singleton) art colours; this is a
+bounded per-colour search over the most-frequent colours, not quantisation,
+so it never distorts the exact bitmap match. When the frame has
+<=MAX_COLOURS_SCANNED colours this is exactly the old exhaustive search
+(every colour is "most frequent" by definition); above the cap it is a
+best-effort search that can miss a low-frequency ink colour, which is
+reported as an ordinary empty result (claim failure), never an exception.
 """
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -88,6 +108,11 @@ from PIL import Image
 
 ROOT = Path(__file__).resolve().parent.parent
 UI_FONT_C = ROOT / "source" / "ui_font.c"
+
+# Bound on find()'s per-colour plane search (module docstring, "FIND"): above
+# this many distinct colours in a frame, only the this-many MOST FREQUENT
+# colours are searched -- never a crash, see BACKLOG #214.
+MAX_COLOURS_SCANNED = 256
 
 FIRST_CP = 0x20   # space -- ui_font.c's own header comment: "96 glyphs, ASCII 32..127"
 NUM_GLYPHS = 96
@@ -259,13 +284,14 @@ def find(frame_png: str | Path | Image.Image | np.ndarray, text: str,
         h, w = mask.shape
         if h == 0 or w == 0 or h > arr.shape[0] or w > arr.shape[1]:
             continue
-        colours = np.unique(arr.reshape(-1, arr.shape[-1]), axis=0)
-        if len(colours) > 256:
-            raise ValueError(
-                f"find(): {len(colours)} distinct colours in the frame (expected <=256 -- "
-                "a real GBA capture is a 15-bit-colour UI render, not a photograph; a "
-                "synthetic test frame should draw from a small fixed palette, not "
-                "per-pixel random noise)")
+        colours, counts = np.unique(arr.reshape(-1, arr.shape[-1]), axis=0, return_counts=True)
+        if len(colours) > MAX_COLOURS_SCANNED:
+            # Bounded fallback for a >256-colour frame (a sprite/gameplay screen,
+            # not a UI render) -- see the module docstring's FIND section and
+            # MAX_COLOURS_SCANNED above. Never raise: search only the most
+            # frequent colours and let a miss fall out as a normal empty result.
+            order = np.argsort(-counts)[:MAX_COLOURS_SCANNED]
+            colours = colours[order]
         for colour in colours:
             plane = np.all(arr == colour, axis=-1)
             windows = sliding_window_view(plane, (h, w))
@@ -296,4 +322,225 @@ def check(frame_png: str | Path | Image.Image | np.ndarray,
     for text in as_list(claim_absent):
         if find(frame_png, text, proportional=proportional):
             failures.append(f"'{text}' unexpectedly ON frame (claim_absent)")
+    return failures
+
+
+# =============================================================================
+# claim_gb= -- the GB-shell (gbscr_text) matcher, BACKLOG #214 item 2.
+#
+# WHY find()/render() DO NOT COVER THIS
+# --------------------------------------
+# The Hall of Fame card, the Gen-1/2 trainer card and the other
+# pdna_gbscreen.c "shell" screens draw their text through gbscr_text()
+# (source/pdna_gbscreen.c), which paints ONE FONT TILE PER COLUMN read
+# straight out of the user's own registered Game Boy ROM (rom_gbui_glyph(),
+# source/rom_gbui.c) -- a THIRD font source, neither source/ui_font.c's
+# ui_font_bits (render(proportional=True)) nor tonc's sys8Font
+# (render(proportional=False)). Its pixel shapes are Game-Freak-owned and
+# differ per game/release, so they can never be a literal in this repo
+# (BACKLOG #184's original v1 scoped this out for exactly that reason -- see
+# tools/dgb_shots.py's b184-revert comments on run_b89_hof/run_b194_hof).
+# BACKLOG #118's own finding also rules out reading a live GB PPU/tilemap the
+# way tools/gb_oracle/oracle.py's compose() does: the shot harness's Session
+# wraps a GBA core in DCNT_MODE3 (a bitmap framebuffer), and gbscr's shell
+# composites onto that bitmap directly -- there is no tilemap to read from
+# "VRAM" here at all.
+#
+# THE FIX: read the SAME ROM FILE the shot was booted from
+# ----------------------------------------------------------
+# Nothing is embedded. tools/gbclaim_font_driver.c compiles the SHIPPED
+# source/rom_gbui.c (the font locator) and source/gb_edit.c
+# (gb_char_encode(), the exact ASCII->GB-charcode table gbscr_text() itself
+# calls) against a tiny main() and, for each requested claim string, walks
+# the identical "gb_char_encode() -> rom_gbui_glyph()" loop
+# gbscr_text()/gbscr_tile_pixels() run on real hardware -- against the
+# caller's own ROM file, read fresh every call, never cached to disk (same
+# clean-room posture tools/gbui_dump.py's own header documents: "this script
+# does not locate anything itself -- it only invokes the already-reviewed C
+# locator"). The result is an exact 1bpp ink/background bitmap per glyph
+# (rom_gbui_tile()'s own 1bpp rule: the raw bit IS the ink/background
+# decision, "hi = lo" so idx is 0 or 3 -- no grey levels in the font).
+#
+# THE GRID: gbscr's own known 8x8 layout, not a sliding search
+# ----------------------------------------------------------------
+# gbscr_text() places one glyph per COLUMN on a fixed GBSCR_COLS(20) x
+# GBSCR_ROWS(18) canvas; in the default (gb_scale_mode == 0, "1:1") layout
+# blit_1to1() (source/pdna_gbscreen.c) places cell (cx, cy)'s 8x8 block at
+# pixel (GBSCR_ORIGIN_X + cx*8, GBSCR_ORIGIN_Y + cy*8) = (40 + cx*8, 8 + cy*8)
+# -- both constants read straight from source/pdna_gbscreen.h, not guessed.
+# find_gb() therefore does not slide pixel-by-pixel like find(): it only
+# tries the GBSCR_COLS*GBSCR_ROWS discrete cell-aligned starting positions a
+# real glyph run could ever begin at, and requires an EXACT match (every ink
+# bit AND every background bit of the claim's rendered glyphs) against the
+# frame's own pixels there -- the same "gap pixels must not be ink either"
+# contract render()/find() already document, here expressed as "every
+# non-claimed pixel in the glyph's own 8x8 cell must be background". A blank
+# glyph (ASCII space, gb_char_encode() -> 0x7F) matches gbscr's
+# GBSCR_BLANK_COLOR cell (solid background, source/pdna_gbscreen.c) exactly
+# the same way. This is a best-effort, scale-mode-0-only matcher: every
+# claim_gb= shot this lane adds runs with the shell's default (unstretched)
+# scale, the only mode any runner in this tree reaches without an explicit
+# SELECT tap (gb_scale_mode's own default is 0, source/pdna_gbscreen.c).
+# =============================================================================
+
+GBUI_DRIVER_SRC = ROOT / "tools" / "gbclaim_font_driver.c"
+GBUI_C_SOURCES = [
+    "rom_gbui.c", "gb_edit.c", "data_tables.c", "gen1_save.c", "gen2_save.c",
+    "gen3_to_gb.c", "gb_sidecar.c", "bank_cell.c", "gen3_edit.c", "gen3_mon.c",
+    "gen3_box.c", "gen3_save.c", "gen3_daycare.c",
+]  # BACKLOG #214: the exact link list tests/host_gbhof_glyph_test.c's own header
+   # documents for gb_edit.c's transitive Gen-1/2 dependencies, plus rom_gbui.c
+   # for the font locator -- never hand-picked, copied from that test's recipe.
+
+# GB-shell 1:1 layout constants -- source/pdna_gbscreen.h's own #defines, read
+# once here rather than re-typed at every call site.
+GBSCR_ORIGIN_X = 40
+GBSCR_ORIGIN_Y = 8
+GBSCR_COLS = 20
+GBSCR_ROWS = 18
+GB_CELL = 8
+
+_gb_driver_bin: Path | None = None
+_gb_driver_build_failed: str | None = None
+
+
+def _gb_driver() -> Path | None:
+    """Compile tools/gbclaim_font_driver.c once per process (cc, no devkitARM
+    needed -- same host-`cc` posture tools/gbui_dump.py's build_driver() and
+    every tests/host_*_test.c recipe already use). Returns None (cached) if
+    this host has no C compiler -- callers surface that as a clear failure,
+    never a silent claim pass."""
+    global _gb_driver_bin, _gb_driver_build_failed
+    if _gb_driver_bin is not None or _gb_driver_build_failed is not None:
+        return _gb_driver_bin
+    cc = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
+    if not cc:
+        _gb_driver_build_failed = "no host C compiler (cc/gcc/clang) found"
+        return None
+    src_dir = ROOT / "source"
+    bin_dir = Path(tempfile.mkdtemp(prefix="gbclaim_"))
+    binp = bin_dir / "gbclaim_font_driver"
+    cmd = [cc, "-std=c11", "-O1", "-I", str(src_dir), str(GBUI_DRIVER_SRC)]
+    cmd += [str(src_dir / name) for name in GBUI_C_SOURCES]
+    cmd += ["-o", str(binp)]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0 or not binp.is_file():
+        _gb_driver_build_failed = f"build failed: {r.stderr.strip()[-2000:]}"
+        return None
+    _gb_driver_bin = binp
+    return _gb_driver_bin
+
+
+def _gb_glyph_tokens(rom_path: str | Path, texts: list[str]) -> dict[str, list[str] | None]:
+    """Run the compiled driver once for this ROM against every text in `texts`
+    (batched -- one process launch, not one per claim). Returns text -> list
+    of glyph tokens ("BLANK" or 16 lowercase hex digits), or None if that
+    text could not be encoded/rendered on this ROM's font (a claim on it then
+    reports a clear reason, not a silent miss)."""
+    binp = _gb_driver()
+    if binp is None:
+        raise RuntimeError(f"claim_gb=: cannot build the GB font driver ({_gb_driver_build_failed})")
+    rom_path = Path(rom_path)
+    if not rom_path.is_file():
+        raise RuntimeError(f"claim_gb=: ROM not found: {rom_path}")
+    r = subprocess.run([str(binp), str(rom_path), *texts], capture_output=True, text=True)
+    lines = r.stdout.splitlines()
+    out: dict[str, list[str] | None] = {}
+    for text, line in zip(texts, lines):
+        if "\t" not in line:
+            out[text] = None
+            continue
+        tag, body = line.split("\t", 1)
+        out[text] = body.split(",") if tag == "OK" else None
+    for text in texts:
+        out.setdefault(text, None)
+    return out
+
+
+def render_gb(rom_path: str | Path, text: str) -> np.ndarray | None:
+    """Render `text` the way gbscr_text() draws it on `rom_path`'s own font,
+    as an (8, 8*len(glyphs)) bool array (True = ink), one 8px-wide cell per
+    glyph -- see this section's module-level design comment. None if the ROM
+    or this text's glyphs could not be resolved (never raises for a normal
+    "this ROM's font doesn't have that" case, matching find()'s no-raise
+    contract; a missing ROM/compiler still raises -- that is a setup error,
+    not a claim result)."""
+    tokens = _gb_glyph_tokens(rom_path, [text])[text]
+    if tokens is None:
+        return None
+    n = len(tokens)
+    mask = np.zeros((GB_CELL, GB_CELL * n), dtype=bool)
+    for i, tok in enumerate(tokens):
+        if tok == "BLANK":
+            continue
+        rows = bytes.fromhex(tok)
+        for r, byte in enumerate(rows):
+            for c in range(GB_CELL):
+                if (byte >> (7 - c)) & 1:      # bit 7 = leftmost pixel (driver's own doc comment)
+                    mask[r, i * GB_CELL + c] = True
+    return mask
+
+
+def find_gb(frame_png: str | Path | Image.Image | np.ndarray, rom_path: str | Path,
+            text: str) -> list[tuple[int, int]]:
+    """Search `frame_png` for an EXACT match of `text` rendered through
+    `rom_path`'s own GB font (render_gb()), at every gbscr 1:1-layout cell
+    position (GBSCR_ORIGIN_X/Y + col/row*8) -- see this section's design
+    comment for why this is a fixed-grid search, not find()'s sliding one.
+    Returns a list of (x, y) top-left hits; empty = not found (including "this
+    ROM's font can't render this text at all", the same not-found semantics
+    find() already gives >256-colour frames -- see MAX_COLOURS_SCANNED)."""
+    mask = render_gb(rom_path, text)
+    if mask is None:
+        return []
+    h, w = mask.shape
+    n_glyphs = w // GB_CELL
+    if n_glyphs == 0 or n_glyphs > GBSCR_COLS:
+        return []
+
+    if isinstance(frame_png, np.ndarray):
+        arr = frame_png
+    else:
+        img = frame_png if isinstance(frame_png, Image.Image) else Image.open(frame_png)
+        arr = np.asarray(img.convert("RGB"))
+
+    hits: list[tuple[int, int]] = []
+    for row in range(GBSCR_ROWS):
+        y = GBSCR_ORIGIN_Y + row * GB_CELL
+        if y + h > arr.shape[0]:
+            continue
+        for col in range(GBSCR_COLS - n_glyphs + 1):
+            x = GBSCR_ORIGIN_X + col * GB_CELL
+            if x + w > arr.shape[1]:
+                continue
+            crop = arr[y:y + h, x:x + w]
+            # Exact match: every ink pixel of the mask must be a SINGLE colour
+            # (the glyph's own ink colour, not known a priori -- same
+            # reasoning find()'s own docstring gives) and every non-ink pixel
+            # must NOT be that colour (the gap/background requirement).
+            ink_px = crop[mask]
+            if ink_px.size == 0:
+                continue   # an all-blank claim (pure whitespace) can't anchor a colour
+            colour = ink_px[0]
+            if not np.all(ink_px == colour):
+                continue
+            bg_px = crop[~mask]
+            if bg_px.size and np.any(np.all(bg_px == colour, axis=-1)):
+                continue
+            hits.append((x, y))
+    return hits
+
+
+def check_gb(frame_png: str | Path | Image.Image | np.ndarray, rom_path: str | Path,
+             claim_gb: str | list[str] | None = None) -> list[str]:
+    """claim_gb='s own check(), same failure-string contract as check(). Every
+    string in `claim_gb` must be found via find_gb() against `rom_path`'s own
+    GB font; a miss is a normal (non-raising) failure string."""
+    if claim_gb is None:
+        return []
+    texts = [claim_gb] if isinstance(claim_gb, str) else list(claim_gb)
+    failures: list[str] = []
+    for text in texts:
+        if not find_gb(frame_png, rom_path, text):
+            failures.append(f"'{text}' not on frame (claim_gb)")
     return failures
