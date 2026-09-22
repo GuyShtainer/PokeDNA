@@ -4156,13 +4156,26 @@ def run_s2_bank_control(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_sho
     s.tap("B", settle=100)                                  # back to the party/box list
     s.tap("START", settle=80)                               # nav menu
     s.tap("DOWN", settle=60)                                # Party -> Bank (index 1, one DOWN)
-    s.tap("A", settle=150)                                  # -> pdna_bank_show()
-    s.shot("02_bank", "#120 F1 control: the real Bank, from an ordinary Gen-3 session")
+    s.tap("A", settle=150)                                  # -> pdna_bank_show(), box 0 (BANK 1)
+    s.shot("02_bank", "#120 F1 control: the real Bank, from an ordinary Gen-3 session -- "
+           "box 0 shows the PDNA_DELTA plant's 7 native cells (bank_plant_box0's five "
+           "directed cells at slots 0-4, plus BACKLOG #150 S150-12 decision 17's two "
+           "COPY cells at slots 5/6), 7/30 occupied; cursor on slot 0, a native cell")
+    # BACKLOG #198 item 1: slot 0 is a PLANTED native cell (bank_plant_box0(), same
+    # navigation run_s2_control() documents) -- landing straight on it and A-ing what
+    # the cursor sits on hits the native whitelist menu (VIEW only), not the empty
+    # Gen-3 cell's CREATE/PASTE HERE menu this shot means to prove. Land on a REAL
+    # empty non-native cell first: DOWN (slot 0 -> slot 6, row 1 col 0 -- ALSO native,
+    # decision 17's second COPY cell) then RIGHT (slot 6 -> slot 7, row 1 col 1 --
+    # the first genuinely empty, non-native Gen-3 slot), the exact same two-tap
+    # recipe run_s2_control()'s own "01_bank_grid" -> "03_empty_cell_menu" chain uses.
+    s.tap("DOWN", settle=gb_shots.SETTLE)                   # slot 0 -> slot 6 (row 1, col 0): still native
+    s.tap("RIGHT", settle=gb_shots.SETTLE)                  # slot 6 -> slot 7 (row 1, col 1): empty, non-native
     s.tap("A", settle=150)                                  # A on the empty cell -> its menu
-    s.shot("03_empty_menu_create_and_paste", "#120 F1 control: the empty Bank "
-           "cell's menu -- CREATE, PASTE HERE, CANCEL -- BOTH present, unchanged by "
-           "the F1 gate (xg_create_row/xg_paste_row are true throughout an ordinary "
-           "Gen-3 session)")
+    s.shot("03_empty_menu_create_and_paste", "#120 F1 control: slot 7's (the first "
+           "genuinely empty, non-native cell) menu -- CREATE, PASTE HERE, CANCEL -- "
+           "BOTH present, unchanged by the F1 gate (xg_create_row/xg_paste_row are "
+           "true throughout an ordinary Gen-3 session)")
     return s
 
 
