@@ -39,7 +39,8 @@ Four checks:
   (f) review fix 4, BACKLOG #191a: source/pdna_bank.c's meta_save() -- the
       ONLY path pdna_bank_next_serial() reaches to persist a new serial --
       creates /PokeDNA/bank (f_mkdir, same return-ignored idiom
-      pdna_bank_show() already uses) before its own sf_write_verified() call.
+      pdna_bank_show() already uses) before its own write call (sf_save_rolling()
+      since BACKLOG #168b, was sf_write_verified()).
       Without this, the first-ever grab on a card whose Bank screen was never
       opened refuses with a silent beep (meta_save's write fails at the
       FatFs layer -- no directory to write into) -- Guy's own #191a report,
@@ -187,23 +188,26 @@ def check_move_within_moves(gen12_text: str) -> list[str]:
 def check_meta_save_mkdirs(bank_text: str) -> list[str]:
     """(f) review fix 4, BACKLOG #191a: meta_save()'s own body (comments stripped)
     must call f_mkdir( at least twice (the "/PokeDNA" then PDNA_BANK_DIR pair
-    pdna_bank_show() already uses) BEFORE its own write call
-    (sf_write_verified() -- meta_save's real write; the assignment-only prep code
-    above it does not touch the card). Two separate f_mkdir( calls, not one,
-    because a straight-to-PDNA_BANK_DIR mkdir fails on a card where "/PokeDNA"
-    itself does not exist yet either (same two-level idiom pdna_bank_show() uses)."""
+    pdna_bank_show() already uses) BEFORE its own write call. BACKLOG #168b
+    (2026-09-22) changed that write from sf_write_verified() (no backup) to
+    sf_save_rolling() (one rolling bank.meta.bak, same discipline box_save()
+    already uses) -- the mkdir-before-write ordering this check pins is
+    unaffected by which write primitive runs, so it now anchors on
+    sf_save_rolling( instead. Two separate f_mkdir( calls, not one, because a
+    straight-to-PDNA_BANK_DIR mkdir fails on a card where "/PokeDNA" itself
+    does not exist yet either (same two-level idiom pdna_bank_show() uses)."""
     body = strip_comments(extract_function_body(bank_text, "meta_save"))
     if not body:
         return ["pdna_bank.c: meta_save() function body not found"]
-    wm = re.search(r"sf_write_verified\s*\(", body)
+    wm = re.search(r"sf_save_rolling\s*\(", body)
     if not wm:
-        return ["pdna_bank.c: meta_save() no longer calls sf_write_verified( -- "
+        return ["pdna_bank.c: meta_save() no longer calls sf_save_rolling( -- "
                 "check is stale, update it"]
     head = body[:wm.start()]
     if len(re.findall(r"\bf_mkdir\s*\(", head)) < 2:
         return ["pdna_bank.c: meta_save() does not f_mkdir( the Bank directory "
                 "(both '/PokeDNA' and PDNA_BANK_DIR) before its own "
-                "sf_write_verified( call -- the first-ever grab on a virgin card "
+                "sf_save_rolling( call -- the first-ever grab on a virgin card "
                 "refuses with a silent beep again (BACKLOG #191a regression)"]
     return []
 

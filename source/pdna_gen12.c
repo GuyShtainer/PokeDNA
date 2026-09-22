@@ -3230,6 +3230,13 @@ static bool __attribute__((noinline)) gb_paste_write(const GbEditMon* mon, int b
  * ROW_H (9 px) from y=PDNA_SIDECAR_LOSS_ROW_Y0 (16) -> 106 px, inside UI_SCR_H (160). */
 static bool __attribute__((noinline))
 gb_down_loss_screen(const Gb12Notes* n, uint8_t g2_item, bool item_travels, bool is_copy) {
+  /* BACKLOG #207 (from the s150-12 review): this dialog had no boxoam_suspend/resume
+   * bracket, so the PC box's live OBJ icons sat over the dialog text (visible in the
+   * --s150-12 chain's frames 16/20). Bracketed exactly like the same idiom elsewhere
+   * in this file (release_box_all, above) and in pdna_box.c (:1089-1091 / :1253-1264):
+   * suspend before the FIRST draw, resume after the last key read -- the ONE return
+   * below is covered either way. */
+  boxoam_suspend();
   ui_clear();
   ui_text(4, 3, UI_TITLE, PDNA_SIDECAR_LOSS_TITLE);
   ui_hline(0, 13, UI_SCR_W, UI_BORDER);
@@ -3254,6 +3261,7 @@ gb_down_loss_screen(const Gb12Notes* n, uint8_t g2_item, bool item_travels, bool
   ui_text(4, y, UI_DIM,  PDNA_SIDECAR_LOSS_B_CANCEL);
 
   u16 k = s_wait(KEY_A | KEY_B);
+  boxoam_resume();
   return (k & KEY_A) != 0;
 }
 
@@ -3425,7 +3433,12 @@ BankDownResult gb_bank_down_gen3(BoxSource* src, int dst_box, int dst_cell,
   Gb12Result cr = bdc_convert_gen3_core(cell80, met_game, out80, &written, &notes, &g3item);
   if (cr != GB12_OK) {                                                      /* 16(c)/(d): egg/damaged/other */
     snd_deny();
+    /* BACKLOG #168a review D6: this dialog is drawn with the PC box's OBJ icons
+     * still live, same class of bug as #207's loss screen (gb_down_loss_screen,
+     * above) -- bracket it the same way. */
+    boxoam_suspend();
     msg_wait(PDNA_SIDECAR_XFER_TITLE, UI_WARN, gen12_reason_text(cr), 0);
+    boxoam_resume();
     return BANK_DOWN_REFUSED;
   }
 
@@ -3435,7 +3448,11 @@ BankDownResult gb_bank_down_gen3(BoxSource* src, int dst_box, int dst_cell,
    * flight guards is about ledger entries, never about cells. */
   if (!copy && app_xfer_pending()) {                                        /* 16(g), decision 9 */
     snd_deny();
+    /* BACKLOG #168a review D6: same class as the gen12_reason_text dialog above --
+     * bracket it so the PC box's OBJ icons do not sit over the SAVE FIRST text. */
+    boxoam_suspend();
     msg_wait(PDNA_XFER_SAVEFIRST_TITLE, UI_WARN, PDNA_XFER_SAVEFIRST_L1, PDNA_XFER_SAVEFIRST_L2);
+    boxoam_resume();
     return BANK_DOWN_REFUSED;
   }
 

@@ -436,18 +436,42 @@ def up_order_facts(lines, start, end):           # shared by the real check AND 
     c = first_match_line(lines, start, end, COMMIT_RE)
     r = first_match_line(lines, start, end, RELEASE_UP_RE)
     z = first_match_line(lines, start, end, ZEROBACK_RE)
-    if c is None: return False, "drop_held: no `ok = src->commit()` line in the UP branch"
-    if r is None: return False, "drop_held: no `s_xfer_peer->release_up(` call"
-    if z is None: return False, "drop_held: no zero-back memset of the destination cell"
-    if not c < r: return False, (f"drop_held: src->commit() (line {c+1}) does NOT come before "
+    if c is None: return False, "drop_held_up: no `ok = src->commit()` line in the UP branch"
+    if r is None: return False, "drop_held_up: no `s_xfer_peer->release_up(` call"
+    if z is None: return False, "drop_held_up: no zero-back memset of the destination cell"
+    if not c < r: return False, (f"drop_held_up: src->commit() (line {c+1}) does NOT come before "
                                  f"release_up() (line {r+1}) -- the Game Boy save would lose the "
                                  f"mon before the Bank has it")
-    if not c < z < r: return False, (f"drop_held: the zero-back memset (line {z+1}) is not between "
+    if not c < z < r: return False, (f"drop_held_up: the zero-back memset (line {z+1}) is not between "
                                      f"commit() ({c+1}) and release_up() ({r+1})")
     if first_match_line(lines, z, r, RETURN_RECS_RE) is None:
-        return False, (f"drop_held: no `return recs;` between the zero-back memset (line {z+1}) and "
+        return False, (f"drop_held_up: no `return recs;` between the zero-back memset (line {z+1}) and "
                        f"release_up() (line {r+1}) -- release_up is not dominated by the "
                        f"commit-failure early-out")
+    return True, "ok"
+
+
+# BACKLOG #168a review D2 (check (ad), shared by the real check and MUT AD below):
+# `pdna_bank_serial_trusted()` says only that the LAST meta_load() this session parsed
+# a clean primary -- it cannot see a bank.meta restored from .bak, an older
+# /PokeDNA/bank copied back, or a second card's boxes dropped in beside this card's
+# meta. The fix pays the full 16-box scan ONCE per session regardless of `trusted`,
+# via a `!s_up_scan_done` latch OR'd onto the same guard line the reviewer's original
+# bare `if (!pdna_bank_serial_trusted())` used -- a revert to the bare form silently
+# skips the WHOLE scan on an ordinary card (trusted stays true all session) even
+# though it has never actually run once.
+UP_SCAN_GUARD_RE = re.compile(r"if\s*\(\s*!pdna_bank_serial_trusted\(\)")
+UP_SCAN_LATCH_RE = re.compile(r"s_up_scan_done")
+
+
+def up_scan_latch_facts(lines, start, end):      # shared by the real check AND MUT AD
+    g = first_match_line(lines, start, end, UP_SCAN_GUARD_RE)
+    if g is None:
+        return False, "drop_held_up: no `if (!pdna_bank_serial_trusted()` guard line found"
+    if not UP_SCAN_LATCH_RE.search(lines[g]):
+        return False, (f"drop_held_up: the scan guard (line {g+1}) does not also check "
+                       f"`s_up_scan_done` -- on an ordinary card `trusted` stays true all "
+                       f"session and the 16-box scan would never run even once")
     return True, "ok"
 
 
@@ -1041,15 +1065,17 @@ def main() -> int:
           "occupancy check -- a refused GB lift could fall through unnoticed")
 
     # ---- (i) REVIEW F2: drop_held's UP branch commits the Bank write BEFORE it ever
-    # calls release_up (the Game Boy delete) -- pins the order, not just presence. ----
-    s, e = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
+    # calls release_up (the Game Boy delete) -- pins the order, not just presence.
+    # BACKLOG #170: the UP branch is now its own noinline helper, drop_held_up --
+    # re-anchored here in the same commit that moved it. ----
+    s, e = extract_function(box_lines, r"^static uint8_t\* __attribute__\(\(noinline\)\) drop_held_up\(")
     ok, d = up_order_facts(box_lines, s, e)
     check(ok, d)
 
     # ---- (n1) BACKLOG #150 S150-12 decision 6: the release_up-optional wrap --
     # `if (s_xfer_peer->release_up)` after commit()/hand-empty, and app_pc_queue_note(
-    # in its else, in that line order. ----
-    s, e = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
+    # in its else, in that line order. BACKLOG #170: re-anchored to drop_held_up. ----
+    s, e = extract_function(box_lines, r"^static uint8_t\* __attribute__\(\(noinline\)\) drop_held_up\(")
     ok, d = n1_order_facts(box_lines, s, e)
     check(ok, d)
 
@@ -1258,6 +1284,14 @@ def main() -> int:
                                    PASTE_WRITE_CALL_RE, "gb_paste_hook")
     check(ok, msg)
 
+    # ---- (ad) BACKLOG #168a review D2: drop_held_up's ident32-collision scan runs
+    # once per session regardless of pdna_bank_serial_trusted() -- the `s_up_scan_done`
+    # latch must be part of the same guard line, not a bare `!pdna_bank_serial_trusted()`
+    # check. MUT AD below reverts it and must be caught. ----
+    s, e = extract_function(box_lines, r"^static uint8_t\* __attribute__\(\(noinline\)\) drop_held_up\(")
+    ok, d = up_scan_latch_facts(box_lines, s, e)
+    check(ok, d)
+
     # ---- (f) review F3: the self-mutation harness, every run ----
     self_test_mutation_detection(box_lines, gen12_lines)
 
@@ -1373,10 +1407,11 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str]) -
           f"start_carry: count dropped to {lift_count_mut} (expected 3, was 4)")
 
     # MUT H (REVIEW F2): swap the release_up() line to ABOVE the `ok = src->commit()`
-    # line in a copy of drop_held's body -- the exact defect the reviewer demonstrated
-    # (the Game Boy save would lose the mon before the Bank has committed it) -- and
-    # assert up_order_facts() reports failure.
-    s, e = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
+    # line in a copy of drop_held_up's body (BACKLOG #170: re-anchored -- the UP
+    # branch moved into its own noinline helper) -- the exact defect the reviewer
+    # demonstrated (the Game Boy save would lose the mon before the Bank has
+    # committed it) -- and assert up_order_facts() reports failure.
+    s, e = extract_function(box_lines, r"^static uint8_t\* __attribute__\(\(noinline\)\) drop_held_up\(")
     body = box_lines[s:e]
     commit_i = first_match_line(body, 0, len(body), COMMIT_RE)
     release_i = first_match_line(body, 0, len(body), RELEASE_UP_RE)
@@ -1391,10 +1426,11 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str]) -
         print(f"  MUT H demonstration -- release_up() line swapped above src->commit(): {detail}")
 
     # MUT N1 (BACKLOG #150 S150-12 decision 6): move the `app_pc_queue_note(` line to
-    # ABOVE `ok = src->commit()` in a copy of drop_held's body -- the copy would be
-    # queued for the PC offer before the Bank write that supposedly landed it has even
-    # been attempted -- and assert n1_order_facts() reports failure.
-    s, e = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
+    # ABOVE `ok = src->commit()` in a copy of drop_held_up's body (BACKLOG #170:
+    # re-anchored, same reason as MUT H above) -- the copy would be queued for the PC
+    # offer before the Bank write that supposedly landed it has even been attempted --
+    # and assert n1_order_facts() reports failure.
+    s, e = extract_function(box_lines, r"^static uint8_t\* __attribute__\(\(noinline\)\) drop_held_up\(")
     body = box_lines[s:e]
     commit_i3 = first_match_line(body, 0, len(body), COMMIT_RE)
     queue_i = first_match_line(body, 0, len(body), PC_QUEUE_NOTE_RE)
@@ -1916,6 +1952,25 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str]) -
                         f"have been caught but was not: {detail}")
         print(f"  MUT Z demonstration -- gb_paste_fill_moves( line moved after "
               f"gb_paste_write(: {detail}")
+
+    # MUT AD (BACKLOG #168a review D2, check (ad)'s own demonstration): revert
+    # drop_held_up's scan guard back to the reviewer's original bare
+    # `if (!pdna_bank_serial_trusted()) {` -- on a copy -- and assert
+    # up_scan_latch_facts() catches the missing `s_up_scan_done` latch.
+    s, e = extract_function(box_lines, r"^static uint8_t\* __attribute__\(\(noinline\)\) drop_held_up\(")
+    body = box_lines[s:e]
+    guard_i = first_match_line(body, 0, len(body), UP_SCAN_GUARD_RE)
+    check(guard_i is not None, "MUT AD: could not locate drop_held_up's scan guard line "
+                                "in the real source -- fix this test")
+    if guard_i is not None:
+        mut_ad = list(body)
+        mut_ad[guard_i] = "  if (!pdna_bank_serial_trusted()) {"
+        ok9, detail = up_scan_latch_facts(mut_ad, 0, len(mut_ad))
+        check(not ok9, f"MUT AD (scan guard reverted to the bare "
+                        f"`!pdna_bank_serial_trusted()` form) should have been caught but "
+                        f"was not: {detail}")
+        print(f"  MUT AD demonstration -- drop_held_up's scan guard reverted to the bare "
+              f"`if (!pdna_bank_serial_trusted())` form: {detail}")
 
 # ---- (m) 2026-09-16 (merged-tree shot lane): the DOWN dispatch's `occupied` refusal is scoped to
 # the GEN3 arm. An unscoped `&& !occupied` on the dispatch condition made the EXACT arm refuse
