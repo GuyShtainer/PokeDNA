@@ -1336,6 +1336,7 @@ def main() -> int:
         (gen12_lines, r"^static bool gb_release_up_hook\(int box, int slot, const uint8_t cell80\[80\]\) \{",
          "gb_release_up_hook"),
         (box_lines, r"^pc_bank_restore_done\(const uint8_t g3_rec80\[80\]\) \{", "pc_bank_restore_done"),
+        (gen12_lines, r"^static bool __attribute__\(\(noinline\)\) gb_paste_write\(", "gb_paste_write"),
     ):
         ok, d = invalidate_call_facts(lines, sig_re, label)
         check(ok, d)

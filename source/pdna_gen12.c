@@ -3195,6 +3195,7 @@ static bool __attribute__((noinline)) gb_paste_write(const GbEditMon* mon, int b
     msg_wait(PDNA_SIDECAR_NOTWRITTEN_TITLE, UI_WARN, sf_status_str(wst), PDNA_SIDECAR_NOTWRITTEN_L2);
     return false;
   }
+  app_xv_cache_invalidate();   /* BACKLOG #213: this write's f_mkdir CREATES /PokeDNA/xfer */
 
   int newslot = -1;
   GbsStatus ist = gbs_insert(&g_ed->s, box, mon, &newslot, g_ed->list);
