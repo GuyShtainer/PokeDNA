@@ -1728,9 +1728,17 @@ def run_u5_pack(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm qty=10 -> gbb_pocket_of(game,0x9D)=BALLS
                                                               # != ITEMS (the pocket this menu opened from) ->
                                                               # AUTO-ROUTES: gbb_insert(game,bag,BALLS,0x9D,10),
-                                                              # a fresh slot, GBB_OK, no message. Still viewing
-                                                              # the ITEMS pocket -- the new row lives in BALLS,
-                                                              # invisible from here (proven by the next shot).
+                                                              # a fresh slot, GBB_OK -- Review D4: a SUCCESSFUL
+                                                              # route to a DIFFERENT pocket than this menu opened
+                                                              # from now tells the player where it landed
+                                                              # (pdna_bag.c:447-451's own "RIGHT POCKET" shape).
+    s.shot("09f_right_pocket", "U5 (Review D4, UX parity with pdna_bag.c's "
+                                "own Gen-3 routing feedback): 'RIGHT POCKET / "
+                                "Put in BALLS.' -- the SAME pocket name "
+                                "pocket_name_of() gives every other message "
+                                "in this file, now also telling the player "
+                                "the item did NOT stay in Items")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss the msg_wait -- back on the Items list
     s.tap("RIGHT", settle=gb_shots.BIG_SETTLE)              # Items -> Balls: does the row actually land there?
     s.shot("10_lands_in_balls", "U5 (BACKLOG #195, 'a Ball picked from the "
                                  "Items pocket -> lands in Balls'): switching "

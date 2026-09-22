@@ -221,27 +221,57 @@ static bool gbpack_add_to_pc(GbBag* bag, GbGame game, uint8_t id8) {
   return true;
 }
 
+/* Review D4: the SAME pocket display names kPocketNames already carries,
+ * addressed by GbBagPocket value instead of the UI cycle position
+ * kPocketNames itself is indexed by (kPocketNames[pcyc], pcyc != the enum
+ * value -- ITEMS=0/KEY=1/BALLS=2/TMHM=3/PC=4 in gb_bag.h's own enum order,
+ * but kUiPocket cycles ITEMS/BALLS/KEY/TMHM -- indexing kPocketNames
+ * directly by GbBagPocket would silently print the WRONG name for Key/
+ * Balls). Same literal strings, correctly addressed. */
+static const char* pocket_name_of(GbBagPocket p) {
+  switch (p) {
+    case GBB_POCKET_ITEMS: return "ITEMS";
+    case GBB_POCKET_BALLS: return "BALLS";
+    case GBB_POCKET_KEY:   return "KEY ITEMS";
+    case GBB_POCKET_TMHM:  return "TM/HM";
+    case GBB_POCKET_PC:    return "PC ITEM STORE";
+    default:                return "?";
+  }
+}
+
 /* BACKLOG #195 F2: ADD ITEM into one of the four real pockets -- auto-routes
  * to the picked id's OWN pocket via gbb_pocket_of(), the Gen-3 bag's own
- * shape (pdna_bag.c:445-452), NOT necessarily the pocket this menu was
- * opened from. The old "WRONG POCKET / no per-item table yet" refusal is
- * gone: gbb_pocket_of() IS that table now. Same false/true cancel contract
- * as gbpack_add_to_pc() above (Key items have no quantity prompt to cancel,
- * so this branch always returns true for a Key item -- it never reaches
- * the point where a cancel is even possible). */
-static bool gbpack_add_routed(GbBag* bag, GbGame game, uint8_t id8) {
+ * shape (pdna_bag.c:445-452), NOT necessarily `pocket` (the pocket this menu
+ * was opened from). The old "WRONG POCKET / no per-item table yet" refusal
+ * is gone: gbb_pocket_of() IS that table now. Same false/true cancel
+ * contract as gbpack_add_to_pc() above (Key items have no quantity prompt
+ * to cancel, so this branch always returns true for a Key item -- it never
+ * reaches the point where a cancel is even possible).
+ *
+ * Review D4 (UX parity with pdna_bag.c:447-451, the Gen-3 bag's own routing
+ * feedback): a successful insert into a DIFFERENT pocket than `pocket` now
+ * tells the player where it landed ("RIGHT POCKET / Put in <name>."), the
+ * exact wording/shape pdna_bag.c's own `bag_msg("RIGHT POCKET", UI_OK, m, 0)`
+ * uses; a FULL refusal now names the pocket that was actually full (the
+ * TARGET, which is `pocket` itself when not routing) instead of the generic
+ * "This pocket" -- pdna_bag.c's own `bag_msg("POCKET FULL", UI_WARN,
+ * pk_pocket_name(dp), "is full.")` shape. */
+static bool gbpack_add_routed(GbBag* bag, GbGame game, GbBagPocket pocket, uint8_t id8) {
   GbBagPocket target = gbb_pocket_of(game, id8);
   if (target == GBB_POCKET_TMHM) {
-    /* Not a list slot -- its own count array (gb_bag.h's own contract). A
-     * count, not a "+N" quantity, matching the existing TM/HM row-edit
-     * prompt elsewhere in this file. Review D1 fix: this used to call the
-     * cancel-blind num_entry() seeded at 0, so B at the COUNT prompt SET the
-     * TM's count to 0 (data loss on an already-owned TM) instead of
-     * cancelling, and the prompt opened at 0 instead of the CURRENT count;
-     * gbb_tmhm_set()'s own status was also dropped. num_entry_opt() seeded
-     * at the real current count, cancel returns false (nothing attempted,
-     * same contract every other branch here already gives its caller), and
-     * a non-GBB_OK status is reported instead of silently swallowed. */
+    /* Not a list slot -- its own count array (gb_bag.h's own contract), so
+     * it has no FULL/RIGHT-POCKET notion at all (every TM/HM index always
+     * "exists" once the game has the pocket, gb_bag.h's own tmhm_set()
+     * comment) -- unaffected by D4. A count, not a "+N" quantity, matching
+     * the existing TM/HM row-edit prompt elsewhere in this file. Review D1
+     * fix: this used to call the cancel-blind num_entry() seeded at 0, so B
+     * at the COUNT prompt SET the TM's count to 0 (data loss on an already-
+     * owned TM) instead of cancelling, and the prompt opened at 0 instead of
+     * the CURRENT count; gbb_tmhm_set()'s own status was also dropped.
+     * num_entry_opt() seeded at the real current count, cancel returns
+     * false (nothing attempted, same contract every other branch here
+     * already gives its caller), and a non-GBB_OK status is reported
+     * instead of silently swallowed. */
     int tmi = gbb_tmhm_index_of(game, id8);
     if (tmi < 0) { msg_wait("BAD ID", UI_WARN, "That item id does not exist.", 0); return true; }
     uint8_t cur = 0;
@@ -258,9 +288,13 @@ static bool gbpack_add_routed(GbBag* bag, GbGame game, uint8_t id8) {
      * for this pocket, gb_bag.h's own contract). */
     GbBagOpStatus st = gbb_insert(game, bag, GBB_POCKET_KEY, id8, 1u);
     if (st == GBB_ERR_FULL)
-      msg_wait("BAG FULL", UI_WARN, "This pocket has no free slot.", 0);
+      msg_wait("POCKET FULL", UI_WARN, pocket_name_of(GBB_POCKET_KEY), "is full.");
     else if (st == GBB_ERR_ARG)
       msg_wait("ALREADY HELD", UI_WARN, "You already have this key item.", 0);
+    else if (st == GBB_OK && GBB_POCKET_KEY != pocket) {
+      char m[40]; siprintf(m, "Put in %s.", pocket_name_of(GBB_POCKET_KEY));
+      msg_wait("RIGHT POCKET", UI_OK, m, 0);
+    }
     return true;
   }
   if (target == GBB_POCKET_ITEMS || target == GBB_POCKET_BALLS) {
@@ -270,12 +304,15 @@ static bool gbpack_add_routed(GbBag* bag, GbGame game, uint8_t id8) {
     uint8_t qty8 = (uint8_t)(qty > 0xFFu ? 0xFFu : qty);
     GbBagOpStatus st = gbb_insert(game, bag, target, id8, qty8);
     if (st == GBB_ERR_FULL)
-      msg_wait("BAG FULL", UI_WARN, "This pocket has no free slot.", 0);
+      msg_wait("POCKET FULL", UI_WARN, pocket_name_of(target), "is full.");
     else if (st == GBB_ERR_BADID)
       msg_wait("BAD ID", UI_WARN, "That item id does not exist.", 0);
     else if (st == GBB_ERR_QTY) {
       if (qty_in_range) msg_wait("SATURATED", UI_WARN, "Quantity clamped to the cap.", 0);
       else msg_wait("BAD QUANTITY", UI_WARN, "Quantity must be 1-99.", 0);
+    } else if (st == GBB_OK && target != pocket) {
+      char m[40]; siprintf(m, "Put in %s.", pocket_name_of(target));
+      msg_wait("RIGHT POCKET", UI_OK, m, 0);
     }
     return true;
   }
@@ -343,7 +380,7 @@ static int gbpack_start_menu(GbBag* bag, GbBagPocket pocket, GbGame game, int* s
       uint8_t id8 = (uint8_t)id16;
 
       bool did_add = (pocket == GBB_POCKET_PC) ? gbpack_add_to_pc(bag, game, id8)
-                                                : gbpack_add_routed(bag, game, id8);
+                                                : gbpack_add_routed(bag, game, pocket, id8);
       if (!did_add) continue;   /* QUANTITY prompt was cancelled -- nothing attempted */
       *sel = l->count > 0 ? l->count - 1 : 0;
     } else if (csel == 1) {   /* REMOVE */
