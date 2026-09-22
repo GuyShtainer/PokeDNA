@@ -1988,7 +1988,12 @@ def run_b89_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     s.shot("03_menu", "BACKLOG #202 F1: START -> the shell's own in-frame menu -- "
                        "CLEAR ALL / SET COUNT / ADD TEAM / DELETE TEAM (BACKLOG "
                        "#194 F3's two newer rows, recaptioned here -- this frame "
-                       "used to show only the first two)")
+                       "used to show only the first two)",
+                       claim=["CLEAR ALL", "SET COUNT", "ADD TEAM", "DELETE TEAM"])
+                       # BACKLOG #184 retrofit: this is exactly the caption BACKLOG #198
+                       # item 5 found stale (predating the ADD/DELETE TEAM rows) --
+                       # pdna_gbhof.c's own kHofMenuLbl[], drawn via trainer_row_paint's
+                       # ui_text (fixed font)
 
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # CLEAR ALL -> app_confirm (A2: shell stays
                                                               # OPEN underneath; this full-screen ui_*
@@ -5464,7 +5469,9 @@ def run_s150_9_merge_screen(core_mod, image_mod, rom_emerald: Path, out_dir: Pat
     s.tap("A", settle=300)
     s.shot("06_merge_screen", "S150-9: A to drop -> the per-field MERGE screen -- "
            "'BACK TO ITS ORIGINAL' / 'Level 9 > 12  KEEP' (cursor here) / "
-           "'Moves changed  KEEP' / 'A flip  START apply  B cancel'")
+           "'Moves changed  KEEP' / 'A flip  START apply  B cancel'",
+           claim=["BACK TO ITS ORIGINAL", "KEEP"])  # BACKLOG #184 retrofit:
+           # pdna_layout.h's PDNA_XFERRESTORE_TITLE / PDNA_XFERMERGE_KEEP literals
     s.tap("A", settle=200)
     s.shot("07_level_take", "S150-9: A flips the cursor row -- LEVEL now TAKE")
     s.tap("DOWN", settle=150)
@@ -5495,7 +5502,9 @@ def run_s150_9_merge_screen(core_mod, image_mod, rom_emerald: Path, out_dir: Pat
            "ran here. drop_held's own rc<0 branch shows this same message for "
            "any negative pc_bank_restore_up return (source/pdna_box.c ~:1633-1642). "
            "Hardware-owed (docs/HW-QUEUE.md): whether the merge lands correctly "
-           "when a real card CAN allocate a serial is untested here.")
+           "when a real card CAN allocate a serial is untested here.",
+           claim=["TRANSFER RECORD UNREADABLE"])  # BACKLOG #184 retrofit:
+           # pdna_layout.h's PDNA_XFERREC_TITLE literal
 
     # ---- decision 7: slot 28 -- the "nothing changed" skip -----------------------
     s2 = gb_shots.Session(core_mod, image_mod, rom_emerald, out_dir, "s150_9b_")
@@ -5522,7 +5531,9 @@ def run_s150_9_merge_screen(core_mod, image_mod, rom_emerald: Path, out_dir: Pat
     s3.shot("01_already_restored", "S150-9 decision 8: A to drop -- 'ALREADY "
             "RESTORED / The Bank has its original. / Release this copy "
             "instead.' (PDNA_XFERDUP_*), the state refusal BEFORE the screen -- "
-            "nothing written, still holding")
+            "nothing written, still holding",
+            claim=["ALREADY RESTORED"])  # BACKLOG #184 retrofit:
+            # pdna_layout.h's PDNA_XFERDUP_TITLE literal
     s3.tap("A", settle=200)
     s3.shot("02_still_holding", "S150-9 decision 8: dismiss -- still carrying "
             "the slot-27 cell, footer 'A drop B cancel'")
@@ -5537,7 +5548,9 @@ def run_s150_9_merge_screen(core_mod, image_mod, rom_emerald: Path, out_dir: Pat
     s4.tap("A", settle=300)
     s4.shot("01_save_first", "S150-9 decision 8: A to drop -- 'SAVE FIRST / One "
             "transfer is waiting for / the game save. START > SAVE.' "
-            "(PDNA_XFER_SAVEFIRST_*) -- nothing written, still holding")
+            "(PDNA_XFER_SAVEFIRST_*) -- nothing written, still holding",
+            claim=["SAVE FIRST"])  # BACKLOG #184 retrofit:
+            # pdna_layout.h's PDNA_XFER_SAVEFIRST_TITLE literal
     s4.tap("A", settle=200)
     s4.shot("02_still_holding", "S150-9 decision 8: dismiss -- still carrying "
             "the slot-26 cell, footer 'A drop B cancel'")
