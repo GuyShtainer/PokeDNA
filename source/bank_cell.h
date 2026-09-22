@@ -36,7 +36,8 @@
  *   9    1  rec_len (33 Gen-1 box / 32 Gen-2 box)
  *  10    1  list_species (Gen-2 Egg = 0xFD; never 0xFF, which gb_commit refuses)
  *  11    1  flags: b0 came-from-party, b1 has-xfer-record, b2 queued-for-PC, b3 egg,
- *              b4 holds-item
+ *              b4 holds-item, b5 COPY (S150-12: the GB original still exists; permanent,
+ *              never cleared while the cell lives)
  *  12    7  rec[0..6]
  *  19    1  CONSTANT 0x01 -- the Gen-3 BoxPokemon flags byte. NEVER payload. Forces
  *              pk_decode_mon's plaintext isBadEgg bit, so pk3_validate() rejects every
@@ -96,6 +97,7 @@
 #define BC_FLAG_QUEUED_PC    0x04u  /* b2 */
 #define BC_FLAG_EGG          0x08u  /* b3 */
 #define BC_FLAG_HOLDS_ITEM   0x10u  /* b4 */
+#define BC_FLAG_COPY         0x20u  /* b5 -- a COPY whose GB original still exists; DOWN writes NO ledger entry (S150-12, BANK-CROSSGEN-DESIGN.md SS11.7 G-L3) */
 
 /* origin_game values (offset 68) */
 #define BC_ORIGIN_UNKNOWN 0u
@@ -115,6 +117,18 @@ _Static_assert(BC_OFF_OLDBUILD == 19u, "byte 19 must land on the Gen-3 BoxPokemo
 _Static_assert(BC_OFF_REC_LO + 7u == BC_OFF_OLDBUILD, "rec[0..6] must end exactly at byte 19");
 _Static_assert(BC_OFF_REC_HI + 26u == BC_OFF_OTNAME, "rec[7..32] must end exactly at byte 46");
 _Static_assert(BC_OFF_RESERVED + 3u == BC_CELL_BYTES, "the reserved tail must end at byte 80");
+/* S150-12 BC-COPY-2: the six BC_FLAG_* bits must be pairwise disjoint (each its own bit)
+ * and all fit under 0x40 (bits 0..5 of an 8-bit flags byte) -- a compile-time guard
+ * that catches a copy/paste bit collision before it ever reaches a packed cell. */
+_Static_assert((BC_FLAG_FROM_PARTY | BC_FLAG_HAS_XFER_REC | BC_FLAG_QUEUED_PC | BC_FLAG_EGG |
+                BC_FLAG_HOLDS_ITEM | BC_FLAG_COPY) ==
+               (BC_FLAG_FROM_PARTY + BC_FLAG_HAS_XFER_REC + BC_FLAG_QUEUED_PC + BC_FLAG_EGG +
+                BC_FLAG_HOLDS_ITEM + BC_FLAG_COPY),
+               "BC_FLAG_* bits must be pairwise disjoint (OR must equal sum)");
+_Static_assert(BC_FLAG_FROM_PARTY < 0x40u && BC_FLAG_HAS_XFER_REC < 0x40u &&
+               BC_FLAG_QUEUED_PC < 0x40u && BC_FLAG_EGG < 0x40u &&
+               BC_FLAG_HOLDS_ITEM < 0x40u && BC_FLAG_COPY < 0x40u,
+               "every BC_FLAG_* value must fit under 0x40 (bits 0..5 of the flags byte)");
 
 /* Everything bc_unpack() hands back beyond the GbEditMon itself -- the cell's own
  * bookkeeping fields, which have no home in GbEditMon (a pure Gen-1/2 record editor that

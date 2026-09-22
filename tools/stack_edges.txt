@@ -355,7 +355,13 @@ BoxSource.can_lift @80 in src_can_lift -> gb_can_lift_hook
 # drop_held's `s_xfer_peer->release_up(...)` call (release_up @16) -- both match the
 # natural ARM EABI layout of BoxXferOps (gen@0 padded to 4, lift_up@4, preview_down@8,
 # accept_down@12, release_up@16, move_within@20).
-BoxXferOps.lift_up @4 in start_carry -> gb_lift_up_hook
+# BACKLOG #150 S150-12: the read-only mount's k_gb_xfer_ro table installs a SECOND
+# lift_up implementation (gb_lift_copy_hook, the COPY-flavoured lift) at the same
+# offset 4 -- the multi-target idiom of BoxSource.can_edit @44 in src_can_lift below
+# (-> banksrc_can_edit gbsrc_can_edit app_can_edit). Both hooks are reachable through
+# the identical struct-field load; only which TABLE is installed differs at runtime
+# (pdna_gen12.c's g_ed ? &k_gb_xfer : &k_gb_xfer_ro selector).
+BoxXferOps.lift_up @4 in start_carry -> gb_lift_up_hook gb_lift_copy_hook
 BoxXferOps.release_up @16 in drop_held -> gb_release_up_hook
 
 # BACKLOG #187/#191a, F2: BoxXferOps.move_within (@20, see the layout comment just

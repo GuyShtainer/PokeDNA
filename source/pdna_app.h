@@ -556,6 +556,14 @@ bool     app_arena_held(void);
  * session has borrowed this arena (xg_pc_live, source/xfer_gate.h). */
 bool app_gen3_pc_live(void);
 
+/* BACKLOG #150 S150-12 decision 12: a copy just landed in the Bank (drop_held's UP
+ * branch, the read-only-mount vtable's missing release_up) -- bump the session-RAM
+ * "waiting for the PC" counter and remember which Bank box it landed in, for the
+ * mount-exit offer (pdna_gen12.c gb_ro_exit_offer). Saturates at 255; a power-off
+ * before the exit loses only the offer, never the cell (its flags are already on
+ * the card). Defined in pdna_gen12.c next to app_gb_session_gen(). */
+void app_pc_queue_note(int bank_box);
+
 /* ---- borrowed EWRAM cache (the box screen's SD/cache-sourced pose-swap frame-1s) ----
  * The real Gen-3 2-frame icon pose swap needs a persistent 15,360 B cache (30 grid
  * slots x one 512 B "other pose" frame) so a per-tick swap never touches the SD card
