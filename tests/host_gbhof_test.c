@@ -566,14 +566,38 @@ static void set_mon_roundtrip(const char* file) {
           "%s: DVs changed on a same-species edit", file);
   }
 
-  /* Pad-byte preservation (Gen 1 only: offsets +13..+15 of the 16-byte record). */
+  /* Pad bytes (Gen 1 only: offsets +13..+15 of the 16-byte record).
+   *
+   * b194 review D5, honesty fix: on any REAL corpus record `before[13..15]` is
+   * ALWAYS {0,0,0} -- hof_slot_present()'s own discriminator (gb_hof.c) refuses
+   * to treat a slot as present at all unless its pad bytes already read zero, so
+   * a record this test can even reach via gbh_team()'s own index never carries a
+   * non-zero pad to begin with. This check therefore does NOT prove "gbh_set_mon
+   * explicitly preserves whatever pad byte was there" (there is no copy-forward
+   * step to preserve one) -- it proves the WEAKER but still real claim that
+   * hof_write_mon()'s Gen-1 branch writes are BOUNDED to exactly its declared
+   * 13-byte span [mon_off, mon_off+13) and structurally cannot reach mon_off+13
+   * ..+15 at all (gbs_write_outside_sum(s, mon_off, rec, sizeof rec) with
+   * sizeof rec == 13). A mutant that widens that write to 16 bytes (or otherwise
+   * pokes the pad range) still fails here -- proven below by the "skip pad
+   * preservation" mutation run -- but a mutant that left a COPY-FORWARD bug in
+   * hypothetical future code (preserving the WRONG source bytes into the pad)
+   * could not be caught by this check, since there is no such step for it to
+   * mutate today. Asserting the precondition explicitly rather than silently
+   * relying on it. */
   if (s.gen == GB_GEN1) {
+    CHECKF(before[13] == 0 && before[14] == 0 && before[15] == 0,
+          "%s: precondition failed -- a REAL record's pad bytes must already be "
+          "0 (got %02X %02X %02X); if this fires, hof_slot_present()'s own "
+          "discriminator let a non-pad-zero slot through, which would also mean "
+          "this pad check below is not exercising what it claims to",
+          file, before[13], before[14], before[15]);
     uint8_t after[16];
     memcpy(after, g_img + mon0_off, sizeof after);
     CHECKF(memcmp(after + 13, before + 13, 3) == 0,
-          "%s: pad bytes +13..+15 changed by gbh_set_mon (got %02X %02X %02X, "
-          "want %02X %02X %02X)", file, after[13], after[14], after[15],
-          before[13], before[14], before[15]);
+          "%s: gbh_set_mon's write reached outside its declared 13-byte span -- "
+          "pad bytes +13..+15 changed (got %02X %02X %02X, want %02X %02X %02X)",
+          file, after[13], after[14], after[15], before[13], before[14], before[15]);
   }
 
   /* Species change on Gen 2: gbh_roll_dv() gives a fresh quad; readback must carry

@@ -12,6 +12,13 @@
  * shared little-endian helper would be too easy to grab by mistake on this tree). --- */
 static uint16_t rd16be(const uint8_t* p) { return (uint16_t)(((uint16_t)p[0] << 8) | p[1]); }
 
+/* One team's worth of zero bytes, reused for every zero-fill in this file -- 98 B
+ * max (Gen 2), well under GBS_SCRATCH_BYTES; a .rodata constant, never a stack
+ * array (hard rule 2). D5 (b194 review, golden rule 6): ONE file-static instead of
+ * three separate function-local copies (gbh_clear/gbh_append_team/gbh_delete_team
+ * each declared their own identical `static const uint8_t k_zero[98] = {0};`). */
+static const uint8_t k_zero[98] = {0};
+
 static GbGame hof_game(const GbSession* s) {
   /* Yellow deliberately maps to GBF_G_RED here (gbt_game/gbb_game's own convention,
    * gb_bag.c:131): every HOF offset this table defines is numerically identical on
@@ -224,9 +231,6 @@ GbsStatus gbh_clear(GbSession* s) {
 
   uint32_t stride = hof_team_bytes(s);
   int cap = hof_capacity(s);
-  /* One team's worth of zero bytes, reused for every slot -- 98 B max (Gen 2), well
-   * under GBS_SCRATCH_BYTES; a .rodata constant, never a stack array (hard rule 2). */
-  static const uint8_t k_zero[98] = {0};
 
   for (int i = 0; i < cap; i++) {
     uint32_t off = base + (uint32_t)i * stride;
@@ -454,9 +458,8 @@ GbsStatus gbh_append_team(GbSession* s, const GbHofTeam* team) {
   uint32_t team_off = base + (uint32_t)slot * stride;
 
   /* Zero the whole team block first: a fresh record's unused mon slots (and, Gen 1,
-   * the pad bytes) must read back as the retail "empty" pattern -- reuses gbh_clear's
-   * own k_zero shape, GBH_NUM_MONS*16(+1 win-count byte on Gen 2) always <= 98. */
-  static const uint8_t k_zero[98] = {0};
+   * the pad bytes) must read back as the retail "empty" pattern -- the file-static
+   * k_zero (above), GBH_NUM_MONS*16(+1 win-count byte on Gen 2) always <= 98. */
   GbsStatus zst = (s->gen == GB_GEN1) ? gbs_write_outside_sum(s, team_off, k_zero, stride)
                                        : gbs_write_field(s, team_off, k_zero, stride);
   if (zst != GBS_OK) return zst;
@@ -499,7 +502,6 @@ GbsStatus gbh_delete_team(GbSession* s, int team_idx) {
    * gbh_append_team uses once its table is full), then zero the vacated top slot. */
   GbsStatus gst = hof_shift_close_gap(s, base, stride, cap, slot);
   if (gst != GBS_OK) return gst;
-  static const uint8_t k_zero[98] = {0};
   uint32_t last_off = base + (uint32_t)(cap - 1) * stride;
   GbsStatus zst = (s->gen == GB_GEN1) ? gbs_write_outside_sum(s, last_off, k_zero, stride)
                                        : gbs_write_field(s, last_off, k_zero, stride);
