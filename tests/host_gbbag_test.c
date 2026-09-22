@@ -477,6 +477,77 @@ static void noop_checksum_untouched(const char* file) {
   g_img[off] = before;   /* restore */
 }
 
+/* -------------------------------------------------- D3: PC store accepts TM/HM ids
+ *
+ * Review D3: is_valid_id() bounds a LIST pocket's own id space at
+ * gbb_max_item_id() (the real-item block, 0xBE for Gen 2) -- correct for
+ * Items/Key/Balls, but the real cartridge ALSO deposits TMs into the PC
+ * (pokecrystal engine/events/pokecenter_pc.asm's own .TryDepositItem: TM_HM's
+ * field-menu action is ITEMMENU_PARTY, routed to the depositable `.tossable`
+ * case, not `.no_toss`) -- gbb_insert() used to refuse a TM/HM id into the PC
+ * pocket with GBB_ERR_BADID, a refusal the real game does not give. */
+static void pc_accepts_tmhm(void) {
+  g_ran++;
+  /* Synthetic, no save needed -- the review's own literal pin. */
+  GbBag bag; memset(&bag, 0, sizeof bag);
+  CHECK(gbb_insert(GBF_G_GS, &bag, GBB_POCKET_PC, 0xBFu, 1u) == GBB_OK,
+        "gbb_insert(GS, PC, TM01/0xBF, 1) must be GBB_OK");
+  CHECK(bag.pockets[GBB_POCKET_PC].count == 1 &&
+        bag.pockets[GBB_POCKET_PC].entries[0].id == 0xBFu &&
+        bag.pockets[GBB_POCKET_PC].entries[0].qty == 1u,
+        "TM01 actually landed in the PC store's own list at qty 1");
+  /* Contrast: the SAME id is still refused for a pocket with no TM/HM slot
+   * at all -- gbpack_add_routed() never calls gbb_insert() for a TM outside
+   * the PC (it goes through gbb_tmhm_set() instead), so this must stay a
+   * refusal or a future caller could silently corrupt the Items list. */
+  GbBag bag2; memset(&bag2, 0, sizeof bag2);
+  CHECK(gbb_insert(GBF_G_GS, &bag2, GBB_POCKET_ITEMS, 0xBFu, 1u) == GBB_ERR_BADID,
+        "gbb_insert(GS, ITEMS, TM01, 1) must stay GBB_ERR_BADID -- only the PC pocket accepts TM/HM ids");
+}
+
+/* D3 zero-diff: the real-corpus half -- deposit a TM into an ACTUAL save's PC
+ * store, write it, re-read, and prove (a) the TM round-trips there and
+ * (b) every OTHER pocket is byte-for-byte untouched (the same "only the
+ * touched pocket's own bytes move" discipline B0/roundtrip already prove for
+ * the pockets gbb_insert() already accepted before this fix). */
+static void pc_accepts_tmhm_real(const char* file) {
+  uint32_t len = load(file);
+  if (!len) { printf("  SKIP %s (not present)\n", file); return; }
+  g_ran++;
+
+  GbSession s;
+  CHECKF(gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "%s: open (D3)", file);
+  GbGame g = session_game(&s);
+  GbBag before;
+  CHECKF(gbb_read(&s, &before), "%s: gbb_read (D3)", file);
+
+  GbBag bag = before;
+  GbBagOpStatus st = gbb_insert(g, &bag, GBB_POCKET_PC, 0xBFu, 1u);
+  if (st == GBB_ERR_FULL) { printf("  SKIP %s (D3: PC store already full)\n", file); return; }
+  CHECKF(st == GBB_OK, "%s: gbb_insert(PC, TM01) must be GBB_OK (status %d)", file, st);
+
+  GbsStatus wst = gbb_write(&s, &bag);
+  CHECKF(wst == GBS_OK, "%s: D3 gbb_write status %s", file, gbs_status_text(wst));
+
+  GbSession s2;
+  CHECKF(gbs_open(&s2, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "%s: D3 re-open", file);
+  GbBag after;
+  CHECKF(gbb_read(&s2, &after), "%s: D3 gbb_read after edit", file);
+
+  bool found = false;
+  for (int i = 0; i < after.pockets[GBB_POCKET_PC].count; i++)
+    if (after.pockets[GBB_POCKET_PC].entries[i].id == 0xBFu) found = true;
+  CHECKF(found, "%s: D3 TM01 did not round-trip into the PC store", file);
+
+  for (int p = 0; p < GBB_POCKET_COUNT; p++) {
+    if (p == GBB_POCKET_PC || p == GBB_POCKET_TMHM) continue;
+    CHECKF(memcmp(&after.pockets[p], &before.pockets[p], sizeof(GbBagList)) == 0,
+          "%s: D3 pocket %d changed bytes it should not have (only PC was touched)", file, p);
+  }
+  CHECKF(memcmp(after.tmhm_counts, before.tmhm_counts, sizeof after.tmhm_counts) == 0,
+        "%s: D3 tmhm_counts changed -- only the PC pocket's own list was inserted into", file);
+}
+
 /* ---------------------------------------------------------------- B: round trip */
 
 static void protect(uint32_t off, uint32_t len) {
@@ -987,6 +1058,11 @@ int main(void) {
   noop_checksum_untouched("Yellow.sav");
   noop_checksum_untouched("Gold.sav");
   noop_checksum_untouched("Crystal.sav");
+
+  printf("== D3: PC store accepts TM/HM ids ==\n");
+  pc_accepts_tmhm();
+  pc_accepts_tmhm_real("Gold.sav");
+  pc_accepts_tmhm_real("Crystal.sav");
 
   printf("== B: round trips ==\n");
   roundtrip("Red.sav", GB_GEN1);

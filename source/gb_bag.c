@@ -257,7 +257,20 @@ GbBagOpStatus gbb_insert(GbGame game, GbBag* bag, GbBagPocket pocket,
   if (!bag || pocket < 0 || pocket >= GBB_POCKET_COUNT || pocket == GBB_POCKET_TMHM)
     return GBB_ERR_ARG;
   if (!gbb_field_present(game, pocket)) return GBB_ERR_NOT_PRESENT;
-  if (!is_valid_id(game, id)) return GBB_ERR_BADID;
+  /* Review D3: is_valid_id() bounds every LIST pocket's own id space at
+   * gbb_max_item_id() (0xBE for Gen 2 -- the real-item block only), which is
+   * correct for Items/Key/Balls but WRONG for the PC store: the real
+   * cartridge deposits TMs into the PC too (pokecrystal engine/events/
+   * pokecenter_pc.asm's own .TryDepositItem -- TM_HM's field-menu action is
+   * ITEMMENU_PARTY, which that file's own jump table routes to the
+   * depositable `.tossable` case, not `.no_toss`). A TM/HM id (gbb_pocket_of()'s
+   * own TM/HM admission test, gbb_tmhm_index_of() >= 0) is therefore also
+   * valid here, but ONLY for the PC pocket -- Items/Key/Balls still refuse it
+   * (a TM has no slot in those pockets; gbpack_add_routed() already routes a
+   * picked TM to gbb_tmhm_set(), never here). */
+  if (!is_valid_id(game, id) &&
+      !(pocket == GBB_POCKET_PC && gbb_tmhm_index_of(game, id) >= 0))
+    return GBB_ERR_BADID;
 
   const GbBagPocketDesc* d = &k_pocket[pocket];
   if (!d->has_qty) {
