@@ -425,6 +425,81 @@ def n3_facts(lines, func_name):
     return n3_facts_over_body(body, func_name)
 
 
+# ---- REVIEW FIX (LOW, BACKLOG #150 S150-12): three findings the reviewer's own
+# mutants M2/M7/M9 passed EVERY test in this file (unpinned, not a source defect --
+# the shipped source is correct today, only unproven). Shared by the real checks (u)/
+# (v)/(w) below and their own self-mutation demonstrations. -----------------------
+K_GB_XFER_RO_RE = re.compile(r"static const BoxXferOps k_gb_xfer_ro = \{")
+
+
+def k_gb_xfer_ro_facts(lines):     # shared by real check (u) and MUT M2
+    """BACKLOG #150 S150-12 decision 2: k_gb_xfer_ro's literal must contain BOTH
+    `.release_up = 0` and `.accept_down = 0` -- the read-only mount's table has
+    STRUCTURALLY no delete/accept hook, not just a runtime-refused one (reviewer's
+    mutant M2: a non-NULL release_up here would let a COPY drop delete from the
+    read-only mount's own save, which has no GbSession to write through -- a
+    guaranteed crash or silent corruption, not caught by any other check in this
+    file, since drop_held's own `s_xfer_peer->release_up` guard only checks
+    non-NULLness, never WHAT the pointer is)."""
+    idx = first_match_line(lines, 0, len(lines), K_GB_XFER_RO_RE)
+    if idx is None:
+        return False, "k_gb_xfer_ro: `static const BoxXferOps k_gb_xfer_ro = {` literal not found"
+    depth = 0
+    end = idx
+    for i in range(idx, len(lines)):
+        depth += lines[i].count("{") - lines[i].count("}")
+        if depth == 0 and i > idx:
+            end = i
+            break
+    block = "\n".join(lines[idx:end + 1])
+    missing = [f for f in (".release_up = 0", ".accept_down = 0") if f not in block]
+    if missing:
+        return False, f"k_gb_xfer_ro: literal is missing {missing} -- see this check's own docstring"
+    return True, "ok"
+
+
+HAVE_XFER_RE = re.compile(r"bool have_xfer = s_xfer_peer")
+
+
+def have_xfer_facts(lines):        # shared by real check (v) and MUT M7
+    """BACKLOG #150 S150-12 decision 6: the `have_xfer` line in drop_held's UP branch
+    must NOT mention `release_up` -- requiring it would refuse the read-only mount's
+    COPY drop outright (its table has no release_up at all), reverting decision 6's
+    whole point. Exactly one `bool have_xfer = s_xfer_peer` site is expected
+    (reviewer's mutant M7: adding `&& s_xfer_peer->release_up` back)."""
+    idx = first_match_line(lines, 0, len(lines), HAVE_XFER_RE)
+    if idx is None:
+        return False, "drop_held: no `bool have_xfer = s_xfer_peer` line found"
+    if "release_up" in lines[idx]:
+        return False, (f"drop_held line {idx+1}: {lines[idx].strip()!r} mentions `release_up` -- "
+                        f"this would refuse the read-only mount's COPY drop (its table has no "
+                        f"release_up), reverting decision 6")
+    return True, "ok"
+
+
+NF_MASK_RE = re.compile(r"uint8_t nf = \(uint8_t\)\(meta\.flags & \(")
+
+
+def native_summary_mask_facts(lines):   # shared by real check (w) and MUT M9
+    """BACKLOG #150 S150-12 decision 3: gb_native_summary_open's `nf` re-pack mask
+    (source/pdna_gen12.c) must carry BC_FLAG_COPY forward, or editing a copy cell
+    through the summary screen silently un-marks it -- the NEXT DOWN of that cell
+    then writes the clone's ledger entry, reaching G-L3 (the original clone-claims-
+    the-original hole this whole lane exists to close) through the editor instead
+    of through a fresh lift (reviewer's mutant M9: dropping `| BC_FLAG_COPY` from
+    the mask)."""
+    idx = first_match_line(lines, 0, len(lines), NF_MASK_RE)
+    if idx is None:
+        return False, "gb_native_summary_open: no `uint8_t nf = (uint8_t)(meta.flags & (...` re-pack line found"
+    # the mask spans this line and (today) one continuation line before the closing `));`
+    window = "\n".join(lines[idx:idx + 3])
+    if "BC_FLAG_COPY" not in window:
+        return False, ("gb_native_summary_open: the `nf` re-pack mask does not carry BC_FLAG_COPY "
+                        "forward -- editing a copy cell would silently un-mark it (G-L3 through "
+                        "the editor)")
+    return True, "ok"
+
+
 def restore_order_facts(lines, start, end):     # shared by the real check (l) AND MUT K
     """BACKLOG #150 S150-8b decision 3 / §3.2's commit order: drop_held's PC->Bank arm
     must call pc_bank_restore_up( BEFORE the ternary memcpy that writes either the
@@ -981,6 +1056,17 @@ def main() -> int:
         ok, d = n3_facts(gen12_lines, fn)
         check(ok, d)
 
+    # ---- (u)/(v)/(w) REVIEW FIX (LOW, BACKLOG #150 S150-12): three findings the
+    # reviewer's own mutants M2/M7/M9 passed every check in this file today
+    # (unpinned) -- see k_gb_xfer_ro_facts/have_xfer_facts/native_summary_mask_facts'
+    # own docstrings above. ----
+    ok, d = k_gb_xfer_ro_facts(gen12_lines)
+    check(ok, d)
+    ok, d = have_xfer_facts(box_lines)
+    check(ok, d)
+    ok, d = native_summary_mask_facts(gen12_lines)
+    check(ok, d)
+
     # ---- (f) review F3: the self-mutation harness, every run ----
     self_test_mutation_detection(box_lines, gen12_lines)
 
@@ -1473,6 +1559,56 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str]) -
                         f"dispatch) should have been caught but was not: {detail}")
         print(f"  MUT V demonstration -- a second xg_bank_down_arm( derivation added "
               f"after bank_down_dispatch(: {detail}")
+
+    # MUT M2 (REVIEW FIX, LOW, BACKLOG #150 S150-12): give k_gb_xfer_ro's literal a
+    # non-NULL release_up in a copy of gen12_lines -- must go red.
+    idx = first_match_line(gen12_lines, 0, len(gen12_lines), K_GB_XFER_RO_RE)
+    check(idx is not None, "MUT M2: could not locate k_gb_xfer_ro's literal in the real source -- fix this test")
+    if idx is not None:
+        target_m2 = "  .release_up = 0, .move_within = 0,"
+        check(gen12_lines[idx + 2] == target_m2,
+              f"MUT M2: k_gb_xfer_ro's third line does not match the expected "
+              f"{target_m2!r} (found {gen12_lines[idx + 2]!r}) -- fix this test")
+        if gen12_lines[idx + 2] == target_m2:
+            mut_m2 = list(gen12_lines)
+            mut_m2[idx + 2] = "  .release_up = gb_release_up_hook, .move_within = 0,"
+            ok_m2, detail = k_gb_xfer_ro_facts(mut_m2)
+            check(not ok_m2, f"MUT M2 (k_gb_xfer_ro given a non-NULL release_up) should have "
+                              f"been caught but was not: {detail}")
+            print(f"  MUT M2 demonstration -- k_gb_xfer_ro's .release_up set to "
+                  f"gb_release_up_hook: {detail}")
+
+    # MUT M7 (REVIEW FIX, LOW, BACKLOG #150 S150-12): add `&& s_xfer_peer->release_up`
+    # back onto drop_held's `have_xfer` line in a copy of box_lines -- must go red.
+    idx7 = first_match_line(box_lines, 0, len(box_lines), HAVE_XFER_RE)
+    check(idx7 is not None, "MUT M7: could not locate the `have_xfer` line in the real source -- fix this test")
+    if idx7 is not None:
+        mut_m7 = list(box_lines)
+        mut_m7[idx7] = mut_m7[idx7].rstrip().rstrip(";") + " && s_xfer_peer->release_up;"
+        ok_m7, detail = have_xfer_facts(mut_m7)
+        check(not ok_m7, f"MUT M7 (`&& s_xfer_peer->release_up` re-added to have_xfer) should "
+                          f"have been caught but was not: {detail}")
+        print(f"  MUT M7 demonstration -- `&& s_xfer_peer->release_up` re-added to "
+              f"drop_held's have_xfer line: {detail}")
+
+    # MUT M9 (REVIEW FIX, LOW, BACKLOG #150 S150-12): drop `| BC_FLAG_COPY` from
+    # gb_native_summary_open's `nf` re-pack mask in a copy of gen12_lines -- must go red.
+    idx9 = first_match_line(gen12_lines, 0, len(gen12_lines), NF_MASK_RE)
+    check(idx9 is not None, "MUT M9: could not locate the `nf` re-pack mask line in the real source -- fix this test")
+    if idx9 is not None:
+        window9 = gen12_lines[idx9:idx9 + 3]
+        found9 = [i for i, ln in enumerate(window9) if "BC_FLAG_COPY" in ln]
+        check(len(found9) == 1, f"MUT M9: expected exactly 1 line naming BC_FLAG_COPY in the "
+                                 f"3-line mask window, found {len(found9)} -- fix this test")
+        if len(found9) == 1:
+            mut_m9 = list(gen12_lines)
+            j = idx9 + found9[0]
+            mut_m9[j] = mut_m9[j].replace("BC_FLAG_COPY", "").replace(" |  |", " |").replace("| )", ")")
+            ok_m9, detail = native_summary_mask_facts(mut_m9)
+            check(not ok_m9, f"MUT M9 (BC_FLAG_COPY dropped from the nf re-pack mask) should "
+                              f"have been caught but was not: {detail}")
+            print(f"  MUT M9 demonstration -- BC_FLAG_COPY dropped from "
+                  f"gb_native_summary_open's nf re-pack mask: {detail}")
 
 # ---- (m) 2026-09-16 (merged-tree shot lane): the DOWN dispatch's `occupied` refusal is scoped to
 # the GEN3 arm. An unscoped `&& !occupied` on the dispatch condition made the EXACT arm refuse
