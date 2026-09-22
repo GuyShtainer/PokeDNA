@@ -3506,6 +3506,217 @@ def run_r1_xfer_red(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.S
     return s
 
 
+def run_s150_10(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #150 S150-10 (G-H8): PASTE (GB) swaps only the BAD move slots instead
+    of refusing the whole record -- gb_paste_legal_screen_ex's swap-row extension of
+    the R1 modal above.
+
+    `rom` must be `pokedna-delta-artless.gba` fused exactly as run_r1_xfer()'s own
+    docstring prescribes -- GOLD, not Red (same reasoning: a Gen-1 target needs a
+    base-stats ROM through a completely different lookup, gb_gen1_locate_rom, that
+    this lane deliberately does not touch; Gen 2 needs no base-stats table at all,
+    so Gold exercises this lane's own code without that unrelated gap) -- except the
+    --clip record is re-moved (tools/extract_gen3_record.c's new --moves flag) to
+    {57 SURF, 44 BITE, 317 ROCK TOMB, 182 PROTECT}: on a Gen-2 target only ROCK TOMB
+    (317 > gb_max_move(GB_GEN2)==251) is out of range -- Protect (182) is legal in
+    Gen 2 -- so this seeds exactly ONE bad slot, the mixed case G-H8 describes.
+
+    Nav: boot picker -> Gold's box grid -> R x13 -> DOWN x2 -> RIGHT x6, to BOX13
+    slot 18 (0-based, 6-column grid: row 2 col 6) -> A -> the empty-cell menu ->
+    DOWN -> A (PASTE HERE) -> gen3_to_gb_fixed() runs with bad4={0,0,1,0} -> the
+    EXISTING loss screen (unchanged) -> A -> the NEW swap-row modal
+    (gb_paste_legal_screen_ex).
+
+    BACKLOG #150 S150-10 own re-verification: run_r1_xfer()'s docstring claims slot
+    17 (RIGHT x5 from row 2 col 0) is "the first genuinely-empty cell" on Guy's own
+    Gold.sav, 17/20 occupied. Re-probed directly against THIS corpus file
+    (interactive mGBA session, one RIGHT press at a time, settle=150, a screenshot
+    read after every press): row 2 reads ELECTRODE(12)/GYARADOS(13)/EMPTY(14)/
+    SNORLAX(15)/SUDOWOODO(16)/LAPRAS(17)/EMPTY(18, labelled "(empty)" on its own
+    info panel) -- slot 17 is occupied (LAPRAS), slot 18 is the first genuinely-
+    empty cell reachable this way. The corpus file has drifted since run_r1_xfer()
+    was written (an extra entry landed somewhere in the box ahead of slot 17,
+    without changing the 17/20 header count -- consistent with the box holding a
+    scattered empty cell elsewhere in the SAME 20, not only at the tail). RIGHT x5
+    at settle=80 (the OLD recipe) also intermittently drops a press on this same
+    probe (confirmed directly: two consecutive captures came back pixel-identical
+    at that settle) -- both the target slot AND the settle needed a re-verify, not
+    just a re-grep. Slot 19 was not probed (18 alone is enough room for one paste)."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s150_10_")
+    print("== BACKLOG #150 S150-10: PASTE (GB) swaps only the bad move slot(s) ==")
+
+    boot_to_gb_session(s, rom, which="gold")
+    s.shot("01_box_grid", "BACKLOG #150 S150-10: Gold's box grid, boot-picker -> "
+                           "standalone (g_clip pre-seeded with a real corpus mon "
+                           "re-moved to SURF/BITE/ROCK TOMB/PROTECT -- "
+                           "extract_gen3_record --moves, screenshot-only, no Gen-3 "
+                           "session ever opened). BOX1, 20/20 -- no room here, see "
+                           "the R x13 below.")
+
+    # Re-verified directly against this corpus file (see the docstring above): slot
+    # 18 (row 2 col 6), NOT slot 17 -- and settle=150, not 80, or a RIGHT press
+    # intermittently drops on this same probe.
+    s.press_n("R", 13, settle=200)
+    s.press_n("DOWN", 2, settle=150)
+    s.press_n("RIGHT", 6, settle=150)                       # slot 18 -- confirmed empty, re-probed directly
+    s.shot("02_cursor_on_empty_cell", "BACKLOG #150 S150-10: BOX13 (R x13 from "
+                                       "BOX1, 17/20 -- the first box with room), "
+                                       "cursor parked on an empty cell (slot 18, "
+                                       "re-verified directly against this corpus "
+                                       "file) before pressing A")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # empty-cell action menu
+    s.shot("03_empty_cell_menu", "BACKLOG #150 S150-10: the empty-cell action menu "
+                                  "(CREATE / PASTE HERE / CANCEL), cursor on CREATE "
+                                  "(default)")
+
+    s.press_n("DOWN", 1, settle=80)                         # CREATE (default) -> PASTE HERE
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # PASTE HERE -> gb_clip_moves+gen3_to_gb_fixed -> loss screen
+    s.shot("04_loss_screen", "BACKLOG #150 S150-10: the EXISTING loss screen, "
+                              "unchanged by this lane -- gen3_to_gb_fixed() already "
+                              "ran with bad4={0,0,1,0} (only ROCK TOMB out of range "
+                              "for Gen 2) and emptied that ONE slot rather than "
+                              "refusing the whole record with G3GB_ERR_MOVE")
+
+    # BACKLOG #150 S150-10 own finding: this ONE transition also runs the fill step
+    # (decision 8 step 7, gb_paste_fill_moves -> gb_create_locate_rom ->
+    # gb_create_learn), which on a COLD session (the ROM's table not yet scanned/
+    # cached this session -- gb_create_learn's own g_ed->learn_ready cache, shared
+    # with CREATE) does the SAME "up to ~185,000 read() calls" full-ROM scan
+    # CREATE's own s_busy_reading() comment warns about, but WITHOUT that busy-
+    # screen feedback (gb_paste_hook shows none before this step) -- measured
+    # directly on this build: pixel-identical for 20,000+ frames at BIG_SETTLE/150,
+    # done well before 2,000. 4,000 frames is a safe, measured margin, not a guess.
+    # Flagged as a UX gap for the orchestrator (BACKLOG follow-up), not fixed here
+    # -- adding a busy screen is outside this lane's named steps.
+    s.tap("A", settle=4000)                                 # proceed -> the NEW swap-row modal (cold ROM scan, no busy-screen feedback -- see the note above)
+    s.shot("05_swap_modal", "BACKLOG #150 S150-10 decision 7: the swap-row modal "
+                             "(gb_paste_legal_screen_ex) -- ONE row 'ROCK TOMB -> "
+                             "<a Gold level-up move>' (the only bad slot; SURF/"
+                             "BITE/PROTECT are all <= gb_max_move(GB_GEN2)==251, "
+                             "kept as-is); 'KEEP AS IS: not possible here' in dim "
+                             "text (nbad > 0 greys this row); 'SELECT = MAKE LEGAL "
+                             "(swap moves)' (no level correction alongside this "
+                             "paste, so the moves-only wording); 'Either way it "
+                             "comes back unchanged.'; 'B = cancel'")
+
+    # Decision 7: A is not even in the wait mask once any slot is bad -- this tap
+    # must be a genuine no-op, asserted by pixel-equality (allow_same=True), not by
+    # eye, exactly as the standing rule requires for a claim like this.
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.shot("06_a_is_a_noop", "BACKLOG #150 S150-10 decision 7: A pressed on the "
+                              "greyed KEEP AS IS row -- pixel-identical to 05 "
+                              "(asserted by the chain itself, not by eye): A is "
+                              "simply not in this screen's wait mask once nbad > 0",
+           allow_same=True)
+
+    # decision 8 step 7's fills are already in `mon` at this point; SELECT (MAKE
+    # LEGAL) only decides whether the record is WRITTEN at all -- gb_paste_write()
+    # is UNCHANGED by this lane (decision 8 step 9), and its very first act under
+    # PDNA_DELTA is f_mkdir(PDNA_XFER_DIR), which always fails (no SD at all in this
+    # build, BACKLOG #62) -- refusing BEFORE gbs_insert() ever runs. Observed
+    # directly, matching run_r1_xfer()'s own already-shot precedent exactly (its own
+    # shot 05/06 for the SAME reason): "SIDECAR FOLDER / Nothing transferred. /
+    # Press A", then back at the box grid with the cell STILL empty. The master
+    # design brief's speculative "gb_persist keeps the edit in-session" wording
+    # (written for a DIFFERENT refusal point, gb_persist's own card-flush, not
+    # gb_paste_write's earlier mkdir gate) does not describe what this build
+    # actually shows -- captioned from the real frame, not the brief's guess.
+    s.tap("SEL", settle=gb_shots.BIG_SETTLE)                # MAKE LEGAL -> gb_paste_write()
+    s.shot("07_sd_refusal_hardware_only", "BACKLOG #150 S150-10: SELECT registered "
+                               "cleanly and gb_paste_write() ran (UNCHANGED by this "
+                               "lane) -- but PDNA_DELTA has NO SD at all, so its "
+                               "very first act, f_mkdir(PDNA_XFER_DIR), always "
+                               "fails here ('SIDECAR FOLDER / Nothing transferred.') "
+                               "BEFORE gbs_insert() ever runs -- the SAME refusal "
+                               "run_r1_xfer()'s own shot 05 hits, pre-existing and "
+                               "unrelated to this lane's move-swap logic. The "
+                               "record's fills/pack (decision 8 step 7) are proven "
+                               "byte-for-byte by the host tests instead -- "
+                               "tests/host_gen3gb_test.c section 7 -- "
+                               "HARDWARE-ONLY proof, not faked here.")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss -> back to the box grid
+    s.shot("08_cell_still_empty_no_corruption", "BACKLOG #150 S150-10: the cell is "
+                               "STILL the empty-cell action menu's own EMPTY label "
+                               "(not a half-written mon) -- the refused write left "
+                               "nothing behind, matching the sidecar-first safety "
+                               "pattern (hard rule 3) exactly as run_r1_xfer()'s own "
+                               "shot 06 already demonstrated for the level-only case.")
+    return s
+
+
+def run_s150_10_two_bad(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #150 S150-10: the SAME flow as run_s150_10() above, except `rom`'s
+    --clip record is re-moved to {317 ROCK TOMB, 315 OVERHEAT, 0, 0} -- BOTH non-
+    empty slots are out of range for Gen 2 (315 > 251 too), so this is the "two bad
+    slots, the fills come from Gold's own learnset at the record's level" case --
+    the second half of decision 7's worst-case row count. A SEPARATE fused image
+    from run_s150_10()'s own (a different --clip payload cannot be swapped mid-
+    session), same box/cell coordinates (a fresh Gold.sav copy, same corpus)."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s150_10b_")
+    print("== BACKLOG #150 S150-10: PASTE (GB), two bad move slots ==")
+
+    boot_to_gb_session(s, rom, which="gold")
+    s.press_n("R", 13, settle=200)
+    s.press_n("DOWN", 2, settle=150)
+    s.press_n("RIGHT", 6, settle=150)                       # slot 18 -- see run_s150_10()'s own re-verification note
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # empty-cell action menu
+    s.press_n("DOWN", 1, settle=80)                         # CREATE (default) -> PASTE HERE
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # PASTE HERE -> loss screen
+    s.tap("A", settle=4000)                                 # proceed -> the swap-row modal (cold ROM scan on the first paste this session -- see run_s150_10()'s own note)
+    s.shot("05_two_swap_rows", "BACKLOG #150 S150-10 decision 7: TWO swap rows "
+                                "('ROCK TOMB -> <fill>', 'OVERHEAT -> <fill>') -- "
+                                "both non-empty slots were out of range for Gen 2 "
+                                "(317 and 315, both > gb_max_move(GB_GEN2)==251); "
+                                "the fills come from Gold's own level-up learnset "
+                                "at the record's level (gb_paste_fill_moves, "
+                                "decision 5), not a hand-picked pair")
+    return s
+
+
+def run_s150_10_four_bad(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #150 S150-10 decision 8.7: the SAME flow again, `rom`'s --clip record
+    re-moved to four Gen-3-only moves ({317 ROCK TOMB, 332 AERIAL ACE, 339 BULK UP,
+    291 DIVE} -- all four > gb_max_move(GB_GEN2)==251) -- the master brief's own
+    example for "a mon whose four moves are all > 251". Whether this actually
+    reaches decision 8.7's zero-move refusal depends on whether Gold's own
+    level-up table has ANYTHING to offer this species at this level -- with a ROM
+    present the fill is NOT guaranteed to be empty (a real species almost always
+    knows SOME level-up move by its own level), so this is exploratory: the shot
+    is taken and captioned from what actually happens, not forced to match the
+    refusal. The genuine "no ROM, all four bad" zero-move case is easier to reach
+    (an empty learnset always fills nothing) but needs a Gen-2 target with NO Gen-2
+    ROM fused at all -- unreachable on THIS harness (booting a Gen-2 session
+    requires a Gen-2 ROM to exist in the fused image in the first place) -- see the
+    report for why that combination is hardware-only, same posture as the no-ROM
+    refusal itself."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s150_10c_")
+    print("== BACKLOG #150 S150-10: PASTE (GB), four bad move slots (exploratory) ==")
+
+    boot_to_gb_session(s, rom, which="gold")
+    s.press_n("R", 13, settle=200)
+    s.press_n("DOWN", 2, settle=150)
+    s.press_n("RIGHT", 6, settle=150)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # empty-cell action menu
+    s.press_n("DOWN", 1, settle=80)                         # CREATE (default) -> PASTE HERE
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # PASTE HERE -> loss screen
+    s.tap("A", settle=4000)                                 # proceed -> either the modal or the zero-move refusal
+    s.shot("05_four_swap_rows_all_filled", "BACKLOG #150 S150-10 decision 8.7: "
+                                  "observed result -- FOUR swap rows, ALL filled "
+                                  "(ROCK TOMB -> THUNDERSHOCK, AERIAL ACE -> "
+                                  "SUPERSONIC, BULK UP -> SONICBOOM, DIVE -> "
+                                  "THUNDER WAVE) -- the zero-move refusal does NOT "
+                                  "fire here: with a real ROM present, Magneton's "
+                                  "own Gold level-up table has enough moves to fill "
+                                  "all four bad slots, exactly decision 8.7's "
+                                  "'never block' success path for nbad==4 (every "
+                                  "slot bad, but nfill==4 too). The REFUSAL itself "
+                                  "(nbad==4 AND nfill==0) needs a no-ROM target, "
+                                  "hardware-only on this harness -- see the report.")
+    return s
+
+
 # ---------------------------------------------------------------------------------
 # BACKLOG #68b: cold-start timing, WITH vs WITHOUT the fused LOC payloads.
 # ---------------------------------------------------------------------------------
@@ -5445,6 +5656,24 @@ def main(argv=None) -> int:
                           "instead of Gold -- proves the PDNA_DELTA-only fused-ROM "
                           "fallback (source/pdna_gen12.c) reaches the R1 screen on "
                           "Red instead of 'NO GEN-1 ROM'")
+    ap.add_argument("--s150-10", action="store_true",
+                     help="BACKLOG #150 S150-10 (G-H8): only run_s150_10() against "
+                          "--image -- --image MUST be pokedna-delta-artless.gba fused "
+                          "the SAME way as --r1-xfer (Gold.gbc+Gold.sav) except the "
+                          "--clip record is re-moved to SURF/BITE/ROCK TOMB/PROTECT "
+                          "(extract_gen3_record.c's --moves flag) -- ONE bad slot on "
+                          "Gen 2, the swap-row modal's mixed case")
+    ap.add_argument("--s150-10-two-bad", action="store_true",
+                     help="BACKLOG #150 S150-10: only run_s150_10_two_bad() against "
+                          "--image -- a SEPARATE fused image, --clip re-moved to "
+                          "ROCK TOMB/OVERHEAT/0/0 -- TWO bad slots on Gen 2")
+    ap.add_argument("--s150-10-four-bad", action="store_true",
+                     help="BACKLOG #150 S150-10 decision 8.7: only "
+                          "run_s150_10_four_bad() against --image -- a SEPARATE "
+                          "fused image, --clip re-moved to ROCK TOMB/AERIAL ACE/"
+                          "BULK UP/DIVE (all four > 251) -- exploratory, see its "
+                          "own docstring for why the zero-move refusal is not "
+                          "guaranteed with a ROM present")
     ap.add_argument("--m1-map", action="store_true",
                      help="M1 (BACKLOG #91): only run_m1_map() against --image -- "
                           "--image MUST be a Red-only fused image (Red.gb+Red.sav)")
@@ -6066,6 +6295,42 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] r1 xfer red: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        ran = True
+    if a.s150_10:
+        try:
+            sess = run_s150_10(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] s150-10: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        ran = True
+    if a.s150_10_two_bad:
+        try:
+            sess = run_s150_10_two_bad(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] s150-10 two-bad: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        ran = True
+    if a.s150_10_four_bad:
+        try:
+            sess = run_s150_10_four_bad(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] s150-10 four-bad: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
