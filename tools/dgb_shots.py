@@ -5449,6 +5449,20 @@ def main(argv=None) -> int:
                           "artless.gba> Red.gb Red.sav (Gen 1) -- the SAME two images "
                           "--s150-7 uses (reuses --s150-7-red rather than adding a "
                           "third flag name for the identical Red image).")
+    ap.add_argument("--s150-12", action="store_true",
+                     help="BACKLOG #150 S150-12: only run_s150_12_copy_edge() against "
+                          "--image -- --image MUST be `make delta-gb`'s own combined "
+                          "image (Emerald.sav + Red/Gold/Crystal). The read-only "
+                          "START > GB import mount's COPY lift (SELECT enters MOVE, "
+                          "the origin prompt draws, the lift is then refused cleanly "
+                          "at the same no-SD-card wall run_s150_4_uplift() already "
+                          "documents for the MOVE lift), then bank_plant.c's two "
+                          "PDNA_DELTA-only planted COPY cells (box 0 slots 5/6) prove "
+                          "decision 9's DOWN-skips-the-ledger claim live: both land in "
+                          "the Emerald PC with the honest NOBACK loss-screen rows and "
+                          "no SAVE FIRST wall between them, and the Bank slot reads "
+                          "blank afterwards -- see the run function's own docstring "
+                          "for the full per-tap trace.")
     ap.add_argument("--b54-romhack", choices=("hack", "control"),
                      help="BACKLOG #54: only run_b54_romhack() against --image for the "
                           "named case -- the ROM-hack banner + the mon-menu refusal it "
@@ -6174,6 +6188,21 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] s150-8-bridge: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+    if getattr(a, "s150_12", False):
+        # BACKLOG #150 S150-12: append-only, same convention as --s150-4/7/8 above --
+        # single image (make delta-gb's own combined image).
+        ran = True
+        try:
+            sess = run_s150_12_copy_edge(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] s150-12: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
@@ -7162,6 +7191,222 @@ def run_b187_chain_c(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.
 # (real Yellow.sav, the engine level), and by tests/host_gb_grid_ops_test.py's
 # structural checks (b)/(e) with four real mutations -- what mGBA specifically
 # cannot ever show is the LIFT gesture's own SD-write-gated start. HW-QUEUE row.
+
+
+def run_s150_12_copy_edge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #150 S150-12: the read-only START > GB import mount's COPY lift, and
+    a planted COPY cell's ledger-free DOWN into the Emerald PC. `rom` MUST be
+    `make delta-gb`'s own combined image (Emerald.sav + Red/Gold/Crystal).
+
+    THE WIRING PROOF (frames 05-07) -- SELECT enters MOVE on the read-only mount
+    (before this lane, src_can_lift was flatly false there; decision 4's
+    gb_lift_why_bs RO branch and the DRIFT-flagged gbsrc_can_enter_move_impl fix
+    both had to land for this), A grabs slot 0 and the origin prompt genuinely
+    draws (decision 5's g_ro_path, no NULL deref), and A picking GOLD is then
+    REFUSED CLEANLY -- pdna_bank_next_serial()'s meta_save() fails (no SD card in
+    mGBA, the identical wall run_s150_4_uplift() already documents for the MOVE
+    lift), gb_lift_pack returns false, begin_select's refusal branch fires a beep
+    only and repaints cleanly. This is the SAME "no SD card in mGBA" wall every
+    write path in this tree hits -- not a delta-vehicle quirk of this lane.
+
+    WHAT DEVIATES FROM THIS LANE'S OWN BRIEF (found live, not guessed): the brief's
+    frame list expected B to first back out to the Gold info page, then a second B
+    to reach Emerald's own grid with no prompt. What the vehicle actually does:
+    the FIRST B only drops CM_MOVE back to CM_NORMAL (still on Gold's own grid, the
+    footer changes from "MOVE A grab hold=set" back to the plain occupied-cell
+    footer) -- pdna_box.c's own `if (k & KEY_B) { if (s_cur_mode != CM_NORMAL &&
+    !on_title) { s_cur_mode = CM_NORMAL; ... } else { ...; return 0; } }` needs
+    CM_NORMAL before B actually leaves the grid. The SECOND B then exits the whole
+    GB session in one step -- pdna_box() returning 0 unwinds gb_session_core's own
+    loop straight past the info page to `if (m->nblocked || m->nunreadable)
+    gb_report_page(m);` (source/pdna_gen12.c), because THIS corpus's real Gold.sav
+    has locked/unreadable records (the same report row-source count 5's info page
+    (frame 03) already prints: "Ready to copy: 265 / Shown but locked: 15"). A
+    THIRD B dismisses that report and lands on Emerald's own box grid -- with NO
+    PC-offer prompt (decision 7's negative case: the lift never queued anything,
+    g_pcq_count stayed 0). None of this is a defect in this lane's own code --
+    gb_report_page is pre-existing, unrelated machinery this real save happens to
+    trigger; captured here so the trace is honest, not force-fit to the brief's
+    own guess.
+
+    THE PLANTED-CELL DOWN EDGE (frames 11-18) proves decision 9 without needing
+    the no-SD wall at all: bank_plant.c's box_load() PDNA_DELTA-only hook auto-
+    plants box 0 (bank_plant_box0(), decision 17) the instant a real box0.box read
+    fails -- which it always does with no SD card -- so the Bank opens showing
+    "BANK 1 7/30" with the two new COPY cells already sitting at slots 5 (CHIKORITA
+    L13) and 6 (L14), no live SD-writing lift required. MOVE-carrying one off the
+    Bank's own bottom edge onto the Emerald PC grid and dropping it on an EMPTY
+    cell (an occupied cell instead reaches drop_held's OTHER gate,
+    xg_native_escape_denied, and shows "STAYS IN THE BANK" -- found live while
+    probing this chain, not this lane's own gate) reaches the loss screen with the
+    NOBACK rows this lane's decision 10 added, and the drop lands with no SD write
+    at all (the PC placement is RAM-only until a real save, exactly like every
+    other Bank->PC drop in this tree). The SECOND copy (slot 6) lands right after
+    the first with NO SAVE FIRST wall between them -- decision 9's own claim that a
+    copy cell has nothing to promote, so N copies may share one session.
+
+    NOT shown here (hardware-only, not faked): a landed COPY cell surviving a real
+    save, XFER-C15a's own md5-of-the-.sav proof, and the RO-mount refusal on an
+    EverDrive/read-only cart (XFER-C15e) -- none of these are producible in mGBA,
+    which has no SD card and no EverDrive emulation at all."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s150_12_")
+    print("== BACKLOG #150 S150-12: the read-only mount's COPY lift + planted-cell DOWN edge ==")
+    idx = gb_save_pick_index(rom)["gold"]
+
+    s.run(700)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)              # #68a boot picker, Emerald row (default) -> box
+    s.shot("00_emerald_box_grid", "s150-12: Emerald's own box grid, freshly booted")
+
+    s.tap("START", settle=gb_shots.BIG_SETTLE)
+    s.shot("01_start_menu", "s150-12: the nav menu -- 'GB import' sits in column 1")
+
+    s.tap("RIGHT")
+    s.press_n("DOWN", nav_down_from_col_top("NV_GB"))
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    assert_screen(s, "pick_a_save")
+    s.shot("02_nv_gb_picker", "s150-12: NV_GB -> 'PICK A SAVE' -- Red.sav/Gold.sav/"
+           "Crystal.sav, Red selected by default")
+
+    for _ in range(idx):
+        s.tap("DOWN", settle=gb_shots.SETTLE)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                # picked Gold -> S1 info page
+    s.shot("03_gold_info", "s150-12: Gold.sav's own S1 info page -- the read-only "
+           "mount, no edit session (g_ed stays NULL for this whole visit)")
+
+    s.tap("A", settle=60)                                 # info -> box grid (cold fetch)
+    s.run(GB_ART_COLD_SETTLE)
+    s.shot("04_gold_box_grid", "s150-12: Gold's box grid on the read-only mount -- "
+           "cursor on slot 0 (No.1 BULBASAUR), footer 'A pokeball  A menu  SEL  "
+           "L/R  B' (SELECT has never entered MOVE here before this lane)")
+
+    s.tap("SEL", settle=100)
+    s.shot("05_cm_move", "s150-12 WIRING PROOF: SELECT cycles to MOVE on the "
+           "read-only mount -- footer 'MOVE  A grab  hold=set'. Before this lane "
+           "src_can_lift was flatly false here (gb_lift_why_bs's own !g_ed branch "
+           "returned PDNA_GB_LIFT_WHY_VIEW unconditionally) and the box-level "
+           "gbsrc_can_enter_move_impl gate (BACKLOG #187/#192) refused independently "
+           "-- SELECT did nothing at all. This frame IS the wiring proof both fixes "
+           "landed.")
+
+    s.tap("A", settle=150)
+    s.shot("06_origin_prompt", "s150-12: A grabs slot 0 -- gb_lift_copy_hook -> "
+           "gb_lift_pack -> gb_origin_for_save() opens 'WHICH GAME IS THIS?' GOLD "
+           "(selected) / SILVER, no box sprites over it (boxoam_suspend() ran "
+           "first). Before decision 5's g_ro_path this would have dereferenced "
+           "NULL (g_ed->path with g_ed == NULL) -- it does not.")
+
+    s.tap("A", settle=250)
+    s.shot("07_refused_clean", "s150-12: A picks GOLD -- gb_origin_for_save() "
+           "returns BC_ORIGIN_GOLD (the .og persist fails silently, no SD card, "
+           "decision 5's own tolerance), then pdna_bank_next_serial()'s "
+           "meta_save() fails (the SAME no-SD-card wall run_s150_4_uplift() "
+           "already found for the MOVE lift) -- refused, a beep only, clean "
+           "repaint: still CM_MOVE, empty-handed, BULBASAUR still at slot 0")
+
+    s.tap("B", settle=200)
+    s.shot("08_move_to_normal", "s150-12 (found live, not in the brief): the "
+           "FIRST B only drops CM_MOVE back to CM_NORMAL -- still Gold's own box "
+           "grid, footer back to the plain occupied-cell hint. pdna_box.c's own "
+           "`if (s_cur_mode != CM_NORMAL && !on_title) { s_cur_mode = CM_NORMAL; "
+           "...}` needs CM_NORMAL before B actually leaves the grid")
+
+    s.tap("B", settle=200)
+    s.shot("09_report_page", "s150-12 (found live, not in the brief): the SECOND "
+           "B exits the whole GB session in one step -- pdna_box() returning 0 "
+           "reaches gb_session_core's own `if (m->nblocked || m->nunreadable) "
+           "gb_report_page(m);` (unrelated, pre-existing machinery this real "
+           "Gold.sav happens to trigger: 15 records 'Shown but locked', matching "
+           "frame 03's own info-page count) -- not skipped over, not this lane's "
+           "own gate")
+
+    s.tap("B", settle=200)
+    s.shot("10_emerald_grid_noprompt", "s150-12: a THIRD B dismisses the report "
+           "-- back on Emerald's own box grid with NO 'WAITING FOR THE PC' "
+           "prompt (decision 7's negative case: g_pcq_count stayed 0, the lift "
+           "was refused before anything was ever queued)")
+
+    s.tap("START", settle=gb_shots.BIG_SETTLE)
+    s.tap("DOWN", settle=gb_shots.SETTLE)                 # NV_PARTY -> NV_BANK (column 0, row 1)
+    s.tap("A", settle=150)
+    s.shot("11_bank_box0", "s150-12: START > Bank -- 'BANK 1  7/30', box 0's "
+           "PDNA_DELTA-only auto-plant (bank_plant_box0(), decision 17) already "
+           "includes the two new COPY cells at slots 5/6 -- no live SD-writing "
+           "lift needed to get them here")
+
+    s.press_n("RIGHT", 5, settle=60)
+    s.shot("12_cursor_slot5", "s150-12: cursor on slot 5 -- 'No.152 CHIKORITA "
+           "Lv13 M', the first planted COPY cell (BC_FLAG_QUEUED_PC|BC_FLAG_COPY, "
+           "serial 6)")
+
+    s.tap("A", settle=150)
+    s.shot("13_menu", "s150-12: the ordinary Bank-cell menu -- VIEW/EDIT, MOVE, "
+           "RELEASE, CANCEL (this is a real Bank cell now, not the read-only "
+           "mount's whitelist)")
+
+    s.tap("DOWN", settle=60)                              # VIEW/EDIT -> MOVE
+    s.tap("A", settle=150)                                # MOVE -> carrying
+    s.shot("14_carrying", "s150-12: carrying the COPY cell -- slot 5 now empty "
+           "in the grid, footer 'A drop  B cancel'")
+
+    s.press_n("DOWN", 5, settle=150)                      # row0 -> Bank's own bottom row -> off the edge
+    s.shot("15_pc_grid_carrying", "s150-12: DOWN x5 off the Bank's own bottom "
+           "edge -- back on Emerald's PC grid, still carrying, box '1 5.Unp09n "
+           "30/30' (full on this cartridge)")
+
+    for _ in range(7):
+        s.tap("R", settle=150)                            # R to a box with real room (found live)
+    s.tap("RIGHT", settle=60)                             # slot 0 of this box may already be occupied
+    s.tap("A", settle=200)                                # A on the empty cell -> the loss screen opens
+    s.shot("16_loss_screen", "s150-12 decisions 9/10: A dropped on an empty PC "
+           "cell reaches the honest DOWN loss screen -- 'No transfer record: "
+           "this copy / cannot be sent back.' (PDNA_XFER_COPY_NOBACK_L1/_L2), "
+           "alongside the ordinary 'IVs come from DVs...'/'Met: this game, "
+           "traded' rows -- no ledger entry was ever written for this cell "
+           "(xg_cell_is_copy() true, decision 9's own guard)")
+
+    s.tap("A", settle=250)
+    s.shot("17_landed", "s150-12: A lands the copy -- the PC box count went up "
+           "by one, no SD write involved (RAM-only until a real save, same as "
+           "every other Bank->PC drop)")
+
+    s.tap("START", settle=gb_shots.BIG_SETTLE)
+    s.tap("DOWN", settle=gb_shots.SETTLE)
+    s.tap("A", settle=150)
+    s.press_n("RIGHT", 5, settle=60)
+    s.shot("18_bank_slot5_blank", "s150-12: re-entering the Bank confirms slot "
+           "5 reads blank ('(empty)') and the box count dropped from 7/30 to "
+           "6/30 -- the SD-less deferred-consume path this decision reuses "
+           "already ran without needing a save")
+
+    s.tap("DOWN", settle=60)
+    s.press_n("LEFT", 5, settle=60)
+    s.shot("19_slot6_cursor", "s150-12: cursor on slot 6 -- 'No.152 CHIKORITA "
+           "Lv14 M', the SECOND planted COPY cell (serial 7)")
+
+    s.tap("A", settle=150)
+    s.tap("DOWN", settle=60)
+    s.tap("A", settle=150)
+    s.press_n("DOWN", 4, settle=150)                      # row1 -> off the Bank's own bottom edge
+    for _ in range(7):
+        s.tap("R", settle=150)
+    # NOTE (found live): unlike the first drop, the box's own remembered cursor
+    # already rests on an empty cell here (the first copy's landing slot shifted
+    # it) -- no extra RIGHT needed; an extra RIGHT here would land back on an
+    # OCCUPIED cell and hit xg_native_escape_denied's "STAYS IN THE BANK" refusal
+    # instead (found live while building this chain, not this lane's own gate).
+    s.tap("A", settle=200)
+    s.shot("20_second_loss_screen", "s150-12 decision 9: the SECOND copy's own "
+           "DOWN reaches the SAME honest loss screen -- critically, NO 'SAVE "
+           "FIRST' wall between the two drops (a copy has nothing to promote, "
+           "so N copies may land in one session, unlike an ordinary S150-8d "
+           "ledger-pending cell)")
+
+    s.tap("A", settle=250)
+    s.shot("21_second_landed", "s150-12: the second copy lands too -- both "
+           "planted cells now sit in the Emerald PC, proving decision 9's DOWN-"
+           "skips-the-ledger claim end to end on the emulator")
+
+    return s
 
 
 if __name__ == "__main__":
