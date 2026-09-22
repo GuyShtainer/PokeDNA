@@ -233,13 +233,25 @@ def check_xfer_wired(text: str) -> list[str]:
 
 
 def check_native_unpack_in_loop(text: str) -> list[str]:
-    """S150-14 decision 3: bc_unpack must sit INSIDE gb_native_summary_open's for(;;),
-    never hoisted above it -- pdna_gbsummary edits `e` in place and restores nothing."""
-    body = strip_comments(extract_function_body(text, "gb_native_summary_open"))
+    """S150-14 decision 3: bc_unpack must sit INSIDE the native-cell summary's
+    for(;;), never hoisted above it -- pdna_gbsummary edits `e` in place and
+    restores nothing.
+
+    BACKLOG #150 S150-15 decision 7 retargets this check: gb_native_summary_open's
+    own for(;;)/bc_unpack loop moved into a shared static helper, native_summary_run
+    (so gb_original_summary_open's read-only entry point reuses the IDENTICAL
+    re-open loop rather than a second hand-copy that could drift from it) -- the
+    invariant this check protects (bc_unpack re-run every iteration, never hoisted
+    once above the loop) still applies, just to the function that now actually
+    contains the loop. Prefer native_summary_run when it exists (post-decision-7);
+    fall back to gb_native_summary_open itself for a tree where it does not, so this
+    check still means something on either shape."""
+    target = "native_summary_run" if "native_summary_run" in text else "gb_native_summary_open"
+    body = strip_comments(extract_function_body(text, target))
     if not body:
-        return ["gb_native_summary_open(): function body not found"]
-    if "for (;;)" not in body or body.index("for (;;)") > body.index("bc_unpack("):
-        return ["gb_native_summary_open(): bc_unpack( is hoisted above the for(;;) "
+        return [f"{target}(): function body not found"]
+    if "for (;;)" not in body or "bc_unpack(" not in body or body.index("for (;;)") > body.index("bc_unpack("):
+        return [f"{target}(): bc_unpack( is hoisted above the for(;;) "
                 "-- decision 3's discard trap is re-introduced"]
     return []
 

@@ -756,6 +756,13 @@ static void check_conversion(const uint8_t* rec, uint8_t gen, const GbGen1Base* 
  * supplies its own bad4 -- and every non-bad slot's move id must be untouched, every
  * bad slot must read 0. */
 static int g_fixed_move_refusals[3], g_fixed_accepted[3];
+/* (7l) lane s150-10b: "no third outcome" -- every MOVE-refused record, pushed through
+ * the SAME fill gb_paste_hook applies (g3gb_moves_fill with the "no ROM" empty
+ * learnset, Guy's own "never block" input) must land in EXACTLY one of two buckets:
+ * >= 1 move survives (nbad < 4 -- some slot was in range to begin with), or the
+ * result has ZERO moves (nbad == 4, nothing to fill from) -- the one case
+ * gb_paste_hook's own decision 8.7 refuses before ever reaching gb_paste_write. */
+static int g_fill_has_move[3], g_fill_zero_moves[3];
 
 static void check_fixed_moves(const uint8_t* rec, uint8_t gen, const GbGen1Base* base) {
   PkMon m;
@@ -784,6 +791,22 @@ static void check_fixed_moves(const uint8_t* rec, uint8_t gen, const GbGen1Base*
     } else {
       CHECK(gb_get_move(&fout, i) == (uint8_t)m.moves[i], "7f: non-bad slot %d unchanged", i);
     }
+  }
+
+  /* (7l): the "never block" empty-learnset fill (Guy's own no-ROM answer), then count
+   * survivors by actually reading the four slots back -- not by trusting nbad's own
+   * arithmetic blindly. */
+  uint8_t learn4[4] = { 0, 0, 0, 0 }, fill4[4];
+  int nfill = g3gb_moves_fill(&fout, bad4, learn4, fill4);
+  CHECK(nfill == 0, "7l: an all-zero learnset must fill nothing (got %d)", nfill);
+  int nmoves = 0;
+  for (int i = 0; i < 4; i++) if (gb_get_move(&fout, i) != 0) nmoves++;
+  if (nbad < 4) {
+    CHECK(nmoves >= 1, "7l: nbad=%d (< 4) must leave >= 1 move (got %d)", nbad, nmoves);
+    g_fill_has_move[gen]++;
+  } else {
+    CHECK(nmoves == 0, "7l: nbad==4 with an empty learnset must leave 0 moves (got %d)", nmoves);
+    g_fill_zero_moves[gen]++;
   }
 }
 
@@ -1795,6 +1818,18 @@ int main(int argc, char** argv) {
   if (g_fixed_move_refusals[GB_GEN1] == 0)
     printf("  (7f) note: zero Gen-1 MOVE refusals found on this corpus -- the >=1 floor\n"
            "       relaxes to >=0, nothing to fix-accept\n");
+
+  /* (7l) lane s150-10b: "no third outcome" -- every fixed-accepted record lands in
+   * exactly one of the two buckets (>= 1 move survives, or the zero-move case
+   * gb_paste_hook's decision 8.7 refuses); the two counters must sum to the (7f)
+   * fixed-accepted total for each generation, with no record unaccounted for. */
+  printf("  (7l) no-third-outcome: gen1 has-move=%d zero-moves=%d; gen2 has-move=%d zero-moves=%d\n",
+         g_fill_has_move[GB_GEN1], g_fill_zero_moves[GB_GEN1],
+         g_fill_has_move[GB_GEN2], g_fill_zero_moves[GB_GEN2]);
+  CHECK(g_fill_has_move[GB_GEN1] + g_fill_zero_moves[GB_GEN1] == g_fixed_accepted[GB_GEN1],
+        "7l: gen1 has-move + zero-moves must account for every fixed-accepted record");
+  CHECK(g_fill_has_move[GB_GEN2] + g_fill_zero_moves[GB_GEN2] == g_fixed_accepted[GB_GEN2],
+        "7l: gen2 has-move + zero-moves must account for every fixed-accepted record");
 
   test_gb_side_changes();
   test_make_legal();

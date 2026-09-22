@@ -890,6 +890,20 @@ int main(void) {
   T("Gen 1 record", PDNA_SUM_CARD_X);
   T("Gen 2 record", PDNA_SUM_CARD_X);
 
+  /* BACKLOG #150 S150-15 decision 8: the GB ORIGINAL card's caller-composed note
+   * line reuses this SAME "note" slot, so it is bound by the SAME PDNA_SUM_CARD_W
+   * (138 px) the card itself draws in -- not the whole-screen T() helper's looser
+   * SCR_W - x bound. Four composed worst cases: known game + date, known game no
+   * date (widest: 17 chars), unknown game + date, unknown game no date. */
+  chk("gbsum origin note", PDNA_SUM_CARD_X, PDNA_SUM_CARD_W,
+      (int)strlen("CRYSTAL 26-09-16") * SYS8_W, "CRYSTAL 26-09-16");
+  chk("gbsum origin note", PDNA_SUM_CARD_X, PDNA_SUM_CARD_W,
+      (int)strlen("CRYSTAL (no date)") * SYS8_W, "CRYSTAL (no date)");
+  chk("gbsum origin note", PDNA_SUM_CARD_X, PDNA_SUM_CARD_W,
+      (int)strlen("GEN 2 26-09-16") * SYS8_W, "GEN 2 26-09-16");
+  chk("gbsum origin note", PDNA_SUM_CARD_X, PDNA_SUM_CARD_W,
+      (int)strlen("GEN 2 (no date)") * SYS8_W, "GEN 2 (no date)");
+
   /* Card 1 (SKILLS): two rows per stat. Row 1 labels + the widest computed
    * value; row 2's DV/stat-exp cells at their own PDNA_GBSUM_STAT_*_DX offsets
    * from PDNA_SUM_CARD_X (NOT screen-absolute x positions like the old 4-column
@@ -1019,6 +1033,10 @@ int main(void) {
   PF(PDNA_XFER_GAME_GOLD,    28, 184);
   PF(PDNA_XFER_GAME_SILVER,  28, 184);
   PF(PDNA_XFER_GAME_CRYSTAL, 28, 184);
+  /* BACKLOG #150 S150-15 decision 11: the "no original" plaque. */
+  PF(PDNA_XFER_ORIG_NONE_TITLE, 28, 184);
+  PF(PDNA_XFER_ORIG_NONE_L1,    28, 184);
+  PF(PDNA_XFER_ORIG_NONE_L2,    28, 184);
   /* BACKLOG #150 S150-8 decision 13: the DOWN-converting edge's own strings. */
   PF(PDNA_XFER_PARTY_TITLE,     28, 184);
   PF(PDNA_XFER_PARTY_L1,        28, 184);
@@ -1163,6 +1181,7 @@ int main(void) {
    * below, not here. */
   PF(PDNA_SIDECAR_GEN1_TITLE,       28, 184);
   PF(PDNA_SIDECAR_GEN1_L1,          28, 184);
+  PF(PDNA_SIDECAR_GEN2_TITLE,       28, 184);   /* s150-10b review A9: pinned like GEN1_TITLE */
   /* S5-C Part B1: the STATIC tail of the "no ROM beside the save" message; the
    * dynamic "Put NAME.gb here" line is built at runtime (gb_gen1_norom_msg) and is
    * exempt from static measurement per this file's own header note -- it goes
@@ -1261,6 +1280,38 @@ int main(void) {
       PDNA_SIDECAR_LOSS_ROW_Y0 + 4 * PDNA_SIDECAR_LOSS_ROW_H +
         2 * (PDNA_SIDECAR_LOSS_ROW_H / 2) + UI_ROW_H - 1,   /* + the WHY-row gap */
       "legal screen: worst case (WHY + BACK rows) clears the screen");
+
+  /* BACKLOG #150 S150-10 decision 7: gb_paste_legal_screen_ex's extra rows -- one
+   * swap row per bad slot (PDNA_XFER_SWAP_FMT), KEEP AS IS greyed
+   * (PDNA_SIDECAR_LEGAL_KEEP_OFF) and the moves-only FIX row
+   * (PDNA_SIDECAR_LEGAL_FIX_MOVES). The widest pk_move_name() pair the tables can
+   * produce, measured by iterating every id 1..354 (data_tables.c's own s_move[]
+   * bound) rather than guessed -- "SMELLINGSALT" is not necessarily the widest under
+   * the proportional font. */
+  {
+    int widest_w = 0; const char* widest_s = "-";
+    for (int i = 1; i <= 354; i++) {
+      const char* nm = pk_move_name((uint16_t)i);
+      int w = pwidth(nm);
+      if (w > widest_w) { widest_w = w; widest_s = nm; }
+    }
+    char row[80];
+    snprintf(row, sizeof row, PDNA_XFER_SWAP_FMT, widest_s, widest_s);
+    chk("ptext_fit", 4, UI_SCR_W - 8, pwidth(row), row);
+    snprintf(row, sizeof row, PDNA_XFER_SWAP_FMT, widest_s, PDNA_XFER_SWAP_NONE);
+    chk("ptext_fit", 4, UI_SCR_W - 8, pwidth(row), row);
+  }
+  PF(PDNA_SIDECAR_LEGAL_KEEP_OFF,  4, UI_SCR_W - 8);
+  PF(PDNA_SIDECAR_LEGAL_FIX_MOVES, 4, UI_SCR_W - 8);
+  /* Worst case (decision 7): to_lvl != 0 AND all 4 slots bad -- WHY(1) + 4 swap rows +
+   * KEEP(1) + FIX(1) + BACK(1) + B(1) = 9 rows at ROW_H, 2 ROW_H/2 gaps (before KEEP,
+   * before BACK), then the last line's own ink. Mirrors
+   * gb_paste_legal_screen_ex's exact y sequence. */
+  chk("legal screen (swap rows) worst-case height", 0,
+      UI_SCR_H - 1,
+      PDNA_SIDECAR_LOSS_ROW_Y0 + 9 * PDNA_SIDECAR_LOSS_ROW_H +
+        2 * (PDNA_SIDECAR_LOSS_ROW_H / 2) + UI_ROW_H - 1,
+      "legal screen: worst case (WHY + 4 swap rows + KEEP-off + FIX + BACK) clears the screen");
   /* ==== END S5-B sidecar (Part D) ============================================ */
 
   /* ==== S5-B Part E: the DV-orphan warning (source/pdna_gbedit.c dv_orphan_warn) ==== */
