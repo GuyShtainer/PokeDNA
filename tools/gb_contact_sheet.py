@@ -345,6 +345,20 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     ("gb-merge-screen-s150-9", "BACKLOG #150 S150-9 — the per-field MERGE screen: "
      "toggle rows, the byte-identical skip, ALREADY RESTORED and SAVE FIRST",
      ("S150-9", "S150-9 decision 7", "S150-9 decision 8")),
+    # BACKLOG #150 S150-11 (this lane): the TRANSFERS screen -- the 21-row START
+    # menu with the new 'Transfers' row, the empty-state screen (decision 16 --
+    # the only reachable list state on this vehicle, no readable FAT), a Game Boy
+    # session's dimmed row + honest refusal (G-F2), and a silent Bank open (no
+    # ledger on this vehicle). Shots come from tools/dgb_shots.py's
+    # run_s150_11_reconcile() (--s150-11); captions use several exact prefixes
+    # (lowercase "s150-11", not "S150-11", matching what the run function actually
+    # writes) since feature_for_caption() matches EXACTLY, not by startswith.
+    # Appended after "gb-merge-screen-s150-9" per this list's own append-only rule.
+    ("gb-xfer-reconcile-s150-11", "BACKLOG #150 S150-11 — the TRANSFERS screen: "
+     "the 21-row START menu, the empty state, a GB session's dimmed row + refusal, "
+     "a silent Bank open",
+     ("s150-11", "s150-11 decision 13", "s150-11 decision 16",
+      "s150-11 decision 4/G-F2", "s150-11 decision 4/§11.8")),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
 FEATURE_TITLE = {fid: title for fid, title, _prefixes in FEATURE_TABLE}

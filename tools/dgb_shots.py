@@ -6471,6 +6471,17 @@ def main(argv=None) -> int:
                           "original80, both on a PC cell and a Bank cell that is "
                           "abroad -- see run_s150_15_view_original()'s own docstring "
                           "for the full nav recipe.")
+    ap.add_argument("--s150-11", action="store_true",
+                     help="BACKLOG #150 S150-11: only run_s150_11_reconcile() against "
+                          "--image -- --image MUST be `make delta-gb`'s own combined "
+                          "image (Emerald.sav + Red/Gold/Crystal, same vehicle as "
+                          "--s150-12), since the chain needs a Game Boy session (Gold) "
+                          "as well as the Gen-3 side. The 21-row START menu with the "
+                          "new Transfers row, the empty-state TRANSFERS screen, the "
+                          "row dimmed inside a Game Boy session with the honest "
+                          "refusal message, and a silent Bank open (no ledger on this "
+                          "vehicle -- decision 16, see the run function's own "
+                          "docstring for why only the empty state is producible here).")
     ap.add_argument("--b166", action="store_true",
                      help="BACKLOG #166: only run_b166() against --image -- "
                           "--image MUST be `make delta-gb`'s own combined image "
@@ -7522,6 +7533,22 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] b54-romhack ({a.b54_romhack}): {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if getattr(a, "s150_11", False):
+        # BACKLOG #150 S150-11: append-only, same delta-gb combined-image convention
+        # as --s150-12 above (needs a Game Boy session too, not just the Gen-3 side).
+        ran = True
+        try:
+            sess = run_s150_11_reconcile(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] s150-11: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
@@ -8841,6 +8868,123 @@ def run_s150_12_copy_edge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
            "planted cells now sit in the Emerald PC, proving decision 9's DOWN-"
            "skips-the-ledger claim end to end on the emulator")
 
+    return s
+
+
+def run_s150_11_reconcile(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #150 S150-11: the TRANSFERS screen (decision 13/14) -- the 21-row START
+    menu, the empty-state screen, a Game Boy session's dimmed row + honest refusal, and
+    a silent Bank open. `rom` MUST be `make delta-gb`'s own combined image (Emerald.sav
+    + Red/Gold/Crystal, same vehicle as --s150-12) -- the chain needs BOTH the Gen-3
+    side (frames 00-03, 06) and a Game Boy session (frames 04-05), which S150-14's own
+    single-Emerald fusion (no --gb) cannot provide (no boot picker, no GB row at all).
+
+    WHAT DEVIATES FROM THIS LANE'S CONTINUATION BRIEF (found live, not guessed): the
+    brief's step 7 said to use S150-9's bank_plant_xfer_seed_all() delta slots (box-0
+    slots 26-29) "so the list has real rows". Checked before this ladder ran a single
+    tap: source/xfer_io.c's own PDNA_DELTA comment says plainly "the delta vehicle has
+    no readable FAT" -- the seam bank_plant_xfer_seed_all()/xfer_io.c's PDNA_DELTA
+    fallback provide is a single BY-KEY lookup (consumed by source/xfer_view.c's GB
+    ORIGINAL row through xr_open()), not a directory listing. source/pdna_main.c's
+    xfer_reconcile_walk() -- this screen's own walk -- calls f_opendir(&dir,
+    PDNA_XFER_DIR) directly (never xr_open()), which fails on this vehicle regardless
+    of what is planted in the Bank: rb->nxrc stays 0 no matter how many Bank cells
+    bank_plant_xfer_seed_all() plants. Decision 16 ("delta vehicle = the empty state
+    only... do NOT add a RAM-backed ledger or #ifdef PDNA_DELTA plants for records --
+    S150-13 owns #179") is therefore still exactly right for this screen's LIST view,
+    confirmed against the shipped source rather than assumed; a populated-list shot
+    needs either S150-13's real RAM ledger or real hardware (BACKLOG #150 S150-11's
+    HW-QUEUE rows XFER-C13/C14/C16b/C20/C27/C28/C29 cover the populated cases)."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s150_11_")
+    print("== BACKLOG #150 S150-11: the TRANSFERS screen (START row, empty state, GB "
+          "session refusal, silent Bank open) ==")
+    idx = gb_save_pick_index(rom)["gold"]
+
+    s.run(700)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)              # #68a boot picker, Emerald row (default) -> box
+    s.shot("01_gen3_box", "s150-11: the Emerald box screen, freshly booted (boot "
+           "picker -> Gen-3 row)")
+
+    s.tap("START", settle=gb_shots.BIG_SETTLE)
+    s.tap("RIGHT")                                       # column 0 -> column 1
+    s.press_n("DOWN", nav_down_from_col_top("NV_XFER"))  # column 1 top -> Transfers' own row
+    s.shot("02_start_menu_21_rows", "s150-11 decision 13: the 21-row START menu -- "
+           "'Transfers' now sits between 'GB import' and 'Settings' in column 2, "
+           "cursor already on it (PDNA_NAV_ROW_H 11 -> 10 fits the 21st row -- the "
+           "hint line at the bottom of the panel sits clear of the last row, not "
+           "overlapping it)")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.shot("03_transfers_empty", "s150-11 decision 16: A on Transfers -- the "
+           "empty-state screen ('No transfer records. / Records appear after a / "
+           "Bank transfer.') -- this delta vehicle has no readable FAT "
+           "(source/xfer_io.c), so xfer_reconcile_walk()'s f_opendir() always "
+           "fails here regardless of what is planted in the Bank; this is the "
+           "ONLY reachable frame for this screen on the emulator (decision 16)")
+
+    s.tap("B", settle=gb_shots.BIG_SETTLE)
+    s.shot("04_transfers_back", "s150-11: B backs out of the empty-state screen "
+           "-- Emerald's own box screen again, no residue")
+
+    s.tap("START", settle=gb_shots.BIG_SETTLE)
+    s.tap("RIGHT")
+    s.press_n("DOWN", nav_down_from_col_top("NV_GB"))
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    assert_screen(s, "pick_a_save")
+    for _ in range(idx):
+        s.tap("DOWN", settle=gb_shots.SETTLE)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)               # picked Gold -> S1 info page
+    s.tap("A", settle=60)                                 # info -> box grid (cold fetch)
+    s.run(GB_ART_COLD_SETTLE)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)
+    s.tap("RIGHT")
+    s.press_n("DOWN", nav_down_from_col_top("NV_XFER"))
+    s.shot("05_gb_session_start", "s150-11 decision 4/G-F2: the SAME 21-row menu "
+           "inside a Gold session, cursor already on 'Transfers' -- the CURSOR "
+           "highlight paints selected text the same bright ink whether the row is "
+           "enabled or not (the same convention 02's own frame shows for the Gen-3 "
+           "menu -- caption honest: the screenshot alone does not visually "
+           "distinguish dimmed-but-selected from enabled-and-selected; the actual "
+           "NAV_COMING_SOON classification is nav_avail.c's GB_TABLE[NV_XFER] row, "
+           "pinned by tests/host_nav_avail_test.c, and frame 06 is the real proof "
+           "-- A here refuses instead of opening the screen)")
+
+    s.tap("A", settle=200)
+    s.shot("06_gb_session_refused", "s150-11: A on the dimmed row -- the honest "
+           "'Open it from a Gen-3 save.' refusal (app_nav_refuse(), the SAME "
+           "message nav_avail.c's [NV_XFER] table entry carries); nothing was "
+           "read from the ledger and nothing was logged (G-F2 -- verified "
+           "structurally by tests/host_xfer_reconcile_sites_test.py's check (i), "
+           "not re-provable from a screenshot alone)")
+
+    # A dismisses msg_wait (source/pdna_main.c: "Press A", KEY_A only -- verified
+    # live, NOT KEY_B). The nav menu already returned one level up (gb_nav_from_
+    # start's own dispatch already exited before app_nav_refuse ran), so this lands
+    # straight back on Gold's own box grid, not a second menu frame.
+    s.tap("A", settle=200)
+    # This real Gold.sav corpus holds several mons carrying an item (found live,
+    # same "an unrelated report page interrupts the exit" shape run_s150_12_copy_
+    # edge's own docstring documents for a different report kind) -- leaving the
+    # box grid (B) surfaces a "NOT TRANSFERABLE" report before the session
+    # actually closes; a SECOND B dismisses it and lands on Emerald's own box grid
+    # (verified live: exactly two B presses, not the three a naive guess assumed).
+    s.tap("B", settle=200)
+    s.tap("B", settle=200)
+    s.shot("07_back_on_emerald", "s150-11: backed all the way out of the Gold "
+           "session -- A dismissed the refusal, then TWO B presses (one dismisses "
+           "this corpus's own unrelated 'NOT TRANSFERABLE' held-item report, the "
+           "second actually exits the session) -- Emerald's own box screen again, "
+           "confirming the GB-session detour left no residue there either")
+
+    s.tap("START", settle=gb_shots.BIG_SETTLE)
+    s.tap("DOWN", settle=gb_shots.SETTLE)                 # NV_PARTY -> NV_BANK (column 0, row 1)
+    s.tap("A", settle=200)
+    s.shot("08_bank_open_silent", "s150-11 decision 4/§11.8: START > Bank opens "
+           "with NO prompt -- xfer_reconcile_walk()'s own f_opendir() fails "
+           "silently on this vehicle's unreadable FAT (same finding as frame 03), "
+           "so app_xfer_reconcile_bank_open() always sees zero candidates here; "
+           "the log-line assertion (XFER-C13/C14) is hardware-only, not "
+           "producible on the emulator")
     return s
 
 
