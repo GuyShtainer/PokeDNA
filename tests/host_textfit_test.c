@@ -1192,6 +1192,11 @@ int main(void) {
   PF(PDNA_SIDECAR_GEN1_TITLE,       28, 184);
   PF(PDNA_SIDECAR_GEN1_L1,          28, 184);
   PF(PDNA_SIDECAR_GEN2_TITLE,       28, 184);   /* s150-10b review A9: pinned like GEN1_TITLE */
+  /* BACKLOG #212 re-verify R2: gb_gen12_nomoves_msg's own strings (source/pdna_gen12.c
+   * :3733-3734), reached from gb_bank_down_bridge's D9 zero-move refusal. */
+  PF(PDNA_SIDECAR_NOMOVES_TITLE1,   28, 184);
+  PF(PDNA_SIDECAR_NOMOVES_TITLE2,   28, 184);
+  PF(PDNA_SIDECAR_NOMOVES_L1,       28, 184);
   /* S5-C Part B1: the STATIC tail of the "no ROM beside the save" message; the
    * dynamic "Put NAME.gb here" line is built at runtime (gb_gen1_norom_msg) and is
    * exempt from static measurement per this file's own header note -- it goes
