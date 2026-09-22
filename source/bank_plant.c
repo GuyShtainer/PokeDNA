@@ -83,11 +83,37 @@ void bank_plant_box0(uint8_t* recs) {
   e.list_species = 0xFE;
   bc_pack(&e, 0, BC_ORIGIN_GOLD, 0, 5u, cell);
   memcpy(recs + (uint32_t)4 * 80, cell, 80);
+
+  /* BACKLOG #150 S150-12 decision 17: two COPY cells (BC_FLAG_QUEUED_PC |
+   * BC_FLAG_COPY, b2|b5), the artless/delta shot chain's own proof that decision 9
+   * (a copy cell's DOWN skips the ledger write entirely) actually lands: without
+   * these two planted cells, every DOWN on the delta build hits #179 (a)'s
+   * "SIDECAR FOLDER / Nothing transferred" wall before ever reaching a real
+   * xfer_down_write() call to prove skipped. Serials 6/7 are ALSO used by
+   * bank_plant_box_full()'s own loop below for BOX 1 (a different buffer/box
+   * entirely, called separately from pdna_bank.c) -- no same-box ident32 collision,
+   * since S150-4's own collision scan is scoped to one box. */
+  plant_gen2_chikorita(&e, 13, 6u);
+  bc_pack(&e, (uint8_t)(BC_FLAG_QUEUED_PC | BC_FLAG_COPY), BC_ORIGIN_GOLD, 0, 6u, cell);
+  memcpy(recs + (uint32_t)5 * 80, cell, 80);
+
+  plant_gen2_chikorita(&e, 14, 7u);
+  bc_pack(&e, (uint8_t)(BC_FLAG_QUEUED_PC | BC_FLAG_COPY), BC_ORIGIN_GOLD, 0, 7u, cell);
+  memcpy(recs + (uint32_t)6 * 80, cell, 80);
 }
 
 void bank_plant_box_full(uint8_t* recs) {
   if (!recs) return;
-  bank_plant_box0(recs);                              /* slots 0-4, as above */
+  /* BACKLOG #150 S150-12: bank_plant_box0() now plants 7 slots (0-6, the two new
+   * COPY cells included), but this function's OWN loop below still starts at 5 and
+   * immediately overwrites slots 5/6 with its own plain (non-copy) Chikoritas at
+   * the SAME serials 6/7 -- deliberately: this is a DIFFERENT box/buffer (box 1,
+   * called separately from pdna_bank.c's box==1 branch, never against box 0's own
+   * buffer -- confirmed at lane start: bank_plant_box0/bank_plant_box_full are
+   * never both called against the same `recs`), and it is BOX 1 that is meant to
+   * carry the generic 30-cell sweep, not box 0's two special COPY cells. Leaving
+   * the loop start at 5 is correct, not stale; only this comment needed updating. */
+  bank_plant_box0(recs);                              /* slots 0-6, as above */
   for (int slot = 5; slot < 30; slot++) {
     uint8_t level = (uint8_t)(12 + (slot % 30));
     if (level < 1) level = 1;
