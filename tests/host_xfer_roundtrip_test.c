@@ -1380,6 +1380,34 @@ static void run_rt4_one(const char* tag, const GbEditMon* mon, uint8_t origin) {
   }
   if (nb2 > 0) g_rt4_clipped++;
 
+  /* BACKLOG #220a review D7: the production no-ROM path ends in g3gb_moves_pack
+   * (source/gb_moves_legal.c's own g3gb_moves_fill, called by gb_paste_fill_moves)
+   * -- a clipped slot is never left as a hole in the MIDDLE of the move list, it is
+   * packed forward. This lane's own no-ROM fallback (the comment above: "leave a
+   * clipped slot EMPTY, same as CREATE's own no-ROM fallback") stopped at
+   * gen3_to_gb_fixed and never ran that pack step, so 50 of 78 clipped records in
+   * this corpus were left GAPPED (a real move sitting after an empty slot) --
+   * legal-looking to every OTHER check here (R1's byte-identical assertions never
+   * compare individual move slots against a hole rule), but not what the real
+   * bridge ever produces. learn4 is all zeros (no ROM learnset host-compilable, same
+   * reason the whole file avoids gb_paste_fill_moves) -- g3gb_moves_fill therefore
+   * fills nothing (fill4 stays all-zero) and its own g3gb_moves_pack() call is the
+   * only thing this exercises, matching CREATE's own no-ROM fallback exactly. */
+  if (nb2 > 0) {
+    uint8_t learn4[4] = { 0, 0, 0, 0 };
+    uint8_t fill4[4];
+    CHECK(g3gb_moves_fill(&R1, bad4, learn4, fill4) >= 0,
+          "%s: RT-4 hop 3: g3gb_moves_fill runs on the clipped record", tag);
+    bool seen_empty = false;
+    for (int i = 0; i < 4; i++) {
+      uint8_t mv = gb_get_move(&R1, i);
+      if (mv == 0) { seen_empty = true; continue; }
+      CHECK(!seen_empty,
+            "%s: RT-4 hop 3: slot %d holds a move after an earlier empty slot -- "
+            "g3gb_moves_fill's own pack step must never leave a gap", tag, i);
+    }
+  }
+
   GbscEntry e2;
   xr_entry_for_down(&e2, &R1, N2p, 0, XR_DIR_ABROAD_GB, NULL);
   e2.state = XR_STATE_CLAIMED;
