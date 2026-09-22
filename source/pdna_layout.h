@@ -1454,6 +1454,14 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * -- "beside the .sav to transfer." -- never named an extension, so it needs no
  * Gen-2 twin). */
 #define PDNA_SIDECAR_GEN2_TITLE      "NO GEN-2 ROM"
+/* BACKLOG #212 review D9: the bridge's OWN zero-move refusal (gb_bank_down_bridge)
+ * runs strictly after the base-stats gate already proved a <base>.gb/.gbc ROM sits
+ * beside the save (GB1BASE_NO_ROM is refused earlier, at the base-stats lookup) --
+ * "NO GEN-1 ROM" would be a false claim there. This pair says the true reason: the
+ * fill found no eligible move in the destination generation's learnset at all. */
+#define PDNA_SIDECAR_NOMOVES_TITLE1  "NO MOVES FOR GEN 1"
+#define PDNA_SIDECAR_NOMOVES_TITLE2  "NO MOVES FOR GEN 2"
+#define PDNA_SIDECAR_NOMOVES_L1      "Learnset not found."
 /* Full-screen list (gb_pick_box's own geometry: title y=3, rule y=13), not a scrolling
  * picker -- rows are drawn only for flags actually set, so the common case is much
  * shorter than the worst case the host test pins: 10 conditional Gen3ToGbLoss lines +

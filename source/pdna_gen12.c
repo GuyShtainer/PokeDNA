@@ -3725,6 +3725,15 @@ static void __attribute__((noinline)) gb_gen12_norom_msg(uint8_t gen) {
            UI_WARN, l1, PDNA_SIDECAR_GEN1_L1);
 }
 
+/* BACKLOG #212 review D9: the bridge's zero-move refusal runs AFTER the base-stats
+ * gate has already proved a ROM is present (gb_gen12_norom_msg above would be a
+ * false "the ROM is missing" claim there) -- the true reason is that no eligible
+ * move was found anywhere in that ROM's learnset for this species/level. */
+static void __attribute__((noinline)) gb_gen12_nomoves_msg(uint8_t gen) {
+  msg_wait(gen == GB_GEN1 ? PDNA_SIDECAR_NOMOVES_TITLE1 : PDNA_SIDECAR_NOMOVES_TITLE2,
+           UI_WARN, PDNA_SIDECAR_NOMOVES_L1, 0);
+}
+
 /* BACKLOG #150 S150-8 decision 14/15, arm 1: a native cell bridges into the
  * CURRENTLY MOUNTED Game Boy session's OTHER generation, under the time-capsule
  * rules. `dst_box` is the box the cursor is on; gbs_insert() assigns the slot
@@ -3844,7 +3853,7 @@ BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]) {
     for (int i = 0; i < 4; i++) if (gb_get_move(&mon, i)) nleft++;
     if (nleft == 0) {
       snd_deny();
-      gb_gen12_norom_msg(dst_gen);
+      gb_gen12_nomoves_msg(dst_gen);   /* D9: the base-stats gate already proved a ROM */
       return BANK_DOWN_REFUSED;
     }
   }
