@@ -3836,10 +3836,13 @@ BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]) {
     nfill = gb_paste_fill_moves(gb_get_species_dex(&mon), wlvl, &mon, bad4, fill4);
     log_line("gen12: bridge moves: gen %u, %d bad slot(s), %d filled",
              (unsigned)dst_gen, nbad, nfill);
-    /* Decision 8.7's zero-move refusal, mirrored: all four slots bad and none filled
-     * would land `mon` with literally zero moves -- refused here, nothing written,
-     * the modal below never shown. */
-    if (nbad == 4 && nfill == 0) {
+    /* Decision 8.7's real predicate (review D1): "the record would be WRITTEN with
+     * no moves at all". `nbad == 4` misses the 1-3-bad case where every non-empty
+     * slot was out of range and the fill ran dry -- that lands a Struggle-forever
+     * record just as illegally. */
+    int nleft = 0;
+    for (int i = 0; i < 4; i++) if (gb_get_move(&mon, i)) nleft++;
+    if (nleft == 0) {
       snd_deny();
       gb_gen12_norom_msg(dst_gen);
       return BANK_DOWN_REFUSED;
@@ -4280,11 +4283,14 @@ static bool gb_paste_hook(uint8_t* rec80) {
       if (!bad4[i] && from4[i] != 0 && gb_get_move(&mon, i) != (uint8_t)from4[i]) packed = true;
     log_line("gen12: paste moves: gen %u, %d bad slot(s), %d filled, packed=%d",
              (unsigned)g_ed->s.gen, nbad, nfill, (int)packed);
-    /* Decision 8.7 -- the ONE exception to Guy's "never block": all four slots were
-     * bad and none got a fill, so `mon` would arrive with literally zero moves (an
-     * illegal Game Boy record -- it would Struggle forever). Refused here, nothing
-     * written; the modal below is never shown. */
-    if (nbad == 4 && nfill == 0) {
+    /* Decision 8.7's real predicate (review D1): "the record would be WRITTEN with
+     * no moves at all". `nbad == 4` misses the 1-3-bad case where every non-empty
+     * slot was out of range and the fill ran dry -- that lands a Struggle-forever
+     * record just as illegally. Refused here, nothing written; the modal below is
+     * never shown. */
+    int nleft = 0;
+    for (int i = 0; i < 4; i++) if (gb_get_move(&mon, i)) nleft++;
+    if (nleft == 0) {
       snd_deny();
       gb_gen12_norom_msg(g_ed->s.gen);
       return false;

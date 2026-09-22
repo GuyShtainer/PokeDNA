@@ -810,7 +810,7 @@ INVERTED_GEN_RE = re.compile(r"\?\s*GB_GEN2\s*:\s*GB_GEN1")
 # the real checks and their MUT X/MUT Y/MUT Z self-mutation demonstrations. ----------
 CLIP_MOVES_RE      = re.compile(r"\bgb_clip_moves\(")
 GEN3_TO_GB_FIXED_RE = re.compile(r"\bgen3_to_gb_fixed\(")
-ZERO_MOVE_REFUSAL_RE = re.compile(r"nbad\s*==\s*4\s*&&\s*nfill\s*==\s*0")
+ZERO_MOVE_REFUSAL_RE = re.compile(r"nleft\s*==\s*0")
 PASTE_FILL_MOVES_RE = re.compile(r"\bgb_paste_fill_moves\(")
 PASTE_WRITE_CALL_RE = re.compile(r"\bgb_paste_write\(")
 
@@ -1299,11 +1299,12 @@ def main() -> int:
                                    GEN3_TO_GB_FIXED_RE, "gb_paste_hook")
     check(ok, msg)
 
-    # (ab) the zero-move refusal (decision 8.7) exists.
+    # (ab) the zero-move refusal (decision 8.7, review D1's `nleft == 0` predicate) exists.
     check(any(ZERO_MOVE_REFUSAL_RE.search(ln) for ln in hook_body),
-          "gb_paste_hook: no `nbad == 4 && nfill == 0` zero-move refusal found in its "
-          "(comment-stripped) body -- a mon with all four slots bad and nothing filled "
-          "would land with no moves (Struggles forever, an illegal Game Boy record)")
+          "gb_paste_hook: no `nleft == 0` zero-move refusal found in its (comment-stripped) "
+          "body -- a mon that would be WRITTEN with no moves left at all (whether from all "
+          "four slots bad, or 1-3 bad slots all out of range with the fill run dry) would "
+          "land with no moves (Struggles forever, an illegal Game Boy record)")
 
     # (ac) the fill (gb_paste_fill_moves) is called BEFORE the write (gb_paste_write) --
     # a bad slot that reached gen3_to_gb_fixed non-NULL must always be filled (or the
@@ -1974,15 +1975,15 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str]) -
     # 8.7's ONE exception to "never block" silently disappears) on a copy -- (ab) must
     # fail to find it.
     zero_i = first_match_line(hook_body, 0, len(hook_body), ZERO_MOVE_REFUSAL_RE)
-    check(zero_i is not None, "MUT Y: could not locate the real `nbad == 4 && nfill == "
-                               "0` refusal in gb_paste_hook -- fix this test")
+    check(zero_i is not None, "MUT Y: could not locate the real `nleft == 0` refusal "
+                               "in gb_paste_hook -- fix this test")
     if zero_i is not None:
         mut_y = list(hook_body)
         mut_y[zero_i] = ZERO_MOVE_REFUSAL_RE.sub("false", mut_y[zero_i])
         ok7 = any(ZERO_MOVE_REFUSAL_RE.search(ln) for ln in mut_y)
         check(not ok7, "MUT Y (zero-move refusal condition weakened to `false`) should "
                         "have been caught but was not")
-        print("  MUT Y demonstration -- `nbad == 4 && nfill == 0` replaced with `false` "
+        print("  MUT Y demonstration -- `nleft == 0` replaced with `false` "
               "in gb_paste_hook: correctly caught")
 
     # MUT Z: move the `gb_paste_fill_moves(` call line to AFTER `gb_paste_write(` on a

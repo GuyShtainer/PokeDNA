@@ -50,6 +50,7 @@
 #include "gen1_save.h"
 #include "gen2_save.h"
 #include "bank_down_convert.h"
+#include "gb_moves_legal.h"   /* F2b: g3gb_moves_fill -- the caller-level fill review D1 pins */
 #include "gen3_edit.h"   /* F3 (review): gen3_edit_load -- an INDEPENDENT reader of the
                           * converted record's own raw nickname bytes, for the
                           * nick_written-override assertion below */
@@ -873,6 +874,56 @@ static void test_bridge_corpus_no_move_refusal(void) {
 }
 
 /* ============================================================================ */
+/* F2b. review D1 pin: a cell whose only non-empty moves are BOTH out of range for  */
+/* the destination generation (no learn table) -- 2 of 4 slots bad, not 4 of 4. The */
+/* OLD predicate `nbad == 4 && nfill == 0` is FALSE here (nbad == 2) even though the */
+/* record would land with zero moves left -- the exact case review D1 found reachable*/
+/* through --op paste80 in production. Proves the caller-level `nleft == 0` predicate*/
+/* (source/pdna_gen12.c's gb_paste_hook / gb_bank_down_bridge, tests/host_gbsurgery_  */
+/* tool.c's do_paste80) is the one that must fire, not the old nbad==4 shortcut. */
+/* ============================================================================ */
+static void test_caller_zero_move_refusal_two_bad(void) {
+  GbEditMon m; memset(&m, 0, sizeof m);
+  m.gen = GB_GEN2;
+  gb_set_species(&m, 25, NULL);            /* Pikachu -- Gen 1 can represent it */
+  gb_set_level(&m, 20);
+  gb_set_dv(&m, GB_ATK, 12); gb_set_dv(&m, GB_DEF, 12);
+  gb_set_dv(&m, GB_SPE, 12); gb_set_dv(&m, GB_SPC, 12);
+  gb_set_move(&m, 0, 200);                 /* > 165, out of Gen-1 range */
+  gb_set_move(&m, 1, 230);                 /* > 165, out of Gen-1 range */
+  gb_set_otid(&m, 12345);
+  uint8_t cell[80];
+  int rc = bc_pack(&m, 0, 0, 0, 9001u, cell);
+  CHECK(rc == 0, "F2b: bc_pack builds the two-bad-move fixture (rc=%d)", rc);
+
+  GbGen1Base base = { .base = { 35, 55, 40, 90, 50 }, .type1 = 0x18, .type2 = 0x18 };
+  int tc; uint16_t tc_bad; Gb12Result g12; G3GbStatus g3gb;
+  GbEditMon out; Gen3ToGbLoss loss; Gb12Notes notes;
+  uint16_t from4[4]; uint8_t bad4[4]; int nbad;
+  bdc_convert_gb_core(cell, GB_GEN1, false, &base, &tc, &tc_bad, &g12, &g3gb, &out, &loss,
+                      &notes, from4, bad4, &nbad);
+  CHECK(tc == 0 && g12 == GB12_OK, "F2b: converts to the intermediate");
+  CHECK(g3gb == G3GB_OK, "F2b: gen3_to_gb_fixed accepts (got %s)", g3gb_status_text(g3gb));
+  CHECK(nbad == 2, "F2b: exactly 2 of 4 slots flagged bad (got %d)", nbad);
+
+  /* No ROM (the "--rom absent" equivalent) -- the caller-level fill (mirroring
+   * pdna_gen12.c's gb_bank_down_bridge/gb_paste_hook) gets an all-empty learn
+   * table, so nfill stays 0. */
+  uint8_t learn4[4] = { 0, 0, 0, 0 };
+  uint8_t fill4[4] = { 0, 0, 0, 0 };
+  int nfill = g3gb_moves_fill(&out, bad4, learn4, fill4);
+  CHECK(nfill == 0, "F2b: no learn table -> nothing filled (got %d)", nfill);
+
+  int nleft = 0;
+  for (int i = 0; i < 4; i++) if (gb_get_move(&out, i)) nleft++;
+  CHECK(nleft == 0, "F2b: the record would be WRITTEN with zero moves left (got %d) -- "
+        "the caller-level refusal (review D1's `nleft == 0`) must fire here", nleft);
+  CHECK(!(nbad == 4 && nfill == 0), "F2b: demonstrates the review D1 bug -- the OLD "
+        "predicate `nbad == 4 && nfill == 0` is FALSE here (nbad=%d) even though the "
+        "record has zero moves left; only `nleft == 0` catches this case", nbad);
+}
+
+/* ============================================================================ */
 /* G. F2 (review): app_xfer_pending_undo()/app_xfer_promote()'s identity re-check   */
 /* -- gbsc_remove(idx) alone is a blind index into a file that may have changed    */
 /* under us (a GB paste to the same key, gbsc_evict_oldest, a re-mount); this      */
@@ -947,6 +998,7 @@ int main(void) {
   test_name_glyph_loss_synthetic(); printf("  (E3) BACKLOG #177 name-glyph loss ok\n");
   test_time_capsule_refusal();printf("  (F) time-capsule refusal     ok\n");
   test_bridge_corpus_no_move_refusal(); printf("  (F2) BACKLOG #212 corpus, no whole-record move refusal ok\n");
+  test_caller_zero_move_refusal_two_bad(); printf("  (F2b) review D1, 2-bad-move zero-move refusal ok\n");
   test_pending_identity_check(); printf("  (G) pending identity check   ok\n");
 
   printf("%d checks, %d failed\n", g_check, g_fail);

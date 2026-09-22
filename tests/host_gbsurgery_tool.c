@@ -985,8 +985,9 @@ static int do_create(GbSession* s, const char* box_tok, const char* dex_tok) {
  *      the just-converted `mon`, since this tool never applies an evolution-level fix)
  *      via g3gb_moves_fill(); no --rom means learn4 stays {0,0,0,0}, the documented
  *      "never block" input (decision 3) -- every bad slot is simply left empty.
- *   4. decision 8.7's ONE exception: nbad == 4 && nfill == 0 refuses outright (nothing
- *      written) -- the same zero-move guard gb_paste_hook applies.
+ *   4. decision 8.7's ONE exception: the record would be WRITTEN with no moves left
+ *      at all (nleft == 0, review D1) refuses outright (nothing written) -- the same
+ *      zero-move guard gb_paste_hook applies.
  *   5. gbs_insert(box) -- gen3_to_gb_fixed's own gb_load_parts(..., false, ...) already
  *      built `mon` box-shaped (is_party = false), so no party->box copy is needed
  *      here, unlike do_create() above (which starts from a party record). */
@@ -1067,9 +1068,15 @@ static int do_paste80(GbSession* s, const char* box_tok, const char* rec_path) {
     }
     uint8_t fill4[4] = { 0, 0, 0, 0 };
     nfill = g3gb_moves_fill(&mon, bad4, learn4, fill4);
-    if (nbad == 4 && nfill == 0) {
+    /* review D1: "the record would be WRITTEN with no moves at all" -- nbad == 4
+     * misses the 1-3-bad case where every non-empty slot was out of range and the
+     * fill ran dry (a mirror of pdna_gen12.c's gb_paste_hook / gb_bank_down_bridge
+     * fix). */
+    int nleft = 0;
+    for (int i = 0; i < 4; i++) if (gb_get_move(&mon, i)) nleft++;
+    if (nleft == 0) {
       if (rf) fclose(rf);
-      return refuse("zero-move refusal (decision 8.7): all four slots bad, nothing filled");
+      return refuse("zero-move refusal (decision 8.7): the record would land with no moves at all");
     }
   }
   if (rf) fclose(rf);
