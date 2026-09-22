@@ -4202,6 +4202,16 @@ static bool gb_paste_hook(uint8_t* rec80) {
   int nfill = 0;
   if (nbad > 0) {
     uint8_t wlvl = fix ? fix_to : gb_get_level(&mon);
+    /* BACKLOG #210: gb_paste_fill_moves() below calls gb_create_locate_rom() (decision
+     * 5's own choice, deliberately bypassing romgs_ready -- see that function's MEDIUM-1
+     * comment: CREATE's resolution is ALWAYS a cold, ~185,000-read full-ROM scan, never
+     * cached). CREATE masks that exact scan with s_busy_reading() (see gb_create_hook's
+     * own MEDIUM-2 comment) before it ever calls gb_create_locate_rom; the fill's call to
+     * the SAME function had no such cover, so a cold session's loss screen -> modal
+     * transition looked frozen for the whole scan. The very next screen (the modal below,
+     * or gb_gen12_norom_msg's msg_wait on 8.7's refusal) does its own ui_clear(), so no
+     * explicit "restore" call is needed here -- it simply draws over this busy panel. */
+    s_busy_reading();
     nfill = gb_paste_fill_moves(gb_get_species_dex(&mon), wlvl, &mon, bad4, fill4);
     /* "packed": did any KEPT (non-bad) slot's move end up at a different index than
      * it started at? g3gb_moves_fill's own contract writes a fill AT its bad slot's

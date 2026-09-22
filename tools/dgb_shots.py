@@ -3873,18 +3873,28 @@ def run_s150_10(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessi
                               "for Gen 2) and emptied that ONE slot rather than "
                               "refusing the whole record with G3GB_ERR_MOVE")
 
-    # BACKLOG #150 S150-10 own finding: this ONE transition also runs the fill step
-    # (decision 8 step 7, gb_paste_fill_moves -> gb_create_locate_rom ->
-    # gb_create_learn), which on a COLD session (the ROM's table not yet scanned/
-    # cached this session -- gb_create_learn's own g_ed->learn_ready cache, shared
-    # with CREATE) does the SAME "up to ~185,000 read() calls" full-ROM scan
-    # CREATE's own s_busy_reading() comment warns about, but WITHOUT that busy-
-    # screen feedback (gb_paste_hook shows none before this step) -- measured
-    # directly on this build: pixel-identical for 20,000+ frames at BIG_SETTLE/150,
-    # done well before 2,000. 4,000 frames is a safe, measured margin, not a guess.
-    # Flagged as a UX gap for the orchestrator (BACKLOG follow-up), not fixed here
-    # -- adding a busy screen is outside this lane's named steps.
-    s.tap("A", settle=4000)                                 # proceed -> the NEW swap-row modal (cold ROM scan, no busy-screen feedback -- see the note above)
+    # BACKLOG #150 S150-10 own finding, FIXED by BACKLOG #210: this ONE transition
+    # also runs the fill step (decision 8 step 7, gb_paste_fill_moves ->
+    # gb_create_locate_rom -> gb_create_learn), which on a COLD session (the ROM's
+    # table not yet scanned/cached this session -- gb_create_locate_rom NEVER uses
+    # the romgs_ready cache, by design, same as CREATE's own choice) does the SAME
+    # "up to ~185,000 read() calls" full-ROM scan CREATE's own s_busy_reading()
+    # masks. gb_paste_hook now calls s_busy_reading() immediately before
+    # gb_paste_fill_moves() (source/pdna_gen12.c) -- the busy panel draws
+    # synchronously (ui_clear + two ui_text calls) BEFORE the scan starts, so a
+    # SHORT settle already shows it stably; a much longer settle (the scan itself,
+    # measured 20,000+ frames pixel-identical before 4,000) reaches the modal next.
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # proceed -> s_busy_reading() draws, THEN the cold scan starts
+    s.shot("04b_busy_reading", "BACKLOG #210: the busy screen (s_busy_reading(), "
+                                "CREATE's own panel/text, reused verbatim) now "
+                                "covers gb_paste_fill_moves()'s cold "
+                                "gb_create_locate_rom() scan -- captured mid-scan, "
+                                "BEFORE the swap modal below -- so a cold paste no "
+                                "longer looks frozen between the loss screen and "
+                                "the modal",
+           claim=["Reading your ROM...", "This can take a moment."])
+
+    s.run(4000 - gb_shots.BIG_SETTLE)                       # let the cold scan finish (measured pixel-identical well before 4,000 total)
     s.shot("05_swap_modal", "BACKLOG #150 S150-10 decision 7: the swap-row modal "
                              "(gb_paste_legal_screen_ex) -- ONE row 'ROCK TOMB -> "
                              "<a Gold level-up move>' (the only bad slot; SURF/"

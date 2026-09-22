@@ -118,6 +118,13 @@ Checks:
       must always be filled (or the whole paste refused by (ab)) before the record is
       ever written. MUT Z moves the fill call after the write and must be caught.
       (Re-lettered from (w), same merge.)
+  (ad) BACKLOG #210: gb_paste_hook calls s_busy_reading( BEFORE gb_paste_fill_moves( --
+      the fill's own gb_create_locate_rom() call is CREATE's identical cold, uncached,
+      ~185,000-read full-ROM scan (see that function's own MEDIUM-1 comment), and
+      CREATE masks the same scan with s_busy_reading() before it runs. A busy call
+      missing, or sitting after the fill call, would leave a cold paste's loss screen
+      -> modal transition looking frozen for the whole scan. MUT AA deletes the
+      s_busy_reading( line and must be caught.
 """
 from __future__ import annotations
 
@@ -774,6 +781,12 @@ ZERO_MOVE_REFUSAL_RE = re.compile(r"nbad\s*==\s*4\s*&&\s*nfill\s*==\s*0")
 PASTE_FILL_MOVES_RE = re.compile(r"\bgb_paste_fill_moves\(")
 PASTE_WRITE_CALL_RE = re.compile(r"\bgb_paste_write\(")
 
+# ---- (ad) BACKLOG #210: s_busy_reading( must run BEFORE gb_paste_fill_moves( in
+# gb_paste_hook -- the fill's own gb_create_locate_rom() call is a cold, uncached scan
+# (decision 5's own choice), exactly like CREATE's, which CREATE masks with the same
+# busy screen. Shared by the real check (ad) and its MUT AA self-mutation. ----------
+BUSY_READING_RE = re.compile(r"\bs_busy_reading\(\)")
+
 # ---- (q)/(r) merged-tree reviewer: the non-EXACT LANDED tail must both repaint (q)
 # and never re-admit a deferred delete even alongside a kept consume (r). Shared with
 # MUT S / MUT T. -----------------------------------------------------------------
@@ -1256,6 +1269,13 @@ def main() -> int:
     # whole paste refused by (ab)) before gb_paste_write ever runs.
     ok, msg = gate_before_pattern(hook_body, 0, len(hook_body), PASTE_FILL_MOVES_RE,
                                    PASTE_WRITE_CALL_RE, "gb_paste_hook")
+    check(ok, msg)
+
+    # (ad) BACKLOG #210: s_busy_reading( is called BEFORE gb_paste_fill_moves( -- the
+    # fill's own gb_create_locate_rom() call is a cold, uncached, ~185,000-read scan
+    # (same as CREATE's, which CREATE masks the same way).
+    ok, msg = gate_before_pattern(hook_body, 0, len(hook_body), BUSY_READING_RE,
+                                   PASTE_FILL_MOVES_RE, "gb_paste_hook")
     check(ok, msg)
 
     # ---- (f) review F3: the self-mutation harness, every run ----
@@ -1916,6 +1936,20 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str]) -
                         f"have been caught but was not: {detail}")
         print(f"  MUT Z demonstration -- gb_paste_fill_moves( line moved after "
               f"gb_paste_write(: {detail}")
+
+    # MUT AA (BACKLOG #210): delete the `s_busy_reading();` line on a copy -- (ad) must
+    # fail to find any busy call before the fill's cold ROM scan.
+    busy_i = first_match_line(hook_body, 0, len(hook_body), BUSY_READING_RE)
+    check(busy_i is not None, "MUT AA: could not locate the real s_busy_reading() call "
+                               "in gb_paste_hook -- fix this test")
+    if busy_i is not None:
+        mut_aa = [ln for i, ln in enumerate(hook_body) if i != busy_i]
+        ok9, detail = gate_before_pattern(mut_aa, 0, len(mut_aa), BUSY_READING_RE,
+                                           PASTE_FILL_MOVES_RE, "gb_paste_hook (MUT AA)")
+        check(not ok9, f"MUT AA (s_busy_reading() deleted) should have been caught but "
+                        f"was not: {detail}")
+        print(f"  MUT AA demonstration -- s_busy_reading() call deleted from "
+              f"gb_paste_hook: {detail}")
 
 # ---- (m) 2026-09-16 (merged-tree shot lane): the DOWN dispatch's `occupied` refusal is scoped to
 # the GEN3 arm. An unscoped `&& !occupied` on the dispatch condition made the EXACT arm refuse
