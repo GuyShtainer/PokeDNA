@@ -129,6 +129,10 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_LBL_VIEW_EDIT   "VIEW / EDIT"
 #define PDNA_LBL_ITEM        "ITEM"
 #define PDNA_LBL_LEGALITY    "LEGALITY"
+/* BACKLOG #150 S150-15, decision 2: 11 glyphs = 88 px = exactly PDNA_MONMENU_ROW_W --
+ * Guy's wording "ORIGINAL DATA" (13 glyphs) does not fit (mismatch 4). Grouped with
+ * LEGALITY, the other "look at it" row (decision 1). */
+#define PDNA_LBL_ORIGINAL    "GB ORIGINAL"
 #define PDNA_LBL_HATCH       "HATCH"
 #define PDNA_LBL_MOVE        "MOVE"
 #define PDNA_LBL_MOVE_TO_BOX "MOVE TO BOX"
@@ -168,7 +172,8 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 /* Every label either action popup can show, so the host test measures the strings the
  * menus actually draw. The X() entries are the macros above, not fresh literals. */
 #define PDNA_MONMENU_LABELS(X)                                                        \
-  X(PDNA_LBL_VIEW_EDIT) X(PDNA_LBL_ITEM) X(PDNA_LBL_LEGALITY) X(PDNA_LBL_HATCH)       \
+  X(PDNA_LBL_VIEW_EDIT) X(PDNA_LBL_ITEM) X(PDNA_LBL_LEGALITY) X(PDNA_LBL_ORIGINAL)    \
+  X(PDNA_LBL_HATCH)                                                                  \
   X(PDNA_LBL_MOVE) X(PDNA_LBL_MOVE_TO_BOX) X(PDNA_LBL_COPY) X(PDNA_LBL_PASTE)         \
   X(PDNA_LBL_DUPLICATE) X(PDNA_LBL_TO_DAYCARE) X(PDNA_LBL_TO_GAME)                    \
   X(PDNA_LBL_EXPORT_PK) X(PDNA_LBL_TAKE_ITEM) X(PDNA_LBL_GIVE_ITEM)                   \
@@ -1162,6 +1167,13 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XFER_ORIG_NOTE_FMT   "%s %02u-%02u-%02u"
 #define PDNA_XFER_ORIG_NODATE_FMT "%s (no date)"
 #define PDNA_XFER_ORIG_GEN_FMT    "GEN %u"          /* origin_game unknown -- xv_origin_name() NULL */
+
+/* decision 11: the "no original" plaque -- a row that was visible (a ledger file
+ * exists, decision 4's caveat) but the walk found no NATIVE_HOME entry. PF(text, 28,
+ * 184) discipline, same as every other msg_wait string in this file. */
+#define PDNA_XFER_ORIG_NONE_TITLE "NO ORIGINAL DATA"
+#define PDNA_XFER_ORIG_NONE_L1    "The transfer record holds no"
+#define PDNA_XFER_ORIG_NONE_L2    "Game Boy original."
 
 /* ---- S5-B Part D: PASTE (GB) on an empty Game Boy cell (pdna_gen12.c) ------------- */
 /* S5-C Part B1: Gen 1 is no longer refused outright -- a base-stat table now exists

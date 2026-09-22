@@ -890,6 +890,20 @@ int main(void) {
   T("Gen 1 record", PDNA_SUM_CARD_X);
   T("Gen 2 record", PDNA_SUM_CARD_X);
 
+  /* BACKLOG #150 S150-15 decision 8: the GB ORIGINAL card's caller-composed note
+   * line reuses this SAME "note" slot, so it is bound by the SAME PDNA_SUM_CARD_W
+   * (138 px) the card itself draws in -- not the whole-screen T() helper's looser
+   * SCR_W - x bound. Four composed worst cases: known game + date, known game no
+   * date (widest: 18 chars), unknown game + date, unknown game no date. */
+  chk("gbsum origin note", PDNA_SUM_CARD_X, PDNA_SUM_CARD_W,
+      (int)strlen("CRYSTAL 26-09-16") * SYS8_W, "CRYSTAL 26-09-16");
+  chk("gbsum origin note", PDNA_SUM_CARD_X, PDNA_SUM_CARD_W,
+      (int)strlen("CRYSTAL (no date)") * SYS8_W, "CRYSTAL (no date)");
+  chk("gbsum origin note", PDNA_SUM_CARD_X, PDNA_SUM_CARD_W,
+      (int)strlen("GEN 2 26-09-16") * SYS8_W, "GEN 2 26-09-16");
+  chk("gbsum origin note", PDNA_SUM_CARD_X, PDNA_SUM_CARD_W,
+      (int)strlen("GEN 2 (no date)") * SYS8_W, "GEN 2 (no date)");
+
   /* Card 1 (SKILLS): two rows per stat. Row 1 labels + the widest computed
    * value; row 2's DV/stat-exp cells at their own PDNA_GBSUM_STAT_*_DX offsets
    * from PDNA_SUM_CARD_X (NOT screen-absolute x positions like the old 4-column
@@ -1018,6 +1032,10 @@ int main(void) {
   PF(PDNA_XFER_GAME_GOLD,    28, 184);
   PF(PDNA_XFER_GAME_SILVER,  28, 184);
   PF(PDNA_XFER_GAME_CRYSTAL, 28, 184);
+  /* BACKLOG #150 S150-15 decision 11: the "no original" plaque. */
+  PF(PDNA_XFER_ORIG_NONE_TITLE, 28, 184);
+  PF(PDNA_XFER_ORIG_NONE_L1,    28, 184);
+  PF(PDNA_XFER_ORIG_NONE_L2,    28, 184);
   /* BACKLOG #150 S150-8 decision 13: the DOWN-converting edge's own strings. */
   PF(PDNA_XFER_PARTY_TITLE,     28, 184);
   PF(PDNA_XFER_PARTY_L1,        28, 184);

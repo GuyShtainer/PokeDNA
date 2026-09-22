@@ -38,6 +38,7 @@
 #include "bank_cell.h"      /* BACKLOG #150 S150-6: bc_is_native -- app_paste_gb_commit's G-H6 guard */
 #include "xfer_io.h"        /* BACKLOG #150 S150-6: xr_path_for_key/xr_path_for_name/xr_migrate_once */
 #include "xfer_rec.h"       /* BACKLOG #150 S150-6: xr_key_g3 -- the reroll re-key guard             */
+#include "xfer_view.h"      /* BACKLOG #150 S150-15: xv_has_original/xv_find_original -- GB ORIGINAL */
 #include "gen3_trainer.h"
 #include "gen3_record.h"    /* Emerald Battle Record (save sector 31) info + export */
 #include "gen3_frontier.h"  /* g3f_streak_get/g3f_modes/g3f_mode_name for the record screen's streaks page */
@@ -5387,6 +5388,44 @@ static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0, 
   }
 }
 
+/* BACKLOG #150 S150-15 decision 10: the GB ORIGINAL row's own entry point.
+ * Two-phase, load-bearing: xv_find_original's own GBSC_FILE_MAX (1042 B) stack
+ * frame is RELEASED (the call returns) before gb_original_summary_open's own
+ * pdna_gbsummary depth is ever entered, so the peak stays
+ * max(menu + xv_find_original's frame + FatFs read depth, menu + 24-B note +
+ * pdna_gbsummary depth) -- never their sum. `noinline` for the same reason as
+ * app_native_cell_edit's own header comment records (S150-14 hit this exact
+ * stack-walker problem: GCC will not otherwise keep a callee's frame out of an
+ * inlined caller when the caller sits on the box grid's mon-menu chain that
+ * PDNA_PARTY_STRIP_NEED is derived from). Takes NO AppCommitFn -- nothing is
+ * ever written here, so tools/stack_edges.txt's count-only population does not
+ * move by adding this function. */
+static void __attribute__((noinline)) app_view_original(const uint8_t* rec) {
+  XvOriginal o;
+  int rc = xv_find_original(rec, &o);
+  if (rc == 1) {
+    char note[24];
+    xv_format_note(note, o.gen, o.origin_game, o.rtc_epoch);
+    (void)gb_original_summary_open(o.original80, note);
+    return;
+  }
+  if (rc == 0) {
+    /* decision 4's caveat: a ledger file existed (the row was shown) but the walk
+     * found no NATIVE_HOME entry -- a G3_HOME-only file, a legacy/evicted one, or
+     * the 2^-64 key collision. Decision 11's plaque. */
+    snd_deny();
+    log_line("xfer: view: no NATIVE_HOME entry for this record");
+    msg_wait(PDNA_XFER_ORIG_NONE_TITLE, UI_WARN, PDNA_XFER_ORIG_NONE_L1, PDNA_XFER_ORIG_NONE_L2);
+    return;
+  }
+  /* rc == -1: a real read/validate failure (xv_find_original already logged the
+   * SfStatus/validation detail via log_line -- that boundary is not exposed back
+   * to this caller, so the on-screen L1 is a fixed string rather than
+   * sf_status_str(rst) verbatim; the log has the exact detail). */
+  snd_error();
+  msg_wait(PDNA_SIDECAR_READFAIL_TITLE, UI_WARN, "Could not read the ledger.", 0);
+}
+
 bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit, uint8_t* block, int box, int slot, int footer_y) {
   PkMon m0;
   bool occupied = pk_decode_mon(rec, is_party, &m0);
@@ -5468,7 +5507,7 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
     return app_mon_menu_readonly(rec, is_party, &m0, false);
   }
 
-  enum { A_SUMMARY, A_ITEM, A_MOVES, A_LEGAL, A_MOVE, A_TOBOX, A_COPY, A_PASTE, A_DUP, A_EXPORT, A_TOGAME, A_DAYCARE, A_RELEASE, A_TAKEITEM, A_GIVEITEM, A_CREATE, A_HATCH, A_CANCEL };
+  enum { A_SUMMARY, A_ITEM, A_MOVES, A_LEGAL, A_ORIGINAL, A_MOVE, A_TOBOX, A_COPY, A_PASTE, A_DUP, A_EXPORT, A_TOGAME, A_DAYCARE, A_RELEASE, A_TAKEITEM, A_GIVEITEM, A_CREATE, A_HATCH, A_CANCEL };
   /* Labels come from pdna_layout.h: they are 8 px/glyph inside a 100 px panel, so their
    * WIDTH is a real constraint (host_textfit_test.c measures every one of them). */
   int act[PDNA_MONMENU_MAX]; const char* lab[PDNA_MONMENU_MAX]; int n = 0;
@@ -5500,6 +5539,14 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
     lab[n]=PDNA_LBL_VIEW_EDIT; act[n++]=A_SUMMARY;     /* opens the editable summary (moves edited there) */
     lab[n]=PDNA_LBL_ITEM;    act[n++]=A_ITEM;
     lab[n]=PDNA_LBL_LEGALITY; act[n++]=A_LEGAL;
+    /* BACKLOG #150 S150-15 decision 4: ONE f_stat, gated on app_gen3_pc_live() so a
+     * Bank visit from a GB session (g_vinfo.valid false) never touches /PokeDNA/xfer
+     * -- S150-11's own G-F2 promise, mirroring xg_paste_row/xg_togame_row's own gate
+     * a few lines below. No cheap RAM pre-filter (pdna_origin_of's heuristic can flip
+     * after training/an edit and hide a row whose entry is real) -- only the ledger
+     * file itself decides. A file that exists but holds no NATIVE_HOME entry still
+     * shows the row (decision 4's caveat); A then answers with decision 11's plaque. */
+    if (app_gen3_pc_live() && xv_has_original(rec)) { lab[n]=PDNA_LBL_ORIGINAL; act[n++]=A_ORIGINAL; }
     if (m0.isEgg && !m0.isBadEgg) { lab[n]=PDNA_LBL_HATCH; act[n++]=A_HATCH; }   /* eggs only: reveal + level 5 */
     if (!is_party) { lab[n]=PDNA_LBL_MOVE; act[n++]=A_MOVE; }                    /* box: pick up + reposition */
     else if (g_party_tobox_allowed) { lab[n]=PDNA_LBL_MOVE_TO_BOX; act[n++]=A_TOBOX; }  /* party popup: carry out to a box */
@@ -5609,6 +5656,7 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
                         (void)pdna_legality_show_box(&m0, is_party ? NULL : block,
                                                      is_party ? -1 : box, slot);
                         return false;
+        case A_ORIGINAL: app_view_original(rec); return false;    /* nothing written -- read-only */
         case A_HATCH:   return app_hatch(rec, is_party, commit, block);   /* egg -> revealed Pokemon */
         case A_MOVE:    g_move_req = true; return false;            /* box loop handles the move */
         case A_TOBOX:   g_party_tobox_req = true; return false;     /* party popup grabs it for a box */
