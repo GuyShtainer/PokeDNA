@@ -333,6 +333,77 @@ static void test_format(void) {
   }
   /* ==== END BACKLOG #150 S150-6 flags byte ===================================== */
 
+  /* ==== BACKLOG #150 S150-11 decision 10: gbsc_set_state / gbsc_set_bank_keep /
+   * gbsc_file_key -- in-place mutation, no callers yet (S150-11's core wires them). */
+  {
+    uint8_t sb[GBSC_FILE_MAX];
+    uint32_t slen = (uint32_t)gbsc_init(sb, 0xC0FFEEu);
+    GbscEntry se; memset(&se, 0, sizeof se);
+    se.gen = GB_GEN2; se.otid16 = 0x2222; se.kind = XR_KIND_NATIVE_HOME;
+    se.direction = XR_DIR_ABROAD_G3; se.state = XR_STATE_PENDING;
+    memcpy(se.otname_written, otname, GB_NAME_BYTES);
+    memcpy(se.dv4, dv4, 4);
+    CHECK(gbsc_add(sb, &slen, sizeof sb, &se) == 0, "s150-11: entry added, state PENDING");
+
+    CHECK(gbsc_file_key(sb, slen) == 0xC0FFEEu, "s150-11: gbsc_file_key equals gbsc_init's key");
+
+    GbscEntry sg0;
+    CHECK(gbsc_get(sb, slen, 0, &sg0) && sg0.state == XR_STATE_PENDING,
+          "s150-11: entry reads back PENDING");
+    CHECK(gbsc_set_state(sb, slen, 0, XR_STATE_CLAIMED) == 0, "s150-11: set_state(CLAIMED)");
+    CHECK(gbsc_count(sb, slen) == 1, "s150-11: file still validates after set_state (crc rewritten)");
+    GbscEntry sg1;
+    CHECK(gbsc_get(sb, slen, 0, &sg1) && sg1.state == XR_STATE_CLAIMED,
+          "s150-11: entry reads back CLAIMED");
+    CHECK(sg1.kind == XR_KIND_NATIVE_HOME && sg1.direction == XR_DIR_ABROAD_G3 &&
+          sg1.claimed == 0 && sg1.bank_keep == 0,
+          "s150-11: set_state leaves kind/direction/claimed/bank_keep bit-identical");
+    CHECK(gbsc_set_state(sb, slen, 0, XR_STATE_RESTORED) == 0, "s150-11: set_state(RESTORED)");
+    GbscEntry sg2;
+    CHECK(gbsc_get(sb, slen, 0, &sg2) && sg2.state == XR_STATE_RESTORED,
+          "s150-11: entry reads back RESTORED (all four states round-trip)");
+    CHECK(gbsc_set_state(sb, slen, 0, XR_STATE_NONE) == 0, "s150-11: set_state(NONE)");
+    GbscEntry sg3;
+    CHECK(gbsc_get(sb, slen, 0, &sg3) && sg3.state == XR_STATE_NONE,
+          "s150-11: entry reads back NONE");
+    CHECK(gbsc_set_state(sb, slen, 5, XR_STATE_CLAIMED) == -1,
+          "s150-11: set_state refuses an out-of-range index");
+
+    /* mutation proof: without the crc16 rewrite, the file stops validating (or, if
+     * gbsc_count() didn't check crc, would silently accept a corrupt entry). Do it
+     * for real: hand-flip the state bits without touching the crc and show the file
+     * refuses to validate afterward, which is exactly what gbsc_set_state's crc
+     * rewrite prevents on the real code path above. */
+    {
+      uint8_t mut[GBSC_FILE_MAX];
+      memcpy(mut, sb, slen);
+      uint8_t* me2 = mut + GBSC_HEADER;
+      me2[1] = (uint8_t)((me2[1] & ~0x06u) | (XR_STATE_PENDING << 1));  /* flip state bits, NO crc rewrite */
+      CHECK(gbsc_count(mut, slen) == -1,
+            "s150-11 MUTATION: flipping state bits without the crc rewrite fails validation "
+            "(pins that gbsc_set_state's crc16 rewrite is load-bearing)");
+    }
+
+    CHECK(gbsc_set_bank_keep(sb, slen, 0, true) == 0, "s150-11: set_bank_keep(true)");
+    GbscEntry sk0;
+    CHECK(gbsc_get(sb, slen, 0, &sk0) && sk0.bank_keep == 1, "s150-11: bank_keep reads back 1");
+    CHECK(sk0.claimed == 0 && sk0.state == XR_STATE_NONE,
+          "s150-11: set_bank_keep leaves claimed/state untouched");
+    /* a pre-#150-S150-11 reader (one that never decodes b6) still reads claimed
+     * correctly: claim the entry too and confirm claimed==1 independent of bank_keep. */
+    CHECK(gbsc_set_claimed(sb, slen, 0, true) == 0, "s150-11: claim the same entry too");
+    GbscEntry sk1;
+    CHECK(gbsc_get(sb, slen, 0, &sk1) && sk1.claimed == 1 && sk1.bank_keep == 1,
+          "s150-11: claimed and bank_keep are independent bits, both read back set");
+    CHECK(gbsc_set_bank_keep(sb, slen, 0, false) == 0, "s150-11: set_bank_keep(false)");
+    GbscEntry sk2;
+    CHECK(gbsc_get(sb, slen, 0, &sk2) && sk2.bank_keep == 0 && sk2.claimed == 1,
+          "s150-11: bank_keep clears without touching claimed");
+
+    CHECK(gbsc_file_key(sb, 3) == 0, "s150-11: gbsc_file_key returns 0 on a too-short buffer");
+  }
+  /* ==== END BACKLOG #150 S150-11 decision 10 ==================================== */
+
   /* remove entry 3, check compaction */
   uint32_t len2 = len;
   CHECK(gbsc_remove(buf, &len2, 3) == 0, "gbsc_remove(3)");

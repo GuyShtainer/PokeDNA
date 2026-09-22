@@ -53,6 +53,7 @@
   /* image (tools/fuse_rom.py) the map reads it from cartridge space, no SD needed.   */ \
   X(NV_MAP,        "Map")                       \
   X(NV_GB,         "GB import")   /* import from a Game Boy (Gen 1/2) save on the card */ \
+  X(NV_XFER,       "Transfers")   /* BACKLOG #150 S150-11: the transfer-ledger reconcile */ \
   X(NV_SETTINGS,   "Settings")                  \
   X(NV_BACK,       "Back")
 
@@ -82,7 +83,16 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * budget. A wider label runs out past the highlight and into the second column. */
 #define PDNA_NAV_LABEL_W (PDNA_NAV_BAND_W - PDNA_NAV_LABEL_DX)
 
-#define PDNA_NAV_ROW_H   11
+/* BACKLOG #150 S150-11 decision 13: shrunk 11 -> 10 to seat the 21st row (NV_XFER).
+ * PDNA_NAV_ROWS = (21+1)/2 = 11; PDNA_NAV_MH = 20 + 11*10 + 14 = 144 <= UI_FOOTER_Y
+ * (150, source/ui_layout.h) -- both pass at 10 and fail at 9:
+ *   host_textfit_test.c "nav panel height": PDNA_NAV_MH (144) <= UI_FOOTER_Y (150) -- OK.
+ *   the bar-vs-row check: PDNA_NAV_BAND_DY + PDNA_NAV_BAND_H - 1 (-2+12-1=9) <=
+ *     PDNA_NAV_ROW_H - 1 (10-1=9) -- OK, exactly, fails at 9-1=8 if ROW_H were 9.
+ *   UI_FONT_CELL_H - 1 - PDNA_NAV_ROW_H (8-1-10=-3) <= -3 -- OK, exactly.
+ *   last-row check: PDNA_NAV_HEAD + (PDNA_NAV_ROWS-1)*PDNA_NAV_ROW_H + UI_FONT_CELL_H - 1
+ *     (20+10*10+7=127) <= PDNA_NAV_MH - PDNA_NAV_FOOT - 1 (144-14-1=129) -- OK. */
+#define PDNA_NAV_ROW_H   10
 #define PDNA_NAV_ROWS    ((PDNA_NAV_COUNT + 1) / 2)   /* two columns  */
 #define PDNA_NAV_HEAD    20                     /* title + divider above row 0        */
 #define PDNA_NAV_FOOT    14                     /* hint line + bottom border          */
@@ -1100,6 +1110,80 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XFER_TOOMANY_TITLE "TOO MANY TRANSFERS"
 #define PDNA_XFER_TOOMANY_L1    "Too many transfer records"
 #define PDNA_XFER_TOOMANY_L2    "for this Pokemon."
+
+/* BACKLOG #150 S150-11 decision 18 -- the Bank-open reconcile prompt's own strings
+ * (a %d-bearing suffix, same siprintf("%d %s") shape as PDNA_SIDECAR_RECON_TITLE_
+ * SUFFIX above). Worst case measured in tests/host_textfit_test.c: "64 POKEMON IN
+ * TWO PLACES". */
+#define PDNA_XRC_DUP_TITLE_SUFFIX "POKEMON IN TWO PLACES"
+#define PDNA_XRC_DUP_L1           "Remove the duplicates?"
+
+/* BACKLOG #150 S150-11 decision 11 (#176) -- a failed PC commit leaves the Bank
+ * cell untouched; this tells the player their Pokemon is still safe. */
+#define PDNA_XFER_NOTSAVED_TITLE "TRANSFER NOT SAVED"
+#define PDNA_XFER_NOTSAVED_L1    "The save was not confirmed."
+#define PDNA_XFER_NOTSAVED_L2    "Your Pokemon is still in the Bank."
+
+/* BACKLOG #150 S150-11 decision 18/13/14 -- the TRANSFERS screen (start-menu row,
+ * list, per-row action popup, APPLY/discard confirms, the loss confirm). Every
+ * title/line below is a plain literal through msg_wait/app_confirm's shared (28,
+ * .., 184) clamp -- tests/host_textfit_test.c's PF(text, 28, 184) rows, beside the
+ * PDNA_XFER_NOTSAVED_* rows above, pin every one. */
+#define PDNA_XRC_TITLE      "TRANSFER RECORDS"
+#define PDNA_XRC_EMPTY_L1   "No transfer records."
+#define PDNA_XRC_EMPTY_L2   "Records appear after a"
+#define PDNA_XRC_EMPTY_L3   "Bank transfer."
+#define PDNA_XRC_MORE       "More records not shown."
+#define PDNA_XRC_FOOT       "A act  SEL info  START apply"
+
+/* Per-row action labels (decision 8), listed on the action popup. */
+#define PDNA_XRC_ACT_REMOVE  "Remove duplicate"
+#define PDNA_XRC_ACT_RELEASE "Release Gen-3 copy"
+#define PDNA_XRC_ACT_RESTORE "Restore to Bank"
+#define PDNA_XRC_ACT_DELETE  "Delete record"
+#define PDNA_XRC_ACT_REKEY   "Re-link record"
+#define PDNA_XRC_ACT_CANCEL  "Cancel"
+
+/* The loss confirm (decision 2/8d) -- DELETE behind a second confirm naming the
+ * loss, for any row whose original80 is the last surviving copy. */
+#define PDNA_XRC_LOSS_TITLE  "ORIGINAL BYTES LOST"
+#define PDNA_XRC_LOSS_L1     "This record is the last copy."
+
+/* RESTORE TO BANK's own failure line (decision 8c/19). */
+#define PDNA_XRC_NOBANK_L1   "Nothing was written to the Bank."
+#define PDNA_XRC_NOROOM_L1   "No room in the Bank."
+
+/* APPLY / discard confirms (decision 14), both %d-bearing (siprintf worst case
+ * "64 changes, 64 deletes" / "64 choices" -- tests/host_textfit_test.c). */
+#define PDNA_XRC_APPLY_TITLE   "APPLY CHANGES?"
+#define PDNA_XRC_DISCARD_TITLE "DISCARD CHOICES?"
+
+/* Re-key duplicate follow-up (RE-KEY, decision 8e) -- reuses the reroll guard's own
+ * wording family (PDNA_XFER_REKEY_*) but scoped to this screen's own action so a
+ * caption never has to guess which flow produced it. */
+#define PDNA_XRC_REKEY_DUP_TITLE "ALREADY LINKED"
+#define PDNA_XRC_REKEY_DUP_L1    "A record already exists there."
+
+/* The 12 detail phrases of decision 2's table (SELECT's three-line detail view),
+ * indexed by XrcRowKind in pdna_main.c's xrc_detail_line(). Several row kinds
+ * share one phrase (RESTORED-stale and PENDING/CLAIMED-lost both read "only the
+ * record is left", both STALE branches read "restored; record is stale") --
+ * exactly the table's own repeats, not a new shortcut. */
+#define PDNA_XRC_D_PENDING_BOTH    "Did not finish; both copies"
+#define PDNA_XRC_D_PENDING_ORPHAN  "Transfer never landed."
+#define PDNA_XRC_D_PENDING_NOBANK  "Copy landed, record unproven."
+#define PDNA_XRC_D_LOST            "Only the record is left."
+#define PDNA_XRC_D_DUP_BANK        "In two places."
+#define PDNA_XRC_D_DEFERRED        "Queued to leave the Bank."
+#define PDNA_XRC_D_ABROAD          "In the Gen-3 PC, restorable."
+#define PDNA_XRC_D_ABROAD_GB       "In a Game Boy save."
+#define PDNA_XRC_D_DUP_G3          "Restored; Gen-3 copy is a dup."
+#define PDNA_XRC_D_STALE           "Restored; record is stale."
+#define PDNA_XRC_D_RESTORED_MOVED  "Restored copy left the Bank."
+#define PDNA_XRC_D_DAYCARE         "In the Day-Care."
+#define PDNA_XRC_D_STALE_KEY       "PID changed; not linked."
+#define PDNA_XRC_D_AMBIGUOUS       "Ambiguous match; skipped."
+#define PDNA_XRC_D_G3HOME          "Gen-3 original; see load screen."
 
 #define PDNA_XFER_TC_TITLE        "NO GEN 1 FORM"
 /* BACKLOG #150 S150-8: shortened from the brief's original "%s did not exist in

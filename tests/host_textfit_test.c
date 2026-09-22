@@ -1132,6 +1132,52 @@ int main(void) {
   PF(PDNA_XFERDUP_L2,    28, 184);
   /* ==== END S150-9 merge screen ================================================ */
 
+  /* ==== BACKLOG #150 S150-11 decision 18 -- the TRANSFERS screen's own strings === */
+  PF(PDNA_XFER_NOTSAVED_TITLE, 28, 184);
+  PF(PDNA_XFER_NOTSAVED_L1,    28, 184);
+  /* review D3b: PDNA_XRC_FOOT/_TITLE/_MORE/_EMPTY_L1-3 are all drawn with
+   * ui_text() (source/pdna_main.c ~10346-10371), the FIXED sys8 8px/glyph font --
+   * NOT ui_ptext's proportional metric PF() checks. T() is the right pin. */
+  T(PDNA_XRC_FOOT, 4);
+  T(PDNA_XRC_TITLE, 4);
+  T(PDNA_XRC_MORE, 4);
+  T(PDNA_XRC_EMPTY_L1, 20);
+  T(PDNA_XRC_EMPTY_L2, 20);
+  T(PDNA_XRC_EMPTY_L3, 20);
+  { char b[40]; sprintf(b, "%d %s", 64, PDNA_XRC_DUP_TITLE_SUFFIX); PF(b, 28, 184); }
+  PF(PDNA_XRC_DUP_L1,    28, 184);
+  PF(PDNA_XRC_ACT_REMOVE,  28, 184);
+  PF(PDNA_XRC_ACT_RELEASE, 28, 184);
+  PF(PDNA_XRC_ACT_RESTORE, 28, 184);
+  PF(PDNA_XRC_ACT_DELETE,  28, 184);
+  PF(PDNA_XRC_ACT_REKEY,   28, 184);
+  PF(PDNA_XRC_LOSS_TITLE, 28, 184);
+  PF(PDNA_XRC_LOSS_L1,    28, 184);
+  PF(PDNA_XRC_NOBANK_L1, 28, 184);
+  PF(PDNA_XRC_NOROOM_L1, 28, 184);
+  PF(PDNA_XRC_APPLY_TITLE,   28, 184);
+  PF(PDNA_XRC_DISCARD_TITLE, 28, 184);
+  { char b[40]; sprintf(b, "%d changes, %d deletes", 64, 64); PF(b, 28, 184); }
+  { char b[40]; sprintf(b, "%d choices lost", 64); PF(b, 28, 184); }
+  PF(PDNA_XRC_REKEY_DUP_TITLE,  28, 184);
+  PF(PDNA_XRC_REKEY_DUP_L1,     28, 184);
+  PF(PDNA_XRC_D_PENDING_BOTH,   28, 184);
+  PF(PDNA_XRC_D_PENDING_ORPHAN, 28, 184);
+  PF(PDNA_XRC_D_PENDING_NOBANK, 28, 184);
+  PF(PDNA_XRC_D_LOST,           28, 184);
+  PF(PDNA_XRC_D_DUP_BANK,       28, 184);
+  PF(PDNA_XRC_D_DEFERRED,       28, 184);
+  PF(PDNA_XRC_D_ABROAD,         28, 184);
+  PF(PDNA_XRC_D_ABROAD_GB,      28, 184);
+  PF(PDNA_XRC_D_DUP_G3,         28, 184);
+  PF(PDNA_XRC_D_STALE,          28, 184);
+  PF(PDNA_XRC_D_RESTORED_MOVED, 28, 184);
+  PF(PDNA_XRC_D_DAYCARE,        28, 184);
+  PF(PDNA_XRC_D_STALE_KEY,      28, 184);
+  PF(PDNA_XRC_D_AMBIGUOUS,      28, 184);
+  PF(PDNA_XRC_D_G3HOME,         28, 184);
+  /* ==== END BACKLOG #150 S150-11 decision 18 ==================================== */
+
   /* ==== S5-B Part D: PASTE, source/pdna_gen12.c gb_paste_hook/gb_paste_write ===
    * The empty-cell PASTE row now reuses PDNA_LBL_PASTE_HERE (G1 review BLOCKING-1,
    * 2026-09-08 -- PDNA_LBL_PASTE_GB is gone), measured through PDNA_MONMENU_LABELS

@@ -590,6 +590,47 @@ static bool __attribute__((noinline)) bank_backup_v1(void) {
 /* Public entry: called from drop_held BEFORE the cell is written (decision 3). */
 bool pdna_bank_prepare_native(void) { return bank_backup_v1(); }
 
+/* BACKLOG #150 S150-11 decision 19 -- the reconcile needs to READ every box without
+ * the box screen open. Exactly banksrc_records()'s own shape (flush the CURRENTLY
+ * loaded box first, via box_save_or_keep_dirty() -- b163's verdict path, so a refused
+ * save is never silently paged over -- then page in `box`). NULL on a page-in failure
+ * or an out-of-range box; the caller must not assume the returned pointer's contents
+ * are complete without checking box_load()'s own return, which this wrapper folds
+ * into "NULL means don't trust it" since a reconcile walk only ever wants to READ. */
+const uint8_t* pdna_bank_peek_box(int box) {
+  if (box < 0 || box >= BANK_BOXES) return NULL;
+  if (g_dirty && !box_save_or_keep_dirty()) return NULL;
+  if (!box_load(box)) return NULL;
+  return box_recs();
+}
+
+/* BACKLOG #150 S150-11 decision 8c/19 -- RESTORE TO BANK's write path: a genuinely
+ * NEW Bank write with no merge (only ever called for a *_LOST row, where there is no
+ * Gen-3 copy to fold in). Omega-gated FIRST. Refuses unless the target slot is
+ * entirely zero -- a native cell is NEVER all-zero (bc_is_native's own false-positive
+ * analysis) and native_invariant_ok() already treats "still native OR all-zero" as
+ * the only legitimate transitions, so writing into anything else would silently
+ * clobber whatever the user has there. On a failed box_save() the buffer's copy of
+ * the slot is re-zeroed (so a retry sees the same "empty" state this call started
+ * from) and the entry stays intact -- the caller shows PDNA_XRC_NOBANK_L1. */
+bool pdna_bank_put_cell(int box, int slot, const uint8_t cell80[80]) {
+  if (!app_can_edit()) return false;
+  if (box < 0 || box >= BANK_BOXES || slot < 0 || slot >= BOX_RECS || !cell80) return false;
+  if (g_dirty && !box_save_or_keep_dirty()) return false;
+  if (!box_load(box)) return false;
+  uint8_t* p = box_recs() + (uint32_t)slot * REC_BYTES;
+  for (int i = 0; i < REC_BYTES; i++) if (p[i]) return false;   /* slot not all-zero -- refuse */
+  memcpy(p, cell80, REC_BYTES);
+  g_native_snap |= (1u << slot);
+  g_dirty = true;
+  if (!box_save_or_keep_dirty()) {
+    memset(p, 0, REC_BYTES);
+    g_native_snap &= ~(1u << slot);
+    return false;
+  }
+  return true;
+}
+
 /* ---- BoxSource hooks (singleton state) ---- */
 static uint8_t* banksrc_records(int box) {
   if (box != g_loaded) {
@@ -642,6 +683,8 @@ int pdna_bank_show(void) {
    * unsaved marker from any PRIOR session must not survive to describe a box this one
    * has not touched yet. */
   g_loaded = -1; g_dirty = false; g_box_unsaved_box = -1;
+
+  app_xfer_reconcile_bank_open();   /* BACKLOG #150 S150-11 decision 4/§11.8 */
 
   BoxSource s; memset(&s, 0, sizeof s);
   s.nboxes     = BANK_BOXES;
