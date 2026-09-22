@@ -56,6 +56,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 import gb_shots  # noqa: E402 -- Session, load_mgba, KEY, HOLD/SETTLE/BIG_SETTLE
+import gb_claims  # noqa: E402 -- BACKLOG #184: --selftest-captions's offline claim re-check
 import gen_gbfields  # noqa: E402 -- BACKLOG #129: GROUPS_GEN1's own header order,
                      # imported directly rather than a second hand-copied list
 import fuse_gb   # noqa: E402 -- BACKLOG #98 D3: reads the fused image's OWN directory
@@ -3919,7 +3920,7 @@ def run_cold_start_compare(core_mod, image_mod, loc_image: Path, noloc_image: Pa
 
     # Save both final frames as shots, captioned for gb_contact_sheet.py's "#68b:"
     # prefix match (FEATURE_TABLE's own new "delta-gb-loc" row, appended separately).
-    ok: list[tuple[str, str]] = []
+    ok: list[tuple[str, str, dict]] = []
     from PIL import Image
     for label, px, frames in (("loc", loc_px, loc_frames), ("noloc", noloc_px, noloc_frames)):
         name = f"dgb_coldstart_{label}.png"
@@ -3928,7 +3929,7 @@ def run_cold_start_compare(core_mod, image_mod, loc_image: Path, noloc_image: Pa
         caption = (f"#68b: Red.sav box grid, cold start {'WITH' if label == 'loc' else 'WITHOUT'} "
                    f"the fused rom_gb*_open_loc() record -- {frames} frames "
                    f"({frames / GBA_FPS:.2f} s emulated) to first stable paint")
-        ok.append((name, caption))
+        ok.append((name, caption, {}))
         print(f"  [ok]   {name:32s} {caption}")
     return ok, []
 
@@ -4030,7 +4031,7 @@ def run_b185_cold_locate(core_mod, image_mod, noloc_image: Path,
     function)."""
     print("== BACKLOG #185 Step 1: locate() emulator-floor cold-scan measurement ==")
     from PIL import Image
-    ok: list[tuple[str, str]] = []
+    ok: list[tuple[str, str, dict]] = []
 
     frames1, px1 = _measure_b185_auto(core_mod, image_mod, noloc_image, 1, "gen1")
     secs1 = frames1 / GBA_FPS
@@ -4042,7 +4043,7 @@ def run_b185_cold_locate(core_mod, image_mod, noloc_image: Path,
     cap1 = (f"#185 Step 1: Red.sav box grid, cold locate() (no .loc seed) -- "
             f"{frames1} frames ({secs1:.2f} s emulated, {bps1/1024:.1f} KB/s floor) "
             f"to first stable portrait paint")
-    ok.append((name1, cap1))
+    ok.append((name1, cap1, {}))
     print(f"  [ok]   {name1:32s} {cap1}")
 
     frames2, px2 = _measure_b185_auto(core_mod, image_mod, noloc_image, 3, "gen2")
@@ -4055,30 +4056,54 @@ def run_b185_cold_locate(core_mod, image_mod, noloc_image: Path,
     cap2 = (f"#185 Step 1: Crystal.sav box grid, cold locate() (no .loc seed) -- "
             f"{frames2} frames ({secs2:.2f} s emulated, {bps2/1024:.1f} KB/s floor) "
             f"to first stable portrait paint")
-    ok.append((name2, cap2))
+    ok.append((name2, cap2, {}))
     print(f"  [ok]   {name2:32s} {cap2}")
 
     return ok, []
 
 
-def _write_manifest(out_dir: Path, ok: list[tuple[str, str]], skipped: list[tuple[str, str]]) -> None:
+def _write_manifest(out_dir: Path, ok: list[tuple[str, str, dict]],
+                     skipped: list[tuple[str, str]]) -> None:
     """Same merge-by-file/merge-by-name block tools/gb_shots.py's own main() uses
     (BACKLOG #62 review D3: this script never wrote one at all before). Merged, not
     overwritten, for the identical reason: a partial run must not erase captions a
-    separate prior run already wrote."""
+    separate prior run already wrote.
+
+    BACKLOG #184: `ok` entries are now 3-tuples (file, caption, claim_info) -- claim_info
+    is gb_shots.Session.shot()'s own claim_info dict (possibly empty), merged straight
+    into the manifest entry: "claim"/"claim_absent" (the original strings, kept so
+    --selftest-captions can re-derive pass/fail from the PNG later, offline) and
+    "claim_failed" (this capture's own failures, if any -- tools/gb_claims.py). The PNG
+    and this manifest entry are written EITHER WAY (a claim failure is still evidence),
+    but this function is the ONE place every CLI branch's `_write_manifest(...)` call
+    already runs through unconditionally without inspecting a return value -- calling
+    sys.exit(1) HERE, after writing, makes a claim failure end the whole process
+    non-zero without editing any of the dispatch chain's own `return 0` lines
+    (deliberately: other lanes are appending new flags to that chain right now, and a
+    touched `return 0` in every existing branch would be a guaranteed merge conflict
+    with every one of them)."""
     manifest_path = out_dir / "manifest.json"
     existing = {"shots": [], "skipped": []}
     if manifest_path.is_file():
         existing = json.loads(manifest_path.read_text(encoding="utf-8"))
     by_file = {e["file"]: e for e in existing.get("shots", [])}
-    for n, c in ok:
-        by_file[n] = {"file": n, "caption": c}
+    any_claim_failed = False
+    for n, c, claim_info in ok:
+        entry = {"file": n, "caption": c}
+        entry.update(claim_info)
+        if claim_info.get("claim_failed"):
+            any_claim_failed = True
+        by_file[n] = entry
     by_name = {e["name"]: e for e in existing.get("skipped", [])}
     for n, r in skipped:
         by_name[n] = {"name": n, "reason": r}
     manifest_path.write_text(
         json.dumps({"shots": list(by_file.values()), "skipped": list(by_name.values())}, indent=2),
         encoding="utf-8")
+    if any_claim_failed:
+        print("\n[CLAIM FAILED] one or more shots -- see [CLAIM FAILED] lines above "
+              "and each failing entry's manifest.json \"claim_failed\" list", file=sys.stderr)
+        sys.exit(1)
 
 
 def run_s2_bank(core_mod, image_mod, rom: Path, out_dir: Path, which: str,
@@ -6247,13 +6272,19 @@ def main(argv=None) -> int:
                           "fused Yellow.gb/Yellow.sav, GUY'S OWN Yellow.sav copied to "
                           "/tmp first).")
     ap.add_argument("--selftest-captions", action="store_true",
-                     help="BACKLOG #198 method note (a mechanical floor for BACKLOG "
-                          "#184, NOT #184's own pixel verification): read --out's "
-                          "manifest.json and check every shot's caption is non-empty "
-                          "and every shot's own frame file actually exists on disk. "
-                          "No mGBA/--image needed. Exits 1 and prints every failure "
-                          "if any caption is empty/whitespace-only or any frame file "
-                          "is missing; exits 0 (and prints the shot count) otherwise.")
+                     help="BACKLOG #198's original floor (a caption is non-empty and its "
+                          "frame file exists) EXTENDED for BACKLOG #184: read --out's "
+                          "manifest.json, check every shot's caption is non-empty and its "
+                          "frame file exists, AND for every entry carrying \"claim\"/"
+                          "\"claim_absent\" (gb_shots.Session.shot()'s own claim= kwarg, "
+                          "tools/gb_claims.py) RE-RUN the pixel search against that PNG "
+                          "right now, offline (no mGBA/--image needed) -- this is an "
+                          "independent re-derivation, not a re-print of whatever "
+                          "claim_failed the capture itself already wrote, so a hand-edited "
+                          "manifest or a stale PNG is caught too. Exits 1 and prints every "
+                          "failure if any caption is empty/whitespace-only, any frame file "
+                          "is missing, or any claim/claim_absent fails on re-check; exits 0 "
+                          "(and prints the shot + claim-checked counts) otherwise.")
     a = ap.parse_args(argv)
     a.out.mkdir(parents=True, exist_ok=True)
 
@@ -6265,6 +6296,7 @@ def main(argv=None) -> int:
                       "already has a manifest.json)")
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         failures: list[str] = []
+        claims_checked = 0
         for entry in manifest.get("shots", []):
             name = entry.get("file", "<no file key>")
             caption = entry.get("caption", "")
@@ -6273,13 +6305,21 @@ def main(argv=None) -> int:
             frame_path = a.out / name
             if not frame_path.is_file():
                 failures.append(f"{name}: frame file missing ({frame_path})")
+                continue  # nothing to re-check a claim against
+            claim = entry.get("claim")
+            claim_absent = entry.get("claim_absent")
+            if claim is not None or claim_absent is not None:
+                claims_checked += 1
+                for f in gb_claims.check(frame_path, claim=claim, claim_absent=claim_absent):
+                    failures.append(f"{name}: {f}")
         if failures:
             print(f"--selftest-captions: {len(failures)} failure(s):", file=sys.stderr)
             for f in failures:
                 print(f"  {f}", file=sys.stderr)
             return 1
         print(f"--selftest-captions: ok -- {len(manifest.get('shots', []))} shot(s), "
-              "every caption non-empty, every frame file present")
+              f"every caption non-empty, every frame file present, "
+              f"{claims_checked} shot(s)' claim(s) re-verified against their own PNG")
         return 0
 
     core_mod, image_mod = gb_shots.load_mgba()
