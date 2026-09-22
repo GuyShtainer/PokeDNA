@@ -7,8 +7,14 @@
  *
  * PROVES (per BACKLOG #208's own design, from the #196 review's own measurement):
  *   A. key(): gen/dex pack into one uint16_t with no collisions across the whole
- *      legal range (gen 1/2, dex 1..251), and out-of-range/garbage gen values still
- *      produce a key distinct from either real generation's.
+ *      legal range (gen 1/2, dex 1..251). BACKLOG #208 fixes review D5: this
+ *      bullet used to also claim "out-of-range/garbage gen values still produce a
+ *      key distinct from either real generation's" -- FALSE, and never actually
+ *      tested: dexcache_key() packs `gen & 3u`, so a garbage gen of 5 aliases to
+ *      1 (5 & 3 == 1) and collides with a real Gen-1 entry for the same dex. This
+ *      is harmless in practice (the only two callers, pdna_gbdex.c's cache_lookup/
+ *      insert_gen1/gen2, only ever pass the literal PDNA_GEN1/PDNA_GEN2 constants),
+ *      but the claim was false and is deleted rather than left standing.
  *   B. find()/claim() on an EMPTY cache: everything misses; claim() always returns a
  *      fresh, in-range slot index and never the same slot twice until the ring wraps.
  *   C. claim() on an ALREADY-CACHED key returns the SAME slot (no FIFO motion) --
@@ -231,6 +237,63 @@ static void test_mutation_catches_fifo_motion_bug(void) {
   CHECK(!mut_stable, "the mutant must FAIL the same property (proves this test actually bites)");
 }
 
+/* H. CROSS-GEN SLOT SEPARATION (BACKLOG #208 fixes review D5): dexcache_key()'s
+ * whole reason to pack `gen` at all is that a Gen-1 and Gen-2 entry for the SAME
+ * dex number must never share a slot -- proved directly (not just "the keys
+ * differ", part A's narrower claim) by claiming BOTH generations' dex 1..10 into
+ * one 23-slot cache and checking every one of the 20 entries landed in its OWN
+ * slot, with its OWN first and last payload byte still intact (a cheap corruption
+ * tripwire for the full 1,024 B record: a slot-sharing bug would stamp one
+ * generation's bytes over the other's). The mutation half of this claim (a key()
+ * that drops `gen` collides every gen1/gen2 pair sharing a dex number) is proved
+ * against the REAL source in a scratch copy, not a hand-duplicated function here --
+ * see the BACKLOG #208 fixes report for the exact fail count. */
+static void test_cross_gen_separation(void) {
+  printf("H. cross-gen SLOT separation: gen1 dex 1..10 and gen2 dex 1..10 never share a slot\n");
+  DexArtSlot slots[23];
+  DexArtCache c;
+  dexcache_reset(&c, slots, 23);
+
+  int slot_idx[20];
+  int n = 0;
+  for (uint16_t dex = 1; dex <= 10; dex++, n++) {
+    int s = dexcache_claim(&c, dexcache_key(1, dex));
+    CHECK(s >= 0, "claim() must succeed for a gen1 entry (23 slots, 20 total claims)");
+    if (s >= 0) {
+      slots[s].payload[0] = (uint8_t)(0x10 + dex);
+      slots[s].payload[DEXCACHE_PAYLOAD - 1] = (uint8_t)(0xE0 + dex);
+    }
+    slot_idx[n] = s;
+  }
+  for (uint16_t dex = 1; dex <= 10; dex++, n++) {
+    int s = dexcache_claim(&c, dexcache_key(2, dex));
+    CHECK(s >= 0, "claim() must succeed for a gen2 entry (23 slots, 20 total claims)");
+    if (s >= 0) {
+      slots[s].payload[0] = (uint8_t)(0x20 + dex);
+      slots[s].payload[DEXCACHE_PAYLOAD - 1] = (uint8_t)(0xF0 + dex);
+    }
+    slot_idx[n] = s;
+  }
+
+  for (int i = 0; i < 20; i++)
+    for (int j = i + 1; j < 20; j++)
+      CHECK(slot_idx[i] != slot_idx[j], "a gen1 and a gen2 entry (or two same-gen entries) shared a slot");
+
+  for (uint16_t dex = 1; dex <= 10; dex++) {
+    int s1 = dexcache_find(&c, dexcache_key(1, dex));
+    int s2 = dexcache_find(&c, dexcache_key(2, dex));
+    CHECK(s1 >= 0 && s2 >= 0 && s1 != s2, "gen1/gen2 of the SAME dex number must resolve to different slots");
+    if (s1 >= 0) {
+      CHECK(slots[s1].payload[0] == (uint8_t)(0x10 + dex), "gen1 entry's first payload byte was overwritten");
+      CHECK(slots[s1].payload[DEXCACHE_PAYLOAD - 1] == (uint8_t)(0xE0 + dex), "gen1 entry's last payload byte was overwritten");
+    }
+    if (s2 >= 0) {
+      CHECK(slots[s2].payload[0] == (uint8_t)(0x20 + dex), "gen2 entry's first payload byte was overwritten");
+      CHECK(slots[s2].payload[DEXCACHE_PAYLOAD - 1] == (uint8_t)(0xF0 + dex), "gen2 entry's last payload byte was overwritten");
+    }
+  }
+}
+
 int main(void) {
   test_key_no_collisions();
   test_empty_cache();
@@ -239,6 +302,7 @@ int main(void) {
   test_row_scroll();
   test_disabled();
   test_mutation_catches_fifo_motion_bug();
+  test_cross_gen_separation();
 
   printf("dex_gbart_cache: %d checks, %d failed\n", checks, fails);
   return fails ? 1 : 0;
