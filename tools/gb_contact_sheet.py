@@ -324,6 +324,17 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
      ("S150-7", "S150-7 (a)", "S150-7 (b)", "S150-7 (b), post-59dd45c", "S150-7 (c)",
       "S150-7 (c) SS11.20 item 10(c)", "S150-7 (c) D9", "S150-7 (c)+(D-Q2/D-Q3)+F6",
       "S150-7 (d)", "S150-8", "S150-8 bridge")),
+    # BACKLOG #150 S150-9 (lane s150-9): the shared per-field MERGE screen
+    # (app_xfer_merge_screen) -- the real-rows case, the "nothing changed" skip
+    # (decision 7), and the RESTORED/PENDING refusals (decision 8), all reached only
+    # via decision 12's planted-ledger read shim (source/bank_plant.c/xfer_io.c --
+    # this vehicle has no writable FAT at all). Shots come from tools/dgb_shots.py's
+    # run_s150_9_merge_screen() (--s150-9, captions all start "S150-9" or
+    # "S150-9 decision 7"/"S150-9 decision 8"). Appended after "gb-bank-down-edge"
+    # per this list's own append-only rule.
+    ("gb-merge-screen-s150-9", "BACKLOG #150 S150-9 — the per-field MERGE screen: "
+     "toggle rows, the byte-identical skip, ALREADY RESTORED and SAVE FIRST",
+     ("S150-9", "S150-9 decision 7", "S150-9 decision 8")),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
 FEATURE_TITLE = {fid: title for fid, title, _prefixes in FEATURE_TABLE}
