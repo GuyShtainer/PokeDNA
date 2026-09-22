@@ -3663,7 +3663,10 @@ def run_b208_dexcache(core_mod, image_mod, rom: Path, out_dir: Path, which: str 
     mark = dump("cold entry (page 1)", 0)
     s.shot("03_b208_cold", "#208 fixes D2: cold entry, page 1 -- 21 fetch / 0 hit "
            "(this frame's own tally has not been flushed yet -- it prints at the "
-           "next full repaint, see the dexart: line under the NEXT phase below)")
+           "next full repaint, see the dexart: line under the NEXT phase below); "
+           "pixel-identical to run_b124_dexicons()'s own 02_dex_grid by design -- "
+           "no navigation happened between them, this is the SAME state re-captured "
+           "as this bench's own frame 1", allow_same=True)
 
     s.tap("START", settle=gb_shots.BIG_SETTLE)   # dex_menu's own filter overlay
     s.tap("B", settle=gb_shots.BIG_SETTLE)       # cancel -- same page, forces a repaint
@@ -3671,18 +3674,27 @@ def run_b208_dexcache(core_mod, image_mod, rom: Path, out_dir: Path, which: str 
     s.shot("04_b208_repaint", "#208 fixes D2: same-page repaint (START then B) -- "
            "the frame itself is unchanged pixels (every cell re-served from cache); "
            "the dexart: line just printed above it is COLD ENTRY's own flushed "
-           "tally (fetch=21 hit=0), not this step's")
+           "tally (fetch=21 hit=0), not this step's", allow_same=True)
 
     s.tap("RIGHT", settle=gb_shots.SETTLE)
     s.tap("LEFT", settle=gb_shots.SETTLE)
     mark = dump("cursor move, no scroll (RIGHT then LEFT)", mark)
 
     s.press_n("DOWN", 3, settle=gb_shots.SETTLE)  # one full row, cols=7
-    dump("row scroll (DOWN x3)", mark)
+    mark = dump("row scroll (DOWN x3)", mark)
     s.shot("05_b208_scroll", "#208 fixes D2: one-row scroll (DOWN x3) -- 7 of the "
            "21 visible cells are newly fetched, 14 stay cached; the dexart: line "
            "just printed above it is the SAME-PAGE REPAINT's own flushed tally "
            "(fetch=0 hit=21), not this step's")
+
+    # One more forced repaint (same START/B trick as the "same-page repaint" step
+    # above) purely to FLUSH the row scroll's own tally -- gbdex_dex_page_begin()
+    # never prints a page's numbers until the NEXT page begins, so without this
+    # the scroll's real fetch=7/hit=14 count would only ever be asserted in prose,
+    # never actually observed from the bench's own output.
+    s.tap("START", settle=gb_shots.BIG_SETTLE)
+    s.tap("B", settle=gb_shots.BIG_SETTLE)
+    dump("flush (START then B) -- surfaces the row scroll's own tally", mark)
 
 
 # ---------------------------------------------------------------------------------
