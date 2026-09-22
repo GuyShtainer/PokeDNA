@@ -139,12 +139,18 @@ def check_cursor_skips_blocked(box_text: str) -> list[str]:
 
     # DOWN: both sites must test against `cap`, not the old fixed COLS*(ROWS-1).
     down_cap_tests = len(re.findall(r"cur\s*\+\s*COLS\s*(?:>=|<)\s*cap\b", code))
-    if down_cap_tests < 3:  # plain-grid wrap test + is_bank-exit test + carry-mode test
+    if down_cap_tests < 2:  # plain-grid wrap test + carry-mode step test
         violations.append(f"pdna_box.c: only {down_cap_tests} `cur + COLS >=/< cap` "
-                           "DOWN test(s) found, expected at least 3 -- DOWN can once "
-                           "again walk the cursor onto a blocked cell before falling "
-                           "back to the physical-bottom-row edge (BACKLOG #200 F2 "
+                           "DOWN test(s) found, expected at least 2 -- DOWN can once "
+                           "again walk the cursor onto a blocked cell (BACKLOG #200 F2 "
                            "regression)")
+    # The is_bank EXIT (return 5) fires only at the PHYSICAL bottom row (b200 review A1):
+    # a capacity edge mid-grid wraps (plain grid) or stays put (carry), never re-enters.
+    exit_tests = len(re.findall(r"src->is_bank\s*&&\s*cur\s*\+\s*COLS\s*>=\s*COLS\s*\*\s*ROWS", code))
+    if exit_tests < 2:
+        violations.append(f"pdna_box.c: only {exit_tests} `src->is_bank && cur + COLS >= COLS * ROWS` "
+                           "exit test(s) found, expected 2 -- a capacity edge would exit/re-enter the "
+                           "box instead of wrapping (b200 review A1 regression)")
 
     # SWITCH_BOX clamps cur to the new box's own last real slot.
     switch_body = code[code.find("#define SWITCH_BOX"):code.find("#define SWITCH_BOX") + 900]

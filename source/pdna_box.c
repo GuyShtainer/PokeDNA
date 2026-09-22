@@ -4235,7 +4235,7 @@ int pdna_box(BoxSource* src) {
          * nothing to skip TO; treat it the same as the physical-bottom case. */
         if (cur + COLS < cap) cur += COLS;
         else if (homeless) snd_deny();                          /* place the swapped mon before leaving */
-        else if (src->is_bank) { app_box_resume_note(box, cur); boxoam_exit(); return 5; }     /* off Bank bottom -> PC, still holding */
+        else if (src->is_bank && cur + COLS >= COLS * ROWS) { app_box_resume_note(box, cur); boxoam_exit(); return 5; }     /* off the PHYSICAL Bank bottom -> PC, still holding; a capacity edge stays put (b200 review A1) */
       }
 
       /* cursor move while carrying -> partial redraw (no ui_clear), so it doesn't flicker */
@@ -4413,7 +4413,7 @@ int pdna_box(BoxSource* src) {
      * below a blocked cell in the same column is blocked too -- there is
      * nothing further to skip to. The wrap target `cur - COLS*(ROWS-1)` is
      * `cur % COLS` (row 0, same column), always real by the same argument. */
-    else if (k & KEY_DOWN)  { if (src->is_bank && cur + COLS >= cap) { app_box_resume_note(box, cur); boxoam_exit(); return 5; }   /* off the bank bottom -> PC tabs */
+    else if (k & KEY_DOWN)  { if (src->is_bank && cur + COLS >= COLS * ROWS) { app_box_resume_note(box, cur); boxoam_exit(); return 5; }   /* off the PHYSICAL bank bottom -> PC tabs; a capacity edge mid-grid (GB source) wraps below instead (b200 review A1) */
                               else cur = (cur + COLS >= cap) ? cur % COLS : cur + COLS; }
     else if ((k & KEY_A) && s_cur_mode == CM_MOVE) {     /* orange hand: TAP = grab one; HOLD+DPAD = rubber-band multi-select */
       if (!src_can_lift(src, box, cur)) snd_deny();
