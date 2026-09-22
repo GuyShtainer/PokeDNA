@@ -85,6 +85,19 @@ bool xr_path_for_key_hint(char out[GBSC_PATH_MAX], uint64_t key, bool xfer_dir_a
   char xpath[GBSC_PATH_MAX] = {0};
   if (gbsc_path(xpath, GBSC_PATH_MAX, PDNA_XFER_DIR, key) < 0) return false;
 
+#ifdef PDNA_DELTA
+  /* BACKLOG #209: mirrors xr_open()'s own bank_plant_xfer_open shim below, but for
+   * the EXISTENCE question -- gb_has_sidecar() (source/pdna_gen12.c) calls
+   * xr_path_for_key() DIRECTLY, never through xr_open(), so that shim (which only
+   * xr_open() itself consults) never gets a chance to run for site 2 (the Red-grid
+   * restore lift, gb_lift_restore): the f_stat below always misses on this vehicle
+   * (no FAT at all) and gb_lift_restore() is never even called. `out` is filled with
+   * `xpath`, the exact bytes a real xfer-dir hit would have produced -- nothing on
+   * this vehicle ever reads bytes off the path string itself; xr_open()'s own shim
+   * serves the CONTENT when the caller opens it for real. */
+  if (bank_plant_xfer_has(key)) { memcpy(out, xpath, GBSC_PATH_MAX); return true; }
+#endif
+
   FILINFO fi;
   bool migrated = false;
   if (!xfer_dir_absent) {

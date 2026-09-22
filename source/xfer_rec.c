@@ -281,6 +281,29 @@ bool xr_merge_down_gb(const GbscEntry* e, const GbEditMon* now, GbEditMon* out,
   return xr_merge_down_gb_sel(e, now, XR_ACCEPT_ALL, out, rep);
 }
 
+/* BACKLOG #206 review R1: pc_bank_restore_up's pick loop + RESTORED/PENDING
+ * refusals, extracted verbatim (see xfer_rec.h's contract comment). Returns
+ * XR_PICK_NONE/leaves `out` untouched when NULL/empty buf. */
+XrRestorePick xr_restore_pick_basic(const uint8_t* buf, uint32_t len, int count,
+                                    GbscEntry* out) {
+  if (!buf || count <= 0) return XR_PICK_NONE;
+  int best = -1;
+  GbscEntry e;
+  for (int i = 0; i < count; i++) {
+    GbscEntry cand;
+    if (!gbsc_get(buf, len, i, &cand)) continue;
+    if (cand.kind != XR_KIND_NATIVE_HOME) continue;
+    if (!bc_is_native(cand.original80)) continue;
+    best = i;
+    e = cand;
+  }
+  if (best < 0) return XR_PICK_NONE;
+  if (e.state == XR_STATE_RESTORED) return XR_PICK_REFUSE_RESTORED;
+  if (e.state == XR_STATE_PENDING) return XR_PICK_REFUSE_PENDING;
+  if (out) *out = e;
+  return XR_PICK_LIVE;
+}
+
 /* BACKLOG #150 S150-9 decision 11: moved verbatim out of pdna_gen12.c's
  * xfer_down_write() (the pre-#150-S150-9 shape) so the flagship host round-trip test
  * exercises the REAL entry the DOWN edge writes. Pure gbsc_entry_from() + five field

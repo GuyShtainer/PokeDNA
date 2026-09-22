@@ -259,6 +259,20 @@ uint32_t pdna_bank_next_serial(void) {
   return next;
 }
 
+/* BACKLOG #223: see pdna_bank.h's own doc comment. g_bank_serial is populated by
+ * meta_load() the same way pdna_bank_next_serial() relies on -- callers on the UP
+ * path (drop_held_up) always run through the collision scan (which itself pages
+ * every box, so g_meta/g_bank_serial are current by the time this runs) first. */
+bool pdna_bank_serial_resync(uint32_t stored_max) {
+  if (g_bank_serial > stored_max) return false;   /* already strictly ahead -- nothing to do */
+  uint32_t prev = g_bank_serial;
+  uint32_t next = stored_max + 1;
+  g_bank_serial = next;
+  if (!meta_save()) { g_bank_serial = prev; return false; }
+  log_line("bank: serial resynced %u -> %u", (unsigned)prev, (unsigned)next);
+  return true;
+}
+
 /* ---- box files ---- */
 /* Read a box file -> g_bankbuf (absent/short/failed -> zeroed = an empty box, which is what
  * BROWSING wants). Returns whether the file was read IN FULL: any caller that intends to WRITE the

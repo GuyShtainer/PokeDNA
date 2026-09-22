@@ -3,8 +3,17 @@
  * be exercised on a SYNTHESIZED 16-box Bank without linking pdna_box.c or
  * pdna_bank.c (both tonc-dependent). Nothing here touches the real GBA build.
  *
- *   cc -std=c11 -Wall -Wextra -I source tests/host_bank_collision_test.c \
- *      source/bank_collision.c -o /tmp/hbc && /tmp/hbc
+ * BACKLOG #223 adds bank_serial_max() coverage at the bottom (the pure walker a
+ * stale-serial resync needs; pdna_bank_serial_resync() itself is not host-buildable,
+ * same class of gap as pc_bank_restore_up -- see tests/host_escape_gate_sites_test.py's
+ * structural check (am)/MUT AM for that half). Needs a REAL bc_pack()ed cell
+ * (bank_serial_max only counts bc_is_native() slots, which recomputes bc_ident32()),
+ * so tests/gen12_fixture.c supplies a synthetic Gen-1 save image in memory -- Guy owns
+ * no Gen-1/2 saves, same reasoning as host_gen12_test.c's own header comment.
+ *
+ *   cc -std=c11 -Wall -Wextra -I source -I tests tests/host_bank_collision_test.c \
+ *      source/bank_collision.c source/bank_cell.c source/gb_edit.c source/gen1_save.c \
+ *      source/gen2_save.c source/data_tables.c tests/gen12_fixture.c -o /tmp/hbc && /tmp/hbc
  */
 #include <stdio.h>
 #include <string.h>
@@ -13,6 +22,10 @@
 #include <stddef.h>
 
 #include "bank_collision.h"
+#include "bank_cell.h"
+#include "gb_edit.h"
+#include "gen1_save.h"
+#include "gen12_fixture.h"
 
 static int g_check = 0, g_fail = 0;
 #define CHECK(c, ...) do { \
@@ -203,6 +216,114 @@ int main(void) {
       CHECK(new_hit, "case %zu: fixed getter failed to find the box-%d collision", i, dup_box);
       CHECK(fb == dup_box, "case %zu: fixed getter named the wrong box: got %d want %d", i, fb, dup_box);
       CHECK(fs == dup_slot, "case %zu: fixed getter named the wrong slot: got %d want %d", i, fs, dup_slot);
+    }
+  }
+
+  /* ---- BACKLOG #223: bank_serial_max() over a synthesized Bank of REAL native cells ---- */
+  {
+    static uint8_t img[GBF_MAX_BYTES];
+    uint32_t ilen = gbf_build(GBF_RBY, img, 0);
+    Gen1Save s;
+    CHECK(gen1_open(img, ilen, &s) == GEN1_OK, "223: the synthetic Gen-1 fixture opens");
+    GbEditMon mon;
+    bool found = false;
+    for (int box = 0; box <= GEN1_PARTY_BOX && !found; box++) {
+      uint32_t off = gen1_list_offset(&s, box);
+      int count = gen1_list_count(img + off, box);
+      if (count < 0) continue;
+      for (int slot = 0; slot < count; slot++) {
+        if (!gb_load(&mon, GB_GEN1, img + off, box, slot)) continue;
+        found = true;
+        break;
+      }
+    }
+    CHECK(found, "223: the fixture yields at least one loadable Gen-1 record");
+
+    if (found) {
+      /* 8) Empty bank -> 0 (no box holds a native cell -- 0 is never a real
+       * allocated bank_serial, see bank_serial_max()'s own doc comment). */
+      reset_bank();
+      CHECK(bank_serial_max(get_box, NULL, NUM_BOXES, SLOTS) == 0,
+            "223: an empty bank must report max serial 0");
+
+      /* 9) One native cell in box 3 slot 5 with serial 42 -> max is exactly 42. */
+      reset_bank();
+      uint8_t cell1[BC_CELL_BYTES];
+      CHECK(bc_pack(&mon, 0, BC_ORIGIN_RED, 0, 42u, cell1) == 0, "223: bc_pack serial 42");
+      memcpy(g_bank[3][5], cell1, BC_CELL_BYTES);
+      CHECK(bank_serial_max(get_box, NULL, NUM_BOXES, SLOTS) == 42u,
+            "223: a single planted native cell's own serial is the max");
+
+      /* 10) A SECOND, higher serial in a DIFFERENT box (15) must win, regardless of
+       * box order -- the walker must not stop at the first native cell found. */
+      uint8_t cell2[BC_CELL_BYTES];
+      CHECK(bc_pack(&mon, 0, BC_ORIGIN_RED, 0, 999u, cell2) == 0, "223: bc_pack serial 999");
+      memcpy(g_bank[15][29], cell2, BC_CELL_BYTES);
+      CHECK(bank_serial_max(get_box, NULL, NUM_BOXES, SLOTS) == 999u,
+            "223: the higher serial in a later box wins over the earlier, lower one");
+
+      /* 11) A THIRD, LOWER serial added afterward must not lower the max. */
+      uint8_t cell3[BC_CELL_BYTES];
+      CHECK(bc_pack(&mon, 0, BC_ORIGIN_RED, 0, 7u, cell3) == 0, "223: bc_pack serial 7");
+      memcpy(g_bank[0][0], cell3, BC_CELL_BYTES);
+      CHECK(bank_serial_max(get_box, NULL, NUM_BOXES, SLOTS) == 999u,
+            "223: a lower serial elsewhere does not pull the max down");
+
+      /* 11b) BACKLOG #223 review D6: the reviewer's own mutant -- `if (serial > max)
+       * max = serial;` weakened to an unconditional `max = serial;` -- survives every
+       * case above unnoticed, because (9)/(10) always leave the HIGHEST serial (999)
+       * in the LAST slot the walker visits (box 15 slot 29), so an unconditional
+       * last-write-wins assignment happens to land on the same answer a correct
+       * max-tracking walk would. This case inverts that: the HIGHER serial (999) sits
+       * in an EARLIER box (3, slot 5), the LOWER serial (7) sits in the LAST slot of
+       * the LAST box (15, slot 29) -- the unconditional mutant ends the scan having
+       * just overwritten max with 7, while the real `>` comparison correctly keeps
+       * 999. */
+      reset_bank();
+      uint8_t cell11b_hi[BC_CELL_BYTES];
+      CHECK(bc_pack(&mon, 0, BC_ORIGIN_RED, 0, 999u, cell11b_hi) == 0, "223 (11b): bc_pack serial 999");
+      memcpy(g_bank[3][5], cell11b_hi, BC_CELL_BYTES);
+      uint8_t cell11b_lo[BC_CELL_BYTES];
+      CHECK(bc_pack(&mon, 0, BC_ORIGIN_RED, 0, 7u, cell11b_lo) == 0, "223 (11b): bc_pack serial 7");
+      memcpy(g_bank[NUM_BOXES - 1][SLOTS - 1], cell11b_lo, BC_CELL_BYTES);
+      CHECK(bank_serial_max(get_box, NULL, NUM_BOXES, SLOTS) == 999u,
+            "223 (11b): an earlier-box higher serial (999) beats a lower one in the "
+            "LAST slot of the LAST box (7) -- kills the `max = serial;` mutant");
+
+      /* 12) A non-native slot (bank_ident32_collision's own plant() -- an arbitrary
+       * "GBC1"+ident32 with no valid bc_ident32() hash over the rest of the record)
+       * must be IGNORED, never misread as a serial -- bc_is_native() is the gate.
+       * The fake record's OWN bank_serial bytes are set to a large, deliberately
+       * non-zero value (BC_OFF_BANK_SERIAL, not just left at plant()'s zero fill) so
+       * a mutant that drops the bc_is_native() filter reads a WRONG, non-zero max
+       * here instead of coincidentally landing on 0 anyway. */
+      reset_bank();
+      plant(4, 4, 0xDEADBEEFu);   /* magic + ident32 only, fails bc_is_native()'s hash check */
+      g_bank[4][4][BC_OFF_BANK_SERIAL + 0] = 0x78;
+      g_bank[4][4][BC_OFF_BANK_SERIAL + 1] = 0x56;
+      g_bank[4][4][BC_OFF_BANK_SERIAL + 2] = 0x34;
+      g_bank[4][4][BC_OFF_BANK_SERIAL + 3] = 0x12;   /* 0x12345678 if misread */
+      CHECK(bank_serial_max(get_box, NULL, NUM_BOXES, SLOTS) == 0,
+            "223: a non-native (fake-ident-only) slot must not be read as a real serial");
+
+      /* 13) An unreadable box (get_box returns NULL) is skipped, same contract as
+       * bank_ident32_collision's own case (5) above. */
+      reset_bank();
+      uint8_t cell4[BC_CELL_BYTES];
+      CHECK(bc_pack(&mon, 0, BC_ORIGIN_RED, 0, 5000u, cell4) == 0, "223: bc_pack serial 5000");
+      memcpy(g_bank[6][0], cell4, BC_CELL_BYTES);
+      g_box_present[6] = false;
+      CHECK(bank_serial_max(get_box, NULL, NUM_BOXES, SLOTS) == 0,
+            "223: an unreadable box's own native cell must not be counted");
+
+      /* 14) Bound mutation pin, same style as case (6) above: a scan clamped to
+       * num_boxes=1 must MISS the box-15 serial 999 case (9)+(10) prove a real
+       * 16-box scan finds -- calling with 1 here IS the mutation. */
+      reset_bank();
+      memcpy(g_bank[3][5], cell1, BC_CELL_BYTES);    /* serial 42 */
+      memcpy(g_bank[15][29], cell2, BC_CELL_BYTES);  /* serial 999 */
+      CHECK(bank_serial_max(get_box, NULL, /*num_boxes*/ 1, SLOTS) == 0,
+            "223: a 1-box scan must NOT find box 3's or box 15's serial (bound not exercised)");
     }
   }
 

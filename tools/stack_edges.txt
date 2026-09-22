@@ -135,9 +135,34 @@
 # dispatching s_gb.pic through the same inlined fetch_pic_ex shape fetch_icon
 # already does, declared below with its own dated reasoning). 49 + 1 = 50.
 # Re-measured on all three variants after the strip.
-count-only-max 50 variant=nor artless=1
-count-only-max 50 variant=nor
-count-only-max 50 variant=delta
+# BACKLOG #223 (2026-09-22): 50 -> 51. bank_serial_max()'s new call site sat right
+# beside bank_ident32_collision()'s own call in drop_held_up (both pass the SAME
+# bank_scan_get, sequentially, same reasoning as the two argsites declarations just
+# above) -- adding it shifted the codegen enough that the disassembly-based literal-
+# pool tracer could no longer independently resolve bank_ident32_collision's own
+# target either. Both sites were declared with an explicit `argsites=1 ->
+# bank_scan_get` above.
+# BACKLOG #206 fixes2 R2 (2026-09-22, same day): re-measured at 51, UNCHANGED --
+# NOT the 51 -> 50 the brief predicted. bank_ident32_collision() and
+# bank_serial_max() are now thin wrappers over ONE fused pass,
+# bank_scan_serial_and_clash() -- only ONE function in the file still calls
+# `get_box(b, ctx)` through the indirect parameter, so only one argsites
+# declaration remains (see that declaration's own comment above). But the walker
+# says bank_serial_max was NEVER itself in the count-only-validated set (diffed
+# both lists, `/tmp/base_countonly.txt` vs `/tmp/r2_countonly.txt`, 2026-09-22):
+# its own dispatch site resolved cleanly via the literal-pool tracer even though
+# it shared the exact same bank_scan_get subtree as bank_ident32_collision --
+# only bank_ident32_collision was untraceable. So the 51 -> 50 the #223 comment
+# above predicted from "two sites removed, one added" was never the real
+# composition; it was always "one untraceable site removed (bank_ident32_
+# collision), one equally untraceable site added (bank_scan_serial_and_clash)" --
+# a wash. Re-measured on all three variants after the fusion; no other name in
+# either list changed (diffed the two 51-item lists line for line: exactly one
+# swap, bank_ident32_collision -> bank_scan_serial_and_clash, everything else
+# byte-identical).
+count-only-max 51 variant=nor artless=1
+count-only-max 51 variant=nor
+count-only-max 51 variant=delta
 
 # Delta-only -- the artless/normal (PDNA_TARGET=nor) links do not contain it:
 # Listing EVERY variant in variants= re-creates a blanket exemption -- if the symbol exists
@@ -899,29 +924,37 @@ G2Writer.wr @4 in refresh_checksums,write_patch.part.0 -> img_wr str_wr
 # walk_entry/gbl_verify above (all the same struct).
 RomGbLearn.read @4 in rom_gblearn_moves_at_seeded -> fused_gb_slice_read gb_read
 
-# BACKLOG #170: bank_collision.c's bank_ident32_collision() (a pure, host-tested
-# core with no tonc/FatFs dependency -- BACKLOG #168a) takes a plain function-
-# pointer PARAMETER, BankBoxGetter get_box, and calls `get_box(b, ctx)` once per
-# box scanned. Its ONE real caller (drop_held_up, pdna_box.c) always passes the
-# same file-static wrapper, bank_scan_get -- there is no dispatch table and no
-# second implementation anywhere in the tree (grep: bank_scan_get is defined once,
-# address-taken once, at this one call site). Not the coincidental-address-literal
-# class the two entries above this comment document (gen1_encode_name et al) --
-# bank_scan_get IS genuinely address-taken AND genuinely dispatched, the exact
-# shape the ArtIconsGen.progress note below warns must NOT be marked
-# `addrtaken-ok`.
-# BACKLOG #168a review D5: this declaration does NOT make the walker trace depth
-# through bank_scan_get's own subtree -- it only silences the address-taken sweep
-# (the entry below reports 60 B, the argsites class's own flat per-call cost,
-# never the callee's frame). The real collision-path depth was hand-measured
-# separately: drop_held_up 152 B + bank_ident32_collision 48 B + bank_scan_get's
-# own subtree (pdna_bank_peek_box -> box_load -> sf_read_full -> f_read ->
-# disk_read) 2,984 B = ~3,184 B, which is 1,304 B BELOW the deepest chain the
-# walker already guards via pdna_bank_prepare_native -> bank_backup_v1 (the
-# Settings -> register-ROM browser chain, 13,112 of 15,024). No budget impact --
-# a future lane that deepens bank_scan_get's own subtree past that 1,304 B margin
-# needs a fresh hand measurement, not a reread of this comment.
-bank_ident32_collision argsites=1 -> bank_scan_get
+# BACKLOG #206 fixes2 R2 (2026-09-22): bank_collision.c's bank_ident32_collision()
+# and bank_serial_max() (BACKLOG #170 / #223, formerly declared here as two separate
+# argsites sites) are now thin wrappers over ONE fused pass, bank_scan_serial_and_
+# clash() -- it is the only function in this file that still calls `get_box(b, ctx)`
+# through the plain function-pointer PARAMETER, BankBoxGetter get_box; the two
+# wrappers now call bank_scan_serial_and_clash by name (a statically resolvable
+# direct call, no indirection, no declaration needed). Its real caller, drop_held_up
+# (pdna_box.c), always passes the same file-static wrapper, bank_scan_get -- there is
+# no dispatch table and no second implementation anywhere in the tree (grep:
+# bank_scan_get is defined once, address-taken once, at this one call site). Not the
+# coincidental-address-literal class the two entries above this comment document
+# (gen1_encode_name et al) -- bank_scan_get IS genuinely address-taken AND genuinely
+# dispatched, the exact shape the ArtIconsGen.progress note below warns must NOT be
+# marked `addrtaken-ok`.
+# BACKLOG #168a review D5 (unchanged by the fusion): this declaration does NOT make
+# the walker trace depth through bank_scan_get's own subtree -- it only silences the
+# address-taken sweep (the entry below reports 60 B, the argsites class's own flat
+# per-call cost, never the callee's frame). The real collision-path depth was
+# hand-measured separately: drop_held_up 152 B + bank_scan_serial_and_clash's own
+# frame (the fused body, no bigger than bank_ident32_collision's old 48 B) +
+# bank_scan_get's own subtree (pdna_bank_peek_box -> box_load -> sf_read_full ->
+# f_read -> disk_read) 2,984 B = ~3,184 B, which is 1,304 B BELOW the deepest chain
+# the walker already guards via pdna_bank_prepare_native -> bank_backup_v1 (the
+# Settings -> register-ROM browser chain, 13,112 of 15,024). drop_held_up's own
+# conditional re-probe (bank_ident32_collision, called only when a stale-counter
+# resync re-packed s_held) is a direct, statically-resolved call into the SAME
+# already-declared bank_scan_serial_and_clash -- not a second indirect dispatch, no
+# second declaration. No budget impact -- a future lane that deepens
+# bank_scan_get's own subtree past that 1,304 B margin needs a fresh hand
+# measurement, not a reread of this comment.
+bank_scan_serial_and_clash argsites=1 -> bank_scan_get
 
 # art_icons_extract.h's ArtIconsGen.progress (progress@4, `const RomMon* rm;
 # ArtIconsProgressFn progress;`) -- art_icons_stream's TWO `g->progress(...)` calls

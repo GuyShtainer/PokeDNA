@@ -1230,25 +1230,13 @@ pc_bank_restore_up(const uint8_t g3_rec80[80], uint8_t out_cell80[80]) {
   int count = gbsc_count(buf, len);
   if (count < 0) { log_line("bank: restore lookup: ledger file failed to validate"); return -1; }
 
-  /* decision 8's tiebreak: the HIGHEST index whose kind is XR_KIND_NATIVE_HOME (the
-   * newest cycle), belt-and-braces bc_is_native() since the kind byte is absent on
-   * pre-#150 entries. */
-  int best = -1;
+  /* BACKLOG #206 review R1: pick loop + RESTORED/PENDING refusals moved to
+   * source/xfer_rec.c's xr_restore_pick_basic (see its contract comment) --
+   * behaviour byte-identical, same S150-9 decision 8 tiebreak/order. */
   GbscEntry e;
-  for (int i = 0; i < count; i++) {
-    GbscEntry cand;
-    if (!gbsc_get(buf, len, i, &cand)) continue;
-    if (cand.kind != XR_KIND_NATIVE_HOME) continue;
-    if (!bc_is_native(cand.original80)) continue;
-    best = i;
-    e = cand;
-  }
-  if (best < 0) return 0;                     /* only Gen-3-home entries (or none) -- already exact */
-
-  /* S150-9 decision 8: the state branch runs BEFORE the screen -- a RESTORED or
-   * PENDING entry is refused outright, never even probed for a report (§3.2's
-   * order; check (o) pins "state refusals precede app_xfer_merge_screen"). */
-  if (e.state == XR_STATE_RESTORED) {
+  XrRestorePick pick = xr_restore_pick_basic(buf, len, count, &e);
+  if (pick == XR_PICK_NONE) return 0;         /* only Gen-3-home entries (or none) -- already exact */
+  if (pick == XR_PICK_REFUSE_RESTORED) {
     log_line("bank: restore: entry already RESTORED -- refusing a second restore");
     boxoam_suspend();
     snd_deny();
@@ -1256,7 +1244,7 @@ pc_bank_restore_up(const uint8_t g3_rec80[80], uint8_t out_cell80[80]) {
     boxoam_resume();
     return -2;   /* review D3's convention: a declined/refused restore, not a genuine failure */
   }
-  if (e.state == XR_STATE_PENDING) {
+  if (pick == XR_PICK_REFUSE_PENDING) {
     log_line("bank: restore: entry still PENDING -- the Bank slot is not proven yet");
     boxoam_suspend();
     snd_deny();
@@ -1441,9 +1429,40 @@ static uint8_t* __attribute__((noinline)) drop_held_up(BoxSource* src, int box, 
    * extra 2,400-B reads, on a deliberate user action), then trust it. */
   static EWRAM_BSS bool s_up_scan_done;   /* EWRAM: an IWRAM static would cost 8 B of stack budget (re-verify) */
   if (!pdna_bank_serial_trusted() || !s_up_scan_done) {
+    /* BACKLOG #223 review D4/D5, fused into one pass by #206 fixes2 R2
+     * (bank_scan_serial_and_clash, bank_collision.c): a rolled-back counter
+     * (BACKLOG #219's .bak recovery) can hand serial S to a DIFFERENT mon than the
+     * one that originally held it -- no ident32 clash results (the two cells' other
+     * 76 bytes differ), so a collided-only gate would never notice and would
+     * silently duplicate the serial, #168's own hazard. The high-water mark
+     * (stored_max) repairs a rolled-back counter even when the stale serial lands
+     * on a mon that does NOT collide -- computed by the SAME scan that answers
+     * `collided`, so the resync decision below always sees a mark from BEFORE
+     * s_held was touched. */
+    uint32_t stored_max = 0;
     int coll_box = -1, coll_slot = -1;
-    if (bank_ident32_collision(bank_scan_get, NULL, PDNA_BANK_BOXES, G3_BOX_SLOTS, box, cur,
-                                s_held, &coll_box, &coll_slot)) {
+    bool collided = bank_scan_serial_and_clash(bank_scan_get, NULL, PDNA_BANK_BOXES, G3_BOX_SLOTS,
+                                               box, cur, s_held, &stored_max, &coll_box, &coll_slot);
+    GbEditMon rmon; BcMeta rmeta;
+    bool repacked = false;
+    if (pdna_bank_serial_resync(stored_max) && bc_unpack(s_held, &rmon, &rmeta)) {
+      uint32_t fresh = pdna_bank_next_serial();
+      if (fresh != 0) {
+        (void)bc_pack(&rmon, rmeta.flags, rmeta.origin_game, rmeta.rtc_epoch, fresh, s_held);
+        repacked = true;
+      }
+    }
+    /* re-serialising changes ident32 BY CONSTRUCTION (bc_pack folds bank_serial
+     * into the hash) -- the fused pass's `collided` verdict above described the
+     * PRE-repack s_held and no longer applies. Re-probe ONLY when a repack
+     * actually happened (rare: only a rolled-back counter reaches here); the
+     * ordinary case (no resync, or resync declined/failed) reuses the first
+     * pass's verdict untouched, same one-scan cost as before this fix. */
+    if (repacked) {
+      collided = bank_ident32_collision(bank_scan_get, NULL, PDNA_BANK_BOXES, G3_BOX_SLOTS,
+                                        box, cur, s_held, &coll_box, &coll_slot);
+    }
+    if (collided) {
       snd_error();
       /* BACKLOG #219b: was a log line + snd_error() only -- the player saw nothing.
        * msg_wait BEFORE boxoam_resume(), same as the backup-gate refusal above (the

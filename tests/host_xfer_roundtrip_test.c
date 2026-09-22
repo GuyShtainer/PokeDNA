@@ -6,6 +6,7 @@
  *      source/gen3_daycare.c source/data_tables.c source/evolutions.c \
  *      source/gb_edit.c source/gen1_save.c source/gen2_save.c \
  *      source/xfer_rec.c source/bank_restore.c source/item_map_g2g3.c \
+ *      source/gb_moves_legal.c \
  *      -o /tmp/hxfer
  *   /tmp/hxfer /Users/guyshtainer/VSCodeProjects/gba-toolkit/roms/ (.sav files)
  *
@@ -74,6 +75,7 @@
 #include "bank_cell.h"
 #include "xfer_rec.h"
 #include "bank_restore.h"
+#include "gb_moves_legal.h"   /* BACKLOG #220a: g3gb_moves_ok_rec -- RT-4's per-slot clip gate */
 #include "data_tables.h"   /* pk_national_no */
 #include "item_map_g2g3.h" /* item_g2_to_g3 -- review D2's item-loss comparison */
 
@@ -1164,6 +1166,174 @@ static void test_d2_item_confirm_logic(void) {
   printf("  SKIP (no item holder found in Gold.sav)\n");
 }
 
+/* ---- BACKLOG #206 review D1: the revert's own regression pin ------------------
+ *
+ * a274651 ("state-aware, identity-checked restore pick") made pc_bank_restore_up
+ * refuse a CLAIMED entry whenever the entry's OWN stored identity (species_written /
+ * otid16 / nick_written) no longer matched the incoming Gen-3 record -- but that is
+ * exactly what a mon renamed or evolved ABROAD looks like: xr_key_g3 (PID+otId) still
+ * finds the right entry, the entry is still the newest CLAIMED one for this cell, yet
+ * its species_written/nick_written are the values from the moment it went DOWN, not
+ * what the Gen-3 side holds now. a274651 would refuse those, dropping the mon back as
+ * an ordinary Gen-3-origin cell with its native original stranded -- the review's own
+ * repro. After the revert, xr_merge_down / bank_restore_from_entry must reach the
+ * merge path (never refuse, never land the cell as an ordinary Gen-3 mon) for BOTH a
+ * renamed-abroad and an evolved-abroad record, and the report's renamed/evolved bit
+ * must be set. Returns 0 (this test's own success convention, matching bc_pack/
+ * xr_open's "0 = ok" idiom) so the two CHECK sites below read the same way trip 1/2
+ * of the pre-#206 two-trips shape did.
+ *
+ * MUTATION: reintroduce a274651's identity gate INSIDE xr_restore_pick_basic
+ * (source/xfer_rec.c) -- refusing the picked entry whenever its own stored
+ * nick_written/species_written no longer match the incoming record -- and either
+ * of the two CHECK(rc == 0 && ...) lines below fails -- the renamed/evolved case is
+ * refused instead of reaching the merge path, the exact regression this pins. BACKLOG
+ * #206 review R1: this case now drives the REAL pick (xr_restore_pick_basic against a
+ * real ledger buffer, exactly what pc_bank_restore_up calls), not a hand-picked
+ * GbscEntry handed straight to bank_restore_from_entry -- the original D1 test never
+ * touched the pick loop at all, so a274651's gate (which lived INSIDE the old pick
+ * loop, source/pdna_box.c pre-revert) could not have failed it. */
+static int xr_restore_regression_case(const uint8_t* ledger, uint32_t llen, int lcount,
+                                      const uint8_t g3_edited[80], XrMergeReport* rep_out) {
+  GbscEntry picked;
+  XrRestorePick pick = xr_restore_pick_basic(ledger, llen, lcount, &picked);
+  if (pick != XR_PICK_LIVE) return -1;
+  uint8_t out_cell80[80];
+  int rc = bank_restore_from_entry(&picked, g3_edited, XR_ACCEPT_ALL, g_xr_serial++, out_cell80,
+                                   rep_out);
+  return (rc == 1) ? 0 : -1;   /* this test's own convention: 0 = reached the merge path */
+}
+
+static void test_backlog_206_regression(void) {
+  printf("\n-- D1 (BACKLOG #206 review): renamed/evolved abroad still reach the merge path --\n");
+  char path[512];
+  snprintf(path, sizeof path, "%s/Gold.sav", GB_ROMS);
+  FILE* f = fopen(path, "rb");
+  if (!f) { printf("  SKIP (Gold.sav not present)\n"); return; }
+  static uint8_t img[G2_SAVE_SIZE + G2_MAX_RTC_TAIL];
+  uint32_t ilen = (uint32_t)fread(img, 1, sizeof img, f);
+  fclose(f);
+  G2Save sv;
+  if (!g2_detect(img, ilen, &sv) || !sv.supported) { printf("  SKIP (unsupported)\n"); return; }
+  G2Header hd;
+  if (!g2_read_header(img, &sv, &hd)) { printf("  SKIP (header)\n"); return; }
+
+  GbEditMon base;
+  bool found = false;
+  for (int box = 0; box <= G2_BOX_PARTY && !found; box++) {
+    uint32_t off = g2_list_offset(&sv, box, hd.current_box);
+    if (off == 0) continue;
+    int count = gb_list_count(GB_GEN2, img + off, box);
+    if (count < 0) continue;
+    for (int slot = 0; slot < count; slot++) {
+      if (!gb_load(&base, GB_GEN2, img + off, box, slot)) continue;
+      if (base.list_species == G2_LIST_EGG) continue;
+      found = true;
+      break;
+    }
+  }
+  if (!found) { printf("  SKIP (no usable Gen-2 record in Gold.sav)\n"); return; }
+
+  /* One trip DOWN, promoted to CLAIMED (what a saved exit does -- app_xfer_promote /
+   * xfer_down_claim_now, mirrored here as the one assignment the tests always use). */
+  uint8_t cell[80]; GbEditMon written; uint8_t g3rec80[80];
+  if (!xr_down_sim(&base, BC_ORIGIN_GOLD, g_xr_serial++, cell, &written, g3rec80)) {
+    printf("  SKIP (does not convert)\n"); return;
+  }
+  GbscEntry e;
+  xr_build_entry_asdown(&e, &written, cell, g3rec80);
+  e.state = XR_STATE_CLAIMED;
+
+  /* BACKLOG #206 review R1: a REAL ledger buffer, the same shape xr_open() hands
+   * pc_bank_restore_up -- xr_restore_pick_basic is driven against this, not against
+   * a hand-picked GbscEntry, so the pick loop itself (which a274651's identity gate
+   * lived inside) is actually exercised. */
+  uint8_t ledger[GBSC_FILE_MAX];
+  uint32_t llen = (uint32_t)gbsc_init(ledger, xr_key_g3(g3rec80));
+  CHECK(llen > 0, "D1: gbsc_init succeeds");
+  int aidx = gbsc_add(ledger, &llen, sizeof ledger, &e);
+  CHECK(aidx == 0, "D1: gbsc_add lands the CLAIMED entry at index 0");
+  int lcount = gbsc_count(ledger, llen);
+  CHECK(lcount == 1, "D1: the ledger validates with exactly one entry");
+
+  /* Case 1: renamed abroad -- the Gen-3 record's own nickname bytes no longer match
+   * e.nick_written (a real edit, not a synthetic flip: a different, validly-encoded
+   * nickname), everything else unchanged. */
+  {
+    uint8_t g3_renamed[80];
+    memcpy(g3_renamed, g3rec80, 80);
+    EditMon em;
+    gen3_edit_load(g3_renamed, false, &em);
+    em_set_nickname(&em, "NEWNAME");
+    gen3_edit_commit(&em, g3_renamed);
+    CHECK(memcmp(g3_renamed + 0x08, e.nick_written, 10) != 0,
+          "D1: the renamed record's nickname bytes really do differ from the entry's own");
+
+    XrMergeReport rep;
+    int rc = xr_restore_regression_case(ledger, llen, lcount, g3_renamed, &rep);
+    CHECK(rc == 0 && rep.renamed,
+          "D1: a renamed-abroad record reaches the merge path, never refused (rc=%d renamed=%d)",
+          rc, (int)rep.renamed);
+  }
+
+  /* Case 2: evolved abroad -- species differs from e.species_written, everything else
+   * (nickname, moves, level) unchanged. Species is report-only (decision 4), never
+   * applied by xr_merge_down_sel -- this pins that the ENTRY is still found and used,
+   * not that species changes. */
+  {
+    uint8_t g3_evolved[80];
+    memcpy(g3_evolved, g3rec80, 80);
+    PkMon base_pk;
+    CHECK(pk_decode_mon(g3_evolved, false, &base_pk), "D1: base record decodes for the evolve case");
+    uint16_t new_species = (uint16_t)((pk_national_no(base_pk.species) % 411u) + 1u);
+    if (new_species == e.species_written) new_species = (uint16_t)((new_species % 411u) + 1u);
+    EditMon em;
+    gen3_edit_load(g3_evolved, false, &em);
+    em_set_species(&em, new_species);
+    gen3_edit_commit(&em, g3_evolved);
+    PkMon evolved_pk;
+    CHECK(pk_decode_mon(g3_evolved, false, &evolved_pk), "D1: evolved record decodes");
+    CHECK(pk_national_no(evolved_pk.species) != e.species_written,
+          "D1: the evolved record's species really does differ from the entry's own");
+
+    XrMergeReport rep;
+    int rc = xr_restore_regression_case(ledger, llen, lcount, g3_evolved, &rep);
+    CHECK(rc == 0 && rep.evolved,
+          "D1: an evolved-abroad record reaches the merge path, never refused (rc=%d evolved=%d)",
+          rc, (int)rep.evolved);
+  }
+
+  /* Case 3/4 (S150-9 decision 8, review R1): a RESTORED or PENDING entry is a pure
+   * pick-time refusal, before any identity/merge concern -- separate ledgers so case
+   * 3's state doesn't leak into case 4. */
+  {
+    GbscEntry restored = e;
+    restored.state = XR_STATE_RESTORED;
+    uint8_t rledger[GBSC_FILE_MAX];
+    uint32_t rlen = (uint32_t)gbsc_init(rledger, xr_key_g3(g3rec80));
+    CHECK(gbsc_add(rledger, &rlen, sizeof rledger, &restored) == 0,
+          "D1: RESTORED-state ledger add succeeds");
+    int rcount = gbsc_count(rledger, rlen);
+    GbscEntry picked;
+    XrRestorePick pick = xr_restore_pick_basic(rledger, rlen, rcount, &picked);
+    CHECK(pick == XR_PICK_REFUSE_RESTORED,
+          "D1: a RESTORED entry refuses at pick time (pick=%d)", (int)pick);
+  }
+  {
+    GbscEntry pending = e;
+    pending.state = XR_STATE_PENDING;
+    uint8_t pledger[GBSC_FILE_MAX];
+    uint32_t plen = (uint32_t)gbsc_init(pledger, xr_key_g3(g3rec80));
+    CHECK(gbsc_add(pledger, &plen, sizeof pledger, &pending) == 0,
+          "D1: PENDING-state ledger add succeeds");
+    int pcount = gbsc_count(pledger, plen);
+    GbscEntry picked;
+    XrRestorePick pick = xr_restore_pick_basic(pledger, plen, pcount, &picked);
+    CHECK(pick == XR_PICK_REFUSE_PENDING,
+          "D1: a PENDING entry refuses at pick time (pick=%d)", (int)pick);
+  }
+}
+
 /* ============================================================================ */
 /* E. BACKLOG #150 S150-9: accept masks, xr_merge_down_gb, the flagship 2->3->1->2. */
 /* ============================================================================ */
@@ -1181,12 +1351,16 @@ static GbGen1Base xr_fake_g1base(void) {
 /* ---- RT-4: the flagship 2->3->1->2, byte-identical via the ledger ------------- */
 
 static int g_rt4_completed = 0, g_rt4_skipped_capsule = 0, g_rt4_skipped_other = 0;
+static int g_rt4_clipped = 0;   /* BACKLOG #220a: completed records whose hop 3 clipped >=1 move */
 
 static void run_rt4_one(const char* tag, const GbEditMon* mon, uint8_t origin) {
-  uint16_t moves4[4];
-  for (int i = 0; i < 4; i++) moves4[i] = gb_get_move(mon, i);
-  uint16_t bad;
-  if (xr_time_capsule_block(GB_GEN2, GB_GEN1, gb_get_species_dex(mon), moves4, &bad) != 0) {
+  /* BACKLOG #220a: species-only gate, mirroring bank_down_convert.c's bdc_convert_gb_core
+   * (xr_time_capsule_block(..., NULL, tc_bad) -- moves4 == NULL there means "species only,
+   * this arm handles moves itself" per that file's own comment). The old all-or-nothing
+   * predicate (moves4 non-NULL) refused every record with even one out-of-range move,
+   * which is exactly what BACKLOG #212 already taught the shipped bridge arm not to do --
+   * RT-4 had simply never been updated to match. */
+  if (xr_time_capsule_block(GB_GEN2, GB_GEN1, gb_get_species_dex(mon), NULL, NULL) != 0) {
     g_rt4_skipped_capsule++;
     return;
   }
@@ -1231,14 +1405,59 @@ static void run_rt4_one(const char* tag, const GbEditMon* mon, uint8_t origin) {
   CHECK(conv2, "%s: RT-4 hop 3 gen12_convert(N2') succeeds", tag);
   if (!conv2) return;
 
+  /* BACKLOG #220a: per-slot clip (gb_moves_legal.h's g3gb_moves_ok_rec -- the SAME
+   * predicate bdc_convert_gb_core (source/bank_down_convert.c) uses) instead of
+   * refusing the whole record on one bad move. bad4[i] slots are written EMPTY by
+   * gen3_to_gb_fixed rather than blocking hop 3 -- the ledger entry below is keyed
+   * off N2p (the UNCLIPPED Gen-3 record from hop 2, xr_entry_for_down's `cell80`
+   * argument), so hop 4's restore rebuilds from the pre-clip bytes regardless of
+   * what hop 3 had to empty; the final byte-identical assertions below are
+   * unaffected by the clip. This lane does not call gb_paste_fill_moves() (the
+   * production bridge's own fill step, source/pdna_gen12.c) -- it needs a real ROM's
+   * learnset (g_ed/gb_create_locate_rom), which is not host-compilable; the no-ROM
+   * path is simply to leave a clipped slot EMPTY, same as CREATE's own no-ROM
+   * fallback. */
+  uint8_t bad4[4];
+  int nb2 = g3gb_moves_ok_rec(g3b, GB_GEN1, bad4);
+  if (nb2 < 0) { g_rt4_skipped_other++; return; }
+
   GbGen1Base g1base = xr_fake_g1base();
   GbEditMon R1; Gen3ToGbLoss loss;
-  G3GbStatus st = gen3_to_gb(g3b, GB_GEN1, true, &g1base, &R1, &loss);
+  G3GbStatus st = gen3_to_gb_fixed(g3b, GB_GEN1, true, &g1base, nb2 > 0 ? bad4 : NULL, &R1, &loss);
   if (st != G3GB_OK) {
-    /* A real refusal (e.g. a move outside Gen 1's own historical subset even though
-     * it passed the time-capsule species/move-id gate above) -- tallied, not failed. */
+    /* A real refusal for another reason entirely (species floor already gated above;
+     * moves are now clipped, not refused) -- tallied, not failed. */
     g_rt4_skipped_other++;
     return;
+  }
+  if (nb2 > 0) g_rt4_clipped++;
+
+  /* BACKLOG #220a review D7: the production no-ROM path ends in g3gb_moves_pack
+   * (source/gb_moves_legal.c's own g3gb_moves_fill, called by gb_paste_fill_moves)
+   * -- a clipped slot is never left as a hole in the MIDDLE of the move list, it is
+   * packed forward. This lane's own no-ROM fallback (the comment above: "leave a
+   * clipped slot EMPTY, same as CREATE's own no-ROM fallback") stopped at
+   * gen3_to_gb_fixed and never ran that pack step, so 50 of 78 clipped records in
+   * this corpus were left GAPPED (a real move sitting after an empty slot) --
+   * legal-looking to every OTHER check here (R1's byte-identical assertions never
+   * compare individual move slots against a hole rule), but not what the real
+   * bridge ever produces. learn4 is all zeros (no ROM learnset host-compilable, same
+   * reason the whole file avoids gb_paste_fill_moves) -- g3gb_moves_fill therefore
+   * fills nothing (fill4 stays all-zero) and its own g3gb_moves_pack() call is the
+   * only thing this exercises, matching CREATE's own no-ROM fallback exactly. */
+  if (nb2 > 0) {
+    uint8_t learn4[4] = { 0, 0, 0, 0 };
+    uint8_t fill4[4];
+    CHECK(g3gb_moves_fill(&R1, bad4, learn4, fill4) >= 0,
+          "%s: RT-4 hop 3: g3gb_moves_fill runs on the clipped record", tag);
+    bool seen_empty = false;
+    for (int i = 0; i < 4; i++) {
+      uint8_t mv = gb_get_move(&R1, i);
+      if (mv == 0) { seen_empty = true; continue; }
+      CHECK(!seen_empty,
+            "%s: RT-4 hop 3: slot %d holds a move after an earlier empty slot -- "
+            "g3gb_moves_fill's own pack step must never leave a gap", tag, i);
+    }
   }
 
   GbscEntry e2;
@@ -1847,6 +2066,7 @@ int main(int argc, char** argv) {
   test_nickname_unmappable_glyph();
   test_merge4_make_legal_written_level();
   test_d2_item_confirm_logic();
+  test_backlog_206_regression();
 
   printf("\n-- E. BACKLOG #150 S150-9: accept masks, xr_merge_down_gb, the flagship --\n");
   printf("== E0. RT-4 (the flagship 2->3->1->2) ==\n");
@@ -1854,9 +2074,10 @@ int main(int argc, char** argv) {
     snprintf(pathbuf, sizeof pathbuf, "%s", kGb2[i]);
     run_rt4_file(kGb2[i]);
   }
-  printf("  RT-4: %d record(s) completed all four hops byte-identical, %d skipped by the\n"
+  printf("  RT-4: %d record(s) completed all four hops byte-identical (%d of them with >=1\n"
+         "        move clipped at hop 3, BACKLOG #220a), %d skipped by the species-only\n"
          "        time-capsule gate, %d skipped for another real reason (refusal/conversion)\n",
-         g_rt4_completed, g_rt4_skipped_capsule, g_rt4_skipped_other);
+         g_rt4_completed, g_rt4_clipped, g_rt4_skipped_capsule, g_rt4_skipped_other);
 
   printf("== E0b. RT-5 (1->3->1) / RT-6 (2->3->2), the accept=0 mask path ==\n");
   for (size_t i = 0; i < sizeof kGb1 / sizeof kGb1[0]; i++) run_rt5_gen1(kGb1[i]);

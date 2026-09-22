@@ -11106,6 +11106,24 @@ static void view_save(const char* path) {
       }
       log_line("save: flash blank/invalid -> using the fused GB save (%lu B)",
                (unsigned long)fsz);
+      /* BACKLOG #209: seed site 2's ledger entry (gb_lift_restore, source/pdna_gen12.c)
+       * from whatever THIS fused save actually holds at its own box 0 slot 0 -- see
+       * bank_plant_site2_seed's own doc comment for why a boot-time constant (like
+       * the four S150-9 xfer slots above) cannot work here: the key is the mon's
+       * NATIVE identity (gbsc_key), which only the fused save itself (tools/
+       * fuse_sav.py's choice) actually determines. Gen-1 (Red/Yellow) only, matching
+       * the brief's own vehicle; a Gen-2 fused save seeds nothing (gb_has_sidecar
+       * stays false for it, same as every build before this lane). */
+      {
+        Gen1Save g1s;
+        if (gen1_open(g_save, fsz, &g1s) == GEN1_OK) {
+          uint32_t off = gen1_list_offset(&g1s, 0);
+          int count = gen1_list_count(g_save + off, 0);
+          GbEditMon site2mon;
+          if (count > 0 && gb_load(&site2mon, GB_GEN1, g_save + off, 0, 0))
+            bank_plant_site2_seed(&site2mon);
+        }
+      }
       /* Looped rather than a single call: pdna_gen12_show_image() browses until B backs
        * all the way out (GB12_ENTER_OK), and a delta build has no file browser to
        * return to underneath it -- so re-enter the same session instead of falling into
@@ -11217,6 +11235,21 @@ static void view_save(const char* path) {
         }
         log_line("save: combined-image boot picker -> fused GB entry %s (%lu B)",
                  nm ? nm : "?", (unsigned long)psz);
+        /* BACKLOG #209: same site-2 seed as the blank-flash GB fork below -- this is
+         * the OTHER real boot path a `make delta-gb` image (Emerald.sav + a fused GB
+         * corpus) actually takes: gb_delta_boot_pick's own "PICK A SAVE" flow, not
+         * the blank-flash fork (this vehicle's flash is never blank -- Emerald.sav
+         * seeds it). See bank_plant_site2_seed's own doc comment. */
+        {
+          Gen1Save g1s;
+          if (gen1_open(g_save, psz, &g1s) == GEN1_OK) {
+            uint32_t off = gen1_list_offset(&g1s, 0);
+            int count = gen1_list_count(g_save + off, 0);
+            GbEditMon site2mon;
+            if (count > 0 && gb_load(&site2mon, GB_GEN1, g_save + off, 0, 0))
+              bank_plant_site2_seed(&site2mon);
+          }
+        }
         pdna_gen12_show_image(path, g_save, psz, g_save + GB12_PRISTINE_OFF, 3);
         /* Whatever the GB mount returned, g_save now holds GB bytes -- restore the
          * Gen-3 save before the picker (or the fallthrough) reads g_save again. */
