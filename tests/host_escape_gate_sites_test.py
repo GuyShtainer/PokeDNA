@@ -118,22 +118,38 @@ Checks:
       must always be filled (or the whole paste refused by (ab)) before the record is
       ever written. MUT Z moves the fill call after the write and must be caught.
       (Re-lettered from (w), same merge.)
-  (ad) BACKLOG #210: gb_paste_hook calls s_busy_reading( BEFORE gb_paste_fill_moves( --
+  (ad) BACKLOG #168a review D2: drop_held_up's ident32-collision scan runs once per
+      session regardless of pdna_bank_serial_trusted() -- the `s_up_scan_done` latch
+      must be part of the same guard line, not a bare `!pdna_bank_serial_trusted()`
+      check (main's own check, not a #212 one -- documented here since #212's
+      re-verify R4 freed this letter from #210's busy-reading check below, which
+      re-lettered to (ag)). MUT AD reverts the guard to the bare form and must be
+      caught.
+  (ag) BACKLOG #210: gb_paste_hook calls s_busy_reading( BEFORE gb_paste_fill_moves( --
       the fill's own gb_create_locate_rom() call is CREATE's identical cold, uncached,
       ~185,000-read full-ROM scan (see that function's own MEDIUM-1 comment), and
       CREATE masks the same scan with s_busy_reading() before it runs. A busy call
       missing, or sitting after the fill call, would leave a cold paste's loss screen
-      -> modal transition looking frozen for the whole scan. MUT AA deletes the
-      s_busy_reading( line and must be caught.
-  (ae) BACKLOG #212: gb_bank_down_bridge (source/pdna_gen12.c) calls gb_paste_fill_moves(
-      (the fill, S150-10's own function reused for the bridge) BEFORE
-      gb_paste_legal_screen_ex( (the modal) -- the fills must already be in `mon` when
-      the swap-row modal lists them, exactly gb_paste_hook's own step 7/8 order. MUT AB
-      moves the fill call after the modal and must be caught.
-  (af) BACKLOG #212: gb_bank_down_bridge calls gb_paste_legal_screen_ex( (the modal)
+      -> modal transition looking frozen for the whole scan. MUT AG deletes the
+      s_busy_reading( line and must be caught. (Re-lettered from (ad) at #212's
+      re-verify R4, MUT AA -> MUT AG.)
+  (aj) BACKLOG #212: gb_bank_down_bridge (source/pdna_gen12.c) calls s_busy_reading(
+      BEFORE gb_paste_fill_moves( too -- the bridge shares gb_paste_fill_moves' own
+      cold ROM scan with gb_paste_hook (ag, above). MUT AJ deletes the s_busy_reading(
+      call and must be caught.
+  (ah) BACKLOG #212: gb_bank_down_bridge calls gb_paste_fill_moves( (the fill, S150-10's
+      own function reused for the bridge) BEFORE gb_paste_legal_screen_ex( (the modal)
+      -- the fills must already be in `mon` when the swap-row modal lists them, exactly
+      gb_paste_hook's own step 7/8 order. MUT AH moves the fill call after the modal and
+      must be caught. (Re-lettered from (ae) at R4, MUT AB -> MUT AH.)
+  (ai) BACKLOG #212: gb_bank_down_bridge calls gb_paste_legal_screen_ex( (the modal)
       BEFORE gbs_insert( (the box write) -- CANCEL must be able to discard `mon`
-      before anything lands on the card. MUT AC moves the modal call after the write
-      and must be caught.
+      before anything lands on the card. MUT AI moves the modal call after the write
+      and must be caught. (Re-lettered from (af) at R4, MUT AC -> MUT AI.)
+  (ak) BACKLOG #212 re-verify R3: gb_bank_down_bridge contains the SAME `nleft == 0`
+      zero-move refusal (ab) gives gb_paste_hook -- D9's own guard, closing the same
+      Struggle-forever hole for a bridge paste. Mirrors (ab); no MUT of its own here
+      (reuses ZERO_MOVE_REFUSAL_RE and (ab)'s own MUT Y demonstration).
 """
 from __future__ import annotations
 
@@ -814,15 +830,22 @@ ZERO_MOVE_REFUSAL_RE = re.compile(r"nleft\s*==\s*0")
 PASTE_FILL_MOVES_RE = re.compile(r"\bgb_paste_fill_moves\(")
 PASTE_WRITE_CALL_RE = re.compile(r"\bgb_paste_write\(")
 
-# ---- (ad) BACKLOG #210: s_busy_reading( must run BEFORE gb_paste_fill_moves( in
+# ---- (ag) BACKLOG #210: s_busy_reading( must run BEFORE gb_paste_fill_moves( in
 # gb_paste_hook -- the fill's own gb_create_locate_rom() call is a cold, uncached scan
 # (decision 5's own choice), exactly like CREATE's, which CREATE masks with the same
-# busy screen. Shared by the real check (ad) and its MUT AA self-mutation. ----------
+# busy screen. Shared by the real check (ag) and its MUT AG self-mutation. (Re-lettered
+# from (ad) at BACKLOG #212's re-verify R4 -- (ad) itself was reassigned to BACKLOG
+# #168a review D2's own drop_held_up scan-latch check, main's check, NOT this one; see
+# that check's own comment above, up_scan_latch_facts.) ------------------------------
 BUSY_READING_RE = re.compile(r"\bs_busy_reading\(\)")
 
-# ---- (ae)/(af) BACKLOG #212: gb_bank_down_bridge's own per-slot move rule -- the fill
-# before the modal, the modal before the write. Shared by the real checks and their
-# MUT AB/MUT AC self-mutation demonstrations. ---------------------------------------
+# ---- (aj)/(ah)/(ai)/(ak) BACKLOG #212: gb_bank_down_bridge's own per-slot move rule --
+# the busy screen before the fill's cold ROM scan (aj), the fill before the modal (ah),
+# the modal before the write (ai), and the same `nleft == 0` zero-move refusal (ab)
+# gives gb_paste_hook (ak, BACKLOG #212 re-verify R3). Shared by the real checks and
+# their MUT AJ/MUT AH/MUT AI self-mutation demonstrations (re-lettered from (ae)/(af)
+# at R4; ak has no MUT of its own here -- it reuses ZERO_MOVE_REFUSAL_RE, whose own
+# comment above documents its MUT Y demonstration for (ab)). -------------------------
 LEGAL_SCREEN_EX_RE = re.compile(r"\bgb_paste_legal_screen_ex\(")
 GBS_INSERT_CALL_RE = re.compile(r"\bgbs_insert\(")
 
@@ -1350,6 +1373,15 @@ def main() -> int:
     ok, msg = gate_before_pattern(bridge_body, 0, len(bridge_body), LEGAL_SCREEN_EX_RE,
                                    GBS_INSERT_CALL_RE, "gb_bank_down_bridge")
     check(ok, msg)
+
+    # (ak) BACKLOG #212 re-verify R3: the same `nleft == 0` zero-move refusal (ab)
+    # requires of gb_paste_hook must exist in gb_bank_down_bridge too -- D9's own
+    # zero-move guard (source/pdna_gen12.c ~:3852-3858), mirroring (ab) above.
+    check(any(ZERO_MOVE_REFUSAL_RE.search(ln) for ln in bridge_body),
+          "gb_bank_down_bridge: no `nleft == 0` zero-move refusal found in its "
+          "(comment-stripped) body -- a bridge paste that would be WRITTEN with no "
+          "moves left at all would land with no moves (Struggles forever, an "
+          "illegal Game Boy record), the same D9 hole (ab) closes for gb_paste_hook")
 
     # ---- (f) review F3: the self-mutation harness, every run ----
     self_test_mutation_detection(box_lines, gen12_lines)
