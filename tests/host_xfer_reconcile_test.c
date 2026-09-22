@@ -19,6 +19,9 @@
  * BANK-1: a synthetic 2400-B box with three bc_pack()ed cells -- by-bytes finds the
  *   PENDING entry's own cell; a fresh-serial re-pack of the SAME mon (RESTORED case)
  *   is 0 by bytes, 1 by identity; two identical-identity cells are refused (2).
+ *   D4 negatives: four single-field-changed cells (DV/otid16/otname/gen) each refuse
+ *   the by-identity match (0) -- proves none of xrc_bank_match's four identity terms
+ *   is dead.
  * PHASE2-1 (review D1): a transcription of xfer_reconcile_bank_phase2()'s own
  *   per-box "touched" loop (pdna_main.c is not host-compilable) -- a target cell
  *   planted only in box 5, decoys in boxes 0-4, proves the FIXED `bank_matches < 2`
@@ -27,6 +30,9 @@
  *   neither branch of the old condition reads as "keep scanning").
  * ID-1: a corpus record with its PID rewritten in a RAM copy is found by identity,
  *   not by key (species/otid/nickname bytes are the identity; PID never enters it).
+ *   D4 negatives: the same rerolled record with species, then otId, changed each
+ *   refuses the identity match (0) -- proves identity_matches_rec's two decoded-field
+ *   comparisons are both load-bearing, not just the raw nick10 bytes.
  * REBUILD-1: xrc_rebuild_cell() round-trips a corpus-derived native cell through
  *   bc_pack/bc_unpack with flags/origin_game/rtc_epoch preserved and a fresh serial.
  * ORDER-1: xrc_apply_order() over {1, 3, 6} sorts strictly descending; mutation:
@@ -194,6 +200,38 @@ static void test_bank1(void) {
   CHECK(bc_pack(&m2, 0, BC_ORIGIN_GOLD, 0, 300u, cell3) == 0, "BANK-1: cell3 packed (serial 300, same identity)");
   memcpy(box + 1 * 80, cell3, 80);
   CHECK(xrc_bank_match(box, &e, true, &slot) == 2, "BANK-1: two identical-identity cells -> refused (2)");
+
+  /* D4 negatives (review D4): a single differing identity field must refuse the
+   * match (0), never match -- proves none of the by-identity comparison's four
+   * terms (gen/otid16/dv4/otname) is dead. Each cell alone in a fresh box, still
+   * compared against the SAME `e` (identity: GEN2/0x1234/5,6,7,8/"GUY..."). */
+  uint8_t neg_box[2400];
+
+  GbEditMon dv_bad; mk_gb_mon(&dv_bad, GB_GEN2, 0x1234, 9 /* atk flipped, was 5 */, 6, 7, 8, otname);
+  uint8_t cell_dv[80];
+  CHECK(bc_pack(&dv_bad, 0, BC_ORIGIN_GOLD, 0, 400u, cell_dv) == 0, "BANK-1 D4: dv-changed cell packed");
+  memset(neg_box, 0, sizeof neg_box); memcpy(neg_box + 0 * 80, cell_dv, 80);
+  CHECK(xrc_bank_match(neg_box, &e, true, &slot) == 0, "BANK-1 D4(a): one DV changed -> no identity match");
+
+  GbEditMon otid_bad; mk_gb_mon(&otid_bad, GB_GEN2, 0x9999, 5, 6, 7, 8, otname);
+  uint8_t cell_otid[80];
+  CHECK(bc_pack(&otid_bad, 0, BC_ORIGIN_GOLD, 0, 401u, cell_otid) == 0, "BANK-1 D4: otid16-changed cell packed");
+  memset(neg_box, 0, sizeof neg_box); memcpy(neg_box + 0 * 80, cell_otid, 80);
+  CHECK(xrc_bank_match(neg_box, &e, true, &slot) == 0, "BANK-1 D4(b): otid16 changed -> no identity match");
+
+  uint8_t otname_bad[GB_NAME_BYTES]; memcpy(otname_bad, otname, GB_NAME_BYTES);
+  otname_bad[0] = (uint8_t)(otname_bad[0] ^ 0xFFu);
+  GbEditMon name_bad; mk_gb_mon(&name_bad, GB_GEN2, 0x1234, 5, 6, 7, 8, otname_bad);
+  uint8_t cell_name[80];
+  CHECK(bc_pack(&name_bad, 0, BC_ORIGIN_GOLD, 0, 402u, cell_name) == 0, "BANK-1 D4: otname-changed cell packed");
+  memset(neg_box, 0, sizeof neg_box); memcpy(neg_box + 0 * 80, cell_name, 80);
+  CHECK(xrc_bank_match(neg_box, &e, true, &slot) == 0, "BANK-1 D4(c): one OT-name byte changed -> no identity match");
+
+  GbEditMon gen_bad; mk_gb_mon(&gen_bad, GB_GEN1, 0x1234, 5, 6, 7, 8, otname);
+  uint8_t cell_gen[80];
+  CHECK(bc_pack(&gen_bad, 0, BC_ORIGIN_RED, 0, 403u, cell_gen) == 0, "BANK-1 D4: gen-flipped cell packed");
+  memset(neg_box, 0, sizeof neg_box); memcpy(neg_box + 0 * 80, cell_gen, 80);
+  CHECK(xrc_bank_match(neg_box, &e, true, &slot) == 0, "BANK-1 D4(d): gen flipped -> no identity match");
 }
 
 /* ==== PHASE2-1: transcribed touched-loop pin (BACKLOG #150 S150-11 review D1) ======
@@ -440,6 +478,23 @@ static void test_corpus(const char* path) {
     CHECK(cnt == 1 && wb == -1 && ws == 0,
           "%s: ID-1 the identity pass finds the rerolled record at (-1,0) (got cnt=%d box=%d slot=%d)",
           path, cnt, wb, ws);
+
+    /* D4 negatives (review D4): identity_matches_rec() compares species AND otId
+     * (both plaintext/decoded fields) AND the 10 raw nickname bytes -- a mismatch
+     * in EITHER of the first two alone must refuse the match (cnt == 0), proving
+     * neither comparison term is dead. Reuses the SAME rerolled record/nick10 so
+     * only one field differs from the true positive above. */
+    uint16_t sp_wrong = (uint16_t)(sp_written == 1 ? 2 : sp_written - 1);
+    int cnt_sp = xrc_g3_match_identity(sb1c, frlg, NULL, dc_base, dc_stride, sp_wrong, otid16,
+                                       nick10, &wb, &ws);
+    CHECK(cnt_sp == 0, "%s: ID-1 D4 a species mismatch does not match by identity (got cnt=%d)",
+          path, cnt_sp);
+
+    uint16_t otid_wrong = (uint16_t)(otid16 ^ 0xFFFFu);
+    int cnt_otid = xrc_g3_match_identity(sb1c, frlg, NULL, dc_base, dc_stride, sp_written, otid_wrong,
+                                         nick10, &wb, &ws);
+    CHECK(cnt_otid == 0, "%s: ID-1 D4 an otId mismatch does not match by identity (got cnt=%d)",
+          path, cnt_otid);
   }
 }
 
