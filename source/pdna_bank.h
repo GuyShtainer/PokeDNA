@@ -66,4 +66,18 @@ void pdna_bank_start_box_set(int box);
  * moved). O(1) once /PokeDNA/bank/backup-v1/DONE exists. */
 bool pdna_bank_prepare_native(void);
 
+/* BACKLOG #150 S150-11 decision 19: read box `box`'s 2400-byte raw records without
+ * opening the box screen (flushes the currently-loaded box first, via the same
+ * b163 verdict path banksrc_records() uses). NULL on a page-in failure or an
+ * out-of-range box; the returned pointer aliases the one shared bank buffer and is
+ * only valid until the next call that pages a box in. */
+const uint8_t* pdna_bank_peek_box(int box);
+
+/* BACKLOG #150 S150-11 decision 8c/19: write a fresh native cell into an all-zero
+ * slot (RESTORE TO BANK's write path -- a genuinely new Bank write, no merge).
+ * Omega-only (app_can_edit() first); refuses on a non-zero target slot, an
+ * out-of-range box/slot, or a failed save (the buffer's copy of the slot is
+ * re-zeroed on that path so a retry starts from the same state). */
+bool pdna_bank_put_cell(int box, int slot, const uint8_t cell80[80]);
+
 #endif /* PDNA_BANK_H */
