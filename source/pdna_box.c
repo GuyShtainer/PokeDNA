@@ -1446,7 +1446,11 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
      * allow-rule (BANK<-GB) through once k_gb_xfer (this lane) is session-wide.
      * Bracketed like the PC->Bank commit below it uses for its own
      * boxoam_suspend()/resume(). */
-    bool have_xfer = s_xfer_peer && s_xfer_peer->lift_up && s_xfer_peer->release_up;
+    /* BACKLOG #150 S150-12 decision 6: release_up is no longer required for
+     * `have_xfer` -- the read-only mount's k_gb_xfer_ro table has a real lift_up
+     * (the COPY-flavoured one) but no release_up at all, and its drop must still be
+     * admitted (as a COPY, never a delete) rather than refused by xg_drop_denied. */
+    bool have_xfer = s_xfer_peer && s_xfer_peer->lift_up;
     if (xg_drop_denied(src->scope, s_orig_scope, have_xfer)) {
       boxoam_suspend();
       snd_deny();
@@ -1461,8 +1465,12 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
      * A failed Bank write reverts the cell and KEEPS HOLDING (never touches the GB
      * save); a failed release_up leaves a DUPLICATE (the Bank already has it, the GB
      * save still has it too) -- a duplicate is visible and repairable, a loss is not. */
+    /* BACKLOG #150 S150-12 decision 6: `s_xfer_peer->lift_up`, not `->release_up` --
+     * this branch now also carries a COPY (no release_up at all) all the way to the
+     * commit; the release_up call further down is itself gated (else: queue for the
+     * PC instead of deleting). */
     if (src->scope == BOXSCOPE_BANK && s_orig_scope == BOXSCOPE_GB &&
-        s_orig_slot >= 0 && s_xfer_peer && s_xfer_peer->release_up) {
+        s_orig_slot >= 0 && s_xfer_peer && s_xfer_peer->lift_up) {
       boxoam_suspend();
       if (!pdna_bank_prepare_native()) {
         snd_error();
@@ -1524,14 +1532,25 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
       int gb_box = s_orig_box, gb_slot = s_orig_slot;
       uint8_t held_copy[80]; memcpy(held_copy, s_held, 80);
       s_holding = false; *done = true;                         /* hand empties BEFORE source cleanup (§11.2 step 6) */
-      if (!s_xfer_peer->release_up(gb_box, gb_slot, held_copy)) {
-        snd_error();
-        msg_wait(PDNA_XFER_KEPT_TITLE, UI_WARN, PDNA_XFER_KEPT_L1, PDNA_XFER_KEPT_L2);
-        log_line("bank: up box %d slot %d -> bank box %d slot %d: release refused, duplicate", gb_box, gb_slot, box, cur);
-        app_log_flush();
+      /* BACKLOG #150 S150-12 decision 6: a vtable with no release_up (the read-only
+       * mount's k_gb_xfer_ro) never deletes -- the Bank commit above already landed
+       * the copy; queue it for the PC offer instead of trying to delete a GB save
+       * this session structurally cannot write. */
+      if (s_xfer_peer->release_up) {
+        if (!s_xfer_peer->release_up(gb_box, gb_slot, held_copy)) {
+          snd_error();
+          msg_wait(PDNA_XFER_KEPT_TITLE, UI_WARN, PDNA_XFER_KEPT_L1, PDNA_XFER_KEPT_L2);
+          log_line("bank: up box %d slot %d -> bank box %d slot %d: release refused, duplicate", gb_box, gb_slot, box, cur);
+          app_log_flush();
+        } else {
+          snd_save();
+          log_line("bank: up box %d slot %d -> bank box %d slot %d: ok", gb_box, gb_slot, box, cur);
+        }
       } else {
+        app_pc_queue_note(box);
         snd_save();
-        log_line("bank: up box %d slot %d -> bank box %d slot %d: ok", gb_box, gb_slot, box, cur);
+        msg_wait(PDNA_XFER_COPIED_TITLE, UI_TEXT, PDNA_XFER_COPIED_L1, PDNA_XFER_COPIED_L2);
+        log_line("bank: copy box %d slot %d -> bank box %d slot %d: ok, queued for the PC", gb_box, gb_slot, box, cur);
       }
       boxoam_resume();                                         /* REVIEW F4: covers gb_persist's own panels + PDNA_XFER_KEPT_* above */
       return recs;

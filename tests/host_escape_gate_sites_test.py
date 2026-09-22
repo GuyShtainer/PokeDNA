@@ -289,6 +289,39 @@ def bank_edge_sites_check(block: list[str]) -> tuple[bool, list[str]]:
             details.append(f"line {i + 1}: ok ({'guarded+clause' if guarded else 'unguarded, no clause needed'})")
     return all_ok, details
 
+# BACKLOG #150 S150-12 decision 6: the release_up-optional wrap in drop_held's UP
+# branch. Shared by the real check (n1) and its self-mutation demonstration (MUT N1).
+RELEASE_UP_TEST_RE = re.compile(r"if\s*\(\s*s_xfer_peer->release_up\s*\)")   # NOT a call (no `(` after
+                                                                              # the member) -- must not
+                                                                              # match RELEASE_UP_RE
+HOLDING_DONE_RE     = re.compile(r"s_holding = false; \*done = true;")
+PC_QUEUE_NOTE_RE    = re.compile(r"app_pc_queue_note\(")
+
+
+def n1_order_facts(lines, start, end):           # shared by the real check AND MUT N1
+    """BACKLOG #150 S150-12 decision 6: `if (s_xfer_peer->release_up)` must exist,
+    come AFTER both `ok = src->commit()` and the `s_holding = false; *done = true;`
+    hand-empty line, and `app_pc_queue_note(` must sit in its else branch -- line
+    order test < release_up call < app_pc_queue_note(."""
+    c = first_match_line(lines, start, end, COMMIT_RE)
+    h = first_match_line(lines, start, end, HOLDING_DONE_RE)
+    t = first_match_line(lines, start, end, RELEASE_UP_TEST_RE)
+    r = first_match_line(lines, start, end, RELEASE_UP_RE)
+    q = first_match_line(lines, start, end, PC_QUEUE_NOTE_RE)
+    if c is None: return False, "drop_held: no `ok = src->commit()` line in the UP branch"
+    if h is None: return False, "drop_held: no `s_holding = false; *done = true;` line in the UP branch"
+    if t is None: return False, "drop_held: no `if (s_xfer_peer->release_up)` test line -- decision 6's wrap is missing"
+    if r is None: return False, "drop_held: no `s_xfer_peer->release_up(` call"
+    if q is None: return False, "drop_held: no `app_pc_queue_note(` call"
+    if not (c < t and h < t):
+        return False, (f"drop_held: the `if (s_xfer_peer->release_up)` test (line {t+1}) does not come "
+                        f"after both commit() (line {c+1}) and the hand-empty line (line {h+1})")
+    if not (t < r < q):
+        return False, (f"drop_held: expected line order test (line {t+1}) < release_up() call "
+                        f"(line {r+1}) < app_pc_queue_note() (line {q+1})")
+    return True, "ok"
+
+
 def up_order_facts(lines, start, end):           # shared by the real check AND MUT H
     c = first_match_line(lines, start, end, COMMIT_RE)
     r = first_match_line(lines, start, end, RELEASE_UP_RE)
@@ -746,6 +779,13 @@ def main() -> int:
     ok, d = up_order_facts(box_lines, s, e)
     check(ok, d)
 
+    # ---- (n1) BACKLOG #150 S150-12 decision 6: the release_up-optional wrap --
+    # `if (s_xfer_peer->release_up)` after commit()/hand-empty, and app_pc_queue_note(
+    # in its else, in that line order. ----
+    s, e = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
+    ok, d = n1_order_facts(box_lines, s, e)
+    check(ok, d)
+
     # ---- (l) BACKLOG #150 S150-8b: the RESTORE edge's ordering in drop_held's
     # PC->Bank arm -- pc_bank_restore_up( before the write, pc_bank_restore_done(
     # strictly after both the verified commit and the source release. ----
@@ -1003,6 +1043,24 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str]) -
         ok, detail = up_order_facts(mut_h, 0, len(mut_h))
         check(not ok, f"MUT H (release_up swapped before commit()) should have been caught but was not: {detail}")
         print(f"  MUT H demonstration -- release_up() line swapped above src->commit(): {detail}")
+
+    # MUT N1 (BACKLOG #150 S150-12 decision 6): move the `app_pc_queue_note(` line to
+    # ABOVE `ok = src->commit()` in a copy of drop_held's body -- the copy would be
+    # queued for the PC offer before the Bank write that supposedly landed it has even
+    # been attempted -- and assert n1_order_facts() reports failure.
+    s, e = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
+    body = box_lines[s:e]
+    commit_i3 = first_match_line(body, 0, len(body), COMMIT_RE)
+    queue_i = first_match_line(body, 0, len(body), PC_QUEUE_NOTE_RE)
+    check(commit_i3 is not None and queue_i is not None,
+          "MUT N1: could not locate both the commit() and app_pc_queue_note() lines in the real source -- fix this test")
+    if commit_i3 is not None and queue_i is not None and commit_i3 < queue_i:
+        mut_n1 = list(body)
+        queue_line = mut_n1.pop(queue_i)
+        mut_n1.insert(commit_i3, queue_line)   # app_pc_queue_note's line now sits BEFORE commit()
+        ok, detail = n1_order_facts(mut_n1, 0, len(mut_n1))
+        check(not ok, f"MUT N1 (app_pc_queue_note moved above commit()) should have been caught but was not: {detail}")
+        print(f"  MUT N1 demonstration -- app_pc_queue_note() line moved above src->commit(): {detail}")
 
     # MUT K (BACKLOG #150 S150-8b, step 5's own demonstration): move
     # pc_bank_restore_done( ABOVE `ok = src->commit()` in a copy of drop_held's body --
