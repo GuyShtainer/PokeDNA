@@ -316,11 +316,36 @@ def check_make_legal_stamp(text: str) -> list[str]:
                 "after gen3_edit_commit -- a restore would read the correction as a level-up (S150-8b D1)"]
     return []
 
+def check_origin_path_ternary(text: str) -> list[str]:
+    """REVIEW FIX (HIGH, BACKLOG #150 S150-12, found post-merge): gb_origin_for_save()'s
+    path source must read `g_ed ? g_ed->path : g_ro_path`, never a bare `g_ed->path` --
+    the latter is a NULL deref on the read-only mount (g_ed stays NULL there, for every
+    Red/Blue/Gold/Silver save; only Crystal and a proven-Yellow save return earlier).
+    Two conditions: the ternary must be present, AND every occurrence of the substring
+    `g_ed->path` anywhere in the body must be accounted for by that same ternary (a
+    SECOND, bare `g_ed->path` added elsewhere would still pass a presence-only check)."""
+    body = extract_function_body(text, "gb_origin_for_save")
+    if not body:
+        return ["gb_origin_for_save() not found in source/pdna_gen12.c"]
+    code = strip_comments(body)
+    ternary = "g_ed ? g_ed->path : g_ro_path"
+    ternary_count = code.count(ternary)
+    if ternary_count == 0:
+        return ["gb_origin_for_save(): no `g_ed ? g_ed->path : g_ro_path` ternary found -- "
+                "the RO-mount path source is missing (NULL deref risk on g_ed->path)"]
+    bare_count = len(re.findall(r"g_ed->path", code))
+    if bare_count != ternary_count:
+        return [f"gb_origin_for_save(): found {bare_count} occurrence(s) of `g_ed->path` but only "
+                f"{ternary_count} inside the `{ternary}` ternary -- a bare dereference elsewhere "
+                f"would NULL-fault on the read-only mount"]
+    return []
+
+
 def run_all(path: Path) -> list[str]:
     text = path.read_text()
     return (check_nav_dispatch(text) + check_mutating_hooks(text) + check_named_write_hooks(text)
             + check_native_unpack_in_loop(text) + check_xfer_wired(text) + check_accept_down_rollback(text)
-            + check_make_legal_stamp(text))
+            + check_make_legal_stamp(text) + check_origin_path_ternary(text))
 
 
 def main() -> int:
@@ -446,10 +471,32 @@ def main() -> int:
               "return in gb_accept_down_hook -- correctly caught:")
         for v in mutation5:
             print(f"  (mutated-copy) FAIL: {v}")
+
+        # --- sixth self-mutation (REVIEW FIX, HIGH, BACKLOG #150 S150-12): revert
+        # gb_origin_for_save()'s ternary path source back to the bare `g_ed->path`
+        # deref that NULL-faults on the read-only mount -- must go red.
+        target6 = "gbsc_key_hex(gb_origin_key(g_ed ? g_ed->path : g_ro_path), hex);"
+        mutated_line6 = "gbsc_key_hex(gb_origin_key(g_ed->path), hex);"
+        if target6 not in original:
+            print(f"FAIL -- sixth self-mutation target line not found verbatim: {target6!r} "
+                  f"(source drifted -- update this test's target string)")
+            return 1
+        mutated6 = original.replace(target6, mutated_line6, 1)
+        scratch.write_text(mutated6)
+        mutation6 = [v for v in run_all(scratch) if "gb_origin_for_save" in v]
+        if not mutation6:
+            print("FAIL -- sixth self-mutation check: reverting the ternary to a bare "
+                  "`g_ed->path` did NOT turn this test red (the NULL-deref regression "
+                  "would ship silently)")
+            return 1
+        print("self-mutation check 6: reverting gb_origin_for_save()'s ternary path "
+              "source to a bare `g_ed->path` -- correctly caught:")
+        for v in mutation6:
+            print(f"  (mutated-copy) FAIL: {v}")
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
-    print("\nhost_gb_write_gate_test: ok (shipped source clean, all five mutations caught)")
+    print("\nhost_gb_write_gate_test: ok (shipped source clean, all six mutations caught)")
     return 0
 
 

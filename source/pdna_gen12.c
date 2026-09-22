@@ -1814,9 +1814,27 @@ static int __attribute__((noinline)) gb_origin_for_save(uint8_t gen, bool crysta
 
   uint32_t fp = gb_origin_fingerprint();
 
+  /* REVIEW FIX (HIGH, found post-merge): decision 5 was claimed in 217c148's
+   * commit message but never actually written here -- this line read
+   * `g_ed->path` unconditionally, a NULL deref on every RO-mount lift that
+   * reaches this point (every Red/Blue/Gold/Silver save; only Crystal and a
+   * proven-Yellow save return earlier, above). On hardware that reads the
+   * pointer field at Gb12Edit's own path offset off address 0 (BIOS-protected,
+   * open bus) and strlen-walks garbage -- mGBA happened to survive it, which is
+   * why the shot chain's frame 06 caption ("no NULL deref") was false. Refuse
+   * up front when neither a resident session nor a mounted RO path exists
+   * (should not happen -- both hooks' own guards keep this function
+   * unreachable otherwise -- but self-sufficient, same posture gb_lift_up_hook/
+   * gb_lift_copy_hook already take on their own guards), then read the path
+   * from whichever of the two is actually live. */
+  if (!g_ed && !g_ro_path) {
+    log_line("gen12: origin: no session and no mount path");
+    return -1;
+  }
+
   char name[24];
   char hex[17];
-  gbsc_key_hex(gb_origin_key(g_ed->path), hex);
+  gbsc_key_hex(gb_origin_key(g_ed ? g_ed->path : g_ro_path), hex);
   siprintf(name, "%s.og", hex);
   char path[GBSC_PATH_MAX];
   bool existed = xr_path_for_name(path, name);
@@ -1843,6 +1861,13 @@ static int __attribute__((noinline)) gb_origin_for_save(uint8_t gen, bool crysta
   if (mkr != FR_OK && mkr != FR_EXIST) {
     log_line("gen12: origin mkdir %s failed (%d) -- kept the answer for this mount", PDNA_XFER_DIR, (int)mkr);
     if (g_ed) { g_ed->origin_write_failed = true; g_ed->origin_cached = (uint8_t)picked; }
+    /* REVIEW FIX (decision 5's second half, missing from 217c148): the RO mount
+     * has no g_ed to cache the answer in, and BACKLOG #172's own "two cells from
+     * one save can never disagree" rule means this function must not silently
+     * re-derive (and possibly re-prompt to a DIFFERENT answer) on the NEXT grab
+     * this same mount -- refuse the lift instead. Without this, an RO lift whose
+     * card cannot take a 5-byte .og re-prompts on EVERY grab. */
+    else { log_line("gen12: origin persist failed on the read-only mount -- lift refused"); return -1; }
   } else {
     uint8_t b[5];
     b[0] = (uint8_t)picked;
@@ -1853,6 +1878,7 @@ static int __attribute__((noinline)) gb_origin_for_save(uint8_t gen, bool crysta
     if (sf_write_verified(path, b, sizeof b) != SF_OK) {
       log_line("gen12: origin write %s failed -- kept the answer for this mount", path);
       if (g_ed) { g_ed->origin_write_failed = true; g_ed->origin_cached = (uint8_t)picked; }
+      else { log_line("gen12: origin persist failed on the read-only mount -- lift refused"); return -1; }
     }
   }
   return picked;
