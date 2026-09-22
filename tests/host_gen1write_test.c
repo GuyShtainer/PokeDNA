@@ -165,6 +165,7 @@ static void test_charset(void) {
     "PIKACHU", "Mr Mime", "ABCDEFGHIJ", "A", "12345", "N.T", "IT'S", "HE'LL",
     "(A):B;", "[X]", "A-B", "WHY?", "YES!", "A/B", "A,B", "M\xE2\x99\x82", "F\xE2\x99\x80",
     "CAF\xC3\xA9",                /* BACKLOG #216b: UTF-8 e-acute -> Gen-1 0xBA now round-trips */
+    "10\xC3\x97" "5",             /* BACKLOG #216b review D1: UTF-8 times sign -> Gen-1 0xF1 round-trips */
   };
   static const char* const bad[] = {
     "", "ABCDEFGHIJK",           /* empty / 11 glyphs                       */

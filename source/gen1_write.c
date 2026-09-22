@@ -61,9 +61,10 @@ int gen1_encode_char(const char* s, uint8_t* out) {
   /* BACKLOG #216b: e-acute, spelled exactly as gen1_char_ascii() now emits it (UTF-8
    * "\xC3\xA9") -- the exact inverse of gen1_save.c:99. Gen 1 has no umlaut code
    * points at all (pokered/constants/charmap.asm has none), so nothing else lands
-   * here; an Ä/Ö/Ü/ä/ö/ü/× falls through to the `p[0] >= 0x80u` catch-all below and
+   * here; an Ä/Ö/Ü/ä/ö/ü falls through to the `p[0] >= 0x80u` catch-all below and
    * is refused, same as before this fix. */
   if (p[0] == 0xC3u && p[1] == 0xA9u) { *out = 0xBAu; return 2; }
+  if (p[0] == 0xC3u && p[1] == 0x97u) { *out = 0xF1u; return 2; }   /* × (review D1) */
 
   /* The five lowercase contractions plus 'r and 'm are ONE byte on the GB and two
    * characters in ASCII (gen1_save.c:104-114). Fold them back; a bare apostrophe with

@@ -102,8 +102,9 @@ int gen1_char_ascii(uint8_t c, char out[3]) {
      * SAME text as a genuine "CAFé", so gen12_convert.c's note_spelling_loss (which
      * compares at the Gen-3 byte level) could never tell the two apart. Gen 1 has NO
      * umlaut code points at all (pokered/constants/charmap.asm has no umlaut entry;
-     * confirmed against the checkout at assets/upstream/pokered) -- only é crosses. */
+     * confirmed against the checkout at assets/upstream/pokered) -- é and × cross. */
     case 0xBAu: out[0] = (char)0xC3; out[1] = (char)0xA9; return 2;   /* é, UTF-8 */
+    case 0xF1u: out[0] = (char)0xC3; out[1] = (char)0x97; return 2;   /* ×, UTF-8 -- pokered charmap.asm:181 (review D1) */
     /* The five lowercase contractions ('d 'l 's 't 'v — "you'd", "he'll", "it's",
      * "don't", "we've") are ONE byte on the GB and two characters in ASCII, so
      * decoding a name can produce more characters than it read. The Gen1Mon name
