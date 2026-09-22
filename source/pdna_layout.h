@@ -1283,6 +1283,21 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_SIDECAR_LEGAL_BACK       "Either way it comes back unchanged."
 #define PDNA_SIDECAR_LEGAL_KEEP_ROW   "A = KEEP AS IS"
 #define PDNA_SIDECAR_LEGAL_FIX_FMT    "SELECT = MAKE LEGAL (%u -> %u)"
+
+/* BACKLOG #150 S150-10 decision 7: gb_paste_legal_screen_ex's extra rows -- shown when
+ * one or more move slots are out of range for the destination generation (G-H8). One
+ * swap row per bad slot ("ROCK TOMB -> WHIRLPOOL", or "-> (no move)" when nothing
+ * eligible was found); KEEP AS IS is greyed the moment any slot is bad (decision 8: A
+ * is not even in the wait mask then, so no row needs "why" beyond this text itself). */
+#define PDNA_XFER_SWAP_FMT           "%s -> %s"
+#define PDNA_XFER_SWAP_NONE          "(no move)"
+#define PDNA_SIDECAR_LEGAL_KEEP_OFF  "KEEP AS IS: not possible here"
+#define PDNA_SIDECAR_LEGAL_FIX_MOVES "SELECT = MAKE LEGAL (swap moves)"
+/* BACKLOG #150 S150-10 decision 10: gb_gen12_norom_msg's Gen-2 title -- Gen 1's own
+ * PDNA_SIDECAR_GEN1_TITLE/_L1 are reused for both generations otherwise (L1's wording
+ * -- "beside the .sav to transfer." -- never named an extension, so it needs no
+ * Gen-2 twin). */
+#define PDNA_SIDECAR_GEN2_TITLE      "NO GEN-2 ROM"
 /* Full-screen list (gb_pick_box's own geometry: title y=3, rule y=13), not a scrolling
  * picker -- rows are drawn only for flags actually set, so the common case is much
  * shorter than the worst case the host test pins: 10 conditional Gen3ToGbLoss lines +

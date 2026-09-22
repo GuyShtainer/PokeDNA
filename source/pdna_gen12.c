@@ -693,6 +693,7 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "pdna_layout.h"   /* PDNA_GBEDIT_* / PDNA_SIDECAR_* -- fixed strings         */
 #include "gb_sidecar.h"    /* S5-B: the sidecar format + gbsc_path/gbsc_key            */
 #include "gen3_to_gb.h"    /* S5-B: the Gen-3 -> Game Boy down converter               */
+#include "gb_moves_legal.h" /* BACKLOG #150 S150-10: per-slot move predicate/fill/pack */
 #include "gba_rtc.h"       /* S5-B: the sidecar entry's transfer-time RTC stamp        */
 #include "gb_item_names.h" /* BACKLOG #150 S150-8: gb2_item_name for gb_down_loss_screen */
 #include "xfer_rec.h"      /* BACKLOG #150 S150-8: xr_key_g3/xr_game_item_mask/xr_time_capsule_block */
@@ -2616,44 +2617,74 @@ static bool __attribute__((noinline)) gb_paste_loss_screen(const Gen3ToGbLoss* l
   return (k & KEY_A) != 0;
 }
 
-/* BACKLOG #104 R1: KEEP AS IS / MAKE LEGAL, shown ONLY when gen3_to_gb_evo_needs_fix()
- * found a correction to offer -- most transfers never see this screen at all. A
- * SEPARATE screen from gb_paste_loss_screen (see the PDNA_SIDECAR_LEGAL_* comment in
- * pdna_layout.h for why), reusing the exact same primitives/hint convention. B here
- * means "cancel the whole transfer, nothing written" -- gb_paste_hook has already let
- * the earlier loss screen's own B do that once; this is a second, independent chance
- * to back out, not a redefinition of what B means. */
+/* BACKLOG #104 R1 / #150 S150-10 decision 7: KEEP AS IS / MAKE LEGAL, shown when
+ * gen3_to_gb_evo_needs_fix() found a level correction to offer AND/OR one or more move
+ * slots were out of range for the destination generation (G-H8) -- most transfers never
+ * see this screen at all. A SEPARATE screen from gb_paste_loss_screen (see the
+ * PDNA_SIDECAR_LEGAL_* comment in pdna_layout.h for why), reusing the exact same
+ * primitives/hint convention. B here means "cancel the whole transfer, nothing
+ * written" -- gb_paste_hook has already let the earlier loss screen's own B do that
+ * once; this is a second, independent chance to back out, not a redefinition of what B
+ * means. */
 typedef enum { GB_XFER_CANCEL = 0, GB_XFER_KEEP, GB_XFER_MAKE_LEGAL } GbXferChoice;
 
+/* `from4`/`bad4`/`fill4`/`nbad` are the move-swap preview (decision 7); NULL/0 for the
+ * plain level-only screen (the two shipped callers, unchanged below). `to_lvl == 0`
+ * means "no level correction offered" -- the WHY row and its gap are skipped, matching
+ * decision 8's `fix ? to : 0`. `nbad > 0`: one row per bad slot (index order,
+ * PDNA_XFER_SWAP_FMT), KEEP AS IS greyed (PDNA_SIDECAR_LEGAL_KEEP_OFF, not in the wait
+ * mask -- A does nothing, no beep, the row already says why) and the FIX row reads
+ * PDNA_SIDECAR_LEGAL_FIX_MOVES instead of the level "%u -> %u" when there is no level
+ * correction alongside it. Worst case (to_lvl != 0 AND all 4 slots bad): WHY(1) + 4 swap
+ * rows + KEEP(1) + FIX(1) + BACK(1) + B(1) = 9 rows, 2 half-gaps -- pinned in
+ * host_textfit_test.c. */
 static GbXferChoice __attribute__((noinline))
-gb_paste_legal_screen(uint16_t dex, uint8_t from_lvl, uint8_t to_lvl) {
+gb_paste_legal_screen_ex(uint16_t dex, uint8_t from_lvl, uint8_t to_lvl,
+                          const uint16_t from4[4], const uint8_t bad4[4],
+                          const uint8_t fill4[4], int nbad) {
   ui_clear();
   ui_text(4, 3, UI_TITLE, PDNA_SIDECAR_LEGAL_TITLE);
   ui_hline(0, 13, UI_SCR_W, UI_BORDER);
 
   int y = PDNA_SIDECAR_LOSS_ROW_Y0;
-
-  /* D3: the WHY row, first. to_lvl is always pk_evo_floor(dex) (that is what
-   * gen3_to_gb_evo_needs_fix() corrects to) -- "evolves at" is only true when that
-   * floor equals the true evolution floor (pk_evo_min_level); when it is instead the
-   * lower wild-caught floor, say "legal from" so the claim stays honest. */
   char l2[64];
-  int floor = pk_evo_floor(dex);
-  int min_lvl = pk_evo_min_level(dex);
-  bool is_true_evo_lvl = (floor != PK_EVO_NO_DATA && min_lvl != PK_EVO_NO_DATA &&
-                           floor == min_lvl);
-  siprintf(l2, is_true_evo_lvl ? PDNA_SIDECAR_LEGAL_WHY_FMT
-                                : PDNA_SIDECAR_LEGAL_WHY_FLOOR_FMT,
-           pk_species_name(dex), (unsigned)to_lvl, (unsigned)from_lvl);
-  ui_ptext_fit(4, y, UI_SCR_W - 8, UI_TEXT, l2);
-  y += PDNA_SIDECAR_LOSS_ROW_H;
+
+  /* D3: the WHY row, first, only when a level correction is actually offered. to_lvl
+   * is always pk_evo_floor(dex) when present (that is what gen3_to_gb_evo_needs_fix()
+   * corrects to) -- "evolves at" is only true when that floor equals the true
+   * evolution floor (pk_evo_min_level); when it is instead the lower wild-caught
+   * floor, say "legal from" so the claim stays honest. */
+  if (to_lvl != 0) {
+    int floor = pk_evo_floor(dex);
+    int min_lvl = pk_evo_min_level(dex);
+    bool is_true_evo_lvl = (floor != PK_EVO_NO_DATA && min_lvl != PK_EVO_NO_DATA &&
+                             floor == min_lvl);
+    siprintf(l2, is_true_evo_lvl ? PDNA_SIDECAR_LEGAL_WHY_FMT
+                                  : PDNA_SIDECAR_LEGAL_WHY_FLOOR_FMT,
+             pk_species_name(dex), (unsigned)to_lvl, (unsigned)from_lvl);
+    ui_ptext_fit(4, y, UI_SCR_W - 8, UI_TEXT, l2);
+    y += PDNA_SIDECAR_LOSS_ROW_H;
+  }
+
+  /* Decision 7: one swap row per bad slot, index order -- "ROCK TOMB -> WHIRLPOOL" or
+   * "-> (no move)" when nothing eligible was found for that slot. */
+  if (nbad > 0 && from4 && bad4 && fill4) {
+    for (int i = 0; i < 4; i++) {
+      if (!bad4[i]) continue;
+      siprintf(l2, PDNA_XFER_SWAP_FMT, pk_move_name(from4[i]),
+               fill4[i] ? pk_move_name(fill4[i]) : PDNA_XFER_SWAP_NONE);
+      ui_ptext_fit(4, y, UI_SCR_W - 8, UI_TEXT, l2);
+      y += PDNA_SIDECAR_LOSS_ROW_H;
+    }
+  }
   y += PDNA_SIDECAR_LOSS_ROW_H / 2;   /* prose above, the two choices below (r1 re-verify nit) */
 
-  ui_ptext_fit(4, y, UI_SCR_W - 8, UI_TEXT, PDNA_SIDECAR_LEGAL_KEEP_ROW);
+  if (nbad > 0) ui_ptext_fit(4, y, UI_SCR_W - 8, UI_DIM, PDNA_SIDECAR_LEGAL_KEEP_OFF);
+  else          ui_ptext_fit(4, y, UI_SCR_W - 8, UI_TEXT, PDNA_SIDECAR_LEGAL_KEEP_ROW);
   y += PDNA_SIDECAR_LOSS_ROW_H;
 
-  siprintf(l2, PDNA_SIDECAR_LEGAL_FIX_FMT, (unsigned)from_lvl, (unsigned)to_lvl);
-  ui_ptext_fit(4, y, UI_SCR_W - 8, UI_TEXT, l2);
+  if (to_lvl != 0) siprintf(l2, PDNA_SIDECAR_LEGAL_FIX_FMT, (unsigned)from_lvl, (unsigned)to_lvl);
+  ui_ptext_fit(4, y, UI_SCR_W - 8, UI_TEXT, to_lvl != 0 ? l2 : PDNA_SIDECAR_LEGAL_FIX_MOVES);
   y += PDNA_SIDECAR_LOSS_ROW_H;
 
   y += PDNA_SIDECAR_LOSS_ROW_H / 2;
@@ -2665,9 +2696,20 @@ gb_paste_legal_screen(uint16_t dex, uint8_t from_lvl, uint8_t to_lvl) {
   y += PDNA_SIDECAR_LOSS_ROW_H;
   ui_text(4, y, UI_DIM, PDNA_SIDECAR_LOSS_B_CANCEL);
 
-  u16 k = s_wait(KEY_A | KEY_SELECT | KEY_B);
+  /* Decision 7: A is simply not in the mask on a greyed KEEP AS IS row (nbad > 0) --
+   * no beep, the row already says why; KEEP is reachable only when nbad == 0. */
+  u16 mask = (nbad > 0) ? (KEY_SELECT | KEY_B) : (KEY_A | KEY_SELECT | KEY_B);
+  u16 k = s_wait(mask);
   if (k & KEY_B) return GB_XFER_CANCEL;
   return (k & KEY_SELECT) ? GB_XFER_MAKE_LEGAL : GB_XFER_KEEP;
+}
+
+/* The shipped 3-argument level-only modal -- unchanged shape for its two existing
+ * callers (bank-down's evolution-fix arm and the native<->Gen-3 bridge's, both
+ * untouched by this lane). */
+static GbXferChoice
+gb_paste_legal_screen(uint16_t dex, uint8_t from_lvl, uint8_t to_lvl) {
+  return gb_paste_legal_screen_ex(dex, from_lvl, to_lvl, NULL, NULL, NULL, 0);
 }
 
 /* Best-effort cleanup after gbs_insert()/gb_persist() refused a paste whose sidecar
@@ -3115,6 +3157,28 @@ static uint16_t __attribute__((noinline)) gb_clip_dex(void) {
   return pk_national_no(m.species);
 }
 
+/* BACKLOG #150 S150-10 decision 8, step 2: bad4/from4 for gb_paste_hook, off the SAME
+ * clipboard decode gb_clip_dex() above does (a second, independent decode -- this
+ * function's own frame, same reasoning as gb_clip_dex's). -1 on a decode failure or an
+ * Egg (mirrors gb_clip_dex's own refusal set exactly): the caller then passes bad4 =
+ * NULL into gen3_to_gb_fixed, so it refuses precisely the way gen3_to_gb() always has.
+ * Otherwise returns g3gb_moves_ok()'s bad count (0..4) and fills from4 with the raw
+ * Gen-3 move ids (for the modal's "X -> Y" rows -- pk_move_name() takes them directly,
+ * no re-decode needed later). */
+static int __attribute__((noinline))
+gb_clip_moves(uint8_t gen, uint16_t from4[4], uint8_t bad4[4]) {
+  PkMon m;
+  if (!pk_decode_mon(app_clip_rec(), false, &m) || m.isEgg || m.isBadEgg) return -1;
+  for (int i = 0; i < 4; i++) from4[i] = m.moves[i];
+  return g3gb_moves_ok(m.moves, gen, bad4);
+}
+
+/* Defined below, after gb_create_locate_rom/gb_create_base1/gb_create_learn (the
+ * learnset block this needs, BACKLOG #150 S150-10 decision 5) -- forward-declared here
+ * because gb_paste_hook, which calls it, sits earlier in this file than that block. */
+static int gb_paste_fill_moves(uint16_t dex, uint8_t level, GbEditMon* mon,
+                                const uint8_t bad4[4], uint8_t fill4[4]);
+
 /* Derive "<save's dir><save's basename>" (no extension) from g_ed->path into
  * g_ed->romspath -- arena-resident, so the path never lives on any function's own
  * stack. Truncates (never overflows) if the source path is implausibly long. */
@@ -3261,11 +3325,16 @@ gb_gen1_base_from_rom(uint16_t dex, GbGen1Base* out) {
 }
 
 /* The ROM was absent: name it. base_only points INTO the arena-resident romspath
- * (still holding "<dir><base>" after gb_gen1_base_from_rom's own failure above), so
+ * (still holding "<dir><base>" after the failed locate above -- gb_gen1_base_from_rom's
+ * own probe, or, since BACKLOG #150 S150-10 decision 10, gb_create_locate_rom's), so
  * this needs no path buffer of its own -- only the short printf-staging one, which
  * (like every message string in this tree) is safe by construction: msg_wait()
- * itself runs l1 through ui_ptext_fit(), so a long path is clipped, never overflowed. */
-static void __attribute__((noinline)) gb_gen1_norom_msg(void) {
+ * itself runs l1 through ui_ptext_fit(), so a long path is clipped, never overflowed.
+ *
+ * Decision 10: generalised by generation (was gb_gen1_norom_msg(void), Gen-1-only) --
+ * ".gb"/GEN-1 title for GB_GEN1, ".gbc"/NEW GEN-2 title for GB_GEN2; L1's wording never
+ * named an extension, so it is reused unchanged for both. */
+static void __attribute__((noinline)) gb_gen12_norom_msg(uint8_t gen) {
   const char* base_only = g_ed->romspath;
   for (int i = 0; g_ed->romspath[i]; i++)
     if (g_ed->romspath[i] == '/') base_only = g_ed->romspath + i + 1;
@@ -3276,8 +3345,9 @@ static void __attribute__((noinline)) gb_gen1_norom_msg(void) {
    * enough that no real ROM filename is cut before the screen ever gets a chance to
    * ellipsize it visually. */
   char l1[64];
-  siprintf(l1, "Put %.48s.gb here", base_only);
-  msg_wait(PDNA_SIDECAR_GEN1_TITLE, UI_WARN, l1, PDNA_SIDECAR_GEN1_L1);
+  siprintf(l1, "Put %.48s.%s here", base_only, gen == GB_GEN1 ? "gb" : "gbc");
+  msg_wait(gen == GB_GEN1 ? PDNA_SIDECAR_GEN1_TITLE : PDNA_SIDECAR_GEN2_TITLE,
+           UI_WARN, l1, PDNA_SIDECAR_GEN1_L1);
 }
 
 /* BACKLOG #150 S150-8 decision 14/15, arm 1: a native cell bridges into the
@@ -3332,7 +3402,7 @@ BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]) {
     }
     GbGen1Base g1base;
     Gb1BaseStatus bst = dex ? gb_gen1_base_from_rom(dex, &g1base) : GB1BASE_BAD_ROM;
-    if (bst == GB1BASE_NO_ROM) { snd_deny(); gb_gen1_norom_msg(); return BANK_DOWN_REFUSED; }
+    if (bst == GB1BASE_NO_ROM) { snd_deny(); gb_gen12_norom_msg(GB_GEN1); return BANK_DOWN_REFUSED; }
     if (bst != GB1BASE_OK) {
       snd_deny();
       msg_wait(PDNA_SIDECAR_XFER_TITLE, UI_WARN, PDNA_SIDECAR_GEN1_BADROM_L1, 0);
@@ -3557,7 +3627,7 @@ static bool __attribute__((noinline)) gb_accept_down_hook(int dst_box, const uin
   if (to_party && g_ed->s.gen == GB_GEN1) {
     dex = gb_get_species_dex(&mon);
     Gb1BaseStatus bst = dex ? gb_gen1_base_from_rom(dex, &g1base) : GB1BASE_BAD_ROM;
-    if (bst == GB1BASE_NO_ROM) { snd_deny(); gb_gen1_norom_msg(); return false; }
+    if (bst == GB1BASE_NO_ROM) { snd_deny(); gb_gen12_norom_msg(GB_GEN1); return false; }
     if (bst != GB1BASE_OK) {
       snd_deny();
       msg_wait(PDNA_GBEDIT_MOVE_REFUSED_TITLE, UI_WARN, PDNA_GBEDIT_MOVE_NEEDSBASE_L2, 0);
@@ -3693,7 +3763,19 @@ static bool gb_paste_hook(uint8_t* rec80) {
    * call, so the live editor and this synthesis path cannot disagree about which target
    * saves get a synthetic Met record. */
   bool crystal = gb_session_is_crystal(&g_ed->s);
-  G3GbStatus cst = gen3_to_gb(app_clip_rec(), g_ed->s.gen, crystal, NULL, &mon, &loss);   /* 2 */
+
+  /* BACKLOG #150 S150-10 decision 8, step 2: bad move slots are found BEFORE the
+   * conversion runs, so gen3_to_gb_fixed can empty them instead of the whole record
+   * being refused with G3GB_ERR_MOVE (G-H8). nbad < 0 (decode failure/Egg) passes
+   * bad4 = NULL through, so gen3_to_gb_fixed refuses exactly the way gen3_to_gb()
+   * always has -- and indeed IS, decision 1. */
+  uint16_t from4[4] = { 0, 0, 0, 0 };
+  uint8_t  bad4[4]  = { 0, 0, 0, 0 };
+  int nbad = gb_clip_moves(g_ed->s.gen, from4, bad4);
+  const uint8_t* bad4p = (nbad > 0) ? bad4 : NULL;
+
+  G3GbStatus cst = gen3_to_gb_fixed(app_clip_rec(), g_ed->s.gen, crystal, NULL,
+                                     bad4p, &mon, &loss);                   /* 2 */
   if (cst == G3GB_ERR_NEEDS_BASE) {          /* Gen 1 only -- everything else about this
                                               * mon already checked out (gen3_to_gb.c's
                                               * screen() reaches this check LAST) */
@@ -3702,7 +3784,7 @@ static bool gb_paste_hook(uint8_t* rec80) {
     Gb1BaseStatus bst = dex ? gb_gen1_base_from_rom(dex, &g1base) : GB1BASE_BAD_ROM;
     if (bst == GB1BASE_NO_ROM) {
       snd_deny();
-      gb_gen1_norom_msg();
+      gb_gen12_norom_msg(GB_GEN1);
       return false;
     }
     if (bst != GB1BASE_OK) {
@@ -3710,7 +3792,8 @@ static bool gb_paste_hook(uint8_t* rec80) {
       msg_wait(PDNA_SIDECAR_XFER_TITLE, UI_WARN, PDNA_SIDECAR_GEN1_BADROM_L1, 0);
       return false;
     }
-    cst = gen3_to_gb(app_clip_rec(), g_ed->s.gen, crystal, &g1base, &mon, &loss);   /* 3 */
+    cst = gen3_to_gb_fixed(app_clip_rec(), g_ed->s.gen, crystal, &g1base,
+                            bad4p, &mon, &loss);                            /* 3 */
   }
   if (cst != G3GB_OK) {
     snd_deny();
@@ -3731,10 +3814,47 @@ static bool gb_paste_hook(uint8_t* rec80) {
    * also unchanged) stays the true, uncorrected Gen-3 original -- see
    * gb_sidecar.c's merge_species_and_level() for why that distinction matters. */
   uint8_t fix_from = 0, fix_to = 0;
-  if (gen3_to_gb_evo_needs_fix(&mon, &fix_from, &fix_to)) {
-    GbXferChoice ch = gb_paste_legal_screen(gb_get_species_dex(&mon), fix_from, fix_to);
+  bool fix = gen3_to_gb_evo_needs_fix(&mon, &fix_from, &fix_to);
+
+  /* BACKLOG #150 S150-10 decision 8, step 7: nbad > 0 -- fill the bad slots from the
+   * destination ROM's learnset AT THE LEVEL THAT WILL BE WRITTEN (decision 5): `to`
+   * when the evolution fix above will be applied (MAKE LEGAL is the only accepting
+   * choice once a slot is bad, decision 7), else the mon's current level. Writes the
+   * fills into `mon` HERE, before the modal, because a MAKE LEGAL choice adds nothing
+   * further for moves and a CANCEL discards `mon` entirely (nothing is written on any
+   * `return false` below -- gb_paste_write is the only writer, at the very end). */
+  uint8_t fill4[4] = { 0, 0, 0, 0 };
+  int nfill = 0;
+  if (nbad > 0) {
+    uint8_t wlvl = fix ? fix_to : gb_get_level(&mon);
+    nfill = gb_paste_fill_moves(gb_get_species_dex(&mon), wlvl, &mon, bad4, fill4);
+    /* "packed": did any KEPT (non-bad) slot's move end up at a different index than
+     * it started at? g3gb_moves_fill's own contract writes a fill AT its bad slot's
+     * own index and never touches a kept slot's value -- so a kept slot's move can
+     * only have moved if g3gb_moves_pack() (called last, inside the fill) shifted it
+     * to close a hole. Cheap and correct without a new return value from that
+     * shipped, already-tested function. */
+    bool packed = false;
+    for (int i = 0; i < 4; i++)
+      if (!bad4[i] && from4[i] != 0 && gb_get_move(&mon, i) != (uint8_t)from4[i]) packed = true;
+    log_line("gen12: paste moves: gen %u, %d bad slot(s), %d filled, packed=%d",
+             (unsigned)g_ed->s.gen, nbad, nfill, (int)packed);
+    /* Decision 8.7 -- the ONE exception to Guy's "never block": all four slots were
+     * bad and none got a fill, so `mon` would arrive with literally zero moves (an
+     * illegal Game Boy record -- it would Struggle forever). Refused here, nothing
+     * written; the modal below is never shown. */
+    if (nbad == 4 && nfill == 0) {
+      snd_deny();
+      gb_gen12_norom_msg(g_ed->s.gen);
+      return false;
+    }
+  }
+
+  if (fix || nbad > 0) {
+    GbXferChoice ch = gb_paste_legal_screen_ex(gb_get_species_dex(&mon), fix_from,
+                                                fix ? fix_to : 0, from4, bad4, fill4, nbad);
     if (ch == GB_XFER_CANCEL) return false;
-    if (ch == GB_XFER_MAKE_LEGAL) gb_set_level(&mon, fix_to);
+    if (ch == GB_XFER_MAKE_LEGAL && fix) gb_set_level(&mon, fix_to);
   }
 
   GbsStatus wst = gbs_box_writable(&g_ed->s, box);                          /* 5 */
@@ -4280,9 +4400,18 @@ static bool __attribute__((noinline)) gb_create_base2(uint16_t dex, RomGb2Specie
  * time (rom_gblearn_open's own scan is what drove ~118,000-185,000 read()
  * calls per create, measured, before this fix). A fresh FIL is still opened
  * every call regardless -- the located table_off/data_bank are cheap facts
- * to trust across calls, an open file handle is not. */
+ * to trust across calls, an open file handle is not.
+ *
+ * BACKLOG #150 S150-10 decision 5: `at_level` (added, least-diff shape) -- 0 means
+ * "use rom_gblearn_min_level(dex) and report it via *out_level", CREATE's own
+ * behaviour, unchanged for its one caller below (which still passes 0); any other
+ * value fetches the learnset AT THAT LEVEL instead (gb_paste_fill_moves' own use:
+ * the level the transfer will actually WRITE, decision 5's "written level" answer to
+ * §11.12) and `*out_level` is left untouched (the caller already knows the level it
+ * asked for -- there is nothing new to report back). */
 static int __attribute__((noinline))
-gb_create_learn(uint16_t dex, const uint8_t g1_start[4], uint8_t* out_level, uint8_t out4[4]) {
+gb_create_learn(uint16_t dex, const uint8_t g1_start[4], uint8_t at_level,
+                 uint8_t* out_level, uint8_t out4[4]) {
 #ifdef PDNA_DELTA
   /* BACKLOG #62: same cache-hit shape as the SD path below, just against the fused
    * cart-space slice gb_create_locate_rom already set instead of a FIL. */
@@ -4300,10 +4429,10 @@ gb_create_learn(uint16_t dex, const uint8_t g1_start[4], uint8_t* out_level, uin
   g_ed->learn.ctx = &s_gb_create_slice;
   int kept = -1;
   if (ok) {
-    uint8_t lvl = rom_gblearn_min_level(&g_ed->learn, dex);
+    uint8_t lvl = at_level ? at_level : rom_gblearn_min_level(&g_ed->learn, dex);
     kept = g1_start ? rom_gblearn_moves_at_seeded(&g_ed->learn, dex, lvl, g1_start, out4)
                     : rom_gblearn_moves_at(&g_ed->learn, dex, lvl, out4);
-    if (kept >= 0 && out_level) *out_level = lvl;
+    if (kept >= 0 && out_level && !at_level) *out_level = lvl;
   }
   return kept;
 #else
@@ -4324,14 +4453,52 @@ gb_create_learn(uint16_t dex, const uint8_t g1_start[4], uint8_t* out_level, uin
   g_ed->learn.ctx = &g_ed->romfil;
   int kept = -1;
   if (ok) {
-    uint8_t lvl = rom_gblearn_min_level(&g_ed->learn, dex);
+    uint8_t lvl = at_level ? at_level : rom_gblearn_min_level(&g_ed->learn, dex);
     kept = g1_start ? rom_gblearn_moves_at_seeded(&g_ed->learn, dex, lvl, g1_start, out4)
                     : rom_gblearn_moves_at(&g_ed->learn, dex, lvl, out4);
-    if (kept >= 0 && out_level) *out_level = lvl;
+    if (kept >= 0 && out_level && !at_level) *out_level = lvl;
   }
   f_close(&g_ed->romfil);
   return kept;
 #endif
+}
+
+/* BACKLOG #150 S150-10 decision 5: the fill for gb_paste_hook's bad move slots, off
+ * CREATE's own ROM resolution (gb_create_locate_rom: registered first, then beside
+ * the save; the fused slice under PDNA_DELTA) -- NOT gb_gen1_locate_rom's
+ * beside-the-save-only probe (open question 2: a user with a DIFFERENT Red.gb
+ * registered gets base stats from one ROM and moves from another; left as-is,
+ * both are the user's own ROMs of the same game).
+ *
+ * `learn4` stays {0,0,0,0} (the legitimate "no ROM" input, Guy's "never block") when
+ * no ROM resolves, when the Gen-1 base-stats lookup this needs for the starter seed
+ * fails, or when gb_create_learn() itself returns < 0 -- g3gb_moves_fill() still
+ * runs and empties every bad slot, decision 3's documented behaviour for an
+ * all-zero learnset. `mon` is mutated in place: up to `nbad` slots get gb_set_move
+ * (fresh base PP, 0 PP-Ups) then the whole record is left-packed (decision 4) --
+ * both inside g3gb_moves_fill(), this function is a pure ROM-resolution wrapper
+ * around it. Returns g3gb_moves_fill()'s own fill count (0..nbad). */
+static int gb_paste_fill_moves(uint16_t dex, uint8_t level, GbEditMon* mon,
+                                const uint8_t bad4[4], uint8_t fill4[4]) {
+  uint8_t learn4[4] = { 0, 0, 0, 0 };
+  bool have_rom = gb_create_locate_rom(g_ed->s.gen);
+  if (have_rom && g_ed->s.gen == GB_GEN1) {
+    RomGb1Species sp;
+    if (gb_create_base1(dex, &sp)) {
+      uint8_t g1_start[4];
+      memcpy(g1_start, sp.start, 4);
+      have_rom = gb_create_learn(dex, g1_start, level, NULL, learn4) >= 0;
+    } else {
+      have_rom = false;
+    }
+  } else if (have_rom) {
+    have_rom = gb_create_learn(dex, NULL, level, NULL, learn4) >= 0;
+  }
+  if (!have_rom) {
+    int n = 0; for (int i = 0; i < 4; i++) n += bad4[i] != 0;
+    log_line("gen12: paste moves: no gen-%u rom, %d slot(s) emptied", (unsigned)g_ed->s.gen, n);
+  }
+  return g3gb_moves_fill(mon, bad4, learn4, fill4);
 }
 
 /* AppSrcOps.create. Takes NO arguments -- see pdna_app.h's own comment on why
@@ -4477,7 +4644,7 @@ static bool gb_create_hook(void) {
    * computes the species' own lowest legal level (rom_gblearn_min_level, off
    * the SAME ROM) and its moveset at that level together, one ROM open. */
   uint8_t lvl = 5;
-  int kept = gb_create_learn(dex, g1_start, &lvl, src.moves);
+  int kept = gb_create_learn(dex, g1_start, 0, &lvl, src.moves);
   if (kept < 0) {
     snd_deny();
     msg_wait(PDNA_GBCREATE_TITLE, UI_WARN, PDNA_GBCREATE_NOROM_L1, PDNA_GBCREATE_NOROM_L2);
