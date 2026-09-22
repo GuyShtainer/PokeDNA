@@ -20,6 +20,7 @@
 #include "flashcartio.h"   /* active_flashcart, flashcartio_activate (pulls in sys.h) */
 #ifdef PDNA_DELTA
 #include "flashsave.h"     /* emulator build: the save IS this ROM's own 128 KiB flash */
+#include "vsd.h"           /* BACKLOG #179: the harness-hosted virtual SD, spike A1    */
 #endif
 #include "sys.h"           /* EWRAM_BSS (idempotent; guarded)                          */
 #include "ff.h"
@@ -11742,6 +11743,18 @@ int main(void) {
   }
 
 #ifdef PDNA_DELTA
+  /* BACKLOG #179 step A1 (the spike): attach the harness-hosted virtual SD if one is
+   * listening, then round-trip exactly one read transaction so tools/vsd_spike.py has
+   * something to observe. Bounded 4-frame handshake (vsd_attach, S4.3); if nothing
+   * writes the magic in time it latches "never attached" and returns false in one
+   * instruction forever after, so an unattended boot (every existing runner today) is
+   * unchanged except for those 4 extra frames, which Session.__init__'s existing
+   * self.run(180) already absorbs (docs/briefs/s179-design.md S4.3). No FatFs mount
+   * here yet — that is step A3's job; this step only proves the mailbox itself. */
+  if (vsd_attach()) {
+    uint8_t vsd_probe[512];   /* stack-local, discardable: the spike's own proof */
+    flashcartio_read_sector(0, vsd_probe, 1);
+  }
   /* ---- emulator build: no flashcart, no microSD, no file browser. -------------
    * The save is this ROM's own 128 KiB flash chip, so boot straight into it. If the
    * emulator did not allocate a flash save at all, the FLASH1M_V signature is missing
