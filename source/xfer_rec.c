@@ -18,54 +18,6 @@ uint64_t xr_key_g3(const uint8_t rec80[80]) {
   return h;
 }
 
-/* BACKLOG #206: "is `e`'s Gen-3 descendant actually THIS cell" -- the same 3-field
- * identity S150-11's xrc_g3_match_identity (source/xfer_reconcile.c) uses to match a
- * live Gen-3 record to a ledger entry (species_written / otid16 / the raw nickname
- * bytes), applied to a bare 80-byte record instead of a scan over a save. Species/
- * otId/nickname are the only entry fields that describe the ABROAD (Gen-3) side at
- * all for a NATIVE_HOME/ABROAD_G3 entry (xr_entry_for_down); every other field
- * (dv4/otname/exp_written/written_level) describes the NATIVE side, which is
- * identical across every trip and every copy of the same mon by construction and so
- * cannot disambiguate them -- deliberately not compared here. */
-static bool xr_entry_matches_g3(const GbscEntry* e, const uint8_t g3_rec80[80]) {
-  PkMon m;
-  if (!pk_decode_mon(g3_rec80, false, &m)) return false;
-  if (pk_national_no(m.species) != e->species_written) return false;
-  if ((uint16_t)(m.otId & 0xFFFFu) != e->otid16) return false;
-  if (memcmp(g3_rec80 + 0x08, e->nick_written, 10) != 0) return false;
-  return true;
-}
-
-int xr_restore_pick(const uint8_t* buf, uint32_t len, int count,
-                    const uint8_t g3_rec80[80], GbscEntry* out, XrRestorePickRule* out_rule) {
-  int best_live = -1, best_any = -1;
-  GbscEntry e_live, e_any;
-  for (int i = 0; i < count; i++) {
-    GbscEntry cand;
-    if (!gbsc_get(buf, len, i, &cand)) continue;
-    if (cand.kind != XR_KIND_NATIVE_HOME) continue;
-    if (!bc_is_native(cand.original80)) continue;
-    best_any = i;
-    e_any = cand;
-    if (cand.state != XR_STATE_CLAIMED && cand.state != XR_STATE_NONE) continue;
-    if (!xr_entry_matches_g3(&cand, g3_rec80)) continue;
-    best_live = i;
-    e_live = cand;
-  }
-  if (best_live >= 0) {
-    if (out) *out = e_live;
-    if (out_rule) *out_rule = XR_PICK_LIVE;
-    return best_live;
-  }
-  if (best_any >= 0 && (e_any.state == XR_STATE_RESTORED || e_any.state == XR_STATE_PENDING)) {
-    if (out) *out = e_any;
-    if (out_rule) *out_rule = XR_PICK_REFUSAL_ONLY;
-    return best_any;
-  }
-  if (out_rule) *out_rule = XR_PICK_NONE;
-  return -1;
-}
-
 /* BACKLOG #150 S150-8 decision 5. met_game: 1 Sapphire, 2 Ruby, 3 Emerald, 4 FireRed,
  * 5 LeafGreen (pdna_main.c's own app_met_game() spelling). */
 uint8_t xr_game_item_mask(uint8_t met_game) {

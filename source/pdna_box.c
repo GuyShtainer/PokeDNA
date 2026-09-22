@@ -1230,19 +1230,20 @@ pc_bank_restore_up(const uint8_t g3_rec80[80], uint8_t out_cell80[80]) {
   int count = gbsc_count(buf, len);
   if (count < 0) { log_line("bank: restore lookup: ledger file failed to validate"); return -1; }
 
-  /* BACKLOG #206 (CLAIMED half): the pick is state-aware AND identity-checked, not
-   * plain highest-index -- xr_key_g3 hashes only PID+otId, identical for a COPY's
-   * descendant and every past/future descendant of the SAME native mon (S150-12
-   * decision 9 leaves a copy with no entry of its own), so the highest-index
-   * NATIVE_HOME entry in this file is not necessarily the one THIS cell descends
-   * from. xr_restore_pick (source/xfer_rec.c, pure C, host-tested) is the shared
-   * rule; XR_PICK_REFUSAL_ONLY carries a RESTORED/PENDING entry through purely to
-   * drive the messages below -- it is never restored from. */
+  /* decision 8's tiebreak: the HIGHEST index whose kind is XR_KIND_NATIVE_HOME (the
+   * newest cycle), belt-and-braces bc_is_native() since the kind byte is absent on
+   * pre-#150 entries. */
+  int best = -1;
   GbscEntry e;
-  XrRestorePickRule rule;
-  int best = xr_restore_pick(buf, len, count, g3_rec80, &e, &rule);
-  log_line("bank: restore pick: entry %d, rule=%d", best, (int)rule);
-  if (best < 0) return 0;                     /* only Gen-3-home entries, none, or no identity match */
+  for (int i = 0; i < count; i++) {
+    GbscEntry cand;
+    if (!gbsc_get(buf, len, i, &cand)) continue;
+    if (cand.kind != XR_KIND_NATIVE_HOME) continue;
+    if (!bc_is_native(cand.original80)) continue;
+    best = i;
+    e = cand;
+  }
+  if (best < 0) return 0;                     /* only Gen-3-home entries (or none) -- already exact */
 
   /* S150-9 decision 8: the state branch runs BEFORE the screen -- a RESTORED or
    * PENDING entry is refused outright, never even probed for a report (§3.2's

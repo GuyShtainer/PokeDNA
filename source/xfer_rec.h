@@ -23,26 +23,6 @@
  * exactly the property the reroll re-key guard (decision 8) needs. */
 uint64_t xr_key_g3(const uint8_t rec80[80]);
 
-/* BACKLOG #206 (CLAIMED half): the state-aware restore pick. Scans `buf`/`len`
- * (an already-opened .pds ledger file, `count` entries per gbsc_count()) for the
- * NATIVE_HOME entry (bc_is_native(original80)) that `g3_rec80` should restore.
- * Rule: among entries whose state is CLAIMED or the legacy NONE, pick the
- * HIGHEST index whose stored identity (species_written / otid16 / nick_written)
- * matches `g3_rec80` -- xr_key_g3 hashes only PID+otId, identical for a COPY's
- * descendant and every past/future descendant of the SAME native mon (S150-12
- * leaves a copy with no entry of its own), so identity is the only signal that
- * ties a SPECIFIC entry to THIS cell rather than merely "some entry in this
- * file". If no such entry exists, `*out_rule` is XR_PICK_NONE unless the
- * highest-index NATIVE_HOME entry overall is RESTORED or PENDING, in which case
- * that entry is returned (rule XR_PICK_REFUSAL_ONLY) purely so the caller can
- * show the right refusal message -- it is never restored from. Returns the
- * entry's index (>=0) with `*out` filled, or -1 with `*out_rule` XR_PICK_NONE
- * when nothing applies (an ordinary Gen-3 mon, or a live entry that does not
- * match this cell's identity -- BACKLOG #206's exact hazard). Pure C, no I/O. */
-typedef enum { XR_PICK_NONE = 0, XR_PICK_LIVE = 1, XR_PICK_REFUSAL_ONLY = 2 } XrRestorePickRule;
-int xr_restore_pick(const uint8_t* buf, uint32_t len, int count,
-                    const uint8_t g3_rec80[80], GbscEntry* out, XrRestorePickRule* out_rule);
-
 /* BACKLOG #150 S150-8 decision 5: the pk_item_games() mask bit for a Gen-3 origin-game
  * id (1 Sapphire, 2 Ruby, 3 Emerald, 4 FireRed, 5 LeafGreen) -- bit0 RS, bit1 Emerald,
  * bit2 FRLG (source/pdna_pick.c documents the mask). 0 for an unknown id (0 or > 5). */
