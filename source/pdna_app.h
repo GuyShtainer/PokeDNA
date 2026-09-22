@@ -427,11 +427,25 @@ void app_xfer_pending_drop(void);
 
 /* BACKLOG #213: the GB ORIGINAL row's two caches over xv_has_original() (folder-
  * absent latch + a small ring of miss keys, both EWRAM_BSS, both owned/defined in
- * pdna_main.c because xfer_io.c/xfer_view.c never include tonc.h/sys.h). Call this
- * after ANY write to a /PokeDNA/xfer or /PokeDNA/sidecar ledger file (xfer_io.c's
- * own migration marker calls it already) and on every fresh Gen-3 save load --
- * cheap and side-effect-free to call an extra time; the only bug this guards
- * against is NOT calling it after a real write. */
+ * pdna_main.c because xfer_io.c/xfer_view.c never include tonc.h/sys.h). Only
+ * negative results are ever cached -- a card round trip that FINDS a key is never
+ * remembered, so the only thing that can make a cached answer wrong is a write that
+ * turns a cached "absent" into "present": one that CREATES /PokeDNA/xfer for the
+ * first time (the folder latch), or CREATES a NEW file under an xr_key_g3 name (the
+ * miss ring). Call this after such a write (xfer_io.c's own migration marker calls
+ * it already) and on every fresh Gen-3 save load -- cheap and side-effect-free to
+ * call an extra time; the only bug this guards against is NOT calling it after a
+ * real create.
+ *
+ * A write that only DELETES an entry/file, or only REWRITES an existing entry's
+ * state/flags in place, never turns an "absent" into a "present" and therefore
+ * needs no call -- five sites do exactly that and correctly have none:
+ * gb_paste_sidecar_undo() (pdna_gen12.c, removes the entry a refused paste just
+ * added), app_xfer_pending_undo() (pdna_main.c, removes a declined-save PENDING
+ * entry), app_paste_gb_commit() (pdna_main.c, removes the entry a merge-paste just
+ * consumed), gb_reconcile_claim_sidecars() (pdna_main.c, rewrites claimed/
+ * GBSC_FLAG_KEEP_ASKED in place on load), and app_xfer_reconcile_bank_open()'s KEEP
+ * BOTH loop (pdna_main.c, rewrites bank_keep in place). */
 void app_xv_cache_invalidate(void);
 
 /* BACKLOG #150 S150-11 decision 4: the §11.8 Bank-open reconcile -- gated on

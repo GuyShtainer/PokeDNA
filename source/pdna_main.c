@@ -10711,8 +10711,12 @@ static void __attribute__((noinline)) xfer_reconcile_apply(GbReconBuf* rb) {
    * second row's old_path is gone either way, so it reported rekeyed++ for a
    * rename that never happened. file_rekeyed[] tracks per-FILE outcome: once a
    * row has genuinely moved file f (rekeyed++ below), every later row for the
-   * same f is left PENDING for the next reconcile visit instead of being counted
-   * at all -- a plan that has already moved a file counts once. */
+   * same f is skipped this pass, no-op (log only, not counted rekeyed OR
+   * failed) -- that row's RE-KEY choice is simply DISCARDED, not deferred: this
+   * apply() runs once per user action and nothing re-drives it later, so the
+   * user must re-open the TRANSFERS screen and choose again for that row if it
+   * still needs a key change -- a plan that has already moved a file counts
+   * once. */
   bool file_rekeyed[GB_RECON_MAX_FILES];
   memset(file_rekeyed, 0, sizeof file_rekeyed);
   for (int i = 0; i < rb->nxrc; i++) {

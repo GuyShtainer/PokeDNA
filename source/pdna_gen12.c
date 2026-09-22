@@ -2349,8 +2349,16 @@ static bool gb_release_up_hook(int box, int slot, const uint8_t cell80[80]) {
         return false;
       }
       if (!gb_persist("xferup")) return false;
-      /* Mark the entry RESTORED -- app_xfer_promote's own remove-mutate-re-add
-       * idiom, STRICTLY AFTER gb_persist() has landed (§3.2's order, check (n)).
+      /* Mark the entry RESTORED -- a remove/mutate/gbsc_add rewrite of the same
+       * entry, STRICTLY AFTER gb_persist() has landed (§3.2's order, check (n)).
+       * BACKLOG #215(c): app_xfer_promote() (pdna_main.c) no longer does this --
+       * it now uses gbsc_set_state(), which flips only the state bits in place
+       * and therefore PRESERVES every other bit of the entry's flags byte,
+       * including bank_keep (b6, "KEEP BOTH was chosen for this row"). This site
+       * still rebuilds the entry from a GbscEntry via gbsc_add(), whose
+       * ef_compose() call does not carry bank_keep forward -- an entry marked
+       * RESTORED here silently loses a prior KEEP BOTH choice. Known gap, not
+       * fixed by this pass (BACKLOG #213/#215 review F5 is comments-only).
        * Best-effort: the card already has the correct bytes either way, so a
        * bookkeeping failure here only logs. */
       GbscEntry e;
