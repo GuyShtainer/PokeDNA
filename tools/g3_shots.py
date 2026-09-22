@@ -289,10 +289,12 @@ def run_b218_gender_glyph(core_mod, image_mod, rom: Path, out_dir: Path) -> Sess
 
     s.tap("A", settle=BIG_SETTLE)          # CREATE -> pick_species(1); real-art build -> icon grid
     s.press_n("DOWN", 4)                   # GCOLS=7: 0 -> 7 -> 14 -> 21 -> 28 = NIDORAN (F), #029
-    s.shot("01_picker_nidoran", "#218 setup: the species picker cursor on NIDORAN (F), "
-                                 "national #029 -- the header already shows the gender sign "
-                                 "PokeDNA's own font renders fine at THIS size (type-badge "
-                                 "row), unrelated to the SUMMARY card bug below")
+    s.shot("01_picker_nidoran", "#218 BEFORE-evidence: the species picker cursor on "
+                                 "NIDORAN (F), national #029 -- the header is drawn by the "
+                                 "raw ui_text/tte path this item is about, and the frame "
+                                 "shows \"NIDORAN\" followed by an OUT-OF-BOUNDS GARBAGE "
+                                 "CELL, not a gender sign and not '?' (BACKLOG #222 tracks "
+                                 "the same fix for this call site)")
                                  # no claim= here: this frame is the real-art icon grid (many
                                  # colours), not the GB-shell font gb_claims.py's matcher reads
 
