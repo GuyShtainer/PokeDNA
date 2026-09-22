@@ -148,6 +148,12 @@ gbdex_cell_blit(const PdnaArt* a, int x, int y, int w, int h) {
  * generic DexArtSlot.payload bytes that module never itself looks inside. */
 #define DEXCACHE_SLOTS 23   /* 23 * 1,026 = 23,598 B <= the arena tail's 23,744 B slack */
 #define DEXCACHE_NEED ((uint32_t)DEXCACHE_SLOTS * (uint32_t)sizeof(DexArtSlot))
+/* BACKLOG #208 fixes review D3: this file's own comment two lines up cites the
+ * arena tail's slack (23,744 B) as a bare number -- pinned here against pdna_gen12.h's
+ * GB12_ARENA_TAIL_SLACK so a future DEXCACHE_SLOTS bump (or a shrink of the arena
+ * tail itself) that no longer fits fails the BUILD, not a hand review. */
+_Static_assert(DEXCACHE_NEED <= GB12_ARENA_TAIL_SLACK,
+               "BACKLOG #208's dex art cache no longer fits the GB12 arena tail");
 
 /* EWRAM_BSS (same review posture as pdna_pick.c's s_cell_art): a plain file static
  * here would be IWRAM .bss, which the stack budget's ceiling counts against; EWRAM
