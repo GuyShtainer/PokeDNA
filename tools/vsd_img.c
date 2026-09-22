@@ -54,7 +54,15 @@ static int dump_image(const char* out_path, unsigned sectors) {
       rc = 1; break;
     }
   }
-  fclose(f);
+  /* BACKLOG #179 A3 review D11: fclose() flushes libc's own write buffer -- a late
+   * flush failure (disk full, quota) after every fwrite() above reported success is
+   * exactly the class of bug this project's own verified-write pattern exists to
+   * catch on the GBA side; checking it here on the host side is the same discipline
+   * (golden rule 7: check every return value). */
+  if (fclose(f) != 0) {
+    fprintf(stderr, "vsd_img: fclose(%s) failed (late flush error)\n", out_path);
+    rc = 1;
+  }
   return rc;
 }
 
@@ -139,7 +147,15 @@ static int copy_file_into_image(const char* host_path, const char* img_path) {
       rc = 1; break;
     }
   }
-  f_close(&fp);
+  /* BACKLOG #179 A3 review D11: f_close's own FRESULT is FatFs' equivalent late-flush
+   * signal -- a dirty cluster/FAT-table write that fails here would otherwise be
+   * silent, exactly the write-side omission dump_image()'s own fclose() check above
+   * just fixed. */
+  FRESULT fr_close = f_close(&fp);
+  if (fr_close != FR_OK) {
+    fprintf(stderr, "vsd_img: f_close %s failed (fr=%d)\n", img_path, fr_close);
+    rc = 1;
+  }
   fclose(hf);
   return rc;
 }
@@ -257,7 +273,11 @@ static int crc_file(const char* img_path, FSIZE_t size, uint32_t* out_crc) {
     crc = pdna_rv_crc32_upd(tab, crc, buf, br, 0);
     left -= br;
   }
-  f_close(&fp);
+  /* Read-only close: nothing was ever written through `fp`, so there is no dirty
+   * buffer a late flush could lose -- (void) documents that choice explicitly rather
+   * than leaving the return value silently discarded (golden rule 7), matching D11's
+   * own write-vs-read-only distinction. */
+  (void)f_close(&fp);
   if (rc) return rc;
   *out_crc = pdna_rv_crc32_fin(crc);
   return 0;
@@ -292,7 +312,7 @@ static int list_walk(const char* img_dir, ListCtx* lc, int depth) {
       if (list_push(lc, child, fno.fsize, crc)) { rc = 1; break; }
     }
   }
-  f_closedir(&d);
+  (void)f_closedir(&d);   /* read-only walk, same D11 rationale as crc_file's f_close */
   return rc;
 }
 
