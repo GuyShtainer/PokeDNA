@@ -1166,6 +1166,122 @@ static void test_d2_item_confirm_logic(void) {
   printf("  SKIP (no item holder found in Gold.sav)\n");
 }
 
+/* ---- BACKLOG #206 review D1: the revert's own regression pin ------------------
+ *
+ * a274651 ("state-aware, identity-checked restore pick") made pc_bank_restore_up
+ * refuse a CLAIMED entry whenever the entry's OWN stored identity (species_written /
+ * otid16 / nick_written) no longer matched the incoming Gen-3 record -- but that is
+ * exactly what a mon renamed or evolved ABROAD looks like: xr_key_g3 (PID+otId) still
+ * finds the right entry, the entry is still the newest CLAIMED one for this cell, yet
+ * its species_written/nick_written are the values from the moment it went DOWN, not
+ * what the Gen-3 side holds now. a274651 would refuse those, dropping the mon back as
+ * an ordinary Gen-3-origin cell with its native original stranded -- the review's own
+ * repro. After the revert, xr_merge_down / bank_restore_from_entry must reach the
+ * merge path (never refuse, never land the cell as an ordinary Gen-3 mon) for BOTH a
+ * renamed-abroad and an evolved-abroad record, and the report's renamed/evolved bit
+ * must be set. Returns 0 (this test's own success convention, matching bc_pack/
+ * xr_open's "0 = ok" idiom) so the two CHECK sites below read the same way trip 1/2
+ * of the pre-#206 two-trips shape did.
+ *
+ * MUTATION: reintroduce a274651's identity gate (xr_restore_pick, refusing an entry
+ * whose nick_written/species_written no longer match the incoming record) and either
+ * of the two CHECK(rc == 0 && ...) lines below fails -- the renamed/evolved case is
+ * refused instead of reaching the merge path, the exact regression this pins. */
+static int xr_restore_regression_case(const uint8_t g3_edited[80], GbscEntry* e,
+                                      XrMergeReport* rep_out) {
+  uint8_t out_cell80[80];
+  int rc = bank_restore_from_entry(e, g3_edited, XR_ACCEPT_ALL, g_xr_serial++, out_cell80, rep_out);
+  return (rc == 1) ? 0 : -1;   /* this test's own convention: 0 = reached the merge path */
+}
+
+static void test_backlog_206_regression(void) {
+  printf("\n-- D1 (BACKLOG #206 review): renamed/evolved abroad still reach the merge path --\n");
+  char path[512];
+  snprintf(path, sizeof path, "%s/Gold.sav", GB_ROMS);
+  FILE* f = fopen(path, "rb");
+  if (!f) { printf("  SKIP (Gold.sav not present)\n"); return; }
+  static uint8_t img[G2_SAVE_SIZE + G2_MAX_RTC_TAIL];
+  uint32_t ilen = (uint32_t)fread(img, 1, sizeof img, f);
+  fclose(f);
+  G2Save sv;
+  if (!g2_detect(img, ilen, &sv) || !sv.supported) { printf("  SKIP (unsupported)\n"); return; }
+  G2Header hd;
+  if (!g2_read_header(img, &sv, &hd)) { printf("  SKIP (header)\n"); return; }
+
+  GbEditMon base;
+  bool found = false;
+  for (int box = 0; box <= G2_BOX_PARTY && !found; box++) {
+    uint32_t off = g2_list_offset(&sv, box, hd.current_box);
+    if (off == 0) continue;
+    int count = gb_list_count(GB_GEN2, img + off, box);
+    if (count < 0) continue;
+    for (int slot = 0; slot < count; slot++) {
+      if (!gb_load(&base, GB_GEN2, img + off, box, slot)) continue;
+      if (base.list_species == G2_LIST_EGG) continue;
+      found = true;
+      break;
+    }
+  }
+  if (!found) { printf("  SKIP (no usable Gen-2 record in Gold.sav)\n"); return; }
+
+  /* One trip DOWN, promoted to CLAIMED (what a saved exit does -- app_xfer_promote /
+   * xfer_down_claim_now, mirrored here as the one assignment the tests always use). */
+  uint8_t cell[80]; GbEditMon written; uint8_t g3rec80[80];
+  if (!xr_down_sim(&base, BC_ORIGIN_GOLD, g_xr_serial++, cell, &written, g3rec80)) {
+    printf("  SKIP (does not convert)\n"); return;
+  }
+  GbscEntry e;
+  xr_build_entry_asdown(&e, &written, cell, g3rec80);
+  e.state = XR_STATE_CLAIMED;
+
+  /* Case 1: renamed abroad -- the Gen-3 record's own nickname bytes no longer match
+   * e.nick_written (a real edit, not a synthetic flip: a different, validly-encoded
+   * nickname), everything else unchanged. */
+  {
+    uint8_t g3_renamed[80];
+    memcpy(g3_renamed, g3rec80, 80);
+    EditMon em;
+    gen3_edit_load(g3_renamed, false, &em);
+    em_set_nickname(&em, "NEWNAME");
+    gen3_edit_commit(&em, g3_renamed);
+    CHECK(memcmp(g3_renamed + 0x08, e.nick_written, 10) != 0,
+          "D1: the renamed record's nickname bytes really do differ from the entry's own");
+
+    XrMergeReport rep;
+    int rc = xr_restore_regression_case(g3_renamed, &e, &rep);
+    CHECK(rc == 0 && rep.renamed,
+          "D1: a renamed-abroad record reaches the merge path, never refused (rc=%d renamed=%d)",
+          rc, (int)rep.renamed);
+  }
+
+  /* Case 2: evolved abroad -- species differs from e.species_written, everything else
+   * (nickname, moves, level) unchanged. Species is report-only (decision 4), never
+   * applied by xr_merge_down_sel -- this pins that the ENTRY is still found and used,
+   * not that species changes. */
+  {
+    uint8_t g3_evolved[80];
+    memcpy(g3_evolved, g3rec80, 80);
+    PkMon base_pk;
+    CHECK(pk_decode_mon(g3_evolved, false, &base_pk), "D1: base record decodes for the evolve case");
+    uint16_t new_species = (uint16_t)((pk_national_no(base_pk.species) % 411u) + 1u);
+    if (new_species == e.species_written) new_species = (uint16_t)((new_species % 411u) + 1u);
+    EditMon em;
+    gen3_edit_load(g3_evolved, false, &em);
+    em_set_species(&em, new_species);
+    gen3_edit_commit(&em, g3_evolved);
+    PkMon evolved_pk;
+    CHECK(pk_decode_mon(g3_evolved, false, &evolved_pk), "D1: evolved record decodes");
+    CHECK(pk_national_no(evolved_pk.species) != e.species_written,
+          "D1: the evolved record's species really does differ from the entry's own");
+
+    XrMergeReport rep;
+    int rc = xr_restore_regression_case(g3_evolved, &e, &rep);
+    CHECK(rc == 0 && rep.evolved,
+          "D1: an evolved-abroad record reaches the merge path, never refused (rc=%d evolved=%d)",
+          rc, (int)rep.evolved);
+  }
+}
+
 /* ============================================================================ */
 /* E. BACKLOG #150 S150-9: accept masks, xr_merge_down_gb, the flagship 2->3->1->2. */
 /* ============================================================================ */
@@ -1870,6 +1986,7 @@ int main(int argc, char** argv) {
   test_nickname_unmappable_glyph();
   test_merge4_make_legal_written_level();
   test_d2_item_confirm_logic();
+  test_backlog_206_regression();
 
   printf("\n-- E. BACKLOG #150 S150-9: accept masks, xr_merge_down_gb, the flagship --\n");
   printf("== E0. RT-4 (the flagship 2->3->1->2) ==\n");
