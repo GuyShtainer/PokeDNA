@@ -1055,7 +1055,7 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XFERMERGE_RO_RENAME     "New name can't be spelled; kept."
 #define PDNA_XFERMERGE_RO_MOVE       "A move can't exist here; kept."
 #define PDNA_XFERMERGE_HINT_TOGGLE   "A flip  START apply  B cancel"
-#define PDNA_XFERMERGE_HINT_RO       "START ok  B cancel"
+#define PDNA_XFERMERGE_HINT_RO       "A ok  B cancel"   /* review D2: A commits with zero toggle rows */
 
 /* BACKLOG #150 S150-9 decision 8: the ledger's RESTORED/PENDING state refusals at a
  * restore lookup (site 1, pc_bank_restore_up; site 2, the GB lift, a later commit). */

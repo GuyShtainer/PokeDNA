@@ -4010,6 +4010,12 @@ static int xfermerge_build_rows(const XrMergeReport* rep, uint8_t dir, XferMerge
   int n = 0;
   if (dir == XR_MERGE_UP) {
     if (rep->evolved && n < XFERMERGE_MAX_ROWS) {
+      /* BACKLOG #150 S150-9 review D2 (orchestrator decision): species stays
+       * default KEEP, same as every other row -- Guy's rule is "round trips come
+       * back byte-identical by default; the changes made abroad are OFFERED", so
+       * an evolution is a TAKE toggle here, never a default. `state[]` (below)
+       * already starts every row at false (KEEP); this toggle needs no special
+       * casing to honour that. */
       rows[n].toggle = true; rows[n].bit = XR_ACCEPT_SPECIES;
       xfermerge_setrow(rows[n].text, sizeof rows[n].text, PDNA_XFERMERGE_ROW_SPECIES);
       n++;
@@ -4147,7 +4153,10 @@ bool app_xfer_merge_screen(const XrMergeReport* rep, uint8_t dir, uint8_t* accep
     u16 k;
     do { vsync(); k = key_hit(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B | KEY_START); } while (!k);
     if (k & KEY_B) { snd_back(); return false; }
-    if (k & KEY_START) {
+    /* review D2 (MEDIUM): with zero toggle rows (every remaining row read-only),
+     * A must commit like every other PokeDNA confirm screen -- not just START.
+     * PDNA_XFERMERGE_HINT_RO now reads "A ok  B cancel" to match. */
+    if ((k & KEY_START) || (ntoggle == 0 && (k & KEY_A))) {
       uint8_t acc = 0;
       for (int t = 0; t < ntoggle; t++) if (state[toggle_idx[t]]) acc |= rows[toggle_idx[t]].bit;
       if (accept) *accept = acc;
