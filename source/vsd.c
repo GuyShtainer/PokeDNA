@@ -53,6 +53,24 @@ static int vsd_wrap_frame(uint16_t* last_vc) {
 }
 
 bool vsd_attach(void) {
+  /* BACKLOG #179 step A3 finding: force a genuine RUNTIME reference to g_pdna_vsd.
+   * __attribute__((used)) tells the COMPILER not to discard an unreferenced global,
+   * but --gc-sections (gba.specs, source/flashsave.c:56-62) still discards the whole
+   * SECTION unless something reachable from main() actually reads it -- exactly like
+   * every precedent this file's own header comment cites: fused_gb.c's g_pdna_gbd,
+   * fused_rom.c's g_pdna_fuse, fused_sav.c's g_pdna_sav are each read by their own
+   * runtime parser. g_pdna_vsd has no such reader (the HOST, not the GBA, is its only
+   * consumer), so `nm pokedna-delta.elf | grep g_pdna_vsd` came back empty until this
+   * line was added -- tools/vsd.py's find_mailbox() could not locate the mailbox at
+   * all. The check is also a free assertion (golden rule 5): both sides are the SAME
+   * compile-time constant (&s_vsd), so it can never legitimately fail; if it ever
+   * does, the section layout changed underneath this record and s_attached must stay
+   * false rather than hand the host a stale/wrong address. */
+  if (g_pdna_vsd.addr != (uint32_t)&s_vsd) {
+    s_attached = false;
+    return false;
+  }
+
   s_vsd.op     = VSD_OP_NONE;
   s_vsd.sector = 0;
   s_vsd.count  = 0;

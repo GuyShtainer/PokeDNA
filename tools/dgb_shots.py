@@ -7197,8 +7197,42 @@ def main(argv=None) -> int:
                           "failure if any caption is empty/whitespace-only, any frame file "
                           "is missing, or any claim/claim_absent fails on re-check; exits 0 "
                           "(and prints the shot + claim-checked counts) otherwise.")
+    ap.add_argument("--vsd", type=Path,
+                     help="BACKLOG #179 Phase A step A3: attach the harness-hosted "
+                          "virtual SD (tools/vsd.py) to every Session this run "
+                          "constructs, serving disk_read/disk_write out of this "
+                          "tools/vsd_img.c-built .img file. Absent (the default), "
+                          "every Session behaves byte-identically to before this "
+                          "lane -- see A4's parity gate.")
+    ap.add_argument("--vsd-protect", action="store_true",
+                     help="S4.7 failure injection: every VSD write fails (a "
+                          "write-protected volume).")
+    ap.add_argument("--vsd-fail-write-in", type=int, default=None,
+                     help="S4.7: the Nth served VSD write from now fails, then heals.")
+    ap.add_argument("--vsd-fail-at", type=int, default=None,
+                     help="S4.7: after N successful VSD writes, exactly one more "
+                          "fails, then heals.")
+    ap.add_argument("--vsd-lie-after", type=int, default=None,
+                     help="S4.7: after N successful VSD writes, every write reports "
+                          "OK and discards (the card that ACKs and keeps nothing).")
+    ap.add_argument("--vsd-fail-read-at", type=int, default=None,
+                     help="S4.7: after N successful VSD reads, exactly one more "
+                          "fails, then heals.")
     a = ap.parse_args(argv)
     a.out.mkdir(parents=True, exist_ok=True)
+
+    # BACKLOG #179 Phase A step A3: wire --vsd (and any failure-injection knobs) into
+    # every Session this process constructs, BEFORE any run_*() dispatch below --
+    # gb_shots.set_default_vsd(None) with no knobs is a true no-op (Session.vsd stays
+    # None), so a run without --vsd is unaffected either way.
+    gb_shots.set_default_vsd(
+        a.vsd,
+        protect=a.vsd_protect if a.vsd_protect else None,
+        fail_write_in=a.vsd_fail_write_in,
+        fail_at=a.vsd_fail_at,
+        lie_after=a.vsd_lie_after,
+        fail_read_at=a.vsd_fail_read_at,
+    )
 
     if a.selftest_captions:
         manifest_path = a.out / "manifest.json"

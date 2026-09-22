@@ -115,6 +115,9 @@ import fuse_gb  # noqa: E402 -- BACKLOG #214 item 2: claim_gb= extracts the embe
                 # Session booted, via fuse_gb's own directory parser (never a second
                 # implementation of the fuse format). No mgba import at module level here
                 # either (fuse_gb.py only touches struct/zlib/tempfile).
+import vsd  # noqa: E402 -- BACKLOG #179 Phase A step A3: the harness-hosted virtual SD
+            # server. No mgba import at module level here either (vsd.py only touches
+            # struct/dataclasses/pathlib) -- see vsd.py's own header for the protocol.
 
 KEY = dict(A=0x1, B=0x2, SEL=0x4, START=0x8, RIGHT=0x10, LEFT=0x20,
            UP=0x40, DOWN=0x80, R=0x100, L=0x200)
@@ -122,6 +125,26 @@ KEY = dict(A=0x1, B=0x2, SEL=0x4, START=0x8, RIGHT=0x10, LEFT=0x20,
 HOLD = 3          # frames a key is physically "down"
 SETTLE = 12       # frames of nothing, after a simple cursor move
 BIG_SETTLE = 40   # frames of nothing, after a screen opens/closes/repaints fully
+VSD_QUIESCE_IDLE = 4        # S4.5: consecutive no-request frames that mean "I/O settled"
+VSD_QUIESCE_CAP = 3600      # S4.5: hard cap -- a chain that never quiesces is a loud failure
+
+# BACKLOG #179 Phase A step A3: dgb_shots.py's --vsd CLI flag calls set_default_vsd()
+# ONCE, before dispatching to whichever run_*() the user selected. Every Session()
+# constructed afterwards in this process picks the image (and any failure-injection
+# knobs) up automatically unless it passes its own vsd_img= explicitly -- avoids
+# threading a new kwarg through every one of dgb_shots.py's 70+ run_*() call sites.
+# When neither this nor a per-call vsd_img is set (every existing runner today, and
+# any runner invoked without --vsd), Session.vsd stays None and behaves byte-identically
+# to before this lane -- that equivalence is S4.3's own gate and A4's own merge
+# condition, re-proven for every runner without --vsd.
+_DEFAULT_VSD_IMG: "Path | None" = None
+_DEFAULT_VSD_KNOBS: dict = {}
+
+
+def set_default_vsd(img: "Path | None", **knobs) -> None:
+    global _DEFAULT_VSD_IMG, _DEFAULT_VSD_KNOBS
+    _DEFAULT_VSD_IMG = img
+    _DEFAULT_VSD_KNOBS = knobs
 
 
 def load_mgba():
@@ -137,7 +160,8 @@ def load_mgba():
 class Session:
     """One booted core + the tap/shot primitives every shot list below is built from."""
 
-    def __init__(self, core_mod, image_mod, rom_path: Path, out_dir: Path, prefix: str):
+    def __init__(self, core_mod, image_mod, rom_path: Path, out_dir: Path, prefix: str,
+                 *, vsd_img: "Path | None" = None, vsd_knobs: "dict | None" = None):
         self.core = core_mod.load_path(str(rom_path))
         if self.core is None:
             sys.exit(f"mgba could not load {rom_path}")
@@ -161,7 +185,20 @@ class Session:
                                          # return value, so no CLI dispatch branch needs editing.
         self._last_shot = None    # (name, raw RGB bytes) -- for the consecutive-differ check
         self._gb_rom_file_cache: Path | None = None   # BACKLOG #214: lazy, memoized per Session
-        self.run(180)       # let the boot screen (info page) fully settle
+
+        # BACKLOG #179 Phase A step A3: the virtual SD. `vsd_img` (explicit) wins over
+        # set_default_vsd()'s CLI-wide default; both absent (every runner today, and
+        # any runner run without --vsd) leaves self.vsd None and run()/tap() below are
+        # exactly their pre-A3 selves -- no mgba call, no extra frame cost.
+        self.vsd: "vsd.VsdServer | None" = None
+        chosen_img = vsd_img if vsd_img is not None else _DEFAULT_VSD_IMG
+        if chosen_img is not None:
+            chosen_knobs = vsd_knobs if vsd_knobs is not None else _DEFAULT_VSD_KNOBS
+            rom_bytes = self.rom_path.read_bytes()
+            self.vsd = vsd.attach_server(self.core, rom_bytes, Path(chosen_img), **chosen_knobs)
+
+        self.run(180)       # let the boot screen (info page) fully settle; also where
+                             # vsd_attach()'s 4-frame handshake gets served, if attached
 
     def _gb_rom_file(self) -> Path:
         """BACKLOG #214 item 2: the embedded GB ROM (TYPE_ROM_GEN1/2) this Session's own
@@ -195,8 +232,38 @@ class Session:
         return tmp_path
 
     def run(self, n: int) -> None:
+        """The single funnel for every frame in both gb_shots.py and dgb_shots.py
+        (S4.5 -- dgb_shots.py constructs Session objects directly and never advances
+        the core any other way). When self.vsd is attached, service() is called once
+        per frame, AFTER run_frame() so the emulated CPU is stopped for the whole call
+        (S4.4 -- no barriers needed for that reason). Unattached, this branch is never
+        taken: byte-identical to every runner's pre-A3 timing (S4.3's own gate)."""
         for _ in range(n):
             self.core.run_frame()
+            if self.vsd is not None:
+                self.vsd.service()
+
+    def _io_quiesce(self) -> None:
+        """S4.5: after tap()'s own settle, keep running extra frames while the VSD is
+        still being served, until VSD_QUIESCE_IDLE consecutive frames produce no
+        transaction, capped at VSD_QUIESCE_CAP frames total. "Is the I/O finished?"
+        becomes OBSERVED rather than guessed at -- a chain that hits the cap is a loud
+        failure (I/O never quiesced), not a screenshot of a busy panel (design S4.5).
+        Unattended (self.vsd is None) this is a no-op: no request is ever served, so
+        the while loop's own guard below never even starts it."""
+        if self.vsd is None:
+            return
+        idle = 0
+        frames = 0
+        while idle < VSD_QUIESCE_IDLE and frames < VSD_QUIESCE_CAP:
+            self.core.run_frame()
+            served = self.vsd.service()
+            frames += 1
+            idle = 0 if served else idle + 1
+        if frames >= VSD_QUIESCE_CAP and idle < VSD_QUIESCE_IDLE:
+            raise RuntimeError(
+                f"{self.prefix}: VSD I/O never quiesced after {frames} frames "
+                f"(S4.5's own {VSD_QUIESCE_CAP}-frame cap) -- treat as a real failure")
 
     def tap(self, *names: str, settle: int = SETTLE) -> None:
         """A single key-down edge. Multiple names are pressed as ONE simultaneous chord
@@ -211,6 +278,7 @@ class Session:
         self.run(HOLD)
         self.core.set_keys(raw=0)
         self.run(settle)
+        self._io_quiesce()   # S4.5 -- no-op unless self.vsd is attached
 
     def press_n(self, name: str, n: int, settle: int = SETTLE) -> None:
         for _ in range(n):
