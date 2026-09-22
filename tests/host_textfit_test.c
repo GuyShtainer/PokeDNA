@@ -1120,6 +1120,7 @@ int main(void) {
    * below, not here. */
   PF(PDNA_SIDECAR_GEN1_TITLE,       28, 184);
   PF(PDNA_SIDECAR_GEN1_L1,          28, 184);
+  PF(PDNA_SIDECAR_GEN2_TITLE,       28, 184);   /* s150-10b review A9: pinned like GEN1_TITLE */
   /* S5-C Part B1: the STATIC tail of the "no ROM beside the save" message; the
    * dynamic "Put NAME.gb here" line is built at runtime (gb_gen1_norom_msg) and is
    * exempt from static measurement per this file's own header note -- it goes

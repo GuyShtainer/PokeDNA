@@ -3534,7 +3534,7 @@ gb_clip_moves(uint8_t gen, uint16_t from4[4], uint8_t bad4[4]) {
 /* Defined below, after gb_create_locate_rom/gb_create_base1/gb_create_learn (the
  * learnset block this needs, BACKLOG #150 S150-10 decision 5) -- forward-declared here
  * because gb_paste_hook, which calls it, sits earlier in this file than that block. */
-static int gb_paste_fill_moves(uint16_t dex, uint8_t level, GbEditMon* mon,
+static int __attribute__((noinline)) gb_paste_fill_moves(uint16_t dex, uint8_t level, GbEditMon* mon,
                                 const uint8_t bad4[4], uint8_t fill4[4]);
 
 /* Derive "<save's dir><save's basename>" (no extension) from g_ed->path into
@@ -4857,7 +4857,7 @@ gb_create_learn(uint16_t dex, const uint8_t g1_start[4], uint8_t at_level,
  * (fresh base PP, 0 PP-Ups) then the whole record is left-packed (decision 4) --
  * both inside g3gb_moves_fill(), this function is a pure ROM-resolution wrapper
  * around it. Returns g3gb_moves_fill()'s own fill count (0..nbad). */
-static int gb_paste_fill_moves(uint16_t dex, uint8_t level, GbEditMon* mon,
+static int __attribute__((noinline)) gb_paste_fill_moves(uint16_t dex, uint8_t level, GbEditMon* mon,
                                 const uint8_t bad4[4], uint8_t fill4[4]) {
   uint8_t learn4[4] = { 0, 0, 0, 0 };
   bool have_rom = gb_create_locate_rom(g_ed->s.gen);
