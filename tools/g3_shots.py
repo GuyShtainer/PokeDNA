@@ -60,6 +60,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # so `import gb_shots` finds its sibling
 
 from gb_shots import Session, load_mgba, BIG_SETTLE, SETTLE   # noqa: E402  (Session helpers only — gb_shots.py itself is untouched)
+import gb_claims   # noqa: E402 -- BACKLOG #184/#218: discriminating claim= checks below.
 
 
 def run_osk_rename(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
@@ -299,12 +300,19 @@ def run_b218_gender_glyph(core_mod, image_mod, rom: Path, out_dir: Path) -> Sess
                                  # colours), not the GB-shell font gb_claims.py's matcher reads
 
     s.tap("A", settle=BIG_SETTLE)          # confirm species -> builds the mon, opens the SUMMARY
-    s.shot("02_summary_fixed", "#218 FIXED: SUMMARY, POKEMON INFO card -- Spec. and Name "
+    p = s.shot("02_summary_fixed", "#218 FIXED: SUMMARY, POKEMON INFO card -- Spec. and Name "
                                 "both render \"NIDORAN?\" (one safe '?' glyph for the 3-byte "
                                 "gender sign, ui_ptext_fit's pnext() bound), no garbage cell "
                                 "anywhere on the card; BEFORE this fix the Spec. row showed "
                                 "\"NIDORAN\" plus an out-of-bounds glyph instead",
            claim=["NIDORAN?"])
+
+    # DISCRIMINATING pin (a claim that also passes on the unfixed build is not a pin):
+    # ui_ptext_fit draws with ui_font; the OLD ui_text path drew with tonc's sys8. A
+    # sys8 "NIDORAN" anywhere on this card means the fix is NOT in this build.
+    if gb_claims.find(p, "NIDORAN", proportional=False):
+        raise RuntimeError("b218_02: the Spec. row is still drawn by the FIXED sys8 font "
+                           "(ui_text) -- BACKLOG #218's fix is not in this build")
 
     s.tap("B", settle=BIG_SETTLE)          # leave the summary without keeping the created mon
     s.shot("03_discard_confirm", "#218: leaving the summary without pressing START -- the "

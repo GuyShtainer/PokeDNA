@@ -1,5 +1,9 @@
-/* Host (PC) pin test for BACKLOG #218's fix: source/pdna_summary.c's Spec./OT rows
- * on the summary's POKEMON INFO card switched from the raw tte_write (UTF-8, no
+/* Host (PC) font-WIDTH pin (review D2, b216: this test alone does not pin BACKLOG
+ * #218's fix -- it proves the width walk is correct, not that the summary's Spec./OT
+ * rows actually call ui_ptext_fit; that call-site claim is g3_shots.py's mGBA frame
+ * b218_02, whose discriminating claim= rejects a build that still draws with sys8).
+ * Context: source/pdna_summary.c's Spec./OT rows on the summary's POKEMON INFO card
+ * switched from the raw tte_write (UTF-8, no
  * glyph bound -- an out-of-bounds font-cell read on a 3-byte gender sign, proven on
  * a delta frame: "Spec. NIDORAN" + a garbage cell, docs/shots/b216_218_) to
  * ui_ptext_fit against the app's OWN bounded font (source/ui.c's pnext()/ui_font.c),
