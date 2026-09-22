@@ -145,6 +145,23 @@ void xrc_apply_order(uint8_t* idx, int n);
  * text. Returns the length written (excluding NUL). */
 int xrc_row_text(XrcRowKind kind, const char* species, const char* game, char out[40]);
 
+/* BACKLOG #215(b): a .pds ledger file's identity is its NAME, not any one entry
+ * inside it. Two stale-key rows can name the SAME file_idx (two entries inside one
+ * physical file, both stale against their own current Gen-3 record); the file only
+ * has one name to move to, so only the FIRST row to actually rename it may count --
+ * a second row for the same file_idx, run afterward in the same apply pass, would
+ * find the old path already gone (the first row's own rename) and, without this
+ * guard, wrongly read that as ITS OWN success. `file_rekeyed` is a caller-owned
+ * bool array of length `n` (>= every file_idx this pass can see), all-false at the
+ * start of the pass. xrc_rekey_should_attempt() says whether a REKEY row should even
+ * try; the caller marks a row's own attempt as having genuinely landed with
+ * xrc_rekey_mark_done() -- and ONLY on that path, never on a refusal/failure, so a
+ * later row for the same file still gets its own real attempt next time (or next
+ * visit). `file_idx >= n` never blocks (defensive: the caller's own bound is
+ * trusted, this never denies past its knowledge). */
+bool xrc_rekey_should_attempt(const bool* file_rekeyed, int n, uint8_t file_idx);
+void xrc_rekey_mark_done(bool* file_rekeyed, int n, uint8_t file_idx);
+
 /* ---- the caller's row bookkeeping (decision 5) ----------------------------------- */
 
 /* One row's-worth of bookkeeping for the Bank-open walk / TRANSFERS screen, carried

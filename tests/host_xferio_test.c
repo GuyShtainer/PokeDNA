@@ -27,6 +27,10 @@
 #include "xfer_io.h"
 
 bool app_can_edit(void) { return true; }
+/* BACKLOG #213: write_marker() (this file's own SUT) now invalidates the caller-side
+ * GB ORIGINAL cache on every successful write -- that cache lives in pdna_main.c,
+ * not linked here, so a no-op stub stands in for it exactly like app_can_edit() above. */
+void app_xv_cache_invalidate(void) {}
 
 static int g_check = 0, g_fail = 0;
 #define CHECK(c, ...) do { \
@@ -246,6 +250,37 @@ int main(void) {
     SfStatus st = xr_open(key, readback, sizeof readback, &len, out2);
     CHECK(st == SF_OK, "(c3) xr_open succeeds via the sidecar fallback (%s)", sf_status_str(st));
     CHECK(len == clen && memcmp(readback, content, clen) == 0, "(c3) bytes match the sidecar original exactly");
+  }
+
+  /* ---- BACKLOG #213: XrMissCache -- pure ring-buffer logic (no FatFs involved),
+   * the negative half of the GB ORIGINAL row's cache. The real invariant this
+   * backs is "after ANY ledger write, the next lookup goes to the card" -- proven
+   * here at the cache's own level: miss -> cached -> (a write happens, the caller
+   * calls xr_miss_cache_reset -- app_xv_cache_invalidate() in the real app) ->
+   * miss again means a real re-lookup, not a stale cached "no file". */
+  printf("== XrMissCache: miss -> cached -> invalidate -> miss again ==\n");
+  {
+    XrMissCache c; xr_miss_cache_reset(&c);
+    uint64_t k1 = 0x1122334455667788ULL, k2 = 0xAABBCCDDEEFF0011ULL;
+    CHECK(!xr_miss_cache_has(&c, k1), "fresh cache: k1 not cached");
+    xr_miss_cache_remember(&c, k1);
+    CHECK(xr_miss_cache_has(&c, k1), "after remember: k1 IS cached (0 f_stat on a repeat open)");
+    CHECK(!xr_miss_cache_has(&c, k2), "k2 (never remembered) is NOT cached");
+    xr_miss_cache_reset(&c);   /* stands in for a ledger write's app_xv_cache_invalidate() */
+    CHECK(!xr_miss_cache_has(&c, k1),
+          "after invalidate: k1 no longer cached -- the next lookup goes back to the card");
+  }
+  printf("== XrMissCache: the 9th remember evicts the oldest (ring, never unbounded -- golden rule 2) ==\n");
+  {
+    XrMissCache c; xr_miss_cache_reset(&c);
+    for (int i = 0; i < XR_MISS_RING_N; i++) xr_miss_cache_remember(&c, (uint64_t)(i + 1));
+    for (int i = 0; i < XR_MISS_RING_N; i++)
+      CHECK(xr_miss_cache_has(&c, (uint64_t)(i + 1)), "ring holds key %d before the 9th remember", i + 1);
+    xr_miss_cache_remember(&c, 999);   /* one past capacity -- evicts slot 0 (key 1) */
+    CHECK(!xr_miss_cache_has(&c, 1), "9th remember evicted the oldest key (1)");
+    CHECK(xr_miss_cache_has(&c, 999), "9th remember's own key is now cached");
+    for (int i = 1; i < XR_MISS_RING_N; i++)
+      CHECK(xr_miss_cache_has(&c, (uint64_t)(i + 1)), "keys 2..8 survive the 9th remember");
   }
 
   printf("\n%d check(s), %s\n", g_check, g_fail ? "FAIL" : "OK");

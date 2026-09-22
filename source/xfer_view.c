@@ -32,9 +32,16 @@ static void fill_from_entry(const GbscEntry* e, XvOriginal* out) {
 /* xr_path_for_key's own contract: "Returns true iff a file exists at the path it
  * wrote" -- decision 4's ONE f_stat, no parse, no separate xr_open. */
 bool xv_has_original(const uint8_t rec80[80]) {
+  return xv_has_original_hint(rec80, false);
+}
+
+/* BACKLOG #213: same contract as xv_has_original, plus xr_path_for_key_hint's own
+ * `xfer_dir_absent` passthrough (pdna_main.c's cached call site -- the GB ORIGINAL
+ * row on the occupied-cell menu -- is the only caller that ever passes true). */
+bool xv_has_original_hint(const uint8_t rec80[80], bool xfer_dir_absent) {
   if (!rec80) return false;
   char path[GBSC_PATH_MAX];
-  if (xr_path_for_key(path, xr_key_g3(rec80))) return true;
+  if (xr_path_for_key_hint(path, xr_key_g3(rec80), xfer_dir_absent)) return true;
 #ifdef PDNA_DELTA
   /* decision 13 consumer (i): consulted ONLY after the real lookup found nothing.
    * A plain `false` from the real check above IS "no file" -- there is no read

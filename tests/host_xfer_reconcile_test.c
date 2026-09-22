@@ -335,6 +335,39 @@ static void test_order1(void) {
 
 /* ==== ROW-1 ========================================================================= */
 
+/* ==== REKEY-1: BACKLOG #215(b), xrc_rekey_should_attempt/xrc_rekey_mark_done ======= */
+
+static void test_rekey1(void) {
+  printf("== REKEY-1: two stale entries in one .pds file -> only the first attempts ==\n");
+  bool fr[8]; memset(fr, 0, sizeof fr);
+
+  /* row A: file_idx 3, no prior attempt this pass -- must be told to attempt. */
+  CHECK(xrc_rekey_should_attempt(fr, 8, 3), "REKEY-1: a fresh file_idx is told to attempt");
+  xrc_rekey_mark_done(fr, 8, 3);   /* simulates row A's real rename landing */
+
+  /* row B: SAME file_idx 3 (the second stale entry inside the SAME physical file,
+   * already moved by row A's own rename) -- must now be refused, the exact bug this
+   * lane fixes (the old code's `f_stat(old_path) != FR_OK` test could not tell "I
+   * just moved this" from "row A already moved this out from under me", and counted
+   * row B as a second success for a rename that never happened). */
+  CHECK(!xrc_rekey_should_attempt(fr, 8, 3), "REKEY-1: the same file_idx is refused a second attempt");
+
+  /* row C: a DIFFERENT file_idx must be entirely unaffected -- the guard is per-file,
+   * not global. */
+  CHECK(xrc_rekey_should_attempt(fr, 8, 4), "REKEY-1: an unrelated file_idx is still told to attempt");
+
+  /* a failed attempt (row D, file_idx 5) must NOT mark the file done -- a later row
+   * for the same file still gets its own real attempt. */
+  CHECK(xrc_rekey_should_attempt(fr, 8, 5), "REKEY-1: file_idx 5 starts attemptable");
+  /* (row D's own attempt fails -- the real caller never calls xrc_rekey_mark_done()
+   * on a failure path; simulated here by simply not calling it.) */
+  CHECK(xrc_rekey_should_attempt(fr, 8, 5), "REKEY-1: a FAILED attempt leaves the file attemptable again");
+
+  /* out-of-bounds file_idx never blocks (defensive -- the caller's own bound is
+   * trusted, this predicate only ever narrows, never widens, what the caller allows). */
+  CHECK(xrc_rekey_should_attempt(fr, 8, 200), "REKEY-1: an out-of-range file_idx is never blocked");
+}
+
 static void test_row1(void) {
   printf("== ROW-1: xrc_row_text worst case <= 39 bytes ==\n");
   char out[40];
@@ -504,6 +537,7 @@ int main(int argc, char** argv) {
   test_bank1();
   test_phase2();
   test_order1();
+  test_rekey1();
   test_row1();
   test_rebuild1();
 

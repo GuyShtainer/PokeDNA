@@ -1306,9 +1306,15 @@ pc_bank_restore_up(const uint8_t g3_rec80[80], uint8_t out_cell80[80]) {
  * (the first cut of this function) was a byte-for-byte no-op, because
  * xfer_down_write() already sets `claimed = 1` at BIRTH (source/pdna_gen12.c),
  * so S150-11's reconcile had no signal to tell a restored entry apart from an
- * ordinary pending/claimed one. This now writes the SAME remove-mutate-re-add idiom
- * app_xfer_promote() uses (source/pdna_main.c:1856-1884) so the entry's own crc16
- * stays correct. */
+ * ordinary pending/claimed one. This writes a remove-then-gbsc_add rewrite so the
+ * entry's own crc16 stays correct -- BACKLOG #215(c): app_xfer_promote()
+ * (source/pdna_main.c) no longer matches this description; it now uses
+ * gbsc_set_state(), which flips only the state bits of the entry's flags byte
+ * IN PLACE and therefore PRESERVES every other bit, including bank_keep (b6,
+ * "KEEP BOTH was chosen for this row"). This site's own gbsc_add() call does
+ * NOT carry bank_keep forward (its ef_compose() never sets b6), so marking an
+ * entry RESTORED here silently drops a prior KEEP BOTH choice. Known gap, not
+ * fixed by this pass (BACKLOG #213/#215 review F5 is comments-only). */
 static void __attribute__((noinline))
 pc_bank_restore_done(const uint8_t g3_rec80[80]) {
   if (!app_can_edit()) return;                /* decision 13 */
@@ -1349,6 +1355,8 @@ pc_bank_restore_done(const uint8_t g3_rec80[80]) {
    * unmarked entry is a residual duplicate risk for a future lane, never a loss. */
   if (sf_write_verified(path, buf, len) != SF_OK) {
     log_line("bank: restore done: rewrite failed for %s", path);
+  } else {
+    app_xv_cache_invalidate();   /* BACKLOG #213: a real ledger write */
   }
 }
 

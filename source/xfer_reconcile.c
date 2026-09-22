@@ -261,6 +261,16 @@ static const char* xrc_status_word(XrcRowKind kind) {
   }
 }
 
+bool xrc_rekey_should_attempt(const bool* file_rekeyed, int n, uint8_t file_idx) {
+  if (!file_rekeyed || file_idx >= n) return true;
+  return !file_rekeyed[file_idx];
+}
+
+void xrc_rekey_mark_done(bool* file_rekeyed, int n, uint8_t file_idx) {
+  if (!file_rekeyed || file_idx >= n) return;
+  file_rekeyed[file_idx] = true;
+}
+
 int xrc_row_text(XrcRowKind kind, const char* species, const char* game, char out[40]) {
   if (!out) return 0;
   char sp[11]; char gm[8];
