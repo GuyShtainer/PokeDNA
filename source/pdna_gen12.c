@@ -477,6 +477,9 @@ static bool gb_can_lift_hook_impl(int box, int slot);
  * pdna_gen12_source() (which wires s.xfer) appears in file order. */
 static bool gb_lift_up_hook(const uint8_t* rec80, uint8_t* out80, XferCarry* xc);
 static bool gb_release_up_hook(int box, int slot, const uint8_t cell80[80]);
+/* BACKLOG #150 S150-12 decision 4: the read-only mount's copy-flavoured lift --
+ * gb_lift_pack()'s `copy` switch, thin hook defined beside gb_lift_up_hook below. */
+static bool gb_lift_copy_hook(const uint8_t* rec80, uint8_t* out80, XferCarry* xc);
 /* BACKLOG #150 S150-7 step 4: BoxXferOps.accept_down's real body (defined further
  * below, beside gb_paste_hook -- D8's own ordering comment), forward-declared for the
  * same reason as lift_up/release_up above. */
@@ -501,6 +504,19 @@ static const BoxXferOps k_gb_xfer = {
   .gen = 0, .lift_up = gb_lift_up_hook, .preview_down = 0, .accept_down = gb_accept_down_hook,
   .release_up = gb_release_up_hook,
   .move_within = gb_move_within_hook,   /* BACKLOG #187/#191a, F2: within-save GB drop */
+};
+
+/* BACKLOG #150 S150-12 decision 2: the read-only nav-menu mount's own xfer table --
+ * copy-flavoured lift, and STRUCTURALLY no way to delete: .release_up/.accept_down/
+ * .move_within are all NULL, not just refused at runtime by a guard that could be
+ * edited away later. drop_held (pdna_box.c) already treats a NULL release_up as "this
+ * peer cannot be asked to delete" (decision 6); bank_down_exact already NULL-checks
+ * accept_down before dereferencing it (source/pdna_box.c:1143) -- both existing
+ * checks, not new ones this lane adds. `.gen = 0`, same "unread today" reasoning as
+ * k_gb_xfer above. `static const` -> ROM, not a new EWRAM static. */
+static const BoxXferOps k_gb_xfer_ro = {
+  .gen = 0, .lift_up = gb_lift_copy_hook, .preview_down = 0, .accept_down = 0,
+  .release_up = 0, .move_within = 0,
 };
 
 /* BACKLOG #150 S150-7 D-Q7 plumbing fix: xg_bank_down_arm()'s `dst_gen` argument, for
@@ -632,7 +648,14 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
   s.can_edit   = gbsrc_can_edit;
   s.can_lift   = gb_can_lift_hook;   /* BACKLOG #150 S150-5: the GB grid's own grab-time refusal */
 #ifndef PDNA_GEN12_HOST
-  s.xfer       = &k_gb_xfer;   /* BACKLOG #171b: start_carry reads src->xfer, not s_xfer_peer */
+  /* BACKLOG #150 S150-12 decision 2: g_ed selects MOVE (k_gb_xfer) vs. the read-only
+   * mount's COPY-only table (k_gb_xfer_ro, no release_up/accept_down/move_within) --
+   * same selector gb_session_ops_install already uses for k_gb_ops_ro below.
+   * pdna_gen12_resident() (pdna_gen12.h), not a bare `g_ed` read: this function runs
+   * before g_ed's own declaration appears in this file (g_ed lives inside the
+   * PDNA_GEN12_HOST-guarded block further down), and the accessor is the existing,
+   * already-declared way every OTHER file asks this question. */
+  s.xfer       = pdna_gen12_resident() ? &k_gb_xfer : &k_gb_xfer_ro;   /* BACKLOG #171b: start_carry reads src->xfer, not s_xfer_peer */
 #endif
   s.commit     = gbsrc_commit;
   s.mark_dirty = gbsrc_mark_dirty;
@@ -1026,6 +1049,34 @@ bool pdna_gen12_resident(void) { return g_ed != 0; }
 static uint8_t* g_ro_tail;
 static uint32_t g_ro_tail_slack;
 
+/* BACKLOG #150 S150-12 decision 5: the read-only mount's own path/name, so
+ * gb_origin_for_save()'s per-save-remembered .og file can be keyed the same way for
+ * both entry points (g_ed->path when resident, g_ro_path here when only a streamed
+ * view exists) -- same "clear before release" bracket as g_ro_tail above, set right
+ * beside it in pdna_gen12_show()/pdna_gen12_show_fused(). 4 B plain .bss. */
+static const char* g_ro_path;
+
+/* BACKLOG #150 S150-12 decisions 8/12: the RAM-only "how many copies are waiting for
+ * the PC" counter and the Bank box the last one landed in -- 2 B plain .bss, cleared
+ * by gb_ro_exit_offer() on every exit path and again at the top of
+ * pdna_gen12_show()/_fused() (a stale count from an entry that failed before its own
+ * gb_session_core() call must never leak into the NEXT mount). Session-RAM only: a
+ * power-off between a copy and the mount's exit loses the OFFER, never the cells
+ * (BC_FLAG_QUEUED_PC/BC_FLAG_COPY are already on the card) -- OPEN QUESTION 7. */
+static uint8_t g_pcq_count;
+static uint8_t g_pcq_box;
+
+/* BACKLOG #150 S150-12 decision 12: see pdna_app.h's own comment on the declaration.
+ * Saturating (never wraps past 255 -- the offer's worst-case wording is measured for
+ * exactly that ceiling, decision 16). Defined here (beside g_pcq_count/g_pcq_box),
+ * not next to app_gb_session_gen() as first planned: app_gb_session_gen() sits
+ * before these two statics' own declaration in this file, and C does not let a
+ * function read a file-static that has not been declared yet by that point. */
+void app_pc_queue_note(int bank_box) {
+  if (g_pcq_count < 255) g_pcq_count++;
+  g_pcq_box = (uint8_t)bank_box;
+}
+
 /* F1 (BACKLOG #94): gbsrc_set_name/gbsrc_can_rename's real bodies (declared as thin
  * shims above the PDNA_GEN12_HOST guard, since g_ed, app_can_edit, gbbn_rename,
  * gbbn_supported and gb_persist all live down here in the GBA-glue half of this file).
@@ -1244,7 +1295,18 @@ static const char* gb_lift_why_status(GbsStatus st) {
 }
 
 static const char* gb_lift_why_bs(int box, int slot) {
-  if (!g_ed) return PDNA_GB_LIFT_WHY_VIEW;            /* no open edit session (the read-only nav-menu mount) */
+  /* BACKLOG #150 S150-12 decision 4: the read-only nav-menu mount (no open edit
+   * session) is no longer a flat refusal -- a COPY lift is allowed there, gated
+   * the same way gb_lift_copy_hook's own guard is (g_m and g_ro_path both set,
+   * decision 5/OPEN QUESTION 8: g_ro_path is set unconditionally after a successful
+   * pdna_gen12_mount, not only when the streamed view session also opened, since
+   * the copy itself only ever needs g_m->stage). !app_can_edit() on that mount
+   * (Q-C, §11.8: an EverDrive, or a hack ROM) is its own distinct reason. */
+  if (!g_ed) {
+    if (!g_m || !g_ro_path) return PDNA_GB_LIFT_WHY_VIEW;
+    return app_can_edit() ? NULL
+         : (app_rom_hack_active() ? PDNA_ROMHACK_NOTE : PDNA_GB_LIFT_WHY_OMEGA);
+  }
   if (!app_can_edit())                                /* cart/ROM-hack read-only */
     return app_rom_hack_active() ? PDNA_ROMHACK_NOTE : PDNA_GB_LIFT_WHY_OMEGA;
   GbsStatus wst = gbs_box_writable(&g_ed->s, box);
@@ -1758,9 +1820,27 @@ static int __attribute__((noinline)) gb_origin_for_save(uint8_t gen, bool crysta
 
   uint32_t fp = gb_origin_fingerprint();
 
+  /* REVIEW FIX (HIGH, found post-merge): decision 5 was claimed in 217c148's
+   * commit message but never actually written here -- this line read
+   * `g_ed->path` unconditionally, a NULL deref on every RO-mount lift that
+   * reaches this point (every Red/Blue/Gold/Silver save; only Crystal and a
+   * proven-Yellow save return earlier, above). On hardware that reads the
+   * pointer field at Gb12Edit's own path offset off address 0 (BIOS-protected,
+   * open bus) and strlen-walks garbage -- mGBA happened to survive it, which is
+   * why the shot chain's frame 06 caption ("no NULL deref") was false. Refuse
+   * up front when neither a resident session nor a mounted RO path exists
+   * (should not happen -- both hooks' own guards keep this function
+   * unreachable otherwise -- but self-sufficient, same posture gb_lift_up_hook/
+   * gb_lift_copy_hook already take on their own guards), then read the path
+   * from whichever of the two is actually live. */
+  if (!g_ed && !g_ro_path) {
+    log_line("gen12: origin: no session and no mount path");
+    return -1;
+  }
+
   char name[24];
   char hex[17];
-  gbsc_key_hex(gb_origin_key(g_ed->path), hex);
+  gbsc_key_hex(gb_origin_key(g_ed ? g_ed->path : g_ro_path), hex);
   siprintf(name, "%s.og", hex);
   char path[GBSC_PATH_MAX];
   bool existed = xr_path_for_name(path, name);
@@ -1787,6 +1867,13 @@ static int __attribute__((noinline)) gb_origin_for_save(uint8_t gen, bool crysta
   if (mkr != FR_OK && mkr != FR_EXIST) {
     log_line("gen12: origin mkdir %s failed (%d) -- kept the answer for this mount", PDNA_XFER_DIR, (int)mkr);
     if (g_ed) { g_ed->origin_write_failed = true; g_ed->origin_cached = (uint8_t)picked; }
+    /* REVIEW FIX (decision 5's second half, missing from 217c148): the RO mount
+     * has no g_ed to cache the answer in, and BACKLOG #172's own "two cells from
+     * one save can never disagree" rule means this function must not silently
+     * re-derive (and possibly re-prompt to a DIFFERENT answer) on the NEXT grab
+     * this same mount -- refuse the lift instead. Without this, an RO lift whose
+     * card cannot take a 5-byte .og re-prompts on EVERY grab. */
+    else { log_line("gen12: origin persist failed on the read-only mount -- lift refused"); return -1; }
   } else {
     uint8_t b[5];
     b[0] = (uint8_t)picked;
@@ -1797,6 +1884,7 @@ static int __attribute__((noinline)) gb_origin_for_save(uint8_t gen, bool crysta
     if (sf_write_verified(path, b, sizeof b) != SF_OK) {
       log_line("gen12: origin write %s failed -- kept the answer for this mount", path);
       if (g_ed) { g_ed->origin_write_failed = true; g_ed->origin_cached = (uint8_t)picked; }
+      else { log_line("gen12: origin persist failed on the read-only mount -- lift refused"); return -1; }
     }
   }
   return picked;
@@ -1935,45 +2023,34 @@ static bool gb_release_hook(uint8_t* rec80) {
   return gb_persist("release");
 }
 
-/* BoxXferOps.lift_up (BACKLOG #150 S150-4 decision 3/step 3): pack the record's
- * NATIVE bytes -- G-M7's whole point. gb_copy_native_hook() already does
- * gb_locate_addr + gbs_load_list + gb_load + gb_mark_caught and works on both GB
- * entry points, so it is reused rather than re-derived (its own header comment).
- * `xc` is unused (decision 6: no XferCarry static this lane -- s_held already holds
- * the 80-byte result and s_orig_box/s_orig_slot hold the GB origin).
+/* BACKLOG #150 S150-12 decision 4: gb_lift_up_hook's (BACKLOG #150 S150-4 decision
+ * 3/step 3) shared body, factored so a COPY lift (the read-only mount) and a MOVE
+ * lift (the resident edit session) run the exact same pack sequence instead of two
+ * drifting copies (golden rule: one function per job). `copy` selects only the two
+ * places that must differ: the flags byte (COPY marks BC_FLAG_QUEUED_PC|BC_FLAG_COPY
+ * on top of the ordinary egg/item/party bits; MOVE marks none of those three) and,
+ * inside the shared origin-prompt call, which source answers "is this Crystal" (a
+ * MOVE lift asks the open GbSession, exactly as it always has; a COPY lift -- no
+ * GbSession exists on the read-only mount -- asks the mount's own Gb12Mount.kind,
+ * decision 4's own text). The two per-hook GUARDS (self-sufficient refusal, before
+ * either can run: MOVE needs g_ed set, COPY needs g_ed absent AND a mounted
+ * read-only path) live in the two thin callers below, not here.
  *
- * Order: copy the native record -> decision 5's ledger refusal (a mon with a sidecar
- * entry already has a restorable Gen-3 original via COPY/PASTE; refuse rather than
- * merge) -> the origin byte (BC_ORIGIN_UNKNOWN placeholder here; step 4 replaces this
- * with the real per-save-remembered prompt -- wiring order stated in the S150-4/5
- * delivery report) -> pdna_bank_next_serial() (0 -> fail the lift, the serial is
+ * Order, unchanged from the original: copy the native record -> decision 5/G-F6's
+ * ledger refusal (a mon with a sidecar entry already has a restorable Gen-3 original
+ * via COPY/PASTE; refuse rather than merge) -> the one-time-per-save origin prompt
+ * (decision 5) -> pdna_bank_next_serial() (0 -> fail the lift, the serial is
  * persisted before the cell that consumes it) -> flags derived from the SAME getters
  * bank_plant.c's own test fixture uses (gb_is_egg / gb_get_held_item), never a new
  * rule -> bc_pack(), which owns the party->box truncation itself (do not truncate
  * here). epoch reuses gb_paste_write's own RTC source (gba_rtc_get), not a new clock
  * call -- 0 when the RTC is absent, exactly as gb_paste_write already tolerates. */
-static bool gb_lift_up_hook(const uint8_t* rec80, uint8_t* out80, XferCarry* xc) {
-  (void)xc;
-  /* BACKLOG #171b review F3: since pdna_gen12_source() now wires s.xfer
-   * unconditionally (BACKLOG #171b), this hook is no longer reachable ONLY through a
-   * path that already implies g_ed is set -- today gb_can_lift_hook_impl's own
-   * `if (!g_ed) return false;` (this file) keeps a g_ed==NULL session out of CM_MOVE
-   * mode in the first place, and the CM_NORMAL reset on re-entry backs that up, but
-   * neither of those is THIS function's own responsibility to rely on. Self-
-   * sufficient: refuse up front rather than trust two other call sites forever
-   * staying in lock-step with this one. */
-  if (!g_ed) { log_line("gen12: xferup lift refused: no editable session"); return false; }
-  if (!out80) { log_line("gen12: xferup lift refused: no destination buffer"); return false; }
-  /* hard rule 4 / tests/host_gb_write_gate_test.py: this hook itself writes
-   * (pdna_bank_next_serial() persists bank.meta), so it carries its own
-   * app_can_edit() gate rather than relying only on the caller's can_lift check --
-   * the SD side of the write is this function's own responsibility, not begin_
-   * select's/the NORMAL-mode menu's, which merely decide whether to LOOK at a cell. */
-  if (!app_can_edit()) { log_line("gen12: xferup lift refused: cart is not writable"); return false; }
+static bool gb_lift_pack(const uint8_t* rec80, uint8_t* out80, bool copy) {
+  if (!out80) { log_line("gen12: %s lift refused: no destination buffer", copy ? "copy" : "xferup"); return false; }
 
   GbEditMon mon;
   if (!gb_copy_native_hook(rec80, &mon, NULL)) {
-    log_line("gen12: xferup lift refused: gb_copy_native_hook could not read the record");
+    log_line("gen12: %s lift refused: gb_copy_native_hook could not read the record", copy ? "copy" : "xferup");
     return false;
   }
 
@@ -1981,22 +2058,23 @@ static bool gb_lift_up_hook(const uint8_t* rec80, uint8_t* out80, XferCarry* xc)
    * it is not merged here. The shipped COPY -> PASTE 3->GB->3 route
    * (pdna_main.c app_paste_gb_merge) stays the way home for that mon. */
   if (gb_has_sidecar(mon.gen, &mon)) {
-    log_line("gen12: xferup lift refused: mon already has a Gen-3 ledger entry (use COPY/PASTE)");
+    log_line("gen12: %s lift refused: mon already has a Gen-3 ledger entry (use COPY/PASTE)", copy ? "copy" : "xferup");
     return false;
   }
 
-  /* decision 4/D-Q7: the one-time-per-save origin prompt -- g_ed is non-NULL here
-   * because of THIS function's own guard above (BACKLOG #171b review F3), not
-   * because of how it was reached: pdna_gen12_source() now wires k_gb_xfer
-   * unconditionally, so this hook no longer depends on the caller for that. -1 = B
+  /* decision 4/D-Q7: the one-time-per-save origin prompt. g_ed set (MOVE) asks the
+   * open GbSession, exactly as before; g_ed NULL (COPY, decision 4) asks the mount's
+   * own Gb12Mount.kind -- `mon.gen` (just loaded, above) is the right `gen` argument
+   * either way, since it is the SAME session/mount's own generation. -1 = B
    * cancelled -> fail the lift, before any serial is spent. */
-  int origin = gb_origin_for_save(g_ed->s.gen, gb_session_is_crystal(&g_ed->s));
-  if (origin < 0) { log_line("gen12: xferup lift refused: origin prompt cancelled"); return false; }
+  bool crystal = g_ed ? gb_session_is_crystal(&g_ed->s) : (g_m && g_m->kind == GB12_SAVE_CRYSTAL);
+  int origin = gb_origin_for_save(mon.gen, crystal);
+  if (origin < 0) { log_line("gen12: %s lift refused: origin prompt cancelled", copy ? "copy" : "xferup"); return false; }
   uint8_t origin_game = (uint8_t)origin;
 
   uint32_t serial = pdna_bank_next_serial();
   if (!serial) {                              /* meta write failed -> refuse the lift */
-    log_line("gen12: xferup lift refused: bank.meta write failed (pdna_bank_next_serial)");
+    log_line("gen12: %s lift refused: bank.meta write failed (pdna_bank_next_serial)", copy ? "copy" : "xferup");
     return false;
   }
 
@@ -2004,6 +2082,7 @@ static bool gb_lift_up_hook(const uint8_t* rec80, uint8_t* out80, XferCarry* xc)
   if (mon.is_party)          flags |= BC_FLAG_FROM_PARTY;
   if (gb_is_egg(&mon))       flags |= BC_FLAG_EGG;
   if (gb_get_held_item(&mon) != 0) flags |= BC_FLAG_HOLDS_ITEM;
+  if (copy)                  flags |= (BC_FLAG_QUEUED_PC | BC_FLAG_COPY);   /* S150-12 decision 3 */
 
   GbaRtcTime t;
   uint32_t epoch = 0;
@@ -2013,6 +2092,40 @@ static bool gb_lift_up_hook(const uint8_t* rec80, uint8_t* out80, XferCarry* xc)
             ((uint32_t)t.minute << 6) | (uint32_t)t.second;
 
   return bc_pack(&mon, flags, origin_game, epoch, serial, out80) == 0;
+}
+
+/* BoxXferOps.lift_up (MOVE, the resident write session -- BACKLOG #150 S150-4
+ * decision 3/step 3). `xc` is unused (decision 6: no XferCarry static this lane --
+ * s_held already holds the 80-byte result and s_orig_box/s_orig_slot hold the GB
+ * origin). Self-sufficient guard, unchanged from before the S150-12 refactor
+ * (BACKLOG #171b review F3): refuse up front rather than trust the caller's own
+ * can_lift/can_enter_move gates to forever stay in lock-step with this one. */
+static bool gb_lift_up_hook(const uint8_t* rec80, uint8_t* out80, XferCarry* xc) {
+  (void)xc;
+  if (!g_ed) { log_line("gen12: xferup lift refused: no editable session"); return false; }
+  /* hard rule 4 / tests/host_gb_write_gate_test.py: this hook itself writes
+   * (pdna_bank_next_serial() persists bank.meta), so it carries its own
+   * app_can_edit() gate rather than relying only on the caller's can_lift check --
+   * the SD side of the write is this function's own responsibility, not begin_
+   * select's/the NORMAL-mode menu's, which merely decide whether to LOOK at a cell. */
+  if (!app_can_edit()) { log_line("gen12: xferup lift refused: cart is not writable"); return false; }
+  return gb_lift_pack(rec80, out80, false);
+}
+
+/* BoxXferOps.lift_up (COPY, the read-only nav-menu mount -- BACKLOG #150 S150-12
+ * decision 4). Mirror-image guard of gb_lift_up_hook above: refuses a write session
+ * outright (a write session never copies -- it MOVEs, through gb_lift_up_hook), and
+ * refuses without a mounted read-only path (g_m/g_ro_path, decision 5). `xc` unused,
+ * same reason as gb_lift_up_hook. app_can_edit( is repeated here (not only reachable
+ * through gb_lift_pack) for the same tests/host_gb_write_gate_test.py reason
+ * gb_lift_up_hook's own copy is: the checker scans each NAMED_WRITE_HOOKS function's
+ * OWN body text, never the shared callee it delegates to. */
+static bool gb_lift_copy_hook(const uint8_t* rec80, uint8_t* out80, XferCarry* xc) {
+  (void)xc;
+  if (g_ed) { log_line("gen12: copy lift refused: a write session never copies"); return false; }
+  if (!g_m || !g_ro_path) { log_line("gen12: copy lift refused: no read-only mount path"); return false; }
+  if (!app_can_edit()) { log_line("gen12: copy lift refused: cart is not writable"); return false; }
+  return gb_lift_pack(rec80, out80, true);
 }
 
 /* BoxXferOps.release_up (BACKLOG #150 S150-4 decision 7): RE-VERIFIES before it
@@ -2387,7 +2500,15 @@ static bool gbsrc_can_boxops_impl(int box) {
  * engine will accept a write into. Thin wrapper (gbsrc_can_enter_move) lives up by
  * gbsrc_can_boxops, same PDNA_GEN12_HOST pattern. */
 static bool gbsrc_can_enter_move_impl(int box) {
-  if (!g_ed) return false;
+  /* BACKLOG #150 S150-12 (DRIFT finding, folded from BACKLOG #187/#192 F1): the
+   * read-only nav-menu mount admits SELECT->MOVE too, box-level only -- no per-slot
+   * gbs_can_delete check (a copy deletes nothing, decision 4's own reasoning), same
+   * `g_m && g_ro_path` guard gb_lift_why_bs/gb_lift_copy_hook already use. Without
+   * this, frame 05 of the --s150-12 shot chain (SELECT enters MOVE on the RO mount)
+   * never fires: this gate sits IN FRONT of can_lift at the SELECT dispatch site
+   * (source/pdna_box.c) and refused the read-only mount outright, independent of
+   * gb_lift_why_bs's own fix above. */
+  if (!g_ed) return g_m != NULL && g_ro_path != NULL && app_can_edit();
   return app_can_edit() && gbs_box_writable(&g_ed->s, box) == GBS_OK;
 }
 
@@ -2585,7 +2706,17 @@ static const char* loss_name_text(const Gen3ToGbLoss* loss) {
   if (loss->nick_lossy && !loss->ot_lossy)   return PDNA_SIDECAR_LOSS_NICKNAME;
   return PDNA_SIDECAR_LOSS_NAME;
 }
-static bool __attribute__((noinline)) gb_paste_loss_screen(const Gen3ToGbLoss* loss) {
+/* BACKLOG #150 S150-12 decision 10 (folds BACKLOG #180): the shared PASTE/bridge
+ * screen's footer, by which caller. PASTE keeps the original three lines verbatim
+ * (there really is a ledger entry the PASTE route can restore from); BRIDGE gets
+ * the honest "the slot empties" wording instead of PASTE's stale "it stays in the
+ * Bank" claim (the bridge arm DOES consume the source Bank slot); COPY prints the
+ * NOBACK rows instead -- a copy cell has no ledger entry at all, so there is
+ * nothing to "keep". A local enum, not a new file-static override: three callers,
+ * one screen. */
+typedef enum { LOSS_FOOT_PASTE = 0, LOSS_FOOT_BRIDGE, LOSS_FOOT_COPY } GbLossFooter;
+
+static bool __attribute__((noinline)) gb_paste_loss_screen(const Gen3ToGbLoss* loss, GbLossFooter footer) {
   ui_clear();
   ui_text(4, 3, UI_TITLE, PDNA_SIDECAR_LOSS_TITLE);
   ui_hline(0, 13, UI_SCR_W, UI_BORDER);
@@ -2606,9 +2737,16 @@ static bool __attribute__((noinline)) gb_paste_loss_screen(const Gen3ToGbLoss* l
   y = loss_row(y, loss->nick_lossy || loss->ot_lossy, loss_name_text(loss));
 
   y += PDNA_SIDECAR_LOSS_ROW_H / 2;
-  ui_ptext_fit(4, y, UI_SCR_W - 8, UI_DIM, PDNA_SIDECAR_LOSS_KEPT_L1); y += PDNA_SIDECAR_LOSS_ROW_H;
-  ui_ptext_fit(4, y, UI_SCR_W - 8, UI_DIM, PDNA_SIDECAR_LOSS_KEPT_L2); y += PDNA_SIDECAR_LOSS_ROW_H;
-  ui_ptext_fit(4, y, UI_SCR_W - 8, UI_DIM, PDNA_SIDECAR_LOSS_STAYS);   y += PDNA_SIDECAR_LOSS_ROW_H;
+  if (footer == LOSS_FOOT_COPY) {
+    ui_ptext_fit(4, y, UI_SCR_W - 8, UI_DIM, PDNA_XFER_COPY_NOBACK_L1); y += PDNA_SIDECAR_LOSS_ROW_H;
+    ui_ptext_fit(4, y, UI_SCR_W - 8, UI_DIM, PDNA_XFER_COPY_NOBACK_L2); y += PDNA_SIDECAR_LOSS_ROW_H;
+  } else {
+    ui_ptext_fit(4, y, UI_SCR_W - 8, UI_DIM, PDNA_SIDECAR_LOSS_KEPT_L1); y += PDNA_SIDECAR_LOSS_ROW_H;
+    ui_ptext_fit(4, y, UI_SCR_W - 8, UI_DIM, PDNA_SIDECAR_LOSS_KEPT_L2); y += PDNA_SIDECAR_LOSS_ROW_H;
+    ui_ptext_fit(4, y, UI_SCR_W - 8, UI_DIM,
+                 footer == LOSS_FOOT_BRIDGE ? PDNA_XFER_BRIDGE_STAYS : PDNA_SIDECAR_LOSS_STAYS);
+    y += PDNA_SIDECAR_LOSS_ROW_H;
+  }
   y += PDNA_SIDECAR_LOSS_ROW_H / 2;
   ui_text(4, y, UI_TEXT, PDNA_SIDECAR_LOSS_A_TRANSFER); y += PDNA_SIDECAR_LOSS_ROW_H;
   ui_text(4, y, UI_DIM,  PDNA_SIDECAR_LOSS_B_CANCEL);
@@ -2874,8 +3012,14 @@ static bool __attribute__((noinline)) gb_paste_write(const GbEditMon* mon, int b
  * PDNA_SIDECAR_LOSS_TITLE/ROW_H/A_TRANSFER/B_CANCEL, the same s_wait(KEY_A|KEY_B)
  * return convention). `g2_item`/`item_travels` name the held-item row exactly as
  * S11.18 Q8 words it. */
+/* BACKLOG #150 S150-12 decision 10: `is_copy` adds one extra dim row before
+ * A_TRANSFER -- a copy cell's DOWN never reaches the ledger (decision 9), so this
+ * is the honest replacement for "there is a transfer record" that every other DOWN
+ * implicitly promises. Row budget (decision 10's own header note): Item + all four
+ * conditional rows + these two + the two hint rows = 10 rows of PDNA_SIDECAR_LOSS_
+ * ROW_H (9 px) from y=PDNA_SIDECAR_LOSS_ROW_Y0 (16) -> 106 px, inside UI_SCR_H (160). */
 static bool __attribute__((noinline))
-gb_down_loss_screen(const Gb12Notes* n, uint8_t g2_item, bool item_travels) {
+gb_down_loss_screen(const Gb12Notes* n, uint8_t g2_item, bool item_travels, bool is_copy) {
   ui_clear();
   ui_text(4, 3, UI_TITLE, PDNA_SIDECAR_LOSS_TITLE);
   ui_hline(0, 13, UI_SCR_W, UI_BORDER);
@@ -2890,6 +3034,10 @@ gb_down_loss_screen(const Gb12Notes* n, uint8_t g2_item, bool item_travels) {
   y = loss_row(y, n->gender_relaxed || n->letter_relaxed, "PID search relaxed");
   y = loss_row(y, true, "IVs come from DVs, nature from EXP");
   y = loss_row(y, true, "Met: this game, traded");
+  if (is_copy) {
+    y = loss_row(y, true, PDNA_XFER_COPY_NOBACK_L1);
+    y = loss_row(y, true, PDNA_XFER_COPY_NOBACK_L2);
+  }
 
   y += PDNA_SIDECAR_LOSS_ROW_H / 2;
   ui_text(4, y, UI_TEXT, PDNA_SIDECAR_LOSS_A_TRANSFER); y += PDNA_SIDECAR_LOSS_ROW_H;
@@ -3067,6 +3215,12 @@ BankDownResult gb_bank_down_gen3(BoxSource* src, int dst_box, int dst_cell,
   if (!app_can_edit()) { snd_deny(); return BANK_DOWN_REFUSED; }             /* 16(a) */
   if (!app_gen3_pc_live()) { snd_deny(); return BANK_DOWN_REFUSED; }         /* 16(b), G-F2 */
 
+  /* BACKLOG #150 S150-12 decision 9: a COPY cell (its GB original still exists,
+   * BC_FLAG_COPY) never reaches xfer_down_write/app_xfer_pending_set below -- an
+   * entry keyed by this cell's gbsc_key would collide with the entry the STILL-LIVING
+   * original would derive (SS11.7 G-L3, the clone-claims-the-original hole). */
+  const bool copy = xg_cell_is_copy(cell80);
+
   GbEditMon written;
   Gb12Notes notes;
   uint16_t g3item = 0;
@@ -3079,7 +3233,10 @@ BankDownResult gb_bank_down_gen3(BoxSource* src, int dst_box, int dst_cell,
   }
 
   if (app_bank_defer_full()) { snd_deny(); return BANK_DOWN_REFUSED; }      /* 16(f) */
-  if (app_xfer_pending()) {                                                 /* 16(g), decision 9 */
+  /* S150-12 decision 9: a copy has no ledger entry to promote, so N copies may land
+   * in one session without a SAVE-FIRST wall -- the S150-8d constraint this pre-
+   * flight guards is about ledger entries, never about cells. */
+  if (!copy && app_xfer_pending()) {                                        /* 16(g), decision 9 */
     snd_deny();
     msg_wait(PDNA_XFER_SAVEFIRST_TITLE, UI_WARN, PDNA_XFER_SAVEFIRST_L1, PDNA_XFER_SAVEFIRST_L2);
     return BANK_DOWN_REFUSED;
@@ -3089,7 +3246,7 @@ BankDownResult gb_bank_down_gen3(BoxSource* src, int dst_box, int dst_cell,
   if (occ) { snd_deny(); return BANK_DOWN_REFUSED; }                        /* 16(h) */
 
   bool travels = (g3item != 0);
-  if (!gb_down_loss_screen(&notes, notes.item_g2, travels)) return BANK_DOWN_REFUSED;
+  if (!gb_down_loss_screen(&notes, notes.item_g2, travels, copy)) return BANK_DOWN_REFUSED;
 
   /* decision 7's MAKE LEGAL correction: the mon standing below pk_evo_floor(dex). */
   PkMon pk;
@@ -3124,12 +3281,16 @@ BankDownResult gb_bank_down_gen3(BoxSource* src, int dst_box, int dst_cell,
    * decode_name(out->nickname, mon + 0x08, 10) call site names the offset) -- the
    * nickname AS WRITTEN ABROAD, not the GB bytes gbsc_entry_from() would otherwise
    * copy from `written` (the cell's own unpacked GB record). */
-  int idx = xfer_down_write(xr_key_g3(out80), cell80, &written, XR_DIR_ABROAD_G3,
-                            out80 + 0x08, scratch, path, NULL);
-  if (idx < 0) return BANK_DOWN_REFUSED;
+  if (!copy) {
+    int idx = xfer_down_write(xr_key_g3(out80), cell80, &written, XR_DIR_ABROAD_G3,
+                              out80 + 0x08, scratch, path, NULL);
+    if (idx < 0) return BANK_DOWN_REFUSED;
 
-  app_xfer_pending_set(xr_key_g3(out80), (int16_t)idx);                     /* decision 9 */
-  log_line("gen12: down->gen3 box %d slot %d: pending, %s", dst_box, dst_cell, path);
+    app_xfer_pending_set(xr_key_g3(out80), (int16_t)idx);                   /* decision 9 */
+    log_line("gen12: down->gen3 box %d slot %d: pending, %s", dst_box, dst_cell, path);
+  } else {
+    log_line("gen12: down->gen3 box %d slot %d: copy cell, no ledger entry", dst_box, dst_cell);
+  }
   return BANK_DOWN_CONVERTED;
 }
 
@@ -3360,6 +3521,10 @@ static void __attribute__((noinline)) gb_gen12_norom_msg(uint8_t gen) {
  * on this arm -- decision 15). */
 BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]) {
   if (!app_can_edit() || !g_ed) { snd_deny(); return BANK_DOWN_REFUSED; }    /* 16(a)/(b) */
+  /* BACKLOG #150 S150-12 decision 9: same derivation as gb_bank_down_gen3 -- a COPY
+   * cell's GB original still exists, so this arm must not write a ledger entry for
+   * it either. */
+  const bool copy = xg_cell_is_copy(cell80);
   if (gb_box_is_party(g_ed->s.gen, dst_box)) {
     snd_deny();
     msg_wait(PDNA_SIDECAR_XFER_TITLE, UI_WARN, PDNA_SIDECAR_PARTY_L1, 0);
@@ -3424,7 +3589,9 @@ BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]) {
    * already fires for gen3_to_gb's own (different) name loss. */
   loss.ot_lossy   |= notes.otname_lossy;
   loss.nick_lossy |= notes.nick_lossy;
-  if (!gb_paste_loss_screen(&loss)) return BANK_DOWN_REFUSED;               /* decision 15: the shipped screen */
+  /* decision 10: COPY prints the NOBACK rows instead of KEPT/STAYS -- there is no
+   * ledger entry to keep. */
+  if (!gb_paste_loss_screen(&loss, copy ? LOSS_FOOT_COPY : LOSS_FOOT_BRIDGE)) return BANK_DOWN_REFUSED;  /* decision 15: the shipped screen */
 
   uint8_t fix_from = 0, fix_to = 0;
   if (gen3_to_gb_evo_needs_fix(&mon, &fix_from, &fix_to)) {                  /* R1 block, verbatim */
@@ -3459,17 +3626,24 @@ BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]) {
     gb_get_dv(&mon, GB_SPE), gb_get_dv(&mon, GB_SPC)
   };
   uint64_t key = gbsc_key(mon.gen, gb_get_otid(&mon), dv4, mon.otname);
+  /* decision 9: a copy writes NO ledger entry -- idx stays -1 and path/wlen stay
+   * unused, so every guard below (undo/claim) must key on `copy`, never on `idx`
+   * alone (idx == -1 is ALSO gbsc_insert's own "the ledger is full" failure shape
+   * for a non-copy cell, which must still refuse the whole drop). */
   char path[GBSC_PATH_MAX];
   uint32_t wlen = 0;
-  int idx = xfer_down_write(key, cell80, &mon, XR_DIR_ABROAD_GB, NULL, g_ed->sidecar, path, &wlen);
-  if (idx < 0) return BANK_DOWN_REFUSED;
+  int idx = -1;
+  if (!copy) {
+    idx = xfer_down_write(key, cell80, &mon, XR_DIR_ABROAD_GB, NULL, g_ed->sidecar, path, &wlen);
+    if (idx < 0) return BANK_DOWN_REFUSED;
+  }
 
   int newslot = -1;
   GbsStatus ist = gbs_insert(&g_ed->s, dst_box, &mon, &newslot, g_ed->list);
   if (ist != GBS_OK) {
     gb_rollback();
     log_line("gen12: down->bridge insert box %d refused: %s", dst_box, gbs_status_text(ist));
-    xfer_down_undo(path, g_ed->sidecar);
+    if (!copy) xfer_down_undo(path, g_ed->sidecar);
     snd_error();
     msg_wait(PDNA_SIDECAR_XFER_REFUSED_TITLE, UI_WARN, gbs_status_text(ist), PDNA_GBEDIT_UNCHANGED_L2);
     return BANK_DOWN_REFUSED;
@@ -3477,9 +3651,13 @@ BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]) {
 
   log_line("=== gen12 down->bridge -> %s box %d slot %d ===", g_ed->path, dst_box, newslot);
   bool ok = gb_persist("xferdown");
-  if (!ok) { xfer_down_undo(path, g_ed->sidecar); return BANK_DOWN_REFUSED; }
+  if (!ok) {
+    if (!copy) xfer_down_undo(path, g_ed->sidecar);
+    return BANK_DOWN_REFUSED;
+  }
 
-  xfer_down_claim_now(g_ed->sidecar, wlen, idx, path);                      /* decision 15: CLAIMED now */
+  if (!copy) xfer_down_claim_now(g_ed->sidecar, wlen, idx, path);           /* decision 15: CLAIMED now */
+  else       log_line("gen12: down->bridge box %d slot %d: copy cell, no ledger entry", dst_box, newslot);
   return BANK_DOWN_LANDED;
 }
 
@@ -3801,7 +3979,7 @@ static bool gb_paste_hook(uint8_t* rec80) {
     return false;
   }
 
-  if (!gb_paste_loss_screen(&loss)) return false;                           /* 4 */
+  if (!gb_paste_loss_screen(&loss, LOSS_FOOT_PASTE)) return false;          /* 4 */
 
   /* BACKLOG #104 R1 (docs/TRANSFER-ROUNDTRIP-DESIGN.md section 3c/4): KEEP AS IS vs
    * MAKE LEGAL, additive between the loss screen and the box-writable check -- most
@@ -4129,7 +4307,11 @@ bool gb_native_summary_open(const uint8_t rec80[80], bool allow_edit, uint8_t ou
        * free inside bc_pack; re-derive only the two flag bits a GbEditMon can carry
        * (b3 egg, b4 held-item) -- b0/b1/b2 are Bank/ledger state bank_cell.h says a
        * GbEditMon has no home for, and must survive verbatim. */
-      uint8_t nf = (uint8_t)(meta.flags & (BC_FLAG_FROM_PARTY | BC_FLAG_HAS_XFER_REC | BC_FLAG_QUEUED_PC));
+      /* S150-12 decision 3: BC_FLAG_COPY (b5) is permanent while the cell lives, so it
+       * must survive an edit's re-pack too -- an unmarked copy would silently start
+       * writing ledger entries on its next DOWN (G-L3 reached through the editor). */
+      uint8_t nf = (uint8_t)(meta.flags & (BC_FLAG_FROM_PARTY | BC_FLAG_HAS_XFER_REC |
+                                            BC_FLAG_QUEUED_PC | BC_FLAG_COPY));
       if (gb_is_egg(&e))        nf |= BC_FLAG_EGG;          /* gb_edit.h -- Gen 2 list byte 0xFD   */
       if (gb_get_held_item(&e)) nf |= BC_FLAG_HOLDS_ITEM;   /* gb_edit.h -- Gen 2 only, 0 on Gen 1 */
       if (bc_pack(&e, nf, meta.origin_game, meta.rtc_epoch, meta.bank_serial, out80) != 0) return false;
@@ -5132,7 +5314,10 @@ static void gb_session_core(Gb12Mount* m, GbSession* ro) {
    * never dereferences a member through it, so installing the real table changes no
    * gate's verdict today; it is what makes start_carry's `src->xfer->lift_up` (this
    * step) and drop_held's UP branch (`s_xfer_peer->release_up`, step 5) reachable. */
-  pdna_box_xfer_set(&k_gb_xfer);
+  /* BACKLOG #150 S150-12 decision 2: same !g_ed ? selector as pdna_gen12_source()'s
+   * own s.xfer install above -- the read-only mount gets the COPY-only, no-delete
+   * table. */
+  pdna_box_xfer_set(g_ed ? &k_gb_xfer : &k_gb_xfer_ro);
   /* Returns 0 on B / the SAVE tab (leave); 2 on START, now reachable (BACKLOG #48,
    * BoxSource.has_start) -- handled by gb_nav_from_start above; 5 when the cursor
    * drops off the bottom row (the PC<->Bank hand-off, which has no PC to hand off to
@@ -5172,6 +5357,31 @@ static void gb_session_core(Gb12Mount* m, GbSession* ro) {
   app_src_readonly_clear();
   pdna_gen12_source(0);                      /* unmount: no dangling arena pointers */
   if (m->nblocked || m->nunreadable) gb_report_page(m);
+}
+
+/* BACKLOG #150 S150-12 decision 7: the read-only mount's ONE exit offer. Called at
+ * EXACTLY two sites -- pdna_gen12_show() and pdna_gen12_show_fused(), each right
+ * after their own FINAL app_arena_release() -- never anywhere else (not at Bank
+ * open, not at the next mount, not from inside the GB session itself; OPEN QUESTION
+ * 1 defers "repeats on the next Bank open" to S150-11). Why after the release and
+ * not before: app_gen3_pc_live() reads !app_arena_held(), which is still true (held)
+ * until the release actually runs, and the Bank the offer opens must see the real
+ * g_pc, not the mount's borrowed arena view of it. Returns 1 when the user accepted
+ * (the nav-menu caller opens the Bank); 0 otherwise -- pdna_gen12_show()/_fused()'s
+ * own callers never read a nonzero return today besides this new meaning. */
+static int __attribute__((noinline)) gb_ro_exit_offer(void) {
+  if (!xg_pc_offer(g_pcq_count, app_gen3_pc_live())) {
+    if (g_pcq_count)
+      log_line("gen12: %d copies queued for the PC but no live Gen-3 PC -- offer skipped", g_pcq_count);
+    g_pcq_count = 0;
+    return 0;
+  }
+  char l1[40];
+  siprintf(l1, PDNA_XFER_PCQ_L1_FMT, (int)g_pcq_count);
+  bool yes = app_confirm(PDNA_XFER_PCQ_TITLE, l1);
+  if (yes) pdna_bank_start_box_set(g_pcq_box);
+  g_pcq_count = 0;
+  return yes ? 1 : 0;
 }
 
 int pdna_gen12_show(const char* path, uint8_t met_game) {
@@ -5223,6 +5433,15 @@ int pdna_gen12_show(const char* path, uint8_t met_game) {
            path, pdna_gen12_kind_name(m->kind), m->nstored, m->nready,
            m->nblocked, m->nunreadable);
   app_box_resume_clear();   /* BACKLOG #188: a previous save/session's resume cell must not leak in */
+  /* BACKLOG #150 S150-12 decision 5/OPEN QUESTION 8: g_ro_path is set unconditionally
+   * the moment the MOUNT itself succeeds -- a COPY lift only ever needs g_m->stage
+   * (gb_copy_native_hook's own g_ed==NULL branch), never the streamed view session
+   * below, so tying it to vw_ok would refuse a copy the mount can plainly serve.
+   * decision 12: reset the "waiting for the PC" counter here too -- a stale count
+   * from an entry that failed before this point (or from a previous mount) must
+   * never leak into THIS one. */
+  g_ro_path = path;
+  g_pcq_count = 0;
 
   /* BACKLOG #64: a read-only STREAMED session over the SAME FIL/read-callback pair
    * the mount just used -- reachability + read parity for the eleven GB-screen nav
@@ -5254,14 +5473,21 @@ int pdna_gen12_show(const char* path, uint8_t met_game) {
   /* MANDATORY: the arena block is about to go -- clear the tail exactly like every
    * `g_ed = 0` site already clears g_tail_lent, or the next screen (resident-image
    * or streamed) could be handed a pointer into an arena block that is no longer
-   * this session's to use. */
+   * this session's to use. g_ro_path clears in the SAME bracket (decision 5): a
+   * stale pointer into a path string that is about to go out of scope must never
+   * survive this function's return. */
   g_ro_tail = 0;
   g_ro_tail_slack = 0;
   g_tail_lent = false;
+  g_ro_path = 0;
 
   f_close(f);
+  /* BACKLOG #150 S150-12 decision 7: fires exactly once per mount exit, ONLY after
+   * the arena release below has actually given g_pc back (app_gen3_pc_live() reads
+   * !app_arena_held(), which is still true until this line runs). Replaces the old
+   * unconditional `return 0;`. */
   app_arena_release();
-  return 0;
+  return gb_ro_exit_offer();
 }
 
 #ifdef PDNA_DELTA
@@ -5309,6 +5535,10 @@ int pdna_gen12_show_fused(int idx, uint8_t met_game) {
            name ? name : "?", pdna_gen12_kind_name(m->kind), m->nstored, m->nready,
            m->nblocked, m->nunreadable);
   app_box_resume_clear();   /* BACKLOG #188: a previous save/session's resume cell must not leak in */
+  /* BACKLOG #150 S150-12 decision 5/12 (same reasoning as pdna_gen12_show() above,
+   * `name` in place of `path` -- this entry mounts a fused ROM slice, not a FIL). */
+  g_ro_path = name;
+  g_pcq_count = 0;
 
   /* BACKLOG #64 review Finding (F1 ruling): this entry does NOT set g_ed either
    * (only pdna_gen12_show_image() does) -- the comment this replaces claimed
@@ -5334,9 +5564,10 @@ int pdna_gen12_show_fused(int idx, uint8_t met_game) {
   g_ro_tail = 0;
   g_ro_tail_slack = 0;
   g_tail_lent = false;
+  g_ro_path = 0;
 
   app_arena_release();
-  return 0;
+  return gb_ro_exit_offer();
 }
 #endif /* PDNA_DELTA */
 

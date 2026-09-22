@@ -103,18 +103,21 @@ Checks:
   (t) merged-tree reviewer: drop_held derives `arm` via xg_bank_down_arm( exactly
       ONCE, above the bank_down_dispatch( call -- the union's original bug class was a
       second derivation in the tail. MUT V adds a second derivation after dispatch.
-  (u) BACKLOG #150 S150-10: gb_paste_hook (source/pdna_gen12.c) computes bad4 via
+  (aa) BACKLOG #150 S150-10: gb_paste_hook (source/pdna_gen12.c) computes bad4 via
       gb_clip_moves( (which wraps g3gb_moves_ok) BEFORE its first gen3_to_gb_fixed(
-      call. MUT X deletes the gb_clip_moves( call and must be caught.
-  (v) BACKLOG #150 S150-10 decision 8.7: gb_paste_hook contains the zero-move refusal
+      call. MUT X deletes the gb_clip_moves( call and must be caught. (Re-lettered
+      from (u) at the merge with main/s150-12, which already owns (u)/(v)/(w); s150-9
+      is taking (x)/(y)/(z), so (aa)/(ab)/(ac) are the next free ones.)
+  (ab) BACKLOG #150 S150-10 decision 8.7: gb_paste_hook contains the zero-move refusal
       (`nbad == 4 && nfill == 0`) -- the ONE exception to Guy's "never block" answer,
       for a mon that would otherwise land with no moves at all (Struggles forever, an
       illegal Game Boy record). MUT Y weakens the condition to `false` and must be
-      caught.
-  (w) BACKLOG #150 S150-10: gb_paste_hook calls gb_paste_fill_moves( (the fill) BEFORE
+      caught. (Re-lettered from (v), same merge.)
+  (ac) BACKLOG #150 S150-10: gb_paste_hook calls gb_paste_fill_moves( (the fill) BEFORE
       gb_paste_write( -- a bad slot that reached gen3_to_gb_fixed with a non-NULL bad4
-      must always be filled (or the whole paste refused by (v)) before the record is
+      must always be filled (or the whole paste refused by (ab)) before the record is
       ever written. MUT Z moves the fill call after the write and must be caught.
+      (Re-lettered from (w), same merge.)
 """
 from __future__ import annotations
 
@@ -301,6 +304,39 @@ def bank_edge_sites_check(block: list[str]) -> tuple[bool, list[str]]:
             details.append(f"line {i + 1}: ok ({'guarded+clause' if guarded else 'unguarded, no clause needed'})")
     return all_ok, details
 
+# BACKLOG #150 S150-12 decision 6: the release_up-optional wrap in drop_held's UP
+# branch. Shared by the real check (n1) and its self-mutation demonstration (MUT N1).
+RELEASE_UP_TEST_RE = re.compile(r"if\s*\(\s*s_xfer_peer->release_up\s*\)")   # NOT a call (no `(` after
+                                                                              # the member) -- must not
+                                                                              # match RELEASE_UP_RE
+HOLDING_DONE_RE     = re.compile(r"s_holding = false; \*done = true;")
+PC_QUEUE_NOTE_RE    = re.compile(r"app_pc_queue_note\(")
+
+
+def n1_order_facts(lines, start, end):           # shared by the real check AND MUT N1
+    """BACKLOG #150 S150-12 decision 6: `if (s_xfer_peer->release_up)` must exist,
+    come AFTER both `ok = src->commit()` and the `s_holding = false; *done = true;`
+    hand-empty line, and `app_pc_queue_note(` must sit in its else branch -- line
+    order test < release_up call < app_pc_queue_note(."""
+    c = first_match_line(lines, start, end, COMMIT_RE)
+    h = first_match_line(lines, start, end, HOLDING_DONE_RE)
+    t = first_match_line(lines, start, end, RELEASE_UP_TEST_RE)
+    r = first_match_line(lines, start, end, RELEASE_UP_RE)
+    q = first_match_line(lines, start, end, PC_QUEUE_NOTE_RE)
+    if c is None: return False, "drop_held: no `ok = src->commit()` line in the UP branch"
+    if h is None: return False, "drop_held: no `s_holding = false; *done = true;` line in the UP branch"
+    if t is None: return False, "drop_held: no `if (s_xfer_peer->release_up)` test line -- decision 6's wrap is missing"
+    if r is None: return False, "drop_held: no `s_xfer_peer->release_up(` call"
+    if q is None: return False, "drop_held: no `app_pc_queue_note(` call"
+    if not (c < t and h < t):
+        return False, (f"drop_held: the `if (s_xfer_peer->release_up)` test (line {t+1}) does not come "
+                        f"after both commit() (line {c+1}) and the hand-empty line (line {h+1})")
+    if not (t < r < q):
+        return False, (f"drop_held: expected line order test (line {t+1}) < release_up() call "
+                        f"(line {r+1}) < app_pc_queue_note() (line {q+1})")
+    return True, "ok"
+
+
 def up_order_facts(lines, start, end):           # shared by the real check AND MUT H
     c = first_match_line(lines, start, end, COMMIT_RE)
     r = first_match_line(lines, start, end, RELEASE_UP_RE)
@@ -339,6 +375,143 @@ def down_order_facts(lines, start, end):        # shared by the real check AND M
                                  f"come before app_bank_clear_slots() (line {c+1}, the Bank consume) "
                                  f"-- the Bank's own copy could be zeroed before the Game Boy save "
                                  f"has the mon")
+    return True, "ok"
+
+
+# BACKLOG #150 S150-12 decision 9: a COPY cell's DOWN writes no ledger entry -- the
+# `copy` derivation must precede the first ledger write, and every ledger-mutating
+# call in gb_bank_down_gen3/gb_bank_down_bridge must sit inside an `if (!copy`
+# guard (either form: a one-line `if (!copy) call(...);` or a brace-balanced
+# `if (!copy) { ... call(...); ... }` block). Shared by the real check (n3) and its
+# self-mutation demonstration (MUT N3).
+COPY_DERIVE_RE       = re.compile(r"const bool copy = xg_cell_is_copy\(")
+COPY_GUARD_RE        = re.compile(r"if\s*\(\s*!copy\b")
+XFER_DOWN_WRITE_RE   = re.compile(r"\bxfer_down_write\(")
+XFER_PENDING_SET_RE  = re.compile(r"\bapp_xfer_pending_set\(")
+XFER_CLAIM_NOW_RE    = re.compile(r"\bxfer_down_claim_now\(")
+XFER_UNDO_RE         = re.compile(r"\bxfer_down_undo\(")
+N3_TARGET_RES = (XFER_DOWN_WRITE_RE, XFER_PENDING_SET_RE, XFER_CLAIM_NOW_RE, XFER_UNDO_RE)
+
+
+def n3_facts_over_body(body, func_name):
+    """The core of n3_facts(), operating on an already-extracted (and possibly
+    mutated) function body list -- shared by the real check (n3) and MUT N3, same
+    "real check and its self-mutation demonstration call the identical logic"
+    posture as gate_before_pattern(). Approximates "is this call inside an
+    `if (!copy` guard" with a brace-depth walk: a same-line guard (`if (!copy)
+    call(...);`, no `{`) covers only its own line; a block guard (`if (!copy) {`)
+    covers every line from the NEXT line until depth returns to the depth measured
+    just before that guard line. This is a heuristic, not a real block-scope parser
+    (documented per the brief) -- as precise as gate_before_pattern()'s own
+    line-order approximation elsewhere in this file, applied to "inside a guard"
+    instead of "before a line". Returns (ok, detail)."""
+    copy_i = first_match_line(body, 0, len(body), COPY_DERIVE_RE)
+    if copy_i is None:
+        return False, f"{func_name}: no `const bool copy = xg_cell_is_copy(` derivation found"
+    write_i = first_match_line(body, 0, len(body), XFER_DOWN_WRITE_RE)
+    if write_i is not None and not copy_i < write_i:
+        return False, (f"{func_name}: the `copy` derivation (line {copy_i+1}) does not precede "
+                        f"the first xfer_down_write( (line {write_i+1})")
+
+    depth = 0
+    guard_stack = []   # depths at which an `if (!copy) {` block's own body sits
+    violations = []
+    for i, ln in enumerate(body):
+        depth_before = depth
+        has_guard = bool(COPY_GUARD_RE.search(ln))
+        same_line_guard = has_guard and "{" not in ln
+        opens_block = has_guard and "{" in ln
+        guarded = same_line_guard or bool(guard_stack)
+        if any(p.search(ln) for p in N3_TARGET_RES) and not guarded:
+            violations.append(f"{func_name} line {i+1}: {ln.strip()!r} is not inside an `if (!copy` guard")
+        if opens_block:
+            guard_stack.append(depth_before)
+        depth += ln.count("{") - ln.count("}")
+        while guard_stack and depth <= guard_stack[-1]:
+            guard_stack.pop()
+    if violations:
+        return False, "; ".join(violations)
+    return True, "ok"
+
+
+def n3_facts(lines, func_name):
+    s, e = extract_function(lines, r"^BankDownResult " + re.escape(func_name) + r"\(")
+    body = lines[s:e]
+    return n3_facts_over_body(body, func_name)
+
+
+# ---- REVIEW FIX (LOW, BACKLOG #150 S150-12): three findings the reviewer's own
+# mutants M2/M7/M9 passed EVERY test in this file (unpinned, not a source defect --
+# the shipped source is correct today, only unproven). Shared by the real checks (u)/
+# (v)/(w) below and their own self-mutation demonstrations. -----------------------
+K_GB_XFER_RO_RE = re.compile(r"static const BoxXferOps k_gb_xfer_ro = \{")
+
+
+def k_gb_xfer_ro_facts(lines):     # shared by real check (u) and MUT M2
+    """BACKLOG #150 S150-12 decision 2: k_gb_xfer_ro's literal must contain BOTH
+    `.release_up = 0` and `.accept_down = 0` -- the read-only mount's table has
+    STRUCTURALLY no delete/accept hook, not just a runtime-refused one (reviewer's
+    mutant M2: a non-NULL release_up here would let a COPY drop delete from the
+    read-only mount's own save, which has no GbSession to write through -- a
+    guaranteed crash or silent corruption, not caught by any other check in this
+    file, since drop_held's own `s_xfer_peer->release_up` guard only checks
+    non-NULLness, never WHAT the pointer is)."""
+    idx = first_match_line(lines, 0, len(lines), K_GB_XFER_RO_RE)
+    if idx is None:
+        return False, "k_gb_xfer_ro: `static const BoxXferOps k_gb_xfer_ro = {` literal not found"
+    depth = 0
+    end = idx
+    for i in range(idx, len(lines)):
+        depth += lines[i].count("{") - lines[i].count("}")
+        if depth == 0 and i > idx:
+            end = i
+            break
+    block = "\n".join(lines[idx:end + 1])
+    missing = [f for f in (".release_up = 0", ".accept_down = 0") if f not in block]
+    if missing:
+        return False, f"k_gb_xfer_ro: literal is missing {missing} -- see this check's own docstring"
+    return True, "ok"
+
+
+HAVE_XFER_RE = re.compile(r"bool have_xfer = s_xfer_peer")
+
+
+def have_xfer_facts(lines):        # shared by real check (v) and MUT M7
+    """BACKLOG #150 S150-12 decision 6: the `have_xfer` line in drop_held's UP branch
+    must NOT mention `release_up` -- requiring it would refuse the read-only mount's
+    COPY drop outright (its table has no release_up at all), reverting decision 6's
+    whole point. Exactly one `bool have_xfer = s_xfer_peer` site is expected
+    (reviewer's mutant M7: adding `&& s_xfer_peer->release_up` back)."""
+    idx = first_match_line(lines, 0, len(lines), HAVE_XFER_RE)
+    if idx is None:
+        return False, "drop_held: no `bool have_xfer = s_xfer_peer` line found"
+    if "release_up" in lines[idx]:
+        return False, (f"drop_held line {idx+1}: {lines[idx].strip()!r} mentions `release_up` -- "
+                        f"this would refuse the read-only mount's COPY drop (its table has no "
+                        f"release_up), reverting decision 6")
+    return True, "ok"
+
+
+NF_MASK_RE = re.compile(r"uint8_t nf = \(uint8_t\)\(meta\.flags & \(")
+
+
+def native_summary_mask_facts(lines):   # shared by real check (w) and MUT M9
+    """BACKLOG #150 S150-12 decision 3: gb_native_summary_open's `nf` re-pack mask
+    (source/pdna_gen12.c) must carry BC_FLAG_COPY forward, or editing a copy cell
+    through the summary screen silently un-marks it -- the NEXT DOWN of that cell
+    then writes the clone's ledger entry, reaching G-L3 (the original clone-claims-
+    the-original hole this whole lane exists to close) through the editor instead
+    of through a fresh lift (reviewer's mutant M9: dropping `| BC_FLAG_COPY` from
+    the mask)."""
+    idx = first_match_line(lines, 0, len(lines), NF_MASK_RE)
+    if idx is None:
+        return False, "gb_native_summary_open: no `uint8_t nf = (uint8_t)(meta.flags & (...` re-pack line found"
+    # the mask spans this line and (today) one continuation line before the closing `));`
+    window = "\n".join(lines[idx:idx + 3])
+    if "BC_FLAG_COPY" not in window:
+        return False, ("gb_native_summary_open: the `nf` re-pack mask does not carry BC_FLAG_COPY "
+                        "forward -- editing a copy cell would silently un-mark it (G-L3 through "
+                        "the editor)")
     return True, "ok"
 
 
@@ -486,15 +659,17 @@ def landed_tail_block(dh_body: list[str]) -> list[str]:
 DST_GEN_LINE_RE = re.compile(r"uint8_t\s+dst_gen\s*=\s*g_ed->s\.gen\s*;")
 INVERTED_GEN_RE = re.compile(r"\?\s*GB_GEN2\s*:\s*GB_GEN1")
 
-# ---- (u)/(v)/(w) BACKLOG #150 S150-10: gb_paste_hook's per-slot move rule (G-H8).
-# (u) bad4 is computed (gb_clip_moves -> g3gb_moves_ok) BEFORE the first
+# ---- (aa)/(ab)/(ac) BACKLOG #150 S150-10: gb_paste_hook's per-slot move rule (G-H8).
+# Re-lettered from (u)/(v)/(w) at the merge with main/s150-12, which already owns
+# those letters for its own three checks; s150-9 is taking (x)/(y)/(z).
+# (aa) bad4 is computed (gb_clip_moves -> g3gb_moves_ok) BEFORE the first
 # gen3_to_gb_fixed( call -- an uninitialised/stale bad4 handed to the converter would
 # either wrongly refuse a legal record or (worse) wrongly empty one it never checked.
-# (v) the zero-move refusal (decision 8.7, the ONE exception to Guy's "never block")
+# (ab) the zero-move refusal (decision 8.7, the ONE exception to Guy's "never block")
 # exists: all four slots bad AND the fill produced nothing must refuse before the
 # modal, not silently hand a Struggle-forever mon to gb_paste_write.
-# (w) gb_paste_fill_moves( (the fill) is called BEFORE gb_paste_write( -- a bad slot
-# that reached gen3_to_gb_fixed non-NULL must always be filled (or refused by (v))
+# (ac) gb_paste_fill_moves( (the fill) is called BEFORE gb_paste_write( -- a bad slot
+# that reached gen3_to_gb_fixed non-NULL must always be filled (or refused by (ab))
 # before the record is ever written; a write reachable without the fill having run
 # would leave a mid-list hole/an un-filled empty slot in the landed record. Shared by
 # the real checks and their MUT X/MUT Y/MUT Z self-mutation demonstrations. ----------
@@ -776,6 +951,13 @@ def main() -> int:
     ok, d = up_order_facts(box_lines, s, e)
     check(ok, d)
 
+    # ---- (n1) BACKLOG #150 S150-12 decision 6: the release_up-optional wrap --
+    # `if (s_xfer_peer->release_up)` after commit()/hand-empty, and app_pc_queue_note(
+    # in its else, in that line order. ----
+    s, e = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
+    ok, d = n1_order_facts(box_lines, s, e)
+    check(ok, d)
+
     # ---- (l) BACKLOG #150 S150-8b: the RESTORE edge's ordering in drop_held's
     # PC->Bank arm -- pc_bank_restore_up( before the write, pc_bank_restore_done(
     # strictly after both the verified commit and the source release. ----
@@ -902,24 +1084,45 @@ def main() -> int:
     check(sum(1 for ln in bridge_body if re.search(r"\bdst_gen\s*=", ln)) == 1,
           "gb_bank_down_bridge: dst_gen must be assigned exactly once (its declaration)")   # Fable review F1
 
-    # ---- (u)/(v)/(w) BACKLOG #150 S150-10: gb_paste_hook's per-slot move rule. ----
+    # ---- (n3) BACKLOG #150 S150-12 decision 9: gb_bank_down_gen3/gb_bank_down_bridge
+    # -- the `copy` derivation precedes the first ledger write, and every ledger call
+    # in each body sits inside an `if (!copy` guard. ----
+    for fn in ("gb_bank_down_gen3", "gb_bank_down_bridge"):
+        ok, d = n3_facts(gen12_lines, fn)
+        check(ok, d)
+
+    # ---- (u)/(v)/(w) REVIEW FIX (LOW, BACKLOG #150 S150-12): three findings the
+    # reviewer's own mutants M2/M7/M9 passed every check in this file today
+    # (unpinned) -- see k_gb_xfer_ro_facts/have_xfer_facts/native_summary_mask_facts'
+    # own docstrings above. ----
+    ok, d = k_gb_xfer_ro_facts(gen12_lines)
+    check(ok, d)
+    ok, d = have_xfer_facts(box_lines)
+    check(ok, d)
+    ok, d = native_summary_mask_facts(gen12_lines)
+    check(ok, d)
+
+    # ---- (aa)/(ab)/(ac) BACKLOG #150 S150-10: gb_paste_hook's per-slot move rule --
+    # RE-LETTERED from (u)/(v)/(w) (merge with main/s150-12, which already owns those
+    # letters; s150-9 is taking (x)/(y)/(z), so (aa)/(ab)/(ac) are the next free
+    # ones). ----
     sh, eh = extract_function(gen12_lines, r"^static bool gb_paste_hook\(")
     hook_body = gen12_lines[sh:eh]
 
-    # (u) bad4 is computed (gb_clip_moves) BEFORE the first gen3_to_gb_fixed( call.
+    # (aa) bad4 is computed (gb_clip_moves) BEFORE the first gen3_to_gb_fixed( call.
     ok, msg = gate_before_pattern(hook_body, 0, len(hook_body), CLIP_MOVES_RE,
                                    GEN3_TO_GB_FIXED_RE, "gb_paste_hook")
     check(ok, msg)
 
-    # (v) the zero-move refusal (decision 8.7) exists.
+    # (ab) the zero-move refusal (decision 8.7) exists.
     check(any(ZERO_MOVE_REFUSAL_RE.search(ln) for ln in hook_body),
           "gb_paste_hook: no `nbad == 4 && nfill == 0` zero-move refusal found in its "
           "(comment-stripped) body -- a mon with all four slots bad and nothing filled "
           "would land with no moves (Struggles forever, an illegal Game Boy record)")
 
-    # (w) the fill (gb_paste_fill_moves) is called BEFORE the write (gb_paste_write) --
+    # (ac) the fill (gb_paste_fill_moves) is called BEFORE the write (gb_paste_write) --
     # a bad slot that reached gen3_to_gb_fixed non-NULL must always be filled (or the
-    # whole paste refused by (v)) before gb_paste_write ever runs.
+    # whole paste refused by (ab)) before gb_paste_write ever runs.
     ok, msg = gate_before_pattern(hook_body, 0, len(hook_body), PASTE_FILL_MOVES_RE,
                                    PASTE_WRITE_CALL_RE, "gb_paste_hook")
     check(ok, msg)
@@ -1055,6 +1258,24 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str]) -
         ok, detail = up_order_facts(mut_h, 0, len(mut_h))
         check(not ok, f"MUT H (release_up swapped before commit()) should have been caught but was not: {detail}")
         print(f"  MUT H demonstration -- release_up() line swapped above src->commit(): {detail}")
+
+    # MUT N1 (BACKLOG #150 S150-12 decision 6): move the `app_pc_queue_note(` line to
+    # ABOVE `ok = src->commit()` in a copy of drop_held's body -- the copy would be
+    # queued for the PC offer before the Bank write that supposedly landed it has even
+    # been attempted -- and assert n1_order_facts() reports failure.
+    s, e = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
+    body = box_lines[s:e]
+    commit_i3 = first_match_line(body, 0, len(body), COMMIT_RE)
+    queue_i = first_match_line(body, 0, len(body), PC_QUEUE_NOTE_RE)
+    check(commit_i3 is not None and queue_i is not None,
+          "MUT N1: could not locate both the commit() and app_pc_queue_note() lines in the real source -- fix this test")
+    if commit_i3 is not None and queue_i is not None and commit_i3 < queue_i:
+        mut_n1 = list(body)
+        queue_line = mut_n1.pop(queue_i)
+        mut_n1.insert(commit_i3, queue_line)   # app_pc_queue_note's line now sits BEFORE commit()
+        ok, detail = n1_order_facts(mut_n1, 0, len(mut_n1))
+        check(not ok, f"MUT N1 (app_pc_queue_note moved above commit()) should have been caught but was not: {detail}")
+        print(f"  MUT N1 demonstration -- app_pc_queue_note() line moved above src->commit(): {detail}")
 
     # MUT K (BACKLOG #150 S150-8b, step 5's own demonstration): move
     # pc_bank_restore_done( ABOVE `ok = src->commit()` in a copy of drop_held's body --
@@ -1305,6 +1526,39 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str]) -
         print("  MUT R demonstration -- gb_bank_down_bridge's dst_gen line reverted to "
               "the inverted `? GB_GEN2 : GB_GEN1` form: correctly caught")
 
+    # MUT N3 (BACKLOG #150 S150-12 decision 9): delete the `if (!copy)` guard around
+    # gb_bank_down_gen3's Gen-3 ledger-write arm on a copy of gb_bank_down_gen3's
+    # body -- the exact regression the brief's STOP-LICENCE item 6 names (a copy cell
+    # reaching xfer_down_write on any arm) -- and assert n3_facts() reports failure.
+    s, e = extract_function(gen12_lines, r"^BankDownResult gb_bank_down_gen3\(")
+    gen3_body = gen12_lines[s:e]
+    # the guard that actually ENCLOSES xfer_down_write( -- not the earlier, unrelated
+    # `if (!copy && app_xfer_pending())` SAVE-FIRST pre-flight, which also matches
+    # COPY_GUARD_RE but guards a REFUSAL, not the ledger write. Search backward from
+    # the write call for the nearest block-opening `if (!copy) {`.
+    write_i = first_match_line(gen3_body, 0, len(gen3_body), XFER_DOWN_WRITE_RE)
+    check(write_i is not None, "MUT N3: could not locate xfer_down_write( in gb_bank_down_gen3's real source -- fix this test")
+    guard_i = None
+    if write_i is not None:
+        for j in range(write_i, -1, -1):
+            if COPY_GUARD_RE.search(gen3_body[j]) and "{" in gen3_body[j]:
+                guard_i = j
+                break
+    check(guard_i is not None,
+          "MUT N3: could not locate the `if (!copy) {` guard enclosing xfer_down_write( in gb_bank_down_gen3's real source -- fix this test")
+    if guard_i is not None and "{" in gen3_body[guard_i]:
+        # delete just the guard LINE itself (leaving its `{`-opened block's own lines
+        # and its matching `}` in place) -- an unbalanced brace is fine for this
+        # heuristic checker (it only re-scans the same 4 call patterns against a
+        # depth walk that starts from 0 regardless), and matches the shape of every
+        # other single-line-deletion MUT in this file.
+        mut_n3 = gen3_body[:guard_i] + gen3_body[guard_i + 1:]
+        ok, detail = n3_facts_over_body(mut_n3, "gb_bank_down_gen3")
+        check(not ok, f"MUT N3 (the `if (!copy) {{` guard deleted around the Gen-3 ledger "
+                       f"write) should have been caught but was not: {detail}")
+        print(f"  MUT N3 demonstration -- `if (!copy) {{` guard deleted from "
+              f"gb_bank_down_gen3's ledger-write arm: {detail}")
+
     # MUT W (merged-tree reviewer): drop the non-EXACT LANDED tail's repaint lines
     # (s_oam_reload = true; and the recs = src->records(box) reassignment) on a copy,
     # keeping the Bank consume -- a revert that keeps the consume but drops the
@@ -1366,11 +1620,63 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str]) -
         print(f"  MUT V demonstration -- a second xg_bank_down_arm( derivation added "
               f"after bank_down_dispatch(: {detail}")
 
-    # BACKLOG #150 S150-10: gb_paste_hook's per-slot move rule -- MUT X/Y/Z.
+    # MUT M2 (REVIEW FIX, LOW, BACKLOG #150 S150-12): give k_gb_xfer_ro's literal a
+    # non-NULL release_up in a copy of gen12_lines -- must go red.
+    idx = first_match_line(gen12_lines, 0, len(gen12_lines), K_GB_XFER_RO_RE)
+    check(idx is not None, "MUT M2: could not locate k_gb_xfer_ro's literal in the real source -- fix this test")
+    if idx is not None:
+        target_m2 = "  .release_up = 0, .move_within = 0,"
+        check(gen12_lines[idx + 2] == target_m2,
+              f"MUT M2: k_gb_xfer_ro's third line does not match the expected "
+              f"{target_m2!r} (found {gen12_lines[idx + 2]!r}) -- fix this test")
+        if gen12_lines[idx + 2] == target_m2:
+            mut_m2 = list(gen12_lines)
+            mut_m2[idx + 2] = "  .release_up = gb_release_up_hook, .move_within = 0,"
+            ok_m2, detail = k_gb_xfer_ro_facts(mut_m2)
+            check(not ok_m2, f"MUT M2 (k_gb_xfer_ro given a non-NULL release_up) should have "
+                              f"been caught but was not: {detail}")
+            print(f"  MUT M2 demonstration -- k_gb_xfer_ro's .release_up set to "
+                  f"gb_release_up_hook: {detail}")
+
+    # MUT M7 (REVIEW FIX, LOW, BACKLOG #150 S150-12): add `&& s_xfer_peer->release_up`
+    # back onto drop_held's `have_xfer` line in a copy of box_lines -- must go red.
+    idx7 = first_match_line(box_lines, 0, len(box_lines), HAVE_XFER_RE)
+    check(idx7 is not None, "MUT M7: could not locate the `have_xfer` line in the real source -- fix this test")
+    if idx7 is not None:
+        mut_m7 = list(box_lines)
+        mut_m7[idx7] = mut_m7[idx7].rstrip().rstrip(";") + " && s_xfer_peer->release_up;"
+        ok_m7, detail = have_xfer_facts(mut_m7)
+        check(not ok_m7, f"MUT M7 (`&& s_xfer_peer->release_up` re-added to have_xfer) should "
+                          f"have been caught but was not: {detail}")
+        print(f"  MUT M7 demonstration -- `&& s_xfer_peer->release_up` re-added to "
+              f"drop_held's have_xfer line: {detail}")
+
+    # MUT M9 (REVIEW FIX, LOW, BACKLOG #150 S150-12): drop `| BC_FLAG_COPY` from
+    # gb_native_summary_open's `nf` re-pack mask in a copy of gen12_lines -- must go red.
+    idx9 = first_match_line(gen12_lines, 0, len(gen12_lines), NF_MASK_RE)
+    check(idx9 is not None, "MUT M9: could not locate the `nf` re-pack mask line in the real source -- fix this test")
+    if idx9 is not None:
+        window9 = gen12_lines[idx9:idx9 + 3]
+        found9 = [i for i, ln in enumerate(window9) if "BC_FLAG_COPY" in ln]
+        check(len(found9) == 1, f"MUT M9: expected exactly 1 line naming BC_FLAG_COPY in the "
+                                 f"3-line mask window, found {len(found9)} -- fix this test")
+        if len(found9) == 1:
+            mut_m9 = list(gen12_lines)
+            j = idx9 + found9[0]
+            mut_m9[j] = mut_m9[j].replace("BC_FLAG_COPY", "").replace(" |  |", " |").replace("| )", ")")
+            ok_m9, detail = native_summary_mask_facts(mut_m9)
+            check(not ok_m9, f"MUT M9 (BC_FLAG_COPY dropped from the nf re-pack mask) should "
+                              f"have been caught but was not: {detail}")
+            print(f"  MUT M9 demonstration -- BC_FLAG_COPY dropped from "
+                  f"gb_native_summary_open's nf re-pack mask: {detail}")
+
+    # BACKLOG #150 S150-10: gb_paste_hook's per-slot move rule -- MUT X/Y/Z. Checks
+    # RE-LETTERED to (aa)/(ab)/(ac) above (merge with main/s150-12); the MUT letters
+    # themselves are untouched (X/Y/Z were already free, no collision).
     sh, eh = extract_function(gen12_lines, r"^static bool gb_paste_hook\(")
     hook_body = gen12_lines[sh:eh]
 
-    # MUT X: delete the `gb_clip_moves(` call line on a copy -- (u) must fail to find
+    # MUT X: delete the `gb_clip_moves(` call line on a copy -- (aa) must fail to find
     # bad4 computed at all, not silently accept an uninitialised bad4.
     clip_i = first_match_line(hook_body, 0, len(hook_body), CLIP_MOVES_RE)
     check(clip_i is not None, "MUT X: could not locate the real gb_clip_moves( call in "
@@ -1384,7 +1690,7 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str]) -
         print(f"  MUT X demonstration -- gb_clip_moves( call deleted from gb_paste_hook: {detail}")
 
     # MUT Y: replace the zero-move refusal's condition with a weaker one (decision
-    # 8.7's ONE exception to "never block" silently disappears) on a copy -- (v) must
+    # 8.7's ONE exception to "never block" silently disappears) on a copy -- (ab) must
     # fail to find it.
     zero_i = first_match_line(hook_body, 0, len(hook_body), ZERO_MOVE_REFUSAL_RE)
     check(zero_i is not None, "MUT Y: could not locate the real `nbad == 4 && nfill == "
@@ -1399,7 +1705,7 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str]) -
               "in gb_paste_hook: correctly caught")
 
     # MUT Z: move the `gb_paste_fill_moves(` call line to AFTER `gb_paste_write(` on a
-    # copy -- (w) must fail: a bad slot could reach the write un-filled.
+    # copy -- (ac) must fail: a bad slot could reach the write un-filled.
     fill_i = first_match_line(hook_body, 0, len(hook_body), PASTE_FILL_MOVES_RE)
     write_i = first_match_line(hook_body, 0, len(hook_body), PASTE_WRITE_CALL_RE)
     check(fill_i is not None and write_i is not None and fill_i < write_i,
