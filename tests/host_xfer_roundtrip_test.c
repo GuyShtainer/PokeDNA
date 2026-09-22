@@ -1790,6 +1790,129 @@ static void test_mutation_proofs(void) {
   printf("  source mutation; that step runs from the shell, not from inside this file).\n");
 }
 
+/* ---- BACKLOG #206 (CLAIMED half): the two-trips test ----------------------------
+ *
+ * pc_bank_restore_up (pdna_box.c) is not host-buildable (same D7 note above); this
+ * pins the pure pick it delegates to, xr_restore_pick (source/xfer_rec.c). Three
+ * Gen-3 descendants of ONE native mon share the same xr_key_g3 (PID+otId is a pure
+ * function of the native record, gen12_convert.c:166-188/338-340) but carry
+ * DIFFERENT nicknames (a real edit between snapshots, not a synthetic byte flip),
+ * so the sidecar's nick_written field can tell them apart -- exactly the signal
+ * BACKLOG #206 says highest-index-only ignores:
+ *
+ *   trip 1: mon renamed "TRIPONE",  DOWN -> out1 (entry E1, then marked RESTORED)
+ *   copy:   mon (still "TRIPONE" at the time of copying) renamed "COPYNIK" on a
+ *           SEPARATE in-memory copy, DOWN -> outC, NO ledger entry (S150-12)
+ *   trip 2: the SAME native mon renamed "TRIPTWO", DOWN -> out2 (entry E2, CLAIMED)
+ *
+ * After trip 2 the ledger file holds [E1 RESTORED "TRIPONE", E2 CLAIMED "TRIPTWO"].
+ * Restoring outC (nickname "COPYNIK") must find NEITHER: not E1 (RESTORED, refused
+ * already by S150-9) and not E2 either -- E2's own nickname doesn't match outC's.
+ * Restoring out2 (nickname "TRIPTWO") must find E2, never E1.
+ *
+ * MUTATION: revert xr_restore_pick to plain highest-index-among-NATIVE_HOME
+ * (ignore state and identity, the pre-#206 shape) -- outC then wrongly resolves to
+ * E2 (the only non-refused entry, picked purely because it is the highest index),
+ * and this test's "outC finds nothing live" check fails. */
+static void test_backlog_206_two_trips(void) {
+  printf("\n-- D8. BACKLOG #206: the two-trips CLAIMED-aware restore pick --\n");
+  char path[512];
+  snprintf(path, sizeof path, "%s/Gold.sav", GB_ROMS);
+  FILE* f = fopen(path, "rb");
+  if (!f) { printf("  SKIP (Gold.sav not present)\n"); return; }
+  static uint8_t img[G2_SAVE_SIZE + G2_MAX_RTC_TAIL];
+  uint32_t ilen = (uint32_t)fread(img, 1, sizeof img, f);
+  fclose(f);
+  G2Save sv;
+  if (!g2_detect(img, ilen, &sv) || !sv.supported) { printf("  SKIP (unsupported)\n"); return; }
+  G2Header hd;
+  if (!g2_read_header(img, &sv, &hd)) { printf("  SKIP (header)\n"); return; }
+
+  GbEditMon base;
+  bool found = false;
+  for (int box = 0; box <= G2_BOX_PARTY && !found; box++) {
+    uint32_t off = g2_list_offset(&sv, box, hd.current_box);
+    if (off == 0) continue;
+    int count = gb_list_count(GB_GEN2, img + off, box);
+    if (count < 0) continue;
+    for (int slot = 0; slot < count; slot++) {
+      if (!gb_load(&base, GB_GEN2, img + off, box, slot)) continue;
+      if (base.list_species == G2_LIST_EGG) continue;
+      found = true;
+      break;
+    }
+  }
+  if (!found) { printf("  SKIP (no usable Gen-2 record in Gold.sav)\n"); return; }
+
+  /* trip 1 */
+  GbEditMon mon1 = base;
+  CHECK(gb_set_nickname(&mon1, "TRIPONE"), "206: rename to TRIPONE");
+  uint8_t cell1[80]; GbEditMon written1; uint8_t out1[80];
+  if (!xr_down_sim(&mon1, BC_ORIGIN_GOLD, g_xr_serial++, cell1, &written1, out1)) {
+    printf("  SKIP (does not convert)\n"); return;
+  }
+  GbscEntry e1;
+  xr_build_entry_asdown(&e1, &written1, cell1, out1);
+  e1.state = XR_STATE_CLAIMED;
+
+  uint8_t buf[GBSC_FILE_MAX];
+  uint32_t len = (uint32_t)gbsc_init(buf, xr_key_g3(out1));
+  int idx1 = gbsc_add(buf, &len, GBSC_FILE_MAX, &e1);
+  CHECK(idx1 == 0, "206: E1 added at index 0");
+
+  /* restore trip 1: must find E1 live (the ordinary, single-entry case still works) */
+  GbscEntry picked; XrRestorePickRule rule;
+  int rc = xr_restore_pick(buf, len, gbsc_count(buf, len), out1, &picked, &rule);
+  CHECK(rc == idx1 && rule == XR_PICK_LIVE, "206: trip-1 restore finds E1 live (rc=%d rule=%d)", rc, (int)rule);
+  CHECK(gbsc_set_state(buf, len, idx1, XR_STATE_RESTORED) == 0, "206: E1 marked RESTORED");
+
+  /* the copy: a DIFFERENT in-memory rename off the ORIGINAL "TRIPONE" state, DOWN'd
+   * with NO ledger entry (S150-12 decision 9 -- a copy never writes one). */
+  GbEditMon monC = mon1;
+  CHECK(gb_set_nickname(&monC, "COPYNIK"), "206: copy renamed to COPYNIK");
+  uint8_t cellC[80]; GbEditMon writtenC; uint8_t outC[80];
+  if (!xr_down_sim(&monC, BC_ORIGIN_GOLD, g_xr_serial++, cellC, &writtenC, outC)) {
+    printf("  SKIP (copy does not convert)\n"); return;
+  }
+
+  /* attempt to restore the copy while E1 is the only entry: must NOT be a live pick. */
+  int rcC1 = xr_restore_pick(buf, len, gbsc_count(buf, len), outC, &picked, &rule);
+  CHECK(rule != XR_PICK_LIVE,
+        "206: restoring the copy right after E1's own restore is never live (rc=%d rule=%d)",
+        rcC1, (int)rule);
+
+  /* trip 2: the SAME native mon (base, unedited by the copy branch) renamed again and
+   * sent down a second time -- a fresh CLAIMED entry, E2. */
+  GbEditMon mon2 = base;
+  CHECK(gb_set_nickname(&mon2, "TRIPTWO"), "206: rename to TRIPTWO");
+  uint8_t cell2[80]; GbEditMon written2; uint8_t out2[80];
+  if (!xr_down_sim(&mon2, BC_ORIGIN_GOLD, g_xr_serial++, cell2, &written2, out2)) {
+    printf("  SKIP (trip 2 does not convert)\n"); return;
+  }
+  GbscEntry e2;
+  xr_build_entry_asdown(&e2, &written2, cell2, out2);
+  e2.state = XR_STATE_CLAIMED;
+  int idx2 = gbsc_add(buf, &len, GBSC_FILE_MAX, &e2);
+  CHECK(idx2 == 1, "206: E2 added at index 1");
+
+  /* THE crux: restoring the copy (outC, "COPYNIK") must STILL find nothing live, even
+   * though E2 is now the highest-index CLAIMED entry in the file -- E2's own nickname
+   * ("TRIPTWO") does not match outC's ("COPYNIK"). A plain highest-index pick would
+   * wrongly hand E2's data to the copy here. */
+  int rcC2 = xr_restore_pick(buf, len, gbsc_count(buf, len), outC, &picked, &rule);
+  CHECK(rule != XR_PICK_LIVE,
+        "206: the copy never matches E2 by identity either (rc=%d rule=%d) -- "
+        "a stale/unrelated CLAIMED entry must never be handed to a different cell",
+        rcC2, (int)rule);
+
+  /* restoring the TRUE trip-2 descendant (out2, "TRIPTWO") must find E2, never E1. */
+  int rc2 = xr_restore_pick(buf, len, gbsc_count(buf, len), out2, &picked, &rule);
+  CHECK(rc2 == idx2 && rule == XR_PICK_LIVE,
+        "206: trip-2 restore finds E2 live, not E1 (rc=%d want %d, rule=%d)", rc2, idx2, (int)rule);
+  CHECK(memcmp(picked.nick_written, e2.nick_written, 10) == 0,
+        "206: the picked entry's nickname bytes are E2's own, not E1's");
+}
+
 /* ============================================================================ */
 
 int main(int argc, char** argv) {
@@ -1847,6 +1970,7 @@ int main(int argc, char** argv) {
   test_nickname_unmappable_glyph();
   test_merge4_make_legal_written_level();
   test_d2_item_confirm_logic();
+  test_backlog_206_two_trips();
 
   printf("\n-- E. BACKLOG #150 S150-9: accept masks, xr_merge_down_gb, the flagship --\n");
   printf("== E0. RT-4 (the flagship 2->3->1->2) ==\n");
