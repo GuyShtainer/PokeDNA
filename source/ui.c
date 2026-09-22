@@ -101,7 +101,7 @@ void ui_hline(int x, int y, int w, u16 color) {
 
 void ui_text(int x, int y, u16 ink, const char* s) {
   char buf[UI_TEXT_BOUND];
-  ui_ascii_bound(buf, sizeof buf, s);
+  (void)ui_ascii_bound(buf, sizeof buf, s);
   tte_set_ink(ink);
   tte_set_pos(x, y);
   tte_write(buf);
@@ -109,7 +109,7 @@ void ui_text(int x, int y, u16 ink, const char* s) {
 
 void ui_text_sel(int x, int y, int w, bool selected, u16 ink, const char* s) {
   char buf[UI_TEXT_BOUND];
-  ui_ascii_bound(buf, sizeof buf, s);
+  (void)ui_ascii_bound(buf, sizeof buf, s);
   if (selected) m3_rect(x, y, x + w, y + UI_ROW_H, UI_SEL);
   tte_set_ink(selected ? UI_SELTEXT : ink);
   tte_set_pos(x + 1, y);
