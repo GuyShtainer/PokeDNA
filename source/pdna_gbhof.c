@@ -21,6 +21,7 @@
 #include "osk.h"            /* osk_input (F2/F3 nickname)                             */
 #include "pdna_layout.h"    /* PDNA_GBEDIT_KEEP_TITLE (D4 discard-confirm)            */
 #include "pdna_gbscreen.h"  /* gbscr_open/_cell/_text/_flush/_close (F1 card shell)   */
+#include "pdna_origin_art.h" /* A1: pdna_origin_art_icon / pdna_origin_cell_render     */
 #include "ui.h"
 #include "snd.h"
 #include "pdna_app.h"       /* msg_wait / app_confirm / app_session_seed              */
@@ -643,33 +644,56 @@ static void hof_plain_screen(GbSession* s, bool can_edit, bool art_off) {
  * really the PDNA_DELTA leg of gbscr_open_inner (source/pdna_gbscreen.c) running
  * its whole-ROM UI locator on EVERY open, ~3,240 frames each time, ~6,450 more per
  * detail/START round trip. This version opens the shell ONCE per pdna_gbhof()
- * visit and keeps it open across LIST <-> DETAIL <-> the START menu: all three are
- * drawn INSIDE the frame with gbscr_text()/gbscr_cell() (never ui_*, which would
- * paint outside the card's border). Only the leaf pickers/confirms this screen
- * already had (the species dex grid, the level stepper, the nickname OSK,
- * app_confirm, msg_wait -- hof_edit_mon/hof_do_clear/hof_set_count_editor/
- * hof_do_add_team/hof_do_delete_team, all UNCHANGED) still use ui_* and take the
- * WHOLE screen, exactly like the trainer card's own gbtr_edit_row/g1card_edit_sel
- * do -- gbscr_mark_all_dirty() forces a full repaint on return, the #119
- * partial-repaint contract every screen sharing the Mode-3 framebuffer must honour.
+ * visit and keeps it open across LIST <-> DETAIL <-> the START menu <-> EVERY
+ * full-screen sub-editor (A2 review fix): the species dex grid, the level
+ * stepper, the nickname OSK, app_confirm, msg_wait -- none of pick_species()/
+ * hof_level_editor()/osk_input()/app_confirm()/msg_wait() touch
+ * gb12_arena_tail() (grep proves only the gbscr-shell family in this file
+ * does), so there was nothing to close and reopen around them in the first
+ * place; hof_edit_mon()/hof_do_clear()/hof_set_count_editor()/
+ * hof_do_add_team()/hof_do_delete_team() are called with `gs` OPEN, exactly
+ * the way the trainer card's own g1card_edit_sel() (pdna_gbtrainer.c:693-698)
+ * calls its field editor with the shell open, then repaints + marks the
+ * canvas dirty on the SAME `gs` -- ONE gbscr_open() per whole visit, proven
+ * by direct count (this lane's own report). List/detail/menu are drawn
+ * INSIDE the frame with gbscr_text()/gbscr_cell() (never ui_*, which would
+ * paint outside the card's border); every full-screen sub-editor still uses
+ * ui_* and takes the WHOLE screen -- gbscr_mark_all_dirty() forces a full
+ * repaint on return, the #119 partial-repaint contract every screen sharing
+ * the Mode-3 framebuffer must honour.
  *
  * F2: no '>' cursor glyph and no '#' row marker -- gb_edit.c's enc_one() maps
  * both to the blank tile (0x7F, "no GB glyph -> a space") on the REAL located
  * font, not just a decorative choice; the row cursor is instead a
  * gbscr_cell_rect() framebuffer highlight (the SAME primitive the trainer card's
  * own field cursor uses) and the row label is "N: ..." (":" IS a real font
- * tile, 0x9C/0x9C on both gens per enc_one()).
+ * tile, 0x9C/0x9C on both gens per enc_one()). A4: the shiny mark is " (S)",
+ * not "*" (no GB glyph for '*' either -- see hof_card_paint_detail()'s own
+ * comment).
  *
- * NOT wired here: mon portraits/icons at each row's left (gb_art_fetch()'s own
- * frame is 3,672 B, gb_art_source.h's own measured comment -- this lane's
- * STACK margin at the deepest chain is 1,936 B, STANDING-RULES.md, and the HoF
- * detail chain already nests inside pdna_gen12's own nav dispatch; adding that
- * frame on top is a real risk of failing the STACK gate for a decorative field,
- * not this lane's own"list/detail/card" ask -- left for its own follow-up
- * BACKLOG item, same honesty the b194 SCOPE NOTE used for the same gap). */
+ * A1 review fix (the original "NOT wired -- STACK risk" note here was FALSE,
+ * per the review's own re-measurement: gb_art_fetch/pdna_origin_art_icon sit
+ * behind pdna_origin_art_stack_room(), a GATED subtree the stack walker
+ * excludes from this file's own deepest-chain number by design -- rooted at
+ * pdna_gbhof alone that chain is ~7,200 B, nowhere near the gate). Gen 2's
+ * detail rows now draw each mon's real 16x16 ROM menu icon (hof_card_icon_
+ * refresh()/hof_card_icon_blit() below, the SAME pdna_origin_art_icon() chain
+ * the dex grid's cell art and the box grid's era art already share, BACKLOG
+ * #124) at the row's left. Gen 1 stays text-only, and THAT gap is real: a
+ * Gen-1 front-pic decode has no per-species cache at all (unlike Gen 2's
+ * icon fetch, memoised one entry deep) -- BACKLOG #196 is where a real
+ * per-species Gen-1 cache would need to land first. */
 #define HOF_CARD_COLS          18   /* usable columns 1..18 (0/19 are border)  */
 #define HOF_CARD_ROW0          4    /* first team/mon/menu row                */
 #define HOF_CARD_ROWS_PER_PAGE 8
+
+/* A1: one Gen-2 detail-row menu icon, RGB15 ui_sprite()-ready, and the whole
+ * per-visit cache (GBH_NUM_MONS slots) carved from the SAME arena-tail slice
+ * the shell's own tile cache uses -- see hof_card_open()'s own comment. */
+#define HOF_ICON_W 16
+#define HOF_ICON_H 16
+#define HOF_ICON_PX (HOF_ICON_W * HOF_ICON_H)
+#define HOF_ICON_CACHE_BYTES ((uint32_t)GBH_NUM_MONS * HOF_ICON_PX * 2)
 
 typedef enum { HOF_CARD_LIST = 0, HOF_CARD_DETAIL, HOF_CARD_MENU } HofCardMode;
 
@@ -755,7 +779,33 @@ static void hof_card_paint_list(GbScreen* gs, uint8_t gen, const GbSession* s,
  * comment already established), up to GBH_NUM_MONS mons -- 6*2=12 rows fit
  * comfortably inside rows 4..16 (13 interior rows below the title/wins). OT
  * id is dropped from the card view (there is no more room without a 3rd row
- * per mon); it stays visible on the plain fallback page. */
+ * per mon); it stays visible on the plain fallback page.
+ *
+ * A4 review fix: the shiny mark used to be a bare "*", but gb_edit.c's
+ * enc_one() has no GB glyph for '*' -- it silently maps to the blank tile
+ * and `lost` is discarded here (hof_card_text_fit only measures column
+ * COUNT via gbscr_text_cols(), which counts a lost glyph as ONE cell same as
+ * a real one), so a shiny Gen-2 HoF mon showed NOTHING extra at all. " (S)"
+ * is four real font tiles (space/'('/S/')' -- every one of them is in
+ * enc_one()'s single-ASCII-character table, pinned by
+ * tests/host_gbhof_glyph_test.c) and reads unambiguously on a screen with no
+ * colour to show an actual shiny sparkle.
+ *
+ * A1 GEN-2 ONLY: each row's left 2 cells (16x16 px at 1:1) show the ROM's
+ * OWN menu icon (pdna_origin_art_icon(), the SAME chain the dex grid's cell
+ * art and the box grid's era art already share -- BACKLOG #124) -- text
+ * starts at x=3 instead of x=1 to leave room, so HOF_CARD_TEXT_X below feeds
+ * hof_card_text_fit() a tighter (16-col) budget on Gen 2 than Gen 1's 18.
+ * GEN 1 stays text-only: gb_art_fetch's Gen-1 pic decode has no per-species
+ * cache at all yet (unlike Gen 2's icon fetch, which IS memoised one entry
+ * deep, see fetch_pic_ex()'s own s_memo_* -- still only one entry, which is
+ * exactly why this card renders the icon cache ONCE per paint into
+ * `icon_cache`, below, rather than re-fetching every frame) -- a 6-row Gen-1
+ * page would re-decode 6 DIFFERENT front pics from the ROM on every single
+ * paint, no cache to reuse between them. BACKLOG #196 is where a real
+ * per-species Gen-1 cache would need to land before this is safe to add. */
+#define HOF_CARD_TEXT_X(gen) ((gen) == GB_GEN2 ? 3 : 1)
+
 static void hof_card_paint_detail(GbScreen* gs, uint8_t gen, const GbHofTeam* t,
                                   int team_no) {
   hof_card_clear_interior(gs);
@@ -768,15 +818,74 @@ static void hof_card_paint_detail(GbScreen* gs, uint8_t gen, const GbHofTeam* t,
     siprintf(wc, "Wins: %d", (int)t->win_count);
     hof_card_text_fit(gs, gen, 1, 2, wc, 0);
   }
+  int tx = HOF_CARD_TEXT_X(gen);
   for (int m = 0; m < t->n && m < GBH_NUM_MONS; m++) {
     int y = HOF_CARD_ROW0 + m * 2;
     const GbHofMon* mn = &t->mon[m];
     const char* nm = (mn->dex >= 1 && mn->dex <= 251) ? pk_species_name(mn->dex) : "?";
-    char line[24];
-    siprintf(line, "%s Lv%d%s", nm, mn->level, (gen == GB_GEN2 && mn->shiny) ? "*" : "");
-    hof_card_text_fit(gs, gen, 1, y, line, nm);
+    char line[28];
+    siprintf(line, "%s Lv%d%s", nm, mn->level, (gen == GB_GEN2 && mn->shiny) ? " (S)" : "");
+    hof_card_text_fit(gs, gen, tx, y, line, nm);
     if (mn->nick[0] != '\0' && strcmp(mn->nick, nm) != 0)
-      hof_card_text_fit(gs, gen, 1, y + 1, mn->nick, 0);
+      hof_card_text_fit(gs, gen, tx, y + 1, mn->nick, 0);
+  }
+}
+
+/* A1: fetch + render every mon's 16x16 menu icon into `cache` (GBH_NUM_MONS
+ * slots of 16*16 RGB15 = 512 B each, carved from the SAME arena-tail slice
+ * hof_card_open() sized -- see that function's own comment) ONCE per detail
+ * paint -- Gen 2 only, a no-op on Gen 1 (deliberately, see the paint
+ * function's own comment above). A slot whose fetch fails (no ROM/no stack
+ * room right now/species out of range) is zeroed -- ui_sprite() treats an
+ * all-zero RGB15 buffer as fully transparent, so a failed icon draws
+ * nothing rather than garbage. noinline for the same reason gbdex_cell_blit
+ * (pdna_gbdex.c) is: pdna_origin_cell_render()'s own scale/blit locals must
+ * never coexist on the stack with pdna_origin_art_icon()'s own fetch chain
+ * frame (its own GATED pdna_origin_art_stack_room(PDNA_GB_ICON_NEED) check
+ * covers that chain independently of this file's un-gated STACK number --
+ * confirmed by direct measurement, the review's own re-verify note). */
+static void __attribute__((noinline))
+hof_card_icon_refresh(uint8_t gen, const GbHofTeam* t, uint8_t* cache) {
+  if (gen != GB_GEN2 || !cache) return;
+  for (int m = 0; m < GBH_NUM_MONS; m++) {
+    uint16_t* slot = (uint16_t*)(cache + (uint32_t)m * HOF_ICON_PX * 2);
+    memset(slot, 0, HOF_ICON_PX * 2);
+    if (m >= t->n) continue;
+    uint16_t dex = t->mon[m].dex;
+    if (dex < 1 || dex > 251) continue;
+    PdnaArt a;
+    if (!pdna_origin_art_icon(dex, &a) || !a.px) continue;
+    pdna_origin_cell_render(&a, slot, HOF_ICON_W, HOF_ICON_H);
+  }
+}
+
+/* A1: blit the ALREADY-RENDERED cache onto the framebuffer, one 16x16 sprite
+ * per row, at each row's own pixel origin (gbscr_cell_rect(), the SAME
+ * primitive the cursor rect uses -- adapts to gb_scale_mode automatically).
+ * Pure RAM->framebuffer copy, no SD/ROM access at all -- safe to call every
+ * frame the DETAIL page is on screen (hof_card_screen's own loop does,
+ * exactly like the cursor rect it is drawn alongside), which is what keeps
+ * the icons visible across a cursor move or a SELECT scale toggle without
+ * needing a second content repaint or a dirty-cell-per-icon scheme. */
+static void hof_card_icon_blit(uint8_t gen, int n, const uint8_t* cache) {
+  if (gen != GB_GEN2 || !cache) return;
+  if (n > GBH_NUM_MONS) n = GBH_NUM_MONS;
+  for (int m = 0; m < n; m++) {
+    int cy = HOF_CARD_ROW0 + m * 2;
+    int px0, py0, px1, py1;
+    gbscr_cell_rect(1, cy, 2, 2, &px0, &py0, &px1, &py1);
+    int w = px1 - px0, h = py1 - py0;
+    if (w <= 0 || h <= 0) continue;
+    const uint16_t* slot = (const uint16_t*)(cache + (uint32_t)m * HOF_ICON_PX * 2);
+    if (w == HOF_ICON_W && h == HOF_ICON_H) {
+      ui_sprite(px0, py0, w, h, slot);
+    } else {
+      /* stretched scale: pdna_origin_cell_render() already fit the source
+       * into a 16x16 buffer -- re-render straight to the stretched size
+       * would need a second cache, so this rung simply skips the icon at
+       * non-1:1 scale rather than draw it warped or mis-sized; the row TEXT
+       * still repaints correctly either way (gbscr's own stretch path). */
+    }
   }
 }
 
@@ -810,15 +919,24 @@ static void hof_card_legend_menu(GbScreen* gs) {
   gbscr_set_legend(gs, kMenu);
 }
 
-static bool hof_card_open(uint8_t gen, GbScreen* gs) {
-  uint32_t need = gbscr_tail_need(gen, GBSCR_NEED_TEXTBOX, 0);
+/* A1: ONE slice, carved -- the shell's own tile cache AND the Gen-2 icon
+ * cache share the SAME gb12_arena_tail() loan (the trainer card's own
+ * "shell + player-pic share one slice" pattern, pdna_gbtrainer.c's
+ * pdna_gbtrainer_gen1_card()). Returns a pointer to the icon-cache bytes
+ * (past the shell's own share) on success, NULL on any refusal (no ROM, bad
+ * ROM, non-English release, no tile-bank memory, or not enough arena left)
+ * -- Gen 1 still gets a valid (unused) pointer back, since HOF_ICON_CACHE_
+ * BYTES is only ever read/written by the Gen-2-gated icon functions above. */
+static uint8_t* hof_card_open(uint8_t gen, GbScreen* gs) {
+  uint32_t shell_need = gbscr_tail_need(gen, GBSCR_NEED_TEXTBOX, 0);
+  uint32_t need = shell_need + HOF_ICON_CACHE_BYTES;
   uint8_t* tail = gb12_arena_tail(need);
   const char* reason = 0;
-  if (!gbscr_open(gen, gs, tail, need, GBSCR_NEED_TEXTBOX, 0, &reason)) {
+  if (!gbscr_open(gen, gs, tail, shell_need, GBSCR_NEED_TEXTBOX, 0, &reason)) {
     gb12_arena_tail_release();
-    return false;
+    return 0;
   }
-  return true;
+  return tail + shell_need;
 }
 
 /* All mutable state one visit to the card shell threads through the three
@@ -828,6 +946,7 @@ static bool hof_card_open(uint8_t gen, GbScreen* gs) {
 typedef struct {
   HofCardMode mode;
   int sel, detail_team, mon_sel, menu_sel, present, count;
+  uint8_t* icon_cache;   /* A1: GBH_NUM_MONS x 16x16 RGB15, carved by hof_card_open() */
 } HofCardState;
 
 /* Re-reads present/count, clamps `sel`, and repaints the LIST content --
@@ -872,65 +991,70 @@ static void hof_card_list_key(GbSession* s, GbScreen* gs, bool can_edit, u16 k,
     hof_card_paint_list(gs, s->gen, s, st->present, st->count, st->sel, can_edit);
   else if (st->mode == HOF_CARD_DETAIL) {
     GbHofTeam t;
-    if (gbh_team(s, st->detail_team, &t))
+    if (gbh_team(s, st->detail_team, &t)) {
       hof_card_paint_detail(gs, s->gen, &t, st->detail_team + 1);
+      hof_card_icon_refresh(s->gen, &t, st->icon_cache);   /* A1: fetch once per paint */
+    }
   } else {
     hof_card_paint_menu(gs, s->gen);
   }
 }
 
-/* DETAIL page. Returns false only if a sub-editor closed the shell and it
- * could not be reopened afterward (caller must give up on the card entirely,
- * same contract as hof_card_open's own caller). */
-static bool hof_card_detail_key(GbSession* s, GbScreen* gs, bool can_edit, u16 k,
+/* DETAIL page. A1/A2 review fix: the shell stays OPEN across the per-mon field
+ * editor -- pick_species()/hof_level_editor()/osk_input()/app_confirm()/
+ * msg_wait() never touch gb12_arena_tail() (grep proves only the gbscr-shell
+ * family in this file does), so there is nothing to release/reacquire around
+ * them; the trainer card's own g1card_edit_sel() (pdna_gbtrainer.c:693-698)
+ * calls its field editor with the shell open too, then repaints + marks dirty
+ * on the SAME `gs` -- this now matches that posture exactly instead of paying
+ * a second gbscr_open() (another ~3,240-frame PDNA_DELTA locator scan) for an
+ * editor that never needed the shell closed at all. */
+static void hof_card_detail_key(GbSession* s, GbScreen* gs, bool can_edit, u16 k,
                                 HofCardState* st) {
   GbHofTeam t;
   if (!gbh_team(s, st->detail_team, &t)) {
     hof_card_back_to_list(s, gs, can_edit, st);
     gbscr_mark_all_dirty(gs);
-    return true;
+    return;
   }
-  if (k & KEY_B) { hof_card_back_to_list(s, gs, can_edit, st); gbscr_mark_all_dirty(gs); return true; }
+  if (k & KEY_B) { hof_card_back_to_list(s, gs, can_edit, st); gbscr_mark_all_dirty(gs); return; }
   if (k & KEY_UP)        st->mon_sel = (st->mon_sel > 0) ? st->mon_sel - 1 : t.n - 1;
   else if (k & KEY_DOWN) st->mon_sel = (st->mon_sel + 1) % t.n;
-  else if (k & KEY_A) {
-    /* F3: the per-mon field editor is a full-screen ui_* menu, exactly like
-     * the trainer card's own g1card_edit_sel -- it takes the WHOLE screen
-     * and repaints it via its own ui_clear()s; the shell's tiles come back
-     * only once THIS call returns. */
-    gbscr_close(gs);
-    gb12_arena_tail_release();
+  else if (k & KEY_A)
+    /* Full-screen ui_* menu, shell left open -- it repaints the WHOLE
+     * Mode-3 framebuffer itself, so the shell's own tiles are gone the
+     * instant this call starts painting; gbscr_mark_all_dirty() below
+     * (unconditional, every branch) is what brings them back on the very
+     * next gbscr_flush(), the same #119 partial-repaint contract F3 cites. */
     hof_edit_mon(s, st->detail_team, st->mon_sel, &t.mon[st->mon_sel]);
-    if (!hof_card_open(s->gen, gs)) return false;
-    hof_card_legend_detail(gs, can_edit);
+  if (!gbh_team(s, st->detail_team, &t)) {
+    hof_card_back_to_list(s, gs, can_edit, st);
+  } else {
+    hof_card_paint_detail(gs, s->gen, &t, st->detail_team + 1);
+    hof_card_icon_refresh(s->gen, &t, st->icon_cache);   /* A1: species/shiny may have changed */
   }
-  if (!gbh_team(s, st->detail_team, &t)) hof_card_back_to_list(s, gs, can_edit, st);
-  else hof_card_paint_detail(gs, s->gen, &t, st->detail_team + 1);
   gbscr_mark_all_dirty(gs);
-  return true;
 }
 
 /* START menu (CLEAR ALL / SET COUNT / ADD TEAM / DELETE TEAM), drawn inside
- * the frame. Same "false = give up" contract as hof_card_detail_key(). */
-static bool hof_card_menu_key(GbSession* s, GbScreen* gs, bool can_edit, u16 k,
+ * the frame. A2: same "shell stays open" fix as hof_card_detail_key() above --
+ * none of hof_do_clear/hof_set_count_editor/hof_do_add_team/hof_do_delete_team
+ * touch gb12_arena_tail either. */
+static void hof_card_menu_key(GbSession* s, GbScreen* gs, bool can_edit, u16 k,
                               HofCardState* st) {
-  if (k & KEY_B) { hof_card_back_to_list(s, gs, can_edit, st); gbscr_mark_all_dirty(gs); return true; }
+  if (k & KEY_B) { hof_card_back_to_list(s, gs, can_edit, st); gbscr_mark_all_dirty(gs); return; }
   if (k & KEY_UP)        st->menu_sel = (st->menu_sel > 0) ? st->menu_sel - 1 : HOFMENU_N - 1;
   else if (k & KEY_DOWN) st->menu_sel = (st->menu_sel + 1) % HOFMENU_N;
   else if (k & KEY_A) {
-    /* F3: each item is a full-screen ui_* confirm/stepper/picker -- same
-     * close/run/reopen posture as the per-mon editor above. */
-    gbscr_close(gs);
-    gb12_arena_tail_release();
+    /* Full-screen ui_* confirm/stepper/picker, shell left open (A2) -- same
+     * "mark_all_dirty repaints it" contract as the per-mon editor above. */
     if (st->menu_sel == HOFMENU_CLEAR) hof_do_clear(s);
     else if (st->menu_sel == HOFMENU_SETCOUNT) hof_set_count_editor(s, s->gen);
     else if (st->menu_sel == HOFMENU_ADD) hof_do_add_team(s);
     else hof_do_delete_team(s, st->sel);
-    if (!hof_card_open(s->gen, gs)) return false;
     hof_card_back_to_list(s, gs, can_edit, st);
   }
   gbscr_mark_all_dirty(gs);
-  return true;
 }
 
 /* The cursor's cell span for the current mode -- gbscr_cell_rect() turns
@@ -952,23 +1076,35 @@ static void hof_card_cursor(const HofCardState* st, bool can_edit,
 }
 
 /* Returns true once the shell has run to completion (B pressed on the LIST
- * page, or the shell could not be re-opened after a full-screen sub-editor --
- * either way nothing left for the caller to fall back to); false only if the
- * shell never opened at all, meaning the caller must show the plain screen. */
+ * page -- A2: the shell now stays open for the WHOLE visit, including every
+ * full-screen sub-editor, so there is no "could not reopen" exit any more);
+ * false only if the shell never opened at all, meaning the caller must show
+ * the plain screen. */
 static bool hof_card_screen(GbSession* s, bool can_edit) {
   GbScreen gs;
-  if (!hof_card_open(s->gen, &gs)) return false;
+  uint8_t* icon_cache = hof_card_open(s->gen, &gs);
+  if (!icon_cache) return false;
 
   HofCardState st;
   memset(&st, 0, sizeof st);
   st.mode = HOF_CARD_LIST;
   st.present = gbh_team_count_present(s);
   st.count = gbh_count(s);
+  st.icon_cache = icon_cache;
   hof_card_legend_list(&gs, can_edit);
   hof_card_paint_list(&gs, s->gen, s, st.present, st.count, st.sel, can_edit);
 
   for (;;) {
     gbscr_flush(&gs, 0);
+
+    if (st.mode == HOF_CARD_DETAIL) {
+      /* A1: cheap RAM->framebuffer blit, every frame -- see hof_card_icon_
+       * blit()'s own comment for why this (not a per-icon dirty scheme) is
+       * both correct and safe to call unconditionally here. */
+      GbHofTeam t;
+      if (gbh_team(s, st.detail_team, &t))
+        hof_card_icon_blit(s->gen, t.n, st.icon_cache);
+    }
 
     int cx, cy, cw, ch; bool show_cursor;
     hof_card_cursor(&st, can_edit, &cx, &cy, &cw, &ch, &show_cursor);
@@ -990,9 +1126,9 @@ static bool hof_card_screen(GbSession* s, bool can_edit) {
       if (k & KEY_B) break;
       hof_card_list_key(s, &gs, can_edit, k, &st);
     } else if (st.mode == HOF_CARD_DETAIL) {
-      if (!hof_card_detail_key(s, &gs, can_edit, k, &st)) return true;
+      hof_card_detail_key(s, &gs, can_edit, k, &st);
     } else {
-      if (!hof_card_menu_key(s, &gs, can_edit, k, &st)) return true;
+      hof_card_menu_key(s, &gs, can_edit, k, &st);
     }
   }
 
