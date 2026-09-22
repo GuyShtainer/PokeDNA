@@ -4489,15 +4489,22 @@ void gb12_arena_tail_release(void) {
  * mutated (discarded) record as if it had been kept. `saved` is also checked BEFORE
  * the `nav == 0` test, since pdna_gbsummary.c can set `*saved` on a U/D exit too
  * (:617-625), not only on B. */
-bool gb_native_summary_open(const uint8_t rec80[80], bool allow_edit, uint8_t out80[80]) {
-  const bool can_edit = allow_edit && out80 && app_can_edit();
+/* BACKLOG #150 S150-15 decision 7: the body of gb_native_summary_open, unchanged
+ * shape, with a caller-supplied note line instead of the hard-coded
+ * "Gen 1/2 record" pair -- `note` NULL keeps that exact default (gb_native_summary_
+ * open's own three callers pass NULL implicitly by construction below). Read-only
+ * for the S150-15 caller is STRUCTURAL, not a policy flag threaded through: pass
+ * `can_edit=false, out80=NULL` and `pdna_gbsummary` can never set `*saved` (its own
+ * contract), so the `if (saved)` arm's whole re-pack body never runs. */
+static bool native_summary_run(const uint8_t rec80[80], bool can_edit,
+                               uint8_t out80[80], const char* note) {
   int card = 0;                                            /* sticky across re-opens, gb_view_hook's own hoist */
   for (;;) {
     GbEditMon e; BcMeta meta;
     if (!bc_unpack(rec80, &e, &meta)) return false;
     bool saved = false;
     int nav = pdna_gbsummary(&e, can_edit, /*start_editing*/false,
-                        meta.gen == GB_GEN1 ? "Gen 1 record" : "Gen 2 record",
+                        note ? note : (meta.gen == GB_GEN1 ? "Gen 1 record" : "Gen 2 record"),
                         /*has_sidecar*/false, /*create*/false, &saved, &card);
     if (saved) {
       /* decision 4: keep bank_serial/origin_game/rtc_epoch; ident32 recomputes for
@@ -4520,6 +4527,21 @@ bool gb_native_summary_open(const uint8_t rec80[80], bool allow_edit, uint8_t ou
      * next iteration so a preceding discard (nav != 0, saved == false) can never
      * leak the mutated `e` back into view (the trap this loop shape exists to avoid). */
   }
+}
+
+bool gb_native_summary_open(const uint8_t rec80[80], bool allow_edit, uint8_t out80[80]) {
+  const bool can_edit = allow_edit && out80 && app_can_edit();
+  return native_summary_run(rec80, can_edit, out80, NULL);
+}
+
+/* BACKLOG #150 S150-15 decision 7: the GB ORIGINAL row's own entry point -- a
+ * converted mon's ledger `original80`, READ-ONLY (can_edit is a literal `false`,
+ * out80 is NULL, so pdna_gbsummary can never set `*saved`), with a caller-composed
+ * note line (decision 8's origin-game + transfer-date string) in place of the
+ * hard-coded "Gen 1/2 record" pair. `has_sidecar` stays `false`, parity with the
+ * native VIEW row (open question 5). */
+bool gb_original_summary_open(const uint8_t original80[80], const char* note) {
+  return native_summary_run(original80, /*can_edit*/false, /*out80*/NULL, note);
 }
 
 /* S2/S3/S5-B: the resident-image edit pipeline's hooks, registered as one const struct

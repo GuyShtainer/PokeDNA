@@ -4957,6 +4957,165 @@ def run_s150_14_native_edit(core_mod, image_mod, rom: Path, out_dir: Path) -> gb
     return s
 
 
+def run_s150_15_view_original(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #150 S150-15: the GB ORIGINAL row -- a converted Gen-1/2 mon's Gen-3
+    menu opens its Game Boy original read-only, with the true origin game and the
+    transfer date. `rom` MUST be a PLAIN `tools/fuse_sav.py <pokedna-delta-artless.gba>
+    <Emerald.sav>` fusion (no --gb, no --clip -- same vehicle as --s150-2/--s150-8),
+    built from a PDNA_DELTA image (decision 13's seam is compiled in). app_met_game()
+    on Emerald is 3, the SAME value both the seam hook (pdna_main.c's view_save()) and
+    xfer_view.c's own PDNA_DELTA fallback recompute with -- this is WHY the seam's key
+    match succeeds (decision 14).
+
+    Nav recipe, verified live against this exact fused image (probe screenshots, not
+    guessed):
+      Bank entry + native cell VIEW (the parity reference): the SAME three taps
+        run_s2_bank_control()'s own "02_bank" uses (START, DOWN, A), then A (slot 0's
+        own native whitelist menu) then A (VIEW/EDIT, already selected -- S150-14
+        routes this through app_box_browse -> app_native_cell_edit(allow_edit=true),
+        so this reference screen's footer reads "A edit  U/D mon  L/R card": can_edit
+        is TRUE here, unlike GB ORIGINAL's own structurally-read-only entry point
+        (decision 7). The Acceptance section's "pixel-identical except the outline/
+        cursor" therefore does NOT hold footer-for-footer on this build (a drift this
+        lane's own DRIFT pass did not anticipate, S150-14 having changed what the
+        Bank's own VIEW/EDIT row shows since S150-2/3 first shipped it) -- reported,
+        not silently matched; the INFO/SKILLS/MOVES card BODIES and the chip/portrait
+        are still identical, and the ORIGIN card differs only on the note line, per
+        the brief's own claim.
+      Back out: TWO B presses (not three -- this build's VIEW/EDIT is not dirty, so
+        one B from VIEW mode returns straight to the Bank grid, a second B exits the
+        Bank onto the PC box view, box "5.Unp09n" 30/30 on this corpus) -- verified
+        live; a third B is pixel-identical to the second (gb_shots.Session's own
+        same-frame guard would refuse it).
+      Empty PC cell: R x10 -- box 11 ("Qo", 0/30), this corpus's own completely empty
+        box (SAME box run_s150_8_gen3_arm's own docstring names for the identical
+        reason -- generation-agnostic fixture, same corpus). A on the empty cell (no
+        further navigation) offers PASTE HERE -- decision 13's seam at work: the
+        PDNA_DELTA hook in view_save() seeded g_clip with a freshly-converted
+        CHIKORITA the moment this save loaded.
+      Paste: DOWN (CREATE -> PASTE HERE) then A. This triggers a REAL flash write
+        (the PC box commits through banksrc_commit -> box_save -> sf_write_verified
+        against the emulator's own flash chip, which DOES work on a delta image,
+        unlike the Bank's SD-backed native cells) -- "Saving - do not power off" then
+        "SAVED / Flash written + verified. No backup in this build." -- ONE more A
+        dismisses it before the grid with the pasted mon is visible.
+      GB ORIGINAL row position: VIEW / EDIT, ITEM, LEGALITY, GB ORIGINAL, MOVE, COPY,
+        PASTE, DUPLICATE, TO DAY-CARE -- DOWN x3 from the menu's own opening selection
+        (VIEW / EDIT) lands on GB ORIGINAL, confirmed live.
+      Control (an ordinary mon, no row): L x10 from box 11 returns to box 1
+        ("5.Unp09n", 30/30) -- the SAME box this whole chain started from, its
+        ordinary corpus mons untouched by anything above.
+      Bank-abroad row: from the pasted PC mon's own menu, DOWN x5 (VIEW/EDIT, ITEM,
+        LEGALITY, GB ORIGINAL, MOVE, COPY) selects COPY; A copies it (a real, in-
+        session copy, no fused --clip payload, same posture as run_s2_bank_control's
+        own COPY step); back in the Bank, DOWN then RIGHT from slot 0 lands on slot 7
+        (this corpus's first empty Bank cell -- verified live, the grid is 6 columns
+        wide and slots 0-6 are the seven bank_plant.c cells); A offers PASTE HERE
+        (no flash-write dialog this time -- a Bank cell write defers to the box's own
+        "BOX NOT SAVED" banner, not an immediate flash commit); DOWN, A pastes; A on
+        the result opens its menu, which also lists GB ORIGINAL (decision 1's own
+        "a Bank cell that is abroad" scope).
+
+    REVIEW FIXTURE FIX 1 (BACKLOG #150 S150-15 review): a post-S150-9-merge
+    ledger-KEY collision (this seam's converted record and S150-9's own planted PC
+    box slot 29 both converted bank_plant_cell0()'s IDENTICAL serial-1 bytes, so
+    both resolved to the same xr_key_g3(), and xr_open()'s S150-9 shim answered
+    first -- shot 06 briefly showed "GOLD (no date)" instead of this seam's own
+    date) was fixed by giving this seam its own serial (source/xfer_plant.c's
+    XFER_PLANT_SERIAL, 150 -- outside every other PDNA_DELTA fixture's own range),
+    via the new bank_plant_cell0_serial(out80, serial) export. The serial lives
+    outside every field a summary card draws, so 00-vs-05 parity is unaffected."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s150_15_")
+    print("== BACKLOG #150 S150-15: the GB ORIGINAL row ==")
+    SETTLE = 200
+
+    # ---- 00: the Bank's own native-cell VIEW/EDIT (the parity reference) ---------
+    s.tap("START", settle=80)
+    s.tap("DOWN", settle=60)
+    s.tap("A", settle=150)                                   # -> pdna_bank_show(), box 0, slot 0
+    s.tap("A", settle=150)                                   # slot 0 -> native whitelist menu
+    s.tap("A", settle=150)                                   # VIEW/EDIT -> the REAL Gen-1/2 summary
+    s.shot("00_bank_cell0_view", "S150-15: the Bank's own slot-0 CHIKORITA, VIEW/EDIT "
+           "-- the PARITY REFERENCE for 05_original_info_card below. Footer reads "
+           "'A edit' (can_edit is TRUE here, S150-14) -- GB ORIGINAL's own entry is "
+           "structurally read-only instead (decision 7), so that ONE line is the "
+           "expected, correct difference, not a bug")
+    s.tap("B", settle=150)                                   # VIEW -> Bank grid
+    s.tap("B", settle=150)                                   # Bank -> PC box view
+
+    # ---- empty PC cell: PASTE HERE offered by the PDNA_DELTA seam ----------------
+    s.press_n("R", 10, settle=150)                           # box 1 -> box 11 ("Qo", 0/30, empty)
+    s.tap("A", settle=250)
+    s.shot("01_empty_menu_paste_here", "S150-15: A on an empty PC cell -- PASTE HERE "
+           "is offered (decision 13's seam: view_save()'s PDNA_DELTA hook seeded "
+           "g_clip with a freshly-converted CHIKORITA the moment this save loaded)")
+    s.tap("DOWN", settle=100)                                # CREATE -> PASTE HERE
+    s.tap("A", settle=400)                                   # paste -> flash write ("Saving...")
+    s.tap("A", settle=250)                                   # dismiss "SAVED / Flash written + verified"
+    s.shot("02_pasted_converted", "S150-15: the pasted CHIKORITA now sits in a Gen-3 "
+           "PC cell, era badge '2' on its icon (the grid's own GB-origin indicator)")
+
+    # ---- the menu, the row, the read-only summary ---------------------------------
+    s.tap("A", settle=250)
+    s.shot("03_menu_with_row", "S150-15: A on the pasted mon -- the occupied-cell menu "
+           "now lists GB ORIGINAL fourth (VIEW/EDIT, ITEM, LEGALITY, GB ORIGINAL, "
+           "MOVE, COPY, PASTE, DUPLICATE, TO DAY-CARE)")
+    s.press_n("DOWN", 3, settle=80)
+    s.shot("04_row_selected", "S150-15: DOWN x3 -- GB ORIGINAL highlighted")
+    s.tap("A", settle=300)
+    s.shot("05_original_info_card", "S150-15: A -- the REAL Gen-1/2 summary opens over "
+           "the ledger's original80, chip reads VIEW, GB2 -- compare to 00 above "
+           "(card bodies identical; footer differs by design, see 00's own caption)")
+    s.press_n("R", 3, settle=SETTLE)                         # INFO -> SKILLS -> MOVES -> ORIGIN
+    s.shot("06_original_origin_card", "S150-15: R x3 -- the ORIGIN card, note reads "
+           "'GOLD 26-09-16' (decision 13's PLANT_EPOCH date, the origin game the cell "
+           "was planted with), 'Sidecar: No' (parity with the native VIEW, open "
+           "question 5)")
+
+    # ---- read-only proof: A and SELECT are both inert -----------------------------
+    s.tap("A", settle=250)
+    s.shot("07_a_is_inert", "S150-15: A inside -- PIXEL-IDENTICAL to 06 (can_edit is "
+           "a literal false; pdna_gbsummary can never set *saved here)", allow_same=True)
+    s.tap("SEL", settle=250)
+    s.shot("08_select_denied", "S150-15: SELECT -- also PIXEL-IDENTICAL (the flat "
+           "editor's own can_edit gate, pdna_gbsummary.c's `if (!c->can_edit) "
+           "{ snd_deny(); return false; }`, refuses it; this test cannot hear the "
+           "beep, only that no editor opened)", allow_same=True)
+    s.tap("B", settle=200)
+    s.shot("09_back_on_grid", "S150-15: B -- back on the PC grid (box 11), cursor "
+           "still on the pasted mon", allow_same=True)
+
+    # ---- control: an ordinary Gen-3 mon has no row --------------------------------
+    s.press_n("L", 10, settle=150)                           # box 11 -> box 1 (ordinary corpus mons)
+    s.tap("A", settle=250)
+    s.shot("10_control_no_row", "S150-15: A on an ORDINARY box-1 mon (no ledger entry) "
+           "-- the same menu family, without GB ORIGINAL (control; not byte-identical "
+           "to 03/04 -- this PC (not Bank) mon also carries its own EXPORT .pk row, "
+           "TO GAME/EXPORT's own is_bank branch)")
+    s.tap("B", settle=150)
+
+    # ---- a Bank Gen-3 cell that is abroad also shows the row ----------------------
+    s.press_n("R", 10, settle=150)                           # box 1 -> box 11 (the pasted mon again)
+    s.tap("A", settle=250)                                   # menu on the pasted mon
+    s.press_n("DOWN", 5, settle=80)                          # VIEW/EDIT..MOVE -> COPY
+    s.tap("A", settle=250)                                   # COPY -> confirm
+    s.tap("A", settle=200)                                   # dismiss
+    s.tap("B", settle=150)                                   # back to grid
+    s.tap("START", settle=80)
+    s.tap("DOWN", settle=60)
+    s.tap("A", settle=150)                                   # -> Bank, box 0, slot 0
+    s.tap("DOWN", settle=100)                                # slot 0 -> slot 6 (row 1, col 0)
+    s.tap("RIGHT", settle=100)                                # slot 6 -> slot 7 (this corpus's first empty cell)
+    s.tap("A", settle=250)                                   # empty Bank cell menu
+    s.tap("DOWN", settle=100)                                # CREATE -> PASTE HERE
+    s.tap("A", settle=300)                                   # paste (Bank: no flash-write dialog)
+    s.tap("A", settle=250)                                   # A on the Bank-pasted mon -> menu
+    s.shot("11_bank_abroad_menu_row", "S150-15: a Bank Gen-3 cell that is abroad "
+           "(the pasted CHIKORITA, COPIEd then PASTEd into an empty Bank slot) also "
+           "shows GB ORIGINAL -- decision 1's 'a Bank cell that is abroad' scope")
+    return s
+
+
 def run_b190_move_refusal(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
     """BACKLOG #190: Guy's cart report -- "after that promt the screen glitched to show
     both promt and attacks of wigglytuff" -- a move-picker refusal on the GB editor's
@@ -6301,6 +6460,17 @@ def main(argv=None) -> int:
                           "no PDNA_DELTA branch in box_save(), so this proves decision "
                           "7's rollback, not a real write -- see the run function's own "
                           "docstring).")
+    ap.add_argument("--s150-15", action="store_true",
+                     help="BACKLOG #150 S150-15: only run_s150_15_view_original() "
+                          "against --image -- --image MUST be a plain tools/fuse_sav.py "
+                          "fusion of an Emerald.sav onto a PDNA_DELTA-built "
+                          "pokedna-delta-artless.gba (decision 13's seam compiled in; "
+                          "no --gb, no --clip -- same vehicle as --s150-2/--s150-8). "
+                          "The GB ORIGINAL row on a converted Gen-3 mon's menu, opening "
+                          "the real Gen-1/2 summary read-only over the ledger's "
+                          "original80, both on a PC cell and a Bank cell that is "
+                          "abroad -- see run_s150_15_view_original()'s own docstring "
+                          "for the full nav recipe.")
     ap.add_argument("--b166", action="store_true",
                      help="BACKLOG #166: only run_b166() against --image -- "
                           "--image MUST be `make delta-gb`'s own combined image "
@@ -7165,6 +7335,21 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] s150-14: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if getattr(a, "s150_15", False):
+        # BACKLOG #150 S150-15: same append-only convention as --s150-2/--s150-14 above.
+        ran = True
+        try:
+            sess = run_s150_15_view_original(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] s150-15: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
