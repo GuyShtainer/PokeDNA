@@ -1266,6 +1266,12 @@ int main(void) {
   PF(PDNA_SIDECAR_LOSS_EXP_FLOORED, 4, UI_SCR_W - 8);
   PF(PDNA_SIDECAR_LOSS_EVS_EXP,     4, UI_SCR_W - 8);
   PF(PDNA_SIDECAR_LOSS_ITEMSECRET,  4, UI_SCR_W - 8);
+  /* F3 (xfer-items fix pass): loss_item_text() (pdna_gen12.c) now suffixes every
+   * outcome with "+ Secret ID" when loss->secret_id is also true -- worst case over
+   * every pk_item_name() entry and every G3GbItemOutcome format, brute-force checked
+   * (tools scratch, not committed): {POKEBLOCK} CASE -> item PC + Secret ID, 202 px
+   * of a 232 px budget, 39 bytes of item_row[48]. */
+  PF("{POKEBLOCK} CASE -> item PC + Secret ID", 4, UI_SCR_W - 8);
   PF(PDNA_SIDECAR_LOSS_POKERUS,     4, UI_SCR_W - 8);
   PF(PDNA_SIDECAR_LOSS_SHINY,       4, UI_SCR_W - 8);
   PF(PDNA_SIDECAR_LOSS_GENDER,      4, UI_SCR_W - 8);

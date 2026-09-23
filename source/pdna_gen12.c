@@ -22,6 +22,45 @@
 #include "evolutions.h"    /* pk_evo_floor/pk_evo_min_level -- BACKLOG #104 R1 D3 */
 #include "gb12_render.h"  /* the display ladder: GB_SHOW_*, gb12_presentation, gb12_render_rec */
 #include "bank_cell.h"    /* bc_unpack -- gb_native_summary_open (BACKLOG #150 S150-2 step 5) */
+#include "pdna_layout.h"  /* PDNA_SIDECAR_LOSS_ITEMSECRET -- loss_item_text below, host-testable */
+
+/* F3/F5 (xfer-items fix pass): loss_item_text lives here, ABOVE the PDNA_GEN12_HOST
+ * guard, on purpose -- it is pure C (pk_item_name + strcpy/strcat, no tonc, no
+ * siprintf/newlib) despite building a string gb_paste_loss_screen (below the guard)
+ * draws, so tests/host_gen12_test.c can call it directly instead of re-deriving its
+ * logic. F5 also rewrote it off siprintf: every format string here has exactly one
+ * %s, so strcpy/strcat needs no formatting machinery, and gb_paste_loss_screen's own
+ * stack (tools/stack_budget.py) drops the ~800 B _svfiprintf_r/newlib pulled onto a
+ * draw path by putting the first siprintf on that chain. cap>=48 always (see the
+ * comment on the switch below for the measured 39-byte worst case); a caller that
+ * cannot afford 48 gets an empty string, never a truncated write. */
+void loss_item_text(const Gen3ToGbLoss* loss, char* out, int cap) {
+  const char* name = (loss->g3_held_item != 0) ? pk_item_name(loss->g3_held_item) : "item";
+  const bool sid = loss->secret_id;
+  if (cap < 48) { out[0] = 0; return; }
+  switch (loss->item_outcome) {
+    case G3GB_ITEM_HELD:
+      if (sid) { strcpy(out, name); strcat(out, " travels + Secret ID"); }
+      else     { strcpy(out, "Item: "); strcat(out, name); strcat(out, " travels"); }
+      return;
+    case G3GB_ITEM_BAG:
+      if (sid) { strcpy(out, name); strcat(out, " -> bag + Secret ID"); }
+      else     { strcpy(out, "Item: "); strcat(out, name); strcat(out, " -> bag"); }
+      return;
+    case G3GB_ITEM_PC:
+      if (sid) { strcpy(out, name); strcat(out, " -> item PC + Secret ID"); }
+      else     { strcpy(out, "Item: "); strcat(out, name); strcat(out, " -> item PC"); }
+      return;
+    case G3GB_ITEM_STAYS:
+      if (sid) { strcpy(out, name); strcat(out, " stays + Secret ID"); }
+      else     { strcpy(out, "Item: "); strcat(out, name); strcat(out, " stays behind"); }
+      return;
+    case G3GB_ITEM_NONE:
+    default:
+      strcpy(out, PDNA_SIDECAR_LOSS_ITEMSECRET);
+      return;
+  }
+}
 
 /* ================================================================= pure core */
 
@@ -3193,29 +3232,9 @@ static const char* loss_name_text(const Gen3ToGbLoss* loss) {
 }
 
 /* BACKLOG #248/#249: the item row's text, five possible shapes (case A HELD / B BAG /
- * C PC / D-E STAYS / no item at all). No spare row exists on this screen (2 px of
- * slack total, see the comment above gb_paste_loss_screen) so this reuses the ITEM/
- * SECRETID row's own slot with dynamic text, same shape as loss_name_text() above --
- * `out` must hold at least 40 bytes (pk_item_name()'s longest entry is 16 chars). */
-static void loss_item_text(const Gen3ToGbLoss* loss, char* out, int cap) {
-  (void)cap;   /* `out` is always the caller's 40-byte row buffer -- see the comment
-               * above: pk_item_name()'s longest entry (16) plus the longest fixed
-               * wording here ("Item: " + " stays behind", 19) is 35, inside 40. */
-  const char* name = (loss->g3_held_item != 0) ? pk_item_name(loss->g3_held_item) : "item";
-  switch (loss->item_outcome) {
-    case G3GB_ITEM_HELD: siprintf(out, "Item: %s travels", name); return;
-    case G3GB_ITEM_BAG:  siprintf(out, "Item: %s -> bag", name); return;
-    case G3GB_ITEM_PC:   siprintf(out, "Item: %s -> item PC", name); return;
-    case G3GB_ITEM_STAYS:
-      if (loss->secret_id) siprintf(out, "%s", PDNA_SIDECAR_LOSS_ITEMSECRET);
-      else                 siprintf(out, "Item: %s stays behind", name);
-      return;
-    case G3GB_ITEM_NONE:
-    default:
-      siprintf(out, "%s", PDNA_SIDECAR_LOSS_ITEMSECRET);   /* secret_id only */
-      return;
-  }
-}
+ * C PC / D-E STAYS / no item at all). loss_item_text() itself now lives at the top of
+ * this file, ABOVE the PDNA_GEN12_HOST guard (F3/F5, xfer-items fix pass) -- see the
+ * comment there for why. */
 
 /* BACKLOG #247: exp_floored shares the EVS row's slot (same reasoning as the item row
  * above -- zero spare row budget). "EVs rescaled" alone when only evs_scaled fired,
@@ -3247,7 +3266,7 @@ static bool __attribute__((noinline)) gb_paste_loss_screen(const Gen3ToGbLoss* l
   y = loss_row(y, loss->ivs_halved,                   PDNA_SIDECAR_LOSS_IVS);
   y = loss_row(y, loss->evs_scaled || loss->exp_floored, loss_evs_text(loss));
   {
-    char item_row[40];
+    char item_row[48];
     loss_item_text(loss, item_row, (int)sizeof item_row);
     y = loss_row(y, g3gb_loss_needs_item_row(loss), item_row);
   }
