@@ -70,18 +70,42 @@ def run_gold_menu(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     s.shot("01_menu", "#58: Gold (Gen 2) START menu -- the SAME panel/labels/order as "
                        "a Gen-3 save's own (no dimming; compare against em_01_menu)")
 
-    # PDNA_NAV_ITEMS index 7 = NV_BAG, still inside column 0 (rows 0..9) -- a plain
-    # DOWN walk from the menu's default sel=0 (NV_PARTY), no column jump needed.
-    s.press_n("DOWN", 7, settle=SETTLE)     # Party -> Bank -> ... -> Bag
-    s.tap("A", settle=BIG_SETTLE)           # Bag -> app_nav_refuse(NV_BAG, SE_KIND_GEN2)
-    s.shot("02_bag_coming_soon", "#58: Gold, Bag -- \"COMING SOON\" / \"The Bag is coming "
-                                  "soon.\" (nav_avail_why, not a screen-local string)")
+    # BACKLOG #251 shots-refresh re-derivation (was: "PDNA_NAV_ITEMS index 7 = NV_BAG
+    # ... DOWN x7 ... Bag -> app_nav_refuse -> COMING SOON"): source/nav_avail.c's own
+    # GB_TABLE now answers NAV_OK for NV_BAG on BOTH Gen 1 and Gen 2 (U4/U5 landed
+    # Red/Yellow's own Item bag and Gold/Silver/Crystal's own Pack for real since this
+    # was last calibrated) -- pressing A on Bag now opens the REAL Pack screen, not a
+    # refusal, and this function's OLD follow-up taps (a dismiss-A, then START to
+    # reopen the nav menu) instead operated INSIDE that live screen, drifting into an
+    # item's own quantity keyboard -- reproduced live, caught by looking at the actual
+    # captured frames (a Bag item list and a "QUANTITY" OSK), not trusting the tap
+    # count. Bag can no longer demonstrate a refusal at all (it is a real, working
+    # screen now, which is itself worth noting). Swapped the "still NAV_COMING_SOON"
+    # example to NV_XFER ("Transfers" -- GB_TABLE still answers NAV_COMING_SOON /
+    # "Open it from a Gen-3 save." for a raw Game Boy session, unaffected by U4/U5).
+    # PDNA_NAV_ITEMS index 18 = NV_XFER, column 1 (index>=PDNA_NAV_ROWS=11) row 7 --
+    # one RIGHT (whole-column jump to index 11, NV_EVENTS) then DOWN x7.
+    s.press_n("RIGHT", 1, settle=SETTLE)    # Party -> Tickets (column 1 top)
+    s.press_n("DOWN", 7, settle=SETTLE)     # Tickets -> ... -> Transfers (index 18)
+    s.tap("A", settle=BIG_SETTLE)           # Transfers -> app_nav_refuse(NV_XFER, SE_KIND_GEN2)
+    s.shot("02_bag_coming_soon", "#58: Gold, Transfers -- \"COMING SOON\" / \"Open it from a "
+                                  "Gen-3 save.\" (nav_avail_why, not a screen-local string) -- "
+                                  "re-targeted off NV_XFER: NV_BAG (this shot's original subject) "
+                                  "is NAV_OK on both generations now (U4/U5 landed Red/Yellow's "
+                                  "own Item bag + Gold/Silver/Crystal's own Pack for real), so "
+                                  "Bag can no longer demonstrate a COMING-SOON refusal at all")
     s.tap("A", settle=BIG_SETTLE)           # dismiss msg_wait -> back to the box grid
 
     s.tap("START", settle=BIG_SETTLE)       # reopen the nav menu (sel resets to 0)
-    # PDNA_NAV_ITEMS index 10 = NV_POKEBLOCK, the first row of column 1 -- one RIGHT
-    # (a whole-column jump, sel += PDNA_NAV_ROWS) lands on it directly.
-    s.press_n("RIGHT", 1, settle=SETTLE)    # Party -> Blocks
+    # BACKLOG #251 shots-refresh re-derivation (was: "PDNA_NAV_ITEMS index 10 =
+    # NV_POKEBLOCK, the first row of column 1 -- one RIGHT ... lands on it directly"):
+    # source/pdna_layout.h's PDNA_NAV_ITEMS has since grown NV_MAP/NV_GB/NV_XFER,
+    # raising PDNA_NAV_ROWS from 10 to 11 -- NV_POKEBLOCK (index 10) is now the LAST
+    # row of column 0, not the first row of column 1, so a plain DOWN x10 from the
+    # menu's default sel=0 reaches it directly; RIGHT would now overshoot to index 11
+    # (NV_EVENTS, "Tickets") instead. Reproduced live against the real Sprites-grid-
+    # style frame, same fix class as gb_shots.py's own run_e4_settings().
+    s.press_n("DOWN", 10, settle=SETTLE)    # Party -> ... -> Blocks (index 10, col 0 last row)
     s.tap("A", settle=BIG_SETTLE)           # Blocks -> app_nav_refuse(NV_POKEBLOCK, SE_KIND_GEN2)
     s.shot("03_blocks_not_in_gen2", "#58: Gold, Blocks -- \"NOT IN GEN 2\" / \"Gen 2 games "
                                      "have no Blocks.\" (Gen 2 never had Pokeblocks)")
@@ -95,8 +119,14 @@ def run_firered_menu(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     print("== FireRed.sav (Gen 3, FRLG) -- BACKLOG #58: identical menu, EXISTING per-game "
           "refusals still fire (verified: nav_avail's Gen-3 gate list is empty) ==")
 
+    # BACKLOG #251 shots-refresh re-derivation (was: "RIGHT x1 -> Blocks (index 10,
+    # col 1 row 0)"): same PDNA_NAV_ROWS 10->11 shift as run_gold_menu()'s own fix
+    # above -- NV_POKEBLOCK (index 10) is now column 0's OWN last row, reached by a
+    # plain DOWN x10, not a column-jump RIGHT (which now overshoots to index 11,
+    # NV_EVENTS/"Tickets" -- reproduced live, this exact frame used to be captioned
+    # "Blocks" while actually showing the Event Tickets screen).
     s.tap("START", settle=BIG_SETTLE)       # box screen (no info page for a Gen-3 fused save)
-    s.press_n("RIGHT", 1, settle=SETTLE)    # Party -> Blocks (index 10, col 1 row 0)
+    s.press_n("DOWN", 10, settle=SETTLE)    # Party -> ... -> Blocks (index 10, col 0 last row)
     s.tap("A", settle=BIG_SETTLE)           # Blocks -> pdna_pokeblock()'s OWN gate fires
                                              # (pk_pokeblock_offset(PK_FRLG) == 0) -- nav_avail
                                              # never intercepts this row for a Gen-3 kind
@@ -109,9 +139,14 @@ def run_firered_menu(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
                                      "own file header)")
     s.tap("A", settle=BIG_SETTLE)           # dismiss -> box grid
 
+    # BACKLOG #251 shots-refresh re-derivation (was: "RIGHT x1 -> Blocks (index 10) ...
+    # DOWN x3 -> Tickets -> Records -> Frontier (index 13)"): NV_FRONTIER is index 13,
+    # column 1 (13 >= PDNA_NAV_ROWS=11) row 13-11=2 -- one RIGHT (column jump to index
+    # 11, NV_EVENTS) then DOWN x2, not DOWN x3 off an index-10 start that no longer
+    # exists in column 1 at all.
     s.tap("START", settle=BIG_SETTLE)       # reopen the nav menu
-    s.press_n("RIGHT", 1, settle=SETTLE)    # Party -> Blocks (index 10)
-    s.press_n("DOWN", 3, settle=SETTLE)     # Blocks -> Tickets -> Records -> Frontier (index 13)
+    s.press_n("RIGHT", 1, settle=SETTLE)    # Party -> Tickets (column 1 top, index 11)
+    s.press_n("DOWN", 2, settle=SETTLE)     # Tickets -> Records -> Frontier (index 13)
     s.tap("A", settle=BIG_SETTLE)           # Frontier -> pdna_frontier()'s OWN g3f_supported()
                                              # gate fires (FRLG has no streak block at all)
     s.shot("02_frontier_no_records", "#58: FireRed, Frontier -- pdna_frontier()'s OWN "
@@ -132,7 +167,11 @@ def run_emerald_menu(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
 
     s.tap("START", settle=BIG_SETTLE)
     s.shot("01_menu", "#58: Emerald (Gen 3) START menu -- compare pixel-for-pixel "
-                       "against n1gold_01_menu; same panel, same 19 labels, same order")
+                       "against n1gold_01_menu; same panel, same 21 labels, same order "
+                       "(BACKLOG #251 shots-refresh: was 19 when this caption was "
+                       "written -- source/pdna_layout.h's PDNA_NAV_ITEMS has since "
+                       "grown NV_MAP/NV_GB/NV_XFER, re-counted live off this exact "
+                       "frame, not assumed)")
     return s
 
 
@@ -175,8 +214,16 @@ def main(argv=None) -> int:
     if manifest_path.is_file():
         existing = json.loads(manifest_path.read_text(encoding="utf-8"))
     by_file = {e["file"]: e for e in existing.get("shots", [])}
-    for n, c in ok:
-        by_file[n] = {"file": n, "caption": c}
+    # BACKLOG #251 shots-refresh fix: Session.taken entries are (name, caption,
+    # claim_info) since gb_shots.py's BACKLOG #184 claim mechanism -- this loop still
+    # unpacked 2 values and crashed AFTER every shot() call had already run (the PNGs
+    # were fine; only the manifest write -- and therefore this script's OWN entries
+    # ever reaching gb_contact_sheet.py -- never happened). claim_info is merged in
+    # verbatim, same as gb_shots.py's own main() does.
+    for n, c, claim_info in ok:
+        entry = {"file": n, "caption": c}
+        entry.update(claim_info)
+        by_file[n] = entry
     by_name = {e["name"]: e for e in existing.get("skipped", [])}
     for n, r in skipped:
         by_name[n] = {"name": n, "reason": r}

@@ -3515,13 +3515,26 @@ def run_b87_dex(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     # row on GB, setnat NULL) -- 3 DOWN presses from the overlay's own default sel=0.
     s.press_n("DOWN", 3)
     s.tap("A", settle=gb_shots.BIG_SETTLE)                   # Undo -> restores the pre-Catch-ALL snapshot; dex_menu's own loop is STILL open
-    s.tap("B", settle=gb_shots.BIG_SETTLE)                   # dex_menu -> B closes it, back to the list
-    s.shot("12_after_undo", "#87: back at the list after Undo -- restored to exactly the "
-                             "pre-Catch-ALL state (dex_bulk's s_dex_snap[386], "
-                             "byte-exact per the acceptance gate) -- compare against "
-                             "03_list_default")
-
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                   # dex_menu closes
+    # BACKLOG #251 shots-refresh re-derivation (was: "back at the list after Undo" for
+    # BOTH games, then one more B -> the save confirm for both): reproduced live,
+    # three times, on Red only -- this SAME dex_menu-closing B, right after Undo (not
+    # after Catch ALL two shots earlier, which correctly lands on the list, see
+    # 10_after_catch_all above), lands directly on pdna_gbdex()'s own "Save Pokedex
+    # changes?" confirm for Red, skipping the list screen entirely; Crystal's own
+    # capture (b87_dex_crystal_12_after_undo.png) DOES still show the list, matching
+    # the original caption. Not chased to a root cause in source/pdna_gbdex.c (out of
+    # this lane's scope) -- shooting what is actually on screen for each game, and
+    # correcting Red's downstream taps to match (see the which=="red" branch below):
+    # the old code's extra "B" after this point CANCELLED this already-showing
+    # confirm (B = no) and cascaded out to the Bank/box screen, so 16_save_confirm was
+    # silently capturing a totally unrelated screen (a Bank grid) under a "Save
+    # Pokedex changes?" caption on every Red run.
     if which == "crystal":
+        s.shot("12_after_undo", "#87: back at the list after Undo -- restored to exactly "
+                                 "the pre-Catch-ALL state (dex_bulk's s_dex_snap[386], "
+                                 "byte-exact per the acceptance gate) -- compare against "
+                                 "03_list_default")
         s.tap("B", settle=gb_shots.BIG_SETTLE)               # dex screen -> back to the chooser
         s.tap("DOWN", settle=gb_shots.SETTLE)                # chooser row 1: Unown forms
         s.shot("13_chooser_unown_row", "#87: the chooser with 'Unown forms' selected")
@@ -3532,10 +3545,26 @@ def run_b87_dex(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
         s.shot("15_unown_toggled", "#87: letter A toggled -- trainer_flag_row_paint's own "
                                     "ON/off text flips")
         s.tap("B", settle=gb_shots.BIG_SETTLE)               # Unown list -> back to the chooser
-
-    s.tap("B", settle=gb_shots.BIG_SETTLE)                   # chooser (or dex screen, Red) -> pdna_gbdex()'s own confirm
-    s.shot("16_save_confirm", "#87: 'Save Pokedex changes?' -- item 3's own end-of-visit "
-                               "confirm (gbs_finish + gb_persist('dex') on A)")
+        s.tap("B", settle=gb_shots.BIG_SETTLE)               # chooser -> pdna_gbdex()'s own confirm
+        s.shot("16_save_confirm", "#87: 'Save Pokedex changes?' -- item 3's own end-of-visit "
+                                   "confirm (gbs_finish + gb_persist('dex') on A)")
+    else:
+        # Red: the dex_menu-closing B above already reached the confirm (see this
+        # function's own comment). 12_after_undo's real content IS the confirm, not
+        # the list -- recaptioned to match. Pressing A here (yes -- write it) reaches
+        # NEW evidence instead of re-showing the same frame under a second name: the
+        # honest SD-write refusal every other GB commit path in this file shows.
+        s.shot("12_after_undo", "#87: after Undo, one B closes BOTH dex_menu and the "
+                                 "dex screen itself on Red (unlike Crystal, which still "
+                                 "shows the list here -- see this function's own "
+                                 "comment) -- landing directly on pdna_gbdex()'s "
+                                 "\"Save Pokedex changes?\" confirm")
+        s.tap("A", settle=gb_shots.BIG_SETTLE)               # confirm (yes) -> gb_persist('dex')
+        s.shot("16_save_confirm", "#87: confirmed -> refused: \"GAME BOY SAVE / Edits "
+                                   "are in-session only in the emulator build.\" -- the "
+                                   "same honest SD-write refusal every other GB commit "
+                                   "path in this file shows (gb_persist()'s PDNA_DELTA "
+                                   "branch); no flashcart in mGBA")
     return s
 
 
