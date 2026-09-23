@@ -1033,6 +1033,13 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XFER_NOGEN_TITLE "NOT ACROSS GENERATIONS"
 #define PDNA_XFER_NOGEN_L1    "This Pokemon cannot move"
 #define PDNA_XFER_NOGEN_L2    "between these two saves yet."
+/* BACKLOG #246 review F6(a) fix: the D1 refusal (a Bank DUPLICATE carry dropped
+ * on a GB grid, pdna_box.c) used to reuse PDNA_XFER_NOGEN_*, which the user has
+ * just seen disproved by a successful non-duplicate move a moment earlier --
+ * this is a COPY-specific rule, not a generation rule. */
+#define PDNA_XFER_COPYNOXFER_TITLE "COPIES CAN'T TRANSFER"
+#define PDNA_XFER_COPYNOXFER_L1    "Move the original instead."
+#define PDNA_XFER_COPYNOXFER_L2    "A copy has no Bank slot to free."
 
 /* BACKLOG #150 S150-3 decision 3/10: a native "GBC1" Bank cell dropped anywhere other
  * than back into the Bank (drop_held's dominating xg_native_escape_denied() call). The
@@ -1422,6 +1429,15 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_SIDECAR_FULL_L1         "Too many clones of this Pokemon."
 #define PDNA_SIDECAR_NOTWRITTEN_TITLE "SIDECAR NOT WRITTEN"
 #define PDNA_SIDECAR_NOTWRITTEN_L2   "Nothing transferred."
+/* BACKLOG #246 review F4 fix: gb_paste_write's own pre-gbsc_add guard. Two live
+ * entries in one .pds that share BOTH the fingerprint (already guaranteed -- one
+ * file per key) AND species_written are indistinguishable to xr_resolve_home's
+ * own tiebreak (first match wins); the SECOND deposit of that pair silently binds
+ * to the wrong entry and a later restore swaps the two originals. Refuse the
+ * creation instead, naming the real reason. */
+#define PDNA_SIDECAR_AMBIG_TITLE     "ALREADY OVER THERE"
+#define PDNA_SIDECAR_AMBIG_L1        "Another Pokemon with the same"
+#define PDNA_SIDECAR_AMBIG_L2        "trainer and DVs is over there."
 /* BACKLOG #40(c): gb_paste_write()/gb_paste_hook's own STRUCTURAL refusals (the
  * conversion already succeeded and the loss screen was already accepted -- gbs_insert()
  * itself then said no: the box filled up between the check and the write, or the list

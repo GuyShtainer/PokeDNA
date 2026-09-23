@@ -8,6 +8,45 @@
 #include "gen3_save.h"    /* gen3_decode_char -- review F4's unmappable-glyph guard  */
 #include "item_map_g2g3.h" /* item_g2_to_g3 -- S150-9 decision 5's abroad_item_dropped */
 
+/* BACKLOG #246 D3 fix: moved verbatim from pdna_main.c's static xr_report_from_gbsc
+ * (BACKLOG #150 S150-9 decision 5) -- same six field names, decision 12's own design.
+ * See xfer_rec.h for why this now lives here instead of staying a pdna_main.c-private
+ * static. */
+void xr_report_from_gbsc(const GbscMergeReport* g, XrMergeReport* x) {
+  memset(x, 0, sizeof *x);
+  x->evolved = g->evolved;
+  x->level_changed = g->level_changed;
+  x->moves_changed = g->moves_changed;
+  x->renamed = g->renamed;
+  x->rename_refused = g->rename_refused;
+  x->gb_item_ignored = g->gb_item_ignored;
+  x->level_from = g->level_from;
+  x->level_to = g->level_to;
+}
+
+/* BACKLOG #246 review F2 fix: see xfer_rec.h for why this exists. Identical loop to
+ * the two copies it replaces in source/pdna_gen12.c (gb_lift_restore_g3home,
+ * gb_release_g3home) -- start=0, guard bound GBSC_MAX_ENTRIES (gbsc_find can never
+ * revisit an index, so this bounds the walk even if gbsc_find's own invariants were
+ * ever violated, golden rule 2), first match kept as the fallback, a species_written
+ * == nowdex match preferred and ends the walk immediately. */
+int xr_resolve_home(const uint8_t* buf, uint32_t len, const GbEditMon* mon,
+                    int want_kind, uint16_t nowdex) {
+  int first = -1, species_match = -1, start = 0;
+  for (int guard = 0; guard <= GBSC_MAX_ENTRIES; guard++) {
+    int i = gbsc_find(buf, len, mon, start, /*include_claimed*/true, want_kind);
+    if (i < 0) break;
+    if (first < 0) first = i;
+    GbscEntry cand;
+    if (gbsc_get(buf, len, i, &cand) && cand.species_written == nowdex) {
+      species_match = i;
+      break;
+    }
+    start = i + 1;
+  }
+  return (species_match >= 0) ? species_match : first;
+}
+
 /* Same constants gb_sidecar.c's gbsc_key() uses (source/gb_sidecar.h:68-70). */
 uint64_t xr_key_g3(const uint8_t rec80[80]) {
   uint64_t h = 14695981039346656037ULL;   /* FNV-1a-64 offset basis */

@@ -42,11 +42,17 @@ bool xg_inject_refuse(bool arena_held, bool vinfo_valid);
 bool xg_clear_carry_on_gb_exit(bool carry_is_gb);
 
 /* pdna_box.c drop_held(): deny a drop when either side of the transfer is
- * BOXSCOPE_GB (== 2) — no cross-generation drop lands here, EXCEPT (BACKLOG #150
- * S150-4 decision 9) a Bank destination receiving a GB-scope carry when both sides
- * have an xfer vtable (`have_xfer`, since a bare predicate cannot see the vtable
- * itself) -- the UP edge this lane adds. Every other GB-involving pair (including
- * GB<-BANK, which is DOWN, not this lane) stays denied.
+ * BOXSCOPE_GB (== 2) — no cross-generation drop lands here, EXCEPT two named pairs,
+ * each gated the same way (`have_xfer`, since a bare predicate cannot see the vtable
+ * itself):
+ *   - (BACKLOG #150 S150-4 decision 9) a Bank destination receiving a GB-scope
+ *     carry -- the UP edge.
+ *   - (BACKLOG #246, #104 Phase 1) a GB destination receiving a Bank-scope carry
+ *     whose cell is a plain Gen-3 record (never native -- a native cell reaching a
+ *     GB destination is intercepted earlier, by the bc_is_native-gated DOWN-arm
+ *     dispatch block in pdna_box.c, and never reaches this predicate) -- the DOWN
+ *     edge re-attaching gen3_to_gb.c to a source for the first time since #239.
+ * Every OTHER GB-involving pair stays denied.
  *
  * BACKLOG #199 review D7 (report only): as of chain D (this same lane), this is now
  * the SOLE gate against a GB-origin carry escaping to a non-Bank destination.

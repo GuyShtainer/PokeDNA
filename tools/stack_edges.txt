@@ -1388,7 +1388,7 @@ AppSrcOps.release @8 in app_mon_menu_readonly -> gb_release_hook gb_move_hook gb
 AppSrcOps.move @4 in app_mon_menu_readonly -> gb_move_hook
 AppSrcOps.copy_native @12 in app_copy.isra.0 -> gb_copy_native_hook
 AppSrcOps.view @20 in app_mon_menu_readonly -> gb_view_hook
-BoxSource.records @20 in clear_origin,drop_held,drop_held_up,export_box_all,party_strip_overlay,release_box_all -> banksrc_records gbsrc_records pcsrc_records
+BoxSource.records @20 in clear_origin,drop_held,drop_held_up,drop_held_down_g3,drop_held_down_g3.isra.0,export_box_all,party_strip_overlay,release_box_all -> banksrc_records gbsrc_records pcsrc_records
 # drop_held's own offset-20 call site (BACKLOG #150 S150-7 step 3): `recs =
 # src->records(box);` after bank_down_dispatch() lands the EXACT arm, repainting the
 # grid from the image the GB list just grew into -- added to the existing caller list
@@ -1401,6 +1401,14 @@ BoxSource.records @20 in clear_origin,drop_held,drop_held_up,export_box_all,part
 # release_box_all's offset-20 site is the exact one the third review pass named:
 # BoxSource.records(), never AppSrcOps.view -- this is the fix for "release_box_all no
 # longer reaches gb_view_hook".
+# BACKLOG #246: drop_held_down_g3 added to this line's caller list -- its own ONE
+# `recs = src->records(box);` site (repainting the GB grid after a Gen-3 Bank cell
+# lands, the DOWN mirror of drop_held_up's UP-direction sites above), extracted out
+# of drop_held's body into its own noinline helper the same way, same offset, same
+# targets. Both spellings listed (bank_down_dispatch's own precedent, just above):
+# this build's `nm` shows `drop_held_down_g3.isra.0` (GCC's IPA-SRA cloned it,
+# unlike drop_held_up, which compiles plain) -- the bare name stays too since which
+# variant clones is not this lane's invariant to pin.
 AppSrcOps.editable @24 in app_mon_menu_readonly -> gb_editable_hook
 # fetch_pic_ex.constprop.0's offset-24 sites are the SAME "spilled section-anchor,
 # coincidental numeric offset" shape the dex-screen family USED to have before

@@ -100,17 +100,22 @@ static void test_xg_drop_denied(void) {
     for (int s = 0; s < 3; s++)
       for (int hx = 0; hx <= 1; hx++) {
         bool have_xfer = (bool)hx;
-        bool allow = (scopes[d] == BOXSCOPE_BANK) && (scopes[s] == 2u) && have_xfer;
+        /* BACKLOG #246 (#104 Phase 1): the second allow-rule, GB<-BANK, added
+         * alongside the S150-4 one (BANK<-GB) -- exactly the two pairs
+         * source/xfer_gate.h now documents by name. */
+        bool allow = ((scopes[d] == BOXSCOPE_BANK) && (scopes[s] == 2u) && have_xfer) ||
+                     ((scopes[d] == 2u) && (scopes[s] == BOXSCOPE_BANK) && have_xfer);
         bool want = !allow && ((scopes[d] == 2u) || (scopes[s] == 2u));
         if (allow) allowed++;
         CHECK(xg_drop_denied(scopes[d], scopes[s], have_xfer) == want,
-              "drop_denied: denied unless dst=BANK, src=GB, have_xfer -- the one S150-4 allow-rule");
+              "drop_denied: denied unless (dst=BANK,src=GB) or (dst=GB,src=BANK), have_xfer -- "
+              "the two named allow-rules (S150-4 + BACKLOG #246)");
       }
-  CHECK(allowed == 1, "drop_denied: exactly ONE of the 18 combinations is allowed");
-  printf("(F) xg_drop_denied: all 3x3x2 = 18 scope/have_xfer combinations, exactly one allowed\n");
+  CHECK(allowed == 2, "drop_denied: exactly TWO of the 18 combinations are allowed");
+  printf("(F) xg_drop_denied: all 3x3x2 = 18 scope/have_xfer combinations, exactly two allowed\n");
 
   /* BACKLOG #199 review D7 (report only): this combination is already covered by
-   * the exhaustive sweep above (dst=PC, src=GB is never the one S150-4 allow-rule),
+   * the exhaustive sweep above (dst=PC, src=GB is never one of the two allow-rules),
    * but pinned here BY NAME too -- xg_drop_denied is now the SOLE gate against a
    * GB-origin carry escaping to the PC (source/xfer_gate.h's own contract comment
    * on this function): xg_native_escape_denied is inert for a GB-origin carry,
@@ -124,6 +129,20 @@ static void test_xg_drop_denied(void) {
         "against a GB-origin carry escaping to the PC now that xg_native_escape_denied "
         "is inert for one (BACKLOG #199 review D7)");
   printf("(F2) xg_drop_denied(PC, GB, true) == true -- the sole GB-escape gate, pinned by name\n");
+
+  /* BACKLOG #246 (#104 Phase 1) STOP-LICENCE check, pinned by name: the new
+   * allow-rule opens EXACTLY (dst=GB, src=BANK) and nothing else that touches PC.
+   * PC<-BANK and BANK<-PC (the ordinary Bank<->PC move, never gated by this
+   * predicate's dst/src==GB check at all in the real caller, but exercised here for
+   * completeness) must stay exactly as permissive as they always were --
+   * xg_drop_denied only ever refuses when GB is on one side. */
+  CHECK(xg_drop_denied(BOXSCOPE_PC, BOXSCOPE_BANK, true) == false,
+        "drop_denied: PC<-BANK (no GB on either side) was never denied by this gate, "
+        "and BACKLOG #246 touches nothing here");
+  CHECK(xg_drop_denied(BOXSCOPE_BANK, BOXSCOPE_PC, true) == false,
+        "drop_denied: BANK<-PC (no GB on either side) was never denied by this gate, "
+        "and BACKLOG #246 touches nothing here");
+  printf("(F3) xg_drop_denied: BACKLOG #246 opens GB<-BANK only -- PC<->BANK unaffected\n");
 }
 
 /* BACKLOG #150 S150-3 step 1: build a native fixture WITHOUT a corpus -- fill 80 bytes

@@ -1481,9 +1481,20 @@ static uint8_t* __attribute__((noinline)) drop_held_up(BoxSource* src, int box, 
   recs = src->records(box);
   /* decision 10: the ident32 collision refusal, NOT a re-pack -- the serial is
    * monotonic and persisted before use, so a collision means the meta was lost
-   * or rolled back. A plain memcmp on bytes 0..7 (magic + ident32), not a
-   * recomputed bc_ident32() on the candidate (a match on bytes 0..3 alone
-   * already implies "GBC1", so no separate bc_is_native() check is needed).
+   * or rolled back. A plain memcmp on bytes 0..7 (magic + ident32) against each
+   * CANDIDATE cell already stored in a Bank box -- not a recomputed bc_ident32()
+   * on the candidate (a match on bytes 0..3 alone already implies "GBC1" for
+   * THAT side, so no separate bc_is_native() check is needed on it).
+   * BACKLOG #246 review F5 fix: `packed` itself is a DIFFERENT matter -- since
+   * gb_lift_restore_g3home (source/pdna_gen12.c), it can be a PLAIN Gen-3
+   * record (bc_is_native(packed) == false by construction: gen3_edit_commit
+   * never writes the GBC1 tag), and for that shape bytes 0..7 are PID + OT ID,
+   * not magic + ident32 at all -- comparing them against every stored cell's
+   * ident32 span is comparing two unrelated fields, and a false "BANK RECORD
+   * CLASH" refusal follows whenever another cell happens to share that PID+OTID.
+   * No corruption either way (bc_unpack rejects the false match before commit),
+   * but this whole scan -- serial resync, repack, ident32 clash -- is a
+   * native-cell-only concept, so it is now gated on bc_is_native(packed) below.
    * BACKLOG #168a (REVIEW F5's own follow-up): scans ALL 16 Bank boxes, not just
    * the destination -- a duplicate serial landing in another box used to be
    * invisible here, and S150-6/S150-7 would mis-target it. One box buffer at a
@@ -1496,6 +1507,13 @@ static uint8_t* __attribute__((noinline)) drop_held_up(BoxSource* src, int box, 
    * in beside this card's meta. Pay the full 16-box scan ONCE per session (15
    * extra 2,400-B reads, on a deliberate user action), then trust it. */
   static EWRAM_BSS bool s_up_scan_done;   /* EWRAM: an IWRAM static would cost 8 B of stack budget (re-verify) */
+  /* BACKLOG #246 review F5 fix: wraps the WHOLE native-only scan (not folded into
+   * the inner guard's own condition) so the #168a review D2 structural test can
+   * still find the exact `if (!pdna_bank_serial_trusted() ... s_up_scan_done ...)`
+   * line its latch checks pin -- see that test's own comment for why the latch
+   * form matters (a bare `if (!pdna_bank_serial_trusted())` silently skips the
+   * scan forever on an ordinary card). */
+  if (bc_is_native(packed)) {
   if (!pdna_bank_serial_trusted() || !s_up_scan_done) {
     /* BACKLOG #223 review D4/D5, fused into one pass by #206 fixes2 R2
      * (bank_scan_serial_and_clash, bank_collision.c): a rolled-back counter
@@ -1551,6 +1569,7 @@ static uint8_t* __attribute__((noinline)) drop_held_up(BoxSource* src, int box, 
      * box's bytes, not `box`'s. Re-page the destination before writing. */
     recs = src->records(box);
   }
+  }   /* BACKLOG #246 review F5 fix: closes the bc_is_native(packed) wrap above */
   memcpy(recs + (uint32_t)cur * 80, packed, 80);
   bool ok = src->commit();                                 /* verified bank box_save */
   if (!ok) {
@@ -1593,6 +1612,54 @@ static uint8_t* __attribute__((noinline)) drop_held_up(BoxSource* src, int box, 
     log_line("bank: copy box %d slot %d -> bank box %d slot %d: ok, queued for the PC", gb_box, gb_slot, box, cur);
   }
   boxoam_resume();                                         /* REVIEW F4: covers gb_persist's own panels + PDNA_XFER_KEPT_* above */
+  return recs;
+}
+
+/* BACKLOG #246 (#104 Phase 1): the DOWN mirror of drop_held_up above -- a PLAIN
+ * Gen-3 Bank cell (never native) carried onto a Game Boy grid and dropped. Own
+ * noinline frame for the same reason drop_held_up gets one (BACKLOG #170): gen3_to_gb_fixed
+ * + the loss/legal screens are exactly the kind of weight that must not sit on
+ * drop_held's own worst-case stack path, which runs on every grid A-press, not
+ * just a carry.
+ *
+ * ORDER, mirroring drop_held_up's own contract (its doc comment, decision 1): the
+ * Game Boy save is written and VERIFIED first (gb_bank_down_g3 -> gb_persist,
+ * BANK_DOWN_LANDED only after a real card write); only THEN does the Bank lose the
+ * cell (app_bank_clear_slots). A refused landing reverts nothing and keeps holding
+ * (gb_bank_down_g3 has already said why, on screen); a landed-but-not-consumed
+ * failure leaves a DUPLICATE -- the game HAS it, the Bank slot is a repairable
+ * leftover, never silently lost -- same shape as every OTHER Bank-down consume in
+ * this file (bank_down_exact's own comment, just above, makes the identical
+ * argument). `s_held` IS the 80-byte record: handed to gb_bank_down_g3 and to the
+ * consume directly, no extra 80-B copy (the escape-gate structural test treats
+ * every 80-B memcpy in drop_held as a write that must sit below the gate; this
+ * function adds none). */
+static uint8_t* __attribute__((noinline))
+drop_held_down_g3(BoxSource* src, int box, int cur, uint8_t* recs, bool* done) {
+  (void)cur;   /* BACKLOG #246 review D7: never read -- a Game Boy list always appends at
+                * its own next free slot (gbs_insert), never at the cursor cell; `cur`
+                * stays in the signature only to match drop_held_up's own sibling shape. */
+  boxoam_suspend();
+  bool landed = gb_bank_down_g3(box, s_held) == BANK_DOWN_LANDED;
+  boxoam_resume();
+  if (!landed) {
+    log_line("gen12: g3-down box %d slot %d -> gb box %d: refused/not landed",
+             s_orig_box, s_orig_slot, box);
+    return recs;                                            /* still holding -- the arm already said why */
+  }
+
+  s_holding = false; *done = true;
+  { uint8_t slots1[1]; slots1[0] = (uint8_t)s_orig_slot;
+    boxoam_suspend();                                        /* hard rule 1: SD write with OAM off */
+    if (!app_bank_clear_slots(s_orig_box, slots1, (const uint8_t (*)[80])s_held, 1)) {
+      snd_error();                                           /* D7's own shape: the game HAS it; the Bank keeps a duplicate */
+      char l2[40]; siprintf(l2, "Bank box %d slot %d", s_orig_box + 1, s_orig_slot + 1);
+      msg_wait(PDNA_XFER_DOWN_DUP_TITLE, UI_WARN, PDNA_XFER_DOWN_DUP_L1, l2);
+    }
+    boxoam_resume(); }
+  s_oam_reload = true;
+  recs = src->records(box);   /* the GB list grew -- repaint from the image */
+  log_line("gen12: g3-down box %d slot %d -> gb box %d: ok", s_orig_box, s_orig_slot, box);
   return recs;
 }
 
@@ -1725,6 +1792,55 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
       boxoam_suspend();
       snd_deny();
       msg_wait(PDNA_XFER_NOGEN_TITLE, UI_WARN, PDNA_XFER_NOGEN_L1, PDNA_XFER_NOGEN_L2);
+      boxoam_resume();
+      return recs;
+    }
+    /* BACKLOG #246 (#104 Phase 1): the mirror pair -- a PLAIN Gen-3 Bank cell
+     * (never native; a native cell reaching this point for a GB destination
+     * would already have returned above, through the bc_is_native-gated DOWN-arm
+     * dispatch block) carried out of the Bank and dropped onto a Game Boy grid.
+     * `have_xfer` (computed just above, `s_xfer_peer && s_xfer_peer->lift_up`) is
+     * exactly what unlocked this pair past xg_drop_denied a few lines up --
+     * re-checked here by name (`!bc_is_native(s_held)`) as the edge predicate this
+     * branch actually means: "a Bank-origin carry that is a plain Gen-3 record,
+     * not the native-cell case the dispatch block above already owns."
+     * BEFORE the `occupied` check below, not after (found live: Red's real GB
+     * BOX1 is 20/20 on this corpus and the drop silently no-op'd, snd_deny()'d
+     * by that check with no dialog at all) -- `occupied` reads the DESTINATION
+     * cell under the cursor, which means something for a slot-addressable Bank
+     * cell (drop_held_up, just below) but NOTHING for a Game Boy list: gbs_insert
+     * always appends at the list's own next free slot (gb_bank_down_g3's own
+     * capacity check, further down, is the real gate), exactly why the native-cell
+     * dispatch block above this whole `if (!same_scope(src))` branch also runs
+     * BEFORE `occupied` for its own EXACT/GB_BRIDGE arms. */
+    if (src->scope == BOXSCOPE_GB && s_orig_scope == BOXSCOPE_BANK &&
+        s_orig_slot >= 0 && s_xfer_peer && s_xfer_peer->lift_up && !bc_is_native(s_held)) {
+      return drop_held_down_g3(src, box, cur, recs, done);
+    }
+    /* BACKLOG #246 review D1 (HIGH -- a false success): the down-arm above requires
+     * s_orig_slot >= 0 (it deletes a card slot on landing -- a real ORIGIN drop), so
+     * a Bank DUPLICATE carry (s_orig_slot == -1, s_held_dup == true -- the read-only
+     * nav-menu's copy, or a COPY lift) falls PAST it. Before this fix it fell past
+     * `occupied` too, into the generic DUPLICATE fast path further down, which
+     * memcpy's the Gen-3 record straight into the GB page buffer with no
+     * gen3_to_gb_fixed, no loss screen, no capacity check and no sidecar write -- a
+     * silent, undeclared copy into a Game Boy save (display-only: gbsrc_commit
+     * refuses a native-shaped write and a re-page clears it, but the box header still
+     * lies 16/20 -> 17/20 with no dialog at all). Refuse every Bank-origin duplicate
+     * headed for a GB destination outright -- named by the exact scope this drop is
+     * headed for (src->scope == BOXSCOPE_GB), so a PC-destination duplicate is
+     * unaffected and still reaches its own existing fast path below. There is no
+     * landing path for a Bank duplicate on a Game Boy save yet (#104's later phases,
+     * not #246 Phase 1). tests/host_escape_gate_sites_test.py check (bb) pins this
+     * refusal strictly between the down-arm above and `if (occupied)` below. */
+    if (src->scope == BOXSCOPE_GB && s_orig_scope == BOXSCOPE_BANK && s_held_dup) {
+      boxoam_suspend();
+      snd_deny();
+      /* BACKLOG #246 review F6(a) fix: this is NOT the "not across generations"
+       * rule (PDNA_XFER_NOGEN_*) -- the user has just seen that disproved by a
+       * successful non-duplicate move a moment earlier. This is COPY-specific:
+       * a duplicate carry has no Bank slot of its own to free on landing. */
+      msg_wait(PDNA_XFER_COPYNOXFER_TITLE, UI_WARN, PDNA_XFER_COPYNOXFER_L1, PDNA_XFER_COPYNOXFER_L2);
       boxoam_resume();
       return recs;
     }

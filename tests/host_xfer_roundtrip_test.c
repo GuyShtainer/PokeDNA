@@ -2106,6 +2106,175 @@ static void test_mutation_proofs(void) {
 }
 
 /* ============================================================================ */
+/* F. BACKLOG #246 review D3 (BLOCKING fix -- the phase's own return trip, #104 S7's
+ * acceptance criterion "Emerald -> Bank -> Red AND BACK, byte-identical"). gb_paste_
+ * write() (source/pdna_gen12.c) writes a sidecar entry via gbsc_entry_from(), which
+ * always stamps kind = XR_KIND_G3_HOME (gb_sidecar.c, verified below). Before this
+ * fix, gb_lift_restore's own Bank-UP lift -- the ONLY route a card, on real
+ * hardware, offers to bring that mon back into the Bank -- searched EXCLUSIVELY for
+ * XR_KIND_NATIVE_HOME, so a #246 landing was findable by NOTHING the box screen
+ * could reach (review R3/D3; /tmp/r246/rt_proof.c's own ROUTE A failed before this
+ * fix, matching this test before the fix and passing after it). This section builds
+ * the entry EXACTLY the way gb_paste_write does (the same gbsc_entry_from() call,
+ * same argument order, same orig80 = the Bank cell's own true bytes) and asserts
+ * what gb_lift_restore_g3home (pdna_gen12.c, this fix's own new second arm) now
+ * does: the NATIVE_HOME search still finds nothing (proves the native arm is
+ * untouched -- a second arm, not a replacement), the G3_HOME search DOES find it --
+ * THE ASSERTION THE REVIEW SAYS WAS MISSING -- and gbsc_merge_up_sel reproduces the
+ * original 80 bytes when nothing changed on the Game Boy side (KEEP AS IS, the
+ * common case, the same default every other direction in this file uses). */
+static void test_backlog_246_d3_lift_finds_g3home(void) {
+  if (!g_have_g3_sample) {
+    printf("  SKIP #246 D3 (no Gen-3 corpus record captured by section A)\n");
+    return;
+  }
+
+  GbEditMon down;
+  Gen3ToGbLoss loss;
+  G3GbStatus st = gen3_to_gb(g_g3_sample_rec, GB_GEN2, true, NULL, &down, &loss);
+  if (st != G3GB_OK) {
+    printf("  SKIP #246 D3 (section A's sample record refuses gen3_to_gb: %s)\n",
+           g3gb_status_text(st));
+    return;
+  }
+
+  /* gb_paste_write()'s OWN call, verbatim (source/pdna_gen12.c): orig80 is the Bank
+   * cell's own true bytes (g_g3_sample_rec here), epoch 0 (no RTC on host). */
+  GbscEntry e;
+  gbsc_entry_from(&e, &down, g_g3_sample_rec, 0);
+  CHECK(e.kind == XR_KIND_G3_HOME, "#246 D3: gbsc_entry_from stamps kind = XR_KIND_G3_HOME");
+  CHECK(e.direction == XR_DIR_ABROAD_GB, "#246 D3: gbsc_entry_from stamps direction = XR_DIR_ABROAD_GB");
+
+  uint8_t file[GBSC_FILE_MAX];
+  uint8_t dv4[4] = {
+    gb_get_dv(&down, GB_ATK), gb_get_dv(&down, GB_DEF),
+    gb_get_dv(&down, GB_SPE), gb_get_dv(&down, GB_SPC)
+  };
+  uint64_t key = gbsc_key(down.gen, gb_get_otid(&down), dv4, down.otname);
+  uint32_t len = (uint32_t)gbsc_init(file, key);
+  int idx = gbsc_add(file, &len, GBSC_FILE_MAX, &e);
+  CHECK(idx >= 0, "#246 D3: gbsc_add succeeds for the entry gb_paste_write writes");
+  if (idx < 0) return;
+
+  /* Before this fix, gb_lift_restore searched ONLY XR_KIND_NATIVE_HOME -- must still
+   * find NOTHING here (the native arm is unchanged, second arm not a replacement). */
+  int native_hit = gbsc_find(file, len, &down, 0, /*include_claimed*/true, XR_KIND_NATIVE_HOME);
+  CHECK(native_hit < 0,
+        "#246 D3: the NATIVE_HOME search still finds nothing for a #246 entry (native arm untouched)");
+
+  /* THE LIFT LOOKUP FINDS IT: BACKLOG #246 review F2 fix -- this now calls
+   * xr_resolve_home() (source/xfer_rec.c), the ONE resolve BOTH gb_lift_restore_
+   * g3home and gb_release_g3home (source/pdna_gen12.c) actually call at runtime, so
+   * a mutation of the real decision (not a hand-copied re-implementation in this
+   * test) shows up here. Before F2, this test called gbsc_find() directly and the
+   * reviewer's mutation of pdna_gen12.c's OWN copy of this tiebreak (sed line-2141
+   * rewrite to "return 0;") passed the suite green -- the entire fix this section
+   * exists to prove could be deleted undetected. */
+  uint16_t down_nowdex = gb_get_species_dex(&down);
+  int g3home_hit = xr_resolve_home(file, len, &down, XR_KIND_G3_HOME, down_nowdex);
+  CHECK(g3home_hit == idx,
+        "#246 D3 (the fix): xr_resolve_home FINDS the #246 entry (index %d, want %d) -- "
+        "before this fix gb_lift_restore never even looked", g3home_hit, idx);
+  if (g3home_hit < 0) return;
+
+  /* gb_lift_restore_g3home's own commit call, verbatim: gbsc_merge_up_sel(&e, mon,
+   * accept, out80, rep) -- accept=0 (KEEP AS IS, nothing changed on the Game Boy
+   * side since the write) reproduces the Bank cell's own true bytes exactly. */
+  GbscEntry got;
+  CHECK(gbsc_get(file, len, g3home_hit, &got), "#246 D3: gbsc_get on the found index");
+  uint8_t back80[80];
+  GbscMergeReport rep;
+  CHECK(gbsc_merge_up_sel(&got, &down, 0, back80, &rep),
+        "#246 D3: gbsc_merge_up_sel (accept=0, KEEP AS IS) succeeds on the found entry");
+  CHECK(memcmp(back80, g_g3_sample_rec, 80) == 0,
+        "#246 D3: the round trip is byte-identical -- Emerald -> Bank -> GB -> back, "
+        "matching #104 S7's own acceptance criterion");
+  CHECK(!bc_is_native(back80), "#246 D3: the restored Bank cell is a PLAIN Gen-3 record, never native");
+}
+
+/* ============================================================================ */
+/* F4. BACKLOG #246 review F4 (MEDIUM): two same-fingerprint, same-species entries
+ * in one .pds swap their originals. gbsc_find() matches only gen/otid16/dv4/
+ * otname -- exactly the fields the FILENAME key is built from -- so every entry in
+ * one file matches every lift, and xr_resolve_home's species_written tiebreak is
+ * the ONLY discriminator: first match wins on a tie. gb_paste_write (source/
+ * pdna_gen12.c) now refuses to gbsc_add a SECOND entry whose species_written would
+ * collide with a live entry already in the file -- this section builds that exact
+ * scenario (two different Gen-3 originals, same down-converted mon so the same
+ * fingerprint AND the same species) and asserts (a) the guard's own predicate
+ * (xr_resolve_home + species_written compare, the same two calls gb_paste_write's
+ * new guard makes) detects the collision before a second gbsc_add, and (b)
+ * demonstrates the swap that guard exists to prevent: WITHOUT it, a lookup for the
+ * mon that came from the second (later) original still resolves to the FIRST
+ * entry's index -- gb_release_g3home would then consume and report the wrong
+ * original. */
+static void test_backlog_246_f4_ambiguous_entries(void) {
+  if (!g_have_g3_sample) {
+    printf("  SKIP #246 F4 (no Gen-3 corpus record captured by section A)\n");
+    return;
+  }
+
+  GbEditMon down;
+  Gen3ToGbLoss loss;
+  G3GbStatus st = gen3_to_gb(g_g3_sample_rec, GB_GEN2, true, NULL, &down, &loss);
+  if (st != G3GB_OK) {
+    printf("  SKIP #246 F4 (section A's sample record refuses gen3_to_gb: %s)\n",
+           g3gb_status_text(st));
+    return;
+  }
+
+  uint8_t file[GBSC_FILE_MAX];
+  uint8_t dv4[4] = {
+    gb_get_dv(&down, GB_ATK), gb_get_dv(&down, GB_DEF),
+    gb_get_dv(&down, GB_SPE), gb_get_dv(&down, GB_SPC)
+  };
+  uint64_t key = gbsc_key(down.gen, gb_get_otid(&down), dv4, down.otname);
+  uint32_t len = (uint32_t)gbsc_init(file, key);
+
+  /* Two DIFFERENT Gen-3 originals (two separate Bank cells) that both down-convert
+   * to the identical `down` -- same trainer/DVs/name (the fingerprint) AND the
+   * same species_written, the exact ambiguity F4 reports. orig_b differs at byte 8
+   * (outside the 0..7 PID+OTID span gbsc_find/xr_resolve_home never look at) so it
+   * is a genuinely different 80-byte record, not a duplicate write of orig_a. */
+  uint8_t orig_a[80]; memcpy(orig_a, g_g3_sample_rec, 80);
+  uint8_t orig_b[80]; memcpy(orig_b, g_g3_sample_rec, 80);
+  orig_b[8] ^= 0xFF;
+
+  GbscEntry ea;
+  gbsc_entry_from(&ea, &down, orig_a, 0);
+  int idx_a = gbsc_add(file, &len, GBSC_FILE_MAX, &ea);
+  CHECK(idx_a >= 0, "#246 F4: first entry (orig_a) added");
+  if (idx_a < 0) return;
+
+  uint16_t nowdex = gb_get_species_dex(&down);
+  bool guard_would_refuse = false;
+  int collide = xr_resolve_home(file, len, &down, XR_KIND_G3_HOME, nowdex);
+  if (collide >= 0) {
+    GbscEntry cand;
+    if (gbsc_get(file, len, collide, &cand) && cand.species_written == nowdex) guard_would_refuse = true;
+  }
+  CHECK(guard_would_refuse,
+        "#246 F4 (the fix): the pre-add guard's own predicate detects the ambiguous "
+        "same-species entry (index %d) before gb_paste_write would add a second one",
+        collide);
+
+  /* Demonstrate the swap the guard exists to prevent: add the second (ambiguous)
+   * entry as if the guard were bypassed, then resolve for the SAME mon/species
+   * again -- xr_resolve_home's first-match tiebreak always returns idx_a, never
+   * idx_b, so a release after orig_b's deposit would consume/report orig_a. */
+  GbscEntry eb;
+  gbsc_entry_from(&eb, &down, orig_b, 0);
+  int idx_b = gbsc_add(file, &len, GBSC_FILE_MAX, &eb);
+  CHECK(idx_b >= 0, "#246 F4: second (ambiguous) entry (orig_b) added for the swap demonstration");
+  if (idx_b < 0) return;
+  int resolved = xr_resolve_home(file, len, &down, XR_KIND_G3_HOME, nowdex);
+  CHECK(resolved == idx_a,
+        "#246 F4: WITHOUT the guard, xr_resolve_home always binds to entry %d (first "
+        "match), never entry %d -- the swap gb_paste_write's new guard exists to "
+        "prevent (index resolved: %d)", idx_a, idx_b, resolved);
+}
+
+/* ============================================================================ */
 
 int main(int argc, char** argv) {
   printf("== BACKLOG #104 audit: cross-generation round-trip field survey ==\n");
@@ -2117,6 +2286,12 @@ int main(int argc, char** argv) {
   for (int i = 1; i < argc; i++) { run_gen3_corpus_file(&ta, argv[i]); gen3_files++; }
   if (!gen3_files) printf("  (no Gen-3 saves given on argv -- section A empty)\n");
   tally_report(&ta, "A. Gen3->GB->Gen3 (existing sidecar path)");
+
+  printf("\n-- F. BACKLOG #246 review D3: the down-arm's own return trip (the lift lookup) --\n");
+  test_backlog_246_d3_lift_finds_g3home();
+
+  printf("\n-- F4. BACKLOG #246 review F4: two same-fingerprint, same-species entries --\n");
+  test_backlog_246_f4_ambiguous_entries();
 
   printf("\n");
   test_make_legal_edge_case();

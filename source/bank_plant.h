@@ -71,6 +71,17 @@ void bank_plant_box_full(uint8_t* recs);
  * Planted by bank_plant_box_full() at box 1 slot 7. */
 void bank_plant_gen2_badmoves_cell(uint8_t out80[80]);
 
+/* BACKLOG #246 (#104 Phase 1): a PLAIN Gen-3 cell (never native "GBC1") at slot 0 of
+ * a DEDICATED box (box 2 -- wired in pdna_bank.c's box_load(), never box 0/1, so
+ * every existing shot chain keyed on bank_plant_box0()/bank_plant_box_full()'s own
+ * byte-for-byte content is untouched). This is the ONE cell type this whole file
+ * never had a case for before this lane: every earlier plant is a native cell built
+ * for the "native cell going DOWN" arms (S150-7/S150-8); this is the mirror -- a
+ * Gen-3 record for BACKLOG #246's new "Gen-3 cell going DOWN into a GB save" arm.
+ * `recs` is the same 2400-byte box buffer bank_plant_box0 takes; only slot 0 (bytes
+ * 0..79) is written, slots 1..29 stay the caller's own memset-zero empty cells. */
+void bank_plant_g3_box(uint8_t* recs);
+
 /* BACKLOG #150 S150-9 decision 12: the planted-ledger read shim (#179(a), the READ
  * half only -- the write side stays S150-13's). Serves up to FIVE in-RAM ".pds"
  * files (BACKLOG #209 added the fifth; five 1042-B slots inside #ifdef PDNA_DELTA
