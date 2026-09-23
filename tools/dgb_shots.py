@@ -6342,35 +6342,51 @@ def run_s150_9_site2(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.
     landing on Red's box grid with box 0 slot 0 seeded by bank_plant_site2_seed()
     from whatever that exact cell decodes to at mount time.
 
-    THE PROOF IS THE MISSING ORIGIN PROMPT, not a log line: log_under_mgba() is
-    false on this vehicle (run_s150_4_uplift's own documented finding, confirmed
-    again independently by this chain -- see the delivery report), so no "gen12:"
-    log line is visible in mGBA's own stdout capture here. What IS visible: an
-    ORDINARY GB-grid lift (no ledger entry, run_s150_4_uplift's own Gold/slot-0
-    Bulbasaur) always shows gb_pick_origin()'s full-screen "WHICH GAME IS THIS?"
-    prompt before any refusal -- gb_lift_pack() only reaches that prompt when
-    gb_has_sidecar() answered false. THIS slot (seeded, gb_has_sidecar() now true)
-    takes the OTHER branch instead: gb_lift_restore() runs directly (decision 10's
-    own comment: "the origin prompt is SKIPPED -- the home cell carries its own
-    origin_game already") -- so the prompt's ABSENCE, on the exact same SEL->A grab
-    gesture that shows it for an unseeded cell, is a frame gb_lift_pack's ordinary
-    (non-restore) path structurally CANNOT produce. bank_plant_site2_seed() marks
-    the entry CLAIMED and unaltered (byte-identical to the mon itself), so
-    xr_merge_down_gb_sel's own probe reports DIFFERING rows (BACKLOG #206/#209
-    review D2: the seed's home cell is now a CHANGED copy of the live mon --
-    renamed "OLDNAME" and 5 levels lower -- so gb_lift_restore's probe reads
-    renamed=1/level_changed=1 and decision 6/7's screen DRAWS instead of skipping)
-    -- app_xfer_merge_screen ("BACK TO ITS ORIGINAL") shows two toggle rows, both
-    defaulting to KEEP. B cancels it (nothing spent, mon still sitting at slot 0);
-    re-grabbing and pressing START instead applies nothing (both rows left at
-    KEEP) and runs into pdna_bank_next_serial(), which fails for the SAME reason
-    run_s150_4_uplift's own chain already documents (meta_save() needs a
-    writable FAT this vehicle does not have) -- a SILENT refusal: no msg_wait
-    fires on that specific failure (only xr_open/gbsc_count failures show
-    PDNA_XFERREC_TITLE "TRANSFER RECORD UNREADABLE"; a meta-write failure is
-    log-only, "gen12: xferup lift refused: restore refused"), so the frame is
-    pixel-identical to the grid state B already reached -- captioned as exactly
-    that, not as a message that never appears.
+    b199 review D2 (repair, BACKLOG #199 chain D moved the call site): this chain
+    used to assert the restore screen / origin prompt appeared at GRAB time (SEL,
+    A on the seeded cell). Lane b199's own chain D moved gb_lift_pack's call from
+    start_carry (grab) to drop_held_up (the one drop that actually needs the
+    Bank's price, source/pdna_gen12.c's own comment on gb_lift_pack: "the call
+    moved from grab time... to the one drop that actually needs the Bank's
+    price") -- so A on the seeded cell now just HOLDS (footer "A drop  B
+    cancel", no screen at all, the SAME footer an ordinary unseeded grab shows),
+    and gb_has_sidecar()'s branch only fires once the carried mon is DROPPED on
+    an empty Bank cell. Re-derived live against this exact vehicle (not assumed):
+    SEL -> A (grab, no screen) -> UP, UP (the bank_edge hop, still carrying,
+    landing on BANK 1 with the cursor already on the first empty cell -- slot 7,
+    right after bank_plant_box0()'s seven planted cells) -> A on that cell is
+    the drop that finally calls gb_lift_pack() -> gb_has_sidecar() finds the
+    seeded entry -> gb_lift_restore() runs (decision 10: "the origin prompt is
+    SKIPPED -- the home cell carries its own origin_game already") -- so THIS
+    drop, not the grab, is where the restore/merge screen or its absence is the
+    proof.
+
+    xr_merge_down_gb_sel's own probe reports DIFFERING rows against the seeded
+    home (BACKLOG #206/#209 review D2: the seed's home cell is a CHANGED copy of
+    the live mon -- 5 levels lower and renamed -- so gb_lift_restore's probe reads
+    level_changed=1/renamed=1 and the screen DRAWS instead of skipping) --
+    app_xfer_merge_screen ("BACK TO ITS ORIGINAL") shows two toggle rows, both
+    defaulting to KEEP -- found live: "Level 95 > 100" / "Nickname changed", both
+    KEEP.
+
+    B ON THIS SCREEN, TODAY (pre-D5, still true as of this chain's own repair):
+    gb_lift_restore() returns -1 on a plain decline (its own "B: nothing spent"
+    comment), which gb_lift_pack() treats as a refusal (rc <= 0 -> false), which
+    drop_held_up()'s `if (!s_xfer_peer->lift_up(...))` branch surfaces as
+    PDNA_XFER_LIFT_REFUSED_TITLE -- "NOT MOVED TO THE BANK / This Pokemon could
+    not be packed for the Bank." -- an HONEST DESCRIPTION OF A REAL BUG (D5,
+    later in this same brief, gives a plain B-cancel its own quieter path; this
+    chain is re-verified once D5 lands and updated here if the frame changes).
+    Dismissing (A) returns to the Bank grid STILL HOLDING the SAME mon (found
+    live: pressing A on the same cell again reopens the identical merge screen)
+    -- so a re-grab needs no fresh SEL/A, just another A on the cell. START from
+    the merge screen (both rows left at KEEP, nothing accepted) reaches
+    pdna_bank_next_serial(), which ALSO fails on this vehicle (no writable FAT,
+    the same wall run_s150_4_uplift's own chain documents) and takes the SAME
+    lift_up-returned-false branch -- so START shows the identical "NOT MOVED TO
+    THE BANK" dialog as a plain B cancel does; this vehicle cannot yet
+    distinguish "the user declined" from "the write failed" on screen (this IS
+    the D5 bug, observed here rather than asserted).
 
     A landed, persisted native cell (bank.meta writable) is hardware-only from
     here, same as run_s150_4_uplift's own chain -- not faked with a pre-planted
@@ -6387,45 +6403,78 @@ def run_s150_9_site2(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.
            "footer 'MOVE  A grab  hold=set'")
 
     s.tap("A", settle=150)
-    s.shot("02_after_grab", "s150-9-site2: A grabs slot 0 -- no origin prompt: "
-           "gb_has_sidecar found the seeded entry, so gb_lift_pack took the "
-           "restore branch. gb_lift_restore's probe (xr_merge_down_gb_sel) "
-           "found two differing rows against the seeded home (BACKLOG #206/"
-           "#209 review D2: the seed's home is a CHANGED copy, renamed + 5 "
-           "levels lower) -- app_xfer_merge_screen draws straight away, 'BACK "
-           "TO ITS ORIGINAL' with a Level and a Nickname row, both KEEP, "
-           "footer 'A flip  START apply  B cancel'.",
+    s.shot("02_grabbed_no_screen", "s150-9-site2 (b199 D2 repair): A grabs slot 0 "
+           "-- footer 'A drop  B cancel', NO screen at all -- BACKLOG #199 chain D "
+           "moved gb_lift_pack (and therefore gb_has_sidecar's restore-vs-fresh "
+           "branch) off the grab entirely; start_carry() is now a plain memcpy for "
+           "every scope, seeded or not.",
+           claim=["A drop  B cancel"])
+
+    s.tap("UP", settle=gb_shots.BIG_SETTLE); s.run(60)
+    s.tap("UP", settle=150); s.run(100)
+    s.shot("03_bank_hop", "s150-9-site2 (b199 D2 repair): 2xUP, carrying -- row0 -> "
+           "tab focus -> the bank_edge hop (`return 4`) lands on BANK 1, STILL "
+           "carrying, cursor already on the first EMPTY cell (slot 7, right after "
+           "bank_plant_box0()'s seven planted native cells) -- the next A is the "
+           "drop that finally calls gb_lift_pack().")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE); s.run(100)
+    s.shot("04_merge_screen", "s150-9-site2 (b199 D2 repair): A on the empty Bank "
+           "cell -- THIS is the drop gb_lift_pack() now runs on. gb_has_sidecar() "
+           "finds the seeded entry -> gb_lift_restore() runs (decision 10: the "
+           "origin prompt is SKIPPED, the home cell carries its own origin_game) "
+           "-> xr_merge_down_gb_sel's probe found two differing rows against the "
+           "seeded home -> app_xfer_merge_screen draws straight away, 'BACK TO ITS "
+           "ORIGINAL' with a Level and a Nickname row, both KEEP, footer 'A flip  "
+           "START apply  B cancel'.",
            claim=["BACK TO ITS ORIGINAL", "Level", "Nickname", "KEEP"])
 
-    s.tap("B", settle=150)
-    s.shot("03_cancel_back_to_grid", "s150-9-site2: B cancels the merge screen "
-           "-- nothing spent, back on the grid, still CM_MOVE, empty-handed, "
-           "the seeded mon untouched at slot 0 (same frame 01 already showed).",
-           allow_same=True)
+    s.tap("B", settle=gb_shots.BIG_SETTLE); s.run(100)
+    s.shot("05_cancel_shows_error", "s150-9-site2 (b199 D2 repair): B cancels the "
+           "merge screen -- TODAY (pre-D5) gb_lift_restore()'s -1 (\"B: nothing "
+           "spent\") is treated as a plain lift_up() refusal by drop_held_up(), "
+           "which shows PDNA_XFER_LIFT_REFUSED_TITLE: 'NOT MOVED TO THE BANK / "
+           "This Pokemon could not be packed for the Bank.' -- an honest capture "
+           "of the exact bug D5 (this same brief) fixes; re-verify this frame "
+           "once D5 lands.",
+           claim=["NOT MOVED TO THE BANK", "This Pokemon could not be",
+                  "packed for the Bank."])
 
-    s.tap("A", settle=150)
-    s.shot("04_regrab_merge_screen", "s150-9-site2: A re-grabs slot 0 -- the "
-           "SAME merge screen again (pixel-identical to frame 02: nothing was "
-           "applied or persisted by the B cancel above).", allow_same=True,
+    s.tap("A", settle=gb_shots.BIG_SETTLE); s.run(100)
+    s.shot("06_dismiss_still_holding", "s150-9-site2 (b199 D2 repair): A dismisses "
+           "the error -- back on the Bank grid, STILL HOLDING the same mon "
+           "(footer 'A drop  B cancel' again) -- nothing was spent by the B "
+           "cancel above, the seeded mon never left the Game Boy save.")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE); s.run(100)
+    s.shot("07_regrab_merge_screen", "s150-9-site2 (b199 D2 repair): A on the "
+           "SAME cell again -- the identical merge screen redraws (pixel-"
+           "identical to frame 04: nothing was applied or persisted by the B "
+           "cancel above, so gb_lift_pack() runs the exact same probe again).",
+           allow_same=True,
            claim=["BACK TO ITS ORIGINAL", "Level", "Nickname", "KEEP"])
 
-    s.tap("START", settle=150)
-    s.shot("05_start_refused", "s150-9-site2: START confirms the merge screen "
-           "(both rows left at KEEP, nothing accepted) -- gb_lift_restore then "
-           "reaches pdna_bank_next_serial(), which fails on this vehicle (no "
-           "writable FAT, the SAME wall run_s150_4_uplift's own chain "
-           "documents). No msg_wait fires for THIS specific failure (that only "
-           "happens for an xr_open/gbsc_count failure) -- the refusal is "
-           "log-only ('gen12: xferup lift refused: restore refused'), so the "
-           "frame is pixel-identical to 01/03: still CM_MOVE, empty-handed, "
-           "the seeded mon untouched at slot 0.", allow_same=True)
+    s.tap("START", settle=gb_shots.BIG_SETTLE); s.run(150)
+    s.shot("08_start_refused", "s150-9-site2 (b199 D2 repair): START confirms the "
+           "merge screen (both rows left at KEEP, nothing accepted) -- "
+           "gb_lift_restore() then reaches pdna_bank_next_serial(), which fails "
+           "on this vehicle (no writable FAT, the SAME wall run_s150_4_uplift's "
+           "own chain documents) -- lift_up() returns false for THIS reason too, "
+           "so drop_held_up() shows the IDENTICAL 'NOT MOVED TO THE BANK' dialog "
+           "frame 05's plain B cancel showed: this vehicle cannot yet tell "
+           "'the user declined' from 'the write failed' apart on screen -- found "
+           "live, the observation D5 exists to fix.",
+           claim=["NOT MOVED TO THE BANK", "This Pokemon could not be",
+                  "packed for the Bank."])
 
     # ---- A/B proof, SAME image/session shape, ONE cell over: slot 1 (unseeded) --
     # DOES show the origin prompt, exactly where slot 0 (seeded) does not -- the
     # direct demonstration that gb_has_sidecar()/xr_path_for_key's own PDNA_DELTA
-    # shim is what changed frame 02's outcome above, not some vehicle-wide inability
+    # shim is what changed frame 04's outcome above, not some vehicle-wide inability
     # to ever draw the prompt at all (a real risk to rule out on a build with no
-    # writable FAT anywhere near this path).
+    # writable FAT anywhere near this path). Relocated to the SAME bank-drop site
+    # as the main chain above (b199 D2 repair) -- the grab itself shows nothing for
+    # either slot now.
     s2 = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s150_9_site2_cmp_")
     boot_to_gb_session(s2, rom, which="red")
     s2.tap("RIGHT", settle=100)
@@ -6433,13 +6482,23 @@ def run_s150_9_site2(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.
             "-- UNSEEDED (bank_plant_site2_seed only ever seeds box 0 slot 0)")
     s2.tap("SEL", settle=100)
     s2.tap("A", settle=150)
-    s2.shot("01_prompt_shows", "s150-9-site2 A/B: A grabs slot 1 -- 'WHICH GAME IS "
-            "THIS?' RED (selected) / BLUE / YELLOW DOES draw here, on the exact same "
-            "image/session/gesture that skipped it for slot 0 -- gb_has_sidecar() "
-            "answers false for this ordinary, unseeded cell, so gb_lift_pack() takes "
-            "the normal (non-restore) path instead. This is the direct proof that "
-            "slot 0's missing prompt is the seed/shim working, not a vehicle-wide "
-            "inability to ever draw this screen.",
+    s2.shot("01_grabbed_no_screen", "s150-9-site2 A/B (b199 D2 repair): A grabs "
+            "slot 1 -- footer 'A drop  B cancel', no screen, same as slot 0's own "
+            "grab -- the grab itself no longer distinguishes seeded from unseeded.",
+            claim=["A drop  B cancel"])
+    s2.tap("UP", settle=gb_shots.BIG_SETTLE); s2.run(60)
+    s2.tap("UP", settle=150); s2.run(100)
+    s2.shot("02_bank_hop", "s150-9-site2 A/B (b199 D2 repair): 2xUP, carrying -- "
+            "the same bank_edge hop, landing on the same first-empty Bank cell.")
+    s2.tap("A", settle=gb_shots.BIG_SETTLE); s2.run(100)
+    s2.shot("03_prompt_shows", "s150-9-site2 A/B (b199 D2 repair): A on the empty "
+            "Bank cell -- 'WHICH GAME IS THIS?' RED (selected) / BLUE / YELLOW "
+            "DOES draw here, on the exact same image/session/gesture that skipped "
+            "it for slot 0 -- gb_has_sidecar() answers false for this ordinary, "
+            "unseeded cell, so gb_lift_pack() takes the normal (non-restore) path "
+            "instead. This is the direct proof that slot 0's missing prompt is the "
+            "seed/shim working, not a vehicle-wide inability to ever draw this "
+            "screen -- relocated to the drop site, same as the main chain above.",
             claim=["WHICH GAME IS THIS", "RED", "YELLOW"])
 
     s.taken += s2.taken
