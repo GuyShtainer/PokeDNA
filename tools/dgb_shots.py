@@ -51,6 +51,7 @@ import functools
 import json
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -6680,6 +6681,196 @@ def run_s150_8_party_vsd(core_mod, image_mod, rom_ruby: Path, out_dir: Path) -> 
     return s
 
 
+def run_s150_8d_savenow(core_mod, image_mod, rom_ruby: Path, out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #175 (S150-8d): SAVE NOW? replacing the flat SAVE FIRST refusal when a
+    second native->Gen-3 transfer is attempted while one is already PENDING. Needs
+    --vsd for the SAME reason run_s150_8_party_vsd() does (a real ledger write must
+    actually land for app_xfer_pending() to ever become true) -- sequenced after that
+    lane's own OQ2 answer ("after s179-a2"), on the SAME Ruby vehicle.
+
+    `rom_ruby` MUST be `tools/fuse_sav.py <pokedna-delta-artless.gba> Ruby.sav` (the
+    SAME fusion run_s150_8_party_vsd() uses). This chain lands into the PC (not the
+    party) both times -- #174 and #175 are independent edges; XFER-C24c (the two
+    combined) is HW-only, named in this function's own docstring below.
+
+    Nav recipe, verified live (probe screenshots under /tmp/pdna-s150-8cd-corpus/
+    explore28..34/ during this lane's own development, not guessed): Ruby's PC box 1
+    has only 2 free cells among 28 filled (not enough headroom to navigate cleanly
+    twice), so this chain switches to box 9 (`R` x8 from box 1) which the SAME corpus
+    save has at 17/30 -- two of its own gaps, row 1 col 1 (DOWN, RIGHT once) and row 1
+    col 4 (DOWN, RIGHT x4 -- both confirmed via the left info panel reading
+    "(empty)", not eyeballed from the compact 5x6 tag grid, which turned out to be
+    genuinely hard to read by eye: several species abbreviate to overlapping 3-letter
+    tags). Cell 1 (Bank slot 0, plain CHIKORITA) lands on row1col1 WITHOUT saving.
+    Cell 2 (Bank slot 1, plain PIKACHU) is carried to row1col4; dropping it there
+    finds app_xfer_pending() already true (cell 1's own entry) and offers SAVE NOW?
+    instead of refusing. A = yes runs THREE more automatic/keyed steps in sequence
+    (found live, not zero-input as the design's own prose might suggest): a transient
+    "Saving -- do not power off" panel (no input, just frames), then A dismisses
+    SAVED, then A confirms cell 2's own loss screen -- the whole point is that none
+    of these needs new NAVIGATION or a B, just repeated A, "the same gesture"."""
+    print("== BACKLOG #175 (S150-8d): SAVE NOW? (--vsd) ==")
+    if gb_shots._DEFAULT_VSD_IMG is None:
+        raise RuntimeError("--s150-8d-savenow requires --vsd <img.img> on the "
+                            "command line (BACKLOG #179's virtual SD) -- there is "
+                            "no way to reach a pending transfer without it")
+
+    def enter_bank(s: gb_shots.Session) -> None:
+        s.tap("START", settle=80)
+        s.tap("DOWN", settle=60)
+        s.tap("A", settle=150)
+
+    s = gb_shots.Session(core_mod, image_mod, rom_ruby, out_dir, "s150_8d_")
+    s.run(700)
+    s.vsd_snapshot()
+
+    # ---- cell 1: Bank slot 0 (plain CHIKORITA) -> box9 row1col1. Land, DO NOT SAVE.
+    enter_bank(s)
+    s.tap("A", settle=150); s.tap("DOWN", settle=60); s.tap("A", settle=150)   # pick slot0
+    s.press_n("DOWN", 5, settle=150)                # off the Bank grid -> Ruby's PC box 1
+    s.press_n("R", 8, settle=150)                   # -> box 9 (this corpus's own 17/30)
+    s.tap("DOWN", settle=80); s.tap("RIGHT", settle=80)   # row1 col1, an empty cell
+    s.shot("00_cell1_on_empty", "S150-8d: carrying the plain CHIKORITA cell, on box "
+           "9's row1col1 (empty, confirmed via the info panel)")
+    s.tap("A", settle=300)
+    s.shot("01_cell1_loss", "S150-8d: the ordinary loss screen (no PARTYLAND row -- "
+           "this lands in the PC, not the party)")
+    s.tap("A", settle=400)
+    s.shot("02_cell1_landed", "S150-8d: A = transfer -- cell 1's ledger entry lands "
+           "for real, PENDING, box9 grows to 18/30. Deliberately NOT saved -- this "
+           "is the pending transfer #175's own prompt fires on")
+    changed1 = s.vsd_report(expect_changed=[
+        "/PokeDNA/xfer/540E42FE7925AA15.pds",   # cell 1's own ledger entry (added)
+        "/PokeDNA/bank/bank.meta",               # this Bank entry's own meta_save()
+        "/PokeDNA/xfer/MIGRATED",               # first real SD touch, same as
+                                                 # run_s150_8_party_vsd's own finding
+        "/PokeDNA/log.txt",
+    ])
+    print(f"  [VSD] cell1 landing vsd_diff (GREEN): {sorted(changed1)}")
+    s.vsd_snapshot()
+
+    # ---- cell 2: Bank slot 1 (plain PIKACHU) -> box9 row1col4 -- app_xfer_pending()
+    # is already true -> SAVE NOW? instead of the old flat refusal. ----------------
+    enter_bank(s)
+    s.tap("RIGHT", settle=80)                        # slot0 -> slot1 (plain PIKACHU)
+    s.tap("A", settle=150); s.tap("DOWN", settle=60); s.tap("A", settle=150)
+    s.press_n("DOWN", 5, settle=150)
+    s.press_n("R", 8, settle=150)                    # box1 -> box9 again (re-navigate)
+    s.tap("DOWN", settle=80); s.press_n("RIGHT", 4, settle=80)   # row1 col4, empty
+    s.shot("03_cell2_on_empty", "S150-8d: carrying the plain PIKACHU cell, on box "
+           "9's row1col4 (the OTHER empty cell)")
+    s.tap("A", settle=400)
+    s.shot("04_savenow", "S150-8d NEW: A on the ADD target -- 'SAVE NOW? / One "
+           "transfer is waiting for the game / save. Save it now?' (wraps after "
+           "\"game\", not after \"save.\" -- found live, not assumed) -- REPLACES "
+           "the old flat SAVE FIRST refusal (its own strings stay live for the two "
+           "restore-side sites, D18, untouched by this lane)",
+           claim=["SAVE NOW?", "One transfer is waiting for the game",
+                  "save. Save it now?", "A = yes", "B = no"])
+
+    # RED DEMO (BACKLOG #184): the whole A = yes chain below is one continuous
+    # gesture the brief calls out by name -- prove vsd_report() actually goes RED on
+    # a wrong expectation before trusting the real one.
+    s.tap("A", settle=300)
+    s.shot("05_saving", "S150-8d: A = yes -- the transient 'Saving -- do not power "
+           "off / Writing flash save...' panel (no input; found live that this is "
+           "a REAL frame the harness must wait through, not instantaneous)")
+    try:
+        s.vsd_report(expect_changed=["/PokeDNA/this/path/does/not/exist.pds"])
+        raise RuntimeError("RED DEMO FAILED: vsd_report() did not exit(1) on a "
+                            "deliberately wrong expect_changed set")
+    except SystemExit as e:
+        if e.code != 1:
+            raise RuntimeError(f"RED DEMO: vsd_report() exited {e.code}, not 1")
+        print("  [RED DEMO] vsd_report(expect_changed=[wrong path]) correctly "
+              "exited 1 -- the proof below is not inert")
+
+    s.tap("A", settle=400)
+    s.shot("06_saved", "S150-8d: app_xfer_save_now() ran app_commit_pc() (a real "
+           "FLASH1M write, verified) -> app_xfer_promote() (cell 1's own PENDING "
+           "entry flips to CLAIMED) -> pdna_bank_flush_deletions() -- 'SAVED / "
+           "Flash written + verified.' A dismisses it",
+           claim=["SAVED", "Flash written + verified."])
+    s.tap("A", settle=400)
+    s.shot("07_loss2", "S150-8d: the SAME gesture continues onto cell 2's own loss "
+           "screen, no re-press, no new navigation -- exactly #175's own point",
+           claim=["IVs come from DVs, nature from EXP", "A = transfer", "B = cancel"])
+    s.tap("A", settle=400)
+    s.shot("08_landed2", "S150-8d: A = transfer -- cell 2's ledger entry lands, box9 "
+           "grows to 19/30 (both CHI and PIK now visible in the grid)")
+    changed2 = s.vsd_report(expect_changed=[
+        "/PokeDNA/xfer/540E42FE7925AA15.pds",   # cell 1's entry -- CONTENT changed
+                                                 # (PENDING -> CLAIMED, app_xfer_promote)
+        "/PokeDNA/xfer/BECFDD2BC68C1D06.pds",   # cell 2's own new entry (added,
+                                                 # PENDING -- its OWN save has not
+                                                 # run yet)
+        "/PokeDNA/bank/box00.box",               # pdna_bank_flush_deletions() found
+                                                 # real entries to clear this time
+                                                 # (unlike run_s150_8_party_vsd's own
+                                                 # single-landing chain) and rewrote
+                                                 # the Bank's own box file -- added
+        "/PokeDNA/log.txt",
+    ])
+    print(f"  [VSD] cell2 SAVE NOW + landing vsd_diff (GREEN): {sorted(changed2)}")
+
+    # ---- the decline path: B on the SAME prompt -- a FRESH scratch --vsd image and
+    # Session (S150-8d D15's first bullet: "still holding, nothing written, the old
+    # START > SAVE route still works"), so cell 2's own landing above (which just
+    # dirtied box9/bank.meta/the ledger) cannot contaminate this check. Built via the
+    # SAME tools/vsd_img.c mkimg gb_shots.py's own vsd_report() already compiles on
+    # demand -- no new build step for the operator, no second --vsd flag needed. */
+    scratch_dir = Path(tempfile.mkdtemp(prefix="s150_8d_decline_vsd_"))
+    scratch_img = scratch_dir / "decline16.img"
+    binp = gb_shots._vsd_img_bin()
+    r = subprocess.run([str(binp), "mkimg", str(scratch_img), "16"],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"S150-8d decline sub-chain: mkimg failed: {r.stderr.strip()}")
+    s2 = gb_shots.Session(core_mod, image_mod, rom_ruby, out_dir, "s150_8d_decline_",
+                          vsd_img=scratch_img)
+    s2.run(700)
+    s2.vsd_snapshot()
+    enter_bank(s2)
+    s2.tap("A", settle=150); s2.tap("DOWN", settle=60); s2.tap("A", settle=150)   # slot0
+    s2.press_n("DOWN", 5, settle=150)
+    s2.press_n("R", 8, settle=150)
+    s2.tap("DOWN", settle=80); s2.tap("RIGHT", settle=80)          # row1col1, empty
+    s2.tap("A", settle=300)
+    s2.tap("A", settle=400)                                        # land cell 1, don't save
+    # BACKLOG #179 A3: vsd_snapshot() copies the ON-DISK image as-is; it does NOT
+    # flush first (vsd_report() is the one that flushes, per its own docstring) --
+    # calling vsd_snapshot() twice in a row with no vsd_report() between them
+    # produces two IDENTICAL (both unflushed) snapshots, silently discarding
+    # everything cell 1 just wrote. vsd_report() here forces the flush; the
+    # vsd_snapshot() right after resets the diff baseline to the JUST-FLUSHED state
+    # (mirrors run_s150_8_party_vsd's own working report-then-snapshot pattern,
+    # never snapshot-then-snapshot).
+    s2.vsd_report()
+    s2.vsd_snapshot()
+    enter_bank(s2)
+    s2.tap("RIGHT", settle=80)                                     # slot1 (PIKACHU)
+    s2.tap("A", settle=150); s2.tap("DOWN", settle=60); s2.tap("A", settle=150)
+    s2.press_n("DOWN", 5, settle=150)
+    s2.press_n("R", 8, settle=150)
+    s2.tap("DOWN", settle=80); s2.press_n("RIGHT", 4, settle=80)   # row1col4, empty
+    s2.tap("A", settle=400)
+    s2.shot("decline_00_savenow", "S150-8d D15 decline: the SAME SAVE NOW? prompt, "
+           "on a fresh scratch --vsd image (cell 1's own landing above must not "
+           "contaminate this check)",
+           claim=["SAVE NOW?"])
+    s2.tap("B", settle=300)
+    s2.shot("decline_01_declined", "S150-8d D15: B = no -- BANK_DOWN_REFUSED, still "
+           "carrying the PIKACHU cell (footer 'A drop B cancel'), nothing written "
+           "for cell 2 -- the old START > SAVE route still works for cell 1's own "
+           "still-PENDING entry")
+    changed_decline = s2.vsd_report(expect_changed=["/PokeDNA/log.txt"])
+    print(f"  [VSD] decline vsd_diff (GREEN, expect ONLY the append-only log): "
+          f"{sorted(changed_decline)}")
+    s.taken += s2.taken
+    s.skipped += s2.skipped
+    return s
+
+
 def run_s150_8_bridge(core_mod, image_mod, rom_gold: Path, rom_red: Path,
                       out_dir: Path) -> gb_shots.Session:
     """BACKLOG #150 S150-8: the CONVERTING DOWN edge's GB_BRIDGE arm (a native cell
@@ -7405,6 +7596,13 @@ def _main_dispatch(argv=None) -> int:
                           "artless.gba> Ruby.sav (NOT Emerald.sav -- Emerald's own "
                           "corpus party already has six members, so there is no ADD "
                           "slot to land on; Ruby's has four).")
+    ap.add_argument("--s150-8d-savenow", action="store_true",
+                     help="BACKLOG #175 (S150-8d): only run_s150_8d_savenow() -- "
+                          "SAVE NOW? replacing the flat SAVE FIRST refusal for a "
+                          "second pending native->Gen-3 transfer. REQUIRES --vsd "
+                          "<img.img> (same reason as --s150-8-party). --image MUST "
+                          "be tools/fuse_sav.py <pokedna-delta-artless.gba> Ruby.sav "
+                          "(the SAME fusion --s150-8-party uses).")
     ap.add_argument("--s150-8-bridge", action="store_true",
                      help="BACKLOG #150 S150-8: only run_s150_8_bridge() -- the "
                           "CONVERTING DOWN edge's GB_BRIDGE arm (Gen 1 <-> Gen 2). "
@@ -8506,6 +8704,20 @@ def _main_dispatch(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] s150-8-party: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+    if getattr(a, "s150_8d_savenow", False):
+        # BACKLOG #175 (S150-8d): append-only, same convention as --s150-8-party.
+        ran = True
+        try:
+            sess = run_s150_8d_savenow(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] s150-8d-savenow: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
