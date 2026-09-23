@@ -10253,8 +10253,30 @@ def run_b199_chain_d(core_mod, image_mod, rom: Path, out_dir: Path) -> list[gb_s
     delta) -- release_up returns false, and drop_held_up's own KEPT message shows
     ("MOVED TO THE BANK / It is still in the Game Boy save too - remove it there.")
     -- a duplicate, not a loss, exactly the ordering the design promises (S150-4's
-    serial-before-cell / cell-before-delete, unchanged by this lane's move)."""
+    serial-before-cell / cell-before-delete, unchanged by this lane's move).
+
+    b199 review D4/R1 (BACKLOG #199 review, docs/briefs/b199-review.md): R1's own
+    stop-licence condition -- a carried Pokemon must never be able to exist in
+    NEITHER place at an instant a power cut could freeze -- gets its own SWEPT
+    sub-chain, D3 below, armed at the exact moment the Bank commit begins
+    (fail_at/lie_after set on a FRESH VsdImage per swept value, isolated from
+    D1/D2's own --vsd image and from any --vsd-fail-at/--vsd-lie-after the CLI
+    parsed for this whole process). For every value: still holding (footer 'A
+    drop  B cancel'), never 'nowhere' -- the answer now lives in this repo, not
+    only in a review transcript."""
     sessions: list[gb_shots.Session] = []
+
+    # BACKLOG #199 review D4 (repair): set_default_vsd(img) with NO knobs OVERWRITES
+    # gb_shots._DEFAULT_VSD_KNOBS wholesale (it is a plain module global, replaced not
+    # merged) -- so any --vsd-fail-at/--vsd-lie-after/--vsd-protect the CLI already
+    # parsed into it (dgb_shots.main()'s own gb_shots.set_default_vsd(a.vsd, ...) call,
+    # BEFORE this function ever runs) was silently discarded the moment either D1's or
+    # D2's own set_default_vsd(vsd1)/(vsd2) call below ran. Proven: --vsd-fail-at 1
+    # against this exact chain gave a byte-identical result set to no flag at all.
+    # Captured ONCE, here, before either call below can clobber it, and forwarded to
+    # both -- a caller who armed a chain-wide injection knob on the command line now
+    # actually gets it applied to D1 and D2's own images too.
+    _cli_vsd_knobs = dict(gb_shots._DEFAULT_VSD_KNOBS)
 
     # ---- D1: within-save move, box1 slot0 -> box12 (empty) ---------------------
     vsd1 = out_dir / "b199d1.img"
@@ -10264,7 +10286,7 @@ def run_b199_chain_d(core_mod, image_mod, rom: Path, out_dir: Path) -> list[gb_s
     r = subprocess.run([str(binp), "mkimg", str(vsd1), "16"], capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError(f"b199 chain D1: mkimg failed: {r.stderr.strip()}")
-    gb_shots.set_default_vsd(vsd1)
+    gb_shots.set_default_vsd(vsd1, **_cli_vsd_knobs)
 
     s1 = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b199d1_")
     print("== BACKLOG #199 Chain D1: within-save GB move (--vsd) ==")
@@ -10329,7 +10351,7 @@ def run_b199_chain_d(core_mod, image_mod, rom: Path, out_dir: Path) -> list[gb_s
     r = subprocess.run([str(binp), "mkimg", str(vsd2), "16"], capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError(f"b199 chain D2: mkimg failed: {r.stderr.strip()}")
-    gb_shots.set_default_vsd(vsd2)
+    gb_shots.set_default_vsd(vsd2, **_cli_vsd_knobs)
 
     s2 = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b199d2_")
     print("== BACKLOG #199 Chain D2: GB -> Bank drop (--vsd) ==")
@@ -10418,6 +10440,85 @@ def run_b199_chain_d(core_mod, image_mod, rom: Path, out_dir: Path) -> list[gb_s
           f"-- a real bank.meta write AND a real Bank-cell write: a GB -> Bank drop "
           f"asks (this screen) and writes (this serial), mechanically proven")
     sessions.append(s2)
+
+    # ---- D3/R1 (b199 review D4): sweep a mid-drop Bank-write failure ------------
+    # R1's own stop-licence condition: a carried Pokemon must never be able to exist
+    # in NEITHER place at an instant a power cut could freeze. Re-runs D2's exact tap
+    # sequence up to (and including) START on a FRESH Session/vsd image per swept
+    # value, arming the injection knob DIRECTLY ON THE LIVE VsdImage (s3.vsd.image.
+    # <knob> -- a plain mutable field, the same one write()/read() in tools/vsd.py
+    # check) right before the START tap, so the failure is live for exactly this
+    # commit and nothing before it. An earlier cut of this sweep passed the knob to
+    # Session.__init__ instead (vsd_knobs=) -- found live to be WRONG: the knob is
+    # then live from the very first frame, so it fires inside BOOT's own writes and
+    # breaks boot_to_gb_session()'s own gb_info_page assertion before the chain ever
+    # reaches box1 -- not "mid-drop" at all.
+    #
+    # Four points, chosen empirically against THIS exact commit (not guessed from the
+    # write-set's byte sizes, which turned out not to predict sector-call order):
+    # fail_at=1 and fail_at=8 both land inside the write sequence (confirmed by a
+    # partial vsd_report() diff, fewer than the full 5-file set D2's own successful
+    # run produces); fail_at=20 lands even later, in the Bank BACKUP step specifically
+    # (a THIRD, distinct refusal dialog was found live here -- "COULD NOT PREPARE /
+    # The Bank backup failed." -- neither of the other two dialogs this brief already
+    # names); lie_after=0 is R1's sharper case (every write ACKs but DISCARDS, the
+    # card that lies from the very first call) -- does sf_write_verified's own
+    # read-back catch it, or does the code believe a lie and proceed as if committed?
+    # Each Session is its OWN vsd_img (NOT gb_shots.set_default_vsd()), isolated from
+    # D1/D2's own image and from _cli_vsd_knobs above -- this sweep's own injection
+    # must never leak into D1/D2, nor theirs into this.
+    _sweep_points = [("fail_at", 1), ("fail_at", 8), ("fail_at", 20), ("lie_after", 0)]
+    for knob_name, knob_val in _sweep_points:
+        vsd3 = out_dir / f"b199d3_{knob_name}_{knob_val}.img"
+        if vsd3.exists():
+            vsd3.unlink()
+        r = subprocess.run([str(binp), "mkimg", str(vsd3), "16"], capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"b199 chain D3 ({knob_name}={knob_val}): mkimg failed: {r.stderr.strip()}")
+        s3 = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b199d3_{knob_name}{knob_val}_",
+                               vsd_img=vsd3)   # clean boot -- no vsd_knobs, see above
+        print(f"== BACKLOG #199 Chain D3/R1: mid-drop Bank-write sweep ({knob_name}={knob_val}) ==")
+        boot_to_gb_session(s3, rom, which="yellow")
+        s3.vsd_snapshot()   # reset AFTER boot's own log.txt/MIGRATED writes, same as D1/D2
+        s3.tap("R", settle=gb_shots.BIG_SETTLE); s3.run(60)
+        s3.tap("R", settle=gb_shots.BIG_SETTLE); s3.run(60)      # box1 (20/20 full)
+        s3.tap("SEL", settle=gb_shots.BIG_SETTLE); s3.run(60)    # MOVE mode
+        s3.tap("A", settle=gb_shots.BIG_SETTLE); s3.run(60)      # lift slot 0, no prompt
+        s3.tap("UP", settle=gb_shots.BIG_SETTLE); s3.run(60)
+        s3.tap("UP", settle=150); s3.run(100)                    # bank_edge hop, still carrying
+        s3.tap("A", settle=gb_shots.BIG_SETTLE); s3.run(100)     # empty Bank cell -> merge screen
+        s3.tap("A", settle=gb_shots.BIG_SETTLE); s3.run(60)      # flip level row to TAKE
+        setattr(s3.vsd.image, knob_name, knob_val)                # ARM here, mid-drop, right
+                                                                    # before the write-issuing tap
+        s3.tap("START", settle=gb_shots.BIG_SETTLE); s3.run(150)  # apply -- the injected knob
+                                                                   # fires somewhere inside THIS commit
+        s3.shot(f"00_dialog_{knob_name}{knob_val}",
+                f"D3/R1 ({knob_name}={knob_val}): the frame immediately after START, "
+                f"with the injected failure armed for this exact commit -- whichever "
+                f"of the codebase's refusal dialogs fires here (found live: 'NOT "
+                f"MOVED TO THE BANK' for the plain lift_up() refusal, or 'COULD NOT "
+                f"PREPARE / The Bank backup failed.' for a failure inside "
+                f"pdna_bank_prepare_native() specifically), it IS a dialog the "
+                f"player must dismiss -- never a silent success.")
+        s3.tap("A", settle=gb_shots.BIG_SETTLE); s3.run(100)     # dismiss whichever dialog fired
+        s3.shot(f"01_still_holding_{knob_name}{knob_val}",
+                f"D3/R1 ({knob_name}={knob_val}): after dismissing -- footer 'A "
+                f"drop  B cancel' means STILL HOLDING: the carry never completed "
+                f"(lift_up() did not return true), so release_up() was never even "
+                f"attempted -- the mon is SOURCE ONLY (the GB save, untouched the "
+                f"whole time this display copy was held), never 'nowhere' and "
+                f"never a silent duplicate.",
+                claim=["A drop  B cancel"])
+        changed3 = s3.vsd_report()   # report-only (no expect_changed): the exact set of
+                                      # files that landed before the injected failure
+                                      # fired varies per swept value BY DESIGN -- the
+                                      # invariant this sweep exists to prove is the
+                                      # frame's footer above, not a fixed file list
+        print(f"  [VSD] D3/R1 ({knob_name}={knob_val}) on-disk diff: {sorted(changed3)} "
+              f"-- whatever partial state landed here, the footer already proves the "
+              f"carry itself never completed: source only, not nowhere, not a "
+              f"silent duplicate")
+        sessions.append(s3)
 
     return sessions
 
