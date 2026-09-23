@@ -1098,9 +1098,9 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * evict-then-refuse case (decision 8), the Gen-1<->Gen-2 time-capsule refusal
  * (decision 14), and the flush-failure report (decision 10). Same <=28-column
  * discipline as every other fixed title in this file (tests/host_textfit_test.c's
- * own PF(text, 28, 184) rows). PDNA_XFER_PARTY_TITLE/L1/L2 ("PC BOX FIRST") were
- * here -- DEAD, deleted by BACKLOG #174 (S150-8c): the party is now a real native
- * landing, not a refusal. */
+ * own PF(text, 28, 184) rows). The old "PC BOX FIRST" refusal macros were here --
+ * DEAD, deleted by BACKLOG #174 (S150-8c): the party is now a real native landing,
+ * not a refusal. */
 
 #define PDNA_XFER_SAVEFIRST_TITLE "SAVE FIRST"
 #define PDNA_XFER_SAVEFIRST_L1    "One transfer is waiting for"

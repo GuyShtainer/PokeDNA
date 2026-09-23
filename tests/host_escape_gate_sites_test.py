@@ -220,6 +220,21 @@ CONVERTED_TRUE_RE = re.compile(r"\bconverted\s*=\s*true\b")
 CHUNK_COPY_RE = re.compile(r"memcpy\(s_ch_rec\[i\]")
 GATE_RE = re.compile(r"xg_native_escape_denied\(")
 BC_NATIVE_RE = re.compile(r"bc_is_native\(")
+# BACKLOG #174 (S150-8c) D11 -- the party convert edge (letters (ao)/(ap)/(aq), taken
+# fresh at this lane's start: (aa)-(an) were live on the tree this lane branched from,
+# and no (at)+ letters exist anywhere in this file despite the design's stale note that
+# s179-a2 claimed them -- re-grepped, not assumed). Module-level so both the real checks
+# and their self-mutation demonstrations (MUT AO/MUT AP/MUT AQ) share one pattern each.
+SEL_NEQ_NNOW_RE       = re.compile(r"sel\s*!=\s*n_now")
+APP_PARTY_N_RE        = re.compile(r"app_party_n\(")
+BANK_DOWN_CONVERT_PARTY_RE = re.compile(r"bank_down_convert_gen3_party\(")
+APP_PARTY_PLACE_HELD_PLACING_RE = re.compile(r"app_party_place_held\(placing")
+PARTYSWAP_REFUSAL_RE  = re.compile(r"PDNA_XFER_PARTYSWAP_TITLE")
+PARTYFULL3_REFUSAL_RE = re.compile(r"PDNA_XFER_PARTYFULL3_TITLE")
+TOOMANYMOVES_REFUSAL_RE = re.compile(r'"TOO MANY MOVES"')
+PLACING_ASSIGN_RE     = re.compile(r"placing\s*=\s*converted\s*\?\s*conv\s*:\s*s_held")
+PLACE_HELD_LAST_ARG_RE = re.compile(r"converted\s*\?\s*s_held\s*:\s*NULL\)\s*;")
+ESCAPE_GATE_CONVERTED_RE = re.compile(r"!converted\s*&&\s*xg_native_escape_denied\(")
 # BACKLOG #150 S150-4: both start_carry() sites reachable with a BOXSCOPE_GB source
 # must be preceded by this exact call -- module-level so both the real check (g) and
 # its self-mutation demonstration (MUT G) share one pattern.
@@ -942,6 +957,88 @@ def landed_consume_after_dispatch(dh_body: list[str]) -> tuple[bool, str]:
 INVALIDATE_RE = re.compile(r"\bapp_xv_cache_invalidate\(")
 
 
+def party_convert_order_facts(body: list[str]) -> tuple[bool, str]:
+    """(ao) BACKLOG #174 (S150-8c) D11: within party_strip_overlay's (comment-stripped)
+    body, the first bank_down_convert_gen3_party( line must come after the first
+    app_party_n(/sel != n_now guard line and before the first
+    app_party_place_held(placing line; and the three refusal lines of D2 (PARTYSWAP,
+    PARTYFULL3, TOO MANY MOVES) must ALL precede the convert call. Shared by the real
+    check (ao) and its MUT AO self-mutation demonstration."""
+    n_line = first_match_line(body, 0, len(body), APP_PARTY_N_RE)
+    sel_line = first_match_line(body, 0, len(body), SEL_NEQ_NNOW_RE)
+    conv_line = first_match_line(body, 0, len(body), BANK_DOWN_CONVERT_PARTY_RE)
+    place_line = first_match_line(body, 0, len(body), APP_PARTY_PLACE_HELD_PLACING_RE)
+    if n_line is None or sel_line is None:
+        return False, "party_strip_overlay: app_party_n(/sel != n_now guard line not found"
+    if conv_line is None:
+        return False, "party_strip_overlay: no bank_down_convert_gen3_party( call found"
+    if place_line is None:
+        return False, "party_strip_overlay: no app_party_place_held(placing call found"
+    if not (n_line < conv_line and sel_line < conv_line):
+        return False, (f"party_strip_overlay: bank_down_convert_gen3_party( (line "
+                        f"{conv_line + 1}) does not come after the app_party_n(/"
+                        f"sel != n_now guard line (lines {n_line + 1}/{sel_line + 1})")
+    if not conv_line < place_line:
+        return False, (f"party_strip_overlay: bank_down_convert_gen3_party( (line "
+                        f"{conv_line + 1}) does not come before app_party_place_held( "
+                        f"placing (line {place_line + 1})")
+    for label, pat in (("PARTYSWAP", PARTYSWAP_REFUSAL_RE),
+                       ("PARTYFULL3", PARTYFULL3_REFUSAL_RE),
+                       ("TOO MANY MOVES", TOOMANYMOVES_REFUSAL_RE)):
+        refusal_line = first_match_line(body, 0, len(body), pat)
+        if refusal_line is None:
+            return False, f"party_strip_overlay: no {label} refusal line found"
+        if not refusal_line < conv_line:
+            return False, (f"party_strip_overlay: the {label} refusal line (line "
+                            f"{refusal_line + 1}) does not precede "
+                            f"bank_down_convert_gen3_party( (line {conv_line + 1}) -- "
+                            f"D2's pre-flights must ALL run BEFORE the conversion arm")
+    return True, "ok"
+
+
+def party_place_identity_facts(body: list[str]) -> tuple[bool, str]:
+    """(ap) BACKLOG #174 (S150-8c) D11: within party_strip_overlay's body, the
+    `placing` variable is assigned `converted ? conv : s_held` above the
+    app_party_place_held( call, whose FIRST argument is `placing` and whose LAST
+    argument is the literal `converted ? s_held : NULL` (D3's identity bytes). This is
+    the pin that pays for the whole test file on this lane -- MUT AP rewrites the last
+    argument to NULL (D3's exact duplicate-producing defect) and must be caught."""
+    assign_line = first_match_line(body, 0, len(body), PLACING_ASSIGN_RE)
+    place_line = first_match_line(body, 0, len(body), APP_PARTY_PLACE_HELD_PLACING_RE)
+    if assign_line is None:
+        return False, "party_strip_overlay: no `placing = converted ? conv : s_held` assignment found"
+    if place_line is None:
+        return False, "party_strip_overlay: no app_party_place_held(placing call found"
+    if not assign_line < place_line:
+        return False, (f"party_strip_overlay: the `placing` assignment (line "
+                        f"{assign_line + 1}) does not come before app_party_place_held("
+                        f"placing (line {place_line + 1})")
+    # the last argument, `converted ? s_held : NULL`, is on its own line by this
+    # tree's own multi-line call formatting -- search a small window AFTER the call's
+    # opening line for the literal, never anywhere in the whole body.
+    window = body[place_line:place_line + 4]
+    if not any(PLACE_HELD_LAST_ARG_RE.search(ln) for ln in window):
+        return False, (f"party_strip_overlay: app_party_place_held(placing's call "
+                        f"(line {place_line + 1}) does not pass the literal "
+                        f"`converted ? s_held : NULL` as its last argument within the "
+                        f"next few lines -- BACKLOG #174 D3's identity-byte defect")
+    return True, "ok"
+
+
+def party_escape_gate_converted_facts(body: list[str]) -> tuple[bool, str]:
+    """(aq) BACKLOG #174 (S150-8c) D11: within party_strip_overlay's body, the
+    xg_native_escape_denied( call is guarded by `!converted &&` on the SAME line --
+    a converted record is an ordinary Gen-3 record the gate would wrongly refuse.
+    MUT AQ drops the guard and must be caught."""
+    for ln in body:
+        if GATE_RE.search(ln):
+            if ESCAPE_GATE_CONVERTED_RE.search(ln):
+                return True, "ok"
+            return False, (f"party_strip_overlay: xg_native_escape_denied( call not "
+                            f"guarded by `!converted &&` on the same line: {ln.strip()!r}")
+    return False, "party_strip_overlay: no xg_native_escape_denied( call found"
+
+
 def invalidate_call_facts(lines: list[str], sig_re: str, fn_label: str) -> tuple[bool, str]:
     """(al): extract_function(lines, sig_re)'s body must contain INVALIDATE_RE at
     least once. MUT AL (self_test_mutation_detection) blanks the one real call line
@@ -1053,18 +1150,23 @@ def main() -> int:
           "item_home: no bc_is_native( found in its (comment-stripped) body")
 
     # ---- (b) party-place call + homeless-B memcpy: gate within a few lines before ----
+    # BACKLOG #174 (S150-8c) D4: re-anchored from "app_party_place_held(s_held" to
+    # "app_party_place_held(placing" -- the party site's own held/converted split now
+    # names its argument `placing` (converted ? conv : s_held), never a bare s_held.
+    # This is deliberate: the OLD literal pattern would now match NOTHING (the rename
+    # breaks loudly, per D4's own comment) rather than silently pass on a stale line.
     NEARBY = 6   # generous but still local -- not "anywhere in the file"
     party_line = None
     for i, ln in enumerate(box_lines):
-        if "app_party_place_held(s_held" in ln:
+        if "app_party_place_held(placing" in ln:
             party_line = i
             break
-    check(party_line is not None, "party site: app_party_place_held(s_held ... call not found in pdna_box.c")
+    check(party_line is not None, "party site: app_party_place_held(placing ... call not found in pdna_box.c")
     if party_line is not None:
         window = box_lines[max(0, party_line - NEARBY):party_line]
         check(any(GATE_RE.search(ln) for ln in window),
               f"party site: no xg_native_escape_denied( within {NEARBY} lines before "
-              f"the app_party_place_held(s_held call (line {party_line + 1})")
+              f"the app_party_place_held(placing call (line {party_line + 1})")
 
     homeless_memcpy_line = None
     for i, ln in enumerate(box_lines):
@@ -1445,6 +1547,32 @@ def main() -> int:
           "(comment-stripped) body -- a bridge paste that would be WRITTEN with no "
           "moves left at all would land with no moves (Struggles forever, an "
           "illegal Game Boy record), the same D9 hole (ab) closes for gb_paste_hook")
+    # ---- (ao)/(ap)/(aq) BACKLOG #174 (S150-8c) D11: the party convert edge --------
+    party_s, party_e = extract_function(box_lines, r"^static int party_strip_overlay\(")
+    party_body = box_lines[party_s:party_e]
+
+    # (ao) party_convert_order_facts: the convert call comes after the app_party_n(/
+    # sel != n_now guard line and before the app_party_place_held(placing call; and
+    # ALL THREE of D2's refusal lines precede the convert call. MUT AO (self-mutation,
+    # below) moves the convert call above the party-full test and must be caught.
+    ok, detail = party_convert_order_facts(party_body)
+    check(ok, detail)
+
+    # (ap) party_place_identity_facts: app_party_place_held('s last argument is the
+    # literal `converted ? s_held : NULL` (D3's identity bytes) and its first is
+    # `placing`, itself assigned `converted ? conv : s_held` above the call. This is
+    # the pin that pays for the whole test file on this lane -- MUT AP rewrites the
+    # last argument to NULL (D3's exact duplicate-producing defect) and must be caught.
+    ok, detail = party_place_identity_facts(party_body)
+    check(ok, detail)
+
+    # (aq) party_escape_gate_converted_facts: the xg_native_escape_denied( call inside
+    # party_strip_overlay is guarded by `!converted &&` on the SAME line. MUT AQ drops
+    # the guard and must be caught (and, separately, the real build would then refuse
+    # every converted party drop).
+    ok, detail = party_escape_gate_converted_facts(party_body)
+    check(ok, detail)
+
     # ---- (al) BACKLOG #213: every ledger-write function this lane could reach calls
     # app_xv_cache_invalidate( -- the GB ORIGINAL row's negative cache promises "after
     # ANY ledger write the next lookup goes to the card"; this is the only place that
@@ -2242,6 +2370,73 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str]) -
                          f"have been caught but was not: {detail}")
         print(f"  MUT AI demonstration -- gb_paste_legal_screen_ex( line moved after "
               f"gbs_insert( in gb_bank_down_bridge: {detail}")
+
+    # ---- BACKLOG #174 (S150-8c) D11: MUT AO/MUT AP/MUT AQ, the party convert edge ----
+    s_ps, e_ps = extract_function(box_lines, r"^static int party_strip_overlay\(")
+    party_body_real = box_lines[s_ps:e_ps]
+
+    # MUT AO: move the bank_down_convert_gen3_party( call line to ABOVE the party-full
+    # (PARTYFULL3) refusal test -- (ao) must fail: a full party would then write a
+    # ledger entry before ever being refused.
+    conv_i = first_match_line(party_body_real, 0, len(party_body_real), BANK_DOWN_CONVERT_PARTY_RE)
+    full3_i = first_match_line(party_body_real, 0, len(party_body_real), PARTYFULL3_REFUSAL_RE)
+    check(conv_i is not None and full3_i is not None and full3_i < conv_i,
+          "MUT AO: could not locate bank_down_convert_gen3_party( after the PARTYFULL3 "
+          "refusal in the real source -- fix this test")
+    if conv_i is not None and full3_i is not None and full3_i < conv_i:
+        mut_ao = list(party_body_real)
+        conv_line = mut_ao.pop(conv_i)
+        mut_ao.insert(full3_i, conv_line)   # the convert call now sits ABOVE the PARTYFULL3 test
+        ok_ao, detail = party_convert_order_facts(mut_ao)
+        check(not ok_ao, f"MUT AO (bank_down_convert_gen3_party( moved above the "
+                          f"party-full test) should have been caught but was not: {detail}")
+        print(f"  MUT AO demonstration -- bank_down_convert_gen3_party( moved above "
+              f"the PARTYFULL3 refusal in party_strip_overlay: {detail}")
+
+    # MUT AP: rewrite app_party_place_held(placing's last argument from
+    # `converted ? s_held : NULL` to plain `NULL` -- D3's exact duplicate-producing
+    # defect. (ap) must fail.
+    place_i = first_match_line(party_body_real, 0, len(party_body_real), APP_PARTY_PLACE_HELD_PLACING_RE)
+    check(place_i is not None, "MUT AP: could not locate app_party_place_held(placing "
+                                "in the real source -- fix this test")
+    if place_i is not None:
+        last_arg_i = None
+        for j in range(place_i, min(place_i + 4, len(party_body_real))):
+            if PLACE_HELD_LAST_ARG_RE.search(party_body_real[j]):
+                last_arg_i = j
+                break
+        check(last_arg_i is not None, "MUT AP: could not locate the "
+                                       "`converted ? s_held : NULL` last-argument line "
+                                       "-- fix this test")
+        if last_arg_i is not None:
+            mut_ap = list(party_body_real)
+            mut_ap[last_arg_i] = PLACE_HELD_LAST_ARG_RE.sub("NULL);", mut_ap[last_arg_i])
+            ok_ap, detail = party_place_identity_facts(mut_ap)
+            check(not ok_ap, f"MUT AP (app_party_place_held(placing's last argument "
+                              f"rewritten to plain NULL) should have been caught but "
+                              f"was not: {detail}")
+            print(f"  MUT AP demonstration -- app_party_place_held(placing's last "
+                  f"argument rewritten from `converted ? s_held : NULL` to `NULL`: {detail}")
+
+    # MUT AQ: drop the `!converted &&` guard from the escape-gate call -- (aq) must
+    # fail (and, separately, the real build would then refuse every converted party
+    # drop).
+    gate_i = None
+    for i, ln in enumerate(party_body_real):
+        if GATE_RE.search(ln):
+            gate_i = i
+            break
+    check(gate_i is not None, "MUT AQ: could not locate xg_native_escape_denied( in "
+                               "party_strip_overlay -- fix this test")
+    if gate_i is not None:
+        mut_aq = list(party_body_real)
+        mut_aq[gate_i] = re.sub(r"!converted\s*&&\s*", "", mut_aq[gate_i])
+        ok_aq, detail = party_escape_gate_converted_facts(mut_aq)
+        check(not ok_aq, f"MUT AQ (`!converted &&` dropped from the escape-gate call) "
+                          f"should have been caught but was not: {detail}")
+        print(f"  MUT AQ demonstration -- `!converted &&` dropped from "
+              f"xg_native_escape_denied( in party_strip_overlay: {detail}")
+
 
 def self_test_al_mutation(main_lines: list[str]) -> None:
     """BACKLOG #213 (al): prove invalidate_call_facts() actually has teeth. Takes
