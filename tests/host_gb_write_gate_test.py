@@ -35,12 +35,14 @@ Four checks:
       gate here) -- the gate must be app_can_edit( itself, not either-or.
 
   (d) BACKLOG #171b (lane s150-4-5b, post-#171 review finding): pdna_gen12_source()
-      assigns `s.xfer = &k_gb_xfer;` (comment-stripped) -- start_carry() (pdna_box.c
-      :1077) gates the whole lift_up path on `src->xfer`, a per-BoxSource field, never
-      on the file-static `s_xfer_peer` a Bank visit installs. Without this the whole
-      UP-lift feature (BACKLOG #150 S150-4/5) silently falls back to a plain memcpy on
-      every grab -- no origin prompt, no pack, no serial -- proven live: a "successful"
-      grab on a vehicle where every SD write fails is itself the proof lift_up never ran.
+      assigns `s.xfer = &k_gb_xfer;` (comment-stripped) -- the one place this vtable
+      is wired at all. BACKLOG #199 (lane b199) moved the actual `->lift_up(...)`
+      call from start_carry() to drop_held_up() (pdna_box.c, the GB -> Bank UP drop),
+      reading it off the file-static `s_xfer_peer` a Bank visit installs, not
+      `src->xfer` directly -- this check's own assertion (the table assignment
+      itself) is unchanged by that move: without it, `s_xfer_peer`/`src->xfer` would
+      both still resolve to a NULL-bodied table and BoxXferOps.lift_up would never
+      run from either call site.
 
 Run directly:
 
@@ -209,13 +211,16 @@ def check_named_write_hooks(text: str) -> list[str]:
 
 def check_xfer_wired(text: str) -> list[str]:
     """BACKLOG #171b (lane s150-4-5b, post-#171 review finding): pdna_gen12_source()
-    must assign `s.xfer` to `&k_gb_xfer` (comments excluded) -- start_carry() (pdna_box.c
-    :1077) gates the whole lift_up path on `src->xfer`, a per-BoxSource FIELD, never on
-    the file-static `s_xfer_peer` a Bank visit installs via pdna_box_xfer_set(). Without
-    this assignment every GB-scope grab falls straight to start_carry()'s plain memcpy
-    branch -- BoxXferOps.lift_up (the origin prompt, the pack, pdna_bank_next_serial())
-    NEVER RUNS, confirmed by lane s150-4-5b's own per-tap mGBA trace: a "successful"
-    grab on a vehicle where every SD write fails is proof by itself (had lift_up run,
+    must assign `s.xfer` to `&k_gb_xfer` (comments excluded) -- this is the one place
+    the vtable is wired at all, so it must stay non-NULL for either of its two
+    readers: `src->xfer` (drop_held's same-scope GB move_within call) and the
+    file-static `s_xfer_peer` a Bank visit installs via pdna_box_xfer_set()
+    (BACKLOG #199, lane b199: drop_held_up's `->lift_up(...)` call, moved there from
+    start_carry, which no longer touches `src->xfer` at all). Without this assignment
+    every GB-scope grab-then-Bank-drop falls straight to a refusal -- BoxXferOps.
+    lift_up (the origin prompt, the pack, pdna_bank_next_serial()) NEVER RUNS,
+    confirmed by lane s150-4-5b's own per-tap mGBA trace: a "successful" grab on a
+    vehicle where every SD write fails is proof by itself (had lift_up run,
     next_serial -> meta_save would have failed and the grab would have been refused).
     BACKLOG #150 S150-12: the assignment is now a ternary (`pdna_gen12_resident() ?
     &k_gb_xfer : &k_gb_xfer_ro`), since the read-only mount installs a second,
@@ -227,8 +232,8 @@ def check_xfer_wired(text: str) -> list[str]:
     xfer_line = re.search(r"\bs\.xfer\s*=[^;]*;", body)
     if not xfer_line or not re.search(r"&k_gb_xfer\s*[;:]", xfer_line.group(0)):
         return ["pdna_gen12_source(): no `s.xfer = ... &k_gb_xfer ...;` assignment in its "
-                "(comment-stripped) body -- start_carry()'s src->xfer gate would stay "
-                "NULL and BoxXferOps.lift_up would never run"]
+                "(comment-stripped) body -- s_xfer_peer/src->xfer would stay NULL and "
+                "BoxXferOps.lift_up would never run"]
     return []
 
 

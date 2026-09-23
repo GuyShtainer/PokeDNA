@@ -475,11 +475,11 @@ static bool gb_can_lift_hook_impl(int box, int slot);
  * further below, beside gb_release_hook/gb_lift_up_hook's own header comments) --
  * forward-declared here so k_gb_xfer (this same guarded block) can name them before
  * pdna_gen12_source() (which wires s.xfer) appears in file order. */
-static bool gb_lift_up_hook(const uint8_t* rec80, uint8_t* out80, XferCarry* xc);
+static bool gb_lift_up_hook(int box, int slot, uint8_t* out80);
 static bool gb_release_up_hook(int box, int slot, const uint8_t cell80[80]);
 /* BACKLOG #150 S150-12 decision 4: the read-only mount's copy-flavoured lift --
  * gb_lift_pack()'s `copy` switch, thin hook defined beside gb_lift_up_hook below. */
-static bool gb_lift_copy_hook(const uint8_t* rec80, uint8_t* out80, XferCarry* xc);
+static bool gb_lift_copy_hook(int box, int slot, uint8_t* out80);
 /* BACKLOG #150 S150-7 step 4: BoxXferOps.accept_down's real body (defined further
  * below, beside gb_paste_hook -- D8's own ordering comment), forward-declared for the
  * same reason as lift_up/release_up above. */
@@ -1390,11 +1390,16 @@ static bool __attribute__((noinline)) gb_has_sidecar(uint8_t gen, const GbEditMo
  * including Gen-1 mons and Gen-2 mons that were never transferred down, neither of
  * which actually pastes losslessly) always gets a real answer, never a stale one from
  * a previous call. */
-static bool gb_copy_native_hook(const uint8_t* rec80, GbEditMon* out, bool* has_sidecar) {
+/* BACKLOG #199: the box/slot-driven half of gb_copy_native_hook below, factored out
+ * so gb_lift_pack (the Bank-UP lift, now called by ORIGIN COORDINATES from
+ * drop_held_up rather than by a rec80 address resolved through the currently-paged
+ * display buffer) can load the SAME way without a rec80 to resolve one from. Neither
+ * caller needs gb_locate_addr's own bounds check here -- both already have a
+ * trustworthy (box, slot): this function's own gbs_load_list()/gb_list_count() (or
+ * the RO mount's gb_list_read()/gb_list_count()) calls fail closed on an out-of-range
+ * box/slot exactly as they always have. */
+static bool gb_copy_native_by_coord(int box, int slot, GbEditMon* out, bool* has_sidecar) {
   if (has_sidecar) *has_sidecar = false;
-  int box, slot;
-  if (!gb_locate_addr(rec80, &box, &slot)) return false;
-
   bool ok;
   uint8_t gen;
   if (g_ed) {
@@ -1420,6 +1425,13 @@ static bool gb_copy_native_hook(const uint8_t* rec80, GbEditMon* out, bool* has_
   }
   if (ok && has_sidecar) *has_sidecar = gb_has_sidecar(gen, out);
   return ok;
+}
+
+static bool gb_copy_native_hook(const uint8_t* rec80, GbEditMon* out, bool* has_sidecar) {
+  if (has_sidecar) *has_sidecar = false;
+  int box, slot;
+  if (!gb_locate_addr(rec80, &box, &slot)) return false;
+  return gb_copy_native_by_coord(box, slot, out, has_sidecar);
 }
 
 /* S5-B Part E: does `mon` already have a sidecar entry on the card? Gen-1 targets
@@ -2156,13 +2168,22 @@ gb_lift_restore(const GbEditMon* mon, uint8_t out80[80]) {
  * bank_plant.c's own test fixture uses (gb_is_egg / gb_get_held_item), never a new
  * rule -> bc_pack(), which owns the party->box truncation itself (do not truncate
  * here). epoch reuses gb_paste_write's own RTC source (gba_rtc_get), not a new clock
- * call -- 0 when the RTC is absent, exactly as gb_paste_write already tolerates. */
-static bool gb_lift_pack(const uint8_t* rec80, uint8_t* out80, bool copy) {
+ * call -- 0 when the RTC is absent, exactly as gb_paste_write already tolerates.
+ *
+ * BACKLOG #199 (lane b199): `box`/`slot` replace the old `rec80` parameter -- the
+ * call moved from grab time (start_carry) to the one drop that actually needs the
+ * Bank's price (drop_held_up), so there is no live rec80 address into the display
+ * buffer to resolve any more, only the carry's own origin coordinates. Loads through
+ * gb_copy_native_by_coord() (the box/slot half of gb_copy_native_hook, factored out
+ * for this), which is the SAME load gb_release_up_hook's own re-verify already does
+ * by coordinates -- unlike the old rec80 form, this is robust to an L/R re-page of
+ * the display mount between the grab and the drop. */
+static bool gb_lift_pack(int box, int slot, uint8_t* out80, bool copy) {
   if (!out80) { log_line("gen12: %s lift refused: no destination buffer", copy ? "copy" : "xferup"); return false; }
 
   GbEditMon mon;
-  if (!gb_copy_native_hook(rec80, &mon, NULL)) {
-    log_line("gen12: %s lift refused: gb_copy_native_hook could not read the record", copy ? "copy" : "xferup");
+  if (!gb_copy_native_by_coord(box, slot, &mon, NULL)) {
+    log_line("gen12: %s lift refused: gb_copy_native_by_coord could not read box %d slot %d", copy ? "copy" : "xferup", box, slot);
     return false;
   }
 
@@ -2287,13 +2308,13 @@ gb_release_restored_verify(const GbEditMon* have, const GbEditMon* want,
 }
 
 /* BoxXferOps.lift_up (MOVE, the resident write session -- BACKLOG #150 S150-4
- * decision 3/step 3). `xc` is unused (decision 6: no XferCarry static this lane --
- * s_held already holds the 80-byte result and s_orig_box/s_orig_slot hold the GB
- * origin). Self-sufficient guard, unchanged from before the S150-12 refactor
- * (BACKLOG #171b review F3): refuse up front rather than trust the caller's own
- * can_lift/can_enter_move gates to forever stay in lock-step with this one. */
-static bool gb_lift_up_hook(const uint8_t* rec80, uint8_t* out80, XferCarry* xc) {
-  (void)xc;
+ * decision 3/step 3). BACKLOG #199: called from drop_held_up (pdna_box.c) at the
+ * Bank-UP drop, by the carry's own ORIGIN coordinates -- no rec80 any more (see this
+ * field's own contract comment, pdna_box.h). Self-sufficient guard, unchanged from
+ * before the S150-12 refactor (BACKLOG #171b review F3): refuse up front rather than
+ * trust the caller's own can_lift/can_enter_move gates to forever stay in lock-step
+ * with this one. */
+static bool gb_lift_up_hook(int box, int slot, uint8_t* out80) {
   if (!g_ed) { log_line("gen12: xferup lift refused: no editable session"); return false; }
   /* hard rule 4 / tests/host_gb_write_gate_test.py: this hook itself writes
    * (pdna_bank_next_serial() persists bank.meta), so it carries its own
@@ -2301,23 +2322,23 @@ static bool gb_lift_up_hook(const uint8_t* rec80, uint8_t* out80, XferCarry* xc)
    * the SD side of the write is this function's own responsibility, not begin_
    * select's/the NORMAL-mode menu's, which merely decide whether to LOOK at a cell. */
   if (!app_can_edit()) { log_line("gen12: xferup lift refused: cart is not writable"); return false; }
-  return gb_lift_pack(rec80, out80, false);
+  return gb_lift_pack(box, slot, out80, false);
 }
 
 /* BoxXferOps.lift_up (COPY, the read-only nav-menu mount -- BACKLOG #150 S150-12
  * decision 4). Mirror-image guard of gb_lift_up_hook above: refuses a write session
  * outright (a write session never copies -- it MOVEs, through gb_lift_up_hook), and
- * refuses without a mounted read-only path (g_m/g_ro_path, decision 5). `xc` unused,
- * same reason as gb_lift_up_hook. app_can_edit( is repeated here (not only reachable
- * through gb_lift_pack) for the same tests/host_gb_write_gate_test.py reason
- * gb_lift_up_hook's own copy is: the checker scans each NAMED_WRITE_HOOKS function's
- * OWN body text, never the shared callee it delegates to. */
-static bool gb_lift_copy_hook(const uint8_t* rec80, uint8_t* out80, XferCarry* xc) {
-  (void)xc;
+ * refuses without a mounted read-only path (g_m/g_ro_path, decision 5). BACKLOG #199:
+ * box/slot, not rec80, same reason as gb_lift_up_hook above. app_can_edit( is
+ * repeated here (not only reachable through gb_lift_pack) for the same
+ * tests/host_gb_write_gate_test.py reason gb_lift_up_hook's own copy is: the checker
+ * scans each NAMED_WRITE_HOOKS function's OWN body text, never the shared callee it
+ * delegates to. */
+static bool gb_lift_copy_hook(int box, int slot, uint8_t* out80) {
   if (g_ed) { log_line("gen12: copy lift refused: a write session never copies"); return false; }
   if (!g_m || !g_ro_path) { log_line("gen12: copy lift refused: no read-only mount path"); return false; }
   if (!app_can_edit()) { log_line("gen12: copy lift refused: cart is not writable"); return false; }
-  return gb_lift_pack(rec80, out80, true);
+  return gb_lift_pack(box, slot, out80, true);
 }
 
 /* BoxXferOps.release_up (BACKLOG #150 S150-4 decision 7): RE-VERIFIES before it

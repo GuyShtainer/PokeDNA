@@ -396,7 +396,16 @@ BoxSource.can_lift @80 in src_can_lift -> gb_can_lift_hook
 # (-> banksrc_can_edit gbsrc_can_edit app_can_edit). Both hooks are reachable through
 # the identical struct-field load; only which TABLE is installed differs at runtime
 # (pdna_gen12.c's g_ed ? &k_gb_xfer : &k_gb_xfer_ro selector).
-BoxXferOps.lift_up @4 in start_carry -> gb_lift_up_hook gb_lift_copy_hook
+# BACKLOG #199 (lane b199): the call itself MOVED -- start_carry() no longer touches
+# `src->xfer` at all (it now does the same plain memcpy of the display record for
+# every scope, GB included; the paragraph above still describes the ONE-TIME S150-4
+# wiring of pdna_gen12_source()'s `s.xfer = ...` assignment, which is unchanged and
+# still what makes this call reachable). The indirect call through offset 4 now sits
+# in drop_held_up (the GB -> Bank UP drop), called with the carry's own origin
+# coordinates instead of a rec80 derived from the live display page -- re-derived
+# from the walker's own BLIND SPOT report after the move (never assumed), same two
+# targets, same offset.
+BoxXferOps.lift_up @4 in drop_held_up -> gb_lift_up_hook gb_lift_copy_hook
 # BACKLOG #170: drop_held's UP branch (the only `s_xfer_peer->release_up(...)` call
 # site in pdna_box.c) was extracted into its own noinline helper, drop_held_up --
 # re-qualified from `in drop_held` to `in drop_held_up`, the same offset/targets.

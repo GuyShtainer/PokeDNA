@@ -39,7 +39,18 @@ typedef struct XferCarry XferCarry;
  * implementation added by a later slice — S1 wires no GB body, only the shape. */
 typedef struct {
   uint8_t gen;                                     /* PDNA_GEN1 / PDNA_GEN2, for the wording */
-  bool (*lift_up)(const uint8_t* rec80, uint8_t* out80, XferCarry* xc);       /* GB -> Gen-3 native */
+  /* BACKLOG #199 (lane b199): re-shaped from `(const uint8_t* rec80, uint8_t* out80,
+   * XferCarry* xc)` -- the rec80 form resolved its (box, slot) from the ADDRESS of
+   * rec80 inside the mount's own paged buffer (gb_locate_addr's `*box = g_m->loaded`),
+   * which only holds true while the display is still paged on the cell that was
+   * grabbed; an L/R re-page between the grab and a later drop broke it. The call now
+   * moves from grab time (start_carry) to the one drop that actually needs the Bank's
+   * price (drop_held_up, pdna_box.c), by the ORIGIN COORDINATES the carry already
+   * tracks (s_orig_box/s_orig_slot) -- exactly the same coordinate form release_up
+   * below already uses, and robust to any repage in between. `XferCarry` is unused by
+   * both bodies (decision 6, unchanged) and is dropped from the signature along with
+   * it; the incomplete typedef above stays (harmless, no other user). */
+  bool (*lift_up)(int box, int slot, uint8_t* out80);                        /* GB -> Gen-3 native */
   /* BACKLOG #150 S150-7 decision D-Q6: reshaped once, alongside accept_down below, so
    * the vtable's SHAPE only ever changes here -- S150-8's later diff fills bodies, not
    * signatures. Re-shaped from `(const uint8_t* rec80, XferCarry* xc)`: `XferCarry`
