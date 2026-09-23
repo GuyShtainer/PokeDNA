@@ -164,16 +164,17 @@ def main() -> int:
     s.press_n("UP", UP_TO_ROW0, settle=60)
     s.tap("R", settle=150); s.tap("R", settle=150)   # box 0 -> box 1 -> box 2
     s.shot("00_box2", "box 2, slot 0 -- the SAME item fixture as cases B/F3, on THIS "
-           "save's own full Items pocket")
+           "save's own full Items pocket", claim=["BANK 3", "2/30"])
     s.tap("A", settle=150)
     s.press_n("DOWN", 3, settle=80)   # VIEW/EDIT -> ITEM -> LEGALITY -> MOVE
     s.tap("A", settle=150)            # MOVE -> start_carry()
     s.press_n("DOWN", DOWN_OFF_BANK, settle=150)
     s.shot("01_carrying_box1", "carrying, back on GB BOX1 -- corpus box fullness is "
            "unaffected by this fixture's own bag edit, so this is 20/20 as on every "
-           "other chain against this corpus")
+           "other chain against this corpus", claim=["GB BOX1", "20/20"])
     s.press_n("R", 5, settle=150)
-    s.shot("02_box_room", "R x5 -> the box with room (19/20)")
+    s.shot("02_box_room", "R x5 -> the box with room (GB BOX6, 16/20)",
+           claim=["GB BOX6", "16/20"])
     s.tap("A", settle=gb_shots.BIG_SETTLE)
     s.shot("03_loss_screen_pc", "A -- the loss screen's item row: "
            "loss_item_text()'s G3GB_ITEM_PC/sid=false branch, reached because "

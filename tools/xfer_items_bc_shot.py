@@ -120,10 +120,11 @@ def main() -> int:
     # ---- Scene B: box 2 slot 0 (item, no SID) -> a Gen-1 target with bag room -------
     carry_from_box2(s, slot_right_taps=0)
     s.shot("00_carrying_box1_full", "carrying box 2 slot 0 (BULBASAUR + POTION, no "
-           "Secret ID) -- back on GB BOX1, 20/20 (no room here)")
+           "Secret ID) -- back on GB BOX1, 20/20 (no room here)",
+           claim=["GB BOX1", "20/20"])
     s.press_n("R", 5, settle=150)
-    s.shot("01_box_room", "R x5 -> the box with room (19/20, the SAME box tools/"
-           "b246_g3_to_gb_vsd.py's own frame 05 finds on this corpus)")
+    s.shot("01_box_room", "R x5 -> the box with room (GB BOX6, 16/20)",
+           claim=["GB BOX6", "16/20"])
     s.tap("A", settle=gb_shots.BIG_SETTLE)
     s.shot("02_loss_screen_bag", "A -- the loss screen's item row: "
            "loss_item_text()'s G3GB_ITEM_BAG/sid=false branch",
@@ -181,7 +182,8 @@ def main() -> int:
     carry_from_box2(s2, slot_right_taps=1)   # box 2 slot 1: item + nonzero SID
     s2.press_n("R", 5, settle=150)
     s2.shot("00_box_room_slot1", "F3: carrying box 2 slot 1 (item + nonzero Secret "
-            "ID) -- R x5 -> the box with room")
+            "ID) -- R x5 -> the box with room (GB BOX6, 16/20)",
+            claim=["GB BOX6", "16/20"])
     s2.tap("A", settle=gb_shots.BIG_SETTLE)
     s2.shot("01_loss_screen_sid", "A -- loss_item_text()'s sid=true branch: the "
             "composite suffix",
