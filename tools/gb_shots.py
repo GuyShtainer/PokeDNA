@@ -881,23 +881,35 @@ def run_red(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     s.tap("UP")
     s.shot("12d_move_to_party_selected", "S2b: MOVE TO BOX picker, Party selected")
     s.tap("A", settle=BIG_SETTLE)
-    # gb_session.c gbs_move() checks capacity (dcount >= gb_list_capacity) BEFORE the
-    # Gen-1 box->party GBS_ERR_NEEDS_BASE check ("Gen 1: withdraw it in-game instead",
-    # source/pdna_layout.h PDNA_GBEDIT_MOVE_NEEDSBASE_L2) ever runs. Guy's own Red.sav
-    # and Yellow.sav (gba-toolkit/roms/gb/) both carry a full 6/6 party, so this specific
-    # refusal is unreachable from the corpus on hand -- it always hits GBS_ERR_FULL
-    # first. That IS the real, correct behaviour (still worth a shot), not a script bug.
-    s.shot("12e_gen1_party_full", "S2b: Gen 1 MOVE TO -> Party refused: the party is "
-                                   "already full (6/6) — the capacity gate that runs "
-                                   "before the Gen-1-specific one. BACKLOG #40(d): the "
-                                   "message now reads \"The party is full.\", not the "
-                                   "box-flavoured \"that box is full\"")
+    # BACKLOG #251 shots-refresh re-derivation (was: "gb_session.c gbs_move() checks
+    # capacity BEFORE the Gen-1-specific check, so this shows MOVE REFUSED / The party
+    # is full."): reproduced live and that is no longer what this tap sequence reaches.
+    # Picking "Party" off the MOVE TO BOX list now hits pdna_gen12.c's own PDNA_DELTA
+    # write-gate (gb_persist()'s "Edits are in-session only in the emulator build."
+    # msg_wait -- the SAME generic refusal every other GB commit path in this file
+    # shows) BEFORE gbs_move()'s capacity check ever runs at all -- confirmed by hand:
+    # pressing A again on this dialog dismisses it straight back to the box grid, no
+    # "party is full" screen in between. Likely BACKLOG #246 moving the write-gate
+    # earlier in the MOVE TO flow (this lane did not chase the exact commit -- the
+    # pixels are the evidence, not a theory). The capacity-check screen this shot used
+    # to prove is therefore UNREACHABLE from this emulator vehicle now, same class as
+    # 12f's own long-standing skip below -- shooting what is actually on screen
+    # instead of the stale claim.
+    s.shot("12e_gen1_party_full", "S2b: Gen 1 MOVE TO -> Party: the emulator's own "
+                                   "PDNA_DELTA write-gate (\"Edits are in-session only "
+                                   "in the emulator build.\") now fires BEFORE gbs_move()'s "
+                                   "capacity check ever runs — the \"party is full\" "
+                                   "screen (BACKLOG #40(d)'s wording fix) this shot used "
+                                   "to show is no longer reachable from here; A dismisses "
+                                   "straight back to the box grid with no move attempted")
     s.skip("12f_gen1_needs_base_text",
            "the \"Gen 1: withdraw it in-game instead\" text (GBS_ERR_NEEDS_BASE) is only "
-           "reached when the destination party has a free slot; both of Guy's Gen-1 "
-           "saves (Red.sav, Yellow.sav) have a full 6/6 party, so gbs_move()'s own "
-           "capacity check (gb_session.c:399, checked first) wins every time. Needs a "
-           "save with room in the party to ever show this exact string.")
+           "reached when the destination party has a free slot AND gbs_move()'s own "
+           "capacity check is reached at all -- both of Guy's Gen-1 saves (Red.sav, "
+           "Yellow.sav) have a full 6/6 party, AND (BACKLOG #251 re-derivation) the "
+           "emulator's own PDNA_DELTA write-gate now fires first regardless (see "
+           "12e_gen1_party_full's own comment above). Needs a save with room in the "
+           "party AND real hardware (no write-gate) to ever show this exact string.")
 
     s.skip("11_dv_orphan_warning", "needs a sidecar file on SD (docs/GEN3-TO-GB-SIDECAR-DESIGN.md "
                                     "section 10) — the emulator has no SD card, so has_sidecar is "
