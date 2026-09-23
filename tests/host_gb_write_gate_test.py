@@ -63,8 +63,12 @@ SRC = ROOT / "source" / "pdna_gen12.c"
 # `gs` (or, for the one daycare call outside gb_nav_from_start that uses the
 # session directly, `&g_ed->s`) followed by a comma -- i.e. it takes a SECOND
 # argument, the can_edit-shaped one this check cares about. Calls with only one
-# argument (the read-only map screens, pdna_gbmap_gen1(gs)/pdna_gbmap_gen2(gs))
-# do not match this pattern and are correctly skipped.
+# argument (the read-only Gen-2 map screen, pdna_gbmap_gen2(gs)) do not match
+# this pattern and are correctly skipped. pdna_gbmap_gen1(gs, ...) DOES match --
+# BACKLOG #91 M3 gave Gen 1's own map screen a can_edit-gated teleport, so its
+# dispatch is covered by this check exactly like any other GB screen (map-gen1
+# review: this comment used to list it alongside pdna_gbmap_gen2 as one-arg/
+# read-only, which stopped being true the moment M3 shipped).
 DISPATCH_RE = re.compile(r"pdna_gb\w*\(\s*(?:gs|&g_ed->s)\s*,")
 
 # The mutating AppSrcOps fields to check, read straight out of the two table

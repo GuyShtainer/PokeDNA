@@ -427,6 +427,16 @@ FIELDS = [
       "GS": D("cur_map_data", "wMapGroup", 0x2868), "CRYSTAL": D("cur_map_data", "wMapGroup", 0x2843)}),
   ("MAP_NUMBER", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
       "GS": D("cur_map_data", "wMapNumber", 0x2869), "CRYSTAL": D("cur_map_data", "wMapNumber", 0x2844)}),
+  # map-gen1 review D1: wCurrentTileBlockMapViewPointer -- what LoadCurrentMapView
+  # actually renders from; Red $D35F / Yellow $D35E, both at the SAME save offset
+  # 0x260B (main_data + 0x68) since the two games' save layouts are byte-identical
+  # (headline #2). 2 raw bytes, LITTLE-endian (a WRAM pointer copy, not a numeric
+  # field) -- gbmap_write_pos() builds the lo/hi buffer itself, so BYTES (not a
+  # dedicated U16LE kind) is the right tag: nothing here decodes it generically.
+  ("POS_VIEWPTR", BYTES, 2, {
+      "RED": D("main_data", "wCurrentTileBlockMapViewPointer", 0x260B),
+      "YELLOW": D("main_data", "wCurrentTileBlockMapViewPointer", 0x260B),
+      "GS": ABSENT, "CRYSTAL": ABSENT}),
   ("POS_X", U8, 1, {
       "RED": D("main_data", "wXCoord", 0x260E), "YELLOW": D("main_data", "wXCoord", 0x260E),
       "GS": D("cur_map_data", "wXCoord", 0x286B), "CRYSTAL": D("cur_map_data", "wXCoord", 0x2846)}),
@@ -644,6 +654,21 @@ FIELDS = [
   ("FIRST_UNOWN_SEEN", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
       "GS": D("pokemon_data", "wFirstUnownSeen", 0x2AA7),
       "CRYSTAL": D("pokemon_data", "wFirstUnownSeen", 0x2A82)}),
+  # map-gen1 R-A: wDestinationWarpID -- $D42F Red / $D42E Yellow, both at save offset
+  # 0x26DB (main_data + 0x138). engine/overworld/tilesets.asm:38-53 -- on a
+  # DungeonTilesets map (GYM/CAVERN/FOREST/MANSION/FACILITY/CEMETERY/LOBBY/LAB/GATE/
+  # SHIP/MUSEUM) the hPreviousTileset guard is skipped and, if this byte != 0xFF,
+  # LoadDestinationWarpPosition overwrites the view pointer/Y/X from the map's own
+  # warp_to table right after boot -- i.e. this byte gates whether a freshly-loaded
+  # position sticks. 0xFF is the game's OWN "no warp pending" sentinel (every ordinary
+  # non-warp boot path sets it there -- home/overworld.asm:456/478,
+  # engine/overworld/player_state.asm:18). Red/Yellow only, same as GBF_POS_VIEWPTR;
+  # Gen 2 recomputes its own current-map-view state from wMapGroup/wMapNumber and has
+  # no equivalent byte.
+  ("DEST_WARP_ID", U8, 1, {
+      "RED": D("main_data", "wDestinationWarpID", 0x26DB),
+      "YELLOW": D("main_data", "wDestinationWarpID", 0x26DB),
+      "GS": ABSENT, "CRYSTAL": ABSENT}),
 ]
 
 

@@ -41,6 +41,7 @@
  *      source/gen3_save.c \
  *      source/gen3_edit.c \
  *      source/gen3_daycare.c \
+ *      source/rom_gbmap.c \
  *      -o /tmp/hgbsurg
  *
  * (gb_fields.c is also required -- gb_trainer.c already needs it -- but was already
@@ -149,6 +150,9 @@
 #include "rom_gbsprite.h"
 #include "rom_gbbase.h"
 #include "rom_gblearn.h"
+#include "rom_gbmap.h"
+#include "gb1_warp.h"     /* map-gen1 review D4: gb1warp_viewptr/gb1warp_coord --
+                            * the exact write shape do_warp_vp() below mirrors */
 #include "gb_new_mon.h"
 #include "data_tables.h"
 #include "gb_trainer.h"
@@ -342,6 +346,8 @@ static int parse_args(int argc, char** argv, const char** in, const char** out,
     {"hofnick", 3},    /* BACKLOG #198 item 7: TEAM_IDX MON_IDX TEXT, via gbh_set_mon */
     {"hofdv", 4},      /* BACKLOG #198 item 7: TEAM_IDX MON_IDX STAT V, Gen 2 only */
     {"paste80", 2},    /* BACKLOG #211: BOX REC80FILE, via gen3_to_gb_fixed + the fill */
+    {"mapquery", 1},   /* M3 (BACKLOG #91) retail-gate case: MAP, read-only, needs --rom */
+    {"warpvp", 4},     /* map-gen1 review D4 retail-gate case: MAP WIDTH BX BY, Gen 1 only */
   };
   *in = NULL; *out = NULL; *list_mode = false; *nops = 0;
   for (int i = 1; i < argc; i++) {
@@ -569,6 +575,55 @@ static int do_warp(GbSession* s, const char* map_tok, const char* x_tok, const c
   if ((st = gbs_write_field(s, 0x260du, &y_b, 1)) != GBS_OK) return refuse(gbs_status_text(st));
   if ((st = gbs_write_field(s, 0x2610u, &xblock_b, 1)) != GBS_OK) return refuse(gbs_status_text(st));
   if ((st = gbs_write_field(s, 0x260fu, &yblock_b, 1)) != GBS_OK) return refuse(gbs_status_text(st));
+  if ((st = gbs_finish(s)) != GBS_OK) return refuse(gbs_status_text(st));
+  return 0;
+}
+
+/* map-gen1 review D4 retail-gate case: the SAME write shape source/pdna_gbmap.c's
+ * gbmap_write_pos() uses -- derive+validate the view pointer via gb1warp_viewptr()
+ * BEFORE the first byte lands, then write ALL FIVE fields it writes (viewptr, Y, X,
+ * YBLOCK=0, XBLOCK=0). Unlike do_warp() above (a general shot-retake helper that
+ * also repositions map_id and accepts raw, possibly-odd coordinate bytes), this
+ * always writes a BLOCK-ALIGNED destination and NEVER touches map_id -- exactly
+ * what the shipped M3 screen does (gb1_warp.h's own scope note: teleport stays
+ * within the current map). MAP is a read-only sanity check against the save's own
+ * current map, never written -- a mismatch here means the corpus save moved out
+ * from under the case, not something this op should silently paper over. */
+static int do_warp_vp(GbSession* s, const char* map_tok, const char* width_tok,
+                       const char* bx_tok, const char* by_tok) {
+  if (s->gen != GB_GEN1) return refuse("warpvp is Gen 1 only");
+  int map = resolve_uint(map_tok, "warpvp map");
+  int width = resolve_uint(width_tok, "warpvp width");
+  int bx = resolve_uint(bx_tok, "warpvp bx");
+  int by = resolve_uint(by_tok, "warpvp by");
+  if (map < 0 || width < 0 || bx < 0 || by < 0) return 2;
+  if (map > 255 || width > 255 || bx > 127 || by > 127) {
+    fprintf(stderr, "warpvp MAP must be 0..255, WIDTH 0..255, BX/BY 0..127\n");
+    return 2;
+  }
+
+  uint8_t cur_map = 0;
+  if (gbs_read_field(s, 0x260au, &cur_map, 1) != GBS_OK) return refuse("could not read current map");
+  if (cur_map != (uint8_t)map) return refuse("warpvp MAP does not match the save's own current map");
+
+  uint16_t vp;
+  if (!gb1warp_viewptr((uint16_t)width, (int16_t)bx, (int16_t)by, &vp))
+    return refuse("gb1warp_viewptr refused this destination");
+  uint8_t vpbuf[2] = { (uint8_t)(vp & 0xFF), (uint8_t)(vp >> 8) };
+  uint8_t xcoord = gb1warp_coord((int16_t)bx), ycoord = gb1warp_coord((int16_t)by), zero = 0;
+  /* map-gen1 R-A: the SIXTH field gbmap_write_pos() now writes, mirrored here byte
+   * for byte -- 0x26DB (wDestinationWarpID) = 0xFF, the game's own "no warp
+   * pending" sentinel, so LoadDestinationWarpPosition cannot overwrite this write
+   * on a DungeonTilesets map (engine/overworld/tilesets.asm:38-53). */
+  uint8_t no_warp_pending = 0xFF;
+
+  GbsStatus st;
+  if ((st = gbs_write_field(s, 0x260bu, vpbuf, 2)) != GBS_OK) return refuse(gbs_status_text(st));
+  if ((st = gbs_write_field(s, 0x260du, &ycoord, 1)) != GBS_OK) return refuse(gbs_status_text(st));
+  if ((st = gbs_write_field(s, 0x260eu, &xcoord, 1)) != GBS_OK) return refuse(gbs_status_text(st));
+  if ((st = gbs_write_field(s, 0x260fu, &zero, 1)) != GBS_OK) return refuse(gbs_status_text(st));
+  if ((st = gbs_write_field(s, 0x2610u, &zero, 1)) != GBS_OK) return refuse(gbs_status_text(st));
+  if ((st = gbs_write_field(s, 0x26dbu, &no_warp_pending, 1)) != GBS_OK) return refuse(gbs_status_text(st));
   if ((st = gbs_finish(s)) != GBS_OK) return refuse(gbs_status_text(st));
   return 0;
 }
@@ -879,6 +934,39 @@ static bool tool_rom_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
   if (fseek(f, (long)off, SEEK_SET) != 0) return false;
   if (fread(dst, 1, len, f) != len) return false;
   return true;
+}
+
+/* M3 (BACKLOG #91) retail-gate case: read-only ROM query, no save bytes touched.
+ * Prints the located header's own width/height (in BLOCKS, rom_gbmap.h's own
+ * GbMap1Header) for `map` so run_teleport_case (tools/gb_retail_gate.py) can
+ * pick a destination it has PROVEN is inside the map's own bounds instead of
+ * guessing a coordinate and hoping -- the exact "never trust a shape it could
+ * not confirm" posture this whole locator module is built around (rom_gbmap.h's
+ * own top comment). Reuses g_rom_path/g_romscratch/tool_rom_read exactly as
+ * do_create() below does for rom_gbbase_gen1/rom_gblearn_open. */
+static int do_mapquery(const GbSession* s, const char* map_tok) {
+  if (s->gen != GB_GEN1) return refuse("mapquery is Gen 1 only");
+  int map = resolve_uint(map_tok, "mapquery map");
+  if (map < 0 || map > 255) { fprintf(stderr, "mapquery MAP must be 0..255\n"); return 2; }
+  if (!g_rom_path) { fprintf(stderr, "--op mapquery needs --rom PATH\n"); return 2; }
+
+  FILE* rf = fopen(g_rom_path, "rb");
+  if (!rf) return refuse("cannot open --rom file");
+  if (fseek(rf, 0, SEEK_END) != 0) { fclose(rf); return refuse("cannot seek --rom file"); }
+  long rsz = ftell(rf);
+  if (rsz <= 0) { fclose(rf); return refuse("empty --rom file"); }
+  rewind(rf);
+
+  RomGbMap1 g;
+  bool gok = rgm1_open(&g, tool_rom_read, rf, (uint32_t)rsz, g_romscratch, sizeof g_romscratch);
+  if (!gok) { fclose(rf); return refuse("rgm1_open: no Gen-1 map tables located"); }
+  GbMap1Header hdr;
+  bool hok = rgm1_header(&g, (uint8_t)map, &hdr);
+  fclose(rf);
+  if (!hok) return refuse("rgm1_header: could not resolve that map id");
+
+  printf("MAPQUERY %d WIDTH %u HEIGHT %u\n", map, (unsigned)hdr.width, (unsigned)hdr.height);
+  return 0;
 }
 
 /* BACKLOG #50, retail-gate case: build a fresh mon off --rom (rom_gbbase_gen1/2 +
@@ -1532,6 +1620,12 @@ static int apply_op(GbSession* s, const Op* o) {
   }
   if (!strcmp(o->kind, "warp")) {
     return do_warp(s, o->a[0], o->a[1], o->a[2]);
+  }
+  if (!strcmp(o->kind, "warpvp")) {
+    return do_warp_vp(s, o->a[0], o->a[1], o->a[2], o->a[3]);
+  }
+  if (!strcmp(o->kind, "mapquery")) {
+    return do_mapquery(s, o->a[0]);
   }
   if (!strcmp(o->kind, "warp2")) {
     return do_warp2(s, o->a[0], o->a[1], o->a[2], o->a[3]);
