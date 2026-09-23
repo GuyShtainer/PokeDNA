@@ -4768,6 +4768,20 @@ int pdna_box(BoxSource* src) {
           recs = src->records(box); box_decode(src, recs, box);          /* belt-and-braces refresh, same as the menu path */
           s_oam_reload = true; need_full = true;
         }
+        /* BACKLOG #244: rename isn't offered on Gen 1 (gbsrc_can_rename_impl:
+         * gbbn_supported() refuses -- Gen 1 has no box-name table at all), the same
+         * reason #154 already hides the row from box_options_menu's own rename entry.
+         * This shortcut used to just snd_deny() here -- "a control that exists only
+         * to say no", the dead-refusal class the reviews keep catching, one route
+         * behind #154's fix. Repurpose it instead of leaving a silent beep: fall
+         * through to the SAME box_options_menu SELECT already opens (can_boxops does
+         * not discriminate by generation -- EXPORT ALL/RELEASE ALL are still real
+         * rows on a writable Gen-1 box), so the two routes agree on what A does here. */
+        else if (src->can_boxops ? src->can_boxops(box) : src_can_lift(src, box, -1)) {
+          boxoam_suspend(); box_options_menu(src, box); boxoam_resume();
+          recs = src->records(box); box_decode(src, recs, box);
+          s_oam_reload = true; need_full = true;
+        }
         else { snd_deny(); }
       }
     }
