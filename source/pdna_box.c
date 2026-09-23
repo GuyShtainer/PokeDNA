@@ -1222,20 +1222,41 @@ pc_bank_restore_up(const uint8_t g3_rec80[80], uint8_t out_cell80[80]) {
   uint8_t buf[GBSC_FILE_MAX];
   uint32_t len = 0;
   uint64_t key = xr_key_g3(g3_rec80);
-  SfStatus rst = xr_open(key, buf, sizeof buf, &len, NULL);
-  if (rst == SF_ERR_OPEN) return 0;           /* no ledger entry -- an ordinary Gen-3 mon */
-  if (rst != SF_OK) {
-    log_line("bank: restore lookup: %s", sf_status_str(rst));
-    return -1;
-  }
-  int count = gbsc_count(buf, len);
-  if (count < 0) { log_line("bank: restore lookup: ledger file failed to validate"); return -1; }
 
   /* BACKLOG #206 review R1: pick loop + RESTORED/PENDING refusals moved to
    * source/xfer_rec.c's xr_restore_pick_basic (see its contract comment) --
-   * behaviour byte-identical, same S150-9 decision 8 tiebreak/order. */
+   * behaviour byte-identical, same S150-9 decision 8 tiebreak/order.
+   * BACKLOG #175c: bounded 2-attempt loop (golden rule 2's provable bound) --
+   * attempt 0 may offer SAVE NOW? on a PENDING pick and re-read once (attempt 1)
+   * so a successful promotion falls through into the SAME restore flow below
+   * instead of a second copy of it; attempt 1 never offers again (decision 9:
+   * only one unpromoted transfer can ever exist, so a re-read that is STILL
+   * PENDING after a verified save-now is a real refusal, not a retry loop). */
   GbscEntry e;
-  XrRestorePick pick = xr_restore_pick_basic(buf, len, count, &e);
+  XrRestorePick pick = XR_PICK_NONE;
+  for (int attempt = 0; attempt < 2; attempt++) {
+    SfStatus rst = xr_open(key, buf, sizeof buf, &len, NULL);
+    if (rst == SF_ERR_OPEN) return 0;         /* no ledger entry -- an ordinary Gen-3 mon */
+    if (rst != SF_OK) {
+      log_line("bank: restore lookup: %s", sf_status_str(rst));
+      return -1;
+    }
+    int count = gbsc_count(buf, len);
+    if (count < 0) { log_line("bank: restore lookup: ledger file failed to validate"); return -1; }
+    pick = xr_restore_pick_basic(buf, len, count, &e);
+    if (pick != XR_PICK_REFUSE_PENDING || attempt == 1) break;
+    log_line("bank: restore: entry still PENDING -- offering SAVE NOW? instead of the flat wall");
+    boxoam_suspend();
+    char l1[64];
+    siprintf(l1, "%s %s", PDNA_XFER_SAVENOW_L1, PDNA_XFER_SAVENOW_L2);
+    bool yes = app_confirm(PDNA_XFER_SAVENOW_TITLE, l1);       /* A = save now, B = no */
+    bool ok  = yes && app_xfer_save_now();  /* the helper shows its own NOTSAVED on failure */
+    boxoam_resume();
+    if (!ok) { snd_deny(); return -2; }     /* the helper/confirm already said why */
+    /* saved -- loop once more to re-read the now-promoted entry (crosses the SAME
+     * xr_open()/xr_restore_pick_basic() this function already used, never a second
+     * implementation). */
+  }
   if (pick == XR_PICK_NONE) return 0;         /* only Gen-3-home entries (or none) -- already exact */
   if (pick == XR_PICK_REFUSE_RESTORED) {
     log_line("bank: restore: entry already RESTORED -- refusing a second restore");
@@ -1246,7 +1267,10 @@ pc_bank_restore_up(const uint8_t g3_rec80[80], uint8_t out_cell80[80]) {
     return -2;   /* review D3's convention: a declined/refused restore, not a genuine failure */
   }
   if (pick == XR_PICK_REFUSE_PENDING) {
-    log_line("bank: restore: entry still PENDING -- the Bank slot is not proven yet");
+    /* BACKLOG #175c: still PENDING after a VERIFIED save-now -- decision 9 says
+     * this cannot be the same entry (one unpromoted transfer at a time), so this
+     * is a genuine second refusal, not the flat wall this lane replaced. */
+    log_line("bank: restore: entry still PENDING after save-now -- refusing");
     boxoam_suspend();
     snd_deny();
     msg_wait(PDNA_XFER_SAVEFIRST_TITLE, UI_WARN, PDNA_XFER_SAVEFIRST_L1, PDNA_XFER_SAVEFIRST_L2);
