@@ -115,7 +115,10 @@ void em_set_nickname(EditMon* e, const char* s);            /* <=10 chars */
  * UTF-8 lead byte (>= 0x80) -- this function is never the right call for plain
  * ASCII. Exported so a caller outside this file (gb_sidecar.c's UP-merge glyph
  * guard) routes through the SAME table gen3's own encoder uses, rather than
- * re-deriving it. */
+ * re-deriving it. `p` must be NUL-terminated within its buffer: on a 0xC3 lead this
+ * reads p[1], which is the NUL for a truncated sequence (no table entry has lo == 0,
+ * so a truncated tail refuses rather than overreading). On false, *adv is untouched;
+ * callers must not advance by it. */
 bool gen3_utf8_storable(const char* p, int* adv);
 void em_set_otname(EditMon* e, const char* s);              /* <=7 chars  */
 void em_set_metloc(EditMon* e, uint8_t loc);                /* caught/met location id      */

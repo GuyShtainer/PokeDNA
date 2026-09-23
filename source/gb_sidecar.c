@@ -557,7 +557,7 @@ static bool gb_nick_text_ok_for_gen3(const char* text, int n) {
       continue;
     }
     int adv = 0;
-    if (!gen3_utf8_storable(&text[i], &adv)) return false;
+    if (!gen3_utf8_storable(&text[i], &adv) || adv <= 0) return false;  /* adv > 0 keeps this walk provably bounded */
     i += adv;
   }
   return true;
