@@ -258,23 +258,56 @@ static bool plant_g3_pair(uint8_t g3_rec80[80], uint8_t cell80[80], uint8_t leve
   return gen12_convert(&view, &tgt, g3_rec80, &notes) == GB12_OK;
 }
 
+/* BACKLOG #246 (#104 Phase 1): plant_g3_pair's own species (dex 152, CHIKORITA) has
+ * NO Gen-1 form at all (Gen 1's own dex tops out at 151) -- fine for plant_g3_pair's
+ * existing callers (bank_plant_xfer_seed_all's own PC-storage fixture never lands on
+ * a Gen-1 save), wrong for this one: BACKLOG #246's shot chain needs to prove a
+ * landing on BOTH Game Boy generations, Red (Gen 1) included, so the planted species
+ * must clear the Gen-1 species floor too. A local, parallel builder -- dex 1
+ * (BULBASAUR), never touching plant_gen2_chikorita/plant_g3_pair (bank_plant_xfer_
+ * seed_all's own fixture stays byte-for-byte unchanged) -- with a single legal move
+ * (Tackle, id 33, valid in every generation) so a Red landing never needs a per-slot
+ * move fill either. */
+#define PLANT_G3_DEX_BULBASAUR 1
+static bool plant_g3_pair_bulbasaur(uint8_t g3_rec80[80], uint8_t cell80[80],
+                                    uint8_t level, uint32_t serial) {
+  GbNewMonSrc src; memset(&src, 0, sizeof src);
+  src.growth = gb_growth_rate(PLANT_G3_DEX_BULBASAUR);
+  src.moves[0] = 33;                                  /* Tackle -- valid everywhere */
+  src.species_name = pk_species_name(PLANT_G3_DEX_BULBASAUR);
+  src.ot_name = "PLANT";
+  src.ot_id = 12345;
+  GbEditMon e;
+  gb_new_mon(GB_GEN2, PLANT_G3_DEX_BULBASAUR, level, &src, serial, &e);
+  bc_pack(&e, 0, BC_ORIGIN_GOLD, 0, serial, cell80);
+
+  GbEditMon home; BcMeta meta;
+  if (!bc_unpack(cell80, &home, &meta)) return false;
+  Gb12Mon view;
+  if (!bc_view(&home, &meta, bc_ident32(cell80), &view)) return false;
+  Gb12Target tgt; memset(&tgt, 0, sizeof tgt);
+  tgt.met_game = 3;   /* Emerald -- this chain's own vehicle */
+  Gb12Notes notes;
+  return gen12_convert(&view, &tgt, g3_rec80, &notes) == GB12_OK;
+}
+
 /* BACKLOG #246 (#104 Phase 1): a PLAIN Gen-3 Bank cell -- NEVER native/GBC1 -- for a
  * DEDICATED box (box 2, wired below in pdna_bank.c's box_load()), not box 0/1: every
  * existing shot chain's pixel captions and counts ("BANK 1  7/30" etc.) key off
  * bank_plant_box0()/bank_plant_box_full()'s own byte-for-byte content, and this lane
- * must not move either. Reuses plant_g3_pair()'s own conversion (a Gen-2 CHIKORITA
- * carried through gen12_convert(), met_game=Emerald) so the planted cell is a real,
- * decodable Gen-3 box record built with no new construction path -- this is the
- * first Bank-visited PDNA_DELTA scenario that has ever needed a PLAIN Gen-3 cell
- * (every earlier plant in this file is a native "GBC1" cell). serial 300 -- distinct
- * from every other planted serial in this file (box0 1..7, box_full 6..30, S150-9
- * xfer {1,2,26,27}, site2 200). */
+ * must not move either. Reuses plant_g3_pair_bulbasaur() above (the SAME shape as
+ * plant_g3_pair's own Gen-2 -> gen12_convert() -> Gen-3 pipeline, just a Gen-1-legal
+ * species) so the planted cell is a real, decodable Gen-3 box record built with no
+ * new construction path -- this is the first Bank-visited PDNA_DELTA scenario that
+ * has ever needed a PLAIN Gen-3 cell (every earlier plant in this file is a native
+ * "GBC1" cell). serial 300 -- distinct from every other planted serial in this file
+ * (box0 1..7, box_full 6..30, S150-9 xfer {1,2,26,27}, site2 200). */
 #define PLANT_G3_SERIAL 300u
 void bank_plant_g3_box(uint8_t* recs) {
   if (!recs) return;
   uint8_t g3_rec80[80], cell80[80];   /* cell80 discarded -- this slot's whole point
                                        * is the plain Gen-3 RECORD, not a native cell */
-  if (!plant_g3_pair(g3_rec80, cell80, 14, PLANT_G3_SERIAL)) { memset(recs, 0, 80); return; }
+  if (!plant_g3_pair_bulbasaur(g3_rec80, cell80, 14, PLANT_G3_SERIAL)) { memset(recs, 0, 80); return; }
   memcpy(recs, g3_rec80, 80);   /* slot 0 of this box */
 }
 
