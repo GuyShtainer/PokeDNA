@@ -8,6 +8,22 @@
 #include "gen3_save.h"    /* gen3_decode_char -- review F4's unmappable-glyph guard  */
 #include "item_map_g2g3.h" /* item_g2_to_g3 -- S150-9 decision 5's abroad_item_dropped */
 
+/* BACKLOG #246 D3 fix: moved verbatim from pdna_main.c's static xr_report_from_gbsc
+ * (BACKLOG #150 S150-9 decision 5) -- same six field names, decision 12's own design.
+ * See xfer_rec.h for why this now lives here instead of staying a pdna_main.c-private
+ * static. */
+void xr_report_from_gbsc(const GbscMergeReport* g, XrMergeReport* x) {
+  memset(x, 0, sizeof *x);
+  x->evolved = g->evolved;
+  x->level_changed = g->level_changed;
+  x->moves_changed = g->moves_changed;
+  x->renamed = g->renamed;
+  x->rename_refused = g->rename_refused;
+  x->gb_item_ignored = g->gb_item_ignored;
+  x->level_from = g->level_from;
+  x->level_to = g->level_to;
+}
+
 /* Same constants gb_sidecar.c's gbsc_key() uses (source/gb_sidecar.h:68-70). */
 uint64_t xr_key_g3(const uint8_t rec80[80]) {
   uint64_t h = 14695981039346656037ULL;   /* FNV-1a-64 offset basis */

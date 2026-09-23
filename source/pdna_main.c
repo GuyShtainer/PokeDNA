@@ -4024,22 +4024,9 @@ static bool app_copy(uint8_t* rec, bool is_party) {
   return false;                                          /* no save change */
 }
 
-/* BACKLOG #150 S150-9 decision 5: the Gen-3-home direction's own report shape
- * (GbscMergeReport) adapted into the shared XrMergeReport the merge screen reads --
- * same six field names (s150-8b decision 12 designed them for exactly this), so this
- * is a straight copy plus the two new S150-9 numbers gb_sidecar.c's
- * merge_species_and_level() already fills. */
-static void xr_report_from_gbsc(const GbscMergeReport* g, XrMergeReport* x) {
-  memset(x, 0, sizeof *x);
-  x->evolved = g->evolved;
-  x->level_changed = g->level_changed;
-  x->moves_changed = g->moves_changed;
-  x->renamed = g->renamed;
-  x->rename_refused = g->rename_refused;
-  x->gb_item_ignored = g->gb_item_ignored;
-  x->level_from = g->level_from;
-  x->level_to = g->level_to;
-}
+/* BACKLOG #246 D3 fix: xr_report_from_gbsc moved to source/xfer_rec.c (non-static) --
+ * source/pdna_gen12.c's own Bank-UP lift needs the identical conversion and cannot
+ * reach a pdna_main.c-private static. Declared in xfer_rec.h, already included here. */
 
 /* BACKLOG #150 S150-9 decision 6: one row of the shared merge screen. A toggle row
  * (KEEP/TAKE, cursor can land on it) or a fixed read-only line -- never both. */

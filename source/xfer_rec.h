@@ -82,6 +82,17 @@ typedef struct {
   bool abroad_item_dropped;   /* S150-9 decision 2 -- xr_merge_down_gb only            */
 } XrMergeReport;
 
+/* BACKLOG #246 D3 fix: the "two-line adapter" this file's own decision-12 comment
+ * above already promised -- gbsc_merge_up_sel's GbscMergeReport (the Gen-3-home/UP
+ * direction) read through the SAME app_xfer_merge_screen (pdna_app.h) every other
+ * direction already shares. Moved here (was a pdna_main.c static, app_paste_gb_lookup's
+ * own private helper) because BACKLOG #246's Bank-UP lift (source/pdna_gen12.c
+ * gb_lift_restore) needs the identical conversion and pdna_gen12.c cannot reach a
+ * pdna_main.c static; xfer_rec.h already includes gb_sidecar.h (GbscMergeReport), so no
+ * new include and no circular-include risk (this header's own note above). A straight
+ * field copy, never lossy: both reports share the same six names by design (decision 12). */
+void xr_report_from_gbsc(const GbscMergeReport* g, XrMergeReport* x);
+
 /* BACKLOG #150 S150-8b, decisions 10 + 11: rebuild the NATIVE cell's Game Boy record
  * (`out`, box-shape) from its own `original80` (via bank_cell.h's bc_unpack -- the
  * home, unedited) folding in whatever changed on the GEN-3 SIDE (`g3_rec80`, the
