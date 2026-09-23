@@ -357,6 +357,12 @@ bool gb_original_summary_open(const uint8_t original80[80], const char* note);
 BankDownResult gb_bank_down_gen3(BoxSource* src, int dst_box, int dst_cell,
                                  const uint8_t cell80[80], const uint8_t dstrec[80],
                                  uint8_t out80[80]);
+/* BACKLOG #246 review F7 fix: OAM CONTRACT -- brackets its own boxoam_suspend()/
+ * resume() internally around every UI it draws (the loss screen, the norom/nomoves
+ * refusals). The caller must NOT wrap this call in its own boxoam_suspend/resume
+ * pair (bare REG_DISPCNT toggles, no depth counter -- a caller bracket plus this
+ * function's own would resume the sprites early, mid-dialog). Opposite contract
+ * from gb_bank_down_g3 below -- see its own doc comment. */
 BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]);
 
 /* BACKLOG #246 (#104 Phase 1): the arm none of the three above cover -- a PLAIN
@@ -368,7 +374,14 @@ BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]);
  * native DOWN at all"); this is the deliberate mirror, reusing gb_paste_hook's old
  * body (deleted, along with its PASTE row, in the same commit) instead. Never
  * returns BANK_DOWN_CONVERTED. See gb_bank_down_g3's own comment in pdna_gen12.c
- * for the full contract. */
+ * for the full contract.
+ *
+ * BACKLOG #246 review F7 fix: OAM CONTRACT -- opens NO boxoam_suspend()/resume()
+ * of its own (pdna_gen12.c review D2's own note); the CALLER must bracket this
+ * entire call in boxoam_suspend()/resume() before every dialog this function may
+ * draw. Opposite contract from gb_bank_down_bridge above, which brackets itself --
+ * the two are declared side by side here precisely so that asymmetry cannot be
+ * missed by a caller that assumes both work the same way. */
 BankDownResult gb_bank_down_g3(int dst_box, const uint8_t cell80[80]);
 
 
