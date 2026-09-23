@@ -103,17 +103,17 @@ Checks:
   (t) merged-tree reviewer: drop_held derives `arm` via xg_bank_down_arm( exactly
       ONCE, above the bank_down_dispatch( call -- the union's original bug class was a
       second derivation in the tail. MUT V adds a second derivation after dispatch.
-  (aa) BACKLOG #150 S150-10: gb_paste_hook (source/pdna_gen12.c) computes bad4 via
-      gb_clip_moves( (which wraps g3gb_moves_ok) BEFORE its first gen3_to_gb_fixed(
-      call. MUT X deletes the gb_clip_moves( call and must be caught. (Re-lettered
+  (aa) BACKLOG #150 S150-10: gb_bank_down_g3 (source/pdna_gen12.c) computes bad4 via
+      gb_rec_moves( (which wraps g3gb_moves_ok) BEFORE its first gen3_to_gb_fixed(
+      call. MUT X deletes the gb_rec_moves( call and must be caught. (Re-lettered
       from (u) at the merge with main/s150-12, which already owns (u)/(v)/(w); s150-9
       is taking (x)/(y)/(z), so (aa)/(ab)/(ac) are the next free ones.)
-  (ab) BACKLOG #150 S150-10 decision 8.7: gb_paste_hook contains the zero-move refusal
+  (ab) BACKLOG #150 S150-10 decision 8.7: gb_bank_down_g3 contains the zero-move refusal
       (`nbad == 4 && nfill == 0`) -- the ONE exception to Guy's "never block" answer,
       for a mon that would otherwise land with no moves at all (Struggles forever, an
       illegal Game Boy record). MUT Y weakens the condition to `false` and must be
       caught. (Re-lettered from (v), same merge.)
-  (ac) BACKLOG #150 S150-10: gb_paste_hook calls gb_paste_fill_moves( (the fill) BEFORE
+  (ac) BACKLOG #150 S150-10: gb_bank_down_g3 calls gb_paste_fill_moves( (the fill) BEFORE
       gb_paste_write( -- a bad slot that reached gen3_to_gb_fixed with a non-NULL bad4
       must always be filled (or the whole paste refused by (ab)) before the record is
       ever written. MUT Z moves the fill call after the write and must be caught.
@@ -125,7 +125,7 @@ Checks:
       re-verify R4 freed this letter from #210's busy-reading check below, which
       re-lettered to (ag)). MUT AD reverts the guard to the bare form and must be
       caught.
-  (ag) BACKLOG #210: gb_paste_hook calls s_busy_reading( BEFORE gb_paste_fill_moves( --
+  (ag) BACKLOG #210: gb_bank_down_g3 calls s_busy_reading( BEFORE gb_paste_fill_moves( --
       the fill's own gb_create_locate_rom() call is CREATE's identical cold, uncached,
       ~185,000-read full-ROM scan (see that function's own MEDIUM-1 comment), and
       CREATE masks the same scan with s_busy_reading() before it runs. A busy call
@@ -135,19 +135,19 @@ Checks:
       re-verify R4, MUT AA -> MUT AG.)
   (aj) BACKLOG #212: gb_bank_down_bridge (source/pdna_gen12.c) calls s_busy_reading(
       BEFORE gb_paste_fill_moves( too -- the bridge shares gb_paste_fill_moves' own
-      cold ROM scan with gb_paste_hook (ag, above). MUT AJ deletes the s_busy_reading(
+      cold ROM scan with gb_bank_down_g3 (ag, above). MUT AJ deletes the s_busy_reading(
       call and must be caught.
   (ah) BACKLOG #212: gb_bank_down_bridge calls gb_paste_fill_moves( (the fill, S150-10's
       own function reused for the bridge) BEFORE gb_paste_legal_screen_ex( (the modal)
       -- the fills must already be in `mon` when the swap-row modal lists them, exactly
-      gb_paste_hook's own step 7/8 order. MUT AH moves the fill call after the modal and
+      gb_bank_down_g3's own step 7/8 order. MUT AH moves the fill call after the modal and
       must be caught. (Re-lettered from (ae) at R4, MUT AB -> MUT AH.)
   (ai) BACKLOG #212: gb_bank_down_bridge calls gb_paste_legal_screen_ex( (the modal)
       BEFORE gbs_insert( (the box write) -- CANCEL must be able to discard `mon`
       before anything lands on the card. MUT AI moves the modal call after the write
       and must be caught. (Re-lettered from (af) at R4, MUT AC -> MUT AI.)
   (ak) BACKLOG #212 re-verify R3: gb_bank_down_bridge contains the SAME `nleft == 0`
-      zero-move refusal (ab) gives gb_paste_hook -- D9's own guard, closing the same
+      zero-move refusal (ab) gives gb_bank_down_g3 -- D9's own guard, closing the same
       Struggle-forever hole for a bridge paste. Mirrors (ab); no MUT of its own here
       (reuses ZERO_MOVE_REFUSAL_RE and (ab)'s own MUT Y demonstration).
 """
@@ -880,10 +880,10 @@ def landed_tail_block(dh_body: list[str]) -> list[str]:
 DST_GEN_LINE_RE = re.compile(r"uint8_t\s+dst_gen\s*=\s*g_ed->s\.gen\s*;")
 INVERTED_GEN_RE = re.compile(r"\?\s*GB_GEN2\s*:\s*GB_GEN1")
 
-# ---- (aa)/(ab)/(ac) BACKLOG #150 S150-10: gb_paste_hook's per-slot move rule (G-H8).
+# ---- (aa)/(ab)/(ac) BACKLOG #150 S150-10: gb_bank_down_g3's per-slot move rule (G-H8).
 # Re-lettered from (u)/(v)/(w) at the merge with main/s150-12, which already owns
 # those letters for its own three checks; s150-9 is taking (x)/(y)/(z).
-# (aa) bad4 is computed (gb_clip_moves -> g3gb_moves_ok) BEFORE the first
+# (aa) bad4 is computed (gb_rec_moves -> g3gb_moves_ok) BEFORE the first
 # gen3_to_gb_fixed( call -- an uninitialised/stale bad4 handed to the converter would
 # either wrongly refuse a legal record or (worse) wrongly empty one it never checked.
 # (ab) the zero-move refusal (decision 8.7, the ONE exception to Guy's "never block")
@@ -894,14 +894,14 @@ INVERTED_GEN_RE = re.compile(r"\?\s*GB_GEN2\s*:\s*GB_GEN1")
 # before the record is ever written; a write reachable without the fill having run
 # would leave a mid-list hole/an un-filled empty slot in the landed record. Shared by
 # the real checks and their MUT X/MUT Y/MUT Z self-mutation demonstrations. ----------
-CLIP_MOVES_RE      = re.compile(r"\bgb_clip_moves\(")
+CLIP_MOVES_RE      = re.compile(r"\bgb_rec_moves\(")
 GEN3_TO_GB_FIXED_RE = re.compile(r"\bgen3_to_gb_fixed\(")
 ZERO_MOVE_REFUSAL_RE = re.compile(r"nleft\s*==\s*0")
 PASTE_FILL_MOVES_RE = re.compile(r"\bgb_paste_fill_moves\(")
 PASTE_WRITE_CALL_RE = re.compile(r"\bgb_paste_write\(")
 
 # ---- (ag) BACKLOG #210: s_busy_reading( must run BEFORE gb_paste_fill_moves( in
-# gb_paste_hook -- the fill's own gb_create_locate_rom() call is a cold, uncached scan
+# gb_bank_down_g3 -- the fill's own gb_create_locate_rom() call is a cold, uncached scan
 # (decision 5's own choice), exactly like CREATE's, which CREATE masks with the same
 # busy screen. Shared by the real check (ag) and its MUT AG self-mutation. (Re-lettered
 # from (ad) at BACKLOG #212's re-verify R4 -- (ad) itself was reassigned to BACKLOG
@@ -912,7 +912,7 @@ BUSY_READING_RE = re.compile(r"\bs_busy_reading\(\)")
 # ---- (aj)/(ah)/(ai)/(ak) BACKLOG #212: gb_bank_down_bridge's own per-slot move rule --
 # the busy screen before the fill's cold ROM scan (aj), the fill before the modal (ah),
 # the modal before the write (ai), and the same `nleft == 0` zero-move refusal (ab)
-# gives gb_paste_hook (ak, BACKLOG #212 re-verify R3). Shared by the real checks and
+# gives gb_bank_down_g3 (ak, BACKLOG #212 re-verify R3). Shared by the real checks and
 # their MUT AJ/MUT AH/MUT AI self-mutation demonstrations (re-lettered from (ae)/(af)
 # at R4; ak has no MUT of its own here -- it reuses ZERO_MOVE_REFUSAL_RE, whose own
 # comment above documents its MUT Y demonstration for (ab)). -------------------------
@@ -1729,21 +1729,21 @@ def main() -> int:
     ok, d = native_summary_mask_facts(gen12_lines)
     check(ok, d)
 
-    # ---- (aa)/(ab)/(ac) BACKLOG #150 S150-10: gb_paste_hook's per-slot move rule --
+    # ---- (aa)/(ab)/(ac) BACKLOG #150 S150-10: gb_bank_down_g3's per-slot move rule --
     # RE-LETTERED from (u)/(v)/(w) (merge with main/s150-12, which already owns those
     # letters; s150-9 is taking (x)/(y)/(z), so (aa)/(ab)/(ac) are the next free
     # ones). ----
-    sh, eh = extract_function(gen12_lines, r"^static bool gb_paste_hook\(")
+    sh, eh = extract_function(gen12_lines, r"^BankDownResult gb_bank_down_g3\(")
     hook_body = gen12_lines[sh:eh]
 
-    # (aa) bad4 is computed (gb_clip_moves) BEFORE the first gen3_to_gb_fixed( call.
+    # (aa) bad4 is computed (gb_rec_moves) BEFORE the first gen3_to_gb_fixed( call.
     ok, msg = gate_before_pattern(hook_body, 0, len(hook_body), CLIP_MOVES_RE,
-                                   GEN3_TO_GB_FIXED_RE, "gb_paste_hook")
+                                   GEN3_TO_GB_FIXED_RE, "gb_bank_down_g3")
     check(ok, msg)
 
     # (ab) the zero-move refusal (decision 8.7, review D1's `nleft == 0` predicate) exists.
     check(any(ZERO_MOVE_REFUSAL_RE.search(ln) for ln in hook_body),
-          "gb_paste_hook: no `nleft == 0` zero-move refusal found in its (comment-stripped) "
+          "gb_bank_down_g3: no `nleft == 0` zero-move refusal found in its (comment-stripped) "
           "body -- a mon that would be WRITTEN with no moves left at all (whether from all "
           "four slots bad, or 1-3 bad slots all out of range with the fill run dry) would "
           "land with no moves (Struggles forever, an illegal Game Boy record)")
@@ -1752,7 +1752,7 @@ def main() -> int:
     # a bad slot that reached gen3_to_gb_fixed non-NULL must always be filled (or the
     # whole paste refused by (ab)) before gb_paste_write ever runs.
     ok, msg = gate_before_pattern(hook_body, 0, len(hook_body), PASTE_FILL_MOVES_RE,
-                                   PASTE_WRITE_CALL_RE, "gb_paste_hook")
+                                   PASTE_WRITE_CALL_RE, "gb_bank_down_g3")
     check(ok, msg)
 
     # ---- (ad) BACKLOG #168a review D2: drop_held_up's ident32-collision scan runs
@@ -1780,7 +1780,7 @@ def main() -> int:
     # fill's own gb_create_locate_rom() call is a cold, uncached, ~185,000-read scan
     # (same as CREATE's, which CREATE masks the same way).
     ok, msg = gate_before_pattern(hook_body, 0, len(hook_body), BUSY_READING_RE,
-                                   PASTE_FILL_MOVES_RE, "gb_paste_hook")
+                                   PASTE_FILL_MOVES_RE, "gb_bank_down_g3")
     check(ok, msg)
 
     # ---- (aj)/(ah)/(ai) BACKLOG #212: gb_bank_down_bridge's own per-slot move rule --
@@ -1791,7 +1791,7 @@ def main() -> int:
 
     # (aj) review D5: s_busy_reading( is called BEFORE gb_paste_fill_moves( in the
     # bridge too -- the bridge shares gb_paste_fill_moves' own cold, uncached,
-    # ~185,000-read ROM scan (see (ag) above, gb_paste_hook's own copy of this check).
+    # ~185,000-read ROM scan (see (ag) above, gb_bank_down_g3's own copy of this check).
     ok, msg = gate_before_pattern(bridge_body, 0, len(bridge_body), BUSY_READING_RE,
                                    PASTE_FILL_MOVES_RE, "gb_bank_down_bridge")
     check(ok, msg)
@@ -1807,13 +1807,13 @@ def main() -> int:
     check(ok, msg)
 
     # (ak) BACKLOG #212 re-verify R3: the same `nleft == 0` zero-move refusal (ab)
-    # requires of gb_paste_hook must exist in gb_bank_down_bridge too -- D9's own
+    # requires of gb_bank_down_g3 must exist in gb_bank_down_bridge too -- D9's own
     # zero-move guard (source/pdna_gen12.c ~:3852-3858), mirroring (ab) above.
     check(any(ZERO_MOVE_REFUSAL_RE.search(ln) for ln in bridge_body),
           "gb_bank_down_bridge: no `nleft == 0` zero-move refusal found in its "
           "(comment-stripped) body -- a bridge paste that would be WRITTEN with no "
           "moves left at all would land with no moves (Struggles forever, an "
-          "illegal Game Boy record), the same D9 hole (ab) closes for gb_paste_hook")
+          "illegal Game Boy record), the same D9 hole (ab) closes for gb_bank_down_g3")
     # ---- (ao)/(ap)/(aq) BACKLOG #174 (S150-8c) D11: the party convert edge --------
     party_s, party_e = extract_function(box_lines, r"^static int party_strip_overlay\(")
     party_body = box_lines[party_s:party_e]
@@ -1867,7 +1867,12 @@ def main() -> int:
         (gen12_lines, r"^static bool gb_release_up_hook\(int box, int slot, const uint8_t cell80\[80\]\) \{",
          "gb_release_up_hook"),
         (box_lines, r"^pc_bank_restore_done\(const uint8_t g3_rec80\[80\]\) \{", "pc_bank_restore_done"),
-        (gen12_lines, r"^static bool __attribute__\(\(noinline\)\) gb_paste_write\(", "gb_paste_write"),
+        # BACKLOG #246: gb_paste_write's signature moved to two lines (the
+        # `static bool __attribute__((noinline))` prefix now sits alone, matching
+        # several other functions in this file) when it grew a third parameter
+        # (orig80) -- the signature line extract_function() must match is now just
+        # the name+params line, not the attribute prefix.
+        (gen12_lines, r"^gb_paste_write\(", "gb_paste_write"),
     ):
         ok, d = invalidate_call_facts(lines, sig_re, label)
         check(ok, d)
@@ -2525,31 +2530,31 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str],
             print(f"  MUT M9 demonstration -- BC_FLAG_COPY dropped from "
                   f"gb_native_summary_open's nf re-pack mask: {detail}")
 
-    # BACKLOG #150 S150-10: gb_paste_hook's per-slot move rule -- MUT X/Y/Z. Checks
+    # BACKLOG #150 S150-10: gb_bank_down_g3's per-slot move rule -- MUT X/Y/Z. Checks
     # RE-LETTERED to (aa)/(ab)/(ac) above (merge with main/s150-12); the MUT letters
     # themselves are untouched (X/Y/Z were already free, no collision).
-    sh, eh = extract_function(gen12_lines, r"^static bool gb_paste_hook\(")
+    sh, eh = extract_function(gen12_lines, r"^BankDownResult gb_bank_down_g3\(")
     hook_body = gen12_lines[sh:eh]
 
-    # MUT X: delete the `gb_clip_moves(` call line on a copy -- (aa) must fail to find
+    # MUT X: delete the `gb_rec_moves(` call line on a copy -- (aa) must fail to find
     # bad4 computed at all, not silently accept an uninitialised bad4.
     clip_i = first_match_line(hook_body, 0, len(hook_body), CLIP_MOVES_RE)
-    check(clip_i is not None, "MUT X: could not locate the real gb_clip_moves( call in "
-                               "gb_paste_hook -- fix this test")
+    check(clip_i is not None, "MUT X: could not locate the real gb_rec_moves( call in "
+                               "gb_bank_down_g3 -- fix this test")
     if clip_i is not None:
         mut_x = [ln for i, ln in enumerate(hook_body) if i != clip_i]
         ok6, detail = gate_before_pattern(mut_x, 0, len(mut_x), CLIP_MOVES_RE,
-                                           GEN3_TO_GB_FIXED_RE, "gb_paste_hook (MUT X)")
-        check(not ok6, f"MUT X (gb_clip_moves( deleted) should have been caught but was "
+                                           GEN3_TO_GB_FIXED_RE, "gb_bank_down_g3 (MUT X)")
+        check(not ok6, f"MUT X (gb_rec_moves( deleted) should have been caught but was "
                         f"not: {detail}")
-        print(f"  MUT X demonstration -- gb_clip_moves( call deleted from gb_paste_hook: {detail}")
+        print(f"  MUT X demonstration -- gb_rec_moves( call deleted from gb_bank_down_g3: {detail}")
 
     # MUT Y: replace the zero-move refusal's condition with a weaker one (decision
     # 8.7's ONE exception to "never block" silently disappears) on a copy -- (ab) must
     # fail to find it.
     zero_i = first_match_line(hook_body, 0, len(hook_body), ZERO_MOVE_REFUSAL_RE)
     check(zero_i is not None, "MUT Y: could not locate the real `nleft == 0` refusal "
-                               "in gb_paste_hook -- fix this test")
+                               "in gb_bank_down_g3 -- fix this test")
     if zero_i is not None:
         mut_y = list(hook_body)
         mut_y[zero_i] = ZERO_MOVE_REFUSAL_RE.sub("false", mut_y[zero_i])
@@ -2557,7 +2562,7 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str],
         check(not ok7, "MUT Y (zero-move refusal condition weakened to `false`) should "
                         "have been caught but was not")
         print("  MUT Y demonstration -- `nleft == 0` replaced with `false` "
-              "in gb_paste_hook: correctly caught")
+              "in gb_bank_down_g3: correctly caught")
 
     # MUT Z: move the `gb_paste_fill_moves(` call line to AFTER `gb_paste_write(` on a
     # copy -- (ac) must fail: a bad slot could reach the write un-filled.
@@ -2571,7 +2576,7 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str],
         fill_line = mut_z.pop(fill_i)
         mut_z.insert(write_i, fill_line)   # the fill's line now sits AFTER the write call
         ok8, detail = gate_before_pattern(mut_z, 0, len(mut_z), PASTE_FILL_MOVES_RE,
-                                           PASTE_WRITE_CALL_RE, "gb_paste_hook (MUT Z)")
+                                           PASTE_WRITE_CALL_RE, "gb_bank_down_g3 (MUT Z)")
         check(not ok8, f"MUT Z (gb_paste_fill_moves( moved after gb_paste_write() should "
                         f"have been caught but was not: {detail}")
         print(f"  MUT Z demonstration -- gb_paste_fill_moves( line moved after "
@@ -2622,15 +2627,15 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str],
     # fail to find any busy call before the fill's cold ROM scan.
     busy_i = first_match_line(hook_body, 0, len(hook_body), BUSY_READING_RE)
     check(busy_i is not None, "MUT AG: could not locate the real s_busy_reading() call "
-                               "in gb_paste_hook -- fix this test")
+                               "in gb_bank_down_g3 -- fix this test")
     if busy_i is not None:
         mut_ag = [ln for i, ln in enumerate(hook_body) if i != busy_i]
         ok12, detail = gate_before_pattern(mut_ag, 0, len(mut_ag), BUSY_READING_RE,
-                                           PASTE_FILL_MOVES_RE, "gb_paste_hook (MUT AG)")
+                                           PASTE_FILL_MOVES_RE, "gb_bank_down_g3 (MUT AG)")
         check(not ok12, f"MUT AG (s_busy_reading() deleted) should have been caught but "
                         f"was not: {detail}")
         print(f"  MUT AG demonstration -- s_busy_reading() call deleted from "
-              f"gb_paste_hook: {detail}")
+              f"gb_bank_down_g3: {detail}")
 
     # BACKLOG #212: gb_bank_down_bridge's own per-slot move rule -- MUT AJ/MUT AH/MUT AI.
     sbr, ebr = extract_function(gen12_lines, r"^BankDownResult gb_bank_down_bridge\(")
