@@ -2181,6 +2181,42 @@ bool __attribute__((noinline)) app_xfer_promote(void) {
   return true;
 }
 
+/* BACKLOG #175 (S150-8d): run the ONE verified commit that promotes a pending
+ * native->Gen-3 transfer, mid-session, from wherever the user is standing. This is
+ * flush_on_exit()'s own success arm, verbatim, so the tree has ONE promotion+flush
+ * chain and not two: app_commit_pc() (a WHOLE-FILE verified write that folds the
+ * staged SaveBlock1 party edits and the dirty PC, app_save_finalize) -> on success
+ * app_xfer_promote() -> pdna_bank_flush_deletions(), reporting `kept` exactly as the
+ * exit flush does. On FAILURE: app_xfer_pending_drop() (NEVER _undo -- the write may
+ * have landed unconfirmed, #176 review D2) + PDNA_XFER_NOTSAVED_*, and false.
+ * Returns true iff the save was verified. */
+bool app_xfer_save_now(void) {
+  bool ok;
+  if (app_commit_pc()) {
+    app_xfer_promote();                  /* decision 9: the PC is now verified on disk */
+    int kept = pdna_bank_flush_deletions();
+    if (kept) {
+      char l1[48]; siprintf(l1, PDNA_XFER_FLUSHFAIL_L1, kept);
+      msg_wait(PDNA_XFER_FLUSHFAIL_TITLE, UI_WARN, l1, PDNA_XFER_FLUSHFAIL_L2);
+    }
+    log_line("xfer: save-now: committed, entry promoted");
+    ok = true;
+  } else {
+    /* BACKLOG #150 S150-11 decision 11(i)/#176 (review D2): app_commit_pc() returning
+     * false does NOT mean nothing landed -- app_save_finalize()'s SF_WHERE_TARGET
+     * branch returns false for a write that IS on the card, only unconfirmed. Calling
+     * app_xfer_pending_undo() here would REMOVE the ledger's PENDING entry while the
+     * Gen-3 copy may have actually landed -> an uncollectable duplicate. Only clear
+     * the RAM key (app_xfer_pending_drop()): the TRANSFERS screen's own XRC_PENDING_*
+     * rows still see the ledger entry either way and can collect/reconcile it later. */
+    app_xfer_pending_drop();
+    msg_wait(PDNA_XFER_NOTSAVED_TITLE, UI_WARN, PDNA_XFER_NOTSAVED_L1, PDNA_XFER_NOTSAVED_L2);
+    log_line("xfer: save-now: app_commit_pc failed -- pending key dropped");
+    ok = false;
+  }
+  return ok;
+}
+
 /* Best-effort undo of a PENDING entry the user just declined to save (the transfer
  * never happened, so the entry must not linger -- an orphan XR_PENDING entry can
  * never be collected, S11.18 Q6). Same shape as gb_paste_sidecar_undo's own
@@ -9672,29 +9708,11 @@ static void flush_on_exit(void) {
      * (a Bank->PC move — the multi-select chunk amplifies this to a whole box at once). Flush the
      * deletions ONLY after the destination (PC) is verified on disk -> worst case a recoverable
      * duplicate (mons kept in the Bank), never a loss. g_pc_dirty stays set on failure, so the
-     * moves are still pending and can be retried. */
-    if (app_commit_pc()) {
-      app_xfer_promote();                  /* decision 9: the PC is now verified on disk */
-      int kept = pdna_bank_flush_deletions();
-      if (kept) {
-        char l1[48]; siprintf(l1, PDNA_XFER_FLUSHFAIL_L1, kept);
-        msg_wait(PDNA_XFER_FLUSHFAIL_TITLE, UI_WARN, l1, PDNA_XFER_FLUSHFAIL_L2);
-      }
-    } else {
-      /* BACKLOG #150 S150-11 decision 11(i)/#176 (review D2): app_commit_pc() returning
-       * false does NOT mean nothing landed -- app_save_finalize()'s SF_WHERE_TARGET
-       * branch (~:2028) returns false for a write that IS on the card, only unconfirmed.
-       * Calling app_xfer_pending_undo() here would REMOVE the ledger's PENDING entry
-       * while the Gen-3 copy may have actually landed -> an uncollectable duplicate (the
-       * record describing the transfer is gone, but the copy exists). Only clear the RAM
-       * key (app_xfer_pending_drop()): the TRANSFERS screen's own XRC_PENDING_* rows
-       * still see the ledger entry either way and can collect/reconcile it later. Without
-       * clearing the key at all, g_xd_key stayed set for the rest of the boot and every
-       * later native->Gen-3 drop refused with SAVE FIRST (pdna_gen12.c's xfer_down_write
-       * gate) -- the bug #176 names. */
-      app_xfer_pending_drop();
-      msg_wait(PDNA_XFER_NOTSAVED_TITLE, UI_WARN, PDNA_XFER_NOTSAVED_L1, PDNA_XFER_NOTSAVED_L2);
-    }
+     * moves are still pending and can be retried.
+     * BACKLOG #175 (S150-8d): this whole success/failure pair is now app_xfer_save_now(),
+     * factored out so the tree has ONE promotion+flush chain and not two -- a reviewer can
+     * diff this call against the helper's own body rather than two hand-kept copies. */
+    (void)app_xfer_save_now();
   } else {
     gen3_read_pc_storage(g_save, g_vinfo.slot, g_pc);   /* revert PC moves */
     g_pc_dirty = false; g_sb1_deferred = false;          /* drop staged Day-Care (disk untouched) */

@@ -459,6 +459,12 @@ void app_xv_cache_invalidate(void);
  * log lines). Called once from pdna_bank_show(). */
 void app_xfer_reconcile_bank_open(void);
 void app_xfer_pending_undo(void);
+/* BACKLOG #175 (S150-8d): flush_on_exit()'s own success arm, factored -- the ONE
+ * verified commit that promotes a pending native->Gen-3 transfer, callable mid-
+ * session (not only at exit). app_commit_pc() -> on success app_xfer_promote() ->
+ * pdna_bank_flush_deletions(); on failure app_xfer_pending_drop() (never _undo,
+ * #176 review D2) + PDNA_XFER_NOTSAVED_*. Returns true iff the save was verified. */
+bool app_xfer_save_now(void);
 
 /* A mon carried Bank->PC is deleted from the bank only at the save, but must LOOK gone at once.
  * hide_pending blanks those slots in a DECODED box (display only); slot_pending says a slot still
