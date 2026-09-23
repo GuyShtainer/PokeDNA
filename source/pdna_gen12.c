@@ -2071,6 +2071,8 @@ static bool gb_release_hook(uint8_t* rec80) {
  * is marked RESTORED later, by the release side, after gb_persist() lands, decision
  * 9's own ordering). Uses g_ed->sidecar, the session's own 1042-B EWRAM scratch
  * (the same buffer 19 other call sites already borrow, none live during a lift). */
+static int gb_lift_restore_g3home(const GbEditMon* mon, uint8_t out80[80]);   /* #246 D3, defined below */
+
 static int __attribute__((noinline))
 gb_lift_restore(const GbEditMon* mon, uint8_t out80[80]) {
   if (!app_can_edit()) { log_line("gen12: lift restore refused: cart is not writable"); return -1; }
@@ -2124,7 +2126,20 @@ gb_lift_restore(const GbEditMon* mon, uint8_t out80[80]) {
     start = i + 1;
   }
   found = (species_match >= 0) ? species_match : first;
-  if (found < 0) return 0;   /* only Gen-3-home entries (or none) -- not this edge's job */
+  if (found < 0) {
+    /* BACKLOG #246 review D3 (BLOCKING fix, #104 S7's own acceptance: "Emerald ->
+     * Bank -> Red AND BACK, byte-identical"): no XR_KIND_NATIVE_HOME entry -- but a
+     * #246-D down-landing (gb_paste_write, via gb_bank_down_g3) writes an
+     * XR_KIND_G3_HOME entry, which this loop's `want_kind` never searched for.
+     * Before this fix a #246 landing was findable by nothing reachable from the box
+     * screen: the clipboard route (app_paste_gb_merge) is closed by BACKLOG #239's
+     * per-view_save clipboard clear, and xfer_direct_allowed() is false -- see
+     * docs/briefs/g3-to-gb-arm-review.md R3/D3 and /tmp/r246/rt_proof.c ROUTE A,
+     * which failed before this fix and is mirrored by
+     * tests/host_xfer_roundtrip_test.c's own new #246 section. Second arm, not a
+     * replacement -- the native search above is unchanged. */
+    return gb_lift_restore_g3home(mon, out80);
+  }
 
   if (!gbsc_get(g_ed->sidecar, len, found, &e)) return -1;
 
@@ -2172,6 +2187,107 @@ gb_lift_restore(const GbEditMon* mon, uint8_t out80[80]) {
     return -1;
   }
   return 1;   /* the entry is NOT touched here -- decision 9 marks it, after gb_persist() */
+}
+
+/* BACKLOG #246 review D3 (BLOCKING fix -- the phase's own return trip, #104 S7's
+ * acceptance criterion): gb_lift_restore's second arm, reached only when the native
+ * search above found NOTHING. A #246 down-landing (gb_bank_down_g3 -> gb_paste_write)
+ * writes an XR_KIND_G3_HOME entry whose original80 IS the Bank cell's own true bytes
+ * (review R3, verified end to end by /tmp/r246/rt_proof.c and this file's own
+ * tests/host_xfer_roundtrip_test.c section). Design-correct fix, per the orchestrator's
+ * decision: resolve through gbsc_merge_up_sel (the SAME core app_paste_gb_lookup/
+ * app_paste_gb_commit already use for the Gen-3 PC PASTE direction, source/pdna_main.c)
+ * and hand back a PLAIN Gen-3 record -- never xr_merge_down_gb_sel + bank_restore_
+ * from_entry_gb, which are native-cell-only (G-F4/G-H6's own belt: bc_is_native(e->
+ * original80) is REQUIRED by gbsc_merge_up_sel to be false, or it refuses outright).
+ * out80 therefore comes back with bc_is_native(out80) == false, by construction
+ * (gen3_edit_commit never writes the GBC1 tag) -- exactly what a Bank cell always was
+ * before BACKLOG #150's native-cell feature existed; gb_release_g3home below (the
+ * release-side twin, gb_release_up_hook) is what makes THAT half of the round trip
+ * safe to delete-and-consume. */
+static int
+gb_lift_restore_g3home(const GbEditMon* mon, uint8_t out80[80]) {
+  uint8_t dv4[4] = {
+    gb_get_dv(mon, GB_ATK), gb_get_dv(mon, GB_DEF),
+    gb_get_dv(mon, GB_SPE), gb_get_dv(mon, GB_SPC)
+  };
+  uint64_t key = gbsc_key(mon->gen, gb_get_otid(mon), dv4, mon->otname);
+
+  uint32_t len = 0;
+  SfStatus rst = xr_open(key, g_ed->sidecar, GBSC_FILE_MAX, &len, NULL);
+  if (rst == SF_ERR_OPEN) return 0;   /* no ledger entry at all */
+  if (rst != SF_OK) {
+    log_line("gen12: lift restore(g3home): xr_open failed (%s)", sf_status_str(rst));
+    msg_wait(PDNA_XFERREC_TITLE, UI_WARN, PDNA_XFERREC_L1, PDNA_XFERREC_L2);
+    return -2;
+  }
+  int count = gbsc_count(g_ed->sidecar, len);
+  if (count < 0) {
+    log_line("gen12: lift restore(g3home): ledger file failed to validate");
+    msg_wait(PDNA_XFERREC_TITLE, UI_WARN, PDNA_XFERREC_L1, PDNA_XFERREC_L2);
+    return -2;
+  }
+
+  /* Same tiebreak as gb_lift_restore's own native search: prefer the entry whose
+   * species_written matches the mon's CURRENT dex, fall back to the first match. */
+  int first = -1, species_match = -1, start = 0;
+  uint16_t nowdex = gb_get_species_dex(mon);
+  for (int guard = 0; guard <= GBSC_MAX_ENTRIES; guard++) {
+    int i = gbsc_find(g_ed->sidecar, len, mon, start, /*include_claimed*/true, XR_KIND_G3_HOME);
+    if (i < 0) break;
+    if (first < 0) first = i;
+    GbscEntry cand;
+    if (gbsc_get(g_ed->sidecar, len, i, &cand) && cand.species_written == nowdex) {
+      species_match = i;
+      break;
+    }
+    start = i + 1;
+  }
+  int found = (species_match >= 0) ? species_match : first;
+  if (found < 0) return 0;   /* neither kind matched -- an ordinary native lift, nothing to restore */
+
+  GbscEntry e;
+  if (!gbsc_get(g_ed->sidecar, len, found, &e)) return -1;
+
+  /* Same state gate as the native arm (decision 8, mirrored). */
+  if (e.state == XR_STATE_RESTORED) {
+    log_line("gen12: lift restore(g3home): entry already RESTORED -- refusing a second restore");
+    snd_deny();
+    msg_wait(PDNA_XFERDUP_TITLE, UI_WARN, PDNA_XFERDUP_L1, PDNA_XFERDUP_L2);
+    return -2;
+  }
+  if (e.state == XR_STATE_PENDING) {
+    log_line("gen12: lift restore(g3home): entry still PENDING -- refusing (honest SAVE FIRST wall)");
+    snd_deny();
+    msg_wait(PDNA_XFER_SAVEFIRST_TITLE, UI_WARN, PDNA_XFER_SAVEFIRST_L1, PDNA_XFER_SAVEFIRST_L2);
+    return -2;
+  }
+
+  /* probe with accept=0 first (report only), same shape as the native arm. */
+  GbscMergeReport rep;
+  uint8_t probe80[80];
+  if (!gbsc_merge_up_sel(&e, mon, 0, probe80, &rep)) {
+    log_line("gen12: lift restore(g3home): gbsc_merge_up_sel probe failed");
+    return -1;
+  }
+  XrMergeReport xrep;
+  xr_report_from_gbsc(&rep, &xrep);
+  uint8_t accept = 0;
+  if (!app_xfer_merge_screen(&xrep, XR_MERGE_UP, &accept)) return -2;   /* B: nothing spent */
+
+  if (!gbsc_merge_up_sel(&e, mon, accept, out80, NULL)) {
+    log_line("gen12: lift restore(g3home): gbsc_merge_up_sel commit failed");
+    return -1;
+  }
+  /* G-H6 twin: gbsc_merge_up_sel already refuses a native original80 internally, but
+   * a belt check on ITS OWN output costs nothing and matches app_paste_gb_commit's
+   * own second independent guard (source/pdna_main.c) -- a native cell must never
+   * reach the Bank through this arm even if the belt above it were ever bypassed. */
+  if (bc_is_native(out80)) {
+    log_line("gen12: lift restore(g3home): merged80 is a native cell -- refusing");
+    return -1;
+  }
+  return 1;   /* the entry is NOT touched here -- gb_release_g3home consumes it, after gb_persist() */
 }
 
 /* BACKLOG #150 S150-12 decision 4: gb_lift_up_hook's (BACKLOG #150 S150-4 decision
@@ -2386,6 +2502,79 @@ static int gb_lift_copy_hook(int box, int slot, uint8_t* out80) {
   return gb_lift_pack(box, slot, out80, true);
 }
 
+/* BACKLOG #246 review D3 (BLOCKING fix): gb_release_up_hook's own re-verify for the
+ * G3_HOME arm. `cell80` (the just-committed Bank cell, gb_lift_restore_g3home's out80)
+ * is a PLAIN Gen-3 record, not a native "GBC1" cell -- bc_unpack cannot verify it
+ * against `have` (it is not a repack of `have` at all, by construction: it IS the
+ * restored Gen-3 original, structurally unrelated in shape to a Game Boy record).
+ * The bystander check for THIS arm is therefore the identical lookup gb_lift_restore_
+ * g3home itself just ran: `have`, freshly reloaded from the card at (box, slot), must
+ * still resolve to a live XR_KIND_G3_HOME entry -- a genuine bystander never does. On
+ * a match: delete the Game Boy record, persist, then CONSUME the entry (gbsc_remove,
+ * not gbsc_set_state(RESTORED) -- a restored Gen-3 original is fully spent, no KEEP
+ * BOTH option exists for it, the same shape app_paste_gb_commit's own PASTE consumer
+ * already uses, source/pdna_main.c). Best-effort ledger cleanup, same reasoning as
+ * every sibling in this file: the card already has the correct bytes either way, so a
+ * bookkeeping failure here only logs. */
+static bool __attribute__((noinline))
+gb_release_g3home(int box, int slot, const GbEditMon* have) {
+  GbSession* s = &g_ed->s;
+  uint8_t dv4[4] = {
+    gb_get_dv(have, GB_ATK), gb_get_dv(have, GB_DEF),
+    gb_get_dv(have, GB_SPE), gb_get_dv(have, GB_SPC)
+  };
+  uint64_t key = gbsc_key(have->gen, gb_get_otid(have), dv4, have->otname);
+
+  uint32_t len = 0;
+  char path[GBSC_PATH_MAX];
+  SfStatus rst = xr_open(key, g_ed->sidecar, GBSC_FILE_MAX, &len, path);
+  if (rst != SF_OK) { gb_rollback(); return false; }
+  int count = gbsc_count(g_ed->sidecar, len);
+  if (count < 0) { gb_rollback(); return false; }
+
+  uint16_t nowdex = gb_get_species_dex(have);
+  int first = -1, species_match = -1, start = 0;
+  for (int guard = 0; guard <= GBSC_MAX_ENTRIES; guard++) {
+    int i = gbsc_find(g_ed->sidecar, len, have, start, /*include_claimed*/true, XR_KIND_G3_HOME);
+    if (i < 0) break;
+    if (first < 0) first = i;
+    GbscEntry cand;
+    if (gbsc_get(g_ed->sidecar, len, i, &cand) && cand.species_written == nowdex) {
+      species_match = i;
+      break;
+    }
+    start = i + 1;
+  }
+  int idx = (species_match >= 0) ? species_match : first;
+  if (idx < 0) {
+    gb_rollback();   /* a genuine bystander -- (box, slot) no longer matches ANY live G3_HOME entry */
+    log_line("gen12: xferup(g3home) box %d slot %d: bystander mismatch, refusing delete", box, slot);
+    return false;
+  }
+
+  GbsStatus st = gbs_delete(s, box, slot, g_ed->list);
+  if (st != GBS_OK) {
+    gb_rollback();
+    log_line("gen12: xferup(g3home) box %d slot %d refused: %s", box, slot, gbs_status_text(st));
+    return false;
+  }
+  if (!gb_persist("xferup-g3home")) return false;   /* gb_persist reports its own refusal */
+
+  rmbl_pause();
+  bool removed = (gbsc_remove(g_ed->sidecar, &len, idx) == 0);
+  bool sidecar_ok = removed &&
+                    ((gbsc_count(g_ed->sidecar, len) == 0)
+                       ? (f_unlink(path) == FR_OK)
+                       : (sf_write_verified(path, g_ed->sidecar, len) == SF_OK));
+  rmbl_resume();
+  if (!sidecar_ok) {
+    log_line("gen12: xferup(g3home) box %d slot %d: sidecar entry not consumed after restore", box, slot);
+  } else {
+    app_xv_cache_invalidate();   /* BACKLOG #213: a real ledger write */
+  }
+  return true;   /* the Game Boy card already lost the mon either way -- best-effort ledger cleanup only */
+}
+
 /* BoxXferOps.release_up (BACKLOG #150 S150-4 decision 7): RE-VERIFIES before it
  * deletes. Between the lift and the drop the user walked to another screen; deleting
  * (box, slot) blind could delete a bystander -- so this reloads the slot and refuses
@@ -2394,7 +2583,10 @@ static int gb_lift_copy_hook(int box, int slot, uint8_t* out80) {
  * (rec[0..meta.rec_len), otname, nick) since bc_unpack() hands back a whole
  * GbEditMon to compare against, not just an 8-byte identity span. Any mismatch or
  * refusal -> gb_rollback() + log, return false -- the caller (drop_held) shows the
- * duplicate message; the Bank already has the mon either way. */
+ * duplicate message; the Bank already has the mon either way.
+ * BACKLOG #246 review D3: cell80 is not ALWAYS a native cell any more -- a G3_HOME
+ * restore (gb_lift_restore_g3home) hands back a plain Gen-3 record, bc_is_native()
+ * false by construction; that arm's own re-verify is gb_release_g3home above. */
 static bool gb_release_up_hook(int box, int slot, const uint8_t cell80[80]) {
   if (!g_ed) return false;
   if (!app_can_edit()) return false;
@@ -2406,6 +2598,8 @@ static bool gb_release_up_hook(int box, int slot, const uint8_t cell80[80]) {
 
   GbEditMon have;
   if (!gb_load(&have, s->gen, g_ed->list, box, slot)) { gb_rollback(); return false; }
+
+  if (!bc_is_native(cell80)) return gb_release_g3home(box, slot, &have);
 
   GbEditMon want; BcMeta meta;
   if (!bc_unpack(cell80, &want, &meta)) { gb_rollback(); return false; }
