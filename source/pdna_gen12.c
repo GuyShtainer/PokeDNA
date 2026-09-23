@@ -22,6 +22,45 @@
 #include "evolutions.h"    /* pk_evo_floor/pk_evo_min_level -- BACKLOG #104 R1 D3 */
 #include "gb12_render.h"  /* the display ladder: GB_SHOW_*, gb12_presentation, gb12_render_rec */
 #include "bank_cell.h"    /* bc_unpack -- gb_native_summary_open (BACKLOG #150 S150-2 step 5) */
+#include "pdna_layout.h"  /* PDNA_SIDECAR_LOSS_ITEMSECRET -- loss_item_text below, host-testable */
+
+/* F3/F5 (xfer-items fix pass): loss_item_text lives here, ABOVE the PDNA_GEN12_HOST
+ * guard, on purpose -- it is pure C (pk_item_name + strcpy/strcat, no tonc, no
+ * siprintf/newlib) despite building a string gb_paste_loss_screen (below the guard)
+ * draws, so tests/host_gen12_test.c can call it directly instead of re-deriving its
+ * logic. F5 also rewrote it off siprintf: every format string here has exactly one
+ * %s, so strcpy/strcat needs no formatting machinery, and gb_paste_loss_screen's own
+ * stack (tools/stack_budget.py) drops the ~800 B _svfiprintf_r/newlib pulled onto a
+ * draw path by putting the first siprintf on that chain. cap>=48 always (see the
+ * comment on the switch below for the measured 39-byte worst case); a caller that
+ * cannot afford 48 gets an empty string, never a truncated write. */
+void loss_item_text(const Gen3ToGbLoss* loss, char* out, int cap) {
+  const char* name = (loss->g3_held_item != 0) ? pk_item_name(loss->g3_held_item) : "item";
+  const bool sid = loss->secret_id;
+  if (cap < 48) { out[0] = 0; return; }
+  switch (loss->item_outcome) {
+    case G3GB_ITEM_HELD:
+      if (sid) { strcpy(out, name); strcat(out, " travels + Secret ID"); }
+      else     { strcpy(out, "Item: "); strcat(out, name); strcat(out, " travels"); }
+      return;
+    case G3GB_ITEM_BAG:
+      if (sid) { strcpy(out, name); strcat(out, " -> bag + Secret ID"); }
+      else     { strcpy(out, "Item: "); strcat(out, name); strcat(out, " -> bag"); }
+      return;
+    case G3GB_ITEM_PC:
+      if (sid) { strcpy(out, name); strcat(out, " -> item PC + Secret ID"); }
+      else     { strcpy(out, "Item: "); strcat(out, name); strcat(out, " -> item PC"); }
+      return;
+    case G3GB_ITEM_STAYS:
+      if (sid) { strcpy(out, name); strcat(out, " stays + Secret ID"); }
+      else     { strcpy(out, "Item: "); strcat(out, name); strcat(out, " stays behind"); }
+      return;
+    case G3GB_ITEM_NONE:
+    default:
+      strcpy(out, PDNA_SIDECAR_LOSS_ITEMSECRET);
+      return;
+  }
+}
 
 /* ================================================================= pure core */
 
@@ -735,6 +774,8 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "xfer_rec.h"      /* BACKLOG #150 S150-8: xr_key_g3/xr_game_item_mask/xr_time_capsule_block */
 #include "bank_restore.h"  /* BACKLOG #150 S150-9 decision 10: bank_restore_from_entry_gb            */
 #include "item_map_g2g3.h" /* BACKLOG #150 S150-8: item_g2_to_g3 (bdc_convert_*_core's own use) */
+#include "item_map_g1g2.h" /* BACKLOG #249: item_g2_to_g1 (g3gb_item_ladder's own use)  */
+#include "gb_bag.h"        /* BACKLOG #249: gbb_read/gbb_pocket_cap/gbb_insert_and_write */
 #include "rom_gbsprite.h"  /* S5-C: locates BaseStats in the user's own Gen-1 ROM      */
 #include "rom_gblearn.h"   /* BACKLOG #50: level-up learnsets + min-level for CREATE   */
 #include "gb_new_mon.h"    /* BACKLOG #50: gb_new_mon/gb_new_mon_g1_moves for CREATE   */
@@ -3189,6 +3230,20 @@ static const char* loss_name_text(const Gen3ToGbLoss* loss) {
   if (loss->nick_lossy && !loss->ot_lossy)   return PDNA_SIDECAR_LOSS_NICKNAME;
   return PDNA_SIDECAR_LOSS_NAME;
 }
+
+/* BACKLOG #248/#249: the item row's text, five possible shapes (case A HELD / B BAG /
+ * C PC / D-E STAYS / no item at all). loss_item_text() itself now lives at the top of
+ * this file, ABOVE the PDNA_GEN12_HOST guard (F3/F5, xfer-items fix pass) -- see the
+ * comment there for why. */
+
+/* BACKLOG #247: exp_floored shares the EVS row's slot (same reasoning as the item row
+ * above -- zero spare row budget). "EVs rescaled" alone when only evs_scaled fired,
+ * the new EXP text alone when only exp_floored fired, a combined line when both did. */
+static const char* loss_evs_text(const Gen3ToGbLoss* loss) {
+  if (loss->evs_scaled && loss->exp_floored) return PDNA_SIDECAR_LOSS_EVS_EXP;
+  if (loss->exp_floored)                     return PDNA_SIDECAR_LOSS_EXP_FLOORED;
+  return PDNA_SIDECAR_LOSS_EVS;
+}
 /* BACKLOG #150 S150-12 decision 10 (folds BACKLOG #180): the shared PASTE/bridge
  * screen's footer, by which caller. PASTE keeps the original three lines verbatim
  * (there really is a ledger entry the PASTE route can restore from); BRIDGE gets
@@ -3209,8 +3264,12 @@ static bool __attribute__((noinline)) gb_paste_loss_screen(const Gen3ToGbLoss* l
   y = loss_row(y, loss->ribbons || loss->contest,     PDNA_SIDECAR_LOSS_RIBBONS);
   y = loss_row(y, loss->met_data || loss->ball,       PDNA_SIDECAR_LOSS_METDATA);
   y = loss_row(y, loss->ivs_halved,                   PDNA_SIDECAR_LOSS_IVS);
-  y = loss_row(y, loss->evs_scaled,                   PDNA_SIDECAR_LOSS_EVS);
-  y = loss_row(y, loss->item_dropped || loss->secret_id, PDNA_SIDECAR_LOSS_ITEMSECRET);
+  y = loss_row(y, loss->evs_scaled || loss->exp_floored, loss_evs_text(loss));
+  {
+    char item_row[48];
+    loss_item_text(loss, item_row, (int)sizeof item_row);
+    y = loss_row(y, g3gb_loss_needs_item_row(loss), item_row);
+  }
   /* S5-B review fix #4: two of Gen3ToGbLoss's 17 flags had no row at all before this --
    * merged with item/secret_id above (row-count-neutral: was 2 separate rows, now 1 +
    * this 1, still 10 conditional rows total, matching the screen's own 2px-slack fit). */
@@ -3368,9 +3427,13 @@ static void gb_paste_sidecar_undo(const char* path) {
  * the 48-byte path together are exactly the kind of "sidecar I/O" weight the S5-B
  * brief calls out as needing its own frame, same reasoning as gb_persist's
  * bak[SF_PATH_MAX] split. `orig80` is the TRUE Gen-3 original -- the clipboard
- * record before #246, the Bank cell since -- gbsc_entry_from()'s own original80. */
+ * record before #246, the Bank cell since -- gbsc_entry_from()'s own original80.
+ * `item_outcome`/`g1_item` (BACKLOG #249): NONE/HELD/STAYS never touch the bag here
+ * (HELD is already inside `mon` by the time this runs, gen3_to_gb.c's own job);
+ * only BAG/PC insert `g1_item` into the resident image, see below. */
 static bool __attribute__((noinline))
-gb_paste_write(const GbEditMon* mon, int box, const uint8_t orig80[80]) {
+gb_paste_write(const GbEditMon* mon, int box, const uint8_t orig80[80],
+               G3GbItemOutcome item_outcome, uint8_t g1_item) {
   uint8_t dv4[4] = {
     gb_get_dv(mon, GB_ATK), gb_get_dv(mon, GB_DEF),
     gb_get_dv(mon, GB_SPE), gb_get_dv(mon, GB_SPC)
@@ -3502,6 +3565,28 @@ gb_paste_write(const GbEditMon* mon, int box, const uint8_t orig80[80]) {
     snd_error();
     msg_wait(PDNA_SIDECAR_XFER_REFUSED_TITLE, UI_WARN, gbs_status_text(ist), PDNA_GBEDIT_UNCHANGED_L2);
     return false;
+  }
+
+  /* BACKLOG #249 cases B/C: the item lands in the SAME resident image gbs_insert()
+   * just wrote the mon into, BEFORE gb_persist()'s one whole-image verified write
+   * below -- one transaction, same rollback machinery as the gbs_insert refusal
+   * just above. item_outcome is only ever BAG/PC here for a Gen-1 target whose
+   * caller (gb_bank_down_g3) already confirmed room a moment ago; gbb_insert_and_write
+   * re-checks for real (never trusts a stale decision) and refuses cleanly if the
+   * bag changed out from under it between that check and this write. */
+  if (item_outcome == G3GB_ITEM_BAG || item_outcome == G3GB_ITEM_PC) {
+    GbBagPocket pocket = (item_outcome == G3GB_ITEM_BAG) ? GBB_POCKET_ITEMS : GBB_POCKET_PC;
+    GbBagOpStatus bst = gbb_insert_and_write(&g_ed->s, pocket, g1_item, 1);
+    if (bst != GBB_OK) {
+      gb_rollback();
+      log_line("gen12: paste item insert (id 0x%02X, pocket %d) refused: %d",
+               g1_item, (int)pocket, (int)bst);
+      gb_paste_sidecar_undo(path);
+      snd_error();
+      msg_wait(PDNA_SIDECAR_XFER_REFUSED_TITLE, UI_WARN, "Item could not be placed",
+               PDNA_GBEDIT_UNCHANGED_L2);
+      return false;
+    }
   }
 
   log_line("=== gb paste -> %s box %d slot %d ===", g_ed->path, box, newslot);
@@ -4632,6 +4717,34 @@ BankDownResult gb_bank_down_g3(int dst_box, const uint8_t cell80[80]) {
     return BANK_DOWN_REFUSED;
   }
 
+  /* BACKLOG #249 cases B/C/D/E: gen3_to_gb_fixed() (a pure module with no session)
+   * can only ever leave loss.item_outcome at NONE/HELD/STAYS -- for a Gen-1 target
+   * with an item that STAYS, this is the ONE place that knows both the destination
+   * save is OPEN right now (g_ed->s) and which item wants a home, so the ladder is
+   * decided here, once, off a live bag read -- gb_paste_write() re-checks for real
+   * at commit time (a decision can go stale between here and the A=transfer press),
+   * this is only what the loss screen below shows the user. */
+  uint8_t g1_item = 0;
+  if (g_ed->s.gen == GB_GEN1 && loss.item_outcome == G3GB_ITEM_STAYS && loss.g3_held_item != 0) {
+    GbBag bag;
+    if (gbb_read(&g_ed->s, &bag)) {
+      /* F2 fix: g3gb_item_ladder()'s own room test is `items_count < items_cap`, which
+       * knows nothing about stack depth -- gbb_insert() MERGES, so a pocket at its
+       * entry cap can still accept a matching stack below 99, and a pocket with free
+       * slots refuses a stack already at 99. gbb_has_room_for() is the real predicate;
+       * feed it in as an EFFECTIVE count/cap pair (0 of cap = room, cap of cap = full)
+       * so g3gb_item_ladder's own signature and every test against it stay untouched. */
+      uint8_t want = g3gb_item_to_gb1(loss.g3_held_item);
+      int icap = gbb_pocket_cap(GBF_G_RED, GBB_POCKET_ITEMS);
+      int pcap = gbb_pocket_cap(GBF_G_RED, GBB_POCKET_PC);
+      loss.item_outcome = g3gb_item_ladder(
+          GB_GEN1, loss.g3_held_item,
+          gbb_has_room_for(GBF_G_RED, &bag, GBB_POCKET_ITEMS, want) ? 0 : icap, icap,
+          gbb_has_room_for(GBF_G_RED, &bag, GBB_POCKET_PC,    want) ? 0 : pcap, pcap,
+          &g1_item);
+    }
+  }
+
   /* LOSS_FOOT_BRIDGE, not LOSS_FOOT_PASTE: the KEPT rows ("Kept in /PokeDNA/xfer;
    * restored when it comes back.") stay -- the sidecar entry IS written, same as
    * PASTE always did -- but the footer's third line must say the Bank slot EMPTIES,
@@ -4720,7 +4833,7 @@ BankDownResult gb_bank_down_g3(int dst_box, const uint8_t cell80[80]) {
     if (ch == GB_XFER_MAKE_LEGAL && fix) gb_set_level(&mon, fix_to);
   }
 
-  bool wok = gb_paste_write(&mon, dst_box, cell80);                         /* 6-8 */
+  bool wok = gb_paste_write(&mon, dst_box, cell80, loss.item_outcome, g1_item); /* 6-8 */
   return wok ? BANK_DOWN_LANDED : BANK_DOWN_REFUSED;
 }
 

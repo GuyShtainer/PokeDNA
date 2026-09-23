@@ -1071,6 +1071,41 @@ static void part6_unown_dv_for_letter(void) {
   CHECK(!g2_unown_dv_for_letter(200, NULL), "NULL dv refused (200)");
 }
 
+/* F3 (xfer-items fix pass): loss_item_text() (pdna_gen12.c, now non-static -- see
+ * pdna_gen12.h) must mention "Secret ID" whenever loss->secret_id is true AND
+ * item_outcome != G3GB_ITEM_NONE (the NONE case always uses the generic
+ * PDNA_SIDECAR_LOSS_ITEMSECRET wording, which already says "Secret ID" -- out of
+ * scope for this assertion, not a gap). Also checks the negative: secret_id false
+ * must NOT claim a Secret ID loss that did not happen. */
+static void part7_loss_item_text(void) {
+  printf("\n(7) loss_item_text -- 'Secret ID' present iff secret_id && outcome != NONE\n");
+  const G3GbItemOutcome outcomes[] = { G3GB_ITEM_HELD, G3GB_ITEM_BAG, G3GB_ITEM_PC, G3GB_ITEM_STAYS };
+  const char* names[] = { "HELD", "BAG", "PC", "STAYS" };
+  for (int i = 0; i < 4; i++) {
+    for (int sid = 0; sid < 2; sid++) {
+      Gen3ToGbLoss loss; memset(&loss, 0, sizeof loss);
+      loss.item_outcome = outcomes[i];
+      loss.secret_id = sid != 0;
+      loss.g3_held_item = 20;   /* POTION -- any non-zero real id */
+      char row[48];
+      loss_item_text(&loss, row, (int)sizeof row);
+      bool has_sid = strstr(row, "Secret ID") != NULL;
+      CHECK(has_sid == (sid != 0),
+            "%s, secret_id=%d: row %s 'Secret ID' as expected (row=\"%s\")",
+            names[i], sid, has_sid == (sid != 0) ? "does" : "does NOT", row);
+    }
+  }
+  /* cap < 48 defensiveness (golden rule 7): writes an empty string, never truncates
+   * into the caller's buffer past what it declared. */
+  {
+    Gen3ToGbLoss loss; memset(&loss, 0, sizeof loss);
+    loss.item_outcome = G3GB_ITEM_BAG; loss.secret_id = true; loss.g3_held_item = 20;
+    char row[8]; row[0] = 'X';
+    loss_item_text(&loss, row, (int)sizeof row);
+    CHECK(row[0] == 0, "cap=8 < 48: loss_item_text writes an empty string, not a partial one");
+  }
+}
+
 int main(void) {
   printf("== gen 1/2 import: synthetic saves + conversion ==\n");
   part0_oracles();
@@ -1085,6 +1120,7 @@ int main(void) {
   part4_boxsource(GBF_CRYSTAL, GBF_RTC_TAIL_64);
   part5_rejection();
   part6_unown_dv_for_letter();
+  part7_loss_item_text();
 
   printf("\n%s: %d checks, %d failure(s)\n", g_fail ? "FAIL" : "OK", g_checks, g_fail);
   return g_fail ? 1 : 0;

@@ -224,6 +224,14 @@ bool pdna_gen12_resident(void);
  * save is mounted at a time. Pass NULL to unmount. */
 BoxSource pdna_gen12_source(Gb12Mount* m);
 
+/* F3 (xfer-items fix pass): the item/Secret-ID loss row's TEXT builder (not to be
+ * confused with g3gb_loss_needs_item_row's show/hide predicate, gen3_to_gb.h) --
+ * exposed (not static) so tests/host_gen12_test.c can assert "Secret ID" really
+ * appears in the rendered row whenever loss->secret_id && item_outcome != NONE, not
+ * just that the row fits (host_textfit_test.c's own, separate, width-only check).
+ * `cap` must be >= 48; a smaller cap writes an empty string rather than truncate. */
+void loss_item_text(const Gen3ToGbLoss* loss, char* out, int cap);
+
 /* ---- GBA glue (FatFs + tonc) ---------------------------------------------- */
 #ifndef PDNA_GEN12_HOST
 /* Open the GB save at `path`, show its info page, then browse its boxes through the

@@ -1463,6 +1463,11 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_SIDECAR_LOSS_METDATA    "Met place / level / ball"
 #define PDNA_SIDECAR_LOSS_IVS        "IVs halved to DVs"
 #define PDNA_SIDECAR_LOSS_EVS        "EVs rescaled"
+/* BACKLOG #247: exp_floored shares the EVS row's slot (pdna_gen12.c's loss_evs_text())
+ * -- the screen has zero spare rows, same reasoning as the item row's ITEMSECRET
+ * merge below. */
+#define PDNA_SIDECAR_LOSS_EXP_FLOORED "EXP: within-level progress reset"
+#define PDNA_SIDECAR_LOSS_EVS_EXP    "EVs rescaled; EXP progress reset"
 #define PDNA_SIDECAR_LOSS_ITEMSECRET "Held item and Secret ID"
 #define PDNA_SIDECAR_LOSS_POKERUS    "Pokerus and friendship"
 #define PDNA_SIDECAR_LOSS_SHINY      "Shiny not preserved"

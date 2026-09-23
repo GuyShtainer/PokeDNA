@@ -386,11 +386,17 @@ def check(frame_png: str | Path | Image.Image | np.ndarray,
 GBUI_DRIVER_SRC = ROOT / "tools" / "gbclaim_font_driver.c"
 GBUI_C_SOURCES = [
     "rom_gbui.c", "gb_edit.c", "data_tables.c", "gen1_save.c", "gen2_save.c",
+    "gen1_write.c", "gen2_write.c", "gb_session.c",
+    "item_map_g2g3.c", "item_map_g1g2.c", "gb_item_names.c", "gb_bag.c", "gb_fields.c",
     "gen3_to_gb.c", "gb_sidecar.c", "bank_cell.c", "gen3_edit.c", "gen3_mon.c",
     "gen3_box.c", "gen3_save.c", "gen3_daycare.c",
 ]  # BACKLOG #214: the exact link list tests/host_gbhof_glyph_test.c's own header
    # documents for gb_edit.c's transitive Gen-1/2 dependencies, plus rom_gbui.c
    # for the font locator -- never hand-picked, copied from that test's recipe.
+   # BACKLOG #248/#249 (xfer-items): gen3_to_gb.c now calls item_g3_to_g2()/
+   # item_g2_to_g1(), and item_g2_to_g1() calls gbb_is_g1_key_item() -- the same
+   # four extra modules (+ their gen1_write/gen2_write/gb_session transitive deps)
+   # host_gbhof_glyph_test.c's own header picked up when this lane added them there.
 
 # GB-shell 1:1 layout constants -- source/pdna_gbscreen.h's own #defines, read
 # once here rather than re-typed at every call site.

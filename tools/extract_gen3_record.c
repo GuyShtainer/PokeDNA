@@ -30,6 +30,12 @@
  * with the byte printed, not assumed. Composable with --moves (moves are
  * re-moved on the box form first, then the result is expanded to party).
  *
+ * F4(iii) (xfer-items fix pass, BACKLOG #248/#249): an optional `--item id` flag
+ * forces the picked record's held item via em_set_item, the same way --moves forces
+ * moves -- so a retail-gate case can prove a SPECIFIC Gen-3 item (one with a real
+ * Gen-2 counterpart) lands in a real Gold/Crystal save's bag, instead of depending on
+ * whether the first qualifying box slot happens to be holding one.
+ *
  * Host-only, not part of tests/run_host_tests.py. Build:
  *   cc -std=c11 -O2 -I ../../source extract_gen3_record.c \
  *      ../../source/gen3_mon.c ../../source/gen3_save.c ../../source/gen3_box.c \
@@ -37,6 +43,7 @@
  *      ../../source/data_tables.c -o /tmp/extract_gen3_record
  *   /tmp/extract_gen3_record /path/to/Emerald.sav out.bin
  *   /tmp/extract_gen3_record /path/to/Emerald.sav out.bin --moves 57,44,317,182
+ *   /tmp/extract_gen3_record /path/to/Emerald.sav out.bin --item 13
  *   /tmp/extract_gen3_record /path/to/Emerald.sav out100.bin --party
  *
  * gen3_clip.c is linked for pk_box_slot() alone (the one real box-offset formula --
@@ -61,13 +68,15 @@
 #define PARTY_MON    100
 
 static void usage(const char* prog) {
-  fprintf(stderr, "usage: %s <gen3.sav> <out.bin> [--moves a,b,c,d] [--party]\n", prog);
+  fprintf(stderr, "usage: %s <gen3.sav> <out.bin> [--moves a,b,c,d] [--item id] [--party]\n",
+          prog);
 }
 
 int main(int argc, char** argv) {
   if (argc < 3) { usage(argv[0]); return 2; }
   uint16_t moves4[4] = { 0, 0, 0, 0 };
-  int have_moves = 0, want_party = 0;
+  uint16_t item_override = 0;
+  int have_moves = 0, have_item = 0, want_party = 0;
   for (int i = 3; i < argc; i++) {
     if (!strcmp(argv[i], "--party")) {
       want_party = 1;
@@ -89,6 +98,19 @@ int main(int argc, char** argv) {
       }
       if (tok) { fprintf(stderr, "--moves: more than 4 ids given\n"); return 2; }
       have_moves = 1;
+      continue;
+    }
+    if (!strcmp(argv[i], "--item")) {
+      /* F4(iii) (xfer-items fix pass, BACKLOG #248/#249): forces a specific held item
+       * onto the picked record via em_set_item, the SAME way --moves forces moves via
+       * em_set_move -- so the retail-gate paste80 case can prove a Gen-3 held item
+       * really lands in a real Gold/Crystal bag, instead of depending on whichever
+       * box-0-slot-0 record extract_gen3_record.c's picker happens to find. */
+      if (i + 1 >= argc) { fprintf(stderr, "--item: needs a value\n"); return 2; }
+      long v = strtol(argv[++i], NULL, 10);
+      if (v < 0 || v > 65535) { fprintf(stderr, "--item: id out of range: %s\n", argv[i]); return 2; }
+      item_override = (uint16_t)v;
+      have_item = 1;
       continue;
     }
     usage(argv[0]);
@@ -131,16 +153,19 @@ int main(int argc, char** argv) {
       for (int i = 0; i < 4; i++) if (m.moves[i]) nmoves++;
       /* --moves overwrites every slot itself, so the "< 4 moves" filter (which exists
        * to guarantee a truncation row on the PLAIN path) no longer applies -- any
-       * record works as the --moves seed. */
+       * record works as the --moves seed. Same reasoning for --item and the held-item
+       * filter: --item overwrites the held item itself, so the picker no longer needs
+       * to FIND one. */
       if (!have_moves && nmoves >= 4) continue;           /* want a truncation row */
-      if (!have_moves && !m.heldItem) continue;            /* want an item-drop row */
+      if (!have_item && !have_moves && !m.heldItem) continue; /* want an item-drop row */
 
       uint8_t rec80[80];
       memcpy(rec80, rec, BOX_MON);
-      if (have_moves) {
+      if (have_moves || have_item) {
         EditMon e;
         gen3_edit_load(rec80, false, &e);
-        for (int i = 0; i < 4; i++) em_set_move(&e, i, moves4[i]);
+        if (have_moves) for (int i = 0; i < 4; i++) em_set_move(&e, i, moves4[i]);
+        if (have_item) em_set_item(&e, item_override);
         gen3_edit_commit(&e, rec80);
         /* Still checksummed: re-decode the re-encoded bytes exactly as the plain
          * path's own caller (fuse_sav.py --clip, then gen3_to_gb's pk_decode_mon)
@@ -148,7 +173,7 @@ int main(int argc, char** argv) {
          * silently. */
         PkMon check;
         if (!pk_decode_mon(rec80, false, &check) || check.isBadEgg) {
-          fprintf(stderr, "%s: --moves re-encode failed its own checksum\n", argv[1]);
+          fprintf(stderr, "%s: --moves/--item re-encode failed its own checksum\n", argv[1]);
           return 1;
         }
       }
@@ -185,6 +210,8 @@ int main(int argc, char** argv) {
       else
         fprintf(stderr, "box %2d slot %2d: species %3d, %d move(s), held item %d -> %s\n",
                 b, s, m.species, nmoves, m.heldItem, argv[2]);
+      if (have_item)
+        fprintf(stderr, "held item forced to %u\n", (unsigned)item_override);
       if (want_party)
         fprintf(stderr, "party mail byte 0x%02X = 0x%02X (MAIL_NONE=0x%02X)\n",
                 G3_PARTY_MAIL_OFF, rec100[G3_PARTY_MAIL_OFF], G3_MAIL_NONE);

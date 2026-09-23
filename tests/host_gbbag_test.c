@@ -1,9 +1,9 @@
 /* source/gb_bag.c -- the pure-C bag / PC-item-store core -- under test.
  *
  *   cc -std=c11 -Wall -Wextra -I source -I tests tests/host_gbbag_test.c \
- *      source/gb_bag.c source/gb_fields.c source/gb_session.c source/gb_edit.c \
+ *      source/gb_bag.c source/gb_item_names.c source/gb_fields.c source/gb_session.c source/gb_edit.c \
  *      source/gen1_save.c source/gen1_write.c source/gen2_save.c source/gen2_write.c \
- *      source/data_tables.c source/gen3_to_gb.c source/gb_sidecar.c source/bank_cell.c source/gen3_edit.c \
+ *      source/data_tables.c source/item_map_g2g3.c source/item_map_g1g2.c source/gen3_to_gb.c source/gb_sidecar.c source/bank_cell.c source/gen3_edit.c \
  *      source/gen3_mon.c source/gen3_box.c source/gen3_save.c source/gen3_daycare.c \
  *      -o /tmp/hgbb && /tmp/hgbb
  *
@@ -40,6 +40,7 @@
 #include <stddef.h>
 
 #include "gb_bag.h"
+#include "gen3_to_gb.h"   /* F2 regression: g3gb_item_ladder/g3gb_item_to_gb1 */
 
 #define ROMS "/Users/guyshtainer/VSCodeProjects/gba-toolkit/roms/gb"
 
@@ -700,6 +701,187 @@ static void roundtrip(const char* file, uint8_t expect_gen) {
         file, unexplained, first, g_orig[first], g_img[first]);
 }
 
+/* ---------------------------------------------------------- B3: gbb_insert_and_write
+ * BACKLOG #249 cases B/C: the ONE-CALL convenience source/pdna_gen12.c's gb_paste_write
+ * uses to place a Gen-1 bag item transactionally alongside a mon landing. Two things
+ * to prove: (1) a successful call really does insert and persist; (2) a call that
+ * FAILS (the pocket is full -- exactly the race a caller could hit between deciding
+ * BAG/PC via g3gb_item_ladder() and this call actually running) leaves the session
+ * image byte-for-byte untouched, so the caller's own gb_rollback() has nothing to
+ * clean up and the mon-only half of a botched landing is never silently kept. */
+static void insert_and_write(const char* file, uint8_t expect_gen) {
+  uint32_t len = load(file);
+  if (!len) return;
+  g_ran++;
+  GbGame g = expect_gen == GB_GEN1 ? GBF_G_RED : GBF_G_GS; /* refined below once open */
+
+  /* -- success case: an id with room in Items -- */
+  {
+    GbSession s;
+    CHECKF(gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "%s: B3 open", file);
+    g = session_game(&s);
+    GbBag before;
+    CHECKF(gbb_read(&s, &before), "%s: B3 pre-read", file);
+    if (before.pockets[GBB_POCKET_ITEMS].count >= gbb_pocket_cap(g, GBB_POCKET_ITEMS)) {
+      printf("  (%s: Items pocket already at cap -- success case skipped)\n", file);
+    } else {
+      uint8_t id = pick_unused_id(g, &before.pockets[GBB_POCKET_ITEMS]);
+      GbBagOpStatus st = gbb_insert_and_write(&s, GBB_POCKET_ITEMS, id, 1);
+      CHECKF(st == GBB_OK, "%s: B3 insert_and_write(id=0x%02X) == GBB_OK (got %d)", file, id, (int)st);
+
+      GbSession s2;
+      CHECKF(gbs_open(&s2, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "%s: B3 re-open", file);
+      GbBag after;
+      CHECKF(gbb_read(&s2, &after), "%s: B3 post-read", file);
+      bool found = false;
+      for (int i = 0; i < after.pockets[GBB_POCKET_ITEMS].count; i++)
+        if (after.pockets[GBB_POCKET_ITEMS].entries[i].id == id) found = true;
+      CHECKF(found, "%s: B3 id 0x%02X present after re-open", file, id);
+      CHECKF(after.pockets[GBB_POCKET_ITEMS].count == before.pockets[GBB_POCKET_ITEMS].count + 1,
+             "%s: B3 Items count grew by exactly 1 (was %u, now %u)", file,
+             before.pockets[GBB_POCKET_ITEMS].count, after.pockets[GBB_POCKET_ITEMS].count);
+    }
+  }
+
+  /* -- failure case (F4(i), xfer-items fix pass): a QTY-SATURATION refusal, not a
+   * full-pocket one. The old version filled the pocket to `cap` with distinct ids and
+   * then tried a genuinely NEW id -- gbb_insert()'s FULL arm returns before touching
+   * `list` at all, so a mutant that calls gbb_write() BEFORE checking the insert
+   * verdict still writes a byte-identical `bag` (write_list's own no-op guard,
+   * `if (!cnt_changed && !body_changed) return GBS_OK;`, then swallows it): 2070/2070
+   * passed on that mutant, which is why F2's review called this vacuous "by
+   * construction".
+   *
+   * The fix seeds ONE entry to a qty BELOW the cap (90, not 99 -- see below) via a
+   * real committed insert, snapshots the image, then inserts enough more (15) that
+   * gbb_insert()'s saturation arm (`list->entries[i].qty = GBB_QTY_CAP;`) actually
+   * CHANGES that entry's in-memory qty (90 -> 99) before returning GBB_ERR_QTY. A
+   * seed already AT 99 (the brief's literal example) does not work here: saturating
+   * 99 to 99 is a no-op assignment, so write_list's own change-detection would hide a
+   * premature write just as completely as the FULL case did -- this seed is chosen
+   * specifically so the saturated value differs from what is on disk, which is what
+   * actually makes the mutant detectable. This is also F2's own regression case: a
+   * bag near a 99-stack must answer PC or STAYS, never silently re-attempt BAG. */
+  {
+    uint32_t len2 = load(file);   /* fresh copy into g_img/g_orig */
+    (void)len2;
+    GbSession s;
+    CHECKF(gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "%s: B3f open", file);
+    g = session_game(&s);
+    GbBag bag;
+    CHECKF(gbb_read(&s, &bag), "%s: B3f pre-read", file);
+    uint8_t id = pick_unused_id(g, &bag.pockets[GBB_POCKET_ITEMS]);
+    if (id == 0 || bag.pockets[GBB_POCKET_ITEMS].count >= gbb_pocket_cap(g, GBB_POCKET_ITEMS)) {
+      printf("  (%s: no free slot/id for the qty-saturation case -- skipped)\n", file);
+    } else {
+      GbBagOpStatus seed = gbb_insert_and_write(&s, GBB_POCKET_ITEMS, id, 90);
+      CHECKF(seed == GBB_OK, "%s: B3f seed insert(id=0x%02X, qty=90) == GBB_OK (got %d)",
+             file, id, (int)seed);
+      if (seed == GBB_OK) {
+        uint8_t snapshot[sizeof g_img];
+        memcpy(snapshot, g_img, len);
+        GbBagOpStatus fst = gbb_insert_and_write(&s, GBB_POCKET_ITEMS, id, 15); /* 90+15=105 > 99 */
+        CHECKF(fst == GBB_ERR_QTY,
+               "%s: B3f a stack that would exceed GBB_QTY_CAP refuses with GBB_ERR_QTY (got %d)",
+               file, (int)fst);
+        CHECKF(memcmp(snapshot, g_img, len) == 0,
+               "%s: B3f the session image is BYTE-FOR-BYTE unchanged after the refused insert", file);
+      }
+    }
+  }
+}
+
+/* ---------------------------------------------------------- F2 regression (xfer-items
+ * fix pass): the exact bug the review reproduced on a real save -- "the POTION stack
+ * at 99 and two slots free: ladder says BAG, insert returns 5 [GBB_ERR_QTY]". Calls the
+ * REAL functions pdna_gen12.c's gb_bank_down_g3 now calls (gbb_pocket_cap,
+ * gbb_has_room_for, g3gb_item_to_gb1, g3gb_item_ladder) with the SAME effective-count
+ * translation as that call site (source/pdna_gen12.c:4705-4713), so this is mutation-
+ * testable against the real functions, not a re-derivation -- and reproduces the OLD
+ * (unfixed) `items_count < items_cap` call alongside it to show the two disagree. */
+static void qty99_ladder_regression(const char* file) {
+  uint32_t len = load(file);
+  if (!len) return;
+  g_ran++;
+
+  GbSession s;
+  CHECKF(gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "%s: F2reg open", file);
+  GbGame g = session_game(&s);
+
+  /* POTION is Gen-1 item id 0x14 (gb_item_names.c). Find a Gen-3 item id that maps to
+   * it through the real g3gb_item_to_gb1() chain -- never hand-picked, so this test
+   * survives the item map being regenerated. */
+  uint16_t g3_potion = 0;
+  for (uint16_t g3 = 1; g3 < 377; g3++) {
+    if (g3gb_item_to_gb1(g3) == 0x14u) { g3_potion = g3; break; }
+  }
+  CHECKF(g3_potion != 0, "%s: F2reg a Gen-3 item id maps to Gen-1 POTION (0x14)", file);
+  if (g3_potion == 0) return;
+
+  GbBag bag;
+  CHECKF(gbb_read(&s, &bag), "%s: F2reg pre-read", file);
+  int icap = gbb_pocket_cap(g, GBB_POCKET_ITEMS);
+  int pcap = gbb_pocket_cap(g, GBB_POCKET_PC);
+
+  /* Seed: EMPTY the Items pocket, then insert ONLY a 99-POTION stack -- a
+   * deterministic build of the review's own repro ("the POTION stack at 99 and two
+   * slots free") that never depends on how full this save's real bag happens to be
+   * (Red.sav's own corpus bag is 19/20 already, with no POTION and no room to add
+   * a fresh 99-stack AND keep a free slot -- the real state this save ships with does
+   * not reach the review's scenario, so this test builds it instead of skipping).
+   * gbb_insert()/gbb_write() are the REAL functions (no write-your-own-bytes), just
+   * called on an in-memory GbBag built for this test rather than on whatever was
+   * read -- everything downstream (gbb_has_room_for, g3gb_item_ladder,
+   * gbb_insert_and_write's real refusal) still runs against the genuine functions. */
+  bag.pockets[GBB_POCKET_ITEMS].count = 0;
+  GbBagOpStatus seed = gbb_insert(g, &bag, GBB_POCKET_ITEMS, 0x14u, 99);
+  CHECKF(seed == GBB_OK, "%s: F2reg seed POTION x99 into an empty pocket == GBB_OK (got %d)",
+         file, (int)seed);
+  if (seed != GBB_OK) return;
+  CHECKF(gbb_write(&s, &bag) == GBS_OK, "%s: F2reg commit the seeded bag", file);
+  CHECKF(gbb_read(&s, &bag), "%s: F2reg re-read after seed", file);
+  CHECKF(bag.pockets[GBB_POCKET_ITEMS].count == 1 &&
+         bag.pockets[GBB_POCKET_ITEMS].entries[0].id == 0x14u &&
+         bag.pockets[GBB_POCKET_ITEMS].entries[0].qty == 99,
+         "%s: F2reg the seeded bag reads back as one 99-POTION entry", file);
+
+  /* OLD (unfixed) call: naive items_count < items_cap says the pocket has ROOM (a free
+   * slot exists), so the pre-F2 code fed g3gb_item_ladder real counts and got BAG --
+   * exactly the outcome the review showed then fails at gbb_insert_and_write time. */
+  uint8_t old_g1_item = 0;
+  G3GbItemOutcome old_outcome = g3gb_item_ladder(
+      GB_GEN1, g3_potion,
+      bag.pockets[GBB_POCKET_ITEMS].count, icap,
+      bag.pockets[GBB_POCKET_PC].count, pcap, &old_g1_item);
+  CHECKF(old_outcome == G3GB_ITEM_BAG,
+         "%s: F2reg the OLD ladder call answers BAG here (got %d) -- this is the bug",
+         file, (int)old_outcome);
+
+  /* NEW (F2-fixed) call: pdna_gen12.c:4705-4713's own effective-count translation. */
+  uint8_t want = g3gb_item_to_gb1(g3_potion);
+  CHECKF(want == 0x14u, "%s: F2reg want resolves to POTION (got 0x%02X)", file, want);
+  uint8_t new_g1_item = 0;
+  G3GbItemOutcome new_outcome = g3gb_item_ladder(
+      GB_GEN1, g3_potion,
+      gbb_has_room_for(g, &bag, GBB_POCKET_ITEMS, want) ? 0 : icap, icap,
+      gbb_has_room_for(g, &bag, GBB_POCKET_PC,    want) ? 0 : pcap, pcap,
+      &new_g1_item);
+  CHECKF(new_outcome != G3GB_ITEM_BAG,
+         "%s: F2reg the fixed ladder call never answers BAG here (got %d)",
+         file, (int)new_outcome);
+  CHECKF(new_outcome == G3GB_ITEM_PC || new_outcome == G3GB_ITEM_STAYS,
+         "%s: F2reg the fixed ladder call answers PC or STAYS (got %d)",
+         file, (int)new_outcome);
+
+  /* Prove the OLD outcome really would have refused: gbb_insert_and_write(BAG, ...)
+   * with the old decision returns GBB_ERR_QTY (5), never GBB_OK -- the review's own
+   * "insert returns 5". */
+  GbBagOpStatus real_bag_insert = gbb_insert_and_write(&s, GBB_POCKET_ITEMS, old_g1_item, 1);
+  CHECKF(real_bag_insert == GBB_ERR_QTY,
+         "%s: F2reg the OLD decision's real insert fails with GBB_ERR_QTY (got %d)",
+         file, (int)real_bag_insert);
+}
+
 /* ---------------------------------------------------------- B2: single-pocket write
  * Mirror of P1a's one_field_only: change exactly one pocket -> gbs_open() still
  * succeeds (a Gen-2 skipped gbs_finish() shows up as a stale-checksum reopen
@@ -1077,6 +1259,14 @@ int main(void) {
 
   printf("== B2: single-pocket write ==\n");
   one_pocket_only_all();
+
+  printf("== B3: gbb_insert_and_write (BACKLOG #249) ==\n");
+  insert_and_write("Red.sav", GB_GEN1);
+  insert_and_write("Gold.sav", GB_GEN2);
+  insert_and_write("Crystal.sav", GB_GEN2);
+
+  printf("== F2: 99-POTION ladder regression (xfer-items fix pass) ==\n");
+  qty99_ladder_regression("Red.sav");
 
   printf("== C: refusals ==\n");
   refusals("Red.sav", GB_GEN1);

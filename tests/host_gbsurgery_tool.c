@@ -33,7 +33,7 @@
  *      source/gb_flags_rw.c \
  *      source/gb_hof.c \
  *      source/gb_dex.c \
- *      source/gen3_to_gb.c \
+ *      source/item_map_g2g3.c source/item_map_g1g2.c source/gb_item_names.c source/gen3_to_gb.c \
  *      source/gb_moves_legal.c \
  *      source/gen3_mon.c \
  *      source/gen3_box.c \
@@ -1705,6 +1705,11 @@ static void list_box(GbSession* s, int box, const char* label) {
              (unsigned)pk_move_pp(gb_get_move(&e, 2)), (unsigned)pk_move_pp(gb_get_move(&e, 3)),
              (unsigned)gb_get_ppup(&e, 0), (unsigned)gb_get_ppup(&e, 1),
              (unsigned)gb_get_ppup(&e, 2), (unsigned)gb_get_ppup(&e, 3));
+      /* F4(iii) (xfer-items fix pass): a SEPARATE line again, same reasoning -- a
+       * THIRD line so no existing --moves-only caller's parse of the moves= line
+       * shifts. gb_get_held_item() is 0 (and refuses to be anything else) on Gen 1
+       * (gb_edit.h's own comment); a caller only reads this on a Gen-2 save. */
+      printf("    item=%u\n", (unsigned)gb_get_held_item(&e));
     }
   }
 }

@@ -3,7 +3,7 @@
  * format + the merge back up). docs/GEN3-TO-GB-SIDECAR-DESIGN.md is the design.
  *
  *   cc -std=c11 -Wall -Wextra -I source tests/host_gen3gb_test.c \
- *      source/gen3_to_gb.c source/gb_sidecar.c source/bank_cell.c source/evolutions.c \
+ *      source/item_map_g2g3.c source/item_map_g1g2.c source/gb_item_names.c source/gb_bag.c source/gb_fields.c source/gen3_to_gb.c source/gb_sidecar.c source/bank_cell.c source/evolutions.c \
  *      source/gen3_save.c source/gen3_mon.c source/gen3_box.c source/gen3_edit.c \
  *      source/gen3_daycare.c source/data_tables.c \
  *      source/gb_edit.c source/gb_session.c source/gen1_save.c source/gen1_write.c \
@@ -1662,6 +1662,122 @@ static void test_gen3_to_gb_fixed(void) {
          "   naming '7d: gen3_to_gb_fixed accepts with bad4 flagged', restored -> green)\n");
 }
 
+/* BACKLOG #248/#247: item travel (case A) + exp_floored, host-level. */
+static uint32_t rd32le_t(const uint8_t* p) {
+  return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+static void wr32le_t(uint8_t* p, uint32_t v) {
+  p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
+}
+
+static void test_item_and_exp(void) {
+  printf("-- 8. BACKLOG #248 (item travel) + #247 (exp_floored) --\n");
+  GbGen1Base g1 = test_g1base();
+
+  /* 8a: a Gen-3 item WITH a Gen-2 counterpart (id 1, kG3ToG2[1]==1 per
+   * item_map_g2g3.c's generated table) travels with a Gen-2 target, HELD, not
+   * dropped. */
+  {
+    uint8_t rec[80];
+    gen3_build_mon(9, 50, 0x11112222u, 0xA0000001u, "ITEMA", 3, rec);
+    EditMon em; gen3_edit_load(rec, false, &em);
+    em_set_item(&em, 1);
+    gen3_edit_commit(&em, rec);
+
+    GbEditMon out; Gen3ToGbLoss loss;
+    G3GbStatus st = gen3_to_gb_fixed(rec, GB_GEN2, true, NULL, NULL, &out, &loss);
+    CHECK(st == G3GB_OK, "8a: GEN2 accepts (%s)", g3gb_status_text(st));
+    if (st == G3GB_OK) {
+      CHECK(gb_get_held_item(&out) == 1, "8a: held item == 1 (got %u)", gb_get_held_item(&out));
+      CHECK(!loss.item_dropped, "8a: item_dropped is false (it travelled)");
+      CHECK(loss.item_outcome == G3GB_ITEM_HELD, "8a: item_outcome == HELD (got %d)", (int)loss.item_outcome);
+      CHECK(loss.g3_held_item == 1, "8a: g3_held_item == 1 (got %u)", loss.g3_held_item);
+    }
+  }
+
+  /* 8b: a Gen-3 item with NO Gen-2 counterpart (id 5, kG3ToG2[5]==0) drops on a
+   * Gen-2 target -- the pre-existing behaviour, unchanged. */
+  {
+    uint8_t rec[80];
+    gen3_build_mon(9, 50, 0x33334444u, 0xA0000002u, "ITEMB", 3, rec);
+    EditMon em; gen3_edit_load(rec, false, &em);
+    em_set_item(&em, 5);
+    gen3_edit_commit(&em, rec);
+
+    GbEditMon out; Gen3ToGbLoss loss;
+    G3GbStatus st = gen3_to_gb_fixed(rec, GB_GEN2, true, NULL, NULL, &out, &loss);
+    CHECK(st == G3GB_OK, "8b: GEN2 accepts (%s)", g3gb_status_text(st));
+    if (st == G3GB_OK) {
+      CHECK(gb_get_held_item(&out) == 0, "8b: held item == 0 (no counterpart)");
+      CHECK(loss.item_dropped, "8b: item_dropped is true");
+      CHECK(loss.item_outcome == G3GB_ITEM_STAYS, "8b: item_outcome == STAYS (got %d)", (int)loss.item_outcome);
+      CHECK(loss.g3_held_item == 5, "8b: g3_held_item == 5 (got %u)", loss.g3_held_item);
+    }
+  }
+
+  /* 8c: a Gen-1 target NEVER holds the item directly -- baseline is STAYS (the
+   * caller, gb_bank_down_g3, is the only place that ever upgrades this to BAG/PC). */
+  {
+    uint8_t rec[80];
+    gen3_build_mon(9, 50, 0x55556666u, 0xA0000003u, "ITEMC", 3, rec);
+    EditMon em; gen3_edit_load(rec, false, &em);
+    em_set_item(&em, 1);
+    gen3_edit_commit(&em, rec);
+
+    GbEditMon out; Gen3ToGbLoss loss;
+    G3GbStatus st = gen3_to_gb_fixed(rec, GB_GEN1, true, &g1, NULL, &out, &loss);
+    CHECK(st == G3GB_OK, "8c: GEN1 accepts (%s)", g3gb_status_text(st));
+    if (st == G3GB_OK) {
+      CHECK(loss.item_dropped, "8c: item_dropped is true (Gen 1 has no held-item byte)");
+      CHECK(loss.item_outcome == G3GB_ITEM_STAYS, "8c: item_outcome == STAYS (got %d)", (int)loss.item_outcome);
+      CHECK(loss.g3_held_item == 1, "8c: g3_held_item == 1 (got %u)", loss.g3_held_item);
+    }
+  }
+
+  /* 8d: no item at all -- NONE, never a "loss" claim. */
+  {
+    uint8_t rec[80];
+    gen3_build_mon(9, 50, 0x77778888u, 0xA0000004u, "ITEMD", 3, rec);
+    GbEditMon out; Gen3ToGbLoss loss;
+    G3GbStatus st = gen3_to_gb_fixed(rec, GB_GEN2, true, NULL, NULL, &out, &loss);
+    CHECK(st == G3GB_OK, "8d: GEN2 accepts (%s)", g3gb_status_text(st));
+    if (st == G3GB_OK) {
+      CHECK(!loss.item_dropped, "8d: item_dropped is false (nothing was held)");
+      CHECK(loss.item_outcome == G3GB_ITEM_NONE, "8d: item_outcome == NONE (got %d)", (int)loss.item_outcome);
+    }
+  }
+
+  /* 8e: exp_floored -- exactly-at-floor is false, above-floor is true, same species/
+   * level either way (only the within-level remainder differs). */
+  {
+    uint8_t rec[80];
+    gen3_build_mon(9, 50, 0x99990000u, 0xA0000005u, "EXPA", 3, rec);
+    GbEditMon out; Gen3ToGbLoss loss;
+    G3GbStatus st = gen3_to_gb_fixed(rec, GB_GEN2, true, NULL, NULL, &out, &loss);
+    CHECK(st == G3GB_OK, "8e: GEN2 accepts (%s)", g3gb_status_text(st));
+    if (st == G3GB_OK)
+      CHECK(!loss.exp_floored, "8e: exactly-at-floor exp -> exp_floored is false");
+
+    EditMon em; gen3_edit_load(rec, false, &em);
+    uint32_t floor_exp = rd32le_t(em.sub[0] + 4);
+    wr32le_t(em.sub[0] + 4, floor_exp + 37);   /* still well under level 51's threshold */
+    gen3_edit_commit(&em, rec);
+    st = gen3_to_gb_fixed(rec, GB_GEN2, true, NULL, NULL, &out, &loss);
+    CHECK(st == G3GB_OK, "8e: GEN2 accepts with within-level progress (%s)", g3gb_status_text(st));
+    if (st == G3GB_OK)
+      CHECK(loss.exp_floored, "8e: floor+37 exp -> exp_floored is true");
+    CHECK(gb_get_level(&out) == 50, "8e: the written level is unaffected (still 50, got %u)", gb_get_level(&out));
+  }
+
+  /* F6 (xfer-items fix pass review): mutations M3 ("comment out set_item's
+   * `if (gen == GB_GEN2)` mapped branch") and M4 ("change exp_floored's `>` to `>=`
+   * in set_identity_and_level") used to be printed claims here, not tests. Both are
+   * now real, running mutations: tests/host_gen3gb_m3m4_test.py builds this WHOLE
+   * file against a scratch-mutated copy of source/gen3_to_gb.c and asserts the named
+   * check above (8a / 8e) goes RED -- wired into tests/run_host_tests.py's
+   * PY_TESTS. */
+}
+
 /* (7g-k) source/gb_sidecar.c's merge_moves -- decision 9 (G-H8/G-H9), the ROUND TRIP
  * through the real writer (gbsc_entry_from) and the real merge (gbsc_merge_up), not
  * a re-implementation. */
@@ -1874,6 +1990,7 @@ int main(int argc, char** argv) {
   test_moves_baseline();
   test_moves_per_slot();
   test_gen3_to_gb_fixed();
+  test_item_and_exp();
   test_merge_moves_per_slot();
 
   printf("== 2. the Gen-3 corpus, both target generations ==\n");

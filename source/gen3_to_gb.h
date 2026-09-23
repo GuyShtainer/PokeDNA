@@ -31,6 +31,23 @@
  * on this side, and the merge-up direction (gb_sidecar.c) reuses the same identity to
  * go the other way. */
 
+/* BACKLOG #248/#249: where the Gen-3 record's held item ends up. This module (pure C,
+ * no session) can only ever decide NONE/HELD/STAYS on its own -- HELD needs nothing
+ * more than the target GbEditMon it is already building (gen == GB_GEN2, a mapped
+ * Gen-2 counterpart exists). BAG/PC need the destination save's OPEN bag state, which
+ * this module never has (no tonc, no GbSession, host-testable in isolation) -- the
+ * caller (source/pdna_gen12.c's gb_bank_down_g3, the only place a real Gen-3 record
+ * lands in a Game Boy save) upgrades STAYS to BAG/PC for a GB_GEN1 target once it has
+ * read the live bag, via g3gb_item_ladder() below. */
+typedef enum {
+  G3GB_ITEM_NONE = 0,  /* the Gen-3 record held nothing */
+  G3GB_ITEM_HELD,      /* case A: travels, held by the Game Boy record itself (Gen 2 only) */
+  G3GB_ITEM_BAG,        /* case B: Gen-1 target, placed in the open save's Items pocket */
+  G3GB_ITEM_PC,          /* case C: Gen-1 target, Items pocket was full, placed in the Item PC */
+  G3GB_ITEM_STAYS,        /* case D/E: no room anywhere, or no counterpart at all -- stays
+                           * inside the original Gen-3 record (BACKLOG #104), unchanged */
+} G3GbItemOutcome;
+
 /* Everything a Gen-3 record carries that a Game Boy record has no room for. All false
  * is the ideal case (never actually reachable — every Gen-3 mon has SOME PID-derived
  * nature); the UI shows a line per true field. Each *_lossy pair (nick/ot) also fills
@@ -39,10 +56,46 @@
 typedef struct {
   bool nature, ability, shiny_lost, gender_lost, ribbons, contest, met_data, ball,
        item_dropped, secret_id, markings, evs_scaled, ivs_halved, nick_lossy, ot_lossy,
-       pokerus_dropped, friendship_dropped;
+       pokerus_dropped, friendship_dropped,
+       exp_floored;   /* BACKLOG #247: the source record had progress inside its level
+                       * under Gen 3's own growth rate; the written record always starts
+                       * that level at its floor (gb_set_level -> set_exp_for). The VALUE
+                       * is never carried across (see gen3_to_gb.c's set_identity_and_level) --
+                       * this only says whether floor-ing it lost something real. */
   char nick_first_bad[GB_GLYPH_MAX];
   char ot_first_bad[GB_GLYPH_MAX];
+  G3GbItemOutcome item_outcome;   /* BACKLOG #248/#249: see the enum's own comment */
+  uint16_t g3_held_item;          /* the ORIGINAL Gen-3 held item id, 0 = none -- always
+                                   * filled so a caller can chain item_g3_to_g2()/
+                                   * item_g2_to_g1() without decoding rec80 a second time */
 } Gen3ToGbLoss;
+
+/* xfer-items fix F1: the item/Secret-ID loss row's own show/hide predicate, pulled out
+ * of pdna_gen12.c's gb_paste_loss_screen so it is a real, host-testable function rather
+ * than logic only ever reachable inside a GBA-only draw call. item_dropped is the S150-8
+ * decision-15 "a Gen-2 item cannot reach Gen 1" case (bank_down_convert.c's GB1<->GB2
+ * bridge, gb_bank_down_bridge folds notes.item_dropped into loss.item_dropped before
+ * this call) -- item_outcome alone (BACKLOG #248/#249's Gen-3 -> GB ladder) never covers
+ * it, so a predicate that only checked item_outcome/secret_id silently dropped the row
+ * for every bridge transfer that drops an item. */
+bool g3gb_loss_needs_item_row(const Gen3ToGbLoss* loss);
+
+/* F2 (xfer-items fix pass): the same Gen-3 -> Gen-2 -> Gen-1 item-id chain
+ * g3gb_item_ladder() below runs internally, split out so a caller can ask "what Gen-1
+ * item id would this become" WITHOUT the room decision -- gbb_has_room_for() (gb_bag.h)
+ * needs the id to check the live bag, one step before g3gb_item_ladder() is called. 0
+ * for no item or no counterpart either hop. */
+uint8_t g3gb_item_to_gb1(uint16_t g3_item);
+
+/* BACKLOG #249 cases B/C/D/E, as a PURE decision (no session, host-testable): given the
+ * Gen-3 held item and a snapshot of the destination Gen-1 bag's two relevant pocket
+ * counts/caps, which of BAG/PC/STAYS applies, and which Gen-1 item id to insert (0 when
+ * the outcome is NONE/STAYS). `dst_gen` other than GB_GEN1 always answers STAYS (or NONE
+ * for no item) -- a Gen-2 target's own A/E ladder is already decided inside
+ * gen3_to_gb_fixed, this function is only ever consulted for GB_GEN1 by its one caller. */
+G3GbItemOutcome g3gb_item_ladder(uint8_t dst_gen, uint16_t g3_item,
+                                 int items_count, int items_cap,
+                                 int pc_count, int pc_cap, uint8_t* g1_item_out);
 
 typedef enum {
   G3GB_OK = 0,

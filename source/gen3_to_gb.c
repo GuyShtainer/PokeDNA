@@ -3,6 +3,8 @@
 #include "gen3_box.h"      /* pk_resolve — fills level/gender for a BOX record */
 #include "data_tables.h"   /* pk_national_no, pk_species_ability, growth/exp tables */
 #include "evolutions.h"    /* pk_evo_have_data/pk_evo_floor — BACKLOG #104 R1 */
+#include "item_map_g2g3.h" /* item_g3_to_g2 -- BACKLOG #248 */
+#include "item_map_g1g2.h" /* item_g2_to_g1 -- BACKLOG #249 cases B/C/D */
 #include <string.h>
 
 /* ---- status text ----------------------------------------------------------- */
@@ -18,6 +20,16 @@ const char* g3gb_status_text(G3GbStatus st) {
     case G3GB_ERR_GLITCH:     return "the Gen-3 record could not be decoded";
   }
   return "?";
+}
+
+/* F1 (xfer-items fix pass): the item/Secret-ID loss row's show/hide predicate -- see
+ * the declaration in gen3_to_gb.h for why item_dropped has to be in this OR chain
+ * alongside item_outcome/secret_id. NULL is defensive (golden rule 7): no caller passes
+ * NULL today, but a predicate function that crashes on it is a worse failure mode than
+ * one that just says "no row". */
+bool g3gb_loss_needs_item_row(const Gen3ToGbLoss* loss) {
+  if (!loss) return false;
+  return loss->item_outcome != G3GB_ITEM_NONE || loss->item_dropped || loss->secret_id;
 }
 
 /* Markings (four owner-set marks: circle/square/triangle/heart) are a single PLAINTEXT
@@ -92,6 +104,16 @@ static G3GbStatus set_identity_and_level(GbEditMon* e, const PkMon* m, uint16_t 
   loss->secret_id = (m->otId >> 16) != 0;
 
   if (!gb_set_level(e, m->level)) return G3GB_ERR_GLITCH;
+
+  /* BACKLOG #247: state the predicate in words before the code. "The Gen-3 record
+   * carried progress inside its level, and the Game Boy record starts that level at
+   * zero" -- gb_set_level() above always writes the EXP FLOOR for m->level (set_exp_for,
+   * gb_edit.c), so the WRITTEN record can never show partial progress inside a level.
+   * This only says whether the SOURCE record had any, under GEN 3's OWN growth rate
+   * (not the target's -- there is nothing to convert, the value itself is never carried
+   * across; see this file's header comment on what this module does not do). */
+  uint8_t g3_growth = pk_species_growth(m->species);
+  loss->exp_floored = m->experience > pk_exp_for_level(g3_growth, m->level);
   return G3GB_OK;
 }
 
@@ -206,13 +228,77 @@ static G3GbStatus set_gen2_only_fields(GbEditMon* e, uint8_t gen, bool caught_av
   return G3GB_OK;
 }
 
+/* BACKLOG #248 (#249 case A): a Gen-2 counterpart of the Gen-3 held item TRAVELS WITH
+ * THE MON -- item_g3_to_g2() IS wired here; the comment this replaces ("no Gen-3 ->
+ * Gen-2 item map in this tree") was FALSE, the map has existed since S150-8, it was
+ * simply never called from this file. Gen 1 has no held-item byte at all
+ * (gb_set_held_item refuses a Gen-1 record outright) -- for that generation, and for a
+ * Gen-2 target whose item has no counterpart, the baseline outcome is STAYS; BACKLOG
+ * #249 cases B/C's bag-insert upgrade to BAG/PC happens in the CALLER (source/
+ * pdna_gen12.c's gb_bank_down_g3), once the destination save is open -- this module
+ * never touches a bag, it has no session, and stays pure C/host-testable (rule 5).
+ * g3_held_item is recorded regardless of outcome so the caller can chain
+ * item_g3_to_g2()/item_g2_to_g1() without decoding rec80 a second time. */
+static G3GbStatus set_item(GbEditMon* e, uint8_t gen, const PkMon* m, Gen3ToGbLoss* loss) {
+  loss->g3_held_item = m->heldItem;
+  if (m->heldItem == 0) {
+    loss->item_dropped = false;
+    loss->item_outcome = G3GB_ITEM_NONE;
+    return G3GB_OK;
+  }
+  if (gen == GB_GEN2) {
+    uint8_t mapped = item_g3_to_g2(m->heldItem);
+    if (mapped != 0) {
+      if (!gb_set_held_item(e, mapped)) return G3GB_ERR_GLITCH;
+      loss->item_dropped = false;
+      loss->item_outcome = G3GB_ITEM_HELD;
+      return G3GB_OK;
+    }
+  }
+  loss->item_dropped = true;
+  loss->item_outcome = G3GB_ITEM_STAYS;   /* caller may upgrade to BAG/PC for a Gen-1 target */
+  return G3GB_OK;
+}
+
+/* F2 (xfer-items fix pass): the same id chain g3gb_item_ladder() below computes
+ * inline, split out so a caller can resolve the Gen-1 id BEFORE deciding room
+ * (gbb_has_room_for() needs the id to check the live bag; g3gb_item_ladder()'s own
+ * signature and every test against it stay untouched, so it keeps its own inline
+ * copy of this chain rather than calling this function). */
+uint8_t g3gb_item_to_gb1(uint16_t g3_item) {
+  if (g3_item == 0) return 0;
+  uint8_t g2 = item_g3_to_g2(g3_item);
+  return g2 ? item_g2_to_g1(g2) : 0;
+}
+
+/* BACKLOG #249 cases B/C/D/E, as a PURE decision -- see gen3_to_gb.h's own comment for
+ * the contract. `dst_gen != GB_GEN1` always answers NONE/STAYS: a Gen-2 target's own
+ * A/E ladder is already decided by set_item() above, this function is only ever
+ * consulted for GB_GEN1 by its one caller (gb_bank_down_g3). Chains item_g3_to_g2()
+ * then item_g2_to_g1() exactly as the brief requires -- no second Gen-3 table. */
+G3GbItemOutcome g3gb_item_ladder(uint8_t dst_gen, uint16_t g3_item,
+                                 int items_count, int items_cap,
+                                 int pc_count, int pc_cap, uint8_t* g1_item_out) {
+  if (g1_item_out) *g1_item_out = 0;
+  if (g3_item == 0) return G3GB_ITEM_NONE;
+  if (dst_gen != GB_GEN1) return G3GB_ITEM_STAYS;
+
+  uint8_t g2 = item_g3_to_g2(g3_item);
+  uint8_t g1 = g2 ? item_g2_to_g1(g2) : 0;
+  if (g1 == 0) return G3GB_ITEM_STAYS;              /* case E: no counterpart at all */
+
+  if (g1_item_out) *g1_item_out = g1;
+  if (items_count < items_cap) return G3GB_ITEM_BAG;  /* case B */
+  if (pc_count < pc_cap)       return G3GB_ITEM_PC;    /* case C */
+  return G3GB_ITEM_STAYS;                              /* case D falls to E */
+}
+
 /* Everything else the Game Boy record cannot carry, none of it ever refused on:
- * nature/ability/ribbons/contest/met data/ball/markings/held item/shiny-or-gender
- * drift, each flagged only when it is non-default so the UI lists real losses. */
+ * nature/ability/ribbons/contest/met data/ball/markings/shiny-or-gender drift, each
+ * flagged only when it is non-default so the UI lists real losses. Held item is
+ * set_item()'s own job now (BACKLOG #248), not this function's. */
 static void set_remaining_loss_flags(const GbEditMon* e, const uint8_t* rec80,
                                      const PkMon* m, Gen3ToGbLoss* loss) {
-  loss->item_dropped = (m->heldItem != 0);   /* no Gen-3 -> Gen-2 item map in this tree */
-
   uint16_t ab0 = pk_species_ability(m->species, 0), ab1 = pk_species_ability(m->species, 1);
   loss->ability  = (ab0 != ab1);
   loss->nature   = (pk_nature_boost(m->nature) != -1) || (pk_nature_hinder(m->nature) != -1);
@@ -275,6 +361,9 @@ G3GbStatus gen3_to_gb_fixed(const uint8_t* rec80, uint8_t gen, bool caught_avail
   if (st != G3GB_OK) return st;
 
   st = set_gen2_only_fields(&e, gen, caught_available, &m, loss);
+  if (st != G3GB_OK) return st;
+
+  st = set_item(&e, gen, &m, loss);
   if (st != G3GB_OK) return st;
 
   set_remaining_loss_flags(&e, rec80, &m, loss);

@@ -3,7 +3,7 @@
  *   cc -std=c11 -Wall -Wextra -I source -I tests tests/host_gen1party_test.c \
  *      source/gb_session.c source/gb_edit.c source/gen1_save.c source/gen1_write.c \
  *      source/gen2_save.c source/gen2_write.c source/data_tables.c \
- *      source/gen3_to_gb.c source/gb_sidecar.c source/bank_cell.c source/gen3_edit.c \
+ *      source/item_map_g2g3.c source/item_map_g1g2.c source/gb_item_names.c source/gb_bag.c source/gb_fields.c source/gen3_to_gb.c source/gb_sidecar.c source/bank_cell.c source/gen3_edit.c \
  *      source/gen3_mon.c source/gen3_box.c source/gen3_save.c source/gen3_daycare.c \
  *      source/rom_gbbase.c source/rom_gbsprite.c source/gb_sprite_codec.c \
  *      tests/gen12_fixture.c -o /tmp/hg1party && /tmp/hg1party
