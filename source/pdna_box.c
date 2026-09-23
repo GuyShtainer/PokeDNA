@@ -1507,7 +1507,14 @@ static uint8_t* __attribute__((noinline)) drop_held_up(BoxSource* src, int box, 
    * in beside this card's meta. Pay the full 16-box scan ONCE per session (15
    * extra 2,400-B reads, on a deliberate user action), then trust it. */
   static EWRAM_BSS bool s_up_scan_done;   /* EWRAM: an IWRAM static would cost 8 B of stack budget (re-verify) */
-  if (bc_is_native(packed) && (!pdna_bank_serial_trusted() || !s_up_scan_done)) {
+  /* BACKLOG #246 review F5 fix: wraps the WHOLE native-only scan (not folded into
+   * the inner guard's own condition) so the #168a review D2 structural test can
+   * still find the exact `if (!pdna_bank_serial_trusted() ... s_up_scan_done ...)`
+   * line its latch checks pin -- see that test's own comment for why the latch
+   * form matters (a bare `if (!pdna_bank_serial_trusted())` silently skips the
+   * scan forever on an ordinary card). */
+  if (bc_is_native(packed)) {
+  if (!pdna_bank_serial_trusted() || !s_up_scan_done) {
     /* BACKLOG #223 review D4/D5, fused into one pass by #206 fixes2 R2
      * (bank_scan_serial_and_clash, bank_collision.c): a rolled-back counter
      * (BACKLOG #219's .bak recovery) can hand serial S to a DIFFERENT mon than the
@@ -1562,6 +1569,7 @@ static uint8_t* __attribute__((noinline)) drop_held_up(BoxSource* src, int box, 
      * box's bytes, not `box`'s. Re-page the destination before writing. */
     recs = src->records(box);
   }
+  }   /* BACKLOG #246 review F5 fix: closes the bc_is_native(packed) wrap above */
   memcpy(recs + (uint32_t)cur * 80, packed, 80);
   bool ok = src->commit();                                 /* verified bank box_save */
   if (!ok) {
