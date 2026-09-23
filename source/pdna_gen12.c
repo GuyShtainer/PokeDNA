@@ -2046,64 +2046,52 @@ gb_lift_restore(const GbEditMon* mon, uint8_t out80[80]) {
   };
   uint64_t key = gbsc_key(mon->gen, gb_get_otid(mon), dv4, mon->otname);
 
-  /* BACKLOG #175c: bounded 2-attempt loop (golden rule 2's provable bound), same
-   * shape as pc_bank_restore_up (site 1, source/pdna_box.c): attempt 0 may offer
-   * SAVE NOW? on a PENDING entry and re-read once (attempt 1) so a successful
-   * promotion falls through into the SAME restore flow below; attempt 1 never
-   * offers again (decision 9: only one unpromoted transfer can ever exist, so a
-   * re-read that is STILL PENDING after a verified save-now is a real refusal). */
+  /* BACKLOG #226 review D1-R: this used to be a bounded 2-attempt loop offering
+   * SAVE NOW? on a PENDING entry, mirroring pc_bank_restore_up (site 1,
+   * source/pdna_box.c). Deleted, not repaired: `key` here is gbsc_key(...) (GB key
+   * space) while g_xd_key -- the only thing app_xfer_pending_is() ever compares
+   * against -- is set exclusively via app_xfer_pending_set(xr_key_g3(out80), ...)
+   * (Gen-3 key space, pdna_gen12.c:3558, the single writer). The two spaces never
+   * collide in practice, so the SAVE NOW? arm below was unreachable and the retry
+   * loop existed to serve a branch that could not run. Site 1 stays live: its key
+   * is xr_key_g3(g3_rec80), the same space g_xd_key is written in. */
   uint32_t len = 0;
   int found = -1;
   GbscEntry e;
-  for (int attempt = 0; attempt < 2; attempt++) {
-    SfStatus rst = xr_open(key, g_ed->sidecar, GBSC_FILE_MAX, &len, NULL);
-    if (rst == SF_ERR_OPEN) return 0;   /* no ledger entry at all -- an ordinary native lift */
-    if (rst != SF_OK) {
-      log_line("gen12: lift restore: xr_open failed (%s)", sf_status_str(rst));
-      msg_wait(PDNA_XFERREC_TITLE, UI_WARN, PDNA_XFERREC_L1, PDNA_XFERREC_L2);
-      return -1;
-    }
-    int count = gbsc_count(g_ed->sidecar, len);
-    if (count < 0) {
-      log_line("gen12: lift restore: ledger file failed to validate");
-      msg_wait(PDNA_XFERREC_TITLE, UI_WARN, PDNA_XFERREC_L1, PDNA_XFERREC_L2);
-      return -1;
-    }
-
-    /* decision 10's tiebreak, mirrored from app_paste_gb_lookup: prefer the entry
-     * whose species_written matches the mon's CURRENT dex (unevolved since the
-     * write); fall back to the first match at all. */
-    int first = -1, species_match = -1, start = 0;
-    uint16_t nowdex = gb_get_species_dex(mon);
-    for (int guard = 0; guard <= GBSC_MAX_ENTRIES; guard++) {
-      int i = gbsc_find(g_ed->sidecar, len, mon, start, /*include_claimed*/true, XR_KIND_NATIVE_HOME);
-      if (i < 0) break;
-      if (first < 0) first = i;
-      GbscEntry cand;
-      if (gbsc_get(g_ed->sidecar, len, i, &cand) && cand.species_written == nowdex) {
-        species_match = i;
-        break;
-      }
-      start = i + 1;
-    }
-    found = (species_match >= 0) ? species_match : first;
-    if (found < 0) return 0;   /* only Gen-3-home entries (or none) -- not this edge's job */
-
-    if (!gbsc_get(g_ed->sidecar, len, found, &e)) return -1;
-    /* BACKLOG #175c review D2: same fix as site 1 (source/pdna_box.c) -- only offer
-     * SAVE NOW? when THIS session's own unpromoted transfer is the entry blocking
-     * us; a mismatch falls through to the honest SAVE FIRST wall below instead of a
-     * real write followed by a false NOT SAVED. */
-    if (e.state != XR_STATE_PENDING || attempt == 1 || !app_xfer_pending_is(key)) break;
-    log_line("gen12: lift restore: entry still PENDING -- offering SAVE NOW? instead of the flat wall");
-    char l1[64];
-    siprintf(l1, "%s %s", PDNA_XFER_SAVENOW_L1, PDNA_XFER_SAVENOW_L2);
-    bool yes = app_confirm(PDNA_XFER_SAVENOW_TITLE, l1);       /* A = save now, B = no */
-    bool ok  = yes && app_xfer_save_now();  /* the helper shows its own NOTSAVED on failure */
-    if (!ok) { snd_deny(); return -1; }     /* the helper/confirm already said why */
-    /* saved -- loop once more to re-read the now-promoted entry via the SAME
-     * xr_open()/gbsc_find() this function already used, never a second copy. */
+  SfStatus rst = xr_open(key, g_ed->sidecar, GBSC_FILE_MAX, &len, NULL);
+  if (rst == SF_ERR_OPEN) return 0;   /* no ledger entry at all -- an ordinary native lift */
+  if (rst != SF_OK) {
+    log_line("gen12: lift restore: xr_open failed (%s)", sf_status_str(rst));
+    msg_wait(PDNA_XFERREC_TITLE, UI_WARN, PDNA_XFERREC_L1, PDNA_XFERREC_L2);
+    return -1;
   }
+  int count = gbsc_count(g_ed->sidecar, len);
+  if (count < 0) {
+    log_line("gen12: lift restore: ledger file failed to validate");
+    msg_wait(PDNA_XFERREC_TITLE, UI_WARN, PDNA_XFERREC_L1, PDNA_XFERREC_L2);
+    return -1;
+  }
+
+  /* decision 10's tiebreak, mirrored from app_paste_gb_lookup: prefer the entry
+   * whose species_written matches the mon's CURRENT dex (unevolved since the
+   * write); fall back to the first match at all. */
+  int first = -1, species_match = -1, start = 0;
+  uint16_t nowdex = gb_get_species_dex(mon);
+  for (int guard = 0; guard <= GBSC_MAX_ENTRIES; guard++) {
+    int i = gbsc_find(g_ed->sidecar, len, mon, start, /*include_claimed*/true, XR_KIND_NATIVE_HOME);
+    if (i < 0) break;
+    if (first < 0) first = i;
+    GbscEntry cand;
+    if (gbsc_get(g_ed->sidecar, len, i, &cand) && cand.species_written == nowdex) {
+      species_match = i;
+      break;
+    }
+    start = i + 1;
+  }
+  found = (species_match >= 0) ? species_match : first;
+  if (found < 0) return 0;   /* only Gen-3-home entries (or none) -- not this edge's job */
+
+  if (!gbsc_get(g_ed->sidecar, len, found, &e)) return -1;
 
   /* decision 8's state branch, mirrored from pc_bank_restore_up (site 1). */
   if (e.state == XR_STATE_RESTORED) {
@@ -2113,10 +2101,10 @@ gb_lift_restore(const GbEditMon* mon, uint8_t out80[80]) {
     return -1;
   }
   if (e.state == XR_STATE_PENDING) {
-    /* BACKLOG #175c: still PENDING after a VERIFIED save-now -- decision 9 says
-     * this cannot be the same entry (one unpromoted transfer at a time), so this
-     * is a genuine second refusal, not the flat wall this lane replaced. */
-    log_line("gen12: lift restore: entry still PENDING after save-now -- refusing");
+    /* BACKLOG #226 review D1-R: this session's own g_xd_key is Gen-3-space and can
+     * never equal this GB-space key (see the comment above), so PENDING here is
+     * always someone else's unpromoted transfer -- the honest SAVE FIRST wall. */
+    log_line("gen12: lift restore: entry still PENDING -- refusing (honest SAVE FIRST wall)");
     snd_deny();
     msg_wait(PDNA_XFER_SAVEFIRST_TITLE, UI_WARN, PDNA_XFER_SAVEFIRST_L1, PDNA_XFER_SAVEFIRST_L2);
     return -1;

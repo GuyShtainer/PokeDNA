@@ -1795,14 +1795,16 @@ def main() -> int:
         ok, d = invalidate_call_facts(lines, sig_re, label)
         check(ok, d)
 
-    # ---- (as) BACKLOG #175c review D2: both restore sites gate their SAVE NOW? offer
-    # on app_xfer_pending_is(key), not the bare app_xfer_pending(). MUT AS below drops
-    # the clause at each site and must be caught. ----
+    # ---- (as) BACKLOG #175c review D2 / #226 review D1-R: pc_bank_restore_up (site 1)
+    # gates its SAVE NOW? offer on app_xfer_pending_is(key) -- the RAM key is Gen-3
+    # space (xr_key_g3), the same space this site's own `key` uses, so the gate is
+    # real. Site 2 (gb_lift_restore, source/pdna_gen12.c) had the identical-looking
+    # gate but compared a GB-space key (gbsc_key) against the Gen-3-space g_xd_key --
+    # always false, an unreachable dead path -- and D1-R deleted it outright rather
+    # than pin a gate that no longer exists. MUT AS below drops the clause at site 1
+    # and must be caught. ----
     s, e = extract_function(box_lines, r"^pc_bank_restore_up\(")
     ok, detail = restore_savenow_key_facts(box_lines[s:e], "pc_bank_restore_up")
-    check(ok, detail)
-    s, e = extract_function(gen12_lines, r"^gb_lift_restore\(")
-    ok, detail = restore_savenow_key_facts(gen12_lines[s:e], "gb_lift_restore")
     check(ok, detail)
 
     # ---- (au)/(av)/(aw) BACKLOG #226 review D1: the party-full deposit's hoisted
@@ -2692,11 +2694,12 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str],
               f"xfer_down_write( in gb_bank_down_gen3: {detail}")
 
     # MUT AS (BACKLOG #175c review D2, check (as)'s own demonstration): drop the
-    # `|| !app_xfer_pending_is(key)` clause from each restore site's `attempt == 1`
-    # break line -- (as) must fail at both sites.
+    # `|| !app_xfer_pending_is(key)` clause from site 1's `attempt == 1` break line.
+    # Site 2 (gb_lift_restore) no longer has this loop at all -- BACKLOG #226 D1-R
+    # deleted it because its `key` compared a different key space than g_xd_key and
+    # the gate was unreachable by construction (see (as)'s comment above).
     for lines, sig, label in (
         (box_lines, r"^pc_bank_restore_up\(", "pc_bank_restore_up"),
-        (gen12_lines, r"^gb_lift_restore\(", "gb_lift_restore"),
     ):
         s, e = extract_function(lines, sig)
         body_real = lines[s:e]
