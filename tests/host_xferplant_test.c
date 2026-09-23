@@ -8,7 +8,7 @@
  *      source/gb_editor.c source/gb_session.c source/rom_gblearn.c \
  *      source/rom_gbbase.c source/rom_gbsprite.c source/gb_sprite_codec.c \
  *      source/ui_font.c \
- *      source/bank_down_convert.c source/gen12_convert.c source/gen3_to_gb.c \
+ *      source/bank_down_convert.c source/gen12_convert.c source/item_map_g1g2.c source/gb_bag.c source/gb_fields.c source/gen3_to_gb.c \
  *      source/xfer_rec.c source/bank_cell.c source/gb_edit.c source/gen1_save.c \
  *      source/gen1_write.c source/gen2_save.c source/gen2_write.c \
  *      source/gb_sidecar.c source/gen3_save.c source/gen3_mon.c source/gen3_box.c \

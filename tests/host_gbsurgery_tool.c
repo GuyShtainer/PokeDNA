@@ -33,7 +33,7 @@
  *      source/gb_flags_rw.c \
  *      source/gb_hof.c \
  *      source/gb_dex.c \
- *      source/gen3_to_gb.c \
+ *      source/item_map_g2g3.c source/item_map_g1g2.c source/gb_item_names.c source/gen3_to_gb.c \
  *      source/gb_moves_legal.c \
  *      source/gen3_mon.c \
  *      source/gen3_box.c \
