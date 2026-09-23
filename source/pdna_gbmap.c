@@ -134,34 +134,125 @@ static void gbmap_paint(GbScreen* gs, GbMapState* st, uint8_t* maptiles) {
 static int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
 /* ------------------------------------------------------------- M3 write -- */
-/* Both bytes plus their derived XBLOCK/YBLOCK (Red/Yellow only, gb_fields.c's
- * own per-game columns -- 0 on Gen 2, gbs_write_field is skipped for a field
- * whose gbf_off() is 0). Writes ALL FOUR fields this screen ever touches, not
- * just the two the design doc's table names, so a caller never has to wonder
- * which byte of the destination it owns (Pre-report self-audit item 3):
- * wXCoord, wYCoord, wXBlockCoord, wYBlockCoord. Every write goes through
- * gbs_write_field, the SAME structural+reparse+verify gate every other GB
- * field edit in this codebase uses (gb_clock.c/gb_trainer.c/gb_bag.c/...) --
- * this module adds no new write mechanism, only new callers of the existing
- * one. Returns the first non-OK status if any write refuses (fail-fast,
- * matching gbs_write_field's own per-call verify contract); the caller must
- * treat any non-GBS_OK as "nothing landed on the card yet" and NOT call
- * gb_persist(). */
-static GbsStatus gbmap_write_pos(GbSession* s, uint8_t xcoord, uint8_t ycoord) {
-  uint32_t xoff = gbf_off(GBF_G_RED, GBF_POS_X);
-  uint32_t yoff = gbf_off(GBF_G_RED, GBF_POS_Y);
-  if (!xoff || !yoff) return GBS_ERR_ARG;
-  GbsStatus st = gbs_write_field(s, xoff, &xcoord, 1);
+/* ALL FIVE fields the boot path actually consumes, not just the two the design
+ * doc's table originally named (map-gen1 review D1, Pre-report self-audit item
+ * 3): wCurrentTileBlockMapViewPointer, wXCoord, wYCoord, wXBlockCoord,
+ * wYBlockCoord. LoadCurrentMapView RENDERS from the view pointer, not from the
+ * coord pair -- a write that only sets the coords moves the player LOGICALLY
+ * without moving the map (the failing boot trace this fix is for).
+ *
+ * The pointer is DERIVED (gb1warp_viewptr(), gb1_warp.h) and validated BEFORE
+ * the first byte of this write lands: an underivable pointer writes NOTHING at
+ * all, never a partial position (same fail-closed contract gb1warp_check()
+ * itself already carries one level up). XBLOCK/YBLOCK are always written 0 --
+ * gb1warp_coord() always returns an EVEN coordinate (block*2), so X&1/Y&1 are
+ * always 0 for a block-aligned teleport destination; nothing here needs to
+ * re-derive them from the coord pair the way the game's own dungeon-tileset
+ * transition code does.
+ *
+ * Every write goes through gbs_write_field, the SAME structural+reparse+verify
+ * gate every other GB field edit in this codebase uses (gb_clock.c/
+ * gb_trainer.c/gb_bag.c/...) -- this module adds no new write mechanism, only
+ * new callers of the existing one. Returns the first non-OK status if any
+ * write refuses (fail-fast, matching gbs_write_field's own per-call verify
+ * contract); the caller must treat any non-GBS_OK as "the session's own image
+ * may hold a half-edit now" and gb_rollback() before doing anything else with
+ * it (map-gen1 review D5) -- NOT just skip gb_persist(). */
+static GbsStatus gbmap_write_pos(GbSession* s, uint16_t width, int16_t bx, int16_t by) {
+  uint16_t vp;
+  if (!gb1warp_viewptr(width, bx, by, &vp)) return GBS_ERR_ARG;   /* nothing written yet */
+
+  uint32_t vpoff = gbf_off(GBF_G_RED, GBF_POS_VIEWPTR);
+  uint32_t xoff  = gbf_off(GBF_G_RED, GBF_POS_X);
+  uint32_t yoff  = gbf_off(GBF_G_RED, GBF_POS_Y);
+  uint32_t xbk   = gbf_off(GBF_G_RED, GBF_POS_XBLOCK);
+  uint32_t ybk   = gbf_off(GBF_G_RED, GBF_POS_YBLOCK);
+  if (!vpoff || !xoff || !yoff || !xbk || !ybk) return GBS_ERR_ARG;
+
+  uint8_t vpbuf[2] = { (uint8_t)(vp & 0xFF), (uint8_t)(vp >> 8) };   /* LE, matching
+                                                                       * SRAM's own
+                                                                       * lo/hi layout */
+  uint8_t xcoord = gb1warp_coord(bx), ycoord = gb1warp_coord(by), zero = 0;
+
+  GbsStatus st = gbs_write_field(s, vpoff, vpbuf, sizeof vpbuf);
   if (st != GBS_OK) return st;
   st = gbs_write_field(s, yoff, &ycoord, 1);
   if (st != GBS_OK) return st;
-
-  uint8_t zero = 0;
-  uint32_t xbk = gbf_off(GBF_G_RED, GBF_POS_XBLOCK);
-  uint32_t ybk = gbf_off(GBF_G_RED, GBF_POS_YBLOCK);
-  if (xbk) { st = gbs_write_field(s, xbk, &zero, 1); if (st != GBS_OK) return st; }
-  if (ybk) { st = gbs_write_field(s, ybk, &zero, 1); if (st != GBS_OK) return st; }
+  st = gbs_write_field(s, xoff, &xcoord, 1);
+  if (st != GBS_OK) return st;
+  st = gbs_write_field(s, ybk, &zero, 1);
+  if (st != GBS_OK) return st;
+  st = gbs_write_field(s, xbk, &zero, 1);
+  if (st != GBS_OK) return st;
   return gbs_finish(s);
+}
+
+/* map-gen1 review D3: the undo restores the exact 6 BYTES a snapshot took before
+ * the forward write above touched anything (viewptr lo/hi, Y, X, YBLOCK, XBLOCK --
+ * contiguous at GBF_POS_VIEWPTR's own offset through GBF_POS_XBLOCK's, in both Red
+ * and Yellow), never a re-derived XBLOCK/YBLOCK pair -- re-deriving from a starting
+ * coordinate that happened to be ODD (an ordinary state) would write a position
+ * that boots fine and desyncs the very next step, permanently. */
+static GbsStatus gbmap_restore_pos(GbSession* s, const uint8_t snap[6]) {
+  uint32_t off = gbf_off(GBF_G_RED, GBF_POS_VIEWPTR);
+  if (!off) return GBS_ERR_ARG;
+  GbsStatus st = gbs_write_field(s, off, snap, 6);
+  if (st != GBS_OK) return st;
+  return gbs_finish(s);
+}
+
+/* map-gen1 review D8: the confirm+write+persist tail, extracted out of
+ * pdna_gbmap_gen1() (which was 297 lines, well past the 60-line guideline) --
+ * D1/D2/D3 all land in exactly this code, so the write path gets its own
+ * reviewable unit. Runs AFTER the shell is closed (see the KEY_A handler's own
+ * comment in pdna_gbmap_gen1() for why); `not_walkable` is already resolved by
+ * the caller, while the ROM/shell were still open (map-gen1 review D2). */
+static void gbmap_do_place(GbSession* s, uint8_t map_id, uint16_t width, uint16_t height,
+                            int cur_bx, int cur_by, bool not_walkable) {
+  Gb1MapBounds b = { map_id, width, height, true };
+  Gb1Warp w = { map_id, (int16_t)cur_bx, (int16_t)cur_by };
+  if (gb1warp_check(&b, &w) != GB1W_OK) {
+    snd_deny();
+    s_msg("CANNOT PLACE", UI_WARN, PDNA_GBMAP_CANNOT_L1, PDNA_GBMAP_CANNOT_L2);
+    return;
+  }
+  char l1[40];
+  siprintf(l1, "Block (%d,%d)%s", cur_bx, cur_by,
+           not_walkable ? PDNA_GBMAP_NOT_WALKABLE : "");
+  if (!app_confirm(PDNA_GBMAP_CONFIRM_TITLE, l1)) return;
+
+  /* The ONE snapshot this visit ever takes -- the raw 6 bytes, taken BEFORE the
+   * first write (map-gen1 review D3). A failed snapshot read still lets the
+   * placement proceed (the forward write's own checksummed re-verify is
+   * self-contained), it just means no undo can be offered afterward. */
+  uint8_t snap[6];
+  uint32_t snap_off = gbf_off(GBF_G_RED, GBF_POS_VIEWPTR);
+  bool have_snap = snap_off && gbs_read_field(s, snap_off, snap, sizeof snap) == GBS_OK;
+
+  GbsStatus wst = gbmap_write_pos(s, width, (int16_t)cur_bx, (int16_t)cur_by);
+  if (wst != GBS_OK) {
+    gb_rollback();   /* map-gen1 review D5: a Gen-1 field write re-checksums and
+                       * re-verifies the image on EVERY call, so a failure partway
+                       * through this batch can leave a VALID half-edit resident in
+                       * the session's own image -- discard it, don't let a later
+                       * unrelated edit's gb_persist() flush it to the card */
+    s_msg("WRITE REFUSED", UI_WARN, gbs_status_text(wst), "Nothing was changed.");
+    return;
+  }
+  if (!gb_persist("gb1 teleport")) return;   /* gb_persist already messaged + rolled back */
+
+  s_msg("PLACED", UI_OK, PDNA_GBMAP_PLACED_L1, PDNA_GBMAP_PLACED_L2);
+  if (!have_snap) return;   /* undo offer gated on having the snapshot (D3) */
+  if (app_confirm(PDNA_GBMAP_UNDO_TITLE, 0)) {
+    GbsStatus ust = gbmap_restore_pos(s, snap);
+    if (ust != GBS_OK) {
+      gb_rollback();   /* same D5 posture as the write-refused path above */
+      s_msg("REFUSED", UI_WARN, gbs_status_text(ust), 0);
+      return;
+    }
+    if (!gb_persist("gb1 teleport undo")) return;
+    s_msg("RESTORED", UI_OK, PDNA_GBMAP_RESTORED_L1, PDNA_GBMAP_RESTORED_L2);
+  }
 }
 
 void pdna_gbmap_gen1(GbSession* s, bool can_edit) {
@@ -287,6 +378,10 @@ void pdna_gbmap_gen1(GbSession* s, bool can_edit) {
 
   const char* const kLegendPlain[4] = { can_edit ? PDNA_GBSCR_ACT_PLACE : 0,
                                          PDNA_GBSCR_ACT_BACK, PDNA_GBSCR_ACT_SIZE, 0 };
+  /* map-gen1 review D7: while placing, the D-pad moves the CURSOR, not the
+   * viewport -- SELECT/L/R's SIZE toggle does nothing there, so the legend
+   * must not advertise it (it used to stay on kLegendPlain the whole visit). */
+  const char* const kLegendPlacing[4] = { PDNA_GBSCR_ACT_PLACE, PDNA_GBSCR_ACT_BACK, 0, 0 };
   gbscr_set_legend(&gs, kLegendPlain);
 
   gbmap_load_viewport_blocks(&st);
@@ -332,6 +427,7 @@ void pdna_gbmap_gen1(GbSession* s, bool can_edit) {
         if (!can_edit) { snd_deny(); continue; }
         placing = true;
         cur_bx = block_px; cur_by = block_py;   /* start the cursor on the player */
+        gbscr_set_legend(&gs, kLegendPlacing);   /* D7: SIZE is inert while placing */
         gbscr_mark_all_dirty(&gs);   /* the cursor frame is new pixels m3_frame()
                                       * draws directly on the framebuffer -- a
                                       * dirty-tile repaint is the only thing that
@@ -374,6 +470,7 @@ void pdna_gbmap_gen1(GbSession* s, bool can_edit) {
      * simply not re-enter it, not to reproduce that dance). */
     if (k & KEY_B) {
       placing = false;
+      gbscr_set_legend(&gs, kLegendPlain);   /* D7: restore the SIZE slot */
       snd_back();
       gbscr_mark_all_dirty(&gs);   /* erase the now-stale cursor frame (see the
                                     * KEY_A handler's own comment above) */
@@ -383,12 +480,19 @@ void pdna_gbmap_gen1(GbSession* s, bool can_edit) {
       if (cur_bx == block_px && cur_by == block_py) {   /* no-op: already there */
         snd_back();
         placing = false;
+        gbscr_set_legend(&gs, kLegendPlain);   /* D7: restore the SIZE slot */
         gbscr_mark_all_dirty(&gs);   /* same erase as the KEY_B path above */
         continue;
       }
       want_place = true;
       break;
     }
+    /* map-gen1 review D7: SELECT/L/R have no meaning while placing (SIZE is a
+     * plain-view-only toggle -- the legend above no longer even advertises it
+     * here) -- explicit no-op rather than an implicit fall-through into the
+     * D-pad cursor-move code below, which happened to no-op for these bits
+     * anyway but left s_wait()'s own move sound as the only feedback. */
+    if (k & (KEY_SELECT | KEY_L | KEY_R)) continue;
 
     int ncx = cur_bx, ncy = cur_by;
     if (k & KEY_LEFT)  ncx--;
@@ -418,6 +522,22 @@ void pdna_gbmap_gen1(GbSession* s, bool can_edit) {
                                   * erases the previous position's stale outline) */
   }
 
+  /* map-gen1 review D2: is the placed-on block walkable? Resolved HERE, while
+   * the ROM (st.g) is still open -- the shell/FIL below are about to close, and
+   * the confirm dialog runs after that (see the comment on that dialog for
+   * why). A read failure just means "unknown", never a warning -- this is
+   * advisory only, so silence on a read failure is the safe default, not a
+   * guess in either direction. */
+  bool not_walkable = false;
+  if (want_place) {
+    uint8_t blk_id = 0xFF;
+    if (st.g.read(st.g.ctx, st.hdr.blocks_off + (uint32_t)cur_by * st.hdr.width + (uint32_t)cur_bx,
+                 &blk_id, 1)) {
+      bool walkable = true;
+      if (rgm1_block_walkable(&st.g, &st.ts, blk_id, &walkable)) not_walkable = !walkable;
+    }
+  }
+
 #ifndef PDNA_DELTA
   f_close(&fil);
 #endif
@@ -430,34 +550,9 @@ void pdna_gbmap_gen1(GbSession* s, bool can_edit) {
    * comment) -- the bounds check is still run for real, not skipped, because
    * a hand-carried (map_id,bx,by) triple must never be trusted just because
    * it usually agrees with itself (design §7: "never trust a hand-typed
-   * pair"). */
+   * pair"). Extracted to gbmap_do_place() (map-gen1 review D8) -- see that
+   * function's own comment. */
   if (want_place) {
-    Gb1MapBounds b = { map_id, st.hdr.width, st.hdr.height, true };
-    Gb1Warp w = { map_id, (int16_t)cur_bx, (int16_t)cur_by };
-    if (gb1warp_check(&b, &w) != GB1W_OK) {
-      snd_deny();
-      s_msg("CANNOT PLACE", UI_WARN, PDNA_GBMAP_CANNOT_L1, PDNA_GBMAP_CANNOT_L2);
-      return;
-    }
-    char l1[32];
-    siprintf(l1, "Block (%d,%d)", cur_bx, cur_by);
-    if (!app_confirm(PDNA_GBMAP_CONFIRM_TITLE, l1)) return;
-
-    uint8_t old_x = px, old_y = py;   /* the ONE snapshot this visit ever takes */
-    uint8_t nx = gb1warp_coord((int16_t)cur_bx), ny = gb1warp_coord((int16_t)cur_by);
-    GbsStatus wst = gbmap_write_pos(s, nx, ny);
-    if (wst != GBS_OK) {
-      s_msg("WRITE REFUSED", UI_WARN, gbs_status_text(wst), "Nothing was changed.");
-      return;
-    }
-    if (!gb_persist("gb1 teleport")) return;   /* gb_persist already messaged + rolled back */
-
-    s_msg("PLACED", UI_OK, PDNA_GBMAP_PLACED_L1, PDNA_GBMAP_PLACED_L2);
-    if (app_confirm(PDNA_GBMAP_UNDO_TITLE, 0)) {
-      GbsStatus ust = gbmap_write_pos(s, old_x, old_y);
-      if (ust != GBS_OK) { s_msg("REFUSED", UI_WARN, gbs_status_text(ust), 0); return; }
-      if (!gb_persist("gb1 teleport undo")) return;
-      s_msg("RESTORED", UI_OK, PDNA_GBMAP_RESTORED_L1, PDNA_GBMAP_RESTORED_L2);
-    }
+    gbmap_do_place(s, map_id, st.hdr.width, st.hdr.height, cur_bx, cur_by, not_walkable);
   }
 }

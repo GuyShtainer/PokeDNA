@@ -130,6 +130,16 @@ typedef enum {
    * show for dex entry #201. GS/Crystal only; Gen 1 has no Unown dex entry at all. */
   GBF_FIRST_UNOWN_SEEN,   /* GBF_STATUS_FLAGS itself was appended by BACKLOG #96 above */
 
+  /* map-gen1 review D1, appended (same API-id rule as every prior append above):
+   * wCurrentTileBlockMapViewPointer -- $D35F Red / $D35E Yellow, both at save offset
+   * 0x260B (2 bytes, LITTLE-endian -- the one exception to this table's usual
+   * big-endian convention, since this is a raw copy of a 16-bit WRAM pointer, not a
+   * player-facing numeric field). LoadCurrentMapView renders from THIS pointer, not
+   * from wXBlockCoord/wYBlockCoord -- see source/gb1_warp.h's own top comment for why
+   * a Gen-1 teleport must write it. Red/Yellow only; Gen 2 has no equivalent field
+   * (its own current-map-view state is recomputed from wMapGroup/wMapNumber on load). */
+  GBF_POS_VIEWPTR,
+
   GBF_FIELD_COUNT
 } GbField;
 

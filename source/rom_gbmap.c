@@ -268,13 +268,40 @@ bool rgm1_tileset(const RomGbMap1* g, uint8_t tileset_id, GbMap1Tileset* out) {
   uint8_t  gfx_bank = row[0];
   uint16_t block_ptr = rd16(row + 1);
   uint16_t gfx_ptr = rd16(row + 3);
+  uint16_t coll_ptr = rd16(row + 5);   /* map-gen1 review D2: _Coll, same bank+
+                                        * resolve as blockset/tile-gfx above */
   uint32_t block_off = fileoff(gfx_bank, block_ptr);
   uint32_t gfx_off = fileoff(gfx_bank, gfx_ptr);
-  if (block_off >= g->size || gfx_off >= g->size) return false;
+  uint32_t coll_off = fileoff(gfx_bank, coll_ptr);
+  if (block_off >= g->size || gfx_off >= g->size || coll_off >= g->size) return false;
   out->gfx_bank = gfx_bank;
   out->block_off = block_off;
   out->gfx_off = gfx_off;
+  out->coll_off = coll_off;
   return true;
+}
+
+bool rgm1_block_walkable(const RomGbMap1* g, const GbMap1Tileset* ts, uint8_t block_id,
+                          bool* out) {
+  if (!out) return false;
+  *out = false;
+  if (!g->ok) return false;
+  uint8_t blk[16];
+  if (!rgm1_block(g, ts, block_id, blk)) return false;
+  uint8_t rep = blk[4];   /* the block's own representative collision tile (D2) */
+
+  uint8_t coll[256];
+  uint32_t n = 0;
+  for (; n < 256; n++) {
+    uint8_t b;
+    if (!rdg(g, ts->coll_off + n, &b, 1)) return false;
+    if (b == 0xFF) break;
+    coll[n] = b;
+  }
+  for (uint32_t i = 0; i < n; i++) {
+    if (coll[i] == rep) { *out = true; return true; }
+  }
+  return true;   /* read fine, rep tile just is not in the passable list */
 }
 
 bool rgm1_block(const RomGbMap1* g, const GbMap1Tileset* ts, uint8_t block_id,

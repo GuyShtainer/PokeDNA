@@ -73,4 +73,23 @@ int gb1warp_check(const Gb1MapBounds* b, const Gb1Warp* w);
  * would collide with no real sentinel here, but staying inside a byte matters). */
 uint8_t gb1warp_coord(int16_t block);
 
+/* map-gen1 review D1: wCurrentTileBlockMapViewPointer -- what LoadCurrentMapView
+ * ACTUALLY RENDERS FROM (gb_fields.h's GBF_POS_VIEWPTR), which nothing else on the
+ * boot path recomputes. The game's own derivation (pokered/pokeyellow home/
+ * overworld.asm, event_displacement macro, coords.asm:75-79):
+ *   viewptr = wOverworldMap + 7 + W + (W+6)*by + bx
+ * with wOverworldMap = $C6E8 in Red, Blue AND Yellow, W the map's own width in
+ * BLOCKS, and (bx,by) the destination BLOCK coordinate (gbmap_block_of()'s own
+ * units -- the same pair gb1warp_check() validates). Verified against both corpus
+ * saves untouched: Red W=7 bx=3 by=2 -> 0xC713; Yellow W=4 bx=1 by=2 -> 0xC708.
+ *
+ * Fails closed (returns false, `*out` untouched) for any input that would not land
+ * inside the game's own wOverworldMap buffer, [0xC6E8, 0xCBFC) -- an underivable
+ * pointer must never be written, so the caller's contract is "check this FIRST,
+ * before the first byte of the position write lands" (gbmap_write_pos does). Does
+ * NOT trust the caller's own bounds check alone: `width` and `bx`/`by` are
+ * independently re-validated here (golden rule 7), even though every real call site
+ * already ran them through gb1warp_check(). */
+bool gb1warp_viewptr(uint16_t width, int16_t bx, int16_t by, uint16_t* out);
+
 #endif /* GB1_WARP_H */

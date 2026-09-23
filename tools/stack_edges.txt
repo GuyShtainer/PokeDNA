@@ -1150,12 +1150,14 @@ ScanJob.cb @0 in scan_multi -> g1_bs_cb g1_dex_cb g1_mew_cb g2_bd_cb g2_pal_cb g
 # `const RomGbMap1*`/`RomGbMap1*` and dereferences it through `rdg()` (rom_gbmap.c),
 # which the compiler inlines into each -- same "no separate accessor symbol in this
 # ELF" shape rom_gbui.c's own `rd()` already has (RomGbUi.read@0 above).
-# gbmap_load_viewport_blocks (source/pdna_gbmap.c) calls `st->g.read(...)` directly on
-# its own GbMapState.g field (a RomGbMap1, embedded at GbMapState offset 0 -- same
-# struct, same field offset 0). Implementations, from every rgm1_open() call site
-# (grepped pdna_gbmap.c): gbmap_sd_read (SD/artless build) and fused_gb_slice_read
-# (delta build, #ifdef PDNA_DELTA).
-RomGbMap1.read @0 in rgm1_header,rgm1_tileset,rgm1_block,rgm1_tile2bpp,gbmap_load_viewport_blocks -> gbmap_sd_read fused_gb_slice_read
+# gbmap_load_viewport_blocks and pdna_gbmap_gen1 (source/pdna_gbmap.c) call
+# `st->g.read(...)`/`st.g.read(...)` directly on their own GbMapState.g field (a
+# RomGbMap1, embedded at GbMapState offset 0 -- same struct, same field offset 0).
+# rgm1_block_walkable (map-gen1 review D2) dereferences it through the SAME rdg()
+# rgm1_header/rgm1_tileset/rgm1_block/rgm1_tile2bpp already use. Implementations,
+# from every rgm1_open() call site (grepped pdna_gbmap.c): gbmap_sd_read (SD/artless
+# build) and fused_gb_slice_read (delta build, #ifdef PDNA_DELTA).
+RomGbMap1.read @0 in rgm1_header,rgm1_tileset,rgm1_block,rgm1_tile2bpp,rgm1_block_walkable,gbmap_load_viewport_blocks,pdna_gbmap_gen1 -> gbmap_sd_read fused_gb_slice_read
 # rgm1_open's OWN scan (rom_gbmap.c's file-local `rd()`/`scan_one()`, both inlined into
 # rgm1_open -- no separate symbol) dispatches through a LOCAL `Scan.read` struct built
 # on rgm1_open's own stack frame, not a heap/argument struct field the walker can key an

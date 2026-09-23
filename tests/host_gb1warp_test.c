@@ -82,6 +82,34 @@ int main(void) {
     CHECK(gb1warp_coord(200) == 254, "an oversized block clamps to 127*2=254, never 0xFF/wraps");
   }
 
+  /* ---- 8. map-gen1 review D1: gb1warp_viewptr() against the two corpus facts
+   *      (Red W=7 bx=3 by=2 -> 0xC713; Yellow W=4 bx=1 by=2 -> 0xC708, both
+   *      verified live off the untouched corpus saves) ---- */
+  {
+    uint16_t vp = 0;
+    CHECK(gb1warp_viewptr(7, 3, 2, &vp) && vp == 0xC713,
+          "Red W=7 bx=3 by=2 -> viewptr 0xC713");
+    vp = 0;
+    CHECK(gb1warp_viewptr(4, 1, 2, &vp) && vp == 0xC708,
+          "Yellow W=4 bx=1 by=2 -> viewptr 0xC708");
+  }
+
+  /* ---- 9. gb1warp_viewptr() fails closed outside the game's own
+   *      wOverworldMap buffer [0xC6E8, 0xCBFC), and never touches *out on
+   *      refusal ---- */
+  {
+    uint16_t vp = 0xDEAD;
+    CHECK(!gb1warp_viewptr(0, 0, 0, &vp), "width 0 refuses");
+    CHECK(vp == 0xDEAD, "a refused call never touches *out");
+    CHECK(!gb1warp_viewptr(1, -1, 0, &vp), "negative bx refuses");
+    CHECK(!gb1warp_viewptr(1, 0, -1, &vp), "negative by refuses");
+    /* a huge but structurally-plausible map (128 wide) pushed far enough down
+     * to walk the derived pointer straight out of the 1300-byte buffer */
+    CHECK(!gb1warp_viewptr(128, 127, 127, &vp),
+          "a destination whose derived pointer falls outside the buffer refuses");
+    CHECK(!gb1warp_viewptr(0, 0, 0, 0), "a NULL out pointer refuses");
+  }
+
   if (g_fail) { printf("host_gb1warp_test: %d FAILED\n", g_fail); return 1; }
   printf("host_gb1warp_test: all OK\n");
   return 0;

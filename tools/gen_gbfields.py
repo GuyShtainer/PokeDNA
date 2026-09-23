@@ -427,6 +427,16 @@ FIELDS = [
       "GS": D("cur_map_data", "wMapGroup", 0x2868), "CRYSTAL": D("cur_map_data", "wMapGroup", 0x2843)}),
   ("MAP_NUMBER", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
       "GS": D("cur_map_data", "wMapNumber", 0x2869), "CRYSTAL": D("cur_map_data", "wMapNumber", 0x2844)}),
+  # map-gen1 review D1: wCurrentTileBlockMapViewPointer -- what LoadCurrentMapView
+  # actually renders from; Red $D35F / Yellow $D35E, both at the SAME save offset
+  # 0x260B (main_data + 0x68) since the two games' save layouts are byte-identical
+  # (headline #2). 2 raw bytes, LITTLE-endian (a WRAM pointer copy, not a numeric
+  # field) -- gbmap_write_pos() builds the lo/hi buffer itself, so BYTES (not a
+  # dedicated U16LE kind) is the right tag: nothing here decodes it generically.
+  ("POS_VIEWPTR", BYTES, 2, {
+      "RED": D("main_data", "wCurrentTileBlockMapViewPointer", 0x260B),
+      "YELLOW": D("main_data", "wCurrentTileBlockMapViewPointer", 0x260B),
+      "GS": ABSENT, "CRYSTAL": ABSENT}),
   ("POS_X", U8, 1, {
       "RED": D("main_data", "wXCoord", 0x260E), "YELLOW": D("main_data", "wXCoord", 0x260E),
       "GS": D("cur_map_data", "wXCoord", 0x286B), "CRYSTAL": D("cur_map_data", "wXCoord", 0x2846)}),

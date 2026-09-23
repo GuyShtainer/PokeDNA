@@ -2212,6 +2212,11 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_GBMAP_UNDO_TITLE      "UNDO THE LAST PLACEMENT?"
 #define PDNA_GBMAP_RESTORED_L1     "Restored to where you"
 #define PDNA_GBMAP_RESTORED_L2     "were before placing."
+/* map-gen1 review D2: same "warn, do not refuse" posture pdna_map.c's own Gen-3
+ * warp confirm uses ("Tile is NOT walkable!") -- you can still Fly/Dig/Teleport off
+ * an unwalkable tile, so this is a warning line appended to the confirm dialog's
+ * own l1, not a refusal. */
+#define PDNA_GBMAP_NOT_WALKABLE    " - not walkable!"
 
 /* M1-G2 (BACKLOG #91) Gen-2 Map screen: the one genuinely new silent-
  * corruption risk in this slice (design doc §10 risk 1) -- a Gold save
