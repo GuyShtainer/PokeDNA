@@ -87,6 +87,7 @@ import time
 DEVKITARM = os.environ.get("DEVKITARM", "/opt/devkitpro/devkitARM")
 OBJDUMP = os.path.join(DEVKITARM, "bin", "arm-none-eabi-objdump")
 NM = os.path.join(DEVKITARM, "bin", "arm-none-eabi-nm")
+READELF = os.path.join(DEVKITARM, "bin", "arm-none-eabi-readelf")
 
 SAFETY_MARGIN = 1024   # B of headroom demanded below (__sp_usr - __iheap_start)
 # D9 (BACKLOG #84b fifth pass): where 64 comes from, spelled out once instead of
@@ -3245,8 +3246,96 @@ def scan_relocated_addresses(builddir, name_at):
 
 _TEXT_WORD_RE = re.compile(r'^\.word\s+0x([0-9a-f]+)$')
 
+# BACKLOG #230: a `.text` literal that happens to equal an ORDINARY DATA WORD (not a
+# pointer store at all) collides with a Thumb function's address far more easily than
+# with an ARM one, because scan_text_literal_pool() used to mask bit 0 off the literal
+# before the name_at lookup -- the same masking name_at itself already needed (objdump
+# -d always PRINTS a function's disassembly label at its even address, Thumb or ARM
+# alike). That made an EVEN word match a Thumb function too, even though the only
+# value a real Thumb function pointer can ever hold is the ODD form (BX/BLX requires
+# bit 0 set for Thumb interworking -- the ARM-Thumb interworking rule, not a PokeDNA
+# convention). `gbscr_persist_mode` (Thumb) landing at 0x08040000 and a plain data word
+# 0x08040000 living six times in the image (mon_anim.c's s_fam[413] table among them)
+# is exactly that collision: 0x08040001, the only shape a genuine pointer to it could
+# take, appears zero times.
+#
+# The fix: read each function's TRUE Thumb/ARM identity straight out of the ELF's own
+# symbol table (read_func_isa() below) instead of guessing "everything is Thumb". Per
+# the ARM ELF ABI, a STT_FUNC symbol's OWN st_value carries the ISA in its low bit --
+# 1 for Thumb, 0 for ARM -- and `arm-none-eabi-readelf -s` prints that raw value
+# un-stripped (confirmed live: `icon_from_cache` reads 08000705 there, matching its
+# Thumb disassembly, vs `objdump -t`'s 08000704, which discards the bit and cannot be
+# used for this). That is the discriminator the ELF itself proves, not a mapping-
+# symbol range correlation the walker would have to get right on its own.
+#
+# A .word literal therefore only counts as taking a function's address when the
+# literal's OWN low bit matches that function's proven ISA: an even literal can name
+# an ARM function (bit 0 clear is that function's real, callable address) but never a
+# Thumb one (whose real address is always odd); an odd literal can name a Thumb
+# function but never an ARM one. When a function's ISA is unknown (its start address
+# carries no FUNC symbol at all in the ELF -- not expected to happen, since name_at
+# itself is built from the same symbol table objdump -d labels functions from, but not
+# provable impossible) the old, permissive match is kept: an unproven collision must
+# never cost a function its place in the sweep.
 
-def scan_text_literal_pool(dump_text, name_at):
+_READELF_SYM_RE = re.compile(
+    r'^\s*\d+:\s+([0-9a-f]+)\s+\d+\s+(\S+)\s+\S+\s+\S+\s+\S+\s+(\S.*)$')
+
+
+def dump_elf_symbols_raw(elf):
+    """`readelf -sW <elf>`'s raw text: the ONE tool in this toolchain that prints a
+    STT_FUNC symbol's st_value WITHOUT masking off the Thumb bit (objdump -t and nm
+    both strip it -- confirmed live against this project's own ELF, see the comment
+    above scan_text_literal_pool). `-W` (wide) disables readelf's own name truncation
+    (`foo[...]`), the same trap parse_object_symbol_table's callers already have to
+    dodge for objdump's narrower default width."""
+    try:
+        return subprocess.run([READELF, "-sW", elf], capture_output=True, text=True,
+                               check=True).stdout
+    except subprocess.CalledProcessError:
+        return ""
+
+
+def parse_func_isa(text):
+    """Pure parsing half of read_func_isa(): {addr (Thumb-bit stripped): 'thumb'|
+    'arm'} from `readelf -sW`'s raw text (see dump_elf_symbols_raw()). Split out
+    from the subprocess call the same way parse_object_relocations()/
+    parse_object_symbol_table() are split from their own dump_*() callers, so a
+    test can hand this synthetic readelf output without a real toolchain/ELF. A
+    conflicting pair of FUNC symbols at the same stripped address (never observed
+    on this project's own images) leaves that address OUT of the map entirely --
+    an ambiguous ISA must fall back to the permissive old match, the same as an
+    address absent from the map altogether, rather than silently pick a side."""
+    isa_at = {}
+    conflicted = set()
+    for line in text.splitlines():
+        m = _READELF_SYM_RE.match(line)
+        if not m or m.group(2) != "FUNC":
+            continue
+        try:
+            val = int(m.group(1), 16)
+        except ValueError:
+            continue
+        addr = val & ~1
+        mode = "thumb" if (val & 1) else "arm"
+        if addr in isa_at and isa_at[addr] != mode:
+            conflicted.add(addr)
+            continue
+        isa_at[addr] = mode
+    for addr in conflicted:
+        isa_at.pop(addr, None)
+    return isa_at
+
+
+def read_func_isa(elf):
+    """{addr (Thumb-bit stripped): 'thumb'|'arm'} for every STT_FUNC symbol in `elf`
+    -- dump_elf_symbols_raw() (the subprocess) piped through parse_func_isa() (the
+    pure parse). This is the per-address ground truth scan_text_literal_pool()
+    checks a literal's own low bit against."""
+    return parse_func_isa(dump_elf_symbols_raw(elf))
+
+
+def scan_text_literal_pool(dump_text, name_at, isa_at=None):
     """G2: every function in `name_at` whose address is taken via a `.word` literal-
     pool entry somewhere in .text -- found through objdump's OWN disassembly
     annotation (an INSN_RE-shaped line whose mnemonic half is exactly
@@ -3255,7 +3344,15 @@ def scan_text_literal_pool(dump_text, name_at):
     raw byte scan of .text: two adjacent 16-bit Thumb opcodes read as one 32-bit
     word can coincidentally equal a function's address far more easily than a real
     literal pool entry can (.text is far denser than .rodata), and unlike a literal
-    pool a decoded instruction was never a pointer store to begin with."""
+    pool a decoded instruction was never a pointer store to begin with.
+
+    `isa_at` (BACKLOG #230, read_func_isa()'s output; None/missing entry both fall
+    back to the pre-#230 permissive match) additionally requires the literal's OWN
+    low bit to match the target function's proven ISA -- a Thumb function's real
+    address is always odd, an ARM function's always even, so a word whose bit 0
+    disagrees with the function it numerically matches is proven NOT to be a pointer
+    to it, no matter how the rest of the 31 bits line up."""
+    isa_at = isa_at or {}
     taken = set()
     for raw in dump_text.splitlines():
         m = INSN_RE.match(raw.rstrip("\n"))
@@ -3264,9 +3361,17 @@ def scan_text_literal_pool(dump_text, name_at):
         wm = _TEXT_WORD_RE.match(m.group(2).strip())
         if not wm:
             continue
-        fn = name_at.get(int(wm.group(1), 16) & ~1)
-        if fn:
-            taken.add(fn)
+        word = int(wm.group(1), 16)
+        addr = word & ~1
+        fn = name_at.get(addr)
+        if not fn:
+            continue
+        mode = isa_at.get(addr)
+        if mode is not None:
+            word_is_thumb = bool(word & 1)
+            if (mode == "thumb") != word_is_thumb:
+                continue    # bit-0 mismatch: this literal cannot be fn's real address
+        taken.add(fn)
     return taken
 
 
@@ -3306,7 +3411,7 @@ def scan_third_party_words_raw(sections, section_dumps, name_at, restrict_to):
     return taken
 
 
-def scan_address_taken(builddir, dump_text, name_at, sections, section_dumps):
+def scan_address_taken(builddir, dump_text, name_at, sections, section_dumps, isa_at=None):
     """The whole G2 address-taken sweep: scan_relocated_addresses() (DATA sections,
     relocation-proven, covers everything THIS PROJECT compiles) union
     scan_text_literal_pool() (.text literal pools, disassembly-proven) union a
@@ -3372,7 +3477,7 @@ def scan_address_taken(builddir, dump_text, name_at, sections, section_dumps):
     restricted to exactly that set), so 'reloc' and 'lit' take priority whenever
     a name happens to be provable more than one way."""
     reloc_taken, detail = scan_relocated_addresses(builddir, name_at)
-    lit_taken = scan_text_literal_pool(dump_text, name_at)
+    lit_taken = scan_text_literal_pool(dump_text, name_at, isa_at)
 
     own = own_function_names(builddir)
     third_party = {name for name in name_at.values() if name not in own}
@@ -4080,8 +4185,13 @@ def main(argv):
     # sweep already accounts for it. The sweep is a property of the whole image, not of
     # whichever root a re-measurement happens to pass, so it only runs for --root main.
     if args.root == "main":
+        # BACKLOG #230: the ELF's own proof of which functions are Thumb vs ARM (see
+        # read_func_isa()'s docstring) -- computed once here, not cached alongside
+        # dump_text/sym_text, since it is one cheap `readelf -sW` call, not the
+        # disassembly-scale cost those caches exist for.
+        isa_at = read_func_isa(args.elf)
         taken, taken_detail, taken_provenance = scan_address_taken(
-            args.builddir, dump_text, analysis["name_at"], sections, section_dumps)
+            args.builddir, dump_text, analysis["name_at"], sections, section_dumps, isa_at)
         declared_or_reachable = all_impls | reachable | isr_decls | addrtaken_ok
         candidates = sorted(taken - declared_or_reachable)
 
