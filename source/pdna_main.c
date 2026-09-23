@@ -4004,7 +4004,7 @@ static bool app_copy(uint8_t* rec, bool is_party) {
    * nav-menu mount, review fix #5), also capture the record in its own native shape. A
    * later PASTE in a Gen-3 session (app_paste) checks g_clip.from_gb to look up the
    * sidecar instead of using the lossy `rec` bytes clip_copy_from just filled. */
-  const char* l2 = "(kept until overwritten)";
+  const char* l2 = "(kept while this save is open)";
   if (g_src_ops && g_src_ops->copy_native) {
     /* S5-B re-verification NEW-3: say whether a later PASTE will actually be
      * lossless, not just whether the native record was captured. copy_native()
@@ -9768,6 +9768,18 @@ void app_nav_refuse(int nv_item, int save_kind) {
      * "fine". Silence is the exact bug #58 fixed -- say something generic instead. */
     snd_deny(); msg_wait("COMING SOON", UI_DIM, "Not available here yet.", 0); return;
   }
+  if (av == NAV_BANK_ONLY) {
+    /* BACKLOG #239: this row was wired and was deliberately removed (a concurrent
+     * second-save mount was the clone vector), so neither "COMING SOON" nor "Open
+     * the Bank instead" is honest here -- nav_avail_why()'s one line cannot teach
+     * the actual two-step procedure, so this state gets its own two-line message
+     * instead of the generic `why`-driven call below. Stays bright/selectable in
+     * the menu itself (NAV_ALL_AVAILABLE, nav_menu() never dims this row) -- only
+     * pressing A shows this, exactly the #58 fix this must not regress. */
+    snd_deny();
+    msg_wait("BANK ONLY", UI_DIM, "Open the GB save on its own,", "send it to the Bank, come back.");
+    return;
+  }
   const char* title;
   if (av == NAV_COMING_SOON) {
     title = "COMING SOON";
@@ -11167,6 +11179,15 @@ static void view_save(const char* path) {
   g_path[sizeof(g_path) - 1] = 0;
   gb_art_session_reset();  /* new save -- the "beside the save" fallback forgets the old one */
   app_box_resume_clear();  /* BACKLOG #188: a previous save's resume cell must not leak in */
+  /* BACKLOG #239: the mon and held-item clipboards are file-scope statics that
+   * NOTHING else ever clears. They are per-SAVE, not per-session -- two saves meet
+   * sequentially in one power cycle (main()'s for(;;) loop), so leaving either set
+   * turns a COPY in save A followed by a PASTE/PASTE HERE/RO_PASTE/day-care PUT IN
+   * in save B into a direct, Bank-free transfer -- and a clone, since app_copy()
+   * never releases the original. Must run above the #ifdef PDNA_DELTA block below
+   * so the delta build's own fused-clip seeds still run unmolested afterward. */
+  g_clip.occupied = false; g_clip.from_gb = false;
+  g_item_held = false; g_item_clip = 0;
   uint32_t sz = 0;
   const char* err = 0;
   /* Breadcrumb #1 of 3. This is the boundary the 2026-08-18 hang had no record of:

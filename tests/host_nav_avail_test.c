@@ -2,18 +2,21 @@
  * START menu in every game, honest per-row messages when a row is not built yet
  * (COMING SOON) or does not exist in this game/generation (NOT IN GAME).
  *
- *   cc -std=c11 -O2 -Wall -Wextra -I source tests/host_nav_avail_test.c \
- *      source/nav_avail.c -o /tmp/hnat && /tmp/hnat
+ *   cc -std=c11 -O2 -Wall -Wextra -I source -I tests tests/host_nav_avail_test.c \
+ *      source/nav_avail.c source/xfer_gate.c source/bank_cell.c source/gb_edit.c \
+ *      source/gen1_save.c source/gen1_write.c source/gen2_save.c source/gen2_write.c \
+ *      source/data_tables.c source/gb_session.c -o /tmp/hnat && /tmp/hnat
  *
  * Covers: every (nv_item, save_kind) pair over the full NV_COUNT x SE_KIND_N grid
  * returns a defined NavAvail state and a non-empty, <=30-char reason (msg_wait's
  * 184px proportional clamp at a 30-char cap); every Gen-3 kind (RS/EM/FRLG) answers
- * NAV_OK for every row -- the VERIFIED result of checking each candidate screen's
- * existing per-game behaviour, spelled out in source/nav_avail.c's own header, not an
- * unchecked default; Settings/Back answer NAV_OK for every kind; the Game Boy table's
- * named cases from the brief (Clock fix's Gen1-vs-Gen2 SPLIT, a COMING_SOON row, a
- * NOT_IN_GAME row); and out-of-range nv_item/save_kind degrade to NAV_OK with a
- * non-empty reason rather than reading off the end of the table. */
+ * NAV_OK for every row EXCEPT NV_GB (BACKLOG #239: gated by xfer_gate.c's
+ * xfer_direct_allowed(), see (I) below) -- the VERIFIED result of checking each
+ * candidate screen's existing per-game behaviour, spelled out in source/nav_avail.c's
+ * own header, not an unchecked default; Settings/Back answer NAV_OK for every kind;
+ * the Game Boy table's named cases from the brief (Clock fix's Gen1-vs-Gen2 SPLIT, a
+ * COMING_SOON row, a NOT_IN_GAME row); and out-of-range nv_item/save_kind degrade to
+ * NAV_OK with a non-empty reason rather than reading off the end of the table. */
 #include <stdio.h>
 #include <string.h>
 
@@ -34,8 +37,8 @@ static void test_every_pair_defined(void) {
   for (int item = 0; item < NV_COUNT; item++) {
     for (int k = 0; k < N_KINDS; k++) {
       NavAvail a = nav_avail(item, ALL_KINDS[k]);
-      CHECK(a == NAV_OK || a == NAV_COMING_SOON || a == NAV_NOT_IN_GAME,
-            "nav_avail: state is one of the three defined values");
+      CHECK(a == NAV_OK || a == NAV_COMING_SOON || a == NAV_NOT_IN_GAME || a == NAV_BANK_ONLY,
+            "nav_avail: state is one of the four defined values");
       const char* why = nav_avail_why(item, ALL_KINDS[k]);
       CHECK(why != 0, "nav_avail_why: never NULL");
       if (why) {
@@ -47,21 +50,52 @@ static void test_every_pair_defined(void) {
   printf("(A) every (item, kind) pair defined, %d items x %d kinds\n", NV_COUNT, N_KINDS);
 }
 
-/* ---- (B) every Gen-3 kind answers NAV_OK for every row ------------------------------
+/* ---- (B) every Gen-3 kind answers NAV_OK for every row, EXCEPT NV_GB ----------------
  *
  * VERIFIED, not assumed: source/nav_avail.c's file header cites the exact per-game
  * check inside pdna_pokeblock/pdna_secretbase/pdna_mirage/pdna_clock/
  * pdna_battle_record/pdna_frontier/event_tickets that already makes every one of
- * those honest on its own -- so the "explicit gate list" for a Gen-3 kind is empty,
- * and this loop has nothing to except out. A future row that DOES need gating for a
- * Gen-3 kind changes this test right here, on purpose -- not silently. */
+ * those honest on its own -- so the "explicit gate list" for a Gen-3 kind was empty
+ * until BACKLOG #239 (this is the "on purpose, not silently" update the old comment
+ * asked for): NV_GB now depends on xfer_direct_allowed() (source/xfer_gate.c), which
+ * this build's PokeDNA-BACKLOG-239 lane always returns false, so it is excepted here. */
 static void test_gen3_kinds_all_ok(void) {
   const int g3[] = { SE_KIND_RS, SE_KIND_EM, SE_KIND_FRLG };
   for (int k = 0; k < 3; k++)
-    for (int item = 0; item < NV_COUNT; item++)
+    for (int item = 0; item < NV_COUNT; item++) {
+      if (item == NV_GB) continue;   /* BACKLOG #239 -- checked separately below (I) */
       CHECK(nav_avail(item, g3[k]) == NAV_OK,
-            "Gen-3 kind (RS/EM/FRLG): every row is NAV_OK (see nav_avail.c's header)");
-  printf("(B) RS/EM/FRLG: every one of %d rows is NAV_OK\n", NV_COUNT);
+            "Gen-3 kind (RS/EM/FRLG): every row but NV_GB is NAV_OK (see nav_avail.c's header)");
+    }
+  printf("(B) RS/EM/FRLG: every row but NV_GB is NAV_OK\n");
+}
+
+/* ---- (I) BACKLOG #239 review fix: NV_GB says NAV_BANK_ONLY on every Gen-3 kind too,
+ * same wording the Game Boy table already uses for the row -- a Gen-3 save's own nav
+ * menu must not offer "mount a second save while I stay resident" any more than a raw
+ * Game Boy save's own menu does. NAV_COMING_SOON would lie (this row WAS wired and was
+ * deliberately removed) and "Open the Bank instead." named an EMPTY Bank (nothing was
+ * ever deposited, since the GB save was never opened) -- NAV_BANK_ONLY + "Deposit it to
+ * the Bank first." replaces both. Mutation-provable: source/xfer_gate.c's
+ * xfer_direct_allowed() is the ONE line this depends on -- flip it to `return true;` in
+ * a scratch copy and every assertion below flips too (demonstrated by hand, not
+ * compiled here: this test links the REAL xfer_gate.c, so a flipped source is a
+ * flipped binary, not a mutation this file can stage in-process -- see the delivery
+ * report for the hand run). */
+static void test_gen3_nv_gb_gated(void) {
+  const int g3[] = { SE_KIND_RS, SE_KIND_EM, SE_KIND_FRLG };
+  for (int k = 0; k < 3; k++) {
+    CHECK(nav_avail(NV_GB, g3[k]) == NAV_BANK_ONLY,
+          "BACKLOG #239: NV_GB is NAV_BANK_ONLY on every Gen-3 kind while xfer_direct_allowed() is false");
+    CHECK(strcmp(nav_avail_why(NV_GB, g3[k]), "Deposit it to the Bank first.") == 0,
+          "BACKLOG #239: NV_GB's Gen-3 reason matches the Game Boy table's own wording for the row");
+  }
+  /* Same predicate, same answer, on the Game Boy kinds -- unchanged behaviour,
+   * pinned so a future refactor of gb_col()'s early-return can't silently diverge
+   * the two paths that now both say NAV_BANK_ONLY for the same reason. */
+  CHECK(nav_avail(NV_GB, SE_KIND_GEN1) == NAV_BANK_ONLY, "BACKLOG #239: GB kind still NAV_BANK_ONLY too");
+  CHECK(nav_avail(NV_GB, SE_KIND_GEN2) == NAV_BANK_ONLY, "BACKLOG #239: GB kind still NAV_BANK_ONLY too");
+  printf("(I) BACKLOG #239: NV_GB is NAV_BANK_ONLY / \"Deposit it to the Bank first.\" on all 5 kinds\n");
 }
 
 /* ---- (C) Settings / Back: NAV_OK everywhere, every kind ------------------------------ */
@@ -106,11 +140,12 @@ static void test_representative_rows(void) {
   /* Per-gen wording, not one shared string copy-pasted across both kinds. */
   CHECK(strcmp(nav_avail_why(NV_POKEBLOCK, SE_KIND_GEN1), nav_avail_why(NV_POKEBLOCK, SE_KIND_GEN2)) != 0,
         "Blocks: Gen 1 and Gen 2 reasons name their own generation");
-  CHECK(nav_avail(NV_GB, SE_KIND_GEN1) == NAV_COMING_SOON, "GB import row on a Gen 1 save: coming with the Bank");
-  /* BACKLOG #120 S2: the Bank is now reachable from a GB session, so the GB-import
-   * row's why-text points there instead of promising a still-missing feature. */
-  CHECK(strcmp(nav_avail_why(NV_GB, SE_KIND_GEN1), "Open the Bank instead.") == 0,
-        "GB import row: why-text now points at the Bank (BACKLOG #120 S2)");
+  CHECK(nav_avail(NV_GB, SE_KIND_GEN1) == NAV_BANK_ONLY, "GB import row on a Gen 1 save: deposit-first procedure");
+  /* BACKLOG #120 S2 / #239 review fix: the Bank is now reachable from a GB session,
+   * so the GB-import row's why-text points at the correct, deposit-first procedure
+   * instead of promising a still-missing feature OR naming an empty Bank. */
+  CHECK(strcmp(nav_avail_why(NV_GB, SE_KIND_GEN1), "Deposit it to the Bank first.") == 0,
+        "GB import row: why-text now points at the deposit-first procedure (BACKLOG #120 S2 / #239)");
   /* BACKLOG #90: gb_fly.h's bitfield core + pdna_gbfly.c's screen are wired for
    * both generations now -- Fly moves from "coming soon" to genuinely OK. */
   CHECK(nav_avail(NV_FLY, SE_KIND_GEN1) == NAV_OK, "Fly: wired up on Gen 1 (BACKLOG #90)");
@@ -147,10 +182,13 @@ static void test_every_row_covered(void) {
    * now, so Map no longer splits per-gen the way NV_CLOCK does.
    * BACKLOG #87: NV_DEX moved OUT too -- gb_dex.c + pdna_gbdex.c wire the
    * shared Pokedex screen on both kinds, checked in ok_both below. */
+  /* BACKLOG #239 review fix: NV_GB moved OUT of this bucket -- the GB_TABLE row
+   * itself is now NAV_BANK_ONLY on both Game Boy kinds too (checked in (I) above),
+   * not NAV_COMING_SOON, since the row was wired and deliberately removed rather
+   * than never built. */
   static const int coming_soon_both[] = {
-    NV_PARTY, NV_GB,   /* 2: NV_FLY (#90), NV_DATA (#88), NV_BATTLEREC (#89), NV_DEX (#87),
-                               * NV_MAP (#91 M1-G2) and NV_BANK (#120 S2) all moved to
-                               * ok_both below */
+    NV_PARTY,   /* NV_FLY (#90), NV_DATA (#88), NV_BATTLEREC (#89), NV_DEX (#87),
+                 * NV_MAP (#91 M1-G2) and NV_BANK (#120 S2) all moved to ok_both below */
     NV_XFER   /* BACKLOG #150 S150-11: the TRANSFERS screen only reads a Gen-3 PC
               * (app_gen3_pc_live()), which a raw Game Boy session never has --
               * same "open it from the other side" shape as NV_GB above */
@@ -161,6 +199,8 @@ static void test_every_row_covered(void) {
     CHECK(nav_avail(coming_soon_both[i], SE_KIND_GEN2) == NAV_COMING_SOON,
           "Gen 2: every not-yet-wired row is COMING_SOON");
   }
+  CHECK(nav_avail(NV_GB, SE_KIND_GEN1) == NAV_BANK_ONLY, "Gen 1: NV_GB is NAV_BANK_ONLY (#239), not COMING_SOON");
+  CHECK(nav_avail(NV_GB, SE_KIND_GEN2) == NAV_BANK_ONLY, "Gen 2: NV_GB is NAV_BANK_ONLY (#239), not COMING_SOON");
 
   /* BACKLOG #85: NV_DAYCARE moved from coming-soon to OK-both -- gb_daycare.c's core
    * is wired up on both Gen 1 (one slot, level-up only) and Gen 2 (two slots +
@@ -191,10 +231,14 @@ static void test_every_row_covered(void) {
    * (BACKLOG #91 M1-G2), so there is no more separate per-gen "split" row to add. */
   const int n_coming = (int)(sizeof coming_soon_both / sizeof coming_soon_both[0]);
   const int n_ok = (int)(sizeof ok_both / sizeof ok_both[0]);
-  CHECK(7 + n_coming + n_ok == NV_COUNT,
-        "row classification accounts for all PDNA_NAV_ITEMS (7 NOT_IN_GAME + COMING_SOON-both + OK-both)");
+  /* BACKLOG #239 review fix: NV_GB is its own bucket now (NAV_BANK_ONLY, +1),
+   * distinct from both COMING_SOON-both and OK-both -- accounted for explicitly
+   * rather than folded into either derived count. */
+  const int n_bank_only = 1;   /* NV_GB */
+  CHECK(7 + n_coming + n_ok + n_bank_only == NV_COUNT,
+        "row classification accounts for all PDNA_NAV_ITEMS (7 NOT_IN_GAME + COMING_SOON-both + OK-both + BANK_ONLY)");
   printf("(G) every PDNA_NAV_ITEMS row is classified (7 NOT_IN_GAME + %d COMING_SOON-both + "
-        "%d OK-both == %d)\n", n_coming, n_ok, NV_COUNT);
+        "%d OK-both + %d BANK_ONLY == %d)\n", n_coming, n_ok, n_bank_only, NV_COUNT);
 
   /* Gen 2 differs from Gen 1 in EXACTLY one remaining cell: Clock (Gen 1's
    * NOT_IN_GAME to Gen 2's own NAV_OK, test (E) above) -- Map is now symmetric on
@@ -207,8 +251,8 @@ static void test_every_row_covered(void) {
     CHECK(nav_avail(not_in_game_gen1[i], SE_KIND_GEN2) == NAV_NOT_IN_GAME,
           "Gen 2: every Hoenn/Frontier-shaped row except Clock stays NOT_IN_GAME");
   }
-  CHECK(6 + n_coming + n_ok + 1 == NV_COUNT,
-        "Gen 2's row classification (6 NOT_IN_GAME + COMING_SOON-both + OK-both + Clock) accounts for all rows too");
+  CHECK(6 + n_coming + n_ok + n_bank_only + 1 == NV_COUNT,
+        "Gen 2's row classification (6 NOT_IN_GAME + COMING_SOON-both + OK-both + BANK_ONLY + Clock) accounts for all rows too");
 }
 
 /* ---- (H) defensive: out-of-range nv_item / save_kind never misbehaves -------------- */
@@ -226,6 +270,7 @@ static void test_out_of_range(void) {
 int main(void) {
   test_every_pair_defined();
   test_gen3_kinds_all_ok();
+  test_gen3_nv_gb_gated();
   test_settings_back_ok_everywhere();
   test_trainer_ok_on_gb();
   test_clock_fix_splits_gen1_gen2();

@@ -206,6 +206,18 @@ static void test_xg_pc_offer(void) {
          "4 queued>0 rows true\n");
 }
 
+/* BACKLOG #239: the ONE flag that gates NV_GB (source/nav_avail.c's own consult site
+ * is proven RED/GREEN in tests/host_nav_avail_test.c's (I) -- flipping the real
+ * source/xfer_gate.c line to `return true;` there flips 6 assertions from PASS to
+ * FAIL, run by hand as part of this lane's delivery report). Pinned here too, at the
+ * source, so a change to xfer_direct_allowed()'s signature or a future accidental
+ * `return true;` shows up in the smallest, fastest test that exercises it. */
+static void test_xfer_direct_allowed(void) {
+  CHECK(xfer_direct_allowed() == false,
+        "BACKLOG #239: xfer_direct_allowed() is false -- no direct save-to-save/cart-to-save transfer offered");
+  printf("(Q) xfer_direct_allowed: false (BACKLOG #239 -- see host_nav_avail_test.c's (I) for the RED proof)\n");
+}
+
 static void test_xg_chunk_crossgen_denied(void) {
   /* Matches pdna_box.c's own `if (src->scope == BOXSCOPE_GB || s_ch_scope == BOXSCOPE_GB)`
    * (drop_chunk's cross-generation refusal) exactly -- all 9 scope pairs. */
@@ -424,6 +436,7 @@ int main(void) {
   test_xg_native_escape_denied();
   test_xg_cell_is_copy();
   test_xg_pc_offer();
+  test_xfer_direct_allowed();
   test_xg_chunk_crossgen_denied();
   test_xg_bank_down_arm();
   test_gbs_can_delete_table();

@@ -58,3 +58,12 @@ bool xg_cell_is_copy(const uint8_t rec80[80]) {
 bool xg_pc_offer(uint8_t queued, bool pc_live) {
   return queued > 0 && pc_live;
 }
+
+/* BACKLOG #239: see xfer_gate.h's own comment. Consulted from exactly one place,
+ * source/nav_avail.c's nav_avail(NV_GB, ...) -- both of pdna_main.c's NV_GB call sites
+ * (the plain-FIL pdna_gen12_show() and the PDNA_DELTA pdna_gen12_show_fused() arm) sit
+ * behind that SAME nav_avail() check already (BACKLOG #58's own "no row dispatches
+ * without asking first" contract), so gating the row here closes both without a second
+ * call site. Hardcoded false, not state: golden rule 3, nothing to allocate or persist
+ * for a predicate this simple. */
+bool xfer_direct_allowed(void) { return false; }
