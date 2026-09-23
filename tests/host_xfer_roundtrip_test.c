@@ -2162,12 +2162,18 @@ static void test_backlog_246_d3_lift_finds_g3home(void) {
   CHECK(native_hit < 0,
         "#246 D3: the NATIVE_HOME search still finds nothing for a #246 entry (native arm untouched)");
 
-  /* THE LIFT LOOKUP FINDS IT: gb_lift_restore_g3home's own search (source/
-   * pdna_gen12.c), mirrored here exactly -- same want_kind, same start=0, same
-   * include_claimed=true. */
-  int g3home_hit = gbsc_find(file, len, &down, 0, /*include_claimed*/true, XR_KIND_G3_HOME);
+  /* THE LIFT LOOKUP FINDS IT: BACKLOG #246 review F2 fix -- this now calls
+   * xr_resolve_home() (source/xfer_rec.c), the ONE resolve BOTH gb_lift_restore_
+   * g3home and gb_release_g3home (source/pdna_gen12.c) actually call at runtime, so
+   * a mutation of the real decision (not a hand-copied re-implementation in this
+   * test) shows up here. Before F2, this test called gbsc_find() directly and the
+   * reviewer's mutation of pdna_gen12.c's OWN copy of this tiebreak (sed line-2141
+   * rewrite to "return 0;") passed the suite green -- the entire fix this section
+   * exists to prove could be deleted undetected. */
+  uint16_t down_nowdex = gb_get_species_dex(&down);
+  int g3home_hit = xr_resolve_home(file, len, &down, XR_KIND_G3_HOME, down_nowdex);
   CHECK(g3home_hit == idx,
-        "#246 D3 (the fix): the G3_HOME search FINDS the #246 entry (index %d, want %d) -- "
+        "#246 D3 (the fix): xr_resolve_home FINDS the #246 entry (index %d, want %d) -- "
         "before this fix gb_lift_restore never even looked", g3home_hit, idx);
   if (g3home_hit < 0) return;
 

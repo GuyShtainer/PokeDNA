@@ -24,6 +24,29 @@ void xr_report_from_gbsc(const GbscMergeReport* g, XrMergeReport* x) {
   x->level_to = g->level_to;
 }
 
+/* BACKLOG #246 review F2 fix: see xfer_rec.h for why this exists. Identical loop to
+ * the two copies it replaces in source/pdna_gen12.c (gb_lift_restore_g3home,
+ * gb_release_g3home) -- start=0, guard bound GBSC_MAX_ENTRIES (gbsc_find can never
+ * revisit an index, so this bounds the walk even if gbsc_find's own invariants were
+ * ever violated, golden rule 2), first match kept as the fallback, a species_written
+ * == nowdex match preferred and ends the walk immediately. */
+int xr_resolve_home(const uint8_t* buf, uint32_t len, const GbEditMon* mon,
+                    int want_kind, uint16_t nowdex) {
+  int first = -1, species_match = -1, start = 0;
+  for (int guard = 0; guard <= GBSC_MAX_ENTRIES; guard++) {
+    int i = gbsc_find(buf, len, mon, start, /*include_claimed*/true, want_kind);
+    if (i < 0) break;
+    if (first < 0) first = i;
+    GbscEntry cand;
+    if (gbsc_get(buf, len, i, &cand) && cand.species_written == nowdex) {
+      species_match = i;
+      break;
+    }
+    start = i + 1;
+  }
+  return (species_match >= 0) ? species_match : first;
+}
+
 /* Same constants gb_sidecar.c's gbsc_key() uses (source/gb_sidecar.h:68-70). */
 uint64_t xr_key_g3(const uint8_t rec80[80]) {
   uint64_t h = 14695981039346656037ULL;   /* FNV-1a-64 offset basis */

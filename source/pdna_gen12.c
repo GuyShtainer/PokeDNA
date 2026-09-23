@@ -2228,22 +2228,10 @@ gb_lift_restore_g3home(const GbEditMon* mon, uint8_t out80[80]) {
     return -2;
   }
 
-  /* Same tiebreak as gb_lift_restore's own native search: prefer the entry whose
-   * species_written matches the mon's CURRENT dex, fall back to the first match. */
-  int first = -1, species_match = -1, start = 0;
+  /* BACKLOG #246 review F2 fix: xr_resolve_home (source/xfer_rec.c) is the ONE
+   * tiebreak both #246 arms use -- see its own doc comment for why. */
   uint16_t nowdex = gb_get_species_dex(mon);
-  for (int guard = 0; guard <= GBSC_MAX_ENTRIES; guard++) {
-    int i = gbsc_find(g_ed->sidecar, len, mon, start, /*include_claimed*/true, XR_KIND_G3_HOME);
-    if (i < 0) break;
-    if (first < 0) first = i;
-    GbscEntry cand;
-    if (gbsc_get(g_ed->sidecar, len, i, &cand) && cand.species_written == nowdex) {
-      species_match = i;
-      break;
-    }
-    start = i + 1;
-  }
-  int found = (species_match >= 0) ? species_match : first;
+  int found = xr_resolve_home(g_ed->sidecar, len, mon, XR_KIND_G3_HOME, nowdex);
   if (found < 0) return 0;   /* neither kind matched -- an ordinary native lift, nothing to restore */
 
   GbscEntry e;
@@ -2532,20 +2520,10 @@ gb_release_g3home(int box, int slot, const GbEditMon* have) {
   int count = gbsc_count(g_ed->sidecar, len);
   if (count < 0) { gb_rollback(); return false; }
 
+  /* BACKLOG #246 review F2 fix: xr_resolve_home (source/xfer_rec.c) is the ONE
+   * tiebreak both #246 arms use -- see its own doc comment for why. */
   uint16_t nowdex = gb_get_species_dex(have);
-  int first = -1, species_match = -1, start = 0;
-  for (int guard = 0; guard <= GBSC_MAX_ENTRIES; guard++) {
-    int i = gbsc_find(g_ed->sidecar, len, have, start, /*include_claimed*/true, XR_KIND_G3_HOME);
-    if (i < 0) break;
-    if (first < 0) first = i;
-    GbscEntry cand;
-    if (gbsc_get(g_ed->sidecar, len, i, &cand) && cand.species_written == nowdex) {
-      species_match = i;
-      break;
-    }
-    start = i + 1;
-  }
-  int idx = (species_match >= 0) ? species_match : first;
+  int idx = xr_resolve_home(g_ed->sidecar, len, have, XR_KIND_G3_HOME, nowdex);
   if (idx < 0) {
     gb_rollback();   /* a genuine bystander -- (box, slot) no longer matches ANY live G3_HOME entry */
     log_line("gen12: xferup(g3home) box %d slot %d: bystander mismatch, refusing delete", box, slot);
