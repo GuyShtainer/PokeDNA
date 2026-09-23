@@ -2,7 +2,7 @@
 #include <string.h>
 #include "gb_edit.h"      /* gb_max_species/gb_max_move, GB_GEN1 -- already pure C */
 #include "bank_cell.h"    /* bc_is_native, bc_unpack, BcMeta                         */
-#include "gen3_mon.h"     /* PkMon, pk_decode_mon                                    */
+#include "gen3_mon.h"     /* PkMon, pk_decode_mon, gen3_decode_2byte_accent -- BACKLOG #224 */
 #include "gen3_box.h"     /* pk_resolve                                              */
 #include "data_tables.h"  /* pk_national_no                                          */
 #include "gen3_save.h"    /* gen3_decode_char -- review F4's unmappable-glyph guard  */
@@ -87,6 +87,25 @@ static void xr_merge_moves(GbEditMon* out, const GbEditMon* home, const GbscEntr
   }
 }
 
+/* BACKLOG #224: does raw Gen-3 nickname byte `b` -- one of the 7 codes
+ * gen3_mon.c's decode_2byte_accent owns (the umlauts F1-F6, x B9) plus e-acute
+ * (0x1B, its own single-code special case, same as decode_name) -- survive a
+ * decode-then-re-encode into GB generation `gen` with NOTHING lost? Decodes `b`
+ * the SAME way decode_name does (gen3_decode_2byte_accent, the public wrapper
+ * around the exact table gen3_mon.c's own decoder uses -- no re-derivation),
+ * then asks gb_text_lossy() the real per-generation question (gb_edit.c's
+ * enc_one: Gen 2 spells all 7 exactly; Gen 1 has no umlaut tiles and
+ * transliterates them, which enc_one flags lost -- e-acute and x round-trip on
+ * BOTH generations). Returns false for any byte this predicate does not cover
+ * (the caller's own loop only calls it on 0x1B/F1-F6/B9). */
+static bool gen3_byte_storable_in_gb(uint8_t gen, uint8_t b) {
+  char spelling[3];
+  if (b == 0x1Bu) { spelling[0] = (char)0xC3; spelling[1] = (char)0xA9; }
+  else if (!gen3_decode_2byte_accent(b, spelling)) return false;
+  spelling[2] = 0;
+  return gb_text_lossy(gen, spelling, 1, NULL) == 0;
+}
+
 /* Nickname, decision 11 (direction-gated, safe degrade), decision 1 (accept-gated
  * apply). Split out of xr_merge_down_sel for the same reason as xr_merge_moves();
  * mirrors gb_sidecar.c's merge_nickname(). */
@@ -105,9 +124,24 @@ static void xr_merge_nickname(GbEditMon* out, const GbEditMon* home, const GbscE
    * perfectly GB-spellable '?' and never refuses, so an unmappable byte silently
    * becomes a literal question mark in the home's nickname instead of refusing the
    * rename. Scan the raw Gen-3 bytes directly: a decoded '?' whose raw byte is NOT
-   * the genuine 0xAC is an unmappable glyph -- refuse, keep the home name. */
+   * the genuine 0xAC is an unmappable glyph -- refuse, keep the home name.
+   *
+   * BACKLOG #224: 0x1B (e-acute) and the 7-entry umlaut/x table (F1-F6, B9) ALSO
+   * decode to '?' through gen3_decode_char (its single-`char` return cannot carry
+   * a 2-byte UTF-8 spelling -- decode_name/gen3_utf8_storable own those instead),
+   * so this loop used to refuse every one of them even on Gen 2, which spells all
+   * seven exactly (b216b). Route those 8 codes through gen3_byte_storable_in_gb()
+   * (decode + gb_text_lossy(), the SAME per-generation call the rest of this
+   * function already trusts below) instead of the single-char '?' test; every
+   * other unmappable byte (0x01, 0xB0, 0xF7, ...) still refuses exactly as before. */
   for (int k = 0; k < 10 && g3_rec80[8 + k] != 0xFF; k++) {
-    if (gen3_decode_char(g3_rec80[8 + k]) == '?' && g3_rec80[8 + k] != 0xAC) {
+    uint8_t b = g3_rec80[8 + k];
+    bool special = (b == 0x1Bu || (b >= 0xF1u && b <= 0xF6u) || b == 0xB9u);
+    if (special) {
+      if (!gen3_byte_storable_in_gb(home->gen, b)) { rep->rename_refused = true; return; }
+      continue;
+    }
+    if (gen3_decode_char(b) == '?' && b != 0xAC) {
       rep->rename_refused = true;
       return;
     }

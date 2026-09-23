@@ -246,6 +246,50 @@ def extract_paste_record(extract_binary: Path, emerald_sav: Path, out_path: Path
     return proc.returncode == 0 and out_path.exists()
 
 
+PARTYMAIL_OUT_RE = re.compile(
+    r"party mail byte 0x([0-9A-Fa-f]+) = 0x([0-9A-Fa-f]+) \(MAIL_NONE=0x([0-9A-Fa-f]+)\)")
+
+
+def run_partymail_case(extract_binary, emerald_sav: Path, work: Path, tally):
+    """BACKLOG #225: a real corpus box record, run through tools/extract_gen3_record.c's
+    `--party` flag -- the SAME box(80)->party(100) expansion the live editor uses on
+    every PC->party move in the tree (gen3_clip.c clip_to_record / pdna_main.c
+    box_to_party / the Day-Care return, all through gen3_edit.c's own
+    em_set_party_flag(e, true) -- ONE choke point). This is "the retail readback tool"
+    the backlog item asks to print the byte: a real record, the real fix, the byte on
+    stdout, not assumed. Runs ONCE (not per GB game -- this is Gen-3-only and has
+    nothing to do with which GB title the rest of this file boots), so it is driven
+    directly from main(), not through run_game()/Tally-per-game. --moves is passed
+    too (the SAME PASTE_MOVES seed already trusted by the paste case) because the
+    picker's own "< 4 moves and a held item" filter (extract_gen3_record.c's header
+    comment) does not match every corpus box slot on its own -- --moves bypasses that
+    filter, same as the paste case already relies on."""
+    label = "party mail (BACKLOG #225)"
+    if extract_binary is None:
+        tally.skip_case(label, "tools/extract_gen3_record.c build failed")
+        return
+    if not emerald_sav.exists():
+        tally.skip_case(label, f"no corpus {emerald_sav}")
+        return
+    out_path = work / "partymail_record.bin"
+    moves_arg = ",".join(str(m) for m in PASTE_MOVES)
+    proc = subprocess.run([str(extract_binary), str(emerald_sav), str(out_path),
+                           "--moves", moves_arg, "--party"], capture_output=True, text=True)
+    if proc.returncode != 0 or not out_path.exists():
+        tally.record(label, False, f"extract --party failed: {proc.stderr.strip()}")
+        return
+    m = PARTYMAIL_OUT_RE.search(proc.stderr)
+    if not m:
+        tally.record(label, False, f"could not parse --party stdout/stderr: {proc.stderr!r}")
+        return
+    off, got, want = (int(g, 16) for g in m.groups())
+    data = out_path.read_bytes()
+    ok = (len(data) == 100 and off == 0x55 and got == 0xFF and want == 0xFF and
+         data[0x55] == 0xFF)
+    tally.record(label, ok, f"offset=0x{off:02X} byte=0x{got:02X} (want 0xFF) "
+                            f"rec_len={len(data)}")
+
+
 def run_paste_case(name, info, rom, sav, work, binary, python, vendor, tally,
                    sections, rec_path):
     """BACKLOG #211: PASTE (Gen 3 -> Game Boy) through the retail gate -- the SAME
@@ -2500,8 +2544,17 @@ def main(argv=None):
             print(f"[skip] paste (BACKLOG #211): could not extract a record from "
                   f"{emerald_sav} -- every game's paste case will skip", file=sys.stderr)
 
-    names = [a.only] if a.only else list(GAMES)
     total_ok = total_fail = total_skip = 0
+
+    # BACKLOG #225: Gen-3-only, has nothing to do with which GB title the rest of this
+    # file boots -- runs ONCE here, not inside run_game()'s per-GB-game loop.
+    partymail_tally = Tally("(host)")
+    run_partymail_case(extract_binary, corpus.parent / "Emerald.sav", scratch, partymail_tally)
+    total_ok += partymail_tally.ok
+    total_fail += partymail_tally.fail
+    total_skip += partymail_tally.skip
+
+    names = [a.only] if a.only else list(GAMES)
     for name in names:
         info = GAMES[name]
         rom = Path(a.corpus) / info["rom"]

@@ -104,6 +104,22 @@ void em_set_ability(EditMon* e, uint8_t n);                  /* 0 or 1 */
 void em_set_level(EditMon* e, uint8_t level);                /* sets exp (+ party level + stats) */
 void em_set_party_flag(EditMon* e, bool is_party);          /* box<->party kind (derives/drops plaintext stats) */
 void em_set_nickname(EditMon* e, const char* s);            /* <=10 chars */
+
+/* BACKLOG #224: is the UTF-8 sequence starting at `p` one of the 8 non-ASCII
+ * glyphs Gen 3's own charset can actually spell -- e-acute (encode_name's own
+ * "\xC3\xA9" special case) plus the 7-entry umlaut/x table encode_2byte_accent
+ * owns (Ä Ö Ü ä ö ü ×)? On true, `*adv` is the sequence's byte length (always 2
+ * here) and the caller should treat the glyph as representable; on false the
+ * caller should treat it as unrepresentable (the SAME conservative "refuse,
+ * keep the original" posture already used for '[' ']' '$'). `p[0]` must be a
+ * UTF-8 lead byte (>= 0x80) -- this function is never the right call for plain
+ * ASCII. Exported so a caller outside this file (gb_sidecar.c's UP-merge glyph
+ * guard) routes through the SAME table gen3's own encoder uses, rather than
+ * re-deriving it. `p` must be NUL-terminated within its buffer: on a 0xC3 lead this
+ * reads p[1], which is the NUL for a truncated sequence (no table entry has lo == 0,
+ * so a truncated tail refuses rather than overreading). On false, *adv is untouched;
+ * callers must not advance by it. */
+bool gen3_utf8_storable(const char* p, int* adv);
 void em_set_otname(EditMon* e, const char* s);              /* <=7 chars  */
 void em_set_metloc(EditMon* e, uint8_t loc);                /* caught/met location id      */
 void em_set_ball(EditMon* e, uint8_t ball);                 /* Poke Ball 1..12             */

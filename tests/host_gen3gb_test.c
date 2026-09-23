@@ -698,6 +698,68 @@ static void test_rename_refused(void) {
     CHECK(rep.rename_refused && !rep.renamed, "\"A[B]\": rename_refused set, renamed not set");
     CHECK(memcmp(back80, rec, 80) == 0, "\"A[B]\": record byte-identical (name never applied)");
   }
+  {
+    /* BACKLOG #224: e-acute alone (Gen-2 byte 0xEA) -- Gen 3 stores this exactly
+     * (0x1B, b216b), so this must now ACCEPT (it used to refuse: any byte >= 0x80
+     * was an automatic "unrepresentable"). */
+    GbEditMon chg = out;
+    uint8_t nick[GB_NAME_BYTES] = { 0xEAu, 0x50u, 0x50u, 0x50u, 0x50u,
+                                    0x50u, 0x50u, 0x50u, 0x50u, 0x50u, 0x50u };
+    gb_set_nickname_raw(&chg, nick);
+    uint8_t back80[80]; GbscMergeReport rep;
+    CHECK(gbsc_merge_up(&e, &chg, back80, &rep), "e-acute alone: merge up succeeds");
+    CHECK(!rep.rename_refused && rep.renamed, "e-acute alone: rename_refused NOT set, renamed IS set");
+    CHECK(back80[0x08] == 0x1Bu, "e-acute alone: Gen-3 byte 0x08 == 0x1B");
+  }
+  {
+    /* An umlaut (Gen-2 byte 0xC0 = Ä) -- also stored exactly by Gen 3 (0xF1). */
+    GbEditMon chg = out;
+    uint8_t nick[GB_NAME_BYTES] = { 0xC0u, 0x50u, 0x50u, 0x50u, 0x50u,
+                                    0x50u, 0x50u, 0x50u, 0x50u, 0x50u, 0x50u };
+    gb_set_nickname_raw(&chg, nick);
+    uint8_t back80[80]; GbscMergeReport rep;
+    CHECK(gbsc_merge_up(&e, &chg, back80, &rep), "umlaut alone: merge up succeeds");
+    CHECK(!rep.rename_refused && rep.renamed, "umlaut alone: rename_refused NOT set, renamed IS set");
+    CHECK(back80[0x08] == 0xF1u, "umlaut alone: Gen-3 byte 0x08 == 0xF1 (Ae)");
+  }
+  {
+    /* x (U+00D7, Gen-2 byte 0xF1) -- stored exactly by Gen 3 (0xB9). */
+    GbEditMon chg = out;
+    uint8_t nick[GB_NAME_BYTES] = { 0xF1u, 0x50u, 0x50u, 0x50u, 0x50u,
+                                    0x50u, 0x50u, 0x50u, 0x50u, 0x50u, 0x50u };
+    gb_set_nickname_raw(&chg, nick);
+    uint8_t back80[80]; GbscMergeReport rep;
+    CHECK(gbsc_merge_up(&e, &chg, back80, &rep), "x alone: merge up succeeds");
+    CHECK(!rep.rename_refused && rep.renamed, "x alone: rename_refused NOT set, renamed IS set");
+    CHECK(back80[0x08] == 0xB9u, "x alone: Gen-3 byte 0x08 == 0xB9");
+  }
+  {
+    /* Multi-char: "CAFe-acute" (0x82 0x80 0x85 0xEA), the exact glyph run
+     * BACKLOG #224's own review note names. */
+    GbEditMon chg = out;
+    uint8_t nick[GB_NAME_BYTES] = { 0x82u, 0x80u, 0x85u, 0xEAu, 0x50u,
+                                    0x50u, 0x50u, 0x50u, 0x50u, 0x50u, 0x50u };
+    gb_set_nickname_raw(&chg, nick);
+    uint8_t back80[80]; GbscMergeReport rep;
+    CHECK(gbsc_merge_up(&e, &chg, back80, &rep), "\"CAFe-acute\": merge up succeeds");
+    CHECK(!rep.rename_refused && rep.renamed, "\"CAFe-acute\": rename_refused NOT set, renamed IS set");
+    CHECK(back80[0x08] == 0xBBu + 2 && back80[0x09] == 0xBBu && back80[0x0A] == 0xBBu + 5 &&
+         back80[0x0B] == 0x1Bu, "\"CAFe-acute\": Gen-3 bytes spell C,A,F,e-acute");
+  }
+  {
+    /* Still refused: a byte gen3_utf8_storable does not recognise at all (the
+     * male sign, 0xEFu, re-tested here alongside the new accepted codes so the
+     * fix's own boundary is pinned in the SAME test as the accepted cases). */
+    GbEditMon chg = out;
+    uint8_t nick[GB_NAME_BYTES] = { 0xEFu, 0xEAu, 0x50u, 0x50u, 0x50u,
+                                    0x50u, 0x50u, 0x50u, 0x50u, 0x50u, 0x50u };
+    gb_set_nickname_raw(&chg, nick);
+    uint8_t back80[80]; GbscMergeReport rep;
+    CHECK(gbsc_merge_up(&e, &chg, back80, &rep), "gender+e-acute: merge up succeeds");
+    CHECK(rep.rename_refused && !rep.renamed,
+          "gender sign still refuses even with an accepted glyph after it");
+    CHECK(memcmp(back80, rec, 80) == 0, "gender+e-acute: record byte-identical (name never applied)");
+  }
 }
 
 /* ============================================================================ */

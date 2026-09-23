@@ -404,6 +404,84 @@ def run_b107_contest_picker_artless(core_mod, image_mod, rom: Path, out_dir: Pat
     return s
 
 
+def run_b225_party_mail(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
+    """BACKLOG #225: a real box(80)->party(100) move, through the app's OWN carry/
+    drop UI (not a host tool), on Guy's real Emerald.sav, ending in a REAL verified
+    flash write -- then the party overlay + the moved mon's own SUMMARY, to show it
+    landed. This exercises the exact fixed choke point (gen3_edit.c's
+    em_set_party_flag(e, true), reached here via pdna_main.c's party_place_held's
+    SWAP branch, since box 0 slot 0 (species 81, Magnemite) and the party this save
+    carries are both real and the party happens to already be full 6/6 -- SWAP is
+    the reachable path, and it calls the SAME box_to_party() ADD does).
+
+    Nav (verified against this exact build+save by direct exploration, not guessed):
+    box screen, cell 0 (Magnemite) -> SELECT (cursor mode cycles NORMAL -> MOVE) ->
+    A (picks it up, carrying) -> UP (off the grid top -> top tabs, lands on PARTY,
+    still carrying) -> A (opens party_strip_overlay in PLACE mode) -> A (swaps the
+    carried mon onto the panel's seeded slot, index 1) -> UP, UP (grid -> title ->
+    top tabs) -> RIGHT (PARTY -> SAVE) -> A (save confirm dialog) -> A (yes -- a
+    REAL flashsave.c toggle-bit-polling write, ~3000+ mGBA frames, not landed by
+    BIG_SETTLE) -> A (dismiss "SAVED / Flash written + verified") -> UP, UP (top
+    tabs again) -> A (party overlay, now BROWSE mode -- the seeded slot (index 1)
+    is the mon just moved in) -> A (its action menu) -> A (VIEW/EDIT -> SUMMARY).
+
+    PokeDNA's own SUMMARY card (pdna_main.c) has no mail-icon slot at all (mail is
+    a Day-Care-boarder concept in this tool's UI, a different 56-byte struct,
+    unrelated to the party record's own 0x55 byte) -- so there is nothing on
+    screen to mechanically claim= against for "no phantom MAIL entry". The
+    byte-level pin is the readback: tests/host_clip_test.c (mutation-tested) and
+    tools/gb_retail_gate.py's run_partymail_case (also mutation-tested against
+    this same real corpus record, through tools/extract_gen3_record.c --party) --
+    and, one level further, a direct dump of THIS session's own emulated flash
+    after the save above (Session doesn't expose that hook -- verified separately,
+    by hand, driving mgba.core directly the same way gb_roundtrip.py does for GB:
+    slot 1 read back species=81 level=24 mail(0x55)=0xFF post-save on the fixed
+    build, mail(0x55)=0x00 on a scratch mutant with the fix line dropped -- the
+    real end-to-end mutation test, not just a host-level one)."""
+    s = Session(core_mod, image_mod, rom, out_dir, "b225_")
+    print("== BACKLOG #225: party mail byte (MAIL_NONE) on a real box->party move ==")
+
+    s.tap("SEL", settle=BIG_SETTLE)        # cursor mode NORMAL -> MOVE
+    s.tap("A", settle=BIG_SETTLE)          # pick up cell 0 (Magnemite, species 81) -> carrying
+    s.tap("UP", settle=BIG_SETTLE)         # off the grid top -> top tabs, PARTY (still carrying)
+    s.tap("A", settle=BIG_SETTLE)          # PARTY tab -> party_strip_overlay, PLACE mode
+    s.shot("01_place_overlay", "#225: carrying Magnemite (box 0 slot 0) into the party "
+                                "overlay's PLACE mode -- party is already 6/6, so this is "
+                                "the SWAP path (party_place_held), which calls the SAME "
+                                "box_to_party()/em_set_party_flag(e, true) the ADD path does")
+
+    s.tap("A", settle=BIG_SETTLE)          # swap onto the panel's seeded slot (index 1)
+    s.tap("UP", settle=BIG_SETTLE)         # grid -> title row
+    s.tap("UP", settle=BIG_SETTLE)         # title -> top tabs (PARTY)
+    s.tap("RIGHT", settle=BIG_SETTLE)      # PARTY -> SAVE
+    s.tap("A", settle=BIG_SETTLE)          # SAVE -> "Save changes? Save the moved Pokemon?"
+    s.tap("A", settle=180)                 # yes -> "Saving - do not power off / Writing flash save..."
+    s.run(3000)                            # flashsave.c's real toggle-bit polling write --
+                                            # empirically nowhere near done at 180 frames (the
+                                            # Contests museum write took ~150-250 for ONE
+                                            # sector; this is party+PC, several more)
+    s.shot("02_saved", "#225: \"SAVED / Flash written + verified\" -- the swap above is a "
+                        "REAL verified flash write, not a RAM-only edit", claim=["SAVED"])
+
+    s.tap("A", settle=BIG_SETTLE)          # dismiss "Press A" -> back to the box grid
+    s.tap("UP", settle=BIG_SETTLE)         # grid -> title row
+    s.tap("UP", settle=BIG_SETTLE)         # title -> top tabs (PARTY)
+    s.tap("A", settle=BIG_SETTLE)          # PARTY -> party_strip_overlay, BROWSE mode this time
+    s.tap("A", settle=BIG_SETTLE)          # A on the seeded slot (index 1 -- Magnemite, just moved) -> action menu
+    s.tap("A", settle=BIG_SETTLE)          # VIEW/EDIT -> SUMMARY, card 0 (INFO)
+    s.shot("03_summary_after_save", "#225: the moved mon's own SUMMARY, POKEMON INFO card, "
+                                     "AFTER the real flash write above -- Magnemite, Lv24, "
+                                     "confirming it really landed in the party. PokeDNA's "
+                                     "own summary draws no mail-icon slot at all (mail here "
+                                     "is a separate Day-Care-boarder concept) -- the "
+                                     "mechanical pin on the 0x55 byte itself is the host "
+                                     "case + the retail-gate case, not a claim on this frame",
+           claim=["MAGNEMITE"])
+
+    s.tap("B", settle=BIG_SETTLE)          # leave the summary (no edits made)
+    return s
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -416,7 +494,8 @@ def main(argv=None) -> int:
                           "(default --shots) picks these up with no extra flags")
     ap.add_argument("--only",
                      choices=("osk", "flags", "contests", "daycare",
-                              "b107-contest", "b107-contest-artless", "b218-gender-glyph"),
+                              "b107-contest", "b107-contest-artless", "b218-gender-glyph",
+                              "b225-party-mail"),
                      default=None,
                      help="run just ONE of this script's shot functions (BACKLOG #114's "
                           "pixel-parity proof uses --only daycare against a private --out "
@@ -435,7 +514,8 @@ def main(argv=None) -> int:
                   "contests": run_contests, "daycare": run_daycare,
                   "b107-contest": run_b107_contest_picker,
                   "b107-contest-artless": run_b107_contest_picker_artless,
-                  "b218-gender-glyph": run_b218_gender_glyph}
+                  "b218-gender-glyph": run_b218_gender_glyph,
+                  "b225-party-mail": run_b225_party_mail}
     fns = (fn_by_name[a.only],) if a.only else (run_osk_rename, run_flags_sections, run_contests)
 
     ok, skipped = [], []

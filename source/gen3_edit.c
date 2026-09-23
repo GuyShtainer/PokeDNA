@@ -132,7 +132,14 @@ static void recompute_party_stats(EditMon* e) {
   uint8_t level = e->raw[0x54];
   uint8_t nat = (uint8_t)(e->personality % 25);
   int nb = pk_nature_boost(nat), nh = pk_nature_hinder(nat);
-  uint16_t hp = pk_calc_hp(base[PK_HP], ivs[PK_HP], ev[PK_HP], level);
+  /* Shedinja is the one species whose Max HP is NOT the formula: CalculateMonStats
+   * forces it to 1 in all three families (see gen3_mon.h). Its other five stats are
+   * normal. gen3_legality2.c already grades a formula-HP Shedinja INVALID, so without
+   * this case every PC->party move wrote a record the tool's own checker rejects --
+   * and the game trusts stored Max HP until the next level-up. (b225 review D1.) */
+  uint16_t hp = (species == SPECIES_SHEDINJA)
+                  ? 1
+                  : pk_calc_hp(base[PK_HP], ivs[PK_HP], ev[PK_HP], level);
   wr16(e->raw + 0x58, hp);
   wr16(e->raw + 0x56, hp);                      /* current HP = max */
   for (int s = PK_ATK; s <= PK_SPD; s++) {
@@ -601,6 +608,13 @@ void em_set_party_flag(EditMon* e, bool is_party) {
     uint16_t species = rd16(e->sub[0] + 0);
     uint32_t exp = rd32(e->sub[0] + 4);
     e->raw[0x54] = pk_level_from_exp(pk_species_growth(species), exp);
+    /* BACKLOG #225: a box(80) record has no plaintext tail, so e->raw[0x55]
+     * came out of gen3_edit_load's memset(e,0,...) as 0x00 -- retail's own
+     * "no mail" is MAIL_NONE (0xFF); 0x00 is mail slot 0, a real held mail
+     * item index (see gen3_save.h's G3_PARTY_MAIL_OFF/G3_MAIL_NONE citation).
+     * This is the ONE box->party expansion point (every caller in the tree
+     * routes through it), so this is the one place that needs the write. */
+    e->raw[G3_PARTY_MAIL_OFF] = G3_MAIL_NONE;
     recompute_party_stats(e);
   }
 }
@@ -626,6 +640,19 @@ static bool encode_2byte_accent(uint8_t lo, uint8_t* out) {
   for (size_t i = 0; i < sizeof k / sizeof k[0]; i++) {
     if (k[i].lo == lo) { *out = k[i].code; return true; }
   }
+  return false;
+}
+
+/* BACKLOG #224: public wrapper (see gen3_edit.h's own comment) -- reuses
+ * encode_2byte_accent's table directly, plus the same "\xC3\xA9" special case
+ * encode_name checks above it; no logic duplicated. */
+bool gen3_utf8_storable(const char* p, int* adv) {
+  const unsigned char* u = (const unsigned char*)p;
+  if (u[0] != 0xC3u) return false;    /* every glyph this codec owns is a 2-byte
+                                       * 0xC3 __ sequence (Latin-1 Supplement) */
+  if (u[1] == 0xA9u) { *adv = 2; return true; }         /* e-acute -> 0x1B */
+  uint8_t code;
+  if (encode_2byte_accent(u[1], &code)) { *adv = 2; return true; }   /* umlauts/x */
   return false;
 }
 

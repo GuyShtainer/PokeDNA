@@ -19,6 +19,17 @@
  * chain seeds a clip record with a mix of in-range and out-of-range moves
  * (SURF/BITE/ROCK TOMB/PROTECT) without hand-building 80 bytes.
  *
+ * BACKLOG #225: an optional `--party` flag runs the SAME box(80)->party(100)
+ * expansion the live editor uses for every PC->party move in the tree
+ * (gen3_edit_load + em_set_party_flag(&e, true) + gen3_edit_commit --
+ * gen3_clip.c's clip_to_record / pdna_main.c's box_to_party / the Day-Care
+ * return all call exactly this), writes 100 bytes instead of 80, and prints
+ * the party record's mail byte (offset 0x55 -- gen3_save.h's
+ * G3_PARTY_MAIL_OFF/G3_MAIL_NONE) to stderr -- the retail readback this
+ * backlog item asks for: a real corpus record run through the real fix,
+ * with the byte printed, not assumed. Composable with --moves (moves are
+ * re-moved on the box form first, then the result is expanded to party).
+ *
  * Host-only, not part of tests/run_host_tests.py. Build:
  *   cc -std=c11 -O2 -I ../../source extract_gen3_record.c \
  *      ../../source/gen3_mon.c ../../source/gen3_save.c ../../source/gen3_box.c \
@@ -26,6 +37,7 @@
  *      ../../source/data_tables.c -o /tmp/extract_gen3_record
  *   /tmp/extract_gen3_record /path/to/Emerald.sav out.bin
  *   /tmp/extract_gen3_record /path/to/Emerald.sav out.bin --moves 57,44,317,182
+ *   /tmp/extract_gen3_record /path/to/Emerald.sav out100.bin --party
  *
  * gen3_clip.c is linked for pk_box_slot() alone (the one real box-offset formula --
  * see the include below); gen3_edit.c + gen3_daycare.c are neither this file's nor
@@ -46,32 +58,41 @@
 #include "gen3_clip.h"   /* pk_box_slot() -- the one real box-offset formula, not a copy */
 
 #define BOX_MON      80
+#define PARTY_MON    100
+
+static void usage(const char* prog) {
+  fprintf(stderr, "usage: %s <gen3.sav> <out.bin> [--moves a,b,c,d] [--party]\n", prog);
+}
 
 int main(int argc, char** argv) {
-  if (argc != 3 && argc != 5) {
-    fprintf(stderr, "usage: %s <gen3.sav> <out80.bin> [--moves a,b,c,d]\n", argv[0]);
-    return 2;
-  }
+  if (argc < 3) { usage(argv[0]); return 2; }
   uint16_t moves4[4] = { 0, 0, 0, 0 };
-  int have_moves = 0;
-  if (argc == 5) {
-    if (strcmp(argv[3], "--moves") != 0) {
-      fprintf(stderr, "usage: %s <gen3.sav> <out80.bin> [--moves a,b,c,d]\n", argv[0]);
-      return 2;
+  int have_moves = 0, want_party = 0;
+  for (int i = 3; i < argc; i++) {
+    if (!strcmp(argv[i], "--party")) {
+      want_party = 1;
+      continue;
     }
-    char buf[64];
-    if (strlen(argv[4]) >= sizeof buf) { fprintf(stderr, "--moves: value too long\n"); return 2; }
-    strcpy(buf, argv[4]);
-    char* tok = strtok(buf, ",");
-    for (int i = 0; i < 4; i++) {
-      if (!tok) { fprintf(stderr, "--moves: need exactly 4 comma-separated ids\n"); return 2; }
-      long v = strtol(tok, NULL, 10);
-      if (v < 0 || v > 65535) { fprintf(stderr, "--moves: id out of range: %s\n", tok); return 2; }
-      moves4[i] = (uint16_t)v;
-      tok = strtok(NULL, ",");
+    if (!strcmp(argv[i], "--moves")) {
+      if (i + 1 >= argc) { fprintf(stderr, "--moves: needs a value\n"); return 2; }
+      char buf[64];
+      const char* val = argv[++i];
+      if (strlen(val) >= sizeof buf) { fprintf(stderr, "--moves: value too long\n"); return 2; }
+      strcpy(buf, val);
+      char* tok = strtok(buf, ",");
+      for (int k = 0; k < 4; k++) {
+        if (!tok) { fprintf(stderr, "--moves: need exactly 4 comma-separated ids\n"); return 2; }
+        long v = strtol(tok, NULL, 10);
+        if (v < 0 || v > 65535) { fprintf(stderr, "--moves: id out of range: %s\n", tok); return 2; }
+        moves4[k] = (uint16_t)v;
+        tok = strtok(NULL, ",");
+      }
+      if (tok) { fprintf(stderr, "--moves: more than 4 ids given\n"); return 2; }
+      have_moves = 1;
+      continue;
     }
-    if (tok) { fprintf(stderr, "--moves: more than 4 ids given\n"); return 2; }
-    have_moves = 1;
+    usage(argv[0]);
+    return 2;
   }
 
   FILE* f = fopen(argv[1], "rb");
@@ -132,17 +153,41 @@ int main(int argc, char** argv) {
         }
       }
 
+      uint8_t rec100[PARTY_MON];
+      const uint8_t* out_bytes = rec80;
+      size_t out_len = BOX_MON;
+      if (want_party) {
+        /* BACKLOG #225: the SAME box->party expansion the live editor uses
+         * (gen3_clip.c clip_to_record / pdna_main.c box_to_party / the
+         * Day-Care return -- one choke point, gen3_edit.c's
+         * em_set_party_flag(e, true)). */
+        EditMon e;
+        gen3_edit_load(rec80, false, &e);
+        em_set_party_flag(&e, true);
+        gen3_edit_commit(&e, rec100);
+        PkMon check;
+        if (!pk_decode_mon(rec100, true, &check) || check.isBadEgg) {
+          fprintf(stderr, "%s: --party expansion failed its own checksum\n", argv[1]);
+          return 1;
+        }
+        out_bytes = rec100;
+        out_len = PARTY_MON;
+      }
+
       FILE* out = fopen(argv[2], "wb");
       if (!out) { fprintf(stderr, "%s: cannot write\n", argv[2]); return 1; }
-      size_t w = fwrite(rec80, 1, BOX_MON, out);
+      size_t w = fwrite(out_bytes, 1, out_len, out);
       fclose(out);
-      if (w != BOX_MON) { fprintf(stderr, "%s: short write\n", argv[2]); return 1; }
+      if (w != out_len) { fprintf(stderr, "%s: short write\n", argv[2]); return 1; }
       if (have_moves)
         fprintf(stderr, "box %2d slot %2d: species %3d, moves %u,%u,%u,%u -> %s\n",
                 b, s, m.species, moves4[0], moves4[1], moves4[2], moves4[3], argv[2]);
       else
         fprintf(stderr, "box %2d slot %2d: species %3d, %d move(s), held item %d -> %s\n",
                 b, s, m.species, nmoves, m.heldItem, argv[2]);
+      if (want_party)
+        fprintf(stderr, "party mail byte 0x%02X = 0x%02X (MAIL_NONE=0x%02X)\n",
+                G3_PARTY_MAIL_OFF, rec100[G3_PARTY_MAIL_OFF], G3_MAIL_NONE);
       return 0;
     }
   }
