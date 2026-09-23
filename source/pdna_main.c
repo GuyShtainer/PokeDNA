@@ -33,6 +33,9 @@
 #include "mon_icons_gate.h"  /* PDNA_MON_ICONS_ART_COMPILED -- is this a full-art build (see
                               * party_bob_recompose's two code paths, MUST-FIX 2) */
 #include "perf.h"          /* SD/icon telemetry + the session clock (see perf.h) */
+#include "build_variant.h" /* BACKLOG #255: pdna_build_variant_str() -- the marker a shot
+                             * chain's assert_vehicle() greps for; the boot log_line call
+                             * below is also what keeps it linked in (see build_variant.c) */
 #include "pdna_summary.h"
 #include "pdna_box.h"
 #include "xfer_gate.h"      /* BACKLOG #120 S2: xg_pc_live/xg_togame_row/xg_paste_row/xg_inject_refuse */
@@ -11968,6 +11971,9 @@ int main(void) {
    * EWRAM the binary was linked with, read from the linker's own __eheap_start, so a
    * log states the memory budget it was built against instead of us guessing. */
   perf_boot_line();
+  log_line("variant: %s", pdna_build_variant_str());  /* BACKLOG #255: also the call site
+                                                         * that keeps pdna_build_variant
+                                                         * linked past --gc-sections */
   log_line("waitcnt=%04x (was %04x) dispcnt=%04x console=%s",  /* cart timing: boosted vs the loader's handoff */
            *(volatile uint16_t*)0x04000204, flashcartio_bus_inherited(), REG_DISPCNT,
            console_name());
