@@ -42,6 +42,14 @@ import gb_claims  # noqa: E402
 # machine-local dump directory -- READ-ONLY, never opened for write.
 ROMS = Path(os.environ.get("ROMS", "/Users/guyshtainer/VSCodeProjects/gba-toolkit/roms"))
 
+# BACKLOG #254: docs/ is gitignored in every PokeDNA worktree (see
+# docs/worktree_setup.sh's own copy list, which does not include docs/shots), so a
+# lane worktree never has docs/shots/gb -- only the main checkout does. Same
+# "hardcoded machine-local default, overridable, skip cleanly if absent" shape as
+# ROMS right above, not a new convention.
+SHOTS_GB = Path(os.environ.get(
+    "SHOTS_GB", "/Users/guyshtainer/VSCodeProjects/gba-toolkit/projects/PokeDNA/docs/shots/gb"))
+
 
 def make_noisy_frame(rng, h=160, w=240, palette_size=24):
     """A small-palette noisy background -- realistic for a GBA capture (<=256
@@ -311,6 +319,109 @@ def check_claim_gb(failures):
           f"blank frame, check_gb() failure semantics hold")
 
 
+def check_cursor_occlusion(failures):
+    """BACKLOG #254: the GB shell's row/field cursor (m3_frame, GBCARD_CSEL --
+    source/pdna_gbhof.c:54 / source/pdna_gbtrainer.c:48) is drawn AFTER the text and
+    overwrites the SELECTED row's own top/bottom border scanline with one hardcoded
+    colour -- the old strict find_gb() missed a species name that WAS on the frame
+    whenever its row was selected (docs/shots/gb/b89_crystal_02_detail.png,
+    claim_gb=TYPHLOSION was the original repro). This is the real-frame regression
+    corpus for the fix: two selected-row positives (the exact repro plus a second,
+    different-game/no-icon frame), four unselected-row controls on the SAME two
+    frames (the common, unoccluded case must still match), two negative controls
+    (genuinely absent text, and a same-length WRONG string on the very same
+    selected row/position as the real match -- proves the cursor-colour exclusion
+    is not "any text of the right length matches"), and a mutation of
+    GB_CURSOR_OCCLUSION_CAP itself (BACKLOG #254's own honesty requirement: prove
+    the refusal path is real, not decoration -- see STANDING-RULES.md's
+    pre-report self-audit item 1). Skips cleanly (not a silent pass -- prints why)
+    if this machine doesn't have the gitignored docs/shots/gb corpus or the ROM
+    corpus, same shape check_claim_gb() already uses."""
+    if not SHOTS_GB.is_dir():
+        print(f"  skip: check_cursor_occlusion -- {SHOTS_GB} not present on this "
+              "machine (docs/ is gitignored; set $SHOTS_GB to override)")
+        return
+    crystal_rom = ROMS / "gb" / "Crystal.gbc"
+    red_rom = ROMS / "gb" / "Red.gb"
+    crystal_png = SHOTS_GB / "b89_crystal_02_detail.png"
+    red_png = SHOTS_GB / "b89_red_02_detail.png"
+    missing = [p for p in (crystal_rom, red_rom, crystal_png, red_png) if not p.is_file()]
+    if missing:
+        print(f"  skip: check_cursor_occlusion -- missing on this machine: "
+              f"{[str(p) for p in missing]}")
+        return
+
+    # (1) positives: the SELECTED row's own species name IS found, on two
+    # independent frames (Gen 2 with a 16px icon column, Gen 1 with none --
+    # BACKLOG #254's own finding was that the icon never actually reaches the
+    # text columns on either repro; both still exercise the top/bottom border
+    # scanline corruption every selected row gets).
+    if not gb_claims.find_gb(crystal_png, crystal_rom, "TYPHLOSION"):
+        failures.append("check_cursor_occlusion: 'TYPHLOSION' (row 0, SELECTED, "
+                         "b89_crystal_02_detail.png) not found -- BACKLOG #254 regressed")
+        return
+    if not gb_claims.find_gb(red_png, red_rom, "MEW"):
+        failures.append("check_cursor_occlusion: 'MEW' (row 0, SELECTED, "
+                         "b89_red_02_detail.png) not found -- BACKLOG #254 regressed")
+        return
+
+    # (2) unselected-row controls on the SAME two frames: the ordinary,
+    # unoccluded case must still match exactly as before this fix.
+    for png, rom, text in [(crystal_png, crystal_rom, "NOCTOWL"),
+                            (crystal_png, crystal_rom, "MANTINE"),
+                            (red_png, red_rom, "MEWTWO"),
+                            (red_png, red_rom, "CHARIZARD")]:
+        if not gb_claims.find_gb(png, rom, text):
+            failures.append(f"check_cursor_occlusion: unselected-row control "
+                             f"{text!r} on {png.name} not found")
+            return
+
+    # (3) negative control: genuinely absent text on the selected-row frame.
+    fails = gb_claims.check_gb(crystal_png, crystal_rom, claim_gb="BULBASAUR")
+    if not fails or "not on frame" not in fails[0]:
+        failures.append(f"check_cursor_occlusion: 'BULBASAUR' (genuinely absent) "
+                         f"should fail as 'not on frame', got {fails}")
+        return
+
+    # (4) negative control: a same-length WRONG string at the SAME
+    # selected-row position as the real match -- the cursor-colour exclusion
+    # must not degrade into "any text of the right length matches here".
+    fails = gb_claims.check_gb(crystal_png, crystal_rom, claim_gb="TYPHLOSIAN")
+    if not fails or "not on frame" not in fails[0]:
+        failures.append(f"check_cursor_occlusion: near-miss 'TYPHLOSIAN' (same "
+                         f"length as the real, selected TYPHLOSION) should still "
+                         f"fail as 'not on frame', got {fails}")
+        return
+
+    # (5) mutation: GB_CURSOR_OCCLUSION_CAP must be load-bearing. Forcing it to
+    # 0.0 means ANY cursor-colour pixel at all triggers a refusal, so the real,
+    # correct 'TYPHLOSION' match (which genuinely has occluded ink pixels on
+    # this frame) must now come back as the DISTINCT "cannot be verified"
+    # wording, not "not on frame" and not a silent pass -- proving this is a
+    # real code path this test can turn red, per STANDING-RULES.md's
+    # pre-report self-audit item 1, not an assertion that has never failed.
+    real_cap = gb_claims.GB_CURSOR_OCCLUSION_CAP
+    try:
+        gb_claims.GB_CURSOR_OCCLUSION_CAP = 0.0
+        fails = gb_claims.check_gb(crystal_png, crystal_rom, claim_gb="TYPHLOSION")
+    finally:
+        gb_claims.GB_CURSOR_OCCLUSION_CAP = real_cap
+    if not fails or "cannot be verified" not in fails[0]:
+        failures.append("check_cursor_occlusion: forcing GB_CURSOR_OCCLUSION_CAP="
+                         f"0.0 should have produced the distinct 'cannot be "
+                         f"verified' refusal for 'TYPHLOSION', got {fails}")
+        return
+    fails = gb_claims.check_gb(crystal_png, crystal_rom, claim_gb="TYPHLOSION")
+    if fails:
+        failures.append(f"check_cursor_occlusion: 'TYPHLOSION' should pass again "
+                         f"once GB_CURSOR_OCCLUSION_CAP is restored, got {fails}")
+        return
+
+    print("  ok: cursor-highlight-aware claim_gb= matcher (BACKLOG #254) -- 2 "
+          "selected-row positives, 4 unselected-row controls, 2 negative controls, "
+          "1 occlusion-cap mutation, all real frames from docs/shots/gb, all hold")
+
+
 def main() -> int:
     failures: list[str] = []
     rng = np.random.default_rng(20260922)
@@ -321,6 +432,7 @@ def main() -> int:
     check_real_fixture(failures)
     check_many_colours(rng, failures)
     check_claim_gb(failures)
+    check_cursor_occlusion(failures)
 
     if failures:
         print(f"\nhost_gb_claims_test: {len(failures)} FAILURE(S):", file=sys.stderr)
