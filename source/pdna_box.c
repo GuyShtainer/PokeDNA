@@ -1481,9 +1481,20 @@ static uint8_t* __attribute__((noinline)) drop_held_up(BoxSource* src, int box, 
   recs = src->records(box);
   /* decision 10: the ident32 collision refusal, NOT a re-pack -- the serial is
    * monotonic and persisted before use, so a collision means the meta was lost
-   * or rolled back. A plain memcmp on bytes 0..7 (magic + ident32), not a
-   * recomputed bc_ident32() on the candidate (a match on bytes 0..3 alone
-   * already implies "GBC1", so no separate bc_is_native() check is needed).
+   * or rolled back. A plain memcmp on bytes 0..7 (magic + ident32) against each
+   * CANDIDATE cell already stored in a Bank box -- not a recomputed bc_ident32()
+   * on the candidate (a match on bytes 0..3 alone already implies "GBC1" for
+   * THAT side, so no separate bc_is_native() check is needed on it).
+   * BACKLOG #246 review F5 fix: `packed` itself is a DIFFERENT matter -- since
+   * gb_lift_restore_g3home (source/pdna_gen12.c), it can be a PLAIN Gen-3
+   * record (bc_is_native(packed) == false by construction: gen3_edit_commit
+   * never writes the GBC1 tag), and for that shape bytes 0..7 are PID + OT ID,
+   * not magic + ident32 at all -- comparing them against every stored cell's
+   * ident32 span is comparing two unrelated fields, and a false "BANK RECORD
+   * CLASH" refusal follows whenever another cell happens to share that PID+OTID.
+   * No corruption either way (bc_unpack rejects the false match before commit),
+   * but this whole scan -- serial resync, repack, ident32 clash -- is a
+   * native-cell-only concept, so it is now gated on bc_is_native(packed) below.
    * BACKLOG #168a (REVIEW F5's own follow-up): scans ALL 16 Bank boxes, not just
    * the destination -- a duplicate serial landing in another box used to be
    * invisible here, and S150-6/S150-7 would mis-target it. One box buffer at a
@@ -1496,7 +1507,7 @@ static uint8_t* __attribute__((noinline)) drop_held_up(BoxSource* src, int box, 
    * in beside this card's meta. Pay the full 16-box scan ONCE per session (15
    * extra 2,400-B reads, on a deliberate user action), then trust it. */
   static EWRAM_BSS bool s_up_scan_done;   /* EWRAM: an IWRAM static would cost 8 B of stack budget (re-verify) */
-  if (!pdna_bank_serial_trusted() || !s_up_scan_done) {
+  if (bc_is_native(packed) && (!pdna_bank_serial_trusted() || !s_up_scan_done)) {
     /* BACKLOG #223 review D4/D5, fused into one pass by #206 fixes2 R2
      * (bank_scan_serial_and_clash, bank_collision.c): a rolled-back counter
      * (BACKLOG #219's .bak recovery) can hand serial S to a DIFFERENT mon than the
