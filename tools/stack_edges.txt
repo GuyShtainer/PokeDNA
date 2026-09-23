@@ -181,7 +181,14 @@ count-only-max 52 variant=nor
 # comment on PdnaDexPageFn), so it only ever adds a count-only site on the delta
 # variant -- nor/nor-artless/sd are untouched by this lane, hence only this one line
 # moves, 51 -> 52.
-count-only-max 52 variant=delta
+# BACKLOG #229 (2026-09-23, lane mail-integrity): the SAME app_commit_with_dex shift
+# documented above the nor/nor-artless lines (app_create_mon's new is_party call site
+# stopped it being fully inlined) applies to delta too -- diffed the 52-item nor-
+# artless-with-fix list against this build's own count-only list: exactly one addition
+# beyond that, dex_page_begin_call (the pre-existing delta-only site #208 already
+# accounts for) -- so this line moves the same +1, 52 -> 53. Built and measured
+# privately for this lane's own mGBA shot vehicle (`make delta`), not by the gate.
+count-only-max 53 variant=delta
 
 # Delta-only -- the artless/normal (PDNA_TARGET=nor) links do not contain it:
 # Listing EVERY variant in variants= re-creates a blanket exemption -- if the symbol exists
