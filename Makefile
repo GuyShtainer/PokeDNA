@@ -300,6 +300,28 @@ endif
 PDNA_PERF ?= 1
 CFLAGS += -DPDNA_PERF=$(PDNA_PERF)
 
+# BACKLOG #235: pin the build timestamp for PARITY builds. source/pdna_main.c embeds
+# `__DATE__ __TIME__` at three sites (the emulator-boot footer + the log's own "build"
+# line), so two builds of byte-identical source compiled minutes apart cannot be
+# byte-exact -- a real parity sweep (tools/parity_sweep_a4.py) then has to hand-wave
+# the resulting diff as "probably the timestamp", which is exactly how a genuine
+# regression gets excused. Off by default (`PDNA_PIN_BUILD_STAMP` unset/0): every
+# ordinary build keeps the compiler's real __DATE__/__TIME__, which is useful
+# diagnostic information nobody wants to lose day to day. A parity run builds BOTH
+# sides with `PDNA_PIN_BUILD_STAMP=1` (same fixed literal every time -- the exact
+# text doesn't matter, only that it's identical on both sides), which redefines the
+# two builtin macros via -D so the ROM's embedded bytes are the same regardless of
+# wall-clock build time -- PINNED, never a masked pixel region (#235's own point:
+# masking a screen area to make a diff go away can hide a REAL change behind it, the
+# opposite of what this checker exists to catch). `make does not track CFLAGS`
+# (BUILD IDENTITY comment above, same caveat): a parity build must be a CLEAN build
+# on both sides (`make clean` first, or a fresh worktree/objdir) so an incremental
+# .o left over from an unpinned build never carries a stale timestamp forward.
+PDNA_PIN_BUILD_STAMP ?= 0
+ifeq ($(strip $(PDNA_PIN_BUILD_STAMP)),1)
+CFLAGS += -D__DATE__='"Jan  1 2026"' -D__TIME__='"00:00:00"'
+endif
+
 # BUILD IDENTITY. __DATE__/__TIME__ alone cannot tell two builds of the same afternoon
 # apart, and "is that log from the old binary?" has already cost this project a
 # debugging session. The short hash + a '+' when the tree is dirty goes into the ROM and
