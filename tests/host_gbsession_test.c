@@ -975,6 +975,76 @@ static void s5_insert(const char* file, uint8_t expect_gen) {
   }
 }
 
+/* ---- BACKLOG #256: a box that just lost a member, tested with the room it just made ----
+ *
+ * test_dup_roundtrip and s5_insert(a) both need a box that ALREADY has room before they
+ * start (`c > 0 && c < cap`) -- and Guy's whole Gen-1 corpus is maxed (every Red box
+ * full, Yellow boxes 0-6 full), so that precondition is never met there and this exact
+ * composition -- gbs_delete() immediately followed by a gbs_insert() into the SAME box,
+ * on the room the delete itself just freed -- had no coverage at all. That gap is
+ * BACKLOG #256's own reproduction shape: "gbs_delete(box, slot 0) returns GBS_OK, and
+ * the gbs_insert(box, ...) immediately after it returns GBS_ERR_STRUCT."
+ *
+ * Investigation note (2026-09-24): exhaustively probed against roms/gb/Red.sav and
+ * roms/gb/Yellow.sav at main fcb9137 -- every one of the 12 storage boxes in both files,
+ * gbs_delete(box,0) immediately followed by gbs_insert(box, <the just-deleted record>),
+ * a FRESH GbSession reopened from a re-written file between the two calls (ruling out
+ * any single-process staleness), the production host_gbsurgery_tool CLI chaining
+ * `--op delete --op create`/`--op paste80` in one invocation (gb_new_mon / gen3_to_gb_fixed
+ * record shapes, not just gb_load()'s), and 10 repeated delete-then-insert cycles in a
+ * row on the same box -- and GBS_OK came back every time; GBS_ERR_STRUCT never fired.
+ * The defect as literally described did not reproduce on this tree. This test is landed
+ * anyway as the permanent regression guard for exactly that composition (proven to catch
+ * a real regression by mutation -- see the commit message), not as evidence #256 ever
+ * existed on this commit. */
+static void s256_delete_then_insert(const char* file, uint8_t expect_gen) {
+  uint32_t len = load(file);
+  if (!len) { printf("  SKIP %s (BACKLOG #256 delete-then-insert)\n", file); return; }
+  printf("  -- BACKLOG #256 delete-then-insert: %s\n", file);
+
+  GbSession s;
+  CHECK(gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK,
+        "#256: session opens");
+  CHECK(s.gen == expect_gen, "#256: the right generation was detected");
+
+  int nb = gbs_nboxes(&s), pb = gbs_party_box(&s), tested = 0;
+  for (int box = 0; box < nb; box++) {
+    if (box == pb || gbs_box_writable(&s, box) != GBS_OK) continue;
+    if (gbs_load_list(&s, box, g_list) != GBS_OK) continue;
+    int count0 = gb_list_count(s.gen, g_list, box);
+    if (count0 <= 0) continue;                    /* nothing to delete/reinsert here */
+
+    GbEditMon original;
+    CHECK(gb_load(&original, s.gen, g_list, box, 0), "#256: slot 0 loads before delete");
+
+    GbsStatus dst = gbs_delete(&s, box, 0, g_list);
+    CHECK(dst == GBS_OK, "#256: the delete that frees the room succeeds");
+    if (dst != GBS_OK) continue;
+    CHECK(gb_list_count(s.gen, g_list, box) == count0 - 1,
+          "#256: count dropped by exactly one after the delete");
+
+    /* THE composition under test: insert into the SAME box, on the room the delete
+     * immediately above just freed -- BACKLOG #256's own words, "immediately after". */
+    int slot_out = -1;
+    GbsStatus ist = gbs_insert(&s, box, &original, &slot_out, g_list);
+    CHECK(ist == GBS_OK, "#256: the insert right after the delete is accepted, not GBS_ERR_STRUCT");
+    if (ist != GBS_OK) {
+      printf("     BACKLOG #256 REPRODUCED: box %d, gbs_insert -> %s\n",
+             box, gbs_status_text(ist));
+      continue;
+    }
+    tested++;
+
+    CHECK(gbs_load_list(&s, box, g_list) == GBS_OK, "#256: box reloads after the insert");
+    CHECK(gb_list_count(s.gen, g_list, box) == count0,
+          "#256: count is back to what it was before the delete");
+    CHECK(slot_out == count0 - 1, "#256: landed at the expected (appended) slot");
+    CHECK(gb_verify_slot(&original, g_list, box, slot_out),
+          "#256: the reinserted record reads back byte-for-byte the same");
+  }
+  CHECK(tested > 0, "#256: at least one box exercised the delete-then-insert composition");
+}
+
 /* ---- BACKLOG #93: DUPLICATE's own round trip -------------------------------------
  * gb_dup_hook (pdna_gen12.c) is gb_load() -> gbs_insert() of the SAME loaded record ->
  * gb_persist(); the Acceptance section asks for exactly this over the corpus: load an
@@ -1509,6 +1579,14 @@ int main(void) {
 
   s8_roundtrip("Gold.sav",    GB_GEN2);
   s8_roundtrip("Crystal.sav", GB_GEN2);
+
+  /* BACKLOG #256: delete then immediately insert into the same box, on the room the
+   * delete itself just freed -- see the function's own header for what this checks
+   * and what did NOT reproduce. */
+  s256_delete_then_insert("Red.sav",     GB_GEN1);
+  s256_delete_then_insert("Yellow.sav",  GB_GEN1);
+  s256_delete_then_insert("Gold.sav",    GB_GEN2);
+  s256_delete_then_insert("Crystal.sav", GB_GEN2);
 
   /* BACKLOG #64: the read-only STREAMED session, over every corpus save. */
   s64_streamed_vs_resident("Red.sav",     GB_GEN1);
