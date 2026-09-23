@@ -3176,11 +3176,16 @@ static void gb_paste_sidecar_undo(const char* path) {
   if (wst != SF_OK) log_line("gen12: sidecar cleanup: rewrite failed for %s", path);
 }
 
-/* Steps 6-8 of gb_paste_hook (below): the sidecar, then gbs_insert(), then the card.
- * noinline: GbscEntry (~120 B) + the 48-byte path together are exactly the kind of
- * "sidecar I/O" weight the S5-B brief calls out as needing its own frame, same
- * reasoning as gb_persist's bak[SF_PATH_MAX] split. */
-static bool __attribute__((noinline)) gb_paste_write(const GbEditMon* mon, int box) {
+/* The sidecar, then gbs_insert(), then the card -- shared by every Gen-3 -> Game Boy
+ * landing (BACKLOG #246: gb_bank_down_g3 below is its only caller now; the menu-driven
+ * gb_paste_hook this comment used to describe steps 6-8 of is deleted, along with the
+ * PASTE row -- see this file's own delivery report). noinline: GbscEntry (~120 B) +
+ * the 48-byte path together are exactly the kind of "sidecar I/O" weight the S5-B
+ * brief calls out as needing its own frame, same reasoning as gb_persist's
+ * bak[SF_PATH_MAX] split. `orig80` is the TRUE Gen-3 original -- the clipboard
+ * record before #246, the Bank cell since -- gbsc_entry_from()'s own original80. */
+static bool __attribute__((noinline))
+gb_paste_write(const GbEditMon* mon, int box, const uint8_t orig80[80]) {
   uint8_t dv4[4] = {
     gb_get_dv(mon, GB_ATK), gb_get_dv(mon, GB_DEF),
     gb_get_dv(mon, GB_SPE), gb_get_dv(mon, GB_SPC)
@@ -3257,7 +3262,7 @@ static bool __attribute__((noinline)) gb_paste_write(const GbEditMon* mon, int b
             ((uint32_t)t.minute << 6) | (uint32_t)t.second;
 
   GbscEntry e;
-  gbsc_entry_from(&e, mon, app_clip_rec(), epoch);
+  gbsc_entry_from(&e, mon, orig80, epoch);
   int idx = gbsc_add(g_ed->sidecar, &len, GBSC_FILE_MAX, &e);
   if (idx < 0) {
     snd_deny();
@@ -3630,29 +3635,34 @@ typedef enum {
   GB1BASE_BAD_ROM    /* opened, but not a valid Gen-1 ROM, or the dex row is bad    */
 } Gb1BaseStatus;
 
-/* Just the dex number PASTE (GB) needs to look up base stats for -- PkMon (~90 B) is
- * exactly the kind of weight this slice's brief says must not ride in gb_paste_hook's
- * own frame, so it gets its own noinline frame instead. 0 (an impossible dex) on any
- * decode failure or an Egg, which have no base stats to fetch and are about to be
- * refused by gen3_to_gb's own EGG/GLITCH checks the moment the caller retries it. */
-static uint16_t __attribute__((noinline)) gb_clip_dex(void) {
+/* Just the dex number a Gen-3 -> Game Boy landing needs to look up base stats for --
+ * PkMon (~90 B) is exactly the kind of weight this slice's brief says must not ride
+ * in the caller's own frame, so it gets its own noinline frame instead. 0 (an
+ * impossible dex) on any decode failure or an Egg, which have no base stats to fetch
+ * and are about to be refused by gen3_to_gb's own EGG/GLITCH checks the moment the
+ * caller retries it. BACKLOG #246: takes `rec80` explicitly -- this used to read
+ * app_clip_rec() (the clipboard) when its only caller was the now-deleted
+ * gb_paste_hook; its ONLY caller now (gb_bank_down_g3, below) hands in the Bank
+ * cell instead, so there is nothing clipboard-shaped left to default to. */
+static uint16_t __attribute__((noinline)) gb_rec_dex(const uint8_t rec80[80]) {
   PkMon m;
-  if (!pk_decode_mon(app_clip_rec(), false, &m) || m.isEgg || m.isBadEgg) return 0;
+  if (!pk_decode_mon(rec80, false, &m) || m.isEgg || m.isBadEgg) return 0;
   return pk_national_no(m.species);
 }
 
-/* BACKLOG #150 S150-10 decision 8, step 2: bad4/from4 for gb_paste_hook, off the SAME
- * clipboard decode gb_clip_dex() above does (a second, independent decode -- this
- * function's own frame, same reasoning as gb_clip_dex's). -1 on a decode failure or an
- * Egg (mirrors gb_clip_dex's own refusal set exactly): the caller then passes bad4 =
- * NULL into gen3_to_gb_fixed, so it refuses precisely the way gen3_to_gb() always has.
- * Otherwise returns g3gb_moves_ok()'s bad count (0..4) and fills from4 with the raw
- * Gen-3 move ids (for the modal's "X -> Y" rows -- pk_move_name() takes them directly,
- * no re-decode needed later). */
+/* BACKLOG #150 S150-10 decision 8, step 2: bad4/from4 for a Gen-3 -> Game Boy
+ * landing, off the SAME decode gb_rec_dex() above does (a second, independent
+ * decode -- this function's own frame, same reasoning as gb_rec_dex's). -1 on a
+ * decode failure or an Egg (mirrors gb_rec_dex's own refusal set exactly): the
+ * caller then passes bad4 = NULL into gen3_to_gb_fixed, so it refuses precisely the
+ * way gen3_to_gb() always has. Otherwise returns g3gb_moves_ok()'s bad count (0..4)
+ * and fills from4 with the raw Gen-3 move ids (for the modal's "X -> Y" rows --
+ * pk_move_name() takes them directly, no re-decode needed later). BACKLOG #246:
+ * takes `rec80` explicitly, same reasoning as gb_rec_dex above. */
 static int __attribute__((noinline))
-gb_clip_moves(uint8_t gen, uint16_t from4[4], uint8_t bad4[4]) {
+gb_rec_moves(const uint8_t rec80[80], uint8_t gen, uint16_t from4[4], uint8_t bad4[4]) {
   PkMon m;
-  if (!pk_decode_mon(app_clip_rec(), false, &m) || m.isEgg || m.isBadEgg) return -1;
+  if (!pk_decode_mon(rec80, false, &m) || m.isEgg || m.isBadEgg) return -1;
   for (int i = 0; i < 4; i++) from4[i] = m.moves[i];
   return g3gb_moves_ok(m.moves, gen, bad4);
 }
@@ -3891,7 +3901,7 @@ BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]) {
     return BANK_DOWN_REFUSED;
   }
   if (g3gb == G3GB_ERR_NEEDS_BASE) {                                        /* S5-C's own retry, verbatim shape */
-    /* Re-derive the intermediate species dex the same way gb_clip_dex() would, off
+    /* Re-derive the intermediate species dex the same way gb_rec_dex() would, off
      * the cell's own view -- bdc_convert_gb_core() already decoded it once
      * internally; re-unpack here rather than widening that function's signature
      * just to smuggle one uint16_t out on the ONE refusal path that needs it. */
@@ -4042,17 +4052,6 @@ BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]) {
   return BANK_DOWN_LANDED;
 }
 
-/* AppSrcOps.paste: convert the CLIPBOARD's Gen-3 record and append it into `rec80`'s
- * box (an empty cell -- app_mon_menu's own gate: g_clip.occupied && !g_clip.from_gb).
- * Order, each refusal leaving nothing PAST it touched:
- *   1. locate (box + the S2/S3 gates, gb_locate)
- *   2-3. gen3_to_gb() -- species/move/Egg refusals; a Gen-1 target that needs base
- *      stats retries once with the user's own ROM's table (S5-C)
- *   4. the loss screen (A = continue, B = cancel: nothing touched)
- *   5. gbs_box_writable() re-checked fresh (gb_locate's own check is against the box
- *      as it stood when the popup opened; cheap, and every other hook does the same)
- *   6-8. gb_paste_write(): the sidecar (verified, written FIRST -- design doc section 5
- *      point 3), gbs_insert(), then the card (gb_persist). */
 /* BACKLOG #150 S150-7 decision D10: the first STORAGE box (never the party) with room,
  * for the 10(c) deposit. -1 when every box is full -- the caller refuses the WHOLE drop
  * before anything moves rather than offering a second picker. g_ed->list2 as scratch:
@@ -4294,25 +4293,44 @@ static bool __attribute__((noinline)) gb_accept_down_hook(int dst_box, const uin
   return gb_persist("bank-down");     /* the ONE card write; it reports its own refusals */
 }
 
-static bool gb_paste_hook(uint8_t* rec80) {
-  int box, slot;
-  if (!gb_locate(rec80, &box, &slot)) return false;                          /* 1 */
+/* BACKLOG #246 (#104 Phase 1): the missing arm -- a PLAIN Gen-3 Bank cell (never
+ * native "GBC1") landing in THIS Game Boy save for the FIRST time. Called from
+ * pdna_box.c's drop_held, its own new cross-scope branch for the pair xg_drop_denied
+ * now allows (GB<-BANK) -- the caller already knows the destination box (a Bank
+ * drop, unlike the old menu-driven PASTE, is never addressed via gb_locate()) and
+ * hands the held Bank cell in directly as `cell80`, so every place this body used
+ * to read app_clip_rec() (the clipboard) now reads `cell80` instead. Body and order
+ * are gb_paste_hook's own (deleted in this same commit, along with its PASTE row --
+ * two live routes into a Game Boy save must never drift apart), with two deliberate
+ * departures from that shape, matching this call site's siblings
+ * (gb_bank_down_bridge/gb_bank_down_gen3, above -- the SAME caller, drop_held's
+ * cross-scope dispatch): (1) `dst_box` arrives as a parameter, no gb_locate(); (2)
+ * boxoam_suspend()/resume() brackets the two screens -- the menu-driven PASTE ran
+ * under app_mon_menu's own bracket, but a Bank-drop's box-grid OBJ sprites are live
+ * on screen the whole time, the same reason gb_bank_down_bridge brackets its own
+ * loss/legal screens. The party refusal (S5-B re-verification NEW-1's own reasoning:
+ * gbs_insert() only ever inserts BOX-kind records into storage boxes, never the
+ * party -- landing there needs gbs_move()'s species-limit/live-stat/Mail rules this
+ * function does not have) is KEPT, first, unchanged.
+ * Returns BANK_DOWN_LANDED on a verified card write, BANK_DOWN_REFUSED otherwise
+ * (a message has already been shown on every refusal path; nothing is written on
+ * any BANK_DOWN_REFUSED return -- gb_paste_write() is the only writer, at the very
+ * end). Never returns BANK_DOWN_CONVERTED -- this arm lands directly in the
+ * destination, exactly like gb_bank_down_bridge, never through the Gen-3-PC
+ * fall-through gb_bank_down_gen3 uses. */
+BankDownResult gb_bank_down_g3(int dst_box, const uint8_t cell80[80]) {
+  if (!app_can_edit() || !g_ed) { snd_deny(); return BANK_DOWN_REFUSED; }
 
-  /* S5-B re-verification NEW-1 (must): the party pseudo-box IS a grid box (nboxes ==
-   * party_box + 1), so app_src_paste_offered() opened PASTE (GB) on an empty PARTY
-   * cell too -- gbs_box_writable() says OK for the Gen-2 party and the capacity
-   * pre-check below passes (g2_list_capacity(party) == 6), so without this guard
+  /* S5-B re-verification NEW-1 (must), kept verbatim from gb_paste_hook: the party
+   * pseudo-box IS a grid box (nboxes == party_box + 1) -- without this guard
    * gb_paste_write() would write the sidecar to the CARD and only THEN have
-   * gbs_insert() refuse with GBS_ERR_ARG (it only ever inserts BOX-kind records into
-   * storage boxes -- gb_session.h's own contract), triggering a rollback + best-effort
-   * sidecar-undo on every single attempt. Landing a converted mon in the party needs
-   * species-limit/live-stat/Mail rules gbs_insert() deliberately does not have; that is
-   * gbs_move()'s job, and S5-C's. Refused here, before ANYTHING (including the loss
-   * screen) runs. */
-  if (gb_box_is_party(g_ed->s.gen, box)) {
+   * gbs_insert() refuse with GBS_ERR_ARG, orphaning a sidecar entry on every single
+   * attempt rather than only on a genuine race. Refused here, before ANYTHING
+   * (including the loss screen) runs. */
+  if (gb_box_is_party(g_ed->s.gen, dst_box)) {
     snd_deny();
     msg_wait(PDNA_SIDECAR_XFER_TITLE, UI_WARN, PDNA_SIDECAR_PARTY_L1, 0);
-    return false;
+    return BANK_DOWN_REFUSED;
   }
 
   GbEditMon mon;
@@ -4330,48 +4348,60 @@ static bool gb_paste_hook(uint8_t* rec80) {
    * always has -- and indeed IS, decision 1. */
   uint16_t from4[4] = { 0, 0, 0, 0 };
   uint8_t  bad4[4]  = { 0, 0, 0, 0 };
-  int nbad = gb_clip_moves(g_ed->s.gen, from4, bad4);
+  int nbad = gb_rec_moves(cell80, g_ed->s.gen, from4, bad4);
   const uint8_t* bad4p = (nbad > 0) ? bad4 : NULL;
 
-  G3GbStatus cst = gen3_to_gb_fixed(app_clip_rec(), g_ed->s.gen, crystal, NULL,
+  G3GbStatus cst = gen3_to_gb_fixed(cell80, g_ed->s.gen, crystal, NULL,
                                      bad4p, &mon, &loss);                   /* 2 */
   if (cst == G3GB_ERR_NEEDS_BASE) {          /* Gen 1 only -- everything else about this
                                               * mon already checked out (gen3_to_gb.c's
                                               * screen() reaches this check LAST) */
-    uint16_t dex = gb_clip_dex();
+    uint16_t dex = gb_rec_dex(cell80);
     GbGen1Base g1base;
     Gb1BaseStatus bst = dex ? gb_gen1_base_from_rom(dex, &g1base) : GB1BASE_BAD_ROM;
     if (bst == GB1BASE_NO_ROM) {
       snd_deny();
       gb_gen12_norom_msg(GB_GEN1);
-      return false;
+      return BANK_DOWN_REFUSED;
     }
     if (bst != GB1BASE_OK) {
       snd_deny();
       msg_wait(PDNA_SIDECAR_XFER_TITLE, UI_WARN, PDNA_SIDECAR_GEN1_BADROM_L1, 0);
-      return false;
+      return BANK_DOWN_REFUSED;
     }
-    cst = gen3_to_gb_fixed(app_clip_rec(), g_ed->s.gen, crystal, &g1base,
+    cst = gen3_to_gb_fixed(cell80, g_ed->s.gen, crystal, &g1base,
                             bad4p, &mon, &loss);                            /* 3 */
   }
   if (cst != G3GB_OK) {
     snd_deny();
     msg_wait(PDNA_SIDECAR_XFER_TITLE, UI_WARN, g3gb_status_text(cst), 0);
-    return false;
+    return BANK_DOWN_REFUSED;
   }
 
-  if (!gb_paste_loss_screen(&loss, LOSS_FOOT_PASTE)) return false;          /* 4 */
+  /* LOSS_FOOT_BRIDGE, not LOSS_FOOT_PASTE: the KEPT rows ("Kept in /PokeDNA/xfer;
+   * restored when it comes back.") stay -- the sidecar entry IS written, same as
+   * PASTE always did -- but the footer's third line must say the Bank slot EMPTIES,
+   * not PDNA_SIDECAR_LOSS_STAYS's stale "the copy in your Gen-3 save stays" (that
+   * was true of the OLD clipboard-copy PASTE route; dropping a Bank cell is a MOVE,
+   * consumed on landing, docs/104-ROUNDTRIP-DESIGN.md section 2.1's "the cell is
+   * consumed" -- the caller, drop_held's new branch, deletes it right after this
+   * call returns LANDED). PDNA_XFER_BRIDGE_STAYS's own wording ("The Bank slot is
+   * emptied when it lands.") is generic, not bridge-specific, and applies verbatim. */
+  boxoam_suspend();
+  bool loss_ok = gb_paste_loss_screen(&loss, LOSS_FOOT_BRIDGE);             /* 4 */
+  boxoam_resume();
+  if (!loss_ok) return BANK_DOWN_REFUSED;
 
-  /* BACKLOG #104 R1 (docs/TRANSFER-ROUNDTRIP-DESIGN.md section 3c/4): KEEP AS IS vs
+  /* BACKLOG #104 R1 (docs/104-ROUNDTRIP-DESIGN.md section 3c/4): KEEP AS IS vs
    * MAKE LEGAL, additive between the loss screen and the box-writable check -- most
    * transfers never trigger gen3_to_gb_evo_needs_fix() and this whole block is a
    * no-op. MAKE LEGAL's one correction is the level; gb_set_level() (gb_edit.h,
    * already shipped) also recomputes EXP under the target generation's own growth
    * rate, so level and EXP stay consistent. `mon` is corrected HERE, before
    * gb_paste_write() runs, so its own gbsc_entry_from() call (unchanged) captures
-   * the CORRECTED level as written_level while original80 (from app_clip_rec(),
-   * also unchanged) stays the true, uncorrected Gen-3 original -- see
-   * gb_sidecar.c's merge_species_and_level() for why that distinction matters. */
+   * the CORRECTED level as written_level while original80 (`cell80`, also
+   * unchanged) stays the true, uncorrected Gen-3 original -- see gb_sidecar.c's
+   * merge_species_and_level() for why that distinction matters. */
   uint8_t fix_from = 0, fix_to = 0;
   bool fix = gen3_to_gb_evo_needs_fix(&mon, &fix_from, &fix_to);
 
@@ -4381,7 +4411,8 @@ static bool gb_paste_hook(uint8_t* rec80) {
    * choice once a slot is bad, decision 7), else the mon's current level. Writes the
    * fills into `mon` HERE, before the modal, because a MAKE LEGAL choice adds nothing
    * further for moves and a CANCEL discards `mon` entirely (nothing is written on any
-   * `return false` below -- gb_paste_write is the only writer, at the very end). */
+   * BANK_DOWN_REFUSED return below -- gb_paste_write is the only writer, at the very
+   * end). */
   uint8_t fill4[4] = { 0, 0, 0, 0 };
   int nfill = 0;
   if (nbad > 0) {
@@ -4390,11 +4421,8 @@ static bool gb_paste_hook(uint8_t* rec80) {
      * 5's own choice, deliberately bypassing romgs_ready -- see that function's MEDIUM-1
      * comment: CREATE's resolution is ALWAYS a cold, ~185,000-read full-ROM scan, never
      * cached). CREATE masks that exact scan with s_busy_reading() (see gb_create_hook's
-     * own MEDIUM-2 comment) before it ever calls gb_create_locate_rom; the fill's call to
-     * the SAME function had no such cover, so a cold session's loss screen -> modal
-     * transition looked frozen for the whole scan. The very next screen (the modal below,
-     * or gb_gen12_norom_msg's msg_wait on 8.7's refusal) does its own ui_clear(), so no
-     * explicit "restore" call is needed here -- it simply draws over this busy panel. */
+     * own MEDIUM-2 comment) before it ever calls gb_create_locate_rom. */
+    boxoam_suspend();
     s_busy_reading();
     nfill = gb_paste_fill_moves(gb_get_species_dex(&mon), wlvl, &mon, bad4, fill4);
     /* "packed": did any KEPT (non-bad) slot's move end up at a different index than
@@ -4406,7 +4434,7 @@ static bool gb_paste_hook(uint8_t* rec80) {
     bool packed = false;
     for (int i = 0; i < 4; i++)
       if (!bad4[i] && from4[i] != 0 && gb_get_move(&mon, i) != (uint8_t)from4[i]) packed = true;
-    log_line("gen12: paste moves: gen %u, %d bad slot(s), %d filled, packed=%d",
+    log_line("gen12: bank-down->g3 moves: gen %u, %d bad slot(s), %d filled, packed=%d",
              (unsigned)g_ed->s.gen, nbad, nfill, (int)packed);
     /* Decision 8.7's real predicate (review D1): "the record would be WRITTEN with
      * no moves at all". `nbad == 4` misses the 1-3-bad case where every non-empty
@@ -4417,54 +4445,59 @@ static bool gb_paste_hook(uint8_t* rec80) {
     for (int i = 0; i < 4; i++) if (gb_get_move(&mon, i)) nleft++;
     if (nleft == 0) {
       snd_deny();
-      gb_gen12_norom_msg(g_ed->s.gen);
-      return false;
+      gb_gen12_nomoves_msg(g_ed->s.gen);
+      boxoam_resume();
+      return BANK_DOWN_REFUSED;
     }
+    boxoam_resume();
   }
 
   if (fix || nbad > 0) {
+    boxoam_suspend();
     GbXferChoice ch = gb_paste_legal_screen_ex(gb_get_species_dex(&mon), fix_from,
                                                 fix ? fix_to : 0, from4, bad4, fill4, nbad);
-    if (ch == GB_XFER_CANCEL) return false;
+    boxoam_resume();
+    if (ch == GB_XFER_CANCEL) return BANK_DOWN_REFUSED;
     if (ch == GB_XFER_MAKE_LEGAL && fix) gb_set_level(&mon, fix_to);
   }
 
-  GbsStatus wst = gbs_box_writable(&g_ed->s, box);                          /* 5 */
+  GbsStatus wst = gbs_box_writable(&g_ed->s, dst_box);                      /* 5 */
   if (wst != GBS_OK) {
     snd_deny();
     msg_wait(PDNA_GBEDIT_BOXWR_TITLE, UI_WARN, gbs_status_text(wst),
              wst == GBS_ERR_UNWRITABLE ? PDNA_GBEDIT_UNWRITABLE_HINT : 0);
-    return false;
+    return BANK_DOWN_REFUSED;
   }
 
-  /* S5-B review fix (BLOCKING #1): the grid shows 30 cells but a GB box holds at most
-   * gb_list_capacity() (20 for Gen 2) -- cells 20..29 always read empty on this source,
-   * so without this check a paste attempted there would write the sidecar to the card
-   * FIRST and only then have gbs_insert() refuse with GBS_ERR_FULL inside
-   * gb_paste_write(), leaving an orphan sidecar entry behind on EVERY such attempt
-   * rather than only on a genuine race. `g_ed->list` is reloaded a moment later by
-   * gb_paste_write()'s own gbs_insert() -- cheap, and every other hook in this file
-   * re-derives its own gates fresh the same way. */
-  GbsStatus lst = gbs_load_list(&g_ed->s, box, g_ed->list);
+  /* S5-B review fix (BLOCKING #1), kept verbatim: the grid shows 30 cells but a GB
+   * box holds at most gb_list_capacity() (20 for Gen 2) -- cells 20..29 always read
+   * empty on this source, so without this check a drop attempted there would write
+   * the sidecar to the card FIRST and only then have gbs_insert() refuse with
+   * GBS_ERR_FULL inside gb_paste_write(), leaving an orphan sidecar entry behind on
+   * EVERY such attempt rather than only on a genuine race. `g_ed->list` is reloaded
+   * a moment later by gb_paste_write()'s own gbs_insert() -- cheap, and every other
+   * hook in this file re-derives its own gates fresh the same way. */
+  GbsStatus lst = gbs_load_list(&g_ed->s, dst_box, g_ed->list);
   if (lst != GBS_OK) {
     snd_deny();
     msg_wait(PDNA_GBEDIT_BOXRD_TITLE, UI_WARN, gbs_status_text(lst), 0);
-    return false;
+    return BANK_DOWN_REFUSED;
   }
-  int cnt = gb_list_count(g_ed->s.gen, g_ed->list, box);
+  int cnt = gb_list_count(g_ed->s.gen, g_ed->list, dst_box);
   if (cnt < 0) {
     snd_deny();
     msg_wait(PDNA_SIDECAR_XFER_REFUSED_TITLE, UI_WARN, gbs_status_text(GBS_ERR_STRUCT), 0);
-    return false;
+    return BANK_DOWN_REFUSED;
   }
-  if (cnt >= gb_list_capacity(g_ed->s.gen, box)) {
+  if (cnt >= gb_list_capacity(g_ed->s.gen, dst_box)) {
     snd_deny();
     msg_wait(PDNA_SIDECAR_XFER_REFUSED_TITLE, UI_WARN, gbs_status_text(GBS_ERR_FULL),
              PDNA_GBEDIT_MOVE_FULL_L2);
-    return false;
+    return BANK_DOWN_REFUSED;
   }
 
-  return gb_paste_write(&mon, box);                                         /* 6-8 */
+  bool wok = gb_paste_write(&mon, dst_box, cell80);                         /* 6-8 */
+  return wok ? BANK_DOWN_LANDED : BANK_DOWN_REFUSED;
 }
 
 /* The card, for all FOUR hooks (edit/move/release, and S5-B's paste). Same two safe
@@ -5384,17 +5417,23 @@ static bool gb_item_hook(uint8_t* rec80) {
 
 /* Split in two (BACKLOG #92) so `item` can be NULL for a Gen-1 mount and
  * gb_item_hook for a Gen-2 one -- gb_session_core picks between them off
- * g_ed->s.gen, same idea as k_gb_ops vs k_gb_ops_ro picking off g_ed itself. */
+ * g_ed->s.gen, same idea as k_gb_ops vs k_gb_ops_ro picking off g_ed itself.
+ * BACKLOG #246: `.paste = 0` on both (was gb_paste_hook, deleted this same commit)
+ * -- the menu-driven clipboard PASTE route into a Game Boy save is retired; the
+ * ONLY route now is the Bank-drop arm (gb_bank_down_g3, above), reached through
+ * drop_held's cross-scope dispatch, never through g_src_ops->paste. app_mon_menu's
+ * own `paste = g_src_ops && g_src_ops->paste && ...` gate (pdna_main.c) already
+ * hides the PASTE row the moment this is NULL -- no separate row deletion needed. */
 static const AppSrcOps k_gb_ops_gen1 = {
   .edit = 0, .move = gb_move_hook, .release = gb_release_hook,
-  .copy_native = gb_copy_native_hook, .paste = gb_paste_hook, .view = gb_view_hook,
+  .copy_native = gb_copy_native_hook, .paste = 0, .view = gb_view_hook,
   .editable = gb_editable_hook, .create = gb_create_hook,
   .dup = gb_dup_hook, .daycare = gb_daycare_hook, .export_one = gb_export_hook,   /* BACKLOG #93 */
   .lift_why = gb_lift_why_hook,                                                  /* BACKLOG #166 */
 };
 static const AppSrcOps k_gb_ops_gen2 = {
   .edit = 0, .move = gb_move_hook, .release = gb_release_hook,
-  .copy_native = gb_copy_native_hook, .paste = gb_paste_hook, .view = gb_view_hook,
+  .copy_native = gb_copy_native_hook, .paste = 0, .view = gb_view_hook,
   .editable = gb_editable_hook, .create = gb_create_hook, .item = gb_item_hook,
   .dup = gb_dup_hook, .daycare = gb_daycare_hook, .export_one = gb_export_hook,   /* BACKLOG #93 */
   .lift_why = gb_lift_why_hook,                                                  /* BACKLOG #166 */

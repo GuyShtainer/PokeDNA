@@ -1596,6 +1596,51 @@ static uint8_t* __attribute__((noinline)) drop_held_up(BoxSource* src, int box, 
   return recs;
 }
 
+/* BACKLOG #246 (#104 Phase 1): the DOWN mirror of drop_held_up above -- a PLAIN
+ * Gen-3 Bank cell (never native) carried onto a Game Boy grid and dropped. Own
+ * noinline frame for the same reason drop_held_up gets one (BACKLOG #170): gen3_to_gb_fixed
+ * + the loss/legal screens are exactly the kind of weight that must not sit on
+ * drop_held's own worst-case stack path, which runs on every grid A-press, not
+ * just a carry.
+ *
+ * ORDER, mirroring drop_held_up's own contract (its doc comment, decision 1): the
+ * Game Boy save is written and VERIFIED first (gb_bank_down_g3 -> gb_persist,
+ * BANK_DOWN_LANDED only after a real card write); only THEN does the Bank lose the
+ * cell (app_bank_clear_slots). A refused landing reverts nothing and keeps holding
+ * (gb_bank_down_g3 has already said why, on screen); a landed-but-not-consumed
+ * failure leaves a DUPLICATE -- the game HAS it, the Bank slot is a repairable
+ * leftover, never silently lost -- same shape as every OTHER Bank-down consume in
+ * this file (bank_down_exact's own comment, just above, makes the identical
+ * argument). `s_held` IS the 80-byte record: handed to gb_bank_down_g3 and to the
+ * consume directly, no extra 80-B copy (the escape-gate structural test treats
+ * every 80-B memcpy in drop_held as a write that must sit below the gate; this
+ * function adds none). */
+static uint8_t* __attribute__((noinline))
+drop_held_down_g3(BoxSource* src, int box, int cur, uint8_t* recs, bool* done) {
+  boxoam_suspend();
+  bool landed = gb_bank_down_g3(box, s_held) == BANK_DOWN_LANDED;
+  boxoam_resume();
+  if (!landed) {
+    log_line("gen12: g3-down box %d slot %d -> gb box %d: refused/not landed",
+             s_orig_box, s_orig_slot, box);
+    return recs;                                            /* still holding -- the arm already said why */
+  }
+
+  s_holding = false; *done = true;
+  { uint8_t slots1[1]; slots1[0] = (uint8_t)s_orig_slot;
+    boxoam_suspend();                                        /* hard rule 1: SD write with OAM off */
+    if (!app_bank_clear_slots(s_orig_box, slots1, (const uint8_t (*)[80])s_held, 1)) {
+      snd_error();                                           /* D7's own shape: the game HAS it; the Bank keeps a duplicate */
+      char l2[40]; siprintf(l2, "Bank box %d slot %d", s_orig_box + 1, s_orig_slot + 1);
+      msg_wait(PDNA_XFER_DOWN_DUP_TITLE, UI_WARN, PDNA_XFER_DOWN_DUP_L1, l2);
+    }
+    boxoam_resume(); }
+  s_oam_reload = true;
+  recs = src->records(box);   /* the GB list grew -- repaint from the image */
+  log_line("gen12: g3-down box %d slot %d -> gb box %d: ok", s_orig_box, s_orig_slot, box);
+  return recs;
+}
+
 /* Drop the held mon onto cursor cell `cur`. Within the origin's scope: true move (place +
  * clear origin; swap if occupied). Across the PC<->Bank boundary: COPY onto an empty cell
  * only (origin kept) so a mon can't be lost between two save scopes. *done=true when the
@@ -1738,6 +1783,19 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
     if (src->scope == BOXSCOPE_BANK && s_orig_scope == BOXSCOPE_GB &&
         s_orig_slot >= 0 && s_xfer_peer && s_xfer_peer->lift_up) {
       return drop_held_up(src, box, cur, recs, done);
+    }
+    /* BACKLOG #246 (#104 Phase 1): the mirror pair -- a PLAIN Gen-3 Bank cell
+     * (never native; a native cell reaching this point for a GB destination
+     * would already have returned above, through the bc_is_native-gated DOWN-arm
+     * dispatch block) carried out of the Bank and dropped onto a Game Boy grid.
+     * `have_xfer` (computed just above, `s_xfer_peer && s_xfer_peer->lift_up`) is
+     * exactly what unlocked this pair past xg_drop_denied a few lines up --
+     * re-checked here by name (`!bc_is_native(s_held)`) as the edge predicate this
+     * branch actually means: "a Bank-origin carry that is a plain Gen-3 record,
+     * not the native-cell case the dispatch block above already owns." */
+    if (src->scope == BOXSCOPE_GB && s_orig_scope == BOXSCOPE_BANK &&
+        s_orig_slot >= 0 && s_xfer_peer && s_xfer_peer->lift_up && !bc_is_native(s_held)) {
+      return drop_held_down_g3(src, box, cur, recs, done);
     }
     if (s_held_dup && s_orig_slot < 0) {                     /* a fresh DUPLICATE: placing it is loss-proof
                                                                  in either direction -> no confirm needed

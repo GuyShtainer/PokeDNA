@@ -359,6 +359,18 @@ BankDownResult gb_bank_down_gen3(BoxSource* src, int dst_box, int dst_cell,
                                  uint8_t out80[80]);
 BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]);
 
+/* BACKLOG #246 (#104 Phase 1): the arm none of the three above cover -- a PLAIN
+ * Gen-3 cell (bc_kind(cell80) == 0, never native "GBC1") landing in THIS Game Boy
+ * save. Called directly from pdna_box.c's drop_held, its own new cross-scope
+ * branch for the pair xg_drop_denied now allows (GB<-BANK) -- NOT through
+ * xg_bank_down_arm/bank_down_dispatch, whose whole arm table is scoped to a
+ * NATIVE cell going down (xg_bank_down_arm's own first line: cell_gen==0 is "not a
+ * native DOWN at all"); this is the deliberate mirror, reusing gb_paste_hook's old
+ * body (deleted, along with its PASTE row, in the same commit) instead. Never
+ * returns BANK_DOWN_CONVERTED. See gb_bank_down_g3's own comment in pdna_gen12.c
+ * for the full contract. */
+BankDownResult gb_bank_down_g3(int dst_box, const uint8_t cell80[80]);
+
 
 #ifdef PDNA_DELTA
 /* BACKLOG #62: mount fused_gb_save(idx) directly out of cartridge space -- no FIL, no
