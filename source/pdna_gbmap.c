@@ -332,6 +332,11 @@ void pdna_gbmap_gen1(GbSession* s, bool can_edit) {
         if (!can_edit) { snd_deny(); continue; }
         placing = true;
         cur_bx = block_px; cur_by = block_py;   /* start the cursor on the player */
+        gbscr_mark_all_dirty(&gs);   /* the cursor frame is new pixels m3_frame()
+                                      * draws directly on the framebuffer -- a
+                                      * dirty-tile repaint is the only thing that
+                                      * erases a STALE one later (m1 review's own
+                                      * precedent, gb_hof's cursor comment) */
         continue;
       }
 
@@ -367,11 +372,18 @@ void pdna_gbmap_gen1(GbSession* s, bool can_edit) {
      * of bug pdna_map.c's own do_drop() header comment documents for the
      * Gen-3 screen's mgfx_exit()/mgfx_enter() dance -- this shell's fix is to
      * simply not re-enter it, not to reproduce that dance). */
-    if (k & KEY_B) { placing = false; snd_back(); continue; }
+    if (k & KEY_B) {
+      placing = false;
+      snd_back();
+      gbscr_mark_all_dirty(&gs);   /* erase the now-stale cursor frame (see the
+                                    * KEY_A handler's own comment above) */
+      continue;
+    }
     if (k & KEY_A) {
       if (cur_bx == block_px && cur_by == block_py) {   /* no-op: already there */
         snd_back();
         placing = false;
+        gbscr_mark_all_dirty(&gs);   /* same erase as the KEY_B path above */
         continue;
       }
       want_place = true;
@@ -399,8 +411,11 @@ void pdna_gbmap_gen1(GbSession* s, bool can_edit) {
       st.vbx = nvbx; st.vby = nvby;
       gbmap_load_viewport_blocks(&st);
       gbmap_paint(&gs, &st, maptiles);
-      gbscr_mark_all_dirty(&gs);
     }
+    gbscr_mark_all_dirty(&gs);   /* the cursor moved -- its frame's own pixel rect
+                                  * changed even when the viewport itself did not
+                                  * pan (a plain repaint of the SAME tiles is what
+                                  * erases the previous position's stale outline) */
   }
 
 #ifndef PDNA_DELTA

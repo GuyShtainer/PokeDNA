@@ -1465,6 +1465,108 @@ def run_m1_map(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessio
     return s
 
 
+def run_m3_map_teleport(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """M3 (BACKLOG #91): the Gen-1 in-map teleport UI -- place-cursor mode, the
+    confirm dialog, and the write path -- against Red's own current map, same
+    Red-only fused image run_m1_map() uses.
+
+    WHAT THE EMULATOR CAN AND CANNOT PROVE (read before editing this chain):
+    app_can_edit() is TRUE in the PDNA_DELTA build (source/pdna_main.c: "there is
+    no flashcart to gate on -- the save is our own flash chip, which is always
+    writable"), so the PLACE row, the cursor, and the confirm dialog are all
+    reachable and the field write itself (gbs_write_field, source/pdna_gbmap.c's
+    gbmap_write_pos) genuinely lands in the resident image. What this build CANNOT
+    reach is the "PLACED"/undo-offer/"RESTORED" messages: gb_persist()'s own
+    PDNA_DELTA branch (source/pdna_gen12.c) always refuses ("Edits are in-session
+    only in the emulator build") because a delta image has no SD card to persist
+    to -- so shot 08 below is where this chain's proof stops. "PLACED" and
+    "RESTORED" are HARDWARE-ONLY (HW-QUEUE), not faked here.
+
+    Nav: identical to run_m1_map() up to the Map row (boot picker -> standalone ->
+    START -> DOWN x16 -> A)."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "m3_teleport_")
+    print("== M3: Gen-1 in-map teleport (place cursor, confirm, write) ==")
+
+    boot_to_gb_session(s, rom, which="red")
+    s.tap("START", settle=gb_shots.BIG_SETTLE)               # box grid -> nav menu
+    s.press_n("DOWN", 16)                                     # Party -> ... -> Map (index 16)
+    s.tap("A", settle=GB_ART_COLD_SETTLE)                    # Map -> pdna_gbmap_gen1()
+    s.shot("01_map_view", "M3: the Map screen opens with the PLACE row now lit in "
+                           "the right-side legend (can_edit is true in this build) "
+                           "-- the red frame is the player's own current block "
+                           "(3,2), same starting state as run_m1_map()'s own shot "
+                           "01", claim=["PLACE", "BACK", "SIZE"])
+
+    s.tap("A", settle=gb_shots.SETTLE)                        # A: enter place mode
+    s.shot("02_placing_cursor_on_player", "M3: A enters place-cursor mode -- a "
+                                           "SECOND (green) frame appears on the "
+                                           "SAME block as the player's own (red) "
+                                           "marker, since the cursor always starts "
+                                           "there; the legend is unchanged (PLACE "
+                                           "still A, BACK still B)",
+           claim=["PLACE", "BACK", "SIZE"])
+
+    s.tap("RIGHT", settle=gb_shots.SETTLE)
+    s.shot("03_cursor_moved_right", "M3: the D-PAD moves the CURSOR now, not the "
+                                     "viewport -- the green frame is one block "
+                                     "right of the still-stationary red player "
+                                     "marker")
+
+    s.tap("B", settle=gb_shots.SETTLE)                        # B: cancel placing
+    s.shot("04_cancelled_back_to_view", "M3: B cancels place mode without writing "
+                                         "anything -- back to the plain view, "
+                                         "pixel-identical in substance to shot 01 "
+                                         "(only the red player marker remains)")
+
+    s.tap("A", settle=gb_shots.SETTLE)                        # re-enter place mode
+    s.tap("RIGHT", settle=gb_shots.SETTLE)
+    s.tap("DOWN", settle=gb_shots.SETTLE)
+    s.shot("05_cursor_two_blocks_away", "M3: re-entered place mode (cursor resets "
+                                         "to the player's own block again) and "
+                                         "moved RIGHT then DOWN -- the green "
+                                         "cursor is now two blocks from the red "
+                                         "player marker, a real, different, "
+                                         "in-bounds destination")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # A: freeze + close the shell
+    s.shot("06_confirm_dialog", "M3: A on a real (non-no-op) cursor position "
+                                 "CLOSES the GB-screen shell first (pdna_gbtrainer."
+                                 "c's own established shape for this codebase's "
+                                 "shell -- see the KEY_A handler's own comment in "
+                                 "source/pdna_gbmap.c) and only THEN shows the "
+                                 "confirm dialog in plain Mode-3 UI, naming the "
+                                 "exact destination block",
+           claim=["PLACE CHARACTER HERE?", "Block (4,3)", "A = yes", "B = no"])
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # confirm: write + persist
+    s.shot("07_emulator_persist_refusal", "M3: A confirms -- gbmap_write_pos() "
+                                           "writes wXCoord/wYCoord/wXBlockCoord/"
+                                           "wYBlockCoord into the resident image "
+                                           "(gbs_write_field, verified/reparsed "
+                                           "the same way every other GB field "
+                                           "edit in this codebase is) and THEN "
+                                           "gb_persist() is called -- its own "
+                                           "PDNA_DELTA branch refuses to persist "
+                                           "(no SD card in this build) and says "
+                                           "so plainly; on real hardware this "
+                                           "step instead shows PLACED and offers "
+                                           "an immediate undo (HARDWARE-ONLY, not "
+                                           "reachable here)",
+           claim=["Edits are in-session only", "in the emulator build."])
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # dismiss -> back to the box grid
+    s.shot("08_back_to_box_grid", "M3: dismissing the refusal returns to the box "
+                                   "grid -- pdna_gbmap_gen1() has already "
+                                   "returned, same landing spot run_m1_map()'s "
+                                   "own shot 06 (B-close) reaches -- the chain's "
+                                   "own end state; re-opening Map would show the "
+                                   "UNCHANGED player position, since gb_persist() "
+                                   "refused before any byte reached the card this "
+                                   "build has none of")
+
+    return s
+
+
 def run_m1_map_vclamp(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
     """M1 (BACKLOG #91) vertical-clamp demo: VIRIDIAN_POKECENTER (Red.sav's real
     starting map) is only 4 blocks tall, shorter than the 5-block viewport, so
@@ -7603,6 +7705,10 @@ def _main_dispatch(argv=None) -> int:
     ap.add_argument("--m1-map", action="store_true",
                      help="M1 (BACKLOG #91): only run_m1_map() against --image -- "
                           "--image MUST be a Red-only fused image (Red.gb+Red.sav)")
+    ap.add_argument("--m3-map-teleport", action="store_true",
+                     help="M3 (BACKLOG #91): only run_m3_map_teleport() against "
+                          "--image -- --image MUST be a Red-only fused image "
+                          "(Red.gb+Red.sav), same as --m1-map")
     ap.add_argument("--m1-map-vclamp", action="store_true",
                      help="M1 (BACKLOG #91) vertical-clamp demo: only "
                           "run_m1_map_vclamp() against --image -- --image MUST be a "
@@ -8638,6 +8744,19 @@ def _main_dispatch(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] m1 map: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        ran = True
+
+    if a.m3_map_teleport:
+        try:
+            sess = run_m3_map_teleport(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] m3 map teleport: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
