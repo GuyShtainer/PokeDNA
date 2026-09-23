@@ -611,6 +611,11 @@ static int do_warp_vp(GbSession* s, const char* map_tok, const char* width_tok,
     return refuse("gb1warp_viewptr refused this destination");
   uint8_t vpbuf[2] = { (uint8_t)(vp & 0xFF), (uint8_t)(vp >> 8) };
   uint8_t xcoord = gb1warp_coord((int16_t)bx), ycoord = gb1warp_coord((int16_t)by), zero = 0;
+  /* map-gen1 R-A: the SIXTH field gbmap_write_pos() now writes, mirrored here byte
+   * for byte -- 0x26DB (wDestinationWarpID) = 0xFF, the game's own "no warp
+   * pending" sentinel, so LoadDestinationWarpPosition cannot overwrite this write
+   * on a DungeonTilesets map (engine/overworld/tilesets.asm:38-53). */
+  uint8_t no_warp_pending = 0xFF;
 
   GbsStatus st;
   if ((st = gbs_write_field(s, 0x260bu, vpbuf, 2)) != GBS_OK) return refuse(gbs_status_text(st));
@@ -618,6 +623,7 @@ static int do_warp_vp(GbSession* s, const char* map_tok, const char* width_tok,
   if ((st = gbs_write_field(s, 0x260eu, &xcoord, 1)) != GBS_OK) return refuse(gbs_status_text(st));
   if ((st = gbs_write_field(s, 0x260fu, &zero, 1)) != GBS_OK) return refuse(gbs_status_text(st));
   if ((st = gbs_write_field(s, 0x2610u, &zero, 1)) != GBS_OK) return refuse(gbs_status_text(st));
+  if ((st = gbs_write_field(s, 0x26dbu, &no_warp_pending, 1)) != GBS_OK) return refuse(gbs_status_text(st));
   if ((st = gbs_finish(s)) != GBS_OK) return refuse(gbs_status_text(st));
   return 0;
 }

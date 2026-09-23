@@ -140,6 +140,19 @@ typedef enum {
    * (its own current-map-view state is recomputed from wMapGroup/wMapNumber on load). */
   GBF_POS_VIEWPTR,
 
+  /* map-gen1 R-A, appended (same API-id rule as every prior append above):
+   * wDestinationWarpID -- $D42F Red / $D42E Yellow, save offset 0x26DB. On a map
+   * whose tileset is in DungeonTilesets (engine/overworld/tilesets.asm:38-53 --
+   * every GYM, CAVERN, FOREST, MANSION, FACILITY, CEMETERY, LOBBY, LAB, GATE, SHIP,
+   * MUSEUM) the hPreviousTileset guard is skipped and, if this byte != 0xFF,
+   * LoadDestinationWarpPosition overwrites the view pointer/Y/X gb1warp just wrote
+   * from the map's own warp_to table. gbmap_write_pos writes 0xFF here as part of the
+   * SAME position batch -- the game's own "no warp pending" sentinel, true after any
+   * teleport since the player is simply standing somewhere, not arriving via a warp --
+   * which makes that overwrite structurally unreachable rather than empirically
+   * unobserved on one map. Red/Yellow only; Gen 2 has no equivalent byte. */
+  GBF_DEST_WARP_ID,
+
   GBF_FIELD_COUNT
 } GbField;
 

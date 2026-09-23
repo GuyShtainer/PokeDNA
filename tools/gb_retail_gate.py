@@ -176,6 +176,14 @@ TELEPORT_EXPECT_DIMS = {"red": (7, 4), "yellow": (4, 6)}
 # (Red $D35F, Yellow $D35E, one byte before TELEPORT_WRAM's own "map" address in
 # each game, matching gb_fields.c's own GBF_POS_VIEWPTR derivation).
 TELEPORT_VIEWPTR_WRAM = {"red": 0xD35F, "yellow": 0xD35E}
+# map-gen1 R-A: wDestinationWarpID (Red $D42F, Yellow $D42E, save offset 0x26DB on
+# both -- gb_fields.c's own GBF_DEST_WARP_ID derivation). gbmap_write_pos()/do_warp_vp
+# now write 0xFF here as the SIXTH field of the same batch -- the game's own "no warp
+# pending" sentinel, which makes engine/overworld/tilesets.asm:38-53's
+# LoadDestinationWarpPosition overwrite structurally unreachable on every tileset
+# (R-A) rather than merely unobserved on the two non-dungeon corpus maps this case
+# happens to boot. Read back and asserted == 0xFF below, on both games.
+TELEPORT_DEST_WARP_WRAM = {"red": 0xD42F, "yellow": 0xD42E}
 
 
 def _teleport_expect_viewptr(width, bx, by):
@@ -1818,11 +1826,13 @@ def run_teleport_case(name, info, rom, sav, work, binary, python, vendor, tally)
 
     wram = TELEPORT_WRAM[name]
     viewptr_addr = TELEPORT_VIEWPTR_WRAM[name]
+    dest_warp_addr = TELEPORT_DEST_WARP_WRAM[name]
     extra_args = ["--expect", "accept",
                  "--read-mem", f"{wram['map']:#06x}:1",
                  "--read-mem", f"{wram['x']:#06x}:1",
                  "--read-mem", f"{wram['y']:#06x}:1",
-                 "--read-mem", f"{viewptr_addr:#06x}:2"]
+                 "--read-mem", f"{viewptr_addr:#06x}:2",
+                 "--read-mem", f"{dest_warp_addr:#06x}:1"]
     rc, rep, out, err = boot(python, rom, edited, work / "teleport", vendor,
                              work / "teleport.json", extra_args=extra_args)
     mem = rep.get("mem") or {}
@@ -1846,12 +1856,18 @@ def run_teleport_case(name, info, rom, sav, work, binary, python, vendor, tally)
         got_viewptr = int(viewptr_hex[0:2], 16) | (int(viewptr_hex[2:4], 16) << 8)   # LE
     want_viewptr = _teleport_expect_viewptr(width, bx, by)
 
+    # map-gen1 R-A: the sixth field, read back off the SAME boot -- proves the write
+    # landed at 0x26DB (not merely that gb_fields.c's table says it should have).
+    got_dest_warp = _val(dest_warp_addr)
+
     ok = (rc == 0 and svbk_ok and got_map == map_id
-         and got_x == x_coord and got_y == y_coord and got_viewptr == want_viewptr)
+         and got_x == x_coord and got_y == y_coord and got_viewptr == want_viewptr
+         and got_dest_warp == 0xFF)
     detail = (f"verdict={rep.get('verdict')} svbk_ok={svbk_ok} "
              f"map={got_map!r}(want {map_id}) x={got_x!r}(want {x_coord}) "
              f"y={got_y!r}(want {y_coord}) "
              f"viewptr={got_viewptr and hex(got_viewptr)!r}(want {hex(want_viewptr)}) "
+             f"dest_warp_id={got_dest_warp and hex(got_dest_warp)!r}(want 0xff) "
              f"dest=block({bx},{by}) of {width}x{height}")
     if not ok:
         fails = [f.strip() for f in out.splitlines() if f.strip().startswith("FAIL:")]

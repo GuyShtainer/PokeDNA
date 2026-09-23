@@ -157,7 +157,20 @@ static int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v
  * write refuses (fail-fast, matching gbs_write_field's own per-call verify
  * contract); the caller must treat any non-GBS_OK as "the session's own image
  * may hold a half-edit now" and gb_rollback() before doing anything else with
- * it (map-gen1 review D5) -- NOT just skip gb_persist(). */
+ * it (map-gen1 review D5) -- NOT just skip gb_persist().
+ *
+ * SIXTH field, map-gen1 R-A: wDestinationWarpID ($D42F Red / $D42E Yellow,
+ * save offset 0x26DB) is written LAST, as 0xFF -- the game's own "no warp
+ * pending" sentinel. engine/overworld/tilesets.asm:38-53 skips the
+ * hPreviousTileset guard on any DungeonTilesets map (every GYM/CAVERN/
+ * FOREST/MANSION/FACILITY/CEMETERY/LOBBY/LAB/GATE/SHIP/MUSEUM) and, if this
+ * byte != 0xFF, LoadDestinationWarpPosition overwrites the view pointer/Y/X
+ * this function just wrote from the map's OWN warp_to table on next load --
+ * silently undoing the teleport on every dungeon-tileset interior. 0xFF is
+ * truthful here, not a workaround: after a teleport no warp IS pending, the
+ * player is simply standing somewhere. Writing it makes that overwrite
+ * structurally unreachable on every tileset, not empirically unobserved on
+ * one map (R-A). */
 static GbsStatus gbmap_write_pos(GbSession* s, uint16_t width, int16_t bx, int16_t by) {
   uint16_t vp;
   if (!gb1warp_viewptr(width, bx, by, &vp)) return GBS_ERR_ARG;   /* nothing written yet */
@@ -167,12 +180,14 @@ static GbsStatus gbmap_write_pos(GbSession* s, uint16_t width, int16_t bx, int16
   uint32_t yoff  = gbf_off(GBF_G_RED, GBF_POS_Y);
   uint32_t xbk   = gbf_off(GBF_G_RED, GBF_POS_XBLOCK);
   uint32_t ybk   = gbf_off(GBF_G_RED, GBF_POS_YBLOCK);
-  if (!vpoff || !xoff || !yoff || !xbk || !ybk) return GBS_ERR_ARG;
+  uint32_t dwoff = gbf_off(GBF_G_RED, GBF_DEST_WARP_ID);
+  if (!vpoff || !xoff || !yoff || !xbk || !ybk || !dwoff) return GBS_ERR_ARG;
 
   uint8_t vpbuf[2] = { (uint8_t)(vp & 0xFF), (uint8_t)(vp >> 8) };   /* LE, matching
                                                                        * SRAM's own
                                                                        * lo/hi layout */
   uint8_t xcoord = gb1warp_coord(bx), ycoord = gb1warp_coord(by), zero = 0;
+  uint8_t no_warp_pending = 0xFF;
 
   GbsStatus st = gbs_write_field(s, vpoff, vpbuf, sizeof vpbuf);
   if (st != GBS_OK) return st;
@@ -184,6 +199,8 @@ static GbsStatus gbmap_write_pos(GbSession* s, uint16_t width, int16_t bx, int16
   if (st != GBS_OK) return st;
   st = gbs_write_field(s, xbk, &zero, 1);
   if (st != GBS_OK) return st;
+  st = gbs_write_field(s, dwoff, &no_warp_pending, 1);
+  if (st != GBS_OK) return st;
   return gbs_finish(s);
 }
 
@@ -192,11 +209,22 @@ static GbsStatus gbmap_write_pos(GbSession* s, uint16_t width, int16_t bx, int16
  * contiguous at GBF_POS_VIEWPTR's own offset through GBF_POS_XBLOCK's, in both Red
  * and Yellow), never a re-derived XBLOCK/YBLOCK pair -- re-deriving from a starting
  * coordinate that happened to be ODD (an ordinary state) would write a position
- * that boots fine and desyncs the very next step, permanently. */
-static GbsStatus gbmap_restore_pos(GbSession* s, const uint8_t snap[6]) {
+ * that boots fine and desyncs the very next step, permanently.
+ *
+ * R-A adds a SEVENTH restored byte, wDestinationWarpID (0x26DB) -- it is NOT
+ * contiguous with the 0x260b..0x2610 run above (0x26DB sits 0xCB bytes past
+ * 0x2610), so this is a genuinely SECOND snapshot read and a second restore
+ * write, not a widened single run. Undoing a teleport restores whatever warp
+ * state the player was actually in before the edit (usually already 0xFF on
+ * an ordinary non-warp-pending boot, but never assumed -- read back
+ * verbatim like every other byte here). */
+static GbsStatus gbmap_restore_pos(GbSession* s, const uint8_t snap[6], uint8_t warp_snap) {
   uint32_t off = gbf_off(GBF_G_RED, GBF_POS_VIEWPTR);
-  if (!off) return GBS_ERR_ARG;
+  uint32_t dwoff = gbf_off(GBF_G_RED, GBF_DEST_WARP_ID);
+  if (!off || !dwoff) return GBS_ERR_ARG;
   GbsStatus st = gbs_write_field(s, off, snap, 6);
+  if (st != GBS_OK) return st;
+  st = gbs_write_field(s, dwoff, &warp_snap, 1);
   if (st != GBS_OK) return st;
   return gbs_finish(s);
 }
@@ -221,13 +249,18 @@ static void gbmap_do_place(GbSession* s, uint8_t map_id, uint16_t width, uint16_
            not_walkable ? PDNA_GBMAP_NOT_WALKABLE : "");
   if (!app_confirm(PDNA_GBMAP_CONFIRM_TITLE, l1)) return;
 
-  /* The ONE snapshot this visit ever takes -- the raw 6 bytes, taken BEFORE the
-   * first write (map-gen1 review D3). A failed snapshot read still lets the
+  /* The snapshot this visit ever takes -- the raw 6 contiguous bytes (map-gen1
+   * review D3) PLUS the R-A warp-pending byte at its own, non-contiguous
+   * offset (a genuinely second read, not a widened run) -- both taken BEFORE
+   * the first write. A failed snapshot read on EITHER half still lets the
    * placement proceed (the forward write's own checksummed re-verify is
    * self-contained), it just means no undo can be offered afterward. */
   uint8_t snap[6];
   uint32_t snap_off = gbf_off(GBF_G_RED, GBF_POS_VIEWPTR);
-  bool have_snap = snap_off && gbs_read_field(s, snap_off, snap, sizeof snap) == GBS_OK;
+  uint8_t warp_snap = 0;
+  uint32_t warp_snap_off = gbf_off(GBF_G_RED, GBF_DEST_WARP_ID);
+  bool have_snap = snap_off && gbs_read_field(s, snap_off, snap, sizeof snap) == GBS_OK &&
+                   warp_snap_off && gbs_read_field(s, warp_snap_off, &warp_snap, 1) == GBS_OK;
 
   GbsStatus wst = gbmap_write_pos(s, width, (int16_t)cur_bx, (int16_t)cur_by);
   if (wst != GBS_OK) {
@@ -244,7 +277,7 @@ static void gbmap_do_place(GbSession* s, uint8_t map_id, uint16_t width, uint16_
   s_msg("PLACED", UI_OK, PDNA_GBMAP_PLACED_L1, PDNA_GBMAP_PLACED_L2);
   if (!have_snap) return;   /* undo offer gated on having the snapshot (D3) */
   if (app_confirm(PDNA_GBMAP_UNDO_TITLE, 0)) {
-    GbsStatus ust = gbmap_restore_pos(s, snap);
+    GbsStatus ust = gbmap_restore_pos(s, snap, warp_snap);
     if (ust != GBS_OK) {
       gb_rollback();   /* same D5 posture as the write-refused path above */
       s_msg("REFUSED", UI_WARN, gbs_status_text(ust), 0);
