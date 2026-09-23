@@ -251,7 +251,7 @@ DEPOSIT_OFFER_CALL_RE      = re.compile(r"\bapp_party_full_deposit_offer\(")
 DEPOSIT_UNDO_CALL_RE       = re.compile(r"\bapp_party_deposit_undo\(")
 BOXOAM_SUSPEND_RE          = re.compile(r"\bboxoam_suspend\(\)")
 BOXOAM_RESUME_RE           = re.compile(r"\bboxoam_resume\(\)")
-DEPOSIT_MAIL_CHECK_RE      = re.compile(r"pk\.heldItem\s*>=\s*121\s*&&\s*pk\.heldItem\s*<=\s*132")
+DEPOSIT_MAIL_CHECK_RE      = re.compile(r"g3_item_is_mail\(pk\.heldItem\)")
 APP_INJECT_DEFERRED_RE     = re.compile(r"\bapp_inject_to_game_deferred\(")
 # BACKLOG #226 review D4-R(b): the six post-deposit refusal-arm anchors in
 # party_strip_overlay, each of which must roll dep_box back within its own block.

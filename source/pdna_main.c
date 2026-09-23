@@ -4478,9 +4478,21 @@ static bool app_paste(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* 
   return app_commit_with_dex(rec, is_party, commit, block);   /* auto-register the pasted species */
 }
 
+/* BACKLOG #227 D2: forward-declared -- app_duplicate/app_release/app_to_daycare below
+ * all need the party-mail guard and sit ABOVE its definition further down this file. */
+static bool g3_party_rec_has_mail(const uint8_t* party100);
+
 static bool app_duplicate(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* block, int box) {
   if (is_party) {
     if (party_count(block, g_frlg) >= 6) { snd_deny(); msg_wait("PARTY FULL", UI_WARN, "Release a mon first.", 0); return false; }
+    /* BACKLOG #227 D2: the memcpy below would alias the SAME mail slot onto two party
+     * records (the source keeps its mail index at 0x55 and so would the copy) -- two
+     * mons pointing at one message, with nothing to say which one really has it. */
+    if (g3_party_rec_has_mail(rec)) {
+      snd_deny();
+      msg_wait("CAN'T DUPLICATE", UI_WARN, PDNA_XFER_PARTYFULL_MAIL_L1, PDNA_XFER_PARTYFULL_MAIL_L2);
+      return false;
+    }
     uint8_t out[100]; memcpy(out, rec, 100);
     party_append(block, g_frlg, out);
   } else {
@@ -4492,10 +4504,20 @@ static bool app_duplicate(uint8_t* rec, bool is_party, AppCommitFn commit, uint8
 }
 
 static bool app_release(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* block, int box, int slot) {
-  (void)rec;
   if (is_party && party_count(block, g_frlg) <= 1) {
     snd_deny();
     msg_wait("CAN'T RELEASE", UI_WARN, "The party can't be empty.", 0);
+    return false;
+  }
+  /* BACKLOG #227 D2: retail refuses to release a mail holder too (MENU_RELEASE ->
+   * ItemIsMail, pokeemerald src/pokemon_storage_system.c:2661-2671) -- releasing a
+   * party mon drops its 100-byte record with nothing left pointing at the message it
+   * still owns in gSaveBlock1's mail array. Box records never carry mail (the mail
+   * index lives only at the party record's 0x55 byte), so this only applies to the
+   * party arm. */
+  if (is_party && g3_party_rec_has_mail(rec)) {
+    snd_deny();
+    msg_wait("CAN'T RELEASE", UI_WARN, PDNA_XFER_PARTYFULL_MAIL_L1, PDNA_XFER_PARTYFULL_MAIL_L2);
     return false;
   }
   if (!app_confirm("Release this Pokemon?", "Deleted permanently.")) return false;
@@ -4575,6 +4597,22 @@ static bool app_to_daycare(uint8_t* rec, bool is_party, uint8_t* block, int box,
   int fi = dc_first_free(base, stride);
   if (fi < 0) { snd_deny(); msg_wait("DAY-CARE FULL", UI_WARN, "Take a Pokemon out first.", 0); return false; }
   if (is_party && party_count(block, g_frlg) <= 1) { snd_deny(); msg_wait("CAN'T", UI_WARN, "The party can't be empty.", 0); return false; }
+  /* BACKLOG #227 D2: retail MIGRATES a depositing party member's Mail into the
+   * boarder's own DaycareMail record (pokeemerald src/daycare.c:162-173) so the
+   * message survives the trip. PokeDNA has no parser or writer for gSaveBlock1's
+   * mail array at all -- it only ever WRITES G3_MAIL_NONE at the party record's
+   * 0x55 byte (gen3_edit.c), never reads or relocates the message content itself --
+   * so migrating it is out of this lane's reach. The deposit below only copies the
+   * 80-byte box form (no mail byte) and then dc_clear_slot_aux/dc_clear_egg blank
+   * the daycare struct, so an unguarded mail holder would silently lose the message
+   * with nothing pointing at it afterward. Refuse instead, honestly, the same as
+   * RELEASE/DUPLICATE/SWAP/MOVE-TO-BOX/the PC deposit offer. Box records never carry
+   * mail (the index lives only in the party form), so this only applies to is_party. */
+  if (is_party && g3_party_rec_has_mail(rec)) {
+    snd_deny();
+    msg_wait("CAN'T SEND", UI_WARN, PDNA_XFER_PARTYFULL_MAIL_L1, PDNA_XFER_PARTYFULL_MAIL_L2);
+    return false;
+  }
   if (!app_confirm("Send to Day-Care?", "Moves this Pokemon there.")) return false;
   memcpy(g_sb1 + base + (uint32_t)fi * stride, rec, 80);        /* deposit (first 80 bytes = box form) */
   dc_clear_slot_aux(base, stride, fi);
@@ -4600,6 +4638,20 @@ static void box_to_party(const uint8_t* box80, uint8_t out100[100]) {
 }
 static void party_to_box(const uint8_t* party100, uint8_t out80[80]) {
   EditMon e; gen3_edit_load(party100, true, &e); em_set_party_flag(&e, false); gen3_edit_commit(&e, out80);
+}
+
+/* BACKLOG #227: does a 100-byte PARTY record hold Mail? Test the HELD ITEM id via
+ * g3_item_is_mail() (gen3_clip.h/.c, pure C, host-boundary-tested at 0/120/121/132/133/
+ * 0xFFFF), never the raw 0x55 mail byte -- PokeDNA itself wrote 0x00 there before #225
+ * and 0x00 is a valid mail index (G3_MAIL_NONE is 0xFF), so a 0x55-byte test would refuse
+ * every tool-moved Pokemon. Mirrors retail's own gate (MENU_STORE -> ItemIsMail,
+ * pokeemerald src/pokemon_storage_system.c:2646-2651). #227 review D1: the predicate used
+ * to be inlined here as a bare integer range with no value-level test of its own -- moved
+ * onto the shared helper so the host suite actually exercises the boundaries, not just
+ * that some call to a same-named function exists before a write. */
+static bool g3_party_rec_has_mail(const uint8_t* party100) {
+  PkMon pk;
+  return pk_decode_mon(party100, true, &pk) && g3_item_is_mail(pk.heldItem);
 }
 
 /* Place a HELD box mon into the party: ADD it to a free slot (target == party count) or
@@ -4639,6 +4691,15 @@ static bool party_place_held(const uint8_t* held80, int target, int orig_box, in
   /* SWAP with party[target]: the party mon takes the held mon's PC origin */
   if (!can_swap) { snd_deny(); msg_wait("CAN'T SWAP", UI_WARN, "This held mon has no PC", "slot to receive the swap."); return false; }
   uint8_t* pslot = g_sb1 + (g_frlg ? 0x038 : 0x238) + (uint32_t)target * 100;
+  /* BACKLOG #227: the displaced party mon is about to be boxed (party_to_box below
+   * drops its plaintext 0x55 mail byte with nothing left pointing at the mail slot it
+   * still owns in gSaveBlock1's mail array) -- refuse exactly as retail does, before
+   * either half of the swap touches anything. */
+  if (g3_party_rec_has_mail(pslot)) {
+    snd_deny();
+    msg_wait(PDNA_XFER_PARTYFULL_MAIL_TITLE, UI_WARN, PDNA_XFER_PARTYFULL_MAIL_L1, PDNA_XFER_PARTYFULL_MAIL_L2);
+    return false;
+  }
   uint8_t y80[80];  party_to_box(pslot, y80);               /* party mon -> 80b box */
   uint8_t x100[100]; box_to_party(held80, x100);            /* held box mon -> 100b party */
   memcpy(pk_box_slot(g_pc, orig_box, orig_slot), y80, 80);  /* party mon -> the PC origin */
@@ -4706,14 +4767,18 @@ bool app_party_full_deposit_offer(int* out_box, int* out_slot) {
   uint16_t doff = g_frlg ? 0x0038 : 0x0238;
   uint8_t* pslot = g_sb1 + doff + (uint32_t)chosen * 100;
 
-  /* BACKLOG #226 review D4: retail refuses to store a mail holder (MENU_STORE ->
-   * ItemIsMail -> "PLEASE REMOVE MAIL", pokeemerald src/pokemon_storage_system.c:
-   * 2646-2651) -- do the same check before this offer touches anything. HELD ITEM
-   * ID range 121 (ORANGE MAIL) .. 132 (RETRO MAIL), source/data_tables.c. Do NOT
-   * test the record's raw 0x55 mail byte: PokeDNA itself wrote 0x00 there before
-   * #225 and 0x00 is a valid mail index, not "no mail". */
+  /* BACKLOG #226 review D4 / #227 review D1: retail refuses to store a mail holder
+   * (MENU_STORE -> ItemIsMail -> "PLEASE REMOVE MAIL", pokeemerald
+   * src/pokemon_storage_system.c:2646-2651) -- do the same check before this offer
+   * touches anything, via the shared g3_item_is_mail() predicate (gen3_clip.h/.c,
+   * boundary-tested on the host at 0/120/121/132/133/0xFFFF). Do NOT test the record's
+   * raw 0x55 mail byte: PokeDNA itself wrote 0x00 there before #225 and 0x00 is a valid
+   * mail index, not "no mail". Now the same spelling as g3_party_rec_has_mail()'s own
+   * check -- tests/host_escape_gate_sites_test.py's DEPOSIT_MAIL_CHECK_RE was updated to
+   * match (the duplicate spelling was the reason only one of the two ever had its range
+   * boundary-tested; the pin and the code moved together). */
   PkMon pk;
-  if (pk_decode_mon(pslot, true, &pk) && pk.heldItem >= 121 && pk.heldItem <= 132) {
+  if (pk_decode_mon(pslot, true, &pk) && g3_item_is_mail(pk.heldItem)) {
     snd_deny();
     msg_wait(PDNA_XFER_PARTYFULL_MAIL_TITLE, UI_WARN, PDNA_XFER_PARTYFULL_MAIL_L1, PDNA_XFER_PARTYFULL_MAIL_L2);
     return false;
@@ -4789,6 +4854,11 @@ bool app_party_mon_menu(int slot, int footer_y, bool allow_move_to_box,
     g_party_tobox_req = false;
     if (party_count(g_sb1, g_frlg) <= 1) {
       snd_deny(); msg_wait("CAN'T", UI_WARN, "The party can't be empty.", "Move another mon in first.");
+    } else if (g3_party_rec_has_mail(rec)) {
+      /* BACKLOG #227: MOVE TO BOX is exactly the box-a-party-mon path that drops the
+       * plaintext mail byte with nothing left pointing at the mail slot. */
+      snd_deny();
+      msg_wait(PDNA_XFER_PARTYFULL_MAIL_TITLE, UI_WARN, PDNA_XFER_PARTYFULL_MAIL_L1, PDNA_XFER_PARTYFULL_MAIL_L2);
     } else if (tobox_hit) {
       party_to_box(rec, tobox_grab); *tobox_hit = true;
     }
@@ -5342,7 +5412,19 @@ int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool ori
  * to customise, then write + commit. Returns true if the user kept it. Omega-only.
  * The summary — not the flat field list — is deliberate: making a Pokémon should look
  * like inspecting one, and the summary reaches all 40 editable fields anyway. */
-static bool app_create_mon(uint8_t* rec, AppCommitFn commit, uint8_t* block) {
+/* BACKLOG #229: `is_party` is real, not decoration -- app_create_mon builds its record
+ * entirely in box form (species picker, spread roll, editor all operate on an 80-byte
+ * `tmp`/`out`), and the final write below branches on it: a box slot gets the 80 bytes
+ * as before, a party slot gets those same 80 bytes properly widened through
+ * box_to_party() -- the SAME choke point party_place_held's own ADD arm and
+ * app_party_deposit_undo already use for every other box->party producer -- so the
+ * plaintext tail (status/level/mail/current+max HP/the five stats) is never left stale.
+ * The CREATE row itself is still hidden on the party by xg_create_row's `!is_party`
+ * gate at its one call site (pdna_main.c's app_mon_menu, action-row build); this
+ * parameter makes the function itself correct for the day that gate moves, rather than
+ * leaving an 80-into-100 write waiting behind a runtime `if` nobody but that gate is
+ * watching. */
+static bool app_create_mon(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* block) {
   /* BACKLOG #120 S2 F1 (review finding): defence in depth -- the CREATE row above
    * should already have hidden this action on a Bank cell with no live Gen-3 save,
    * but this is the actual write-time gate (same posture as app_inject_to_game's
@@ -5469,6 +5551,18 @@ static bool app_create_mon(uint8_t* rec, AppCommitFn commit, uint8_t* block) {
              "it was met here. May be flagged.");
   }
 
+  if (is_party) {
+    /* BACKLOG #229: widen through the same choke point every other box->party producer
+     * uses (party_place_held's ADD arm: `uint8_t p100[100]; box_to_party(held80, p100);`)
+     * rather than a raw 80-byte memcpy into a 100-byte slot -- box_to_party derives the
+     * plaintext level/battle-stats tail via the editor's own em_set_party_flag path, so
+     * status/mail/current+max HP/the five stats all land correctly instead of staying
+     * whatever the caller's buffer happened to hold before. */
+    uint8_t p100[100];
+    box_to_party(out, p100);
+    memcpy(rec, p100, 100);
+    return app_commit_with_dex(rec, true, commit, block);   /* gated write + auto-register dex */
+  }
   memcpy(rec, out, 80);
   return app_commit_with_dex(rec, false, commit, block);   /* gated write + auto-register dex (PC only) */
 }
@@ -6089,7 +6183,7 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
         case A_RELEASE: return app_release(rec, is_party, commit, block, box, slot);
         case A_TAKEITEM:return app_take_item(rec, is_party, commit);
         case A_GIVEITEM:return app_give_item(rec, is_party, commit);
-        case A_CREATE:  return app_create_mon(rec, commit, block);   /* build a new mon into this empty slot */
+        case A_CREATE:  return app_create_mon(rec, is_party, commit, block);   /* build a new mon into this empty slot */
         default:        return false;                    /* CANCEL */
       }
     }
