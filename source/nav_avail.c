@@ -4,6 +4,9 @@
 #include "sprite_era.h"     /* SE_KIND_* -- ONLY for the case labels + the assert below;
                               * nav_avail.h itself stays decoupled (plain ints), the
                               * same split sprite_era.h/.c keeps from gen3_trainer.h. */
+#include "xfer_gate.h"      /* BACKLOG #239: xfer_direct_allowed() -- the one flag that
+                              * makes NV_GB say COMING_SOON on a Gen-3 kind too, see
+                              * nav_avail()'s own comment below. */
 
 /* If sprite_era.h's SeSaveKind numbering ever changes, GB_TABLE's two columns below
  * silently answer for the wrong kind -- catch that at compile time instead, the same
@@ -127,12 +130,32 @@ static int gb_col(int nv_item, int save_kind) {
   return -1;
 }
 
+/* BACKLOG #239: the ONE exception to "every Gen-3 kind answers NAV_OK for every row"
+ * (this file's own header comment above). NV_GB is how a Gen-3 save's own nav menu
+ * mounts a SECOND (Game Boy) save as a read-only box source while the Gen-3 save stays
+ * resident -- exactly the "direct save-to-save / cart-to-save" concurrency BACKLOG #239
+ * closes; both of pdna_main.c's NV_GB call sites (pdna_gen12_show / the PDNA_DELTA
+ * pdna_gen12_show_fused arm) sit behind this SAME nav_avail() check, so gating it here
+ * is the one place that makes both unreachable. xfer_direct_allowed() is a plain
+ * function (xfer_gate.h), not a table row, because a Gen-3 kind's own GB_TABLE column
+ * does not exist (gb_col() returns -1 for RS/EM/FRLG) -- adding a real column would
+ * mean re-deriving col for a kind this table was never meant to index. Checked BEFORE
+ * gb_col(): a GEN1/GEN2 save_kind already gets NAV_COMING_SOON off GB_TABLE regardless
+ * (unaffected either way), so this early return only ever changes the Gen-3 answer. */
+static bool nv_gb_blocked(int nv_item) {
+  return nv_item == (int)NV_GB && !xfer_direct_allowed();
+}
+
 NavAvail nav_avail(int nv_item, int save_kind) {
+  if (nv_gb_blocked(nv_item)) return NAV_COMING_SOON;
   int col = gb_col(nv_item, save_kind);
   return (col < 0) ? NAV_OK : GB_TABLE[nv_item][col].state;
 }
 
 const char* nav_avail_why(int nv_item, int save_kind) {
+  /* Same wording the Game Boy table already uses for this exact row (GB_TABLE's own
+   * [NV_GB] entries above) -- one string, not a second copy that could drift. */
+  if (nv_gb_blocked(nv_item)) return "Open the Bank instead.";
   int col = gb_col(nv_item, save_kind);
   return (col < 0) ? "OK" : GB_TABLE[nv_item][col].why;
 }

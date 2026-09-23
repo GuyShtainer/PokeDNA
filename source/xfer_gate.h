@@ -100,4 +100,17 @@ bool xg_cell_is_copy(const uint8_t rec80[80]);
  * AND a live Gen-3 PC (`pc_live`, xg_pc_live()) exists to receive them. */
 bool xg_pc_offer(uint8_t queued, bool pc_live);
 
+/* BACKLOG #239: the ONE switch for "may a second save be mounted while a Gen-3 save
+ * stays resident" (source/nav_avail.c's nav_avail(NV_GB, ...) is the sole caller --
+ * it is what makes the GB-IMPORT row itself say COMING_SOON / "Open the Bank instead."
+ * for a Gen-3 save kind, exactly the same honesty the GB_TABLE already gives that row
+ * for a raw Game Boy save). Deliberately a plain function, not a #define or a second
+ * rule table (golden rule 8: one leash on the preprocessor) -- flipping this one `return`
+ * is the whole re-enable, once hardware has validated the Bank-only flow and BACKLOG #239's
+ * later pass is ready to delete the ledger/promote/reconcile machinery this gate currently
+ * leaves standing but unreachable. Always false today: no direct save-to-save or
+ * cart-to-save transfer is offered; deposit-to-Bank and take-from-Bank (both already
+ * Bank-mediated, see BACKLOG #239's own survivor list) are untouched by this gate. */
+bool xfer_direct_allowed(void);
+
 #endif

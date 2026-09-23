@@ -2,18 +2,21 @@
  * START menu in every game, honest per-row messages when a row is not built yet
  * (COMING SOON) or does not exist in this game/generation (NOT IN GAME).
  *
- *   cc -std=c11 -O2 -Wall -Wextra -I source tests/host_nav_avail_test.c \
- *      source/nav_avail.c -o /tmp/hnat && /tmp/hnat
+ *   cc -std=c11 -O2 -Wall -Wextra -I source -I tests tests/host_nav_avail_test.c \
+ *      source/nav_avail.c source/xfer_gate.c source/bank_cell.c source/gb_edit.c \
+ *      source/gen1_save.c source/gen1_write.c source/gen2_save.c source/gen2_write.c \
+ *      source/data_tables.c source/gb_session.c -o /tmp/hnat && /tmp/hnat
  *
  * Covers: every (nv_item, save_kind) pair over the full NV_COUNT x SE_KIND_N grid
  * returns a defined NavAvail state and a non-empty, <=30-char reason (msg_wait's
  * 184px proportional clamp at a 30-char cap); every Gen-3 kind (RS/EM/FRLG) answers
- * NAV_OK for every row -- the VERIFIED result of checking each candidate screen's
- * existing per-game behaviour, spelled out in source/nav_avail.c's own header, not an
- * unchecked default; Settings/Back answer NAV_OK for every kind; the Game Boy table's
- * named cases from the brief (Clock fix's Gen1-vs-Gen2 SPLIT, a COMING_SOON row, a
- * NOT_IN_GAME row); and out-of-range nv_item/save_kind degrade to NAV_OK with a
- * non-empty reason rather than reading off the end of the table. */
+ * NAV_OK for every row EXCEPT NV_GB (BACKLOG #239: gated by xfer_gate.c's
+ * xfer_direct_allowed(), see (I) below) -- the VERIFIED result of checking each
+ * candidate screen's existing per-game behaviour, spelled out in source/nav_avail.c's
+ * own header, not an unchecked default; Settings/Back answer NAV_OK for every kind;
+ * the Game Boy table's named cases from the brief (Clock fix's Gen1-vs-Gen2 SPLIT, a
+ * COMING_SOON row, a NOT_IN_GAME row); and out-of-range nv_item/save_kind degrade to
+ * NAV_OK with a non-empty reason rather than reading off the end of the table. */
 #include <stdio.h>
 #include <string.h>
 
@@ -47,21 +50,48 @@ static void test_every_pair_defined(void) {
   printf("(A) every (item, kind) pair defined, %d items x %d kinds\n", NV_COUNT, N_KINDS);
 }
 
-/* ---- (B) every Gen-3 kind answers NAV_OK for every row ------------------------------
+/* ---- (B) every Gen-3 kind answers NAV_OK for every row, EXCEPT NV_GB ----------------
  *
  * VERIFIED, not assumed: source/nav_avail.c's file header cites the exact per-game
  * check inside pdna_pokeblock/pdna_secretbase/pdna_mirage/pdna_clock/
  * pdna_battle_record/pdna_frontier/event_tickets that already makes every one of
- * those honest on its own -- so the "explicit gate list" for a Gen-3 kind is empty,
- * and this loop has nothing to except out. A future row that DOES need gating for a
- * Gen-3 kind changes this test right here, on purpose -- not silently. */
+ * those honest on its own -- so the "explicit gate list" for a Gen-3 kind was empty
+ * until BACKLOG #239 (this is the "on purpose, not silently" update the old comment
+ * asked for): NV_GB now depends on xfer_direct_allowed() (source/xfer_gate.c), which
+ * this build's PokeDNA-BACKLOG-239 lane always returns false, so it is excepted here. */
 static void test_gen3_kinds_all_ok(void) {
   const int g3[] = { SE_KIND_RS, SE_KIND_EM, SE_KIND_FRLG };
   for (int k = 0; k < 3; k++)
-    for (int item = 0; item < NV_COUNT; item++)
+    for (int item = 0; item < NV_COUNT; item++) {
+      if (item == NV_GB) continue;   /* BACKLOG #239 -- checked separately below (I) */
       CHECK(nav_avail(item, g3[k]) == NAV_OK,
-            "Gen-3 kind (RS/EM/FRLG): every row is NAV_OK (see nav_avail.c's header)");
-  printf("(B) RS/EM/FRLG: every one of %d rows is NAV_OK\n", NV_COUNT);
+            "Gen-3 kind (RS/EM/FRLG): every row but NV_GB is NAV_OK (see nav_avail.c's header)");
+    }
+  printf("(B) RS/EM/FRLG: every row but NV_GB is NAV_OK\n");
+}
+
+/* ---- (I) BACKLOG #239: NV_GB says COMING_SOON on every Gen-3 kind too, same wording
+ * the Game Boy table already uses for the row -- a Gen-3 save's own nav menu must not
+ * offer "mount a second save while I stay resident" any more than a raw Game Boy
+ * save's own menu does. Mutation-provable: source/xfer_gate.c's xfer_direct_allowed()
+ * is the ONE line this depends on -- flip it to `return true;` in a scratch copy and
+ * every assertion below flips too (demonstrated by hand, not compiled here: this test
+ * links the REAL xfer_gate.c, so a flipped source is a flipped binary, not a mutation
+ * this file can stage in-process -- see the delivery report for the hand run). */
+static void test_gen3_nv_gb_gated(void) {
+  const int g3[] = { SE_KIND_RS, SE_KIND_EM, SE_KIND_FRLG };
+  for (int k = 0; k < 3; k++) {
+    CHECK(nav_avail(NV_GB, g3[k]) == NAV_COMING_SOON,
+          "BACKLOG #239: NV_GB is COMING_SOON on every Gen-3 kind while xfer_direct_allowed() is false");
+    CHECK(strcmp(nav_avail_why(NV_GB, g3[k]), "Open the Bank instead.") == 0,
+          "BACKLOG #239: NV_GB's Gen-3 reason matches the Game Boy table's own wording for the row");
+  }
+  /* Same predicate, same answer, on the Game Boy kinds -- unchanged behaviour,
+   * pinned so a future refactor of gb_col()'s early-return can't silently diverge
+   * the two paths that now both say COMING_SOON for the same reason. */
+  CHECK(nav_avail(NV_GB, SE_KIND_GEN1) == NAV_COMING_SOON, "BACKLOG #239: GB kind still COMING_SOON too");
+  CHECK(nav_avail(NV_GB, SE_KIND_GEN2) == NAV_COMING_SOON, "BACKLOG #239: GB kind still COMING_SOON too");
+  printf("(I) BACKLOG #239: NV_GB is COMING_SOON / \"Open the Bank instead.\" on all 5 kinds\n");
 }
 
 /* ---- (C) Settings / Back: NAV_OK everywhere, every kind ------------------------------ */
@@ -226,6 +256,7 @@ static void test_out_of_range(void) {
 int main(void) {
   test_every_pair_defined();
   test_gen3_kinds_all_ok();
+  test_gen3_nv_gb_gated();
   test_settings_back_ok_everywhere();
   test_trainer_ok_on_gb();
   test_clock_fix_splits_gen1_gen2();
