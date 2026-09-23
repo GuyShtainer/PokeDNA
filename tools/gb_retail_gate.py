@@ -115,6 +115,11 @@ SURGERY_SRCS = [
     "source/gen3_to_gb.c", "source/gb_moves_legal.c", "source/gen3_mon.c",
     "source/gen3_box.c", "source/evolutions.c", "source/gen3_save.c",
     "source/gen3_edit.c", "source/gen3_daycare.c",
+    # BACKLOG #248/#249 (xfer-items): gen3_to_gb.c now calls item_g3_to_g2()/
+    # item_g2_to_g1() (source/gen3_to_gb.c's set_item/g3gb_item_ladder) --
+    # item_map_g2g3.c/item_map_g1g2.c/gb_item_names.c are their own dependencies
+    # (gb_bag.c is already listed above for --op item).
+    "source/item_map_g2g3.c", "source/item_map_g1g2.c", "source/gb_item_names.c",
     # BACKLOG #91 M3: --op mapquery's own dependency (rom_gbmap.h's locate-by-shape
     # module -- read-only, no save bytes, used to pick a PROVEN in-bounds teleport
     # destination for run_teleport_case instead of a guessed one).
