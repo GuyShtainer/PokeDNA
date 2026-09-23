@@ -2822,7 +2822,13 @@ static bool app_box_browse(uint8_t* block, int box, int start, AppCommitFn commi
  * mon staying on the SAME card (real-PC style) instead of dropping back to the party list.
  * The party is gap-free, so every index 0..g_nparty-1 is a real mon — just wrap. */
 static bool party_browse(int start, AppCommitFn commit) {
-  int count = g_nparty; if (count < 1) return false;
+  /* BACKLOG #174 review D3: g_party/g_nparty are a CACHE. app_party_remove_at (party->box
+   * carry-out) refreshes it; party_place_held's ADD arm (a native Bank cell converting and
+   * joining the party, this lane) does not -- after a Bank->party landing the cache is one
+   * short, so a stale g_nparty here would clamp VIEW/EDIT onto the WRONG party slot and
+   * party_browse's own memcpy(rec, out, 100) would save the edit to that mon's slot. Read
+   * the true count from the save data itself rather than trust the cache. */
+  int count = party_count(g_sb1, g_frlg); if (count < 1) return false;
   int idx = start; if (idx < 0) idx = 0; if (idx >= count) idx = count - 1;
   uint16_t doff = g_frlg ? 0x0038 : 0x0238;
   int card = 0; bool any = false;                          /* card sticky across mon-scroll */
