@@ -1795,6 +1795,29 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
         s_orig_slot >= 0 && s_xfer_peer && s_xfer_peer->lift_up && !bc_is_native(s_held)) {
       return drop_held_down_g3(src, box, cur, recs, done);
     }
+    /* BACKLOG #246 review D1 (HIGH -- a false success): the down-arm above requires
+     * s_orig_slot >= 0 (it deletes a card slot on landing -- a real ORIGIN drop), so
+     * a Bank DUPLICATE carry (s_orig_slot == -1, s_held_dup == true -- the read-only
+     * nav-menu's copy, or a COPY lift) falls PAST it. Before this fix it fell past
+     * `occupied` too, into the generic DUPLICATE fast path further down, which
+     * memcpy's the Gen-3 record straight into the GB page buffer with no
+     * gen3_to_gb_fixed, no loss screen, no capacity check and no sidecar write -- a
+     * silent, undeclared copy into a Game Boy save (display-only: gbsrc_commit
+     * refuses a native-shaped write and a re-page clears it, but the box header still
+     * lies 16/20 -> 17/20 with no dialog at all). Refuse every Bank-origin duplicate
+     * headed for a GB destination outright -- named by the exact scope this drop is
+     * headed for (src->scope == BOXSCOPE_GB), so a PC-destination duplicate is
+     * unaffected and still reaches its own existing fast path below. There is no
+     * landing path for a Bank duplicate on a Game Boy save yet (#104's later phases,
+     * not #246 Phase 1). tests/host_escape_gate_sites_test.py check (bb) pins this
+     * refusal strictly between the down-arm above and `if (occupied)` below. */
+    if (src->scope == BOXSCOPE_GB && s_orig_scope == BOXSCOPE_BANK && s_held_dup) {
+      boxoam_suspend();
+      snd_deny();
+      msg_wait(PDNA_XFER_NOGEN_TITLE, UI_WARN, PDNA_XFER_NOGEN_L1, PDNA_XFER_NOGEN_L2);
+      boxoam_resume();
+      return recs;
+    }
     if (occupied) { snd_deny(); return recs; }
     /* BACKLOG #150 S150-4 decisions 1/7/9/10 / BACKLOG #170: the UP drop -- a Game
      * Boy mon carried into an empty Bank cell -- extracted into its own noinline

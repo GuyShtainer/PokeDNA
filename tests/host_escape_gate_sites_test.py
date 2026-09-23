@@ -491,6 +491,13 @@ RELEASE_UP_TEST_RE = re.compile(r"if\s*\(\s*s_xfer_peer->release_up\s*\)")   # N
 HOLDING_DONE_RE     = re.compile(r"s_holding = false; \*done = true;")
 PC_QUEUE_NOTE_RE    = re.compile(r"app_pc_queue_note\(")
 
+# BACKLOG #246 review D1: the down-arm call, the D1 Bank-dup-on-GB refusal, and the
+# generic `if (occupied)` check this refusal must precede. Shared by the real checks
+# (bb) and its self-mutation demonstration (MUT D1) below.
+D1_246_DOWNARM_RE  = re.compile(r"return\s+drop_held_down_g3\(")
+D1_246_REFUSAL_RE  = re.compile(r"src->scope == BOXSCOPE_GB && s_orig_scope == BOXSCOPE_BANK && s_held_dup")
+D1_246_OCCUPIED_RE = re.compile(r"if\s*\(\s*occupied\s*\)")
+
 
 def n1_order_facts(lines, start, end):           # shared by the real check AND MUT N1
     """BACKLOG #150 S150-12 decision 6: `if (s_xfer_peer->release_up)` must exist,
@@ -1919,6 +1926,29 @@ def main() -> int:
     ok, detail = deposit_undo_order_facts(main_lines)
     check(ok, detail)
 
+    # ---- (bb) BACKLOG #246 review D1 (HIGH -- a false success): a Bank DUPLICATE
+    # carry (s_orig_slot == -1, s_held_dup == true -- the read-only nav-menu's copy,
+    # or a COPY lift) has no origin coordinates for the #246 down-arm above (its own
+    # `s_orig_slot >= 0` guard is deliberate: the down-arm deletes a card slot, a
+    # DUPLICATE carry has none to delete), so before this fix it fell through into
+    # the generic DUPLICATE fast path further down drop_held -- no gen3_to_gb_fixed,
+    # no loss screen, no capacity check, no sidecar write: a silent undeclared copy
+    # into a Game Boy save (the review's own repro: box header 16/20 -> 17/20, no
+    # dialog). The refusal must sit strictly between the #246 down-arm's own
+    # `drop_held_down_g3(` call and the generic `if (occupied)` check -- both real
+    # checks below AND MUT D1 share gate_before_pattern(), the same idiom every other
+    # ordering pin in this file uses.
+    s, e = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
+    dh_body_d1 = box_lines[s:e]
+    ok, detail = gate_before_pattern(dh_body_d1, 0, len(dh_body_d1),
+                                     D1_246_DOWNARM_RE, D1_246_REFUSAL_RE,
+                                     "drop_held #246 down-arm before D1 refusal")
+    check(ok, detail)
+    ok, detail = gate_before_pattern(dh_body_d1, 0, len(dh_body_d1),
+                                     D1_246_REFUSAL_RE, D1_246_OCCUPIED_RE,
+                                     "drop_held #246 D1 refusal before `if (occupied)`")
+    check(ok, detail)
+
     # ---- (f) review F3: the self-mutation harness, every run ----
     self_test_mutation_detection(box_lines, gen12_lines, main_lines)
     self_test_al_mutation(main_lines)
@@ -1984,6 +2014,19 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str],
     ok, detail = gate_before_pattern(mut_f, 0, len(mut_f), GATE_RE, MEMCPY80_RE, "drop_held (MUT F)")
     check(not ok, f"MUT F (drop_held's gate moved after all memcpys) should have been caught but was not: {detail}")
     print(f"  MUT F demonstration -- gate block relocated after drop_held's last memcpy: {detail}")
+
+    # MUT D1 (BACKLOG #246 review D1): delete the Bank-DUPLICATE-on-GB refusal from a
+    # scratch copy of drop_held's body -- simulates the exact pre-fix shape (a Bank
+    # dup carry fell through into the unrelated generic DUPLICATE fast path, no loss
+    # screen, no dialog) and must be caught by the SAME gate_before_pattern() the real
+    # check (bb) above uses.
+    s, e = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
+    body = box_lines[s:e]
+    mut_d1 = [ln for ln in body if not D1_246_REFUSAL_RE.search(ln)]
+    ok, detail = gate_before_pattern(mut_d1, 0, len(mut_d1), D1_246_REFUSAL_RE, D1_246_OCCUPIED_RE,
+                                     "drop_held #246 D1 refusal (MUT D1)")
+    check(not ok, f"MUT D1 (#246 D1 Bank-dup-on-GB refusal deleted) should have been caught but was not: {detail}")
+    print(f"  MUT D1 demonstration -- #246 D1 refusal removed from drop_held: {detail}")
 
     # MUT G (BACKLOG #150 S150-4): revert the NORMAL-mode MOVE-menu site's combined
     # guard back to what it looked like before this lane closed the second G-M7
