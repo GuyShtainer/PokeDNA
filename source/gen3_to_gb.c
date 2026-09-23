@@ -22,6 +22,16 @@ const char* g3gb_status_text(G3GbStatus st) {
   return "?";
 }
 
+/* F1 (xfer-items fix pass): the item/Secret-ID loss row's show/hide predicate -- see
+ * the declaration in gen3_to_gb.h for why item_dropped has to be in this OR chain
+ * alongside item_outcome/secret_id. NULL is defensive (golden rule 7): no caller passes
+ * NULL today, but a predicate function that crashes on it is a worse failure mode than
+ * one that just says "no row". */
+bool g3gb_loss_needs_item_row(const Gen3ToGbLoss* loss) {
+  if (!loss) return false;
+  return loss->item_outcome != G3GB_ITEM_NONE || loss->item_dropped || loss->secret_id;
+}
+
 /* Markings (four owner-set marks: circle/square/triangle/heart) are a single PLAINTEXT
  * byte the Growth/Attacks/EVs/Misc substruct machinery never touches — struct BoxPokemon
  * lays out personality(4)@0x00, otId(4)@0x04, nickname(10)@0x08, language(1)@0x12,

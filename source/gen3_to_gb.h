@@ -70,6 +70,16 @@ typedef struct {
                                    * item_g2_to_g1() without decoding rec80 a second time */
 } Gen3ToGbLoss;
 
+/* xfer-items fix F1: the item/Secret-ID loss row's own show/hide predicate, pulled out
+ * of pdna_gen12.c's gb_paste_loss_screen so it is a real, host-testable function rather
+ * than logic only ever reachable inside a GBA-only draw call. item_dropped is the S150-8
+ * decision-15 "a Gen-2 item cannot reach Gen 1" case (bank_down_convert.c's GB1<->GB2
+ * bridge, gb_bank_down_bridge folds notes.item_dropped into loss.item_dropped before
+ * this call) -- item_outcome alone (BACKLOG #248/#249's Gen-3 -> GB ladder) never covers
+ * it, so a predicate that only checked item_outcome/secret_id silently dropped the row
+ * for every bridge transfer that drops an item. */
+bool g3gb_loss_needs_item_row(const Gen3ToGbLoss* loss);
+
 /* BACKLOG #249 cases B/C/D/E, as a PURE decision (no session, host-testable): given the
  * Gen-3 held item and a snapshot of the destination Gen-1 bag's two relevant pocket
  * counts/caps, which of BAG/PC/STAYS applies, and which Gen-1 item id to insert (0 when

@@ -454,6 +454,34 @@ static void test_bridge_one_case(uint16_t species_dex, uint8_t src_gen, uint8_t 
   CHECK(gb_get_species_dex(&out) == species_dex, "%s: species survives the bridge", label);
 
   /* (c) xr_time_capsule_block returned 0 -- already asserted above as a precondition. */
+
+  /* F1 (xfer-items fix pass): a Gen-2 source mon holding an item into a Gen-1 target
+   * always drops the item (bank_down_convert.c:118, gen12_convert refuses a held item
+   * on that arm) and bdc_convert_gb_core reports that via loss.item_dropped -- NOT
+   * item_outcome, which this bridge path never sets (item_outcome only exists for the
+   * Gen-3 -> GB down-convert core, bdc_convert_gen3_core). pdna_gen12.c:3252's row
+   * predicate must read item_dropped or the loss screen silently drops this row.
+   * Reproduce the UNFIXED predicate here (not by calling the GBA-only
+   * gb_paste_loss_screen) and show the difference directly. */
+  if (item != 0 && dst_gen == GB_GEN1) {
+    CHECK(notes.item_dropped, "%s: bdc_convert_gb_core's notes report item_dropped", label);
+    /* pdna_gen12.c:4200 (gb_bank_down_bridge, the GBA-facing caller) folds notes.item_dropped
+     * into loss.item_dropped with exactly this OR-assign before the loss screen reads it --
+     * bdc_convert_gb_core itself never touches loss->item_dropped. Reproduce that one line
+     * so the predicate below sees what the real screen sees. */
+    loss.item_dropped |= notes.item_dropped;
+    CHECK(loss.item_dropped, "%s: loss.item_dropped set after the real caller's merge", label);
+    /* Calls the REAL predicate pdna_gen12.c's gb_paste_loss_screen now uses
+     * (gen3_to_gb.c's g3gb_loss_needs_item_row) -- not a re-derivation, so reverting the
+     * F1 fix (removing item_dropped from that function's OR chain) turns this RED. */
+    CHECK(g3gb_loss_needs_item_row(&loss),
+          "%s: g3gb_loss_needs_item_row is TRUE (item_dropped seen)", label);
+    bool unfixed_predicate = loss.item_outcome != G3GB_ITEM_NONE || loss.secret_id;
+    CHECK(!unfixed_predicate,
+          "%s: the OLD inline predicate (pre-lane, no item_dropped term) is FALSE here -- "
+          "this is the row the lane made vanish (item_outcome=%d secret_id=%d)",
+          label, (int)loss.item_outcome, (int)loss.secret_id);
+  }
 }
 
 static void test_bridge_roundtrips(void) {

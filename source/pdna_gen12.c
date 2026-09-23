@@ -3249,7 +3249,7 @@ static bool __attribute__((noinline)) gb_paste_loss_screen(const Gen3ToGbLoss* l
   {
     char item_row[40];
     loss_item_text(loss, item_row, (int)sizeof item_row);
-    y = loss_row(y, loss->item_outcome != G3GB_ITEM_NONE || loss->secret_id, item_row);
+    y = loss_row(y, g3gb_loss_needs_item_row(loss), item_row);
   }
   /* S5-B review fix #4: two of Gen3ToGbLoss's 17 flags had no row at all before this --
    * merged with item/secret_id above (row-count-neutral: was 2 separate rows, now 1 +
