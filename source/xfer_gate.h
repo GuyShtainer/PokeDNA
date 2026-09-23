@@ -46,7 +46,20 @@ bool xg_clear_carry_on_gb_exit(bool carry_is_gb);
  * S150-4 decision 9) a Bank destination receiving a GB-scope carry when both sides
  * have an xfer vtable (`have_xfer`, since a bare predicate cannot see the vtable
  * itself) -- the UP edge this lane adds. Every other GB-involving pair (including
- * GB<-BANK, which is DOWN, not this lane) stays denied. */
+ * GB<-BANK, which is DOWN, not this lane) stays denied.
+ *
+ * BACKLOG #199 review D7 (report only): as of chain D (this same lane), this is now
+ * the SOLE gate against a GB-origin carry escaping to a non-Bank destination.
+ * xg_native_escape_denied (below) is INERT for one: start_carry() no longer packs a
+ * GB-origin mon at grab time -- s_held stays the plain Gen-3-shaped DISPLAY record
+ * for the WHOLE hold (pk_decode_mon-compatible, oam_sync's own renderer), never the
+ * packed "GBC1" native format bc_is_native() checks for, until drop_held_up's own
+ * lift_up() packs it at the ONE drop that needs it. So bc_is_native(s_held) reads
+ * false for the entire duration of a GB-origin hold, and xg_native_escape_denied
+ * can never fire on one -- xg_drop_denied(dst, GB, have_xfer) above, called before
+ * xg_native_escape_denied on the same cross-scope drop path (pdna_box.c
+ * drop_held), is what actually stops the escape now. Pinned:
+ * xg_drop_denied(BOXSCOPE_PC, BOXSCOPE_GB, true) == true (tests/host_xfergate_test.c). */
 bool xg_drop_denied(uint8_t dst_scope, uint8_t src_scope, bool have_xfer);
 
 /* BACKLOG #150 S150-3: the escape-route gate. A native "GBC1" Bank cell

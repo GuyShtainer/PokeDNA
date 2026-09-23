@@ -1673,8 +1673,18 @@ def main() -> int:
     # (w) below. Anchor updated post-merge: s150-12 folded gb_lift_up_hook's body
     # into the shared gb_lift_pack(rec80, out80, copy); the old
     # gb_lift_up_hook(...) signature no longer contains the gb_has_sidecar/
-    # gb_lift_restore call pair at all.) ----
-    sh, eh = extract_function(gen12_lines, r"^static bool gb_lift_pack\(const uint8_t\* rec80, uint8_t\* out80, bool copy\) \{")
+    # gb_lift_restore call pair at all. Re-anchored again for BACKLOG #199 (lane
+    # b199): gb_lift_pack's first two params became `int box, int slot` -- the call
+    # moved from grab time (start_carry) to the Bank-UP drop (drop_held_up), by the
+    # carry's own origin coordinates instead of a rec80 resolved from the live
+    # display page -- same body, same ordering, new signature text only.
+    # Re-anchored AGAIN for b199 review D5: gb_lift_pack (and gb_lift_restore) now
+    # return the XG_LIFT_OK/CANCELLED/FAILED tri-state (int), not bool -- a plain B
+    # decline or an already-explained refusal must stay silent at the caller
+    # (drop_held_up), not draw a second, vaguer dialog on top. Same body, same
+    # ordering, new signature/return-type text only -- this test checks CALL ORDER,
+    # never the return type, so nothing below this line needed to change.) ----
+    sh, eh = extract_function(gen12_lines, r"^static int gb_lift_pack\(int box, int slot, uint8_t\* out80, bool copy\) \{")
     hook_body = gen12_lines[sh:eh]
     ok, d = lift_order_facts_hook(hook_body)
     check(ok, d)

@@ -27,6 +27,22 @@
 #define BOXSCOPE_BANK 1
 #define BOXSCOPE_GB   2
 
+/* BACKLOG #199 review D5: BoxXferOps.lift_up's tri-state, mirroring pc_bank_
+ * restore_up's own established 0/-2/-1/1 convention (source/pdna_box.c, the Gen-3
+ * PC->Bank restore -- NOT itself reached through this vtable, but the shape a
+ * carried mon's caller must respect either way). Some lift_up refusals already
+ * drew their OWN specific dialog (a stale ledger record, an already-RESTORED
+ * entry, a PENDING SAVE FIRST wall) or deliberately drew NOTHING (a plain B on the
+ * merge screen or the origin picker -- app_confirm/app_xfer_merge_screen's own
+ * "B = no" convention) and must never get a SECOND, vaguer dialog from the
+ * caller; others never explained themselves at all (an unreadable ledger, a
+ * failed serial write, a pack failure) and DO need the caller's generic
+ * "NOT MOVED TO THE BANK" dialog. XG_LIFT_CANCELLED covers the first group,
+ * XG_LIFT_FAILED the second. */
+#define XG_LIFT_OK        1   /* packed; the drop proceeds */
+#define XG_LIFT_CANCELLED 0   /* declined, or already explained on screen -- stay silent */
+#define XG_LIFT_FAILED   (-1) /* unreported -- the caller shows its own generic dialog */
+
 /* Carried-mon cross-generation transfer state; the full definition lands with S3 (the UP
  * mechanics). S1 only needs the incomplete type so BoxXferOps's function pointers can
  * name it — a pointer to an incomplete struct type is legal in a prototype. */
@@ -39,7 +55,23 @@ typedef struct XferCarry XferCarry;
  * implementation added by a later slice — S1 wires no GB body, only the shape. */
 typedef struct {
   uint8_t gen;                                     /* PDNA_GEN1 / PDNA_GEN2, for the wording */
-  bool (*lift_up)(const uint8_t* rec80, uint8_t* out80, XferCarry* xc);       /* GB -> Gen-3 native */
+  /* BACKLOG #199 (lane b199): re-shaped from `(const uint8_t* rec80, uint8_t* out80,
+   * XferCarry* xc)` -- the rec80 form resolved its (box, slot) from the ADDRESS of
+   * rec80 inside the mount's own paged buffer (gb_locate_addr's `*box = g_m->loaded`),
+   * which only holds true while the display is still paged on the cell that was
+   * grabbed; an L/R re-page between the grab and a later drop broke it. The call now
+   * moves from grab time (start_carry) to the one drop that actually needs the Bank's
+   * price (drop_held_up, pdna_box.c), by the ORIGIN COORDINATES the carry already
+   * tracks (s_orig_box/s_orig_slot) -- exactly the same coordinate form release_up
+   * below already uses, and robust to any repage in between. `XferCarry` is unused by
+   * both bodies (decision 6, unchanged) and is dropped from the signature along with
+   * it; the incomplete typedef above stays (harmless, no other user).
+   * BACKLOG #199 review D5: re-shaped AGAIN, bool -> int, to the XG_LIFT_OK/
+   * CANCELLED/FAILED tri-state defined above -- the caller (drop_held_up,
+   * pdna_box.c) must be able to tell "declined, or already explained on screen"
+   * apart from "unreported, show the generic dialog", which a bare bool cannot
+   * carry. */
+  int (*lift_up)(int box, int slot, uint8_t* out80);                        /* GB -> Gen-3 native */
   /* BACKLOG #150 S150-7 decision D-Q6: reshaped once, alongside accept_down below, so
    * the vtable's SHAPE only ever changes here -- S150-8's later diff fills bodies, not
    * signatures. Re-shaped from `(const uint8_t* rec80, XferCarry* xc)`: `XferCarry`
@@ -167,6 +199,17 @@ typedef struct {
    * A GB session wires gbsrc_can_enter_move (app_can_edit() + gbs_box_writable(box),
    * no per-slot/party-floor check -- those still gate the lift itself). */
   bool (*can_enter_move)(int box);
+  /* BACKLOG #244 (b199-fixes2, corrected design): answers ONE question -- "does this
+   * source have a box-name table at all" -- and nothing about whether it is writable
+   * right now. That is a DIFFERENT question from can_edit()/can_rename(), which the
+   * first attempt at this fix conflated: can_rename() is false for THREE reasons
+   * (no table / EverDrive / hack-flagged ROM), and only the first of those is "no
+   * box names" -- the other two are "not writable", the shipped-silent case. NULL
+   * means yes -- the Gen-3 PC and the Bank always have a box-name table, so both
+   * leave this NULL (the memset in pc_box_source()/pdna_bank_show() already does).
+   * Appended at the END, same offset-stability rule can_rename/can_boxops/
+   * can_enter_move above document (tools/stack_edges.txt is keyed by byte offset). */
+  bool (*box_names_supported)(void);
 } BoxSource;
 
 /* Game-faithful box screen over `src`: a left PKMN DATA panel + a 6x5 icon grid on

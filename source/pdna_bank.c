@@ -843,6 +843,9 @@ int pdna_bank_show(void) {
   s_start_box  = 0;
   s.is_bank    = true;
   s.scope      = BOXSCOPE_BANK;  /* BACKLOG #120 S1: can_lift/xfer stay NULL (memset above) */
+  /* BACKLOG #244: box_names_supported stays NULL (memset above) -- the Bank always
+   * has a box-name table; the shortcut/menu's writability gate (can_edit) still
+   * refuses on an EverDrive, silently, exactly as before. */
   s.wp_count   = G3_BOX_WALLPAPER_COUNT;          /* bank has no Walda */
   s.records    = banksrc_records;
   s.menu_block = g_bankbuf;                        /* records at +0x0004; menu box index = 0 */

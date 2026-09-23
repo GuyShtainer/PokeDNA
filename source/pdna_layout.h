@@ -1041,6 +1041,16 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XFER_NATIVE_L1    "This Game Boy Pokemon can"
 #define PDNA_XFER_NATIVE_L2    "only move inside the Bank."
 
+/* BACKLOG #199 (lane b199): the GB -> Bank UP drop now calls lift_up() at DROP time
+ * (drop_held_up, pdna_box.c), not at grab time -- a refusal there (the one-time
+ * origin prompt cancelled, a sidecar ledger entry already exists for this mon, or
+ * pdna_bank_next_serial()'s own SD write failed) happens over the BANK grid, mid-
+ * carry, so it must say so rather than silently doing nothing: the hand keeps
+ * holding, same "still holding" shape as every other refusal in drop_held_up. */
+#define PDNA_XFER_LIFT_REFUSED_TITLE "NOT MOVED TO THE BANK"
+#define PDNA_XFER_LIFT_REFUSED_L1    "This Pokemon could not be"
+#define PDNA_XFER_LIFT_REFUSED_L2    "packed for the Bank."
+
 /* BACKLOG #150 S150-9 decision 6/13: app_xferrestore_confirm (S150-8b review F3/D6)
  * is DELETED this commit -- its only call site (pc_bank_restore_up) now shows the
  * shared app_xfer_merge_screen. PDNA_XFERRESTORE_L_LOSS/L_EVOLVED/A_OK were that

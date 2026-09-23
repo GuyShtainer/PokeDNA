@@ -1075,25 +1075,21 @@ static int cursor_look(void) {
 }
 
 /* ---- mon-in-hand carry helpers (data-safety notes on the s_held declaration) ---- */
-/* BACKLOG #150 S150-4 step 3 (G-M7): a GB-scope source with a real xfer vtable packs
- * its NATIVE bytes through lift_up() instead of the plain memcpy -- `recs` is the
- * mount's SYNTHESISED Gen-3 grid for a GB source (gb_build_slot), and copying that
- * would silently store a converted Gen-3 record where a native cell belongs. Returns
- * false with NOTHING held (s_holding untouched) when lift_up() refuses (decision 5's
- * ledger check, pdna_bank_next_serial()'s own failure, or a cancelled origin prompt) --
- * every call site must check this return, either by acting on it (begin_select's
- * single-tap grab, the NORMAL-mode MOVE-menu site) or by casting it (void) with a
- * comment proving that call site can never be GB-scope (the party-strip/day-care
- * pickup sites). */
+/* BACKLOG #199 (lane b199): a GB-scope grab no longer pays the Bank's price (the
+ * "WHICH GAME IS THIS?" origin prompt and a verified bank.meta serial write, both
+ * inside lift_up()) at GRAB time -- it copies the display record exactly like a
+ * PC/Bank grab always has (`recs` is the mount's SYNTHESISED Gen-3 grid for a GB
+ * source, gb_build_slot's own output, built to decode/render like an ordinary Gen-3
+ * record; see oam_sync's own bc_is_native(s_held) branch below for what that buys).
+ * The lift through BoxXferOps.lift_up moved to the one drop that actually needs it
+ * -- drop_held_up, the GB -> Bank UP drop -- so a within-save move (drag to another
+ * box of the SAME save) now asks nothing and writes no serial; only landing in the
+ * Bank still does. This function can no longer fail on a valid slot (nothing here
+ * touches the card), but keeps its `bool` return and every call site's existing
+ * `!start_carry(...)` check as harmless, unchanged defensive code -- the checked
+ * failure mode moved to drop_held_up's own `!s_xfer_peer->lift_up(...)` branch. */
 static bool start_carry(BoxSource* src, const uint8_t* recs, int box, int slot) {
-  if (src->scope == BOXSCOPE_GB && src->xfer && src->xfer->lift_up) {
-    boxoam_suspend(); /* REVIEW F3: lift_up can open the full-screen origin picker */
-    bool got = src->xfer->lift_up(recs + (uint32_t)slot * 80, s_held, 0);
-    boxoam_resume();
-    if (!got) return false;
-  } else {
-    memcpy(s_held, recs + (uint32_t)slot * 80, 80);            /* lift-don't-clear: copy, origin stays */
-  }
+  memcpy(s_held, recs + (uint32_t)slot * 80, 80);              /* lift-don't-clear: copy, origin stays */
   s_holding = true; s_orig_box = box; s_orig_slot = slot; s_orig_scope = src->scope;
   s_held_dup = false;                                         /* a real mon (origin keeps it) */
   s_orig_party = false;                                       /* a box/bank origin, not the party */
@@ -1421,6 +1417,46 @@ static const uint8_t* bank_scan_get(int b, void* ctx) {
  * checking anything). */
 static uint8_t* __attribute__((noinline)) drop_held_up(BoxSource* src, int box, int cur, uint8_t* recs, bool* done) {
   boxoam_suspend();
+  /* BACKLOG #199 (lane b199): the Bank's price -- the one-time-per-save origin
+   * prompt, the sidecar-ledger refusal, and pdna_bank_next_serial()'s own VERIFIED
+   * bank.meta write -- is paid HERE, at the one drop that actually needs it, not at
+   * grab time (start_carry, above, now just copies the display record for every
+   * scope). `s_xfer_peer->lift_up` is called by the carry's own ORIGIN coordinates
+   * (s_orig_box/s_orig_slot), the same coordinate form gb_release_up_hook's own
+   * re-verify already uses -- robust to an L/R repage of the GB display between the
+   * grab and this drop, unlike the retired rec80 form (which needed
+   * g_m->loaded == s_orig_box to resolve at all). `packed` is the real native
+   * "GBC1" cell from here on; s_held stays the display copy and is never written to
+   * the Bank. A refusal (the origin prompt cancelled, a sidecar entry already
+   * exists, or the serial write failed) returns "still holding" -- the same shape
+   * as every other refusal in this function, so a carried mon can never be
+   * silently stranded nor land in neither save. BACKLOG #199 review D5: lift_up
+   * is now a TRI-STATE (XG_LIFT_OK/CANCELLED/FAILED, pdna_box.h) -- a plain B
+   * decline or a refusal that already drew its OWN dialog (a stale ledger
+   * record, an already-RESTORED entry, the PENDING SAVE FIRST wall) comes back
+   * CANCELLED and shows NOTHING further here, matching pc_bank_restore_up's own
+   * rc==-2 convention (the Gen-3 twin, just above) and app_confirm's "B = no"
+   * house style; only a genuinely UNREPORTED failure (an unreadable ledger, a
+   * failed serial write, a pack failure) shows this generic dialog. */
+  uint8_t packed[80];
+  int lift_rc = s_xfer_peer->lift_up(s_orig_box, s_orig_slot, packed);
+  if (lift_rc != XG_LIFT_OK) {
+    if (lift_rc == XG_LIFT_FAILED) {
+      /* review D6: this was the only refusal in the function with no sound --
+       * every sibling below (pdna_bank_prepare_native's own refusal, the
+       * collision refusal further down) calls snd_error() before its own
+       * msg_wait(). Folded into D5's own tri-state edit: a CANCELLED (silent)
+       * return never reaches here, so this stays paired 1:1 with the ONE
+       * dialog left standing. */
+      snd_error();
+      msg_wait(PDNA_XFER_LIFT_REFUSED_TITLE, UI_WARN, PDNA_XFER_LIFT_REFUSED_L1, PDNA_XFER_LIFT_REFUSED_L2);
+    }
+    boxoam_resume();
+    log_line("bank: up box %d slot %d -> bank box %d slot %d: lift %s", s_orig_box, s_orig_slot, box, cur,
+              lift_rc == XG_LIFT_CANCELLED ? "cancelled" : "refused");
+    app_log_flush();
+    return recs;                                          /* still holding */
+  }
   if (!pdna_bank_prepare_native()) {
     snd_error();
     msg_wait(PDNA_XFER_PREP_TITLE, UI_WARN, PDNA_XFER_PREP_L1, PDNA_XFER_PREP_L2);
@@ -1470,29 +1506,31 @@ static uint8_t* __attribute__((noinline)) drop_held_up(BoxSource* src, int box, 
      * (stored_max) repairs a rolled-back counter even when the stale serial lands
      * on a mon that does NOT collide -- computed by the SAME scan that answers
      * `collided`, so the resync decision below always sees a mark from BEFORE
-     * s_held was touched. */
+     * `packed` was touched. BACKLOG #199: this whole block reads/re-packs `packed`
+     * (the just-lifted native cell), never `s_held` (still the display copy, never
+     * native-formatted for a GB carry any more -- see start_carry's own comment). */
     uint32_t stored_max = 0;
     int coll_box = -1, coll_slot = -1;
     bool collided = bank_scan_serial_and_clash(bank_scan_get, NULL, PDNA_BANK_BOXES, G3_BOX_SLOTS,
-                                               box, cur, s_held, &stored_max, &coll_box, &coll_slot);
+                                               box, cur, packed, &stored_max, &coll_box, &coll_slot);
     GbEditMon rmon; BcMeta rmeta;
     bool repacked = false;
-    if (pdna_bank_serial_resync(stored_max) && bc_unpack(s_held, &rmon, &rmeta)) {
+    if (pdna_bank_serial_resync(stored_max) && bc_unpack(packed, &rmon, &rmeta)) {
       uint32_t fresh = pdna_bank_next_serial();
       if (fresh != 0) {
-        (void)bc_pack(&rmon, rmeta.flags, rmeta.origin_game, rmeta.rtc_epoch, fresh, s_held);
+        (void)bc_pack(&rmon, rmeta.flags, rmeta.origin_game, rmeta.rtc_epoch, fresh, packed);
         repacked = true;
       }
     }
     /* re-serialising changes ident32 BY CONSTRUCTION (bc_pack folds bank_serial
      * into the hash) -- the fused pass's `collided` verdict above described the
-     * PRE-repack s_held and no longer applies. Re-probe ONLY when a repack
+     * PRE-repack `packed` and no longer applies. Re-probe ONLY when a repack
      * actually happened (rare: only a rolled-back counter reaches here); the
      * ordinary case (no resync, or resync declined/failed) reuses the first
      * pass's verdict untouched, same one-scan cost as before this fix. */
     if (repacked) {
       collided = bank_ident32_collision(bank_scan_get, NULL, PDNA_BANK_BOXES, G3_BOX_SLOTS,
-                                        box, cur, s_held, &coll_box, &coll_slot);
+                                        box, cur, packed, &coll_box, &coll_slot);
     }
     if (collided) {
       snd_error();
@@ -1513,7 +1551,7 @@ static uint8_t* __attribute__((noinline)) drop_held_up(BoxSource* src, int box, 
      * box's bytes, not `box`'s. Re-page the destination before writing. */
     recs = src->records(box);
   }
-  memcpy(recs + (uint32_t)cur * 80, s_held, 80);
+  memcpy(recs + (uint32_t)cur * 80, packed, 80);
   bool ok = src->commit();                                 /* verified bank box_save */
   if (!ok) {
     memset(recs + (uint32_t)cur * 80, 0, 80);
@@ -1528,7 +1566,11 @@ static uint8_t* __attribute__((noinline)) drop_held_up(BoxSource* src, int box, 
     return recs;                                          /* still holding */
   }
   int gb_box = s_orig_box, gb_slot = s_orig_slot;
-  uint8_t held_copy[80]; memcpy(held_copy, s_held, 80);
+  /* BACKLOG #199: held_copy is the just-committed NATIVE bytes (`packed`), not
+   * `s_held` -- release_up's own re-verify (gb_release_up_hook) compares this
+   * against the origin card's bytes, and only the native cell IS what the Bank now
+   * holds. */
+  uint8_t held_copy[80]; memcpy(held_copy, packed, 80);
   s_holding = false; *done = true;                         /* hand empties BEFORE source cleanup (§11.2 step 6) */
   /* BACKLOG #150 S150-12 decision 6: a vtable with no release_up (the read-only
    * mount's k_gb_xfer_ro) never deletes -- the Bank commit above already landed
@@ -2850,19 +2892,19 @@ static uint8_t* begin_select(BoxSource* src, int box, uint8_t* recs, int cur, bo
   if (themed) boxoam_select_clear();                    /* un-whiten; grab/deny takes over */
   boxoam_hand_pose(BOXOAM_POSE_NORMAL);
   if (anchor == corner) {                               /* no drag: the classic single-mon grab */
-    /* BACKLOG #150 S150-4 step 3: the caller's src_can_lift() gate (the CM_MOVE
-     * dispatch above begin_select's own call) only proves the cell was liftABLE at
-     * grab time -- lift_up() itself can still refuse at pack time (decision 5's
-     * ledger check, or pdna_bank_next_serial() failing on a write). start_carry()'s
-     * own return must be checked here too, or a refused GB lift would silently fall
-     * through into the grab animation with nothing actually held. */
+    /* BACKLOG #150 S150-4 step 3 / BACKLOG #199: the caller's src_can_lift() gate
+     * (the CM_MOVE dispatch above begin_select's own call) is the only refusal a GB
+     * grab can hit any more -- start_carry() no longer calls lift_up() (BACKLOG #199
+     * moved that to drop_held_up, the Bank-UP drop), so its return is always true for
+     * a real cell. The check stays: cheap, and start_carry()'s own contract comment
+     * still asks every call site to check it. */
     if (g_box[anchor].species && start_carry(src, recs, box, anchor)) {
       if (themed) render_full(src, box, anchor, false, false, false);   /* only to undo the theme */
       play_grab_anim(src, box, anchor);                 /* hand stays on screen throughout */
       carry_move(src, box, anchor, anchor);
       draw_footer(src->is_bank, false, true);
       *pfull = false;
-    } else { snd_deny(); *pfull = true; }   /* REVIEW: gb_pick_origin painted a full screen; repaint over it */
+    } else { snd_deny(); *pfull = true; }
     return recs;
   }
   /* BACKLOG #150 S150-5 decision 8(a): a GB-scope carry stays SINGLE -- a chunk carry
@@ -4744,7 +4786,28 @@ int pdna_box(BoxSource* src) {
           recs = src->records(box); box_decode(src, recs, box);          /* belt-and-braces refresh, same as the menu path */
           s_oam_reload = true; need_full = true;
         }
-        else { snd_deny(); }
+        /* BACKLOG #244 (b199-fixes2, corrected design): can_rename() above is false
+         * for THREE different reasons -- no box-name table (Gen 1), an EverDrive
+         * (app_can_edit() false, hard rule 4), or a hack-flagged/bad ROM -- and only
+         * the first of those is "this game has no box names". The review's first
+         * prescription (`src->can_edit && !src->can_edit()`) does not distinguish
+         * them EITHER: for a GB source can_edit is hardwired false unconditionally
+         * (gbsrc_can_edit, pdna_gen12.c) and can_rename is non-NULL, so that branch
+         * always fired for every GB save and swallowed Gen 1's genuine case (proven
+         * live on a Red save: A produced no frame change at all). The predicate that
+         * actually says the dialog's sentence is box_names_supported() (NULL means
+         * yes -- Gen-3 PC/Bank always have a table): explain ONLY when the table
+         * itself is missing; every other refusal (not writable right now) stays the
+         * shipped-silent beep, exactly as main's own box_options_menu path does. */
+        else if (src->box_names_supported && !src->box_names_supported()) {
+          snd_deny();
+          boxoam_suspend();                                              /* full-screen dialog — same bracket as the rename branch above */
+          msg_wait("NO BOX NAMES", UI_WARN, "This game has no box names.", 0);
+          boxoam_resume();
+        }
+        else {
+          snd_deny();                 /* not writable -- stay silent, exactly as main did */
+        }
       }
     }
     else if (k & KEY_LEFT)  cur = grid_lr_step(cur, cap, false);   /* BACKLOG #200 F2 */
@@ -4817,20 +4880,19 @@ int pdna_box(BoxSource* src) {
            * this menu's MOVE row is offered on ANY occupied, non-native, non-party
            * cell regardless of scope (pdna_main.c's app_mon_menu row builder never
            * sees `src`), so a Gen-1/2 cell a Gen-1-one-mon-party/Mail-holding-party
-           * can_lift refuses must be guarded here too, or G-M7 (the lift must be a
-           * vtable call, not the shipped memcpy of the synthesised grid) is violated
-           * through this second route -- the same SILENT-but-honest refusal decision
-           * 8's grab-site guards use (the menu has already closed here, so the grid
-           * is visible underneath, same as the CM_MOVE site's own refusal reads).
+           * can_lift refuses must be guarded here too, or a cell this game's own
+           * rules forbid lifting at all (party floor, a Mail-holding party) would
+           * start a carry anyway -- the same SILENT-but-honest refusal decision 8's
+           * grab-site guards use (the menu has already closed here, so the grid is
+           * visible underneath, same as the CM_MOVE site's own refusal reads).
            * render_full/play_grab_anim/carry_move/draw_footer must only run when the
            * carry actually started -- moved into the else branch so a refusal leaves
            * nothing held and no grab animation plays. */
           /* src_can_lift() is the grab-time gate (parity with the CM_MOVE site above);
-           * start_carry()'s own return is ALSO checked (not just relied on) because
-           * lift_up() can still refuse things src_can_lift() never asks about --
-           * decision 5's ledger check (gb_has_sidecar) and pdna_bank_next_serial()'s
-           * own SD-write failure -- so a can_lift PASS does not guarantee the pack
-           * succeeds. Same defense added to begin_select's single-tap grab. */
+           * start_carry()'s own return is still checked, same defensive shape as
+           * begin_select's single-tap grab -- BACKLOG #199: start_carry() no longer
+           * calls lift_up() (moved to drop_held_up, the Bank-UP drop), so it cannot
+           * fail here any more on a valid cell, but the check costs nothing to keep. */
           if (!src_can_lift(src, box, cur) || !start_carry(src, recs, box, cur)) {
             snd_deny();
           } else {
