@@ -1773,6 +1773,28 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
       boxoam_resume();
       return recs;
     }
+    /* BACKLOG #246 (#104 Phase 1): the mirror pair -- a PLAIN Gen-3 Bank cell
+     * (never native; a native cell reaching this point for a GB destination
+     * would already have returned above, through the bc_is_native-gated DOWN-arm
+     * dispatch block) carried out of the Bank and dropped onto a Game Boy grid.
+     * `have_xfer` (computed just above, `s_xfer_peer && s_xfer_peer->lift_up`) is
+     * exactly what unlocked this pair past xg_drop_denied a few lines up --
+     * re-checked here by name (`!bc_is_native(s_held)`) as the edge predicate this
+     * branch actually means: "a Bank-origin carry that is a plain Gen-3 record,
+     * not the native-cell case the dispatch block above already owns."
+     * BEFORE the `occupied` check below, not after (found live: Red's real GB
+     * BOX1 is 20/20 on this corpus and the drop silently no-op'd, snd_deny()'d
+     * by that check with no dialog at all) -- `occupied` reads the DESTINATION
+     * cell under the cursor, which means something for a slot-addressable Bank
+     * cell (drop_held_up, just below) but NOTHING for a Game Boy list: gbs_insert
+     * always appends at the list's own next free slot (gb_bank_down_g3's own
+     * capacity check, further down, is the real gate), exactly why the native-cell
+     * dispatch block above this whole `if (!same_scope(src))` branch also runs
+     * BEFORE `occupied` for its own EXACT/GB_BRIDGE arms. */
+    if (src->scope == BOXSCOPE_GB && s_orig_scope == BOXSCOPE_BANK &&
+        s_orig_slot >= 0 && s_xfer_peer && s_xfer_peer->lift_up && !bc_is_native(s_held)) {
+      return drop_held_down_g3(src, box, cur, recs, done);
+    }
     if (occupied) { snd_deny(); return recs; }
     /* BACKLOG #150 S150-4 decisions 1/7/9/10 / BACKLOG #170: the UP drop -- a Game
      * Boy mon carried into an empty Bank cell -- extracted into its own noinline
@@ -1783,19 +1805,6 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
     if (src->scope == BOXSCOPE_BANK && s_orig_scope == BOXSCOPE_GB &&
         s_orig_slot >= 0 && s_xfer_peer && s_xfer_peer->lift_up) {
       return drop_held_up(src, box, cur, recs, done);
-    }
-    /* BACKLOG #246 (#104 Phase 1): the mirror pair -- a PLAIN Gen-3 Bank cell
-     * (never native; a native cell reaching this point for a GB destination
-     * would already have returned above, through the bc_is_native-gated DOWN-arm
-     * dispatch block) carried out of the Bank and dropped onto a Game Boy grid.
-     * `have_xfer` (computed just above, `s_xfer_peer && s_xfer_peer->lift_up`) is
-     * exactly what unlocked this pair past xg_drop_denied a few lines up --
-     * re-checked here by name (`!bc_is_native(s_held)`) as the edge predicate this
-     * branch actually means: "a Bank-origin carry that is a plain Gen-3 record,
-     * not the native-cell case the dispatch block above already owns." */
-    if (src->scope == BOXSCOPE_GB && s_orig_scope == BOXSCOPE_BANK &&
-        s_orig_slot >= 0 && s_xfer_peer && s_xfer_peer->lift_up && !bc_is_native(s_held)) {
-      return drop_held_down_g3(src, box, cur, recs, done);
     }
     if (s_held_dup && s_orig_slot < 0) {                     /* a fresh DUPLICATE: placing it is loss-proof
                                                                  in either direction -> no confirm needed
