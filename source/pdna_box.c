@@ -3634,10 +3634,22 @@ static void pcp_draw_panel(void) {
   m3_rect(PANEL_W, 0, PDNA_PCP_LB_OUTER_X + 1, PDNA_PCP_FILL_Y1 + 1, UI_PCP_PANEL_OUTER);
   m3_rect(PDNA_PCP_LB_MID_X0,  0, PDNA_PCP_LB_MID_X1 + 1,  PDNA_PCP_FILL_Y1 + 1, UI_PCP_PANEL_MID);
   m3_rect(PDNA_PCP_LB_HI_X0,   0, PDNA_PCP_LB_HI_X1 + 1,   PDNA_PCP_FILL_Y1 + 1, UI_PCP_PANEL_HILITE);
-  /* right: inner SHADOW(3px) / mid(2px) / outer(1px) */
-  m3_rect(PDNA_PCP_RB_SH_X0,  0, PDNA_PCP_RB_SH_X1 + 1,  PDNA_PCP_FILL_Y1 + 1, UI_PCP_PANEL_SHADOW);
-  m3_rect(PDNA_PCP_RB_MID_X0, 0, PDNA_PCP_RB_MID_X1 + 1, PDNA_PCP_FILL_Y1 + 1, UI_PCP_PANEL_MID);
-  m3_rect(PDNA_PCP_RB_OUTER_X, 0, PDNA_PCP_RB_OUTER_X + 1, PDNA_PCP_FILL_Y1 + 1, UI_PCP_PANEL_OUTER);
+  /* right: inner SHADOW(3px) / mid(2px) / outer(1px). BACKLOG #243: draw_box_banner's
+   * own rect (called from render_full, a moment before this function every frame of
+   * party_strip_overlay's loop) occupies y=13..26 across the WHOLE box width
+   * (WP_X+2==80 .. +158==238) -- including the box-occupancy readout ("28/30") that
+   * sits past this panel's own right edge, close enough to PDNA_PCP_RB_OUTER_X==175
+   * that its leading digit's leftmost ink column lands ON that column. Starting the
+   * right border's rects at PDNA_PCP_BANNER_Y1+1 instead of 0 leaves the banner row
+   * for THIS panel's right edge alone (its own 1px bottom shadow line at y==26 stays
+   * the visual boundary there, same as everywhere else the banner sits on top of the
+   * box BG) -- the left border and the interior fill are UNCHANGED (still full height,
+   * still hide the box NAME under the panel the way "stay alive behind the panel"
+   * describes; only the occupancy text peeking out past this panel's right edge was
+   * ever meant to read intact). */
+  m3_rect(PDNA_PCP_RB_SH_X0,  PDNA_PCP_BANNER_Y1 + 1, PDNA_PCP_RB_SH_X1 + 1,  PDNA_PCP_FILL_Y1 + 1, UI_PCP_PANEL_SHADOW);
+  m3_rect(PDNA_PCP_RB_MID_X0, PDNA_PCP_BANNER_Y1 + 1, PDNA_PCP_RB_MID_X1 + 1, PDNA_PCP_FILL_Y1 + 1, UI_PCP_PANEL_MID);
+  m3_rect(PDNA_PCP_RB_OUTER_X, PDNA_PCP_BANNER_Y1 + 1, PDNA_PCP_RB_OUTER_X + 1, PDNA_PCP_FILL_Y1 + 1, UI_PCP_PANEL_OUTER);
   /* bottom (drawn last, full width): inner SHADOW(3px) / mid(3px) / outer(2px) */
   m3_rect(PDNA_PCP_PANEL_X0, PDNA_PCP_BB_SH_Y0,    PDNA_PCP_PANEL_X1 + 1, PDNA_PCP_BB_SH_Y1 + 1,    UI_PCP_PANEL_SHADOW);
   m3_rect(PDNA_PCP_PANEL_X0, PDNA_PCP_BB_MID_Y0,   PDNA_PCP_PANEL_X1 + 1, PDNA_PCP_BB_MID_Y1 + 1,   UI_PCP_PANEL_MID);

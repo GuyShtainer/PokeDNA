@@ -2037,6 +2037,12 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_PCP_PANEL_X1  175           /* outer bbox right, inclusive              */
 #define PDNA_PCP_PANEL_Y0    0           /* flush to the very top -- no top border   */
 #define PDNA_PCP_PANEL_Y1  159           /* full native height                       */
+#define PDNA_PCP_BANNER_Y1  26           /* BACKLOG #243: last row of the box banner draw_box_banner()
+                                          * paints every frame (draw_banner(WP_X+2, 13, ..., w, 14) ->
+                                          * rows 13..26 inclusive) -- pcp_draw_panel()'s RIGHT border
+                                          * bands stop just past this row so they never clip the box-
+                                          * occupancy readout that sits in that same row, past this
+                                          * panel's own right edge (PDNA_PCP_PANEL_X1). */
 
 #define PDNA_PCP_LB_OUTER_X   82         /* left border, outer 1px band  #556171     */
 #define PDNA_PCP_LB_MID_X0    83         /* left border, mid 2px band    #8CA9B4     */
