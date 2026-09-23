@@ -2064,30 +2064,30 @@ static void test_entry1(void) {
  * DESTINATION property, never a conversion input: two identical calls to
  * xr_entry_for_down (standing in for "the PC arm's call" and "the party arm's call")
  * must produce byte-identical GbscEntry structs and merge to byte-identical results. */
+/* BACKLOG #174/#175 review D6 (2026-09-23): this used to call xr_entry_for_down()/
+ * xr_merge_down() TWICE with IDENTICAL arguments and memcmp the two results against
+ * each other -- true by construction (memcmp(x, x)), proven blind: reverting BACKLOG
+ * #174 D3's src_id80 fix still left this whole suite at 150 passed / 0 failed. The
+ * genuinely load-bearing assertion (the artefact's real field values, and that
+ * xr_merge_down succeeds and produces a real GbEditMon from it) needs only ONE call;
+ * kept that, dropped the self-comparison theatre. */
 static void test_entry_party_identical(void) {
-  printf("\n-- E4b. BACKLOG #174 D10(2): the PARTY arm's entry == the PC arm's --\n");
+  printf("\n-- E4b. BACKLOG #174 D10(2): the PARTY arm's ledger artefact shape --\n");
   if (!g_rt6_capture.have) {
     printf("  SKIP (no Gen-2 record captured by RT-6)\n");
     return;
   }
-  GbscEntry pc_e, party_e;
-  xr_entry_for_down(&pc_e, &g_rt6_capture.written, g_rt6_capture.e.original80,
-                    0, XR_DIR_ABROAD_G3, g_rt6_capture.g3rec80 + 0x08);
+  GbscEntry party_e;
   xr_entry_for_down(&party_e, &g_rt6_capture.written, g_rt6_capture.e.original80,
                     0, XR_DIR_ABROAD_G3, g_rt6_capture.g3rec80 + 0x08);
-  CHECK(memcmp(&pc_e, &party_e, sizeof(GbscEntry)) == 0,
-        "D10(2): the party-flavour entry is byte-identical to the PC-flavour entry "
-        "(xr_entry_for_down has no destination parameter to differ on)");
   CHECK(party_e.kind == XR_KIND_NATIVE_HOME && party_e.state == XR_STATE_PENDING &&
         party_e.direction == XR_DIR_ABROAD_G3 && party_e.claimed == 1,
         "D10(2): the party artefact is kind=NATIVE_HOME/state=PENDING/direction=ABROAD_G3/"
-        "claimed=1 -- the SAME artefact shape the PC arm writes");
-  GbEditMon pc_out, party_out; XrMergeReport pc_rep, party_rep;
-  bool pc_ok = xr_merge_down(&pc_e, g_rt6_capture.g3rec80, &pc_out, &pc_rep);
+        "claimed=1 -- the SAME artefact shape the PC arm writes (xr_entry_for_down has "
+        "no destination parameter to differ on, so one real call covers both arms)");
+  GbEditMon party_out; XrMergeReport party_rep;
   bool party_ok = xr_merge_down(&party_e, g_rt6_capture.g3rec80, &party_out, &party_rep);
-  CHECK(pc_ok && party_ok, "D10(2): xr_merge_down succeeds on both artefacts");
-  CHECK(memcmp(&pc_out, &party_out, sizeof(GbEditMon)) == 0,
-        "D10(2): xr_merge_down produces byte-identical output from both artefacts");
+  CHECK(party_ok, "D10(2): xr_merge_down succeeds on the party artefact");
 }
 
 /* ---- Mutation proofs (decision 1's own three, per the brief's step 1) --------- */
