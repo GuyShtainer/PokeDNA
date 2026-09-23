@@ -16,6 +16,14 @@
 
 enum { PK_HP = 0, PK_ATK, PK_DEF, PK_SPE, PK_SPA, PK_SPD, PK_NSTATS };
 
+/* CalculateMonStats hard-codes this one species' Max HP to 1 regardless of the stat
+ * formula (pokeemerald src/pokemon.c:2845-2848 + 2866-2871; pokefirered
+ * src/pokemon.c:2124/2146; pokeruby src/pokemon_1.c:1724/1746). Both the stat writer
+ * (gen3_edit.c's recompute_party_stats) and the legality grader (gen3_legality2.c)
+ * need it, so it lives here once -- two copies could drift and the tool would then
+ * write records its own checker calls INVALID. */
+#define SPECIES_SHEDINJA   303   /* INTERNAL index; Max HP is always 1 */
+
 /* PkMon.nameFlags bits (BACKLOG #217) -- a field's DECODED string carries a
  * literal '?' standing in for a real glyph (gender sign / e-acute) that could
  * not fit the fixed-width nickname[11]/otName[8] buffer. */

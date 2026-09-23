@@ -32,7 +32,7 @@
 #define G3_JP_NAME_MAX       5   /* JP carts cap nicknames/player names at 5 glyphs */
 #define SPECIES_MEW        151
 #define SPECIES_DEOXYS     410   /* INTERNAL index (national 386)                   */
-#define SPECIES_SHEDINJA   303   /* CalculateMonStats forces its Max HP to 1        */
+/* SPECIES_SHEDINJA now lives in gen3_mon.h -- the stat writer needs the same number. */
 
 /* E4 — Safari Ball <-> Safari Zone. Both games hand out ONLY the Safari Ball inside
  * their Safari Zone (RSE: `GiveMonToPlayer`/ball is unconditionally ITEM_SAFARI_BALL

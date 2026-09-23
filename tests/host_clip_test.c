@@ -70,6 +70,22 @@ int main(int argc, char** argv) {
     CHECK(p100[G3_PARTY_MAIL_OFF] == G3_MAIL_NONE,
           "box->party writes MAIL_NONE (0xFF) at 0x55, not 0x00");
     printf("(1b) party mail byte 0x55 = 0x%02X\n", p100[G3_PARTY_MAIL_OFF]);
+
+    /* (1c) b225 review D1: CalculateMonStats forces Shedinja's Max HP to 1 in all
+     * three families; gen3_legality2.c already grades anything else INVALID, so the
+     * box->party expansion has to agree with it. */
+    {
+      uint8_t shed80[80], shed100[100];
+      gen3_build_mon(SPECIES_SHEDINJA, 20, 0x12345678u, 0x0000BEEFu, "GUY", 3, shed80);
+      ClipMon sc;
+      clip_copy_from(&sc, shed80, false);
+      CHECK(clip_to_record(&sc, true, shed100), "shedinja box->party produced a record");
+      uint16_t shed_max = (uint16_t)(shed100[0x58] | (shed100[0x59] << 8));
+      uint16_t shed_cur = (uint16_t)(shed100[0x56] | (shed100[0x57] << 8));
+      CHECK(shed_max == 1 && shed_cur == 1,
+            "box->party gives Shedinja Max HP 1, not the stat formula");
+      printf("(1c) shedinja party HP %u/%u\n", shed_cur, shed_max);
+    }
   }
 
   /* (2) party -> box == the party record's first 80 bytes */

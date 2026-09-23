@@ -132,7 +132,14 @@ static void recompute_party_stats(EditMon* e) {
   uint8_t level = e->raw[0x54];
   uint8_t nat = (uint8_t)(e->personality % 25);
   int nb = pk_nature_boost(nat), nh = pk_nature_hinder(nat);
-  uint16_t hp = pk_calc_hp(base[PK_HP], ivs[PK_HP], ev[PK_HP], level);
+  /* Shedinja is the one species whose Max HP is NOT the formula: CalculateMonStats
+   * forces it to 1 in all three families (see gen3_mon.h). Its other five stats are
+   * normal. gen3_legality2.c already grades a formula-HP Shedinja INVALID, so without
+   * this case every PC->party move wrote a record the tool's own checker rejects --
+   * and the game trusts stored Max HP until the next level-up. (b225 review D1.) */
+  uint16_t hp = (species == SPECIES_SHEDINJA)
+                  ? 1
+                  : pk_calc_hp(base[PK_HP], ivs[PK_HP], ev[PK_HP], level);
   wr16(e->raw + 0x58, hp);
   wr16(e->raw + 0x56, hp);                      /* current HP = max */
   for (int s = PK_ATK; s <= PK_SPD; s++) {
