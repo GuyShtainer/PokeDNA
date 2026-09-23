@@ -2133,6 +2133,14 @@ static int16_t  g_xd_idx = -1;
 
 bool app_xfer_pending(void) { return g_xd_key != 0 && g_xd_idx >= 0; }
 
+/* BACKLOG #175c review D2: app_xfer_pending() alone answers "is SOME transfer
+ * pending", not "is THIS entry the one that can be promoted" -- app_xfer_promote()
+ * only ever acts on g_xd_key/g_xd_idx (this session's own ledger write), so an
+ * entry the DISK still shows PENDING from an earlier session can never be
+ * promoted, no matter how many times app_commit_pc() runs. Compare the RAM key so
+ * a caller can tell the two apart before offering SAVE NOW? at all. */
+bool app_xfer_pending_is(uint64_t key) { return g_xd_key == key && g_xd_idx >= 0; }
+
 void app_xfer_pending_set(uint64_t key, int idx) {
   g_xd_key = key;
   g_xd_idx = (int16_t)idx;

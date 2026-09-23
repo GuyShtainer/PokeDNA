@@ -2090,7 +2090,11 @@ gb_lift_restore(const GbEditMon* mon, uint8_t out80[80]) {
     if (found < 0) return 0;   /* only Gen-3-home entries (or none) -- not this edge's job */
 
     if (!gbsc_get(g_ed->sidecar, len, found, &e)) return -1;
-    if (e.state != XR_STATE_PENDING || attempt == 1) break;
+    /* BACKLOG #175c review D2: same fix as site 1 (source/pdna_box.c) -- only offer
+     * SAVE NOW? when THIS session's own unpromoted transfer is the entry blocking
+     * us; a mismatch falls through to the honest SAVE FIRST wall below instead of a
+     * real write followed by a false NOT SAVED. */
+    if (e.state != XR_STATE_PENDING || attempt == 1 || !app_xfer_pending_is(key)) break;
     log_line("gen12: lift restore: entry still PENDING -- offering SAVE NOW? instead of the flat wall");
     char l1[64];
     siprintf(l1, "%s %s", PDNA_XFER_SAVENOW_L1, PDNA_XFER_SAVENOW_L2);

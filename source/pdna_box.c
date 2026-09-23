@@ -1244,7 +1244,14 @@ pc_bank_restore_up(const uint8_t g3_rec80[80], uint8_t out_cell80[80]) {
     int count = gbsc_count(buf, len);
     if (count < 0) { log_line("bank: restore lookup: ledger file failed to validate"); return -1; }
     pick = xr_restore_pick_basic(buf, len, count, &e);
-    if (pick != XR_PICK_REFUSE_PENDING || attempt == 1) break;
+    /* BACKLOG #175c review D2: only offer SAVE NOW? when THIS session's own
+     * unpromoted transfer (g_xd_key/g_xd_idx) is the entry blocking us -- a PENDING
+     * entry left by an EARLIER session can never be promoted (app_xfer_promote()
+     * only ever acts on the RAM key), so offering here would run a real verified
+     * app_commit_pc() and then report PDNA_XFER_NOTSAVED_* regardless. Falling
+     * through with pick still XR_PICK_REFUSE_PENDING reaches the honest SAVE FIRST
+     * wall below instead. */
+    if (pick != XR_PICK_REFUSE_PENDING || attempt == 1 || !app_xfer_pending_is(key)) break;
     log_line("bank: restore: entry still PENDING -- offering SAVE NOW? instead of the flat wall");
     boxoam_suspend();
     char l1[64];

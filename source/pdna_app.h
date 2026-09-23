@@ -431,6 +431,12 @@ int  app_bank_flush_deletions(void);  /* delete the queued Bank sources NOW — 
  * promotion (nothing more to track), _undo() on a declined save (best-effort
  * gbsc_remove of the orphaned PENDING entry). */
 bool app_xfer_pending(void);
+/* BACKLOG #175c review D2: true iff a transfer IS pending AND it is THIS key --
+ * app_xfer_promote() only ever promotes g_xd_key/g_xd_idx, so a PENDING entry left
+ * on disk by an EARLIER session (a different key) can never be promoted; the honest
+ * fallback there is the old SAVE FIRST wall, not a SAVE NOW? offer that commits a
+ * real write and then reports failure. */
+bool app_xfer_pending_is(uint64_t key);
 void app_xfer_pending_set(uint64_t key, int idx);
 bool app_xfer_promote(void);
 void app_xfer_pending_drop(void);

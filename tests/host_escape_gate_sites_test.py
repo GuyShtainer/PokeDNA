@@ -241,6 +241,10 @@ APP_XFER_PENDING_CALL_RE  = re.compile(r"app_xfer_pending\(\)")
 APP_XFER_SAVE_NOW_CALL_RE = re.compile(r"app_xfer_save_now\(\)")
 XFER_DOWN_WRITE_CALL_RE   = re.compile(r"xfer_down_write\(")
 APP_COMMIT_PC_CALL_RE     = re.compile(r"app_commit_pc\(")
+# BACKLOG #175c review D2 (check (as)): both restore sites' SAVE NOW? offer must be
+# gated on app_xfer_pending_is(key) (the RAM key comparison), not the bare
+# app_xfer_pending().
+APP_XFER_PENDING_IS_RE    = re.compile(r"\bapp_xfer_pending_is\(")
 # BACKLOG #150 S150-4: both start_carry() sites reachable with a BOXSCOPE_GB source
 # must be preceded by this exact call -- module-level so both the real check (g) and
 # its self-mutation demonstration (MUT G) share one pattern.
@@ -1114,6 +1118,24 @@ def arm_derived_once_above_dispatch(dh_body: list[str]) -> tuple[bool, str]:
     return True, "ok"
 
 
+def restore_savenow_key_facts(body: list[str], label: str) -> tuple[bool, str]:
+    """(as) BACKLOG #175c review D2: the SAVE NOW? offer inside a restore site's
+    2-attempt loop must be gated by app_xfer_pending_is( (the RAM key comparison),
+    on the SAME line as the loop's `attempt == 1` break test -- not the bare
+    app_xfer_pending() a caller cannot use to tell "this session's own unpromoted
+    transfer" apart from "some earlier session left an entry PENDING on disk"
+    (app_xfer_promote() only ever acts on the former; offering on the latter runs a
+    real verified write and then reports a false NOT SAVED). MUT AS drops the
+    `|| !app_xfer_pending_is(key)` clause and must be caught."""
+    break_i = first_match_line(body, 0, len(body), re.compile(r"attempt == 1"))
+    if break_i is None:
+        return False, f"{label}: no `attempt == 1` loop-break line found"
+    if not APP_XFER_PENDING_IS_RE.search(body[break_i]):
+        return False, (f"{label}: the `attempt == 1` break line (line {break_i + 1}) does "
+                        f"not also test app_xfer_pending_is( -- {body[break_i].strip()}")
+    return True, "ok"
+
+
 def main() -> int:
     box_lines = strip_comments(BOX_C.read_text()).splitlines()
     box_text_stripped = "\n".join(box_lines)
@@ -1648,6 +1670,16 @@ def main() -> int:
     ):
         ok, d = invalidate_call_facts(lines, sig_re, label)
         check(ok, d)
+
+    # ---- (as) BACKLOG #175c review D2: both restore sites gate their SAVE NOW? offer
+    # on app_xfer_pending_is(key), not the bare app_xfer_pending(). MUT AS below drops
+    # the clause at each site and must be caught. ----
+    s, e = extract_function(box_lines, r"^pc_bank_restore_up\(")
+    ok, detail = restore_savenow_key_facts(box_lines[s:e], "pc_bank_restore_up")
+    check(ok, detail)
+    s, e = extract_function(gen12_lines, r"^gb_lift_restore\(")
+    ok, detail = restore_savenow_key_facts(gen12_lines[s:e], "gb_lift_restore")
+    check(ok, detail)
 
     # ---- (f) review F3: the self-mutation harness, every run ----
     self_test_mutation_detection(box_lines, gen12_lines, main_lines)
@@ -2509,6 +2541,27 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str],
                           f"should have been caught but was not: {detail}")
         print(f"  MUT AR demonstration -- app_xfer_save_now( line moved after "
               f"xfer_down_write( in gb_bank_down_gen3: {detail}")
+
+    # MUT AS (BACKLOG #175c review D2, check (as)'s own demonstration): drop the
+    # `|| !app_xfer_pending_is(key)` clause from each restore site's `attempt == 1`
+    # break line -- (as) must fail at both sites.
+    for lines, sig, label in (
+        (box_lines, r"^pc_bank_restore_up\(", "pc_bank_restore_up"),
+        (gen12_lines, r"^gb_lift_restore\(", "gb_lift_restore"),
+    ):
+        s, e = extract_function(lines, sig)
+        body_real = lines[s:e]
+        brk_i = first_match_line(body_real, 0, len(body_real), re.compile(r"attempt == 1"))
+        check(brk_i is not None, f"MUT AS: could not locate the `attempt == 1` break "
+                                  f"line in {label}'s real source -- fix this test")
+        if brk_i is not None:
+            mut_as = list(body_real)
+            mut_as[brk_i] = re.sub(r"\s*\|\|\s*!app_xfer_pending_is\(key\)", "", mut_as[brk_i])
+            ok_as, detail = restore_savenow_key_facts(mut_as, f"{label} (MUT AS)")
+            check(not ok_as, f"MUT AS ({label}'s app_xfer_pending_is(key) clause "
+                              f"dropped) should have been caught but was not: {detail}")
+            print(f"  MUT AS demonstration -- {label}'s app_xfer_pending_is(key) "
+                  f"clause dropped from the attempt==1 break line: {detail}")
 
 
 def self_test_al_mutation(main_lines: list[str]) -> None:
