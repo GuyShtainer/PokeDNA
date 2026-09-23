@@ -5611,53 +5611,56 @@ def run_b188_resume_cell(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_sh
 
 
 def run_s150_4_uplift(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
-    """BACKLOG #150 S150-4/5 follow-up (lane s150-4-5b): the UP-lift gesture's grab
-    step end to end on `make delta-gb`'s own combined image (Emerald.sav +
-    Red/Gold/Crystal) -- boot picker -> Gold's box grid -> CM_MOVE grab -> the origin
-    prompt draws -> pick GOLD -> the grab is REFUSED at the serial step, cleanly.
+    """BACKLOG #150 S150-4/5 follow-up (lane s150-4-5b), CORRECTED by b199 review D3
+    (BACKLOG #199 chain D superseded the grab-time story this docstring used to
+    tell): the UP-lift gesture's grab step end to end on `make delta-gb`'s own
+    combined image (Emerald.sav + Red/Gold/Crystal) -- boot picker -> Gold's box
+    grid -> CM_MOVE grab -> the mon is HELD, no screen at all -- the origin
+    prompt / the Bank's price is now paid at the DROP, not the grab (see
+    run_s150_9_site2's own docstring for that half, which this chain does not
+    reach).
 
     BACKLOG #171b (this lane, a review finding on top of #171): start_carry()
-    (pdna_box.c:1077) gates the whole lift_up path on the per-BoxSource field
-    `src->xfer`, never on the file-static `s_xfer_peer` a Bank visit installs.
-    pdna_gen12_source() never assigned it, so every GB grab used to fall straight to
-    start_carry()'s plain-memcpy branch -- BoxXferOps.lift_up (the origin prompt, the
-    pack, pdna_bank_next_serial()) never ran at all, and this chain's OWN first cut
-    (before #171b) showed a "successful" grab with no prompt, which was the bug, not
-    a delta-vehicle quirk. Fixed: `s.xfer = &k_gb_xfer;` in pdna_gen12_source(). Now
-    verified live: the prompt draws, and the grab is correctly refused where the
-    vehicle cannot write bank.meta -- see the facts below.
+    (pdna_box.c:1077, at the time) gated the whole lift_up path on the per-
+    BoxSource field `src->xfer`, never on the file-static `s_xfer_peer` a Bank
+    visit installs. pdna_gen12_source() never assigned it, so every GB grab used
+    to fall straight to start_carry()'s plain-memcpy branch -- BoxXferOps.lift_up
+    (the origin prompt, the pack, pdna_bank_next_serial()) never ran at all.
+    Fixed: `s.xfer = &k_gb_xfer;` in pdna_gen12_source(). THIS WIRING STILL
+    MATTERS -- it is what makes the origin prompt and the restore/merge screen
+    reachable AT ALL -- but BACKLOG #199's own chain D (0f1e41f, after this
+    lane) moved the CALL SITE: start_carry() no longer calls lift_up() for any
+    scope, seeded or not (source/pdna_gen12.c's own comment on gb_lift_pack:
+    "the call moved from grab time... to the one drop that actually needs the
+    Bank's price"). So the grab itself never shows the picker or a refusal any
+    more -- it is now indistinguishable from an ordinary Gen-3 grab, footer
+    "A drop  B cancel", nothing else. #171b's fix is still live and still
+    load-bearing; it just fires one drop later than this docstring used to say.
 
-    THE ORIGIN PROMPT NOW DRAWS -- "WHICH GAME IS THIS?" / GOLD (selected) / SILVER,
-    footer "U/D pick  A ok  B cancel", no box sprites over it (boxoam_suspend() runs
-    before lift_up()). Confirmed stable across 200+ idle frames (a real blocking
-    wait_keys(), not a transient compositing frame).
+    THE GRAB NOW JUST HOLDS -- footer "A drop  B cancel", no full-screen picker,
+    no box sprites disturbed. Re-derived live against this exact vehicle (not
+    assumed): A on slot 0 (CM_MOVE) produces this frame and nothing else.
 
-    THE GRAB IS THEN REFUSED, SILENTLY, AND THE SCREEN REPAINTS CLEANLY --
-    pdna_bank_next_serial() (source/pdna_bank.c) calls meta_save(), which fails (no
-    SD card on this delta vehicle: `if (!meta_save()) { g_bank_serial = prev; return
-    0; }`); gb_lift_up_hook logs "bank.meta write failed" and returns false;
-    start_carry() returns false; begin_select's refusal branch fires `snd_deny();
-    *pfull = true;` -- a BEEP ONLY, no on-screen dialog (matches this codebase's
-    existing silent-refusal convention elsewhere in pdna_box.c), but a FULL repaint
-    over gb_pick_origin's full-screen picker (a review fix on top of this same lane's
-    finding: the bare `else snd_deny();` this branch used to be left that repaint to
-    chance -- the very first cut of this chain caught the resulting stale-bitmap
-    frame live and needed a throwaway L/R box-switch to force a clean one; that
-    workaround is GONE now that the real fix sets *pfull itself). The log line is NOT
-    visible in this mGBA build (log_under_mgba() reports false here -- confirmed by
-    installing a Python log sink and capturing zero "gen12:" lines across the whole
-    run, only unrelated GBA-hardware-register noise) -- quoted from source, not shown
-    on screen. The very next frame is already clean: still CM_MOVE, empty-handed
-    ("MOVE  A grab  hold=set"), the same Bulbasaur still sitting at slot 0, untouched.
+    A SECOND A ON THE SAME CELL IS A NO-OP, NOT A REFUSAL -- drop_held's own
+    guard (source/pdna_box.c ~1586: `if (s_orig_slot >= 0 && same_scope(src) &&
+    s_orig_box == box && cur == s_orig_slot) { s_holding = false; *done = true;
+    return recs; }`) fires before ANY write is attempted -- "dropped back on its
+    own cell". No meta_save(), no serial, no snd_deny(), no repaint trick: the
+    screen returns to plain CM_MOVE, empty-handed ("MOVE  A grab  hold=set"),
+    because there was never anything to refuse. This superseded a REAL prior
+    fact (BACKLOG #171b's original find: picking GOLD on the origin picker used
+    to reach pdna_bank_next_serial(), whose meta_save() fails with no SD card on
+    this delta vehicle, and the grab was refused there, silently) -- but that
+    call no longer happens from this cell at all; it is a different code path
+    now (run_s150_9_site2's Bank-drop chain still exercises the real refusal).
 
-    THIS REFUSAL IS THE HONEST DELTA DEMONSTRATION -- a landed, persisted native
-    cell (and therefore the #171 UP-into-tab-focus fix's own carry-navigation, which
-    needs an actual hold to begin) CANNOT be produced on this vehicle at all now that
-    #171b is fixed: a GB-scope hold can only ever begin through a successful
-    lift_up(), and lift_up() can only ever succeed where bank.meta is writable.
-    Proving the carry reaches the Bank, and VIEW/EDIT on a freshly-landed cell, are
-    BOTH hardware-only from here (XFER-UP1/XFER-UP2/XFER-UP5/XFER-UP6) -- not faked
-    with a pre-planted stand-in cell.
+    WHAT THIS CHAIN NO LONGER PROVES, HONESTLY NAMED: neither "the origin prompt
+    draws" nor "the grab is silently refused" is a fact about THIS gesture (grid
+    A on slot 0) any more -- both moved to the Bank-drop gesture
+    run_s150_9_site2 covers. What this chain DOES still prove: the grab is a
+    real hold (proof below plus BACKLOG #173 F3's tab-focus-while-empty-handed
+    facts, unaffected by chain D since this vehicle's self-drop path never lets
+    the hold survive to be inspected while carrying).
 
     NOT in this chain: the Gen-1 last-party-mon (party-floor) refusal. Guy's own
     Red.sav (the corpus `make delta-gb` fuses) carries a FULL 6/6 party -- lifting any
@@ -5665,7 +5668,8 @@ def run_s150_4_uplift(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots
     this exact corpus without save surgery this lane does not perform. Left for real
     hardware (or a purpose-built 1-mon-party fixture), not faked here."""
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s150_4_")
-    print("== BACKLOG #150 S150-4/5 follow-up: the grab step, post-BACKLOG #171b ==")
+    print("== BACKLOG #150 S150-4/5 follow-up: the grab step (b199 review D3: grab "
+          "now just holds, no picker) ==")
     boot_to_gb_session(s, rom, which="gold")
     s.shot("00_gold_box_grid", "s150-4: Gold's box grid, freshly entered -- cursor on "
            "slot 0 (No.1 BULBASAUR), footer 'A menu  SEL  L/R  B'")
@@ -5675,54 +5679,71 @@ def run_s150_4_uplift(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots
            "cycles NORMAL<->MOVE only, decision 8(b)) -- footer 'MOVE  A grab  hold=set'")
 
     s.tap("A", settle=150)
-    s.shot("02_origin_prompt", "s150-4/BACKLOG #171b: A grabbed slot 0 -- "
-           "start_carry() now genuinely reaches BoxXferOps.lift_up (gb_lift_up_hook), "
-           "whose gb_origin_for_save() opens the full-screen picker -- 'WHICH GAME IS "
-           "THIS?' GOLD (selected) / SILVER, no box sprites over it (boxoam_suspend() "
-           "ran first). BEFORE #171b this screen never appeared at all -- the grab "
-           "'succeeded' silently via the plain-memcpy fallback instead")
+    s.shot("02_grabbed_no_screen", "s150-4 (b199 review D3 repair): A grabbed slot "
+           "0 -- footer 'A drop  B cancel', NO screen at all. BACKLOG #199 chain D "
+           "moved BoxXferOps.lift_up (the origin prompt, the pack, "
+           "pdna_bank_next_serial()) off the grab entirely -- start_carry() is now "
+           "a plain memcpy for every scope, exactly the shape it had BEFORE #171b, "
+           "except the difference now lives at the DROP (run_s150_9_site2), not "
+           "here. This frame used to show the full-screen 'WHICH GAME IS THIS?' "
+           "picker; it no longer does, and that is correct, not a regression.",
+           claim=["A drop  B cancel"])
 
     s.tap("A", settle=200)
-    s.shot("03_refused_clean", "s150-4/BACKLOG #171b: A picks GOLD (already selected) -- "
-           "gb_pick_origin() returns BC_ORIGIN_GOLD; gb_lift_up_hook then calls "
-           "pdna_bank_next_serial(), whose meta_save() fails (no SD card on this "
-           "delta vehicle) -- the grab is refused (a beep only, snd_deny(), no "
-           "dialog) and begin_select's refusal branch now sets *pfull = true, "
-           "forcing a clean repaint over the picker in the SAME frame: still "
-           "CM_MOVE, empty-handed ('MOVE  A grab  hold=set'), No.1 BULBASAUR still "
-           "at slot 0 -- no leftover picker text, no forced L/R workaround needed")
+    s.shot("03_self_drop_noop", "s150-4 (b199 review D3 repair): A on the SAME "
+           "cell again -- drop_held's own same-cell guard (source/pdna_box.c "
+           "~1586: s_orig_box==box && cur==s_orig_slot) fires BEFORE any write is "
+           "attempted -- 'dropped back on its own cell', s_holding=false, *done= "
+           "true. No meta_save(), no serial, no snd_deny(): there was never "
+           "anything to refuse. Back to plain CM_MOVE, empty-handed ('MOVE  A "
+           "grab  hold=set'), No.1 BULBASAUR still at slot 0. This superseded a "
+           "REAL prior fact (BACKLOG #171b's own find: picking GOLD on the origin "
+           "picker used to reach pdna_bank_next_serial(), whose meta_save() fails "
+           "with no SD card here, refusing the grab) -- that refusal is real but "
+           "no longer reachable from THIS gesture; run_s150_9_site2's Bank-drop "
+           "chain is where it lives now.",
+           claim=["MOVE A grab hold=set"])
 
-    # BACKLOG #173 F3 (review-sonnet A5, 2026-09-21): the brief asks this chain to
-    # lift a GB mon then press UP to reach tab focus WHILE HOLDING, to capture the
-    # carry-aware footer (PDNA_TAB_FOCUS_CARRY_FOOTER, "L/R tab  UP bank  DN"). That
-    # literal sequence is attempted below -- but shot 03 just proved (and every prior
-    # run of this exact chain has proved, going back to the S150-4/5 lane) that the
-    # grab is REFUSED before s_holding is ever set true: start_carry() (pdna_box.c
-    # :1078-1086) routes every BOXSCOPE_GB grab through src->xfer->lift_up
-    # (gb_lift_up_hook), which calls pdna_bank_next_serial() -> meta_save() ->
-    # sf_write_verified() -- a real SD write. mGBA never emulates a flashcart/SD card
-    # under ANY shot vehicle this repo builds (delta, delta-artless, artless, or
-    # normal) -- confirmed unconditional, not save-specific, by this exact file's own
-    # decade of "no SD card" citations elsewhere (search dgb_shots.py for "no SD
-    # card"). So a genuine s_holding==true with pdna_box_carry_is_gb()==true CANNOT be
-    # produced by any screenshot chain -- the carry-aware footer frame is HARDWARE-
-    # ONLY, not faked here (CLAUDE.md rule 17). What follows presses UP anyway and
-    # shows exactly what happens on THIS vehicle: still empty-handed (the grab never
-    # held anything), so KEY_UP takes the ORDINARY (non-holding) grid-navigation path
-    # (pdna_box.c:4067 `if (cur < COLS) on_title = true`, then :4026 `s_tab_focus =
-    # src->is_bank ? 2 : 1`) rather than the holding-only tab-focus edge (pdna_box.c
-    # :3906-3909) the brief had in mind. Both UP presses use settle=100, matching
-    # run_b142_tab_focus_arrival's own established idiom just above this function
-    # (its own comment: entering tab focus triggers a full repaint, which the
-    # default SETTLE=12 "simple cursor move" budget is too short to catch cleanly --
-    # confirmed live: a first pass at SETTLE=12 captured three consecutive frames
-    # with an unchanged footer despite the title bar's icons visibly changing
-    # underneath, i.e. the repaint's regions land on different frames; settle=100
-    # closes that gap, exactly as the existing b142/s150-7/s150-8 chains already do
-    # for every tab-focus-entering UP in this file).
+    # BACKLOG #173 F3 (review-sonnet A5, 2026-09-21), RE-DERIVED for b199 review D3
+    # (the ORIGINAL reasoning below is stale -- kept struck through in spirit, not
+    # in fact, so the next reader does not have to re-derive the correction): the
+    # brief asks this chain to lift a GB mon then press UP to reach tab focus WHILE
+    # HOLDING, to capture the carry-aware footer (PDNA_TAB_FOCUS_CARRY_FOOTER,
+    # "L/R tab  UP bank  DN"). That literal sequence is attempted below, and it
+    # STILL cannot be produced by this chain -- but the REASON changed. The old
+    # claim was "the grab is REFUSED before s_holding is ever set true: every
+    # BOXSCOPE_GB grab routes through src->xfer->lift_up, which needs a real SD
+    # write" -- FALSE as of BACKLOG #199 chain D: start_carry() no longer calls
+    # lift_up() at grab time for ANY scope, so shot 02 above holds for real
+    # (s_holding IS true there). What actually clears s_holding before this UP is
+    # shot 03's SELF-DROP NO-OP (drop_held's same-cell guard, source/pdna_box.c
+    # ~1586) -- a second A on the SAME cell was always going to land back on
+    # itself with this chain's own tap sequence, chain D or not; this was never a
+    # refusal, just this chain never dropping the mon ANYWHERE else. A genuine
+    # held-while-UP frame still needs the mon to survive to a DIFFERENT cell or
+    # tab press before UP, which this chain's own tap sequence does not attempt
+    # (run_s150_9_site2's chain proves a real hold survives a 2xUP Bank hop
+    # instead) -- so the carry-aware footer stays HARDWARE-ONLY *for this
+    # specific chain*, not because mGBA cannot emulate the write (CLAUDE.md rule
+    # 17 no longer the operative reason here), but because this chain's own tap
+    # sequence never keeps the mon held past this point. What follows presses UP
+    # anyway and shows exactly what happens on THIS vehicle: still empty-handed
+    # (shot 03 already cleared s_holding), so KEY_UP takes the ORDINARY
+    # (non-holding) grid-navigation path (pdna_box.c:4067 `if (cur < COLS)
+    # on_title = true`, then :4026 `s_tab_focus = src->is_bank ? 2 : 1`) rather
+    # than the holding-only tab-focus edge (pdna_box.c :3906-3909) the brief had
+    # in mind. Both UP presses use settle=100, matching run_b142_tab_focus_
+    # arrival's own established idiom just above this function (its own comment:
+    # entering tab focus triggers a full repaint, which the default SETTLE=12
+    # "simple cursor move" budget is too short to catch cleanly -- confirmed live:
+    # a first pass at SETTLE=12 captured three consecutive frames with an
+    # unchanged footer despite the title bar's icons visibly changing underneath,
+    # i.e. the repaint's regions land on different frames; settle=100 closes that
+    # gap, exactly as the existing b142/s150-7/s150-8 chains already do for every
+    # tab-focus-entering UP in this file).
     s.tap("UP", settle=100)
     s.shot("04_up_after_refusal_title_row", "s150-4/BACKLOG #173 F3: still empty-handed "
-           "after the refused grab (shot 03) -- UP from grid row 0 takes the ORDINARY "
+           "after the self-drop no-op (shot 03) -- UP from grid row 0 takes the ORDINARY "
            "non-holding path (on_title = true), NOT the holding-only tab-focus edge; "
            "footer 'L/R  A name  SEL  menu' (on_title's own line, not tab_focus_footer's) "
            "-- cursor now on the box title row")
@@ -7786,22 +7807,24 @@ def _main_dispatch(argv=None) -> int:
                           "function's own docstring for the full recipe.")
     ap.add_argument("--s150-4", action="store_true",
                      help="BACKLOG #150 S150-4/5 follow-up (lane s150-4-5b, BACKLOG "
-                          "#171/#171b): only run_s150_4_uplift() against --image -- "
-                          "--image MUST be `make delta-gb`'s own combined image "
-                          "(Emerald.sav + Red/Gold/Crystal). The grab step end to "
-                          "end, post-#171b (pdna_gen12_source() now wires "
-                          "`s.xfer = &k_gb_xfer`, so BoxXferOps.lift_up genuinely "
-                          "runs): CM_MOVE grab, the origin prompt DRAWS (GOLD/SILVER), "
-                          "picking GOLD is then REFUSED at the serial step (no SD card "
-                          "on this vehicle -- meta_save() fails) -- a beep only, a "
-                          "clean repaint over the picker (review F1: begin_select's "
-                          "refusal branch now sets *pfull itself), the mon left "
-                          "untouched. A landed, persisted native cell needs "
-                          "real hardware from here (a GB-scope hold can only begin "
-                          "through a successful lift_up) -- see the run function's own "
-                          "docstring for the full explanation, not faked. The Gen-1 "
-                          "last-party-mon refusal is also NOT reachable on this "
-                          "corpus (Red.sav's party is a full 6/6).")
+                          "#171/#171b), CORRECTED by b199 review D3: only "
+                          "run_s150_4_uplift() against --image -- --image MUST be "
+                          "`make delta-gb`'s own combined image (Emerald.sav + "
+                          "Red/Gold/Crystal). The grab step end to end: CM_MOVE grab "
+                          "just HOLDS now (footer 'A drop  B cancel'), no origin "
+                          "picker, no refusal -- BACKLOG #199 chain D moved "
+                          "BoxXferOps.lift_up (the picker, the pack, "
+                          "pdna_bank_next_serial()) off the grab and onto the Bank "
+                          "drop (run_s150_9_site2 covers that half). A second A on "
+                          "the same cell is a same-cell no-op (drop_held's own "
+                          "guard), not a refusal -- there was never anything to "
+                          "refuse from this cell. #171b's `s.xfer = &k_gb_xfer` "
+                          "wiring is still what makes the picker/refusal reachable "
+                          "at all, just one drop later than this help text used to "
+                          "say -- see the run function's own docstring for the full "
+                          "explanation. The Gen-1 last-party-mon refusal is also NOT "
+                          "reachable on this corpus (Red.sav's party is a full "
+                          "6/6).")
     ap.add_argument("--s150-7", action="store_true",
                      help="BACKLOG #150 S150-7: only run_s150_7_down_edge() -- the DOWN "
                           "edge (a native cell back into a same-generation Game Boy "
