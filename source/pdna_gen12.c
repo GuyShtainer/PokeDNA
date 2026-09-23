@@ -4499,10 +4499,18 @@ static bool __attribute__((noinline)) gb_accept_down_hook(int dst_box, const uin
  * departures from that shape, matching this call site's siblings
  * (gb_bank_down_bridge/gb_bank_down_gen3, above -- the SAME caller, drop_held's
  * cross-scope dispatch): (1) `dst_box` arrives as a parameter, no gb_locate(); (2)
- * boxoam_suspend()/resume() brackets the two screens -- the menu-driven PASTE ran
- * under app_mon_menu's own bracket, but a Bank-drop's box-grid OBJ sprites are live
- * on screen the whole time, the same reason gb_bank_down_bridge brackets its own
- * loss/legal screens. The party refusal (S5-B re-verification NEW-1's own reasoning:
+ * BACKLOG #246 review D2 fix: this function opens NO boxoam_suspend()/resume() of
+ * its own around its screens -- its ONE caller, drop_held_down_g3 (pdna_box.c),
+ * already brackets this entire call, and boxoam_suspend/resume are bare
+ * REG_DISPCNT toggles with no depth counter (source/box_oam.c), so a second,
+ * inner pair does not "help" the box-grid OBJ sprites stay off -- it turns them
+ * back ON the moment its own resume() runs, for the REST of this function's own
+ * body, bleeding the carry glove and the carried mon through every screen/dialog
+ * drawn after that point. (An earlier revision of this comment claimed the
+ * opposite -- that this function needed its own bracket because a Bank-drop's OBJ
+ * sprites are live the whole time; true of the SYMPTOM, wrong about the fix: the
+ * caller's own bracket already covers "the whole time", and nesting a second one
+ * is what broke it.) The party refusal (S5-B re-verification NEW-1's own reasoning:
  * gbs_insert() only ever inserts BOX-kind records into storage boxes, never the
  * party -- landing there needs gbs_move()'s species-limit/live-stat/Mail rules this
  * function does not have) is KEPT, first, unchanged.
@@ -4524,6 +4532,48 @@ BankDownResult gb_bank_down_g3(int dst_box, const uint8_t cell80[80]) {
   if (gb_box_is_party(g_ed->s.gen, dst_box)) {
     snd_deny();
     msg_wait(PDNA_SIDECAR_XFER_TITLE, UI_WARN, PDNA_SIDECAR_PARTY_L1, 0);
+    return BANK_DOWN_REFUSED;
+  }
+
+  /* BACKLOG #246 review D6: hoisted from just before gb_paste_write() (inherited
+   * from gb_paste_hook, where the destination box was picked in a MENU after the
+   * loss/legal screens already ran) -- a Bank drop knows dst_box at entry, so
+   * writable/list/capacity are checked HERE, before the loss screen, not after. The
+   * pre-fix order let the user confirm "A = transfer" on the loss screen and only
+   * THEN be told the box was unwritable/unreadable/full -- a confirmed choice that
+   * silently turned out to mean nothing. */
+  GbsStatus wst = gbs_box_writable(&g_ed->s, dst_box);                      /* 5 */
+  if (wst != GBS_OK) {
+    snd_deny();
+    msg_wait(PDNA_GBEDIT_BOXWR_TITLE, UI_WARN, gbs_status_text(wst),
+             wst == GBS_ERR_UNWRITABLE ? PDNA_GBEDIT_UNWRITABLE_HINT : 0);
+    return BANK_DOWN_REFUSED;
+  }
+
+  /* S5-B review fix (BLOCKING #1), kept verbatim: the grid shows 30 cells but a GB
+   * box holds at most gb_list_capacity() (20 for Gen 2) -- cells 20..29 always read
+   * empty on this source, so without this check a drop attempted there would write
+   * the sidecar to the card FIRST and only then have gbs_insert() refuse with
+   * GBS_ERR_FULL inside gb_paste_write(), leaving an orphan sidecar entry behind on
+   * EVERY such attempt rather than only on a genuine race. `g_ed->list` is reloaded
+   * a moment later by gb_paste_write()'s own gbs_insert() -- cheap, and every other
+   * hook in this file re-derives its own gates fresh the same way. */
+  GbsStatus lst = gbs_load_list(&g_ed->s, dst_box, g_ed->list);
+  if (lst != GBS_OK) {
+    snd_deny();
+    msg_wait(PDNA_GBEDIT_BOXRD_TITLE, UI_WARN, gbs_status_text(lst), 0);
+    return BANK_DOWN_REFUSED;
+  }
+  int cnt = gb_list_count(g_ed->s.gen, g_ed->list, dst_box);
+  if (cnt < 0) {
+    snd_deny();
+    msg_wait(PDNA_SIDECAR_XFER_REFUSED_TITLE, UI_WARN, gbs_status_text(GBS_ERR_STRUCT), 0);
+    return BANK_DOWN_REFUSED;
+  }
+  if (cnt >= gb_list_capacity(g_ed->s.gen, dst_box)) {
+    snd_deny();
+    msg_wait(PDNA_SIDECAR_XFER_REFUSED_TITLE, UI_WARN, gbs_status_text(GBS_ERR_FULL),
+             PDNA_GBEDIT_MOVE_FULL_L2);
     return BANK_DOWN_REFUSED;
   }
 
@@ -4580,10 +4630,16 @@ BankDownResult gb_bank_down_g3(int dst_box, const uint8_t cell80[80]) {
    * consumed on landing, docs/104-ROUNDTRIP-DESIGN.md section 2.1's "the cell is
    * consumed" -- the caller, drop_held's new branch, deletes it right after this
    * call returns LANDED). PDNA_XFER_BRIDGE_STAYS's own wording ("The Bank slot is
-   * emptied when it lands.") is generic, not bridge-specific, and applies verbatim. */
-  boxoam_suspend();
+   * emptied when it lands.") is generic, not bridge-specific, and applies verbatim.
+   * BACKLOG #246 review D2: NO boxoam_suspend()/resume() bracket here -- the caller
+   * (drop_held_down_g3, pdna_box.c) already brackets this ENTIRE call, and
+   * boxoam_suspend/resume are bare REG_DISPCNT toggles with no depth counter
+   * (source/box_oam.c) -- an inner resume() here would turn OBJ back ON while the
+   * outer bracket is still logically "suspended", bleeding the carry glove and the
+   * carried mon through every dialog/screen this function draws AFTER this point
+   * (the review's own repro: the first inner resume left OBJ on for the rest of the
+   * call, including later refusal dialogs). */
   bool loss_ok = gb_paste_loss_screen(&loss, LOSS_FOOT_BRIDGE);             /* 4 */
-  boxoam_resume();
   if (!loss_ok) return BANK_DOWN_REFUSED;
 
   /* BACKLOG #104 R1 (docs/104-ROUNDTRIP-DESIGN.md section 3c/4): KEEP AS IS vs
@@ -4615,8 +4671,9 @@ BankDownResult gb_bank_down_g3(int dst_box, const uint8_t cell80[80]) {
      * 5's own choice, deliberately bypassing romgs_ready -- see that function's MEDIUM-1
      * comment: CREATE's resolution is ALWAYS a cold, ~185,000-read full-ROM scan, never
      * cached). CREATE masks that exact scan with s_busy_reading() (see gb_create_hook's
-     * own MEDIUM-2 comment) before it ever calls gb_create_locate_rom. */
-    boxoam_suspend();
+     * own MEDIUM-2 comment) before it ever calls gb_create_locate_rom.
+     * BACKLOG #246 review D2: no boxoam_suspend/resume bracket -- see the loss-screen
+     * comment above (drop_held_down_g3's own outer bracket already covers this). */
     s_busy_reading();
     nfill = gb_paste_fill_moves(gb_get_species_dex(&mon), wlvl, &mon, bad4, fill4);
     /* "packed": did any KEPT (non-bad) slot's move end up at a different index than
@@ -4640,54 +4697,17 @@ BankDownResult gb_bank_down_g3(int dst_box, const uint8_t cell80[80]) {
     if (nleft == 0) {
       snd_deny();
       gb_gen12_nomoves_msg(g_ed->s.gen);
-      boxoam_resume();
       return BANK_DOWN_REFUSED;
     }
-    boxoam_resume();
   }
 
+  /* BACKLOG #246 review D2: no boxoam_suspend/resume bracket here either -- same
+   * reasoning as the two sites above. */
   if (fix || nbad > 0) {
-    boxoam_suspend();
     GbXferChoice ch = gb_paste_legal_screen_ex(gb_get_species_dex(&mon), fix_from,
                                                 fix ? fix_to : 0, from4, bad4, fill4, nbad);
-    boxoam_resume();
     if (ch == GB_XFER_CANCEL) return BANK_DOWN_REFUSED;
     if (ch == GB_XFER_MAKE_LEGAL && fix) gb_set_level(&mon, fix_to);
-  }
-
-  GbsStatus wst = gbs_box_writable(&g_ed->s, dst_box);                      /* 5 */
-  if (wst != GBS_OK) {
-    snd_deny();
-    msg_wait(PDNA_GBEDIT_BOXWR_TITLE, UI_WARN, gbs_status_text(wst),
-             wst == GBS_ERR_UNWRITABLE ? PDNA_GBEDIT_UNWRITABLE_HINT : 0);
-    return BANK_DOWN_REFUSED;
-  }
-
-  /* S5-B review fix (BLOCKING #1), kept verbatim: the grid shows 30 cells but a GB
-   * box holds at most gb_list_capacity() (20 for Gen 2) -- cells 20..29 always read
-   * empty on this source, so without this check a drop attempted there would write
-   * the sidecar to the card FIRST and only then have gbs_insert() refuse with
-   * GBS_ERR_FULL inside gb_paste_write(), leaving an orphan sidecar entry behind on
-   * EVERY such attempt rather than only on a genuine race. `g_ed->list` is reloaded
-   * a moment later by gb_paste_write()'s own gbs_insert() -- cheap, and every other
-   * hook in this file re-derives its own gates fresh the same way. */
-  GbsStatus lst = gbs_load_list(&g_ed->s, dst_box, g_ed->list);
-  if (lst != GBS_OK) {
-    snd_deny();
-    msg_wait(PDNA_GBEDIT_BOXRD_TITLE, UI_WARN, gbs_status_text(lst), 0);
-    return BANK_DOWN_REFUSED;
-  }
-  int cnt = gb_list_count(g_ed->s.gen, g_ed->list, dst_box);
-  if (cnt < 0) {
-    snd_deny();
-    msg_wait(PDNA_SIDECAR_XFER_REFUSED_TITLE, UI_WARN, gbs_status_text(GBS_ERR_STRUCT), 0);
-    return BANK_DOWN_REFUSED;
-  }
-  if (cnt >= gb_list_capacity(g_ed->s.gen, dst_box)) {
-    snd_deny();
-    msg_wait(PDNA_SIDECAR_XFER_REFUSED_TITLE, UI_WARN, gbs_status_text(GBS_ERR_FULL),
-             PDNA_GBEDIT_MOVE_FULL_L2);
-    return BANK_DOWN_REFUSED;
   }
 
   bool wok = gb_paste_write(&mon, dst_box, cell80);                         /* 6-8 */
