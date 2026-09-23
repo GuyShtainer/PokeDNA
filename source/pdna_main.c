@@ -4602,19 +4602,18 @@ static void party_to_box(const uint8_t* party100, uint8_t out80[80]) {
   EditMon e; gen3_edit_load(party100, true, &e); em_set_party_flag(&e, false); gen3_edit_commit(&e, out80);
 }
 
-/* BACKLOG #227: does a 100-byte PARTY record hold Mail? Test the HELD ITEM id (121..132,
- * ORANGE MAIL..RETRO MAIL, verified against source/data_tables.c's s_item table), never the
- * raw 0x55 mail byte -- PokeDNA itself wrote 0x00 there before #225 and 0x00 is a valid
- * mail index (G3_MAIL_NONE is 0xFF), so a 0x55-byte test would refuse every tool-moved
- * Pokemon. Mirrors retail's own gate (MENU_STORE -> ItemIsMail, pokeemerald
- * src/pokemon_storage_system.c:2646-2651) and the check app_party_full_deposit_offer
- * already had inline (#226, kept inline there so tests/host_escape_gate_sites_test.py's
- * existing structural check on its exact literal keeps working) -- same predicate,
- * different call sites, so every "about to box a party mon" site asks the exact same
- * question. */
+/* BACKLOG #227: does a 100-byte PARTY record hold Mail? Test the HELD ITEM id via
+ * g3_item_is_mail() (gen3_clip.h/.c, pure C, host-boundary-tested at 0/120/121/132/133/
+ * 0xFFFF), never the raw 0x55 mail byte -- PokeDNA itself wrote 0x00 there before #225
+ * and 0x00 is a valid mail index (G3_MAIL_NONE is 0xFF), so a 0x55-byte test would refuse
+ * every tool-moved Pokemon. Mirrors retail's own gate (MENU_STORE -> ItemIsMail,
+ * pokeemerald src/pokemon_storage_system.c:2646-2651). #227 review D1: the predicate used
+ * to be inlined here as a bare integer range with no value-level test of its own -- moved
+ * onto the shared helper so the host suite actually exercises the boundaries, not just
+ * that some call to a same-named function exists before a write. */
 static bool g3_party_rec_has_mail(const uint8_t* party100) {
   PkMon pk;
-  return pk_decode_mon(party100, true, &pk) && pk.heldItem >= 121 && pk.heldItem <= 132;
+  return pk_decode_mon(party100, true, &pk) && g3_item_is_mail(pk.heldItem);
 }
 
 /* Place a HELD box mon into the party: ADD it to a free slot (target == party count) or
@@ -4730,18 +4729,18 @@ bool app_party_full_deposit_offer(int* out_box, int* out_slot) {
   uint16_t doff = g_frlg ? 0x0038 : 0x0238;
   uint8_t* pslot = g_sb1 + doff + (uint32_t)chosen * 100;
 
-  /* BACKLOG #226 review D4: retail refuses to store a mail holder (MENU_STORE ->
-   * ItemIsMail -> "PLEASE REMOVE MAIL", pokeemerald src/pokemon_storage_system.c:
-   * 2646-2651) -- do the same check before this offer touches anything. HELD ITEM
-   * ID range 121 (ORANGE MAIL) .. 132 (RETRO MAIL), source/data_tables.c. Do NOT
-   * test the record's raw 0x55 mail byte: PokeDNA itself wrote 0x00 there before
-   * #225 and 0x00 is a valid mail index, not "no mail". (#227 gave the SWAP arm and
-   * MOVE TO BOX the same rule via g3_party_rec_has_mail(), which this predicate
-   * matches field-for-field; kept inline here rather than refactored onto that
-   * helper so tests/host_escape_gate_sites_test.py's existing structural check on
-   * this exact site's literal pk.heldItem test keeps working unmodified.) */
+  /* BACKLOG #226 review D4 / #227 review D1: retail refuses to store a mail holder
+   * (MENU_STORE -> ItemIsMail -> "PLEASE REMOVE MAIL", pokeemerald
+   * src/pokemon_storage_system.c:2646-2651) -- do the same check before this offer
+   * touches anything, via the shared g3_item_is_mail() predicate (gen3_clip.h/.c,
+   * boundary-tested on the host at 0/120/121/132/133/0xFFFF). Do NOT test the record's
+   * raw 0x55 mail byte: PokeDNA itself wrote 0x00 there before #225 and 0x00 is a valid
+   * mail index, not "no mail". Now the same spelling as g3_party_rec_has_mail()'s own
+   * check -- tests/host_escape_gate_sites_test.py's DEPOSIT_MAIL_CHECK_RE was updated to
+   * match (the duplicate spelling was the reason only one of the two ever had its range
+   * boundary-tested; the pin and the code moved together). */
   PkMon pk;
-  if (pk_decode_mon(pslot, true, &pk) && pk.heldItem >= 121 && pk.heldItem <= 132) {
+  if (pk_decode_mon(pslot, true, &pk) && g3_item_is_mail(pk.heldItem)) {
     snd_deny();
     msg_wait(PDNA_XFER_PARTYFULL_MAIL_TITLE, UI_WARN, PDNA_XFER_PARTYFULL_MAIL_L1, PDNA_XFER_PARTYFULL_MAIL_L2);
     return false;

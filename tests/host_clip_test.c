@@ -131,6 +131,22 @@ int main(int argc, char** argv) {
     printf("(5) party_release: compacted to %d, slot1->slot0, tail cleared\n", party_count(w, frlg));
   }
 
+  /* (6) BACKLOG #227 review D1: g3_item_is_mail's own boundary, value-checked here
+   * (not just "some call to it exists before a write", the way the pdna_main.c-side
+   * structural pins can only prove). ORANGE MAIL..RETRO MAIL is 121..132. */
+  {
+    CHECK(!g3_item_is_mail(0), "item 0 (none) is not mail");
+    CHECK(!g3_item_is_mail(120), "item 120 (one below the range) is not mail");
+    CHECK(g3_item_is_mail(121), "item 121 (ORANGE MAIL, the low edge) is mail");
+    CHECK(g3_item_is_mail(132), "item 132 (RETRO MAIL, the high edge) is mail");
+    CHECK(!g3_item_is_mail(133), "item 133 (one above the range) is not mail");
+    CHECK(!g3_item_is_mail(0xFFFF), "item 0xFFFF (out of range) is not mail");
+    printf("(6) g3_item_is_mail boundary: 0/120/121/132/133/0xFFFF -> "
+           "%d/%d/%d/%d/%d/%d\n",
+           g3_item_is_mail(0), g3_item_is_mail(120), g3_item_is_mail(121),
+           g3_item_is_mail(132), g3_item_is_mail(133), g3_item_is_mail(0xFFFF));
+  }
+
   printf("\n%s: %d failure(s)\n", g_fail ? "FAIL" : "OK", g_fail);
   return g_fail ? 1 : 0;
 }

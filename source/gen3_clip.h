@@ -43,6 +43,17 @@ bool clip_to_record(const ClipMon* c, bool dst_is_party, uint8_t out[100]);
  * rejects empty/bad-egg (corrupt) records. */
 bool pk3_validate(const uint8_t rec80[80]);
 
+/* Held-item Mail range (ORANGE MAIL..RETRO MAIL, source/data_tables.c) -- moving a party
+ * mon holding one of these into an 80-byte box record drops the plaintext mail byte with
+ * nothing left pointing at the mail slot it still owns in gSaveBlock1's mail array. Pure
+ * predicate on the HELD ITEM id (never the raw 0x55 mail-index byte -- PokeDNA itself
+ * wrote 0x00 there before #225 and 0x00 is a valid mail index). tests/host_clip_test.c
+ * boundary-checks 0, 120, 121, 132, 133, 0xFFFF so this predicate's own logic -- not just
+ * that some call to it exists -- is what the host suite proves (BACKLOG #227 D1). */
+#define G3_ITEM_MAIL_LO 121u
+#define G3_ITEM_MAIL_HI 132u
+bool g3_item_is_mail(uint16_t item);
+
 /* ---- PC box slots (fixed 14x30 array; an all-zero record == empty) ---- */
 uint8_t* pk_box_slot(uint8_t* pc, int box, int slot);   /* pc + 0x0004 + (box*30+slot)*80 */
 void clip_clear_box_slot(uint8_t* pc, int box, int slot);

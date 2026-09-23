@@ -38,6 +38,10 @@ bool pk3_validate(const uint8_t rec80[80]) {
   return m.species >= 1 && m.species <= 411;
 }
 
+bool g3_item_is_mail(uint16_t item) {
+  return item >= G3_ITEM_MAIL_LO && item <= G3_ITEM_MAIL_HI;
+}
+
 /* ---- box slots ---- */
 uint8_t* pk_box_slot(uint8_t* pc, int box, int slot) {
   return pc + PC_OFF_BOXES + ((uint32_t)(box * G3_IN_BOX + slot)) * BOX_MON;
