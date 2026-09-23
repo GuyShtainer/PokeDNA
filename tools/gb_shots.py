@@ -980,18 +980,23 @@ def run_e4_settings(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     "NO SD HERE" refusal with no live sub-screen at all.
 
     Navigation (session boots straight to the box screen; no info page here, unlike
-    the GB fork's pdna_gen12_show_image): START -> nav menu (two 10-row columns,
-    RIGHT jumps a whole column, sel 0 Party -> RIGHT -> sel 10 Blocks) -> DOWN x7 to
-    NV_SETTINGS (index 17: 10 + 7) -> A -> the Settings list (S_BACKUP..S_CLOSE) ->
-    DOWN x3 to S_ROM -> A -> (PDNA_DELTA only) straight into sprite_settings(), no
-    "Change ROM" popup in the way.
+    the GB fork's pdna_gen12_show_image): START -> nav menu (two 11-row columns,
+    RIGHT jumps a whole column, sel 0 Party -> RIGHT -> sel 11 Events) -> DOWN x8 to
+    NV_SETTINGS (source/pdna_layout.h's PDNA_NAV_ITEMS X-macro, index 19: column 1
+    row 19-11=8 under PDNA_NAV_ROWS=11 -- BACKLOG #251 shots-refresh re-derivation:
+    NV_MAP/NV_GB/NV_XFER were inserted ahead of NV_SETTINGS since this was last
+    calibrated at DOWN x7 (then index 17 under PDNA_NAV_ROWS=10), which now lands on
+    NV_XFER ("Transfers") instead -- reproduced live, the stale count opened the
+    "TRANSFER RECORDS" screen, not Settings) -> A -> the Settings list
+    (S_BACKUP..S_CLOSE) -> DOWN x3 to S_ROM -> A -> (PDNA_DELTA only) straight into
+    sprite_settings(), no "Change ROM" popup in the way.
     """
     s = Session(core_mod, image_mod, rom, out_dir, "e4_")
     print("== E4: Settings > Sprites grid (fused Gen-3 save, no GB fork) ==")
 
     s.tap("START", settle=BIG_SETTLE)      # box screen -> nav menu
-    s.tap("RIGHT")                          # column 0 (Party) -> column 1 (Blocks)
-    s.press_n("DOWN", 7)                    # Blocks -> ... -> Settings (index 17)
+    s.tap("RIGHT")                          # column 0 (Party) -> column 1 (Events)
+    s.press_n("DOWN", 8)                    # Events -> ... -> Settings (index 19, row 8)
     s.tap("A", settle=BIG_SETTLE)           # nav menu -> Settings list
     s.press_n("DOWN", 3)                    # Backups -> Animations -> Yard -> Game ROM
     s.tap("A", settle=BIG_SETTLE)           # S_ROM -> (delta) straight into the grid

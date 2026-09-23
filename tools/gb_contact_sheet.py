@@ -265,8 +265,18 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # (there is no Gen-3 twin to mirror, see gb_hof.h's own header). Shots come from
     # tools/dgb_shots.py's run_b89_hof() (--b89-hof), captions all start
     # "BACKLOG #89:". Appended after "gb-boxname" per this list's own append-only rule.
+    #
+    # BACKLOG #251 shots-refresh fix: run_b89_hof()'s OWN docstring says "(BACKLOG
+    # #202 F1 recaption)" -- BACKLOG #202's later HOF-shell rework retitled several of
+    # this same function's captions from "BACKLOG #89:" to "BACKLOG #202 F1:" (the
+    # card-shell shots: 01_list/02_detail/03_menu) and "BACKLOG #202 A2:" (06_empty,
+    # the shell-never-closes CLEAR ALL round trip) without this table being updated to
+    # match -- 8 of 17 real b89_*.png shots (all still genuine #89 evidence, same
+    # screen family) were silently landing in "misc" as a result. Re-derived from the
+    # manifest's own actual caption set (docs/shots/gb/manifest.json, all "b89_*"
+    # files), not guessed.
     ("gb-hof", "BACKLOG #89 — the Gen-1/2 Hall of Fame screen (list, detail, "
-     "CLEAR ALL, SET COUNT)", ("BACKLOG #89",)),
+     "CLEAR ALL, SET COUNT)", ("BACKLOG #89", "BACKLOG #202 F1", "BACKLOG #202 A2")),
     # gbnames brief: real Gen-1/Gen-2 item names (source/gb_item_names.c, an
     # embedded identifier table) on both real GB-shell screens. Shots come from
     # tools/dgb_shots.py's run_gbnames(), captions all start "gbnames:".
@@ -277,7 +287,13 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # hop past the top tabs). Shots come from tools/dgb_shots.py's run_s2_bank()
     # (--s2-bank), captions all start "#120:". Appended after
     # "gb-item-names" per this list's own append-only rule.
-    ("gb-bank-s2", "#120 S2 — the Bank from a Game Boy session", ("#120",)),
+    #
+    # BACKLOG #251 shots-refresh fix: run_s2_bank()'s own F1 closed-write-surface
+    # shots (the empty-cell-A-does-nothing pair, both the clip-seeded and no-clip
+    # variants) caption themselves "#120 F1:", not "#120:" -- 4 of 14 real
+    # s2bank_*.png shots were landing in "misc" for the same reason as gb-hof's
+    # "#202 F1"/"A2" above. Re-derived from the manifest's own actual caption set.
+    ("gb-bank-s2", "#120 S2 — the Bank from a Game Boy session", ("#120", "#120 F1")),
     # BACKLOG #54: ROM-hack detection (T0) + the read-only posture it gates (T1) --
     # the msg_wait banner (app_register_rom's refusal, view_save's once-per-open
     # notice) and the mon-menu refusal (app_src_readonly_set routing through

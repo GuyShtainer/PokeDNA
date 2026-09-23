@@ -132,7 +132,11 @@ def run_emerald_menu(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
 
     s.tap("START", settle=BIG_SETTLE)
     s.shot("01_menu", "#58: Emerald (Gen 3) START menu -- compare pixel-for-pixel "
-                       "against n1gold_01_menu; same panel, same 19 labels, same order")
+                       "against n1gold_01_menu; same panel, same 21 labels, same order "
+                       "(BACKLOG #251 shots-refresh: was 19 when this caption was "
+                       "written -- source/pdna_layout.h's PDNA_NAV_ITEMS has since "
+                       "grown NV_MAP/NV_GB/NV_XFER, re-counted live off this exact "
+                       "frame, not assumed)")
     return s
 
 
@@ -175,8 +179,16 @@ def main(argv=None) -> int:
     if manifest_path.is_file():
         existing = json.loads(manifest_path.read_text(encoding="utf-8"))
     by_file = {e["file"]: e for e in existing.get("shots", [])}
-    for n, c in ok:
-        by_file[n] = {"file": n, "caption": c}
+    # BACKLOG #251 shots-refresh fix: Session.taken entries are (name, caption,
+    # claim_info) since gb_shots.py's BACKLOG #184 claim mechanism -- this loop still
+    # unpacked 2 values and crashed AFTER every shot() call had already run (the PNGs
+    # were fine; only the manifest write -- and therefore this script's OWN entries
+    # ever reaching gb_contact_sheet.py -- never happened). claim_info is merged in
+    # verbatim, same as gb_shots.py's own main() does.
+    for n, c, claim_info in ok:
+        entry = {"file": n, "caption": c}
+        entry.update(claim_info)
+        by_file[n] = entry
     by_name = {e["name"]: e for e in existing.get("skipped", [])}
     for n, r in skipped:
         by_name[n] = {"name": n, "reason": r}
