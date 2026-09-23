@@ -25,9 +25,12 @@
 #endif
 
 static void s_vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
-static u16 s_wait(u16 mask) {
+/* `move_mask` is the subset of `mask` that should sound like movement. While placing,
+ * L/R do nothing (SIZE leaves the legend), and playing the move sound for a key that
+ * moves nothing is a lie the ear believes -- review D7-R. */
+static u16 s_wait(u16 mask, u16 move_mask) {
   u16 k; do { s_vsync(); k = key_hit(mask); } while (!k);
-  if      (k & (KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R)) snd_move();
+  if      (k & move_mask) snd_move();
   else if (k & KEY_B) snd_back();
   return k;
 }
@@ -444,8 +447,9 @@ void pdna_gbmap_gen1(GbSession* s, bool can_edit) {
       }
     }
 
+    u16 move_mask = KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | (placing ? 0 : (KEY_L | KEY_R));
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R |
-                   KEY_B | KEY_SELECT | KEY_A);
+                   KEY_B | KEY_SELECT | KEY_A, move_mask);
 
     if (!placing) {
       if (k & KEY_B) break;
