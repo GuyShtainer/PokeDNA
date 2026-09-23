@@ -241,10 +241,21 @@ APP_XFER_PENDING_CALL_RE  = re.compile(r"app_xfer_pending\(\)")
 APP_XFER_SAVE_NOW_CALL_RE = re.compile(r"app_xfer_save_now\(\)")
 XFER_DOWN_WRITE_CALL_RE   = re.compile(r"xfer_down_write\(")
 APP_COMMIT_PC_CALL_RE     = re.compile(r"app_commit_pc\(")
-# BACKLOG #175c review D2 (check (as)): both restore sites' SAVE NOW? offer must be
-# gated on app_xfer_pending_is(key) (the RAM key comparison), not the bare
-# app_xfer_pending().
-APP_XFER_PENDING_IS_RE    = re.compile(r"\bapp_xfer_pending_is\(")
+# BACKLOG #226 review D1/D2/D3/D4/D5/D6 (checks as/au/av/aw/ax/ay/az): the party-full
+# deposit offer's own consent fixes, all on party_strip_overlay (source/pdna_box.c) and
+# app_party_full_deposit_offer (source/pdna_main.c, not host-compilable -- MAIN_C's
+# comment-stripped text is greppable the same way box_lines/gen12_lines already are).
+APP_XFER_PENDING_IS_RE     = re.compile(r"\bapp_xfer_pending_is\(")
+APP_BANK_DEFER_FULL_RE     = re.compile(r"\bapp_bank_defer_full\(")
+DEPOSIT_OFFER_CALL_RE      = re.compile(r"\bapp_party_full_deposit_offer\(")
+DEPOSIT_UNDO_CALL_RE       = re.compile(r"\bapp_party_deposit_undo\(")
+BOXOAM_SUSPEND_RE          = re.compile(r"\bboxoam_suspend\(\)")
+BOXOAM_RESUME_RE           = re.compile(r"\bboxoam_resume\(\)")
+DEPOSIT_MAIL_CHECK_RE      = re.compile(r"pk\.heldItem\s*>=\s*121\s*&&\s*pk\.heldItem\s*<=\s*132")
+APP_INJECT_DEFERRED_RE     = re.compile(r"\bapp_inject_to_game_deferred\(")
+RETURN_PARTY_N_LT6_RE      = re.compile(r"return\s+app_party_n\(\)\s*<\s*6\s*;")
+PARTY_RELEASE_CALL_RE      = re.compile(r"\bparty_release\(g_sb1,\s*g_frlg,\s*chosen\)")
+DEP_BOX_REFRESH_RE         = re.compile(r"dep_box\s*>=\s*0")
 # BACKLOG #150 S150-4: both start_carry() sites reachable with a BOXSCOPE_GB source
 # must be preceded by this exact call -- module-level so both the real check (g) and
 # its self-mutation demonstration (MUT G) share one pattern.
@@ -1136,6 +1147,119 @@ def restore_savenow_key_facts(body: list[str], label: str) -> tuple[bool, str]:
     return True, "ok"
 
 
+def deposit_hoist_order_facts(body: list[str]) -> tuple[bool, str]:
+    """(au) BACKLOG #226 review D1(a): app_bank_defer_full( ("TOO MANY MOVES") and the
+    16(g) pending-transfer check must both come BEFORE app_party_full_deposit_offer(
+    within party_strip_overlay -- a refusal that does not need the freed slot must
+    touch nothing, not run after a real deposit. MUT AU moves the deposit-offer call
+    ABOVE both hoisted checks and must be caught."""
+    defer_i = first_match_line(body, 0, len(body), APP_BANK_DEFER_FULL_RE)
+    pending_i = first_match_line(body, 0, len(body), APP_XFER_PENDING_CALL_RE)
+    offer_i = first_match_line(body, 0, len(body), DEPOSIT_OFFER_CALL_RE)
+    if defer_i is None:
+        return False, "party_strip_overlay: no app_bank_defer_full( call found"
+    if pending_i is None:
+        return False, "party_strip_overlay: no app_xfer_pending() call found"
+    if offer_i is None:
+        return False, "party_strip_overlay: no app_party_full_deposit_offer( call found"
+    if not (defer_i < offer_i and pending_i < offer_i):
+        return False, (f"party_strip_overlay: expected app_bank_defer_full( (line "
+                        f"{defer_i + 1}) and app_xfer_pending() (line {pending_i + 1}) "
+                        f"both BEFORE app_party_full_deposit_offer( (line {offer_i + 1})")
+    return True, "ok"
+
+
+def deposit_rollback_facts(body: list[str]) -> tuple[bool, str]:
+    """(av) BACKLOG #226 review D1(b): app_party_deposit_undo( must be called on all
+    3 arms the review named -- the PARTYSWAP-can't-happen backstop, the re-checked
+    "TOO MANY MOVES" backstop, the bank_down_convert_gen3_party() != CONVERTED
+    refusal (the loss/legal screens), and the converted-but-not-placed arm -- 4 call
+    sites in total. MUT AV deletes one and must be caught (< 4)."""
+    n = len([1 for ln in body if DEPOSIT_UNDO_CALL_RE.search(ln)])
+    if n < 4:
+        return False, (f"party_strip_overlay: expected >= 4 app_party_deposit_undo( "
+                        f"call sites (one per post-deposit refusal arm), found {n}")
+    return True, "ok"
+
+
+def deposit_boxoam_bracket_facts(body: list[str]) -> tuple[bool, str]:
+    """(aw) BACKLOG #226 review D3: the app_party_full_deposit_offer( call itself is
+    bracketed by its OWN boxoam_suspend()/boxoam_resume(), like every sibling refusal
+    in this block (the offer's app_confirm/app_pick_party_slot/PC-FULL msg_wait all
+    paint full screens; hardware note: the OAM tick can run during the commit). MUT AW
+    removes the bracket and must be caught."""
+    off_i = first_match_line(body, 0, len(body), DEPOSIT_OFFER_CALL_RE)
+    if off_i is None:
+        return False, "party_strip_overlay: no app_party_full_deposit_offer( call found"
+    before = body[max(0, off_i - 2):off_i]
+    after = body[off_i + 1:off_i + 3]
+    if not any(BOXOAM_SUSPEND_RE.search(ln) for ln in before):
+        return False, (f"party_strip_overlay: app_party_full_deposit_offer( (line "
+                        f"{off_i + 1}) has no boxoam_suspend() in the 2 lines above it")
+    if not any(BOXOAM_RESUME_RE.search(ln) for ln in after):
+        return False, (f"party_strip_overlay: app_party_full_deposit_offer( (line "
+                        f"{off_i + 1}) has no boxoam_resume() in the 2 lines below it")
+    return True, "ok"
+
+
+def deposit_mail_refusal_facts(main_lines: list[str]) -> tuple[bool, str]:
+    """(ax) BACKLOG #226 review D4: app_party_full_deposit_offer's own body (source/
+    pdna_main.c, not host-compilable -- checked textually the same way pdna_box.c/
+    pdna_gen12.c already are) refuses a mail holder (HELD ITEM 121..132) BEFORE
+    app_inject_to_game_deferred( actually deposits it. MUT AX deletes the mail check
+    line and must be caught."""
+    s, e = extract_function(main_lines, r"^bool app_party_full_deposit_offer\(")
+    body = main_lines[s:e]
+    mail_i = first_match_line(body, 0, len(body), DEPOSIT_MAIL_CHECK_RE)
+    inject_i = first_match_line(body, 0, len(body), APP_INJECT_DEFERRED_RE)
+    if mail_i is None:
+        return False, "app_party_full_deposit_offer: no HELD ITEM 121..132 mail check found"
+    if inject_i is None:
+        return False, "app_party_full_deposit_offer: no app_inject_to_game_deferred( call found"
+    if not mail_i < inject_i:
+        return False, (f"app_party_full_deposit_offer: mail check (line {mail_i + 1}) does "
+                        f"not come BEFORE app_inject_to_game_deferred( (line {inject_i + 1})")
+    return True, "ok"
+
+
+def deposit_postcondition_facts(main_lines: list[str]) -> tuple[bool, str]:
+    """(ay) BACKLOG #226 review D5: app_party_full_deposit_offer's own final return
+    is the self-enforcing `return app_party_n() < 6;`, not a bare `return true;` that
+    would let attempt 1's PARTYFULL3 wall lie about being reachable. MUT AY rewrites
+    it back to `return true;` and must be caught."""
+    s, e = extract_function(main_lines, r"^bool app_party_full_deposit_offer\(")
+    body = main_lines[s:e]
+    rel_i = first_match_line(body, 0, len(body), PARTY_RELEASE_CALL_RE)
+    ret_i = first_match_line(body, 0, len(body), RETURN_PARTY_N_LT6_RE)
+    if rel_i is None:
+        return False, "app_party_full_deposit_offer: no party_release(g_sb1, g_frlg, chosen) call found"
+    if ret_i is None:
+        return False, "app_party_full_deposit_offer: no `return app_party_n() < 6;` found"
+    if not rel_i < ret_i:
+        return False, (f"app_party_full_deposit_offer: party_release( (line {rel_i + 1}) "
+                        f"does not come before the postcondition return (line {ret_i + 1})")
+    return True, "ok"
+
+
+def deposit_refresh_facts(body: list[str]) -> tuple[bool, str]:
+    """(az) BACKLOG #226 review D6: party_strip_overlay's post-loop box-grid refresh
+    (recs = src->records(box); box_decode(...); s_oam_reload = true;) fires whenever
+    dep_box >= 0 (a deposit landed and was not rolled back), not only when `placed &&
+    s_orig_scope == BOXSCOPE_PC` -- a deposit only ever happens on a BANK carry, so
+    the old condition alone could never see it and the grid stayed stale until the
+    user changed boxes by hand. MUT AZ drops the `|| dep_box >= 0` clause and must be
+    caught."""
+    recs_idx = [i for i, ln in enumerate(body) if RECS_REASSIGN_RE.search(ln)]
+    if not recs_idx:
+        return False, "party_strip_overlay: no `recs = src->records(box)` refresh line found"
+    for i in recs_idx:
+        if DEP_BOX_REFRESH_RE.search(body[i]) or (i > 0 and DEP_BOX_REFRESH_RE.search(body[i - 1])):
+            return True, "ok"
+    return False, (f"party_strip_overlay: none of the {len(recs_idx)} `recs = "
+                    f"src->records(box)` refresh line(s) (lines "
+                    f"{[i + 1 for i in recs_idx]}) is gated on dep_box >= 0")
+
+
 def main() -> int:
     box_lines = strip_comments(BOX_C.read_text()).splitlines()
     box_text_stripped = "\n".join(box_lines)
@@ -1679,6 +1803,31 @@ def main() -> int:
     check(ok, detail)
     s, e = extract_function(gen12_lines, r"^gb_lift_restore\(")
     ok, detail = restore_savenow_key_facts(gen12_lines[s:e], "gb_lift_restore")
+    check(ok, detail)
+
+    # ---- (au)/(av)/(aw) BACKLOG #226 review D1: the party-full deposit's hoisted
+    # pre-checks, its rollback on every post-deposit refusal, and its own boxoam
+    # bracket. MUT AU/AV/AW below. ----
+    s, e = extract_function(box_lines, r"^static int party_strip_overlay\(")
+    party_body2 = box_lines[s:e]
+    ok, detail = deposit_hoist_order_facts(party_body2)
+    check(ok, detail)
+    ok, detail = deposit_rollback_facts(party_body2)
+    check(ok, detail)
+    ok, detail = deposit_boxoam_bracket_facts(party_body2)
+    check(ok, detail)
+
+    # ---- (ax)/(ay) BACKLOG #226 review D4/D5: app_party_full_deposit_offer's own
+    # mail refusal and self-enforcing postcondition (source/pdna_main.c, checked
+    # textually -- not host-compilable). MUT AX/AY below. ----
+    ok, detail = deposit_mail_refusal_facts(main_lines)
+    check(ok, detail)
+    ok, detail = deposit_postcondition_facts(main_lines)
+    check(ok, detail)
+
+    # ---- (az) BACKLOG #226 review D6: party_strip_overlay's post-loop box-grid
+    # refresh also fires on dep_box >= 0. MUT AZ below. ----
+    ok, detail = deposit_refresh_facts(party_body2)
     check(ok, detail)
 
     # ---- (f) review F3: the self-mutation harness, every run ----
@@ -2562,6 +2711,109 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str],
                               f"dropped) should have been caught but was not: {detail}")
             print(f"  MUT AS demonstration -- {label}'s app_xfer_pending_is(key) "
                   f"clause dropped from the attempt==1 break line: {detail}")
+
+    # MUT AU (BACKLOG #226 review D1(a), check (au)'s own demonstration): move
+    # app_party_full_deposit_offer( ABOVE both hoisted pre-checks -- (au) must fail.
+    s, e = extract_function(box_lines, r"^static int party_strip_overlay\(")
+    party_body_real2 = box_lines[s:e]
+    defer_i = first_match_line(party_body_real2, 0, len(party_body_real2), APP_BANK_DEFER_FULL_RE)
+    offer_i = first_match_line(party_body_real2, 0, len(party_body_real2), DEPOSIT_OFFER_CALL_RE)
+    check(defer_i is not None and offer_i is not None and defer_i < offer_i,
+          "MUT AU: could not locate app_bank_defer_full( before app_party_full_deposit_offer( "
+          "in the real source -- fix this test")
+    if defer_i is not None and offer_i is not None and defer_i < offer_i:
+        mut_au = list(party_body_real2)
+        offer_line = mut_au.pop(offer_i)
+        mut_au.insert(defer_i, offer_line)   # the offer call now sits ABOVE both hoisted checks
+        ok_au, detail = deposit_hoist_order_facts(mut_au)
+        check(not ok_au, f"MUT AU (app_party_full_deposit_offer( moved above the "
+                          f"hoisted checks) should have been caught but was not: {detail}")
+        print(f"  MUT AU demonstration -- app_party_full_deposit_offer( moved above "
+              f"the D1(a) hoisted checks in party_strip_overlay: {detail}")
+
+    # MUT AV (BACKLOG #226 review D1(b), check (av)'s own demonstration): delete one
+    # of the 4 app_party_deposit_undo( call sites -- (av) must fail (< 4 remaining).
+    undo_idx = [i for i, ln in enumerate(party_body_real2) if DEPOSIT_UNDO_CALL_RE.search(ln)]
+    check(len(undo_idx) >= 1, "MUT AV: no app_party_deposit_undo( call found in the "
+                               "real source -- fix this test")
+    if undo_idx:
+        mut_av = [ln for i, ln in enumerate(party_body_real2) if i != undo_idx[0]]
+        ok_av, detail = deposit_rollback_facts(mut_av)
+        check(not ok_av, f"MUT AV (one app_party_deposit_undo( call site deleted) "
+                          f"should have been caught but was not: {detail}")
+        print(f"  MUT AV demonstration -- one app_party_deposit_undo( call site "
+              f"deleted from party_strip_overlay: {detail}")
+
+    # MUT AW (BACKLOG #226 review D3, check (aw)'s own demonstration): delete the
+    # boxoam_suspend()/boxoam_resume() bracket around the deposit-offer call.
+    off_i2 = first_match_line(party_body_real2, 0, len(party_body_real2), DEPOSIT_OFFER_CALL_RE)
+    check(off_i2 is not None and off_i2 > 0,
+          "MUT AW: could not locate app_party_full_deposit_offer( in the real source "
+          "-- fix this test")
+    if off_i2 is not None and off_i2 > 0:
+        mut_aw = [ln for i, ln in enumerate(party_body_real2)
+                  if not (BOXOAM_SUSPEND_RE.search(ln) and i == off_i2 - 1)
+                  and not (BOXOAM_RESUME_RE.search(ln) and i == off_i2 + 1)]
+        ok_aw, detail = deposit_boxoam_bracket_facts(mut_aw)
+        check(not ok_aw, f"MUT AW (the deposit-offer's boxoam bracket deleted) should "
+                          f"have been caught but was not: {detail}")
+        print(f"  MUT AW demonstration -- boxoam_suspend()/boxoam_resume() bracket "
+              f"deleted around app_party_full_deposit_offer(: {detail}")
+
+    # MUT AX (BACKLOG #226 review D4, check (ax)'s own demonstration): delete the
+    # mail-holder refusal line from app_party_full_deposit_offer's real body.
+    s, e = extract_function(main_lines, r"^bool app_party_full_deposit_offer\(")
+    offer_body_real = main_lines[s:e]
+    mail_i = first_match_line(offer_body_real, 0, len(offer_body_real), DEPOSIT_MAIL_CHECK_RE)
+    check(mail_i is not None, "MUT AX: could not locate the mail-holder refusal in "
+                               "app_party_full_deposit_offer's real source -- fix this test")
+    if mail_i is not None:
+        mut_ax_body = [ln for ln in offer_body_real if not DEPOSIT_MAIL_CHECK_RE.search(ln)]
+        mut_ax = list(main_lines[:s]) + mut_ax_body + list(main_lines[e:])
+        ok_ax, detail = deposit_mail_refusal_facts(mut_ax)
+        check(not ok_ax, f"MUT AX (the mail-holder refusal deleted from "
+                          f"app_party_full_deposit_offer) should have been caught but "
+                          f"was not: {detail}")
+        print(f"  MUT AX demonstration -- HELD ITEM 121..132 refusal deleted from "
+              f"app_party_full_deposit_offer: {detail}")
+
+    # MUT AY (BACKLOG #226 review D5, check (ay)'s own demonstration): rewrite the
+    # postcondition back to a bare `return true;` (the pre-fix form).
+    s, e = extract_function(main_lines, r"^bool app_party_full_deposit_offer\(")
+    offer_body_real2 = main_lines[s:e]
+    ret_i = first_match_line(offer_body_real2, 0, len(offer_body_real2), RETURN_PARTY_N_LT6_RE)
+    check(ret_i is not None, "MUT AY: could not locate `return app_party_n() < 6;` in "
+                              "app_party_full_deposit_offer's real source -- fix this test")
+    if ret_i is not None:
+        mut_ay = list(main_lines[:s]) + list(offer_body_real2) + list(main_lines[e:])
+        idx = s + ret_i
+        mut_ay[idx] = RETURN_PARTY_N_LT6_RE.sub("return true;", mut_ay[idx])
+        ok_ay, detail = deposit_postcondition_facts(mut_ay)
+        check(not ok_ay, f"MUT AY (postcondition rewritten to a bare `return true;`) "
+                          f"should have been caught but was not: {detail}")
+        print(f"  MUT AY demonstration -- app_party_full_deposit_offer's postcondition "
+              f"rewritten from `return app_party_n() < 6;` to `return true;`: {detail}")
+
+    # MUT AZ (BACKLOG #226 review D6, check (az)'s own demonstration): drop the
+    # `|| dep_box >= 0` clause from the post-loop refresh condition.
+    recs_idx2 = [i for i, ln in enumerate(party_body_real2) if RECS_REASSIGN_RE.search(ln)]
+    target_i = None
+    for i in recs_idx2:
+        if DEP_BOX_REFRESH_RE.search(party_body_real2[i]) or \
+           (i > 0 and DEP_BOX_REFRESH_RE.search(party_body_real2[i - 1])):
+            target_i = i
+            break
+    check(target_i is not None, "MUT AZ: could not locate the dep_box >= 0 -gated "
+                                 "refresh line in the real source -- fix this test")
+    if target_i is not None:
+        mut_az = list(party_body_real2)
+        gate_line_i = target_i if DEP_BOX_REFRESH_RE.search(mut_az[target_i]) else target_i - 1
+        mut_az[gate_line_i] = re.sub(r"\s*\|\|\s*dep_box >= 0", "", mut_az[gate_line_i])
+        ok_az, detail = deposit_refresh_facts(mut_az)
+        check(not ok_az, f"MUT AZ (`|| dep_box >= 0` dropped from the refresh "
+                          f"condition) should have been caught but was not: {detail}")
+        print(f"  MUT AZ demonstration -- `|| dep_box >= 0` dropped from "
+              f"party_strip_overlay's post-loop refresh condition: {detail}")
 
 
 def self_test_al_mutation(main_lines: list[str]) -> None:

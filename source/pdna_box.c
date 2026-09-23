@@ -3877,6 +3877,19 @@ static int party_strip_overlay(BoxSource* src, int box, int* cur,
          * would mean party_release()+app_inject_to_game_deferred() together did not
          * free a slot, which cannot happen (both are plain C mutations, no card I/O
          * in between) -- treat it as a real refusal, not a retry loop. */
+        /* BACKLOG #226 review D1: dep_box/dep_slot track where app_party_full_
+         * deposit_offer() landed the deposited party member (-1,-1 = "no deposit
+         * outstanding"); app_party_deposit_undo() rolls it back on any refusal that
+         * survives the deposit. D1(a): app_bank_defer_full()'s "TOO MANY MOVES" and
+         * the 16(g) pending-transfer SAVE NOW? confirm -- both normally run INSIDE
+         * bank_down_convert_gen3_party() -- are hoisted to run BEFORE the deposit
+         * (a decline here touches nothing, like every sibling refusal). Only
+         * gb_down_loss_screen/gb_paste_legal_screen, which run inside the convert
+         * and need the freed slot's converted record to know what to ask, can still
+         * refuse AFTER the deposit -- bank_down_convert_gen3_party()'s own dstrec is
+         * always k_empty80 for the party target (bank_down_convert.c), so its
+         * internal occupancy test never fires here. */
+        int dep_box = -1, dep_slot = -1;
         for (int attempt = 0; attempt < 2; attempt++) {
           if (native && n_now >= 6) {
             if (attempt == 1) {
@@ -3886,7 +3899,26 @@ static int party_strip_overlay(BoxSource* src, int box, int* cur,
               placed = false;
               break;
             }
-            if (!app_party_full_deposit_offer()) { placed = false; break; }
+            if (s_orig_scope == BOXSCOPE_BANK && s_orig_slot >= 0 && app_bank_defer_full()) {
+              boxoam_suspend(); snd_deny();
+              msg_wait("TOO MANY MOVES", UI_WARN, "Save first, then continue.", 0);
+              boxoam_resume();
+              placed = false;
+              break;
+            }
+            if (!xg_cell_is_copy(s_held) && app_xfer_pending()) {
+              boxoam_suspend();
+              char l1[64];
+              siprintf(l1, "%s %s", PDNA_XFER_SAVENOW_L1, PDNA_XFER_SAVENOW_L2);
+              bool yes = app_confirm(PDNA_XFER_SAVENOW_TITLE, l1);       /* A = save now, B = no */
+              bool ok  = yes && app_xfer_save_now();  /* the helper shows its own NOTSAVED on failure */
+              boxoam_resume();
+              if (!ok) { snd_deny(); placed = false; break; }
+            }
+            boxoam_suspend();
+            bool deposited = app_party_full_deposit_offer(&dep_box, &dep_slot);  /* review D3: bracket */
+            boxoam_resume();
+            if (!deposited) { placed = false; break; }
             n_now = app_party_n(); sel = n_now;   /* re-target the newly-freed ADD slot */
             continue;
           }
@@ -3894,6 +3926,7 @@ static int party_strip_overlay(BoxSource* src, int box, int* cur,
             boxoam_suspend(); snd_deny();
             msg_wait(PDNA_XFER_PARTYSWAP_TITLE, UI_WARN, PDNA_XFER_PARTYSWAP_L1, PDNA_XFER_PARTYSWAP_L2);
             boxoam_resume();
+            if (dep_box >= 0) { app_party_deposit_undo(dep_box, dep_slot); dep_box = -1; }
             placed = false;
             break;
           }
@@ -3901,10 +3934,12 @@ static int party_strip_overlay(BoxSource* src, int box, int* cur,
             boxoam_suspend(); snd_deny();
             msg_wait("TOO MANY MOVES", UI_WARN, "Save first, then continue.", 0);
             boxoam_resume();
+            if (dep_box >= 0) { app_party_deposit_undo(dep_box, dep_slot); dep_box = -1; }
             placed = false;
             break;
           }
           if (native && bank_down_convert_gen3_party(src, sel, s_held, conv) != BANK_DOWN_CONVERTED) {
+            if (dep_box >= 0) { app_party_deposit_undo(dep_box, dep_slot); dep_box = -1; }
             placed = false;                          /* the arm's own dialog already said why */
             break;
           }
@@ -3930,12 +3965,18 @@ static int party_strip_overlay(BoxSource* src, int box, int* cur,
           if (converted && !placed) {
             log_line("party: place refused AFTER a converted transfer -- undoing the ledger entry");
             app_xfer_pending_undo();
+            if (dep_box >= 0) { app_party_deposit_undo(dep_box, dep_slot); dep_box = -1; }
             snd_error();
             msg_wait(PDNA_XFERREC_TITLE, UI_WARN, PDNA_XFERREC_L1, PDNA_XFERREC_L2);
           }
           break;
         }
-        if (placed && s_orig_scope == BOXSCOPE_PC && s_orig_slot >= 0) {
+        /* BACKLOG #226 review D6: dep_box >= 0 means the offer landed a mon in a PC
+         * box (possibly the one on screen) and was NOT rolled back above -- refresh
+         * regardless of `placed`/`s_orig_scope` so the grid's occupancy count can't
+         * go stale until the user happens to change boxes (box_decode() re-reads the
+         * CURRENTLY VIEWED `box`, a harmless redundant redraw when dep_box != box). */
+        if ((placed && s_orig_scope == BOXSCOPE_PC && s_orig_slot >= 0) || dep_box >= 0) {
           recs = src->records(box); box_decode(src, recs, box); s_oam_reload = true;
         }
         if (placed) {
@@ -4074,21 +4115,28 @@ out:
  * (hardware-testing-protocol; the emulator cannot prove a stack-overflow refusal is
  * correct on real silicon, only that the code path the refusal message takes is
  * reachable and renders). */
-#define PDNA_PARTY_STRIP_NEED 7264   /* re-derived 2026-09-23 (BACKLOG #150 S150-8c/#174 review D2):
+#define PDNA_PARTY_STRIP_NEED 7296   /* re-derived 2026-09-23 (BACKLOG #226 review D1/D2 fix pass):
                                       * the #1 chain (via gb_daycare_hook, see the comment block
-                                      * above) grew 7,152 -> 7,200 B artless (party_strip_overlay's
-                                      * own frame 936 -> 984 B, +48 B, inside the 64 B stop-licence,
-                                      * from this lane's native-cell party-landing branch), +64 B
-                                      * ISR = 7,264. The WORSE (artless) of the two variants still
-                                      * sets the constant (normal is 7,192 + 64 = 7,256). RE-MEASURED
-                                      * on this exact tree:
+                                      * above) grew again, 7,200 -> 7,232 B artless (party_strip_
+                                      * overlay's own frame 984 -> 1,016 B, +32 B, inside the 64 B
+                                      * stop-licence) -- drop_held (inlined into party_strip_overlay)
+                                      * picked up the D1 rollback's dep_box/dep_slot locals and the
+                                      * D1(a) hoisted 16(g) SAVE NOW? confirm's own char l1[64], which
+                                      * the compiler partially folded onto an existing scratch slot
+                                      * (+32 B measured, not +72 B the raw declarations would suggest).
+                                      * +64 B ISR = 7,296. The WORSE (artless) of the two variants
+                                      * still sets the constant (normal is 7,224 + 64 = 7,288).
+                                      * RE-MEASURED on this exact tree:
                                       *   python3 tools/stack_budget.py --elf PokeDNA-artless.elf \
                                       *       --builddir "$(pwd)/build-artless" \
                                       *       --root pcp_open_party_strip_inner --top 6
                                       *   python3 tools/stack_budget.py --elf PokeDNA.elf \
                                       *       --builddir "$(pwd)/build" \
                                       *       --root pcp_open_party_strip_inner --top 1
-                                      * confirms 7,264 artless / 7,256 normal.
+                                      * confirms 7,296 artless / 7,288 normal.
+                                      *
+                                      * Previously 7,264 artless / 7,256 normal (BACKLOG #150 S150-8c/
+                                      * #174 review D2, native-cell party landing).
                                       *
                                       * Older history (was 7,224 = 7,160 + 64 ISR, BACKLOG #150
                                       * S150-3 review D-Q4; was 7,216 = 7,152 + 64 ISR, S150-2

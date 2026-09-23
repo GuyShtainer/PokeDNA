@@ -1296,6 +1296,13 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XFER_PARTYFULL_L1    "Send a party Pokemon to a"
 #define PDNA_XFER_PARTYFULL_L2    "box first?"
 
+/* BACKLOG #226 review D4: app_party_full_deposit_offer()'s own mail refusal -- retail's
+ * MENU_STORE -> ItemIsMail -> "PLEASE REMOVE MAIL" (pokeemerald
+ * src/pokemon_storage_system.c:2646-2651), applied to the offer's picker the same way. */
+#define PDNA_XFER_PARTYFULL_MAIL_TITLE "CAN'T DEPOSIT"
+#define PDNA_XFER_PARTYFULL_MAIL_L1    "PLEASE REMOVE MAIL"
+#define PDNA_XFER_PARTYFULL_MAIL_L2    "from that Pokemon first."
+
 /* D-Q3: per-generation confirm-footer wording -- Gen 2's box->party landing also
  * resets HP/status to full-healthy (gb_session.c's own box->party conversion), Gen 1's
  * does not (D4: HP/status are the record's own bytes, preserved). */

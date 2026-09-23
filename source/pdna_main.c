@@ -4688,12 +4688,14 @@ static int app_pick_party_slot(void) {
 /* BACKLOG #226: Gen-3 twin of gb_accept_down_party_deposit() -- the party is full;
  * offer to send one member to a box first rather than refusing the drop outright
  * (SS11.20 item 10(c)'s own reasoning, applied to the OTHER generation so the two
- * behave identically). Confirm decline, B on the picker, or no free PC box all
- * refuse the WHOLE offer with nothing touched -- app_inject_to_game_deferred()
- * only mutates g_pc AFTER it has already found a free slot, and party_release()
- * only runs after that succeeds, so a failure here never gets past "nothing
- * moved yet". Returns true iff a party slot is now free. */
-bool app_party_full_deposit_offer(void) {
+ * behave identically). Confirm decline, B on the picker, a mail holder (review D4),
+ * or no free PC box all refuse the WHOLE offer with nothing touched --
+ * app_inject_to_game_deferred() only mutates g_pc AFTER it has already found a free
+ * slot, and party_release() only runs after that succeeds, so a failure here never
+ * gets past "nothing moved yet". Returns true iff a party slot is now free (review
+ * D5). *out_box/*out_slot (either may be NULL) receive the deposit's landing spot
+ * so a caller can roll it back with app_party_deposit_undo() (review D1). */
+bool app_party_full_deposit_offer(int* out_box, int* out_slot) {
   char l1[64];
   siprintf(l1, "%s %s", PDNA_XFER_PARTYFULL_L1, PDNA_XFER_PARTYFULL_L2);
   if (!app_confirm(PDNA_XFER_PARTYFULL_TITLE, l1)) return false;
@@ -4703,15 +4705,52 @@ bool app_party_full_deposit_offer(void) {
 
   uint16_t doff = g_frlg ? 0x0038 : 0x0238;
   uint8_t* pslot = g_sb1 + doff + (uint32_t)chosen * 100;
+
+  /* BACKLOG #226 review D4: retail refuses to store a mail holder (MENU_STORE ->
+   * ItemIsMail -> "PLEASE REMOVE MAIL", pokeemerald src/pokemon_storage_system.c:
+   * 2646-2651) -- do the same check before this offer touches anything. HELD ITEM
+   * ID range 121 (ORANGE MAIL) .. 132 (RETRO MAIL), source/data_tables.c. Do NOT
+   * test the record's raw 0x55 mail byte: PokeDNA itself wrote 0x00 there before
+   * #225 and 0x00 is a valid mail index, not "no mail". */
+  PkMon pk;
+  if (pk_decode_mon(pslot, true, &pk) && pk.heldItem >= 121 && pk.heldItem <= 132) {
+    snd_deny();
+    msg_wait(PDNA_XFER_PARTYFULL_MAIL_TITLE, UI_WARN, PDNA_XFER_PARTYFULL_MAIL_L1, PDNA_XFER_PARTYFULL_MAIL_L2);
+    return false;
+  }
+
   uint8_t box80[80];
   party_to_box(pslot, box80);
 
-  int out_box = -1, out_slot = -1;
-  if (!app_inject_to_game_deferred(box80, &out_box, &out_slot)) return false;  /* shows its own PC FULL */
+  int ob = -1, os = -1;
+  if (!app_inject_to_game_deferred(box80, &ob, &os)) return false;  /* shows its own PC FULL */
 
   party_release(g_sb1, g_frlg, chosen);
   app_stage_sb1();
-  return true;
+  if (out_box) *out_box = ob;
+  if (out_slot) *out_slot = os;
+  /* review D5: self-enforcing postcondition -- party_release + app_inject_to_game_
+   * deferred are both plain C mutations (no card I/O between them), but a bare
+   * `return true` let attempt 1's PARTYFULL3 wall lie about being reachable. Make
+   * the offer's own contract check itself instead of trusting the arithmetic. */
+  return app_party_n() < 6;
+}
+
+/* BACKLOG #226 review D1(b): see the contract comment in pdna_app.h. */
+void app_party_deposit_undo(int box, int slot) {
+  if (box < 0 || slot < 0) return;
+  uint8_t* cell = pk_box_slot(g_pc, box, slot);
+  uint8_t p100[100];
+  box_to_party(cell, p100);
+  memset(cell, 0, 80);
+  if (!party_append(g_sb1, g_frlg, p100)) {
+    /* Unreachable by construction (see the header contract), but never trust a
+     * postcondition silently -- golden rule 7, check every return value. */
+    log_line("party: deposit undo: party_append failed -- should be unreachable");
+    return;
+  }
+  app_mark_pc_dirty();
+  app_stage_sb1();
 }
 
 /* ---- shared party engine, exposed to pdna_box.c's party_strip_overlay (pdna_app.h) --

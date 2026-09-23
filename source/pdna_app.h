@@ -394,9 +394,23 @@ bool app_party_place_held(const uint8_t* held80, int target, int orig_box, int o
                           bool orig_bank, bool can_swap, const uint8_t* src_id80);
 /* BACKLOG #226: the Gen-3 twin of gb_accept_down_party_deposit() (source/pdna_gen12.c) --
  * offers "Send a party Pokemon to a box first?", a picker, then deposits the chosen
- * member into the first free PC box. Confirm decline, B on the picker, or no free box
- * all refuse with nothing touched. Returns true iff a party slot is now free. */
-bool app_party_full_deposit_offer(void);
+ * member into the first free PC box. Confirm decline, B on the picker, a mail holder
+ * (review D4, HELD ITEM 121-132), or no free box all refuse with nothing touched.
+ * Returns true iff a party slot is now free (review D5: the self-enforcing
+ * app_party_n() < 6, not a bare `true`). On success, *out_box and *out_slot (either
+ * may be NULL) receive exactly where app_inject_to_game_deferred() placed the deposited
+ * mon -- app_party_deposit_undo()'s own arguments, for a caller whose OWN later
+ * refusal must roll the deposit back (review D1). */
+bool app_party_full_deposit_offer(int* out_box, int* out_slot);
+/* BACKLOG #226 review D1(b): RAM-only rollback for app_party_full_deposit_offer()'s
+ * deposit -- box_to_party the cell back into the party (append; retail appends too,
+ * this does not restore the original party ORDER -- say so at the call site), clear
+ * the box cell, stage both dirty for the pending save-on-exit. Cannot itself fail:
+ * party_append only fails at party_count() >= 6, which the deposit that makes this
+ * call necessary just disproved with nothing landing in the interim (no card I/O
+ * between the two calls). A no-op when box/slot are the offer's own "declined"
+ * sentinel (-1, -1). */
+void app_party_deposit_undo(int box, int slot);
 /* Open the full action menu (VIEW/EDIT, ITEM, LEGALITY, COPY, DUPLICATE, TO DAY-CARE,
  * EXPORT .pk, TAKE/GIVE ITEM, RELEASE, CANCEL) on party slot `slot`. If the user picks
  * MOVE TO BOX (only offered when allow_move_to_box), *tobox_hit is set true and
