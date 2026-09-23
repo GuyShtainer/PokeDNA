@@ -5663,13 +5663,16 @@ static void gb_nav_from_start(Gb12Mount* m, GbSession* ro) {
     if (gs) pdna_gbflags(gs, ed && app_can_edit());
     else    (void)gb_info_page(m);
   } else if (nv == NV_MAP && kind == SE_KIND_GEN1) {
-    /* M1 (BACKLOG #91): read-only current-map view, same "needs a live
-     * GbSession to read the ROM's own tile bank through" gate every other
-     * real-art Gen-1/2 screen on this menu uses (Trainer/Bag/Pack above) --
-     * g_ed->s is the same resident session those already read/write
-     * through gb12_arena_tail(). The plain FIL-streaming mount (no g_ed)
-     * falls back to the read-only info page, same as Trainer/Bag/Pack. */
-    if (gs) pdna_gbmap_gen1(gs);
+    /* M1+M3 (BACKLOG #91): current-map view + in-map teleport, same "needs a
+     * live GbSession to read the ROM's own tile bank through" gate every
+     * other real-art Gen-1/2 screen on this menu uses (Trainer/Bag/Pack
+     * above) -- g_ed->s is the same resident session those already
+     * read/write through gb12_arena_tail(). The plain FIL-streaming mount
+     * (no g_ed) falls back to the read-only info page, same as
+     * Trainer/Bag/Pack. `ed && app_can_edit()` gates M3 (teleport writes)
+     * exactly like every sibling write screen above; M1's own read-only
+     * view stays available either way. */
+    if (gs) pdna_gbmap_gen1(gs, ed && app_can_edit());
     else    (void)gb_info_page(m);
   } else if (nv == NV_BATTLEREC) {
     /* BACKLOG #89: the "Records" row hosts the Hall of Fame on a Game Boy save --

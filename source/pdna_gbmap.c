@@ -9,11 +9,12 @@
 
 #include "pdna_gbmap.h"
 #include "rom_gbmap.h"
+#include "gb1_warp.h"         /* gb1warp_check/gb1warp_coord (BACKLOG #91 M3) */
 #include "gb_fields.h"
 #include "pdna_gbscreen.h"
-#include "pdna_gen12.h"       /* gb12_arena_tail/gb12_arena_tail_release      */
+#include "pdna_gen12.h"       /* gb12_arena_tail/gb12_arena_tail_release, gb_persist */
 #include "pdna_origin_art.h"  /* PDNA_GEN1                                    */
-#include "pdna_app.h"         /* msg_wait, app_gb_rom_path, app_current_save_*/
+#include "pdna_app.h"         /* msg_wait, app_gb_rom_path, app_current_save_*, app_confirm */
 #include "gb_art_source.h"    /* GB_ROM_PATH_MAX, gb_rom_path_beside          */
 #include "pdna_layout.h"      /* PDNA_GBSCR_ACT_*/
 #include "ui.h"
@@ -132,7 +133,38 @@ static void gbmap_paint(GbScreen* gs, GbMapState* st, uint8_t* maptiles) {
 
 static int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
-void pdna_gbmap_gen1(GbSession* s) {
+/* ------------------------------------------------------------- M3 write -- */
+/* Both bytes plus their derived XBLOCK/YBLOCK (Red/Yellow only, gb_fields.c's
+ * own per-game columns -- 0 on Gen 2, gbs_write_field is skipped for a field
+ * whose gbf_off() is 0). Writes ALL FOUR fields this screen ever touches, not
+ * just the two the design doc's table names, so a caller never has to wonder
+ * which byte of the destination it owns (Pre-report self-audit item 3):
+ * wXCoord, wYCoord, wXBlockCoord, wYBlockCoord. Every write goes through
+ * gbs_write_field, the SAME structural+reparse+verify gate every other GB
+ * field edit in this codebase uses (gb_clock.c/gb_trainer.c/gb_bag.c/...) --
+ * this module adds no new write mechanism, only new callers of the existing
+ * one. Returns the first non-OK status if any write refuses (fail-fast,
+ * matching gbs_write_field's own per-call verify contract); the caller must
+ * treat any non-GBS_OK as "nothing landed on the card yet" and NOT call
+ * gb_persist(). */
+static GbsStatus gbmap_write_pos(GbSession* s, uint8_t xcoord, uint8_t ycoord) {
+  uint32_t xoff = gbf_off(GBF_G_RED, GBF_POS_X);
+  uint32_t yoff = gbf_off(GBF_G_RED, GBF_POS_Y);
+  if (!xoff || !yoff) return GBS_ERR_ARG;
+  GbsStatus st = gbs_write_field(s, xoff, &xcoord, 1);
+  if (st != GBS_OK) return st;
+  st = gbs_write_field(s, yoff, &ycoord, 1);
+  if (st != GBS_OK) return st;
+
+  uint8_t zero = 0;
+  uint32_t xbk = gbf_off(GBF_G_RED, GBF_POS_XBLOCK);
+  uint32_t ybk = gbf_off(GBF_G_RED, GBF_POS_YBLOCK);
+  if (xbk) { st = gbs_write_field(s, xbk, &zero, 1); if (st != GBS_OK) return st; }
+  if (ybk) { st = gbs_write_field(s, ybk, &zero, 1); if (st != GBS_OK) return st; }
+  return gbs_finish(s);
+}
+
+void pdna_gbmap_gen1(GbSession* s, bool can_edit) {
   if (!s || s->gen != GB_GEN1) return;
 
   /* Player's current map + position -- same GBF_MAP_ID/POS_X/POS_Y offsets
@@ -246,8 +278,16 @@ void pdna_gbmap_gen1(GbSession* s) {
   st.vbx = clampi(block_px - VBW / 2, 0, st.hdr.width  > VBW ? st.hdr.width  - VBW : 0);
   st.vby = clampi(block_py - VBH / 2, 0, st.hdr.height > VBH ? st.hdr.height - VBH : 0);
 
-  static const char* const kLegend[4] = { 0, PDNA_GBSCR_ACT_BACK, PDNA_GBSCR_ACT_SIZE, 0 };
-  gbscr_set_legend(&gs, kLegend);
+  /* M3 state -- all local to this one screen visit (rule 6: smallest scope).
+   * `want_place` freezes the cursor's target and breaks the render loop the
+   * moment A confirms it; the actual dialog/write happens after gbscr_close()
+   * below (see the KEY_A handler's own comment for why). */
+  bool placing = false, want_place = false;
+  int cur_bx = block_px, cur_by = block_py;
+
+  const char* const kLegendPlain[4] = { can_edit ? PDNA_GBSCR_ACT_PLACE : 0,
+                                         PDNA_GBSCR_ACT_BACK, PDNA_GBSCR_ACT_SIZE, 0 };
+  gbscr_set_legend(&gs, kLegendPlain);
 
   gbmap_load_viewport_blocks(&st);
   gbmap_paint(&gs, &st, maptiles);
@@ -263,21 +303,96 @@ void pdna_gbmap_gen1(GbSession* s) {
       gbscr_cell_rect(rel_bx * 4, rel_by * 4, 4, 4, &px0, &py0, &px1, &py1);
       m3_frame(px0, py0, px1, py1, RGB15(31, 4, 4));
     }
+    /* Teleport cursor: a SECOND frame, a different colour, only while placing
+     * and only when it is inside the loaded viewport (it always is -- the
+     * cursor-move code below re-pans the viewport to keep it in view -- this
+     * guard is belt-and-braces, not load-bearing). */
+    if (placing) {
+      int crel_bx = cur_bx - st.vbx, crel_by = cur_by - st.vby;
+      if (crel_bx >= 0 && crel_bx < VBW && crel_by >= 0 && crel_by < VBH) {
+        int cx0, cy0, cx1, cy1;
+        gbscr_cell_rect(crel_bx * 4, crel_by * 4, 4, 4, &cx0, &cy0, &cx1, &cy1);
+        m3_frame(cx0, cy0, cx1, cy1, RGB15(4, 31, 4));
+      }
+    }
 
-    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R | KEY_B | KEY_SELECT);
-    if (k & KEY_B) break;
-    /* L/R are the shell's own SIZE toggle here (same as SELECT), matching
-     * the shell-wide "L/R or SELECT" scale convention every other GB screen
-     * uses -- the D-pad ALONE pans this screen, not a separate mode (m1
-     * review D6; pdna_map.c's L/R zoom-out/in is Guy's own Gen-3 mapping and
-     * stays exactly as-is, this is Gen-1's own screen). */
-    if (k & (KEY_SELECT | KEY_L | KEY_R)) { gbscr_toggle_scale(&gs); continue; }
+    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R |
+                   KEY_B | KEY_SELECT | KEY_A);
+
+    if (!placing) {
+      if (k & KEY_B) break;
+      /* L/R are the shell's own SIZE toggle here (same as SELECT), matching
+       * the shell-wide "L/R or SELECT" scale convention every other GB screen
+       * uses -- the D-pad ALONE pans this screen, not a separate mode (m1
+       * review D6; pdna_map.c's L/R zoom-out/in is Guy's own Gen-3 mapping
+       * and stays exactly as-is, this is Gen-1's own screen). */
+      if (k & (KEY_SELECT | KEY_L | KEY_R)) { gbscr_toggle_scale(&gs); continue; }
+
+      if (k & KEY_A) {
+        if (!can_edit) { snd_deny(); continue; }
+        placing = true;
+        cur_bx = block_px; cur_by = block_py;   /* start the cursor on the player */
+        continue;
+      }
+
+      int nvbx = st.vbx, nvby = st.vby;
+      if (k & KEY_LEFT)  nvbx--;
+      if (k & KEY_RIGHT) nvbx++;
+      if (k & KEY_UP)    nvby--;
+      if (k & KEY_DOWN)  nvby++;
+      nvbx = clampi(nvbx, 0, st.hdr.width  > VBW ? st.hdr.width  - VBW : 0);
+      nvby = clampi(nvby, 0, st.hdr.height > VBH ? st.hdr.height - VBH : 0);
+      if (nvbx != st.vbx || nvby != st.vby) {
+        st.vbx = nvbx; st.vby = nvby;
+        gbmap_load_viewport_blocks(&st);
+        gbmap_paint(&gs, &st, maptiles);
+        gbscr_mark_all_dirty(&gs);
+      }
+      continue;
+    }
+
+    /* ---- placing == true: D-pad moves the CURSOR, not the viewport -- the
+     * viewport pans only when the cursor would otherwise leave it, so the
+     * whole map stays reachable one block at a time (M2's stitching is not
+     * needed for this -- the cursor never leaves the map this header's own
+     * width/height already bounds it to). B cancels back to the plain view.
+     * A FREEZES the target and BREAKS OUT of this whole screen -- the actual
+     * confirm dialog + write happen AFTER gbscr_close() below, never while
+     * this shell is open: pdna_gbtrainer.c's own card-commit flow (its outer
+     * pdna_gbtrainer(), after its inner gbscr loop returns) is the estab-
+     * lished precedent for this codebase's GB-screen shell -- app_confirm()/
+     * msg_wait() draw through the shared Mode-3 UI (ui_clear/ui_panel), which
+     * collides with whatever VRAM state the shell's own Mode-0 GB-tile render
+     * left behind if drawn while the shell is still "open" (exactly the class
+     * of bug pdna_map.c's own do_drop() header comment documents for the
+     * Gen-3 screen's mgfx_exit()/mgfx_enter() dance -- this shell's fix is to
+     * simply not re-enter it, not to reproduce that dance). */
+    if (k & KEY_B) { placing = false; snd_back(); continue; }
+    if (k & KEY_A) {
+      if (cur_bx == block_px && cur_by == block_py) {   /* no-op: already there */
+        snd_back();
+        placing = false;
+        continue;
+      }
+      want_place = true;
+      break;
+    }
+
+    int ncx = cur_bx, ncy = cur_by;
+    if (k & KEY_LEFT)  ncx--;
+    if (k & KEY_RIGHT) ncx++;
+    if (k & KEY_UP)    ncy--;
+    if (k & KEY_DOWN)  ncy++;
+    ncx = clampi(ncx, 0, st.hdr.width  - 1);
+    ncy = clampi(ncy, 0, st.hdr.height - 1);
+    if (ncx == cur_bx && ncy == cur_by) continue;
+    cur_bx = ncx; cur_by = ncy;
 
     int nvbx = st.vbx, nvby = st.vby;
-    if (k & KEY_LEFT)  nvbx--;
-    if (k & KEY_RIGHT) nvbx++;
-    if (k & KEY_UP)    nvby--;
-    if (k & KEY_DOWN)  nvby++;
+    if (cur_bx < st.vbx)          nvbx = cur_bx;
+    else if (cur_bx >= st.vbx + VBW) nvbx = cur_bx - VBW + 1;
+    if (cur_by < st.vby)          nvby = cur_by;
+    else if (cur_by >= st.vby + VBH) nvby = cur_by - VBH + 1;
     nvbx = clampi(nvbx, 0, st.hdr.width  > VBW ? st.hdr.width  - VBW : 0);
     nvby = clampi(nvby, 0, st.hdr.height > VBH ? st.hdr.height - VBH : 0);
     if (nvbx != st.vbx || nvby != st.vby) {
@@ -293,4 +408,41 @@ void pdna_gbmap_gen1(GbSession* s) {
 #endif
   gbscr_close(&gs);
   gb12_arena_tail_release();
+
+  /* ---- M3: the confirm dialog + write + persist, entirely AFTER the shell
+   * is closed (see the KEY_A comment above for why). `map_id` never changes
+   * (this screen's own scope is the CURRENT map only, gb1_warp.h's own top
+   * comment) -- the bounds check is still run for real, not skipped, because
+   * a hand-carried (map_id,bx,by) triple must never be trusted just because
+   * it usually agrees with itself (design §7: "never trust a hand-typed
+   * pair"). */
+  if (want_place) {
+    Gb1MapBounds b = { map_id, st.hdr.width, st.hdr.height, true };
+    Gb1Warp w = { map_id, (int16_t)cur_bx, (int16_t)cur_by };
+    if (gb1warp_check(&b, &w) != GB1W_OK) {
+      snd_deny();
+      s_msg("CANNOT PLACE", UI_WARN, PDNA_GBMAP_CANNOT_L1, PDNA_GBMAP_CANNOT_L2);
+      return;
+    }
+    char l1[32];
+    siprintf(l1, "Block (%d,%d)", cur_bx, cur_by);
+    if (!app_confirm(PDNA_GBMAP_CONFIRM_TITLE, l1)) return;
+
+    uint8_t old_x = px, old_y = py;   /* the ONE snapshot this visit ever takes */
+    uint8_t nx = gb1warp_coord((int16_t)cur_bx), ny = gb1warp_coord((int16_t)cur_by);
+    GbsStatus wst = gbmap_write_pos(s, nx, ny);
+    if (wst != GBS_OK) {
+      s_msg("WRITE REFUSED", UI_WARN, gbs_status_text(wst), "Nothing was changed.");
+      return;
+    }
+    if (!gb_persist("gb1 teleport")) return;   /* gb_persist already messaged + rolled back */
+
+    s_msg("PLACED", UI_OK, PDNA_GBMAP_PLACED_L1, PDNA_GBMAP_PLACED_L2);
+    if (app_confirm(PDNA_GBMAP_UNDO_TITLE, 0)) {
+      GbsStatus ust = gbmap_write_pos(s, old_x, old_y);
+      if (ust != GBS_OK) { s_msg("REFUSED", UI_WARN, gbs_status_text(ust), 0); return; }
+      if (!gb_persist("gb1 teleport undo")) return;
+      s_msg("RESTORED", UI_OK, PDNA_GBMAP_RESTORED_L1, PDNA_GBMAP_RESTORED_L2);
+    }
+  }
 }
