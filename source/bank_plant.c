@@ -12,6 +12,8 @@
 #include "bank_cell.h"
 #include "data_tables.h"   /* pk_species_name */
 #include "gen12_convert.h" /* gen12_convert -- decision 12(c)'s own conversion */
+#include "gen3_edit.h"     /* gen3_build_mon, gen3_edit_load/commit, em_set_item --
+                            * BACKLOG #260's item/Secret-ID fixtures */
 #include "gb_sidecar.h"    /* GbscEntry, gbsc_init/gbsc_add */
 #include "xfer_rec.h"      /* xr_key_g3, xr_entry_for_down, XR_KIND_NATIVE_HOME/XR_STATE_CLAIMED */
 /* decision 12's own note: this static belongs in EWRAM, not IWRAM (32 KiB,
@@ -301,6 +303,21 @@ static bool plant_g3_pair_bulbasaur(uint8_t g3_rec80[80], uint8_t cell80[80],
   return gen12_convert(&view, &tgt, g3_rec80, &notes) == GB12_OK;
 }
 
+/* BACKLOG #260 (item-shots lane): the held item cases B/C/F3 need -- POTION, Gen-3
+ * item id 13 (data_tables.c s_item[13]). Verified end to end before use, not guessed:
+ * item_map_g2g3.c's kG3ToG2[13] == 18, and gb_item_names.c's kGen2ItemName[18] ==
+ * "POTION" -- item_g2_to_g1()'s 1:1 name search then resolves that same "POTION"
+ * string to a real, non-key Gen-1 item id, so this id reaches Gen 1 through the whole
+ * item_g3_to_g2()/item_g2_to_g1() chain g3gb_item_ladder() (source/gen3_to_gb.c)
+ * walks -- one of the 48 the brief names, picked by checking the table, not by name
+ * alone. */
+#define PLANT_G3_ITEM_POTION 13u
+
+/* Case F3's own otId: SID 0xBEEF (nonzero upper 16 bits) / TID 0x3039 (12345,
+ * matching plant_g3_pair_bulbasaur's own ot_id so the two box-2 fixtures share a
+ * trainer). */
+#define PLANT_G3_SID_OTID 0xBEEF3039u
+
 /* BACKLOG #246 (#104 Phase 1): a PLAIN Gen-3 Bank cell -- NEVER native/GBC1 -- for a
  * DEDICATED box (box 2, wired below in pdna_bank.c's box_load()), not box 0/1: every
  * existing shot chain's pixel captions and counts ("BANK 1  7/30" etc.) key off
@@ -311,14 +328,56 @@ static bool plant_g3_pair_bulbasaur(uint8_t g3_rec80[80], uint8_t cell80[80],
  * new construction path -- this is the first Bank-visited PDNA_DELTA scenario that
  * has ever needed a PLAIN Gen-3 cell (every earlier plant in this file is a native
  * "GBC1" cell). serial 300 -- distinct from every other planted serial in this file
- * (box0 1..7, box_full 6..30, S150-9 xfer {1,2,26,27}, site2 200). */
+ * (box0 1..7, box_full 6..30, S150-9 xfer {1,2,26,27}, site2 200).
+ *
+ * BACKLOG #260 (item-shots lane) adds the held item -- em_set_item() patches the
+ * Growth substruct's item field AFTER gen12_convert() already ran and re-encodes with
+ * gen3_edit_commit(), so nothing about the up-conversion pipeline itself changes and
+ * the record's SID stays 0 (gen12_convert.h's own documented "PokeDNA GB import"
+ * fingerprint is untouched) -- this is deliberately NOT the Secret-ID fixture (see
+ * plant_g3_sid_item() below, slot 1, for that). Neither of the two existing shot
+ * chains against this box (tools/b246_g3_to_gb_shot.py, tools/b246_g3_to_gb_vsd.py)
+ * asserts on the record's item byte or the box's slot count -- checked before this
+ * edit, not assumed -- so no VARIANT function was needed; this fixture's own bytes
+ * were free to move. */
 #define PLANT_G3_SERIAL 300u
+
+/* BACKLOG #260 (item-shots lane), case F3's own fixture: a genuine Gen-3-NATIVE
+ * record (gen3_build_mon() directly, NOT plant_g3_pair_bulbasaur's gen12_convert
+ * up-conversion pipeline -- that pipeline's own documented fingerprint,
+ * gen12_convert.h's "SID == 0", would make a nonzero Secret ID here a lie about
+ * where the record came from). otId's upper 16 bits (the SID half) are forced
+ * nonzero so gen3_to_gb.c's own `loss->secret_id = (m->otId >> 16) != 0` reads true
+ * and loss_item_text()'s "+ Secret ID" suffix has something real to report; the item
+ * (same PLANT_G3_ITEM_POTION as slot 0) makes item_outcome land on BAG/PC too, so the
+ * frame reads the FULL composite suffix ("POTION -> bag + Secret ID"), not just the
+ * bare Secret-ID row. Slot 1 of box 2 -- bank_plant_g3_box's own header comment
+ * documents both slots now; slots 2..29 stay the caller's memset-zero empty cells,
+ * unchanged. */
+static bool plant_g3_sid_item(uint8_t g3_rec80[80]) {
+  if (!g3_rec80) return false;
+  gen3_build_mon(PLANT_G3_DEX_BULBASAUR, 14, 0x2468ACE0u, PLANT_G3_SID_OTID,
+                "PLANT2", 3, g3_rec80);
+  EditMon e;
+  gen3_edit_load(g3_rec80, false, &e);
+  em_set_item(&e, PLANT_G3_ITEM_POTION);
+  gen3_edit_commit(&e, g3_rec80);
+  return true;
+}
+
 void bank_plant_g3_box(uint8_t* recs) {
   if (!recs) return;
   uint8_t g3_rec80[80], cell80[80];   /* cell80 discarded -- this slot's whole point
                                        * is the plain Gen-3 RECORD, not a native cell */
   if (!plant_g3_pair_bulbasaur(g3_rec80, cell80, 14, PLANT_G3_SERIAL)) { memset(recs, 0, 80); return; }
+  EditMon e;                             /* BACKLOG #260: cases B/C's held item */
+  gen3_edit_load(g3_rec80, false, &e);
+  em_set_item(&e, PLANT_G3_ITEM_POTION);
+  gen3_edit_commit(&e, g3_rec80);
   memcpy(recs, g3_rec80, 80);   /* slot 0 of this box */
+
+  uint8_t sid_rec80[80];
+  if (plant_g3_sid_item(sid_rec80)) memcpy(recs + 80, sid_rec80, 80);  /* slot 1: case F3 */
 }
 
 /* Seeds slot `idx`'s ledger file, one entry, keyed by xr_key_g3(g3_rec80). `state`
