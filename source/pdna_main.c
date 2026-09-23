@@ -4553,7 +4553,7 @@ static void party_to_box(const uint8_t* party100, uint8_t out80[80]) {
  * ADD defer-deletes the bank source, SWAP is disallowed). Party + PC edits are staged and
  * committed together at the one exit save. Returns true iff the mon was placed. */
 static bool party_place_held(const uint8_t* held80, int target, int orig_box, int orig_slot,
-                             bool orig_bank, bool can_swap) {
+                             bool orig_bank, bool can_swap, const uint8_t* src_id80) {
   int n = party_count(g_sb1, g_frlg);
   if (target < 0 || target > n) { snd_deny(); return false; }   /* past the add slot */
   if (orig_bank) can_swap = false;                              /* a bank origin can't receive a swap */
@@ -4566,9 +4566,15 @@ static bool party_place_held(const uint8_t* held80, int target, int orig_box, in
     if (!party_append(g_sb1, g_frlg, p100)) { snd_deny(); return false; }
     /* Remove the origin (it left for the party). A BANK origin is a bank slot, NOT a g_pc
      * slot — clearing g_pc there would zero an untouched PC mon (or write OOB for the top
-     * bank boxes); defer-delete the bank source instead (flushed AFTER the party commits). */
+     * bank boxes); defer-delete the bank source instead (flushed AFTER the party commits).
+     * BACKLOG #174 (S150-8c) D3: src_id80 is the ORIGIN record's own 8 identity bytes, for
+     * this defer-delete only. NULL (every pre-#174 caller) => held80. Non-NULL exactly when
+     * a native Bank cell was CONVERTED on the way in: the flush's memcmp (pdna_bank.c's
+     * BANK_DEL_IDLEN compare) must see the NATIVE bytes, never the converted Gen-3 record --
+     * handing it the converted bytes makes no Bank slot ever match, so the original is never
+     * deleted and a silent duplicate results (the Gen-3 copy AND the still-live native cell). */
     if (orig_slot >= 0) {
-      if (orig_bank) app_bank_defer_delete(orig_box, orig_slot, held80);
+      if (orig_bank) app_bank_defer_delete(orig_box, orig_slot, src_id80 ? src_id80 : held80);
       else           memset(pk_box_slot(g_pc, orig_box, orig_slot), 0, 80);
     }
     app_mark_pc_dirty(); app_register_dex_deferred(p100, true); app_stage_sb1();
@@ -4597,8 +4603,8 @@ int app_party_read(PkMon out[6]) {
 }
 
 bool app_party_place_held(const uint8_t* held80, int target, int orig_box, int orig_slot,
-                          bool orig_bank, bool can_swap) {
-  return party_place_held(held80, target, orig_box, orig_slot, orig_bank, can_swap);
+                          bool orig_bank, bool can_swap, const uint8_t* src_id80) {
+  return party_place_held(held80, target, orig_box, orig_slot, orig_bank, can_swap, src_id80);
 }
 
 bool app_party_mon_menu(int slot, int footer_y, bool allow_move_to_box,
@@ -5130,7 +5136,7 @@ static int app_party_overlay_inner(const uint8_t* held, int orig_box, int orig_s
     else if (k & KEY_A) {
       if (sel == BACK) { snd_back(); perf_rep_flush(PERF_REP_BOB); return 0; }
       if (held) {                                    /* PLACE: drop/swap into the party */
-        if (party_place_held(held, sel, orig_box, orig_slot, orig_bank, can_swap)) return 1;
+        if (party_place_held(held, sel, orig_box, orig_slot, orig_bank, can_swap, NULL)) return 1;
       } else if (sel < n) {                          /* BROWSE: the full action menu on this mon
                                                        * (app_party_mon_menu — shared with
                                                        * party_strip_overlay, pdna_box.c) */

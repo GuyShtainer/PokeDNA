@@ -1066,6 +1066,71 @@ static bool xfer_identity_ok(const uint8_t* buf, uint32_t len, int idx) {
          e.state == XR_STATE_PENDING;
 }
 
+/* BACKLOG #174 (S150-8c) D10(1): bank_down_convert_gen3_party() (source/bank_down_convert.c)
+ * forwards straight into gb_bank_down_gen3(), which calls bdc_convert_gen3_core() with no
+ * destination-shaped input at all -- dst_box/dst_cell/dstrec only steer the log line and the
+ * caller's own occupancy test (the party wrapper skips that test entirely via a zeroed
+ * k_empty80). The conversion itself (this core function) cannot see WHICH destination is
+ * calling it. Prove it directly: two identical calls to bdc_convert_gen3_core, standing in
+ * for "the box-flavoured call" and "the party-flavoured call", must produce byte-identical
+ * records -- the party-ness is a destination property, never a conversion input. */
+static void test_party_flavour_identity(void) {
+  uint8_t cell[80];
+  build_gen2_cell(cell, 25, 0x1D, 33, 900);
+  uint8_t out_box[80]; GbEditMon w_box; Gb12Notes n_box; uint16_t item_box;
+  Gb12Result r_box = bdc_convert_gen3_core(cell, 3, out_box, &w_box, &n_box, &item_box);
+  uint8_t out_party[80]; GbEditMon w_party; Gb12Notes n_party; uint16_t item_party;
+  Gb12Result r_party = bdc_convert_gen3_core(cell, 3, out_party, &w_party, &n_party, &item_party);
+  CHECK(r_box == GB12_OK && r_party == GB12_OK, "D10(1): both flavours' conversion succeeds");
+  CHECK(memcmp(out_box, out_party, 80) == 0,
+        "D10(1): the box-flavoured and party-flavoured records are byte-identical");
+  CHECK(memcmp(&w_box, &w_party, sizeof(GbEditMon)) == 0,
+        "D10(1): the box-flavoured and party-flavoured `written` structs are byte-identical");
+  CHECK(item_box == item_party, "D10(1): the g3item is identical (%u vs %u)", item_box, item_party);
+}
+
+/* BACKLOG #174 (S150-8c) D10(3): the pure-C identity test for D3's defer-delete fix -- the
+ * defect this design exists to prevent. pdna_bank.c is not host-compilable (it includes
+ * tonc.h/ff.h) and is OUT of this lane's scope to modify (docs/briefs/s150-8cd-design.md
+ * S5's file table), so there is no shim to drive pdna_bank_defer_delete itself through; per
+ * the design's own fallback (D10(3)'s last sentence) this asserts the memcmp SEMANTICS
+ * directly against the constant the flush actually uses: `#define BANK_DEL_IDLEN 8`
+ * (source/pdna_bank.c:471), compared with `memcmp(p, recs80[i], BANK_DEL_IDLEN) != 0 ->
+ * continue` (source/pdna_bank.c:531) and `memcmp(p, g_bank_del[i].id, BANK_DEL_IDLEN) != 0
+ * -> continue` (source/pdna_bank.c:561). Neither BANK_DEL_IDLEN nor the comparison is
+ * exported by pdna_bank.h, so the value below is a literal cross-referenced to those exact
+ * lines, not an independent header include -- state this in the report. */
+#define TEST_BANK_DEL_IDLEN 8
+
+static void test_defer_delete_identity(void) {
+  /* A Bank slot's own 80-byte native record (arbitrary, deterministic bytes). */
+  uint8_t bank_slot[80];
+  for (int i = 0; i < 80; i++) bank_slot[i] = (uint8_t)(0x40 + i);
+
+  /* D3's CORRECT usage: party_place_held's src_id80 = the ORIGIN record's own native first
+   * 8 bytes (party_place_held's `held80` before conversion, or the fixed src_id80 argument
+   * app_party_place_held now carries). This is bit-for-bit the bank slot's own first 8
+   * bytes -- the flush's memcmp must match. */
+  uint8_t id_native[TEST_BANK_DEL_IDLEN];
+  memcpy(id_native, bank_slot, TEST_BANK_DEL_IDLEN);
+  CHECK(memcmp(bank_slot, id_native, TEST_BANK_DEL_IDLEN) == 0,
+        "D10(3): the NATIVE identity bytes match the Bank slot's own first 8 bytes "
+        "(the flush WOULD delete it -- correct)");
+
+  /* D3's DEFECT (mutation M1 -- what a `NULL` or converted `src_id80` would produce): the
+   * CONVERTED Gen-3 record's first 8 bytes (PID + OT id, an entirely different byte
+   * sequence -- the conversion runs a fresh PID search, D7's own loss row says so). A
+   * converted record's bytes cannot be expected to equal the native cell's own bytes; the
+   * defect this test pins is that the flush's memcmp on those bytes silently never matches
+   * -> the Bank slot is never deleted -> a duplicate mon (BANK NOT FULLY UPDATED). */
+  uint8_t id_converted[TEST_BANK_DEL_IDLEN] = { 0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11, 0x22, 0x33 };
+  CHECK(memcmp(bank_slot, id_converted, TEST_BANK_DEL_IDLEN) != 0,
+        "D10(3): a CONVERTED record's identity bytes do NOT match the Bank slot's own "
+        "bytes (the flush would silently skip it -- the duplicate-mon defect D3 exists to "
+        "prevent, if app_bank_defer_delete were ever handed the converted bytes instead of "
+        "the native ones)");
+}
+
 static void test_pending_identity_check(void) {
   uint8_t cell[80];
   build_gen2_cell(cell, 25, 0, 33, 700);
@@ -1127,6 +1192,8 @@ int main(void) {
   test_bridge_corpus_no_move_refusal(); printf("  (F2) BACKLOG #212 corpus, no whole-record move refusal ok\n");
   test_caller_zero_move_refusal_two_bad(); printf("  (F2b) review D1, 2-bad-move zero-move refusal ok\n");
   test_pending_identity_check(); printf("  (G) pending identity check   ok\n");
+  test_party_flavour_identity(); printf("  (H) BACKLOG #174 D10(1) party-flavour identity ok\n");
+  test_defer_delete_identity();  printf("  (I) BACKLOG #174 D10(3) defer-delete identity ok\n");
 
   printf("%d checks, %d failed\n", g_check, g_fail);
   if (g_fail) { printf("FAILED\n"); return 1; }

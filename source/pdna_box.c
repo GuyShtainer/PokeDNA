@@ -3825,7 +3825,7 @@ static int party_strip_overlay(BoxSource* src, int box, int* cur,
           boxoam_resume();
           placed = false;
         } else if (xg_native_escape_denied(s_held, BOXSCOPE_PC)) { snd_deny(); placed = false; }
-        else placed = app_party_place_held(s_held, sel, s_orig_box, s_orig_slot, (s_orig_scope == BOXSCOPE_BANK), can_swap_now);
+        else placed = app_party_place_held(s_held, sel, s_orig_box, s_orig_slot, (s_orig_scope == BOXSCOPE_BANK), can_swap_now, NULL);
         if (placed && s_orig_scope == BOXSCOPE_PC && s_orig_slot >= 0) {
           recs = src->records(box); box_decode(src, recs, box); s_oam_reload = true;
         }
