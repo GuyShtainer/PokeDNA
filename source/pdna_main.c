@@ -2193,14 +2193,20 @@ bool __attribute__((noinline)) app_xfer_promote(void) {
 bool app_xfer_save_now(void) {
   bool ok;
   if (app_commit_pc()) {
-    app_xfer_promote();                  /* decision 9: the PC is now verified on disk */
+    bool promoted = app_xfer_promote();  /* decision 9: the PC is now verified on disk */
     int kept = pdna_bank_flush_deletions();
     if (kept) {
       char l1[48]; siprintf(l1, PDNA_XFER_FLUSHFAIL_L1, kept);
       msg_wait(PDNA_XFER_FLUSHFAIL_TITLE, UI_WARN, l1, PDNA_XFER_FLUSHFAIL_L2);
     }
     log_line("xfer: save-now: committed, entry promoted");
-    ok = true;
+    /* BACKLOG #175 review D1: a failed promotion left the ledger entry PENDING and
+     * uncollectable while ok stayed true regardless -- the caller (pdna_gen12.c's
+     * SAVE NOW? site) then treated the whole thing as success and let a SECOND
+     * transfer proceed, orphaning a duplicate .pds the ledger can never resolve.
+     * Report the real outcome so the caller refuses instead. */
+    if (!promoted) { snd_error(); msg_wait(PDNA_XFER_NOTSAVED_TITLE, UI_WARN, PDNA_XFER_NOTSAVED_L1, PDNA_XFER_NOTSAVED_L2); }
+    ok = promoted;
   } else {
     /* BACKLOG #150 S150-11 decision 11(i)/#176 (review D2): app_commit_pc() returning
      * false does NOT mean nothing landed -- app_save_finalize()'s SF_WHERE_TARGET
