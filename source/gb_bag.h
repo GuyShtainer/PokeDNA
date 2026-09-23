@@ -211,6 +211,16 @@ GbsStatus gbb_write(GbSession* s, const GbBag* in);
 GbBagOpStatus gbb_insert(GbGame game, GbBag* bag, GbBagPocket pocket,
                           uint8_t id, uint8_t qty);
 
+/* BACKLOG #249 cases B/C: gbb_read() + gbb_insert() + gbb_write() against an ALREADY
+ * OPEN session, in one call -- the convenience a caller that only wants "put this
+ * item in this pocket right now" needs (source/pdna_gen12.c's gb_paste_write, the
+ * ONLY place a Gen-3 record's held item is placed into a live Game Boy bag). Same
+ * partial-write contract as every other session write here: on any non-GBB_OK return
+ * the caller rolls back the whole image from its own pristine copy, this function
+ * does not. GBB_ERR_ARG for a NULL/unopened session, or when gbb_write's own
+ * GbsStatus failure has no closer GbBagOpStatus match. */
+GbBagOpStatus gbb_insert_and_write(GbSession* s, GbBagPocket pocket, uint8_t id, uint8_t qty);
+
 /* Remove the occupied slot at `slot` (0-based, < list->count) from `pocket`,
  * compacting the remaining entries down and decrementing count. */
 GbBagOpStatus gbb_remove(GbGame game, GbBag* bag, GbBagPocket pocket, int slot);

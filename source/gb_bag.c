@@ -135,16 +135,22 @@ static void read_list(const GbSession* s, GbGame g, GbBagPocket pocket, GbBagLis
   out->count = (uint8_t)n;
 }
 
+/* Yellow deliberately maps to GBF_G_RED here (as gbt_game in gb_trainer.c does): its
+ * wMainDataStart shifts by one byte and so does the bag, so every bag offset is
+ * identical in the save (review 2026-09-09 re-derived 0x25C9/0x25CA on both). Shared
+ * by gbb_read/gbb_write/gbb_insert_and_write so the three can never disagree about
+ * which game a session is. */
+static GbGame gbb_game_of(const GbSession* s) {
+  return (s->gen == GB_GEN1) ? GBF_G_RED
+                              : ((s->g2w.sv.version == G2_VER_CRYSTAL) ? GBF_G_CRYSTAL
+                                                                        : GBF_G_GS);
+}
+
 bool gbb_read(const GbSession* s, GbBag* out) {
   if (!s || !out || !s->open) return false;
   memset(out, 0, sizeof *out);
 
-  /* Yellow deliberately maps to GBF_G_RED here (as gbt_game in gb_trainer.c does):
-   * its wMainDataStart shifts by one byte and so does the bag, so every bag offset
-   * is identical in the save (review 2026-09-09 re-derived 0x25C9/0x25CA on both). */
-  GbGame g = (s->gen == GB_GEN1) ? GBF_G_RED
-                                  : ((s->g2w.sv.version == G2_VER_CRYSTAL) ? GBF_G_CRYSTAL
-                                                                            : GBF_G_GS);
+  GbGame g = gbb_game_of(s);
 
   for (int p = 0; p < GBB_POCKET_COUNT; p++) {
     if (p == GBB_POCKET_TMHM) continue;
@@ -220,12 +226,7 @@ static GbsStatus write_list(GbSession* s, GbGame g, GbBagPocket pocket,
 GbsStatus gbb_write(GbSession* s, const GbBag* in) {
   if (!s || !in || !s->open) return GBS_ERR_ARG;
 
-  /* Yellow deliberately maps to GBF_G_RED here (as gbt_game in gb_trainer.c does):
-   * its wMainDataStart shifts by one byte and so does the bag, so every bag offset
-   * is identical in the save (review 2026-09-09 re-derived 0x25C9/0x25CA on both). */
-  GbGame g = (s->gen == GB_GEN1) ? GBF_G_RED
-                                  : ((s->g2w.sv.version == G2_VER_CRYSTAL) ? GBF_G_CRYSTAL
-                                                                            : GBF_G_GS);
+  GbGame g = gbb_game_of(s);
   bool changed = false;
 
   for (int p = 0; p < GBB_POCKET_COUNT; p++) {
@@ -395,4 +396,20 @@ GbBagPocket gbb_pocket_of(GbGame game, uint8_t id) {
   if (id > gbb_max_item_id(game)) return GBB_POCKET_COUNT;
   if (id >= 0xC4u && id <= 0xFAu) return GBB_POCKET_TMHM;
   return GBB_POCKET_ITEMS;
+}
+
+/* BACKLOG #249 cases B/C: gbb_read() + gbb_insert() + gbb_write() in one call, for a
+ * caller (source/pdna_gen12.c's gb_paste_write) that only wants "put this item in
+ * this pocket of the session that's already open" and does not need the intermediate
+ * GbBag for anything else. On any non-GBB_OK return the session's image may already
+ * hold SOME of gbb_write's own pocket writes -- same contract every other session
+ * write in this codebase documents: the caller rolls back the WHOLE image from its
+ * own pristine copy (gb_rollback(), pdna_gen12.c), this function does not. */
+GbBagOpStatus gbb_insert_and_write(GbSession* s, GbBagPocket pocket, uint8_t id, uint8_t qty) {
+  if (!s || !s->open) return GBB_ERR_ARG;
+  GbBag bag;
+  if (!gbb_read(s, &bag)) return GBB_ERR_ARG;
+  GbBagOpStatus ist = gbb_insert(gbb_game_of(s), &bag, pocket, id, qty);
+  if (ist != GBB_OK) return ist;
+  return (gbb_write(s, &bag) == GBS_OK) ? GBB_OK : GBB_ERR_ARG;
 }

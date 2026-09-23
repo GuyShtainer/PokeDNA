@@ -700,6 +700,89 @@ static void roundtrip(const char* file, uint8_t expect_gen) {
         file, unexplained, first, g_orig[first], g_img[first]);
 }
 
+/* ---------------------------------------------------------- B3: gbb_insert_and_write
+ * BACKLOG #249 cases B/C: the ONE-CALL convenience source/pdna_gen12.c's gb_paste_write
+ * uses to place a Gen-1 bag item transactionally alongside a mon landing. Two things
+ * to prove: (1) a successful call really does insert and persist; (2) a call that
+ * FAILS (the pocket is full -- exactly the race a caller could hit between deciding
+ * BAG/PC via g3gb_item_ladder() and this call actually running) leaves the session
+ * image byte-for-byte untouched, so the caller's own gb_rollback() has nothing to
+ * clean up and the mon-only half of a botched landing is never silently kept. */
+static void insert_and_write(const char* file, uint8_t expect_gen) {
+  uint32_t len = load(file);
+  if (!len) return;
+  g_ran++;
+  GbGame g = expect_gen == GB_GEN1 ? GBF_G_RED : GBF_G_GS; /* refined below once open */
+
+  /* -- success case: an id with room in Items -- */
+  {
+    GbSession s;
+    CHECKF(gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "%s: B3 open", file);
+    g = session_game(&s);
+    GbBag before;
+    CHECKF(gbb_read(&s, &before), "%s: B3 pre-read", file);
+    if (before.pockets[GBB_POCKET_ITEMS].count >= gbb_pocket_cap(g, GBB_POCKET_ITEMS)) {
+      printf("  (%s: Items pocket already at cap -- success case skipped)\n", file);
+    } else {
+      uint8_t id = pick_unused_id(g, &before.pockets[GBB_POCKET_ITEMS]);
+      GbBagOpStatus st = gbb_insert_and_write(&s, GBB_POCKET_ITEMS, id, 1);
+      CHECKF(st == GBB_OK, "%s: B3 insert_and_write(id=0x%02X) == GBB_OK (got %d)", file, id, (int)st);
+
+      GbSession s2;
+      CHECKF(gbs_open(&s2, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "%s: B3 re-open", file);
+      GbBag after;
+      CHECKF(gbb_read(&s2, &after), "%s: B3 post-read", file);
+      bool found = false;
+      for (int i = 0; i < after.pockets[GBB_POCKET_ITEMS].count; i++)
+        if (after.pockets[GBB_POCKET_ITEMS].entries[i].id == id) found = true;
+      CHECKF(found, "%s: B3 id 0x%02X present after re-open", file, id);
+      CHECKF(after.pockets[GBB_POCKET_ITEMS].count == before.pockets[GBB_POCKET_ITEMS].count + 1,
+             "%s: B3 Items count grew by exactly 1 (was %u, now %u)", file,
+             before.pockets[GBB_POCKET_ITEMS].count, after.pockets[GBB_POCKET_ITEMS].count);
+    }
+  }
+
+  /* -- failure case: fill the pocket to its cap first (a scratch copy, never the
+   * bytes the success case above already committed), then attempt one more insert
+   * and prove the image is UNCHANGED byte-for-byte -- gbb_insert() itself refuses
+   * with GBB_ERR_FULL before gbb_write() is ever called, by construction (the source
+   * order in gbb_insert_and_write is read -> insert -> write, and this function
+   * returns as soon as insert disagrees). */
+  {
+    uint32_t len2 = load(file);   /* fresh copy into g_img/g_orig */
+    (void)len2;
+    GbSession s;
+    CHECKF(gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "%s: B3f open", file);
+    g = session_game(&s);
+    GbBag bag;
+    CHECKF(gbb_read(&s, &bag), "%s: B3f pre-read", file);
+    int cap = gbb_pocket_cap(g, GBB_POCKET_ITEMS);
+    /* Fill to cap with distinct unused ids, each via the real gbb_insert_and_write
+     * (so the "before the failing call" snapshot is whatever bytes that leaves --
+     * exactly what a caller mid-session would see). */
+    while (bag.pockets[GBB_POCKET_ITEMS].count < cap) {
+      uint8_t id = pick_unused_id(g, &bag.pockets[GBB_POCKET_ITEMS]);
+      if (id == 0) break;   /* id space exhausted -- never true in practice */
+      GbBagOpStatus fst = gbb_insert_and_write(&s, GBB_POCKET_ITEMS, id, 1);
+      if (fst != GBB_OK) break;
+      CHECKF(gbb_read(&s, &bag), "%s: B3f re-read while filling", file);
+    }
+    if (bag.pockets[GBB_POCKET_ITEMS].count < cap) {
+      printf("  (%s: could not fill Items to cap -- failure case skipped)\n", file);
+    } else {
+      uint8_t snapshot[sizeof g_img];
+      memcpy(snapshot, g_img, len);
+      uint8_t new_id = pick_unused_id(g, &bag.pockets[GBB_POCKET_ITEMS]);
+      CHECKF(new_id != 0, "%s: B3f a genuinely new id exists to attempt", file);
+      GbBagOpStatus fst = gbb_insert_and_write(&s, GBB_POCKET_ITEMS, new_id, 1);
+      CHECKF(fst == GBB_ERR_FULL, "%s: B3f a full pocket refuses with GBB_ERR_FULL (got %d)",
+             file, (int)fst);
+      CHECKF(memcmp(snapshot, g_img, len) == 0,
+             "%s: B3f the session image is BYTE-FOR-BYTE unchanged after the refused insert", file);
+    }
+  }
+}
+
 /* ---------------------------------------------------------- B2: single-pocket write
  * Mirror of P1a's one_field_only: change exactly one pocket -> gbs_open() still
  * succeeds (a Gen-2 skipped gbs_finish() shows up as a stale-checksum reopen
@@ -1077,6 +1160,11 @@ int main(void) {
 
   printf("== B2: single-pocket write ==\n");
   one_pocket_only_all();
+
+  printf("== B3: gbb_insert_and_write (BACKLOG #249) ==\n");
+  insert_and_write("Red.sav", GB_GEN1);
+  insert_and_write("Gold.sav", GB_GEN2);
+  insert_and_write("Crystal.sav", GB_GEN2);
 
   printf("== C: refusals ==\n");
   refusals("Red.sav", GB_GEN1);
