@@ -92,10 +92,12 @@ def main() -> int:
            "corpus finding for this same Red.sav) -- ready to drop")
     s.tap("A", settle=300)                         # bdc_convert_gb_core runs -> loss screen
     s.shot("05_loss_screen_item_row", "A -- gb_paste_loss_screen's 'WHAT WON'T "
-           "TRANSFER' preview, F1's own fix: the item row now reads (item name) "
-           "'stays behind' -- SILENT before F1 (loss.item_outcome stays "
-           "G3GB_ITEM_NONE on this arm; the old predicate only checked "
-           "item_outcome/secret_id, never loss.item_dropped)")
+           "TRANSFER' preview, F1's own fix: the item row now reads the generic "
+           "'Held item and Secret ID' text (PDNA_SIDECAR_LOSS_ITEMSECRET) -- "
+           "item_outcome stays G3GB_ITEM_NONE on the bridge arm, so loss_item_text "
+           "takes its NONE/default branch, NOT a per-item 'X stays behind' line -- "
+           "and the row was SILENT before F1 (the old predicate never checked "
+           "loss.item_dropped)", claim="Held item and Secret ID")
     s.tap("B", settle=gb_shots.BIG_SETTLE)         # cancel -- this vehicle's own
                                                     # gb_persist() PDNA_DELTA wall
                                                     # (see b246_g3_to_gb_vsd.py's own
