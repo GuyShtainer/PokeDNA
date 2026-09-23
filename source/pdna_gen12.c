@@ -487,11 +487,11 @@ static bool gb_can_lift_hook_impl(int box, int slot);
  * further below, beside gb_release_hook/gb_lift_up_hook's own header comments) --
  * forward-declared here so k_gb_xfer (this same guarded block) can name them before
  * pdna_gen12_source() (which wires s.xfer) appears in file order. */
-static bool gb_lift_up_hook(int box, int slot, uint8_t* out80);
+static int gb_lift_up_hook(int box, int slot, uint8_t* out80);   /* review D5: bool -> XG_LIFT_* tri-state */
 static bool gb_release_up_hook(int box, int slot, const uint8_t cell80[80]);
 /* BACKLOG #150 S150-12 decision 4: the read-only mount's copy-flavoured lift --
  * gb_lift_pack()'s `copy` switch, thin hook defined beside gb_lift_up_hook below. */
-static bool gb_lift_copy_hook(int box, int slot, uint8_t* out80);
+static int gb_lift_copy_hook(int box, int slot, uint8_t* out80);   /* review D5: bool -> XG_LIFT_* tri-state */
 /* BACKLOG #150 S150-7 step 4: BoxXferOps.accept_down's real body (defined further
  * below, beside gb_paste_hook -- D8's own ordering comment), forward-declared for the
  * same reason as lift_up/release_up above. */
@@ -2098,13 +2098,13 @@ gb_lift_restore(const GbEditMon* mon, uint8_t out80[80]) {
   if (rst != SF_OK) {
     log_line("gen12: lift restore: xr_open failed (%s)", sf_status_str(rst));
     msg_wait(PDNA_XFERREC_TITLE, UI_WARN, PDNA_XFERREC_L1, PDNA_XFERREC_L2);
-    return -1;
+    return -2;   /* review D5: already explained on screen -- the caller shows nothing more */
   }
   int count = gbsc_count(g_ed->sidecar, len);
   if (count < 0) {
     log_line("gen12: lift restore: ledger file failed to validate");
     msg_wait(PDNA_XFERREC_TITLE, UI_WARN, PDNA_XFERREC_L1, PDNA_XFERREC_L2);
-    return -1;
+    return -2;   /* review D5: already explained on screen -- the caller shows nothing more */
   }
 
   /* decision 10's tiebreak, mirrored from app_paste_gb_lookup: prefer the entry
@@ -2133,7 +2133,7 @@ gb_lift_restore(const GbEditMon* mon, uint8_t out80[80]) {
     log_line("gen12: lift restore: entry already RESTORED -- refusing a second restore");
     snd_deny();
     msg_wait(PDNA_XFERDUP_TITLE, UI_WARN, PDNA_XFERDUP_L1, PDNA_XFERDUP_L2);
-    return -1;
+    return -2;   /* review D5: already explained on screen -- the caller shows nothing more */
   }
   if (e.state == XR_STATE_PENDING) {
     /* BACKLOG #226 review D1-R: this session's own g_xd_key is Gen-3-space and can
@@ -2142,7 +2142,7 @@ gb_lift_restore(const GbEditMon* mon, uint8_t out80[80]) {
     log_line("gen12: lift restore: entry still PENDING -- refusing (honest SAVE FIRST wall)");
     snd_deny();
     msg_wait(PDNA_XFER_SAVEFIRST_TITLE, UI_WARN, PDNA_XFER_SAVEFIRST_L1, PDNA_XFER_SAVEFIRST_L2);
-    return -1;
+    return -2;   /* review D5: already explained on screen -- the caller shows nothing more */
   }
   if (e.state == XR_STATE_NONE) {
     log_line("restore: native-home entry with state NONE");
@@ -2156,7 +2156,11 @@ gb_lift_restore(const GbEditMon* mon, uint8_t out80[80]) {
     return -1;
   }
   uint8_t accept = 0;
-  if (!app_xfer_merge_screen(&rep, XR_MERGE_DOWN, &accept)) return -1;   /* B: nothing spent */
+  /* review D5: B, a plain user decline -- app_xfer_merge_screen already drew its own
+   * "B = no" (the Gen-3 twin, pc_bank_restore_up just above in pdna_box.c, treats an
+   * identical decline the same way: `if (!confirmed) return -2;`) -- distinct from a
+   * genuine failure, so the caller must show nothing further. */
+  if (!app_xfer_merge_screen(&rep, XR_MERGE_DOWN, &accept)) return -2;   /* B: nothing spent */
 
   uint32_t serial = pdna_bank_next_serial();
   if (!serial) {
@@ -2201,13 +2205,13 @@ gb_lift_restore(const GbEditMon* mon, uint8_t out80[80]) {
  * for this), which is the SAME load gb_release_up_hook's own re-verify already does
  * by coordinates -- unlike the old rec80 form, this is robust to an L/R re-page of
  * the display mount between the grab and the drop. */
-static bool gb_lift_pack(int box, int slot, uint8_t* out80, bool copy) {
-  if (!out80) { log_line("gen12: %s lift refused: no destination buffer", copy ? "copy" : "xferup"); return false; }
+static int gb_lift_pack(int box, int slot, uint8_t* out80, bool copy) {
+  if (!out80) { log_line("gen12: %s lift refused: no destination buffer", copy ? "copy" : "xferup"); return XG_LIFT_FAILED; }
 
   GbEditMon mon;
   if (!gb_copy_native_by_coord(box, slot, &mon, NULL)) {
     log_line("gen12: %s lift refused: gb_copy_native_by_coord could not read box %d slot %d", copy ? "copy" : "xferup", box, slot);
-    return false;
+    return XG_LIFT_FAILED;
   }
 
   /* BACKLOG #150 S150-9 decision 10: gb_has_sidecar() stays the cheap f_stat pre-
@@ -2225,28 +2229,42 @@ static bool gb_lift_pack(int box, int slot, uint8_t* out80, bool copy) {
      * may restore. */
     if (copy) {   /* a COPY lift (read-only mount, g_ed == NULL) never restores */
       log_line("gen12: copy lift refused: mon already has a Gen-3 ledger entry (use COPY/PASTE)");
-      return false;
+      return XG_LIFT_FAILED;
     }
+    /* review D5: gb_lift_restore()'s OWN tri-state (1/0/-1/-2, mirroring
+     * pc_bank_restore_up) threads straight through -- -2 (already explained on
+     * screen, or a plain B decline) becomes CANCELLED here too; 0 ("only a Gen-3-
+     * home entry -- use COPY/PASTE instead") and -1 (a genuine unreported I/O
+     * failure) both still need this caller's own generic dialog, unchanged from
+     * before this review. */
     int rc = gb_lift_restore(&mon, out80);
-    if (rc <= 0) { log_line(rc == 0 ? "gen12: xferup lift refused: mon already has a Gen-3 ledger entry (use COPY/PASTE)"
-                                    : "gen12: xferup lift refused: restore refused"); return false; }
-    return true;
+    if (rc == 1) return XG_LIFT_OK;
+    if (rc == -2) { log_line("gen12: xferup lift cancelled: already explained on screen"); return XG_LIFT_CANCELLED; }
+    log_line(rc == 0 ? "gen12: xferup lift refused: mon already has a Gen-3 ledger entry (use COPY/PASTE)"
+                      : "gen12: xferup lift refused: restore refused");
+    return XG_LIFT_FAILED;
   }
 
   /* decision 4/D-Q7: the one-time-per-save origin prompt. g_ed set (MOVE) asks the
    * open GbSession, exactly as before; g_ed NULL (COPY, decision 4) asks the mount's
    * own Gb12Mount.kind -- `mon.gen` (just loaded, above) is the right `gen` argument
-   * either way, since it is the SAME session/mount's own generation. -1 = B
-   * cancelled -> fail the lift, before any serial is spent. */
+   * either way, since it is the SAME session/mount's own generation. review D5: -1 = B
+   * cancelled on the full-screen picker itself (gb_pick_origin's own KEY_B branch) --
+   * the player was already looking straight at it, so its own disappearance IS the
+   * "B = no" the house style elsewhere draws explicitly; CANCELLED, not a failure,
+   * before any serial is spent. */
   bool crystal = g_ed ? gb_session_is_crystal(&g_ed->s) : (g_m && g_m->kind == GB12_SAVE_CRYSTAL);
   int origin = gb_origin_for_save(mon.gen, crystal);
-  if (origin < 0) { log_line("gen12: %s lift refused: origin prompt cancelled", copy ? "copy" : "xferup"); return false; }
+  if (origin < 0) {
+    log_line("gen12: %s lift cancelled: origin prompt cancelled", copy ? "copy" : "xferup");
+    return XG_LIFT_CANCELLED;
+  }
   uint8_t origin_game = (uint8_t)origin;
 
   uint32_t serial = pdna_bank_next_serial();
   if (!serial) {                              /* meta write failed -> refuse the lift */
     log_line("gen12: %s lift refused: bank.meta write failed (pdna_bank_next_serial)", copy ? "copy" : "xferup");
-    return false;
+    return XG_LIFT_FAILED;
   }
 
   uint8_t flags = 0;
@@ -2262,7 +2280,11 @@ static bool gb_lift_pack(int box, int slot, uint8_t* out80, bool copy) {
             ((uint32_t)t.day << 17) | ((uint32_t)t.hour << 12) |
             ((uint32_t)t.minute << 6) | (uint32_t)t.second;
 
-  return bc_pack(&mon, flags, origin_game, epoch, serial, out80) == 0;
+  if (bc_pack(&mon, flags, origin_game, epoch, serial, out80) != 0) {
+    log_line("gen12: %s lift refused: bc_pack failed", copy ? "copy" : "xferup");
+    return XG_LIFT_FAILED;
+  }
+  return XG_LIFT_OK;
 }
 
 /* BACKLOG #150 S150-9 decision 9: the ledger half of gb_release_up_hook's RESTORED
@@ -2337,14 +2359,14 @@ gb_release_restored_verify(const GbEditMon* have, const GbEditMon* want,
  * before the S150-12 refactor (BACKLOG #171b review F3): refuse up front rather than
  * trust the caller's own can_lift/can_enter_move gates to forever stay in lock-step
  * with this one. */
-static bool gb_lift_up_hook(int box, int slot, uint8_t* out80) {
-  if (!g_ed) { log_line("gen12: xferup lift refused: no editable session"); return false; }
+static int gb_lift_up_hook(int box, int slot, uint8_t* out80) {
+  if (!g_ed) { log_line("gen12: xferup lift refused: no editable session"); return XG_LIFT_FAILED; }
   /* hard rule 4 / tests/host_gb_write_gate_test.py: this hook itself writes
    * (pdna_bank_next_serial() persists bank.meta), so it carries its own
    * app_can_edit() gate rather than relying only on the caller's can_lift check --
    * the SD side of the write is this function's own responsibility, not begin_
    * select's/the NORMAL-mode menu's, which merely decide whether to LOOK at a cell. */
-  if (!app_can_edit()) { log_line("gen12: xferup lift refused: cart is not writable"); return false; }
+  if (!app_can_edit()) { log_line("gen12: xferup lift refused: cart is not writable"); return XG_LIFT_FAILED; }
   return gb_lift_pack(box, slot, out80, false);
 }
 
@@ -2357,10 +2379,10 @@ static bool gb_lift_up_hook(int box, int slot, uint8_t* out80) {
  * tests/host_gb_write_gate_test.py reason gb_lift_up_hook's own copy is: the checker
  * scans each NAMED_WRITE_HOOKS function's OWN body text, never the shared callee it
  * delegates to. */
-static bool gb_lift_copy_hook(int box, int slot, uint8_t* out80) {
-  if (g_ed) { log_line("gen12: copy lift refused: a write session never copies"); return false; }
-  if (!g_m || !g_ro_path) { log_line("gen12: copy lift refused: no read-only mount path"); return false; }
-  if (!app_can_edit()) { log_line("gen12: copy lift refused: cart is not writable"); return false; }
+static int gb_lift_copy_hook(int box, int slot, uint8_t* out80) {
+  if (g_ed) { log_line("gen12: copy lift refused: a write session never copies"); return XG_LIFT_FAILED; }
+  if (!g_m || !g_ro_path) { log_line("gen12: copy lift refused: no read-only mount path"); return XG_LIFT_FAILED; }
+  if (!app_can_edit()) { log_line("gen12: copy lift refused: cart is not writable"); return XG_LIFT_FAILED; }
   return gb_lift_pack(box, slot, out80, true);
 }
 

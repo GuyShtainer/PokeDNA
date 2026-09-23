@@ -1677,8 +1677,14 @@ def main() -> int:
     # b199): gb_lift_pack's first two params became `int box, int slot` -- the call
     # moved from grab time (start_carry) to the Bank-UP drop (drop_held_up), by the
     # carry's own origin coordinates instead of a rec80 resolved from the live
-    # display page -- same body, same ordering, new signature text only.) ----
-    sh, eh = extract_function(gen12_lines, r"^static bool gb_lift_pack\(int box, int slot, uint8_t\* out80, bool copy\) \{")
+    # display page -- same body, same ordering, new signature text only.
+    # Re-anchored AGAIN for b199 review D5: gb_lift_pack (and gb_lift_restore) now
+    # return the XG_LIFT_OK/CANCELLED/FAILED tri-state (int), not bool -- a plain B
+    # decline or an already-explained refusal must stay silent at the caller
+    # (drop_held_up), not draw a second, vaguer dialog on top. Same body, same
+    # ordering, new signature/return-type text only -- this test checks CALL ORDER,
+    # never the return type, so nothing below this line needed to change.) ----
+    sh, eh = extract_function(gen12_lines, r"^static int gb_lift_pack\(int box, int slot, uint8_t\* out80, bool copy\) \{")
     hook_body = gen12_lines[sh:eh]
     ok, d = lift_order_facts_hook(hook_body)
     check(ok, d)

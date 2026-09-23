@@ -6390,24 +6390,25 @@ def run_s150_9_site2(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.
     defaulting to KEEP -- found live: "Level 95 > 100" / "Nickname changed", both
     KEEP.
 
-    B ON THIS SCREEN, TODAY (pre-D5, still true as of this chain's own repair):
-    gb_lift_restore() returns -1 on a plain decline (its own "B: nothing spent"
-    comment), which gb_lift_pack() treats as a refusal (rc <= 0 -> false), which
-    drop_held_up()'s `if (!s_xfer_peer->lift_up(...))` branch surfaces as
-    PDNA_XFER_LIFT_REFUSED_TITLE -- "NOT MOVED TO THE BANK / This Pokemon could
-    not be packed for the Bank." -- an HONEST DESCRIPTION OF A REAL BUG (D5,
-    later in this same brief, gives a plain B-cancel its own quieter path; this
-    chain is re-verified once D5 lands and updated here if the frame changes).
-    Dismissing (A) returns to the Bank grid STILL HOLDING the SAME mon (found
-    live: pressing A on the same cell again reopens the identical merge screen)
-    -- so a re-grab needs no fresh SEL/A, just another A on the cell. START from
-    the merge screen (both rows left at KEEP, nothing accepted) reaches
-    pdna_bank_next_serial(), which ALSO fails on this vehicle (no writable FAT,
-    the same wall run_s150_4_uplift's own chain documents) and takes the SAME
-    lift_up-returned-false branch -- so START shows the identical "NOT MOVED TO
-    THE BANK" dialog as a plain B cancel does; this vehicle cannot yet
-    distinguish "the user declined" from "the write failed" on screen (this IS
-    the D5 bug, observed here rather than asserted).
+    B ON THIS SCREEN, POST-D5 (re-verified live after D5 landed in this same
+    lane): gb_lift_restore() returns -2 on a plain decline (its own "B: nothing
+    spent" comment, now XG_LIFT_CANCELLED via gb_lift_pack -- pdna_box.h), which
+    drop_held_up()'s tri-state check treats as "already explained on screen" and
+    shows NOTHING further -- straight back to the Bank grid, still holding, no
+    dialog at all. BEFORE D5 this exact B press showed PDNA_XFER_LIFT_REFUSED_
+    TITLE -- "NOT MOVED TO THE BANK / This Pokemon could not be packed for the
+    Bank." -- on a plain decline, a real bug (an error dialog for a user's own
+    B press); this chain's own frame 05 is now the live proof it is fixed. A
+    re-grab needs no fresh SEL/A, just another A on the cell (found live:
+    pressing A on the same cell again reopens the identical merge screen,
+    s_holding never cleared by a CANCELLED return any more than a FAILED one
+    did). START from the merge screen (both rows left at KEEP, nothing
+    accepted) reaches pdna_bank_next_serial(), which ALSO fails on this vehicle
+    (no writable FAT, the same wall run_s150_4_uplift's own chain documents) --
+    a GENUINE unreported failure (XG_LIFT_FAILED, not CANCELLED), so START DOES
+    still show "NOT MOVED TO THE BANK" -- this vehicle can now tell "the user
+    declined" (silent) apart from "the write failed" (a real dialog) on screen,
+    D5's whole point, proven by frames 05 and 07 disagreeing on purpose.
 
     A landed, persisted native cell (bank.meta writable) is hardware-only from
     here, same as run_s150_4_uplift's own chain -- not faked with a pre-planted
@@ -6451,24 +6452,20 @@ def run_s150_9_site2(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.
            claim=["BACK TO ITS ORIGINAL", "Level", "Nickname", "KEEP"])
 
     s.tap("B", settle=gb_shots.BIG_SETTLE); s.run(100)
-    s.shot("05_cancel_shows_error", "s150-9-site2 (b199 D2 repair): B cancels the "
-           "merge screen -- TODAY (pre-D5) gb_lift_restore()'s -1 (\"B: nothing "
-           "spent\") is treated as a plain lift_up() refusal by drop_held_up(), "
-           "which shows PDNA_XFER_LIFT_REFUSED_TITLE: 'NOT MOVED TO THE BANK / "
-           "This Pokemon could not be packed for the Bank.' -- an honest capture "
-           "of the exact bug D5 (this same brief) fixes; re-verify this frame "
-           "once D5 lands.",
-           claim=["NOT MOVED TO THE BANK", "This Pokemon could not be",
-                  "packed for the Bank."])
+    s.shot("05_cancel_silent", "s150-9-site2 (b199 review D5 fix, re-verified after "
+           "D5 landed in this same lane): B cancels the merge screen -- "
+           "gb_lift_restore()'s B-decline now returns -2 (XG_LIFT_CANCELLED via "
+           "gb_lift_pack), which drop_held_up() treats as 'already explained on "
+           "screen' and shows NOTHING further -- straight back to the Bank grid, "
+           "STILL HOLDING the same mon (footer 'A drop  B cancel'), no dialog at "
+           "all. BEFORE D5 this exact B press showed 'NOT MOVED TO THE BANK / "
+           "This Pokemon could not be packed for the Bank.' on a PLAIN DECLINE -- "
+           "the bug D5 fixes; this frame is the live proof it is fixed.",
+           claim=["A drop  B cancel"],
+           claim_absent=["NOT MOVED TO THE BANK", "This Pokemon could not be"])
 
     s.tap("A", settle=gb_shots.BIG_SETTLE); s.run(100)
-    s.shot("06_dismiss_still_holding", "s150-9-site2 (b199 D2 repair): A dismisses "
-           "the error -- back on the Bank grid, STILL HOLDING the same mon "
-           "(footer 'A drop  B cancel' again) -- nothing was spent by the B "
-           "cancel above, the seeded mon never left the Game Boy save.")
-
-    s.tap("A", settle=gb_shots.BIG_SETTLE); s.run(100)
-    s.shot("07_regrab_merge_screen", "s150-9-site2 (b199 D2 repair): A on the "
+    s.shot("06_regrab_merge_screen", "s150-9-site2 (b199 D2 repair): A on the "
            "SAME cell again -- the identical merge screen redraws (pixel-"
            "identical to frame 04: nothing was applied or persisted by the B "
            "cancel above, so gb_lift_pack() runs the exact same probe again).",
@@ -6476,15 +6473,16 @@ def run_s150_9_site2(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.
            claim=["BACK TO ITS ORIGINAL", "Level", "Nickname", "KEEP"])
 
     s.tap("START", settle=gb_shots.BIG_SETTLE); s.run(150)
-    s.shot("08_start_refused", "s150-9-site2 (b199 D2 repair): START confirms the "
-           "merge screen (both rows left at KEEP, nothing accepted) -- "
-           "gb_lift_restore() then reaches pdna_bank_next_serial(), which fails "
-           "on this vehicle (no writable FAT, the SAME wall run_s150_4_uplift's "
-           "own chain documents) -- lift_up() returns false for THIS reason too, "
-           "so drop_held_up() shows the IDENTICAL 'NOT MOVED TO THE BANK' dialog "
-           "frame 05's plain B cancel showed: this vehicle cannot yet tell "
-           "'the user declined' from 'the write failed' apart on screen -- found "
-           "live, the observation D5 exists to fix.",
+    s.shot("07_start_refused", "s150-9-site2 (b199 review D5 fix, re-verified): "
+           "START confirms the merge screen (both rows left at KEEP, nothing "
+           "accepted) -- gb_lift_restore() then reaches pdna_bank_next_serial(), "
+           "which fails on this vehicle (no writable FAT, the SAME wall "
+           "run_s150_4_uplift's own chain documents) -- a GENUINE unreported "
+           "failure (XG_LIFT_FAILED), unlike frame 05's plain decline, so "
+           "drop_held_up() DOES show 'NOT MOVED TO THE BANK / This Pokemon "
+           "could not be packed for the Bank.' here -- D5's whole point: this "
+           "vehicle can now tell 'the user declined' (frame 05, silent) apart "
+           "from 'the write failed' (this frame, a real dialog) on screen.",
            claim=["NOT MOVED TO THE BANK", "This Pokemon could not be",
                   "packed for the Bank."])
 

@@ -1428,14 +1428,32 @@ static uint8_t* __attribute__((noinline)) drop_held_up(BoxSource* src, int box, 
    * g_m->loaded == s_orig_box to resolve at all). `packed` is the real native
    * "GBC1" cell from here on; s_held stays the display copy and is never written to
    * the Bank. A refusal (the origin prompt cancelled, a sidecar entry already
-   * exists, or the serial write failed) shows a dialog and returns "still holding" --
-   * the same shape as every other refusal in this function, so a carried mon can
-   * never be silently stranded nor land in neither save. */
+   * exists, or the serial write failed) returns "still holding" -- the same shape
+   * as every other refusal in this function, so a carried mon can never be
+   * silently stranded nor land in neither save. BACKLOG #199 review D5: lift_up
+   * is now a TRI-STATE (XG_LIFT_OK/CANCELLED/FAILED, pdna_box.h) -- a plain B
+   * decline or a refusal that already drew its OWN dialog (a stale ledger
+   * record, an already-RESTORED entry, the PENDING SAVE FIRST wall) comes back
+   * CANCELLED and shows NOTHING further here, matching pc_bank_restore_up's own
+   * rc==-2 convention (the Gen-3 twin, just above) and app_confirm's "B = no"
+   * house style; only a genuinely UNREPORTED failure (an unreadable ledger, a
+   * failed serial write, a pack failure) shows this generic dialog. */
   uint8_t packed[80];
-  if (!s_xfer_peer->lift_up(s_orig_box, s_orig_slot, packed)) {
-    msg_wait(PDNA_XFER_LIFT_REFUSED_TITLE, UI_WARN, PDNA_XFER_LIFT_REFUSED_L1, PDNA_XFER_LIFT_REFUSED_L2);
+  int lift_rc = s_xfer_peer->lift_up(s_orig_box, s_orig_slot, packed);
+  if (lift_rc != XG_LIFT_OK) {
+    if (lift_rc == XG_LIFT_FAILED) {
+      /* review D6: this was the only refusal in the function with no sound --
+       * every sibling below (pdna_bank_prepare_native's own refusal, the
+       * collision refusal further down) calls snd_error() before its own
+       * msg_wait(). Folded into D5's own tri-state edit: a CANCELLED (silent)
+       * return never reaches here, so this stays paired 1:1 with the ONE
+       * dialog left standing. */
+      snd_error();
+      msg_wait(PDNA_XFER_LIFT_REFUSED_TITLE, UI_WARN, PDNA_XFER_LIFT_REFUSED_L1, PDNA_XFER_LIFT_REFUSED_L2);
+    }
     boxoam_resume();
-    log_line("bank: up box %d slot %d -> bank box %d slot %d: lift refused", s_orig_box, s_orig_slot, box, cur);
+    log_line("bank: up box %d slot %d -> bank box %d slot %d: lift %s", s_orig_box, s_orig_slot, box, cur,
+              lift_rc == XG_LIFT_CANCELLED ? "cancelled" : "refused");
     app_log_flush();
     return recs;                                          /* still holding */
   }
