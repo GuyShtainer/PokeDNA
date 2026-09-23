@@ -1643,6 +1643,7 @@ def run_m1_map_gen2(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.S
     block map: vbx starts at clampi(6-5//2, 0, 10-5=5) = 4, vby at
     clampi(3-5//2, 0, 9-5=4) = 1 -- the marker lands exactly centred on open
     ground (design doc §2.4/§8's own cross-checked New Bark Town dump)."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "m1_map_g2_")
     print("== M1-G2: Crystal's own current-map view (single-ROM -> Map) ==")
 
@@ -1703,6 +1704,7 @@ def run_m1_map_gen2_wrong_game(core_mod, image_mod, rom: Path, out_dir: Path) ->
     to run_m1_map_gen2() up to the Map row; pdna_gbmap_gen2() must refuse with
     PDNA_GBMAP2_WRONG_GAME instead of drawing Crystal's own New Bark Town under
     a Gold save."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "m1_map_g2_wronggame_")
     print("== M1-G2: wrong-game refusal (Gold save, Crystal-only ROM) ==")
 
@@ -1729,6 +1731,7 @@ def run_m1_map_gen2_no_rom(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_
     catch) -- the real caption on this build is gbscr_open()'s own
     PDNA_GBSCR_REASON_ORPHANED_ROM message, "this save's ROM is not fused"
     (confirmed by the actual screenshot, not assumed)."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "m1_map_g2_norom_")
     print("== M1-G2: no-ROM refusal (Gold save, no Gen-2 ROM fused) ==")
 
@@ -2218,6 +2221,7 @@ def run_b194_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> g
     "back on the card" now, not "reopened" (the old two-open-per-edit
     behaviour this runner's captions used to describe was itself A2's bug).
     GB_ART_COLD_SETTLE is still used ONLY after that one open."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b194_{which}_")
     print(f"== BACKLOG #202 F4: {which}'s own HoF card -- cold open, menu, edit, "
           "add, delete ==")
@@ -2382,6 +2386,7 @@ def run_b194_hof_no_rom(core_mod, image_mod, rom: Path, out_dir: Path, which: st
     gbscr_open()'s own kReasonNoRom refusal fires, and pdna_gbhof() falls back
     to hof_plain_screen() with the honest 'HALL OF FAME (GB ART: OFF)' header
     -- the SAME plain rows this screen drew before BACKLOG #194/#202 existed."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b194_{which}_norom_")
     print(f"== BACKLOG #202 F1: {which}'s HoF, no ROM fused -- the honest plain fallback ==")
     boot_to_gb_session(s, rom, which=which)
@@ -3090,6 +3095,7 @@ def run_b86_clock(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Ses
     gb_persist()'s PDNA_DELTA in-session-only refusal, the same honest outcome every
     other delta-build write ends at, so the shots prove the write PATH runs, not that
     it lands on a card that does not exist in this build)."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b86_clock_")
     print("== BACKLOG #86/#108: the Gen-2 Clock screen (Crystal) ==")
     boot_to_gb_session(s, rom, which="crystal")
@@ -3152,6 +3158,7 @@ def run_b86_clock_gen1_fallback(core_mod, image_mod, rom: Path, out_dir: Path) -
     already proves for a different row/state. `rom` MUST be a Red-ONLY fused image
     (same single-ROM posture as run_b86_clock's own Crystal-only image, and run_d7_gold's
     Gold-only one) -- ONE tap (A) reaches the box grid, no boot picker."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b86_clock_gen1_")
     print("== BACKLOG #86/#108: the Gen-1 fallback (Red, NAV_NOT_IN_GAME) ==")
     boot_to_gb_session(s, rom, which="red")
@@ -3185,6 +3192,7 @@ def run_b88_flags(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> 
     GBFL_KIND_BAG_GRANT section, so Crystal's own run captures the read-only bag-grant
     row instead of toggling anything in it (SELECT jumps to "Key events", the next
     section, TOGGLE-kind, for Crystal's own toggle/CAUTION shots)."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b88_flags_{which}_")
     print(f"== BACKLOG #88: the Flags & counters screen ({which}) ==")
     boot_to_gb_session(s, rom, which=which)
@@ -3332,6 +3340,7 @@ def run_b88_flags_d6(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.
     GROUPS_GEN2 header order (tools/gen_gbfields.py): 0 Key items (grant in Bag),
     1 Key events, 2 Gym Leaders, 3 Elite Four, 4 Story (READONLY), 5 Kanto
     (post-game) (WARN) -- SELECT from header 0 steps forward one header per press."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b88_flags_d6_")
     print("== BACKLOG #88 D6: WARN confirm + READONLY message (crystal) ==")
     boot_to_gb_session(s, rom, which="crystal")
@@ -3423,6 +3432,7 @@ def run_b87_dex(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     Catch ALL + Undo (dex_bulk, the "Mark all..." row), B -> the shared screen's own
     exit, on Crystal only: the Unown forms 26-row toggle list from the chooser's
     second row, B -> confirm ("Save Pokedex changes?")."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     tag = f"b87_dex_{which}_"
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, tag)
     print(f"== BACKLOG #87: the Pokedex screen ({which}) ==")
@@ -3678,6 +3688,7 @@ def run_b124_bobcheck(core_mod, image_mod, rom: Path, out_dir: Path, which: str)
     on the same animation phase despite a 4-6 frame redraw wave. Prints the max diff
     across all samples; a genuinely bobbing page has a NON-ZERO max diff, a static page
     (pre-fix behaviour on the Gen-1+Gen-2-ROM image) has ZERO."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     from PIL import Image, ImageChops
     s = run_b124_dexicons(core_mod, image_mod, rom, out_dir, which, fallback=False)
     # s is now sitting on the dex grid (DV_GRID, page 1) right after run_b124_dexicons's
@@ -3825,6 +3836,7 @@ def run_b208_dexcache(core_mod, image_mod, rom: Path, out_dir: Path, which: str 
     Prints every captured 'dexart:' line, per phase, for a human (or a future
     machine parser -- BACKLOG #184's own aspiration) to read the counts off -- same
     "no parser here" posture as measure_dex_sd_reads() above."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     lines: list[str] = []
     log_mod = getattr(core_mod, "log", None)
     if log_mod is None:
@@ -3951,6 +3963,7 @@ def run_r1_xfer(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessi
     a concrete level" are the SAME single screen (05 below); there is no separate
     "confirm" screen to shoot distinctly from it -- selecting SELECT commits
     directly, matching the brief's own "additive, no new screen kind" design. The write itself is proven by the host tests (host_gen3gb_test / host_xfer_roundtrip_test); PDNA_DELTA has no SD., not just in dialog text."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "r1_")
     print("== BACKLOG #104 R1: KEEP AS IS / MAKE LEGAL on a Gen 3 -> Game Boy paste ==")
 
@@ -4083,6 +4096,7 @@ def run_r1_xfer_red(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.S
     the empty-cell action menu -> DOWN x1 -> A -> gen3_to_gb() runs against the SAME
     clip-seeded Charizard L20 -> the loss screen -> A -> the R1 screen (KEEP AS IS /
     MAKE LEGAL), reached on Red instead of 'NO GEN-1 ROM'."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "r1_red_")
     print("== BACKLOG #112: Gen-1 (Red) transfer-down now reaches the R1 screen ==")
 
@@ -4167,6 +4181,7 @@ def run_s150_10(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessi
     probe (confirmed directly: two consecutive captures came back pixel-identical
     at that settle) -- both the target slot AND the settle needed a re-verify, not
     just a re-grep. Slot 19 was not probed (18 alone is enough room for one paste)."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s150_10_")
     print("== BACKLOG #150 S150-10: PASTE (GB) swaps only the bad move slot(s) ==")
 
@@ -4748,6 +4763,9 @@ def run_s2_bank(core_mod, image_mod, rom: Path, out_dir: Path, which: str,
     locator cannot be layered onto one image (pdna_main.c's fused_sav_present()
     check runs BEFORE the gb_delta_pick_save() loop, so a single-slot fusion always
     pre-empts a directory one)."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
+    if clip_rom is not None:
+        gb_shots.assert_vehicle(clip_rom, "ARTLESS")  # BACKLOG #255
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"s2bank_{which}_")
     print(f"== #120: the Bank from a Game Boy session ({which}) ==")
     s.run(700)
@@ -4821,6 +4839,7 @@ def run_s2_bank_control(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_sho
     since the ordinary flash-boot/fused-.sav path never reads a fused --clip record
     at all -- only the three PDNA_DELTA GB-boot forks do, source/pdna_main.c's own
     three `fused_clip_present` call sites)."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s2bank_control_")
     print("== #120 F1 control: CREATE + PASTE HERE survive an ordinary Gen-3 Bank visit ==")
     s.run(700)
@@ -4897,6 +4916,7 @@ def run_b54_romhack(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -
     banner, the ordinary full mon menu (same shape as run_s2_bank_control's own
     "COPY -> ..." menu, proving this lane changes nothing for a genuine retail ROM,
     i.e. decision 1b/retail-pixel-parity)."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b54romhack_{which}_")
     print(f"== BACKLOG #54: ROM-hack detection + read-only posture ({which}) ==")
     s.run(700)
@@ -5045,6 +5065,7 @@ def run_s150_2_bank_native(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_
     measurement the S150-2 acceptance row asks for (a real hardware box-flip timing for
     the 30-native box) -- this panel is a RENDER proof only; the perf numbers come from
     real hardware, reported separately."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s150_2_")
     print("== BACKLOG #150 S150-2: native Bank cells render + the 30-native worst case ==")
     # CURSOR is a much slower repaint on this screen than an ordinary GB-box cursor
@@ -5171,6 +5192,7 @@ def run_s150_13_carry_badge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb
     the same exact quantized colour, so badge-present must read STRICTLY higher than
     the pre-carry baseline (00), by the exact number of gen-tint pixels in this file's
     own hand-authored tile (source/box_oam.c's s150_13_badge_tiles)."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s150_13_")
     print("== BACKLOG #150 S150-13 (#164): the glove's carried-native-cell era badge ==")
     s.tap("START", settle=80)                              # nav menu
@@ -5247,6 +5269,7 @@ def run_s150_3_escape_gate(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_
     tools/fuse_sav.py fusion of an Emerald.sav onto pokedna-delta-artless.gba, no --gb,
     no --clip) -- see run_s150_2_bank_native()'s own docstring for why no fused payload
     is needed (source/bank_plant.c's PDNA_DELTA-only box_load() hook)."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s150_3_")
     print("== BACKLOG #150 S150-3: the escape-route gate ==")
     s.tap("START", settle=80)                              # nav menu
@@ -5384,6 +5407,7 @@ def run_s150_14_native_edit(core_mod, image_mod, rom: Path, out_dir: Path) -> gb
     decision 7's rollback is expected to fire: 07_after_commit proves the ROLLBACK (the
     in-RAM cell restored to its pre-edit bytes), not a real write. Shots 02-06 are what
     prove the edit reached the confirm dialog with the new value."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s150_14_")
     print("== BACKLOG #150 S150-14: EDITING a native Bank cell in the GB's own screens ==")
     CURSOR_SETTLE = 300
@@ -5523,6 +5547,7 @@ def run_s150_15_view_original(core_mod, image_mod, rom: Path, out_dir: Path) -> 
     XFER_PLANT_SERIAL, 150 -- outside every other PDNA_DELTA fixture's own range),
     via the new bank_plant_cell0_serial(out80, serial) export. The serial lives
     outside every field a summary card draws, so 00-vs-05 parity is unaffected."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s150_15_")
     print("== BACKLOG #150 S150-15: the GB ORIGINAL row ==")
     SETTLE = 200
@@ -5680,6 +5705,7 @@ def run_b190_move_refusal(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
     -- BEFORE the fix this is where the ghost (ALREADY KNOWN text still on screen,
     MOVES/TACKLE/GROWL/LEECH SEED also on screen) showed up; AFTER the fix it must be a
     clean single screen."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b190_")
     print("== BACKLOG #190: MOVE-PICKER REFUSAL GHOSTING (Yellow.sav, standalone) ==")
     SETTLE = 200
@@ -6036,6 +6062,7 @@ def run_b182_release_gate(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
     status()'s own bucket for GBS_ERR_PARTY_FLOOR), which is move_why's own line
     (RELEASE's fix deliberately adds no second line, per the fix's own comment --
     the same reason, worded once)."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b182_")
     print("== BACKLOG #182: RO_RELEASE's lift_why gate -- 1-mon party PARTY_FLOOR "
           "refuses both MOVE TO BOX and RELEASE, no shown-then-refused row ==")
@@ -6116,6 +6143,8 @@ def run_s150_7_down_edge(core_mod, image_mod, rom_gold: Path, rom_red: Path,
         fill level was never a design invariant); R x15 from box 1 reaches the GB PARTY
         pseudo-box (14 storage boxes + the party, Gen 2 -- Gen 1 has 12 + the party, so
         the party index differs and is walked to separately below for panel (c))."""
+    gb_shots.assert_vehicle(rom_gold, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
+    gb_shots.assert_vehicle(rom_red, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     print("== BACKLOG #150 S150-7: the DOWN edge (EXACT arm) ==")
     UP_INTO_BANK = 3          # grid -> title -> tabs -> the bank_edge hop
     UP_TO_ROW0 = 4            # Bank's own bottom row -> row 0 (the planted cells)
@@ -6300,6 +6329,8 @@ def run_b142_tab_focus_arrival(core_mod, image_mod, rom_after: Path, rom_before:
         and re-enters the GB source's own pdna_box() -- the exact `st == 1` arrival
         this lane's fix touches.
     """
+    gb_shots.assert_vehicle(rom_after, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
+    gb_shots.assert_vehicle(rom_before, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     print("== BACKLOG #142: is_bank grid tab-focus arrival ==")
     UP_INTO_BANK = 3     # cell -> title -> tabs -> the bank_edge hop
     DOWN_OFF_BANK = 1    # the linked Bank opens on its own bottom row already
@@ -6389,6 +6420,7 @@ def run_s150_9_merge_screen(core_mod, image_mod, rom_emerald: Path, out_dir: Pat
         past them on an empty cell -- no further navigation needed to drop.
       drop: A. The merge screen (when it draws): U/D moves the row cursor, A flips
         KEEP/TAKE, START applies, B cancels back to the Bank grid still carrying."""
+    gb_shots.assert_vehicle(rom_emerald, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     print("== BACKLOG #150 S150-9: the per-field MERGE screen ==")
 
     def goto_slot_and_grab(s: gb_shots.Session, slot: int) -> None:
@@ -6588,6 +6620,7 @@ def run_s150_9_site2(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.
     A landed, persisted native cell (bank.meta writable) is hardware-only from
     here, same as run_s150_4_uplift's own chain -- not faked with a pre-planted
     stand-in cell."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s150_9_site2_")
     print("== BACKLOG #209: site 2 of the restore (gb_lift_restore) ==")
     boot_to_gb_session(s, rom, which="red")
@@ -6750,6 +6783,7 @@ def run_s150_8_gen3_arm(core_mod, image_mod, rom_emerald: Path, out_dir: Path) -
       run_s150_8_party_vsd(), below -- since proving a real landing needs a real SD
       write this vehicle's flash chip cannot serve (see this function's own last
       frames, the SIDECAR FOLDER wall)."""
+    gb_shots.assert_vehicle(rom_emerald, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     print("== BACKLOG #150 S150-8: the DOWN edge (GEN3 arm) ==")
     DOWN_OFF_BANK = 5   # same constant as run_s150_7_down_edge -- generation-agnostic
 
@@ -6924,6 +6958,7 @@ def run_s150_8_party_vsd(core_mod, image_mod, rom_ruby: Path, out_dir: Path) -> 
     on every re-entry) than this lane's remaining budget could safely verify without
     risking a mis-captioned frame (BACKLOG #184's own lesson); left as an HW-only row
     (XFER-C9r) rather than shipped as an unverified claim."""
+    gb_shots.assert_vehicle(rom_ruby, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     print("== BACKLOG #174 (S150-8c): the party arm (--vsd) ==")
     if gb_shots._DEFAULT_VSD_IMG is None:
         raise RuntimeError("--s150-8-party requires --vsd <img.img> on the command "
@@ -7091,6 +7126,7 @@ def run_s150_8d_savenow(core_mod, image_mod, rom_ruby: Path, out_dir: Path) -> g
     "Saving -- do not power off" panel (no input, just frames), then A dismisses
     SAVED, then A confirms cell 2's own loss screen -- the whole point is that none
     of these needs new NAVIGATION or a B, just repeated A, "the same gesture"."""
+    gb_shots.assert_vehicle(rom_ruby, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     print("== BACKLOG #175 (S150-8d): SAVE NOW? (--vsd) ==")
     if gb_shots._DEFAULT_VSD_IMG is None:
         raise RuntimeError("--s150-8d-savenow requires --vsd <img.img> on the "
@@ -7307,6 +7343,8 @@ def run_s150_8_bridge(core_mod, image_mod, rom_gold: Path, rom_red: Path,
     (occupied) position on this box needs no further navigation, matching
     run_s150_7_down_edge's frame-11/12 finding that a fully-occupied Red box (20/20)
     dispatches fine too."""
+    gb_shots.assert_vehicle(rom_gold, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
+    gb_shots.assert_vehicle(rom_red, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     print("== BACKLOG #150 S150-8: the DOWN edge (GB_BRIDGE arm) ==")
     UP_INTO_BANK = 3
     UP_TO_ROW0 = 4
@@ -9701,6 +9739,7 @@ def run_b154_boxmenu(core_mod, image_mod, rom: Path, out_dir: Path, which: str) 
     --image MUST be a ONE-ROM fused image matching `which` (tools/fuse_gb.py,
     no Emerald.sav -- same BACKLOG #98 reasoning run_b93_menu's own docstring
     gives), so boot_to_gb_session() skips the picker."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b154_{which}_")
     print(f"== BACKLOG #154: box-options menu Rename row, gated on can_rename ({which}) ==")
 
@@ -9774,6 +9813,7 @@ def run_b93_menu(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> g
          there), so it reaches sf_write_verified, which fails at the FatFs layer
          (no volume mounted under mGBA) with "EXPORT FAILED / open failed" -- the
          real, hardware-shaped file write is HW-QUEUE GBMON-3/4."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b93_{which}_")
     print(f"== BACKLOG #93: DUPLICATE / TO DAY-CARE / EXPORT .pk + the GB box menu ({which}) ==")
 
@@ -10059,6 +10099,7 @@ def run_gbnames(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     happens to open on its TMs (real save data, pickup order, not sorted by
     this core), so shot 01 already doubles as the "one TM row" ask; no
     ADD ITEM detour needed."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     if which == "red":
         s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "gbnames_red_")
         print("== gbnames: Red's own Item bag, real names ==")
@@ -10194,6 +10235,7 @@ def run_s2_control(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Se
     or create a new Gen-3 mon in the Bank). The F1 gate (xg_create_row/xg_paste_row)
     does NOT apply here -- only to the GB session's Bank visit; a Gen-3 session's Bank
     visit always shows the full menu."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s2_control_")
     print("== #143: the Gen-3 Bank control -- what CREATE + PASTE HERE look like ==")
     s.run(700)
@@ -10271,6 +10313,7 @@ def run_b187_chain_a(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.
     `rom` MUST be the flight-shaped image (Emerald.sav + a GB corpus fused with
     tools/fuse_gb.py) with Guy's OWN Yellow.sav as its Gen-1 payload (copy it to
     /tmp first -- the corpus at gba-toolkit/roms/gb/Yellow.sav is read-only)."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b187a_")
     print("== BACKLOG #187/#192, Chain A: SELECT NORMAL<->MOVE on an empty cell ==")
     boot_to_gb_session(s, rom, which="yellow")
@@ -10311,6 +10354,7 @@ def run_b187_chain_b(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.
 
     `rom` MUST be the same flight-shaped Yellow.sav image run_b187_chain_a()
     uses."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b187b_")
     print("== BACKLOG #187/#193, Chain B: DUPLICATE box1(full) -> picker -> box8 ==")
     boot_to_gb_session(s, rom, which="yellow")
@@ -10354,6 +10398,7 @@ def run_b187_chain_c(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.
     path (F4 only changes the FULL-box case; this chain demonstrates F4 did not
     regress the ordinary one). `rom` MUST be the same flight-shaped Yellow.sav
     image run_b187_chain_a() uses."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b187c_")
     print("== BACKLOG #187, Chain C: CREATE in box12 (current, 0/20) ==")
     boot_to_gb_session(s, rom, which="yellow")
@@ -10454,6 +10499,7 @@ def run_b199_chain_d(core_mod, image_mod, rom: Path, out_dir: Path) -> list[gb_s
     parsed for this whole process). For every value: still holding (footer 'A
     drop  B cancel'), never 'nowhere' -- the answer now lives in this repo, not
     only in a review transcript."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     sessions: list[gb_shots.Session] = []
 
     # BACKLOG #199 review D4 (repair): set_default_vsd(img) with NO knobs OVERWRITES
@@ -10755,6 +10801,7 @@ def run_b200_chain(core_mod, image_mod, rom: Path, out_dir: Path) -> list[gb_sho
       D: the Emerald Gen-3 PC box (row 0 of the SAME image's boot picker,
          capacity NULL -> 30) -- unaffected: no blocked cells anywhere.
     """
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     sessions: list[gb_shots.Session] = []
 
     # ---- A: box 12 (0/20, boot landing) + the DOWN-off-blocked-row edge -------
@@ -10904,6 +10951,7 @@ def run_s150_12_copy_edge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
     save, XFER-C15a's own md5-of-the-.sav proof, and the RO-mount refusal on an
     EverDrive/read-only cart (XFER-C15e) -- none of these are producible in mGBA,
     which has no SD card and no EverDrive emulation at all."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s150_12_")
     print("== BACKLOG #150 S150-12: the read-only mount's COPY lift + planted-cell DOWN edge ==")
     idx = gb_save_pick_index(rom)["gold"]
@@ -11119,6 +11167,7 @@ def run_s150_11_reconcile(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
     confirmed against the shipped source rather than assumed; a populated-list shot
     needs either S150-13's real RAM ledger or real hardware (BACKLOG #150 S150-11's
     HW-QUEUE rows XFER-C13/C14/C16b/C20/C27/C28/C29 cover the populated cases)."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s150_11_")
     print("== BACKLOG #150 S150-11: the TRANSFERS screen (START row, empty state, GB "
           "session refusal, silent Bank open) ==")
@@ -11234,6 +11283,7 @@ def run_b222_summary_nick(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
     Nickname first via field_row() -> ui_text(), which since review R1 bounds through
     ui_ascii_next_fixed() -- sys8's own cell 127 is a blank 8x8 tile (BACKLOG #222 R1),
     so PIKA♂'s decoded gender sign collapses to '?': "PIKA?"."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b222_nick_")
     print("== BACKLOG #222 review R3(a): the Gen-1/2 summary's Nickname row, PIKA? ==")
     boot_to_gb_session(s, rom)
@@ -11282,6 +11332,7 @@ def run_b216b_summary_cafe(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_
     Nav: identical to run_b222_summary_nick() -- boot_to_gb_session() lands on the box
     grid (single-ROM image, no picker), A opens slot 0's own cell menu (VIEW/EDIT
     already selected, row 0), A again enters the summary in VIEW mode, Card 0 INFO."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b216b_cafe_")
     print("== BACKLOG #216b: the Gen-1/2 summary's Nickname row, a Gold CAFé mon ==")
     boot_to_gb_session(s, rom)

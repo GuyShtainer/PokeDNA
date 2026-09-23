@@ -133,6 +133,62 @@ BIG_SETTLE = 40   # frames of nothing, after a screen opens/closes/repaints full
 VSD_QUIESCE_IDLE = 4        # S4.5: consecutive no-request frames that mean "I/O settled"
 VSD_QUIESCE_CAP = 3600      # S4.5: hard cap -- a chain that never quiesces is a loud failure
 
+# BACKLOG #255: the #253 corpus was fourteen frames of the FULL-ART build shot against a
+# chain whose docstring says "MUST be pokedna-delta-artless.gba" -- with art linked in, the
+# first icon lookup succeeds and the dex opens in grid view instead of list view, so every
+# frame documented a screen that was never on the glass, and every check anyone ran (file
+# freshness, sheet regeneration, caption-vs-pixel on the frames people happened to open)
+# passed. The marker a chain needs is source/build_variant.c's pdna_build_variant string,
+# grep-able straight out of the built .gba (see that file for why a plain
+# __attribute__((used)) data symbol did NOT survive this Makefile's --gc-sections link, and
+# why the marker also has to be exercised by a live call site).
+_VEHICLE_MARKER = {"ART": b"PDNA-VARIANT:ART", "ARTLESS": b"PDNA-VARIANT:ARTLESS"}
+
+
+def assert_vehicle(image_path: "str | Path", want: str) -> str:
+    """Refuse to shoot a chain against the wrong build.
+
+    Reads image_path and greps it for the PDNA-VARIANT marker (source/build_variant.c).
+    want is "ARTLESS" or "ART" (DELTA-ness is not checked here -- the caller already picked
+    the delta vs non-delta image by path/filename; this only guards the art/artless axis,
+    which is the one #253 got wrong).
+
+    Returns the marker string found (e.g. "PDNA-VARIANT:ARTLESS+DELTA").
+    Raises SystemExit(1) -- loud, chain-stopping, not a warning -- naming the image, what
+    was found, and what was wanted, if the wrong variant (or no marker at all) is found.
+    """
+    if want not in _VEHICLE_MARKER:
+        raise ValueError(f"assert_vehicle: want must be 'ART' or 'ARTLESS', got {want!r}")
+    path = Path(image_path)
+    data = path.read_bytes()
+    # "PDNA-VARIANT:ART" is a byte-prefix of "PDNA-VARIANT:ARTLESS" -- check ARTLESS first
+    # so an artless image is never mis-read as an ART-image false match on the prefix.
+    if _VEHICLE_MARKER["ARTLESS"] in data:
+        found = "ARTLESS"
+    elif _VEHICLE_MARKER["ART"] in data:
+        found = "ART"
+    else:
+        found = None
+    if found != want:
+        found_desc = (
+            "PDNA-VARIANT:" + found if found else
+            "(no PDNA-VARIANT marker at all -- image predates BACKLOG #255"
+            " or was not built by this Makefile)"
+        )
+        make_hint = "make artless" if want == "ARTLESS" else "make (no PDNA_ARTLESS)"
+        sys.exit(
+            f"*** REFUSING: {path.name} is the WRONG build for this chain.\n"
+            f"***   wanted:  PDNA-VARIANT:{want}\n"
+            f"***   found:   {found_desc}\n"
+            f"***   image:   {path}\n"
+            f"*** BACKLOG #255: the #253 corpus was 14 frames of the wrong build and nothing\n"
+            f"*** could tell. Build the right variant ({make_hint}) and re-run."
+        )
+    # Recover the exact marker text (including +DELTA, if present) for the caller to log.
+    marker_with_delta = _VEHICLE_MARKER[found] + b"+DELTA"
+    marker = marker_with_delta if marker_with_delta in data else _VEHICLE_MARKER[found]
+    return marker.decode("ascii")
+
 # BACKLOG #179 Phase A step A3: dgb_shots.py's --vsd CLI flag calls set_default_vsd()
 # ONCE, before dispatching to whichever run_*() the user selected. Every Session()
 # constructed afterwards in this process picks the image (and any failure-injection
