@@ -20,8 +20,21 @@ bool xg_drop_denied(uint8_t dst_scope, uint8_t src_scope, bool have_xfer) {
   /* BACKLOG #150 S150-4 decision 9: exactly one allow-rule added to the S2 refusal --
    * BANK<-GB, and only when both sides actually have an xfer vtable (the vtable half
    * cannot be seen from a pure predicate, so the caller hands it in). Every other
-   * GB-involving pair (including GB<-BANK, which is DOWN, not this lane) stays denied. */
+   * GB-involving pair stayed denied UNTIL BACKLOG #246 added the second, symmetric
+   * allow-rule below. */
   if (dst_scope == XG_SCOPE_BANK && src_scope == XG_SCOPE_GB && have_xfer) return false;
+  /* BACKLOG #246 (#104 Phase 1): the ONLY new pair this lane opens -- a Gen-3 Bank
+   * cell dropped onto a Game Boy destination, re-attaching gen3_to_gb.c to a source
+   * for the first time since #239 closed the old COPY -> NV_GB mount -> PASTE route.
+   * `have_xfer` is the same real-vtable test as the sibling rule above (pdna_box.c's
+   * drop_held computes it once, before either check); the caller (drop_held's new
+   * cross-scope branch) additionally requires the held cell to be a plain Gen-3
+   * record, never a native "GBC1" cell -- a native cell reaching a GB destination is
+   * intercepted earlier, by the bc_is_native-gated DOWN-arm dispatch block, and never
+   * reaches this predicate at all (see that block's own comment in pdna_box.c). Every
+   * OTHER GB-involving pair (PC<-GB, GB<-PC, PC<-BANK-via-GB, etc.) is UNCHANGED --
+   * still denied by the base rule below. */
+  if (dst_scope == XG_SCOPE_GB && src_scope == XG_SCOPE_BANK && have_xfer) return false;
   return dst_scope == XG_SCOPE_GB || src_scope == XG_SCOPE_GB;
 }
 
