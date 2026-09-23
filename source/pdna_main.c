@@ -9768,6 +9768,18 @@ void app_nav_refuse(int nv_item, int save_kind) {
      * "fine". Silence is the exact bug #58 fixed -- say something generic instead. */
     snd_deny(); msg_wait("COMING SOON", UI_DIM, "Not available here yet.", 0); return;
   }
+  if (av == NAV_BANK_ONLY) {
+    /* BACKLOG #239: this row was wired and was deliberately removed (a concurrent
+     * second-save mount was the clone vector), so neither "COMING SOON" nor "Open
+     * the Bank instead" is honest here -- nav_avail_why()'s one line cannot teach
+     * the actual two-step procedure, so this state gets its own two-line message
+     * instead of the generic `why`-driven call below. Stays bright/selectable in
+     * the menu itself (NAV_ALL_AVAILABLE, nav_menu() never dims this row) -- only
+     * pressing A shows this, exactly the #58 fix this must not regress. */
+    snd_deny();
+    msg_wait("BANK ONLY", UI_DIM, "Open the GB save on its own,", "send it to the Bank, come back.");
+    return;
+  }
   const char* title;
   if (av == NAV_COMING_SOON) {
     title = "COMING SOON";

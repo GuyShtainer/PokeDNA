@@ -110,8 +110,13 @@ static const NavCell GB_TABLE[NV_COUNT][2] = {
    * NV_MAP branches). */
   [NV_MAP]       = { { NAV_OK, "OK" },
                      { NAV_OK, "OK" } },
-  [NV_GB]        = { { NAV_COMING_SOON, "Open the Bank instead." },
-                     { NAV_COMING_SOON, "Open the Bank instead." } },
+  /* BACKLOG #239 review: this row was a concurrent second-save mount (removed --
+   * see nv_gb_blocked() below) that let a COPY in the Game Boy save leak straight
+   * into a live Gen-3 save with no Bank in the middle. "Open the Bank instead." lied
+   * about an empty Bank (nothing was ever deposited, since the GB save was never
+   * opened); the honest procedure is deposit-first. */
+  [NV_GB]        = { { NAV_BANK_ONLY, "Deposit it to the Bank first." },
+                     { NAV_BANK_ONLY, "Deposit it to the Bank first." } },
   /* BACKLOG #150 S150-11 decision 13: the TRANSFERS screen only reads a Gen-3 PC
    * (app_gen3_pc_live()) -- a raw Game Boy session has none, so it's the same
    * "open it from the other side" honesty as NV_GB above, not NAV_OK. */
@@ -147,7 +152,7 @@ static bool nv_gb_blocked(int nv_item) {
 }
 
 NavAvail nav_avail(int nv_item, int save_kind) {
-  if (nv_gb_blocked(nv_item)) return NAV_COMING_SOON;
+  if (nv_gb_blocked(nv_item)) return NAV_BANK_ONLY;
   int col = gb_col(nv_item, save_kind);
   return (col < 0) ? NAV_OK : GB_TABLE[nv_item][col].state;
 }
@@ -155,7 +160,7 @@ NavAvail nav_avail(int nv_item, int save_kind) {
 const char* nav_avail_why(int nv_item, int save_kind) {
   /* Same wording the Game Boy table already uses for this exact row (GB_TABLE's own
    * [NV_GB] entries above) -- one string, not a second copy that could drift. */
-  if (nv_gb_blocked(nv_item)) return "Open the Bank instead.";
+  if (nv_gb_blocked(nv_item)) return "Deposit it to the Bank first.";
   int col = gb_col(nv_item, save_kind);
   return (col < 0) ? "OK" : GB_TABLE[nv_item][col].why;
 }

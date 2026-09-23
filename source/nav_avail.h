@@ -45,7 +45,14 @@ typedef enum {
                        * kind, the row's EXISTING per-game-correct behaviour) runs   */
   NAV_COMING_SOON,    /* the feature is real (works for some other save) but this
                        * session's code path does not wire it up yet                */
-  NAV_NOT_IN_GAME     /* this game/generation never had the feature at all          */
+  NAV_NOT_IN_GAME,    /* this game/generation never had the feature at all          */
+  NAV_BANK_ONLY        /* BACKLOG #239: the row WAS wired (concurrent second-save
+                       * mount) and was deliberately removed -- "coming soon" would
+                       * lie about that, and "Open the Bank instead" names a Bank
+                       * that is EMPTY (nothing was ever deposited, since the GB save
+                       * was never opened). This state says the real, current
+                       * procedure: deposit from the GB save's own session first,
+                       * THEN the Bank has something to open here.                  */
 } NavAvail;
 
 /* `nv_item` is an NV_* id from pdna_layout.h's PDNA_NAV_ITEMS X-macro (0..NV_COUNT-1).
