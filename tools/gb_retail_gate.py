@@ -290,6 +290,103 @@ def run_partymail_case(extract_binary, emerald_sav: Path, work: Path, tally):
                             f"rec_len={len(data)}")
 
 
+def build_mail_inject_tool(scratch: Path) -> Path | None:
+    """cc tools/mail_inject.c's own recipe (its own header comment). Returns None on a
+    build failure -- the swap-refusal case then skips, same convention as
+    build_extract_tool."""
+    binary = scratch / "mail_inject"
+    cmd = ["cc", "-std=c11", "-O2", "-I", "source", "tools/mail_inject.c",
+           "source/gen3_save.c", "source/gen3_mon.c", "source/gen3_edit.c",
+           "source/gen3_ivroll.c", "source/gen3_pidiv.c", "source/gen3_gen.c",
+           "source/gen3_daycare.c", "source/data_tables.c", "-o", str(binary)]
+    proc = subprocess.run(cmd, cwd=PROJECT_ROOT, capture_output=True, text=True)
+    if proc.returncode != 0:
+        print("[skip] swap mail refusal (BACKLOG #227 D3): tools/mail_inject.c build failed:",
+              file=sys.stderr)
+        print((proc.stdout + proc.stderr).strip(), file=sys.stderr)
+        return None
+    return binary
+
+
+def build_swap_mail_case_tool(scratch: Path, mutant: bool) -> Path | None:
+    """cc tools/swap_mail_case.c's own recipe (its own header comment). `mutant=True`
+    builds the -DSWAP_MAIL_CASE_MUTANT_WRITE_FIRST self-proof variant this case's own
+    self-test runs once to prove the check has teeth (BACKLOG #227 D3, STANDING-RULES'
+    self-audit point 1)."""
+    binary = scratch / ("swap_mail_case_mut" if mutant else "swap_mail_case")
+    cmd = ["cc", "-std=c11", "-O2", "-I", "source"]
+    if mutant:
+        cmd += ["-DSWAP_MAIL_CASE_MUTANT_WRITE_FIRST"]
+    cmd += ["tools/swap_mail_case.c", "source/gen3_save.c", "source/gen3_mon.c",
+            "source/gen3_box.c", "source/gen3_edit.c", "source/gen3_clip.c",
+            "source/gen3_daycare.c", "source/data_tables.c", "-o", str(binary)]
+    proc = subprocess.run(cmd, cwd=PROJECT_ROOT, capture_output=True, text=True)
+    if proc.returncode != 0:
+        print(f"[skip] swap mail refusal (BACKLOG #227 D3): tools/swap_mail_case.c "
+              f"(mutant={mutant}) build failed:", file=sys.stderr)
+        print((proc.stdout + proc.stderr).strip(), file=sys.stderr)
+        return None
+    return binary
+
+
+def run_swap_mail_refusal_case(scratch: Path, emerald_sav: Path, tally):
+    """BACKLOG #227 D3 (review mail-integrity-review.md): `make retail-gate` had never
+    run the SWAP-arm mail refusal against a real corpus save -- only the shot chain's
+    on-screen captions proved it, which check pixels, not save bytes. Injects Mail
+    (item 121, ORANGE MAIL) onto a real corpus save's party slot 1 through the SAME
+    verified edit pipeline tools/mail_inject.c already proved honest for BACKLOG #227's
+    own shot fixture, then runs tools/swap_mail_case.c's reproduction of
+    party_place_held's SWAP-arm guard (source/pdna_main.c, itself not host-compilable)
+    against it and asserts the save image is BYTE-UNCHANGED afterward -- the shape
+    tests/host_gen1party_test.c:466 already uses for the Gen-2 mirror
+    (memcmp(g_fimg, g_fsnap, len) == 0 after a refused insert).
+
+    Self-test first (STANDING-RULES' self-audit point 1: every new assertion has been
+    seen RED): builds the -DSWAP_MAIL_CASE_MUTANT_WRITE_FIRST variant, which performs
+    the SWAP arm's destructive write BEFORE the guard would have stopped it, and
+    confirms it reports a CHANGED save image and a non-zero exit -- proving this case
+    would fail if the real guard fired too late or not at all -- before trusting the
+    real (unmutated) build's PASS."""
+    label = "swap mail refusal (BACKLOG #227 D3)"
+    if not emerald_sav.exists():
+        tally.skip_case(label, f"no corpus {emerald_sav}")
+        return
+    inject_bin = build_mail_inject_tool(scratch)
+    swap_bin = build_swap_mail_case_tool(scratch, mutant=False)
+    swap_bin_mut = build_swap_mail_case_tool(scratch, mutant=True)
+    if inject_bin is None or swap_bin is None or swap_bin_mut is None:
+        tally.skip_case(label, "tool build failed -- see stderr above")
+        return
+
+    injected = scratch / "swap_mail_injected.sav"
+    proc = subprocess.run([str(inject_bin), str(emerald_sav), "1", "121", str(injected)],
+                          capture_output=True, text=True)
+    if proc.returncode != 0 or not injected.exists():
+        tally.record(label, False, f"mail_inject failed: {proc.stderr.strip()}")
+        return
+
+    # Self-test: the mutant build must report CHANGED + a non-zero exit against a FRESH
+    # copy of the injected save (the tool overwrites its input's in-memory buffer only,
+    # but run it on its own copy anyway so a future refactor that adds an on-disk write
+    # can't let one run's mutation leak into the other's input).
+    mut_copy = scratch / "swap_mail_injected_mut.sav"
+    mut_copy.write_bytes(injected.read_bytes())
+    mut_proc = subprocess.run([str(swap_bin_mut), str(mut_copy), "1"],
+                              capture_output=True, text=True)
+    mut_changed = "CHANGED" in mut_proc.stdout
+    if not tally.record(f"{label} self-test (mutant must show CHANGED)",
+                        mut_proc.returncode != 0 and mut_changed,
+                        f"exit={mut_proc.returncode} stdout={mut_proc.stdout.strip()!r}"):
+        return   # the self-test failing means this case has no teeth -- don't trust the real run
+
+    # The real (unmutated) build: must report byte-unchanged and exit 0.
+    real_proc = subprocess.run([str(swap_bin), str(injected), "1"],
+                               capture_output=True, text=True)
+    real_ok = real_proc.returncode == 0 and "byte-unchanged" in real_proc.stdout
+    tally.record(label, real_ok,
+                f"exit={real_proc.returncode} stdout={real_proc.stdout.strip()!r}")
+
+
 def run_paste_case(name, info, rom, sav, work, binary, python, vendor, tally,
                    sections, rec_path):
     """BACKLOG #211: PASTE (Gen 3 -> Game Boy) through the retail gate -- the SAME
@@ -2553,6 +2650,13 @@ def main(argv=None):
     total_ok += partymail_tally.ok
     total_fail += partymail_tally.fail
     total_skip += partymail_tally.skip
+
+    # BACKLOG #227 D3: same style -- Gen-3-only, runs ONCE, not per GB game.
+    swapmail_tally = Tally("(host)")
+    run_swap_mail_refusal_case(scratch, corpus.parent / "Emerald.sav", swapmail_tally)
+    total_ok += swapmail_tally.ok
+    total_fail += swapmail_tally.fail
+    total_skip += swapmail_tally.skip
 
     names = [a.only] if a.only else list(GAMES)
     for name in names:
