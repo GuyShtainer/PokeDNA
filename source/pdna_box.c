@@ -10,6 +10,7 @@
 #include "sys.h"            /* EWRAM_BSS (after tonc.h so u8 macro doesn't clash) */
 #include "pdna_box.h"
 #include "xfer_gate.h"      /* BACKLOG #120 S2: xg_drop_denied gates cross-generation drops */
+#include "bank_down_convert.h" /* BACKLOG #174 (S150-8c): bank_down_convert_gen3_party */
 _Static_assert(BOXSCOPE_GB == 2, "source/xfer_gate.c's XG_SCOPE_GB hard-codes 2 for "
                "BOXSCOPE_GB -- keep them in step or the cross-generation drop deny "
                "silently stops firing");
@@ -3811,21 +3812,69 @@ static int party_strip_overlay(BoxSource* src, int box, int* cur,
          * unconditionally, so this function is self-sufficient regardless of which
          * call site is running (matches the same principle the s_holding clear below
          * already follows). */
-        /* BACKLOG #150 S150-3 decision 3 (party site): the party lives in `g_sb1`,
-         * PC-scope storage -- a native cell can never survive there. BACKLOG #150
-         * S150-8 decision 2/D-Q2: say so, with a sentence -- the Gen-3 PARTY
-         * destination is CUT for this lane (a converted copy lands in the PC only;
-         * see this lane's OPEN WORK note), so a bare snd_deny() would silently look
-         * like a bug rather than the documented gap it is. */
+        /* BACKLOG #174 (S150-8c) D2: a native Bank cell now converts and joins the
+         * Gen-3 party, mirroring drop_held's own arm (:1529 ff.) -- the party site's
+         * OWN pre-flights ALL run before the conversion arm (G-M2's rule): a non-ADD
+         * target (a SWAP is already impossible for a bank origin -- can_swap_now is
+         * false and party_place_held forces can_swap=false for a bank origin, but
+         * today the user would only learn that AFTER the whole conversion had run;
+         * refusing it first makes the only reachable post-ledger failure impossible,
+         * D4/D5), a full party (party_place_held's own PARTY FULL check runs AFTER a
+         * landing would have been recorded -- hoist the identical condition), and a
+         * full Bank defer queue (a full queue would silently drop the delete, D3's
+         * queue-full precondition). Each dialog is bracketed with its OWN
+         * boxoam_suspend()/boxoam_resume() -- never once around the whole block:
+         * gb_down_loss_screen re-enables OBJ on its own return, so an outer bracket
+         * would be cancelled by the inner one and the NEXT dialog would draw over
+         * live box sprites (BACKLOG #207's exact defect class). */
         bool placed;
-        if (bc_is_native(s_held)) {
-          boxoam_suspend();
-          snd_deny();
-          msg_wait(PDNA_XFER_PARTY_TITLE, UI_WARN, PDNA_XFER_PARTY_L1, PDNA_XFER_PARTY_L2);
+        int n_now = app_party_n();
+        bool native = bc_is_native(s_held);
+        bool converted = false; uint8_t conv[80];
+        if (native && sel != n_now) {
+          boxoam_suspend(); snd_deny();
+          msg_wait(PDNA_XFER_PARTYSWAP_TITLE, UI_WARN, PDNA_XFER_PARTYSWAP_L1, PDNA_XFER_PARTYSWAP_L2);
           boxoam_resume();
           placed = false;
-        } else if (xg_native_escape_denied(s_held, BOXSCOPE_PC)) { snd_deny(); placed = false; }
-        else placed = app_party_place_held(s_held, sel, s_orig_box, s_orig_slot, (s_orig_scope == BOXSCOPE_BANK), can_swap_now, NULL);
+        } else if (native && n_now >= 6) {
+          boxoam_suspend(); snd_deny();
+          msg_wait(PDNA_XFER_PARTYFULL3_TITLE, UI_WARN, PDNA_XFER_PARTYFULL3_L1, PDNA_XFER_PARTYFULL3_L2);
+          boxoam_resume();
+          placed = false;
+        } else if (native && s_orig_scope == BOXSCOPE_BANK && s_orig_slot >= 0 && app_bank_defer_full()) {
+          boxoam_suspend(); snd_deny();
+          msg_wait("TOO MANY MOVES", UI_WARN, "Save first, then continue.", 0);
+          boxoam_resume();
+          placed = false;
+        } else if (native && bank_down_convert_gen3_party(src, sel, s_held, conv) != BANK_DOWN_CONVERTED) {
+          placed = false;                          /* the arm's own dialog already said why */
+        } else {
+          converted = native;
+          /* BACKLOG #174 D4: `placing` mirrors drop_held's own idiom (:1686) -- a
+           * converted record is an ordinary Gen-3 record the escape gate would
+           * (correctly) never refuse; s_held is still native, so an ungated call
+           * would refuse a transfer its own arm just approved (the identical
+           * reasoning at drop_held's own escape gate, :1614-1619). */
+          const uint8_t* placing = converted ? conv : s_held;
+          if (!converted && xg_native_escape_denied(s_held, BOXSCOPE_PC)) { snd_deny(); placed = false; }
+          else placed = app_party_place_held(placing, sel, s_orig_box, s_orig_slot,
+                                             (s_orig_scope == BOXSCOPE_BANK), can_swap_now,
+                                             converted ? s_held : NULL);
+          /* BACKLOG #174 D5: after a converted cell's ledger entry is written,
+           * party_append can fail ONLY when party_count() >= PARTY_MAX -- already
+           * excluded above by n_now >= 6 on this SAME frame -- and box_to_party
+           * cannot fail. If app_party_place_held still returns false here, the
+           * ledger entry this frame just wrote must be undone (nothing landed
+           * anywhere yet -- unlike flush_on_exit's failed-commit arm, where the
+           * write may already be on the card, which is why #176 chose _drop there
+           * instead). */
+          if (converted && !placed) {
+            log_line("party: place refused AFTER a converted transfer -- undoing the ledger entry");
+            app_xfer_pending_undo();
+            snd_error();
+            msg_wait(PDNA_XFERREC_TITLE, UI_WARN, PDNA_XFERREC_L1, PDNA_XFERREC_L2);
+          }
+        }
         if (placed && s_orig_scope == BOXSCOPE_PC && s_orig_slot >= 0) {
           recs = src->records(box); box_decode(src, recs, box); s_oam_reload = true;
         }
