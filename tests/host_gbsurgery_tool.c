@@ -41,6 +41,7 @@
  *      source/gen3_save.c \
  *      source/gen3_edit.c \
  *      source/gen3_daycare.c \
+ *      source/rom_gbmap.c \
  *      -o /tmp/hgbsurg
  *
  * (gb_fields.c is also required -- gb_trainer.c already needs it -- but was already
@@ -149,6 +150,7 @@
 #include "rom_gbsprite.h"
 #include "rom_gbbase.h"
 #include "rom_gblearn.h"
+#include "rom_gbmap.h"
 #include "gb_new_mon.h"
 #include "data_tables.h"
 #include "gb_trainer.h"
@@ -342,6 +344,7 @@ static int parse_args(int argc, char** argv, const char** in, const char** out,
     {"hofnick", 3},    /* BACKLOG #198 item 7: TEAM_IDX MON_IDX TEXT, via gbh_set_mon */
     {"hofdv", 4},      /* BACKLOG #198 item 7: TEAM_IDX MON_IDX STAT V, Gen 2 only */
     {"paste80", 2},    /* BACKLOG #211: BOX REC80FILE, via gen3_to_gb_fixed + the fill */
+    {"mapquery", 1},   /* M3 (BACKLOG #91) retail-gate case: MAP, read-only, needs --rom */
   };
   *in = NULL; *out = NULL; *list_mode = false; *nops = 0;
   for (int i = 1; i < argc; i++) {
@@ -879,6 +882,39 @@ static bool tool_rom_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
   if (fseek(f, (long)off, SEEK_SET) != 0) return false;
   if (fread(dst, 1, len, f) != len) return false;
   return true;
+}
+
+/* M3 (BACKLOG #91) retail-gate case: read-only ROM query, no save bytes touched.
+ * Prints the located header's own width/height (in BLOCKS, rom_gbmap.h's own
+ * GbMap1Header) for `map` so run_teleport_case (tools/gb_retail_gate.py) can
+ * pick a destination it has PROVEN is inside the map's own bounds instead of
+ * guessing a coordinate and hoping -- the exact "never trust a shape it could
+ * not confirm" posture this whole locator module is built around (rom_gbmap.h's
+ * own top comment). Reuses g_rom_path/g_romscratch/tool_rom_read exactly as
+ * do_create() below does for rom_gbbase_gen1/rom_gblearn_open. */
+static int do_mapquery(const GbSession* s, const char* map_tok) {
+  if (s->gen != GB_GEN1) return refuse("mapquery is Gen 1 only");
+  int map = resolve_uint(map_tok, "mapquery map");
+  if (map < 0 || map > 255) { fprintf(stderr, "mapquery MAP must be 0..255\n"); return 2; }
+  if (!g_rom_path) { fprintf(stderr, "--op mapquery needs --rom PATH\n"); return 2; }
+
+  FILE* rf = fopen(g_rom_path, "rb");
+  if (!rf) return refuse("cannot open --rom file");
+  if (fseek(rf, 0, SEEK_END) != 0) { fclose(rf); return refuse("cannot seek --rom file"); }
+  long rsz = ftell(rf);
+  if (rsz <= 0) { fclose(rf); return refuse("empty --rom file"); }
+  rewind(rf);
+
+  RomGbMap1 g;
+  bool gok = rgm1_open(&g, tool_rom_read, rf, (uint32_t)rsz, g_romscratch, sizeof g_romscratch);
+  if (!gok) { fclose(rf); return refuse("rgm1_open: no Gen-1 map tables located"); }
+  GbMap1Header hdr;
+  bool hok = rgm1_header(&g, (uint8_t)map, &hdr);
+  fclose(rf);
+  if (!hok) return refuse("rgm1_header: could not resolve that map id");
+
+  printf("MAPQUERY %d WIDTH %u HEIGHT %u\n", map, (unsigned)hdr.width, (unsigned)hdr.height);
+  return 0;
 }
 
 /* BACKLOG #50, retail-gate case: build a fresh mon off --rom (rom_gbbase_gen1/2 +
@@ -1532,6 +1568,9 @@ static int apply_op(GbSession* s, const Op* o) {
   }
   if (!strcmp(o->kind, "warp")) {
     return do_warp(s, o->a[0], o->a[1], o->a[2]);
+  }
+  if (!strcmp(o->kind, "mapquery")) {
+    return do_mapquery(s, o->a[0]);
   }
   if (!strcmp(o->kind, "warp2")) {
     return do_warp2(s, o->a[0], o->a[1], o->a[2], o->a[3]);

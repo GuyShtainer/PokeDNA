@@ -112,6 +112,10 @@ SURGERY_SRCS = [
     "source/gen3_to_gb.c", "source/gb_moves_legal.c", "source/gen3_mon.c",
     "source/gen3_box.c", "source/evolutions.c", "source/gen3_save.c",
     "source/gen3_edit.c", "source/gen3_daycare.c",
+    # BACKLOG #91 M3: --op mapquery's own dependency (rom_gbmap.h's locate-by-shape
+    # module -- read-only, no save bytes, used to pick a PROVEN in-bounds teleport
+    # destination for run_teleport_case instead of a guessed one).
+    "source/rom_gbmap.c",
 ]
 
 # gen: 1 = Gen-1 numbering (no primary/backup mirror split in gb_roundtrip's classifier,
@@ -142,6 +146,20 @@ PRIMARY_CKSUM_OFF = {"gs": 0x2D69, "crystal": 0x2D0D}
 MONEY_VALUE = 123456        # < the 999999 cap; distinct digits so a byte-order bug shows
 MONEY_WRAM = {"red": 0xD347, "yellow": 0xD346, "gold": 0xD573, "crystal": 0xD84E}
 MONEY_LEN = 3                # both encodings are 3 bytes (BCD24 Gen 1 / BE24 Gen 2)
+
+# BACKLOG #91 M3 -- the Gen-1 in-map teleport write (source/gb1_warp.h's own scope
+# note explains why this is Gen 1 only: Gen 2's map fields are BACKLOG #91 M1-G2's
+# own lane). map_id is each corpus save's OWN current map (docs/GB-MAP-DESIGN.md
+# Grilling A1: Red sits on VIRIDIAN_POKECENTER=0x29=41, Yellow on
+# CELADON_MANSION_3F=0x82=130) -- teleport stays WITHIN that map, the same scope
+# source/gb1_warp.h's own top comment gives the shipped screen. wCurMap/wXCoord/
+# wYCoord addresses are the SAME per-game pair gb_fields.c and the design doc's
+# §3.1 both carry (Red $D35E/$D362/$D361, Yellow shifted -1 byte across the board).
+TELEPORT_MAP = {"red": 41, "yellow": 130}
+TELEPORT_WRAM = {
+    "red":    {"map": 0xD35E, "x": 0xD362, "y": 0xD361},
+    "yellow": {"map": 0xD35D, "x": 0xD361, "y": 0xD360},
+}
 
 # BACKLOG #95 review gate case: the held-item write (--op helditem, gb_set_held_item)
 # proven the SAME way as money above -- boot it and read the byte back off WRAM,
@@ -1694,6 +1712,88 @@ def run_fly_case(name, info, rom, sav, work, binary, python, vendor, tally):
     tally.record("fly (BACKLOG #90)", ok, detail)
 
 
+def run_teleport_case(name, info, rom, sav, work, binary, python, vendor, tally):
+    """BACKLOG #91 M3 -- proves the Gen-1 in-map teleport write (source/pdna_gbmap.c's
+    gbmap_write_pos, exercised here through the SAME --op warp the M1 shot harness
+    already uses -- both write the identical GBF_MAP_ID/POS_X/POS_Y/POS_XBLOCK/
+    POS_YBLOCK fields via gbs_write_field) actually lands where the REAL game reads
+    it back from after a Continue boot, not just that PokeDNA's own parser agrees
+    with itself. Gen 1 only -- Gen 2's map fields are BACKLOG #91 M1-G2's own scope.
+
+    The destination is never guessed: --op mapquery asks the located ROM header for
+    THIS map's own block width/height (the same rom_gbmap.c code the shipped screen
+    itself runs) and this case picks the map's own far corner (width-1, height-1) --
+    always structurally in-bounds, whatever the corpus ROM's real numbers turn out to
+    be. This is the "never trust a shape it could not confirm" posture the map
+    module's own header comment requires of every caller, applied to a TEST rather
+    than to the shipped screen."""
+    if info["gen"] != 1:
+        tally.skip_case("teleport (BACKLOG #91 M3)",
+                        "Gen 2 map fields are BACKLOG #91 M1-G2's own lane")
+        return
+    map_id = TELEPORT_MAP.get(name)
+    if map_id is None:
+        tally.skip_case("teleport (BACKLOG #91 M3)", f"no known map id for {name}")
+        return
+
+    dummy = work / "mapquery_unused.sav"
+    rc, out, err = run_surgery(binary, sav, dummy, [["mapquery", str(map_id)]], rom=rom)
+    m = re.search(r"MAPQUERY (\d+) WIDTH (\d+) HEIGHT (\d+)", out)
+    if rc != 0 or not m:
+        tally.record("teleport (BACKLOG #91 M3)", False,
+                    f"mapquery refused: rc={rc} out={out.strip()!r} err={err.strip()!r}")
+        return
+    width, height = int(m.group(2)), int(m.group(3))
+    if width < 1 or height < 1:
+        tally.record("teleport (BACKLOG #91 M3)", False,
+                    f"degenerate bounds {width}x{height} for map {map_id}")
+        return
+
+    bx, by = width - 1, height - 1          # the map's own far corner -- always in-bounds
+    x_coord, y_coord = bx * 2, by * 2       # gb1warp_coord's own block -> coord inverse
+
+    edited = work / "teleport.sav"
+    rc, out, err = run_surgery(binary, sav, edited,
+                               [["warp", str(map_id), str(x_coord), str(y_coord)]])
+    if rc != 0:
+        tally.record("teleport (BACKLOG #91 M3)", False, f"surgery refused: {err.strip()}")
+        return
+    if edited.read_bytes() == sav.read_bytes():
+        tally.record("teleport (BACKLOG #91 M3)", False,
+                    "surgery wrote 0 bytes -- the destination was already the "
+                    "save's own current position (gate-D6-style check)")
+        return
+
+    wram = TELEPORT_WRAM[name]
+    extra_args = ["--expect", "accept",
+                 "--read-mem", f"{wram['map']:#06x}:1",
+                 "--read-mem", f"{wram['x']:#06x}:1",
+                 "--read-mem", f"{wram['y']:#06x}:1"]
+    rc, rep, out, err = boot(python, rom, edited, work / "teleport", vendor,
+                             work / "teleport.json", extra_args=extra_args)
+    mem = rep.get("mem") or {}
+    svbk_ok = bool(mem.get("svbk_ok", True))
+
+    def _val(addr):
+        h = mem.get(f"{addr:#06x}")
+        return int(h, 16) if isinstance(h, str) else None
+
+    got_map, got_x, got_y = _val(wram["map"]), _val(wram["x"]), _val(wram["y"])
+    ok = (rc == 0 and svbk_ok and got_map == map_id
+         and got_x == x_coord and got_y == y_coord)
+    detail = (f"verdict={rep.get('verdict')} svbk_ok={svbk_ok} "
+             f"map={got_map!r}(want {map_id}) x={got_x!r}(want {x_coord}) "
+             f"y={got_y!r}(want {y_coord}) dest=block({bx},{by}) of {width}x{height}")
+    if not ok:
+        fails = [f.strip() for f in out.splitlines() if f.strip().startswith("FAIL:")]
+        if fails:
+            detail += " | " + "; ".join(fails)
+        tail = stderr_tail(err)
+        if tail:
+            detail += " | stderr: " + tail
+    tally.record("teleport (BACKLOG #91 M3)", ok, detail)
+
+
 def _dex_popcount(hexstr):
     return bin(int(hexstr, 16)).count("1") if hexstr else 0
 
@@ -2303,6 +2403,10 @@ def run_game(name, info, rom, sav, scratch, binary, python, vendor, paste_rec_pa
     # ---- 2i. BACKLOG #90 — the fly-destination bitfield core (run_fly_case itself
     # skips Gen 1 -- every real destination is already visited in the corpus, D6) ----
     run_fly_case(name, info, rom, sav, work, binary, python, vendor, tally)
+
+    # ---- 2i1. BACKLOG #91 M3 — the Gen-1 in-map teleport write, proven on a real
+    # boot (run_teleport_case itself skips Gen 2 -- a different lane's own scope) ----
+    run_teleport_case(name, info, rom, sav, work, binary, python, vendor, tally)
 
     # ---- 2i2. BACKLOG #87 item 6 — the Pokedex owned/seen core, both directions ----
     run_dexset_case(name, info, rom, sav, work, binary, python, vendor, tally)
