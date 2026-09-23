@@ -1918,7 +1918,12 @@ gated gbscr_open_inner need=6088 from=rom_gbui.h:PDNA_GB_UI_NEED gate=gbscr_open
 # whole party-strip visit), growing it to 7,160 B (artless) / 7,152 B (normal),
 # both <= the 64 B ceiling. New need = 7,160 + 64 ISR = 7,224 (artless
 # dominates) -- see PDNA_PARTY_STRIP_NEED's own comment.
-gated pcp_open_party_strip_inner need=7224 from=pdna_box.c:PDNA_PARTY_STRIP_NEED gate=pcp_open_party_strip via=pcp_open_party_strip
+# BACKLOG #150 S150-8c/#174 (review D2, 2026-09-23): re-derived again --
+# party_strip_overlay's own frame grew 936 -> 984 B (this lane's native-cell
+# party-landing branch, inside the 64 B stop-licence) on the same #1 chain,
+# growing it to 7,200 B (artless) / 7,192 B (normal). New need = 7,200 + 64 ISR
+# = 7,264 (artless dominates) -- see PDNA_PARTY_STRIP_NEED's own comment.
+gated pcp_open_party_strip_inner need=7264 from=pdna_box.c:PDNA_PARTY_STRIP_NEED gate=pcp_open_party_strip via=pcp_open_party_strip
 
 # BACKLOG #179 A3 review D14 (informational, 2026-09-23): the delta variant's own
 # deepest-chain figure reported by the gate (e.g. "STACK ok: deepest N of 15,024

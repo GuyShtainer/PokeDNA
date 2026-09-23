@@ -173,4 +173,16 @@ BankDownResult bank_down_convert_gen3(BoxSource* src, int dst_box, int dst_cell,
   return gb_bank_down_gen3(src, dst_box, dst_cell, cell80, dstrec, out80);
 }
 
+/* BACKLOG #174 (S150-8c): a zeroed dstrec makes gb_bank_down_gen3's own occupancy test
+ * (`occ = (dstrec[0..3] != 0) || bc_is_native(dstrec)`) false by construction -- there is
+ * no PC cell to be occupied, the caller has already proved the party ADD slot is free.
+ * `.rodata`, 80 B of ROM, 0 B of RAM (the gate forbids new EWRAM statics, not new `const`).
+ * dst_box = -1 makes the log line self-identifying ("box -1 slot N" = the party). */
+static const uint8_t k_empty80[80] = {0};
+
+BankDownResult bank_down_convert_gen3_party(BoxSource* src, int party_slot,
+                                            const uint8_t cell80[80], uint8_t out80[80]) {
+  return gb_bank_down_gen3(src, -1, party_slot, cell80, k_empty80, out80);
+}
+
 #endif

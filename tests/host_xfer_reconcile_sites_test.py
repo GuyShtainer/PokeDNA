@@ -9,12 +9,15 @@ source/pdna_bank.c instead of source/pdna_gen12.c.
 
 Seven checks, each with an in-memory mutation that must turn it red:
 
-  (g) flush_on_exit()'s app_commit_pc() FAILURE branch (the `else` this slice adds)
-      calls app_xfer_pending_drop() (review D2 -- NOT app_xfer_pending_undo(), which
-      would remove the ledger's PENDING entry even for a landed-but-unconfirmed write,
-      an uncollectable duplicate) -- without clearing the RAM key at all, BACKLOG #176
-      reproduces: a failed save leaves g_xd_key set for the rest of the boot and every
-      later native->Gen-3 drop refuses with SAVE FIRST.
+  (g) app_xfer_save_now()'s app_commit_pc() FAILURE branch (the `else` this slice
+      adds) calls app_xfer_pending_drop() (review D2 -- NOT app_xfer_pending_undo(),
+      which would remove the ledger's PENDING entry even for a landed-but-unconfirmed
+      write, an uncollectable duplicate) -- without clearing the RAM key at all,
+      BACKLOG #176 reproduces: a failed save leaves g_xd_key set for the rest of the
+      boot and every later native->Gen-3 drop refuses with SAVE FIRST. BACKLOG #175
+      (S150-8d) D14 factored this whole if/else out of flush_on_exit() into
+      app_xfer_save_now(); this check now also confirms flush_on_exit() still calls
+      the helper (a behaviour-identical refactor, not a removal).
 
   (h) every `pdna_bank_clear_deletions();` call site in source/pdna_main.c is within
       2 lines of `app_xfer_pending_drop();`/`app_xfer_pending_undo();` -- a fresh
@@ -124,13 +127,25 @@ def extract_function_body(text: str, func_name: str) -> str:
 
 
 def check_g_flush_on_exit_undo(text: str) -> list[str]:
-    body = extract_function_body(text, "flush_on_exit")
-    if not body:
+    # BACKLOG #175 (S150-8d) D14: flush_on_exit()'s own `if (app_commit_pc())
+    # {...} else {...}` shape (the #176 posture this check pins) was factored out
+    # into app_xfer_save_now() -- flush_on_exit() now just calls it. Check the
+    # helper's own body for the shape, and separately confirm flush_on_exit() still
+    # reaches it (a behaviour-identical refactor, not a removal).
+    exit_body = extract_function_body(text, "flush_on_exit")
+    if not exit_body:
         return ["flush_on_exit() not found in source/pdna_main.c"]
+    if "app_xfer_save_now(" not in strip_comments(exit_body):
+        return ["flush_on_exit(): no app_xfer_save_now( call found -- BACKLOG #175 "
+                "D14's refactor moved the #176 posture there; flush_on_exit() must "
+                "still call it"]
+    body = extract_function_body(text, "app_xfer_save_now")
+    if not body:
+        return ["app_xfer_save_now() not found in source/pdna_main.c"]
     stripped = strip_comments(body)
     m = re.search(r"if\s*\(\s*app_commit_pc\s*\(\s*\)\s*\)\s*\{", stripped)
     if not m:
-        return ["flush_on_exit(): no `if (app_commit_pc())` found"]
+        return ["app_xfer_save_now(): no `if (app_commit_pc())` found"]
     # the else branch: from the matching close-brace of the if-block to the next
     # `else {` ... matching close-brace.
     depth = 1
@@ -144,7 +159,7 @@ def check_g_flush_on_exit_undo(text: str) -> list[str]:
     rest = stripped[i:]
     em = re.match(r"\s*else\s*\{", rest)
     if not em:
-        return ["flush_on_exit(): app_commit_pc()'s if-block has no `else` -- BACKLOG #176 "
+        return ["app_xfer_save_now(): app_commit_pc()'s if-block has no `else` -- BACKLOG #176 "
                 "regression: a failed commit never clears the pending transfer"]
     depth = 1
     j = em.end()
@@ -162,11 +177,11 @@ def check_g_flush_on_exit_undo(text: str) -> list[str]:
     # the ledger's PENDING entry over a copy that actually landed, an uncollectable
     # duplicate. Only the RAM key is cleared here: app_xfer_pending_drop(), not undo.
     if "app_xfer_pending_drop(" not in else_body:
-        out.append("flush_on_exit(): the app_commit_pc() FAILURE branch does not call "
+        out.append("app_xfer_save_now(): the app_commit_pc() FAILURE branch does not call "
                     "app_xfer_pending_drop( -- BACKLOG #176/review D2 (a failed-or-"
                     "unconfirmed save must not remove the ledger's PENDING entry)")
     if "PDNA_XFER_NOTSAVED_TITLE" not in else_body:
-        out.append("flush_on_exit(): the app_commit_pc() FAILURE branch does not show "
+        out.append("app_xfer_save_now(): the app_commit_pc() FAILURE branch does not show "
                     "PDNA_XFER_NOTSAVED_TITLE (decision 11(i))")
     return out
 
@@ -337,11 +352,14 @@ def main() -> int:
     # --- self-mutation proofs -----------------------------------------------------
     fails = 0
 
-    # (g): delete the drop call from the else branch.
+    # (g): delete the drop call from the else branch. BACKLOG #175 (S150-8d) D14
+    # moved this from flush_on_exit (6-space indent, 3 nesting levels) into
+    # app_xfer_save_now (4-space indent, 2 nesting levels) -- re-anchored, not
+    # copied blind.
     mutated = main_text.replace(
-        "      app_xfer_pending_drop();\n"
-        "      msg_wait(PDNA_XFER_NOTSAVED_TITLE, UI_WARN, PDNA_XFER_NOTSAVED_L1, PDNA_XFER_NOTSAVED_L2);\n",
-        "      msg_wait(PDNA_XFER_NOTSAVED_TITLE, UI_WARN, PDNA_XFER_NOTSAVED_L1, PDNA_XFER_NOTSAVED_L2);\n",
+        "    app_xfer_pending_drop();\n"
+        "    msg_wait(PDNA_XFER_NOTSAVED_TITLE, UI_WARN, PDNA_XFER_NOTSAVED_L1, PDNA_XFER_NOTSAVED_L2);\n",
+        "    msg_wait(PDNA_XFER_NOTSAVED_TITLE, UI_WARN, PDNA_XFER_NOTSAVED_L1, PDNA_XFER_NOTSAVED_L2);\n",
         1)
     if mutated == main_text:
         print("FAIL -- self-mutation (g) target not found verbatim (source drifted)")

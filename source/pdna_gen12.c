@@ -3239,7 +3239,8 @@ static bool __attribute__((noinline)) gb_paste_write(const GbEditMon* mon, int b
  * conditional rows + these two + the two hint rows = 10 rows of PDNA_SIDECAR_LOSS_
  * ROW_H (9 px) from y=PDNA_SIDECAR_LOSS_ROW_Y0 (16) -> 106 px, inside UI_SCR_H (160). */
 static bool __attribute__((noinline))
-gb_down_loss_screen(const Gb12Notes* n, uint8_t g2_item, bool item_travels, bool is_copy) {
+gb_down_loss_screen(const Gb12Notes* n, uint8_t g2_item, bool item_travels, bool is_copy,
+                    bool to_party) {
   /* BACKLOG #207 (from the s150-12 review): this dialog had no boxoam_suspend/resume
    * bracket, so the PC box's live OBJ icons sat over the dialog text (visible in the
    * --s150-12 chain's frames 16/20). Bracketed exactly like the same idiom elsewhere
@@ -3261,7 +3262,15 @@ gb_down_loss_screen(const Gb12Notes* n, uint8_t g2_item, bool item_travels, bool
   y = loss_row(y, n->gender_relaxed || n->letter_relaxed, "PID search relaxed");
   y = loss_row(y, true, "IVs come from DVs, nature from EXP");
   y = loss_row(y, true, "Met: this game, traded");
-  if (is_copy) {
+  /* BACKLOG #174 (S150-8c) D7: to_party and is_copy are mutually exclusive -- a COPY
+   * cell's DOWN never writes a ledger entry (decision 9), and D2 admits only Bank-origin
+   * native cells to the party site, so the row budget (Item + 4 conditional + 2 fixed +
+   * copy's 2 + 2 hint rows = 10, PDNA_SIDECAR_LOSS_ROW_H*10 = 90 px from y=16 -> 106 px,
+   * inside UI_SCR_H 160) is unchanged by adding this ONE row in the same slot copy's two
+   * would otherwise occupy alone. */
+  if (to_party) {
+    y = loss_row(y, true, PDNA_XFER_PARTYLAND_L1);
+  } else if (is_copy) {
     y = loss_row(y, true, PDNA_XFER_COPY_NOBACK_L1);
     y = loss_row(y, true, PDNA_XFER_COPY_NOBACK_L2);
   }
@@ -3460,20 +3469,28 @@ BankDownResult gb_bank_down_gen3(BoxSource* src, int dst_box, int dst_cell,
    * in one session without a SAVE-FIRST wall -- the S150-8d constraint this pre-
    * flight guards is about ledger entries, never about cells. */
   if (!copy && app_xfer_pending()) {                                        /* 16(g), decision 9 */
-    snd_deny();
-    /* BACKLOG #168a review D6: same class as the gen12_reason_text dialog above --
-     * bracket it so the PC box's OBJ icons do not sit over the SAVE FIRST text. */
+    /* BACKLOG #175 (S150-8d) D13: offer SAVE NOW? instead of a flat refusal -- the
+     * shipped SAVE FIRST msg_wait is gone (its own strings stay live for the two
+     * restore-side SAVE FIRST refusals, D18, decision 18); this is the ONLY site
+     * that used them for the pending-transfer wall. BACKLOG #168a review D6's own
+     * bracket (the PC box's OBJ icons must not sit under the dialog) still applies. */
     boxoam_suspend();
-    msg_wait(PDNA_XFER_SAVEFIRST_TITLE, UI_WARN, PDNA_XFER_SAVEFIRST_L1, PDNA_XFER_SAVEFIRST_L2);
+    char l1[64];
+    siprintf(l1, "%s %s", PDNA_XFER_SAVENOW_L1, PDNA_XFER_SAVENOW_L2);
+    bool yes = app_confirm(PDNA_XFER_SAVENOW_TITLE, l1);      /* A = save now, B = no */
+    bool ok  = yes && app_xfer_save_now();                    /* D14 */
     boxoam_resume();
-    return BANK_DOWN_REFUSED;
+    if (!ok) { snd_deny(); return BANK_DOWN_REFUSED; }        /* the helper/confirm already said why */
   }
 
   bool occ = (dstrec[0] | dstrec[1] | dstrec[2] | dstrec[3]) != 0 || bc_is_native(dstrec);
   if (occ) { snd_deny(); return BANK_DOWN_REFUSED; }                        /* 16(h) */
 
   bool travels = (g3item != 0);
-  if (!gb_down_loss_screen(&notes, notes.item_g2, travels, copy)) return BANK_DOWN_REFUSED;
+  const bool to_party = (dst_box < 0);   /* BACKLOG #174 D7: gb_bank_down_gen3's own dst_box<0
+                                          * test, so bank_down_convert_gen3_party's exported
+                                          * signature stays unchanged (D1) */
+  if (!gb_down_loss_screen(&notes, notes.item_g2, travels, copy, to_party)) return BANK_DOWN_REFUSED;
 
   /* decision 7's MAKE LEGAL correction: the mon standing below pk_evo_floor(dex). */
   PkMon pk;

@@ -1094,18 +1094,45 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XFER_GBSWAP_L2    "two Pokemon at once."
 
 /* BACKLOG #150 S150-8 decision 13 / D-Q2/D-Q3: the DOWN-converting edge's own
- * strings -- native cell -> Gen-3 PC (decision 2's party refusal), one unpromoted
- * transfer at a time (decision 9), the ledger-full evict-then-refuse case
- * (decision 8), the Gen-1<->Gen-2 time-capsule refusal (decision 14), and the
- * flush-failure report (decision 10). Same <=28-column discipline as every other
- * fixed title in this file (tests/host_textfit_test.c's own PF(text, 28, 184) rows). */
-#define PDNA_XFER_PARTY_TITLE "PC BOX FIRST"
-#define PDNA_XFER_PARTY_L1    "Send it to a PC box, then"
-#define PDNA_XFER_PARTY_L2    "move it to the party."
+ * strings -- one unpromoted transfer at a time (decision 9), the ledger-full
+ * evict-then-refuse case (decision 8), the Gen-1<->Gen-2 time-capsule refusal
+ * (decision 14), and the flush-failure report (decision 10). Same <=28-column
+ * discipline as every other fixed title in this file (tests/host_textfit_test.c's
+ * own PF(text, 28, 184) rows). The old "PC BOX FIRST" refusal macros were here --
+ * DEAD, deleted by BACKLOG #174 (S150-8c): the party is now a real native landing,
+ * not a refusal. */
 
 #define PDNA_XFER_SAVEFIRST_TITLE "SAVE FIRST"
 #define PDNA_XFER_SAVEFIRST_L1    "One transfer is waiting for"
 #define PDNA_XFER_SAVEFIRST_L2    "the game save. START > SAVE."
+
+/* BACKLOG #175 (S150-8d) D16: the mid-session SAVE NOW? confirm that replaces the
+ * plain SAVE FIRST wall at the ONE site that used to show it (gb_bank_down_gen3's
+ * pre-flight 16(g)) -- PDNA_XFER_SAVEFIRST_* above stays live for the two
+ * restore-side refusals (D18, decision 18), untouched by this lane. L1 reuses
+ * PDNA_XFER_SAVEFIRST_L1 verbatim (siprintf'd together with L2 below) so the two
+ * screens can never drift apart in wording. */
+#define PDNA_XFER_SAVENOW_TITLE "SAVE NOW?"
+#define PDNA_XFER_SAVENOW_L1    PDNA_XFER_SAVEFIRST_L1
+#define PDNA_XFER_SAVENOW_L2    "the game save. Save it now?"
+
+/* BACKLOG #174 (S150-8c) D7: the party arm's own always-drawn loss row -- the ONE
+ * thing the destination changes (a fully-healed party mon vs. a box cell). */
+#define PDNA_XFER_PARTYLAND_L1 "Joins your party, fully healed."
+
+/* BACKLOG #174 (S150-8c) D2/D8: the party site's own pre-flights, ALL before the
+ * conversion arm -- a non-ADD target (SWAP is impossible for a bank origin, D2's
+ * reason: `can_swap_now` is already false and party_place_held forces can_swap=
+ * false for a bank origin, so refusing it BEFORE the (irreversible-ish) ledger
+ * write is strictly better than the post-conversion CAN'T SWAP the user would
+ * otherwise see), and a full party (hoisted above party_place_held's own PARTY
+ * FULL check, which runs AFTER a landing would have been recorded). */
+#define PDNA_XFER_PARTYSWAP_TITLE  "CAN'T SWAP HERE"
+#define PDNA_XFER_PARTYSWAP_L1     "A Bank Pokemon can only join"
+#define PDNA_XFER_PARTYSWAP_L2     "an empty party slot."
+#define PDNA_XFER_PARTYFULL3_TITLE "PARTY IS FULL"
+#define PDNA_XFER_PARTYFULL3_L1    "Send a party Pokemon to a box,"
+#define PDNA_XFER_PARTYFULL3_L2    "then try again."
 
 #define PDNA_XFER_TOOMANY_TITLE "TOO MANY TRANSFERS"
 #define PDNA_XFER_TOOMANY_L1    "Too many transfer records"

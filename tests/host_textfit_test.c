@@ -1041,13 +1041,38 @@ int main(void) {
   PF(PDNA_XFER_ORIG_NONE_TITLE, 28, 184);
   PF(PDNA_XFER_ORIG_NONE_L1,    28, 184);
   PF(PDNA_XFER_ORIG_NONE_L2,    28, 184);
-  /* BACKLOG #150 S150-8 decision 13: the DOWN-converting edge's own strings. */
-  PF(PDNA_XFER_PARTY_TITLE,     28, 184);
-  PF(PDNA_XFER_PARTY_L1,        28, 184);
-  PF(PDNA_XFER_PARTY_L2,        28, 184);
+  /* BACKLOG #150 S150-8 decision 13: the DOWN-converting edge's own strings. The
+   * old "PC BOX FIRST" refusal macros were here -- DEAD, deleted by BACKLOG #174
+   * (S150-8c): the party is now a real native landing, not a refusal. */
   PF(PDNA_XFER_SAVEFIRST_TITLE, 28, 184);
   PF(PDNA_XFER_SAVEFIRST_L1,    28, 184);
   PF(PDNA_XFER_SAVEFIRST_L2,    28, 184);
+  /* BACKLOG #174 (S150-8c) D12: the party site's own pre-flight refusals. */
+  PF(PDNA_XFER_PARTYSWAP_TITLE,  28, 184);
+  PF(PDNA_XFER_PARTYSWAP_L1,     28, 184);
+  PF(PDNA_XFER_PARTYSWAP_L2,     28, 184);
+  PF(PDNA_XFER_PARTYFULL3_TITLE, 28, 184);
+  PF(PDNA_XFER_PARTYFULL3_L1,    28, 184);
+  PF(PDNA_XFER_PARTYFULL3_L2,    28, 184);
+  /* BACKLOG #174 (S150-8c) D7: the loss screen's own always-drawn party row -- it is
+   * drawn via loss_row() (source/pdna_gen12.c), not msg_wait/app_confirm's clamp, but
+   * the SAME <=28-column / 184px discipline applies (loss_row's own callers all pass
+   * plain literals, no siprintf join, so no separate composed-worst-case row is needed
+   * for this one -- unlike D16's SAVE NOW? confirm, below). */
+  PF(PDNA_XFER_PARTYLAND_L1, 28, 184);
+  /* BACKLOG #175 (S150-8d) D16/D10(4): the SAVE NOW? confirm's own composed string
+   * -- source/pdna_gen12.c's `siprintf(l1, "%s %s", PDNA_XFER_SAVENOW_L1,
+   * PDNA_XFER_SAVENOW_L2)` idiom (the same join app_confirm's own PCQ offer above
+   * uses), measured at the ACTUAL composed worst case, not the bare parts
+   * (BACKLOG #178's own lesson) -- and against `l1[64]`'s real size, not eyeballed. */
+  PF(PDNA_XFER_SAVENOW_TITLE, 28, 184);
+  { char l1[64];
+    snprintf(l1, sizeof l1, "%s %s", PDNA_XFER_SAVENOW_L1, PDNA_XFER_SAVENOW_L2);
+    chkv("PDNA_XFER_SAVENOW_L1+L2 composed length fits l1[64] with room to spare",
+         (int)strlen(l1), (int)sizeof(l1) - 1);
+    int lines = wrap_lines(l1, 184);
+    chkv("PDNA_XFER_SAVENOW_L1+L2 composed wraps to <= 2 lines (app_confirm's own cap)",
+         lines, 2); }
   PF(PDNA_XFER_TOOMANY_TITLE,   28, 184);
   PF(PDNA_XFER_TOOMANY_L1,      28, 184);
   PF(PDNA_XFER_TOOMANY_L2,      28, 184);
@@ -1261,6 +1286,33 @@ int main(void) {
       PDNA_SIDECAR_LOSS_ROW_Y0 + 14 * PDNA_SIDECAR_LOSS_ROW_H +
         2 * (PDNA_SIDECAR_LOSS_ROW_H / 2) + UI_ROW_H - 1,
       "loss screen: worst case (all 10 loss flags) clears the screen");
+
+  /* BACKLOG #174 (S150-8c) D7/D10(5): gb_down_loss_screen's OWN row budget (a
+   * SEPARATE screen from the paste/BRIDGE screen above -- same Y0/ROW_H geometry,
+   * different row set). Mirrors gb_down_loss_screen's (source/pdna_gen12.c) exact
+   * y-increment sequence for the worst case: Item + exp_clamped + PID-relaxed (all
+   * three conditional, all true) + the two always-true rows (IVs/nature, Met) + the
+   * to_party/is_copy branch's WORST case (is_copy's 2 rows -- strictly >= to_party's
+   * 1, so this bound already covers BACKLOG #174's new row without raising it, D7's
+   * own claim) + the ROW_H/2 gap + the two hint rows (A_TRANSFER, B_CANCEL). */
+  {
+    int y = PDNA_SIDECAR_LOSS_ROW_Y0;
+    y += PDNA_SIDECAR_LOSS_ROW_H;   /* Item (g2_item != 0) */
+    y += PDNA_SIDECAR_LOSS_ROW_H;   /* exp_clamped */
+    y += PDNA_SIDECAR_LOSS_ROW_H;   /* gender_relaxed || letter_relaxed */
+    y += PDNA_SIDECAR_LOSS_ROW_H;   /* "IVs come from DVs, nature from EXP" (always) */
+    y += PDNA_SIDECAR_LOSS_ROW_H;   /* "Met: this game, traded" (always) */
+    y += 2 * PDNA_SIDECAR_LOSS_ROW_H;  /* is_copy's two NOBACK rows -- the worst of the
+                                       * to_party(1)/is_copy(2) mutually-exclusive pair */
+    y += PDNA_SIDECAR_LOSS_ROW_H / 2;  /* the gap before the hint rows */
+    y += PDNA_SIDECAR_LOSS_ROW_H;   /* A_TRANSFER hint line */
+    /* B_CANCEL is drawn at this same y with no further advance; its own ink is
+     * UI_ROW_H tall, matching the paste screen's own worst-case chk idiom above. */
+    chk("gb_down_loss_screen worst-case height", 0, UI_SCR_H - 1,
+        y + UI_ROW_H - 1,
+        "gb_down_loss_screen: worst case (Item+exp+PID-relaxed+2 fixed+copy's 2+2 hints, "
+        "D7's to_party row never exceeds this) clears the screen");
+  }
 
   /* BACKLOG #104 R1: gb_paste_legal_screen, a SEPARATE full-screen dialog (own
    * ui_clear budget, unrelated to the loss screen's own tight fit above) --

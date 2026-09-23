@@ -2181,6 +2181,48 @@ bool __attribute__((noinline)) app_xfer_promote(void) {
   return true;
 }
 
+/* BACKLOG #175 (S150-8d): run the ONE verified commit that promotes a pending
+ * native->Gen-3 transfer, mid-session, from wherever the user is standing. This is
+ * flush_on_exit()'s own success arm, verbatim, so the tree has ONE promotion+flush
+ * chain and not two: app_commit_pc() (a WHOLE-FILE verified write that folds the
+ * staged SaveBlock1 party edits and the dirty PC, app_save_finalize) -> on success
+ * app_xfer_promote() -> pdna_bank_flush_deletions(), reporting `kept` exactly as the
+ * exit flush does. On FAILURE: app_xfer_pending_drop() (NEVER _undo -- the write may
+ * have landed unconfirmed, #176 review D2) + PDNA_XFER_NOTSAVED_*, and false.
+ * Returns true iff the save was verified. */
+bool app_xfer_save_now(void) {
+  bool ok;
+  if (app_commit_pc()) {
+    bool promoted = app_xfer_promote();  /* decision 9: the PC is now verified on disk */
+    int kept = pdna_bank_flush_deletions();
+    if (kept) {
+      char l1[48]; siprintf(l1, PDNA_XFER_FLUSHFAIL_L1, kept);
+      msg_wait(PDNA_XFER_FLUSHFAIL_TITLE, UI_WARN, l1, PDNA_XFER_FLUSHFAIL_L2);
+    }
+    log_line("xfer: save-now: committed, entry promoted");
+    /* BACKLOG #175 review D1: a failed promotion left the ledger entry PENDING and
+     * uncollectable while ok stayed true regardless -- the caller (pdna_gen12.c's
+     * SAVE NOW? site) then treated the whole thing as success and let a SECOND
+     * transfer proceed, orphaning a duplicate .pds the ledger can never resolve.
+     * Report the real outcome so the caller refuses instead. */
+    if (!promoted) { snd_error(); msg_wait(PDNA_XFER_NOTSAVED_TITLE, UI_WARN, PDNA_XFER_NOTSAVED_L1, PDNA_XFER_NOTSAVED_L2); }
+    ok = promoted;
+  } else {
+    /* BACKLOG #150 S150-11 decision 11(i)/#176 (review D2): app_commit_pc() returning
+     * false does NOT mean nothing landed -- app_save_finalize()'s SF_WHERE_TARGET
+     * branch returns false for a write that IS on the card, only unconfirmed. Calling
+     * app_xfer_pending_undo() here would REMOVE the ledger's PENDING entry while the
+     * Gen-3 copy may have actually landed -> an uncollectable duplicate. Only clear
+     * the RAM key (app_xfer_pending_drop()): the TRANSFERS screen's own XRC_PENDING_*
+     * rows still see the ledger entry either way and can collect/reconcile it later. */
+    app_xfer_pending_drop();
+    msg_wait(PDNA_XFER_NOTSAVED_TITLE, UI_WARN, PDNA_XFER_NOTSAVED_L1, PDNA_XFER_NOTSAVED_L2);
+    log_line("xfer: save-now: app_commit_pc failed -- pending key dropped");
+    ok = false;
+  }
+  return ok;
+}
+
 /* Best-effort undo of a PENDING entry the user just declined to save (the transfer
  * never happened, so the entry must not linger -- an orphan XR_PENDING entry can
  * never be collected, S11.18 Q6). Same shape as gb_paste_sidecar_undo's own
@@ -2780,7 +2822,13 @@ static bool app_box_browse(uint8_t* block, int box, int start, AppCommitFn commi
  * mon staying on the SAME card (real-PC style) instead of dropping back to the party list.
  * The party is gap-free, so every index 0..g_nparty-1 is a real mon — just wrap. */
 static bool party_browse(int start, AppCommitFn commit) {
-  int count = g_nparty; if (count < 1) return false;
+  /* BACKLOG #174 review D3: g_party/g_nparty are a CACHE. app_party_remove_at (party->box
+   * carry-out) refreshes it; party_place_held's ADD arm (a native Bank cell converting and
+   * joining the party, this lane) does not -- after a Bank->party landing the cache is one
+   * short, so a stale g_nparty here would clamp VIEW/EDIT onto the WRONG party slot and
+   * party_browse's own memcpy(rec, out, 100) would save the edit to that mon's slot. Read
+   * the true count from the save data itself rather than trust the cache. */
+  int count = party_count(g_sb1, g_frlg); if (count < 1) return false;
   int idx = start; if (idx < 0) idx = 0; if (idx >= count) idx = count - 1;
   uint16_t doff = g_frlg ? 0x0038 : 0x0238;
   int card = 0; bool any = false;                          /* card sticky across mon-scroll */
@@ -4553,7 +4601,7 @@ static void party_to_box(const uint8_t* party100, uint8_t out80[80]) {
  * ADD defer-deletes the bank source, SWAP is disallowed). Party + PC edits are staged and
  * committed together at the one exit save. Returns true iff the mon was placed. */
 static bool party_place_held(const uint8_t* held80, int target, int orig_box, int orig_slot,
-                             bool orig_bank, bool can_swap) {
+                             bool orig_bank, bool can_swap, const uint8_t* src_id80) {
   int n = party_count(g_sb1, g_frlg);
   if (target < 0 || target > n) { snd_deny(); return false; }   /* past the add slot */
   if (orig_bank) can_swap = false;                              /* a bank origin can't receive a swap */
@@ -4566,9 +4614,15 @@ static bool party_place_held(const uint8_t* held80, int target, int orig_box, in
     if (!party_append(g_sb1, g_frlg, p100)) { snd_deny(); return false; }
     /* Remove the origin (it left for the party). A BANK origin is a bank slot, NOT a g_pc
      * slot — clearing g_pc there would zero an untouched PC mon (or write OOB for the top
-     * bank boxes); defer-delete the bank source instead (flushed AFTER the party commits). */
+     * bank boxes); defer-delete the bank source instead (flushed AFTER the party commits).
+     * BACKLOG #174 (S150-8c) D3: src_id80 is the ORIGIN record's own 8 identity bytes, for
+     * this defer-delete only. NULL (every pre-#174 caller) => held80. Non-NULL exactly when
+     * a native Bank cell was CONVERTED on the way in: the flush's memcmp (pdna_bank.c's
+     * BANK_DEL_IDLEN compare) must see the NATIVE bytes, never the converted Gen-3 record --
+     * handing it the converted bytes makes no Bank slot ever match, so the original is never
+     * deleted and a silent duplicate results (the Gen-3 copy AND the still-live native cell). */
     if (orig_slot >= 0) {
-      if (orig_bank) app_bank_defer_delete(orig_box, orig_slot, held80);
+      if (orig_bank) app_bank_defer_delete(orig_box, orig_slot, src_id80 ? src_id80 : held80);
       else           memset(pk_box_slot(g_pc, orig_box, orig_slot), 0, 80);
     }
     app_mark_pc_dirty(); app_register_dex_deferred(p100, true); app_stage_sb1();
@@ -4597,8 +4651,8 @@ int app_party_read(PkMon out[6]) {
 }
 
 bool app_party_place_held(const uint8_t* held80, int target, int orig_box, int orig_slot,
-                          bool orig_bank, bool can_swap) {
-  return party_place_held(held80, target, orig_box, orig_slot, orig_bank, can_swap);
+                          bool orig_bank, bool can_swap, const uint8_t* src_id80) {
+  return party_place_held(held80, target, orig_box, orig_slot, orig_bank, can_swap, src_id80);
 }
 
 bool app_party_mon_menu(int slot, int footer_y, bool allow_move_to_box,
@@ -5130,7 +5184,7 @@ static int app_party_overlay_inner(const uint8_t* held, int orig_box, int orig_s
     else if (k & KEY_A) {
       if (sel == BACK) { snd_back(); perf_rep_flush(PERF_REP_BOB); return 0; }
       if (held) {                                    /* PLACE: drop/swap into the party */
-        if (party_place_held(held, sel, orig_box, orig_slot, orig_bank, can_swap)) return 1;
+        if (party_place_held(held, sel, orig_box, orig_slot, orig_bank, can_swap, NULL)) return 1;
       } else if (sel < n) {                          /* BROWSE: the full action menu on this mon
                                                        * (app_party_mon_menu — shared with
                                                        * party_strip_overlay, pdna_box.c) */
@@ -9666,29 +9720,11 @@ static void flush_on_exit(void) {
      * (a Bank->PC move — the multi-select chunk amplifies this to a whole box at once). Flush the
      * deletions ONLY after the destination (PC) is verified on disk -> worst case a recoverable
      * duplicate (mons kept in the Bank), never a loss. g_pc_dirty stays set on failure, so the
-     * moves are still pending and can be retried. */
-    if (app_commit_pc()) {
-      app_xfer_promote();                  /* decision 9: the PC is now verified on disk */
-      int kept = pdna_bank_flush_deletions();
-      if (kept) {
-        char l1[48]; siprintf(l1, PDNA_XFER_FLUSHFAIL_L1, kept);
-        msg_wait(PDNA_XFER_FLUSHFAIL_TITLE, UI_WARN, l1, PDNA_XFER_FLUSHFAIL_L2);
-      }
-    } else {
-      /* BACKLOG #150 S150-11 decision 11(i)/#176 (review D2): app_commit_pc() returning
-       * false does NOT mean nothing landed -- app_save_finalize()'s SF_WHERE_TARGET
-       * branch (~:2028) returns false for a write that IS on the card, only unconfirmed.
-       * Calling app_xfer_pending_undo() here would REMOVE the ledger's PENDING entry
-       * while the Gen-3 copy may have actually landed -> an uncollectable duplicate (the
-       * record describing the transfer is gone, but the copy exists). Only clear the RAM
-       * key (app_xfer_pending_drop()): the TRANSFERS screen's own XRC_PENDING_* rows
-       * still see the ledger entry either way and can collect/reconcile it later. Without
-       * clearing the key at all, g_xd_key stayed set for the rest of the boot and every
-       * later native->Gen-3 drop refused with SAVE FIRST (pdna_gen12.c's xfer_down_write
-       * gate) -- the bug #176 names. */
-      app_xfer_pending_drop();
-      msg_wait(PDNA_XFER_NOTSAVED_TITLE, UI_WARN, PDNA_XFER_NOTSAVED_L1, PDNA_XFER_NOTSAVED_L2);
-    }
+     * moves are still pending and can be retried.
+     * BACKLOG #175 (S150-8d): this whole success/failure pair is now app_xfer_save_now(),
+     * factored out so the tree has ONE promotion+flush chain and not two -- a reviewer can
+     * diff this call against the helper's own body rather than two hand-kept copies. */
+    (void)app_xfer_save_now();
   } else {
     gen3_read_pc_storage(g_save, g_vinfo.slot, g_pc);   /* revert PC moves */
     g_pc_dirty = false; g_sb1_deferred = false;          /* drop staged Day-Care (disk untouched) */

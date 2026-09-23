@@ -384,9 +384,14 @@ void app_party_remove_at(int idx);
 int  app_party_n(void);                       /* party_count(g_sb1, g_frlg) */
 int  app_party_read(PkMon out[6]);             /* decode + pk_resolve every party mon; returns n */
 /* ADD (target == n) or SWAP (target < n) a held 80-byte box mon into the party. Same
- * contract/return as the PLACE branch above. */
+ * contract/return as the PLACE branch above. src_id80 = the 8 identity bytes of the
+ * ORIGIN record, for the Bank defer-delete only (BACKLOG #174 S150-8c D3). NULL => held80
+ * (every pre-#174 caller). Non-NULL exactly when a native Bank cell was CONVERTED on the
+ * way in: the defer-delete queue must remember the cell's own NATIVE first 8 bytes,
+ * because that is what pdna_bank.c's flush compares against the live Bank slot -- handing
+ * it the converted bytes makes no slot ever match, silently duplicating the mon. */
 bool app_party_place_held(const uint8_t* held80, int target, int orig_box, int orig_slot,
-                          bool orig_bank, bool can_swap);
+                          bool orig_bank, bool can_swap, const uint8_t* src_id80);
 /* Open the full action menu (VIEW/EDIT, ITEM, LEGALITY, COPY, DUPLICATE, TO DAY-CARE,
  * EXPORT .pk, TAKE/GIVE ITEM, RELEASE, CANCEL) on party slot `slot`. If the user picks
  * MOVE TO BOX (only offered when allow_move_to_box), *tobox_hit is set true and
@@ -454,6 +459,12 @@ void app_xv_cache_invalidate(void);
  * log lines). Called once from pdna_bank_show(). */
 void app_xfer_reconcile_bank_open(void);
 void app_xfer_pending_undo(void);
+/* BACKLOG #175 (S150-8d): flush_on_exit()'s own success arm, factored -- the ONE
+ * verified commit that promotes a pending native->Gen-3 transfer, callable mid-
+ * session (not only at exit). app_commit_pc() -> on success app_xfer_promote() ->
+ * pdna_bank_flush_deletions(); on failure app_xfer_pending_drop() (never _undo,
+ * #176 review D2) + PDNA_XFER_NOTSAVED_*. Returns true iff the save was verified. */
+bool app_xfer_save_now(void);
 
 /* A mon carried Bank->PC is deleted from the bank only at the save, but must LOOK gone at once.
  * hide_pending blanks those slots in a DECODED box (display only); slot_pending says a slot still

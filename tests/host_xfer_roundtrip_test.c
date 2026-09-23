@@ -2053,6 +2053,43 @@ static void test_entry1(void) {
   CHECK(got.has_written_moves == 1, "ENTRY-1: has_written_moves == 1 (gbsc_entry_from's own contract)");
 }
 
+/* ---- ENTRY-1b: BACKLOG #174 (S150-8c) D10(2) -- the PARTY arm's artefact ------- */
+/* bank_down_convert_gen3_party() (source/bank_down_convert.c) reaches gb_bank_down_gen3
+ * with dst_box = -1; xr_entry_for_down() (called from xfer_down_write, the ONE ledger-
+ * entry builder both the PC arm and the party arm share) takes no destination parameter
+ * at all -- no dst_box, no dst_cell, no party/box flag (source/xfer_rec.h:168's own
+ * signature). dst_box's only two uses in gb_bank_down_gen3 are the two log_line() calls
+ * and the caller's own dstrec occupancy test (skipped for the party flavour via
+ * bank_down_convert.c's k_empty80). So the party-ness of a landing is provably a
+ * DESTINATION property, never a conversion input: two identical calls to
+ * xr_entry_for_down (standing in for "the PC arm's call" and "the party arm's call")
+ * must produce byte-identical GbscEntry structs and merge to byte-identical results. */
+/* BACKLOG #174/#175 review D6 (2026-09-23): this used to call xr_entry_for_down()/
+ * xr_merge_down() TWICE with IDENTICAL arguments and memcmp the two results against
+ * each other -- true by construction (memcmp(x, x)), proven blind: reverting BACKLOG
+ * #174 D3's src_id80 fix still left this whole suite at 150 passed / 0 failed. The
+ * genuinely load-bearing assertion (the artefact's real field values, and that
+ * xr_merge_down succeeds and produces a real GbEditMon from it) needs only ONE call;
+ * kept that, dropped the self-comparison theatre. */
+static void test_entry_party_identical(void) {
+  printf("\n-- E4b. BACKLOG #174 D10(2): the PARTY arm's ledger artefact shape --\n");
+  if (!g_rt6_capture.have) {
+    printf("  SKIP (no Gen-2 record captured by RT-6)\n");
+    return;
+  }
+  GbscEntry party_e;
+  xr_entry_for_down(&party_e, &g_rt6_capture.written, g_rt6_capture.e.original80,
+                    0, XR_DIR_ABROAD_G3, g_rt6_capture.g3rec80 + 0x08);
+  CHECK(party_e.kind == XR_KIND_NATIVE_HOME && party_e.state == XR_STATE_PENDING &&
+        party_e.direction == XR_DIR_ABROAD_G3 && party_e.claimed == 1,
+        "D10(2): the party artefact is kind=NATIVE_HOME/state=PENDING/direction=ABROAD_G3/"
+        "claimed=1 -- the SAME artefact shape the PC arm writes (xr_entry_for_down has "
+        "no destination parameter to differ on, so one real call covers both arms)");
+  GbEditMon party_out; XrMergeReport party_rep;
+  bool party_ok = xr_merge_down(&party_e, g_rt6_capture.g3rec80, &party_out, &party_rep);
+  CHECK(party_ok, "D10(2): xr_merge_down succeeds on the party artefact");
+}
+
 /* ---- Mutation proofs (decision 1's own three, per the brief's step 1) --------- */
 
 static void test_mutation_proofs(void) {
@@ -2148,6 +2185,7 @@ int main(int argc, char** argv) {
   test_mask_4();
   test_gb_merge_down_gb();
   test_entry1();
+  test_entry_party_identical();
   test_mutation_proofs();
 
   printf("\n== summary: %d checks, %d fail(s) (fails mean the PIPELINE didn't run --\n"

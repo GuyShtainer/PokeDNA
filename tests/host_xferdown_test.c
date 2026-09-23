@@ -1066,6 +1066,25 @@ static bool xfer_identity_ok(const uint8_t* buf, uint32_t len, int idx) {
          e.state == XR_STATE_PENDING;
 }
 
+/* BACKLOG #174/#175 review D6 (2026-09-23): test_party_flavour_identity() and
+ * test_defer_delete_identity() (BACKLOG #174 D10(1)/D10(3)) DELETED -- both were
+ * tautologies, not evidence (STANDING-RULES self-audit point 1: "a proof that
+ * cannot fail is decoration"). test_party_flavour_identity() called
+ * bdc_convert_gen3_core() TWICE with IDENTICAL arguments and asserted the two
+ * results matched -- that is memcmp(x, x), true by construction, and reverting
+ * D3's src_id80 fix (BACKLOG #174 D3, the defer-delete identity bytes) still gave
+ * 150 passed / 0 failed on this whole suite, proving it blind. test_defer_delete_
+ * identity() asserted memcmp(a, copy_of_a) == 0 and memcmp(a, unrelated_const) !=
+ * 0 against a local scratch buffer -- it never called pdna_bank.c's own flush code
+ * at all (pdna_bank.c is not host-compilable, out of this lane's scope), so it was
+ * testing memcmp's own behaviour, not this codebase's. tools/dgb_shots.py's
+ * run_s150_8_party_vsd() (review D5's fix pass) now carries the real pin instead:
+ * its post-save vsd_report(expect_changed=[... "/PokeDNA/bank/box00.box" ...])
+ * mutation-fails (RED, exit 1) when src_id80 is reverted to NULL, because
+ * pdna_bank_flush_deletions() then never finds a matching Bank slot to delete and
+ * box00.box never appears in the diff -- an assertion against the REAL flush code,
+ * not a restatement of memcmp. */
+
 static void test_pending_identity_check(void) {
   uint8_t cell[80];
   build_gen2_cell(cell, 25, 0, 33, 700);
@@ -1127,6 +1146,8 @@ int main(void) {
   test_bridge_corpus_no_move_refusal(); printf("  (F2) BACKLOG #212 corpus, no whole-record move refusal ok\n");
   test_caller_zero_move_refusal_two_bad(); printf("  (F2b) review D1, 2-bad-move zero-move refusal ok\n");
   test_pending_identity_check(); printf("  (G) pending identity check   ok\n");
+  /* review D6: test_party_flavour_identity/test_defer_delete_identity DELETED
+   * (tautologies) -- see this file's own comment above (H)/(I)'s old spot. */
 
   printf("%d checks, %d failed\n", g_check, g_fail);
   if (g_fail) { printf("FAILED\n"); return 1; }
