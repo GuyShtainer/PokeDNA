@@ -32,6 +32,25 @@ export OBJCOPY := $(PREFIX)objcopy
 # the correct title, only detectable by running it on the cart. gbafix stamps the title
 # from the Makefile, so the title proves NOTHING about the code. Assert on the code.
 	@if [ "$(PDNA_TARGET)" != "delta" ] && grep -qa "PokeDNA (emulator build)" $@; then 		echo "*** FATAL: $(notdir $@) is a HARDWARE build but contains emulator-build code."; 		echo "***        Stale objects were linked in. rm -rf build* and rebuild."; 		rm -f $@; exit 1; 	fi
+# VARIANT MARKER GUARD (BACKLOG #258). build_variant.c's pdna_build_variant[] (BACKLOG
+# #255) survives the link ONLY because pdna_main.c's boot log_line("variant: %s", ...)
+# call is its one live reference into a --gc-sections build; delete that call and the
+# whole marker silently vanishes from the .gba -- proven by mutation (see this commit's
+# message), and with it goes the ONE thing the 48 guarded shot chains (BACKLOG #253) use
+# to refuse a build that isn't the one their docstring prescribes. Checked here, not in
+# check-art: check-art only runs for the full-art path (a fresh clone never has the
+# gitignored art files) and this must cover artless/normal/delta alike.
+	@if ! grep -qa "$(PDNA_EXPECTED_VARIANT_MARKER)" $@; then \
+	   echo "*** FATAL: $(notdir $@) is missing its build-variant marker (want \"$(PDNA_EXPECTED_VARIANT_MARKER)\")."; \
+	   echo "***        pdna_build_variant[] (source/build_variant.c, BACKLOG #255) did not"; \
+	   echo "***        survive the link, or landed with the wrong PDNA_ARTLESS/PDNA_TARGET"; \
+	   echo "***        value baked in. The 48 guarded shot chains (BACKLOG #253) rely on"; \
+	   echo "***        this string to tell one build from another -- see pdna_main.c's"; \
+	   echo "***        boot log_line(\"variant: %s\", pdna_build_variant_str()) call."; \
+	   rm -f $@; exit 1; \
+	 else \
+	   echo "  VARIANT ok: $(notdir $@) carries \"$(PDNA_EXPECTED_VARIANT_MARKER)\""; \
+	 fi
 # ROM SELF-CHECK STAMP. This image is ~12.5 MB and this card has a documented history of
 # incomplete 12 MB SD loads (projects/rom-load-lab). Post-link, CRC32 the sampled windows
 # declared in source/pdna_romver_data.c -- located BY SYMBOL through nm, never by scanning
@@ -240,6 +259,12 @@ PDNA_TARGET  ?= nor
 # exactly where they are in source/ -- see PDNA_ART_CFILES/PDNA_ART_SFILES below, and the
 # check-art guard, which fails loudly if they are ever actually missing from disk instead).
 PDNA_ARTLESS ?= 0
+# BACKLOG #258: the expected value of build_variant.c's pdna_build_variant[] (BACKLOG
+# #255's marker), derived from the SAME PDNA_TARGET/PDNA_ARTLESS the CFLAGS block below
+# uses to pick -DPDNA_ARTLESS=1 / -DPDNA_DELTA -- one source of truth for what the string
+# OUGHT to say, checked post-link in the %.gba rule against what actually landed in the
+# built image.
+PDNA_EXPECTED_VARIANT_MARKER := PDNA-VARIANT:$(if $(filter 1,$(strip $(PDNA_ARTLESS))),ARTLESS,ART)$(if $(filter delta,$(PDNA_TARGET)),+DELTA,)
 ifneq ($(PDNA_TARGET),sd)
 SRCDIRS     += source/embed          # NOR: embed the shiny-front + back blobs
 endif
