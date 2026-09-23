@@ -4757,6 +4757,99 @@ def run_b54_romhack(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -
     return s
 
 
+def run_d1_boxname_gate(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
+    """b199-fixes2 D1 fix proof, CORRECTED DESIGN (source/pdna_box.c ~4782): the
+    review's first prescription (`else if (src->can_edit && !src->can_edit())
+    snd_deny();`) was itself wrong for a Game Boy source -- gbsrc_can_edit() is
+    HARDWIRED false unconditionally (nothing to do with writability) and the GB
+    source's can_rename is non-NULL, so that branch fired for EVERY GB save and
+    swallowed Gen 1's genuine "no table" case (proven live: A on a Red save
+    produced no frame change at all under that design). The corrected fix adds a
+    field that answers the dialog's actual sentence -- BoxSource.box_names_supported
+    (NULL means yes -- Gen-3 PC/Bank always have a table) -- and explains ONLY when
+    the table itself is missing:
+        else if (src->box_names_supported && !src->box_names_supported())
+          { ...explain... }
+        else { snd_deny(); }   /* not writable -- stay silent, exactly as main did */
+
+    Three cases, proved here plus a fourth reused from the pre-existing #94 chain:
+      (a) which="gen1": Red -- box_names_supported() is non-NULL and false
+          (gbbn_supported() refuses, Gen 1 genuinely has no table) -> EXPLAINS.
+      (b) which="hack": a hack-flagged Emerald PC -- box_names_supported is NULL
+          (pc_box_source leaves it NULL, memset) so the elif never fires; can_rename
+          is false (can_edit() false, pdna_romcheck_bad()) so the final `else`
+          fires -> SILENT, same as main's box_options_menu path. Silence on a
+          screen is ambiguous (correctly-silent vs. the tap being swallowed
+          outright), so this case adds a CONTROL TAP (DOWN, which the on_title
+          branch handles unconditionally by clearing on_title -- source/pdna_box.c
+          ~4734, unrelated to box_names_supported) right after the silent A,
+          proving the input loop is alive and the silence is a real "nothing to
+          show", not a stuck emulator.
+      (c) Gen 2 (Gold) still RENAMES normally -- NOT re-proven here: the
+          pre-existing --b94-boxname gold chain (run_b94_boxname, unmodified by
+          this lane) already drives this exact path end-to-end (A on the banner ->
+          osk_input('BOX NAME', ...) opens -> 'TEST' typed -> banner re-reads
+          '1:TEST 20/20') and was re-run against this lane's own build as part of
+          this fix's proof; see the D1 report for its frame."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"d1_{which}_")
+    print(f"== b199-fixes2 D1: the #244 banner dialog answers the right question ({which}) ==")
+
+    if which == "hack":
+        s.run(700)
+        s.shot("a_boot_banner", "b199 D1 (hack): view_save()'s ROM-hack banner -- "
+               "this save's box source (pc_box_source) has can_edit = app_can_edit, "
+               "which is false here (pdna_romcheck_bad() gates on the hack flag); "
+               "box_names_supported stays NULL (memset) regardless -- the PC always "
+               "has a table, this save's just not writable right now")
+        s.tap("A", settle=150)                                  # dismiss the banner
+        s.shot("b_box_grid", "b199 D1 (hack): party/box view underneath -- box grid "
+               "cur=0, top-left cell")
+        s.tap("UP", settle=150)                                 # cur < COLS -> on_title = true
+        s.shot("c_title_selected", "b199 D1 (hack): UP selects the TITLE row "
+               "(on_title = true) -- A here is the direct rename shortcut this "
+               "fix touches")
+        s.tap("A", settle=150)                                  # box_names_supported NULL -> final else -> snd_deny()
+        s.shot("d_silent_no_dialog", "b199 D1 FIX PROOF (hack): A on the banner -- "
+               "box_names_supported is NULL for the PC (always has a table), so "
+               "the new explain branch never fires; can_rename() is false (writ"
+               "ability), so the final `else { snd_deny(); }` fires -- SILENT, "
+               "same as main's own box_options_menu path -- this frame must be "
+               "pixel-identical to shot c (no dialog opened)",
+               claim_absent=["NO BOX NAMES", "This game has no box names."])
+        s.tap("DOWN", settle=150)                                # control tap: on_title branch handles DOWN
+                                                                   # unconditionally (pdna_box.c ~4734), proving
+                                                                   # the input loop is alive -- distinguishes
+                                                                   # "correctly silent" from "tap swallowed"
+        s.shot("e_control_tap_moves", "b199 D1 CONTROL (hack): DOWN right after the "
+               "silent A -- unconditionally clears on_title and moves the cursor "
+               "highlight from the banner onto the grid's top-left cell, a REAL "
+               "visible change -- this frame must differ from shot d. Proves the "
+               "session's input loop was alive the whole time: shot d's silence "
+               "was 'correctly nothing to show', not 'the emulator ate the tap'.")
+    else:  # gen1
+        boot_to_gb_session(s, rom, which="red")
+        s.shot("a_box_grid", "b199 D1 (gen1): Red's box grid, freshly entered -- "
+               "cur=0, top-left cell")
+        s.tap("UP", settle=100)                                 # cur < COLS -> on_title = true
+        s.shot("b_title_selected", "b199 D1 (gen1): UP selects the TITLE row")
+        s.tap("A", settle=150)                                  # box_names_supported() false (gbbn_supported)
+        s.shot("c_explains_no_dialog", "b199 D1 FIX PROOF (gen1): A on the banner "
+               "-- gbsrc_box_names_supported() is g_ed && gbbn_supported(&g_ed->s), "
+               "false here (Gen 1 genuinely has no box-name table) and NON-NULL "
+               "(the GB source always sets this field), so the new explain branch "
+               "fires FIRST, before can_rename is even consulted -- 'NO BOX NAMES "
+               "/ This game has no box names.', the only case this message is "
+               "honest for. Live proof the corrected predicate is not the review's "
+               "first (wrong) prescription: that design's `can_edit()` check would "
+               "have caught THIS case too (gbsrc_can_edit() is hardwired false) "
+               "and produced the exact same frame for the WRONG reason -- the "
+               "distinguishing case is the hack run above, where the two designs "
+               "disagree (old: explains and lies; new: silent).",
+               claim=["NO BOX NAMES", "This game has no box names."])
+        s.tap("A", settle=150)                                  # dismiss
+    return s
+
+
 def run_s150_2_bank_native(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
     """BACKLOG #150 S150-2: a native ("GBC1") Bank cell renders as the Gen-1/2 Pokemon
     it is. `rom` MUST be `tools/fuse_sav.py <pokedna-delta-artless.gba> <Emerald.sav>`
@@ -7750,6 +7843,15 @@ def _main_dispatch(argv=None) -> int:
                           "'POKEMON HACK' before fusing -- retail code+version+size, "
                           "wrong title, so rom_identify() classifies HACK(EMERALD)) or "
                           "'control' (the unmodified Emerald.gba, classifies RETAIL).")
+    ap.add_argument("--d1-boxname-gate", choices=("hack", "gen1"),
+                     help="b199 review D1 fix proof: only run_d1_boxname_gate() against "
+                          "--image for the named case -- the #244 banner dialog no "
+                          "longer fires on a can_edit()-false refusal. 'hack' needs a "
+                          "fusion of pokedna-delta-artless.gba with a hack-flagged "
+                          "Emerald.gba (same 0xA0..0xAB recipe as --b54-romhack's own "
+                          "'hack' case) + Emerald.sav (fuse_rom.py then fuse_sav.py); "
+                          "'gen1' needs a ONE-ROM fused image (Red.gb+Red.sav, no "
+                          "Emerald.sav, same BACKLOG #98 reasoning as --gbnames).")
     ap.add_argument("--gbnames", choices=("red", "crystal"),
                      help="gbnames brief: only run_gbnames() against --image for the "
                           "named game -- real Gen-1/Gen-2 item names now shown by "
@@ -8965,6 +9067,21 @@ def _main_dispatch(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] b54-romhack ({a.b54_romhack}): {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if a.d1_boxname_gate:
+        # b199 review D1 fix proof: same append-only convention as --b54-romhack above.
+        ran = True
+        try:
+            sess = run_d1_boxname_gate(core_mod, image_mod, a.image, a.out, a.d1_boxname_gate)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] d1-boxname-gate ({a.d1_boxname_gate}): {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:

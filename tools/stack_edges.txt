@@ -222,6 +222,17 @@ BoxSource.release_all @96 in box_options_menu -> gbsrc_release_all
 # NULL, so pdna_box.c's SELECT gate falls back to src_can_lift(src,box,cur) there,
 # byte-identical to before this field existed.
 BoxSource.can_enter_move @100 in pdna_box -> gbsrc_can_enter_move
+# BACKLOG #244 (b199-fixes2, corrected design): BoxSource.box_names_supported,
+# appended at the struct's NEW END (pdna_box.h, same offset-stability rule as
+# can_enter_move above) -- offset 104, can_enter_move@100 (a pointer, the struct's
+# previous last field) + 4 = 104. Only pdna_gen12_source() assigns it
+# (gbsrc_box_names_supported); pcsrc/banksrc leave it NULL, so pdna_box.c's own
+# `src->box_names_supported && !src->box_names_supported()` banner check is false
+# there (the PC/Bank always have a box-name table), byte-identical to before this
+# field existed. Single call site (pdna_box's A-on-banner rename shortcut) -- no
+# second predecessor, so this does not hit the multi-predecessor struct-field-load
+# blind spot the can_rename/can_boxops family has tripped elsewhere.
+BoxSource.box_names_supported @104 in pdna_box -> gbsrc_box_names_supported
 # 2026-09-14 (the "stuck choosing the .gbc" cart fix): gb_art_source.c's SD read shim
 # calls its GbArtIo.fn progress callback between reads. pdna_main.c's gb_reg_progress
 # is the ONLY implementation ever stored there (app_register_gb_rom, its restore

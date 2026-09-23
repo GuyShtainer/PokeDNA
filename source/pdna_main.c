@@ -9819,6 +9819,9 @@ static BoxSource pc_box_source(void) {
   s.start_box  = g_pc_last_box;
   s.is_bank    = false;
   s.scope      = BOXSCOPE_PC;    /* BACKLOG #120 S1: can_lift/xfer stay NULL (memset above) */
+  /* BACKLOG #244: box_names_supported stays NULL (memset above) -- the Gen-3 PC
+   * always has a box-name table; the shortcut/menu's writability gate (can_edit)
+   * still refuses a hack-flagged or EverDrive PC, silently, exactly as before. */
   s.wp_count   = (app_walda_pattern() >= 0) ? 32 : G3_BOX_WALLPAPER_COUNT;  /* Emerald = +Walda */
   s.records    = pcsrc_records;
   s.menu_block = g_pc;

@@ -4768,22 +4768,27 @@ int pdna_box(BoxSource* src) {
           recs = src->records(box); box_decode(src, recs, box);          /* belt-and-braces refresh, same as the menu path */
           s_oam_reload = true; need_full = true;
         }
-        /* BACKLOG #244: rename isn't offered on Gen 1 (gbsrc_can_rename_impl:
-         * gbbn_supported() refuses -- Gen 1 has no box-name table at all), the same
-         * reason #154 already hides the row from box_options_menu's own rename entry.
-         * This shortcut used to just snd_deny() here with no explanation -- "a
-         * control that exists only to say no", the dead-refusal class the reviews
-         * keep catching, one route behind #154's fix. #154's own row has no room for
-         * a dialog (it is hidden, never drawn); this direct hotkey has no row to
-         * hide, so it repurposes the refusal instead: explain why, reusing the
-         * IDENTICAL wording box_options_menu's own rename case already shows for the
-         * same condition (its defense-in-depth branch, a == 0, just above) -- one
-         * message, two routes, never a silent beep. */
-        else {
+        /* BACKLOG #244 (b199-fixes2, corrected design): can_rename() above is false
+         * for THREE different reasons -- no box-name table (Gen 1), an EverDrive
+         * (app_can_edit() false, hard rule 4), or a hack-flagged/bad ROM -- and only
+         * the first of those is "this game has no box names". The review's first
+         * prescription (`src->can_edit && !src->can_edit()`) does not distinguish
+         * them EITHER: for a GB source can_edit is hardwired false unconditionally
+         * (gbsrc_can_edit, pdna_gen12.c) and can_rename is non-NULL, so that branch
+         * always fired for every GB save and swallowed Gen 1's genuine case (proven
+         * live on a Red save: A produced no frame change at all). The predicate that
+         * actually says the dialog's sentence is box_names_supported() (NULL means
+         * yes -- Gen-3 PC/Bank always have a table): explain ONLY when the table
+         * itself is missing; every other refusal (not writable right now) stays the
+         * shipped-silent beep, exactly as main's own box_options_menu path does. */
+        else if (src->box_names_supported && !src->box_names_supported()) {
           snd_deny();
           boxoam_suspend();                                              /* full-screen dialog — same bracket as the rename branch above */
           msg_wait("NO BOX NAMES", UI_WARN, "This game has no box names.", 0);
           boxoam_resume();
+        }
+        else {
+          snd_deny();                 /* not writable -- stay silent, exactly as main did */
         }
       }
     }

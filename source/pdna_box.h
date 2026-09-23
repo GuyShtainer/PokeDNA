@@ -178,6 +178,17 @@ typedef struct {
    * A GB session wires gbsrc_can_enter_move (app_can_edit() + gbs_box_writable(box),
    * no per-slot/party-floor check -- those still gate the lift itself). */
   bool (*can_enter_move)(int box);
+  /* BACKLOG #244 (b199-fixes2, corrected design): answers ONE question -- "does this
+   * source have a box-name table at all" -- and nothing about whether it is writable
+   * right now. That is a DIFFERENT question from can_edit()/can_rename(), which the
+   * first attempt at this fix conflated: can_rename() is false for THREE reasons
+   * (no table / EverDrive / hack-flagged ROM), and only the first of those is "no
+   * box names" -- the other two are "not writable", the shipped-silent case. NULL
+   * means yes -- the Gen-3 PC and the Bank always have a box-name table, so both
+   * leave this NULL (the memset in pc_box_source()/pdna_bank_show() already does).
+   * Appended at the END, same offset-stability rule can_rename/can_boxops/
+   * can_enter_move above document (tools/stack_edges.txt is keyed by byte offset). */
+  bool (*box_names_supported)(void);
 } BoxSource;
 
 /* Game-faithful box screen over `src`: a left PKMN DATA panel + a 6x5 icon grid on

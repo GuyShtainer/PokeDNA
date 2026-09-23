@@ -441,6 +441,7 @@ static void gbsrc_get_raw_name(int box, char out[12]) {
 #ifndef PDNA_GEN12_HOST
 static void gbsrc_set_name_impl(int box, const char* s);
 static bool gbsrc_can_rename_impl(void);
+static bool gbsrc_box_names_supported_impl(void);
 #endif
 static void gbsrc_set_name(int box, const char* s) {
 #ifndef PDNA_GEN12_HOST
@@ -452,6 +453,17 @@ static void gbsrc_set_name(int box, const char* s) {
 static bool gbsrc_can_rename(void) {
 #ifndef PDNA_GEN12_HOST
   return gbsrc_can_rename_impl();
+#else
+  return false;
+#endif
+}
+/* BACKLOG #244 (b199-fixes2): the "has a box-name table at all" question, isolated
+ * from can_rename()'s "AND is it writable right now" -- see the BoxSource.h comment
+ * on box_names_supported. Host default (no live GbSession) is false, the same safe
+ * default gbsrc_can_rename's own host shim uses. */
+static bool gbsrc_box_names_supported(void) {
+#ifndef PDNA_GEN12_HOST
+  return gbsrc_box_names_supported_impl();
 #else
   return false;
 #endif
@@ -670,6 +682,7 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
   s.export_all  = gbsrc_export_all;
   s.release_all = gbsrc_release_all;
   s.can_enter_move = gbsrc_can_enter_move;   /* BACKLOG #187/#192, F1: box-level SELECT gate */
+  s.box_names_supported = gbsrc_box_names_supported;   /* BACKLOG #244: "has a table", not "is writable" */
   return s;
 }
 
@@ -1090,6 +1103,16 @@ void app_pc_queue_note(int bank_box) {
  * same reasoning pdna_gbtrainer's own g_ed gate documents. */
 static bool gbsrc_can_rename_impl(void) {
   return g_ed && app_can_edit() && gbbn_supported(&g_ed->s);
+}
+
+/* BACKLOG #244 (b199-fixes2): deliberately DROPS the app_can_edit() conjunct
+ * gbsrc_can_rename_impl() above has -- this answers "does this session's game have
+ * a box-name table at all", not "is it writable right now". No g_ed (the plain
+ * FIL-streaming entry, no live GbSession) also answers false: there is nothing to
+ * ask gbbn_supported() about, the same reasoning gbsrc_can_rename_impl's own
+ * no-g_ed refusal documents -- not a writability judgement. */
+static bool gbsrc_box_names_supported_impl(void) {
+  return g_ed && gbbn_supported(&g_ed->s);
 }
 
 /* F1b: the RAW seed for the rename editor -- gbbn_read() decodes the session's own
