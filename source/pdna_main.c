@@ -4736,19 +4736,23 @@ bool app_party_full_deposit_offer(int* out_box, int* out_slot) {
   return app_party_n() < 6;
 }
 
-/* BACKLOG #226 review D1(b): see the contract comment in pdna_app.h. */
+/* BACKLOG #226 review D2-R: see the contract comment in pdna_app.h. Bounds-check first
+ * (this became a callable-from-anywhere public function, not just the one hoisted site),
+ * then append BEFORE touching the box cell -- the re-verify found gb_bank_down_gen3 runs
+ * xfer_down_write (a real .pds write) between the deposit and this undo for a GB-origin
+ * source, so party_append CAN fail here; the old zero-then-append order discarded the
+ * stack-local p100 on that arm and the Pokemon existed nowhere. On a failed append the
+ * mon is left standing in the box instead (still findable, never destroyed). */
 void app_party_deposit_undo(int box, int slot) {
-  if (box < 0 || slot < 0) return;
+  if (box < 0 || box >= G3_TOTAL_BOXES || slot < 0 || slot >= G3_IN_BOX) return;
   uint8_t* cell = pk_box_slot(g_pc, box, slot);
   uint8_t p100[100];
   box_to_party(cell, p100);
-  memset(cell, 0, 80);
   if (!party_append(g_sb1, g_frlg, p100)) {
-    /* Unreachable by construction (see the header contract), but never trust a
-     * postcondition silently -- golden rule 7, check every return value. */
-    log_line("party: deposit undo: party_append failed -- should be unreachable");
+    log_line("party: deposit undo: party_append failed -- deposit LEFT in box %d slot %d", box, slot);
     return;
   }
+  memset(cell, 0, 80);
   app_mark_pc_dirty();
   app_stage_sb1();
 }

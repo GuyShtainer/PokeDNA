@@ -402,14 +402,20 @@ bool app_party_place_held(const uint8_t* held80, int target, int orig_box, int o
  * mon -- app_party_deposit_undo()'s own arguments, for a caller whose OWN later
  * refusal must roll the deposit back (review D1). */
 bool app_party_full_deposit_offer(int* out_box, int* out_slot);
-/* BACKLOG #226 review D1(b): RAM-only rollback for app_party_full_deposit_offer()'s
- * deposit -- box_to_party the cell back into the party (append; retail appends too,
- * this does not restore the original party ORDER -- say so at the call site), clear
- * the box cell, stage both dirty for the pending save-on-exit. Cannot itself fail:
- * party_append only fails at party_count() >= 6, which the deposit that makes this
- * call necessary just disproved with nothing landing in the interim (no card I/O
- * between the two calls). A no-op when box/slot are the offer's own "declined"
- * sentinel (-1, -1). */
+/* BACKLOG #226 review D2-R: RAM-only-on-its-own-side rollback for app_party_full_
+ * deposit_offer()'s deposit -- box_to_party the cell back into the party (append;
+ * retail appends too, this does not restore the original party ORDER -- say so at
+ * the call site), clear the box cell, stage both dirty for the pending save-on-exit.
+ * WHAT IS ACTUALLY TRUE (the earlier "no card I/O between the two calls" claim was
+ * false: bank_down_convert_gen3_party -> gb_bank_down_gen3 can run xfer_down_write,
+ * a real .pds write, between the deposit and this call for a GB-origin source) --
+ * only the party COUNT is untouched in the interim: party_release() dropped the
+ * deposited slot and nothing else appends to the party between the two calls, so
+ * party_append here fails ONLY if something else independently fills the party to 6
+ * in that window, which today's callers do not. The function still checks the
+ * return value and bounds box/slot itself (0..G3_TOTAL_BOXES-1 / 0..G3_IN_BOX-1);
+ * a failed append leaves the mon standing in the box rather than discarding it. A
+ * no-op when box/slot are the offer's own "declined" sentinel (-1, -1). */
 void app_party_deposit_undo(int box, int slot);
 /* Open the full action menu (VIEW/EDIT, ITEM, LEGALITY, COPY, DUPLICATE, TO DAY-CARE,
  * EXPORT .pk, TAKE/GIVE ITEM, RELEASE, CANCEL) on party slot `slot`. If the user picks
