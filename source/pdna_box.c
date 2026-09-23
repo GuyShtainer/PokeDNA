@@ -1617,6 +1617,9 @@ static uint8_t* __attribute__((noinline)) drop_held_up(BoxSource* src, int box, 
  * function adds none). */
 static uint8_t* __attribute__((noinline))
 drop_held_down_g3(BoxSource* src, int box, int cur, uint8_t* recs, bool* done) {
+  (void)cur;   /* BACKLOG #246 review D7: never read -- a Game Boy list always appends at
+                * its own next free slot (gbs_insert), never at the cursor cell; `cur`
+                * stays in the signature only to match drop_held_up's own sibling shape. */
   boxoam_suspend();
   bool landed = gb_bank_down_g3(box, s_held) == BANK_DOWN_LANDED;
   boxoam_resume();
