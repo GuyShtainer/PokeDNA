@@ -10,6 +10,10 @@
 
 #include "diskio.h" /* Declarations of disk functions */
 
+#ifdef PDNA_DELTA
+#include "log.h"    /* BACKLOG #179 A3 review D7's own unaligned-read log line, -Isource */
+#endif
+
 /* Telemetry only. perf.h is stdint-only on purpose so it can sit alongside sys.h's
  * u8/u16/u32 MACROS here without a type clash, and PERF_SD_READ/PERF_SD_WRITE expand
  * to plain arithmetic on EWRAM words -- no call, no log line, no ROM access. That
@@ -82,6 +86,19 @@ DRESULT disk_read(BYTE pdrv, BYTE* buff, LBA_t sector, UINT count) {
    * at 2 mod 4) while FireRed/LeafGreen -- whose attributes are u32, keeping every array
    * word-aligned -- were structurally immune. */
   if ((u32)buff & 0x3) {
+#ifdef PDNA_DELTA
+    /* BACKLOG #179 A3 review D7: tools/vsd.py's own unaligned_count counts the
+     * mailbox's `addr` field, which by the time a served transaction reaches vsd_xfer
+     * is ALWAYS fc_bounce (4-byte aligned, ALIGNED static below) -- structurally 0 on
+     * this vehicle regardless of what the CALLER's original `buff` was. This logs the
+     * real unaligned-source fact, once per disk_read CALL (not once per bounce
+     * chunk), at the one place that still has the caller's own pointer.
+     * log_line_bsc(), not log_line(): a plain vsniprintf log_line() call here put this
+     * chain's own gated subtree over budget on the write side (lane s179-a2's own
+     * disk_write sibling, 2026-09-23) -- see log.h's comment on log_line_bsc for why. */
+    log_line_bsc("vsd: unaligned read", (unsigned)buff, (unsigned long)sector,
+                 (unsigned)count);
+#endif
     for (UINT i = 0; i < count; i += 4) {
       const u16 blocks = (count - i > 4) ? 4 : (count - i);
 

@@ -17,6 +17,9 @@
 #include "diskio.h" /* DRESULT, command codes */
 #include "gba_rtc.h" /* cartridge RTC (resolved via -Isource) */
 #include "perf.h"    /* PERF_SD_WRITE -- see the note in diskio.c's disk_read */
+#ifdef PDNA_DELTA
+#include "log.h"     /* BACKLOG #179 A3 review D7's own unaligned-write log line, -Isource */
+#endif
 
 #define ALIGNED __attribute__((aligned(4)))
 
@@ -35,11 +38,37 @@ DRESULT disk_write(BYTE pdrv, const BYTE* buff, LBA_t sector, UINT count) {
    * transfer, at the one choke point. */
   PERF_SD_WRITE(count);
 
+#ifdef PDNA_DELTA
+  /* BACKLOG #179 A3 review D8: tools/vsd.py's S7.4 ROM-source check reads the
+   * MAILBOX's `addr` field -- which, for a 2-mod-4 `buff`, is always fc_bounce
+   * (EWRAM) by the time it gets there (D7's own bounce), never the caller's real ROM
+   * pointer. Checked here too, on the pre-bounce `buff` itself, so the "f_write from
+   * ROM writes the BOOTLOADER" bug class rom-load-lab found is caught for an
+   * unaligned source too, not only an aligned one.
+   * log_line_bs(), not log_line(): see log.h's comment on log_line_bs/log_line_bsc --
+   * a plain vsniprintf log_line() call anywhere in disk_write()'s own body put the
+   * party-strip-save gated subtree over its declared stack budget (lane s179-a2,
+   * 2026-09-23). */
+  if ((u32)buff >= 0x08000000u && (u32)buff <= 0x0DFFFFFFu) {
+    log_line_bs("vsd: REFUSED disk_write from ROM", (unsigned)buff, (unsigned long)sector);
+    return RES_ERROR;
+  }
+#endif
+
   /* WORD alignment, not halfword -- see the long note in disk_read(). The EZ-Flash write
    * path is the same DMA32 copy in the opposite direction, so a 2-mod-4 SOURCE reads two
    * bytes early and writes shifted data to the card. On the write side that is a
    * data-loss bug, not just a display one. */
   if ((u32)buff & 0x3) {
+#ifdef PDNA_DELTA
+    /* BACKLOG #179 A3 review D7: same fix as diskio.c's disk_read -- vsd.py's own
+     * unaligned_count is structurally 0 (the mailbox only ever sees fc_bounce, always
+     * 4-aligned), so log the real unaligned SOURCE once per disk_write CALL, before
+     * it is bounced away, at the one place that still has the caller's own buff.
+     * log_line_bsc(), not log_line() -- see log.h's comment on log_line_bsc. */
+    log_line_bsc("vsd: unaligned write", (unsigned)buff, (unsigned long)sector,
+                 (unsigned)count);
+#endif
     /* Unaligned source: stage through the aligned buffer, 4 sectors at a time. */
     for (UINT i = 0; i < count; i += 4) {
       const u16 blocks = (count - i > 4) ? 4 : (u16)(count - i);

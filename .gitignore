@@ -138,3 +138,10 @@ __pycache__/
 # by default and never committed.
 /box14.box
 /box15.box
+
+# BACKLOG #179 Phase A: tools/vsd_img.c-built virtual-SD card images -- they embed
+# whatever fixture .pds/.sav bytes a chain seeded into them (personal save data in
+# real usage), and tools/vsd_img.c list/vsd_diff.py's own `path size crc32` output
+# files. Both live under /tmp/pokedna-vsd/ (design S4.6) and are never committed.
+*.img
+*.list

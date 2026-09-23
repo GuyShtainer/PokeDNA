@@ -12,6 +12,24 @@ void log_init(void);                  /* probe/open the mGBA debug channel   */
 int  log_under_mgba(void);            /* 1 if running under mGBA, else 0      */
 
 void log_line(const char* fmt, ...);  /* append a line (RAM buffer + mGBA)    */
+
+/* Two hand-formatted siblings of log_line() for stack-budget-hot call sites: same
+ * three sinks (RAM ring, mGBA, later flush), but NO va_list and NO vsniprintf -- the
+ * general log_line() pulls in newlib's reentrant *printf tail (_svfiprintf_r et al,
+ * ~740 B measured, first-use malloc-arena setup) onto whichever call chain reaches it,
+ * which is exactly what put BACKLOG #179's party-strip-save gated subtree
+ * (source/pdna_box.c's PDNA_PARTY_STRIP_NEED) over its declared budget the moment
+ * lib/fatfs/diskio.c and diskio_write.c started calling log_line() from disk_read()/
+ * disk_write()'s own hot path (lane s179-a2, 2026-09-23: measured 7,568 > 7,224).
+ * These two cover the only shapes those two call sites need: "<prefix> 0x%08x %lu"
+ * and "<prefix> 0x%08x %lu %u", built with hand-rolled hex/decimal. PDNA_DELTA-only:
+ * their only callers are the delta build's diskio diagnostics, and a shipped ROM must
+ * not carry them (~700 B of dead .text otherwise -- s179-a2 re-verify D-A11d-R). */
+#ifdef PDNA_DELTA
+void log_line_bs(const char* prefix, unsigned buff, unsigned long sector);
+void log_line_bsc(const char* prefix, unsigned buff, unsigned long sector, unsigned count);
+#endif
+
 void log_clear(void);
 
 
