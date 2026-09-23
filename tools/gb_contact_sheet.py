@@ -230,7 +230,11 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # "BACKLOG #88:".
     ("gb-flags", "BACKLOG #88 — Flags & counters (source/pdna_gbflags.c): two tabs, "
      "foldable named-flags list, bag-grant/story/warn row kinds, raw flag browser",
-     ("BACKLOG #88",)),
+     # The #127 partial-repaint shots (P2 red/crystal, F3) are flag-browser frames
+     # too -- same class as the #202/#120 prefixes fixed above, found by the review
+     # of this lane. Without them, five real shots silently land in `misc`.
+     ("BACKLOG #88", "BACKLOG #127 P2 (red)", "BACKLOG #127 P2 (crystal)",
+      "BACKLOG #127 F3")),
     # BACKLOG #87 (append-only, same rule as every row above): the Pokedex (seen/
     # caught) for Gen 1/2 on the SHARED dex screen (pdna_pick.c's pdna_dex_screen,
     # reused unchanged under a species cap) + Gen 2's own Unown-forms toggle list.
