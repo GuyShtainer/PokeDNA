@@ -2689,6 +2689,7 @@ def run_b132_portrait(core_mod, image_mod, rom: Path, out_dir: Path, which: str)
 
     Returns both Sessions (boot-picker mount, nested mount) so the caller can sum
     `.taken`/`.skipped` across both."""
+    gb_shots.assert_vehicle(rom, "ART")  # BACKLOG #255 review: its docstring says `make delta-gb`'s own recipe -- the full-art delta
     sessions: list[gb_shots.Session] = []
 
     # Mount 1: the standalone/boot-picker mount -- a combined image's top-level
@@ -3637,6 +3638,8 @@ def run_b124_dexicons(core_mod, image_mod, rom: Path, out_dir: Path, which: str,
     icon-store fallback when `fallback`), and (crystal, non-fallback only) the SAME
     dex page's `perf dex:` log line so step 2's SD-read count can be read back off
     it (see measure_dex_sd_reads() below, which reuses this exact navigation)."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255 review: its own inline comment turns on mon_icon_for(1) being NULL -- the exact
+                                        # icon-lookup divergence that made BACKLOG #253 fourteen wrong frames
     tag = f"b124_dexicons_{which}{'_fallback' if fallback else ''}_"
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, tag)
     print(f"== BACKLOG #124: dex-grid GB icons ({which}{' fallback' if fallback else ''}) ==")
@@ -6620,7 +6623,9 @@ def run_s150_9_site2(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.
     A landed, persisted native cell (bank.meta writable) is hardware-only from
     here, same as run_s150_4_uplift's own chain -- not faked with a pre-planted
     stand-in cell."""
-    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
+    gb_shots.assert_vehicle(rom, "ART")  # BACKLOG #255 review: this docstring says `make delta-gb`, which is PDNA_TARGET=delta
+                                    # with NO PDNA_ARTLESS=1 (Makefile:567) -- the FULL-ART delta. Asserting
+                                    # ARTLESS here hard-refused the very build the chain prescribes.
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s150_9_site2_")
     print("== BACKLOG #209: site 2 of the restore (gb_lift_restore) ==")
     boot_to_gb_session(s, rom, which="red")
@@ -10951,7 +10956,9 @@ def run_s150_12_copy_edge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
     save, XFER-C15a's own md5-of-the-.sav proof, and the RO-mount refusal on an
     EverDrive/read-only cart (XFER-C15e) -- none of these are producible in mGBA,
     which has no SD card and no EverDrive emulation at all."""
-    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
+    gb_shots.assert_vehicle(rom, "ART")  # BACKLOG #255 review: this docstring says `make delta-gb`, which is PDNA_TARGET=delta
+                                    # with NO PDNA_ARTLESS=1 (Makefile:567) -- the FULL-ART delta. Asserting
+                                    # ARTLESS here hard-refused the very build the chain prescribes.
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s150_12_")
     print("== BACKLOG #150 S150-12: the read-only mount's COPY lift + planted-cell DOWN edge ==")
     idx = gb_save_pick_index(rom)["gold"]
@@ -11167,7 +11174,9 @@ def run_s150_11_reconcile(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
     confirmed against the shipped source rather than assumed; a populated-list shot
     needs either S150-13's real RAM ledger or real hardware (BACKLOG #150 S150-11's
     HW-QUEUE rows XFER-C13/C14/C16b/C20/C27/C28/C29 cover the populated cases)."""
-    gb_shots.assert_vehicle(rom, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
+    gb_shots.assert_vehicle(rom, "ART")  # BACKLOG #255 review: this docstring says `make delta-gb`, which is PDNA_TARGET=delta
+                                    # with NO PDNA_ARTLESS=1 (Makefile:567) -- the FULL-ART delta. Asserting
+                                    # ARTLESS here hard-refused the very build the chain prescribes.
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s150_11_")
     print("== BACKLOG #150 S150-11: the TRANSFERS screen (START row, empty state, GB "
           "session refusal, silent Bank open) ==")
