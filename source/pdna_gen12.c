@@ -2237,19 +2237,17 @@ gb_lift_restore_g3home(const GbEditMon* mon, uint8_t out80[80]) {
   GbscEntry e;
   if (!gbsc_get(g_ed->sidecar, len, found, &e)) return -1;
 
-  /* Same state gate as the native arm (decision 8, mirrored). */
-  if (e.state == XR_STATE_RESTORED) {
-    log_line("gen12: lift restore(g3home): entry already RESTORED -- refusing a second restore");
-    snd_deny();
-    msg_wait(PDNA_XFERDUP_TITLE, UI_WARN, PDNA_XFERDUP_L1, PDNA_XFERDUP_L2);
-    return -2;
-  }
-  if (e.state == XR_STATE_PENDING) {
-    log_line("gen12: lift restore(g3home): entry still PENDING -- refusing (honest SAVE FIRST wall)");
-    snd_deny();
-    msg_wait(PDNA_XFER_SAVEFIRST_TITLE, UI_WARN, PDNA_XFER_SAVEFIRST_L1, PDNA_XFER_SAVEFIRST_L2);
-    return -2;
-  }
+  /* BACKLOG #246 review F3 fix: NO state gate here, unlike the native arm. The
+   * only writer of a G3_HOME entry is gb_paste_write -> gbsc_entry_from, which
+   * always stamps XR_STATE_NONE (source/gb_sidecar.c); nothing else ever calls
+   * gbsc_set_state (or assigns e.state directly) on a G3_HOME entry -- every other
+   * state write in this file is scoped to XR_KIND_NATIVE_HOME (gb_release_restored_
+   * verify's caller, and app_xfer_promote in pdna_main.c, both gate on kind ==
+   * XR_KIND_NATIVE_HOME). Per #104 SS2.5 the RESTORED/PENDING states are retired
+   * for this direction: a #246 entry is always XR_STATE_NONE, and gb_release_
+   * g3home's own consume (not a state flip) is its entire lifecycle. The two
+   * blocks that used to gate on RESTORED/PENDING here could never fire -- dead
+   * refusals, the #154/#232/#244 class. */
 
   /* probe with accept=0 first (report only), same shape as the native arm. */
   GbscMergeReport rep;
