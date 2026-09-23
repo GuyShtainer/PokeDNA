@@ -972,6 +972,11 @@ int main(void) {
   PF(PDNA_XFER_NOGEN_TITLE, 28, 184);
   PF(PDNA_XFER_NOGEN_L1,    28, 184);
   PF(PDNA_XFER_NOGEN_L2,    28, 184);
+  /* BACKLOG #246 review F6(a): the D1 Bank-duplicate-onto-GB refusal's own text,
+   * split out from PDNA_XFER_NOGEN (a generation rule, not a copy rule). */
+  PF(PDNA_XFER_COPYNOXFER_TITLE, 28, 184);
+  PF(PDNA_XFER_COPYNOXFER_L1,    28, 184);
+  PF(PDNA_XFER_COPYNOXFER_L2,    28, 184);
   /* BACKLOG #150 S150-3 decision 10: drop_held's native-escape deny (pdna_box.c). */
   PF(PDNA_XFER_NATIVE_TITLE, 28, 184);
   PF(PDNA_XFER_NATIVE_L1,    28, 184);
@@ -1244,6 +1249,10 @@ int main(void) {
   PF(PDNA_SIDECAR_FULL_L1,          28, 184);
   PF(PDNA_SIDECAR_NOTWRITTEN_TITLE, 28, 184);
   PF(PDNA_SIDECAR_NOTWRITTEN_L2,    28, 184);
+  /* BACKLOG #246 review F4: gb_paste_write's pre-gbsc_add ambiguous-entry guard. */
+  PF(PDNA_SIDECAR_AMBIG_TITLE,      28, 184);
+  PF(PDNA_SIDECAR_AMBIG_L1,         28, 184);
+  PF(PDNA_SIDECAR_AMBIG_L2,         28, 184);
 
   /* The loss screen: fixed sys8 title/footer at x=4 (gb_pick_box's own convention),
    * proportional rows fit to UI_SCR_W - 8 at x=4. */

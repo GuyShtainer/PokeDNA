@@ -134,8 +134,11 @@ def main() -> int:
                  # msg_wait -- BIG_SETTLE alone was pixel-identical to the loss screen.
     s.shot("07_after_confirm", "A = transfer -- the sidecar sf_write_verified() runs for "
            "real against this --vsd image, THEN gb_paste_write()'s own gb_persist(\"paste\") "
-           "call hits the PDNA_DELTA wall and gb_paste_sidecar_undo() rolls the sidecar "
-           "entry back out -- whatever the screen shows now is that refusal, not a landing")
+           "call hits the PDNA_DELTA wall and blocks on its own msg_wait keypress -- "
+           "gb_paste_sidecar_undo() has NOT run yet at this frame (BACKLOG #246 review "
+           "F6(b): it never runs on this runner at all, since nothing here dismisses that "
+           "msg_wait) -- which is exactly why the .pds this step just wrote is still on "
+           "disk for the diff below to find")
     s.run(300)
     s.shot("08_settled", "300 more frames", allow_same=True)
 

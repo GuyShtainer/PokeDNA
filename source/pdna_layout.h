@@ -1033,6 +1033,13 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XFER_NOGEN_TITLE "NOT ACROSS GENERATIONS"
 #define PDNA_XFER_NOGEN_L1    "This Pokemon cannot move"
 #define PDNA_XFER_NOGEN_L2    "between these two saves yet."
+/* BACKLOG #246 review F6(a) fix: the D1 refusal (a Bank DUPLICATE carry dropped
+ * on a GB grid, pdna_box.c) used to reuse PDNA_XFER_NOGEN_*, which the user has
+ * just seen disproved by a successful non-duplicate move a moment earlier --
+ * this is a COPY-specific rule, not a generation rule. */
+#define PDNA_XFER_COPYNOXFER_TITLE "COPIES CAN'T TRANSFER"
+#define PDNA_XFER_COPYNOXFER_L1    "Move the original instead."
+#define PDNA_XFER_COPYNOXFER_L2    "A copy has no Bank slot to free."
 
 /* BACKLOG #150 S150-3 decision 3/10: a native "GBC1" Bank cell dropped anywhere other
  * than back into the Bank (drop_held's dominating xg_native_escape_denied() call). The

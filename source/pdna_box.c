@@ -1828,7 +1828,11 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
     if (src->scope == BOXSCOPE_GB && s_orig_scope == BOXSCOPE_BANK && s_held_dup) {
       boxoam_suspend();
       snd_deny();
-      msg_wait(PDNA_XFER_NOGEN_TITLE, UI_WARN, PDNA_XFER_NOGEN_L1, PDNA_XFER_NOGEN_L2);
+      /* BACKLOG #246 review F6(a) fix: this is NOT the "not across generations"
+       * rule (PDNA_XFER_NOGEN_*) -- the user has just seen that disproved by a
+       * successful non-duplicate move a moment earlier. This is COPY-specific:
+       * a duplicate carry has no Bank slot of its own to free on landing. */
+      msg_wait(PDNA_XFER_COPYNOXFER_TITLE, UI_WARN, PDNA_XFER_COPYNOXFER_L1, PDNA_XFER_COPYNOXFER_L2);
       boxoam_resume();
       return recs;
     }
