@@ -292,6 +292,12 @@ static bool box_load(int box) {
    * there): see bank_plant.h. */
   if (st != SF_OK && box == 0) bank_plant_box0(box_recs());
   if (st != SF_OK && box == 1) bank_plant_box_full(box_recs());
+  /* BACKLOG #246 (#104 Phase 1): a THIRD, dedicated box -- never box 0/1, so every
+   * existing shot chain keyed on those two boxes' own byte-for-byte content stays
+   * untouched. This is the one plant this whole file never had before: a PLAIN
+   * Gen-3 cell (see bank_plant_g3_box's own comment), the source this lane's new
+   * arm needs to demonstrate carrying a Gen-3 Bank cell onto a Game Boy grid. */
+  if (st != SF_OK && box == 2) bank_plant_g3_box(box_recs());
 #endif
   /* BACKLOG #150 S150-3 decision 6: recomputed at every page-in, AFTER the PDNA_DELTA
    * plant above so a planted native cell is captured too -- this is the ONE choke

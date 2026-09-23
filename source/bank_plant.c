@@ -258,6 +258,26 @@ static bool plant_g3_pair(uint8_t g3_rec80[80], uint8_t cell80[80], uint8_t leve
   return gen12_convert(&view, &tgt, g3_rec80, &notes) == GB12_OK;
 }
 
+/* BACKLOG #246 (#104 Phase 1): a PLAIN Gen-3 Bank cell -- NEVER native/GBC1 -- for a
+ * DEDICATED box (box 2, wired below in pdna_bank.c's box_load()), not box 0/1: every
+ * existing shot chain's pixel captions and counts ("BANK 1  7/30" etc.) key off
+ * bank_plant_box0()/bank_plant_box_full()'s own byte-for-byte content, and this lane
+ * must not move either. Reuses plant_g3_pair()'s own conversion (a Gen-2 CHIKORITA
+ * carried through gen12_convert(), met_game=Emerald) so the planted cell is a real,
+ * decodable Gen-3 box record built with no new construction path -- this is the
+ * first Bank-visited PDNA_DELTA scenario that has ever needed a PLAIN Gen-3 cell
+ * (every earlier plant in this file is a native "GBC1" cell). serial 300 -- distinct
+ * from every other planted serial in this file (box0 1..7, box_full 6..30, S150-9
+ * xfer {1,2,26,27}, site2 200). */
+#define PLANT_G3_SERIAL 300u
+void bank_plant_g3_box(uint8_t* recs) {
+  if (!recs) return;
+  uint8_t g3_rec80[80], cell80[80];   /* cell80 discarded -- this slot's whole point
+                                       * is the plain Gen-3 RECORD, not a native cell */
+  if (!plant_g3_pair(g3_rec80, cell80, 14, PLANT_G3_SERIAL)) { memset(recs, 0, 80); return; }
+  memcpy(recs, g3_rec80, 80);   /* slot 0 of this box */
+}
+
 /* Seeds slot `idx`'s ledger file, one entry, keyed by xr_key_g3(g3_rec80). `state`
  * is the entry's XR_STATE_* (decision 8); `alter` requests decision 12(b)'s
  * written_level-3/moves-swap so the screen has real toggle rows (false leaves the
