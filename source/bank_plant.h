@@ -79,9 +79,20 @@ void bank_plant_gen2_badmoves_cell(uint8_t out80[80]);
  * gate ELFs' .bss/.sbss are byte-unchanged by this file, proven in the delivery
  * report with arm-none-eabi-size). `bank_plant_xfer_open` is xr_open()'s own shim
  * call: true + `buf`/`*len` filled only when `key` matches ONE of the seeded keys;
- * false (untouched `buf`/`*len`) for every other key, so a real ledger file (if one
- * ever existed on this vehicle, which it cannot -- no writable FAT) would not be
- * shadowed. */
+ * false (untouched `buf`/`*len`) for every other key.
+ *
+ * CORRECTED (BACKLOG #175c/#226 review, 2026-09-23): the "no writable FAT" premise
+ * above was already stale -- a VSD-attached delta build DOES have a real, writable
+ * FAT (BACKLOG #179's virtual SD), and app_xfer_save_now() really does land a real
+ * ledger file there. The bug this shim used to have was the OTHER direction:
+ * xr_open() tried this shim BEFORE ever reading the real file, so once a real write
+ * landed it stayed permanently shadowed by the stale planted bytes -- attempt 1 of
+ * a restore's SAVE NOW? loop kept re-reading the SAME PENDING plant forever, and
+ * "save-now succeeds -> the restore proceeds" (the loop's own happy path) could
+ * never execute at either restore site. xr_open() now tries the real file FIRST
+ * and only falls back to this shim on a genuine SF_ERR_OPEN, so a real write DOES
+ * shadow the plant once it exists -- exactly the shadowing this comment used to
+ * (wrongly) say was structurally impossible. */
 bool bank_plant_xfer_open(uint64_t key, uint8_t* buf, uint32_t cap, uint32_t* len);
 
 /* Builds and seeds all four planted ledger entries (decisions 7/8/12(b)/12(c)),

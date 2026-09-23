@@ -2133,6 +2133,14 @@ static int16_t  g_xd_idx = -1;
 
 bool app_xfer_pending(void) { return g_xd_key != 0 && g_xd_idx >= 0; }
 
+/* BACKLOG #175c review D2: app_xfer_pending() alone answers "is SOME transfer
+ * pending", not "is THIS entry the one that can be promoted" -- app_xfer_promote()
+ * only ever acts on g_xd_key/g_xd_idx (this session's own ledger write), so an
+ * entry the DISK still shows PENDING from an earlier session can never be
+ * promoted, no matter how many times app_commit_pc() runs. Compare the RAM key so
+ * a caller can tell the two apart before offering SAVE NOW? at all. */
+bool app_xfer_pending_is(uint64_t key) { return g_xd_key == key && g_xd_idx >= 0; }
+
 void app_xfer_pending_set(uint64_t key, int idx) {
   g_xd_key = key;
   g_xd_idx = (int16_t)idx;
@@ -4637,6 +4645,121 @@ static bool party_place_held(const uint8_t* held80, int target, int orig_box, in
   memcpy(pslot, x100, 100);                                 /* held mon -> the party slot */
   app_mark_pc_dirty(); app_register_dex_deferred(x100, true); app_stage_sb1();
   snd_ok(); return true;
+}
+
+/* BACKLOG #226: Gen-3 twin of gb_accept_down_party_deposit()'s own picker
+ * (source/pdna_gen12.c gb_pick_party_slot) -- same PDNA_GBEDIT_PICKBOX_* row
+ * metrics, same wait_keys(KEY_UP|KEY_DOWN|KEY_A|KEY_B) loop, same
+ * PDNA_GBEDIT_PICKPARTY_* title/footer, so the two generations' pickers look and
+ * behave identically (the UX-parity rule). Rows are the party's own nicknames
+ * (ui_ptext_fit, PokeDNA's proportional font -- never ui_text+truncate). Returns
+ * the chosen slot, or -1 on B. */
+static int app_pick_party_slot(void) {
+  int n = party_count(g_sb1, g_frlg);
+  if (n <= 0 || n > 6) return -1;
+  uint16_t doff = g_frlg ? 0x0038 : 0x0238;
+  int sel = 0;
+  for (;;) {
+    ui_clear();
+    ui_text(4, 3, UI_TITLE, PDNA_GBEDIT_PICKPARTY_TITLE);
+    ui_hline(0, 13, UI_SCR_W, UI_BORDER);
+    for (int i = 0; i < n; i++) {
+      PkMon pk;
+      char nm[24];
+      if (pk_decode_mon(g_sb1 + doff + (uint32_t)i * 100, true, &pk))
+        strcpy(nm, pk.nickname[0] ? pk.nickname : pk_species_name(pk.species));
+      else nm[0] = 0;
+      int y = PDNA_GBEDIT_PICKBOX_Y0 + i * PDNA_GBEDIT_PICKBOX_ROW_H;
+      bool sh = (i == sel);
+      if (sh) ui_panel(2, y - 1, UI_SCR_W - 4, PDNA_GBEDIT_PICKBOX_ROW_H, UI_SEL, UI_TITLE);
+      ui_ptext_fit(4, y, UI_SCR_W - 8, sh ? UI_SELTEXT : UI_TEXT, nm[0] ? nm : "?");
+    }
+    ui_hline(0, 147, UI_SCR_W, UI_BORDER);
+    ui_text(4, 150, UI_DIM, PDNA_GBEDIT_PICKPARTY_FOOT);
+
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    if (k & KEY_B) return -1;
+    if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : n - 1;
+    if (k & KEY_DOWN) sel = (sel + 1) % n;
+    if (k & KEY_A) return sel;
+  }
+}
+
+/* BACKLOG #226: Gen-3 twin of gb_accept_down_party_deposit() -- the party is full;
+ * offer to send one member to a box first rather than refusing the drop outright
+ * (SS11.20 item 10(c)'s own reasoning, applied to the OTHER generation so the two
+ * behave identically). Confirm decline, B on the picker, a mail holder (review D4),
+ * or no free PC box all refuse the WHOLE offer with nothing touched --
+ * app_inject_to_game_deferred() only mutates g_pc AFTER it has already found a free
+ * slot, and party_release() only runs after that succeeds, so a failure here never
+ * gets past "nothing moved yet". Returns true iff a party slot is now free (review
+ * D5). *out_box/*out_slot (either may be NULL) receive the deposit's landing spot
+ * so a caller can roll it back with app_party_deposit_undo() (review D1). */
+bool app_party_full_deposit_offer(int* out_box, int* out_slot) {
+  char l1[64];
+  siprintf(l1, "%s %s", PDNA_XFER_PARTYFULL_L1, PDNA_XFER_PARTYFULL_L2);
+  if (!app_confirm(PDNA_XFER_PARTYFULL_TITLE, l1)) return false;
+
+  int chosen = app_pick_party_slot();
+  if (chosen < 0) return false;
+
+  uint16_t doff = g_frlg ? 0x0038 : 0x0238;
+  uint8_t* pslot = g_sb1 + doff + (uint32_t)chosen * 100;
+
+  /* BACKLOG #226 review D4: retail refuses to store a mail holder (MENU_STORE ->
+   * ItemIsMail -> "PLEASE REMOVE MAIL", pokeemerald src/pokemon_storage_system.c:
+   * 2646-2651) -- do the same check before this offer touches anything. HELD ITEM
+   * ID range 121 (ORANGE MAIL) .. 132 (RETRO MAIL), source/data_tables.c. Do NOT
+   * test the record's raw 0x55 mail byte: PokeDNA itself wrote 0x00 there before
+   * #225 and 0x00 is a valid mail index, not "no mail". */
+  PkMon pk;
+  if (pk_decode_mon(pslot, true, &pk) && pk.heldItem >= 121 && pk.heldItem <= 132) {
+    snd_deny();
+    msg_wait(PDNA_XFER_PARTYFULL_MAIL_TITLE, UI_WARN, PDNA_XFER_PARTYFULL_MAIL_L1, PDNA_XFER_PARTYFULL_MAIL_L2);
+    return false;
+  }
+
+  uint8_t box80[80];
+  party_to_box(pslot, box80);
+
+  int ob = -1, os = -1;
+  if (!app_inject_to_game_deferred(box80, &ob, &os)) return false;  /* shows its own PC FULL */
+
+  party_release(g_sb1, g_frlg, chosen);
+  app_stage_sb1();
+  if (out_box) *out_box = ob;
+  if (out_slot) *out_slot = os;
+  /* review D5: self-enforcing postcondition -- party_release + app_inject_to_game_
+   * deferred are both plain C mutations (no card I/O between them), so this check
+   * cannot itself fail today. review D3-R: this did NOT make attempt 1's PARTYFULL3
+   * wall reachable-in-principle -- the caller re-reads app_party_n() immediately
+   * after this call returns, with nothing able to run in between, so a `true` here
+   * guarantees the caller's own recheck also sees < 6. Its purpose is defensive
+   * (golden rule 7: check the return value instead of trusting the arithmetic), not
+   * to open a path this file's own comments elsewhere still (correctly) call
+   * unreachable. */
+  return app_party_n() < 6;
+}
+
+/* BACKLOG #226 review D2-R: see the contract comment in pdna_app.h. Bounds-check first
+ * (this became a callable-from-anywhere public function, not just the one hoisted site),
+ * then append BEFORE touching the box cell -- the re-verify found gb_bank_down_gen3 runs
+ * xfer_down_write (a real .pds write) between the deposit and this undo for a GB-origin
+ * source, so party_append CAN fail here; the old zero-then-append order discarded the
+ * stack-local p100 on that arm and the Pokemon existed nowhere. On a failed append the
+ * mon is left standing in the box instead (still findable, never destroyed). */
+void app_party_deposit_undo(int box, int slot) {
+  if (box < 0 || box >= G3_TOTAL_BOXES || slot < 0 || slot >= G3_IN_BOX) return;
+  uint8_t* cell = pk_box_slot(g_pc, box, slot);
+  uint8_t p100[100];
+  box_to_party(cell, p100);
+  if (!party_append(g_sb1, g_frlg, p100)) {
+    log_line("party: deposit undo: party_append failed -- deposit LEFT in box %d slot %d", box, slot);
+    return;
+  }
+  memset(cell, 0, 80);
+  app_mark_pc_dirty();
+  app_stage_sb1();
 }
 
 /* ---- shared party engine, exposed to pdna_box.c's party_strip_overlay (pdna_app.h) --
