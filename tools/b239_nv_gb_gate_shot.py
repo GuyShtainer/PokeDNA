@@ -18,10 +18,13 @@ coverage).
 
 Before this lane: A on NV_GB opened pdna_gen12_show_fused()'s "PICK A SAVE" picker
 (read-only nested mount).
-After this lane: A on NV_GB shows the ordinary nav-refuse dialog -- title "COMING
-SOON", body "Open the Bank instead." (source/nav_avail.c's own GB_TABLE wording,
-reused for the Gen-3 case by this lane) -- and the box screen underneath is
-UNCHANGED (no mount, no picker, nothing entered).
+After the fix-pass review (BACKLOG #239 D3): A on NV_GB shows its OWN dedicated
+dialog -- title "BANK ONLY", a two-line procedure ("Open the GB save on its own," /
+"send it to the Bank, come back.") -- instead of the generic "COMING SOON" / "Open
+the Bank instead." wording the first pass shipped (a review BLOCK: that wording lied
+-- the row WAS wired and was deliberately removed, and the named Bank was empty since
+the GB save was never opened). The box screen underneath is UNCHANGED (no mount, no
+picker, nothing entered).
 
     cd /tmp/pokedna-bank-only && /usr/local/bin/python3 tools/b239_nv_gb_gate_shot.py
 
@@ -68,12 +71,15 @@ def main() -> int:
     s.tap("RIGHT")                                                    # column 0 -> column 1
     s.press_n("DOWN", dgb_shots.nav_down_from_col_top("NV_GB"))        # Blocks -> ... -> GB import
     s.tap("A", settle=gb_shots.BIG_SETTLE)                            # NV_GB -> refuse, not a mount
-    s.shot("01_refused", "BACKLOG #239: NV_GB on a live Gen-3 save now shows "
-           "COMING SOON / \"Open the Bank instead.\" instead of opening the "
-           "nested read-only GB mount (pdna_gen12_show_fused's own PICK A SAVE "
-           "picker) -- xfer_direct_allowed()/nav_avail() close the row before "
-           "app_pick_gb_save/gb_delta_pick_save ever runs.",
-           claim=["COMING SOON", "Open the Bank instead."])
+    s.shot("01_refused", "BACKLOG #239 D3: NV_GB on a live Gen-3 save now shows its "
+           "own \"BANK ONLY\" dialog with the deposit-first procedure, instead of "
+           "opening the nested read-only GB mount (pdna_gen12_show_fused's own "
+           "PICK A SAVE picker) -- xfer_direct_allowed()/nav_avail() close the row "
+           "before app_pick_gb_save/gb_delta_pick_save ever runs, and the reused "
+           "\"COMING SOON\"/\"Open the Bank instead.\" wording from the first pass "
+           "was replaced (it lied: the row was wired and removed on purpose, and "
+           "the named Bank was empty).",
+           claim=["BANK ONLY", "Open the GB save on its own,", "send it to the Bank, come back."])
 
     s.tap("A", settle=gb_shots.BIG_SETTLE)                            # msg_wait dismisses on A ("Press A")
     s.shot("02_box_after", "after: back on the SAME box grid, still nothing entered "
