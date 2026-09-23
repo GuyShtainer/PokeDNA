@@ -4602,6 +4602,21 @@ static void party_to_box(const uint8_t* party100, uint8_t out80[80]) {
   EditMon e; gen3_edit_load(party100, true, &e); em_set_party_flag(&e, false); gen3_edit_commit(&e, out80);
 }
 
+/* BACKLOG #227: does a 100-byte PARTY record hold Mail? Test the HELD ITEM id (121..132,
+ * ORANGE MAIL..RETRO MAIL, verified against source/data_tables.c's s_item table), never the
+ * raw 0x55 mail byte -- PokeDNA itself wrote 0x00 there before #225 and 0x00 is a valid
+ * mail index (G3_MAIL_NONE is 0xFF), so a 0x55-byte test would refuse every tool-moved
+ * Pokemon. Mirrors retail's own gate (MENU_STORE -> ItemIsMail, pokeemerald
+ * src/pokemon_storage_system.c:2646-2651) and the check app_party_full_deposit_offer
+ * already had inline (#226, kept inline there so tests/host_escape_gate_sites_test.py's
+ * existing structural check on its exact literal keeps working) -- same predicate,
+ * different call sites, so every "about to box a party mon" site asks the exact same
+ * question. */
+static bool g3_party_rec_has_mail(const uint8_t* party100) {
+  PkMon pk;
+  return pk_decode_mon(party100, true, &pk) && pk.heldItem >= 121 && pk.heldItem <= 132;
+}
+
 /* Place a HELD box mon into the party: ADD it to a free slot (target == party count) or
  * SWAP with party[target] (the displaced party mon takes the held mon's PC origin). The one
  * proven add/swap core, shared by the party overlay below. (orig_box,orig_slot) = the held
@@ -4639,6 +4654,15 @@ static bool party_place_held(const uint8_t* held80, int target, int orig_box, in
   /* SWAP with party[target]: the party mon takes the held mon's PC origin */
   if (!can_swap) { snd_deny(); msg_wait("CAN'T SWAP", UI_WARN, "This held mon has no PC", "slot to receive the swap."); return false; }
   uint8_t* pslot = g_sb1 + (g_frlg ? 0x038 : 0x238) + (uint32_t)target * 100;
+  /* BACKLOG #227: the displaced party mon is about to be boxed (party_to_box below
+   * drops its plaintext 0x55 mail byte with nothing left pointing at the mail slot it
+   * still owns in gSaveBlock1's mail array) -- refuse exactly as retail does, before
+   * either half of the swap touches anything. */
+  if (g3_party_rec_has_mail(pslot)) {
+    snd_deny();
+    msg_wait(PDNA_XFER_PARTYFULL_MAIL_TITLE, UI_WARN, PDNA_XFER_PARTYFULL_MAIL_L1, PDNA_XFER_PARTYFULL_MAIL_L2);
+    return false;
+  }
   uint8_t y80[80];  party_to_box(pslot, y80);               /* party mon -> 80b box */
   uint8_t x100[100]; box_to_party(held80, x100);            /* held box mon -> 100b party */
   memcpy(pk_box_slot(g_pc, orig_box, orig_slot), y80, 80);  /* party mon -> the PC origin */
@@ -4711,7 +4735,11 @@ bool app_party_full_deposit_offer(int* out_box, int* out_slot) {
    * 2646-2651) -- do the same check before this offer touches anything. HELD ITEM
    * ID range 121 (ORANGE MAIL) .. 132 (RETRO MAIL), source/data_tables.c. Do NOT
    * test the record's raw 0x55 mail byte: PokeDNA itself wrote 0x00 there before
-   * #225 and 0x00 is a valid mail index, not "no mail". */
+   * #225 and 0x00 is a valid mail index, not "no mail". (#227 gave the SWAP arm and
+   * MOVE TO BOX the same rule via g3_party_rec_has_mail(), which this predicate
+   * matches field-for-field; kept inline here rather than refactored onto that
+   * helper so tests/host_escape_gate_sites_test.py's existing structural check on
+   * this exact site's literal pk.heldItem test keeps working unmodified.) */
   PkMon pk;
   if (pk_decode_mon(pslot, true, &pk) && pk.heldItem >= 121 && pk.heldItem <= 132) {
     snd_deny();
@@ -4789,6 +4817,11 @@ bool app_party_mon_menu(int slot, int footer_y, bool allow_move_to_box,
     g_party_tobox_req = false;
     if (party_count(g_sb1, g_frlg) <= 1) {
       snd_deny(); msg_wait("CAN'T", UI_WARN, "The party can't be empty.", "Move another mon in first.");
+    } else if (g3_party_rec_has_mail(rec)) {
+      /* BACKLOG #227: MOVE TO BOX is exactly the box-a-party-mon path that drops the
+       * plaintext mail byte with nothing left pointing at the mail slot. */
+      snd_deny();
+      msg_wait(PDNA_XFER_PARTYFULL_MAIL_TITLE, UI_WARN, PDNA_XFER_PARTYFULL_MAIL_L1, PDNA_XFER_PARTYFULL_MAIL_L2);
     } else if (tobox_hit) {
       party_to_box(rec, tobox_grab); *tobox_hit = true;
     }
