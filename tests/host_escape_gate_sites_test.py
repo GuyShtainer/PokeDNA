@@ -253,6 +253,17 @@ BOXOAM_SUSPEND_RE          = re.compile(r"\bboxoam_suspend\(\)")
 BOXOAM_RESUME_RE           = re.compile(r"\bboxoam_resume\(\)")
 DEPOSIT_MAIL_CHECK_RE      = re.compile(r"pk\.heldItem\s*>=\s*121\s*&&\s*pk\.heldItem\s*<=\s*132")
 APP_INJECT_DEFERRED_RE     = re.compile(r"\bapp_inject_to_game_deferred\(")
+# BACKLOG #226 review D4-R(b): the six post-deposit refusal-arm anchors in
+# party_strip_overlay, each of which must roll dep_box back within its own block.
+DEPOSIT_ARM_ATTEMPT1_RE    = re.compile(r"if\s*\(\s*attempt\s*==\s*1\s*\)\s*\{")
+DEPOSIT_ARM_NOT_DEPOSITED_RE = re.compile(r"if\s*\(\s*!deposited\s*\)\s*\{")
+DEPOSIT_ARM_PARTYSWAP_RE   = re.compile(r"if\s*\(\s*native\s*&&\s*sel\s*!=\s*n_now\s*\)\s*\{")
+DEPOSIT_ARM_DEFER_FULL_RE  = re.compile(r"app_bank_defer_full\(\)\s*\)\s*\{")
+DEPOSIT_ARM_NOT_CONVERTED_RE = re.compile(r"!=\s*BANK_DOWN_CONVERTED\s*\)\s*\{")
+DEPOSIT_ARM_CONVERTED_NOT_PLACED_RE = re.compile(r"if\s*\(\s*converted\s*&&\s*!placed\s*\)\s*\{")
+# BACKLOG #226 review D2-R: app_party_deposit_undo's own append-before-zero order.
+DEPOSIT_UNDO_PARTY_APPEND_CALL_RE = re.compile(r"\bparty_append\(g_sb1,\s*g_frlg,\s*p100\)")
+DEPOSIT_UNDO_MEMSET_CELL_RE       = re.compile(r"\bmemset\(cell,\s*0,\s*80\)")
 RETURN_PARTY_N_LT6_RE      = re.compile(r"return\s+app_party_n\(\)\s*<\s*6\s*;")
 PARTY_RELEASE_CALL_RE      = re.compile(r"\bparty_release\(g_sb1,\s*g_frlg,\s*chosen\)")
 DEP_BOX_REFRESH_RE         = re.compile(r"dep_box\s*>=\s*0")
@@ -1170,15 +1181,47 @@ def deposit_hoist_order_facts(body: list[str]) -> tuple[bool, str]:
 
 
 def deposit_rollback_facts(body: list[str]) -> tuple[bool, str]:
-    """(av) BACKLOG #226 review D1(b): app_party_deposit_undo( must be called on all
-    3 arms the review named -- the PARTYSWAP-can't-happen backstop, the re-checked
-    "TOO MANY MOVES" backstop, the bank_down_convert_gen3_party() != CONVERTED
-    refusal (the loss/legal screens), and the converted-but-not-placed arm -- 4 call
-    sites in total. MUT AV deletes one and must be caught (< 4)."""
-    n = len([1 for ln in body if DEPOSIT_UNDO_CALL_RE.search(ln)])
-    if n < 4:
-        return False, (f"party_strip_overlay: expected >= 4 app_party_deposit_undo( "
-                        f"call sites (one per post-deposit refusal arm), found {n}")
+    """(av) BACKLOG #226 review D4-R(b): a bare COUNT of app_party_deposit_undo( call
+    sites is not proof -- MUT AV in review found it moving the SAME rollback off its
+    one truly live arm onto a dead one, and the count (>= 4) stayed green either way,
+    because 2 of the original 4 sites are provably dead (the PARTYSWAP and the
+    pre-deposit-hoisted-shape TOO MANY MOVES backstops can only fire when dep_box is
+    still -1: sel is re-targeted to == n_now the instant a deposit lands, and
+    app_bank_defer_full()'s result cannot change between the hoisted pre-deposit
+    check and a later re-check with nothing in between that touches the defer
+    queue). A count can't tell "the live one" from "a dead one" apart. This is a
+    PER-ARM structural check instead: each of the six named post-deposit refusal
+    anchors (attempt==1's PARTYFULL3, !deposited, PARTYSWAP, the post-deposit
+    app_bank_defer_full() re-check, != BANK_DOWN_CONVERTED, and converted && !placed)
+    must have its OWN app_party_deposit_undo( call within the next 6 lines of ITS
+    OWN opening brace -- so deleting any one site's undo, live or dead, is caught
+    against that SPECIFIC arm, not papered over by a total that still clears a
+    threshold. The pre-deposit HOISTED app_bank_defer_full() check (which runs
+    BEFORE the offer and correctly has no undo) is distinguished from the post-
+    deposit re-check by taking the SECOND match of the anchor, not the first."""
+    arms: list[tuple[str, re.Pattern, int]] = [
+        ("attempt==1 PARTYFULL3",              DEPOSIT_ARM_ATTEMPT1_RE, 0),
+        ("!deposited",                         DEPOSIT_ARM_NOT_DEPOSITED_RE, 0),
+        ("PARTYSWAP (sel != n_now)",           DEPOSIT_ARM_PARTYSWAP_RE, 0),
+        ("post-deposit TOO MANY MOVES",        DEPOSIT_ARM_DEFER_FULL_RE, 1),  # 2nd match: skip the hoisted one
+        ("!= BANK_DOWN_CONVERTED",             DEPOSIT_ARM_NOT_CONVERTED_RE, 0),
+        ("converted && !placed",               DEPOSIT_ARM_CONVERTED_NOT_PLACED_RE, 0),
+    ]
+    for label, pat, which in arms:
+        start = 0
+        anchor_i = None
+        for _ in range(which + 1):
+            anchor_i = first_match_line(body, start, len(body), pat)
+            if anchor_i is None:
+                break
+            start = anchor_i + 1
+        if anchor_i is None:
+            return False, (f"party_strip_overlay: could not locate the '{label}' "
+                            f"refusal-arm anchor (occurrence #{which + 1})")
+        window_end = min(len(body), anchor_i + 7)
+        if first_match_line(body, anchor_i, window_end, DEPOSIT_UNDO_CALL_RE) is None:
+            return False, (f"party_strip_overlay: '{label}' arm (line {anchor_i + 1}) has "
+                            f"no app_party_deposit_undo( call in the following 6 lines")
     return True, "ok"
 
 
@@ -1238,6 +1281,30 @@ def deposit_postcondition_facts(main_lines: list[str]) -> tuple[bool, str]:
     if not rel_i < ret_i:
         return False, (f"app_party_full_deposit_offer: party_release( (line {rel_i + 1}) "
                         f"does not come before the postcondition return (line {ret_i + 1})")
+    return True, "ok"
+
+
+def deposit_undo_order_facts(main_lines: list[str]) -> tuple[bool, str]:
+    """(ba) BACKLOG #226 review D2-R: app_party_deposit_undo() (source/pdna_main.c, not
+    host-compilable) must call party_append(g_sb1, g_frlg, p100) BEFORE
+    memset(cell, 0, 80) -- the opposite order was the actual mon-destroying defect
+    this fix brief exists for: a failing append (reachable -- gb_bank_down_gen3 can
+    run xfer_down_write, a real card write, between the deposit and this undo for a
+    GB-origin source) used to zero the box cell FIRST, discarding the stack-local
+    p100 with the mon existing nowhere. MUT BA swaps the two lines and must be
+    caught."""
+    s, e = extract_function(main_lines, r"^void app_party_deposit_undo\(")
+    body = main_lines[s:e]
+    append_i = first_match_line(body, 0, len(body), DEPOSIT_UNDO_PARTY_APPEND_CALL_RE)
+    memset_i = first_match_line(body, 0, len(body), DEPOSIT_UNDO_MEMSET_CELL_RE)
+    if append_i is None:
+        return False, "app_party_deposit_undo: no party_append(g_sb1, g_frlg, p100) call found"
+    if memset_i is None:
+        return False, "app_party_deposit_undo: no memset(cell, 0, 80) call found"
+    if not append_i < memset_i:
+        return False, (f"app_party_deposit_undo: party_append( (line {append_i + 1}) does "
+                        f"not come BEFORE memset(cell, 0, 80) (line {memset_i + 1}) -- a "
+                        f"failing append would discard the mon with nowhere to land")
     return True, "ok"
 
 
@@ -1830,6 +1897,11 @@ def main() -> int:
     # ---- (az) BACKLOG #226 review D6: party_strip_overlay's post-loop box-grid
     # refresh also fires on dep_box >= 0. MUT AZ below. ----
     ok, detail = deposit_refresh_facts(party_body2)
+    check(ok, detail)
+
+    # ---- (ba) BACKLOG #226 review D2-R: app_party_deposit_undo's own append-before-
+    # zero order (source/pdna_main.c). MUT BA below. ----
+    ok, detail = deposit_undo_order_facts(main_lines)
     check(ok, detail)
 
     # ---- (f) review F3: the self-mutation harness, every run ----
@@ -2734,18 +2806,36 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str],
         print(f"  MUT AU demonstration -- app_party_full_deposit_offer( moved above "
               f"the D1(a) hoisted checks in party_strip_overlay: {detail}")
 
-    # MUT AV (BACKLOG #226 review D1(b), check (av)'s own demonstration): delete one
-    # of the 4 app_party_deposit_undo( call sites -- (av) must fail (< 4 remaining).
-    undo_idx = [i for i, ln in enumerate(party_body_real2) if DEPOSIT_UNDO_CALL_RE.search(ln)]
-    check(len(undo_idx) >= 1, "MUT AV: no app_party_deposit_undo( call found in the "
-                               "real source -- fix this test")
-    if undo_idx:
-        mut_av = [ln for i, ln in enumerate(party_body_real2) if i != undo_idx[0]]
-        ok_av, detail = deposit_rollback_facts(mut_av)
-        check(not ok_av, f"MUT AV (one app_party_deposit_undo( call site deleted) "
-                          f"should have been caught but was not: {detail}")
-        print(f"  MUT AV demonstration -- one app_party_deposit_undo( call site "
-              f"deleted from party_strip_overlay: {detail}")
+    # MUT AV (BACKLOG #226 review D4-R(b), check (av)'s own demonstration): the
+    # re-verify found the OLD bare-count (av) stayed green when the fix moved the
+    # rollback OFF its one live arm ONTO a dead one -- a count can't tell them apart.
+    # Prove the new PER-ARM check catches deleting the "converted && !placed" arm's
+    # own undo call specifically (the arm the review traced as reachable via the
+    # gb_down_loss_screen/gb_paste_legal_screen decline inside the convert step).
+    conv_i = first_match_line(party_body_real2, 0, len(party_body_real2),
+                               DEPOSIT_ARM_CONVERTED_NOT_PLACED_RE)
+    check(conv_i is not None, "MUT AV: could not locate the 'converted && !placed' "
+                               "arm anchor in the real source -- fix this test")
+    if conv_i is not None:
+        undo_i = first_match_line(party_body_real2, conv_i,
+                                   min(len(party_body_real2), conv_i + 7), DEPOSIT_UNDO_CALL_RE)
+        check(undo_i is not None, "MUT AV: the 'converted && !placed' arm has no "
+                                   "app_party_deposit_undo( within 6 lines in the real "
+                                   "source -- fix this test")
+        if undo_i is not None:
+            mut_av = [ln for i, ln in enumerate(party_body_real2) if i != undo_i]
+            ok_av, detail = deposit_rollback_facts(mut_av)
+            check(not ok_av, f"MUT AV (the 'converted && !placed' arm's "
+                              f"app_party_deposit_undo( call site deleted) should have "
+                              f"been caught but was not: {detail}")
+            print(f"  MUT AV demonstration -- the 'converted && !placed' arm's "
+                  f"app_party_deposit_undo( call site deleted from party_strip_overlay: {detail}")
+            # And the OTHER five arms alone (no mutation) must still pass on their own --
+            # confirms the failure above is attributed to the mutated arm specifically,
+            # not a side effect of losing an unrelated line.
+            ok_clean, detail_clean = deposit_rollback_facts(party_body_real2)
+            check(ok_clean, f"MUT AV: the UNMUTATED real source should pass the "
+                             f"per-arm check but did not: {detail_clean}")
 
     # MUT AW (BACKLOG #226 review D3, check (aw)'s own demonstration): delete the
     # boxoam_suspend()/boxoam_resume() bracket around the deposit-offer call.
@@ -2817,6 +2907,27 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str],
                           f"condition) should have been caught but was not: {detail}")
         print(f"  MUT AZ demonstration -- `|| dep_box >= 0` dropped from "
               f"party_strip_overlay's post-loop refresh condition: {detail}")
+
+    # MUT BA (BACKLOG #226 review D2-R, check (ba)'s own demonstration): swap
+    # app_party_deposit_undo's party_append( and memset(cell,0,80) lines back to the
+    # ORIGINAL bug order (zero first, append second) and confirm it is caught.
+    du_s, du_e = extract_function(main_lines, r"^void app_party_deposit_undo\(")
+    du_body_real = main_lines[du_s:du_e]
+    ba_append_i = first_match_line(du_body_real, 0, len(du_body_real), DEPOSIT_UNDO_PARTY_APPEND_CALL_RE)
+    ba_memset_i = first_match_line(du_body_real, 0, len(du_body_real), DEPOSIT_UNDO_MEMSET_CELL_RE)
+    check(ba_append_i is not None and ba_memset_i is not None and ba_append_i < ba_memset_i,
+          "MUT BA: could not locate party_append( before memset(cell, 0, 80) in "
+          "app_party_deposit_undo's real source -- fix this test")
+    if ba_append_i is not None and ba_memset_i is not None and ba_append_i < ba_memset_i:
+        mut_ba = list(du_body_real)
+        memset_line = mut_ba.pop(ba_memset_i)
+        mut_ba.insert(ba_append_i, memset_line)   # zero the cell BEFORE the append -- the original bug
+        ok_ba, detail = deposit_undo_order_facts(mut_ba)
+        check(not ok_ba, f"MUT BA (memset(cell, 0, 80) moved before party_append() -- "
+                          f"the D1/D2 mon-destroying order) should have been caught but "
+                          f"was not: {detail}")
+        print(f"  MUT BA demonstration -- memset(cell, 0, 80) moved before "
+              f"party_append( in app_party_deposit_undo (the original bug order): {detail}")
 
 
 def self_test_al_mutation(main_lines: list[str]) -> None:

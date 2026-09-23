@@ -1,14 +1,17 @@
-/* Host test: BACKLOG #226 review D1(b) -- the pure-C round trip app_party_deposit_undo()
- * (source/pdna_main.c, GBA-only, not host-compilable -- see host_escape_gate_sites_test.py's
- * (au)/(av)/(aw)/(ax)/(ay)/(az) checks for the structural/textual proof of the wrapper itself)
- * composes to roll a party-full deposit back: box_to_party the cell (gen3_edit_load(box80,
- * false,&e) + em_set_party_flag(&e,true) + gen3_edit_commit -- byte-for-byte the same three
- * calls pdna_main.c's own static box_to_party() makes), zero the box cell, party_append it
- * back. This does NOT link pdna_main.c (446 KB, tonc-dependent); it proves the pure engine
- * (gen3_edit.c + gen3_clip.c) the wrapper is built from, on a synthetic 6-mon party plus a
- * synthetic PC box, exactly mirroring app_party_full_deposit_offer()'s own sequence
- * (party_to_box + party_release + [deposit]) and app_party_deposit_undo()'s own sequence
- * (box_to_party + memset + party_append) end to end.
+/* Host test: BACKLOG #226 review D4-R(a) -- HONEST LABEL. This file does NOT test
+ * app_party_deposit_undo() or app_party_full_deposit_offer() (source/pdna_main.c,
+ * GBA-only, not host-compilable). It re-implements the same THREE-CALL SEQUENCE each
+ * of them makes (box_to_party = gen3_edit_load+em_set_party_flag+gen3_edit_commit;
+ * party_to_box the mirror) locally as t_box_to_party()/t_party_to_box(), and tests
+ * the PRIMITIVES those sequences are built from: gen3_edit.c's round trip and
+ * gen3_box.c's party_append/party_release/party_count, on a synthetic 6-mon party
+ * plus a synthetic PC box. A bug in the SHIPPED wrapper's own control flow --
+ * D2-R's "zero the cell before checking party_append's return" being the exact
+ * example -- is invisible here: this file never calls pdna_main.c's functions, so
+ * it cannot see their order of operations. The real coverage for that lives in
+ * tests/host_escape_gate_sites_test.py's structural checks (which read
+ * source/pdna_main.c and source/pdna_box.c's actual text) plus the behavioural
+ * pixel chain committed alongside this fix (tools/xfer226_deposit_rollback_chain.py).
  *
  *   cc -std=c11 -Wall -Wextra -I source tests/host_party_deposit_undo_test.c \
  *      source/gen3_save.c source/gen3_mon.c source/gen3_box.c source/gen3_edit.c \
@@ -22,11 +25,11 @@
  *      trips byte-for-byte; this is the exact math the undo relies on).
  *   B. the full deposit+undo sequence on a synthetic 6-slot party + one PC box slot:
  *      party_release(slot 0) -> count 6->5, box slot <- party_to_box(mon0); UNDO:
- *      box_to_party(box slot) -> party_append -> count 5->6, box slot zeroed. RED PROOF
- *      (self-audit #1): comment out the party_append call (simulating a reverted D1(b)) and
- *      the assertion on final party count catches it -- demonstrated in-process by calling
- *      the two halves separately and checking the INTERMEDIATE (pre-undo) state fails the
- *      same assertion the post-undo state passes.
+ *      box_to_party(box slot) -> party_append -> count 5->6, box slot zeroed. (D4-R:
+ *      the three former "RED PROOF" CHECKs asserting the pre-undo intermediate state
+ *      were deleted -- they asserted the state this LOCAL sequence is constructed to
+ *      be in at that point regardless of whether the real wrapper's bug exists, so
+ *      they passed on both a fixed and a broken pdna_main.c: decoration, not proof.)
  *   C. deposit+undo does not restore the original SLOT (retail-parity note, D1's own
  *      comment): the recovered mon lands at the new tail (index 5), not back at index 0 --
  *      slots 1..5 shifted down by party_release, unaffected by the append.
@@ -118,14 +121,6 @@ int main(void) {
     memcpy(pc_cell, depbox, 80);                    /* the deposit's own PC landing spot */
     party_release(sb1, frlg, 0);
     CHECK(party_count(sb1, frlg) == 5, "B: party_release drops the count to 5 (deposit half)");
-
-    /* RED PROOF (self-audit #1): if app_party_deposit_undo() were never called (D1's
-     * original bug -- a refusal after the deposit left the party at 5 and the PC cell
-     * occupied), this is exactly the state the reviewer's pixel proof describes. Assert
-     * it explicitly so the difference from the post-undo state below is unmistakable. */
-    CHECK(party_count(sb1, frlg) == 5, "B (pre-undo, RED without D1(b)): party still short one");
-    bool cell_occupied_pre = (pc_cell[0] | pc_cell[1] | pc_cell[2] | pc_cell[3]) != 0;
-    CHECK(cell_occupied_pre, "B (pre-undo, RED without D1(b)): PC cell still holds the deposit");
 
     /* app_party_deposit_undo()'s own sequence: box_to_party(cell) -> memset(cell) ->
      * party_append. */
