@@ -1106,6 +1106,16 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XFER_SAVEFIRST_L1    "One transfer is waiting for"
 #define PDNA_XFER_SAVEFIRST_L2    "the game save. START > SAVE."
 
+/* BACKLOG #175 (S150-8d) D16: the mid-session SAVE NOW? confirm that replaces the
+ * plain SAVE FIRST wall at the ONE site that used to show it (gb_bank_down_gen3's
+ * pre-flight 16(g)) -- PDNA_XFER_SAVEFIRST_* above stays live for the two
+ * restore-side refusals (D18, decision 18), untouched by this lane. L1 reuses
+ * PDNA_XFER_SAVEFIRST_L1 verbatim (siprintf'd together with L2 below) so the two
+ * screens can never drift apart in wording. */
+#define PDNA_XFER_SAVENOW_TITLE "SAVE NOW?"
+#define PDNA_XFER_SAVENOW_L1    PDNA_XFER_SAVEFIRST_L1
+#define PDNA_XFER_SAVENOW_L2    "the game save. Save it now?"
+
 /* BACKLOG #174 (S150-8c) D7: the party arm's own always-drawn loss row -- the ONE
  * thing the destination changes (a fully-healed party mon vs. a box cell). */
 #define PDNA_XFER_PARTYLAND_L1 "Joins your party, fully healed."

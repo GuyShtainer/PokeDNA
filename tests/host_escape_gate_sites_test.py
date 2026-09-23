@@ -235,6 +235,12 @@ TOOMANYMOVES_REFUSAL_RE = re.compile(r'"TOO MANY MOVES"')
 PLACING_ASSIGN_RE     = re.compile(r"placing\s*=\s*converted\s*\?\s*conv\s*:\s*s_held")
 PLACE_HELD_LAST_ARG_RE = re.compile(r"converted\s*\?\s*s_held\s*:\s*NULL\)\s*;")
 ESCAPE_GATE_CONVERTED_RE = re.compile(r"!converted\s*&&\s*xg_native_escape_denied\(")
+# BACKLOG #175 (S150-8d) D11 (ar): the SAVE NOW? edge inside gb_bank_down_gen3, and
+# D17's pin that app_xfer_save_now uses app_commit_pc, never app_commit_sb1/app_commit_all.
+APP_XFER_PENDING_CALL_RE  = re.compile(r"app_xfer_pending\(\)")
+APP_XFER_SAVE_NOW_CALL_RE = re.compile(r"app_xfer_save_now\(\)")
+XFER_DOWN_WRITE_CALL_RE   = re.compile(r"xfer_down_write\(")
+APP_COMMIT_PC_CALL_RE     = re.compile(r"app_commit_pc\(")
 # BACKLOG #150 S150-4: both start_carry() sites reachable with a BOXSCOPE_GB source
 # must be preceded by this exact call -- module-level so both the real check (g) and
 # its self-mutation demonstration (MUT G) share one pattern.
@@ -1039,6 +1045,44 @@ def party_escape_gate_converted_facts(body: list[str]) -> tuple[bool, str]:
     return False, "party_strip_overlay: no xg_native_escape_denied( call found"
 
 
+def savenow_order_facts(body: list[str], main_lines: list[str]) -> tuple[bool, str]:
+    """(ar) BACKLOG #175 (S150-8d) D11/D17: within gb_bank_down_gen3's (comment-
+    stripped) body, app_xfer_pending( must come before app_xfer_save_now(, which
+    must come before xfer_down_write(; app_xfer_save_now( must appear EXACTLY ONCE
+    in source/pdna_gen12.c (this call site); and app_xfer_save_now's own body
+    (source/pdna_main.c) must call app_commit_pc( and must NOT call app_commit_sb1(
+    or app_commit_all( (D17: app_commit_pc alone carries the xg_inject_refuse guard
+    that keeps a GB session's borrowed arena from writing Gen-3 sections into a Game
+    Boy battery image). MUT AR moves the save call after the ledger write and must
+    be caught."""
+    pending_i = first_match_line(body, 0, len(body), APP_XFER_PENDING_CALL_RE)
+    save_i = first_match_line(body, 0, len(body), APP_XFER_SAVE_NOW_CALL_RE)
+    write_i = first_match_line(body, 0, len(body), XFER_DOWN_WRITE_CALL_RE)
+    if pending_i is None:
+        return False, "gb_bank_down_gen3: no app_xfer_pending() call found"
+    if save_i is None:
+        return False, "gb_bank_down_gen3: no app_xfer_save_now() call found"
+    if write_i is None:
+        return False, "gb_bank_down_gen3: no xfer_down_write( call found"
+    if not (pending_i < save_i < write_i):
+        return False, (f"gb_bank_down_gen3: expected app_xfer_pending() (line "
+                        f"{pending_i + 1}) < app_xfer_save_now() (line {save_i + 1}) "
+                        f"< xfer_down_write( (line {write_i + 1}) -- order violated")
+    all_calls = len([1 for ln in body if APP_XFER_SAVE_NOW_CALL_RE.search(ln)])
+    if all_calls != 1:
+        return False, (f"source/pdna_gen12.c: expected exactly 1 app_xfer_save_now( "
+                        f"call site, found {all_calls}")
+    s, e = extract_function(main_lines, r"^bool app_xfer_save_now\(void\) \{")
+    save_now_body = main_lines[s:e]
+    if not any(APP_COMMIT_PC_CALL_RE.search(ln) for ln in save_now_body):
+        return False, "app_xfer_save_now(): no app_commit_pc( call found"
+    if any("app_commit_sb1(" in ln for ln in save_now_body):
+        return False, "app_xfer_save_now(): calls app_commit_sb1( -- D17 forbids it"
+    if any("app_commit_all(" in ln for ln in save_now_body):
+        return False, "app_xfer_save_now(): calls app_commit_all( -- D17 forbids it"
+    return True, "ok"
+
+
 def invalidate_call_facts(lines: list[str], sig_re: str, fn_label: str) -> tuple[bool, str]:
     """(al): extract_function(lines, sig_re)'s body must contain INVALIDATE_RE at
     least once. MUT AL (self_test_mutation_detection) blanks the one real call line
@@ -1573,6 +1617,13 @@ def main() -> int:
     ok, detail = party_escape_gate_converted_facts(party_body)
     check(ok, detail)
 
+    # (ar) savenow_order_facts: BACKLOG #175 (S150-8d) -- the SAVE NOW? edge inside
+    # gb_bank_down_gen3, plus D17's app_commit_pc-only pin on app_xfer_save_now.
+    gbd_s, gbd_e = extract_function(gen12_lines, r"^BankDownResult gb_bank_down_gen3\(")
+    gbd_body = gen12_lines[gbd_s:gbd_e]
+    ok, detail = savenow_order_facts(gbd_body, main_lines)
+    check(ok, detail)
+
     # ---- (al) BACKLOG #213: every ledger-write function this lane could reach calls
     # app_xv_cache_invalidate( -- the GB ORIGINAL row's negative cache promises "after
     # ANY ledger write the next lookup goes to the card"; this is the only place that
@@ -1599,7 +1650,7 @@ def main() -> int:
         check(ok, d)
 
     # ---- (f) review F3: the self-mutation harness, every run ----
-    self_test_mutation_detection(box_lines, gen12_lines)
+    self_test_mutation_detection(box_lines, gen12_lines, main_lines)
     self_test_al_mutation(main_lines)
 
     print(f"{checks} checks, {len(fails)} failed")
@@ -1608,7 +1659,8 @@ def main() -> int:
     return 1 if fails else 0
 
 
-def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str]) -> None:
+def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str],
+                                 main_lines: list[str]) -> None:
     """Review F3: prove the checker actually has teeth, on every run, not just when a
     human remembers to demonstrate it by hand. Builds two synthetic mutated copies of
     the real (comment-stripped) pdna_box.c body text and asserts gate_before_pattern()
@@ -2436,6 +2488,27 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str]) -
                           f"should have been caught but was not: {detail}")
         print(f"  MUT AQ demonstration -- `!converted &&` dropped from "
               f"xg_native_escape_denied( in party_strip_overlay: {detail}")
+
+    # MUT AR (BACKLOG #175 S150-8d, check (ar)'s own demonstration): move the
+    # app_xfer_save_now( call line to AFTER xfer_down_write( inside gb_bank_down_gen3
+    # -- (ar) must fail: the ledger write would run BEFORE a chance to save, exactly
+    # the ordering bug this design's own decision 8/D13 forbids.
+    gbd_s, gbd_e = extract_function(gen12_lines, r"^BankDownResult gb_bank_down_gen3\(")
+    gbd_body_real = gen12_lines[gbd_s:gbd_e]
+    save_i = first_match_line(gbd_body_real, 0, len(gbd_body_real), APP_XFER_SAVE_NOW_CALL_RE)
+    write_i = first_match_line(gbd_body_real, 0, len(gbd_body_real), XFER_DOWN_WRITE_CALL_RE)
+    check(save_i is not None and write_i is not None and save_i < write_i,
+          "MUT AR: could not locate app_xfer_save_now( before xfer_down_write( in "
+          "gb_bank_down_gen3's real source -- fix this test")
+    if save_i is not None and write_i is not None and save_i < write_i:
+        mut_ar = list(gbd_body_real)
+        save_line = mut_ar.pop(save_i)
+        mut_ar.insert(write_i, save_line)   # the save call now sits AFTER the ledger write
+        ok_ar, detail = savenow_order_facts(mut_ar, main_lines)
+        check(not ok_ar, f"MUT AR (app_xfer_save_now( moved after xfer_down_write() "
+                          f"should have been caught but was not: {detail}")
+        print(f"  MUT AR demonstration -- app_xfer_save_now( line moved after "
+              f"xfer_down_write( in gb_bank_down_gen3: {detail}")
 
 
 def self_test_al_mutation(main_lines: list[str]) -> None:

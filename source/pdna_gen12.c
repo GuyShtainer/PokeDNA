@@ -3469,13 +3469,18 @@ BankDownResult gb_bank_down_gen3(BoxSource* src, int dst_box, int dst_cell,
    * in one session without a SAVE-FIRST wall -- the S150-8d constraint this pre-
    * flight guards is about ledger entries, never about cells. */
   if (!copy && app_xfer_pending()) {                                        /* 16(g), decision 9 */
-    snd_deny();
-    /* BACKLOG #168a review D6: same class as the gen12_reason_text dialog above --
-     * bracket it so the PC box's OBJ icons do not sit over the SAVE FIRST text. */
+    /* BACKLOG #175 (S150-8d) D13: offer SAVE NOW? instead of a flat refusal -- the
+     * shipped SAVE FIRST msg_wait is gone (its own strings stay live for the two
+     * restore-side SAVE FIRST refusals, D18, decision 18); this is the ONLY site
+     * that used them for the pending-transfer wall. BACKLOG #168a review D6's own
+     * bracket (the PC box's OBJ icons must not sit under the dialog) still applies. */
     boxoam_suspend();
-    msg_wait(PDNA_XFER_SAVEFIRST_TITLE, UI_WARN, PDNA_XFER_SAVEFIRST_L1, PDNA_XFER_SAVEFIRST_L2);
+    char l1[64];
+    siprintf(l1, "%s %s", PDNA_XFER_SAVENOW_L1, PDNA_XFER_SAVENOW_L2);
+    bool yes = app_confirm(PDNA_XFER_SAVENOW_TITLE, l1);      /* A = save now, B = no */
+    bool ok  = yes && app_xfer_save_now();                    /* D14 */
     boxoam_resume();
-    return BANK_DOWN_REFUSED;
+    if (!ok) { snd_deny(); return BANK_DOWN_REFUSED; }        /* the helper/confirm already said why */
   }
 
   bool occ = (dstrec[0] | dstrec[1] | dstrec[2] | dstrec[3]) != 0 || bc_is_native(dstrec);

@@ -1060,6 +1060,19 @@ int main(void) {
    * plain literals, no siprintf join, so no separate composed-worst-case row is needed
    * for this one -- unlike D16's SAVE NOW? confirm, below). */
   PF(PDNA_XFER_PARTYLAND_L1, 28, 184);
+  /* BACKLOG #175 (S150-8d) D16/D10(4): the SAVE NOW? confirm's own composed string
+   * -- source/pdna_gen12.c's `siprintf(l1, "%s %s", PDNA_XFER_SAVENOW_L1,
+   * PDNA_XFER_SAVENOW_L2)` idiom (the same join app_confirm's own PCQ offer above
+   * uses), measured at the ACTUAL composed worst case, not the bare parts
+   * (BACKLOG #178's own lesson) -- and against `l1[64]`'s real size, not eyeballed. */
+  PF(PDNA_XFER_SAVENOW_TITLE, 28, 184);
+  { char l1[64];
+    snprintf(l1, sizeof l1, "%s %s", PDNA_XFER_SAVENOW_L1, PDNA_XFER_SAVENOW_L2);
+    chkv("PDNA_XFER_SAVENOW_L1+L2 composed length fits l1[64] with room to spare",
+         (int)strlen(l1), (int)sizeof(l1) - 1);
+    int lines = wrap_lines(l1, 184);
+    chkv("PDNA_XFER_SAVENOW_L1+L2 composed wraps to <= 2 lines (app_confirm's own cap)",
+         lines, 2); }
   PF(PDNA_XFER_TOOMANY_TITLE,   28, 184);
   PF(PDNA_XFER_TOOMANY_L1,      28, 184);
   PF(PDNA_XFER_TOOMANY_L2,      28, 184);
