@@ -6545,14 +6545,15 @@ def run_s150_8_party_vsd(core_mod, image_mod, rom_ruby: Path, out_dir: Path) -> 
         confirm; A there runs `app_commit_pc()` (a real FLASH1M write, verified by
         the SAVED panel) -> `app_xfer_promote()` -> `pdna_bank_flush_deletions()`.
 
-    NOT provable on this vehicle (stated here, not silently skipped): the Bank's own
-    per-box SD file (`/PokeDNA/bank/box00.box`) never appears in the vsd diff, because
-    bank_plant_box0() seeds the Bank's displayed cells directly in RAM for every
-    chain in this file (there is no real box00.box on a fresh --vsd image for
-    pdna_bank_flush_deletions() to rewrite) -- D3's identity-byte fix (the whole
-    reason this design exists) therefore cannot be observed AS A DELETED BANK SLOT
-    on this vehicle; it is proven structurally (pin (ap), host case D10(3)) and on
-    hardware only (docs/HW-QUEUE.md XFER-C9p). The PARTYFULL3 (PARTY IS FULL)
+    BACKLOG #174/#175 review D5 (fix pass): the original claim here -- that
+    `/PokeDNA/bank/box00.box` "never appears in the vsd diff" on this vehicle -- was
+    FALSE. Frame 10 ("10_saved") is taken INSIDE app_commit_pc()'s own blocking
+    "SAVED / Press A" msg_wait, before app_xfer_promote() and
+    pdna_bank_flush_deletions() have run at all; the extra A tap right after 10_saved
+    dismisses that msg_wait and lets both actually execute, and box00.box (the Bank's
+    own defer-delete flush, D3's identity-byte fix's whole reason to exist) DOES
+    appear in the vsd diff at that point -- proven directly below, not merely
+    structurally. Left un-provable on this vehicle: the PARTYFULL3 (PARTY IS FULL)
     refusal likewise needs the party to reach six members first (two more real
     landings + saves after this one, from bank_plant.c's other two convertible
     cells, slot 1 PIK and slot 3 item-CHIKORITA) -- attempted during this lane's own
@@ -6668,16 +6669,35 @@ def run_s150_8_party_vsd(core_mod, image_mod, rom_ruby: Path, out_dir: Path) -> 
            claim=["Save changes?", "Save the moved Pokemon?", "A = yes", "B = no"])
     s.tap("A", settle=600)
     s.shot("10_saved", "S150-8c: A = yes -- app_commit_pc() runs a REAL FLASH1M "
-           "write (this delta build's own flash chip, verified) -> "
-           "app_xfer_promote() clears the pending key -> "
-           "pdna_bank_flush_deletions() runs (a no-op on this vehicle, see this "
-           "function's own docstring) -- 'SAVED / Flash written + verified.'",
+           "write (this delta build's own flash chip, verified) -- 'SAVED / Flash "
+           "written + verified.' STILL inside app_commit_pc()'s own blocking "
+           "msg_wait here (review D5): app_xfer_promote() and "
+           "pdna_bank_flush_deletions() have NOT run yet -- they run only after "
+           "this msg_wait's own A dismisses it, below.",
            claim=["SAVED", "Flash written + verified."])
-    changed2 = s.vsd_report(expect_changed=["/PokeDNA/log.txt"])
+    s.tap("A", settle=400)
+    s.shot("11_promoted_flushed", "S150-8c review D5: the extra A that dismisses "
+           "10_saved's own msg_wait -- THIS is where app_xfer_promote() (cell 1's "
+           "ledger entry PENDING -> CLAIMED) and pdna_bank_flush_deletions() (the "
+           "Bank's own defer-delete, box00.box) actually run")
+    changed2 = s.vsd_report(expect_changed=[
+        "/PokeDNA/bank/box00.box",              # pdna_bank_flush_deletions()
+                                                 # deletes cell 1's origin Bank
+                                                 # slot for real -- D3's identity-
+                                                 # byte fix, now OBSERVED, not just
+                                                 # structurally proven
+        "/PokeDNA/config.cfg",                  # found live: the exit-save path
+                                                 # also persists config state here
+        "/PokeDNA/log.txt",                     # the triple logger's own append
+        "/PokeDNA/xfer/540E42FE7925AA15.pds",   # app_xfer_promote(): PENDING ->
+                                                 # CLAIMED (content changed, not
+                                                 # added -- the entry already
+                                                 # existed from the landing step)
+    ])
     print(f"  [VSD] post-save vsd_diff (GREEN, expected set matched): "
-          f"{sorted(changed2)} -- the promotion clears an in-RAM key and the Bank "
-          f"flush has no real box file to rewrite on this vehicle, both "
-          f"unobservable via SD (this function's own docstring)")
+          f"{sorted(changed2)} -- the promotion rewrites the ledger file and the "
+          f"flush creates box00.box, BOTH observed here (review D5 fix -- the old "
+          f"'unobservable via SD' claim was false)")
     return s
 
 
