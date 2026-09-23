@@ -170,15 +170,14 @@ int main(void) {
   test_key_items_never_returned();
   test_ladder();
 
-  printf("-- Mutation proof M5: drop the reverse (g2_count) ambiguity check in item_g2_to_g1 --\n");
-  printf("  (verified in the report, not reproduced by this binary: no REAL Gen-1/Gen-2\n"
-         "   name pair triggers reverse ambiguity today, so this scratch-file mutation\n"
-         "   needs a SYNTHETIC name table -- a scratch copy of gb_item_names.c with Gen-2\n"
-         "   id 0x03 relabelled \"MASTER BALL\" (aliasing id 0x01) links against the real\n"
-         "   item_map_g1g2.c and item_g2_to_g1(1) correctly refuses (0x00); the SAME\n"
-         "   synthetic table linked against a scratch item_map_g1g2.c with the g2_count\n"
-         "   block deleted instead returns 0x01 -- RED, confirming the check is\n"
-         "   load-bearing, restored -> green)\n");
+  /* F6 (xfer-items fix pass review): mutation M5 ("drop the reverse g2_count
+   * ambiguity check in item_g2_to_g1") used to be a printed claim here, not a test --
+   * no REAL Gen-1/Gen-2 name pair triggers reverse ambiguity today, so a printf could
+   * not prove anything without a SYNTHETIC name table, and a printf is not evidence
+   * regardless. It is now a real, running test: tests/host_itemladder_m5_test.py
+   * builds a scratch-aliased copy of gb_item_names.c and both a real and a mutant
+   * item_map_g1g2.c against it, and asserts the real build refuses (0) while the
+   * mutant wrongly accepts (1) -- wired into tests/run_host_tests.py's PY_TESTS. */
 
   printf(g_fail ? "FAIL: %d check(s), %d failure(s)\n" : "PASS: %d check(s), %d failure(s)\n",
          g_check, g_fail);

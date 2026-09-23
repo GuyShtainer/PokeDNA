@@ -1769,14 +1769,13 @@ static void test_item_and_exp(void) {
     CHECK(gb_get_level(&out) == 50, "8e: the written level is unaffected (still 50, got %u)", gb_get_level(&out));
   }
 
-  printf("-- Mutation proof M3: comment out set_item's `if (gen == GB_GEN2)` mapped branch --\n");
-  printf("  (see the report: applied to a scratch copy of source/gen3_to_gb.c, 8a\n"
-         "   then gets held item == 0 / item_outcome == STAYS instead of HELD/1 -- FAIL\n"
-         "   naming '8a: held item == 1', restored -> green)\n");
-  printf("-- Mutation proof M4: change exp_floored's `>` to `>=` in set_identity_and_level --\n");
-  printf("  (see the report: applied to a scratch copy of source/gen3_to_gb.c, 8e's\n"
-         "   exactly-at-floor case then reports exp_floored == true -- FAIL naming\n"
-         "   '8e: exactly-at-floor exp -> exp_floored is false', restored -> green)\n");
+  /* F6 (xfer-items fix pass review): mutations M3 ("comment out set_item's
+   * `if (gen == GB_GEN2)` mapped branch") and M4 ("change exp_floored's `>` to `>=`
+   * in set_identity_and_level") used to be printed claims here, not tests. Both are
+   * now real, running mutations: tests/host_gen3gb_m3m4_test.py builds this WHOLE
+   * file against a scratch-mutated copy of source/gen3_to_gb.c and asserts the named
+   * check above (8a / 8e) goes RED -- wired into tests/run_host_tests.py's
+   * PY_TESTS. */
 }
 
 /* (7g-k) source/gb_sidecar.c's merge_moves -- decision 9 (G-H8/G-H9), the ROUND TRIP
