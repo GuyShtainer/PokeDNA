@@ -14,6 +14,8 @@ Three source documents feed the page, in this order:
 Screenshots stay last, exactly as before.
 """
 import base64
+import shutil
+import datetime
 import datetime
 import html
 import json
@@ -94,6 +96,11 @@ TEMPLATE = """<!doctype html>
   tbody tr:nth-child(even) { background:#0f141a; }
   tbody tr:hover { background:#161d26; }
   td:first-child { white-space:nowrap; }
+  .toolbar button, .hwq-bar button, .hwbtn {
+    touch-action: manipulation;      /* no 300ms double-tap-zoom delay on a phone */
+    min-height: 40px; min-width: 40px;   /* a thumb-sized target, not a mouse-sized one */
+  }
+  .fhidden { display: none; }
   .badge { display:inline-block; padding:1px 8px; border-radius:11px; font-weight:600;
            font-size:11.5px; letter-spacing:.4px; border:1px solid; background:transparent; }
   BADGECSS
@@ -159,6 +166,7 @@ TEMPLATE = """<!doctype html>
   <button data-tok="" class="on">All</button>
   BUTTONS
   <input id="q" type="search" placeholder="filter rows by text...">
+  <span id="filtercount" style="color:#58a6ff;font-size:13px;cursor:pointer;padding:6px 2px"></span>
 </div>
 <div class="wrap">
 HWQUEUE_HTML
@@ -173,24 +181,56 @@ SHOTS_HTML
 var bar = document.getElementById('bar'), q = document.getElementById('q'), tok = '';
 function apply() {
   var text = q.value.trim().toLowerCase();
+  var shown = 0, total = 0;
   document.querySelectorAll('table.matrix tbody tr').forEach(function (tr) {
     var t = tr.textContent;
     var okTok = !tok || (tr.querySelector('.badge-' + tok) !== null);
     var okTxt = !text || t.toLowerCase().indexOf(text) !== -1;
     tr.classList.toggle('hidden', !(okTok && okTxt));
+    total++; if (okTok && okTxt) shown++;
   });
   document.querySelectorAll('table.matrix').forEach(function (tb) {
     var any = tb.querySelectorAll('tbody tr:not(.hidden)').length;
     tb.classList.toggle('hidden', any === 0);
   });
+  /* The matrix starts ~330 KB below this toolbar, past the whole hardware queue, so a
+     filter used to change only things you could not see -- on a phone that reads as a
+     dead button. Filter the queue too (it is the table directly below), and say how many
+     rows matched. Uses its own class so the queue's "Show unchecked only" cannot fight it. */
+  var hwq = document.getElementById('hwq-table');
+  if (hwq) {
+    var hshown = 0, htotal = 0;
+    hwq.querySelectorAll('tbody tr').forEach(function (tr) {
+      var okTok = !tok || (tr.querySelector('.badge-' + tok) !== null);
+      var okTxt = !text || tr.textContent.toLowerCase().indexOf(text) !== -1;
+      tr.classList.toggle('fhidden', !(okTok && okTxt));
+      htotal++; if (okTok && okTxt) hshown++;
+    });
+    var hc = document.getElementById('hwq-filtercount');
+    if (hc) hc.textContent = (tok || text) ? (hshown + ' of ' + htotal + ' rows match') : '';
+  }
+  var fc = document.getElementById('filtercount');
+  if (fc) fc.textContent = (tok || text)
+    ? (shown + ' feature row' + (shown === 1 ? '' : 's') + ' below \u2014 tap to jump')
+    : '';
 }
 bar.addEventListener('click', function (e) {
-  if (e.target.tagName !== 'BUTTON') return;
-  tok = e.target.dataset.tok;
-  bar.querySelectorAll('button').forEach(function (b) { b.classList.toggle('on', b === e.target); });
+  /* Each filter button wraps its label in <span>s, so on a touch screen e.target is the
+     SPAN, not the BUTTON -- the old tagName test bailed out and the toolbar did nothing
+     on a phone while working with a mouse that happened to hit the button's padding.
+     Walk up to the button instead. */
+  var btn = e.target.closest ? e.target.closest('button') : null;
+  if (!btn || !bar.contains(btn)) return;
+  tok = btn.dataset.tok;
+  bar.querySelectorAll('button').forEach(function (b) { b.classList.toggle('on', b === btn); });
   apply();
 });
 q.addEventListener('input', apply);
+var fcEl = document.getElementById('filtercount');
+if (fcEl) fcEl.addEventListener('click', function () {
+  var first = document.querySelector('table.matrix:not(.hidden)');
+  if (first && first.scrollIntoView) first.scrollIntoView({ block: 'start' });
+});
 
 // --- Hardware queue: PASS/FAIL/SKIP per row, notes, "Show unchecked only", "Copy report" ---
 (function () {
@@ -250,6 +290,8 @@ q.addEventListener('input', apply);
   updateCount();
 
   var uncheckedOnly = false;
+  /* Touch targets: give the toolbar buttons room for a thumb and stop the browser
+     double-tap-zooming on them (a 300 ms tap delay reads as "the button did nothing"). */
   var btnUnchecked = document.getElementById('hwq-unchecked');
   var btnCopy = document.getElementById('hwq-copy');
   var btnReset = document.getElementById('hwq-reset');
@@ -467,12 +509,18 @@ def render_hwqueue(path: "pathlib.Path"):
 
         sec_m = re.match(r"^§([A-M])", steps_raw)
         section_letter = sec_m.group(1) if sec_m else ""
-        ref_m = re.match(r"^§([A-Za-z0-9]+)$", steps_raw)
         if not steps_raw or steps_raw in ("—", "-"):
             steps_html = "—"
-        elif ref_m:
-            ref = ref_m.group(1)
-            steps_html = '<a href="#hw-%s">§%s</a>' % (html.escape(ref), html.escape(ref))
+        elif "§" in steps_raw:
+            # A cell can name several sections ("§M, §Q"), and a section can be missing
+            # entirely (§N..§Q had no anchor and jumped nowhere). Link each ref that has
+            # a real target; render the rest as plain text so a button never lies.
+            def _ref_link(m):
+                ref = m.group(1)
+                if ref in HWTEST_ANCHORS:
+                    return '<a href="#hw-%s">§%s</a>' % (html.escape(ref), html.escape(ref))
+                return '<span title="no detailed steps written for this section">§%s</span>' % html.escape(ref)
+            steps_html = re.sub(r"§([A-Za-z0-9]+)", _ref_link, html.escape(steps_raw))
         else:
             steps_html = md_inline(steps_raw)
 
@@ -503,6 +551,7 @@ def render_hwqueue(path: "pathlib.Path"):
         '<button type="button" id="hwq-copy">Copy report</button>'
         '<button type="button" id="hwq-reset">Reset</button>'
         '<span class="hwq-count" id="hwq-count"></span>'
+        '<span class="hwq-count" id="hwq-filtercount"></span>'
         "</div>"
     )
     table_html = (
@@ -636,6 +685,30 @@ def _render_section_body(blocks: list) -> str:
     return "".join(parts)
 
 
+def hwtest_anchor_ids(path: "pathlib.Path") -> set:
+    """Every id="hw-..." render_hwtest() will emit, computed BEFORE the queue table renders.
+
+    The queue's Steps column links to these. Four refs (N, O, P, Q) used to point at
+    sections nobody had written, so those buttons scrolled nowhere; the table now only
+    links a ref that really has a target.
+    """
+    ids = set()
+    if not path.is_file():
+        return ids
+    for header, body in _split_hw_sections(path.read_text(encoding="utf-8")):
+        if header:
+            m = _LETTERED_RE.match(header.strip())
+            if m:
+                ids.add(m.group(1))
+        for line in body:
+            m = _STEP_RE.match(line.strip())
+            if m:
+                ids.add(m.group(1))
+    return ids
+
+
+HWTEST_ANCHORS = hwtest_anchor_ids(HWTEST)
+
 def render_hwtest(path: "pathlib.Path") -> str:
     if not path.is_file():
         print("note: %s missing, skipping the detailed hardware-steps section" % path, file=sys.stderr)
@@ -698,12 +771,28 @@ def main() -> int:
     )
 
     def figure(path: pathlib.Path, caption: str) -> str:
-        data = base64.b64encode(path.read_bytes()).decode("ascii")
+        """Link the sheet instead of inlining it.
+
+        Inlining 19 contact sheets as base64 made the page 3.1 MB, which is most of what
+        made it feel stale and heavy. The sheets are copied next to the page (docs/site/
+        shots/) and referenced by URL, so the page is ~100 KB and the images still open.
+        """
+        dest_dir = ROOT / "docs" / "site" / "shots"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / path.name
+        try:
+            if (not dest.exists()) or dest.stat().st_mtime < path.stat().st_mtime:
+                shutil.copy2(path, dest)
+        except OSError:
+            return ""
+        age = (datetime.date.today() - datetime.date.fromtimestamp(path.stat().st_mtime)).days
+        stale = (' <span style="color:#d29922">— %d days old, predates the current build</span>' % age) if age > 2 else ""
         return (
-            '<figure style="margin:18px 0"><img src="data:image/png;base64,%s" '
-            'style="max-width:100%%;border:1px solid #21262d;border-radius:6px" alt="%s">'
-            '<figcaption style="color:#8b949e;font-size:13px;margin-top:6px">%s</figcaption></figure>'
-            % (data, html.escape(caption), html.escape(caption)))
+            '<figure style="margin:18px 0"><a href="shots/%s"><img src="shots/%s" loading="lazy" '
+            'style="max-width:100%%;border:1px solid #21262d;border-radius:6px" alt="%s"></a>'
+            '<figcaption style="color:#8b949e;font-size:13px;margin-top:6px">%s%s</figcaption></figure>'
+            % (html.escape(path.name), html.escape(path.name),
+               html.escape(caption), html.escape(caption), stale))
 
     per_feature_html = ""
     jump_list_html = ""
@@ -738,11 +827,33 @@ def main() -> int:
 
     shots_html = ""
     if per_feature_html or older_shots:
-        shots_html = '<h2 id="shots">Screenshots</h2>' + jump_list_html + per_feature_html
+        # Say how old the sheets are instead of implying they are current. Every sheet on
+        # this page is a picture of a build that is not the one linked at the top, and the
+        # page used to present them with no date at all.
+        newest = 0
+        try:
+            for entry in json.loads(CONTACT_SHEETS_INDEX.read_text(encoding="utf-8")):
+                sp = ROOT / entry["file"]
+                if sp.exists():
+                    newest = max(newest, sp.stat().st_mtime)
+        except Exception:
+            newest = 0
+        age_note = ""
+        if newest:
+            d = datetime.date.fromtimestamp(newest)
+            days = (datetime.date.today() - d).days
+            age_note = (
+                '<p style="color:#d29922;font-size:13px">These sheets were captured on '
+                '<b>%s</b>%s. They are kept because they are still the clearest picture of '
+                'those features, not because they match the build above — re-run the chains '
+                'to refresh them.</p>' % (d.isoformat(), ", %d days ago" % days if days else ""))
+        shots_html = '<h2 id="shots">Screenshots</h2>' + age_note + jump_list_html + per_feature_html
         if older_shots:
-            if per_feature_html:
-                shots_html += '<h3>Older sheets</h3>'
-            shots_html += "".join(older_shots)
+            # Collapsed: these are historical and were dominating the page.
+            shots_html += (
+                '<details style="margin-top:18px"><summary style="cursor:pointer;color:#8b949e">'
+                'Older sheets (%d, archived — 2026-08-08 to 2026-09-05)</summary>%s</details>'
+                % (len(older_shots), "".join(older_shots)))
 
     hwqueue_html, hw_build, hw_build_date = render_hwqueue(HWQ)
     hwtest_html = render_hwtest(HWTEST)
