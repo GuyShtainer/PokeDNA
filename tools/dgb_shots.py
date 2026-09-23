@@ -6648,12 +6648,11 @@ def run_s150_8_party_vsd(core_mod, image_mod, rom_ruby: Path, out_dir: Path) -> 
                                                  # entry (NOT the deferred-delete
                                                  # flush -- see this function's own
                                                  # docstring, box00.box never appears)
-        "/PokeDNA/xfer/MIGRATED",               # the one-time flat .pk3->box-file
-                                                 # migration marker (pdna_bank.c),
-                                                 # written on this session's FIRST
-                                                 # real SD touch -- found live to
-                                                 # land AFTER the post-boot snapshot,
-                                                 # not at boot itself
+        # /PokeDNA/xfer/MIGRATED dropped here (review D7 fix pass): D7 fixed
+        # vsd_snapshot() to flush before copying the image, so the post-boot
+        # snapshot right above this call now correctly captures MIGRATED (a
+        # boot-time, one-time marker) as part of the BASELINE instead of missing
+        # it -- it no longer shows as newly-added by this landing.
         "/PokeDNA/log.txt",                     # the triple logger's own append
     ])
     print(f"  [VSD] landing vsd_diff (GREEN, expected set matched): {sorted(changed)}")
@@ -6762,8 +6761,9 @@ def run_s150_8d_savenow(core_mod, image_mod, rom_ruby: Path, out_dir: Path) -> g
     changed1 = s.vsd_report(expect_changed=[
         "/PokeDNA/xfer/540E42FE7925AA15.pds",   # cell 1's own ledger entry (added)
         "/PokeDNA/bank/bank.meta",               # this Bank entry's own meta_save()
-        "/PokeDNA/xfer/MIGRATED",               # first real SD touch, same as
-                                                 # run_s150_8_party_vsd's own finding
+        # /PokeDNA/xfer/MIGRATED dropped here (review D7 fix pass), same reason as
+        # run_s150_8_party_vsd's own landing check: the flushed post-boot snapshot
+        # now correctly carries MIGRATED as part of the baseline.
         "/PokeDNA/log.txt",
     ])
     print(f"  [VSD] cell1 landing vsd_diff (GREEN): {sorted(changed1)}")

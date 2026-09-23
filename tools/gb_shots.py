@@ -339,6 +339,12 @@ class Session:
         unless this Session attached --vsd."""
         if self.vsd is None:
             return
+        self.vsd_flush()   # BACKLOG #174/#175 review D7: this copied the ON-DISK
+                           # image without flushing the in-process bytearray to it
+                           # first -- two snapshots with no vsd_report() between them
+                           # silently discarded whatever was written in between.
+                           # Idempotent and a no-op without --vsd, so no existing
+                           # chain's diff changes.
         pre = Path(str(self.vsd.image.path) + ".pre")
         shutil.copyfile(self.vsd.image.path, pre)
         self._vsd_pre_path = pre
