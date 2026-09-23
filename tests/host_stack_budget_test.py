@@ -2571,6 +2571,158 @@ def test_g2_text_literal_pool_still_detected_via_objdump_annotation():
           taken == {"holder"}, taken)
 
 
+def test_b230_parse_func_isa_distinguishes_thumb_and_arm():
+    """parse_func_isa() (BACKLOG #230) reads the ELF's OWN un-stripped st_value low
+    bit straight out of synthetic `readelf -sW` text -- a Thumb FUNC symbol's real
+    value is odd (bit 0 set, the ARM ELF ABI's own Thumb-interworking marker), an
+    ARM one's is even. Modeled on this project's own live readelf output shape
+    (confirmed against PokeDNA-artless.elf: icon_from_cache reads 08000705 there,
+    matching Thumb, vs objdump -t's bit-stripped 08000704)."""
+    text = (
+        "\nSymbol table '.symtab' contains 3 entries:\n"
+        "   Num:    Value  Size Type    Bind   Vis      Ndx Name\n"
+        "     1: 08000705   124 FUNC    LOCAL  DEFAULT    4 icon_from_cache\n"
+        "     2: 030002dc    24 FUNC    GLOBAL DEFAULT    2 isr_master\n"
+        "     3: 08010000     0 OBJECT  LOCAL  DEFAULT    3 not_a_function\n"
+    )
+    isa_at = sb.parse_func_isa(text)
+    check("(B230) a Thumb FUNC's odd st_value maps to 'thumb', stripped",
+          isa_at.get(0x08000704) == "thumb", isa_at.get(0x08000704))
+    check("(B230) an ARM FUNC's even st_value maps to 'arm'",
+          isa_at.get(0x030002dc) == "arm", isa_at.get(0x030002dc))
+    check("(B230) an OBJECT (data) symbol is never entered into the ISA map",
+          0x08010000 not in isa_at, isa_at)
+
+
+def test_b230_parse_func_isa_conflicting_pair_drops_the_address():
+    """Two FUNC symbols claiming the same stripped address with DIFFERENT ISA bits
+    (never observed on this project's own images, per read_func_isa()'s docstring)
+    must leave that address OUT of the map entirely -- an ambiguous ISA falls back
+    to the permissive old match (scan_text_literal_pool()'s own isa_at.get()
+    default), never silently picks a side."""
+    text = (
+        "\nSymbol table '.symtab' contains 2 entries:\n"
+        "   Num:    Value  Size Type    Bind   Vis      Ndx Name\n"
+        "     1: 08000705     4 FUNC    LOCAL  DEFAULT    4 alias_thumb\n"
+        "     2: 08000704     4 FUNC    LOCAL  DEFAULT    4 alias_arm\n"
+    )
+    isa_at = sb.parse_func_isa(text)
+    check("(B230) a conflicting address is dropped from the map, not guessed",
+          0x08000704 not in isa_at, isa_at)
+
+
+def test_b230_even_word_no_longer_matches_a_thumb_function():
+    """The exact BACKLOG #230 false positive, reproduced with the REAL colliding
+    address from the report: `gbscr_persist_mode` (Thumb) landed at 0x08040000,
+    and a plain EVEN data word (mon_anim.c's s_fam[413] table, among five others)
+    happened to equal it. Before the fix, scan_text_literal_pool() masked the
+    Thumb bit off every literal before the name_at lookup, so this even word
+    matched a Thumb function whose only REAL pointer shape is odd (0x08040001,
+    which the report found appears zero times in the image). With isa_at wired
+    in, the even word no longer matches."""
+    addr = 0x08040d4c
+    name = "gbscr_persist_mode"
+    dump_text = (
+        "%08x <%s>:\n"
+        " %x:\t4770      \tbx\tlr\n"
+        " %x:\t0000      \tmovs\tr0, r0\n"
+        " %x:\t0000 0004 \t.word\t0x%08x\n"
+    ) % (addr, name, addr, addr + 2, addr + 4, addr)  # EVEN word: the false-positive shape
+    name_at = {addr: name}
+    isa_at = {addr: "thumb"}
+
+    old_style_taken = sb.scan_text_literal_pool(dump_text, name_at)  # no isa_at: pre-#230 shape
+    check("(B230 mutation) WITHOUT the ISA guard the even word IS a false positive "
+          "(proves the bug this fix closes was real)",
+          old_style_taken == {name}, old_style_taken)
+
+    fixed_taken = sb.scan_text_literal_pool(dump_text, name_at, isa_at)
+    check("(B230) WITH the ISA guard the even word is no longer taken",
+          fixed_taken == set(), fixed_taken)
+
+
+def test_b230_odd_word_real_thumb_pointer_still_caught():
+    """The only shape a genuine Thumb function pointer to `gbscr_persist_mode` can
+    take -- BX/BLX require bit 0 set for Thumb interworking -- must still be
+    caught after the #230 fix. Regression guard: the ISA check must narrow false
+    positives, not detection of the real thing."""
+    addr = 0x08040d4c
+    name = "gbscr_persist_mode"
+    dump_text = (
+        "%08x <%s>:\n"
+        " %x:\t4770      \tbx\tlr\n"
+        " %x:\t0000      \tmovs\tr0, r0\n"
+        " %x:\t0100 0004 \t.word\t0x%08x\n"
+    ) % (addr, name, addr, addr + 2, addr + 4, addr | 1)  # ODD word: the real pointer shape
+    name_at = {addr: name}
+    isa_at = {addr: "thumb"}
+    taken = sb.scan_text_literal_pool(dump_text, name_at, isa_at)
+    check("(B230) a genuine odd-bit Thumb pointer is still address-taken",
+          taken == {name}, taken)
+
+
+def test_b230_arm_mode_function_still_caught_via_even_literal():
+    """Proof #3 (the case a WRONG discriminator would break): an ARM-mode
+    function's real, callable address is EVEN (no Thumb bit) -- modeled on this
+    project's own real ARM-mode `isr_master` (libtonc's IRQ entry, confirmed live
+    via readelf: 0x030002dc, no Thumb bit, vs every ordinary Thumb function in
+    this build). An even literal must still match an ARM function after the
+    #230 fix, or the fix would have swapped one false-positive class for a
+    false-negative one on every ARM function in the image."""
+    addr = 0x030002dc
+    name = "isr_master"
+    dump_text = (
+        "%08x <%s>:\n"
+        " %x:\te92d4070  \tpush\t{r4, r5, r6, lr}\n"
+        " %x:\t0000 0002 \t.word\t0x%08x\n"
+    ) % (addr, name, addr, addr + 4, addr)  # EVEN word: the real ARM pointer shape
+    name_at = {addr: name}
+    isa_at = {addr: "arm"}
+    taken = sb.scan_text_literal_pool(dump_text, name_at, isa_at)
+    check("(B230) an ARM-mode function's even literal is still address-taken",
+          taken == {name}, taken)
+
+
+def test_b230_arm_mode_function_odd_literal_rejected():
+    """The mirror check: an ODD literal can never be isr_master's real address (it
+    is ARM-mode, no Thumb bit) -- the same bit-0 discriminator that protects a
+    Thumb function from an even coincidence must equally protect an ARM function
+    from an odd one."""
+    addr = 0x030002dc
+    name = "isr_master"
+    dump_text = (
+        "%08x <%s>:\n"
+        " %x:\te92d4070  \tpush\t{r4, r5, r6, lr}\n"
+        " %x:\t0100 0002 \t.word\t0x%08x\n"
+    ) % (addr, name, addr, addr + 4, addr | 1)  # ODD word: not a real ARM pointer
+    name_at = {addr: name}
+    isa_at = {addr: "arm"}
+    taken = sb.scan_text_literal_pool(dump_text, name_at, isa_at)
+    check("(B230) an odd literal is not taken as ARM isr_master's address",
+          taken == set(), taken)
+
+
+def test_b230_unknown_isa_falls_back_to_permissive_match():
+    """A function start address absent from isa_at (not expected in practice --
+    name_at itself comes from the same symbol table objdump -d labels functions
+    from -- but not provable impossible, see read_func_isa()'s docstring) must
+    fall back to the pre-#230 permissive match rather than silently drop the
+    function from the sweep: an unproven collision must never cost a function
+    its place in the safety net."""
+    addr = 0x08050000
+    name = "no_isa_info"
+    dump_text = (
+        "%08x <%s>:\n"
+        " %x:\t4770      \tbx\tlr\n"
+        " %x:\t0000      \tmovs\tr0, r0\n"
+        " %x:\t0000 0005 \t.word\t0x%08x\n"
+    ) % (addr, name, addr, addr + 2, addr + 4, addr)
+    name_at = {addr: name}
+    taken = sb.scan_text_literal_pool(dump_text, name_at, {})  # isa_at present but empty
+    check("(B230) an address with no ISA info still matches (fail-open, not fail-closed)",
+          taken == {name}, taken)
+
+
 def test_g2_third_party_fallback_scoped_to_non_project_functions():
     """own_function_names()/the fallback in scan_address_taken() must ONLY ever
     raw-scan for names this project's OWN *.o's do NOT define (crt0/libgcc/
@@ -2957,6 +3109,30 @@ def test_b167_mutation_broken_comparison_would_never_fatal():
         os.unlink(path)
 
 
+def test_b230_discriminator_is_actually_active():
+    """The #230 fix can silently no-op: if readelf fails or its format drifts, isa_at is
+    empty, every literal falls back to the permissive pre-fix match, and every other test
+    here still passes. Assert the map is real on a real ELF, and that main() says so out
+    loud when it is not (review D1)."""
+    import os, re as _re
+    src = open(os.path.join(os.path.dirname(__file__), "..", "tools", "stack_budget.py")).read()
+    check("D1: an empty ISA map warns instead of failing over in silence",
+          "the BACKLOG #230 Thumb/ARM literal discriminator is INACTIVE" in src)
+    elf = None
+    for cand in ("PokeDNA-artless.elf", "PokeDNA.elf"):
+        pth = os.path.join(os.path.dirname(__file__), "..", cand)
+        if os.path.exists(pth):
+            elf = pth
+            break
+    if elf is None:
+        print("  (skip) no built ELF here to prove the map is populated")
+        return
+    isa = sb.read_func_isa(elf)
+    check("D1: readelf yields a real FUNC ISA map (>2000 entries) on %s" % os.path.basename(elf),
+          len(isa) > 2000)
+    check("D1: an ABS symbol never claims address 0 (review D3)", 0 not in isa)
+
+
 def main():
     print("host_stack_budget_test.py")
     test_a_estimator_no_explosion()
@@ -3042,6 +3218,14 @@ def main():
     test_g2_global_symbol_relocation_is_taken()
     test_g2_local_symbol_exact_start_vs_mid_function_jump_table_entry()
     test_g2_text_literal_pool_still_detected_via_objdump_annotation()
+    test_b230_parse_func_isa_distinguishes_thumb_and_arm()
+    test_b230_parse_func_isa_conflicting_pair_drops_the_address()
+    test_b230_even_word_no_longer_matches_a_thumb_function()
+    test_b230_odd_word_real_thumb_pointer_still_caught()
+    test_b230_arm_mode_function_still_caught_via_even_literal()
+    test_b230_arm_mode_function_odd_literal_rejected()
+    test_b230_unknown_isa_falls_back_to_permissive_match()
+    test_b230_discriminator_is_actually_active()
     test_g2_third_party_fallback_scoped_to_non_project_functions()
     test_b157_chase_reg_to_literal_word_resolves_spilled_literal()
     test_b157_chase_reg_to_literal_word_second_level_spill_bails_honestly()
@@ -3064,5 +3248,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
-
-
