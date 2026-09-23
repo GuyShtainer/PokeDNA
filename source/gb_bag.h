@@ -104,6 +104,13 @@ bool gbb_field_present(GbGame game, GbBagPocket pocket);
  * GBB_POCKET_TMHM (not a list) or a pocket this game lacks. */
 int gbb_pocket_cap(GbGame game, GbBagPocket pocket);
 
+/* F2 (xfer-items fix pass): True when `pocket` can take one more of `id`: a free
+ * slot, OR a matching entry still below GBB_QTY_CAP. gbb_insert() MERGES, so
+ * "count < cap" is neither necessary nor sufficient -- a full pocket can still
+ * accept a stack, and a pocket with free slots refuses when the matching stack
+ * is already at 99. */
+bool gbb_has_room_for(GbGame game, const GbBag* bag, GbBagPocket pocket, uint8_t id);
+
 /* Pure accessors onto the pocket <-> field table (gb_bag.c's static k_pocket[]),
  * exposed so tests can assert the table's cap/entry-shape literals against the
  * generated field lengths (gbf_len) without duplicating the table. For

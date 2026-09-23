@@ -260,6 +260,17 @@ static G3GbStatus set_item(GbEditMon* e, uint8_t gen, const PkMon* m, Gen3ToGbLo
   return G3GB_OK;
 }
 
+/* F2 (xfer-items fix pass): the same id chain g3gb_item_ladder() below computes
+ * inline, split out so a caller can resolve the Gen-1 id BEFORE deciding room
+ * (gbb_has_room_for() needs the id to check the live bag; g3gb_item_ladder()'s own
+ * signature and every test against it stay untouched, so it keeps its own inline
+ * copy of this chain rather than calling this function). */
+uint8_t g3gb_item_to_gb1(uint16_t g3_item) {
+  if (g3_item == 0) return 0;
+  uint8_t g2 = item_g3_to_g2(g3_item);
+  return g2 ? item_g2_to_g1(g2) : 0;
+}
+
 /* BACKLOG #249 cases B/C/D/E, as a PURE decision -- see gen3_to_gb.h's own comment for
  * the contract. `dst_gen != GB_GEN1` always answers NONE/STAYS: a Gen-2 target's own
  * A/E ladder is already decided by set_item() above, this function is only ever

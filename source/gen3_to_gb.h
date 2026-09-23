@@ -80,6 +80,13 @@ typedef struct {
  * for every bridge transfer that drops an item. */
 bool g3gb_loss_needs_item_row(const Gen3ToGbLoss* loss);
 
+/* F2 (xfer-items fix pass): the same Gen-3 -> Gen-2 -> Gen-1 item-id chain
+ * g3gb_item_ladder() below runs internally, split out so a caller can ask "what Gen-1
+ * item id would this become" WITHOUT the room decision -- gbb_has_room_for() (gb_bag.h)
+ * needs the id to check the live bag, one step before g3gb_item_ladder() is called. 0
+ * for no item or no counterpart either hop. */
+uint8_t g3gb_item_to_gb1(uint16_t g3_item);
+
 /* BACKLOG #249 cases B/C/D/E, as a PURE decision (no session, host-testable): given the
  * Gen-3 held item and a snapshot of the destination Gen-1 bag's two relevant pocket
  * counts/caps, which of BAG/PC/STAYS applies, and which Gen-1 item id to insert (0 when

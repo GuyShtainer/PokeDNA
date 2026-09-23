@@ -3564,7 +3564,8 @@ gb_paste_write(const GbEditMon* mon, int box, const uint8_t orig80[80],
                g1_item, (int)pocket, (int)bst);
       gb_paste_sidecar_undo(path);
       snd_error();
-      msg_wait(PDNA_SIDECAR_XFER_REFUSED_TITLE, UI_WARN, PDNA_GBEDIT_UNCHANGED_L2, 0);
+      msg_wait(PDNA_SIDECAR_XFER_REFUSED_TITLE, UI_WARN, "Item could not be placed",
+               PDNA_GBEDIT_UNCHANGED_L2);
       return false;
     }
   }
@@ -4708,10 +4709,19 @@ BankDownResult gb_bank_down_g3(int dst_box, const uint8_t cell80[80]) {
   if (g_ed->s.gen == GB_GEN1 && loss.item_outcome == G3GB_ITEM_STAYS && loss.g3_held_item != 0) {
     GbBag bag;
     if (gbb_read(&g_ed->s, &bag)) {
+      /* F2 fix: g3gb_item_ladder()'s own room test is `items_count < items_cap`, which
+       * knows nothing about stack depth -- gbb_insert() MERGES, so a pocket at its
+       * entry cap can still accept a matching stack below 99, and a pocket with free
+       * slots refuses a stack already at 99. gbb_has_room_for() is the real predicate;
+       * feed it in as an EFFECTIVE count/cap pair (0 of cap = room, cap of cap = full)
+       * so g3gb_item_ladder's own signature and every test against it stay untouched. */
+      uint8_t want = g3gb_item_to_gb1(loss.g3_held_item);
+      int icap = gbb_pocket_cap(GBF_G_RED, GBB_POCKET_ITEMS);
+      int pcap = gbb_pocket_cap(GBF_G_RED, GBB_POCKET_PC);
       loss.item_outcome = g3gb_item_ladder(
           GB_GEN1, loss.g3_held_item,
-          bag.pockets[GBB_POCKET_ITEMS].count, gbb_pocket_cap(GBF_G_RED, GBB_POCKET_ITEMS),
-          bag.pockets[GBB_POCKET_PC].count, gbb_pocket_cap(GBF_G_RED, GBB_POCKET_PC),
+          gbb_has_room_for(GBF_G_RED, &bag, GBB_POCKET_ITEMS, want) ? 0 : icap, icap,
+          gbb_has_room_for(GBF_G_RED, &bag, GBB_POCKET_PC,    want) ? 0 : pcap, pcap,
           &g1_item);
     }
   }

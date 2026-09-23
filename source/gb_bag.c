@@ -300,6 +300,22 @@ GbBagOpStatus gbb_insert(GbGame game, GbBag* bag, GbBagPocket pocket,
   return GBB_OK;
 }
 
+/* F2 (xfer-items fix pass): see gb_bag.h's own comment -- gbb_insert() merges into a
+ * matching entry, so "list->count < cap" (this function's caller-side twin before
+ * this fix) is neither necessary nor sufficient for "will gbb_insert() accept this
+ * id". Mirrors gbb_insert()'s own two admission arms (merge vs new slot) without
+ * mutating anything. */
+bool gbb_has_room_for(GbGame game, const GbBag* bag, GbBagPocket pocket, uint8_t id) {
+  if (!bag || pocket < 0 || pocket >= GBB_POCKET_COUNT || pocket == GBB_POCKET_TMHM)
+    return false;
+  if (!gbb_field_present(game, pocket)) return false;
+  const GbBagList* L = &bag->pockets[pocket];
+  for (int i = 0; i < L->count; i++)
+    if (L->entries[i].id == id)
+      return k_pocket[pocket].has_qty && L->entries[i].qty < GBB_QTY_CAP;
+  return L->count < k_pocket[pocket].cap;
+}
+
 GbBagOpStatus gbb_remove(GbGame game, GbBag* bag, GbBagPocket pocket, int slot) {
   if (!bag || pocket < 0 || pocket >= GBB_POCKET_COUNT || pocket == GBB_POCKET_TMHM)
     return GBB_ERR_ARG;
