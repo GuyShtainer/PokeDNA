@@ -20,6 +20,23 @@ Checks:
   (b) MOVE TO BOX arm: app_party_mon_menu's body calls g3_party_rec_has_mail(rec) at a
       line strictly BEFORE its party_to_box(rec, tobox_grab) call. MUT B deletes the
       guard line and must be caught.
+
+BACKLOG #227 D2 (the same mail-orphan bug at three more party->box/party-destroying
+sites, review mail-integrity-review.md R3): DUPLICATE aliases the mail slot onto two
+party records; RELEASE drops the record with nothing left pointing at the mail it still
+owns (retail refuses this too, pokemon_storage_system.c:2661-2671); Day-Care deposit
+blanks the daycare struct with no migration (PokeDNA has no mail-array reader/writer at
+all, so it refuses rather than silently losing the message, unlike retail's own MIGRATE,
+daycare.c:162-173).
+  (c) DUPLICATE: app_duplicate's body calls g3_party_rec_has_mail(rec) at a line
+      strictly BEFORE its party_append(block, g_frlg, out) call. MUT C deletes the guard
+      line and must be caught.
+  (d) RELEASE: app_release's body calls g3_party_rec_has_mail(rec) at a line strictly
+      BEFORE its party_release(block, g_frlg, slot) call. MUT D deletes the guard line
+      and must be caught.
+  (e) DAY-CARE: app_to_daycare's body calls g3_party_rec_has_mail(rec) at a line
+      strictly BEFORE its memcpy(g_sb1 + base deposit call. MUT E deletes the guard
+      line and must be caught.
 """
 from __future__ import annotations
 
@@ -87,6 +104,9 @@ def first_line_matching(body: list[str], pat: re.Pattern) -> int | None:
 MAIL_GUARD_RE = re.compile(r"g3_party_rec_has_mail\(")
 PARTY_TO_BOX_PSLOT_RE = re.compile(r"party_to_box\(pslot,\s*y80\)")
 PARTY_TO_BOX_TOBOX_RE = re.compile(r"party_to_box\(rec,\s*tobox_grab\)")
+PARTY_APPEND_RE       = re.compile(r"party_append\(block,\s*g_frlg,\s*out\)")
+PARTY_RELEASE_CALL_RE = re.compile(r"party_release\(block,\s*g_frlg,\s*slot\)")
+DAYCARE_DEPOSIT_RE    = re.compile(r"memcpy\(g_sb1\s*\+\s*base")
 
 
 def check_swap_arm_mail_guard(stripped_lines: list[str]) -> None:
@@ -117,6 +137,54 @@ def check_tobox_arm_mail_guard(stripped_lines: list[str]) -> None:
     check(guard_i is not None and guard_i < write_i,
           "app_party_mon_menu: g3_party_rec_has_mail(rec) missing or not before "
           "party_to_box(rec, tobox_grab) -- #227's MOVE-TO-BOX mail guard is gone")
+
+
+def check_duplicate_mail_guard(stripped_lines: list[str]) -> None:
+    """(c) app_duplicate: g3_party_rec_has_mail(rec) must come strictly BEFORE
+    party_append(block, g_frlg, out) -- refuse before a second record aliases the
+    same mail slot (BACKLOG #227 D2)."""
+    s, e = extract_function(stripped_lines, r"static bool app_duplicate\(")
+    body = stripped_lines[s:e]
+    guard_i = first_line_matching(body, MAIL_GUARD_RE)
+    write_i = first_line_matching(body, PARTY_APPEND_RE)
+    if write_i is None:
+        check(False, "app_duplicate: no party_append(block, g_frlg, out) call found -- fix this test")
+        return
+    check(guard_i is not None and guard_i < write_i,
+          "app_duplicate: g3_party_rec_has_mail(rec) missing or not before "
+          "party_append(block, g_frlg, out) -- #227 D2's DUPLICATE mail guard is gone")
+
+
+def check_release_mail_guard(stripped_lines: list[str]) -> None:
+    """(d) app_release: g3_party_rec_has_mail(rec) must come strictly BEFORE
+    party_release(block, g_frlg, slot) -- refuse before the record (and the mail it
+    still owns) is dropped (BACKLOG #227 D2)."""
+    s, e = extract_function(stripped_lines, r"static bool app_release\(")
+    body = stripped_lines[s:e]
+    guard_i = first_line_matching(body, MAIL_GUARD_RE)
+    write_i = first_line_matching(body, PARTY_RELEASE_CALL_RE)
+    if write_i is None:
+        check(False, "app_release: no party_release(block, g_frlg, slot) call found -- fix this test")
+        return
+    check(guard_i is not None and guard_i < write_i,
+          "app_release: g3_party_rec_has_mail(rec) missing or not before "
+          "party_release(block, g_frlg, slot) -- #227 D2's RELEASE mail guard is gone")
+
+
+def check_daycare_mail_guard(stripped_lines: list[str]) -> None:
+    """(e) app_to_daycare: g3_party_rec_has_mail(rec) must come strictly BEFORE the
+    memcpy(g_sb1 + base ... deposit -- refuse before the boarder is written and the
+    daycare struct is blanked with no mail migrated (BACKLOG #227 D2)."""
+    s, e = extract_function(stripped_lines, r"static bool app_to_daycare\(")
+    body = stripped_lines[s:e]
+    guard_i = first_line_matching(body, MAIL_GUARD_RE)
+    write_i = first_line_matching(body, DAYCARE_DEPOSIT_RE)
+    if write_i is None:
+        check(False, "app_to_daycare: no memcpy(g_sb1 + base ... deposit call found -- fix this test")
+        return
+    check(guard_i is not None and guard_i < write_i,
+          "app_to_daycare: g3_party_rec_has_mail(rec) missing or not before the "
+          "memcpy(g_sb1 + base deposit -- #227 D2's DAY-CARE mail guard is gone")
 
 
 # ---- self-mutation harness: prove each check above actually has teeth ---------------
@@ -151,6 +219,39 @@ def self_test_mutation_detection(stripped_lines: list[str]) -> None:
     print("  MUT B demonstration -- app_party_mon_menu's mail guard deleted: "
           + ("correctly caught" if caughtB else "MISSED"))
 
+    # MUT C: delete DUPLICATE's mail-guard line entirely (BACKLOG #227 D2).
+    s3, e3 = extract_function(stripped_lines, r"static bool app_duplicate\(")
+    body3 = stripped_lines[s3:e3]
+    mutC = mutate_delete_line(body3, MAIL_GUARD_RE)
+    write3_i = first_line_matching(mutC, PARTY_APPEND_RE)
+    guard3_i = first_line_matching(mutC, MAIL_GUARD_RE)
+    caughtC = not (guard3_i is not None and write3_i is not None and guard3_i < write3_i)
+    check(caughtC, "MUT C demonstration: deleting the DUPLICATE mail guard was NOT caught")
+    print("  MUT C demonstration -- app_duplicate's mail guard deleted: "
+          + ("correctly caught" if caughtC else "MISSED"))
+
+    # MUT D: delete RELEASE's mail-guard line entirely (BACKLOG #227 D2).
+    s4, e4 = extract_function(stripped_lines, r"static bool app_release\(")
+    body4 = stripped_lines[s4:e4]
+    mutD = mutate_delete_line(body4, MAIL_GUARD_RE)
+    write4_i = first_line_matching(mutD, PARTY_RELEASE_CALL_RE)
+    guard4_i = first_line_matching(mutD, MAIL_GUARD_RE)
+    caughtD = not (guard4_i is not None and write4_i is not None and guard4_i < write4_i)
+    check(caughtD, "MUT D demonstration: deleting the RELEASE mail guard was NOT caught")
+    print("  MUT D demonstration -- app_release's mail guard deleted: "
+          + ("correctly caught" if caughtD else "MISSED"))
+
+    # MUT E: delete DAY-CARE's mail-guard line entirely (BACKLOG #227 D2).
+    s5, e5 = extract_function(stripped_lines, r"static bool app_to_daycare\(")
+    body5 = stripped_lines[s5:e5]
+    mutE = mutate_delete_line(body5, MAIL_GUARD_RE)
+    write5_i = first_line_matching(mutE, DAYCARE_DEPOSIT_RE)
+    guard5_i = first_line_matching(mutE, MAIL_GUARD_RE)
+    caughtE = not (guard5_i is not None and write5_i is not None and guard5_i < write5_i)
+    check(caughtE, "MUT E demonstration: deleting the DAY-CARE mail guard was NOT caught")
+    print("  MUT E demonstration -- app_to_daycare's mail guard deleted: "
+          + ("correctly caught" if caughtE else "MISSED"))
+
 
 def main() -> int:
     raw = MAIN_C.read_text(errors="replace")
@@ -159,6 +260,9 @@ def main() -> int:
 
     check_swap_arm_mail_guard(stripped_lines)
     check_tobox_arm_mail_guard(stripped_lines)
+    check_duplicate_mail_guard(stripped_lines)
+    check_release_mail_guard(stripped_lines)
+    check_daycare_mail_guard(stripped_lines)
     self_test_mutation_detection(stripped_lines)
 
     print(f"{checks} checks, {len(fails)} failed")

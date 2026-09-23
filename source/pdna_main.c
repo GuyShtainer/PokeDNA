@@ -4478,9 +4478,21 @@ static bool app_paste(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* 
   return app_commit_with_dex(rec, is_party, commit, block);   /* auto-register the pasted species */
 }
 
+/* BACKLOG #227 D2: forward-declared -- app_duplicate/app_release/app_to_daycare below
+ * all need the party-mail guard and sit ABOVE its definition further down this file. */
+static bool g3_party_rec_has_mail(const uint8_t* party100);
+
 static bool app_duplicate(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* block, int box) {
   if (is_party) {
     if (party_count(block, g_frlg) >= 6) { snd_deny(); msg_wait("PARTY FULL", UI_WARN, "Release a mon first.", 0); return false; }
+    /* BACKLOG #227 D2: the memcpy below would alias the SAME mail slot onto two party
+     * records (the source keeps its mail index at 0x55 and so would the copy) -- two
+     * mons pointing at one message, with nothing to say which one really has it. */
+    if (g3_party_rec_has_mail(rec)) {
+      snd_deny();
+      msg_wait("CAN'T DUPLICATE", UI_WARN, PDNA_XFER_PARTYFULL_MAIL_L1, PDNA_XFER_PARTYFULL_MAIL_L2);
+      return false;
+    }
     uint8_t out[100]; memcpy(out, rec, 100);
     party_append(block, g_frlg, out);
   } else {
@@ -4492,10 +4504,20 @@ static bool app_duplicate(uint8_t* rec, bool is_party, AppCommitFn commit, uint8
 }
 
 static bool app_release(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* block, int box, int slot) {
-  (void)rec;
   if (is_party && party_count(block, g_frlg) <= 1) {
     snd_deny();
     msg_wait("CAN'T RELEASE", UI_WARN, "The party can't be empty.", 0);
+    return false;
+  }
+  /* BACKLOG #227 D2: retail refuses to release a mail holder too (MENU_RELEASE ->
+   * ItemIsMail, pokeemerald src/pokemon_storage_system.c:2661-2671) -- releasing a
+   * party mon drops its 100-byte record with nothing left pointing at the message it
+   * still owns in gSaveBlock1's mail array. Box records never carry mail (the mail
+   * index lives only at the party record's 0x55 byte), so this only applies to the
+   * party arm. */
+  if (is_party && g3_party_rec_has_mail(rec)) {
+    snd_deny();
+    msg_wait("CAN'T RELEASE", UI_WARN, PDNA_XFER_PARTYFULL_MAIL_L1, PDNA_XFER_PARTYFULL_MAIL_L2);
     return false;
   }
   if (!app_confirm("Release this Pokemon?", "Deleted permanently.")) return false;
@@ -4575,6 +4597,22 @@ static bool app_to_daycare(uint8_t* rec, bool is_party, uint8_t* block, int box,
   int fi = dc_first_free(base, stride);
   if (fi < 0) { snd_deny(); msg_wait("DAY-CARE FULL", UI_WARN, "Take a Pokemon out first.", 0); return false; }
   if (is_party && party_count(block, g_frlg) <= 1) { snd_deny(); msg_wait("CAN'T", UI_WARN, "The party can't be empty.", 0); return false; }
+  /* BACKLOG #227 D2: retail MIGRATES a depositing party member's Mail into the
+   * boarder's own DaycareMail record (pokeemerald src/daycare.c:162-173) so the
+   * message survives the trip. PokeDNA has no parser or writer for gSaveBlock1's
+   * mail array at all -- it only ever WRITES G3_MAIL_NONE at the party record's
+   * 0x55 byte (gen3_edit.c), never reads or relocates the message content itself --
+   * so migrating it is out of this lane's reach. The deposit below only copies the
+   * 80-byte box form (no mail byte) and then dc_clear_slot_aux/dc_clear_egg blank
+   * the daycare struct, so an unguarded mail holder would silently lose the message
+   * with nothing pointing at it afterward. Refuse instead, honestly, the same as
+   * RELEASE/DUPLICATE/SWAP/MOVE-TO-BOX/the PC deposit offer. Box records never carry
+   * mail (the index lives only in the party form), so this only applies to is_party. */
+  if (is_party && g3_party_rec_has_mail(rec)) {
+    snd_deny();
+    msg_wait("CAN'T SEND", UI_WARN, PDNA_XFER_PARTYFULL_MAIL_L1, PDNA_XFER_PARTYFULL_MAIL_L2);
+    return false;
+  }
   if (!app_confirm("Send to Day-Care?", "Moves this Pokemon there.")) return false;
   memcpy(g_sb1 + base + (uint32_t)fi * stride, rec, 80);        /* deposit (first 80 bytes = box form) */
   dc_clear_slot_aux(base, stride, fi);

@@ -4195,7 +4195,16 @@ out:
  * (hardware-testing-protocol; the emulator cannot prove a stack-overflow refusal is
  * correct on real silicon, only that the code path the refusal message takes is
  * reachable and renders). */
-#define PDNA_PARTY_STRIP_NEED 7392   /* re-derived 2026-09-23 (BACKLOG #229, lane mail-integrity):
+#define PDNA_PARTY_STRIP_NEED 7392   /* RE-CHECKED 2026-09-23 (BACKLOG #227 D2, lane mail-integrity
+                                      * fix pass): the mail guard added to app_duplicate/app_release/
+                                      * app_to_daycare also inlines into app_mon_menu on this #1 chain,
+                                      * but each guard is one extra call plus a branch, not a new local
+                                      * buffer -- re-running the exact commands below on fresh artless
+                                      * AND normal ELFs after the fix still prints 7,392 artless / 7,384
+                                      * normal, unchanged from #229's own derivation, so this constant
+                                      * and tools/stack_edges.txt's need=7392 line stand as-is.
+                                      *
+                                      * re-derived 2026-09-23 (BACKLOG #229, lane mail-integrity):
                                       * app_create_mon (inlined into app_mon_menu, reached through
                                       * app_party_mon_menu on this same #1 chain) gained an is_party
                                       * branch -- a new uint8_t p100[100] plus the box_to_party() call
