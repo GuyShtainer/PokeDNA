@@ -7834,6 +7834,18 @@ def _main_dispatch(argv=None) -> int:
                           "flight-shaped image --b187-chains uses (Emerald.sav + a "
                           "fused Yellow.gb/Yellow.sav, GUY'S OWN Yellow.sav copied to "
                           "/tmp first).")
+    ap.add_argument("--b199-chain-d", action="store_true",
+                     help="BACKLOG #199 (lane b199): runs run_b199_chain_d() against "
+                          "--image -- the drag-and-drop gesture BACKLOG #187's review "
+                          "fix 2 could never shoot before this lane. D1: a within-save "
+                          "GB move (box1 slot0 -> box12) that asks nothing and writes no "
+                          "serial. D2: a GB -> Bank drop (box1 slot0 -> the Bank) that "
+                          "does both. Both sub-chains attach their OWN --vsd scratch "
+                          "image automatically (mkimg'd into --out) -- do not pass "
+                          "--vsd yourself, it would be overwritten. --image MUST be the "
+                          "same flight-shaped image --b187-chains/--b200 use (Emerald.sav "
+                          "+ a fused Yellow.gb/Yellow.sav, GUY'S OWN Yellow.sav copied "
+                          "to /tmp first).")
     ap.add_argument("--selftest-captions", action="store_true",
                      help="BACKLOG #198's original floor (a caption is non-empty and its "
                           "frame file exists) EXTENDED for BACKLOG #184: read --out's "
@@ -8567,6 +8579,20 @@ def _main_dispatch(argv=None) -> int:
                 skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] b200 chain: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        ran = True
+
+    if getattr(a, "b199_chain_d", False):
+        # BACKLOG #199 (lane b199): append-only, same convention as --b200 above.
+        try:
+            for sess in run_b199_chain_d(core_mod, image_mod, a.image, a.out):
+                ok += sess.taken
+                skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b199 chain D: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
@@ -9953,21 +9979,248 @@ def run_b187_chain_c(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.
     return s
 
 
-# BACKLOG #187/#193/#191a/#192, review fix 2: chain D (drag-and-drop, SELECT ->
-# MOVE -> A to lift -> L/R to another box -> A to drop on an empty cell) is NOT
-# added here -- it is impossible to demonstrate on ANY emulator vehicle. The
-# lift half of a GB-scope carry (start_carry -> BoxXferOps.lift_up ->
-# gb_lift_up_hook, source/pdna_box.c/pdna_gen12.c) always calls
-# pdna_bank_next_serial(), which always calls meta_save() -> sf_write_verified()
-# against /PokeDNA/bank/bank.meta -- a REAL SD write. PDNA_DELTA has no SD card
-# (the same "no flashcart in mGBA" wall every other GB write hook in this file
-# hits), so the lift refuses before a single cell moves, on every fused image,
-# always. F2's DROP half (move_within itself) is proven working end-to-end by
-# Chain B above via the picker-driven gb_move_core/gbs_move path DUPLICATE
-# shares with it, by tests/host_gbsession_test.c's s187_yellow_box8_matrix
-# (real Yellow.sav, the engine level), and by tests/host_gb_grid_ops_test.py's
-# structural checks (b)/(e) with four real mutations -- what mGBA specifically
-# cannot ever show is the LIFT gesture's own SD-write-gated start. HW-QUEUE row.
+# BACKLOG #187/#193/#191a/#192, review fix 2 said chain D (drag-and-drop, SELECT ->
+# MOVE -> A to lift -> L/R to another box -> A to drop) was impossible on ANY
+# emulator vehicle: the lift half of a GB-scope carry (start_carry -> BoxXferOps.
+# lift_up -> gb_lift_up_hook) ALWAYS called pdna_bank_next_serial() -> meta_save() ->
+# a REAL SD write, which PDNA_DELTA (no SD card) always refused before a single cell
+# moved -- ANY drag, not just a cross-scope one. BACKLOG #199 (lane b199) moved that
+# call from the grab (start_carry) to the ONE drop that actually needs it
+# (drop_held_up, the GB -> Bank UP drop) -- a within-save drag now never calls
+# lift_up at all, and is genuinely shootable for the first time. run_b199_chain_d()
+# below is that proof: D1 is the within-save move (asks nothing, writes nothing);
+# D2 is the GB -> Bank drop (asks + writes, --vsd attached so the write is real).
+
+
+def run_b199_chain_d(core_mod, image_mod, rom: Path, out_dir: Path) -> list[gb_shots.Session]:
+    """BACKLOG #199 (lane b199): chain D, the drag-and-drop gesture BACKLOG #187's
+    review fix 2 could never shoot before this lane (see the module comment just
+    above). Two sub-chains, each its own Session, each attaching --vsd (BACKLOG
+    #179's virtual SD) so a real write can be told apart from a refused one.
+
+    `rom` MUST be a flight-shaped image (Emerald.sav + a fused Yellow.gb/Yellow.sav,
+    tools/fuse_sav.py then tools/fuse_gb.py) with Guy's OWN Yellow.sav as the Gen-1
+    payload (copy it to /tmp first -- the corpus at gba-toolkit/roms/gb/Yellow.sav is
+    read-only) -- the SAME image run_b187_chain_a/b/c() use. Navigation re-derived by
+    direct probing against this exact image (not assumed): box1 (index 0, 20/20
+    full, run_b187_chain_b's own corpus fact) is reached from the box12 boot landing
+    (index 11) by 2x R (11->12 the GB PARTY pseudo-box->0 box1, SWITCH_BOX's
+    `(box+1)%nb` wrap, nb=13) -- confirmed live; a single R plus a shot lands on the
+    PARTY pseudo-box, not box1, so the run needs an idle settle run between taps
+    (60 frames) or the second R's own edge is served mid-paint of the first.
+
+    D1 -- WITHIN-SAVE MOVE (box1 slot 0 -> box12, both boxes of the SAME save):
+    SELECT (MOVE mode) -> A (lift slot 0) -> two carry-mode L presses (SWITCH_BOX
+    wraps 0->12 the party pseudo-box->11 box12, the empty boot-landing box) -> A
+    (drop on the empty cell). Verified live: step 02 (the lift) shows NO origin
+    prompt at all -- before this lane this EXACT step opened "WHICH GAME IS THIS?"
+    full-screen (see run_s150_4_uplift's own captured frame 02, still true for any
+    GB->Bank carry, just not this one any more) -- start_carry() now only memcpy's
+    the display record. The drop reaches gb_move_core/gbs_move for real and hits the
+    SAME honest PDNA_DELTA wall ("Edits are in-session only in the emulator build.")
+    every other GB write in this file already hits (the FUSED GB save itself has no
+    real SD path under delta, independent of the Bank's own --vsd) -- s_holding stays
+    true across that wall (drop_held's `if (!ok) return recs;`, ok = gb_persist()'s
+    own false), same shape as Chain B's DUPLICATE-then-wall. --vsd's own report is
+    the proof that matters: ["/PokeDNA/log.txt"] only (the triple logger's own
+    flush from inside gb_persist's refusal branch) -- no bank.meta, no ledger file,
+    nothing under /PokeDNA/xfer/ or /PokeDNA/bank/ at all. THAT is "asks nothing,
+    writes no serial", mechanically, not just by absence of a screenshot.
+
+    D2 -- GB -> BANK DROP (box1 slot 0 -> the Bank, cross-scope): SELECT -> A (lift,
+    also no prompt) -> two carry-mode UP presses (row0 -> tab focus -> the bank_edge
+    hop, `return 4`) lands on the Bank, STILL CARRYING -- and the carried icon is
+    the REAL Bulbasaur sprite riding the glove, not a badge-only fist (b199's own
+    consequence: s_held is the Gen-3-shaped display record the WHOLE hold, so
+    oam_sync's `pk_decode_mon(s_held, ...)` branch runs instead of the
+    bc_is_native() badge branch -- before this lane, a GB-origin carry could never
+    even reach here to compare). A on an empty Bank cell triggers drop_held_up,
+    which now calls `s_xfer_peer->lift_up(s_orig_box, s_orig_slot, packed)` BY
+    ORIGIN COORDINATES for the first time (this exact call was impossible to reach
+    live before b199 -- the grab always refused first). Found live, not assumed:
+    box1 slot 0 (this exact corpus mon) already carries a bank_plant.c dev fixture
+    (`bank_plant_site2_seed`, xfer_io.c's own `xr_open()` fallback to
+    `bank_plant_xfer_open()` when the real SD read misses) -- so the lift takes the
+    RESTORE branch (gb_lift_restore, "BACK TO ITS ORIGINAL", Level 5 > 10 / Nickname
+    changed) rather than the plain fresh-mon origin picker; the ASKS+WRITES contract
+    the brief names is still proven, by the SAME two real facts (a screen the player
+    must act on, then pdna_bank_next_serial()'s own verified SD write) -- arguably a
+    STRONGER proof, since it exercises the shared merge-screen/serial pipeline
+    end-to-end rather than the simpler fresh-mon path. A flips the level row to TAKE,
+    START applies: --vsd shows the REAL writes landing -- bank.meta (+ .bak),
+    backup-v1/bank.meta + DONE (pdna_bank_prepare_native()'s first-ever-run backup
+    gate), box00.box (the Bank cell itself), and log.txt. The GB-side release then
+    hits the SAME PDNA_DELTA wall D1's drop did (the fused save has no SD path under
+    delta) -- release_up returns false, and drop_held_up's own KEPT message shows
+    ("MOVED TO THE BANK / It is still in the Game Boy save too - remove it there.")
+    -- a duplicate, not a loss, exactly the ordering the design promises (S150-4's
+    serial-before-cell / cell-before-delete, unchanged by this lane's move)."""
+    sessions: list[gb_shots.Session] = []
+
+    # ---- D1: within-save move, box1 slot0 -> box12 (empty) ---------------------
+    vsd1 = out_dir / "b199d1.img"
+    binp = gb_shots._vsd_img_bin()
+    if vsd1.exists():
+        vsd1.unlink()
+    r = subprocess.run([str(binp), "mkimg", str(vsd1), "16"], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"b199 chain D1: mkimg failed: {r.stderr.strip()}")
+    gb_shots.set_default_vsd(vsd1)
+
+    s1 = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b199d1_")
+    print("== BACKLOG #199 Chain D1: within-save GB move (--vsd) ==")
+    boot_to_gb_session(s1, rom, which="yellow")
+    s1.vsd_snapshot()   # reset the diff baseline AFTER boot's own log.txt/MIGRATED writes
+    s1.tap("R", settle=gb_shots.BIG_SETTLE); s1.run(60)
+    s1.tap("R", settle=gb_shots.BIG_SETTLE); s1.run(60)
+    s1.shot("00_box1", "tap0 (2xR from boot): box1 (index 0, 20/20 full) -- "
+            "run_b187_chain_b's own corpus fact, reached via the party pseudo-box wrap")
+    s1.tap("SEL", settle=gb_shots.BIG_SETTLE); s1.run(60)
+    s1.shot("01_move_mode", "tap1 (SELECT): MOVE mode -- footer 'MOVE A grab hold=set'",
+            claim=["MOVE A grab hold=set"])
+    s1.tap("A", settle=gb_shots.BIG_SETTLE); s1.run(60)
+    s1.shot("02_lifted_no_prompt", "tap2 (A, lift slot 0): carrying, footer 'A drop "
+            "B cancel' -- NO origin prompt (BACKLOG #199's whole point: start_carry() "
+            "no longer calls lift_up() for ANY scope; the grab is a plain memcpy of "
+            "the display record). Before this lane the identical A press here opened "
+            "a full-screen 'WHICH GAME IS THIS?' picker (run_s150_4_uplift frame 02) "
+            "and only then refused on the serial write -- this frame proves that no "
+            "longer happens at grab time.",
+            claim=["A drop  B cancel"])
+    s1.tap("L", settle=gb_shots.BIG_SETTLE); s1.run(60)
+    s1.tap("L", settle=gb_shots.BIG_SETTLE); s1.run(60)
+    s1.shot("03_box12_empty", "tap3 (2xL, carrying): box12 (index 11, 0/20, the boot "
+            "landing) -- SWITCH_BOX wraps 0 -> 12 (party) -> 11 while still carrying, "
+            "still no card write of any kind")
+    s1.tap("A", settle=gb_shots.BIG_SETTLE); s1.run(100)
+    s1.shot("04_delta_wall", "tap4 (A, drop on the empty cell): move_within reaches "
+            "gb_move_core/gbs_move for real, then hits gb_persist()'s own honest "
+            "PDNA_DELTA wall ('Edits are in-session only in the emulator build.') -- "
+            "the SAME wall every other GB write in this file shows on this vehicle "
+            "(no real SD for the FUSED save under delta, independent of the Bank's "
+            "own --vsd); s_holding stays true (drop_held's `if (!ok) return recs;`)",
+            claim=["GAME BOY SAVE", "Edits are in-session only",
+                   "in the emulator build."])
+
+    # ---- RED DEMO first (BACKLOG #184: a proof that cannot fail is not a proof) --
+    try:
+        s1.vsd_report(expect_changed=["/PokeDNA/this/path/does/not/exist.pds"])
+        raise RuntimeError("D1 RED DEMO FAILED: vsd_report() did not exit(1) on a "
+                            "deliberately wrong expect_changed set")
+    except SystemExit as e:
+        if e.code != 1:
+            raise RuntimeError(f"D1 RED DEMO: vsd_report() exited {e.code}, not 1")
+        print("  [RED DEMO] D1 vsd_report(expect_changed=[wrong path]) correctly "
+              "exited 1 -- the GREEN proof below is not inert")
+    changed1 = s1.vsd_report(expect_changed=[
+        "/PokeDNA/log.txt",   # the triple logger's own flush, from INSIDE
+                              # gb_persist()'s PDNA_DELTA refusal branch -- the ONLY
+                              # thing this whole gesture wrote anywhere
+    ])
+    print(f"  [VSD] D1 vsd_diff (GREEN, expected set matched): {sorted(changed1)} "
+          f"-- no bank.meta, no ledger file, nothing under /PokeDNA/xfer or "
+          f"/PokeDNA/bank at all: a within-save move asks nothing and writes no "
+          f"serial, mechanically proven, not just absent from a screenshot")
+    sessions.append(s1)
+
+    # ---- D2: GB -> Bank drop, box1 slot0 -> the Bank (cross-scope) --------------
+    vsd2 = out_dir / "b199d2.img"
+    if vsd2.exists():
+        vsd2.unlink()
+    r = subprocess.run([str(binp), "mkimg", str(vsd2), "16"], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"b199 chain D2: mkimg failed: {r.stderr.strip()}")
+    gb_shots.set_default_vsd(vsd2)
+
+    s2 = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b199d2_")
+    print("== BACKLOG #199 Chain D2: GB -> Bank drop (--vsd) ==")
+    boot_to_gb_session(s2, rom, which="yellow")
+    s2.vsd_snapshot()
+    s2.tap("R", settle=gb_shots.BIG_SETTLE); s2.run(60)
+    s2.tap("R", settle=gb_shots.BIG_SETTLE); s2.run(60)
+    s2.shot("00_box1", "tap0 (2xR from boot): box1 (20/20 full), same landing D1 uses")
+    s2.tap("SEL", settle=gb_shots.BIG_SETTLE); s2.run(60)
+    s2.tap("A", settle=gb_shots.BIG_SETTLE); s2.run(60)
+    s2.shot("01_lifted_no_prompt", "tap1 (SELECT, A): lifted slot 0, no origin prompt "
+            "(same b199 fact D1's tap2 shows)",
+            claim=["A drop  B cancel"])
+    s2.tap("UP", settle=gb_shots.BIG_SETTLE); s2.run(60)
+    s2.tap("UP", settle=150); s2.run(100)
+    s2.shot("02_bank_hop", "tap2 (2xUP, carrying): row0 -> tab focus -> the bank_edge "
+            "hop (`return 4`) -- lands on the Bank, STILL carrying, and the carried "
+            "icon is the REAL Bulbasaur sprite riding the glove (not a badge-only "
+            "fist) -- b199's other visible consequence: s_held is the Gen-3-shaped "
+            "display record for the WHOLE hold, so oam_sync's pk_decode_mon() branch "
+            "runs here instead of the bc_is_native() native-badge branch; before "
+            "this lane a GB-origin carry could never even reach the Bank to compare")
+    s2.tap("A", settle=gb_shots.BIG_SETTLE); s2.run(100)
+    s2.shot("03_merge_screen", "tap3 (A on an empty Bank cell): drop_held_up calls "
+            "`s_xfer_peer->lift_up(s_orig_box, s_orig_slot, packed)` BY ORIGIN "
+            "COORDINATES for the first time -- unreachable live before b199 (the "
+            "grab always refused first). Found live, not assumed: this exact corpus "
+            "mon (box1 slot 0) already carries a bank_plant.c dev fixture "
+            "(bank_plant_site2_seed, xfer_io.c's xr_open() fallback to "
+            "bank_plant_xfer_open() when the real SD read misses), so the lift takes "
+            "the RESTORE branch -- 'BACK TO ITS ORIGINAL', 'Level 5 > 10' TAKE row, "
+            "'Nickname changed' KEEP row -- rather than the plain fresh-mon origin "
+            "picker. The brief's ASKS+WRITES contract is proven either way: this IS "
+            "a screen the player must act on, and applying it still spends a real "
+            "serial (below) -- the shared merge-screen/serial pipeline, exercised "
+            "end to end.",
+            claim=["BACK TO ITS ORIGINAL", "Level 5 > 10", "Nickname changed"])
+    s2.tap("A", settle=gb_shots.BIG_SETTLE); s2.run(60)     # flip the level row to TAKE
+    s2.shot("04_flipped", "tap4 (A): the level row flips to TAKE")
+    s2.tap("START", settle=gb_shots.BIG_SETTLE); s2.run(150)
+    s2.shot("05_delta_wall", "tap5 (START, apply): the Bank write lands FOR REAL on "
+            "this --vsd image (see the vsd_diff below) -- then release_up's own "
+            "gb_persist() call hits the SAME honest PDNA_DELTA wall D1's drop showed "
+            "('Edits are in-session only in the emulator build.') -- the FUSED GB "
+            "save has no real SD path under delta, independent of the Bank's own "
+            "--vsd, so the ORIGIN half of this drop cannot be verified-deleted here",
+            claim=["GAME BOY SAVE", "Edits are in-session only",
+                   "in the emulator build."])
+    s2.tap("A", settle=gb_shots.BIG_SETTLE); s2.run(150)
+    s2.shot("06_kept_dup", "tap6 (A, dismiss): release_up returned false (the wall "
+            "above), so drop_held_up shows its own KEPT message -- 'MOVED TO THE "
+            "BANK / It is still in the Game Boy save too - remove it there.' -- a "
+            "DUPLICATE, never a loss: the Bank cell landed and verified BEFORE the "
+            "GB-side delete was even attempted (S150-4's own ordering, unmoved by "
+            "this lane -- see drop_held_up's header comment)",
+            claim=["MOVED TO THE BANK", "It is still in the Game Boy",
+                   "save too - remove it there."])
+
+    # ---- RED DEMO first ----------------------------------------------------------
+    try:
+        s2.vsd_report(expect_changed=["/PokeDNA/this/path/does/not/exist.pds"])
+        raise RuntimeError("D2 RED DEMO FAILED: vsd_report() did not exit(1) on a "
+                            "deliberately wrong expect_changed set")
+    except SystemExit as e:
+        if e.code != 1:
+            raise RuntimeError(f"D2 RED DEMO: vsd_report() exited {e.code}, not 1")
+        print("  [RED DEMO] D2 vsd_report(expect_changed=[wrong path]) correctly "
+              "exited 1 -- the GREEN proof below is not inert")
+    changed2 = s2.vsd_report(expect_changed=[
+        "/PokeDNA/bank/backup-v1/DONE",         # pdna_bank_prepare_native()'s
+                                                 # first-ever-run backup gate marker
+        "/PokeDNA/bank/backup-v1/bank.meta",    # the backup-v1 copy of bank.meta
+                                                 # bank_backup_v1() takes before the
+                                                 # first-ever native write
+        "/PokeDNA/bank/bank.meta",              # pdna_bank_next_serial()'s own
+                                                 # verified meta_save() -- the ONE
+                                                 # write the brief calls "a serial"
+        "/PokeDNA/bank/bank.meta.bak",          # sf_write_verified's own rolling
+                                                 # backup of bank.meta
+        "/PokeDNA/bank/box00.box",              # the Bank cell itself, verified
+                                                 # box_save() -- the "asks" half's
+                                                 # answer actually landing
+        "/PokeDNA/log.txt",                     # the triple logger's own append
+    ])
+    print(f"  [VSD] D2 vsd_diff (GREEN, expected set matched): {sorted(changed2)} "
+          f"-- a real bank.meta write AND a real Bank-cell write: a GB -> Bank drop "
+          f"asks (this screen) and writes (this serial), mechanically proven")
+    sessions.append(s2)
+
+    return sessions
 
 
 def run_b200_chain(core_mod, image_mod, rom: Path, out_dir: Path) -> list[gb_shots.Session]:
