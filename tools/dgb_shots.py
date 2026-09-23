@@ -7464,6 +7464,14 @@ def _main_dispatch(argv=None) -> int:
                           "be a ONE-ROM fused image matching the choice (Gold.gbc+"
                           "Gold.sav or Red.gb+Red.sav, tools/fuse_gb.py, no "
                           "Emerald.sav -- BACKLOG #98)")
+    ap.add_argument("--b154-boxmenu", choices=("red", "yellow", "gold"),
+                     help="BACKLOG #154: only run_b154_boxmenu() against --image -- "
+                          "the box-options menu's Rename row, hidden on a source "
+                          "with no box-name table (Gen 1) rather than shown then "
+                          "refused. --image MUST be a ONE-ROM fused image matching "
+                          "the choice (Gold.gbc+Gold.sav or Red.gb+Red.sav / "
+                          "Yellow.gb+Yellow.sav, tools/fuse_gb.py, no Emerald.sav "
+                          "-- BACKLOG #98)")
     ap.add_argument("--b187-chains", action="store_true",
                      help="BACKLOG #187/#193/#191a/#192, review fix 2: runs "
                           "run_b187_chain_a/b/c() against --image in sequence -- "
@@ -8524,6 +8532,19 @@ def _main_dispatch(argv=None) -> int:
             print(f"  [skip] {name}: {reason}")
         ran = True
 
+    if a.b154_boxmenu:
+        try:
+            sess = run_b154_boxmenu(core_mod, image_mod, a.image, a.out, a.b154_boxmenu)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b154 boxmenu ({a.b154_boxmenu}): {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        ran = True
+
     if a.b187_chains:
         for label, fn in (("A", run_b187_chain_a), ("B", run_b187_chain_b),
                           ("C", run_b187_chain_c)):
@@ -9248,6 +9269,45 @@ def run_gbmon(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session
                                      "after Egg on a Gold session) -- proof the row "
                                      "list genuinely reflows around the absent Met "
                                      "rows rather than leaving a gap or a stale cursor")
+    return s
+
+
+def run_b154_boxmenu(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
+    """BACKLOG #154: the box-options menu's Rename row used to draw and act
+    unconditionally, refusing on A with 'NO BOX NAMES' when the source has no
+    box-name table at all (Gen 1: gbbn_supported()==false) -- the shown-then-
+    refused pattern the repo's own convention is to avoid. The fix (pdna_box.c
+    box_options_menu, show_rename computed once before the loop) OMITS the row
+    entirely on such a source instead: Gen 1 (`which == "red"` or "yellow") sees
+    4 rows (Wallpaper/Export all .pk/Release all/Cancel); Gen 2 (`which ==
+    "gold"`) is unaffected -- still 5 rows, Rename box first, byte-identical to
+    before this fix (can_rename() is true there, gbbn_supported()==true).
+
+    --image MUST be a ONE-ROM fused image matching `which` (tools/fuse_gb.py,
+    no Emerald.sav -- same BACKLOG #98 reasoning run_b93_menu's own docstring
+    gives), so boot_to_gb_session() skips the picker."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b154_{which}_")
+    print(f"== BACKLOG #154: box-options menu Rename row, gated on can_rename ({which}) ==")
+
+    boot_to_gb_session(s, rom, which=which)
+    s.tap("UP", settle=100)                  # occupied cell -> TITLE row
+    s.tap("SEL", settle=100)                 # SELECT on title -> box_options_menu
+
+    if which in ("red", "yellow"):           # Gen 1: no box-name table at all
+        s.shot("01_box_menu_no_rename", "BACKLOG #154: Gen 1's box menu -- "
+               "'Rename box' is OMITTED (was: drawn then refused with 'NO BOX "
+               "NAMES' on A) -- 'Wallpaper / Export all .pk / Release all / "
+               "Cancel', 4 rows, cursor defaults to Wallpaper (row 0 now)",
+               claim=["Wallpaper", "Export all .pk", "Release all", "Cancel"],
+               claim_absent=["Rename box"])
+    else:                                     # Gen 2: has a real box-name table
+        s.shot("01_box_menu_has_rename", "BACKLOG #154: Gen 2's box menu is "
+               "UNCHANGED by this fix -- 'Rename box' is still the first row "
+               "(can_rename() is true here, gbbn_supported()==true) -- "
+               "'Rename box / Wallpaper / Export all .pk / Release all / "
+               "Cancel', 5 rows, byte-identical to before",
+               claim=["Rename box", "Wallpaper", "Export all .pk", "Release all",
+                      "Cancel"])
     return s
 
 

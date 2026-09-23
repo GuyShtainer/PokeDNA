@@ -3121,33 +3121,46 @@ static void release_box_all(BoxSource* src, int box) {
  * action mutates the source and commits via its verified-write path. */
 static void box_options_menu(BoxSource* src, int box) {
   static const char* const OPT[5] = { "Rename box", "Wallpaper", "Export all .pk", "Release all", "Cancel" };
+  /* #154: the Rename row used to draw+act unconditionally and refuse on A (D2,
+   * BACKLOG #93) -- that is the shown-then-refused pattern the repo's own
+   * convention is to avoid (the omitted-row convention every other capability
+   * gate here follows: can_boxops/can_edit/can_lift all hide, never refuse-after).
+   * A source with no box-name table at all (Gen 1: gbbn_supported()==false, so
+   * gbsrc_can_rename_impl() returns false) has nothing legitimate to do with this
+   * row, so it is left out of the menu entirely. can_rename() takes no box
+   * argument -- it gates the whole session, not a specific box (BoxSource.can_rename's
+   * own header note) -- so this can be decided once, before the loop, and cannot
+   * change while the menu is open. Same condition the old refusal used, so PC/Bank
+   * (can_rename == NULL -> src_can_lift fallback) keep showing it, byte-identical. */
+  bool show_rename = src->can_rename ? src->can_rename() : src_can_lift(src, box, -1);
+  int action[5]; int n = 0;
+  if (show_rename) action[n++] = 0;
+  action[n++] = 1; action[n++] = 2; action[n++] = 3; action[n++] = 4;
   int sel = 0;
   for (;;) {
-    const int mx = 50, my = 42, mw = 140, mh = 18 + 5 * 14 + 11;
+    const int mx = 50, my = 42, mw = 140, mh = 18 + n * 14 + 11;
     ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
     ui_text(mx + 6, my + 4, UI_TITLE, "BOX");
     ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < n; i++) {
       int y = my + 18 + i * 14; bool s = (i == sel);
       if (s) ui_panel(mx + 2, y - 1, mw - 4, 13, UI_SEL, UI_TITLE);
-      ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, OPT[i]);
+      ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, OPT[action[i]]);
     }
     ui_text(mx + 6, my + mh - 9, UI_DIM, "A pick B back");
     u16 k; do { s_vsync(); k = key_hit(KEY_UP | KEY_DOWN | KEY_A | KEY_B); } while (!k);
     if (k & KEY_B) { snd_back(); return; }
-    else if (k & KEY_UP)   { snd_move(); sel = (sel > 0) ? sel - 1 : 4; }
-    else if (k & KEY_DOWN) { snd_move(); sel = (sel + 1) % 5; }
+    else if (k & KEY_UP)   { snd_move(); sel = (sel > 0) ? sel - 1 : n - 1; }
+    else if (k & KEY_DOWN) { snd_move(); sel = (sel + 1) % n; }
     else if (k & KEY_A) {
       snd_ok();
-      if (sel == 0) {                              /* rename */
-        /* D2 (review-opus, BACKLOG #93): this row used to draw and act on Rename
-         * unconditionally -- the direct-A-on-banner shortcut (~:3444) already gates
-         * on can_rename, but THIS second path to the same osk_input did not, so a
-         * Gen-1 GB box (gbsrc_can_rename_impl -> gbbn_supported -> false, no box-
-         * name table) reached this menu (now openable via can_boxops, BACKLOG #93)
-         * and could type a name that died with a bare beep when set_name/commit
-         * silently no-op'd. Same gate as the direct-A path, so PC/Bank (can_rename
-         * NULL -> falls back to src_can_lift, unchanged) stay byte-identical. */
+      int a = action[sel];
+      if (a == 0) {                                 /* rename */
+        /* Defense-in-depth only now that show_rename gates the row itself above:
+         * this branch is unreachable when the check would fail (a == 0 only appears
+         * in `action[]` when show_rename was true, and can_rename() is session-wide
+         * so it cannot flip mid-menu) -- kept so a future caller of this branch
+         * cannot silently skip the gate the way the pre-D2 code did. */
         if (!(src->can_rename ? src->can_rename() : src_can_lift(src, box, -1))) {
           snd_deny();
           msg_wait("NO BOX NAMES", UI_WARN, "This game has no box names.", 0);
@@ -3165,7 +3178,7 @@ static void box_options_menu(BoxSource* src, int box) {
           src->commit();
         }
         return;
-      } else if (sel == 1) {                       /* wallpaper */
+      } else if (a == 1) {                          /* wallpaper */
         /* D3 (review-opus, BACKLOG #93): gbsrc_set_wp is a documented no-op (GB
          * boxes have no wallpaper byte), so wallpaper_pick's own choice used to
          * vanish silently on a GB box (now reachable via can_boxops). `can_boxops
@@ -3194,10 +3207,10 @@ static void box_options_menu(BoxSource* src, int box) {
           }
         }
         return;
-      } else if (sel == 2) {                       /* export all to .pk */
+      } else if (a == 2) {                          /* export all to .pk */
         if (src->export_all) src->export_all(box); else export_box_all(src, box);
         return;
-      } else if (sel == 3) {                       /* release all (destructive; confirms) */
+      } else if (a == 3) {                          /* release all (destructive; confirms) */
         if (src->release_all) src->release_all(box); else release_box_all(src, box);
         return;
       } else return;                               /* cancel */
