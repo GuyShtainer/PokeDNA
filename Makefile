@@ -40,8 +40,13 @@ export OBJCOPY := $(PREFIX)objcopy
 # to refuse a build that isn't the one their docstring prescribes. Checked here, not in
 # check-art: check-art only runs for the full-art path (a fresh clone never has the
 # gitignored art files) and this must cover artless/normal/delta alike.
-	@if ! grep -qa "$(PDNA_EXPECTED_VARIANT_MARKER)" $@; then \
-	   echo "*** FATAL: $(notdir $@) is missing its build-variant marker (want \"$(PDNA_EXPECTED_VARIANT_MARKER)\")."; \
+# EXACT match, never containment (review of #258): "PDNA-VARIANT:ART" is a literal prefix
+# of both "PDNA-VARIANT:ARTLESS" and "PDNA-VARIANT:ART+DELTA", so a `grep -q` for the
+# normal build's marker matches an artless or delta image and waves through exactly the
+# contamination this guard exists to catch -- on `make` and `make sd`, the shipped ones.
+	@actual="$$(grep -a -o 'PDNA-VARIANT:[A-Z+]*' $@ | head -1)"; \
+	 if [ "$$actual" != "$(PDNA_EXPECTED_VARIANT_MARKER)" ]; then \
+	   echo "*** FATAL: $(notdir $@) carries build-variant marker \"$$actual\" (want \"$(PDNA_EXPECTED_VARIANT_MARKER)\")."; \
 	   echo "***        pdna_build_variant[] (source/build_variant.c, BACKLOG #255) did not"; \
 	   echo "***        survive the link, or landed with the wrong PDNA_ARTLESS/PDNA_TARGET"; \
 	   echo "***        value baked in. The 48 guarded shot chains (BACKLOG #253) rely on"; \
