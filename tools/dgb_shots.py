@@ -3450,7 +3450,21 @@ def run_b87_dex(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
                                "row past it, S/C counts in the header) -- "
                                "pdna_pick.c UNCHANGED, same screen Gen 3 uses")
 
+    # BACKLOG #253: L's own BIG_SETTLE (40 frames) is not long enough for this page's
+    # 21-cell GB-ROM icon repaint to finish -- reproduced live: a capture taken right
+    # here (before the extra s.run() below) shows only 8 of 21 cells and NO header
+    # text yet, and the very next R tap's key-down edge lands inside that still-busy
+    # repaint and is silently dropped (200 more idle frames afterward, with no further
+    # input, still shows DV_GRID -- not a render lag, a genuinely missed edge). The
+    # symptom this produced downstream: R never took the screen back to DV_LIST, so
+    # the 99x DOWN below (whose "row i == dex i+1" math is LIST-only -- DV_GRID's own
+    # KEY_DOWN handler advances `sel` by `cols` (7) per press, not 1) walked a 2-D grid
+    # instead and landed on dex #85 (DODRIO), not #100, contradicting every caption
+    # from here through 10_after_catch_all. Extra settle here, before the R tap fires,
+    # is the fix: R has never once dropped an edge once this page was allowed to finish
+    # loading first (reproduced clean on 5 separate runs).
     s.tap("L", settle=gb_shots.BIG_SETTLE)                   # DV_LIST(1) -> DV_GRID(0)
+    s.run(60)                                                # let the 21-cell repaint finish before the next tap
     s.shot("04_grid", "#87: L once -> DV_GRID -- the icon grid (art-free build: name "
                        "chips, per dex_cell_grid's own art-free fallback), same cap")
 
@@ -3549,16 +3563,32 @@ def run_b87_dex(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
         s.shot("16_save_confirm", "#87: 'Save Pokedex changes?' -- item 3's own end-of-visit "
                                    "confirm (gbs_finish + gb_persist('dex') on A)")
     else:
-        # Red: the dex_menu-closing B above already reached the confirm (see this
-        # function's own comment). 12_after_undo's real content IS the confirm, not
-        # the list -- recaptioned to match. Pressing A here (yes -- write it) reaches
-        # NEW evidence instead of re-showing the same frame under a second name: the
-        # honest SD-write refusal every other GB commit path in this file shows.
-        s.shot("12_after_undo", "#87: after Undo, one B closes BOTH dex_menu and the "
-                                 "dex screen itself on Red (unlike Crystal, which still "
-                                 "shows the list here -- see this function's own "
-                                 "comment) -- landing directly on pdna_gbdex()'s "
-                                 "\"Save Pokedex changes?\" confirm")
+        # BACKLOG #253 re-derivation: e185112 (shots-refresh) reported that this SAME
+        # dex_menu-closing B, on Red only, closes dex_menu AND pdna_dex_screen() in one
+        # press, skipping straight to pdna_gbdex()'s confirm. Source says that cannot
+        # happen: dex_menu() (pdna_pick.c ~949) is its OWN `for(;;)` loop with its own
+        # `k & KEY_B` handling (`return bulked?2:(changed?1:0);`) -- a single B keypress
+        # is consumed by exactly one s_wait() call, either dex_menu's or the outer
+        # pdna_dex_screen() loop's (`if (k & KEY_B) break;`), never both. #253's own fix
+        # above (L then R was landing on the wrong DV_* index because L's own settle was
+        # too short for the R tap that followed) is the far more likely explanation for
+        # e185112's capture: reproduced clean, twice, deterministically, against the
+        # FIXED chain -- one B here lands on the list, exactly like Crystal's own
+        # 12_after_undo, not the confirm. Red has no chooser to return through first
+        # (Gen 1 skips gbdex_chooser() entirely, pdna_gbdex.c's own `s->gen == GB_GEN2`
+        # branch), so ONE more B from here (not Crystal's B -> chooser -> B) is enough
+        # to exit pdna_dex_screen() itself and reach the confirm.
+        s.shot("12_after_undo", "#87: back at the list after Undo -- restored to exactly "
+                                 "the pre-Catch-ALL state (dex_bulk's s_dex_snap[386], "
+                                 "byte-exact per the acceptance gate) -- compare against "
+                                 "03_list_default; this closing B only exits dex_menu's "
+                                 "own nested loop, same as Crystal's 12_after_undo")
+        s.tap("B", settle=gb_shots.BIG_SETTLE)               # dex screen's own B -> exits pdna_dex_screen() (Red has no chooser in between) -> pdna_gbdex()'s confirm
+        s.shot("15_save_confirm", "#87: 'Save Pokedex changes?' -- item 3's own "
+                                   "end-of-visit confirm (gbs_finish + "
+                                   "gb_persist('dex') on A) -- Red reaches it one B "
+                                   "sooner than Crystal (no chooser layer to return "
+                                   "through first)")
         s.tap("A", settle=gb_shots.BIG_SETTLE)               # confirm (yes) -> gb_persist('dex')
         s.shot("16_save_confirm", "#87: confirmed -> refused: \"GAME BOY SAVE / Edits "
                                    "are in-session only in the emulator build.\" -- the "
