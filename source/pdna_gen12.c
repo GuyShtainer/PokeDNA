@@ -2516,7 +2516,16 @@ gb_release_g3home(int box, int slot, const GbEditMon* have) {
   uint32_t len = 0;
   char path[GBSC_PATH_MAX];
   SfStatus rst = xr_open(key, g_ed->sidecar, GBSC_FILE_MAX, &len, path);
-  if (rst != SF_OK) { gb_rollback(); return false; }
+  if (rst != SF_OK) {
+    gb_rollback();
+    /* BACKLOG #246 review F1 follow-up: this used to fall through silently and let
+     * the "bystander mismatch" log below (the ONLY log line this function used to
+     * print) misdiagnose an xr_open failure as a genuine bystander. Name the real
+     * cause. */
+    log_line("gen12: xferup(g3home) box %d slot %d: ledger open failed (%s), refusing delete",
+              box, slot, sf_status_str(rst));
+    return false;
+  }
   int count = gbsc_count(g_ed->sidecar, len);
   if (count < 0) { gb_rollback(); return false; }
 
@@ -2530,14 +2539,12 @@ gb_release_g3home(int box, int slot, const GbEditMon* have) {
     return false;
   }
 
-  GbsStatus st = gbs_delete(s, box, slot, g_ed->list);
-  if (st != GBS_OK) {
-    gb_rollback();
-    log_line("gen12: xferup(g3home) box %d slot %d refused: %s", box, slot, gbs_status_text(st));
-    return false;
-  }
-  if (!gb_persist("xferup-g3home")) return false;   /* gb_persist reports its own refusal */
-
+  /* BACKLOG #246 review F1 fix (#104 SS2.5 steps 6 -> 7): remove the origin entry
+   * FIRST, verified, and only then release the abroad record. 6-after-7 (the old
+   * order here) leaves a stale entry on any failed ledger write, and a later deposit
+   * of a DIFFERENT mon with the same fingerprint then restores the wrong original
+   * (SS2.5's own words). 6-before-7 costs at worst a visible duplicate, which
+   * drop_held_up already declares. */
   rmbl_pause();
   bool removed = (gbsc_remove(g_ed->sidecar, &len, idx) == 0);
   bool sidecar_ok = removed &&
@@ -2545,12 +2552,20 @@ gb_release_g3home(int box, int slot, const GbEditMon* have) {
                        ? (f_unlink(path) == FR_OK)
                        : (sf_write_verified(path, g_ed->sidecar, len) == SF_OK));
   rmbl_resume();
-  if (!sidecar_ok) {
-    log_line("gen12: xferup(g3home) box %d slot %d: sidecar entry not consumed after restore", box, slot);
-  } else {
-    app_xv_cache_invalidate();   /* BACKLOG #213: a real ledger write */
+  if (!sidecar_ok) {                       /* SS5.2: never report a write that did not verify */
+    gb_rollback();
+    log_line("gen12: xferup(g3home) box %d slot %d: ledger consume failed -- refusing the delete", box, slot);
+    return false;                          /* caller shows PDNA_XFER_KEPT_*: an honest duplicate */
   }
-  return true;   /* the Game Boy card already lost the mon either way -- best-effort ledger cleanup only */
+  app_xv_cache_invalidate();               /* BACKLOG #213: a real ledger write */
+
+  GbsStatus st = gbs_delete(s, box, slot, g_ed->list);
+  if (st != GBS_OK) {
+    gb_rollback();
+    log_line("gen12: xferup(g3home) box %d slot %d refused: %s", box, slot, gbs_status_text(st));
+    return false;
+  }
+  return gb_persist("xferup-g3home");      /* gb_persist reports its own refusal */
 }
 
 /* BoxXferOps.release_up (BACKLOG #150 S150-4 decision 7): RE-VERIFIES before it
