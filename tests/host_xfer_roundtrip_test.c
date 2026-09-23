@@ -2193,6 +2193,88 @@ static void test_backlog_246_d3_lift_finds_g3home(void) {
 }
 
 /* ============================================================================ */
+/* F4. BACKLOG #246 review F4 (MEDIUM): two same-fingerprint, same-species entries
+ * in one .pds swap their originals. gbsc_find() matches only gen/otid16/dv4/
+ * otname -- exactly the fields the FILENAME key is built from -- so every entry in
+ * one file matches every lift, and xr_resolve_home's species_written tiebreak is
+ * the ONLY discriminator: first match wins on a tie. gb_paste_write (source/
+ * pdna_gen12.c) now refuses to gbsc_add a SECOND entry whose species_written would
+ * collide with a live entry already in the file -- this section builds that exact
+ * scenario (two different Gen-3 originals, same down-converted mon so the same
+ * fingerprint AND the same species) and asserts (a) the guard's own predicate
+ * (xr_resolve_home + species_written compare, the same two calls gb_paste_write's
+ * new guard makes) detects the collision before a second gbsc_add, and (b)
+ * demonstrates the swap that guard exists to prevent: WITHOUT it, a lookup for the
+ * mon that came from the second (later) original still resolves to the FIRST
+ * entry's index -- gb_release_g3home would then consume and report the wrong
+ * original. */
+static void test_backlog_246_f4_ambiguous_entries(void) {
+  if (!g_have_g3_sample) {
+    printf("  SKIP #246 F4 (no Gen-3 corpus record captured by section A)\n");
+    return;
+  }
+
+  GbEditMon down;
+  Gen3ToGbLoss loss;
+  G3GbStatus st = gen3_to_gb(g_g3_sample_rec, GB_GEN2, true, NULL, &down, &loss);
+  if (st != G3GB_OK) {
+    printf("  SKIP #246 F4 (section A's sample record refuses gen3_to_gb: %s)\n",
+           g3gb_status_text(st));
+    return;
+  }
+
+  uint8_t file[GBSC_FILE_MAX];
+  uint8_t dv4[4] = {
+    gb_get_dv(&down, GB_ATK), gb_get_dv(&down, GB_DEF),
+    gb_get_dv(&down, GB_SPE), gb_get_dv(&down, GB_SPC)
+  };
+  uint64_t key = gbsc_key(down.gen, gb_get_otid(&down), dv4, down.otname);
+  uint32_t len = (uint32_t)gbsc_init(file, key);
+
+  /* Two DIFFERENT Gen-3 originals (two separate Bank cells) that both down-convert
+   * to the identical `down` -- same trainer/DVs/name (the fingerprint) AND the
+   * same species_written, the exact ambiguity F4 reports. orig_b differs at byte 8
+   * (outside the 0..7 PID+OTID span gbsc_find/xr_resolve_home never look at) so it
+   * is a genuinely different 80-byte record, not a duplicate write of orig_a. */
+  uint8_t orig_a[80]; memcpy(orig_a, g_g3_sample_rec, 80);
+  uint8_t orig_b[80]; memcpy(orig_b, g_g3_sample_rec, 80);
+  orig_b[8] ^= 0xFF;
+
+  GbscEntry ea;
+  gbsc_entry_from(&ea, &down, orig_a, 0);
+  int idx_a = gbsc_add(file, &len, GBSC_FILE_MAX, &ea);
+  CHECK(idx_a >= 0, "#246 F4: first entry (orig_a) added");
+  if (idx_a < 0) return;
+
+  uint16_t nowdex = gb_get_species_dex(&down);
+  bool guard_would_refuse = false;
+  int collide = xr_resolve_home(file, len, &down, XR_KIND_G3_HOME, nowdex);
+  if (collide >= 0) {
+    GbscEntry cand;
+    if (gbsc_get(file, len, collide, &cand) && cand.species_written == nowdex) guard_would_refuse = true;
+  }
+  CHECK(guard_would_refuse,
+        "#246 F4 (the fix): the pre-add guard's own predicate detects the ambiguous "
+        "same-species entry (index %d) before gb_paste_write would add a second one",
+        collide);
+
+  /* Demonstrate the swap the guard exists to prevent: add the second (ambiguous)
+   * entry as if the guard were bypassed, then resolve for the SAME mon/species
+   * again -- xr_resolve_home's first-match tiebreak always returns idx_a, never
+   * idx_b, so a release after orig_b's deposit would consume/report orig_a. */
+  GbscEntry eb;
+  gbsc_entry_from(&eb, &down, orig_b, 0);
+  int idx_b = gbsc_add(file, &len, GBSC_FILE_MAX, &eb);
+  CHECK(idx_b >= 0, "#246 F4: second (ambiguous) entry (orig_b) added for the swap demonstration");
+  if (idx_b < 0) return;
+  int resolved = xr_resolve_home(file, len, &down, XR_KIND_G3_HOME, nowdex);
+  CHECK(resolved == idx_a,
+        "#246 F4: WITHOUT the guard, xr_resolve_home always binds to entry %d (first "
+        "match), never entry %d -- the swap gb_paste_write's new guard exists to "
+        "prevent (index resolved: %d)", idx_a, idx_b, resolved);
+}
+
+/* ============================================================================ */
 
 int main(int argc, char** argv) {
   printf("== BACKLOG #104 audit: cross-generation round-trip field survey ==\n");
@@ -2207,6 +2289,9 @@ int main(int argc, char** argv) {
 
   printf("\n-- F. BACKLOG #246 review D3: the down-arm's own return trip (the lift lookup) --\n");
   test_backlog_246_d3_lift_finds_g3home();
+
+  printf("\n-- F4. BACKLOG #246 review F4: two same-fingerprint, same-species entries --\n");
+  test_backlog_246_f4_ambiguous_entries();
 
   printf("\n");
   test_make_legal_edge_case();

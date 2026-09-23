@@ -1422,6 +1422,15 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_SIDECAR_FULL_L1         "Too many clones of this Pokemon."
 #define PDNA_SIDECAR_NOTWRITTEN_TITLE "SIDECAR NOT WRITTEN"
 #define PDNA_SIDECAR_NOTWRITTEN_L2   "Nothing transferred."
+/* BACKLOG #246 review F4 fix: gb_paste_write's own pre-gbsc_add guard. Two live
+ * entries in one .pds that share BOTH the fingerprint (already guaranteed -- one
+ * file per key) AND species_written are indistinguishable to xr_resolve_home's
+ * own tiebreak (first match wins); the SECOND deposit of that pair silently binds
+ * to the wrong entry and a later restore swaps the two originals. Refuse the
+ * creation instead, naming the real reason. */
+#define PDNA_SIDECAR_AMBIG_TITLE     "ALREADY OVER THERE"
+#define PDNA_SIDECAR_AMBIG_L1        "Another Pokemon with the same"
+#define PDNA_SIDECAR_AMBIG_L2        "trainer and DVs is over there."
 /* BACKLOG #40(c): gb_paste_write()/gb_paste_hook's own STRUCTURAL refusals (the
  * conversion already succeeded and the loss screen was already accepted -- gbs_insert()
  * itself then said no: the box filled up between the check and the write, or the list

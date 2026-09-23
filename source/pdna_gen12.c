@@ -3446,6 +3446,25 @@ gb_paste_write(const GbEditMon* mon, int box, const uint8_t orig80[80]) {
             ((uint32_t)t.day << 17) | ((uint32_t)t.hour << 12) |
             ((uint32_t)t.minute << 6) | (uint32_t)t.second;
 
+  /* BACKLOG #246 review F4 fix: refuse the creation of a SECOND ambiguous entry.
+   * Every entry already in this file shares the fingerprint (gen/otid16/dv4/
+   * otname -- one file per key), so xr_resolve_home's species_written tiebreak is
+   * the ONLY thing that can tell two entries apart; if an existing live entry ALSO
+   * has species_written == this mon's current dex, the new entry about to be
+   * added would be indistinguishable from it and gb_release_g3home's consume
+   * would bind to whichever one xr_resolve_home happens to return first --
+   * silently swapping the two originals on a later restore. */
+  uint16_t paste_nowdex = gb_get_species_dex(mon);
+  int paste_collide = xr_resolve_home(g_ed->sidecar, len, mon, XR_KIND_G3_HOME, paste_nowdex);
+  if (paste_collide >= 0) {
+    GbscEntry cand;
+    if (gbsc_get(g_ed->sidecar, len, paste_collide, &cand) && cand.species_written == paste_nowdex) {
+      snd_deny();
+      msg_wait(PDNA_SIDECAR_AMBIG_TITLE, UI_WARN, PDNA_SIDECAR_AMBIG_L1, PDNA_SIDECAR_AMBIG_L2);
+      return false;
+    }
+  }
+
   GbscEntry e;
   gbsc_entry_from(&e, mon, orig80, epoch);
   int idx = gbsc_add(g_ed->sidecar, &len, GBSC_FILE_MAX, &e);
