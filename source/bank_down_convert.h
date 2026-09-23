@@ -110,4 +110,13 @@ BankDownResult bank_down_convert_gen3(BoxSource* src, int dst_box, int dst_cell,
                                       const uint8_t cell80[80], const uint8_t dstrec[80],
                                       uint8_t out80[80]);
 
+/* BACKLOG #174 (S150-8c): the PARTY flavour of arm 2. Identical to bank_down_convert_gen3()
+ * except that the destination is a party SLOT, so there is no `dstrec` to check for occupancy
+ * (the caller has already proved the target is the ADD slot -- see pdna_box.c's party site) and
+ * no box index. `party_slot` is carried for the log line only. On BANK_DOWN_CONVERTED `out80`
+ * holds the finished 80-byte BOX record; the CALLER places it through app_party_place_held(),
+ * which does the 80->100 widening (pdna_main.c's box_to_party). Never returns BANK_DOWN_LANDED. */
+BankDownResult bank_down_convert_gen3_party(BoxSource* src, int party_slot,
+                                            const uint8_t cell80[80], uint8_t out80[80]);
+
 #endif /* BANK_DOWN_CONVERT_H */

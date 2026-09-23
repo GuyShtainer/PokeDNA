@@ -1107,6 +1107,10 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XFER_SAVEFIRST_L1    "One transfer is waiting for"
 #define PDNA_XFER_SAVEFIRST_L2    "the game save. START > SAVE."
 
+/* BACKLOG #174 (S150-8c) D7: the party arm's own always-drawn loss row -- the ONE
+ * thing the destination changes (a fully-healed party mon vs. a box cell). */
+#define PDNA_XFER_PARTYLAND_L1 "Joins your party, fully healed."
+
 #define PDNA_XFER_TOOMANY_TITLE "TOO MANY TRANSFERS"
 #define PDNA_XFER_TOOMANY_L1    "Too many transfer records"
 #define PDNA_XFER_TOOMANY_L2    "for this Pokemon."
