@@ -82,9 +82,17 @@ def main() -> int:
         claim = ["NOT ACROSS GENERATIONS", "This Pokemon cannot move",
                  "between these two saves yet."]
     else:
-        claim = ["WHAT WON'T TRANSFER", "Kept in /PokeDNA/xfer",
-                 "restored when it comes back.", "The Bank slot is emptied when it lands.",
-                 "A = transfer", "B = cancel"]
+        # BACKLOG #246 review D6's own fix, caught live: Red's default GB grid box
+        # (reached with no R-navigation, this probe's own tap sequence) is already
+        # full on this corpus -- gbs_status_text(GBS_ERR_FULL) = "that box is full"
+        # (lowercase, source/pdna_layout.h). Before D6 (the writable/list/capacity
+        # checks ran AFTER the loss screen), dropping here showed the loss screen
+        # FIRST and only refused after a confirming A -- exactly the review's own
+        # repro. After D6, the capacity refusal fires immediately, before the loss
+        # screen ever draws: this frame is now the D6 fix's own live demonstration,
+        # not a false success. (A box with room -- e.g. GB BOX6, five R-presses
+        # further -- reaches the loss screen instead; see the D4 --vsd runner.)
+        claim = ["TRANSFER REFUSED", "that box is full", "Free a slot there first."]
     s.shot("06_drop_result", "A to drop the Gen-3 cell onto Red's GB grid -- "
            "whatever the current build does", claim=claim)
 
