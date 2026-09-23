@@ -1262,6 +1262,9 @@ int main(void) {
   PF(PDNA_SIDECAR_LOSS_METDATA,     4, UI_SCR_W - 8);
   PF(PDNA_SIDECAR_LOSS_IVS,         4, UI_SCR_W - 8);
   PF(PDNA_SIDECAR_LOSS_EVS,         4, UI_SCR_W - 8);
+  /* BACKLOG #247: loss_evs_text()'s two more-specific texts (pdna_gen12.c). */
+  PF(PDNA_SIDECAR_LOSS_EXP_FLOORED, 4, UI_SCR_W - 8);
+  PF(PDNA_SIDECAR_LOSS_EVS_EXP,     4, UI_SCR_W - 8);
   PF(PDNA_SIDECAR_LOSS_ITEMSECRET,  4, UI_SCR_W - 8);
   PF(PDNA_SIDECAR_LOSS_POKERUS,     4, UI_SCR_W - 8);
   PF(PDNA_SIDECAR_LOSS_SHINY,       4, UI_SCR_W - 8);
