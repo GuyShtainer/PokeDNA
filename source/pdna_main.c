@@ -4004,7 +4004,7 @@ static bool app_copy(uint8_t* rec, bool is_party) {
    * nav-menu mount, review fix #5), also capture the record in its own native shape. A
    * later PASTE in a Gen-3 session (app_paste) checks g_clip.from_gb to look up the
    * sidecar instead of using the lossy `rec` bytes clip_copy_from just filled. */
-  const char* l2 = "(kept until overwritten)";
+  const char* l2 = "(kept while this save is open)";
   if (g_src_ops && g_src_ops->copy_native) {
     /* S5-B re-verification NEW-3: say whether a later PASTE will actually be
      * lossless, not just whether the native record was captured. copy_native()
@@ -11167,6 +11167,15 @@ static void view_save(const char* path) {
   g_path[sizeof(g_path) - 1] = 0;
   gb_art_session_reset();  /* new save -- the "beside the save" fallback forgets the old one */
   app_box_resume_clear();  /* BACKLOG #188: a previous save's resume cell must not leak in */
+  /* BACKLOG #239: the mon and held-item clipboards are file-scope statics that
+   * NOTHING else ever clears. They are per-SAVE, not per-session -- two saves meet
+   * sequentially in one power cycle (main()'s for(;;) loop), so leaving either set
+   * turns a COPY in save A followed by a PASTE/PASTE HERE/RO_PASTE/day-care PUT IN
+   * in save B into a direct, Bank-free transfer -- and a clone, since app_copy()
+   * never releases the original. Must run above the #ifdef PDNA_DELTA block below
+   * so the delta build's own fused-clip seeds still run unmolested afterward. */
+  g_clip.occupied = false; g_clip.from_gb = false;
+  g_item_held = false; g_item_clip = 0;
   uint32_t sz = 0;
   const char* err = 0;
   /* Breadcrumb #1 of 3. This is the boundary the 2026-08-18 hang had no record of:
