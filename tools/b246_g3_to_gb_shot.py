@@ -33,6 +33,16 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", type=Path, default=Path("/tmp/b246_out"))
     ap.add_argument("--tag", default="")
+    # BACKLOG #246 review D5: this file's own committed claim used to be the PRE-fix
+    # refusal text ("NOT ACROSS GENERATIONS...") -- once the #246 D-arm landed (this
+    # lane's own earlier commits), the real screen after the A-press drop is the
+    # gb_paste_loss_screen/LOSS_FOOT_BRIDGE confirm ("WHAT WON'T TRANSFER" / "A =
+    # transfer"), so the committed probe exited 1 on its own tree. --before restores
+    # the original refusal-text claim, for anyone checking out a commit before the
+    # #246 D-arm landed; the default now matches what ships today.
+    ap.add_argument("--before", action="store_true",
+                     help="assert the PRE-#246 refusal text instead of the post-fix "
+                          "loss/confirm screen (for a checkout before the D-arm landed)")
     args = ap.parse_args()
 
     if not ROM.is_file():
@@ -68,10 +78,15 @@ def main() -> int:
            "Gen-3 cell -- about to press A to drop it")
 
     s.tap("A", settle=gb_shots.BIG_SETTLE)
+    if args.before:
+        claim = ["NOT ACROSS GENERATIONS", "This Pokemon cannot move",
+                 "between these two saves yet."]
+    else:
+        claim = ["WHAT WON'T TRANSFER", "Kept in /PokeDNA/xfer",
+                 "restored when it comes back.", "The Bank slot is emptied when it lands.",
+                 "A = transfer", "B = cancel"]
     s.shot("06_drop_result", "A to drop the Gen-3 cell onto Red's GB grid -- "
-           "whatever the current build does",
-           claim=["NOT ACROSS GENERATIONS", "This Pokemon cannot move",
-                  "between these two saves yet."])
+           "whatever the current build does", claim=claim)
 
     ok = not s.any_claim_failed
     print(f"\n{'PASS' if ok else 'FAIL'}: {len(s.taken)} shots, "
