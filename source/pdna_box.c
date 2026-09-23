@@ -3893,6 +3893,11 @@ static int party_strip_overlay(BoxSource* src, int box, int* cur,
         for (int attempt = 0; attempt < 2; attempt++) {
           if (native && n_now >= 6) {
             if (attempt == 1) {
+              /* review D3-R: cannot happen with a deposit outstanding (dep_box < 0
+               * here always -- see the loop's own header comment above), but the
+               * rollback guard costs nothing and matches every sibling arm below;
+               * golden rule 7, never trust a postcondition silently. */
+              if (dep_box >= 0) { app_party_deposit_undo(dep_box, dep_slot); dep_box = -1; }
               boxoam_suspend(); snd_deny();
               msg_wait(PDNA_XFER_PARTYFULL3_TITLE, UI_WARN, PDNA_XFER_PARTYFULL3_L1, PDNA_XFER_PARTYFULL3_L2);
               boxoam_resume();
@@ -3918,7 +3923,15 @@ static int party_strip_overlay(BoxSource* src, int box, int* cur,
             boxoam_suspend();
             bool deposited = app_party_full_deposit_offer(&dep_box, &dep_slot);  /* review D3: bracket */
             boxoam_resume();
-            if (!deposited) { placed = false; break; }
+            if (!deposited) {
+              /* review D3-R: app_party_full_deposit_offer writes *out_box/*out_slot
+               * BEFORE evaluating D5's `return app_party_n() < 6;`, so a false
+               * return here can still leave dep_box/dep_slot pointing at a real
+               * deposit (the postcondition-fail edge, unreachable in practice --
+               * see D5's own comment -- but never trusted silently). */
+              if (dep_box >= 0) { app_party_deposit_undo(dep_box, dep_slot); dep_box = -1; }
+              placed = false; break;
+            }
             n_now = app_party_n(); sel = n_now;   /* re-target the newly-freed ADD slot */
             continue;
           }

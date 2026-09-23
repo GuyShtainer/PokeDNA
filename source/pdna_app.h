@@ -395,12 +395,19 @@ bool app_party_place_held(const uint8_t* held80, int target, int orig_box, int o
 /* BACKLOG #226: the Gen-3 twin of gb_accept_down_party_deposit() (source/pdna_gen12.c) --
  * offers "Send a party Pokemon to a box first?", a picker, then deposits the chosen
  * member into the first free PC box. Confirm decline, B on the picker, a mail holder
- * (review D4, HELD ITEM 121-132), or no free box all refuse with nothing touched.
+ * (review D4, HELD ITEM 121-132), or no free box all refuse with nothing touched --
+ * *out_box/*out_slot are left at whatever the caller passed in (still -1,-1 if it
+ * initialized them that way) because the function returns before ever writing them.
  * Returns true iff a party slot is now free (review D5: the self-enforcing
- * app_party_n() < 6, not a bare `true`). On success, *out_box and *out_slot (either
- * may be NULL) receive exactly where app_inject_to_game_deferred() placed the deposited
- * mon -- app_party_deposit_undo()'s own arguments, for a caller whose OWN later
- * refusal must roll the deposit back (review D1). */
+ * app_party_n() < 6, not a bare `true`, though this cannot itself fail -- see the
+ * function's own comment). review D3-R: *out_box/*out_slot ARE written before that
+ * D5 check runs, so on the (unreachable-in-practice) postcondition-fail edge the
+ * function still returns false but leaves *out_box/*out_slot pointing at a real
+ * deposit -- app_party_deposit_undo()'s own arguments. A caller must roll the
+ * deposit back on EITHER a false return that already reached this point (checking
+ * its own dep_box/dep_slot, not just the bool) or any of its OWN later refusals
+ * (review D1). On the ordinary success path they receive exactly where
+ * app_inject_to_game_deferred() placed the deposited mon. */
 bool app_party_full_deposit_offer(int* out_box, int* out_slot);
 /* BACKLOG #226 review D2-R: RAM-only-on-its-own-side rollback for app_party_full_
  * deposit_offer()'s deposit -- box_to_party the cell back into the party (append;

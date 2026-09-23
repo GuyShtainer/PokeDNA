@@ -4730,9 +4730,14 @@ bool app_party_full_deposit_offer(int* out_box, int* out_slot) {
   if (out_box) *out_box = ob;
   if (out_slot) *out_slot = os;
   /* review D5: self-enforcing postcondition -- party_release + app_inject_to_game_
-   * deferred are both plain C mutations (no card I/O between them), but a bare
-   * `return true` let attempt 1's PARTYFULL3 wall lie about being reachable. Make
-   * the offer's own contract check itself instead of trusting the arithmetic. */
+   * deferred are both plain C mutations (no card I/O between them), so this check
+   * cannot itself fail today. review D3-R: this did NOT make attempt 1's PARTYFULL3
+   * wall reachable-in-principle -- the caller re-reads app_party_n() immediately
+   * after this call returns, with nothing able to run in between, so a `true` here
+   * guarantees the caller's own recheck also sees < 6. Its purpose is defensive
+   * (golden rule 7: check the return value instead of trusting the arithmetic), not
+   * to open a path this file's own comments elsewhere still (correctly) call
+   * unreachable. */
   return app_party_n() < 6;
 }
 
