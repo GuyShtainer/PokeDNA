@@ -68,7 +68,10 @@ void bank_plant_box_full(uint8_t* recs);
  * =165) but legal on its own generation (<= gb_max_move(GB_GEN2)=251) -- bridged
  * to a Gen-1 session, this reaches gb_bank_down_bridge's per-slot move clip and
  * fill instead of the species-floor refusal box0's CHIKORITA plant always hits.
- * Planted by bank_plant_box_full() at box 1 slot 7. */
+ * Planted by bank_plant_box_full() at box 1 slot 7. xfer-items fix pass F7: also
+ * holds item id 19 -- decision 15's own rule (bank_down_convert.c) means a Gen-2
+ * item NEVER reaches Gen 1 on the bridge arm, so this is the one planted cell that
+ * can demonstrate the item/Secret-ID row's "stays behind" text unconditionally. */
 void bank_plant_gen2_badmoves_cell(uint8_t out80[80]);
 
 /* BACKLOG #246 (#104 Phase 1): a PLAIN Gen-3 cell (never native "GBC1") at slot 0 of

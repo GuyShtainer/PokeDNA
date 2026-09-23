@@ -167,6 +167,16 @@ void bank_plant_gen2_badmoves_cell(uint8_t out80[80]) {
   src.ot_id = 9999;   /* uint16_t field -- 99999 overflowed it (caught by -Wconstant-conversion) */
   GbEditMon e;
   gb_new_mon(GB_GEN2, PLANT_DEX_BADMOVES, 20, &src, 8u, &e);
+  /* xfer-items fix pass F7: an item (id 19, the same "any non-zero Gen-2 item id"
+   * bank_plant_box0's own slot-3 comment uses) so this cell -- the ONE planted
+   * fixture that both clears the Gen-1 species floor (dex 1) AND reaches
+   * gb_paste_loss_screen on a bridge (run_s150_8_bridge's own leg (3)) -- can also
+   * demonstrate the item/Secret-ID row's "stays behind" text (bank_down_convert.c's
+   * own decision 15: a Gen-2 item can NEVER reach Gen 1 on the bridge arm, so this
+   * is unconditional, not merely likely). Only run_s150_8_bridge (tools/dgb_shots.py)
+   * consumes this cell -- see this function's own header/BACKLOG #212 review D3(b)
+   * comment above -- so this is scoped to that one chain's own frames. */
+  gb_set_held_item(&e, 19);
   bc_pack(&e, 0, BC_ORIGIN_GOLD, 0, 8u, out80);
 }
 
