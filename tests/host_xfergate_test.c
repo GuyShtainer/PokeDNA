@@ -108,6 +108,22 @@ static void test_xg_drop_denied(void) {
       }
   CHECK(allowed == 1, "drop_denied: exactly ONE of the 18 combinations is allowed");
   printf("(F) xg_drop_denied: all 3x3x2 = 18 scope/have_xfer combinations, exactly one allowed\n");
+
+  /* BACKLOG #199 review D7 (report only): this combination is already covered by
+   * the exhaustive sweep above (dst=PC, src=GB is never the one S150-4 allow-rule),
+   * but pinned here BY NAME too -- xg_drop_denied is now the SOLE gate against a
+   * GB-origin carry escaping to the PC (source/xfer_gate.h's own contract comment
+   * on this function): xg_native_escape_denied is inert for a GB-origin carry,
+   * since s_held stays the plain Gen-3-shaped display record for the whole hold,
+   * never the packed native format that predicate checks for, until the one drop
+   * that packs it. A dedicated, named assertion for exactly this escape route
+   * survives a future rewrite of the exhaustive loop above in a way a buried
+   * iteration would not. */
+  CHECK(xg_drop_denied(BOXSCOPE_PC, 2u /* BOXSCOPE_GB */, true) == true,
+        "drop_denied: PC<-GB stays denied even with have_xfer=true -- the SOLE gate "
+        "against a GB-origin carry escaping to the PC now that xg_native_escape_denied "
+        "is inert for one (BACKLOG #199 review D7)");
+  printf("(F2) xg_drop_denied(PC, GB, true) == true -- the sole GB-escape gate, pinned by name\n");
 }
 
 /* BACKLOG #150 S150-3 step 1: build a native fixture WITHOUT a corpus -- fill 80 bytes
