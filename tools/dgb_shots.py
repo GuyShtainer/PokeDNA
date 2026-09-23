@@ -43,6 +43,23 @@ art), so this constant is deliberately generous, not tuned to the bare minimum.
 Usage:
     /usr/local/bin/python3 tools/dgb_shots.py --image pokedna-delta-gb.gba \
         --out docs/shots/gb
+
+BACKLOG #179 lane s179-a4, phase A5 SCOPE CUT (approved by the orchestrator, not a
+completion): A5 asked to convert THREE conversion chains to --vsd -- --s150-8,
+--s150-8-bridge, --r1-xfer. Only run_s150_8_bridge() (--s150-8-bridge) was converted
+(see its own docstring below). The other two were NOT converted, each blocked by a
+pre-existing problem this lane diagnosed but did not fix, now filed as its own
+backlog item so a future reader does not mistake this scope cut for A5 being done:
+  BACKLOG #236 -- run_s150_8_gen3_arm()'s (--s150-8) own enter_bank() helper is
+    missing the dismiss tap its sibling run_s150_8_bridge()'s boot_to_grid() already
+    has for the "GAME BOY SAVE / Edits are in-session only in the emulator build."
+    msg_wait (source/pdna_gen12.c:4422, gb_persist()'s unconditional #ifdef
+    PDNA_DELTA refusal -- NOT the VSD seam). Fixing it moves non-vsd frames, which
+    the A4 parity sweep this same lane wrote forbids touching mid-lane.
+  BACKLOG #237 -- run_r1_xfer()'s (--r1-xfer) own docstring needs a bespoke
+    Charizard-L20 clip-seeded fused image (an ordinary Gen-3 .sav for the boot
+    picker's row 0 PLUS an 80-byte fuse_sav.py --clip seed PLUS one GB ROM+save)
+    this lane could not reconstruct in its remaining budget.
 """
 from __future__ import annotations
 
@@ -6999,25 +7016,94 @@ def run_s150_8_bridge(core_mod, image_mod, rom_gold: Path, rom_red: Path,
             # proves the old wording is gone, not just that the new wording is present.
             claim=["The Bank slot is emptied when it lands."],
             claim_absent=["The copy in your Gen-3 save stays."])
+    # BACKLOG #179 lane s179-a4 A5: --vsd changes WHICH refusal this frame shows.
+    # Found live (not assumed): xfer_down_write()'s own f_mkdir(/PokeDNA/xfer/) is
+    # exactly the flashcartio_*_sector seam --vsd replaces, so with --vsd attached
+    # it SUCCEEDS -- gbs_insert() then also succeeds (RAM-only) -- but
+    # gb_persist("xferdown") (source/pdna_gen12.c:3955) is refused UNCONDITIONALLY
+    # under #ifdef PDNA_DELTA (:4398-4423, "GAME BOY SAVE / Edits are in-session
+    # only in the emulator build.") with NO vsd_attached() check at all -- a
+    # SEPARATE, deliberate policy wall this lane's brief did not ask to touch and
+    # this lane does not touch. So the observable effect of --vsd here is case (c)
+    # (SIDECAR FOLDER, xfer_down_write's own mkdir refusal) becoming case (a)
+    # (GAME BOY SAVE, gb_persist's refusal) -- the ledger write genuinely lands for
+    # real, proven below with a real vsd_report(), not claimed. gb_bank_down_bridge
+    # DOES call xfer_down_undo() on the gb_persist failure (source/pdna_gen12.c:
+    # 3956-3960, "roll the ledger entry back") -- but the .pds this run actually
+    # WRITES still shows up in the final vsd_report() below (found live, not
+    # assumed): xfer_down_undo()'s own f_unlink()/sf_write_verified() call is only
+    # BEST-EFFORT (its own comment: "a failure here only logs, it never blocks"),
+    # so on THIS vehicle the entry survives -- an open question for BACKLOG
+    # (does f_unlink genuinely fail against this harness's FAT16 image, or does
+    # gb_persist's own PDNA_DELTA-only refusal race xfer_down_undo some other way),
+    # not something this lane's narrow brief (wire --vsd, prove it moves the
+    # refusal point) resolves. The real, OBSERVED set is asserted below.
     sg.tap("A", settle=300)                     # A = transfer
-    sg.shot("05_sidecar_folder_wall", "S150-8 bridge: A = transfer -> the panel "
-            "reads 'SIDECAR FOLDER' / 'Nothing transferred.' / 'Press A' "
-            "(PDNA_SIDECAR_MKDIR_TITLE/PDNA_SIDECAR_NOTWRITTEN_L2) -- CASE (c), a "
-            "LEDGER-WRITE refusal: gb_bank_down_bridge() calls xfer_down_write() "
-            "(source/pdna_gen12.c:3096) BEFORE gbs_insert() (:3100), and this "
-            "vehicle's f_mkdir(/PokeDNA/xfer/) fails first (no SD card) -- so "
-            "gbs_insert()/gb_persist() NEVER RUN on this vehicle. This is NOT frame "
-            "04's docstring case (a) ('GAME BOY SAVE / Edits are in-session only', "
-            "which would mean gbs_insert succeeded and only the final persist "
-            "refused) and NOT case (b) (PDNA_SIDECAR_XFER_REFUSED_TITLE + a GBS "
-            "status, which would mean gbs_insert itself refused, the PRE-59dd45c "
-            "signature) -- the chain never reaches either of those checks, so "
-            "59dd45c's own fix (converting to the mounted session's generation) is "
-            "UNTESTED on this vehicle, not disproven: hardware must prove it "
-            "(docs/HW-QUEUE.md)")
-    sg.tap("A", settle=250)                     # dismiss
-    sg.shot("06_still_holding", "S150-8 bridge: still carrying the same PIKACHU "
-            "cell after the ledger-write refusal -- box 13 unchanged (17/20)")
+    if sg.vsd is not None:
+        sg.shot("05_gameboy_save_wall", "S150-8 bridge (--vsd): A = transfer -> "
+                "xfer_down_write()'s own f_mkdir(/PokeDNA/xfer/) SUCCEEDS for real "
+                "(this vehicle's --vsd virtual SD) -> gbs_insert() succeeds -> but "
+                "gb_persist(\"xferdown\") is STILL refused ('GAME BOY SAVE / Edits "
+                "are in-session only in the emulator build.') -- an UNCONDITIONAL "
+                "#ifdef PDNA_DELTA policy (source/pdna_gen12.c:4398-4423) with no "
+                "vsd_attached() check, separate from the flashcartio seam this "
+                "lane's brief scopes; this is CASE (a), NOT case (c) -- the "
+                "refusal point genuinely moved, proving the ledger write itself "
+                "landed before gb_persist's own wall undid it")
+        try:
+            sg.vsd_report(expect_changed=["/PokeDNA/this/path/does/not/exist.pds"])
+            raise RuntimeError("RED DEMO FAILED: vsd_report() did not exit(1) on a "
+                                "deliberately wrong expect_changed set -- the "
+                                "assertion the brief requires is NOT provable")
+        except SystemExit as e:
+            if e.code != 1:
+                raise RuntimeError(f"RED DEMO: vsd_report() exited {e.code}, not 1")
+            print("  [RED DEMO] vsd_report(expect_changed=[wrong path]) correctly "
+                  "exited 1 -- the proof below is not inert")
+        # The REAL diff (found live via the RED demo's own [VSD DIFF FAILED] "got="
+        # line, not assumed or hand-derived): the Bank-entry's own bank.meta (this
+        # visit's own pdna_bank_next_serial()/meta_save()), the triple logger's
+        # log.txt, AND the ledger entry xfer_down_write() wrote -- xfer_down_undo()
+        # ran (its own log_line fires either way) but did not make the entry
+        # disappear from this vehicle's image, per the comment above.
+        changed = sg.vsd_report(expect_changed=[
+            "/PokeDNA/bank/bank.meta",
+            "/PokeDNA/log.txt",
+            "/PokeDNA/xfer/314FD4CF809D0B9D.pds",   # xr_key_g3-equivalent ledger
+                                                     # key for this cell -- deterministic
+                                                     # for this corpus save, re-derive
+                                                     # (run once with a deliberately-
+                                                     # wrong set and read the "got="
+                                                     # line) if the corpus changes.
+        ])
+        print(f"  [VSD] gb_persist-wall vsd_diff (GREEN, expected set matched -- "
+              f"the .pds SURVIVES despite gb_persist's own refusal, see this "
+              f"branch's own comment above): {sorted(changed)}")
+        sg.tap("A", settle=250)                     # dismiss
+        sg.shot("06_still_holding", "S150-8 bridge (--vsd): still carrying the "
+                "same PIKACHU cell after gb_persist's own refusal -- box 13 "
+                "unchanged (17/20) even though a ledger entry now exists on the "
+                "card for it (BANK_DOWN_REFUSED: the caller never marks the Bank "
+                "origin consumed on this path)")
+    else:
+        sg.shot("05_sidecar_folder_wall", "S150-8 bridge: A = transfer -> the panel "
+                "reads 'SIDECAR FOLDER' / 'Nothing transferred.' / 'Press A' "
+                "(PDNA_SIDECAR_MKDIR_TITLE/PDNA_SIDECAR_NOTWRITTEN_L2) -- CASE (c), a "
+                "LEDGER-WRITE refusal: gb_bank_down_bridge() calls xfer_down_write() "
+                "(source/pdna_gen12.c:3096) BEFORE gbs_insert() (:3100), and this "
+                "vehicle's f_mkdir(/PokeDNA/xfer/) fails first (no SD card) -- so "
+                "gbs_insert()/gb_persist() NEVER RUN on this vehicle. This is NOT frame "
+                "04's docstring case (a) ('GAME BOY SAVE / Edits are in-session only', "
+                "which would mean gbs_insert succeeded and only the final persist "
+                "refused) and NOT case (b) (PDNA_SIDECAR_XFER_REFUSED_TITLE + a GBS "
+                "status, which would mean gbs_insert itself refused, the PRE-59dd45c "
+                "signature) -- the chain never reaches either of those checks, so "
+                "59dd45c's own fix (converting to the mounted session's generation) is "
+                "UNTESTED on this vehicle, not disproven: hardware must prove it "
+                "(docs/HW-QUEUE.md)")
+        sg.tap("A", settle=250)                     # dismiss
+        sg.shot("06_still_holding", "S150-8 bridge: still carrying the same PIKACHU "
+                "cell after the ledger-write refusal -- box 13 unchanged (17/20)")
 
     # ---- (2) Gen 2 -> Gen 1: CHIKORITA carried into Red -- the two time-capsule
     # refusals the brief asks for; only the species one is reachable with the
