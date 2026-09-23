@@ -74,6 +74,12 @@ int main(void) {
   /* --- mkimg: fresh 16 MiB volume (BACKLOG #179 A3 review D5: the harness's own
    * default chain-image size -- small enough that a 2 MiB image quietly built FAT12,
    * which no real SD card is ever formatted as) + the template tree ------------- */
+  /* D5's refusal guard needs its own coverage (s179-a2 re-verify D-A5-R): below 16 MiB
+   * f_mkfs picks FAT12 with one FAT, a shape no real card has, so mkimg must refuse. */
+  CHECK(vsdimg_mkimg("/tmp/host_vsdimg_4mb.img", 4, NULL) != 0,
+        "mkimg at 4 MiB must refuse (FAT12, not a real card's shape)");
+  CHECK(vsdimg_mkimg("/tmp/host_vsdimg_8mb.img", 8, NULL) != 0,
+        "mkimg at 8 MiB must refuse (FAT12, not a real card's shape)");
   CHECK(vsdimg_mkimg(IMG, 16, TMPL_DIR) == 0, "mkimg failed");
 
   /* --- list #1: the template's two files, plus /PokeDNA itself is a dir (not listed) */

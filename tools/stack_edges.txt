@@ -1951,8 +1951,13 @@ gated pcp_open_party_strip_inner need=7224 from=pdna_box.c:PDNA_PARTY_STRIP_NEED
 # declared need (measured 7,568 -- disk_write()'s unaligned branch became the walker's
 # new deepest child of move_window(), ahead of disk_read()'s previous 696 B
 # ed_sd_dma_to_rom tail, because log_line()'s first-ever-use of vsniprintf drags in
-# newlib's reentrant _svfiprintf_r/_realloc_r/_malloc_r/_free_r chain, ~1,432 B, onto
-# ANY chain that reaches it for the first time -- not something specific to the VSD
+# newlib's reentrant _svfiprintf_r/_realloc_r/_malloc_r/_free_r chain onto
+# ANY chain that reaches it for the first time. THREE DIFFERENT NUMBERS live in this
+# note and a re-reader has already conflated them once: ~1,432 B is the WHOLE new
+# disk_write->log_line->vsniprintf->... branch; 696 B is the WHOLE previous branch it
+# displaced (disk_read 32 + flashcartio_read_sector 40 + diskRead 24 + ed_sd_dma_rd 48
+# + ed_sd_dma_to_rom 552, whose 552 B is only the leaf frame); ~740 B is the NET cost
+# (7,568 - 6,824 = 744), which is what the subtree actually felt -- not something specific to the VSD
 # mailbox seam itself). Per the brief's fix order (docs/briefs/s179-a2-delta-stack.md
 # step 3(a), shrink the added frames rather than raise need=, which mirrors a runtime
 # constant): source/log.c/log.h gained log_line_bs()/log_line_bsc(), hand-formatting

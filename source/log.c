@@ -187,6 +187,13 @@ void log_line(const char* fmt, ...) {
   log_line_raw(tmp);
 }
 
+#ifdef PDNA_DELTA
+/* PDNA_DELTA-only: the three call sites are the delta build's diskio diagnostics
+ * (lib/fatfs/diskio.c, diskio_write.c). Shipped builds must not carry them -- the
+ * s179-a2 re-verify found ~700 B of dead .text here when they were unconditional,
+ * which also breaks this tree's rule that every PDNA_DELTA symbol is absent from a
+ * shipped ROM (source/vsd.h's header comment states it). Check with:
+ *   arm-none-eabi-nm PokeDNA-artless.elf | grep -c log_line_bs   -> 0 */
 /* Hand-rolled hex/decimal appenders -- no *printf, no va_list, so neither of these
  * pulls in newlib's reentrant tail. `cap` bounds every write (golden rule 2/7): both
  * callers below size `out` generously (96 B) against the longest possible prefix they
@@ -240,6 +247,7 @@ void log_line_bsc(const char* prefix, unsigned buff, unsigned long sector, unsig
   out[len] = 0;
   log_line_raw(out);
 }
+#endif /* PDNA_DELTA */
 
 /* "/PokeDNA/log.txt" + n -> "/PokeDNA/log.prevN.txt". Returns 0 (rotation skipped)
  * when it would not fit or `path` has no ".txt" tail -- we rotate only names we
