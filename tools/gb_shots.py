@@ -706,7 +706,7 @@ def run_gold_create(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     that row is now gated on the SAME clip actually being present.
 
     GB BOX1 (the box the info page always opens into) is 20/20 on this corpus, same
-    as every box run_gold() already notes — box index 13 ("GB BOX13" on screen) has
+    as every box run_gold() already notes — box index 13 ("GB BOX14" on screen, BACKLOG #251 re-derivation: 1-indexed display of a 0-indexed box) has
     real room, 17/20, discovered the same way tools/gb_retail_gate.py's
     first_room_box() does. This is ALSO the run that caught the box-resolution bug
     fixed before this file existed in its current form: an EARLIER version of
@@ -727,10 +727,16 @@ def run_gold_create(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     s = Session(core_mod, image_mod, rom, out_dir, "gold_")
     print("== Gold.sav (Gen 2) -- BACKLOG #50 CREATE (UX-parity re-shoot) ==")
     s.tap("A", settle=BIG_SETTLE)          # info -> box grid (GB BOX1, 20/20)
-    s.press_n("R", 13, settle=SETTLE)      # -> GB BOX13, 17/20 (real room)
+    # BACKLOG #251 shots-refresh fix: 13 R presses at plain SETTLE dropped some of
+    # them (each R re-pages the WHOLE box, a bigger repaint than a cursor move) --
+    # reproduced live: this landed on "BOX10" (still 20/20, still occupied), not
+    # "BOX14" (17/20, real room), and the DOWN/RIGHT below then walked onto another
+    # occupied cell instead of the empty one this shot claims. BIG_SETTLE between
+    # each R press lands correctly and reproducibly (verified by hand, several runs).
+    s.press_n("R", 13, settle=BIG_SETTLE)  # -> GB BOX14 on screen (17/20, real room)
     s.press_n("DOWN", 2)
     s.press_n("RIGHT", 5)                  # cursor -> slot 17, the first real empty slot
-    s.shot("14_cursor_on_empty", "#50: cursor on a real empty slot (GB BOX13, 17/20)")
+    s.shot("14_cursor_on_empty", "#50: cursor on a real empty slot (GB BOX14, 17/20)")
 
     s.tap("A", settle=BIG_SETTLE)          # open the empty-cell menu
     # G1 review BLOCKING-1 (2026-09-08): this row list used to add PASTE
@@ -798,13 +804,30 @@ def run_gold_paste(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     DV edit above, so a failure there can never take these down with it."""
     s = Session(core_mod, image_mod, rom, out_dir, "gold_")
     print("== Gold.sav (Gen 2, --clip) -- PASTE (GB) on an empty cell ==")
-    s.tap("A", settle=BIG_SETTLE)          # info -> box grid
+    s.tap("A", settle=BIG_SETTLE)          # info -> box grid (GB BOX1, 20/20)
 
-    # Grid is 6 cols x 5 rows; slots 0..19 are filled, 20..29 are the "always empty"
-    # cells S5-B's own review notes call out. Slot 20 = row 3, col 2 from slot 0.
-    s.press_n("DOWN", 3)
-    s.press_n("RIGHT", 2)
-    s.shot("09_cursor_on_empty_cell", "S5-B: cursor parked on an empty cell before pressing A")
+    # BACKLOG #251 shots-refresh re-derivation (was: "Grid is 6 cols x 5 rows; slots
+    # 0..19 are filled, 20..29 are the always empty cells... slot 20 = row 3, col 2"):
+    # BACKLOG #200 F2 (source/pdna_box.c grid_lr_step(), landed after this was last
+    # calibrated) made cells at/after a source's own capacity genuinely UNREACHABLE
+    # by cursor movement -- LEFT/RIGHT now skip over any index >= cap and wrap back to
+    # the row's own column 0 instead of ever landing on one (blocked_cells()'s own
+    # docstring: "cells...don't exist in this game" -- deliberately closing the same
+    # "phantom cell past the Game Boy's real capacity" gap #120 S2 F1 closed for the
+    # Bank). Reproduced live: DOWN x3 + RIGHT x2 from a fresh BOX1 (20/20) landed back
+    # on slot 18 (RATTATA, occupied), not an empty cell -- the whole chain below used
+    # to shoot the wrong screen (an occupied-cell mon menu captioned as an empty-cell
+    # action menu). BOX1 has no real empty slot at all any more with this corpus (it
+    # is genuinely full at capacity), so this now reuses run_gold_create()'s own
+    # box13/slot17 navigation (real room, 17/20) instead of chasing a blocked cell.
+    s.press_n("R", 13, settle=BIG_SETTLE)  # -> GB BOX14 on screen, 17/20 (real room, same box run_gold_create() uses; BIG_SETTLE per that function's own comment)
+    s.press_n("DOWN", 2)
+    s.press_n("RIGHT", 5)                  # cursor -> slot 17, the first real empty slot
+    s.shot("09_cursor_on_empty_cell", "S5-B: cursor parked on a REAL empty slot (GB BOX14, "
+                                       "17/20) before pressing A -- re-derived off run_gold_create()'s "
+                                       "own box13 navigation; BOX1's own cells past its 20/20 "
+                                       "capacity are no longer cursor-reachable at all (BACKLOG "
+                                       "#200 F2's grid_lr_step(), see this function's own comment)")
 
     s.tap("A", settle=BIG_SETTLE)
     # G1 review BLOCKING-1 (2026-09-08) side effect: this menu now ALSO offers
@@ -824,17 +847,23 @@ def run_gold_paste(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     s.tap("A", settle=BIG_SETTLE)          # select PASTE HERE -> gen3_to_gb() -> the loss screen
     s.shot("10_loss_screen", "S5-B: the Gen-3-to-GB loss screen (what a real transfer would drop)")
 
-    # This corpus's GB BOX1 is already at its real Gen-2 capacity (20/20 -- the "20/30"
-    # badge counts 10 structurally-dead display cells too, source/pdna_gen12.c's own
-    # note on cells 20..29). gb_session.c's gbs_move()/gbs_insert() check capacity
-    # BEFORE anything else, including before the card is ever opened for writing, so
-    # this is the real, first refusal a paste into this box hits -- not the SD-write
-    # refusal the header below once assumed. It is still honest evidence: the capacity
-    # gate holds even for a converted paste. gold_06b already covers the SD-refusal
-    # path (a plain edit-and-save, which has no capacity gate in the way).
+    # BACKLOG #251 shots-refresh re-derivation (was: "GB BOX1 is already at its real
+    # Gen-2 capacity (20/20)... the same, first refusal a paste into this box hits"):
+    # this whole chain now targets BOX14 (17/20, real room -- see 09_cursor_on_empty_
+    # cell's own comment), so the capacity gate no longer fires here at all. Confirmed
+    # -> A now reaches the ACTUAL first refusal past a real destination slot: "SIDECAR
+    # FOLDER / Nothing transferred." (source/xfer_io.c's own /PokeDNA/xfer sidecar-
+    # write attempt, which fails the same way every SD-backed write does in mGBA --
+    # no flashcart, so f_open/f_mkdir on the sidecar folder never succeed). Different
+    # refusal, same honest-evidence shape as 07b_save_refusal/14d_no_rom_refusal.
     s.tap("A", settle=BIG_SETTLE)
-    s.shot("10b_paste_refusal", "S5-B: confirmed -> refused: GB BOX1 is already full (20/20), "
-                                 "the same capacity gate a real transfer would hit")
+    s.shot("10b_paste_refusal", "S5-B: confirmed -> refused: \"SIDECAR FOLDER / "
+                                 "Nothing transferred.\" -- the /PokeDNA/xfer sidecar "
+                                 "write (source/xfer_io.c) is itself SD-backed and has "
+                                 "no flashcart to write to in mGBA, the same class of "
+                                 "honest refusal every other SD-write shot in this file "
+                                 "shows (BOX14 has real room, so the capacity gate this "
+                                 "caption used to describe never fires here any more)")
     return s
 
 
