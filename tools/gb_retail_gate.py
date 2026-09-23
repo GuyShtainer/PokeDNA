@@ -94,6 +94,9 @@ SURGERY_SRCS = [
     # locate the ROM's tables; gb_new_mon builds the record from what they find).
     "source/rom_gbsprite.c", "source/gb_sprite_codec.c", "source/rom_gbbase.c",
     "source/rom_gblearn.c", "source/gb_new_mon.c",
+    # map-gen1 review D4: --op warpvp's own dependency (gb1warp_viewptr/gb1warp_coord --
+    # the exact write shape source/pdna_gbmap.c's gbmap_write_pos() uses).
+    "source/gb1_warp.c",
     "source/gb_trainer.c", "source/gb_fields.c",
     # BACKLOG #49 P2a: --op item's own dependency (gb_bag.h's pure-C bag/PC-item core).
     "source/gb_bag.c",
@@ -160,6 +163,28 @@ TELEPORT_WRAM = {
     "red":    {"map": 0xD35E, "x": 0xD362, "y": 0xD361},
     "yellow": {"map": 0xD35D, "x": 0xD361, "y": 0xD360},
 }
+# map-gen1 review D4: the destination map's own width/height, PINNED INDEPENDENTLY of
+# the --op mapquery locator this case ALSO uses to derive them -- without this, a
+# wrong header would pass its own self-check (staged live: doubling width/height in
+# rom_gbmap.c, both games still reported [ok] while teleporting to block (13,7) of a
+# map that is really only 7x4). Structural sizes, a fact not an expression, read off
+# the decomp's own map_constants.asm (reference only): VIRIDIAN_POKECENTER 7x4
+# (pokered/constants/map_constants.asm "$29"), CELADON_MANSION_3F 4x6
+# (pokeyellow/constants/map_constants.asm "$82").
+TELEPORT_EXPECT_DIMS = {"red": (7, 4), "yellow": (4, 6)}
+# wCurrentTileBlockMapViewPointer -- what the second, D1-catching read-back checks
+# (Red $D35F, Yellow $D35E, one byte before TELEPORT_WRAM's own "map" address in
+# each game, matching gb_fields.c's own GBF_POS_VIEWPTR derivation).
+TELEPORT_VIEWPTR_WRAM = {"red": 0xD35F, "yellow": 0xD35E}
+
+
+def _teleport_expect_viewptr(width, bx, by):
+    """Reference-only re-derivation of the game's own event_displacement formula
+    (pokered/pokeyellow home/overworld.asm, coords.asm:75-79) -- an INDEPENDENT
+    witness from source/gb1_warp.c's gb1warp_viewptr(), not a call into it, so this
+    assertion can actually catch a bug in that function rather than just agreeing
+    with it by construction."""
+    return 0xC6E8 + 7 + width + (width + 6) * by + bx
 
 # BACKLOG #95 review gate case: the held-item write (--op helditem, gb_set_held_item)
 # proven the SAME way as money above -- boot it and read the byte back off WRAM,
@@ -1714,19 +1739,34 @@ def run_fly_case(name, info, rom, sav, work, binary, python, vendor, tally):
 
 def run_teleport_case(name, info, rom, sav, work, binary, python, vendor, tally):
     """BACKLOG #91 M3 -- proves the Gen-1 in-map teleport write (source/pdna_gbmap.c's
-    gbmap_write_pos, exercised here through the SAME --op warp the M1 shot harness
-    already uses -- both write the identical GBF_MAP_ID/POS_X/POS_Y/POS_XBLOCK/
-    POS_YBLOCK fields via gbs_write_field) actually lands where the REAL game reads
-    it back from after a Continue boot, not just that PokeDNA's own parser agrees
-    with itself. Gen 1 only -- Gen 2's map fields are BACKLOG #91 M1-G2's own scope.
+    gbmap_write_pos) actually lands where the REAL game reads it back from after a
+    Continue boot, not just that PokeDNA's own parser agrees with itself. Gen 1 only
+    -- Gen 2's map fields are BACKLOG #91 M1-G2's own scope.
+
+    map-gen1 review D4: exercised through --op warpvp (tests/host_gbsurgery_tool.c's
+    do_warp_vp), NOT --op warp (the M1 shot-retake helper -- a different op, general-
+    purpose, that repositions map_id too and never wrote the view pointer at all).
+    warpvp mirrors gbmap_write_pos()'s own shape byte for byte: derive+validate
+    wCurrentTileBlockMapViewPointer via gb1warp_viewptr() BEFORE the first byte
+    lands, then write it plus wYCoord/wXCoord/wYBlockCoord/wXBlockCoord -- never
+    map_id, exactly what the shipped screen does.
 
     The destination is never guessed: --op mapquery asks the located ROM header for
     THIS map's own block width/height (the same rom_gbmap.c code the shipped screen
     itself runs) and this case picks the map's own far corner (width-1, height-1) --
     always structurally in-bounds, whatever the corpus ROM's real numbers turn out to
-    be. This is the "never trust a shape it could not confirm" posture the map
-    module's own header comment requires of every caller, applied to a TEST rather
-    than to the shipped screen."""
+    be. D4: that width/height is now PINNED against TELEPORT_EXPECT_DIMS (a
+    structural fact read off the decomp's own map_constants.asm, independent of the
+    locator under test) before being trusted -- a wrong header no longer passes its
+    own self-check. This is the "never trust a shape it could not confirm" posture
+    the map module's own header comment requires of every caller, applied to a TEST
+    rather than to the shipped screen.
+
+    D4's second read-back: wCurrentTileBlockMapViewPointer itself, asserted against
+    an INDEPENDENT re-derivation of the game's own event_displacement formula
+    (_teleport_expect_viewptr, never a call into gb1warp_viewptr) -- the assertion
+    that would have caught D1 (the old case only ever checked the coord pair, which
+    D1's bug left correct even while the game's own map never moved)."""
     if info["gen"] != 1:
         tally.skip_case("teleport (BACKLOG #91 M3)",
                         "Gen 2 map fields are BACKLOG #91 M1-G2's own lane")
@@ -1749,12 +1789,24 @@ def run_teleport_case(name, info, rom, sav, work, binary, python, vendor, tally)
                     f"degenerate bounds {width}x{height} for map {map_id}")
         return
 
+    # map-gen1 review D4: pin the expected dimensions INDEPENDENTLY of the locator
+    # this case ALSO uses to derive them (mapquery, above) -- a wrong header would
+    # otherwise pass its own self-check. See TELEPORT_EXPECT_DIMS's own comment.
+    want_dims = TELEPORT_EXPECT_DIMS.get(name)
+    if want_dims is not None and (width, height) != want_dims:
+        tally.record("teleport (BACKLOG #91 M3)", False,
+                    f"mapquery reported {width}x{height} for map {map_id}, but this "
+                    f"map's own structural size (independent of the locator under "
+                    f"test) is {want_dims[0]}x{want_dims[1]} -- the located header "
+                    f"is wrong (D4)")
+        return
+
     bx, by = width - 1, height - 1          # the map's own far corner -- always in-bounds
     x_coord, y_coord = bx * 2, by * 2       # gb1warp_coord's own block -> coord inverse
 
     edited = work / "teleport.sav"
     rc, out, err = run_surgery(binary, sav, edited,
-                               [["warp", str(map_id), str(x_coord), str(y_coord)]])
+                               [["warpvp", str(map_id), str(width), str(bx), str(by)]])
     if rc != 0:
         tally.record("teleport (BACKLOG #91 M3)", False, f"surgery refused: {err.strip()}")
         return
@@ -1765,10 +1817,12 @@ def run_teleport_case(name, info, rom, sav, work, binary, python, vendor, tally)
         return
 
     wram = TELEPORT_WRAM[name]
+    viewptr_addr = TELEPORT_VIEWPTR_WRAM[name]
     extra_args = ["--expect", "accept",
                  "--read-mem", f"{wram['map']:#06x}:1",
                  "--read-mem", f"{wram['x']:#06x}:1",
-                 "--read-mem", f"{wram['y']:#06x}:1"]
+                 "--read-mem", f"{wram['y']:#06x}:1",
+                 "--read-mem", f"{viewptr_addr:#06x}:2"]
     rc, rep, out, err = boot(python, rom, edited, work / "teleport", vendor,
                              work / "teleport.json", extra_args=extra_args)
     mem = rep.get("mem") or {}
@@ -1779,11 +1833,26 @@ def run_teleport_case(name, info, rom, sav, work, binary, python, vendor, tally)
         return int(h, 16) if isinstance(h, str) else None
 
     got_map, got_x, got_y = _val(wram["map"]), _val(wram["x"]), _val(wram["y"])
+
+    # map-gen1 review D4: a SECOND read-back, of wCurrentTileBlockMapViewPointer --
+    # what LoadCurrentMapView actually renders from -- asserted against an
+    # INDEPENDENT re-derivation of the game's own formula (never a call into the
+    # code under test). This is the assertion that would have caught D1: the old
+    # case only ever checked wXCoord/wYCoord, which D1's bug left correct even
+    # while the map itself never moved.
+    viewptr_hex = mem.get(f"{viewptr_addr:#06x}")
+    got_viewptr = None
+    if isinstance(viewptr_hex, str) and len(viewptr_hex) == 4:
+        got_viewptr = int(viewptr_hex[0:2], 16) | (int(viewptr_hex[2:4], 16) << 8)   # LE
+    want_viewptr = _teleport_expect_viewptr(width, bx, by)
+
     ok = (rc == 0 and svbk_ok and got_map == map_id
-         and got_x == x_coord and got_y == y_coord)
+         and got_x == x_coord and got_y == y_coord and got_viewptr == want_viewptr)
     detail = (f"verdict={rep.get('verdict')} svbk_ok={svbk_ok} "
              f"map={got_map!r}(want {map_id}) x={got_x!r}(want {x_coord}) "
-             f"y={got_y!r}(want {y_coord}) dest=block({bx},{by}) of {width}x{height}")
+             f"y={got_y!r}(want {y_coord}) "
+             f"viewptr={got_viewptr and hex(got_viewptr)!r}(want {hex(want_viewptr)}) "
+             f"dest=block({bx},{by}) of {width}x{height}")
     if not ok:
         fails = [f.strip() for f in out.splitlines() if f.strip().startswith("FAIL:")]
         if fails:

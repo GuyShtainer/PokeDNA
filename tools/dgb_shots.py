@@ -1498,13 +1498,17 @@ def run_m3_map_teleport(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_sho
                            "01", claim=["PLACE", "BACK", "SIZE"])
 
     s.tap("A", settle=gb_shots.SETTLE)                        # A: enter place mode
-    s.shot("02_placing_cursor_on_player", "M3: A enters place-cursor mode -- a "
-                                           "SECOND (green) frame appears on the "
-                                           "SAME block as the player's own (red) "
-                                           "marker, since the cursor always starts "
-                                           "there; the legend is unchanged (PLACE "
-                                           "still A, BACK still B)",
-           claim=["PLACE", "BACK", "SIZE"])
+    s.shot("02_placing_cursor_on_player", "M3: A enters place-cursor mode -- the "
+                                           "green cursor frame is drawn on the SAME "
+                                           "block as the player's own (red) marker, "
+                                           "since the cursor always starts there, "
+                                           "and drawn OVER it -- only the green "
+                                           "frame is actually visible on this "
+                                           "frame, not a second overlapping one "
+                                           "(map-gen1 review D6); the legend is "
+                                           "SWAPPED to PLACE/BACK only (D7: SIZE is "
+                                           "inert while placing)",
+           claim=["PLACE", "BACK"])
 
     s.tap("RIGHT", settle=gb_shots.SETTLE)
     s.shot("03_cursor_moved_right", "M3: the D-PAD moves the CURSOR now, not the "
@@ -1540,8 +1544,11 @@ def run_m3_map_teleport(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_sho
 
     s.tap("A", settle=gb_shots.BIG_SETTLE)                    # confirm: write + persist
     s.shot("07_emulator_persist_refusal", "M3: A confirms -- gbmap_write_pos() "
-                                           "writes wXCoord/wYCoord/wXBlockCoord/"
-                                           "wYBlockCoord into the resident image "
+                                           "derives+validates "
+                                           "wCurrentTileBlockMapViewPointer "
+                                           "(map-gen1 review D1) then writes it "
+                                           "plus wYCoord/wXCoord/wYBlockCoord/"
+                                           "wXBlockCoord into the resident image "
                                            "(gbs_write_field, verified/reparsed "
                                            "the same way every other GB field "
                                            "edit in this codebase is) and THEN "
@@ -1560,9 +1567,14 @@ def run_m3_map_teleport(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_sho
                                    "returned, same landing spot run_m1_map()'s "
                                    "own shot 06 (B-close) reaches -- the chain's "
                                    "own end state; re-opening Map would show the "
-                                   "UNCHANGED player position, since gb_persist() "
-                                   "refused before any byte reached the card this "
-                                   "build has none of")
+                                   "MOVED player position (map-gen1 review D6): "
+                                   "gb_persist()'s own PDNA_DELTA branch "
+                                   "re-baselines g_ed->pristine to the post-edit "
+                                   "image BEFORE returning false (pdna_gen12.c), "
+                                   "so the refusal is 'no card to write to', not "
+                                   "'this edit is void' -- this build has no card "
+                                   "at all, but the session's own resident image "
+                                   "already carries the moved position")
 
     return s
 

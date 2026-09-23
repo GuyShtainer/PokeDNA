@@ -151,6 +151,8 @@
 #include "rom_gbbase.h"
 #include "rom_gblearn.h"
 #include "rom_gbmap.h"
+#include "gb1_warp.h"     /* map-gen1 review D4: gb1warp_viewptr/gb1warp_coord --
+                            * the exact write shape do_warp_vp() below mirrors */
 #include "gb_new_mon.h"
 #include "data_tables.h"
 #include "gb_trainer.h"
@@ -345,6 +347,7 @@ static int parse_args(int argc, char** argv, const char** in, const char** out,
     {"hofdv", 4},      /* BACKLOG #198 item 7: TEAM_IDX MON_IDX STAT V, Gen 2 only */
     {"paste80", 2},    /* BACKLOG #211: BOX REC80FILE, via gen3_to_gb_fixed + the fill */
     {"mapquery", 1},   /* M3 (BACKLOG #91) retail-gate case: MAP, read-only, needs --rom */
+    {"warpvp", 4},     /* map-gen1 review D4 retail-gate case: MAP WIDTH BX BY, Gen 1 only */
   };
   *in = NULL; *out = NULL; *list_mode = false; *nops = 0;
   for (int i = 1; i < argc; i++) {
@@ -572,6 +575,49 @@ static int do_warp(GbSession* s, const char* map_tok, const char* x_tok, const c
   if ((st = gbs_write_field(s, 0x260du, &y_b, 1)) != GBS_OK) return refuse(gbs_status_text(st));
   if ((st = gbs_write_field(s, 0x2610u, &xblock_b, 1)) != GBS_OK) return refuse(gbs_status_text(st));
   if ((st = gbs_write_field(s, 0x260fu, &yblock_b, 1)) != GBS_OK) return refuse(gbs_status_text(st));
+  if ((st = gbs_finish(s)) != GBS_OK) return refuse(gbs_status_text(st));
+  return 0;
+}
+
+/* map-gen1 review D4 retail-gate case: the SAME write shape source/pdna_gbmap.c's
+ * gbmap_write_pos() uses -- derive+validate the view pointer via gb1warp_viewptr()
+ * BEFORE the first byte lands, then write ALL FIVE fields it writes (viewptr, Y, X,
+ * YBLOCK=0, XBLOCK=0). Unlike do_warp() above (a general shot-retake helper that
+ * also repositions map_id and accepts raw, possibly-odd coordinate bytes), this
+ * always writes a BLOCK-ALIGNED destination and NEVER touches map_id -- exactly
+ * what the shipped M3 screen does (gb1_warp.h's own scope note: teleport stays
+ * within the current map). MAP is a read-only sanity check against the save's own
+ * current map, never written -- a mismatch here means the corpus save moved out
+ * from under the case, not something this op should silently paper over. */
+static int do_warp_vp(GbSession* s, const char* map_tok, const char* width_tok,
+                       const char* bx_tok, const char* by_tok) {
+  if (s->gen != GB_GEN1) return refuse("warpvp is Gen 1 only");
+  int map = resolve_uint(map_tok, "warpvp map");
+  int width = resolve_uint(width_tok, "warpvp width");
+  int bx = resolve_uint(bx_tok, "warpvp bx");
+  int by = resolve_uint(by_tok, "warpvp by");
+  if (map < 0 || width < 0 || bx < 0 || by < 0) return 2;
+  if (map > 255 || width > 255 || bx > 127 || by > 127) {
+    fprintf(stderr, "warpvp MAP must be 0..255, WIDTH 0..255, BX/BY 0..127\n");
+    return 2;
+  }
+
+  uint8_t cur_map = 0;
+  if (gbs_read_field(s, 0x260au, &cur_map, 1) != GBS_OK) return refuse("could not read current map");
+  if (cur_map != (uint8_t)map) return refuse("warpvp MAP does not match the save's own current map");
+
+  uint16_t vp;
+  if (!gb1warp_viewptr((uint16_t)width, (int16_t)bx, (int16_t)by, &vp))
+    return refuse("gb1warp_viewptr refused this destination");
+  uint8_t vpbuf[2] = { (uint8_t)(vp & 0xFF), (uint8_t)(vp >> 8) };
+  uint8_t xcoord = gb1warp_coord((int16_t)bx), ycoord = gb1warp_coord((int16_t)by), zero = 0;
+
+  GbsStatus st;
+  if ((st = gbs_write_field(s, 0x260bu, vpbuf, 2)) != GBS_OK) return refuse(gbs_status_text(st));
+  if ((st = gbs_write_field(s, 0x260du, &ycoord, 1)) != GBS_OK) return refuse(gbs_status_text(st));
+  if ((st = gbs_write_field(s, 0x260eu, &xcoord, 1)) != GBS_OK) return refuse(gbs_status_text(st));
+  if ((st = gbs_write_field(s, 0x260fu, &zero, 1)) != GBS_OK) return refuse(gbs_status_text(st));
+  if ((st = gbs_write_field(s, 0x2610u, &zero, 1)) != GBS_OK) return refuse(gbs_status_text(st));
   if ((st = gbs_finish(s)) != GBS_OK) return refuse(gbs_status_text(st));
   return 0;
 }
@@ -1568,6 +1614,9 @@ static int apply_op(GbSession* s, const Op* o) {
   }
   if (!strcmp(o->kind, "warp")) {
     return do_warp(s, o->a[0], o->a[1], o->a[2]);
+  }
+  if (!strcmp(o->kind, "warpvp")) {
+    return do_warp_vp(s, o->a[0], o->a[1], o->a[2], o->a[3]);
   }
   if (!strcmp(o->kind, "mapquery")) {
     return do_mapquery(s, o->a[0]);
