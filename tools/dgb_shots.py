@@ -3464,9 +3464,11 @@ def run_b87_dex(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     # is the fix: R has never once dropped an edge once this page was allowed to finish
     # loading first (reproduced clean on 5 separate runs).
     s.tap("L", settle=gb_shots.BIG_SETTLE)                   # DV_LIST(1) -> DV_GRID(0)
-    s.run(60)                                                # let the 21-cell repaint finish before the next tap
-    s.shot("04_grid", "#87: L once -> DV_GRID -- the icon grid (art-free build: name "
-                       "chips, per dex_cell_grid's own art-free fallback), same cap")
+    s.run(GB196_GB_PAGE_SETTLE)                              # same repaint weight as run_b124_dexicons's 21-cell GB-ROM page (dex_cell_art_call, pdna_pick.c:802) -- reuse its measured constant, not a new guessed one
+    s.shot("04_grid", "#87: L once -> DV_GRID -- BACKLOG #196's GB-ROM-native icon "
+                       "override (dex_cell_art_call, pdna_pick.c:802): Red's own "
+                       "DMG-grey front sprites, not the art-free name-chip fallback "
+                       "-- same cap")
 
     s.tap("R", settle=gb_shots.BIG_SETTLE)                   # DV_GRID(0) -> DV_LIST(1), back where item 5/6's cursor math below assumes
 
