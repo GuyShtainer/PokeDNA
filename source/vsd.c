@@ -53,6 +53,24 @@ static int vsd_wrap_frame(uint16_t* last_vc) {
 }
 
 bool vsd_attach(void) {
+  /* BACKLOG #179 step A3 finding: force a genuine RUNTIME reference to g_pdna_vsd.
+   * __attribute__((used)) tells the COMPILER not to discard an unreferenced global,
+   * but --gc-sections (gba.specs, source/flashsave.c:56-62) still discards the whole
+   * SECTION unless something reachable from main() actually reads it -- exactly like
+   * every precedent this file's own header comment cites: fused_gb.c's g_pdna_gbd,
+   * fused_rom.c's g_pdna_fuse, fused_sav.c's g_pdna_sav are each read by their own
+   * runtime parser. g_pdna_vsd has no such reader (the HOST, not the GBA, is its only
+   * consumer), so `nm pokedna-delta.elf | grep g_pdna_vsd` came back empty until this
+   * line was added -- tools/vsd.py's find_mailbox() could not locate the mailbox at
+   * all. The check is also a free assertion (golden rule 5): both sides are the SAME
+   * compile-time constant (&s_vsd), so it can never legitimately fail; if it ever
+   * does, the section layout changed underneath this record and s_attached must stay
+   * false rather than hand the host a stale/wrong address. */
+  if (g_pdna_vsd.addr != (uint32_t)&s_vsd) {
+    s_attached = false;
+    return false;
+  }
+
   s_vsd.op     = VSD_OP_NONE;
   s_vsd.sector = 0;
   s_vsd.count  = 0;
@@ -71,7 +89,20 @@ bool vsd_attach(void) {
     if (vsd_wrap_frame(&last_vc)) {
       frames++;
       if (frames >= 4) {
+        /* BACKLOG #179 A3 review D3, mirrored from vsd_xfer's own timeout below:
+         * active_flashcart is never set to EZ_FLASH_OMEGA before this loop exits
+         * (that happens only on the success path just past it), so this assignment
+         * is a no-op on THIS path today -- but it is set explicitly anyway, exactly
+         * like vsd_xfer's timeout, so the invariant "a timed-out VSD path always
+         * leaves active_flashcart == NO_FLASHCART" holds by construction rather than
+         * by accident of call order, and a future edit that moves the
+         * active_flashcart assignment earlier cannot silently reopen the real-EZFO
+         * fallback this review exists to close. The mailbox itself is disowned the
+         * same way: a half-attached host that starts serving late must never be
+         * answered by a GBA side that has already moved on. */
         s_attached = false;
+        active_flashcart = NO_FLASHCART;
+        s_vsd.magic = 0;
         return false;
       }
     }
@@ -101,7 +132,17 @@ bool vsd_xfer(uint32_t op, uint32_t sector, uint32_t addr, uint32_t count) {
     if (vsd_wrap_frame(&last_vc)) {
       frames++;
       if (frames >= 16) {
+        /* BACKLOG #179 A3 review D3 (HIGH): a timed-out vsd_xfer() used to leave
+         * active_flashcart == EZ_FLASH_OMEGA (set by vsd_attach()'s own success path
+         * before this transaction was even issued), so the NEXT SD op after a dead
+         * harness fell through flashcartio's dispatch into the REAL
+         * _EZFO_readSectors -- Visoly unlock, WAITCNT, DMA from 0x09xxxxxx -- inside
+         * mGBA, which has no such hardware. Degrade to NO_FLASHCART (no card at
+         * all), never silently back to the real EZFO driver this vehicle was never
+         * meant to run. */
         s_attached = false;
+        active_flashcart = NO_FLASHCART;  /* degrade to no card, not to the real EZFO driver */
+        s_vsd.magic = 0;                  /* the host must not serve this abandoned request */
         return false;
       }
     }

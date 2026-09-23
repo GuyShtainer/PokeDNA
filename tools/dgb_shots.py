@@ -4249,7 +4249,10 @@ def _measure_box_grid_cold_start(core_mod, image_mod, rom: Path,
     candidate = None
     candidate_since = 0
     while frame < _MAX_FRAMES:
-        s.core.run_frame()
+        s.run(1)   # BACKLOG #179 A3 review D2: never advance the core past the VSD
+                   # service hook -- a bare core.run_frame() here bypassed
+                   # Session.run()'s single funnel, so an in-flight VSD request timed
+                   # out and the stale reply then landed in an abandoned buffer.
         frame += 1
         if frame % _SAMPLE_EVERY:
             continue
@@ -4376,7 +4379,10 @@ def _measure_b185_auto(core_mod, image_mod, rom: Path, down_n: int,
     candidate = None
     candidate_since = 0
     while frame < _MAX_FRAMES:
-        s.core.run_frame()
+        s.run(1)   # BACKLOG #179 A3 review D2: never advance the core past the VSD
+                   # service hook -- a bare core.run_frame() here bypassed
+                   # Session.run()'s single funnel, so an in-flight VSD request timed
+                   # out and the stale reply then landed in an abandoned buffer.
         frame += 1
         if frame % _SAMPLE_EVERY:
             continue
@@ -6795,6 +6801,23 @@ def _extract_gb_rom_offline(fused_image_path: Path) -> Path:
 
 
 def main(argv=None) -> int:
+    """BACKLOG #179 A3 review D1 (BLOCKER): _main_dispatch() below constructs every
+    Session this process will build; whichever of its many CLI branches ran (or a
+    --selftest-captions sys.exit(1) fired instead of returning at all), every
+    attached --vsd write must reach disk before the process exits. finally still runs
+    when SystemExit propagates through it, so this covers every exit path without
+    touching any of _main_dispatch()'s own dozens of `return 0`/`return 1` lines
+    (deliberately: other lanes add new CLI branches to that function constantly, and
+    a touched `return` in each one would be a guaranteed merge conflict with every
+    one of them -- the same reasoning _write_manifest()'s own sys.exit(1) docstring
+    already gives for not editing every dispatch branch)."""
+    try:
+        return _main_dispatch(argv)
+    finally:
+        gb_shots.flush_live_vsd_sessions()
+
+
+def _main_dispatch(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--image", type=Path,
@@ -7329,8 +7352,63 @@ def main(argv=None) -> int:
                           "failure if any caption is empty/whitespace-only, any frame file "
                           "is missing, or any claim/claim_absent fails on re-check; exits 0 "
                           "(and prints the shot + claim-checked counts) otherwise.")
+    ap.add_argument("--vsd", type=Path,
+                     help="BACKLOG #179 Phase A step A3: attach the harness-hosted "
+                          "virtual SD (tools/vsd.py) to every Session this run "
+                          "constructs, serving disk_read/disk_write out of this "
+                          "tools/vsd_img.c-built .img file. Absent (the default), "
+                          "every Session behaves byte-identically to before this "
+                          "lane -- see A4's parity gate.")
+    # BACKLOG #179 A3 review D6: units are SECTORS for fail_at/lie_after/fail_read_at
+    # (a multi-sector FatFs call can cross the threshold mid-call, exactly like
+    # tests/hostfat/ramdisk.c's own rd_fail_at/rd_lie_after/rd_fail_read_at) and CALLS
+    # for fail_write_in/fail_reads_after (ramdisk.c decrements those by 1 per call,
+    # never by the call's sector count) -- see tools/vsd.py's own module docstring for
+    # the full per-knob rationale this help text summarizes.
+    ap.add_argument("--vsd-protect", action="store_true",
+                     help="S4.7 failure injection: every VSD write fails, "
+                          "unconditionally, forever (a write-protected volume).")
+    ap.add_argument("--vsd-fail-all-writes", action="store_true",
+                     help="S4.7: every VSD write fails, unconditionally, forever "
+                          "(an EverDrive, by design).")
+    ap.add_argument("--vsd-fail-write-in", type=int, default=None,
+                     help="S4.7: the NEXT N served VSD write CALLS all fail, then "
+                          "heal (not just the Nth -- a run of N).")
+    ap.add_argument("--vsd-fail-at", type=int, default=None,
+                     help="S4.7: after N successful VSD write SECTORS, the write "
+                          "call that crosses that threshold fails once, then heals.")
+    ap.add_argument("--vsd-lie-after", type=int, default=None,
+                     help="S4.7: after N successful VSD write SECTORS, every write "
+                          "reports OK and discards, forever (the card that ACKs and "
+                          "keeps nothing).")
+    ap.add_argument("--vsd-lie-writes", action="store_true",
+                     help="S4.7: every VSD write reports OK and discards, from the "
+                          "very first call (no countdown -- the card that was "
+                          "already bad).")
+    ap.add_argument("--vsd-fail-read-at", type=int, default=None,
+                     help="S4.7: after N successful VSD read SECTORS, the read call "
+                          "that crosses that threshold fails once, then heals.")
+    ap.add_argument("--vsd-fail-reads-after", type=int, default=None,
+                     help="S4.7: after N successful VSD read CALLS, every read "
+                          "fails, forever (never heals).")
     a = ap.parse_args(argv)
     a.out.mkdir(parents=True, exist_ok=True)
+
+    # BACKLOG #179 Phase A step A3: wire --vsd (and any failure-injection knobs) into
+    # every Session this process constructs, BEFORE any run_*() dispatch below --
+    # gb_shots.set_default_vsd(None) with no knobs is a true no-op (Session.vsd stays
+    # None), so a run without --vsd is unaffected either way.
+    gb_shots.set_default_vsd(
+        a.vsd,
+        protect=a.vsd_protect if a.vsd_protect else None,
+        fail_all_writes=a.vsd_fail_all_writes if a.vsd_fail_all_writes else None,
+        fail_write_in=a.vsd_fail_write_in,
+        fail_at=a.vsd_fail_at,
+        lie_after=a.vsd_lie_after,
+        lie_writes=a.vsd_lie_writes if a.vsd_lie_writes else None,
+        fail_read_at=a.vsd_fail_read_at,
+        fail_reads_after=a.vsd_fail_reads_after,
+    )
 
     if a.selftest_captions:
         manifest_path = a.out / "manifest.json"

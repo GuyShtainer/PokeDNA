@@ -11743,17 +11743,59 @@ int main(void) {
   }
 
 #ifdef PDNA_DELTA
-  /* BACKLOG #179 step A1 (the spike): attach the harness-hosted virtual SD if one is
-   * listening, then round-trip exactly one read transaction so tools/vsd_spike.py has
-   * something to observe. Bounded 4-frame handshake (vsd_attach, S4.3); if nothing
-   * writes the magic in time it latches "never attached" and returns false in one
-   * instruction forever after, so an unattended boot (every existing runner today) is
-   * unchanged except for those 4 extra frames, which Session.__init__'s existing
-   * self.run(180) already absorbs (docs/briefs/s179-design.md S4.3). No FatFs mount
-   * here yet — that is step A3's job; this step only proves the mailbox itself. */
+  /* BACKLOG #179 Phase A step A3: the real mount. Bounded 4-frame handshake
+   * (vsd_attach, S4.3); if nothing writes the magic in time it latches "never
+   * attached" and returns false in one instruction forever after, so an unattended
+   * boot (every existing runner today, and any runner without --vsd) is unchanged
+   * except for those 4 extra frames, which Session.__init__'s existing self.run(180)
+   * already absorbs.
+   *
+   * `FATFS fs;` sits on main()'s OWN frame (588 B), NOT static EWRAM_BSS: 588 B is
+   * bigger than the delta's 312 B EWRAM free (344 - A1's 32-byte VsdBox), so it is
+   * paid out of the delta's stack margin instead, exactly as the shipped hardware
+   * build already pays it below (the #else half's own `FATFS fs;` at what is now
+   * :11807-ish, "lives forever (main never returns)"). Falling through into that
+   * WHOLE shipped #else boot instead would cost 3,432 B of EWRAM that is not there
+   * (design S4.2's sc.33/s_iconrom_fil/s_iconrom_clmt/s_g3x_clmt tally) — so this
+   * calls ONLY the four lines the shipped boot calls right after a successful mount
+   * (f_mkdir/log_begin_run/app_log_flush), never a second compilation unit and never
+   * the browser/cfg/perf machinery below it. Step A1's throwaway probe (a raw
+   * sector-0 read for the now-deleted tools/vsd_spike.py) is replaced by this. */
+  FATFS fs;                    /* lives forever (main never returns), delta branch only */
   if (vsd_attach()) {
-    uint8_t vsd_probe[512];   /* stack-local, discardable: the spike's own proof */
-    flashcartio_read_sector(0, vsd_probe, 1);
+    if (f_mount(&fs, "", 1) == FR_OK) {
+      f_mkdir(PDNA_DIR);                                        /* the shipped line */
+      if (active_flashcart == EZ_FLASH_OMEGA) log_begin_run(LOG_PATH); /* Omega-gated, shipped */
+      app_log_flush();                                          /* Omega-gated, shipped */
+      perf_fs_facts(&fs);   /* BACKLOG #179 A3 review D4: the shipped success-path call
+                              * (pdna_main.c's own #else boot makes it right after
+                              * "SD mounted OK" -- cluster size is the ceiling on any
+                              * batched read, see perf.c) */
+      /* BACKLOG #179 A3 review D4: the shipped LOG NOT SAVING panel, verbatim, so a
+       * --vsd-protect/--vsd-lie-after/--vsd-fail-* knob run can reach the SAME four-way
+       * triage a real bad card reaches on hardware (design S4.7) instead of leaving it
+       * hardware-only forever. ORCHESTRATOR DECISION: yes, add it -- a normal --vsd run
+       * (no failure knob) never triggers log_health() != LOG_HEALTH_OK, so every
+       * existing runner without a knob is unaffected; a knob run gains one extra A tap
+       * at boot to clear this panel (documented on the runner that first exercises a
+       * knob). */
+      if (active_flashcart == EZ_FLASH_OMEGA && log_health() != LOG_HEALTH_OK) {
+        char m[48];
+        const char* why = "Card locked, full, or unwritable?";
+        if (log_health() == LOG_HEALTH_LOST) {
+          /* The write said FR_OK and the card kept less than it acknowledged. This is
+           * the one the old gate could not see at all: every counter said healthy. */
+          siprintf(m, "card kept %lu of %lu bytes", log_card_bytes(), log_expect_bytes());
+          why = "Card ACKed writes it did not keep!";
+        } else if (log_health() == LOG_HEALTH_UNVERIF) {
+          siprintf(m, "read-back failed (e%d)", log_verify_result());
+          why = "Cannot confirm the log reached the card.";
+        } else {
+          siprintf(m, "%s wrote nothing (e%d)", LOG_PATH, log_last_result());
+        }
+        msg_wait("LOG NOT SAVING", UI_WARN, m, why);
+      }
+    }
   }
   /* ---- emulator build: no flashcart, no microSD, no file browser. -------------
    * The save is this ROM's own 128 KiB flash chip, so boot straight into it. If the

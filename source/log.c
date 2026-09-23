@@ -135,16 +135,19 @@ static void mgba_emit(const char* line) {
   MGBA_REG_FLAGS = 0x100 | MGBA_LEVEL_INFO;
 }
 
-void log_line(const char* fmt, ...) {
-  char tmp[256];
-  va_list ap;
-  va_start(ap, fmt);
-  vsniprintf(tmp, sizeof(tmp), fmt, ap);
-  va_end(ap);
+/* Common tail of log_line()/log_line_bs()/log_line_bsc(): `text` is already fully
+ * formatted (NUL-terminated, no trailing '\n') -- append it to the RAM ring and mirror
+ * it to mGBA. Split out so the two hand-formatted siblings below never pull in
+ * vsniprintf: this function's own frame carries no big local buffer, only the ring's
+ * existing bookkeeping. `n` is capped defensively at LOG_CAP/2 - 2 (golden rule 7: a
+ * caller-supplied length is not trusted past this function's own boundary either) so a
+ * future caller with a bad `text` cannot underflow `keep` below. */
+static void log_line_raw(const char* text) {
+  mgba_emit(text);
 
-  mgba_emit(tmp);
+  unsigned n = (unsigned)strlen(text);
+  if (n > LOG_CAP / 2 - 2) n = LOG_CAP / 2 - 2;
 
-  unsigned n = (unsigned)strlen(tmp);
   /* If the buffer would overflow, drop the oldest half -- and move the flush
    * watermark with it so it keeps pointing at the SAME TEXT. Otherwise the next
    * append either re-sends text already on the card (duplicates) or skips text
@@ -169,11 +172,82 @@ void log_line(const char* fmt, ...) {
       s_flushed = 0;
     }
   }
-  memcpy(s_buf + s_len, tmp, n);
+  memcpy(s_buf + s_len, text, n);
   s_len += n;
   s_buf[s_len++] = '\n';
   s_buf[s_len] = 0;
 }
+
+void log_line(const char* fmt, ...) {
+  char tmp[256];
+  va_list ap;
+  va_start(ap, fmt);
+  vsniprintf(tmp, sizeof(tmp), fmt, ap);
+  va_end(ap);
+  log_line_raw(tmp);
+}
+
+#ifdef PDNA_DELTA
+/* PDNA_DELTA-only: the three call sites are the delta build's diskio diagnostics
+ * (lib/fatfs/diskio.c, diskio_write.c). Shipped builds must not carry them -- the
+ * s179-a2 re-verify found ~700 B of dead .text here when they were unconditional,
+ * which also breaks this tree's rule that every PDNA_DELTA symbol is absent from a
+ * shipped ROM (source/vsd.h's header comment states it). Check with:
+ *   arm-none-eabi-nm PokeDNA-artless.elf | grep -c log_line_bs   -> 0 */
+/* Hand-rolled hex/decimal appenders -- no *printf, no va_list, so neither of these
+ * pulls in newlib's reentrant tail. `cap` bounds every write (golden rule 2/7): both
+ * callers below size `out` generously (96 B) against the longest possible prefix they
+ * pass, but these stay defensive regardless of what a future caller hands them. */
+static void append_str(char* out, unsigned cap, unsigned* len, const char* s) {
+  while (*s && *len + 1 < cap) out[(*len)++] = *s++;
+}
+
+static void append_hex8(char* out, unsigned cap, unsigned* len, unsigned v) {
+  static const char digits[] = "0123456789abcdef";
+  for (int shift = 28; shift >= 0 && *len + 1 < cap; shift -= 4)
+    out[(*len)++] = digits[(v >> shift) & 0xFu];
+}
+
+static void append_dec(char* out, unsigned cap, unsigned* len, unsigned long v) {
+  char rev[10]; /* max 10 digits in a 32-bit value */
+  int n = 0;
+  if (v == 0) {
+    if (*len + 1 < cap) out[(*len)++] = '0';
+    return;
+  }
+  while (v > 0 && n < 10) {
+    rev[n++] = (char)('0' + (v % 10));
+    v /= 10;
+  }
+  while (n > 0 && *len + 1 < cap) out[(*len)++] = rev[--n];
+}
+
+void log_line_bs(const char* prefix, unsigned buff, unsigned long sector) {
+  char out[96];
+  unsigned len = 0;
+  append_str(out, sizeof out, &len, prefix);
+  append_str(out, sizeof out, &len, " buff=0x");
+  append_hex8(out, sizeof out, &len, buff);
+  append_str(out, sizeof out, &len, " sector=");
+  append_dec(out, sizeof out, &len, sector);
+  out[len] = 0;
+  log_line_raw(out);
+}
+
+void log_line_bsc(const char* prefix, unsigned buff, unsigned long sector, unsigned count) {
+  char out[96];
+  unsigned len = 0;
+  append_str(out, sizeof out, &len, prefix);
+  append_str(out, sizeof out, &len, " buff=0x");
+  append_hex8(out, sizeof out, &len, buff);
+  append_str(out, sizeof out, &len, " sector=");
+  append_dec(out, sizeof out, &len, sector);
+  append_str(out, sizeof out, &len, " count=");
+  append_dec(out, sizeof out, &len, count);
+  out[len] = 0;
+  log_line_raw(out);
+}
+#endif /* PDNA_DELTA */
 
 /* "/PokeDNA/log.txt" + n -> "/PokeDNA/log.prevN.txt". Returns 0 (rotation skipped)
  * when it would not fit or `path` has no ".txt" tail -- we rotate only names we
