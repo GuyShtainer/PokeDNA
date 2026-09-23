@@ -3851,7 +3851,7 @@ static int party_strip_overlay(BoxSource* src, int box, int* cur,
          * gb_down_loss_screen re-enables OBJ on its own return, so an outer bracket
          * would be cancelled by the inner one and the NEXT dialog would draw over
          * live box sprites (BACKLOG #207's exact defect class). */
-        bool placed;
+        bool placed = false;
         int n_now = app_party_n();
         bool native = bc_is_native(s_held);
         bool converted = false; uint8_t conv[80];
@@ -3859,25 +3859,48 @@ static int party_strip_overlay(BoxSource* src, int box, int* cur,
          * and `sel == n_now` (the CANCEL row) is consumed by the CANCEL branch before
          * this switch is ever reached -- sel here can only be in [0, n_now-1], which
          * is NEVER != n_now, so the old PARTYSWAP-first order made PARTYFULL3
-         * unreachable (OQ3 never delivered). Full-party must be decided FIRST. */
-        if (native && n_now >= 6) {
-          boxoam_suspend(); snd_deny();
-          msg_wait(PDNA_XFER_PARTYFULL3_TITLE, UI_WARN, PDNA_XFER_PARTYFULL3_L1, PDNA_XFER_PARTYFULL3_L2);
-          boxoam_resume();
-          placed = false;
-        } else if (native && sel != n_now) {
-          boxoam_suspend(); snd_deny();
-          msg_wait(PDNA_XFER_PARTYSWAP_TITLE, UI_WARN, PDNA_XFER_PARTYSWAP_L1, PDNA_XFER_PARTYSWAP_L2);
-          boxoam_resume();
-          placed = false;
-        } else if (native && s_orig_scope == BOXSCOPE_BANK && s_orig_slot >= 0 && app_bank_defer_full()) {
-          boxoam_suspend(); snd_deny();
-          msg_wait("TOO MANY MOVES", UI_WARN, "Save first, then continue.", 0);
-          boxoam_resume();
-          placed = false;
-        } else if (native && bank_down_convert_gen3_party(src, sel, s_held, conv) != BANK_DOWN_CONVERTED) {
-          placed = false;                          /* the arm's own dialog already said why */
-        } else {
+         * unreachable (OQ3 never delivered). Full-party must be decided FIRST.
+         * BACKLOG #226: bounded 2-attempt loop (golden rule 2's provable bound), same
+         * shape as the restore sites' own #175c fix -- attempt 0 may offer to send a
+         * party member to a box first (Gen-1/2 parity, gb_accept_down_party_deposit()
+         * in source/pdna_gen12.c) instead of the flat PARTYFULL3 wall; on success it
+         * re-targets `sel` at the now-free ADD slot and re-runs the chain once
+         * (attempt 1) so the SAME convert+place code below lands the held cell.
+         * Attempt 1 never offers again: a party still full after a verified deposit
+         * would mean party_release()+app_inject_to_game_deferred() together did not
+         * free a slot, which cannot happen (both are plain C mutations, no card I/O
+         * in between) -- treat it as a real refusal, not a retry loop. */
+        for (int attempt = 0; attempt < 2; attempt++) {
+          if (native && n_now >= 6) {
+            if (attempt == 1) {
+              boxoam_suspend(); snd_deny();
+              msg_wait(PDNA_XFER_PARTYFULL3_TITLE, UI_WARN, PDNA_XFER_PARTYFULL3_L1, PDNA_XFER_PARTYFULL3_L2);
+              boxoam_resume();
+              placed = false;
+              break;
+            }
+            if (!app_party_full_deposit_offer()) { placed = false; break; }
+            n_now = app_party_n(); sel = n_now;   /* re-target the newly-freed ADD slot */
+            continue;
+          }
+          if (native && sel != n_now) {
+            boxoam_suspend(); snd_deny();
+            msg_wait(PDNA_XFER_PARTYSWAP_TITLE, UI_WARN, PDNA_XFER_PARTYSWAP_L1, PDNA_XFER_PARTYSWAP_L2);
+            boxoam_resume();
+            placed = false;
+            break;
+          }
+          if (native && s_orig_scope == BOXSCOPE_BANK && s_orig_slot >= 0 && app_bank_defer_full()) {
+            boxoam_suspend(); snd_deny();
+            msg_wait("TOO MANY MOVES", UI_WARN, "Save first, then continue.", 0);
+            boxoam_resume();
+            placed = false;
+            break;
+          }
+          if (native && bank_down_convert_gen3_party(src, sel, s_held, conv) != BANK_DOWN_CONVERTED) {
+            placed = false;                          /* the arm's own dialog already said why */
+            break;
+          }
           converted = native;
           /* BACKLOG #174 D4: `placing` mirrors drop_held's own idiom (:1686) -- a
            * converted record is an ordinary Gen-3 record the escape gate would
@@ -3903,6 +3926,7 @@ static int party_strip_overlay(BoxSource* src, int box, int* cur,
             snd_error();
             msg_wait(PDNA_XFERREC_TITLE, UI_WARN, PDNA_XFERREC_L1, PDNA_XFERREC_L2);
           }
+          break;
         }
         if (placed && s_orig_scope == BOXSCOPE_PC && s_orig_slot >= 0) {
           recs = src->records(box); box_decode(src, recs, box); s_oam_reload = true;

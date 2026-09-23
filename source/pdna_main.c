@@ -4639,6 +4639,73 @@ static bool party_place_held(const uint8_t* held80, int target, int orig_box, in
   snd_ok(); return true;
 }
 
+/* BACKLOG #226: Gen-3 twin of gb_accept_down_party_deposit()'s own picker
+ * (source/pdna_gen12.c gb_pick_party_slot) -- same PDNA_GBEDIT_PICKBOX_* row
+ * metrics, same wait_keys(KEY_UP|KEY_DOWN|KEY_A|KEY_B) loop, same
+ * PDNA_GBEDIT_PICKPARTY_* title/footer, so the two generations' pickers look and
+ * behave identically (the UX-parity rule). Rows are the party's own nicknames
+ * (ui_ptext_fit, PokeDNA's proportional font -- never ui_text+truncate). Returns
+ * the chosen slot, or -1 on B. */
+static int app_pick_party_slot(void) {
+  int n = party_count(g_sb1, g_frlg);
+  if (n <= 0 || n > 6) return -1;
+  uint16_t doff = g_frlg ? 0x0038 : 0x0238;
+  int sel = 0;
+  for (;;) {
+    ui_clear();
+    ui_text(4, 3, UI_TITLE, PDNA_GBEDIT_PICKPARTY_TITLE);
+    ui_hline(0, 13, UI_SCR_W, UI_BORDER);
+    for (int i = 0; i < n; i++) {
+      PkMon pk;
+      char nm[24];
+      if (pk_decode_mon(g_sb1 + doff + (uint32_t)i * 100, true, &pk))
+        strcpy(nm, pk.nickname[0] ? pk.nickname : pk_species_name(pk.species));
+      else nm[0] = 0;
+      int y = PDNA_GBEDIT_PICKBOX_Y0 + i * PDNA_GBEDIT_PICKBOX_ROW_H;
+      bool sh = (i == sel);
+      if (sh) ui_panel(2, y - 1, UI_SCR_W - 4, PDNA_GBEDIT_PICKBOX_ROW_H, UI_SEL, UI_TITLE);
+      ui_ptext_fit(4, y, UI_SCR_W - 8, sh ? UI_SELTEXT : UI_TEXT, nm[0] ? nm : "?");
+    }
+    ui_hline(0, 147, UI_SCR_W, UI_BORDER);
+    ui_text(4, 150, UI_DIM, PDNA_GBEDIT_PICKPARTY_FOOT);
+
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    if (k & KEY_B) return -1;
+    if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : n - 1;
+    if (k & KEY_DOWN) sel = (sel + 1) % n;
+    if (k & KEY_A) return sel;
+  }
+}
+
+/* BACKLOG #226: Gen-3 twin of gb_accept_down_party_deposit() -- the party is full;
+ * offer to send one member to a box first rather than refusing the drop outright
+ * (SS11.20 item 10(c)'s own reasoning, applied to the OTHER generation so the two
+ * behave identically). Confirm decline, B on the picker, or no free PC box all
+ * refuse the WHOLE offer with nothing touched -- app_inject_to_game_deferred()
+ * only mutates g_pc AFTER it has already found a free slot, and party_release()
+ * only runs after that succeeds, so a failure here never gets past "nothing
+ * moved yet". Returns true iff a party slot is now free. */
+bool app_party_full_deposit_offer(void) {
+  char l1[64];
+  siprintf(l1, "%s %s", PDNA_XFER_PARTYFULL_L1, PDNA_XFER_PARTYFULL_L2);
+  if (!app_confirm(PDNA_XFER_PARTYFULL_TITLE, l1)) return false;
+
+  int chosen = app_pick_party_slot();
+  if (chosen < 0) return false;
+
+  uint16_t doff = g_frlg ? 0x0038 : 0x0238;
+  uint8_t* pslot = g_sb1 + doff + (uint32_t)chosen * 100;
+  uint8_t box80[80];
+  party_to_box(pslot, box80);
+
+  int out_box = -1, out_slot = -1;
+  if (!app_inject_to_game_deferred(box80, &out_box, &out_slot)) return false;  /* shows its own PC FULL */
+
+  party_release(g_sb1, g_frlg, chosen);
+  app_stage_sb1();
+  return true;
+}
+
 /* ---- shared party engine, exposed to pdna_box.c's party_strip_overlay (pdna_app.h) --
  * g_sb1/g_frlg never leave this file; these wrap the exact same calls app_party_overlay
  * itself makes below, so there is one place that knows the party's SaveBlock1 layout. */

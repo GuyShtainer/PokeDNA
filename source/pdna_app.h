@@ -392,6 +392,11 @@ int  app_party_read(PkMon out[6]);             /* decode + pk_resolve every part
  * it the converted bytes makes no slot ever match, silently duplicating the mon. */
 bool app_party_place_held(const uint8_t* held80, int target, int orig_box, int orig_slot,
                           bool orig_bank, bool can_swap, const uint8_t* src_id80);
+/* BACKLOG #226: the Gen-3 twin of gb_accept_down_party_deposit() (source/pdna_gen12.c) --
+ * offers "Send a party Pokemon to a box first?", a picker, then deposits the chosen
+ * member into the first free PC box. Confirm decline, B on the picker, or no free box
+ * all refuse with nothing touched. Returns true iff a party slot is now free. */
+bool app_party_full_deposit_offer(void);
 /* Open the full action menu (VIEW/EDIT, ITEM, LEGALITY, COPY, DUPLICATE, TO DAY-CARE,
  * EXPORT .pk, TAKE/GIVE ITEM, RELEASE, CANCEL) on party slot `slot`. If the user picks
  * MOVE TO BOX (only offered when allow_move_to_box), *tobox_hit is set true and
