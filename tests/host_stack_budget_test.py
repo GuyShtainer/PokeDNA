@@ -3109,6 +3109,30 @@ def test_b167_mutation_broken_comparison_would_never_fatal():
         os.unlink(path)
 
 
+def test_b230_discriminator_is_actually_active():
+    """The #230 fix can silently no-op: if readelf fails or its format drifts, isa_at is
+    empty, every literal falls back to the permissive pre-fix match, and every other test
+    here still passes. Assert the map is real on a real ELF, and that main() says so out
+    loud when it is not (review D1)."""
+    import os, re as _re
+    src = open(os.path.join(os.path.dirname(__file__), "..", "tools", "stack_budget.py")).read()
+    check("D1: an empty ISA map warns instead of failing over in silence",
+          "the BACKLOG #230 Thumb/ARM literal discriminator is INACTIVE" in src)
+    elf = None
+    for cand in ("PokeDNA-artless.elf", "PokeDNA.elf"):
+        pth = os.path.join(os.path.dirname(__file__), "..", cand)
+        if os.path.exists(pth):
+            elf = pth
+            break
+    if elf is None:
+        print("  (skip) no built ELF here to prove the map is populated")
+        return
+    isa = sb.read_func_isa(elf)
+    check("D1: readelf yields a real FUNC ISA map (>2000 entries) on %s" % os.path.basename(elf),
+          len(isa) > 2000)
+    check("D1: an ABS symbol never claims address 0 (review D3)", 0 not in isa)
+
+
 def main():
     print("host_stack_budget_test.py")
     test_a_estimator_no_explosion()
@@ -3201,6 +3225,7 @@ def main():
     test_b230_arm_mode_function_still_caught_via_even_literal()
     test_b230_arm_mode_function_odd_literal_rejected()
     test_b230_unknown_isa_falls_back_to_permissive_match()
+    test_b230_discriminator_is_actually_active()
     test_g2_third_party_fallback_scoped_to_non_project_functions()
     test_b157_chase_reg_to_literal_word_resolves_spilled_literal()
     test_b157_chase_reg_to_literal_word_second_level_spill_bails_honestly()
@@ -3223,5 +3248,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
-
-

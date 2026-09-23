@@ -109,9 +109,13 @@ ISR_BYTES = 64         # libtonc isr_master runs handlers on __sp_usr too (see a
 # G1 (BACKLOG #84b eighth pass, merge-blocker): an `addrtaken-ok fn (reason)` line is a
 # claim nobody re-verifies -- the reviewer's own comment attached to it (the sweep just
 # trusts the text) -- so bound what a WRONG one can cost instead of letting it hide an
-# arbitrarily heavy chain behind a one-line exemption. 256 B is generous next to every
-# legitimate exemption on file today (all <= 128 B, grep `addrtaken-ok` in
-# tools/stack_edges.txt) while still catching the reviewer's planted fixture: a literal
+# arbitrarily heavy chain behind a one-line exemption. MEASURED 2026-09-23 (BACKLOG #230
+# review D2): the heaviest legitimate exemptions on file are flashcartio_activate at 248 B
+# and _EZFO_startUp at 224 B, so the real headroom under this cap is 8 B, NOT the 128 B an
+# earlier revision of this comment claimed. One added frame on that chain turns a
+# long-standing, correct exemption into an unfixable EXEMPTION TOO HEAVY -- at which point
+# #230's fix (b) (a heavy addrtaken-ok that accounts its own chain as an independent root)
+# is the answer, and it is still open. It still catches the reviewer's planted fixture: a literal
 # stored to a global then reloaded and called through a register (trap #5) whose own
 # worst chain is thousands of bytes.
 EXEMPT_MAX_DEEPEST = 256
@@ -3278,8 +3282,12 @@ _TEXT_WORD_RE = re.compile(r'^\.word\s+0x([0-9a-f]+)$')
 # provable impossible) the old, permissive match is kept: an unproven collision must
 # never cost a function its place in the sweep.
 
+# Size is printed in hex once it exceeds five digits (readelf's own DEC_5 switch), so a
+# bare \d+ silently drops those lines. Ndx is captured so ABS/UND can be rejected: an ABS
+# symbol's value is not a code address -- __sync_synchronize is FUNC/ABS with st_value 1,
+# which would otherwise claim address 0 is Thumb (BACKLOG #230 review D3).
 _READELF_SYM_RE = re.compile(
-    r'^\s*\d+:\s+([0-9a-f]+)\s+\d+\s+(\S+)\s+\S+\s+\S+\s+\S+\s+(\S.*)$')
+    r'^\s*\d+:\s+([0-9a-f]+)\s+(?:\d+|0x[0-9a-f]+)\s+(\S+)\s+\S+\s+\S+\s+(\S+)\s+(\S.*)$')
 
 
 def dump_elf_symbols_raw(elf):
@@ -3310,7 +3318,7 @@ def parse_func_isa(text):
     conflicted = set()
     for line in text.splitlines():
         m = _READELF_SYM_RE.match(line)
-        if not m or m.group(2) != "FUNC":
+        if not m or m.group(2) != "FUNC" or m.group(3) in ("UND", "ABS"):
             continue
         try:
             val = int(m.group(1), 16)
@@ -4190,6 +4198,16 @@ def main(argv):
         # dump_text/sym_text, since it is one cheap `readelf -sW` call, not the
         # disassembly-scale cost those caches exist for.
         isa_at = read_func_isa(args.elf)
+        if not isa_at:
+            # If readelf is missing, fails, or its output stops matching, isa_at is empty
+            # and EVERY literal falls back to the permissive pre-#230 match -- the false
+            # positives return, silently, with every test still green. Failing loudly is
+            # the difference between a tool that regressed and a tool nobody noticed
+            # regressed (BACKLOG #230 review D1).
+            print("*** stack_budget: WARNING -- readelf produced no FUNC ISA map for "
+                  "%s; the BACKLOG #230 Thumb/ARM literal discriminator is INACTIVE and "
+                  "every literal falls back to the permissive match." % args.elf,
+                  file=sys.stderr)
         taken, taken_detail, taken_provenance = scan_address_taken(
             args.builddir, dump_text, analysis["name_at"], sections, section_dumps, isa_at)
         declared_or_reachable = all_impls | reachable | isr_decls | addrtaken_ok
