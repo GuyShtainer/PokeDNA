@@ -81,8 +81,12 @@ void bank_plant_gen2_badmoves_cell(uint8_t out80[80]);
  * never had a case for before this lane: every earlier plant is a native cell built
  * for the "native cell going DOWN" arms (S150-7/S150-8); this is the mirror -- a
  * Gen-3 record for BACKLOG #246's new "Gen-3 cell going DOWN into a GB save" arm.
- * `recs` is the same 2400-byte box buffer bank_plant_box0 takes; only slot 0 (bytes
- * 0..79) is written, slots 1..29 stay the caller's own memset-zero empty cells. */
+ * `recs` is the same 2400-byte box buffer bank_plant_box0 takes; slot 0 (bytes 0..79)
+ * holds the plain cell above, now carrying a POTION (BACKLOG #260, item-shots lane --
+ * cases B/C's fixture). Slot 1 (bytes 80..159, BACKLOG #260) is a SEPARATE genuine
+ * Gen-3-native record (gen3_build_mon, not the gen12_convert up-conversion pipeline)
+ * with a nonzero Secret ID and the same item, for case F3's "+ Secret ID" suffix.
+ * Slots 2..29 stay the caller's own memset-zero empty cells. */
 void bank_plant_g3_box(uint8_t* recs);
 
 /* BACKLOG #150 S150-9 decision 12: the planted-ledger read shim (#179(a), the READ
