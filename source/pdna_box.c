@@ -4014,24 +4014,29 @@ out:
  * (hardware-testing-protocol; the emulator cannot prove a stack-overflow refusal is
  * correct on real silicon, only that the code path the refusal message takes is
  * reachable and renders). */
-#define PDNA_PARTY_STRIP_NEED 7224   /* re-derived 2026-09-15 (BACKLOG #150 S150-3 review pass,
-                                      * D-Q4, growth 8 B artless / 8 B normal, both <= the 64 B
-                                      * ceiling): review F4 turned app_mon_menu_readonly's blunt
-                                      * early return into a `bool ro_native` + whitelist branch,
-                                      * on THIS chain (party_strip_overlay -> app_party_mon_menu
-                                      * -> app_mon_menu -> app_mon_menu_readonly, reached with
-                                      * g_src_ro true for the whole party-strip visit) -- the #1
-                                      * chain's own total grew from 7,152 to 7,160 B (artless,
-                                      * still dominates over normal's 7,144 -> 7,152). New need =
-                                      * 7,160 + 64 ISR = 7,224. The chain's own shape is
-                                      * otherwise unchanged from the prior derivation below.
-                                      * (was 7,216 = 7,152 + 64 ISR, S150-2 D-Q1; was 7,192 =
-                                      * 7,128 + 64 ISR, BACKLOG #93; was 6,616 = 6,552 + 64 from
-                                      * #102); #1 chain is still
-                                      * gb_daycare_hook's (DUPLICATE/TO DAY-CARE/EXPORT rows
-                                      * on the read-only GB mon menu, reachable through
-                                      * app_mon_menu from this same root), not the old
-                                      * app_paste_gb_merge/app_commit_sb1 branch */
+#define PDNA_PARTY_STRIP_NEED 7264   /* re-derived 2026-09-23 (BACKLOG #150 S150-8c/#174 review D2):
+                                      * the #1 chain (via gb_daycare_hook, see the comment block
+                                      * above) grew 7,152 -> 7,200 B artless (party_strip_overlay's
+                                      * own frame 936 -> 984 B, +48 B, inside the 64 B stop-licence,
+                                      * from this lane's native-cell party-landing branch), +64 B
+                                      * ISR = 7,264. The WORSE (artless) of the two variants still
+                                      * sets the constant (normal is 7,192 + 64 = 7,256). RE-MEASURED
+                                      * on this exact tree:
+                                      *   python3 tools/stack_budget.py --elf PokeDNA-artless.elf \
+                                      *       --builddir "$(pwd)/build-artless" \
+                                      *       --root pcp_open_party_strip_inner --top 6
+                                      *   python3 tools/stack_budget.py --elf PokeDNA.elf \
+                                      *       --builddir "$(pwd)/build" \
+                                      *       --root pcp_open_party_strip_inner --top 1
+                                      * confirms 7,264 artless / 7,256 normal.
+                                      *
+                                      * Older history (was 7,224 = 7,160 + 64 ISR, BACKLOG #150
+                                      * S150-3 review D-Q4; was 7,216 = 7,152 + 64 ISR, S150-2
+                                      * D-Q1; was 7,192 = 7,128 + 64 ISR, BACKLOG #93; was 6,616 =
+                                      * 6,552 + 64 from #102) -- #1 chain is still gb_daycare_hook's
+                                      * (DUPLICATE/TO DAY-CARE/EXPORT rows on the read-only GB mon
+                                      * menu, reachable through app_mon_menu from this same root),
+                                      * not the old app_paste_gb_merge/app_commit_sb1 branch. */
 
 static void __attribute__((noinline)) pcp_open_party_strip_inner(BoxSource* src, int box,
                                                                   int* cur, bool* need_full) {
