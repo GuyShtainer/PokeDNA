@@ -4195,25 +4195,31 @@ out:
  * (hardware-testing-protocol; the emulator cannot prove a stack-overflow refusal is
  * correct on real silicon, only that the code path the refusal message takes is
  * reachable and renders). */
-#define PDNA_PARTY_STRIP_NEED 7296   /* re-derived 2026-09-23 (BACKLOG #226 review D1/D2 fix pass):
-                                      * the #1 chain (via gb_daycare_hook, see the comment block
-                                      * above) grew again, 7,200 -> 7,232 B artless (party_strip_
-                                      * overlay's own frame 984 -> 1,016 B, +32 B, inside the 64 B
-                                      * stop-licence) -- drop_held (inlined into party_strip_overlay)
-                                      * picked up the D1 rollback's dep_box/dep_slot locals and the
-                                      * D1(a) hoisted 16(g) SAVE NOW? confirm's own char l1[64], which
-                                      * the compiler partially folded onto an existing scratch slot
-                                      * (+32 B measured, not +72 B the raw declarations would suggest).
-                                      * +64 B ISR = 7,296. The WORSE (artless) of the two variants
-                                      * still sets the constant (normal is 7,224 + 64 = 7,288).
-                                      * RE-MEASURED on this exact tree:
+#define PDNA_PARTY_STRIP_NEED 7392   /* re-derived 2026-09-23 (BACKLOG #229, lane mail-integrity):
+                                      * app_create_mon (inlined into app_mon_menu, reached through
+                                      * app_party_mon_menu on this same #1 chain) gained an is_party
+                                      * branch -- a new uint8_t p100[100] plus the box_to_party() call
+                                      * that fills it -- growing app_mon_menu's own frame 896 -> 992 B
+                                      * (+96 B artless; the normal build's chain moved the same amount,
+                                      * 7,224 -> 7,320). New need = 7,328 + 64 ISR = 7,392 (artless
+                                      * dominates). RE-MEASURED on this exact tree:
                                       *   python3 tools/stack_budget.py --elf PokeDNA-artless.elf \
                                       *       --builddir "$(pwd)/build-artless" \
                                       *       --root pcp_open_party_strip_inner --top 6
                                       *   python3 tools/stack_budget.py --elf PokeDNA.elf \
                                       *       --builddir "$(pwd)/build" \
                                       *       --root pcp_open_party_strip_inner --top 1
-                                      * confirms 7,296 artless / 7,288 normal.
+                                      * confirms 7,392 artless / 7,384 normal. #1 chain is UNCHANGED
+                                      * in shape (still gb_daycare_hook's, via app_mon_menu_readonly --
+                                      * app_create_mon's own is_party branch is not itself reachable
+                                      * from this root today, since xg_create_row's `!is_party` gate
+                                      * still hides CREATE on the party; only app_mon_menu's compiled
+                                      * FRAME SIZE grew, because app_create_mon is unconditionally
+                                      * inlined regardless of which branch a given call can reach).
+                                      *
+                                      * Previously 7,296 = 7,232 + 64 ISR (BACKLOG #226 review D1/D2
+                                      * fix pass: party_strip_overlay's own frame 984 -> 1,016 B, +32 B,
+                                      * drop_held's D1 rollback locals + D1(a)'s hoisted char l1[64]).
                                       *
                                       * Previously 7,264 artless / 7,256 normal (BACKLOG #150 S150-8c/
                                       * #174 review D2, native-cell party landing).

@@ -5375,7 +5375,19 @@ int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool ori
  * to customise, then write + commit. Returns true if the user kept it. Omega-only.
  * The summary — not the flat field list — is deliberate: making a Pokémon should look
  * like inspecting one, and the summary reaches all 40 editable fields anyway. */
-static bool app_create_mon(uint8_t* rec, AppCommitFn commit, uint8_t* block) {
+/* BACKLOG #229: `is_party` is real, not decoration -- app_create_mon builds its record
+ * entirely in box form (species picker, spread roll, editor all operate on an 80-byte
+ * `tmp`/`out`), and the final write below branches on it: a box slot gets the 80 bytes
+ * as before, a party slot gets those same 80 bytes properly widened through
+ * box_to_party() -- the SAME choke point party_place_held's own ADD arm and
+ * app_party_deposit_undo already use for every other box->party producer -- so the
+ * plaintext tail (status/level/mail/current+max HP/the five stats) is never left stale.
+ * The CREATE row itself is still hidden on the party by xg_create_row's `!is_party`
+ * gate at its one call site (pdna_main.c's app_mon_menu, action-row build); this
+ * parameter makes the function itself correct for the day that gate moves, rather than
+ * leaving an 80-into-100 write waiting behind a runtime `if` nobody but that gate is
+ * watching. */
+static bool app_create_mon(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* block) {
   /* BACKLOG #120 S2 F1 (review finding): defence in depth -- the CREATE row above
    * should already have hidden this action on a Bank cell with no live Gen-3 save,
    * but this is the actual write-time gate (same posture as app_inject_to_game's
@@ -5502,6 +5514,18 @@ static bool app_create_mon(uint8_t* rec, AppCommitFn commit, uint8_t* block) {
              "it was met here. May be flagged.");
   }
 
+  if (is_party) {
+    /* BACKLOG #229: widen through the same choke point every other box->party producer
+     * uses (party_place_held's ADD arm: `uint8_t p100[100]; box_to_party(held80, p100);`)
+     * rather than a raw 80-byte memcpy into a 100-byte slot -- box_to_party derives the
+     * plaintext level/battle-stats tail via the editor's own em_set_party_flag path, so
+     * status/mail/current+max HP/the five stats all land correctly instead of staying
+     * whatever the caller's buffer happened to hold before. */
+    uint8_t p100[100];
+    box_to_party(out, p100);
+    memcpy(rec, p100, 100);
+    return app_commit_with_dex(rec, true, commit, block);   /* gated write + auto-register dex */
+  }
   memcpy(rec, out, 80);
   return app_commit_with_dex(rec, false, commit, block);   /* gated write + auto-register dex (PC only) */
 }
@@ -6122,7 +6146,7 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
         case A_RELEASE: return app_release(rec, is_party, commit, block, box, slot);
         case A_TAKEITEM:return app_take_item(rec, is_party, commit);
         case A_GIVEITEM:return app_give_item(rec, is_party, commit);
-        case A_CREATE:  return app_create_mon(rec, commit, block);   /* build a new mon into this empty slot */
+        case A_CREATE:  return app_create_mon(rec, is_party, commit, block);   /* build a new mon into this empty slot */
         default:        return false;                    /* CANCEL */
       }
     }
