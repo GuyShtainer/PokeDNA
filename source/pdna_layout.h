@@ -2189,6 +2189,7 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_GBSCR_ACT_OK    "OK"
 #define PDNA_GBSCR_ACT_BACK  "BACK"
 #define PDNA_GBSCR_ACT_SIZE  "SIZE"
+#define PDNA_GBSCR_ACT_PLACE "PLACE"
 
 /* M1 (BACKLOG #91) Gen-1 Map screen: L/R are the shell's own SIZE toggle
  * (same as SELECT) on this screen -- the D-pad alone pans -- so there is no
@@ -2198,6 +2199,24 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * GBSCR_COLS (20) columns at 1:1 AND stretched (the same cell-coordinate
  * text, just a different pixel scale -- see tests/host_textfit_test.c). */
 #define PDNA_GBMAP_HINT      "D-PAD PAN"
+
+/* M3 (BACKLOG #91) Gen-1 Map teleport -- cursor+A+confirm, mirroring
+ * pdna_map.c's own place-confirm flow (source/gen3_warp.h's design intent,
+ * carried here through source/gb1_warp.h since Gen 1 has no
+ * continueGameWarp-style indirection to write instead). */
+#define PDNA_GBMAP_CONFIRM_TITLE   "PLACE CHARACTER HERE?"
+#define PDNA_GBMAP_PLACED_L1       "Load your save to appear"
+#define PDNA_GBMAP_PLACED_L2       "there."
+#define PDNA_GBMAP_CANNOT_L1       "That spot is outside"
+#define PDNA_GBMAP_CANNOT_L2       "the map."
+#define PDNA_GBMAP_UNDO_TITLE      "UNDO THE LAST PLACEMENT?"
+#define PDNA_GBMAP_RESTORED_L1     "Restored to where you"
+#define PDNA_GBMAP_RESTORED_L2     "were before placing."
+/* map-gen1 review D2: same "warn, do not refuse" posture pdna_map.c's own Gen-3
+ * warp confirm uses ("Tile is NOT walkable!") -- you can still Fly/Dig/Teleport off
+ * an unwalkable tile, so this is a warning line appended to the confirm dialog's
+ * own l1, not a refusal. */
+#define PDNA_GBMAP_NOT_WALKABLE    " - not walkable!"
 
 /* M1-G2 (BACKLOG #91) Gen-2 Map screen: the one genuinely new silent-
  * corruption risk in this slice (design doc §10 risk 1) -- a Gold save

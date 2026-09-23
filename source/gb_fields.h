@@ -130,6 +130,29 @@ typedef enum {
    * show for dex entry #201. GS/Crystal only; Gen 1 has no Unown dex entry at all. */
   GBF_FIRST_UNOWN_SEEN,   /* GBF_STATUS_FLAGS itself was appended by BACKLOG #96 above */
 
+  /* map-gen1 review D1, appended (same API-id rule as every prior append above):
+   * wCurrentTileBlockMapViewPointer -- $D35F Red / $D35E Yellow, both at save offset
+   * 0x260B (2 bytes, LITTLE-endian -- the one exception to this table's usual
+   * big-endian convention, since this is a raw copy of a 16-bit WRAM pointer, not a
+   * player-facing numeric field). LoadCurrentMapView renders from THIS pointer, not
+   * from wXBlockCoord/wYBlockCoord -- see source/gb1_warp.h's own top comment for why
+   * a Gen-1 teleport must write it. Red/Yellow only; Gen 2 has no equivalent field
+   * (its own current-map-view state is recomputed from wMapGroup/wMapNumber on load). */
+  GBF_POS_VIEWPTR,
+
+  /* map-gen1 R-A, appended (same API-id rule as every prior append above):
+   * wDestinationWarpID -- $D42F Red / $D42E Yellow, save offset 0x26DB. On a map
+   * whose tileset is in DungeonTilesets (engine/overworld/tilesets.asm:38-53 --
+   * every GYM, CAVERN, FOREST, MANSION, FACILITY, CEMETERY, LOBBY, LAB, GATE, SHIP,
+   * MUSEUM) the hPreviousTileset guard is skipped and, if this byte != 0xFF,
+   * LoadDestinationWarpPosition overwrites the view pointer/Y/X gb1warp just wrote
+   * from the map's own warp_to table. gbmap_write_pos writes 0xFF here as part of the
+   * SAME position batch -- the game's own "no warp pending" sentinel, true after any
+   * teleport since the player is simply standing somewhere, not arriving via a warp --
+   * which makes that overwrite structurally unreachable rather than empirically
+   * unobserved on one map. Red/Yellow only; Gen 2 has no equivalent byte. */
+  GBF_DEST_WARP_ID,
+
   GBF_FIELD_COUNT
 } GbField;
 

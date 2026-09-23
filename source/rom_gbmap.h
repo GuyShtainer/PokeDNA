@@ -144,6 +144,10 @@ typedef struct {
   uint8_t  gfx_bank;
   uint32_t block_off;   /* blockset: 16 B per block id (4x4 tile ids)        */
   uint32_t gfx_off;     /* tile graphics: 16 B per tile id, 2bpp planar, raw */
+  uint32_t coll_off;    /* map-gen1 review D2: _Coll -- a 0xFF-terminated list
+                          * of passable tile ids, pointed to by the tileset
+                          * header's own offset 0x05 (home/overworld.asm:
+                          * 1259-1276, reference only) */
 } GbMap1Tileset;
 
 /* Locate the 3 tables above. `scratch`/`scratch_len` (>= ROM_GBMAP_SCRATCH_MIN)
@@ -171,5 +175,16 @@ bool rgm1_block(const RomGbMap1* g, const GbMap1Tileset* ts, uint8_t block_id,
  * of `ts`'s own tile graphics. */
 bool rgm1_tile2bpp(const RomGbMap1* g, const GbMap1Tileset* ts, uint8_t tile_id,
                     uint8_t out16[16]);
+
+/* map-gen1 review D2: is `block_id` (of `ts`'s own blockset) walkable? Reads the
+ * block's 16 tile ids and checks its own representative tile -- blk[4], the SAME
+ * index IsTileWalkable's caller uses (home/overworld.asm, reference only) -- against
+ * `ts->coll_off`'s 0xFF-terminated passable-tile-id list, capped at 256 entries
+ * (golden rule 2: every loop needs a provable bound). `*out` is only meaningful on a
+ * true return; false means the block or the collision list could not be read at all
+ * (never trust silence as an answer either way -- the caller warns only when this
+ * returns true and `*out` is false, never on a read failure). */
+bool rgm1_block_walkable(const RomGbMap1* g, const GbMap1Tileset* ts, uint8_t block_id,
+                          bool* out);
 
 #endif /* ROM_GBMAP_H */
