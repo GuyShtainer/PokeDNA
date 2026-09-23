@@ -3831,14 +3831,19 @@ static int party_strip_overlay(BoxSource* src, int box, int* cur,
         int n_now = app_party_n();
         bool native = bc_is_native(s_held);
         bool converted = false; uint8_t conv[80];
-        if (native && sel != n_now) {
-          boxoam_suspend(); snd_deny();
-          msg_wait(PDNA_XFER_PARTYSWAP_TITLE, UI_WARN, PDNA_XFER_PARTYSWAP_L1, PDNA_XFER_PARTYSWAP_L2);
-          boxoam_resume();
-          placed = false;
-        } else if (native && n_now >= 6) {
+        /* BACKLOG #174 review D4: with a FULL party, addslot == -1 so rows == n_now
+         * and `sel == n_now` (the CANCEL row) is consumed by the CANCEL branch before
+         * this switch is ever reached -- sel here can only be in [0, n_now-1], which
+         * is NEVER != n_now, so the old PARTYSWAP-first order made PARTYFULL3
+         * unreachable (OQ3 never delivered). Full-party must be decided FIRST. */
+        if (native && n_now >= 6) {
           boxoam_suspend(); snd_deny();
           msg_wait(PDNA_XFER_PARTYFULL3_TITLE, UI_WARN, PDNA_XFER_PARTYFULL3_L1, PDNA_XFER_PARTYFULL3_L2);
+          boxoam_resume();
+          placed = false;
+        } else if (native && sel != n_now) {
+          boxoam_suspend(); snd_deny();
+          msg_wait(PDNA_XFER_PARTYSWAP_TITLE, UI_WARN, PDNA_XFER_PARTYSWAP_L1, PDNA_XFER_PARTYSWAP_L2);
           boxoam_resume();
           placed = false;
         } else if (native && s_orig_scope == BOXSCOPE_BANK && s_orig_slot >= 0 && app_bank_defer_full()) {
