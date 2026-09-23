@@ -4771,18 +4771,20 @@ int pdna_box(BoxSource* src) {
         /* BACKLOG #244: rename isn't offered on Gen 1 (gbsrc_can_rename_impl:
          * gbbn_supported() refuses -- Gen 1 has no box-name table at all), the same
          * reason #154 already hides the row from box_options_menu's own rename entry.
-         * This shortcut used to just snd_deny() here -- "a control that exists only
-         * to say no", the dead-refusal class the reviews keep catching, one route
-         * behind #154's fix. Repurpose it instead of leaving a silent beep: fall
-         * through to the SAME box_options_menu SELECT already opens (can_boxops does
-         * not discriminate by generation -- EXPORT ALL/RELEASE ALL are still real
-         * rows on a writable Gen-1 box), so the two routes agree on what A does here. */
-        else if (src->can_boxops ? src->can_boxops(box) : src_can_lift(src, box, -1)) {
-          boxoam_suspend(); box_options_menu(src, box); boxoam_resume();
-          recs = src->records(box); box_decode(src, recs, box);
-          s_oam_reload = true; need_full = true;
+         * This shortcut used to just snd_deny() here with no explanation -- "a
+         * control that exists only to say no", the dead-refusal class the reviews
+         * keep catching, one route behind #154's fix. #154's own row has no room for
+         * a dialog (it is hidden, never drawn); this direct hotkey has no row to
+         * hide, so it repurposes the refusal instead: explain why, reusing the
+         * IDENTICAL wording box_options_menu's own rename case already shows for the
+         * same condition (its defense-in-depth branch, a == 0, just above) -- one
+         * message, two routes, never a silent beep. */
+        else {
+          snd_deny();
+          boxoam_suspend();                                              /* full-screen dialog — same bracket as the rename branch above */
+          msg_wait("NO BOX NAMES", UI_WARN, "This game has no box names.", 0);
+          boxoam_resume();
         }
-        else { snd_deny(); }
       }
     }
     else if (k & KEY_LEFT)  cur = grid_lr_step(cur, cap, false);   /* BACKLOG #200 F2 */
