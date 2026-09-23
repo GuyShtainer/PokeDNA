@@ -237,15 +237,22 @@ PASTE_OUT_RE = re.compile(
     r"paste80: (\d+) bad slot\(s\), (\d+) filled, into box (\d+) slot (\d+)")
 LIST_MOVES_RE = re.compile(
     r"^    moves=([\d,]+) pp=([\d,]+) ppmax=([\d,]+) ppup=([\d,]+)$")
+# F4(iii) (xfer-items fix pass): a THIRD line, right after the moves= line, only ever
+# present when --moves was also passed (tests/host_gbsurgery_tool.c's list_box).
+LIST_ITEM_RE = re.compile(r"^    item=(\d+)$")
 
 
 def parse_list_moves(text: str, box: int, slot: int):
-    """One slot's moves/pp/ppmax/ppup out of `--list --moves`' stdout (BACKLOG #211) --
-    the new line sits immediately after the matching "  slot N: ..." line inside the
-    matching "box B: count=" section. LIST_BOX_RE/LIST_SLOT_RE (above) stay the parser
-    of record for everything they already covered; this only reads the one new line
-    neither of them looks at. None if the (box, slot) pair, or its moves line, is not
-    found (a caller must treat that as a hard failure, not an empty result)."""
+    """One slot's moves/pp/ppmax/ppup (+ item, F4(iii)) out of `--list --moves`'
+    stdout (BACKLOG #211) -- the new line(s) sit immediately after the matching
+    "  slot N: ..." line inside the matching "box B: count=" section. LIST_BOX_RE/
+    LIST_SLOT_RE (above) stay the parser of record for everything they already
+    covered; this only reads the new lines neither of them looks at. None if the
+    (box, slot) pair, or its moves line, is not found (a caller must treat that as a
+    hard failure, not an empty result). `item` is None when the item= line is absent
+    (a build of this tool predating F4(iii)) rather than a hard failure -- run_paste_
+    case's own PRE/CONTENT/POST checks never look at it, only run_paste_item_case
+    does, and that case checks for None itself."""
     lines = text.splitlines()
     cur_box = None
     for i, line in enumerate(lines):
@@ -263,8 +270,13 @@ def parse_list_moves(text: str, box: int, slot: int):
             if not mv:
                 return None
             to4 = lambda s: [int(x) for x in s.split(",")]
+            item = None
+            if i + 2 < len(lines):
+                im = LIST_ITEM_RE.match(lines[i + 2])
+                if im:
+                    item = int(im.group(1))
             return {"moves": to4(mv.group(1)), "pp": to4(mv.group(2)),
-                    "ppmax": to4(mv.group(3)), "ppup": to4(mv.group(4))}
+                    "ppmax": to4(mv.group(3)), "ppup": to4(mv.group(4)), "item": item}
     return None
 
 
@@ -290,15 +302,21 @@ def build_extract_tool(scratch: Path) -> Path | None:
     return binary
 
 
-def extract_paste_record(extract_binary: Path, emerald_sav: Path, out_path: Path) -> bool:
+def extract_paste_record(extract_binary: Path, emerald_sav: Path, out_path: Path,
+                         item: int | None = None) -> bool:
     """One real corpus record (box 0 slot 0, per extract_gen3_record.c's own picker),
     re-moved to PASTE_MOVES. False on any failure (missing Emerald.sav, a decode
-    refusal) -- the caller skips, it never falls back to a hand-built record."""
+    refusal) -- the caller skips, it never falls back to a hand-built record.
+    F4(iii): `item` (Gen-3 item id) also forces the record's held item via
+    extract_gen3_record.c's own --item flag, mirroring --moves; None leaves the
+    picked record's own held item alone (run_paste_case's original behavior)."""
     if not emerald_sav.exists():
         return False
     moves_arg = ",".join(str(m) for m in PASTE_MOVES)
-    proc = subprocess.run([str(extract_binary), str(emerald_sav), str(out_path),
-                           "--moves", moves_arg], capture_output=True, text=True)
+    cmd = [str(extract_binary), str(emerald_sav), str(out_path), "--moves", moves_arg]
+    if item is not None:
+        cmd += ["--item", str(item)]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
     return proc.returncode == 0 and out_path.exists()
 
 
@@ -549,6 +567,91 @@ def run_paste_case(name, info, rom, sav, work, binary, python, vendor, tally,
         if tail:
             detail += " | stderr: " + tail
     tally.record(label, ok, detail)
+
+
+# F4(iii) (xfer-items fix pass, BACKLOG #248/#249 review): a held item's Gen-3 id.
+# POTION (Gen-3 13) -> Gen-2 POTION (18/0x12) via item_g3_to_g2 -- both a real,
+# ordinary item and, unlike PASTE_MOVES' seed, never cart-restricted (no CARD KEY/
+# BICYCLE mask to worry about, gen3_to_gb.c's set_item() only checks GB_GEN2 -> mapped
+# != 0, no xr_game_item_mask involved on this arm at all).
+PASTE_ITEM_G3 = 13
+PASTE_ITEM_G2_WANT = 18
+
+
+def run_paste_item_case(name, info, rom, sav, work, binary, python, vendor, tally,
+                        sections, rec_path):
+    """F4(iii) (xfer-items fix pass review): the lane added zero retail cases for a
+    feature that writes items into a real save -- run_paste_case above only seeds
+    PASTE_MOVES, never a held item, so gen3_to_gb.c's set_item() (the Gen-2 HELD-item
+    arm gb_bank_down_g3/gb_paste_write's screen relies on) has never been proven to
+    survive a real Gold/Crystal boot. Gold/Crystal only (`rec_path` here is built with
+    --item, Gen 1 has no held-item concept at all -- gb_set_held_item refuses it, the
+    same reasoning run_helditem_case above already documents).
+
+    Same PRE/CONTENT/POST shape as run_paste_case: an independent --list --moves
+    re-parse of the item= line the surgery step just wrote, a real boot that the game
+    must ACCEPT, then a fresh SRAM dump re-parsed the identical way and compared
+    byte-for-byte (dict equality on parse_list_moves' own return, item included) to
+    the PRE snapshot."""
+    label = "paste item (BACKLOG #248/#249 review F4(iii))"
+    if info["gen"] == 1:
+        tally.skip_case(label, "Gen 1 has no held-item field; gb_set_held_item refuses it")
+        return
+    if rec_path is None:
+        tally.skip_case(label, "no corpus Emerald.sav / tools/extract_gen3_record.c build")
+        return
+    box = first_room_box(sections)
+    if box is None:
+        tally.skip_case(label, "every storage box this --list saw is full")
+        return
+
+    edited = work / "paste_item.sav"
+    rc, out, err = run_surgery(binary, sav, edited, [["paste80", str(box), str(rec_path)]],
+                               rom=rom)
+    if rc != 0:
+        tally.record(label, False, f"surgery refused: {err.strip()}")
+        return
+    m = PASTE_OUT_RE.search(out)
+    if not m:
+        tally.record(label, False, f"could not parse --op paste80 stdout: {out!r}")
+        return
+    _, _, box_got, slot = (int(m.group(i)) for i in range(1, 5))
+
+    pre_list = subprocess.run([str(binary), "--in", str(edited), "--list", "--moves"],
+                              capture_output=True, text=True).stdout
+    pre = parse_list_moves(pre_list, box_got, slot)
+    if pre is None:
+        tally.record(label, False,
+                    f"could not re-parse box {box_got} slot {slot} out of --list --moves")
+        return
+    pre_ok = pre.get("item") == PASTE_ITEM_G2_WANT
+
+    dump_path = work / "paste_item_dump.sav"
+    rc2, rep, out2, err2 = boot(python, rom, edited, work / "paste_item", vendor,
+                                work / "paste_item.json", dump_path=dump_path,
+                                extra_args=["--expect", "accept"])
+    content_ok = (rc2 == 0) and rep.get("verdict") == "accept"
+
+    post = None
+    if dump_path.exists():
+        post_list = subprocess.run([str(binary), "--in", str(dump_path), "--list", "--moves"],
+                                   capture_output=True, text=True).stdout
+        post = parse_list_moves(post_list, box_got, slot)
+    post_ok = post == pre
+
+    ok = pre_ok and content_ok and post_ok
+    detail = (f"box={box_got} slot={slot} pre_item={pre.get('item')} "
+             f"want={PASTE_ITEM_G2_WANT} content_ok={content_ok} "
+             f"verdict={rep.get('verdict')} post_item={(post or {}).get('item')}")
+    if not ok:
+        fails = [f.strip() for f in out2.splitlines() if f.strip().startswith("FAIL:")]
+        if fails:
+            detail += " | " + "; ".join(fails)
+        tail = stderr_tail(err2)
+        if tail:
+            detail += " | stderr: " + tail
+    tally.record(label, ok, detail)
+
 
 # BACKLOG #49 P1a — gb_trainer.h's badges/name setters (source/gb_trainer.c), via the
 # surgery tool's new --op badges / --op name. WRAM anchors from
@@ -2495,7 +2598,8 @@ def create_case(python, vendor, work, rom, gen, sav, orig, sections, party_count
                tally, label, extra_check=extra_check)
 
 
-def run_game(name, info, rom, sav, scratch, binary, python, vendor, paste_rec_path=None):
+def run_game(name, info, rom, sav, scratch, binary, python, vendor, paste_rec_path=None,
+            paste_item_rec_path=None):
     tally = Tally(sav.name)
     work = scratch / name
     work.mkdir(parents=True, exist_ok=True)
@@ -2628,6 +2732,14 @@ def run_game(name, info, rom, sav, scratch, binary, python, vendor, paste_rec_pa
     if name in ("gold", "red"):
         run_paste_case(name, info, rom, sav, work, binary, python, vendor, tally,
                        sections, paste_rec_path)
+
+    # ---- 2m1. F4(iii) (xfer-items fix pass review): a Gen-3 held item, through the
+    # SAME --op paste80 pipeline, must survive into a REAL Gold save -- run_paste_case
+    # above never seeds an item. Gold only (Crystal is the same code path per the
+    # convention just above; run_paste_item_case itself also skips Gen 1 by name). ----
+    if name == "gold":
+        run_paste_item_case(name, info, rom, sav, work, binary, python, vendor, tally,
+                            sections, paste_item_rec_path)
 
     if party_count0 < 2:
         tally.skip_case("nickname/level/delete/move",
@@ -2835,6 +2947,20 @@ def main(argv=None):
             print(f"[skip] paste (BACKLOG #211): could not extract a record from "
                   f"{emerald_sav} -- every game's paste case will skip", file=sys.stderr)
 
+    # F4(iii) (xfer-items fix pass review): a SECOND record, built the same way but
+    # with --item PASTE_ITEM_G3 forced -- built ONCE, not per game (only the Gold case
+    # uses it, same skip-safe posture as paste_rec_path above).
+    paste_item_rec_path = None
+    if extract_binary is not None:
+        emerald_sav = corpus.parent / "Emerald.sav"
+        item_candidate = scratch / "paste_item_record.bin"
+        if extract_paste_record(extract_binary, emerald_sav, item_candidate,
+                                item=PASTE_ITEM_G3):
+            paste_item_rec_path = item_candidate
+        else:
+            print(f"[skip] paste item (F4(iii)): could not extract a record from "
+                  f"{emerald_sav} -- Gold's paste-item case will skip", file=sys.stderr)
+
     total_ok = total_fail = total_skip = 0
 
     # BACKLOG #225: Gen-3-only, has nothing to do with which GB title the rest of this
@@ -2862,7 +2988,8 @@ def main(argv=None):
             total_skip += 1
             continue
         tally = run_game(name, info, rom, sav, scratch, binary, a.python, a.mgba_vendor,
-                         paste_rec_path=paste_rec_path)
+                         paste_rec_path=paste_rec_path,
+                         paste_item_rec_path=paste_item_rec_path)
         total_ok += tally.ok
         total_fail += tally.fail
         total_skip += tally.skip
