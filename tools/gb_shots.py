@@ -30,10 +30,10 @@ Two fused images (built by the caller, this script does not fuse anything):
 BACKLOG #51/#50 (2026-09-07, this session): run_gold_gender() shows the new Gender
 row (source/gb_editor.c's GBE_GENDER) flipping Bulbasaur M -> F live, header and
 all. run_gold_create()/run_red_create() drive the CREATE action on an empty cell
-(source/pdna_gen12.c's gb_create_hook) through the species picker, to the honest
-"Needs your Gen 1/2 ROM" wall gb_create_learn()'s own ROM lookup hits with no
-flashcart in the emulator — the same shape 07b_save_refusal/10b_paste_refusal
-already use for an SD-backed action.
+(source/pdna_gen12.c's gb_create_hook) through the species picker. (BACKLOG #278:
+Gen 1 no longer hits a "Needs your Gen 1/2 ROM" wall with no ROM -- the generated
+base table builds the level-1 mon and run_red_create() shoots its summary; Gen 2's
+run_gold_create() is unchanged.)
 
 BACKLOG #50 UX-parity re-shoot (2026-09-07/08, Guy: "Pokemon creation is not from
 the Pokedex view -- fix that", "I want the Gen-1/2 versions to look the same from
@@ -1014,7 +1014,11 @@ def run_red_create(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     s = Session(core_mod, image_mod, rom, out_dir, "red_")
     print("== Red.sav (Gen 1) -- BACKLOG #50 CREATE (UX-parity re-shoot) ==")
     s.tap("A", settle=BIG_SETTLE)          # info -> box grid
-    s.press_n("R", 4, settle=SETTLE)       # -> GB BOX5, 19/20 (one real empty slot)
+    # BIG_SETTLE, not SETTLE (BACKLOG #278): the box-switch repaint outlasts SETTLE's 12 frames,
+    # so the next R lands mid-repaint and is swallowed -- 4 fast presses stopped on BOX4 (20/20,
+    # NO empty slot), and CREATE's tap then opened the Lapras summary. 4 presses with a full
+    # settle each reach GB BOX5 (19/20).
+    s.press_n("R", 4, settle=BIG_SETTLE)   # -> GB BOX5, 19/20 (one real empty slot)
     s.press_n("DOWN", 3)
     s.press_n("RIGHT", 1)                  # cursor -> slot 19, the one real empty slot
     s.shot("13_cursor_on_empty", "#50: Gen 1 — cursor on the one real empty slot (GB BOX5, 19/20)")
@@ -1055,16 +1059,15 @@ def run_red_create(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
                                                 "filter -- Bulbasaur (dex 1) selected again")
 
     s.tap("A", settle=BIG_SETTLE)          # pick Bulbasaur -> gb_create_learn (level + moveset)
-    s.shot("13d_no_rom_refusal", "#265: Gen 1 with no registered ROM -- no choice screen (nothing "
-                                  "to copy from), and it still hits the honest \"Needs your Gen 1/2 "
-                                  "ROM\" wall: unlike Gen 2, Gen 1 has NO in-tree base-stat/type "
-                                  "table (gb_edit.h; PokeDNA ships no Game Freak data), so even a "
-                                  "from-scratch build needs the ROM's 28-byte base row",
-           claim=["Needs your Gen 1/2 ROM"])
-    s.skip("13e_new_mon_summary",
-           "same gap as Gold's 14e_new_mon_legit_copy: gb_create_learn()'s ROM lookup needs a real cartridge, and "
-           "the summary it would open is now in CREATE mode (NEW chip, UX-parity). "
-           "Hardware-only: docs/HW-TEST-2026-09-05-GB-ARC.md §O.")
+    # BACKLOG #278: this shot used to assert the "Needs your Gen 1/2 ROM" wall. It is gone: the
+    # generated Gen-1 base table (source/gb1_base_gen.c, #276) lets a no-ROM create build the
+    # level-1 mon itself -- no choice screen, straight into the new mon's summary (CREATE mode).
+    s.shot("13d_new_mon_summary", "#278: Gen 1 with no registered ROM -- picking Bulbasaur shows no "
+                                   "choice prompt and builds the level-1 mon from the generated base "
+                                   "table (source/gb1_base_gen.c): the new mon's summary opens in EDIT, "
+                                   "INFO card, #001 BULBASAUR Lv1, Name BULBASAUR, GRASS/POISON chips",
+           claim=["BULBASAUR", "Lv1"],
+           claim_absent=["Needs your Gen 1/2 ROM"])
     return s
 
 
