@@ -850,6 +850,7 @@ static void wp_restore_rect_rom(int x0, int y0, int x1, int y1) {
   const uint8_t* tiles = (const uint8_t*)mon_decomp;
   int tx0 = (x0 - WP_X) / 8, tx1 = (x1 - 1 - WP_X) / 8;
   int ty0 = (y0 - WP_Y) / 8, ty1 = (y1 - 1 - WP_Y) / 8;
+  if (tx1 > 19) tx1 = 19;          /* the map is 20 tiles wide: index 20 would read the NEXT row's first tile */
   for (int ty = ty0; ty <= ty1; ty++)
     for (int tx = tx0; tx <= tx1; tx++) {
       uint16_t e = s_wp_map[ty * 20 + tx];
@@ -901,6 +902,7 @@ static void wp_restore_rect(int x0, int y0, int w, int h) {
   rumble_io_suspend();
   int tx0 = (x0 - WP_X) / 8, tx1 = (x1 - 1 - WP_X) / 8;
   int ty0 = (y0 - WP_Y) / 8, ty1 = (y1 - 1 - WP_Y) / 8;
+  if (tx1 > 19) tx1 = 19;          /* see wp_restore_rect_rom: never read past the 20-tile row */
   for (int ty = ty0; ty <= ty1; ty++)
     for (int tx = tx0; tx <= tx1; tx++) {
       int idx = s_wp_map[ty * 20 + tx];
@@ -2650,20 +2652,21 @@ static void cursor_slide(BoxSource* src, int box, int old_cur, int cur, bool car
 static void move_cursor(BoxSource* src, int box, int old_cur, bool old_title,
                         int cur, bool on_title) {
   if (on_title != old_title) {                        /* entering/leaving the title row */
-    draw_wallpaper(src->get_wp(box), WP_X, WP_Y, WP_W, WP_H);
-    /* The wallpaper repaint above wipes the BG, and the era layer LIVES in the BG — so it
-     * has to be redrawn here too. Leaving it out cost every era marker on the first press
-     * of UP, permanently: moving onto the box title is how you change boxes, i.e. the
-     * core interaction of the screen this feature exists for, and nothing else repaints
-     * the layer. The rule is simply that artless_cells() and era_cells() are the two BG
-     * cell layers and every site that repaints the wallpaper owes both.
+    /* BACKLOG #268: the ONLY thing that changes on the way onto or off the box name is the
+     * banner's selection frame -- a 2 px ring in y 12..27 (draw_box_banner), above the grid
+     * (GRID_Y = 30). This used to repaint the WHOLE wallpaper and then redraw every cell
+     * layer over it: for a Game Boy box that is a fresh art fetch of all 20 cells, so a plain
+     * UP onto the name (and DOWN off it) reloaded the box, visibly (Guy: "it reloads the box.
+     * It shouldn't as its already loaded"). The Gen-3 grid never showed it because its icons
+     * are sprites; the Game Boy art lives in the bitmap, and the wallpaper repaint wiped it.
      *
-     * PARITY-AUDIT-2026-09 #75: era_cells() now runs FIRST (same reorder as
-     * render_full/chunk_draw) so artless_cells()'s per-cell s_era_drawn check sees
-     * this box's fresh state, not the previous box's. */
-    era_cells();
-    artless_cells();                                  /* clear stale title frame */
-    blocked_cells(src, box);      /* BACKLOG #200 F1: mark cells past this source's capacity */
+     * So restore just the band the ring sat in (the same rect-limited restore the chunk
+     * carry uses) and redraw the banner and footer over it. Cells, era art, era pads,
+     * name chips and the blocked-cell hatch are outside the band and are never touched.
+     * The full WP_W: the procedural grass covers all 162 columns (as draw_wallpaper's does),
+     * while the tiled wallpaper's map is 20 tiles = 160 px wide, so wp_restore_rect clamps to
+     * the map and the two columns past it are left exactly as draw_wallpaper leaves them. */
+    wp_restore_rect(WP_X, WP_Y, WP_W, 16);
     draw_box_banner(src, box, on_title);
     draw_footer(src->is_bank, on_title, false);
   }
