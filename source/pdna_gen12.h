@@ -371,6 +371,11 @@ BankDownResult gb_bank_down_gen3(BoxSource* src, int dst_box, int dst_cell,
  * bank_down_convert.c's Gen-3 wrappers, before gb_bank_down_gen3. */
 int gb_g3home_restore_up(const uint8_t cell80[80], uint8_t out80[80]);
 
+/* BACKLOG #280: the GB-bridge-target restore (see pdna_gen12.c). 1 = restored cell landed and
+ * persisted, 0 = convert normally, -2 = refused/declined (already said). Brackets its own
+ * boxoam_suspend()/resume(), like gb_bank_down_bridge. Called only from bank_down_convert_gb. */
+int gb_bridge_restore_up(int dst_box, const uint8_t cell80[80]);
+
 /* BACKLOG #246 review F7 fix: OAM CONTRACT -- brackets its own boxoam_suspend()/
  * resume() internally around every UI it draws (the loss screen, the norom/nomoves
  * refusals). The caller must NOT wrap this call in its own boxoam_suspend/resume

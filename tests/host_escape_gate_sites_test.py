@@ -354,59 +354,10 @@ RESTORE_UP_RESTORED_CHECK_RE = re.compile(r"pick == XR_PICK_REFUSE_RESTORED")
 RESTORE_UP_PENDING_CHECK_RE  = re.compile(r"pick == XR_PICK_REFUSE_PENDING")
 
 
-def lift_order_facts_hook(hook_body: list[str]) -> tuple[bool, str]:
-    """Check (u), part 1: in gb_lift_up_hook's body, gb_has_sidecar( (the cheap f_stat
-    pre-check) must be found and must precede the gb_lift_restore( call it gates."""
-    hs = first_match_line(hook_body, 0, len(hook_body), GB_HAS_SIDECAR_RE)
-    lr = first_match_line(hook_body, 0, len(hook_body), GB_LIFT_RESTORE_CALL_RE)
-    if hs is None or lr is None:
-        return False, "gb_lift_up_hook: could not find gb_has_sidecar(/gb_lift_restore( calls"
-    if not (hs < lr):
-        return False, (f"gb_lift_up_hook: gb_has_sidecar( (line {hs + 1}) does not come "
-                        f"before gb_lift_restore( (line {lr + 1})")
-    return True, "ok"
-
-
-def lift_order_facts_restore(restore_body: list[str]) -> tuple[bool, str]:
-    """Check (u), part 2: inside gb_lift_restore's own body -- the screen before the
-    serial is spent, the serial before the pack (decision 10's own ordering)."""
-    ace = first_match_line(restore_body, 0, len(restore_body), APP_CAN_EDIT_RE)
-    xo  = first_match_line(restore_body, 0, len(restore_body), XR_OPEN_RE)
-    scr = first_match_line(restore_body, 0, len(restore_body), APP_XFER_MERGE_SCREEN_RE)
-    ser = first_match_line(restore_body, 0, len(restore_body), BANK_NEXT_SERIAL_RE)
-    brg = first_match_line(restore_body, 0, len(restore_body), BANK_RESTORE_GB_RE)
-    vals = {"app_can_edit(": ace, "xr_open(": xo, "app_xfer_merge_screen(": scr,
-            "pdna_bank_next_serial(": ser, "bank_restore_from_entry_gb(": brg}
-    missing = [n for n, v in vals.items() if v is None]
-    if missing:
-        return False, f"gb_lift_restore: missing call(s): {missing}"
-    if not (ace < xo < scr < ser < brg):
-        return False, f"gb_lift_restore: wrong order -- {vals} (want strictly increasing)"
-    return True, "ok"
-
-
-def release_order_facts(body: list[str]) -> tuple[bool, str]:
-    """Check (v): gb_release_up_hook -- gb_release_restored_verify( before gbs_delete(,
-    gbs_delete( before gb_persist(, and the RESTORED mark STRICTLY AFTER gb_persist(."""
-    v = first_match_line(body, 0, len(body), RELEASE_VERIFY_CALL_RE)
-    d = first_match_line(body, 0, len(body), GBS_DELETE_RE)
-    p = first_match_line(body, 0, len(body), GB_PERSIST_RE)
-    m = first_match_line(body, 0, len(body), XR_STATE_RESTORED_RE)
-    vals = {"gb_release_restored_verify(": v, "gbs_delete(": d, "gb_persist(": p,
-            "e.state = XR_STATE_RESTORED;": m}
-    missing = [n for n, val in vals.items() if val is None]
-    if missing:
-        return False, f"gb_release_up_hook: missing call(s): {missing}"
-    if not (v < d):
-        return False, (f"gb_release_up_hook: gb_release_restored_verify( (line {v + 1}) "
-                        f"does not come before gbs_delete( (line {d + 1})")
-    if not (d < p):
-        return False, (f"gb_release_up_hook: gbs_delete( (line {d + 1}) does not come "
-                        f"before gb_persist( (line {p + 1})")
-    if not (p < m):
-        return False, (f"gb_release_up_hook: the RESTORED mark (line {m + 1}) does not come "
-                        f"STRICTLY AFTER gb_persist( (line {p + 1})")
-    return True, "ok"
+# #280: lift_order_facts_hook / lift_order_facts_restore / release_order_facts (checks (x)/(y): the
+# lift-time restore's ordering and the release-side RESTORED mark) are RETIRED with the code they
+# pinned -- the lift is a pass-through now. Their successors live in
+# tests/host_y9_target_restore_sites_test.py (the restores at the two TARGET drops).
 
 
 def restore_up_state_before_screen_facts(body: list[str]) -> tuple[bool, str]:
@@ -1746,42 +1697,9 @@ def main() -> int:
     check(sum(1 for ln in bridge_body if re.search(r"\bdst_gen\s*=", ln)) == 1,
           "gb_bank_down_bridge: dst_gen must be assigned exactly once (its declaration)")   # Fable review F1
 
-    # ---- (x) BACKLOG #150 S150-9 decision 10: gb_lift_pack / gb_lift_restore's
-    # ordering -- the cheap f_stat pre-check before the real restore open; inside
-    # gb_lift_restore, the screen before the serial is spent, the serial before the
-    # pack. (Re-lettered from the brief's drafting-time "(m)", then the lane's own
-    # "(u)" -- both taken by lanes that landed on main first: s150-12's own (u)/(v)/
-    # (w) below. Anchor updated post-merge: s150-12 folded gb_lift_up_hook's body
-    # into the shared gb_lift_pack(rec80, out80, copy); the old
-    # gb_lift_up_hook(...) signature no longer contains the gb_has_sidecar/
-    # gb_lift_restore call pair at all. Re-anchored again for BACKLOG #199 (lane
-    # b199): gb_lift_pack's first two params became `int box, int slot` -- the call
-    # moved from grab time (start_carry) to the Bank-UP drop (drop_held_up), by the
-    # carry's own origin coordinates instead of a rec80 resolved from the live
-    # display page -- same body, same ordering, new signature text only.
-    # Re-anchored AGAIN for b199 review D5: gb_lift_pack (and gb_lift_restore) now
-    # return the XG_LIFT_OK/CANCELLED/FAILED tri-state (int), not bool -- a plain B
-    # decline or an already-explained refusal must stay silent at the caller
-    # (drop_held_up), not draw a second, vaguer dialog on top. Same body, same
-    # ordering, new signature/return-type text only -- this test checks CALL ORDER,
-    # never the return type, so nothing below this line needed to change.) ----
-    sh, eh = extract_function(gen12_lines, r"^static int gb_lift_pack\(int box, int slot, uint8_t\* out80, bool copy\) \{")
-    hook_body = gen12_lines[sh:eh]
-    ok, d = lift_order_facts_hook(hook_body)
-    check(ok, d)
-    sr, er = extract_function(gen12_lines, r"^gb_lift_restore\(")
-    restore_body = gen12_lines[sr:er]
-    ok, d = lift_order_facts_restore(restore_body)
-    check(ok, d)
-
-    # ---- (y) BACKLOG #150 S150-9 decision 9: gb_release_up_hook's RESTORED
-    # re-verify -- the ledger identity walk before the delete, the delete before
-    # gb_persist(, the RESTORED mark strictly after gb_persist(. (Re-lettered from
-    # the brief's drafting-time "(n)", then the lane's own "(v)" -- both taken.) ----
-    s, e = extract_function(gen12_lines, r"^static bool gb_release_up_hook\(int box, int slot, const uint8_t cell80\[80\]\) \{")
-    release_body = gen12_lines[s:e]
-    ok, d = release_order_facts(release_body)
-    check(ok, d)
+    # ---- (x)/(y) retired by #280 (see the note above lift_order_facts): gb_lift_restore and the
+    # release-side RESTORED mark no longer exist; host_y9_target_restore_sites_test.py pins the
+    # relocated restores. ----
 
     # ---- (z) BACKLOG #150 S150-9 decision 8: gbpc_restore_up's state refusals
     # (RESTORED/PENDING) precede the merge screen, which precedes the serial spend.
@@ -1945,8 +1863,9 @@ def main() -> int:
         (gen12_lines, r"^xfer_down_write\(uint64_t key", "xfer_down_write"),
         (gen12_lines, r"^static void xfer_down_claim_now\(", "xfer_down_claim_now"),
         (gen12_lines, r"^static void xfer_down_undo\(", "xfer_down_undo"),
-        (gen12_lines, r"^static bool gb_release_up_hook\(int box, int slot, const uint8_t cell80\[80\]\) \{",
-         "gb_release_up_hook"),
+        # #280: gb_release_up_hook no longer writes the ledger (the RESTORED mark moved to the
+        # bridge-target restore, gb_bridge_mark_restored).
+        (gen12_lines, r"^gb_bridge_mark_restored\(", "gb_bridge_mark_restored"),
         (box_lines, r"^gbpc_restore_done\(const uint8_t g3_rec80\[80\]\) \{", "gbpc_restore_done"),
         # BACKLOG #246: gb_paste_write's signature moved to two lines (the
         # `static bool __attribute__((noinline))` prefix now sits alone, matching
@@ -2573,46 +2492,7 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str],
         print(f"  MUT V demonstration -- a second xg_bank_down_arm( derivation added "
               f"after bank_down_dispatch(: {detail}")
 
-    # MUT X (BACKLOG #150 S150-9 decision 10, check (u)'s own demonstration): move
-    # gb_lift_restore's app_xfer_merge_screen( call to AFTER pdna_bank_next_serial( --
-    # a refused screen (B) would then have already spent a serial for nothing.
-    sr, er = extract_function(gen12_lines, r"^gb_lift_restore\(")
-    restore_body_real = gen12_lines[sr:er]
-    scr_i = first_match_line(restore_body_real, 0, len(restore_body_real), APP_XFER_MERGE_SCREEN_RE)
-    ser_i = first_match_line(restore_body_real, 0, len(restore_body_real), BANK_NEXT_SERIAL_RE)
-    check(scr_i is not None and ser_i is not None and scr_i < ser_i,
-          "MUT X: could not locate app_xfer_merge_screen(/pdna_bank_next_serial( in the "
-          "real gb_lift_restore source in the expected order -- fix this test")
-    if scr_i is not None and ser_i is not None and scr_i < ser_i:
-        mut_x = list(restore_body_real)
-        scr_line = mut_x.pop(scr_i)
-        mut_x.insert(ser_i, scr_line)   # the screen call now sits AFTER the serial spend
-        ok, detail = lift_order_facts_restore(mut_x)
-        check(not ok, f"MUT X (app_xfer_merge_screen( moved after pdna_bank_next_serial() "
-                       f"should have been caught but was not: {detail}")
-        print(f"  MUT X demonstration -- gb_lift_restore's screen call moved after the "
-              f"serial spend: {detail}")
-
-    # MUT Y (BACKLOG #150 S150-9 decision 9, check (v)'s own demonstration): move the
-    # `e.state = XR_STATE_RESTORED;` mark line to BEFORE gb_persist( in a copy of
-    # gb_release_up_hook's body -- the entry would be marked restored before the
-    # Game Boy save that makes it true has actually landed.
-    s, e = extract_function(gen12_lines, r"^static bool gb_release_up_hook\(int box, int slot, const uint8_t cell80\[80\]\) \{")
-    release_body_real = gen12_lines[s:e]
-    p_i = first_match_line(release_body_real, 0, len(release_body_real), GB_PERSIST_RE)
-    m_i = first_match_line(release_body_real, 0, len(release_body_real), XR_STATE_RESTORED_RE)
-    check(p_i is not None and m_i is not None and p_i < m_i,
-          "MUT Y: could not locate gb_persist(/the RESTORED mark in the real "
-          "gb_release_up_hook source in the expected order -- fix this test")
-    if p_i is not None and m_i is not None and p_i < m_i:
-        mut_y = list(release_body_real)
-        mark_line = mut_y.pop(m_i)
-        mut_y.insert(p_i, mark_line)   # the mark now sits BEFORE gb_persist(
-        ok, detail = release_order_facts(mut_y)
-        check(not ok, f"MUT Y (the RESTORED mark moved before gb_persist() should have "
-                       f"been caught but was not: {detail}")
-        print(f"  MUT Y demonstration -- gb_release_up_hook's RESTORED mark line swapped "
-              f"above gb_persist(: {detail}")
+    # MUT X / MUT Y (the lift-restore ordering demonstrations) retired by #280 with checks (x)/(y).
 
     # MUT Z (BACKLOG #150 S150-9 decision 8, check (w)'s own demonstration): move the
     # `e.state == XR_STATE_RESTORED` refusal check to AFTER app_xfer_merge_screen( in

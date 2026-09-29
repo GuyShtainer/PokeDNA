@@ -7,6 +7,11 @@ Pure text checks against the shipped source (no build), the same posture as
 host_escape_gate_sites_test.py's Y7 pins. Every fact function is shared by the real check and by
 an in-memory MUTATION that must turn it red (the self-test at the bottom).
 
+Slice 2 adds: D. gb_bridge_restore_up (the NATIVE_HOME bridge restore at the other-generation Game Boy
+target) -- order, the ALREADY-RESTORED dup rule, the landed-check before the RESTORED mark; E. the
+bank_down_convert_gb wrapper; F. the lift is a pass-through (gb_lift_pack / gb_release_up_hook read no
+ledger; the retired functions are gone); G. gb_bridge_mark_restored's set_state -> verified write.
+
 Slice 1 (G3_HOME at the Gen-3 target):
   A. gb_g3home_restore_up (source/pdna_gen12.c): copy-cell gate, the write gate and the live-PC
      gate come BEFORE any ledger read; the pending-transfer wall (SAVE NOW?) and the deferred-
@@ -150,12 +155,92 @@ def promote_consume_facts(body: str) -> tuple[bool, str]:
     return True, "ok"
 
 
+# ---- D. gb_bridge_restore_up ------------------------------------------------------------
+def bridge_order_facts(body: str) -> tuple[bool, str]:
+    ok, d = ordered(body, ["app_can_edit", "xg_cell_is_copy", "xr_open", "xr_resolve_home",
+                           "xr_merge_down_gb_sel", "app_xfer_merge_screen", "pdna_bank_next_serial",
+                           "bank_restore_from_entry_gb", "gb_accept_down_hook", "gb_bridge_mark_restored"])
+    if not ok:
+        return False, d
+    landed = re.search(r"if\s*\(\s*!landed\s*\)\s*return\s+-2", body)
+    if not landed or landed.start() > first(body, "gb_bridge_mark_restored"):
+        return False, "the `if (!landed) return -2` check must precede gb_bridge_mark_restored"
+    if landed.start() < first(body, "gb_accept_down_hook"):
+        return False, "the landed check sits above the landing"
+    return True, "ok"
+
+
+def bridge_state_facts(body: str) -> tuple[bool, str]:
+    m = re.search(r"state\s*==\s*XR_STATE_RESTORED\s*\)\s*\{[^}]*return\s+0\s*;", body, re.DOTALL)
+    if not m:
+        return False, "an already-RESTORED entry must `return 0` (convert normally: never restore twice, never refuse)"
+    if m.start() > first(body, "app_xfer_merge_screen"):
+        return False, "the RESTORED gate must precede the merge screen"
+    p = re.search(r"state\s*==\s*XR_STATE_PENDING", body)
+    if not p or p.start() > first(body, "app_xfer_merge_screen"):
+        return False, "the PENDING (SAVE FIRST) wall must precede the merge screen"
+    if not re.search(r"home\.gen\s*!=\s*g_ed->s\.gen", body):
+        return False, "no home-generation gate (only an original of THIS save's generation comes home)"
+    if "XR_DIR_ABROAD_GB" not in body:
+        return False, "no ABROAD_GB direction gate"
+    if "XR_KIND_G3_HOME" in body:
+        return False, "must not touch G3_HOME entries (the Gen-3 target's job)"
+    return True, "ok"
+
+
+def bridge_wrapper_facts(body: str) -> tuple[bool, str]:
+    ok, d = ordered(body, ["gb_bridge_restore_up", "gb_bank_down_bridge"])
+    if not ok:
+        return False, d
+    if not re.search(r"rc\s*==\s*1\s*\)\s*return\s+BANK_DOWN_LANDED", body):
+        return False, "rc == 1 must return BANK_DOWN_LANDED"
+    if not re.search(r"rc\s*!=\s*0\s*\)\s*return\s+BANK_DOWN_REFUSED", body):
+        return False, "rc != 0 must return BANK_DOWN_REFUSED"
+    return True, "ok"
+
+
+# ---- F. the lift is a pass-through ------------------------------------------------------
+LEDGER_CALLS = ("gb_has_sidecar", "gb_lift_restore", "xr_open", "xr_resolve_home", "gbsc_find",
+                "gbsc_get", "gbsc_merge_up_sel", "xr_merge_down_gb_sel", "app_xfer_merge_screen",
+                "bank_restore_from_entry_gb")
+
+
+def passthrough_facts(body: str) -> tuple[bool, str]:
+    bad = [c for c in LEDGER_CALLS if first(body, c) >= 0]
+    return (not bad), ("ok" if not bad else "reads the ledger / restores: " + ", ".join(bad))
+
+
+def retired_facts(gen12: str) -> tuple[bool, str]:
+    gone = [n for n in ("gb_lift_restore", "gb_lift_restore_g3home", "gb_release_g3home",
+                        "gb_release_restored_verify")
+            if re.search(r"^[^\n;{}]*\b" + n + r"\s*\([^;{]*\)\s*\{", strip_comments(gen12), re.MULTILINE)]
+    return (not gone), ("ok" if not gone else "retired function(s) are back: " + ", ".join(gone))
+
+
+# ---- G. gb_bridge_mark_restored ---------------------------------------------------------
+def mark_facts(body: str) -> tuple[bool, str]:
+    ok, d = ordered(body, ["xr_open", "xr_resolve_home", "gbsc_set_state", "sf_write_verified",
+                           "app_xv_cache_invalidate"])
+    if not ok:
+        return False, d
+    if "XR_STATE_RESTORED" not in body:
+        return False, "does not set XR_STATE_RESTORED"
+    return True, "ok"
+
+
 def real_texts():
     gen12, conv, main = (p.read_text() for p in (GEN12, CONVERT, MAIN))
     return (function_body(gen12, "gb_g3home_restore_up"),
             function_body(conv, "bank_down_convert_gen3"),
             function_body(conv, "bank_down_convert_gen3_party"),
             function_body(main, "app_xfer_promote"))
+
+
+def real_texts2():
+    gen12, conv = GEN12.read_text(), CONVERT.read_text()
+    return (function_body(gen12, "gb_bridge_restore_up"), function_body(conv, "bank_down_convert_gb"),
+            function_body(gen12, "gb_lift_pack"), function_body(gen12, "gb_release_up_hook"),
+            function_body(gen12, "gb_bridge_mark_restored"), gen12)
 
 
 def run_real() -> None:
@@ -168,6 +253,17 @@ def run_real() -> None:
                             ("B1 wrapper", wrapper_facts, w),
                             ("B2 party wrapper", wrapper_facts, wp),
                             ("C promote", promote_consume_facts, pr)):
+        ok, d = fn(body)
+        check(ok, f"{label}: {d}")
+    br, bw, lp, rel, mk, gen12 = real_texts2()
+    for label, fn, body in (("D1 bridge order", bridge_order_facts, br),
+                            ("D2 bridge state/gates", bridge_state_facts, br),
+                            ("E bridge wrapper", bridge_wrapper_facts, bw),
+                            ("F1 gb_lift_pack pass-through", passthrough_facts, lp),
+                            ("F2 gb_release_up_hook pass-through", passthrough_facts, rel),
+                            ("F3 retired functions", retired_facts, gen12),
+                            ("G mark", mark_facts, mk)):
+        check(bool(body), f"{label}: body not found")
         ok, d = fn(body)
         check(ok, f"{label}: {d}")
 
@@ -205,6 +301,32 @@ def self_test() -> None:
          mutate(pr, "gbsc_remove(", "sf_write_verified(path, s_promote_buf, len); gbsc_remove(")),
         ("MUT C2: no G3_HOME branch", promote_consume_facts, pr.replace("XR_KIND_G3_HOME", "XR_KIND_XXX")),
         ("MUT C3: last entry not unlinked", promote_consume_facts, pr.replace("f_unlink", "f_xunlink")),
+    ]
+    br, bw, lp, rel, mk, gen12 = real_texts2()
+    muts += [
+        ("MUT D1a: the RESTORED mark before the landing", bridge_order_facts,
+         mutate(br, "gb_accept_down_hook(", "gb_bridge_mark_restored(&mon); gb_accept_down_hook(")),
+        ("MUT D1a2: the landed check removed (mark runs even when nothing landed)", bridge_order_facts,
+         re.sub(r"if\s*\(\s*!landed\s*\)\s*return\s+-2\s*;", "", br)),
+        ("MUT D1b: landing before the merge screen", bridge_order_facts,
+         mutate(br, "app_xfer_merge_screen(", "gb_accept_down_hook(dst_box, cell80); app_xfer_merge_screen(")),
+        ("MUT D1c: copy gate dropped", bridge_order_facts, br.replace("xg_cell_is_copy(", "0 && (")),
+        ("MUT D2a: an already-RESTORED entry refuses instead of converting", bridge_state_facts,
+         re.sub(r"(state\s*==\s*XR_STATE_RESTORED\s*\)\s*\{[^}]*return\s+)0(\s*;)", r"\g<1>-2\2", br, flags=re.DOTALL)),
+        ("MUT D2b: home-generation gate dropped", bridge_state_facts,
+         re.sub(r"home\.gen\s*!=\s*g_ed->s\.gen", "0", br)),
+        ("MUT D2c: PENDING wall dropped", bridge_state_facts, br.replace("XR_STATE_PENDING", "XR_STATE_XXX")),
+        ("MUT E1: wrapper converts first", bridge_wrapper_facts,
+         mutate(bw, "gb_bridge_restore_up(", "gb_bank_down_bridge(0,0); gb_bridge_restore_up(")),
+        ("MUT E2: wrapper falls into a conversion after a declined restore", bridge_wrapper_facts,
+         re.sub(r"if\s*\(rc\s*!=\s*0\)\s*return\s+BANK_DOWN_REFUSED;", "", bw)),
+        ("MUT F1a: the lift asks the ledger again", passthrough_facts, lp + " gb_has_sidecar(0,0);"),
+        ("MUT F1b: the lift restores again", passthrough_facts, lp + " gb_lift_restore(0,0);"),
+        ("MUT F2: the release re-reads the ledger", passthrough_facts, rel + " xr_open(0,0,0,0,0);"),
+        ("MUT F3: gb_release_g3home is back", retired_facts,
+         gen12 + "\nstatic bool gb_release_g3home(int box, int slot, const GbEditMon* have) {\n}\n"),
+        ("MUT G1: marked before the verified write order", mark_facts,
+         mutate(mk, "gbsc_set_state(", "sf_write_verified(0,0,0); gbsc_set_state(")),
     ]
     for label, fn, body in muts:
         ok, d = fn(body)

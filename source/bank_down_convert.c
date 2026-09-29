@@ -164,6 +164,11 @@ void bdc_convert_gb_core(const uint8_t cell80[BC_CELL_BYTES], uint8_t dst_gen,
 BankDownResult bank_down_convert_gb(BoxSource* src, int dst_box, int dst_cell,
                                     const uint8_t cell80[80]) {
   (void)src; (void)dst_cell;
+  /* BACKLOG #280: the other-generation TARGET is where a bridged mon goes home -- the restore
+   * edge runs FIRST; 1 = landed (LANDED), 0 = convert normally, else refused/declined (said). */
+  int rc = gb_bridge_restore_up(dst_box, cell80);
+  if (rc == 1) return BANK_DOWN_LANDED;
+  if (rc != 0) return BANK_DOWN_REFUSED;
   return gb_bank_down_bridge(dst_box, cell80);
 }
 
