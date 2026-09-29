@@ -5329,12 +5329,17 @@ def run_s150_3_escape_gate(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_
            "on its own slot 0, no longer carried, ready for the review demos below")
 
     # ---- review F1: the grid's ITEM mode is a fourteenth escape route ----------------
-    # Build a real (non-native) mon at the first empty slot (slot 5: box0's plant only
-    # populates 0-4), give it an item via the ordinary ITEM menu row, then TAKE it in
+    # Build a real (non-native) mon at the first empty slot -- SLOT 7 (BACKLOG #272:
+    # this said "slot 5: box0's plant only populates 0-4", stale since S150-12's two
+    # PDNA_DELTA-only COPY cells took slots 5 and 6, so BANK 1 reads 7/30 and RIGHT x5
+    # landed on the native COPY cell -- A/A there opened the native cell's VIEW/EDIT and
+    # its A on the Name field opened the "Nickname" editor, NOT a CREATE). Slot 7 is
+    # row 1, col 1 of the 6-wide grid: DOWN then RIGHT from slot 0. Give it an item via the ordinary ITEM menu row, then TAKE it in
     # the grid's own ITEM cursor mode and try to GIVE/swap it onto the native CHIKORITA
     # cell at slot 0 -- box_set_held()'s bc_is_native() refusal must fire BEFORE any
     # write, with the native cell's own data untouched and the item still in hand.
-    s.press_n("RIGHT", 5, settle=150)                       # slot 0 -> slot 5 (empty)
+    s.tap("DOWN", settle=150)                               # slot 0 -> slot 6 (row 1, col 0: COPY cell)
+    s.tap("RIGHT", settle=150)                              # slot 6 -> slot 7 (empty)
     s.tap("A", settle=150)                                  # menu on the empty slot
     s.tap("A", settle=200)                                  # CREATE (default selection) -> species picker
     s.tap("A", settle=400)                                  # pick the default species (BULBASAUR) -> summary
@@ -5347,10 +5352,12 @@ def run_s150_3_escape_gate(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_
     s.tap("A", settle=400)                                  # give it MASTER BALL
     s.tap("SEL", settle=100)                                 # cursor mode: NORMAL -> MOVE
     s.tap("SEL", settle=100)                                 # MOVE -> ITEM
-    s.tap("A", settle=300)                                  # TAKE the item off slot 5
+    s.tap("A", settle=300)                                  # TAKE the item off slot 7
     s.shot("07_item_taken", "S150-3 review F1: TAKE'd MASTER BALL off the fresh mon in "
-           "ITEM cursor mode -- footer reads 'A give  B put back'")
-    s.press_n("LEFT", 5, settle=150)                        # slot 5 -> slot 0 (native CHIKORITA)
+           "ITEM cursor mode -- footer reads 'A give  B put back'",
+           claim=["A give  B put back"])  # BACKLOG #272 (rule 17): the caption's footer is now mechanically checked
+    s.tap("UP", settle=150)                                 # slot 7 -> slot 1 (row 0, col 1)
+    s.tap("LEFT", settle=150)                               # slot 1 -> slot 0 (native CHIKORITA)
     s.shot("08_item_cursor_on_native", "S150-3 review F1: still carrying the item, cursor "
            "now on the native CHIKORITA cell")
     s.tap("A", settle=300)                                  # GIVE/swap attempt -> box_set_held() refuses
@@ -5366,16 +5373,17 @@ def run_s150_3_escape_gate(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_
                                                               # A opens the menu, not another TAKE)
 
     # ---- review F2: drop_held's same-box SWAP branch gated only the held record -----
-    # MOVE the same real mon (now back at slot 5) and try to drop/swap it onto the
+    # MOVE the same real mon (now back at slot 7) and try to drop/swap it onto the
     # native CHIKORITA cell in the SAME box -- the destination-side bc_is_native() guard
     # (immediately before the cross-box refusal) must deny before any memcpy, keeping
     # the native cell displayed and the carry still in hand.
-    s.tap("A", settle=150)                                  # menu on slot 5 again
+    s.tap("A", settle=150)                                  # menu on slot 7 again
     s.press_n("DOWN", 3, settle=150)                        # VIEW/EDIT -> ITEM -> LEGALITY -> MOVE
     s.tap("A", settle=300)                                  # select MOVE -> pick it up
     s.shot("11_carrying_real_mon", "S150-3 review F2: MOVE picked up the real (non-native) "
-           "mon from slot 5")
-    s.press_n("LEFT", 5, settle=150)                        # slot 5 -> slot 0 (native CHIKORITA), same box
+           "mon from slot 7", claim=["A drop  B cancel"])  # BACKLOG #272
+    s.tap("UP", settle=150)                                 # slot 7 -> slot 1
+    s.tap("LEFT", settle=150)                               # slot 1 -> slot 0 (native CHIKORITA), same box
     s.shot("12_move_cursor_on_native", "S150-3 review F2: carrying the real mon, cursor now "
            "on the native CHIKORITA cell -- SAME box, so the cross-box refusal below it "
            "does not fire on its own")
@@ -5387,7 +5395,7 @@ def run_s150_3_escape_gate(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_
            allow_same=True)
     s.tap("B", settle=300)                                  # cancel the carry -- origin (box mon) keeps it
     s.shot("14_swap_cancelled", "S150-3 review F2: B cancels the carry -- the real mon "
-           "stays at its own slot 5, nothing lost")
+           "stays at its own slot 7, nothing lost")
     return s
 
 
