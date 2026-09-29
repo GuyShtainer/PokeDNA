@@ -711,7 +711,13 @@ def run_standalone(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Se
                                  "Gen-3's own app_create_mon uses -- Bulbasaur (dex 1) "
                                  "pre-selected")
 
-    s.tap("A", settle=60)                                 # pick Bulbasaur -> gb_create_learn (ROM read)
+    s.tap("A", settle=60)                                 # pick Bulbasaur -> #265 origin choice
+    s.shot("09b_origin_choice", "#265: BEFORE any ROM read, CREATE asks 'A = LEGIT COPY' "
+                                 "(real level and moves, read from your ROM) or 'SELECT = FROM "
+                                 "SCRATCH' (level 1 with Growl) -- a fused Red.gb counts as a "
+                                 "registered ROM here, so the prompt shows",
+           claim=["NEW POKEMON", "A = LEGIT COPY", "SELECT = FROM SCRATCH", "B = cancel"])
+    s.tap("A", settle=60)                                 # A = LEGIT COPY -> gb_create_learn (ROM read)
     s.shot("10_busy_line", "#62 A3: 'Reading your ROM... This can take a moment.' -- unlike "
                             "gb_shots.py's SD-based CREATE test (which always refuses here, no "
                             "flashcart in mGBA), THIS build has a real fused Red.gb, so the "
