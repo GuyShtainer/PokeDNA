@@ -5112,7 +5112,7 @@ def run_s150_2_bank_native(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_
     s.tap("A", settle=150)                                  # slot 0 -> the occupied-mon menu
     s.shot("06_cell0_menu", "S150-2: A on the CHIKORITA cell -- the ordinary occupied-"
            "mon menu, cursor on row 0 (Summary/VIEW-EDIT) -- on/after S150-3 this is "
-           "the native WHITELIST (VIEW/MOVE/RELEASE/CANCEL)")
+           "the native WHITELIST (VIEW/EDIT, LEGALITY, MOVE, DUPLICATE, EXPORT, RELEASE, CANCEL -- #271)")
     s.tap("A", settle=150)                                  # select the Summary row
     s.shot("07_cell0_summary", "S150-2: the REAL Gen-1/2 summary, opened read-only over "
            "the native cell's own 80 bytes via gb_native_summary_open() (decision "
@@ -5132,7 +5132,7 @@ def run_s150_2_bank_native(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_
            "from bc_is_native() -- decoded via pdna_native_cell_decode(), the same "
            "ladder the grid uses -- not from whether pk_decode_mon's meaningless-key "
            "decrypt of the raw bytes happens to pass its checksum) -- on/after S150-3 "
-           "this is the native WHITELIST (VIEW/MOVE/RELEASE/CANCEL)")
+           "this is the native WHITELIST (VIEW/EDIT, LEGALITY, MOVE, DUPLICATE, EXPORT, RELEASE, CANCEL -- #271)")
     s.tap("A", settle=150)                                  # select the Summary row
     s.shot("10_cell4_summary_or_refuse", "S150-2: the Summary row on the DMG cell -- "
            "bc_unpack succeeds (the glitch species lives in list_species/rec, outside "
@@ -5281,8 +5281,8 @@ def run_s150_3_escape_gate(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_
     # cursor already on slot 0 (the CHIKORITA plant). A opens the mon menu.
     s.tap("A", settle=150)                                  # slot 0 -> its menu
     s.shot("00_native_menu", "S150-3: A on the CHIKORITA native cell -- decision 7's "
-           "WHITELIST, not the ordinary eleven-row occupied menu: VIEW / MOVE / "
-           "RELEASE / CANCEL only, cursor defaults to row 0 (VIEW)")
+           "WHITELIST, not the ordinary eleven-row occupied menu: VIEW/EDIT / LEGALITY / "
+           "MOVE / DUPLICATE / EXPORT .pk / RELEASE / CANCEL (#271), cursor defaults to row 0")
 
     # VIEW (row 0, already selected) -> A_SUMMARY's dispatch case -> app_box_browse ->
     # its own bc_is_native() interception -> gb_native_summary_open() (D-Q1: the same
@@ -7149,7 +7149,7 @@ def run_s150_8d_savenow(core_mod, image_mod, rom_ruby: Path, out_dir: Path) -> g
 
     # ---- cell 1: Bank slot 0 (plain CHIKORITA) -> box9 row1col1. Land, DO NOT SAVE.
     enter_bank(s)
-    s.tap("A", settle=150); s.tap("DOWN", settle=60); s.tap("A", settle=150)   # pick slot0
+    s.tap("A", settle=150); s.press_n("DOWN", 2, settle=60); s.tap("A", settle=150)   # pick slot0
     s.press_n("DOWN", 5, settle=150)                # off the Bank grid -> Ruby's PC box 1
     s.press_n("R", 8, settle=150)                   # -> box 9 (this corpus's own 17/30)
     s.tap("DOWN", settle=80); s.tap("RIGHT", settle=80)   # row1 col1, an empty cell
@@ -7177,7 +7177,7 @@ def run_s150_8d_savenow(core_mod, image_mod, rom_ruby: Path, out_dir: Path) -> g
     # is already true -> SAVE NOW? instead of the old flat refusal. ----------------
     enter_bank(s)
     s.tap("RIGHT", settle=80)                        # slot0 -> slot1 (plain PIKACHU)
-    s.tap("A", settle=150); s.tap("DOWN", settle=60); s.tap("A", settle=150)
+    s.tap("A", settle=150); s.press_n("DOWN", 2, settle=60); s.tap("A", settle=150)
     s.press_n("DOWN", 5, settle=150)
     s.press_n("R", 8, settle=150)                    # box1 -> box9 again (re-navigate)
     s.tap("DOWN", settle=80); s.press_n("RIGHT", 4, settle=80)   # row1 col4, empty
@@ -7255,7 +7255,7 @@ def run_s150_8d_savenow(core_mod, image_mod, rom_ruby: Path, out_dir: Path) -> g
     s2.run(700)
     s2.vsd_snapshot()
     enter_bank(s2)
-    s2.tap("A", settle=150); s2.tap("DOWN", settle=60); s2.tap("A", settle=150)   # slot0
+    s2.tap("A", settle=150); s2.press_n("DOWN", 2, settle=60); s2.tap("A", settle=150)   # slot0
     s2.press_n("DOWN", 5, settle=150)
     s2.press_n("R", 8, settle=150)
     s2.tap("DOWN", settle=80); s2.tap("RIGHT", settle=80)          # row1col1, empty
@@ -7273,7 +7273,7 @@ def run_s150_8d_savenow(core_mod, image_mod, rom_ruby: Path, out_dir: Path) -> g
     s2.vsd_snapshot()
     enter_bank(s2)
     s2.tap("RIGHT", settle=80)                                     # slot1 (PIKACHU)
-    s2.tap("A", settle=150); s2.tap("DOWN", settle=60); s2.tap("A", settle=150)
+    s2.tap("A", settle=150); s2.press_n("DOWN", 2, settle=60); s2.tap("A", settle=150)
     s2.press_n("DOWN", 5, settle=150)
     s2.press_n("R", 8, settle=150)
     s2.tap("DOWN", settle=80); s2.press_n("RIGHT", 4, settle=80)   # row1col4, empty
@@ -7505,7 +7505,7 @@ def run_s150_8_bridge(core_mod, image_mod, rom_gold: Path, rom_red: Path,
             "agnostic box 0 plant, cursor on slot 0 (the plain CHIKORITA cell, "
             "dex 152)")
     sr.tap("A", settle=150)
-    sr.tap("DOWN", settle=60)
+    sr.press_n("DOWN", 2, settle=60)                 # VIEW/EDIT -> LEGALITY -> MOVE (native menu, #271)
     sr.tap("A", settle=150)
     sr.press_n("DOWN", DOWN_OFF_BANK, settle=150)
     sr.shot("08_red_carrying", "S150-8 bridge: carrying CHIKORITA, back on Red's "
@@ -11058,8 +11058,8 @@ def run_s150_12_copy_edge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
            "serial 6)")
 
     s.tap("A", settle=150)
-    s.shot("13_menu", "s150-12: the ordinary Bank-cell menu -- VIEW/EDIT, MOVE, "
-           "RELEASE, CANCEL (this is a real Bank cell now, not the read-only "
+    s.shot("13_menu", "s150-12: the ordinary Bank-cell menu -- VIEW/EDIT, LEGALITY, MOVE, DUPLICATE, EXPORT, "
+           "EXPORT .pk, RELEASE, CANCEL (this is a real Bank cell now, not the read-only "
            "mount's whitelist)")
 
     s.press_n("DOWN", 2, settle=60)                              # VIEW/EDIT -> LEGALITY -> MOVE
@@ -11122,7 +11122,7 @@ def run_s150_12_copy_edge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
            "Lv14 M', the SECOND planted COPY cell (serial 7)")
 
     s.tap("A", settle=150)
-    s.tap("DOWN", settle=60)
+    s.press_n("DOWN", 2, settle=60)                 # VIEW/EDIT -> LEGALITY -> MOVE (native menu, #271)
     s.tap("A", settle=150)
     s.press_n("DOWN", 4, settle=150)                      # row1 -> off the Bank's own bottom edge
     for _ in range(7):

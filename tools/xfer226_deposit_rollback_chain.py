@@ -52,7 +52,7 @@ def pick_bank_cell(s, right_n):
     enter_bank(s)
     if right_n:
         s.press_n("RIGHT", right_n, settle=80)
-    s.tap("A", settle=150); s.tap("DOWN", settle=60); s.tap("A", settle=150)
+    s.tap("A", settle=150); s.press_n("DOWN", 2, settle=60); s.tap("A", settle=150)   # native menu: VIEW/EDIT, LEGALITY, MOVE (#271)
     s.press_n("DOWN", 5, settle=150)
 
 
