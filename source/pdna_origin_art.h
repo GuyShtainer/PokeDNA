@@ -256,6 +256,14 @@ typedef struct PdnaGbArtSource {
  * fetch memo, so a re-registration is the way to say "my buffer moved". */
 void pdna_origin_art_register(const PdnaGbArtSource* src);
 
+/* BACKLOG #263: re-point the `ctx` the registered source's callbacks receive (the field
+ * pdna_origin_art_register() copied in, 0 for gb_art_source.c until now). This is how a
+ * caller that is about to ask for a whole PASS of pictures hands the source a per-pass
+ * handle (an already-open ROM) without a new static anywhere: set it, make the calls,
+ * set it back to 0. A pdna_origin_art_register() replaces it (with the source's own ctx);
+ * the fetch memo is NOT touched (the pixels it points at do not change). */
+void pdna_origin_art_set_gb_ctx(void* ctx);
+
 /* 1 if era `gen` (1 or 2) can currently produce art. Always 0 with no source. */
 int pdna_origin_art_have(uint8_t gen);
 

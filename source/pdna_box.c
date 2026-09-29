@@ -34,6 +34,7 @@ _Static_assert(BOXSCOPE_BANK == 1, "source/xfer_gate.c's XG_SCOPE_BANK hard-code
 #include "item_icons.h"     /* item_icon_for: held-item markers in ITEM mode */
 #include "box_oam.h"        /* hardware-OAM icon/cursor/carry/marker rendering */
 #include "pdna_origin_art.h" /* THE BANK IN PARALLEL: each cell in the art of its own era */
+#include "gb_art_source.h"   /* BACKLOG #263: GbArtBatch -- one ROM open + table validation per era pass */
 #include "sprite_era.h"      /* SePlace -- pdna_origin_art_set_place() on entry (E4) */
 #include "pdna_summary.h"
 #include "perf.h"        /* screen-enter spans + the box-load/bob rollups (telemetry) */
@@ -2396,6 +2397,7 @@ static void era_cell_draw(int slot) {
    * no card access — so a box with no registered era ROM stops here for free. */
   if (pdna_origin_box_art_wanted(slot)) {
     PdnaArt a;
+    PERF_ICON(mru_miss);   /* BACKLOG #263: one art FETCH attempt (the rep line's `icons H/M mru`) */
     /* gen == PDNA_GEN3 means the router fell back (the ROM could not serve this
      * species): leave the ordinary Gen-3 OBJ icon alone rather than blitting the same
      * picture twice, once badly. era_cell_blit's own frame (cell[]) is allocated only
@@ -2434,12 +2436,26 @@ static void era_cells(void) {
    * still has to be handed back even when THIS box has no imports. any_damaged()
    * (BACKLOG #150 S150-2) covers the DMG-only case above. */
   if (s_era_drawn || pdna_origin_box_any_gb() || any_damaged()) {
+    /* BACKLOG #263: the era pass's own rollup -- `perf box.era xN: ... sd Nr/Ns, icons
+     * H/M mru` is emitted when the box is left (boxoam_exit flushes PERF_REP_MON). N =
+     * passes, sd = the card cost of ALL of them (delta: the fused-ROM read count, see
+     * gb_art_source.c), M = fetches attempted. PERF_REP_MON, not PAGE: the box owns PAGE
+     * for "box.load"; a screen that opens FROM the box (summary) flushes this line first. */
+    perf_rep_begin(PERF_REP_MON, "box.era");
+    /* BACKLOG #263: ONE ROM open + table validation for the whole pass, not one per cell.
+     * The batch (~1.1 KB) lives on this frame -- there is no spare EWRAM -- and begin() does
+     * no I/O, so a box whose cells fetch nothing still costs nothing. Every path out of this
+     * block reaches gb_art_batch_end() below (there is no early return between them). */
+    GbArtBatch bt;
+    gb_art_batch_begin(&bt);
     /* Reset first, THEN recompute. s_era_drawn survives across box flips and across whole
      * pdna_box() runs, and a stale set bit means a permanently hidden OBJ icon over a cell
      * that no longer has art to show — an empty cell holding a real Pokemon. Handing every
      * marked cell back to the OAM layer up front makes that unrepresentable. */
     for (int i = 0; i < G3_BOX_SLOTS; i++) era_cell_icon_back(i);
     for (int i = 0; i < G3_BOX_SLOTS; i++) era_cell_draw(i);
+    gb_art_batch_end(&bt);
+    perf_rep_end(PERF_REP_MON);
   }
   /* OUTSIDE the bail, deliberately. The art source decodes into a buffer it owns and
    * PUBLISHES A POINTER TO — and the obvious home for that buffer is mon_decomp, which

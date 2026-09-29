@@ -1035,6 +1035,7 @@ void boxoam_exit(void) {
    * the flush inside is safe here for the same reason app_log_flush is. */
   perf_rep_flush(PERF_REP_PAGE);
   perf_rep_flush(PERF_REP_BOB);
+  perf_rep_flush(PERF_REP_MON);   /* BACKLOG #263: pdna_box.c's "box.era" rollup */
 }
 
 void boxoam_suspend(void) { REG_DISPCNT &= ~DCNT_OBJ; REG_BLDCNT = 0; }

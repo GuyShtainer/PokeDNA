@@ -36,6 +36,7 @@
 #define MEW_DEX        151
 #define UNOWN_DEX      201    /* the one species whose picture depends on a form      */
 #define UNOWN_LETTERS  26     /* Gen 2 has A..Z only; Gen 3 adds ! and ?              */
+#define PDNA_CELL_MAXW 48     /* widest destination pdna_origin_cell_render() precomputes columns for */
 
 /* The ribbon word's bit 31 is modernFatefulEncounter, and gen12_convert.c:429 SETS IT
  * for an imported Mew so the game will obey it (put_fateful, citing
@@ -322,6 +323,8 @@ void pdna_origin_art_register(const PdnaGbArtSource* src) {
   if (src && src->pic) { s_gb = *src; s_gb_on = 1; }
   else { memset(&s_gb, 0, sizeof s_gb); s_gb_on = 0; }
 }
+
+void pdna_origin_art_set_gb_ctx(void* ctx) { s_gb.ctx = ctx; }
 
 void pdna_origin_art_invalidate(void) { memo_clear(); }
 
@@ -992,6 +995,23 @@ int pdna_origin_cell_render(const PdnaArt* a, uint16_t* dst, int dw, int dh) {
   int x0 = (dw - ow) / 2;      /* centred horizontally */
   int y0 = dh - oh;            /* feet on the floor -- same rule as _place()          */
 
+  /* BACKLOG #263: the column bounds depend only on x, so they are worked out ONCE here, not
+   * once per destination pixel. On the GBA there is no divide instruction -- each `/` below
+   * is a library call -- and this loop ran two of them for every one of a box cell's
+   * ~500 pixels, twenty cells per box switch (measured: 25 ms of a 75 ms cell, the biggest
+   * single line of the box-load profile). The values, and so every output pixel, are
+   * unchanged: tests/host_originart_test.c pins it against the original expressions. */
+  uint8_t cx0[PDNA_CELL_MAXW], cx1[PDNA_CELL_MAXW];
+  const int fast = (ow <= PDNA_CELL_MAXW && sw <= 255);
+  if (fast) {
+    for (int x = 0; x < ow; x++) {
+      int a = (x * sw) / ow, b = ((x + 1) * sw) / ow;
+      if (b <= a) b = a + 1;
+      if (b > sw) b = sw;
+      cx0[x] = (uint8_t)a; cx1[x] = (uint8_t)b;
+    }
+  }
+
   for (int y = 0; y < oh; y++) {
     /* The source block this destination row covers. Half-open, and always non-empty
      * even when the scale is an exact integer. */
@@ -1000,9 +1020,13 @@ int pdna_origin_cell_render(const PdnaArt* a, uint16_t* dst, int dw, int dh) {
     if (sy1 > sh) sy1 = sh;
     uint16_t* drow = dst + (unsigned)(y0 + y) * (unsigned)dw + (unsigned)x0;
     for (int x = 0; x < ow; x++) {
-      int sx0 = (x * sw) / ow, sx1 = ((x + 1) * sw) / ow;
-      if (sx1 <= sx0) sx1 = sx0 + 1;
-      if (sx1 > sw) sx1 = sw;
+      int sx0, sx1;
+      if (fast) { sx0 = cx0[x]; sx1 = cx1[x]; }
+      else {
+        sx0 = (x * sw) / ow; sx1 = ((x + 1) * sw) / ow;
+        if (sx1 <= sx0) sx1 = sx0 + 1;
+        if (sx1 > sw) sx1 = sw;
+      }
       /* The primary sample is PLAIN NEAREST NEIGHBOUR — the block's top-left, which is
        * the same point a point sampler picks. That matters: it makes this scaler a
        * strict SUPERSET of point sampling rather than a different one. Shifting the
