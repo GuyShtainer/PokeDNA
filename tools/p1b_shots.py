@@ -58,7 +58,7 @@ def run_gold_trainer(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     s.tap("A", settle=BIG_SETTLE)               # Trainer -> pdna_gbtrainer(), card view
     s.shot("01_card", "#49-P1: the Gen-1/2 trainer card, Gold/Silver/Crystal — NAME/ID/"
                        "MONEY/COINS/MOM'S MONEY+SAVE/BADGES/TIME/DEX/RIVAL/MOTHER rows, "
-                       "the same red selection panel as the Gen-3 plain page")
+                       "the same blue selection panel as the Gen-3 plain page")
 
     s.press_n("DOWN", 2)                       # NAME -> ID -> MONEY
     s.tap("A", settle=BIG_SETTLE)               # open num_entry("MONEY", ...)
