@@ -164,18 +164,20 @@ def main(argv=None) -> int:
     core_mod, image_mod = load_mgba(a.mgba_vendor)
 
     ok, skipped = [], []
+    any_claim_failed = False
     for _label, p, fns in active:
         for fn in fns:
             sess = fn(core_mod, image_mod, p, a.out)
             ok += sess.taken; skipped += sess.skipped
+            any_claim_failed = any_claim_failed or sess.any_claim_failed
 
     manifest_path = a.out / "manifest.json"
     existing = {"shots": [], "skipped": []}
     if manifest_path.is_file():
         existing = json.loads(manifest_path.read_text(encoding="utf-8"))
     by_file = {e["file"]: e for e in existing.get("shots", [])}
-    for n, c in ok:
-        by_file[n] = {"file": n, "caption": c}
+    for n, c, claim_info in ok:   # gb_shots.Session.taken is (file, caption, claim_info)
+        by_file[n] = {"file": n, "caption": c, **claim_info}
     by_name = {e["name"]: e for e in existing.get("skipped", [])}
     for n, r in skipped:
         by_name[n] = {"name": n, "reason": r}
@@ -186,6 +188,10 @@ def main(argv=None) -> int:
     print(f"\n{len(ok)} shot(s) saved to {a.out}")
     for name, reason in skipped:
         print(f"[skip] {name}: {reason}")
+    if any_claim_failed:
+        print("\n[CLAIM FAILED] one or more shots -- see [CLAIM FAILED] lines above "
+              "and each entry's manifest.json \"claim_failed\" list", file=sys.stderr)
+        return 1
     return 0
 
 
