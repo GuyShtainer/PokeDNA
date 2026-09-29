@@ -65,6 +65,8 @@ typedef struct {
   int     bank_matches;         /* xrc_bank_match() count, 0/1/2(+)                    */
   bool    bank_slot_pending;    /* app_bank_slot_pending() at the matched bank slot    */
   bool    bank_keep;            /* the entry's bank_keep bit (decision 7)              */
+  int     bank_g3_matches;      /* xrc_bank_g3_match(): Gen-3 copies PARKED in the Bank
+                                 * (#270 pass-through), 0/1/2(+); 0 when never scanned  */
 } XrcInput;
 
 typedef struct {
@@ -115,6 +117,12 @@ int xrc_g3_match_identity(const uint8_t* sb1, bool frlg, const uint8_t* pc,
  * count, clamped to 2; `*slot` filled only on exactly 1. */
 int xrc_bank_match(const uint8_t box2400[2400], const GbscEntry* e, bool by_identity,
                    int* slot);
+
+/* #270 pass-through: the Gen-3 copy of an ABROAD_G3 entry may sit in the Bank (a PC ->
+ * Bank drop lands as-is). Counts NON-native cells of one 2400-byte box whose first 8
+ * bytes hash to `key` (xr_key_g3()'s FNV-1a-64). All-zero first 8 bytes never match.
+ * Returns the count, clamped to 2. */
+int xrc_bank_g3_match(const uint8_t box2400[2400], uint64_t key);
 
 /* ---- RESTORE TO BANK (decision 8c) ----------------------------------------------- */
 
@@ -181,6 +189,8 @@ typedef struct {
   int8_t  g3_identity_matches;
   bool    g3_in_daycare;
   int8_t  bank_matches;                /* -1 unresolved until phase 2                */
+  int8_t  bank_g3_matches;             /* Gen-3 copies parked in the Bank (phase 2)  */
+  uint64_t file_key;                   /* the ledger file's key (ABROAD_G3 only)     */
   bool    bank_slot_pending;
   bool    bank_keep;
   int8_t  bank_box, bank_slot, g3_box, g3_slot;

@@ -945,7 +945,7 @@ static void test_restored_mark_is_real(void) {
   int idx = gbsc_add(buf, &len, GBSC_FILE_MAX, &e);
   CHECK(idx >= 0, "the entry adds into a fresh ledger file");
 
-  /* pc_bank_restore_done()'s own idiom: remove -> mutate state -> re-add. */
+  /* gbpc_restore_done()'s own idiom: remove -> mutate state -> re-add. */
   GbscEntry got;
   CHECK(gbsc_get(buf, len, idx, &got), "the entry reads back before marking");
   got.state = XR_STATE_RESTORED;
@@ -972,6 +972,103 @@ static void test_restored_mark_is_real(void) {
         "a RESTORED entry is != XR_STATE_PENDING -- app_xfer_promote's guard refuses it (fail-safe)");
   CHECK(after.state != XR_STATE_CLAIMED,
         "a RESTORED entry is != XR_STATE_CLAIMED -- distinguishable from an ordinary claim");
+}
+
+/* ---- #270 (Guy 2026-09-29): the Bank is a pass-through; the ledger restores only at the
+ * TARGET drop. The pure-C composition of gbpc_restore_up + gbpc_restore_done (pdna_box.c is
+ * not host-buildable; tests/host_escape_gate_sites_test.py pins their source order): the
+ * full GB-origin -> Bank -> Gen-3 PC -> Bank -> GB PC round trip. ---- */
+
+static void y7_one_capture(const char* tag, const XrCapture* cap, uint8_t gen, uint8_t other_gen) {
+  /* hop 1-2: GB original -> native Bank cell -> Gen-3 PC record (cap.g3rec80) + ledger entry */
+  GbscEntry e = cap->e;
+  e.state = XR_STATE_CLAIMED;          /* the saved-exit promotion, as test_backlog_206 does */
+  uint8_t ledger[GBSC_FILE_MAX];
+  uint32_t llen = (uint32_t)gbsc_init(ledger, xr_key_g3(cap->g3rec80));
+  CHECK(llen > 0 && gbsc_add(ledger, &llen, sizeof ledger, &e) == 0, "%s: ledger holds the entry", tag);
+  int count = gbsc_count(ledger, llen);
+
+  /* hop 3: PC -> Bank is byte-as-is (the drop_held arm is a bare memcpy of s_held); the
+   * record, its key and the ledger are all untouched, and it is STILL a Gen-3 record. */
+  uint8_t bank_slot[80];
+  memcpy(bank_slot, cap->g3rec80, 80);
+  CHECK(memcmp(bank_slot, cap->g3rec80, 80) == 0, "%s: Bank slot bytes == the Gen-3 record", tag);
+  CHECK(!bc_is_native(bank_slot), "%s: the record in the Bank is still a Gen-3 record, not a native cell", tag);
+  CHECK(xr_key_g3(bank_slot) == xr_key_g3(cap->g3rec80), "%s: its ledger key is unchanged", tag);
+  GbscEntry still;
+  CHECK(xr_restore_pick_basic(ledger, llen, count, &still) == XR_PICK_LIVE,
+        "%s: the entry is NOT consumed by bank entry (still live)", tag);
+
+  /* hop 4: the TARGET drop. Generation gate first (a wrong-generation PC converts). */
+  CHECK(xr_home_gen(ledger, llen, count) == gen, "%s: xr_home_gen == the original's generation", tag);
+  CHECK(xr_home_gen(ledger, llen, count) != other_gen, "%s: xr_home_gen != the other generation (that drop converts)", tag);
+  uint8_t cell[80];
+  int rc = bank_restore_from_entry(&still, bank_slot, XR_ACCEPT_ALL, 777001u, cell, NULL);
+  CHECK(rc == 1, "%s: target restore rebuilds the native cell (rc=%d)", tag, rc);
+  if (rc != 1) return;
+  GbEditMon back; BcMeta meta;
+  CHECK(bc_unpack(cell, &back, &meta), "%s: restored cell unpacks", tag);
+  xr_check_roundtrip(tag, &cap->written, &back);   /* rec/otname/nick/gen byte-identical to the GB original */
+
+  /* mark RESTORED after the verified GB write (gbpc_restore_done's idiom). */
+  GbscEntry got;
+  CHECK(gbsc_get(ledger, llen, 0, &got), "%s: entry reads back", tag);
+  got.state = XR_STATE_RESTORED;
+  CHECK(gbsc_remove(ledger, &llen, 0) == 0 && gbsc_add(ledger, &llen, sizeof ledger, &got) >= 0,
+        "%s: entry marked RESTORED", tag);
+  count = gbsc_count(ledger, llen);
+
+  /* the DUP: a second record with the same key. It must NOT restore again (that would clone
+   * bytes into the GB save) -- the pick reports RESTORED, which gbpc_restore_up turns into
+   * rc 0 = the plain conversion. The gen gate still sees the same generation. */
+  CHECK(xr_restore_pick_basic(ledger, llen, count, &still) == XR_PICK_REFUSE_RESTORED,
+        "%s: the duplicate sees a RESTORED entry -> converts, never a second restore", tag);
+  CHECK(xr_home_gen(ledger, llen, count) == gen, "%s: xr_home_gen still names the generation after RESTORED", tag);
+}
+
+static void test_y7_target_restore_roundtrip(void) {
+  printf("\n-- D5. #270: Bank pass-through + target-drop restore, the full round trip --\n");
+  CHECK(xr_home_gen(NULL, 0, 0) == 0, "xr_home_gen: NULL/empty -> 0");
+  if (g_rt1_capture.have) y7_one_capture("Y7 Gen2", &g_rt1_capture, GB_GEN2, GB_GEN1);
+  else printf("  SKIP Gen-2 (no capture -- corpus absent?)\n");
+  if (g_rt2_capture.have) y7_one_capture("Y7 Gen1", &g_rt2_capture, GB_GEN1, GB_GEN2);
+  else printf("  SKIP Gen-1 (no capture -- corpus absent?)\n");
+  /* F4 (review): a two-entry ledger (same key, a Gen-1 then a Gen-2 entry): the generation
+   * gate must name the generation of the entry the PICK will actually restore
+   * (xr_restore_pick_basic is last-entry-wins) -- in BOTH orders. MUTATION: make xr_home_gen
+   * first-entry-wins -- both orders go RED (it would gate on an entry that is not restored). */
+  if (g_rt1_capture.have && g_rt2_capture.have) {
+    for (int order = 0; order < 2; order++) {
+      const XrCapture* first  = order == 0 ? &g_rt2_capture : &g_rt1_capture;   /* Gen-1 / Gen-2 */
+      const XrCapture* second = order == 0 ? &g_rt1_capture : &g_rt2_capture;
+      GbscEntry e1 = first->e, e2 = second->e;
+      e1.state = XR_STATE_CLAIMED; e2.state = XR_STATE_CLAIMED;
+      uint8_t lg[GBSC_FILE_MAX];
+      uint32_t ll = (uint32_t)gbsc_init(lg, xr_key_g3(first->g3rec80));
+      CHECK(ll > 0 && gbsc_add(lg, &ll, sizeof lg, &e1) >= 0 && gbsc_add(lg, &ll, sizeof lg, &e2) >= 0,
+            "Y7 two-entry (order %d): both entries added", order);
+      int cnt = gbsc_count(lg, ll);
+      GbscEntry pick;
+      CHECK(cnt == 2 && xr_restore_pick_basic(lg, ll, cnt, &pick) == XR_PICK_LIVE,
+            "Y7 two-entry (order %d): the pick is live over 2 entries (count %d)", order, cnt);
+      GbEditMon pm; BcMeta pmeta;
+      CHECK(bc_unpack(pick.original80, &pm, &pmeta), "Y7 two-entry (order %d): the picked original unpacks", order);
+      CHECK(xr_home_gen(lg, ll, cnt) == pm.gen,
+            "Y7 two-entry (order %d): xr_home_gen (%u) == the generation of the entry the pick restores (%u)",
+            order, (unsigned)xr_home_gen(lg, ll, cnt), (unsigned)pm.gen);
+      CHECK(pm.gen == (order == 0 ? GB_GEN2 : GB_GEN1),
+            "Y7 two-entry (order %d): the LAST entry is the one restored (gen %u)", order, (unsigned)pm.gen);
+    }
+  }
+  /* a Gen-3-home entry never restores: xr_home_gen ignores it (0), the caller converts */
+  if (g_rt1_capture.have) {
+    GbscEntry g3h = g_rt1_capture.e;
+    g3h.kind = XR_KIND_G3_HOME;
+    uint8_t lg[GBSC_FILE_MAX];
+    uint32_t ll = (uint32_t)gbsc_init(lg, xr_key_g3(g_rt1_capture.g3rec80));
+    CHECK(gbsc_add(lg, &ll, sizeof lg, &g3h) == 0, "Y7: Gen-3-home entry added");
+    CHECK(xr_home_gen(lg, ll, gbsc_count(lg, ll)) == 0, "Y7: a Gen-3-home entry yields no home generation");
+  }
 }
 
 /* ---- BACKLOG #150 S150-8b review F4: an unmappable Gen-3 glyph must refuse, ---- */
@@ -1145,7 +1242,7 @@ static void test_merge4_make_legal_written_level(void) {
 }
 
 /* ---- BACKLOG #150 S150-8b review D2: the confirm's item-loss comparison. ------ */
-/* pc_bank_restore_up (pdna_box.c) is not host-buildable; this pins the underlying
+/* gbpc_restore_up (pdna_box.c) is not host-buildable; this pins the underlying
  * comparison it relies on -- pm.heldItem vs item_g2_to_g3(gb_get_held_item(&home)) --
  * against a real corpus item holder, both unchanged (must read as "nothing lost")
  * and changed (must read as "something lost"). */
@@ -1228,7 +1325,7 @@ static void test_d2_item_confirm_logic(void) {
 
 /* ---- BACKLOG #206 review D1: the revert's own regression pin ------------------
  *
- * a274651 ("state-aware, identity-checked restore pick") made pc_bank_restore_up
+ * a274651 ("state-aware, identity-checked restore pick") made gbpc_restore_up
  * refuse a CLAIMED entry whenever the entry's OWN stored identity (species_written /
  * otid16 / nick_written) no longer matched the incoming Gen-3 record -- but that is
  * exactly what a mon renamed or evolved ABROAD looks like: xr_key_g3 (PID+otId) still
@@ -1249,7 +1346,7 @@ static void test_d2_item_confirm_logic(void) {
  * of the two CHECK(rc == 0 && ...) lines below fails -- the renamed/evolved case is
  * refused instead of reaching the merge path, the exact regression this pins. BACKLOG
  * #206 review R1: this case now drives the REAL pick (xr_restore_pick_basic against a
- * real ledger buffer, exactly what pc_bank_restore_up calls), not a hand-picked
+ * real ledger buffer, exactly what gbpc_restore_up calls), not a hand-picked
  * GbscEntry handed straight to bank_restore_from_entry -- the original D1 test never
  * touched the pick loop at all, so a274651's gate (which lived INSIDE the old pick
  * loop, source/pdna_box.c pre-revert) could not have failed it. */
@@ -1305,7 +1402,7 @@ static void test_backlog_206_regression(void) {
   e.state = XR_STATE_CLAIMED;
 
   /* BACKLOG #206 review R1: a REAL ledger buffer, the same shape xr_open() hands
-   * pc_bank_restore_up -- xr_restore_pick_basic is driven against this, not against
+   * gbpc_restore_up -- xr_restore_pick_basic is driven against this, not against
    * a hand-picked GbscEntry, so the pick loop itself (which a274651's identity gate
    * lived inside) is actually exercised. */
   uint8_t ledger[GBSC_FILE_MAX];
@@ -2335,6 +2432,7 @@ int main(int argc, char** argv) {
   test_merge_and_refuse();
   test_bank_restore_from_entry();
   test_restored_mark_is_real();
+  test_y7_target_restore_roundtrip();
   test_nickname_unmappable_glyph();
   test_nickname_umlaut_down_gen2_accepts();
   test_nickname_umlaut_down_gen1_refuses();

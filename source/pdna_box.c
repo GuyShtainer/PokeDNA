@@ -1216,20 +1216,23 @@ bank_down_dispatch(BoxSource* src, int dst_box, int dst_cell, const uint8_t cell
   }
 }
 
-/* BACKLOG #150 S150-8b, D-Q5: no BoxSource.xfer vtable on the Bank (pdna_box.h:116-117's
- * "NULL on every Gen-3 source, forever" stands) -- the RESTORE hook is called DIRECTLY
- * from drop_held's PC->Bank arm below, gated on this ledger lookup. Both halves are
- * noinline with their OWN GBSC_FILE_MAX (1042 B) frame -- D-Q6 asked for this to avoid
- * that frame on drop_held's own deepest path; measured instead of assumed:
- * `stack_budget.py --root drop_held` reports drop_held's own worst path at 4,560 of
- * 15,032 B (10,472 B of local margin) on this lane's base, nowhere near the program's
- * actual deepest root (11,912 B, a completely different call chain) -- adding 1042 B
- * here cannot move either number. See the delivery report for the full measurement;
- * this is a declared, numbers-backed deviation from D-Q6's literal wording, not an
- * edit to the frozen source/xfer_io.* (which D-Q6's "add an accessor... if none
- * exists" would otherwise have required). */
+/* #270 (Guy 2026-09-29, RULED): the Bank is a PASS-THROUGH -- today in the Gen-3 ->
+ * Bank DIRECTION: a PC->Bank drop stores the record byte-as-is and the S150-8b D-Q1
+ * restore edge that used to run there is RETIRED. The GB->Bank lift still restores on
+ * entry (BACKLOG #280 is the follow-up that makes that direction pass through too).
+ * This lookup now runs at exactly one place, the TARGET drop (drop_held_down_g3): a
+ * Gen-3 record dropped onto a Game Boy PC whose ledger has a native-home entry of THAT save's generation is restored
+ * byte-exactly (the merge screen, then the native cell). Anything else -- no entry,
+ * a different generation, an entry already RESTORED (the DUPLICATE of an original
+ * that already came home: never restore twice) -- returns 0 and the caller runs the
+ * plain conversion. BACKLOG #150 S150-8b, D-Q5: no BoxSource.xfer vtable on the Bank
+ * (pdna_box.h:116-117's "NULL on every Gen-3 source, forever" stands). The function
+ * is noinline with its OWN GBSC_FILE_MAX (1042 B) frame; the gate's STACK/GATED
+ * numbers are the measurement (see the lane report), not an assumption.
+ * Returns 1 = `out_cell80` holds the native cell to land; 0 = convert normally;
+ * -1 = genuine failure; -2 = the user declined/refused (already said on screen). */
 static int __attribute__((noinline))
-pc_bank_restore_up(const uint8_t g3_rec80[80], uint8_t out_cell80[80]) {
+gbpc_restore_up(const uint8_t g3_rec80[80], uint8_t target_gen, uint8_t out_cell80[80]) {
   if (!app_can_edit()) return 0;              /* decision 13: nothing to restore, read-only cart */
   uint8_t buf[GBSC_FILE_MAX];
   uint32_t len = 0;
@@ -1255,6 +1258,10 @@ pc_bank_restore_up(const uint8_t g3_rec80[80], uint8_t out_cell80[80]) {
     }
     int count = gbsc_count(buf, len);
     if (count < 0) { log_line("bank: restore lookup: ledger file failed to validate"); return -1; }
+    /* #270: only an original of the TARGET save's generation may come home -- checked
+     * before ANY screen (a Gen-1 original must not raise SAVE NOW? or a wall for a
+     * Gen-2 drop); a mismatch is the plain conversion. */
+    if (xr_home_gen(buf, len, count) != target_gen) return 0;
     pick = xr_restore_pick_basic(buf, len, count, &e);
     /* BACKLOG #175c review D2: only offer SAVE NOW? when THIS session's own
      * unpromoted transfer (g_xd_key/g_xd_idx) is the entry blocking us -- a PENDING
@@ -1278,12 +1285,11 @@ pc_bank_restore_up(const uint8_t g3_rec80[80], uint8_t out_cell80[80]) {
   }
   if (pick == XR_PICK_NONE) return 0;         /* only Gen-3-home entries (or none) -- already exact */
   if (pick == XR_PICK_REFUSE_RESTORED) {
-    log_line("bank: restore: entry already RESTORED -- refusing a second restore");
-    boxoam_suspend();
-    snd_deny();
-    msg_wait(PDNA_XFERDUP_TITLE, UI_WARN, PDNA_XFERDUP_L1, PDNA_XFERDUP_L2);
-    boxoam_resume();
-    return -2;   /* review D3's convention: a declined/refused restore, not a genuine failure */
+    /* #270 DUP RULING: the original already came home once -- this record is the
+     * duplicate. Restoring again would clone bytes into the Game Boy save, and
+     * refusing would strand a Gen-3 mon that legitimately converts: plain conversion. */
+    log_line("bank: restore: entry already RESTORED -- this drop converts instead");
+    return 0;
   }
   if (pick == XR_PICK_REFUSE_PENDING) {
     /* BACKLOG #175c: still PENDING after a VERIFIED save-now -- decision 9 says
@@ -1348,7 +1354,7 @@ pc_bank_restore_up(const uint8_t g3_rec80[80], uint8_t out_cell80[80]) {
  * entry RESTORED here silently drops a prior KEEP BOTH choice. Known gap, not
  * fixed by this pass (BACKLOG #213/#215 review F5 is comments-only). */
 static void __attribute__((noinline))
-pc_bank_restore_done(const uint8_t g3_rec80[80]) {
+gbpc_restore_done(const uint8_t g3_rec80[80]) {
   if (!app_can_edit()) return;                /* decision 13 */
   uint8_t buf[GBSC_FILE_MAX];
   uint32_t len = 0;
@@ -1372,7 +1378,7 @@ pc_bank_restore_done(const uint8_t g3_rec80[80]) {
   GbscEntry e;
   if (!gbsc_get(buf, len, best, &e)) { log_line("bank: restore done: gbsc_get failed"); return; }
   /* S150-9 decision 8: mark RESTORED only an entry that is CLAIMED/NONE -- a
-   * RESTORED entry re-resolved here (defensive; pc_bank_restore_up's own state
+   * RESTORED entry re-resolved here (defensive; gbpc_restore_up's own state
    * branch already refuses this case before the write) is left alone, never
    * re-marked, never a second time. */
   if (e.state == XR_STATE_RESTORED) {
@@ -1450,7 +1456,7 @@ static uint8_t* __attribute__((noinline)) drop_held_up(BoxSource* src, int box, 
    * is now a TRI-STATE (XG_LIFT_OK/CANCELLED/FAILED, pdna_box.h) -- a plain B
    * decline or a refusal that already drew its OWN dialog (a stale ledger
    * record, an already-RESTORED entry, the PENDING SAVE FIRST wall) comes back
-   * CANCELLED and shows NOTHING further here, matching pc_bank_restore_up's own
+   * CANCELLED and shows NOTHING further here, matching gbpc_restore_up's own
    * rc==-2 convention (the Gen-3 twin, just above) and app_confirm's "B = no"
    * house style; only a genuinely UNREPORTED failure (an unreadable ledger, a
    * failed serial write, a pack failure) shows this generic dialog. */
@@ -1655,8 +1661,28 @@ drop_held_down_g3(BoxSource* src, int box, int cur, uint8_t* recs, bool* done) {
   (void)cur;   /* BACKLOG #246 review D7: never read -- a Game Boy list always appends at
                 * its own next free slot (gbs_insert), never at the cursor cell; `cur`
                 * stays in the signature only to match drop_held_up's own sibling shape. */
+  /* #270 TARGET RESTORE (Guy 2026-09-29): a Gen-3 record whose ledger holds a native
+   * original of THIS save's generation goes home byte-exactly -- the SAME accept_down
+   * hook the NATIVE-cell EXACT drop uses (bank_down_exact), fed the cell rebuilt by
+   * gbpc_restore_up. rc 0 = no restorable original (none / other generation / already
+   * RESTORED = the duplicate): today's convert path, unchanged. */
+  uint8_t cell80[80];
+  int rc = (s_xfer_peer && s_xfer_peer->accept_down) ? gbpc_restore_up(s_held, app_gb_session_gen(), cell80) : 0;
+  if (rc == -2) return recs;                                 /* declined/refused -- already said */
+  if (rc < 0) {                                              /* still holding, nothing written */
+    snd_error();
+    boxoam_suspend();
+    msg_wait(PDNA_XFERREC_TITLE, UI_WARN, PDNA_XFERREC_L1, PDNA_XFERREC_L2);
+    boxoam_resume();
+    return recs;
+  }
   boxoam_suspend();
-  bool landed = gb_bank_down_g3(box, s_held) == BANK_DOWN_LANDED;
+  bool landed;
+  if (rc == 1) {
+    landed = s_xfer_peer && s_xfer_peer->accept_down && s_xfer_peer->accept_down(box, cell80);
+  } else {
+    landed = gb_bank_down_g3(box, s_held) == BANK_DOWN_LANDED;
+  }
   boxoam_resume();
   if (!landed) {
     log_line("gen12: g3-down box %d slot %d -> gb box %d: refused/not landed",
@@ -1673,6 +1699,7 @@ drop_held_down_g3(BoxSource* src, int box, int cur, uint8_t* recs, bool* done) {
       msg_wait(PDNA_XFER_DOWN_DUP_TITLE, UI_WARN, PDNA_XFER_DOWN_DUP_L1, l2);
     }
     boxoam_resume(); }
+  if (rc == 1) gbpc_restore_done(s_held);   /* entry marked LAST, after the verified GB write landed */
   s_oam_reload = true;
   recs = src->records(box);   /* the GB list grew -- repaint from the image */
   log_line("gen12: g3-down box %d slot %d -> gb box %d: ok", s_orig_box, s_orig_slot, box);
@@ -1901,51 +1928,16 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
      * commit the destination before clearing the source -> worst case a duplicate, never a
      * loss; the PC clear is deferred to the one exit save, backed by the immutable backup).
      *
-     * BACKLOG #150 S150-8b, D-Q1 (the RESTORE edge, hop 2 of Guy's 2->3->1->2): if
-     * `s_held` (the Gen-3 mon in hand) has a native-home transfer-ledger entry --
-     * S150-8's DOWN edge wrote one when this exact mon left the Bank as a converted
-     * Gen-3 record -- this Gen-3 mon going BACK into the Bank restores that ORIGINAL
-     * native cell instead of landing as another Gen-3 cell. rc==-1 refuses the WHOLE
-     * drop: nothing written anywhere, the hand keeps holding (an unreadable record or
-     * a serial refusal). rc==0 is the ordinary, unchanged path: an ordinary Gen-3 mon,
-     * or one whose ledger entry is Gen-3-home, lands exactly as it did before this
-     * lane, byte for byte. */
-    uint8_t cell80[80];
-    /* review D9: defensive -- this "PC -> Bank" comment block is reached by the
-     * homeless-carry fall-through too (s_orig_box == -1, decision 2's own footgun
-     * note), which is NOT guaranteed to have src->scope == BOXSCOPE_BANK. Never call
-     * the restore lookup, and never let a native cell land, on any destination that
-     * is not actually the Bank. */
-    int rc = (src->scope == BOXSCOPE_BANK) ? pc_bank_restore_up(s_held, cell80) : 0;
-    /* review D3: rc == -2 is a plain user decline on the F3 confirm -- app_confirm
-     * already drew its own "B = no", so nothing further is shown; still holding,
-     * nothing written, same as every other refusal here. */
-    if (rc == -2) return recs;
-    if (rc < 0) {                                                      /* still holding, nothing written */
-      snd_error();
-      /* review F5: decision 9's own message -- an unreadable ledger record or a
-       * serial refusal, not silence. review D5: box sprites off around the panel,
-       * same as the escape-gate refusal above and the UP arm's own backup-gate
-       * message. */
-      boxoam_suspend();
-      msg_wait(PDNA_XFERREC_TITLE, UI_WARN, PDNA_XFERREC_L1, PDNA_XFERREC_L2);
-      boxoam_resume();
-      return recs;
-    }
-    if (rc == 1 && !pdna_bank_prepare_native()) {
-      snd_error();
-      boxoam_suspend();
-      msg_wait(PDNA_XFER_PREP_TITLE, UI_WARN, PDNA_XFER_PREP_L1, PDNA_XFER_PREP_L2);
-      boxoam_resume();
-      return recs;                                                     /* still holding */
-    }
-    memcpy(recs + (uint32_t)cur * 80, rc == 1 ? cell80 : s_held, 80);
+     * #270 (Guy 2026-09-29, RULED): the Bank is a PASS-THROUGH -- `s_held` lands BYTE-AS-IS,
+     * sidecar or not. The S150-8b D-Q1 restore edge (rebuild the native cell on bank entry)
+     * is RETIRED; the ledger is consulted at exactly one place, the TARGET drop onto a Game
+     * Boy PC (drop_held_down_g3 -> gbpc_restore_up). */
+    memcpy(recs + (uint32_t)cur * 80, s_held, 80);
     boxoam_suspend();
     bool ok = src->commit();                                 /* verified bank box_save (banksrc_commit) */
     boxoam_resume();
     if (!ok) { memset(recs + (uint32_t)cur * 80, 0, 80); snd_error(); return recs; }   /* keep holding */
     if (s_orig_slot >= 0) app_pc_release_slot(s_orig_box, s_orig_slot, s_held);
-    if (rc == 1) pc_bank_restore_done(s_held);      /* entry marked LAST, after the Bank write landed */
     snd_save();
     s_holding = false; *done = true; return recs;
   }

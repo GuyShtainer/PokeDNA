@@ -5896,7 +5896,7 @@ static void __attribute__((noinline)) app_view_original(const uint8_t* rec) {
  * file's RE-KEY (app_xfer_pid_rekey) and promote (app_xfer_promote) and the
  * TRANSFERS-screen apply (xfer_reconcile_apply), and one call added at each of
  * pdna_gen12.c's/pdna_box.c's own ledger-write sites (xfer_down_write and its
- * claim/cleanup companions, gb_release_up_hook's RESTORED mark, pc_bank_restore_done)
+ * claim/cleanup companions, gb_release_up_hook's RESTORED mark, gbpc_restore_done)
  * -- plus once on every fresh Gen-3 save load (a stale miss from a DIFFERENT card
  * session must never leak into this one). Over-invalidating only costs one extra
  * card round trip on the next lookup; under-invalidating would be a correctness bug,
@@ -10427,6 +10427,7 @@ static void __attribute__((noinline)) xfer_reconcile_walk(GbReconBuf* rb, int ca
       h->kind = e2.kind; h->state = e2.state; h->direction = e2.direction;
       h->bank_keep = e2.bank_keep != 0;
       h->bank_matches = -1; h->bank_box = -1; h->bank_slot = -1;
+      h->bank_g3_matches = 0; h->file_key = file_key;
       h->g3_key_matches = -1; h->g3_identity_matches = -1; h->g3_box = -1; h->g3_slot = -1;
       h->gen = e2.gen; h->otid16 = e2.otid16;
       memcpy(h->dv4, e2.dv4, 4);
@@ -10471,6 +10472,10 @@ static void __attribute__((noinline)) xfer_reconcile_bank_phase2(GbReconBuf* rb)
     log_line("xfer: reconcile: box %d paged", box);
     for (int i = 0; i < rb->nxrc; i++) {
       XrcHit* h = &rb->xrc[i];
+      if (h->direction == XR_DIR_ABROAD_G3 && h->bank_g3_matches < 2) {
+        int g = h->bank_g3_matches + xrc_bank_g3_match(recs, h->file_key);
+        h->bank_g3_matches = (int8_t)(g > 2 ? 2 : g);
+      }
       if (h->bank_matches >= 2) continue;
       GbscEntry e2; memset(&e2, 0, sizeof e2);
       e2.gen = h->gen; e2.otid16 = h->otid16;
@@ -10510,6 +10515,7 @@ static void __attribute__((noinline)) xfer_reconcile_classify_all(GbReconBuf* rb
     in.bank_matches = h->bank_matches < 0 ? 0 : h->bank_matches;
     in.bank_slot_pending = h->bank_slot_pending;
     in.bank_keep = h->bank_keep;
+    in.bank_g3_matches = h->bank_g3_matches;
     XrcResult out;
     xrc_classify(&in, &out);
     h->row_kind = (uint8_t)out.kind;

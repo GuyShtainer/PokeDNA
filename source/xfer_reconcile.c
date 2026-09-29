@@ -30,6 +30,11 @@ void xrc_classify(const XrcInput* in, XrcResult* out) {
    * unconditionally "in a Game Boy save", no action, no further lookups meaningful. */
   if (in->direction == XR_DIR_ABROAD_GB) { out->kind = XRC_ABROAD_GB; return; }
 
+  /* #270: the Gen-3 copy is parked in the Bank (PC -> Bank pass-through), not in the
+   * save. It is not lost -- the normal "abroad" state, and never destructive (no
+   * RESTORE, which would clone it, and no DELETE, which would lose the way home). */
+  if (in->bank_g3_matches >= 1 && in->g3_key_matches == 0) { out->kind = XRC_ABROAD; return; }
+
   bool g3_seen = (in->g3_key_matches == 1);
   bool bank_seen = (in->bank_matches == 1);
 
@@ -213,6 +218,20 @@ int xrc_bank_match(const uint8_t box2400[2400], const GbscEntry* e, bool by_iden
   }
   if (slot) *slot = (count == 1) ? ws : -1;
   return count > 2 ? 2 : count;
+}
+
+int xrc_bank_g3_match(const uint8_t box2400[2400], uint64_t key) {
+  if (!box2400) return 0;
+  int count = 0;
+  for (int s = 0; s < 30 && count < 2; s++) {
+    const uint8_t* cell = box2400 + (uint32_t)s * 80;
+    if (bc_is_native(cell)) continue;
+    bool zero = true;
+    for (int i = 0; i < 8; i++) if (cell[i]) { zero = false; break; }
+    if (zero) continue;
+    if (rec8_key(cell) == key) count++;
+  }
+  return count;
 }
 
 /* ---- decision 8c: RESTORE TO BANK's cell rebuild --------------------------------- */

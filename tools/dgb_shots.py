@@ -5602,6 +5602,88 @@ def run_s150_15_view_original(core_mod, image_mod, rom: Path, out_dir: Path) -> 
     return s
 
 
+def run_y7_bank_passthrough(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """#270 (lane y7-bankpass, F3 fix pass): the Bank is a pass-through. Vehicle: the S150-9
+    PLANTED-LEDGER one -- `rom` = `tools/fuse_sav.py <pokedna-delta-artless.gba> Emerald.sav`
+    (plain Gen-3 fusion), `--vsd <img>` REQUIRED (the Bank drop commits box00.box). The
+    planted slot-29 CHIKORITA has a REAL `xr_open` ledger entry (CLAIMED, ALTERED), so on the
+    RETIRED flow (base 2dbf7bd) this exact chain raised the "BACK TO ITS ORIGINAL" merge
+    screen on the PC->Bank drop and wrote nothing; on the pass-through it lands byte-as-is.
+    (The earlier S150-15-seam chain planted no ledger entry, so base behaved identically --
+    it could not fail; replaced.)
+
+    Nav (pin270.py, the reviewer's recipe): DOWNx4, RIGHTx5 -> slot 29; A opens its menu
+    (GB ORIGINAL row sits above MOVE); DOWNx4 -> MOVE; A carries; UPx6 -> off the grid, the
+    tab row, off the top -> the Bank, still carrying; A drops.
+
+    Proof: frame 04 (after the drop) must NOT show "BACK TO ITS ORIGINAL"; the vsd diff must
+    be EXACTLY {box00.box} -- the Bank write; and the host byte-check of that box00 slot 24
+    against bank_plant_xfer_seed_all()[0] (tests/y7_plantcmp.c recipe) proves the record
+    landed byte-for-byte. The GB ORIGINAL menu row on the Bank cell is checked on frame 05."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")
+    print("== #270 (y7-bankpass): Bank pass-through, planted-ledger vehicle (--vsd) ==")
+    if gb_shots._DEFAULT_VSD_IMG is None:
+        raise RuntimeError("--y7-bankpass requires --vsd <img.img>")
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "y7_bankpass_")
+    s.run(700)
+    s.vsd_snapshot()
+    s.press_n("DOWN", 4, settle=100)
+    s.press_n("RIGHT", 5, settle=100)                        # slot 29: planted CLAIMED+ALTERED
+    s.shot("00_cursor_slot29", "y7: cursor on planted slot 29 (DOWNx4, RIGHTx5) -- the "
+           "CHIKORITA whose ledger entry is CLAIMED and ALTERED", allow_same=True)
+    s.tap("A", settle=200)
+    s.press_n("DOWN", 4, settle=80)                          # -> MOVE (GB ORIGINAL row above it)
+    s.shot("01_on_move", "y7: its menu, MOVE highlighted (GB ORIGINAL is the row above)",
+           allow_same=True, claim=["GB ORIGINAL", "MOVE"])
+    s.tap("A", settle=200)
+    s.shot("02_carrying", "y7: picked up, carrying", allow_same=True)
+    s.press_n("UP", 6, settle=100)
+    s.shot("03_in_bank", "y7: in the Bank, still carrying the Gen-3 record", allow_same=True)
+    s.tap("A", settle=500)                                   # drop
+    s.shot("04_after_drop", "y7: A -- the drop landed with NO merge/restore screen (#270: the "
+           "Bank stores the record as it is; on base 2dbf7bd this frame is the BACK TO ITS "
+           "ORIGINAL merge screen)", allow_same=True, claim_absent=["BACK TO ITS ORIGINAL"])
+    changed = s.vsd_report(expect_changed=["/PokeDNA/bank/bank.meta", "/PokeDNA/bank/bank.meta.bak",
+                                            "/PokeDNA/bank/box00.box", "/PokeDNA/log.txt"])
+    print(f"  vsd diff (Bank drop): {sorted(changed)}")
+    _y7_plantcmp(gb_shots._DEFAULT_VSD_IMG)
+    return s
+
+
+def _y7_plantcmp(img: Path) -> None:
+    """F3: pull box00.box out of the (already flushed) --vsd image and require Bank slot 24 ==
+    the planted slot-29 record byte-for-byte (tests/y7_plantcmp.c, built with the
+    host_bankcell_test.c source list + -DPDNA_DELTA). Exits 1 on a mismatch (loud, like
+    vsd_report's expect_changed)."""
+    root = Path(__file__).resolve().parent.parent
+    tmp = Path(tempfile.mkdtemp(prefix="y7_plantcmp_"))
+    srcs = ("bank_cell gb_edit gen1_save gen1_write gen2_save gen2_write gen3_save gen3_box gen3_mon "
+            "gen3_edit gen3_daycare gen3_clip gen12_convert data_tables bank_plant gb_new_mon gb_editor "
+            "gb_session rom_gblearn rom_gbbase rom_gbsprite gb_sprite_codec ui_font gb_sidecar xfer_rec "
+            "item_map_g2g3").split()
+    exe = tmp / "y7_plantcmp"
+    cc = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
+    r = subprocess.run([cc, "-std=c11", "-I", str(root / "source"), "-DPDNA_DELTA",
+                        str(root / "tests" / "y7_plantcmp.c")] +
+                       [str(root / "source" / (n + ".c")) for n in srcs] + ["-o", str(exe)],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        print(f"[Y7 PLANTCMP FAILED] host build: {r.stderr[-400:]}", file=sys.stderr)
+        sys.exit(1)
+    box = tmp / "box00.bin"
+    with open(box, "wb") as fh:
+        g = subprocess.run([sys.executable, str(root / "tools" / "vsd_fatget.py"), str(img),
+                            "POKEDNA/BANK/BOX00.BOX"], stdout=fh, stderr=subprocess.PIPE)
+    if g.returncode != 0:
+        print(f"[Y7 PLANTCMP FAILED] could not read box00.box: {g.stderr.decode()[-300:]}", file=sys.stderr)
+        sys.exit(1)
+    c = subprocess.run([str(exe), str(box)], capture_output=True, text=True)
+    print("  " + c.stdout.strip())
+    if c.returncode != 0:
+        print("[Y7 PLANTCMP FAILED] Bank slot 24 is not the planted record", file=sys.stderr)
+        sys.exit(1)
+
+
 def run_b190_move_refusal(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
     """BACKLOG #190: Guy's cart report -- "after that promt the screen glitched to show
     both promt and attacks of wigglytuff" -- a move-picker refusal on the GB editor's
@@ -6318,7 +6400,12 @@ def run_b142_tab_focus_arrival(core_mod, image_mod, rom_after: Path, rom_before:
     sb.skipped += sa.skipped
     return sb
 def run_s150_9_merge_screen(core_mod, image_mod, rom_emerald: Path, out_dir: Path) -> gb_shots.Session:
-    """BACKLOG #150 S150-9: the shared per-field MERGE screen (app_xfer_merge_screen,
+    """RETIRED IN PART (lane y7-bankpass, #270): the drop-into-the-Bank frames (merge screen,
+    ALREADY RESTORED, SAVE FIRST) are gone -- the Bank is a pass-through and no longer raises
+    them; only the planted-cell grab frames 00-04 remain. See run_y7_bank_passthrough and
+    run_s150_9_site2 for what replaced them. The historical text below describes the removed flow.
+
+    BACKLOG #150 S150-9: the shared per-field MERGE screen (app_xfer_merge_screen,
     source/pdna_main.c), both the real-rows case and decision 7's "nothing changed"
     skip, plus decision 8's RESTORED/PENDING refusals -- all four reachable only
     because of decision 12's planted-ledger read shim (source/bank_plant.c/
@@ -6371,17 +6458,6 @@ def run_s150_9_merge_screen(core_mod, image_mod, rom_emerald: Path, out_dir: Pat
     gb_shots.assert_vehicle(rom_emerald, "ARTLESS")  # BACKLOG #255: this chain's own docstring names a required vehicle
     print("== BACKLOG #150 S150-9: the per-field MERGE screen ==")
 
-    def goto_slot_and_grab(s: gb_shots.Session, slot: int) -> None:
-        row, col = divmod(slot, 6)
-        s.press_n("DOWN", row, settle=100)
-        s.press_n("RIGHT", col, settle=100)
-        s.tap("A", settle=200)              # the cell's own menu
-        s.press_n("DOWN", 3, settle=80)     # -> MOVE
-        s.tap("A", settle=200)              # pick up -> carrying
-
-    def into_bank(s: gb_shots.Session) -> None:
-        s.press_n("UP", 6, settle=100)      # row0, tab row, off the top -> the Bank
-
     s = gb_shots.Session(core_mod, image_mod, rom_emerald, out_dir, "s150_9_")
     s.run(700)
     s.shot("00_boot", "S150-9: Emerald boots into the PC box view, box 1 (storage "
@@ -6394,111 +6470,20 @@ def run_s150_9_merge_screen(core_mod, image_mod, rom_emerald: Path, out_dir: Pat
     s.tap("A", settle=200)
     s.shot("02_menu", "S150-9: A opens the cell's menu (VIEW/EDIT, ITEM, "
            "LEGALITY, MOVE, COPY, DUPLICATE, TO DAY-CARE, EXPORT .pk, RELEASE)")
-    s.press_n("DOWN", 3, settle=80)
-    s.shot("03_on_move", "S150-9: DOWNx3 -> cursor on MOVE")
+    s.press_n("DOWN", 4, settle=80)   # S150-15 added the GB ORIGINAL row above MOVE: x4, not x3
+    s.shot("03_on_move", "S150-9: DOWNx4 (GB ORIGINAL row sits above MOVE since S150-15) "
+           "-> cursor on MOVE")
     s.tap("A", settle=200)
     s.shot("04_carrying", "S150-9: A -> picked up, carrying (footer 'A drop B "
            "cancel')")
-    into_bank(s)
-    s.shot("05_in_bank", "S150-9: UPx6 (off the grid, past the tab row, off the "
-           "top) -> the Bank itself, still carrying -- box 1 shows "
-           "bank_plant_box0's own SEVEN cells (CHI/PIK/EGG/CHI/DMG/CHI/CHI -- "
-           "S150-12 review decision 17, merged after this lane's first pass, "
-           "added two COPY cells at slots 5/6; was five cells pre-merge), "
-           "cursor past them on an empty cell")
-    s.tap("A", settle=300)
-    s.shot("06_merge_screen", "S150-9: A to drop -> the per-field MERGE screen -- "
-           "'BACK TO ITS ORIGINAL' / 'Level 9 > 12  KEEP' (cursor here) / "
-           "'Moves changed  KEEP' / 'A flip  START apply  B cancel'",
-           claim=["BACK TO ITS ORIGINAL", "KEEP"])  # BACKLOG #184 retrofit:
-           # pdna_layout.h's PDNA_XFERRESTORE_TITLE / PDNA_XFERMERGE_KEEP literals
-    s.tap("A", settle=200)
-    s.shot("07_level_take", "S150-9: A flips the cursor row -- LEVEL now TAKE")
-    s.tap("DOWN", settle=150)
-    s.shot("08_cursor_moves", "S150-9: DOWN moves the cursor to the MOVES row")
-    s.tap("A", settle=200)
-    s.shot("09_moves_take", "S150-9: A flips MOVES to TAKE (both rows now TAKE)")
-    s.tap("A", settle=200)
-    s.shot("10_moves_keep_again", "S150-9: A again flips MOVES back to KEEP")
-    s.tap("B", settle=250)
-    s.shot("11_cancel_still_holding", "S150-9: B cancels the screen -- back on "
-           "the Bank grid, STILL carrying (footer 'A drop B cancel'), nothing "
-           "applied")
-    s.tap("A", settle=300)
-    s.shot("12_redrop_menu", "S150-9: A again on the same empty cell -- the "
-           "screen reappears")
-    s.shot("13_both_keep_again", "S150-9: both rows read KEEP again -- toggle "
-           "state is NOT remembered across a cancel", allow_same=True)
-    s.tap("A", settle=200)
-    s.shot("14_level_take_again", "S150-9: A -- LEVEL -> TAKE (MOVES stays KEEP)")
-    s.tap("START", settle=300)
-    s.shot("15_write_result", "S150-9: START applies (accept=LEVEL only) -- "
-           "'TRANSFER RECORD UNREADABLE / Nothing was moved.' (PDNA_XFERREC_*). "
-           "The real mechanism (review D6, corrected from an earlier guess): "
-           "pc_bank_restore_up's own pdna_bank_next_serial() call fails (it "
-           "writes bank.meta -- no writable FAT on this vehicle at all), so "
-           "`serial == 0` and pc_bank_restore_up returns -1 BEFORE "
-           "bank_restore_from_entry is ever called -- the restore itself never "
-           "ran here. drop_held's own rc<0 branch shows this same message for "
-           "any negative pc_bank_restore_up return (source/pdna_box.c ~:1633-1642). "
-           "Hardware-owed (docs/HW-QUEUE.md): whether the merge lands correctly "
-           "when a real card CAN allocate a serial is untested here.",
-           claim=["TRANSFER RECORD UNREADABLE"])  # BACKLOG #184 retrofit:
-           # pdna_layout.h's PDNA_XFERREC_TITLE literal
-
-    # ---- decision 7: slot 28 -- the "nothing changed" skip -----------------------
-    s2 = gb_shots.Session(core_mod, image_mod, rom_emerald, out_dir, "s150_9b_")
-    s2.run(700)
-    goto_slot_and_grab(s2, 28)
-    s2.shot("00_carrying_slot28", "S150-9 decision 7: carrying the slot-28 "
-            "planted cell (CLAIMED, unaltered -- byte-identical to its own "
-            "ledger baseline)")
-    into_bank(s2)
-    s2.tap("A", settle=300)
-    s2.shot("01_no_screen", "S150-9 decision 7: A to drop -- NO merge screen "
-            "(nothing changed abroad, decision 7's own rule; app_xfer_merge_screen "
-            "returns true with *accept=0 without drawing), straight to the SAME "
-            "pdna_bank_next_serial() failure frame 15 reaches (review D6)")
-
-    # ---- decision 8: slot 27 -- XR_STATE_RESTORED, the ALREADY RESTORED refusal --
-    s3 = gb_shots.Session(core_mod, image_mod, rom_emerald, out_dir, "s150_9c_")
-    s3.run(700)
-    goto_slot_and_grab(s3, 27)
-    s3.shot("00_carrying_slot27", "S150-9 decision 8: carrying the slot-27 "
-            "planted cell (its ledger entry is already XR_STATE_RESTORED)")
-    into_bank(s3)
-    s3.tap("A", settle=300)
-    s3.shot("01_already_restored", "S150-9 decision 8: A to drop -- 'ALREADY "
-            "RESTORED / The Bank has its original. / Release this copy "
-            "instead.' (PDNA_XFERDUP_*), the state refusal BEFORE the screen -- "
-            "nothing written, still holding",
-            claim=["ALREADY RESTORED"])  # BACKLOG #184 retrofit:
-            # pdna_layout.h's PDNA_XFERDUP_TITLE literal
-    s3.tap("A", settle=200)
-    s3.shot("02_still_holding", "S150-9 decision 8: dismiss -- still carrying "
-            "the slot-27 cell, footer 'A drop B cancel'")
-
-    # ---- decision 8: slot 26 -- XR_STATE_PENDING, the SAVE FIRST refusal ---------
-    s4 = gb_shots.Session(core_mod, image_mod, rom_emerald, out_dir, "s150_9d_")
-    s4.run(700)
-    goto_slot_and_grab(s4, 26)
-    s4.shot("00_carrying_slot26", "S150-9 decision 8: carrying the slot-26 "
-            "planted cell (its ledger entry is XR_STATE_PENDING)")
-    into_bank(s4)
-    s4.tap("A", settle=300)
-    s4.shot("01_save_first", "S150-9 decision 8: A to drop -- 'SAVE FIRST / One "
-            "transfer is waiting for / the game save. START > SAVE.' "
-            "(PDNA_XFER_SAVEFIRST_*) -- nothing written, still holding",
-            claim=["SAVE FIRST"])  # BACKLOG #184 retrofit:
-            # pdna_layout.h's PDNA_XFER_SAVEFIRST_TITLE literal
-    s4.tap("A", settle=200)
-    s4.shot("02_still_holding", "S150-9 decision 8: dismiss -- still carrying "
-            "the slot-26 cell, footer 'A drop B cancel'")
-
-    # Fold the three follow-on sessions' shots into the first session's own lists
-    # so the caller's manifest/exit-code accounting sees all four.
-    s.taken += s2.taken + s3.taken + s4.taken
-    s.skipped += s2.skipped + s3.skipped + s4.skipped
+    # F8 (lane y7-bankpass, #270): frames 05-15 and the slot-28/27/26 sub-sessions narrated
+    # the RETIRED flow -- the merge screen / ALREADY RESTORED / SAVE FIRST raised on the
+    # PC->Bank DROP. The Bank is a pass-through now (a PC->Bank drop stores the record
+    # as-is; see run_y7_bank_passthrough), so those frames can no longer be reached and
+    # were removed rather than left claiming a dead flow. The merge-screen UX still on the
+    # GB->Bank lift is proven by run_s150_9_site2 (frames 04_merge_screen / 05_cancel_silent
+    # / 06_regrab_merge_screen / 07_start_refused); the TARGET-drop restore is host-pinned
+    # (tests/host_xfer_roundtrip_test.c D5) and hardware-owed.
     return s
 
 
@@ -7928,6 +7913,10 @@ def _main_dispatch(argv=None) -> int:
                           "original80, both on a PC cell and a Bank cell that is "
                           "abroad -- see run_s150_15_view_original()'s own docstring "
                           "for the full nav recipe.")
+    ap.add_argument("--y7-bankpass", action="store_true",
+                     help="#270 (lane y7-bankpass): only run_y7_bank_passthrough() -- --image "
+                          "as for --s150-15 (plain fuse_sav.py <delta-artless> Emerald.sav) "
+                          "AND --vsd <img> (the Bank drop commits box00.box).")
     ap.add_argument("--s150-11", action="store_true",
                      help="BACKLOG #150 S150-11: only run_s150_11_reconcile() against "
                           "--image -- --image MUST be `make delta-gb`'s own combined "
@@ -9084,6 +9073,20 @@ def _main_dispatch(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] s150-14: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if getattr(a, "y7_bankpass", False):
+        ran = True
+        try:
+            sess = run_y7_bank_passthrough(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] y7-bankpass: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:

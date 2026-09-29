@@ -158,7 +158,7 @@ bool xr_merge_down_gb_sel(const GbscEntry* e, const GbEditMon* now, uint8_t acce
 bool xr_merge_down_gb(const GbscEntry* e, const GbEditMon* now, GbEditMon* out,
                       XrMergeReport* rep); /* ACCEPT_ALL wrapper */
 
-/* BACKLOG #206 review R1: pc_bank_restore_up's (source/pdna_box.c) pick loop +
+/* BACKLOG #206 review R1: gbpc_restore_up's (source/pdna_box.c) pick loop +
  * RESTORED/PENDING refusals, extracted pure so a host test can exercise them
  * directly instead of a synthetic bank_restore_from_entry(e, ...) call that never
  * touches the pick/state logic at all (the pre-extraction regression test's own
@@ -170,7 +170,7 @@ bool xr_merge_down_gb(const GbscEntry* e, const GbEditMon* now, GbEditMon* out,
  * picked entry's own state refuses the restore outright, decision 8's "before the
  * screen" order (§3.2) -- `out` is left untouched on both refusals and XR_PICK_NONE.
  * XR_PICK_LIVE: `out` holds the picked entry (CLAIMED, or the pre-state-byte NONE
- * case pc_bank_restore_up itself still logs and treats as CLAIMED); the caller
+ * case gbpc_restore_up itself still logs and treats as CLAIMED); the caller
  * still does the probe / confirm screen / bank_restore_from_entry as before -- this
  * function makes NO identity comparison (nickname/species) against any abroad
  * record and never will; that is exactly the regression BACKLOG #206 pinned against. */
@@ -183,6 +183,13 @@ typedef enum {
 
 XrRestorePick xr_restore_pick_basic(const uint8_t* buf, uint32_t len, int count,
                                     GbscEntry* out);
+
+/* #270 (Guy 2026-09-29, the Bank is a pass-through): the generation (GB_GEN1/GB_GEN2)
+ * of the native original the SAME pick loop as xr_restore_pick_basic would choose
+ * (the LAST NATIVE_HOME entry whose original80 is a native cell), whatever its state;
+ * 0 when there is none or the cell does not unpack. The target-drop restore compares
+ * it with the destination save's generation BEFORE it offers any screen. */
+uint8_t xr_home_gen(const uint8_t* buf, uint32_t len, int count);
 
 /* BACKLOG #150 S150-9 decision 11: the entry builder xfer_down_write() inlined
  * (source/pdna_gen12.c) -- pure gbsc_entry_from() + five field stores + one memcpy,

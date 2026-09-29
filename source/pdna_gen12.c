@@ -2127,7 +2127,7 @@ gb_lift_restore(const GbEditMon* mon, uint8_t out80[80]) {
   uint64_t key = gbsc_key(mon->gen, gb_get_otid(mon), dv4, mon->otname);
 
   /* BACKLOG #226 review D1-R: this used to be a bounded 2-attempt loop offering
-   * SAVE NOW? on a PENDING entry, mirroring pc_bank_restore_up (site 1,
+   * SAVE NOW? on a PENDING entry, mirroring gbpc_restore_up (site 1,
    * source/pdna_box.c). Deleted, not repaired: `key` here is gbsc_key(...) (GB key
    * space) while g_xd_key -- the only thing app_xfer_pending_is() ever compares
    * against -- is set exclusively via app_xfer_pending_set(xr_key_g3(out80), ...)
@@ -2186,7 +2186,7 @@ gb_lift_restore(const GbEditMon* mon, uint8_t out80[80]) {
 
   if (!gbsc_get(g_ed->sidecar, len, found, &e)) return -1;
 
-  /* decision 8's state branch, mirrored from pc_bank_restore_up (site 1). */
+  /* decision 8's state branch, mirrored from gbpc_restore_up (site 1). */
   if (e.state == XR_STATE_RESTORED) {
     log_line("gen12: lift restore: entry already RESTORED -- refusing a second restore");
     snd_deny();
@@ -2215,7 +2215,7 @@ gb_lift_restore(const GbEditMon* mon, uint8_t out80[80]) {
   }
   uint8_t accept = 0;
   /* review D5: B, a plain user decline -- app_xfer_merge_screen already drew its own
-   * "B = no" (the Gen-3 twin, pc_bank_restore_up just above in pdna_box.c, treats an
+   * "B = no" (the Gen-3 twin, gbpc_restore_up just above in pdna_box.c, treats an
    * identical decline the same way: `if (!confirmed) return -2;`) -- distinct from a
    * genuine failure, so the caller must show nothing further. */
   if (!app_xfer_merge_screen(&rep, XR_MERGE_DOWN, &accept)) return -2;   /* B: nothing spent */
@@ -2377,7 +2377,7 @@ static int gb_lift_pack(int box, int slot, uint8_t* out80, bool copy) {
       return XG_LIFT_FAILED;
     }
     /* review D5: gb_lift_restore()'s OWN tri-state (1/0/-1/-2, mirroring
-     * pc_bank_restore_up) threads straight through -- -2 (already explained on
+     * gbpc_restore_up) threads straight through -- -2 (already explained on
      * screen, or a plain B decline) becomes CANCELLED here too; 0 ("only a Gen-3-
      * home entry -- use COPY/PASTE instead") and -1 (a genuine unreported I/O
      * failure) both still need this caller's own generic dialog, unchanged from

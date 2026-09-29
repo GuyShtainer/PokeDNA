@@ -1059,7 +1059,7 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XFER_LIFT_REFUSED_L2    "packed for the Bank."
 
 /* BACKLOG #150 S150-9 decision 6/13: app_xferrestore_confirm (S150-8b review F3/D6)
- * is DELETED this commit -- its only call site (pc_bank_restore_up) now shows the
+ * is DELETED this commit -- its only call site (gbpc_restore_up) now shows the
  * shared app_xfer_merge_screen. PDNA_XFERRESTORE_L_LOSS/L_EVOLVED/A_OK were that
  * screen's own (never reused) and are deleted with it. PDNA_XFERRESTORE_TITLE
  * STAYS: it is reused verbatim as PDNA_XFERMERGE_TITLE_DOWN (decision 13). */
@@ -1067,7 +1067,7 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 
 /* BACKLOG #150 S150-9 decision 6/13: the shared per-field MERGE screen
  * (app_xfer_merge_screen, pdna_main.c) -- replaces app_sidecar_confirm (this commit)
- * and app_xferrestore_confirm's call site in pc_bank_restore_up (a later commit).
+ * and app_xferrestore_confirm's call site in gbpc_restore_up (a later commit).
  * Same panel chrome as the two screens it replaces (PDNA_SIDECAR_PANEL_x, TEXT_x,
  * LINE_x, EVS_GAP above). PDNA_SIDECAR_L_EVS is reused verbatim as the UP direction's
  * always-shown read-only row (decision 7); PDNA_SIDECAR_B_CANCEL is reused for the
@@ -1090,7 +1090,7 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XFERMERGE_HINT_RO       "A ok  B cancel"   /* review D2: A commits with zero toggle rows */
 
 /* BACKLOG #150 S150-9 decision 8: the ledger's RESTORED/PENDING state refusals at a
- * restore lookup (site 1, pc_bank_restore_up; site 2, the GB lift, a later commit). */
+ * restore lookup (site 1, gbpc_restore_up; site 2, the GB lift, a later commit). */
 #define PDNA_XFERDUP_TITLE   "ALREADY RESTORED"
 #define PDNA_XFERDUP_L1      "The Bank has its original."
 #define PDNA_XFERDUP_L2      "Release this copy instead."

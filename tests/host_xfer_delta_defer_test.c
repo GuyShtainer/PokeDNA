@@ -4,7 +4,7 @@
  * verified write on a VSD-attached delta build) is not shadowed forever by the
  * stale planted bytes -- the exact bug that made the restore's "save-now succeeds
  * -> the restore proceeds" happy path unreachable at either site (source/pdna_box.c
- * pc_bank_restore_up, source/pdna_gen12.c gb_lift_restore).
+ * gbpc_restore_up, source/pdna_gen12.c gb_lift_restore).
  *
  *   cc -std=c11 -Wall -Wextra -DPDNA_DELTA -DPDNA_GEN12_HOST -DFF_USE_MKFS=1 \
  *      -Dsiprintf=sprintf -Dsniprintf=snprintf -Dvsniprintf=vsnprintf \
