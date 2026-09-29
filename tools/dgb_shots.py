@@ -5602,6 +5602,53 @@ def run_s150_15_view_original(core_mod, image_mod, rom: Path, out_dir: Path) -> 
     return s
 
 
+def run_y7_bank_passthrough(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """#270 (lane y7-bankpass): the Bank is a pass-through. A converted Gen-3 record that
+    HAS a ledger original (the S150-15 PDNA_DELTA seam pastes one into a PC cell) is carried
+    PC -> Bank and dropped: it lands BYTE-AS-IS (no restore screen, no native cell), the
+    ledger entry stays, and the Bank grid/menu still show that it came from a Game Boy game
+    ('2' era pad on the cell, GB ORIGINAL in its menu).
+
+    `rom` MUST be the same PLAIN `tools/fuse_sav.py <pokedna-delta-artless.gba> Emerald.sav`
+    fusion run_s150_15_view_original documents, AND `--vsd <img>` is required (the Bank
+    drop commits box00.box, which needs a writable FAT). Nav (S150-15's own, then S150-9's
+    into_bank): R x10 -> box 11 (empty), A/DOWN/A pastes the seam clip, A dismisses SAVED;
+    A on the pasted mon -> DOWN x4 (VIEW/EDIT, ITEM, LEGALITY, GB ORIGINAL -> MOVE) -> A
+    carries; UP x2 (tab row, off the top) -> the Bank, still carrying; A drops."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")
+    print("== #270 (y7-bankpass): Bank pass-through (--vsd) ==")
+    if gb_shots._DEFAULT_VSD_IMG is None:
+        raise RuntimeError("--y7-bankpass requires --vsd <img.img>")
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "y7_bankpass_")
+    s.run(700)
+    s.vsd_snapshot()
+    s.press_n("R", 10, settle=150)                           # box 1 -> box 11 (empty)
+    s.tap("A", settle=250)
+    s.tap("DOWN", settle=100)                                # CREATE -> PASTE HERE
+    s.tap("A", settle=400)                                   # paste -> flash write
+    s.tap("A", settle=250)                                   # dismiss SAVED
+    s.shot("00_pasted_in_pc", "y7: the converted CHIKORITA (seam clip, ledger original on file) "
+           "pasted into an empty Gen-3 PC cell -- era badge '2' on the cell")
+    s.tap("A", settle=250)
+    s.press_n("DOWN", 4, settle=80)                          # -> MOVE
+    s.shot("01_move_row", "y7: its menu, MOVE highlighted (GB ORIGINAL is the row above)",
+           claim=["GB ORIGINAL", "MOVE"])
+    s.tap("A", settle=250)                                   # pick up
+    s.shot("02_carrying", "y7: picked up, carrying", allow_same=True)
+    s.press_n("UP", 2, settle=150)                           # tab row, off the top -> the Bank
+    s.shot("03_in_bank_carrying", "y7: in the Bank, still carrying the Gen-3 record")
+    s.tap("A", settle=500)                                   # drop
+    s.shot("04_after_drop", "y7: A -- the drop landed with NO restore/merge screen (#270: the "
+           "Bank stores the record as it is)")
+    s.tap("A", settle=250)                                   # A on the just-dropped cell -> its menu
+    s.shot("05_bank_menu_original", "y7: A on the record now in the Bank -- the menu lists "
+           "GB ORIGINAL (its ledger original is still on file: bank entry did NOT consume it)",
+           claim=["GB ORIGINAL"])
+    changed = s.vsd_report()
+    print(f"  vsd diff (Bank drop): {sorted(changed)}")
+    return s
+
+
 def run_b190_move_refusal(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
     """BACKLOG #190: Guy's cart report -- "after that promt the screen glitched to show
     both promt and attacks of wigglytuff" -- a move-picker refusal on the GB editor's
@@ -7928,6 +7975,10 @@ def _main_dispatch(argv=None) -> int:
                           "original80, both on a PC cell and a Bank cell that is "
                           "abroad -- see run_s150_15_view_original()'s own docstring "
                           "for the full nav recipe.")
+    ap.add_argument("--y7-bankpass", action="store_true",
+                     help="#270 (lane y7-bankpass): only run_y7_bank_passthrough() -- --image "
+                          "as for --s150-15 (plain fuse_sav.py <delta-artless> Emerald.sav) "
+                          "AND --vsd <img> (the Bank drop commits box00.box).")
     ap.add_argument("--s150-11", action="store_true",
                      help="BACKLOG #150 S150-11: only run_s150_11_reconcile() against "
                           "--image -- --image MUST be `make delta-gb`'s own combined "
@@ -9084,6 +9135,20 @@ def _main_dispatch(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] s150-14: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if getattr(a, "y7_bankpass", False):
+        ran = True
+        try:
+            sess = run_y7_bank_passthrough(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] y7-bankpass: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
