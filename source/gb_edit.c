@@ -440,6 +440,15 @@ uint16_t gb_get_current_hp(const GbEditMon* e) {
   if (!e || !gen_ok(e->gen) || !e->is_party) return 0;
   return rd16be(e->rec + (e->gen == GB_GEN1 ? R1_CURHP : R2_CURHP));
 }
+bool gb_set_current_hp(GbEditMon* e, uint16_t hp) {
+  uint16_t mx;
+  if (!e || !gen_ok(e->gen) || !e->is_party) return false;
+  mx = gb_get_stat(e, GB_HP);                    /* stored max HP: stat 0 in both gens */
+  if (mx == 0) return false;
+  if (hp > mx) hp = mx;
+  wr16be(e->rec + (e->gen == GB_GEN1 ? R1_CURHP : R2_CURHP), hp);
+  return true;
+}
 uint8_t gb_get_gen1_type1(const GbEditMon* e) {
   return (e && e->gen == GB_GEN1) ? e->rec[R1_TYPE1] : 0;
 }
