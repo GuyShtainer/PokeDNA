@@ -1216,11 +1216,12 @@ bank_down_dispatch(BoxSource* src, int dst_box, int dst_cell, const uint8_t cell
   }
 }
 
-/* #270 (Guy 2026-09-29, RULED): the Bank is a PASS-THROUGH -- it stores and returns
- * every record byte-as-is, both directions, always. The S150-8b D-Q1 restore edge
- * that used to run on the PC->Bank drop is RETIRED; this lookup now runs at exactly
- * one place, the TARGET drop (drop_held_down_g3): a Gen-3 record dropped onto a Game
- * Boy PC whose ledger has a native-home entry of THAT save's generation is restored
+/* #270 (Guy 2026-09-29, RULED): the Bank is a PASS-THROUGH -- today in the Gen-3 ->
+ * Bank DIRECTION: a PC->Bank drop stores the record byte-as-is and the S150-8b D-Q1
+ * restore edge that used to run there is RETIRED. The GB->Bank lift still restores on
+ * entry (BACKLOG #280 is the follow-up that makes that direction pass through too).
+ * This lookup now runs at exactly one place, the TARGET drop (drop_held_down_g3): a
+ * Gen-3 record dropped onto a Game Boy PC whose ledger has a native-home entry of THAT save's generation is restored
  * byte-exactly (the merge screen, then the native cell). Anything else -- no entry,
  * a different generation, an entry already RESTORED (the DUPLICATE of an original
  * that already came home: never restore twice) -- returns 0 and the caller runs the
@@ -1666,7 +1667,7 @@ drop_held_down_g3(BoxSource* src, int box, int cur, uint8_t* recs, bool* done) {
    * gbpc_restore_up. rc 0 = no restorable original (none / other generation / already
    * RESTORED = the duplicate): today's convert path, unchanged. */
   uint8_t cell80[80];
-  int rc = gbpc_restore_up(s_held, app_gb_session_gen(), cell80);
+  int rc = (s_xfer_peer && s_xfer_peer->accept_down) ? gbpc_restore_up(s_held, app_gb_session_gen(), cell80) : 0;
   if (rc == -2) return recs;                                 /* declined/refused -- already said */
   if (rc < 0) {                                              /* still holding, nothing written */
     snd_error();
@@ -1679,7 +1680,6 @@ drop_held_down_g3(BoxSource* src, int box, int cur, uint8_t* recs, bool* done) {
   bool landed;
   if (rc == 1) {
     landed = s_xfer_peer && s_xfer_peer->accept_down && s_xfer_peer->accept_down(box, cell80);
-    if (!landed) snd_deny();
   } else {
     landed = gb_bank_down_g3(box, s_held) == BANK_DOWN_LANDED;
   }
