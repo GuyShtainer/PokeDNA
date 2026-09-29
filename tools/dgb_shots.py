@@ -5040,7 +5040,8 @@ def run_s150_2_bank_native(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_
     s.tap("A", settle=150)                                  # slot 0 -> the occupied-mon menu
     s.shot("06_cell0_menu", "S150-2: A on the CHIKORITA cell -- the ordinary occupied-"
            "mon menu, cursor on row 0 (Summary/VIEW-EDIT) -- on/after S150-3 this is "
-           "the native WHITELIST (VIEW/EDIT, LEGALITY, MOVE, DUPLICATE, EXPORT, RELEASE, CANCEL -- #271)")
+           "the native WHITELIST (VIEW/EDIT, LEGALITY, MOVE, DUPLICATE, EXPORT, TO GAME, RELEASE, CANCEL -- #271; TO GAME "
+           "is the #271/y10 row, shown because this Emerald session has a live Gen-3 PC)", claim=["TO GAME"])
     s.tap("A", settle=150)                                  # select the Summary row
     s.shot("07_cell0_summary", "S150-2: the REAL Gen-1/2 summary, opened read-only over "
            "the native cell's own 80 bytes via gb_native_summary_open() (decision "
@@ -5060,7 +5061,8 @@ def run_s150_2_bank_native(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_
            "from bc_is_native() -- decoded via pdna_native_cell_decode(), the same "
            "ladder the grid uses -- not from whether pk_decode_mon's meaningless-key "
            "decrypt of the raw bytes happens to pass its checksum) -- on/after S150-3 "
-           "this is the native WHITELIST (VIEW/EDIT, LEGALITY, MOVE, DUPLICATE, EXPORT, RELEASE, CANCEL -- #271)")
+           "this is the native WHITELIST (VIEW/EDIT, LEGALITY, MOVE, DUPLICATE, EXPORT, TO GAME, RELEASE, CANCEL -- #271; TO GAME "
+           "is the #271/y10 row, shown because this Emerald session has a live Gen-3 PC)", claim=["TO GAME"])
     s.tap("A", settle=150)                                  # select the Summary row
     s.shot("10_cell4_summary_or_refuse", "S150-2: the Summary row on the DMG cell -- "
            "bc_unpack succeeds (the glitch species lives in list_species/rec, outside "
@@ -5210,7 +5212,8 @@ def run_s150_3_escape_gate(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_
     s.tap("A", settle=150)                                  # slot 0 -> its menu
     s.shot("00_native_menu", "S150-3: A on the CHIKORITA native cell -- decision 7's "
            "WHITELIST, not the ordinary eleven-row occupied menu: VIEW/EDIT / LEGALITY / "
-           "MOVE / DUPLICATE / EXPORT .pk / RELEASE / CANCEL (#271), cursor defaults to row 0")
+           "MOVE / DUPLICATE / EXPORT .pk / TO GAME / RELEASE / CANCEL (#271; TO GAME = #271/y10, Gen-3 session), "
+           "cursor defaults to row 0", claim=["TO GAME"])
 
     # VIEW (row 0, already selected) -> A_SUMMARY's dispatch case -> app_box_browse ->
     # its own bc_is_native() interception -> gb_native_summary_open() (D-Q1: the same
@@ -7322,8 +7325,8 @@ def run_s150_8_gen3_arm(core_mod, image_mod, rom_emerald: Path, out_dir: Path) -
         uses (Party -> Bank is one DOWN in the nav list, then A opens
         pdna_bank_show()). Box 0's cursor starts on slot 0 (plain CHIKORITA); RIGHT
         x3 reaches slot 3 (the item-holding CHIKORITA).
-      pick up: A (native-cell whitelist: VIEW/EDIT, MOVE, RELEASE, CANCEL) -> DOWN
-        (VIEW/EDIT -> MOVE) -> A (starts the carry).
+      pick up: A (native-cell whitelist: VIEW/EDIT, LEGALITY, MOVE, DUPLICATE, EXPORT .pk, TO GAME,
+        RELEASE, CANCEL -- #271/y10 added TO GAME) -> DOWN x2 (VIEW/EDIT -> LEGALITY -> MOVE) -> A (starts the carry).
       Bank -> PC, still carrying: DOWN x5 (row 0 down to the Bank's own bottom row,
         a 5th off its bottom edge) -- IDENTICAL to run_s150_7_down_edge's own
         DOWN_OFF_BANK=5 (pdna_box.c's `else if (src->is_bank) { boxoam_exit();
@@ -11669,8 +11672,9 @@ def run_s150_12_copy_edge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
 
     s.tap("A", settle=150)
     s.shot("13_menu", "s150-12: the ordinary Bank-cell menu -- VIEW/EDIT, LEGALITY, MOVE, DUPLICATE, EXPORT .pk, "
-           "RELEASE, CANCEL (this is a real Bank cell now, not the read-only "
-           "mount's whitelist)")
+           "TO GAME, RELEASE, CANCEL (this is a real Bank cell now, not the read-only "
+           "mount's whitelist; TO GAME is the #271/y10 row -- this is an Emerald session with a live Gen-3 PC)",
+           claim=["TO GAME"])
 
     s.press_n("DOWN", 2, settle=60)                              # VIEW/EDIT -> LEGALITY -> MOVE
     s.tap("A", settle=150)                                # MOVE -> carrying
