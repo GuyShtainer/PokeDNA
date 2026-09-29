@@ -82,7 +82,7 @@ def main() -> int:
            "row) -> slot 7, the planted BULBASAUR (dex 1, OT BADMOVE/9999) -- F7's "
            "own fixture change: now also holds item id 19 (ESCAPE ROPE)")
     s.tap("A", settle=150)                        # native-cell whitelist menu
-    s.tap("DOWN", settle=60)                       # VIEW/EDIT -> MOVE
+    s.press_n("DOWN", 2, settle=60)                       # VIEW/EDIT -> LEGALITY -> MOVE (native menu, #271)
     s.tap("A", settle=150)                         # MOVE -> carrying
     s.press_n("DOWN", DOWN_OFF_BANK, settle=150)
     s.shot("03_carrying", "carrying the BULBASAUR+item cell, back on Red's own "

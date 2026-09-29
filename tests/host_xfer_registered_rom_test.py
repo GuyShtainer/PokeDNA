@@ -13,7 +13,14 @@ a self-mutation proof.
   (c1) the SD branch of gb_gen1_locate_rom calls app_gb_rom_path(GB_GEN1);
   (c2) that call comes BEFORE gb_rom_base_path() (registered wins, beside-save falls back);
   (c3) the registered arm opens the ROM as GB_ROM_GEN1 and only then sets romgs_ready.
-MUT: deleting the app_gb_rom_path line (the old body) must be caught by (c1).
+  (c4) the registered arm accepts the ROM only when `romgs.gen == GB_ROM_GEN1` (a Gen-2 ROM registered
+       in the Gen-1 slot must not seed Gen-1 base stats);
+  (c5) a registered path that will not open (dangling) falls THROUGH to the beside-the-save probe --
+       the arm contains no refusal return, its only return is GB1BASE_OK;
+  (c6) a registered ROM of the wrong generation also falls through (no GB1BASE_BAD_ROM in the arm).
+MUTs (each must be caught): delete the app_gb_rom_path line (c1); drop the `gen == GB_ROM_GEN1` test
+from the registered arm (c4); make a dangling path return NO_ROM (c5); make a wrong-gen ROM return
+BAD_ROM instead of falling back (c6).
 """
 from __future__ import annotations
 import re, sys
@@ -47,6 +54,13 @@ def func(text: str, sig: str) -> str:
     raise AssertionError("unbalanced")
 
 
+def arm(body: str) -> str:
+    sd = body[body.index("#else"):]
+    reg = sd.find("app_gb_rom_path(GB_GEN1)")
+    base = sd.find("gb_rom_base_path()")
+    return sd[reg:base] if 0 <= reg < base else ""
+
+
 def verdicts(body: str) -> tuple[bool, bool, bool]:
     else_i = body.index("#else")
     sd = body[else_i:]
@@ -55,6 +69,14 @@ def verdicts(body: str) -> tuple[bool, bool, bool]:
     open_ = sd.find("GB_ROM_GEN1", reg) if reg >= 0 else -1
     ready = sd.find("romgs_ready = true", reg) if reg >= 0 else -1
     return reg >= 0, (reg >= 0 and base > reg), (open_ >= 0 and ready > open_ and ready < base)
+
+
+def arm_verdicts(body: str) -> tuple[bool, bool, bool]:
+    a = arm(body)
+    c4 = re.search(r"if \(rok && g_ed->romgs\.gen == GB_ROM_GEN1\) \{", a) is not None
+    c5 = bool(a) and re.findall(r"return [A-Z0-9_]+;", a) == ["return GB1BASE_OK;"]
+    c6 = bool(a) and "GB1BASE_BAD_ROM" not in a
+    return c4, c5, c6
 
 
 def main() -> int:
@@ -67,6 +89,21 @@ def main() -> int:
     m1, _, _ = verdicts(mut)
     check(not m1, "MUT (registered lookup removed) was NOT caught")
     print("  MUT registered-lookup removed:", "caught" if not m1 else "MISSED")
+    c4, c5, c6 = arm_verdicts(body)
+    check(c4, "registered arm does not require romgs.gen == GB_ROM_GEN1 before returning OK")
+    check(c5, "registered arm has a return other than GB1BASE_OK (a dangling path would refuse)")
+    check(c6, "registered arm returns GB1BASE_BAD_ROM (a wrong-gen registered ROM must fall back)")
+    muts = {
+        "gen check dropped (c4)": (0, lambda b: b.replace("if (rok && g_ed->romgs.gen == GB_ROM_GEN1) {", "if (rok) {", 1)),
+        "dangling path refuses (c5)": (1, lambda b: b.replace("log_line(\"gen12: gen-1 rom: registered %s did not open as Gen-1\", g_ed->romspath);\n      }", "log_line(\"gen12: gen-1 rom: registered %s did not open as Gen-1\", g_ed->romspath);\n      } else { return GB1BASE_NO_ROM; }", 1)),
+        "wrong-gen returns BAD_ROM (c6)": (2, lambda b: b.replace("did not open as Gen-1\", g_ed->romspath);", "did not open as Gen-1\", g_ed->romspath); return GB1BASE_BAD_ROM;", 1)),
+    }
+    for name, (idx, f) in muts.items():
+        mb = f(body)
+        changed = mb != body
+        caught = changed and not arm_verdicts(mb)[idx]
+        check(caught, f"MUT {name} was NOT caught (changed={changed})")
+        print("  MUT", name, ":", "caught" if caught else "MISSED")
     print(f"{checks} checks, {len(fails)} failed")
     for f in fails:
         print("  !! FAIL:", f)

@@ -3001,6 +3001,46 @@ static bool gb_export_hook(uint8_t* rec80) {
   return false;
 }
 
+/* BACKLOG #271: EXPORT .pk1/.pk2 for a NATIVE Bank cell (a banked Gen-1/2 record) -- the
+ * menu row Gen-3 records already had. Same file format, folder, name rule and collision
+ * suffixing as gb_export_hook (shared gb_pk_build_path), but the record comes out of the
+ * cell (bc_unpack) instead of a mounted session, so it needs no g_ed and no GB session:
+ * it runs from a Gen-3 session's Bank visit too. Only the CART gate applies (Omega-only
+ * writes, hard rule 4). The path + payload live in one caller-frame buffer (272 + 56 B).
+ * The FRAME is bigger than pdna_pk_export's (488 B vs 320 B); what is equal is the deepest
+ * SUBTREE below this menu (2,760 B here vs 2,904 B there), so the chain's STACK budget is unchanged. Nothing in the Bank is modified. */
+bool gb_export_native(const uint8_t cell80[80]) {
+  GbEditMon e; BcMeta mt;
+  if (!cell80 || !bc_unpack(cell80, &e, &mt)) { snd_deny(); return false; }
+  if (!app_can_edit()) {
+    snd_deny();
+    msg_wait(PDNA_GBEDIT_READONLY_TITLE, UI_WARN, app_gb_readonly_why(), 0);
+    return false;
+  }
+  if (gb_is_egg(&e)) { snd_deny(); msg_wait("EGGS", UI_WARN, "Eggs can't be exported.", 0); return false; }
+  uint8_t payload[56];
+  int wrote = gb_pk_pack(&e, payload, (int)sizeof payload);
+  if (wrote < 0) { snd_error(); msg_wait("EXPORT FAILED", UI_WARN, "Could not build the file.", 0); return false; }
+  char path[SF_PATH_MAX];
+  f_mkdir(PDNA_DIR);       /* ignore FR_EXIST */
+  f_mkdir(PDNA_BANK_DIR);
+  if (!gb_pk_build_path(path, (int)sizeof path, &e)) {
+    snd_error(); msg_wait("EXPORT FAILED", UI_WARN, "Path too long.", 0); return false;
+  }
+  rmbl_pause();
+  SfStatus wst = sf_write_verified(path, payload, wrote);
+  rmbl_resume();
+  if (wst == SF_OK) {
+    char p2[40]; ui_truncate(p2, path, 29);
+    snd_save();
+    msg_wait("EXPORTED", UI_OK, p2, "Open it from START > Bank.");
+    return true;
+  }
+  snd_error();
+  msg_wait("EXPORT FAILED", UI_WARN, sf_status_str(wst), 0);
+  return false;
+}
+
 /* BoxSource.can_boxops (BACKLOG #93, step 5): the narrow box-menu open gate this
  * step exists to add -- see pdna_box.h's own comment on the field and the finding
  * that shapes it (gbsrc_can_edit() is hardwired false and can_lift is S3's transfer

@@ -475,6 +475,40 @@ static void test_resolve_cell(void) {
     CHECK(got == SE_ERA_GEN1, "Db9b: a Gen-1 save's own GBGRID at NATIVE -> GEN1, unchanged");
   }
 
+  /* Db9c-Db9h (BACKLOG #267, Guy 2026-09-29): a BANK cell's art follows the record's ORIGIN,
+   * not the mounted save's kind. Before the fix a mounted Gen-1/2 save made every Bank mon of
+   * species <= 151 (<= 251) draw Gen-1 (Gen-2) art -- an Emerald Dratini (dex 147) included. */
+  {
+    SeSetting s; se_default(&s);
+    int why = -1;
+    SeEra got = se_resolve_cell(&s, SE_KIND_GEN1, SE_PLACE_BANK, 3, 1, 147, &all_roms, 1, &why);
+    CHECK(got == SE_ERA_NATIVE, "Db9c: Yellow mounted, BANK cell = Gen-3 record (Dratini 147) -> NATIVE (Gen-3 art), not GEN1");
+    got = se_resolve_cell(&s, SE_KIND_GEN2, SE_PLACE_BANK, 3, 1, 25, &all_roms, 1, &why);
+    CHECK(got == SE_ERA_NATIVE, "Db9d: Gold mounted, BANK cell = Gen-3 record (Pikachu 25) -> NATIVE, not GEN2");
+    got = se_resolve_for_router(&s, SE_KIND_GEN1, SE_PLACE_BANK, 3, 1, 147, &all_roms, true, &why);
+    CHECK(got == SE_ERA_NATIVE, "Db9e: the PORTRAIT router agrees with the cell resolver on a Gen-3 Bank record");
+    got = se_resolve_cell(&s, SE_KIND_GEN1, SE_PLACE_BANK, 2, 1, 152, &all_roms, 1, &why);
+    CHECK(got == SE_ERA_GEN2, "Db9f: Yellow mounted, BANK cell = native Gen-2 cell (Chikorita) -> GEN2 (its origin), not the mounted kind");
+    got = se_resolve_cell(&s, SE_KIND_GEN2, SE_PLACE_BANK, 1, 1, 25, &all_roms, 1, &why);
+    CHECK(got == SE_ERA_GEN1, "Db9g: Gold mounted, BANK cell = native Gen-1 cell -> GEN1 (its origin)");
+    got = se_resolve_cell(&s, SE_KIND_GEN1, SE_PLACE_GBGRID, 3, 1, 147, &all_roms, 1, &why);
+    CHECK(got == SE_ERA_GEN1, "Db9h: the mounted save's OWN grid is unchanged (a GB kind's GBGRID is always its era)");
+    /* Db9i (review D6c): a Gen-2 cell at dex 25 (exists in Gen 1 too), Gen-2 ROM absent, Gen-1 ROM
+     * present, Yellow mounted. The origin era is unavailable -> NATIVE. Without the BANK origin block
+     * the mounted kind's GEN1 answer would win (dex 25 is a Gen-1 species), so this is RED then. */
+    SeRoms no2 = all_roms; no2.have[SE_ERA_GEN2] = false;
+    got = se_resolve_cell(&s, SE_KIND_GEN1, SE_PLACE_BANK, 2, 1, 25, &no2, 1, &why);
+    CHECK(got == SE_ERA_NATIVE, "Db9i: origin era's ROM absent -> NATIVE fallback, never the mounted kind's era");
+    /* Db9j/k (review D4): the Bank -> VIEW summary uses place SUMMARY -- a Gen-3 record still takes no
+     * GB era there (grid and summary agree); a GB session's OWN summary is unchanged. */
+    got = se_resolve_for_router(&s, SE_KIND_GEN1, SE_PLACE_SUMMARY, 3, 1, 147, &all_roms, true, &why);
+    CHECK(got == SE_ERA_NATIVE, "Db9j: Yellow mounted, SUMMARY of a Gen-3 Bank record (Dratini 147) -> NATIVE, not GEN1");
+    got = se_resolve_for_router(&s, SE_KIND_GEN1, SE_PLACE_SUMMARY, 1, 1, 147, &all_roms, true, &why);
+    CHECK(got == SE_ERA_GEN1, "Db9k: Yellow's OWN summary (origin 1) is unchanged -> GEN1");
+    got = se_resolve_for_router(&s, SE_KIND_GEN2, SE_PLACE_SUMMARY, 1, 1, 25, &all_roms, true, &why);
+    CHECK(got == SE_ERA_GEN2, "Db9k2: SUMMARY keeps the mounted era for origin 1/2 (the origin half is BANK-only)");
+  }
+
   /* Db10-Db12 (E5b review D1): an EXPLICIT cell that fails one of se_resolve()'s gates
    * must fall back to the STORE, never to the import's own era -- the pre-E5b bitmap
    * default that the opt-in retires. Three measured manifestations. */

@@ -181,3 +181,17 @@ bool bc_view(const GbEditMon* mon, const BcMeta* meta, uint32_t id_salt, Gb12Mon
   out->slot_salt = id_salt;
   return true;
 }
+
+/* BACKLOG #271 review D1/D6: the pure half of DUPLICATE on a native Bank cell -- re-pack it
+ * with `serial` and the COPY flag, ledger-state bits cleared (they describe the ORIGINAL).
+ * Nothing is written to `cell` unless every step succeeds. */
+bool bc_restamp_copy(uint8_t cell[BC_CELL_BYTES], uint32_t serial) {
+  GbEditMon m; BcMeta mt;
+  uint8_t out[BC_CELL_BYTES];
+  if (cell == NULL || serial == 0) return false;
+  if (!bc_unpack(cell, &m, &mt)) return false;
+  uint8_t fl = (uint8_t)((mt.flags & ~(BC_FLAG_HAS_XFER_REC | BC_FLAG_QUEUED_PC)) | BC_FLAG_COPY);
+  if (bc_pack(&m, fl, mt.origin_game, mt.rtc_epoch, serial, out) != 0) return false;
+  memcpy(cell, out, BC_CELL_BYTES);
+  return true;
+}

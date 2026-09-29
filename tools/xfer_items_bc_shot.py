@@ -71,9 +71,10 @@ def carry_from_box2(s: gb_shots.Session, slot_right_taps: int) -> None:
     s.tap("R", settle=150); s.tap("R", settle=150)   # box 0 -> box 1 -> box 2
     for _ in range(slot_right_taps):
         s.tap("RIGHT", settle=80)
-    s.tap("A", settle=150)                        # cell menu (native-cell OR plain-cell
-                                                    # menu -- either way MOVE sits at
-                                                    # index 3, see this lane's own report)
+    s.tap("A", settle=150)                        # cell menu -- box 2's cells are plain Gen-3 records,
+                                                    # whose menu is VIEW/ITEM/LEGALITY/MOVE (MOVE = index 3).
+                                                    # A NATIVE Gen-1/2 cell's menu is VIEW/LEGALITY/MOVE/
+                                                    # DUPLICATE (#271): MOVE = index 2, index 3 = DUPLICATE.
     s.press_n("DOWN", 3, settle=80)                # VIEW/EDIT -> ITEM -> LEGALITY -> MOVE
     s.tap("A", settle=150)                         # MOVE -> start_carry()
     s.press_n("DOWN", DOWN_OFF_BANK, settle=150)   # off the Bank's bottom edge -> GB BOX1

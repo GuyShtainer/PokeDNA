@@ -2120,6 +2120,29 @@ static void oam_sync(int cur, bool on_title, int box, bool is_bank) {
   }
 }
 
+/* BACKLOG #271: DUPLICATE on a native Bank cell (a banked Gen-1/2 record). A byte copy
+ * would put TWO cells with the same bank_serial (hence the same ident32) in the Bank --
+ * the exact #168 hazard the UP-landing collision scan exists to refuse -- and both would
+ * claim the one Game Boy original. So the copy is re-packed with a FRESH serial and the
+ * COPY flag (BANK-CROSSGEN-DESIGN SS11.7 G-L3: a copy never writes a ledger entry); the
+ * ledger-state bits (has-xfer-record, queued-for-PC) describe the ORIGINAL and are cleared.
+ * Everything else (species, DVs, moves, names, origin_game, rtc_epoch) is untouched.
+ * Non-native cells (Gen-3 records) pass straight through. false = no serial could be
+ * allocated (meta write failed); the caller must not carry a copy then. */
+static bool __attribute__((noinline)) dup_restamp_native(uint8_t held[80]) {
+  if (!bc_is_native(held)) return true;
+  /* review D1 (#168 hazard): same protections as the UP-landing path -- after a bank.meta
+   * rollback (#219 .bak) the counter can re-issue the original's serial, i.e. the same
+   * ident32 and the same xr_key_g3, so the copy would restore through the original's
+   * NATIVE_HOME entry. Resync the counter to the stored high-water mark FIRST. NOTE: the
+   * scan re-pages the shared Bank buffer -- callers re-fetch `recs` afterwards. */
+  uint32_t stored_max = bank_serial_max(bank_scan_get, NULL, PDNA_BANK_BOXES, G3_BOX_SLOTS);
+  (void)pdna_bank_serial_resync(stored_max);
+  uint32_t serial = pdna_bank_next_serial();
+  if (serial == 0 || serial <= stored_max) return false;
+  return bc_restamp_copy(held, serial);
+}
+
 static void draw_footer(bool is_bank, bool on_title, bool moving) {
   const char* f;
   if (s_tab_focus >= 0)    f = tab_focus_footer(s_holding, pdna_box_carry_is_gb());
@@ -4025,9 +4048,15 @@ static int party_strip_overlay(BoxSource* src, int box, int* cur,
                                                                 * into a LATER, unrelated
                                                                 * app_mon_menu call         */
             memcpy(s_held, recs + (uint32_t)gcur * 80, 80);
+            bool dup_ok = dup_restamp_native(s_held);
+            recs = src->records(box);                         /* review D1: the serial scan re-paged the shared Bank buffer */
+            if (!dup_ok) {                                    /* BACKLOG #271: no serial -> no copy */
+              snd_deny();
+            } else {
             s_holding = true; s_orig_box = box; s_orig_slot = -1; s_orig_scope = src->scope;
             s_held_dup = true; s_orig_party = false;
             play_grab_anim(src, box, gcur);
+            }
           }
           /* neither -> the menu only viewed/edited/released in place; recs/g_box are
            * already fresh (refreshed above), the next iteration's redraw reflects it */
@@ -5104,11 +5133,17 @@ int pdna_box(BoxSource* src) {
           }
         } else if (app_take_dup_request()) {                            /* picked DUPLICATE -> a fresh COPY in the glove */
           memcpy(s_held, recs + (uint32_t)cur * 80, 80);                /* copy floats in-hand; no origin (cancel discards it) */
+          bool dup_ok = dup_restamp_native(s_held);
+          recs = src->records(box);                                     /* review D1: the serial scan re-paged the shared Bank buffer */
+          if (!dup_ok) {                                                /* BACKLOG #271: no serial -> no copy */
+            snd_deny(); need_full = true;                               /* repaint: don't leave the menu popup stale (review D5) */
+          } else {
           s_holding = true; s_orig_box = box; s_orig_slot = -1; s_orig_scope = src->scope; s_held_dup = true; s_orig_party = false;
           render_full(src, box, cur, false, false, false);
           play_grab_anim(src, box, cur);
           carry_move(src, box, cur, cur);
           draw_footer(src->is_bank, false, true);
+          }
         } else {
           int pb, ps;
           if (app_take_pickup(&pb, &ps) && pb >= 0 && pb < nb && ps >= 0 && ps < 30) {

@@ -392,6 +392,9 @@ BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]);
  * missed by a caller that assumes both work the same way. */
 BankDownResult gb_bank_down_g3(int dst_box, const uint8_t cell80[80]);
 
+/* BACKLOG #271: write a native Bank cell out as a .pk1/.pk2 file (no GB session needed). */
+bool gb_export_native(const uint8_t cell80[80]);
+
 
 #ifdef PDNA_DELTA
 /* BACKLOG #62: mount fused_gb_save(idx) directly out of cartridge space -- no FIL, no

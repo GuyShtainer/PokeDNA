@@ -109,9 +109,29 @@ SeEra se_resolve(const SeSetting* s, SeSaveKind kind, SePlace place,
    * species (dex 152..251) used to ask for a picture Gen 1 never had. Both are refused
    * here exactly as `wanted` was. */
   SeEra native = se_native_era(kind, origin_gen, origin_certain);
+  /* BACKLOG #267 (Guy 2026-09-29): the BANK is shared by every save, so when a Game Boy
+   * session is mounted a Bank cell's art follows the RECORD'S OWN ORIGIN, never the
+   * mounted save's kind. se_native_era() answers GEN1/GEN2 outright for a GB kind
+   * whatever the origin, which drew every Bank mon of species <= 151 as Gen-1 art (and
+   * <= 251 as Gen-2) -- an Emerald Dratini included -- purely because the species
+   * existed in that era. Here: a Gen-3 record (origin_gen 3) is not a GB mon at all, so
+   * it takes no GB era and falls through to the Gen-3 pipeline (step 7); a native GB
+   * cell (origin_gen 1/2 -- its own generation byte, or the import fingerprint) draws
+   * the era it came FROM, not the era of the save that happens to be open. Only the BANK
+   * place: a GB session's own grid/party/summary are unchanged. */
+  if (kind == SE_KIND_GEN1 || kind == SE_KIND_GEN2) {
+    /* Review D4: the Bank -> VIEW summary (summary_run switches place to SUMMARY) shows the SAME
+     * record as the grid, so the origin_gen == 3 half applies at SUMMARY too; a Gen-3 record
+     * takes no GB era at either place. The origin-1/2 half stays BANK-only: a GB session's own
+     * summary is its mounted era. */
+    if ((place == SE_PLACE_BANK || place == SE_PLACE_SUMMARY) && origin_gen == 3)
+      native = SE_ERA_NATIVE;
+    else if (place == SE_PLACE_BANK && origin_gen == 1) native = SE_ERA_GEN1;
+    else if (place == SE_PLACE_BANK && origin_gen == 2) native = SE_ERA_GEN2;
+  }
   bool native_icons_ok   = !(place == SE_PLACE_PC && native == SE_ERA_GEN1);
   bool native_species_ok = se_species_exists(native, national_dex);
-  if (native_icons_ok && native_species_ok && era_has_rom(native, roms)) {
+  if (native != SE_ERA_NATIVE && native_icons_ok && native_species_ok && era_has_rom(native, roms)) {
     if (reason) *reason = why;                          /* Step 6 */
     return native;
   }

@@ -892,13 +892,13 @@ int pdna_origin_art_portrait_by_dex(uint16_t dex, PdnaArt* out) {
 }
 
 int pdna_origin_box_art(int slot, const PkMon* m, PdnaArt* out) {
-  (void)slot;   /* the cache decides the MARKER; the art is always recomputed from the
-                 * record, so a stale cache can never put the wrong picture on screen */
+  /* the era hint comes from the cell cache: the cache decides the MARKER and the
+   * origin hint, so a stale cache can never put the wrong picture on screen */
   if (out) memset(out, 0, sizeof *out);
   if (!m || !out) return 0;
 
   PdnaOrigin o;
-  pdna_origin_of(m, &o);
+  pdna_origin_of_hint(m, (uint8_t)pdna_origin_box_gen(slot), &o);   /* #267: same hint cell_pack used, or a hinted GB egg resolves GEN2 in cell_pack but NATIVE here */
   uint16_t nat_dex = pk_national_no(m->species);
   int era = cell_era_of(o.gen, o.gen_certain, nat_dex);
 
