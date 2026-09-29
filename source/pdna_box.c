@@ -5070,7 +5070,7 @@ int pdna_box(BoxSource* src) {
         } else if (app_take_dup_request()) {                            /* picked DUPLICATE -> a fresh COPY in the glove */
           memcpy(s_held, recs + (uint32_t)cur * 80, 80);                /* copy floats in-hand; no origin (cancel discards it) */
           if (!dup_restamp_native(s_held)) {                            /* BACKLOG #271: no serial -> no copy */
-            snd_deny();
+            snd_deny(); need_full = true;                               /* repaint: don't leave the menu popup stale (review D5) */
           } else {
           s_holding = true; s_orig_box = box; s_orig_slot = -1; s_orig_scope = src->scope; s_held_dup = true; s_orig_party = false;
           render_full(src, box, cur, false, false, false);
