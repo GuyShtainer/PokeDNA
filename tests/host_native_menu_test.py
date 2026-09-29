@@ -8,7 +8,9 @@ the REAL sources (same style as host_escape_gate_sites_test.py) with a mutation 
 
   (m1) the `if (native) { ... }` row builder in app_mon_menu offers A_LEGAL, A_DUP, A_EXPORT
        (menu-visibility assertion for a banked record);
-  (m2) it does NOT offer A_TOGAME/A_PASTE/A_COPY/A_ITEM (would run Gen-3 bodies on GBC1 bytes);
+  (m2) it does NOT offer A_PASTE/A_COPY/A_ITEM (would run Gen-3 bodies on GBC1 bytes); A_TOGAME is
+       offered ONLY as the gated row (#271/y10: xg_togame_row -- its native action is a request the
+       Bank grid runs through the drop's own arm, pinned in host_y10_togame_sites_test.py);
   (m3) A_LEGAL on a native cell shows the cell's own view and never the Gen-3 box sweep;
   (m4) A_EXPORT on a native cell calls gb_export_native (never pdna_pk_export's .pk3 body);
   (m5) both DUPLICATE sites in pdna_box.c run dup_restamp_native() right after copying into s_held,
@@ -62,7 +64,8 @@ def analyse(menu: str, box: str) -> dict[str, bool]:
     helper = func(box, "dup_restamp_native(uint8_t held[80]) {")
     return {
         "m1": all(a in nb for a in ("act[n++]=A_LEGAL", "act[n++]=A_DUP", "act[n++]=A_EXPORT")),
-        "m2": not any(a in nb for a in ("A_TOGAME", "A_PASTE", "A_COPY", "A_ITEM")),
+        "m2": (not any(a in nb for a in ("A_PASTE", "A_COPY", "A_ITEM"))
+               and all("xg_togame_row(" in ln for ln in nb.split("\n") if "A_TOGAME" in ln)),
         "m3": legal,
         "m4": export,
         "m5": len(dup_sites) == 2,
@@ -80,8 +83,9 @@ def main() -> int:
     for k, v in ok.items():
         check(v, f"{k} does not hold on the real source")
     muts = {
-        "m1": lambda m, b: (m.replace("lab[n]=PDNA_LBL_EXPORT_PK; act[n++]=A_EXPORT;\n    lab[n]=PDNA_LBL_RELEASE", "lab[n]=PDNA_LBL_RELEASE", 1), b),
-        "m2": lambda m, b: (m.replace("lab[n]=PDNA_LBL_DUPLICATE; act[n++]=A_DUP;\n    lab[n]=PDNA_LBL_EXPORT_PK", "lab[n]=PDNA_LBL_DUPLICATE; act[n++]=A_DUP; act[n++]=A_TOGAME;\n    lab[n]=PDNA_LBL_EXPORT_PK", 1), b),
+        "m1": lambda m, b: (m.replace("lab[n]=PDNA_LBL_EXPORT_PK; act[n++]=A_EXPORT;", "", 1), b),
+        "m2": lambda m, b: (m.replace("lab[n]=PDNA_LBL_DUPLICATE; act[n++]=A_DUP;\n    lab[n]=PDNA_LBL_EXPORT_PK", "lab[n]=PDNA_LBL_DUPLICATE; act[n++]=A_DUP; act[n++]=A_PASTE;\n    lab[n]=PDNA_LBL_EXPORT_PK", 1), b),
+        "m2b": lambda m, b: (m.replace("if (is_bank && xg_togame_row(is_bank, app_gen3_pc_live(), g_have_pc)) { lab[n]=PDNA_LBL_TO_GAME;", "{ lab[n]=PDNA_LBL_TO_GAME;", 1), b),
         "m3": lambda m, b: (m.replace("if (native) { pdna_legality_show(&m0); return false; }", "", 1), b),
         "m4": lambda m, b: (m.replace("if (native) { (void)gb_export_native(rec); return false; }", "", 1), b),
         "m5": lambda m, b: (m, b.replace("bool dup_ok = dup_restamp_native(s_held);", "bool dup_ok = true;", 1)),

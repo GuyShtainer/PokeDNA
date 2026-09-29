@@ -4049,8 +4049,12 @@ bool __attribute__((noinline)) app_bank_togame_native(int bank_box, int bank_slo
   int db = -1, ds = -1;
   for (int i = 0; i < G3_TOTAL_BOXES && db < 0; i++) {
     int b = (((g_pc_last_box >= 0 && g_pc_last_box < G3_TOTAL_BOXES) ? g_pc_last_box : 0) + i) % G3_TOTAL_BOXES;
-    int s = box_free_slot(g_pc, b);
-    if (s >= 0) { db = b; ds = s; }
+    for (int c = 0; c < G3_IN_BOX && db < 0; c++) {
+      /* an all-zero personality, NOT box_free_slot()'s "decodes as empty": a glitch record that decodes as
+       * empty is non-zero, and the arm's own occupancy gate (dstrec[0..3], the drop's) would refuse it silently */
+      const uint8_t* cs = pk_box_slot(g_pc, b, c);
+      if ((cs[0] | cs[1] | cs[2] | cs[3]) == 0 && !bc_is_native(cs)) { db = b; ds = c; }
+    }
   }
   if (db < 0) { snd_deny(); msg_wait("PC FULL", UI_WARN, "No free PC slot in the", "loaded game."); return false; }
   if (app_bank_defer_full()) { snd_deny(); msg_wait("TOO MANY MOVES", UI_WARN, "Save and re-enter the", "Bank first."); return false; }
@@ -4066,6 +4070,9 @@ bool __attribute__((noinline)) app_bank_togame_native(int bank_box, int bank_slo
   app_mark_pc_dirty();                                      /* == src->mark_dirty */
   app_bank_defer_delete(bank_box, bank_slot, held);
   snd_save();
+  /* the destination is off-screen (the Bank grid is showing) -- say where it went, and that the write waits for the exit save */
+  char l1[24]; siprintf(l1, "PC box %d, slot %d.", db + 1, ds + 1);
+  msg_wait("SENT TO GAME", UI_OK, l1, "Save when you leave.");
   return true;
 }
 
