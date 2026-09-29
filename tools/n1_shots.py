@@ -65,7 +65,7 @@ def run_gold_menu(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     s = Session(core_mod, image_mod, rom, out_dir, "n1gold_")
     print("== Gold.sav (Gen 2) -- BACKLOG #58: identical menu, honest per-row refusals ==")
 
-    s.tap("A", settle=BIG_SETTLE)           # info page -> box grid
+    s.run(BIG_SETTLE)                       # #279: no info page -- the grid opens directly; this run() rides out its cold fetch
     s.tap("START", settle=BIG_SETTLE)       # box grid -> the nav menu
     s.shot("01_menu", "#58: Gold (Gen 2) START menu -- the SAME panel/labels/order as "
                        "a Gen-3 save's own (no dimming; compare against em_01_menu)")

@@ -6256,7 +6256,13 @@ static void gb_nav_from_start(Gb12Mount* m, GbSession* ro) {
  * WHERE THE BYTES COME FROM, and that difference lives entirely in the read callback. */
 static void gb_session_core(Gb12Mount* m, GbSession* ro) {
   rmbl_fire(RCUE_ROOM);
-  if (!gb_info_page(m)) return;              /* B on the info page = never entered */
+  /* BACKLOG #279 (Guy: "there is an entering promt i dont understand... it should simply
+   * enter it, pokedna becomes a tool to edit gen 2 and 1 saves just as its for gen 3"):
+   * a GAME BOY SAVE info page (title, honest line, four counts, "A browse SEL list B
+   * back") sat between the save pick and the box grid; a Gen-3 open has no such stop.
+   * It is gone: the mount enters the grid directly. The page itself is still what the
+   * no-session nav branches fall back to (gb_info_page below), and gb_report_page still
+   * runs on the way OUT when something was locked/unreadable. */
   /* BACKLOG #77: once per session, past the point the user could still back out --
    * open the Gen-3 ROM wallpaper rung (artless builds only, no-op if already open)
    * so the box grid below can stream the real wallpaper instead of the procedural

@@ -365,9 +365,7 @@ def boot_to_gb_session(s: gb_shots.Session, rom: Path, which: str | None = None)
         n = row_index(rom, which)
         if n:
             s.press_n("DOWN", n, settle=gb_shots.SETTLE)   # Gen-3 row -> `which`'s row
-        s.tap("A", settle=60)                               # pick row -> S1 info
-    assert_screen(s, "gb_info_page")
-    s.tap("A", settle=60)                    # S1 info -> box grid (rom_gbsprite cold fetch)
+        s.tap("A", settle=60)                               # pick row -> box grid (#279: no info page)
     s.run(GB_ART_COLD_SETTLE)
     assert_screen(s, "gb_box_grid")
 
@@ -584,11 +582,7 @@ def run_standalone(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Se
                               "(Red/Gold/Crystal)")
 
     s.tap("DOWN", settle=gb_shots.SETTLE)                 # Emerald (row 0) -> Red (row 1)
-    s.tap("A", settle=60)                                 # pick Red -> S1
-    s.shot("02_s1_info", "#68a: Red.sav's own S1 info page -- the standalone "
-                          "mount, reached via the boot picker's Red row")
-
-    s.tap("A", settle=60)                                 # -> box grid (COLD fetch, gen1 loc empty)
+    s.tap("A", settle=60)                                 # pick Red -> box grid (COLD fetch, gen1 loc empty; #279: no S1 info page)
     s.run(GB_ART_COLD_SETTLE)
     s.shot("03_box_grid", "#62 D1: box grid with REAL Red/Blue/Yellow art -- 4-shade Game Boy "
                            "sprites decoded from the fused Red.gb ROM, the first-ever cold scan "
@@ -1593,7 +1587,7 @@ def run_m1_map_gen2(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.S
     print("== M1-G2: Crystal's own current-map view (single-ROM -> Map) ==")
 
     s.run(700)
-    s.tap("A", settle=60)                                    # S1 info -> box grid (single-ROM image)
+    # #279: single-ROM image lands on the grid by itself (no S1 info page, no tap)
     s.run(GB_ART_COLD_SETTLE)
     s.tap("START", settle=gb_shots.BIG_SETTLE)               # box grid -> nav menu
     s.press_n("DOWN", 16)                                     # Party -> ... -> Map (index 16, same as Gen 1)
@@ -1653,8 +1647,7 @@ def run_m1_map_gen2_wrong_game(core_mod, image_mod, rom: Path, out_dir: Path) ->
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "m1_map_g2_wronggame_")
     print("== M1-G2: wrong-game refusal (Gold save, Crystal-only ROM) ==")
 
-    s.run(700)
-    s.tap("A", settle=60)
+    s.run(700)                       # #279: lands on the grid by itself (no info page, no tap)
     s.run(GB_ART_COLD_SETTLE)
     s.tap("START", settle=gb_shots.BIG_SETTLE)
     s.press_n("DOWN", 16)
@@ -1680,8 +1673,7 @@ def run_m1_map_gen2_no_rom(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "m1_map_g2_norom_")
     print("== M1-G2: no-ROM refusal (Gold save, no Gen-2 ROM fused) ==")
 
-    s.run(700)
-    s.tap("A", settle=60)
+    s.run(700)                       # #279: lands on the grid by itself (no info page, no tap)
     s.run(GB_ART_COLD_SETTLE)
     s.tap("START", settle=gb_shots.BIG_SETTLE)
     s.press_n("DOWN", 16)
@@ -3581,7 +3573,7 @@ def run_b124_dexicons(core_mod, image_mod, rom: Path, out_dir: Path, which: str,
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, tag)
     print(f"== BACKLOG #124: dex-grid GB icons ({which}{' fallback' if fallback else ''}) ==")
     s.run(700)
-    s.tap("A", settle=60)                                   # S1 info -> box grid (single-ROM image)
+    # #279: single-ROM image lands on the grid by itself (no S1 info page, no tap)
     s.run(GB_ART_COLD_SETTLE)
     s.shot("01_box_grid", "#124: the box grid BEFORE the dex visit -- pdna_box.c's "
                            "own GB-icon cell (pdna_origin_box_art(), unrelated to "
@@ -4358,8 +4350,7 @@ def _derive_checkerboard_ref(core_mod, image_mod, rom: Path) -> bytes:
     s = gb_shots.Session(core_mod, image_mod, rom, Path("/tmp"), "measure_ref_")
     s.run(700)
     s.tap("DOWN", settle=gb_shots.SETTLE)
-    s.tap("A", settle=60)
-    s.tap("A", settle=300)
+    s.tap("A", settle=300)            # pick Red -> grid (#279: no info page in between)
     return _crop_bytes(s.screen)
 
 
@@ -4378,7 +4369,8 @@ def _measure_box_grid_cold_start(core_mod, image_mod, rom: Path,
     s = gb_shots.Session(core_mod, image_mod, rom, Path("/tmp"), "measure_")
     s.run(700)
     s.tap("DOWN", settle=gb_shots.SETTLE)   # boot picker: Emerald row (0) -> Red row (1)
-    s.tap("A", settle=60)                   # pick Red -> S1 info page
+    # #279: there is no S1 info page any more; the "not real art yet" reference is the boot
+    # picker crop (what is on screen when the A press lands).
     info_page_crop = _crop_bytes(s.screen)
 
     # Same key-down/HOLD/key-up edge tap() uses, but WITHOUT its trailing settle --
@@ -4518,7 +4510,7 @@ def _measure_b185_auto(core_mod, image_mod, rom: Path, down_n: int,
     s = gb_shots.Session(core_mod, image_mod, rom, Path("/tmp"), f"b185_{label}_")
     s.run(700)
     s.press_n("DOWN", down_n, settle=gb_shots.SETTLE)
-    s.tap("A", settle=60)
+    # #279: no S1 info page -- the reference "not painted yet" crop is the boot picker itself.
     info_page_crop = _crop_bytes(s.screen)
     s.core.set_keys(raw=gb_shots.KEY["A"])
     s.run(gb_shots.HOLD)
@@ -4709,7 +4701,7 @@ def run_s2_bank(core_mod, image_mod, rom: Path, out_dir: Path, which: str,
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"s2bank_{which}_")
     print(f"== #120: the Bank from a Game Boy session ({which}) ==")
     s.run(700)
-    s.tap("A", settle=60)                                   # S1 info -> box grid (single-ROM image)
+    # #279: single-ROM image lands on the grid by itself (no S1 info page, no tap)
     s.run(GB_ART_COLD_SETTLE)
     s.shot("a_gb_grid", f"#120: the {which} box grid, freshly entered "
                         "-- every occupied cell wears its own era mark")
@@ -4725,7 +4717,7 @@ def run_s2_bank(core_mod, image_mod, rom: Path, out_dir: Path, which: str,
     if clip_rom is not None:
         cs = gb_shots.Session(core_mod, image_mod, clip_rom, out_dir, f"s2bank_{which}_clip_")
         cs.run(700)
-        cs.tap("A", settle=60)                              # single-slot image: info -> box grid directly
+        # #279: single-slot image lands on the grid by itself (no info page, no tap)
         cs.run(GB_ART_COLD_SETTLE)
         cs.press_n("UP", 3, settle=100)
         cs.tap("A", settle=150)                             # A on the empty cell (cursor starts at 0)
@@ -6070,8 +6062,8 @@ def run_s150_7_down_edge(core_mod, image_mod, rom_gold: Path, rom_red: Path,
 
     Nav recipe, verified live against these exact fused images (settle counts found by
     hand, same posture as every other run_* function in this file):
-      grid entry: `s.run(700); s.tap("A", settle=60); s.run(100)` -- boots to the S1 info
-        page, A opens the box grid (single-directory-entry fusion, gb_delta_pick_save()
+      grid entry: `s.run(700); s.run(100)` -- boots straight into the box grid (#279: the S1 info
+        page is gone; single-directory-entry fusion, gb_delta_pick_save()
         auto-picks the lone slot).
       grid -> Bank: UP x3 (cell -> title -> tabs -> the bank_edge hop, same three-press
         count run_s2_bank()'s own docstring already measured) THEN UP x4 more (the Bank
@@ -6099,8 +6091,7 @@ def run_s150_7_down_edge(core_mod, image_mod, rom_gold: Path, rom_red: Path,
     DOWN_OFF_BANK = 5         # row 0 -> Bank's own bottom row (4) -> off the bottom edge (1 more)
 
     def boot_to_grid(s: gb_shots.Session) -> None:
-        s.run(700)
-        s.tap("A", settle=60)
+        s.run(700)                       # #279: lands on the grid by itself (no info page, no tap)
         s.run(100)
 
     def pick_up_chikorita(s: gb_shots.Session) -> None:
@@ -7301,8 +7292,7 @@ def run_s150_8_bridge(core_mod, image_mod, rom_gold: Path, rom_red: Path,
     DOWN_OFF_BANK = 5
 
     def boot_to_grid(s: gb_shots.Session) -> None:
-        s.run(700)
-        s.tap("A", settle=60)
+        s.run(700)                       # #279: lands on the grid by itself (no info page, no tap)
         s.run(100)
 
     # ---- (1) Gen 1 -> Gen 2: PIKACHU carried into Gold -- the REACHABLE direction
@@ -9970,8 +9960,7 @@ def run_b93_menu(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> g
     # Bank-cell absence (#120 S2's own bank_edge UP hop, reused verbatim from
     # run_s2_bank -- 3 UPs from a fresh grid entry: cell -> title -> tabs -> the hop).
     s2 = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b93_{which}_bank_")
-    s2.run(700)
-    s2.tap("A", settle=60)
+    s2.run(700)                      # #279: lands on the grid by itself (no info page, no tap)
     s2.run(GB_ART_COLD_SETTLE)
     s2.press_n("UP", 3, settle=100)
     s2.shot("26_bank_hop", "BACKLOG #93: the bank_edge UP hop opens the Bank -- "

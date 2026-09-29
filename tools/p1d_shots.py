@@ -31,7 +31,7 @@ def run_gold_card_p1d(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     s = Session(core_mod, image_mod, rom, out_dir, "p1c_gold_")
     print("== Gold.sav (Gen 2) -- P1d re-shoot: name frame + B-save flow ==")
 
-    s.tap("A", settle=BIG_SETTLE)              # info page -> box grid
+    s.run(BIG_SETTLE)                          # #279: no info page -- the grid opens directly; this run() rides out its cold fetch
     s.tap("START", settle=BIG_SETTLE)          # box grid -> the nav menu
     s.press_n("DOWN", 3)                       # Party -> Bank -> Daycare -> Trainer
     s.tap("A", settle=BIG_SETTLE)               # Trainer -> pdna_gbtrainer(), card FRONT

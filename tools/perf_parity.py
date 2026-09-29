@@ -268,8 +268,7 @@ def measure_gb_box(core_mod, image_mod, lines: list[str], rom: Path, prefix: str
     for i in range(runs + 1):
         n0 = len(lines)
         d.s.tap("DOWN", settle=BIG_SETTLE)   # picker resets to row 0 every time it's shown
-        d.s.tap("A", settle=BIG_SETTLE)      # Red row -> info page
-        d.s.tap("A", settle=BIG_SETTLE)      # info -> box grid
+        d.s.tap("A", settle=BIG_SETTLE)      # Red row -> box grid (#279: no info page in between)
         d.s.run(FLUSH_SETTLE)
         got = new_lines(lines, n0)
         box_ms = find_last(got, lambda l: parse_span_ms(l, "box"))

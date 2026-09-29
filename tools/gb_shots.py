@@ -616,9 +616,8 @@ def run_gold(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     # their boxes), and only a second B (or A) from there reaches the info page. Not
     # used below (every reopen goes box-grid -> A, never through the info page), but
     # worth knowing if a future shot needs to leave the box grid.
-    s.shot("01_info", "S1: the info page — Gold/Silver save, converted-copy notice, counts")
-
-    s.tap("A", settle=BIG_SETTLE)          # info -> box grid
+    # #279: the S1 info page ("01_info") no longer exists -- the mount enters the grid directly.
+    s.run(BIG_SETTLE)                      # #279: no info page -- the grid opens directly; this run() rides out its cold fetch
     s.shot("02_box_grid", "S2: box grid — GB BOX1 20/20 (BACKLOG #40(a): the banner now uses "
                           "the source's own capacity, not the Gen-3 grid's 30 cells)")
 
@@ -725,7 +724,7 @@ def run_gold_gender(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     exactly this reason (source/gb_editor.c)."""
     s = Session(core_mod, image_mod, rom, out_dir, "gold_")
     print("== Gold.sav (Gen 2) -- BACKLOG #51 Gender row ==")
-    s.tap("A", settle=BIG_SETTLE)          # info -> box grid
+    s.run(BIG_SETTLE)                      # #279: no info page -- the grid opens directly; this run() rides out its cold fetch
     s.tap("A", settle=BIG_SETTLE)          # slot 0 (Bulbasaur) -> mon menu
     s.tap("A", settle=BIG_SETTLE)          # VIEW/EDIT -> the summary, VIEW, card 0 INFO
     s.tap("A", settle=BIG_SETTLE)          # A inside VIEW -> editing = true
@@ -781,7 +780,7 @@ def run_gold_create(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     already use."""
     s = Session(core_mod, image_mod, rom, out_dir, "gold_")
     print("== Gold.sav (Gen 2) -- BACKLOG #50 CREATE (UX-parity re-shoot) ==")
-    s.tap("A", settle=BIG_SETTLE)          # info -> box grid (GB BOX1, 20/20)
+    s.run(BIG_SETTLE)                      # #279: no info page -- the grid opens directly; this run() rides out its cold fetch (GB BOX1, 20/20)
     # BACKLOG #251 shots-refresh fix: 13 R presses at plain SETTLE dropped some of
     # them (each R re-pages the WHOLE box, a bigger repaint than a cursor move) --
     # reproduced live: this landed on "BOX10" (still 20/20, still occupied), not
@@ -858,7 +857,7 @@ def run_gold_paste(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     DV edit above, so a failure there can never take these down with it."""
     s = Session(core_mod, image_mod, rom, out_dir, "gold_")
     print("== Gold.sav (Gen 2, --clip) -- PASTE (GB) on an empty cell ==")
-    s.tap("A", settle=BIG_SETTLE)          # info -> box grid (GB BOX1, 20/20)
+    s.run(BIG_SETTLE)                      # #279: no info page -- the grid opens directly; this run() rides out its cold fetch (GB BOX1, 20/20)
 
     # BACKLOG #251 shots-refresh re-derivation (was: "Grid is 6 cols x 5 rows; slots
     # 0..19 are filled, 20..29 are the always empty cells... slot 20 = row 3, col 2"):
@@ -925,7 +924,7 @@ def run_red(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     s = Session(core_mod, image_mod, rom, out_dir, "red_")
     print("== Red.sav (Gen 1, no clip) ==")
 
-    s.tap("A", settle=BIG_SETTLE)
+    s.run(BIG_SETTLE)                      # #279: no info page -- the grid opens directly
     s.shot("12a_box_grid", "S2: Red.sav box grid — Gen 1")
 
     # BACKLOG #41: VIEW opens the native summary (card 0 INFO — the requested Gen-1 shot).
@@ -1012,7 +1011,7 @@ def run_red_create(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     only 2 presses here, not the unrestricted picker's 4."""
     s = Session(core_mod, image_mod, rom, out_dir, "red_")
     print("== Red.sav (Gen 1) -- BACKLOG #50 CREATE (UX-parity re-shoot) ==")
-    s.tap("A", settle=BIG_SETTLE)          # info -> box grid
+    s.run(BIG_SETTLE)                      # #279: no info page -- the grid opens directly; this run() rides out its cold fetch
     # BIG_SETTLE, not SETTLE (BACKLOG #278): the box-switch repaint outlasts SETTLE's 12 frames,
     # so the next R lands mid-repaint and is swallowed -- 4 fast presses stopped on BOX4 (20/20,
     # NO empty slot), and CREATE's tap then opened the Lapras summary. 4 presses with a full
