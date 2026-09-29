@@ -778,6 +778,7 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "gb_bag.h"        /* BACKLOG #249: gbb_read/gbb_pocket_cap/gbb_insert_and_write */
 #include "rom_gbsprite.h"  /* S5-C: locates BaseStats in the user's own Gen-1 ROM      */
 #include "rom_gblearn.h"   /* BACKLOG #50: level-up learnsets + min-level for CREATE   */
+#include "gb_origin.h"     /* BACKLOG #266: static-encounter level floor for CREATE   */
 #include "gb_new_mon.h"    /* BACKLOG #50: gb_new_mon/gb_new_mon_g1_moves for CREATE   */
 #include "pdna_pick.h"     /* BACKLOG #50 UX-parity: pick_species(), the Gen-3 picker  */
 #include "rom_gbbase.h"    /* S5-C: decodes the 28-byte BaseStats row rom_gbsprite found;
@@ -5473,7 +5474,8 @@ gb_create_learn(uint16_t dex, const uint8_t g1_start[4], uint8_t at_level,
   g_ed->learn.ctx = &s_gb_create_slice;
   int kept = -1;
   if (ok) {
-    uint8_t lvl = at_level ? at_level : rom_gblearn_min_level(&g_ed->learn, dex);
+    uint8_t lvl = at_level ? at_level
+                             : gb_origin_level_floor(g_ed->s.gen, dex, rom_gblearn_min_level(&g_ed->learn, dex));
     kept = g1_start ? rom_gblearn_moves_at_seeded(&g_ed->learn, dex, lvl, g1_start, out4)
                     : rom_gblearn_moves_at(&g_ed->learn, dex, lvl, out4);
     if (kept >= 0 && out_level && !at_level) *out_level = lvl;
@@ -5497,7 +5499,8 @@ gb_create_learn(uint16_t dex, const uint8_t g1_start[4], uint8_t at_level,
   g_ed->learn.ctx = &g_ed->romfil;
   int kept = -1;
   if (ok) {
-    uint8_t lvl = at_level ? at_level : rom_gblearn_min_level(&g_ed->learn, dex);
+    uint8_t lvl = at_level ? at_level
+                             : gb_origin_level_floor(g_ed->s.gen, dex, rom_gblearn_min_level(&g_ed->learn, dex));
     kept = g1_start ? rom_gblearn_moves_at_seeded(&g_ed->learn, dex, lvl, g1_start, out4)
                     : rom_gblearn_moves_at(&g_ed->learn, dex, lvl, out4);
     if (kept >= 0 && out_level && !at_level) *out_level = lvl;
