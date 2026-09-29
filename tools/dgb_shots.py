@@ -10907,7 +10907,13 @@ def run_b200_chain(core_mod, image_mod, rom: Path, out_dir: Path) -> list[gb_sho
 
     return sessions
 def run_s150_12_copy_edge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
-    """BACKLOG #150 S150-12: the read-only START > GB import mount's COPY lift, and
+    """BACKLOG #273 NOTE: the read-only START > GB import mount half described below
+    (frames 02-10 as originally captured) was closed by BACKLOG #239 and is RETIRED
+    from this chain -- see the comment at frame 02; only the refusal and the
+    planted-cell DOWN edge (frames 11-21) still run. The prose below is kept as the
+    historical record of what those retired frames showed.
+
+    BACKLOG #150 S150-12: the read-only START > GB import mount's COPY lift, and
     a planted COPY cell's ledger-free DOWN into the Emerald PC. `rom` MUST be
     `make delta-gb`'s own combined image (Emerald.sav + Red/Gold/Crystal).
 
@@ -10967,8 +10973,6 @@ def run_s150_12_copy_edge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
                                     # ARTLESS here hard-refused the very build the chain prescribes.
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s150_12_")
     print("== BACKLOG #150 S150-12: the read-only mount's COPY lift + planted-cell DOWN edge ==")
-    idx = gb_save_pick_index(rom)["gold"]
-
     s.run(700)
     s.tap("A", settle=gb_shots.BIG_SETTLE)              # #68a boot picker, Emerald row (default) -> box
     s.shot("00_emerald_box_grid", "s150-12: Emerald's own box grid, freshly booted")
@@ -10980,73 +10984,26 @@ def run_s150_12_copy_edge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
            "not column 1 -- this chain's own next tap is RIGHT before descending, "
            "which only makes sense if the target is in the second column")
 
+    # BACKLOG #273: the nested read-only GB import mount (frames 02-10 of the old
+    # chain: picker, Gold info page, RO box grid, SELECT->MOVE, origin prompt,
+    # refused lift, B x3 back out) was CLOSED on purpose by BACKLOG #239 -- A on NV_GB
+    # from a live Gen-3 save's nav menu now shows the "BANK ONLY" dialog and never
+    # mounts anything (source/pdna_main.c app_nav_refuse()). The app is right; the
+    # chain asserted a screen that no longer exists. Frames 03-10 are therefore
+    # RETIRED (numbers left unused so 11+ keep their names); frame 02 now proves the
+    # refusal, and the planted-cell DOWN edge below (which never needed the mount)
+    # runs unchanged from frame 11.
     s.tap("RIGHT")
     s.press_n("DOWN", nav_down_from_col_top("NV_GB"))
     s.tap("A", settle=gb_shots.BIG_SETTLE)
-    assert_screen(s, "pick_a_save")
-    s.shot("02_nv_gb_picker", "s150-12: NV_GB -> 'PICK A SAVE' -- Red.sav/Gold.sav/"
-           "Crystal.sav, Red selected by default")
-
-    for _ in range(idx):
-        s.tap("DOWN", settle=gb_shots.SETTLE)
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                # picked Gold -> S1 info page
-    s.shot("03_gold_info", "s150-12: Gold.sav's own S1 info page -- the read-only "
-           "mount, no edit session (g_ed stays NULL for this whole visit)")
-
-    s.tap("A", settle=60)                                 # info -> box grid (cold fetch)
-    s.run(GB_ART_COLD_SETTLE)
-    s.shot("04_gold_box_grid", "s150-12 (BACKLOG #198 item 10 recaption): Gold's "
-           "box grid on the read-only mount -- cursor on slot 0 (No.1 BULBASAUR), "
-           "footer 'A menu  SEL  L/R  B' (the footer never shows 'A pokeball' -- "
-           "SELECT has never entered MOVE here before this lane)",
-           claim=["A menu  SEL  L/R  B"])  # BACKLOG #184 retrofit: pdna_box.c's own
-           # `f = is_bank ? "A menu  SEL  L/R  B" : ...` literal (ui_text, fixed font)
-
-    s.tap("SEL", settle=100)
-    s.shot("05_cm_move", "s150-12 WIRING PROOF: SELECT cycles to MOVE on the "
-           "read-only mount -- footer 'MOVE  A grab  hold=set'. Before this lane "
-           "src_can_lift was flatly false here (gb_lift_why_bs's own !g_ed branch "
-           "returned PDNA_GB_LIFT_WHY_VIEW unconditionally) and the box-level "
-           "gbsrc_can_enter_move_impl gate (BACKLOG #187/#192) refused independently "
-           "-- SELECT did nothing at all. This frame IS the wiring proof both fixes "
-           "landed.")
-
-    s.tap("A", settle=150)
-    s.shot("06_origin_prompt", "s150-12: A grabs slot 0 -- gb_lift_copy_hook -> "
-           "gb_lift_pack -> gb_origin_for_save() opens 'WHICH GAME IS THIS?' GOLD "
-           "(selected) / SILVER, no box sprites over it (boxoam_suspend() ran "
-           "first). Before decision 5's g_ro_path this would have dereferenced "
-           "NULL (g_ed->path with g_ed == NULL) -- it does not.")
-
-    s.tap("A", settle=250)
-    s.shot("07_refused_clean", "s150-12: A picks GOLD -- gb_origin_for_save() "
-           "returns BC_ORIGIN_GOLD (the .og persist fails silently, no SD card, "
-           "decision 5's own tolerance), then pdna_bank_next_serial()'s "
-           "meta_save() fails (the SAME no-SD-card wall run_s150_4_uplift() "
-           "already found for the MOVE lift) -- refused, a beep only, clean "
-           "repaint: still CM_MOVE, empty-handed, BULBASAUR still at slot 0")
-
-    s.tap("B", settle=200)
-    s.shot("08_move_to_normal", "s150-12 (found live, not in the brief): the "
-           "FIRST B only drops CM_MOVE back to CM_NORMAL -- still Gold's own box "
-           "grid, footer back to the plain occupied-cell hint. pdna_box.c's own "
-           "`if (s_cur_mode != CM_NORMAL && !on_title) { s_cur_mode = CM_NORMAL; "
-           "...}` needs CM_NORMAL before B actually leaves the grid")
-
-    s.tap("B", settle=200)
-    s.shot("09_report_page", "s150-12 (found live, not in the brief): the SECOND "
-           "B exits the whole GB session in one step -- pdna_box() returning 0 "
-           "reaches gb_session_core's own `if (m->nblocked || m->nunreadable) "
-           "gb_report_page(m);` (unrelated, pre-existing machinery this real "
-           "Gold.sav happens to trigger: 15 records 'Shown but locked', matching "
-           "frame 03's own info-page count) -- not skipped over, not this lane's "
-           "own gate")
-
-    s.tap("B", settle=200)
-    s.shot("10_emerald_grid_noprompt", "s150-12: a THIRD B dismisses the report "
-           "-- back on Emerald's own box grid with NO 'WAITING FOR THE PC' "
-           "prompt (decision 7's negative case: g_pcq_count stayed 0, the lift "
-           "was refused before anything was ever queued)")
+    s.shot("02_nv_gb_refused", "s150-12 (BACKLOG #273 re-script): A on NV_GB from the "
+           "Emerald nav menu -- the 'BANK ONLY' dialog ('Open the GB save on its own,' / "
+           "'send it to the Bank, come back.'), NOT the retired PICK A SAVE picker "
+           "(BACKLOG #239 closed the nested mount)",
+           claim=["BANK ONLY", "Open the GB save on its own,", "send it to the Bank, come back."])
+    s.tap("A", settle=gb_shots.BIG_SETTLE)               # msg_wait dismisses on A
+    s.shot("03_box_after_refusal", "s150-12: A dismissed the dialog -- back on Emerald's "
+           "own box grid, nothing mounted, no PC-offer prompt (the retired lift never ran)")
 
     s.tap("START", settle=gb_shots.BIG_SETTLE)
     s.tap("DOWN", settle=gb_shots.SETTLE)                 # NV_PARTY -> NV_BANK (column 0, row 1)
