@@ -1412,6 +1412,19 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_GBCREATE_REDIRECTED_TITLE "CREATED"
 #define PDNA_GBCREATE_REDIRECTED_FMT   "Created in %s, slot %d."
 #define PDNA_GBCREATE_BUILDFAIL_L1   "Could not build a legal record."
+
+/* BACKLOG #265: the LEGIT COPY / FROM SCRATCH choice CREATE asks BEFORE it reads the
+ * card (Guy 2026-09-29: "the user should be asked first if they want a legit copy, if
+ * they wont than they build it from scratch, lvl 1 and with growl"). Same shape as the
+ * KEEP AS IS / MAKE LEGAL screen (PDNA_SIDECAR_LEGAL_*): a title, prose, one "A = ..."
+ * row, one "SELECT = ..." row, "B = cancel". Shown only when a ROM is registered; with
+ * none, CREATE builds from scratch without asking. */
+#define PDNA_GBCREATE_ORIGIN_TITLE     "NEW POKEMON"
+#define PDNA_GBCREATE_ORIGIN_A         "A = LEGIT COPY"
+#define PDNA_GBCREATE_ORIGIN_A_WHY     "Real level and moves, read from your ROM."
+#define PDNA_GBCREATE_ORIGIN_SEL       "SELECT = FROM SCRATCH"
+#define PDNA_GBCREATE_ORIGIN_SEL_WHY   "Level 1 with Growl, built right away."
+#define PDNA_GBCREATE_ORIGIN_B         "B = cancel"
 /* pdna_pick.c's pick_item(), restricted mode (UX-parity audit, Guy 2026-09-07:
  * the GB editor's item row now opens the SAME picker the Gen-3 flow uses,
  * pick_item_set_gen1_2_max(), instead of stepping a raw byte). Gen-1/2 items
