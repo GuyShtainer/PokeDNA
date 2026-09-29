@@ -1456,10 +1456,12 @@ def main() -> int:
             break
     check(dispatch_line is not None, "app_mon_menu: no dispatch-whitelist line (`native && act[sel] != ...`) found")
     if dispatch_line is not None:
-        for action in ("A_SUMMARY", "A_MOVE", "A_RELEASE", "A_CANCEL"):
+        # BACKLOG #271 (Guy 2026-09-29): A_LEGAL/A_DUP/A_EXPORT are now native-aware
+        # (host_native_menu_test.py pins their handlers), so they joined the whitelist.
+        for action in ("A_SUMMARY", "A_LEGAL", "A_MOVE", "A_DUP", "A_EXPORT", "A_RELEASE", "A_CANCEL"):
             check(action in dispatch_line, f"app_mon_menu: dispatch-whitelist line does not name {action}")
-        for action in ("A_ITEM", "A_LEGAL", "A_HATCH", "A_PASTE", "A_DUP", "A_TOGAME",
-                        "A_EXPORT", "A_TAKEITEM", "A_GIVEITEM", "A_COPY", "A_CREATE"):
+        for action in ("A_ITEM", "A_HATCH", "A_PASTE", "A_TOGAME",
+                        "A_TAKEITEM", "A_GIVEITEM", "A_COPY", "A_CREATE"):
             check(action not in dispatch_line, f"app_mon_menu: dispatch-whitelist line unexpectedly names {action}")
 
     # ---- (d) app_mon_menu_readonly (review F4 shape): whitelist, not blunt early return ----

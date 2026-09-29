@@ -3931,6 +3931,7 @@ static bool file_actions(const BrowseEntry* e) {
 static int box_free_slot(const uint8_t* pc, int box) {
   for (int s = 0; s < G3_IN_BOX; s++) {
     PkMon m;
+    if (bc_is_native(pk_box_slot((uint8_t*)pc, box, s))) continue;   /* #271: a GBC1 cell is occupied (pk_decode_mon can misread it as empty) */
     if (!pk_decode_mon(pk_box_slot((uint8_t*)pc, box, s), false, &m)) return s;
   }
   return -1;
@@ -6034,7 +6035,18 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
      * Gen 3's own PDNA_LBL_VIEW_EDIT (pdna_layout.h) -- same label, same position,
      * same action as Gen 3's own occupied row -- no new string. */
     lab[n]=PDNA_LBL_VIEW_EDIT; act[n++]=A_SUMMARY;
+    /* BACKLOG #271 (Guy 2026-09-29): LEGALITY, DUPLICATE and EXPORT are not Gen-3-only
+     * operations -- they were missing here only because decision 7's whitelist predated
+     * native handlers for them. Each is now a native-aware action (never the Gen-3 body
+     * run on a GBC1 cell): LEGALITY reads the cell's own decoded view, DUPLICATE re-stamps
+     * a fresh serial + COPY flag (pdna_box.c dup_restamp_native), EXPORT writes .pk1/.pk2
+     * (gb_export_native). Gen-3's relative order is kept. TO GAME stays off a native cell:
+     * app_inject_to_game() would memcpy the raw GBC1 bytes into a Gen-3 PC -- the real
+     * Bank -> game path for a native cell is the conversion drop (bank_down_dispatch). */
+    lab[n]=PDNA_LBL_LEGALITY; act[n++]=A_LEGAL;
     if (!is_party) { lab[n]=PDNA_LBL_MOVE; act[n++]=A_MOVE; }         /* box: pick up + reposition */
+    lab[n]=PDNA_LBL_DUPLICATE; act[n++]=A_DUP;
+    lab[n]=PDNA_LBL_EXPORT_PK; act[n++]=A_EXPORT;
     lab[n]=PDNA_LBL_RELEASE; act[n++]=A_RELEASE;
   } else if (occupied) {
     lab[n]=PDNA_LBL_VIEW_EDIT; act[n++]=A_SUMMARY;     /* opens the editable summary (moves edited there) */
@@ -6147,12 +6159,13 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
       /* BACKLOG #150 S150-3 decision 9: defence in depth -- cannot be out-of-sync with
        * the row build above since it whitelists the exact same four actions. Refuses
        * anything else outright before the switch even runs. */
-      if (native && act[sel] != A_SUMMARY && act[sel] != A_MOVE && act[sel] != A_RELEASE && act[sel] != A_CANCEL) { snd_deny(); return false; }
+      if (native && act[sel] != A_SUMMARY && act[sel] != A_LEGAL && act[sel] != A_MOVE && act[sel] != A_DUP && act[sel] != A_EXPORT && act[sel] != A_RELEASE && act[sel] != A_CANCEL) { snd_deny(); return false; }
       switch (act[sel]) {
         case A_SUMMARY: return is_party ? party_browse(slot, commit)                  /* party: scroll mons */
                                         : app_box_browse(block, box, slot, commit);   /* box: scroll mons */
         case A_ITEM:    return app_quick_item (rec, is_party, commit);
-        case A_LEGAL:   /* pass the box context so the screen can offer the 30-cell sweep;
+        case A_LEGAL:   if (native) { pdna_legality_show(&m0); return false; }   /* #271: the cell's own decoded view; no Gen-3 box sweep over GBC1 cells */
+                        /* pass the box context so the screen can offer the 30-cell sweep;
                          * a party mon has no box, so it gets the single-mon report */
                         (void)pdna_legality_show_box(&m0, is_party ? NULL : block,
                                                      is_party ? -1 : box, slot);
@@ -6161,7 +6174,8 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
         case A_HATCH:   return app_hatch(rec, is_party, commit, block);   /* egg -> revealed Pokemon */
         case A_MOVE:    g_move_req = true; return false;            /* box loop handles the move */
         case A_TOBOX:   g_party_tobox_req = true; return false;     /* party popup grabs it for a box */
-        case A_EXPORT:  pdna_pk_export(rec, &m0); return false;   /* writes a .pk3, not the save */
+        case A_EXPORT:  if (native) { (void)gb_export_native(rec); return false; }   /* #271: .pk1/.pk2 */
+                        pdna_pk_export(rec, &m0); return false;   /* writes a .pk3, not the save */
         case A_TOGAME:  return app_inject_to_game(rec);           /* bank -> loaded save's PC */
         case A_DAYCARE: return app_to_daycare(rec, is_party, block, box, slot);   /* -> day-care */
         case A_COPY:    return app_copy(rec, is_party);
