@@ -2168,6 +2168,26 @@ bool __attribute__((noinline)) app_xfer_promote(void) {
     return false;
   }
   GbscEntry e;
+  /* BACKLOG #280: the pending slot may instead hold a G3_HOME entry a Gen-3-target drop
+   * restored from (gb_g3home_restore_up): the PC save is verified, so the entry is CONSUMED
+   * now -- removed, the file unlinked when it was the last one (gb_release_g3home's old
+   * semantics, design 2.5). A failed write keeps the key so a later save retries. */
+  if (gbsc_get(s_promote_buf, len, g_xd_idx, &e) && e.kind == XR_KIND_G3_HOME &&
+      e.state == XR_STATE_NONE) {
+    if (gbsc_remove(s_promote_buf, &len, g_xd_idx) != 0) {
+      log_line("xfer: promote: g3home consume: remove failed in %s", path);
+      return false;
+    }
+    rmbl_pause();
+    SfStatus cst = (gbsc_count(s_promote_buf, len) == 0)
+                     ? ((f_unlink(path) == FR_OK) ? SF_OK : SF_ERR_WRITE)
+                     : sf_write_verified(path, s_promote_buf, len);
+    rmbl_resume();
+    if (cst != SF_OK) { log_line("xfer: promote: g3home consume failed for %s", path); return false; }
+    app_xv_cache_invalidate();
+    app_xfer_pending_drop();
+    return true;
+  }
   if (!gbsc_get(s_promote_buf, len, g_xd_idx, &e) ||
       e.kind != XR_KIND_NATIVE_HOME || e.direction != XR_DIR_ABROAD_G3 ||
       e.state != XR_STATE_PENDING) {
@@ -11394,7 +11414,7 @@ static void view_save(const char* path) {
       }
       log_line("save: flash blank/invalid -> using the fused GB save (%lu B)",
                (unsigned long)fsz);
-      /* BACKLOG #209: seed site 2's ledger entry (gb_lift_restore, source/pdna_gen12.c)
+      /* BACKLOG #209: seed site 2's ledger entry (gb_lift_restore until #280, now the bridge-target restore gb_bridge_restore_up, source/pdna_gen12.c)
        * from whatever THIS fused save actually holds at its own box 0 slot 0 -- see
        * bank_plant_site2_seed's own doc comment for why a boot-time constant (like
        * the four S150-9 xfer slots above) cannot work here: the key is the mon's

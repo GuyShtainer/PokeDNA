@@ -125,7 +125,7 @@ bool bank_plant_xfer_open(uint64_t key, uint8_t* buf, uint32_t cap, uint32_t* le
 int bank_plant_xfer_seed_all(uint8_t g3_out[4][80]);
 
 /* BACKLOG #209: a FIFTH planted ledger slot, keyed by gbsc_key() (gen/otid16/dv4/
- * otname -- the NATIVE identity gb_lift_restore() itself computes from a Game Boy
+ * otname -- the NATIVE identity the restore (gb_lift_restore() until #280; now gb_bridge_restore_up()) computes from a Game Boy
  * grid mon, source/pdna_gen12.c), never xr_key_g3() (the four slots above, keyed by
  * a Gen-3 record's PID+otId) -- a completely different key space, so none of those
  * four could ever serve site 2 (the Red-grid restore lift). Seeded at MOUNT TIME
@@ -137,6 +137,14 @@ int bank_plant_xfer_seed_all(uint8_t g3_out[4][80]);
  * unaltered) -- the simplest, most legible first proof that gb_lift_restore ever
  * ran on this vehicle at all. */
 void bank_plant_site2_seed(const GbEditMon* mon);
+
+/* BACKLOG #280 (lane y9-280): the planted vehicle for the two TARGET-drop restores -- five Gen-2
+ * BULBASAUR cells for Bank box 3 and each one's ledger FILE (case 0,1 G3_HOME; 2 bridge CLAIMED; 3
+ * bridge RESTORED; 4 bridge PENDING -- see bank_plant.c). The ledger is written into the --vsd
+ * image by tests/y9_mkledger.c, never planted on the device. */
+bool bank_plant_y9_cell(int which, uint8_t out80[80]);
+int  bank_plant_y9_ledger(int which, uint8_t* file, uint32_t cap, uint64_t* key_out);
+void bank_plant_y9_box(uint8_t* recs);
 
 /* BACKLOG #209: bank_plant_xfer_open()'s own existence-only twin -- true iff `key`
  * matches ONE of the (now five) seeded slots, touching neither `buf` nor `len`. Lets

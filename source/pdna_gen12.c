@@ -2102,221 +2102,102 @@ static bool gb_release_hook(uint8_t* rec80) {
   return gb_persist("release");
 }
 
-/* BACKLOG #150 S150-9 decision 10: site 2 of the restore (§11.2 step 1b's native-
- * origin branch) -- a GB lift of a mon whose ledger entry has a NATIVE home. Called
- * from gb_lift_up_hook only after gb_has_sidecar()'s cheap f_stat pre-check found
- * SOME ledger file for this key; this function opens it for real and narrows to the
- * NATIVE_HOME case. `mon` is the record already loaded off the card (gb_lift_up_hook's
- * own gb_copy_native_hook() result); `out80` receives the rebuilt native cell on
- * success. Returns 1 on success, 0 when the only entries found are Gen-3-home (not
- * this edge's job -- the shipped COPY/PASTE route stays the way home), -1 on any
- * refusal (nothing spent: no serial allocated, no ledger entry touched -- the entry
- * is marked RESTORED later, by the release side, after gb_persist() lands, decision
- * 9's own ordering). Uses g_ed->sidecar, the session's own 1042-B EWRAM scratch
- * (the same buffer 19 other call sites already borrow, none live during a lift). */
-static int gb_lift_restore_g3home(const GbEditMon* mon, uint8_t out80[80]);   /* #246 D3, defined below */
+/* BACKLOG #280 (Guy's #270 ruling, the G3_HOME half): the Gen-3-TARGET restore. The GB->Bank
+ * lift is a pass-through now (gb_lift_pack), so a Game Boy mon whose HOME is Gen-3 (ledger
+ * entry XR_KIND_G3_HOME, written when a Gen-3 mon was sent DOWN into a Game Boy save --
+ * gb_bank_down_g3 -> gb_paste_write) reaches the Bank as its native "GBC1" cell. When THAT
+ * cell is dropped on a Gen-3 target (a PC box or the party, both through
+ * bank_down_convert_gen3*), this is the edge that hands the EXACT original Gen-3 bytes back.
+ * It is the relocated core of the old lift-time gb_lift_restore_g3home: the SAME
+ * gbsc_merge_up_sel walls (probe, then the TAKE/KEEP merge screen) -- but it runs in a Gen-3
+ * session, where g_ed is NULL, so it owns a GBSC_FILE_MAX frame (gbpc_restore_up's shape,
+ * pdna_box.c) instead of borrowing g_ed->sidecar. noinline: never inlined into a
+ * wrapper on drop_held's stack chain.
+ *
+ * Lifecycle (R3): the entry is CONSUMED, not marked RESTORED (gb_release_g3home's old
+ * semantics, design 2.5), and only after the restored bytes are durable: this function
+ * writes nothing to the card. It records the entry in the session's ONE pending-transfer
+ * slot (app_xfer_pending_set, the very slot the GEN3 arm uses); app_xfer_promote consumes
+ * the entry after the verified PC save, app_xfer_pending_undo leaves it untouched on a
+ * declined save. The same slot is what stops a second restore of the same entry before
+ * the flush: with a transfer pending, the next Gen-3-target drop meets the SAVE NOW? wall
+ * (below), and once saved the entry is gone.
+ *
+ * Returns 1 = `out80` holds the plain Gen-3 record to land (pending set); 0 = convert
+ * normally (no entry / a COPY cell / not a Gen-3 PC session / an entry that is not plain);
+ * -2 = refused or declined, ALREADY said on screen (any failure shows its own dialog). */
+int __attribute__((noinline))
+gb_g3home_restore_up(const uint8_t cell80[80], uint8_t out80[80]) {
+  if (!cell80 || !out80) return -2;
+  if (!bc_is_native(cell80) || xg_cell_is_copy(cell80)) return 0;   /* a COPY's GB original still lives: restoring = clone */
+  if (!app_can_edit() || !app_gen3_pc_live()) return 0;
 
-static int __attribute__((noinline))
-gb_lift_restore(const GbEditMon* mon, uint8_t out80[80]) {
-  if (!app_can_edit()) { log_line("gen12: lift restore refused: cart is not writable"); return -1; }
-
+  GbEditMon mon; BcMeta meta;
+  if (!bc_unpack(cell80, &mon, &meta)) return 0;
   uint8_t dv4[4] = {
-    gb_get_dv(mon, GB_ATK), gb_get_dv(mon, GB_DEF),
-    gb_get_dv(mon, GB_SPE), gb_get_dv(mon, GB_SPC)
+    gb_get_dv(&mon, GB_ATK), gb_get_dv(&mon, GB_DEF),
+    gb_get_dv(&mon, GB_SPE), gb_get_dv(&mon, GB_SPC)
   };
-  uint64_t key = gbsc_key(mon->gen, gb_get_otid(mon), dv4, mon->otname);
+  uint64_t key = gbsc_key(mon.gen, gb_get_otid(&mon), dv4, mon.otname);
 
-  /* BACKLOG #226 review D1-R: this used to be a bounded 2-attempt loop offering
-   * SAVE NOW? on a PENDING entry, mirroring gbpc_restore_up (site 1,
-   * source/pdna_box.c). Deleted, not repaired: `key` here is gbsc_key(...) (GB key
-   * space) while g_xd_key -- the only thing app_xfer_pending_is() ever compares
-   * against -- is set exclusively via app_xfer_pending_set(xr_key_g3(out80), ...)
-   * (Gen-3 key space, pdna_gen12.c:3558, the single writer). The two spaces never
-   * collide in practice, so the SAVE NOW? arm below was unreachable and the retry
-   * loop existed to serve a branch that could not run. Site 1 stays live: its key
-   * is xr_key_g3(g3_rec80), the same space g_xd_key is written in. */
+  uint8_t buf[GBSC_FILE_MAX];
   uint32_t len = 0;
+  GbscEntry e;
   int found = -1;
-  GbscEntry e;
-  SfStatus rst = xr_open(key, g_ed->sidecar, GBSC_FILE_MAX, &len, NULL);
-  if (rst == SF_ERR_OPEN) return 0;   /* no ledger entry at all -- an ordinary native lift */
-  if (rst != SF_OK) {
-    log_line("gen12: lift restore: xr_open failed (%s)", sf_status_str(rst));
-    msg_wait(PDNA_XFERREC_TITLE, UI_WARN, PDNA_XFERREC_L1, PDNA_XFERREC_L2);
-    return -2;   /* review D5: already explained on screen -- the caller shows nothing more */
-  }
-  int count = gbsc_count(g_ed->sidecar, len);
-  if (count < 0) {
-    log_line("gen12: lift restore: ledger file failed to validate");
-    msg_wait(PDNA_XFERREC_TITLE, UI_WARN, PDNA_XFERREC_L1, PDNA_XFERREC_L2);
-    return -2;   /* review D5: already explained on screen -- the caller shows nothing more */
-  }
-
-  /* decision 10's tiebreak, mirrored from app_paste_gb_lookup: prefer the entry
-   * whose species_written matches the mon's CURRENT dex (unevolved since the
-   * write); fall back to the first match at all. */
-  int first = -1, species_match = -1, start = 0;
-  uint16_t nowdex = gb_get_species_dex(mon);
-  for (int guard = 0; guard <= GBSC_MAX_ENTRIES; guard++) {
-    int i = gbsc_find(g_ed->sidecar, len, mon, start, /*include_claimed*/true, XR_KIND_NATIVE_HOME);
-    if (i < 0) break;
-    if (first < 0) first = i;
-    GbscEntry cand;
-    if (gbsc_get(g_ed->sidecar, len, i, &cand) && cand.species_written == nowdex) {
-      species_match = i;
-      break;
+  for (int attempt = 0; attempt < 2; attempt++) {   /* bounded: one SAVE NOW? re-read at most */
+    SfStatus rst = xr_open(key, buf, sizeof buf, &len, NULL);
+    if (rst == SF_ERR_OPEN) return 0;               /* no ledger entry -- an ordinary native cell */
+    if (rst != SF_OK || gbsc_count(buf, len) < 0) {
+      log_line("gen12: g3home restore: ledger open/validate failed (%s)", sf_status_str(rst));
+      boxoam_suspend(); snd_error();
+      msg_wait(PDNA_XFERREC_TITLE, UI_WARN, PDNA_XFERREC_L1, PDNA_XFERREC_L2);
+      boxoam_resume();
+      return -2;
     }
-    start = i + 1;
+    found = xr_resolve_home(buf, len, &mon, XR_KIND_G3_HOME, gb_get_species_dex(&mon));
+    if (found < 0) return 0;                        /* no G3_HOME entry for this mon */
+    if (!gbsc_get(buf, len, found, &e) || e.state != XR_STATE_NONE) return 0;   /* only a plain entry restores */
+    if (!app_xfer_pending() || attempt == 1) break;
+    /* An unpromoted transfer is pending: the same SAVE NOW? wall gb_bank_down_gen3's
+     * 16(g) shows -- and the only thing keeping one entry from restoring twice pre-flush. */
+    log_line("gen12: g3home restore: a transfer is pending -- offering SAVE NOW?");
+    boxoam_suspend();
+    char l1[64];
+    siprintf(l1, "%s %s", PDNA_XFER_SAVENOW_L1, PDNA_XFER_SAVENOW_L2);
+    bool yes = app_confirm(PDNA_XFER_SAVENOW_TITLE, l1);
+    bool ok  = yes && app_xfer_save_now();
+    boxoam_resume();
+    if (!ok) { snd_deny(); return -2; }
   }
-  found = (species_match >= 0) ? species_match : first;
-  if (found < 0) {
-    /* BACKLOG #246 review D3 (BLOCKING fix, #104 S7's own acceptance: "Emerald ->
-     * Bank -> Red AND BACK, byte-identical"): no XR_KIND_NATIVE_HOME entry -- but a
-     * #246-D down-landing (gb_paste_write, via gb_bank_down_g3) writes an
-     * XR_KIND_G3_HOME entry, which this loop's `want_kind` never searched for.
-     * Before this fix a #246 landing was findable by nothing reachable from the box
-     * screen: the clipboard route (app_paste_gb_merge) is closed by BACKLOG #239's
-     * per-view_save clipboard clear, and xfer_direct_allowed() is false -- see
-     * docs/briefs/g3-to-gb-arm-review.md R3/D3 and /tmp/r246/rt_proof.c ROUTE A,
-     * which failed before this fix and is mirrored by
-     * tests/host_xfer_roundtrip_test.c's own new #246 section. Second arm, not a
-     * replacement -- the native search above is unchanged. */
-    return gb_lift_restore_g3home(mon, out80);
-  }
+  if (app_xfer_pending() || app_bank_defer_full()) { snd_deny(); return -2; }   /* still pending / no deferred-delete room */
 
-  if (!gbsc_get(g_ed->sidecar, len, found, &e)) return -1;
-
-  /* decision 8's state branch, mirrored from gbpc_restore_up (site 1). */
-  if (e.state == XR_STATE_RESTORED) {
-    log_line("gen12: lift restore: entry already RESTORED -- refusing a second restore");
-    snd_deny();
-    msg_wait(PDNA_XFERDUP_TITLE, UI_WARN, PDNA_XFERDUP_L1, PDNA_XFERDUP_L2);
-    return -2;   /* review D5: already explained on screen -- the caller shows nothing more */
-  }
-  if (e.state == XR_STATE_PENDING) {
-    /* BACKLOG #226 review D1-R: this session's own g_xd_key is Gen-3-space and can
-     * never equal this GB-space key (see the comment above), so PENDING here is
-     * always someone else's unpromoted transfer -- the honest SAVE FIRST wall. */
-    log_line("gen12: lift restore: entry still PENDING -- refusing (honest SAVE FIRST wall)");
-    snd_deny();
-    msg_wait(PDNA_XFER_SAVEFIRST_TITLE, UI_WARN, PDNA_XFER_SAVEFIRST_L1, PDNA_XFER_SAVEFIRST_L2);
-    return -2;   /* review D5: already explained on screen -- the caller shows nothing more */
-  }
-  if (e.state == XR_STATE_NONE) {
-    log_line("restore: native-home entry with state NONE");
-  }
-
-  /* probe with accept=0 first (the report alone); the origin prompt is SKIPPED --
-   * the home cell carries its own origin_game already (decision 10's own note). */
-  GbEditMon probe; XrMergeReport rep;
-  if (!xr_merge_down_gb_sel(&e, mon, 0, &probe, &rep)) {
-    log_line("gen12: lift restore: xr_merge_down_gb_sel probe failed");
-    return -1;
-  }
-  uint8_t accept = 0;
-  /* review D5: B, a plain user decline -- app_xfer_merge_screen already drew its own
-   * "B = no" (the Gen-3 twin, gbpc_restore_up just above in pdna_box.c, treats an
-   * identical decline the same way: `if (!confirmed) return -2;`) -- distinct from a
-   * genuine failure, so the caller must show nothing further. */
-  if (!app_xfer_merge_screen(&rep, XR_MERGE_DOWN, &accept)) return -2;   /* B: nothing spent */
-
-  uint32_t serial = pdna_bank_next_serial();
-  if (!serial) {
-    log_line("gen12: lift restore: bank.meta write failed (pdna_bank_next_serial)");
-    return -1;
-  }
-  if (bank_restore_from_entry_gb(&e, mon, accept, serial, out80, NULL) != 1) {
-    log_line("gen12: lift restore: bank_restore_from_entry_gb failed");
-    return -1;
-  }
-  return 1;   /* the entry is NOT touched here -- decision 9 marks it, after gb_persist() */
-}
-
-/* BACKLOG #246 review D3 (BLOCKING fix -- the phase's own return trip, #104 S7's
- * acceptance criterion): gb_lift_restore's second arm, reached only when the native
- * search above found NOTHING. A #246 down-landing (gb_bank_down_g3 -> gb_paste_write)
- * writes an XR_KIND_G3_HOME entry whose original80 IS the Bank cell's own true bytes
- * (review R3, verified end to end by /tmp/r246/rt_proof.c and this file's own
- * tests/host_xfer_roundtrip_test.c section). Design-correct fix, per the orchestrator's
- * decision: resolve through gbsc_merge_up_sel (the SAME core app_paste_gb_lookup/
- * app_paste_gb_commit already use for the Gen-3 PC PASTE direction, source/pdna_main.c)
- * and hand back a PLAIN Gen-3 record -- never xr_merge_down_gb_sel + bank_restore_
- * from_entry_gb, which are native-cell-only (G-F4/G-H6's own belt: bc_is_native(e->
- * original80) is REQUIRED by gbsc_merge_up_sel to be false, or it refuses outright).
- * out80 therefore comes back with bc_is_native(out80) == false, by construction
- * (gen3_edit_commit never writes the GBC1 tag) -- exactly what a Bank cell always was
- * before BACKLOG #150's native-cell feature existed; gb_release_g3home below (the
- * release-side twin, gb_release_up_hook) is what makes THAT half of the round trip
- * safe to delete-and-consume. */
-static int
-gb_lift_restore_g3home(const GbEditMon* mon, uint8_t out80[80]) {
-  uint8_t dv4[4] = {
-    gb_get_dv(mon, GB_ATK), gb_get_dv(mon, GB_DEF),
-    gb_get_dv(mon, GB_SPE), gb_get_dv(mon, GB_SPC)
-  };
-  uint64_t key = gbsc_key(mon->gen, gb_get_otid(mon), dv4, mon->otname);
-
-  uint32_t len = 0;
-  SfStatus rst = xr_open(key, g_ed->sidecar, GBSC_FILE_MAX, &len, NULL);
-  if (rst == SF_ERR_OPEN) return 0;   /* no ledger entry at all */
-  if (rst != SF_OK) {
-    log_line("gen12: lift restore(g3home): xr_open failed (%s)", sf_status_str(rst));
-    msg_wait(PDNA_XFERREC_TITLE, UI_WARN, PDNA_XFERREC_L1, PDNA_XFERREC_L2);
-    return -2;
-  }
-  int count = gbsc_count(g_ed->sidecar, len);
-  if (count < 0) {
-    log_line("gen12: lift restore(g3home): ledger file failed to validate");
-    msg_wait(PDNA_XFERREC_TITLE, UI_WARN, PDNA_XFERREC_L1, PDNA_XFERREC_L2);
-    return -2;
-  }
-
-  /* BACKLOG #246 review F2 fix: xr_resolve_home (source/xfer_rec.c) is the ONE
-   * tiebreak both #246 arms use -- see its own doc comment for why. */
-  uint16_t nowdex = gb_get_species_dex(mon);
-  int found = xr_resolve_home(g_ed->sidecar, len, mon, XR_KIND_G3_HOME, nowdex);
-  if (found < 0) return 0;   /* neither kind matched -- an ordinary native lift, nothing to restore */
-
-  GbscEntry e;
-  if (!gbsc_get(g_ed->sidecar, len, found, &e)) return -1;
-
-  /* BACKLOG #246 review F3 fix: NO state gate here, unlike the native arm. The
-   * only writer of a G3_HOME entry is gb_paste_write -> gbsc_entry_from, which
-   * always stamps XR_STATE_NONE (source/gb_sidecar.c); nothing else ever calls
-   * gbsc_set_state (or assigns e.state directly) on a G3_HOME entry -- every other
-   * state write in this file is scoped to XR_KIND_NATIVE_HOME (gb_release_restored_
-   * verify's caller, and app_xfer_promote in pdna_main.c, both gate on kind ==
-   * XR_KIND_NATIVE_HOME). Per #104 SS2.5 the RESTORED/PENDING states are retired
-   * for this direction: a #246 entry is always XR_STATE_NONE, and gb_release_
-   * g3home's own consume (not a state flip) is its entire lifecycle. The two
-   * blocks that used to gate on RESTORED/PENDING here could never fire -- dead
-   * refusals, the #154/#232/#244 class. */
-
-  /* probe with accept=0 first (report only), same shape as the native arm. */
   GbscMergeReport rep;
   uint8_t probe80[80];
-  if (!gbsc_merge_up_sel(&e, mon, 0, probe80, &rep)) {
-    log_line("gen12: lift restore(g3home): gbsc_merge_up_sel probe failed");
-    return -1;
+  if (!gbsc_merge_up_sel(&e, &mon, 0, probe80, &rep)) {
+    log_line("gen12: g3home restore: gbsc_merge_up_sel probe failed");
+    boxoam_suspend(); snd_error();
+    msg_wait(PDNA_XFERREC_TITLE, UI_WARN, PDNA_XFERREC_L1, PDNA_XFERREC_L2);
+    boxoam_resume();
+    return -2;
   }
   XrMergeReport xrep;
   xr_report_from_gbsc(&rep, &xrep);
   uint8_t accept = 0;
-  if (!app_xfer_merge_screen(&xrep, XR_MERGE_UP, &accept)) return -2;   /* B: nothing spent */
+  boxoam_suspend();
+  bool confirmed = app_xfer_merge_screen(&xrep, XR_MERGE_UP, &accept);
+  boxoam_resume();
+  if (!confirmed) return -2;                        /* B: nothing spent, nothing written */
 
-  if (!gbsc_merge_up_sel(&e, mon, accept, out80, NULL)) {
-    log_line("gen12: lift restore(g3home): gbsc_merge_up_sel commit failed");
-    return -1;
+  if (!gbsc_merge_up_sel(&e, &mon, accept, out80, NULL) || bc_is_native(out80)) {
+    log_line("gen12: g3home restore: commit failed or produced a native cell");
+    boxoam_suspend(); snd_error();
+    msg_wait(PDNA_XFERREC_TITLE, UI_WARN, PDNA_XFERREC_L1, PDNA_XFERREC_L2);
+    boxoam_resume();
+    return -2;
   }
-  /* G-H6 twin: gbsc_merge_up_sel already refuses a native original80 internally, but
-   * a belt check on ITS OWN output costs nothing and matches app_paste_gb_commit's
-   * own second independent guard (source/pdna_main.c) -- a native cell must never
-   * reach the Bank through this arm even if the belt above it were ever bypassed. */
-  if (bc_is_native(out80)) {
-    log_line("gen12: lift restore(g3home): merged80 is a native cell -- refusing");
-    return -1;
-  }
-  return 1;   /* the entry is NOT touched here -- gb_release_g3home consumes it, after gb_persist() */
+  app_xfer_pending_set(key, (int16_t)found);        /* consumed by app_xfer_promote after the verified save */
+  log_line("gen12: g3home restore: original Gen-3 record ready, entry %d pending consume", found);
+  return 1;
 }
 
 /* BACKLOG #150 S150-12 decision 4: gb_lift_up_hook's (BACKLOG #150 S150-4 decision
@@ -2332,9 +2213,8 @@ gb_lift_restore_g3home(const GbEditMon* mon, uint8_t out80[80]) {
  * either can run: MOVE needs g_ed set, COPY needs g_ed absent AND a mounted
  * read-only path) live in the two thin callers below, not here.
  *
- * Order, unchanged from the original: copy the native record -> decision 5/G-F6's
- * ledger refusal (a mon with a sidecar entry already has a restorable Gen-3 original
- * via COPY/PASTE; refuse rather than merge) -> the one-time-per-save origin prompt
+ * Order: copy the native record -> (#280: no ledger step -- the lift is a pass-through)
+ * -> the one-time-per-save origin prompt
  * (decision 5) -> pdna_bank_next_serial() (0 -> fail the lift, the serial is
  * persisted before the cell that consumes it) -> flags derived from the SAME getters
  * bank_plant.c's own test fixture uses (gb_is_egg / gb_get_held_item), never a new
@@ -2359,36 +2239,11 @@ static int gb_lift_pack(int box, int slot, uint8_t* out80, bool copy) {
     return XG_LIFT_FAILED;
   }
 
-  /* BACKLOG #150 S150-9 decision 10: gb_has_sidecar() stays the cheap f_stat pre-
-   * check (it only tests whether A ledger file exists for this key, not what KIND
-   * of entry is inside it); gb_lift_restore() opens that file for real and narrows
-   * to the native-origin case (site 2 of the restore). A Gen-3-home entry (kind
-   * XR_KIND_G3_HOME) still refuses here -- the shipped COPY -> PASTE 3->GB->3
-   * route (pdna_main.c app_paste_gb_merge) stays the way home for THAT mon (open
-   * question 2: this brief keeps the Gen-3-home LIFT refused). */
-  if (gb_has_sidecar(mon.gen, &mon)) {
-    /* BACKLOG #150 S150-9 review D1 (HIGH): a COPY lift is the read-only mount --
-     * g_ed is NULL there -- and gb_lift_restore() dereferences g_ed->sidecar
-     * unconditionally, so a COPY lift on a mon with a native-home ledger entry
-     * must never reach it. Only a MOVE lift (g_ed set, the resident edit session)
-     * may restore. */
-    if (copy) {   /* a COPY lift (read-only mount, g_ed == NULL) never restores */
-      log_line("gen12: copy lift refused: mon already has a Gen-3 ledger entry (use COPY/PASTE)");
-      return XG_LIFT_FAILED;
-    }
-    /* review D5: gb_lift_restore()'s OWN tri-state (1/0/-1/-2, mirroring
-     * gbpc_restore_up) threads straight through -- -2 (already explained on
-     * screen, or a plain B decline) becomes CANCELLED here too; 0 ("only a Gen-3-
-     * home entry -- use COPY/PASTE instead") and -1 (a genuine unreported I/O
-     * failure) both still need this caller's own generic dialog, unchanged from
-     * before this review. */
-    int rc = gb_lift_restore(&mon, out80);
-    if (rc == 1) return XG_LIFT_OK;
-    if (rc == -2) { log_line("gen12: xferup lift cancelled: already explained on screen"); return XG_LIFT_CANCELLED; }
-    log_line(rc == 0 ? "gen12: xferup lift refused: mon already has a Gen-3 ledger entry (use COPY/PASTE)"
-                      : "gen12: xferup lift refused: restore refused");
-    return XG_LIFT_FAILED;
-  }
+  /* #280 (Guy's #270 ruling): the lift is a PASS-THROUGH -- no ledger read, no restore, no wall,
+   * no merge screen, COPY or MOVE alike. A mon whose ledger entry says it has a home elsewhere
+   * banks as the native record it is; the restore happens only at a different-generation TARGET
+   * drop (gb_g3home_restore_up for a Gen-3 target, gb_bridge_restore_up for the other Game Boy
+   * generation). */
 
   /* decision 4/D-Q7: the one-time-per-save origin prompt. g_ed set (MOVE) asks the
    * open GbSession, exactly as before; g_ed NULL (COPY, decision 4) asks the mount's
@@ -2432,71 +2287,6 @@ static int gb_lift_pack(int box, int slot, uint8_t* out80, bool copy) {
   return XG_LIFT_OK;
 }
 
-/* BACKLOG #150 S150-9 decision 9: the ledger half of gb_release_up_hook's RESTORED
- * re-verify, factored out so that function's own frame does not grow (it is on
- * drop_held's chain). `have` is the bystander candidate already loaded off the card
- * (the release's own re-verify slot); `want` is what the Bank cell unpacks to. A
- * restored native cell keeps its ORIGINAL identity (gen/otid16/dv4/otname) even
- * though its rec[] bytes differ by construction (that is what a merge patch IS) --
- * so match on identity, never on rec[]/nick/original80[0..7] (review finding (b)).
- * Highest-index match among CLAIMED/NONE entries wins; a RESTORED entry is never a
- * candidate (it is already spoken for). Returns true and fills *idx_out/*len_out
- * (g_ed->sidecar's own valid length) plus `path` on a match; false on no match or
- * any I/O failure -- the caller's own shipped refusal covers both. Stateless by
- * construction: a cell that is not a restore never has a NATIVE_HOME entry keyed by
- * its own GB copy, so this reads exactly like today's refusal for a genuine
- * bystander (one extra xr_open on a path that already ends in a refusal). */
-static bool __attribute__((noinline))
-gb_release_restored_verify(const GbEditMon* have, const GbEditMon* want,
-                           int* idx_out, char path[GBSC_PATH_MAX], uint32_t* len_out) {
-  uint8_t hdv4[4] = {
-    gb_get_dv(have, GB_ATK), gb_get_dv(have, GB_DEF),
-    gb_get_dv(have, GB_SPE), gb_get_dv(have, GB_SPC)
-  };
-  uint64_t key = gbsc_key(have->gen, gb_get_otid(have), hdv4, have->otname);
-
-  uint32_t len = 0;
-  SfStatus rst = xr_open(key, g_ed->sidecar, GBSC_FILE_MAX, &len, path);
-  if (rst != SF_OK) return false;
-  int count = gbsc_count(g_ed->sidecar, len);
-  if (count < 0) return false;
-
-  uint8_t wdv4[4] = {
-    gb_get_dv(want, GB_ATK), gb_get_dv(want, GB_DEF),
-    gb_get_dv(want, GB_SPE), gb_get_dv(want, GB_SPC)
-  };
-  uint16_t wotid = gb_get_otid(want);
-
-  int best = -1;
-  bool best_sp = false;
-  for (int i = 0; i < count; i++) {
-    GbscEntry cand;
-    if (!gbsc_get(g_ed->sidecar, len, i, &cand)) continue;
-    if (cand.kind != XR_KIND_NATIVE_HOME) continue;
-    if (cand.state != XR_STATE_CLAIMED && cand.state != XR_STATE_NONE) continue;
-    GbEditMon ohome; BcMeta ometa;
-    if (!bc_unpack(cand.original80, &ohome, &ometa)) continue;
-    if (ohome.gen != want->gen) continue;
-    if (gb_get_otid(&ohome) != wotid) continue;
-    uint8_t odv4[4] = {
-      gb_get_dv(&ohome, GB_ATK), gb_get_dv(&ohome, GB_DEF),
-      gb_get_dv(&ohome, GB_SPE), gb_get_dv(&ohome, GB_SPC)
-    };
-    if (memcmp(odv4, wdv4, 4) != 0) continue;
-    if (memcmp(ohome.otname, want->otname, GB_NAME_BYTES) != 0) continue;
-    /* review D3 (LOW): the lift's own species tiebreak (app_paste_gb_lookup /
-     * gb_lift_restore) mirrored here -- prefer a species match over a bare
-     * highest-index win, so a released-then-relanded duplicate with the SAME
-     * identity but a DIFFERENT (evolved) species does not shadow the real match. */
-    bool sp = gb_get_species_dex(&ohome) == gb_get_species_dex(want);
-    if (best < 0 || sp || !best_sp) { best = i; best_sp = sp; }
-  }
-  if (best < 0) return false;
-  *idx_out = best;
-  if (len_out) *len_out = len;
-  return true;
-}
-
 /* BoxXferOps.lift_up (MOVE, the resident write session -- BACKLOG #150 S150-4
  * decision 3/step 3). BACKLOG #199: called from drop_held_up (pdna_box.c) at the
  * Bank-UP drop, by the carry's own ORIGIN coordinates -- no rec80 any more (see this
@@ -2531,84 +2321,6 @@ static int gb_lift_copy_hook(int box, int slot, uint8_t* out80) {
   return gb_lift_pack(box, slot, out80, true);
 }
 
-/* BACKLOG #246 review D3 (BLOCKING fix): gb_release_up_hook's own re-verify for the
- * G3_HOME arm. `cell80` (the just-committed Bank cell, gb_lift_restore_g3home's out80)
- * is a PLAIN Gen-3 record, not a native "GBC1" cell -- bc_unpack cannot verify it
- * against `have` (it is not a repack of `have` at all, by construction: it IS the
- * restored Gen-3 original, structurally unrelated in shape to a Game Boy record).
- * The bystander check for THIS arm is therefore the identical lookup gb_lift_restore_
- * g3home itself just ran: `have`, freshly reloaded from the card at (box, slot), must
- * still resolve to a live XR_KIND_G3_HOME entry -- a genuine bystander never does. On
- * a match: delete the Game Boy record, persist, then CONSUME the entry (gbsc_remove,
- * not gbsc_set_state(RESTORED) -- a restored Gen-3 original is fully spent, no KEEP
- * BOTH option exists for it, the same shape app_paste_gb_commit's own PASTE consumer
- * already uses, source/pdna_main.c). Best-effort ledger cleanup, same reasoning as
- * every sibling in this file: the card already has the correct bytes either way, so a
- * bookkeeping failure here only logs. */
-static bool __attribute__((noinline))
-gb_release_g3home(int box, int slot, const GbEditMon* have) {
-  GbSession* s = &g_ed->s;
-  uint8_t dv4[4] = {
-    gb_get_dv(have, GB_ATK), gb_get_dv(have, GB_DEF),
-    gb_get_dv(have, GB_SPE), gb_get_dv(have, GB_SPC)
-  };
-  uint64_t key = gbsc_key(have->gen, gb_get_otid(have), dv4, have->otname);
-
-  uint32_t len = 0;
-  char path[GBSC_PATH_MAX];
-  SfStatus rst = xr_open(key, g_ed->sidecar, GBSC_FILE_MAX, &len, path);
-  if (rst != SF_OK) {
-    gb_rollback();
-    /* BACKLOG #246 review F1 follow-up: this used to fall through silently and let
-     * the "bystander mismatch" log below (the ONLY log line this function used to
-     * print) misdiagnose an xr_open failure as a genuine bystander. Name the real
-     * cause. */
-    log_line("gen12: xferup(g3home) box %d slot %d: ledger open failed (%s), refusing delete",
-              box, slot, sf_status_str(rst));
-    return false;
-  }
-  int count = gbsc_count(g_ed->sidecar, len);
-  if (count < 0) { gb_rollback(); return false; }
-
-  /* BACKLOG #246 review F2 fix: xr_resolve_home (source/xfer_rec.c) is the ONE
-   * tiebreak both #246 arms use -- see its own doc comment for why. */
-  uint16_t nowdex = gb_get_species_dex(have);
-  int idx = xr_resolve_home(g_ed->sidecar, len, have, XR_KIND_G3_HOME, nowdex);
-  if (idx < 0) {
-    gb_rollback();   /* a genuine bystander -- (box, slot) no longer matches ANY live G3_HOME entry */
-    log_line("gen12: xferup(g3home) box %d slot %d: bystander mismatch, refusing delete", box, slot);
-    return false;
-  }
-
-  /* BACKLOG #246 review F1 fix (#104 SS2.5 steps 6 -> 7): remove the origin entry
-   * FIRST, verified, and only then release the abroad record. 6-after-7 (the old
-   * order here) leaves a stale entry on any failed ledger write, and a later deposit
-   * of a DIFFERENT mon with the same fingerprint then restores the wrong original
-   * (SS2.5's own words). 6-before-7 costs at worst a visible duplicate, which
-   * drop_held_up already declares. */
-  rmbl_pause();
-  bool removed = (gbsc_remove(g_ed->sidecar, &len, idx) == 0);
-  bool sidecar_ok = removed &&
-                    ((gbsc_count(g_ed->sidecar, len) == 0)
-                       ? (f_unlink(path) == FR_OK)
-                       : (sf_write_verified(path, g_ed->sidecar, len) == SF_OK));
-  rmbl_resume();
-  if (!sidecar_ok) {                       /* SS5.2: never report a write that did not verify */
-    gb_rollback();
-    log_line("gen12: xferup(g3home) box %d slot %d: ledger consume failed -- refusing the delete", box, slot);
-    return false;                          /* caller shows PDNA_XFER_KEPT_*: an honest duplicate */
-  }
-  app_xv_cache_invalidate();               /* BACKLOG #213: a real ledger write */
-
-  GbsStatus st = gbs_delete(s, box, slot, g_ed->list);
-  if (st != GBS_OK) {
-    gb_rollback();
-    log_line("gen12: xferup(g3home) box %d slot %d refused: %s", box, slot, gbs_status_text(st));
-    return false;
-  }
-  return gb_persist("xferup-g3home");      /* gb_persist reports its own refusal */
-}
-
 /* BoxXferOps.release_up (BACKLOG #150 S150-4 decision 7): RE-VERIFIES before it
  * deletes. Between the lift and the drop the user walked to another screen; deleting
  * (box, slot) blind could delete a bystander -- so this reloads the slot and refuses
@@ -2618,9 +2330,7 @@ gb_release_g3home(int box, int slot, const GbEditMon* have) {
  * GbEditMon to compare against, not just an 8-byte identity span. Any mismatch or
  * refusal -> gb_rollback() + log, return false -- the caller (drop_held) shows the
  * duplicate message; the Bank already has the mon either way.
- * BACKLOG #246 review D3: cell80 is not ALWAYS a native cell any more -- a G3_HOME
- * restore (gb_lift_restore_g3home) hands back a plain Gen-3 record, bc_is_native()
- * false by construction; that arm's own re-verify is gb_release_g3home above. */
+ * #280: cell80 is always a native cell (a plain Gen-3 cell here is refused). */
 static bool gb_release_up_hook(int box, int slot, const uint8_t cell80[80]) {
   if (!g_ed) return false;
   if (!app_can_edit()) return false;
@@ -2633,7 +2343,10 @@ static bool gb_release_up_hook(int box, int slot, const uint8_t cell80[80]) {
   GbEditMon have;
   if (!gb_load(&have, s->gen, g_ed->list, box, slot)) { gb_rollback(); return false; }
 
-  if (!bc_is_native(cell80)) return gb_release_g3home(box, slot, &have);
+  /* #280: the G3_HOME arm that used to sit here (a plain Gen-3 cell from the lift-time restore,
+   * consumed by gb_release_g3home) is gone -- the lift is a pass-through, so the Bank cell is
+   * always this slot's own native record. */
+  if (!bc_is_native(cell80)) { gb_rollback(); return false; }
 
   GbEditMon want; BcMeta meta;
   if (!bc_unpack(cell80, &want, &meta)) { gb_rollback(); return false; }
@@ -2643,46 +2356,9 @@ static bool gb_release_up_hook(int box, int slot, const uint8_t cell80[80]) {
       memcmp(have.rec, want.rec, want.rec_len) != 0 ||
       memcmp(have.otname, want.otname, GB_NAME_BYTES) != 0 ||
       memcmp(have.nick, want.nick, GB_NAME_BYTES) != 0) {
-    /* S150-9 decision 9: do NOT roll back yet -- try the LEDGER identity first. A
-     * restored native cell keeps `have`'s own gen/otid/dv4/otname but has DIFFERENT
-     * rec[] bytes by construction (the merge patch), so the memcmp block above
-     * fails for it every time; that is not yet a genuine bystander. */
-    int idx; char path[GBSC_PATH_MAX]; uint32_t len2 = 0;
-    if (gb_release_restored_verify(&have, &want, &idx, path, &len2)) {
-      GbsStatus st = gbs_delete(s, box, slot, g_ed->list);
-      if (st != GBS_OK) {
-        gb_rollback();
-        log_line("gen12: xferup box %d slot %d refused: %s", box, slot, gbs_status_text(st));
-        return false;
-      }
-      if (!gb_persist("xferup")) return false;
-      /* Mark the entry RESTORED -- a remove/mutate/gbsc_add rewrite of the same
-       * entry, STRICTLY AFTER gb_persist() has landed (§3.2's order, check (n)).
-       * BACKLOG #215(c): app_xfer_promote() (pdna_main.c) no longer does this --
-       * it now uses gbsc_set_state(), which flips only the state bits in place
-       * and therefore PRESERVES every other bit of the entry's flags byte,
-       * including bank_keep (b6, "KEEP BOTH was chosen for this row"). This site
-       * still rebuilds the entry from a GbscEntry via gbsc_add(), whose
-       * ef_compose() call does not carry bank_keep forward -- an entry marked
-       * RESTORED here silently loses a prior KEEP BOTH choice. Known gap, not
-       * fixed by this pass (BACKLOG #213/#215 review F5 is comments-only).
-       * Best-effort: the card already has the correct bytes either way, so a
-       * bookkeeping failure here only logs. */
-      GbscEntry e;
-      if (gbsc_get(g_ed->sidecar, len2, idx, &e)) {
-        e.state = XR_STATE_RESTORED;
-        rmbl_pause();
-        bool marked = (gbsc_remove(g_ed->sidecar, &len2, idx) == 0) &&
-                      (gbsc_add(g_ed->sidecar, &len2, GBSC_FILE_MAX, &e) >= 0) &&
-                      (sf_write_verified(path, g_ed->sidecar, len2) == SF_OK);
-        rmbl_resume();
-        if (!marked) log_line("gen12: xferup box %d slot %d: RESTORED mark failed", box, slot);
-        else         app_xv_cache_invalidate();   /* BACKLOG #213: a real ledger write */
-      } else {
-        log_line("gen12: xferup box %d slot %d: RESTORED mark: gbsc_get failed", box, slot);
-      }
-      return true;
-    }
+    /* #280: no ledger-identity second chance any more (gb_release_restored_verify + the
+     * RESTORED mark died with the lift-time restore) -- the cell is always the slot's own
+     * bytes, so a mismatch is a genuine bystander. */
     gb_rollback();
     log_line("gen12: xferup box %d slot %d: bystander mismatch, refusing delete", box, slot);
     return false;
@@ -4668,6 +4344,127 @@ static bool __attribute__((noinline)) gb_accept_down_hook(int dst_box, const uin
 
   log_line("=== gb bank-down -> %s box %d slot %d ===", g_ed->path, dst_box, slot);
   return gb_persist("bank-down");     /* the ONE card write; it reports its own refusals */
+}
+
+/* BACKLOG #280 (Guy's #270 ruling, the bridge half): the marking step of gb_bridge_restore_up --
+ * flip the NATIVE_HOME entry to RESTORED, STRICTLY AFTER the restored cell has landed and
+ * persisted (the old release-side marking, gb_release_up_hook, relocated with the restore).
+ * gbsc_set_state flips only the state bits in place, so bank_keep survives (#215(c)). The entry is
+ * re-resolved from the card by the same key + tiebreak as the lookup (gb_persist may have reused
+ * the sidecar buffer). Best-effort like every sibling: the card already has the right bytes, so a
+ * bookkeeping failure only logs -- and a surviving unmarked entry is a residual duplicate risk,
+ * never a loss. */
+static void __attribute__((noinline))
+gb_bridge_mark_restored(const GbEditMon* now) {
+  uint8_t dv4[4] = {
+    gb_get_dv(now, GB_ATK), gb_get_dv(now, GB_DEF), gb_get_dv(now, GB_SPE), gb_get_dv(now, GB_SPC)
+  };
+  uint64_t key = gbsc_key(now->gen, gb_get_otid(now), dv4, now->otname);
+  uint32_t len = 0;
+  char path[GBSC_PATH_MAX];
+  if (xr_open(key, g_ed->sidecar, GBSC_FILE_MAX, &len, path) != SF_OK || gbsc_count(g_ed->sidecar, len) < 0) {
+    log_line("gen12: bridge restore: mark: ledger re-open failed"); return;
+  }
+  int idx = xr_resolve_home(g_ed->sidecar, len, now, XR_KIND_NATIVE_HOME, gb_get_species_dex(now));
+  if (idx < 0 || gbsc_set_state(g_ed->sidecar, len, idx, XR_STATE_RESTORED) != 0) {
+    log_line("gen12: bridge restore: mark: entry vanished / set_state failed"); return;
+  }
+  rmbl_pause();
+  SfStatus wst = sf_write_verified(path, g_ed->sidecar, len);
+  rmbl_resume();
+  if (wst != SF_OK) log_line("gen12: bridge restore: mark: rewrite failed for %s", path);
+  else              app_xv_cache_invalidate();   /* BACKLOG #213: a real ledger write */
+}
+
+/* BACKLOG #280 (Guy's #270 ruling, the bridge half): the GB-BRIDGE-TARGET restore. The lift is a
+ * pass-through now, so a Gen-2 mon that was bridged down from a Gen-1 original (ledger entry
+ * XR_KIND_NATIVE_HOME / XR_DIR_ABROAD_GB, written by gb_bank_down_bridge) reaches the Bank as its
+ * own native cell. Dropped on a Game Boy PC of the OTHER generation -- the entry's HOME generation
+ * -- this hands back the original native cell instead of a fresh lossy conversion. It is the
+ * relocated core of the old lift-time gb_lift_restore native arm: the same probe
+ * (xr_merge_down_gb_sel), the same merge screen, the same bank_restore_from_entry_gb, the same
+ * ALREADY-RESTORED / PENDING behaviour as gbpc_restore_up -- and the restored cell then lands
+ * through gb_accept_down_hook, exactly like the EXACT drop. The entry keeps its RESTORED lifecycle
+ * (gb_bridge_mark_restored, after the landing). Called only from bank_down_convert_gb.
+ *
+ * OAM: brackets its own screens (and the landing) like gb_bank_down_bridge -- its caller must not.
+ * Returns 1 = restored and landed (persisted; the caller consumes the Bank cell), 0 = convert
+ * normally (no entry / a COPY cell / an entry of another kind, direction or home generation / an
+ * entry already RESTORED -- the DUPLICATE, never restored twice), -2 = refused or declined,
+ * already said on screen. */
+int __attribute__((noinline))
+gb_bridge_restore_up(int dst_box, const uint8_t cell80[80]) {
+  if (!g_ed || !cell80) return 0;
+  if (!app_can_edit()) return 0;
+  if (!bc_is_native(cell80) || xg_cell_is_copy(cell80)) return 0;   /* a COPY's original still lives: restoring = clone */
+
+  GbEditMon mon; BcMeta meta;
+  if (!bc_unpack(cell80, &mon, &meta)) return 0;
+  uint8_t dv4[4] = {
+    gb_get_dv(&mon, GB_ATK), gb_get_dv(&mon, GB_DEF), gb_get_dv(&mon, GB_SPE), gb_get_dv(&mon, GB_SPC)
+  };
+  uint64_t key = gbsc_key(mon.gen, gb_get_otid(&mon), dv4, mon.otname);
+
+  uint32_t len = 0;
+  SfStatus rst = xr_open(key, g_ed->sidecar, GBSC_FILE_MAX, &len, NULL);
+  if (rst == SF_ERR_OPEN) return 0;                 /* no ledger entry -- an ordinary native cell */
+  if (rst != SF_OK || gbsc_count(g_ed->sidecar, len) < 0) {
+    log_line("gen12: bridge restore: ledger open/validate failed (%s)", sf_status_str(rst));
+    boxoam_suspend(); snd_error();
+    msg_wait(PDNA_XFERREC_TITLE, UI_WARN, PDNA_XFERREC_L1, PDNA_XFERREC_L2);
+    boxoam_resume();
+    return -2;
+  }
+  int found = xr_resolve_home(g_ed->sidecar, len, &mon, XR_KIND_NATIVE_HOME, gb_get_species_dex(&mon));
+  if (found < 0) return 0;                          /* no NATIVE_HOME entry for this mon */
+  GbscEntry e;
+  if (!gbsc_get(g_ed->sidecar, len, found, &e) || e.direction != XR_DIR_ABROAD_GB) return 0;
+  GbEditMon home; BcMeta hmeta;
+  if (!bc_is_native(e.original80) || !bc_unpack(e.original80, &home, &hmeta) ||
+      home.gen != g_ed->s.gen) return 0;            /* only an original of THIS save's generation comes home */
+
+  if (e.state == XR_STATE_RESTORED) {               /* the duplicate of an original that already came home */
+    log_line("gen12: bridge restore: entry already RESTORED -- this drop converts instead");
+    return 0;
+  }
+  if (e.state == XR_STATE_PENDING) {                /* the honest SAVE FIRST wall (relocated from the lift) */
+    log_line("gen12: bridge restore: entry still PENDING -- refusing (SAVE FIRST wall)");
+    boxoam_suspend(); snd_deny();
+    msg_wait(PDNA_XFER_SAVEFIRST_TITLE, UI_WARN, PDNA_XFER_SAVEFIRST_L1, PDNA_XFER_SAVEFIRST_L2);
+    boxoam_resume();
+    return -2;
+  }
+
+  GbEditMon probe; XrMergeReport rep;
+  if (!xr_merge_down_gb_sel(&e, &mon, 0, &probe, &rep)) {
+    log_line("gen12: bridge restore: xr_merge_down_gb_sel probe failed");
+    boxoam_suspend(); snd_error();
+    msg_wait(PDNA_XFERREC_TITLE, UI_WARN, PDNA_XFERREC_L1, PDNA_XFERREC_L2);
+    boxoam_resume();
+    return -2;
+  }
+  uint8_t accept = 0;
+  boxoam_suspend();
+  bool confirmed = app_xfer_merge_screen(&rep, XR_MERGE_DOWN, &accept);
+  boxoam_resume();
+  if (!confirmed) return -2;                        /* B: nothing spent, nothing written */
+
+  uint32_t serial = pdna_bank_next_serial();
+  uint8_t restored[80];
+  if (serial == 0 || bank_restore_from_entry_gb(&e, &mon, accept, serial, restored, NULL) != 1) {
+    log_line("gen12: bridge restore: serial/rebuild failed");
+    boxoam_suspend(); snd_error();
+    msg_wait(PDNA_XFERREC_TITLE, UI_WARN, PDNA_XFERREC_L1, PDNA_XFERREC_L2);
+    boxoam_resume();
+    return -2;
+  }
+
+  boxoam_suspend();
+  bool landed = gb_accept_down_hook(dst_box, restored);   /* asks its own confirm; persists */
+  boxoam_resume();
+  if (!landed) return -2;                           /* the hook already said why; still holding */
+  gb_bridge_mark_restored(&mon);                    /* AFTER the landed check */
+  return 1;
 }
 
 /* BACKLOG #246 (#104 Phase 1): the missing arm -- a PLAIN Gen-3 Bank cell (never

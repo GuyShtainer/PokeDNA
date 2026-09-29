@@ -194,6 +194,24 @@ static void test_bankg3(void) {
   CHECK(xrc_bank_g3_match(NULL, key) == 0, "BANKG3-1: NULL box -> 0");
 }
 
+/* ==== G3HOME-1: #280 -- a native GB cell PARKED in the Bank whose G3_HOME entry is live ======
+ * (the lift is a pass-through now: the Gen-3 original's way home is that ledger entry). It must
+ * classify ACTION-FREE in every state -- RESTORE would clone, DELETE would lose the way home.
+ * Mutation: make xrc_classify's `kind != XR_KIND_NATIVE_HOME` first line fall through (or add an
+ * action there) -- this goes RED. */
+static void test_g3home_parked(void) {
+  printf("== G3HOME-1: parked native GB cell with a G3_HOME entry ==\n");
+  static const uint8_t states[] = { XR_STATE_NONE, XR_STATE_CLAIMED, XR_STATE_PENDING, XR_STATE_RESTORED };
+  for (unsigned i = 0; i < sizeof states; i++) {
+    XrcInput in; memset(&in, 0, sizeof in);
+    in.kind = XR_KIND_G3_HOME; in.state = states[i]; in.direction = XR_DIR_ABROAD_GB;
+    in.bank_matches = 1;               /* the parked native cell */
+    XrcResult r; xrc_classify(&in, &r);
+    CHECK(r.kind == XRC_G3HOME && r.actions == XRC_ACT_NONE,
+          "G3HOME-1: state %d -> XRC_G3HOME, no actions (got kind %d actions 0x%x)", (int)states[i], r.kind, r.actions);
+  }
+}
+
 static void test_bank1(void) {
   printf("== BANK-1: xrc_bank_match, bytes vs identity ==\n");
   uint8_t otname[GB_NAME_BYTES] = "GUY\x50\x50\x50\x50\x50\x50\x50\x50";
@@ -568,6 +586,7 @@ int main(int argc, char** argv) {
   test_cls1();
   test_bank1();
   test_bankg3();
+  test_g3home_parked();
   test_phase2();
   test_order1();
   test_rekey1();

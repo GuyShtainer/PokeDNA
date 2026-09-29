@@ -298,6 +298,7 @@ static bool box_load(int box) {
    * Gen-3 cell (see bank_plant_g3_box's own comment), the source this lane's new
    * arm needs to demonstrate carrying a Gen-3 Bank cell onto a Game Boy grid. */
   if (st != SF_OK && box == 2) bank_plant_g3_box(box_recs());
+  if (st != SF_OK && box == 3) bank_plant_y9_box(box_recs());   /* #280: the target-drop restore chains' cells */
 #endif
   /* BACKLOG #150 S150-3 decision 6: recomputed at every page-in, AFTER the PDNA_DELTA
    * plant above so a planted native cell is captured too -- this is the ONE choke

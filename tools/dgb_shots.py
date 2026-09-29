@@ -66,6 +66,7 @@ from __future__ import annotations
 import argparse
 import functools
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -5674,6 +5675,423 @@ def _y7_plantcmp(img: Path) -> None:
         sys.exit(1)
 
 
+# ---- #280 (lane y9-280): the GB->Bank lift is a pass-through; the originals come home at the TARGET ----
+_Y9_SRCS = ("bank_cell gb_edit gen1_save gen1_write gen2_save gen2_write gen3_save gen3_box gen3_mon "
+            "gen3_edit gen3_daycare gen3_clip gen12_convert data_tables bank_plant gb_new_mon gb_editor "
+            "gb_session rom_gblearn rom_gbbase rom_gbsprite gb_sprite_codec ui_font gb_sidecar xfer_rec "
+            "item_map_g2g3").split()
+_y9_tool_cache: "Path | None" = None
+
+
+def _y9_tool() -> Path:
+    """Build tests/y9_mkledger.c (-DPDNA_DELTA, the y7_plantcmp source list) once per process."""
+    global _y9_tool_cache
+    if _y9_tool_cache is not None:
+        return _y9_tool_cache
+    root = Path(__file__).resolve().parent.parent
+    tmp = Path(tempfile.mkdtemp(prefix="y9_mkledger_"))
+    exe = tmp / "y9_mkledger"
+    cc = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
+    r = subprocess.run([cc, "-std=c11", "-I", str(root / "source"), "-DPDNA_DELTA",
+                        str(root / "tests" / "y9_mkledger.c")] +
+                       [str(root / "source" / (n + ".c")) for n in _Y9_SRCS] + ["-o", str(exe)],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        print(f"[Y9 TOOL FAILED] host build: {r.stderr[-400:]}", file=sys.stderr)
+        sys.exit(1)
+    _y9_tool_cache = exe
+    return exe
+
+
+def _y9_patch(img: Path, mode_args: "list[list[str]]") -> "list[str]":
+    """Write each `y9_mkledger <mode_args> OUT` ledger file into the --vsd image (vsd_img patch) BEFORE
+    the Session attaches; returns the on-card paths. The image should be a FRESH `vsd_img mkimg`."""
+    tool = _y9_tool()
+    tmp = Path(tempfile.mkdtemp(prefix="y9_ledgers_"))
+    paths = []
+    for i, args in enumerate(mode_args):
+        out = tmp / f"l{i}.pds"
+        r = subprocess.run([str(tool)] + args[:1] + args[1:] + [str(out)], capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"[Y9 TOOL FAILED] {args}: rc={r.returncode}", file=sys.stderr)
+            sys.exit(1)
+        card = r.stdout.strip()
+        p = subprocess.run([str(gb_shots._vsd_img_bin()), "patch", str(img), card, str(out)],
+                           capture_output=True, text=True)
+        if p.returncode != 0:
+            print(f"[Y9 PATCH FAILED] {card}: {p.stderr[-300:]}", file=sys.stderr)
+            sys.exit(1)
+        print(f"  [Y9] ledger planted in the vsd image: {card}  ({args})")
+        paths.append(card)
+    return paths
+
+
+def _y9_listing(s: "gb_shots.Session") -> "dict[str, str]":
+    """{card path: 'size crc'} of the LIVE (flushed) vsd image."""
+    s.vsd_flush()
+    r = subprocess.run([str(gb_shots._vsd_img_bin()), "list", str(s.vsd.image.path)],
+                       capture_output=True, text=True)
+    out = {}
+    for ln in r.stdout.splitlines():
+        parts = ln.split()
+        if len(parts) >= 3 and parts[0].startswith("/"):
+            out[parts[0]] = parts[1] + " " + parts[2]
+    return out
+
+
+def _y9_expect(s: "gb_shots.Session", label: str, present=(), absent=()) -> "dict[str, str]":
+    """Loud, mechanical: every path in `present` is on the card image now, every path in `absent` is not."""
+    ls = _y9_listing(s)
+    bad = [f"{p} should be PRESENT" for p in present if p not in ls] + \
+          [f"{p} should be ABSENT" for p in absent if p in ls]
+    print(f"  [Y9 CHECK] {label}: present={list(present)} absent={list(absent)} -> "
+          f"{'OK' if not bad else 'FAILED'}")
+    if bad:
+        print(f"[Y9 CHECK FAILED] {label}: {bad}", file=sys.stderr)
+        sys.exit(1)
+    return ls
+
+
+def _y9_bankcell_empty(img: Path, box_path: str, slots: "tuple[int, ...]", label: str) -> None:
+    """Pull the Bank box out of the image and require every listed slot to be all-zero."""
+    root = Path(__file__).resolve().parent.parent
+    g = subprocess.run([sys.executable, str(root / "tools" / "vsd_fatget.py"), str(img), box_path],
+                       capture_output=True)
+    if g.returncode != 0 or len(g.stdout) != 2400:
+        print(f"[Y9 CHECK FAILED] {label}: could not read {box_path}", file=sys.stderr)
+        sys.exit(1)
+    live = [i for i in slots if any(g.stdout[i * 80:(i + 1) * 80])]
+    print(f"  [Y9 CHECK] {label}: slots {list(slots)} of {box_path} empty -> {'OK' if not live else 'FAILED'}")
+    if live:
+        print(f"[Y9 CHECK FAILED] {label}: slots still occupied: {live}", file=sys.stderr)
+        sys.exit(1)
+
+
+def run_y9_g3home_target(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """#280 (lane y9-280), the Gen-3-TARGET restore of a G3_HOME entry. Vehicle: `rom` = tools/fuse_sav.py
+    <pokedna-delta-artless.gba> Emerald.sav; `--vsd <img>` REQUIRED, a FRESH `vsd_img mkimg IMG 16
+    <template>` (this chain writes two REAL ledger files into it -- tests/y9_mkledger.c -- so the
+    consume can be proven against a real FAT, which the S150-9 shim slots cannot). Bank box 4 (bank_plant
+    box 3) holds two Gen-2 BULBASAUR cells; each has a G3_HOME entry (the Gen-3 original it came from).
+
+    Flow: carry cell 0 Bank -> the empty PC box 11, A -> the restore merge screen (NOT the conversion loss
+    screen) -> A flips a row to TAKE (#283b) -> B cancels silently (ledger untouched) -> A, START lands the
+    ORIGINAL Gen-3 record. The entry is consumed only after the verified save (R3): both ledger files must
+    still be on the card while the PC is unsaved; a SECOND restore before the save meets the SAVE NOW?
+    wall (the pre-flush double-restore barrier); A saves, the first file is gone, the second restore
+    proceeds; leaving the box screen saves it and the second file goes too, with the Bank cells flushed."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")
+    print("== #280 (y9-280): Gen-3-target restore of a G3_HOME entry (--vsd, real ledger files) ==")
+    if gb_shots._DEFAULT_VSD_IMG is None:
+        raise RuntimeError("--y9-g3home requires --vsd <img.img> (a FRESH mkimg copy)")
+    img = gb_shots._DEFAULT_VSD_IMG
+    p0, p1 = _y9_patch(img, [["ledger", "0"], ["ledger", "1"]])
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "y9_g3home_")
+    T = lambda k, n=1, **kw: (print(f"  [TRACE] {k} x{n}"), s.press_n(k, n, **kw))
+    s.run(700)
+    s.vsd_snapshot()
+    T("START", settle=80); T("DOWN", settle=60); T("A", settle=150)
+    T("R", 3, settle=150)
+    s.shot("00_bank_box4", "y9: the Bank opened from the Emerald session, R x3 -> BANK 4: five planted "
+           "Gen-2 BULBASAUR cells at slots 0-4, cursor on slot 0", claim=["BANK 4"])
+    T("A", settle=150)
+    s.shot("01_native_menu", "y9: A on slot 0 -- the native-cell menu", allow_same=False)
+    T("DOWN", 2, settle=60); T("A", settle=150)
+    T("DOWN", 5, settle=150)
+    s.shot("02_carrying_on_pc", "y9: MOVE picked up, DOWN x5 -> off the Bank onto the Emerald PC grid, "
+           "still carrying (footer 'A drop  B cancel')", claim=["A drop  B cancel"])
+    T("R", 10, settle=150)
+    s.shot("03_empty_box11", "y9: R x10 -> box 11 'Qo' (0/30), this cartridge's empty box; cursor on an "
+           "empty cell", claim=["0/30"])
+    T("A", settle=300)
+    s.shot("04_restore_screen", "y9: A on the empty cell -- the RESTORE merge screen ('RESTORED FROM THE "
+           "SIDECAR', a Level row, KEEP), NOT the conversion loss screen: the Bank cell is a Game Boy "
+           "record whose ledger says its home is Gen-3, and the Gen-3 TARGET is where it goes home",
+           claim=["RESTORED FROM THE SIDECAR", "Level", "KEEP"], claim_absent=["WHAT WON'T TRANSFER"])
+    T("A", settle=150)
+    s.shot("05_row_flipped_take", "y9 (#283b): A flips the Level row to TAKE -- the per-field toggle now "
+           "lives at the target drop", claim=["TAKE"], claim_absent=["KEEP"])
+    T("B", settle=300)
+    s.shot("06_cancel_silent", "y9: B cancels -- back on the PC grid, still carrying, NO dialog",
+           claim=["A drop  B cancel"], claim_absent=["RESTORED FROM THE SIDECAR"])
+    _y9_expect(s, "after a declined restore", present=[p0, p1])
+    T("A", settle=300)
+    s.shot("07_restore_screen_again", "y9: A again -- the merge screen redraws (nothing was spent)",
+           claim=["RESTORED FROM THE SIDECAR", "KEEP"])
+    T("START", settle=500)
+    s.shot("08_landed", "y9: START applies -- the ORIGINAL Gen-3 record is in box 11 (1/30), the hand is "
+           "empty", claim=["1/30"])
+    _y9_expect(s, "landed but NOT saved: the entry must not be consumed yet (R3)", present=[p0, p1])
+    # second cell: back into the Bank via the nav menu
+    T("START", settle=150); T("DOWN", settle=60); T("A", settle=200)
+    T("R", 3, settle=150)
+    T("RIGHT", settle=100)
+    s.shot("09_bank_slot1", "y9: the Bank again, BANK 4 -- slot 0 is empty now (its deletion is queued for "
+           "the save), cursor on slot 1 (the second cell)", claim=["BANK 4", "4/30"])
+    T("A", settle=150); T("DOWN", 2, settle=60); T("A", settle=150)
+    T("DOWN", 5, settle=150)
+    T("R", 10, settle=150)
+    T("RIGHT", settle=100)
+    s.shot("10_carrying_second", "y9: the second cell carried to box 11's second cell", allow_same=False)
+    T("A", settle=300)
+    s.shot("11_savenow_wall", "y9 (R3): A -- the SAVE NOW? wall: a restore is waiting for the save, so a "
+           "second restore cannot start (the pre-flush double-restore barrier)",
+           claim=["SAVE NOW", "One transfer is waiting"])
+    _y9_expect(s, "wall shown: still nothing consumed", present=[p0, p1])
+    T("A", settle=600)
+    s.shot("12_saved", "y9: A = yes -- the verified save ('Flash written + verified.')", claim=["Flash written"])
+    T("A", settle=600)
+    s.shot("13_second_restore_screen", "y9: A -- the save is done, the first entry consumed, and the "
+           "SECOND cell's restore screen follows", claim=["RESTORED FROM THE SIDECAR", "KEEP"])
+    _y9_expect(s, "after the verified save: the first entry is consumed, the second is not yet", present=[p1], absent=[p0])
+    T("START", settle=500)
+    s.shot("14_second_landed", "y9: START -- the second original landed (2/30)", claim=["2/30"])
+    T("B", settle=400)
+    s.shot("15_exit_save_prompt", "y9: B leaves the box screen -- 'Save changes?'", allow_same=False)
+    T("A", settle=600)
+    s.shot("16_exit_saved", "y9: A -- saved and verified", claim=["Flash written"])
+    T("A", settle=600)
+    s.shot("17_after_exit", "y9: A dismisses the SAVED panel -- the grid is shown again with both "
+           "originals in box 11 (2/30), now on the card", claim=["2/30"], allow_same=True)
+    _y9_expect(s, "after the exit save: both entries consumed", absent=[p0, p1])
+    changed = s.vsd_report()
+    print(f"  vsd diff: {sorted(changed)}")
+    if "/PokeDNA/bank/box03.box" not in changed:
+        print("[Y9 CHECK FAILED] the Bank flush did not write box03.box", file=sys.stderr)
+        sys.exit(1)
+    _y9_bankcell_empty(img, "POKEDNA/BANK/BOX03.BOX", (0, 1), "both restored Bank cells flushed")
+
+    # ---- a DECLINED exit save: nothing may be consumed, the Bank keeps its cell (R3's other half) ----
+    img2 = Path(str(img) + ".decline")
+    subprocess.run([str(gb_shots._vsd_img_bin()), "mkimg", str(img2), "16", "/tmp/host_vsdimg_test_tmpl"],
+                   capture_output=True)
+    q0, q1 = _y9_patch(img2, [["ledger", "0"], ["ledger", "1"]])
+    saved_default = gb_shots._DEFAULT_VSD_IMG
+    gb_shots._DEFAULT_VSD_IMG = img2
+    try:
+        d = gb_shots.Session(core_mod, image_mod, rom, out_dir, "y9_g3home_decline_")
+    finally:
+        gb_shots._DEFAULT_VSD_IMG = saved_default
+    Td = lambda k, n=1, **kw: (print(f"  [TRACE] decline {k} x{n}"), d.press_n(k, n, **kw))
+    d.run(700)
+    d.vsd_snapshot()
+    Td("START", settle=80); Td("DOWN", settle=60); Td("A", settle=150)
+    Td("R", 3, settle=150)
+    Td("A", settle=150); Td("DOWN", 2, settle=60); Td("A", settle=150)
+    Td("DOWN", 5, settle=150)
+    Td("R", 10, settle=150)
+    Td("A", settle=300)
+    Td("START", settle=500)
+    d.shot("00_landed_unsaved", "y9 (decline): the original landed in box 11 (1/30), not yet saved", claim=["1/30"])
+    Td("B", settle=400)
+    d.shot("01_save_prompt", "y9 (decline): B -- 'Save changes?'", allow_same=False)
+    Td("B", settle=600)
+    d.shot("02_declined", "y9 (decline): B = no -- the moves are reverted (box 11 back to 0/30)", claim=["0/30"])
+    _y9_expect(d, "a declined save consumes nothing", present=[q0, q1])
+    ch = d.vsd_report()
+    print(f"  vsd diff (declined): {sorted(ch)}")
+    if any(c.startswith("/PokeDNA/bank/box0") for c in ch):
+        print("[Y9 CHECK FAILED] a declined save still wrote a Bank box", file=sys.stderr)
+        sys.exit(1)
+    s.taken += d.taken
+    s.skipped += d.skipped
+    return s
+
+
+def run_y9_lift_passthrough(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """#280 (lane y9-280), the GB->Bank LIFT is a pass-through. Vehicle: `rom` = tools/fuse_gb.py
+    <pokedna-delta-artless.gba> Red.gb Red.sav (the fused Red the bridge chain also uses); `--vsd <img>`
+    REQUIRED, a FRESH mkimg copy. This chain plants a REAL G3_HOME ledger file for Red box 1 slot 0 (its
+    Slowbro) -- on base d425687 the lift of that mon RESTORED the Gen-3 original at the drop (the merge
+    screen); now it must bank the Game Boy record as it is: no restore screen, the ledger file untouched,
+    the vsd diff bank files only, and the banked cell byte-equal to the Game Boy record (host check)."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")
+    print("== #280 (y9-280): the GB->Bank lift passes through (--vsd) ==")
+    if gb_shots._DEFAULT_VSD_IMG is None:
+        raise RuntimeError("--y9-lift requires --vsd <img.img> (a FRESH mkimg copy)")
+    img = gb_shots._DEFAULT_VSD_IMG
+    sav = Path(os.environ.get("Y9_RED_SAV") or (Path.home() / "VSCodeProjects" / "gba-toolkit" / "roms" / "gb" / "Red.sav"))
+    if not sav.exists():
+        raise RuntimeError(f"{sav} not found (the corpus Red.sav the fused image was built from)")
+    (pds,) = _y9_patch(img, [["savledger", str(sav)]])
+    before_crc = None
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "y9_lift_")
+    T = lambda k, n=1, **kw: (print(f"  [TRACE] {k} x{n}"), s.press_n(k, n, **kw))
+    s.run(700); s.run(100)
+    s.vsd_snapshot()
+    before_crc = _y9_expect(s, "the planted G3_HOME ledger is on the card", present=[pds])[pds]
+    s.shot("00_red_grid", "y9: Red's box grid, box 1, cursor on slot 0 -- the mon whose ledger entry says "
+           "'Gen-3 original'", allow_same=True)
+    T("SEL", settle=100)
+    T("A", settle=150)
+    s.shot("01_grabbed", "y9: SEL -> MOVE, A grabs slot 0 (footer 'A drop  B cancel')", claim=["A drop  B cancel"])
+    T("UP", settle=gb_shots.BIG_SETTLE); s.run(60)
+    T("UP", settle=150); s.run(100)
+    s.shot("02_bank_hop", "y9: 2 x UP, still carrying -- landed on BANK 1, cursor on the first empty cell",
+           allow_same=False)
+    T("A", settle=gb_shots.BIG_SETTLE); s.run(100)
+    s.shot("03_drop_no_restore", "y9: A on the empty Bank cell -- the ordinary one-time 'WHICH GAME IS THIS?' "
+           "prompt and NO restore/merge screen (on base d425687 this frame is the RESTORED FROM THE SIDECAR "
+           "merge screen)", claim=["WHICH GAME IS THIS", "RED"],
+           claim_absent=["RESTORED FROM THE SIDECAR", "BACK TO ITS ORIGINAL"])
+    T("A", settle=gb_shots.BIG_SETTLE); s.run(300)
+    s.shot("04_release_wall", "y9: A picks RED -- the record is banked, then the Game Boy save's delete is "
+           "refused by the emulator build's own wall ('GAME BOY SAVE / Edits are in-session only') -- the "
+           "delta vehicle cannot persist a Game Boy save; on hardware the mon leaves the save here",
+           claim=["GAME BOY SAVE"])
+    T("A", settle=gb_shots.BIG_SETTLE); s.run(300)
+    s.shot("05_moved_notice", "y9: A -- 'MOVED TO THE BANK / still in the Game Boy save too' (the bank write "
+           "landed; only the emulator wall kept the source)", claim=["MOVED TO THE BANK"], allow_same=False)
+    ls = _y9_expect(s, "the ledger is untouched by the lift", present=[pds])
+    if ls[pds] != before_crc:
+        print(f"[Y9 CHECK FAILED] the ledger file changed at the lift: {before_crc} -> {ls[pds]}", file=sys.stderr)
+        sys.exit(1)
+    changed = s.vsd_report()
+    print(f"  vsd diff (lift): {sorted(changed)}")
+    stray = [c for c in changed if not (c.startswith("/PokeDNA/bank/") or c == "/PokeDNA/log.txt" or c.endswith(".og"))]
+    if stray or pds in changed or "/PokeDNA/bank/box00.box" not in changed:
+        print(f"[Y9 CHECK FAILED] lift diff is not 'bank files only': stray={stray}", file=sys.stderr)
+        sys.exit(1)
+    root = Path(__file__).resolve().parent.parent
+    tmp = Path(tempfile.mkdtemp(prefix="y9_lift_"))
+    box = tmp / "box00.bin"
+    with open(box, "wb") as fh:
+        g = subprocess.run([sys.executable, str(root / "tools" / "vsd_fatget.py"), str(img),
+                            "POKEDNA/BANK/BOX00.BOX"], stdout=fh, stderr=subprocess.PIPE)
+    if g.returncode != 0:
+        print(f"[Y9 CHECK FAILED] could not read box00.box: {g.stderr.decode()[-300:]}", file=sys.stderr)
+        sys.exit(1)
+    c = subprocess.run([str(_y9_tool()), "liftcheck", str(sav), str(box), "24"], capture_output=True, text=True)
+    print("  " + c.stdout.strip())
+    if c.returncode != 0:
+        print("[Y9 CHECK FAILED] the banked cell is not the Game Boy record as-is", file=sys.stderr)
+        sys.exit(1)
+    return s
+
+
+def run_y9_bridge_target(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """#280 (lane y9-280), the GB-BRIDGE-target restore. Vehicle: `rom` = the fused Red (as --y9-lift);
+    `--vsd <img>` REQUIRED, a FRESH mkimg copy. Bank box 4 holds three Gen-2 BULBASAUR cells that were
+    'bridged down from a Gen-1 original' (slots 2/3/4): slot 2's NATIVE_HOME entry is CLAIMED (restorable),
+    slot 3's is RESTORED (a duplicate), slot 4's is PENDING. Three sessions, one drop each, on Red's box:
+      slot 2 -> the merge screen (BACK TO ITS ORIGINAL), TAKE flip, START -> accept_down's confirm, A -> the
+                emulator build's own GAME BOY SAVE wall (the delta vehicle cannot persist a Game Boy save, so
+                the LANDING and the RESTORED mark are HARDWARE-ONLY -- HW-QUEUE XFER-270); the ledger file
+                is byte-unchanged
+      slot 3 -> the ordinary conversion preview (WHAT WON'T TRANSFER): the duplicate converts normally
+      slot 4 -> the SAVE FIRST wall."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")
+    print("== #280 (y9-280): the GB-bridge target restore (--vsd, real ledger files) ==")
+    if gb_shots._DEFAULT_VSD_IMG is None:
+        raise RuntimeError("--y9-bridge requires --vsd <img.img> (a FRESH mkimg copy)")
+    img = gb_shots._DEFAULT_VSD_IMG
+    p2, p3, p4 = _y9_patch(img, [["ledger", "2"], ["ledger", "3"], ["ledger", "4"]])
+    sessions = []
+
+    def carry_to_red(prefix: str, slot: int):
+        s = gb_shots.Session(core_mod, image_mod, rom, out_dir, prefix)
+        T = lambda k, n=1, **kw: (print(f"  [TRACE] {prefix} {k} x{n}"), s.press_n(k, n, **kw))
+        s.run(700); s.run(100)
+        s.vsd_snapshot()
+        T("UP", 3, settle=100); T("UP", 4, settle=60)
+        T("R", 3, settle=150)
+        T("RIGHT", slot, settle=100)
+        s.shot("00_bank_box4", f"y9: Red's Bank, R x3 -> BANK 4, cursor on slot {slot}", claim=["BANK 4"])
+        T("A", settle=150); T("DOWN", 2, settle=60); T("A", settle=150)
+        T("DOWN", 5, settle=150)
+        T("R", 5, settle=150)
+        s.shot("01_carrying_on_red", "y9: DOWN x5 -> Red's box 1 (20/20, full), then R x5 -> box 6 (16/20, room -- "
+               "the corpus Red.sav's only box with space), still carrying (footer 'A drop  B cancel')",
+               claim=["A drop  B cancel", "16/20"])
+        sessions.append(s)
+        return s, T
+
+    # ---- slot 2: CLAIMED -> the restore ---------------------------------------------------------------
+    s, T = carry_to_red("y9_bridge_claimed_", 2)
+    before = _y9_expect(s, "the CLAIMED bridge entry is planted", present=[p2])[p2]
+    T("A", settle=400)
+    s.shot("02_restore_screen", "y9: A on Red's box -- the restore merge screen (BACK TO ITS ORIGINAL, Level "
+           "row, KEEP): the Gen-2 cell goes home to the Gen-1 save", claim=["BACK TO ITS ORIGINAL", "Level", "KEEP"],
+           claim_absent=["WHAT WON'T TRANSFER"])
+    T("A", settle=150)
+    s.shot("03_row_flipped_take", "y9 (#283b): A flips the row to TAKE at the target drop", claim=["TAKE"], claim_absent=["KEEP"])
+    T("START", settle=500)
+    s.shot("04_accept_confirm", "y9: START -- accept_down's own one confirm line for the landing", allow_same=False)
+    T("A", settle=400)
+    s.shot("05_emulator_wall", "y9: A -- the emulator build's own GAME BOY SAVE wall refuses the write "
+           "(HARDWARE-ONLY from here: the landing, the Bank consume and the RESTORED mark)",
+           claim=["GAME BOY SAVE"])
+    after = _y9_expect(s, "the entry is not marked (nothing landed)", present=[p2])[p2]
+    if after != before:
+        print(f"[Y9 CHECK FAILED] the CLAIMED entry changed without a landing: {before} -> {after}", file=sys.stderr)
+        sys.exit(1)
+
+    # ---- slot 3: RESTORED -> converts normally ---------------------------------------------------------
+    s3, T3 = carry_to_red("y9_bridge_restored_", 3)
+    T3("A", settle=400)
+    s3.shot("02_converts_normally", "y9: A -- an already-RESTORED entry: NO restore screen, the ordinary "
+            "Gen-2 -> Gen-1 conversion preview (a duplicate never restores twice, never refuses)",
+            claim=["A = transfer", "B = cancel"], claim_absent=["BACK TO ITS ORIGINAL", "ALREADY RESTORED"])
+
+    # ---- slot 4: PENDING -> SAVE FIRST -----------------------------------------------------------------
+    s4, T4 = carry_to_red("y9_bridge_pending_", 4)
+    T4("A", settle=400)
+    s4.shot("02_save_first_wall", "y9 (#283b): A -- a PENDING entry meets the SAVE FIRST wall at the target "
+            "drop (the wording is the shipped one; #281 owns its correction)",
+            claim=["SAVE FIRST", "One transfer is waiting"], claim_absent=["BACK TO ITS ORIGINAL"])
+    for extra in (s3, s4):
+        s.taken += extra.taken
+        s.skipped += extra.skipped
+    return s
+
+
+def run_y9_party_restore(core_mod, image_mod, rom_ruby: Path, out_dir: Path) -> gb_shots.Session:
+    """#280 (lane y9-280, R2): the PARTY drop is a Gen-3 target too. Vehicle: `rom_ruby` = tools/fuse_sav.py
+    <pokedna-delta-artless.gba> Ruby.sav (four party members, so an ADD slot exists -- see
+    run_s150_8_party_vsd); `--vsd <img>` REQUIRED, a FRESH mkimg copy. The same planted Bank box-4 cell 0
+    (a Gen-2 BULBASAUR with a G3_HOME entry) is carried onto the party's ADD slot: bank_down_convert_gen3_party
+    calls the SAME gb_g3home_restore_up, so A meets the restore merge screen, not the conversion loss
+    screen; START lands the original, and the entry is consumed only by the verified save."""
+    gb_shots.assert_vehicle(rom_ruby, "ARTLESS")
+    print("== #280 (y9-280): the party drop restores too (--vsd, real ledger file) ==")
+    if gb_shots._DEFAULT_VSD_IMG is None:
+        raise RuntimeError("--y9-party requires --vsd <img.img> (a FRESH mkimg copy)")
+    (p0,) = _y9_patch(gb_shots._DEFAULT_VSD_IMG, [["ledger", "0"]])
+    s = gb_shots.Session(core_mod, image_mod, rom_ruby, out_dir, "y9_party_")
+    T = lambda k, n=1, **kw: (print(f"  [TRACE] {k} x{n}"), s.press_n(k, n, **kw))
+    s.run(700)
+    s.vsd_snapshot()
+    T("START", settle=80); T("DOWN", settle=60); T("A", settle=150)
+    T("R", 3, settle=150)
+    s.shot("00_bank_box4", "y9 (party): Ruby's Bank, R x3 -> BANK 4, cursor on slot 0", claim=["BANK 4"])
+    T("A", settle=150); T("DOWN", 2, settle=60); T("A", settle=150)
+    T("DOWN", 5, settle=150)
+    T("UP", settle=150)
+    T("A", settle=250)
+    s.shot("01_party_overlay", "y9 (party): UP -> tab focus PARTY, A -- the party picker, cursor seeded "
+           "on an occupied row (four members + the ADD slot)", allow_same=False)
+    T("DOWN", 3, settle=150)
+    s.shot("02_on_add", "y9 (party): DOWN x3 -> the empty ADD slot", allow_same=False)
+    T("A", settle=300)
+    s.shot("03_restore_screen", "y9 (party): A on the ADD slot -- the RESTORE merge screen (not the party "
+           "conversion loss screen 'Joins your party, fully healed.')",
+           claim=["RESTORED FROM THE SIDECAR", "Level", "KEEP"],
+           claim_absent=["Joins your party, fully healed."])
+    T("START", settle=500)
+    s.shot("04_landed_in_party", "y9 (party): START -- the restore applied and the overlay closed (back on "
+           "the PC grid; the party is not on screen -- the landing is proven by the post-save consume check below)",
+           allow_same=False)
+    _y9_expect(s, "landed but NOT saved: the entry must not be consumed yet", present=[p0])
+    T("B", settle=400)
+    s.shot("05_exit_prompt", "y9 (party): B -- 'Save changes?'", allow_same=False)
+    T("A", settle=600)
+    s.shot("06_saved", "y9 (party): A -- saved and verified", claim=["Flash written"])
+    T("A", settle=600)
+    _y9_expect(s, "after the verified save the entry is consumed", absent=[p0])
+    print(f"  vsd diff: {sorted(s.vsd_report())}")
+    return s
+
+
 def run_b190_move_refusal(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
     """BACKLOG #190: Guy's cart report -- "after that promt the screen glitched to show
     both promt and attacks of wigglytuff" -- a move-picker refusal on the GB editor's
@@ -6477,7 +6895,12 @@ def run_s150_9_merge_screen(core_mod, image_mod, rom_emerald: Path, out_dir: Pat
 
 
 def run_s150_9_site2(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
-    """BACKLOG #209: site 2 of the restore -- gb_lift_restore (source/pdna_gen12.c),
+    """#280 (lane y9-280) REWRITE NOTE: gb_lift_restore no longer exists -- the GB->Bank lift is a
+    pass-through and its restores moved to the TARGET drops (--y9-lift / --y9-g3home / --y9-bridge). This
+    chain now proves, on the delta-gb vehicle, that the SEEDED cell's lift shows the ordinary origin prompt
+    exactly like the unseeded cell (frames 04-07; the older frame text below is history).
+
+    BACKLOG #209 (history): site 2 of the restore -- gb_lift_restore (source/pdna_gen12.c),
     a GB-grid lift of a mon whose ledger entry has a NATIVE home. Until this lane,
     gb_has_sidecar's own f_stat pre-check (xr_path_for_key) always missed on the
     delta (no FAT at all), so gb_lift_restore had NEVER executed on any vehicle --
@@ -6546,7 +6969,7 @@ def run_s150_9_site2(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.
                                     # with NO PDNA_ARTLESS=1 (Makefile:567) -- the FULL-ART delta. Asserting
                                     # ARTLESS here hard-refused the very build the chain prescribes.
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s150_9_site2_")
-    print("== BACKLOG #209: site 2 of the restore (gb_lift_restore) ==")
+    print("== BACKLOG #209 (history) / #280: the pass-through lift + merge-screen UX (was gb_lift_restore site 2) ==")
     boot_to_gb_session(s, rom, which="red")
     s.shot("00_red_box_grid", "s150-9-site2: Red's box grid, freshly entered -- "
            "cursor on slot 0, the SEEDED cell (bank_plant_site2_seed() keyed this "
@@ -6573,48 +6996,36 @@ def run_s150_9_site2(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.
            "drop that finally calls gb_lift_pack().")
 
     s.tap("A", settle=gb_shots.BIG_SETTLE); s.run(100)
-    s.shot("04_merge_screen", "s150-9-site2 (b199 D2 repair): A on the empty Bank "
-           "cell -- THIS is the drop gb_lift_pack() now runs on. gb_has_sidecar() "
-           "finds the seeded entry -> gb_lift_restore() runs (decision 10: the "
-           "origin prompt is SKIPPED, the home cell carries its own origin_game) "
-           "-> xr_merge_down_gb_sel's probe found two differing rows against the "
-           "seeded home -> app_xfer_merge_screen draws straight away, 'BACK TO ITS "
-           "ORIGINAL' with a Level and a Nickname row, both KEEP, footer 'A flip  "
-           "START apply  B cancel'.",
-           claim=["BACK TO ITS ORIGINAL", "Level", "Nickname", "KEEP"])
+    s.shot("04_origin_prompt_no_restore", "s150-9-site2 (#280 REWRITE): A on the empty Bank cell -- the drop "
+           "that runs gb_lift_pack(). The seeded cell's ledger entry (NATIVE_HOME, keyed at mount) used to "
+           "raise 'BACK TO ITS ORIGINAL' here; the lift is a PASS-THROUGH now (#280, Guy's #270 ruling: "
+           "restores happen at the TARGET drop), so this is the ordinary one-time 'WHICH GAME IS THIS?' "
+           "prompt -- the SAME screen the unseeded slot-1 A/B run below shows, and NO merge screen.",
+           claim=["WHICH GAME IS THIS", "RED"],
+           claim_absent=["BACK TO ITS ORIGINAL", "RESTORED FROM THE SIDECAR"])
 
     s.tap("B", settle=gb_shots.BIG_SETTLE); s.run(100)
-    s.shot("05_cancel_silent", "s150-9-site2 (b199 review D5 fix, re-verified after "
-           "D5 landed in this same lane): B cancels the merge screen -- "
-           "gb_lift_restore()'s B-decline now returns -2 (XG_LIFT_CANCELLED via "
-           "gb_lift_pack), which drop_held_up() treats as 'already explained on "
-           "screen' and shows NOTHING further -- straight back to the Bank grid, "
-           "STILL HOLDING the same mon (footer 'A drop  B cancel'), no dialog at "
-           "all. BEFORE D5 this exact B press showed 'NOT MOVED TO THE BANK / "
-           "This Pokemon could not be packed for the Bank.' on a PLAIN DECLINE -- "
-           "the bug D5 fixes; this frame is the live proof it is fixed.",
+    s.shot("05_cancel_silent", "s150-9-site2 (#280): B cancels the origin prompt -- gb_origin_for_save's "
+           "cancel is XG_LIFT_CANCELLED, which drop_held_up() treats as 'already explained on screen': "
+           "straight back to the Bank grid, STILL HOLDING the same mon (footer 'A drop  B cancel'), no "
+           "dialog at all.",
            claim=["A drop  B cancel"],
            claim_absent=["NOT MOVED TO THE BANK", "This Pokemon could not be"])
 
     s.tap("A", settle=gb_shots.BIG_SETTLE); s.run(100)
-    s.shot("06_regrab_merge_screen", "s150-9-site2 (b199 D2 repair): A on the "
-           "SAME cell again -- the identical merge screen redraws (pixel-"
-           "identical to frame 04: nothing was applied or persisted by the B "
-           "cancel above, so gb_lift_pack() runs the exact same probe again).",
+    s.shot("06_regrab_prompt", "s150-9-site2 (#280): A on the SAME cell again -- the identical origin "
+           "prompt redraws (pixel-identical to frame 04: nothing was spent by the cancel).",
            allow_same=True,
-           claim=["BACK TO ITS ORIGINAL", "Level", "Nickname", "KEEP"])
+           claim=["WHICH GAME IS THIS", "RED"])
 
-    s.tap("START", settle=gb_shots.BIG_SETTLE); s.run(150)
-    s.shot("07_start_refused", "s150-9-site2 (b199 review D5 fix, re-verified): "
-           "START confirms the merge screen (both rows left at KEEP, nothing "
-           "accepted) -- gb_lift_restore() then reaches pdna_bank_next_serial(), "
-           "which fails on this vehicle (no writable FAT, the SAME wall "
-           "run_s150_4_uplift's own chain documents) -- a GENUINE unreported "
-           "failure (XG_LIFT_FAILED), unlike frame 05's plain decline, so "
-           "drop_held_up() DOES show 'NOT MOVED TO THE BANK / This Pokemon "
-           "could not be packed for the Bank.' here -- D5's whole point: this "
-           "vehicle can now tell 'the user declined' (frame 05, silent) apart "
-           "from 'the write failed' (this frame, a real dialog) on screen.",
+    s.tap("A", settle=gb_shots.BIG_SETTLE); s.run(150)
+    s.shot("07_pick_refused", "s150-9-site2 (#280): A picks RED -- gb_lift_pack() then reaches "
+           "pdna_bank_next_serial(), which fails on this vehicle (no writable FAT, the SAME wall "
+           "run_s150_4_uplift's own chain documents) -- a GENUINE unreported failure (XG_LIFT_FAILED), "
+           "unlike frame 05's plain decline, so drop_held_up() DOES show 'NOT MOVED TO THE BANK / This "
+           "Pokemon could not be packed for the Bank.' here -- the vehicle still tells 'the user "
+           "declined' (silent) apart from 'the write failed' (a real dialog). A landed, persisted cell "
+           "is hardware-only from here; the real-FAT proof of the pass-through is --y9-lift.",
            claim=["NOT MOVED TO THE BANK", "This Pokemon could not be",
                   "packed for the Bank."])
 
@@ -6642,14 +7053,9 @@ def run_s150_9_site2(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.
     s2.shot("02_bank_hop", "s150-9-site2 A/B (b199 D2 repair): 2xUP, carrying -- "
             "the same bank_edge hop, landing on the same first-empty Bank cell.")
     s2.tap("A", settle=gb_shots.BIG_SETTLE); s2.run(100)
-    s2.shot("03_prompt_shows", "s150-9-site2 A/B (b199 D2 repair): A on the empty "
-            "Bank cell -- 'WHICH GAME IS THIS?' RED (selected) / BLUE / YELLOW "
-            "DOES draw here, on the exact same image/session/gesture that skipped "
-            "it for slot 0 -- gb_has_sidecar() answers false for this ordinary, "
-            "unseeded cell, so gb_lift_pack() takes the normal (non-restore) path "
-            "instead. This is the direct proof that slot 0's missing prompt is the "
-            "seed/shim working, not a vehicle-wide inability to ever draw this "
-            "screen -- relocated to the drop site, same as the main chain above.",
+    s2.shot("03_prompt_shows", "s150-9-site2 A/B (#280): A on the empty Bank cell -- 'WHICH GAME IS THIS?' RED "
+            "(selected) / BLUE / YELLOW, pixel-identical to the SEEDED slot 0's frame 04 above: since #280 the "
+            "lift ignores the ledger, so a mon with a ledger entry and one without take the same path.",
             claim=["WHICH GAME IS THIS", "RED", "YELLOW"])
 
     s.taken += s2.taken
@@ -7905,6 +8311,18 @@ def _main_dispatch(argv=None) -> int:
                      help="#270 (lane y7-bankpass): only run_y7_bank_passthrough() -- --image "
                           "as for --s150-15 (plain fuse_sav.py <delta-artless> Emerald.sav) "
                           "AND --vsd <img> (the Bank drop commits box00.box).")
+    ap.add_argument("--y9-g3home", action="store_true",
+                     help="#280 (lane y9-280): run_y9_g3home_target() -- --image = plain fuse_sav.py "
+                          "<delta-artless> Emerald.sav, --vsd = a FRESH mkimg copy.")
+    ap.add_argument("--y9-lift", action="store_true",
+                     help="#280 (lane y9-280): run_y9_lift_passthrough() -- --image = fuse_gb.py "
+                          "<delta-artless> Red.gb Red.sav, --vsd = a FRESH mkimg copy.")
+    ap.add_argument("--y9-party", action="store_true",
+                     help="#280 (lane y9-280): run_y9_party_restore() -- --image = fuse_sav.py "
+                          "<delta-artless> Ruby.sav, --vsd = a FRESH mkimg copy.")
+    ap.add_argument("--y9-bridge", action="store_true",
+                     help="#280 (lane y9-280): run_y9_bridge_target() -- --image as --y9-lift, --vsd = "
+                          "a FRESH mkimg copy.")
     ap.add_argument("--s150-11", action="store_true",
                      help="BACKLOG #150 S150-11: only run_s150_11_reconcile() against "
                           "--image -- --image MUST be `make delta-gb`'s own combined "
@@ -8007,9 +8425,9 @@ def _main_dispatch(argv=None) -> int:
                           "artless.gba> Emerald.sav (a plain Gen-3 fusion, no --gb -- "
                           "same vehicle shape as --s150-8).")
     ap.add_argument("--s150-9-site2", action="store_true",
-                     help="BACKLOG #209: only run_s150_9_site2() -- gb_lift_restore, "
-                          "site 2 of the restore (a GB-grid lift of a mon whose "
-                          "ledger entry has a NATIVE home), reached via the NEW "
+                     help="BACKLOG #209 (history) / #280: only run_s150_9_site2() -- the pass-through "
+                          "GB-grid lift of a mon whose ledger entry has a NATIVE home "
+                          "(gb_lift_restore is deleted; the restore lives at the target drop), via the "
                           "PDNA_DELTA shim on xr_path_for_key plus a mount-time seed "
                           "keyed to whatever Red.sav's own box 0 slot 0 mon actually "
                           "is. --image MUST be `make delta-gb`'s own combined image "
@@ -9075,6 +9493,62 @@ def _main_dispatch(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] y7-bankpass: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if getattr(a, "y9_g3home", False):
+        ran = True
+        try:
+            sess = run_y9_g3home_target(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] y9-g3home: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if getattr(a, "y9_lift", False):
+        ran = True
+        try:
+            sess = run_y9_lift_passthrough(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] y9-lift: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if getattr(a, "y9_bridge", False):
+        ran = True
+        try:
+            sess = run_y9_bridge_target(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] y9-bridge: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if getattr(a, "y9_party", False):
+        ran = True
+        try:
+            sess = run_y9_party_restore(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] y9-party: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
