@@ -5860,6 +5860,41 @@ def run_y9_g3home_target(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_sh
         print("[Y9 CHECK FAILED] the Bank flush did not write box03.box", file=sys.stderr)
         sys.exit(1)
     _y9_bankcell_empty(img, "POKEDNA/BANK/BOX03.BOX", (0, 1), "both restored Bank cells flushed")
+
+    # ---- a DECLINED exit save: nothing may be consumed, the Bank keeps its cell (R3's other half) ----
+    img2 = Path(str(img) + ".decline")
+    subprocess.run([str(gb_shots._vsd_img_bin()), "mkimg", str(img2), "16", "/tmp/host_vsdimg_test_tmpl"],
+                   capture_output=True)
+    q0, q1 = _y9_patch(img2, [["ledger", "0"], ["ledger", "1"]])
+    saved_default = gb_shots._DEFAULT_VSD_IMG
+    gb_shots._DEFAULT_VSD_IMG = img2
+    try:
+        d = gb_shots.Session(core_mod, image_mod, rom, out_dir, "y9_g3home_decline_")
+    finally:
+        gb_shots._DEFAULT_VSD_IMG = saved_default
+    Td = lambda k, n=1, **kw: (print(f"  [TRACE] decline {k} x{n}"), d.press_n(k, n, **kw))
+    d.run(700)
+    d.vsd_snapshot()
+    Td("START", settle=80); Td("DOWN", settle=60); Td("A", settle=150)
+    Td("R", 3, settle=150)
+    Td("A", settle=150); Td("DOWN", 2, settle=60); Td("A", settle=150)
+    Td("DOWN", 5, settle=150)
+    Td("R", 10, settle=150)
+    Td("A", settle=300)
+    Td("START", settle=500)
+    d.shot("00_landed_unsaved", "y9 (decline): the original landed in box 11 (1/30), not yet saved", claim=["1/30"])
+    Td("B", settle=400)
+    d.shot("01_save_prompt", "y9 (decline): B -- 'Save changes?'", allow_same=False)
+    Td("B", settle=600)
+    d.shot("02_declined", "y9 (decline): B = no -- the moves are reverted (box 11 back to 0/30)", claim=["0/30"])
+    _y9_expect(d, "a declined save consumes nothing", present=[q0, q1])
+    ch = d.vsd_report()
+    print(f"  vsd diff (declined): {sorted(ch)}")
+    if any(c.startswith("/PokeDNA/bank/box0") for c in ch):
+        print("[Y9 CHECK FAILED] a declined save still wrote a Bank box", file=sys.stderr)
+        sys.exit(1)
+    s.taken += d.taken
+    s.skipped += d.skipped
     return s
 
 
@@ -6007,6 +6042,52 @@ def run_y9_bridge_target(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_sh
     for extra in (s3, s4):
         s.taken += extra.taken
         s.skipped += extra.skipped
+    return s
+
+
+def run_y9_party_restore(core_mod, image_mod, rom_ruby: Path, out_dir: Path) -> gb_shots.Session:
+    """#280 (lane y9-280, R2): the PARTY drop is a Gen-3 target too. Vehicle: `rom_ruby` = tools/fuse_sav.py
+    <pokedna-delta-artless.gba> Ruby.sav (four party members, so an ADD slot exists -- see
+    run_s150_8_party_vsd); `--vsd <img>` REQUIRED, a FRESH mkimg copy. The same planted Bank box-4 cell 0
+    (a Gen-2 BULBASAUR with a G3_HOME entry) is carried onto the party's ADD slot: bank_down_convert_gen3_party
+    calls the SAME gb_g3home_restore_up, so A meets the restore merge screen, not the conversion loss
+    screen; START lands the original, and the entry is consumed only by the verified save."""
+    gb_shots.assert_vehicle(rom_ruby, "ARTLESS")
+    print("== #280 (y9-280): the party drop restores too (--vsd, real ledger file) ==")
+    if gb_shots._DEFAULT_VSD_IMG is None:
+        raise RuntimeError("--y9-party requires --vsd <img.img> (a FRESH mkimg copy)")
+    (p0,) = _y9_patch(gb_shots._DEFAULT_VSD_IMG, [["ledger", "0"]])
+    s = gb_shots.Session(core_mod, image_mod, rom_ruby, out_dir, "y9_party_")
+    T = lambda k, n=1, **kw: (print(f"  [TRACE] {k} x{n}"), s.press_n(k, n, **kw))
+    s.run(700)
+    s.vsd_snapshot()
+    T("START", settle=80); T("DOWN", settle=60); T("A", settle=150)
+    T("R", 3, settle=150)
+    s.shot("00_bank_box4", "y9 (party): Ruby's Bank, R x3 -> BANK 4, cursor on slot 0", claim=["BANK 4"])
+    T("A", settle=150); T("DOWN", 2, settle=60); T("A", settle=150)
+    T("DOWN", 5, settle=150)
+    T("UP", settle=150)
+    T("A", settle=250)
+    s.shot("01_party_overlay", "y9 (party): UP -> tab focus PARTY, A -- the party picker, cursor seeded "
+           "on an occupied row (four members + the ADD slot)", allow_same=False)
+    T("DOWN", 3, settle=150)
+    s.shot("02_on_add", "y9 (party): DOWN x3 -> the empty ADD slot", allow_same=False)
+    T("A", settle=300)
+    s.shot("03_restore_screen", "y9 (party): A on the ADD slot -- the RESTORE merge screen (not the party "
+           "conversion loss screen 'Joins your party, fully healed.')",
+           claim=["RESTORED FROM THE SIDECAR", "Level", "KEEP"],
+           claim_absent=["Joins your party, fully healed."])
+    T("START", settle=500)
+    s.shot("04_landed_in_party", "y9 (party): START -- the original Gen-3 record joined the party (5th slot)",
+           allow_same=False)
+    _y9_expect(s, "landed but NOT saved: the entry must not be consumed yet", present=[p0])
+    T("B", settle=400)
+    s.shot("05_exit_prompt", "y9 (party): B -- 'Save changes?'", allow_same=False)
+    T("A", settle=600)
+    s.shot("06_saved", "y9 (party): A -- saved and verified", claim=["Flash written"])
+    T("A", settle=600)
+    _y9_expect(s, "after the verified save the entry is consumed", absent=[p0])
+    print(f"  vsd diff: {sorted(s.vsd_report())}")
     return s
 
 
@@ -8235,6 +8316,9 @@ def _main_dispatch(argv=None) -> int:
     ap.add_argument("--y9-lift", action="store_true",
                      help="#280 (lane y9-280): run_y9_lift_passthrough() -- --image = fuse_gb.py "
                           "<delta-artless> Red.gb Red.sav, --vsd = a FRESH mkimg copy.")
+    ap.add_argument("--y9-party", action="store_true",
+                     help="#280 (lane y9-280): run_y9_party_restore() -- --image = fuse_sav.py "
+                          "<delta-artless> Ruby.sav, --vsd = a FRESH mkimg copy.")
     ap.add_argument("--y9-bridge", action="store_true",
                      help="#280 (lane y9-280): run_y9_bridge_target() -- --image as --y9-lift, --vsd = "
                           "a FRESH mkimg copy.")
@@ -9450,6 +9534,20 @@ def _main_dispatch(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] y9-bridge: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if getattr(a, "y9_party", False):
+        ran = True
+        try:
+            sess = run_y9_party_restore(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] y9-party: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
