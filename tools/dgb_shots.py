@@ -5601,7 +5601,7 @@ def run_b190_move_refusal(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
     <pokedna-delta-artless.gba> Yellow.gb Yellow.sav -o out.gba` (Guy's own save/ROM,
     gba-toolkit/roms/gb/ -- copy both to /tmp first, the corpus is read-only). A single
     fused GB payload means gb_delta_pick_save() (pdna_main.c) auto-picks it (n==1), so
-    boot lands straight on the info screen -- no boot picker to navigate through, same
+    boot lands straight on the box grid (#279: no info page) -- no boot picker to navigate through, same
     convention every other --s150-* flag here documents for ITS own vehicle.
 
     RECIPE (found live against Yellow.sav's own real box contents, not guessed):
@@ -11076,7 +11076,7 @@ def run_s150_11_reconcile(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
     # their old numbers; capture order is 05, 06, then 01..04, 08 (old frame 07, the
     # no-residue check, is folded into 01's caption).
     s.run(700)
-    boot_to_gb_session(s, rom, which="gold")          # picker -> Gold row -> info -> box grid
+    boot_to_gb_session(s, rom, which="gold")          # picker -> Gold row -> box grid (#279: no info page)
     s.tap("START", settle=gb_shots.BIG_SETTLE)
     s.tap("RIGHT")
     s.press_n("DOWN", nav_down_from_col_top("NV_XFER"))
