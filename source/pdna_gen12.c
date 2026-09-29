@@ -4017,6 +4017,25 @@ static void gb_rom_base_path(void) {
   g_ed->romspath[baselen] = 0;
 }
 
+static bool __attribute__((noinline)) gb_create_rom_available(void) {
+  const char* reg = app_gb_rom_path(g_ed->s.gen);
+  if (reg && reg[0]) return true;
+#ifndef PDNA_DELTA
+  gb_rom_base_path();
+  int bl = 0; while (g_ed->romspath[bl]) bl++;
+  static const char* const kExt[2] = { ".gb", ".gbc" };
+  for (int e = 0; e < 2; e++) {
+    int bp = bl;
+    for (int i = 0; kExt[e][i] && bp < (int)sizeof(g_ed->romspath) - 1; i++) g_ed->romspath[bp++] = kExt[e][i];
+    g_ed->romspath[bp] = 0;
+    memset(&g_ed->romfil, 0, sizeof g_ed->romfil);
+    if (f_open(&g_ed->romfil, g_ed->romspath, FA_READ) == FR_OK) { f_close(&g_ed->romfil); g_ed->romspath[bl] = 0; return true; }
+    g_ed->romspath[bl] = 0;
+  }
+#endif
+  return false;
+}
+
 /* Locate a Gen-1 ROM's tables -- the part of gb_gen1_base_from_rom() worth caching
  * (S5-C review fix #6b): rom_gbsprite_open() streams the WHOLE ROM once through
  * romscan to find them (rom_gbsprite.h: "1 MB (Gen 1) ... in ONE pass"), so redoing
@@ -5769,8 +5788,7 @@ static bool gb_create_hook(void) {
   GbNewMonSrc src; memset(&src, 0, sizeof src);
   uint8_t lvl = 1;
   bool legit = false;
-  const char* reg_rom = app_gb_rom_path(g_ed->s.gen);
-  if (reg_rom && reg_rom[0]) {
+  if (gb_create_rom_available()) {
     GbCreateMode mode = gb_create_origin_screen(dex);
     if (mode == GB_CREATE_CANCEL) return false;
     legit = (mode == GB_CREATE_LEGIT);
