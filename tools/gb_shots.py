@@ -51,10 +51,9 @@ always stops there normally in EITHER session; it is the SECOND R that then jump
 straight over whatever the ceiling has excluded in one keypress -- "Gen 3+" only,
 for a Gen-2 session's picker (3 presses total to reach Legendary), or BOTH "Gen 2"
 and "Gen 3+" together, for a Gen-1 session's (2 presses total). The species
-picker, the filter-skip demo, and the honest refusal ARE captured; the actual
-build (the new mon's own summary
-editor -- NOW in CREATE mode, the NEW chip + START-keep confirm, also UX-parity --
-and it landing in the grid) needs a real ROM on a real SD card and is
+picker, the filter-skip demo and, for Gen 1, the ROM-free new-mon summary
+(BACKLOG #278/#276 -- the generated base table builds it with no ROM) ARE
+captured; Gen 2's build still needs a real ROM on a real SD card and is
 hardware-only (docs/HW-TEST-2026-09-05-GB-ARC.md §O).
 
 BACKLOG #50 UX-parity audit (2026-09-07, same session): run_gold()'s own
@@ -1066,7 +1065,7 @@ def run_red_create(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
                                    "choice prompt and builds the level-1 mon from the generated base "
                                    "table (source/gb1_base_gen.c): the new mon's summary opens in EDIT, "
                                    "INFO card, #001 BULBASAUR Lv1, Name BULBASAUR, GRASS/POISON chips",
-           claim=["BULBASAUR", "Lv1"],
+           claim=["BULBASAUR", "Lv1", "EDIT", "INFO"],
            claim_absent=["Needs your Gen 1/2 ROM"])
     return s
 
