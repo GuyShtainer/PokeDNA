@@ -4341,73 +4341,22 @@ def _crop_bytes(screen, box: tuple[int, int, int, int] = _PORTRAIT_CROP) -> byte
     return screen.to_pil().convert("RGB").crop(box).tobytes()
 
 
-def _derive_checkerboard_ref(core_mod, image_mod, rom: Path) -> bytes:
-    """Boots the SLOWER (--no-loc) image and captures _PORTRAIT_CROP's own "loading"
-    placeholder, 300 frames after the box grid is requested -- confirmed by a manual
-    probe (BACKLOG #68b) to still read as the placeholder that far in, and to stay
-    that way for >14,000 further frames on Guy's own Red.gb corpus, i.e. nowhere near
-    the real cold-scan actually finishing. Used as one of the two "not real art yet"
-    references _measure_box_grid_cold_start() rules out before declaring victory."""
-    s = gb_shots.Session(core_mod, image_mod, rom, Path("/tmp"), "measure_ref_")
-    s.run(700)
-    s.tap("DOWN", settle=gb_shots.SETTLE)
-    s.tap("A", settle=300)            # pick Red -> grid (#279: no info page in between)
-    return _crop_bytes(s.screen)
+def _measure_box_grid_cold_start(core_mod, image_mod, rom: Path) -> tuple[int, bytes]:
+    """Frames from the key-up edge of the A press on the boot picker's Red.sav row
+    (row 1) to the first STABLE real portrait paint of the box grid; returns
+    (frames_to_first_stable_paint, final_screen_rgb_bytes).
 
-
-def _measure_box_grid_cold_start(core_mod, image_mod, rom: Path,
-                                 checkerboard_ref: bytes) -> tuple[int, bytes]:
-    """Boots `rom`, drives the boot picker down to Red.sav (row 1), picks it, and
-    starts a frame-accurate timer at the exact frame the box grid is REQUESTED (right
-    after the key-up edge of the A press, #279: direct entry, no info page). Polls
-    _PORTRAIT_CROP every _SAMPLE_EVERY frames until it stops matching `checkerboard_ref`
-    (the "loading" placeholder) -- the first frame that is neither the placeholder
-    nor a build-specific transition frame. Returns (frames_to_first_paint,
-    final_screen_rgb_bytes) -- the second value is for a caller to diff the LOC-seeded
-    and scanned paths' full final frames against each other (they must render the
-    identical picture, portrait included)."""
-    s = gb_shots.Session(core_mod, image_mod, rom, Path("/tmp"), "measure_")
-    s.run(700)
-    s.tap("DOWN", settle=gb_shots.SETTLE)   # boot picker: Emerald row (0) -> Red row (1)
-    # #279: there is no S1 info page any more; the "not real art yet" reference is the boot
-    # picker crop (what is on screen when the A press lands).
-    info_page_crop = _crop_bytes(s.screen)
-
-    # Same key-down/HOLD/key-up edge tap() uses, but WITHOUT its trailing settle --
-    # the timer below starts counting from the exact frame the key-up edge lands,
-    # which is the earliest frame the box-grid request could possibly begin.
-    s.core.set_keys(raw=gb_shots.KEY["A"])
-    s.run(gb_shots.HOLD)
-    s.core.set_keys(raw=0)
-
-    # A frame or two of blank/transitional content between "info page" and "real
-    # portrait" is normal (the redraw is not atomic) -- a candidate crop value must
-    # persist for _STABLE_WINDOW frames once it stops being either "not painted yet"
-    # reference before it counts as the real paint, so a one-sample flicker (observed
-    # in practice, BACKLOG #68b evidence run) is not mistaken for it.
-    frame = 0
-    candidate = None
-    candidate_since = 0
-    while frame < _MAX_FRAMES:
-        s.run(1)   # BACKLOG #179 A3 review D2: never advance the core past the VSD
-                   # service hook -- a bare core.run_frame() here bypassed
-                   # Session.run()'s single funnel, so an in-flight VSD request timed
-                   # out and the stale reply then landed in an abandoned buffer.
-        frame += 1
-        if frame % _SAMPLE_EVERY:
-            continue
-        cur = _crop_bytes(s.screen)
-        if cur == info_page_crop or cur == checkerboard_ref:
-            candidate = None
-            continue
-        if cur == candidate:
-            if frame - candidate_since >= _STABLE_WINDOW:
-                return candidate_since, s.screen.to_pil().convert("RGB").tobytes()
-        else:
-            candidate = cur
-            candidate_since = frame
-    raise RuntimeError(f"{rom}: box grid portrait never left its pre-paint state "
-                       f"within {_MAX_FRAMES} frames")
+    POST-#279 SEMANTICS (what this number is): the picker mounts the save and enters
+    the grid directly -- there is no info page any more -- so the timer INCLUDES the
+    SD/save mount, the grid's shell paint and the portrait fetch. "Not painted yet" is
+    the boot-picker crop or the known 2-colour loading checkerboard (_is_checkerboard,
+    by colour). #282a: this used to compare against a checkerboard crop sampled from
+    the --no-loc image 300 frames in; since the F5 known-ROM fast path (f3c9dc8,
+    2026-09-21) that image paints the real portrait by ~frame 25, so the "reference"
+    WAS the finished portrait and the poll could never exit. Colour detection does not
+    depend on how slow the build is. The honest timeout stays: a screen that truly
+    never paints raises RuntimeError after _MAX_FRAMES."""
+    return _measure_b185_auto(core_mod, image_mod, rom, 1, "coldstart")
 
 
 def run_cold_start_compare(core_mod, image_mod, loc_image: Path, noloc_image: Path,
@@ -4418,11 +4367,15 @@ def run_cold_start_compare(core_mod, image_mod, loc_image: Path, noloc_image: Pa
     --no-loc, i.e. today's behaviour before this backlog item) -- and proves the two
     images paint the IDENTICAL picture (a byte-diff of the final frame, expected 0)."""
     print("== #68b: cold-start timing, WITH vs WITHOUT the fused LOC payloads ==")
-    checkerboard_ref = _derive_checkerboard_ref(core_mod, image_mod, noloc_image)
-    loc_frames, loc_px = _measure_box_grid_cold_start(core_mod, image_mod, loc_image, checkerboard_ref)
+    print("  measures: frames from the A key-up on the boot picker's Red.sav row to the first\n"
+          "  STABLE real portrait paint of the box grid -- post-#279 direct entry, so the\n"
+          "  timer INCLUDES the save mount (no info page). Both images are Red.gb, a\n"
+          "  known-ROM table hit (F5 fast path), so the --no-loc image no longer runs a\n"
+          "  cold scan here; the real-scan floor is --b185-cold-locate's job.")
+    loc_frames, loc_px = _measure_box_grid_cold_start(core_mod, image_mod, loc_image)
     print(f"  WITH LOC   : {loc_frames} frames ({loc_frames / GBA_FPS:.2f} s emulated) "
           f"(+/- {_SAMPLE_EVERY} frames sampling granularity)")
-    noloc_frames, noloc_px = _measure_box_grid_cold_start(core_mod, image_mod, noloc_image, checkerboard_ref)
+    noloc_frames, noloc_px = _measure_box_grid_cold_start(core_mod, image_mod, noloc_image)
     print(f"  WITHOUT LOC: {noloc_frames} frames ({noloc_frames / GBA_FPS:.2f} s emulated) "
           f"(+/- {_SAMPLE_EVERY} frames sampling granularity)")
 
@@ -8747,7 +8700,11 @@ def _main_dispatch(argv=None) -> int:
             sys.exit(f"--cold-start-compare: {loc_image}: not a file")
         if not noloc_image.is_file():
             sys.exit(f"--cold-start-compare: {noloc_image}: not a file")
-        ok, skipped = run_cold_start_compare(core_mod, image_mod, loc_image, noloc_image, a.out)
+        try:
+            ok, skipped = run_cold_start_compare(core_mod, image_mod, loc_image, noloc_image, a.out)
+        except RuntimeError as e:   # #282a: the honest timeout is a FAILURE, not a crash trace
+            print(f"\n[FAILED] --cold-start-compare: {e}", file=sys.stderr)
+            return 1
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         return 0
