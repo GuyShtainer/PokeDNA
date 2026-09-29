@@ -6263,10 +6263,10 @@ static void gb_session_core(Gb12Mount* m, GbSession* ro) {
    * It is gone: the mount enters the grid directly. The page itself is still what the
    * no-session nav branches fall back to (gb_info_page below), and gb_report_page still
    * runs on the way OUT when something was locked/unreadable. */
-  /* BACKLOG #77: once per session, past the point the user could still back out --
-   * open the Gen-3 ROM wallpaper rung (artless builds only, no-op if already open)
-   * so the box grid below can stream the real wallpaper instead of the procedural
-   * grass when a Gen-3 ROM is fused/registered. See app_gb_wallpaper_rom_open(). */
+  /* BACKLOG #77: at entry to the box grid, open the Gen-3 ROM wallpaper rung
+   * (artless builds only, no-op if already open) so the box grid below can stream
+   * the real wallpaper instead of the procedural grass when a Gen-3 ROM is
+   * fused/registered. See app_gb_wallpaper_rom_open(). */
   /* Tell app_mon_menu that the ACTIVE box source is read-only, so its destructive
    * actions (PASTE / DUPLICATE / CREATE) are not offered on a source that cannot
    * accept them. This also suppresses the bank's deferred-delete bookkeeping for these

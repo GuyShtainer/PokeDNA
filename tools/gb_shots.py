@@ -17,7 +17,7 @@ WHAT THIS DRIVES
 ----------------
 Two fused images (built by the caller, this script does not fuse anything):
   pokedna-delta.gba + Gold.sav (+ --clip, an 80-byte real Gen-3 box record) — the
-    Gen-2 run: info page, box grid, mon menu, the native summary (BACKLOG #41,
+    Gen-2 run: box grid (#279: no info page on boot), mon menu, the native summary (BACKLOG #41,
     source/pdna_gbsummary.c) in VIEW across all FOUR cards then in EDIT (+ a DV
     edit), the confirm screen, MOVE TO, RELEASE, and — because a clip was seeded —
     PASTE (GB) on an empty cell through to the loss screen.
@@ -321,7 +321,7 @@ class Session:
             _LIVE_VSD_SESSIONS.append(self)   # flushed by flush_live_vsd_sessions() in a
                                                # try/finally around the caller's dispatch
 
-        self.run(180)       # let the boot screen (info page) fully settle; also where
+        self.run(180)       # let the boot screen (box grid, #279: no info page) fully settle; also where
                              # vsd_attach()'s 4-frame handshake gets served, if attached
 
     def _gb_rom_file(self) -> Path:
@@ -610,12 +610,9 @@ def run_gold(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     # "stays" at the last row, cancelling a sub-picker returns to the row list) were
     # wrong; every row demoed below is a fresh box-grid-A-DOWN*n-A sequence.
     #
-    # A trace also caught a THIRD surprise the old script never accounted for: B from
-    # the box grid does not go straight to the info page -- it first opens a "NOT
-    # TRANSFERABLE" interstitial (why the converted-copy mons that don't fit stay in
-    # their boxes), and only a second B (or A) from there reaches the info page. Not
-    # used below (every reopen goes box-grid -> A, never through the info page), but
-    # worth knowing if a future shot needs to leave the box grid.
+    # (Legacy note: in the old flow before #279, B from the box grid opened a "NOT
+    # TRANSFERABLE" interstitial before reaching the info page. Now, the boot enters
+    # the box grid directly, and the info page survives only as a no-session fallback.)
     # #279: the S1 info page ("01_info") no longer exists -- the mount enters the grid directly.
     s.run(BIG_SETTLE)                      # #279: no info page -- the grid opens directly; this run() rides out its cold fetch
     s.shot("02_box_grid", "S2: box grid — GB BOX1 20/20 (BACKLOG #40(a): the banner now uses "
@@ -759,7 +756,7 @@ def run_gold_create(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     CREATE, which is the point: BLOCKING-1's fix (G1 review, 2026-09-08) means
     that row is now gated on the SAME clip actually being present.
 
-    GB BOX1 (the box the info page always opens into) is 20/20 on this corpus, same
+    GB BOX1 (the box that used to appear on info-page entry, #279: now boots directly to grid) is 20/20 on this corpus, same
     as every box run_gold() already notes — box index 13 ("GB BOX14" on screen, BACKLOG #251 re-derivation: 1-indexed display of a 0-indexed box) has
     real room, 17/20, discovered the same way tools/gb_retail_gate.py's
     first_room_box() does. This is ALSO the run that caught the box-resolution bug

@@ -85,7 +85,7 @@ FIXTURES = {
 # independently-invocable unit" convention (the brief's F1: "the seven gb_shots rows
 # named individually") without tripling the mGBA boot cost.
 GB_SHOTS_STEMS = {
-    "run_gold": ["gold_01_info", "gold_02_box_grid", "gold_03_mon_menu",
+    "run_gold": ["gold_02_box_grid", "gold_03_mon_menu",
                  "gold_04_view_info", "gold_04b_view_skills", "gold_04c_view_moves",
                  "gold_04d_view_origin", "gold_05_edit_info", "gold_05b_edit_skills_dv_atk",
                  "gold_06_edit_dv_changed", "gold_07_confirm", "gold_07b_save_refusal",
