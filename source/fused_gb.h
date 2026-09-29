@@ -247,6 +247,13 @@ typedef struct {
 } FusedGbSlice;
 
 bool fused_gb_slice_read(void* ctx, uint32_t off, void* dst, uint32_t len);
+#ifdef PDNA_DELTA
+/* BACKLOG #263: a delta-only MODEL of the SD read cost of the fused_gb_slice_read()
+ * calls (disk_read calls / sectors FatFs would have issued) -- see fused_gb.c. */
+uint32_t fused_gb_read_calls(void);
+uint32_t fused_gb_read_sects(void);
+void     fused_gb_read_reopen(void);        /* a fresh f_open(): the FIL sector buffer is empty */
+#endif
 
 /* BACKLOG #98: the fused LOC record matching (kind, gen) -- `kind` is one of
  * FUSED_GB_LOC_SPRITE/ICON/UI, `gen` is FUSED_GB_ROM_GEN1/2 (same numbering

@@ -280,4 +280,37 @@ void gb_art_session_reset(void);
  * generation-`gen` Game Boy image. A no-op (returns false) under PDNA_DELTA. */
 bool gb_rom_path_beside(const char* save_path, uint8_t gen, char* out, int cap);
 
+/* ---- BACKLOG #263: the per-PASS batch ------------------------------------------------
+ * Guy's first cart run of the Game Boy box grid: "each time I switch to another box they
+ * load slowly from top left to bottom right one by one". The Gen-3 grid asks its icon store
+ * for a whole page at once; this path used to pay the FULL cost of a one-off fetch for every
+ * one of the 20 cells -- f_open(ROM), the .loc file's open+read, then rom_gbsprite_open_loc()
+ * re-verifying the located tables against the ROM from scratch (the emulator's model of it
+ * is ~10-14 reads and 36-50 ms of CPU per cell), and only THEN the few reads the picture
+ * itself needs. None of that depends on the cell.
+ *
+ * A batch does it once. The caller (pdna_box.c's era_cells) puts a GbArtBatch on ITS OWN
+ * stack -- there is no spare EWRAM (896 B) and no new static -- and brackets its loop:
+ *
+ *     GbArtBatch bt;
+ *     gb_art_batch_begin(&bt);       // routes every fetch below through `bt`
+ *     ... pdna_origin_box_art() for each cell ...
+ *     gb_art_batch_end(&bt);         // closes the ROM handle, unroutes
+ *
+ * begin() does NO I/O: the first fetch of a generation opens that ROM and validates its
+ * tables into `bt`, every later one reuses them, and a pass that fetches nothing costs
+ * nothing. The routing rides pdna_origin_art's existing source `ctx` field
+ * (pdna_origin_art_set_gb_ctx()), so a fetch made outside a begin/end pair is the old
+ * one-shot path, byte for byte. A pass that hits a read error stops touching the card (the
+ * guard latches) and the next pass starts clean.
+ *
+ * MEMORY: ~1.1 KB of the CALLER's stack while the pass runs (GB_ART_BATCH_BYTES, pinned
+ * against the real layout by a _Static_assert in gb_art_source.c); the fetch that runs
+ * inside it still pays gb_art_fetch's own frame plus gb_batch_open (measured 4,360 B vs the
+ * one-shot's 3,768 B, under PDNA_GB_FETCH_NEED). */
+#define GB_ART_BATCH_BYTES 1120
+typedef struct { uint64_t w[GB_ART_BATCH_BYTES / 8]; } GbArtBatch;
+void gb_art_batch_begin(GbArtBatch* b);
+void gb_art_batch_end(GbArtBatch* b);
+
 #endif /* GB_ART_SOURCE_H */

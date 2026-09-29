@@ -135,6 +135,7 @@ static uint16_t g_gbpix[56 * 56];
 static int g_gb1_on = 1, g_gb2_on = 1, g_gb_back_on = 0;
 static int g_gb_calls, g_gb_last_gen, g_gb_last_dex, g_gb_last_form,
            g_gb_last_back, g_gb_last_shiny;
+static void* g_gb_last_ctx;   /* BACKLOG #263: the ctx the source's pic() callback last received */
 /* BACKLOG #47: mirrors app_rom_art_off() -- the real gb_art_source.c has
  * gb_art_have()/gb_art_pic_cb()/gb_art_icon_cb() each check this BEFORE anything
  * else, even ahead of an otherwise-successful registration (g_gb1_on/g_gb2_on
@@ -146,7 +147,7 @@ static int g_gb_artoff = 0;
 
 static const uint16_t* fake_pic(void* ctx, uint8_t gen, uint16_t dex, uint8_t form,
                                 uint8_t back, uint8_t shiny, uint8_t* w, uint8_t* h) {
-  (void)ctx;
+  g_gb_last_ctx = ctx;
   if (g_gb_artoff) return 0;   /* BACKLOG #47: cheap first-line refuse, never even counted */
   g_gb_calls++; g_gb_last_gen = gen; g_gb_last_dex = dex; g_gb_last_form = form;
   g_gb_last_back = back; g_gb_last_shiny = shiny;
@@ -1731,6 +1732,87 @@ static void part_f(void) {
     }
     CHECK(placed_ok, "F1b (D4) the 16x16 window is placed at exactly (4,3), pixel-for-pixel");
     CHECK(border_ok, "F1b (D4) every pixel outside the 16x16 window is 0");
+  }
+
+  /* F1d (BACKLOG #263): the scaler now works its per-column source bounds out once per
+   * call instead of once per pixel (the GBA has no divide instruction -- it was 25 ms of a
+   * 75 ms box cell). This is the ORIGINAL per-pixel-division expression, verbatim, as an
+   * oracle, over every source size a Game Boy pic or menu icon can have (8..56 in steps of
+   * 8 wide and tall, plus odd sizes), both destination geometries the app uses (the 24x22
+   * box cell and the 32x32 dex cell), and a source with holes so the "first opaque pixel in
+   * the block" fallback runs. Any difference at any pixel is a failure. */
+  {
+    static uint16_t rsrc[64 * 64], rgot[32 * 32], rref[32 * 32];
+    static const int sizes[] = { 8, 16, 24, 25, 33, 40, 47, 48, 56, 63, 64 };
+    static const int dgeo[][2] = { { CELL_W, CELL_H }, { 32, 32 } };
+    unsigned seed = 12345u;
+    int mism = 0, cases = 0;
+    for (unsigned di = 0; di < sizeof dgeo / sizeof dgeo[0]; di++)
+      for (unsigned wi = 0; wi < sizeof sizes / sizeof sizes[0]; wi++)
+        for (unsigned hi = 0; hi < sizeof sizes / sizeof sizes[0]; hi++) {
+          int sw = sizes[wi], sh = sizes[hi], dw = dgeo[di][0], dh = dgeo[di][1];
+          if (sw <= dw && sh <= dh) continue;                  /* the 1:1 branch: untouched */
+          for (int i = 0; i < sw * sh; i++) {
+            seed = seed * 1103515245u + 12345u;
+            unsigned r = (seed >> 16) & 7u;                    /* ~5/8 holes: the fallback scan runs */
+            rsrc[i] = (r < 3u) ? (uint16_t)(0x8000u | ((seed >> 8) & 0x7FFFu)) : 0u;
+          }
+          PdnaArt ra; memset(&ra, 0, sizeof ra);
+          ra.px = rsrc; ra.w = (uint8_t)sw; ra.h = (uint8_t)sh; ra.gen = PDNA_GEN1;
+          memset(rgot, 0xAA, sizeof rgot);
+          CHECK(pdna_origin_cell_render(&ra, rgot, dw, dh), "F1d should render");
+          /* the original expressions, verbatim */
+          int ow = dw, oh = (sh * dw + sw / 2) / sw;
+          if (oh > dh) { oh = dh; ow = (sw * dh + sh / 2) / sh; }
+          if (ow < 1) ow = 1;
+          if (oh < 1) oh = 1;
+          if (ow > dw) ow = dw;
+          if (oh > dh) oh = dh;
+          for (int i = 0; i < dw * dh; i++) rref[i] = 0;
+          int rx0 = (dw - ow) / 2, ry0 = dh - oh;
+          for (int y = 0; y < oh; y++) {
+            int sy0 = (y * sh) / oh, sy1 = ((y + 1) * sh) / oh;
+            if (sy1 <= sy0) sy1 = sy0 + 1;
+            if (sy1 > sh) sy1 = sh;
+            uint16_t* drow = rref + (unsigned)(ry0 + y) * (unsigned)dw + (unsigned)rx0;
+            for (int x = 0; x < ow; x++) {
+              int sx0 = (x * sw) / ow, sx1 = ((x + 1) * sw) / ow;
+              if (sx1 <= sx0) sx1 = sx0 + 1;
+              if (sx1 > sw) sx1 = sw;
+              uint16_t px = rsrc[(unsigned)sy0 * (unsigned)sw + (unsigned)sx0];
+              if (!(px & 0x8000)) {
+                for (int yy = sy0; yy < sy1 && !(px & 0x8000); yy++)
+                  for (int xx = sx0; xx < sx1; xx++) {
+                    uint16_t q = rsrc[(unsigned)yy * (unsigned)sw + (unsigned)xx];
+                    if (q & 0x8000) { px = q; break; }
+                  }
+              }
+              drow[x] = (px & 0x8000) ? px : 0u;
+            }
+          }
+          cases++;
+          if (memcmp(rgot, rref, (size_t)dw * (size_t)dh * sizeof(uint16_t)) != 0) mism++;
+        }
+    CHECK_EQ(mism, 0, "F1d (#263) column-hoisted downscale == the original per-pixel-division scaler");
+    printf("    F1d: %d source/destination geometries compared, %d differ\n", cases, mism);
+  }
+
+  /* F1e (BACKLOG #263): pdna_origin_art_set_gb_ctx() is how a box pass hands the Game Boy
+   * source its per-pass batch handle. The registered source's callbacks must receive it
+   * while it is set, and the ordinary registered ctx (0) again once it is cleared. */
+  {
+    static int marker;
+    PdnaArt pa;
+    gb_source_on();
+    g_gb1_on = 1;
+    g_gb_last_ctx = (void*)&pa;                          /* poison: neither 0 nor &marker */
+    pdna_origin_art_set_gb_ctx(&marker);
+    CHECK(pdna_origin_art_portrait_by_dex(4, &pa), "F1e a fetch under a set ctx should succeed");
+    CHECK(g_gb_last_ctx == (void*)&marker, "F1e the source's pic() must receive the ctx that was set");
+    pdna_origin_art_set_gb_ctx(0);
+    CHECK(pdna_origin_art_portrait_by_dex(5, &pa), "F1e a fetch after the ctx is cleared should succeed");
+    CHECK(g_gb_last_ctx == 0, "F1e cleared ctx: the source gets its registered ctx (0) again");
+    gb_source_off();
   }
 
   /* F2: BOTTOM-ANCHORED, not centred vertically. A short, wide picture must stand on

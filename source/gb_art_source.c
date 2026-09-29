@@ -19,6 +19,8 @@
 #ifndef PDNA_DELTA
 #include "perf.h"             /* perf_ticks/perf_ms: the timeout clock (runs with IRQs off) */
 #include "rmbl.h"             /* rmbl_pause/resume around every SD read (rmbl.h contract)  */
+#else
+#include "perf.h"             /* BACKLOG #263: the delta build folds its fused-ROM read count into perf_sd */
 #endif
 
 /* ---- per-gen state -----------------------------------------------------------------
@@ -32,6 +34,61 @@ static bool s_reg_have[3];      /* last gb_art_register() outcome for gen, stick
 static bool s_reg_checked[3];   /* gb_art_register() has run at least once for gen     */
 static bool s_fb_have[3];       /* "beside the save" fallback result, THIS open save   */
 static bool s_fb_checked[3];    /* fallback has been probed for the CURRENT save       */
+
+/* ---- BACKLOG #263: the decode halves the per-pass batch reuses -----------------------
+ * Compiled in BOTH builds (they touch only rom_gb* and mon_decomp, never FatFs or the
+ * fused slice): the batch differs from the one-shot fetch only in WHO opened the ROM and
+ * validated its tables; turning a located `gs`/`gi` into pixels is the same code. Same
+ * in-place layout and claim-before-write rule as gb_art_fetch() below (see its comment
+ * for the aliasing argument), and gs->scratch (mon_decomp, set when the batch opened it)
+ * is only ever read as a temporary by rom_gbsprite_pal() at offset 0, below the px
+ * region, exactly as it is in the one-shot fetch. */
+static const uint16_t* __attribute__((noinline))
+gb_batch_decode_pic(RomGbSprite* gs, uint16_t dex, uint8_t form, uint8_t back, uint8_t shiny,
+                    uint8_t* out_w, uint8_t* out_h) {
+  _Static_assert(ROM_GBSPRITE_RGB15_BYTES + GB_SPRITE_WORK <= MON_DECOMP_BYTES,
+                 "GB art in-place layout no longer fits mon_decomp");
+  RomGbSide side = back ? ROM_GBSPRITE_BACK : ROM_GBSPRITE_FRONT;
+  RomGbPic info;
+  uint16_t pal[4];
+  uint8_t* mdbuf = (uint8_t*)mon_decomp;
+  artbuf_claim();
+  if (rom_gbsprite_pic_buf(gs, side, dex, form, mdbuf + ROM_GBSPRITE_MAX_PIXELS,
+                           mdbuf + ROM_GBSPRITE_RGB15_BYTES, &info) &&
+      rom_gbsprite_pal(gs, dex, shiny ? 1 : 0, pal) &&
+      rom_gbsprite_to_rgb15_inplace(mdbuf, ROM_GBSPRITE_MAX_PIXELS, info.w, info.h, pal)) {
+    *out_w = info.w; *out_h = info.h;
+    return mon_decomp;
+  }
+  return 0;
+}
+
+static const uint16_t* __attribute__((noinline))
+gb_batch_decode_icon(RomGbIcon* gi, uint16_t dex, uint8_t* out_w, uint8_t* out_h) {
+  int kind = (dex == 0) ? rom_gbicon_kind_egg(gi) : rom_gbicon_kind(gi, dex);   /* dex 0 = EGG, see gb_art_fetch_icon */
+  if (!kind) return 0;
+  uint8_t tile[ROM_GBICON_FRAME_BYTES];
+  uint16_t pal[4];
+  artbuf_claim();
+  if (rom_gbicon_tiles(gi, kind, 0, tile) && rom_gbicon_pal(gi, kind, pal) &&
+      rom_gbicon_to_rgb15(tile, pal, mon_decomp)) {
+    *out_w = ROM_GBICON_W; *out_h = ROM_GBICON_H;
+    return mon_decomp;
+  }
+  return 0;
+}
+
+/* The per-pass batch (BACKLOG #263). The two halves below define its layout (struct
+ * GbArtBatchImpl: a FIL on the SD build, a fused-ROM slice on the delta build); gb_art_fetch()
+ * and gb_art_fetch_icon() take a pointer to it -- 0 = the ordinary one-shot fetch -- and hand
+ * a non-zero one to these two, defined after the halves. They are reachable ONLY through
+ * those two gated fetch functions, which is what keeps the stack budget's runtime gate
+ * (PDNA_GB_FETCH_NEED / PDNA_GB_ICON_NEED, gb_art_stack_room) covering them too. */
+typedef struct GbArtBatchImpl GbArtBatchImpl;
+static const uint16_t* gb_art_batch_pic(GbArtBatchImpl* b, uint8_t gen, uint16_t dex, uint8_t form,
+                                        uint8_t back, uint8_t shiny, uint8_t* out_w, uint8_t* out_h);
+static const uint16_t* gb_art_batch_icon(GbArtBatchImpl* b, uint8_t gen, uint16_t dex,
+                                         uint8_t* out_w, uint8_t* out_h);
 
 /* ---- E3 review item 8: everything below that touches FatFs/SD is real ONLY outside
  * PDNA_DELTA (the emulator build has no SD card at all). Previously each function had
@@ -490,8 +547,9 @@ static bool gb_art_resolve_path(uint8_t gen, char* out, int cap) {
 }
 
 static const uint16_t* __attribute__((noinline))
-gb_art_fetch(uint8_t gen, uint16_t dex, uint8_t form, uint8_t back, uint8_t shiny,
+gb_art_fetch(GbArtBatchImpl* bt, uint8_t gen, uint16_t dex, uint8_t form, uint8_t back, uint8_t shiny,
             uint8_t* out_w, uint8_t* out_h) {
+  if (bt) return gb_art_batch_pic(bt, gen, dex, form, back, shiny, out_w, out_h);   /* BACKLOG #263 */
   /* have() is re-checked in gb_art_pic_cb() (24 B own frame) now, not here (E3
    * re-verification "free partial") -- pdna_origin_art_portrait() already checked it
    * before ever reaching this call, so this was a redundant re-check paid for INSIDE
@@ -580,8 +638,9 @@ gb_art_fetch(uint8_t gen, uint16_t dex, uint8_t form, uint8_t back, uint8_t shin
  * -O2 -fstack-usage): see PDNA_GB_ICON_NEED's own comment (gb_art_source.h) for the
  * number and how it compares to the portrait rung's PDNA_GB_FETCH_NEED. */
 static const uint16_t* __attribute__((noinline))
-gb_art_fetch_icon(uint8_t gen, uint16_t dex, uint8_t* out_w, uint8_t* out_h) {
+gb_art_fetch_icon(GbArtBatchImpl* bt, uint8_t gen, uint16_t dex, uint8_t* out_w, uint8_t* out_h) {
   if (gen != PDNA_GEN2) return 0;         /* Gen 1 has no menu icons -- rom_gbicon.h */
+  if (bt) return gb_art_batch_icon(bt, gen, dex, out_w, out_h);   /* BACKLOG #263 */
 
   char path[GB_ROM_PATH_MAX];
   if (!gb_art_resolve_path(gen, path, (int)sizeof path)) return 0;
@@ -635,6 +694,87 @@ gb_art_fetch_icon(uint8_t gen, uint16_t dex, uint8_t* out_w, uint8_t* out_h) {
   }
   f_close(&fil);
   return px;
+}
+
+/* ---- BACKLOG #263: the per-pass batch, SD half -------------------------------------
+ * The layout gb_art_source.h's GbArtBatch reserves room for. `owner` says this struct is
+ * the ROUTED one (begin() ran on it); `gen` is the generation whose ROM `fil` holds (0 =
+ * nothing open); have_gs/have_gi say gs/gi hold located tables for that ROM; fail_* are
+ * per-generation bit masks (bit gen) of "this pass could not open/locate it -- do not try
+ * again until the next pass", so a missing Gen-2 ROM costs one failed open, not twenty. */
+struct GbArtBatchImpl {
+  FIL         fil;
+  GbArtIo     io;
+  RomGbSprite gs;
+  RomGbIcon   gi;
+  uint32_t    size;
+  uint8_t     owner, gen, have_gs, have_gi, fail_gs, fail_gi;
+};
+_Static_assert(sizeof(struct GbArtBatchImpl) <= sizeof(GbArtBatch),
+               "GB_ART_BATCH_BYTES (gb_art_source.h) is smaller than the SD batch layout");
+_Static_assert(_Alignof(struct GbArtBatchImpl) <= _Alignof(GbArtBatch),
+               "GbArtBatch under-aligned for FIL");
+
+/* Open `gen`'s ROM into the batch if it is not the one already open, then locate/validate
+ * the sprite tables (icon=false) or the icon tables (icon=true) if this pass has not yet.
+ * Exactly the open sequence gb_art_fetch()/gb_art_fetch_icon() run per call, minus the
+ * repetition; noinline so its path[]/loc frame is not part of the per-cell decode chain. */
+static bool __attribute__((noinline))
+gb_batch_open(GbArtBatchImpl* b, uint8_t gen, bool icon) {
+  if (gen != PDNA_GEN1 && gen != PDNA_GEN2) return false;
+  if ((icon ? b->fail_gi : b->fail_gs) & (1u << gen)) return false;
+  if (b->gen && b->io.g.stop != GB_SCAN_OK) return false;     /* a read stopped this pass: no more card I/O */
+  if (b->gen != gen) {
+    if (b->gen) { f_close(&b->fil); b->gen = 0; b->have_gs = b->have_gi = 0; }
+    char path[GB_ROM_PATH_MAX];
+    memset(&b->fil, 0, sizeof b->fil);
+    if (!gb_art_resolve_path(gen, path, (int)sizeof path) ||
+        f_open(&b->fil, path, FA_READ) != FR_OK) {
+      b->fail_gs |= (uint8_t)(1u << gen); b->fail_gi |= (uint8_t)(1u << gen);
+      return false;
+    }
+    FSIZE_t fsz = f_size(&b->fil);
+    b->size = (fsz > (FSIZE_t)0xFFFFFFFFu) ? 0xFFFFFFFFu : (uint32_t)fsz;
+    gb_art_io_init(&b->io, &b->fil, b->size, 0, 0, GB_ART_LOC_SPRITES, false);   /* silent, unlimited: no UI on a repaint */
+    b->gen = gen;
+  }
+  if (icon ? b->have_gi : b->have_gs) return true;
+  artbuf_claim();                                  /* the scan window is mon_decomp */
+  if (icon) {
+    RomGbIconLoc loc;
+    bool have_loc = gb_icon_load_loc(&loc);
+    int ok = rom_gbicon_open_loc(&b->gi, gb_art_read, &b->io, b->size, (uint8_t*)mon_decomp,
+                                 MON_DECOMP_BYTES, have_loc ? &loc : 0, 0, 0);
+    if (ok && (!have_loc || loc.id_hash != b->gi.id_hash || loc.size != b->size)) {
+      RomGbIconLoc fresh;                          /* self-heal a stale .loc, as gb_art_fetch_icon() does */
+      rom_gbicon_save_loc(&b->gi, &fresh);
+      gb_icon_save_loc(&fresh);
+    }
+    if (!ok) { gb_art_log_stop(&b->io, "icon batch"); b->fail_gi |= (uint8_t)(1u << gen); return false; }
+    b->have_gi = 1;
+  } else {
+    RomGbSpriteLoc loc;
+    bool have_loc = gb_art_load_loc(gen, &loc);
+    int ok = rom_gbsprite_open_loc(&b->gs, gb_art_read, &b->io, b->size, (uint8_t*)mon_decomp,
+                                   MON_DECOMP_BYTES, have_loc ? &loc : 0, gen);
+    if (ok && (!have_loc || loc.id_hash != b->gs.id_hash || loc.size != b->size)) {
+      RomGbSpriteLoc fresh;
+      rom_gbsprite_save_loc(&b->gs, &fresh);
+      gb_art_save_loc(gen, &fresh);
+    }
+    if (!ok || (uint8_t)b->gs.gen != gen) {
+      gb_art_log_stop(&b->io, "fetch batch");
+      b->fail_gs |= (uint8_t)(1u << gen);
+      return false;
+    }
+    b->have_gs = 1;
+  }
+  return true;
+}
+
+static void gb_batch_close(GbArtBatchImpl* b) {
+  if (b->gen) { f_close(&b->fil); b->gen = 0; }
+  b->have_gs = b->have_gi = 0;
 }
 
 #else /* PDNA_DELTA: no SD card at all -- but BACKLOG #62's delta-gb build fuses a
@@ -718,8 +858,9 @@ static bool gb_art_loc_seed(uint8_t kind, uint8_t gen, uint32_t rom_size,
   return true;
 }
 
-static const uint16_t* gb_art_fetch(uint8_t gen, uint16_t dex, uint8_t form, uint8_t back,
-                                    uint8_t shiny, uint8_t* out_w, uint8_t* out_h) {
+static const uint16_t* gb_art_fetch(GbArtBatchImpl* bt, uint8_t gen, uint16_t dex, uint8_t form,
+                                    uint8_t back, uint8_t shiny, uint8_t* out_w, uint8_t* out_h) {
+  if (bt) return gb_art_batch_pic(bt, gen, dex, form, back, shiny, out_w, out_h);   /* BACKLOG #263 */
   const uint8_t* base; uint32_t size;
   if (!fused_gb_rom(gen, &base, &size)) return 0;
   FusedGbSlice slice = { base, size };
@@ -778,8 +919,10 @@ static const uint16_t* gb_art_fetch(uint8_t gen, uint16_t dex, uint8_t form, uin
   return px;
 }
 
-static const uint16_t* gb_art_fetch_icon(uint8_t gen, uint16_t dex, uint8_t* out_w, uint8_t* out_h) {
+static const uint16_t* gb_art_fetch_icon(GbArtBatchImpl* bt, uint8_t gen, uint16_t dex,
+                                         uint8_t* out_w, uint8_t* out_h) {
   if (gen != PDNA_GEN2) return 0;                /* Gen 1 has no menu icons -- rom_gbicon.h */
+  if (bt) return gb_art_batch_icon(bt, gen, dex, out_w, out_h);   /* BACKLOG #263 */
   const uint8_t* base; uint32_t size;
   if (!fused_gb_rom(gen, &base, &size)) return 0;
   FusedGbSlice slice = { base, size };
@@ -816,12 +959,126 @@ static const uint16_t* gb_art_fetch_icon(uint8_t gen, uint16_t dex, uint8_t* out
   return px;
 }
 
+/* ---- BACKLOG #263: the per-pass batch, delta half -----------------------------------
+ * Same shape as the SD half above over the fused ROM slice instead of a FIL, so the
+ * begin/fetch/end flow (and the located-tables reuse it exists for) runs in the emulator
+ * exactly as on the cart; only the open/close of the byte source differ. */
+struct GbArtBatchImpl {
+  FusedGbSlice slice;
+  RomGbSprite  gs;
+  RomGbIcon    gi;
+  uint32_t     size;
+  uint8_t      owner, gen, have_gs, have_gi, fail_gs, fail_gi;
+};
+_Static_assert(sizeof(struct GbArtBatchImpl) <= sizeof(GbArtBatch),
+               "GB_ART_BATCH_BYTES (gb_art_source.h) is smaller than the delta batch layout");
+_Static_assert(_Alignof(struct GbArtBatchImpl) <= _Alignof(GbArtBatch),
+               "GbArtBatch under-aligned for FIL");
+
+static bool __attribute__((noinline))
+gb_batch_open(GbArtBatchImpl* b, uint8_t gen, bool icon) {
+  if (gen != PDNA_GEN1 && gen != PDNA_GEN2) return false;
+  if ((icon ? b->fail_gi : b->fail_gs) & (1u << gen)) return false;
+  if (b->gen != gen) {
+    const uint8_t* base; uint32_t size;
+    if (!fused_gb_rom(gen, &base, &size)) {
+      b->fail_gs |= (uint8_t)(1u << gen); b->fail_gi |= (uint8_t)(1u << gen);
+      return false;
+    }
+    b->slice.base = base; b->slice.size = size; b->size = size;
+    b->gen = gen; b->have_gs = b->have_gi = 0;
+    fused_gb_read_reopen();                        /* the SD build's f_open: an empty FIL buffer */
+  }
+  if (icon ? b->have_gi : b->have_gs) return true;
+  artbuf_claim();                                  /* the scan window is mon_decomp, which outlives this call */
+  if (icon) {
+    bool have_loc = s_dicon_loc_ok;
+    if (!have_loc)
+      have_loc = gb_art_loc_seed(FUSED_GB_LOC_ICON, gen, b->size, &s_dicon_loc, (uint32_t)sizeof s_dicon_loc);
+    int ok = rom_gbicon_open_loc(&b->gi, fused_gb_slice_read, &b->slice, b->size, (uint8_t*)mon_decomp,
+                                 MON_DECOMP_BYTES, have_loc ? &s_dicon_loc : 0, 0, 0);
+    if (ok) { rom_gbicon_save_loc(&b->gi, &s_dicon_loc); s_dicon_loc_ok = true; b->have_gi = 1; return true; }
+    b->fail_gi |= (uint8_t)(1u << gen);
+    return false;
+  }
+  bool have_loc = s_dsprite_loc_ok[gen];
+  if (!have_loc)
+    have_loc = gb_art_loc_seed(FUSED_GB_LOC_SPRITE, gen, b->size, &s_dsprite_loc[gen],
+                               (uint32_t)sizeof s_dsprite_loc[gen]);
+  int ok = rom_gbsprite_open_loc(&b->gs, fused_gb_slice_read, &b->slice, b->size, (uint8_t*)mon_decomp,
+                                 MON_DECOMP_BYTES, have_loc ? &s_dsprite_loc[gen] : 0, GB_ROM_NONE);
+  if (ok) { rom_gbsprite_save_loc(&b->gs, &s_dsprite_loc[gen]); s_dsprite_loc_ok[gen] = true; }
+  if (!ok || (uint8_t)b->gs.gen != gen) { b->fail_gs |= (uint8_t)(1u << gen); return false; }
+  b->have_gs = 1;
+  return true;
+}
+
+static void gb_batch_close(GbArtBatchImpl* b) { b->gen = 0; b->have_gs = b->have_gi = 0; }
+
 #endif /* PDNA_DELTA */
+
+#ifdef PDNA_DELTA
+/* BACKLOG #263: the emulator has no card, so perf_sd would stay 0 and the box grid's
+ * `sd Nr/Ns` line would say nothing about how much I/O the Game Boy art path issues.
+ * fused_gb.c MODELS the disk_read calls/sectors FatFs would have made for each fused-ROM
+ * read (a mid-sector read shares the FIL's one-sector buffer; whole sectors go direct);
+ * gb_delta_begin()/gb_delta_end() bracket one fetch, dropping the modelled buffer like the
+ * SD build's per-fetch f_open does, and fold what it counted into perf_sd. A like-for-like
+ * COUNT for comparing two emulator runs -- it excludes the f_open(ROM) directory walk and
+ * the .loc file's open+read the real SD build also pays per fetch, which the emulator
+ * cannot see. Delta only. */
+typedef struct { uint32_t calls, sects; } GbDeltaSnap;
+static void gb_delta_begin(GbDeltaSnap* sn, bool reopen) {
+  if (reopen) fused_gb_read_reopen();
+  sn->calls = fused_gb_read_calls();
+  sn->sects = fused_gb_read_sects();
+}
+static void gb_delta_end(const GbDeltaSnap* sn) {
+#if PDNA_PERF
+  uint32_t c = fused_gb_read_calls() - sn->calls, n = fused_gb_read_sects() - sn->sects;
+  perf_sd.rd += c;
+  perf_sd.rd_sect += n;
+  if (n > c) perf_sd.rd_multi++;
+  if (c && perf_sd.rd_max < 1) perf_sd.rd_max = 1;
+#else
+  (void)sn;
+#endif
+}
+#endif
+
+/* The batched fetches gb_art_fetch()/gb_art_fetch_icon() route to while a pass is open
+ * (forward-declared above the halves). The tables are located once per pass by
+ * gb_batch_open(); everything per-cell is the decode. */
+static const uint16_t* gb_art_batch_pic(GbArtBatchImpl* b, uint8_t gen, uint16_t dex, uint8_t form,
+                                        uint8_t back, uint8_t shiny, uint8_t* out_w, uint8_t* out_h) {
+  if (!gb_batch_open(b, gen, false)) return 0;
+  return gb_batch_decode_pic(&b->gs, dex, form, back, shiny, out_w, out_h);
+}
+
+static const uint16_t* gb_art_batch_icon(GbArtBatchImpl* b, uint8_t gen, uint16_t dex,
+                                         uint8_t* out_w, uint8_t* out_h) {
+  if (!gb_batch_open(b, gen, true)) return 0;
+  return gb_batch_decode_icon(&b->gi, dex, out_w, out_h);
+}
+
+void gb_art_batch_begin(GbArtBatch* b) {
+  if (!b) return;
+  memset(b, 0, sizeof *b);
+  ((GbArtBatchImpl*)b)->owner = 1;
+  pdna_origin_art_set_gb_ctx(b);
+}
+
+void gb_art_batch_end(GbArtBatch* b) {
+  if (!b || !((GbArtBatchImpl*)b)->owner) return;
+  gb_batch_close((GbArtBatchImpl*)b);
+  ((GbArtBatchImpl*)b)->owner = 0;
+  pdna_origin_art_set_gb_ctx(0);
+}
 
 /* ---- the PdnaGbArtSource vtable -- compiled in BOTH builds -------------------------- */
 static const uint16_t* gb_art_pic_cb(void* ctx, uint8_t gen, uint16_t dex, uint8_t form,
                                      uint8_t back, uint8_t shiny, uint8_t* out_w, uint8_t* out_h) {
-  (void)ctx;
+  GbArtBatchImpl* bt = (GbArtBatchImpl*)ctx;     /* 0 outside a gb_art_batch_begin()..end() pass */
   /* BACKLOG #47: cheap first-line refuse, same posture as g3cross_pic_cb's own
    * first line -- redundant with gb_art_have()'s own check below (belt-and-braces,
    * not load-bearing on its own), but every OTHER rung that honours the switch
@@ -831,7 +1088,15 @@ static const uint16_t* gb_art_pic_cb(void* ctx, uint8_t gen, uint16_t dex, uint8
   /* have() re-checked HERE (24 B own frame), not inside gb_art_fetch (E3
    * re-verification "free partial") -- see gb_art_fetch's own comment. */
   if (!gb_art_have(gen)) return 0;
-  return gb_art_fetch(gen, dex, form, back, shiny, out_w, out_h);
+  if (bt && !bt->owner) bt = 0;                  /* a stale/foreign ctx is never a batch */
+#ifdef PDNA_DELTA
+  GbDeltaSnap sn; gb_delta_begin(&sn, bt == 0);  /* a batch keeps its modelled FIL buffer across cells */
+  const uint16_t* r = gb_art_fetch(bt, gen, dex, form, back, shiny, out_w, out_h);
+  gb_delta_end(&sn);
+  return r;
+#else
+  return gb_art_fetch(bt, gen, dex, form, back, shiny, out_w, out_h);
+#endif
 }
 static int gb_art_have_cb(void* ctx, uint8_t gen) { (void)ctx; return gb_art_have(gen) ? 1 : 0; }
 
@@ -840,10 +1105,18 @@ static int gb_art_have_cb(void* ctx, uint8_t gen) { (void)ctx; return gb_art_hav
  * checking here too skips even the resolve-path/f_open attempt for gen 1). */
 static const uint16_t* gb_art_icon_cb(void* ctx, uint8_t gen, uint16_t dex,
                                       uint8_t* out_w, uint8_t* out_h) {
-  (void)ctx;
+  GbArtBatchImpl* bt = (GbArtBatchImpl*)ctx;
   if (app_rom_art_off()) return 0;   /* BACKLOG #47: see gb_art_pic_cb's own comment */
   if (gen != PDNA_GEN2 || !gb_art_have(gen)) return 0;
-  return gb_art_fetch_icon(gen, dex, out_w, out_h);
+  if (bt && !bt->owner) bt = 0;
+#ifdef PDNA_DELTA
+  GbDeltaSnap sn; gb_delta_begin(&sn, bt == 0);
+  const uint16_t* r = gb_art_fetch_icon(bt, gen, dex, out_w, out_h);
+  gb_delta_end(&sn);
+  return r;
+#else
+  return gb_art_fetch_icon(bt, gen, dex, out_w, out_h);
+#endif
 }
 
 /* E3 review re-verification: the real stack-headroom check. __iheap_start is the

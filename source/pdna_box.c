@@ -34,6 +34,7 @@ _Static_assert(BOXSCOPE_BANK == 1, "source/xfer_gate.c's XG_SCOPE_BANK hard-code
 #include "item_icons.h"     /* item_icon_for: held-item markers in ITEM mode */
 #include "box_oam.h"        /* hardware-OAM icon/cursor/carry/marker rendering */
 #include "pdna_origin_art.h" /* THE BANK IN PARALLEL: each cell in the art of its own era */
+#include "gb_art_source.h"   /* BACKLOG #263: GbArtBatch -- one ROM open + table validation per era pass */
 #include "sprite_era.h"      /* SePlace -- pdna_origin_art_set_place() on entry (E4) */
 #include "pdna_summary.h"
 #include "perf.h"        /* screen-enter spans + the box-load/bob rollups (telemetry) */
@@ -849,6 +850,7 @@ static void wp_restore_rect_rom(int x0, int y0, int x1, int y1) {
   const uint8_t* tiles = (const uint8_t*)mon_decomp;
   int tx0 = (x0 - WP_X) / 8, tx1 = (x1 - 1 - WP_X) / 8;
   int ty0 = (y0 - WP_Y) / 8, ty1 = (y1 - 1 - WP_Y) / 8;
+  if (tx1 > 19) tx1 = 19;          /* the map is 20 tiles wide: index 20 would read the NEXT row's first tile */
   for (int ty = ty0; ty <= ty1; ty++)
     for (int tx = tx0; tx <= tx1; tx++) {
       uint16_t e = s_wp_map[ty * 20 + tx];
@@ -900,6 +902,7 @@ static void wp_restore_rect(int x0, int y0, int w, int h) {
   rumble_io_suspend();
   int tx0 = (x0 - WP_X) / 8, tx1 = (x1 - 1 - WP_X) / 8;
   int ty0 = (y0 - WP_Y) / 8, ty1 = (y1 - 1 - WP_Y) / 8;
+  if (tx1 > 19) tx1 = 19;          /* see wp_restore_rect_rom: never read past the 20-tile row */
   for (int ty = ty0; ty <= ty1; ty++)
     for (int tx = tx0; tx <= tx1; tx++) {
       int idx = s_wp_map[ty * 20 + tx];
@@ -2248,21 +2251,42 @@ static int grid_lr_step(int cur, int cap, bool right) {
  * Boy box holds 20, its party 6; the grid always draws 30). box_oam.c's OBJ tile
  * budget is spent in full already -- 30 icons x 16 tiles + the hand + region B is
  * exactly the 512 tiles bitmap-mode OBJ VRAM has (that file's boxoam_set_frame
- * header) -- so there is no spare tile for a new BLOCKED graphic; this paints a
- * dim hatch (the retail-style banded fill ui_panel_striped already uses
- * elsewhere) plus a small "X" straight onto the BG bitmap, the same layer
- * artless_cells()/era_cells() paint into, so it rides every full repaint of the
- * wallpaper for free. Drawn for every blocked cell regardless of the artless/
- * real-art build -- a cell with no species never gets an OBJ icon either way, so
- * there is nothing for this to hide behind. */
+ * header) -- so there is no spare tile for a new BLOCKED graphic; this paints straight
+ * onto the BG bitmap, the same layer artless_cells()/era_cells() paint into, so it
+ * rides every full repaint of the wallpaper for free.
+ * BACKLOG #262 (Guy: "ugly X's ... something that blends in"): the old hatch + X is
+ * gone. A dead cell is now a RECESSED TILE -- the user's own wallpaper darkened in
+ * place (top row and left column harder, like a bevel, the rest softer) so the cell
+ * grid stays visible but reads as "not there". No glyph and no ROM art, so it is
+ * identical in the artless build and on every game; the slot still refuses a drop
+ * (that is box_cap's job, not this paint). Drawn for every blocked cell regardless
+ * of the artless/real-art build -- a cell with no species never gets an OBJ icon
+ * either way, so there is nothing for this to hide behind. */
+#define BLOCKED_EDGE_PCT 45   /* top row / left column of a dead cell, % of the wallpaper */
+#define BLOCKED_FILL_PCT 70   /* the rest of it */
+
+static u16 blocked_shade(u16 c, int pct) {
+  /* exact on 0..31, no divide (the GBA has none): v*45/100 == (v*231)>>9, v*70/100 == (v*45)>>6 */
+  _Static_assert(BLOCKED_EDGE_PCT == 45 && BLOCKED_FILL_PCT == 70, "re-derive the multipliers");
+  int m  = (pct == BLOCKED_EDGE_PCT) ? 231 : 45;
+  int sh = (pct == BLOCKED_EDGE_PCT) ? 9 : 6;
+  int r = ((c & 31) * m) >> sh;
+  int g = (((c >> 5) & 31) * m) >> sh;
+  int b = (((c >> 10) & 31) * m) >> sh;
+  return (u16)(r | (g << 5) | (b << 10));
+}
+
 static void blocked_cells(BoxSource* src, int box) {
   int cap = box_cap(src, box);
   if (cap >= COLS * ROWS) return;                  /* Gen-3 PC/Bank: every cell real */
-  for (int i = cap; i < COLS * ROWS; i++) {
+  if (cap < 0) cap = 0;
+  for (int i = cap; i < COLS * ROWS; i++) {        /* <= COLS*ROWS iterations */
     int cx = GRID_X + (i % COLS) * CELL_W, cy = GRID_Y + (i / COLS) * CELL_H;
     for (int r = 0; r < CELL_H; r++)
-      m3_line(cx, cy + r, cx + CELL_W - 1, cy + r, (r & 1) ? UI_BG : UI_DIM);
-    ui_ptext(cx + (CELL_W - ui_ptext_w("X")) / 2, cy + (CELL_H - 7) / 2, UI_WARN, "X");
+      for (int c = 0; c < CELL_W; c++) {
+        u16* px = &vid_mem[(cy + r) * 240 + cx + c];
+        *px = blocked_shade(*px, (r == 0 || c == 0) ? BLOCKED_EDGE_PCT : BLOCKED_FILL_PCT);
+      }
   }
 }
 
@@ -2349,11 +2373,27 @@ static void era_cell_icon_back(int slot) {
  * below calls this ONLY AFTER that fetch has already returned and popped, so the two
  * frames never coexist. noinline: an inlined copy would put `cell[]` right back into
  * era_cell_draw's own frame, silently undoing the split. */
+/* BACKLOG #264: the page colour a Game Boy picture is drawn over. A Gen-1/2 picture is four
+ * shades and the LIGHTEST (index 0) is white -- and in the games it is white, not "nothing":
+ * the picture is written into the BACKGROUND tilemap (pokered engine/pokemon/status_screen.asm:
+ * 169-170, LoadFlippedFrontSpriteByMonIndex at hlcoord 1,0), so shade 0 is drawn opaque with
+ * BGP = %11100100 (home/palettes.asm:22, colour 0 = the lightest) on a white page. Yellow's own
+ * palettes agree for every species: colour 0 of each PAL_*MON row is white in both its SGB set
+ * (pokeyellow data/sgb/sgb_palettes.asm:20.., RGB 31,31,30) and its CGB set (:65.., RGB
+ * 31,31,31). Gen 2 is the same fact by construction: pokecrystal's PokemonPalettes hold only
+ * the MIDDLE two colours of a species ("not black or white", data/pokemon/palettes.asm:4-6),
+ * white being the engine's PALRGB_WHITE = $7FFF (constants/gfx_constants.asm:3) -- so the
+ * per-species palettes change colours 1 and 2 and never the page. Our decode keeps index 0
+ * transparent (so one blitter can serve three generations), which over the wallpaper read as
+ * holes in every white belly and cheek; this puts the page back, one cell at a time. */
+#define ERA_PAGE_WHITE RGB15(31, 31, 31)
+
 static void __attribute__((noinline))
 era_cell_blit(int slot, const PdnaArt* a, int cx, int cy) {
   u16 cell[CELL_W * CELL_H];             /* 1056 B of STACK. Never a static, never
                                           * EWRAM (hard rule 2) — and never 30 of them. */
   if (pdna_origin_cell_render(a, cell, CELL_W, CELL_H)) {
+    ui_fill_rect(cx, cy, CELL_W, CELL_H, ERA_PAGE_WHITE);   /* #264: only behind a cell that HAS a picture */
     ui_sprite(cx, cy, CELL_W, CELL_H, cell);
     s_era_drawn |= 1u << slot;
     boxoam_hide_slot(slot);              /* or the Gen-3 icon sits ON the Gen-1 sprite */
@@ -2396,6 +2436,7 @@ static void era_cell_draw(int slot) {
    * no card access — so a box with no registered era ROM stops here for free. */
   if (pdna_origin_box_art_wanted(slot)) {
     PdnaArt a;
+    PERF_ICON(mru_miss);   /* BACKLOG #263: one art FETCH attempt (the rep line's `icons H/M mru`) */
     /* gen == PDNA_GEN3 means the router fell back (the ROM could not serve this
      * species): leave the ordinary Gen-3 OBJ icon alone rather than blitting the same
      * picture twice, once badly. era_cell_blit's own frame (cell[]) is allocated only
@@ -2434,12 +2475,26 @@ static void era_cells(void) {
    * still has to be handed back even when THIS box has no imports. any_damaged()
    * (BACKLOG #150 S150-2) covers the DMG-only case above. */
   if (s_era_drawn || pdna_origin_box_any_gb() || any_damaged()) {
+    /* BACKLOG #263: the era pass's own rollup -- `perf box.era xN: ... sd Nr/Ns, icons
+     * H/M mru` is emitted when the box is left (boxoam_exit flushes PERF_REP_MON). N =
+     * passes, sd = the card cost of ALL of them (delta: the fused-ROM read count, see
+     * gb_art_source.c), M = fetches attempted. PERF_REP_MON, not PAGE: the box owns PAGE
+     * for "box.load"; a screen that opens FROM the box (summary) flushes this line first. */
+    perf_rep_begin(PERF_REP_MON, "box.era");
+    /* BACKLOG #263: ONE ROM open + table validation for the whole pass, not one per cell.
+     * The batch (~1.1 KB) lives on this frame -- there is no spare EWRAM -- and begin() does
+     * no I/O, so a box whose cells fetch nothing still costs nothing. Every path out of this
+     * block reaches gb_art_batch_end() below (there is no early return between them). */
+    GbArtBatch bt;
+    gb_art_batch_begin(&bt);
     /* Reset first, THEN recompute. s_era_drawn survives across box flips and across whole
      * pdna_box() runs, and a stale set bit means a permanently hidden OBJ icon over a cell
      * that no longer has art to show — an empty cell holding a real Pokemon. Handing every
      * marked cell back to the OAM layer up front makes that unrepresentable. */
     for (int i = 0; i < G3_BOX_SLOTS; i++) era_cell_icon_back(i);
     for (int i = 0; i < G3_BOX_SLOTS; i++) era_cell_draw(i);
+    gb_art_batch_end(&bt);
+    perf_rep_end(PERF_REP_MON);
   }
   /* OUTSIDE the bail, deliberately. The art source decodes into a buffer it owns and
    * PUBLISHES A POINTER TO — and the obvious home for that buffer is mon_decomp, which
@@ -2634,20 +2689,23 @@ static void cursor_slide(BoxSource* src, int box, int old_cur, int cur, bool car
 static void move_cursor(BoxSource* src, int box, int old_cur, bool old_title,
                         int cur, bool on_title) {
   if (on_title != old_title) {                        /* entering/leaving the title row */
-    draw_wallpaper(src->get_wp(box), WP_X, WP_Y, WP_W, WP_H);
-    /* The wallpaper repaint above wipes the BG, and the era layer LIVES in the BG — so it
-     * has to be redrawn here too. Leaving it out cost every era marker on the first press
-     * of UP, permanently: moving onto the box title is how you change boxes, i.e. the
-     * core interaction of the screen this feature exists for, and nothing else repaints
-     * the layer. The rule is simply that artless_cells() and era_cells() are the two BG
-     * cell layers and every site that repaints the wallpaper owes both.
+    /* BACKLOG #268: the ONLY thing that changes on the way onto or off the box name is the
+     * banner's selection frame -- a 2 px ring in y 12..27 (draw_box_banner), above the grid
+     * (GRID_Y = 30). This used to repaint the WHOLE wallpaper and then redraw every cell
+     * layer over it: for a Game Boy box that is a fresh art fetch of all 20 cells, so a plain
+     * UP onto the name (and DOWN off it) reloaded the box, visibly (Guy: "it reloads the box.
+     * It shouldn't as its already loaded"). The Gen-3 grid never showed it because its icons
+     * are sprites; the Game Boy art lives in the bitmap, and the wallpaper repaint wiped it.
      *
-     * PARITY-AUDIT-2026-09 #75: era_cells() now runs FIRST (same reorder as
-     * render_full/chunk_draw) so artless_cells()'s per-cell s_era_drawn check sees
-     * this box's fresh state, not the previous box's. */
-    era_cells();
-    artless_cells();                                  /* clear stale title frame */
-    blocked_cells(src, box);      /* BACKLOG #200 F1: mark cells past this source's capacity */
+     * So restore just the band the ring sat in (the same rect-limited restore the chunk
+     * carry uses) and redraw the banner and footer over it. Cells, era art, era pads,
+     * name chips and the blocked-cell hatch are outside the band and are never touched.
+     * The full WP_W: the procedural grass covers all 162 columns (as draw_wallpaper's does),
+     * while the tiled wallpaper's map is 20 tiles = 160 px wide, so wp_restore_rect clamps to
+     * the map and the two columns past it are left exactly as draw_wallpaper leaves them.
+     * Known: the selection frame itself paints x=238, which wp_restore_rect never
+     * repaints, so a 1-px sliver can remain -- pre-existing, BACKLOG #274 (not fixed here). */
+    wp_restore_rect(WP_X, WP_Y, WP_W, 16);
     draw_box_banner(src, box, on_title);
     draw_footer(src->is_bank, on_title, false);
   }

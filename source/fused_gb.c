@@ -519,9 +519,48 @@ bool fused_gb_loc(uint8_t kind, uint8_t gen, const uint8_t** rec, uint32_t* rec_
 /* Compiled unconditionally: outside PDNA_DELTA it is simply never reached (nothing
  * calls fused_gb_rom() to obtain a slice to read), but keeping it out of the #ifdef
  * avoids a fifth near-duplicate stub. */
+#ifdef PDNA_DELTA
+/* BACKLOG #263: the emulator has no SD card, so its `sd Nr/Ns` counter would read 0 for
+ * the Game Boy art path. Every GbReadFn call over a fused ROM is the stand-in for one
+ * f_lseek+f_read on the SD build, so this MODELS what FatFs's f_read would have asked the
+ * card for, and gb_art_source.c folds the totals into perf_sd:
+ *   - a request that starts or ends mid-sector goes through the FIL's one-sector buffer:
+ *     it costs one disk_read the first time that sector is touched and nothing while the
+ *     next reads land in the same sector (the buffer already holds it);
+ *   - whole sectors go straight to the caller's buffer: one disk_read per contiguous run.
+ * fused_gb_read_reopen() drops the modelled buffer, like a fresh f_open() does.
+ * NOT modelled (the emulator cannot see them): f_open's directory walk, the .loc file's
+ * open+read, FAT-chain lookups on f_lseek. EWRAM, 12 bytes, delta only. */
+static GBD_EWRAM_BSS uint32_t s_rd_calls, s_rd_sects;
+static GBD_EWRAM_BSS uint32_t s_rd_cached;        /* sector index + 1 held by the buffer; 0 = none */
+uint32_t fused_gb_read_calls(void) { return s_rd_calls; }
+uint32_t fused_gb_read_sects(void) { return s_rd_sects; }
+void fused_gb_read_reopen(void) { s_rd_cached = 0; }
+
+static void count_read(uint32_t off, uint32_t len) {
+  if (!len) return;
+  uint32_t s0 = off >> 9, s1 = (off + len - 1u) >> 9;
+  bool in_run = false;                            /* previous sector was part of a direct run */
+  for (uint32_t s = s0; s <= s1; s++) {           /* bounded: len <= slice size */
+    bool partial = (s == s0 && (off & 511u)) || (s == s1 && ((off + len) & 511u));
+    if (partial) {
+      in_run = false;
+      if (s_rd_cached != s + 1u) { s_rd_calls++; s_rd_sects++; s_rd_cached = s + 1u; }
+    } else {
+      if (!in_run) s_rd_calls++;
+      s_rd_sects++;
+      in_run = true;
+    }
+  }
+}
+#endif
+
 bool fused_gb_slice_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
   const FusedGbSlice* s = (const FusedGbSlice*)ctx;
   if (!s || !dst) return false;
+#ifdef PDNA_DELTA
+  count_read(off, len);
+#endif
   if (off > s->size || len > s->size - off) return false;   /* short read == failure, as FatFs */
   if (!len) return true;
   memcpy(dst, s->base + off, len);
