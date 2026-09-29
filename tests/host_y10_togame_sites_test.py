@@ -181,6 +181,21 @@ def helper_facts(body: str) -> tuple[bool, str]:
 
 
 # ---- C. app_bank_togame_native -------------------------------------------------------------
+def scan_facts(body: str) -> tuple[bool, str]:
+    """H1: a destination cell is free only when ALL 80 bytes are zero (never just the personality)."""
+    if not body:
+        return False, "app_bank_togame_native not found"
+    if re.search(r"cs\[0\]\s*\|\s*cs\[1\]", body):
+        return False, "the scan tests only the 4 personality bytes: a PID-0 mon / Bad Egg would be overwritten"
+    if not re.search(r"k\s*<\s*80", body):
+        return False, "the free-cell scan must cover all 80 bytes (k < 80)"
+    if not re.search(r"zero\s*=\s*\(\s*cs\[k\]\s*==\s*0\s*\)", body):
+        return False, "the free-cell scan must fold zero = (cs[k] == 0)"
+    if not re.search(r"if\s*\(\s*zero\s*\)", body):
+        return False, "the free cell must be taken only under `if (zero)`"
+    return True, "ok"
+
+
 def togame_order_facts(body: str) -> tuple[bool, str]:
     if not body:
         return False, "app_bank_togame_native not found"
@@ -314,6 +329,7 @@ def run_real() -> None:
                            ("B1 consumers", consumer_facts, t["box"]),
                            ("B2 helper", helper_facts, t["helper"]),
                            ("C1 order", togame_order_facts, t["togame"]),
+                           ("C3 all-80-zero scan", scan_facts, t["togame"]),
                            ("C2 isolation", togame_isolation_facts, t["togame"]),
                            ("E dispatch", lambda _b: dispatch_facts(t["box"], t["conv"]), None)):
         ok, d = fn(arg)
@@ -354,6 +370,10 @@ def self_test() -> None:
         ("MUT C2a: TO GAME calls the restore directly (a clone of the arm)", togame_isolation_facts,
          tg + " gb_g3home_restore_up(0,0);"),
         ("MUT C2b: TO GAME saves the PC itself", togame_isolation_facts, tg + " app_commit_pc();"),
+        ("MUT C3a: any cell is free", scan_facts,
+         mutate(tg, "if (zero) { db = b; ds = c; }", "if (1) { db = b; ds = c; }")),
+        ("MUT C3b: the 4-byte personality test is back", scan_facts,
+         mutate(tg, "if (zero) { db = b; ds = c; }", "if ((cs[0] | cs[1] | cs[2] | cs[3]) == 0) { db = b; ds = c; }")),
         ("MUT D1a: the menu places the NATIVE cell", parity_facts,
          (dr, tg.replace("memcpy(dst, conv, 80)", "memcpy(dst, held, 80)"), ps, pn)),
         ("MUT D1b: the menu deletes the converted record instead of the original", parity_facts,
