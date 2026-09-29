@@ -56,7 +56,7 @@ PY_TESTS = ["tests/host_stack_budget_test.py", "tests/host_gb_write_gate_test.py
             "tests/host_gb_grid_blocked_test.py",
             "tests/host_stack_edges_hygiene_test.py",
             "tests/host_xfer_view_readonly_test.py",
-            "tests/host_gb_claims_test.py",
+            "tests/host_gb_claims_test.py", "tests/host_gb_open_direct_test.py",
             "tests/host_xfer_reconcile_sites_test.py",
             "tests/host_bank_meta_backup_sites_test.py",
             "tests/host_vsd_funnel_sites_test.py",
