@@ -106,7 +106,7 @@ def check_render_marks_blocked(box_text: str) -> list[str]:
     mc = strip_comments(extract_function_body(box_text, "move_cursor"))
     if not mc:
         violations.append("pdna_box.c: move_cursor() function body not found")
-    elif "draw_wallpaper(" in mc or "wp_restore_rect(" not in mc:
+    elif any(t in mc for t in ("draw_wallpaper(", "era_cells(", "artless_cells(", "blocked_cells(")) or "wp_restore_rect(" not in mc:
         violations.append("pdna_box.c: move_cursor() repaints the whole wallpaper (or no "
                           "longer restores just the banner band) -- BACKLOG #268 regression: "
                           "the name-row round trip reloads every Game Boy cell")
@@ -313,10 +313,26 @@ def main() -> int:
         print("mutant 3 (drop the A refusal): correctly caught:")
         for v in m3:
             print(f"  (mutated-copy) FAIL: {v}")
+        # --- mutant 4 (#268 guard): a per-cell repaint returns to move_cursor ---
+        target4 = "wp_restore_rect(WP_X, WP_Y, WP_W, 16);\n"
+        if target4 not in box_text:
+            print(f"FAIL -- mutant 4 target not found verbatim (source drifted -- "
+                  f"update this test's target string):\n{target4!r}")
+            return 1
+        box_scratch.write_text(box_text.replace(target4, target4 + "    era_cells();\n", 1))
+        m4 = check_render_marks_blocked(box_scratch.read_text()) + \
+            check_cursor_skips_blocked(box_scratch.read_text())
+        if not any("268" in v for v in m4):
+            print("FAIL -- mutant 4 (era_cells() in move_cursor) did NOT turn the "
+                  "#268 guard red (vacuous check)")
+            return 1
+        print("mutant 4 (era_cells in move_cursor): correctly caught:")
+        for v in m4:
+            print(f"  (mutated-copy) FAIL: {v}")
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
-    print("\nhost_gb_grid_blocked_test: ok (shipped source clean, all three "
+    print("\nhost_gb_grid_blocked_test: ok (shipped source clean, all four "
           "mutations caught)")
     return 0
 
