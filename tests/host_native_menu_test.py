@@ -11,8 +11,12 @@ the REAL sources (same style as host_escape_gate_sites_test.py) with a mutation 
   (m2) it does NOT offer A_TOGAME/A_PASTE/A_COPY/A_ITEM (would run Gen-3 bodies on GBC1 bytes);
   (m3) A_LEGAL on a native cell shows the cell's own view and never the Gen-3 box sweep;
   (m4) A_EXPORT on a native cell calls gb_export_native (never pdna_pk_export's .pk3 body);
-  (m5) both DUPLICATE sites in pdna_box.c run dup_restamp_native() right after copying into s_held;
-  (m6) dup_restamp_native allocates a fresh serial, sets BC_FLAG_COPY and clears the ledger bits.
+  (m5) both DUPLICATE sites in pdna_box.c run dup_restamp_native() right after copying into s_held,
+       re-fetch `recs` (the serial scan re-pages the shared Bank buffer) and carry the copy ONLY when
+       the restamp succeeded (a failed restamp must not set s_holding);
+  (m6) dup_restamp_native resyncs the counter to the stored high-water mark BEFORE allocating, refuses
+       serial <= stored_max, and delegates the re-pack to the pure bc_restamp_copy (whose ident32-change,
+       COPY flag and ledger-bit clearing are host-tested in host_bankcell_test.c).
 """
 from __future__ import annotations
 import re, sys
@@ -51,7 +55,10 @@ def analyse(menu: str, box: str) -> dict[str, bool]:
     nb = menu[menu.index("if (native) {", st):menu.index("} else if (occupied) {")]
     legal = re.search(r"case A_LEGAL:\s*if \(native\) \{ pdna_legality_show\(&m0\);", menu) is not None
     export = re.search(r"case A_EXPORT:\s*if \(native\) \{ \(void\)gb_export_native\(rec\);", menu) is not None
-    dup_sites = re.findall(r"memcpy\(s_held, recs \+ \(uint32_t\)(?:gcur|cur) \* 80, 80\);\s*if \(!dup_restamp_native\(s_held\)\)", box)
+    dup_sites = re.findall(r"memcpy\(s_held, recs \+ \(uint32_t\)(?:gcur|cur) \* 80, 80\);\s*"
+                           r"bool dup_ok = dup_restamp_native\(s_held\);\s*"
+                           r"recs = src->records\(box\);[^\n]*\n\s*"
+                           r"if \(!dup_ok\) \{[^\n]*\n\s*snd_deny\(\);(?: need_full = true;)?\s*\} else \{\s*s_holding = true;", box)
     helper = func(box, "dup_restamp_native(uint8_t held[80]) {")
     return {
         "m1": all(a in nb for a in ("act[n++]=A_LEGAL", "act[n++]=A_DUP", "act[n++]=A_EXPORT")),
@@ -59,8 +66,9 @@ def analyse(menu: str, box: str) -> dict[str, bool]:
         "m3": legal,
         "m4": export,
         "m5": len(dup_sites) == 2,
-        "m6": ("pdna_bank_next_serial()" in helper and "BC_FLAG_COPY" in helper and
-               "~(BC_FLAG_HAS_XFER_REC | BC_FLAG_QUEUED_PC)" in helper and "serial == 0" in helper),
+        "m6": (0 <= helper.find("bank_serial_max(") < helper.find("pdna_bank_serial_resync(stored_max)")
+               < helper.find("pdna_bank_next_serial()") < helper.find("serial <= stored_max")
+               < helper.find("bc_restamp_copy(held, serial)") and "serial == 0" in helper),
     }
 
 
@@ -76,12 +84,15 @@ def main() -> int:
         "m2": lambda m, b: (m.replace("lab[n]=PDNA_LBL_DUPLICATE; act[n++]=A_DUP;\n    lab[n]=PDNA_LBL_EXPORT_PK", "lab[n]=PDNA_LBL_DUPLICATE; act[n++]=A_DUP; act[n++]=A_TOGAME;\n    lab[n]=PDNA_LBL_EXPORT_PK", 1), b),
         "m3": lambda m, b: (m.replace("if (native) { pdna_legality_show(&m0); return false; }", "", 1), b),
         "m4": lambda m, b: (m.replace("if (native) { (void)gb_export_native(rec); return false; }", "", 1), b),
-        "m5": lambda m, b: (m, b.replace("if (!dup_restamp_native(s_held))", "if (false)", 1)),
-        "m6": lambda m, b: (m, b.replace("BC_FLAG_COPY", "0", 1) if False else b.replace("| BC_FLAG_COPY)", ")", 1)),
+        "m5": lambda m, b: (m, b.replace("bool dup_ok = dup_restamp_native(s_held);", "bool dup_ok = true;", 1)),
+        "m5b": lambda m, b: (m, re.sub(r"(dup_restamp_native\(s_held\);\s*)recs = src->records\(box\);", r"\1", b, count=1)),
+        "m5c": lambda m, b: (m, re.sub(r"(if \(!dup_ok\) \{[^\n]*\n\s*snd_deny\(\);)", r"\1 s_holding = true;", b, count=1)),
+        "m6": lambda m, b: (m, b.replace("(void)pdna_bank_serial_resync(stored_max);\n", "", 1)),
+        "m6b": lambda m, b: (m, b.replace("serial == 0 || serial <= stored_max", "serial == 0", 1)),
     }
     for k, f in muts.items():
         mm, bb = f(menu, box)
-        caught = not analyse(mm, bb)[k]
+        caught = not analyse(mm, bb)[k[:2]]
         check(caught, f"MUT {k} was NOT caught")
         print(f"  MUT {k}:", "caught" if caught else "MISSED")
     print(f"{checks} checks, {len(fails)} failed")

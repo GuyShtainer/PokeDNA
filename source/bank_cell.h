@@ -185,6 +185,13 @@ int bc_pack(const GbEditMon* mon, uint8_t flags, uint8_t origin_game,
  * !bc_is_native(rec80). */
 bool bc_unpack(const uint8_t rec80[BC_CELL_BYTES], GbEditMon* mon, BcMeta* meta);
 
+/* BACKLOG #271 review D1/D6: DUPLICATE's pure re-pack. Re-packs a native `cell` in place with
+ * `serial` (must be non-zero; the caller allocates it) and BC_FLAG_COPY set, BC_FLAG_HAS_XFER_REC
+ * and BC_FLAG_QUEUED_PC cleared. ident32 changes (bank_serial is inside the hashed span); species,
+ * DVs, moves, names, origin_game and rtc_epoch are untouched. Returns false and leaves `cell`
+ * byte-for-byte unchanged when cell is NULL, serial == 0, or the cell is not native. */
+bool bc_restamp_copy(uint8_t cell[BC_CELL_BYTES], uint32_t serial);
+
 /* A native cell's Gb12Mon VIEW (BACKLOG #150 S150-2, docs/BANK-CROSSGEN-DESIGN.md
  * SS11.5/SS11.13 row S150-2) -- a pure field copy off `mon`'s own getters, so a native
  * cell renders THE SAME as the identical mon in a GB session (both read the same

@@ -2128,12 +2128,16 @@ static void oam_sync(int cur, bool on_title, int box, bool is_bank) {
  * allocated (meta write failed); the caller must not carry a copy then. */
 static bool __attribute__((noinline)) dup_restamp_native(uint8_t held[80]) {
   if (!bc_is_native(held)) return true;
-  GbEditMon m; BcMeta mt;
-  if (!bc_unpack(held, &m, &mt)) return false;
+  /* review D1 (#168 hazard): same protections as the UP-landing path -- after a bank.meta
+   * rollback (#219 .bak) the counter can re-issue the original's serial, i.e. the same
+   * ident32 and the same xr_key_g3, so the copy would restore through the original's
+   * NATIVE_HOME entry. Resync the counter to the stored high-water mark FIRST. NOTE: the
+   * scan re-pages the shared Bank buffer -- callers re-fetch `recs` afterwards. */
+  uint32_t stored_max = bank_serial_max(bank_scan_get, NULL, PDNA_BANK_BOXES, G3_BOX_SLOTS);
+  (void)pdna_bank_serial_resync(stored_max);
   uint32_t serial = pdna_bank_next_serial();
-  if (serial == 0) return false;
-  uint8_t fl = (uint8_t)((mt.flags & ~(BC_FLAG_HAS_XFER_REC | BC_FLAG_QUEUED_PC)) | BC_FLAG_COPY);
-  return bc_pack(&m, fl, mt.origin_game, mt.rtc_epoch, serial, held) == 0;
+  if (serial == 0 || serial <= stored_max) return false;
+  return bc_restamp_copy(held, serial);
 }
 
 static void draw_footer(bool is_bank, bool on_title, bool moving) {
@@ -3986,7 +3990,9 @@ static int party_strip_overlay(BoxSource* src, int box, int* cur,
                                                                 * into a LATER, unrelated
                                                                 * app_mon_menu call         */
             memcpy(s_held, recs + (uint32_t)gcur * 80, 80);
-            if (!dup_restamp_native(s_held)) {                /* BACKLOG #271: no serial -> no copy */
+            bool dup_ok = dup_restamp_native(s_held);
+            recs = src->records(box);                         /* review D1: the serial scan re-paged the shared Bank buffer */
+            if (!dup_ok) {                                    /* BACKLOG #271: no serial -> no copy */
               snd_deny();
             } else {
             s_holding = true; s_orig_box = box; s_orig_slot = -1; s_orig_scope = src->scope;
@@ -5069,7 +5075,9 @@ int pdna_box(BoxSource* src) {
           }
         } else if (app_take_dup_request()) {                            /* picked DUPLICATE -> a fresh COPY in the glove */
           memcpy(s_held, recs + (uint32_t)cur * 80, 80);                /* copy floats in-hand; no origin (cancel discards it) */
-          if (!dup_restamp_native(s_held)) {                            /* BACKLOG #271: no serial -> no copy */
+          bool dup_ok = dup_restamp_native(s_held);
+          recs = src->records(box);                                     /* review D1: the serial scan re-paged the shared Bank buffer */
+          if (!dup_ok) {                                                /* BACKLOG #271: no serial -> no copy */
             snd_deny(); need_full = true;                               /* repaint: don't leave the menu popup stale (review D5) */
           } else {
           s_holding = true; s_orig_box = box; s_orig_slot = -1; s_orig_scope = src->scope; s_held_dup = true; s_orig_party = false;

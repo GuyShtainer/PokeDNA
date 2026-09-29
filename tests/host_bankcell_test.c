@@ -547,6 +547,36 @@ static void test_egg_and_item_directed(void) {
 /*     one real Gen-2 (Gold.sav) corpus record; missing corpus SKIPs.             */
 /* ============================================================================ */
 
+/* BACKLOG #271 review D1/D6: bc_restamp_copy (DUPLICATE's pure re-pack). The original carries the
+ * ledger bits HAS_XFER_REC|QUEUED_PC|HOLDS_ITEM so the flags byte is checked exactly, not just "COPY set". */
+static void check_restamp_copy(const GbEditMon* mon, uint8_t origin, const char* file) {
+  uint8_t orig[BC_CELL_BYTES], cp[BC_CELL_BYTES], keep[BC_CELL_BYTES];
+  CHECK(bc_pack(mon, (uint8_t)(BC_FLAG_HAS_XFER_REC | BC_FLAG_QUEUED_PC | BC_FLAG_HOLDS_ITEM), origin, 0x3333u, 700u, orig) == 0,
+        "%s: restamp bc_pack original", file);
+  memcpy(cp, orig, sizeof cp);
+  CHECK(bc_restamp_copy(cp, 701u), "%s: bc_restamp_copy succeeds on a native cell", file);
+  GbEditMon back; BcMeta meta;
+  CHECK(bc_unpack(cp, &back, &meta), "%s: restamped cell still unpacks", file);
+  CHECK(meta.flags == (uint8_t)(BC_FLAG_COPY | BC_FLAG_HOLDS_ITEM),
+        "%s: restamp flags == COPY|HOLDS_ITEM exactly (ledger bits cleared), got 0x%02x", file, meta.flags);
+  CHECK(meta.origin_game == origin && meta.rtc_epoch == 0x3333u, "%s: restamp keeps origin_game and rtc_epoch", file);
+  CHECK(memcmp(cp + BC_OFF_IDENT32, orig + BC_OFF_IDENT32, 4) != 0, "%s: restamp CHANGES ident32 (new serial)", file);
+  CHECK(bc_ident32(cp) != bc_ident32(orig), "%s: restamp ident32 differs from the original's", file);
+  CHECK(memcmp(back.rec, mon->rec, sizeof back.rec) == 0, "%s: restamp leaves the mon record bytes untouched", file);
+  /* the OLD serial must not be reusable: restamping with the original's own serial keeps ident32 equal --
+   * that is exactly the #168 collision the caller's serial <= stored_max guard refuses. */
+  memcpy(cp, orig, sizeof cp);
+  CHECK(bc_restamp_copy(cp, 700u) && memcmp(cp + BC_OFF_IDENT32, orig + BC_OFF_IDENT32, 4) == 0,
+        "%s: same serial => same ident32 (why the caller must allocate above stored_max)", file);
+  /* refusals leave the cell byte-for-byte unchanged */
+  memcpy(cp, orig, sizeof cp); memcpy(keep, orig, sizeof keep);
+  CHECK(!bc_restamp_copy(cp, 0u) && memcmp(cp, keep, sizeof cp) == 0, "%s: serial 0 refused, cell untouched", file);
+  cp[0] ^= 0xFFu; memcpy(keep, cp, sizeof keep);
+  CHECK(!bc_is_native(cp) && !bc_restamp_copy(cp, 702u) && memcmp(cp, keep, sizeof cp) == 0,
+        "%s: a non-native cell is refused and untouched", file);
+  CHECK(!bc_restamp_copy(NULL, 702u), "%s: NULL refused", file);
+}
+
 static void test_copy_flag_one_gen1(const char* file) {
   char path[512];
   snprintf(path, sizeof path, "%s/%s", GB_ROMS, file);
@@ -579,6 +609,7 @@ static void test_copy_flag_one_gen1(const char* file) {
   CHECK(bc_is_native(copy_cell), "%s: BC-COPY-1 copy cell is native", file);
   CHECK(memcmp(copy_cell + BC_OFF_IDENT32, plain_cell + BC_OFF_IDENT32, 4) == 0,
         "%s: BC-COPY-1 ident32 unchanged by BC_FLAG_COPY (byte 11 is outside the hashed span)", file);
+  check_restamp_copy(&mon, BC_ORIGIN_RED, file);
   printf("  %s: BC-COPY-1 Gen-1 directed case ok\n", file);
 }
 
@@ -618,6 +649,7 @@ static void test_copy_flag_one_gen2(const char* file) {
   CHECK(bc_is_native(copy_cell), "%s: BC-COPY-1 copy cell is native", file);
   CHECK(memcmp(copy_cell + BC_OFF_IDENT32, plain_cell + BC_OFF_IDENT32, 4) == 0,
         "%s: BC-COPY-1 ident32 unchanged by BC_FLAG_COPY (byte 11 is outside the hashed span)", file);
+  check_restamp_copy(&mon, BC_ORIGIN_GOLD, file);
   printf("  %s: BC-COPY-1 Gen-2 directed case ok\n", file);
 }
 
