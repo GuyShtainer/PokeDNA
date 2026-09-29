@@ -2251,21 +2251,38 @@ static int grid_lr_step(int cur, int cap, bool right) {
  * Boy box holds 20, its party 6; the grid always draws 30). box_oam.c's OBJ tile
  * budget is spent in full already -- 30 icons x 16 tiles + the hand + region B is
  * exactly the 512 tiles bitmap-mode OBJ VRAM has (that file's boxoam_set_frame
- * header) -- so there is no spare tile for a new BLOCKED graphic; this paints a
- * dim hatch (the retail-style banded fill ui_panel_striped already uses
- * elsewhere) plus a small "X" straight onto the BG bitmap, the same layer
- * artless_cells()/era_cells() paint into, so it rides every full repaint of the
- * wallpaper for free. Drawn for every blocked cell regardless of the artless/
- * real-art build -- a cell with no species never gets an OBJ icon either way, so
- * there is nothing for this to hide behind. */
+ * header) -- so there is no spare tile for a new BLOCKED graphic; this paints straight
+ * onto the BG bitmap, the same layer artless_cells()/era_cells() paint into, so it
+ * rides every full repaint of the wallpaper for free.
+ * BACKLOG #262 (Guy: "ugly X's ... something that blends in"): the old hatch + X is
+ * gone. A dead cell is now a RECESSED TILE -- the user's own wallpaper darkened in
+ * place (top row and left column harder, like a bevel, the rest softer) so the cell
+ * grid stays visible but reads as "not there". No glyph and no ROM art, so it is
+ * identical in the artless build and on every game; the slot still refuses a drop
+ * (that is box_cap's job, not this paint). Drawn for every blocked cell regardless
+ * of the artless/real-art build -- a cell with no species never gets an OBJ icon
+ * either way, so there is nothing for this to hide behind. */
+#define BLOCKED_EDGE_PCT 45   /* top row / left column of a dead cell, % of the wallpaper */
+#define BLOCKED_FILL_PCT 70   /* the rest of it */
+
+static u16 blocked_shade(u16 c, int pct) {
+  int r = (c & 31) * pct / 100;
+  int g = ((c >> 5) & 31) * pct / 100;
+  int b = ((c >> 10) & 31) * pct / 100;
+  return (u16)(r | (g << 5) | (b << 10));
+}
+
 static void blocked_cells(BoxSource* src, int box) {
   int cap = box_cap(src, box);
   if (cap >= COLS * ROWS) return;                  /* Gen-3 PC/Bank: every cell real */
-  for (int i = cap; i < COLS * ROWS; i++) {
+  if (cap < 0) cap = 0;
+  for (int i = cap; i < COLS * ROWS; i++) {        /* <= COLS*ROWS iterations */
     int cx = GRID_X + (i % COLS) * CELL_W, cy = GRID_Y + (i / COLS) * CELL_H;
     for (int r = 0; r < CELL_H; r++)
-      m3_line(cx, cy + r, cx + CELL_W - 1, cy + r, (r & 1) ? UI_BG : UI_DIM);
-    ui_ptext(cx + (CELL_W - ui_ptext_w("X")) / 2, cy + (CELL_H - 7) / 2, UI_WARN, "X");
+      for (int c = 0; c < CELL_W; c++) {
+        u16* px = &vid_mem[(cy + r) * 240 + cx + c];
+        *px = blocked_shade(*px, (r == 0 || c == 0) ? BLOCKED_EDGE_PCT : BLOCKED_FILL_PCT);
+      }
   }
 }
 
