@@ -865,6 +865,10 @@ static void wp_restore_rect_rom(int x0, int y0, int x1, int y1) {
         for (int i = 0; i < 8; i++)
           plot_clip(bx + i, by + j, s_wp_tile[j * 8 + i] & 0x7FFF, x0, y0, x1, y1);
     }
+  /* BACKLOG #274: the tile map is 20 tiles = 160 px wide, so columns WP_X+160.. (x=238,239)
+   * are never touched by the loop above; draw_wallpaper leaves them UI_BG, so a rect that
+   * reaches them (the name-row selection frame paints x=238) must put UI_BG back. */
+  if (x1 > WP_X + 160) ui_fill_rect(WP_X + 160, y0, x1 - (WP_X + 160), y1 - y0, UI_BG);
   rumble_io_resume();
   if (retries) log_line("wp %d (rom): %d re-decodes (rect restore)", s_wp_drawn, retries);
 }
@@ -918,6 +922,10 @@ static void wp_restore_rect(int x0, int y0, int w, int h) {
         for (int i = 0; i < 8; i++)
           plot_clip(bx + i, by + j, s_wp_tile[j * 8 + i] & 0x7FFF, x0, y0, x1, y1);
     }
+  /* BACKLOG #274: the tile map is 20 tiles = 160 px wide, so columns WP_X+160.. (x=238,239)
+   * are never touched by the loop above; draw_wallpaper leaves them UI_BG, so a rect that
+   * reaches them (the name-row selection frame paints x=238) must put UI_BG back. */
+  if (x1 > WP_X + 160) ui_fill_rect(WP_X + 160, y0, x1 - (WP_X + 160), y1 - y0, UI_BG);
   rumble_io_resume();
 }
 
@@ -2730,8 +2738,8 @@ static void move_cursor(BoxSource* src, int box, int old_cur, bool old_title,
      * The full WP_W: the procedural grass covers all 162 columns (as draw_wallpaper's does),
      * while the tiled wallpaper's map is 20 tiles = 160 px wide, so wp_restore_rect clamps to
      * the map and the two columns past it are left exactly as draw_wallpaper leaves them.
-     * Known: the selection frame itself paints x=238, which wp_restore_rect never
-     * repaints, so a 1-px sliver can remain -- pre-existing, BACKLOG #274 (not fixed here). */
+     * The selection frame itself paints x=238; wp_restore_rect(_rom) now put UI_BG back on
+     * the columns past the map (BACKLOG #274), so no 1-px sliver remains. */
     wp_restore_rect(WP_X, WP_Y, WP_W, 16);
     draw_box_banner(src, box, on_title);
     draw_footer(src->is_bank, on_title, false);
