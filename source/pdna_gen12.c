@@ -4024,6 +4024,33 @@ static Gb1BaseStatus __attribute__((noinline)) gb_gen1_locate_rom(void) {
   g_ed->romgs_path = g_ed->path;
   return GB1BASE_OK;
 #else
+  /* BACKLOG #269: try the REGISTERED Gen-1 ROM (Settings > Game ROM) FIRST, the same
+   * order gb_create_locate_rom uses. This probe used to look ONLY beside the save, so a
+   * cart session that registered yellow.gb (and read its art fine) still got "Put
+   * yellow.gb here" the moment a Gen-3 -> Gen-1 transfer needed base stats. */
+  {
+    const char* reg = app_gb_rom_path(GB_GEN1);
+    if (reg && reg[0]) {
+      int ri = 0;
+      for (; reg[ri] && ri < (int)sizeof(g_ed->romspath) - 1; ri++) g_ed->romspath[ri] = reg[ri];
+      g_ed->romspath[ri] = 0;
+      memset(&g_ed->romfil, 0, sizeof g_ed->romfil);
+      if (f_open(&g_ed->romfil, g_ed->romspath, FA_READ) == FR_OK) {
+        FSIZE_t rsz = f_size(&g_ed->romfil);
+        uint32_t rs = (rsz > (FSIZE_t)0xFFFFFFFFu) ? 0xFFFFFFFFu : (uint32_t)rsz;
+        int rok = rom_gbsprite_open(&g_ed->romgs, gb_read, &g_ed->romfil, rs,
+                                    g_ed->romscan, sizeof g_ed->romscan, GB_ROM_GEN1);
+        f_close(&g_ed->romfil);
+        if (rok && g_ed->romgs.gen == GB_ROM_GEN1) {
+          log_line("gen12: gen-1 rom: registered %s", g_ed->romspath);
+          g_ed->romgs_ready = true;
+          g_ed->romgs_path = g_ed->path;
+          return GB1BASE_OK;
+        }
+        log_line("gen12: gen-1 rom: registered %s did not open as Gen-1", g_ed->romspath);
+      }
+    }
+  }
   gb_rom_base_path();
   int baselen = 0; while (g_ed->romspath[baselen]) baselen++;
 
