@@ -155,6 +155,24 @@ def promote_consume_facts(body: str) -> tuple[bool, str]:
     return True, "ok"
 
 
+def save_now_order_facts(body: str) -> tuple[bool, str]:
+    m = re.search(r"if\s*\(\s*app_commit_pc\s*\(\s*\)\s*\)\s*\{", body)
+    p = first(body, "app_xfer_promote")
+    if not m or p < 0:
+        return False, "app_xfer_save_now: `if (app_commit_pc()) {` or app_xfer_promote( missing"
+    if p < m.end():
+        return False, "app_xfer_promote( runs before the verified app_commit_pc() -- the G3_HOME unlink could precede the save"
+    return True, "ok"
+
+
+def undo_kind_facts(body: str) -> tuple[bool, str]:
+    k = re.search(r"e\.kind\s*!=\s*XR_KIND_NATIVE_HOME", body)
+    r = first(body, "gbsc_remove")
+    if not k or r < 0 or k.start() > r:
+        return False, "app_xfer_pending_undo: the NATIVE_HOME-only filter must precede gbsc_remove( (a declined save must never remove a G3_HOME entry)"
+    return True, "ok"
+
+
 # ---- D. gb_bridge_restore_up ------------------------------------------------------------
 def bridge_order_facts(body: str) -> tuple[bool, str]:
     ok, d = ordered(body, ["app_can_edit", "xg_cell_is_copy", "xr_open", "xr_resolve_home",
@@ -252,7 +270,9 @@ def run_real() -> None:
                             ("A3 kind/state", restore_kind_facts, r),
                             ("B1 wrapper", wrapper_facts, w),
                             ("B2 party wrapper", wrapper_facts, wp),
-                            ("C promote", promote_consume_facts, pr)):
+                            ("C promote", promote_consume_facts, pr),
+                            ("C2 save-now order", save_now_order_facts, function_body(MAIN.read_text(), "app_xfer_save_now")),
+                            ("C3 undo kind", undo_kind_facts, function_body(MAIN.read_text(), "app_xfer_pending_undo"))):
         ok, d = fn(body)
         check(ok, f"{label}: {d}")
     br, bw, lp, rel, mk, gen12 = real_texts2()

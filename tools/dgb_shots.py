@@ -6078,7 +6078,8 @@ def run_y9_party_restore(core_mod, image_mod, rom_ruby: Path, out_dir: Path) -> 
            claim=["RESTORED FROM THE SIDECAR", "Level", "KEEP"],
            claim_absent=["Joins your party, fully healed."])
     T("START", settle=500)
-    s.shot("04_landed_in_party", "y9 (party): START -- the original Gen-3 record joined the party (5th slot)",
+    s.shot("04_landed_in_party", "y9 (party): START -- the restore applied and the overlay closed (back on "
+           "the PC grid; the party is not on screen -- the landing is proven by the post-save consume check below)",
            allow_same=False)
     _y9_expect(s, "landed but NOT saved: the entry must not be consumed yet", present=[p0])
     T("B", settle=400)
@@ -6968,7 +6969,7 @@ def run_s150_9_site2(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.
                                     # with NO PDNA_ARTLESS=1 (Makefile:567) -- the FULL-ART delta. Asserting
                                     # ARTLESS here hard-refused the very build the chain prescribes.
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s150_9_site2_")
-    print("== BACKLOG #209: site 2 of the restore (gb_lift_restore) ==")
+    print("== BACKLOG #209 (history) / #280: the pass-through lift + merge-screen UX (was gb_lift_restore site 2) ==")
     boot_to_gb_session(s, rom, which="red")
     s.shot("00_red_box_grid", "s150-9-site2: Red's box grid, freshly entered -- "
            "cursor on slot 0, the SEEDED cell (bank_plant_site2_seed() keyed this "
@@ -8424,9 +8425,9 @@ def _main_dispatch(argv=None) -> int:
                           "artless.gba> Emerald.sav (a plain Gen-3 fusion, no --gb -- "
                           "same vehicle shape as --s150-8).")
     ap.add_argument("--s150-9-site2", action="store_true",
-                     help="BACKLOG #209: only run_s150_9_site2() -- gb_lift_restore, "
-                          "site 2 of the restore (a GB-grid lift of a mon whose "
-                          "ledger entry has a NATIVE home), reached via the NEW "
+                     help="BACKLOG #209 (history) / #280: only run_s150_9_site2() -- the pass-through "
+                          "GB-grid lift of a mon whose ledger entry has a NATIVE home "
+                          "(gb_lift_restore is deleted; the restore lives at the target drop), via the "
                           "PDNA_DELTA shim on xr_path_for_key plus a mount-time seed "
                           "keyed to whatever Red.sav's own box 0 slot 0 mon actually "
                           "is. --image MUST be `make delta-gb`'s own combined image "
