@@ -2352,11 +2352,27 @@ static void era_cell_icon_back(int slot) {
  * below calls this ONLY AFTER that fetch has already returned and popped, so the two
  * frames never coexist. noinline: an inlined copy would put `cell[]` right back into
  * era_cell_draw's own frame, silently undoing the split. */
+/* BACKLOG #264: the page colour a Game Boy picture is drawn over. A Gen-1/2 picture is four
+ * shades and the LIGHTEST (index 0) is white -- and in the games it is white, not "nothing":
+ * the picture is written into the BACKGROUND tilemap (pokered engine/pokemon/status_screen.asm:
+ * 169-170, LoadFlippedFrontSpriteByMonIndex at hlcoord 1,0), so shade 0 is drawn opaque with
+ * BGP = %11100100 (home/palettes.asm:22, colour 0 = the lightest) on a white page. Yellow's own
+ * palettes agree for every species: colour 0 of each PAL_*MON row is white in both its SGB set
+ * (pokeyellow data/sgb/sgb_palettes.asm:20.., RGB 31,31,30) and its CGB set (:65.., RGB
+ * 31,31,31). Gen 2 is the same fact by construction: pokecrystal's PokemonPalettes hold only
+ * the MIDDLE two colours of a species ("not black or white", data/pokemon/palettes.asm:4-6),
+ * white being the engine's PALRGB_WHITE = $7FFF (constants/gfx_constants.asm:3) -- so the
+ * per-species palettes change colours 1 and 2 and never the page. Our decode keeps index 0
+ * transparent (so one blitter can serve three generations), which over the wallpaper read as
+ * holes in every white belly and cheek; this puts the page back, one cell at a time. */
+#define ERA_PAGE_WHITE RGB15(31, 31, 31)
+
 static void __attribute__((noinline))
 era_cell_blit(int slot, const PdnaArt* a, int cx, int cy) {
   u16 cell[CELL_W * CELL_H];             /* 1056 B of STACK. Never a static, never
                                           * EWRAM (hard rule 2) — and never 30 of them. */
   if (pdna_origin_cell_render(a, cell, CELL_W, CELL_H)) {
+    ui_fill_rect(cx, cy, CELL_W, CELL_H, ERA_PAGE_WHITE);   /* #264: only behind a cell that HAS a picture */
     ui_sprite(cx, cy, CELL_W, CELL_H, cell);
     s_era_drawn |= 1u << slot;
     boxoam_hide_slot(slot);              /* or the Gen-3 icon sits ON the Gen-1 sprite */
