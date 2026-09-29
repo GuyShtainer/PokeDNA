@@ -2679,8 +2679,8 @@ def run_b132_portrait(core_mod, image_mod, rom: Path, out_dir: Path, which: str)
     slot 1's own VIEW summary through BOTH mounts that reach pdna_origin_art_
     portrait() -- the standalone/boot-picker mount (boot_to_gb_session(), a single-
     save fused image skips the top-level picker entirely) and the nested START >
-    NV_GB import mount (nav_to_gb_import(), reached from a combined image's default
-    Emerald row, same navigation run_nav_gb() already uses). `rom` must be the
+    NV_GB import mount (RETIRED by BACKLOG #239/#273 -- see the "Mount 2" comment in
+    the body; that half now only proves the "BANK ONLY" refusal). `rom` must be the
     COMBINED image (Emerald.sav + Red/Gold/Crystal, `make delta-gb`'s own recipe --
     tools/fuse_gb.py) so BOTH mounts are reachable from the one image: the top-level
     picker's own `which` row for the boot-picker mount, and the Emerald row -> NV_GB
@@ -2726,35 +2726,27 @@ def run_b132_portrait(core_mod, image_mod, rom: Path, out_dir: Path, which: str)
                                 "branch without changing a pixel).")
     sessions.append(s1)
 
-    # Mount 2: the nested START > NV_GB import mount -- default Emerald row (0) on
-    # the SAME combined image -> ordinary Gen-3 box screen -> nav_to_gb_import() ->
-    # `which`'s own row on the (separate) nested-import picker -> that save's own
-    # S1 info page -> box grid (cold-fetched, same posture as run_nav_gb()).
-    idx = gb_save_pick_index(rom)[which]
+    # Mount 2 (BACKLOG #273): the nested START > NV_GB import mount was CLOSED on
+    # purpose by BACKLOG #239 (A on NV_GB from a live Gen-3 save now shows the "BANK
+    # ONLY" dialog and mounts nothing), so the "second, independent proof" through it
+    # no longer exists and is RETIRED. This session instead pins that fact -- the same
+    # navigation the old nested half drove now must land on the refusal, so if the
+    # mount is ever reopened this chain fails loudly rather than silently shooting it.
     s2 = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b132_nested_{which}_")
-    print(f"== BACKLOG #132: {which}'s own summary portrait, nested NV_GB import mount ==")
+    print(f"== BACKLOG #132/#273: {which}'s nested NV_GB mount is retired -- refusal only ==")
     s2.run(700)
     s2.tap("A", settle=gb_shots.BIG_SETTLE)                   # top-level picker, Emerald row (default) -> box
-    nav_to_gb_import(s2)                                        # box screen -> nav menu -> NV_GB -> the save picker
-    for _ in range(idx):
-        s2.tap("DOWN", settle=gb_shots.SETTLE)
-    s2.tap("A", settle=gb_shots.BIG_SETTLE)                   # picked -> this save's own S1 info page
-    s2.tap("A", settle=60)                                     # info -> box grid (COLD fetch starts)
-    s2.run(GB_ART_COLD_SETTLE)
-    s2.shot("01_box_grid", f"BACKLOG #132: {which}.sav's box grid via the nested "
-                            "NV_GB import mount -- box 1, cursor on slot 1 (same "
-                            "hover-panel control as the boot-picker mount above)")
-    s2.tap("A", settle=gb_shots.BIG_SETTLE)                   # A on slot 1 -> its menu
-    s2.shot("02_mon_menu", f"BACKLOG #132: {which}.sav -- the nested-import mount's "
-                            "own occupied-cell menu: VIEW / LEGALITY / COPY / "
-                            "CANCEL only (no EDIT/MOVE TO BOX/RELEASE)")
-    s2.tap("A", settle=gb_shots.BIG_SETTLE)                   # VIEW -> the native summary (read-only)
-    s2.shot("03_view_summary", f"BACKLOG #132: {which}.sav -- VIEW via the nested "
-                                "import mount: same expectation as the boot-picker "
-                                "mount's summary shot above (Gold changes to its "
-                                "own GB sprite, Red stays pixel-identical) -- both "
-                                "mounts reach the SAME pdna_origin_art_portrait(), "
-                                "so this is the second, independent proof.")
+    s2.tap("START", settle=gb_shots.BIG_SETTLE)               # box screen -> nav menu
+    s2.tap("RIGHT")                                            # column 0 -> column 1
+    s2.press_n("DOWN", nav_down_from_col_top("NV_GB"))         # Blocks -> ... -> GB import
+    s2.tap("A", settle=gb_shots.BIG_SETTLE)                   # NV_GB -> refuse, not a mount
+    s2.shot("01_nested_refused", f"BACKLOG #273: the nested NV_GB mount that used to "
+                                  f"carry {which}.sav's second portrait proof is closed "
+                                  "(BACKLOG #239) -- A on GB import shows the 'BANK ONLY' "
+                                  "dialog; the boot-picker mount above is the only "
+                                  "portrait proof now",
+            claim=["BANK ONLY", "Open the GB save on its own,", "send it to the Bank, come back."])
+    s2.tap("A", settle=gb_shots.BIG_SETTLE)                   # msg_wait dismisses on A
     sessions.append(s2)
 
     return sessions
