@@ -88,7 +88,11 @@ int main(void) {
   em_set_curhp(&e, 5);
   CHECK(em_get_curhp(&e) == 0xFFFFu, "E1 box getter reports none");
   uint8_t out[100]; gen3_edit_commit(&e, out);
-  CHECK(memcmp(out, box, 80) == 0, "E2 box setter is a no-op (record byte-identical)");
+  /* HONEST NOTE: this cannot fail on its own -- a box commit writes 80 bytes and the current-HP
+   * field lives at 0x56+ (party tail, past byte 80), which never commits; so the record comes
+   * back identical whatever em_set_curhp does. The behaviour is pinned by E1 above (the getter
+   * still reports 0xFFFF after the set). Kept as a round-trip identity check. */
+  CHECK(memcmp(out, box, 80) == 0, "E2 box round-trip is byte-identical (bytes past 80 never commit; E1 pins the setter)");
 
   /* F: commit round-trip carries the HP */
   mk(&e, 384); em_set_curhp(&e, 11);

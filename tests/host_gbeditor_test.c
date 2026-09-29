@@ -576,7 +576,8 @@ static void curhp_slot(GbSession* s, int box, int slot) {
   gb_set_level(&t, (uint8_t)(gb_get_level(&t) < 60 ? gb_get_level(&t) + 7 : gb_get_level(&t) - 7));
   (void)gbe_settle_stats(&t);
   CHECK(gb_get_current_hp(&t) == 0, "fainted stays fainted through statexp/DV/level edits + recalc");
-  /* a healthy mon is never handed max HP by an edit either */
+  /* a healthy mon is never handed max HP by an edit either. (This range check is weak on its own
+   * -- any value in 1..max passes; the no-max-handout behaviour is pinned by test_carry_hp in host_gbedit_test.c.) */
   GbEditMon h = e;
   gb_set_current_hp(&h, 1);
   gb_set_statexp(&h, GB_HP, 65535);
@@ -608,7 +609,7 @@ static void test_curhp(void) {
         for (int k = 0; k < n; k++) if (rows[k] == GBE_CURHP) has = true;
         CHECK(!has, "a box record shows no Cur HP row");
         GbEditMon c = b;
-        CHECK(!gb_set_current_hp(&c, 5) && memcmp(&c, &b, sizeof c) == 0, "box setter refuses and writes nothing");
+        CHECK(!gb_set_current_hp(&c, 5) && memcmp(&c, &b, sizeof c) == 0, "box setter refuses and writes nothing (refused by the !is_party guard; the mx == 0 guard is a second)");
       }
     }
   }
