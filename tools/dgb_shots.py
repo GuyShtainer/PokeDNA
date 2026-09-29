@@ -6971,14 +6971,9 @@ def run_s150_9_site2(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.
     s2.shot("02_bank_hop", "s150-9-site2 A/B (b199 D2 repair): 2xUP, carrying -- "
             "the same bank_edge hop, landing on the same first-empty Bank cell.")
     s2.tap("A", settle=gb_shots.BIG_SETTLE); s2.run(100)
-    s2.shot("03_prompt_shows", "s150-9-site2 A/B (b199 D2 repair): A on the empty "
-            "Bank cell -- 'WHICH GAME IS THIS?' RED (selected) / BLUE / YELLOW "
-            "DOES draw here, on the exact same image/session/gesture that skipped "
-            "it for slot 0 -- gb_has_sidecar() answers false for this ordinary, "
-            "unseeded cell, so gb_lift_pack() takes the normal (non-restore) path "
-            "instead. This is the direct proof that slot 0's missing prompt is the "
-            "seed/shim working, not a vehicle-wide inability to ever draw this "
-            "screen -- relocated to the drop site, same as the main chain above.",
+    s2.shot("03_prompt_shows", "s150-9-site2 A/B (#280): A on the empty Bank cell -- 'WHICH GAME IS THIS?' RED "
+            "(selected) / BLUE / YELLOW, pixel-identical to the SEEDED slot 0's frame 04 above: since #280 the "
+            "lift ignores the ledger, so a mon with a ledger entry and one without take the same path.",
             claim=["WHICH GAME IS THIS", "RED", "YELLOW"])
 
     s.taken += s2.taken
