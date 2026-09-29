@@ -3006,9 +3006,9 @@ static bool gb_export_hook(uint8_t* rec80) {
  * suffixing as gb_export_hook (shared gb_pk_build_path), but the record comes out of the
  * cell (bc_unpack) instead of a mounted session, so it needs no g_ed and no GB session:
  * it runs from a Gen-3 session's Bank visit too. Only the CART gate applies (Omega-only
- * writes, hard rule 4). The path + payload live in one caller-frame buffer (272 + 56 B),
- * the same footprint pdna_pk_export's own `char path[SF_PATH_MAX]` already puts on this
- * menu chain. Nothing in the Bank is modified. */
+ * writes, hard rule 4). The path + payload live in one caller-frame buffer (272 + 56 B).
+ * The FRAME is bigger than pdna_pk_export's (488 B vs 320 B); what is equal is the deepest
+ * SUBTREE below this menu (2,760 B here vs 2,904 B there), so the chain's STACK budget is unchanged. Nothing in the Bank is modified. */
 bool gb_export_native(const uint8_t cell80[80]) {
   GbEditMon e; BcMeta mt;
   if (!cell80 || !bc_unpack(cell80, &e, &mt)) { snd_deny(); return false; }
