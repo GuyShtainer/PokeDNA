@@ -138,6 +138,14 @@ int bank_plant_xfer_seed_all(uint8_t g3_out[4][80]);
  * ran on this vehicle at all. */
 void bank_plant_site2_seed(const GbEditMon* mon);
 
+/* BACKLOG #280 (lane y9-280): the planted vehicle for the two TARGET-drop restores -- five Gen-2
+ * BULBASAUR cells for Bank box 3 and each one's ledger FILE (case 0,1 G3_HOME; 2 bridge CLAIMED; 3
+ * bridge RESTORED; 4 bridge PENDING -- see bank_plant.c). The ledger is written into the --vsd
+ * image by tests/y9_mkledger.c, never planted on the device. */
+bool bank_plant_y9_cell(int which, uint8_t out80[80]);
+int  bank_plant_y9_ledger(int which, uint8_t* file, uint32_t cap, uint64_t* key_out);
+void bank_plant_y9_box(uint8_t* recs);
+
 /* BACKLOG #209: bank_plant_xfer_open()'s own existence-only twin -- true iff `key`
  * matches ONE of the (now five) seeded slots, touching neither `buf` nor `len`. Lets
  * xr_path_for_key_hint() (source/xfer_io.c) answer gb_has_sidecar()'s plain "does a

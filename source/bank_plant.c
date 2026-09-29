@@ -505,6 +505,94 @@ bool bank_plant_xfer_has(uint64_t key) {
   return false;
 }
 
+/* ---- BACKLOG #280 (lane y9-280): the planted vehicle for the two TARGET-drop restores -------
+ * Five Gen-2 BULBASAUR native cells (Bank box 3, slots 0..4) and, for each, the ledger FILE its
+ * restore would read -- built HERE, ONCE, so the on-device box hook and the host tool that writes
+ * the file into the --vsd image (tests/y9_mkledger.c) can never drift apart. The ledger is NOT
+ * planted on the device (unlike the S150-9 slots above): the chains need REAL files on the virtual
+ * SD, because the Gen-3 target's consume (app_xfer_promote's unlink) can only be proven against
+ * a real FAT.
+ *   0,1  G3_HOME  : a Gen-2 copy of a Gen-3 original (gen12_convert of the same cell) -- the
+ *                   Gen-3-target restore (gb_g3home_restore_up); two cells so the second drop
+ *                   meets the pending-transfer wall before the first is saved.
+ *   2    BRIDGE, CLAIMED  : the abroad copy of a Gen-1 original -- restorable at a Gen-1 save.
+ *   3    BRIDGE, RESTORED : the same, already restored once -- a duplicate: converts normally.
+ *   4    BRIDGE, PENDING  : an unproven transfer -- the SAVE FIRST wall.
+ * Every entry's baseline is 3 levels below the live cell so the merge screen has a real row. */
+#define Y9_CELLS 5
+
+static void y9_gen2_bulbasaur(GbEditMon* e, uint8_t level, uint32_t seed) {
+  GbNewMonSrc src; memset(&src, 0, sizeof src);
+  src.growth = gb_growth_rate(PLANT_G3_DEX_BULBASAUR);
+  src.moves[0] = 33;
+  src.species_name = pk_species_name(PLANT_G3_DEX_BULBASAUR);
+  src.ot_name = "Y9OT";
+  src.ot_id = 4242;
+  gb_new_mon(GB_GEN2, PLANT_G3_DEX_BULBASAUR, level, &src, seed, e);
+}
+
+static void y9_gen1_bulbasaur(GbEditMon* e, uint8_t level, uint32_t seed) {
+  GbNewMonSrc src; memset(&src, 0, sizeof src);
+  src.base[GB_HP] = 45; src.base[GB_ATK] = 49; src.base[GB_DEF] = 49;
+  src.base[GB_SPE] = 45; src.base[GB_SPC] = 65;
+  src.type1 = 0x16; src.type2 = 0x03;                 /* GRASS / POISON */
+  src.growth = gb_growth_rate(PLANT_G3_DEX_BULBASAUR);
+  src.moves[0] = 33;
+  src.species_name = pk_species_name(PLANT_G3_DEX_BULBASAUR);
+  src.ot_name = "Y9OT";
+  src.ot_id = 4242;
+  gb_new_mon(GB_GEN1, PLANT_G3_DEX_BULBASAUR, level, &src, seed, e);
+}
+
+/* The Bank cell for case `which` (0..4); false on a bad index. */
+bool bank_plant_y9_cell(int which, uint8_t out80[80]) {
+  if (!out80 || which < 0 || which >= Y9_CELLS) return false;
+  GbEditMon e;
+  y9_gen2_bulbasaur(&e, (uint8_t)(20 + which), 410u + (uint32_t)which);
+  return bc_pack(&e, 0, BC_ORIGIN_GOLD, 0, 410u + (uint32_t)which, out80) == 0;
+}
+
+/* Case `which`'s ledger file (gbsc_init + one entry) into `file`; returns its length, 0 on any
+ * failure; `key_out` receives the gbsc_key it is filed under (its .pds name). */
+int bank_plant_y9_ledger(int which, uint8_t* file, uint32_t cap, uint64_t* key_out) {
+  if (!file || which < 0 || which >= Y9_CELLS || cap < GBSC_HEADER + GBSC_ENTRY) return 0;
+  uint8_t cell[80];
+  if (!bank_plant_y9_cell(which, cell)) return 0;
+  GbEditMon now; BcMeta meta;
+  if (!bc_unpack(cell, &now, &meta)) return 0;
+  GbscEntry e;
+  if (which < 2) {                                    /* G3_HOME: original80 = the Gen-3 record */
+    uint8_t g3[80];
+    Gb12Mon view;
+    if (!bc_view(&now, &meta, bc_ident32(cell), &view)) return 0;
+    Gb12Target tgt; memset(&tgt, 0, sizeof tgt);
+    tgt.met_game = 3;
+    Gb12Notes notes;
+    if (gen12_convert(&view, &tgt, g3, &notes) != GB12_OK) return 0;
+    gbsc_entry_from(&e, &now, g3, 0);
+  } else {                                            /* bridge: original80 = a Gen-1 native cell */
+    GbEditMon home; uint8_t hcell[80];
+    y9_gen1_bulbasaur(&home, (uint8_t)(20 + which), 420u + (uint32_t)which);
+    if (bc_pack(&home, 0, BC_ORIGIN_RED, 0, 430u + (uint32_t)which, hcell) != 0) return 0;
+    xr_entry_for_down(&e, &now, hcell, 0, XR_DIR_ABROAD_GB, 0);
+    e.state = (which == 2) ? XR_STATE_CLAIMED : (which == 3) ? XR_STATE_RESTORED : XR_STATE_PENDING;
+  }
+  e.written_level = (e.written_level > 3) ? (uint8_t)(e.written_level - 3) : e.written_level;
+  uint8_t dv4[4] = { gb_get_dv(&now, GB_ATK), gb_get_dv(&now, GB_DEF), gb_get_dv(&now, GB_SPE), gb_get_dv(&now, GB_SPC) };
+  uint64_t key = gbsc_key(now.gen, gb_get_otid(&now), dv4, now.otname);
+  uint32_t len = (uint32_t)gbsc_init(file, key);
+  if (gbsc_add(file, &len, cap, &e) < 0) return 0;
+  if (key_out) *key_out = key;
+  return (int)len;
+}
+
+/* Bank box 3 (the 4th box): the five cells at slots 0..4. Called from pdna_bank.c's box_load()
+ * hook only when box 3's file is absent, like the other plants. */
+void bank_plant_y9_box(uint8_t* recs) {
+  if (!recs) return;
+  for (int i = 0; i < Y9_CELLS; i++) (void)bank_plant_y9_cell(i, recs + (uint32_t)i * 80);
+}
+
 #else
 typedef int bank_plant_no_empty_tu;
 #endif /* PDNA_DELTA */
