@@ -4036,8 +4036,8 @@ static bool app_inject_to_game_deferred(const uint8_t* rec80, int* out_box, int*
  * MOVE branch does with a CONVERTED result: place the finished record (never the native cell), register the dex
  * entry deferred, mark the PC dirty and queue the Bank cell's deferred delete -- nothing is written to the save
  * now (the box screen's exit save is the ONE write, same as a drop). The destination: the first free cell of
- * the PC box the app last used, scanning on through the following boxes (the Gen-3 TO GAME row scans the same
- * way), refusing PC FULL honestly. Returns true iff a record landed. */
+ * the PC box the app last used, scanning on through the following boxes (unlike app_inject_to_game, which
+ * scans from box 0: this row resumes where the user is working), refusing PC FULL honestly. Returns true iff a record landed. */
 bool __attribute__((noinline)) app_bank_togame_native(int bank_box, int bank_slot, const uint8_t* cell) {
   if (!cell || bank_box < 0 || bank_slot < 0 || !bc_is_native(cell)) return false;
   if (xg_inject_refuse(app_arena_held(), g_vinfo.valid)) {
@@ -4050,10 +4050,13 @@ bool __attribute__((noinline)) app_bank_togame_native(int bank_box, int bank_slo
   for (int i = 0; i < G3_TOTAL_BOXES && db < 0; i++) {
     int b = (((g_pc_last_box >= 0 && g_pc_last_box < G3_TOTAL_BOXES) ? g_pc_last_box : 0) + i) % G3_TOTAL_BOXES;
     for (int c = 0; c < G3_IN_BOX && db < 0; c++) {
-      /* an all-zero personality, NOT box_free_slot()'s "decodes as empty": a glitch record that decodes as
-       * empty is non-zero, and the arm's own occupancy gate (dstrec[0..3], the drop's) would refuse it silently */
+      /* free == ALL 80 BYTES ZERO, what ZeroBoxMonData and clip_clear_box_slot leave. NOT the personality alone: a
+       * checksum-valid PID-0 mon or a Bad Egg has a zero personality and is real data. A strict subset of
+       * box_free_slot() and of the drop's own `occupied` gate, so the arm's 16(h) stays satisfied. */
       const uint8_t* cs = pk_box_slot(g_pc, b, c);
-      if ((cs[0] | cs[1] | cs[2] | cs[3]) == 0 && !bc_is_native(cs)) { db = b; ds = c; }
+      bool zero = true;
+      for (int k = 0; k < 80 && zero; k++) zero = (cs[k] == 0);
+      if (zero) { db = b; ds = c; }
     }
   }
   if (db < 0) { snd_deny(); msg_wait("PC FULL", UI_WARN, "No free PC slot in the", "loaded game."); return false; }
@@ -4070,6 +4073,7 @@ bool __attribute__((noinline)) app_bank_togame_native(int bank_box, int bank_slo
   app_mark_pc_dirty();                                      /* == src->mark_dirty */
   app_bank_defer_delete(bank_box, bank_slot, held);
   snd_save();
+  boxoam_suspend();   /* the arm's inner boxoam_resume un-suspended the glove; suspend/resume do not nest */
   /* the destination is off-screen (the Bank grid is showing) -- say where it went, and that the write waits for the exit save */
   char l1[24]; siprintf(l1, "PC box %d, slot %d.", db + 1, ds + 1);
   msg_wait("SENT TO GAME", UI_OK, l1, "Save when you leave.");
