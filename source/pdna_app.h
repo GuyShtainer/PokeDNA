@@ -465,6 +465,8 @@ bool app_xfer_pending(void);
  * real write and then reports failure. */
 bool app_xfer_pending_is(uint64_t key);
 void app_xfer_pending_set(uint64_t key, int idx);
+void app_xfer_pending_mark_g3home(void);   /* #284: right after _set by the G3_HOME restore */
+bool app_xfer_pending_is_g3home(void);
 bool app_xfer_promote(void);
 void app_xfer_pending_drop(void);
 

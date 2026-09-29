@@ -2133,6 +2133,9 @@ bool app_gen3_pc_live(void) { return xg_pc_live(g_vinfo.valid, app_arena_held())
  * spend one byte of EWRAM). 0/-1 == none pending. */
 static uint64_t g_xd_key;
 static int16_t  g_xd_idx = -1;
+/* #284: 1 byte (plain .bss/IWRAM, no EWRAM): the pending entry is a G3_HOME one (a Gen-3-target restore,
+ * gb_g3home_restore_up) rather than a NATIVE_HOME conversion. Cleared by every set/drop. */
+static bool     g_xd_g3home;
 
 bool app_xfer_pending(void) { return g_xd_key != 0 && g_xd_idx >= 0; }
 
@@ -2147,9 +2150,14 @@ bool app_xfer_pending_is(uint64_t key) { return g_xd_key == key && g_xd_idx >= 0
 void app_xfer_pending_set(uint64_t key, int idx) {
   g_xd_key = key;
   g_xd_idx = (int16_t)idx;
+  g_xd_g3home = false;
 }
 
-void app_xfer_pending_drop(void) { g_xd_key = 0; g_xd_idx = -1; }
+/* #284: called right after app_xfer_pending_set() by the G3_HOME restore only. */
+void app_xfer_pending_mark_g3home(void) { g_xd_g3home = app_xfer_pending(); }
+bool app_xfer_pending_is_g3home(void)   { return g_xd_g3home && app_xfer_pending(); }
+
+void app_xfer_pending_drop(void) { g_xd_key = 0; g_xd_idx = -1; g_xd_g3home = false; }
 
 /* Re-resolve the entry's path, re-read it, do a cheap identity re-check (still the
  * right kind/direction/state at that index -- a mismatch means the file changed
@@ -2245,10 +2253,13 @@ bool app_xfer_save_now(void) {
      * app_xfer_pending_undo() here would REMOVE the ledger's PENDING entry while the
      * Gen-3 copy may have actually landed -> an uncollectable duplicate. Only clear
      * the RAM key (app_xfer_pending_drop()): the TRANSFERS screen's own XRC_PENDING_*
-     * rows still see the ledger entry either way and can collect/reconcile it later. */
-    app_xfer_pending_drop();
+     * rows still see the ledger entry either way and can collect/reconcile it later.
+     * #284 (y9 review finding 3): EXCEPT a G3_HOME entry -- undo never removes it, so keeping
+     * the key is safe, and the retry (another save) then still consumes it on success; a
+     * dropped key would strand the restore (the entry survives, nothing can ever consume it). */
+    if (!app_xfer_pending_is_g3home()) app_xfer_pending_drop();
     msg_wait(PDNA_XFER_NOTSAVED_TITLE, UI_WARN, PDNA_XFER_NOTSAVED_L1, PDNA_XFER_NOTSAVED_L2);
-    log_line("xfer: save-now: app_commit_pc failed -- pending key dropped");
+    log_line("xfer: save-now: app_commit_pc failed -- pending key %s", app_xfer_pending() ? "kept (G3_HOME)" : "dropped");
     ok = false;
   }
   return ok;

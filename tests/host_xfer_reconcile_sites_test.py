@@ -393,7 +393,7 @@ def main() -> int:
     # app_xfer_save_now (4-space indent, 2 nesting levels) -- re-anchored, not
     # copied blind.
     mutated = main_text.replace(
-        "    app_xfer_pending_drop();\n"
+        "    if (!app_xfer_pending_is_g3home()) app_xfer_pending_drop();\n"   # #284: guarded by the kind
         "    msg_wait(PDNA_XFER_NOTSAVED_TITLE, UI_WARN, PDNA_XFER_NOTSAVED_L1, PDNA_XFER_NOTSAVED_L2);\n",
         "    msg_wait(PDNA_XFER_NOTSAVED_TITLE, UI_WARN, PDNA_XFER_NOTSAVED_L1, PDNA_XFER_NOTSAVED_L2);\n",
         1)

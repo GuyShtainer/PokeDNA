@@ -2196,6 +2196,7 @@ gb_g3home_restore_up(const uint8_t cell80[80], uint8_t out80[80]) {
     return -2;
   }
   app_xfer_pending_set(key, (int16_t)found);        /* consumed by app_xfer_promote after the verified save */
+  app_xfer_pending_mark_g3home();                   /* #284: a failed save keeps this key (undo never removes G3_HOME) */
   log_line("gen12: g3home restore: original Gen-3 record ready, entry %d pending consume", found);
   return 1;
 }
