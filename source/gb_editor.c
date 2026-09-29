@@ -350,6 +350,7 @@ bool gbe_adjust(GbEditMon* e, int f, int dir, bool big) {
       return gb_set_friendship(e, (uint8_t)v);
     }
     case GBE_CURHP: {                       /* THE reviving edit; 0..stored max (#231) */
+      (void)gbe_settle_stats(e);            /* edit against the FRESH max, never a stale one */
       int mx = gb_get_stat(e, GB_HP);
       int v = big ? (dir > 0 ? mx : 0) : clampi((int)gb_get_current_hp(e) + dir, 0, mx);
       if (v == gb_get_current_hp(e)) return false;
@@ -436,6 +437,7 @@ bool gbe_press(GbEditMon* e, int f) {
     case GBE_ITEM:   return gb_get_held_item(e) ? gb_set_held_item(e, 0) : false;
     case GBE_FRIEND: return gb_set_friendship(e, (uint8_t)(gb_get_friendship(e) == 255 ? 0 : 255));
     case GBE_CURHP: {                       /* A: full <-> fainted */
+      (void)gbe_settle_stats(e);            /* edit against the FRESH max, never a stale one */
       uint16_t mx = gb_get_stat(e, GB_HP);
       return gb_set_current_hp(e, gb_get_current_hp(e) == mx ? 0 : mx);
     }

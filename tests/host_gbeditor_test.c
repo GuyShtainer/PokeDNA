@@ -582,6 +582,11 @@ static void curhp_slot(GbSession* s, int box, int slot) {
   gb_set_statexp(&h, GB_HP, 65535);
   (void)gbe_settle_stats(&h);
   CHECK(gb_get_current_hp(&h) >= 1 && gb_get_current_hp(&h) <= gb_get_stat(&h, GB_HP), "damaged mon stays in 1..max");
+  /* G2: Cur HP typed AFTER a level edit is edited against the fresh max and saves as shown */
+  GbEditMon st = e;
+  gb_set_level(&st, (uint8_t)(gb_get_level(&st) > 10 ? 5 : 50));
+  gbe_adjust(&st, GBE_CURHP, -1, true); gbe_adjust(&st, GBE_CURHP, +1, false); gbe_adjust(&st, GBE_CURHP, +1, false);
+  if (gbe_settle_stats(&st)) CHECK(gb_get_current_hp(&st) == 2, "Cur HP set after a level edit saves as shown");
 }
 static void test_curhp(void) {
   const char* names[4] = { "Red.sav", "Yellow.sav", "Gold.sav", "Crystal.sav" };
