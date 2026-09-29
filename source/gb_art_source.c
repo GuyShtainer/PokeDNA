@@ -712,6 +712,8 @@ struct GbArtBatchImpl {
 };
 _Static_assert(sizeof(struct GbArtBatchImpl) <= sizeof(GbArtBatch),
                "GB_ART_BATCH_BYTES (gb_art_source.h) is smaller than the SD batch layout");
+_Static_assert(_Alignof(struct GbArtBatchImpl) <= _Alignof(GbArtBatch),
+               "GbArtBatch under-aligned for FIL");
 
 /* Open `gen`'s ROM into the batch if it is not the one already open, then locate/validate
  * the sprite tables (icon=false) or the icon tables (icon=true) if this pass has not yet.
@@ -970,6 +972,8 @@ struct GbArtBatchImpl {
 };
 _Static_assert(sizeof(struct GbArtBatchImpl) <= sizeof(GbArtBatch),
                "GB_ART_BATCH_BYTES (gb_art_source.h) is smaller than the delta batch layout");
+_Static_assert(_Alignof(struct GbArtBatchImpl) <= _Alignof(GbArtBatch),
+               "GbArtBatch under-aligned for FIL");
 
 static bool __attribute__((noinline))
 gb_batch_open(GbArtBatchImpl* b, uint8_t gen, bool icon) {

@@ -2702,7 +2702,9 @@ static void move_cursor(BoxSource* src, int box, int old_cur, bool old_title,
      * name chips and the blocked-cell hatch are outside the band and are never touched.
      * The full WP_W: the procedural grass covers all 162 columns (as draw_wallpaper's does),
      * while the tiled wallpaper's map is 20 tiles = 160 px wide, so wp_restore_rect clamps to
-     * the map and the two columns past it are left exactly as draw_wallpaper leaves them. */
+     * the map and the two columns past it are left exactly as draw_wallpaper leaves them.
+     * Known: the selection frame itself paints x=238, which wp_restore_rect never
+     * repaints, so a 1-px sliver can remain -- pre-existing, BACKLOG #274 (not fixed here). */
     wp_restore_rect(WP_X, WP_Y, WP_W, 16);
     draw_box_banner(src, box, on_title);
     draw_footer(src->is_bank, on_title, false);

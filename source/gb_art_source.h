@@ -306,10 +306,10 @@ bool gb_rom_path_beside(const char* save_path, uint8_t gen, char* out, int cap);
  *
  * MEMORY: ~1.1 KB of the CALLER's stack while the pass runs (GB_ART_BATCH_BYTES, pinned
  * against the real layout by a _Static_assert in gb_art_source.c); the fetch that runs
- * inside it is smaller than the one-shot fetch because the FIL, the located tables and the
- * scan guard already live in `bt`. */
+ * inside it still pays gb_art_fetch's own frame plus gb_batch_open (measured 4,360 B vs the
+ * one-shot's 3,768 B, under PDNA_GB_FETCH_NEED). */
 #define GB_ART_BATCH_BYTES 1120
-typedef struct { uint32_t w[GB_ART_BATCH_BYTES / 4]; } GbArtBatch;
+typedef struct { uint64_t w[GB_ART_BATCH_BYTES / 8]; } GbArtBatch;
 void gb_art_batch_begin(GbArtBatch* b);
 void gb_art_batch_end(GbArtBatch* b);
 
