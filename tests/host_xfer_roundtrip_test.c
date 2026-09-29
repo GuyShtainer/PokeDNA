@@ -2290,6 +2290,58 @@ static void test_backlog_246_d3_lift_finds_g3home(void) {
   CHECK(!bc_is_native(back80), "#246 D3: the restored Bank cell is a PLAIN Gen-3 record, never native");
 }
 
+/* Y9. BACKLOG #280 (Guy's #270 ruling, G3_HOME half): the GB->Bank lift is a pass-through and the
+ * Gen-3 original comes home at the Gen-3 TARGET drop. This is the whole pure-C path of that
+ * round trip: a Gen-3 record goes DOWN (gb_paste_write's own gbsc_entry_from), the GB record is
+ * lifted to the Bank AS-IS (bc_pack), and at the target the cell is unpacked, keyed and resolved
+ * exactly as gb_g3home_restore_up does -- the restored bytes must equal the original, then the
+ * entry is consumed (app_xfer_promote's gbsc_remove) and a second cell of the same identity finds
+ * NOTHING (the dup rule: never restore twice). MUTATION (host): make gbsc_key ignore otname, or
+ * xr_resolve_home return -1 -> the lookup/merge checks go RED. */
+static void test_y9_g3home_target_restore(void) {
+  printf("\n-- Y9. #280: lift pass-through + Gen-3-target restore of a G3_HOME entry --\n");
+  if (!g_have_g3_sample) { printf("  SKIP Y9 (no Gen-3 corpus record)\n"); return; }
+  GbEditMon down;
+  Gen3ToGbLoss loss;
+  if (gen3_to_gb(g_g3_sample_rec, GB_GEN2, true, NULL, &down, &loss) != G3GB_OK) {
+    printf("  SKIP Y9 (sample refuses gen3_to_gb)\n"); return;
+  }
+  GbscEntry e;
+  gbsc_entry_from(&e, &down, g_g3_sample_rec, 0);
+  uint8_t dv4[4] = { gb_get_dv(&down, GB_ATK), gb_get_dv(&down, GB_DEF), gb_get_dv(&down, GB_SPE), gb_get_dv(&down, GB_SPC) };
+  uint64_t key = gbsc_key(down.gen, gb_get_otid(&down), dv4, down.otname);
+  uint8_t file[GBSC_FILE_MAX];
+  uint32_t len = (uint32_t)gbsc_init(file, key);
+  int idx = gbsc_add(file, &len, GBSC_FILE_MAX, &e);
+  CHECK(idx >= 0, "Y9: the G3_HOME entry is added");
+  if (idx < 0) return;
+
+  /* the lift: pass-through, the GB record banked as-is (no ledger read, no restore) */
+  uint8_t cell[80];
+  CHECK(bc_pack(&down, 0, 3, 0, 7001, cell) == 0 && bc_is_native(cell), "Y9: the lifted cell is the native GB record");
+  GbEditMon at_target; BcMeta meta;
+  CHECK(bc_unpack(cell, &at_target, &meta), "Y9: the cell unpacks at the target");
+  uint8_t tdv[4] = { gb_get_dv(&at_target, GB_ATK), gb_get_dv(&at_target, GB_DEF), gb_get_dv(&at_target, GB_SPE), gb_get_dv(&at_target, GB_SPC) };
+  CHECK(gbsc_key(at_target.gen, gb_get_otid(&at_target), tdv, at_target.otname) == key,
+        "Y9: the target-side key (from the cell) equals the ledger key");
+
+  /* the target restore: gb_g3home_restore_up's lookup + commit, verbatim calls */
+  int found = xr_resolve_home(file, len, &at_target, XR_KIND_G3_HOME, gb_get_species_dex(&at_target));
+  CHECK(found == idx, "Y9: xr_resolve_home finds the entry from the CELL (index %d, want %d)", found, idx);
+  if (found < 0) return;
+  GbscEntry got;
+  CHECK(gbsc_get(file, len, found, &got) && got.state == XR_STATE_NONE, "Y9: a plain (state NONE) entry");
+  uint8_t back[80];
+  CHECK(gbsc_merge_up_sel(&got, &at_target, 0, back, NULL), "Y9: gbsc_merge_up_sel commits");
+  CHECK(memcmp(back, g_g3_sample_rec, 80) == 0, "Y9: the restored Gen-3 record is BYTE-IDENTICAL to the original");
+  CHECK(!bc_is_native(back), "Y9: the restored record is plain Gen-3");
+
+  /* app_xfer_promote's consume, then the dup: a second cell finds no entry -> converts normally */
+  CHECK(gbsc_remove(file, &len, found) == 0, "Y9: the entry is consumed (gbsc_remove)");
+  CHECK(xr_resolve_home(file, len, &at_target, XR_KIND_G3_HOME, gb_get_species_dex(&at_target)) < 0,
+        "Y9: after the consume a second cell of the same identity resolves to NOTHING (never restored twice)");
+}
+
 /* ============================================================================ */
 /* F4. BACKLOG #246 review F4 (MEDIUM): two same-fingerprint, same-species entries
  * in one .pds swap their originals. gbsc_find() matches only gen/otid16/dv4/
@@ -2387,6 +2439,7 @@ int main(int argc, char** argv) {
 
   printf("\n-- F. BACKLOG #246 review D3: the down-arm's own return trip (the lift lookup) --\n");
   test_backlog_246_d3_lift_finds_g3home();
+  test_y9_g3home_target_restore();
 
   printf("\n-- F4. BACKLOG #246 review F4: two same-fingerprint, same-species entries --\n");
   test_backlog_246_f4_ambiguous_entries();

@@ -167,9 +167,17 @@ BankDownResult bank_down_convert_gb(BoxSource* src, int dst_box, int dst_cell,
   return gb_bank_down_bridge(dst_box, cell80);
 }
 
+/* BACKLOG #280: a Gen-3 target is where a Game Boy mon whose HOME is Gen-3 goes home --
+ * the restore edge runs FIRST, in its own frame (a sibling of gb_bank_down_gen3's frame,
+ * never nested under it); 1 = the original Gen-3 record is in out80 (land it), 0 = no
+ * restorable original (convert normally, unchanged), anything else = refused/declined,
+ * already said on screen. */
 BankDownResult bank_down_convert_gen3(BoxSource* src, int dst_box, int dst_cell,
                                       const uint8_t cell80[80], const uint8_t dstrec[80],
                                       uint8_t out80[80]) {
+  int rc = gb_g3home_restore_up(cell80, out80);
+  if (rc == 1) return BANK_DOWN_CONVERTED;
+  if (rc != 0) return BANK_DOWN_REFUSED;
   return gb_bank_down_gen3(src, dst_box, dst_cell, cell80, dstrec, out80);
 }
 
@@ -182,6 +190,9 @@ static const uint8_t k_empty80[80] = {0};
 
 BankDownResult bank_down_convert_gen3_party(BoxSource* src, int party_slot,
                                             const uint8_t cell80[80], uint8_t out80[80]) {
+  int rc = gb_g3home_restore_up(cell80, out80);   /* #280: same restore edge as the box grid */
+  if (rc == 1) return BANK_DOWN_CONVERTED;
+  if (rc != 0) return BANK_DOWN_REFUSED;
   return gb_bank_down_gen3(src, -1, party_slot, cell80, k_empty80, out80);
 }
 
