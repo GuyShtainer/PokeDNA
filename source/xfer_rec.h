@@ -87,7 +87,7 @@ typedef struct {
  * direction) read through the SAME app_xfer_merge_screen (pdna_app.h) every other
  * direction already shares. Moved here (was a pdna_main.c static, app_paste_gb_lookup's
  * own private helper) because BACKLOG #246's Bank-UP lift (source/pdna_gen12.c
- * gb_lift_restore) needs the identical conversion and pdna_gen12.c cannot reach a
+ * gb_lift_restore, since #280 gb_g3home_restore_up) needs the identical conversion and pdna_gen12.c cannot reach a
  * pdna_main.c static; xfer_rec.h already includes gb_sidecar.h (GbscMergeReport), so no
  * new include and no circular-include risk (this header's own note above). A straight
  * field copy, never lossy: both reports share the same six names by design (decision 12). */
@@ -95,7 +95,7 @@ void xr_report_from_gbsc(const GbscMergeReport* g, XrMergeReport* x);
 
 /* BACKLOG #246 review F2 fix: the ONE entry-resolve decision both #246 arms need --
  * gb_lift_restore_g3home (the Bank-UP lift) and gb_release_g3home (the matching
- * release, source/pdna_gen12.c) used to carry two hand-copied loops of this same
+ * release; both deleted by #280, the Gen-3-target restore gb_g3home_restore_up now calls this) used to carry two hand-copied loops of this same
  * tiebreak. Walks every `want_kind` match gbsc_find() returns (include_claimed =
  * true -- a #246 entry is always claimed=false by construction, F3, but the walk
  * itself must not filter on it) and prefers the one whose species_written equals

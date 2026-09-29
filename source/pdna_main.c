@@ -11414,7 +11414,7 @@ static void view_save(const char* path) {
       }
       log_line("save: flash blank/invalid -> using the fused GB save (%lu B)",
                (unsigned long)fsz);
-      /* BACKLOG #209: seed site 2's ledger entry (gb_lift_restore, source/pdna_gen12.c)
+      /* BACKLOG #209: seed site 2's ledger entry (gb_lift_restore until #280, now the bridge-target restore gb_bridge_restore_up, source/pdna_gen12.c)
        * from whatever THIS fused save actually holds at its own box 0 slot 0 -- see
        * bank_plant_site2_seed's own doc comment for why a boot-time constant (like
        * the four S150-9 xfer slots above) cannot work here: the key is the mon's

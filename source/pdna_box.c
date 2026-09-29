@@ -1218,8 +1218,11 @@ bank_down_dispatch(BoxSource* src, int dst_box, int dst_cell, const uint8_t cell
 
 /* #270 (Guy 2026-09-29, RULED): the Bank is a PASS-THROUGH -- today in the Gen-3 ->
  * Bank DIRECTION: a PC->Bank drop stores the record byte-as-is and the S150-8b D-Q1
- * restore edge that used to run there is RETIRED. The GB->Bank lift still restores on
- * entry (BACKLOG #280 is the follow-up that makes that direction pass through too).
+ * restore edge that used to run there is RETIRED. The GB->Bank direction passes through too
+ * (BACKLOG #280, lane y9-280 -- history: the lift used to restore on entry): the Gen-3 originals
+ * of Game Boy mons come home at the Gen-3 TARGET (gb_g3home_restore_up, in
+ * bank_down_convert_gen3/_party) and the bridged GB originals at the other-generation Game Boy
+ * TARGET (gb_bridge_restore_up, in bank_down_convert_gb), both pdna_gen12.c.
  * This lookup now runs at exactly one place, the TARGET drop (drop_held_down_g3): a
  * Gen-3 record dropped onto a Game Boy PC whose ledger has a native-home entry of THAT save's generation is restored
  * byte-exactly (the merge screen, then the native cell). Anything else -- no entry,
@@ -1507,8 +1510,8 @@ static uint8_t* __attribute__((noinline)) drop_held_up(BoxSource* src, int box, 
    * CANDIDATE cell already stored in a Bank box -- not a recomputed bc_ident32()
    * on the candidate (a match on bytes 0..3 alone already implies "GBC1" for
    * THAT side, so no separate bc_is_native() check is needed on it).
-   * BACKLOG #246 review F5 fix: `packed` itself is a DIFFERENT matter -- since
-   * gb_lift_restore_g3home (source/pdna_gen12.c), it can be a PLAIN Gen-3
+   * BACKLOG #246 review F5 fix: `packed` itself is a DIFFERENT matter -- until #280
+   * (the lift-time gb_lift_restore_g3home, deleted) it could be a PLAIN Gen-3
    * record (bc_is_native(packed) == false by construction: gen3_edit_commit
    * never writes the GBC1 tag), and for that shape bytes 0..7 are PID + OT ID,
    * not magic + ident32 at all -- comparing them against every stored cell's

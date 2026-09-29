@@ -446,7 +446,7 @@ int bank_plant_xfer_seed_all(uint8_t g3_out[4][80]) {
 void bank_plant_site2_seed(const GbEditMon* mon) {
   if (!mon) return;
   /* BACKLOG #206/#209 review D2: the entry's HOME must be a CHANGED copy of the
-   * live mon, not the live mon itself -- gb_lift_restore's probe compares the
+   * live mon, not the live mon itself -- the bridge restore's probe (gb_lift_restore, retired by #280; now gb_bridge_restore_up at the target drop) compares the
    * entry's baseline (written_level / nick_written) against the mon still ON THE
    * CARD (unedited by this seed); if both sides are built from the same `mon`,
    * nothing ever reads as changed and app_xfer_merge_screen never draws (decision
@@ -467,7 +467,7 @@ void bank_plant_site2_seed(const GbEditMon* mon) {
   if (!bc_unpack(cell, &written, &meta)) return;
 
   /* gbsc_entry_from() alone (not xr_entry_for_down()) -- there is no companion
-   * converted Gen-3 record for this entry (gb_lift_restore() merges directly
+   * converted Gen-3 record for this entry (the restore -- gb_lift_restore() until #280, now gb_bridge_restore_up() -- merges directly
    * between the entry and the Game Boy mon being lifted, never consults a Gen-3
    * side at all), so xr_entry_for_down()'s nick_g3 override does not apply; its
    * default (nick_written = written->nick) is exactly what gbsc_entry_from() does
@@ -477,7 +477,7 @@ void bank_plant_site2_seed(const GbEditMon* mon) {
   gbsc_entry_from(&e, &written, cell, 0);
   e.kind = XR_KIND_NATIVE_HOME;
   e.state = XR_STATE_CLAIMED;
-  /* BACKLOG #206/#209 review D2: gb_lift_restore's probe is xr_merge_down_gb_sel
+  /* BACKLOG #206/#209 review D2: the restore's probe (gb_lift_restore, now gb_bridge_restore_up) is xr_merge_down_gb_sel
    * (source/xfer_rec.c:245 `if (e->direction != XR_DIR_ABROAD_GB) return false;`),
    * not xr_merge_down_sel -- site 2 is a GB lift, so the seeded entry must claim to
    * have come from the OTHER Game Boy generation, never XR_DIR_ABROAD_G3 (that tag

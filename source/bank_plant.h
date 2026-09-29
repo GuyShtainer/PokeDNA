@@ -125,7 +125,7 @@ bool bank_plant_xfer_open(uint64_t key, uint8_t* buf, uint32_t cap, uint32_t* le
 int bank_plant_xfer_seed_all(uint8_t g3_out[4][80]);
 
 /* BACKLOG #209: a FIFTH planted ledger slot, keyed by gbsc_key() (gen/otid16/dv4/
- * otname -- the NATIVE identity gb_lift_restore() itself computes from a Game Boy
+ * otname -- the NATIVE identity the restore (gb_lift_restore() until #280; now gb_bridge_restore_up()) computes from a Game Boy
  * grid mon, source/pdna_gen12.c), never xr_key_g3() (the four slots above, keyed by
  * a Gen-3 record's PID+otId) -- a completely different key space, so none of those
  * four could ever serve site 2 (the Red-grid restore lift). Seeded at MOUNT TIME

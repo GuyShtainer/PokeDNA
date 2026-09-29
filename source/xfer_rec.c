@@ -25,8 +25,8 @@ void xr_report_from_gbsc(const GbscMergeReport* g, XrMergeReport* x) {
 }
 
 /* BACKLOG #246 review F2 fix: see xfer_rec.h for why this exists. Identical loop to
- * the two copies it replaces in source/pdna_gen12.c (gb_lift_restore_g3home,
- * gb_release_g3home) -- start=0, guard bound GBSC_MAX_ENTRIES (gbsc_find can never
+ * the two copies it replaced in source/pdna_gen12.c (gb_lift_restore_g3home,
+ * gb_release_g3home -- both deleted by #280; the callers are now gb_g3home_restore_up and gb_bridge_mark_restored's neighbours) -- start=0, guard bound GBSC_MAX_ENTRIES (gbsc_find can never
  * revisit an index, so this bounds the walk even if gbsc_find's own invariants were
  * ever violated, golden rule 2), first match kept as the fallback, a species_written
  * == nowdex match preferred and ends the walk immediately. */
