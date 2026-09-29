@@ -53,6 +53,7 @@
 #include "gen3_mon.h"
 #include "gen3_clip.h"
 #include "data_tables.h"
+#include "xfer_rec.h"      /* xr_key_g3 (BANKG3-1) */
 #include "gen3_edit.h"     /* ID-1: a genuine PID reroll (decode/re-encrypt), not a
                             * raw byte flip -- species lives in an ENCRYPTED substruct
                             * keyed by personality^otId, so flipping personality alone
@@ -160,6 +161,37 @@ static void mk_gb_mon(GbEditMon* m, uint8_t gen, uint16_t otid, uint8_t atk, uin
   gb_set_otid(m, otid);
   gb_set_dv(m, GB_ATK, atk); gb_set_dv(m, GB_DEF, def);
   gb_set_dv(m, GB_SPE, spe); gb_set_dv(m, GB_SPC, spc);
+}
+
+/* ==== BANKG3-1: #270 pass-through -- a Gen-3 copy parked in the Bank ================
+ * Mutation: delete the `bank_g3_matches >= 1` branch in xrc_classify -- the CLAIMED
+ * ABROAD_G3 entry with 0 save matches goes back to XRC_LOST + RESTORE|DELETE (a clone
+ * offer / loss of the way home). */
+static void test_bankg3(void) {
+  printf("== BANKG3-1: Gen-3 copy parked in the Bank ==\n");
+  XrcInput in; memset(&in, 0, sizeof in);
+  in.kind = XR_KIND_NATIVE_HOME; in.state = XR_STATE_CLAIMED; in.direction = XR_DIR_ABROAD_G3;
+  in.bank_g3_matches = 1;
+  XrcResult r; xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_ABROAD && r.actions == XRC_ACT_NONE,
+        "BANKG3-1: parked in Bank -> ABROAD, no actions (got kind %d actions 0x%x)", r.kind, r.actions);
+  in.bank_g3_matches = 0; xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_LOST, "BANKG3-1: nothing anywhere -> still LOST");
+  in.bank_g3_matches = 1; in.g3_key_matches = 1; xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_ABROAD, "BANKG3-1: in save (not bank-gated branch) still ABROAD");
+
+  /* the matcher: non-native cells only, by the FNV key of bytes 0..7 */
+  uint8_t box[2400]; memset(box, 0, sizeof box);
+  uint8_t rec[80]; memset(rec, 0, sizeof rec);
+  for (int i = 0; i < 8; i++) rec[i] = (uint8_t)(0x11 * (i + 1));
+  uint64_t key = xr_key_g3(rec);
+  CHECK(xrc_bank_g3_match(box, key) == 0, "BANKG3-1: empty box -> 0");
+  memcpy(box + 5 * 80, rec, 80);
+  CHECK(xrc_bank_g3_match(box, key) == 1, "BANKG3-1: one parked copy -> 1");
+  memcpy(box + 9 * 80, rec, 80);
+  CHECK(xrc_bank_g3_match(box, key) == 2, "BANKG3-1: two parked copies -> 2");
+  CHECK(xrc_bank_g3_match(box, key ^ 1u) == 0, "BANKG3-1: other key -> 0");
+  CHECK(xrc_bank_g3_match(NULL, key) == 0, "BANKG3-1: NULL box -> 0");
 }
 
 static void test_bank1(void) {
@@ -535,6 +567,7 @@ int main(int argc, char** argv) {
   printf("== xfer_reconcile ==\n");
   test_cls1();
   test_bank1();
+  test_bankg3();
   test_phase2();
   test_order1();
   test_rekey1();
