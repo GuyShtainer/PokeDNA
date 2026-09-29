@@ -5942,7 +5942,7 @@ def _y10_landed(before: "list[bytes]", after: "list[bytes]", label: str) -> "tup
     """Exactly one PC slot must differ between the two snapshots: return (slot index, its record)."""
     ch = [i for i in range(len(before)) if before[i] != after[i]]
     print(f"  [Y10 CHECK] {label}: changed PC slots = {[(i // 30 + 1, i % 30 + 1) for i in ch]}")
-    if len(ch) != 1 or not any(after[ch[0]]):
+    if len(ch) != 1 or not any(after[ch[0]]) or any(before[ch[0]]):
         print(f"[Y10 CHECK FAILED] {label}: expected exactly one newly written PC slot, got {ch}", file=sys.stderr)
         sys.exit(1)
     return ch[0], after[ch[0]]
@@ -6037,7 +6037,7 @@ def run_y10_togame(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Se
     _, m2 = _y10_landed(pc2, pc3, "menu: fresh conversion of slot 2 (after the save)")
     T("A", settle=300)
     T("B", settle=500)
-    s.shot("14b_party_view", "y10: B -- the first B leaves the Bank grid for the PARTY view", claim=["PARTY"], allow_same=False)
+    s.shot("14b_pc_box_grid", "y10: B -- the first B leaves the Bank grid for PC box 1's grid (30/30)", claim=["30/30"], allow_same=False)
     T("B", settle=500)
     s.shot("15_exit_prompt", "y10: B again leaves the box screen -- 'Save changes?' (the deferred PC writes + the "
            "queued Bank deletions wait for this ONE save, like a drop's)", claim=["Save changes"], allow_same=False)
@@ -6124,6 +6124,9 @@ def run_y10_togame(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Se
     print(f"  [Y10 PARITY] card files menu={sorted(ma)}  drop={sorted(da)}")
     diff = sorted(k for k in set(ma) | set(da) if ma.get(k) != da.get(k))
     print(f"  [Y10 PARITY] card files differing (path/size/crc): {diff}")
+    if diff:
+        print("[Y10 PARITY FAILED] card files differ", file=sys.stderr)
+        sys.exit(1)
     s.taken += d.taken
     s.skipped += d.skipped
     return s
