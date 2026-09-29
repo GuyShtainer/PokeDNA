@@ -140,12 +140,36 @@ static void recompute_party_stats(EditMon* e) {
   uint16_t hp = (species == SPECIES_SHEDINJA)
                   ? 1
                   : pk_calc_hp(base[PK_HP], ivs[PK_HP], ev[PK_HP], level);
+  /* BACKLOG #231 (Guy: "dont revive a mon when it gets edited"): an edit PRESERVES the
+   * current HP -- it used to write cur = max, silently reviving a fainted mon. Retail's
+   * CalculateMonStats agrees (REFERENCE ONLY): only a record with NO HP yet (cur == 0 AND
+   * old max == 0, i.e. a box mon just expanded to party) starts full; a fainted mon stays
+   * 0; a healthy one keeps its HP, clamped to the new max. Shedinja: a live one pins to 1,
+   * a fainted one stays 0. Raising current HP is the em_set_curhp field's job, not this. */
+  uint16_t old_max = rd16(e->raw + 0x58);
+  uint16_t cur     = rd16(e->raw + 0x56);
+  uint16_t ncur;
+  if (cur == 0 && old_max == 0)      ncur = hp;                    /* fresh from a box */
+  else if (species == SPECIES_SHEDINJA) ncur = (cur != 0) ? 1 : 0;
+  else                               ncur = (cur < hp) ? cur : hp; /* 0 stays 0 */
   wr16(e->raw + 0x58, hp);
-  wr16(e->raw + 0x56, hp);                      /* current HP = max */
+  wr16(e->raw + 0x56, ncur);
   for (int s = PK_ATK; s <= PK_SPD; s++) {
     int mod = (s == nb) ? 1 : (s == nh) ? -1 : 0;
     wr16(e->raw + 0x58 + s * 2, pk_calc_stat(base[s], ivs[s], ev[s], level, mod));
   }
+}
+
+/* BACKLOG #231: current HP is stored only in a PARTY record (plaintext tail, +0x56). The
+ * getter returns 0xFFFF for a box record (no such field); the setter is a no-op there and
+ * clamps to 0..max HP (+0x58) -- raising it above 0 is THE reviving edit. */
+uint16_t em_get_curhp(const EditMon* e) {
+  return e->is_party ? rd16(e->raw + 0x56) : 0xFFFFu;
+}
+void em_set_curhp(EditMon* e, uint16_t v) {
+  if (!e->is_party) return;
+  uint16_t mx = rd16(e->raw + 0x58);
+  wr16(e->raw + 0x56, v > mx ? mx : v);
 }
 
 void em_set_iv(EditMon* e, int stat, uint8_t v) {
