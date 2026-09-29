@@ -363,7 +363,7 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # "S150-9 decision 7"/"S150-9 decision 8"). Appended after "gb-bank-down-edge"
     # per this list's own append-only rule.
     ("gb-merge-screen-s150-9", "BACKLOG #150 S150-9 — the per-field MERGE screen: "
-     "toggle rows, the byte-identical skip, ALREADY RESTORED and SAVE FIRST",
+     "planted-cell grab (the drop-into-Bank merge frames retired by #270)",
      ("S150-9", "S150-9 decision 7", "S150-9 decision 8")),
     # BACKLOG #150 S150-11 (this lane): the TRANSFERS screen -- the 21-row START
     # menu with the new 'Transfers' row, the empty-state screen (decision 16 --
