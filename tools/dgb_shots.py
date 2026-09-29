@@ -17,9 +17,9 @@ chip parses, or (the normal case on a fresh emulator boot, where the flash is bl
 single-slot fused .sav fallback supplies it -- AND a GB corpus is fused in (gb_delta_boot_pick(), source/pdna_main.c) — row 0 is
 the loaded Gen-3 save, rows 1..n mirror the fused GB saves one for one. Picking the
 Gen-3 row continues into the normal Emerald box screen, where the nav menu's "GB
-import" row (NV_GB) still offers the READ-ONLY nested mount via
-pdna_gen12_show_fused() — VIEW / LEGALITY / COPY / CANCEL, no EDIT, no MOVE TO BOX, no
-RELEASE, no CREATE. Picking a GB row instead reuses the SAME full read/write STANDALONE
+import" row (NV_GB) is RETIRED by BACKLOG #239/#277 — it now shows the BANK ONLY
+refusal (it used to offer the READ-ONLY nested mount via pdna_gen12_show_fused() —
+VIEW / LEGALITY / COPY / CANCEL — and the chains here now pin the refusal instead). Picking a GB row instead reuses the SAME full read/write STANDALONE
 mount tools/gb_shots.py's own run_gold()/run_red() were calibrated against — VIEW/EDIT,
 LEGALITY, MOVE TO BOX, COPY, RELEASE, and a REAL, WORKING CREATE (this build fuses
 actual Red.gb/Gold.gbc/Crystal.gbc ROMs alongside the saves, unlike gb_shots.py's
@@ -8121,9 +8121,10 @@ def _main_dispatch(argv=None) -> int:
                           "same BACKLOG #98 harness-gap reasoning as --b90-fly")
     ap.add_argument("--b132-portrait", choices=("gold", "red"),
                      help="BACKLOG #132: run_b132_portrait() against --image for the "
-                          "named game's own summary portrait, through BOTH the "
-                          "boot-picker mount and the nested START > NV_GB import "
-                          "mount -- --image MUST be a COMBINED image (Emerald.sav + "
+                          "named game's own summary portrait, through the boot-picker "
+                          "mount AND the nested START > NV_GB entry (RETIRED by "
+                          "BACKLOG #239/#277 -- that leg now pins the BANK ONLY "
+                          "refusal) -- --image MUST be a COMBINED image (Emerald.sav + "
                           "Red/Gold/Crystal, `make delta-gb`'s own recipe) so both "
                           "mounts are reachable from the one image.")
     ap.add_argument("--b64-import", choices=("gold", "red"),
@@ -8131,12 +8132,11 @@ def _main_dispatch(argv=None) -> int:
                           "for the named game -- --image MUST be a COMBINED image "
                           "(Emerald.sav + Red/Gold/Crystal, `make delta-gb`'s own recipe, "
                           "same as run_nav_gb()). Drives the SAME START > nav menu > GB "
-                          "import (NV_GB) entry run_nav_gb() already uses, now a REAL "
-                          "streamed read-only session after Fix 3 gave pdna_gen12_show_"
-                          "fused() its own Option B install -- captures Trainer/Bag-or-"
-                          "Pack/Flags/Dex/Map from BOTH this mount AND the boot picker's "
-                          "own direct GB row (the pre-existing resident-image mount) over "
-                          "the SAME save, and `cmp`s each pair. The still-HW-only half is "
+                          "import (NV_GB) entry run_nav_gb() already uses -- RETIRED by "
+                          "BACKLOG #239/#277: that leg now pins the BANK ONLY refusal -- "
+                          "and captures Trainer/Bag-or-Pack/Flags/Dex/Map from the boot "
+                          "picker's own direct GB row (the pre-existing resident-image "
+                          "mount). The still-HW-only half is "
                           "pdna_gen12_show() itself (the real FIL/SD file-browser entry) "
                           "-- see run_b64_import()'s own docstring.")
     ap.add_argument("--out", type=Path, default=ROOT / "docs" / "shots" / "gb")

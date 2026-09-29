@@ -5787,7 +5787,8 @@ static bool gb_create_hook(void) {
    * (the legit arm's reads freeze the screen for a real ROM scan -- s_busy_reading()
    * inside gb_create_src_legit -- so the player must know why, and must be able to
    * decline). With no ROM registered there is nothing to copy from: build from scratch
-   * without asking (Gen 1 then needs the ROM for its base row and says so, below). */
+   * without asking (Gen 1 uses the generated gb1_base table when linked, else the
+   * ROM read for its base row -- and says so, below). */
   GbNewMonSrc src; memset(&src, 0, sizeof src);
   uint8_t lvl = 1;
   bool legit = false;
