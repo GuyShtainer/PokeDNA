@@ -119,10 +119,15 @@ SeEra se_resolve(const SeSetting* s, SeSaveKind kind, SePlace place,
    * cell (origin_gen 1/2 -- its own generation byte, or the import fingerprint) draws
    * the era it came FROM, not the era of the save that happens to be open. Only the BANK
    * place: a GB session's own grid/party/summary are unchanged. */
-  if (place == SE_PLACE_BANK && (kind == SE_KIND_GEN1 || kind == SE_KIND_GEN2)) {
-    if (origin_gen == 3)      native = SE_ERA_NATIVE;
-    else if (origin_gen == 1) native = SE_ERA_GEN1;
-    else if (origin_gen == 2) native = SE_ERA_GEN2;
+  if (kind == SE_KIND_GEN1 || kind == SE_KIND_GEN2) {
+    /* Review D4: the Bank -> VIEW summary (summary_run switches place to SUMMARY) shows the SAME
+     * record as the grid, so the origin_gen == 3 half applies at SUMMARY too; a Gen-3 record
+     * takes no GB era at either place. The origin-1/2 half stays BANK-only: a GB session's own
+     * summary is its mounted era. */
+    if ((place == SE_PLACE_BANK || place == SE_PLACE_SUMMARY) && origin_gen == 3)
+      native = SE_ERA_NATIVE;
+    else if (place == SE_PLACE_BANK && origin_gen == 1) native = SE_ERA_GEN1;
+    else if (place == SE_PLACE_BANK && origin_gen == 2) native = SE_ERA_GEN2;
   }
   bool native_icons_ok   = !(place == SE_PLACE_PC && native == SE_ERA_GEN1);
   bool native_species_ok = se_species_exists(native, national_dex);
