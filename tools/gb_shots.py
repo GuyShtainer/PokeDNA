@@ -835,20 +835,19 @@ def run_gold_create(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
                                                 "the list's own first entry")
 
     s.tap("A", settle=BIG_SETTLE)          # pick Bulbasaur -> gb_create_learn (level + moveset)
-    s.shot("14d_no_rom_refusal", "#50: picked -> \"Needs your Gen 1/2 ROM\" — honest evidence, "
-                                  "not a bug: mGBA has no flashcart/SD card, so neither the "
-                                  "registered-ROM path (app_gb_rom_path) nor the beside-the-save "
-                                  "fallback can ever find one here. No level prompt appears any "
-                                  "more (UX-parity: rom_gblearn_min_level would have computed "
-                                  "level 5 for Bulbasaur here, same as Gen 3's own create)")
-    s.skip("14e_new_mon_summary",
-           "gb_create_learn()'s own ROM lookup (rom_gbbase_gen1/2 + rom_gblearn) needs a real "
-           "Gen-1/2 ROM on the SD card, which mGBA's fused-save harness has no flashcart "
-           "to provide (same class of gap as E4's Sprites-era-cycling shot) -- the summary "
-           "editor this backlog item opens over the newly built mon (NOW in CREATE mode, the "
-           "NEW chip + START-keep confirm, UX-parity) is real, host-tested code (tests/"
-           "host_newmon_test.c gb_new_mon(); pdna_gbsummary.c's create param) but only "
-           "reachable with a real cartridge. Hardware-only: docs/HW-TEST-2026-09-05-GB-ARC.md §O.")
+    s.shot("14d_scratch_no_rom_summary", "#265: picked -> NO choice screen (nothing is registered, so "
+                                          "there is no ROM to copy from) and NO refusal any more: Gen 2 "
+                                          "builds FROM SCRATCH without touching a card -- the NEW-mon "
+                                          "summary opens on a level-1 BULBASAUR (Lv1, EXP 0), built from "
+                                          "the in-tree Gen-3 tables (Gen 2's base stats/growth are "
+                                          "identical to Gen 3's)",
+           claim=["BULBASAUR", "Lv1"])
+    s.skip("14e_new_mon_legit_copy",
+           "the LEGIT COPY arm (A on the #265 choice screen: real level + learnset off the "
+           "registered ROM) needs a registered ROM, which mGBA's fused-save harness has no "
+           "flashcart to provide here -- it IS captured on the delta-gb image "
+           "(dgb_shots.py --standalone's 09b/10/11 frames, and tools/y3_create_shots.py). "
+           "Hardware-only on a real SD-card ROM: docs/HW-TEST-2026-09-05-GB-ARC.md §O.")
     s.skip("14f_mon_in_grid",
            "downstream of 14e (gbs_insert -> the box grid re-paging with the new mon "
            "showing) -- same ROM-needs-a-real-SD-card gap, hardware-only.")
@@ -1056,12 +1055,14 @@ def run_red_create(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
                                                 "filter -- Bulbasaur (dex 1) selected again")
 
     s.tap("A", settle=BIG_SETTLE)          # pick Bulbasaur -> gb_create_learn (level + moveset)
-    s.shot("13d_no_rom_refusal", "#50: Gen 1 hits the same honest \"Needs your Gen 1/2 ROM\" "
-                                  "wall as Gen 2 — mGBA has no flashcart for either generation's "
-                                  "ROM lookup to find one on. No level prompt any more (UX-parity: "
-                                  "rom_gblearn_min_level would have computed level 5 here)")
+    s.shot("13d_no_rom_refusal", "#265: Gen 1 with no registered ROM -- no choice screen (nothing "
+                                  "to copy from), and it still hits the honest \"Needs your Gen 1/2 "
+                                  "ROM\" wall: unlike Gen 2, Gen 1 has NO in-tree base-stat/type "
+                                  "table (gb_edit.h; PokeDNA ships no Game Freak data), so even a "
+                                  "from-scratch build needs the ROM's 28-byte base row",
+           claim=["Needs your Gen 1/2 ROM"])
     s.skip("13e_new_mon_summary",
-           "same gap as Gold's 14e: gb_create_learn()'s ROM lookup needs a real cartridge, and "
+           "same gap as Gold's 14e_new_mon_legit_copy: gb_create_learn()'s ROM lookup needs a real cartridge, and "
            "the summary it would open is now in CREATE mode (NEW chip, UX-parity). "
            "Hardware-only: docs/HW-TEST-2026-09-05-GB-ARC.md §O.")
     return s

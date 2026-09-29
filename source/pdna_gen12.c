@@ -778,6 +778,7 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "gb_bag.h"        /* BACKLOG #249: gbb_read/gbb_pocket_cap/gbb_insert_and_write */
 #include "rom_gbsprite.h"  /* S5-C: locates BaseStats in the user's own Gen-1 ROM      */
 #include "rom_gblearn.h"   /* BACKLOG #50: level-up learnsets + min-level for CREATE   */
+#include "gb_origin.h"     /* BACKLOG #266: static-encounter level floor for CREATE   */
 #include "gb_new_mon.h"    /* BACKLOG #50: gb_new_mon/gb_new_mon_g1_moves for CREATE   */
 #include "pdna_pick.h"     /* BACKLOG #50 UX-parity: pick_species(), the Gen-3 picker  */
 #include "rom_gbbase.h"    /* S5-C: decodes the 28-byte BaseStats row rom_gbsprite found;
@@ -4016,6 +4017,25 @@ static void gb_rom_base_path(void) {
   g_ed->romspath[baselen] = 0;
 }
 
+static bool __attribute__((noinline)) gb_create_rom_available(void) {
+  const char* reg = app_gb_rom_path(g_ed->s.gen);
+  if (reg && reg[0]) return true;
+#ifndef PDNA_DELTA
+  gb_rom_base_path();
+  int bl = 0; while (g_ed->romspath[bl]) bl++;
+  static const char* const kExt[2] = { ".gb", ".gbc" };
+  for (int e = 0; e < 2; e++) {
+    int bp = bl;
+    for (int i = 0; kExt[e][i] && bp < (int)sizeof(g_ed->romspath) - 1; i++) g_ed->romspath[bp++] = kExt[e][i];
+    g_ed->romspath[bp] = 0;
+    memset(&g_ed->romfil, 0, sizeof g_ed->romfil);
+    if (f_open(&g_ed->romfil, g_ed->romspath, FA_READ) == FR_OK) { f_close(&g_ed->romfil); g_ed->romspath[bl] = 0; return true; }
+    g_ed->romspath[bl] = 0;
+  }
+#endif
+  return false;
+}
+
 /* Locate a Gen-1 ROM's tables -- the part of gb_gen1_base_from_rom() worth caching
  * (S5-C review fix #6b): rom_gbsprite_open() streams the WHOLE ROM once through
  * romscan to find them (rom_gbsprite.h: "1 MB (Gen 1) ... in ONE pass"), so redoing
@@ -5473,7 +5493,8 @@ gb_create_learn(uint16_t dex, const uint8_t g1_start[4], uint8_t at_level,
   g_ed->learn.ctx = &s_gb_create_slice;
   int kept = -1;
   if (ok) {
-    uint8_t lvl = at_level ? at_level : rom_gblearn_min_level(&g_ed->learn, dex);
+    uint8_t lvl = at_level ? at_level
+                             : gb_origin_level_floor(g_ed->s.gen, dex, rom_gblearn_min_level(&g_ed->learn, dex));
     kept = g1_start ? rom_gblearn_moves_at_seeded(&g_ed->learn, dex, lvl, g1_start, out4)
                     : rom_gblearn_moves_at(&g_ed->learn, dex, lvl, out4);
     if (kept >= 0 && out_level && !at_level) *out_level = lvl;
@@ -5497,7 +5518,8 @@ gb_create_learn(uint16_t dex, const uint8_t g1_start[4], uint8_t at_level,
   g_ed->learn.ctx = &g_ed->romfil;
   int kept = -1;
   if (ok) {
-    uint8_t lvl = at_level ? at_level : rom_gblearn_min_level(&g_ed->learn, dex);
+    uint8_t lvl = at_level ? at_level
+                             : gb_origin_level_floor(g_ed->s.gen, dex, rom_gblearn_min_level(&g_ed->learn, dex));
     kept = g1_start ? rom_gblearn_moves_at_seeded(&g_ed->learn, dex, lvl, g1_start, out4)
                     : rom_gblearn_moves_at(&g_ed->learn, dex, lvl, out4);
     if (kept >= 0 && out_level && !at_level) *out_level = lvl;
@@ -5543,6 +5565,113 @@ static int __attribute__((noinline)) gb_paste_fill_moves(uint16_t dex, uint8_t l
     log_line("gen12: paste moves: no gen-%u rom, %d slot(s) emptied", (unsigned)g_ed->s.gen, n);
   }
   return g3gb_moves_fill(mon, bad4, learn4, fill4);
+}
+
+/* BACKLOG #265: CREATE's origin choice -- LEGIT COPY reads the registered ROM for the
+ * species' real level and moves; FROM SCRATCH builds a level-1 Growl mon (see
+ * gb_create_src_scratch). Same idiom as gb_paste_legal_screen_ex above: a
+ * title, prose, an "A = ..." row, a "SELECT = ..." row, "B = cancel". */
+typedef enum { GB_CREATE_CANCEL = 0, GB_CREATE_LEGIT, GB_CREATE_SCRATCH } GbCreateMode;
+
+static GbCreateMode __attribute__((noinline)) gb_create_origin_screen(uint16_t dex) {
+  ui_clear();
+  ui_text(4, 3, UI_TITLE, PDNA_GBCREATE_ORIGIN_TITLE);
+  ui_hline(0, 13, UI_SCR_W, UI_BORDER);
+  int y = PDNA_SIDECAR_LOSS_ROW_Y0;
+  ui_ptext_fit(4, y, UI_SCR_W - 8, UI_TEXT, pk_species_name(dex));
+  y += PDNA_SIDECAR_LOSS_ROW_H + PDNA_SIDECAR_LOSS_ROW_H / 2;
+  ui_ptext_fit(4, y, UI_SCR_W - 8, UI_TEXT, PDNA_GBCREATE_ORIGIN_A);
+  y += PDNA_SIDECAR_LOSS_ROW_H;
+  ui_ptext_fit(4, y, UI_SCR_W - 8, UI_DIM, PDNA_GBCREATE_ORIGIN_A_WHY);
+  y += PDNA_SIDECAR_LOSS_ROW_H + PDNA_SIDECAR_LOSS_ROW_H / 2;
+  ui_ptext_fit(4, y, UI_SCR_W - 8, UI_TEXT, PDNA_GBCREATE_ORIGIN_SEL);
+  y += PDNA_SIDECAR_LOSS_ROW_H;
+  ui_ptext_fit(4, y, UI_SCR_W - 8, UI_DIM, PDNA_GBCREATE_ORIGIN_SEL_WHY);
+  y += PDNA_SIDECAR_LOSS_ROW_H + PDNA_SIDECAR_LOSS_ROW_H / 2;
+  ui_text(4, y, UI_DIM, PDNA_GBCREATE_ORIGIN_B);
+  u16 k = s_wait(KEY_A | KEY_SELECT | KEY_B);
+  if (k & KEY_B) return GB_CREATE_CANCEL;
+  return (k & KEY_SELECT) ? GB_CREATE_SCRATCH : GB_CREATE_LEGIT;
+}
+
+/* LEGIT COPY: locate the ROM, read the species' base row, then its learnset AND its
+ * lowest legal level (gb_create_learn -> gb_origin_level_floor, BACKLOG #266) in one
+ * open. Fills src's ROM facts + moves and *lvl; false (after its own message) on any
+ * failure. This is the body CREATE ran unconditionally before #265. */
+static bool __attribute__((noinline)) gb_create_src_legit(uint16_t dex, GbNewMonSrc* src, uint8_t* lvl) {
+  /* G1 review MEDIUM-2: gb_create_locate_rom + gb_create_learn together freeze the
+   * screen for a real full-ROM scan (up to ~185,000 read() calls, measured, before
+   * the cache below makes a second create in this session skip it) -- show honest
+   * feedback before either runs, not a still screen a player might mistake for a
+   * hang. Stays up through base1/base2/gb_create_learn too: nothing between here
+   * and the summary/refusal draws anything else. */
+  s_busy_reading();
+  if (!gb_create_locate_rom(g_ed->s.gen)) {
+    snd_deny();
+    msg_wait(PDNA_GBCREATE_TITLE, UI_WARN, PDNA_GBCREATE_NOROM_L1, PDNA_GBCREATE_NOROM_L2);
+    return false;
+  }
+
+  uint8_t g1_start_buf[4]; const uint8_t* g1_start = NULL;
+  if (g_ed->s.gen == GB_GEN1) {
+    RomGb1Species sp;
+    if (!gb_create_base1(dex, &sp)) {
+      snd_deny(); msg_wait(PDNA_GBCREATE_TITLE, UI_WARN, PDNA_SIDECAR_GEN1_BADROM_L1, 0); return false;
+    }
+    memcpy(src->base, sp.base.base, GB_NSTATS);
+    src->type1 = sp.base.type1; src->type2 = sp.base.type2;
+    src->growth = sp.growth;
+    memcpy(g1_start_buf, sp.start, 4);
+    g1_start = g1_start_buf;
+  } else {
+    RomGb2Species sp;
+    if (!gb_create_base2(dex, &sp)) {
+      snd_deny(); msg_wait(PDNA_GBCREATE_TITLE, UI_WARN, PDNA_SIDECAR_GEN1_BADROM_L1, 0); return false;
+    }
+    src->growth = sp.growth;
+  }
+
+  /* No level PROMPT any more (BACKLOG #50 UX-parity): gb_create_learn()
+   * computes the species' own lowest legal level (rom_gblearn_min_level, off
+   * the SAME ROM) and its moveset at that level together, one ROM open. */
+  *lvl = 5;
+  int kept = gb_create_learn(dex, g1_start, 0, lvl, src->moves);
+  if (kept < 0) {
+    snd_deny();
+    msg_wait(PDNA_GBCREATE_TITLE, UI_WARN, PDNA_GBCREATE_NOROM_L1, PDNA_GBCREATE_NOROM_L2);
+    return false;
+  }
+
+  return true;
+}
+
+/* FROM SCRATCH (Guy 2026-09-29): level 1, Growl, no learnset lookup, no level floor.
+ * Gen 2 needs nothing from the card at all (base stats/growth are the in-tree Gen-3
+ * tables, gb_edit.h). Gen 1 has NO in-tree base-stat/type table -- gb_edit.h and
+ * rom_gbbase.h both say so, and PokeDNA ships no Game Freak data -- so its base row
+ * (28 bytes) is still read from the registered ROM; that is the one card access left in
+ * this arm, and the legit arm's ~185,000-read learnset scan is skipped. Returns false
+ * after its own message when Gen 1 has no readable ROM. */
+static bool __attribute__((noinline)) gb_create_src_scratch(uint16_t dex, GbNewMonSrc* src) {
+  src->moves[0] = 45;   /* Growl: the same move id in Gen 1 and Gen 2 */
+  if (g_ed->s.gen == GB_GEN1) {
+    s_busy_reading();
+    RomGb1Species sp;
+    if (!gb_create_locate_rom(GB_GEN1)) {
+      snd_deny();
+      msg_wait(PDNA_GBCREATE_TITLE, UI_WARN, PDNA_GBCREATE_NOROM_L1, PDNA_GBCREATE_NOROM_L2);
+      return false;
+    }
+    if (!gb_create_base1(dex, &sp)) {
+      snd_deny(); msg_wait(PDNA_GBCREATE_TITLE, UI_WARN, PDNA_SIDECAR_GEN1_BADROM_L1, 0); return false;
+    }
+    memcpy(src->base, sp.base.base, GB_NSTATS);
+    src->type1 = sp.base.type1; src->type2 = sp.base.type2;
+    src->growth = sp.growth;
+  } else {
+    src->growth = gb_growth_rate(dex);   /* cross-checked inside gb_new_mon */
+  }
+  return true;
 }
 
 /* AppSrcOps.create. Takes NO arguments -- see pdna_app.h's own comment on why
@@ -5651,49 +5780,20 @@ static bool gb_create_hook(void) {
     if (form >= 0 && form <= 25) unown_letter = form;
   }
 
-  /* G1 review MEDIUM-2: gb_create_locate_rom + gb_create_learn together freeze the
-   * screen for a real full-ROM scan (up to ~185,000 read() calls, measured, before
-   * the cache below makes a second create in this session skip it) -- show honest
-   * feedback before either runs, not a still screen a player might mistake for a
-   * hang. Stays up through base1/base2/gb_create_learn too: nothing between here
-   * and the summary/refusal draws anything else. */
-  s_busy_reading();
-  if (!gb_create_locate_rom(g_ed->s.gen)) {
-    snd_deny();
-    msg_wait(PDNA_GBCREATE_TITLE, UI_WARN, PDNA_GBCREATE_NOROM_L1, PDNA_GBCREATE_NOROM_L2);
-    return false;
-  }
-
+  /* BACKLOG #265: the LEGIT COPY / FROM SCRATCH choice comes BEFORE any card access
+   * (the legit arm's reads freeze the screen for a real ROM scan -- s_busy_reading()
+   * inside gb_create_src_legit -- so the player must know why, and must be able to
+   * decline). With no ROM registered there is nothing to copy from: build from scratch
+   * without asking (Gen 1 then needs the ROM for its base row and says so, below). */
   GbNewMonSrc src; memset(&src, 0, sizeof src);
-  uint8_t g1_start_buf[4]; const uint8_t* g1_start = NULL;
-  if (g_ed->s.gen == GB_GEN1) {
-    RomGb1Species sp;
-    if (!gb_create_base1(dex, &sp)) {
-      snd_deny(); msg_wait(PDNA_GBCREATE_TITLE, UI_WARN, PDNA_SIDECAR_GEN1_BADROM_L1, 0); return false;
-    }
-    memcpy(src.base, sp.base.base, GB_NSTATS);
-    src.type1 = sp.base.type1; src.type2 = sp.base.type2;
-    src.growth = sp.growth;
-    memcpy(g1_start_buf, sp.start, 4);
-    g1_start = g1_start_buf;
-  } else {
-    RomGb2Species sp;
-    if (!gb_create_base2(dex, &sp)) {
-      snd_deny(); msg_wait(PDNA_GBCREATE_TITLE, UI_WARN, PDNA_SIDECAR_GEN1_BADROM_L1, 0); return false;
-    }
-    src.growth = sp.growth;
+  uint8_t lvl = 1;
+  bool legit = false;
+  if (gb_create_rom_available()) {
+    GbCreateMode mode = gb_create_origin_screen(dex);
+    if (mode == GB_CREATE_CANCEL) return false;
+    legit = (mode == GB_CREATE_LEGIT);
   }
-
-  /* No level PROMPT any more (BACKLOG #50 UX-parity): gb_create_learn()
-   * computes the species' own lowest legal level (rom_gblearn_min_level, off
-   * the SAME ROM) and its moveset at that level together, one ROM open. */
-  uint8_t lvl = 5;
-  int kept = gb_create_learn(dex, g1_start, 0, &lvl, src.moves);
-  if (kept < 0) {
-    snd_deny();
-    msg_wait(PDNA_GBCREATE_TITLE, UI_WARN, PDNA_GBCREATE_NOROM_L1, PDNA_GBCREATE_NOROM_L2);
-    return false;
-  }
+  if (!(legit ? gb_create_src_legit(dex, &src, &lvl) : gb_create_src_scratch(dex, &src))) return false;
 
   src.species_name = pk_species_name(dex);
   src.ot_name = (g_m && g_m->player[0]) ? g_m->player : 0;
