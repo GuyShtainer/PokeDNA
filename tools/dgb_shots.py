@@ -11058,8 +11058,8 @@ def run_s150_12_copy_edge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
            "serial 6)")
 
     s.tap("A", settle=150)
-    s.shot("13_menu", "s150-12: the ordinary Bank-cell menu -- VIEW/EDIT, LEGALITY, MOVE, DUPLICATE, EXPORT, "
-           "EXPORT .pk, RELEASE, CANCEL (this is a real Bank cell now, not the read-only "
+    s.shot("13_menu", "s150-12: the ordinary Bank-cell menu -- VIEW/EDIT, LEGALITY, MOVE, DUPLICATE, EXPORT .pk, "
+           "RELEASE, CANCEL (this is a real Bank cell now, not the read-only "
            "mount's whitelist)")
 
     s.press_n("DOWN", 2, settle=60)                              # VIEW/EDIT -> LEGALITY -> MOVE
