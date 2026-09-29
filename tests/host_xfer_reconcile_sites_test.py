@@ -313,6 +313,40 @@ def check_m_apply_gate(text: str) -> list[str]:
     return out
 
 
+def check_n_bank_g3_wiring(text: str) -> list[str]:
+    """(n) BACKLOG #283(c) / #280 step 4: the #270 parked-copy signal is wired END TO END.
+    xfer_reconcile_bank_phase2() must count parked Gen-3 copies with xrc_bank_g3_match(recs,
+    h->file_key) and xfer_reconcile_classify_all() must hand the count to the classifier
+    (`in.bank_g3_matches = h->bank_g3_matches;`) -- unwired, a Gen-3 copy parked in the Bank
+    classifies LOST with RESTORE (= a clone) / DELETE (= the way home lost)."""
+    out = []
+    phase2 = strip_comments(extract_function_body(text, "xfer_reconcile_bank_phase2"))
+    if not phase2:
+        out.append("xfer_reconcile_bank_phase2() not found in source/pdna_main.c")
+    elif not re.search(r"xrc_bank_g3_match\s*\(\s*recs\s*,\s*h->file_key\s*\)", phase2):
+        out.append("xfer_reconcile_bank_phase2(): no xrc_bank_g3_match(recs, h->file_key) call")
+    classify = strip_comments(extract_function_body(text, "xfer_reconcile_classify_all"))
+    if not classify:
+        out.append("xfer_reconcile_classify_all() not found in source/pdna_main.c")
+    elif "in.bank_g3_matches = h->bank_g3_matches;" not in classify:
+        out.append("xfer_reconcile_classify_all(): `in.bank_g3_matches = h->bank_g3_matches;` missing")
+    return out
+
+
+def check_o_g3home_not_listed(text: str) -> list[str]:
+    """(o) #280 step 4: the reconcile WALK lists NATIVE_HOME entries only -- a G3_HOME entry (the
+    ledger record of a Gen-3 original whose Game Boy copy is parked in the Bank as a native cell)
+    never becomes a TRANSFERS row, so no RESTORE (clone) / DELETE (loses the way home) can be
+    offered for it. RED if the skip is removed: someone must then re-derive that row's actions."""
+    body = strip_comments(extract_function_body(text, "xfer_reconcile_walk"))
+    if not body:
+        return ["xfer_reconcile_walk() not found in source/pdna_main.c"]
+    if not re.search(r"e2\.kind\s*!=\s*XR_KIND_NATIVE_HOME\s*\)\s*continue", body):
+        return ["xfer_reconcile_walk(): the `e2.kind != XR_KIND_NATIVE_HOME) continue` skip is gone -- "
+                "G3_HOME entries would reach the classifier/TRANSFERS"]
+    return []
+
+
 def run_all(main_text: str, bank_text: str) -> tuple[list[str], int]:
     violations = list(check_g_flush_on_exit_undo(main_text))
     h_violations, h_sites = check_h_load_sites(main_text)
@@ -322,6 +356,8 @@ def run_all(main_text: str, bank_text: str) -> tuple[list[str], int]:
     violations += check_k_apply_no_ledger_write(main_text)
     violations += check_l_screen_apply_order(main_text)
     violations += check_m_apply_gate(main_text)
+    violations += check_n_bank_g3_wiring(main_text)
+    violations += check_o_g3home_not_listed(main_text)
     return violations, h_sites
 
 
@@ -500,6 +536,24 @@ def main() -> int:
             fails += 1
         else:
             print("self-mutation (m): the leading app_can_edit( guard removed -- correctly caught")
+
+    # (n)/(o) (#283(c) + #280 step 4): each wiring/skip line removed must turn its check red.
+    for label, target, needle in (
+        ("(n) xrc_bank_g3_match call", "xrc_bank_g3_match(recs, h->file_key)", "xrc_bank_g3_match(recs, h->file_key)"),
+        ("(n) in.bank_g3_matches wiring", "in.bank_g3_matches = h->bank_g3_matches;", "in.bank_g3_matches = h->bank_g3_matches;"),
+        ("(o) G3_HOME skip", "e2.kind != XR_KIND_NATIVE_HOME) continue;", "the `e2.kind != XR_KIND_NATIVE_HOME) continue` skip"),
+    ):
+        if target not in main_text:
+            print(f"FAIL -- self-mutation {label} target not found verbatim (source drifted)")
+            fails += 1
+            continue
+        repl = "0" if label.startswith("(n) xrc") else ("" if "wiring" in label else "e2.kind != 99) continue;")
+        v, _ = run_all(main_text.replace(target, repl, 1), bank_text)
+        if not any(("xrc_bank_g3_match" in x or "bank_g3_matches" in x or "skip is gone" in x) for x in v):
+            print(f"FAIL -- self-mutation {label}: did NOT turn its check red")
+            fails += 1
+        else:
+            print(f"self-mutation {label}: correctly caught")
 
     if fails:
         print(f"FAIL -- {fails} self-mutation proof(s) did not fire")
