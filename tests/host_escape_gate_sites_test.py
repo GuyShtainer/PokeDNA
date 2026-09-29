@@ -294,7 +294,10 @@ RETURN_RECS_RE = re.compile(r"^\s*return recs;")
 # by the real check (l) and its self-mutation demonstration (MUT K).
 RESTORE_UP_RE       = re.compile(r"\bgbpc_restore_up\(")
 RESTORE_DONE_RE     = re.compile(r"\bgbpc_restore_done\(")
-RESTORE_MEMCPY_RE   = re.compile(r"memcpy\(recs \+ \(uint32_t\)cur \* 80, rc == 1")
+ACCEPT_DOWN_CALL_RE = re.compile(r"s_xfer_peer->accept_down\(")
+GB_BANK_DOWN_G3_RE  = re.compile(r"\bgb_bank_down_g3\(")
+HOME_GEN_RE         = re.compile(r"\bxr_home_gen\(")
+PICK_BASIC_CALL_RE  = re.compile(r"\bxr_restore_pick_basic\(")
 PC_RELEASE_SLOT_RE  = re.compile(r"\bapp_pc_release_slot\(")
 APP_CAN_EDIT_RE     = re.compile(r"\bapp_can_edit\(")
 SF_WRITE_VERIFIED_RE = re.compile(r"\bsf_write_verified\(")
@@ -743,42 +746,93 @@ def native_summary_mask_facts(lines):   # shared by real check (w) and MUT M9
     return True, "ok"
 
 
-def restore_order_facts(lines, start, end):     # shared by the real check (l) AND MUT K
-    """BACKLOG #150 S150-8b decision 3 / §3.2's commit order: drop_held's PC->Bank arm
-    must call gbpc_restore_up( BEFORE the ternary memcpy that writes either the
-    rebuilt native cell or the plain Gen-3 record, and gbpc_restore_done( (the
-    entry-marking call) must come STRICTLY AFTER BOTH `ok = src->commit()` (the
-    verified Bank write) and `app_pc_release_slot(` (the source release) -- the
-    "destination first, verified; source only after; landed writes never undone" rule,
-    applied to marking the ledger entry: it must never be visible as done before the
-    Bank write it describes has actually landed."""
-    u = first_match_line(lines, start, end, RESTORE_UP_RE)
-    m = first_match_line(lines, start, end, RESTORE_MEMCPY_RE)
-    # review D4: COMMIT_RE's FIRST match in drop_held's whole body is the UP path's
-    # OWN `ok = src->commit()` (the earlier, unrelated Bank<-GB arm) -- anchoring the
-    # search there let the PC->Bank arm's own commit call be moved anywhere relative
-    # to it and still "pass" (a real regression: app_pc_release_slot + pc_bank_
-    # restore_done moved ABOVE the ARM's commit still reads as after the UP path's
-    # commit). Anchor the search at `m` (the PC->Bank arm's own memcpy) instead, so
-    # `c` resolves to the arm's OWN commit call.
-    c = first_match_line(lines, m if m is not None else start, end, COMMIT_RE)
-    r = first_match_line(lines, start, end, PC_RELEASE_SLOT_RE)
-    d = first_match_line(lines, start, end, RESTORE_DONE_RE)
-    if u is None: return False, "drop_held: no `gbpc_restore_up(` call in the PC->Bank arm"
-    if m is None: return False, "drop_held: no PC->Bank ternary memcpy line found"
-    if c is None: return False, "drop_held: no `ok = src->commit()` line in the PC->Bank arm"
-    if r is None: return False, "drop_held: no `app_pc_release_slot(` call in the PC->Bank arm"
-    if d is None: return False, "drop_held: no `gbpc_restore_done(` call in the PC->Bank arm"
-    if not u < m:
-        return False, (f"drop_held: gbpc_restore_up() (line {u+1}) does NOT come before "
-                       f"the PC->Bank memcpy (line {m+1}) -- the rebuilt cell could not be "
-                       f"ready in time to be written")
-    if not (m < c and c < r and c < d and r < d):
-        return False, (f"drop_held: gbpc_restore_done() (line {d+1}) and "
-                       f"app_pc_release_slot() (line {r+1}) must both come AFTER the PC->Bank "
-                       f"arm's OWN src->commit() (line {c+1}, found after the arm's memcpy at "
-                       f"line {m+1}) -- the entry would be marked (or the source released) "
-                       f"before the Bank write it describes has actually landed")
+def _code_lines(lines, start, end):
+    """(index, text) of the non-comment lines in [start, end) -- a comment that NAMES a call
+    must never satisfy or trip a structural pin."""
+    out = []
+    for i in range(start, end):
+        t = lines[i].strip()
+        if t.startswith("/*") or t.startswith("*") or t.startswith("//"):
+            continue
+        out.append((i, lines[i]))
+    return out
+
+
+def bank_passthrough_facts(lines, start, end):    # shared by the real check (l) AND MUT P
+    """#270 (Guy 2026-09-29, RULED): the Bank is a pass-through. drop_held (whose PC->Bank
+    arm writes `s_held` into the Bank cell) must contain NO call to the ledger restore
+    (gbpc_restore_up / gbpc_restore_done) and must not write a rebuilt cell (`rc == 1 ?`
+    ternary) -- the restore edge that ran on bank entry is RETIRED."""
+    for i, ln in _code_lines(lines, start, end):
+        if RESTORE_UP_RE.search(ln) or RESTORE_DONE_RE.search(ln):
+            return False, (f"drop_held: line {i + 1} calls the ledger restore -- the Bank must "
+                           f"store records byte-as-is (#270); restoration belongs to the TARGET "
+                           f"drop (drop_held_down_g3) only")
+        if re.search(r"rc == 1 \?", ln):
+            return False, f"drop_held: line {i + 1} writes a rebuilt cell into the Bank (`rc == 1 ?`)"
+    return True, "ok"
+
+
+def target_restore_order_facts(lines, start, end):   # shared by the real check (l2) AND MUT K/N
+    """#270 target-drop restore, in drop_held_down_g3: gbpc_restore_up( -- fed the TARGET save's
+    generation (app_gb_session_gen) -- comes BEFORE either landing (the exact accept_down hook
+    or the plain gb_bank_down_g3 convert), and gbpc_restore_done( (the entry-marking call) comes
+    STRICTLY AFTER both landings: the entry must never read as consumed before the verified
+    Game Boy write it describes has landed."""
+    code = _code_lines(lines, start, end)
+    def first(rx):
+        for i, ln in code:
+            if rx.search(ln):
+                return i
+        return None
+    u = first(RESTORE_UP_RE)
+    a = first(ACCEPT_DOWN_CALL_RE)
+    g = first(GB_BANK_DOWN_G3_RE)
+    d = first(RESTORE_DONE_RE)
+    if u is None: return False, "drop_held_down_g3: no `gbpc_restore_up(` call -- the target-drop restore is gone"
+    if a is None: return False, "drop_held_down_g3: no `s_xfer_peer->accept_down(` landing for the restored cell"
+    if g is None: return False, "drop_held_down_g3: no `gb_bank_down_g3(` convert fallback"
+    if d is None: return False, "drop_held_down_g3: no `gbpc_restore_done(` marking call"
+    if "app_gb_session_gen(" not in lines[u]:
+        return False, (f"drop_held_down_g3: gbpc_restore_up( (line {u + 1}) is not handed "
+                       f"app_gb_session_gen() -- the generation gate has no target")
+    if not (u < a and u < g):
+        return False, (f"drop_held_down_g3: gbpc_restore_up( (line {u + 1}) must precede both landings "
+                       f"(accept_down line {a + 1}, gb_bank_down_g3 line {g + 1})")
+    if not (a < d and g < d):
+        return False, (f"drop_held_down_g3: gbpc_restore_done( (line {d + 1}) must come AFTER both landings "
+                       f"(accept_down line {a + 1}, gb_bank_down_g3 line {g + 1}) -- the entry would be "
+                       f"marked before the Game Boy write it describes has landed")
+    return True, "ok"
+
+
+def restore_up_target_gate_facts(body):    # shared by the real check (l3) AND MUT Q/R
+    """#270 inside gbpc_restore_up: (1) xr_home_gen( is compared with target_gen BEFORE the pick
+    and before any screen (a wrong-generation original converts, silently); (2) the RESTORED
+    arm is `return 0;` -- the duplicate of an original that already came home CONVERTS, it is
+    neither restored twice (a clone) nor refused (a stranded mon) -- with no msg_wait/-2."""
+    hg = first_match_line(body, 0, len(body), HOME_GEN_RE)
+    pk = first_match_line(body, 0, len(body), PICK_BASIC_CALL_RE)
+    if hg is None: return False, "gbpc_restore_up: no xr_home_gen( generation gate"
+    if pk is None: return False, "gbpc_restore_up: no xr_restore_pick_basic( call"
+    if "target_gen" not in body[hg] or "return 0" not in body[hg]:
+        return False, f"gbpc_restore_up: line {hg + 1} does not `return 0` on a target_gen mismatch"
+    if not hg < pk:
+        return False, "gbpc_restore_up: the generation gate must precede xr_restore_pick_basic("
+    r = first_match_line(body, 0, len(body), RESTORE_UP_RESTORED_CHECK_RE)
+    if r is None: return False, "gbpc_restore_up: no RESTORED arm"
+    arm = []
+    for i in range(r + 1, min(r + 9, len(body))):
+        t = body[i].strip()
+        if t.startswith("/*") or t.startswith("*") or t.startswith("//"):
+            continue
+        arm.append(t)
+        if t == "}":
+            break
+    txt = " ".join(arm)
+    if "return 0;" not in txt or "msg_wait" in txt or "return -2" in txt:
+        return False, (f"gbpc_restore_up: the RESTORED arm must be a silent `return 0;` (the duplicate "
+                       f"converts) -- found: {txt}")
     return True, "ok"
 
 
@@ -1544,11 +1598,19 @@ def main() -> int:
     ok, d = n1_order_facts(box_lines, s, e)
     check(ok, d)
 
-    # ---- (l) BACKLOG #150 S150-8b: the RESTORE edge's ordering in drop_held's
-    # PC->Bank arm -- gbpc_restore_up( before the write, gbpc_restore_done(
-    # strictly after both the verified commit and the source release. ----
+    # ---- (l) #270 (RULED 2026-09-29): the Bank is a pass-through -- drop_held (the PC->Bank
+    # arm) has NO ledger-restore call and writes no rebuilt cell; (l2) the restore lives at the
+    # TARGET drop, drop_held_down_g3: gbpc_restore_up( (fed the target generation) before either
+    # landing, gbpc_restore_done( after both; (l3) inside gbpc_restore_up the generation gate
+    # precedes the pick and the RESTORED arm (the duplicate) is a silent `return 0`. ----
     s, e = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
-    ok, d = restore_order_facts(box_lines, s, e)
+    ok, d = bank_passthrough_facts(box_lines, s, e)
+    check(ok, d)
+    s, e = extract_function(box_lines, r"^drop_held_down_g3\(")
+    ok, d = target_restore_order_facts(box_lines, s, e)
+    check(ok, d)
+    s, e = extract_function(box_lines, r"^gbpc_restore_up\(")
+    ok, d = restore_up_target_gate_facts(box_lines[s:e])
     check(ok, d)
 
     # ---- (l') decision 13: app_can_edit( is the FIRST statement checked in both
@@ -2118,52 +2180,64 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str],
         check(not ok, f"MUT N1 (app_pc_queue_note moved above commit()) should have been caught but was not: {detail}")
         print(f"  MUT N1 demonstration -- app_pc_queue_note() line moved above src->commit(): {detail}")
 
-    # MUT K (BACKLOG #150 S150-8b, step 5's own demonstration): move
-    # gbpc_restore_done( ABOVE `ok = src->commit()` in a copy of drop_held's body --
-    # the entry would be marked as restored before the Bank write it describes has
-    # actually landed -- and assert restore_order_facts() reports failure.
-    s, e = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
+    # MUT Y7-K (#270): move gbpc_restore_done( ABOVE the accept_down landing in a copy of
+    # drop_held_down_g3 -- the entry would read RESTORED before the Game Boy write landed --
+    # and assert target_restore_order_facts() reports failure.
+    s, e = extract_function(box_lines, r"^drop_held_down_g3\(")
     body = box_lines[s:e]
-    commit_i2 = first_match_line(body, 0, len(body), COMMIT_RE)
+    acc_i = first_match_line(body, 0, len(body), ACCEPT_DOWN_CALL_RE)
     done_i = first_match_line(body, 0, len(body), RESTORE_DONE_RE)
-    check(commit_i2 is not None and done_i is not None,
-          "MUT K: could not locate both the commit() and gbpc_restore_done() lines in the real source -- fix this test")
-    if commit_i2 is not None and done_i is not None and commit_i2 < done_i:
+    check(acc_i is not None and done_i is not None,
+          "MUT Y7-K: could not locate accept_down( and gbpc_restore_done( in drop_held_down_g3 -- fix this test")
+    if acc_i is not None and done_i is not None and acc_i < done_i:
         mut_k = list(body)
         done_line = mut_k.pop(done_i)
-        mut_k.insert(commit_i2, done_line)   # gbpc_restore_done's line now sits BEFORE commit()
-        ok, detail = restore_order_facts(mut_k, 0, len(mut_k))
-        check(not ok, f"MUT K (gbpc_restore_done swapped before commit()) should have been caught but was not: {detail}")
-        print(f"  MUT K demonstration -- gbpc_restore_done() line swapped above src->commit(): {detail}")
+        mut_k.insert(acc_i, done_line)
+        ok, detail = target_restore_order_facts(mut_k, 0, len(mut_k))
+        check(not ok, f"MUT Y7-K (gbpc_restore_done above the landing) should have been caught but was not: {detail}")
+        print(f"  MUT Y7-K demonstration -- gbpc_restore_done() swapped above the landing: {detail}")
 
-    # MUT N (review D4): move BOTH app_pc_release_slot( AND gbpc_restore_done(
-    # above the PC->Bank ARM's own `ok = src->commit()` (found via RESTORE_MEMCPY_RE,
-    # the same anchor the fixed restore_order_facts() uses) -- the exact shape the
-    # PRE-D4 checker (anchored on the UP path's FIRST commit() match, much earlier in
-    # the function) could not catch, because both moved lines would still sit textually
-    # AFTER that earlier, unrelated commit() line and read as "ok".
-    s, e = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
-    body = box_lines[s:e]
-    m_i = first_match_line(body, 0, len(body), RESTORE_MEMCPY_RE)
-    arm_commit_i = first_match_line(body, m_i if m_i is not None else 0, len(body), COMMIT_RE)
-    release_i2 = first_match_line(body, 0, len(body), PC_RELEASE_SLOT_RE)
-    done_i2 = first_match_line(body, 0, len(body), RESTORE_DONE_RE)
-    check(m_i is not None and arm_commit_i is not None and release_i2 is not None and done_i2 is not None,
-          "MUT N: could not locate the memcpy/arm-commit/release/done lines in the real source -- fix this test")
-    if (m_i is not None and arm_commit_i is not None and release_i2 is not None and done_i2 is not None
-            and arm_commit_i < release_i2 and arm_commit_i < done_i2):
+    # MUT Y7-N (#270): delete the gbpc_restore_up( call from drop_held_down_g3 -- the target-drop
+    # restore is gone, every Gen-3 record silently converts again -- and assert it goes RED.
+    up_i = first_match_line(body, 0, len(body), RESTORE_UP_RE)
+    check(up_i is not None, "MUT Y7-N: could not locate gbpc_restore_up( in drop_held_down_g3 -- fix this test")
+    if up_i is not None:
         mut_n = list(body)
-        # pop the LATER index first so the earlier index stays valid.
-        first_pop, second_pop = sorted([release_i2, done_i2], reverse=True)
-        line_a = mut_n.pop(first_pop)
-        line_b = mut_n.pop(second_pop)
-        mut_n.insert(arm_commit_i, line_a)
-        mut_n.insert(arm_commit_i, line_b)
-        ok, detail = restore_order_facts(mut_n, 0, len(mut_n))
-        check(not ok, f"MUT N (both app_pc_release_slot and gbpc_restore_done swapped "
-                       f"above the ARM's own commit()) should have been caught but was not: {detail}")
-        print(f"  MUT N demonstration -- app_pc_release_slot() AND gbpc_restore_done() "
-              f"both swapped above the PC->Bank arm's own src->commit(): {detail}")
+        mut_n[up_i] = "  int rc = 0;"
+        ok, detail = target_restore_order_facts(mut_n, 0, len(mut_n))
+        check(not ok, f"MUT Y7-N (target restore call deleted) should have been caught but was not: {detail}")
+        print(f"  MUT Y7-N demonstration -- gbpc_restore_up() deleted from drop_held_down_g3: {detail}")
+
+    # MUT Y7-P (#270): re-introduce the retired bank-entry restore -- a gbpc_restore_up( call inside
+    # drop_held -- and assert the pass-through pin goes RED.
+    s, e = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
+    dbody = list(box_lines[s:e])
+    dbody.insert(len(dbody) // 2, "    int rc = gbpc_restore_up(s_held, 1, cell80);")
+    ok, detail = bank_passthrough_facts(dbody, 0, len(dbody))
+    check(not ok, f"MUT Y7-P (restore call on the PC->Bank arm) should have been caught but was not: {detail}")
+    print(f"  MUT Y7-P demonstration -- gbpc_restore_up() re-inserted into drop_held: {detail}")
+
+    # MUT Y7-Q / MUT Y7-R (#270): drop the generation gate; turn the RESTORED arm back into the old wall.
+    s, e = extract_function(box_lines, r"^gbpc_restore_up\(")
+    ubody = list(box_lines[s:e])
+    hg_i = first_match_line(ubody, 0, len(ubody), HOME_GEN_RE)
+    check(hg_i is not None, "MUT Y7-Q: could not locate the xr_home_gen( gate -- fix this test")
+    if hg_i is not None:
+        mut_q = list(ubody); mut_q[hg_i] = ""
+        ok, detail = restore_up_target_gate_facts(mut_q)
+        check(not ok, f"MUT Y7-Q (generation gate deleted) should have been caught but was not: {detail}")
+        print(f"  MUT Y7-Q demonstration -- xr_home_gen gate deleted from gbpc_restore_up: {detail}")
+    r_i = first_match_line(ubody, 0, len(ubody), RESTORE_UP_RESTORED_CHECK_RE)
+    check(r_i is not None, "MUT Y7-R: could not locate the RESTORED arm -- fix this test")
+    if r_i is not None:
+        mut_r = list(ubody)
+        for i in range(r_i + 1, min(r_i + 9, len(mut_r))):
+            if mut_r[i].strip() == "return 0;":
+                mut_r[i] = "    return -2;"
+                break
+        ok, detail = restore_up_target_gate_facts(mut_r)
+        check(not ok, f"MUT Y7-R (RESTORED arm refuses) should have been caught but was not: {detail}")
+        print(f"  MUT Y7-R demonstration -- RESTORED arm changed to `return -2`: {detail}")
 
     # MUT O (review D8/F2): revert gbpc_restore_done()'s `e.state = XR_STATE_RESTORED;`
     # line to a bare `gbsc_set_claimed(buf, len, best, true)` call (F2's original,

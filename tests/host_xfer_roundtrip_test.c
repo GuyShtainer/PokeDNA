@@ -974,6 +974,76 @@ static void test_restored_mark_is_real(void) {
         "a RESTORED entry is != XR_STATE_CLAIMED -- distinguishable from an ordinary claim");
 }
 
+/* ---- #270 (Guy 2026-09-29): the Bank is a pass-through; the ledger restores only at the
+ * TARGET drop. The pure-C composition of gbpc_restore_up + gbpc_restore_done (pdna_box.c is
+ * not host-buildable; tests/host_escape_gate_sites_test.py pins their source order): the
+ * full GB-origin -> Bank -> Gen-3 PC -> Bank -> GB PC round trip. ---- */
+
+static void y7_one_capture(const char* tag, const XrCapture* cap, uint8_t gen, uint8_t other_gen) {
+  /* hop 1-2: GB original -> native Bank cell -> Gen-3 PC record (cap.g3rec80) + ledger entry */
+  GbscEntry e = cap->e;
+  e.state = XR_STATE_CLAIMED;          /* the saved-exit promotion, as test_backlog_206 does */
+  uint8_t ledger[GBSC_FILE_MAX];
+  uint32_t llen = (uint32_t)gbsc_init(ledger, xr_key_g3(cap->g3rec80));
+  CHECK(llen > 0 && gbsc_add(ledger, &llen, sizeof ledger, &e) == 0, "%s: ledger holds the entry", tag);
+  int count = gbsc_count(ledger, llen);
+
+  /* hop 3: PC -> Bank is byte-as-is (the drop_held arm is a bare memcpy of s_held); the
+   * record, its key and the ledger are all untouched, and it is STILL a Gen-3 record. */
+  uint8_t bank_slot[80];
+  memcpy(bank_slot, cap->g3rec80, 80);
+  CHECK(memcmp(bank_slot, cap->g3rec80, 80) == 0, "%s: Bank slot bytes == the Gen-3 record", tag);
+  CHECK(!bc_is_native(bank_slot), "%s: the record in the Bank is still a Gen-3 record, not a native cell", tag);
+  CHECK(xr_key_g3(bank_slot) == xr_key_g3(cap->g3rec80), "%s: its ledger key is unchanged", tag);
+  GbscEntry still;
+  CHECK(xr_restore_pick_basic(ledger, llen, count, &still) == XR_PICK_LIVE,
+        "%s: the entry is NOT consumed by bank entry (still live)", tag);
+
+  /* hop 4: the TARGET drop. Generation gate first (a wrong-generation PC converts). */
+  CHECK(xr_home_gen(ledger, llen, count) == gen, "%s: xr_home_gen == the original's generation", tag);
+  CHECK(xr_home_gen(ledger, llen, count) != other_gen, "%s: xr_home_gen != the other generation (that drop converts)", tag);
+  uint8_t cell[80];
+  int rc = bank_restore_from_entry(&still, bank_slot, XR_ACCEPT_ALL, 777001u, cell, NULL);
+  CHECK(rc == 1, "%s: target restore rebuilds the native cell (rc=%d)", tag, rc);
+  if (rc != 1) return;
+  GbEditMon back; BcMeta meta;
+  CHECK(bc_unpack(cell, &back, &meta), "%s: restored cell unpacks", tag);
+  xr_check_roundtrip(tag, &cap->written, &back);   /* rec/otname/nick/gen byte-identical to the GB original */
+
+  /* mark RESTORED after the verified GB write (gbpc_restore_done's idiom). */
+  GbscEntry got;
+  CHECK(gbsc_get(ledger, llen, 0, &got), "%s: entry reads back", tag);
+  got.state = XR_STATE_RESTORED;
+  CHECK(gbsc_remove(ledger, &llen, 0) == 0 && gbsc_add(ledger, &llen, sizeof ledger, &got) >= 0,
+        "%s: entry marked RESTORED", tag);
+  count = gbsc_count(ledger, llen);
+
+  /* the DUP: a second record with the same key. It must NOT restore again (that would clone
+   * bytes into the GB save) -- the pick reports RESTORED, which gbpc_restore_up turns into
+   * rc 0 = the plain conversion. The gen gate still sees the same generation. */
+  CHECK(xr_restore_pick_basic(ledger, llen, count, &still) == XR_PICK_REFUSE_RESTORED,
+        "%s: the duplicate sees a RESTORED entry -> converts, never a second restore", tag);
+  CHECK(xr_home_gen(ledger, llen, count) == gen, "%s: xr_home_gen still names the generation after RESTORED", tag);
+}
+
+static void test_y7_target_restore_roundtrip(void) {
+  printf("\n-- D5. #270: Bank pass-through + target-drop restore, the full round trip --\n");
+  CHECK(xr_home_gen(NULL, 0, 0) == 0, "xr_home_gen: NULL/empty -> 0");
+  if (g_rt1_capture.have) y7_one_capture("Y7 Gen2", &g_rt1_capture, GB_GEN2, GB_GEN1);
+  else printf("  SKIP Gen-2 (no capture -- corpus absent?)\n");
+  if (g_rt2_capture.have) y7_one_capture("Y7 Gen1", &g_rt2_capture, GB_GEN1, GB_GEN2);
+  else printf("  SKIP Gen-1 (no capture -- corpus absent?)\n");
+  /* a Gen-3-home entry never restores: xr_home_gen ignores it (0), the caller converts */
+  if (g_rt1_capture.have) {
+    GbscEntry g3h = g_rt1_capture.e;
+    g3h.kind = XR_KIND_G3_HOME;
+    uint8_t lg[GBSC_FILE_MAX];
+    uint32_t ll = (uint32_t)gbsc_init(lg, xr_key_g3(g_rt1_capture.g3rec80));
+    CHECK(gbsc_add(lg, &ll, sizeof lg, &g3h) == 0, "Y7: Gen-3-home entry added");
+    CHECK(xr_home_gen(lg, ll, gbsc_count(lg, ll)) == 0, "Y7: a Gen-3-home entry yields no home generation");
+  }
+}
+
 /* ---- BACKLOG #150 S150-8b review F4: an unmappable Gen-3 glyph must refuse, ---- */
 /* ---- never silently become a literal '?' in the home's nickname.           ---- */
 
@@ -2335,6 +2405,7 @@ int main(int argc, char** argv) {
   test_merge_and_refuse();
   test_bank_restore_from_entry();
   test_restored_mark_is_real();
+  test_y7_target_restore_roundtrip();
   test_nickname_unmappable_glyph();
   test_nickname_umlaut_down_gen2_accepts();
   test_nickname_umlaut_down_gen1_refuses();
