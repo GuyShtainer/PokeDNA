@@ -17,9 +17,9 @@ chip parses, or (the normal case on a fresh emulator boot, where the flash is bl
 single-slot fused .sav fallback supplies it -- AND a GB corpus is fused in (gb_delta_boot_pick(), source/pdna_main.c) — row 0 is
 the loaded Gen-3 save, rows 1..n mirror the fused GB saves one for one. Picking the
 Gen-3 row continues into the normal Emerald box screen, where the nav menu's "GB
-import" row (NV_GB) still offers the READ-ONLY nested mount via
-pdna_gen12_show_fused() — VIEW / LEGALITY / COPY / CANCEL, no EDIT, no MOVE TO BOX, no
-RELEASE, no CREATE. Picking a GB row instead reuses the SAME full read/write STANDALONE
+import" row (NV_GB) is RETIRED by BACKLOG #239/#277 — it now shows the BANK ONLY
+refusal (it used to offer the READ-ONLY nested mount via pdna_gen12_show_fused() —
+VIEW / LEGALITY / COPY / CANCEL — and the chains here now pin the refusal instead). Picking a GB row instead reuses the SAME full read/write STANDALONE
 mount tools/gb_shots.py's own run_gold()/run_red() were calibrated against — VIEW/EDIT,
 LEGALITY, MOVE TO BOX, COPY, RELEASE, and a REAL, WORKING CREATE (this build fuses
 actual Red.gb/Gold.gbc/Crystal.gbc ROMs alongside the saves, unlike gb_shots.py's
@@ -127,8 +127,8 @@ def gb_save_pick_index(image: Path) -> dict[str, int]:
 # wrong-screen frame through uncaught. Fixed two ways: (1) the offset is now derived
 # from source/pdna_layout.h's own PDNA_NAV_ITEMS list every run, the same "read the
 # generator's own order, never hand-copy it" rule tools/gen_gbfields.py already
-# follows for the GB field tables; (2) nav_to_gb_import() below asserts the landed
-# screen against the SAME "PICK A SAVE" crop-signature boot_to_gb_session() uses --
+# follows for the GB field tables; (2) nav_to_gb_refusal() below (BACKLOG #277: was nav_to_gb_import(), which asserted the
+# retired picker) claim-checks the landed BANK ONLY refusal; the original guard was the SAME "PICK A SAVE" crop-signature boot_to_gb_session() uses --
 # gb_delta_pick_save() (pdna_main.c:8559) draws that exact title for BOTH the
 # top-level boot fork AND this nested NV_GB import (pdna_main.c:9151's own case
 # NV_GB calls the identical function), so no second reference PNG is needed: a
@@ -176,18 +176,24 @@ def nav_down_from_col_top(name: str) -> int:
     return idx - rows
 
 
-def nav_to_gb_import(s: gb_shots.Session) -> None:
-    """START (box grid -> nav menu) -> RIGHT (column 0 -> column 1) -> DOWN x(NV_GB's
-    own row, derived from source every run) -> A -> asserts the landing is really
-    the "PICK A SAVE" picker (gb_delta_pick_save(), the SAME screen boot_to_gb_
-    session() lands on at the top-level boot fork) before returning -- a stale/wrong
-    DOWN count that lands on a DIFFERENT SCREEN now raises here, with a screenshot, instead of silently shooting
-    whatever screen it actually lands on (BACKLOG #118 coordinator addition)."""
+NV_GB_REFUSAL_CLAIM = ["BANK ONLY", "Open the GB save on its own,", "send it to the Bank, come back."]
+
+
+def nav_to_gb_refusal(s: gb_shots.Session, name: str, caption: str) -> None:
+    """BACKLOG #277 (was nav_to_gb_import(), which asserted the retired nested
+    "PICK A SAVE" mount): START (box grid -> nav menu) -> RIGHT -> DOWN x(NV_GB's own
+    row, derived from source every run) -> A -> shoots `name` with the "BANK ONLY"
+    refusal claim-checked, then A dismisses the dialog (msg_wait takes A only). BACKLOG
+    #239 closed NV_GB on a live Gen-3 save (nav_avail.c nv_gb_blocked(),
+    xfer_direct_allowed() is a constant false), so a chain that reaches this from an
+    Emerald box grid MUST land on the refusal -- if the mount is ever reopened the
+    claim fails loudly instead of the chain silently shooting whatever opened."""
     s.tap("START", settle=gb_shots.BIG_SETTLE)              # box screen -> nav menu
     s.tap("RIGHT")                                            # column 0 (Party) -> column 1 (Blocks)
     s.press_n("DOWN", nav_down_from_col_top("NV_GB"))          # Blocks -> ... -> GB import
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # NV_GB -> the (separate) nested-import picker
-    assert_screen(s, "pick_a_save")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # NV_GB -> refuse, not a mount
+    s.shot(name, caption, claim=NV_GB_REFUSAL_CLAIM)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # msg_wait dismisses on A
 
 # BACKLOG #185 (F1 gen-aware jobs + F2 inline prefilter gates) re-measured the
 # SPRITE/PORTRAIT half of this cold scan directly in THIS emulator, same harness as
@@ -438,55 +444,26 @@ def run_gbscreen_shell(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shot
     return s
 
 
-def run_nav_gb(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
-    """pokedna-delta-gb.gba: boots into #68a's boot picker (row 0 = Emerald.sav, the
-    valid flash save; rows 1..3 = the fused GB corpus) -- A on the default Emerald
-    selection continues into the ordinary Gen-3 box screen, from which this drives the
-    nav menu to NV_GB, opens the (separate) nested-import picker, picks `which`, and
-    captures what the nested-import mount actually shows: the info page, the box grid
-    (real Game Boy art -- BACKLOG #62's whole point, cold-fetched the first time), the
-    occupied-cell menu, and VIEW (a real portrait via the shared origin-art router)."""
-    idx = gb_save_pick_index(rom)[which]
-    # "dgb_" prefix: tools/gb_shots.py's own run_gold()/run_red() already claim
-    # gold_01_info.png etc. for the single-fused-save build's standalone S1..S5 flow --
-    # this build's shots are a DIFFERENT screen (the nested NV_GB import mount, see
-    # module docstring) and must not collide with or overwrite that existing evidence.
-    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"dgb_{which}_")
-    print(f"== delta-gb / {which}: NV_GB import (real art) ==")
-
-    # Session.__init__'s own 180-frame settle is calibrated against a plain single-
-    # fused-save image (gb_shots.py's own targets); this recipe's Emerald.sav + the
-    # whole GB directory boots slower (calibrated by hand: still on "Opening save...
-    # N/13 first paint: box" at 180 frames) -- extra settle before the first tap so
-    # A actually lands past the boot picker, not mid-load.
+def run_nav_gb(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #277 (was BACKLOG #62's nested NV_GB import shots -- info page, real-art
+    box grid, occupied-cell menu, VIEW portrait, one set per `which`): that mount was
+    CLOSED on purpose by BACKLOG #239 (A on GB import from a live Gen-3 save shows the
+    "BANK ONLY" dialog and mounts nothing), so those frames are RETIRED. The same real-
+    art GB screens are still proven through the boot picker's own direct GB rows
+    (run_standalone(), run_b132_portrait()'s mount 1, run_b64_import()'s direct leg).
+    This run now pins the refusal itself: boot picker Emerald row -> box grid -> START >
+    GB import must land on "BANK ONLY", claim-checked, so a reopened mount fails loudly.
+    `rom` is `make delta-gb`'s combined image (Emerald.sav + the fused GB corpus)."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "dgb_nvgb_")
+    print("== delta-gb: NV_GB on a live Gen-3 save -- the BANK ONLY refusal (BACKLOG #277) ==")
     s.run(700)
     s.tap("A", settle=gb_shots.BIG_SETTLE)              # #68a boot picker, Emerald row (default) -> box
-    nav_to_gb_import(s)                                   # box screen -> nav menu -> NV_GB -> the save picker
-    for _ in range(idx):
-        s.tap("DOWN", settle=gb_shots.SETTLE)
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                # picked -> this save's own S1 info page
-    s.shot("01_info", f"#62: {which}.sav — S1 info page, opened via NV_GB "
-                       "(pdna_gen12_show_fused, read straight out of cartridge space)")
-
-    s.tap("A", settle=60)                                 # info -> box grid (COLD fetch starts)
-    s.run(GB_ART_COLD_SETTLE)                             # ride out the first-ever real scan
-    s.shot("02_box_grid", f"#62: {which}.sav — box grid with REAL {which.upper()} art: "
-                           "sprites decoded straight out of the fused ROM (D1/E3), the same "
-                           "16x16 menu icons Gen-2's own PC uses where this save is Gen 2 (E5). "
-                           "The portrait is a 4-shade Game Boy sprite, not the full-colour "
-                           "Gen-3 stand-in a build without D1's fix would show here.")
-
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                # A on the box's own first mon -> its menu
-    s.shot("03_mon_menu", f"#62: {which}.sav — the occupied-cell menu this NESTED IMPORT mount "
-                           "offers: VIEW / LEGALITY / COPY / CANCEL only -- no EDIT, MOVE TO BOX, "
-                           "or RELEASE (those exist on the STANDALONE mount view_save()'s own GB-"
-                           "size fork uses, which this recipe's fused Emerald.sav makes "
-                           "unreachable at boot -- see this file's own module docstring)")
-
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                # VIEW -> the native summary (read-only)
-    s.shot("04_view_summary", f"#62: {which}.sav — VIEW: the native read-only summary with a "
-                               "REAL portrait (pdna_origin_art's GB router now reads the fused "
-                               "ROM instead of falling back to Gen-3 stand-in art)")
+    s.shot("00_box", "#277: Emerald box grid, freshly booted (boot picker -> Gen-3 row)")
+    nav_to_gb_refusal(s, "01_refused",
+                      "#277: A on START > GB import shows the \"BANK ONLY\" dialog "
+                      "(BACKLOG #239) -- the nested import mount this run used to "
+                      "screenshot (#62) no longer exists")
+    s.shot("02_box_after", "#277: back on the same box grid -- nothing was mounted")
     return s
 
 
@@ -500,7 +477,11 @@ def run_b64_import(core_mod, image_mod, rom: Path, out_dir: Path, which: str) ->
     mGBA has no SD card at all -- see this function's own git-log history for the
     fuller citation this docstring used to carry before Fix 3 landed).
 
-    Captures Trainer / Bag-or-Pack / Flags / Dex / Map from BOTH of THIS image's
+    BACKLOG #277 NOTE: the `import_*` leg below was RETIRED (the nested mount is closed by
+    BACKLOG #239; that leg now pins the BANK ONLY refusal and the pairwise cmp is gone).
+    The text that follows is the historical record.
+
+    Captured Trainer / Bag-or-Pack / Flags / Dex / Map from BOTH of THIS image's
     real mounts over the SAME `which` save, named to `cmp` pairwise:
       - `import_*`  the nested NV_GB import (nav_to_gb_import(), THIS lane's own
                      streamed read-only session, ed == false, gs == &vw.s)
@@ -510,7 +491,6 @@ def run_b64_import(core_mod, image_mod, rom: Path, out_dir: Path, which: str) ->
     mean either the streamed session's read parity is wrong, or the read-only
     render draws different chrome than the editable one (worth a caption either
     way, not necessarily a bug: e.g. an edit cursor only the editable mount shows)."""
-    idx = gb_save_pick_index(rom)[which]
     kind_g1 = (which == "red")
     rows = [
         ("trainer",     3, GB_ART_COLD_SETTLE),   # own cold rom_gbui scan (run_u3_trainer)
@@ -527,41 +507,18 @@ def run_b64_import(core_mod, image_mod, rom: Path, out_dir: Path, which: str) ->
     ]
     sessions = []
 
-    # ---- mount 1: the nested NV_GB import (streamed, ed == false) --------------
+    # ---- mount 1 (BACKLOG #277): the nested NV_GB import (streamed, ed == false) was
+    # CLOSED by BACKLOG #239 (A on NV_GB from a live Gen-3 save = the "BANK ONLY"
+    # refusal), so the import_* leg and the pairwise cmp are RETIRED. This leg pins
+    # the refusal instead, so a reopened mount fails loudly.
     s1 = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b64_{which}_import_")
-    print(f"== BACKLOG #64 Fix 3: {which}.sav — NV_GB import mount (streamed, ed==false) ==")
+    print(f"== BACKLOG #64/#277: {which}.sav -- NV_GB import mount is retired -- refusal only ==")
     s1.run(700)
     s1.tap("A", settle=gb_shots.BIG_SETTLE)                # #68a boot picker, Emerald row (default) -> box
-    nav_to_gb_import(s1)                                     # box screen -> nav menu -> NV_GB -> the save picker
-    for _ in range(idx):
-        s1.tap("DOWN", settle=gb_shots.SETTLE)
-    s1.tap("A", settle=gb_shots.BIG_SETTLE)                  # picked -> this save's own S1 info page
-    s1.tap("A", settle=60)                                   # info -> box grid (COLD fetch starts)
-    s1.run(GB_ART_COLD_SETTLE)                               # ride out the first-ever real scan
-    for i, (tag, n, a_settle) in enumerate(rows):
-        s1.tap("START", settle=gb_shots.BIG_SETTLE)
-        s1.press_n("DOWN", n)
-        s1.tap("A", settle=a_settle)
-        if tag == "dex" and not kind_g1:
-            # BACKLOG #64 review R2: Gen 2 lands on gbdex_chooser() first (Pokedex /
-            # Unown forms, row 0 default-selected) -- one more A confirms row 0 and
-            # opens the actual dex grid, so this shot matches red's (Gen 1's own,
-            # chooser-free) landing screen shape. The grid's OWN header row ("No.1
-            # BULBASAUR ...") draws one repaint pass behind BIG_SETTLE (hand-
-            # calibrated, same class of delayed chrome as the box grid's own) --
-            # without this extra run(), the shot (and the B-count below) land on a
-            # stale partial frame that looks like an extra chooser round trip.
-            s1.tap("A", settle=gb_shots.BIG_SETTLE)
-            s1.run(2000)
-        s1.shot(f"{i + 1:02d}_{tag}",
-                f"#64 Fix 3: {which}.sav via NV_GB's fused mount -- {tag} row -- NOW A REAL "
-                "streamed (read-only) session (gbs_open_streamed over the same "
-                "fused_gb_slice_read pair the mount used), not the gb_info_page fallback "
-                "this lane used to leave here before Fix 3")
-        s1.tap("B", settle=gb_shots.BIG_SETTLE)
-        if tag == "dex" and not kind_g1:
-            s1.tap("B", settle=gb_shots.BIG_SETTLE)   # grid -> chooser -> box grid (2 levels)
-        s1.run(2000)   # box grid header/footer repaint settle (hand-calibrated, see git log)
+    nav_to_gb_refusal(s1, "01_refused",
+                      f"#277: the nested NV_GB import that used to carry {which}.sav's "
+                      "import_* half of the #64 read-parity compare is closed (BACKLOG "
+                      "#239) -- A on GB import shows the \"BANK ONLY\" dialog")
     sessions.append(s1)
 
     # ---- mount 2: the boot picker's own direct GB row (resident image, ed == true)
@@ -584,16 +541,6 @@ def run_b64_import(core_mod, image_mod, rom: Path, out_dir: Path, which: str) ->
             s2.tap("B", settle=gb_shots.BIG_SETTLE)   # grid -> chooser -> box grid (2 levels)
         s2.run(2000)
     sessions.append(s2)
-
-    print(f"\n== BACKLOG #64: {which}.sav -- cmp import_* vs direct_* ==")
-    for i, (tag, _n, _a) in enumerate(rows):
-        a = out_dir / f"b64_{which}_import_{i + 1:02d}_{tag}.png"
-        b = out_dir / f"b64_{which}_direct_{i + 1:02d}_{tag}.png"
-        if not (a.exists() and b.exists()):
-            print(f"  [skip] {tag}: missing {a if not a.exists() else b}")
-            continue
-        same = a.read_bytes() == b.read_bytes()
-        print(f"  {'MATCH ' if same else 'DIFFER'} {tag}: {a.name} vs {b.name}")
 
     return sessions
 
@@ -762,23 +709,15 @@ def run_standalone(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Se
                               "box screen, exactly as any delta build without a fused GB corpus "
                               "would boot straight to.")
 
-    # NV_GB nested import, exercised from INSIDE this same Emerald session, to prove it
-    # is unaffected by #68a's boot picker: same navigation run_nav_gb() below uses, but
-    # inline here so one continuous session covers both the new picker AND the existing
-    # nested-import path in one screenshot run.
-    nav_to_gb_import(s)                                     # box screen -> nav menu -> NV_GB -> the picker
-    s.tap("DOWN", settle=gb_shots.SETTLE)                   # Red (index 0) -> Gold (index 1)
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # picked -> Gold's own S1 info page
-    s.shot("17_nv_gb_info", "#68a: NV_GB's nested import still works from inside the "
-                             "Emerald session after #68a -- Gold.sav's S1 info page via "
-                             "pdna_gen12_show_fused(), untouched by the boot-picker change")
-    s.tap("A", settle=60)                                   # info -> box grid (COLD fetch, gen2)
-    s.run(GB_ART_COLD_SETTLE)
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # A on the box's own first mon -> its menu
-    s.shot("18_nv_gb_mon_menu", "#68a: the nested import's occupied-cell menu is still "
-                                 "VIEW / LEGALITY / COPY / CANCEL only -- no EDIT, MOVE TO BOX, "
-                                 "or RELEASE (those exist only on the STANDALONE mount reached "
-                                 "through the boot picker's GB rows, shots 02-14 above)")
+    # BACKLOG #277: the nested NV_GB import this tail used to exercise (frames 17-18:
+    # Gold's info page + the VIEW/LEGALITY/COPY/CANCEL menu) was CLOSED by BACKLOG #239.
+    # Same navigation, from the SAME Emerald session #68a's picker just returned to,
+    # now pins the "BANK ONLY" refusal (claim-checked) so a reopened mount fails loudly.
+    nav_to_gb_refusal(s, "17_nv_gb_refused",
+                      "#277 (was #68a's 17_nv_gb_info): from the Emerald session #68a's "
+                      "boot picker just returned to, START > GB import shows the "
+                      "\"BANK ONLY\" dialog (BACKLOG #239) instead of the nested "
+                      "import's picker/info page")
     return s
 
 
@@ -8182,9 +8121,10 @@ def _main_dispatch(argv=None) -> int:
                           "same BACKLOG #98 harness-gap reasoning as --b90-fly")
     ap.add_argument("--b132-portrait", choices=("gold", "red"),
                      help="BACKLOG #132: run_b132_portrait() against --image for the "
-                          "named game's own summary portrait, through BOTH the "
-                          "boot-picker mount and the nested START > NV_GB import "
-                          "mount -- --image MUST be a COMBINED image (Emerald.sav + "
+                          "named game's own summary portrait, through the boot-picker "
+                          "mount AND the nested START > NV_GB entry (RETIRED by "
+                          "BACKLOG #239/#277 -- that leg now pins the BANK ONLY "
+                          "refusal) -- --image MUST be a COMBINED image (Emerald.sav + "
                           "Red/Gold/Crystal, `make delta-gb`'s own recipe) so both "
                           "mounts are reachable from the one image.")
     ap.add_argument("--b64-import", choices=("gold", "red"),
@@ -8192,12 +8132,11 @@ def _main_dispatch(argv=None) -> int:
                           "for the named game -- --image MUST be a COMBINED image "
                           "(Emerald.sav + Red/Gold/Crystal, `make delta-gb`'s own recipe, "
                           "same as run_nav_gb()). Drives the SAME START > nav menu > GB "
-                          "import (NV_GB) entry run_nav_gb() already uses, now a REAL "
-                          "streamed read-only session after Fix 3 gave pdna_gen12_show_"
-                          "fused() its own Option B install -- captures Trainer/Bag-or-"
-                          "Pack/Flags/Dex/Map from BOTH this mount AND the boot picker's "
-                          "own direct GB row (the pre-existing resident-image mount) over "
-                          "the SAME save, and `cmp`s each pair. The still-HW-only half is "
+                          "import (NV_GB) entry run_nav_gb() already uses -- RETIRED by "
+                          "BACKLOG #239/#277: that leg now pins the BANK ONLY refusal -- "
+                          "and captures Trainer/Bag-or-Pack/Flags/Dex/Map from the boot "
+                          "picker's own direct GB row (the pre-existing resident-image "
+                          "mount). The still-HW-only half is "
                           "pdna_gen12_show() itself (the real FIL/SD file-browser entry) "
                           "-- see run_b64_import()'s own docstring.")
     ap.add_argument("--out", type=Path, default=ROOT / "docs" / "shots" / "gb")
@@ -9431,13 +9370,12 @@ def _main_dispatch(argv=None) -> int:
         skipped += sess.skipped
     except RuntimeError as e:
         print(f"  [STOPPED] boot-picker/standalone: {e}")
-    for which in ("gold", "red"):
-        try:
-            sess = run_nav_gb(core_mod, image_mod, a.image, a.out, which)
-            ok += sess.taken
-            skipped += sess.skipped
-        except RuntimeError as e:
-            print(f"  [STOPPED] {which}: {e}")
+    try:
+        sess = run_nav_gb(core_mod, image_mod, a.image, a.out)
+        ok += sess.taken
+        skipped += sess.skipped
+    except RuntimeError as e:
+        print(f"  [STOPPED] nav-gb refusal: {e}")
 
     _write_manifest(a.out, ok, skipped)
 
@@ -11143,45 +11081,15 @@ def run_s150_11_reconcile(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "s150_11_")
     print("== BACKLOG #150 S150-11: the TRANSFERS screen (START row, empty state, GB "
           "session refusal, silent Bank open) ==")
-    idx = gb_save_pick_index(rom)["gold"]
 
+    # BACKLOG #277: the Gold session used to be reached through the nested NV_GB import
+    # (closed by BACKLOG #239). It is now reached the way the boot picker reaches it --
+    # so this half runs FIRST, from the boot picker's Gold row, then backs out through the
+    # picker to Emerald's box grid for the Gen-3 frames (01-04, 08). Frame NAMES keep
+    # their old numbers; capture order is 05, 06, then 01..04, 08 (old frame 07, the
+    # no-residue check, is folded into 01's caption).
     s.run(700)
-    s.tap("A", settle=gb_shots.BIG_SETTLE)              # #68a boot picker, Emerald row (default) -> box
-    s.shot("01_gen3_box", "s150-11: the Emerald box screen, freshly booted (boot "
-           "picker -> Gen-3 row)")
-
-    s.tap("START", settle=gb_shots.BIG_SETTLE)
-    s.tap("RIGHT")                                       # column 0 -> column 1
-    s.press_n("DOWN", nav_down_from_col_top("NV_XFER"))  # column 1 top -> Transfers' own row
-    s.shot("02_start_menu_21_rows", "s150-11 decision 13: the 21-row START menu -- "
-           "'Transfers' now sits between 'GB import' and 'Settings' in column 2, "
-           "cursor already on it (PDNA_NAV_ROW_H 11 -> 10 fits the 21st row -- the "
-           "hint line at the bottom of the panel sits clear of the last row, not "
-           "overlapping it)", claim="Transfers")
-
-    s.tap("A", settle=gb_shots.BIG_SETTLE)
-    s.shot("03_transfers_empty", "s150-11 decision 16: A on Transfers -- the "
-           "empty-state screen ('No transfer records. / Records appear after a / "
-           "Bank transfer.') -- this delta vehicle has no readable FAT "
-           "(source/xfer_io.c), so xfer_reconcile_walk()'s f_opendir() always "
-           "fails here regardless of what is planted in the Bank; this is the "
-           "ONLY reachable frame for this screen on the emulator (decision 16)",
-           claim="TRANSFER RECORDS")
-
-    s.tap("B", settle=gb_shots.BIG_SETTLE)
-    s.shot("04_transfers_back", "s150-11: B backs out of the empty-state screen "
-           "-- Emerald's own box screen again, no residue")
-
-    s.tap("START", settle=gb_shots.BIG_SETTLE)
-    s.tap("RIGHT")
-    s.press_n("DOWN", nav_down_from_col_top("NV_GB"))
-    s.tap("A", settle=gb_shots.BIG_SETTLE)
-    assert_screen(s, "pick_a_save")
-    for _ in range(idx):
-        s.tap("DOWN", settle=gb_shots.SETTLE)
-    s.tap("A", settle=gb_shots.BIG_SETTLE)               # picked Gold -> S1 info page
-    s.tap("A", settle=60)                                 # info -> box grid (cold fetch)
-    s.run(GB_ART_COLD_SETTLE)
+    boot_to_gb_session(s, rom, which="gold")          # picker -> Gold row -> info -> box grid
     s.tap("START", settle=gb_shots.BIG_SETTLE)
     s.tap("RIGHT")
     s.press_n("DOWN", nav_down_from_col_top("NV_XFER"))
@@ -11205,24 +11113,42 @@ def run_s150_11_reconcile(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
            "SOON' (app_nav_refuse()'s NAV_COMING_SOON branch, source/pdna_main.c "
            "~9528), NOT the body line quoted above.", claim="COMING SOON")
 
-    # A dismisses msg_wait (source/pdna_main.c: "Press A", KEY_A only -- verified
-    # live, NOT KEY_B). The nav menu already returned one level up (gb_nav_from_
-    # start's own dispatch already exited before app_nav_refuse ran), so this lands
-    # straight back on Gold's own box grid, not a second menu frame.
+    # A dismisses msg_wait (KEY_A only). Leaving the Gold box grid (B) surfaces this
+    # corpus's held-item "NOT TRANSFERABLE" report, a second B closes the session and
+    # returns to the boot picker (asserted, not assumed), and B there resolves to the
+    # Emerald row.
     s.tap("A", settle=200)
-    # This real Gold.sav corpus holds several mons carrying an item (found live,
-    # same "an unrelated report page interrupts the exit" shape run_s150_12_copy_
-    # edge's own docstring documents for a different report kind) -- leaving the
-    # box grid (B) surfaces a "NOT TRANSFERABLE" report before the session
-    # actually closes; a SECOND B dismisses it and lands on Emerald's own box grid
-    # (verified live: exactly two B presses, not the three a naive guess assumed).
     s.tap("B", settle=200)
     s.tap("B", settle=200)
-    s.shot("07_back_on_emerald", "s150-11: backed all the way out of the Gold "
-           "session -- A dismissed the refusal, then TWO B presses (one dismisses "
-           "this corpus's own unrelated 'NOT TRANSFERABLE' held-item report, the "
-           "second actually exits the session) -- Emerald's own box screen again, "
-           "confirming the GB-session detour left no residue there either")
+    assert_screen(s, "pick_a_save")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)
+    s.shot("01_gen3_box", "s150-11: the Emerald box screen -- reached by backing all the "
+           "way out of the Gold session (A dismissed the refusal, B and B: one dismisses "
+           "this corpus's unrelated 'NOT TRANSFERABLE' held-item report, the second exits "
+           "the session to the boot picker, asserted) and B on the picker = Emerald row. "
+           "Doubles as the no-residue check for the GB-session detour (old frame 07)")
+
+    s.tap("START", settle=gb_shots.BIG_SETTLE)
+    s.tap("RIGHT")                                       # column 0 -> column 1
+    s.press_n("DOWN", nav_down_from_col_top("NV_XFER"))  # column 1 top -> Transfers' own row
+    s.shot("02_start_menu_21_rows", "s150-11 decision 13: the 21-row START menu -- "
+           "'Transfers' now sits between 'GB import' and 'Settings' in column 2, "
+           "cursor already on it (PDNA_NAV_ROW_H 11 -> 10 fits the 21st row -- the "
+           "hint line at the bottom of the panel sits clear of the last row, not "
+           "overlapping it)", claim="Transfers")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.shot("03_transfers_empty", "s150-11 decision 16: A on Transfers -- the "
+           "empty-state screen ('No transfer records. / Records appear after a / "
+           "Bank transfer.') -- this delta vehicle has no readable FAT "
+           "(source/xfer_io.c), so xfer_reconcile_walk()'s f_opendir() always "
+           "fails here regardless of what is planted in the Bank; this is the "
+           "ONLY reachable frame for this screen on the emulator (decision 16)",
+           claim="TRANSFER RECORDS")
+
+    s.tap("B", settle=gb_shots.BIG_SETTLE)
+    s.shot("04_transfers_back", "s150-11: B backs out of the empty-state screen "
+           "-- Emerald's own box screen again, no residue")
 
     s.tap("START", settle=gb_shots.BIG_SETTLE)
     s.tap("DOWN", settle=gb_shots.SETTLE)                 # NV_PARTY -> NV_BANK (column 0, row 1)

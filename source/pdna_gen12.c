@@ -780,6 +780,7 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "rom_gblearn.h"   /* BACKLOG #50: level-up learnsets + min-level for CREATE   */
 #include "gb_origin.h"     /* BACKLOG #266: static-encounter level floor for CREATE   */
 #include "gb_new_mon.h"    /* BACKLOG #50: gb_new_mon/gb_new_mon_g1_moves for CREATE   */
+#include "gb1_base_tbl.h"  /* BACKLOG #276: generated Gen-1 base table (ROM-free scratch) */
 #include "pdna_pick.h"     /* BACKLOG #50 UX-parity: pick_species(), the Gen-3 picker  */
 #include "rom_gbbase.h"    /* S5-C: decodes the 28-byte BaseStats row rom_gbsprite found;
                             * pk_national_no (internal index -> National Dex) comes from
@@ -5647,14 +5648,16 @@ static bool __attribute__((noinline)) gb_create_src_legit(uint16_t dex, GbNewMon
 
 /* FROM SCRATCH (Guy 2026-09-29): level 1, Growl, no learnset lookup, no level floor.
  * Gen 2 needs nothing from the card at all (base stats/growth are the in-tree Gen-3
- * tables, gb_edit.h). Gen 1 has NO in-tree base-stat/type table -- gb_edit.h and
- * rom_gbbase.h both say so, and PokeDNA ships no Game Freak data -- so its base row
- * (28 bytes) is still read from the registered ROM; that is the one card access left in
- * this arm, and the legit arm's ~185,000-read learnset scan is skipped. Returns false
- * after its own message when Gen 1 has no readable ROM. */
+ * tables, gb_edit.h). Gen 1 has no in-tree Game Freak data, but BACKLOG #276's
+ * generated, git-ignored table (gb1_base_tbl.h, tools/gen_gb1_base.py) carries all 151
+ * base rows: when it is linked the arm is ROM-free and touches no file at all -- it
+ * works with NO ROM registered. Only a build without the generated table (or a dex it
+ * lacks) falls back to the one 28-byte base-row read from the registered ROM, and
+ * refuses after its own message when there is none. */
 static bool __attribute__((noinline)) gb_create_src_scratch(uint16_t dex, GbNewMonSrc* src) {
   src->moves[0] = 45;   /* Growl: the same move id in Gen 1 and Gen 2 */
   if (g_ed->s.gen == GB_GEN1) {
+    if (gb1_base_table_fill(dex, src)) return true;   /* zero card access */
     s_busy_reading();
     RomGb1Species sp;
     if (!gb_create_locate_rom(GB_GEN1)) {
@@ -5784,7 +5787,8 @@ static bool gb_create_hook(void) {
    * (the legit arm's reads freeze the screen for a real ROM scan -- s_busy_reading()
    * inside gb_create_src_legit -- so the player must know why, and must be able to
    * decline). With no ROM registered there is nothing to copy from: build from scratch
-   * without asking (Gen 1 then needs the ROM for its base row and says so, below). */
+   * without asking (Gen 1 uses the generated gb1_base table when linked, else the
+   * ROM read for its base row -- and says so, below). */
   GbNewMonSrc src; memset(&src, 0, sizeof src);
   uint8_t lvl = 1;
   bool legit = false;
