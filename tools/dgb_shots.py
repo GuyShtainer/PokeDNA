@@ -5210,7 +5210,7 @@ def run_s150_13_carry_badge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb
 
     # slot 0 (CHIKORITA, gen 2): menu -> MOVE -> carrying.
     s.tap("A", settle=150)                                  # slot 0 -> its whitelist menu
-    s.tap("DOWN", settle=60)                                # VIEW -> MOVE
+    s.press_n("DOWN", 2, settle=60)                                # VIEW -> LEGALITY -> MOVE
     s.tap("A", settle=150)                                  # select MOVE -> start_carry
     s.shot("01_carrying_gen2", "S150-13: MOVE picked up the Gen-2 CHIKORITA cell, "
            "captured immediately (per-tap trace only -- review D1: this timing is "
@@ -5239,7 +5239,7 @@ def run_s150_13_carry_badge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb
     # slot 1 (PIKACHU, gen 1): same recipe, one RIGHT first.
     s.tap("RIGHT", settle=300)                              # slot 0 -> slot 1
     s.tap("A", settle=150)                                  # slot 1 -> its whitelist menu
-    s.tap("DOWN", settle=60)                                # VIEW -> MOVE
+    s.press_n("DOWN", 2, settle=60)                                # VIEW -> LEGALITY -> MOVE
     s.tap("A", settle=150)                                  # select MOVE -> start_carry
     s.shot("03_carrying_gen1", "S150-13: MOVE picked up the Gen-1 PIKACHU cell, "
            "captured immediately (per-tap trace only -- see 03b for the pinned proof; "
@@ -5296,7 +5296,7 @@ def run_s150_3_escape_gate(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_
 
     # MOVE (row 1): re-open the menu, DOWN once to MOVE, A to pick the cell up.
     s.tap("A", settle=150)                                  # slot 0 -> its menu again
-    s.tap("DOWN", settle=60)                                # row 0 (VIEW) -> row 1 (MOVE)
+    s.press_n("DOWN", 2, settle=60)                                # VIEW -> LEGALITY -> MOVE (native menu, #271)
     s.tap("A", settle=150)                                  # select MOVE -> g_move_req -> start_carry
     s.shot("02_carrying", "S150-3: MOVE picked the native cell up into the glove -- "
            "still inside the Bank, s_orig_scope == BOXSCOPE_BANK")
@@ -6162,7 +6162,7 @@ def run_s150_7_down_edge(core_mod, image_mod, rom_gold: Path, rom_red: Path,
         s.press_n("UP", UP_INTO_BANK, settle=100)
         s.press_n("UP", UP_TO_ROW0, settle=60)
         s.tap("A", settle=150)                      # native-cell whitelist menu
-        s.tap("DOWN", settle=60)                    # VIEW/EDIT -> MOVE
+        s.press_n("DOWN", 2, settle=60)                    # VIEW/EDIT -> LEGALITY -> MOVE
         s.tap("A", settle=150)                       # MOVE -> carrying
         s.press_n("DOWN", DOWN_OFF_BANK, settle=150)  # back on the GB's own grid, still carrying
 
@@ -6801,7 +6801,7 @@ def run_s150_8_gen3_arm(core_mod, image_mod, rom_emerald: Path, out_dir: Path) -
     def pick_up_item_cell(s: gb_shots.Session) -> None:
         s.press_n("RIGHT", 3, settle=100)             # slot 0 -> slot 3 (item-holding CHIKORITA)
         s.tap("A", settle=150)                        # native-cell whitelist menu
-        s.tap("DOWN", settle=60)                      # VIEW/EDIT -> MOVE
+        s.press_n("DOWN", 2, settle=60)                      # VIEW/EDIT -> LEGALITY -> MOVE
         s.tap("A", settle=150)                        # MOVE -> carrying
         s.press_n("DOWN", DOWN_OFF_BANK, settle=150)  # back on the Emerald PC grid, still carrying
 
@@ -6981,7 +6981,7 @@ def run_s150_8_party_vsd(core_mod, image_mod, rom_ruby: Path, out_dir: Path) -> 
            "FOUR members (Ruby.sav, this repo's corpus) -- box 0 shows bank_plant.c's "
            "seven cells, cursor starts on slot 0 (plain CHIKORITA)")
     s.tap("A", settle=150)                          # native-cell whitelist menu
-    s.tap("DOWN", settle=60)                        # VIEW/EDIT -> MOVE
+    s.press_n("DOWN", 2, settle=60)                        # VIEW/EDIT -> LEGALITY -> MOVE
     s.tap("A", settle=150)                          # pick up -> carrying
     s.press_n("DOWN", 5, settle=150)                # off the Bank grid -> the Ruby PC
     s.shot("01_landed_pc", "S150-8c: carrying the plain CHIKORITA cell, landed on "
@@ -7375,7 +7375,7 @@ def run_s150_8_bridge(core_mod, image_mod, rom_gold: Path, rom_red: Path,
             "Gen-1->Gen-2 drop: xr_time_capsule_block() returns 0 whenever "
             "dst_gen != GB_GEN1, unconditionally)")
     sg.tap("A", settle=150)                     # native-cell whitelist menu
-    sg.tap("DOWN", settle=60)                   # VIEW/EDIT -> MOVE
+    sg.press_n("DOWN", 2, settle=60)                   # VIEW/EDIT -> LEGALITY -> MOVE
     sg.tap("A", settle=150)                     # MOVE -> carrying
     sg.press_n("DOWN", DOWN_OFF_BANK, settle=150)
     sg.shot("02_carrying_on_pc", "S150-8 bridge: carrying PIKACHU, back on Gold's "
@@ -7574,7 +7574,7 @@ def run_s150_8_bridge(core_mod, image_mod, rom_gold: Path, rom_red: Path,
             "SWEET SCENT (230), both > gb_max_move(GB_GEN1)=165 but <= "
             "gb_max_move(GB_GEN2)=251 (legal on its own generation)")
     s3.tap("A", settle=150)                        # native-cell whitelist menu
-    s3.tap("DOWN", settle=60)                       # VIEW/EDIT -> MOVE
+    s3.press_n("DOWN", 2, settle=60)                       # VIEW/EDIT -> LEGALITY -> MOVE
     s3.tap("A", settle=150)                         # MOVE -> carrying
     s3.press_n("DOWN", DOWN_OFF_BANK, settle=150)
     s3.shot("12_carrying_badmoves", "S150-8 bridge D3(b): carrying the BULBASAUR "
@@ -11062,7 +11062,7 @@ def run_s150_12_copy_edge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
            "RELEASE, CANCEL (this is a real Bank cell now, not the read-only "
            "mount's whitelist)")
 
-    s.tap("DOWN", settle=60)                              # VIEW/EDIT -> MOVE
+    s.press_n("DOWN", 2, settle=60)                              # VIEW/EDIT -> LEGALITY -> MOVE
     s.tap("A", settle=150)                                # MOVE -> carrying
     s.shot("14_carrying", "s150-12 (BACKLOG #198 item 11 recaption): carrying "
            "the COPY cell -- the source cell (slot 5) STAYS the tinted CHIKORITA "
