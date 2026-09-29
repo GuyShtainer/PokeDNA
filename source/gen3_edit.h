@@ -30,6 +30,8 @@ void gen3_edit_load(const uint8_t* rec, bool is_party, EditMon* e);
 void gen3_edit_commit(const EditMon* e, uint8_t* rec_out);   /* lossless re-encode */
 
 /* field mutators (clamped). order args use PK_HP..PK_SPD (gen3_mon.h). */
+uint16_t em_get_curhp(const EditMon* e);                    /* party: cur HP; box: 0xFFFF (none) */
+void em_set_curhp(EditMon* e, uint16_t v);                   /* party only; clamped 0..max HP     */
 void em_set_iv(EditMon* e, int stat, uint8_t v);             /* 0..31  */
 void em_set_ev(EditMon* e, int stat, uint8_t v);             /* 0..255 */
 void em_set_contest(EditMon* e, int i, uint8_t v);          /* condition i=0..5: cool/beauty/cute/smart/tough/sheen */

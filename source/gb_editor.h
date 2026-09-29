@@ -26,6 +26,7 @@
 enum {
   GBE_NICK = 0, GBE_OT, GBE_OTID, GBE_LEVEL,
   GBE_ITEM, GBE_FRIEND,                          /* Gen 2 only                          */
+  GBE_CURHP,                                     /* current HP; PARTY records only (#231) */
   GBE_MV0, GBE_MV1, GBE_MV2, GBE_MV3,
   GBE_PPU0, GBE_PPU1, GBE_PPU2, GBE_PPU3,        /* PP Ups per move (0..3)              */
   GBE_PP0, GBE_PP1, GBE_PP2, GBE_PP3,            /* current PP                          */
@@ -100,7 +101,7 @@ void gbe_value(const GbEditMon* e, int f, char* out, int cap);
  * direction is safe. Setter refusals (an empty move slot's PP) simply return false. */
 bool gbe_adjust(GbEditMon* e, int f, int dir, bool big);
 
-/* A on a GBE_K_NUM row: jump between extremes (DV 0 <-> 15, PP -> max, PP Ups
+/* A on a GBE_K_NUM row: jump between extremes (current HP full <-> 0, DV 0 <-> 15, PP -> max, PP Ups
  * 0 <-> 3, stat exp 0 <-> 65535, level 100 <-> 1, friendship 0 <-> 255). Returns true
  * iff the record changed. */
 bool gbe_press(GbEditMon* e, int f);

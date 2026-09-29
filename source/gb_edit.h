@@ -304,10 +304,15 @@ uint16_t gb_get_stat(const GbEditMon* e, int i);  /* party only, i = 0..4 (Gen 1
  * counterpart (pokered/macros/ram.asm's box_struct, verified against R1_CURHP). It reads
  * 0 here because a box record pairs with no COMPUTED max HP (gb_get_stat() is party-only
  * too), and a bare current-HP number with no max to put it over is not worth showing —
- * not because the bytes do not exist. Read-only: no editor setter exists for it, on
- * purpose — real play only ever changes it via battle damage or a heal, neither of which
- * this tree models. */
+ * not because the bytes do not exist. */
 uint16_t gb_get_current_hp(const GbEditMon* e);
+/* BACKLOG #231 (Guy: "only if the edit is increase current HP"): the ONE editor path that
+ * may revive a mon -- every other edit carries HP without healing (gb_recalc_stats).
+ * PARTY only (a Gen-2 box record has NO current-HP byte at all; a Gen-1 box record has the
+ * bytes but no computed maximum to clamp or show them against, see above). Clamped to
+ * 0..the record's STORED max HP; returns false (writing nothing) on a box record, or when
+ * no max is stored yet (0) so there is nothing to clamp to. */
+bool gb_set_current_hp(GbEditMon* e, uint16_t hp);
 /* Gen-1-only, read-only: the STORED type bytes and status byte (pokered/macros/ram.asm:
  * 12-15 box_struct's Type1/Type2/Status). 0 for a Gen-2 record. Gen-1 type IDS are NOT
  * Gen-3's (see GbGen1Base's own comment) — this tree has no Gen-1-NUMBERED type-name

@@ -432,7 +432,8 @@ static void card_info(const PkMon* p) {
   ui_ptext_fit(x, y, INFO_W, UI_DIM, b);
 }
 
-static void card_skills(const PkMon* p) {
+/* `hp` is the record's CURRENT HP (em_get_curhp; 0xFFFF for a box record, which stores none). */
+static void card_skills(const PkMon* p, uint16_t hp) {
   int x = 98, y = 14; char b[48];
   ui_text(x, y, C_HDR, "SKILLS"); y += 11;
   ui_text(x, y, C_KEY, "Level"); reg(F_LEVEL, x + 60, y, 40);
@@ -449,9 +450,19 @@ static void card_skills(const PkMon* p) {
   for (int i = 0; i < 6; i++) {
     int s = DISP[i], bo = pk_nature_boost(p->nature), h = pk_nature_hinder(p->nature);
     u16 col = (s == bo) ? UI_OK : (s == h) ? UI_WARN : C_VAL;
-    reg(F_EV0 + s, x, y, 138);
-    siprintf(b, "%-3s", DSHORT[i]); ui_text(x, y, C_KEY, b);   /* 3-char label clears the value column */
-    siprintf(b, "%4u", (unsigned)p->stats[s]); ui_text(x + 30, y, col, b);
+    if (s == PK_HP && hp != 0xFFFFu) {
+      /* BACKLOG #231: a PARTY mon's HP row splits in two slots -- "cur/max" edits CURRENT HP
+       * (the one reviving edit; every other edit preserves it), "EVn" still edits the HP EV. */
+      reg(F_CURHP, x, y, 68);
+      reg(F_EV0 + s, x + 70, y, 68);
+      ui_text(x, y, C_KEY, "HP");
+      siprintf(b, "%u/%u", (unsigned)hp, (unsigned)p->stats[s]);
+      ui_ptext_fit(x + 20, y, 50, hp == 0 ? UI_WARN : col, b);   /* fainted reads red */
+    } else {
+      reg(F_EV0 + s, x, y, 138);
+      siprintf(b, "%-3s", DSHORT[i]); ui_text(x, y, C_KEY, b);   /* 3-char label clears the value column */
+      siprintf(b, "%4u", (unsigned)p->stats[s]); ui_text(x + 30, y, col, b);
+    }
     siprintf(b, "EV%u", (unsigned)p->evs[s]);  ui_text(x + 72, y, UI_DIM, b);
     y += 10;                                                   /* 10px stride: edit-frames don't share a scanline */
   }
@@ -700,6 +711,7 @@ typedef struct {
   uint32_t gen;                    /* ui_clear_gen() as of the paint                  */
   int16_t  card, ivh_cur, ivh_n;
   uint8_t  edit, create, back, have_roll, ivonly;
+  uint16_t hp;                     /* em_get_curhp(): not in PkMon, so it rides beside it (#231) */
   bool     valid;
 } CardPaint;
 
@@ -770,10 +782,11 @@ void pdna_summary_sel_frame_set(int sx, int sy, int sw) {
   s_self_x = x; s_self_y = y; s_self_w = w; s_self_on = true;
 }
 
-static bool card_paint_needed(const CardPaint* v, const PkMon* p, int card) {
+static bool card_paint_needed(const CardPaint* v, const PkMon* p, uint16_t hp, int card) {
   return !v->valid || s_self_toobig
       || v->gen  != ui_clear_gen()          /* a picker/OSK/confirm painted over us */
       || v->card != (int16_t)card
+      || v->hp   != hp
       || v->edit != (uint8_t)g_edit || v->create != (uint8_t)g_create
       || v->back != (uint8_t)g_back
       || v->ivh_cur   != (int16_t)g_ivh.cur || v->ivh_n != (int16_t)g_ivh.n
@@ -782,8 +795,9 @@ static bool card_paint_needed(const CardPaint* v, const PkMon* p, int card) {
       || memcmp(p, &v->mon, sizeof *p) != 0;
 }
 
-static void card_paint_store(CardPaint* v, const PkMon* p, int card) {
+static void card_paint_store(CardPaint* v, const PkMon* p, uint16_t hp, int card) {
   v->mon = *p;
+  v->hp = hp;
   v->gen = ui_clear_gen();
   v->card = (int16_t)card;
   v->ivh_cur = (int16_t)g_ivh.cur; v->ivh_n = (int16_t)g_ivh.n;
@@ -792,7 +806,7 @@ static void card_paint_store(CardPaint* v, const PkMon* p, int card) {
   v->valid = true;
 }
 
-static bool render_card(const PkMon* p, int card) {
+static bool render_card(const PkMon* p, uint16_t hp, int card) {
   pdna_summary_bg();                        /* Emerald-style blue gradient backdrop */
   g_nslot = 0;
   if (g_edit)        { ui_fill_rect(0, 0, 50, 9, UI_WARN); ui_text(8, 1, UI_PANEL, "EDIT"); } /* unmissable */
@@ -804,7 +818,7 @@ static bool render_card(const PkMon* p, int card) {
   ui_hline(98, 24, 100, UI_TITLE);          /* header accent rule under each card title */
   switch (card) {
     case 0: card_info(p);          break;
-    case 1: card_skills(p);        break;
+    case 1: card_skills(p, hp);    break;
     case 2: card_spread(p, false); break;
     case 3: card_spread(p, true);  break;
     case 4: card_moves(p, false);  break;
@@ -1146,10 +1160,11 @@ static int summary_run_inner(uint8_t* rec, bool is_party, bool can_edit, uint8_t
      * already on screen. g_nslot/g_slot survive a skip untouched, which is what lets the
      * cursor below still find its slots. */
     bool dl_ran = false, painted = false;
-    if (card_paint_needed(&pv, &cur, card)) {
-      dl_ran  = render_card(&cur, card);
+    const uint16_t hp = em_get_curhp(&e);
+    if (card_paint_needed(&pv, &cur, hp, card)) {
+      dl_ran  = render_card(&cur, hp, card);
       painted = true;
-      card_paint_store(&pv, &cur, card);
+      card_paint_store(&pv, &cur, hp, card);
       pdna_summary_sel_frame_drop();  /* summary_bg just painted over the outline AND its under-pixels */
       p_spr_ok = false;     /* ...and type_badge/draw_left decoded into mon_decomp */
       ui_hline(0, 151, UI_SCR_W, UI_BORDER);

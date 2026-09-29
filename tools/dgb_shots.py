@@ -6,7 +6,7 @@
 WHY A SEPARATE SCRIPT (does NOT edit tools/gb_shots.py)
 ---------------------------------------------------------
 tools/gb_shots.py drives PokeDNA's Game Boy fork against a build fused with exactly
-ONE GB save (tools/fuse_sav.py --gb) — boot lands straight on S1's info page via
+ONE GB save (tools/fuse_sav.py --gb) — boot lands straight on S1's box grid via
 view_save()'s own standalone GB-size fork (memset g_vinfo, pdna_gen12_show_image over
 a resident buffer): a full read/write-capable mount (VIEW/EDIT combined, MOVE TO BOX,
 RELEASE, CREATE on an empty cell). pokedna-delta-gb.gba (tools/fuse_gb.py, BACKLOG #62)
@@ -338,9 +338,9 @@ def boot_to_gb_session(s: gb_shots.Session, rom: Path, which: str | None = None)
       - a single-fused-GB-save image (tools/fuse_gb.py fed exactly one ROM+save
         pair, no Emerald.sav) skips the "PICK A SAVE" picker ENTIRELY --
         gb_delta_pick_save()'s own `if (n == 1) return 0;` (pdna_main.c:8567) --
-        landing straight on that save's own "GAME BOY SAVE" info page the
-        instant `s.run(700)` finishes (verified: Red-only and Gold-only images
-        both show "GAME BOY SAVE" with zero picker frames).
+        landing straight on that save's own box grid (#279: direct entry, no info page)
+        the instant `s.run(700)` finishes (verified: Red-only and Gold-only images
+        both enter the box grid with zero picker frames).
       - any image with a Gen-3 save ready (flash_ok or the fused-.sav fallback)
         AND a fused GB corpus -- e.g. `make delta-gb`'s own Emerald.sav +
         Red/Gold/Crystal recipe, the "flight" shape -- ALWAYS shows the picker:
@@ -365,9 +365,7 @@ def boot_to_gb_session(s: gb_shots.Session, rom: Path, which: str | None = None)
         n = row_index(rom, which)
         if n:
             s.press_n("DOWN", n, settle=gb_shots.SETTLE)   # Gen-3 row -> `which`'s row
-        s.tap("A", settle=60)                               # pick row -> S1 info
-    assert_screen(s, "gb_info_page")
-    s.tap("A", settle=60)                    # S1 info -> box grid (rom_gbsprite cold fetch)
+        s.tap("A", settle=60)                               # pick row -> box grid (#279: no info page)
     s.run(GB_ART_COLD_SETTLE)
     assert_screen(s, "gb_box_grid")
 
@@ -584,11 +582,7 @@ def run_standalone(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Se
                               "(Red/Gold/Crystal)")
 
     s.tap("DOWN", settle=gb_shots.SETTLE)                 # Emerald (row 0) -> Red (row 1)
-    s.tap("A", settle=60)                                 # pick Red -> S1
-    s.shot("02_s1_info", "#68a: Red.sav's own S1 info page -- the standalone "
-                          "mount, reached via the boot picker's Red row")
-
-    s.tap("A", settle=60)                                 # -> box grid (COLD fetch, gen1 loc empty)
+    s.tap("A", settle=60)                                 # pick Red -> box grid (COLD fetch, gen1 loc empty; #279: no S1 info page)
     s.run(GB_ART_COLD_SETTLE)
     s.shot("03_box_grid", "#62 D1: box grid with REAL Red/Blue/Yellow art -- 4-shade Game Boy "
                            "sprites decoded from the fused Red.gb ROM, the first-ever cold scan "
@@ -724,9 +718,9 @@ def run_standalone(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Se
 def run_u2c_trainer(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
     """U2c (docs/GB-GAME-SCREENS-DESIGN.md sec 1.1): Red's OWN trainer card on the
     shared GB-screen shell, over the STANDALONE mount (boot picker DOWN -> Red row ->
-    A -> S1 info -- same path run_standalone()'s own shots 01-02 use), then A -> box
-    grid (rides out rom_gbsprite's cold scan the same way run_standalone()'s own
-    03_box_grid does), START -> nav menu, DOWN x3 -> Trainer -> A ->
+    A -> box grid, #279: no info page), which rides out rom_gbsprite's cold scan the
+    same way run_standalone()'s own 02_box_grid does. Then START -> nav menu, DOWN x3 ->
+    Trainer -> A ->
     pdna_gbtrainer() -- Gen 1, so this lands on pdna_gbtrainer_gen1_card(), NOT the
     Emerald-art path tools/p1c_shots.py's run_gold_card() shoots (that one is Gen-2-
     only as of this slice). gbscr_open()'s own rom_gbui scan is a SEPARATE cold scan
@@ -833,7 +827,7 @@ def run_u3_trainer(core_mod, image_mod, rom: Path, out_dir: Path, which: str) ->
     """U3 (BACKLOG #66, docs/GB-GAME-SCREENS-DESIGN.md sec 1.2): Gold/Silver/Crystal's
     OWN trainer card on the shared GB-screen shell -- the Gen-2 sibling of
     run_u2c_trainer() above. Boot picker DOWN x(gb_save_pick_index(rom)[which]+1) ->
-    `which` row -> A -> S1 info -> A -> box grid (cold rom_gbsprite scan) -> START ->
+    `which` row -> A -> box grid (#279: no info page, cold rom_gbsprite scan) -> START ->
     nav menu -> DOWN x3 -> Trainer -> A -> pdna_gbtrainer_gen2_card() (gbscr_open()'s
     OWN separate cold rom_gbui scan, same GB_ART_COLD_SETTLE ride-out
     run_u2c_trainer() needs)."""
@@ -1574,10 +1568,10 @@ def run_m1_map_gen2(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.S
     run_m1_map() above. `rom` MUST be a Crystal-ONLY fused image (Crystal.gbc+
     Crystal.sav, tools/fuse_gb.py, one ROM per image -- must NOT also carry an
     Emerald.sav, or a bare A on the boot picker opens Emerald's own screen
-    instead of skipping straight to the GB save's S1 info page).
+    instead of skipping straight to the GB save's box grid).
 
     Nav: single-ROM image, so `gb_delta_pick_save()`'s `if (n == 1) return 0`
-    skips the boot picker entirely -- ONE tap (A: S1 info -> box grid), not
+    skips the boot picker entirely -- ONE tap (A -> box grid, #279: no info page), not
     DOWN+A+A the way run_m1_map()'s combined multi-ROM image needs. From the
     box grid: START -> nav menu -> DOWN x16 (same PDNA_NAV_ITEMS index as
     Gen 1's Map row -- the list order does not change per generation) -> A ->
@@ -1593,7 +1587,7 @@ def run_m1_map_gen2(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.S
     print("== M1-G2: Crystal's own current-map view (single-ROM -> Map) ==")
 
     s.run(700)
-    s.tap("A", settle=60)                                    # S1 info -> box grid (single-ROM image)
+    # #279: single-ROM image lands on the grid by itself (no S1 info page, no tap)
     s.run(GB_ART_COLD_SETTLE)
     s.tap("START", settle=gb_shots.BIG_SETTLE)               # box grid -> nav menu
     s.press_n("DOWN", 16)                                     # Party -> ... -> Map (index 16, same as Gen 1)
@@ -1653,8 +1647,7 @@ def run_m1_map_gen2_wrong_game(core_mod, image_mod, rom: Path, out_dir: Path) ->
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "m1_map_g2_wronggame_")
     print("== M1-G2: wrong-game refusal (Gold save, Crystal-only ROM) ==")
 
-    s.run(700)
-    s.tap("A", settle=60)
+    s.run(700)                       # #279: lands on the grid by itself (no info page, no tap)
     s.run(GB_ART_COLD_SETTLE)
     s.tap("START", settle=gb_shots.BIG_SETTLE)
     s.press_n("DOWN", 16)
@@ -1680,8 +1673,7 @@ def run_m1_map_gen2_no_rom(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "m1_map_g2_norom_")
     print("== M1-G2: no-ROM refusal (Gold save, no Gen-2 ROM fused) ==")
 
-    s.run(700)
-    s.tap("A", settle=60)
+    s.run(700)                       # #279: lands on the grid by itself (no info page, no tap)
     s.run(GB_ART_COLD_SETTLE)
     s.tap("START", settle=gb_shots.BIG_SETTLE)
     s.press_n("DOWN", 16)
@@ -1703,9 +1695,9 @@ def run_u5_pack(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     Crystal.sav -- BACKLOG #98's known harness gap, same reasoning as U4's own
     single-ROM requirement). A single-ROM image skips the boot picker entirely
     (gb_delta_pick_save()'s own `if (n == 1) return 0`, same as run_d7_gold()'s
-    own doc comment) -- one A tap reaches S1 info -> box grid directly.
+    own doc comment) -- one A tap reaches the box grid directly (#279: no info page).
 
-    Nav: A (S1 info) -> box grid (rom_gbsprite cold scan) -> START -> nav menu
+    Nav: A -> box grid (#279: no info page, rom_gbsprite cold scan) -> START -> nav menu
     -> DOWN x7 (Party->Bank->Daycare->Trainer->Clock fix->Mirage->Pokedex->Bag,
     PDNA_NAV_ITEMS index 7, SAME row order as Gen 1 -- nav_avail's GB_TABLE has
     one row per NV_* id with a per-generation COLUMN) -> A -> pdna_gbpack_gen2_
@@ -2036,7 +2028,7 @@ def run_b89_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     not BIG_SETTLE; list<->detail<->menu transitions stay on the shell that is
     ALREADY open (no rescan) and only need BIG_SETTLE.
 
-    Nav: A (S1 info) -> box grid -> START -> nav menu -> DOWN x12 (Party=0, Bank=1,
+    Nav: A -> box grid (#279: no info page) -> START -> nav menu -> DOWN x12 (Party=0, Bank=1,
     Daycare=2, Trainer=3, Clock fix=4, Mirage=5, Pokedex=6, Bag=7, Flags&counters=8,
     Bases=9, Blocks=10, Tickets=11, Records=12 -- PDNA_NAV_ITEMS order,
     source/pdna_layout.h) -> A -> pdna_gbhof()."""
@@ -2410,9 +2402,9 @@ def run_b90_fly(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     fused image (Red-only for `which == "red"`, Crystal-only for `which ==
     "crystal"` -- same BACKLOG #98 harness-gap reasoning as U4/U5's own images), so
     the boot picker is skipped (gb_delta_pick_save()'s `if (n == 1) return 0`) and
-    one A tap reaches S1 info -> box grid directly.
+    one A tap reaches the box grid directly (#279: no info page).
 
-    Nav: A (S1 info) -> box grid -> START -> nav menu -> DOWN x14 (Party=0, Bank=1,
+    Nav: A -> box grid (#279: no info page) -> START -> nav menu -> DOWN x14 (Party=0, Bank=1,
     Daycare=2, Trainer=3, Clock fix=4, Mirage=5, Pokedex=6, Bag=7, Flags&counters=8,
     Bases=9, Blocks=10, Tickets=11, Records=12, Frontier=13, Fly=14 -- PDNA_NAV_ITEMS
     order, source/pdna_layout.h) -> A -> pdna_gb_fly()."""
@@ -2546,7 +2538,7 @@ def run_b90_boxname(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -
     table at all (gbbn_supported refuses it), so this shot is Gen-2 only by design,
     not a coverage gap.
 
-    Nav: A (S1 info) -> box grid (cur=0, on_title=false) -> UP (on_title=true, the
+    Nav: A -> box grid (#279: no info page, cur=0, on_title=false) -> UP (on_title=true, the
     banner) -> A -> gbsrc_can_rename_impl() true (g_ed exists on this resident-image
     entry, app_can_edit() true even in the emulator -- only the FINAL write is
     Omega-gated, not the in-RAM edit -- and gbbn_supported() true on a Gen-2 save)
@@ -2717,7 +2709,7 @@ def run_b85_daycare(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -
     came from (which is exactly right: that box is still the first one with a free
     slot after the Put-in reduced its count by one).
 
-    Nav: S1 info -> A -> box grid (rom_gbsprite cold scan) -> R x(box index) ->
+    Nav: A -> box grid (#279: no info page, rom_gbsprite cold scan) -> R x(box index) ->
     START -> nav menu -> DOWN x2 (Party->Bank->Daycare, PDNA_NAV_ITEMS index 2) ->
     A -> pdna_gbdaycare(cur_box = the box just selected). The screen itself draws
     no icons (this slice's own header note: the animated yard art is Gen-3-only,
@@ -2989,10 +2981,10 @@ def run_d7_gold(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessi
     Nav: gb_delta_pick_save()'s own `if (n == 1) return 0` (source/pdna_main.c
     ~8913) means a SINGLE-ROM fused image (this one -- only Gold, no Emerald/
     Gen-3 save fused, so gb_delta_boot_pick()'s own picker never triggers either,
-    same gate) skips straight to the GB save's S1 info page with NO boot-picker
-    taps at all -- unlike run_u4_bag()'s own doc comment above (which describes
-    the combined multi-ROM image's picker), this image needs exactly ONE tap
-    (A: S1 info -> box grid), not DOWN+A+A. Then: START -> nav DOWN x7
+    same gate) skips straight to the GB save's box grid with NO boot-picker
+    taps at all (#279: no info page) -- unlike run_u4_bag()'s own doc comment above
+    (which describes the combined multi-ROM image's picker), this image needs exactly
+    ONE tap (A -> box grid), not DOWN+A+A. Then: START -> nav DOWN x7
     (Party->Bank->Daycare->Trainer->Clock->Mirage->Pokedex->Bag, SAME NV_* row
     order as Gen 1 -- nav_avail's GB_TABLE has one row per NV_* id with a
     per-generation COLUMN, not a per-generation row order) -> A -> app_nav_refuse()."""
@@ -3023,8 +3015,8 @@ def run_b86_clock(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Ses
     Crystal.sav onto the plain PDNA_TARGET=delta base, same one-ROM-image posture as
     run_d7_gold's own Gold-only image) -- gb_delta_pick_save()'s `if (n == 1) return 0`
     (source/pdna_main.c ~8913) means a single-ROM image skips the boot picker entirely
-    and lands straight on the GB save's S1 info page, so this needs exactly ONE tap
-    (A: S1 info -> box grid), not DOWN+A+A the way the combined multi-ROM image does.
+    and lands straight on the GB save's box grid (#279: no info page), so this needs
+    exactly ONE tap (A -> box grid), not DOWN+A+A the way the combined multi-ROM image does.
 
     Captures: the Clock screen itself (offsets/day-count/weekday/flag readout + the
     three rows), each row's own app_confirm (Ask/Shift/Clear), the shift row's signed
@@ -3581,7 +3573,7 @@ def run_b124_dexicons(core_mod, image_mod, rom: Path, out_dir: Path, which: str,
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, tag)
     print(f"== BACKLOG #124: dex-grid GB icons ({which}{' fallback' if fallback else ''}) ==")
     s.run(700)
-    s.tap("A", settle=60)                                   # S1 info -> box grid (single-ROM image)
+    # #279: single-ROM image lands on the grid by itself (no S1 info page, no tap)
     s.run(GB_ART_COLD_SETTLE)
     s.shot("01_box_grid", "#124: the box grid BEFORE the dex visit -- pdna_box.c's "
                            "own GB-icon cell (pdna_origin_box_art(), unrelated to "
@@ -3880,7 +3872,7 @@ def run_r1_xfer(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessi
     target is).
 
     Nav: boot picker (row 0 Emerald, row 1 the fused Gen-2 game -- DOWN x1 -> A ->
-    S1 info -> A -> box grid, same shape as run_u4_bag()'s own boot-picker
+    box grid (#279: no info page), same shape as run_u4_bag()'s own boot-picker
     sequence) -> R x13 (0-based box index 12) to reach the first box with real
     room on Guy's own Gold.sav -- 17/20, confirmed directly against the save's own
     bytes (tests/host_gbsurgery_tool.c --list). R needs a GENEROUS 200-frame
@@ -4358,27 +4350,26 @@ def _derive_checkerboard_ref(core_mod, image_mod, rom: Path) -> bytes:
     s = gb_shots.Session(core_mod, image_mod, rom, Path("/tmp"), "measure_ref_")
     s.run(700)
     s.tap("DOWN", settle=gb_shots.SETTLE)
-    s.tap("A", settle=60)
-    s.tap("A", settle=300)
+    s.tap("A", settle=300)            # pick Red -> grid (#279: no info page in between)
     return _crop_bytes(s.screen)
 
 
 def _measure_box_grid_cold_start(core_mod, image_mod, rom: Path,
                                  checkerboard_ref: bytes) -> tuple[int, bytes]:
-    """Boots `rom`, drives the boot picker down to Red.sav (row 1), picks it, opens the
-    S1 info page, then starts a frame-accurate timer at the exact frame the box grid
-    is REQUESTED (right after the key-up edge of the second A press) and polls
-    _PORTRAIT_CROP every _SAMPLE_EVERY frames until it stops matching EITHER of two
-    "not real art yet" references: the S1 info page's own crop (still mid-transition)
-    and `checkerboard_ref` (the "loading" placeholder) -- whichever a given build
-    actually shows on its way to the real portrait, this is the first frame that is
-    neither. Returns (frames_to_first_paint, final_screen_rgb_bytes) -- the second
-    value is for a caller to diff the LOC-seeded and scanned paths' full final frames
-    against each other (they must render the identical picture, portrait included)."""
+    """Boots `rom`, drives the boot picker down to Red.sav (row 1), picks it, and
+    starts a frame-accurate timer at the exact frame the box grid is REQUESTED (right
+    after the key-up edge of the A press, #279: direct entry, no info page). Polls
+    _PORTRAIT_CROP every _SAMPLE_EVERY frames until it stops matching `checkerboard_ref`
+    (the "loading" placeholder) -- the first frame that is neither the placeholder
+    nor a build-specific transition frame. Returns (frames_to_first_paint,
+    final_screen_rgb_bytes) -- the second value is for a caller to diff the LOC-seeded
+    and scanned paths' full final frames against each other (they must render the
+    identical picture, portrait included)."""
     s = gb_shots.Session(core_mod, image_mod, rom, Path("/tmp"), "measure_")
     s.run(700)
     s.tap("DOWN", settle=gb_shots.SETTLE)   # boot picker: Emerald row (0) -> Red row (1)
-    s.tap("A", settle=60)                   # pick Red -> S1 info page
+    # #279: there is no S1 info page any more; the "not real art yet" reference is the boot
+    # picker crop (what is on screen when the A press lands).
     info_page_crop = _crop_bytes(s.screen)
 
     # Same key-down/HOLD/key-up edge tap() uses, but WITHOUT its trailing settle --
@@ -4508,17 +4499,16 @@ def _measure_b185_auto(core_mod, image_mod, rom: Path, down_n: int,
     for EITHER the F5 known-ROM fast path (a table hit -- the portrait
     paints within a handful of frames) or a real scan (hundreds to tens of
     thousands of frames, depending on build), without needing to know ahead
-    of time which this image is. "Not painted yet" is either the S1 info
-    page's own crop (still mid-transition) or the known checkerboard
+    of time which this image is. "Not painted yet" is the known checkerboard
     placeholder (_is_checkerboard() above, by colour, not by a
-    separately-sampled reference) -- whichever a given build actually shows
-    on its way to the real portrait, this is the first frame that is
-    neither, held stable for _STABLE_WINDOW frames. One session, one pass,
+    separately-sampled reference, #279: no S1 info page transition) -- the first
+    frame that is neither the placeholder nor any build-specific transition, held
+    stable for _STABLE_WINDOW frames. One session, one pass,
     correct for any speed."""
     s = gb_shots.Session(core_mod, image_mod, rom, Path("/tmp"), f"b185_{label}_")
     s.run(700)
     s.press_n("DOWN", down_n, settle=gb_shots.SETTLE)
-    s.tap("A", settle=60)
+    # #279: no S1 info page -- the reference "not painted yet" crop is the boot picker itself.
     info_page_crop = _crop_bytes(s.screen)
     s.core.set_keys(raw=gb_shots.KEY["A"])
     s.run(gb_shots.HOLD)
@@ -4709,7 +4699,7 @@ def run_s2_bank(core_mod, image_mod, rom: Path, out_dir: Path, which: str,
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"s2bank_{which}_")
     print(f"== #120: the Bank from a Game Boy session ({which}) ==")
     s.run(700)
-    s.tap("A", settle=60)                                   # S1 info -> box grid (single-ROM image)
+    # #279: single-ROM image lands on the grid by itself (no S1 info page, no tap)
     s.run(GB_ART_COLD_SETTLE)
     s.shot("a_gb_grid", f"#120: the {which} box grid, freshly entered "
                         "-- every occupied cell wears its own era mark")
@@ -4725,7 +4715,7 @@ def run_s2_bank(core_mod, image_mod, rom: Path, out_dir: Path, which: str,
     if clip_rom is not None:
         cs = gb_shots.Session(core_mod, image_mod, clip_rom, out_dir, f"s2bank_{which}_clip_")
         cs.run(700)
-        cs.tap("A", settle=60)                              # single-slot image: info -> box grid directly
+        # #279: single-slot image lands on the grid by itself (no info page, no tap)
         cs.run(GB_ART_COLD_SETTLE)
         cs.press_n("UP", 3, settle=100)
         cs.tap("A", settle=150)                             # A on the empty cell (cursor starts at 0)
@@ -5693,7 +5683,7 @@ def run_b190_move_refusal(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
     <pokedna-delta-artless.gba> Yellow.gb Yellow.sav -o out.gba` (Guy's own save/ROM,
     gba-toolkit/roms/gb/ -- copy both to /tmp first, the corpus is read-only). A single
     fused GB payload means gb_delta_pick_save() (pdna_main.c) auto-picks it (n==1), so
-    boot lands straight on the info screen -- no boot picker to navigate through, same
+    boot lands straight on the box grid (#279: no info page) -- no boot picker to navigate through, same
     convention every other --s150-* flag here documents for ITS own vehicle.
 
     RECIPE (found live against Yellow.sav's own real box contents, not guessed):
@@ -6152,8 +6142,8 @@ def run_s150_7_down_edge(core_mod, image_mod, rom_gold: Path, rom_red: Path,
 
     Nav recipe, verified live against these exact fused images (settle counts found by
     hand, same posture as every other run_* function in this file):
-      grid entry: `s.run(700); s.tap("A", settle=60); s.run(100)` -- boots to the S1 info
-        page, A opens the box grid (single-directory-entry fusion, gb_delta_pick_save()
+      grid entry: `s.run(700); s.run(100)` -- boots straight into the box grid (#279: the S1 info
+        page is gone; single-directory-entry fusion, gb_delta_pick_save()
         auto-picks the lone slot).
       grid -> Bank: UP x3 (cell -> title -> tabs -> the bank_edge hop, same three-press
         count run_s2_bank()'s own docstring already measured) THEN UP x4 more (the Bank
@@ -6181,8 +6171,7 @@ def run_s150_7_down_edge(core_mod, image_mod, rom_gold: Path, rom_red: Path,
     DOWN_OFF_BANK = 5         # row 0 -> Bank's own bottom row (4) -> off the bottom edge (1 more)
 
     def boot_to_grid(s: gb_shots.Session) -> None:
-        s.run(700)
-        s.tap("A", settle=60)
+        s.run(700)                       # #279: lands on the grid by itself (no info page, no tap)
         s.run(100)
 
     def pick_up_chikorita(s: gb_shots.Session) -> None:
@@ -7286,8 +7275,7 @@ def run_s150_8_bridge(core_mod, image_mod, rom_gold: Path, rom_red: Path,
     DOWN_OFF_BANK = 5
 
     def boot_to_grid(s: gb_shots.Session) -> None:
-        s.run(700)
-        s.tap("A", settle=60)
+        s.run(700)                       # #279: lands on the grid by itself (no info page, no tap)
         s.run(100)
 
     # ---- (1) Gen 1 -> Gen 2: PIKACHU carried into Gold -- the REACHABLE direction
@@ -9397,8 +9385,8 @@ def run_gbmon(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session
 
     A single-ROM fused image has no Emerald/Gen-3 save fused in, so
     gb_delta_boot_pick()'s own `if (n == 1) return 0` (pdna_main.c ~8913) skips the
-    boot picker entirely -- exactly run_d7_gold()'s own nav, ONE tap (A: S1 info ->
-    box grid), not the DOWN+A+A a combined multi-ROM image needs.
+    boot picker entirely -- exactly run_d7_gold()'s own nav, ONE tap (A -> box grid,
+    #279: no info page), not the DOWN+A+A a combined multi-ROM image needs.
 
     Guy's own roms/gb corpus has every box on every save completely full (a
     "living dex" test save -- run_standalone()'s own doc comment), so the box
@@ -9973,8 +9961,7 @@ def run_b93_menu(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> g
     # Bank-cell absence (#120 S2's own bank_edge UP hop, reused verbatim from
     # run_s2_bank -- 3 UPs from a fresh grid entry: cell -> title -> tabs -> the hop).
     s2 = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b93_{which}_bank_")
-    s2.run(700)
-    s2.tap("A", settle=60)
+    s2.run(700)                      # #279: lands on the grid by itself (no info page, no tap)
     s2.run(GB_ART_COLD_SETTLE)
     s2.press_n("UP", 3, settle=100)
     s2.shot("26_bank_hop", "BACKLOG #93: the bank_edge UP hop opens the Bank -- "
@@ -10024,7 +10011,7 @@ def run_gbnames(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
                         BACKLOG #98's fused-image-by-generation harness gap, same
                         constraint run_u4_bag() documents; run_u4_bag()'s own fixture
                         convention, Emerald present). Nav is IDENTICAL to run_u4_bag()'s
-                        own red path: boot picker DOWN -> A (S1 info) -> A (box grid) ->
+                        own red path: boot picker DOWN -> A (box grid, #279: no info page) ->
                         START -> nav menu -> DOWN x7 (Party->Bank->Daycare->Trainer->
                         Clock fix->Mirage->Pokedex->Bag, PDNA_NAV_ITEMS index 7) -> A ->
                         pdna_gbbag_gen1_screen().
@@ -10039,7 +10026,7 @@ def run_gbnames(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
                         A single-ROM-only image skips the boot picker (gb_delta_pick_
                         save()'s own `if (n == 1) return 0`, same as run_u5_pack()'s own
                         doc comment) -- nav is IDENTICAL to run_u5_pack()'s own crystal
-                        path: A (S1 info) -> box grid -> START -> nav menu -> DOWN x7 ->
+                        path: A -> box grid (#279: no info page) -> START -> nav menu -> DOWN x7 ->
                         A -> pdna_gbpack_gen2_screen().
 
     Shots: the Items pocket (both gens show real names there by default -- id
@@ -11092,7 +11079,7 @@ def run_s150_11_reconcile(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
     # their old numbers; capture order is 05, 06, then 01..04, 08 (old frame 07, the
     # no-residue check, is folded into 01's caption).
     s.run(700)
-    boot_to_gb_session(s, rom, which="gold")          # picker -> Gold row -> info -> box grid
+    boot_to_gb_session(s, rom, which="gold")          # picker -> Gold row -> box grid (#279: no info page)
     s.tap("START", settle=gb_shots.BIG_SETTLE)
     s.tap("RIGHT")
     s.press_n("DOWN", nav_down_from_col_top("NV_XFER"))

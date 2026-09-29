@@ -24,7 +24,7 @@ static void put_uint(char* dst, int cap, int* pos, unsigned v) {
 
 static const char* const LABEL[GBE_NUM] = {
   "Nickname", "OT Name", "OT ID", "Level",
-  "Item", "Friendship",
+  "Item", "Friendship", "Cur HP",
   "Move 1", "Move 2", "Move 3", "Move 4",
   "Max PP 1", "Max PP 2", "Max PP 3", "Max PP 4",
   "PP 1", "PP 2", "PP 3", "PP 4",
@@ -60,6 +60,7 @@ int gbe_fields(const GbEditMon* e, uint8_t out[GBE_NUM]) {
   if (!e || !out) return 0;
   for (int f = 0; f < GBE_NUM; f++) {
     if ((f == GBE_ITEM || f == GBE_FRIEND) && e->gen != GB_GEN2) continue;
+    if (f == GBE_CURHP && !e->is_party) continue;   /* box records: no HP row (#231) */
     if (f == GBE_GENDER && !gbe_has_gender_row(e)) continue;
     /* BACKLOG #95: SHINY/EGG/MET* are Gen 2 only, same as ITEM/FRIEND above --
      * none of the four MET rows has a Gen-1 equivalent (gb_set_caught refuses a
@@ -131,6 +132,9 @@ void gbe_value(const GbEditMon* e, int f, char* out, int cap) {
     }
     case GBE_FRIEND: put_uint(out, cap, &pos, gb_get_friendship(e)); return;
     case GBE_DVH:    put_uint(out, cap, &pos, gb_get_dv(e, GB_HP)); return;
+    case GBE_CURHP:
+      put_uint(out, cap, &pos, gb_get_current_hp(e)); put_ch(out, cap, &pos, '/');
+      put_uint(out, cap, &pos, gb_get_stat(e, GB_HP)); return;
     case GBE_GENDER: {
       GbDvEffects fx;
       gb_dv_effects_of(e, &fx);
@@ -345,6 +349,13 @@ bool gbe_adjust(GbEditMon* e, int f, int dir, bool big) {
       if (v == gb_get_friendship(e)) return false;
       return gb_set_friendship(e, (uint8_t)v);
     }
+    case GBE_CURHP: {                       /* THE reviving edit; 0..stored max (#231) */
+      (void)gbe_settle_stats(e);            /* edit against the FRESH max, never a stale one */
+      int mx = gb_get_stat(e, GB_HP);
+      int v = big ? (dir > 0 ? mx : 0) : clampi((int)gb_get_current_hp(e) + dir, 0, mx);
+      if (v == gb_get_current_hp(e)) return false;
+      return gb_set_current_hp(e, (uint16_t)v);
+    }
     case GBE_GENDER: return gbe_flip_gender(e);
     case GBE_SHINY:  return gbe_flip_shiny(e);
     case GBE_EGG:    return gb_set_egg(e, !gb_is_egg(e));
@@ -425,6 +436,11 @@ bool gbe_press(GbEditMon* e, int f) {
      * gets a defined, useful answer, not a silent no-op). */
     case GBE_ITEM:   return gb_get_held_item(e) ? gb_set_held_item(e, 0) : false;
     case GBE_FRIEND: return gb_set_friendship(e, (uint8_t)(gb_get_friendship(e) == 255 ? 0 : 255));
+    case GBE_CURHP: {                       /* A: full <-> fainted */
+      (void)gbe_settle_stats(e);            /* edit against the FRESH max, never a stale one */
+      uint16_t mx = gb_get_stat(e, GB_HP);
+      return gb_set_current_hp(e, gb_get_current_hp(e) == mx ? 0 : mx);
+    }
     case GBE_GENDER: return gbe_flip_gender(e);
     case GBE_SHINY:  return gbe_flip_shiny(e);
     case GBE_EGG:    return gb_set_egg(e, !gb_is_egg(e));

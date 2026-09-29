@@ -33,7 +33,7 @@
 
 static const char* const FLABEL[F_NUM] = {
   "Species", "Nickname", "Level", "Nature", "Ability", "Shiny", "Gender",
-  "Item", "Friendship",
+  "Item", "Friendship", "Cur HP",
   "IV HP", "IV Atk", "IV Def", "IV Spe", "IV SpA", "IV SpD",
   "EV HP", "EV Atk", "EV Def", "EV Spe", "EV SpA", "EV SpD",
   "Move 1", "Move 2", "Move 3", "Move 4",
@@ -85,7 +85,8 @@ static uint8_t pp_ups(const PkMon* c, int i) { return (uint8_t)((c->ppBonuses >>
 /* format a field's current value into buf */
 static const char* const RIB_RANK_NAME[5] = { "None", "Normal", "Super", "Hyper", "Master" };
 
-static void field_value(int f, const PkMon* c, char* buf) {
+/* `hp` is the record's CURRENT HP (em_get_curhp): it is not in PkMon, so it rides beside it. */
+static void field_value(int f, const PkMon* c, uint16_t hp, char* buf) {
   switch (f) {
     case F_SPECIES: siprintf(buf, "%s", pk_species_name(c->species)); break;
     case F_NICK:    siprintf(buf, "%s", c->nickname); break;
@@ -96,6 +97,10 @@ static void field_value(int f, const PkMon* c, char* buf) {
     case F_GENDER:  siprintf(buf, "%s", GEN[c->gender <= 2 ? c->gender : 2]); break;
     case F_ITEM:    siprintf(buf, "%s", c->heldItem ? pk_item_name(c->heldItem) : "-"); break;
     case F_FRIEND:  siprintf(buf, "%u", (unsigned)c->friendship); break;
+    case F_CURHP:
+      if (hp == 0xFFFFu) { buf[0] = '-'; buf[1] = 0; }          /* a box record stores none */
+      else siprintf(buf, "%u/%u", (unsigned)hp, (unsigned)c->stats[PK_HP]);
+      break;
     case F_IV0: case F_IV1: case F_IV2: case F_IV3: case F_IV4: case F_IV5:
       siprintf(buf, "%u", (unsigned)c->ivs[f - F_IV0]); break;
     case F_EV0: case F_EV1: case F_EV2: case F_EV3: case F_EV4: case F_EV5:
@@ -192,6 +197,7 @@ static void field_value(int f, const PkMon* c, char* buf) {
 /* What is on screen right now. */
 typedef struct {
   PkMon    mon;        /* the record whose values are currently drawn        */
+  uint16_t hp;         /* its current HP (em_get_curhp), drawn by F_CURHP     */
   uint32_t gen;        /* ui_clear_gen() as of that paint                    */
   int      top, sel;   /* the window and cursor that were drawn              */
   bool     valid;      /* false = nothing of ours is on screen               */
@@ -208,19 +214,19 @@ static int ev_total(const PkMon* c) {
  *
  * `erase_top` extends the wipe one scanline UP, onto the row above's last scanline. It is
  * not free to do that -- see render()'s dirty-set rule for exactly when it is allowed. */
-static void row_paint(const PkMon* c, int f, int i, bool sel, bool erase_top) {
+static void row_paint(const PkMon* c, uint16_t hp, int f, int i, bool sel, bool erase_top) {
   int y = 21 + i * 8;
   int y0 = erase_top ? y - 1 : y;
   ui_fill_rect(2, y0, 236, y + UI_ROW_H - y0, UI_BG);
   if (sel) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
   ui_text(PDNA_EDIT_LBL_X, y, sel ? UI_SELTEXT : UI_DIM, FLABEL[f]);
   char val[72], vt[72];
-  field_value(f, c, val);
+  field_value(f, c, hp, val);
   ui_truncate(vt, val, PDNA_EDIT_VAL_COLS);
   ui_text(PDNA_EDIT_VAL_X, y, sel ? UI_SELTEXT : UI_TEXT, vt);
 }
 
-static void render(const PkMon* c, int sel, int top, EditPaint* pv) {
+static void render(const PkMon* c, uint16_t hp, int sel, int top, EditPaint* pv) {
   char line[64];
   int  evtot = ev_total(c);
   bool full  = !pv->valid || pv->gen != ui_clear_gen();
@@ -265,8 +271,8 @@ static void render(const PkMon* c, int sel, int top, EditPaint* pv) {
     bool s = (f == sel), os = (of == pv->sel);
     if (full || of != f || s != os) { dirty |= 1u << i; continue; }
     char a[72], b[72];
-    field_value(f, c, a);
-    field_value(f, &pv->mon, b);                     /* the same row, off the shadow mon */
+    field_value(f, c, hp, a);
+    field_value(f, &pv->mon, pv->hp, b);                     /* the same row, off the shadow mon */
     if (strcmp(a, b) != 0) dirty |= 1u << i;         /* comparing UNtruncated is safe: it
                                                       * can only over-report, never under */
   }
@@ -289,10 +295,11 @@ static void render(const PkMon* c, int sel, int top, EditPaint* pv) {
   for (int i = 0; i < VIS_ROWS && top + i < F_NUM; i++) {
     if (!(dirty & (1u << i))) continue;
     bool etop = (i == 0) || (dirty & (1u << (i - 1))) != 0;   /* row 0's y-1 is blank chrome */
-    row_paint(c, top + i, i, top + i == sel, etop);
+    row_paint(c, hp, top + i, i, top + i == sel, etop);
   }
 
   pv->mon = *c;
+  pv->hp  = hp;
   pv->top = top;
   pv->sel = sel;
   pv->gen = ui_clear_gen();          /* read AFTER the ui_clear() above, not before */
@@ -313,6 +320,11 @@ void em_field_adjust(int f, int dir, bool big, EditMon* e, const PkMon* c) {
     case F_SPECIES: em_set_species(e, clampi(c->species + dir * (big ? 10 : 1), 1, 411)); break;
     case F_LEVEL:   em_set_level(e, clampi(c->level + dir * s, 1, 100)); break;
     case F_FRIEND:  em_set_friendship(e, clampi(c->friendship + dir * s, 0, 255)); break;
+    /* BACKLOG #231: THE reviving edit. Party only (a box record has no HP); 0..max, the
+     * shoulders jump to the ends like the IV rows. */
+    case F_CURHP:   if (em_get_curhp(e) != 0xFFFFu)
+                      em_set_curhp(e, (uint16_t)(big ? (dir > 0 ? c->stats[PK_HP] : 0)
+                                                     : clampi((int)em_get_curhp(e) + dir, 0, c->stats[PK_HP]))); break;
     case F_ITEM:    em_set_item(e, clampi(c->heldItem + dir * (big ? 10 : 1), 0, 65535)); break;
     case F_ABILITY: em_set_ability(e, c->abilityNum ^ 1); break;
     case F_NATURE:  reroll_to(e, c, (c->nature + (dir > 0 ? 1 : 24)) % 25,
@@ -427,6 +439,9 @@ void em_field_press(int f, EditMon* e, const PkMon* c) {
     case F_GENDER: { uint8_t r = pk_species_gender_ratio(c->species);
                      if (r >= 1 && r <= 253) reroll_to(e, c, c->nature, c->isShiny ? 1 : 0, c->gender ^ 1); break; }
     case F_FRIEND:  em_set_friendship(e, c->friendship == 255 ? 0 : 255); break;   /* quick toggle */
+    case F_CURHP:   if (em_get_curhp(e) != 0xFFFFu)                                 /* full <-> fainted */
+                      em_set_curhp(e, em_get_curhp(e) == c->stats[PK_HP] ? 0 : c->stats[PK_HP]);
+                    break;
     case F_IV0: case F_IV1: case F_IV2: case F_IV3: case F_IV4: case F_IV5:
       em_set_iv(e, f - F_IV0, c->ivs[f - F_IV0] == 31 ? 0 : 31); break;             /* 0 <-> max */
     case F_EV0: case F_EV1: case F_EV2: case F_EV3: case F_EV4: case F_EV5: {
@@ -490,7 +505,7 @@ bool pdna_edit(const uint8_t* rec, bool is_party, uint8_t* out_rec) {
   for (;;) {
     if (sel < top) top = sel;
     if (sel >= top + VIS_ROWS) top = sel - VIS_ROWS + 1;
-    render(&cur, sel, top, &pv);
+    render(&cur, em_get_curhp(&e), sel, top, &pv);
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R | KEY_A | KEY_B | KEY_START);
     if (k & KEY_B) break;

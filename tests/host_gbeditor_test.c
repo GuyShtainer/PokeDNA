@@ -144,6 +144,7 @@ static void one_slot(GbSession* s, int box, int slot) {
    * Guy's Gold.sav/Crystal.sav that DOES have one), and hides all four Met rows on a
    * Gold/Silver mount (review C1 above). */
   int expect_full = s->gen == GB_GEN2 ? GBE_NUM : GBE_NUM - 9;
+  if (!e.is_party) expect_full -= 1;                       /* BACKLOG #231: Cur HP is party-only */
   if (s->gen == GB_GEN2 && !gbe_has_gender_row(&e)) expect_full -= 1;
   if (s->gen == GB_GEN2 && !e.has_caught) expect_full -= 4;
   CHECK(n == expect_full, "Gen 1 hides the Gen-2 rows; Gen 2 hides Gender/Met where there is none");
@@ -549,6 +550,72 @@ static void test_shiny(void) {
   }
 }
 
+/* BACKLOG #231: current HP is an editable PARTY row and no other edit revives. */
+static int g_hp_slots;
+static void curhp_slot(GbSession* s, int box, int slot) {
+  GbEditMon e;
+  if (!gb_load(&e, s->gen, g_list, box, slot)) { CHECK(0, "gb_load"); return; }
+  if (gb_is_egg(&e) || gb_get_stat(&e, GB_HP) == 0 || gb_get_level(&e) < 1) return;
+  g_hp_slots++;
+  uint16_t mx = gb_get_stat(&e, GB_HP);
+  /* Gen 1 needs base data for a recalc; without it stats stay stale and no HP carry runs,
+   * so the revive check below is only meaningful where gb_recalc_stats can run. */
+  CHECK(gbe_kind(GBE_CURHP) == GBE_K_NUM, "Cur HP is a numeric row");
+  GbEditMon t = e;
+  CHECK(gbe_press(&t, GBE_CURHP) == (gb_get_current_hp(&e) != 0), "A: full<->0 toggles unless already 0");
+  gb_set_current_hp(&t, 0);
+  CHECK(gb_get_current_hp(&t) == 0, "set 0 writes 0 (a fainted mon)");
+  CHECK(gbe_adjust(&t, GBE_CURHP, +1, false) && gb_get_current_hp(&t) == 1, "RIGHT raises 0 -> 1 (the reviving edit)");
+  CHECK(gbe_adjust(&t, GBE_CURHP, +1, true) && gb_get_current_hp(&t) == mx, "R jumps to max");
+  CHECK(!gbe_adjust(&t, GBE_CURHP, +1, false), "RIGHT at max changes nothing");
+  CHECK(!gb_set_current_hp(&t, 60000) || gb_get_current_hp(&t) == mx, "over-max clamps to max");
+  CHECK(gbe_adjust(&t, GBE_CURHP, -1, true) && gb_get_current_hp(&t) == 0, "L jumps to 0");
+  /* no other edit revives a fainted mon */
+  gb_set_statexp(&t, GB_HP, 40000);
+  gb_set_dv(&t, GB_ATK, 3);
+  gb_set_level(&t, (uint8_t)(gb_get_level(&t) < 60 ? gb_get_level(&t) + 7 : gb_get_level(&t) - 7));
+  (void)gbe_settle_stats(&t);
+  CHECK(gb_get_current_hp(&t) == 0, "fainted stays fainted through statexp/DV/level edits + recalc");
+  /* a healthy mon is never handed max HP by an edit either. (This range check is weak on its own
+   * -- any value in 1..max passes; the no-max-handout behaviour is pinned by test_carry_hp in host_gbedit_test.c.) */
+  GbEditMon h = e;
+  gb_set_current_hp(&h, 1);
+  gb_set_statexp(&h, GB_HP, 65535);
+  (void)gbe_settle_stats(&h);
+  CHECK(gb_get_current_hp(&h) >= 1 && gb_get_current_hp(&h) <= gb_get_stat(&h, GB_HP), "damaged mon stays in 1..max");
+  /* G2: Cur HP typed AFTER a level edit is edited against the fresh max and saves as shown */
+  GbEditMon st = e;
+  gb_set_level(&st, (uint8_t)(gb_get_level(&st) > 10 ? 5 : 50));
+  gbe_adjust(&st, GBE_CURHP, -1, true); gbe_adjust(&st, GBE_CURHP, +1, false); gbe_adjust(&st, GBE_CURHP, +1, false);
+  if (gbe_settle_stats(&st)) CHECK(gb_get_current_hp(&st) == 2, "Cur HP set after a level edit saves as shown");
+}
+static void test_curhp(void) {
+  const char* names[4] = { "Red.sav", "Yellow.sav", "Gold.sav", "Crystal.sav" };
+  printf("\n== Cur HP row (#231) ==\n");
+  for (int i = 0; i < 4; i++) {
+    uint32_t len = 0;
+    if (!load_file(names[i], &len)) continue;
+    GbSession s;
+    if (gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) != GBS_OK) continue;
+    int pb = gbs_party_box(&s);
+    if (gbs_load_list(&s, pb, g_list) != GBS_OK) continue;
+    int cnt = gb_list_count(s.gen, g_list, pb);
+    for (int sl = 0; sl < cnt; sl++) curhp_slot(&s, pb, sl);
+    /* a box record: no row, and the setter refuses */
+    if (gbs_load_list(&s, 0, g_list) == GBS_OK && gb_list_count(s.gen, g_list, 0) > 0) {
+      GbEditMon b;
+      if (gb_load(&b, s.gen, g_list, 0, 0)) {
+        uint8_t rows[GBE_NUM]; int n = gbe_fields(&b, rows); bool has = false;
+        for (int k = 0; k < n; k++) if (rows[k] == GBE_CURHP) has = true;
+        CHECK(!has, "a box record shows no Cur HP row");
+        GbEditMon c = b;
+        CHECK(!gb_set_current_hp(&c, 5) && memcmp(&c, &b, sizeof c) == 0, "box setter refuses and writes nothing (refused by the !is_party guard; the mx == 0 guard is a second)");
+      }
+    }
+  }
+  CHECK(g_hp_slots > 0, "at least one party slot was exercised");
+}
+
 int main(void) {
   one_save("Red.sav",     GB_GEN1);
   one_save("Yellow.sav",  GB_GEN1);
@@ -558,6 +625,7 @@ int main(void) {
   issue_and_stale_text_fits();
   test_gender();
   test_shiny();
+  test_curhp();
   printf("\n%d slots, %d rows, %d mutations; %d checks, %d failed\n",
          g_slots, g_rows, g_changes, g_check, g_fail);
   return g_fail ? 1 : 0;

@@ -10,6 +10,7 @@
 enum {
   F_SPECIES, F_NICK, F_LEVEL, F_NATURE, F_ABILITY, F_SHINY, F_GENDER,
   F_ITEM, F_FRIEND,
+  F_CURHP,   /* BACKLOG #231: current HP (party only; box = "-", inert) */
   F_IV0, F_IV1, F_IV2, F_IV3, F_IV4, F_IV5,
   F_EV0, F_EV1, F_EV2, F_EV3, F_EV4, F_EV5,
   F_MV0, F_MV1, F_MV2, F_MV3,

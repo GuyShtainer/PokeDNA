@@ -344,7 +344,12 @@ static void stat_row(const GbEditMon* e, const char* label, int stat_i, int dv_f
   } else {
     strcpy(b, PDNA_GBSUM_STAT_DASH);
   }
-  ui_text(x + PDNA_GBSUM_STAT_VAL_DX, y, C_VAL, b);
+  ui_text(x + PDNA_GBSUM_STAT_VAL_DX, y,
+          (stat_i == GB_HP && e->is_party && gb_get_current_hp(e) == 0) ? UI_WARN : C_VAL, b);
+  /* BACKLOG #231: a PARTY mon's "cur/max" is its CURRENT HP slot -- the one reviving edit
+   * (LEFT/RIGHT +-1, A full<->0). A box record has neither the byte's max nor a row. */
+  if (stat_i == GB_HP && e->is_party)
+    reg(slot, n, GBE_CURHP, x + PDNA_GBSUM_STAT_VAL_DX, y, PDNA_SUM_CARD_W - PDNA_GBSUM_STAT_VAL_DX);
 
   int y2 = y + ROW_H;
   if (dv_field == GBE_DVH) {
