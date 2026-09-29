@@ -1204,7 +1204,7 @@ static BankDownResult bank_down_exact(BoxSource* src, int dst_box, const uint8_t
  * at its own next free slot -- see gb_create_hook's own comment) and is carried for
  * S150-8's Gen-3 arm, which needs the exact cell. noinline: must not inline into
  * drop_held, which sits on the box-screen stack chain. */
-static BankDownResult __attribute__((noinline))
+BankDownResult __attribute__((noinline))
 bank_down_dispatch(BoxSource* src, int dst_box, int dst_cell, const uint8_t cell80[80],
                    const uint8_t dstrec[80], uint8_t out80[80]) {
   switch (xg_bank_down_arm(bc_kind(cell80), src->scope, app_gb_session_gen())) {
@@ -1214,6 +1214,16 @@ bank_down_dispatch(BoxSource* src, int dst_box, int dst_cell, const uint8_t cell
     case XG_DOWN_ARM_NONE:
     default:                    return BANK_DOWN_REFUSED;
   }
+}
+
+/* #271/y10: the TO GAME row on a NATIVE Bank cell (app_mon_menu sets a one-shot; both menu call sites below
+ * consume it). The Bank's own box/cell are known HERE, not in the menu. The drop's arm, not a clone: see
+ * app_bank_togame_native (pdna_main.c) -> bank_down_dispatch above. Only meaningful on the Bank grid. */
+static void __attribute__((noinline)) togame_native_run(BoxSource* src, uint8_t* recs, int box, int cur) {
+  if (!src->is_bank || box < 0 || cur < 0 || cur >= G3_BOX_SLOTS) { snd_deny(); return; }
+  boxoam_suspend();                                   /* the arm opens screens and may touch the card */
+  (void)app_bank_togame_native(box, cur, recs + (uint32_t)cur * 80);
+  boxoam_resume();
 }
 
 /* #270 (Guy 2026-09-29, RULED): the Bank is a PASS-THROUGH -- today in the Gen-3 ->
@@ -4049,6 +4059,9 @@ static int party_strip_overlay(BoxSource* src, int box, int* cur,
                                                              * above -- return ignored. */
             (void)start_carry(src, recs, box, gcur);
             play_grab_anim(src, box, gcur);
+          } else if (app_take_togame_request()) {             /* #271/y10: TO GAME on a native cell */
+            togame_native_run(src, recs, box, gcur);
+            recs = src->records(box); box_decode(src, recs, box); s_oam_reload = true;
           } else if (app_take_dup_request()) {                /* DUPLICATE -> a fresh copy;
                                                                 * both flags are consumed
                                                                 * here so neither can leak
@@ -5138,6 +5151,10 @@ int pdna_box(BoxSource* src) {
             carry_move(src, box, cur, cur);                              /* lift into carry */
             draw_footer(src->is_bank, false, true);                      /* move-mode footer */
           }
+        } else if (app_take_togame_request()) {                         /* #271/y10: TO GAME on a native cell */
+          togame_native_run(src, recs, box, cur);
+          recs = src->records(box); box_decode(src, recs, box); s_oam_reload = true;
+          need_full = true;                                             /* repaint: the menu popup and any arm screen must not linger */
         } else if (app_take_dup_request()) {                            /* picked DUPLICATE -> a fresh COPY in the glove */
           memcpy(s_held, recs + (uint32_t)cur * 80, 80);                /* copy floats in-hand; no origin (cancel discards it) */
           bool dup_ok = dup_restamp_native(s_held);

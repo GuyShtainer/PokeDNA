@@ -61,6 +61,7 @@
 #include "gen3_gen.h"      /* gen3_build_mon_spread — one seed, matched PID + IVs */
 #include "pdna_legality.h" /* pdna_legality_show */
 #include "pdna_gen12.h"    /* GB import: mount a Gen-1/2 save read-only */
+#include "bank_down_convert.h" /* #271/y10: bank_down_dispatch -- the ONE Bank-native -> PC arm the TO GAME row shares with the drop */
 #include "bank_cell.h"     /* bc_is_native -- native Bank cell interception (BACKLOG #150 S150-2) */
 #include "pdna_pk.h"     /* pdna_pk_export (.pk3) */
 #include "pdna_bank.h"   /* pdna_bank_show (bank = parallel boxes) */
@@ -2913,6 +2914,11 @@ static bool g_move_req = false;
 bool app_take_move_request(void) { bool r = g_move_req; g_move_req = false; return r; }
 static bool g_dup_req = false;
 bool app_take_dup_request(void)  { bool r = g_dup_req;  g_dup_req  = false; return r; }
+/* #271/y10: TO GAME on a NATIVE Bank cell. The menu cannot run it (it is handed box 0, never the Bank's own
+ * box index, and the arm needs the real (box, slot) for the deferred delete), so it sets this one-shot and the
+ * Bank grid, which knows both, consumes it and calls app_bank_togame_native(). */
+static bool g_togame_req = false;
+bool app_take_togame_request(void) { bool r = g_togame_req; g_togame_req = false; return r; }
 /* The party popup's "MOVE TO BOX" action (app_mon_menu) sets g_party_tobox_req; the overlay
  * consumes it to start a party-origin carry. g_party_tobox_allowed gates whether the action is
  * even offered (only when the popup was opened from the box, so there's a box to carry into). */
@@ -4019,6 +4025,48 @@ static bool app_inject_to_game_deferred(const uint8_t* rec80, int* out_box, int*
   snd_deny();
   msg_wait("PC FULL", UI_WARN, "No free PC slot in the", "loaded game.");
   return false;
+}
+
+/* #271/y10: TO GAME on a NATIVE (Gen-1/2) Bank cell in a Gen-3 session -- the menu twin of carrying the cell
+ * onto the Gen-3 PC and dropping it. ONE arm, not a clone: it calls bank_down_dispatch() (pdna_box.c) -- the very
+ * function drop_held() calls -- with the same arguments a drop would supply (the PC scope, the destination
+ * box/cell, the Bank cell, the destination's own 80 bytes, an out buffer), so the restore-or-convert walls
+ * (gb_g3home_restore_up first: SAVE NOW? on a pending restore, the merge screen; a COPY/DUPLICATE cell or an
+ * already-RESTORED entry converts fresh) are shared byte for byte. It then does what drop_held()'s BANK -> PC
+ * MOVE branch does with a CONVERTED result: place the finished record (never the native cell), register the dex
+ * entry deferred, mark the PC dirty and queue the Bank cell's deferred delete -- nothing is written to the save
+ * now (the box screen's exit save is the ONE write, same as a drop). The destination: the first free cell of
+ * the PC box the app last used, scanning on through the following boxes (the Gen-3 TO GAME row scans the same
+ * way), refusing PC FULL honestly. Returns true iff a record landed. */
+bool __attribute__((noinline)) app_bank_togame_native(int bank_box, int bank_slot, const uint8_t* cell) {
+  if (!cell || bank_box < 0 || bank_slot < 0 || !bc_is_native(cell)) return false;
+  if (xg_inject_refuse(app_arena_held(), g_vinfo.valid)) {
+    snd_deny();
+    msg_wait("NO GEN-3 SAVE", UI_WARN, "Open a Gen-3 save first,", "then use the Bank.");
+    return false;
+  }
+  if (!app_can_edit()) { snd_deny(); return false; }
+  int db = -1, ds = -1;
+  for (int i = 0; i < G3_TOTAL_BOXES && db < 0; i++) {
+    int b = (((g_pc_last_box >= 0 && g_pc_last_box < G3_TOTAL_BOXES) ? g_pc_last_box : 0) + i) % G3_TOTAL_BOXES;
+    int s = box_free_slot(g_pc, b);
+    if (s >= 0) { db = b; ds = s; }
+  }
+  if (db < 0) { snd_deny(); msg_wait("PC FULL", UI_WARN, "No free PC slot in the", "loaded game."); return false; }
+  if (app_bank_defer_full()) { snd_deny(); msg_wait("TOO MANY MOVES", UI_WARN, "Save and re-enter the", "Bank first."); return false; }
+  BoxSource pcs; memset(&pcs, 0, sizeof pcs);
+  pcs.scope = BOXSCOPE_PC;                                  /* the only member the arm reads */
+  uint8_t held[80], conv[80];
+  memcpy(held, cell, 80);                                   /* the arm may re-page the shared Bank buffer */
+  uint8_t* dst = pk_box_slot(g_pc, db, ds);
+  BankDownResult bd = bank_down_dispatch(&pcs, db, ds, held, dst, conv);
+  if (bd != BANK_DOWN_CONVERTED || bc_is_native(conv)) return false;   /* REFUSED: the arm already said why; nothing changed */
+  memcpy(dst, conv, 80);
+  app_register_dex_deferred(conv, false);                   /* == pcsrc_note_add, the drop's note_add */
+  app_mark_pc_dirty();                                      /* == src->mark_dirty */
+  app_bank_defer_delete(bank_box, bank_slot, held);
+  snd_save();
+  return true;
 }
 
 /* Forward declaration: the real (tentative) definition and app_src_readonly_set/clear/
@@ -6071,13 +6119,19 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
      * native handlers for them. Each is now a native-aware action (never the Gen-3 body
      * run on a GBC1 cell): LEGALITY reads the cell's own decoded view, DUPLICATE re-stamps
      * a fresh serial + COPY flag (pdna_box.c dup_restamp_native), EXPORT writes .pk1/.pk2
-     * (gb_export_native). Gen-3's relative order is kept. TO GAME stays off a native cell:
-     * app_inject_to_game() would memcpy the raw GBC1 bytes into a Gen-3 PC -- the real
-     * Bank -> game path for a native cell is the conversion drop (bank_down_dispatch). */
+     * (gb_export_native). Gen-3's relative order is kept. TO GAME (#271/y10, no longer
+     * de-scoped) is NOT app_inject_to_game() -- that would memcpy the raw GBC1 bytes into a
+     * Gen-3 PC. A native cell's TO GAME row sets a request the Bank grid runs through the SAME
+     * arm the conversion drop uses (bank_down_dispatch: restore-or-convert), landing what a drop
+     * onto the first free PC cell would land: app_bank_togame_native(). */
     lab[n]=PDNA_LBL_LEGALITY; act[n++]=A_LEGAL;
     if (!is_party) { lab[n]=PDNA_LBL_MOVE; act[n++]=A_MOVE; }         /* box: pick up + reposition */
     lab[n]=PDNA_LBL_DUPLICATE; act[n++]=A_DUP;
     lab[n]=PDNA_LBL_EXPORT_PK; act[n++]=A_EXPORT;
+    /* #271/y10 (Guy's #271: "to game / to bank" are not locked to Gen 3): TO GAME on a native cell, same
+     * gate as the Gen-3 cell's row (a Bank cell, a live Gen-3 PC, something already in it). It runs the drop's
+     * own arm -- the restore-or-convert of bank_down_dispatch -- see app_bank_togame_native. */
+    if (is_bank && xg_togame_row(is_bank, app_gen3_pc_live(), g_have_pc)) { lab[n]=PDNA_LBL_TO_GAME; act[n++]=A_TOGAME; }
     lab[n]=PDNA_LBL_RELEASE; act[n++]=A_RELEASE;
   } else if (occupied) {
     lab[n]=PDNA_LBL_VIEW_EDIT; act[n++]=A_SUMMARY;     /* opens the editable summary (moves edited there) */
@@ -6190,7 +6244,7 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
       /* BACKLOG #150 S150-3 decision 9: defence in depth -- cannot be out-of-sync with
        * the row build above since it whitelists the exact same four actions. Refuses
        * anything else outright before the switch even runs. */
-      if (native && act[sel] != A_SUMMARY && act[sel] != A_LEGAL && act[sel] != A_MOVE && act[sel] != A_DUP && act[sel] != A_EXPORT && act[sel] != A_RELEASE && act[sel] != A_CANCEL) { snd_deny(); return false; }
+      if (native && act[sel] != A_SUMMARY && act[sel] != A_LEGAL && act[sel] != A_MOVE && act[sel] != A_DUP && act[sel] != A_EXPORT && act[sel] != A_TOGAME && act[sel] != A_RELEASE && act[sel] != A_CANCEL) { snd_deny(); return false; }
       switch (act[sel]) {
         case A_SUMMARY: return is_party ? party_browse(slot, commit)                  /* party: scroll mons */
                                         : app_box_browse(block, box, slot, commit);   /* box: scroll mons */
@@ -6207,7 +6261,8 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
         case A_TOBOX:   g_party_tobox_req = true; return false;     /* party popup grabs it for a box */
         case A_EXPORT:  if (native) { (void)gb_export_native(rec); return false; }   /* #271: .pk1/.pk2 */
                         pdna_pk_export(rec, &m0); return false;   /* writes a .pk3, not the save */
-        case A_TOGAME:  return app_inject_to_game(rec);           /* bank -> loaded save's PC */
+        case A_TOGAME:  if (native) { g_togame_req = true; return false; }   /* #271/y10: the Bank grid runs the drop's own arm (app_bank_togame_native) */
+                        return app_inject_to_game(rec);           /* bank -> loaded save's PC */
         case A_DAYCARE: return app_to_daycare(rec, is_party, block, box, slot);   /* -> day-care */
         case A_COPY:    return app_copy(rec, is_party);
         case A_PASTE:   return app_paste(rec, is_party, commit, block, occupied);

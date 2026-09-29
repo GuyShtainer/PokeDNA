@@ -295,6 +295,12 @@ bool app_take_move_request(void);
  * glove, so the user positions it. Returns true once per DUPLICATE pick. */
 bool app_take_dup_request(void);
 
+/* #271/y10: the A-menu's TO GAME row on a NATIVE Bank cell sets a one-shot the Bank grid consumes, then calls
+ * app_bank_togame_native(bank_box, bank_slot, cell): the drop's own restore-or-convert arm
+ * (bank_down_dispatch) into the first free PC cell, deferred exactly like a drop. true iff a record landed. */
+bool app_take_togame_request(void);
+bool app_bank_togame_native(int bank_box, int bank_slot, const uint8_t* cell);
+
 /* A Day-Care withdraw-to-PC parks the mon in a free PC slot and sets a pending pickup;
  * the box grid consumes it on entry to open that box carrying the mon in the glove.
  * Returns true once and fills *box/*slot. */

@@ -77,6 +77,12 @@ void bdc_convert_gb_core(const uint8_t cell80[BC_CELL_BYTES], uint8_t dst_gen,
  * pure innards above are what tests/host_xferdown_test.c proves.
  * ============================================================================ */
 
+/* The ONE Bank-native -> destination arm switch (pdna_box.c). drop_held() calls it for a physical drop and
+ * app_bank_togame_native() (pdna_main.c, #271/y10) calls it for the TO GAME menu row -- never a second copy of
+ * the restore-or-convert logic. Dispatches on xg_bank_down_arm(); see the arms below. */
+BankDownResult bank_down_dispatch(BoxSource* src, int dst_box, int dst_cell, const uint8_t cell80[80],
+                                  const uint8_t dstrec[80], uint8_t out80[80]);
+
 /* Arm 1: the native cell bridges into the CURRENTLY MOUNTED Game Boy session's OTHER
  * generation (Gen-2 cell -> a Gen-1 save, or Gen-1 cell -> a Gen-2 save, always
  * allowed the other way). `dst_box` is the destination box within that session the
