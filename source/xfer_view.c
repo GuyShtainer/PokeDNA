@@ -53,7 +53,7 @@ bool xv_has_original_hint(const uint8_t rec80[80], bool xfer_dir_absent) {
 #endif
 }
 
-/* decision 5/8: the s150-8b walk verbatim (source/pdna_box.c's pc_bank_restore_up),
+/* decision 5/8: the s150-8b walk verbatim (source/pdna_box.c's gbpc_restore_up),
  * minus its restore-specific tail (no xr_merge_down, no confirm, no write). `noinline`
  * + its own 1042-B stack frame, decision 10's two-phase shape. */
 int __attribute__((noinline)) xv_find_original(const uint8_t rec80[80], XvOriginal* out) {

@@ -6435,12 +6435,12 @@ def run_s150_9_merge_screen(core_mod, image_mod, rom_emerald: Path, out_dir: Pat
     s.shot("15_write_result", "S150-9: START applies (accept=LEVEL only) -- "
            "'TRANSFER RECORD UNREADABLE / Nothing was moved.' (PDNA_XFERREC_*). "
            "The real mechanism (review D6, corrected from an earlier guess): "
-           "pc_bank_restore_up's own pdna_bank_next_serial() call fails (it "
+           "gbpc_restore_up's own pdna_bank_next_serial() call fails (it "
            "writes bank.meta -- no writable FAT on this vehicle at all), so "
-           "`serial == 0` and pc_bank_restore_up returns -1 BEFORE "
+           "`serial == 0` and gbpc_restore_up returns -1 BEFORE "
            "bank_restore_from_entry is ever called -- the restore itself never "
            "ran here. drop_held's own rc<0 branch shows this same message for "
-           "any negative pc_bank_restore_up return (source/pdna_box.c ~:1633-1642). "
+           "any negative gbpc_restore_up return (source/pdna_box.c ~:1633-1642). "
            "Hardware-owed (docs/HW-QUEUE.md): whether the merge lands correctly "
            "when a real card CAN allocate a serial is untested here.",
            claim=["TRANSFER RECORD UNREADABLE"])  # BACKLOG #184 retrofit:

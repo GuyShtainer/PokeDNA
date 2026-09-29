@@ -546,7 +546,7 @@ bool app_set_walda(uint8_t pattern);
 bool app_confirm(const char* title, const char* l1);
 
 /* app_xferrestore_confirm (S150-8b review D6) is DELETED -- BACKLOG #150 S150-9
- * decision 6/13: its only call site (pdna_box.c's pc_bank_restore_up) now calls
+ * decision 6/13: its only call site (pdna_box.c's gbpc_restore_up) now calls
  * app_xfer_merge_screen below. */
 
 /* BACKLOG #150 S150-9 decision 6: the per-field merge screen (pdna_main.c), shared by

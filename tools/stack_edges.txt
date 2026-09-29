@@ -458,7 +458,9 @@ BoxXferOps.move_within @20 in drop_held -> gb_move_within_hook
 # on bank_down_exact). gb_accept_down_hook now exists (pdna_gen12.c, step 4) and is
 # linked, so the step-3 impl-pending companion row is gone (promoted, per its own
 # "moment the symbol IS linked" rule).
-BoxXferOps.accept_down @12 in bank_down_dispatch,bank_down_dispatch.constprop.0 -> gb_accept_down_hook
+# #270: the TARGET-drop restore (drop_held_down_g3, GCC clones it as .isra.0) lands the rebuilt
+# native cell through the SAME s_xfer_peer->accept_down hook -- one more caller of the one target.
+BoxXferOps.accept_down @12 in bank_down_dispatch,bank_down_dispatch.constprop.0,drop_held_down_g3,drop_held_down_g3.isra.0 -> gb_accept_down_hook
 
 # The commit parameter threaded through app_mon_menu (party call sites) and
 # app_paste_gb_merge -> app_paste_gb_commit -> app_commit_with_dex (inlined) -> `commit ?

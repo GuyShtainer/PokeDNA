@@ -982,7 +982,7 @@ int main(void) {
   PF(PDNA_XFER_NATIVE_L1,    28, 184);
   PF(PDNA_XFER_NATIVE_L2,    28, 184);
   /* BACKLOG #150 S150-9 decision 6/13: app_xferrestore_confirm is DELETED this
-   * commit (its only call site, pc_bank_restore_up, now calls the shared
+   * commit (its only call site, gbpc_restore_up, now calls the shared
    * app_xfer_merge_screen) -- PDNA_XFERRESTORE_L_LOSS/L_EVOLVED/A_OK were its own
    * (never reused) and are deleted with it. PDNA_XFERRESTORE_TITLE STAYS: it is
    * reused verbatim as PDNA_XFERMERGE_TITLE_DOWN (already measured above, decision

@@ -5,7 +5,7 @@
  *
  * BACKLOG #223 adds bank_serial_max() coverage at the bottom (the pure walker a
  * stale-serial resync needs; pdna_bank_serial_resync() itself is not host-buildable,
- * same class of gap as pc_bank_restore_up -- see tests/host_escape_gate_sites_test.py's
+ * same class of gap as gbpc_restore_up -- see tests/host_escape_gate_sites_test.py's
  * structural check (am)/MUT AM for that half). Needs a REAL bc_pack()ed cell
  * (bank_serial_max only counts bc_is_native() slots, which recomputes bc_ident32()),
  * so tests/gen12_fixture.c supplies a synthetic Gen-1 save image in memory -- Guy owns

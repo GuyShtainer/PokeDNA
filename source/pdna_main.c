@@ -5896,7 +5896,7 @@ static void __attribute__((noinline)) app_view_original(const uint8_t* rec) {
  * file's RE-KEY (app_xfer_pid_rekey) and promote (app_xfer_promote) and the
  * TRANSFERS-screen apply (xfer_reconcile_apply), and one call added at each of
  * pdna_gen12.c's/pdna_box.c's own ledger-write sites (xfer_down_write and its
- * claim/cleanup companions, gb_release_up_hook's RESTORED mark, pc_bank_restore_done)
+ * claim/cleanup companions, gb_release_up_hook's RESTORED mark, gbpc_restore_done)
  * -- plus once on every fresh Gen-3 save load (a stale miss from a DIFFERENT card
  * session must never leak into this one). Over-invalidating only costs one extra
  * card round trip on the next lookup; under-invalidating would be a correctness bug,

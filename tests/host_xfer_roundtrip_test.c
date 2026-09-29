@@ -945,7 +945,7 @@ static void test_restored_mark_is_real(void) {
   int idx = gbsc_add(buf, &len, GBSC_FILE_MAX, &e);
   CHECK(idx >= 0, "the entry adds into a fresh ledger file");
 
-  /* pc_bank_restore_done()'s own idiom: remove -> mutate state -> re-add. */
+  /* gbpc_restore_done()'s own idiom: remove -> mutate state -> re-add. */
   GbscEntry got;
   CHECK(gbsc_get(buf, len, idx, &got), "the entry reads back before marking");
   got.state = XR_STATE_RESTORED;
@@ -1145,7 +1145,7 @@ static void test_merge4_make_legal_written_level(void) {
 }
 
 /* ---- BACKLOG #150 S150-8b review D2: the confirm's item-loss comparison. ------ */
-/* pc_bank_restore_up (pdna_box.c) is not host-buildable; this pins the underlying
+/* gbpc_restore_up (pdna_box.c) is not host-buildable; this pins the underlying
  * comparison it relies on -- pm.heldItem vs item_g2_to_g3(gb_get_held_item(&home)) --
  * against a real corpus item holder, both unchanged (must read as "nothing lost")
  * and changed (must read as "something lost"). */
@@ -1228,7 +1228,7 @@ static void test_d2_item_confirm_logic(void) {
 
 /* ---- BACKLOG #206 review D1: the revert's own regression pin ------------------
  *
- * a274651 ("state-aware, identity-checked restore pick") made pc_bank_restore_up
+ * a274651 ("state-aware, identity-checked restore pick") made gbpc_restore_up
  * refuse a CLAIMED entry whenever the entry's OWN stored identity (species_written /
  * otid16 / nick_written) no longer matched the incoming Gen-3 record -- but that is
  * exactly what a mon renamed or evolved ABROAD looks like: xr_key_g3 (PID+otId) still
@@ -1249,7 +1249,7 @@ static void test_d2_item_confirm_logic(void) {
  * of the two CHECK(rc == 0 && ...) lines below fails -- the renamed/evolved case is
  * refused instead of reaching the merge path, the exact regression this pins. BACKLOG
  * #206 review R1: this case now drives the REAL pick (xr_restore_pick_basic against a
- * real ledger buffer, exactly what pc_bank_restore_up calls), not a hand-picked
+ * real ledger buffer, exactly what gbpc_restore_up calls), not a hand-picked
  * GbscEntry handed straight to bank_restore_from_entry -- the original D1 test never
  * touched the pick loop at all, so a274651's gate (which lived INSIDE the old pick
  * loop, source/pdna_box.c pre-revert) could not have failed it. */
@@ -1305,7 +1305,7 @@ static void test_backlog_206_regression(void) {
   e.state = XR_STATE_CLAIMED;
 
   /* BACKLOG #206 review R1: a REAL ledger buffer, the same shape xr_open() hands
-   * pc_bank_restore_up -- xr_restore_pick_basic is driven against this, not against
+   * gbpc_restore_up -- xr_restore_pick_basic is driven against this, not against
    * a hand-picked GbscEntry, so the pick loop itself (which a274651's identity gate
    * lived inside) is actually exercised. */
   uint8_t ledger[GBSC_FILE_MAX];
