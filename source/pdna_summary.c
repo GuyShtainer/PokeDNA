@@ -187,6 +187,7 @@ static void draw_left_ex(const PkMon* p, bool back) {
   if (art.px) {
     int ax, ay;
     pdna_origin_art_place(&art, 12, 14, 68, 64, &ax, &ay);   /* 64x64 -> (14,14) exactly */
+    if (art.gen != PDNA_GEN3) ui_fill_rect(ax, ay, art.w, art.h, 0x7FFF);   /* #275: the page behind a GB picture */
     ui_sprite(ax, ay, art.w, art.h, art.px);
   } else if (art.egg) {
     ui_sprite(30, 30, MON_ICON_W, MON_ICON_H, mon_icon_egg());
@@ -936,13 +937,13 @@ static bool do_history(EditMon* e, PkMon* cur, int dir) {
  * animated portrait and the static one can never disagree about which generation's
  * art a mon wears. Also reports the source pixel size (*sw x *sh): Gen-3 art is 64x64,
  * a Game Boy pic is not, and the pose math below scales relative to it. */
-static const uint16_t* portrait_sprite(const PkMon* p, bool* is_icon, int* sw, int* sh) {
+static const uint16_t* portrait_sprite(const PkMon* p, bool* is_icon, bool* is_era, int* sw, int* sh) {
   rumble_io_suspend();   /* portrait fetch decompresses from ROM */
   PdnaArt art;
   pdna_origin_art_portrait(p, g_back, &art, 0);
   rumble_io_resume();
-  if (art.px) { *is_icon = false; *sw = art.w; *sh = art.h; return art.px; }
-  *is_icon = true; *sw = MON_ICON_W; *sh = MON_ICON_H;
+  if (art.px) { *is_icon = false; *is_era = (art.gen != PDNA_GEN3); *sw = art.w; *sh = art.h; return art.px; }
+  *is_icon = true; *is_era = false; *sw = MON_ICON_W; *sh = MON_ICON_H;
   return art.egg ? mon_icon_egg() : mon_icon_for_form(p->species, p->form);
 }
 
@@ -1002,7 +1003,7 @@ static void portrait_params(int fam, int t, int* wx, int* sy, int* dx, int* dy) 
  * same hardware finding this follows (2026-08-23 A/B, fd205bb): a per-vblank-or-faster
  * dma3_cpy is the proven risk, mechanism not pinned. */
 static u16 __attribute__((aligned(4))) s_pline[68];
-static void portrait_redraw(const PkMon* p, const uint16_t* spr, bool icon, int sw, int sh,
+static void portrait_redraw(const PkMon* p, const uint16_t* spr, bool icon, bool era, int sw, int sh,
                             int wx, int sy, int dx, int dy, int* lastkey) {
   int key = (wx & 0xFF) | ((sy & 0xFF) << 8) | (((dx + 64) & 0xFF) << 16) | (((dy + 64) & 0xFF) << 24);
   if (key == *lastkey) return;
@@ -1055,6 +1056,7 @@ static void portrait_redraw(const PkMon* p, const uint16_t* spr, bool icon, int 
       if (srow && x >= x0 && x < x0 + iw) {
         u16 px = srow[sicol[dx]];   /* icon: sw == 32, exactly the old expression */
         if (px & 0x8000) c = (u16)(px & 0x7FFF);
+        else if (era) c = 0x7FFF;   /* #275: a GB picture's shade 0 is the white page, as in draw_left_ex */
       }
       s_pline[dx] = c;
     }
@@ -1120,7 +1122,7 @@ static int summary_run_inner(uint8_t* rec, bool is_party, bool can_edit, uint8_t
    * as long as nothing decodes into that buffer, and inside this loop the only thing that
    * does is render_card (draw_left's portrait + type_badge). */
   const uint16_t* p_spr = 0;
-  bool p_icon = false, p_spr_ok = false;
+  bool p_icon = false, p_era = false, p_spr_ok = false;
   int  p_sw = MON_FRONT_W, p_sh = MON_FRONT_H;
   key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);
   /* g_back is file-static and survives between calls: a create opened after someone
@@ -1209,9 +1211,9 @@ static int summary_run_inner(uint8_t* rec, bool is_party, bool can_edit, uint8_t
      * into mon_decomp either, so last iteration's pointer still addresses this mon's
      * pixels. Every path that CAN clobber the buffer clears p_spr_ok: render_card above,
      * and a picker/OSK (which ui_clear()s, so the next iteration repaints anyway). */
-    if (anim && !p_spr_ok) { p_spr = portrait_sprite(&cur, &p_icon, &p_sw, &p_sh); p_spr_ok = true; }
+    if (anim && !p_spr_ok) { p_spr = portrait_sprite(&cur, &p_icon, &p_era, &p_sw, &p_sh); p_spr_ok = true; }
     if (anim) { int fam = mon_anim_family(cur.species), wx, sy, dx, dy;
-                              portrait_params(fam, anim_t, &wx, &sy, &dx, &dy); portrait_redraw(&cur, p_spr, p_icon, p_sw, p_sh, wx, sy, dx, dy, &lastkey); }  /* first paint -- memcpy32, see portrait_redraw's header comment */
+                              portrait_params(fam, anim_t, &wx, &sy, &dx, &dy); portrait_redraw(&cur, p_spr, p_icon, p_era, p_sw, p_sh, wx, sy, dx, dy, &lastkey); }  /* first paint -- memcpy32, see portrait_redraw's header comment */
 
     /* The card and the portrait are on screen; everything past here is the idle
      * portrait wiggle (pure CPU -- the sprite fetch is hoisted above on purpose) and
@@ -1220,7 +1222,7 @@ static int summary_run_inner(uint8_t* rec, bool is_party, bool can_edit, uint8_t
     u16 k, fresh;
     do { s_vsync();
          if (anim) { int fam = mon_anim_family(cur.species), wx, sy, dx, dy;
-                                   portrait_params(fam, ++anim_t, &wx, &sy, &dx, &dy); portrait_redraw(&cur, p_spr, p_icon, p_sw, p_sh, wx, sy, dx, dy, &lastkey); }  /* idle wiggle tick -- memcpy32 */
+                                   portrait_params(fam, ++anim_t, &wx, &sy, &dx, &dy); portrait_redraw(&cur, p_spr, p_icon, p_era, p_sw, p_sh, wx, sy, dx, dy, &lastkey); }  /* idle wiggle tick -- memcpy32 */
          fresh = key_hit(KEY_FULL);
          k = fresh | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);
     if      (fresh & (KEY_UP | KEY_DOWN)) snd_move();

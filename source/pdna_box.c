@@ -385,6 +385,10 @@ static void draw_tab(int x, int w, const char* label, bool active) {
   ui_text(tx, 2, ink, label);
 }
 
+/* The page colour behind a Game Boy picture (#264/#275 -- the reasoning is at era_cell_blit
+ * below): painted behind the LARGE era renders only, never the PC grid cells. */
+#define ERA_PAGE_WHITE RGB15(31, 31, 31)
+
 static const char* gender_str(uint8_t g) { return g == 0 ? " M" : g == 1 ? " F" : ""; }
 
 static void draw_left(const PkMon* p) {
@@ -411,6 +415,7 @@ static void draw_left(const PkMon* p) {
   if (art.px) {
     int ax, ay;
     pdna_origin_art_place(&art, 6, 16, 64, 64, &ax, &ay);   /* 64x64 Gen-3 -> (6,16), as before */
+    if (art.gen != PDNA_GEN3) ui_fill_rect(ax, ay, art.w, art.h, ERA_PAGE_WHITE);   /* #275: the page behind a GB picture */
     ui_sprite(ax, ay, art.w, art.h, art.px);
   } else if (art.egg) {
     ui_sprite(22, 32, MON_ICON_W, MON_ICON_H, mon_icon_egg());
@@ -2408,15 +2413,14 @@ static void era_cell_icon_back(int slot) {
  * white being the engine's PALRGB_WHITE = $7FFF (constants/gfx_constants.asm:3) -- so the
  * per-species palettes change colours 1 and 2 and never the page. Our decode keeps index 0
  * transparent (so one blitter can serve three generations), which over the wallpaper read as
- * holes in every white belly and cheek; this puts the page back, one cell at a time. */
-#define ERA_PAGE_WHITE RGB15(31, 31, 31)
-
+ * holes in every white belly and cheek; this puts the page back behind the LARGE renders (#275:
+ * Guy: white behind the big sprites only -- the PC grid cells sit on the wallpaper again, see
+ * era_cell_blit) via ERA_PAGE_WHITE (defined above draw_left). */
 static void __attribute__((noinline))
 era_cell_blit(int slot, const PdnaArt* a, int cx, int cy) {
   u16 cell[CELL_W * CELL_H];             /* 1056 B of STACK. Never a static, never
                                           * EWRAM (hard rule 2) — and never 30 of them. */
   if (pdna_origin_cell_render(a, cell, CELL_W, CELL_H)) {
-    ui_fill_rect(cx, cy, CELL_W, CELL_H, ERA_PAGE_WHITE);   /* #264: only behind a cell that HAS a picture */
     ui_sprite(cx, cy, CELL_W, CELL_H, cell);
     s_era_drawn |= 1u << slot;
     boxoam_hide_slot(slot);              /* or the Gen-3 icon sits ON the Gen-1 sprite */
