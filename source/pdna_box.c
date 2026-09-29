@@ -2266,9 +2266,13 @@ static int grid_lr_step(int cur, int cap, bool right) {
 #define BLOCKED_FILL_PCT 70   /* the rest of it */
 
 static u16 blocked_shade(u16 c, int pct) {
-  int r = (c & 31) * pct / 100;
-  int g = ((c >> 5) & 31) * pct / 100;
-  int b = ((c >> 10) & 31) * pct / 100;
+  /* exact on 0..31, no divide (the GBA has none): v*45/100 == (v*231)>>9, v*70/100 == (v*45)>>6 */
+  _Static_assert(BLOCKED_EDGE_PCT == 45 && BLOCKED_FILL_PCT == 70, "re-derive the multipliers");
+  int m  = (pct == BLOCKED_EDGE_PCT) ? 231 : 45;
+  int sh = (pct == BLOCKED_EDGE_PCT) ? 9 : 6;
+  int r = ((c & 31) * m) >> sh;
+  int g = (((c >> 5) & 31) * m) >> sh;
+  int b = (((c >> 10) & 31) * m) >> sh;
   return (u16)(r | (g << 5) | (b << 10));
 }
 
