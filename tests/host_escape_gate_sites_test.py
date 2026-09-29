@@ -758,7 +758,7 @@ def _code_lines(lines, start, end):
     return out
 
 
-def bank_passthrough_facts(lines, start, end):    # shared by the real check (l) AND MUT P
+def bank_passthrough_facts(lines, start, end):    # shared by the real check (l) AND MUT Y7-P
     """#270 (Guy 2026-09-29, RULED): the Bank is a pass-through. drop_held (whose PC->Bank
     arm writes `s_held` into the Bank cell) must contain NO call to the ledger restore
     (gbpc_restore_up / gbpc_restore_done) and must not write a rebuilt cell (`rc == 1 ?`
@@ -773,7 +773,7 @@ def bank_passthrough_facts(lines, start, end):    # shared by the real check (l)
     return True, "ok"
 
 
-def target_restore_order_facts(lines, start, end):   # shared by the real check (l2) AND MUT K/N
+def target_restore_order_facts(lines, start, end):   # shared by the real check (l2) AND MUT Y7-K/K2/K3/N
     """#270 target-drop restore, in drop_held_down_g3: gbpc_restore_up( -- fed the TARGET save's
     generation (app_gb_session_gen) -- comes BEFORE either landing (the exact accept_down hook
     or the plain gb_bank_down_g3 convert), and gbpc_restore_done( (the entry-marking call) comes
@@ -789,6 +789,7 @@ def target_restore_order_facts(lines, start, end):   # shared by the real check 
     a = first(ACCEPT_DOWN_CALL_RE)
     g = first(GB_BANK_DOWN_G3_RE)
     d = first(RESTORE_DONE_RE)
+    nl = first(re.compile(r"if \(!landed\) \{"))
     if u is None: return False, "drop_held_down_g3: no `gbpc_restore_up(` call -- the target-drop restore is gone"
     if a is None: return False, "drop_held_down_g3: no `s_xfer_peer->accept_down(` landing for the restored cell"
     if g is None: return False, "drop_held_down_g3: no `gb_bank_down_g3(` convert fallback"
@@ -803,10 +804,19 @@ def target_restore_order_facts(lines, start, end):   # shared by the real check 
         return False, (f"drop_held_down_g3: gbpc_restore_done( (line {d + 1}) must come AFTER both landings "
                        f"(accept_down line {a + 1}, gb_bank_down_g3 line {g + 1}) -- the entry would be "
                        f"marked before the Game Boy write it describes has landed")
+    if nl is None:
+        return False, "drop_held_down_g3: no `if (!landed) {` not-landed early return"
+    if not nl < d:
+        return False, (f"drop_held_down_g3: gbpc_restore_done( (line {d + 1}) must come AFTER the "
+                       f"`if (!landed) {{` early return (line {nl + 1}) -- a refused/declined landing "
+                       f"would still mark the entry RESTORED")
+    if "rc == 1" not in lines[d]:
+        return False, (f"drop_held_down_g3: gbpc_restore_done( (line {d + 1}) is not guarded by "
+                       f"`rc == 1` -- a plain converted drop would mark an unrelated entry RESTORED")
     return True, "ok"
 
 
-def restore_up_target_gate_facts(body):    # shared by the real check (l3) AND MUT Q/R
+def restore_up_target_gate_facts(body):    # shared by the real check (l3) AND MUT Y7-Q/Q2/R
     """#270 inside gbpc_restore_up: (1) xr_home_gen( is compared with target_gen BEFORE the pick
     and before any screen (a wrong-generation original converts, silently); (2) the RESTORED
     arm is `return 0;` -- the duplicate of an original that already came home CONVERTS, it is
@@ -815,7 +825,7 @@ def restore_up_target_gate_facts(body):    # shared by the real check (l3) AND M
     pk = first_match_line(body, 0, len(body), PICK_BASIC_CALL_RE)
     if hg is None: return False, "gbpc_restore_up: no xr_home_gen( generation gate"
     if pk is None: return False, "gbpc_restore_up: no xr_restore_pick_basic( call"
-    if "target_gen" not in body[hg] or "return 0" not in body[hg]:
+    if not re.search(r"xr_home_gen\([^)]*\)\s*!=\s*target_gen\)\s*return 0;", body[hg]):
         return False, f"gbpc_restore_up: line {hg + 1} does not `return 0` on a target_gen mismatch"
     if not hg < pk:
         return False, "gbpc_restore_up: the generation gate must precede xr_restore_pick_basic("
@@ -2197,6 +2207,27 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str],
         check(not ok, f"MUT Y7-K (gbpc_restore_done above the landing) should have been caught but was not: {detail}")
         print(f"  MUT Y7-K demonstration -- gbpc_restore_done() swapped above the landing: {detail}")
 
+    # MUT Y7-K2 (#270 F4): move gbpc_restore_done( ABOVE the `if (!landed) {` early return --
+    # a refused landing would still mark the entry RESTORED.
+    nl_i = first_match_line(body, 0, len(body), re.compile(r"if \(!landed\) \{"))
+    done_i = first_match_line(body, 0, len(body), RESTORE_DONE_RE)
+    check(nl_i is not None and done_i is not None and nl_i < done_i,
+          "MUT Y7-K2: could not locate `if (!landed) {` before gbpc_restore_done( -- fix this test")
+    if nl_i is not None and done_i is not None and nl_i < done_i:
+        mut_k2 = list(body)
+        done_line = mut_k2.pop(done_i)
+        mut_k2.insert(nl_i, done_line)
+        ok, detail = target_restore_order_facts(mut_k2, 0, len(mut_k2))
+        check(not ok, f"MUT Y7-K2 (gbpc_restore_done above `if (!landed)`) should have been caught but was not: {detail}")
+        print(f"  MUT Y7-K2 demonstration -- gbpc_restore_done() moved above the not-landed return: {detail}")
+        # MUT Y7-K3: drop the `rc == 1` guard from the marking call.
+        mut_k3 = list(body)
+        mut_k3[done_i] = mut_k3[done_i].replace("if (rc == 1) ", "")
+        check(mut_k3[done_i] != body[done_i], "MUT Y7-K3: the `if (rc == 1) ` guard text was not found -- fix this test")
+        ok, detail = target_restore_order_facts(mut_k3, 0, len(mut_k3))
+        check(not ok, f"MUT Y7-K3 (rc == 1 guard dropped) should have been caught but was not: {detail}")
+        print(f"  MUT Y7-K3 demonstration -- `if (rc == 1)` guard dropped from gbpc_restore_done: {detail}")
+
     # MUT Y7-N (#270): delete the gbpc_restore_up( call from drop_held_down_g3 -- the target-drop
     # restore is gone, every Gen-3 record silently converts again -- and assert it goes RED.
     up_i = first_match_line(body, 0, len(body), RESTORE_UP_RE)
@@ -2227,6 +2258,13 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str],
         ok, detail = restore_up_target_gate_facts(mut_q)
         check(not ok, f"MUT Y7-Q (generation gate deleted) should have been caught but was not: {detail}")
         print(f"  MUT Y7-Q demonstration -- xr_home_gen gate deleted from gbpc_restore_up: {detail}")
+        # MUT Y7-Q2 (#270 F4): INVERT the generation gate (`!=` -> `==`): the wrong generation
+        # would be restored and the right one silently converted.
+        mut_q2 = list(ubody); mut_q2[hg_i] = mut_q2[hg_i].replace("!= target_gen", "== target_gen")
+        check(mut_q2[hg_i] != ubody[hg_i], "MUT Y7-Q2: the `!= target_gen` text was not found -- fix this test")
+        ok, detail = restore_up_target_gate_facts(mut_q2)
+        check(not ok, f"MUT Y7-Q2 (generation gate inverted) should have been caught but was not: {detail}")
+        print(f"  MUT Y7-Q2 demonstration -- xr_home_gen gate inverted to `==`: {detail}")
     r_i = first_match_line(ubody, 0, len(ubody), RESTORE_UP_RESTORED_CHECK_RE)
     check(r_i is not None, "MUT Y7-R: could not locate the RESTORED arm -- fix this test")
     if r_i is not None:

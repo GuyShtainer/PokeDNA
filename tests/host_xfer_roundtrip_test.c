@@ -1033,6 +1033,33 @@ static void test_y7_target_restore_roundtrip(void) {
   else printf("  SKIP Gen-2 (no capture -- corpus absent?)\n");
   if (g_rt2_capture.have) y7_one_capture("Y7 Gen1", &g_rt2_capture, GB_GEN1, GB_GEN2);
   else printf("  SKIP Gen-1 (no capture -- corpus absent?)\n");
+  /* F4 (review): a two-entry ledger (same key, a Gen-1 then a Gen-2 entry): the generation
+   * gate must name the generation of the entry the PICK will actually restore
+   * (xr_restore_pick_basic is last-entry-wins) -- in BOTH orders. MUTATION: make xr_home_gen
+   * first-entry-wins -- both orders go RED (it would gate on an entry that is not restored). */
+  if (g_rt1_capture.have && g_rt2_capture.have) {
+    for (int order = 0; order < 2; order++) {
+      const XrCapture* first  = order == 0 ? &g_rt2_capture : &g_rt1_capture;   /* Gen-1 / Gen-2 */
+      const XrCapture* second = order == 0 ? &g_rt1_capture : &g_rt2_capture;
+      GbscEntry e1 = first->e, e2 = second->e;
+      e1.state = XR_STATE_CLAIMED; e2.state = XR_STATE_CLAIMED;
+      uint8_t lg[GBSC_FILE_MAX];
+      uint32_t ll = (uint32_t)gbsc_init(lg, xr_key_g3(first->g3rec80));
+      CHECK(ll > 0 && gbsc_add(lg, &ll, sizeof lg, &e1) >= 0 && gbsc_add(lg, &ll, sizeof lg, &e2) >= 0,
+            "Y7 two-entry (order %d): both entries added", order);
+      int cnt = gbsc_count(lg, ll);
+      GbscEntry pick;
+      CHECK(cnt == 2 && xr_restore_pick_basic(lg, ll, cnt, &pick) == XR_PICK_LIVE,
+            "Y7 two-entry (order %d): the pick is live over 2 entries (count %d)", order, cnt);
+      GbEditMon pm; BcMeta pmeta;
+      CHECK(bc_unpack(pick.original80, &pm, &pmeta), "Y7 two-entry (order %d): the picked original unpacks", order);
+      CHECK(xr_home_gen(lg, ll, cnt) == pm.gen,
+            "Y7 two-entry (order %d): xr_home_gen (%u) == the generation of the entry the pick restores (%u)",
+            order, (unsigned)xr_home_gen(lg, ll, cnt), (unsigned)pm.gen);
+      CHECK(pm.gen == (order == 0 ? GB_GEN2 : GB_GEN1),
+            "Y7 two-entry (order %d): the LAST entry is the one restored (gen %u)", order, (unsigned)pm.gen);
+    }
+  }
   /* a Gen-3-home entry never restores: xr_home_gen ignores it (0), the caller converts */
   if (g_rt1_capture.have) {
     GbscEntry g3h = g_rt1_capture.e;
