@@ -406,6 +406,53 @@ GBSCR_COLS = 20
 GBSCR_ROWS = 18
 GB_CELL = 8
 
+# BACKLOG #254: find_gb() missed a claim on a SELECTED row (b89_crystal_02_detail.png,
+# claim_gb=TYPHLOSION) because the GB shell's row/field cursor is drawn AFTER the
+# text, on top of it -- source/pdna_gbhof.c's hof_card_screen() and
+# source/pdna_gbtrainer.c's g1card_screen()/g2card_screen() all call
+# gbscr_cell_rect()+m3_frame(px0, py0, px1, py1, GBCARD_CSEL) every frame the cursor
+# is shown, and m3_frame() is a 1px RECTANGLE OUTLINE (top+bottom+left+right lines),
+# not a fill -- it repaints exactly the cursor cell's own border pixels in ONE fixed
+# colour, GBCARD_CSEL, #define'd identically in both files as RGB15(26, 4, 3).
+# A raw pixel dump of the b89 repro (this lane, BACKLOG #254) proved the corruption
+# is narrow and exact: at the correct glyph-cell alignment (x=64, the row's real text
+# start per HOF_CARD_TEXT_X, not the icon's own column), rows 1..6 of the 8-row glyph
+# window are a PIXEL-EXACT match against render_gb()'s own mask, and only row 0 (the
+# cursor's top border line) and row 7 (its bottom border line) are wrong -- both
+# entirely this one hardcoded colour, never a blend and never a sprite hue (the icon
+# stays inside its own 16px cell and never reaches the text columns on this repro).
+# Because gbscr_text()'s own rendering is strictly two colours (the row's ink colour
+# or GBSCR_BLANK_COLOR background -- see render_gb()'s 1bpp contract), a pixel that
+# is EXACTLY this named constant can never be genuine glyph ink OR genuine glyph
+# background; find_gb() below excludes ONLY this one exact RGB triple from both the
+# ink-uniformity check and the background-must-differ check -- not "any third
+# colour", so a genuinely wrong letter (which still renders in the row's normal two
+# colours) is still a hard mismatch, and a sprite-icon hue landing on a glyph cell
+# (not reproduced here, but not ruled out on a denser row) still is too.
+# A window where too much of its own ink is this cursor colour has nothing left to
+# disambiguate the real letters from a different string of the same length -- past
+# GB_CURSOR_OCCLUSION_CAP, find_gb() refuses to call the window a hit (would risk a
+# false positive) OR silently drop it as a plain miss (would repeat BACKLOG #254's
+# false negative); it reports the position via the `occluded` out-param instead, and
+# check_gb() surfaces that as its own distinct, honest failure string.
+GBCARD_CSEL_RGB15 = (26, 4, 3)   # source/pdna_gbhof.c:54, source/pdna_gbtrainer.c:48
+
+
+def _rgb15_to_rgb888(r5: int, g5: int, b5: int) -> tuple[int, int, int]:
+    """The GBA's own 5-bit -> 8-bit channel expansion (v<<3 | v>>2) -- the same
+    formula every core (and this repo's own shot harness) uses turning a Mode-3
+    RGB555 pixel into the RGB888 a captured PNG stores. Verified against the b89
+    repro's own measured border pixel: RGB15(26,4,3) -> (214, 33, 24), exactly
+    what this function returns and exactly what docs/shots/gb/b89_crystal_02_detail
+    .png's border pixels measure."""
+    def conv(v: int) -> int:
+        return (v << 3) | (v >> 2)
+    return (conv(r5), conv(g5), conv(b5))
+
+
+GBCARD_CSEL_RGB = _rgb15_to_rgb888(*GBCARD_CSEL_RGB15)   # (214, 33, 24)
+GB_CURSOR_OCCLUSION_CAP = 0.5   # refuse rather than guess above this ink-pixel fraction
+
 _gb_driver_bin: Path | None = None
 _gb_driver_build_failed: str | None = None
 
@@ -488,14 +535,27 @@ def render_gb(rom_path: str | Path, text: str) -> np.ndarray | None:
 
 
 def find_gb(frame_png: str | Path | Image.Image | np.ndarray, rom_path: str | Path,
-            text: str) -> list[tuple[int, int]]:
+            text: str, occluded: list[tuple[int, int, float]] | None = None
+            ) -> list[tuple[int, int]]:
     """Search `frame_png` for an EXACT match of `text` rendered through
     `rom_path`'s own GB font (render_gb()), at every gbscr 1:1-layout cell
     position (GBSCR_ORIGIN_X/Y + col/row*8) -- see this section's design
     comment for why this is a fixed-grid search, not find()'s sliding one.
     Returns a list of (x, y) top-left hits; empty = not found (including "this
     ROM's font can't render this text at all", the same not-found semantics
-    find() already gives >256-colour frames -- see MAX_COLOURS_SCANNED)."""
+    find() already gives >256-colour frames -- see MAX_COLOURS_SCANNED).
+
+    BACKLOG #254: a pixel that is EXACTLY GBCARD_CSEL_RGB (the GB shell's
+    row/field cursor colour, drawn AFTER the text by m3_frame() -- see this
+    section's module-level design comment right above GBCARD_CSEL_RGB15) is
+    excluded from both the ink-uniformity check and the background-must-differ
+    check at that one position, not treated as a match OR a mismatch either
+    way. If `occluded` is passed, every candidate window this exclusion was
+    needed to accept, but whose ink pixels were MORE than
+    GB_CURSOR_OCCLUSION_CAP cursor-coloured (too little real ink left to trust
+    the match), is appended to it as (x, y, occluded_fraction) and NOT
+    returned as a hit -- callers that want the honest "cannot decide" signal
+    (check_gb()) pass a list here; callers happy with plain hit/no-hit don't."""
     mask = render_gb(rom_path, text)
     if mask is None:
         return []
@@ -510,6 +570,7 @@ def find_gb(frame_png: str | Path | Image.Image | np.ndarray, rom_path: str | Pa
         img = frame_png if isinstance(frame_png, Image.Image) else Image.open(frame_png)
         arr = np.asarray(img.convert("RGB"))
 
+    cursor_rgb = np.array(GBCARD_CSEL_RGB)
     hits: list[tuple[int, int]] = []
     for row in range(GBSCR_ROWS):
         y = GBSCR_ORIGIN_Y + row * GB_CELL
@@ -523,15 +584,34 @@ def find_gb(frame_png: str | Path | Image.Image | np.ndarray, rom_path: str | Pa
             # Exact match: every ink pixel of the mask must be a SINGLE colour
             # (the glyph's own ink colour, not known a priori -- same
             # reasoning find()'s own docstring gives) and every non-ink pixel
-            # must NOT be that colour (the gap/background requirement).
+            # must NOT be that colour (the gap/background requirement) --
+            # EXCEPT pixels the GB shell's own cursor overlay could have
+            # painted (BACKLOG #254), which are set aside from both checks.
             ink_px = crop[mask]
             if ink_px.size == 0:
                 continue   # an all-blank claim (pure whitespace) can't anchor a colour
-            colour = ink_px[0]
-            if not np.all(ink_px == colour):
+            cursor_at_ink = np.all(ink_px == cursor_rgb, axis=-1)
+            occl_frac = float(cursor_at_ink.mean())
+            real_ink = ink_px[~cursor_at_ink]
+            if real_ink.size == 0:
+                # every ink pixel the mask needs is cursor-coloured -- nothing
+                # left to anchor a colour on at all, the strongest "cannot
+                # decide" case.
+                if occluded is not None:
+                    occluded.append((x, y, 1.0))
+                continue
+            colour = real_ink[0]
+            if not np.all(real_ink == colour):
                 continue
             bg_px = crop[~mask]
-            if bg_px.size and np.any(np.all(bg_px == colour, axis=-1)):
+            if bg_px.size:
+                cursor_at_bg = np.all(bg_px == cursor_rgb, axis=-1)
+                real_bg = bg_px[~cursor_at_bg]
+                if real_bg.size and np.any(np.all(real_bg == colour, axis=-1)):
+                    continue
+            if occl_frac > GB_CURSOR_OCCLUSION_CAP:
+                if occluded is not None:
+                    occluded.append((x, y, occl_frac))
                 continue
             hits.append((x, y))
     return hits
@@ -541,12 +621,29 @@ def check_gb(frame_png: str | Path | Image.Image | np.ndarray, rom_path: str | P
              claim_gb: str | list[str] | None = None) -> list[str]:
     """claim_gb='s own check(), same failure-string contract as check(). Every
     string in `claim_gb` must be found via find_gb() against `rom_path`'s own
-    GB font; a miss is a normal (non-raising) failure string."""
+    GB font; a miss is a normal (non-raising) failure string.
+
+    BACKLOG #254: a claim whose only near-matches were too occluded by the GB
+    shell's cursor colour to trust (find_gb()'s `occluded` out-param) gets its
+    OWN failure string -- distinct wording from a genuine "not on frame" miss,
+    so a caller (or a human) can tell "the text is not there" apart from "the
+    matcher refuses to guess here" instead of the two collapsing into the same
+    confident-sounding false negative BACKLOG #254 found."""
     if claim_gb is None:
         return []
     texts = [claim_gb] if isinstance(claim_gb, str) else list(claim_gb)
     failures: list[str] = []
     for text in texts:
-        if not find_gb(frame_png, rom_path, text):
+        occluded: list[tuple[int, int, float]] = []
+        if find_gb(frame_png, rom_path, text, occluded=occluded):
+            continue
+        if occluded:
+            frac = max(o[2] for o in occluded)
+            failures.append(
+                f"'{text}' cannot be verified on frame (claim_gb): the GB-shell "
+                f"cursor highlight covers {frac:.0%} of its own ink pixels at the "
+                f"best candidate position -- refusing rather than guessing "
+                f"(BACKLOG #254)")
+        else:
             failures.append(f"'{text}' not on frame (claim_gb)")
     return failures
