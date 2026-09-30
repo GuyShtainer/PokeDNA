@@ -271,7 +271,7 @@ def g3_settings(p: Pair) -> None:
     """Settings screen."""
     p.tap("START", settle=BIG)
     p.tap("RIGHT")
-    p.press_n("DOWN", 8)
+    p.press_n("DOWN", 9)
     p.tap("A", settle=BIG)
     p.run(200)
     p.shot("g3_80_settings", "Settings")
@@ -307,7 +307,7 @@ def g3_refusal(p: Pair) -> None:
     """Settings > Yard visitors (row 2) with NO registered ROM: the refusal, both builds."""
     p.tap("START", settle=BIG)
     p.tap("RIGHT")
-    p.press_n("DOWN", 8)
+    p.press_n("DOWN", 9)
     p.tap("A", settle=BIG)
     p.run(200)
     p.press_n("DOWN", 2)
@@ -459,11 +459,11 @@ def g3_dex_latency(p: Pair) -> None:
 
 NAV_LABELS = ["Party", "Bank", "Daycare", "Trainer", "Clock", "Mirage", "Pokedex", "Bag", "Flags", "Bases",
               "Blocks", "Tickets", "Records", "Frontier", "Fly", "Contests", "Map", "GBimport", "Transfers",
-              "Settings", "Back"]
+              "History", "Settings", "Back"]
 
 
 def nav_open(p: Pair, idx: int, wait: int) -> None:
-    """START, walk to nav item `idx` (column 0 = 0..10, column 1 = 11..20), A, wait."""
+    """START, walk to nav item `idx` (column 0 = 0..10, column 1 = 11..21), A, wait."""
     p.tap("START", settle=BIG)
     if idx >= 11:
         p.tap("RIGHT")
