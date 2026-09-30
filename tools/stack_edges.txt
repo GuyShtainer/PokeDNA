@@ -712,7 +712,10 @@ fetch_icon argsites=2 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
 # pdna_origin_art_portrait already piggyback on -- see the `BoxSource.can_edit @44`
 # line below, which now also names this function. Verify by address on BOTH ELFs
 # before trusting this count on a future rebuild.
-# BACKLOG #203: by_dex is now a thin wrapper over the noinline gen-parameterised body, which holds the dispatch site(s).
+# BACKLOG #203: by_dex is now a thin wrapper over the noinline gen-parameterised body, which
+# holds the ONE dispatch site (argsite 1/1, the s_stack_room_fn hook call — y17 review A1
+# verified by address on artless/normal/delta; the old "exactly two sites" note predated the
+# fetch_pic_ex.constprop split and is gone).
 pdna_origin_art_portrait_by_dex_gen argsites=1 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
 
 # gen1_save.c's Gen1ReadFn `rd` parameter (gen1_open_ranged) and rom_gblearn.c's
@@ -1429,7 +1432,7 @@ AppSrcOps.editable @24 in fetch_pic_ex.constprop.0 -> gb_art_pic_cb gb_art_have_
 AppSrcOps.create @28 in app_mon_menu_readonly -> gb_create_hook
 AppSrcOps.create @28 in pdna_origin_box_art,pdna_origin_box_art_wanted -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
 BoxSource.get_name @28 in draw_box_banner -> banksrc_get_name gbsrc_get_name pcsrc_get_name
-BoxSource.can_edit @44 in pdna_origin_art_portrait,pdna_origin_box_art,pdna_origin_art_portrait_by_dex_gen -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
+BoxSource.can_edit @44 in pdna_origin_art_portrait,pdna_origin_box_art -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
 # BoxSource.can_edit@44 has no field site of its OWN anywhere in this build (every
 # real can_edit() dispatch goes through pdna_box's declared argsites=4 spilled class
 # below) -- the offset is real (source/pdna_box.h, verified against the header) but

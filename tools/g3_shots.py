@@ -516,7 +516,7 @@ def run_y17_dex_detail_g3(core_mod, image_mod, rom: Path, out_dir: Path) -> Sess
     s.tap("L", settle=BIG_SETTLE); s.run(300)
     s.shot("03_detail_L", "y17 g3: L -> back to No. 155", claim=["No. 155"], claim_absent=["No. 156"], allow_same=False)
     s.tap("B", settle=BIG_SETTLE); s.run(60)
-    back = s.shot("04_back", "y17 g3: B -> the grid, cursor still on No. 155", allow_same=True)
+    back = s.shot("04_back", "y17 g3: B -> the grid, cursor still on No. 155", claim=["No.155"], allow_same=True)
     # The caught cells BOB (ANIM_DEX), so a whole-frame diff would flag the animation; the landing claim is: header band,
     # footer band and the selection-frame pixels (UI_SELTEXT yellow) are identical -- same page, same cursor cell.
     ia, ib = Image.open(list0).convert("RGB"), Image.open(back).convert("RGB")

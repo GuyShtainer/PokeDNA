@@ -1177,8 +1177,7 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
       ui_clear();
       ui_hline(0, 22, UI_SCR_W, UI_BORDER);
       ui_hline(0, 147, UI_SCR_W, UI_BORDER);
-      ui_text(4, 152, UI_DIM, can_edit ? "A open  L/R view  ST  SEL  B"
-                                        : "A open  L/R view  ST  SEL  B");
+      ui_text(4, 152, UI_DIM, "A open  L/R view  ST  SEL  B");
       for (int i = 0; i < vis && top + i < g_n; i++) {
         int x = x0 + (i % cols) * cw, y = y0 + (i / cols) * ch;
         if (grid) dex_cell_grid(x, y, g_list[top + i], bob);
