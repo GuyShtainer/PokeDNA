@@ -2232,7 +2232,7 @@ static void draw_footer(bool is_bank, bool undo, bool on_title, bool moving) {
   else if (on_title)       f = "L/R A name SEL menu";
   else if (s_cur_mode == CM_MOVE) f = "MOVE A grab hold=set";
   else if (s_cur_mode == CM_ITEM) f = "ITEM  A take  SEL B";
-  else if (undo && !is_bank) f = "A menu  SEL+L/R undo";   /* #234 s3: the short form (SEL+L undo, SEL+R redo) -- the strip is 20 columns */
+  else if (undo) f = "A menu  SEL+L/R undo";   /* #234 s3: the short form (SEL+L undo, SEL+R redo) -- the strip is 20 columns */
   else                     f = is_bank ? "A menu  SEL  L/R  B"
                                        : "A menu  UP  SEL  B";
   /* clear the footer strip first (it changes between modes) */
