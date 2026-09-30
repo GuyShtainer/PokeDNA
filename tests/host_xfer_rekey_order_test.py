@@ -239,11 +239,11 @@ def main() -> int:
 
     test_rekey_order_app_box_browse(text)
     print("== (1n) app_box_browse: app_xfer_pid_rekey is INSIDE the commit's if-block (review R3) ==")
-    test_rekey_nesting(text, "if (app_commit_with_dex(rec, false, commit, block)) {",
+    test_rekey_nesting(text, ": app_commit_with_dex(rec, false, commit, block)) {",   # #234 s2: the condition is now `hold-or-commit ? ... : commit`; the rekey stays inside its block
                        "app_xfer_pid_rekey(&plan)", "app_box_browse")
     test_rekey_order_party_browse(text)
     print("== (2n) party_browse: app_xfer_pid_rekey is INSIDE the commit's if-block (review R3) ==")
-    test_rekey_nesting(text, "if (app_commit_with_dex(rec, true, commit, g_sb1)) {",
+    test_rekey_nesting(text, ": app_commit_with_dex(rec, true, commit, g_sb1)) {",   # #234 s2: same shape as app_box_browse
                        "app_xfer_pid_rekey(&plan)", "party_browse")
     test_rekey_order_native_cell_edit(text)
     test_rekey_order_daycare(text)

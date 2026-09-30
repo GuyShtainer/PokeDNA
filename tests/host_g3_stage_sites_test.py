@@ -20,6 +20,14 @@ run (the mutants are built in a scratch dir; the real tree is never touched):
     W4  app_mark_pc_dirty stages through img_pc_edited (the eager stage at the drop)
     W5  every commit/stage site routes through app_stage_sections, none writes a section itself
     W6  the Makefile runs check-gsave-writes on every build
+  #234 slice 2 (the funnel FEEDS the journal): tests/host_jrn_funnel_test.c, recompiled per mutant
+    F1  the recorder never called (a commit stages but records nothing)              -> RED
+    F2  the crossed epoch ignored (a cross-file op no longer floors the offer)      -> RED
+    F3  scopes do not defer (a drop records two steps, and writes the image early)  -> RED
+    F4  old/new swapped in the diff (the record cannot be applied or undone)        -> RED
+  Wiring pins (slice 2): W7 get_fattime honours the journal's held stamp; W8 the journal never opens
+    without write access; W9 the Gen-3 'Save X?' prompts are gone and the STAY prompts are not; W10
+    the load/rest/discard hooks sit where D1/D6 want them; W11 every cross-file op bumps the epoch.
   Grep guard (tools/check_gsave_writes.py): real tree clean; a planted stray write is caught;
   an annotated one is not; a stray inside the funnel itself is allowed.
 """
@@ -70,6 +78,39 @@ def build_and_run(core_dir: Path, tag: str) -> tuple[int, str]:
     return r.returncode, r.stdout[-300:]
 
 
+def build_and_run_funnel(core_dir: Path, tag: str) -> tuple[int, str]:
+    exe = Path(tempfile.gettempdir()) / f"hjf_{tag}_{os.getpid()}"
+    cmd = ["cc", "-std=c11", "-Wall", "-Wextra", "-Wno-unused-function", "-DFF_USE_MKFS=1", "-Dsiprintf=sprintf",
+           "-Dsniprintf=snprintf", "-Dvsniprintf=vsnprintf", "-I", str(core_dir), "-I", str(ROOT / "tests" / "hostfat"),
+           "-I", str(ROOT / "lib" / "fatfs"), "-I", str(ROOT / "source"),
+           str(ROOT / "tests" / "host_jrn_funnel_test.c"), str(core_dir / "img_stage.c"),
+           str(ROOT / "source" / "gen3_save.c"), str(ROOT / "source" / "journal.c"),
+           str(ROOT / "source" / "journal_undo.c"), str(ROOT / "source" / "journal_fs.c"),
+           str(ROOT / "lib" / "fatfs" / "ff.c"), str(ROOT / "lib" / "fatfs" / "ffunicode.c"),
+           str(ROOT / "tests" / "hostfat" / "ramdisk.c"), "-o", str(exe)]
+    b = subprocess.run(cmd, capture_output=True, text=True)
+    if b.returncode != 0:
+        return 99, b.stderr[-300:]
+    r = subprocess.run([str(exe), *map(str, SAVES)], capture_output=True, text=True)
+    exe.unlink(missing_ok=True)
+    return r.returncode, r.stdout[-300:]
+
+
+def funnel_mutant(tag: str, edits: list[tuple[str, str, str]]) -> tuple[int, str]:
+    d = Path(tempfile.mkdtemp(prefix="jrnmut_"))
+    try:
+        for f in ("img_flags.h", "img_stage.h", "img_stage.c"):
+            shutil.copy(ROOT / "source" / f, d / f)
+        for f, old, new in edits:
+            t = (d / f).read_text()
+            if old not in t:
+                return 98, f"mutation anchor missing in {f}: {old[:50]}"
+            (d / f).write_text(t.replace(old, new, 1))
+        return build_and_run_funnel(d, tag)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def mutant(tag: str, edits: list[tuple[str, str, str]]) -> tuple[int, str]:
     """edits = (file, old, new); each old must occur, so a refactor cannot silently void a mutant."""
     d = Path(tempfile.mkdtemp(prefix="imgmut_"))
@@ -105,6 +146,18 @@ def c_pins() -> None:
     for name, edits in muts.items():
         rc, out = mutant(name[:2], edits)
         check(f"C mutant {name} -> RED (rc={rc})", rc == 1, out)
+    rc, out = build_and_run_funnel(ROOT / "source", "clean")
+    check("C core: the funnel feeds the journal (host_jrn_funnel_test.c) on the real source", rc == 0, out)
+    fmuts = {
+        "F1 recorder never called": [("img_stage.c", "  rec_step(r, save, slot, mask, blk);\n", "")],
+        "F2 crossed epoch ignored": [("img_stage.c", "crossed = r->epoch != r->epoch_seen;", "crossed = 0;")],
+        "F3 scopes do not defer": [("img_stage.c", "if (allow_defer && r && r->depth) {", "if (0 && allow_defer && r && r->depth) {")],
+        "F4 old/new swapped in the diff": [("img_stage.c", "jrn_step_region(r->j, (uint8_t)id, old_blk, blk[id])",
+                                            "jrn_step_region(r->j, (uint8_t)id, blk[id], old_blk)")],
+    }
+    for name, edits in fmuts.items():
+        rc, out = funnel_mutant(name[:2], edits)
+        check(f"C mutant {name} -> RED (rc={rc})", rc == 1, out)
 
 
 # ---------------------------------------------------------------- wiring pins
@@ -131,7 +184,91 @@ def wiring(text: str) -> list[str]:
     return bad
 
 
+def fbody(text: str, name: str) -> str:
+    """The body of function `name` in comment-stripped C, brace-matched (tools/check_gsave_writes.func_ranges
+    misses definitions with an __attribute__ in the signature, which several slice-2 hooks have). "" = not found."""
+    clean = guard.strip_comments(text)
+    m = re.search(r"^[^\n;#]*\b" + re.escape(name) + r"\s*\([^;{}]*\)\s*\{", clean, re.M)
+    if not m:
+        return ""
+    i, depth = m.end() - 1, 0
+    for j in range(i, len(clean)):
+        depth += (clean[j] == "{") - (clean[j] == "}")
+        if depth == 0:
+            return clean[i + 1:j]
+    return ""
+
+
+def slice2_wiring(text: str, disk: str, jrnapp: str) -> list[str]:
+    """The #234 slice-2 wiring pins (text level). Empty list = all hold."""
+    bad = []
+    b = {n: fbody(text, n) for n in ("app_journal_load", "flush_on_exit", "app_discard_staged", "app_xfer_pending_set",
+         "app_xfer_promote", "app_pc_release_slot", "app_inject_to_game", "app_bank_defer_delete", "app_xfer_pid_guard",
+         "gb_reconcile_release", "xfer_reconcile_apply")}
+    gf = fbody(disk, "get_fattime")
+    if "jrn_stamp_held()" not in gf or gf.count("jrn_fattime_filter(") < 3:
+        bad.append("W7 get_fattime does not honour the held stamp / filter every return")
+    jo = fbody(jrnapp, "jrnapp_open")
+    if "!write_ok" not in jo or "return JA_OFF" not in jo or jo.find("!write_ok") > jo.find("ja_do_open("):
+        bad.append("W8 the journal can open without write access")
+    if "app_can_edit()" not in b["app_journal_load"]:
+        bad.append("W8 app_journal_load does not pass app_can_edit()")
+    for s in ("Save data changes?", "Save bag changes?", "Save Pokedex changes?", "Save Pokeblocks?", "Save events?",
+              "Save Secret-Base edits?"):
+        for f in sorted((ROOT / "source").glob("*.c")):
+            if f.name.startswith("pdna_gb"):
+                continue                        # the Gen-1/2 editors keep theirs (not journaled)
+            raw = text if f.name == "pdna_main.c" else f.read_text(errors="replace")
+            if f'"{s}"' in raw:                 # a quoted literal: a comment that mentions the words cannot trip this
+                bad.append(f"W9 removed prompt '{s}' is back in {f.name}")
+    for s in ("Release all", "Overwrite", "Delete ALL backups", "PUT IT BACK", "Keep this Pokemon", "SAVE NOW"):
+        if not any(s in f.read_text(errors="replace") for f in (ROOT / "source").glob("*.c")):
+            bad.append(f"W9 STAY prompt '{s}' vanished")
+    if not b["flush_on_exit"].lstrip().startswith("app_journal_rest();"):
+        bad.append("W10 flush_on_exit does not start with the rest-point flush")
+    if "jrnapp_after_discard(&g_rec)" not in b["app_discard_staged"]:
+        bad.append("W10 discard does not re-anchor the journal")
+    if not (0 <= text.find("app_journal_load();") < text.find("load_phase_n(11, PDNA_LOAD_PHASE_SIDECARS)")):
+        bad.append("W10 the load anchor does not run before the reconcile")
+    for fn in ("app_xfer_pending_set", "app_xfer_promote", "app_pc_release_slot", "app_inject_to_game",
+               "app_bank_defer_delete", "app_xfer_pid_guard", "gb_reconcile_release", "xfer_reconcile_apply"):
+        if not b[fn] or "app_journal_cross()" not in b[fn]:
+            bad.append(f"W11 {fn} does not bump the crossed epoch")
+    return bad
+
+
 def wiring_pins() -> None:
+    disk = (ROOT / "lib" / "fatfs" / "diskio_write.c").read_text(errors="replace")
+    jrnapp = (ROOT / "source" / "jrn_app.c").read_text(errors="replace")
+    check("W7-W11 slice-2 wiring holds on the real tree", not slice2_wiring(MAIN, disk, jrnapp), str(slice2_wiring(MAIN, disk, jrnapp)))
+    s2muts = {
+        "W7 get_fattime reads the RTC while a flush holds the stamp": (MAIN, disk, jrnapp, "disk",
+            "if (jrn_stamp_held()) return (DWORD)jrn_fattime_filter(0);\n", ""),
+        "W8 the journal opens without write access": (MAIN, disk, jrnapp, "jrnapp",
+            "if (!write_ok || !save || !sb2) return JA_OFF;", "if (!save || !sb2) return JA_OFF;"),
+        "W9 a removed prompt comes back": (MAIN, disk, jrnapp, "main",
+            "static void app_journal_rest(void) {", "static void x_(void) { app_confirm(\"Save Pokeblocks?\", \"\"); }\nstatic void app_journal_rest(void) {"),
+        "W10 flush_on_exit loses the rest-point flush": (MAIN, disk, jrnapp, "main",
+            "static void flush_on_exit(void) {\n  app_journal_rest();", "static void flush_on_exit(void) {\n  "),
+        "W10 discard forgets to re-anchor": (MAIN, disk, jrnapp, "main",
+            "if (ok) jrnapp_after_discard(&g_rec);", ""),
+        "W11 a cross-file op forgets the epoch": (MAIN, disk, jrnapp, "main",
+            "void app_bank_defer_delete(int box, int slot, const uint8_t* rec80) { app_journal_cross(); ",
+            "void app_bank_defer_delete(int box, int slot, const uint8_t* rec80) { "),
+    }
+    for name, (m, d, j, which, old, new) in s2muts.items():
+        src = {"main": m, "disk": d, "jrnapp": j}[which]
+        if old not in src:
+            check(f"slice-2 wiring mutant anchor present: {name}", False)
+            continue
+        mm, dd, jj = m, d, j
+        if which == "main": mm = m.replace(old, new, 1)
+        elif which == "disk": dd = d.replace(old, new, 1)
+        else: jj = j.replace(old, new, 1)
+        check(f"slice-2 wiring mutant '{name}' -> RED", bool(slice2_wiring(mm, dd, jj)))
+
+
+def wiring_pins_slice01() -> None:
     check("W1-W5 wiring holds on the real pdna_main.c", not wiring(MAIN), str(wiring(MAIN)))
     muts = {
         "flush_on_exit gate back to a PC-only reader": ("imgf_exit_prompt(&g_img)) {", "imgf_arena_ok(&g_img)) {"),
@@ -182,6 +319,7 @@ def main() -> int:
         return 0
     c_pins()
     wiring_pins()
+    wiring_pins_slice01()
     guard_pins()
     print()
     if fails:
