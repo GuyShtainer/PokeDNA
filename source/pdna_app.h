@@ -536,7 +536,6 @@ bool app_commit_pc(void);                 /* PC storage (sections 5..13): box na
  * still commit immediately — and any such commit clears the dirty flag, since the
  * verified write flushes the whole g_pc (pending moves included). */
 void app_mark_pc_dirty(void);
-bool app_pc_dirty(void);
 
 /* PC->Bank MOVE support: clear a PC box slot (release from the save) after the destination
  * bank box has been verified on SD, matched by the mon's 8-byte identity so a bystander is
