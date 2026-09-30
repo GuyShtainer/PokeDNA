@@ -6359,7 +6359,7 @@ def run_y12_togame_gb(core_mod, image_mod, rom_gold: Path, rom_red: Path, out_di
         gb_shots._DEFAULT_VSD_IMG = saved_default
 
 
-def _y16_same_landing(pre: Path, post: Path, tag: str, max_frac: float = 0.03) -> None:
+def _y16_same_landing(pre: Path, post: Path, tag: str, max_frac: float = 0.008) -> None:
     """#261 pin: the frame before the drop and the frame after the wall are the SAME screen (same box, same cursor cell,
     same carrying footer): at most `max_frac` of the pixels may differ (the glove/portrait animate a little). Loud exit."""
     from PIL import Image, ImageChops
