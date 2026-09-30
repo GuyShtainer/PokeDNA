@@ -236,7 +236,7 @@ static void gbdc_take(GbSession* s, int slot, uint8_t* list, uint8_t* list2) {
   char line[32];
   if (landed_box < 0) siprintf(line, "Sent to the party.");
   else                siprintf(line, "Sent to Box %d.", landed_box + 1);
-  msg_wait("TAKEN OUT", UI_OK, line, "Saved.");
+  msg_wait("TAKEN OUT", UI_OK, line, gb_hold_live() ? "Save on exit to keep it." : "Saved.");
 }
 
 /* Take the Egg out (Gen 2 only), landing it like gbdc_take() (party first, then a box with room).
@@ -264,7 +264,7 @@ static void gbdc_take_egg(GbSession* s, uint8_t* list, uint8_t* list2) {
   char line[32];
   if (landed_box < 0) siprintf(line, "Sent to the party.");
   else                siprintf(line, "Sent to Box %d.", landed_box + 1);
-  msg_wait("EGG TAKEN", UI_OK, line, "Saved.");
+  msg_wait("EGG TAKEN", UI_OK, line, gb_hold_live() ? "Save on exit to keep it." : "Saved.");
 }
 
 /* Put a box-picked mon into `slot` -- a MOVE, not a paste (review D1): the picked
@@ -297,7 +297,7 @@ static void gbdc_deposit(GbSession* s, int slot, int cur_box, uint8_t* list) {
   }
   if (!gb_hold_commit("daycare-put")) return;   /* gb_persist already reported any refusal */
   snd_ok();
-  msg_wait("LEFT AT DAY CARE", UI_OK, "Moved from the box. Saved.", 0);
+  msg_wait("LEFT AT DAY CARE", UI_OK, gb_hold_live() ? "Moved from the box." : "Moved from the box. Saved.", 0);
 }
 
 /* View/Edit `start_slot`, Gen-3-parity shape (pdna_daycare()'s own card-editor loop):

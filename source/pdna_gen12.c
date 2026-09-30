@@ -2543,7 +2543,7 @@ static bool gb_daycare_hook(uint8_t* rec80) {
            g_ed->path, box, slot, dcslot);
   if (!gb_hold_commit("daycare-put")) return false;   /* gb_persist already reported any refusal */
   snd_ok();
-  msg_wait("LEFT AT DAY CARE", UI_OK, "Moved from the box. Saved.", 0);   /* gbdc_deposit's own words */
+  msg_wait("LEFT AT DAY CARE", UI_OK, gb_hold_live() ? "Moved from the box." : "Moved from the box. Saved.", 0);   /* gbdc_deposit's own words */
   pdna_gbdaycare(&g_ed->s, box, app_can_edit());
   return true;
 }
@@ -2911,7 +2911,7 @@ static bool gbsrc_release_all_impl(int box) {
    * gets a panel of this hook's own. */
   bool persisted = gb_hold_commit("release-all");   /* ONE persist for the whole box */
   if (persisted) {
-    snd_save();
+    if (!gb_hold_live()) snd_save();
     ui_clear();
     ui_panel(20, 54, 200, 56, UI_PANEL, UI_OK);
     ui_text(30, 64, UI_OK, "RELEASED");

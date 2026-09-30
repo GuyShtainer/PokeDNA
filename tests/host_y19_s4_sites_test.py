@@ -205,6 +205,12 @@ def pins(T: dict[str, str]) -> dict[str, bool]:
             and len(re.findall(r"pdna_summary_quiet_save\(true\);\s*(?:int nav = |nav = )?pdna_gbsummary\(&(?:e|box_mon)\b[^;]*;\s*pdna_summary_quiet_save\(false\);", strip_comments(T["pdna_gen12.c"]))) == 2,
         "S2b gb_persist guards g_m at BOTH re-census sites (the exit save runs with no grid)":
             gp.count("if (g_m) { gb_census(g_m); g_m->loaded = -1; }") == 2 and "gb_census(g_m);" not in re.sub(r"if \(g_m\) \{ gb_census\(g_m\); g_m->loaded = -1; \}", "", gp),
+        "S3d a held commit never says Saved. (daycare take/egg/deposit, release-all chime)":
+            strip_comments(T["pdna_gbdaycare.c"]).count('gb_hold_live() ? "Save on exit to keep it." : "Saved."') == 2
+            and '"Saved."' not in re.sub(r'gb_hold_live\(\) \? "Save on exit to keep it\." : "Saved\."', "", strip_comments(T["pdna_gbdaycare.c"]))
+            and 'gb_hold_live() ? "Moved from the box." : "Moved from the box. Saved."' in strip_comments(T["pdna_gbdaycare.c"])
+            and 'gb_hold_live() ? "Moved from the box." : "Moved from the box. Saved."' in strip_comments(T["pdna_gen12.c"])
+            and re.search(r"if\s*\(\s*persisted\s*\)\s*\{\s*if\s*\(\s*!gb_hold_live\(\)\s*\)\s*snd_save\(\);", strip_comments(T["pdna_gen12.c"])) is not None,
         "S4 the STAY list is exactly the transfer walls; every plain edit holds":
             tags(T, "gb_persist") == STAY and tags(T, "gb_hold_commit") == HOLD,
         "S5 the exit: pending records first, ONE confirm, discard re-reads the card":
@@ -260,6 +266,9 @@ def text_half() -> None:
         "  if (strcmp(what_for_log, \"exit\") != 0 && app_gb_hold_live())\n    (void)app_gb_stage(g_ed->pristine, g_ed->img, gb_step_name(what_for_log), true);\n  app_gb_saved();",
         "  app_gb_saved();", "S2")
     mut("S2b one persist site dereferences a NULL g_m", "pdna_gen12.c", "  if (g_m) { gb_census(g_m); g_m->loaded = -1; } /* nready", "  gb_census(g_m); g_m->loaded = -1; /* nready", "S2b")
+    mut("S3d a held take-out says Saved.", "pdna_gbdaycare.c", 'msg_wait("TAKEN OUT", UI_OK, line, gb_hold_live() ? "Save on exit to keep it." : "Saved.");', 'msg_wait("TAKEN OUT", UI_OK, line, "Saved.");', "S3d")
+    mut("S3d release-all chimes Saved while held", "pdna_gen12.c", "    if (!gb_hold_live()) snd_save();\n    ui_clear();", "    snd_save();\n    ui_clear();", "S3d")
+    mut("S3d deposit says Saved while held", "pdna_gen12.c", 'gb_hold_live() ? "Moved from the box." : "Moved from the box. Saved."', '"Moved from the box. Saved."', "S3d")
     mut("S3 the dex prompt is back unconditionally", "pdna_gbdex.c", "if (!gb_hold_live() && !app_confirm(\"Save Pokedex changes?\"", "if (!app_confirm(\"Save Pokedex changes?\"", "S3")
     mut("S3 the bag prompt is back unconditionally", "pdna_gbbag.c", "if (gb_hold_live() || app_confirm(\"Save bag changes?\"", "if (app_confirm(\"Save bag changes?\"", "S3")
     mut("S3b the plain edit still asks", "pdna_gbedit.c", "  if (gb_hold_live() && pdna_summary_quiet()) {\n    GbIssues iss;", "  if (0) {\n    GbIssues iss;", "S3b")
