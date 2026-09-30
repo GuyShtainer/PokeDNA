@@ -157,6 +157,10 @@ def c_pins() -> None:
         "F5 a lost step is not a floor": [
             ("img_stage.c", "  r->epoch++;                       /* a lost step is a floor: the next record is crossed (#301) */\n", ""),
             ("img_stage.c", "      crossed = 1;                  /* the resynced base is not the recorded chain's base: floor here too */\n", "")],
+        "F7 no rest-point flush at the scope close": [
+            ("img_stage.c", "jrn_pend_free(r->j) < JRN_PEND_HIWATER", "0 && jrn_pend_free(r->j) < JRN_PEND_HIWATER")],
+        "F6 a resynced step is not crossed": [
+            ("img_stage.c", "      crossed = 1;                  /* the resynced base is not the recorded chain's base: floor here too */\n", "")],
     }
     for name, edits in fmuts.items():
         rc, out = funnel_mutant(name[:2], edits)

@@ -209,6 +209,47 @@ static void t_gap_is_a_floor(void) {
         "the chain stops before C: rc-cut total %u avail %u", (unsigned)total, (unsigned)av);
 }
 
+/* #301 resync floor: a write OUTSIDE the funnel (test code pokes the save buffer directly: no funnel, no epoch bump)
+ * moves the image under the journal. The next staged step (C) hits JRN_E_DIVERGED, rec_step resyncs the running
+ * hashes -- and the resynced base is NOT the recorded chain's base, so C must be crossed: the load-time re-apply
+ * offer stops before C instead of applying C on a base that is missing the outside write. */
+static void t_diverged_is_a_floor(void) {
+  Jrn j2;
+  JrnCfg c = cfg_for(KEY, 0, 0);
+  JrnImage im;
+  uint32_t av = 99, total = 99;
+  JrnRec tip;
+  uint8_t out[4] = { 0xDE, 0xAD, 0xBE, 0xEF };
+  poke(100, 4, 0x5A);                                                     /* A: region 5 */
+  CHECK(img_stage_sections(&F, &R, sv, slot, G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, pc), "A");
+  CHECK(jrn_flush(&J) == JRN_OK, "flush A");
+  CHECK(sset(0, 6, 1000, out, 4) == 0, "the outside write lands in region 6");   /* NOT through the funnel */
+  CHECK(read_pc(pc), "the app-side image follows the outside write");
+  poke(G3_SECTOR_DATA_SIZE + 2000, 6, 0x21);                             /* C: region 6 again (elsewhere in it) */
+  CHECK(img_stage_sections(&F, &R, sv, slot, G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, pc), "C");
+  CHECK(jrn_flush(&J) == JRN_OK, "flush C");
+  CHECK(R.lost >= 1, "the divergence is counted honestly, lost %u", (unsigned)R.lost);
+  CHECK(jrn_find(&J, jrn_tip(&J), &tip) == 0 && tip.crossed == 1, "C records crossed 1 (got %u)", (unsigned)tip.crossed);
+  memcpy(sv, orig, sizeof sv);                                            /* the power cut */
+  im.ctx = &acc; im.get = sget; im.set = sset;
+  CHECK(jrn_open(&j2, &c, &im) == JRN_OK, "reopen on the original image");
+  CHECK(jrn_redo_info(&j2, &av, &total, 0) == 1 && total == 2 && av == 1,
+        "the chain stops before C: total %u avail %u", (unsigned)total, (unsigned)av);
+}
+
+/* #234 ruling: the step-end rest hook. A scope that leaves the pend below JRN_PEND_HIWATER free bytes flushes AT the
+ * scope close (screen static), so the next step never meets JRN_E_FULL in its own rec_step. */
+static void t_rest_hook_flushes(void) {
+  poke(100, 4, 0x5A);
+  img_scope_open(&R, "Box move");
+  CHECK(img_stage_sections(&F, &R, sv, slot, G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, pc), "staged in a scope");
+  CHECK(jrn_pending(&J) == 0, "nothing is recorded until the scope closes, pending %d", jrn_pending(&J));
+  CHECK(img_scope_close(&F, &R, sv, slot), "close");
+  CHECK(jrn_pend_free(&J) >= JRN_PEND_HIWATER && jrn_pending(&J) == 0,
+        "the rest hook flushed at the close (free %u, pending %d)", (unsigned)jrn_pend_free(&J), jrn_pending(&J));
+  CHECK(jrn_tip(&J) == 1, "the step is journaled (tip %u)", (unsigned)jrn_tip(&J));
+}
+
 int main(int argc, char** argv) {
   int a;
   static uint8_t file[G3_SAVE_FILE_SIZE];
@@ -225,6 +266,8 @@ int main(int argc, char** argv) {
     CHECK(world(file), "world"); t_commit_spans();
     CHECK(world(file), "world"); t_crossed_floors_offer();
     CHECK(world(file), "world"); t_gap_is_a_floor();
+    CHECK(world(file), "world"); t_diverged_is_a_floor();
+    CHECK(world(file), "world"); t_rest_hook_flushes();
     CHECK(world(file), "world"); t_scope_is_one_step();
     CHECK(world(file), "world"); t_identical_and_null();
   }
