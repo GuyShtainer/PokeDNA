@@ -778,7 +778,9 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * gbs_status_text(st) as the first -- 184px proportional, same clamp. */
 #define PDNA_GBEDIT_MOVE_NEEDSBASE_L2 "Gen 1: withdraw it in-game instead."
 #define PDNA_GBEDIT_MOVE_FLOOR_L2     "The party must keep one Pokemon."
-#define PDNA_GBEDIT_MOVE_MAIL_L2      "Take the Mail off it in-game first."
+/* BACKLOG #241: the refusal is party-level (any member holding Mail; Gen 2 Mail is positional,
+ * six slots by party index), so the hint must not say "off it". */
+#define PDNA_GBEDIT_MOVE_MAIL_L2      "Clear all party Mail in-game first."
 /* NOT "That box is full." -- gbs_status_text(GBS_ERR_FULL) already says exactly that as
  * msg_wait's L1, so an L2 repeating it would tell the player nothing new. */
 #define PDNA_GBEDIT_MOVE_FULL_L2      "Free a slot there first."
