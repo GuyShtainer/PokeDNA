@@ -590,7 +590,7 @@ static void wp_blit_tile(const uint16_t* t64, int bx, int by, int rows) {
 #define WP_ROM_RETRIES 4   /* == wp_copy_verified's own attempt count, on purpose */
 
 static bool wp_rom_stage(const RomWallpaper* rw, int wp, uint32_t* tiles_bytes,
-                         uint16_t pal[ROM_WP_PAL_BANKS][16], int* retries_io) {
+                         uint16_t pal[ROM_WP_PAL_BANKS][16], RomWpBase* bs, int* retries_io) {
   artbuf_claim();    /* E3 review BLOCKING 2: about to borrow+overwrite mon_decomp */
   int ok = 0;
   for (int a = 0; a < WP_ROM_RETRIES && !ok; a++) {
@@ -613,6 +613,7 @@ static bool wp_rom_stage(const RomWallpaper* rw, int wp, uint32_t* tiles_bytes,
   }
   if (!ok) return false;
   *tiles_bytes = na;
+  if (!rom_wallpaper_base(rw, wp, na, bs)) return false;   /* #294: the backdrop sheet's shape */
 
   ok = 0;
   for (int a = 0; a < WP_ROM_RETRIES && !ok; a++) {
@@ -628,21 +629,21 @@ static bool wp_rom_stage(const RomWallpaper* rw, int wp, uint32_t* tiles_bytes,
  * same consecutive-same-tile skip and 15-bit mask the compiled path applies. Shared
  * by the full paint and the rect-restore below. Returns false on an out-of-range
  * tid (the caller treats that as dirty, same as the compiled path). */
-static bool wp_rom_cell(const uint8_t* tiles, uint32_t tiles_bytes,
-                        const uint16_t pal[ROM_WP_PAL_BANKS][16], uint16_t e,
+static bool wp_rom_cell(const uint8_t* tiles, uint32_t tiles_bytes, const RomWpBase* bs,
+                        const uint16_t pal[ROM_WP_PAL_BANKS][16], uint16_t e, int tx, int ty,
                         int32_t* last_key) {
   /* last_key is int32_t (not uint16_t) so -1 is a genuine "nothing staged yet"
    * sentinel: e is a full 16-bit attribute word (tid 10b + hflip + vflip + bank
    * 4b == 16 bits, so every uint16_t value is reachable) and a narrower sentinel
    * could collide with a real first cell and wrongly skip its expansion, leaving
    * s_wp_tile holding whatever an unrelated earlier caller left in it. */
-  if (last_key && (int32_t)e == *last_key) return true;     /* already staged */
-  uint16_t tid = (uint16_t)(e & 0x3FFu);
-  int hf = (e >> 10) & 1, vf = (e >> 11) & 1, bank = (e >> 12) & 0xF;
-  if (!rom_wallpaper_expand_tile(tiles, tiles_bytes, tid, hf, vf,
-                                 pal[rom_wallpaper_pal_bank(bank)], s_wp_tile))
+  /* #294: the pixels now depend on the backdrop under the cell too (tx%cols, ty%rows), so the
+   * skip key is entry + base phase (rom_wallpaper_cell_key), not the entry alone. */
+  int32_t key = (int32_t)rom_wallpaper_cell_key(bs, e, tx, ty);
+  if (last_key && key == *last_key) return true;     /* already staged */
+  if (!rom_wallpaper_expand_cell(tiles, tiles_bytes, e, tx, ty, bs, pal, s_wp_tile))
     return false;
-  if (last_key) *last_key = (int32_t)e;
+  if (last_key) *last_key = key;
   uint32_t* wmk = (uint32_t*)s_wp_tile;         /* 15-bit mask ONCE per tile, matching draw_wallpaper */
   for (int k = 0; k < 32; k++) wmk[k] &= 0x7FFF7FFFu;
   return true;
@@ -656,8 +657,9 @@ static bool draw_wallpaper_rom(int wp, int x, int y, int w, int h) {
   int retries = 0;
   uint32_t tiles_bytes = 0;
   uint16_t pal[ROM_WP_PAL_BANKS][16];
+  RomWpBase bs;
   rumble_io_suspend();
-  bool ok = wp_rom_stage(rw, wp, &tiles_bytes, pal, &retries);
+  bool ok = wp_rom_stage(rw, wp, &tiles_bytes, pal, &bs, &retries);
   if (!ok) {
     rumble_io_resume();
     log_line("wp %d (rom): unstable reads after %d re-decodes, grass fallback", wp, retries);
@@ -670,7 +672,7 @@ static bool draw_wallpaper_rom(int wp, int x, int y, int w, int h) {
   for (int ty = 0; ty < 18 && !dirty; ty++)
     for (int tx = 0; tx < 20; tx++) {
       uint16_t e = s_wp_map[ty * 20 + tx];
-      if (!wp_rom_cell(tiles, tiles_bytes, pal, e, &last_key)) { dirty = true; break; }
+      if (!wp_rom_cell(tiles, tiles_bytes, &bs, pal, e, tx, ty, &last_key)) { dirty = true; break; }
       int bx = x + tx * 8, by = y + ty * 8;
       int rows = y + h - by; if (rows > 8) rows = 8;
       int cols = x + w - bx; if (cols > 8) cols = 8;
@@ -850,8 +852,9 @@ static void wp_restore_rect_rom(int x0, int y0, int x1, int y1) {
   int retries = 0;
   uint32_t tiles_bytes = 0;
   uint16_t pal[ROM_WP_PAL_BANKS][16];
+  RomWpBase bs;
   rumble_io_suspend();
-  bool ok = wp_rom_stage(rw, s_wp_drawn, &tiles_bytes, pal, &retries);
+  bool ok = wp_rom_stage(rw, s_wp_drawn, &tiles_bytes, pal, &bs, &retries);
   if (!ok) { rumble_io_resume(); return; }
   const uint8_t* tiles = (const uint8_t*)mon_decomp;
   int tx0 = (x0 - WP_X) / 8, tx1 = (x1 - 1 - WP_X) / 8;
@@ -860,7 +863,7 @@ static void wp_restore_rect_rom(int x0, int y0, int x1, int y1) {
   for (int ty = ty0; ty <= ty1; ty++)
     for (int tx = tx0; tx <= tx1; tx++) {
       uint16_t e = s_wp_map[ty * 20 + tx];
-      if (!wp_rom_cell(tiles, tiles_bytes, pal, e, 0)) continue;  /* skip: stale beats garbage */
+      if (!wp_rom_cell(tiles, tiles_bytes, &bs, pal, e, tx, ty, 0)) continue;  /* skip: stale beats garbage */
       int bx = WP_X + tx * 8, by = WP_Y + ty * 8;
       for (int j = 0; j < 8; j++)
         for (int i = 0; i < 8; i++)
