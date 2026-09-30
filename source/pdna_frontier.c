@@ -285,8 +285,7 @@ static void rs_tower(uint8_t* sb2) {
       rmbl_fire(RCUE_EDIT);
     }
   }
-  if (dirty && app_confirm("Save tower records?", "Writes SaveBlock2 now."))
-    app_commit_sb2();
+  if (dirty) (void)app_hold_sb2("Tower records");        /* #234 s2: staged, no prompt */
 }
 
 /* How many symbols (Silver/Gold) this facility has already awarded. The game uses
@@ -485,6 +484,5 @@ void pdna_frontier(uint8_t* sb1, uint8_t* sb2, PkGame game) {
     if (dirty) rmbl_fire(RCUE_EDIT);
   }
 
-  if (dirty && app_confirm("Save frontier streaks?", "Writes SaveBlock2 now."))
-    app_commit_sb2();
+  if (dirty) (void)app_hold_sb2("Frontier streaks");     /* #234 s2: staged, no prompt */
 }

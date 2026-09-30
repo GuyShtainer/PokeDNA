@@ -3505,7 +3505,10 @@ static void box_options_menu(BoxSource* src, int box) {
           } else {                                        /* Emerald Walda secret wallpaper (PC) */
             src->set_wp(box, G3_BOX_WALLPAPER_FRIENDS);
             app_set_walda((uint8_t)(wp - G3_BOX_WALLPAPER_FRIENDS));
-            if (src->commit()) app_commit_sb1();          /* box byte + the Walda config */
+            app_step_begin("Walda wallpaper");            /* #234 s2: the box byte + the Walda config are ONE staged step */
+            src->mark_dirty();
+            (void)app_hold_sb1(0);
+            app_step_end();
           }
         }
         return;

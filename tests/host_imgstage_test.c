@@ -51,9 +51,9 @@ static void flag_table(void) {
   check("... without any PC edit pending: no fold, arena still free, 'staged changes' wording",
         !imgf_fold_needed(&f) && imgf_arena_ok(&f) && strcmp(imgf_exit_line(&f), "Save the staged changes?") == 0);
   imgf_pc_edited(&f, true);
-  check("a staged PC edit: prompt, arena refused (slice-0 compat), NO fold, 'moved Pokemon' wording",
-        imgf_exit_prompt(&f) && !imgf_arena_ok(&f) && !imgf_fold_needed(&f) &&
-        strcmp(imgf_exit_line(&f), "Save the moved Pokemon?") == 0);
+  check("a STAGED PC edit (#234 s2, pc_moved retired): prompt, the arena is FREE (g_pc re-derives from g_save), NO fold, generic wording",
+        imgf_exit_prompt(&f) && imgf_arena_ok(&f) && !imgf_fold_needed(&f) &&
+        strcmp(imgf_exit_line(&f), "Save the staged changes?") == 0);
   imgf_clear(&f);
   check("a successful write clears everything", !imgf_exit_prompt(&f) && imgf_arena_ok(&f) && !imgf_fold_needed(&f));
   imgf_pc_edited(&f, false);
@@ -84,7 +84,7 @@ static int run_one(const char* path) {
   img_pc_edited(&f, NULL, g_save, slot, g_pc, true);
   check("after the drop g_save sections 5..13 already decode to g_pc (eager stage)", pc_matches_save(g_pc, slot));
   check("... flags: image dirty + PC edit pending, nothing left to fold",
-        f.image_dirty && f.pc_moved && !f.pc_unstaged && !imgf_fold_needed(&f));
+        f.image_dirty && !f.pc_unstaged && !imgf_fold_needed(&f) && imgf_arena_ok(&f));
   check("... and the funnel kept the checksums valid", gen3_verify_full_checksums(g_save, slot, NULL));
 
   /* (a) the map-warp/tileset case: the arena lends g_pc out (foreign bytes) while a staged PC
@@ -112,7 +112,7 @@ static int run_one(const char* path) {
   memset(sb2, 0x77, sizeof sb2);
   check("SB2-only stage succeeds", img_stage_sections(&f, NULL, g_save, slot, 0, 0, sb2));
   check("SB2-only: the exit gate sees it (old 'PC moves or Day-Care' gate would not)",
-        imgf_exit_prompt(&f) && !f.pc_moved);
+        imgf_exit_prompt(&f));
   check("SB2-only: the funnel wrote the section and kept the checksums valid",
         gen3_verify_full_checksums(g_save, slot, NULL));
 
@@ -159,7 +159,7 @@ static int scope_pins(const char* path) {
   img_scope_open(&r, "Box move");
   img_pc_edited(&f, &r, g_save, slot, g_pc, true);
   check("scope: a deferred drop leaves g_save untouched until the close", memcmp(g_orig, g_save, sizeof g_save) == 0);
-  check("scope: ... g_pc is honestly ahead (pc_unstaged), the image is dirty", f.pc_unstaged && f.image_dirty && f.pc_moved);
+  check("scope: ... g_pc is honestly ahead (pc_unstaged), the image is dirty", f.pc_unstaged && f.image_dirty && !imgf_arena_ok(&f));
   g_pc[0x50] ^= 0x11;                                      /* the second stage of the same drop (clear_origin) */
   img_pc_edited(&f, &r, g_save, slot, g_pc, true);
   check("scope: the close applies it ONCE and folds", img_scope_close(&f, &r, g_save, slot) &&

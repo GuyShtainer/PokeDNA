@@ -9,7 +9,7 @@ run (the mutants are built in a scratch dir; the real tree is never touched):
 
   C pins (host_imgstage_test.c recompiled against a mutated copy of the pure-C core):
     M1  the OLD fold condition back (fold whenever the PC edit/image is pending)  -> RED
-    M2  the OLD exit gate (PC moves only; blind to an SB2-only change)             -> RED
+    M2  an exit gate blind to an SB2-only change (PC-edit-only, the old shape)      -> RED
     M3  a box drop that does NOT stage eagerly                                     -> RED
     M4  the arena/SAVE FIRST refusal dropped (unstaged-only gate)                  -> RED
     M5  the funnel that forgets to mark the image dirty                            -> RED
@@ -91,13 +91,15 @@ def c_pins() -> None:
     check("C core: the real pure-C funnel passes host_imgstage_test.c", rc == 0, out)
     muts = {
         "M1 old fold condition back": [("img_flags.h",
-            "return f ? f->pc_unstaged : false;", "return f ? (f->pc_unstaged || f->pc_moved || f->image_dirty) : false;")],
+            "return f ? f->pc_unstaged : false;", "return f ? (f->pc_unstaged || f->image_dirty) : false;")],
         "M2 old exit gate (PC moves only)": [("img_flags.h",
-            "return f ? f->image_dirty : false; }\n\n/* Wording", "return f ? f->pc_moved : false; }\n\n/* Wording")],
+            "return f ? f->image_dirty : false; }\n\n/* Wording", "return f ? f->pc_unstaged : false; }\n\n/* Wording")],
         "M3 drop does not stage eagerly": [("img_stage.c",
             "bool staged = can_stage &&", "bool staged = false && can_stage &&")],
-        "M4 arena/SAVE-FIRST refusal dropped": [("img_flags.h",
-            "(!f->pc_unstaged && !f->pc_moved)", "(!f->pc_unstaged)")],
+        # #234 s2: pc_moved retired -- M4 flips to the new truth: the arena gate is pc_unstaged ALONE, so a mutant that lets
+        # the arena take a g_pc that is AHEAD of g_save (the tileset-bytes-in-every-box case) must go RED.
+        "M4 arena lent while g_pc is ahead of g_save": [("img_flags.h",
+            "return f ? !f->pc_unstaged : false; }", "return f ? true : false; }")],
         "M5 funnel forgets to mark the image dirty": [("img_stage.c", "  imgf_staged(f);\n", "")],
     }
     for name, edits in muts.items():

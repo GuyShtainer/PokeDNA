@@ -528,6 +528,12 @@ bool app_commit_sb2(void);
 bool app_commit_sb1(void);
 bool app_commit_sb12(void);               /* SB2 + SB1 (sections 0..4) in one verified write */
 bool app_commit_pc(void);                 /* PC storage (sections 5..13): box name/wallpaper */
+/* #234 s2 HELD commits: stage one journal step into the image and write NOTHING (the exit save confirms once). The
+ * editor screens' "Save X?" prompts are gone; these replace their commit. `name` = the history's step name (static
+ * ASCII, <= 24 chars, or 0). True when staged; false on a read-only cart / no Gen-3 image. */
+bool app_hold_sb2(const char* name);
+bool app_hold_sb1(const char* name);
+bool app_hold_sb12(const char* name);
 
 /* Deferred-save for PC box MOVES. Repositioning mons in move-mode mutates g_pc in
  * RAM but does NOT write immediately (no per-drop "Saving" dialog); it marks the PC

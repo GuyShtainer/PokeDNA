@@ -2141,6 +2141,30 @@ bool app_commit_sb12(void) {
   return app_save_finalize();
 }
 
+/* #234 s2 -- HELD commits (design D1): the editor screens' "Save X?" prompts are gone; their commit STAGES one
+ * journal step into the image and writes NOTHING. The .sav is written at exit ("Save changes?", once) or by any later
+ * real commit. `name` is what the history shows (a static ASCII string, <= 24 chars). Each returns true when staged,
+ * false (and stages nothing) on a read-only cart / no Gen-3 image -- the same refusal the write path made. */
+static bool app_hold_ok(void) { return g_vinfo.valid && app_can_edit(); }
+bool app_hold_sb2(const char* name) {
+  if (!app_hold_ok()) return false;
+  app_step_begin(name); app_stage_sections(0, 0, g_sb2); app_step_end();
+  snd_ok();
+  return true;
+}
+bool app_hold_sb1(const char* name) {
+  if (!app_hold_ok()) return false;
+  app_step_begin(name); app_stage_sections(1, 4, g_sb1); app_step_end();
+  snd_ok();
+  return true;
+}
+bool app_hold_sb12(const char* name) {
+  if (!app_hold_ok()) return false;
+  app_step_begin(name); app_stage_sections(0, 0, g_sb2); app_stage_sections(1, 4, g_sb1); app_step_end();
+  snd_ok();
+  return true;
+}
+
 /* A PC box edit reached g_pc (move-mode drop, release, reconcile). #234 s0: stage sections 5..13
  * through the funnel AT THE DROP, so g_save already carries it (design fix 2) and the exit / any
  * later commit only has to write. When it cannot stage (no parsed Gen-3 save, or the arena has
@@ -2668,6 +2692,20 @@ static bool app_commit_with_dex(uint8_t* rec, bool is_party, AppCommitFn commit,
   return commit ? commit() : false;
 }
 
+/* The HELD twin (#234 s2) for an edit of a mon in the loaded Gen-3 image (`block` is g_pc or g_sb1): one step
+ * ("Edit mon"), dex registration included, no write. The identity-changing edits and the re-key path never come here
+ * (they keep app_commit_with_dex + their prompt: a barrier). */
+static bool app_hold_with_dex(uint8_t* rec, bool is_party, uint8_t* block) {
+  if (!app_hold_ok() || (block != g_pc && block != g_sb1)) return false;
+  bool dex = app_dex_register_rec(rec, is_party);
+  app_step_begin("Edit mon");
+  if (dex) { app_stage_sections(0, 0, g_sb2); app_stage_sections(1, 4, g_sb1); }
+  if (block == g_pc) app_mark_pc_dirty(); else if (!dex) app_stage_sections(1, 4, g_sb1);
+  app_step_end();
+  snd_ok();
+  return true;
+}
+
 /* BACKLOG #150 S150-6, decision 8: the guard's own plan, handed from
  * app_xfer_pid_guard() to app_xfer_pid_rekey() across the commit in between. */
 typedef struct {
@@ -2874,12 +2912,16 @@ static bool app_box_browse(uint8_t* block, int box, int start, AppCommitFn commi
      * original read-only call. */
     if (bc_is_native(rec)) { if (app_native_cell_edit(rec, commit)) any = true; break; }
     uint8_t out[100]; bool saved = false;
+    pdna_summary_quiet_save(block == g_pc);          /* #234: a plain edit of a PC mon needs no "Save changes?" prompt */
     int nav = pdna_inspect(rec, false, app_can_edit(), out, &saved, &card);
+    pdna_summary_quiet_save(false);
     if (saved) {
       XferRekeyPlan plan;
+      const bool ident = memcmp(rec, out, 8) != 0;   /* PID / OT id changed: prompted + written now (a barrier), as before */
       if (app_xfer_pid_guard(rec, out, &plan)) {
         memcpy(rec, out, 80);
-        if (app_commit_with_dex(rec, false, commit, block)) {
+        if (block == g_pc && !ident ? app_hold_with_dex(rec, false, block)
+                                    : app_commit_with_dex(rec, false, commit, block)) {
           any = true;
           app_xfer_pid_rekey(&plan);
         }
@@ -2913,12 +2955,16 @@ static bool party_browse(int start, AppCommitFn commit) {
   for (;;) {
     uint8_t* rec = g_sb1 + doff + (uint32_t)idx * 100;
     uint8_t out[100]; bool saved = false;
+    pdna_summary_quiet_save(true);                   /* #234: a plain edit of a party mon needs no "Save changes?" prompt */
     int nav = pdna_inspect(rec, true, app_can_edit(), out, &saved, &card);
+    pdna_summary_quiet_save(false);
     if (saved) {
       XferRekeyPlan plan;
+      const bool ident = memcmp(rec, out, 8) != 0;  /* PID / OT id changed: prompted + written now (a barrier), as before */
       if (app_xfer_pid_guard(rec, out, &plan)) {
         memcpy(rec, out, 100);
-        if (app_commit_with_dex(rec, true, commit, g_sb1)) {
+        if ((!ident) ? app_hold_with_dex(rec, true, g_sb1)
+                     : app_commit_with_dex(rec, true, commit, g_sb1)) {
           any = true;
           app_xfer_pid_rekey(&plan);
         }
@@ -7061,11 +7107,7 @@ static bool data_editor_tab(int only) {
     }
   }
 
-  if (dirty) {                                       /* confirm before the silent write */
-    if (!app_confirm("Save data changes?", "Edits write immediately."))
-      return false;
-    return app_commit_block(1, 4, g_sb1);            /* one verified write on exit */
-  }
+  if (dirty) return app_hold_sb1(tab == 1 ? "Bag" : "Flags and counters");   /* #234: staged, no prompt; the exit save confirms once */
   return false;
 }
 
@@ -7077,8 +7119,7 @@ static bool bag_entry(void) {
   bool dirty = false;
   if (!bag_screen_try(&dirty)) return data_editor_tab(1);
   if (!dirty) return false;
-  if (!app_confirm("Save bag changes?", "Edits write immediately.")) return false;
-  return app_commit_block(1, 4, g_sb1);
+  return app_hold_sb1("Bag");                        /* #234: staged, no prompt */
 }
 
 /* START menu from the box/party: pick a destination screen. */
@@ -7086,7 +7127,7 @@ static bool bag_entry(void) {
 
 /* Commit just the dex: SaveBlock2 (sec 0) + SaveBlock1 (sec 1..4). Doesn't touch
  * PC storage or its dirty flag (unlike app_commit_all). */
-static bool app_commit_dex(void) { return app_commit_sb12(); }
+static bool app_commit_dex(void) { return app_hold_sb12("Pokedex"); }   /* #234 s2: HELD (staged, no write) */
 
 static int  dex_state(int nat) {                            /* 0 none, 1 seen, 2 caught */
   if (pk_dex_owned(g_sb2, (uint16_t)nat)) return 2;
@@ -7111,7 +7152,7 @@ static bool pdna_dex_edit(void) {
   key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);   /* grid needs L/R repeat; leave this default set */
   pdna_dex_set_max(386);   /* every Gen-3 entry resets the cap: a prior GB visit must not leak (BACKLOG #87) */
   bool dirty = pdna_dex_screen(dex_state, dex_set_state, dex_get_national, dex_set_national, app_can_edit());
-  if (dirty && app_confirm("Save Pokedex changes?", "Writes the dex now.")) return app_commit_dex();
+  if (dirty) return app_commit_dex();                /* #234: staged, no prompt */
   return false;
 }
 
@@ -7482,7 +7523,7 @@ static void pdna_pokeblock(void) {
     else if (k & KEY_DOWN) sel = (sel + 1) % PK_POKEBLOCK_COUNT;
     else if (k & KEY_A)    { if (pokeblock_edit(sel)) dirty = true; }
   }
-  if (dirty && app_confirm("Save Pokeblocks?", "Writes the case now.")) app_commit_sb1();
+  if (dirty) (void)app_hold_sb1("Pokeblocks");        /* #234: staged, no prompt */
 }
 
 /* ===================== Event tickets ================================== */
@@ -7604,7 +7645,7 @@ static void pdna_events(void) {
       }
     }
   }
-  if (dirty && app_confirm("Save events?", "Writes the save now.")) app_commit_sb1();
+  if (dirty) (void)app_hold_sb1("Events");           /* #234: staged, no prompt */
 }
 
 /* ===================== Daycare viewer (#9) ============================= */
@@ -8261,14 +8302,12 @@ static void pdna_secretbase(void) {
     else if (k & KEY_UP)   { if (sel > 0) sel--; }
     else if (k & KEY_DOWN) { if (sel < n - 1) sel++; }
     else if (k & KEY_A) {                               /* view/scroll/edit the base's party + owner */
-      if (sb_detail(&g_sb_recs[sel], off)) {            /* edits live in g_sb1 (RAM) — commit or revert */
-        if (app_confirm("Save Secret-Base edits?", "Writes this save now.")) {
-          busy_panel("Secret base");
-          if (!app_commit_sb1()) msg_wait("SAVE FAILED", UI_WARN, "Save not modified.", 0);
-        } else {
-          gen3_read_saveblock1(g_save, g_vinfo.slot, g_sb1);   /* discard: restore SB1 from the image */
+      if (sb_detail(&g_sb_recs[sel], off)) {            /* edits live in g_sb1 (RAM) -- #234: staged, no prompt */
+        if (!app_hold_sb1("Secret base")) {
+          msg_wait("NOT STAGED", UI_WARN, "Editing is off here.", 0);
+          gen3_read_saveblock1(g_save, g_vinfo.slot, g_sb1);   /* restore SB1 from the image */
         }
-        n = sb_read_all(g_sb1, off, g_sb_recs);         /* re-parse either way */
+        n = sb_read_all(g_sb1, off, g_sb_recs);         /* re-parse */
         if (n == 0) return;
         if (sel >= n) sel = n - 1;
       }
@@ -8279,7 +8318,7 @@ static void pdna_secretbase(void) {
       char l2[40]; siprintf(l2, "%s%s", b->trainerName[0] ? b->trainerName : "?", b->own ? "  (YOUR base)" : "'s base");
       if (app_confirm("Clear this Secret Base?", l2)) {
         sb_clear(g_sb1, off, b->slot);
-        if (app_commit_sb1()) {
+        if (app_hold_sb1("Clear secret base")) {           /* #234: the warning above stays; the write waits for the exit save */
           snd_ok(); msg_wait("CLEARED", UI_OK, "Secret Base removed.", 0);
           n = sb_read_all(g_sb1, off, g_sb_recs);       /* re-scan after the write */
           if (n == 0) return;
@@ -8375,7 +8414,7 @@ static void clock_manual_entry(GbaRtcTime live) {
       if (app_confirm("Set in-game clock?", l1)) {
         if (gen3_clock_manual(g_sb2, live.year, live.month, live.day, live.hour, live.minute, live.second,
                               y, mo, d, h, mi, 0))
-          app_commit_sb2();           /* verified write; shows SAVED / WRITE FAILED + backs up */
+          (void)app_hold_sb2("Clock fix");   /* #234: staged; the write waits for the exit save */
         else
           msg_wait("OUT OF RANGE", UI_WARN, "Cart year is way off.", "Fix the cart TIME first.");
         return;
@@ -8509,11 +8548,11 @@ static void pdna_mirage(void) {
     uint16_t wh, wl;
     mirage_solve(key[sel], lo, owed > 0 ? owed : 0, &wh, &wl);
     mirage_set(g_sb1, g_game, wh, wl);
-    bool w = app_commit_sb1();
-    log_line("mirage: key %04X owed %d -> wrote %04X/%04X %s",
+    bool w = app_hold_sb1("Mirage Island");        /* #234: staged (the exit save writes it) */
+    log_line("mirage: key %04X owed %d -> staged %04X/%04X %s",
              key[sel], owed, wh, wl, w ? "OK" : "FAILED");
     if (w) msg_wait("DONE", UI_OK, "Go to Route 130, or ask", "the man in Pacifidlog.");
-    else   msg_wait("WRITE FAILED", UI_WARN, "Nothing was changed.", 0);
+    else   msg_wait("NOT STAGED", UI_WARN, "Nothing was changed.", 0);
   }
 }
 
@@ -8613,7 +8652,7 @@ static void pdna_clock(void) {
     else if (k & KEY_A) {
       if (app_confirm("Sync to cart clock?", "Game clock = cart clock.")) {
         if (gen3_clock_autosync(g_sb2, live.year, live.month, live.day, live.hour, live.minute, live.second))
-          app_commit_sb2();
+          (void)app_hold_sb2("Clock sync");   /* #234: staged; the write waits for the exit save */
         else
           msg_wait("CAN'T SYNC", UI_WARN, "Cart year out of range.", "Set the cart TIME first.");
       }

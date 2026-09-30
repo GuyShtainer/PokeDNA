@@ -414,9 +414,17 @@ int jrn_key_resolve(const JrnFs* fs, const char* root, uint64_t key, uint64_t* o
   return JRN_E_LOOP;
 }
 
+/* noinline + noipa (GCC): the cartridge stack walker needs each seam dispatch as its own function with one struct-field
+ * load; clang (the host tests) has no noipa and needs none. */
+#if defined(__GNUC__) && !defined(__clang__)
+#define JRN_NOIPA __attribute__((noinline, noipa))
+#else
+#define JRN_NOIPA __attribute__((noinline))
+#endif
+
 /* The ONE call site of the seam's mkdir: a single struct-field dispatch the cartridge stack walker can name
  * (tools/stack_edges.txt `JrnFs.mkdir @4 in fs_mkdir`); four inlined copies would each be an unresolvable register call. */
-static int __attribute__((noinline, noipa)) fs_mkdir(const JrnFs* fs, const char* p) {
+static int JRN_NOIPA fs_mkdir(const JrnFs* fs, const char* p) {
   int (*const volatile* slot)(void*, const char*) = &fs->mkdir;   /* volatile: one plain ldr (the compiler would fuse ctx + mkdir into an ldm the walker cannot read) */
   return (*slot)(fs->ctx, p);
 }

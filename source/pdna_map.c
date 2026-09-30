@@ -759,7 +759,7 @@ static bool do_drop(void) {
    * so a FAILED flash write would have been invisible too (QA pass 2, defect 2).
    * Mode 3 is where those panels belong; the map is rebuilt afterwards. */
   mgfx_exit();
-  bool ok = g3warp_apply(v->sb1, v->sb2, v->game, &w) && app_commit_sb12();
+  bool ok = g3warp_apply(v->sb1, v->sb2, v->game, &w) && app_hold_sb12("Map warp");   /* #234 s2: staged; the exit save writes it */
   log_line("map: place %u.%u (%d,%d) blocked=%d risky=%d -> %s",
            v->group, v->num, v->cx, v->cy, (int)blocked, (int)risky, ok ? "OK" : "FAILED");
   if (ok) {
@@ -768,9 +768,9 @@ static bool do_drop(void) {
     v->home_x = v->cx; v->home_y = v->cy;
     /* Say it, because the map view still shows `pos`, not the pending warp — otherwise a
      * successful placement reads as if it did nothing. */
-    s_msg("PLACED", UI_OK, "Load your save to appear", "there. Map shows old spot.");
+    s_msg("PLACED", UI_OK, "Kept until you save. Map", "shows the old spot.");
   } else {
-    s_msg("WRITE FAILED", UI_WARN, "Nothing was changed.", 0);
+    s_msg("NOT STAGED", UI_WARN, "Nothing was changed.", 0);
   }
 
   /* Mode 3 has eaten the tilesets and the arena is untouched but the screen is not, so the
@@ -896,7 +896,7 @@ static bool restore_item_ball(const RomObjectEvent* o) {
 
   mgfx_exit();
   pk_flag_set(v->sb1, v->game, o->flag_id, false);
-  bool ok = app_commit_sb1();
+  bool ok = app_hold_sb1("Restore item ball");          /* #234 s2: staged; the exit save writes it */
   log_line("map: restore ball flag %u item %u on %u.%u (%d,%d) -> %s",
            o->flag_id, it, v->group, v->num, o->x, o->y, ok ? "OK" : "FAILED");
   if (ok) s_msg("RESTORED", UI_OK, nm ? nm : "The item", "is back on the ground.");
@@ -904,7 +904,7 @@ static bool restore_item_ball(const RomObjectEvent* o) {
     /* The write failed, so the save on the card is unchanged — but the in-RAM copy is not.
      * Put the bit back or the greyed ball would silently disagree with the card. */
     pk_flag_set(v->sb1, v->game, o->flag_id, true);
-    s_msg("WRITE FAILED", UI_WARN, "Nothing was changed.", 0);
+    s_msg("NOT STAGED", UI_WARN, "Nothing was changed.", 0);
   }
 
   mgfx_enter();

@@ -129,10 +129,15 @@ static int jfs_create_zero(void* ctx, const char* path, uint32_t size, const voi
 /* The two callbacks the engine hands the seam (JrnListFn / JrnScanFn) are called through a file-local one-field struct by a
  * noipa wrapper each: a struct-field dispatch the cartridge stack walker can name (tools/stack_edges.txt `JfsListCb.cb @0`,
  * `JfsScanCb.cb @0`), where a bare callback parameter would be an unresolvable register call. */
+#if defined(__GNUC__) && !defined(__clang__)
+#define JRN_NOIPA __attribute__((noinline, noipa))
+#else
+#define JRN_NOIPA __attribute__((noinline))
+#endif
 typedef struct { JrnListFn cb; } JfsListCb;
 typedef struct { JrnScanFn cb; } JfsScanCb;
-static void __attribute__((noinline, noipa)) jfs_emit_name(const JfsListCb* c, void* arg, const char* name) { c->cb(arg, name); }
-static int __attribute__((noinline, noipa)) jfs_emit_scan(const JfsScanCb* c, void* arg, uint32_t off, const uint8_t* b,
+static void JRN_NOIPA jfs_emit_name(const JfsListCb* c, void* arg, const char* name) { c->cb(arg, name); }
+static int JRN_NOIPA jfs_emit_scan(const JfsScanCb* c, void* arg, uint32_t off, const uint8_t* b,
                                                           uint32_t n, int last, uint32_t* used) {
   return c->cb(arg, off, b, n, last, used);
 }

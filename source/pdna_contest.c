@@ -264,7 +264,7 @@ void pdna_contest(uint8_t* sb1, uint8_t* pc, PkGame game) {
       write_museum(sb1, game, sel, &donor);
       if (memcmp(before, sb1 + off, GC_RECORD_BYTES) != 0) {
         rmbl_fire(RCUE_SAVE);
-        app_commit_sb1();
+        (void)app_hold_sb1("Contest painting");     /* #234 s2: staged (the SET PAINTING confirm above stays) */
       }
     }
   }
