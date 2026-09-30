@@ -17,11 +17,13 @@
  * after-state and never touches a neighbouring file:
  *   - Segments are PRE-ZEROED fixed-size files. Appends overwrite in place and never
  *     grow the FAT chain; the file is never truncated (torn tails are zeroed in place).
- *   - A segment is created IN PLACE under its final name NNNN.pdj: zero-filled, header
- *     written LAST. It is a segment only when it is exactly JRN_SEG_SIZE long and its header
- *     crc holds; a cut mid-fill leaves an invalid file the next safe moment completes. No
- *     rename and no delete on the growth path (an exFAT create that reuses a dead directory
- *     slot can tear the whole directory: see the slice-1 report).
+ *   - THE RING. The segment set is a FIXED RING of slot files (max_segs + 1) created once at the
+ *     FIRST fill (create-or-complete, zero-filled, header-less = free). After that the directory
+ *     NEVER changes: activating a segment zero-fills its slot in place and writes the header LAST
+ *     (the header carries the LOGICAL index and the ring size); compaction retires the oldest by
+ *     ZEROING ITS HEADER in place. A slot is a segment only when its header crc holds, so a torn
+ *     retire / activation reads as the before- or the after-state, never garbage. No create, delete
+ *     or rename after the first fill (an exFAT directory-entry tear hides every live segment).
  *   - An append flush writes its records BACK TO FRONT: a record becomes visible only
  *     when everything before it is valid (seq continuity + CRC), so the whole batch
  *     commits when its FIRST record's last sector lands -- one atomic point.
@@ -134,7 +136,8 @@ typedef struct Jrn {
   uint32_t     tail_off;       /* append offset inside tail_seg                */
   uint32_t     crc[JRN_NREG_MAX];   /* CRC32 of each region as the engine tracks it */
   uint32_t     bcrc[JRN_NREG_MAX];  /* tentative crcs while a step is being built   */
-  uint16_t     seg_first, seg_last, tail_seg;  /* 0 = no segment                   */
+  uint16_t     seg_first, seg_last, tail_seg;  /* LOGICAL segment indices, 0 = none  */
+  uint16_t     ring;           /* slot files in the ring (from the header), 0 = no journal yet */
   uint16_t     reg_size;
   uint16_t     pend_len;       /* bytes of sealed pending records              */
   uint16_t     bld_len;        /* bytes of the record under construction (0 = none) */
@@ -177,11 +180,13 @@ int jrn_key_resolve(const JrnFs* fs, const char* root, uint64_t key, uint64_t* o
  * by post_hash. Never creates a segment (see jrn_prepare). */
 int  jrn_open(Jrn* j, const JrnCfg* cfg, const JrnImage* img);
 /* Safe moment (load / after a verified exit save): make the dir, the tail segment and the
- * NEXT segment exist. jrn_prepare_first makes only the dir and the first segment (a fresh key);
- * jrn_prepare = prepare_first + the spare. Each segment creation is one atomic step. */
+ * NEXT segment exist. jrn_prepare_first makes only the dir, the whole ring of slot files (first
+ * fill) and the first segment (a fresh key); jrn_prepare = prepare_first + the spare (an in-place
+ * activation of the next slot, retiring the oldest first when the ring is full). */
 int  jrn_prepare_first(Jrn* j);
 int  jrn_prepare(Jrn* j);
-/* Safe moment: delete the oldest segments while more than max_segs exist (never the tail). */
+/* Safe moment: RETIRE (zero the header in place, no delete) the oldest segments while more than
+ * min(max_segs, ring-1) are live (never the tail). jrn_prepare also compacts when the ring has no free slot. */
 int  jrn_compact(Jrn* j);
 
 /* ---- recording ----------------------------------------------------------------------------- */

@@ -52,7 +52,7 @@ static void t_format(void) {
   CHECK(post == ref_hash(), "tracked hash == hash of the image");
   CHECK(jrn_flush(&j) == JRN_OK, "flush");
   CHECK(raw_read(K, 1, 0, h, JRN_SEG_HDR) == 0, "read seg hdr");
-  CHECK(memcmp(h, "PDJS", 4) == 0 && h[4] == 1 && h[5] == 0 && h[8] == 1, "segment header magic/ver/index");
+  CHECK(memcmp(h, "PDJS", 4) == 0 && h[4] == 1 && h[5] == 0 && h[6] == 17 && h[7] == 0 && h[8] == 1, "segment header magic/ver/ring(17 = max_segs 16 + 1)/index");
   CHECK(jrn_crc32_update(0, h, 28) == (uint32_t)(h[28] | h[29] << 8 | h[30] << 16 | (uint32_t)h[31] << 24), "segment header crc");
   CHECK(raw_read(K, 1, JRN_SEG_HDR, r, sizeof r) == 0, "read record");
   CHECK(memcmp(r, "PDJR", 4) == 0, "record magic");
@@ -285,17 +285,118 @@ static void t_segments_and_full(void) {
   CHECK(jrn_flush(&j) == JRN_E_FULL && rd_writes == wr, "a refused flush writes NOTHING");
   CHECK(jrn_prepare(&j) == JRN_OK && j.seg_last == 3, "a safe moment creates the next segment");
   CHECK(jrn_flush(&j) == JRN_OK && j.tail_seg == 3, "and the pending record lands in it");
-  /* a cut mid-creation leaves an INCOMPLETE segment file: prepare completes it in place */
-  snprintf(p, sizeof p, ROOT "/%s/0004.pdj", hex);
-  {
-    FIL f; UINT bw; uint8_t z[1000]; memset(z, 0, sizeof z);
-    CHECK(f_open(&f, p, FA_WRITE | FA_CREATE_NEW) == FR_OK && f_write(&f, z, sizeof z, &bw) == FR_OK && f_close(&f) == FR_OK, "plant a 1000-byte partial segment");
+  /* the ring is whole from the first fill: every slot file exists, full size, header-less = free */
+  snprintf(p, sizeof p, ROOT "/%s/0017.pdj", hex);
+  CHECK(jrn_fatfs.size(0, p) == (long)JRN_SEG_SIZE, "the last of the 17 slot files exists at full size: %ld", jrn_fatfs.size(0, p));
+  snprintf(p, sizeof p, ROOT "/%s/0018.pdj", hex);
+  CHECK(jrn_fatfs.size(0, p) < 0, "and there is no 18th");
+  CHECK(jopen(&j, K) == JRN_OK && j.ring == 17 && j.seg_last == 3, "a free slot (zero header) is not a segment (ring %u seg_last %u)", j.ring, j.seg_last);
+}
+
+/* FIRST FILL is create-or-complete: a cut leaves partial slot files and no header; prepare finishes. */
+static void t_first_fill_partial(void) {
+  Jrn j; char p[96], hex[17]; unsigned s; FIL f; UINT bw; uint8_t z[1000]; long sz; int ok = 1;
+  card_fresh(FM_FAT); img_fill(1); rd_fattime_hook = jrn_fattime_filter;
+  jrn_key_hex(K, hex);
+  CHECK(f_mkdir(ROOT) == FR_OK, "mk root");
+  snprintf(p, sizeof p, ROOT "/%s", hex);
+  CHECK(f_mkdir(p) == FR_OK, "mk key dir");
+  memset(z, 0, sizeof z);
+  snprintf(p, sizeof p, ROOT "/%s/0003.pdj", hex);
+  CHECK(f_open(&f, p, FA_WRITE | FA_CREATE_NEW) == FR_OK && f_write(&f, z, sizeof z, &bw) == FR_OK && f_close(&f) == FR_OK, "plant a 1000-byte partial slot");
+  CHECK(jopen(&j, K) == JRN_OK && j.seg_last == 0 && j.anchor == JRN_ANCHOR_EMPTY, "no header: the journal reads as empty");
+  CHECK(jrn_prepare(&j) == JRN_OK && j.seg_first == 1 && j.seg_last == 2 && j.ring == 17, "prepare finishes the first fill (%u..%u ring %u)", j.seg_first, j.seg_last, j.ring);
+  for (s = 1; s <= 17; s++) {
+    snprintf(p, sizeof p, ROOT "/%s/%04u.pdj", hex, s);
+    sz = jrn_fatfs.size(0, p);
+    if (sz != (long)JRN_SEG_SIZE) ok = 0;
   }
-  CHECK(jrn_fatfs.size(0, p) == 1000, "planted");
-  CHECK(jopen(&j, K) == JRN_OK && j.seg_last == 3, "an incomplete file is not a segment (seg_last %u)", j.seg_last);
-  CHECK(jrn_prepare(&j) == JRN_OK && j.seg_last == 4, "prepare finishes it");
-  CHECK(jrn_fatfs.size(0, p) == (long)JRN_SEG_SIZE, "the partial file was completed in place, size %ld", jrn_fatfs.size(0, p));
-  CHECK(jopen(&j, K) == JRN_OK && j.seg_last == 4, "and it now reads as segment 4");
+  CHECK(ok, "all 17 slot files are full size after completing the partial one");
+}
+
+static unsigned s_names; static char s_dirsig[4096]; static unsigned s_dirlen;
+static void dir_sig_cb(void* a, const char* nm) { (void)a; s_names++; s_dirlen += (unsigned)snprintf(s_dirsig + s_dirlen, sizeof s_dirsig - s_dirlen, "%s;", nm); }
+static void dir_sig(const char* hex, char* out, size_t n, unsigned* cnt) {
+  char d[96]; snprintf(d, sizeof d, ROOT "/%s", hex);
+  s_names = 0; s_dirlen = 0; s_dirsig[0] = 0;
+  CHECK(jrn_fatfs.list(0, d, dir_sig_cb, 0) == 0, "list");
+  snprintf(out, n, "%s", s_dirsig); *cnt = s_names;
+}
+static unsigned long seg_stamp(const char* hex, unsigned slot) { char p[96]; snprintf(p, sizeof p, ROOT "/%s/%04u.pdj", hex, slot); return jrn_fatfs.stamp(0, p); }
+
+/* THE RING: wrap the journal round a 3-slot ring several times. The directory never changes. */
+static void t_ring(void) {
+  Jrn j; JrnCfg c = cfg_for(K, 2, 0); char hex[17], d0[4096], d1[4096]; unsigned n0, n1, i, wraps = 0; int rc;
+  uint8_t h[JRN_SEG_HDR], b[600]; uint32_t idx; unsigned long st1, st1b;
+  card_fresh(FM_FAT); img_fill(3); rd_fattime_hook = jrn_fattime_filter;
+  jrn_key_hex(K, hex);
+  CHECK(jrn_open(&j, &c, &IMG) == JRN_OK && jrn_prepare(&j) == JRN_OK, "open + prepare (cap 2 => ring 3)");
+  CHECK(j.ring == 3, "ring = max_segs + 1 = %u", j.ring);
+  dir_sig(hex, d0, sizeof d0, &n0);
+  CHECK(n0 == 3, "exactly 3 slot files, %u", n0);
+  st1 = seg_stamp(hex, 1);
+  for (i = 0; i < 1100; i++) {
+    rd_fattime_now = 0x5A2A6800u + i * 0x40u;
+    rc = stage(&j, "fill", 0, 1, 0, 220, fresh_val(1, 0));
+    if (!rc) rc = jrn_flush(&j);
+    CHECK(rc == JRN_OK, "fill %u -> %d", i, rc);
+    if (rc) return;
+    if (j.tail_seg == j.seg_last) { CHECK(jrn_prepare(&j) == JRN_OK, "prepare %u", i); if (j.seg_last > 3 && j.seg_last % 3 == 1) wraps++; }
+  }
+  CHECK(j.seg_last >= 9, "the journal wrapped the ring at least twice (seg_last %u)", j.seg_last);
+  CHECK(j.seg_last - j.seg_first + 1u <= 3u, "live set within the ring: %u..%u", j.seg_first, j.seg_last);
+  dir_sig(hex, d1, sizeof d1, &n1);
+  CHECK(n1 == n0 && strcmp(d0, d1) == 0, "the directory listing never changed after the first fill (%u -> %u names)", n0, n1);
+  st1b = seg_stamp(hex, 1);
+  CHECK(st1 == st1b, "slot 1's directory timestamp is frozen across %u wraps (%lx vs %lx)", wraps, st1, st1b);
+  /* the header index, not the slot number, orders the ring */
+  CHECK(jopen(&j, K) == JRN_OK && j.ring == 3, "reopen");
+  CHECK(j.seg_last - j.seg_first + 1u <= 3u && j.seg_first > 1, "open maps slots to logical order (%u..%u)", j.seg_first, j.seg_last);
+  {
+    unsigned s, slot_lo = 0, hi_first = 0; uint32_t lo_idx = 0;
+    for (s = 1; s <= 3; s++) {
+      CHECK(raw_read(K, s, 0, h, JRN_SEG_HDR) == 0, "hdr");
+      idx = (uint32_t)(h[8] | h[9] << 8);
+      if (idx && (!lo_idx || idx < lo_idx)) { lo_idx = idx; slot_lo = s; }
+      if (idx == j.seg_first && s != 1 + (j.seg_first - 1) % 3) hi_first = 1;
+    }
+    CHECK(lo_idx == j.seg_first && !hi_first, "seg_first %u == lowest header index %u (slot %u)", j.seg_first, (unsigned)lo_idx, slot_lo);
+    CHECK(slot_lo != 1 || (j.seg_first - 1) % 3 == 0, "order by header index, not slot: the oldest need not sit in slot 1");
+  }
+  CHECK(jrn_compact(&j) == JRN_OK, "compact");
+  /* a recycled slot has an all-zero body past its header, apart from the records its new life wrote */
+  {
+    unsigned s;
+    CHECK(jrn_prepare(&j) == JRN_OK, "prepare (spare)");
+    for (s = j.tail_seg + 1u; s <= j.seg_last; s++) {
+      uint32_t off; int clean = 1;
+      for (off = JRN_SEG_HDR; off < JRN_SEG_SIZE && clean; off += sizeof b) {
+        uint32_t m = JRN_SEG_SIZE - off < sizeof b ? JRN_SEG_SIZE - off : (uint32_t)sizeof b, k;
+        CHECK(raw_read(K, 1 + (s - 1) % 3, off, b, m) == 0, "read spare body");
+        for (k = 0; k < m; k++) if (b[k]) { clean = 0; break; }
+      }
+      CHECK(clean, "the recycled spare (logical %u) has an all-zero body: no stale record of its previous life", s);
+    }
+  }
+}
+
+/* A header that is half zeroed (a torn retire) or half written (a torn activation) is a FREE slot. */
+static void t_half_header(void) {
+  static const unsigned W[] = { 1, 4, 7, 8, 12, 16, 20, 27, 28 };
+  unsigned w, s; Jrn j; char hex[17]; uint8_t h[JRN_SEG_HDR], z[JRN_SEG_HDR]; JrnCfg c = cfg_for(K, 3, 0);
+  memset(z, 0, sizeof z);
+  for (w = 0; w < sizeof W / sizeof W[0]; w++) {
+    for (s = 0; s < 2; s++) {                     /* s0: zero the first W bytes; s1: zero the LAST W bytes' */
+      card_fresh(FM_FAT); img_fill(1); rd_fattime_hook = jrn_fattime_filter; jrn_key_hex(K, hex);
+      CHECK(jrn_open(&j, &c, &IMG) == JRN_OK && jrn_prepare(&j) == JRN_OK, "open + prepare");
+      CHECK(stage(&j, "a", 0, 1, 10, 4, fresh_val(1, 10)) == JRN_OK && jrn_flush(&j) == JRN_OK, "one record");
+      CHECK(raw_read(K, 1, 0, h, JRN_SEG_HDR) == 0, "hdr");
+      if (s == 0) CHECK(raw_write(K, 1, 0, z, W[w]) == 0, "half-zero the header prefix");
+      else        CHECK(raw_write(K, 1, JRN_SEG_HDR - 4, z, 4) == 0, "zero the crc");
+      CHECK(jrn_open(&j, &c, &IMG) == JRN_OK, "reopen");
+      CHECK(j.seg_first == 2 && j.seg_last == 2, "%s %u bytes zeroed: the slot reads as FREE, never live (%u..%u)", s ? "crc" : "prefix", s ? 4u : W[w], j.seg_first, j.seg_last);
+    }
+  }
 }
 
 static void t_compaction_floor(void) {
@@ -314,7 +415,14 @@ static void t_compaction_floor(void) {
   CHECK(jrn_compact(&j) == JRN_OK, "compact");
   CHECK(j.seg_last - j.seg_first + 1 <= 2 && j.seg_first > 1, "cap 2 enforced: %u..%u", j.seg_first, j.seg_last);
   jrn_key_hex(K, hex); snprintf(p, sizeof p, ROOT "/%s/0001.pdj", hex);
-  CHECK(jrn_fatfs.size(0, p) < 0, "the oldest segment is gone");
+  {
+    uint8_t hz[JRN_SEG_HDR]; unsigned k;
+    snprintf(p, sizeof p, ROOT "/%s/%04u.pdj", hex, 1u + (j.seg_first - 2u) % 3u);
+    CHECK(jrn_fatfs.size(0, p) == (long)JRN_SEG_SIZE, "the retired slot FILE stays (the directory never changes)");
+    CHECK(raw_read(K, 1 + (j.seg_first - 2u) % 3u, 0, hz, JRN_SEG_HDR) == 0, "read retired header");
+    for (k = 0; k < JRN_SEG_HDR && !hz[k]; k++) {}
+    CHECK(k == JRN_SEG_HDR, "the oldest segment is RETIRED: its header is zero in place");
+  }
   last = jrn_cursor(&j);
   for (i = 1; i <= last; i++) if (jrn_find(&j, i, &r) == JRN_OK) { min_seq = i; break; }
   CHECK(min_seq > 1, "the oldest surviving record is %u", (unsigned)min_seq);
@@ -430,6 +538,9 @@ int main(void) {
   t_anchor_follows_last_path();
   t_zero_in_place();
   t_segments_and_full();
+  t_first_fill_partial();
+  t_ring();
+  t_half_header();
   t_compaction_floor();
   t_redirects();
   t_verify_stops();

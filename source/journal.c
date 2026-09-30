@@ -12,7 +12,9 @@
 #define ZCHUNK         256u    /* zero-in-place granularity                               */
 #define ZWINDOW        1024u   /* the most a cut can leave past the tail; the most we zero */
 #define RCHUNK         128u    /* streaming chunk for CRC / verify (stack)                */
-#define SEG_MAX        9999u
+#define SEG_MAX        9999u   /* logical segment index cap (the slot files are a fixed ring) */
+#define RING_MAX       256u    /* slot files in the ring (max_segs + 1, max_segs <= 255)    */
+#define ZBODY          512u    /* recycle zero-fill granularity (stack)                   */
 #define SCAN_MAX       0x40000u
 #define RESOLVE_MAX    8u
 #define PDR_LEN        16u
@@ -21,6 +23,7 @@
 _Static_assert(JRN_PEND_MAXN * JRN_REC_MIN <= JRN_PEND_CAP, "pending record count bound");
 _Static_assert(JRN_REC_MAX <= JRN_PEND_CAP, "a record must fit the pending buffer");
 _Static_assert(JRN_SEG_SIZE % ZCHUNK == 0, "zeroing chunks tile a segment");
+_Static_assert(JRN_SEG_SIZE % ZBODY == 0 && ZBODY >= JRN_SEG_HDR, "recycle chunks tile a segment");
 
 /* ---- the frozen-timestamp hook -------------------------------------------------------------- */
 static uint32_t s_hold_stamp;   /* the held FAT stamp (only meaningful while s_hold_on)   */
@@ -102,20 +105,30 @@ static int p_key(const char* root, uint64_t key, const char* tail, char* out) {
   return pput(out, &n, tail);
 }
 
-static int p_seg(const char* root, uint64_t key, uint16_t idx, const char* ext, char* out) {
+/* A slot file is NNNN.pdj, NNNN = the ring slot (1..ring). The LOGICAL segment index lives in
+ * the slot's header; logical L sits in slot ((L-1) mod ring)+1 (deterministic, so a wrapped
+ * ring reuses exactly the slot compaction just retired). */
+static int p_slot(const char* root, uint64_t key, uint16_t slot, char* out) {
   uint32_t n;
   char d[6];
-  if (!idx || idx > SEG_MAX || p_key(root, key, "/", out)) return -1;
+  if (!slot || slot > RING_MAX || p_key(root, key, "/", out)) return -1;
   n = 0; while (out[n]) n++;
-  d[0] = (char)('0' + (idx / 1000u) % 10u); d[1] = (char)('0' + (idx / 100u) % 10u);
-  d[2] = (char)('0' + (idx / 10u) % 10u);   d[3] = (char)('0' + idx % 10u); d[4] = 0;
-  return pput(out, &n, d) || pput(out, &n, ext);
+  d[0] = (char)('0' + (slot / 1000u) % 10u); d[1] = (char)('0' + (slot / 100u) % 10u);
+  d[2] = (char)('0' + (slot / 10u) % 10u);   d[3] = (char)('0' + slot % 10u); d[4] = 0;
+  return pput(out, &n, d) || pput(out, &n, ".pdj");
+}
+
+static uint16_t slot_of(uint32_t idx, uint16_t ring) { return (uint16_t)((idx - 1u) % ring + 1u); }
+
+static int seg_path(const Jrn* j, uint16_t idx, char* out) {
+  if (!idx || idx > SEG_MAX || j->ring < 2u) return -1;
+  return p_slot(j->root, j->key, slot_of(idx, j->ring), out);
 }
 
 /* ---- segment I/O ------------------------------------------------------------------------------- */
 static int seg_read(const Jrn* j, uint16_t idx, uint32_t off, void* buf, uint32_t n) {
   char p[JRN_PATH_MAX];
-  if (p_seg(j->root, j->key, idx, ".pdj", p) || off + n > JRN_SEG_SIZE) return JRN_E_ARG;
+  if (seg_path(j, idx, p) || off + n > JRN_SEG_SIZE) return JRN_E_ARG;
   return j->fs->read(j->fs->ctx, p, off, buf, n) == 0 ? 0 : JRN_E_IO;
 }
 
@@ -124,7 +137,7 @@ static int seg_read(const Jrn* j, uint16_t idx, uint32_t off, void* buf, uint32_
 static int seg_write(const Jrn* j, uint16_t idx, uint32_t off, const void* buf, uint32_t n) {
   char p[JRN_PATH_MAX];
   int rc;
-  if (p_seg(j->root, j->key, idx, ".pdj", p) || off + n > JRN_SEG_SIZE) return JRN_E_ARG;
+  if (seg_path(j, idx, p) || off + n > JRN_SEG_SIZE) return JRN_E_ARG;
   s_hold_stamp = j->fs->stamp(j->fs->ctx, p);
   s_hold_on = 1;
   rc = j->fs->write(j->fs->ctx, p, off, buf, n);
@@ -146,25 +159,44 @@ static int seg_verify(const Jrn* j, uint16_t idx, uint32_t off, const uint8_t* b
   return 0;
 }
 
-static void seg_hdr_build(uint16_t idx, uint8_t* h) {
+/* Header: 'PDJS', ver u16, ring u16, logical index u32, zeros, crc32 of the first 28 bytes.
+ * All-zero = a FREE slot (never written, or retired in place). */
+static void seg_hdr_build(uint16_t idx, uint16_t ring, uint8_t* h) {
   memset(h, 0, JRN_SEG_HDR);
   h[0] = 'P'; h[1] = 'D'; h[2] = 'J'; h[3] = 'S';
   jrn_wr16(h + 4, SEG_VER);
+  jrn_wr16(h + 6, ring);
   jrn_wr32(h + 8, idx);
   jrn_wr32(h + 28, jrn_crc32_update(0, h, 28));
 }
 
-static int seg_valid(const Jrn* j, uint16_t idx) {
-  char p[JRN_PATH_MAX];
-  uint8_t h[JRN_SEG_HDR], want[JRN_SEG_HDR];
-  if (p_seg(j->root, j->key, idx, ".pdj", p)) return 0;
-  if (j->fs->size(j->fs->ctx, p) != (long)JRN_SEG_SIZE) return 0;
-  if (seg_read(j, idx, 0, h, JRN_SEG_HDR)) return 0;
-  seg_hdr_build(idx, want);
-  return memcmp(h, want, JRN_SEG_HDR) == 0;
+/* A header is LIVE only when magic, version and crc all hold: a half-zeroed (torn retire) or
+ * half-written (torn activation) header fails the crc and reads as a free slot. */
+static int hdr_parse(const uint8_t* h, uint32_t* idx, uint16_t* ring) {
+  if (h[0] != 'P' || h[1] != 'D' || h[2] != 'J' || h[3] != 'S' || jrn_rd16(h + 4) != SEG_VER) return 0;
+  if (jrn_crc32_update(0, h, 28) != jrn_rd32(h + 28)) return 0;
+  *idx = jrn_rd32(h + 8); *ring = jrn_rd16(h + 6);
+  return *idx >= 1u && *idx <= SEG_MAX && *ring >= 2u && *ring <= RING_MAX;
 }
 
-/* ---- records: parse / validate -------------------------------------------------------------- */
+/* The slot file `slot`: full size and a live header? Fills idx + ring. */
+static int slot_hdr(const Jrn* j, uint16_t slot, uint32_t* idx, uint16_t* ring) {
+  char p[JRN_PATH_MAX];
+  uint8_t h[JRN_SEG_HDR];
+  if (p_slot(j->root, j->key, slot, p)) return 0;
+  if (j->fs->size(j->fs->ctx, p) != (long)JRN_SEG_SIZE) return 0;
+  if (j->fs->read(j->fs->ctx, p, 0, h, JRN_SEG_HDR) != 0) return 0;
+  return hdr_parse(h, idx, ring);
+}
+
+static int seg_valid(const Jrn* j, uint16_t idx) {
+  uint32_t i;
+  uint16_t r;
+  if (!idx || idx > SEG_MAX || j->ring < 2u) return 0;
+  return slot_hdr(j, slot_of(idx, j->ring), &i, &r) && i == idx && r == j->ring;
+}
+
+
 int jrn_i_hdr_parse(const uint8_t* b, JrnRec* r) {
   uint16_t len;
   uint8_t flags;
@@ -379,7 +411,7 @@ int jrn_recompute(Jrn* j, const JrnImage* img) {
 }
 
 /* ---- open: directory scan, prefix validation, repair, anchor ------------------------------------- */
-typedef struct DirScan { uint16_t lo; } DirScan;
+typedef struct DirScan { uint16_t hi; } DirScan;   /* highest slot file name present */
 
 static int name_idx(const char* s, const char* ext, uint16_t* idx) {
   uint32_t v = 0;
@@ -399,7 +431,7 @@ static int name_idx(const char* s, const char* ext, uint16_t* idx) {
 static void dir_cb(void* arg, const char* name) {
   DirScan* d = (DirScan*)arg;
   uint16_t idx;
-  if (name_idx(name, "pdj", &idx) && (!d->lo || idx < d->lo)) d->lo = idx;
+  if (name_idx(name, "pdj", &idx) && idx > d->hi) d->hi = idx;
 }
 
 typedef struct Scan { uint32_t expect, c_last, tip_aux, latest; uint8_t have, rootpre; } Scan;
@@ -516,11 +548,30 @@ static int open_validate(const JrnCfg* c, const JrnImage* img) {
   return 0;
 }
 
+/* The ring, read from the slot headers. The ring size comes from the first live header found;
+ * the OLDEST live segment is the slot whose header carries the lowest logical index (NEVER the
+ * lowest slot number: after a wrap the two differ). A zeroed / half-zeroed header is a free slot.
+ * Then the live set extends contiguously (idx+1, idx+2 ...) through the header index. */
+static int ring_scan(Jrn* j, uint16_t hi) {
+  uint16_t s, lim = hi < RING_MAX ? hi : (uint16_t)RING_MAX, ring = 0;
+  uint32_t idx, lo = 0;
+  uint16_t r, nxt;
+  for (s = 1; s <= lim && !ring; s++)
+    if (slot_hdr(j, s, &idx, &r) && slot_of(idx, r) == s) ring = r;
+  if (!ring) return 0;
+  j->ring = ring;
+  for (s = 1; s <= ring && s <= lim; s++)
+    if (slot_hdr(j, s, &idx, &r) && r == ring && slot_of(idx, ring) == s && (!lo || idx < lo)) lo = idx;
+  if (!lo) { j->ring = 0; return 0; }
+  j->seg_first = j->seg_last = (uint16_t)lo;
+  for (nxt = (uint16_t)(lo + 1u); nxt <= SEG_MAX && seg_valid(j, nxt); nxt++) j->seg_last = nxt;
+  return 1;
+}
+
 int jrn_open(Jrn* j, const JrnCfg* cfg, const JrnImage* img) {
   DirScan d;
   Scan sc;
   char dir[JRN_PATH_MAX];
-  uint16_t idx;
   int rc = open_validate(cfg, img);
   if (rc || !j) return rc ? rc : JRN_E_ARG;
   memset(j, 0, sizeof *j);
@@ -535,10 +586,7 @@ int jrn_open(Jrn* j, const JrnCfg* cfg, const JrnImage* img) {
   rc = jrn_recompute(j, img);
   if (rc) return rc;
   if (p_key(j->root, j->key, "", dir)) return JRN_E_ARG;
-  if (j->fs->list(j->fs->ctx, dir, dir_cb, &d) != 0 || !d.lo) { j->anchor = JRN_ANCHOR_EMPTY; return JRN_OK; }
-  if (!seg_valid(j, d.lo)) { j->anchor = JRN_ANCHOR_EMPTY; return JRN_OK; }
-  j->seg_first = j->seg_last = d.lo;
-  for (idx = (uint16_t)(d.lo + 1u); idx <= SEG_MAX && seg_valid(j, idx); idx++) j->seg_last = idx;
+  if (j->fs->list(j->fs->ctx, dir, dir_cb, &d) != 0 || !d.hi || !ring_scan(j, d.hi)) { j->anchor = JRN_ANCHOR_EMPTY; return JRN_OK; }
   rc = scan_prefix(j, jrn_hash(j), &sc);
   if (rc) return rc;
   rc = repair_tail(j);
@@ -547,24 +595,78 @@ int jrn_open(Jrn* j, const JrnCfg* cfg, const JrnImage* img) {
   return JRN_OK;
 }
 
-/* ---- safe moments: prepare + compact ---------------------------------------------------------------- */
-/* Created IN PLACE under its final name: zero-filled, the header written LAST. A file is a
- * valid segment only when it is exactly JRN_SEG_SIZE long AND its header crc holds, so a cut
- * mid-fill leaves an INVALID file the readers ignore (the before-state) and this call completes
- * or replaces on the next safe moment. No rename on this path: every rename or delete leaves a
- * dead directory entry that the next create reuses, and on exFAT a torn sector in a reused
- * slot hides every entry set behind it (tests/host_journal_cut_test.c, "reuse" scenarios). */
-static int seg_create(const Jrn* j, uint16_t idx) {
-  char fin[JRN_PATH_MAX];
-  uint8_t h[JRN_SEG_HDR];
+/* ---- safe moments: prepare + compact --------------------------------------------------------------- */
+/* THE RING (slice-1 ruling, D3). The exFAT sweep proved a torn directory entry set hides every
+ * live segment behind it, so after the FIRST FILL the directory never changes: the segment set is
+ * a fixed ring of `ring` slot files created once, and everything after is an IN-PLACE write.
+ *   activate  = zero the slot's dirty bytes (header first), then write the header LAST: a slot is a
+ *               segment only when its header crc holds, so a cut leaves it free (before) or live.
+ *   retire    = zero the header in place (compaction): a cut leaves it live (before) or free.
+ * No create, delete or rename runs here. */
+
+/* FIRST FILL only: create every slot file, zero-filled (create-or-complete: a cut leftover is
+ * finished, never recreated). No header yet, so the journal still reads as empty. */
+static int ring_ensure(const Jrn* j) {
+  char p[JRN_PATH_MAX];
   const JrnFs* f = j->fs;
+  uint16_t s;
   long sz;
-  if (p_seg(j->root, j->key, idx, ".pdj", fin)) return JRN_E_ARG;
-  sz = f->size(f->ctx, fin);
-  if (sz >= (long)JRN_SEG_SIZE && f->unlink(f->ctx, fin) != 0) return JRN_E_IO;   /* junk: start over */
-  seg_hdr_build(idx, h);
-  if (f->create_zero(f->ctx, fin, JRN_SEG_SIZE, h, JRN_SEG_HDR) != 0) return JRN_E_IO;
+  for (s = 1; s <= j->ring; s++) {
+    if (p_slot(j->root, j->key, s, p)) return JRN_E_ARG;
+    sz = f->size(f->ctx, p);
+    if (sz == (long)JRN_SEG_SIZE) continue;
+    if (sz > (long)JRN_SEG_SIZE) return JRN_E_IO;
+    if (f->create_zero(f->ctx, p, JRN_SEG_SIZE, 0, 0) != 0) return JRN_E_IO;
+  }
+  return 0;
+}
+
+/* Zero every non-zero ZBODY chunk of the slot IN PLACE (header included: a torn remnant of a
+ * retire must not survive into the new life). */
+static int slot_zero(const Jrn* j, uint16_t idx) {
+  uint8_t buf[ZBODY];
+  uint32_t off, i;
+  int rc, dirty;
+  for (off = 0; off < JRN_SEG_SIZE; off += ZBODY) {
+    rc = seg_read(j, idx, off, buf, ZBODY);
+    if (rc) return rc;
+    for (dirty = 0, i = 0; i < ZBODY; i++) if (buf[i]) { dirty = 1; break; }
+    if (!dirty) continue;
+    memset(buf, 0, sizeof buf);
+    rc = seg_write(j, idx, off, buf, ZBODY);
+    if (rc) return rc;
+  }
+  return 0;
+}
+
+/* Logical segment `idx` becomes live in its slot: recycle (zero-fill) then header LAST. */
+static int seg_activate(const Jrn* j, uint16_t idx) {
+  char p[JRN_PATH_MAX];
+  uint8_t h[JRN_SEG_HDR];
+  uint32_t oi;
+  uint16_t orng;
+  int rc;
+  if (seg_path(j, idx, p)) return JRN_E_ARG;
+  if (j->fs->size(j->fs->ctx, p) != (long)JRN_SEG_SIZE) return JRN_E_IO;   /* the ring is not whole */
+  if (slot_hdr(j, slot_of(idx, j->ring), &oi, &orng)) return JRN_E_STATE;   /* a live segment owns it */
+  rc = slot_zero(j, idx);
+  if (rc) return rc;
+  seg_hdr_build(idx, j->ring, h);
+  rc = seg_write(j, idx, 0, h, JRN_SEG_HDR);
+  if (rc) return rc;
   return seg_valid(j, idx) ? 0 : JRN_E_IO;
+}
+
+/* Compaction step: the OLDEST segment leaves by zeroing its header, in place. */
+static int seg_retire(const Jrn* j, uint16_t idx) {
+  uint8_t z[JRN_SEG_HDR], b[JRN_SEG_HDR];
+  int rc;
+  memset(z, 0, sizeof z);
+  rc = seg_write(j, idx, 0, z, JRN_SEG_HDR);
+  if (rc) return rc;
+  rc = seg_read(j, idx, 0, b, JRN_SEG_HDR);
+  if (rc) return rc;
+  return memcmp(b, z, sizeof z) == 0 ? 0 : JRN_E_VERIFY;
 }
 
 int jrn_prepare_first(Jrn* j) {
@@ -577,10 +679,33 @@ int jrn_prepare_first(Jrn* j) {
   if (p_key(j->root, j->key, "", dir)) return JRN_E_ARG;
   if (j->fs->mkdir(j->fs->ctx, dir) != 0) return JRN_E_IO;
   if (j->seg_last) return JRN_OK;
-  rc = seg_create(j, 1);                       /* a fresh key: the first segment */
+  j->ring = (uint16_t)(j->max_segs + 1u);      /* a fresh key: the ring is sized once, here */
+  rc = ring_ensure(j);
+  if (rc) return rc;
+  rc = seg_activate(j, 1);
   if (rc) return rc;
   j->seg_first = j->seg_last = j->tail_seg = 1;
   j->tail_off = JRN_SEG_HDR;
+  return JRN_OK;
+}
+
+/* The retention cap in segments: max_segs, and never more than the ring can hold beside a spare. */
+static uint16_t seg_cap(const Jrn* j) {
+  uint16_t room = j->ring ? (uint16_t)(j->ring - 1u) : (uint16_t)j->max_segs;
+  return j->max_segs < room ? (uint16_t)j->max_segs : room;
+}
+
+int jrn_compact(Jrn* j) {
+  uint32_t g;
+  int rc;
+  if (!j) return JRN_E_ARG;
+  if (j->readonly) return JRN_E_RDONLY;
+  for (g = 0; g < RING_MAX && j->seg_first && j->seg_first < j->tail_seg &&
+              (uint32_t)(j->seg_last - j->seg_first + 1u) > seg_cap(j); g++) {
+    rc = seg_retire(j, j->seg_first);
+    if (rc) return rc;
+    j->seg_first++;
+  }
   return JRN_OK;
 }
 
@@ -588,23 +713,14 @@ int jrn_prepare(Jrn* j) {
   int rc = jrn_prepare_first(j);
   if (rc) return rc;
   if (j->seg_last != j->tail_seg || j->seg_last >= SEG_MAX) return JRN_OK;   /* a spare already exists */
-  rc = seg_create(j, (uint16_t)(j->seg_last + 1u));   /* the NEXT segment, never mid-session */
+  if ((uint32_t)(j->seg_last - j->seg_first + 1u) >= j->ring) {           /* no free slot: retire the oldest */
+    rc = jrn_compact(j);
+    if (rc) return rc;
+    if ((uint32_t)(j->seg_last - j->seg_first + 1u) >= j->ring) return JRN_E_FULL;
+  }
+  rc = seg_activate(j, (uint16_t)(j->seg_last + 1u));   /* the NEXT segment, never mid-session */
   if (rc) return rc;
   j->seg_last++;
-  return JRN_OK;
-}
-
-int jrn_compact(Jrn* j) {
-  char p[JRN_PATH_MAX];
-  uint32_t g;
-  if (!j) return JRN_E_ARG;
-  if (j->readonly) return JRN_E_RDONLY;
-  for (g = 0; g < SEG_MAX && j->seg_first && j->seg_first < j->tail_seg &&
-              (uint32_t)(j->seg_last - j->seg_first + 1u) > j->max_segs; g++) {
-    if (p_seg(j->root, j->key, j->seg_first, ".pdj", p)) return JRN_E_ARG;
-    if (j->fs->unlink(j->fs->ctx, p) != 0) return JRN_E_IO;
-    j->seg_first++;
-  }
   return JRN_OK;
 }
 
