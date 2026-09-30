@@ -4964,6 +4964,20 @@ static void __attribute__((noinline)) gb_flush_on_exit(void) {
   }
 }
 
+/* The History screen over a resident GB session. Its rows borrow the GB arena tail (the session already holds the arena; the
+ * file browser's g_entries the Gen-3 screen borrows is not this session's to take). A read-only mount / a journal that is
+ * off gets the same plain "History is off for this save" page the Gen-3 screen shows (the screen itself says so). */
+#define GB_HIST_ROWS 48
+void pdna_gen12_history(void) {
+  JaHist* rows = g_ed ? (JaHist*)(void*)gb12_arena_tail(sizeof(JaHist) * GB_HIST_ROWS) : 0;
+  if (!rows) {
+    msg_wait("HISTORY", UI_WARN, g_ed ? "Not enough memory right now." : "History is off for this save.", g_ed ? 0 : "(read-only mount.)");
+    return;
+  }
+  pdna_history_screen_rows(rows, GB_HIST_ROWS);
+  gb12_arena_tail_release();
+}
+
 /* The session opened: bind the recorder to the resident image, open its journal (+ the load-time offer, + the ring's first
  * fill). Never fatal: any failure leaves the journal off and the UI silent about it. */
 static void __attribute__((noinline)) gb_journal_session_open(void) {
@@ -6161,6 +6175,8 @@ static void gb_nav_from_start(Gb12Mount* m, GbSession* ro) {
      * same fallback. */
     if (gs) pdna_gbmap_gen2(gs);
     else    (void)gb_info_page(m);
+  } else if (nv == NV_HISTORY) {
+    pdna_gen12_history();       /* #234 s4: the journal's tree over this Game Boy save (a plain notice on a read-only mount) */
   } else if (nv != NV_BACK) {
     app_nav_refuse(nv, kind);   /* COMING SOON or NOT IN GEN 1/2, per nav_avail.h */
   }
@@ -6249,8 +6265,10 @@ static void gb_session_core(Gb12Mount* m, GbSession* ro) {
    * matches, same generic mechanism the PC/Bank share (parity, not a GB special
    * case; see app_box_resume_note()'s own header comment in pdna_app.h). */
   for (int r; (r = pdna_box(&s)) != 0; ) {
+    if (g_ed) app_gb_rest();                       /* #234 s4: the grid was left = a rest point: the pending records reach the journal (rumble paused, verified) */
     if (r == 2) gb_nav_from_start(m, ro);
     else if (r == 4) gb_bank_visit(m, true);       /* BACKLOG #120 S2: bank_edge's UP hop */
+    else if (r == 6) pdna_gen12_history();         /* #234 s4: the chord found the history diverged -> the History screen (the grid released its borrow) */
     else app_box_start_set(1);
     s = pdna_gen12_source(m);
   }

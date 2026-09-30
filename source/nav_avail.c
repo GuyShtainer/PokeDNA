@@ -122,9 +122,9 @@ static const NavCell GB_TABLE[NV_COUNT][2] = {
    * "open it from the other side" honesty as NV_GB above, not NAV_OK. */
   [NV_XFER]      = { { NAV_COMING_SOON, "Open it from a Gen-3 save." },
                      { NAV_COMING_SOON, "Open it from a Gen-3 save." } },
-  /* #234 slice 3 is Gen-3 only (design D8); slice 4 brings the same core to a Game Boy save. */
-  [NV_HISTORY]   = { { NAV_COMING_SOON, "Game Boy history comes later." },
-                     { NAV_COMING_SOON, "Game Boy history comes later." } },
+  /* #234 slice 4: the same journal core runs over a Game Boy save (pdna_gen12_history). */
+  [NV_HISTORY]   = { { NAV_OK, "OK" },
+                     { NAV_OK, "OK" } },
   [NV_SETTINGS]  = { { NAV_OK, "OK" }, { NAV_OK, "OK" } },
   [NV_BACK]      = { { NAV_OK, "OK" }, { NAV_OK, "OK" } },
 };

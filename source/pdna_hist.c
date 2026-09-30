@@ -5,8 +5,8 @@
  * reachable (the T2 re-apply surface), B = back.
  *
  * Built ONLY on jrn_app.h (rows) and pdna_app.h (the jump, which re-derives the decoded copies), so it carries no
- * Gen-3 layout: slice 4 hosts the same screen for a Game Boy session by giving the journal a GB image. The rows live
- * in the shared EWRAM borrow (app_box_swap_acquire): no static of its own. */
+ * Gen-3 layout: slice 4 hosts the same screen for a Game Boy session (pdna_history_screen_rows over the GB arena tail).
+ * The Gen-3 rows live in the shared EWRAM borrow (app_box_swap_acquire): no static of its own. */
 #include <tonc.h>
 #include <stdio.h>
 #include <string.h>
@@ -80,15 +80,16 @@ static void h_say(int rc, int moved, const char* stop) {
   }
 }
 
-void pdna_history_screen(void) {
-  JaHist* rows = (JaHist*)app_box_swap_acquire(sizeof(JaHist) * HH_MAX);
+/* The screen over caller-owned `rows` (`max` rows: the newest `max` steps of the branch). Never touches the row buffer's
+ * owner: the Gen-3 wrapper below borrows it from the file browser's entries, the Game Boy session from its arena tail. */
+void pdna_history_screen_rows(JaHist* rows, int max) {
   int sel = 0, top = 0, n = 0, more = 0, floor_hit = 0;
   bool refetch = true, has_root;
-  if (!rows) { msg_wait("HISTORY", UI_WARN, "Not enough memory right now.", 0); return; }
+  if (!rows || max < 1) return;
   for (;;) {
     int total;
     if (refetch) {
-      n = jrnapp_history(rows, HH_MAX, &more, &floor_hit);
+      n = jrnapp_history(rows, max, &more, &floor_hit);
       refetch = false;
       if (sel >= n + 1) sel = n;
     }
@@ -100,7 +101,7 @@ void pdna_history_screen(void) {
       ui_ptext(8, 54, UI_DIM, app_undo_live() ? "Edits you make are recorded here." : "(read-only card, or no journal.)");
       ui_text(4, 152, UI_DIM, "B back");
       (void)h_wait(KEY_B);
-      break;
+      return;
     }
     has_root = !more && !floor_hit;                          /* the window reaches the first step: "before it" is a valid target */
     total = n + (has_root ? 1 : 0);
@@ -110,7 +111,7 @@ void pdna_history_screen(void) {
     h_paint_all(rows, n, total, sel, top, has_root, more || floor_hit);
     for (;;) {
       u16 k = h_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B | KEY_START);
-      if (k & KEY_B) { app_box_swap_release(); return; }
+      if (k & KEY_B) return;
       if (k & KEY_UP)   { if (sel > 0) sel--; else sel = total - 1; }
       else if (k & KEY_DOWN) { sel = (sel + 1) % total; }
       else if (k & (KEY_A | KEY_START)) {
@@ -127,5 +128,11 @@ void pdna_history_screen(void) {
       h_paint_all(rows, n, total, sel, top, has_root, more || floor_hit);
     }
   }
+}
+
+void pdna_history_screen(void) {
+  JaHist* rows = (JaHist*)app_box_swap_acquire(sizeof(JaHist) * HH_MAX);
+  if (!rows) { msg_wait("HISTORY", UI_WARN, "Not enough memory right now.", 0); return; }
+  pdna_history_screen_rows(rows, HH_MAX);
   app_box_swap_release();
 }

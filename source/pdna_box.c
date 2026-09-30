@@ -2210,8 +2210,11 @@ static bool __attribute__((noinline)) dup_restamp_native(uint8_t held[80]) {
 
 /* #234 s3: the PC grid may say SEL+L/R only while the chord is LIVE here (a Gen-3 PC, an editable card, the journal
  * recording) -- never on the Bank or a Game Boy grid, never with the journal off. */
+static bool box_undo_scope(const BoxSource* src) {   /* #234 s4: also the RESIDENT Game Boy grid (its own journal), never the read-only GB mount, never the Bank */
+  return src && ((src->scope == BOXSCOPE_PC && !src->is_bank) || (src->scope == BOXSCOPE_GB && pdna_gen12_resident()));
+}
 static bool footer_undo(const BoxSource* src) {
-  return src && src->scope == BOXSCOPE_PC && !src->is_bank && app_undo_live();
+  return box_undo_scope(src) && app_undo_live();
 }
 
 static void draw_footer(bool is_bank, bool undo, bool on_title, bool moving) {
@@ -4563,7 +4566,8 @@ static void __attribute__((noinline)) pcp_open_party_strip(BoxSource* src, int b
 /* #234 s3: SELECT+L (undo) / SELECT+R (redo) on the PC grid -- design D5/D6/D7. Only ever called when the chord is
  * LIVE (a Gen-3 PC, an editable card) and no editor holds a staging copy (this loop IS the no-editor state). Every
  * refusal says why in one honest line; a success toasts the step name in the footer strip (no dialog, no new
- * rendering machinery). Returns true when the image changed (the caller re-fetches the records). */
+ * rendering machinery). Returns true when the image changed (the caller re-fetches the records).
+ * #234 s4: the same chord runs on a RESIDENT Game Boy grid -- app_undo_redo routes to that session's own journal. */
 static void chord_refuse(const char* title, const char* l1, const char* l2) {
   boxoam_suspend();
   msg_wait(title, UI_WARN, l1, l2);
@@ -4647,7 +4651,7 @@ int pdna_box(BoxSource* src) {
   Chord chord; chord_reset(&chord);           /* #234 s3: SELECT on release; SEL+L/R = undo/redo (chord.h) */
   char toast[26]; toast[0] = 0;               /* #234 s3: the footer toast text, drawn after a repaint */
   int toast_t = 0;                            /* frames the toast still has to live (0 = none) */
-  const bool chord_live = src->scope == BOXSCOPE_PC && !src->is_bank && app_can_edit();
+  const bool chord_live = box_undo_scope(src) && app_can_edit();
   boxoam_enter();                             /* enable OBJ; upload hand/grab + palettes */
   s_oam_reload = true;                        /* first paint uploads the box's icon tiles */
   uint8_t* recs = src->records(box);          /* current box's 30*80 records */

@@ -180,9 +180,9 @@ def main() -> int:
 
     codes = pdna_box_return_codes()
     # #234 s3 audit of code 6 ("the history diverged: open the History screen"): it is returned ONLY by the chord's
-    # BCA_HISTORY arm, and the chord (chord_live) is live only for src->scope == BOXSCOPE_PC && !is_bank -- a Game Boy
-    # source (scope BOXSCOPE_GB, this loop's only source) can never produce it (tests/host_y19_s3_sites_test.py P7/P9 pin
-    # both halves). Were it ever to arrive here, the loop's catch-all arm would just re-enter the SAME GB session.
+    # BCA_HISTORY arm. Slice 3 kept the chord off a Game Boy grid; #234 slice 4 turns it on for a RESIDENT Game Boy
+    # source (box_undo_scope: scope BOXSCOPE_GB && pdna_gen12_resident()), so this loop now handles code 6 itself
+    # (`else if (r == 6) pdna_gen12_history();`, pinned by tests/host_y19_s4_sites_test.py) rather than leaving it to the catch-all.
     check(codes == {0, 2, 4, 5, 6}, f"pdna_box()'s own boxoam_exit();return sites now use {sorted(codes)}, "
                                     f"not {{0,2,4,5,6}} -- gb_session_core's loop (if/else-if on 2/4, else "
                                     f"catch-all) needs re-auditing for a new code")
