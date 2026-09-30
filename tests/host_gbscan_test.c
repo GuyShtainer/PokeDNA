@@ -600,6 +600,13 @@ static void part_b_f5_wrongrom(void) {
   chk("B F5", "#291: same title+version but a corrupted table is NOT served from the TABLE (verify rejects it)",
       !(ok && gs.src == ROM_GBSPRITE_SRC_TABLE));
   fclose(r.f);
+  /* the Gen-2 verify leg (review z2 A1: it worked but was untested) */
+  if (!rd_open(&r, "Gold.gbc")) { printf("  Gold.gbc: SKIP (dump not present)\n"); return; }
+  r.corrupt_off = 0x0AD3Du + 9u; r.corrupt_xor = 0x80u;    /* Gold's pal table, a byte g2 verify reads */
+  ok = rom_gbsprite_open(&gs, rd_read, &r, r.size, b_scratch, 8192, GB_ROM_NONE);
+  chk("B F5", "#291: Gen-2 wrong-ROM (corrupted pal table) is NOT served from the TABLE",
+      !(ok && gs.src == ROM_GBSPRITE_SRC_TABLE));
+  fclose(r.f);
 }
 
 static void part_b_f5(void) {

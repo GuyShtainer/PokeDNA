@@ -624,7 +624,7 @@ static int try_loc(RomGbSprite* gs, const RomGbSpriteLoc* loc, uint8_t gen_hint)
   return 0;
 }
 
-/* BACKLOG #185 F5: a static const table of (title, version, global_checksum)
+/* BACKLOG #185 F5 (re-keyed by #291 to title+version only; try_loc verifies): a static const table
  * -> the located offsets, populated ONLY from what THIS scanner finds on the
  * four ROMs Guy actually owns (tests/host_gbscan_test.c's part_b_f5_one(),
  * BACKLOG #185 D2, re-derives every entry from the live scanner on every run

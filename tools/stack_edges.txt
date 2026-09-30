@@ -1455,7 +1455,7 @@ BoxSource.can_edit @44 in pdna_origin_art_portrait,pdna_origin_box_art -> gb_art
 # covering it). Keep the row and mark its target impl-pending (absence in EVERY variant is legal; the walker prints
 # LANDED the moment any image links a paste hook again, so the row is promoted instead of left behind).
 AppSrcOps.paste @16 in app_mon_menu_readonly -> gb_paste_hook
-impl-pending gb_paste_hook pending=246-deleted-paste-slot-is-null
+impl-pending gb_paste_hook pending=slot-null-since-246
 # AppSrcOps.move (offset 4) DOES have a real site after all -- see the G5 correction
 # above `AppSrcOps.release @8 in app_mon_menu_readonly`, which also declares it.
 

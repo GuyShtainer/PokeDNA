@@ -7109,6 +7109,9 @@ def run_y16_261(core_mod, image_mod, rom_gold: Path, out_dir: Path, rom_red: "Pa
     edit in-session but returned false, so the hand kept carrying and a second A duplicated the mon); now the wall dismissal
     treats the in-session write as LANDED -- the Bank slot is consumed, the grid repaints with the new count, the glove is empty,
     the footer is 'A menu', a second A opens the cell menu (no re-drop) and the wall's 2 px gutter strip is gone.
+    Under PDNA_DELTA the consumed Bank slot and any /PokeDNA/xfer/*.pds written by the drop PERSIST on the vsd while
+    the GB edit does not survive a reboot; use a FRESH vsd per leg (as the legs here do), and a chain that reuses a
+    vsd across bank-down legs must re-derive its nav recipe (the start row moves).
       G3   Gold, BANK 3 slot 0, plain Gen-3 BULBASAUR (bank_down_g3_run)
       EXA  Gold, BANK 1 slot 0, native Gen-2 CHIKORITA (bank_down_dispatch EXACT arm)
       BRG  Gold, BANK 1 slot 1, native Gen-1 PIKACHU (GB_BRIDGE arm)
