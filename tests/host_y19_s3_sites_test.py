@@ -109,7 +109,7 @@ def main() -> int:
         r = checks(texts["box"], texts["summ"], texts["main"], texts["jrn"], texts["lay"])
         red = [k for k, v in r.items() if not v]
         ok = any(k.startswith(expect_red) for k in red)
-        print(f"  {'ok  ' if ok else 'FAIL'} {tag}: mutant makes {expect_red} RED (red: {[k[:2] for k in red]})")
+        print(f"  {'ok  ' if ok else 'FAIL'} {tag}: mutant makes {expect_red} RED (red: {[k.split()[0] for k in red]})")
         if not ok:
             fails.append(tag)
 
