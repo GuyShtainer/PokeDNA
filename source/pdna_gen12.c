@@ -3317,6 +3317,13 @@ gb_paste_write(const GbEditMon* mon, int box, const uint8_t orig80[80],
    * REFUSES but KEEPS the edit for the rest of this session (there is no card to roll
    * back to; see gb_persist's own PDNA_DELTA branch). */
   bool ok = gb_persist("paste");
+#ifdef PDNA_DELTA
+  /* BACKLOG #292 (delta vehicle ONLY): the wall above is "no card", not "this paste is void" -- the mon is
+   * in the resident image and stays there for the session, so the drop LANDED as far as this build's image
+   * is concerned. Reporting false left a live carry + a stale grid and a second A duplicated the mon.
+   * The sidecar the paste wrote is kept (it describes the mon the image now holds). */
+  ok = true;
+#endif
   if (!ok) gb_paste_sidecar_undo(path);
   return ok;
 }
@@ -4108,6 +4115,9 @@ BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]) {
 
   log_line("=== gen12 down->bridge -> %s box %d slot %d ===", g_ed->path, dst_box, newslot);
   bool ok = gb_persist("xferdown");
+#ifdef PDNA_DELTA
+  ok = true;   /* BACKLOG #292 (delta vehicle ONLY): the in-session edit stands -- see gb_paste_write's twin note */
+#endif
   if (!ok) {
     if (!copy) xfer_down_undo(path, g_ed->sidecar);
     boxoam_resume();
@@ -4358,7 +4368,17 @@ static bool __attribute__((noinline)) gb_accept_down_hook(int dst_box, const uin
   }
 
   log_line("=== gb bank-down -> %s box %d slot %d ===", g_ed->path, dst_box, slot);
+#ifdef PDNA_DELTA
+  /* BACKLOG #292 (delta vehicle ONLY): gb_persist's emulator branch KEEPS the edit in-session and returns false
+   * only to say "no card". bank_down_exact / bank_down_g3_run read false as "refused, still holding" and left a
+   * stale grid + a live carry whose second A duplicated the mon. The edit landed in the resident image, so report
+   * it landed: the caller consumes the Bank slot and repaints from the image. The shipped build below is
+   * unchanged (every non-DELTA failure already rolled the image back). */
+  (void)gb_persist("bank-down");
+  return true;
+#else
   return gb_persist("bank-down");     /* the ONE card write; it reports its own refusals */
+#endif
 }
 
 /* #286/y12: the TO GAME menu action's destination -- the first STORAGE box of the mounted resident Game Boy save that

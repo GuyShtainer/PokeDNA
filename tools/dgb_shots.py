@@ -7025,6 +7025,18 @@ def _y16_same_landing(pre: Path, post: Path, tag: str, max_frac: float = 0.008) 
         sys.exit(1)
 
 
+def _y16_gutter_clean(pre: Path, post: Path, tag: str) -> None:
+    """#292 pin: the 2 px gutter x=76..77, y=12..152 between the left panel and the grid is pixel-identical to the pre-drop
+    frame (the save-wall dialog used to leave a 2x70 column there that the paint-over repaint never covered). Loud exit."""
+    from PIL import Image
+    ia, ib = Image.open(pre).convert("RGB"), Image.open(post).convert("RGB")
+    bad = [(x, y) for x in (76, 77) for y in range(12, 153) if ia.getpixel((x, y)) != ib.getpixel((x, y))]
+    print(f"  [Y16 GUTTER] {tag}: {len(bad)} differing gutter pixel(s) between {pre.name} and {post.name}")
+    if bad:
+        print(f"[Y16 GUTTER FAILED] {tag}: the wall dialog left pixels in the x=76..77 gutter: {bad[:6]}", file=sys.stderr)
+        sys.exit(1)
+
+
 def _y17_portrait_nonbg(png: Path, box=(12, 14, 80, 78)) -> int:
     """#203: count the pixels inside the detail view's portrait 'screen' (12,14)-(79,77) that are NOT the blue backdrop. The
     backdrop gradient is strongly blue (b - r >= ~50); a Game Boy front pic is grey/white (|b - r| small). A frame with no
@@ -7093,9 +7105,10 @@ def run_y16_261(core_mod, image_mod, rom_gold: Path, out_dir: Path, rom_red: "Pa
     Bank onto the GB grid, R x13 (Gold: boxes 1-12 full -> box 13) or none (Red), then A = drop and A through every
     dialog to the wall, A on the wall. Frames 'pre' (last frame before the wall, still carrying, on the GB grid) and 'post'
     (the wall dismissed) are the pair under test: same box, same footer, glove still up = the LANDING matches the refusal
-    contract. NOTE (y16 review): the post-wall grid is a STALE REPAINT — the delta gb_persist keeps the edit in-session,
-    so the mon actually landed (count grows after an R/L reload) while the hand still carries and the Bank slot is
-    unconsumed; a second A re-drops (see BACKLOG #261/#292). This pin tests the SCREEN landing only.
+    contract. #292 (this lane) changed the contract: before, the post-wall grid was a STALE repaint (the delta gb_persist keeps the
+    edit in-session but returned false, so the hand kept carrying and a second A duplicated the mon); now the wall dismissal
+    treats the in-session write as LANDED -- the Bank slot is consumed, the grid repaints with the new count, the glove is empty,
+    the footer is 'A menu', a second A opens the cell menu (no re-drop) and the wall's 2 px gutter strip is gone.
       G3   Gold, BANK 3 slot 0, plain Gen-3 BULBASAUR (bank_down_g3_run)
       EXA  Gold, BANK 1 slot 0, native Gen-2 CHIKORITA (bank_down_dispatch EXACT arm)
       BRG  Gold, BANK 1 slot 1, native Gen-1 PIKACHU (GB_BRIDGE arm)
@@ -7115,7 +7128,7 @@ def run_y16_261(core_mod, image_mod, rom_gold: Path, out_dir: Path, rom_red: "Pa
             gb_shots._DEFAULT_VSD_IMG = None
         T = lambda k, n=1, **kw: (print(f"  [TRACE] y16 {tag} {k} x{n}"), s.press_n(k, n, **kw))
         s.run(700); s.run(100)
-        T("UP", 3, settle=100); T("UP", 4, settle=60)
+        T("UP", 3, settle=100); T("UP", 6 if rom is not rom_red else 4, settle=60)   # Gold 6 (was 4: the start row moved since y16), Red 4
         if bank_r:
             T("R", bank_r, settle=150)
         if slot:
@@ -7154,11 +7167,23 @@ def run_y16_261(core_mod, image_mod, rom_gold: Path, out_dir: Path, rom_red: "Pa
                 sys.exit(f"[Y16] {tag}: the wall never appeared")
             print(f"  [Y16] {tag}: wall after {n} A press(es)")
             T("A", settle=400)
-            s.shot("04_post", f"y16 {tag}: the wall dismissed -- THE LANDING STATE: back on the SAME Game Boy grid the drop was "
-                   f"attempted on, footer still 'A drop  B cancel' (the glove still carrying; the grid is a stale repaint, "
-                   f"see #261 note), not the 'A menu' browser footer",
-                   claim=["A drop", "B cancel", "BOX"], claim_absent=["A menu", "in-session only"], allow_same=True)
-            _y16_same_landing(out_dir / f"y16_{tag}_02_gb_grid.png", out_dir / f"y16_{tag}_04_post.png", tag)
+            cnt = {"g3": ("17/20", "18/20"), "exa": ("17/20", "18/20"), "brg": ("17/20", "18/20")}.get(tag)
+            s.shot("04_post", f"y16 {tag} (#292): the wall dismissed = the drop LANDED (delta: the in-session write stands) -- the grid "
+                   f"repainted from the image" + (f" (box count {cnt[0]} -> {cnt[1]})" if cnt else "") + f", the glove is empty, the "
+                   f"footer is the browser's 'A menu' (NOT 'A drop  B cancel'), and the wall's gutter strip is gone",
+                   claim=["BOX", "A menu"] + ([cnt[1]] if cnt else []),
+                   claim_absent=["A drop", "B cancel", "in-session only"] + ([cnt[0]] if cnt else []), allow_same=True)
+            _y16_gutter_clean(out_dir / f"y16_{tag}_02_gb_grid.png", out_dir / f"y16_{tag}_04_post.png", tag)
+            # a SECOND A must NOT drop again (it used to re-drop = a duplicate): the cell menu opens instead, and B shows
+            # the count unchanged
+            T("A", settle=400)
+            s.shot("05_second_a", f"y16 {tag} (#292): a SECOND A after the wall opens the cell menu -- it does NOT start another "
+                   f"drop (no dialog chain, no wall)", claim=["VIEW"], claim_absent=["A drop", "in-session only", "SAVE FIRST"],
+                   allow_same=False)
+            T("B", settle=300)
+            s.shot("06_no_dup", f"y16 {tag} (#292): B closes the menu -- the box count did not grow again" +
+                   (f" (still {cnt[1]}, not one more)" if cnt else ""), claim=["BOX"] + ([cnt[1]] if cnt else []),
+                   claim_absent=["A drop"], allow_same=True)
             if sess_all is None:
                 sess_all = s
             else:

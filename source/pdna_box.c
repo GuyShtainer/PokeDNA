@@ -2681,6 +2681,12 @@ static void render_full(BoxSource* src, int box, int cur, bool on_title, bool mo
   draw_tab(PANEL_W + 93, UI_SCR_W - (PANEL_W + 93), "SAVE", s_tab_focus == 2);
   draw_left((on_title && s_tab_focus < 0) ? 0 : &g_box[cur]);   /* see draw_box_banner */
 
+#ifdef PDNA_DELTA
+  /* BACKLOG #292 (delta vehicle ONLY): the 2 px gutter between the panel (0..PANEL_W-1) and the wallpaper
+   * (WP_X..) is drawn by nothing but ui_clear(), so a dialog that crossed it (the emulator build's save-wall)
+   * left a 2x70 column behind after a paint-over repaint. Re-fill it on every non-clearing repaint. */
+  if (!clear) ui_fill_rect(PANEL_W, WP_Y, WP_X - PANEL_W, WP_H, UI_BG);
+#endif
   draw_wallpaper(src->get_wp(box), WP_X, WP_Y, WP_W, WP_H);
   /* PARITY-AUDIT-2026-09 #75: era_cells() BEFORE artless_cells() -- it has to run
    * first so s_era_drawn is populated for THIS box before artless_cells() reads it
