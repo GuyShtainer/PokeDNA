@@ -1473,9 +1473,11 @@ def main() -> int:
     if dispatch_line is not None:
         # BACKLOG #271 (Guy 2026-09-29): A_LEGAL/A_DUP/A_EXPORT are now native-aware
         # (host_native_menu_test.py pins their handlers), so they joined the whitelist.
-        for action in ("A_SUMMARY", "A_LEGAL", "A_MOVE", "A_DUP", "A_EXPORT", "A_RELEASE", "A_CANCEL"):
+        # #271/y10: A_TOGAME joined -- its native action only sets the request the Bank grid runs through
+        # bank_down_dispatch (host_y10_togame_sites_test.py pins the whole path); it never runs app_inject_to_game.
+        for action in ("A_SUMMARY", "A_LEGAL", "A_MOVE", "A_DUP", "A_EXPORT", "A_TOGAME", "A_RELEASE", "A_CANCEL"):
             check(action in dispatch_line, f"app_mon_menu: dispatch-whitelist line does not name {action}")
-        for action in ("A_ITEM", "A_HATCH", "A_PASTE", "A_TOGAME",
+        for action in ("A_ITEM", "A_HATCH", "A_PASTE",
                         "A_TAKEITEM", "A_GIVEITEM", "A_COPY", "A_CREATE"):
             check(action not in dispatch_line, f"app_mon_menu: dispatch-whitelist line unexpectedly names {action}")
 

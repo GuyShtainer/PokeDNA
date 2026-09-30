@@ -165,6 +165,33 @@ def save_now_order_facts(body: str) -> tuple[bool, str]:
     return True, "ok"
 
 
+def save_now_fail_facts(body: str) -> tuple[bool, str]:
+    """#284 (y9 review finding 3): when app_commit_pc() FAILS, the pending key may be dropped only when the
+    pending entry is NOT a G3_HOME one (undo never removes G3_HOME; a dropped key would strand the restore --
+    the retry could never consume it). Every app_xfer_pending_drop( in the failure arm must sit under a
+    kind check (the same statement, after the last ; { or })."""
+    m = re.search(r"if\s*\(\s*app_commit_pc\s*\(\s*\)\s*\)\s*\{", body)
+    if not m:
+        return False, "app_xfer_save_now: `if (app_commit_pc()) {` missing"
+    depth, j = 1, m.end()
+    while j < len(body) and depth > 0:
+        depth += (body[j] == "{") - (body[j] == "}")
+        j += 1
+    arm = body[j:]
+    e = re.match(r"\s*else\s*\{", arm)
+    if not e:
+        return False, "no `else {` failure arm after the app_commit_pc() success arm"
+    arm = arm[e.end():]
+    drops = list(re.finditer(r"\bapp_xfer_pending_drop\s*\(", arm))
+    if not drops:
+        return False, "the failure arm never drops the pending key of a NATIVE_HOME transfer"
+    for d in drops:
+        stmt_start = max(arm.rfind(";", 0, d.start()), arm.rfind("{", 0, d.start()), arm.rfind("}", 0, d.start()))
+        if "app_xfer_pending_is_g3home" not in arm[stmt_start + 1:d.start()]:
+            return False, "app_xfer_pending_drop( in the commit-failure arm is not guarded by a G3_HOME kind check (the #284 strand window)"
+    return True, "ok"
+
+
 def undo_kind_facts(body: str) -> tuple[bool, str]:
     k = re.search(r"e\.kind\s*!=\s*XR_KIND_NATIVE_HOME", body)
     r = first(body, "gbsc_remove")
@@ -272,6 +299,7 @@ def run_real() -> None:
                             ("B2 party wrapper", wrapper_facts, wp),
                             ("C promote", promote_consume_facts, pr),
                             ("C2 save-now order", save_now_order_facts, function_body(MAIN.read_text(), "app_xfer_save_now")),
+                            ("C4 save-now failure keeps a G3_HOME key (#284)", save_now_fail_facts, function_body(MAIN.read_text(), "app_xfer_save_now")),
                             ("C3 undo kind", undo_kind_facts, function_body(MAIN.read_text(), "app_xfer_pending_undo"))):
         ok, d = fn(body)
         check(ok, f"{label}: {d}")
@@ -296,6 +324,7 @@ def mutate(body: str, old: str, new: str) -> str:
 def self_test() -> None:
     """Each mutant must be caught by the SAME fact function the real check uses."""
     r, w, wp, pr = real_texts()
+    sn = function_body(MAIN.read_text(), "app_xfer_save_now")
     muts = [
         # A: order / writes / kind
         ("MUT A1a: pending_set hoisted above the merge screen", restore_order_facts,
@@ -321,6 +350,10 @@ def self_test() -> None:
          mutate(pr, "gbsc_remove(", "sf_write_verified(path, s_promote_buf, len); gbsc_remove(")),
         ("MUT C2: no G3_HOME branch", promote_consume_facts, pr.replace("XR_KIND_G3_HOME", "XR_KIND_XXX")),
         ("MUT C3: last entry not unlinked", promote_consume_facts, pr.replace("f_unlink", "f_xunlink")),
+        ("MUT C4a: the failure arm drops the key unconditionally (the #284 strand)", save_now_fail_facts,
+         mutate(sn, "if (!app_xfer_pending_is_g3home()) app_xfer_pending_drop();", "app_xfer_pending_drop();")),
+        ("MUT C4b: the failure arm never drops a NATIVE_HOME key", save_now_fail_facts,
+         mutate(sn, "if (!app_xfer_pending_is_g3home()) app_xfer_pending_drop();", ";")),
     ]
     br, bw, lp, rel, mk, gen12 = real_texts2()
     muts += [

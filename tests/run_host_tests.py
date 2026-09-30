@@ -58,6 +58,7 @@ PY_TESTS = ["tests/host_hp_repaint_pin_test.py", "tests/host_stack_budget_test.p
             "tests/host_xfer_view_readonly_test.py",
             "tests/host_gb_claims_test.py", "tests/host_gb_open_direct_test.py",
             "tests/host_xfer_reconcile_sites_test.py", "tests/host_y9_target_restore_sites_test.py",
+            "tests/host_y10_togame_sites_test.py",
             "tests/host_bank_meta_backup_sites_test.py",
             "tests/host_vsd_funnel_sites_test.py",
             "tests/host_clip_session_clear_test.py",

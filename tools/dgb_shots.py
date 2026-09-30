@@ -4993,7 +4993,8 @@ def run_s150_2_bank_native(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_
     s.tap("A", settle=150)                                  # slot 0 -> the occupied-mon menu
     s.shot("06_cell0_menu", "S150-2: A on the CHIKORITA cell -- the ordinary occupied-"
            "mon menu, cursor on row 0 (Summary/VIEW-EDIT) -- on/after S150-3 this is "
-           "the native WHITELIST (VIEW/EDIT, LEGALITY, MOVE, DUPLICATE, EXPORT, RELEASE, CANCEL -- #271)")
+           "the native WHITELIST (VIEW/EDIT, LEGALITY, MOVE, DUPLICATE, EXPORT, TO GAME, RELEASE, CANCEL -- #271; TO GAME "
+           "is the #271/y10 row, shown because this Emerald session has a live Gen-3 PC)", claim=["TO GAME"])
     s.tap("A", settle=150)                                  # select the Summary row
     s.shot("07_cell0_summary", "S150-2: the REAL Gen-1/2 summary, opened read-only over "
            "the native cell's own 80 bytes via gb_native_summary_open() (decision "
@@ -5013,7 +5014,8 @@ def run_s150_2_bank_native(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_
            "from bc_is_native() -- decoded via pdna_native_cell_decode(), the same "
            "ladder the grid uses -- not from whether pk_decode_mon's meaningless-key "
            "decrypt of the raw bytes happens to pass its checksum) -- on/after S150-3 "
-           "this is the native WHITELIST (VIEW/EDIT, LEGALITY, MOVE, DUPLICATE, EXPORT, RELEASE, CANCEL -- #271)")
+           "this is the native WHITELIST (VIEW/EDIT, LEGALITY, MOVE, DUPLICATE, EXPORT, TO GAME, RELEASE, CANCEL -- #271; TO GAME "
+           "is the #271/y10 row, shown because this Emerald session has a live Gen-3 PC)", claim=["TO GAME"])
     s.tap("A", settle=150)                                  # select the Summary row
     s.shot("10_cell4_summary_or_refuse", "S150-2: the Summary row on the DMG cell -- "
            "bc_unpack succeeds (the glitch species lives in list_species/rec, outside "
@@ -5163,7 +5165,8 @@ def run_s150_3_escape_gate(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_
     s.tap("A", settle=150)                                  # slot 0 -> its menu
     s.shot("00_native_menu", "S150-3: A on the CHIKORITA native cell -- decision 7's "
            "WHITELIST, not the ordinary eleven-row occupied menu: VIEW/EDIT / LEGALITY / "
-           "MOVE / DUPLICATE / EXPORT .pk / RELEASE / CANCEL (#271), cursor defaults to row 0")
+           "MOVE / DUPLICATE / EXPORT .pk / TO GAME / RELEASE / CANCEL (#271; TO GAME = #271/y10, Gen-3 session), "
+           "cursor defaults to row 0", claim=["TO GAME"])
 
     # VIEW (row 0, already selected) -> A_SUMMARY's dispatch case -> app_box_browse ->
     # its own bc_is_native() interception -> gb_native_summary_open() (D-Q1: the same
@@ -5845,6 +5848,237 @@ def run_y9_g3home_target(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_sh
     print(f"  vsd diff (declined): {sorted(ch)}")
     if any(c.startswith("/PokeDNA/bank/box0") for c in ch):
         print("[Y9 CHECK FAILED] a declined save still wrote a Bank box", file=sys.stderr)
+        sys.exit(1)
+    s.taken += d.taken
+    s.skipped += d.skipped
+    return s
+
+
+_Y10_PC_BOXES = 14          # the Gen-3 PC: 14 boxes x 30 slots x 80 B, records start at g_pc + 4
+
+
+def _y10_sym(name: str) -> int:
+    """Address of the static `name` in the delta-artless ELF next to the repo root (override: Y10_ELF).
+    The chain reads live app state (the PC image `g_pc`, the remembered PC box) straight off the emulated bus."""
+    root = Path(__file__).resolve().parent.parent
+    elf = os.environ.get("Y10_ELF") or str(root / "pokedna-delta-artless.elf")
+    nm = shutil.which("arm-none-eabi-nm") or "/opt/devkitpro/devkitARM/bin/arm-none-eabi-nm"
+    out = subprocess.run([nm, elf], capture_output=True, text=True).stdout
+    for ln in out.splitlines():
+        p = ln.split()
+        if len(p) == 3 and p[2] == name:
+            return int(p[0], 16)
+    raise RuntimeError(f"{name} not found in {elf} (build `make delta-artless` first)")
+
+
+def _y10_g_pc_addr() -> int:
+    return _y10_sym("g_pc")
+
+
+def _y10_to_box11(t, s: "gb_shots.Session", bank_dirty: bool = False) -> None:
+    """From the Bank screen, with a mon in the glove: DOWN x5 onto the PC grid (which always opens on box 1 for
+    the hand-off, whatever g_pc_last_box says -- measured), then R x10 to the empty PC box 11."""
+    t("DOWN", 5, settle=150)
+    if bank_dirty:                 # leaving a DIRTY Bank box asks 'Save this bank box?' -- A = yes
+        t("A", settle=500)
+    t("R", 10, settle=150)
+
+
+def _y10_pc_slots(s: "gb_shots.Session", base: int) -> "list[bytes]":
+    """The 420 live PC box records (80 B each) read from the emulated bus."""
+    c = s.core._core
+    raw = bytes(c.busRead8(c, base + 4 + i) for i in range(_Y10_PC_BOXES * 30 * 80))
+    return [raw[i * 80:(i + 1) * 80] for i in range(_Y10_PC_BOXES * 30)]
+
+
+def _y10_landed(before: "list[bytes]", after: "list[bytes]", label: str) -> "tuple[int, bytes]":
+    """Exactly one PC slot must differ between the two snapshots: return (slot index, its record)."""
+    ch = [i for i in range(len(before)) if before[i] != after[i]]
+    print(f"  [Y10 CHECK] {label}: changed PC slots = {[(i // 30 + 1, i % 30 + 1) for i in ch]}")
+    if len(ch) != 1 or not any(after[ch[0]]) or any(before[ch[0]]):
+        print(f"[Y10 CHECK FAILED] {label}: expected exactly one newly written PC slot, got {ch}", file=sys.stderr)
+        sys.exit(1)
+    return ch[0], after[ch[0]]
+
+
+def _y10_fresh_img(img: Path, tag: str) -> Path:
+    img2 = Path(str(img) + "." + tag)
+    subprocess.run([str(gb_shots._vsd_img_bin()), "mkimg", str(img2), "16", "/tmp/host_vsdimg_test_tmpl"],
+                   capture_output=True)
+    return img2
+
+
+def run_y10_togame(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """#271 remainder (lane y10-togame): TO GAME on a NATIVE Bank cell in a Gen-3 session runs the DROP's own
+    arm. Vehicle: as --y9-g3home (`rom` = tools/fuse_sav.py <delta-artless> Emerald.sav; `--vsd <img>` a
+    FRESH mkimg copy; Bank box 4 holds five Gen-2 BULBASAUR cells, cells 0 and 1 with a G3_HOME ledger entry).
+    Session M (menu) does, through the TO GAME row: slot 0 (a G3_HOME restore), then a DUPLICATE of slot 1
+    placed in slot 5 (a COPY: it converts FRESH although slot 1's entry exists), then slot 2 (no entry: a fresh
+    conversion, behind the SAVE NOW? wall of the still-unsaved restore). Session D (drop) carries the same three
+    cells with MOVE and drops them in the PC. The live PC bytes are read off the emulated bus after each landing:
+    the three landed records must be BYTE-EQUAL across the two sessions, and both end with the same ledger/Bank
+    files on the card (parity by construction, proven, not assumed)."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")
+    print("== #271/y10: TO GAME on a native Bank cell == the drop's arm (--vsd, real ledger files) ==")
+    if gb_shots._DEFAULT_VSD_IMG is None:
+        raise RuntimeError("--y10-togame requires --vsd <img.img> (a FRESH mkimg copy)")
+    img = gb_shots._DEFAULT_VSD_IMG
+    base = _y10_g_pc_addr()
+    p0, p1 = _y9_patch(img, [["ledger", "0"], ["ledger", "1"]])
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "y10_menu_")
+    T = lambda k, n=1, **kw: (print(f"  [TRACE] menu {k} x{n}"), s.press_n(k, n, **kw))
+    s.run(700)
+    s.vsd_snapshot()
+    T("START", settle=80); T("DOWN", settle=60); T("A", settle=150)
+    T("R", 3, settle=150)
+    s.shot("00_bank_box4", "y10: the Bank from the Emerald session, R x3 -> BANK 4 (5/30), cursor on slot 0 "
+           "(a Gen-2 BULBASAUR cell with a G3_HOME ledger entry)", claim=["BANK 4"])
+    pc0 = _y10_pc_slots(s, base)
+    T("A", settle=150)
+    s.shot("01_native_menu", "y10: A on slot 0 -- the native-cell menu; TO GAME is now a row between EXPORT "
+           "and RELEASE", claim=["TO GAME", "EXPORT"])
+    T("DOWN", 5, settle=60)
+    s.shot("02_on_to_game", "y10: DOWN x5 -- the highlight is on TO GAME", claim=["TO GAME"], allow_same=False)
+    T("A", settle=300)
+    s.shot("03_restore_screen", "y10: A on TO GAME -- the RESTORE merge screen (RESTORED FROM THE SIDECAR), "
+           "the same screen the drop shows, NOT the conversion loss screen",
+           claim=["RESTORED FROM THE SIDECAR", "Level", "KEEP"], claim_absent=["WHAT WON'T TRANSFER"])
+    T("START", settle=500)
+    s.shot("04_sent", "y10: START applies -- 'SENT TO GAME' names the PC box and slot the original went to",
+           claim=["SENT TO GAME", "PC box"], allow_same=False)
+    pc1 = _y10_pc_slots(s, base)
+    _, m0 = _y10_landed(pc0, pc1, "menu: restore of slot 0")
+    _y9_expect(s, "landed but NOT saved: the ledger entries must still be on the card", present=[p0, p1])
+    T("A", settle=300)
+    s.shot("05_bank_after", "y10: the message dismissed -- slot 0 of BANK 4 is empty now (4/30; its delete is "
+           "queued for the save)", claim=["BANK 4", "4/30"], allow_same=False)
+    # a DUPLICATE of slot 1 (whose G3_HOME entry a restore would use): the copy converts FRESH
+    T("RIGHT", settle=100)
+    T("A", settle=150); T("DOWN", 3, settle=60); T("A", settle=500)
+    s.shot("06_dup_in_glove", "y10: DUPLICATE on slot 1 -- a fresh copy floats in the glove",
+           claim=["A drop  B cancel"], allow_same=False)
+    T("RIGHT", 4, settle=300)     # slot 0 is empty but its delete is pending (a drop there is refused) -- the free slot 5
+    T("A", settle=800)
+    s.shot("07_dup_placed", "y10: A on the free slot 5 -- the copy is placed in the Bank (5/30)",
+           claim=["BANK 4", "5/30"], allow_same=False)
+    T("A", settle=150); T("DOWN", 5, settle=60)
+    s.shot("08_dup_menu", "y10: A on the copy in slot 5 -- its menu, highlight on TO GAME", claim=["TO GAME"], allow_same=False)
+    T("A", settle=400)
+    s.shot("09_dup_loss_screen", "y10: TO GAME on the COPY cell -- the FRESH-conversion loss screen ('WHAT WON'T "
+           "TRANSFER', 'this copy cannot be sent back'), NOT the restore merge screen, although slot 1's original "
+           "has a G3_HOME ledger entry: a COPY never restores", claim=["WHAT WON'T TRANSFER", "this copy"],
+           claim_absent=["RESTORED FROM THE SIDECAR"], allow_same=False)
+    T("A", settle=500)
+    s.shot("10_dup_sent", "y10: A = transfer -- 'SENT TO GAME'; no SAVE NOW? wall for a copy (it writes no ledger entry)",
+           claim=["SENT TO GAME"], allow_same=False)
+    pc2 = _y10_pc_slots(s, base)
+    _, md = _y10_landed(pc1, pc2, "menu: fresh conversion of the DUPLICATE")
+    T("A", settle=300)
+    T("LEFT", 3, settle=200)
+    T("A", settle=150); T("DOWN", 5, settle=60); T("A", settle=400)
+    s.shot("11_savenow_wall", "y10: TO GAME on slot 2 (no ledger entry) while the slot-0 restore still waits for the "
+           "save -- the SAME 'SAVE NOW?' wall the drop meets (a non-copy conversion needs the pending slot)",
+           claim=["SAVE NOW", "One transfer is waiting"], allow_same=False)
+    T("A", settle=700)
+    s.shot("12_saved", "y10: A = yes -- the verified save", claim=["Flash written"], allow_same=False)
+    T("A", settle=400)
+    s.shot("13_loss_screen", "y10: A -- the save is done and slot 2's fresh conversion CONTINUES: the loss screen",
+           claim=["WHAT WON'T TRANSFER"], allow_same=False)
+    T("A", settle=500)
+    s.shot("14_sent2", "y10: A = transfer -- SENT TO GAME", claim=["SENT TO GAME"], allow_same=False)
+    pc3 = _y10_pc_slots(s, base)
+    _, m2 = _y10_landed(pc2, pc3, "menu: fresh conversion of slot 2 (after the save)")
+    T("A", settle=300)
+    T("B", settle=500)
+    s.shot("14b_pc_box_grid", "y10: B -- the first B leaves the Bank grid for PC box 1's grid (30/30)", claim=["30/30"], allow_same=False)
+    T("B", settle=500)
+    s.shot("15_exit_prompt", "y10: B again leaves the box screen -- 'Save changes?' (the deferred PC writes + the "
+           "queued Bank deletions wait for this ONE save, like a drop's)", claim=["Save changes"], allow_same=False)
+    T("A", settle=700)
+    s.shot("16_exit_saved", "y10: A -- saved and verified", claim=["Flash written"], allow_same=False)
+    T("A", settle=700)
+    m_ls = _y9_expect(s, "menu session end: the restored entry is consumed, slot 1's is untouched",
+                      present=[p1], absent=[p0])
+
+    # ---- Session D: the same three cells carried with MOVE and dropped on the PC ----
+    img2 = _y10_fresh_img(img, "drop")
+    q0, q1 = _y9_patch(img2, [["ledger", "0"], ["ledger", "1"]])
+    saved_default = gb_shots._DEFAULT_VSD_IMG
+    gb_shots._DEFAULT_VSD_IMG = img2
+    try:
+        d = gb_shots.Session(core_mod, image_mod, rom, out_dir, "y10_drop_")
+    finally:
+        gb_shots._DEFAULT_VSD_IMG = saved_default
+    Td = lambda k, n=1, **kw: (print(f"  [TRACE] drop {k} x{n}"), d.press_n(k, n, **kw))
+    d.run(700)
+    d.vsd_snapshot()
+    Td("START", settle=80); Td("DOWN", settle=60); Td("A", settle=150)
+    Td("R", 3, settle=150)
+    e0 = _y10_pc_slots(d, base)
+    Td("A", settle=150); Td("DOWN", 2, settle=60); Td("A", settle=150)      # MOVE
+    _y10_to_box11(Td, d)
+    Td("A", settle=300)
+    d.shot("00_restore_screen", "y10 (drop): slot 0 carried to the empty PC box 11 and dropped -- the RESTORE merge "
+           "screen, the very screen the TO GAME row showed", claim=["RESTORED FROM THE SIDECAR", "Level", "KEEP"],
+           claim_absent=["WHAT WON'T TRANSFER"])
+    Td("START", settle=500)
+    d.shot("01_landed", "y10 (drop): START -- the original landed (1/30)", claim=["1/30"], allow_same=False)
+    e1 = _y10_pc_slots(d, base)
+    _, d0 = _y10_landed(e0, e1, "drop: restore of slot 0")
+    Td("START", settle=150); Td("DOWN", settle=60); Td("A", settle=200)
+    Td("R", 3, settle=150)
+    Td("RIGHT", settle=100)
+    Td("A", settle=150); Td("DOWN", 3, settle=60); Td("A", settle=500)      # DUPLICATE
+    Td("RIGHT", 4, settle=300); Td("A", settle=800)                        # placed in slot 5
+    Td("A", settle=150); Td("DOWN", 2, settle=60); Td("A", settle=500)      # MOVE the copy
+    _y10_to_box11(Td, d, bank_dirty=True)
+    Td("RIGHT", settle=150)                # the cursor arrives on cell 0 (occupied by the first landing)
+    Td("A", settle=400)
+    d.shot("02_dup_loss_screen", "y10 (drop): the COPY carried to box 11 and dropped -- the FRESH-conversion loss "
+           "screen ('this copy cannot be sent back'), the very screen the TO GAME row showed",
+           claim=["WHAT WON'T TRANSFER", "this copy"], claim_absent=["RESTORED FROM THE SIDECAR"], allow_same=False)
+    Td("A", settle=500)
+    e2 = _y10_pc_slots(d, base)
+    _, dd = _y10_landed(e1, e2, "drop: fresh conversion of the DUPLICATE")
+    Td("START", settle=150); Td("DOWN", settle=60); Td("A", settle=200)
+    Td("R", 3, settle=150)
+    Td("RIGHT", 2, settle=100)
+    Td("A", settle=150); Td("DOWN", 2, settle=60); Td("A", settle=150)      # MOVE slot 2
+    _y10_to_box11(Td, d)
+    Td("RIGHT", 2, settle=150)
+    Td("A", settle=400)
+    d.shot("03_savenow_wall", "y10 (drop): slot 2 dropped while the restore waits -- the SAME 'SAVE NOW?' wall",
+           claim=["SAVE NOW", "One transfer is waiting"], allow_same=False)
+    Td("A", settle=700)
+    Td("A", settle=400)
+    d.shot("04_loss_screen", "y10 (drop): saved, and slot 2's fresh conversion continues: the loss screen",
+           claim=["WHAT WON'T TRANSFER"], allow_same=False)
+    Td("A", settle=500)
+    e3 = _y10_pc_slots(d, base)
+    _, d2 = _y10_landed(e2, e3, "drop: fresh conversion of slot 2 (after the save)")
+    Td("B", settle=500)
+    Td("A", settle=700)
+    Td("A", settle=700)
+    d_ls = _y9_expect(d, "drop session end: the restored entry is consumed, slot 1's is untouched",
+                      present=[q1], absent=[q0])
+
+    # ---- parity: the landed records and the resulting card files ----
+    for label, a_, b_ in (("restore of slot 0", m0, d0), ("fresh conversion of the DUPLICATE", md, dd),
+                          ("fresh conversion of slot 2", m2, d2)):
+        same = a_ == b_
+        print(f"  [Y10 PARITY] {label}: menu record == drop record -> {'BYTE-EQUAL' if same else 'DIFFERENT'} "
+              f"({a_.hex()[:24]}...)")
+        if not same:
+            print(f"[Y10 PARITY FAILED] {label}: menu {a_.hex()} != drop {b_.hex()}", file=sys.stderr)
+            sys.exit(1)
+    fn = lambda ls: {k.replace("7CF2AC3FA2EEA69A", "P0").replace("33A1180E64A746E4", "P1"): v
+                     for k, v in ls.items() if k.startswith("/PokeDNA/xfer/") or k.startswith("/PokeDNA/bank/")}
+    ma, da = fn(m_ls), fn(d_ls)
+    print(f"  [Y10 PARITY] card files menu={sorted(ma)}  drop={sorted(da)}")
+    diff = sorted(k for k in set(ma) | set(da) if ma.get(k) != da.get(k))
+    print(f"  [Y10 PARITY] card files differing (path/size/crc): {diff}")
+    if diff:
+        print("[Y10 PARITY FAILED] card files differ", file=sys.stderr)
         sys.exit(1)
     s.taken += d.taken
     s.skipped += d.skipped
@@ -7047,8 +7281,8 @@ def run_s150_8_gen3_arm(core_mod, image_mod, rom_emerald: Path, out_dir: Path) -
         uses (Party -> Bank is one DOWN in the nav list, then A opens
         pdna_bank_show()). Box 0's cursor starts on slot 0 (plain CHIKORITA); RIGHT
         x3 reaches slot 3 (the item-holding CHIKORITA).
-      pick up: A (native-cell whitelist: VIEW/EDIT, MOVE, RELEASE, CANCEL) -> DOWN
-        (VIEW/EDIT -> MOVE) -> A (starts the carry).
+      pick up: A (native-cell whitelist: VIEW/EDIT, LEGALITY, MOVE, DUPLICATE, EXPORT .pk, TO GAME,
+        RELEASE, CANCEL -- #271/y10 added TO GAME) -> DOWN x2 (VIEW/EDIT -> LEGALITY -> MOVE) -> A (starts the carry).
       Bank -> PC, still carrying: DOWN x5 (row 0 down to the Bank's own bottom row,
         a 5th off its bottom edge) -- IDENTICAL to run_s150_7_down_edge's own
         DOWN_OFF_BANK=5 (pdna_box.c's `else if (src->is_bank) { boxoam_exit();
@@ -8267,6 +8501,9 @@ def _main_dispatch(argv=None) -> int:
     ap.add_argument("--y9-g3home", action="store_true",
                      help="#280 (lane y9-280): run_y9_g3home_target() -- --image = plain fuse_sav.py "
                           "<delta-artless> Emerald.sav, --vsd = a FRESH mkimg copy.")
+    ap.add_argument("--y10-togame", action="store_true",
+                     help="#271 remainder (lane y10-togame): run_y10_togame() -- --image = plain fuse_sav.py "
+                          "<delta-artless> Emerald.sav, --vsd = a FRESH mkimg copy.")
     ap.add_argument("--y9-lift", action="store_true",
                      help="#280 (lane y9-280): run_y9_lift_passthrough() -- --image = fuse_gb.py "
                           "<delta-artless> Red.gb Red.sav, --vsd = a FRESH mkimg copy.")
@@ -9464,6 +9701,20 @@ def _main_dispatch(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] y9-g3home: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if getattr(a, "y10_togame", False):
+        ran = True
+        try:
+            sess = run_y10_togame(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] y10-togame: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
@@ -11381,8 +11632,9 @@ def run_s150_12_copy_edge(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_s
 
     s.tap("A", settle=150)
     s.shot("13_menu", "s150-12: the ordinary Bank-cell menu -- VIEW/EDIT, LEGALITY, MOVE, DUPLICATE, EXPORT .pk, "
-           "RELEASE, CANCEL (this is a real Bank cell now, not the read-only "
-           "mount's whitelist)")
+           "TO GAME, RELEASE, CANCEL (this is a real Bank cell now, not the read-only "
+           "mount's whitelist; TO GAME is the #271/y10 row -- this is an Emerald session with a live Gen-3 PC)",
+           claim=["TO GAME"])
 
     s.press_n("DOWN", 2, settle=60)                              # VIEW/EDIT -> LEGALITY -> MOVE
     s.tap("A", settle=150)                                # MOVE -> carrying
