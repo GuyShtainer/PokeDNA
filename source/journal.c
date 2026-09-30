@@ -1055,7 +1055,10 @@ int jrn_flush(Jrn* j) {
   if (rc) return rc;
   for (i = (int)j->pend_n - 1; i >= 0; i--) {     /* the FIRST record is the commit point */
     rc = seg_write(j, p.seg[i], p.off[i], j->pend + p.start[i], p.len[i]);
-    if (rc) return rc;
+    /* A write that fails PART WAY (EZ-Flash: no retry) may already have left valid-CRC records past the
+     * tail. Popping a still-pending step would reclaim its seq and the next session could resurrect that
+     * orphan behind a different record: recording STOPS, exactly as for a failed verify. */
+    if (rc) { j->stopped = 1; return rc; }
   }
   for (i = 0; i < (int)j->pend_n; i++) {
     rc = seg_verify(j, p.seg[i], p.off[i], j->pend + p.start[i], p.len[i]);

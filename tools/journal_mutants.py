@@ -196,6 +196,10 @@ MUTANTS = [
            "  if (fs->read(fs->ctx, p, 0, b, PDR_LEN) != 0) return JRN_E_IO;",
            "  if (fs->read(fs->ctx, p, 0, b, PDR_LEN) != 0) return 1;",
            "journal", "WRONG key"),
+    Mutant("flush: a write that fails part way does not stop recording (pop reclaims a seq with orphans on disk)", "journal.c",
+           "    if (rc) { j->stopped = 1; return rc; }\n  }\n  for (i = 0; i < (int)j->pend_n; i++) {",
+           "    if (rc) return rc;\n  }\n  for (i = 0; i < (int)j->pend_n; i++) {",
+           "journal", "fails part way STOPS"),
 ]
 
 

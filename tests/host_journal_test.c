@@ -666,6 +666,33 @@ static void t_read_error_honesty(void) {
   g_jopen_segs = 0;
 }
 
+/* A flush whose write fails PART WAY leaves valid-CRC records past the tail: recording STOPS (no pop that
+ * would reclaim their seqs), and the next session neither resurrects nor re-links them. */
+static void t_partial_flush_stops(void) {
+  Jrn j; int rc; uint8_t z[16], b[16];
+  world(&j, FM_FAT);
+  CHECK(stage(&j, "r1", 0, 1, 10, 4, fresh_val(1, 10)) == JRN_OK, "r1");
+  CHECK(stage(&j, "r2", 0, 2, 10, 4, fresh_val(2, 10)) == JRN_OK && jrn_pending(&j) == 2, "r2");
+  { JrnRec r1; uint16_t len1; CHECK(jrn_i_hdr_parse(j.pend, &r1) == 0, "hdr"); len1 = r1.len;   /* r2 (written first) lands ... */
+    CHECK(raw_write(K, 1, JRN_REC_BASE + len1, j.pend + len1, j.pend_len - len1) == 0, "plant the landed r2"); }
+  rd_fail_all_writes = 1;                            /* ... and r1's write then fails (EZ-Flash: no retry) */
+  rc = jrn_flush(&j);
+  rd_fail_all_writes = 0;
+  CHECK(rc != JRN_OK && j.stopped == 1, "a flush that fails part way STOPS recording (rc %d, stopped %d)", rc, j.stopped);
+  CHECK(jrn_undo(&j, &IMG, 0) == JRN_E_STOPPED, "so a pending step is NOT popped (its seq stays claimed)");
+  CHECK(jrn_step_begin(&j, "x", 0) == JRN_E_STOPPED && jrn_flush(&j) == JRN_E_STOPPED, "and nothing more is recorded");
+  card_remount();
+  CHECK(jopen(&j, K) == JRN_OK, "reopen");
+  CHECK(j.next_seq == 1 && j.tail_off == JRN_REC_BASE, "the orphan r2 is not a record (next_seq %u, tail %u)", (unsigned)j.next_seq, (unsigned)j.tail_off);
+  memset(z, 0, sizeof z);
+  CHECK(raw_read(K, 1, JRN_REC_BASE + 70, b, sizeof b) == 0 && memcmp(b, z, sizeof b) == 0, "the orphan was zeroed at open");
+  img_fill(1);                                       /* the card's saved image: the session's edits never reached it */
+  CHECK(jopen(&j, K) == JRN_OK, "reopen on the saved image");
+  CHECK(stage(&j, "n1", 0, 3, 10, 4, fresh_val(3, 10)) == JRN_OK && jrn_flush(&j) == JRN_OK, "a new session records a step");
+  card_remount();
+  CHECK(jopen(&j, K) == JRN_OK && j.next_seq == 2 && jrn_cursor(&j) == 1, "the new step is seq 1 and nothing was resurrected behind it (next_seq %u, cursor %u)", (unsigned)j.next_seq, (unsigned)jrn_cursor(&j));
+}
+
 /* A header the way a NEWER (or foreign) build would have left it: valid magic + crc, unknown shape. */
 static void plant_hdr(uint64_t key, unsigned slot, uint32_t idx, uint16_t ring, uint16_t ver) {
   uint8_t h[JRN_SEG_HDR]; uint32_t c;
@@ -760,6 +787,7 @@ int main(void) {
   t_read_cost();
   t_index_after_retire();
   t_read_error_honesty();
+  t_partial_flush_stops();
   if (fails) { printf("host_journal_test: %d FAILED of %lu checks\n", fails, checks); return 1; }
   printf("host_journal_test: all %lu checks passed (real lib/fatfs over a RAM disk)\n", checks);
   return 0;
