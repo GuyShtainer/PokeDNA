@@ -135,13 +135,18 @@ static int jfs_list(void* ctx, const char* dir, JrnListFn cb, void* arg) {
   DIR d;
   FILINFO fi;
   uint32_t guard;
+  FRESULT fr;
+  int ok = 1;
   (void)ctx;
-  if (f_opendir(&d, dir) != FR_OK) return -1;
+  fr = f_opendir(&d, dir);
+  if (fr == FR_NO_PATH || fr == FR_NO_FILE) return 1;      /* absent: a journal never started */
+  if (fr != FR_OK) return -1;
   for (guard = 0; guard < 20000u; guard++) {
-    if (f_readdir(&d, &fi) != FR_OK || !fi.fname[0]) break;
+    if (f_readdir(&d, &fi) != FR_OK) { ok = 0; break; }    /* a read error is an ERROR, not the end of the list */
+    if (!fi.fname[0]) break;
     if (!(fi.fattrib & AM_DIR)) cb(arg, fi.fname);
   }
-  return f_closedir(&d) == FR_OK ? 0 : -1;
+  return (f_closedir(&d) == FR_OK && ok) ? 0 : -1;
 }
 
 /* One handle, chunked read (see JrnFs.scan): one aligned sector per f_read (one disk read per sector), the

@@ -353,15 +353,19 @@ int jrn_find(Jrn* j, uint32_t seq, JrnRec* out) {
 }
 
 /* ---- redirects (.pdr) ---------------------------------------------------------------------------- */
-/* 0 = found and valid, 1 = absent or corrupt (a corrupt redirect is no redirect). */
+/* 0 = found and valid, 1 = absent or corrupt (a corrupt redirect is no redirect), < 0 = a card error
+ * (never "absent": a transient error must not send the journal to the wrong key directory). */
 static int pdr_read(const JrnFs* fs, const char* root, uint64_t key, uint64_t* target) {
   char p[JRN_PATH_MAX];
   uint8_t b[PDR_LEN];
   uint64_t t = 0;
+  long sz;
   int i;
   if (p_key(root, key, ".pdr", p)) return 1;
-  if (fs->size(fs->ctx, p) != (long)PDR_LEN) return 1;
-  if (fs->read(fs->ctx, p, 0, b, PDR_LEN) != 0) return 1;
+  sz = fs->size(fs->ctx, p);
+  if (sz < -1) return JRN_E_IO;
+  if (sz != (long)PDR_LEN) return 1;
+  if (fs->read(fs->ctx, p, 0, b, PDR_LEN) != 0) return JRN_E_IO;
   if (b[0] != 'P' || b[1] != 'D' || b[2] != 'R' || b[3] != 'D') return 1;
   if (jrn_rd32(b + 12) != jrn_crc32_update(0, b, 12)) return 1;
   for (i = 7; i >= 0; i--) t = (t << 8) | b[4 + i];
@@ -372,9 +376,12 @@ static int pdr_read(const JrnFs* fs, const char* root, uint64_t key, uint64_t* t
 int jrn_key_resolve(const JrnFs* fs, const char* root, uint64_t key, uint64_t* out) {
   uint64_t cur = key, next = 0;
   uint32_t hop;
+  int rc;
   if (!fs || !fs->size || !fs->read || !root || !out) return JRN_E_ARG;
   for (hop = 0; hop < RESOLVE_MAX; hop++) {
-    if (pdr_read(fs, root, cur, &next) != 0) { *out = cur; return JRN_OK; }
+    rc = pdr_read(fs, root, cur, &next);
+    if (rc < 0) return rc;
+    if (rc != 0) { *out = cur; return JRN_OK; }
     cur = next;
   }
   return JRN_E_LOOP;
@@ -402,7 +409,9 @@ int jrn_redirect_write(const JrnFs* fs, const char* root, uint64_t newkey, uint6
   rc = jrn_key_resolve(fs, root, target, &t);
   if (rc) return rc;
   if (t == newkey) return JRN_OK;                         /* renamed back: nothing to record */
-  if (pdr_read(fs, root, newkey, &have) == 0) return have == t ? JRN_OK : JRN_E_EXISTS;
+  rc = pdr_read(fs, root, newkey, &have);
+  if (rc < 0) return rc;
+  if (rc == 0) return have == t ? JRN_OK : JRN_E_EXISTS;
   if (mkdir_prefixes(fs, root)) return JRN_E_IO;
   if (p_key(root, newkey, ".pdr", pdr)) return JRN_E_ARG;
   if (fs->size(fs->ctx, pdr) >= 0 && fs->unlink(fs->ctx, pdr) != 0) return JRN_E_IO;  /* an invalid leftover */
@@ -713,7 +722,9 @@ int jrn_open(Jrn* j, const JrnCfg* cfg, const JrnImage* img) {
   rc = jrn_recompute(j, img);
   if (rc) return rc;
   if (p_key(j->root, j->key, "", dir)) return JRN_E_ARG;
-  if (j->fs->list(j->fs->ctx, dir, dir_cb, &d) != 0 || !d.hi) { j->anchor = JRN_ANCHOR_EMPTY; return JRN_OK; }
+  rc = j->fs->list(j->fs->ctx, dir, dir_cb, &d);
+  if (rc < 0) return JRN_E_IO;                                   /* a card error is not an empty journal */
+  if (rc > 0 || !d.hi) { j->anchor = JRN_ANCHOR_EMPTY; return JRN_OK; }   /* no directory / no slot file: never started */
   rc = ring_scan(j, d.hi);
   if (rc == JRN_E_VERSION) {                      /* somebody else's journal: read-only, empty, untouched */
     j->foreign = 1; j->readonly = 1; j->ring = 0; j->seg_first = j->seg_last = j->tail_seg = 0;
@@ -751,6 +762,7 @@ static int ring_ensure(const Jrn* j) {
   for (s = 1; s <= j->ring; s++) {
     if (p_slot(j->root, j->key, s, p)) return JRN_E_ARG;
     sz = f->size(f->ctx, p);
+    if (sz < -1) return JRN_E_IO;                       /* a card error is not `absent` */
     if (sz == (long)JRN_SEG_SIZE) continue;
     if (sz > (long)JRN_SEG_SIZE) return JRN_E_IO;
     if (f->alloc(f->ctx, p, JRN_SEG_SIZE, 512u) != 0) return JRN_E_IO;   /* header sector zeroed, body left for the activation */

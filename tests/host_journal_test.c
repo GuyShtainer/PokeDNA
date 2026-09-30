@@ -626,6 +626,46 @@ static void t_index_after_retire(void) {
   CHECK(jrn_find(&j, 1, &r) == JRN_E_FLOOR, "a record of the retired segment is a floor, not a stale hit");
 }
 
+/* Ruling 5 / bounce fix 5: read-error HONESTY. ONE transient read error at every read of jrn_open (and of a
+ * redirect resolve): the call either fails LOUDLY or returns exactly the truth -- never a silently shorter
+ * ring, an empty journal, a moved tail or another key. (Before: 53 silent wrong views, 31 lost history.) */
+static void t_read_error_honesty(void) {
+  Jrn j, t; unsigned g; long k; unsigned long r0, R; uint32_t want_seq; uint16_t wf, wl, wt; uint8_t wanc; uint32_t wcur;
+  unsigned silent = 0, loud = 0, same = 0; static uint8_t img0[NREG][RSZ];
+  g_jopen_segs = 3;
+  card_fresh(FM_FAT); img_fill(1); rd_fattime_hook = jrn_fattime_filter;
+  CHECK(jopen(&j, K) == JRN_OK && jrn_prepare(&j) == JRN_OK, "prep");
+  for (g = 0; g < 400 && j.tail_seg < 2; g++) CHECK(stage(&j, "f", 0, 1, 0, 220, fresh_val(1, 0)) == JRN_OK && jrn_flush(&j) == JRN_OK, "fill");
+  CHECK(jrn_prepare(&j) == JRN_OK && stage(&j, "x", 0, 1, 0, 4, fresh_val(1, 0)) == JRN_OK && jrn_flush(&j) == JRN_OK, "spare + step");
+  card_remount(); CHECK(jopen(&t, K) == JRN_OK, "truth");
+  want_seq = t.next_seq; wf = t.seg_first; wl = t.seg_last; wt = t.tail_seg; wanc = t.anchor; wcur = t.cursor;
+  rd_snapshot(); memcpy(img0, g_img, sizeof g_img);
+  r0 = rd_read_calls; CHECK(jopen(&t, K) == JRN_OK, "count"); R = rd_read_calls - r0;
+  for (k = 0; k < (long)R; k++) {
+    int rc;
+    rd_restore(); memcpy(g_img, img0, sizeof g_img); card_remount();
+    rd_fail_read_at = k; rc = jopen(&j, K); rd_fail_read_at = -1;
+    if (rc != JRN_OK) { loud++; continue; }
+    if (j.next_seq == want_seq && j.seg_first == wf && j.seg_last == wl && j.tail_seg == wt && j.anchor == wanc && j.cursor == wcur) { same++; continue; }
+    silent++;
+    if (silent <= 3) printf("  read #%ld failed: open OK but sees segs %u..%u tail %u next_seq %u anchor %d\n", k, j.seg_first, j.seg_last, j.tail_seg, (unsigned)j.next_seq, j.anchor);
+  }
+  CHECK(silent == 0, "jrn_open with one transient read error: %u SILENT wrong views of %lu reads (%u loud, %u still right)", silent, R, loud, same);
+  CHECK(loud > 0, "the sweep reaches the read paths (%u loud)", loud);
+  /* the same for the redirect resolve: another key's redirect to K */
+  rd_restore(); card_remount();
+  CHECK(jrn_redirect_write(&jrn_fatfs, ROOT, 0x77, K) == JRN_OK, "redirect");
+  rd_snapshot();
+  { uint64_t out = 0; unsigned bad = 0; r0 = rd_read_calls; CHECK(jrn_key_resolve(&jrn_fatfs, ROOT, 0x77, &out) == JRN_OK && out == K, "resolve"); R = rd_read_calls - r0;
+    for (k = 0; k < (long)R; k++) {
+      int rc; rd_restore(); card_remount(); out = 0;
+      rd_fail_read_at = k; rc = jrn_key_resolve(&jrn_fatfs, ROOT, 0x77, &out); rd_fail_read_at = -1;
+      if (rc == JRN_OK && out != K) bad++;
+    }
+    CHECK(bad == 0, "a transient read error made %u resolves return the WRONG key (of %lu reads)", bad, R); }
+  g_jopen_segs = 0;
+}
+
 /* A header the way a NEWER (or foreign) build would have left it: valid magic + crc, unknown shape. */
 static void plant_hdr(uint64_t key, unsigned slot, uint32_t idx, uint16_t ring, uint16_t ver) {
   uint8_t h[JRN_SEG_HDR]; uint32_t c;
@@ -719,6 +759,7 @@ int main(void) {
   t_long_session();
   t_read_cost();
   t_index_after_retire();
+  t_read_error_honesty();
   if (fails) { printf("host_journal_test: %d FAILED of %lu checks\n", fails, checks); return 1; }
   printf("host_journal_test: all %lu checks passed (real lib/fatfs over a RAM disk)\n", checks);
   return 0;

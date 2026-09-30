@@ -130,6 +130,9 @@ typedef struct JrnFs {
   int      (*create_zero)(void* ctx, const char* path, uint32_t size,
                           const void* head, uint32_t headn);
   int      (*unlink)(void* ctx, const char* path);                   /* absent = 0       */
+  /* file names of `dir` (not sub-directories) through cb. 0 = listed, 1 = the directory does NOT exist (a
+   * normal answer for a journal that was never started), < 0 = a card error (never conflate the two: a
+   * transient read error must not look like an empty journal). */
   int      (*list)(void* ctx, const char* dir, JrnListFn cb, void* arg);
   /* ONE handle, chunked READ (the open/locate/anchor scans). `start` is a multiple of 512. The seam reads
    * the file one aligned <= 512-byte chunk at a time (one disk read per sector) into a buffer that already

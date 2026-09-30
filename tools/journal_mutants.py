@@ -180,6 +180,22 @@ MUTANTS = [
     Mutant("index: a retire leaves the retired slot's index behind", "journal.c",
            "    idx_set(j, j->seg_first, 0);\n    j->seg_first++;", "    j->seg_first++;",
            "journal", "first-seq index a reopen builds"),
+    Mutant("read error: a failed directory listing reads as an empty journal", "journal.c",
+           "  if (rc < 0) return JRN_E_IO;                                   /* a card error is not an empty journal */",
+           "  if (rc < 0) { j->anchor = JRN_ANCHOR_EMPTY; return JRN_OK; }",
+           "journal", "SILENT wrong views"),
+    Mutant("read error: a failed slot-header read is a free slot (a shorter ring)", "journal.c",
+           "    if (rc < 0) return rc == SLOT_FOREIGN ? JRN_E_VERSION : rc;",
+           "    if (rc == JRN_E_IO) rc = 0;\n    if (rc < 0) return rc == SLOT_FOREIGN ? JRN_E_VERSION : rc;",
+           "journal", "SILENT wrong views"),
+    Mutant("read error: a failed peek at the next segment ends the journal there", "journal.c",
+           "    rc = next_seg_continues(j, (uint16_t)(seg + 1u), sc);\n    if (rc < 0) return rc;",
+           "    rc = next_seg_continues(j, (uint16_t)(seg + 1u), sc);\n    if (rc < 0) rc = 0;",
+           "journal", "SILENT wrong views"),
+    Mutant("read error: a failed redirect read is an absent redirect (the wrong key directory)", "journal.c",
+           "  if (fs->read(fs->ctx, p, 0, b, PDR_LEN) != 0) return JRN_E_IO;",
+           "  if (fs->read(fs->ctx, p, 0, b, PDR_LEN) != 0) return 1;",
+           "journal", "WRONG key"),
 ]
 
 
