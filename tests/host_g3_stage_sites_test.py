@@ -283,7 +283,7 @@ def wiring_pins() -> None:
 def wiring_pins_slice01() -> None:
     check("W1-W5 wiring holds on the real pdna_main.c", not wiring(MAIN), str(wiring(MAIN)))
     muts = {
-        "flush_on_exit gate back to a PC-only reader": ("imgf_exit_prompt(&g_img)) {", "imgf_arena_ok(&g_img)) {"),
+        "flush_on_exit gate back to a PC-only reader": ("!imgf_exit_prompt(&g_img)) {", "!imgf_arena_ok(&g_img)) {")   # the flush_on_exit gate (not the Settings SAVE FIRST check, #234 s4 D6),
         "drop no longer stages": ("img_pc_edited(&g_img, &g_rec, g_save, g_vinfo.slot, g_pc, can_stage);",
                                   "imgf_pc_edited(&g_img, false);"),
         "commit_sb12 writes a section itself": ("bool app_commit_sb12(void) {\n  app_stage_sections(0, 0, g_sb2);",
