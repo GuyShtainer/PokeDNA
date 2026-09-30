@@ -545,18 +545,63 @@ def up_scan_latch_facts(lines, start, end):      # shared by the real check AND 
 # byte-for-byte on up_order_facts() above -- same shared-function-for-real-check-and-
 # MUT posture (review F3's point in this same file).
 ACCEPT_DOWN_RE = re.compile(r"s_xfer_peer->accept_down\(")
-CONSUME_RE = re.compile(r"app_bank_clear_slots\(")
+CONSUME_RE = re.compile(r"\bbank_down_consume\(")   # #286/y12: the shared consume helper (successor of the raw app_bank_clear_slots( call)
 
 
 def down_order_facts(lines, start, end):        # shared by the real check AND MUT I
     a = first_match_line(lines, start, end, ACCEPT_DOWN_RE)
     c = first_match_line(lines, start, end, CONSUME_RE)
     if a is None: return False, "bank_down_exact: no `s_xfer_peer->accept_down(` call"
-    if c is None: return False, "bank_down_exact: no `app_bank_clear_slots(` call"
+    if c is None: return False, "bank_down_exact: no `bank_down_consume(` call"
     if not a < c: return False, (f"bank_down_exact: accept_down() (line {a+1}, the persist) does NOT "
                                  f"come before app_bank_clear_slots() (line {c+1}, the Bank consume) "
                                  f"-- the Bank's own copy could be zeroed before the Game Boy save "
                                  f"has the mon")
+    return True, "ok"
+
+
+# #286/y12 review F3 (checks bd4/bd5, shared by the real check AND MUT BD4/BD5): "consume only after a landing".
+# bd4: in bank_down_exact an `if (!ok) return BANK_DOWN_REFUSED;` sits BETWEEN the accept_down( line and the
+# bank_down_consume( line, so a refused write can never reach the Bank consume. bd5: in bank_down_g3_run the
+# `if (!landed) {` block returns false before its closing brace and bank_down_consume( comes AFTER that block.
+REFUSED_RETURN_RE = re.compile(r"if\s*\(\s*!ok\s*\)\s*return\s+BANK_DOWN_REFUSED\s*;")
+NOT_LANDED_OPEN_RE = re.compile(r"if\s*\(\s*!landed\s*\)\s*\{")
+
+
+def _no_comment(lines, i):
+    t = lines[i].lstrip()
+    return not (t.startswith("/*") or t.startswith("*") or t.startswith("//"))
+
+
+def refused_before_consume_facts(lines):          # bd4
+    a = first_match_line(lines, 0, len(lines), ACCEPT_DOWN_RE)
+    c = next((i for i in range(len(lines)) if CONSUME_RE.search(lines[i]) and _no_comment(lines, i)), None)
+    if a is None or c is None:
+        return False, "bank_down_exact: accept_down( or bank_down_consume( not found"
+    r = next((i for i in range(a + 1, c) if REFUSED_RETURN_RE.search(lines[i])), None)
+    if r is None:
+        return False, ("bank_down_exact: no `if (!ok) return BANK_DOWN_REFUSED;` between accept_down( and "
+                       "bank_down_consume( -- a refused write would consume the Bank slot (a LOSS)")
+    return True, "ok"
+
+
+def landed_gates_consume_facts(lines):            # bd5
+    o = first_match_line(lines, 0, len(lines), NOT_LANDED_OPEN_RE)
+    if o is None:
+        return False, "bank_down_g3_run: no `if (!landed) {` block"
+    depth, close = 0, None
+    for i in range(o, len(lines)):
+        depth += lines[i].count("{") - lines[i].count("}")
+        if depth == 0:
+            close = i
+            break
+    if close is None:
+        return False, "bank_down_g3_run: unbalanced `if (!landed) {` block"
+    if not any(re.search(r"\breturn\s+false\s*;", lines[i]) for i in range(o, close)):
+        return False, "bank_down_g3_run: the `if (!landed) {` block does not return false -- a refused landing would fall through to the consume"
+    c = next((i for i in range(close + 1, len(lines)) if CONSUME_RE.search(lines[i]) and _no_comment(lines, i)), None)
+    if c is None:
+        return False, "bank_down_g3_run: no bank_down_consume( after the `if (!landed)` block"
     return True, "ok"
 
 
@@ -865,6 +910,12 @@ def dispatch_case_bindings(body: list[str]) -> list[tuple[bool, str]]:
 LANDED_IF_RE    = re.compile(r"if\s*\(\s*bd\s*==\s*BANK_DOWN_LANDED\s*\)\s*\{")
 EXACT_ARM_IF_RE = re.compile(r"if\s*\(\s*arm\s*==\s*XG_DOWN_ARM_EXACT\s*\)\s*\{")
 CLEAR_SLOTS_RE  = re.compile(r"app_bank_clear_slots\(")
+# #286/y12 (pin successors for (o)/(s)/MUT P/Q/T/U and F2's ordering): the Bank consume now lives in ONE shared
+# function, bank_down_consume() (pdna_box.c), that bank_down_exact, drop_held's LANDED tail, drop_held_down_g3 and the
+# TO GAME menu action all call. The property each retired pin held -- "the tail consumes the Bank slot, immediately,
+# after the dispatch" -- is now "the tail CALLS bank_down_consume(" (CONSUME_CALL_RE) plus the new (bd1)/(bd2) pins
+# on the helper's own body (it clears via app_bank_clear_slots(, never defers).
+CONSUME_CALL_RE = re.compile(r"\bbank_down_consume\(")
 DEFER_DELETE_RE = re.compile(r"app_bank_defer_delete\(")
 
 
@@ -990,7 +1041,7 @@ def landed_consume_after_dispatch(dh_body: list[str]) -> tuple[bool, str]:
     text order -- the same persist-before-consume ordering review F2 pinned for
     bank_down_exact, now pinned for drop_held's own caller-side consume too."""
     disp_i = first_match_line(dh_body, 0, len(dh_body), DISPATCH_CALL_RE)
-    clear_i = first_match_line(dh_body, 0, len(dh_body), CLEAR_SLOTS_RE)
+    clear_i = first_match_line(dh_body, 0, len(dh_body), CONSUME_CALL_RE)
     if disp_i is None:
         return False, "drop_held: no bank_down_dispatch( call found"
     if clear_i is None:
@@ -1569,7 +1620,9 @@ def main() -> int:
     s, e = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
     ok, d = bank_passthrough_facts(box_lines, s, e)
     check(ok, d)
-    s, e = extract_function(box_lines, r"^drop_held_down_g3\(")
+    # #286/y12: the restore + landing + consume body moved, unchanged, from drop_held_down_g3 into bank_down_g3_run
+    # (the ONE function the drop and the TO GAME menu action share) -- the pin's target follows it; the property is the same.
+    s, e = extract_function(box_lines, r"^bank_down_g3_run\(")
     ok, d = target_restore_order_facts(box_lines, s, e)
     check(ok, d)
     s, e = extract_function(box_lines, r"^gbpc_restore_up\(")
@@ -1644,6 +1697,12 @@ def main() -> int:
     ok, d = down_order_facts(box_lines, sd, ed)
     check(ok, d)
 
+    ok, d = refused_before_consume_facts(box_lines[sd:ed])                       # bd4 (#286 review F3)
+    check(ok, d)
+    sg, eg = extract_function(box_lines, r"^bank_down_g3_run\(")
+    ok, d = landed_gates_consume_facts(box_lines[sg:eg])                         # bd5 (#286 review F3)
+    check(ok, d)
+
     # ---- (n) merged-tree review F4: bank_down_dispatch's three case->callee bindings ----
     sdd, edd = extract_function(box_lines, r"^bank_down_dispatch\(")
     dispatch_body = box_lines[sdd:edd]
@@ -1657,7 +1716,7 @@ def main() -> int:
     sh, eh = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
     dh_body_full = box_lines[sh:eh]
     landed_tail = landed_tail_block(dh_body_full)
-    check(any(CLEAR_SLOTS_RE.search(ln) for ln in landed_tail),
+    check(any(CONSUME_CALL_RE.search(ln) for ln in landed_tail),
           "drop_held LANDED tail (non-EXACT): no app_bank_clear_slots( call -- the "
           "GB_BRIDGE arm's Bank slot would never be consumed")
     check(not any(DEFER_DELETE_RE.search(ln) for ln in landed_tail),
@@ -1684,6 +1743,23 @@ def main() -> int:
     # bank_down_dispatch( call. ----
     ok, msg = arm_derived_once_above_dispatch(dh_body_full)
     check(ok, msg)
+
+    # ---- (bd1)/(bd2) #286/y12 successors of (o)'s "immediate, never deferred" half: the shared consume helper
+    # every Bank-down landing calls clears the slot through app_bank_clear_slots( and never through the deferred
+    # queue; (bd3) drop_held_down_g3's tail also calls it. ----
+    sc, ec = extract_function(box_lines, r"^static bool __attribute__\(\(noinline\)\) bank_down_consume\(")
+    cons_body = box_lines[sc:ec]
+    check(any(CLEAR_SLOTS_RE.search(ln) for ln in cons_body),
+          "bank_down_consume: no app_bank_clear_slots( call -- the Bank slot would never be consumed")
+    check(not any(DEFER_DELETE_RE.search(ln) for ln in cons_body),
+          "bank_down_consume: contains app_bank_defer_delete( -- a Game Boy session never runs the Gen-3 "
+          "exit-save flush a deferred delete waits for (merged-tree review F2)")
+    sg, eg = extract_function(box_lines, r"^bank_down_g3_run\(")
+    check(any(CONSUME_CALL_RE.search(ln) for ln in box_lines[sg:eg]),
+          "bank_down_g3_run: no bank_down_consume( call -- the landed Gen-3 cell's Bank slot would never be consumed")
+    sg, eg = extract_function(box_lines, r"^drop_held_down_g3\(")
+    check(any(re.search(r"\bbank_down_g3_run\(", ln) for ln in box_lines[sg:eg]),
+          "drop_held_down_g3: no bank_down_g3_run( call -- the drop would no longer share the menu's Gen-3 landing")
 
     # ---- (p) merged-tree review F4/F1: gb_bank_down_bridge's destination generation is
     # the MOUNTED session's own generation, never the inverted `? GB_GEN2 : GB_GEN1`
@@ -2114,7 +2190,7 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str],
     # MUT Y7-K (#270): move gbpc_restore_done( ABOVE the accept_down landing in a copy of
     # drop_held_down_g3 -- the entry would read RESTORED before the Game Boy write landed --
     # and assert target_restore_order_facts() reports failure.
-    s, e = extract_function(box_lines, r"^drop_held_down_g3\(")
+    s, e = extract_function(box_lines, r"^bank_down_g3_run\(")   # #286/y12: retargeted with the pin above
     body = box_lines[s:e]
     acc_i = first_match_line(body, 0, len(body), ACCEPT_DOWN_CALL_RE)
     done_i = first_match_line(body, 0, len(body), RESTORE_DONE_RE)
@@ -2277,6 +2353,22 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str],
               f"caught but was not: {detail}")
         print(f"  MUT L demonstration -- app_bank_clear_slots() line swapped above "
               f"accept_down(): {detail}")
+    # MUT BD4 / MUT BD5 (#286 review F3): delete the guarded return, the facts must go RED.
+    bd4 = [ln for ln in down_body if not REFUSED_RETURN_RE.search(ln)]
+    check(len(bd4) == len(down_body) - 1, "MUT BD4: the real `if (!ok) return BANK_DOWN_REFUSED;` line not found exactly once")
+    ok, detail = refused_before_consume_facts(bd4)
+    check(not ok, f"MUT BD4 (refused return deleted) should have been caught but was not: {detail}")
+    print(f"  MUT BD4 demonstration -- `if (!ok) return BANK_DOWN_REFUSED;` deleted: {detail}")
+    sg, eg = extract_function(box_lines, r"^bank_down_g3_run\(")
+    g3_body = box_lines[sg:eg]
+    o = first_match_line(g3_body, 0, len(g3_body), NOT_LANDED_OPEN_RE)
+    check(o is not None, "MUT BD5: `if (!landed) {` not found")
+    if o is not None:
+        bd5 = [ln for i, ln in enumerate(g3_body) if not (i > o and re.search(r"\breturn\s+false\s*;", ln) and i < o + 4)]
+        check(len(bd5) == len(g3_body) - 1, "MUT BD5: the block's `return false;` not found exactly once")
+        ok, detail = landed_gates_consume_facts(bd5)
+        check(not ok, f"MUT BD5 (landed-block return deleted) should have been caught but was not: {detail}")
+        print(f"  MUT BD5 demonstration -- `if (!landed) {{ return false; }}` return deleted: {detail}")
     # MUT M (BACKLOG #150 S150-8 review F5): `bool converted = true;` at drop_held's own
     # top -- the exact defect the reviewer demonstrated (passes check (a) above, which
     # only looks at line POSITION relative to the first 80-byte memcpy, never the gate's
@@ -2359,11 +2451,11 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str],
     s, e = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
     dh_body = box_lines[s:e]
     tail = landed_tail_block(dh_body)
-    check(any(CLEAR_SLOTS_RE.search(ln) for ln in tail),
+    check(any(CONSUME_CALL_RE.search(ln) for ln in tail),
           "MUT P: the real drop_held LANDED tail has no app_bank_clear_slots( call to "
           "delete -- fix this test")
-    mut_p = [ln for ln in tail if not CLEAR_SLOTS_RE.search(ln)]
-    ok = any(CLEAR_SLOTS_RE.search(ln) for ln in mut_p)
+    mut_p = [ln for ln in tail if not CONSUME_CALL_RE.search(ln)]
+    ok = any(CONSUME_CALL_RE.search(ln) for ln in mut_p)
     check(not ok, "MUT P (app_bank_clear_slots( deleted from the LANDED tail) should "
                    "have been caught but was not")
     print("  MUT P demonstration -- app_bank_clear_slots( deleted from drop_held's "
@@ -2372,8 +2464,8 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str],
     # MUT Q (merged-tree review F4): replace that same call with
     # app_bank_defer_delete( on a copy -- the GB_BRIDGE arm would wait for a Gen-3
     # exit-save flush a Game Boy session never runs (merged-tree review F2).
-    mut_q = [CLEAR_SLOTS_RE.sub("app_bank_defer_delete(", ln) for ln in tail]
-    still_has_clear = any(CLEAR_SLOTS_RE.search(ln) for ln in mut_q)
+    mut_q = [CONSUME_CALL_RE.sub("app_bank_defer_delete(", ln) for ln in tail]
+    still_has_clear = any(CONSUME_CALL_RE.search(ln) for ln in mut_q)
     now_has_defer = any(DEFER_DELETE_RE.search(ln) for ln in mut_q)
     check(not still_has_clear and now_has_defer,
           "MUT Q: substitution did not produce the expected app_bank_defer_delete( "
@@ -2464,7 +2556,7 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str],
     # copy -- the Bank slot would be consumed before the dispatch that decides whether
     # the drop even lands.
     disp_i = first_match_line(dh_body, 0, len(dh_body), DISPATCH_CALL_RE)
-    clear_i = first_match_line(dh_body, 0, len(dh_body), CLEAR_SLOTS_RE)
+    clear_i = first_match_line(dh_body, 0, len(dh_body), CONSUME_CALL_RE)
     check(disp_i is not None and clear_i is not None and disp_i < clear_i,
           "MUT U: could not locate bank_down_dispatch( before app_bank_clear_slots( "
           "in the real source -- fix this test")
@@ -2493,6 +2585,18 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str],
                         f"dispatch) should have been caught but was not: {detail}")
         print(f"  MUT V demonstration -- a second xg_bank_down_arm( derivation added "
               f"after bank_down_dispatch(: {detail}")
+
+    # MUT BD1/BD2 (#286/y12): the shared consume helper loses its immediate clear / re-adds a deferred delete.
+    sc, ec = extract_function(box_lines, r"^static bool __attribute__\(\(noinline\)\) bank_down_consume\(")
+    cons_real = box_lines[sc:ec]
+    mut_bd1 = [ln for ln in cons_real if not CLEAR_SLOTS_RE.search(ln)]
+    check(not any(CLEAR_SLOTS_RE.search(ln) for ln in mut_bd1) and any(CLEAR_SLOTS_RE.search(ln) for ln in cons_real),
+          "MUT BD1: could not delete the real app_bank_clear_slots( line -- fix this test")
+    mut_bd2 = [CLEAR_SLOTS_RE.sub("app_bank_defer_delete(", ln) for ln in cons_real]
+    check(any(DEFER_DELETE_RE.search(ln) for ln in mut_bd2),
+          "MUT BD2: substitution did not produce app_bank_defer_delete( -- fix this test")
+    print("  MUT BD1/BD2 demonstration -- bank_down_consume's clear deleted / turned into a deferred delete: "
+          "the (bd1) `any(CLEAR_SLOTS_RE)` and (bd2) `not any(DEFER_DELETE_RE)` predicates both fail on those copies")
 
     # MUT X / MUT Y (the lift-restore ordering demonstrations) retired by #280 with checks (x)/(y).
 

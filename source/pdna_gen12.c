@@ -4347,6 +4347,32 @@ static bool __attribute__((noinline)) gb_accept_down_hook(int dst_box, const uin
   return gb_persist("bank-down");     /* the ONE card write; it reports its own refusals */
 }
 
+/* #286/y12: the TO GAME menu action's destination -- the first STORAGE box of the mounted resident Game Boy save that
+ * can take one more mon, scanning from the box on screen (resumes at the box on screen, like the Gen-3 twin's
+ * g_pc_last_box start; a drop lands where the cursor is, the menu has no cursor there). *out_unwritable (optional)
+ * counts the non-party boxes skipped as UNWRITABLE, so a caller can tell "full" from "change box in-game". The party pseudo-box is never
+ * chosen (a menu action must not silently fill the party). "Has room" means exactly what accept_down's own
+ * pre-flight tests (so the pick can never send a mon somewhere the hook would refuse for a reason THIS function could
+ * have seen): gbs_box_writable() == GBS_OK AND gb_list_count() trusted (>= 0) AND count < gb_list_capacity(). Writes
+ * the 0-based slot the mon will occupy into *out_slot (a Game Boy list always appends at its own count). Read-only:
+ * it stages lists into the session's scratch (g_ed->list, exactly as accept_down does) and writes nothing. Returns -1
+ * on no session / no room. */
+int gb_togame_pick_box(int* out_slot, int* out_unwritable) {
+  if (!g_ed || !out_slot) return -1;
+  const int party = gbs_party_box(&g_ed->s);
+  const int n = gbs_nboxes(&g_ed->s);
+  const int start = (g_m && g_m->ui_box >= 0 && g_m->ui_box < n) ? g_m->ui_box : 0;
+  for (int i = 0; i < n; i++) {
+    const int b = (start + i) % n;
+    if (b == party) continue;
+    if (gbs_box_writable(&g_ed->s, b) != GBS_OK) { if (out_unwritable) (*out_unwritable)++; continue; }
+    if (gbs_load_list(&g_ed->s, b, g_ed->list) != GBS_OK) continue;
+    const int count = gb_list_count(g_ed->s.gen, g_ed->list, b);
+    if (count >= 0 && count < gb_list_capacity(g_ed->s.gen, b)) { *out_slot = count; return b; }
+  }
+  return -1;
+}
+
 /* BACKLOG #280 (Guy's #270 ruling, the bridge half): the marking step of gb_bridge_restore_up --
  * flip the NATIVE_HOME entry to RESTORED, STRICTLY AFTER the restored cell has landed and
  * persisted (the old release-side marking, gb_release_up_hook, relocated with the restore).

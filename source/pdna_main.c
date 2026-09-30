@@ -2918,6 +2918,10 @@ bool app_take_dup_request(void)  { bool r = g_dup_req;  g_dup_req  = false; retu
  * box index, and the arm needs the real (box, slot) for the deferred delete), so it sets this one-shot and the
  * Bank grid, which knows both, consumes it and calls app_bank_togame_native(). */
 static bool g_togame_req = false;
+/* #286/y12: "a resident (write-capable) Game Boy edit session is mounted AND the cart can write" -- the gb_writable
+ * input of xg_togame_gb_row. pdna_gen12_resident() is false for the read-only nav-menu mount; app_can_edit() is
+ * false on an Everdrive / read-only card / hack-flagged save. */
+static bool togame_gb_writable(void) { return pdna_gen12_resident() && app_can_edit(); }
 bool app_take_togame_request(void) { bool r = g_togame_req; g_togame_req = false; return r; }
 /* The party popup's "MOVE TO BOX" action (app_mon_menu) sets g_party_tobox_req; the overlay
  * consumes it to start a party-origin carry. g_party_tobox_allowed gates whether the action is
@@ -4066,7 +4070,7 @@ bool __attribute__((noinline)) app_bank_togame_native(int bank_box, int bank_slo
   uint8_t held[80], conv[80];
   memcpy(held, cell, 80);                                   /* the arm may re-page the shared Bank buffer */
   uint8_t* dst = pk_box_slot(g_pc, db, ds);
-  BankDownResult bd = bank_down_dispatch(&pcs, db, ds, held, dst, conv);
+  BankDownResult bd = bank_down_dispatch(&pcs, db, ds, held, dst, conv, bank_box, bank_slot);
   if (bd != BANK_DOWN_CONVERTED || bc_is_native(conv)) return false;   /* REFUSED: the arm already said why; nothing changed */
   memcpy(dst, conv, 80);
   app_register_dex_deferred(conv, false);                   /* == pcsrc_note_add, the drop's note_add */
@@ -6143,6 +6147,10 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
      * gate as the Gen-3 cell's row (a Bank cell, a live Gen-3 PC, something already in it). It runs the drop's
      * own arm -- the restore-or-convert of bank_down_dispatch -- see app_bank_togame_native. */
     if (is_bank && xg_togame_row(is_bank, app_gen3_pc_live(), g_have_pc)) { lab[n]=PDNA_LBL_TO_GAME; act[n++]=A_TOGAME; }
+    /* #286/y12: the same row in a RESIDENT GB session's Bank visit (no live Gen-3 PC there, so the row above is
+     * hidden and this one shows instead -- mutually exclusive). Its action is the same one-shot request; the
+     * Bank grid runs the drop's own DOWN arm into the first box of the loaded game with room (bank_togame_gb). */
+    if (xg_togame_gb_row(is_bank, app_gen3_pc_live(), togame_gb_writable())) { lab[n]=PDNA_LBL_TO_GAME; act[n++]=A_TOGAME; }
     lab[n]=PDNA_LBL_RELEASE; act[n++]=A_RELEASE;
   } else if (occupied) {
     lab[n]=PDNA_LBL_VIEW_EDIT; act[n++]=A_SUMMARY;     /* opens the editable summary (moves edited there) */
@@ -6172,7 +6180,19 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
      * BACKLOG #120 S2's Bank-from-GB-session exposure never reaches this row; no new
      * gate needed here (orchestrator-requested audit, BACKLOG #120 S2 review). */
     if (!is_bank) { lab[n]=PDNA_LBL_TO_DAYCARE; act[n++]=A_DAYCARE; }  /* deposit into the daycare (all games incl. FR/LG) */
-    /* BACKLOG #120 S2: TO GAME is gated on xg_togame_row (Bank cell AND a live Gen-3
+    /* #286/y12 UPDATE (the paragraph below is the #120 S2 history): that hidden-in-a-GB-session
+     * state is now only true of the GEN-3 destination row. A RESIDENT Game Boy session's Bank
+     * visit gets its OWN TO GAME row, xg_togame_gb_row(is_bank, app_gen3_pc_live(),
+     * togame_gb_writable()) -- shown exactly when the Gen-3 row is not (no live Gen-3 PC) and the
+     * loaded Game Boy save is resident and write-capable (never the read-only nav-menu mount, never
+     * an Everdrive). Its action sets the same one-shot request; pdna_box.c's togame_native_run
+     * routes it to bank_togame_gb, which runs the DROP's own DOWN arm into the first storage box
+     * of the loaded game with room (gb_togame_pick_box): bank_down_dispatch for a native cell
+     * (EXACT / GB_BRIDGE), bank_down_g3_run for a plain Gen-3 cell -- one function per path, shared
+     * with drop_held / drop_held_down_g3, ending in the ONE bank_down_consume. The landing is
+     * immediate (gb_persist inside the arm), unlike the Gen-3 direction's deferred PC write.
+     *
+     * BACKLOG #120 S2: TO GAME is gated on xg_togame_row (Bank cell AND a live Gen-3
      * PC to receive it AND something already in that PC, g_have_pc) -- during a GB
      * session's Bank visit g_vinfo.valid is false (no parsed Gen-3 save), so this row
      * is hidden even though is_bank is true. The outer branch stays `is_bank` itself
@@ -6194,7 +6214,12 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
      * `if (s_tab_focus == 1 && !src->is_bank && !s_orig_party)` gate (is_bank true on
      * a Bank cell -> `else snd_deny()`), unrelated to this slice. No xg_gen3_dest_row
      * predicate exists because no third row needs one. */
-    if (is_bank) { if (xg_togame_row(is_bank, app_gen3_pc_live(), g_have_pc)) { lab[n]=PDNA_LBL_TO_GAME; act[n++]=A_TOGAME; } }   /* bank: inject into the loaded save */
+    if (is_bank) {
+      if (xg_togame_row(is_bank, app_gen3_pc_live(), g_have_pc)) { lab[n]=PDNA_LBL_TO_GAME; act[n++]=A_TOGAME; }   /* bank: inject into the loaded save */
+      /* #286/y12: a Gen-3 Bank cell in a RESIDENT GB session -- the DOWN conversion onto the Game Boy save, exactly
+       * what carrying the cell onto a GB box and dropping it does (bank_togame_gb). */
+      else if (xg_togame_gb_row(is_bank, app_gen3_pc_live(), togame_gb_writable())) { lab[n]=PDNA_LBL_TO_GAME; act[n++]=A_TOGAME; }
+    }
     else         { lab[n]=PDNA_LBL_EXPORT_PK; act[n++]=A_EXPORT; }/* PC/party: write a .pk3 to the bank dir */
     if (m0.heldItem && !g_item_held) { lab[n]=PDNA_LBL_TAKE_ITEM; act[n++]=A_TAKEITEM; }
     if (g_item_held)                 { lab[n]=PDNA_LBL_GIVE_ITEM; act[n++]=A_GIVEITEM; }
@@ -6272,7 +6297,7 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
         case A_TOBOX:   g_party_tobox_req = true; return false;     /* party popup grabs it for a box */
         case A_EXPORT:  if (native) { (void)gb_export_native(rec); return false; }   /* #271: .pk1/.pk2 */
                         pdna_pk_export(rec, &m0); return false;   /* writes a .pk3, not the save */
-        case A_TOGAME:  if (native) { g_togame_req = true; return false; }   /* #271/y10: the Bank grid runs the drop's own arm (app_bank_togame_native) */
+        case A_TOGAME:  if (native || xg_togame_gb_row(is_bank, app_gen3_pc_live(), togame_gb_writable())) { g_togame_req = true; return false; }   /* #271/y10 + #286/y12: the Bank grid runs the drop's own arm (app_bank_togame_native / bank_togame_gb) */
                         return app_inject_to_game(rec);           /* bank -> loaded save's PC */
         case A_DAYCARE: return app_to_daycare(rec, is_party, block, box, slot);   /* -> day-care */
         case A_COPY:    return app_copy(rec, is_party);

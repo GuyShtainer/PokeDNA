@@ -57,6 +57,20 @@ static void test_xg_togame_row(void) {
   printf("(B) xg_togame_row: full 2x2x2 truth table\n");
 }
 
+static void test_xg_togame_gb_row(void) {
+  for (int is_bank = 0; is_bank <= 1; is_bank++)
+    for (int pc_live = 0; pc_live <= 1; pc_live++)
+      for (int gb_w = 0; gb_w <= 1; gb_w++) {
+        bool want = is_bank && !pc_live && gb_w;
+        CHECK(xg_togame_gb_row(is_bank, pc_live, gb_w) == want,
+              "togame_gb_row: true iff Bank cell AND NO live Gen-3 PC AND a writable resident GB session");
+        /* mutually exclusive with the Gen-3 row for any have_pc: never both offered on one cell */
+        CHECK(!(xg_togame_gb_row(is_bank, pc_live, gb_w) && xg_togame_row(is_bank, pc_live, true)),
+              "togame_gb_row and togame_row are never both true");
+      }
+  printf("(B2) xg_togame_gb_row: full 2x2x2 truth table + mutual exclusion with xg_togame_row\n");
+}
+
 static void test_xg_paste_row(void) {
   CHECK(xg_paste_row(false, false) == false, "paste_row: nothing clipped, no PC -> false");
   CHECK(xg_paste_row(false, true)  == false, "paste_row: nothing clipped, live PC -> false");
@@ -463,6 +477,7 @@ static void test_mail_row_mutation(void) {
 int main(void) {
   test_xg_pc_live();
   test_xg_togame_row();
+  test_xg_togame_gb_row();
   test_xg_paste_row();
   test_xg_create_row();
   test_xg_inject_refuse();

@@ -6085,6 +6085,249 @@ def run_y10_togame(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Se
     return s
 
 
+def _y12_same_pixels(a: Path, b: Path, label: str) -> None:
+    """Menu-vs-drop parity by PIXELS: the two frames must be byte-identical images (loud exit otherwise)."""
+    from PIL import Image
+    ia, ib = Image.open(a).convert("RGB"), Image.open(b).convert("RGB")
+    same = ia.size == ib.size and ia.tobytes() == ib.tobytes()
+    print(f"  [Y12 PARITY] {label}: {a.name} == {b.name} -> {'PIXEL-EQUAL' if same else 'DIFFERENT'}")
+    if not same:
+        print(f"[Y12 PARITY FAILED] {label}: the menu frame and the drop frame differ", file=sys.stderr)
+        sys.exit(1)
+
+
+def run_y12_togame_gb(core_mod, image_mod, rom_gold: Path, rom_red: Path, out_dir: Path) -> gb_shots.Session:
+    """#286 (lane y12-286): TO GAME on a Bank cell during a Bank visit from a RESIDENT Game Boy session runs the
+    DROP's own DOWN arm (bank_togame_gb: the first storage box with room + bank_down_dispatch / bank_down_g3_run).
+    Vehicles (as --s150-7): `rom_gold` = tools/fuse_gb.py <pokedna-delta-artless.gba> Gold.gbc Gold.sav (Gen 2),
+    `rom_red` = ... Red.gb Red.sav (Gen 1); `--vsd <img>` = a FRESH mkimg copy (ledger plants for the restore leg).
+    THE EMULATOR WALL: the delta build cannot persist a Game Boy save (gb_persist refuses under PDNA_DELTA), so every
+    LANDING -- the 'SENT TO GAME' message, the Game Boy save bytes, the Bank consume -- is HARDWARE-ONLY (HW-QUEUE
+    XFER-286). What this chain proves mechanically: the row is VISIBLE, and each arm the menu reaches shows the SAME
+    screens the drop's own chains show for the same cell, up to the wall, with the Bank cell untouched after it.
+      A  Gold, slot 0 CHIKORITA (Gen 2 == session gen): EXACT arm -> accept_down's confirm -> the wall.
+      B  Gold, slot 1 PIKACHU (Gen 1 cell, Gen 2 session): GB_BRIDGE -> the conversion preview -> the wall.
+      C  Red,  slot 0 CHIKORITA (Gen 2 cell, Gen 1 session): GB_BRIDGE -> 'NO GEN 1 FORM' (time capsule).
+      D  Red,  slot 1 PIKACHU (Gen 1 == session gen): EXACT arm -> confirm -> the wall.
+    Nav is the s150-7 recipe: UP x3 into the Bank, UP x4 to row 0, A on the cell -> the native menu; TO GAME is the
+    sixth row (VIEW/EDIT, LEGALITY, MOVE, DUPLICATE, EXPORT, TO GAME): DOWN x5."""
+    gb_shots.assert_vehicle(rom_gold, "ARTLESS")
+    gb_shots.assert_vehicle(rom_red, "ARTLESS")
+    print("== #286 (y12-286): TO GAME from a Bank visit inside a Game Boy session ==")
+    saved_default = gb_shots._DEFAULT_VSD_IMG
+    if saved_default is None:
+        raise RuntimeError("--y12-togame-gb requires --vsd <img.img> (a FRESH mkimg copy)")
+    gb_shots._DEFAULT_VSD_IMG = None          # A, C, D need no card: the delta Bank plants box 0 itself
+
+    def bank_menu(rom, prefix, slot):
+        s = gb_shots.Session(core_mod, image_mod, rom, out_dir, prefix)
+        T = lambda k, n=1, **kw: (print(f"  [TRACE] {prefix} {k} x{n}"), s.press_n(k, n, **kw))
+        s.run(700); s.run(100)
+        T("UP", 3, settle=100); T("UP", 4, settle=60)
+        if slot:
+            T("RIGHT", slot, settle=100)
+        return s, T
+
+    try:
+        # ---- A: Gold, CHIKORITA -> EXACT ----------------------------------------------------------------
+        s, T = bank_menu(rom_gold, "y12_gold_exact_", 0)
+        s.shot("00_bank_slot0", "y12: Gold's Bank (UP x3 into the Bank, UP x4 to row 0), cursor on slot 0 -- the planted "
+               "Gen-2 CHIKORITA cell, BANK 1 7/30", claim=["BANK 1"])
+        T("A", settle=150)
+        s.shot("01_native_menu", "y12: A on the cell -- the native-cell menu inside a GAME BOY session now offers TO GAME "
+               "(it was hidden for EVERY cell here: app_gen3_pc_live() is false)", claim=["TO GAME", "EXPORT"])
+        T("DOWN", 5, settle=60)
+        s.shot("02_on_to_game", "y12: DOWN x5 -- the highlight is on TO GAME", claim=["TO GAME"], allow_same=False)
+        T("A", settle=300)
+        s.shot("03_exact_confirm", "y12: A on TO GAME -- the EXACT arm's own confirm ('MOVE TO THE GAME?', the mon's "
+               "name) with NO destination chosen by the user: gb_togame_pick_box took the first box with room",
+               claim=["CHIKORITA"], allow_same=False)
+        T("A", settle=300)
+        s.shot("04_emulator_wall", "y12: A = yes -- gbs_insert ran in RAM and gb_persist hit the emulator build's own wall "
+               "(HARDWARE-ONLY from here: the landing, 'SENT TO GAME', the Bank consume -- HW-QUEUE XFER-286)",
+               allow_same=False)
+        T("A", settle=300)
+        s.shot("05_bank_cell_still_there", "y12: the wall dismissed -- slot 0 of the Bank is still CHIKORITA, BANK 1 7/30: "
+               "the refused persist consumed nothing (bank_down_exact returned REFUSED before the consume)",
+               claim=["BANK 1", "7/30"], allow_same=False)
+        sess = s
+
+        # ---- B: Gold, PIKACHU (Gen 1 cell) -> GB_BRIDGE -------------------------------------------------
+        # (a card is attached: the bridge arm's FIRST act on 'A = transfer' is the /PokeDNA/xfer sidecar write, which
+        # a card-less vehicle answers with 'SIDECAR FOLDER / Nothing transferred' -- an unrelated wall)
+        gb_shots._DEFAULT_VSD_IMG = _y10_fresh_img(saved_default, "y12b")
+        b, TB = bank_menu(rom_gold, "y12_gold_bridge_", 1)
+        gb_shots._DEFAULT_VSD_IMG = None
+        b.shot("00_bank_slot1", "y12: Gold's Bank, cursor on slot 1 -- the planted Gen-1 PIKACHU cell (a DIFFERENT "
+               "generation from this Gen-2 session)", claim=["BANK 1"])
+        TB("A", settle=150); TB("DOWN", 5, settle=60)
+        b.shot("01_on_to_game", "y12: the native menu, highlight on TO GAME", claim=["TO GAME"], allow_same=False)
+        TB("A", settle=400)
+        b.shot("02_bridge_preview", "y12: A -- the GB_BRIDGE arm's conversion preview (the same loss screen a drop on a "
+               "Gen-2 box shows), reached with no box chosen by the user", claim=["A = transfer", "B = cancel"], allow_same=False)
+        TB("A", settle=400)
+        b.shot("03_after_transfer", "y12: A = transfer -- the bridge's own next screen (the sidecar is written, the landing "
+               "is HARDWARE-ONLY behind the emulator wall)", allow_same=False)
+        sess.taken += b.taken; sess.skipped += b.skipped
+
+        # ---- C: Red, CHIKORITA (Gen 2 cell) -> GB_BRIDGE refusal ----------------------------------------
+        c, TC = bank_menu(rom_red, "y12_red_bridge_", 0)
+        c.shot("00_bank_slot0", "y12: Red's Bank, cursor on slot 0 -- the planted Gen-2 CHIKORITA cell", claim=["BANK 1"])
+        TC("A", settle=150); TC("DOWN", 5, settle=60)
+        c.shot("01_on_to_game", "y12: highlight on TO GAME", claim=["TO GAME"], allow_same=False)
+        TC("A", settle=400)
+        c.shot("02_no_gen1_form", "y12: A -- the bridge arm's species-floor refusal 'NO GEN 1 FORM' (CHIKORITA is dex 152 > "
+               "151), the SAME refusal the drop's own chain shows (--s150-7 frame 12)", claim=["NO GEN 1 FORM"], allow_same=False)
+        sess.taken += c.taken; sess.skipped += c.skipped
+
+        # ---- D: Red, PIKACHU (Gen 1 cell == session gen) -> EXACT ---------------------------------------
+        d, TD = bank_menu(rom_red, "y12_red_exact_", 1)
+        d.shot("00_bank_slot1", "y12: Red's Bank, cursor on slot 1 -- the planted Gen-1 PIKACHU cell (== this session's "
+               "generation)", claim=["BANK 1"])
+        TD("A", settle=150); TD("DOWN", 5, settle=60)
+        d.shot("01_on_to_game", "y12: highlight on TO GAME", claim=["TO GAME"], allow_same=False)
+        TD("A", settle=400)
+        d.shot("02_exact_confirm", "y12: A -- the EXACT arm's confirm for PIKACHU", claim=["PIKACHU"], allow_same=False)
+        TD("A", settle=300)
+        d.shot("03_wall", "y12: A = yes -- the emulator wall (landing HARDWARE-ONLY)", allow_same=False)
+        sess.taken += d.taken; sess.skipped += d.skipped
+
+        # ---- I: Gold, a PLAIN Gen-3 cell (BANK 3, the planted Gen-3 BULBASAUR) -> the shared bank_down_g3_run ------
+        gb_shots._DEFAULT_VSD_IMG = _y10_fresh_img(saved_default, "y12i")
+        gi = gb_shots.Session(core_mod, image_mod, rom_gold, out_dir, "y12_gold_gen3_")
+        gb_shots._DEFAULT_VSD_IMG = None
+        TI = lambda k, n=1, **kw: (print(f"  [TRACE] gold_gen3 {k} x{n}"), gi.press_n(k, n, **kw))
+        gi.run(700); gi.run(100)
+        TI("UP", 3, settle=100); TI("UP", 4, settle=60); TI("R", 2, settle=150)
+        gi.shot("00_bank3_gen3_cell", "y12: Gold's Bank, R x2 -> BANK 3 (2/30), cursor on slot 0 -- a PLAIN Gen-3 BULBASAUR "
+                "(never a native cell), which had NO TO GAME row in a GB session before", claim=["BANK 3"])
+        TI("A", settle=150); TI("DOWN", 6, settle=60)
+        gi.shot("01_on_to_game", "y12: the Gen-3 cell's menu (VIEW/EDIT, ITEM, LEGALITY, MOVE, COPY, DUPLICATE, TO GAME, ...): "
+                "the highlight is on TO GAME", claim=["TO GAME", "TAKE ITEM"], allow_same=False)
+        TI("A", settle=400)
+        gi.shot("02_g3_preview", "y12: A -- the Gen-3 -> Gen-2 conversion preview of gb_bank_down_g3 (reached through "
+                "bank_down_g3_run, the function drop_held_down_g3 calls), no box chosen by the user",
+                claim=["A = transfer", "B = cancel"], allow_same=False)
+        TI("A", settle=500)
+        gi.shot("03_g3_after_transfer", "y12: A = transfer -- the next screen: the emulator's GAME BOY SAVE wall (the landing "
+                "is HARDWARE-ONLY), or a move-fill/legal prompt first if one applies", allow_same=False)
+        sess.taken += gi.taken; sess.skipped += gi.skipped
+
+        # ---- MENU-vs-DROP parity (pixels): the same cells carried with MOVE and dropped on the Gold box with room ----
+        def drop_to_room(rom, prefix, slot, move_down, bank_r=0):
+            r, TR = bank_menu(rom, prefix, slot)
+            if bank_r:
+                TR("R", bank_r, settle=150)
+            TR("A", settle=150); TR("DOWN", move_down, settle=60); TR("A", settle=150)   # MOVE
+            TR("DOWN", 5, settle=150)                                                    # off the Bank onto the GB grid
+            for _ in range(13):                                                          # Gold: boxes 1..12 full -> box 13
+                r.tap("R", settle=150)
+            return r, TR
+
+        dx, TDX = drop_to_room(rom_gold, "y12_drop_exact_", 0, 2)
+        TDX("A", settle=300)
+        dx.shot("00_exact_confirm", "y12 (drop): CHIKORITA carried to Gold's box 13 and dropped -- the EXACT arm's confirm",
+                claim=["CHIKORITA", "A = yes"], allow_same=False)
+        _y12_same_pixels(out_dir / "y12_gold_exact_03_exact_confirm.png", out_dir / "y12_drop_exact_00_exact_confirm.png",
+                         "EXACT arm confirm (CHIKORITA): TO GAME menu == the drop")
+        sess.taken += dx.taken; sess.skipped += dx.skipped
+
+        gb_shots._DEFAULT_VSD_IMG = _y10_fresh_img(saved_default, "y12db")
+        db, TDB = drop_to_room(rom_gold, "y12_drop_bridge_", 1, 2)
+        gb_shots._DEFAULT_VSD_IMG = None
+        TDB("A", settle=400)
+        db.shot("00_bridge_preview", "y12 (drop): PIKACHU carried to Gold's box 13 and dropped -- the bridge conversion preview",
+                claim=["A = transfer", "B = cancel"], allow_same=False)
+        _y12_same_pixels(out_dir / "y12_gold_bridge_02_bridge_preview.png", out_dir / "y12_drop_bridge_00_bridge_preview.png",
+                         "GB_BRIDGE preview (PIKACHU): TO GAME menu == the drop")
+        sess.taken += db.taken; sess.skipped += db.skipped
+
+        gb_shots._DEFAULT_VSD_IMG = _y10_fresh_img(saved_default, "y12dg")
+        dg, TDG = drop_to_room(rom_gold, "y12_drop_gen3_", 0, 3, bank_r=2)
+        gb_shots._DEFAULT_VSD_IMG = None
+        TDG("A", settle=400)
+        dg.shot("00_g3_preview", "y12 (drop): the Gen-3 BULBASAUR carried to Gold's box 13 and dropped -- the Gen-3 -> Gen-2 preview",
+                claim=["A = transfer", "B = cancel"], allow_same=False)
+        _y12_same_pixels(out_dir / "y12_gold_gen3_02_g3_preview.png", out_dir / "y12_drop_gen3_00_g3_preview.png",
+                         "Gen-3 -> GB preview (BULBASAUR): TO GAME menu == the drop")
+        sess.taken += dg.taken; sess.skipped += dg.skipped
+
+        # ---- E-H: the bridge-RESTORE walls through the menu (Red + a planted ledger, as --y9-bridge) -----
+        # Bank box 4 (R x3): slot 2 = a Gen-2 BULBASAUR 'bridged down from a Gen-1 original' with a CLAIMED
+        # NATIVE_HOME entry (restorable), slot 3 = RESTORED (a duplicate), slot 4 = PENDING. gb_bridge_restore_up runs
+        # first inside bank_down_convert_gb, so the menu meets exactly the walls the drop meets.
+        def ledger_red(prefix, slot, tag):
+            img = _y10_fresh_img(saved_default, tag)
+            planted = _y9_patch(img, [["ledger", "2"], ["ledger", "3"], ["ledger", "4"]])
+            gb_shots._DEFAULT_VSD_IMG = img
+            try:
+                r = gb_shots.Session(core_mod, image_mod, rom_red, out_dir, prefix)
+            finally:
+                gb_shots._DEFAULT_VSD_IMG = None
+            TR = lambda k, n=1, **kw: (print(f"  [TRACE] {prefix} {k} x{n}"), r.press_n(k, n, **kw))
+            r.run(700); r.run(100)
+            r.vsd_snapshot()
+            TR("UP", 3, settle=100); TR("UP", 4, settle=60)
+            TR("R", 3, settle=150)
+            TR("RIGHT", slot, settle=100)
+            return r, TR, planted
+
+        e, TE, (p2, p3, p4) = ledger_red("y12_red_claimed_", 2, "y12e")
+        e.shot("00_bank_box4", "y12: Red's Bank, R x3 -> BANK 4, cursor on slot 2 (a Gen-2 BULBASAUR with a CLAIMED bridge "
+               "ledger entry)", claim=["BANK 4"])
+        before = _y9_expect(e, "the CLAIMED bridge entry is planted", present=[p2])[p2]
+        TE("A", settle=150); TE("DOWN", 5, settle=60)
+        e.shot("01_on_to_game", "y12: the native menu on the claimed cell, highlight on TO GAME", claim=["TO GAME"], allow_same=False)
+        TE("A", settle=400)
+        e.shot("02_restore_screen", "y12: A on TO GAME -- the RESTORE merge screen (BACK TO ITS ORIGINAL, Level row, KEEP): "
+               "the menu reached gb_bridge_restore_up through the drop's own dispatch, NOT the conversion loss screen",
+               claim=["BACK TO ITS ORIGINAL", "Level", "KEEP"], claim_absent=["WHAT WON'T TRANSFER"], allow_same=False)
+        TE("START", settle=500)
+        e.shot("03_accept_confirm", "y12: START -- accept_down's own one confirm line for the landing", allow_same=False)
+        TE("A", settle=400)
+        e.shot("04_emulator_wall", "y12: A -- the emulator build's own GAME BOY SAVE wall (the landing, the Bank consume and "
+               "the RESTORED mark are HARDWARE-ONLY -- HW-QUEUE XFER-286)", claim=["GAME BOY SAVE"], allow_same=False)
+        after = _y9_expect(e, "the entry is not marked (nothing landed)", present=[p2])[p2]
+        if after != before:
+            print(f"[Y12 CHECK FAILED] the CLAIMED entry changed without a landing: {before} -> {after}", file=sys.stderr)
+            sys.exit(1)
+        sess.taken += e.taken; sess.skipped += e.skipped
+
+        f, TF, _ = ledger_red("y12_red_restored_", 3, "y12f")
+        TF("A", settle=150); TF("DOWN", 5, settle=60)
+        f.shot("00_on_to_game", "y12: slot 3 (a RESTORED entry = a duplicate), highlight on TO GAME", claim=["TO GAME"])
+        TF("A", settle=400)
+        f.shot("01_converts_normally", "y12: A -- an already-RESTORED entry: NO restore screen, the ordinary Gen-2 -> Gen-1 "
+               "conversion preview (a duplicate never restores twice, never refuses) -- the drop's own behaviour",
+               claim=["A = transfer", "B = cancel"], claim_absent=["BACK TO ITS ORIGINAL", "ALREADY RESTORED"], allow_same=False)
+        sess.taken += f.taken; sess.skipped += f.skipped
+
+        g, TG, _ = ledger_red("y12_red_pending_", 4, "y12g")
+        TG("A", settle=150); TG("DOWN", 5, settle=60)
+        g.shot("00_on_to_game", "y12: slot 4 (a PENDING entry), highlight on TO GAME", claim=["TO GAME"])
+        TG("A", settle=400)
+        g.shot("01_save_first_wall", "y12: A -- a PENDING entry meets the SAVE FIRST wall through the menu, exactly as at "
+               "the drop", claim=["SAVE FIRST", "One transfer is waiting"], claim_absent=["BACK TO ITS ORIGINAL"], allow_same=False)
+        sess.taken += g.taken; sess.skipped += g.skipped
+
+        # ---- H: a DUPLICATE (COPY) of the claimed cell converts FRESH through the menu ----------------------
+        h, TH, _ = ledger_red("y12_red_dup_", 2, "y12h")
+        TH("A", settle=150); TH("DOWN", 3, settle=60); TH("A", settle=500)
+        h.shot("00_dup_in_glove", "y12: DUPLICATE on the claimed slot 2 -- a fresh COPY floats in the glove", claim=["A drop  B cancel"], allow_same=False)
+        TH("RIGHT", 3, settle=300); TH("A", settle=800)
+        h.shot("01_dup_placed", "y12: A on the free slot 5 -- the copy is placed in the Bank (6/30)", claim=["BANK 4", "6/30"], allow_same=False)
+        TH("A", settle=150); TH("DOWN", 5, settle=60)
+        h.shot("02_dup_menu", "y12: A on the copy -- its menu, highlight on TO GAME", claim=["TO GAME"], allow_same=False)
+        TH("A", settle=400)
+        h.shot("03_dup_loss_screen", "y12: TO GAME on the COPY -- the FRESH-conversion preview ('WHAT WON'T TRANSFER'), NOT "
+               "the restore merge screen, although the original in slot 2 has a CLAIMED entry: a COPY never restores",
+               claim=["WHAT WON'T TRANSFER"], claim_absent=["BACK TO ITS ORIGINAL"], allow_same=False)
+        sess.taken += h.taken; sess.skipped += h.skipped
+        return sess
+    finally:
+        gb_shots._DEFAULT_VSD_IMG = saved_default
+
+
 def run_y9_lift_passthrough(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
     """#280 (lane y9-280), the GB->Bank LIFT is a pass-through. Vehicle: `rom` = tools/fuse_gb.py
     <pokedna-delta-artless.gba> Red.gb Red.sav (the fused Red the bridge chain also uses); `--vsd <img>`
@@ -8504,6 +8747,10 @@ def _main_dispatch(argv=None) -> int:
     ap.add_argument("--y10-togame", action="store_true",
                      help="#271 remainder (lane y10-togame): run_y10_togame() -- --image = plain fuse_sav.py "
                           "<delta-artless> Emerald.sav, --vsd = a FRESH mkimg copy.")
+    ap.add_argument("--y12-togame-gb", action="store_true",
+                     help="#286 (lane y12-286): run_y12_togame_gb() -- --image = fuse_gb.py <delta-artless> Gold.gbc "
+                          "Gold.sav, --y12-red = fuse_gb.py <delta-artless> Red.gb Red.sav, --vsd = a FRESH mkimg copy.")
+    ap.add_argument("--y12-red", type=Path, help="#286: the fused Red image for --y12-togame-gb.")
     ap.add_argument("--y9-lift", action="store_true",
                      help="#280 (lane y9-280): run_y9_lift_passthrough() -- --image = fuse_gb.py "
                           "<delta-artless> Red.gb Red.sav, --vsd = a FRESH mkimg copy.")
@@ -9715,6 +9962,22 @@ def _main_dispatch(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] y10-togame: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if getattr(a, "y12_togame_gb", False):
+        ran = True
+        if not a.y12_red:
+            sys.exit("--y12-togame-gb also needs --y12-red (see its own --help)")
+        try:
+            sess = run_y12_togame_gb(core_mod, image_mod, a.image, a.y12_red, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] y12-togame-gb: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:

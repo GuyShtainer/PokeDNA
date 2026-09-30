@@ -8,6 +8,8 @@ bool xg_pc_live(bool vinfo_valid, bool arena_held) { return vinfo_valid && !aren
 
 bool xg_togame_row(bool is_bank, bool pc_live, bool have_pc) { return is_bank && pc_live && have_pc; }
 
+bool xg_togame_gb_row(bool is_bank, bool pc_live, bool gb_writable) { return is_bank && !pc_live && gb_writable; }
+
 bool xg_paste_row(bool clip_occupied, bool pc_live) { return clip_occupied && pc_live; }
 
 bool xg_create_row(bool is_bank, bool pc_live) { return !is_bank || pc_live; }
