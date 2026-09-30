@@ -514,7 +514,7 @@ app_native_cell_edit argsites=1 -> banksrc_commit gbsrc_commit app_commit_pc app
 # implementation already declared above (the guard's MAX-frame rule still charges
 # the true worst case even without knowing exactly which field each site is).
 # Verified identical (4) across all three build variants (artless/full/delta).
-pdna_box argsites=4 -> banksrc_records gbsrc_records pcsrc_records banksrc_get_name gbsrc_get_name pcsrc_get_name banksrc_set_name gbsrc_set_name pcsrc_set_name banksrc_get_wp gbsrc_get_wp pcsrc_get_wp banksrc_set_wp gbsrc_set_wp pcsrc_set_wp banksrc_can_edit gbsrc_can_edit app_can_edit banksrc_commit gbsrc_commit app_commit_pc app_commit_sb1 banksrc_mark_dirty gbsrc_mark_dirty app_mark_pc_dirty pcsrc_note_add gbsrc_note_box gbsrc_capacity
+pdna_box argsites=5 -> banksrc_records gbsrc_records pcsrc_records banksrc_get_name gbsrc_get_name pcsrc_get_name banksrc_set_name gbsrc_set_name pcsrc_set_name banksrc_get_wp gbsrc_get_wp pcsrc_get_wp banksrc_set_wp gbsrc_set_wp pcsrc_set_wp banksrc_can_edit gbsrc_can_edit app_can_edit banksrc_commit gbsrc_commit app_commit_pc app_commit_sb1 banksrc_mark_dirty gbsrc_mark_dirty app_mark_pc_dirty pcsrc_note_add gbsrc_note_box gbsrc_capacity
 
 # D6 (BACKLOG #84b fourth pass) sweep: the SAME spilled-BoxSource-field shape as
 # pdna_box's own 4 sites above (a field value spilled to the stack, reloaded past an

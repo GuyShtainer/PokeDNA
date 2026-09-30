@@ -551,6 +551,22 @@ void app_step_end(void);
 void app_journal_cross(void);
 void app_step_name(const char* name);
 
+/* ---- #234 slice 3: undo / redo (SELECT+L / SELECT+R) and the history screen ---------------------------------
+ * app_undo_redo(dir < 0 undo, > 0 redo, name): ONE step through the engine's cursor rule. AUR_DONE re-derived the
+ * decoded copies (sb1/sb2/PC/party) and marked the image dirty; every other code touched NOTHING. `name` = the step's
+ * name on DONE ("" otherwise). The CALLER refuses first while carrying (T4) -- the arena hold (T5) and unstaged PC
+ * edits are refused here. app_undo_live(): the journal is recording (JA_OK) and the chord may fire -- the ONE
+ * question a footer asks before printing the SEL+L/R hint. */
+enum { AUR_DONE = 0, AUR_OFF, AUR_ARENA, AUR_NOTHING, AUR_FLOOR, AUR_DIVERGED, AUR_ERR };
+int  app_undo_redo(int dir, char name[25]);
+bool app_undo_live(void);
+/* The history screen's jump: undo/redo along the current branch to `target` (0 = before the first step), stopping at
+ * a floor. Returns the AUR_* of what stopped it (AUR_DONE = arrived); *moved = steps applied, `stop` = the floor's
+ * step name. Re-derives the copies whenever anything moved. */
+int  app_history_jump(uint32_t target, char stop[25], int* moved);
+/* The history screen itself (nav menu row "History"): pdna_hist.c. */
+void pdna_history_screen(void);
+
 /* PC->Bank MOVE support: clear a PC box slot (release from the save) after the destination
  * bank box has been verified on SD, matched by the mon's 8-byte identity so a bystander is
  * never zeroed. Marks the PC dirty (committed at the one exit save). Omega-only in effect

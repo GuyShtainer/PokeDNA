@@ -10219,6 +10219,52 @@ static void app_journal_rederive(void) {
   for (int i = 0; i < g_nparty; i++) pk_resolve(&g_party[i]);
 }
 
+/* ---- #234 slice 3: undo / redo (design D5/D6/D7). The engine verifies the cursor rule and patches g_save through the
+ * accessor (never the funnel: an undo must not record itself); here the machine half re-derives every decoded copy and
+ * marks the image dirty. T5: never while the arena lends g_pc out or g_pc is ahead of g_save. */
+static int aur_from_rc(int rc) {
+  if (rc == JRN_OK) return AUR_DONE;
+  if (rc == JRN_E_NOTHING || rc == JRN_NOOP) return AUR_NOTHING;
+  if (rc == JRN_E_CROSSED || rc == JRN_E_FLOOR) return AUR_FLOOR;
+  if (rc == JRN_E_DIVERGED) return AUR_DIVERGED;
+  if (rc == JRN_E_ARG || rc == JRN_E_STOPPED || rc == JRN_E_RDONLY) return AUR_OFF;
+  return AUR_ERR;
+}
+
+bool app_undo_live(void) { return app_can_edit() && jrnapp_state(&g_rec) == JA_OK; }
+
+int app_undo_redo(int dir, char name[25]) {
+  int rc, st = jrnapp_state(&g_rec);
+  name[0] = 0;
+  if (st != JA_OK && st != JA_GAP) return AUR_OFF;
+  if (app_arena_held() || imgf_arena_ok(&g_img) == false) return AUR_ARENA;   /* T5: g_pc is a loan / ahead of the image */
+  rc = jrnapp_step(dir, name);
+  if (rc == JRN_OK) {
+    app_journal_rederive();
+    imgf_staged(&g_img);                          /* the image is ahead of the card: the exit save confirms once */
+    log_line("journal: %s '%s' (cursor %lu tip %lu)", dir < 0 ? "undo" : "redo", name,
+             (unsigned long)jrnapp_cursor(), (unsigned long)jrnapp_tip());
+  } else {
+    log_line("journal: %s refused rc %d", dir < 0 ? "undo" : "redo", rc);
+  }
+  jrnapp_log_events(&g_rec);
+  return aur_from_rc(rc);
+}
+
+int app_history_jump(uint32_t target, char stop[25], int* moved) {
+  int rc;
+  int n = 0;
+  if (moved) *moved = 0;
+  if (stop) stop[0] = 0;
+  if (app_arena_held() || imgf_arena_ok(&g_img) == false) return AUR_ARENA;
+  rc = jrnapp_jump(target, stop, &n);
+  if (moved) *moved = n;
+  if (n > 0) { app_journal_rederive(); imgf_staged(&g_img); }
+  log_line("journal: jump to %lu: %d step(s), rc %d", (unsigned long)target, n, rc);
+  jrnapp_log_events(&g_rec);
+  return aur_from_rc(rc);
+}
+
 /* The load-time offer (D1): "N recorded steps are not in this save -- re-apply?". A = the chained cursor-rule
  * application, STOPPING before the first crossed record; B = a discarded marker (never re-offered). An empty-reading
  * journal never gets here (jrn_offer is false: an unreadable journal must not make claims, D9). */
@@ -10272,6 +10318,7 @@ static void __attribute__((noinline)) app_journal_load(void) {
  * write the redirect that keeps the history under the new key. */
 static bool EWRAM_BSS s_jrn_prepare_owed;
 static void app_journal_after_save(void) {
+  jrnapp_mark_saved();           /* the card now holds the image at the journal's cursor: rows at/below it read SAVED */
   s_jrn_prepare_owed = true;     /* NOT run here: finalize sits at the bottom of the deepest commit chains and the ring work
                                   * (jfs_zero's FIL + block, ~1.7 KiB of frames) must not join them; the next rest point does it */
 }
@@ -12174,6 +12221,7 @@ static void view_save(const char* path) {
       g_nparty = pk_read_party_auto(g_sb1, g_party, &g_frlg);
       for (int i = 0; i < g_nparty; i++) pk_resolve(&g_party[i]);
     }
+    if (r == 6) pdna_history_screen();           /* #234 s3: SEL+L/R found the history diverged -> the History screen (the box screen released its borrow) */
     if (r == 2) {                                /* START -> nav menu */
       int refresh_party = 0;
       int nvsel = nav_menu(NAV_ALL_AVAILABLE);
@@ -12262,6 +12310,7 @@ static void view_save(const char* path) {
           break;
         }
         case NV_XFER:    pdna_xfer_reconcile_screen(); break;   /* BACKLOG #150 S150-11 */
+        case NV_HISTORY: pdna_history_screen(); break;          /* #234 s3: the undo journal's tree */
         case NV_SETTINGS: pdna_settings(); break;
         default: break;                          /* NV_BACK */
       }

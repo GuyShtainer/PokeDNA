@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""host_y19_s3_sites_test.py -- BACKLOG #234 slice 3: the undo/redo UI's wiring pins, with teeth.
+
+The chord's LOGIC is pure C and pinned behaviourally by tests/host_chord_test.c (mutants M1-M7 there). What
+cannot be host-run is the wiring in pdna_box.c / pdna_summary.c / pdna_main.c / jrn_app.c, so it is pinned at
+text level (comment-stripped function bodies) and every pin is shown to FAIL on a mutant of the REAL source,
+every run:
+
+  P1  pdna_box's key loop feeds chord_frame and wakes on a chord event (`while (!k && !cev)`)
+  P2  pdna_summary's key loop feeds chord_frame (SELECT acts on release there too)
+  P3  box_chord_action refuses while carrying (s_holding / s_ch_hold / s_item_held) BEFORE it calls the engine
+  P4  app_undo_redo refuses the arena loan (T5) BEFORE it calls the engine
+  P5  app_undo_redo never goes through the staging funnel (an undo must not record itself) and, on success,
+      re-derives the copies and marks the image dirty
+  P6  jrnapp_step flushes the pending records before an undo (the one deviation from the brief, on purpose)
+  P7  the footer hint and the chord are live only on a Gen-3 PC grid (footer_undo / chord_live)
+  P8  the History row exists in the nav table and is dispatched
+  P9  a diverged history leaves the box screen (which holds the EWRAM borrow) with code 6 and the home loop
+      opens the History screen for it
+  P10 pdna_box swallows the spent SELECT hold (`chord_swallow(&chord)`) after the audit, so lifting SELECT is no
+      mode-cycle tap
+"""
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+SRC = ROOT / "source"
+fails: list[str] = []
+
+
+def rd(name: str) -> str:
+    return (SRC / name).read_text(errors="replace")
+
+
+def strip_comments(t: str) -> str:
+    t = re.sub(r"/\*.*?\*/", "", t, flags=re.S)
+    return re.sub(r"//[^\n]*", "", t)
+
+
+def body(text: str, fn: str) -> str:
+    """The comment-stripped body of the function definition `fn` (brace matched); '' when absent."""
+    t = strip_comments(text)
+    m = re.search(r"(?m)^[A-Za-z_][^;{}\n]*\b" + re.escape(fn) + r"\s*\([^;{]*\)\s*\{", t)
+    if not m:
+        return ""
+    i = m.end() - 1
+    d = 0
+    for j in range(i, len(t)):
+        if t[j] == "{":
+            d += 1
+        elif t[j] == "}":
+            d -= 1
+            if d == 0:
+                return t[i:j + 1]
+    return ""
+
+
+def before(b: str, first: str, second: str) -> bool:
+    i, j = b.find(first), b.find(second)
+    return i >= 0 and j >= 0 and i < j
+
+
+def checks(box: str, summ: str, main: str, jrn: str, lay: str) -> dict[str, bool]:
+    pb = body(box, "pdna_box")
+    ps = body(summ, "pdna_summary")
+    if not ps:                                   # the summary loop's function name differs; fall back to the whole file
+        ps = strip_comments(summ)
+    bca = body(box, "box_chord_action")
+    aur = body(main, "app_undo_redo")
+    jst = body(jrn, "jrnapp_step")
+    fu = body(box, "footer_undo")
+    return {
+        "P1 box loop feeds chord_frame and wakes on the chord": bool(pb) and "chord_frame(&chord" in pb and "while (!k && !cev)" in pb,
+        "P2 summary loop feeds chord_frame": "chord_frame(&chord" in ps,
+        "P3 carrying is refused before the engine": bool(bca) and before(bca, "s_holding", "app_undo_redo(") and "s_ch_hold" in bca and "s_item_held" in bca,
+        "P4 the arena loan is refused before the engine (T5)": bool(aur) and before(aur, "app_arena_held()", "jrnapp_step(") and "imgf_arena_ok" in aur,
+        "P5 undo never uses the funnel; re-derives + dirties on success": bool(aur) and "app_stage_sections" not in aur and "img_stage" not in aur
+            and "app_journal_rederive()" in aur and "imgf_staged(&g_img)" in aur,
+        "P6 pending records are flushed before an undo": bool(jst) and before(jst, "jrn_pending(&s_j)", "jrn_undo("),
+        "P7 footer/chord live only on a Gen-3 PC grid": bool(fu) and "BOXSCOPE_PC" in fu and "app_undo_live()" in fu
+            and re.search(r"chord_live\s*=\s*src->scope == BOXSCOPE_PC\s*&&\s*!src->is_bank\s*&&\s*app_can_edit\(\)", strip_comments(box)) is not None,
+        "P8 History row in the nav table + dispatched": "X(NV_HISTORY" in lay and "case NV_HISTORY:" in main,
+        "P9 diverged -> return 6 -> home loop opens History": "cr == BCA_HISTORY" in strip_comments(box) and "return 6;" in strip_comments(box)
+            and re.search(r"if \(r == 6\)\s*pdna_history_screen\(\);", strip_comments(main)) is not None,
+        "P10 the spent SELECT hold is swallowed (no mode-cycle tap)": bool(pb) and "chord_swallow(&chord);" in pb,
+    }
+
+
+def main() -> int:
+    box, summ, mn, jrn, lay = (rd("pdna_box.c"), rd("pdna_summary.c"), rd("pdna_main.c"), rd("jrn_app.c"), rd("pdna_layout.h"))
+    print("real tree:")
+    real = checks(box, summ, mn, jrn, lay)
+    for k, v in real.items():
+        print(f"  {'ok  ' if v else 'FAIL'} {k}")
+        if not v:
+            fails.append(k)
+
+    def mutant(tag: str, which: str, old: str, new: str, expect_red: str) -> None:
+        texts = {"box": box, "summ": summ, "main": mn, "jrn": jrn, "lay": lay}
+        if old not in texts[which]:
+            print(f"  FAIL {tag}: target not found verbatim (source drifted)")
+            fails.append(tag)
+            return
+        texts[which] = texts[which].replace(old, new, 1)
+        r = checks(texts["box"], texts["summ"], texts["main"], texts["jrn"], texts["lay"])
+        red = [k for k, v in r.items() if not v]
+        ok = any(k.startswith(expect_red) for k in red)
+        print(f"  {'ok  ' if ok else 'FAIL'} {tag}: mutant makes {expect_red} RED (red: {[k.split()[0] for k in red]})")
+        if not ok:
+            fails.append(tag)
+
+    print("mutants (each must turn its pin RED):")
+    mutant("M-P1 loop does not wake on the chord", "box", "while (!k && !cev);", "while (!k);", "P1")
+    mutant("M-P2 summary bypasses the chord", "summ", "(void)chord_frame(&chord,", "(void)0; (void)(&chord,", "P2")
+    mutant("M-P3 carrying check moved after the engine", "box", "  if (s_holding || s_ch_hold || s_item_held) {", "  rc = app_undo_redo(redo ? 1 : -1, name);\n  if (s_holding || s_ch_hold || s_item_held) {", "P3")
+    mutant("M-P4 T5 check dropped", "main", "if (app_arena_held() || imgf_arena_ok(&g_img) == false) return AUR_ARENA;   /* T5: g_pc is a loan / ahead of the image */", "", "P4")
+    mutant("M-P5 undo routed through the funnel", "main", "    app_journal_rederive();\n    imgf_staged(&g_img);                          /* the image is ahead of the card: the exit save confirms once */\n    log_line(\"journal: %s '%s'", "    app_stage_sections(0, 13, 0);\n    log_line(\"journal: %s '%s'", "P5")
+    mutant("M-P6 flush-before-undo removed", "jrn", "if (dir < 0 && jrn_pending(&s_j)) (void)jrnapp_flush();", "", "P6")
+    mutant("M-P7 chord live on every source", "box", "const bool chord_live = src->scope == BOXSCOPE_PC && !src->is_bank && app_can_edit();", "const bool chord_live = app_can_edit();", "P7")
+    mutant("M-P8 History row not dispatched", "main", "case NV_HISTORY: pdna_history_screen(); break;", "", "P8")
+    mutant("M-P9 home loop ignores code 6", "main", "if (r == 6) pdna_history_screen();", "", "P9")
+    mutant("M-P10 chord_swallow removed", "box", "chord_swallow(&chord);", "", "P10")
+    if fails:
+        print("FAILED:", ", ".join(fails))
+        return 1
+    print("host_y19_s3_sites_test: all pins hold, every mutant red")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -5773,6 +5773,263 @@ def run_y19_s2(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessio
     return s
 
 
+def run_y19_s3(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """#234 slice 3 (lane y19-s3): the undo/redo UI. Vehicle as run_y19_s2 (`--image` = fuse_sav.py <delta-artless>
+    Emerald.sav, `--vsd` a FRESH mkimg copy: the journal must record). The chord is a GESTURE (rule 17): every
+    chord below is driven as SELECT held first, THEN the L/R press, exactly as a thumb does it (CHORD()), except
+    (a0) which presses both on ONE frame.
+
+    Setup: swap + exit + save (bakes the vehicle's planted cells), the app reopens. Then:
+    (a) swap in the box grid -> SELECT+L -> the swap is undone on screen + the footer toast 'Undid: Box move';
+    (b) SELECT+R -> redone + 'Redid: Box move'; (c) SELECT alone (press+release) still cycles the cursor mode, and
+    SELECT in the summary still flips the portrait; (d) SELECT held + L does NOT also cycle the mode on release;
+    (f) carrying a mon -> SELECT+L -> the T4 refusal; (g) the History screen: rows, recorded/SAVED, A-jump, B;
+    (e) a Bank drop (crossed) -> SELECT+L -> the floor refusal; History again shows the FLOOR and A stops at it;
+    (h) the grid footer (short form SEL+L/R)."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")
+    print("== #234 s3 (y19-s3): undo/redo chord, toasts, footers, History screen (--vsd) ==")
+    if gb_shots._DEFAULT_VSD_IMG is None:
+        raise RuntimeError("--y19-s3 requires --vsd <img.img> (a FRESH template image)")
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "y19s3_")
+    from PIL import Image  # noqa: E402
+    import numpy as np  # noqa: E402
+    trace: list = []
+    shots: dict = {}
+    latency: list = []
+    n = [0]
+    K = gb_shots.KEY
+
+    def rec(name: str, inp: str, cap: str, path) -> None:
+        trace.append((name, inp, cap)); shots[name] = path
+
+    def T(key: str, cap: str, settle: int = 150, times: int = 1, claim=None, claim_absent=None) -> None:
+        for _ in range(times):
+            s.tap(key, settle=settle)
+        name = f"{n[0]:02d}_{key.lower()}"
+        n[0] += 1
+        rec(name, f"{key} x{times}", cap, s.shot(name, cap, allow_same=True, claim=claim, claim_absent=claim_absent))
+
+    def SHOT(tag: str, cap: str, claim=None, claim_absent=None) -> None:
+        name = f"{n[0]:02d}_{tag}"
+        n[0] += 1
+        rec(name, "-", cap, s.shot(name, cap, allow_same=True, claim=claim, claim_absent=claim_absent))
+
+    def strip():
+        return np.asarray(s.screen.to_pil().convert("RGB"), dtype=np.int16)[150:160, 78:240]
+
+    def CHORD(second: str, cap: str, settle: int = 45, tag: str = "chord", claim=None, claim_absent=None,
+              same_frame: bool = False) -> None:
+        """Idle 170 frames (any earlier toast has expired), SELECT down, 8 frames, THEN `second` down (3 frames), up,
+        6 frames, SELECT up; then poll every 3 frames until the footer strip differs from its pre-chord pixels (the
+        toast / refusal is up: that is the action's repaint latency), `settle` more frames, shot."""
+        s.run(170)
+        pre = strip()
+        f0 = 0
+        if same_frame:
+            s.core.set_keys(raw=K["SEL"] | K[second]); s.run(gb_shots.HOLD); f0 += gb_shots.HOLD
+            s.core.set_keys(raw=0)
+        else:
+            s.core.set_keys(raw=K["SEL"]); s.run(8); f0 += 8
+            s.core.set_keys(raw=K["SEL"] | K[second]); s.run(gb_shots.HOLD); f0 += gb_shots.HOLD
+            s.core.set_keys(raw=K["SEL"]); s.run(6); f0 += 6
+            s.core.set_keys(raw=0)
+        lat = None
+        for i in range(0, 700, 3):
+            s.run(3)
+            if int((np.abs(strip() - pre).max(axis=2) > 0).sum()) > 0:
+                lat = i + 3
+                break
+        s.run(settle)
+        s._io_quiesce()
+        name = f"{n[0]:02d}_{tag}"
+        n[0] += 1
+        latency.append((name, lat))
+        print(f"  {name}: footer/dialog changed {lat} frames after SELECT was released (None = never within 700)")
+        rec(name, f"SEL down, {second} down/up, SEL up" + (" (ONE frame)" if same_frame else ""), cap,
+            s.shot(name, cap, allow_same=True, claim=claim, claim_absent=claim_absent))
+
+    def res(k: str):
+        if k in shots:
+            return shots[k]
+        for nm in reversed(list(shots)):
+            if nm.endswith("_" + k):
+                return shots[nm]
+        raise KeyError(k)
+
+    def bbox(a: str, b: str):
+        ia = np.asarray(Image.open(res(a)).convert("RGB"), dtype=np.int16)
+        ib = np.asarray(Image.open(res(b)).convert("RGB"), dtype=np.int16)
+        d = np.abs(ia - ib).max(axis=2)
+        ys, xs = np.nonzero(d)
+        if not xs.size:
+            return None
+        return (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1, int(xs.size))
+
+    def expect(cond: bool, what: str) -> None:
+        print(f"  [{'ok' if cond else 'FAIL'}] {what}")
+        if not cond:
+            s.any_claim_failed = True
+
+    s.run(700)
+    s.vsd_snapshot()
+
+    # ---- setup: swap, exit, save (the vehicle's planted cells become part of the image), reopen
+    T("A", "setup: cell menu")
+    T("DOWN", "setup: menu on MOVE", times=3)
+    T("A", "setup: MOVE picked")
+    T("RIGHT", "setup: next cell")
+    T("A", "setup: swap drop")
+    T("B", "setup: place back")
+    T("B", "setup: exit -> the ONE exit confirm", claim=["Save changes", "staged changes"])
+    T("A", "setup: yes -> saved", settle=400, claim=["Flash written"])
+    T("A", "setup: dismiss SAVED", settle=300)
+    T("A", "setup: dismiss the vehicle's planted-transfer notice -> the app reopens the save", settle=60)
+    s.run(900)
+    SHOT("base", "BASE: the save reopened, box 1 grid (this is the 'before' frame every undo below must return to)")
+
+    def gridcmp(a: str, b: str):
+        """Diff of the GRID region only (x 78..239, y 32..147): the hand cursor's bob (header row) and the footer
+        toast are outside it, so 'the undo restored the grid' is a pixel count of exactly 0."""
+        ia = np.asarray(Image.open(res(a)).convert("RGB"), dtype=np.int16)[32:148, 78:240]
+        ib = np.asarray(Image.open(res(b)).convert("RGB"), dtype=np.int16)[32:148, 78:240]
+        return int((np.abs(ia - ib).max(axis=2) > 0).sum())
+
+    def gridcmp_nohand(a: str, b: str):
+        """gridcmp minus the hand cursor's box (the cursor is at a different cell after a reload): x 88..135, y 32..64."""
+        ia = np.asarray(Image.open(res(a)).convert("RGB"), dtype=np.int16)[32:148, 78:240]
+        ib = np.asarray(Image.open(res(b)).convert("RGB"), dtype=np.int16)[32:148, 78:240]
+        d = np.abs(ia - ib).max(axis=2) > 0
+        d[0:33, 10:58] = False
+        return int(d.sum())
+
+    def swap_edit(tag: str) -> None:
+        T("A", f"({tag}) cell menu")
+        T("DOWN", f"({tag}) menu on MOVE", times=3, claim=["MOVE"])
+        T("A", f"({tag}) MOVE picked")
+        T("RIGHT", f"({tag}) next cell")
+        T("A", f"({tag}) swap drop (the displaced mon is now IN HAND)", claim_absent=["Save "])
+        T("B", f"({tag}) B: place the displaced mon back; no prompt", claim_absent=["Save changes", "Save the"])
+        s.run(120)
+
+    # ---- (a)/(b): a swap is TWO recorded drops; undo x2 returns to BASE, redo x2 returns to EDITED
+    swap_edit("a")
+    SHOT("edited", "(a) AFTER the swap: MAG and VOL exchanged (first two cells; the 'edited' frame)")
+    CHORD("L", "(a) SELECT held, THEN L: UNDO #1 -> toast 'Undid: Box move'. The grid is the HALF-swap: only the second "
+          "drop is undone, MAG is in nobody's hands (29/30) -- a swap is two steps (see the report)", tag="undo1",
+          claim=["Undid"])
+    CHORD("L", "(a) SELECT+L again: UNDO #2 -> the grid is BASE again + toast", tag="undo2", claim=["Undid"])
+    CHORD("R", "(b) SELECT held, THEN R: REDO #1 -> toast 'Redid: Box move' (half-swap again, 29/30)", tag="redo1",
+          claim=["Redid"])
+    CHORD("R", "(b) SELECT+R again: REDO #2 -> EDITED again + toast", tag="redo2", claim=["Redid"])
+    s.run(250)
+    SHOT("after_toast", "(b) ~4 s later: the toast expired, the grid footer is back (short form SEL+L/R)", claim=["SEL+L/R"])
+    CHORD("L", "(a0) SELECT+L pressed on ONE frame: still an undo (toast 'Undid')", tag="undo_same", same_frame=True,
+          claim=["Undid"])
+    CHORD("R", "(a0) SELECT+R pressed on ONE frame: still a redo (toast 'Redid')", tag="redo_same", same_frame=True,
+          claim=["Redid"])
+    s.run(150)
+
+    # ---- (c) SELECT alone still cycles the mode; (d) SEL+L/R does not; portrait flip still flips
+    T("SEL", "(c) SELECT alone (press + release, no L/R): NORMAL -> MOVE (footer 'MOVE A grab')", settle=40,
+      claim=["MOVE A grab"])
+    T("SEL", "(c) SELECT alone again: MOVE -> ITEM", settle=40, claim=["ITEM"])
+    T("SEL", "(c) SELECT alone again: ITEM -> NORMAL", settle=40, claim_absent=["MOVE A grab", "ITEM  A take"])
+    CHORD("L", "(d) SELECT held + L (an undo): on the SELECT release the mode must NOT cycle", tag="sel_lr_nocycle",
+          claim=["Undid"], claim_absent=["MOVE A grab", "ITEM  A take"])
+    s.run(150)
+    SHOT("after_d", "(d) 2.5 s later: the NORMAL footer -- no mode cycle happened", claim_absent=["MOVE A grab", "ITEM  A take"])
+    CHORD("R", "(d) restore: SEL+R redoes it", tag="restore_d", claim=["Redid"])
+    s.run(150)
+    T("A", "(c) cell menu")
+    T("A", "(c) first menu row: the summary card opens (front sprite)", settle=300)
+    s.run(60)
+    SHOT("summary_front", "(c) summary, front portrait")
+    T("SEL", "(c) SELECT alone in the summary: the portrait flips", settle=60)
+    bs = bbox("%02d_sel" % (n[0] - 1), "summary_front")
+    print(f"  diff(summary after SELECT vs before) = {bs}")
+    T("B", "(c) B: back to the grid", settle=200)
+
+    # ---- (f) carrying -> SELECT+L refuses (T4)
+    T("A", "(f) cell menu")
+    T("DOWN", "(f) menu on MOVE", times=3)
+    T("A", "(f) MOVE picked: carrying")
+    CHORD("L", "(f) carrying a mon: SELECT+L -> the T4 refusal", tag="carry_refuse", claim=["carrying"])
+    T("A", "(f) A dismisses the refusal", settle=200)
+    T("B", "(f) B: put the carried mon back", settle=200)
+    SHOT("after_f", "(f) the grid after the carry was cancelled")
+
+    # ---- (g) the History screen
+    s.tap("START", settle=200)
+    s.tap("RIGHT", settle=20)
+    s.press_n("DOWN", 8, settle=12)
+    SHOT("nav_history", "(g) nav menu, cursor on 'History'", claim=["History"])
+    T("A", "(g) A: the HISTORY screen -- branch, cursor marker '>', recorded / undone / SAVED", settle=300, claim=["HISTORY"])
+    T("DOWN", "(g) DOWN: select the next older row", settle=30)
+    T("A", "(g) A: JUMP to that row (chained undo)", settle=400)
+    T("B", "(g) B: back out of History (straight to the grid)", settle=300)
+    SHOT("after_jump", "(g) the grid after the jump")
+
+    # ---- (e) a Bank drop (crossed) -> the floor
+    T("DOWN", "(e) DOWN: off the title row onto the grid", settle=60)
+    T("RIGHT", "(e) RIGHT: cursor on a mon (cell 2)", settle=60)
+    T("A", "(e) that mon's menu", settle=200)
+    T("DOWN", "(e) menu on MOVE", times=3, settle=80, claim=["MOVE"])
+    T("A", "(e) MOVE picked: carrying", settle=200)
+    T("UP", "(e) UP: cursor onto the box-name row", settle=100)
+    T("UP", "(e) UP again: onto the PARTY/SAVE tab row", settle=100)
+    T("UP", "(e) UP again: off the top -> the Bank (still carrying)", settle=300)
+    SHOT("in_bank", "(e) in the Bank, carrying the PC mon")
+    T("A", "(e) A: drop into the Bank -- a CROSSED step (the Bank copy lives in another file)", settle=500)
+    T("DOWN", "(e) DOWN: off the bottom of the Bank -> back to the PC grid", settle=400)
+    SHOT("back_in_pc", "(e) the PC grid again (the dropped mon is gone from its cell)")
+    CHORD("L", "(e) SELECT+L on the CROSSED step: the floor refusal (nothing patched)", tag="floor", claim=["another file"])
+    T("A", "(e) A dismisses", settle=300)
+    T("DOWN", "(e) DOWN: off the tab row onto the box-name row (START opens the nav menu from the grid)", settle=100)
+    s.tap("START", settle=200)
+    s.tap("RIGHT", settle=20)
+    s.press_n("DOWN", 8, settle=12)
+    T("A", "(e) History again: the newest row is the crossed step, tagged FLOOR", settle=300, claim=["HISTORY"])
+    T("DOWN", "(e) DOWN to the next older row", settle=30)
+    T("A", "(e) A: jump below the floor -> 'STOPPED AT A FLOOR' (undo cannot pass a crossed step)", settle=300)
+    T("A", "(e) dismiss", settle=300)
+    SHOT("history_after_stop", "(e) History after the refused jump: nothing moved")
+    T("B", "(e) B out of History", settle=300)
+    SHOT("final_grid", "(h) the PC grid footer (short form SEL+L/R)", claim=["SEL+L/R"])
+
+    # ---- (i) the half-swap recovery net (permanent leg, #234 s3 fix pass): swap -> ONE SEL+L (the box is one mon short:
+    # the displaced mon is in nobody's hands) -> exit-SAVE that half-swapped image -> power cycle -> the load-time offer
+    # is up for the UNDONE tail ("1 recorded step...") -> A re-applies it -> the box is whole again.
+    T("DOWN", "(i) DOWN: off the box-name row onto the first grid cell", settle=60)
+    swap_edit("i")
+    SHOT("i_swapped", "(i) after a fresh swap: the box is whole (the count is the 'before' number)")
+    CHORD("L", "(i) ONE SELECT+L: undo #1 of the swap = the HALF-swap; the box count drops by one (a mon is in nobody's hands)",
+          tag="i_half", claim=["Undid"])
+    T("B", "(i) B: exit the box editor -> the exit confirm for the HALF-swapped image", settle=200, claim=["Save changes"])
+    T("A", "(i) A: yes -> the half-swapped image is SAVED", settle=400, claim=["Flash written"])
+    T("A", "(i) A: dismiss SAVED -> the vehicle's planted-transfer notice (pre-existing on main; the cut lands here)", settle=300)
+    s.vsd_flush()
+    s.core.reset()
+    s.run(1000)
+    SHOT("i_reloaded", "(i) POWER CYCLE + reload: the load-time offer must be up ('1 recorded step...') for the undone tail",
+         claim=["Recorded steps found"])
+    T("A", "(i) A: re-apply the undone step", settle=300)
+    T("A", "(i) A: dismiss RE-APPLIED", settle=300)
+    s.run(200)
+    SHOT("i_whole", "(i) re-applied: the swap is back and the box count is whole again (the 'before' number)")
+
+    print("\n  frame checks (numbers, not impressions):")
+    expect(bs is not None, "(c) the summary portrait changed after a lone SELECT (flip)")
+    expect(gridcmp("i_swapped", "i_half") > 0, "(i) the half-swap grid differs from the swapped grid (the undo took a mon out of the box)")
+    expect(gridcmp_nohand("i_swapped", "i_whole") == 0, "(i) after the power cut + offer + A the grid is pixel-identical to the pre-undo swapped grid (hand cursor masked: it restarts on the first cell)")
+    print("\n  chord latency (frames from the L/R press to the toast/dialog on screen): " +
+          ", ".join(f"{a.split('_', 1)[1]}={b}" for a, b in latency))
+    print("\n  per-tap trace (rule 17): name | input | caption")
+    for nm, k, cap in trace:
+        print(f"  {nm:24s} | {k:44s} | {cap}")
+    s.vsd_flush()
+    return s
+
+
 def _y7_plantcmp(img: Path) -> None:
     """F3: pull box00.box out of the (already flushed) --vsd image and require Bank slot 24 ==
     the planted slot-29 record byte-for-byte (tests/y7_plantcmp.c, built with the
@@ -9104,6 +9361,9 @@ def _main_dispatch(argv=None) -> int:
     ap.add_argument("--y19-s2", action="store_true",
                      help="#234 slice 2 (lane y19-s2): run_y19_s2() -- --image = plain fuse_sav.py "
                           "<delta-artless> Emerald.sav, --vsd = a FRESH mkimg-from-template copy.")
+    ap.add_argument("--y19-s3", action="store_true",
+                     help="#234 slice 3 (lane y19-s3): run_y19_s3() -- --image = plain fuse_sav.py "
+                          "<delta-artless> Emerald.sav, --vsd = a FRESH mkimg-from-template copy.")
     ap.add_argument("--y7-bankpass", action="store_true",
                      help="#270 (lane y7-bankpass): only run_y7_bank_passthrough() -- --image "
                           "as for --s150-15 (plain fuse_sav.py <delta-artless> Emerald.sav) "
@@ -10298,6 +10558,20 @@ def _main_dispatch(argv=None) -> int:
         for name, reason in skipped:
             print(f"  [skip] {name}: {reason}")
         return 0
+
+    if getattr(a, "y19_s3", False):
+        ran = True
+        try:
+            sess = run_y19_s3(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] y19-s3: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0 if not sess.any_claim_failed else 1
 
     if getattr(a, "y19_s2", False):
         ran = True

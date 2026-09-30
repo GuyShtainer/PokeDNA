@@ -189,6 +189,7 @@ static void test_every_row_covered(void) {
   static const int coming_soon_both[] = {
     NV_PARTY,   /* NV_FLY (#90), NV_DATA (#88), NV_BATTLEREC (#89), NV_DEX (#87),
                  * NV_MAP (#91 M1-G2) and NV_BANK (#120 S2) all moved to ok_both below */
+    NV_HISTORY, /* #234 s3: the undo journal is Gen-3 only until slice 4 (GB parity, design D8) */
     NV_XFER   /* BACKLOG #150 S150-11: the TRANSFERS screen only reads a Gen-3 PC
               * (app_gen3_pc_live()), which a raw Game Boy session never has --
               * same "open it from the other side" shape as NV_GB above */

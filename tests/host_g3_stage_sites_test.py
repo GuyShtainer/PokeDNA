@@ -86,6 +86,7 @@ def build_and_run_funnel(core_dir: Path, tag: str) -> tuple[int, str]:
            str(ROOT / "tests" / "host_jrn_funnel_test.c"), str(core_dir / "img_stage.c"),
            str(ROOT / "source" / "gen3_save.c"), str(ROOT / "source" / "journal.c"),
            str(ROOT / "source" / "journal_undo.c"), str(ROOT / "source" / "journal_fs.c"),
+           str(core_dir / "jrn_app.c"),
            str(ROOT / "lib" / "fatfs" / "ff.c"), str(ROOT / "lib" / "fatfs" / "ffunicode.c"),
            str(ROOT / "tests" / "hostfat" / "ramdisk.c"), "-o", str(exe)]
     b = subprocess.run(cmd, capture_output=True, text=True)
@@ -99,7 +100,7 @@ def build_and_run_funnel(core_dir: Path, tag: str) -> tuple[int, str]:
 def funnel_mutant(tag: str, edits: list[tuple[str, str, str]]) -> tuple[int, str]:
     d = Path(tempfile.mkdtemp(prefix="jrnmut_"))
     try:
-        for f in ("img_flags.h", "img_stage.h", "img_stage.c"):
+        for f in ("img_flags.h", "img_stage.h", "img_stage.c", "jrn_app.c"):
             shutil.copy(ROOT / "source" / f, d / f)
         for f, old, new in edits:
             t = (d / f).read_text()
@@ -160,6 +161,9 @@ def c_pins() -> None:
         "F6 a resynced step is not crossed": [
             ("img_stage.c", "      crossed = 1;                  /* the resynced base is not the recorded chain's base: floor here too */\n", "")],
     }
+    # F8 (#234 s3 fix pass): the offer widening in jrn_app.c -- an UNDONE tail (cursor < tip) must be offered
+    fmuts["F8 an undone tail is not offered"] = [("jrn_app.c",
+        "  if (!jrn_offer(&s_j) && jrn_tip(&s_j) == jrn_cursor(&s_j)) return 0;", "  if (!jrn_offer(&s_j)) return 0;")]
     for name, edits in fmuts.items():
         rc, out = funnel_mutant(name[:2], edits)
         check(f"C mutant {name} -> RED (rc={rc})", rc == 1, out)

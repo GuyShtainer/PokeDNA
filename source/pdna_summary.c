@@ -14,6 +14,7 @@
 #include "pdna_summary.h"
 #include "perf.h"        /* the summary-open rollup (telemetry) */
 #include "pdna_app.h"     /* app_anim_enabled (portrait animation) */
+#include "chord.h"        /* #234 s3: the ONE SELECT chord helper */
 #include "ui.h"
 #include "gen3_mon.h"
 #include "gen3_edit.h"
@@ -1156,6 +1157,7 @@ static int summary_run_inner(uint8_t* rec, bool is_party, bool can_edit, uint8_t
    * screen (box, another mon's summary) was on-screen before this call. */
   pd_summary_left_dirty();
   pdna_summary_sel_frame_drop();   /* likewise: whatever s_self_px held belonged to that screen */
+  Chord chord; chord_reset(&chord);   /* #234 s3: a SELECT hold from the previous screen never leaks in */
 
   for (;;) {
     g_edit = editing;
@@ -1249,6 +1251,8 @@ static int summary_run_inner(uint8_t* rec, bool is_party, bool can_edit, uint8_t
          if (anim) { int fam = mon_anim_family(cur.species), wx, sy, dx, dy;
                                    portrait_params(fam, ++anim_t, &wx, &sy, &dx, &dy); portrait_redraw(&cur, p_spr, p_icon, p_era, p_sw, p_sh, wx, sy, dx, dy, &lastkey); }  /* idle wiggle tick -- memcpy32 */
          fresh = key_hit(KEY_FULL);
+         { u16 cf = (u16)fresh;                  /* #234 s3: SELECT acts on RELEASE (the portrait flip); never live for undo here: the card holds a staging copy of the mon */
+           (void)chord_frame(&chord, (u16)key_curr_state(), (u16)fresh, false, &cf); fresh = cf; }
          k = fresh | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);
     if      (fresh & (KEY_UP | KEY_DOWN)) snd_move();
     else if (fresh & (KEY_L | KEY_R | KEY_SELECT)) snd_tab();

@@ -50,6 +50,7 @@ _Static_assert(BOXSCOPE_BANK == 1, "source/xfer_gate.c's XG_SCOPE_BANK hard-code
 #include "pdna_pk.h"        /* pdna_pk_export_silent: "Export all" from the box title */
 #include "bank_cell.h"      /* bc_is_native/bc_unpack/bc_view/bc_ident32 -- native Bank cell render (BACKLOG #150 S150-2) */
 #include "pdna_gen12.h"     /* BACKLOG #150 S150-8: BankDownResult, bank_down_convert_gb/gen3 */
+#include "chord.h"          /* #234 s3: the ONE SELECT chord helper (SELECT on release; SEL+L/R = undo/redo) */
 #include "gb12_render.h"    /* gb12_render_rec/GB_SHOW_* -- shared display ladder */
 #include "pdna_bank.h"      /* pdna_bank_prepare_native -- the UP drop's backup gate (BACKLOG #150 S150-4) */
 #include "bank_collision.h" /* BACKLOG #168a: drop_held's UP-branch 16-box ident32 collision scan */
@@ -2207,7 +2208,13 @@ static bool __attribute__((noinline)) dup_restamp_native(uint8_t held[80]) {
   return bc_restamp_copy(held, serial);
 }
 
-static void draw_footer(bool is_bank, bool on_title, bool moving) {
+/* #234 s3: the PC grid may say SEL+L/R only while the chord is LIVE here (a Gen-3 PC, an editable card, the journal
+ * recording) -- never on the Bank or a Game Boy grid, never with the journal off. */
+static bool footer_undo(const BoxSource* src) {
+  return src && src->scope == BOXSCOPE_PC && !src->is_bank && app_undo_live();
+}
+
+static void draw_footer(bool is_bank, bool undo, bool on_title, bool moving) {
   const char* f;
   if (s_tab_focus >= 0)    f = tab_focus_footer(s_holding, pdna_box_carry_is_gb());
   else if (moving)         f = "A drop  B cancel";
@@ -2222,6 +2229,7 @@ static void draw_footer(bool is_bank, bool on_title, bool moving) {
   else if (on_title)       f = "L/R A name SEL menu";
   else if (s_cur_mode == CM_MOVE) f = "MOVE A grab hold=set";
   else if (s_cur_mode == CM_ITEM) f = "ITEM  A take  SEL B";
+  else if (undo && !is_bank) f = "A menu  SEL+L/R undo";   /* #234 s3: the short form (SEL+L undo, SEL+R redo) -- the strip is 20 columns */
   else                     f = is_bank ? "A menu  SEL  L/R  B"
                                        : "A menu  UP  SEL  B";
   /* clear the footer strip first (it changes between modes) */
@@ -2670,7 +2678,7 @@ static void render_full(BoxSource* src, int box, int cur, bool on_title, bool mo
   artless_cells();
   blocked_cells(src, box);      /* BACKLOG #200 F1: mark cells past this source's capacity */
   draw_box_banner(src, box, on_title);
-  draw_footer(src->is_bank, on_title, moving);
+  draw_footer(src->is_bank, footer_undo(src), on_title, moving);
 
   oam_sync(cur, on_title, box, src->is_bank);        /* icons + cursor + carry + markers */
 }
@@ -2793,7 +2801,7 @@ static void move_cursor(BoxSource* src, int box, int old_cur, bool old_title,
      * the columns past the map (BACKLOG #274), so no 1-px sliver remains. */
     wp_restore_rect(WP_X, WP_Y, WP_W, 16);
     draw_box_banner(src, box, on_title);
-    draw_footer(src->is_bank, on_title, false);
+    draw_footer(src->is_bank, footer_undo(src), on_title, false);
   }
   draw_left(on_title ? 0 : &g_box[cur]);              /* the selected mon changed */
   if (!on_title && !old_title) cursor_slide(src, box, old_cur, cur, false);
@@ -3162,7 +3170,7 @@ static uint8_t* begin_select(BoxSource* src, int box, uint8_t* recs, int cur, bo
       if (themed) render_full(src, box, anchor, false, false, false);   /* only to undo the theme */
       play_grab_anim(src, box, anchor);                 /* hand stays on screen throughout */
       carry_move(src, box, anchor, anchor);
-      draw_footer(src->is_bank, false, true);
+      draw_footer(src->is_bank, footer_undo(src), false, true);
       *pfull = false;
     } else { snd_deny(); *pfull = true; }
     return recs;
@@ -4529,7 +4537,7 @@ static void __attribute__((noinline)) pcp_open_party_strip_inner(BoxSource* src,
     s_tab_focus = -1; s_oam_reload = true;
     render_full(src, box, *cur, false, false, true);                  /* repaint box over the popup */
     play_grab_anim(src, box, *cur); carry_move(src, box, *cur, *cur);
-    draw_footer(src->is_bank, false, true);
+    draw_footer(src->is_bank, footer_undo(src), false, true);
     *need_full = false;                         /* already fully painted, see header comment */
   } else { s_tab_focus = -1; s_oam_reload = true; *need_full = true; } /* closed -> back to the
                                       * grid (rr==0 not holding, rr==0 still holding a
@@ -4550,6 +4558,53 @@ static void __attribute__((noinline)) pcp_open_party_strip(BoxSource* src, int b
                                                   * (and every write beneath it) ever exists */
   }
   pcp_open_party_strip_inner(src, box, cur, need_full);
+}
+
+/* #234 s3: SELECT+L (undo) / SELECT+R (redo) on the PC grid -- design D5/D6/D7. Only ever called when the chord is
+ * LIVE (a Gen-3 PC, an editable card) and no editor holds a staging copy (this loop IS the no-editor state). Every
+ * refusal says why in one honest line; a success toasts the step name in the footer strip (no dialog, no new
+ * rendering machinery). Returns true when the image changed (the caller re-fetches the records). */
+static void chord_refuse(const char* title, const char* l1, const char* l2) {
+  boxoam_suspend();
+  msg_wait(title, UI_WARN, l1, l2);
+  boxoam_resume();
+}
+
+enum { BCA_NONE = 0, BCA_CHANGED = 1, BCA_HISTORY = 2 };   /* nothing / the image changed (re-fetch) / open the History screen */
+static int __attribute__((noinline)) box_chord_action(int ev, char toast[26], bool* need_full) {
+  char name[25], l1[40];
+  const bool redo = (ev == CHORD_REDO);
+  const char* verb = redo ? "REDO" : "UNDO";
+  int rc;
+  if (s_holding || s_ch_hold || s_item_held) {               /* T4: a carried mon/item lives in no image */
+    snd_deny();
+    chord_refuse(verb, "You are carrying something.", redo ? "Put it down, then redo." : "Put it down, then undo.");
+    *need_full = true; s_oam_reload = true;
+    return BCA_NONE;
+  }
+  rc = app_undo_redo(redo ? 1 : -1, name);
+  if (rc == AUR_DONE) {
+    snd_ok();
+    siprintf(toast, redo ? "Redid: %.17s" : "Undid: %.17s", name);
+    s_oam_reload = true; *need_full = true;
+    return BCA_CHANGED;                                      /* the image changed under the grid: the caller re-fetches the records */
+  }
+  snd_deny();
+  if (rc == AUR_NOTHING) { siprintf(toast, redo ? "Nothing to redo" : "Nothing to undo"); return BCA_NONE; }
+  if (rc == AUR_OFF)     { siprintf(toast, "History is off"); return BCA_NONE; }
+  if (rc == AUR_FLOOR) {                                     /* D6: a crossed step is a floor -- never patched, never guessed */
+    siprintf(l1, redo ? "Redo stops before %.16s." : "Can't undo %.19s.", name[0] ? name : "a transfer");
+    chord_refuse(redo ? "REDO STOPS" : "CAN'T UNDO", l1, redo ? "It crossed files: redo it by hand." : "It crossed into another file.");
+  } else if (rc == AUR_ARENA) {                              /* T5 */
+    chord_refuse(verb, "The box data is on loan to", "another screen. Leave and retry.");
+  } else if (rc == AUR_DIVERGED) {                           /* D5: the engine verified, the image no longer matches: never patch blind */
+    chord_refuse("HISTORY DIVERGED", "History diverged here: the save", "no longer matches this step.");
+    return BCA_HISTORY;                                      /* the box screen holds the shared EWRAM borrow the History rows need: leave, the home loop opens it */
+  } else {
+    chord_refuse(redo ? "REDO FAILED" : "UNDO FAILED", "Nothing was changed.", 0);
+  }
+  *need_full = true; s_oam_reload = true;
+  return BCA_NONE;
 }
 
 int pdna_box(BoxSource* src) {
@@ -4589,6 +4644,10 @@ int pdna_box(BoxSource* src) {
    * open, which is the moment the box is actually on screen. */
   bool perf_first_paint = true;
   if (!perf_span_active()) perf_span_begin(src->is_bank ? "bank" : "box");
+  Chord chord; chord_reset(&chord);           /* #234 s3: SELECT on release; SEL+L/R = undo/redo (chord.h) */
+  char toast[26]; toast[0] = 0;               /* #234 s3: the footer toast text, drawn after a repaint */
+  int toast_t = 0;                            /* frames the toast still has to live (0 = none) */
+  const bool chord_live = src->scope == BOXSCOPE_PC && !src->is_bank && app_can_edit();
   boxoam_enter();                             /* enable OBJ; upload hand/grab + palettes */
   s_oam_reload = true;                        /* first paint uploads the box's icon tiles */
   uint8_t* recs = src->records(box);          /* current box's 30*80 records */
@@ -4711,8 +4770,14 @@ int pdna_box(BoxSource* src) {
      * over it. Consumed once: a later need_full repaint (e.g. once the strip closes)
      * must never re-trigger this. */
     if (want_party_strip) { want_party_strip = false; pcp_open_party_strip(src, box, &cur, &need_full); }
-    u16 k, fresh;
+    if (toast[0]) {                            /* #234 s3: a toast lives in the footer strip; it is drawn AFTER any repaint */
+      ui_fill_rect(WP_X, 152, WP_W, 8, UI_BG);
+      ui_ptext_fit(WP_X + 2, 152, WP_W - 4, RGB15(31, 31, 31), toast);
+      toast_t = 150; toast[0] = 0;
+    }
+    u16 k, fresh; int cev = CHORD_NONE;
     do { s_vsync();
+         if (toast_t && --toast_t == 0) draw_footer(src->is_bank, footer_undo(src), on_title, false);   /* the toast expired: the real footer back */
          /* MUST-FIX 1 (2026-08-22 review): drain the PREVIOUS tick's deferred pose-swap
           * half FIRST, before this tick gets a chance to queue a new one. This used to
           * sit at the BOTTOM of the loop, right after boxoam_set_frame() in the SAME
@@ -4796,7 +4861,15 @@ int pdna_box(BoxSource* src) {
                              boxoam_cursor(cur, tr, cursor_look(), cursor_label_cx(tr)); }
          boxoam_commit();                       /* flush the OAM shadow in the vblank window */
          fresh = key_hit(KEY_FULL);
-         k = fresh | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);
+         { u16 cf = (u16)fresh;                  /* #234 s3: SELECT acts on RELEASE, SEL+L/R = undo/redo (one helper, never open-coded) */
+           cev = chord_frame(&chord, (u16)key_curr_state(), (u16)fresh, chord_live, &cf); fresh = cf; }
+         k = fresh | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k && !cev);
+    if (cev) {
+      int cr = box_chord_action(cev, toast, &need_full);
+      if (cr == BCA_HISTORY) { app_box_resume_note(box, cur); boxoam_exit(); return 6; }   /* D5: diverged -> the History screen (opened by the home loop) */
+      if (cr == BCA_CHANGED) { recs = src->records(box); box_decode(src, recs, box); }      /* the image changed under the grid */
+      continue;
+    }
     /* fresh-press earcons (held d-pad repeats stay silent) */
     if      (fresh & (KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT)) snd_move();
     else if (fresh & (KEY_L | KEY_R | KEY_SELECT))               snd_tab();
@@ -4808,6 +4881,7 @@ int pdna_box(BoxSource* src) {
     /* WP AUDIT hotkey (hold START+SELECT together): the on-hardware discrimination
      * for the garbled-wallpaper hunt — run it WHILE the garble is on screen. */
     if (key_is_down(KEY_START) && key_is_down(KEY_SELECT) && !s_ch_hold && !s_holding) {
+      chord_swallow(&chord);                   /* the hold was spent on the audit: no mode-cycle tap when SELECT lifts */
       wp_audit(src, box);
       need_full = true;
       continue;
@@ -5200,7 +5274,7 @@ int pdna_box(BoxSource* src) {
             render_full(src, box, cur, false, false, false);             /* repaint OVER the menu, no black flash */
             play_grab_anim(src, box, cur);                               /* grab cue (OAM lift) */
             carry_move(src, box, cur, cur);                              /* lift into carry */
-            draw_footer(src->is_bank, false, true);                      /* move-mode footer */
+            draw_footer(src->is_bank, footer_undo(src), false, true);                      /* move-mode footer */
           }
         } else if (app_take_togame_request()) {                         /* #271/y10: TO GAME on a native cell */
           togame_native_run(src, recs, box, cur);
@@ -5217,7 +5291,7 @@ int pdna_box(BoxSource* src) {
           render_full(src, box, cur, false, false, false);
           play_grab_anim(src, box, cur);
           carry_move(src, box, cur, cur);
-          draw_footer(src->is_bank, false, true);
+          draw_footer(src->is_bank, footer_undo(src), false, true);
           }
         } else {
           int pb, ps;
@@ -5233,7 +5307,7 @@ int pdna_box(BoxSource* src) {
             render_full(src, box, cur, false, false, false);
             play_grab_anim(src, box, cur);
             carry_move(src, box, cur, cur);
-            draw_footer(src->is_bank, false, true);
+            draw_footer(src->is_bank, footer_undo(src), false, true);
           } else {
             need_full = true;                                            /* menu may have edited -> redraw */
           }
