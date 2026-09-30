@@ -25,6 +25,7 @@ _Static_assert(JRN_PEND_MAXN * JRN_REC_MIN <= JRN_PEND_CAP, "pending record coun
 _Static_assert(JRN_REC_MAX <= JRN_PEND_CAP, "a record must fit the pending buffer");
 _Static_assert(JRN_SEG_SIZE % ZCHUNK == 0, "zeroing chunks tile a segment");
 _Static_assert(JRN_SEG_SIZE % ZBODY == 0 && ZBODY >= JRN_SEG_HDR, "recycle chunks tile a segment");
+_Static_assert(JRN_REC_BASE % 512u == 0 && JRN_REC_BASE >= JRN_SEG_HDR && JRN_REC_BASE + JRN_REC_MAX < JRN_SEG_SIZE, "records start on a sector boundary, after the header sector");
 
 /* ---- the frozen-timestamp hook -------------------------------------------------------------- */
 static uint32_t s_hold_stamp;   /* the held FAT stamp (only meaningful while s_hold_on)   */
@@ -305,7 +306,7 @@ int jrn_i_locate(Jrn* j, uint32_t seq, JrnRec* r, JrnSrc* src) {
   }
   if (!j->seg_first || !j->tail_seg) return JRN_E_FLOOR;
   for (seg = j->seg_first; seg <= j->tail_seg; seg++) {
-    o = JRN_SEG_HDR;
+    o = JRN_REC_BASE;
     for (g = 0; g < JRN_SEG_SIZE / JRN_REC_MIN + 1u; g++) {
       if (seg == j->tail_seg && o >= j->tail_off) break;
       rc = rec_hdr_at(j, seg, o, r);
@@ -458,21 +459,21 @@ static void scan_absorb(Scan* sc, const JrnRec* r, uint32_t hash) {
 
 static int scan_next_seg_continues(const Jrn* j, uint16_t seg, const Scan* sc) {
   JrnRec r;
-  return rec_at(j, seg, JRN_SEG_HDR, &r) == 0 && (!sc->have || r.seq == sc->expect);
+  return rec_at(j, seg, JRN_REC_BASE, &r) == 0 && (!sc->have || r.seq == sc->expect);
 }
 
 /* Longest valid prefix. Ends at the first record that is absent, corrupt or out of seq
  * (unless the next segment continues the sequence: the slack a full segment leaves). */
 static int scan_prefix(Jrn* j, uint32_t hash, Scan* sc) {
   uint16_t seg = j->seg_first;
-  uint32_t off = JRN_SEG_HDR, guard;
+  uint32_t off = JRN_REC_BASE, guard;
   JrnRec r;
   int rc;
   for (guard = 0; guard < SCAN_MAX; guard++) {
     rc = rec_at(j, seg, off, &r);
     if (rc < 0) return rc;
     if (rc == 0 && (!sc->have || r.seq == sc->expect)) { scan_absorb(sc, &r, hash); off += r.len; continue; }
-    if (seg < j->seg_last && scan_next_seg_continues(j, (uint16_t)(seg + 1u), sc)) { seg++; off = JRN_SEG_HDR; continue; }
+    if (seg < j->seg_last && scan_next_seg_continues(j, (uint16_t)(seg + 1u), sc)) { seg++; off = JRN_REC_BASE; continue; }
     break;
   }
   j->tail_seg = seg;
@@ -509,10 +510,10 @@ static int repair_tail(const Jrn* j) {
   rc = zero_from(j, j->tail_seg, j->tail_off);
   if (rc) return rc;
   for (s = (uint16_t)(j->tail_seg + 1u); s <= j->seg_last && s; s++) {   /* orphans past the tail */
-    rc = seg_read(j, s, JRN_SEG_HDR, b, sizeof b);
+    rc = seg_read(j, s, JRN_REC_BASE, b, sizeof b);
     if (rc) return rc;
     for (dirty = 0, i = 0; i < (int)sizeof b; i++) if (b[i]) dirty = 1;
-    if (dirty) { rc = zero_from(j, s, JRN_SEG_HDR); if (rc) return rc; }
+    if (dirty) { rc = zero_from(j, s, JRN_REC_BASE); if (rc) return rc; }
   }
   return 0;
 }
@@ -716,7 +717,7 @@ int jrn_prepare_first(Jrn* j) {
   rc = seg_activate(j, 1);
   if (rc) return rc;
   j->seg_first = j->seg_last = j->tail_seg = 1;
-  j->tail_off = JRN_SEG_HDR;
+  j->tail_off = JRN_REC_BASE;
   return JRN_OK;
 }
 
@@ -922,7 +923,7 @@ static int flush_plan(const Jrn* j, Plan* p) {
     if (jrn_i_hdr_parse(j->pend + pos, &r)) return JRN_E_STATE;
     if (off + r.len > JRN_SEG_SIZE) {
       if (seg >= j->seg_last) return JRN_E_FULL;   /* the next segment was never pre-created */
-      seg++; off = JRN_SEG_HDR;
+      seg++; off = JRN_REC_BASE;
     }
     p->seg[i] = seg; p->off[i] = off; p->start[i] = pos; p->len[i] = r.len;
     off += r.len; pos = (uint16_t)(pos + r.len);

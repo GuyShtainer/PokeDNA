@@ -15,6 +15,8 @@
  * THE POWER-CUT DISCIPLINE (D3, v2-verify fixes 6+7) -- every rule below exists so that
  * a cut at ANY sector leaves the journal reading as exactly its before-state or its
  * after-state and never touches a neighbouring file:
+ *   - SECTOR 0 IS THE HEADER'S ALONE (records begin at JRN_REC_BASE = 512): a flush never touches it
+ *     after activation, so the flush-tears-the-header class does not exist (costs 0.7% of a segment).
  *   - Segments are PRE-ZEROED fixed-size files. Appends overwrite in place and never
  *     grow the FAT chain; the file is never truncated (torn tails are zeroed in place).
  *   - THE RING. The segment set is a FIXED RING of slot files (max_segs + 1) created once at the
@@ -40,7 +42,9 @@
 
 /* ---- format constants (the values as landed) ------------------------------------- */
 #define JRN_SEG_SIZE   65536u   /* every segment file is exactly this long, pre-zeroed */
-#define JRN_SEG_HDR       32u   /* 'PDJS', ver u16, rsv u16, index u32, zeros, crc32   */
+#define JRN_SEG_HDR       32u   /* 'PDJS', ver u16, ring u16, index u32, zeros, crc32   */
+#define JRN_REC_BASE     512u   /* the FIRST record starts here: sector 0 belongs to the header alone and is
+                                 * never rewritten after activation (an append flush can never tear it) */
 #define JRN_REC_HDR       52u   /* fixed record header (below)                          */
 #define JRN_REC_MIN       56u   /* header + CRC32 = a span-less marker record           */
 #define JRN_REC_MAX      512u   /* no record is ever longer                             */

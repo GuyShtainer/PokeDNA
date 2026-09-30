@@ -54,7 +54,7 @@ static void t_format(void) {
   CHECK(raw_read(K, 1, 0, h, JRN_SEG_HDR) == 0, "read seg hdr");
   CHECK(memcmp(h, "PDJS", 4) == 0 && h[4] == 1 && h[5] == 0 && h[6] == 17 && h[7] == 0 && h[8] == 1, "segment header magic/ver/ring(17 = max_segs 16 + 1)/index");
   CHECK(jrn_crc32_update(0, h, 28) == (uint32_t)(h[28] | h[29] << 8 | h[30] << 16 | (uint32_t)h[31] << 24), "segment header crc");
-  CHECK(raw_read(K, 1, JRN_SEG_HDR, r, sizeof r) == 0, "read record");
+  CHECK(raw_read(K, 1, JRN_REC_BASE, r, sizeof r) == 0, "read record");
   CHECK(memcmp(r, "PDJR", 4) == 0, "record magic");
   CHECK(r[4] + (r[5] << 8) == 52 + 6 + 8 + 4, "record len %d", r[4] + (r[5] << 8));
   CHECK(r[6] == 0 && r[7] == 1, "flags/nspans");
@@ -246,7 +246,7 @@ static void t_zero_in_place(void) {
     CHECK(sz == (long)JRN_SEG_SIZE, "zeroing never truncates or grows: size %ld", sz);
     /* a VALID record with the wrong seq (a stale replay) at the tail is not accepted either */
     { uint8_t rec[70];
-      CHECK(raw_read(K, 1, JRN_SEG_HDR, rec, sizeof rec) == 0, "read S1");
+      CHECK(raw_read(K, 1, JRN_REC_BASE, rec, sizeof rec) == 0, "read S1");
       CHECK(raw_write(K, 1, tail, rec, sizeof rec) == 0, "replay S1 at the tail");
       CHECK(jopen(&j, K) == JRN_OK && j.tail_off == tail && j.next_seq == 3, "a stale valid record (seq 1 where 3 is due) ends the prefix (tail %u, next_seq %u)", (unsigned)j.tail_off, (unsigned)j.next_seq); }
     /* a flipped byte inside the LAST record: the prefix ends before it */
@@ -379,7 +379,7 @@ static void t_ring(void) {
     CHECK(jrn_prepare(&j) == JRN_OK, "prepare (spare)");
     for (s = j.tail_seg + 1u; s <= j.seg_last; s++) {
       uint32_t off; int clean = 1;
-      for (off = JRN_SEG_HDR; off < JRN_SEG_SIZE && clean; off += sizeof b) {
+      for (off = JRN_REC_BASE; off < JRN_SEG_SIZE && clean; off += sizeof b) {
         uint32_t m = JRN_SEG_SIZE - off < sizeof b ? JRN_SEG_SIZE - off : (uint32_t)sizeof b, k;
         CHECK(raw_read(K, 1 + (s - 1) % 3, off, b, m) == 0, "read spare body");
         for (k = 0; k < m; k++) if (b[k]) { clean = 0; break; }
@@ -519,6 +519,25 @@ static void t_readonly(void) {
     CHECK(jopen_ro(&j, K) == JRN_OK && rd_writes == wr, "a read-only open does not even zero the tail"); }
 }
 
+/* Ruling 1: sector 0 of a segment is the header ALONE (32 B, then zeros) and no append ever rewrites it. */
+static void t_header_sector_alone(void) {
+  Jrn j; uint8_t h0[512], h1[512], rec[8]; unsigned i, k; static unsigned ch[64];
+  world(&j, FM_FAT);
+  CHECK(raw_read(K, 1, 0, h0, sizeof h0) == 0, "header sector");
+  for (k = JRN_SEG_HDR; k < sizeof h0 && !h0[k]; k++) {}
+  CHECK(k == sizeof h0, "bytes 32..511 of sector 0 are zero (the first record starts at %u)", JRN_REC_BASE);
+  CHECK(j.tail_off == JRN_REC_BASE, "a fresh tail starts at the record base (%u)", (unsigned)j.tail_off);
+  rd_snapshot();
+  for (i = 0; i < 40; i++) CHECK(stage(&j, "s", 0, 1, 0, 100, fresh_val(1, 0)) == JRN_OK && jrn_flush(&j) == JRN_OK, "append %u", i);
+  CHECK(raw_read(K, 1, 0, h1, sizeof h1) == 0 && memcmp(h0, h1, sizeof h0) == 0, "40 appends left the header sector byte-identical");
+  CHECK(raw_read(K, 1, JRN_REC_BASE, rec, sizeof rec) == 0 && memcmp(rec, "PDJR", 4) == 0, "the first record sits at %u", JRN_REC_BASE);
+  { char p[96], hex[17]; FIL f; unsigned lba0 = 0, n = rd_changed(ch, 64), hit = 0;
+    jrn_key_hex(K, hex); snprintf(p, sizeof p, ROOT "/%s/0001.pdj", hex);
+    CHECK(f_open(&f, p, FA_READ) == FR_OK, "open"); lba0 = (unsigned)(f.obj.fs->database + (LBA_t)f.obj.fs->csize * (f.obj.sclust - 2)); f_close(&f);
+    for (i = 0; i < n && i < 64; i++) if (ch[i] == lba0) hit++;
+    CHECK(n > 0 && hit == 0, "no append wrote the slot's first sector (%u of %u changed sectors)", hit, n); }
+}
+
 /* A header the way a NEWER (or foreign) build would have left it: valid magic + crc, unknown shape. */
 static void plant_hdr(uint64_t key, unsigned slot, uint32_t idx, uint16_t ring, uint16_t ver) {
   uint8_t h[JRN_SEG_HDR]; uint32_t c;
@@ -539,7 +558,7 @@ static void t_version_foreign(void) {
   for (k = 0; k < sizeof F / sizeof F[0]; k++) {
     world(&j, FM_FAT);
     CHECK(stage(&j, "a", 0, 1, 10, 4, fresh_val(1, 10)) == JRN_OK && stage(&j, "b", 0, 1, 30, 4, fresh_val(1, 30)) == JRN_OK && jrn_flush(&j) == JRN_OK, "two steps");
-    CHECK(raw_read(K, 1, JRN_SEG_HDR, rec0, sizeof rec0) == 0, "read rec");
+    CHECK(raw_read(K, 1, JRN_REC_BASE, rec0, sizeof rec0) == 0, "read rec");
     memset(mark, 0xEE, sizeof mark);
     CHECK(raw_write(K, 2, 4096, mark, sizeof mark) == 0, "mark the spare's body");
     plant_hdr(K, 1, F[k].idx, F[k].ring, F[k].ver);
@@ -550,7 +569,7 @@ static void t_version_foreign(void) {
     CHECK(jrn_prepare(&j) == JRN_E_VERSION && jrn_compact(&j) == JRN_E_VERSION && jrn_prepare_first(&j) == JRN_E_VERSION, "%s: every safe-moment write refuses", F[k].what);
     CHECK(jrn_step_begin(&j, "x", 0) == JRN_E_RDONLY && jrn_flush(&j) == JRN_E_RDONLY, "%s: no recording", F[k].what);
     CHECK(rd_writes == wr, "%s: wrote %lu sectors", F[k].what, rd_writes - wr);
-    CHECK(raw_read(K, 1, JRN_SEG_HDR, rec1, sizeof rec1) == 0 && memcmp(rec0, rec1, sizeof rec0) == 0, "%s: the foreign slot's records are untouched (NOT zero-filled)", F[k].what);
+    CHECK(raw_read(K, 1, JRN_REC_BASE, rec1, sizeof rec1) == 0 && memcmp(rec0, rec1, sizeof rec0) == 0, "%s: the foreign slot's records are untouched (NOT zero-filled)", F[k].what);
     CHECK(raw_read(K, 2, 4096, back, sizeof back) == 0 && memcmp(mark, back, sizeof mark) == 0, "%s: no other slot was zeroed", F[k].what);
   }
   /* second line of defence: the journal opened fine, then a newer build activates the NEXT slot behind
@@ -607,6 +626,7 @@ int main(void) {
   t_readonly();
   t_discard_marker();
   t_version_foreign();
+  t_header_sector_alone();
   if (fails) { printf("host_journal_test: %d FAILED of %lu checks\n", fails, checks); return 1; }
   printf("host_journal_test: all %lu checks passed (real lib/fatfs over a RAM disk)\n", checks);
   return 0;

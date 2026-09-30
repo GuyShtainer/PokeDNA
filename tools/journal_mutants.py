@@ -155,6 +155,9 @@ MUTANTS = [
            "  if (rc == SLOT_FOREIGN) { j->foreign = 1; return JRN_E_VERSION; }   /* a newer build owns it: never zero it */\n",
            "  if (rc == SLOT_FOREIGN) rc = 0;\n",
            "journal", "activating over a foreign slot refuses"),
+    Mutant("format: records start at 32 again (the header sector is shared with the first record)", "journal.c",
+           "  j->tail_off = JRN_REC_BASE;", "  j->tail_off = JRN_SEG_HDR;",
+           "journal", "a fresh tail starts at the record base"),
 ]
 
 
