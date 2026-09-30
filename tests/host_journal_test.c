@@ -340,8 +340,12 @@ static void t_ring(void) {
     rc = stage(&j, "fill", 0, 1, 0, 220, fresh_val(1, 0));
     if (!rc) rc = jrn_flush(&j);
     CHECK(rc == JRN_OK, "fill %u -> %d", i, rc);
-    if (rc) return;
-    if (j.tail_seg == j.seg_last) { CHECK(jrn_prepare(&j) == JRN_OK, "prepare %u", i); if (j.seg_last > 3 && j.seg_last % 3 == 1) wraps++; }
+    if (rc) break;
+    if (j.tail_seg == j.seg_last) { rc = jrn_prepare(&j); CHECK(rc == JRN_OK, "prepare %u", i); if (rc) break; if (j.seg_last > 3 && j.seg_last % 3 == 1) wraps++; }
+    if (i % 25 == 0 && i) {                       /* a fresh boot must map the ring to the SAME logical set */
+      Jrn q; CHECK(jrn_open(&q, &c, &IMG) == JRN_OK && q.seg_first == j.seg_first && q.seg_last == j.seg_last && q.tail_seg == j.tail_seg && q.tail_off == j.tail_off,
+                   "reopen at step %u maps the ring to %u..%u tail %u@%u, live state is %u..%u tail %u@%u", i, q.seg_first, q.seg_last, q.tail_seg, (unsigned)q.tail_off, j.seg_first, j.seg_last, j.tail_seg, (unsigned)j.tail_off);
+    }
   }
   CHECK(j.seg_last >= 9, "the journal wrapped the ring at least twice (seg_last %u)", j.seg_last);
   CHECK(j.seg_last - j.seg_first + 1u <= 3u, "live set within the ring: %u..%u", j.seg_first, j.seg_last);
@@ -364,6 +368,11 @@ static void t_ring(void) {
     CHECK(slot_lo != 1 || (j.seg_first - 1) % 3 == 0, "order by header index, not slot: the oldest need not sit in slot 1");
   }
   CHECK(jrn_compact(&j) == JRN_OK, "compact");
+  if (j.seg_first > 1 && j.seg_last - j.seg_first + 1u <= 2u) {                                       /* the slot the oldest segment left is FREE: header zero in place */
+    unsigned k; CHECK(raw_read(K, 1 + (j.seg_first - 2u) % 3u, 0, h, JRN_SEG_HDR) == 0, "retired hdr");
+    for (k = 0; k < JRN_SEG_HDR && !h[k]; k++) {}
+    CHECK(k == JRN_SEG_HDR, "(ring) the retired slot's header is zero in place (compaction never deletes)");
+  }
   /* a recycled slot has an all-zero body past its header, apart from the records its new life wrote */
   {
     unsigned s;
