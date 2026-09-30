@@ -103,6 +103,62 @@ static uint32_t lz77_run(const RomCtx* rom, uint32_t addr, uint8_t* dst, uint32_
   return out;
 }
 
+/* BACKLOG #295: LZ10 decode of ONE output range through a 4 KiB ring, for a blob whose
+ * declared size is larger than any buffer we own (Emerald's 12,288 B bag sheet). LZ10 never
+ * references more than 4,096 B back, so a ring of that size holds every byte a later token can
+ * name; the bytes in [start, start+len) are copied to `dst` as they are produced and the decode
+ * stops the moment the range is full (nothing past it is read or expanded). Returns `len`, or 0
+ * on a bad argument / malformed stream / read failure / a range outside the declared size. */
+uint32_t mr_lz77_range(const RomCtx* rom, uint32_t addr, uint32_t start, uint32_t len,
+                       uint8_t* dst, uint8_t* ring, uint32_t ring_bytes) {
+  uint8_t h[4];
+  if (!rom || !dst || !ring || !len) return 0;
+  if (ring_bytes < 4096u || (ring_bytes & (ring_bytes - 1u)) != 0) return 0;   /* power of two */
+  if (!rom_read_at(rom, addr, h, 4) || h[0] != 0x10) return 0;
+  uint32_t size = (uint32_t)h[1] | ((uint32_t)h[2] << 8) | ((uint32_t)h[3] << 16);
+  if (start > size || len > size - start) return 0;
+  const uint32_t mask = ring_bytes - 1u, stop = start + len;
+  uint8_t in[64];
+  uint32_t in_at = 0, in_len = 0, src = addr + 4, out = 0;
+  uint32_t span_end = addr + 4 + size + 1u + (size + 7u) / 8u;   /* same bound as lz77_run */
+  uint32_t img_end = ROM_BASE + rom->size;
+  #define RNEXT(v) do {                                                       \
+      if (in_at >= in_len) {                                                  \
+        uint32_t want = (uint32_t)sizeof in;                                  \
+        if (span_end - src < want) want = span_end - src;                     \
+        if (src >= img_end) return 0;                                         \
+        if (img_end - src < want) want = img_end - src;                       \
+        if (!want || !rom_read_at(rom, src, in, want)) return 0;              \
+        in_len = want; src += want; in_at = 0;                                \
+      }                                                                       \
+      (v) = in[in_at++];                                                      \
+    } while (0)
+  #define RPUT(b) do { uint8_t pb_ = (b); ring[out & mask] = pb_;             \
+      if (out >= start && out < stop) dst[out - start] = pb_; out++; } while (0)
+  while (out < stop) {
+    uint8_t flags;
+    RNEXT(flags);
+    for (int bit = 0; bit < 8 && out < stop; bit++) {
+      if (flags & (0x80 >> bit)) {
+        uint8_t b1, b2;
+        RNEXT(b1); RNEXT(b2);
+        uint32_t n = (uint32_t)(b1 >> 4) + 3;
+        uint32_t disp = ((uint32_t)(b1 & 0x0F) << 8 | b2) + 1;
+        if (disp > out) return 0;                 /* reference before the start */
+        if (n > size - out) n = size - out;
+        for (uint32_t k = 0; k < n; k++) RPUT(ring[(out - disp) & mask]);
+      } else {
+        uint8_t lit;
+        RNEXT(lit);
+        RPUT(lit);
+      }
+    }
+  }
+  #undef RNEXT
+  #undef RPUT
+  return len;
+}
+
 uint32_t mr_lz77_w(const RomCtx* rom, uint32_t addr, uint8_t* dst, uint32_t dst_cap,
                    uint8_t* win, uint32_t win_bytes) {
   return lz77_run(rom, addr, dst, dst_cap, win, win_bytes, 0, 0);

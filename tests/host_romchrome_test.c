@@ -49,6 +49,7 @@
 #include <string.h>
 
 #include "rom_chrome.h"
+#include "map_render.h"
 
 static int g_fail = 0;
 #define CHECK(cond, ...) do { \
@@ -349,29 +350,59 @@ static void test_pokeblock_device(const char* label, const char* path, int expec
   fclose(c.f);
 }
 
+/* Independent oracle for the bag sheet: the WHOLE blob decoded with mr_lz77() into a big host
+ * buffer (the very thing Emerald's 8,192 B budget can't do on the GBA). BACKLOG #295. */
+static uint32_t bag_sheet_addr(int emerald, int fr, int female) {
+  if (emerald) return female ? 0x08D99A00u : 0x08D98E84u;
+  if (fr) return female ? 0x08E83DBCu : 0x08E8362Cu;
+  return female ? 0x08E83E3Cu : 0x08E836ACu;
+}
+
 static void test_bag_sprite(const char* label, const char* path, int card_bag_g, int expect_ok) {
   HostCtx c; RomCtx rc;
   if (!open_rom(path, &c, &rc)) { printf("%s: SKIP (no dump)\n", label); return; }
   RomChrome rch; rom_chrome_open(&rch, &rc);
   CHECK(rom_chrome_bag_sprite_have(&rch, card_bag_g) == expect_ok,
        "%s: bag_sprite_have=%d want %d", label, rom_chrome_bag_sprite_have(&rch, card_bag_g), expect_ok);
-  static uint8_t scratch[8192];
+  int emerald = (rc.kind == ROM_EMERALD), fr = (rc.kind == ROM_FIRERED);
+  uint32_t sheet_bytes = emerald ? 12288u : 8192u;
+  static uint8_t scratch[8192], whole[16384];
   for (int female = 0; female <= 1; female++) {
-    RomChromeBagSprite bs;
-    int ok = rom_chrome_bag_sprite_load(&rch, card_bag_g, female, scratch, sizeof scratch, &bs);
-    CHECK(ok == expect_ok, "%s: bag_sprite_load(female=%d)=%d want %d", label, female, ok, expect_ok);
-    if (ok) {
-      CHECK(bs.tiles != 0 && bs.frame_count > 0, "%s: bad bag sprite decode (female=%d)", label, female);
+    if (expect_ok)
+      CHECK(mr_lz77(&rc, bag_sheet_addr(emerald, fr, female), whole, sizeof whole) == sheet_bytes,
+            "%s: oracle whole-sheet decode size (female=%d)", label, female);
+    int nframes = expect_ok ? (emerald ? 6 : 4) : 1;
+    for (int frame = 0; frame < nframes; frame++) {
+      RomChromeBagSprite bs;
+      int ok = rom_chrome_bag_sprite_load(&rch, card_bag_g, female, frame, scratch, sizeof scratch, &bs);
+      CHECK(ok == expect_ok, "%s: bag_sprite_load(female=%d frame=%d)=%d want %d", label, female, frame, ok, expect_ok);
+      if (!ok) continue;
+      CHECK(bs.tiles != 0 && bs.frame_count == (emerald ? 6 : 4), "%s: bad bag sprite decode (female=%d)", label, female);
       CHECK(bs.pal[0] == 0, "%s: bag sprite pal[0] must stay 0 (female=%d)", label, female);
-      /* the WHOLE declared blob (8,192 B) must fit exactly at cap == 8,192,
-       * and MUST be refused one byte under -- the "no partial decode" fact
-       * this module's whole Emerald-exclusion rests on. */
-      RomChromeBagSprite tight;
-      CHECK(rom_chrome_bag_sprite_load(&rch, card_bag_g, female, scratch, 8192, &tight),
-           "%s: an exact 8,192 B buffer must succeed (female=%d)", label, female);
-      RomChromeBagSprite bad;
-      CHECK(!rom_chrome_bag_sprite_load(&rch, card_bag_g, female, scratch, 8191, &bad),
-           "%s: an 8,191 B buffer must be refused, not truncated (female=%d)", label, female);
+      CHECK(memcmp(bs.tiles, whole + (size_t)frame * 2048u, 2048u) == 0,
+            "%s: frame %d (female=%d) == the whole-sheet oracle's frame, byte for byte", label, frame, female);
+    }
+    if (!expect_ok) continue;
+    RomChromeBagSprite t;
+    CHECK(rom_chrome_bag_sprite_load(&rch, card_bag_g, female, 1, scratch, 8192, &t),
+         "%s: an exact 8,192 B buffer must succeed (female=%d)", label, female);
+    CHECK(!rom_chrome_bag_sprite_load(&rch, card_bag_g, female, 1, scratch, 8191, &t),
+         "%s: an 8,191 B buffer must be refused, not truncated (female=%d)", label, female);
+    /* out-of-range frame falls back to frame 0, never reads past the sheet */
+    CHECK(rom_chrome_bag_sprite_load(&rch, card_bag_g, female, 99, scratch, 8192, &t) &&
+          memcmp(t.tiles, whole, 2048u) == 0,
+          "%s: frame 99 falls back to frame 0 (female=%d)", label, female);
+    if (emerald) {
+      /* verify off needs only window + frame (6,144 B); verify on needs the copy too */
+      rom_chrome_set_verify(&rch, 0);
+      CHECK(rom_chrome_bag_sprite_load(&rch, card_bag_g, female, 5, scratch, 6144, &t) &&
+            memcmp(t.tiles, whole + 5u * 2048u, 2048u) == 0,
+            "%s: verify-off 6,144 B buffer decodes the LAST frame (female=%d)", label, female);
+      CHECK(!rom_chrome_bag_sprite_load(&rch, card_bag_g, female, 5, scratch, 6143, &t),
+            "%s: verify-off 6,143 B buffer refused (female=%d)", label, female);
+      rom_chrome_set_verify(&rch, 1);
+      CHECK(!rom_chrome_bag_sprite_load(&rch, card_bag_g, female, 5, scratch, 6144, &t),
+            "%s: verify-on 6,144 B buffer refused (needs the compare copy) (female=%d)", label, female);
     }
   }
   fclose(c.f);
@@ -575,7 +606,7 @@ int main(void) {
    * 12,288 B blob cannot fit the 8,192 B shared buffer for ANY frame. */
   test_bag_sprite("FireRed bag sprite", firered, 2, 1);
   test_bag_sprite("LeafGreen bag sprite", leafgreen, 2, 1);
-  test_bag_sprite("Emerald bag sprite (budget-excluded)", emerald, 1, 0);
+  test_bag_sprite("Emerald bag sprite (streamed per frame)", emerald, 1, 1);
   test_bag_sprite("Ruby bag sprite (unwired game)", ruby, 0, 0);
 
   measure_counts(emerald);

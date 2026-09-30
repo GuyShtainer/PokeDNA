@@ -341,43 +341,29 @@ int rom_chrome_bag_load(const RomChrome* rch, int g, int female,
 
 /* ---- bag SPRITE (the drawn bag itself, gendered, one frame per pocket) --- *
  *
- * Emerald + FireRed + LeafGreen ONLY -- narrower than rom_chrome_bag_have()'s
- * game coverage, for a hard reason, not a located-data one: the ROM stores
- * every gender's whole animation sheet as ONE monolithic LZ10 blob (closed +
- * one open frame per pocket, all under a SINGLE header), and mr_lz77() can only
- * decode a blob whose caller-supplied capacity covers its FULL declared size --
- * there is no partial/seek decode (confirmed against the actual decoder,
- * source/map_render.c's mr_lz77(): `if (size > dst_cap) return 0;` gates on the
- * WHOLE blob before a single byte is written, and the loop always runs to
- * `size`). FireRed/LeafGreen's declared size is 8,192 B, which fits the shared
- * 8,192 B buffer ALONE (after the screen chrome's own decode has already been
- * consumed by that visit's bg_restore() and the buffer is free again -- see
- * pdna_bag.c's bag_rest()/pocket_anim(), which already call through bag_anim()
- * at exactly that point). Emerald's is 12,288 B -- bigger than the ENTIRE
- * shared buffer, for EVERY frame including the closed one, because getting
- * ANY frame means decoding the whole stream from byte 0. rom_chrome_bag_sprite_have()
- * reports this honestly: 1 for FireRed/LeafGreen, 0 for Emerald (and for every
- * game rom_chrome_bag_have() already refuses). Closing the Emerald gap needs
- * either a bigger scratch buffer or a decoder that can discard already-consumed
- * output while decoding forward (neither exists today) -- not a wiring gap. */
+ * Emerald + FireRed + LeafGreen (rom_chrome_bag_have()'s coverage minus Ruby/Sapphire).
+ * The ROM stores every gender's animation sheet as ONE monolithic LZ10 blob (closed + one
+ * open frame per pocket, under a single header) and there is no seek. FireRed/LeafGreen's
+ * declared size is 8,192 B, which fits the shared 8,192 B buffer ALONE, so those decode the
+ * whole sheet. Emerald's is 12,288 B -- bigger than the ENTIRE buffer -- so (BACKLOG #295,
+ * closed 2026-09-30) it decodes only the ONE 2,048 B frame asked for, through a 4 KiB LZ
+ * window (map_render.h's mr_lz77_range), inside the same 8,192 B buffer: window + frame +
+ * a verify copy. No new static. rom_chrome_bag_sprite_have() is 1 for all three. */
 int rom_chrome_bag_sprite_have(const RomChrome* rch, int g);
 
 typedef struct {
-  const uint8_t* tiles;      /* frame_count x 64 tiles (8x8 grid each), in scratch */
-  uint16_t       pal[16];    /* the sheet's own flat 16-colour palette        */
-  uint8_t        frame_count;
+  const uint8_t* tiles;      /* THE requested frame: 64 tiles (an 8x8 grid), 2,048 B, in scratch */
+  uint16_t       pal[16];    /* the sheet's own flat 16-colour palette (entry 0 forced to 0) */
+  uint8_t        frame_count;/* frames in the sheet: FRLG 4, Emerald 6                       */
 } RomChromeBagSprite;
 
-/* Decode the WHOLE gendered animation sheet (see above -- there is no way to
- * ask for less) + its own 32 B palette into `scratch` (>= cap; FireRed/
- * LeafGreen worst case 8,224 B). `out->tiles + frame*64*32` is frame `frame`'s
- * 64 tiles (8x8 grid); frame 0 = closed, frame 1..frame_count-1 = pocket p's
- * OPEN frame in bag_bg.h's own pocket_frame order (sAnims_Bag: PokeBalls/
- * Items/KeyItems). Composite with romchrome_blit_tiles(out->tiles + frame*2048,
- * out->pal, NULL, 8, 8, x, y). Returns 1, or 0 (game not FireRed/LeafGreen, no
- * ROM, or `cap` too small) with *out untouched -- caller keeps whatever it had
- * (bag_anim()'s existing "blob == 0 -> no animation, screen still works"). */
-int rom_chrome_bag_sprite_load(const RomChrome* rch, int g, int female,
+/* Decode frame `frame` (0 = closed; 1.. = an open pocket frame, in bag_bg.h's pocket_frame
+ * order) of the gendered sheet + its palette. An out-of-range `frame` falls back to 0.
+ * `out->tiles` is the frame itself -- composite with romchrome_blit_tiles(out->tiles, out->pal,
+ * NULL, 8, 8, x, y). scratch cap: FireRed/LeafGreen >= 8,192 (the whole sheet; `tiles` sits at
+ * frame*2,048 inside it); Emerald >= 8,192 with verify on (>= 6,144 off). Returns 1, or 0 (game
+ * not covered, no ROM, `cap` too small, a read that never agreed) with *out untouched. */
+int rom_chrome_bag_sprite_load(const RomChrome* rch, int g, int female, int frame,
                                uint8_t* scratch, uint32_t cap, RomChromeBagSprite* out);
 
 #endif /* ROM_CHROME_H */
