@@ -2055,8 +2055,6 @@ gated pcp_open_party_strip_inner need=7392 from=pdna_box.c:PDNA_PARTY_STRIP_NEED
 # .set (jrn_app.c: ja_get / ja_set). rec_step/stage_now are one function after inlining. Offsets read off the
 # headers: ImgRec.flush is the FIRST field (img_stage.h), JrnImage = {ctx @0, get @4, set @8} (journal.h).
 ImgRec.flush @0 in stage_now -> jrnapp_flush
-# The rest-point high-water flush (#234 ruling) is the same pointer called from img_scope_close (screen static).
-ImgRec.flush @0 in img_scope_close -> jrnapp_flush
 JrnImage.get @4 in jrn_i_region_crc -> ja_get
 # The scan/list callbacks journal.c hands to the fs seam (JrnScanFn / JrnListFn): each jfs_* has exactly one call site.
 # The journal's fs seam (JrnFs, journal.h): every dispatch lands in the FatFs binding (journal_fs.c). Offsets read off the

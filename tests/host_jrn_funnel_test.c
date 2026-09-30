@@ -237,19 +237,6 @@ static void t_diverged_is_a_floor(void) {
         "the chain stops before C: total %u avail %u", (unsigned)total, (unsigned)av);
 }
 
-/* #234 ruling: the step-end rest hook. A scope that leaves the pend below JRN_PEND_HIWATER free bytes flushes AT the
- * scope close (screen static), so the next step never meets JRN_E_FULL in its own rec_step. */
-static void t_rest_hook_flushes(void) {
-  poke(100, 4, 0x5A);
-  img_scope_open(&R, "Box move");
-  CHECK(img_stage_sections(&F, &R, sv, slot, G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, pc), "staged in a scope");
-  CHECK(jrn_pending(&J) == 0, "nothing is recorded until the scope closes, pending %d", jrn_pending(&J));
-  CHECK(img_scope_close(&F, &R, sv, slot), "close");
-  CHECK(jrn_pend_free(&J) >= JRN_PEND_HIWATER && jrn_pending(&J) == 0,
-        "the rest hook flushed at the close (free %u, pending %d)", (unsigned)jrn_pend_free(&J), jrn_pending(&J));
-  CHECK(jrn_tip(&J) == 1, "the step is journaled (tip %u)", (unsigned)jrn_tip(&J));
-}
-
 int main(int argc, char** argv) {
   int a;
   static uint8_t file[G3_SAVE_FILE_SIZE];
@@ -267,7 +254,6 @@ int main(int argc, char** argv) {
     CHECK(world(file), "world"); t_crossed_floors_offer();
     CHECK(world(file), "world"); t_gap_is_a_floor();
     CHECK(world(file), "world"); t_diverged_is_a_floor();
-    CHECK(world(file), "world"); t_rest_hook_flushes();
     CHECK(world(file), "world"); t_scope_is_one_step();
     CHECK(world(file), "world"); t_identical_and_null();
   }

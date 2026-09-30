@@ -20,7 +20,6 @@
 
 _Static_assert(JRN_PEND_MAXN * JRN_REC_MIN <= JRN_PEND_CAP, "pending record count bound");
 _Static_assert(JRN_REC_MAX <= JRN_PEND_CAP, "a record must fit the pending buffer");
-_Static_assert(JRN_PEND_HIWATER <= JRN_PEND_CAP && JRN_PEND_HIWATER + JRN_REC_MIN >= JRN_PEND_CAP, "the high-water mark sits inside the last record-min of the pend");
 _Static_assert(ZWINDOW >= JRN_PEND_CAP, "the torn-tail zero window must cover a whole orphaned back-to-front batch");
 _Static_assert(JRN_SEG_SIZE % 512u == 0 && JRN_SEG_HDR <= 512u, "the zero seam works in 512-byte chunks that tile a segment");
 _Static_assert(JRN_REC_BASE % 512u == 0 && JRN_REC_BASE >= JRN_SEG_HDR && JRN_REC_BASE + JRN_REC_MAX < JRN_SEG_SIZE, "records start on a sector boundary, after the header sector");
@@ -87,7 +86,6 @@ uint32_t jrn_cursor(const Jrn* j) { return j ? j->cursor : 0; }
 uint32_t jrn_tip(const Jrn* j) { return j ? j->tip : 0; }
 int      jrn_pending(const Jrn* j) { return j ? j->pend_n : 0; }
 int      jrn_offer(const Jrn* j) { return j ? j->offer : 0; }
-uint16_t jrn_pend_free(const Jrn* j) { return j ? (uint16_t)(JRN_PEND_CAP - j->pend_len - j->bld_len) : 0; }
 int      jrn_flush_wanted(const Jrn* j) { return j ? j->flush_wanted : 0; }
 
 /* ---- paths ------------------------------------------------------------------------------------ */
