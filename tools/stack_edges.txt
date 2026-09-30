@@ -626,6 +626,9 @@ dex_cell_art_call.constprop.0 argsites=1 -> gbdex_cell_art
 # PdnaDexPageFn's own header comment explains why), so this entry only ever needs
 # checking against the delta ELF.
 dex_page_begin_call argsites=1 -> gbdex_dex_page_begin
+# BACKLOG #290: delta-only implementation, so per #155 it is impl-optional for the NON-delta variants (nor,sd; impl-optional suppresses the warning only where listed) (artless/nor/sd
+# never compile the hook; the warning still fires if the delta image loses it).
+impl-optional gbdex_dex_page_begin variants=nor,sd
 
 # pdna_origin_art.c's PdnaGbArtSource (source/pdna_origin_art.h:215-251, s_gb --
 # pic/have/icon function-pointer fields, accessed through fetch_pic_ex()'s s_gb.pic/
@@ -1351,7 +1354,7 @@ wait_keys_bob_p argsites=1 -> party_overlay_bob
 #   move        k_gb_ops=gb_move_hook        k_gb_ops_ro=0
 #   release     k_gb_ops=gb_release_hook     k_gb_ops_ro=0
 #   copy_native k_gb_ops=gb_copy_native_hook k_gb_ops_ro=gb_copy_native_hook (same)
-#   paste       k_gb_ops=gb_paste_hook       k_gb_ops_ro=0
+#   paste       k_gb_ops=0 (was gb_paste_hook, deleted by #246; BACKLOG #290 dropped its declarations)
 #   view        k_gb_ops=gb_view_hook        k_gb_ops_ro=gb_view_hook       (same)
 #   editable    k_gb_ops=gb_editable_hook    k_gb_ops_ro=0
 #   create      k_gb_ops=gb_create_hook      k_gb_ops_ro=(unset, NULL)
@@ -1394,7 +1397,7 @@ wait_keys_bob_p argsites=1 -> party_overlay_bob
 # below) -- resolve_all_sites() unions every offset's declared implementations for one
 # physical site, so declaring each offset's OWN correct hook once is enough; it does
 # not need to be repeated on every offset's line.
-AppSrcOps.release @8 in app_mon_menu_readonly -> gb_release_hook gb_move_hook gb_paste_hook
+AppSrcOps.release @8 in app_mon_menu_readonly -> gb_release_hook gb_move_hook
 AppSrcOps.move @4 in app_mon_menu_readonly -> gb_move_hook
 AppSrcOps.copy_native @12 in app_copy.isra.0 -> gb_copy_native_hook
 AppSrcOps.view @20 in app_mon_menu_readonly -> gb_view_hook
@@ -1447,7 +1450,12 @@ BoxSource.can_edit @44 in pdna_origin_art_portrait,pdna_origin_box_art -> gb_art
 # below) -- qualified with `in app_mon_menu_readonly` so the two offset-16 classes
 # stay disambiguated by caller instead of colliding (the guard's own error the moment
 # a second struct claims an unqualified offset).
+# BACKLOG #290: #246 deleted gb_paste_hook and set .paste = 0 on every GB ops table, so NO image links it -- but
+# app_mon_menu_readonly still physically dispatches offset 16 (the walker refuses to certify without a declaration
+# covering it). Keep the row and mark its target impl-pending (absence in EVERY variant is legal; the walker prints
+# LANDED the moment any image links a paste hook again, so the row is promoted instead of left behind).
 AppSrcOps.paste @16 in app_mon_menu_readonly -> gb_paste_hook
+impl-pending gb_paste_hook pending=slot-null-since-246
 # AppSrcOps.move (offset 4) DOES have a real site after all -- see the G5 correction
 # above `AppSrcOps.release @8 in app_mon_menu_readonly`, which also declares it.
 
@@ -1557,7 +1565,6 @@ recursion tte_write depth=2
 # crt0's boot-method BYTE (a data flag multiboot.s reads, not a dispatch target
 # itself), and __text_start is a zero-size linker boundary symbol -- disassembling
 # "at" either one still produces a labelled block objdump calls a function.
-addrtaken-ok fp_walk             # hw1: EWRAM_CODE noinline fingerprint walker called only from _EZFO_startUp; the delta image never reaches flashcartio_activate, so it is unreached there while its address sits in the .ewram load data
 addrtaken-ok __aeabi_idiv0        # libgcc: division-by-zero trap, taken by the div runtime itself
 addrtaken-ok __boot_method        # crt0: multiboot/cart boot-method DATA byte, not a function -- see the D5 note above
 addrtaken-ok __do_global_dtors_aux # crtstuff: static-destructor runner, taken via .fini_array
