@@ -80,6 +80,7 @@ uint32_t jrn_hash(const Jrn* j) { return j ? hash_of(j->crc, j->nreg) : 0; }
 uint32_t jrn_cursor(const Jrn* j) { return j ? j->cursor : 0; }
 uint32_t jrn_tip(const Jrn* j) { return j ? j->tip : 0; }
 int      jrn_pending(const Jrn* j) { return j ? j->pend_n : 0; }
+int      jrn_offer(const Jrn* j) { return j ? j->offer : 0; }
 int      jrn_flush_wanted(const Jrn* j) { return j ? j->flush_wanted : 0; }
 
 /* ---- paths ------------------------------------------------------------------------------------ */
@@ -497,6 +498,7 @@ static void anchor_cursor(Jrn* j, const Scan* sc, uint32_t hash) {
   if (found) {
     j->tip = j->cursor == sc->c_last ? sc->tip_aux : sc->c_last;
     j->anchor = JRN_ANCHOR_MATCH;
+    j->offer = j->cursor != sc->c_last;          /* recorded steps the image lacks */
   } else if (sc->latest) {
     j->cursor = sc->latest; j->tip = sc->latest; j->anchor = JRN_ANCHOR_BRANCH;
   } else {
@@ -702,6 +704,7 @@ int jrn_step_end(Jrn* j) {
   j->pend_n++;
   j->cursor = j->next_seq;
   j->tip = j->next_seq;
+  j->offer = 0;
   j->next_seq++;
   memcpy(j->crc, j->bcrc, sizeof j->crc);
   j->bld_len = 0; j->nspans = 0;
@@ -754,7 +757,7 @@ int jrn_mark_discarded(Jrn* j) {
   if (j->bld_len) return JRN_E_STATE;
   h = hash_of(j->crc, j->nreg);
   rc = jrn_i_marker(j, JRN_KIND_DISCARD, j->cursor, j->tip, h, h, "discarded");
-  if (rc == JRN_OK) j->tip = j->cursor;
+  if (rc == JRN_OK) { j->tip = j->cursor; j->offer = 0; }
   return rc;
 }
 

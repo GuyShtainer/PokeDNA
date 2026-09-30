@@ -139,7 +139,7 @@ typedef struct Jrn {
   uint16_t     pend_len;       /* bytes of sealed pending records              */
   uint16_t     bld_len;        /* bytes of the record under construction (0 = none) */
   uint8_t      nreg, max_segs, pend_n, nspans;
-  uint8_t      readonly, stopped, flush_wanted, anchor;
+  uint8_t      readonly, stopped, flush_wanted, anchor, offer;
   uint8_t      pend[JRN_PEND_CAP];
 } Jrn;
 
@@ -217,6 +217,11 @@ int  jrn_recompute(Jrn* j, const JrnImage* img);              /* re-derive crc[]
 uint32_t jrn_hash(const Jrn* j);          /* CRC32 over the tracked region CRC32s (pre/post_hash) */
 uint32_t jrn_cursor(const Jrn* j);
 uint32_t jrn_tip(const Jrn* j);
+/* 1 when the journal holds recorded steps the loaded image does not (the load-time re-apply
+ * offer, D1): the last cursor position is past the anchor. An undone-and-saved image is NOT an
+ * offer -- its cursor marker says the cursor sits where the image does. Cleared by a decline
+ * (jrn_mark_discarded), an undo, a new step, or by redoing up to the target. */
+int      jrn_offer(const Jrn* j);
 int      jrn_pending(const Jrn* j);       /* sealed records not yet on disk */
 /* Look a STEP record up by seq (pending first, then the segments). 0 found, else JRN_E_FLOOR. */
 int      jrn_find(Jrn* j, uint32_t seq, JrnRec* out);

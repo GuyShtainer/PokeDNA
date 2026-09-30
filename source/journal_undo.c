@@ -111,6 +111,7 @@ int jrn_undo(Jrn* j, const JrnImage* img, JrnRec* undone) {
   if (rc) return rc;
   oldcur = j->cursor; oldtip = j->tip;
   j->cursor = r.parent;
+  j->offer = 0;                                             /* the user chose to be here */
   if (pending) {
     jrn_i_pend_pop(j, start);                               /* never hit the disk: no SD I/O */
     j->tip = j->cursor;
@@ -152,6 +153,7 @@ int jrn_redo(Jrn* j, const JrnImage* img, JrnRec* redone) {
   rc = apply_record(j, img, &s, &r, 1);
   if (rc) return rc;
   j->cursor = r.seq;
+  if (j->cursor == j->tip) j->offer = 0;                    /* the offer is fully applied */
   rc = jrn_i_marker(j, JRN_KIND_CURSOR, j->cursor, j->tip, pre, jrn_hash(j), "redo");
   if (rc) return rc;
   if (redone) *redone = r;

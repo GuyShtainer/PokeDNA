@@ -10,6 +10,7 @@
  * Every check here was seen RED on a mutant of the real source (tools/journal_mutants.py
  * lists each mutant and the check that catches it). */
 #include "jrn_harness.h"
+#include "journal_int.h"   /* the test plays slice 3's history-jump by appending a cursor marker itself */
 
 static const uint64_t K = 0x1122334455667788ull;
 
@@ -98,6 +99,7 @@ static void t_roundtrip_undo_redo(void) {
   CHECK(jrn_flush(&j) == JRN_OK, "flush the markers");
   CHECK(jopen(&j, K) == JRN_OK, "reopen after undos");
   CHECK(j.anchor == JRN_ANCHOR_MATCH && jrn_cursor(&j) == 1 && jrn_tip(&j) == 3, "cursor 1, redo tip 3 across a session (cursor %u tip %u)", (unsigned)jrn_cursor(&j), (unsigned)jrn_tip(&j));
+  CHECK(jrn_offer(&j) == 0, "an undone-and-saved image is NOT a re-apply offer (the undo's cursor marker says so)");
   CHECK(jrn_redo(&j, &IMG, 0) == JRN_OK && jrn_redo(&j, &IMG, 0) == JRN_OK, "redo across a session");
   CHECK(memcmp(g_img, snap[3], sizeof g_img) == 0, "image back at state 3");
 }
@@ -125,7 +127,7 @@ static void t_two_pass_no_partial(void) {
 }
 
 static void t_pending_pop_and_overflow(void) {
-  struct { Jrn j; uint8_t guard[64]; } w;
+  static struct { Jrn j; uint8_t guard[256]; } w;   /* static: an overrun must show as a FAIL line, not a smashed stack */
   static uint8_t saved[NREG][RSZ]; unsigned long wr; int i; uint32_t ns;
   world(&w.j, FM_FAT);
   memset(w.guard, 0xC5, sizeof w.guard);
@@ -141,17 +143,17 @@ static void t_pending_pop_and_overflow(void) {
   CHECK(memcmp(saved, g_img, sizeof g_img) == 0, "image restored by the pop");
   CHECK(jrn_redo(&w.j, &IMG, 0) == JRN_NOOP, "a popped step is gone, nothing to redo");
   /* overflow is LOUD and never overruns */
-  CHECK(stage(&w.j, "a", 0, 2, 0, 200, 0x11) == JRN_OK, "big step 1");
+  CHECK(stage(&w.j, "a", 0, 2, 0, 100, 0x11) == JRN_OK, "step of 262 B: 250 B of the 512 left");
   CHECK(jrn_flush_wanted(&w.j), "the buffer asks for a flush once headroom is gone");
   {
     uint16_t pl = w.j.pend_len;
     int rc = stage(&w.j, "b", 0, 3, 0, 200, 0x22);
-    CHECK(rc == JRN_E_FULL, "second big step must be refused LOUDLY, got %d", rc);
+    CHECK(rc == JRN_E_FULL, "a 462-byte step into 250 free bytes must be refused LOUDLY (at _region, not at _begin), got %d", rc);
     CHECK(w.j.pend_len == pl && w.j.bld_len == 0, "a refused step leaves the buffer untouched");
   }
   for (i = 0; i < (int)sizeof w.guard; i++) if (w.guard[i] != 0xC5) { CHECK(0, "guard byte %d overwritten: the pending buffer overran", i); break; }
   CHECK(jrn_flush(&w.j) == JRN_OK, "flush");
-  CHECK(stage(&w.j, "b", 0, 3, 0, 200, 0x22) == JRN_OK, "after the flush the step fits");
+  CHECK(stage(&w.j, "b", 0, 3, 0, 200, 0x22) == JRN_OK, "after the flush the same step fits");
   CHECK(jrn_flush(&w.j) == JRN_OK, "flush 2");
   CHECK(stage(&w.j, "huge", 0, 4, 0, 300, 0x33) == JRN_E_TOOBIG, "a record that can never fit is TOOBIG, not a silent drop");
 }
@@ -172,6 +174,7 @@ static void t_crossed_floors(void) {
   memcpy(g_img, st[0], sizeof g_img);
   CHECK(jopen(&j, K) == JRN_OK, "reopen on the OLD image (as if the session's steps were lost)");
   CHECK(jrn_cursor(&j) == 0 && jrn_tip(&j) == 3, "anchored before S1, offer target S3 (cursor %u tip %u)", (unsigned)jrn_cursor(&j), (unsigned)jrn_tip(&j));
+  CHECK(jrn_offer(&j) == 1, "steps recorded past the image ARE a re-apply offer");
   rc = jrn_redo_info(&j, &avail, &total, &stop);
   CHECK(rc == 1 && total == 3 && avail == 1 && stop.seq == 2, "redo_info: total %u avail %u blocked-by %u (rc %d)", (unsigned)total, (unsigned)avail, (unsigned)stop.seq, rc);
   CHECK(jrn_redo(&j, &IMG, 0) == JRN_OK, "re-apply S1");
@@ -209,6 +212,21 @@ static void t_anchor_branches(void) {
   CHECK(jrn_tip(&j) == jrn_cursor(&j), "no re-apply offer for a branch match");
 }
 
+/* Two records share a post hash; the cursor was last JUMPED to the OLDER one. The anchor must follow
+ * the last cursor path, not "the newest record whose hash matches" (that would re-parent the next edit
+ * on the wrong branch). */
+static void t_anchor_follows_last_path(void) {
+  Jrn j; uint32_t h;
+  world(&j, FM_FAT);
+  CHECK(stage(&j, "toB", 0, 1, 10, 4, 0x77) == JRN_OK && jrn_flush(&j) == JRN_OK, "S1 A->B");
+  CHECK(jrn_undo(&j, &IMG, 0) == JRN_OK, "undo");
+  CHECK(stage(&j, "toB2", 0, 1, 10, 4, 0x77) == JRN_OK && jrn_flush(&j) == JRN_OK, "S3 A->B on a new branch");
+  h = jrn_hash(&j);
+  CHECK(jrn_i_marker(&j, JRN_KIND_CURSOR, 1, 1, h, h, "jump") == JRN_OK && jrn_flush(&j) == JRN_OK, "a history jump back to S1");
+  CHECK(jopen(&j, K) == JRN_OK, "reopen on the B image");
+  CHECK(j.anchor == JRN_ANCHOR_MATCH && jrn_cursor(&j) == 1, "anchor follows the LAST CURSOR PATH (S1), not the newest record with that hash (cursor %u)", (unsigned)jrn_cursor(&j));
+}
+
 static void t_zero_in_place(void) {
   Jrn j; uint8_t junk[200], z[512], back[512]; long sz; unsigned i; char p[96], hex[17];
   world(&j, FM_FAT);
@@ -226,6 +244,11 @@ static void t_zero_in_place(void) {
     jrn_key_hex(K, hex); snprintf(p, sizeof p, ROOT "/%s/0001.pdj", hex);
     sz = jrn_fatfs.size(0, p);
     CHECK(sz == (long)JRN_SEG_SIZE, "zeroing never truncates or grows: size %ld", sz);
+    /* a VALID record with the wrong seq (a stale replay) at the tail is not accepted either */
+    { uint8_t rec[70];
+      CHECK(raw_read(K, 1, JRN_SEG_HDR, rec, sizeof rec) == 0, "read S1");
+      CHECK(raw_write(K, 1, tail, rec, sizeof rec) == 0, "replay S1 at the tail");
+      CHECK(jopen(&j, K) == JRN_OK && j.tail_off == tail && j.next_seq == 3, "a stale valid record (seq 1 where 3 is due) ends the prefix (tail %u, next_seq %u)", (unsigned)j.tail_off, (unsigned)j.next_seq); }
     /* a flipped byte inside the LAST record: the prefix ends before it */
     {
       uint8_t b; raw_read(K, 1, tail - 10, &b, 1); b ^= 0x40; raw_write(K, 1, tail - 10, &b, 1);
@@ -387,8 +410,11 @@ static void t_discard_marker(void) {
   memcpy(g_img, st0, sizeof g_img);                          /* the session's steps never reached the .sav */
   CHECK(jopen(&j, K) == JRN_OK && jrn_cursor(&j) == 0 && jrn_tip(&j) == 2, "offer: cursor 0, target step 2");
   CHECK(jrn_redo_info(&j, &avail, &total, 0) == 0 && total == 2 && avail == 2, "the offer is 2 steps");
+  CHECK(jrn_offer(&j) == 1, "two recorded steps the image lacks: an offer");
   CHECK(jrn_mark_discarded(&j) == JRN_OK && jrn_flush(&j) == JRN_OK, "the user declines");
+  CHECK(jrn_offer(&j) == 0, "declined: no offer in this session");
   CHECK(jopen(&j, K) == JRN_OK && jrn_cursor(&j) == 0, "reopen");
+  CHECK(jrn_offer(&j) == 0, "a discarded step is NOT re-offered on the next load");
   CHECK(jrn_redo_info(&j, &avail, &total, 0) == 0 && total == 0, "a discarded step is NOT re-offered (total %u)", (unsigned)total);
   CHECK(j.anchor == JRN_ANCHOR_MATCH, "anchor still matches after the marker (%d)", j.anchor);
 }
@@ -401,6 +427,7 @@ int main(void) {
   t_pending_pop_and_overflow();
   t_crossed_floors();
   t_anchor_branches();
+  t_anchor_follows_last_path();
   t_zero_in_place();
   t_segments_and_full();
   t_compaction_floor();
