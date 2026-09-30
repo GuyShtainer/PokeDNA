@@ -4066,7 +4066,7 @@ bool __attribute__((noinline)) app_bank_togame_native(int bank_box, int bank_slo
   uint8_t held[80], conv[80];
   memcpy(held, cell, 80);                                   /* the arm may re-page the shared Bank buffer */
   uint8_t* dst = pk_box_slot(g_pc, db, ds);
-  BankDownResult bd = bank_down_dispatch(&pcs, db, ds, held, dst, conv);
+  BankDownResult bd = bank_down_dispatch(&pcs, db, ds, held, dst, conv, bank_box, bank_slot);
   if (bd != BANK_DOWN_CONVERTED || bc_is_native(conv)) return false;   /* REFUSED: the arm already said why; nothing changed */
   memcpy(dst, conv, 80);
   app_register_dex_deferred(conv, false);                   /* == pcsrc_note_add, the drop's note_add */

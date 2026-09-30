@@ -1135,6 +1135,28 @@ static uint8_t* clear_origin(BoxSource* src, int box) {
  * source consumed) or NOTHING anywhere changed and the hand keeps holding. */
 /* BankDownResult (REFUSED / LANDED / CONVERTED) lives in bank_down_convert.h (S150-8). */
 
+/* #286/y12: the ONE Bank consume every Bank-DOWN landing into a Game Boy save runs -- bank_down_exact (EXACT arm),
+ * drop_held's non-EXACT LANDED tail (GB_BRIDGE), drop_held_down_g3 (a plain Gen-3 cell) and the TO GAME menu
+ * action all call THIS, so the drop and the menu cannot diverge. app_bank_clear_slots() is a full SD read+write --
+ * OS-mode rule (hard rule 1): the box OAM animation is suspended for the whole transfer. It is IMMEDIATE, never
+ * app_bank_defer_delete: a Game Boy session never runs the Gen-3 exit-save flush a deferred delete waits for
+ * (merged-tree review F2). On failure it says so itself (D7: the game HAS it now; the Bank keeps a DUPLICATE the
+ * player can delete -- never a loss) and returns false; the caller's landing stays LANDED. `cell80` is the record
+ * whose identity the Bank slot must still match (app_bank_clear_slots verifies it). */
+static bool __attribute__((noinline)) bank_down_consume(int orig_box, int orig_slot, const uint8_t cell80[80]) {
+  uint8_t slots1[1]; slots1[0] = (uint8_t)orig_slot;
+  boxoam_suspend();                                        /* hard rule 1: SD write with OAM off */
+  bool ok = app_bank_clear_slots(orig_box, slots1, (const uint8_t (*)[80])cell80, 1);
+  if (!ok) {
+    snd_error();
+    char l2[40];
+    siprintf(l2, "Bank box %d slot %d", orig_box + 1, orig_slot + 1);
+    msg_wait(PDNA_XFER_DOWN_DUP_TITLE, UI_WARN, PDNA_XFER_DOWN_DUP_L1, l2);
+  }
+  boxoam_resume();
+  return ok;
+}
+
 /* The XG_DOWN_ARM_EXACT arm: land the cell in a Game Boy save of the SAME generation
  * via the vtable's accept_down hook, then the ONE Bank consume (D7/D12). G-H1's
  * ordering, applied to a GB destination: the consume runs ONLY after accept_down's
@@ -1154,7 +1176,8 @@ static uint8_t* clear_origin(BoxSource* src, int box) {
  * ALWAYS see a NULL vtable and refuse every drop silently -- the exact "has no way out"
  * failure this whole slice exists to fix. Confirmed on the emulator (step 7's delta
  * shots): with `src->xfer` the MOVE/DOWN/A gesture never reaches accept_down at all. */
-static BankDownResult bank_down_exact(BoxSource* src, int dst_box, const uint8_t cell80[80]) {
+static BankDownResult bank_down_exact(BoxSource* src, int dst_box, const uint8_t cell80[80],
+                                      int orig_box, int orig_slot) {
   (void)src;
   if (!s_xfer_peer || !s_xfer_peer->accept_down) { snd_deny(); return BANK_DOWN_REFUSED; }
   boxoam_suspend();
@@ -1162,36 +1185,14 @@ static BankDownResult bank_down_exact(BoxSource* src, int dst_box, const uint8_t
   boxoam_resume();
   if (!ok) return BANK_DOWN_REFUSED;          /* the hook already said why */
 
-  uint8_t slots1[1]; uint8_t recs1[1][80];
-  slots1[0] = (uint8_t)s_orig_slot; memcpy(recs1[0], cell80, 80);
-  /* REVIEW F3: app_bank_clear_slots() is a full SD read+write (box_save(), pdna_bank.c)
-   * -- OS-mode rule (hard rule 1), the box OAM animation must be suspended for the
-   * whole SD transfer, same as this file's other consume site (:2135's
-   * gb_release_up_hook path, which keeps its own boxoam_suspend/resume bracket around
-   * the write). This one previously resumed right after accept_down (:1136 above) and
-   * never re-suspended before the consume -- hardware-only (mGBA has no OS-mode ROM
-   * disappearance to reproduce), but a real EZ-Flash Omega DE could have painted a
-   * cursor-bob frame mid-transfer. */
-  boxoam_suspend();
-  if (!app_bank_clear_slots(s_orig_box, slots1, (const uint8_t (*)[80])recs1, 1)) {
-    /* D7: the reconcile (S150-11) cannot help here -- the EXACT arm writes NO
-     * /PokeDNA/xfer/ entry (D6) for it to walk. Say so explicitly: the game HAS the
-     * mon now, the Bank slot is a DUPLICATE the player can delete themselves, never a
-     * loss. Still BANK_DOWN_LANDED -- the operation succeeded from the player's view;
-     * only the Bank-side cleanup didn't, and that is reported, not silently retried. */
-    snd_error();
-    /* REVIEW F4: PDNA_XFER_DOWN_DUP_L1 ("The game save HAS it now.") is the
-     * reassuring half of D7's message -- used here as the static first line; the
-     * dynamic box/slot naming moves to the second line. */
-    char l2[40];
-    siprintf(l2, "Bank box %d slot %d", s_orig_box + 1, s_orig_slot + 1);
-    msg_wait(PDNA_XFER_DOWN_DUP_TITLE, UI_WARN, PDNA_XFER_DOWN_DUP_L1, l2);
-    boxoam_resume();
+  /* REVIEW F3 / D7: the ONE Bank consume, shared with every other Bank-down landing
+   * (bank_down_consume). A failed consume is still BANK_DOWN_LANDED -- the game HAS the mon; the
+   * Bank slot is a duplicate the player can delete themselves, never a loss. */
+  if (!bank_down_consume(orig_box, orig_slot, cell80)) {
     log_line("gen12: bank-down consume failed -- Bank box %d slot %d still holds a "
-             "duplicate (the game save already has it)", s_orig_box, s_orig_slot);
+             "duplicate (the game save already has it)", orig_box, orig_slot);
     return BANK_DOWN_LANDED;
   }
-  boxoam_resume();
   snd_save();
   return BANK_DOWN_LANDED;
 }
@@ -1206,9 +1207,9 @@ static BankDownResult bank_down_exact(BoxSource* src, int dst_box, const uint8_t
  * drop_held, which sits on the box-screen stack chain. */
 BankDownResult __attribute__((noinline))
 bank_down_dispatch(BoxSource* src, int dst_box, int dst_cell, const uint8_t cell80[80],
-                   const uint8_t dstrec[80], uint8_t out80[80]) {
+                   const uint8_t dstrec[80], uint8_t out80[80], int orig_box, int orig_slot) {
   switch (xg_bank_down_arm(bc_kind(cell80), src->scope, app_gb_session_gen())) {
-    case XG_DOWN_ARM_EXACT:     return bank_down_exact(src, dst_box, cell80);
+    case XG_DOWN_ARM_EXACT:     return bank_down_exact(src, dst_box, cell80, orig_box, orig_slot);
     case XG_DOWN_ARM_GB_BRIDGE: return bank_down_convert_gb(src, dst_box, dst_cell, cell80);
     case XG_DOWN_ARM_GEN3:      return bank_down_convert_gen3(src, dst_box, dst_cell, cell80, dstrec, out80);
     case XG_DOWN_ARM_NONE:
@@ -1704,14 +1705,7 @@ drop_held_down_g3(BoxSource* src, int box, int cur, uint8_t* recs, bool* done) {
   }
 
   s_holding = false; *done = true;
-  { uint8_t slots1[1]; slots1[0] = (uint8_t)s_orig_slot;
-    boxoam_suspend();                                        /* hard rule 1: SD write with OAM off */
-    if (!app_bank_clear_slots(s_orig_box, slots1, (const uint8_t (*)[80])s_held, 1)) {
-      snd_error();                                           /* D7's own shape: the game HAS it; the Bank keeps a duplicate */
-      char l2[40]; siprintf(l2, "Bank box %d slot %d", s_orig_box + 1, s_orig_slot + 1);
-      msg_wait(PDNA_XFER_DOWN_DUP_TITLE, UI_WARN, PDNA_XFER_DOWN_DUP_L1, l2);
-    }
-    boxoam_resume(); }
+  (void)bank_down_consume(s_orig_box, s_orig_slot, s_held);   /* D7: a failed consume already said "duplicate"; the landing stands */
   if (rc == 1) gbpc_restore_done(s_held);   /* entry marked LAST, after the verified GB write landed */
   s_oam_reload = true;
   recs = src->records(box);   /* the GB list grew -- repaint from the image */
@@ -1771,7 +1765,7 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
       src->scope != BOXSCOPE_BANK && bc_is_native(s_held) &&
       !(arm == XG_DOWN_ARM_GEN3 && occupied)) {
     BankDownResult bd = bank_down_dispatch(src, box, cur, s_held,
-                                           recs + (uint32_t)cur * 80, conv);
+                                           recs + (uint32_t)cur * 80, conv, s_orig_box, s_orig_slot);
     if (bd == BANK_DOWN_LANDED) {
       /* Two arms LAND. EXACT (S150-7): the GB list grew and the Bank consume ALREADY
        * ran inside bank_down_exact -- repaint from the image. GB_BRIDGE (S150-8): the
@@ -1786,17 +1780,11 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
         return recs;
       }
       s_holding = false; *done = true;
-      { uint8_t slots1[1]; slots1[0] = (uint8_t)s_orig_slot;
-        /* s_held IS the 80-byte record: hand it to the consume directly (no 80-B copy
-         * here -- the escape-gate structural test treats every 80-B memcpy in
-         * drop_held as a write that must sit below the gate). */
-        boxoam_suspend();                              /* hard rule 1: SD write with OAM off */
-        if (!app_bank_clear_slots(s_orig_box, slots1, (const uint8_t (*)[80])s_held, 1)) {
-          snd_error();                                 /* D7: the game HAS it; the Bank keeps a duplicate */
-          char l2[40]; siprintf(l2, "Bank box %d slot %d", s_orig_box + 1, s_orig_slot + 1);
-          msg_wait(PDNA_XFER_DOWN_DUP_TITLE, UI_WARN, PDNA_XFER_DOWN_DUP_L1, l2);
-        }
-        boxoam_resume(); }
+      /* s_held IS the 80-byte record: hand it to the shared consume directly (no 80-B copy
+       * here -- the escape-gate structural test treats every 80-B memcpy in
+       * drop_held as a write that must sit below the gate). The result is unused on
+       * purpose: a failed consume already said "duplicate" on screen and the landing stands. */
+      (void)bank_down_consume(s_orig_box, s_orig_slot, s_held);
       s_oam_reload = true; recs = src->records(box);   /* the mounted list grew -- repaint */
       return recs;
     }

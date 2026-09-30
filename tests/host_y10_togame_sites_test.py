@@ -255,8 +255,14 @@ def parity_facts(drop_body: str, menu_body: str, pc_src: str, pcsrc_note: str) -
     if not dd or not pb or not menu_body:
         return False, "a parity body was not found (drop dispatch block / BANK->PC branch / app_bank_togame_native)"
     da, ma = call_args(dd, "bank_down_dispatch"), call_args(menu_body, "bank_down_dispatch")
-    if len(da) != 6 or len(ma) != 6:
-        return False, f"bank_down_dispatch must be called with 6 arguments on both sides (drop {len(da)}, menu {len(ma)})"
+    if len(da) != 8 or len(ma) != 8:
+        return False, f"bank_down_dispatch must be called with 8 arguments on both sides (drop {len(da)}, menu {len(ma)})"
+    # #286/y12: the two trailing arguments are the ORIGIN Bank cell (its EXACT arm's consume) -- the drop's carry
+    # statics, the menu's own cell coordinates (the same ones it hands app_bank_defer_delete)
+    if da[6:8] != ["s_orig_box", "s_orig_slot"]:
+        return False, f"drop side: the dispatch's origin args must be s_orig_box, s_orig_slot (got {da[6:8]})"
+    if ma[6:8] != ["bank_box", "bank_slot"]:
+        return False, f"menu side: the dispatch's origin args must be bank_box, bank_slot (got {ma[6:8]})"
     # the sixth argument is the out buffer: it is the record PLACED, on both sides
     d_out, m_out = da[5], ma[5]
     if not re.search(r"placing\s*=\s*converted\s*\?\s*" + re.escape(d_out) + r"\b", pb):
@@ -385,7 +391,11 @@ def self_test() -> None:
         ("MUT D1d: the menu forgets the dex note", parity_facts,
          (dr, tg.replace("app_register_dex_deferred(conv, false);", ";"), ps, pn)),
         ("MUT D1e: the menu passes a different out buffer", parity_facts,
-         (dr, tg.replace("bank_down_dispatch(&pcs, db, ds, held, dst, conv)", "bank_down_dispatch(&pcs, db, ds, held, dst, held)"), ps, pn)),
+         (dr, tg.replace("bank_down_dispatch(&pcs, db, ds, held, dst, conv, bank_box, bank_slot)", "bank_down_dispatch(&pcs, db, ds, held, dst, held, bank_box, bank_slot)"), ps, pn)),
+        ("MUT D1f (#286): the menu passes a different origin cell to the dispatch", parity_facts,
+         (dr, tg.replace("held, dst, conv, bank_box, bank_slot)", "held, dst, conv, db, ds)"), ps, pn)),
+        ("MUT D1g (#286): the drop stops passing its carry origin", parity_facts,
+         (dr.replace("conv, s_orig_box, s_orig_slot)", "conv, -1, -1)"), tg, ps, pn)),
         ("MUT D2a: the PC BoxSource note_add drifts", parity_facts,
          (dr, tg, ps.replace("pcsrc_note_add", "other_note_add"), pn)),
         ("MUT D2b: pcsrc_note_add drifts from the menu's dex call", parity_facts,
