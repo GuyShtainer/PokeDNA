@@ -112,8 +112,16 @@ typedef struct JrnFs {
   int      (*read)(void* ctx, const char* path, uint32_t off, void* buf, uint32_t n);
   /* IN PLACE, never grows the file, synced before returning. 0 ok. */
   int      (*write)(void* ctx, const char* path, uint32_t off, const void* buf, uint32_t n);
-  /* Create-OR-COMPLETE: open (creating if absent), zero-fill from the file's current end to
-   * `size`, then write head[0..headn) at offset 0 LAST, sync. A file longer than `size` fails. */
+  /* STAGED FIRST FILL. Create-OR-COMPLETE a `size`-byte file: open (creating if absent), extend it to
+   * `size` (the FAT chain is allocated) WITHOUT writing the body, overwrite the first `headn` bytes
+   * (<= 512) with ZEROS, sync. The body's content is UNDEFINED (whatever the card held): a caller must
+   * zero it (`zero`) before it may be read as a segment. A file longer than `size` fails. */
+  int      (*alloc)(void* ctx, const char* path, uint32_t size, uint32_t headn);
+  /* ONE handle, IN PLACE, never grows the file: for each 512-byte chunk of [off, off+n) (aligned to
+   * `off`; the last may be shorter) that holds a non-zero byte, overwrite it with zeros; sync once. 0 ok. */
+  int      (*zero)(void* ctx, const char* path, uint32_t off, uint32_t n);
+  /* Create-OR-COMPLETE: open (creating if absent), zero-fill from the file's current end to `size`, then
+   * write head[0..headn) at offset 0 LAST, sync. A file longer than `size` fails. (Small files: .pdr.) */
   int      (*create_zero)(void* ctx, const char* path, uint32_t size,
                           const void* head, uint32_t headn);
   int      (*unlink)(void* ctx, const char* path);                   /* absent = 0       */

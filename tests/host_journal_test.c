@@ -538,6 +538,31 @@ static void t_header_sector_alone(void) {
     CHECK(n > 0 && hit == 0, "no append wrote the slot's first sector (%u of %u changed sectors)", hit, n); }
 }
 
+/* Ruling 2: the first fill allocates every slot but zeroes only each HEADER sector; the body zeroing moves
+ * into the activation (one handle). The card here is poisoned (0xA5 free space), so an un-activated slot's
+ * body must still read garbage, and the write cost of the first fill must be a fraction of 17 x 128. */
+static void t_staged_first_fill(void) {
+  Jrn j; unsigned long w0, cost; uint8_t b[16], hz[512]; unsigned k;
+  card_fresh(FM_FAT32); img_fill(1); rd_fattime_hook = jrn_fattime_filter;
+  g_jopen_segs = 0;
+  CHECK(jopen(&j, K) == JRN_OK, "open");
+  w0 = rd_writes; CHECK(jrn_prepare_first(&j) == JRN_OK, "first fill");
+  cost = rd_writes - w0;
+  CHECK(j.ring == 17 && cost < 400, "the first fill (17 slots) wrote %lu sectors: header sectors + ONE activation, not 17 body zero-fills (2176+)", cost);
+  for (k = 1; k <= 17; k++) {
+    CHECK(raw_read(K, k, 0, hz, sizeof hz) == 0, "slot %u header sector", k);
+    { unsigned i; for (i = 0; i < sizeof hz && !(k > 1 ? hz[i] : 0); i++) {}
+      CHECK(k == 1 || i == sizeof hz, "slot %u: the header sector is zero (a free slot)", k); }
+  }
+  CHECK(raw_read(K, 1, 4096, b, sizeof b) == 0 && !b[0] && !b[8], "the activated segment's body is zero");
+  CHECK(raw_read(K, 17, 4096, b, sizeof b) == 0 && b[0] == 0xA5 && b[8] == 0xA5, "an un-activated slot's body was NOT zero-filled by the first fill (still the card's garbage)");
+  CHECK(jrn_prepare(&j) == JRN_OK, "spare");
+  CHECK(raw_read(K, 2, 4096, b, sizeof b) == 0 && !b[0] && !b[8], "the spare's body is zero-filled by its ACTIVATION");
+  CHECK(raw_read(K, 3, 4096, b, sizeof b) == 0 && b[0] == 0xA5, "slot 3 still garbage");
+  CHECK(jopen(&j, K) == JRN_OK && j.seg_first == 1 && j.seg_last == 2 && j.ring == 17, "reopen sees exactly the two activated segments (garbage bodies are never read)");
+  g_jopen_segs = 0;
+}
+
 /* A header the way a NEWER (or foreign) build would have left it: valid magic + crc, unknown shape. */
 static void plant_hdr(uint64_t key, unsigned slot, uint32_t idx, uint16_t ring, uint16_t ver) {
   uint8_t h[JRN_SEG_HDR]; uint32_t c;
@@ -627,6 +652,7 @@ int main(void) {
   t_discard_marker();
   t_version_foreign();
   t_header_sector_alone();
+  t_staged_first_fill();
   if (fails) { printf("host_journal_test: %d FAILED of %lu checks\n", fails, checks); return 1; }
   printf("host_journal_test: all %lu checks passed (real lib/fatfs over a RAM disk)\n", checks);
   return 0;

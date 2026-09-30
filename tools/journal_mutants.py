@@ -158,6 +158,13 @@ MUTANTS = [
     Mutant("format: records start at 32 again (the header sector is shared with the first record)", "journal.c",
            "  j->tail_off = JRN_REC_BASE;", "  j->tail_off = JRN_SEG_HDR;",
            "journal", "a fresh tail starts at the record base"),
+    Mutant("first fill: every slot body is zero-filled again (not staged)", "journal.c",
+           "f->alloc(f->ctx, p, JRN_SEG_SIZE, 512u) != 0", "f->create_zero(f->ctx, p, JRN_SEG_SIZE, 0, 0) != 0",
+           "journal", "the first fill (17 slots) wrote"),
+    Mutant("first fill: the body zeroing is dropped from the activation (garbage under a live header)", "journal.c",
+           "  rc = slot_zero(j, idx);\n  if (rc) return rc;\n  seg_hdr_build(idx, j->ring, h);",
+           "  seg_hdr_build(idx, j->ring, h);",
+           "journal", "the activated segment's body is zero"),
 ]
 
 

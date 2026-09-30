@@ -49,6 +49,52 @@ static int jfs_write(void* ctx, const char* path, uint32_t off, const void* buf,
   return (f_close(&f) == FR_OK && ok) ? 0 : -1;
 }
 
+/* Staged first fill (see JrnFs.alloc): extend to `size` by seeking past the end (FatFs allocates the chain,
+ * writes no data), zero the header sector, sync. */
+static int jfs_alloc(void* ctx, const char* path, uint32_t size, uint32_t headn) {
+  FIL f;
+  UINT bw = 0;
+  uint8_t blk[ZBLK];
+  uint32_t done;
+  int ok = 1;
+  (void)ctx;
+  if (headn > ZBLK || headn > size) return -1;
+  if (f_open(&f, path, FA_WRITE | FA_OPEN_ALWAYS) != FR_OK) return -1;
+  done = (uint32_t)f_size(&f);
+  if (done > size) { f_close(&f); return -1; }
+  if (done < size) ok = f_lseek(&f, size) == FR_OK && f.fptr == size;   /* disk full: fptr stops short */
+  if (ok && headn) {
+    memset(blk, 0, sizeof blk);
+    ok = f_lseek(&f, 0) == FR_OK && f_write(&f, blk, headn, &bw) == FR_OK && bw == headn;
+  }
+  ok = ok && f_size(&f) == size && f_sync(&f) == FR_OK;
+  return (f_close(&f) == FR_OK && ok) ? 0 : -1;
+}
+
+/* One handle: read each 512-byte chunk, overwrite the dirty ones with zeros in place. */
+static int jfs_zero(void* ctx, const char* path, uint32_t off, uint32_t n) {
+  FIL f;
+  UINT br, bw;
+  uint8_t blk[ZBLK], z[ZBLK];
+  uint32_t pos, m, i;
+  int ok = 1;
+  (void)ctx;
+  memset(z, 0, sizeof z);
+  if (f_open(&f, path, FA_READ | FA_WRITE | FA_OPEN_EXISTING) != FR_OK) return -1;
+  ok = (uint32_t)f_size(&f) >= off + n && f_lseek(&f, off) == FR_OK && f.fptr == off;
+  for (pos = off; ok && pos < off + n; pos += m) {
+    m = off + n - pos < ZBLK ? off + n - pos : ZBLK;
+    br = 0;
+    ok = f_read(&f, blk, m, &br) == FR_OK && br == m;
+    for (i = 0; ok && i < m && !blk[i]; i++) {}
+    if (!ok || i == m) continue;                                     /* clean chunk: nothing to write */
+    bw = 0;
+    ok = f_lseek(&f, pos) == FR_OK && f_write(&f, z, m, &bw) == FR_OK && bw == m;
+  }
+  ok = ok && f_sync(&f) == FR_OK;
+  return (f_close(&f) == FR_OK && ok) ? 0 : -1;
+}
+
 /* Create-or-complete (see JrnFs.create_zero): a leftover from a cut is finished, not recreated,
  * so the growth path never deletes or renames. The header goes in LAST: until it does (and the
  * final sync sets the size) the file is not a valid segment/redirect. */
@@ -106,6 +152,6 @@ static uint32_t jfs_stamp(void* ctx, const char* path) {
 }
 
 const JrnFs jrn_fatfs = {
-  0, jfs_mkdir, jfs_size, jfs_read, jfs_write, jfs_create_zero,
+  0, jfs_mkdir, jfs_size, jfs_read, jfs_write, jfs_alloc, jfs_zero, jfs_create_zero,
   jfs_unlink, jfs_list, jfs_stamp
 };

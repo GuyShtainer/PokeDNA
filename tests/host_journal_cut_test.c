@@ -30,6 +30,7 @@
  *   (e) the journal is still usable: reopen, prepare, record a step, flush, reopen, undo.
  */
 #include "jrn_harness.h"
+#include <string.h>
 
 #define T0 0x5A2A6800u
 #define T1 0x5A2A6C55u   /* a later live clock: get_fattime WOULD change the directory entry */
@@ -116,8 +117,9 @@ static void su_first_only(void) { Jrn j; CHECK(jopen(&j, K) == JRN_OK && jrn_pre
 /* A cut leaves an INCOMPLETE ring: the setup cuts the first fill half way (a partial slot file, no header). */
 static void su_partial_seg(void) {
   Jrn j; CHECK(jopen(&j, K) == JRN_OK, "open");
-  rd_cut_sectors = 200; rd_cut_torn = 0;
+  rd_cut_sectors = 15; rd_cut_torn = 0;   /* the staged fill is ~33 sectors of chain + header zeroing for 4 slots: 15 lands mid-ring */
   (void)jrn_prepare_first(&j);
+  CHECK(rd_cut_fired, "setup: the first fill was cut part way (it wrote fewer than 15 sectors)");
   rd_cut_sectors = -1; rd_cut_fired = 0;
 }
 /* Fill segment `seg` (make it the tail's predecessor) then make sure the spare exists. */
@@ -325,6 +327,7 @@ static void sweep_one(BYTE fmt, const Scn* sc, int garbage) {
         ok = 1;
         if (!garbage) sc_hazA[sc - SCN]++;
       }
+      if (garbage && !ok && getenv("JRN_VERBOSE")) printf("      garbage k=%lu tear=%d: [%s] (before [%s], after [%s])\n", k, TEARS[t], d3, d1, d2);
       SCHECK(GC_STATE, ok, "%s k=%lu/%lu tear=%d: (c) journal is neither before nor after: [%s] (before [%s], after [%s])", sc->name, k, W, TEARS[t], d3, d1, d2);
       recover_and_use(fmt, sc->name, (unsigned)k, TEARS[t], sc->dirmut, (int)(sc - SCN));
       SCHECK(GC_SAV2, sav_intact(), "%s k=%lu/%lu tear=%d: (b) .sav after recovery", sc->name, k, W, TEARS[t]);
@@ -444,12 +447,12 @@ int main(int argc, char** argv) {
     printf("== %s ==\n", FMTS[f].name);
     t_frozen(FMTS[f].fmt, FMTS[f].name);
     t_ring_nodir(FMTS[f].fmt, FMTS[f].name);
-    for (i = 0; i < NSCN; i++) sweep_one(FMTS[f].fmt, &SCN[i], 0);
+    for (i = 0; i < NSCN; i++) if (!getenv("JRN_ONLY") || strstr(SCN[i].name, getenv("JRN_ONLY"))) sweep_one(FMTS[f].fmt, &SCN[i], 0);
     if (!getenv("JRN_NO_GARBAGE")) {
       unsigned long tot[GC_N]; int c;
       printf("  -- GARBAGE tear pass (%s): the torn sector's unwritten suffix is noise. Documented residual, NOT asserted zero (D3: hardware owes the tear shape) --\n", FMTS[f].name);
       memset(g_gtal, 0, sizeof g_gtal);
-      for (i = 0; i < NSCN; i++) sweep_one(FMTS[f].fmt, &SCN[i], 1);
+      for (i = 0; i < NSCN; i++) if (!getenv("JRN_ONLY") || strstr(SCN[i].name, getenv("JRN_ONLY"))) sweep_one(FMTS[f].fmt, &SCN[i], 1);
       memset(tot, 0, sizeof tot);
       for (i = 0; i < NSCN; i++) for (c = 0; c < GC_N; c++) tot[c] += g_gtal[i][c];
       printf("  garbage residual TOTAL on %s: mount %lu  sav %lu  state %lu  reopen %lu  prepare %lu  record %lu  undo %lu  sav-after %lu  exfat-dir %lu\n", FMTS[f].name,

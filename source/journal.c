@@ -10,12 +10,10 @@
 
 #define SEG_VER        JRN_SEG_VER
 #define SLOT_FOREIGN   (-1)     /* slot_hdr / hdr_parse: valid magic + crc, but not a header this build understands */
-#define ZCHUNK         256u    /* zero-in-place granularity                               */
 #define ZWINDOW        1024u   /* the most a cut can leave past the tail; the most we zero */
 #define RCHUNK         128u    /* streaming chunk for CRC / verify (stack)                */
 #define SEG_MAX        9999u   /* logical segment index cap (the slot files are a fixed ring) */
 #define RING_MAX       JRN_RING_MAX   /* slot files in the ring (max_segs + 1, max_segs <= JRN_MAX_SEGS) */
-#define ZBODY          512u    /* recycle zero-fill granularity (stack)                   */
 #define SCAN_MAX       0x40000u
 #define RESOLVE_MAX    8u
 #define PDR_LEN        16u
@@ -23,8 +21,7 @@
 
 _Static_assert(JRN_PEND_MAXN * JRN_REC_MIN <= JRN_PEND_CAP, "pending record count bound");
 _Static_assert(JRN_REC_MAX <= JRN_PEND_CAP, "a record must fit the pending buffer");
-_Static_assert(JRN_SEG_SIZE % ZCHUNK == 0, "zeroing chunks tile a segment");
-_Static_assert(JRN_SEG_SIZE % ZBODY == 0 && ZBODY >= JRN_SEG_HDR, "recycle chunks tile a segment");
+_Static_assert(JRN_SEG_SIZE % 512u == 0 && JRN_SEG_HDR <= 512u, "the zero seam works in 512-byte chunks that tile a segment");
 _Static_assert(JRN_REC_BASE % 512u == 0 && JRN_REC_BASE >= JRN_SEG_HDR && JRN_REC_BASE + JRN_REC_MAX < JRN_SEG_SIZE, "records start on a sector boundary, after the header sector");
 
 /* ---- the frozen-timestamp hook -------------------------------------------------------------- */
@@ -143,6 +140,19 @@ static int seg_write(const Jrn* j, uint16_t idx, uint32_t off, const void* buf, 
   s_hold_stamp = j->fs->stamp(j->fs->ctx, p);
   s_hold_on = 1;
   rc = j->fs->write(j->fs->ctx, p, off, buf, n);
+  s_hold_on = 0;
+  return rc == 0 ? 0 : JRN_E_IO;
+}
+
+/* Zero the dirty 512-byte chunks of [off, off+n) in place, ONE handle (the seam's `zero`), with the file's
+ * own timestamp held exactly like seg_write. */
+static int seg_zero(const Jrn* j, uint16_t idx, uint32_t off, uint32_t n) {
+  char p[JRN_PATH_MAX];
+  int rc;
+  if (seg_path(j, idx, p) || off + n > JRN_SEG_SIZE) return JRN_E_ARG;
+  s_hold_stamp = j->fs->stamp(j->fs->ctx, p);
+  s_hold_on = 1;
+  rc = j->fs->zero(j->fs->ctx, p, off, n);
   s_hold_on = 0;
   return rc == 0 ? 0 : JRN_E_IO;
 }
@@ -488,18 +498,8 @@ static int scan_prefix(Jrn* j, uint32_t hash, Scan* sc) {
  * tail. Nothing past the window is touched -- a corrupt record in the MIDDLE of a journal must
  * cost the history behind it (the valid prefix ends there), never zero valid bytes far away. */
 static int zero_from(const Jrn* j, uint16_t seg, uint32_t from) {
-  uint8_t buf[ZCHUNK], z[ZCHUNK];
-  uint32_t off, n, i;
-  int rc, dirty;
-  memset(z, 0, sizeof z);
-  for (off = from; off < JRN_SEG_SIZE && off < from + ZWINDOW; off += n) {
-    n = JRN_SEG_SIZE - off < ZCHUNK ? JRN_SEG_SIZE - off : ZCHUNK;
-    rc = seg_read(j, seg, off, buf, n);
-    if (rc) return rc;
-    for (dirty = 0, i = 0; i < n; i++) if (buf[i]) { dirty = 1; break; }
-    if (dirty) { rc = seg_write(j, seg, off, z, n); if (rc) return rc; }
-  }
-  return 0;
+  if (from >= JRN_SEG_SIZE) return 0;
+  return seg_zero(j, seg, from, JRN_SEG_SIZE - from < ZWINDOW ? JRN_SEG_SIZE - from : ZWINDOW);
 }
 
 static int repair_tail(const Jrn* j) {
@@ -550,7 +550,7 @@ static int open_validate(const JrnCfg* c, const JrnImage* img) {
   const JrnFs* f;
   if (!c || !img || !img->get || !c->fs || !c->root) return JRN_E_ARG;
   f = c->fs;
-  if (!f->mkdir || !f->size || !f->read || !f->write || !f->create_zero ||
+  if (!f->mkdir || !f->size || !f->read || !f->write || !f->alloc || !f->zero || !f->create_zero ||
       !f->unlink || !f->list || !f->stamp) return JRN_E_ARG;
   if (!c->nreg || c->nreg > JRN_NREG_MAX || !c->reg_size) return JRN_E_ARG;
   return 0;
@@ -631,8 +631,10 @@ int jrn_open(Jrn* j, const JrnCfg* cfg, const JrnImage* img) {
  *   retire    = zero the header in place (compaction): a cut leaves it live (before) or free.
  * No create, delete or rename runs here. */
 
-/* FIRST FILL only: create every slot file, zero-filled (create-or-complete: a cut leftover is
- * finished, never recreated). No header yet, so the journal still reads as empty. */
+/* FIRST FILL only, STAGED (bounce ruling 2): create every slot file at full size but zero ONLY its header
+ * sector (create-or-complete: a cut leftover is finished, never recreated). The bodies stay whatever the
+ * card held; seg_activate zero-fills a body through one handle before the header makes it live. No header
+ * yet, so the journal still reads as empty. */
 static int ring_ensure(const Jrn* j) {
   char p[JRN_PATH_MAX];
   const JrnFs* f = j->fs;
@@ -643,28 +645,14 @@ static int ring_ensure(const Jrn* j) {
     sz = f->size(f->ctx, p);
     if (sz == (long)JRN_SEG_SIZE) continue;
     if (sz > (long)JRN_SEG_SIZE) return JRN_E_IO;
-    if (f->create_zero(f->ctx, p, JRN_SEG_SIZE, 0, 0) != 0) return JRN_E_IO;
+    if (f->alloc(f->ctx, p, JRN_SEG_SIZE, 512u) != 0) return JRN_E_IO;   /* header sector zeroed, body left for the activation */
   }
   return 0;
 }
 
-/* Zero every non-zero ZBODY chunk of the slot IN PLACE (header included: a torn remnant of a
- * retire must not survive into the new life). */
-static int slot_zero(const Jrn* j, uint16_t idx) {
-  uint8_t buf[ZBODY];
-  uint32_t off, i;
-  int rc, dirty;
-  for (off = 0; off < JRN_SEG_SIZE; off += ZBODY) {
-    rc = seg_read(j, idx, off, buf, ZBODY);
-    if (rc) return rc;
-    for (dirty = 0, i = 0; i < ZBODY; i++) if (buf[i]) { dirty = 1; break; }
-    if (!dirty) continue;
-    memset(buf, 0, sizeof buf);
-    rc = seg_write(j, idx, off, buf, ZBODY);
-    if (rc) return rc;
-  }
-  return 0;
-}
+/* Zero every non-zero 512-byte chunk of the slot IN PLACE, header sector included (a torn remnant of a
+ * retire, or the garbage a staged first fill left, must not survive into the new life): ONE handle. */
+static int slot_zero(const Jrn* j, uint16_t idx) { return seg_zero(j, idx, 0, JRN_SEG_SIZE); }
 
 /* Logical segment `idx` becomes live in its slot: recycle (zero-fill) then header LAST. */
 static int seg_activate(Jrn* j, uint16_t idx) {
