@@ -166,7 +166,8 @@ uint32_t jrnapp_offer(uint32_t* avail, char stop[25]) {
   int rc;
   if (avail) *avail = 0;
   if (stop) stop[0] = 0;
-  if (!s_r || !s_r->j || s_state != JA_OK || !jrn_offer(&s_j)) return 0;
+  if (!s_r || !s_r->j || s_state != JA_OK) return 0;
+  if (!jrn_offer(&s_j) && jrn_tip(&s_j) == jrn_cursor(&s_j)) return 0;   /* an UNDONE tail (cursor < tip) is offered too */
   memset(&st, 0, sizeof st);
   rc = jrn_redo_info(&s_j, &av, &total, &st);
   if (rc < 0 || !total) return 0;
