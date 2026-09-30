@@ -98,6 +98,9 @@ int jrnapp_state(const ImgRec* r) {
   return r->state == IREC_OK ? JA_OK : JA_OFF;
 }
 
+uint32_t jrnapp_cursor(void) { return jrn_cursor(&s_j); }
+uint32_t jrnapp_tip(void) { return jrn_tip(&s_j); }
+
 bool jrnapp_first_fill_owed(void) { return s_r && s_r->j && s_state == JA_OK && !s_j.ring; }
 
 /* An identity edit (trainer rename / TID / SID / gender) moves the key: a redirect keeps the history. */

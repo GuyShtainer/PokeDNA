@@ -10260,6 +10260,7 @@ static void __attribute__((noinline)) app_journal_load(void) {
     uint32_t avail = 0;
     char stop[25];
     uint32_t n = jrnapp_offer(&avail, stop);
+    log_line("journal: open cursor %lu tip %lu offer %lu", (unsigned long)jrnapp_cursor(), (unsigned long)jrnapp_tip(), (unsigned long)n);
     if (n) app_journal_offer(n, avail, stop);
     if (jrnapp_first_fill_owed()) busy_panel("Preparing undo history...");
     (void)jrnapp_prepare(&g_rec, g_sb2, g_frlg);
