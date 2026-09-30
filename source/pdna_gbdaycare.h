@@ -32,8 +32,8 @@
  *     `compatible`/`egg_ready` — a flag, not the on-the-fly gen3 calculation,
  *     since Gen 2 already computed it) or the level-up-only note on Gen 1; row 2
  *     the SAME yard-note row Gen 3's own pk_daycare_yard_note() row is, GB-worded
- *     ("No visitors: register a Gen-3 ROM" when app_yard_visitors_ok() is false —
- *     no ROM registered, or the icon art is off — measured, not silently blank).
+ *     (gbd_visitors_note()'s three-way wording when app_yard_visitors_ok() is false —
+ *     no ROM registered / ROM art off / the Settings switch off — measured, not silently blank).
  *
 
  * DEPOSIT'S SOURCE: gb_daycare.h's own gbd_deposit() REQUIRES a box-shaped record

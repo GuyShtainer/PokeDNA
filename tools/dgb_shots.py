@@ -2887,7 +2887,7 @@ def run_b114_yard(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> 
     ROM flow, is `#ifndef PDNA_DELTA` entirely, since there is no SD to browse in the
     emulator; confirmed by direct probe, not assumed). app_yard_visitors_ok() is
     therefore ALWAYS false here (g_yard_visitors also defaults off), so every shot
-    below shows the "No visitors: register a Gen-3 ROM" panel row and NO invented
+    below shows the "Register a Gen-3 ROM for visitors" panel row (#298 wording) and NO invented
     visitor icons -- the brief's own sanctioned fallback ("visitors present ... else
     the 'no visitors' line"). The Gen-1 visitor cap (<=151, vs Gen 2/3's 251) is
     proven on the host instead (tests/host_yard_test.c), the same posture every other
@@ -2918,7 +2918,7 @@ def run_b114_yard(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> 
                              "empty -- dc_scene()'s background (the procedural scene "
                              "in this artless image) fills the screen where the two "
                              "text rows used to be; the panel's third row already "
-                             "reads 'No visitors: register a Gen-3 ROM' (no ROM is "
+                             "reads 'Register a Gen-3 ROM for visitors' (no ROM is "
                              "ever registered in this emulator build); the footer "
                              f"names the selected empty slot ('{'Boarder' if which == 'red' else 'Man'} "
                              "(empty)') since there is no icon in the yard to point at")

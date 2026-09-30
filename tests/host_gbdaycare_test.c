@@ -593,7 +593,31 @@ static void egg_withdraw_ot_and_eggness(const char* file) {
         "(flag=0x%02X)", file, flag_after);
 }
 
+/* BACKLOG #298: the three-way visitors note. Each (registered, art_off, setting_on) corner maps to
+ * exactly one wording; all-true is "no note" (visitors are drawn). Order = the user's fix order. */
+static void visitors_note(void) {
+  struct { bool reg, off, on; const char* want; } t[] = {
+    { false, false, false, "Register a Gen-3 ROM for visitors" },
+    { false, false, true,  "Register a Gen-3 ROM for visitors" },
+    { false, true,  false, "Register a Gen-3 ROM for visitors" },   /* no ROM wins over art-off */
+    { false, true,  true,  "Register a Gen-3 ROM for visitors" },
+    { true,  true,  false, "Visitors need ROM art (turn it back on)" },   /* art-off wins over the switch */
+    { true,  true,  true,  "Visitors need ROM art (turn it back on)" },
+    { true,  false, false, "Turn on Yard visitors in Settings" },
+    { true,  false, true,  0 },                                     /* everything holds: nothing to say */
+  };
+  for (unsigned i = 0; i < sizeof t / sizeof t[0]; i++) {
+    const char* got = gbd_visitors_note(t[i].reg, t[i].off, t[i].on);
+    bool ok = t[i].want ? (got && strcmp(got, t[i].want) == 0) : (got == 0);
+    CHECKF(ok, "visitors_note(reg=%d off=%d on=%d) = \"%s\", want \"%s\"", t[i].reg, t[i].off, t[i].on,
+           got ? got : "(null)", t[i].want ? t[i].want : "(null)");
+  }
+}
+
 int main(void) {
+  printf("== #298: visitors note ==\n");
+  visitors_note();
+
   printf("== A: Gen 1 shape (one slot, no breeding) ==\n");
   gen1_shape("Red.sav");
   gen1_shape("Yellow.sav");
