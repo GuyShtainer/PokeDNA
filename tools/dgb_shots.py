@@ -5784,7 +5784,8 @@ def run_y19_s3(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessio
     (b) SELECT+R -> redone + 'Redid: Box move'; (c) SELECT alone (press+release) still cycles the cursor mode, and
     SELECT in the summary still flips the portrait; (d) SELECT held + L does NOT also cycle the mode on release;
     (f) carrying a mon -> SELECT+L -> the T4 refusal; (g) the History screen: rows, recorded/SAVED, A-jump, B;
-    (e) a Bank drop (crossed) -> SELECT+L -> the floor refusal; History again shows the FLOOR and A stops at it;
+    (e) a Bank drop (crossed) -> SELECT+L -> the floor refusal "Can't undo Bank move" (#306; was "Box move"); History
+    again shows the FLOOR row named 'Bank move' and A stops at it;
     (h) the grid footer (short form SEL+L/R)."""
     gb_shots.assert_vehicle(rom, "ARTLESS")
     print("== #234 s3 (y19-s3): undo/redo chord, toasts, footers, History screen (--vsd) ==")
@@ -5982,13 +5983,13 @@ def run_y19_s3(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessio
     T("A", "(e) A: drop into the Bank -- a CROSSED step (the Bank copy lives in another file)", settle=500)
     T("DOWN", "(e) DOWN: off the bottom of the Bank -> back to the PC grid", settle=400)
     SHOT("back_in_pc", "(e) the PC grid again (the dropped mon is gone from its cell)")
-    CHORD("L", "(e) SELECT+L on the CROSSED step: the floor refusal (nothing patched)", tag="floor", claim=["another file"])
+    CHORD("L", "(e) SELECT+L on the CROSSED step: the floor refusal (nothing patched)", tag="floor", claim=["Bank move", "another file"], claim_absent=["Box move"])   # #306: the crossed drop is 'Bank move', not the plain drop's 'Box move'
     T("A", "(e) A dismisses", settle=300)
     T("DOWN", "(e) DOWN: off the tab row onto the box-name row (START opens the nav menu from the grid)", settle=100)
     s.tap("START", settle=200)
     s.tap("RIGHT", settle=20)
     s.press_n("DOWN", 8, settle=12)
-    T("A", "(e) History again: the newest row is the crossed step, tagged FLOOR", settle=300, claim=["HISTORY"])
+    T("A", "(e) History again: the newest row is the crossed step ('Bank move', #306), tagged FLOOR", settle=300, claim=["HISTORY", "Bank move"])
     T("DOWN", "(e) DOWN to the next older row", settle=30)
     T("A", "(e) A: jump below the floor -> 'STOPPED AT A FLOOR' (undo cannot pass a crossed step)", settle=300)
     T("A", "(e) dismiss", settle=300)

@@ -174,6 +174,30 @@ static void t_scope_is_one_step(void) {
     CHECK(jrn_find(&J, jrn_tip(&J), &rec) == 0 && rec.nspans == 2, "its two runs are its two spans, got %u", (unsigned)rec.nspans);
     CHECK(strcmp(rec.name, "Box move") == 0, "the scope's name is the step's name: '%s'", rec.name);
   }
+  /* BACKLOG #306: a CROSSED drop (Bank <-> PC) opens the same "Box move" scope as a plain drop, then
+   * renames it at the cross site (app_step_name -> img_rec_name). The recorded step must carry the
+   * RENAME, and the rename must not leak into the next scope. */
+  {
+    uint32_t base = jrn_tip(&J);
+    img_scope_open(&R, "Box move");
+    img_rec_name(&R, "Bank move");
+    img_rec_cross(&R);
+    poke(2600, 6, 0x4D);
+    (void)img_stage_sections(&F, &R, sv, slot, G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, pc);
+    CHECK(img_scope_close(&F, &R, sv, slot), "close the renamed scope");
+    CHECK(jrn_tip(&J) == base + 1u, "the renamed scope is one step");
+    CHECK(jrn_flush(&J) == JRN_OK, "flush renamed");
+    CHECK(jrn_find(&J, jrn_tip(&J), &rec) == 0 && strcmp(rec.name, "Bank move") == 0,
+          "the crossed drop's step is named 'Bank move', got '%s'", rec.name);
+    CHECK(R.name == 0, "the rename does not outlive its scope");
+    img_scope_open(&R, "Box move");
+    poke(2700, 6, 0x5E);
+    (void)img_stage_sections(&F, &R, sv, slot, G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, pc);
+    CHECK(img_scope_close(&F, &R, sv, slot), "close the next plain scope");
+    CHECK(jrn_flush(&J) == JRN_OK, "flush plain");
+    CHECK(jrn_find(&J, jrn_tip(&J), &rec) == 0 && strcmp(rec.name, "Box move") == 0,
+          "a plain drop after it is still 'Box move', got '%s'", rec.name);
+  }
 }
 
 static void t_identical_and_null(void) {

@@ -1982,6 +1982,7 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
       const uint8_t* placing = converted ? conv : s_held;
       if (src->note_add) src->note_add(placing);
       memcpy(recs + (uint32_t)cur * 80, placing, 80); src->mark_dirty();
+      app_step_name("Bank move");      /* #306: a crossed drop -- the history/floor refusal must not say "Box move" */
       app_bank_defer_delete(s_orig_box, s_orig_slot, s_held);
       s_holding = false; *done = true; return recs;
     }
@@ -2000,7 +2001,7 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
     bool ok = src->commit();                                 /* verified bank box_save (banksrc_commit) */
     boxoam_resume();
     if (!ok) { memset(recs + (uint32_t)cur * 80, 0, 80); snd_error(); return recs; }   /* keep holding */
-    if (s_orig_slot >= 0) app_pc_release_slot(s_orig_box, s_orig_slot, s_held);
+    if (s_orig_slot >= 0) { app_step_name("Bank move"); app_pc_release_slot(s_orig_box, s_orig_slot, s_held); }   /* #306: PC -> Bank is crossed too */
     snd_save();
     s_holding = false; *done = true; return recs;
   }
