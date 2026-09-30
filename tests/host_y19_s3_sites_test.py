@@ -18,6 +18,8 @@ every run:
   P8  the History row exists in the nav table and is dispatched
   P9  a diverged history leaves the box screen (which holds the EWRAM borrow) with code 6 and the home loop
       opens the History screen for it
+  P10 pdna_box swallows the spent SELECT hold (`chord_swallow(&chord)`) after the audit, so lifting SELECT is no
+      mode-cycle tap
 """
 from __future__ import annotations
 
@@ -84,6 +86,7 @@ def checks(box: str, summ: str, main: str, jrn: str, lay: str) -> dict[str, bool
         "P8 History row in the nav table + dispatched": "X(NV_HISTORY" in lay and "case NV_HISTORY:" in main,
         "P9 diverged -> return 6 -> home loop opens History": "cr == BCA_HISTORY" in strip_comments(box) and "return 6;" in strip_comments(box)
             and re.search(r"if \(r == 6\)\s*pdna_history_screen\(\);", strip_comments(main)) is not None,
+        "P10 the spent SELECT hold is swallowed (no mode-cycle tap)": bool(pb) and "chord_swallow(&chord);" in pb,
     }
 
 
@@ -120,6 +123,7 @@ def main() -> int:
     mutant("M-P7 chord live on every source", "box", "const bool chord_live = src->scope == BOXSCOPE_PC && !src->is_bank && app_can_edit();", "const bool chord_live = app_can_edit();", "P7")
     mutant("M-P8 History row not dispatched", "main", "case NV_HISTORY: pdna_history_screen(); break;", "", "P8")
     mutant("M-P9 home loop ignores code 6", "main", "if (r == 6) pdna_history_screen();", "", "P9")
+    mutant("M-P10 chord_swallow removed", "box", "chord_swallow(&chord);", "", "P10")
     if fails:
         print("FAILED:", ", ".join(fails))
         return 1
