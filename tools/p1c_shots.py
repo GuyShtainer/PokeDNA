@@ -103,7 +103,8 @@ def run_gold_card(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
                               "STATUS panel is replaced by the 8 gym-leader badge cells "
                               "with the cursor on the first (this replaces the retired "
                               "card's R-flip BACK screen, 8bedceb; the flip itself is "
-                              "proven by the frame-differs guard, the top rows by claim_gb)",
+                              "proven only by the frame-differs guard plus the trailing "
+                              "gb_box_grid landing assert, the top rows by claim_gb)",
            claim_gb=["NAME/", "MONEY"])
 
     s.tap("A", settle=BIG_SETTLE)               # toggle the badge under the cursor (badge 0)
