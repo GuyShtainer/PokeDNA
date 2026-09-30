@@ -17,6 +17,7 @@
 #include "diskio.h" /* DRESULT, command codes */
 #include "gba_rtc.h" /* cartridge RTC (resolved via -Isource) */
 #include "perf.h"    /* PERF_SD_WRITE -- see the note in diskio.c's disk_read */
+#include "journal.h" /* jrn_fattime_filter / jrn_stamp_held: the journal's held FAT stamp (#234 s2) */
 #ifdef PDNA_DELTA
 #include "log.h"     /* BACKLOG #179 A3 review D7's own unaligned-write log line, -Isource */
 #endif
@@ -117,15 +118,21 @@ DRESULT disk_ioctl(BYTE pdrv, BYTE cmd, void* buff) {
 /* "RTC only, no fallback" choice, if the cart doesn't expose its RTC we return */
 /* 0 (an unset timestamp) rather than a fabricated date.                        */
 
+/* #234 s2 (design D3, the journal's frozen-timestamp GBA half): while a journal flush is writing into a segment the
+ * FILE'S OWN stamp is held (journal.c, jrn_fattime_filter), so f_sync rewrites the directory entry byte-for-byte and
+ * there is no entry tear to lose. While it is held the RTC is not even read: that is a cartridge GPIO access in the
+ * middle of a card transfer, for an answer that is thrown away. */
 DWORD get_fattime(void) {
   GbaRtcTime t;
+  if (jrn_stamp_held()) return (DWORD)jrn_fattime_filter(0);
   if (gba_rtc_get(&t)) {
-    return ((DWORD)(t.year - 1980) << 25)
+    return (DWORD)jrn_fattime_filter(
+           ((DWORD)(t.year - 1980) << 25)
          | ((DWORD)t.month  << 21)
          | ((DWORD)t.day    << 16)
          | ((DWORD)t.hour   << 11)
          | ((DWORD)t.minute << 5)
-         | ((DWORD)(t.second / 2));
+         | ((DWORD)(t.second / 2)));
   }
-  return 0;
+  return (DWORD)jrn_fattime_filter(0);
 }
