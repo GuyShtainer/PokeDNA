@@ -204,6 +204,10 @@ MUTANTS = [
            "  if (!j->tail_seg) return JRN_E_NOSEG;             /* no segment to record into: refuse at the door, never buffer for a flush that cannot happen */\n",
            "",
            "journal", "says NOSEG"),
+    Mutant("cap: prepare at SEG_MAX returns OK with no spare (silent)", "journal.c",
+           "  if (j->seg_last >= SEG_MAX) return JRN_E_FULL;                           /* the logical index space is spent: LOUD, never a silent no-spare */",
+           "  if (j->seg_last >= SEG_MAX) return JRN_OK;",
+           "journal", "at the cap says JRN_E_FULL"),
 ]
 
 

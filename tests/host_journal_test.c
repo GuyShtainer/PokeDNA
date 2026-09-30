@@ -713,6 +713,32 @@ static void plant_hdr(uint64_t key, unsigned slot, uint32_t idx, uint16_t ring, 
   CHECK(raw_write(key, slot, 0, h, sizeof h) == 0, "plant header slot %u", slot);
 }
 
+/* SEG_MAX honesty (bounce fix 9): the logical segment index is capped (9999; a header index past it is
+ * FOREIGN by the version rule, so the cap is part of the format). At the cap jrn_prepare says JRN_E_FULL
+ * LOUDLY instead of returning OK with no spare and letting the tail fill and die. */
+static void t_seg_max(void) {
+  Jrn j; unsigned g; int rc = 0, prc = 0, hit = 0;
+  g_jopen_segs = 3;
+  world(&j, FM_FAT);
+  plant_hdr(K, 1, 9997, 4, 1); plant_hdr(K, 2, 9998, 4, 1);
+  CHECK(jopen(&j, K) == JRN_OK && j.seg_first == 9997 && j.seg_last == 9998, "renumbered to 9997..9998 (%u..%u)", j.seg_first, j.seg_last);
+  for (g = 0; g < 2000 && !rc; g++) {
+    rc = stage(&j, "w", 0, 1, 0, 220, fresh_val(1, 0));
+    if (!rc) rc = jrn_flush(&j);
+    if (!rc && j.tail_seg == j.seg_last) { prc = jrn_prepare(&j); if (prc == JRN_E_FULL) { hit = 1; break; } CHECK(prc == JRN_OK, "prepare below the cap -> %d", prc); }
+  }
+  CHECK(hit && j.seg_last == 9999 && j.tail_seg == 9999, "jrn_prepare at the cap says JRN_E_FULL (hit %d, segs %u..%u tail %u)", hit, j.seg_first, j.seg_last, j.tail_seg);
+  CHECK(jrn_prepare(&j) == JRN_E_FULL, "and keeps saying it");
+  for (g = 0; g < 400; g++) {                          /* fill the last segment: the flush is LOUD too, nothing is lost */
+    rc = stage(&j, "w", 0, 1, 0, 220, fresh_val(1, 0));
+    if (!rc) rc = jrn_flush(&j);
+    if (rc) break;
+  }
+  CHECK(rc == JRN_E_FULL || jrn_pending(&j) > 0, "a full last segment is a loud JRN_E_FULL flush (rc %d)", rc);
+  CHECK(jopen(&j, K) == JRN_OK && j.seg_last == 9999, "reopen still reads it");
+  g_jopen_segs = 0;
+}
+
 /* THE VERSION RULE (bounce ruling 4): a valid-magic + valid-crc header this build does not know is
  * FOREIGN. The whole journal opens read-only with JRN_E_VERSION and nothing is ever zeroed: a v1
  * reader must not treat a v2 slot as free and recycle it. */
@@ -800,6 +826,7 @@ int main(void) {
   t_read_error_honesty();
   t_partial_flush_stops();
   t_no_segment_refusal();
+  t_seg_max();
   if (fails) { printf("host_journal_test: %d FAILED of %lu checks\n", fails, checks); return 1; }
   printf("host_journal_test: all %lu checks passed (real lib/fatfs over a RAM disk)\n", checks);
   return 0;

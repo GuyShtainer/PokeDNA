@@ -855,7 +855,8 @@ int jrn_compact(Jrn* j) {
 int jrn_prepare(Jrn* j) {
   int rc = jrn_prepare_first(j);
   if (rc) return rc;
-  if (j->seg_last != j->tail_seg || j->seg_last >= SEG_MAX) return JRN_OK;   /* a spare already exists */
+  if (j->seg_last != j->tail_seg) return JRN_OK;                          /* a spare already exists */
+  if (j->seg_last >= SEG_MAX) return JRN_E_FULL;                           /* the logical index space is spent: LOUD, never a silent no-spare */
   if ((uint32_t)(j->seg_last - j->seg_first + 1u) >= j->ring) {           /* no free slot: retire the oldest */
     rc = jrn_compact(j);
     if (rc) return rc;
