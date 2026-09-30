@@ -649,6 +649,10 @@ static bool wp_rom_cell(const uint8_t* tiles, uint32_t tiles_bytes, const RomWpB
   return true;
 }
 
+/* noinline (#294): inlined into draw_wallpaper, the cell loop's own spills reuse the stack slot that
+ * carries draw_wallpaper's wp_copy_verified dispatch, and the stack guard can then only validate those 3
+ * sites by count (count-only 51 -> 52). Kept out of line, the original single-store shape is back. */
+__attribute__((noinline))
 static bool draw_wallpaper_rom(int wp, int x, int y, int w, int h) {
   if (wp < 0 || wp >= ROM_WP_COUNT) return false;   /* Walda ids: not served, see rom_wallpaper.h */
   const RomWallpaper* rw = app_wallpaper_rom();
