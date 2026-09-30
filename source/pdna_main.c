@@ -62,6 +62,7 @@
 #include "pdna_legality.h" /* pdna_legality_show */
 #include "pdna_gen12.h"    /* GB import: mount a Gen-1/2 save read-only */
 #include "bank_down_convert.h" /* #271/y10: bank_down_dispatch -- the ONE Bank-native -> PC arm the TO GAME row shares with the drop */
+#include "img_stage.h"     /* #234 s0: pure-C funnel body (img_stage_sections / img_pc_edited / img_fold_pc) */
 #include "img_flags.h"     /* #234 s0: pure-C dirty-flag state machine (pc_unstaged / image_dirty / pc_moved) */
 #include "bank_cell.h"     /* bc_is_native -- native Bank cell interception (BACKLOG #150 S150-2) */
 #include "pdna_pk.h"     /* pdna_pk_export (.pk3) */
@@ -1908,11 +1909,7 @@ static ImgFlags EWRAM_BSS g_img;
  * ID. Marks the image dirty. Battle-record import (sector 31, outside the 14 sections) is NOT
  * routed here by design; it keeps its own commit. */
 static void app_stage_sections(int sect_lo, int sect_hi, const uint8_t* block) {
-  for (int id = sect_lo; id <= sect_hi; id++)
-    gen3_write_full_section(g_save, g_vinfo.slot, id,
-                            block + (uint32_t)(id - sect_lo) * G3_SECTOR_DATA_SIZE);
-  /* slice 2: journal diff here */
-  imgf_staged(&g_img);
+  (void)img_stage_sections(&g_img, g_save, g_vinfo.slot, sect_lo, sect_hi, block);   /* pure C; journal seam lives there */
 }
 
 /* Backup policy for the verified write: 0 = new .bak/.bak1… each time (default),
@@ -1962,10 +1959,7 @@ static bool app_save_finalize(void) {
    * NEVER on "the image is dirty" -- with the arena lending g_pc out its bytes are foreign, and a
    * map-warp commit would otherwise write tileset bytes into every box. (The flags are cleared
    * only on success, below — a failed write leaves them set so flush_on_exit still prompts.) */
-  if (imgf_fold_needed(&g_img)) {
-    app_stage_sections(G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, g_pc);
-    imgf_pc_folded(&g_img);
-  }
+  (void)img_fold_pc(&g_img, g_save, g_vinfo.slot, g_pc);
   int fail = -1;
   if (!gen3_verify_full_checksums(g_save, g_vinfo.slot, &fail)) {
     /* SAY WHICH SECTION. "Image failed checksums" is unactionable: sections 0..4 are the
@@ -2129,8 +2123,7 @@ bool app_commit_sb12(void) {
  * "g_pc is the truth, fold it later" behaviour. */
 void app_mark_pc_dirty(void) {
   bool can_stage = g_vinfo.valid && !app_arena_held();
-  if (can_stage) app_stage_sections(G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, g_pc);
-  imgf_pc_edited(&g_img, can_stage);
+  img_pc_edited(&g_img, g_save, g_vinfo.slot, g_pc, can_stage);
 }
 
 /* ---- borrowed EWRAM arena (see pdna_app.h for why g_pc is the donor) -------- */
@@ -9458,6 +9451,7 @@ static bool rec_import(void) {
   if (!app_confirm("Import this record?", "Replaces the save's one.")) { f_close(&f); snd_back(); return false; }
 
   f_lseek(&f, 0);
+  /* g_save-write-ok: battle-record import: sector 31 sits OUTSIDE the 14-section image (D1/fix 1); own commit */
   FRESULT fr = f_read(&f, g_save + G3_REC_SECTOR_OFF, G3_SECTOR_SIZE, &br);
   f_close(&f);
   if (fr != FR_OK || br != G3_SECTOR_SIZE) {
@@ -9465,6 +9459,7 @@ static bool rec_import(void) {
     FIL s2; UINT br2 = 0;
     if (f_open(&s2, g_path, FA_READ) == FR_OK) {
       f_lseek(&s2, G3_REC_SECTOR_OFF);
+      /* g_save-write-ok: same record-import read (second try) */
       f_read(&s2, g_save + G3_REC_SECTOR_OFF, G3_SECTOR_SIZE, &br2);
       f_close(&s2);
     }
@@ -10083,9 +10078,11 @@ static void app_discard_staged(void) {
   uint32_t rsz = 0;
   bool ok;
 #ifdef PDNA_DELTA
+  /* g_save-write-ok: discard: restores the untouched card image over the staged one */
   ok = flashsave_read(g_save, G3_SAVE_FILE_SIZE);
 #else
   rmbl_pause();
+  /* g_save-write-ok: discard: restores the untouched card image over the staged one */
   ok = sf_read_full(g_path, g_save, G3_SAVE_FILE_SIZE, &rsz) == SF_OK;
   rmbl_resume();
 #endif
@@ -11462,6 +11459,7 @@ static void view_save(const char* path) {
 #ifdef PDNA_DELTA
   /* Emulator build: `path` is ignored — the save is this ROM's own flash chip. */
   (void)path;
+  /* g_save-write-ok: loader: fills the whole image from flash */
   sz = flashsave_read(g_save, G3_SAVE_FILE_SIZE) ? (uint32_t)G3_SAVE_FILE_SIZE : 0;
   if (!sz) err = "flash save unreadable";
   /* ...unless the chip has nothing usable on it and a save was fused into the image, in
@@ -11490,6 +11488,7 @@ static void view_save(const char* path) {
     bool g3_from_fused_sav = false;
     uint32_t fsz = 0;
     if (!flash_ok && fused_sav_present(&fsz) && fsz == (uint32_t)G3_SAVE_FILE_SIZE &&
+        /* g_save-write-ok: loader: fills the whole image from the fused ROM */
         fused_sav_read(g_save, fsz)) {
       sz = fsz; err = 0;
       g3_from_fused_sav = true;
@@ -11510,6 +11509,7 @@ static void view_save(const char* path) {
         if (xfer_plant_converted(app_met_game(), r)) clip_copy_from(&g_clip, r, false); }
 #endif
     } else if (!flash_ok && fused_sav_present(&fsz) && pdna_gen12_size_is_gb(fsz) &&
+               /* g_save-write-ok: loader: fills the whole image from the fused ROM */
                fused_sav_read(g_save, fsz)) {
       /* SCREENSHOT VEHICLE ONLY (docs/HANDOFF.md 2026-09-05): the GB fork below this
        * #else is compiled OUT of every emulator build, because the real path reads a
@@ -11606,6 +11606,7 @@ static void view_save(const char* path) {
                                             * resolve THIS save's own paired ROM instead of
                                             * guessing by generation alone */
         any_picked = true;
+        /* g_save-write-ok: Game Boy session: g_save is that GB battery image (never a Gen-3 image) */
         memcpy(g_save, base, psz);
         memset(&g_vinfo, 0, sizeof g_vinfo);
         g_save_size = psz;
@@ -11662,6 +11663,7 @@ static void view_save(const char* path) {
         fused_gb_set_active_save(pick);   /* BACKLOG #98: so fused_gb_rom()/fused_gb_loc()
                                             * resolve THIS save's own paired ROM instead of
                                             * guessing by generation alone */
+        /* g_save-write-ok: Game Boy session: g_save is that GB battery image (never a Gen-3 image) */
         memcpy(g_save, base, psz);
         memset(&g_vinfo, 0, sizeof g_vinfo);
         g_save_size = psz;
@@ -11695,6 +11697,7 @@ static void view_save(const char* path) {
         pdna_gen12_show_image(path, g_save, psz, g_save + GB12_PRISTINE_OFF, 3);
         /* Whatever the GB mount returned, g_save now holds GB bytes -- restore the
          * Gen-3 save before the picker (or the fallthrough) reads g_save again. */
+        /* g_save-write-ok: loader: re-reads the GB battery image for the session */
         if (flash_ok) flashsave_read(g_save, G3_SAVE_FILE_SIZE);
         else           fused_sav_read(g_save, fsz);
       }
@@ -11709,6 +11712,7 @@ static void view_save(const char* path) {
    * (rmbl_pause ends the cue cleanly) rather than relying on the driver flag alone. */
   unsigned long rt0 = flashcartio_read_retries, rf0 = flashcartio_read_failures;
   rmbl_pause();
+  /* g_save-write-ok: loader: fills the whole image from the card */
   SfStatus st = sf_read_full(path, g_save, G3_SAVE_FILE_SIZE, &sz);
   rmbl_resume();
   if (flashcartio_read_retries != rt0 || flashcartio_read_failures != rf0)
