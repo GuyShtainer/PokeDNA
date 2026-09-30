@@ -9408,6 +9408,7 @@ static void pdna_settings(void) {
       else if (sel == S_HCLEAR) {                     /* #234 s4: delete this save's history (Omega-only, destructive confirm) */
         if (!cart_writable()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); continue; }
         if (!app_history_bound()) { snd_deny(); msg_wait("HISTORY", UI_DIM, "No history is recorded", "for this save."); pv_valid = false; continue; }
+        if (imgf_exit_prompt(&g_img)) { snd_deny(); msg_wait("SAVE FIRST", UI_WARN, "Unsaved edits rely on", "this history."); pv_valid = false; continue; }
         if (app_confirm(PDNA_SET_HCLEAR_TITLE, PDNA_SET_HCLEAR_L1)) {
           int hn = app_history_clear();
           if (hn >= 0) { snd_ok(); msg_wait("CLEARED", UI_OK, "History cleared.", "A new one starts now."); }

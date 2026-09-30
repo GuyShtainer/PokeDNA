@@ -224,7 +224,7 @@ def pins(T: dict[str, str]) -> dict[str, bool]:
         "S7 the grid loop: rest point when the grid is left, code 6 opens the History":
             bool(sc) and "app_gb_rest();" in sc and "if (r == 6) pdna_gen12_history();" in sc,
         "S8 Settings: Clear history behind the Omega gate and a destructive confirm":
-            bool(st) and order(st, "sel == S_HCLEAR", "cart_writable()", "app_history_bound()", "app_confirm(PDNA_SET_HCLEAR_TITLE", "app_history_clear()")
+            bool(st) and order(st, "sel == S_HCLEAR", "cart_writable()", "app_history_bound()", "imgf_exit_prompt(&g_img)", '"SAVE FIRST"', "app_confirm(PDNA_SET_HCLEAR_TITLE", "app_history_clear()")
             and "S_HIST" in st and "HIST_CAP_SHIFT" in st,
         "S8b the ONLY f_unlink in the journal is jrnfs_clear_key, reached from jrnapp_clear alone":
             strip_comments(T["journal.c"]).count("f_unlink") == 0 and strip_comments(T["journal_undo.c"]).count("f_unlink") == 0
@@ -284,6 +284,7 @@ def text_half() -> None:
     mut("S7 the grid loop ignores code 6", "pdna_gen12.c", "    else if (r == 6) pdna_gen12_history();", "", "S7")
     mut("S8 Clear history without the Omega gate", "pdna_main.c", "        if (!cart_writable()) { snd_deny(); msg_wait(\"READ-ONLY\", UI_WARN, \"Needs EZ-Flash Omega.\", 0); continue; }\n        if (!app_history_bound())",
         "        if (!app_history_bound())", "S8")
+    mut("S8 Clear history ignores unsaved staged edits", "pdna_main.c", 'if (imgf_exit_prompt(&g_img)) { snd_deny(); msg_wait("SAVE FIRST"', 'if (0) { snd_deny(); msg_wait("SAVE FIRST"', "S8")
     mut("S8 Clear history without the confirm", "pdna_main.c", "if (app_confirm(PDNA_SET_HCLEAR_TITLE, PDNA_SET_HCLEAR_L1)) {", "if (1) {", "S8")
     mut("S9 the cap bits are dropped on load", "pdna_main.c", "| (3u << HIST_CAP_SHIFT));", ");", "S9")
     mut("S10 an identity edit is not crossed", "pdna_gbtrainer.c", "  if (ident) app_journal_cross();\n", "", "S10")
