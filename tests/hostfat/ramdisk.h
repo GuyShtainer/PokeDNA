@@ -62,6 +62,7 @@ extern unsigned long rd_reads;    /* SECTORS delivered by disk_read            *
  * carrying 42 sectors and 21 calls carrying 42 sectors move the same bytes at very
  * different prices, and rd_reads alone cannot tell them apart. */
 extern unsigned long rd_read_calls;
+extern unsigned long rd_write_calls;   /* disk_write CALLS (the write-side transfer count) */
 /* How many disk_read calls started at a LOWER sector than the previous call did, and
  * the previous call's start. A backward seek is the one case FatFs restarts a cluster
  * walk from the head of the chain (ff.c:4527) -- a forward one resumes incrementally
@@ -90,6 +91,11 @@ extern unsigned long rd_read_last;
 extern long rd_cut_sectors;
 extern int  rd_cut_torn;
 extern int  rd_cut_fired;
+extern int  rd_cut_garbage;       /* !=0: the torn sector's UNWRITTEN suffix becomes noise (the garbage tear),
+                                   * not the old bytes (the shorn tear, the default). rd_cut_torn = 0 then
+                                   * means the whole sector is noise. */
+void rd_poison(unsigned char v);  /* fill the whole volume with v (call right after rd_init, before mkfs):
+                                   * free space then holds garbage, like a card that was used before */
 extern uint32_t rd_fattime_now;
 extern uint32_t (*rd_fattime_hook)(uint32_t live);
 void rd_snapshot(void);           /* remember the volume as it is now */

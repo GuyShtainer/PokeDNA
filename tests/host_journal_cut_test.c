@@ -45,6 +45,17 @@ typedef struct Scn {
   void     (*mid)(uint32_t* out, int* n);   /* extra accepted states (multi-step ops)      */
 } Scn;
 
+/* THE TWO TEAR MODELS (D3 ruling 6). The SHORN pass (default; rd_cut_garbage = 0) is the safety case: the torn sector
+ * is a new prefix over the OLD suffix. It must show 0 violations. The GARBAGE pass writes noise over the unwritten
+ * suffix (rd_cut_garbage = 1): that is NOT asserted zero -- D3 states the shorn assumption and hardware owes the
+ * real tear shape -- each scenario's residual is COUNTED per class and printed. SCHECK asserts in the shorn pass and
+ * tallies in the garbage pass. */
+enum { GC_MOUNT, GC_SAV, GC_STATE, GC_REOPEN, GC_PREPARE, GC_RECORD, GC_UNDO, GC_SAV2, GC_EXFAT, GC_N };
+static int g_garbage = 0;
+static unsigned long g_gtal[32][GC_N];
+static int g_si = 0;   /* the scenario index the current run belongs to */
+#define SCHECK(cls, c, ...) do { checks++; if (!(c)) { if (g_garbage) g_gtal[g_si][cls]++; else { printf("FAIL: " __VA_ARGS__); printf("\n"); fails++; } } } while (0)
+
 static const uint64_t K = 0x00C0FFEE12345678ull;
 static const uint64_t KB = 0x0BADF00D0BADF00Dull;
 
@@ -239,26 +250,27 @@ static void recover_and_use(BYTE fmt, const char* what, unsigned k, int tear, in
   Jrn j; static uint8_t keep[NREG][RSZ]; int rc; uint8_t reg = 6;
   memcpy(keep, g_img, sizeof g_img);
   rc = jopen(&j, K);
-  CHECK(rc == JRN_OK, "%s k=%u tear=%d: reopen after the cut -> %d", what, k, tear, rc);
+  SCHECK(GC_REOPEN, rc == JRN_OK, "%s k=%u tear=%d: reopen after the cut -> %d", what, k, tear, rc);
   if (rc) return;
   rc = jrn_prepare(&j);
   if (rc && fmt == FM_EXFAT && tear > 0 && keydir_broken()) {
     if (getenv("HAZ")) printf("HAZB %s k=%u tear=%d rc=%d seg %u..%u tail %u\n", what, k, tear, rc, j.seg_first, j.seg_last, j.tail_seg);
+    if (g_garbage) { g_gtal[si][GC_EXFAT]++; return; }
     if (dirmut == 2) g_pdrB++; else if (dirmut == 1) g_ffB++; else g_hazB++;
     sc_hazB[si]++;
     rc = j.tail_seg ? (stage(&j, "post-cut", 0, reg, 20, 4, fresh_val(reg, 20)) || jrn_flush(&j)) : (jrn_flush(&j) == JRN_E_NOSEG ? 0 : 1);
-    CHECK(rc == 0 || j.tail_seg == 0, "%s k=%u tear=%d: exFAT blocked dir: the journal must keep appending into existing space", what, k, tear);
+    SCHECK(GC_RECORD, rc == 0 || j.tail_seg == 0, "%s k=%u tear=%d: exFAT blocked dir: the journal must keep appending into existing space", what, k, tear);
     return;
   }
-  CHECK(rc == JRN_OK, "%s k=%u tear=%d: prepare after the cut -> %d", what, k, tear, rc);
+  SCHECK(GC_PREPARE, rc == JRN_OK, "%s k=%u tear=%d: prepare after the cut -> %d", what, k, tear, rc);
   if (rc) return;
   rc = stage(&j, "post-cut", 0, reg, 20, 4, fresh_val(reg, 20));
   if (!rc) rc = jrn_flush(&j);
-  CHECK(rc == JRN_OK, "%s k=%u tear=%d: record+flush after the cut -> %d", what, k, tear, rc);
+  SCHECK(GC_RECORD, rc == JRN_OK, "%s k=%u tear=%d: record+flush after the cut -> %d", what, k, tear, rc);
   if (rc) return;
   rc = jopen(&j, K);
   if (!rc) rc = jrn_undo(&j, &IMG, 0);
-  CHECK(rc == JRN_OK && memcmp(keep, g_img, sizeof g_img) == 0, "%s k=%u tear=%d: undo after the cut -> %d", what, k, tear, rc);
+  SCHECK(GC_UNDO, rc == JRN_OK && memcmp(keep, g_img, sizeof g_img) == 0, "%s k=%u tear=%d: undo after the cut -> %d", what, k, tear, rc);
 }
 
 static uint32_t empty_fp(void) {   /* fingerprint of a journal with no visible segment */
@@ -266,10 +278,11 @@ static uint32_t empty_fp(void) {   /* fingerprint of a journal with no visible s
   return jrn_crc32_update(0, h, 8);
 }
 
-static void sweep_one(BYTE fmt, const Scn* sc) {
+static void sweep_one(BYTE fmt, const Scn* sc, int garbage) {
   static uint8_t img0[NREG][RSZ];
   uint32_t before, after, extra[4]; int nextra = 0, t, i;
   unsigned long w0, W, k; char d1[96], d2[96], d3[96];
+  g_garbage = garbage; g_si = (int)(sc - SCN);
   card_fresh(fmt); img_fill(1);
   rd_fattime_hook = jrn_fattime_filter; rd_fattime_now = T0;
   sc->setup();
@@ -287,35 +300,42 @@ static void sweep_one(BYTE fmt, const Scn* sc) {
   CHECK(sav_intact(), "%s: .sav after the uncut op", sc->name);
   if (!sc->may_equal) CHECK(after != before, "%s: the op changed nothing (%s vs %s) -- a vacuous scenario", sc->name, d1, d2);
   CHECK(W > 0, "%s: the op wrote no sectors", sc->name);
-  g_ops++;
+  if (!garbage) g_ops++;
   for (k = 0; k < W; k++)
     for (t = 0; t < NTEAR; t++) {
       uint32_t got; int ok;
       rd_restore(); memcpy(g_img, img0, sizeof g_img);
       card_remount();
       rd_fattime_now = T1;
-      rd_cut_sectors = (long)k; rd_cut_torn = TEARS[t];
+      rd_cut_sectors = (long)k; rd_cut_torn = TEARS[t]; rd_cut_garbage = garbage;
       (void)sc->op();                                 /* it dies mid-way: the verdict is whatever the card holds */
       CHECK(rd_cut_fired, "%s k=%lu/%lu tear=%d: the cut never fired (the op wrote fewer sectors than measured)", sc->name, k, W, TEARS[t]);
-      rd_cut_sectors = -1; rd_cut_fired = 0;
+      rd_cut_sectors = -1; rd_cut_fired = 0; rd_cut_garbage = 0;
       f_mount(0, "", 0);
       ok = f_mount(&s_fs, "", 1) == FR_OK;
-      CHECK(ok, "%s k=%lu/%lu tear=%d: (a) the volume does not mount", sc->name, k, W, TEARS[t]);
+      SCHECK(GC_MOUNT, ok, "%s k=%lu/%lu tear=%d: (a) the volume does not mount", sc->name, k, W, TEARS[t]);
       if (!ok) continue;
-      CHECK(sav_intact(), "%s k=%lu/%lu tear=%d: (b) the co-resident .sav changed", sc->name, k, W, TEARS[t]);
+      SCHECK(GC_SAV, sav_intact(), "%s k=%lu/%lu tear=%d: (b) the co-resident .sav changed", sc->name, k, W, TEARS[t]);
       got = sc->state(d3, sizeof d3);
       ok = got == before || got == after;
       for (i = 0; i < nextra; i++) ok = ok || got == extra[i];
       if (!ok && fmt == FM_EXFAT && tear_pos_ok(TEARS[t]) && sc->dirmut && got == empty_fp() && keydir_broken()) {
-        if (sc->dirmut == 2) g_pdrA++; else if (sc->dirmut == 1) g_ffA++; else g_hazA++;   /* exFAT: a torn entry set hid the live segments */
+        if (garbage) g_gtal[sc - SCN][GC_EXFAT]++;
+        else if (sc->dirmut == 2) g_pdrA++; else if (sc->dirmut == 1) g_ffA++; else g_hazA++;   /* exFAT: a torn entry set hid the live segments */
         ok = 1;
-        sc_hazA[sc - SCN]++;
+        if (!garbage) sc_hazA[sc - SCN]++;
       }
-      CHECK(ok, "%s k=%lu/%lu tear=%d: (c) journal is neither before nor after: [%s] (before [%s], after [%s])", sc->name, k, W, TEARS[t], d3, d1, d2);
+      SCHECK(GC_STATE, ok, "%s k=%lu/%lu tear=%d: (c) journal is neither before nor after: [%s] (before [%s], after [%s])", sc->name, k, W, TEARS[t], d3, d1, d2);
       recover_and_use(fmt, sc->name, (unsigned)k, TEARS[t], sc->dirmut, (int)(sc - SCN));
-      CHECK(sav_intact(), "%s k=%lu/%lu tear=%d: (b) .sav after recovery", sc->name, k, W, TEARS[t]);
-      g_runs++;
+      SCHECK(GC_SAV2, sav_intact(), "%s k=%lu/%lu tear=%d: (b) .sav after recovery", sc->name, k, W, TEARS[t]);
+      if (!garbage) g_runs++;
     }
+  if (garbage) {
+    unsigned long* q = g_gtal[sc - SCN];
+    printf("    %-30s %4lu sectors x %d tears: garbage residual  mount %lu  sav %lu  state(neither before/after) %lu  reopen %lu  prepare %lu  record %lu  undo %lu  sav-after %lu  exfat-dir %lu\n",
+           sc->name, W, NTEAR, q[GC_MOUNT], q[GC_SAV], q[GC_STATE], q[GC_REOPEN], q[GC_PREPARE], q[GC_RECORD], q[GC_UNDO], q[GC_SAV2], q[GC_EXFAT]);
+    return;
+  }
   g_points += W;
   printf("    %-30s %4lu sectors x %d tears  before=%08x after=%08x  [%s -> %s]\n", sc->name, W, NTEAR, before, after, d1, d2);
   if (sc_hazA[sc - SCN] || sc_hazB[sc - SCN]) printf("      (exFAT, running total for this scenario: %lu hidden-segment, %lu blocked-create cut runs)\n", sc_hazA[sc - SCN], sc_hazB[sc - SCN]);
@@ -424,7 +444,18 @@ int main(int argc, char** argv) {
     printf("== %s ==\n", FMTS[f].name);
     t_frozen(FMTS[f].fmt, FMTS[f].name);
     t_ring_nodir(FMTS[f].fmt, FMTS[f].name);
-    for (i = 0; i < NSCN; i++) sweep_one(FMTS[f].fmt, &SCN[i]);
+    for (i = 0; i < NSCN; i++) sweep_one(FMTS[f].fmt, &SCN[i], 0);
+    if (!getenv("JRN_NO_GARBAGE")) {
+      unsigned long tot[GC_N]; int c;
+      printf("  -- GARBAGE tear pass (%s): the torn sector's unwritten suffix is noise. Documented residual, NOT asserted zero (D3: hardware owes the tear shape) --\n", FMTS[f].name);
+      memset(g_gtal, 0, sizeof g_gtal);
+      for (i = 0; i < NSCN; i++) sweep_one(FMTS[f].fmt, &SCN[i], 1);
+      memset(tot, 0, sizeof tot);
+      for (i = 0; i < NSCN; i++) for (c = 0; c < GC_N; c++) tot[c] += g_gtal[i][c];
+      printf("  garbage residual TOTAL on %s: mount %lu  sav %lu  state %lu  reopen %lu  prepare %lu  record %lu  undo %lu  sav-after %lu  exfat-dir %lu\n", FMTS[f].name,
+             tot[GC_MOUNT], tot[GC_SAV], tot[GC_STATE], tot[GC_REOPEN], tot[GC_PREPARE], tot[GC_RECORD], tot[GC_UNDO], tot[GC_SAV2], tot[GC_EXFAT]);
+      g_garbage = 0;
+    }
   }
   CHECK(g_hazA == 0 && g_hazB == 0, "exFAT hazard AFTER the first fill: %lu hidden-segment runs, %lu blocked-create runs (must be 0)", g_hazA, g_hazB);
   CHECK(g_ffA == 0 && g_pdrA == 0, "exFAT: a torn create hid live segments (%lu first fill, %lu .pdr) (must be 0)", g_ffA, g_pdrA);

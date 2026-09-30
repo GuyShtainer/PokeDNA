@@ -55,6 +55,7 @@ static void card_fresh(BYTE fmt) {
   FIL f; UINT bw = 0; unsigned i;
   f_mount(0, "", 0);
   rd_init(sectors);
+  rd_poison(0xA5);   /* a used card: free space is garbage, never zero (the journal must not trust fresh clusters) */
   CHECK(f_mkfs("", &opt, s_work, sizeof s_work) == FR_OK, "f_mkfs %d", (int)fmt);
   CHECK(f_mount(&s_fs, "", 1) == FR_OK, "f_mount");
   CHECK(f_mkdir("/PokeDNA") == FR_OK, "mkdir /PokeDNA");

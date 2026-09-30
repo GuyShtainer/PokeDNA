@@ -17,11 +17,12 @@ long rd_fail_at = -1;
 long rd_fail_reads_after = -1;
 long rd_fail_read_at = -1;
 unsigned long rd_writes = 0, rd_reads = 0, rd_lied = 0, rd_read_fails = 0;
-unsigned long rd_read_calls = 0, rd_read_back = 0, rd_read_last = 0;
+unsigned long rd_read_calls = 0, rd_read_back = 0, rd_read_last = 0, rd_write_calls = 0;
 
 long rd_cut_sectors = -1;
 int  rd_cut_torn = 0;
 int  rd_cut_fired = 0;
+int  rd_cut_garbage = 0;
 uint32_t rd_fattime_now = 0;
 uint32_t (*rd_fattime_hook)(uint32_t live) = 0;
 
@@ -36,16 +37,18 @@ void rd_init(unsigned sectors) {
   s_mem = calloc(sectors, FF_MAX_SS);
   rd_protect = 0; rd_fail_write_in = 0; rd_fail_all_writes = 0; rd_lie_writes = 0;
   rd_fail_reads_after = -1; rd_fail_read_at = -1; rd_lie_after = -1; rd_fail_at = -1;
-  rd_cut_sectors = -1; rd_cut_torn = 0; rd_cut_fired = 0;
+  rd_cut_sectors = -1; rd_cut_torn = 0; rd_cut_fired = 0; rd_cut_garbage = 0;
   rd_fattime_now = 0; rd_fattime_hook = 0;
   rd_writes = rd_reads = rd_lied = rd_read_fails = 0;
-  rd_read_calls = rd_read_back = rd_read_last = 0;
+  rd_read_calls = rd_read_back = rd_read_last = 0; rd_write_calls = 0;
 }
 
 void rd_free(void) {
   free(s_mem); free(s_snap); free(s_dirty);
   s_mem = 0; s_snap = 0; s_dirty = 0; s_sectors = 0;
 }
+
+void rd_poison(unsigned char v) { if (s_mem) memset(s_mem, v, (size_t)s_sectors * FF_MAX_SS); }
 
 void rd_snapshot(void) {
   free(s_snap); free(s_dirty);
@@ -113,6 +116,7 @@ DRESULT disk_read(BYTE pdrv, BYTE* buff, LBA_t sector, UINT count) {
 
 DRESULT disk_write(BYTE pdrv, const BYTE* buff, LBA_t sector, UINT count) {
   (void)pdrv;
+  rd_write_calls++;
   if (!s_mem) return RES_NOTRDY;
   if (rd_protect) return RES_WRPRT;
   if (rd_fail_all_writes) return RES_ERROR;
@@ -143,9 +147,12 @@ DRESULT disk_write(BYTE pdrv, const BYTE* buff, LBA_t sector, UINT count) {
     for (i = 0; i < count; i++) {
       unsigned char* dst = s_mem + (size_t)(sector + i) * FF_MAX_SS;
       if (rd_cut_sectors == 0) {               /* this sector is the one in flight */
-        if (rd_cut_torn > 0) {
-          memcpy(dst, buff + (size_t)i * FF_MAX_SS,
-                 (size_t)(rd_cut_torn < FF_MAX_SS ? rd_cut_torn : FF_MAX_SS));
+        if (rd_cut_torn > 0 || rd_cut_garbage) {
+          size_t pre = (size_t)(rd_cut_torn < FF_MAX_SS ? rd_cut_torn : FF_MAX_SS), b;
+          uint32_t x = 0x9E3779B9u ^ (uint32_t)(sector + i) * 2654435761u;
+          memcpy(dst, buff + (size_t)i * FF_MAX_SS, pre);
+          if (rd_cut_garbage)                    /* the GARBAGE tear: the unwritten suffix is noise, not the old bytes */
+            for (b = pre; b < FF_MAX_SS; b++) { x ^= x << 13; x ^= x >> 17; x ^= x << 5; dst[b] = (unsigned char)x; }
           if (s_dirty) s_dirty[sector + i] = 1;
         }
         rd_cut_fired = 1;
