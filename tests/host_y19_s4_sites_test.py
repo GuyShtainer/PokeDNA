@@ -147,7 +147,7 @@ def c_half() -> None:
 # ---------------------------------------------------------------------------------------------- text half
 GB_SCREENS = ["pdna_gbbag.c", "pdna_gbclock.c", "pdna_gbdaycare.c", "pdna_gbdex.c", "pdna_gbflags.c", "pdna_gbfly.c",
               "pdna_gbhof.c", "pdna_gbmap.c", "pdna_gbpack.c", "pdna_gbtrainer.c", "pdna_gbedit.c", "pdna_gen12.c"]
-STAY = {"xferup", "xferdown", "bank-down", "paste", "exit"}
+STAY = {"xferup", "xferdown", "bank-down", "exit"}
 HOLD = {"boxname", "move", "release", "release-all", "dup", "daycare-put", "create", "bag", "gbclock reset", "gbclock clear",
         "gbclock shift", "daycare-take", "daycare-egg", "daycare-edit", "gb1 teleport", "gb1 teleport undo", "gbflags", "fly",
         "trainer", "dex", "hof edit", "hof clear", "hof setcount", "hof add", "hof delete"}
