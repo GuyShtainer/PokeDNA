@@ -6180,7 +6180,19 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
      * BACKLOG #120 S2's Bank-from-GB-session exposure never reaches this row; no new
      * gate needed here (orchestrator-requested audit, BACKLOG #120 S2 review). */
     if (!is_bank) { lab[n]=PDNA_LBL_TO_DAYCARE; act[n++]=A_DAYCARE; }  /* deposit into the daycare (all games incl. FR/LG) */
-    /* BACKLOG #120 S2: TO GAME is gated on xg_togame_row (Bank cell AND a live Gen-3
+    /* #286/y12 UPDATE (the paragraph below is the #120 S2 history): that hidden-in-a-GB-session
+     * state is now only true of the GEN-3 destination row. A RESIDENT Game Boy session's Bank
+     * visit gets its OWN TO GAME row, xg_togame_gb_row(is_bank, app_gen3_pc_live(),
+     * togame_gb_writable()) -- shown exactly when the Gen-3 row is not (no live Gen-3 PC) and the
+     * loaded Game Boy save is resident and write-capable (never the read-only nav-menu mount, never
+     * an Everdrive). Its action sets the same one-shot request; pdna_box.c's togame_native_run
+     * routes it to bank_togame_gb, which runs the DROP's own DOWN arm into the first storage box
+     * of the loaded game with room (gb_togame_pick_box): bank_down_dispatch for a native cell
+     * (EXACT / GB_BRIDGE), bank_down_g3_run for a plain Gen-3 cell -- one function per path, shared
+     * with drop_held / drop_held_down_g3, ending in the ONE bank_down_consume. The landing is
+     * immediate (gb_persist inside the arm), unlike the Gen-3 direction's deferred PC write.
+     *
+     * BACKLOG #120 S2: TO GAME is gated on xg_togame_row (Bank cell AND a live Gen-3
      * PC to receive it AND something already in that PC, g_have_pc) -- during a GB
      * session's Bank visit g_vinfo.valid is false (no parsed Gen-3 save), so this row
      * is hidden even though is_bank is true. The outer branch stays `is_bank` itself
