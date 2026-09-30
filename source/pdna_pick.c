@@ -551,6 +551,14 @@ uint16_t pick_species(uint16_t current) {
  * (START / SELECT). Reuses g_list + build_species: no new EWRAM. */
 
 #define DEX_ANIM_PERIOD 30          /* vblanks per bob frame (~0.5s, the Gen-3 cadence) */
+/* BACKLOG #296: one bob flip used to repaint every caught cell in ONE uninterrupted run (21
+ * cells through the artless ladder = ~3.3 frames of mGBA CPU, measured by frame-end PC
+ * sampling + an instruction-step trace). A 3-frame key press that started and ended inside
+ * that run was never polled -- a dropped DOWN. The flip is now sliced: DEX_BOB_SLICE cells per
+ * idle loop pass (~0.6 frame), so s_vsync()'s key_poll runs at least once per frame between
+ * slices. DEX_BOB_DONE = no flip pass in progress (any value >= the page's cell count). */
+#define DEX_BOB_SLICE 4
+#define DEX_BOB_DONE  0x4000
 
 #define DV_GRID 0
 #define DV_LIST 1
@@ -1147,7 +1155,7 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
    * left sitting over the dex grid after Cancel. Same fix as dex_menu uses on
    * itself for the same reason -- gen/valid alongside relist. */
   uint32_t gen = 0; bool valid = false;
-  int bob = 0, anim_ctr = 0;
+  int bob = 0, anim_ctr = 0, bob_next = DEX_BOB_DONE;
 
   for (;;) {
     int cols, cw, ch, x0, y0, vrows;
@@ -1165,6 +1173,7 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
     relist = false;
 
     if (full) {
+      bob_next = DEX_BOB_DONE;   /* the page draw below paints every cell at the current `bob`: an unfinished flip pass is moot */
       /* One page draw: a fresh entry, a view/filter change, a one-row scroll step
        * (which repaints all `vis` cells, including the ones that did not move), or an
        * overlay that painted over us -- dex_menu() always ui_clear()s on its own first
@@ -1251,13 +1260,15 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
        * ticking either way (harmless -- no I/O, just a counter and a page with zero
        * animating cells doing one extra no-op pass). */
       if (!k && grid && app_anim_enabled(ANIM_DEX) && mon_icon_anim_cheap() &&
-          ++anim_ctr >= DEX_ANIM_PERIOD) {
-        anim_ctr = 0; bob ^= 1;
+          (bob_next < vis || ++anim_ctr >= DEX_ANIM_PERIOD)) {
+        if (bob_next >= vis) { anim_ctr = 0; bob ^= 1; bob_next = 0; }   /* start a flip pass */
+        int bob_end = bob_next + DEX_BOB_SLICE;      /* BACKLOG #296: one SLICE of the pass per idle iteration */
+        if (bob_end > vis) bob_end = vis;
         /* The tick the user feels most: every visible CAUGHT cell is re-fetched through
          * the artless ladder on one 30-frame timer, so the cost scales with how many
          * Pokemon are moving. Rolled up; emitted when the screen is left. */
         perf_rep_begin(PERF_REP_BOB, "bob.dex");
-        for (int i = 0; i < vis && top + i < g_n; i++) {
+        for (int i = bob_next; i < bob_end && top + i < g_n; i++) {
           uint16_t in = g_list[top + i];
           if (dstate(in) != 2) continue;
           if (dex_cell_art_page_served()) continue;  /* BACKLOG #124: only a page the override can actually serve skips bob */
@@ -1268,6 +1279,7 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
           if (top + i == sel) m3_frame(x - 1, y - 1, x + 32, y + 32, UI_SELTEXT);
         }
         perf_rep_end(PERF_REP_BOB);
+        bob_next = (bob_end >= vis || top + bob_end >= g_n) ? DEX_BOB_DONE : bob_end;
       }
     } while (!k);
     if      (fresh & dpad)                          snd_move();

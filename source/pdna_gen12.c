@@ -3316,7 +3316,7 @@ gb_paste_write(const GbEditMon* mon, int box, const uint8_t orig80[80],
    * card holds" is true of the card-write (#else) half only -- the PDNA_DELTA half
    * REFUSES but KEEPS the edit for the rest of this session (there is no card to roll
    * back to; see gb_persist's own PDNA_DELTA branch). */
-  bool ok = gb_persist("paste");
+  bool ok = gb_persist("bank-down");   /* #310: the plain Gen-3 Bank->GB drop reads "Transfer down" (gb_step_name), like xferup/xferdown */
 #ifdef PDNA_DELTA
   /* BACKLOG #292 (delta vehicle ONLY): the wall above is "no card", not "this paste is void" -- the mon is
    * in the resident image and stays there for the session, so the drop LANDED as far as this build's image
