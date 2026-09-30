@@ -25,13 +25,14 @@
 #define UNOWN_B_ENTRY  413
 
 /*
- * RUBY / SAPPHIRE ARE NOT SERVED. They have no GF header, so they need pinned
- * addresses, and this module follows rom_mon.c's precedent of failing closed
- * rather than guessing. The addresses were located anyway, by the same
- * independent shape-scan rom_text.c used (the unique run of 440 eight-byte rows
- * whose tag halfword equals the index -- +6 for sheets, +4 for palettes -- and
- * whose pointer lands on an LZ10 blob inside the image), and verified by
- * rendering Bulbasaur out of each one:
+ * RUBY / SAPPHIRE are served from PINNED addresses (BACKLOG #293), because they
+ * predate the GF header. The precedent is rom_text.c's k_pins: a row is keyed by
+ * game code + revision, so a revision nobody has a dump of stays unpinned and
+ * fails closed. The four tables per game were located by an independent
+ * shape-scan (tools/rs_locate.py -- the unique run of 440 eight-byte rows whose
+ * tag halfword equals the index at +6 for sheets and at +4 for palettes, tag 500 +
+ * index for the shiny palettes, and whose pointers land on LZ10 blobs inside the
+ * image) and verified by rendering Bulbasaur out of each one:
  *
  *     AXVE rev2 (Ruby):     front 0x081E836C  back 0x081E980C
  *                           npal  0x081EA5CC  spal 0x081EB38C
@@ -40,9 +41,23 @@
  *
  * R/S fronts are single-frame (no anim_front), Castform is still 8192 B / four
  * formes, and Deoxys is 2048 B -- Normal only, so R/S add no forme to the set.
- * Wiring them is a k_pins table exactly like rom_text.c's; the other nine
- * revisions nobody here has a dump of must stay unpinned.
+ * A pinned row is re-verified at open (pin_shape_ok below): the 440-row
+ * tag == index shape must hold in all four tables, or the open fails closed.
  */
+typedef struct {
+  const char* code;      /* 4-char game code at 0xAC */
+  uint8_t     version;   /* revision byte at 0xBC    */
+  uint32_t    front, back, npal, spal;   /* ROM addresses */
+} RomSpritePin;
+
+static const RomSpritePin k_pins[] = {
+  { "AXVE", 2, 0x081E836Cu, 0x081E980Cu, 0x081EA5CCu, 0x081EB38Cu },
+  { "AXPE", 1, 0x081E82FCu, 0x081E979Cu, 0x081EA55Cu, 0x081EB31Cu },
+};
+#define K_NPINS ((int)(sizeof k_pins / sizeof k_pins[0]))
+
+/* Shiny palette tags run 500 + index; every other table's tags run 0 + index. */
+#define SPAL_TAG_BASE  500u
 
 static uint32_t rd32le(const uint8_t* p) {
   return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
@@ -55,6 +70,58 @@ static int ptr_ok(const RomCtx* rc, uint32_t addr, uint32_t need) {
   return off < rc->size && need <= rc->size - off;
 }
 
+/* Does `tbl` (a FILE offset) hold 440 rows of `stride` bytes whose u16 tag at
+ * `tag_off` equals tag_base + row index and whose pointer (first word) is ROM-sane?
+ * Read in 128-byte chunks so the check stays off the big buffers. A pinned address
+ * that is wrong, or a revision that merely shares the game code, fails here. */
+static int table_shape_once(const RomCtx* rc, uint32_t tbl, uint32_t tag_off,
+                            uint32_t tag_base) {
+  uint8_t buf[128];
+  const uint32_t rows_per = (uint32_t)sizeof buf / SHEET_STRIDE;
+  for (uint32_t row = 0; row < ROM_SPRITE_ENTRIES; row += rows_per) {
+    uint32_t n = ROM_SPRITE_ENTRIES - row;
+    if (n > rows_per) n = rows_per;
+    if (!rc->read(rc->ctx, tbl + row * SHEET_STRIDE, buf, n * SHEET_STRIDE)) return 0;
+    for (uint32_t i = 0; i < n; i++) {
+      const uint8_t* e = buf + i * SHEET_STRIDE;
+      uint32_t tag = (uint32_t)e[tag_off] | ((uint32_t)e[tag_off + 1] << 8);
+      if (tag != tag_base + row + i) return 0;
+      if (!ptr_ok(rc, rd32le(e), 4)) return 0;
+    }
+  }
+  return 1;
+}
+
+/* Two attempts: one transient garbled read must not cost the session its art, while a
+ * genuinely wrong address fails both times. */
+static int table_shape_ok(const RomCtx* rc, uint32_t tbl, uint32_t tag_off,
+                          uint32_t tag_base) {
+  for (int attempt = 0; attempt < 2; attempt++)
+    if (table_shape_once(rc, tbl, tag_off, tag_base)) return 1;
+  return 0;
+}
+
+/* Ruby/Sapphire: match the pin table by code + revision, then prove the shape. */
+static int open_pinned(RomSprite* rs, const RomCtx* rc) {
+  if (rc->kind != ROM_RUBY && rc->kind != ROM_SAPPHIRE) return 0;
+  for (int i = 0; i < K_NPINS; i++) {
+    const RomSpritePin* p = &k_pins[i];
+    if (memcmp(p->code, rc->code, 4) != 0 || p->version != rc->version) continue;
+    const uint32_t sheet_bytes = (uint32_t)ROM_SPRITE_ENTRIES * SHEET_STRIDE;
+    const uint32_t pal_bytes   = (uint32_t)ROM_SPRITE_ENTRIES * PAL_STRIDE;
+    if (!ptr_ok(rc, p->front, sheet_bytes) || !ptr_ok(rc, p->back, sheet_bytes) ||
+        !ptr_ok(rc, p->npal, pal_bytes)    || !ptr_ok(rc, p->spal, pal_bytes)) return 0;
+    uint32_t f = p->front - ROM_BASE, b = p->back - ROM_BASE;
+    uint32_t n = p->npal - ROM_BASE,  s = p->spal - ROM_BASE;
+    if (!table_shape_ok(rc, f, 6, 0) || !table_shape_ok(rc, b, 6, 0) ||
+        !table_shape_ok(rc, n, 4, 0) || !table_shape_ok(rc, s, 4, SPAL_TAG_BASE)) return 0;
+    rs->front = f; rs->back = b; rs->npal = n; rs->spal = s;
+    rs->ok = 1;
+    return 1;
+  }
+  return 0;   /* an unpinned R/S revision: fail closed */
+}
+
 int rom_sprite_open(RomSprite* rs, const RomCtx* rc) {
   if (!rs) return 0;
   memset(rs, 0, sizeof *rs);
@@ -62,7 +129,10 @@ int rom_sprite_open(RomSprite* rs, const RomCtx* rc) {
   rs->rc = rc;
   if (!rc || !rc->read) return 0;
 
-  /* Ruby/Sapphire predate the GF header — fail closed (see the note above). */
+  /* Ruby/Sapphire predate the GF header: they take the pinned path (see the note above)
+   * and never reach the header read below. */
+  if (rc->kind == ROM_RUBY || rc->kind == ROM_SAPPHIRE) return open_pinned(rs, rc);
+
   /* The header read was the module's ONE unverified read, and it is the worst place
    * to skip verification: its result is four table ADDRESSES cached for the whole
    * session, so a single garbled read poisons every later fetch with pointers that
