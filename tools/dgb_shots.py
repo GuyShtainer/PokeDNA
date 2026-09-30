@@ -6198,11 +6198,13 @@ def run_y19_s4(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessio
     in-session only'), so a real save + its journal mark are HARDWARE-ONLY; what the chain proves is the quiet edit, the
     ONE exit confirm, the journal's on-disk steps across a power cut, the offer + re-apply, the chord, History, a STAY
     prompt, and the Settings rows.
-    (a) MOVE TO BOX: no per-screen prompt; B -> the exit report -> the ONE 'Save changes?'.
+    (a) GIVE AN ITEM (cell menu -> ITEM): no per-screen prompt; B -> the exit report -> the ONE 'Save changes?'.
     (b) power cut AT the exit prompt -> the offer on reload -> A re-applies.   (c) SELECT+L undo / SELECT+R redo + toast.
     (d) the History screen rows.   (e) a STAY prompt still prompts (Release all).
     (f) Everdrive posture: no emulator flag -> pin-only (tests/host_jrn_gb_test.c section 2).
-    (g) Settings: 'History size' cycles, 'Clear history' confirm -> cleared."""
+    (g) Settings: 'History size' cycles; 'Clear history' with a staged edit -> 'SAVE FIRST' (D6); after the reload, (g2) the
+    confirm -> cleared.   (i) D1: MOVE TO BOX on slot 0 of a full box is too big to record -> written at once (the delta
+    wall is the emulator's answer) and the per-screen 'Save pack changes?' prompt returns."""
     gb_shots.assert_vehicle(rom, "ARTLESS")
     print("== #234 s4 (y19-s4): Game Boy save on the journal (--vsd) ==")
     if gb_shots._DEFAULT_VSD_IMG is None:
@@ -6271,14 +6273,14 @@ def run_y19_s4(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessio
     T("DOWN", "(a) menu on ITEM", claim=["ITEM"])
     T("A", "(a) ITEM: the item picker", settle=300)
     T("DOWN", "(a) DOWN: item #1", settle=60)
-    T("A", "(a) A: give item #1 -- NO 'Save ...?' prompt, the item shows in the preview", settle=300, claim_absent=["Save ", "Save the"])
+    T("A", "(a) A: give item #1 -- NO 'Save ...?' prompt appears (the grid preview does not draw the held item; the Item line is read in (c))", settle=300, claim_absent=["Save ", "Save the"])
     T("B", "(a) B: leave the box editor", settle=300)
     T("B", "(a) B: dismiss the exit report -> the ONE exit confirm", settle=300, claim=["Save changes"])
     POWER_CYCLE("(b) POWER CUT at the exit prompt (no save): reload -> the offer must be up", claim=["Recorded steps found"])
     T("A", "(b) A: re-apply", settle=300)
     T("A", "(b) A: dismiss RE-APPLIED", settle=300)
     s.run(300)
-    SHOT("reapplied", "(b) the item edit is back in the image: it came back from the journal")
+    SHOT("reapplied", "(b) after RE-APPLIED: back on the box grid, same picture as frame 02 (the grid does not draw items; the item itself is proved by the Item line in (c): undo -> None, redo -> back)")
 
     # ---- (c) SELECT+L undoes the re-applied item edit, SELECT+R redoes it
     CHORD("L", "(c) SELECT held, THEN L: UNDO -> footer toast 'Undid: Held item' (the grid itself does not draw items)",
@@ -6323,9 +6325,10 @@ def run_y19_s4(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessio
     T("A", "(g) A: cycle -> 512 KiB + the once-per-visit note ('Smaller: next time it opens.')", settle=200, claim=["HISTORY SIZE"])
     T("A", "(g) A: dismiss the note", settle=200, claim=["512 KiB"])
     T("DOWN", "(g) DOWN: the cursor on 'Clear history (this save)'", settle=30)
-    T("A", "(g) A: the destructive confirm 'Delete ALL history?'", settle=200, claim=["Delete ALL history"])
-    T("A", "(g) A: yes -> CLEARED", settle=1500, claim=["CLEARED"])
-    T("A", "(g) A: dismiss -> back in Settings", settle=200)
+    T("A", "(g) A: Clear history with the item edit still STAGED (unsaved) -> 'SAVE FIRST / Unsaved edits rely on this history.' "
+      "(#234 s4 D6: the confirm never appears while staged edits lean on the history)", settle=200,
+      claim=["SAVE FIRST", "Unsaved edits"], claim_absent=["Delete ALL history"])
+    T("A", "(g) A: dismiss -> back in Settings (nothing deleted)", settle=200, claim=["Clear history"])
     T("B", "(g) B: leave Settings", settle=300)
 
     # ---- (h) the exit confirm A path in the emulator: the wall, then the reload offers the recorded step again
@@ -6333,8 +6336,45 @@ def run_y19_s4(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessio
     T("B", "(h) B: dismiss the exit report -> the ONE exit confirm", settle=300, claim=["Save changes"])
     T("A", "(h) A: yes -> the emulator build's wall ('Edits are in-session only'): HARDWARE-ONLY beyond this point",
       settle=300, claim=["in-session only"])
-    T("A", "(h) A: dismiss -> the save reloads from the fused image (the card file never changed); NO offer: Clear history "
-      "removed the recorded step", settle=1200, claim_absent=["Recorded steps found"])
+    T("A", "(h) A: dismiss -> the save reloads from the fused image (the card file never changed); the recorded-but-unsaved "
+      "step is OFFERED again (nothing cleared it)", settle=1200, claim=["Recorded steps found"])
+    T("B", "(h) B: discard the offered step -> the reloaded grid, a clean session (nothing staged)", settle=600,
+      claim_absent=["Recorded steps found"])
+
+    # ---- (g2) Clear history on a CLEAN session (no staged edit): the confirm, then CLEARED
+    s.run(100)
+    s.tap("START", settle=200)
+    s.tap("RIGHT", settle=20)
+    s.press_n("DOWN", 9, settle=12)
+    SHOT("nav_settings2", "(g2) nav menu, cursor on 'Settings' (the reloaded session)", claim=["Settings"])
+    T("A", "(g2) A: SETTINGS again", settle=300, claim=["Clear history"])
+    T("DOWN", "(g2) DOWN x7: the cursor on 'Clear history (this save)'", times=7, settle=30)
+    T("A", "(g2) A: nothing is staged now -> the destructive confirm 'Delete ALL history?'", settle=200,
+      claim=["Delete ALL history"], claim_absent=["SAVE FIRST"])
+    T("A", "(g2) A: yes -> CLEARED", settle=1500, claim=["CLEARED"])
+    T("A", "(g2) A: dismiss -> back in Settings", settle=200)
+    T("B", "(g2) B: leave Settings", settle=300)
+
+    # ---- (i) D1: a step the journal cannot record is WRITTEN at once, never held
+    T("A", "(i) cell menu on BULBASAUR (slot 0 of a full box)")
+    T("DOWN", "(i) DOWN x3: the cursor on 'MOVE TO BOX'", times=3, settle=60, claim=["MOVE TO BOX"])
+    T("A", "(i) A: MOVE TO BOX -- the box picker (cursor on BOX13 17/20)", settle=300, claim=["MOVE TO", "BOX13"])
+    T("A", "(i) A: pick BOX13 -- slot 0 of a full box shifts the whole box list: the step is TOO BIG to record, so it is "
+      "WRITTEN AT ONCE (the delta wall 'Edits are in-session only' is the emulator's answer to that write)", settle=600,
+      claim=["in-session only"])
+    T("A", "(i) A: dismiss -> the grid (BOX1 19/20); the footer lost its SEL+L/R undo hint: the session left the hold posture",
+      settle=400, claim_absent=["undo"])
+    s.run(100)
+    s.tap("START", settle=200)
+    s.press_n("DOWN", 7, settle=12)
+    SHOT("nav_bag", "(i) nav menu, cursor on 'Bag'", claim=["Bag"])
+    T("A", "(i) A: the bag (cold open)", settle=GB_ART_COLD_SETTLE)
+    T("A", "(i) A: first row -> the quantity keyboard", settle=300, claim=["QUANTITY"])
+    T("A", "(i) A: insert the digit under the cursor", settle=100)
+    T("START", "(i) START: confirm the new quantity", settle=400)
+    T("B", "(i) B: leave the bag -> the per-screen 'Save pack changes?' prompt is BACK (the session left the hold posture "
+      "when the step was written at once)", settle=600, claim=["Save pack changes"])
+    T("B", "(i) B: no -- the bag edit is discarded", settle=400)
     s.vsd_flush()
     lst = subprocess.run([str(gb_shots._vsd_img_bin()), "list", str(gb_shots._DEFAULT_VSD_IMG)], capture_output=True, text=True).stdout
     pdj = [ln.split()[0] for ln in lst.splitlines() if ln.split() and ln.split()[0].endswith(".pdj")]
