@@ -18,8 +18,11 @@ static int jfs_mkdir(void* ctx, const char* path) {
 
 static long jfs_size(void* ctx, const char* path) {
   FILINFO fi;
+  FRESULT fr;
   (void)ctx;
-  return f_stat(path, &fi) == FR_OK ? (long)fi.fsize : -1L;
+  fr = f_stat(path, &fi);
+  if (fr == FR_OK) return (long)fi.fsize;
+  return (fr == FR_NO_FILE || fr == FR_NO_PATH) ? -1L : -2L;   /* absent vs a card error */
 }
 
 static int jfs_read(void* ctx, const char* path, uint32_t off, void* buf, uint32_t n) {

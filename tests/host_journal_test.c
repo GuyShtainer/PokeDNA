@@ -519,6 +519,57 @@ static void t_readonly(void) {
     CHECK(jopen_ro(&j, K) == JRN_OK && rd_writes == wr, "a read-only open does not even zero the tail"); }
 }
 
+/* A header the way a NEWER (or foreign) build would have left it: valid magic + crc, unknown shape. */
+static void plant_hdr(uint64_t key, unsigned slot, uint32_t idx, uint16_t ring, uint16_t ver) {
+  uint8_t h[JRN_SEG_HDR]; uint32_t c;
+  memset(h, 0, sizeof h);
+  memcpy(h, "PDJS", 4); jrn_wr16(h + 4, ver); jrn_wr16(h + 6, ring); jrn_wr32(h + 8, idx);
+  c = jrn_crc32_update(0, h, 28); jrn_wr32(h + 28, c);
+  CHECK(raw_write(key, slot, 0, h, sizeof h) == 0, "plant header slot %u", slot);
+}
+
+/* THE VERSION RULE (bounce ruling 4): a valid-magic + valid-crc header this build does not know is
+ * FOREIGN. The whole journal opens read-only with JRN_E_VERSION and nothing is ever zeroed: a v1
+ * reader must not treat a v2 slot as free and recycle it. */
+static void t_version_foreign(void) {
+  Jrn j; uint8_t rec0[64], rec1[64], mark[16], back[16]; unsigned long wr; unsigned k;
+  static const struct { uint32_t idx; uint16_t ring, ver; const char* what; } F[] = {
+    { 1, 17, 2, "a v2 header" }, { 0, 17, 1, "index 0" }, { 10000, 17, 1, "index past SEG_MAX" },
+    { 1, 1, 1, "ring 1" }, { 1, 300, 1, "a ring bigger than this build's" } };
+  for (k = 0; k < sizeof F / sizeof F[0]; k++) {
+    world(&j, FM_FAT);
+    CHECK(stage(&j, "a", 0, 1, 10, 4, fresh_val(1, 10)) == JRN_OK && stage(&j, "b", 0, 1, 30, 4, fresh_val(1, 30)) == JRN_OK && jrn_flush(&j) == JRN_OK, "two steps");
+    CHECK(raw_read(K, 1, JRN_SEG_HDR, rec0, sizeof rec0) == 0, "read rec");
+    memset(mark, 0xEE, sizeof mark);
+    CHECK(raw_write(K, 2, 4096, mark, sizeof mark) == 0, "mark the spare's body");
+    plant_hdr(K, 1, F[k].idx, F[k].ring, F[k].ver);
+    card_remount();
+    wr = rd_writes;
+    CHECK(jopen(&j, K) == JRN_E_VERSION, "%s: open must say JRN_E_VERSION", F[k].what);
+    CHECK(j.readonly == 1 && j.foreign == 1 && j.anchor == JRN_ANCHOR_EMPTY && !j.seg_first && !j.tail_seg, "%s: read-only, foreign, empty", F[k].what);
+    CHECK(jrn_prepare(&j) == JRN_E_VERSION && jrn_compact(&j) == JRN_E_VERSION && jrn_prepare_first(&j) == JRN_E_VERSION, "%s: every safe-moment write refuses", F[k].what);
+    CHECK(jrn_step_begin(&j, "x", 0) == JRN_E_RDONLY && jrn_flush(&j) == JRN_E_RDONLY, "%s: no recording", F[k].what);
+    CHECK(rd_writes == wr, "%s: wrote %lu sectors", F[k].what, rd_writes - wr);
+    CHECK(raw_read(K, 1, JRN_SEG_HDR, rec1, sizeof rec1) == 0 && memcmp(rec0, rec1, sizeof rec0) == 0, "%s: the foreign slot's records are untouched (NOT zero-filled)", F[k].what);
+    CHECK(raw_read(K, 2, 4096, back, sizeof back) == 0 && memcmp(mark, back, sizeof mark) == 0, "%s: no other slot was zeroed", F[k].what);
+  }
+  /* second line of defence: the journal opened fine, then a newer build activates the NEXT slot behind
+   * our back; activating it must refuse instead of zeroing the newer build's segment */
+  card_fresh(FM_FAT); img_fill(1); rd_fattime_hook = jrn_fattime_filter;
+  CHECK(jopen(&j, K) == JRN_OK && jrn_prepare_first(&j) == JRN_OK, "first segment only");
+  memset(mark, 0xEE, sizeof mark);
+  CHECK(raw_write(K, 2, 4096, mark, sizeof mark) == 0, "mark slot 2");
+  plant_hdr(K, 2, 2, 17, 2);
+  CHECK(jrn_prepare(&j) == JRN_E_VERSION && j.foreign == 1, "activating over a foreign slot refuses");
+  CHECK(raw_read(K, 2, 4096, back, sizeof back) == 0 && memcmp(mark, back, sizeof mark) == 0, "the newer build's slot was NOT zeroed");
+  CHECK(jrn_flush(&j) == JRN_OK, "the session's own tail still flushes nothing pending");
+  /* a bad-crc header is FREE, not foreign (a torn write never reads as somebody else's data) */
+  world(&j, FM_FAT);
+  plant_hdr(K, 1, 1, 17, 2);
+  { uint8_t z = 0x55; CHECK(raw_write(K, 1, 30, &z, 1) == 0, "break the crc"); }
+  CHECK(jopen(&j, K) == JRN_OK && j.foreign == 0, "a bad-crc header is a free slot, not foreign");
+}
+
 static void t_discard_marker(void) {
   Jrn j; static uint8_t st0[NREG][RSZ]; uint32_t avail, total;
   world(&j, FM_FAT);
@@ -555,6 +606,7 @@ int main(void) {
   t_verify_stops();
   t_readonly();
   t_discard_marker();
+  t_version_foreign();
   if (fails) { printf("host_journal_test: %d FAILED of %lu checks\n", fails, checks); return 1; }
   printf("host_journal_test: all %lu checks passed (real lib/fatfs over a RAM disk)\n", checks);
   return 0;

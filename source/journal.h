@@ -46,6 +46,8 @@
 #define JRN_REC_MAX      512u   /* no record is ever longer                             */
 #define JRN_PEND_CAP     512u   /* the pending (batched) buffer                         */
 #define JRN_FLUSH_HEADROOM 384u /* free pending bytes below which a flush is REQUESTED  */
+#define JRN_MAX_SEGS      16u   /* retention cap: cfg.max_segs is clamped to this (the ring is max_segs + 1 slots) */
+#define JRN_RING_MAX      17u   /* JRN_MAX_SEGS + 1 spare slot: the per-segment index and every walk bound derive from it */
 #define JRN_NAME_LEN      24u
 #define JRN_NREG_MAX      16u   /* regions in an image (Gen-3: 14 sections)             */
 #define JRN_SPAN_HDR       6u   /* region u8, rsv u8, off u16, len u16                  */
@@ -53,6 +55,15 @@
 #define JRN_PATH_MAX      72u
 #define JRN_PEND_MAXN      9u   /* JRN_PEND_CAP / JRN_REC_MIN, rounded down             */
 #define JRN_WALK_MAX     512u   /* hard bound on any parent-chain walk                  */
+/* THE VERSION RULE (slice-1 bounce, ruling 4). A slot header is `free` (bad magic or bad CRC: never
+ * written, retired, or torn), `live` (magic + CRC + a version and a shape THIS build knows), or
+ * FOREIGN (magic + CRC hold but the version, index, ring size or the region layout is one this build
+ * does not know). Any foreign slot makes the WHOLE journal read-only: jrn_open returns JRN_E_VERSION
+ * with j->readonly and j->foreign set and no segment mapped; activation, retire, flush and repair
+ * all refuse. A reader must never zero, recycle or trim what it does not understand. So: ANY change
+ * a current reader would reject or misread (a new record kind or flag, a new header field with
+ * meaning, a moved offset, a bigger ring) BUMPS JRN_SEG_VER. */
+#define JRN_SEG_VER        1u
 
 /* Record: [0..3] 'PDJR' | [4..5] len | [6] flags (bit0 crossed, bits4-5 kind) |
  * [7] nspans | [8..11] seq | [12..15] parent | [16..19] aux | [20..23] pre_hash |
@@ -80,7 +91,9 @@ enum {
   JRN_E_NOTHING = -12,   /* nothing to undo (cursor at the root) */
   JRN_E_LOOP = -13,      /* redirect chain too long / cyclic, or a chain walk ran away     */
   JRN_E_EXISTS = -14,    /* a redirect for that key already exists and points elsewhere    */
-  JRN_E_STATE = -15      /* an internal invariant failed (a bug, never expected)           */
+  JRN_E_STATE = -15,     /* an internal invariant failed (a bug, never expected)           */
+  JRN_E_VERSION = -16    /* a FOREIGN journal (see JRN_SEG_VER below): jrn_open returns it with j
+                          * readonly and EMPTY; nothing is read past it, nothing is ever written  */
 };
 
 /* ---- the fs seam (source/journal_fs.c binds it to FatFs; the host sweep injects cuts
@@ -90,7 +103,8 @@ typedef void (*JrnListFn)(void* arg, const char* name);
 typedef struct JrnFs {
   void* ctx;
   int      (*mkdir)(void* ctx, const char* path);                    /* 0 ok or exists   */
-  long     (*size)(void* ctx, const char* path);                     /* -1 absent        */
+  /* file size; -1 = ABSENT (no such file / path), -2 = an I/O error (never conflate the two) */
+  long     (*size)(void* ctx, const char* path);
   int      (*read)(void* ctx, const char* path, uint32_t off, void* buf, uint32_t n);
   /* IN PLACE, never grows the file, synced before returning. 0 ok. */
   int      (*write)(void* ctx, const char* path, uint32_t off, const void* buf, uint32_t n);
@@ -142,7 +156,7 @@ typedef struct Jrn {
   uint16_t     pend_len;       /* bytes of sealed pending records              */
   uint16_t     bld_len;        /* bytes of the record under construction (0 = none) */
   uint8_t      nreg, max_segs, pend_n, nspans;
-  uint8_t      readonly, stopped, flush_wanted, anchor, offer;
+  uint8_t      readonly, stopped, flush_wanted, anchor, offer, foreign;   /* foreign: JRN_SEG_VER rule above */
   uint8_t      pend[JRN_PEND_CAP];
 } Jrn;
 

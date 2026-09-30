@@ -8,12 +8,13 @@
 
 #include "journal_int.h"
 
-#define SEG_VER        1u
+#define SEG_VER        JRN_SEG_VER
+#define SLOT_FOREIGN   (-1)     /* slot_hdr / hdr_parse: valid magic + crc, but not a header this build understands */
 #define ZCHUNK         256u    /* zero-in-place granularity                               */
 #define ZWINDOW        1024u   /* the most a cut can leave past the tail; the most we zero */
 #define RCHUNK         128u    /* streaming chunk for CRC / verify (stack)                */
 #define SEG_MAX        9999u   /* logical segment index cap (the slot files are a fixed ring) */
-#define RING_MAX       256u    /* slot files in the ring (max_segs + 1, max_segs <= 255)    */
+#define RING_MAX       JRN_RING_MAX   /* slot files in the ring (max_segs + 1, max_segs <= JRN_MAX_SEGS) */
 #define ZBODY          512u    /* recycle zero-fill granularity (stack)                   */
 #define SCAN_MAX       0x40000u
 #define RESOLVE_MAX    8u
@@ -170,22 +171,28 @@ static void seg_hdr_build(uint16_t idx, uint16_t ring, uint8_t* h) {
   jrn_wr32(h + 28, jrn_crc32_update(0, h, 28));
 }
 
-/* A header is LIVE only when magic, version and crc all hold: a half-zeroed (torn retire) or
- * half-written (torn activation) header fails the crc and reads as a free slot. */
+/* Tri-state (the version rule in journal.h). 0 = FREE: bad magic or bad crc (never written, retired in
+ * place, or torn). 1 = LIVE: magic + crc hold and version, index and ring are ones this build knows.
+ * SLOT_FOREIGN: magic + crc hold but the version, index or ring is NOT -- somebody else's data. */
 static int hdr_parse(const uint8_t* h, uint32_t* idx, uint16_t* ring) {
-  if (h[0] != 'P' || h[1] != 'D' || h[2] != 'J' || h[3] != 'S' || jrn_rd16(h + 4) != SEG_VER) return 0;
+  if (h[0] != 'P' || h[1] != 'D' || h[2] != 'J' || h[3] != 'S') return 0;
   if (jrn_crc32_update(0, h, 28) != jrn_rd32(h + 28)) return 0;
   *idx = jrn_rd32(h + 8); *ring = jrn_rd16(h + 6);
-  return *idx >= 1u && *idx <= SEG_MAX && *ring >= 2u && *ring <= RING_MAX;
+  if (jrn_rd16(h + 4) != SEG_VER || *idx < 1u || *idx > SEG_MAX || *ring < 2u || *ring > RING_MAX) return SLOT_FOREIGN;
+  return 1;
 }
 
-/* The slot file `slot`: full size and a live header? Fills idx + ring. */
+/* The slot file `slot`: 1 = full size and a live header (fills idx + ring), 0 = free / no such file /
+ * a partial file, SLOT_FOREIGN = a header this build does not understand, JRN_E_IO = the card failed. */
 static int slot_hdr(const Jrn* j, uint16_t slot, uint32_t* idx, uint16_t* ring) {
   char p[JRN_PATH_MAX];
   uint8_t h[JRN_SEG_HDR];
+  long sz;
   if (p_slot(j->root, j->key, slot, p)) return 0;
-  if (j->fs->size(j->fs->ctx, p) != (long)JRN_SEG_SIZE) return 0;
-  if (j->fs->read(j->fs->ctx, p, 0, h, JRN_SEG_HDR) != 0) return 0;
+  sz = j->fs->size(j->fs->ctx, p);
+  if (sz < -1) return JRN_E_IO;
+  if (sz != (long)JRN_SEG_SIZE) return 0;
+  if (j->fs->read(j->fs->ctx, p, 0, h, JRN_SEG_HDR) != 0) return JRN_E_IO;
   return hdr_parse(h, idx, ring);
 }
 
@@ -193,7 +200,7 @@ static int seg_valid(const Jrn* j, uint16_t idx) {
   uint32_t i;
   uint16_t r;
   if (!idx || idx > SEG_MAX || j->ring < 2u) return 0;
-  return slot_hdr(j, slot_of(idx, j->ring), &i, &r) && i == idx && r == j->ring;
+  return slot_hdr(j, slot_of(idx, j->ring), &i, &r) == 1 && i == idx && r == j->ring;
 }
 
 
@@ -550,21 +557,32 @@ static int open_validate(const JrnCfg* c, const JrnImage* img) {
 
 /* The ring, read from the slot headers. The ring size comes from the first live header found;
  * the OLDEST live segment is the slot whose header carries the lowest logical index (NEVER the
- * lowest slot number: after a wrap the two differ). A zeroed / half-zeroed header is a free slot.
- * Then the live set extends contiguously (idx+1, idx+2 ...) through the header index. */
+ * lowest slot number: after a wrap the two differ). A zeroed / half-zeroed header is a free slot; a
+ * FOREIGN header (JRN_SEG_VER rule) makes the whole journal unreadable to this build -> JRN_E_VERSION;
+ * a card error -> JRN_E_IO (never a silently shorter ring). The live set extends contiguously
+ * (idx+1, idx+2 ...) through the header indices. 1 = a ring, 0 = none, < 0 = error. */
 static int ring_scan(Jrn* j, uint16_t hi) {
-  uint16_t s, lim = hi < RING_MAX ? hi : (uint16_t)RING_MAX, ring = 0;
-  uint32_t idx, lo = 0;
-  uint16_t r, nxt;
-  for (s = 1; s <= lim && !ring; s++)
-    if (slot_hdr(j, s, &idx, &r) && slot_of(idx, r) == s) ring = r;
+  uint32_t sidx[RING_MAX], lo = 0, nxt;
+  uint16_t srng[RING_MAX], s, lim = hi < RING_MAX ? hi : (uint16_t)RING_MAX, ring = 0;
+  int rc;
+  for (s = 1; s <= lim; s++) {
+    sidx[s - 1u] = 0; srng[s - 1u] = 0;
+    rc = slot_hdr(j, s, &sidx[s - 1u], &srng[s - 1u]);
+    if (rc < 0) return rc == SLOT_FOREIGN ? JRN_E_VERSION : rc;
+    if (rc != 1) sidx[s - 1u] = 0;
+    else if (!ring && slot_of(sidx[s - 1u], srng[s - 1u]) == s) ring = srng[s - 1u];
+  }
   if (!ring) return 0;
-  j->ring = ring;
   for (s = 1; s <= ring && s <= lim; s++)
-    if (slot_hdr(j, s, &idx, &r) && r == ring && slot_of(idx, ring) == s && (!lo || idx < lo)) lo = idx;
-  if (!lo) { j->ring = 0; return 0; }
+    if (sidx[s - 1u] && srng[s - 1u] == ring && slot_of(sidx[s - 1u], ring) == s && (!lo || sidx[s - 1u] < lo)) lo = sidx[s - 1u];
+  if (!lo) return 0;
+  j->ring = ring;
   j->seg_first = j->seg_last = (uint16_t)lo;
-  for (nxt = (uint16_t)(lo + 1u); nxt <= SEG_MAX && seg_valid(j, nxt); nxt++) j->seg_last = nxt;
+  for (nxt = lo + 1u; nxt <= SEG_MAX; nxt++) {
+    s = slot_of(nxt, ring);
+    if (s > lim || sidx[s - 1u] != nxt || srng[s - 1u] != ring) break;
+    j->seg_last = (uint16_t)nxt;
+  }
   return 1;
 }
 
@@ -578,7 +596,7 @@ int jrn_open(Jrn* j, const JrnCfg* cfg, const JrnImage* img) {
   memset(&sc, 0, sizeof sc);
   memset(&d, 0, sizeof d);
   j->fs = cfg->fs; j->root = cfg->root; j->nreg = cfg->nreg; j->reg_size = cfg->reg_size;
-  j->max_segs = cfg->max_segs ? cfg->max_segs : (uint8_t)DEFAULT_SEGS;
+  j->max_segs = cfg->max_segs ? (cfg->max_segs < JRN_MAX_SEGS ? cfg->max_segs : (uint8_t)JRN_MAX_SEGS) : (uint8_t)DEFAULT_SEGS;
   j->readonly = cfg->readonly ? 1 : 0;
   j->next_seq = 1;
   rc = jrn_key_resolve(cfg->fs, cfg->root, cfg->key, &j->key);
@@ -586,7 +604,15 @@ int jrn_open(Jrn* j, const JrnCfg* cfg, const JrnImage* img) {
   rc = jrn_recompute(j, img);
   if (rc) return rc;
   if (p_key(j->root, j->key, "", dir)) return JRN_E_ARG;
-  if (j->fs->list(j->fs->ctx, dir, dir_cb, &d) != 0 || !d.hi || !ring_scan(j, d.hi)) { j->anchor = JRN_ANCHOR_EMPTY; return JRN_OK; }
+  if (j->fs->list(j->fs->ctx, dir, dir_cb, &d) != 0 || !d.hi) { j->anchor = JRN_ANCHOR_EMPTY; return JRN_OK; }
+  rc = ring_scan(j, d.hi);
+  if (rc == JRN_E_VERSION) {                      /* somebody else's journal: read-only, empty, untouched */
+    j->foreign = 1; j->readonly = 1; j->ring = 0; j->seg_first = j->seg_last = j->tail_seg = 0;
+    j->anchor = JRN_ANCHOR_EMPTY;
+    return JRN_E_VERSION;
+  }
+  if (rc < 0) return rc;
+  if (!rc) { j->anchor = JRN_ANCHOR_EMPTY; return JRN_OK; }
   rc = scan_prefix(j, jrn_hash(j), &sc);
   if (rc) return rc;
   rc = repair_tail(j);
@@ -640,7 +666,7 @@ static int slot_zero(const Jrn* j, uint16_t idx) {
 }
 
 /* Logical segment `idx` becomes live in its slot: recycle (zero-fill) then header LAST. */
-static int seg_activate(const Jrn* j, uint16_t idx) {
+static int seg_activate(Jrn* j, uint16_t idx) {
   char p[JRN_PATH_MAX];
   uint8_t h[JRN_SEG_HDR];
   uint32_t oi;
@@ -648,7 +674,11 @@ static int seg_activate(const Jrn* j, uint16_t idx) {
   int rc;
   if (seg_path(j, idx, p)) return JRN_E_ARG;
   if (j->fs->size(j->fs->ctx, p) != (long)JRN_SEG_SIZE) return JRN_E_IO;   /* the ring is not whole */
-  if (slot_hdr(j, slot_of(idx, j->ring), &oi, &orng)) return JRN_E_STATE;   /* a live segment owns it */
+  if (j->foreign) return JRN_E_VERSION;
+  rc = slot_hdr(j, slot_of(idx, j->ring), &oi, &orng);
+  if (rc == SLOT_FOREIGN) { j->foreign = 1; return JRN_E_VERSION; }   /* a newer build owns it: never zero it */
+  if (rc < 0) return rc;
+  if (rc == 1) return JRN_E_STATE;                                     /* a live segment owns it */
   rc = slot_zero(j, idx);
   if (rc) return rc;
   seg_hdr_build(idx, j->ring, h);
@@ -673,6 +703,7 @@ int jrn_prepare_first(Jrn* j) {
   char dir[JRN_PATH_MAX];
   int rc;
   if (!j) return JRN_E_ARG;
+  if (j->foreign) return JRN_E_VERSION;
   if (j->readonly) return JRN_E_RDONLY;
   rc = mkdir_prefixes(j->fs, j->root);
   if (rc) return rc;
@@ -699,6 +730,7 @@ int jrn_compact(Jrn* j) {
   uint32_t g;
   int rc;
   if (!j) return JRN_E_ARG;
+  if (j->foreign) return JRN_E_VERSION;
   if (j->readonly) return JRN_E_RDONLY;
   for (g = 0; g < RING_MAX && j->seg_first && j->seg_first < j->tail_seg &&
               (uint32_t)(j->seg_last - j->seg_first + 1u) > seg_cap(j); g++) {

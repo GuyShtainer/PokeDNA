@@ -134,8 +134,8 @@ MUTANTS = [
            "  seg_hdr_build(idx, j->ring, h);",
            "journal", "all-zero body"),
     Mutant("ring: open trusts slot order instead of the header index", "journal.c",
-           "r == ring && slot_of(idx, ring) == s && (!lo || idx < lo)) lo = idx;",
-           "r == ring && slot_of(idx, ring) == s && (!lo)) lo = idx;",
+           "&& (!lo || sidx[s - 1u] < lo)) lo = sidx[s - 1u];",
+           "&& (!lo)) lo = sidx[s - 1u];",
            "journal", "reopen at step"),
     Mutant("ring: a half-zeroed header (crc gone) is read as live", "journal.c",
            "  if (jrn_crc32_update(0, h, 28) != jrn_rd32(h + 28)) return 0;\n", "",
@@ -148,6 +148,13 @@ MUTANTS = [
            "  rc = slot_zero(j, idx);\n  if (rc) return rc;\n  seg_hdr_build(idx, j->ring, h);\n  rc = seg_write(j, idx, 0, h, JRN_SEG_HDR);\n  if (rc) return rc;\n",
            "  seg_hdr_build(idx, j->ring, h);\n  rc = seg_write(j, idx, 0, h, JRN_SEG_HDR);\n  if (rc) return rc;\n  rc = slot_zero(j, idx);\n  if (rc) return rc;\n",
            "cut", "neither before nor after"),
+    Mutant("version: a foreign (valid magic+crc, unknown ver/idx/ring) header reads as a FREE slot", "journal.c",
+           "*ring > RING_MAX) return SLOT_FOREIGN;", "*ring > RING_MAX) return 0;",
+           "journal", "open must say JRN_E_VERSION"),
+    Mutant("version: activation zeroes a slot a newer build owns", "journal.c",
+           "  if (rc == SLOT_FOREIGN) { j->foreign = 1; return JRN_E_VERSION; }   /* a newer build owns it: never zero it */\n",
+           "  if (rc == SLOT_FOREIGN) rc = 0;\n",
+           "journal", "activating over a foreign slot refuses"),
 ]
 
 
@@ -178,7 +185,7 @@ def run_one(m: Mutant, scratch: Path) -> tuple[bool, str]:
     b = build(m.test, src, binary)
     if b.returncode != 0:
         return False, "mutant does not build: " + b.stderr.strip().splitlines()[0]
-    env = {"JRN_QUICK": "1"}
+    env = {"JRN_QUICK": "1", "JRN_NO_GARBAGE": "1"}
     r = subprocess.run([str(binary)], capture_output=True, text=True, env=env, check=False, timeout=600)
     out = r.stdout + r.stderr
     if r.returncode == 0:
