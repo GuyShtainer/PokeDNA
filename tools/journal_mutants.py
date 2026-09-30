@@ -165,6 +165,21 @@ MUTANTS = [
            "  rc = slot_zero(j, idx);\n  if (rc) return rc;\n  seg_hdr_build(idx, j->ring, h);",
            "  seg_hdr_build(idx, j->ring, h);",
            "journal", "the activated segment's body is zero"),
+    Mutant("bounds: the parent-chain walk is capped at 512 hops again (a long session loses its re-apply offer)", "journal.h",
+           "#define JRN_WALK_MAX     (JRN_RING_MAX * ((JRN_SEG_SIZE - JRN_REC_BASE) / JRN_REC_MIN))",
+           "#define JRN_WALK_MAX     512u",
+           "journal", "unsaved session is offered whole"),
+    Mutant("index: locate ignores the first-seq index (always scans from the oldest segment)", "journal.c",
+           "  for (s = j->seg_first; s && s <= j->tail_seg; s++) {\n    v = idx_get(j, s);\n    if (v && v <= seq) best = s;\n  }\n  return best;",
+           "  (void)v; (void)seq; best = j->seg_first;\n  return best;",
+           "journal", "undo"),
+    Mutant("index: a flush does not feed the index (first record of a fresh segment)", "journal.c",
+           "    if (p.off[i] == JRN_REC_BASE) idx_set(j, p.seg[i], p.seq[i]);",
+           "    if (p.off[i] == JRN_REC_BASE) { (void)p.seq[i]; }",
+           "journal", "first-seq index a reopen builds"),
+    Mutant("index: a retire leaves the retired slot's index behind", "journal.c",
+           "    idx_set(j, j->seg_first, 0);\n    j->seg_first++;", "    j->seg_first++;",
+           "journal", "first-seq index a reopen builds"),
 ]
 
 

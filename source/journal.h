@@ -58,7 +58,11 @@
 #define JRN_MERGE_GAP      4u   /* unchanged bytes tolerated inside one diff span       */
 #define JRN_PATH_MAX      72u
 #define JRN_PEND_MAXN      9u   /* JRN_PEND_CAP / JRN_REC_MIN, rounded down             */
-#define JRN_WALK_MAX     512u   /* hard bound on any parent-chain walk                  */
+/* Every walk and scan bound DERIVES from the ring capacity (never a guess): the most records the whole
+ * ring can hold is JRN_RING_MAX segments x records of at least JRN_REC_MIN bytes. A parent-chain walk,
+ * the open scan and the anchor walk can therefore never lose the tail of a long session (the old fixed
+ * 512-hop cap dropped the re-apply offer of any session longer than 512 steps). */
+#define JRN_WALK_MAX     (JRN_RING_MAX * ((JRN_SEG_SIZE - JRN_REC_BASE) / JRN_REC_MIN))
 /* THE VERSION RULE (slice-1 bounce, ruling 4). A slot header is `free` (bad magic or bad CRC: never
  * written, retired, or torn), `live` (magic + CRC + a version and a shape THIS build knows), or
  * FOREIGN (magic + CRC hold but the version, index, ring size or the region layout is one this build
@@ -103,6 +107,7 @@ enum {
 /* ---- the fs seam (source/journal_fs.c binds it to FatFs; the host sweep injects cuts
  * underneath it, at the disk_write layer) ------------------------------------------ */
 typedef void (*JrnListFn)(void* arg, const char* name);
+typedef int  (*JrnScanFn)(void* arg, uint32_t off, const uint8_t* buf, uint32_t n, int last, uint32_t* used);
 
 typedef struct JrnFs {
   void* ctx;
@@ -126,6 +131,15 @@ typedef struct JrnFs {
                           const void* head, uint32_t headn);
   int      (*unlink)(void* ctx, const char* path);                   /* absent = 0       */
   int      (*list)(void* ctx, const char* dir, JrnListFn cb, void* arg);
+  /* ONE handle, chunked READ (the open/locate/anchor scans). `start` is a multiple of 512. The seam reads
+   * the file one aligned <= 512-byte chunk at a time (one disk read per sector) into a buffer that already
+   * holds the bytes cb did not consume last time, and calls cb(arg, off, buf, n, last, &used): buf[0..n)
+   * is the file at [off, off+n) (n <= 1023), `last` = 1 when this window reaches `limit`. cb consumes as
+   * many WHOLE records as buf holds and sets *used to the bytes it consumed; it returns 1 to go on (what
+   * it did not consume, always < 512 bytes, is carried into the next window) or 0 to stop. When `last` is
+   * set the scan ends after this call whatever cb returns. Returns 0 when the scan ended, -1 on a card
+   * error. */
+  int      (*scan)(void* ctx, const char* path, uint32_t start, uint32_t limit, JrnScanFn cb, void* arg);
   uint32_t (*stamp)(void* ctx, const char* path);                    /* file's FAT stamp */
 } JrnFs;
 
@@ -165,6 +179,9 @@ typedef struct Jrn {
   uint16_t     seg_first, seg_last, tail_seg;  /* LOGICAL segment indices, 0 = none  */
   uint16_t     ring;           /* slot files in the ring (from the header), 0 = no journal yet */
   uint16_t     reg_size;
+  uint32_t     seg_seq[JRN_RING_MAX];   /* the per-segment first-seq INDEX, by ring slot (slot-1): seq of the first
+                                         * record the slot's segment holds, 0 = none yet. Built by open, kept by
+                                         * flush/activate/retire; locate/undo/redo start their scan in the right segment. */
   uint16_t     pend_len;       /* bytes of sealed pending records              */
   uint16_t     bld_len;        /* bytes of the record under construction (0 = none) */
   uint8_t      nreg, max_segs, pend_n, nspans;

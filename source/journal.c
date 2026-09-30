@@ -14,7 +14,6 @@
 #define RCHUNK         128u    /* streaming chunk for CRC / verify (stack)                */
 #define SEG_MAX        9999u   /* logical segment index cap (the slot files are a fixed ring) */
 #define RING_MAX       JRN_RING_MAX   /* slot files in the ring (max_segs + 1, max_segs <= JRN_MAX_SEGS) */
-#define SCAN_MAX       0x40000u
 #define RESOLVE_MAX    8u
 #define PDR_LEN        16u
 #define DEFAULT_SEGS   16u
@@ -234,45 +233,38 @@ int jrn_i_hdr_parse(const uint8_t* b, JrnRec* r) {
   return r->seq == 0 ? 2 : 0;
 }
 
-/* Header only (no CRC): 0 ok, 1/2 = no record here, <0 = I/O. */
-static int rec_hdr_at(const Jrn* j, uint16_t seg, uint32_t off, JrnRec* r) {
-  uint8_t b[JRN_REC_HDR];
+#define REC_SHORT 3   /* rec_check / rec_hdr: the window ends before the record does -- ask for the next window */
+
+/* Header only (no CRC) of the record at b[0..n): 0 ok (the whole record fits the window), 1 = no record
+ * (zero / bad magic), 2 = malformed, REC_SHORT = the window is too short to decide. */
+static int rec_hdr(const uint8_t* b, uint32_t n, JrnRec* r) {
   int rc;
-  if (off + JRN_REC_MIN > JRN_SEG_SIZE) return 1;
-  rc = seg_read(j, seg, off, b, JRN_REC_HDR);
-  if (rc) return rc;
+  if (n < JRN_REC_HDR) return REC_SHORT;
   rc = jrn_i_hdr_parse(b, r);
   if (rc) return rc;
-  return off + r->len > JRN_SEG_SIZE ? 2 : 0;
+  return r->len > n ? REC_SHORT : 0;
 }
 
-/* Header + CRC: a torn tail or flipped bit is 2, never a record. One read covers the header
- * and (for a marker or a small step) the whole record; longer ones stream in RCHUNK pieces. */
-static int rec_at(const Jrn* j, uint16_t seg, uint32_t off, JrnRec* r) {
-  uint8_t chunk[RCHUNK], tail[4];
-  uint32_t crc = 0, body, c, m, n0 = JRN_SEG_SIZE - off < RCHUNK ? JRN_SEG_SIZE - off : RCHUNK;
-  uint32_t i;
-  int rc;
-  if (off + JRN_REC_MIN > JRN_SEG_SIZE) return 1;
-  rc = seg_read(j, seg, off, chunk, n0);
+/* Header + CRC: a torn tail or flipped bit is 2, never a record. Same codes as rec_hdr. */
+static int rec_check(const uint8_t* b, uint32_t n, JrnRec* r) {
+  int rc = rec_hdr(b, n, r);
   if (rc) return rc;
-  rc = jrn_i_hdr_parse(chunk, r);
-  if (rc) return rc;
-  if (off + r->len > JRN_SEG_SIZE) return 2;
-  body = (uint32_t)r->len - 4u;
-  for (c = 0; c < r->len; c += m) {
-    if (c) {
-      m = r->len - c < RCHUNK ? r->len - c : RCHUNK;
-      rc = seg_read(j, seg, off + c, chunk, m);
-      if (rc) return rc;
-    } else {
-      m = n0 < r->len ? n0 : r->len;
-    }
-    for (i = 0; i < m; i++)                      /* the last 4 bytes of the record are the stored crc */
-      if (c + i >= body) tail[c + i - body] = chunk[i];
-    crc = jrn_crc32_update(crc, chunk, c + m <= body ? m : (c < body ? body - c : 0));
-  }
-  return jrn_rd32(tail) == crc ? 0 : 2;
+  return jrn_rd32(b + r->len - 4u) == jrn_crc32_update(0, b, (uint32_t)r->len - 4u) ? 0 : 2;
+}
+
+/* Chunked read through ONE handle (seam `scan`): see JrnFs.scan. */
+static int seg_scan(const Jrn* j, uint16_t seg, uint32_t start, uint32_t limit, JrnScanFn cb, void* arg) {
+  char p[JRN_PATH_MAX];
+  if (seg_path(j, seg, p) || limit > JRN_SEG_SIZE || start > limit) return JRN_E_ARG;
+  return j->fs->scan(j->fs->ctx, p, start, limit, cb, arg) == 0 ? 0 : JRN_E_IO;
+}
+
+/* The per-segment first-seq index (Jrn.seg_seq, by ring slot). */
+static uint32_t idx_get(const Jrn* j, uint16_t seg) {
+  return (j->ring >= 2u && seg) ? j->seg_seq[slot_of(seg, j->ring) - 1u] : 0u;
+}
+static void idx_set(Jrn* j, uint16_t seg, uint32_t v) {
+  if (j->ring >= 2u && seg) j->seg_seq[slot_of(seg, j->ring) - 1u] = v;
 }
 
 int jrn_i_src_read(const Jrn* j, const JrnSrc* s, uint32_t off, void* buf, uint32_t n) {
@@ -304,10 +296,39 @@ void jrn_i_pend_pop(Jrn* j, uint16_t start) {
   j->next_seq--;
 }
 
+typedef struct LocCx { uint32_t seq, off; JrnRec* r; uint8_t state; } LocCx;   /* state 0 searching, 1 found, 2 floor */
+
+static int loc_cb(void* arg, uint32_t off, const uint8_t* b, uint32_t n, int last, uint32_t* used) {
+  LocCx* c = (LocCx*)arg;
+  uint32_t p = 0;
+  int rc;
+  while (p < n) {
+    rc = rec_hdr(b + p, n - p, c->r);
+    if (rc == REC_SHORT && !last) break;                                             /* the record crosses into the next chunk */
+    if (rc) { c->state = 2; return 0; }                                              /* end of the records */
+    if (c->r->seq > c->seq) { c->state = 2; return 0; }                              /* seqs only grow: it is gone */
+    if (c->r->seq == c->seq) { c->state = c->r->kind == JRN_KIND_STEP ? 1u : 2u; c->off = off + p; return 0; }
+    p += c->r->len;
+  }
+  *used = p;
+  return 1;
+}
+
+/* The segment a seq must live in: the LAST live segment whose first record's seq is <= `seq` (the index). */
+static uint16_t seg_for_seq(const Jrn* j, uint32_t seq) {
+  uint16_t s, best = 0;
+  uint32_t v;
+  for (s = j->seg_first; s && s <= j->tail_seg; s++) {
+    v = idx_get(j, s);
+    if (v && v <= seq) best = s;
+  }
+  return best;
+}
+
 int jrn_i_locate(Jrn* j, uint32_t seq, JrnRec* r, JrnSrc* src) {
   uint16_t off = 0, seg;
   uint8_t i;
-  uint32_t o, g;
+  LocCx c;
   int rc;
   for (i = 0; i < j->pend_n; i++) {
     if (jrn_i_hdr_parse(j->pend + off, r)) return JRN_E_STATE;
@@ -315,23 +336,14 @@ int jrn_i_locate(Jrn* j, uint32_t seq, JrnRec* r, JrnSrc* src) {
     off = (uint16_t)(off + r->len);
   }
   if (!j->seg_first || !j->tail_seg) return JRN_E_FLOOR;
-  for (seg = j->seg_first; seg <= j->tail_seg; seg++) {
-    o = JRN_REC_BASE;
-    for (g = 0; g < JRN_SEG_SIZE / JRN_REC_MIN + 1u; g++) {
-      if (seg == j->tail_seg && o >= j->tail_off) break;
-      rc = rec_hdr_at(j, seg, o, r);
-      if (rc < 0) return rc;
-      if (rc > 0) break;
-      if (r->seq > seq) return JRN_E_FLOOR;
-      if (r->seq == seq) {
-        if (r->kind != JRN_KIND_STEP) return JRN_E_FLOOR;
-        src->ram = 0; src->seg = seg; src->base = o;
-        return 0;
-      }
-      o += r->len;
-    }
-  }
-  return JRN_E_FLOOR;
+  seg = seg_for_seq(j, seq);
+  if (!seg) return JRN_E_FLOOR;                  /* older than every segment's first record: compacted away */
+  c.seq = seq; c.off = 0; c.r = r; c.state = 0;
+  rc = seg_scan(j, seg, JRN_REC_BASE, seg == j->tail_seg ? j->tail_off : JRN_SEG_SIZE, loc_cb, &c);
+  if (rc) return rc;
+  if (c.state != 1u) return JRN_E_FLOOR;
+  src->ram = 0; src->seg = seg; src->base = c.off;
+  return 0;
 }
 
 int jrn_find(Jrn* j, uint32_t seq, JrnRec* out) {
@@ -467,27 +479,68 @@ static void scan_absorb(Scan* sc, const JrnRec* r, uint32_t hash) {
   sc->have = 1;
 }
 
-static int scan_next_seg_continues(const Jrn* j, uint16_t seg, const Scan* sc) {
+typedef struct FirstCx { const Scan* sc; uint8_t ok; } FirstCx;
+
+static int first_cb(void* arg, uint32_t off, const uint8_t* b, uint32_t n, int last, uint32_t* used) {
+  FirstCx* c = (FirstCx*)arg;
   JrnRec r;
-  return rec_at(j, seg, JRN_REC_BASE, &r) == 0 && (!sc->have || r.seq == sc->expect);
+  (void)off; (void)used;
+  c->ok = rec_check(b, n, &r) == 0 && (!c->sc->have || r.seq == c->sc->expect);
+  (void)last;
+  return 0;   /* the first record starts at a sector boundary and is <= 512 B: the first chunk holds it whole */
 }
 
-/* Longest valid prefix. Ends at the first record that is absent, corrupt or out of seq
- * (unless the next segment continues the sequence: the slack a full segment leaves). */
-static int scan_prefix(Jrn* j, uint32_t hash, Scan* sc) {
-  uint16_t seg = j->seg_first;
-  uint32_t off = JRN_REC_BASE, guard;
-  JrnRec r;
+/* 1 when the segment's first record continues the sequence (the slack a full segment leaves), 0 when not,
+ * < 0 on a card error (never read as "does not continue": a wrong tail would zero live records). */
+static int next_seg_continues(const Jrn* j, uint16_t seg, const Scan* sc) {
+  FirstCx c;
   int rc;
-  for (guard = 0; guard < SCAN_MAX; guard++) {
-    rc = rec_at(j, seg, off, &r);
+  c.sc = sc; c.ok = 0;
+  rc = seg_scan(j, seg, JRN_REC_BASE, JRN_REC_BASE + JRN_REC_MAX, first_cb, &c);
+  return rc < 0 ? rc : (int)c.ok;
+}
+
+typedef struct PfxCx { Jrn* j; Scan* sc; uint32_t hash, off; uint16_t seg; } PfxCx;
+
+static int pfx_cb(void* arg, uint32_t off, const uint8_t* b, uint32_t n, int last, uint32_t* used) {
+  PfxCx* c = (PfxCx*)arg;
+  JrnRec r;
+  uint32_t p = 0;
+  int rc;
+  while (p < n) {
+    rc = rec_check(b + p, n - p, &r);
+    if (rc == REC_SHORT && !last) break;                                                /* crosses into the next chunk */
+    if (rc != 0 || (c->sc->have && r.seq != c->sc->expect)) return 0;                  /* this segment's run ends */
+    if (off + p == JRN_REC_BASE) idx_set(c->j, c->seg, r.seq);
+    scan_absorb(c->sc, &r, c->hash);
+    p += r.len;
+    c->off = off + p;
+  }
+  *used = p;
+  return 1;
+}
+
+/* Longest valid prefix. Ends at the first record that is absent, corrupt or out of seq (unless the next
+ * segment continues the sequence: the slack a full segment leaves). One handle per segment, 512-byte
+ * windows; builds the per-segment first-seq index on the way. Bounded by the ring: <= JRN_RING_MAX segments. */
+static int scan_prefix(Jrn* j, uint32_t hash, Scan* sc) {
+  PfxCx c;
+  uint16_t seg = j->seg_first;
+  uint32_t g;
+  int rc;
+  c.j = j; c.sc = sc; c.hash = hash; c.off = JRN_REC_BASE;
+  for (g = 0; g < RING_MAX; g++) {
+    c.seg = seg; c.off = JRN_REC_BASE;
+    rc = seg_scan(j, seg, JRN_REC_BASE, JRN_SEG_SIZE, pfx_cb, &c);
+    if (rc) return rc;
+    if (seg >= j->seg_last) break;
+    rc = next_seg_continues(j, (uint16_t)(seg + 1u), sc);
     if (rc < 0) return rc;
-    if (rc == 0 && (!sc->have || r.seq == sc->expect)) { scan_absorb(sc, &r, hash); off += r.len; continue; }
-    if (seg < j->seg_last && scan_next_seg_continues(j, (uint16_t)(seg + 1u), sc)) { seg++; off = JRN_REC_BASE; continue; }
-    break;
+    if (!rc) break;
+    seg++;
   }
   j->tail_seg = seg;
-  j->tail_off = off;
+  j->tail_off = c.off;
   j->next_seq = sc->have ? sc->expect : 1u;
   return 0;
 }
@@ -518,21 +571,75 @@ static int repair_tail(const Jrn* j) {
   return 0;
 }
 
-/* Where does the loaded image sit in the tree? Walk the last cursor position up until the
- * image hash matches a post (image is there) or a pre (image is at the parent). */
-static void anchor_cursor(Jrn* j, const Scan* sc, uint32_t hash) {
-  uint32_t cur = sc->c_last, hops;
-  int found = 0;
+/* THE ANCHOR WALK'S ROLLING WINDOW. The walk follows parent links DOWN, so every hop is a lookup by seq;
+ * done one locate per hop it re-scans a segment prefix per step (a 2,800-step chain read ~330,000 sectors).
+ * Instead one forward scan of the segment keeps the LAST ANC_N step records (seq, parent, pre, post) in a
+ * small ring and the walk continues in RAM while the parents stay inside it: one segment pass per ANC_N hops. */
+#define ANC_N 24u
+
+typedef struct AncEnt { uint32_t seq, parent, pre, post; } AncEnt;
+typedef struct AncWin { AncEnt e[ANC_N]; uint32_t target; uint8_t n, head, hit; } AncWin;
+
+static int anc_cb(void* arg, uint32_t off, const uint8_t* b, uint32_t n, int last, uint32_t* used) {
+  AncWin* w = (AncWin*)arg;
   JrnRec r;
-  JrnSrc s;
+  AncEnt* d;
+  uint32_t p = 0;
+  int rc;
+  (void)off;
+  while (p < n) {
+    rc = rec_hdr(b + p, n - p, &r);
+    if (rc == REC_SHORT && !last) break;
+    if (rc || r.seq > w->target) return 0;
+    if (r.kind == JRN_KIND_STEP) {
+      d = &w->e[w->head];
+      d->seq = r.seq; d->parent = r.parent; d->pre = r.pre; d->post = r.post;
+      w->head = (uint8_t)((w->head + 1u) % ANC_N);
+      if (w->n < ANC_N) w->n++;
+      if (r.seq == w->target) { w->hit = 1; return 0; }
+    } else if (r.seq == w->target) return 0;
+    p += r.len;
+  }
+  *used = p;
+  return 1;
+}
+
+/* Refill the window with the steps that end at `target`. 0 = filled (w->hit says whether target is in it), < 0 I/O. */
+static int anc_fill(const Jrn* j, AncWin* w, uint32_t target) {
+  uint16_t seg = seg_for_seq(j, target);
+  w->target = target; w->n = 0; w->head = 0; w->hit = 0;
+  if (!seg) return 0;
+  return seg_scan(j, seg, JRN_REC_BASE, seg == j->tail_seg ? j->tail_off : JRN_SEG_SIZE, anc_cb, w);
+}
+
+static const AncEnt* anc_find(const AncWin* w, uint32_t seq) {
+  uint8_t i;
+  for (i = 0; i < w->n; i++) if (w->e[i].seq == seq) return &w->e[i];
+  return 0;
+}
+
+/* Where does the loaded image sit in the tree? Walk the last cursor position up until the image hash
+ * matches a post (image is there) or a pre (image is at the parent). Bounded by the ring capacity. */
+static int anchor_cursor(Jrn* j, const Scan* sc, uint32_t hash) {
+  uint32_t cur = sc->c_last, hops;
+  int found = 0, rc;
+  AncWin w;
+  const AncEnt* e;
   j->anchor = JRN_ANCHOR_EMPTY;
   j->cursor = 0; j->tip = 0;
-  if (!sc->have) return;
+  if (!sc->have) return 0;
+  w.n = 0; w.head = 0; w.hit = 0; w.target = 0;
   for (hops = 0; cur && hops < JRN_WALK_MAX && !found; hops++) {
-    if (jrn_i_locate(j, cur, &r, &s) != 0) break;
-    if (r.post == hash) { j->cursor = cur; found = 1; }
-    else if (r.pre == hash) { j->cursor = r.parent; found = 1; }
-    else cur = r.parent;
+    e = anc_find(&w, cur);
+    if (!e) {
+      rc = anc_fill(j, &w, cur);
+      if (rc) return rc;
+      e = w.hit ? anc_find(&w, cur) : 0;
+      if (!e) break;                                     /* the record is gone (compacted): the walk ends */
+    }
+    if (e->post == hash) { j->cursor = cur; found = 1; }
+    else if (e->pre == hash) { j->cursor = e->parent; found = 1; }
+    else cur = e->parent;
   }
   if (!found && !sc->c_last && sc->rootpre) { j->cursor = 0; found = 1; }   /* cursor rests before every root */
   if (found) {
@@ -544,6 +651,7 @@ static void anchor_cursor(Jrn* j, const Scan* sc, uint32_t hash) {
   } else {
     j->anchor = JRN_ANCHOR_NEWROOT;
   }
+  return 0;
 }
 
 static int open_validate(const JrnCfg* c, const JrnImage* img) {
@@ -618,8 +726,8 @@ int jrn_open(Jrn* j, const JrnCfg* cfg, const JrnImage* img) {
   if (rc) return rc;
   rc = repair_tail(j);
   if (rc) return rc;
-  anchor_cursor(j, &sc, jrn_hash(j));
-  return JRN_OK;
+  rc = anchor_cursor(j, &sc, jrn_hash(j));
+  return rc;
 }
 
 /* ---- safe moments: prepare + compact --------------------------------------------------------------- */
@@ -673,6 +781,7 @@ static int seg_activate(Jrn* j, uint16_t idx) {
   seg_hdr_build(idx, j->ring, h);
   rc = seg_write(j, idx, 0, h, JRN_SEG_HDR);
   if (rc) return rc;
+  idx_set(j, idx, 0);                                   /* a fresh segment holds no record yet */
   return seg_valid(j, idx) ? 0 : JRN_E_IO;
 }
 
@@ -725,6 +834,7 @@ int jrn_compact(Jrn* j) {
               (uint32_t)(j->seg_last - j->seg_first + 1u) > seg_cap(j); g++) {
     rc = seg_retire(j, j->seg_first);
     if (rc) return rc;
+    idx_set(j, j->seg_first, 0);
     j->seg_first++;
   }
   return JRN_OK;
@@ -899,7 +1009,7 @@ int jrn_mark_discarded(Jrn* j) {
 }
 
 /* ---- flush: back to front, then verify ----------------------------------------------------------------------- */
-typedef struct Plan { uint16_t seg[JRN_PEND_MAXN], start[JRN_PEND_MAXN], len[JRN_PEND_MAXN]; uint32_t off[JRN_PEND_MAXN]; uint16_t end_seg; uint32_t end_off; } Plan;
+typedef struct Plan { uint16_t seg[JRN_PEND_MAXN], start[JRN_PEND_MAXN], len[JRN_PEND_MAXN]; uint32_t off[JRN_PEND_MAXN], seq[JRN_PEND_MAXN]; uint16_t end_seg; uint32_t end_off; } Plan;
 
 /* Assign every pending record a (segment, offset); a record never spans segments. */
 static int flush_plan(const Jrn* j, Plan* p) {
@@ -913,7 +1023,7 @@ static int flush_plan(const Jrn* j, Plan* p) {
       if (seg >= j->seg_last) return JRN_E_FULL;   /* the next segment was never pre-created */
       seg++; off = JRN_REC_BASE;
     }
-    p->seg[i] = seg; p->off[i] = off; p->start[i] = pos; p->len[i] = r.len;
+    p->seg[i] = seg; p->off[i] = off; p->start[i] = pos; p->len[i] = r.len; p->seq[i] = r.seq;
     off += r.len; pos = (uint16_t)(pos + r.len);
   }
   p->end_seg = seg; p->end_off = off;
@@ -940,6 +1050,8 @@ int jrn_flush(Jrn* j) {
     if (rc == JRN_E_VERIFY) j->stopped = 1;
     if (rc) return rc;
   }
+  for (i = 0; i < (int)j->pend_n; i++)
+    if (p.off[i] == JRN_REC_BASE) idx_set(j, p.seg[i], p.seq[i]);   /* the first record of a segment feeds the index */
   j->tail_seg = p.end_seg; j->tail_off = p.end_off;
   j->pend_len = 0; j->pend_n = 0; j->flush_wanted = 0;
   return JRN_OK;

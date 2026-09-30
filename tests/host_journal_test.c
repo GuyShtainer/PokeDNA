@@ -345,6 +345,7 @@ static void t_ring(void) {
     if (i % 25 == 0 && i) {                       /* a fresh boot must map the ring to the SAME logical set */
       Jrn q; CHECK(jrn_open(&q, &c, &IMG) == JRN_OK && q.seg_first == j.seg_first && q.seg_last == j.seg_last && q.tail_seg == j.tail_seg && q.tail_off == j.tail_off,
                    "reopen at step %u maps the ring to %u..%u tail %u@%u, live state is %u..%u tail %u@%u", i, q.seg_first, q.seg_last, q.tail_seg, (unsigned)q.tail_off, j.seg_first, j.seg_last, j.tail_seg, (unsigned)j.tail_off);
+      CHECK(memcmp(q.seg_seq, j.seg_seq, sizeof q.seg_seq) == 0, "the per-segment first-seq index a reopen builds equals the one the live journal kept (step %u)", i);
     }
   }
   CHECK(j.seg_last >= 9, "the journal wrapped the ring at least twice (seg_last %u)", j.seg_last);
@@ -563,6 +564,68 @@ static void t_staged_first_fill(void) {
   g_jopen_segs = 0;
 }
 
+/* Ruling 5: bounds derive from the ring, never a fixed 512. One UNSAVED session of N steps, then the power
+ * goes: the image on the card is the session's start, the load must anchor there and OFFER all N steps. */
+static void t_long_session(void) {
+  static const unsigned N[] = { 511, 512, 513, 600 };
+  unsigned n, g; Jrn j; static uint8_t start[NREG][RSZ]; uint32_t av = 0, tot = 0, s0;
+  for (n = 0; n < sizeof N / sizeof N[0]; n++) {
+    card_fresh(FM_FAT32); img_fill(1); rd_fattime_hook = jrn_fattime_filter; g_jopen_segs = 0;
+    CHECK(jopen(&j, K) == JRN_OK && jrn_prepare(&j) == JRN_OK, "prep");
+    CHECK(stage(&j, "saved", 0, 1, 0, 4, fresh_val(1, 0)) == JRN_OK && jrn_flush(&j) == JRN_OK, "s0");
+    s0 = j.cursor; memcpy(start, g_img, sizeof g_img);
+    for (g = 0; g < N[n]; g++) {
+      CHECK(stage(&j, "drop", 0, (uint8_t)(2 + g % 10), (uint16_t)(g % 200), 2, fresh_val((uint8_t)(2 + g % 10), (uint16_t)(g % 200))) == JRN_OK && jrn_flush(&j) == JRN_OK, "step %u", g);
+      if (j.tail_seg == j.seg_last) CHECK(jrn_prepare(&j) == JRN_OK, "prepare");
+    }
+    memcpy(g_img, start, sizeof g_img); card_remount();
+    CHECK(jopen(&j, K) == JRN_OK, "reopen");
+    CHECK(jrn_redo_info(&j, &av, &tot, 0) == 0, "redo info");
+    CHECK(j.cursor == s0 && jrn_offer(&j) == 1 && tot == N[n], "a %u-step unsaved session is offered whole (cursor %u want %u, offer %d, total %u)", N[n], (unsigned)j.cursor, (unsigned)s0, jrn_offer(&j), (unsigned)tot);
+  }
+}
+
+/* Ruling 5: the read path is cheap. A FULL default ring (17 slots) on FAT32: disk_read calls for the three
+ * operations the reviewer priced at 75,533 / 34,795 / 7,887,975 before the chunked scan + first-seq index. */
+static void t_read_cost(void) {
+  Jrn j; unsigned g; int rc = 0; unsigned long r0, c_open, c_undo, c_old; static uint8_t cur[NREG][RSZ];
+  card_fresh(FM_FAT32); img_fill(1); rd_fattime_hook = jrn_fattime_filter; g_jopen_segs = 0;
+  CHECK(jopen(&j, K) == JRN_OK && jrn_prepare(&j) == JRN_OK, "prep");
+  for (g = 0; g < 20000 && !rc; g++) {
+    rc = stage(&j, "w", 0, 1, 0, 150, fresh_val(1, 0));
+    if (!rc) rc = jrn_flush(&j);
+    if (!rc && j.tail_seg == j.seg_last) { if (j.seg_last - j.seg_first + 1u >= 17u) break; rc = jrn_prepare(&j); }
+  }
+  CHECK(rc == 0 && j.seg_last - j.seg_first + 1u == 17u, "the ring is full (%u..%u, rc %d)", j.seg_first, j.seg_last, rc);
+  card_remount();
+  r0 = rd_read_calls; CHECK(jopen(&j, K) == JRN_OK && j.anchor == JRN_ANCHOR_MATCH, "open full"); c_open = rd_read_calls - r0;
+  r0 = rd_read_calls; rc = jrn_undo(&j, &IMG, 0); c_undo = rd_read_calls - r0; CHECK(rc == JRN_OK, "undo");
+  memcpy(cur, g_img, sizeof g_img); img_fill(1); card_remount();
+  r0 = rd_read_calls; CHECK(jopen(&j, K) == JRN_OK, "open with the OLD image"); c_old = rd_read_calls - r0;
+  CHECK(j.anchor == JRN_ANCHOR_MATCH || j.anchor == JRN_ANCHOR_BRANCH || j.anchor == JRN_ANCHOR_NEWROOT, "anchored");
+  memcpy(g_img, cur, sizeof g_img);
+  printf("    read cost, FAT32, full 17-slot ring (%u steps): open %lu disk_read calls (was 75533), one undo %lu (was 34795), open with the OLD image / anchor walk %lu (was 7887975)\n", g, c_open, c_undo, c_old);
+  CHECK(c_open < 4000, "open of a full ring costs %lu disk reads (bound 4000)", c_open);
+  CHECK(c_undo < 800, "one undo costs %lu disk reads (bound 800)", c_undo);
+  CHECK(c_old < 30000, "the anchor walk on an old image costs %lu disk reads (bound 30000)", c_old);
+}
+
+/* The first-seq index after a RETIRE: the retired slot's entry must be gone, exactly as a reopen would build it. */
+static void t_index_after_retire(void) {
+  Jrn j, q; JrnCfg c = cfg_for(K, 2, 0); unsigned g; JrnRec r;
+  card_fresh(FM_FAT); img_fill(1); rd_fattime_hook = jrn_fattime_filter;
+  CHECK(jrn_open(&j, &c, &IMG) == JRN_OK && jrn_prepare(&j) == JRN_OK && j.ring == 3, "open + prepare");
+  for (g = 0; g < 400 && j.tail_seg < 2; g++) CHECK(stage(&j, "f", 0, 1, 0, 220, fresh_val(1, 0)) == JRN_OK && jrn_flush(&j) == JRN_OK, "fill");
+  CHECK(j.tail_seg == 2 && j.seg_seq[0] == 1 && j.seg_seq[1] > 1, "segment 1 starts at seq 1, segment 2 after it (%u, %u)", (unsigned)j.seg_seq[0], (unsigned)j.seg_seq[1]);
+  CHECK(jrn_find(&j, j.seg_seq[1], &r) == JRN_OK && r.seq == j.seg_seq[1], "the index finds the first record of segment 2");
+  CHECK(jrn_find(&j, j.seg_seq[1] - 1u, &r) == JRN_OK, "and the last record of segment 1");
+  CHECK(jrn_prepare(&j) == JRN_OK && j.seg_last == 3, "third segment");
+  CHECK(jrn_compact(&j) == JRN_OK && j.seg_first == 2, "retire segment 1");
+  CHECK(jrn_open(&q, &c, &IMG) == JRN_OK && q.seg_first == 2, "reopen");
+  CHECK(memcmp(q.seg_seq, j.seg_seq, sizeof q.seg_seq) == 0, "the first-seq index a reopen builds equals the one the live journal kept after a retire");
+  CHECK(jrn_find(&j, 1, &r) == JRN_E_FLOOR, "a record of the retired segment is a floor, not a stale hit");
+}
+
 /* A header the way a NEWER (or foreign) build would have left it: valid magic + crc, unknown shape. */
 static void plant_hdr(uint64_t key, unsigned slot, uint32_t idx, uint16_t ring, uint16_t ver) {
   uint8_t h[JRN_SEG_HDR]; uint32_t c;
@@ -653,6 +716,9 @@ int main(void) {
   t_version_foreign();
   t_header_sector_alone();
   t_staged_first_fill();
+  t_long_session();
+  t_read_cost();
+  t_index_after_retire();
   if (fails) { printf("host_journal_test: %d FAILED of %lu checks\n", fails, checks); return 1; }
   printf("host_journal_test: all %lu checks passed (real lib/fatfs over a RAM disk)\n", checks);
   return 0;

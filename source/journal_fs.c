@@ -144,6 +144,38 @@ static int jfs_list(void* ctx, const char* dir, JrnListFn cb, void* arg) {
   return f_closedir(&d) == FR_OK ? 0 : -1;
 }
 
+/* One handle, chunked read (see JrnFs.scan): one aligned sector per f_read (one disk read per sector), the
+ * bytes the callback did not consume carried in front of the next sector. blk is 1 KiB on the stack of this
+ * call (never ROM: the flashcart unmaps ROM during a transfer). */
+static int jfs_scan(void* ctx, const char* path, uint32_t start, uint32_t limit, JrnScanFn cb, void* arg) {
+  FIL f;
+  UINT br;
+  uint8_t blk[2u * ZBLK];
+  uint32_t base = start, have = 0, pos = start, n, used, guard;
+  int ok = 1, go = 1, last = 0;
+  (void)ctx;
+  if (!cb || start > limit || start % ZBLK) return -1;
+  if (f_open(&f, path, FA_READ | FA_OPEN_EXISTING) != FR_OK) return -1;
+  ok = (uint32_t)f_size(&f) >= limit && f_lseek(&f, start) == FR_OK && (uint32_t)f.fptr == start;
+  for (guard = 0; ok && go && !last && guard < 0x10000u; guard++) {
+    if (pos >= limit) break;
+    n = limit - pos < ZBLK ? limit - pos : ZBLK;
+    br = 0;
+    ok = f_read(&f, blk + have, n, &br) == FR_OK && br == n;
+    if (!ok) break;
+    pos += n;
+    last = pos >= limit;
+    used = 0;
+    go = cb(arg, base, blk, have + n, last, &used);
+    if (!go) break;                                                                 /* cb stopped the scan */
+    if (used > have + n || (!last && have + n - used >= ZBLK)) { ok = 0; break; }   /* a callback that stalls is a bug */
+    memmove(blk, blk + used, have + n - used);
+    have = have + n - used;
+    base += used;
+  }
+  return (f_close(&f) == FR_OK && ok) ? 0 : -1;
+}
+
 static uint32_t jfs_stamp(void* ctx, const char* path) {
   FILINFO fi;
   (void)ctx;
@@ -153,5 +185,5 @@ static uint32_t jfs_stamp(void* ctx, const char* path) {
 
 const JrnFs jrn_fatfs = {
   0, jfs_mkdir, jfs_size, jfs_read, jfs_write, jfs_alloc, jfs_zero, jfs_create_zero,
-  jfs_unlink, jfs_list, jfs_stamp
+  jfs_unlink, jfs_list, jfs_scan, jfs_stamp
 };
