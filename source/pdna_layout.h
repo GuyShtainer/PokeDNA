@@ -54,6 +54,7 @@
   X(NV_MAP,        "Map")                       \
   X(NV_GB,         "GB import")   /* import from a Game Boy (Gen 1/2) save on the card */ \
   X(NV_XFER,       "Transfers")   /* BACKLOG #150 S150-11: the transfer-ledger reconcile */ \
+  X(NV_HISTORY,    "History")     /* #234 s3: the undo journal's tree (SEL+L / SEL+R undo, A jumps) */ \
   X(NV_SETTINGS,   "Settings")                  \
   X(NV_BACK,       "Back")
 
