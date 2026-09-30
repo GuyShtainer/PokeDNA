@@ -1902,6 +1902,9 @@ static void grow_in(u16 col) {
  * pc_moved = a PC box edit is pending (slice-0 compat for the arena refusal + SAVE FIRST).
  * EWRAM_BSS: three bytes, not IWRAM scalars (IWRAM holds the stack). */
 static ImgFlags EWRAM_BSS g_img;
+/* #234 s2: the funnel's recorder (journal handle, deferred-scope state, crossed epoch) -- see img_stage.h.
+ * ~100 B of EWRAM, zero-initialised = journal off, no scope. */
+static ImgRec EWRAM_BSS g_rec;
 
 /* THE staging funnel (design D2): every byte that reaches g_save's 14-section image goes through
  * here -- commit_block/all/sb12, stage_sb1, dex registration, the box-drop eager stage and the
@@ -1909,8 +1912,15 @@ static ImgFlags EWRAM_BSS g_img;
  * ID. Marks the image dirty. Battle-record import (sector 31, outside the 14 sections) is NOT
  * routed here by design; it keeps its own commit. */
 static void app_stage_sections(int sect_lo, int sect_hi, const uint8_t* block) {
-  (void)img_stage_sections(&g_img, g_save, g_vinfo.slot, sect_lo, sect_hi, block);   /* pure C; journal seam lives there */
+  (void)img_stage_sections(&g_img, &g_rec, g_save, g_vinfo.slot, sect_lo, sect_hi, block);   /* pure C; journal seam lives there */
 }
+
+/* One user action = one step: everything staged between step_begin and the OUTERMOST step_end is
+ * diffed and written ONCE (img_stage.h). Inside a scope the funnel defers, so g_save is only current
+ * again after step_end -- keep scopes tight (one handler) and always close them on every path. The
+ * name is what the history will show (ASCII, <= 24 chars, a string literal). */
+void app_step_begin(const char* name) { img_scope_open(&g_rec, name); }
+void app_step_end(void) { (void)img_scope_close(&g_img, &g_rec, g_save, g_vinfo.slot); }
 
 /* Backup policy for the verified write: 0 = new .bak/.bak1… each time (default),
  * 1 = single rolling .bak (overwrite), 2 = skip backup. Session-only (resets each
@@ -1959,7 +1969,9 @@ static bool app_save_finalize(void) {
    * NEVER on "the image is dirty" -- with the arena lending g_pc out its bytes are foreign, and a
    * map-warp commit would otherwise write tileset bytes into every box. (The flags are cleared
    * only on success, below — a failed write leaves them set so flush_on_exit still prompts.) */
-  (void)img_fold_pc(&g_img, g_save, g_vinfo.slot, g_pc);
+  if (img_scope_flush(&g_img, &g_rec, g_save, g_vinfo.slot))     /* a commit ran inside an open scope: apply it first */
+    log_line("finalize: applied the sections deferred by an open step scope");
+  (void)img_fold_pc(&g_img, &g_rec, g_save, g_vinfo.slot, g_pc);
   int fail = -1;
   if (!gen3_verify_full_checksums(g_save, g_vinfo.slot, &fail)) {
     /* SAY WHICH SECTION. "Image failed checksums" is unactionable: sections 0..4 are the
@@ -2123,7 +2135,7 @@ bool app_commit_sb12(void) {
  * "g_pc is the truth, fold it later" behaviour. */
 void app_mark_pc_dirty(void) {
   bool can_stage = g_vinfo.valid && !app_arena_held();
-  img_pc_edited(&g_img, g_save, g_vinfo.slot, g_pc, can_stage);
+  img_pc_edited(&g_img, &g_rec, g_save, g_vinfo.slot, g_pc, can_stage);
 }
 
 /* ---- borrowed EWRAM arena (see pdna_app.h for why g_pc is the donor) -------- */

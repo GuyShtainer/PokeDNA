@@ -60,7 +60,8 @@ def build_and_run(core_dir: Path, tag: str) -> tuple[int, str]:
     exe = Path(tempfile.gettempdir()) / f"himgstage_{tag}_{os.getpid()}"
     cmd = ["cc", "-std=c11", "-Wall", "-Wextra", "-I", str(core_dir), "-I", str(ROOT / "source"),
            str(ROOT / "tests" / "host_imgstage_test.c"), str(core_dir / "img_stage.c"),
-           str(ROOT / "source" / "gen3_save.c"), "-o", str(exe)]
+           str(ROOT / "source" / "gen3_save.c"), str(ROOT / "source" / "journal.c"),
+           str(ROOT / "source" / "journal_undo.c"), "-o", str(exe)]
     b = subprocess.run(cmd, capture_output=True, text=True)
     if b.returncode != 0:
         return 99, b.stderr[-300:]
@@ -132,7 +133,7 @@ def wiring_pins() -> None:
     check("W1-W5 wiring holds on the real pdna_main.c", not wiring(MAIN), str(wiring(MAIN)))
     muts = {
         "flush_on_exit gate back to a PC-only reader": ("imgf_exit_prompt(&g_img)) {", "imgf_arena_ok(&g_img)) {"),
-        "drop no longer stages": ("img_pc_edited(&g_img, g_save, g_vinfo.slot, g_pc, can_stage);",
+        "drop no longer stages": ("img_pc_edited(&g_img, &g_rec, g_save, g_vinfo.slot, g_pc, can_stage);",
                                   "imgf_pc_edited(&g_img, false);"),
         "commit_sb12 writes a section itself": ("bool app_commit_sb12(void) {\n  app_stage_sections(0, 0, g_sb2);",
                                   "bool app_commit_sb12(void) {\n  gen3_write_full_section(g_save, g_vinfo.slot, 0, g_sb2);"),
@@ -160,7 +161,8 @@ def guard_pins() -> None:
                         ("gen3_write_full_section", "gen3_write_full_section(g_save, 0, 1, d);"),
                         ("|=", "g_save[3] |= 4;"),
                         ("sf_read_full", "sf_read_full(p, g_save, 9, &n);"),
-                        ("img_stage_sections", "img_stage_sections(&g_img, g_save, 0, 1, 1, d);")):
+                        ("img_stage_sections", "img_stage_sections(&g_img, &g_rec, g_save, 0, 1, 1, d);"),
+                        ("img_scope_close", "img_scope_close(&g_img, &g_rec, g_save, 0);")):
         check(f"guard: a planted {label} write goes RED", len(guard.scan(f"void x(void) {{\n  {line}\n}}\n")) == 1)
     check("guard: an annotated exemption passes",
           not guard.scan("void x(void) {\n  /* g_save-write-ok: loader */\n  memcpy(g_save, a, 4);\n}\n"))
