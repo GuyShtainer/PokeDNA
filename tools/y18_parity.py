@@ -377,7 +377,7 @@ def gb_dex(p: Pair, which: str) -> None:
     p.tap("START", settle=BIG)
     p.press_n("DOWN", 6)
     p.tap("A", settle=BIG)
-    if which == "crystal":
+    if which in ("gold", "crystal"):   # Gen-2 dex opens a chooser (Pokedex / Unown forms) first
         p.tap("A", settle=BIG)
     p.run(600)
     p.shot(f"gb_{which}_10_dex", f"{which}: dex first view")
