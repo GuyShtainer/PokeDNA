@@ -17,8 +17,11 @@
  * after-state and never touches a neighbouring file:
  *   - Segments are PRE-ZEROED fixed-size files. Appends overwrite in place and never
  *     grow the FAT chain; the file is never truncated (torn tails are zeroed in place).
- *   - A segment is built as NNNN.tmp then RENAMED to NNNN.pdj, so a visible .pdj is
- *     always complete. A cut mid-fill leaves a .tmp the next safe moment deletes.
+ *   - A segment is created IN PLACE under its final name NNNN.pdj: zero-filled, header
+ *     written LAST. It is a segment only when it is exactly JRN_SEG_SIZE long and its header
+ *     crc holds; a cut mid-fill leaves an invalid file the next safe moment completes. No
+ *     rename and no delete on the growth path (an exFAT create that reuses a dead directory
+ *     slot can tear the whole directory: see the slice-1 report).
  *   - An append flush writes its records BACK TO FRONT: a record becomes visible only
  *     when everything before it is valid (seq continuity + CRC), so the whole batch
  *     commits when its FIRST record's last sector lands -- one atomic point.
@@ -89,10 +92,10 @@ typedef struct JrnFs {
   int      (*read)(void* ctx, const char* path, uint32_t off, void* buf, uint32_t n);
   /* IN PLACE, never grows the file, synced before returning. 0 ok. */
   int      (*write)(void* ctx, const char* path, uint32_t off, const void* buf, uint32_t n);
-  /* NEW file only (fails when it exists): head[0..headn), zeros to `size`, synced. */
+  /* Create-OR-COMPLETE: open (creating if absent), zero-fill from the file's current end to
+   * `size`, then write head[0..headn) at offset 0 LAST, sync. A file longer than `size` fails. */
   int      (*create_zero)(void* ctx, const char* path, uint32_t size,
                           const void* head, uint32_t headn);
-  int      (*rename)(void* ctx, const char* from, const char* to);
   int      (*unlink)(void* ctx, const char* path);                   /* absent = 0       */
   int      (*list)(void* ctx, const char* dir, JrnListFn cb, void* arg);
   uint32_t (*stamp)(void* ctx, const char* path);                    /* file's FAT stamp */
@@ -161,7 +164,7 @@ uint32_t jrn_fattime_filter(uint32_t live);
 int      jrn_stamp_held(void);
 
 /* ---- keys and redirects ---------------------------------------------------------------- */
-/* Write <root>/<newkey>.pdr -> `target` (atomic: .tmp then rename). Flattens: `target` is
+/* Write <root>/<newkey>.pdr -> `target` (created in place, valid only at exactly 16 B + crc). Flattens: `target` is
  * first resolved through existing redirects. 0 ok; JRN_E_EXISTS if newkey already redirects
  * elsewhere; JRN_OK (no-op) when it already points at the target or when newkey == target. */
 int jrn_redirect_write(const JrnFs* fs, const char* root, uint64_t newkey, uint64_t target);
@@ -174,7 +177,9 @@ int jrn_key_resolve(const JrnFs* fs, const char* root, uint64_t key, uint64_t* o
  * by post_hash. Never creates a segment (see jrn_prepare). */
 int  jrn_open(Jrn* j, const JrnCfg* cfg, const JrnImage* img);
 /* Safe moment (load / after a verified exit save): make the dir, the tail segment and the
- * NEXT segment exist; delete stale .tmp files. */
+ * NEXT segment exist. jrn_prepare_first makes only the dir and the first segment (a fresh key);
+ * jrn_prepare = prepare_first + the spare. Each segment creation is one atomic step. */
+int  jrn_prepare_first(Jrn* j);
 int  jrn_prepare(Jrn* j);
 /* Safe moment: delete the oldest segments while more than max_segs exist (never the tail). */
 int  jrn_compact(Jrn* j);

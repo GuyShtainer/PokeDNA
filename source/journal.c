@@ -10,8 +10,8 @@
 
 #define SEG_VER        1u
 #define ZCHUNK         256u    /* zero-in-place granularity                               */
-#define ZWINDOW        1024u   /* always look at least this far past the tail for junk    */
-#define RCHUNK         64u     /* streaming chunk for CRC / verify (stack)                */
+#define ZWINDOW        1024u   /* the most a cut can leave past the tail; the most we zero */
+#define RCHUNK         128u    /* streaming chunk for CRC / verify (stack)                */
 #define SEG_MAX        9999u
 #define SCAN_MAX       0x40000u
 #define RESOLVE_MAX    8u
@@ -195,21 +195,32 @@ static int rec_hdr_at(const Jrn* j, uint16_t seg, uint32_t off, JrnRec* r) {
   return off + r->len > JRN_SEG_SIZE ? 2 : 0;
 }
 
-/* Header + CRC: a torn tail or flipped bit is 2, never a record. */
+/* Header + CRC: a torn tail or flipped bit is 2, never a record. One read covers the header
+ * and (for a marker or a small step) the whole record; longer ones stream in RCHUNK pieces. */
 static int rec_at(const Jrn* j, uint16_t seg, uint32_t off, JrnRec* r) {
   uint8_t chunk[RCHUNK], tail[4];
-  uint32_t crc = 0, c, m, body;
-  int rc = rec_hdr_at(j, seg, off, r);
+  uint32_t crc = 0, body, c, m, n0 = JRN_SEG_SIZE - off < RCHUNK ? JRN_SEG_SIZE - off : RCHUNK;
+  uint32_t i;
+  int rc;
+  if (off + JRN_REC_MIN > JRN_SEG_SIZE) return 1;
+  rc = seg_read(j, seg, off, chunk, n0);
   if (rc) return rc;
+  rc = jrn_i_hdr_parse(chunk, r);
+  if (rc) return rc;
+  if (off + r->len > JRN_SEG_SIZE) return 2;
   body = (uint32_t)r->len - 4u;
-  for (c = 0; c < body; c += m) {
-    m = body - c < RCHUNK ? body - c : RCHUNK;
-    rc = seg_read(j, seg, off + c, chunk, m);
-    if (rc) return rc;
-    crc = jrn_crc32_update(crc, chunk, m);
+  for (c = 0; c < r->len; c += m) {
+    if (c) {
+      m = r->len - c < RCHUNK ? r->len - c : RCHUNK;
+      rc = seg_read(j, seg, off + c, chunk, m);
+      if (rc) return rc;
+    } else {
+      m = n0 < r->len ? n0 : r->len;
+    }
+    for (i = 0; i < m; i++)                      /* the last 4 bytes of the record are the stored crc */
+      if (c + i >= body) tail[c + i - body] = chunk[i];
+    crc = jrn_crc32_update(crc, chunk, c + m <= body ? m : (c < body ? body - c : 0));
   }
-  rc = seg_read(j, seg, off + body, tail, 4);
-  if (rc) return rc;
   return jrn_rd32(tail) == crc ? 0 : 2;
 }
 
@@ -320,24 +331,25 @@ static int mkdir_prefixes(const JrnFs* fs, const char* root) {
 }
 
 int jrn_redirect_write(const JrnFs* fs, const char* root, uint64_t newkey, uint64_t target) {
-  char pdr[JRN_PATH_MAX], tmp[JRN_PATH_MAX];
+  char pdr[JRN_PATH_MAX];
   uint8_t b[PDR_LEN];
   uint64_t t = 0, have = 0;
   int i, rc;
-  if (!fs || !fs->size || !fs->create_zero || !fs->rename || !fs->unlink || !root) return JRN_E_ARG;
+  if (!fs || !fs->size || !fs->create_zero || !fs->unlink || !root) return JRN_E_ARG;
   rc = jrn_key_resolve(fs, root, target, &t);
   if (rc) return rc;
   if (t == newkey) return JRN_OK;                         /* renamed back: nothing to record */
   if (pdr_read(fs, root, newkey, &have) == 0) return have == t ? JRN_OK : JRN_E_EXISTS;
   if (mkdir_prefixes(fs, root)) return JRN_E_IO;
-  if (p_key(root, newkey, ".pdr", pdr) || p_key(root, newkey, ".ptm", tmp)) return JRN_E_ARG;
-  if (fs->size(fs->ctx, pdr) >= 0 && fs->unlink(fs->ctx, pdr) != 0) return JRN_E_IO;  /* corrupt one */
-  if (fs->size(fs->ctx, tmp) >= 0 && fs->unlink(fs->ctx, tmp) != 0) return JRN_E_IO;  /* stale tmp */
+  if (p_key(root, newkey, ".pdr", pdr)) return JRN_E_ARG;
+  if (fs->size(fs->ctx, pdr) >= 0 && fs->unlink(fs->ctx, pdr) != 0) return JRN_E_IO;  /* an invalid leftover */
   b[0] = 'P'; b[1] = 'D'; b[2] = 'R'; b[3] = 'D';
   for (i = 0; i < 8; i++) b[4 + i] = (uint8_t)(t >> (8 * i));
   jrn_wr32(b + 12, jrn_crc32_update(0, b, 12));
-  if (fs->create_zero(fs->ctx, tmp, PDR_LEN, b, PDR_LEN) != 0) return JRN_E_IO;
-  return fs->rename(fs->ctx, tmp, pdr) == 0 ? JRN_OK : JRN_E_IO;
+  /* Written under its FINAL name (no rename: nothing is ever deleted on this path). Valid only
+   * when the file is exactly 16 bytes AND the crc holds; a cut leaves an invalid file that
+   * pdr_read ignores, so key resolution reads exactly its before- or after-state. */
+  return fs->create_zero(fs->ctx, pdr, PDR_LEN, b, PDR_LEN) == 0 ? JRN_OK : JRN_E_IO;
 }
 
 /* ---- image CRCs ------------------------------------------------------------------------------------ */
@@ -366,7 +378,7 @@ int jrn_recompute(Jrn* j, const JrnImage* img) {
 }
 
 /* ---- open: directory scan, prefix validation, repair, anchor ------------------------------------- */
-typedef struct DirScan { uint16_t lo; uint16_t stale[4]; uint8_t nstale; } DirScan;
+typedef struct DirScan { uint16_t lo; } DirScan;
 
 static int name_idx(const char* s, const char* ext, uint16_t* idx) {
   uint32_t v = 0;
@@ -386,8 +398,7 @@ static int name_idx(const char* s, const char* ext, uint16_t* idx) {
 static void dir_cb(void* arg, const char* name) {
   DirScan* d = (DirScan*)arg;
   uint16_t idx;
-  if (name_idx(name, "pdj", &idx)) { if (!d->lo || idx < d->lo) d->lo = idx; }
-  else if (name_idx(name, "tmp", &idx) && d->nstale < 4) d->stale[d->nstale++] = idx;
+  if (name_idx(name, "pdj", &idx) && (!d->lo || idx < d->lo)) d->lo = idx;
 }
 
 typedef struct Scan { uint32_t expect, c_last, tip_aux, latest; uint8_t have, rootpre; } Scan;
@@ -430,21 +441,22 @@ static int scan_prefix(Jrn* j, uint32_t hash, Scan* sc) {
   return 0;
 }
 
-/* Zero every non-zero chunk from `from` on, IN PLACE (never a truncate: the segment's size
- * and FAT chain are fixed). Looks at least ZWINDOW past `from`, then stops at the first
- * all-zero chunk -- a torn record or an orphaned batch is contiguous junk. */
+/* Zero every non-zero chunk in [from, from + ZWINDOW), IN PLACE (never a truncate: the segment's
+ * size and FAT chain are fixed). The window is the WHOLE damage a cut can do: a torn record is
+ * <= JRN_REC_MAX and an orphaned back-to-front batch is <= JRN_PEND_CAP, both starting at the
+ * tail. Nothing past the window is touched -- a corrupt record in the MIDDLE of a journal must
+ * cost the history behind it (the valid prefix ends there), never zero valid bytes far away. */
 static int zero_from(const Jrn* j, uint16_t seg, uint32_t from) {
   uint8_t buf[ZCHUNK], z[ZCHUNK];
   uint32_t off, n, i;
   int rc, dirty;
   memset(z, 0, sizeof z);
-  for (off = from; off < JRN_SEG_SIZE; off += n) {
+  for (off = from; off < JRN_SEG_SIZE && off < from + ZWINDOW; off += n) {
     n = JRN_SEG_SIZE - off < ZCHUNK ? JRN_SEG_SIZE - off : ZCHUNK;
     rc = seg_read(j, seg, off, buf, n);
     if (rc) return rc;
     for (dirty = 0, i = 0; i < n; i++) if (buf[i]) { dirty = 1; break; }
     if (dirty) { rc = seg_write(j, seg, off, z, n); if (rc) return rc; }
-    else if (off - from >= ZWINDOW) break;
   }
   return 0;
 }
@@ -496,7 +508,7 @@ static int open_validate(const JrnCfg* c, const JrnImage* img) {
   const JrnFs* f;
   if (!c || !img || !img->get || !c->fs || !c->root) return JRN_E_ARG;
   f = c->fs;
-  if (!f->mkdir || !f->size || !f->read || !f->write || !f->create_zero || !f->rename ||
+  if (!f->mkdir || !f->size || !f->read || !f->write || !f->create_zero ||
       !f->unlink || !f->list || !f->stamp) return JRN_E_ARG;
   if (!c->nreg || c->nreg > JRN_NREG_MAX || !c->reg_size) return JRN_E_ARG;
   return 0;
@@ -534,41 +546,45 @@ int jrn_open(Jrn* j, const JrnCfg* cfg, const JrnImage* img) {
 }
 
 /* ---- safe moments: prepare + compact ---------------------------------------------------------------- */
+/* Created IN PLACE under its final name: zero-filled, the header written LAST. A file is a
+ * valid segment only when it is exactly JRN_SEG_SIZE long AND its header crc holds, so a cut
+ * mid-fill leaves an INVALID file the readers ignore (the before-state) and this call completes
+ * or replaces on the next safe moment. No rename on this path: every rename or delete leaves a
+ * dead directory entry that the next create reuses, and on exFAT a torn sector in a reused
+ * slot hides every entry set behind it (tests/host_journal_cut_test.c, "reuse" scenarios). */
 static int seg_create(const Jrn* j, uint16_t idx) {
-  char tmp[JRN_PATH_MAX], fin[JRN_PATH_MAX];
+  char fin[JRN_PATH_MAX];
   uint8_t h[JRN_SEG_HDR];
   const JrnFs* f = j->fs;
-  if (p_seg(j->root, j->key, idx, ".tmp", tmp) || p_seg(j->root, j->key, idx, ".pdj", fin)) return JRN_E_ARG;
-  if (f->size(f->ctx, tmp) >= 0 && f->unlink(f->ctx, tmp) != 0) return JRN_E_IO;
-  if (f->size(f->ctx, fin) >= 0 && f->unlink(f->ctx, fin) != 0) return JRN_E_IO;   /* an invalid leftover */
+  long sz;
+  if (p_seg(j->root, j->key, idx, ".pdj", fin)) return JRN_E_ARG;
+  sz = f->size(f->ctx, fin);
+  if (sz >= (long)JRN_SEG_SIZE && f->unlink(f->ctx, fin) != 0) return JRN_E_IO;   /* junk: start over */
   seg_hdr_build(idx, h);
-  if (f->create_zero(f->ctx, tmp, JRN_SEG_SIZE, h, JRN_SEG_HDR) != 0) return JRN_E_IO;
-  return f->rename(f->ctx, tmp, fin) == 0 ? 0 : JRN_E_IO;
+  if (f->create_zero(f->ctx, fin, JRN_SEG_SIZE, h, JRN_SEG_HDR) != 0) return JRN_E_IO;
+  return seg_valid(j, idx) ? 0 : JRN_E_IO;
 }
 
-int jrn_prepare(Jrn* j) {
-  char dir[JRN_PATH_MAX], p[JRN_PATH_MAX];
-  DirScan d;
-  uint8_t i;
+int jrn_prepare_first(Jrn* j) {
+  char dir[JRN_PATH_MAX];
   int rc;
   if (!j) return JRN_E_ARG;
   if (j->readonly) return JRN_E_RDONLY;
-  memset(&d, 0, sizeof d);
   rc = mkdir_prefixes(j->fs, j->root);
   if (rc) return rc;
   if (p_key(j->root, j->key, "", dir)) return JRN_E_ARG;
   if (j->fs->mkdir(j->fs->ctx, dir) != 0) return JRN_E_IO;
-  if (j->fs->list(j->fs->ctx, dir, dir_cb, &d) != 0) return JRN_E_IO;
-  for (i = 0; i < d.nstale; i++) {            /* a cut mid-fill left these; they are invisible */
-    if (p_seg(j->root, j->key, d.stale[i], ".tmp", p)) return JRN_E_ARG;
-    if (j->fs->unlink(j->fs->ctx, p) != 0) return JRN_E_IO;
-  }
-  if (!j->seg_last) {                          /* a fresh key: the first segment */
-    rc = seg_create(j, 1);
-    if (rc) return rc;
-    j->seg_first = j->seg_last = j->tail_seg = 1;
-    j->tail_off = JRN_SEG_HDR;
-  }
+  if (j->seg_last) return JRN_OK;
+  rc = seg_create(j, 1);                       /* a fresh key: the first segment */
+  if (rc) return rc;
+  j->seg_first = j->seg_last = j->tail_seg = 1;
+  j->tail_off = JRN_SEG_HDR;
+  return JRN_OK;
+}
+
+int jrn_prepare(Jrn* j) {
+  int rc = jrn_prepare_first(j);
+  if (rc) return rc;
   if (j->seg_last != j->tail_seg || j->seg_last >= SEG_MAX) return JRN_OK;   /* a spare already exists */
   rc = seg_create(j, (uint16_t)(j->seg_last + 1u));   /* the NEXT segment, never mid-session */
   if (rc) return rc;

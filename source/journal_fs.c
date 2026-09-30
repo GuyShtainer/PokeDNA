@@ -46,30 +46,33 @@ static int jfs_write(void* ctx, const char* path, uint32_t off, const void* buf,
   return (f_close(&f) == FR_OK && ok) ? 0 : -1;
 }
 
+/* Create-or-complete (see JrnFs.create_zero): a leftover from a cut is finished, not recreated,
+ * so the growth path never deletes or renames. The header goes in LAST: until it does (and the
+ * final sync sets the size) the file is not a valid segment/redirect. */
 static int jfs_create_zero(void* ctx, const char* path, uint32_t size, const void* head, uint32_t headn) {
   FIL f;
   UINT bw;
   uint8_t blk[ZBLK];
-  uint32_t done = 0, n;
+  uint32_t done, n;
   int ok = 1;
   (void)ctx;
   if (headn > size || headn > ZBLK) return -1;
-  if (f_open(&f, path, FA_WRITE | FA_CREATE_NEW) != FR_OK) return -1;
+  if (f_open(&f, path, FA_WRITE | FA_OPEN_ALWAYS) != FR_OK) return -1;
+  done = (uint32_t)f_size(&f);
+  if (done > size || f_lseek(&f, done) != FR_OK) { f_close(&f); return -1; }
+  memset(blk, 0, sizeof blk);
   while (ok && done < size) {
     n = size - done < ZBLK ? size - done : ZBLK;
-    memset(blk, 0, sizeof blk);
-    if (done == 0 && headn) memcpy(blk, head, headn);
     bw = 0;
     ok = f_write(&f, blk, n, &bw) == FR_OK && bw == n;
     done += n;
   }
+  if (ok && headn) {
+    bw = 0;
+    ok = f_lseek(&f, 0) == FR_OK && f_write(&f, head, headn, &bw) == FR_OK && bw == headn;
+  }
   ok = ok && f_sync(&f) == FR_OK;
   return (f_close(&f) == FR_OK && ok) ? 0 : -1;
-}
-
-static int jfs_rename(void* ctx, const char* from, const char* to) {
-  (void)ctx;
-  return f_rename(from, to) == FR_OK ? 0 : -1;
 }
 
 static int jfs_unlink(void* ctx, const char* path) {
@@ -100,6 +103,6 @@ static uint32_t jfs_stamp(void* ctx, const char* path) {
 }
 
 const JrnFs jrn_fatfs = {
-  0, jfs_mkdir, jfs_size, jfs_read, jfs_write, jfs_create_zero, jfs_rename,
+  0, jfs_mkdir, jfs_size, jfs_read, jfs_write, jfs_create_zero,
   jfs_unlink, jfs_list, jfs_stamp
 };

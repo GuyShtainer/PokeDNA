@@ -148,7 +148,6 @@ static void t_pending_pop_and_overflow(void) {
     int rc = stage(&w.j, "b", 0, 3, 0, 200, 0x22);
     CHECK(rc == JRN_E_FULL, "second big step must be refused LOUDLY, got %d", rc);
     CHECK(w.j.pend_len == pl && w.j.bld_len == 0, "a refused step leaves the buffer untouched");
-    CHECK(rc != JRN_OK || 1, "n/a");
   }
   for (i = 0; i < (int)sizeof w.guard; i++) if (w.guard[i] != 0xC5) { CHECK(0, "guard byte %d overwritten: the pending buffer overran", i); break; }
   CHECK(jrn_flush(&w.j) == JRN_OK, "flush");
@@ -263,11 +262,17 @@ static void t_segments_and_full(void) {
   CHECK(jrn_flush(&j) == JRN_E_FULL && rd_writes == wr, "a refused flush writes NOTHING");
   CHECK(jrn_prepare(&j) == JRN_OK && j.seg_last == 3, "a safe moment creates the next segment");
   CHECK(jrn_flush(&j) == JRN_OK && j.tail_seg == 3, "and the pending record lands in it");
-  /* stale tmp files are removed at the next safe moment */
-  snprintf(p, sizeof p, ROOT "/%s/0009.tmp", hex);
-  CHECK(jrn_fatfs.create_zero(0, p, 512, "x", 1) == 0, "plant a stale tmp");
-  CHECK(jrn_prepare(&j) == JRN_OK, "prepare");
-  CHECK(jrn_fatfs.size(0, p) < 0, "a stale .tmp (a cut mid-fill) is deleted at the next safe moment");
+  /* a cut mid-creation leaves an INCOMPLETE segment file: prepare completes it in place */
+  snprintf(p, sizeof p, ROOT "/%s/0004.pdj", hex);
+  {
+    FIL f; UINT bw; uint8_t z[1000]; memset(z, 0, sizeof z);
+    CHECK(f_open(&f, p, FA_WRITE | FA_CREATE_NEW) == FR_OK && f_write(&f, z, sizeof z, &bw) == FR_OK && f_close(&f) == FR_OK, "plant a 1000-byte partial segment");
+  }
+  CHECK(jrn_fatfs.size(0, p) == 1000, "planted");
+  CHECK(jopen(&j, K) == JRN_OK && j.seg_last == 3, "an incomplete file is not a segment (seg_last %u)", j.seg_last);
+  CHECK(jrn_prepare(&j) == JRN_OK && j.seg_last == 4, "prepare finishes it");
+  CHECK(jrn_fatfs.size(0, p) == (long)JRN_SEG_SIZE, "the partial file was completed in place, size %ld", jrn_fatfs.size(0, p));
+  CHECK(jopen(&j, K) == JRN_OK && j.seg_last == 4, "and it now reads as segment 4");
 }
 
 static void t_compaction_floor(void) {
