@@ -876,6 +876,7 @@ int jrn_step_begin(Jrn* j, const char* name, int crossed) {
   if (!j || !name) return JRN_E_ARG;
   if (j->readonly) return JRN_E_RDONLY;
   if (j->stopped) return JRN_E_STOPPED;
+  if (!j->tail_seg) return JRN_E_NOSEG;             /* no segment to record into: refuse at the door, never buffer for a flush that cannot happen */
   if (j->bld_len) return JRN_E_STATE;
   if (j->pend_n >= JRN_PEND_MAXN || pend_room(j) < JRN_REC_MIN) { j->flush_wanted = 1; return JRN_E_FULL; }
   b = j->pend + j->pend_len;

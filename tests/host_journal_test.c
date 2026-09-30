@@ -693,6 +693,17 @@ static void t_partial_flush_stops(void) {
   CHECK(jopen(&j, K) == JRN_OK && j.next_seq == 2 && jrn_cursor(&j) == 1, "the new step is seq 1 and nothing was resurrected behind it (next_seq %u, cursor %u)", (unsigned)j.next_seq, (unsigned)jrn_cursor(&j));
 }
 
+/* Sticky refusal (bounce fix 8): with no tail segment recording is refused at the door, every time. */
+static void t_no_segment_refusal(void) {
+  Jrn j; unsigned g;
+  card_fresh(FM_FAT); img_fill(1); rd_fattime_hook = jrn_fattime_filter;
+  CHECK(jopen(&j, K) == JRN_OK && !j.tail_seg, "a journal that was never prepared has no tail segment");
+  for (g = 0; g < 12; g++) CHECK(jrn_step_begin(&j, "x", 0) == JRN_E_NOSEG, "begin %u without a segment says NOSEG (never a buffered step that cannot flush)", g);
+  CHECK(jrn_pending(&j) == 0 && j.bld_len == 0, "nothing was buffered");
+  CHECK(jrn_prepare(&j) == JRN_OK && jrn_step_begin(&j, "x", 0) == JRN_OK, "after prepare recording works");
+  jrn_step_abort(&j);
+}
+
 /* A header the way a NEWER (or foreign) build would have left it: valid magic + crc, unknown shape. */
 static void plant_hdr(uint64_t key, unsigned slot, uint32_t idx, uint16_t ring, uint16_t ver) {
   uint8_t h[JRN_SEG_HDR]; uint32_t c;
@@ -788,6 +799,7 @@ int main(void) {
   t_index_after_retire();
   t_read_error_honesty();
   t_partial_flush_stops();
+  t_no_segment_refusal();
   if (fails) { printf("host_journal_test: %d FAILED of %lu checks\n", fails, checks); return 1; }
   printf("host_journal_test: all %lu checks passed (real lib/fatfs over a RAM disk)\n", checks);
   return 0;

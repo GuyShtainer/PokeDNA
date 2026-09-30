@@ -200,6 +200,10 @@ MUTANTS = [
            "    if (rc) { j->stopped = 1; return rc; }\n  }\n  for (i = 0; i < (int)j->pend_n; i++) {",
            "    if (rc) return rc;\n  }\n  for (i = 0; i < (int)j->pend_n; i++) {",
            "journal", "fails part way STOPS"),
+    Mutant("recording: a step may begin with no tail segment (buffers for a flush that cannot happen)", "journal.c",
+           "  if (!j->tail_seg) return JRN_E_NOSEG;             /* no segment to record into: refuse at the door, never buffer for a flush that cannot happen */\n",
+           "",
+           "journal", "says NOSEG"),
 ]
 
 
