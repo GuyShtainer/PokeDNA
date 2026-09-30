@@ -1,0 +1,105 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* journal_fs.c -- the FatFs binding of the journal's fs seam. See journal_fs.h. */
+#include "journal_fs.h"
+
+#include <string.h>
+
+#include "ff.h"
+
+#define ZBLK 512u   /* zero-fill block: lives on the stack of jfs_create_zero (never ROM: the
+                     * flashcart unmaps ROM during a transfer) */
+
+static int jfs_mkdir(void* ctx, const char* path) {
+  FRESULT fr;
+  (void)ctx;
+  fr = f_mkdir(path);
+  return (fr == FR_OK || fr == FR_EXIST) ? 0 : -1;
+}
+
+static long jfs_size(void* ctx, const char* path) {
+  FILINFO fi;
+  (void)ctx;
+  return f_stat(path, &fi) == FR_OK ? (long)fi.fsize : -1L;
+}
+
+static int jfs_read(void* ctx, const char* path, uint32_t off, void* buf, uint32_t n) {
+  FIL f;
+  UINT br = 0;
+  int ok;
+  (void)ctx;
+  if (f_open(&f, path, FA_READ | FA_OPEN_EXISTING) != FR_OK) return -1;
+  ok = f_lseek(&f, off) == FR_OK && f.fptr == off && f_read(&f, buf, n, &br) == FR_OK && br == n;
+  return (f_close(&f) == FR_OK && ok) ? 0 : -1;
+}
+
+/* IN PLACE: opens the existing file, refuses to extend it (the FAT chain must never grow
+ * mid-session), writes, syncs. The directory entry it rewrites is byte-identical when the
+ * caller holds the timestamp (jrn_fattime_filter). */
+static int jfs_write(void* ctx, const char* path, uint32_t off, const void* buf, uint32_t n) {
+  FIL f;
+  UINT bw = 0;
+  int ok;
+  (void)ctx;
+  if (f_open(&f, path, FA_WRITE | FA_OPEN_EXISTING) != FR_OK) return -1;
+  ok = (uint32_t)f_size(&f) >= off + n && f_lseek(&f, off) == FR_OK && f.fptr == off &&
+       f_write(&f, buf, n, &bw) == FR_OK && bw == n && f_sync(&f) == FR_OK;
+  return (f_close(&f) == FR_OK && ok) ? 0 : -1;
+}
+
+static int jfs_create_zero(void* ctx, const char* path, uint32_t size, const void* head, uint32_t headn) {
+  FIL f;
+  UINT bw;
+  uint8_t blk[ZBLK];
+  uint32_t done = 0, n;
+  int ok = 1;
+  (void)ctx;
+  if (headn > size || headn > ZBLK) return -1;
+  if (f_open(&f, path, FA_WRITE | FA_CREATE_NEW) != FR_OK) return -1;
+  while (ok && done < size) {
+    n = size - done < ZBLK ? size - done : ZBLK;
+    memset(blk, 0, sizeof blk);
+    if (done == 0 && headn) memcpy(blk, head, headn);
+    bw = 0;
+    ok = f_write(&f, blk, n, &bw) == FR_OK && bw == n;
+    done += n;
+  }
+  ok = ok && f_sync(&f) == FR_OK;
+  return (f_close(&f) == FR_OK && ok) ? 0 : -1;
+}
+
+static int jfs_rename(void* ctx, const char* from, const char* to) {
+  (void)ctx;
+  return f_rename(from, to) == FR_OK ? 0 : -1;
+}
+
+static int jfs_unlink(void* ctx, const char* path) {
+  FRESULT fr;
+  (void)ctx;
+  fr = f_unlink(path);
+  return (fr == FR_OK || fr == FR_NO_FILE || fr == FR_NO_PATH) ? 0 : -1;
+}
+
+static int jfs_list(void* ctx, const char* dir, JrnListFn cb, void* arg) {
+  DIR d;
+  FILINFO fi;
+  uint32_t guard;
+  (void)ctx;
+  if (f_opendir(&d, dir) != FR_OK) return -1;
+  for (guard = 0; guard < 20000u; guard++) {
+    if (f_readdir(&d, &fi) != FR_OK || !fi.fname[0]) break;
+    if (!(fi.fattrib & AM_DIR)) cb(arg, fi.fname);
+  }
+  return f_closedir(&d) == FR_OK ? 0 : -1;
+}
+
+static uint32_t jfs_stamp(void* ctx, const char* path) {
+  FILINFO fi;
+  (void)ctx;
+  if (f_stat(path, &fi) != FR_OK) return 0;
+  return ((uint32_t)fi.fdate << 16) | fi.ftime;
+}
+
+const JrnFs jrn_fatfs = {
+  0, jfs_mkdir, jfs_size, jfs_read, jfs_write, jfs_create_zero, jfs_rename,
+  jfs_unlink, jfs_list, jfs_stamp
+};
