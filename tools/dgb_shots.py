@@ -5660,6 +5660,119 @@ def run_y7_bank_passthrough(core_mod, image_mod, rom: Path, out_dir: Path) -> gb
     return s
 
 
+def run_y19_s2(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """#234 slice 2 (lane y19-s2): the undo journal wired into the staging funnel. Vehicle: `rom` =
+    `tools/fuse_sav.py <pokedna-delta-artless.gba> Emerald.sav`; `--vsd <img>` REQUIRED and FRESH
+    (`vsd_img mkimg IMG 16 /tmp/host_vsdimg_test_tmpl`): the journal lives on the virtual SD and survives
+    the power cycles below (`core.reset()`: flash + vsd are kept, RAM is not).
+
+    Vehicle note (NOT a product behaviour): the delta vehicle plants five Chikorita cells into the box-1 PC
+    RAM copy, so the FIRST PC edit's diff (~430 B) is over the 512 B record cap -> that step is counted
+    lost (state GAP) BY DESIGN and the journal resyncs. The chain therefore saves once first (phase 1) so
+    the planted cells are part of the image, and phases 2-4 record small, whole steps.
+
+    Phase 1 (a): swap two mons (A, DOWNx3 -> MOVE, A, RIGHT, A drop, B place). NO prompt at any point of
+    the edit; the editor exit (B) asks ONE 'Save changes?'; A saves (flash written + verified).
+    Phase 2 (b): the same swap again (diff is now small -> ONE recorded step), exit prompt shown, then a
+    POWER CYCLE with no save. The reload shows 'Recorded steps found' (the re-apply offer); A brings the
+    edit back ('RE-APPLIED'), the grid is swapped again, and the exit save confirms once.
+    Phase 3 (c): power-cycle again (the re-applied edit was never saved) -> the offer again; B discards;
+    power-cycle once more -> NO offer, the grid is the saved one.
+    STAY shot: SELECT -> box menu -> 'Release all' keeps its own confirm (a destructive prompt that stays)."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")
+    print("== #234 s2 (y19-s2): journal wired into the funnel; re-apply offer across a power cycle (--vsd) ==")
+    if gb_shots._DEFAULT_VSD_IMG is None:
+        raise RuntimeError("--y19-s2 requires --vsd <img.img> (a FRESH template image)")
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "y19s2_")
+    trace: list = []
+    n = [0]
+
+    def T(key: str, cap: str, settle: int = 150, times: int = 1, claim=None, claim_absent=None) -> None:
+        for _ in range(times):
+            s.tap(key, settle=settle)
+        name = f"{n[0]:02d}_{key.lower()}"
+        n[0] += 1
+        s.shot(name, cap, allow_same=True, claim=claim, claim_absent=claim_absent)
+        trace.append((name, f"{key} x{times}", cap))
+
+    def POWER_CYCLE(cap: str) -> None:
+        s.vsd_flush()
+        s.core.reset()
+        s.run(1000)
+        name = f"{n[0]:02d}_powercycle"
+        n[0] += 1
+        s.shot(name, cap, allow_same=True)
+        trace.append((name, "core.reset() + 1000f", cap))
+
+    s.run(700)
+    s.vsd_snapshot()
+    s.shot("00_boot", "y19s2: booted, box 1 (no journal dialog on a fresh card)", allow_same=True,
+           claim_absent=["Recorded steps found"])
+    n[0] = 1
+    trace.append(("00_boot", "boot", "box 1"))
+
+    # ---- phase 1 (a): edit -> no prompt; exit -> one confirm; A saves
+    T("A", "cell menu")
+    T("DOWN", "menu on MOVE", times=3, claim=["MOVE"])
+    T("A", "MOVE picked: carrying")
+    T("RIGHT", "cursor to the next cell, still carrying")
+    T("A", "A: drop onto the occupied cell = swap; the displaced mon is now carried", claim_absent=["Save "])
+    T("B", "B: place the carried mon back = swap complete; NO 'Save ...?' prompt appeared",
+      claim_absent=["Save changes", "Save the"])
+    T("B", "B: leave the box editor: the ONE exit confirm", claim=["Save changes", "staged changes"])
+    T("A", "A: yes -> saved", settle=400, claim=["Flash written"])
+    T("A", "A: dismiss SAVED -> the vehicle's planted-transfer notice (pre-existing on main)", settle=300,
+      claim=["TRANSFER NOT SAVED"])
+    T("A", "A: dismiss it -> the app reopens the save (the journal re-anchors on the SAVED image)", settle=60)
+    s.run(900)
+    s.shot(f"{n[0]:02d}_reopened", "phase 1 done: the save reopened, box 1, the swap (VOL MAG) is in the saved image",
+           allow_same=True)
+    trace.append((f"{n[0]:02d}_reopened", "wait 900f", "reopened")); n[0] += 1
+
+    # ---- phase 2 (b): edit, exit prompt, power cycle, offer, A
+    T("A", "cell menu")
+    T("DOWN", "menu on MOVE", times=3, claim=["MOVE"])
+    T("A", "MOVE picked")
+    T("RIGHT", "cursor to the next cell")
+    T("A", "A: swap drop")
+    T("B", "B: place back; no prompt", claim_absent=["Save changes", "Save the"])
+    T("B", "B: exit -> the exit confirm is up (the step was flushed to the journal BEFORE it)",
+      claim=["Save changes"])
+    POWER_CYCLE("POWER CUT at the exit prompt (no save): reload -> the re-apply offer must be up")
+    T("A", "(no key) look at the offer", times=0, claim=["Recorded steps found"])
+    T("A", "A: re-apply", settle=300)
+    T("A", "A: dismiss RE-APPLIED", settle=300)
+    s.run(200)
+    s.shot(f"{n[0]:02d}_reapplied", "the edit is back in the image (grid swapped again)", allow_same=True)
+    trace.append((f"{n[0]:02d}_reapplied", "wait 200f", "grid after re-apply")); n[0] += 1
+
+    # ---- phase 3 (c): cycle again (re-applied edit was never saved) -> offer -> B -> no re-offer
+    POWER_CYCLE("POWER CUT again with the re-applied edit unsaved: the offer must come back")
+    T("B", "B: discard the recorded steps", settle=300)
+    s.run(300)
+    s.shot(f"{n[0]:02d}_after_discard", "after B: the grid is the SAVED one", allow_same=True,
+           claim_absent=["Recorded steps found"])
+    trace.append((f"{n[0]:02d}_after_discard", "wait 300f", "grid after discard")); n[0] += 1
+    POWER_CYCLE("power cycle after the discard: NO re-offer")
+    s.shot(f"{n[0]:02d}_no_reoffer", "no dialog: straight to the box grid", allow_same=True,
+           claim_absent=["Recorded steps found"])
+    trace.append((f"{n[0]:02d}_no_reoffer", "-", "no re-offer")); n[0] += 1
+
+    # ---- STAY prompt
+    T("UP", "UP: onto the box-name row (SELECT there opens the box menu)")
+    T("SEL", "SELECT on the box-name row: the box menu (Rename box / Wallpaper / Export / Release all)")
+    T("DOWN", "menu on Release all", times=3)
+    T("A", "A: 'Release all' KEEPS its own confirm (a stay-prompt: destructive, never quieted)",
+      claim=["Release all"])
+    T("B", "B: cancel, nothing released")
+
+    print("\n  per-tap trace (rule 17): name | input | caption")
+    for nm, k, cap in trace:
+        print(f"  {nm:24s} | {k:22s} | {cap}")
+    s.vsd_flush()
+    return s
+
+
 def _y7_plantcmp(img: Path) -> None:
     """F3: pull box00.box out of the (already flushed) --vsd image and require Bank slot 24 ==
     the planted slot-29 record byte-for-byte (tests/y7_plantcmp.c, built with the
@@ -8988,6 +9101,9 @@ def _main_dispatch(argv=None) -> int:
                           "original80, both on a PC cell and a Bank cell that is "
                           "abroad -- see run_s150_15_view_original()'s own docstring "
                           "for the full nav recipe.")
+    ap.add_argument("--y19-s2", action="store_true",
+                     help="#234 slice 2 (lane y19-s2): run_y19_s2() -- --image = plain fuse_sav.py "
+                          "<delta-artless> Emerald.sav, --vsd = a FRESH mkimg-from-template copy.")
     ap.add_argument("--y7-bankpass", action="store_true",
                      help="#270 (lane y7-bankpass): only run_y7_bank_passthrough() -- --image "
                           "as for --s150-15 (plain fuse_sav.py <delta-artless> Emerald.sav) "
@@ -10177,6 +10293,20 @@ def _main_dispatch(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] s150-14: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if getattr(a, "y19_s2", False):
+        ran = True
+        try:
+            sess = run_y19_s2(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] y19-s2: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:

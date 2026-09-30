@@ -767,11 +767,11 @@ static int stars_editor(uint8_t* sb1, uint8_t* sb2, PkGame game) {
 
 /* the one exit-save prompt; commits through the usual verified paths. */
 static void trainer_commit(bool d1, bool d2) {
-  if ((d1 || d2) && app_confirm("Save trainer changes?", "Writes the card edits now.")) {
-    if (d1 && d2)  app_commit_sb12();        /* both blocks: ONE backup + write */
-    else if (d2)   app_commit_sb2();         /* trainer block (section 0)     */
-    else           app_commit_sb1();         /* money (sections 1..4)         */
-  }
+  /* #234 s2: no "Save trainer changes?" prompt any more -- the edit is STAGED as one journal step and the exit save
+   * confirms once. (The identity-edit warning, id_edit_ok, is edit-time and stays.) */
+  if (d1 && d2)  (void)app_hold_sb12("Trainer card");   /* both blocks */
+  else if (d2)   (void)app_hold_sb2("Trainer card");    /* trainer block (section 0)     */
+  else if (d1)   (void)app_hold_sb1("Trainer money");   /* money (sections 1..4)         */
 }
 
 /* The card editor (any game with art): the selection frame walks the fields

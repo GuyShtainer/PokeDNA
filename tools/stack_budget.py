@@ -1568,6 +1568,11 @@ STRUCT_HEADERS = {
                                 # header so source/pdna_gbscreen.c can reuse it; its `fn`
                                 # progress callback is the one indirect call there
     "GbSession": "gb_session.h",    # BACKLOG #64: the new `rd` streamed-read callback
+    "ImgRec": "img_stage.h",        # #234 s2: the funnel recorder's flush hook (FIRST field: the parser cannot size the JRN_NREG_MAX arrays below it)
+    "JrnImage": "journal.h",        # #234 s2: the journal's image accessor (get/set)
+    "JrnFs": "journal.h",           # #234 s2: the journal's fs seam (ten operations)
+    "JfsListCb": "journal_fs.c",    # #234 s2: file-local one-field structs the FatFs binding calls the engine's callbacks through
+    "JfsScanCb": "journal_fs.c",
     "TTC": None,     # libtonc's tte_write dispatch table -- no .c/.h source shipped
                       # in this devkitPro install to grep (see the `recursion
                       # tte_write depth=2` declaration's own comment). Still

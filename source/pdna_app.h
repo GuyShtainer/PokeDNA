@@ -528,6 +528,12 @@ bool app_commit_sb2(void);
 bool app_commit_sb1(void);
 bool app_commit_sb12(void);               /* SB2 + SB1 (sections 0..4) in one verified write */
 bool app_commit_pc(void);                 /* PC storage (sections 5..13): box name/wallpaper */
+/* #234 s2 HELD commits: stage one journal step into the image and write NOTHING (the exit save confirms once). The
+ * editor screens' "Save X?" prompts are gone; these replace their commit. `name` = the history's step name (static
+ * ASCII, <= 24 chars, or 0). True when staged; false on a read-only cart / no Gen-3 image. */
+bool app_hold_sb2(const char* name);
+bool app_hold_sb1(const char* name);
+bool app_hold_sb12(const char* name);
 
 /* Deferred-save for PC box MOVES. Repositioning mons in move-mode mutates g_pc in
  * RAM but does NOT write immediately (no per-drop "Saving" dialog); it marks the PC
@@ -536,6 +542,14 @@ bool app_commit_pc(void);                 /* PC storage (sections 5..13): box na
  * still commit immediately — and any such commit clears the dirty flag, since the
  * verified write flushes the whole g_pc (pending moves included). */
 void app_mark_pc_dirty(void);
+/* #234: group everything staged between begin and the OUTERMOST end into ONE journal step (and one
+ * write per section: the #300 coalescing). Inside a scope g_save is only current after the end. */
+void app_step_begin(const char* name);
+void app_step_end(void);
+/* #234: a cross-file op (transfer, Bank<->PC, reconcile release, XRC apply, PID re-key, promotion) bumps the crossed
+ * epoch: the next step is an undo/redo/re-apply floor. app_step_name: the one-shot step name (static ASCII, <= 24). */
+void app_journal_cross(void);
+void app_step_name(const char* name);
 
 /* PC->Bank MOVE support: clear a PC box slot (release from the save) after the destination
  * bank box has been verified on SD, matched by the mon's 8-byte identity so a bystander is

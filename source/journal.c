@@ -414,6 +414,21 @@ int jrn_key_resolve(const JrnFs* fs, const char* root, uint64_t key, uint64_t* o
   return JRN_E_LOOP;
 }
 
+/* noinline + noipa (GCC): the cartridge stack walker needs each seam dispatch as its own function with one struct-field
+ * load; clang (the host tests) has no noipa and needs none. */
+#if defined(__GNUC__) && !defined(__clang__)
+#define JRN_NOIPA __attribute__((noinline, noipa))
+#else
+#define JRN_NOIPA __attribute__((noinline))
+#endif
+
+/* The ONE call site of the seam's mkdir: a single struct-field dispatch the cartridge stack walker can name
+ * (tools/stack_edges.txt `JrnFs.mkdir @4 in fs_mkdir`); four inlined copies would each be an unresolvable register call. */
+static int JRN_NOIPA fs_mkdir(const JrnFs* fs, const char* p) {
+  int (*const volatile* slot)(void*, const char*) = &fs->mkdir;   /* volatile: one plain ldr (the compiler would fuse ctx + mkdir into an ldm the walker cannot read) */
+  return (*slot)(fs->ctx, p);
+}
+
 static int mkdir_prefixes(const JrnFs* fs, const char* root) {
   char p[JRN_PATH_MAX];
   uint32_t i, n = 0;
@@ -421,10 +436,10 @@ static int mkdir_prefixes(const JrnFs* fs, const char* root) {
   for (i = 1; p[i]; i++) {
     if (p[i] != '/') continue;
     p[i] = 0;
-    if (fs->mkdir(fs->ctx, p) != 0) return JRN_E_IO;
+    if (fs_mkdir(fs, p) != 0) return JRN_E_IO;
     p[i] = '/';
   }
-  return fs->mkdir(fs->ctx, p) == 0 ? 0 : JRN_E_IO;
+  return fs_mkdir(fs, p) == 0 ? 0 : JRN_E_IO;
 }
 
 /* <root> and <root>/r both exist (each mkdir is 0 when it already does). The r directory is made at the FIRST
@@ -435,7 +450,7 @@ static int mkdir_redirect_dir(const JrnFs* fs, const char* root) {
   int rc = mkdir_prefixes(fs, root);
   if (rc) return rc;
   if (pput(p, &n, root) || pput(p, &n, "/r")) return JRN_E_ARG;
-  return fs->mkdir(fs->ctx, p) == 0 ? 0 : JRN_E_IO;
+  return fs_mkdir(fs, p) == 0 ? 0 : JRN_E_IO;
 }
 
 int jrn_redirect_write(const JrnFs* fs, const char* root, uint64_t newkey, uint64_t target) {
@@ -857,7 +872,7 @@ int jrn_prepare_first(Jrn* j) {
   rc = mkdir_prefixes(j->fs, j->root);
   if (rc) return rc;
   if (p_key(j->root, j->key, "", dir)) return JRN_E_ARG;
-  if (j->fs->mkdir(j->fs->ctx, dir) != 0) return JRN_E_IO;
+  if (fs_mkdir(j->fs, dir) != 0) return JRN_E_IO;
   rc = mkdir_redirect_dir(j->fs, j->root);            /* <root>/r: made here so a later redirect never adds an entry to <root> */
   if (rc) return rc;
   if (j->seg_last) return JRN_OK;

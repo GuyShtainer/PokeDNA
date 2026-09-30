@@ -11,10 +11,8 @@
  *                set by that loan, only by a PC edit that could not stage.
  *   image_dirty  g_save differs from the card (anything was staged and not yet written).
  *                Gates the exit prompt.
- *   pc_moved     slice-0 compatibility only: a PC box edit is pending (== the old g_pc_dirty).
- *                It keeps the arena refusal and the "SAVE FIRST" message byte-identical to
- *                today, because with eager staging pc_unstaged alone would silently drop them.
- *                It retires together with those two prompts.
+ *   (pc_moved, the slice-0 compatibility flag, RETIRED in slice 2: a staged box drop survives the arena
+ *   loan because g_pc is re-derived from g_save on release, so the arena gate is pc_unstaged alone.)
  * Nothing here touches memory it does not own; every function tolerates a NULL pointer.
  */
 #ifndef IMG_FLAGS_H
@@ -25,7 +23,6 @@
 typedef struct {
   bool pc_unstaged;
   bool image_dirty;
-  bool pc_moved;
 } ImgFlags;
 
 /* Every g_save section write (the funnel) marks the image dirty. */
@@ -36,7 +33,6 @@ static inline void imgf_staged(ImgFlags* f) { if (f) f->image_dirty = true; }
 static inline void imgf_pc_edited(ImgFlags* f, bool staged) {
   if (!f) return;
   f->image_dirty = true;
-  f->pc_moved    = true;
   if (!staged) f->pc_unstaged = true;
 }
 
@@ -46,23 +42,25 @@ static inline void imgf_pc_folded(ImgFlags* f) { if (f) f->pc_unstaged = false; 
 /* The whole image reached the card (verified write) or was thrown away: nothing pending. */
 static inline void imgf_clear(ImgFlags* f) {
   if (!f) return;
-  f->pc_unstaged = false; f->image_dirty = false; f->pc_moved = false;
+  f->pc_unstaged = false; f->image_dirty = false;
 }
 
 /* Should app_save_finalize() fold g_pc into g_save before the checksum pass? Only when g_pc is
  * genuinely ahead of g_save -- NEVER merely because the image is dirty. */
 static inline bool imgf_fold_needed(const ImgFlags* f) { return f ? f->pc_unstaged : false; }
 
-/* May the arena take g_pc over? (slice 0: refuse while any PC edit is pending, as today.) */
-static inline bool imgf_arena_ok(const ImgFlags* f) { return f ? (!f->pc_unstaged && !f->pc_moved) : false; }
+/* May the arena take g_pc over? Refused only while g_pc is genuinely AHEAD of g_save (pc_unstaged): a staged drop
+ * is already in g_save, and the release re-derives g_pc from it (#234 s2: the pc_moved compat flag retired). */
+static inline bool imgf_arena_ok(const ImgFlags* f) { return f ? !f->pc_unstaged : false; }
 
 /* Does leaving the save need the "save or discard" prompt? Anything staged -- box moves,
  * Day-Care, dex, or a SaveBlock2-only change -- not only PC moves. */
 static inline bool imgf_exit_prompt(const ImgFlags* f) { return f ? f->image_dirty : false; }
 
-/* Wording of that prompt: name what is pending. Box moves keep the historic line. */
+/* Wording of that prompt: it names what is pending -- every staged edit, not only box moves. */
 static inline const char* imgf_exit_line(const ImgFlags* f) {
-  return (f && f->pc_moved) ? "Save the moved Pokemon?" : "Save the staged changes?";
+  (void)f;
+  return "Save the staged changes?";
 }
 
 #endif /* IMG_FLAGS_H */

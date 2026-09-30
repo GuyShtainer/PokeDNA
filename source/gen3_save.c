@@ -16,10 +16,26 @@ static void wr16(uint8_t* p, uint16_t v) {
 
 /* Exactly mirrors pokeemerald CalculateChecksum:
  *   sum u32 words over (size/4), then return (u16)((sum >> 16) + sum). */
+#if defined(__BYTE_ORDER__) && defined(__ORDER_LITTLE_ENDIAN__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+/* #300b: a sector's data is summed a native WORD at a time (one ldr per 4 bytes instead of four byte
+ * loads + shifts, ~17 Thumb instructions/word before). The sum is order-free, so a 4-aligned buffer on a
+ * little-endian target (the GBA, the Mac) reads exactly the words rd32 would; anything else falls back
+ * to the byte-wise loop below. may_alias: the buffer is really bytes. */
+typedef uint32_t __attribute__((may_alias)) g3_u32a;
+#define G3_CSUM_WORDWISE 1
+#endif
+
 uint16_t gen3_checksum(const void* data, uint16_t size) {
   const uint8_t* p = (const uint8_t*)data;
   uint32_t checksum = 0;
   uint16_t words = (uint16_t)(size / 4);
+#ifdef G3_CSUM_WORDWISE
+  if ((((uintptr_t)p) & 3u) == 0) {
+    const g3_u32a* w = (const g3_u32a*)p;
+    for (uint16_t i = 0; i < words; i++) checksum += w[i];
+    return (uint16_t)((checksum >> 16) + checksum);
+  }
+#endif
   for (uint16_t i = 0; i < words; i++) {
     checksum += rd32(p);
     p += 4;

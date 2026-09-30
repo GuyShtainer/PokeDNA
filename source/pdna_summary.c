@@ -862,6 +862,10 @@ static bool confirm(void) {
   return confirm_q("Save changes?", "A = write (backup first)", "B = discard");
 }
 
+/* #234 s2 (see pdna_summary.h): the "Save changes?" prompt is skipped for a plain edit while the caller says so. */
+static bool EWRAM_BSS s_quiet_save;
+void pdna_summary_quiet_save(bool on) { s_quiet_save = on; }
+
 /* CREATE mode's keep/discard prompt. Deliberately worded so "discard" reads as
  * "the slot stays empty", not "your edits are lost". */
 static bool confirm_keep(void) {
@@ -1326,7 +1330,11 @@ static int summary_run_inner(uint8_t* rec, bool is_party, bool can_edit, uint8_t
         }
       }
       else if (k & (KEY_UP | KEY_DOWN | KEY_B)) {    /* leaving this mon: prompt-save if dirty */
-        if (dirty && confirm()) { gen3_edit_commit(&e, out_rec); if (saved) *saved = true; }
+        /* #234 s2: quiet mode skips the prompt for a plain edit; a PID / OT id change (a re-key candidate) is written at once
+         * by the caller, so it is still asked. */
+        const bool ident = e.personality != (uint32_t)(rec[0] | (rec[1] << 8) | (rec[2] << 16) | ((uint32_t)rec[3] << 24)) ||
+                           e.otId != (uint32_t)(rec[4] | (rec[5] << 8) | (rec[6] << 16) | ((uint32_t)rec[7] << 24));
+        if (dirty && ((s_quiet_save && !ident) || confirm())) { gen3_edit_commit(&e, out_rec); if (saved) *saved = true; }
         key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);
         if (card_io) *card_io = card;                /* keep the card sticky across mon-scroll */
         /* B ends the visit -> emit. UP/DOWN is a nav step: the caller re-enters this

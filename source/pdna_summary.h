@@ -19,6 +19,12 @@
 int pdna_inspect(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec,
                    bool* saved, int* card);
 
+/* #234 s2: while ON (the caller sets it around a PC / party pdna_inspect and clears it after), leaving a mon with
+ * edits does NOT raise "Save changes?" -- the caller stages the edit as one journal step and the exit save confirms
+ * once. An edit that changes the mon's PID / OT id (a re-key candidate, a barrier) is still prompted: it is written
+ * at once, so the prompt names what is about to happen. Default OFF (Bank, bases and every other caller keep it). */
+void pdna_summary_quiet_save(bool on);
+
 /* CREATE mode: the same six cards over a brand-new record that is NOT in a save slot
  * yet (one that gen3_build_mon just made), so making a Pokémon looks like inspecting
  * one instead of dropping into a flat field list. Differences from pdna_inspect:

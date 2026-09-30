@@ -218,6 +218,5 @@ void pdna_fly(uint8_t* sb1, PkGame game) {
     }
   }
 
-  if (dirty && app_confirm("Save fly destinations?", "Writes SaveBlock1 now."))
-    app_commit_sb1();
+  if (dirty) (void)app_hold_sb1("Fly destinations");     /* #234 s2: staged, no prompt */
 }

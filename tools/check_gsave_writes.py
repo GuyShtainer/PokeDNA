@@ -6,6 +6,8 @@ The open Gen-3 image (`g_save`, 128 KiB) may only be WRITTEN by
   * app_stage_sections()  -- the one staging funnel (design D2; a thin wrapper over the pure-C
                              img_stage_sections in source/img_stage.c),
   * app_mark_pc_dirty()   -- the box-drop eager stage (calls img_pc_edited, same pure-C funnel),
+  * app_step_end()        -- the outermost scope close applies the deferred sections (img_scope_close),
+  * app_journal_apply()   -- re-apply/undo patches through the journal's image accessor,
   * app_save_finalize()   -- the checksum/verify/write tail (its fold calls img_fold_pc), or
   * a line carrying an explicit, reasoned exemption comment:   g_save-write-ok: <why>
     (the loaders that fill the image from the card / flash / fused ROM, the battle-record
@@ -32,7 +34,7 @@ import re
 import sys
 from pathlib import Path
 
-ALLOWED_FUNCS = ("app_stage_sections", "app_save_finalize", "app_mark_pc_dirty")
+ALLOWED_FUNCS = ("app_stage_sections", "app_save_finalize", "app_mark_pc_dirty", "app_step_end", "app_journal_apply")
 EXEMPT = "g_save-write-ok:"
 
 # Every direct spelling of a write INTO g_save. Matched on comment-stripped text.
@@ -42,7 +44,7 @@ PATTERNS = [
     re.compile(r"\bg_save\s*\[[^\]]*\]\s*(?:=(?!=)|\+=|-=|\|=|&=|\^=|<<=|>>=)"),
     re.compile(r"\bg_save\s*\[[^\]]*\]\s*(?:\+\+|--)"),
     re.compile(r"\b(?:sf_read_full|f_read|flashsave_read|fused_sav_read)\s*\([^;]*\bg_save\b"),
-    re.compile(r"\bimg_(?:stage_sections|pc_edited|fold_pc)\s*\([^;]*\bg_save\b"),
+    re.compile(r"\bimg_(?:stage_sections|pc_edited|fold_pc|scope_close|scope_flush)\s*\([^;]*\bg_save\b"),
     re.compile(r"\*\s*\(\s*g_save\b[^;]*\)\s*(?:=(?!=)|\+=|\|=|&=)"),
 ]
 
