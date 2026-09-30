@@ -30,6 +30,7 @@
  *   (e) the journal is still usable: reopen, prepare, record a step, flush, reopen, undo.
  */
 #include "jrn_harness.h"
+#include "journal_int.h"   /* jrn_wr32 for the composite redirect state */
 #include <string.h>
 
 #define T0 0x5A2A6800u
@@ -156,10 +157,17 @@ static void mid_fullring(uint32_t* out, int* n) {   /* retire first, THEN recycl
   out[(*n)++] = jr_fingerprint(K, 0, 0);
 }
 static int op_redirect(void) { return jrn_redirect_write(&jrn_fatfs, ROOT, KB, K); }
+/* The redirect scenario's state is the resolve result AND K's own journal fingerprint: a torn create of the
+ * .pdr that hid or changed ANOTHER journal (the reviewer's co-located-.pdr finding: 5 of 35 exFAT runs
+ * hid other saves' journals) would show as a state that is neither before nor after. Setup: K's journal
+ * exists (its first fill also made <root>/r/), so the create under test is the .pdr FILE alone. */
 static uint32_t st_redirect(char* dbg, size_t n) {
   uint64_t out = 0; int rc = jrn_key_resolve(&jrn_fatfs, ROOT, KB, &out);
-  if (dbg) snprintf(dbg, n, "resolve(B) rc %d -> %s", rc, out == K ? "A" : out == KB ? "B(self)" : "?");
-  return rc == 0 ? (out == K ? 0xA1u : out == KB ? 0xB2u : 0xC3u) : 0xE4u;
+  char d2[96]; uint32_t fp = jr_fingerprint(K, d2, sizeof d2), code = rc == 0 ? (out == K ? 0xA1u : out == KB ? 0xB2u : 0xC3u) : 0xE4u;
+  uint8_t b[8];
+  jrn_wr32(b, code); jrn_wr32(b + 4, fp);
+  if (dbg) snprintf(dbg, n, "resolve(B) rc %d -> %s; K's journal [%s]", rc, out == K ? "A" : out == KB ? "B(self)" : "?", d2);
+  return jrn_crc32_update(0, b, 8);
 }
 static int op_undo_marker(void) {
   Jrn j; int rc = jopen(&j, K);
@@ -208,7 +216,7 @@ static const Scn SCN[] = {
   { "complete a partial first fill",su_partial_seg, op_prepare,       st_default,  0, 1, mid_prepare_fresh },
   { "recycle a retired slot (wrap)",su_wrapped,     op_prepare,       st_default,  0, 0, 0 },
   { "prepare on a full ring",       su_fullring,    op_prepare,       st_default,  0, 0, mid_fullring },
-  { ".pdr redirect write",          su_none,        op_redirect,      st_redirect, 0, 2, 0 },
+  { ".pdr redirect write (K live)", su_three,       op_redirect,      st_redirect, 0, 2, 0 },
   { "undo cursor marker",           su_three,       op_undo_marker,   st_default,  0, 0, 0 },
   { "discarded marker",             su_three_lost,  op_discard,       st_default,  0, 0, 0 },
   { "retire oldest in place",       su_three_seg,   op_compact,       st_default,  0, 0, 0 },
@@ -225,6 +233,7 @@ static unsigned long g_ops, g_points, g_runs, sc_hazA[16], sc_hazB[16];
 static int tear_pos_ok(int t) { return t > 0; }
 
 static unsigned long g_hazA, g_hazB;   /* the exFAT torn-directory-set hazard, counted: every scenario AFTER the first fill (must be 0/0) */
+static unsigned long g_ffL;            /* first fill: the torn create damaged the KEY directory and the journal open FAILS LOUDLY (JRN_E_IO): nothing was live, not a hidden segment */
 static unsigned long g_ffA, g_ffB;     /* the same during the FIRST FILL, the one place the directory is mutated (hidden must be 0) */
 static unsigned long g_pdrA, g_pdrB;   /* the same, for the .pdr redirect create only (the accepted residual) */
 
@@ -252,6 +261,7 @@ static void recover_and_use(BYTE fmt, const char* what, unsigned k, int tear, in
   Jrn j; static uint8_t keep[NREG][RSZ]; int rc; uint8_t reg = 6;
   memcpy(keep, g_img, sizeof g_img);
   rc = jopen(&j, K);
+  if (rc && fmt == FM_EXFAT && tear > 0 && dirmut == 1 && keydir_broken()) { if (g_garbage) g_gtal[si][GC_EXFAT]++; else { g_ffB++; sc_hazB[si]++; } return; }   /* a torn first-fill create damaged the key directory: the open FAILS LOUDLY (counted, accepted residual) */
   SCHECK(GC_REOPEN, rc == JRN_OK, "%s k=%u tear=%d: reopen after the cut -> %d", what, k, tear, rc);
   if (rc) return;
   rc = jrn_prepare(&j);
@@ -321,8 +331,9 @@ static void sweep_one(BYTE fmt, const Scn* sc, int garbage) {
       got = sc->state(d3, sizeof d3);
       ok = got == before || got == after;
       for (i = 0; i < nextra; i++) ok = ok || got == extra[i];
-      if (!ok && fmt == FM_EXFAT && tear_pos_ok(TEARS[t]) && sc->dirmut && got == empty_fp() && keydir_broken()) {
+      if (!ok && fmt == FM_EXFAT && tear_pos_ok(TEARS[t]) && sc->dirmut && (got == empty_fp() || got == 0xDEAD0001u) && keydir_broken()) {   /* empty view, or the honest loud open failure of a damaged directory */
         if (garbage) g_gtal[sc - SCN][GC_EXFAT]++;
+        else if (got == 0xDEAD0001u) g_ffL++;
         else if (sc->dirmut == 2) g_pdrA++; else if (sc->dirmut == 1) g_ffA++; else g_hazA++;   /* exFAT: a torn entry set hid the live segments */
         ok = 1;
         if (!garbage) sc_hazA[sc - SCN]++;
@@ -464,8 +475,8 @@ int main(int argc, char** argv) {
   CHECK(g_ffA == 0 && g_pdrA == 0, "exFAT: a torn create hid live segments (%lu first fill, %lu .pdr) (must be 0)", g_ffA, g_pdrA);
   if (nf == 3)
     printf("  exFAT torn-directory-set hazard, every scenario after the first fill (activate, recycle, retire, appends, markers, open): %lu hidden-segment, %lu blocked-create cut runs.\n"
-           "  Only the two directory CREATES remain: first fill %lu hidden / %lu blocked-create (nothing was live yet), .pdr redirect %lu hidden / %lu blocked-create (accepted residual, D3).\n"
-           "  In every run the volume mounted, the .sav was intact and no corrupt record was ever read as valid.\n", g_hazA, g_hazB, g_ffA, g_ffB, g_pdrA, g_pdrB);
+           "  Only the two directory CREATES remain: first fill %lu hidden / %lu blocked-create / %lu loud-open-failure (nothing was live yet), .pdr redirect (in <root>/r/, a journal live beside it) %lu hidden / %lu blocked-create (accepted residual, D3).\n"
+           "  In every run the volume mounted, the .sav was intact and no corrupt record was ever read as valid.\n", g_hazA, g_hazB, g_ffA, g_ffB, g_ffL, g_pdrA, g_pdrB);
   if (fails) { printf("host_journal_cut_test: %d FAILED of %lu checks\n", fails, checks); return 1; }
   printf("host_journal_cut_test: all %lu checks passed -- %lu operations, %lu cut points (sector boundaries), %lu cut runs (x%d tears), 0 violations\n",
          checks, g_ops, g_points, g_runs, NTEAR);

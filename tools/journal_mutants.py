@@ -35,6 +35,7 @@ class Mutant:
     new: str
     test: str      # "journal" (host_journal_test) or "cut" (host_journal_cut_test)
     red: str       # a substring of the RED output that must appear
+    only: str = ""  # when set: run ALL three formats (exFAT hazards need it) but only the scenarios whose name contains this
 
 
 MUTANTS = [
@@ -208,6 +209,17 @@ MUTANTS = [
            "  if (j->seg_last >= SEG_MAX) return JRN_E_FULL;                           /* the logical index space is spent: LOUD, never a silent no-spare */",
            "  if (j->seg_last >= SEG_MAX) return JRN_OK;",
            "journal", "at the cap says JRN_E_FULL"),
+    Mutant("pdr: the redirect is written beside the key directories again (not in <root>/r/)", "journal.c",
+           '  if (pput(out, &n, root) || pput(out, &n, "/r/") || pput(out, &n, hex)) return -1;\n  return pput(out, &n, ".pdr");',
+           '  if (pput(out, &n, root) || pput(out, &n, "/") || pput(out, &n, hex)) return -1;\n  return pput(out, &n, ".pdr");',
+           "journal", "16-byte file in <root>/r/"),
+    Mutant("pdr: the version byte is not checked (a newer redirect is followed as if it were ours)", "journal.c",
+           "  if (b[3] != JRN_PDR_VER) return JRN_E_VERSION;\n", "",
+           "journal", "foreign redirect version"),
+    Mutant("pdr: a damaged <root>/r directory blocks the journal open (persistent FR_INT_ERR treated as a card error)", "journal.c",
+           "  if (sz == -3) return 1;                 /* a damaged <root>/r directory (torn create): no redirect, the journal keeps its own key */\n",
+           "",
+           "cut", "neither before nor after", only="pdr"),
 ]
 
 
@@ -238,7 +250,11 @@ def run_one(m: Mutant, scratch: Path) -> tuple[bool, str]:
     b = build(m.test, src, binary)
     if b.returncode != 0:
         return False, "mutant does not build: " + b.stderr.strip().splitlines()[0]
-    env = {"JRN_QUICK": "1", "JRN_NO_GARBAGE": "1"}
+    env = {"JRN_NO_GARBAGE": "1"}
+    if m.only:
+        env["JRN_ONLY"] = m.only
+    else:
+        env["JRN_QUICK"] = "1"
     r = subprocess.run([str(binary)], capture_output=True, text=True, env=env, check=False, timeout=600)
     out = r.stdout + r.stderr
     if r.returncode == 0:

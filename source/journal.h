@@ -72,6 +72,7 @@
  * a current reader would reject or misread (a new record kind or flag, a new header field with
  * meaning, a moved offset, a bigger ring) BUMPS JRN_SEG_VER. */
 #define JRN_SEG_VER        1u
+#define JRN_PDR_VER        1u   /* the .pdr redirect layout version (byte 3) */
 
 /* Record: [0..3] 'PDJR' | [4..5] len | [6] flags (bit0 crossed, bits4-5 kind) |
  * [7] nspans | [8..11] seq | [12..15] parent | [16..19] aux | [20..23] pre_hash |
@@ -112,7 +113,9 @@ typedef int  (*JrnScanFn)(void* arg, uint32_t off, const uint8_t* buf, uint32_t 
 typedef struct JrnFs {
   void* ctx;
   int      (*mkdir)(void* ctx, const char* path);                    /* 0 ok or exists   */
-  /* file size; -1 = ABSENT (no such file / path), -2 = an I/O error (never conflate the two) */
+  /* file size; -1 = ABSENT (no such file / path), -2 = a card I/O error (possibly transient), -3 = the directory
+   * STRUCTURE is damaged (FatFs FR_INT_ERR: a torn exFAT entry set -- persistent, not retryable). Never conflate
+   * them: a redirect lookup treats -3 as `no redirect`, everything else treats -2 and -3 as an error. */
   long     (*size)(void* ctx, const char* path);
   int      (*read)(void* ctx, const char* path, uint32_t off, void* buf, uint32_t n);
   /* IN PLACE, never grows the file, synced before returning. 0 ok. */
@@ -129,7 +132,7 @@ typedef struct JrnFs {
    * write head[0..headn) at offset 0 LAST, sync. A file longer than `size` fails. (Small files: .pdr.) */
   int      (*create_zero)(void* ctx, const char* path, uint32_t size,
                           const void* head, uint32_t headn);
-  int      (*unlink)(void* ctx, const char* path);                   /* absent = 0       */
+  /* NO unlink / rename / delete op exists in this seam, on purpose: a journal can never remove a file. */
   /* file names of `dir` (not sub-directories) through cb. 0 = listed, 1 = the directory does NOT exist (a
    * normal answer for a journal that was never started), < 0 = a card error (never conflate the two: a
    * transient read error must not look like an empty journal). */
@@ -213,7 +216,12 @@ uint32_t jrn_fattime_filter(uint32_t live);
 int      jrn_stamp_held(void);
 
 /* ---- keys and redirects ---------------------------------------------------------------- */
-/* Write <root>/<newkey>.pdr -> `target` (created in place, valid only at exactly 16 B + crc). Flattens: `target` is
+/* Write <root>/r/<newkey>.pdr -> `target`: 16 bytes, 'P' 'D' 'R', version u8 (JRN_PDR_VER), target u64, crc32 of
+ * the first 12. Created in place under its final name in the SUBDIRECTORY <root>/r/ (never beside the key
+ * directories: a torn exFAT create there re-parents nothing else) and NEVER unlinked or replaced (an invalid
+ * leftover of exactly the wrong size fails with JRN_E_IO; one of the right size is overwritten in place).
+ * A redirect with a valid crc and an unknown version is FOREIGN: resolving through it fails with
+ * JRN_E_VERSION (the same rule as the segment header). Flattens: `target` is
  * first resolved through existing redirects. 0 ok; JRN_E_EXISTS if newkey already redirects
  * elsewhere; JRN_OK (no-op) when it already points at the target or when newkey == target. */
 int jrn_redirect_write(const JrnFs* fs, const char* root, uint64_t newkey, uint64_t target);

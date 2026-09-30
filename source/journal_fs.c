@@ -22,7 +22,9 @@ static long jfs_size(void* ctx, const char* path) {
   (void)ctx;
   fr = f_stat(path, &fi);
   if (fr == FR_OK) return (long)fi.fsize;
-  return (fr == FR_NO_FILE || fr == FR_NO_PATH) ? -1L : -2L;   /* absent vs a card error */
+  if (fr == FR_NO_FILE || fr == FR_NO_PATH) return -1L;   /* absent */
+  if (fr == FR_INT_ERR) return -3L;                        /* the directory structure is damaged (a torn exFAT entry set): PERSISTENT */
+  return -2L;                                              /* a card error (FR_DISK_ERR ...): possibly transient */
 }
 
 static int jfs_read(void* ctx, const char* path, uint32_t off, void* buf, uint32_t n) {
@@ -124,13 +126,6 @@ static int jfs_create_zero(void* ctx, const char* path, uint32_t size, const voi
   return (f_close(&f) == FR_OK && ok) ? 0 : -1;
 }
 
-static int jfs_unlink(void* ctx, const char* path) {
-  FRESULT fr;
-  (void)ctx;
-  fr = f_unlink(path);
-  return (fr == FR_OK || fr == FR_NO_FILE || fr == FR_NO_PATH) ? 0 : -1;
-}
-
 static int jfs_list(void* ctx, const char* dir, JrnListFn cb, void* arg) {
   DIR d;
   FILINFO fi;
@@ -190,5 +185,5 @@ static uint32_t jfs_stamp(void* ctx, const char* path) {
 
 const JrnFs jrn_fatfs = {
   0, jfs_mkdir, jfs_size, jfs_read, jfs_write, jfs_alloc, jfs_zero, jfs_create_zero,
-  jfs_unlink, jfs_list, jfs_scan, jfs_stamp
+  jfs_list, jfs_scan, jfs_stamp
 };

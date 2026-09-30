@@ -462,21 +462,21 @@ static void t_redirects(void) {
   CHECK(jrn_redirect_write(fs, ROOT, 1, 2) == JRN_OK, "renaming BACK (target resolves to the key itself) needs no file");
   CHECK(jrn_key_resolve(fs, ROOT, 1, &out) == JRN_OK && out == 1, "no self loop was written");
   /* a hand-made cycle is detected, not followed forever */
-  jrn_key_hex(7, hex); snprintf(p, sizeof p, ROOT "/%s.pdr", hex);
+  jrn_key_hex(7, hex); snprintf(p, sizeof p, ROOT "/r/%s.pdr", hex);
   {
     uint8_t b[16]; uint32_t c; int i;
-    b[0] = 'P'; b[1] = 'D'; b[2] = 'R'; b[3] = 'D';
+    b[0] = 'P'; b[1] = 'D'; b[2] = 'R'; b[3] = (uint8_t)JRN_PDR_VER;
     for (i = 0; i < 8; i++) b[4 + i] = (uint8_t)((uint64_t)8 >> (8 * i));
     c = jrn_crc32_update(0, b, 12); b[12] = (uint8_t)c; b[13] = (uint8_t)(c >> 8); b[14] = (uint8_t)(c >> 16); b[15] = (uint8_t)(c >> 24);
     CHECK(f_open(&f, p, FA_WRITE | FA_CREATE_NEW) == FR_OK && f_write(&f, b, 16, &bw) == FR_OK && f_close(&f) == FR_OK, "plant 7->8");
-    jrn_key_hex(8, hex); snprintf(p, sizeof p, ROOT "/%s.pdr", hex);
+    jrn_key_hex(8, hex); snprintf(p, sizeof p, ROOT "/r/%s.pdr", hex);
     for (i = 0; i < 8; i++) b[4 + i] = (uint8_t)((uint64_t)7 >> (8 * i));
     c = jrn_crc32_update(0, b, 12); b[12] = (uint8_t)c; b[13] = (uint8_t)(c >> 8); b[14] = (uint8_t)(c >> 16); b[15] = (uint8_t)(c >> 24);
     CHECK(f_open(&f, p, FA_WRITE | FA_CREATE_NEW) == FR_OK && f_write(&f, b, 16, &bw) == FR_OK && f_close(&f) == FR_OK, "plant 8->7");
   }
   CHECK(jrn_key_resolve(fs, ROOT, 7, &out) == JRN_E_LOOP, "a redirect LOOP is detected");
   /* a corrupt redirect is no redirect */
-  jrn_key_hex(20, hex); snprintf(p, sizeof p, ROOT "/%s.pdr", hex);
+  jrn_key_hex(20, hex); snprintf(p, sizeof p, ROOT "/r/%s.pdr", hex);
   CHECK(f_open(&f, p, FA_WRITE | FA_CREATE_NEW) == FR_OK && f_write(&f, "garbagegarbageXX", 16, &bw) == FR_OK && f_close(&f) == FR_OK, "plant garbage");
   CHECK(jrn_key_resolve(fs, ROOT, 20, &out) == JRN_OK && out == 20, "a corrupt .pdr is treated as absent");
   /* the journal follows the redirect: history recorded under A is found through B */
@@ -488,6 +488,37 @@ static void t_redirects(void) {
     c = cfg_for(2, 0, 0);
     CHECK(jrn_open(&j, &c, &IMG) == JRN_OK && j.key == 1 && jrn_cursor(&j) == 1, "opening key B lands in A's journal at the cursor (key %llx cursor %u)", (unsigned long long)j.key, (unsigned)jrn_cursor(&j));
   }
+}
+
+/* Ruling 3: .pdr lives in <root>/r/, carries a version byte and is never unlinked. */
+static void t_pdr_layout(void) {
+  const JrnFs* fs = &jrn_fatfs; uint64_t out = 0; char p[96], hex[17]; uint8_t b[16], big[40]; FIL f; UINT bw; long sz; uint32_t c; int i;
+  card_fresh(FM_FAT); img_fill(1); rd_fattime_hook = jrn_fattime_filter;
+  CHECK(jrn_redirect_write(fs, ROOT, 0x22, 0x11) == JRN_OK, "redirect");
+  jrn_key_hex(0x22, hex); snprintf(p, sizeof p, ROOT "/r/%s.pdr", hex);
+  CHECK(fs->size(0, p) == 16 && fs->read(0, p, 0, b, 16) == 0, "the redirect is a 16-byte file in <root>/r/");
+  CHECK(b[0] == 'P' && b[1] == 'D' && b[2] == 'R' && b[3] == JRN_PDR_VER && b[4] == 0x11 && b[5] == 0 && b[11] == 0, "'PDR', version byte, target u64 LE");
+  CHECK(jrn_rd32(b + 12) == jrn_crc32_update(0, b, 12), "crc32 of the first 12 bytes");
+  snprintf(p, sizeof p, ROOT "/%s.pdr", hex);
+  CHECK(fs->size(0, p) == -1, "NOTHING is written beside the key directories (<root>/<key>.pdr does not exist)");
+  { Jrn j; CHECK(jopen(&j, 0x11) == JRN_OK && jrn_prepare(&j) == JRN_OK, "first fill");
+    snprintf(p, sizeof p, ROOT "/r"); { FILINFO fi; CHECK(f_stat(p, &fi) == FR_OK && (fi.fattrib & AM_DIR), "<root>/r exists after a first fill (a redirect create adds no entry to <root>)"); } }
+  /* a FOREIGN version (valid magic + crc, unknown version byte) is never followed and never ignored */
+  jrn_key_hex(0x33, hex); snprintf(p, sizeof p, ROOT "/r/%s.pdr", hex);
+  b[3] = (uint8_t)(JRN_PDR_VER + 1u); for (i = 0; i < 8; i++) b[4 + i] = (uint8_t)((uint64_t)0x11 >> (8 * i));
+  c = jrn_crc32_update(0, b, 12); jrn_wr32(b + 12, c);
+  CHECK(f_open(&f, p, FA_WRITE | FA_CREATE_NEW) == FR_OK && f_write(&f, b, 16, &bw) == FR_OK && f_close(&f) == FR_OK, "plant a v+1 redirect");
+  CHECK(jrn_key_resolve(fs, ROOT, 0x33, &out) == JRN_E_VERSION, "a foreign redirect version fails the resolve with JRN_E_VERSION");
+  { Jrn j; JrnCfg cf = cfg_for(0x33, 0, 0); CHECK(jrn_open(&j, &cf, &IMG) == JRN_E_VERSION && j.readonly && j.foreign, "and the journal opens read-only/foreign, never in a new key directory"); }
+  /* never unlinked: a leftover of the WRONG length stays (the write fails loudly), one of the right length is overwritten in place */
+  jrn_key_hex(0x44, hex); snprintf(p, sizeof p, ROOT "/r/%s.pdr", hex);
+  memset(big, 'Z', sizeof big);
+  CHECK(f_open(&f, p, FA_WRITE | FA_CREATE_NEW) == FR_OK && f_write(&f, big, 40, &bw) == FR_OK && f_close(&f) == FR_OK, "plant a 40-byte leftover");
+  CHECK(jrn_redirect_write(fs, ROOT, 0x44, 0x11) == JRN_E_IO, "a too-long leftover blocks the redirect (loud), it is NOT unlinked");
+  sz = fs->size(0, p); CHECK(sz == 40, "the leftover is still there (%ld)", sz);
+  jrn_key_hex(0x55, hex); snprintf(p, sizeof p, ROOT "/r/%s.pdr", hex);
+  CHECK(f_open(&f, p, FA_WRITE | FA_CREATE_NEW) == FR_OK && f_write(&f, big, 16, &bw) == FR_OK && f_close(&f) == FR_OK, "plant a 16-byte garbage leftover");
+  CHECK(jrn_redirect_write(fs, ROOT, 0x55, 0x11) == JRN_OK && jrn_key_resolve(fs, ROOT, 0x55, &out) == JRN_OK && out == 0x11, "a right-sized leftover is overwritten in place");
 }
 
 static void t_verify_stops(void) {
@@ -814,6 +845,7 @@ int main(void) {
   t_half_header();
   t_compaction_floor();
   t_redirects();
+  t_pdr_layout();
   t_verify_stops();
   t_readonly();
   t_discard_marker();
