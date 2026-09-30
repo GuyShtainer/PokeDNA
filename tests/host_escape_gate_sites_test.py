@@ -560,6 +560,51 @@ def down_order_facts(lines, start, end):        # shared by the real check AND M
     return True, "ok"
 
 
+# #286/y12 review F3 (checks bd4/bd5, shared by the real check AND MUT BD4/BD5): "consume only after a landing".
+# bd4: in bank_down_exact an `if (!ok) return BANK_DOWN_REFUSED;` sits BETWEEN the accept_down( line and the
+# bank_down_consume( line, so a refused write can never reach the Bank consume. bd5: in bank_down_g3_run the
+# `if (!landed) {` block returns false before its closing brace and bank_down_consume( comes AFTER that block.
+REFUSED_RETURN_RE = re.compile(r"if\s*\(\s*!ok\s*\)\s*return\s+BANK_DOWN_REFUSED\s*;")
+NOT_LANDED_OPEN_RE = re.compile(r"if\s*\(\s*!landed\s*\)\s*\{")
+
+
+def _no_comment(lines, i):
+    t = lines[i].lstrip()
+    return not (t.startswith("/*") or t.startswith("*") or t.startswith("//"))
+
+
+def refused_before_consume_facts(lines):          # bd4
+    a = first_match_line(lines, 0, len(lines), ACCEPT_DOWN_RE)
+    c = next((i for i in range(len(lines)) if CONSUME_RE.search(lines[i]) and _no_comment(lines, i)), None)
+    if a is None or c is None:
+        return False, "bank_down_exact: accept_down( or bank_down_consume( not found"
+    r = next((i for i in range(a + 1, c) if REFUSED_RETURN_RE.search(lines[i])), None)
+    if r is None:
+        return False, ("bank_down_exact: no `if (!ok) return BANK_DOWN_REFUSED;` between accept_down( and "
+                       "bank_down_consume( -- a refused write would consume the Bank slot (a LOSS)")
+    return True, "ok"
+
+
+def landed_gates_consume_facts(lines):            # bd5
+    o = first_match_line(lines, 0, len(lines), NOT_LANDED_OPEN_RE)
+    if o is None:
+        return False, "bank_down_g3_run: no `if (!landed) {` block"
+    depth, close = 0, None
+    for i in range(o, len(lines)):
+        depth += lines[i].count("{") - lines[i].count("}")
+        if depth == 0:
+            close = i
+            break
+    if close is None:
+        return False, "bank_down_g3_run: unbalanced `if (!landed) {` block"
+    if not any(re.search(r"\breturn\s+false\s*;", lines[i]) for i in range(o, close)):
+        return False, "bank_down_g3_run: the `if (!landed) {` block does not return false -- a refused landing would fall through to the consume"
+    c = next((i for i in range(close + 1, len(lines)) if CONSUME_RE.search(lines[i]) and _no_comment(lines, i)), None)
+    if c is None:
+        return False, "bank_down_g3_run: no bank_down_consume( after the `if (!landed)` block"
+    return True, "ok"
+
+
 # BACKLOG #150 S150-12 decision 9: a COPY cell's DOWN writes no ledger entry -- the
 # `copy` derivation must precede the first ledger write, and every ledger-mutating
 # call in gb_bank_down_gen3/gb_bank_down_bridge must sit inside an `if (!copy`
@@ -1652,6 +1697,12 @@ def main() -> int:
     ok, d = down_order_facts(box_lines, sd, ed)
     check(ok, d)
 
+    ok, d = refused_before_consume_facts(box_lines[sd:ed])                       # bd4 (#286 review F3)
+    check(ok, d)
+    sg, eg = extract_function(box_lines, r"^bank_down_g3_run\(")
+    ok, d = landed_gates_consume_facts(box_lines[sg:eg])                         # bd5 (#286 review F3)
+    check(ok, d)
+
     # ---- (n) merged-tree review F4: bank_down_dispatch's three case->callee bindings ----
     sdd, edd = extract_function(box_lines, r"^bank_down_dispatch\(")
     dispatch_body = box_lines[sdd:edd]
@@ -2302,6 +2353,22 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str],
               f"caught but was not: {detail}")
         print(f"  MUT L demonstration -- app_bank_clear_slots() line swapped above "
               f"accept_down(): {detail}")
+    # MUT BD4 / MUT BD5 (#286 review F3): delete the guarded return, the facts must go RED.
+    bd4 = [ln for ln in down_body if not REFUSED_RETURN_RE.search(ln)]
+    check(len(bd4) == len(down_body) - 1, "MUT BD4: the real `if (!ok) return BANK_DOWN_REFUSED;` line not found exactly once")
+    ok, detail = refused_before_consume_facts(bd4)
+    check(not ok, f"MUT BD4 (refused return deleted) should have been caught but was not: {detail}")
+    print(f"  MUT BD4 demonstration -- `if (!ok) return BANK_DOWN_REFUSED;` deleted: {detail}")
+    sg, eg = extract_function(box_lines, r"^bank_down_g3_run\(")
+    g3_body = box_lines[sg:eg]
+    o = first_match_line(g3_body, 0, len(g3_body), NOT_LANDED_OPEN_RE)
+    check(o is not None, "MUT BD5: `if (!landed) {` not found")
+    if o is not None:
+        bd5 = [ln for i, ln in enumerate(g3_body) if not (i > o and re.search(r"\breturn\s+false\s*;", ln) and i < o + 4)]
+        check(len(bd5) == len(g3_body) - 1, "MUT BD5: the block's `return false;` not found exactly once")
+        ok, detail = landed_gates_consume_facts(bd5)
+        check(not ok, f"MUT BD5 (landed-block return deleted) should have been caught but was not: {detail}")
+        print(f"  MUT BD5 demonstration -- `if (!landed) {{ return false; }}` return deleted: {detail}")
     # MUT M (BACKLOG #150 S150-8 review F5): `bool converted = true;` at drop_held's own
     # top -- the exact defect the reviewer demonstrated (passes check (a) above, which
     # only looks at line POSITION relative to the first 80-byte memcpy, never the gate's
