@@ -604,6 +604,24 @@ static void t_staged_first_fill(void) {
 
 /* Ruling 5: bounds derive from the ring, never a fixed 512. One UNSAVED session of N steps, then the power
  * goes: the image on the card is the session's start, the load must anchor there and OFFER all N steps. */
+/* #302: next_run skips identical 64-byte windows through memcmp and step_region reuses crc[region] for a region with
+ * no differing byte. A single changed byte at EVERY window edge must still be found (one recorded span, exact
+ * undo), the tracked hash must stay the image's hash, and an untouched region's hash must be the old one. */
+static void t_window_edges(void) {
+  static const uint16_t offs[] = { 0, 1, 62, 63, 64, 65, 127, 128, 129, 191, 192, 3903, 3904, 3966, 3967 };
+  Jrn j; unsigned i; uint8_t before[RSZ];
+  world(&j, FM_FAT);
+  for (i = 0; i < sizeof offs / sizeof offs[0]; i++) {
+    uint32_t pre = jrn_hash(&j);
+    memcpy(before, g_img[5], RSZ);
+    CHECK(stage(&j, "edge", 0, 5, offs[i], 1, fresh_val(5, offs[i])) == JRN_OK, "edge %u: the lone byte is found", offs[i]);
+    CHECK(jrn_hash(&j) == ref_hash(), "edge %u: tracked hash == image hash", offs[i]);
+    CHECK(jrn_hash(&j) != pre, "edge %u: the hash moved", offs[i]);
+    CHECK(jrn_undo(&j, &IMG, 0) == JRN_OK && memcmp(g_img[5], before, RSZ) == 0, "edge %u: undo restores the exact byte", offs[i]);
+    CHECK(jrn_hash(&j) == pre && jrn_hash(&j) == ref_hash(), "edge %u: undo restores the hash", offs[i]);
+  }
+}
+
 static void t_long_session(void) {
   static const unsigned N[] = { 511, 512, 513, 600 };
   unsigned n, g; Jrn j; static uint8_t start[NREG][RSZ]; uint32_t av = 0, tot = 0, s0;
@@ -890,6 +908,7 @@ int main(void) {
   t_version_foreign();
   t_header_sector_alone();
   t_staged_first_fill();
+  t_window_edges();
   t_long_session();
   t_read_cost();
   t_index_after_retire();
