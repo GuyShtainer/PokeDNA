@@ -9428,7 +9428,8 @@ static void pdna_settings(void) {
           char m[44]; siprintf(m, "%d backup(s) removed.", rm);
           snd_ok(); msg_wait("CLEARED", UI_OK, m, 0);
         }
-      } else return;   /* S_CLOSE */
+      } else { cfg_save(); return; }   /* S_CLOSE -- #309: B already persisted; Close used to leave a changed
+                                        * History size / anim / yard / backup mode unsaved until something else wrote config.cfg */
     }
   }
 }

@@ -53,7 +53,7 @@ PY_TESTS = ["tests/host_hp_repaint_pin_test.py", "tests/host_stack_budget_test.p
             "tests/host_browser_parity_test.py",
             "tests/host_gb_grid_ops_test.py",
             "tests/host_gb_item_pick_test.py",
-            "tests/host_gb_grid_blocked_test.py", "tests/host_gb_visitors_note_sites_test.py", "tests/host_bank_move_step_name_test.py",
+            "tests/host_gb_grid_blocked_test.py", "tests/host_gb_visitors_note_sites_test.py", "tests/host_bank_move_step_name_test.py", "tests/host_settings_close_saves_test.py",
             "tests/host_stack_edges_hygiene_test.py",
             "tests/host_xfer_view_readonly_test.py",
             "tests/host_gb_claims_test.py", "tests/host_gb_open_direct_test.py",
