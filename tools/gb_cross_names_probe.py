@@ -10,7 +10,7 @@ step.  Observed on main d9504f0 + z3 (2026-10-01):
     UP  (GB -> Bank, last slot of Red box 1)      -> "Transfer up"
     DOWN exa (native Gen-2 Bank cell -> Gold)     -> "Transfer down"
     DOWN brg (native Gen-1 Bank cell -> Gold)     -> "Transfer down"
-    DOWN g3  (plain Gen-3 Bank cell -> Gold/Red)  -> "Paste"      <- the misnamed one (gb_persist("paste"))
+    DOWN g3  (plain Gen-3 Bank cell -> Gold/Red)  -> "Transfer down" (was "Paste" before the #310 fix: gb_persist("bank-down") now)
 No leg says "Box move".  Needs /tmp/host_vsdimg_test_tmpl (run tests/run_host_tests.py once).
 
     /usr/local/bin/python3 tools/gb_cross_names_probe.py RED.gba GOLD.gba OUTDIR     (fuse_gb.py images)
