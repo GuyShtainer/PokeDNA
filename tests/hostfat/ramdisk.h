@@ -62,6 +62,7 @@ extern unsigned long rd_reads;    /* SECTORS delivered by disk_read            *
  * carrying 42 sectors and 21 calls carrying 42 sectors move the same bytes at very
  * different prices, and rd_reads alone cannot tell them apart. */
 extern unsigned long rd_read_calls;
+extern unsigned long rd_write_calls;   /* disk_write CALLS (the write-side transfer count) */
 /* How many disk_read calls started at a LOWER sector than the previous call did, and
  * the previous call's start. A backward seek is the one case FatFs restarts a cluster
  * walk from the head of the chain (ff.c:4527) -- a forward one resumes incrementally
@@ -70,5 +71,37 @@ extern unsigned long rd_read_calls;
  * the region it means to measure. */
 extern unsigned long rd_read_back;
 extern unsigned long rd_read_last;
+
+/* ---- the POWER CUT (y19-s1) -- unlike the honest-error / liar knobs above, a cut is not an
+ * error return: the process is simply gone. The first N sectors of a run land intact, the
+ * next one lands TORN (its first rd_cut_torn bytes new, the rest still the old bytes -- a
+ * sector programmed part way), nothing after it lands, and every later disk_write reports
+ * RES_ERROR so the operation under test unwinds fast (the test never trusts what the
+ * dead process would have done next; it remounts the RAM disk and reads what is on it).
+ *
+ *   rd_cut_sectors >= 0 : that many MORE sectors land, then power is cut (-1 = disabled)
+ *   rd_cut_torn         : bytes (0..511) of the FIRST sector past the cut that still land
+ *   rd_cut_fired        : set when the cut has happened
+ * rd_snapshot()/rd_restore() make thousands of cut points affordable: restore rewinds only
+ * the sectors written since the snapshot. rd_fattime_now (0 = the fixed default stamp) is
+ * the live RTC; rd_fattime_hook, when set, is get_fattime's filter -- the seam the
+ * journal's frozen-timestamp hook plugs into on the host exactly as slice 2 plugs it into
+ * diskio_write.c's get_fattime on the cartridge. */
+#include <stdint.h>
+extern long rd_cut_sectors;
+extern int  rd_cut_torn;
+extern int  rd_cut_fired;
+extern int  rd_cut_garbage;       /* !=0: the torn sector's UNWRITTEN suffix becomes noise (the garbage tear),
+                                   * not the old bytes (the shorn tear, the default). rd_cut_torn = 0 then
+                                   * means the whole sector is noise. */
+void rd_poison(unsigned char v);  /* fill the whole volume with v (call right after rd_init, before mkfs):
+                                   * free space then holds garbage, like a card that was used before */
+extern uint32_t rd_fattime_now;
+extern uint32_t (*rd_fattime_hook)(uint32_t live);
+void rd_snapshot(void);           /* remember the volume as it is now */
+void rd_restore(void);            /* rewind to the snapshot; clears the cut + write counters */
+unsigned char* rd_sector(unsigned lba);   /* peek at a sector (test-side inspection) */
+unsigned rd_sector_count(void);
+unsigned rd_changed(unsigned* out, unsigned max);   /* sectors whose bytes differ from the snapshot */
 
 #endif /* HOSTFAT_RAMDISK_H */

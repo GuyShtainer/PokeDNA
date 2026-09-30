@@ -17,10 +17,19 @@ long rd_fail_at = -1;
 long rd_fail_reads_after = -1;
 long rd_fail_read_at = -1;
 unsigned long rd_writes = 0, rd_reads = 0, rd_lied = 0, rd_read_fails = 0;
-unsigned long rd_read_calls = 0, rd_read_back = 0, rd_read_last = 0;
+unsigned long rd_read_calls = 0, rd_read_back = 0, rd_read_last = 0, rd_write_calls = 0;
+
+long rd_cut_sectors = -1;
+int  rd_cut_torn = 0;
+int  rd_cut_fired = 0;
+int  rd_cut_garbage = 0;
+uint32_t rd_fattime_now = 0;
+uint32_t (*rd_fattime_hook)(uint32_t live) = 0;
 
 static unsigned char* s_mem = 0;
 static unsigned       s_sectors = 0;
+static unsigned char* s_snap = 0;    /* the volume as rd_snapshot() saw it */
+static unsigned char* s_dirty = 0;   /* per sector: written since the snapshot */
 
 void rd_init(unsigned sectors) {
   rd_free();
@@ -28,11 +37,51 @@ void rd_init(unsigned sectors) {
   s_mem = calloc(sectors, FF_MAX_SS);
   rd_protect = 0; rd_fail_write_in = 0; rd_fail_all_writes = 0; rd_lie_writes = 0;
   rd_fail_reads_after = -1; rd_fail_read_at = -1; rd_lie_after = -1; rd_fail_at = -1;
+  rd_cut_sectors = -1; rd_cut_torn = 0; rd_cut_fired = 0; rd_cut_garbage = 0;
+  rd_fattime_now = 0; rd_fattime_hook = 0;
   rd_writes = rd_reads = rd_lied = rd_read_fails = 0;
-  rd_read_calls = rd_read_back = rd_read_last = 0;
+  rd_read_calls = rd_read_back = rd_read_last = 0; rd_write_calls = 0;
 }
 
-void rd_free(void) { free(s_mem); s_mem = 0; s_sectors = 0; }
+void rd_free(void) {
+  free(s_mem); free(s_snap); free(s_dirty);
+  s_mem = 0; s_snap = 0; s_dirty = 0; s_sectors = 0;
+}
+
+void rd_poison(unsigned char v) { if (s_mem) memset(s_mem, v, (size_t)s_sectors * FF_MAX_SS); }
+
+void rd_snapshot(void) {
+  free(s_snap); free(s_dirty);
+  s_snap = malloc((size_t)s_sectors * FF_MAX_SS);
+  s_dirty = calloc(s_sectors, 1);
+  if (s_snap && s_mem) memcpy(s_snap, s_mem, (size_t)s_sectors * FF_MAX_SS);
+}
+
+void rd_restore(void) {
+  unsigned i;
+  if (!s_snap || !s_mem) return;
+  for (i = 0; i < s_sectors; i++)
+    if (s_dirty[i]) {
+      memcpy(s_mem + (size_t)i * FF_MAX_SS, s_snap + (size_t)i * FF_MAX_SS, FF_MAX_SS);
+      s_dirty[i] = 0;
+    }
+  rd_cut_sectors = -1; rd_cut_torn = 0; rd_cut_fired = 0;
+  rd_writes = rd_lied = 0;
+}
+
+unsigned char* rd_sector(unsigned lba) { return (s_mem && lba < s_sectors) ? s_mem + (size_t)lba * FF_MAX_SS : 0; }
+unsigned rd_sector_count(void) { return s_sectors; }
+
+unsigned rd_changed(unsigned* out, unsigned max) {
+  unsigned i, n = 0;
+  if (!s_snap || !s_mem || !s_dirty) return 0;
+  for (i = 0; i < s_sectors; i++)
+    if (s_dirty[i] && memcmp(s_mem + (size_t)i * FF_MAX_SS, s_snap + (size_t)i * FF_MAX_SS, FF_MAX_SS) != 0) {
+      if (n < max) out[n] = i;
+      n++;
+    }
+  return n;
+}
 
 DSTATUS disk_initialize(BYTE pdrv) { (void)pdrv; return s_mem ? 0 : STA_NOINIT; }
 
@@ -67,6 +116,7 @@ DRESULT disk_read(BYTE pdrv, BYTE* buff, LBA_t sector, UINT count) {
 
 DRESULT disk_write(BYTE pdrv, const BYTE* buff, LBA_t sector, UINT count) {
   (void)pdrv;
+  rd_write_calls++;
   if (!s_mem) return RES_NOTRDY;
   if (rd_protect) return RES_WRPRT;
   if (rd_fail_all_writes) return RES_ERROR;
@@ -91,7 +141,31 @@ DRESULT disk_write(BYTE pdrv, const BYTE* buff, LBA_t sector, UINT count) {
     if (rd_lie_after < 0) rd_lie_after = 0;
   }
   if (rd_lie_writes) { rd_lied += count; return RES_OK; }
+  if (rd_cut_fired) return RES_ERROR;          /* the process is dead: nothing more lands */
+  if (rd_cut_sectors >= 0) {                   /* the power cut, sector by sector */
+    UINT i;
+    for (i = 0; i < count; i++) {
+      unsigned char* dst = s_mem + (size_t)(sector + i) * FF_MAX_SS;
+      if (rd_cut_sectors == 0) {               /* this sector is the one in flight */
+        if (rd_cut_torn > 0 || rd_cut_garbage) {
+          size_t pre = (size_t)(rd_cut_torn < FF_MAX_SS ? rd_cut_torn : FF_MAX_SS), b;
+          uint32_t x = 0x9E3779B9u ^ (uint32_t)(sector + i) * 2654435761u;
+          memcpy(dst, buff + (size_t)i * FF_MAX_SS, pre);
+          if (rd_cut_garbage)                    /* the GARBAGE tear: the unwritten suffix is noise, not the old bytes */
+            for (b = pre; b < FF_MAX_SS; b++) { x ^= x << 13; x ^= x >> 17; x ^= x << 5; dst[b] = (unsigned char)x; }
+          if (s_dirty) s_dirty[sector + i] = 1;
+        }
+        rd_cut_fired = 1;
+        return RES_ERROR;
+      }
+      memcpy(dst, buff + (size_t)i * FF_MAX_SS, FF_MAX_SS);
+      if (s_dirty) s_dirty[sector + i] = 1;
+      rd_writes++; rd_cut_sectors--;
+    }
+    return RES_OK;
+  }
   memcpy(s_mem + (size_t)sector * FF_MAX_SS, buff, (size_t)count * FF_MAX_SS);
+  if (s_dirty) { UINT i; for (i = 0; i < count; i++) s_dirty[sector + i] = 1; }
   rd_writes += count;
   return RES_OK;
 }
@@ -110,6 +184,8 @@ DRESULT disk_ioctl(BYTE pdrv, BYTE cmd, void* buff) {
 
 /* 2026-08-18 12:00:00, so a rotated file's timestamp is deterministic. */
 DWORD get_fattime(void) {
-  return ((DWORD)(2026 - 1980) << 25) | ((DWORD)8 << 21) | ((DWORD)18 << 16) |
-         ((DWORD)12 << 11) | ((DWORD)0 << 5) | 0;
+  uint32_t t = rd_fattime_now ? rd_fattime_now :
+      (((uint32_t)(2026 - 1980) << 25) | ((uint32_t)8 << 21) | ((uint32_t)18 << 16) |
+       ((uint32_t)12 << 11) | ((uint32_t)0 << 5) | 0);
+  return (DWORD)(rd_fattime_hook ? rd_fattime_hook(t) : t);
 }
