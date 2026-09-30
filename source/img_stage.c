@@ -27,10 +27,30 @@ static const char* default_name(uint16_t mask) {
 
 /* One attempt: begin, one region per staged section (old = what g_save holds NOW, new = the block), end.
  * The engine aborts a half-built step on any region error, so a failure leaves nothing pending. */
+/* Slice 4: a flat (Game Boy) image pair -- region id = the id-th `regsz` window of both buffers. */
+typedef struct { const uint8_t* old_img; const uint8_t* new_img; uint16_t regsz; uint8_t nreg; } FlatPair;
+
+/* A read-only accessor over a FlatPair's OLD image: a resync must re-hash the baseline, not the image that already
+ * holds the edit (the Game Boy session edits in place, so the accessor bound at open sees the NEW bytes). */
+static int fp_get_old(void* ctx, uint8_t region, uint16_t off, uint8_t* dst, uint16_t n) {
+  const FlatPair* fp = (const FlatPair*)ctx;
+  if (!fp || !dst || region >= fp->nreg || (uint32_t)off + n > fp->regsz) return -1;
+  memcpy(dst, fp->old_img + (uint32_t)region * fp->regsz + off, n);
+  return 0;
+}
+
 static int rec_try(ImgRec* r, const char* name, int crossed, const uint8_t* save, int slot, uint16_t mask,
-                   const uint8_t* const* blk) {
+                   const uint8_t* const* blk, const FlatPair* fp) {
   int rc = jrn_step_begin(r->j, name, crossed), id;
   if (rc) return rc;
+  if (fp) {
+    for (id = 0; id < (int)fp->nreg; id++) {
+      rc = jrn_step_region(r->j, (uint8_t)id, fp->old_img + (uint32_t)id * fp->regsz,
+                           fp->new_img + (uint32_t)id * fp->regsz);
+      if (rc) return rc;
+    }
+    return jrn_step_end(r->j);
+  }
   for (id = 0; id < (int)IMG_NSEC; id++) {
     const uint8_t* old_blk;
     if (!((mask >> id) & 1u)) continue;
@@ -53,19 +73,24 @@ static void rec_lost(ImgRec* r, const char* what, int rc) {
 /* Journal the difference as ONE step. Never fails the staging that follows: a step that cannot be
  * recorded is counted (state GAP) and the image is staged regardless -- the .sav write at exit is
  * the product, the journal is the safety net, and the UI must never claim what was not recorded. */
-static void rec_step(ImgRec* r, const uint8_t* save, int slot, uint16_t mask, const uint8_t* const* blk) {
+static void rec_step(ImgRec* r, const uint8_t* save, int slot, uint16_t mask, const uint8_t* const* blk,
+                     const FlatPair* fp) {
   const char* name;
   int crossed, rc = JRN_E_STATE, attempt;
   if (!r || !r->j || r->state == IREC_OFF) return;
-  name = r->name ? r->name : default_name(mask);
+  name = r->name ? r->name : (fp ? "Edit" : default_name(mask));
   crossed = r->epoch != r->epoch_seen;
   for (attempt = 0; attempt < 3; attempt++) {
-    rc = rec_try(r, name, crossed, save, slot, mask, blk);
+    rc = rec_try(r, name, crossed, save, slot, mask, blk, fp);
     if (rc == JRN_OK) { r->epoch_seen = r->epoch; return; }
     if (rc == JRN_NOOP) return;                                  /* nothing changed: nothing to record */
     if (rc == JRN_E_FULL) { if (r->flush) (void)r->flush(); continue; }   /* flush, then re-stage in a clear buffer */
     if (rc == JRN_E_DIVERGED) {                                  /* a write outside the funnel moved g_save */
-      if (jrn_recompute(r->j, &r->img) != 0) break;
+      if (fp) {
+        JrnImage oi;
+        oi.ctx = (void*)fp; oi.get = fp_get_old; oi.set = 0;
+        if (jrn_recompute(r->j, &oi) != 0) break;
+      } else if (jrn_recompute(r->j, &r->img) != 0) break;
       r->last_what = "resync"; r->last_rc = rc; r->lost++;
       crossed = 1;                  /* the resynced base is not the recorded chain's base: floor here too */
       if (r->state == IREC_OK) r->state = IREC_GAP;
@@ -79,7 +104,7 @@ static void rec_step(ImgRec* r, const uint8_t* save, int slot, uint16_t mask, co
 /* ---- staging ----------------------------------------------------------------------------------------- */
 static void stage_now(ImgFlags* f, ImgRec* r, uint8_t* save, int slot, uint16_t mask, const uint8_t* const* blk) {
   int id;
-  rec_step(r, save, slot, mask, blk);
+  rec_step(r, save, slot, mask, blk, 0);
   for (id = 0; id < (int)IMG_NSEC; id++) {
     const uint8_t* cur;
     if (!((mask >> id) & 1u)) continue;
@@ -170,3 +195,15 @@ bool img_scope_close(ImgFlags* f, ImgRec* r, uint8_t* save, int slot) {
 
 void img_rec_cross(ImgRec* r) { if (r) r->epoch++; }
 void img_rec_name(ImgRec* r, const char* name) { if (r) r->name = name; }
+
+/* ---- slice 4: the Game Boy image -------------------------------------------------------------------------------- */
+bool img_rec_flat(ImgRec* r, const uint8_t* old_img, const uint8_t* new_img, uint8_t nreg, uint16_t regsz,
+                  const char* name) {
+  FlatPair fp;
+  if (!r || !r->j || r->state == IREC_OFF || !old_img || !new_img || !nreg || nreg > JRN_NREG_MAX || !regsz) return false;
+  fp.old_img = old_img; fp.new_img = new_img; fp.regsz = regsz; fp.nreg = nreg;
+  r->name = name;
+  rec_step(r, 0, 0, 0, 0, &fp);
+  r->name = 0;
+  return true;
+}
