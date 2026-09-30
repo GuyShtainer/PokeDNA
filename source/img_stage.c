@@ -165,6 +165,9 @@ bool img_scope_close(ImgFlags* f, ImgRec* r, uint8_t* save, int slot) {
   if (r->depth) return true;
   (void)img_scope_flush(f, r, save, slot);
   r->name = 0;
+  /* Rest-point high-water flush (#234 ruling): the screen is static here, so a nearly-full pend is written NOW
+   * rather than by the next step's JRN_E_FULL fallback (rec_step) in the middle of its animation. */
+  if (r->j && r->flush && jrn_pending(r->j) && jrn_pend_free(r->j) < JRN_PEND_HIWATER) (void)r->flush();
   return true;
 }
 

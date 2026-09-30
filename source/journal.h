@@ -56,6 +56,10 @@
 #define JRN_REC_MIN       56u   /* header + CRC32 = a span-less marker record           */
 #define JRN_REC_MAX      512u   /* no record is ever longer                             */
 #define JRN_PEND_CAP     512u   /* the pending (batched) buffer                         */
+#define JRN_PEND_HIWATER 456u   /* CONFIG (not format): the step-end rest hook flushes when the pend's free space is below
+                                 * this. 456 = JRN_PEND_CAP - JRN_REC_MIN, i.e. any real (span-carrying) record trips it, so the
+                                 * flush happens at the rest point and the NEXT step (worst-case swap record ~400 B of spans +
+                                 * the 52 B header = 452 B) always fits a fresh buffer: no mid-animation JRN_E_FULL flush */
 #define JRN_FLUSH_HEADROOM 384u /* free pending bytes below which a flush is REQUESTED  */
 #define JRN_MAX_SEGS      16u   /* retention cap: cfg.max_segs is clamped to this (the ring is max_segs + 1 slots) */
 #define JRN_RING_MAX      17u   /* JRN_MAX_SEGS + 1 spare slot: the per-segment index and every walk bound derive from it */
@@ -285,6 +289,7 @@ int  jrn_step_begin(Jrn* j, const char* name, int crossed);
 int  jrn_step_region(Jrn* j, uint8_t region, const uint8_t* old_blk, const uint8_t* new_blk);
 int  jrn_step_end(Jrn* j);
 void jrn_step_abort(Jrn* j);
+uint16_t jrn_pend_free(const Jrn* j);     /* free bytes in the pending buffer (0 for a null journal) */
 int  jrn_flush_wanted(const Jrn* j);      /* pending buffer nearly full: flush at the next idle frame */
 /* Write the pending records (back to front), then re-read and compare. */
 int  jrn_flush(Jrn* j);
