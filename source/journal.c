@@ -20,12 +20,13 @@
 
 _Static_assert(JRN_PEND_MAXN * JRN_REC_MIN <= JRN_PEND_CAP, "pending record count bound");
 _Static_assert(JRN_REC_MAX <= JRN_PEND_CAP, "a record must fit the pending buffer");
+_Static_assert(ZWINDOW >= JRN_PEND_CAP, "the torn-tail zero window must cover a whole orphaned back-to-front batch");
 _Static_assert(JRN_SEG_SIZE % 512u == 0 && JRN_SEG_HDR <= 512u, "the zero seam works in 512-byte chunks that tile a segment");
 _Static_assert(JRN_REC_BASE % 512u == 0 && JRN_REC_BASE >= JRN_SEG_HDR && JRN_REC_BASE + JRN_REC_MAX < JRN_SEG_SIZE, "records start on a sector boundary, after the header sector");
 
 /* ---- the frozen-timestamp hook -------------------------------------------------------------- */
-static uint32_t s_hold_stamp;   /* the held FAT stamp (only meaningful while s_hold_on)   */
-static uint8_t  s_hold_on;
+static uint32_t JRN_EWRAM_BSS s_hold_stamp;   /* the held FAT stamp (only meaningful while s_hold_on)   */
+static uint8_t  JRN_EWRAM_BSS s_hold_on;
 
 uint32_t jrn_fattime_filter(uint32_t live) { return s_hold_on ? s_hold_stamp : live; }
 int      jrn_stamp_held(void) { return s_hold_on; }
@@ -55,11 +56,14 @@ uint64_t jrn_key64(const uint8_t* name, uint8_t name_len, uint16_t tid, uint16_t
                    uint8_t gender, uint8_t frlg) {
   uint64_t h = 0xCBF29CE484222325ull;
   uint8_t i;
-  for (i = 0; name && i < name_len; i++) h = fnv_byte(h, name[i]);
+  /* CANONICAL: the name bytes up to (excluding) the first 0xFF Gen-3 terminator -- the 0xFF padding of the
+   * 7-byte name field and any garbage after the terminator never change the key; gender and frlg are
+   * booleans (0 / non-zero -> 0 / 1). See the key contract in journal.h. */
+  for (i = 0; name && i < name_len && name[i] != 0xFFu; i++) h = fnv_byte(h, name[i]);
   h = fnv_byte(h, (uint8_t)tid); h = fnv_byte(h, (uint8_t)(tid >> 8));
   h = fnv_byte(h, (uint8_t)sid); h = fnv_byte(h, (uint8_t)(sid >> 8));
-  h = fnv_byte(h, gender);
-  h = fnv_byte(h, frlg);
+  h = fnv_byte(h, gender ? 1u : 0u);
+  h = fnv_byte(h, frlg ? 1u : 0u);
   return h;
 }
 
@@ -180,25 +184,30 @@ static int seg_verify(const Jrn* j, uint16_t idx, uint32_t off, const uint8_t* b
   return 0;
 }
 
-/* Header: 'PDJS', ver u16, ring u16, logical index u32, zeros, crc32 of the first 28 bytes.
- * All-zero = a FREE slot (never written, or retired in place). */
-static void seg_hdr_build(uint16_t idx, uint16_t ring, uint8_t* h) {
+/* Header (the field-by-field reserved-byte policy is in journal.h): 'PDJS', ver u16, ring u16, logical index
+ * u32, nreg u8, rsv u8, reg_size u16, 12 zero bytes, crc32 of the first 28 bytes. All-zero = a FREE slot
+ * (never written, or retired in place). */
+static void seg_hdr_build(uint16_t idx, uint16_t ring, uint8_t nreg, uint16_t reg_size, uint8_t* h) {
   memset(h, 0, JRN_SEG_HDR);
   h[0] = 'P'; h[1] = 'D'; h[2] = 'J'; h[3] = 'S';
   jrn_wr16(h + 4, SEG_VER);
   jrn_wr16(h + 6, ring);
   jrn_wr32(h + 8, idx);
+  h[12] = nreg;                       /* [13] reserved: writer zero */
+  jrn_wr16(h + 14, reg_size);
   jrn_wr32(h + 28, jrn_crc32_update(0, h, 28));
 }
 
 /* Tri-state (the version rule in journal.h). 0 = FREE: bad magic or bad crc (never written, retired in
- * place, or torn). 1 = LIVE: magic + crc hold and version, index and ring are ones this build knows.
- * SLOT_FOREIGN: magic + crc hold but the version, index or ring is NOT -- somebody else's data. */
-static int hdr_parse(const uint8_t* h, uint32_t* idx, uint16_t* ring) {
+ * place, or torn). 1 = LIVE: magic + crc hold and version, index, ring and the region layout are ones this
+ * build knows. SLOT_FOREIGN: magic + crc hold but the version, index, ring or layout is NOT -- somebody
+ * else's data (bytes 13 and 16..27 are reserved: writer zero, reader IGNORES them). */
+static int hdr_parse(const uint8_t* h, uint32_t* idx, uint16_t* ring, uint8_t* nreg, uint16_t* reg_size) {
   if (h[0] != 'P' || h[1] != 'D' || h[2] != 'J' || h[3] != 'S') return 0;
   if (jrn_crc32_update(0, h, 28) != jrn_rd32(h + 28)) return 0;
-  *idx = jrn_rd32(h + 8); *ring = jrn_rd16(h + 6);
+  *idx = jrn_rd32(h + 8); *ring = jrn_rd16(h + 6); *nreg = h[12]; *reg_size = jrn_rd16(h + 14);
   if (jrn_rd16(h + 4) != SEG_VER || *idx < 1u || *idx > SEG_MAX || *ring < 2u || *ring > RING_MAX) return SLOT_FOREIGN;
+  if (!*nreg || *nreg > JRN_NREG_MAX || !*reg_size) return SLOT_FOREIGN;
   return 1;
 }
 
@@ -206,14 +215,18 @@ static int hdr_parse(const uint8_t* h, uint32_t* idx, uint16_t* ring) {
  * a partial file, SLOT_FOREIGN = a header this build does not understand, JRN_E_IO = the card failed. */
 static int slot_hdr(const Jrn* j, uint16_t slot, uint32_t* idx, uint16_t* ring) {
   char p[JRN_PATH_MAX];
-  uint8_t h[JRN_SEG_HDR];
+  uint8_t h[JRN_SEG_HDR], nreg = 0;
+  uint16_t rsz = 0;
   long sz;
+  int rc;
   if (p_slot(j->root, j->key, slot, p)) return 0;
   sz = j->fs->size(j->fs->ctx, p);
   if (sz < -1) return JRN_E_IO;
   if (sz != (long)JRN_SEG_SIZE) return 0;
   if (j->fs->read(j->fs->ctx, p, 0, h, JRN_SEG_HDR) != 0) return JRN_E_IO;
-  return hdr_parse(h, idx, ring);
+  rc = hdr_parse(h, idx, ring, &nreg, &rsz);
+  if (rc == 1 && (nreg != j->nreg || rsz != j->reg_size)) return SLOT_FOREIGN;   /* another region layout: detectable, never a silent NEWROOT */
+  return rc;
 }
 
 static int seg_valid(const Jrn* j, uint16_t idx) {
@@ -816,7 +829,7 @@ static int seg_activate(Jrn* j, uint16_t idx) {
   if (rc == 1) return JRN_E_STATE;                                     /* a live segment owns it */
   rc = slot_zero(j, idx);
   if (rc) return rc;
-  seg_hdr_build(idx, j->ring, h);
+  seg_hdr_build(idx, j->ring, j->nreg, j->reg_size, h);
   rc = seg_write(j, idx, 0, h, JRN_SEG_HDR);
   if (rc) return rc;
   idx_set(j, idx, 0);                                   /* a fresh segment holds no record yet */
@@ -907,6 +920,8 @@ int jrn_step_begin(Jrn* j, const char* name, int crossed) {
   if (j->stopped) return JRN_E_STOPPED;
   if (!j->tail_seg) return JRN_E_NOSEG;             /* no segment to record into: refuse at the door, never buffer for a flush that cannot happen */
   if (j->bld_len) return JRN_E_STATE;
+  for (i = 0; i < JRN_NAME_LEN && name[i]; i++)
+    if ((uint8_t)name[i] < 0x20u || (uint8_t)name[i] > 0x7Eu) return JRN_E_ARG;   /* step names are printable ASCII (journal.h) */
   if (j->pend_n >= JRN_PEND_MAXN || pend_room(j) < JRN_REC_MIN) { j->flush_wanted = 1; return JRN_E_FULL; }
   b = j->pend + j->pend_len;
   memset(b, 0, JRN_REC_HDR);

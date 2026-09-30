@@ -258,9 +258,10 @@ static int keydir_broken(void) {
  * directory set can make CREATING impossible (FatFs itself refuses): that is counted, must be
  * confirmed at the FatFs level, and the journal must still append into what already exists. */
 static void recover_and_use(BYTE fmt, const char* what, unsigned k, int tear, int dirmut, int si) {
-  Jrn j; static uint8_t keep[NREG][RSZ]; int rc; uint8_t reg = 6;
+  Jrn j; static uint8_t keep[NREG][RSZ]; int rc; uint8_t reg = 6; uint32_t nseq0;
   memcpy(keep, g_img, sizeof g_img);
   rc = jopen(&j, K);
+  nseq0 = j.next_seq;
   if (rc && fmt == FM_EXFAT && tear > 0 && dirmut == 1 && keydir_broken()) { if (g_garbage) g_gtal[si][GC_EXFAT]++; else { g_ffB++; sc_hazB[si]++; } return; }   /* a torn first-fill create damaged the key directory: the open FAILS LOUDLY (counted, accepted residual) */
   SCHECK(GC_REOPEN, rc == JRN_OK, "%s k=%u tear=%d: reopen after the cut -> %d", what, k, tear, rc);
   if (rc) return;
@@ -281,6 +282,10 @@ static void recover_and_use(BYTE fmt, const char* what, unsigned k, int tear, in
   SCHECK(GC_RECORD, rc == JRN_OK, "%s k=%u tear=%d: record+flush after the cut -> %d", what, k, tear, rc);
   if (rc) return;
   rc = jopen(&j, K);
+  /* CONTINUITY (the reviewer's test gap): one post-cut step is exactly ONE more record. An orphan of the cut that
+   * repair left in place (e.g. a record a crossing flush wrote into the NEXT segment) would be RE-LINKED behind the
+   * new step by seq continuity and inflate the count. */
+  SCHECK(GC_RECORD, rc == JRN_OK && j.next_seq == nseq0 + 1u, "%s k=%u tear=%d: a post-cut step added %d records (next_seq %u -> %u): an orphan was re-linked", what, k, tear, rc ? -1 : (int)(j.next_seq - nseq0), (unsigned)nseq0, (unsigned)j.next_seq);
   if (!rc) rc = jrn_undo(&j, &IMG, 0);
   SCHECK(GC_UNDO, rc == JRN_OK && memcmp(keep, g_img, sizeof g_img) == 0, "%s k=%u tear=%d: undo after the cut -> %d", what, k, tear, rc);
 }
@@ -352,7 +357,7 @@ static void sweep_one(BYTE fmt, const Scn* sc, int garbage) {
   }
   g_points += W;
   printf("    %-30s %4lu sectors x %d tears  before=%08x after=%08x  [%s -> %s]\n", sc->name, W, NTEAR, before, after, d1, d2);
-  if (sc_hazA[sc - SCN] || sc_hazB[sc - SCN]) printf("      (exFAT, running total for this scenario: %lu hidden-segment, %lu blocked-create cut runs)\n", sc_hazA[sc - SCN], sc_hazB[sc - SCN]);
+  if (fmt == FM_EXFAT && (sc_hazA[sc - SCN] || sc_hazB[sc - SCN])) printf("      (exFAT, running total for this scenario: %lu hidden-segment, %lu blocked-create cut runs)\n", sc_hazA[sc - SCN], sc_hazB[sc - SCN]);
 }
 
 /* Which sectors did the last operation change, and are they ALL data sectors of `seg`? */

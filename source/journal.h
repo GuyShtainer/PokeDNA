@@ -40,6 +40,13 @@
 
 #include <stdint.h>
 
+/* Placement of the engine's two hold statics (the frozen-timestamp hook is read by get_fattime WHILE a card
+ * transfer runs, when ROM is unmapped): on the cartridge define this as tonc's EWRAM_BSS (compiler line or
+ * before the include); it is empty on the host. */
+#ifndef JRN_EWRAM_BSS
+#define JRN_EWRAM_BSS
+#endif
+
 /* ---- format constants (the values as landed) ------------------------------------- */
 #define JRN_SEG_SIZE   65536u   /* every segment file is exactly this long, pre-zeroed */
 #define JRN_SEG_HDR       32u   /* 'PDJS', ver u16, ring u16, index u32, zeros, crc32   */
@@ -73,6 +80,27 @@
  * meaning, a moved offset, a bigger ring) BUMPS JRN_SEG_VER. */
 #define JRN_SEG_VER        1u
 #define JRN_PDR_VER        1u   /* the .pdr redirect layout version (byte 3) */
+
+/* THE SEGMENT HEADER (sector 0, 32 bytes at offset 0; the rest of the sector is zero and never written):
+ *   [0..3]  'PDJS'                    magic          reader: bad magic = FREE slot
+ *   [4..5]  version u16 (JRN_SEG_VER)               reader: unknown = FOREIGN  (the version rule above)
+ *   [6..7]  ring u16, 2..JRN_RING_MAX               reader: outside = FOREIGN
+ *   [8..11] logical index u32, 1..9999              reader: outside = FOREIGN (the cap is part of the format)
+ *   [12]    nreg u8      regions of the image       reader: 0 / > JRN_NREG_MAX = FOREIGN; != cfg.nreg = FOREIGN
+ *   [13]    reserved                                writer ZERO, reader IGNORES
+ *   [14..15] reg_size u16 bytes per region          reader: 0 = FOREIGN; != cfg.reg_size = FOREIGN
+ *   [16..27] reserved                               writer ZERO, reader IGNORES
+ *   [28..31] crc32 of [0..27]                       reader: mismatch = FREE slot (a torn write is never foreign)
+ * A layout mismatch (a different game layout under the same key) is therefore DETECTABLE -- the journal opens
+ * read-only with JRN_E_VERSION -- never a silent JRN_ANCHOR_NEWROOT. "Reader ignores" bytes are covered by the
+ * crc, so a writer that starts using them MUST bump JRN_SEG_VER.
+ * STEP NAMES are printable ASCII 0x20..0x7E, NUL padded, at most JRN_NAME_LEN bytes (longer is truncated):
+ * jrn_step_begin refuses anything else with JRN_E_ARG. The READER accepts any bytes (the crc protects them):
+ * a UI must render non-printables as '?'.
+ * THE KEY (jrn_key64): FNV-1a 64 over the CANONICAL name bytes -- everything before the first 0xFF Gen-3
+ * terminator, so the 0xFF padding of the name field and garbage after the terminator never move the key --
+ * then TID, SID (u16 LE each), gender and frlg as BOOLEANS (0 or non-zero, hashed as 0 / 1). frlg = 0 is the
+ * Ruby/Sapphire/Emerald layout, 1 the FireRed/LeafGreen layout: the two layouts never share a journal. */
 
 /* Record: [0..3] 'PDJR' | [4..5] len | [6] flags (bit0 crossed, bits4-5 kind) |
  * [7] nspans | [8..11] seq | [12..15] parent | [16..19] aux | [20..23] pre_hash |
@@ -205,7 +233,8 @@ typedef struct JrnRec {
 
 /* ---- pure helpers ---------------------------------------------------------------------- */
 uint32_t jrn_crc32_update(uint32_t crc, const void* data, uint32_t n); /* chainable, zlib-compatible */
-/* FNV-1a 64 over name + TID + SID + gender + FRLG layout bit. Plain arguments only. */
+/* FNV-1a 64 over the CANONICAL name + TID + SID + gender + FRLG layout bit (see THE KEY above). Plain
+ * arguments only. */
 uint64_t jrn_key64(const uint8_t* name, uint8_t name_len, uint16_t tid, uint16_t sid,
                    uint8_t gender, uint8_t frlg);
 void     jrn_key_hex(uint64_t key, char out[17]);        /* 16 lowercase hex digits + NUL */
@@ -230,8 +259,11 @@ int jrn_key_resolve(const JrnFs* fs, const char* root, uint64_t key, uint64_t* o
 
 /* ---- open / safe-moment operations ------------------------------------------------------- */
 /* Read the journal: resolve the key, validate the longest valid prefix, ZERO the torn tail
- * IN PLACE (unless readonly), derive the per-region CRCs from `img`, and anchor the cursor
- * by post_hash. Never creates a segment (see jrn_prepare). */
+ * IN PLACE (unless readonly), derive the per-region CRCs from `img`, build the per-segment first-seq
+ * index and anchor the cursor by post_hash. Never creates a segment (see jrn_prepare).
+ * Returns JRN_OK; JRN_E_VERSION when the journal (or a redirect to it) is FOREIGN -- j is then read-only,
+ * foreign and EMPTY, nothing was written; or JRN_E_IO on ANY card error: a read error is never a shorter
+ * ring, an empty journal, a moved tail or another key -- j must not be used after an error. */
 int  jrn_open(Jrn* j, const JrnCfg* cfg, const JrnImage* img);
 /* Safe moment (load / after a verified exit save): make the dir, the tail segment and the
  * NEXT segment exist. jrn_prepare_first makes only the dir, the whole ring of slot files (first

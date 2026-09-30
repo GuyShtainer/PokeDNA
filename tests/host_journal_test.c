@@ -37,6 +37,11 @@ static void t_crc_and_keys(void) {
   CHECK(k != jrn_key64(nm, 3, 100, 201, 1, 0), "key64 sees SID");
   CHECK(k != jrn_key64(nm, 3, 100, 200, 0, 0), "key64 sees gender");
   CHECK(k != jrn_key64(nm, 3, 100, 200, 1, 1), "key64 sees the FRLG layout bit");
+  { /* the CANONICAL key: the 0xFF padding / anything after the first 0xFF terminator never moves it */
+    uint8_t p7[7] = { 0xC1, 0xC2, 0xC3, 0xFF, 0xFF, 0xFF, 0xFF }, g7[7] = { 0xC1, 0xC2, 0xC3, 0xFF, 0x12, 0x34, 0x56 };
+    CHECK(jrn_key64(p7, 7, 100, 200, 1, 0) == k && jrn_key64(g7, 7, 100, 200, 1, 0) == k, "a padded name and one with garbage after the terminator key the same as the bare name");
+    CHECK(jrn_key64(nm, 3, 100, 200, 5, 0) == k && jrn_key64(nm, 3, 100, 200, 1, 2) == jrn_key64(nm, 3, 100, 200, 1, 1), "gender and frlg are booleans (any non-zero is 1)");
+    CHECK(jrn_key64(0, 0, 100, 200, 1, 0) != k, "an empty name is a different key"); }
   jrn_key_hex(0x0123456789ABCDEFull, hex);
   CHECK(strcmp(hex, "0123456789abcdef") == 0, "key hex '%s'", hex);
 }
@@ -53,6 +58,8 @@ static void t_format(void) {
   CHECK(jrn_flush(&j) == JRN_OK, "flush");
   CHECK(raw_read(K, 1, 0, h, JRN_SEG_HDR) == 0, "read seg hdr");
   CHECK(memcmp(h, "PDJS", 4) == 0 && h[4] == 1 && h[5] == 0 && h[6] == 17 && h[7] == 0 && h[8] == 1, "segment header magic/ver/ring(17 = max_segs 16 + 1)/index");
+  CHECK(h[12] == NREG && h[13] == 0 && h[14] + (h[15] << 8) == (int)RSZ, "header bytes 12-15: nreg %u, reserved 0, reg_size %u", h[12], h[14] + (h[15] << 8));
+  { unsigned z; for (z = 16; z < 28 && !h[z]; z++) {} CHECK(z == 28, "header bytes 16..27 are reserved zero"); }
   CHECK(jrn_crc32_update(0, h, 28) == (uint32_t)(h[28] | h[29] << 8 | h[30] << 16 | (uint32_t)h[31] << 24), "segment header crc");
   CHECK(raw_read(K, 1, JRN_REC_BASE, r, sizeof r) == 0, "read record");
   CHECK(memcmp(r, "PDJR", 4) == 0, "record magic");
@@ -740,8 +747,28 @@ static void plant_hdr(uint64_t key, unsigned slot, uint32_t idx, uint16_t ring, 
   uint8_t h[JRN_SEG_HDR]; uint32_t c;
   memset(h, 0, sizeof h);
   memcpy(h, "PDJS", 4); jrn_wr16(h + 4, ver); jrn_wr16(h + 6, ring); jrn_wr32(h + 8, idx);
+  h[12] = NREG; jrn_wr16(h + 14, RSZ);          /* the harness layout: a LIVE-shaped header unless ver/idx/ring say otherwise */
   c = jrn_crc32_update(0, h, 28); jrn_wr32(h + 28, c);
   CHECK(raw_write(key, slot, 0, h, sizeof h) == 0, "plant header slot %u", slot);
+}
+
+/* Bounce ruling 7: a different region layout under the same key is DETECTABLE (never a silent NEWROOT), and step
+ * names are printable ASCII. */
+static void t_layout_and_names(void) {
+  Jrn j; JrnCfg c; char nm[40];
+  world(&j, FM_FAT);
+  CHECK(stage(&j, "a", 0, 1, 10, 4, fresh_val(1, 10)) == JRN_OK && jrn_flush(&j) == JRN_OK, "a step");
+  c = cfg_for(K, 0, 0); c.nreg = NREG - 1u;
+  CHECK(jrn_open(&j, &c, &IMG) == JRN_E_VERSION && j.readonly && j.foreign && j.anchor == JRN_ANCHOR_EMPTY, "a journal built for %u regions opened as %u: JRN_E_VERSION, not a new root", NREG, NREG - 1u);
+  c = cfg_for(K, 0, 0); c.reg_size = RSZ - 8u;
+  CHECK(jrn_open(&j, &c, &IMG) == JRN_E_VERSION && j.readonly, "a different reg_size: JRN_E_VERSION too");
+  CHECK(jrn_prepare(&j) == JRN_E_VERSION, "and nothing is written");
+  CHECK(jopen(&j, K) == JRN_OK && j.anchor == JRN_ANCHOR_MATCH, "the right layout still opens");
+  CHECK(jrn_step_begin(&j, "bad\x01name", 0) == JRN_E_ARG && jrn_step_begin(&j, "caf\xc3\xa9", 0) == JRN_E_ARG && jrn_step_begin(&j, "del\x7f", 0) == JRN_E_ARG, "control / non-ASCII bytes in a step name are refused");
+  CHECK(j.bld_len == 0, "a refused name starts nothing");
+  CHECK(jrn_step_begin(&j, "Cur HP 23->31 ~!", 0) == JRN_OK, "printable ASCII 0x20-0x7E is fine"); jrn_step_abort(&j);
+  memset(nm, 'x', sizeof nm - 1); nm[sizeof nm - 1] = 0;
+  CHECK(jrn_step_begin(&j, nm, 0) == JRN_OK, "a name longer than 24 is truncated, not refused"); jrn_step_abort(&j);
 }
 
 /* SEG_MAX honesty (bounce fix 9): the logical segment index is capped (9999; a header index past it is
@@ -859,6 +886,7 @@ int main(void) {
   t_partial_flush_stops();
   t_no_segment_refusal();
   t_seg_max();
+  t_layout_and_names();
   if (fails) { printf("host_journal_test: %d FAILED of %lu checks\n", fails, checks); return 1; }
   printf("host_journal_test: all %lu checks passed (real lib/fatfs over a RAM disk)\n", checks);
   return 0;
