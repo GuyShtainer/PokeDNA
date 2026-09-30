@@ -18,7 +18,7 @@ Diff rules (so a verdict is a number, never an impression):
   * `diff_px`   pixels whose RGB differs at all between the two builds' frames
   * `diff_pct`  diff_px / (240*160)
   * `bbox`      bounding box of the differing pixels (x0,y0,x1,y1) or None
-  * `diff_px_tol` pixels differing by more than 12 in any channel (animation-noise floor)
+  * `diff_px_tol` pixels differing by more than 24 in any channel (TOL below; animation-noise floor)
   A screen with diff_px == 0 is `pixel-identical`; anything else is READ BY EYE before it is
   given a verdict (rule 17) -- this tool never assigns parity/missing/glitch itself.
 
