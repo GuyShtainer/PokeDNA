@@ -267,6 +267,33 @@ static void t_diverged_is_a_floor(void) {
         "the chain stops before C: total %u avail %u", (unsigned)total, (unsigned)av);
 }
 
+/* #302 reuse gate: the outside write lands in a region the next step does NOT touch (old == new there, but old no
+ * longer hashes to crc[region]). step_region must still take the DIVERGED resync on that untouched region -- never
+ * reuse the stale crc -- so C records crossed and the re-apply offer stops before it. */
+static void t_diverged_untouched_region(void) {
+  Jrn j2;
+  JrnCfg c = cfg_for(KEY, 0, 0);
+  JrnImage im;
+  uint32_t av = 99, total = 99;
+  JrnRec tip;
+  uint8_t out[4] = { 0xDE, 0xAD, 0xBE, 0xEF };
+  poke(100, 4, 0x5A);                                                     /* A: region 5 */
+  CHECK(img_stage_sections(&F, &R, sv, slot, G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, pc), "uA");
+  CHECK(jrn_flush(&J) == JRN_OK, "flush uA");
+  CHECK(sset(0, 6, 1000, out, 4) == 0, "the outside write lands in region 6 (untouched by C)");
+  CHECK(read_pc(pc), "the app-side image follows the outside write");
+  poke(2000, 6, 0x21);                                                    /* C: region 5 ONLY */
+  CHECK(img_stage_sections(&F, &R, sv, slot, G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, pc), "uC");
+  CHECK(jrn_flush(&J) == JRN_OK, "flush uC");
+  CHECK(R.lost >= 1, "untouched diverged region: the divergence is counted, lost %u", (unsigned)R.lost);
+  CHECK(jrn_find(&J, jrn_tip(&J), &tip) == 0 && tip.crossed == 1, "untouched diverged region: C records crossed 1 (got %u)", (unsigned)tip.crossed);
+  memcpy(sv, orig, sizeof sv);
+  im.ctx = &acc; im.get = sget; im.set = sset;
+  CHECK(jrn_open(&j2, &c, &im) == JRN_OK, "untouched: reopen on the original image");
+  CHECK(jrn_redo_info(&j2, &av, &total, 0) == 1 && total == 2 && av == 1,
+        "untouched diverged region: the chain stops before C: total %u avail %u", (unsigned)total, (unsigned)av);
+}
+
 
 /* The load-time offer (jrnapp_offer, the app half): an UNDONE tail (cursor < tip, the cursor marker on disk) is offered
  * like a half-swap; a DISCARDED tail is not; a crossed record still floors avail. Uses the real jrn_app.c over the
@@ -340,6 +367,7 @@ int main(int argc, char** argv) {
     CHECK(world(file), "world"); t_crossed_floors_offer();
     CHECK(world(file), "world"); t_gap_is_a_floor();
     CHECK(world(file), "world"); t_diverged_is_a_floor();
+    CHECK(world(file), "world"); t_diverged_untouched_region();
     CHECK(world(file), "world"); t_scope_is_one_step();
     CHECK(world(file), "world"); t_identical_and_null();
     CHECK(app_world(file), "app world"); t_undone_tail_is_offered();

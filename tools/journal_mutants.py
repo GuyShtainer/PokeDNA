@@ -235,6 +235,18 @@ MUTANTS = [
     Mutant("key: the name is not canonicalized (0xFF padding / garbage after the terminator moves the key)", "journal.c",
            "i < name_len && name[i] != 0xFFu; i++)", "i < name_len; i++)",
            "journal", "padded name"),
+    Mutant("crc loop #302: a region with a changed byte reuses the old crc as its new one", "journal.c",
+           "changed ? jrn_crc32_update(0, new_blk, j->reg_size) : j->crc[region]", "j->crc[region]",
+           "journal", "tracked hash == image hash"),
+    Mutant("crc loop #302: next_run skips one byte past an identical 64-byte window", "journal.c",
+           "memcmp(o + i, n + i, 64u) == 0) i += 64u;", "memcmp(o + i, n + i, 64u) == 0) i += 65u;",
+           "journal", "the lone byte is found"),
+    Mutant("crc loop #302: next_run compares only half of each 64-byte window", "journal.c",
+           "memcmp(o + i, n + i, 64u) == 0) i += 64u;", "memcmp(o + i, n + i, 32u) == 0) i += 64u;",
+           "journal", "the lone byte is found"),
+    Mutant("crc loop #302: an untouched region skips the old-hash (DIVERGED) check", "journal.c",
+           "  if (jrn_crc32_update(0, old_blk, j->reg_size) != j->crc[region]) { jrn_step_abort(j); return JRN_E_DIVERGED; }\n", "",
+           "journal", "never reuses crc[region]"),
 ]
 
 
