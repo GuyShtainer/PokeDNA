@@ -181,6 +181,15 @@ extern uint32_t g_rgs_cb_calls[6];
 #define ROM_GBSPRITE_UNOWN_DEX     201
 #define ROM_GBSPRITE_UNOWN_FORMS   26      /* A..Z                             */
 
+/* BACKLOG #205: which path an open served from -- read by the delta bench's cold-locate log
+ * line, so a frame count is never ambiguous. NONE = open failed / not yet opened. */
+typedef enum {
+  ROM_GBSPRITE_SRC_NONE = 0,
+  ROM_GBSPRITE_SRC_CACHE,     /* the caller's RomGbSpriteLoc (.loc file / fused / session) */
+  ROM_GBSPRITE_SRC_TABLE,     /* the compiled-in known-ROM table (rom_gbsprite_known.h)     */
+  ROM_GBSPRITE_SRC_SCAN       /* a real whole-ROM scan                                      */
+} RomGbSpriteSrc;
+
 typedef struct RomGbSprite {
   GbReadFn read;
   void*    ctx;
@@ -197,6 +206,7 @@ typedef struct RomGbSprite {
   uint16_t global_checksum;   /* 0x14E/0x14F, big-endian in the header         */
   uint32_t id_hash;           /* FNV-1a of 0x100..0x14F: cache key             */
   uint8_t  banks;             /* size / 16 KiB                                 */
+  uint8_t  src;               /* RomGbSpriteSrc: WHICH path served the last open (BACKLOG #205) */
 
   /* Gen 1 */
   uint32_t base_stats;        /* file offset of BaseStats                      */

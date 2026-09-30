@@ -64,6 +64,7 @@ backlog item so a future reader does not mistake this scope cut for A5 being don
 from __future__ import annotations
 
 import argparse
+import contextlib
 import functools
 import json
 import os
@@ -4341,7 +4342,8 @@ def _crop_bytes(screen, box: tuple[int, int, int, int] = _PORTRAIT_CROP) -> byte
     return screen.to_pil().convert("RGB").crop(box).tobytes()
 
 
-def _measure_box_grid_cold_start(core_mod, image_mod, rom: Path) -> tuple[int, bytes]:
+def _measure_box_grid_cold_start(core_mod, image_mod, rom: Path,
+                                 gb_art_lines: "list | None" = None) -> tuple[int, bytes]:
     """Frames from the key-up edge of the A press on the boot picker's Red.sav row
     (row 1) to the first STABLE real portrait paint of the box grid; returns
     (frames_to_first_stable_paint, final_screen_rgb_bytes).
@@ -4356,7 +4358,7 @@ def _measure_box_grid_cold_start(core_mod, image_mod, rom: Path) -> tuple[int, b
     WAS the finished portrait and the poll could never exit. Colour detection does not
     depend on how slow the build is. The honest timeout stays: a screen that truly
     never paints raises RuntimeError after _MAX_FRAMES."""
-    return _measure_b185_auto(core_mod, image_mod, rom, 1, "coldstart")
+    return _measure_b185_auto(core_mod, image_mod, rom, 1, "coldstart", gb_art_lines)
 
 
 def run_cold_start_compare(core_mod, image_mod, loc_image: Path, noloc_image: Path,
@@ -4372,12 +4374,16 @@ def run_cold_start_compare(core_mod, image_mod, loc_image: Path, noloc_image: Pa
           "  timer INCLUDES the save mount (no info page). Both images are Red.gb, a\n"
           "  known-ROM table hit (F5 fast path), so the --no-loc image no longer runs a\n"
           "  cold scan here; the real-scan floor is --b185-cold-locate's job.")
-    loc_frames, loc_px = _measure_box_grid_cold_start(core_mod, image_mod, loc_image)
+    loc_lines: list = []
+    noloc_lines: list = []
+    loc_frames, loc_px = _measure_box_grid_cold_start(core_mod, image_mod, loc_image, loc_lines)
     print(f"  WITH LOC   : {loc_frames} frames ({loc_frames / GBA_FPS:.2f} s emulated) "
           f"(+/- {_SAMPLE_EVERY} frames sampling granularity)")
-    noloc_frames, noloc_px = _measure_box_grid_cold_start(core_mod, image_mod, noloc_image)
+    print(f"               served by: {_served_by(loc_lines, 1)}")
+    noloc_frames, noloc_px = _measure_box_grid_cold_start(core_mod, image_mod, noloc_image, noloc_lines)
     print(f"  WITHOUT LOC: {noloc_frames} frames ({noloc_frames / GBA_FPS:.2f} s emulated) "
           f"(+/- {_SAMPLE_EVERY} frames sampling granularity)")
+    print(f"               served by: {_served_by(noloc_lines, 1)}")
 
     diff_bytes = sum(1 for a, b in zip(loc_px, noloc_px) if a != b)
     if len(loc_px) != len(noloc_px):
@@ -4447,8 +4453,44 @@ def _is_checkerboard(crop: bytes) -> bool:
     return True
 
 
+@contextlib.contextmanager
+def _capture_gb_art_log(lines: list) -> "Iterator[None]":
+    """BACKLOG #205: collect the firmware's own `gb art: gen<N> cold-locate served by <path>`
+    line (source/gb_art_source.c gb_art_note_src(), delta build only -- log_line() reaches
+    mGBA's debug register) into `lines` for the duration of the block, then restore the
+    silent default logger (gb_shots.load_mgba()'s MANDATORY silence). Every other message is
+    dropped in the callback so the per-instruction flood never accumulates."""
+    import mgba.log
+    from mgba._pylib import ffi
+
+    class _Capture(mgba.log.Logger):
+        def log(self, category, level, message):
+            # the cffi callback hands `message` over as a char* cdata, not a str
+            text = message if isinstance(message, str) else ffi.string(message).decode("utf-8", "replace")
+            if "gb art:" in text:
+                lines.append(text.strip())
+
+    cap = _Capture()
+    mgba.log.install_default(cap)
+    try:
+        yield
+    finally:
+        mgba.log.silence()
+
+
+def _served_by(lines: list, gen: int) -> str:
+    """The `served by` word for `gen` out of captured `_capture_gb_art_log` lines, or an
+    explicit UNKNOWN naming why -- never a silent blank (the whole point of #205)."""
+    tag = f"gen{gen} cold-locate served by "
+    for line in lines:
+        if tag in line:
+            return line.split(tag, 1)[1].strip()
+    return ("UNKNOWN (no cold-locate line seen: image predates the #205 log line, or the "
+            "portrait never went through a first sprite open this session)")
+
+
 def _measure_b185_auto(core_mod, image_mod, rom: Path, down_n: int,
-                       label: str) -> tuple[int, bytes]:
+                       label: str, gb_art_lines: "list | None" = None) -> tuple[int, bytes]:
     """BACKLOG #185 D4 (review fix): measures the box-grid cold-locate cost
     for EITHER the F5 known-ROM fast path (a table hit -- the portrait
     paints within a handful of frames) or a real scan (hundreds to tens of
@@ -4458,7 +4500,18 @@ def _measure_b185_auto(core_mod, image_mod, rom: Path, down_n: int,
     separately-sampled reference, #279: no S1 info page transition) -- the first
     frame that is neither the placeholder nor any build-specific transition, held
     stable for _STABLE_WINDOW frames. One session, one pass,
-    correct for any speed."""
+    correct for any speed.
+
+    BACKLOG #205: pass a list as `gb_art_lines` and it receives the firmware's own
+    `gb art: ... cold-locate served by TABLE|CACHE(...)|SCAN` line(s) (delta build only)."""
+    with (_capture_gb_art_log(gb_art_lines) if gb_art_lines is not None
+          else contextlib.nullcontext()):
+        return _measure_b185_run(core_mod, image_mod, rom, down_n, label)
+
+
+def _measure_b185_run(core_mod, image_mod, rom: Path, down_n: int,
+                      label: str) -> tuple[int, bytes]:
+    """The poll loop of _measure_b185_auto() (split out so the log capture wraps it whole)."""
     s = gb_shots.Session(core_mod, image_mod, rom, Path("/tmp"), f"b185_{label}_")
     s.run(700)
     s.press_n("DOWN", down_n, settle=gb_shots.SETTLE)
@@ -4517,11 +4570,14 @@ def run_b185_cold_locate(core_mod, image_mod, noloc_image: Path,
     from PIL import Image
     ok: list[tuple[str, str, dict]] = []
 
-    frames1, px1 = _measure_b185_auto(core_mod, image_mod, noloc_image, 1, "gen1")
+    lines1: list = []
+    lines2: list = []
+    frames1, px1 = _measure_b185_auto(core_mod, image_mod, noloc_image, 1, "gen1", lines1)
     secs1 = frames1 / GBA_FPS
     bps1 = 0x100000 / secs1     # Red.gb is exactly 1 MiB (rom_gbsprite.c's own header check)
     print(f"  Gen 1 (Red.gb, 1,048,576 B)   : {frames1} frames, {secs1:.2f} s emulated, "
           f"{bps1:.0f} B/s ({bps1/1024:.1f} KB/s) floor")
+    print(f"    served by: {_served_by(lines1, 1)}")
     name1 = "dgb_b185_gen1_coldscan.png"
     Image.frombytes("RGB", (240, 160), px1).save(out_dir / name1)
     cap1 = (f"#185 Step 1: Red.sav box grid, cold locate() (no .loc seed) -- "
@@ -4530,11 +4586,12 @@ def run_b185_cold_locate(core_mod, image_mod, noloc_image: Path,
     ok.append((name1, cap1, {}))
     print(f"  [ok]   {name1:32s} {cap1}")
 
-    frames2, px2 = _measure_b185_auto(core_mod, image_mod, noloc_image, 3, "gen2")
+    frames2, px2 = _measure_b185_auto(core_mod, image_mod, noloc_image, 3, "gen2", lines2)
     secs2 = frames2 / GBA_FPS
     bps2 = 0x200000 / secs2     # Crystal.gbc is exactly 2 MiB
     print(f"  Gen 2 (Crystal.gbc, 2,097,152 B): {frames2} frames, {secs2:.2f} s emulated, "
           f"{bps2:.0f} B/s ({bps2/1024:.1f} KB/s) floor")
+    print(f"    served by: {_served_by(lines2, 2)}")
     name2 = "dgb_b185_gen2_coldscan.png"
     Image.frombytes("RGB", (240, 160), px2).save(out_dir / name2)
     cap2 = (f"#185 Step 1: Crystal.sav box grid, cold locate() (no .loc seed) -- "
