@@ -9832,11 +9832,16 @@ static void pdna_battle_record(void) {
       /* Best-effort SIDECAR (<basename>.txt): the export-time context the .rec
        * itself cannot carry — all facilities' current and best streaks, player identity,
        * timestamp, teams. A failed sidecar never fails the export. */
-      static char EWRAM_BSS sc[2048];
+      /* #234 s2 step 0: the sidecar text borrows the shared 8 KiB mon_decomp scratch instead of owning a 2 KiB
+       * static (that bought the journal's Jrn its EWRAM home). Nothing between here and the write below decodes
+       * art or draws; artbuf_claim() invalidates every memo of mon_decomp's old content first. */
+      artbuf_claim();
+      char* const sc = (char*)mon_decomp;
+      const size_t sc_cap = 2048u;
       char stamp[24]; stamp[0] = 0;
       if (rtc_ok) sniprintf(stamp, sizeof stamp, "%02u-%02u-%04u %02u:%02u",
                             t.day, t.month, t.year, t.hour, t.minute);
-      int sn = g3_record_sidecar(sc, sizeof sc, &ri, g_save, g_sb2, g_sb1,
+      int sn = g3_record_sidecar(sc, sc_cap, &ri, g_save, g_sb2, g_sb1,
                                  (int)g_game, g_vinfo.tid_public, rtc_ok ? stamp : 0);
       int pl = (int)strlen(path);                        /* ".rec" -> ".txt" */
       char sp[72]; memcpy(sp, path, (size_t)pl + 1);
