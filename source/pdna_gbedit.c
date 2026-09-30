@@ -22,6 +22,7 @@
 #include "pdna_pick.h"
 #include "pdna_layout.h"
 #include "pdna_app.h"      /* msg_wait */
+#include "pdna_gen12.h"    /* gb_hold_live (#234 s4: the quiet plain-edit confirm) */
 #include "snd.h"
 
 #define VIS_ROWS 16
@@ -181,6 +182,13 @@ static bool gbedit_confirm_ex(const GbEditMon* e, const char* title,
 }
 
 bool gbedit_confirm(const GbEditMon* e) {
+  /* #234 s4: while the journal records, a plain, LEGAL edit needs no "Write to the save?" -- its commit is held (one recorded
+   * step, the exit confirm writes once). Anything the screen would WARN about (a legality issue, a stale-stats note) still
+   * asks, exactly as before; with the journal off nothing changes at all. */
+  if (gb_hold_live()) {
+    GbIssues iss;
+    if (gb_check(e, &iss) && !gbe_stale_note(e)) return true;
+  }
   return gbedit_confirm_ex(e, PDNA_GBEDIT_CONFIRM_TITLE, PDNA_GBEDIT_A_WRITE, PDNA_GBEDIT_B_CANCEL);
 }
 

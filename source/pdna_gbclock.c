@@ -110,7 +110,7 @@ static void gbclock_do_reset(GbSession* s) {
   if (st != GBS_OK) { msg_wait("REFUSED", UI_WARN, gbs_status_text(st), 0); return; }
   GbClock after; if (!gbc_read(s, &after)) return;
   if (after.status_flags == before.status_flags) { snd_back(); return; }   /* already set */
-  gb_persist("gbclock reset");
+  gb_hold_commit("gbclock reset");
 }
 
 /* ---- Row 3: "Clear the clock-error flag" -- gbc_clear_status_flags() ------------
@@ -122,7 +122,7 @@ static void gbclock_do_clear(GbSession* s) {
   if (st != GBS_OK) { msg_wait("REFUSED", UI_WARN, gbs_status_text(st), 0); return; }
   GbClock after; if (!gbc_read(s, &after)) return;
   if (after.status_flags == before.status_flags) { snd_back(); return; }   /* already clear */
-  gb_persist("gbclock clear");
+  gb_hold_commit("gbclock clear");
 }
 
 /* ---- Row 2: "Shift the clock" -- gbc_shift() -------------------------------------
@@ -194,7 +194,7 @@ static void gbclock_shift_editor(GbSession* s) {
         if (st != GBS_OK)
           msg_wait("SHIFT REFUSED", UI_WARN, gbs_status_text(st), "Nothing was changed.");
         else
-          gb_persist("gbclock shift");   /* nonzero delta always moves at least one byte */
+          gb_hold_commit("gbclock shift");   /* nonzero delta always moves at least one byte */
       }
       break;
     }

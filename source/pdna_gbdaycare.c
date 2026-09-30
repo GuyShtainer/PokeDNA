@@ -230,7 +230,7 @@ static void gbdc_take(GbSession* s, int slot, uint8_t* list, uint8_t* list2) {
     msg_wait("TAKE OUT", UI_WARN, gbs_status_text(lst), "Nothing was changed.");
     return;
   }
-  if (!gb_persist("daycare-take")) return;   /* gb_persist already reported any refusal */
+  if (!gb_hold_commit("daycare-take")) return;   /* gb_persist already reported any refusal */
   snd_ok();
   char line[32];
   if (landed_box < 0) siprintf(line, "Sent to the party.");
@@ -258,7 +258,7 @@ static void gbdc_take_egg(GbSession* s, uint8_t* list, uint8_t* list2) {
     msg_wait("EGG", UI_WARN, gbs_status_text(ist), "Nothing was changed.");
     return;
   }
-  if (!gb_persist("daycare-egg")) return;
+  if (!gb_hold_commit("daycare-egg")) return;
   snd_ok();
   char line[32];
   if (landed_box < 0) siprintf(line, "Sent to the party.");
@@ -294,7 +294,7 @@ static void gbdc_deposit(GbSession* s, int slot, int cur_box, uint8_t* list) {
     msg_wait("PUT IN", UI_WARN, gbs_status_text(dst), "Nothing was changed.");
     return;
   }
-  if (!gb_persist("daycare-put")) return;   /* gb_persist already reported any refusal */
+  if (!gb_hold_commit("daycare-put")) return;   /* gb_persist already reported any refusal */
   snd_ok();
   msg_wait("LEFT AT DAY CARE", UI_OK, "Moved from the box. Saved.", 0);
 }
@@ -332,7 +332,7 @@ static void gbdc_view_edit(GbSession* s, GbDaycare* dc, int start_slot, bool can
           gb_rollback();
           snd_error();
           msg_wait("DAY CARE", UI_WARN, gbs_status_text(dst), "Nothing was changed.");
-        } else if (gb_persist("daycare-edit")) {
+        } else if (gb_hold_commit("daycare-edit")) {
           snd_ok();
           dc->slot[slot].mon = edited;
           dc->slot[slot].occupied = true;

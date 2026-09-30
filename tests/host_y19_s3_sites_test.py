@@ -117,7 +117,7 @@ def main() -> int:
     mutant("M-P1 loop does not wake on the chord", "box", "while (!k && !cev);", "while (!k);", "P1")
     mutant("M-P2 summary bypasses the chord", "summ", "(void)chord_frame(&chord,", "(void)0; (void)(&chord,", "P2")
     mutant("M-P3 carrying check moved after the engine", "box", "  if (s_holding || s_ch_hold || s_item_held) {", "  rc = app_undo_redo(redo ? 1 : -1, name);\n  if (s_holding || s_ch_hold || s_item_held) {", "P3")
-    mutant("M-P4 T5 check dropped", "main", "if (app_arena_held() || imgf_arena_ok(&g_img) == false) return AUR_ARENA;   /* T5: g_pc is a loan / ahead of the image */", "", "P4")
+    mutant("M-P4 T5 check dropped", "main", "if (!gb && (app_arena_held() || imgf_arena_ok(&g_img) == false)) return AUR_ARENA;   /* T5: g_pc is a loan / ahead of the image */", "", "P4")
     mutant("M-P5 undo routed through the funnel", "main", "    app_journal_rederive();\n    imgf_staged(&g_img);                          /* the image is ahead of the card: the exit save confirms once */\n    log_line(\"journal: %s '%s'", "    app_stage_sections(0, 13, 0);\n    log_line(\"journal: %s '%s'", "P5")
     mutant("M-P6 flush-before-undo removed", "jrn", "if (dir < 0 && jrn_pending(&s_j)) (void)jrnapp_flush();", "", "P6")
     mutant("M-P7 chord live on every source", "box", "const bool chord_live = src->scope == BOXSCOPE_PC && !src->is_bank && app_can_edit();", "const bool chord_live = app_can_edit();", "P7")

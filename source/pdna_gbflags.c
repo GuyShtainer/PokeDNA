@@ -549,7 +549,7 @@ void pdna_gbflags(GbSession* s, bool can_edit) {
    * own "lent one slice at a time" contract) before returning -- no naked `return`
    * past this point. */
   if (!dirty) { flg_tail_release(); return; }
-  if (!app_confirm("Save data changes?", "Edits write immediately.")) { flg_tail_release(); return; }
+  if (!gb_hold_live() && !app_confirm("Save data changes?", "Edits write immediately.")) { flg_tail_release(); return; }   /* #234 s4: quiet while the journal records */
   GbsStatus fst = gbs_finish(s);
   if (fst != GBS_OK) {
     gb_rollback();
@@ -558,6 +558,6 @@ void pdna_gbflags(GbSession* s, bool can_edit) {
     flg_tail_release();
     return;
   }
-  gb_persist("gbflags");
+  gb_hold_commit("gbflags");
   flg_tail_release();
 }

@@ -335,7 +335,7 @@ static void hof_edit_mon(GbSession* s, int team_idx, int mon_idx, const GbHofMon
     msg_wait("REFUSED", UI_WARN, gbs_status_text(st), "Nothing was changed.");
     return;
   }
-  gb_persist("hof edit");
+  gb_hold_commit("hof edit");
 }
 
 /* ---- START menu: CLEAR ALL / SET COUNT ------------------------------------------ */
@@ -362,7 +362,7 @@ static void hof_do_clear(GbSession* s) {
     msg_wait("REFUSED", UI_WARN, gbs_status_text(st), "Nothing was changed.");
     return;
   }
-  gb_persist("hof clear");
+  gb_hold_commit("hof clear");
 }
 
 /* SET COUNT: a plain stepper, same shape as pdna_gbclock.c's shift editor but a
@@ -419,7 +419,7 @@ static void hof_set_count_editor(GbSession* s, uint8_t gen) {
           gb_rollback();
           msg_wait("REFUSED", UI_WARN, gbs_status_text(st), "Nothing was changed.");
         } else {
-          gb_persist("hof setcount");
+          gb_hold_commit("hof setcount");
         }
       }
       break;
@@ -507,7 +507,7 @@ static void hof_do_add_team(GbSession* s) {
             gb_rollback();
             msg_wait("REFUSED", UI_WARN, gbs_status_text(st), "Nothing was changed.");
           } else {
-            gb_persist("hof add");
+            gb_hold_commit("hof add");
           }
         }
         return;
@@ -532,7 +532,7 @@ static void hof_do_delete_team(GbSession* s, int team_idx) {
     msg_wait("REFUSED", UI_WARN, gbs_status_text(st), "Nothing was changed.");
     return;
   }
-  gb_persist("hof delete");
+  gb_hold_commit("hof delete");
 }
 
 enum { HOFMENU_CLEAR = 0, HOFMENU_SETCOUNT, HOFMENU_ADD, HOFMENU_DELETE, HOFMENU_N };

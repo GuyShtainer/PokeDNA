@@ -1111,7 +1111,10 @@ void pdna_gbtrainer(GbSession* s, bool can_edit) {
                                                   * check, same as Gen 3's card_editor */
 
   if (!memcmp(&t, &t0, sizeof t)) { snd_back(); return; }   /* nothing to write */
-  if (!app_confirm("Save trainer changes?", "Writes the card edits now.")) return;
+  if (!gb_hold_live() && !app_confirm("Save trainer changes?", "Writes the card edits now.")) return;   /* #234 s4: quiet while the journal records */
+  /* An identity edit (the trainer name or ID) moves the journal's key and re-parents the mon ownership the transfer ledger
+   * reads: a crossed step (undo/redo/re-apply stop at it), like Gen 3's re-key. Bumped before the step is recorded. */
+  const bool ident = t.trainer_id != t0.trainer_id || strcmp(t.name, t0.name) != 0;   /* the decoded name is what the edit sets (gbt_write compares it decoded) */
   GbsStatus st = gbt_write(s, &t);
   if (st != GBS_OK) {
     /* gbt_write may already have landed SOME of the batch (gb_trainer.h's own
@@ -1123,5 +1126,6 @@ void pdna_gbtrainer(GbSession* s, bool can_edit) {
   }
   /* gb_persist() plays its own snd_save()/snd_error() and, on any failure past
    * this point, has ALREADY called gb_rollback() and told the user why. */
-  gb_persist("trainer");
+  if (ident) app_journal_cross();
+  gb_hold_commit("trainer");
 }

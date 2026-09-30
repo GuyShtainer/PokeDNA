@@ -673,7 +673,7 @@ void pdna_gbbag(GbSession* s, bool can_edit) {
    * change to this file, not a bug today -- keep the release last on purpose. */
   bool commit_ok = true;
   if (want_commit && memcmp(bag, t0, sizeof *t0) != 0) {
-    if (app_confirm("Save bag changes?", "Writes the item edits now.")) {
+    if (gb_hold_live() || app_confirm("Save bag changes?", "Writes the item edits now.")) {   /* #234 s4: quiet while the journal records */
       GbsStatus st = gbb_write(s, bag);
       if (st != GBS_OK) {
         /* gbb_write may already have landed SOME pocket writes (gb_bag.h's
@@ -696,5 +696,5 @@ void pdna_gbbag(GbSession* s, bool can_edit) {
   /* gb_persist() plays its own snd_save()/snd_error() and, on any failure
    * past this point, has ALREADY called gb_rollback() and told the user why.
    * Runs AFTER the release: it touches the session's own image, not `bag`. */
-  if (want_commit && commit_ok) gb_persist("bag");
+  if (want_commit && commit_ok) gb_hold_commit("bag");
 }
