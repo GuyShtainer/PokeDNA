@@ -31,12 +31,77 @@ static int ptr_ok(const RomMon* rm, uint32_t addr, uint32_t need) {
   return off < rm->rc->size && need <= rm->rc->size - off;
 }
 
+/* Ruby/Sapphire predate the GF header, so their three icon tables are PINNED by game
+ * code + revision (BACKLOG #293), the rom_text.c precedent. Each row was located by
+ * tools/rs_locate.py, an independent by-shape scan of the corpus dump: a run of 440
+ * 4-aligned ROM pointers each with room for a 1,024 B icon, followed directly by 440
+ * palette-index bytes all < 3, followed by three {ptr, tag, pad} rows whose tags run
+ * consecutively (0xDAC0..0xDAC2). An unpinned R/S revision stays fail-closed. */
+typedef struct {
+  const char* code;      /* 4-char game code at 0xAC */
+  uint8_t     version;   /* revision byte at 0xBC    */
+  uint32_t    icons, ids, pals;   /* ROM addresses */
+} RomMonPin;
+
+static const RomMonPin k_pins[] = {
+  { "AXVE", 2, 0x083BBD3Cu, 0x083BC41Cu, 0x083BC5D4u },
+  { "AXPE", 1, 0x083BBD98u, 0x083BC478u, 0x083BC630u },
+};
+#define K_NPINS ((int)(sizeof k_pins / sizeof k_pins[0]))
+
+/* The shape a pinned row must still have at open. One transient garbled read gets a
+ * second chance; a wrong address fails both. */
+static int pin_shape_once(const RomMon* rm, uint32_t icons, uint32_t ids, uint32_t pals) {
+  uint8_t buf[128];
+  for (uint32_t o = 0; o < RM_TABLE_ENTRIES * 4u; o += sizeof buf) {
+    uint32_t n = RM_TABLE_ENTRIES * 4u - o;
+    if (n > sizeof buf) n = sizeof buf;
+    if (!rm->rc->read(rm->rc->ctx, icons + o, buf, n)) return 0;
+    for (uint32_t i = 0; i < n; i += 4)
+      if (!ptr_ok(rm, rd32le(buf + i), ROM_MON_ICON_FRAMES * ROM_MON_ICON_BYTES)) return 0;
+  }
+  for (uint32_t o = 0; o < RM_TABLE_ENTRIES; o += sizeof buf) {
+    uint32_t n = RM_TABLE_ENTRIES - o;
+    if (n > sizeof buf) n = sizeof buf;
+    if (!rm->rc->read(rm->rc->ctx, ids + o, buf, n)) return 0;
+    for (uint32_t i = 0; i < n; i++) if (buf[i] >= ROM_MON_PALS) return 0;
+  }
+  uint8_t pe[ROM_MON_PALS * 8];
+  if (!rm->rc->read(rm->rc->ctx, pals, pe, sizeof pe)) return 0;
+  uint32_t tag0 = (uint32_t)pe[4] | ((uint32_t)pe[5] << 8);
+  for (int k = 0; k < ROM_MON_PALS; k++) {
+    const uint8_t* e = pe + k * 8;
+    uint32_t tag = (uint32_t)e[4] | ((uint32_t)e[5] << 8);
+    if (tag != tag0 + (uint32_t)k) return 0;
+    if (!ptr_ok(rm, rd32le(e), 32)) return 0;
+  }
+  return 1;
+}
+
+static int open_pinned(RomMon* rm, const RomCtx* rc) {
+  if (rc->kind != ROM_RUBY && rc->kind != ROM_SAPPHIRE) return 0;
+  for (int i = 0; i < K_NPINS; i++) {
+    const RomMonPin* p = &k_pins[i];
+    if (memcmp(p->code, rc->code, 4) != 0 || p->version != rc->version) continue;
+    rm->ok = 1;                                  /* ptr_ok needs rc set; flip back on failure */
+    if (!ptr_ok(rm, p->icons, RM_TABLE_ENTRIES * 4) || !ptr_ok(rm, p->ids, RM_TABLE_ENTRIES) ||
+        !ptr_ok(rm, p->pals, ROM_MON_PALS * 8)) { rm->ok = 0; return 0; }
+    uint32_t ic = p->icons - ROM_BASE, id = p->ids - ROM_BASE, pl = p->pals - ROM_BASE;
+    if (!pin_shape_once(rm, ic, id, pl) && !pin_shape_once(rm, ic, id, pl)) { rm->ok = 0; return 0; }
+    rm->icons = ic; rm->pal_ids = id; rm->pals = pl;
+    return 1;
+  }
+  return 0;   /* an unpinned R/S revision: fail closed */
+}
+
 int rom_mon_open(RomMon* rm, const RomCtx* rc) {
   memset(rm, 0, sizeof *rm);
   rm->rc = rc;
   if (!rc || !rc->read) return 0;
 
-  /* Ruby/Sapphire predate the GF header — fail closed until they get pinned rows. */
+  /* Ruby/Sapphire predate the GF header: they take the pinned path and never reach the
+   * header read below. */
+  if (rc->kind == ROM_RUBY || rc->kind == ROM_SAPPHIRE) return open_pinned(rm, rc);
   uint8_t h[0x44];
   if (!rc->read(rc->ctx, GFH_OFF, h, sizeof h)) return 0;
   uint32_t ver = rd32le(h + GFH_VERSION), lang = rd32le(h + GFH_LANGUAGE);

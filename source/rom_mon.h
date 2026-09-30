@@ -15,8 +15,8 @@
  *
  * WHERE THE DATA LIVES (verified in the pret decomps + dumped from Guy's carts):
  * Game Freak's own index block `GFRomHeader` sits at ROM+0x100 in Emerald and
- * FireRed/LeafGreen (Ruby/Sapphire predate it — they need pinned addresses and are
- * NOT served yet; rom_mon_open fails closed there):
+ * FireRed/LeafGreen (Ruby/Sapphire predate it — they are served from PINNED addresses,
+ * AXVE rev 2 + AXPE rev 1, BACKLOG #293; any other R/S revision fails closed):
  *     +0x38  const u8* const* monIcons            (species -> raw 4bpp, 2 frames of
  *                                                  512 B each, tonc tile order)
  *     +0x3C  const u8*        monIconPaletteIds   (species -> palette 0..2)
@@ -42,8 +42,8 @@ typedef struct RomMon {
 #define ROM_MON_PALS         3
 
 /* Parse the GF header + sanity-check the three icon pointers. Returns 1 on
- * success; 0 (fail closed) for Ruby/Sapphire, an unknown ROM, or any pointer
- * that does not stay inside the image. */
+ * success; 0 (fail closed) for an unpinned Ruby/Sapphire revision, an unknown ROM, or
+ * any pointer that does not stay inside the image. */
 int rom_mon_open(RomMon* rm, const RomCtx* rc);
 
 /* Where one species' icon lives: the answer to the two SMALL table lookups (the
