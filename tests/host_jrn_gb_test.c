@@ -101,6 +101,25 @@ static void t_key(void) {
   CHECK(k2 != 0 && k2 != k1, "G2 a Gen-2 save of the same trainer name + ID never shares a Gen-1 journal");
   CHECK(strcmp(gb_step_name("move"), "Box move") == 0 && strcmp(gb_step_name("nonsense"), "Edit") == 0 &&
         strcmp(gb_step_name(0), "Edit") == 0, "step names map, unknown = Edit");
+  /* #310: GB crossings read "Transfer up/down"; the plain Gen-3 Bank->GB drop records under "bank-down". */
+  CHECK(strcmp(gb_step_name("xferup"), "Transfer up") == 0, "#310 xferup -> Transfer up");
+  CHECK(strcmp(gb_step_name("xferdown"), "Transfer down") == 0, "#310 xferdown -> Transfer down");
+  CHECK(strcmp(gb_step_name("bank-down"), "Transfer down") == 0, "#310 bank-down -> Transfer down");
+  {
+    /* text pin (cwd = repo root): the sidecar paste core, the plain Gen-3 DOWN drop's one card write, tags "bank-down" */
+    static char src[1 << 20];
+    size_t n = 0;
+    FILE* sf = fopen("source/pdna_gen12.c", "rb");
+    if (sf) { n = fread(src, 1, sizeof src - 1, sf); fclose(sf); }
+    src[n] = 0;
+    {
+      const char* def = strstr(src, "gb_paste_write(const GbEditMon* mon");
+      const char* call = def ? strstr(def, "gb_persist(\"") : 0;
+      CHECK(n > 0 && def && call, "#310 pin: source/pdna_gen12.c readable, paste core + its gb_persist found");
+      CHECK(call && strncmp(call, "gb_persist(\"bank-down\")", 23) == 0,
+            "#310 pin: the g3 DOWN paste core persists under \"bank-down\" (Transfer down), not \"paste\"");
+    }
+  }
 }
 
 static void t_everdrive_never_opens(void) {
