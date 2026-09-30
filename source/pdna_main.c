@@ -64,7 +64,7 @@
 #include "bank_down_convert.h" /* #271/y10: bank_down_dispatch -- the ONE Bank-native -> PC arm the TO GAME row shares with the drop */
 #include "img_stage.h"
 #include "jrn_app.h"       /* #234 s2: the journal wiring (recorder binding, flush, load anchor, re-apply) */     /* #234 s0: pure-C funnel body (img_stage_sections / img_pc_edited / img_fold_pc) */
-#include "img_flags.h"     /* #234 s0: pure-C dirty-flag state machine (pc_unstaged / image_dirty / pc_moved) */
+#include "img_flags.h"     /* #234 s0: pure-C dirty-flag state machine (pc_unstaged / image_dirty) */
 #include "bank_cell.h"     /* bc_is_native -- native Bank cell interception (BACKLOG #150 S150-2) */
 #include "pdna_pk.h"     /* pdna_pk_export (.pk3) */
 #include "pdna_bank.h"   /* pdna_bank_show (bank = parallel boxes) */
@@ -1899,9 +1899,8 @@ static void grow_in(u16 col) {
 }
 
 /* #234 slice 0: the old g_pc_dirty / g_sb1_deferred pair, split by what each really meant
- * (see img_flags.h). image_dirty = g_save != card; pc_unstaged = g_pc != what g_save decodes;
- * pc_moved = a PC box edit is pending (slice-0 compat for the arena refusal + SAVE FIRST).
- * EWRAM_BSS: three bytes, not IWRAM scalars (IWRAM holds the stack). */
+ * (see img_flags.h). image_dirty = g_save != card; pc_unstaged = g_pc != what g_save decodes.
+ * EWRAM_BSS: two bytes, not IWRAM scalars (IWRAM holds the stack). */
 static ImgFlags EWRAM_BSS g_img;
 /* #234 s2: the funnel's recorder (journal handle, deferred-scope state, crossed epoch) -- see img_stage.h.
  * ~100 B of EWRAM, zero-initialised = journal off, no scope. */
