@@ -762,6 +762,8 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "pdna_gbmap.h"       /* M1, BACKLOG #91: Gen 1's read-only current-map view */
 #include "pdna_gbhof.h"       /* BACKLOG #89: the Hall of Fame, both generations */
 #include "pdna_gbmap2.h"      /* M1-G2, BACKLOG #91: Gen 2's read-only current-map view */
+#include "gb_jkey.h"          /* #234 s4: gb_journal_key / gb_step_name */
+#include "jrn_app.h"          /* #234 s4: JaHist (the History screen's rows) */
 #include "pdna_bank.h"        /* BACKLOG #120 S2: the Bank, reachable from a GB session now */
 #include "xfer_gate.h"        /* BACKLOG #120 S2: xg_clear_carry_on_gb_exit */
 #include "pdna_pick.h"        /* BACKLOG #92: pick_item / pick_item_set_gen1_2_max */
@@ -1221,7 +1223,7 @@ static void gbsrc_set_name_impl(int box, const char* s) {
   }
   if (gbbn_rename(&g_ed->s, box, s) != GBS_OK) { snd_error(); return; }
   if (g_m) (void)g_m->rd(g_m->ctx, g_m->g2o.box_names, g_m->g2names, sizeof g_m->g2names);
-  gb_persist("boxname");
+  gb_hold_commit("boxname");
 }
 
 static void s_busy(const char* line) {
@@ -1607,7 +1609,7 @@ static bool gb_edit_commit(int box, int slot, const GbEditMon* e, const char* wh
   }
 
   log_line("=== gb %s commit -> %s box %d slot %d ===", what_for_log, g_ed->path, box, slot);
-  return gb_persist(what_for_log);                                          /* 5 */
+  return gb_hold_commit(what_for_log);                                           /* 5 (#234 s4: held until exit while the journal records) */
 }
 
 /* gb_edit_hook (the AppSrcOps.edit hook: EDIT on the read-only mon menu) was retired by
@@ -2019,7 +2021,7 @@ static bool gb_move_core(int box, int slot, int dst) {
 
   log_line("=== gb move -> %s box %d slot %d -> box %d slot %d ===",
            g_ed->path, box, slot, dst, to_slot);
-  return gb_persist("move");
+  return gb_hold_commit("move");
 }
 
 static bool gb_move_hook(uint8_t* rec80) {
@@ -2099,7 +2101,7 @@ static bool gb_release_hook(uint8_t* rec80) {
   }
 
   log_line("=== gb release -> %s box %d slot %d ===", g_ed->path, box, slot);
-  return gb_persist("release");
+  return gb_hold_commit("release");
 }
 
 /* BACKLOG #280 (Guy's #270 ruling, the G3_HOME half): the Gen-3-TARGET restore. The GB->Bank
@@ -2454,7 +2456,7 @@ static bool gb_dup_hook(uint8_t* rec80) {
   }
 
   log_line("=== gb dup -> %s box %d slot %d -> box %d slot %d ===", g_ed->path, box, slot, dst, slot_out);
-  bool ok = gb_persist("dup");
+  bool ok = gb_hold_commit("dup");
   if (ok) {
     char l1[32];
     siprintf(l1, "Landed in slot %d.", slot_out + 1);
@@ -2538,7 +2540,7 @@ static bool gb_daycare_hook(uint8_t* rec80) {
 
   log_line("=== gb daycare-put -> %s box %d slot %d -> daycare slot %d ===",
            g_ed->path, box, slot, dcslot);
-  if (!gb_persist("daycare-put")) return false;   /* gb_persist already reported any refusal */
+  if (!gb_hold_commit("daycare-put")) return false;   /* gb_persist already reported any refusal */
   snd_ok();
   msg_wait("LEFT AT DAY CARE", UI_OK, "Moved from the box. Saved.", 0);   /* gbdc_deposit's own words */
   pdna_gbdaycare(&g_ed->s, box, app_can_edit());
@@ -2906,7 +2908,7 @@ static bool gbsrc_release_all_impl(int box) {
    * above) -- drawing a SECOND "RELEASE FAILED" panel on top of it would be a false
    * "nothing changed" on the one path where something genuinely did. Only success
    * gets a panel of this hook's own. */
-  bool persisted = gb_persist("release-all");   /* ONE persist for the whole box */
+  bool persisted = gb_hold_commit("release-all");   /* ONE persist for the whole box */
   if (persisted) {
     snd_save();
     ui_clear();
@@ -4787,6 +4789,8 @@ bool gb_persist(const char* what_for_log) {
    * same session) rolls back to this edit's own bytes, not discarding it. Without
    * this, the session was internally inconsistent: the grid painted post-edit bytes
    * while pristine/rollback still pointed at whatever the card last held. */
+  if (strcmp(what_for_log, "exit") != 0 && app_gb_hold_live())         /* #234 s4: the edit is kept in-session: it is a step */
+    app_gb_stage(g_ed->pristine, g_ed->img, gb_step_name(what_for_log), true);
   memcpy(g_ed->pristine, g_ed->img, g_ed->len);
   gb_census(g_m);
   g_m->loaded = -1;
@@ -4874,12 +4878,98 @@ bool gb_persist(const char* what_for_log) {
     msg_wait(PDNA_GBEDIT_WRITEFAIL_TITLE, UI_WARN, sf_status_str(wst), PDNA_GBEDIT_DISCARDED_L2);
     return false;
   }
+  /* #234 s4: the card holds the image now. An IMMEDIATE persist is a crossed step (a transfer, a bank hand-off: it lived in
+   * another file, so undo must not walk back over it); the exit write ("exit") only flushes steps already recorded. The step
+   * is recorded AFTER the verified write on purpose: a failed write rolls back to the baseline and records nothing, so the
+   * journal never holds a step the image does not. Everything above this line -- the backup, the verified write, its
+   * failure triage -- is unchanged and in its original order. */
+  if (strcmp(what_for_log, "exit") != 0 && app_gb_hold_live())
+    app_gb_stage(g_ed->pristine, g_ed->img, gb_step_name(what_for_log), true);
+  app_gb_saved();                                 /* the image is on the card: not dirty, the journal's cursor is the saved point */
   memcpy(g_ed->pristine, g_ed->img, g_ed->len);   /* the card now holds this image */
   gb_census(g_m);                                 /* nready/nblocked/the exit report may have changed */
   g_m->loaded = -1;                               /* the grid re-pages from the new bytes */
   snd_save();
   return true;
 #endif /* PDNA_DELTA */
+}
+
+/* ---- #234 slice 4: the resident Game Boy session on the journal (design D8) -------------------------------------------
+ * `pristine` is now the STAGED baseline (the last state the session accepted and the journal recorded), not the card:
+ * a held commit re-baselines it, so gb_rollback still undoes exactly ONE failed edit and never throws earlier staged
+ * edits away. The card image is only ever the file on the SD (re-read on a discard). */
+bool gb_hold_live(void) { return g_ed && app_gb_hold_live(); }
+
+uint64_t pdna_gen12_journal_key(void) { return g_ed ? gb_journal_key(&g_ed->s) : 0u; }
+
+/* The image was patched behind the session's back (undo / redo / re-apply): the patched bytes are the new baseline; the
+ * session re-latches over them (gbs_open re-identifies, exactly what gb_rollback does) and the grid re-pages. */
+void gb_relatch(void) {
+  if (!g_ed) return;
+  memcpy(g_ed->pristine, g_ed->img, g_ed->len);
+  if (gbs_open(&g_ed->s, g_ed->img, g_ed->len, g_ed->scratch, sizeof g_ed->scratch) != GBS_OK)
+    log_line("gen12: relatch: the patched image no longer opens as a session");
+  if (g_m) { gb_census(g_m); g_m->loaded = -1; }
+}
+
+/* THE QUIET COMMIT. The edit is already in g_ed->img; with the journal recording it becomes ONE recorded step, the
+ * baseline moves up to it and NOTHING is written (the exit confirm writes once). With the journal off it is exactly
+ * gb_persist(): the caller's own confirm stays and the write is immediate, as before slice 4. */
+bool gb_hold_commit(const char* what_for_log) {
+  if (!g_ed) return false;
+  if (!app_can_edit() || !app_gb_hold_live()) return gb_persist(what_for_log);
+  app_gb_stage(g_ed->pristine, g_ed->img, gb_step_name(what_for_log), false);
+  memcpy(g_ed->pristine, g_ed->img, g_ed->len);
+  gb_census(g_m);
+  g_m->loaded = -1;
+  log_line("gb %s: staged (held until exit)", what_for_log);
+  snd_ok();
+  return true;
+}
+
+/* B at the exit confirm: put the card's image back (re-read the file), re-baseline + re-latch, and tell the journal its
+ * thrown-away steps were discarded. A failed re-read leaves the staged image in RAM (never written; the session is
+ * ending and the next open re-reads the file). The emulator build has no card: its edits stay in-session, as always. */
+static void gb_discard_staged(void) {
+#ifdef PDNA_DELTA
+  log_line("gb exit: discard in the emulator build leaves the in-session image (no card to re-read)");
+  app_gb_dirty_clear();
+#else
+  uint32_t got = 0;
+  rmbl_pause();
+  SfStatus st = sf_read_full(g_ed->path, g_ed->img, g_ed->len, &got);
+  rmbl_resume();
+  if (st != SF_OK || got != g_ed->len) {
+    log_line("gb exit: discard re-read failed (%s, %lu of %lu B) - RAM only, never written", sf_status_str(st),
+             (unsigned long)got, (unsigned long)g_ed->len);
+    app_gb_dirty_clear();
+    return;
+  }
+  gb_relatch();
+  app_gb_discarded();
+#endif
+}
+
+/* The session's ONE exit confirm (Gen 3's flush_on_exit): the pending records reach the journal first (a cut between that
+ * and the write = the load-time offer), then A writes the whole staged image once, B discards it. */
+static void __attribute__((noinline)) gb_flush_on_exit(void) {
+  if (!g_ed) return;
+  app_gb_rest();
+  if (!app_gb_dirty()) return;
+  if (app_confirm("Save changes?", "Save the staged changes?")) {
+    (void)gb_persist("exit");                 /* reports its own refusals; success marks the journal saved */
+    app_gb_rest();                            /* the next segment + any identity redirect */
+  } else {
+    gb_discard_staged();
+  }
+}
+
+/* The session opened: bind the recorder to the resident image, open its journal (+ the load-time offer, + the ring's first
+ * fill). Never fatal: any failure leaves the journal off and the UI silent about it. */
+static void __attribute__((noinline)) gb_journal_session_open(void) {
+  uint64_t key = gb_journal_key(&g_ed->s);
+  if (!key) { log_line("journal(gb): no identity key, journal off"); return; }
+  (void)app_gb_journal_open(g_ed->img, key);
 }
 
 /* Arena block for a session whose bytes are already resident: no FIL, and the image
@@ -5696,7 +5786,7 @@ static bool gb_create_hook(void) {
     return false;
   }
   log_line("=== gb create -> %s box %d slot %d dex %u lv %d ===", g_ed->path, box, slot_out, dex, lvl);
-  bool ok = gb_persist("create");
+  bool ok = gb_hold_commit("create");
   /* Review fix 3 (LOW), BACKLOG #187: F4's picker can redirect `box` away from the
    * one the grid is showing -- say so, or the new mon looks like it never landed. A
    * plain in-place create (the common case) already shows it right where the
@@ -6454,6 +6544,7 @@ int pdna_gen12_show_image(const char* path, uint8_t* img, uint32_t len,
       ed->origin_write_failed = false;      /* BACKLOG #172: fresh mount, fresh answer */
       ed->origin_cached = 0;
       g_ed = ed;
+      gb_journal_session_open();            /* #234 s4: bind the recorder, open the journal, offer any unsaved steps */
     } else {
       log_line("gen12: edit session refused (%s, gen %d vs mount kind %d): read-only",
                gbs_status_text(st), ed->s.gen, (int)m->kind);
@@ -6465,6 +6556,7 @@ int pdna_gen12_show_image(const char* path, uint8_t* img, uint32_t len,
                             * succeeded above, or the plain read-only info page when
                             * it did not (same as before this lane) */
 
+  if (g_ed) { gb_flush_on_exit(); app_gb_close(); }   /* #234 s4: the ONE exit confirm, then unbind the recorder */
   g_ed = 0;                                       /* the arena block is about to go */
   g_tail_lent = false;      /* U2b review 0b: the whole block goes away next line anyway,
                               * but a caller that checks the flag before that must see it

@@ -189,6 +189,10 @@ static bool      g_rom_art_off = false;
 static int       g_backup_mode = 0;
 static unsigned  g_anim_mask = (1u << ANIM_BOX) | (1u << ANIM_PARTY) | (1u << ANIM_DEX) |
                                (1u << ANIM_DAYCARE) | (1u << ANIM_SUMMARY);   /* summary wiggle ON by default (Emerald feel) */
+/* #234 s4 (Settings > History size): the journal's retention cap rides in bits 24..25 of g_anim_mask -- a persisted
+ * pref that needs no new static (IWRAM holds the stack, EWRAM is budgeted to the byte). 0 = 16 segments (1 MiB, the
+ * engine default), 1 = 8 (512 KiB), 2 = 4 (256 KiB). Bit 24+ never collides with an ANIM_* place bit. */
+#define HIST_CAP_SHIFT 24u
 static int       g_pc_last_box = 0;        /* PC box to open on (NOT the save's in-game box); app remembers it */
 
 /* Big buffers live in EWRAM (.bss), never on the IWRAM stack. */
@@ -975,7 +979,7 @@ static void cfg_load(void) {
       else if (!strcmp(k, "romoff")) g_rom_art_off = (v[0] == '1');
       else if (!strcmp(k, "gbscale")) gb_scale_mode = (v[0] == '1') ? 1 : 0;
       else if (!strcmp(k, "bak"))    { int m = v[0] - '0'; if (m >= 0 && m <= 2) g_backup_mode = m; }
-      else if (!strcmp(k, "anim"))   { unsigned m = 0; for (const char* d = v; *d >= '0' && *d <= '9'; d++) m = m * 10 + (unsigned)(*d - '0'); g_anim_mask = m & ((1u << ANIM_COUNT) - 1u); }
+      else if (!strcmp(k, "anim"))   { unsigned m = 0; for (const char* d = v; *d >= '0' && *d <= '9'; d++) m = m * 10 + (unsigned)(*d - '0'); g_anim_mask = m & (((1u << ANIM_COUNT) - 1u) | (3u << HIST_CAP_SHIFT)); }
       else if (!strcmp(k, "rumble")) { unsigned m = 0; for (const char* d = v; *d >= '0' && *d <= '9'; d++) m = m * 10 + (unsigned)(*d - '0'); rmbl_set_mask(m); }
       else if (!strcmp(k, "pcbox"))  { int m = 0; for (const char* d = v; *d >= '0' && *d <= '9'; d++) m = m * 10 + (*d - '0'); g_pc_last_box = m; }
       /* All five ROM-path keys REJECT (and log) a value too long for
@@ -1938,6 +1942,11 @@ void app_step_name(const char* name) { img_rec_name(&g_rec, name); }
 
 /* g_anim_mask is defined near the top (with the other persisted prefs) so cfg_save /
  * cfg_load can reach it; this is just the accessor the screens call. */
+/* The retention cap in segments (the engine clamps to 16): 16 / 8 / 4 by the Settings preset. */
+uint8_t app_history_cap(void) {
+  unsigned p = (g_anim_mask >> HIST_CAP_SHIFT) & 3u;
+  return (uint8_t)(p == 1u ? 8u : p == 2u ? 4u : 16u);
+}
 bool app_anim_enabled(int kind) { return kind >= 0 && kind < ANIM_COUNT && ((g_anim_mask >> kind) & 1u); }
 
 /* Verify checksums, back up the original, and do the verified whole-file write —
@@ -10213,6 +10222,7 @@ static void reload_saveblocks(void) {
 /* ---- #234 slice 2: the journal wiring (design D1/D3/D6; the engine is journal.c, the glue jrn_app.c) --------
  * The image was patched behind the mirrors' backs (a re-apply): re-derive every decoded copy from g_save. */
 static void app_journal_rederive(void) {
+  if (pdna_gen12_resident()) { gb_relatch(); return; }     /* #234 s4: a Game Boy session re-latches its session over the patched image */
   reload_saveblocks();
   if (g_have_pc && !g_arena_held) g_have_pc = (gen3_read_pc_storage(g_save, g_vinfo.slot, g_pc) == G3_PC_BYTES);
   g_nparty = pk_read_party_auto(g_sb1, g_party, &g_frlg);
@@ -10235,9 +10245,10 @@ bool app_undo_live(void) { return app_can_edit() && jrnapp_state(&g_rec) == JA_O
 
 int app_undo_redo(int dir, char name[25]) {
   int rc, st = jrnapp_state(&g_rec);
+  const bool gb = pdna_gen12_resident();          /* #234 s4: a Game Boy session has no g_pc loan to protect (its arena IS the mount) */
   name[0] = 0;
   if (st != JA_OK && st != JA_GAP) return AUR_OFF;
-  if (app_arena_held() || imgf_arena_ok(&g_img) == false) return AUR_ARENA;   /* T5: g_pc is a loan / ahead of the image */
+  if (!gb && (app_arena_held() || imgf_arena_ok(&g_img) == false)) return AUR_ARENA;   /* T5: g_pc is a loan / ahead of the image */
   rc = jrnapp_step(dir, name);
   if (rc == JRN_OK) {
     app_journal_rederive();
@@ -10256,7 +10267,7 @@ int app_history_jump(uint32_t target, char stop[25], int* moved) {
   int n = 0;
   if (moved) *moved = 0;
   if (stop) stop[0] = 0;
-  if (app_arena_held() || imgf_arena_ok(&g_img) == false) return AUR_ARENA;
+  if (!pdna_gen12_resident() && (app_arena_held() || imgf_arena_ok(&g_img) == false)) return AUR_ARENA;
   rc = jrnapp_jump(target, stop, &n);
   if (moved) *moved = n;
   if (n > 0) { app_journal_rederive(); imgf_staged(&g_img); }
@@ -10329,10 +10340,55 @@ static void app_journal_rest(void) {
   (void)jrnapp_flush();
   if (s_jrn_prepare_owed) {                     /* a verified save happened since: the next segment + any identity redirect */
     s_jrn_prepare_owed = false;
-    (void)jrnapp_prepare(&g_rec, g_sb2, g_frlg);
+    if (pdna_gen12_resident()) (void)jrnapp_prepare_key(&g_rec, pdna_gen12_journal_key());   /* #234 s4: the Game Boy identity key */
+    else (void)jrnapp_prepare(&g_rec, g_sb2, g_frlg);
   }
   jrnapp_log_events(&g_rec);
 }
+
+/* ---- #234 slice 4: the Game Boy session on the SAME journal (design D8) ------------------------------------------
+ * pdna_gen12.c owns the GB image, its baseline (`pristine`, the last STAGED state) and the session; this file owns the one
+ * recorder (g_rec), the dirty flags (g_img) and the offer dialog. The GB image is edited in place and journaled as a
+ * flat 8 x 4,096-byte image (jrn_app.c). Everdrive / read-only never opens (the same write_ok gate as Gen 3). */
+bool app_gb_journal_open(uint8_t* img, uint64_t key) {
+  int st;
+  imgf_clear(&g_img);                                      /* a Game Boy session starts clean: nothing staged, nothing pending */
+  s_jrn_prepare_owed = false;
+  st = jrnapp_open_gb(&g_rec, img, key, app_history_cap(), app_can_edit());
+  if (st == JA_OK) {
+    uint32_t avail = 0;
+    char stop[25];
+    uint32_t n = jrnapp_offer(&avail, stop);
+    log_line("journal(gb): open cursor %lu tip %lu offer %lu", (unsigned long)jrnapp_cursor(), (unsigned long)jrnapp_tip(), (unsigned long)n);
+    if (n) { hb_pause(); perf_span_pause(); app_journal_offer(n, avail, stop); perf_span_resume(); hb_resume(); }
+    if (jrnapp_first_fill_owed()) busy_panel("Preparing undo history...");
+    (void)jrnapp_prepare_key(&g_rec, key);
+  }
+  jrnapp_log_events(&g_rec);
+  log_line("journal(gb): state %d", jrnapp_state(&g_rec));
+  return st == JA_OK;
+}
+/* Is the hold-until-exit posture live? Only while the journal is recording (the safety net the removed per-screen prompts
+ * lean on): with it off a commit keeps today's confirm + immediate write. */
+bool app_gb_hold_live(void) {
+  int st = jrnapp_state(&g_rec);
+  return app_can_edit() && (st == JA_OK || st == JA_GAP);
+}
+/* One Game Boy step: `base` (the baseline) -> `img` (the edited image), named `name`; `crossed` bumps the epoch first
+ * (a step that lived in another file: a transfer, an identity edit). Marks the image dirty. */
+void app_gb_stage(const uint8_t* base, const uint8_t* img, const char* name, bool crossed) {
+  if (crossed) app_journal_cross();
+  (void)img_rec_flat(&g_rec, base, img, 8u, 4096u, name);
+  imgf_staged(&g_img);
+}
+bool app_gb_dirty(void) { return imgf_exit_prompt(&g_img); }
+void app_gb_dirty_clear(void) { imgf_clear(&g_img); }
+void app_gb_saved(void) { imgf_clear(&g_img); app_journal_after_save(); }
+void app_gb_rest(void) { app_journal_rest(); }
+/* B at the GB exit confirm: the card image was put back in the buffer; re-anchor and mark the thrown-away steps discarded. */
+void app_gb_discarded(void) { imgf_clear(&g_img); jrnapp_after_discard(&g_rec); }
+/* The session is over: unbind the recorder (a later Gen-3 load re-opens it for its own image). */
+void app_gb_close(void) { imgf_clear(&g_img); jrnapp_close(&g_rec); }
 
 /* ---- S5-C Part B2: reconcile on load -- release transferred originals -----------
  *
