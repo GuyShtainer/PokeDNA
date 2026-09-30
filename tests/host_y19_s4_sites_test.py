@@ -136,6 +136,7 @@ def c_half() -> None:
                                                         "for (s = 1; s <= 3u; s++) {                           /* bounded")],
         "G9 Clear history forgets the directory": [("journal_fs.c", "(void)f_unlink(dir); ", "(void)0; ")],
         "G11 a failed Clear history leaves the journal open": [("jrn_app.c", 'ja_event("clear history failed", n); r->j = 0; r->state = IREC_OFF; s_state = JA_ERROR; return n;', 'ja_event("clear history failed", n); return n;')],
+        "G12 the discard never re-anchors the journal": [("jrn_app.c", "  rc = ja_do_open(r);                                        /* re-anchor against the restored card image */", "  rc = JRN_OK;                                        /* re-anchor against the restored card image */")],
         "G10 img_rec_flat never records": [("img_stage.c", "  rec_step(r, 0, 0, 0, 0, &fp);\n", "")],
     }
     for name, edits in muts.items():
@@ -187,6 +188,9 @@ def pins(T: dict[str, str]) -> dict[str, bool]:
             > gp.rfind("sf_backup_rolling(") > 0 and gp.rfind("app_gb_saved();") > gp.rfind("app_gb_stage(")
             and gp.rfind("memcpy(g_ed->pristine, g_ed->img, g_ed->len);") > gp.rfind("app_gb_saved();")
             and gp.rfind("app_gb_stage(") > gp.rfind("sf_write_verified(") > gp.rfind("sf_backup_rolling("),
+        "S2c the PDNA_DELTA branch records the step BEFORE it re-baselines pristine (else the step is an empty diff)":
+            bool(gp) and 0 < gp.find("app_gb_stage(g_ed->pristine, g_ed->img") < gp.find("memcpy(g_ed->pristine, g_ed->img")
+            and gp.find("PDNA_DELTA") >= 0 and gp.find("app_gb_stage(") < gp.find("snd_error();"),
         "S3 every retired prompt is skipped only while the journal records":
             all(re.search(r"gb_hold_live\(\)[^\n]*app_confirm\(\"" + re.escape(p) + r"|app_confirm\(\"" + re.escape(p) + r"[^\n]*", strip_comments(T[f]))
                 and ("gb_hold_live()" in strip_comments(T[f]))
@@ -270,6 +274,9 @@ def text_half() -> None:
     mut("S3d a held take-out says Saved.", "pdna_gbdaycare.c", 'msg_wait("TAKEN OUT", UI_OK, line, gb_hold_live() ? "Save on exit to keep it." : "Saved.");', 'msg_wait("TAKEN OUT", UI_OK, line, "Saved.");', "S3d")
     mut("S3d release-all chimes Saved while held", "pdna_gen12.c", "    if (!gb_hold_live()) snd_save();\n    ui_clear();", "    snd_save();\n    ui_clear();", "S3d")
     mut("S3d deposit says Saved while held", "pdna_gen12.c", 'gb_hold_live() ? "Moved from the box." : "Moved from the box. Saved."', '"Moved from the box. Saved."', "S3d")
+    mut("S2c the delta branch re-baselines before recording", "pdna_gen12.c",
+        "    (void)app_gb_stage(g_ed->pristine, g_ed->img, gb_step_name(what_for_log), true);\n  memcpy(g_ed->pristine, g_ed->img, g_ed->len);\n  if (g_m) { gb_census(g_m); g_m->loaded = -1; }   /* the exit",
+        "  memcpy(g_ed->pristine, g_ed->img, g_ed->len);\n    (void)app_gb_stage(g_ed->pristine, g_ed->img, gb_step_name(what_for_log), true);\n  if (g_m) { gb_census(g_m); g_m->loaded = -1; }   /* the exit", "S2c")
     mut("S3 the dex prompt is back unconditionally", "pdna_gbdex.c", "if (!gb_hold_live() && !app_confirm(\"Save Pokedex changes?\"", "if (!app_confirm(\"Save Pokedex changes?\"", "S3")
     mut("S3 the bag prompt is back unconditionally", "pdna_gbbag.c", "if (gb_hold_live() || app_confirm(\"Save bag changes?\"", "if (app_confirm(\"Save bag changes?\"", "S3")
     mut("S3b the plain edit still asks", "pdna_gbedit.c", "  if (gb_hold_live() && pdna_summary_quiet()) {\n    GbIssues iss;", "  if (0) {\n    GbIssues iss;", "S3b")

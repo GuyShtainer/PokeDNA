@@ -241,6 +241,29 @@ static void t_clear_card_error(void) {
   CHECK(bad == 0, "D5 a failed Clear history leaves the journal ERROR (off), never a half ring; %d bad", bad);
 }
 
+/* D8 (#234 s4 review): the B-at-exit discard. The card image (saved after step 1) is put back in the buffer, the thrown-away
+ * step 2 stays in the history MARKED, and the journal must RE-ANCHOR on the restored image: a new edit after it undoes
+ * byte-exactly to the restored image, never to a state the buffer does not hold. */
+static void t_discard_reanchor(void) {
+  static uint8_t saved[sizeof img];
+  char nm[25];
+  CHECK(world(GBF_RBY, 0), "world");
+  edit(0x0100, 4, 0x5A, "Box move", 0);
+  CHECK(jrnapp_flush() == JRN_OK, "flush 1");
+  jrnapp_mark_saved();
+  memcpy(saved, img, sizeof img);                                          /* what the card holds */
+  edit(0x2100 + 7, 10, 0xA5, "Box move", 0);                               /* the edit the user throws away */
+  CHECK(jrnapp_flush() == JRN_OK && jrnapp_tip() == 2, "two steps recorded, tip %u", (unsigned)jrnapp_tip());
+  memcpy(img, saved, sizeof img); memcpy(base, saved, sizeof base);        /* B at the exit confirm: the card image is back */
+  jrnapp_after_discard(&R);
+  CHECK(jrnapp_state(&R) == JA_OK, "D8 still recording after the discard, state %d", jrnapp_state(&R));
+  CHECK(jrnapp_cursor() == jrnapp_tip(), "D8 the cursor sits on the tip after the re-anchor (cursor %u tip %u)", (unsigned)jrnapp_cursor(), (unsigned)jrnapp_tip());
+  edit(0x0900, 6, 0x11, "Bag", 0);
+  CHECK(jrnapp_flush() == JRN_OK, "flush after the discard");
+  CHECK(jrnapp_step(-1, nm) == JRN_OK, "undo the new edit");
+  CHECK(memcmp(img, saved, GB_LEN) == 0, "D8 undo lands on the restored card image byte-exactly (the journal re-anchored)");
+}
+
 int main(void) {
   t_key();
   t_everdrive_never_opens();
@@ -250,6 +273,7 @@ int main(void) {
   t_cap_and_foreign_layout();
   t_clear_history();
   t_clear_card_error();
+  t_discard_reanchor();
   printf("%lu checks, %d failed\n", checks, fails);
   return fails ? 1 : 0;
 }
