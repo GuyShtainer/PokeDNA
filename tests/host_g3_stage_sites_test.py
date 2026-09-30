@@ -154,6 +154,9 @@ def c_pins() -> None:
         "F3 scopes do not defer": [("img_stage.c", "if (allow_defer && r && r->depth) {", "if (0 && allow_defer && r && r->depth) {")],
         "F4 old/new swapped in the diff": [("img_stage.c", "jrn_step_region(r->j, (uint8_t)id, old_blk, blk[id])",
                                             "jrn_step_region(r->j, (uint8_t)id, blk[id], old_blk)")],
+        "F5 a lost step is not a floor": [
+            ("img_stage.c", "  r->epoch++;                       /* a lost step is a floor: the next record is crossed (#301) */\n", ""),
+            ("img_stage.c", "      crossed = 1;                  /* the resynced base is not the recorded chain's base: floor here too */\n", "")],
     }
     for name, edits in fmuts.items():
         rc, out = funnel_mutant(name[:2], edits)
