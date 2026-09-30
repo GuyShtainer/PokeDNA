@@ -19,6 +19,7 @@ static Jrn      EWRAM_BSS s_j;
 static ImgRec*  EWRAM_BSS s_r;          /* the recorder this session bound (NULL = none)            */
 static uint64_t EWRAM_BSS s_key;        /* the key the journal was opened with (redirect compare)   */
 static uint8_t  EWRAM_BSS s_state;      /* JA_* for the states the recorder cannot express          */
+static uint32_t EWRAM_BSS s_saved;      /* the cursor seq the CARD's image sits on (slice 3: "recorded" vs "SAVED") */
 static uint8_t  EWRAM_BSS s_ev_new;     /* an event is waiting for jrnapp_log_events                */
 static int      EWRAM_BSS s_ev_rc;
 static const char* EWRAM_BSS s_ev_what;
@@ -86,6 +87,7 @@ int jrnapp_open(ImgRec* r, uint8_t* save, int slot, const uint8_t* sb2, bool frl
   if (rc == JRN_E_VERSION) { s_state = JA_FOREIGN; ja_event("open: foreign journal, read-only", rc); return JA_FOREIGN; }
   if (rc != JRN_OK) { s_state = JA_ERROR; ja_event("open failed, journal off", rc); return JA_ERROR; }
   r->j = &s_j;
+  s_saved = jrn_cursor(&s_j);                               /* the loaded image IS the card's: its anchor is the saved point */
   r->flush = jrnapp_flush;
   r->state = IREC_OK;
   s_state = JA_OK;
@@ -208,6 +210,7 @@ void jrnapp_after_discard(ImgRec* r) {
   rc = ja_do_open(r);                                        /* re-anchor against the restored card image */
   rmbl_resume();
   if (rc != JRN_OK) { ja_event("re-open after discard failed", rc); r->j = 0; r->state = IREC_OFF; s_state = JA_ERROR; return; }
+  s_saved = jrn_cursor(&s_j);                                /* the card holds the restored image */
   jrnapp_decline();
 }
 
@@ -216,4 +219,96 @@ void jrnapp_step_name(uint32_t seq, char out[25]) {
   out[0] = 0;
   if (!s_r || !s_r->j) return;
   if (jrn_find(&s_j, seq, &rec) == 0) { memcpy(out, rec.name, 24); out[24] = 0; }
+}
+
+/* ---- slice 3: undo / redo / history (design D5/D7) ----------------------------------------------------- */
+void jrnapp_mark_saved(void) {
+  if (s_r && s_r->j && s_state == JA_OK) s_saved = jrn_cursor(&s_j);
+}
+
+/* One undo (dir < 0) or redo (dir > 0) through the engine's cursor rule. A full pending buffer flushes once and
+ * retries. Returns JRN_OK (name = the step, "" when unknown) or a JRN_E_* / JRN_NOOP: nothing was patched unless 0. */
+int jrnapp_step(int dir, char name[25]) {
+  JrnRec rec;
+  int rc, retried = 0;
+  if (name) name[0] = 0;
+  if (!s_r || !s_r->j || s_state != JA_OK) return JRN_E_ARG;
+  if (s_r->depth) return JRN_E_STATE;                        /* a scope is open: a staged copy is mid-edit */
+  memset(&rec, 0, sizeof rec);
+  for (;;) {
+    rc = dir < 0 ? jrn_undo(&s_j, &s_r->img, &rec) : jrn_redo(&s_j, &s_r->img, &rec);
+    if (rc == JRN_E_FULL && !retried) { retried = 1; (void)jrnapp_flush(); continue; }
+    break;
+  }
+  if (rc == JRN_OK && name) { memcpy(name, rec.name, 24); name[24] = 0; }
+  if (rc == JRN_E_CROSSED && name) {                         /* name the floor: undo stops AT the cursor's step, redo BEFORE the next crossed one */
+    if (dir < 0) jrnapp_step_name(jrn_cursor(&s_j), name);
+    else {
+      uint32_t av = 0, tot = 0;
+      if (jrn_redo_info(&s_j, &av, &tot, &rec) == 1) { memcpy(name, rec.name, 24); name[24] = 0; }
+    }
+  }
+  if (rc != JRN_OK && rc != JRN_NOOP) ja_event(dir < 0 ? "undo refused" : "redo refused", rc);
+  return rc;
+}
+
+/* The current branch, newest first: from the tip down the parent chain, at most `max` steps. */
+int jrnapp_history(JaHist* rows, int max, int* more, int* floor_hit) {
+  JrnRec rec;
+  uint32_t t, cur, hops = 0;
+  int n = 0, ahead = 1, saved_seen = 0;
+  if (more) *more = 0;
+  if (floor_hit) *floor_hit = 0;
+  if (!rows || max < 1 || !s_r || !s_r->j || s_state != JA_OK) return 0;
+  t = jrn_tip(&s_j); cur = jrn_cursor(&s_j);
+  while (t && n < max && hops++ < JRN_WALK_MAX) {
+    if (jrn_find(&s_j, t, &rec) != 0) { if (floor_hit) *floor_hit = 1; return n; }
+    if (t == cur) ahead = 0;                                 /* this row and every older one are IN the image */
+    if (t == s_saved) saved_seen = 1;
+    rows[n].seq = t;
+    rows[n].crossed = rec.crossed ? 1 : 0;
+    rows[n].at_cursor = (t == cur) ? 1 : 0;
+    rows[n].ahead = (uint8_t)ahead;
+    rows[n].saved = (uint8_t)saved_seen;
+    memcpy(rows[n].name, rec.name, 24); rows[n].name[24] = 0;
+    n++;
+    t = rec.parent;
+  }
+  if (t && more) *more = 1;
+  return n;
+}
+
+/* Undo or redo along the current branch until the cursor sits on `target`, stopping at a floor. *moved = steps
+ * applied. Returns 0 (arrived), or the JRN_E_* / JRN_NOOP that stopped the chain (`stop` = the step it stopped at). */
+int jrnapp_jump(uint32_t target, char stop[25], int* moved) {
+  JrnRec rec;
+  uint32_t t, hops;
+  int rc = 0, dir, n = 0;
+  if (stop) stop[0] = 0;
+  if (moved) *moved = 0;
+  if (!s_r || !s_r->j || s_state != JA_OK) return JRN_E_ARG;
+  if (target == jrn_cursor(&s_j)) return 0;
+  dir = 1;                                                   /* an ancestor of the cursor means UNDO, else REDO */
+  for (t = jrn_cursor(&s_j), hops = 0; t && hops < 4096u; hops++) {
+    if (t == target) { dir = -1; break; }
+    if (jrn_find(&s_j, t, &rec) != 0) break;
+    t = rec.parent;
+  }
+  if (target == 0) dir = -1;
+  for (hops = 0; hops < 4096u && jrn_cursor(&s_j) != target; hops++) {
+    if (dir < 0 && jrn_cursor(&s_j) == 0) break;
+    rc = jrnapp_step(dir, 0);
+    if (rc != JRN_OK) break;
+    n++;
+  }
+  if (moved) *moved = n;
+  if (rc == JRN_E_CROSSED && stop && dir < 0) jrnapp_step_name(jrn_cursor(&s_j), stop);   /* the floor is the step at the cursor */
+  if (rc == JRN_E_CROSSED && stop && dir > 0) {              /* redo stopped before a crossed record: name it */
+    uint32_t av = 0, tot = 0;
+    JrnRec st;
+    memset(&st, 0, sizeof st);
+    if (jrn_redo_info(&s_j, &av, &tot, &st) == 1) { memcpy(stop, st.name, 24); stop[24] = 0; }
+  }
+  if (rc == JRN_OK && jrn_cursor(&s_j) != target) rc = JRN_E_NOTHING;
+  return rc;
 }

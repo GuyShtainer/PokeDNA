@@ -65,4 +65,34 @@ void jrnapp_after_discard(ImgRec* r);
 /* The name of the step at seq (for the offer's "stops at <step>" line): "" when unknown. */
 void jrnapp_step_name(uint32_t seq, char out[25]);
 
+/* ---- slice 3: undo / redo / the history screen (design D5/D7) ----------------------------------------- */
+/* The card's image now sits at the journal's current cursor (a verified save happened): "recorded" steps past it
+ * stay "recorded", everything at or below it reads SAVED. Cheap; call after every verified .sav write. */
+void jrnapp_mark_saved(void);
+/* ONE undo (dir < 0) or redo (dir > 0) through the engine's cursor rule (verify every span, then patch the image
+ * through the accessor, then a cursor marker). name = the step it undid/redid. Returns JRN_OK or the engine's
+ * refusal (JRN_E_CROSSED = a floor, JRN_E_DIVERGED = the image no longer matches, JRN_E_NOTHING / JRN_NOOP = nothing
+ * to do, JRN_E_ARG = the journal is not usable, JRN_E_STATE = a scope is open). Nothing is patched unless 0. On
+ * JRN_E_CROSSED `name` is the FLOOR's step (undo: the step at the cursor; redo: the crossed step redo stops before). The
+ * CALLER re-derives its decoded copies and sets image-dirty. */
+int  jrnapp_step(int dir, char name[25]);
+
+typedef struct JaHist {
+  uint32_t seq;
+  uint8_t  crossed;    /* a floor: undo/redo cannot pass it                                   */
+  uint8_t  at_cursor;  /* the image sits exactly here                                         */
+  uint8_t  ahead;      /* newer than the cursor: undone, redoable                             */
+  uint8_t  saved;      /* at or below the step the CARD holds (else only "recorded")          */
+  char     name[25];
+} JaHist;
+/* The current branch newest-first (tip down the parent chain), up to `max` rows. *more = 1 when older steps exist
+ * past the window; *floor_hit = 1 when the chain ended at a compacted (retired) parent. Returns the row count
+ * (0 = nothing recorded / the journal is not usable). Other branches are NOT enumerated (the engine has no
+ * children walk): only the chain the redo tip sits on is listed. */
+int  jrnapp_history(JaHist* rows, int max, int* more, int* floor_hit);
+/* Undo/redo along that branch until the cursor sits on `target` (a row's seq; 0 = before the first step),
+ * stopping at a floor. *moved = steps applied; `stop` = the crossed step's name when a floor stopped it. Returns 0
+ * on arrival or the JRN_E_* that stopped the chain. */
+int  jrnapp_jump(uint32_t target, char stop[25], int* moved);
+
 #endif /* JRN_APP_H */
