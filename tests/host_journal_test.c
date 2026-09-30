@@ -771,6 +771,17 @@ static void t_layout_and_names(void) {
   CHECK(jrn_step_begin(&j, nm, 0) == JRN_OK, "a name longer than 24 is truncated, not refused"); jrn_step_abort(&j);
 }
 
+/* A LIVE-shaped header in the WRONG slot (its index maps to another slot, e.g. a copy) is not part of the ring. */
+static void t_dup_index(void) {
+  Jrn j; unsigned g;
+  g_jopen_segs = 3;
+  world(&j, FM_FAT);
+  for (g = 0; g < 2; g++) CHECK(stage(&j, "s", 0, 1, 0, 8, fresh_val(1, 0)) == JRN_OK && jrn_flush(&j) == JRN_OK, "step");
+  plant_hdr(K, 3, 2, 4, 1);                                  /* index 2 belongs in slot 2; a copy in slot 3 */
+  CHECK(jopen(&j, K) == JRN_OK && j.foreign == 0 && j.seg_first == 1 && j.seg_last == 2 && j.tail_seg == 1 && j.next_seq == 3, "a duplicate index in the wrong slot changes nothing (%u..%u tail %u next_seq %u)", j.seg_first, j.seg_last, j.tail_seg, (unsigned)j.next_seq);
+  g_jopen_segs = 0;
+}
+
 /* SEG_MAX honesty (bounce fix 9): the logical segment index is capped (9999; a header index past it is
  * FOREIGN by the version rule, so the cap is part of the format). At the cap jrn_prepare says JRN_E_FULL
  * LOUDLY instead of returning OK with no spare and letting the tail fill and die. */
@@ -885,6 +896,7 @@ int main(void) {
   t_read_error_honesty();
   t_partial_flush_stops();
   t_no_segment_refusal();
+  t_dup_index();
   t_seg_max();
   t_layout_and_names();
   if (fails) { printf("host_journal_test: %d FAILED of %lu checks\n", fails, checks); return 1; }
