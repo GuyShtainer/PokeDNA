@@ -220,6 +220,6 @@ void pdna_gb_fly(GbSession* s, bool can_edit) {
     }
   }
 
-  if (dirty && app_confirm("Save fly destinations?", "Writes the save file now."))
-    gb_persist("fly");
+  if (dirty && (gb_hold_live() || app_confirm("Save fly destinations?", "Writes the save file now.")))   /* #234 s4: quiet while the journal records */
+    gb_hold_commit("fly");
 }

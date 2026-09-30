@@ -275,7 +275,7 @@ static void gbmap_do_place(GbSession* s, uint8_t map_id, uint16_t width, uint16_
     s_msg("WRITE REFUSED", UI_WARN, gbs_status_text(wst), "Nothing was changed.");
     return;
   }
-  if (!gb_persist("gb1 teleport")) return;   /* gb_persist already messaged + rolled back */
+  if (!gb_hold_commit("gb1 teleport")) return;   /* gb_persist already messaged + rolled back */
 
   s_msg("PLACED", UI_OK, PDNA_GBMAP_PLACED_L1, PDNA_GBMAP_PLACED_L2);
   if (!have_snap) return;   /* undo offer gated on having the snapshot (D3) */
@@ -286,7 +286,7 @@ static void gbmap_do_place(GbSession* s, uint8_t map_id, uint16_t width, uint16_
       s_msg("REFUSED", UI_WARN, gbs_status_text(ust), 0);
       return;
     }
-    if (!gb_persist("gb1 teleport undo")) return;
+    if (!gb_hold_commit("gb1 teleport undo")) return;
     s_msg("RESTORED", UI_OK, PDNA_GBMAP_RESTORED_L1, PDNA_GBMAP_RESTORED_L2);
   }
 }

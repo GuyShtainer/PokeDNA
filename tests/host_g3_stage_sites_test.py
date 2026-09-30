@@ -150,7 +150,7 @@ def c_pins() -> None:
     rc, out = build_and_run_funnel(ROOT / "source", "clean")
     check("C core: the funnel feeds the journal (host_jrn_funnel_test.c) on the real source", rc == 0, out)
     fmuts = {
-        "F1 recorder never called": [("img_stage.c", "  rec_step(r, save, slot, mask, blk);\n", "")],
+        "F1 recorder never called": [("img_stage.c", "  rec_step(r, save, slot, mask, blk, 0);\n", "")],
         "F2 crossed epoch ignored": [("img_stage.c", "crossed = r->epoch != r->epoch_seen;", "crossed = 0;")],
         "F3 scopes do not defer": [("img_stage.c", "if (allow_defer && r && r->depth) {", "if (0 && allow_defer && r && r->depth) {")],
         "F4 old/new swapped in the diff": [("img_stage.c", "jrn_step_region(r->j, (uint8_t)id, old_blk, blk[id])",
@@ -217,9 +217,10 @@ def slice2_wiring(text: str, disk: str, jrnapp: str) -> list[str]:
     gf = fbody(disk, "get_fattime")
     if "jrn_stamp_held()" not in gf or gf.count("jrn_fattime_filter(") < 3:
         bad.append("W7 get_fattime does not honour the held stamp / filter every return")
-    jo = fbody(jrnapp, "jrnapp_open")
-    if "!write_ok" not in jo or "return JA_OFF" not in jo or jo.find("!write_ok") > jo.find("ja_do_open("):
-        bad.append("W8 the journal can open without write access")
+    for fn in ("jrnapp_open", "jrnapp_open_gb"):          # slice 4: the Game Boy open shares the gate (Everdrive never opens)
+        jo = fbody(jrnapp, fn)
+        if "!write_ok" not in jo or "return JA_OFF" not in jo or jo.find("!write_ok") > jo.find("ja_open_bound("):
+            bad.append(f"W8 the journal can open without write access ({fn})")
     if "app_can_edit()" not in b["app_journal_load"]:
         bad.append("W8 app_journal_load does not pass app_can_edit()")
     for s in ("Save data changes?", "Save bag changes?", "Save Pokedex changes?", "Save Pokeblocks?", "Save events?",
@@ -254,7 +255,9 @@ def wiring_pins() -> None:
         "W7 get_fattime reads the RTC while a flush holds the stamp": (MAIN, disk, jrnapp, "disk",
             "if (jrn_stamp_held()) return (DWORD)jrn_fattime_filter(0);\n", ""),
         "W8 the journal opens without write access": (MAIN, disk, jrnapp, "jrnapp",
-            "if (!write_ok || !save || !sb2) return JA_OFF;", "if (!save || !sb2) return JA_OFF;"),
+            "if (!write_ok || !save || !sb2 || slot < 0) return JA_OFF;", "if (!save || !sb2 || slot < 0) return JA_OFF;"),
+        "W8 the GB journal opens without write access (slice 4)": (MAIN, disk, jrnapp, "jrnapp",
+            "if (!write_ok || !img) return JA_OFF;", "if (!img) return JA_OFF;"),
         "W9 a removed prompt comes back": (MAIN, disk, jrnapp, "main",
             "static void app_journal_rest(void) {", "static void x_(void) { app_confirm(\"Save Pokeblocks?\", \"\"); }\nstatic void app_journal_rest(void) {"),
         "W10 flush_on_exit loses the rest-point flush": (MAIN, disk, jrnapp, "main",
@@ -280,7 +283,7 @@ def wiring_pins() -> None:
 def wiring_pins_slice01() -> None:
     check("W1-W5 wiring holds on the real pdna_main.c", not wiring(MAIN), str(wiring(MAIN)))
     muts = {
-        "flush_on_exit gate back to a PC-only reader": ("imgf_exit_prompt(&g_img)) {", "imgf_arena_ok(&g_img)) {"),
+        "flush_on_exit gate back to a PC-only reader": ("!imgf_exit_prompt(&g_img)) {", "!imgf_arena_ok(&g_img)) {"),   # the flush_on_exit gate (not the Settings SAVE FIRST check, #234 s4 D6)
         "drop no longer stages": ("img_pc_edited(&g_img, &g_rec, g_save, g_vinfo.slot, g_pc, can_stage);",
                                   "imgf_pc_edited(&g_img, false);"),
         "commit_sb12 writes a section itself": ("bool app_commit_sb12(void) {\n  app_stage_sections(0, 0, g_sb2);",

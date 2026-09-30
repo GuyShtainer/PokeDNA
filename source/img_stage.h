@@ -72,6 +72,14 @@ bool img_scope_close(ImgFlags* f, ImgRec* r, uint8_t* save, int slot);
 /* Apply whatever is deferred NOW without changing the depth (finalize's defence in depth). Returns
  * true when something was pending (the caller logs a BUG line: a write ran inside a scope). */
 bool img_scope_flush(ImgFlags* f, ImgRec* r, uint8_t* save, int slot);
+/* Slice 4 (a Game Boy image, edited in place by its own session): journal `old_img` -> `new_img` as ONE step named `name`
+ * (static ASCII, <= 24 chars; the tag gb_step_name() maps). Both buffers hold `nreg` regions of `regsz` bytes; region id
+ * = the id-th window. NOTHING is written to either image: the caller owns them (new_img already holds the edit, old_img is
+ * its baseline). Same retry / GAP / lost-step / crossed-epoch rules as the Gen-3 funnel. Returns false only on a NULL
+ * argument or a recorder that is not bound (nothing was recorded); true otherwise, even when the step was a NOOP or was
+ * counted as lost (r->state says which). */
+bool img_rec_flat(ImgRec* r, const uint8_t* old_img, const uint8_t* new_img, uint8_t nreg, uint16_t regsz,
+                  const char* name);
 /* Bump the crossed epoch: the NEXT recorded step is marked crossed (an undo/redo/re-apply floor). */
 void img_rec_cross(ImgRec* r);
 /* Set the one-shot name of the next step (static ASCII string, at most 24 chars). */

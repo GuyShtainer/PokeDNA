@@ -641,9 +641,11 @@ bool pdna_gbdex(GbSession* s, bool can_edit) {
    * its g_ed-shaped assumptions) stays genuinely unreachable there; `s` may be
    * g_ed->s or a streamed session up above, but by the time control reaches HERE
    * it is provably g_ed->s. */
-  if (!app_confirm("Save Pokedex changes?", "Writes the dex now.")) { gb_rollback(); return false; }
+  /* #234 s4: with the journal recording the prompt is gone -- the commit is HELD (one recorded step, no write; the exit
+   * confirm writes once). With it off the confirm + immediate write stay exactly as they were. */
+  if (!gb_hold_live() && !app_confirm("Save Pokedex changes?", "Writes the dex now.")) { gb_rollback(); return false; }
 
   GbsStatus st = gbs_finish(s);
   if (st != GBS_OK) { gb_rollback(); return false; }
-  return gb_persist("dex");
+  return gb_hold_commit("dex");
 }

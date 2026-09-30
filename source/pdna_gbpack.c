@@ -605,7 +605,7 @@ void pdna_gbpack(GbSession* s, bool can_edit) {
 
   bool commit_ok = true;
   if (want_commit && memcmp(bag, t0, sizeof *t0) != 0) {
-    if (app_confirm("Save pack changes?", "Writes the item edits now.")) {
+    if (gb_hold_live() || app_confirm("Save pack changes?", "Writes the item edits now.")) {   /* #234 s4: quiet while the journal records */
       GbsStatus st = gbb_write(s, bag);
       if (st != GBS_OK) {
         gb_rollback();
@@ -622,5 +622,5 @@ void pdna_gbpack(GbSession* s, bool can_edit) {
   }
   gb12_arena_tail_release();
 
-  if (want_commit && commit_ok) gb_persist("bag");
+  if (want_commit && commit_ok) gb_hold_commit("bag");
 }

@@ -866,6 +866,7 @@ static bool confirm(void) {
 /* #234 s2 (see pdna_summary.h): the "Save changes?" prompt is skipped for a plain edit while the caller says so. */
 static bool EWRAM_BSS s_quiet_save;
 void pdna_summary_quiet_save(bool on) { s_quiet_save = on; }
+bool pdna_summary_quiet(void) { return s_quiet_save; }
 
 /* CREATE mode's keep/discard prompt. Deliberately worded so "discard" reads as
  * "the slot stays empty", not "your edits are lost". */

@@ -73,6 +73,7 @@ def checks(box: str, summ: str, main: str, jrn: str, lay: str) -> dict[str, bool
     aur = body(main, "app_undo_redo")
     jst = body(jrn, "jrnapp_step")
     fu = body(box, "footer_undo")
+    us = body(box, "box_undo_scope")              # #234 s4: the ONE scope predicate (a Gen-3 PC grid or a RESIDENT Game Boy grid)
     return {
         "P1 box loop feeds chord_frame and wakes on the chord": bool(pb) and "chord_frame(&chord" in pb and "while (!k && !cev)" in pb,
         "P2 summary loop feeds chord_frame": "chord_frame(&chord" in ps,
@@ -81,8 +82,9 @@ def checks(box: str, summ: str, main: str, jrn: str, lay: str) -> dict[str, bool
         "P5 undo never uses the funnel; re-derives + dirties on success": bool(aur) and "app_stage_sections" not in aur and "img_stage" not in aur
             and "app_journal_rederive()" in aur and "imgf_staged(&g_img)" in aur,
         "P6 pending records are flushed before an undo": bool(jst) and before(jst, "jrn_pending(&s_j)", "jrn_undo("),
-        "P7 footer/chord live only on a Gen-3 PC grid": bool(fu) and "BOXSCOPE_PC" in fu and "app_undo_live()" in fu
-            and re.search(r"chord_live\s*=\s*src->scope == BOXSCOPE_PC\s*&&\s*!src->is_bank\s*&&\s*app_can_edit\(\)", strip_comments(box)) is not None,
+        "P7 footer/chord live only on a Gen-3 PC grid or a resident Game Boy grid": bool(fu) and "box_undo_scope(src)" in fu and "app_undo_live()" in fu
+            and bool(us) and "BOXSCOPE_PC" in us and "!src->is_bank" in us and "BOXSCOPE_GB" in us and "pdna_gen12_resident()" in us
+            and re.search(r"chord_live\s*=\s*box_undo_scope\(src\)\s*&&\s*app_can_edit\(\)", strip_comments(box)) is not None,
         "P8 History row in the nav table + dispatched": "X(NV_HISTORY" in lay and "case NV_HISTORY:" in main,
         "P9 diverged -> return 6 -> home loop opens History": "cr == BCA_HISTORY" in strip_comments(box) and "return 6;" in strip_comments(box)
             and re.search(r"if \(r == 6\)\s*pdna_history_screen\(\);", strip_comments(main)) is not None,
@@ -117,10 +119,12 @@ def main() -> int:
     mutant("M-P1 loop does not wake on the chord", "box", "while (!k && !cev);", "while (!k);", "P1")
     mutant("M-P2 summary bypasses the chord", "summ", "(void)chord_frame(&chord,", "(void)0; (void)(&chord,", "P2")
     mutant("M-P3 carrying check moved after the engine", "box", "  if (s_holding || s_ch_hold || s_item_held) {", "  rc = app_undo_redo(redo ? 1 : -1, name);\n  if (s_holding || s_ch_hold || s_item_held) {", "P3")
-    mutant("M-P4 T5 check dropped", "main", "if (app_arena_held() || imgf_arena_ok(&g_img) == false) return AUR_ARENA;   /* T5: g_pc is a loan / ahead of the image */", "", "P4")
+    mutant("M-P4 T5 check dropped", "main", "if (!gb && (app_arena_held() || imgf_arena_ok(&g_img) == false)) return AUR_ARENA;   /* T5: g_pc is a loan / ahead of the image */", "", "P4")
     mutant("M-P5 undo routed through the funnel", "main", "    app_journal_rederive();\n    imgf_staged(&g_img);                          /* the image is ahead of the card: the exit save confirms once */\n    log_line(\"journal: %s '%s'", "    app_stage_sections(0, 13, 0);\n    log_line(\"journal: %s '%s'", "P5")
     mutant("M-P6 flush-before-undo removed", "jrn", "if (dir < 0 && jrn_pending(&s_j)) (void)jrnapp_flush();", "", "P6")
-    mutant("M-P7 chord live on every source", "box", "const bool chord_live = src->scope == BOXSCOPE_PC && !src->is_bank && app_can_edit();", "const bool chord_live = app_can_edit();", "P7")
+    mutant("M-P7 chord live on every source", "box", "const bool chord_live = box_undo_scope(src) && app_can_edit();", "const bool chord_live = app_can_edit();", "P7")
+    mutant("M-P7b the chord goes live on a read-only Game Boy mount", "box", "(src->scope == BOXSCOPE_GB && pdna_gen12_resident())", "(src->scope == BOXSCOPE_GB)", "P7")
+    mutant("M-P7c the footer hint ignores the journal state", "box", "return box_undo_scope(src) && app_undo_live();", "return box_undo_scope(src);", "P7")
     mutant("M-P8 History row not dispatched", "main", "case NV_HISTORY: pdna_history_screen(); break;", "", "P8")
     mutant("M-P9 home loop ignores code 6", "main", "if (r == 6) pdna_history_screen();", "", "P9")
     mutant("M-P10 chord_swallow removed", "box", "chord_swallow(&chord);", "", "P10")

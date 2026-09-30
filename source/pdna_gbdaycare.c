@@ -7,6 +7,7 @@
 #include "gb_edit.h"
 #include "pdna_gen12.h"      /* gb_rollback / gb_persist / gb12_arena_tail(_release) */
 #include "pdna_gbsummary.h"  /* the View/Edit screen (BACKLOG #41's own Gen-1/2 card) */
+#include "pdna_summary.h"   /* pdna_summary_quiet_save (#234 s4 D2) */
 #include "pdna_layout.h"     /* PDNA_DCY_*, PDNA_DCPOP_* -- the SAME geometry pdna_daycare() uses */
 #include "data_tables.h"     /* pk_species_name */
 #include "ui.h"
@@ -230,12 +231,12 @@ static void gbdc_take(GbSession* s, int slot, uint8_t* list, uint8_t* list2) {
     msg_wait("TAKE OUT", UI_WARN, gbs_status_text(lst), "Nothing was changed.");
     return;
   }
-  if (!gb_persist("daycare-take")) return;   /* gb_persist already reported any refusal */
+  if (!gb_hold_commit("daycare-take")) return;   /* gb_persist already reported any refusal */
   snd_ok();
   char line[32];
   if (landed_box < 0) siprintf(line, "Sent to the party.");
   else                siprintf(line, "Sent to Box %d.", landed_box + 1);
-  msg_wait("TAKEN OUT", UI_OK, line, "Saved.");
+  msg_wait("TAKEN OUT", UI_OK, line, gb_hold_live() ? "Save on exit to keep it." : "Saved.");
 }
 
 /* Take the Egg out (Gen 2 only), landing it like gbdc_take() (party first, then a box with room).
@@ -258,12 +259,12 @@ static void gbdc_take_egg(GbSession* s, uint8_t* list, uint8_t* list2) {
     msg_wait("EGG", UI_WARN, gbs_status_text(ist), "Nothing was changed.");
     return;
   }
-  if (!gb_persist("daycare-egg")) return;
+  if (!gb_hold_commit("daycare-egg")) return;
   snd_ok();
   char line[32];
   if (landed_box < 0) siprintf(line, "Sent to the party.");
   else                siprintf(line, "Sent to Box %d.", landed_box + 1);
-  msg_wait("EGG TAKEN", UI_OK, line, "Saved.");
+  msg_wait("EGG TAKEN", UI_OK, line, gb_hold_live() ? "Save on exit to keep it." : "Saved.");
 }
 
 /* Put a box-picked mon into `slot` -- a MOVE, not a paste (review D1): the picked
@@ -294,9 +295,9 @@ static void gbdc_deposit(GbSession* s, int slot, int cur_box, uint8_t* list) {
     msg_wait("PUT IN", UI_WARN, gbs_status_text(dst), "Nothing was changed.");
     return;
   }
-  if (!gb_persist("daycare-put")) return;   /* gb_persist already reported any refusal */
+  if (!gb_hold_commit("daycare-put")) return;   /* gb_persist already reported any refusal */
   snd_ok();
-  msg_wait("LEFT AT DAY CARE", UI_OK, "Moved from the box. Saved.", 0);
+  msg_wait("LEFT AT DAY CARE", UI_OK, gb_hold_live() ? "Moved from the box." : "Moved from the box. Saved.", 0);
 }
 
 /* View/Edit `start_slot`, Gen-3-parity shape (pdna_daycare()'s own card-editor loop):
@@ -320,7 +321,9 @@ static void gbdc_view_edit(GbSession* s, GbDaycare* dc, int start_slot, bool can
     char note[40];
     siprintf(note, "Day-Care %s", dc->gen1 ? "boarder" : (slot == 0 ? "Man's Pokemon" : "Lady's Pokemon"));
     bool saved = false;
+    pdna_summary_quiet_save(true);            /* #234 s4: a resident-session edit is held (one step; the exit confirm writes) */
     nav = pdna_gbsummary(&edited, can_edit, false, note, false, false, &saved, 0);
+    pdna_summary_quiet_save(false);
     if (saved) {
       GbEditMon original;
       GbsStatus wst = gbd_withdraw(s, slot, &original);
@@ -332,7 +335,7 @@ static void gbdc_view_edit(GbSession* s, GbDaycare* dc, int start_slot, bool can
           gb_rollback();
           snd_error();
           msg_wait("DAY CARE", UI_WARN, gbs_status_text(dst), "Nothing was changed.");
-        } else if (gb_persist("daycare-edit")) {
+        } else if (gb_hold_commit("daycare-edit")) {
           snd_ok();
           dc->slot[slot].mon = edited;
           dc->slot[slot].occupied = true;

@@ -12,6 +12,8 @@
 #include "sys.h"   /* EWRAM_BSS */
 
 #define JA_ROOT "/PokeDNA/journal"
+#define JA_GB_NREG  8u        /* slice 4: a Game Boy image = 8 regions ...                         */
+#define JA_GB_REGSZ 4096u     /* ... of 4,096 bytes = the first 32,768 bytes (len is always >= that) */
 
 /* Statics (all EWRAM_BSS: IWRAM holds the stack). The Jrn is 768 B on ARM (its pending buffer is the
  * design's 512). */
@@ -23,7 +25,10 @@ static uint32_t EWRAM_BSS s_saved;      /* the cursor seq the CARD's image sits 
 static uint8_t  EWRAM_BSS s_ev_new;     /* an event is waiting for jrnapp_log_events                */
 static int      EWRAM_BSS s_ev_rc;
 static const char* EWRAM_BSS s_ev_what;
-typedef struct { uint8_t* save; int slot; } JaImg;   /* NAMED: `static struct {...} EWRAM_BSS x;` puts the attribute on the wrong side and lands in IWRAM (icon_store.c s_is) */
+/* NAMED: `static struct {...} EWRAM_BSS x;` puts the attribute on the wrong side and lands in IWRAM (icon_store.c s_is).
+ * slot >= 0: a Gen-3 image (regions = section IDs). slot < 0: a FLAT Game Boy image (slice 4): regions are
+ * JA_GB_NREG consecutive JA_GB_REGSZ-byte windows of the first 32,768 bytes (the RTC tail is not journaled). */
+typedef struct { uint8_t* save; int slot; } JaImg;
 static JaImg EWRAM_BSS s_ai;   /* the image accessor's context */
 
 static void ja_event(const char* what, int rc) { s_ev_what = what; s_ev_rc = rc; s_ev_new = 1; }
@@ -36,9 +41,23 @@ static uint8_t* ja_sec(int region) {
   return s < 0 ? 0 : s_ai.save + (uint32_t)s_ai.slot * G3_SLOT_BYTES + (uint32_t)s * G3_SECTOR_SIZE;
 }
 
+/* The flat (Game Boy) window: region*4096 + off .. + n, all inside the 8 regions. NULL = out of range. */
+static uint8_t* ja_flat(int region, uint16_t off, uint16_t n) {
+  if (!s_ai.save || s_ai.slot >= 0 || region < 0 || region >= (int)JA_GB_NREG) return 0;
+  if ((uint32_t)off + n > JA_GB_REGSZ) return 0;
+  return s_ai.save + (uint32_t)region * JA_GB_REGSZ + off;
+}
+
 static int ja_get(void* ctx, uint8_t region, uint16_t off, uint8_t* dst, uint16_t n) {
-  const uint8_t* sec = ja_sec(region);
+  const uint8_t* sec;
   (void)ctx;
+  if (s_ai.slot < 0) {
+    sec = ja_flat(region, off, n);
+    if (!sec || !dst) return -1;
+    memcpy(dst, sec, n);
+    return 0;
+  }
+  sec = ja_sec(region);
   if (!sec || !dst || (uint32_t)off + n > G3_SECTOR_DATA_SIZE) return -1;
   memcpy(dst, sec + off, n);
   return 0;
@@ -47,9 +66,16 @@ static int ja_get(void* ctx, uint8_t region, uint16_t off, uint8_t* dst, uint16_
 /* A span patch keeps the sector's checksum honest exactly as gen3_write_full_section does (over the
  * 3,968 data bytes), so a re-applied or undone section still verifies. */
 static int ja_set(void* ctx, uint8_t region, uint16_t off, const uint8_t* src, uint16_t n) {
-  uint8_t* sec = ja_sec(region);
+  uint8_t* sec;
   uint16_t cs;
   (void)ctx;
+  if (s_ai.slot < 0) {                                       /* flat image: the spans carry the checksum bytes themselves */
+    sec = ja_flat(region, off, n);
+    if (!sec || !src) return -1;
+    memcpy(sec, src, n);
+    return 0;
+  }
+  sec = ja_sec(region);
   if (!sec || !src || (uint32_t)off + n > G3_SECTOR_DATA_SIZE) return -1;
   memcpy(sec + off, src, n);
   cs = gen3_checksum(sec, G3_SECTOR_DATA_SIZE);
@@ -68,19 +94,18 @@ static int ja_do_open(ImgRec* r) {
   JrnCfg c;
   memset(&c, 0, sizeof c);
   c.fs = &jrn_fatfs; c.root = JA_ROOT; c.key = s_key;
-  c.nreg = 14; c.reg_size = G3_SECTOR_DATA_SIZE; c.max_segs = 0; c.readonly = 0;
+  if (s_ai.slot < 0) { c.nreg = (uint8_t)JA_GB_NREG; c.reg_size = (uint16_t)JA_GB_REGSZ; }
+  else { c.nreg = 14; c.reg_size = G3_SECTOR_DATA_SIZE; }
+  c.max_segs = s_j.max_segs;                                 /* 0 = the engine default; set by jrnapp_open from the Settings cap, kept across a re-open */
+  c.readonly = 0;
   r->img.ctx = &s_ai; r->img.get = ja_get; r->img.set = ja_set;
   return jrn_open(&s_j, &c, &r->img);
 }
 
-int jrnapp_open(ImgRec* r, uint8_t* save, int slot, const uint8_t* sb2, bool frlg, bool write_ok) {
+/* The shared tail of both opens: the accessor is bound and s_key is set; open (rumble paused: a torn tail is zeroed in
+ * place, an SD write), then bind the recorder. */
+static int ja_open_bound(ImgRec* r) {
   int rc;
-  if (!r) return JA_OFF;
-  memset(r, 0, sizeof *r);
-  s_r = r; s_state = JA_OFF; s_ev_new = 0;
-  s_ai.save = save; s_ai.slot = slot;
-  if (!write_ok || !save || !sb2) return JA_OFF;            /* Everdrive / hack ROM / no image: never opens, never says "recorded" */
-  s_key = ja_key(sb2, frlg);
   rmbl_pause();                                             /* open can zero a torn tail: an SD write */
   rc = ja_do_open(r);
   rmbl_resume();
@@ -92,6 +117,58 @@ int jrnapp_open(ImgRec* r, uint8_t* save, int slot, const uint8_t* sb2, bool frl
   r->state = IREC_OK;
   s_state = JA_OK;
   return JA_OK;
+}
+
+int jrnapp_open(ImgRec* r, uint8_t* save, int slot, const uint8_t* sb2, bool frlg, bool write_ok) {
+  if (!r) return JA_OFF;
+  memset(r, 0, sizeof *r);
+  s_r = r; s_state = JA_OFF; s_ev_new = 0;
+  s_ai.save = save; s_ai.slot = slot;
+  if (!write_ok || !save || !sb2 || slot < 0) return JA_OFF;   /* Everdrive / hack ROM / no image: never opens, never says "recorded" */
+  s_key = ja_key(sb2, frlg);
+  return ja_open_bound(r);
+}
+
+/* Slice 4: a Game Boy image. `key` = gb_journal_key() of the loaded save's identity; `cap` = the Settings retention cap in
+ * segments (0 = the engine default). Everdrive / read-only: never opens. */
+int jrnapp_open_gb(ImgRec* r, uint8_t* img, uint64_t key, uint8_t cap, bool write_ok) {
+  if (!r) return JA_OFF;
+  memset(r, 0, sizeof *r);
+  s_r = r; s_state = JA_OFF; s_ev_new = 0;
+  s_ai.save = img; s_ai.slot = -1;
+  if (!write_ok || !img) return JA_OFF;
+  s_key = key;
+  s_j.max_segs = cap;                                       /* ja_do_open reads it (the engine clamps to 16, 0 = default) */
+  return ja_open_bound(r);
+}
+
+/* Settings > Clear history: delete this save's slot files + directory (rumble paused; Omega-only is the caller's gate),
+ * then reopen the journal EMPTY under `cap` and keep recording from the image as it is now. Redirect files stay (a later
+ * identity that redirects here just starts a new directory). Returns the files removed or a negative JRN_E_*; a failed
+ * delete may have removed SOME slot files, so it turns the journal off and reads ERROR (a half ring must never be misread as a
+ * history); a failed reopen does the same (never claims what is not recorded). */
+int jrnapp_clear(ImgRec* r, uint8_t cap) {
+  int n, rc;
+  if (!r || !r->j || s_state != JA_OK || s_j.readonly) return JRN_E_ARG;
+  rmbl_pause();
+  n = jrnfs_clear_key(JA_ROOT, s_j.key);
+  rmbl_resume();
+  if (n < 0) { ja_event("clear history failed", n); r->j = 0; r->state = IREC_OFF; s_state = JA_ERROR; return n; }
+  s_j.max_segs = cap;
+  r->state = IREC_OK; r->lost = 0; r->epoch = 0; r->epoch_seen = 0; r->mask = 0; r->depth = 0; r->name = 0;
+  rmbl_pause();
+  rc = ja_do_open(r);
+  rmbl_resume();
+  if (rc != JRN_OK) { r->j = 0; r->state = IREC_OFF; s_state = JA_ERROR; ja_event("re-open after clear failed", rc); return rc; }
+  s_saved = jrn_cursor(&s_j);
+  return n;
+}
+
+/* Drop the recorder (the session it was bound to is over): nothing is written, the state reads OFF. */
+void jrnapp_close(ImgRec* r) {
+  if (r) { r->j = 0; r->state = IREC_OFF; r->depth = 0; r->mask = 0; }
+  s_state = JA_OFF;
+  s_ai.save = 0; s_ai.slot = 0;
 }
 
 int jrnapp_state(const ImgRec* r) {
@@ -108,20 +185,19 @@ uint32_t jrnapp_tip(void) { return jrn_tip(&s_j); }
 bool jrnapp_first_fill_owed(void) { return s_r && s_r->j && s_state == JA_OK && !s_j.ring; }
 
 /* An identity edit (trainer rename / TID / SID / gender) moves the key: a redirect keeps the history. */
-static void ja_redirect(const uint8_t* sb2, bool frlg) {
-  uint64_t nk = ja_key(sb2, frlg);
+static void ja_redirect_key(uint64_t nk) {
   int rc;
   if (nk == s_key) return;
   rc = jrn_redirect_write(&jrn_fatfs, JA_ROOT, nk, s_j.key);
   if (rc == JRN_OK) s_key = nk; else ja_event("redirect write failed", rc);
 }
 
-int jrnapp_prepare(ImgRec* r, const uint8_t* sb2, bool frlg) {
+static int ja_prepare(ImgRec* r, uint64_t nk, bool have_key) {
   int rc;
   if (!r || !r->j || s_state != JA_OK || s_j.readonly || s_j.stopped) return 0;
   rmbl_pause();
   rc = jrn_prepare(&s_j);
-  if (rc == JRN_OK && sb2) ja_redirect(sb2, frlg);
+  if (rc == JRN_OK && have_key) ja_redirect_key(nk);
   rmbl_resume();
   if (rc != JRN_OK) {                                        /* no tail segment: recording cannot work this session */
     ja_event("prepare failed, journal off", rc);
@@ -129,6 +205,14 @@ int jrnapp_prepare(ImgRec* r, const uint8_t* sb2, bool frlg) {
   }
   return rc;
 }
+
+int jrnapp_prepare(ImgRec* r, const uint8_t* sb2, bool frlg) {
+  return ja_prepare(r, sb2 ? ja_key(sb2, frlg) : 0u, sb2 != 0);
+}
+
+/* Slice 4: the same safe-moment work for a Game Boy image; `key` = gb_journal_key() of the CURRENT identity (a trainer
+ * rename / ID edit moves it: the redirect keeps the history). */
+int jrnapp_prepare_key(ImgRec* r, uint64_t key) { return ja_prepare(r, key, true); }
 
 int jrnapp_flush(void) {
   int rc;

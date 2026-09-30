@@ -282,6 +282,22 @@ int pdna_gen12_show_image(const char* path, uint8_t* img, uint32_t len,
 void gb_rollback(void);
 bool gb_persist(const char* what_for_log);
 
+/* ---- #234 slice 4: hold-until-exit for a resident Game Boy session (design D8) --------------------------------------
+ * gb_persist() above is the IMMEDIATE, crossed path (transfers, bank hand-offs: SAVE NOW walls) and is byte-for-byte the
+ * verified-write pipeline it always was; on success it now also records the step (crossed) and re-baselines.
+ * gb_hold_commit() is the QUIET path every plain edit takes: with the journal recording (gb_hold_live) it records ONE step,
+ * re-baselines `pristine` to the staged image and writes NOTHING -- the exit confirm (gb_flush_on_exit) writes once.
+ * With the journal off it is exactly gb_persist(): the caller keeps today's confirm + immediate write. */
+bool gb_hold_live(void);
+bool gb_hold_commit(const char* what_for_log);
+/* The image was patched behind the session's back (undo/redo/re-apply): re-baseline `pristine` to it, re-latch the session
+ * over the bytes and re-page the grid (pdna_main.c's app_journal_rederive calls this). */
+void gb_relatch(void);
+/* The journal key of the resident session (gb_jkey.h), 0 without one -- pdna_main.c's rest point needs it for the redirect. */
+uint64_t pdna_gen12_journal_key(void);
+/* The History screen over a resident GB session (borrows its rows from the arena tail); a plain notice without one. */
+void pdna_gen12_history(void);
+
 /* ---- U2b item 0: the arena TAIL, for a GB screen shell riding the resident-image
  * mount ----------------------------------------------------------------------
  * pdna_gen12_show_image()'s own arena layout (pdna_gen12.c) puts Gb12Edit LAST:

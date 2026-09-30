@@ -31,6 +31,19 @@ enum {
 int  jrnapp_open(ImgRec* r, uint8_t* save, int slot, const uint8_t* sb2, bool frlg, bool write_ok);
 int  jrnapp_state(const ImgRec* r);
 
+/* ---- slice 4: a Game Boy image on the SAME engine (design D8) ------------------------------------------------ */
+/* Bind the recorder to a resident Game Boy image (32,768+ bytes, edited in place) and open its journal. The image is
+ * journaled as 8 regions of 4,096 bytes over its first 32,768 bytes (the RTC tail is never edited); undo/redo patch the
+ * bytes raw, checksums included (a step's spans carry them). `key` = gb_journal_key(); `cap` = the retention cap in
+ * segments (0 = the engine default, 16; clamped to 16). Never creates files (jrnapp_prepare_key does). */
+int  jrnapp_open_gb(ImgRec* r, uint8_t* img, uint64_t key, uint8_t cap, bool write_ok);
+/* The Game Boy safe-moment work: the ring/tail/spare, plus the redirect when the identity key moved. */
+int  jrnapp_prepare_key(ImgRec* r, uint64_t key);
+/* Settings > Clear history (see jrn_app.c): delete this save's journal files, reopen empty under `cap`. Files removed or < 0. */
+int  jrnapp_clear(ImgRec* r, uint8_t cap);
+/* The session the recorder was bound to is over: unbind (writes nothing; the state reads JA_OFF). */
+void jrnapp_close(ImgRec* r);
+
 /* Safe moment (load, after a verified exit save): make the ring, the tail segment and the spare exist,
  * write a redirect if the identity changed this session. Returns 0 or a JRN_E_*; a first-fill failure
  * leaves the journal off (state JA_ERROR) so the UI never claims what is not recorded. */
