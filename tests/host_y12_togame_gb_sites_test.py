@@ -251,7 +251,7 @@ def self_test() -> None:
         ("MUT G3a: the consumer never routes to bank_togame_gb", consumer_facts, mutate(hp, "(void)bank_togame_gb(", "(void)app_bank_togame_native(")),
         ("MUT G3b: the routing predicate loses the accept_down presence", consumer_facts,
          mutate(hp, "s_xfer_peer && s_xfer_peer->accept_down", "1")),
-        ("MUT G3c: no OAM bracket", consumer_facts, hp.replace("boxoam_suspend();", "", 1)),
+        ("MUT G3c: no OAM bracket", consumer_facts, mutate(hp, "boxoam_suspend();", "")),
         ("MUT G4a: the write gate removed", body_facts, mutate(gb, "if (!app_can_edit())", "if (0)")),
         ("MUT G4b: the destination pick removed", body_facts, mutate(gb, "gb_togame_pick_box(&slot, &nwr)", "0")),
         ("MUT G4c: the bridge consume dropped", body_facts,
