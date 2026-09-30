@@ -117,8 +117,9 @@ def wiring(text: str) -> list[str]:
         bad.append("W2 flush_on_exit gate/wording")
     if "imgf_arena_ok(&g_img)" not in b.get("app_arena_acquire", ""):
         bad.append("W3 arena gate")
-    if "img_pc_edited(" not in b.get("app_mark_pc_dirty", ""):
-        bad.append("W4 eager stage at the drop")
+    mk = b.get("app_mark_pc_dirty", "")
+    if "img_pc_edited(" not in mk or "!app_arena_held()" not in mk or "g_vinfo.valid" not in mk:
+        bad.append("W4 eager stage at the drop (incl. its can_stage guards)")
     for fn in ("app_commit_block", "app_commit_all", "app_commit_sb12", "app_stage_sb1",
                "app_register_dex_deferred"):
         body = b.get(fn, "")

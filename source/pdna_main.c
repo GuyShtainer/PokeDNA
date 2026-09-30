@@ -10064,10 +10064,10 @@ static BoxSource pc_box_source(void) {
   return s;
 }
 
-/* Leaving the open save: if ANY deferred edits are pending — box moves (g_pc) and/or
- * Day-Care moves (staged into g_save) — ask ONCE and save or discard them together, so
- * a cross-storage move (Day-Care<->PC) can never be half-saved. A writes the whole image
- * in one verified pass (app_commit_pc folds in the staged Day-Care sections); B discards
+/* The exit-prompt flow (flush_on_exit asks; app_discard_staged below is its B arm): if ANY
+ * staged edits are pending — box moves and/or Day-Care moves, all in g_save since #234 s0 —
+ * ask ONCE and save or discard them together, so a cross-storage move (Day-Care<->PC) can
+ * never be half-saved. A writes the whole image in one verified pass; B discards
  * everything — the on-disk save was never touched and we're returning to the browser. */
 /* B at the exit prompt: throw every staged edit away. #234 s0: box drops now stage into g_save
  * at the drop, so the old revert (re-derive g_pc from g_save) would KEEP the moves the user just
@@ -10087,7 +10087,7 @@ static void app_discard_staged(void) {
   rmbl_resume();
 #endif
   (void)rsz;                                            /* size already known from the load */
-  if (!ok) log_line("discard: re-read of the card image failed - staged bytes stay in RAM only");
+  if (!ok) log_line("discard: re-read failed - g_save may be partial; RAM only, never written (browser next, reload on open)");
   gen3_read_pc_storage(g_save, g_vinfo.slot, g_pc);     /* revert PC moves */
   imgf_clear(&g_img);                                   /* nothing staged, nothing pending */
 }
@@ -11697,7 +11697,7 @@ static void view_save(const char* path) {
         pdna_gen12_show_image(path, g_save, psz, g_save + GB12_PRISTINE_OFF, 3);
         /* Whatever the GB mount returned, g_save now holds GB bytes -- restore the
          * Gen-3 save before the picker (or the fallthrough) reads g_save again. */
-        /* g_save-write-ok: loader: re-reads the GB battery image for the session */
+        /* g_save-write-ok: loader: restores the Gen-3 image after the GB session borrowed g_save */
         if (flash_ok) flashsave_read(g_save, G3_SAVE_FILE_SIZE);
         else           fused_sav_read(g_save, fsz);
       }

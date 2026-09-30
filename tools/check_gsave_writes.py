@@ -16,9 +16,12 @@ an `f_read`/`sf_read_full`/`flashsave_read`/`fused_sav_read` INTO g_save -- fail
 the class of miss that would let a step bypass the (slice-2) journal can never silently recur.
 
 Limits, stated honestly: this is a text check. It cannot see a write through an alias
-(`uint8_t* p = g_save; p[0] = 1;`) or a callee that mutates a `g_save` it was handed
-(`pdna_gen12_show_image`, `gen3_parse_into`); those are GB-session / parse paths and are
-reviewed by hand. It does catch every direct spelling in the pattern list below.
+(`uint8_t* p = g_save; p[0] = 1;`), an offset/cast spelling (`&g_save[x]` handed to a call,
+`(uint16_t*)g_save`, `wr16`/`wr32` helpers), a call wrapped so `g_save` starts the next
+line, or a callee that mutates a `g_save` it was handed (`pdna_gen12_show_image` writes the
+GB image half; `gen3_parse_into` is const and never writes; `perf_sd_sample` at
+pdna_main.c:12394 uses g_save as BOOT SCRATCH before any save is loaded — harmless). Those
+are reviewed by hand. It does catch every direct spelling in the pattern list below.
 
 Usage:  check_gsave_writes.py [source_dir]        exit 0 = clean, 1 = violations (listed).
 `scan(text)` is importable so tests/host_g3_stage_sites_test.py can plant a stray write.
