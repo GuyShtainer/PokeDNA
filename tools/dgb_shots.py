@@ -6359,6 +6359,97 @@ def run_y12_togame_gb(core_mod, image_mod, rom_gold: Path, rom_red: Path, out_di
         gb_shots._DEFAULT_VSD_IMG = saved_default
 
 
+def _y16_same_landing(pre: Path, post: Path, tag: str, max_frac: float = 0.03) -> None:
+    """#261 pin: the frame before the drop and the frame after the wall are the SAME screen (same box, same cursor cell,
+    same carrying footer): at most `max_frac` of the pixels may differ (the glove/portrait animate a little). Loud exit."""
+    from PIL import Image, ImageChops
+    ia, ib = Image.open(pre).convert("RGB"), Image.open(post).convert("RGB")
+    diff = ImageChops.difference(ia, ib).convert("L").point(lambda v: 255 if v else 0)
+    changed = sum(1 for v in diff.getdata() if v)
+    frac = changed / float(ia.size[0] * ia.size[1])
+    print(f"  [Y16 LANDING] {tag}: {changed} px differ ({frac:.2%}) between {pre.name} and {post.name}")
+    if frac > max_frac:
+        print(f"[Y16 LANDING FAILED] {tag}: the post-wall frame is a different screen than the drop's grid", file=sys.stderr)
+        sys.exit(1)
+
+
+def run_y16_261(core_mod, image_mod, rom_gold: Path, out_dir: Path, rom_red: "Path | None" = None) -> gb_shots.Session:
+    """#261 (lane y16-261): where does dismissing the PDNA_DELTA 'Edits are in-session only' wall land after a Bank cell
+    is carried onto a Game Boy grid and dropped? Vehicles: `rom_gold` = tools/fuse_gb.py <pokedna-delta-artless.gba>
+    Gold.gbc Gold.sav; `rom_red` (optional, --y12-red) = ... Red.gb Red.sav; `--vsd <img>` = a FRESH mkimg copy.
+    Each leg: UP x3 into the Bank, UP x4 to row 0, [R x N], [RIGHT x slot], A, DOWN x`mv` = MOVE (carry), DOWN x5 off the
+    Bank onto the GB grid, R x13 (Gold: boxes 1-12 full -> box 13) or none (Red), then A = drop and A through every
+    dialog to the wall, A on the wall. Frames 'pre' (last frame before the wall, still carrying, on the GB grid) and 'post'
+    (the wall dismissed) are the pair under test: same box, same footer, glove still up = the refusal contract holds.
+      G3   Gold, BANK 3 slot 0, plain Gen-3 BULBASAUR (bank_down_g3_run)
+      EXA  Gold, BANK 1 slot 0, native Gen-2 CHIKORITA (bank_down_dispatch EXACT arm)
+      BRG  Gold, BANK 1 slot 1, native Gen-1 PIKACHU (GB_BRIDGE arm)
+      RG3  Red,  BANK 3 slot 0, plain Gen-3 BULBASAUR holding a POTION (the #260 item-ladder leg)"""
+    gb_shots.assert_vehicle(rom_gold, "ARTLESS")
+    print("== #261 (y16-261): landing after the PDNA_DELTA wall is dismissed ==")
+    saved_default = gb_shots._DEFAULT_VSD_IMG
+    if saved_default is None:
+        raise RuntimeError("--y16-261 requires --vsd <img.img> (a FRESH mkimg copy)")
+    sess_all = None
+
+    def leg(rom, tag, bank_r, slot, mv, boxes_r, what):
+        gb_shots._DEFAULT_VSD_IMG = _y10_fresh_img(saved_default, "y16" + tag)
+        try:
+            s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "y16_" + tag + "_")
+        finally:
+            gb_shots._DEFAULT_VSD_IMG = None
+        T = lambda k, n=1, **kw: (print(f"  [TRACE] y16 {tag} {k} x{n}"), s.press_n(k, n, **kw))
+        s.run(700); s.run(100)
+        T("UP", 3, settle=100); T("UP", 4, settle=60)
+        if bank_r:
+            T("R", bank_r, settle=150)
+        if slot:
+            T("RIGHT", slot, settle=100)
+        s.shot("00_bank", f"y16 {tag}: the Bank cell under test ({what}), cursor on it", claim=["BANK"])
+        T("A", settle=150); T("DOWN", mv, settle=60); T("A", settle=150)
+        s.shot("01_carrying", f"y16 {tag}: MOVE -- carrying ({what}); footer 'A drop  B cancel'", claim=["A drop"], allow_same=False)
+        T("DOWN", 5, settle=150)
+        for _ in range(boxes_r):
+            s.tap("R", settle=150)
+        s.shot("02_gb_grid", f"y16 {tag}: carrying on the Game Boy PC grid", claim=["A drop", "BOX"], allow_same=False)
+        return s, T
+
+    def to_wall(s, T, tag, max_a=6):
+        """A through the drop's dialogs (one shot each) until 'in-session only' is on screen; returns how many A
+        presses that took, or -1 if it never appeared within max_a (bounded)."""
+        for i in range(max_a):
+            T("A", settle=500)
+            found = gb_claims.find(s.screen.to_pil().convert("RGB"), "in-session only")
+            s.shot(f"03_a{i + 1}", f"y16 {tag}: A #{i + 1} of the drop -> transfer chain", allow_same=True)
+            if found:
+                return i + 1
+        return -1
+
+    legs = [(rom_gold, "g3", 2, 0, 3, 13, "plain Gen-3 BULBASAUR"),
+            (rom_gold, "exa", 0, 0, 2, 13, "native Gen-2 CHIKORITA (EXACT arm)"),
+            (rom_gold, "brg", 0, 1, 2, 13, "native Gen-1 PIKACHU (GB_BRIDGE arm)")]
+    if rom_red is not None:
+        legs.append((rom_red, "rg3", 2, 0, 3, 4, "plain Gen-3 BULBASAUR holding a POTION, Red session"))
+    sess_all = None
+    try:
+        for (rom, tag, bank_r, slot, mv, boxes_r, what) in legs:
+            s, T = leg(rom, tag, bank_r, slot, mv, boxes_r, what)
+            n = to_wall(s, T, tag)
+            print(f"  [Y16] {tag}: wall after {n} A press(es)")
+            T("A", settle=400)
+            s.shot("04_post", f"y16 {tag}: the wall dismissed -- THE LANDING STATE: back on the SAME Game Boy grid the drop was "
+                   f"attempted on, footer still 'A drop  B cancel' (the glove still carrying), not the 'A menu' browser footer",
+                   claim=["A drop", "B cancel", "BOX"], claim_absent=["A menu", "in-session only"], allow_same=True)
+            _y16_same_landing(out_dir / f"y16_{tag}_02_gb_grid.png", out_dir / f"y16_{tag}_04_post.png", tag)
+            if sess_all is None:
+                sess_all = s
+            else:
+                sess_all.taken += s.taken; sess_all.skipped += s.skipped
+    finally:
+        gb_shots._DEFAULT_VSD_IMG = None
+    return sess_all
+
+
 def run_y9_lift_passthrough(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
     """#280 (lane y9-280), the GB->Bank LIFT is a pass-through. Vehicle: `rom` = tools/fuse_gb.py
     <pokedna-delta-artless.gba> Red.gb Red.sav (the fused Red the bridge chain also uses); `--vsd <img>`
@@ -8781,6 +8872,9 @@ def _main_dispatch(argv=None) -> int:
     ap.add_argument("--y12-togame-gb", action="store_true",
                      help="#286 (lane y12-286): run_y12_togame_gb() -- --image = fuse_gb.py <delta-artless> Gold.gbc "
                           "Gold.sav, --y12-red = fuse_gb.py <delta-artless> Red.gb Red.sav, --vsd = a FRESH mkimg copy.")
+    ap.add_argument("--y16-261", action="store_true",
+                     help="#261 (lane y16-261): run_y16_261() -- --image = fuse_gb.py <delta-artless> Gold.gbc "
+                          "Gold.sav, --vsd = a FRESH mkimg copy.")
     ap.add_argument("--y12-red", type=Path, help="#286: the fused Red image for --y12-togame-gb.")
     ap.add_argument("--y9-lift", action="store_true",
                      help="#280 (lane y9-280): run_y9_lift_passthrough() -- --image = fuse_gb.py "
@@ -10009,6 +10103,20 @@ def _main_dispatch(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] y12-togame-gb: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if getattr(a, "y16_261", False):
+        ran = True
+        try:
+            sess = run_y16_261(core_mod, image_mod, a.image, a.out, a.y12_red)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] y16-261: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
