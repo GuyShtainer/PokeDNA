@@ -5894,6 +5894,14 @@ def run_y19_s3(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessio
         ib = np.asarray(Image.open(res(b)).convert("RGB"), dtype=np.int16)[32:148, 78:240]
         return int((np.abs(ia - ib).max(axis=2) > 0).sum())
 
+    def gridcmp_nohand(a: str, b: str):
+        """gridcmp minus the hand cursor's box (the cursor is at a different cell after a reload): x 88..135, y 32..64."""
+        ia = np.asarray(Image.open(res(a)).convert("RGB"), dtype=np.int16)[32:148, 78:240]
+        ib = np.asarray(Image.open(res(b)).convert("RGB"), dtype=np.int16)[32:148, 78:240]
+        d = np.abs(ia - ib).max(axis=2) > 0
+        d[0:33, 10:58] = False
+        return int(d.sum())
+
     def swap_edit(tag: str) -> None:
         T("A", f"({tag}) cell menu")
         T("DOWN", f"({tag}) menu on MOVE", times=3, claim=["MOVE"])
@@ -5988,8 +5996,31 @@ def run_y19_s3(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessio
     T("B", "(e) B out of History", settle=300)
     SHOT("final_grid", "(h) the PC grid footer (short form SEL+L/R)", claim=["SEL+L/R"])
 
+    # ---- (i) the half-swap recovery net (permanent leg, #234 s3 fix pass): swap -> ONE SEL+L (the box is one mon short:
+    # the displaced mon is in nobody's hands) -> exit-SAVE that half-swapped image -> power cycle -> the load-time offer
+    # is up for the UNDONE tail ("1 recorded step...") -> A re-applies it -> the box is whole again.
+    T("DOWN", "(i) DOWN: off the box-name row onto the first grid cell", settle=60)
+    swap_edit("i")
+    SHOT("i_swapped", "(i) after a fresh swap: the box is whole (the count is the 'before' number)")
+    CHORD("L", "(i) ONE SELECT+L: undo #1 of the swap = the HALF-swap; the box count drops by one (a mon is in nobody's hands)",
+          tag="i_half", claim=["Undid"])
+    T("B", "(i) B: exit the box editor -> the exit confirm for the HALF-swapped image", settle=200, claim=["Save changes"])
+    T("A", "(i) A: yes -> the half-swapped image is SAVED", settle=400, claim=["Flash written"])
+    T("A", "(i) A: dismiss SAVED -> the vehicle's planted-transfer notice (pre-existing on main; the cut lands here)", settle=300)
+    s.vsd_flush()
+    s.core.reset()
+    s.run(1000)
+    SHOT("i_reloaded", "(i) POWER CYCLE + reload: the load-time offer must be up ('1 recorded step...') for the undone tail",
+         claim=["Recorded steps found"])
+    T("A", "(i) A: re-apply the undone step", settle=300)
+    T("A", "(i) A: dismiss RE-APPLIED", settle=300)
+    s.run(200)
+    SHOT("i_whole", "(i) re-applied: the swap is back and the box count is whole again (the 'before' number)")
+
     print("\n  frame checks (numbers, not impressions):")
     expect(bs is not None, "(c) the summary portrait changed after a lone SELECT (flip)")
+    expect(gridcmp("i_swapped", "i_half") > 0, "(i) the half-swap grid differs from the swapped grid (the undo took a mon out of the box)")
+    expect(gridcmp_nohand("i_swapped", "i_whole") == 0, "(i) after the power cut + offer + A the grid is pixel-identical to the pre-undo swapped grid (hand cursor masked: it restarts on the first cell)")
     print("\n  chord latency (frames from the L/R press to the toast/dialog on screen): " +
           ", ".join(f"{a.split('_', 1)[1]}={b}" for a, b in latency))
     print("\n  per-tap trace (rule 17): name | input | caption")
