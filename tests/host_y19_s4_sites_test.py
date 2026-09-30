@@ -11,7 +11,7 @@ Two halves, both shown to FAIL on a mutant of the REAL source every run:
              G5 the flat accessor's get() reads zeros     G6 a flat resync hashes the NEW image, not the baseline
              G7 the retention cap is not passed to the open   G8 Clear history stops after 3 slot files
              G9 Clear history forgets the directory's own unlink (the old ring's reopen still works; the dir stays)
-             G10 img_rec_flat never records
+             G10 img_rec_flat never records               G11 a failed Clear history leaves the journal open (card-error sweep)
   Text half  (comment-stripped function bodies of pdna_gen12.c / pdna_main.c / the GB screens):
              S1 gb_hold_commit records, re-baselines and writes NOTHING          S2 gb_persist's verified-write pipeline keeps its
              order (backup, write, THEN the step is recorded, then saved)         S3 the six retired prompts are skipped only while
@@ -135,6 +135,7 @@ def c_half() -> None:
         "G8 Clear history stops after 3 slot files": [("journal_fs.c", "for (s = 1; s <= JRN_RING_MAX; s++) {                           /* bounded",
                                                         "for (s = 1; s <= 3u; s++) {                           /* bounded")],
         "G9 Clear history forgets the directory": [("journal_fs.c", "(void)f_unlink(dir); ", "(void)0; ")],
+        "G11 a failed Clear history leaves the journal open": [("jrn_app.c", 'ja_event("clear history failed", n); r->j = 0; r->state = IREC_OFF; s_state = JA_ERROR; return n;', 'ja_event("clear history failed", n); return n;')],
         "G10 img_rec_flat never records": [("img_stage.c", "  rec_step(r, 0, 0, 0, 0, &fp);\n", "")],
     }
     for name, edits in muts.items():

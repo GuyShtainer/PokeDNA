@@ -219,6 +219,28 @@ static void t_clear_history(void) {
   }
 }
 
+/* D5 (#234 s4 review): a card error part-way through Clear history may have deleted SOME slot files. The journal must then
+ * read ERROR and record nothing (never a half ring misread as a history); a clean clear keeps recording. Sweeps the failing
+ * write across the whole delete + reopen. At least one K must hit the delete itself (n < 0), or the sweep proves nothing. */
+static void t_clear_card_error(void) {
+  long K;
+  int hit_delete = 0, bad = 0;
+  for (K = 0; K <= 60; K++) {
+    int n, st;
+    if (!world(GBF_RBY, 0)) { CHECK(0, "world K=%ld", K); return; }
+    edit(0x0100, 4, 0x5A, "Box move", 0);
+    (void)jrnapp_flush();
+    rd_fail_at = K;
+    n = jrnapp_clear(&R, 0);
+    rd_fail_at = -1;
+    st = jrnapp_state(&R);
+    if (n < 0) { hit_delete++; if (st != JA_ERROR) bad++; }
+    else if (st != JA_OK) bad++;
+  }
+  CHECK(hit_delete > 0, "D5 the sweep reached a failed delete (%d hits)", hit_delete);
+  CHECK(bad == 0, "D5 a failed Clear history leaves the journal ERROR (off), never a half ring; %d bad", bad);
+}
+
 int main(void) {
   t_key();
   t_everdrive_never_opens();
@@ -227,6 +249,7 @@ int main(void) {
   t_resync_hashes_the_baseline();
   t_cap_and_foreign_layout();
   t_clear_history();
+  t_clear_card_error();
   printf("%lu checks, %d failed\n", checks, fails);
   return fails ? 1 : 0;
 }

@@ -9411,7 +9411,7 @@ static void pdna_settings(void) {
         if (app_confirm(PDNA_SET_HCLEAR_TITLE, PDNA_SET_HCLEAR_L1)) {
           int hn = app_history_clear();
           if (hn >= 0) { snd_ok(); msg_wait("CLEARED", UI_OK, "History cleared.", "A new one starts now."); }
-          else { snd_error(); msg_wait("NOT CLEARED", UI_WARN, "The card refused.", "History kept as it was."); }
+          else { snd_error(); msg_wait("NOT CLEARED", UI_WARN, "The card refused.", "History may be partly gone."); }
         }
         pv_valid = false;
       }
