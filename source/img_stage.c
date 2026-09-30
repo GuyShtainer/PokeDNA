@@ -78,8 +78,15 @@ static void rec_step(ImgRec* r, const uint8_t* save, int slot, uint16_t mask, co
 static void stage_now(ImgFlags* f, ImgRec* r, uint8_t* save, int slot, uint16_t mask, const uint8_t* const* blk) {
   int id;
   rec_step(r, save, slot, mask, blk);
-  for (id = 0; id < (int)IMG_NSEC; id++)
-    if ((mask >> id) & 1u) (void)gen3_write_full_section(save, slot, id, blk[id]);
+  for (id = 0; id < (int)IMG_NSEC; id++) {
+    const uint8_t* cur;
+    if (!((mask >> id) & 1u)) continue;
+    /* #300: a drop changes one or two of the nine PC sections; the rest are byte-identical, and rewriting them
+     * (3,968 B copy + checksum each) was most of the mid-drop freeze. An identical section is left as it is. */
+    cur = sec_data(save, slot, id);
+    if (cur && memcmp(cur, blk[id], G3_SECTOR_DATA_SIZE) == 0) continue;
+    (void)gen3_write_full_section(save, slot, id, blk[id]);
+  }
   if (r) r->name = 0;
   imgf_staged(f);
 }

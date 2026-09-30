@@ -4054,9 +4054,10 @@ static int party_strip_overlay(BoxSource* src, int box, int* cur,
                                     * the SAME empty/swap/cross-scope rules) the outer
                                     * loop's own s_holding+A path already trusts */
           play_place_anim_down(src, box, gcur);
-          bool done; app_step_begin("Box move"); recs = drop_held(src, box, gcur, recs, &done); app_step_end();   /* #234: one drop = one step */
+          bool done; app_step_begin("Box move"); recs = drop_held(src, box, gcur, recs, &done);   /* #234: one drop = one step */
           box_decode(src, recs, box); s_oam_reload = true;
           play_place_anim_up(src, box, gcur);
+          app_step_end();                  /* #300: the deferred stage runs AFTER the animation, not mid-drop */
           if (done) { result = 1; goto out; }   /* hand now genuinely empty -> close, same
                                                  * as the panel's own successful PLACE     */
           /* else: SWAP -> still holding the displaced occupant; loop continues, exactly
@@ -4894,10 +4895,11 @@ int pdna_box(BoxSource* src) {
       }
       else if (k & KEY_A) {                          /* drop / swap onto the cursor cell */
         play_place_anim_down(src, box, cur);         /* fist + mon settle onto the cell */
-        bool done; app_step_begin("Box move"); recs = drop_held(src, box, cur, recs, &done); app_step_end();   /* #234: one drop = one step */
+        bool done; app_step_begin("Box move"); recs = drop_held(src, box, cur, recs, &done);   /* #234: one drop = one step */
         (void)done;                                  /* a cross-scope copy may have shown a confirm dialog */
         box_decode(src, recs, box); s_oam_reload = true;
         play_place_anim_up(src, box, cur);           /* open hand (or swapped mon) rises */
+        app_step_end();                              /* #300: the deferred stage runs AFTER the animation, not mid-drop */
         need_full = true; paint_over = true;         /* repaint OVER: no black flash */
       }
       else if ((k & (KEY_L | KEY_R)) && nb > 1) {    /* carry to the next/prev box (even a FULL one) */

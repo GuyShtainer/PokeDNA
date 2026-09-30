@@ -175,6 +175,22 @@ static int scope_pins(const char* path) {
   (void)img_scope_close(&f, &r, g_save, slot);
   const uint8_t* s0 = g_save + (uint32_t)slot * G3_SLOT_BYTES + (uint32_t)gen3_find_section(g_save, slot, 0) * G3_SECTOR_SIZE;
   check("scope: the outer close applies it", memcmp(s0, sb2, G3_SECTOR_DATA_SIZE) == 0 && !r.mask);
+  /* #300: an IDENTICAL section is not rewritten (a drop changes one or two of nine); a changed one is */
+  memcpy(g_save, g_orig, sizeof g_save); memset(&f, 0, sizeof f);
+  {
+    uint8_t* sec5 = g_save + (uint32_t)slot * G3_SLOT_BYTES + (uint32_t)gen3_find_section(g_save, slot, 5) * G3_SECTOR_SIZE;
+    uint8_t keep[2];
+    sec5[G3_OFF_CHECKSUM] ^= 0x55;                                   /* a deliberately stale checksum */
+    memcpy(keep, sec5 + G3_OFF_CHECKSUM, 2);
+    read_pc(g_save, slot, g_pc);
+    (void)img_stage_sections(&f, NULL, g_save, slot, G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, g_pc);
+    check("stage: an identical section is left untouched (its checksum was not recomputed)", memcmp(keep, sec5 + G3_OFF_CHECKSUM, 2) == 0);
+    g_pc[3] ^= 0x01;
+    (void)img_stage_sections(&f, NULL, g_save, slot, G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, g_pc);
+    check("stage: a changed section IS written and its checksum recomputed",
+          sec5[3] == g_pc[3] && gen3_checksum(sec5, G3_SECTOR_DATA_SIZE) ==
+          (uint16_t)(sec5[G3_OFF_CHECKSUM] | (sec5[G3_OFF_CHECKSUM + 1] << 8)));
+  }
   /* a finalize inside a scope: flush applies the deferred sections; the fold stays immediate */
   memcpy(g_save, g_orig, sizeof g_save); memset(&f, 0, sizeof f);
   memset(sb2, 0x67, sizeof sb2);
