@@ -1014,6 +1014,9 @@ static void span_put(Jrn* j, uint8_t region, uint16_t off, uint16_t len, const u
 static int next_run(const uint8_t* o, const uint8_t* n, uint16_t size, uint16_t from, uint16_t* a, uint16_t* b) {
   uint32_t i = from, end, k, lim;
   int more = 1;
+  /* #302: the bulk of a region is identical; skip it a 64-byte window at a time through memcmp (word-wise in
+   * newlib) and finish byte-wise inside the first differing window, so `a` is still the exact first difference. */
+  while (i + 64u <= size && memcmp(o + i, n + i, 64u) == 0) i += 64u;
   while (i < size && o[i] == n[i]) i++;
   if (i >= size) return 0;
   *a = (uint16_t)i;
