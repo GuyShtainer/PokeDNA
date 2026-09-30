@@ -71,4 +71,30 @@ extern unsigned long rd_read_calls;
 extern unsigned long rd_read_back;
 extern unsigned long rd_read_last;
 
+/* ---- the POWER CUT (y19-s1) -- unlike the honest-error / liar knobs above, a cut is not an
+ * error return: the process is simply gone. The first N sectors of a run land intact, the
+ * next one lands TORN (its first rd_cut_torn bytes new, the rest still the old bytes -- a
+ * sector programmed part way), nothing after it lands, and every later disk_write reports
+ * RES_ERROR so the operation under test unwinds fast (the test never trusts what the
+ * dead process would have done next; it remounts the RAM disk and reads what is on it).
+ *
+ *   rd_cut_sectors >= 0 : that many MORE sectors land, then power is cut (-1 = disabled)
+ *   rd_cut_torn         : bytes (0..511) of the FIRST sector past the cut that still land
+ *   rd_cut_fired        : set when the cut has happened
+ * rd_snapshot()/rd_restore() make thousands of cut points affordable: restore rewinds only
+ * the sectors written since the snapshot. rd_fattime_now (0 = the fixed default stamp) is
+ * the live RTC; rd_fattime_hook, when set, is get_fattime's filter -- the seam the
+ * journal's frozen-timestamp hook plugs into on the host exactly as slice 2 plugs it into
+ * diskio_write.c's get_fattime on the cartridge. */
+#include <stdint.h>
+extern long rd_cut_sectors;
+extern int  rd_cut_torn;
+extern int  rd_cut_fired;
+extern uint32_t rd_fattime_now;
+extern uint32_t (*rd_fattime_hook)(uint32_t live);
+void rd_snapshot(void);           /* remember the volume as it is now */
+void rd_restore(void);            /* rewind to the snapshot; clears the cut + write counters */
+unsigned char* rd_sector(unsigned lba);   /* peek at a sector (test-side inspection) */
+unsigned rd_sector_count(void);
+
 #endif /* HOSTFAT_RAMDISK_H */
