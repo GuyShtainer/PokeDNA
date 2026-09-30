@@ -51,11 +51,11 @@ static void h_row(const JaHist* rows, int n, int i, int top, bool sel, bool has_
   }
 }
 
-static void h_paint_all(const JaHist* rows, int n, int total, int sel, int top, bool has_root, bool retired) {
+static void h_paint_all(const JaHist* rows, int n, int total, int sel, int top, bool has_root, bool retired) {   /* retired: older steps exist past the window (or were retired) */
   char hd[32];
   ui_clear();
   ui_text(4, 2, UI_TITLE, "HISTORY");
-  siprintf(hd, "%d step%s%s", n, n == 1 ? "" : "s", (retired || total > n) ? "+" : "");
+  siprintf(hd, "%d step%s%s", n, n == 1 ? "" : "s", retired ? "+" : "");
   ui_ptext_right(UI_SCR_W - 6, 3, UI_DIM, hd);
   ui_hline(0, 13, UI_SCR_W, UI_BORDER);
   for (int i = top; i < top + HH_VIS && i < total; i++) h_row(rows, n, i, top, i == sel, has_root);

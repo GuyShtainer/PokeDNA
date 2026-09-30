@@ -4772,7 +4772,7 @@ int pdna_box(BoxSource* src) {
     if (toast[0]) {                            /* #234 s3: a toast lives in the footer strip; it is drawn AFTER any repaint */
       ui_fill_rect(WP_X, 152, WP_W, 8, UI_BG);
       ui_ptext_fit(WP_X + 2, 152, WP_W - 4, RGB15(31, 31, 31), toast);
-      toast_t = 90; toast[0] = 0;
+      toast_t = 150; toast[0] = 0;
     }
     u16 k, fresh; int cev = CHORD_NONE;
     do { s_vsync();
