@@ -480,6 +480,7 @@ static void part_b_f5_one(const char* name, uint8_t gen, const Want* want) {
   chk(who, "the fast-path open locates the ROM", ok);
   if (ok) {
     chk(who, "generation as expected", (uint8_t)gs.gen == gen);
+    chk(who, "#205: the fast-path open reports src == TABLE", gs.src == ROM_GBSPRITE_SRC_TABLE);
     chk(who, "BaseStats/BaseData at the documented address",
         gen == 1 ? gs.base_stats == want->base_stats : gs.base_data == want->base_data);
     if (gen == 1) chk(who, "Mew record where documented", gs.mew_stats == want->mew_stats);
@@ -524,6 +525,7 @@ static void part_b_f5_one(const char* name, uint8_t gen, const Want* want) {
       RomGbSprite gs2;
       int ok2 = rom_gbsprite_open(&gs2, rd_read, &r2, r2.size, b_scratch, 8192, GB_ROM_NONE);
       chk(who, "D2: the poisoned re-open (forced scan) also locates the ROM", ok2);
+      if (ok2) chk(who, "#205: the poisoned re-open reports src == SCAN", gs2.src == ROM_GBSPRITE_SRC_SCAN);
       if (ok2) {
         RomGbSpriteLoc from_scan; rom_gbsprite_save_loc(&gs2, &from_scan);
         from_scan.id_hash = from_table.id_hash;   /* the one field the table never claims */
@@ -533,6 +535,15 @@ static void part_b_f5_one(const char* name, uint8_t gen, const Want* want) {
       r2.fail_at = -1;
       fclose(r2.f);
     }
+  }
+
+  /* BACKLOG #205: an open_loc() from a loc that validates reports CACHE (never TABLE/SCAN). */
+  if (ok) {
+    RomGbSpriteLoc cached; rom_gbsprite_save_loc(&gs, &cached);
+    RomGbSprite gs3;
+    int ok3 = rom_gbsprite_open_loc(&gs3, rd_read, &r, r.size, b_scratch, 8192, &cached, GB_ROM_NONE);
+    chk(who, "#205: open_loc from a valid loc succeeds and reports src == CACHE",
+        ok3 && gs3.src == ROM_GBSPRITE_SRC_CACHE);
   }
 
   r.fail_at = -1;

@@ -666,8 +666,10 @@ int rom_gbsprite_open(RomGbSprite* gs, GbReadFn read, void* ctx, uint32_t size,
   /* BACKLOG #185 F5: a known ROM's own table entry, verified before use, skips
    * the whole-ROM scan entirely -- checked before locate() so a hit costs
    * only the handful of *_verify reads, not one scan byte. */
-  if (try_loc(gs, known_rom_lookup(gs->title, gs->version, gs->global_checksum), gen_hint))
+  if (try_loc(gs, known_rom_lookup(gs->title, gs->version, gs->global_checksum), gen_hint)) {
+    gs->src = ROM_GBSPRITE_SRC_TABLE;
     return 1;
+  }
   /* Which generation is decided by what is IN the ROM, never by the title, so
    * Blue, Silver and localised builds work the same way -- unless the caller
    * already knows (gen_hint != GB_ROM_NONE), in which case locate() restricts
@@ -675,6 +677,7 @@ int rom_gbsprite_open(RomGbSprite* gs, GbReadFn read, void* ctx, uint32_t size,
    * (BACKLOG #185 F1). */
   if (!locate(gs, gen_hint)) return 0;   /* gs->gen: NONE, or the header-implied gen on a hint mismatch */
   gs->ok = 1;
+  gs->src = ROM_GBSPRITE_SRC_SCAN;
   return 1;
 }
 
@@ -718,8 +721,10 @@ int rom_gbsprite_open_loc(RomGbSprite* gs, GbReadFn read, void* ctx, uint32_t si
    * fields are genuinely self-consistent) and silently hand back the OTHER
    * generation's tables under a hint that promised otherwise. */
   if (loc && loc->id_hash == gs->id_hash && loc->size == size &&
-      try_loc(gs, loc, gen_hint))
+      try_loc(gs, loc, gen_hint)) {
+    gs->src = ROM_GBSPRITE_SRC_CACHE;
     return 1;
+  }
   return rom_gbsprite_open(gs, read, ctx, size, scratch, scratch_len, gen_hint);
 }
 

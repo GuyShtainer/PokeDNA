@@ -803,6 +803,17 @@ static EWRAM_BSS bool           s_dsprite_loc_ok[3];
 static EWRAM_BSS RomGbIconLoc   s_dicon_loc;          /* gen 2 only -- see rom_gbicon.h */
 static EWRAM_BSS bool           s_dicon_loc_ok;
 
+/* BACKLOG #205: the bench's honesty line. On the FIRST sprite open of a generation this session (the
+ * cold locate the delta bench times) say which path served it: the compiled-in known-ROM TABLE, a
+ * CACHE (the fused .loc record; a session cache cannot be first), or a real SCAN. log_line is fine
+ * here: delta-only, never in a gated build, and once per generation. */
+static void gb_art_note_src(uint8_t gen, bool cold, bool had_loc, const RomGbSprite* gs) {
+  if (!cold) return;
+  const char* how = gs->src == ROM_GBSPRITE_SRC_TABLE ? "TABLE" : gs->src == ROM_GBSPRITE_SRC_SCAN ? "SCAN"
+                  : gs->src == ROM_GBSPRITE_SRC_CACHE ? (had_loc ? "CACHE(fused-loc)" : "CACHE(?)") : "NONE";
+  log_line("gb art: gen%u cold-locate served by %s", (unsigned)gen, how);
+}
+
 GbArtRegStatus gb_art_register(uint8_t gen, const char* path, GbArtProgressFn progress,
                                void* progress_ctx, GbArtRegInfo* info) {
   (void)path; (void)progress; (void)progress_ctx;
@@ -874,6 +885,7 @@ static const uint16_t* gb_art_fetch(GbArtBatchImpl* bt, uint8_t gen, uint16_t de
   RomGbSprite gs;
   uint8_t scratch[ROM_GBSPRITE_SCRATCH_MIN];
   bool have_loc = s_dsprite_loc_ok[gen];
+  const bool cold = !have_loc;
   if (!have_loc)
     have_loc = gb_art_loc_seed(FUSED_GB_LOC_SPRITE, gen, size, &s_dsprite_loc[gen],
                                (uint32_t)sizeof s_dsprite_loc[gen]);
@@ -885,6 +897,7 @@ static const uint16_t* gb_art_fetch(GbArtBatchImpl* bt, uint8_t gen, uint16_t de
   int ok = rom_gbsprite_open_loc(&gs, fused_gb_slice_read, &slice, size, scratch,
                                  (uint32_t)sizeof scratch, have_loc ? &s_dsprite_loc[gen] : 0,
                                  GB_ROM_NONE);
+  if (ok) gb_art_note_src(gen, cold, have_loc, &gs);
   if (ok) {
     /* Always (re)snapshot what open_loc() actually validated on success -- cheap (a
      * 260 B struct copy) and simpler than tracking "did this particular open come
@@ -1002,11 +1015,13 @@ gb_batch_open(GbArtBatchImpl* b, uint8_t gen, bool icon) {
     return false;
   }
   bool have_loc = s_dsprite_loc_ok[gen];
+  const bool cold = !have_loc;
   if (!have_loc)
     have_loc = gb_art_loc_seed(FUSED_GB_LOC_SPRITE, gen, b->size, &s_dsprite_loc[gen],
                                (uint32_t)sizeof s_dsprite_loc[gen]);
   int ok = rom_gbsprite_open_loc(&b->gs, fused_gb_slice_read, &b->slice, b->size, (uint8_t*)mon_decomp,
                                  MON_DECOMP_BYTES, have_loc ? &s_dsprite_loc[gen] : 0, GB_ROM_NONE);
+  if (ok) gb_art_note_src(gen, cold, have_loc, &b->gs);
   if (ok) { rom_gbsprite_save_loc(&b->gs, &s_dsprite_loc[gen]); s_dsprite_loc_ok[gen] = true; }
   if (!ok || (uint8_t)b->gs.gen != gen) { b->fail_gs |= (uint8_t)(1u << gen); return false; }
   b->have_gs = 1;
