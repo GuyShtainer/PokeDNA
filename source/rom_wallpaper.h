@@ -63,6 +63,9 @@
  * so comparing them against this Emerald reference is not a correctness check):
  * every pixel whose 4bpp nibble is NONZERO (i.e. not palette index 0) reproduces
  * wallpapers.c EXACTLY, 100.00%, across all 16 standard wallpapers.
+ *   [BACKLOG #294 CLOSED 2026-09-30 by rom_wallpaper_expand_cell below: the backdrop is the
+ *   row's own bg tile sheet tiled from the origin, Emerald pixel-exact; the paragraph that
+ *   follows is the literal-expansion history and still describes rom_wallpaper_expand_tile.]
  *   The ONE genuinely open piece: pixels at palette index 0 (the tile nibble that
  * is 0). Retail's LoadWallpaperGfx composites a wallpaper as TWO layers -- a tiled
  * scenery pattern (bg.png in the decomp) underneath, with the tilemap layer drawn
@@ -153,5 +156,29 @@ int rom_wallpaper_pal_bank(int bank);
 int rom_wallpaper_expand_tile(const uint8_t* tiles, uint32_t tiles_bytes, uint16_t tid,
                               int hflip, int vflip, const uint16_t pal[16],
                               uint16_t out[64]);
+
+/* BACKLOG #294: the wallpaper's tiled BACKDROP (what index 0 is transparent over). `first` =
+ * tile id of the bg sheet's first tile, cols x rows its tiling period, used its tile count;
+ * cols == 0 means "no sheet known" (FireRed/LeafGreen): the flat interior tone. */
+typedef struct RomWpBase { uint16_t first; uint8_t cols, rows, used; } RomWpBase;
+
+/* Fill *out for wallpaper `wp` whose decompressed tile blob is tiles_bytes long. Returns 1
+ * (also for a table-less game, cols == 0) or 0 on a bad argument / a blob shorter than the
+ * known sheet. out is zeroed on every path. */
+int rom_wallpaper_base(const RomWallpaper* rw, int wp, uint32_t tiles_bytes, RomWpBase* out);
+
+/* Expand the tilemap entry `e` AT cell (tx,ty) to 64 RGB15 pixels with the backdrop composed
+ * under it: base sheet tile (or the flat tone), then the entry's own tile over it with index 0
+ * transparent. `pal` is the verified rom_wallpaper_pal() result (bank 2 == the LAST bank is
+ * the bg palette, entry 1 the interior tone). Returns 0 (out unchanged) if tid is outside
+ * tiles_bytes. */
+int rom_wallpaper_expand_cell(const uint8_t* tiles, uint32_t tiles_bytes, uint16_t e,
+                              int tx, int ty, const RomWpBase* bs,
+                              const uint16_t pal[ROM_WP_PAL_BANKS][16], uint16_t out[64]);
+
+/* A cache key for rom_wallpaper_expand_cell's output: equal keys <=> equal pixels. The entry
+ * alone is no longer enough -- the backdrop under it depends on (tx%cols, ty%rows). Never
+ * negative (fits pdna_box.c's int32_t last_key with -1 = "nothing staged"). */
+int rom_wallpaper_cell_key(const RomWpBase* bs, uint16_t e, int tx, int ty);
 
 #endif /* ROM_WALLPAPER_H */

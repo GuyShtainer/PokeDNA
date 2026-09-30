@@ -87,6 +87,14 @@ uint32_t mr_lz77(const RomCtx* rom, uint32_t addr, uint8_t* dst, uint32_t dst_ca
 uint32_t mr_lz77_w(const RomCtx* rom, uint32_t addr, uint8_t* dst, uint32_t dst_cap,
                    uint8_t* win, uint32_t win_bytes);
 
+/* BACKLOG #295: decode only the output bytes [start, start+len) of an LZ10 blob into dst,
+ * keeping the last 4,096 B in `ring` (ring_bytes: a power of two >= 4096) instead of the whole
+ * output -- for a blob bigger than any buffer we own. Stops as soon as the range is full.
+ * Returns len, or 0 on any bad argument / malformed stream / range outside the declared size.
+ * Every byte returned is byte-identical to mr_lz77()'s output at the same offsets. */
+uint32_t mr_lz77_range(const RomCtx* rom, uint32_t addr, uint32_t start, uint32_t len,
+                       uint8_t* dst, uint8_t* ring, uint32_t ring_bytes);
+
 /* Same decoder + window as mr_lz77_w(), but ALSO reports the exact compressed
  * span this decode consumed (`*consumed`, header included) and an FNV-1a hash
  * of exactly those consumed bytes (`*in_hash`) -- BACKLOG #103 step 4's cheap

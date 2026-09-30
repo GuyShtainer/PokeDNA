@@ -400,8 +400,14 @@ static void gbdc_panel(const GbDaycare* dc, int n, bool visitors_ok, int n_visit
    * are real boarders or invented scenery, or WHY there are none (BACKLOG #114
    * step 3's own measured wording -- a GB-only setup with no registered Gen-3
    * ROM has no icon art to draw visitors with, same gate as Gen 3's own
-   * app_yard_visitors_ok(), so it says so instead of silently showing none). */
-  if (!visitors_ok) ui_ptext(dcx, dcy0 + 2 * dcyp, UI_DIM, "No visitors: register a Gen-3 ROM");
+   * app_yard_visitors_ok(), so it says so instead of silently showing none). The wording
+   * names the failing predicate: gb_daycare.h's gbd_visitors_note() (BACKLOG #298). */
+  if (!visitors_ok) {
+    /* #298: name WHICH of the three predicates failed, not one register-a-ROM line for all */
+    const char* why = gbd_visitors_note(app_any_rom_registered(), app_rom_art_off(),
+                                        app_yard_visitors_setting());
+    ui_ptext(dcx, dcy0 + 2 * dcyp, UI_DIM, why ? why : "No visitors this time.");
+  }
   else if (n_visitors > 0) ui_ptext(dcx, dcy0 + 2 * dcyp, UI_DIM, "Others are just visiting.");
   else ui_ptext(dcx, dcy0 + 2 * dcyp, UI_DIM, "No extra visitors this time.");
 }

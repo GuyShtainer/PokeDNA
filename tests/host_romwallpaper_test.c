@@ -22,7 +22,13 @@
  *   4) determinism: decompressing the SAME wallpaper twice yields byte-identical
  *      map and tile bytes — the property pdna_box.c's ROM-rung verify (re-decompress
  *      and compare, matching wp_copy_verified's retry/abandon shape) depends on;
- *   5) out-of-range wp/tid and a too-small tiles buffer are refused, not truncated.
+ *   5) out-of-range wp/tid and a too-small tiles buffer are refused, not truncated;
+ *   6) BACKLOG #294: rom_wallpaper_expand_cell composes the tiled backdrop under the tilemap
+ *      (index 0 transparent). On Emerald all 16 standard wallpapers, composed whole
+ *      (20x18 cells -> 160x144 RGB15), hash EXACTLY to the compiled wallpapers.c composite
+ *      (tools/gen_wallpaper.py's assemble(), FNV-1a over the LE u16 pixels -- goldens
+ *      below); FireRed/LeafGreen (no sheet table) compose with a flat interior tone and
+ *      never leave a band-cell pixel at the literal white unless the tone itself is white.
  *
  * ROMs are the user's own dumps, never part of the repo; missing ROMs SKIP.
  */
@@ -45,6 +51,36 @@ static bool file_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
   fc->calls++;
   if (fseek(fc->f, (long)off, SEEK_SET) != 0) return false;
   return fread(dst, 1, len, fc->f) == len;
+}
+
+/* FNV-1a 32 over the composed 160x144 image's little-endian u16 pixels (bit 15 cleared). */
+static const uint32_t k_em_golden[ROM_WP_COUNT] = {
+  0xFF8FA8AEu, 0xD6199C60u, 0x190381CBu, 0x2C8EEFADu, 0xE6539EF7u, 0x5AF9A66Du, 0x70F2EA42u, 0xAAF78964u,
+  0xA1E53319u, 0x899EC365u, 0x856CCDC6u, 0xCB92A806u, 0xC561316Du, 0x3A6F7ED0u, 0x922705A5u, 0x0EE18723u,
+};
+
+static uint32_t compose_hash(const RomWallpaper* rw, int wp, const uint8_t* tiles, uint32_t tbytes,
+                             const uint16_t* map, const uint16_t pal[ROM_WP_PAL_BANKS][16],
+                             int* white_band_px) {
+  RomWpBase bs;
+  uint32_t h = 0x811C9DC5u;
+  int white = 0;
+  if (!rom_wallpaper_base(rw, wp, tbytes, &bs)) return 0;
+  for (int ty = 0; ty < 18; ty++)
+    for (int r = 0; r < 8; r++)
+      for (int tx = 0; tx < 20; tx++) {
+        uint16_t out[64];
+        if (!rom_wallpaper_expand_cell(tiles, tbytes, map[ty * 20 + tx], tx, ty, &bs, pal, out))
+          return 0;
+        for (int c = 0; c < 8; c++) {
+          uint16_t v = (uint16_t)(out[r * 8 + c] & 0x7FFFu);
+          h ^= (uint8_t)(v & 0xFFu); h *= 0x01000193u;
+          h ^= (uint8_t)(v >> 8);    h *= 0x01000193u;
+          if (ty < 3 && (tx < 2 || tx > 17) && v == 0x7FFFu) white++;   /* the 12 blank corner cells */
+        }
+      }
+  if (white_band_px) *white_band_px = white;
+  return h;
 }
 
 static void run_rom(const char* path, const char* name, int expect_open) {
@@ -95,6 +131,20 @@ static void run_rom(const char* path, const char* name, int expect_open) {
     chk(name, tag, bad_tid == 0);
     chk(name, tag, bad_expand == 0);
 
+    /* BACKLOG #294: the composed wallpaper (backdrop + overlay) */
+    {
+      int white = 0;
+      uint32_t h = compose_hash(&rw, wp, tiles_a, tbytes, map_a, pal, &white);
+      chk(name, "composes (no refusal)", h != 0);
+      if (rc.kind == ROM_EMERALD) {
+        char t2[64]; sprintf(t2, "wp %d composite == compiled wallpapers.c (golden hash)", wp);
+        chk(name, t2, h == k_em_golden[wp]);
+      } else {
+        uint16_t tone = pal[ROM_WP_PAL_BANKS - 1][1];
+        chk(name, "FR/LG flat tone: corner cells not literal white unless the tone is", tone == 0x7FFF || tone == 0 || white == 0);
+      }
+    }
+
     /* determinism: a second independent decompress of the SAME wallpaper agrees
      * byte-for-byte -- the property the caller-side verify/retry depends on */
     uint16_t map2[ROM_WP_MAP_ENTRIES];
@@ -105,6 +155,24 @@ static void run_rom(const char* path, const char* name, int expect_open) {
                    t2bytes == tbytes && memcmp(tiles_a, tiles_b, tbytes) == 0);
   }
   (void)map_b;
+
+  {
+    RomWpBase bz;
+    chk(name, "base: NULL out refused", !rom_wallpaper_base(&rw, 0, 4096, NULL));
+    chk(name, "base: wp -1 refused, out zeroed", !rom_wallpaper_base(&rw, -1, 4096, &bz) && bz.cols == 0);
+    if (rc.kind == ROM_EMERALD) {
+      RomWpBase b0;
+      chk(name, "cell_key: base built", rom_wallpaper_base(&rw, 0, 63u * 32u, &b0) && b0.cols == 4 && b0.rows == 2);
+      chk(name, "cell_key: phase changes the key (skip cache must not reuse a tile across phases)",
+          rom_wallpaper_cell_key(&b0, 0x2037, 0, 0) != rom_wallpaper_cell_key(&b0, 0x2037, 1, 0) &&
+          rom_wallpaper_cell_key(&b0, 0x2037, 0, 0) != rom_wallpaper_cell_key(&b0, 0x2037, 0, 1));
+      chk(name, "cell_key: same phase, same key; never negative",
+          rom_wallpaper_cell_key(&b0, 0x2037, 0, 0) == rom_wallpaper_cell_key(&b0, 0x2037, 4, 2) &&
+          rom_wallpaper_cell_key(&b0, 0xFFFF, 3, 1) >= 0);
+    }
+    if (rc.kind == ROM_EMERALD)
+      chk(name, "base: a blob shorter than the sheet refused", !rom_wallpaper_base(&rw, 0, 32u * 7u, &bz));
+  }
 
   /* out-of-range everything is refused, not truncated */
   chk(name, "wp -1 refused", !rom_wallpaper_map(&rw, -1, map_a));

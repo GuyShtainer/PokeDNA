@@ -2635,6 +2635,9 @@ bool app_yard_visitors_ok(void) {
   return g_yard_visitors && app_any_rom_registered() && !g_rom_art_off;
 }
 
+/* BACKLOG #298: the user's Yard-visitors switch on its own (see pdna_app.h). */
+bool app_yard_visitors_setting(void) { return g_yard_visitors; }
+
 /* Release a PC box slot as part of a PC->Bank MOVE (multi-select "send to bank" + the
  * single-mon carry): clear g_pc[box][slot] IFF it still holds the mon whose 8-byte identity
  * (personality 0-3 + OT id 4-7, both plaintext at the record start) is `id8`, then mark the PC
@@ -9425,7 +9428,8 @@ static void pdna_settings(void) {
           char m[44]; siprintf(m, "%d backup(s) removed.", rm);
           snd_ok(); msg_wait("CLEARED", UI_OK, m, 0);
         }
-      } else return;   /* S_CLOSE */
+      } else { cfg_save(); return; }   /* S_CLOSE -- #309: B already persisted; Close used to leave a changed
+                                        * History size / anim / yard / backup mode unsaved until something else wrote config.cfg */
     }
   }
 }

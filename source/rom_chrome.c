@@ -43,6 +43,7 @@ int rom_chrome_bag_have(const RomChrome* rch, int g) {
 
 #if PDNA_ROM_CHROME_NEEDED   /* the actual decoders: empty otherwise -- see the gate header */
 
+#include <string.h>
 #include "map_render.h"     /* mr_lz77 -- do not write another LZ77 decoder */
 
 /* ---- per-game pins, EACH individually verified in DESIGN.md ------------------ */
@@ -591,27 +592,70 @@ static const BagSpritePins k_bagspr_leafgreen = {
   0x08E836AC, 1, 0x08E83E3C, 1, 0x08E845E0, 1, 4,
 };
 
+/* Emerald BPEE r0 (pokeemerald symbols gBagMaleTiles 0x08D98E84 / gBagFemaleTiles 0x08D99A00 /
+ * gBagPalette 0x08D9A560; headers re-read 2026-09-30: LZ10, 12,288 B = 6 frames x 2,048 B
+ * (closed + Items/KeyItems/PokeBalls/TMsHMs/Berries), the palette an LZ10 of 32 B). The sheet
+ * is BIGGER than the shared 8,192 B buffer, so it is never decoded whole -- see
+ * rom_chrome_bag_sprite_load() and mr_lz77_range(). BACKLOG #295. */
+static const BagSpritePins k_bagspr_emerald = {
+  0x08D98E84, 1, 0x08D99A00, 1, 0x08D9A560, 1, 6,
+};
+
+#define BAG_FRAME_BYTES   2048u   /* one 64x64 4bpp frame: 64 tiles x 32 B          */
+#define BAG_RING_BYTES    4096u   /* LZ10's maximum back-reference distance         */
+
 int rom_chrome_bag_sprite_have(const RomChrome* rch, int g) {
   if (!rom_chrome_bag_have(rch, g)) return 0;
-  return rch->rc->kind == ROM_FIRERED || rch->rc->kind == ROM_LEAFGREEN;
+  return rch->rc->kind == ROM_EMERALD || rch->rc->kind == ROM_FIRERED ||
+         rch->rc->kind == ROM_LEAFGREEN;
 }
 
-int rom_chrome_bag_sprite_load(const RomChrome* rch, int g, int female,
+/* Emerald: decode ONLY frame `frame` of the 12,288 B sheet. scratch layout (cap >= 8,192 when
+ * verifying, >= 6,144 when not): [0,4096) the LZ window, [4096,6144) the frame (what
+ * out->tiles points at), [6144,8192) the verify copy. Two independent decodes must agree
+ * byte-for-byte (the EZ-Flash "read succeeded holding garbage" rule, same posture as
+ * fetch()'s hash re-read); 3 attempts, then fail closed. */
+static int bag_sprite_emerald_frame(const RomChrome* rch, uint32_t addr, int frame,
+                                    uint8_t* scratch, uint32_t cap) {
+  uint8_t* ring = scratch;
+  uint8_t* fr = scratch + BAG_RING_BYTES;
+  uint8_t* cmp = fr + BAG_FRAME_BYTES;
+  uint32_t need = BAG_RING_BYTES + BAG_FRAME_BYTES + (rch->verify ? BAG_FRAME_BYTES : 0u);
+  if (cap < need) return 0;
+  for (int attempt = 0; attempt < 3; attempt++) {
+    if (mr_lz77_range(rch->rc, addr, (uint32_t)frame * BAG_FRAME_BYTES, BAG_FRAME_BYTES,
+                      fr, ring, BAG_RING_BYTES) != BAG_FRAME_BYTES) continue;
+    if (!rch->verify) return 1;
+    if (mr_lz77_range(rch->rc, addr, (uint32_t)frame * BAG_FRAME_BYTES, BAG_FRAME_BYTES,
+                      cmp, ring, BAG_RING_BYTES) == BAG_FRAME_BYTES &&
+        memcmp(fr, cmp, BAG_FRAME_BYTES) == 0) return 1;
+  }
+  return 0;
+}
+
+int rom_chrome_bag_sprite_load(const RomChrome* rch, int g, int female, int frame,
                                uint8_t* scratch, uint32_t cap, RomChromeBagSprite* out) {
   if (!rom_chrome_bag_sprite_have(rch, g) || !scratch || !out) return 0;
-  const BagSpritePins* p = (rch->rc->kind == ROM_FIRERED) ? &k_bagspr_firered
-                                                          : &k_bagspr_leafgreen;
-  /* The 8,192 B sheet ALONE exactly fills the shared buffer -- its palette
-   * (32 B) is fetched to a STACK buffer below, never appended to `scratch`
-   * (there is no room left: 8,192 + 32 > 8,192). Same shape as the card's
-   * star_pal / photo's own palette / pokeblock's device_pal fetches above. */
-  if (BAG_SPRITE_BYTES > cap) return 0;
+  const BagSpritePins* p = (rch->rc->kind == ROM_EMERALD)  ? &k_bagspr_emerald
+                         : (rch->rc->kind == ROM_FIRERED)  ? &k_bagspr_firered
+                                                           : &k_bagspr_leafgreen;
+  if (frame < 0 || frame >= (int)p->frame_count) frame = 0;
   uint32_t addr = female ? p->female : p->male;
   uint8_t addr_lz = female ? p->female_lz : p->male_lz;
-  if (!fetch(rch->rc, rch->verify, addr, addr_lz, scratch, cap, BAG_SPRITE_BYTES)) return 0;
+  const uint8_t* tiles;
+  if (rch->rc->kind == ROM_EMERALD) {
+    if (!bag_sprite_emerald_frame(rch, addr, frame, scratch, cap)) return 0;
+    tiles = scratch + BAG_RING_BYTES;
+  } else {
+    /* The 8,192 B sheet ALONE exactly fills the shared buffer -- its palette (32 B) is
+     * fetched to a STACK buffer below, never appended to `scratch` (8,192 + 32 > 8,192). */
+    if (BAG_SPRITE_BYTES > cap) return 0;
+    if (!fetch(rch->rc, rch->verify, addr, addr_lz, scratch, cap, BAG_SPRITE_BYTES)) return 0;
+    tiles = scratch + (uint32_t)frame * BAG_FRAME_BYTES;
+  }
   uint8_t pb[32];
   if (!fetch(rch->rc, rch->verify, p->pal, p->pal_lz, pb, sizeof pb, 32u)) return 0;
-  out->tiles = scratch;
+  out->tiles = tiles;
   pal_bank_from_raw(pb, out->pal);
   out->pal[0] = 0;
   out->frame_count = p->frame_count;

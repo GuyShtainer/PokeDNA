@@ -125,13 +125,11 @@ int rom_wallpaper_pal_bank(int bank) {
   return pb;
 }
 
-int rom_wallpaper_expand_tile(const uint8_t* tiles, uint32_t tiles_bytes, uint16_t tid,
-                              int hflip, int vflip, const uint16_t pal[16],
-                              uint16_t out[64]) {
-  if (!tiles || !pal || !out) return 0;
-  uint32_t off = (uint32_t)tid * 32u;
-  if (off + 32u > tiles_bytes) return 0;
-  const uint8_t* src = tiles + off;
+/* One tile's pixels, rows/cols flipped as asked. `skip0` = 1 leaves every index-0 pixel
+ * of `out` UNTOUCHED (the overlay pass: index 0 is transparent over the base); 0 writes
+ * all 64 (the literal expansion rom_wallpaper_expand_tile documents). */
+static void expand_px(const uint8_t* src, int hflip, int vflip, const uint16_t pal[16],
+                      int skip0, uint16_t out[64]) {
   for (int y = 0; y < 8; y++) {
     int sy = vflip ? (7 - y) : y;
     for (int xb = 0; xb < 4; xb++) {
@@ -140,9 +138,88 @@ int rom_wallpaper_expand_tile(const uint8_t* tiles, uint32_t tiles_bytes, uint16
       uint8_t hi = (uint8_t)((b >> 4) & 0x0Fu);
       int x0 = xb * 2, x1 = xb * 2 + 1;
       if (hflip) { x0 = 7 - x0; x1 = 7 - x1; }
-      out[y * 8 + x0] = pal[lo];
-      out[y * 8 + x1] = pal[hi];
+      if (!(skip0 && lo == 0)) out[y * 8 + x0] = pal[lo];
+      if (!(skip0 && hi == 0)) out[y * 8 + x1] = pal[hi];
     }
   }
+}
+
+int rom_wallpaper_expand_tile(const uint8_t* tiles, uint32_t tiles_bytes, uint16_t tid,
+                              int hflip, int vflip, const uint16_t pal[16],
+                              uint16_t out[64]) {
+  if (!tiles || !pal || !out) return 0;
+  uint32_t off = (uint32_t)tid * 32u;
+  if (off + 32u > tiles_bytes) return 0;
+  expand_px(tiles + off, hflip, vflip, pal, 0, out);
+  return 1;
+}
+
+/* ---- BACKLOG #294: the backdrop pattern ---------------------------------------------
+ * Retail draws each wallpaper's tilemap OVER a tiled backdrop and treats palette index 0
+ * as transparent; the single-layer expansion above painted those holes white (the top
+ * band, the 12 blank corner cells, every sparse-tile gap). The compiled wallpapers.c
+ * (tools/gen_wallpaper.py) composes: base = the wallpaper's bg tile sheet tiled from the
+ * region's origin (cell (tx,ty) -> sheet tile (ty%rows)*cols + tx%cols, bg index 0 ->
+ * the interior tone = bank-2 entry 1), then the tilemap overlaid with index 0
+ * transparent. The bg tiles are the LAST `used` tiles of the row's tile blob (the build
+ * `cat`s frame then bg), so this module only needs each wallpaper's sheet shape.
+ * Emerald's 16 shapes are below -- measured from the retail row blobs and verified
+ * pixel-exact against gen_wallpaper's composite for all 16 (2026-09-30 probe). FireRed /
+ * LeafGreen re-ordered and re-drew the set (their blob sizes differ), so no table is
+ * claimed for them: they keep the flat interior tone. */
+typedef struct { uint8_t cols, rows, used; } BgShape;
+static const BgShape k_em_bg[ROM_WP_COUNT] = {
+  {4, 2, 8},  {3, 2, 6},  {7, 2, 14}, {3, 8, 23}, {4, 4, 16}, {2, 13, 26}, {2, 11, 22}, {2, 2, 4},
+  {3, 8, 23}, {4, 2, 8},  {3, 4, 11}, {4, 4, 16}, {2, 3, 6},  {11, 2, 22}, {2, 4, 8},   {4, 1, 4},
+};
+
+int rom_wallpaper_base(const RomWallpaper* rw, int wp, uint32_t tiles_bytes, RomWpBase* out) {
+  if (!out) return 0;
+  memset(out, 0, sizeof *out);
+  if (!rw || !rw->ok || !rw->rc || wp < 0 || wp >= ROM_WP_COUNT) return 0;
+  if (rw->rc->kind != ROM_EMERALD) return 1;            /* no table: flat tone, but valid */
+  uint32_t total = tiles_bytes / 32u;
+  const BgShape* sh = &k_em_bg[wp];
+  if (sh->used > total) return 0;                       /* a blob shorter than the sheet: refuse */
+  out->first = (uint16_t)(total - sh->used);
+  out->cols = sh->cols; out->rows = sh->rows; out->used = sh->used;
+  return 1;
+}
+
+int rom_wallpaper_cell_key(const RomWpBase* bs, uint16_t e, int tx, int ty) {
+  int pi = 0;
+  if (bs && bs->cols && bs->rows) pi = (ty % bs->rows) * bs->cols + (tx % bs->cols) + 1;
+  return (int)e | (pi << 16);        /* pi 0 = no base tile; fits 16 + 8 bits, never negative */
+}
+
+int rom_wallpaper_expand_cell(const uint8_t* tiles, uint32_t tiles_bytes, uint16_t e,
+                              int tx, int ty, const RomWpBase* bs,
+                              const uint16_t pal[ROM_WP_PAL_BANKS][16], uint16_t out[64]) {
+  if (!tiles || !pal || !out || !bs) return 0;
+  uint16_t tid = (uint16_t)(e & 0x3FFu);
+  if ((uint32_t)tid * 32u + 32u > tiles_bytes) return 0;
+  const uint16_t* bg = pal[ROM_WP_PAL_BANKS - 1];
+  const uint16_t* fg = pal[rom_wallpaper_pal_bank((e >> 12) & 0xF)];
+  uint16_t tone = bg[1];
+  /* 1) the base: the tiled bg tile, or (no table / past the sheet) the flat tone. A
+   * table-less wallpaper whose tone is 0 keeps the literal index-0 colour -- never paint
+   * black where the answer is unknown (City's tone IS black, but City is table-backed). */
+  uint16_t fill = tone;
+  if (!bs->cols && tone == 0) fill = fg[0];
+  for (int i = 0; i < 64; i++) out[i] = fill;
+  if (bs->cols && bs->rows) {
+    int pi = (ty % bs->rows) * bs->cols + (tx % bs->cols);
+    if (pi < bs->used) {
+      uint32_t boff = ((uint32_t)bs->first + (uint32_t)pi) * 32u;
+      if (boff + 32u <= tiles_bytes) {
+        uint16_t bp[16];
+        memcpy(bp, bg, sizeof bp);
+        bp[0] = tone;                               /* bg index 0 -> interior tone */
+        expand_px(tiles + boff, 0, 0, bp, 0, out);
+      }
+    }
+  }
+  /* 2) the tilemap's own tile over it, index 0 transparent */
+  expand_px(tiles + (uint32_t)tid * 32u, (e >> 10) & 1, (e >> 11) & 1, fg, 1, out);
   return 1;
 }

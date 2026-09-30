@@ -2887,7 +2887,7 @@ def run_b114_yard(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> 
     ROM flow, is `#ifndef PDNA_DELTA` entirely, since there is no SD to browse in the
     emulator; confirmed by direct probe, not assumed). app_yard_visitors_ok() is
     therefore ALWAYS false here (g_yard_visitors also defaults off), so every shot
-    below shows the "No visitors: register a Gen-3 ROM" panel row and NO invented
+    below shows the "Register a Gen-3 ROM for visitors" panel row (#298 wording) and NO invented
     visitor icons -- the brief's own sanctioned fallback ("visitors present ... else
     the 'no visitors' line"). The Gen-1 visitor cap (<=151, vs Gen 2/3's 251) is
     proven on the host instead (tests/host_yard_test.c), the same posture every other
@@ -2918,7 +2918,7 @@ def run_b114_yard(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> 
                              "empty -- dc_scene()'s background (the procedural scene "
                              "in this artless image) fills the screen where the two "
                              "text rows used to be; the panel's third row already "
-                             "reads 'No visitors: register a Gen-3 ROM' (no ROM is "
+                             "reads 'Register a Gen-3 ROM for visitors' (no ROM is "
                              "ever registered in this emulator build); the footer "
                              f"names the selected empty slot ('{'Boarder' if which == 'red' else 'Man'} "
                              "(empty)') since there is no icon in the yard to point at")
@@ -5784,7 +5784,8 @@ def run_y19_s3(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessio
     (b) SELECT+R -> redone + 'Redid: Box move'; (c) SELECT alone (press+release) still cycles the cursor mode, and
     SELECT in the summary still flips the portrait; (d) SELECT held + L does NOT also cycle the mode on release;
     (f) carrying a mon -> SELECT+L -> the T4 refusal; (g) the History screen: rows, recorded/SAVED, A-jump, B;
-    (e) a Bank drop (crossed) -> SELECT+L -> the floor refusal; History again shows the FLOOR and A stops at it;
+    (e) a Bank drop (crossed) -> SELECT+L -> the floor refusal "Can't undo Bank move" (#306; was "Box move"); History
+    again shows the FLOOR row named 'Bank move' and A stops at it;
     (h) the grid footer (short form SEL+L/R)."""
     gb_shots.assert_vehicle(rom, "ARTLESS")
     print("== #234 s3 (y19-s3): undo/redo chord, toasts, footers, History screen (--vsd) ==")
@@ -5982,15 +5983,15 @@ def run_y19_s3(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessio
     T("A", "(e) A: drop into the Bank -- a CROSSED step (the Bank copy lives in another file)", settle=500)
     T("DOWN", "(e) DOWN: off the bottom of the Bank -> back to the PC grid", settle=400)
     SHOT("back_in_pc", "(e) the PC grid again (the dropped mon is gone from its cell)")
-    CHORD("L", "(e) SELECT+L on the CROSSED step: the floor refusal (nothing patched)", tag="floor", claim=["another file"])
+    CHORD("L", "(e) SELECT+L on the CROSSED step: the floor refusal (nothing patched)", tag="floor", claim=["Bank move", "another file"], claim_absent=["Box move"])   # #306: the crossed drop is 'Bank move', not the plain drop's 'Box move'
     T("A", "(e) A dismisses", settle=300)
     T("DOWN", "(e) DOWN: off the tab row onto the box-name row (START opens the nav menu from the grid)", settle=100)
     s.tap("START", settle=200)
     s.tap("RIGHT", settle=20)
     s.press_n("DOWN", 8, settle=12)
-    T("A", "(e) History again: the newest row is the crossed step, tagged FLOOR", settle=300, claim=["HISTORY"])
+    T("A", "(e) History again: the newest row is the crossed step ('Bank move', #306), tagged FLOOR", settle=300, claim=["HISTORY", "Bank move"])
     T("DOWN", "(e) DOWN to the next older row", settle=30)
-    T("A", "(e) A: jump below the floor -> 'STOPPED AT A FLOOR' (undo cannot pass a crossed step)", settle=300)
+    T("A", "(e) A: jump below the floor -> 'STOPPED AT A FLOOR' naming 'Bank move' (#306; undo cannot pass a crossed step)", settle=300, claim=["Stopped at Bank move"], claim_absent=["Box move"])
     T("A", "(e) dismiss", settle=300)
     SHOT("history_after_stop", "(e) History after the refused jump: nothing moved")
     T("B", "(e) B out of History", settle=300)

@@ -650,9 +650,12 @@ bool app_anim_enabled(int kind);   /* true iff animations are on for ANIM_<kind>
 /* Draw the invented yard visitors? Only when the user asked for them (Settings >
  * Yard visitors) AND owns a registered ROM (so there is real icon art to draw
  * them with) AND that ROM's art is not switched off. A caller with this false
- * should say so on screen ("No visitors: register a Gen-3 ROM") rather than
- * silently show none. */
+ * should say WHICH leg failed on screen (gbd_visitors_note's three-way wording,
+ * BACKLOG #298) rather than silently show none. */
 bool app_yard_visitors_ok(void);
+/* BACKLOG #298: the Settings > Yard visitors switch ALONE (g_yard_visitors), so a screen can tell
+ * "switched off" from "no ROM" / "ROM art off" -- app_yard_visitors_ok() is the AND of all three. */
+bool app_yard_visitors_setting(void);
 
 /* The icon-store row a mon draws from (species+form, or the shared egg row 412).
  * Feed app_icons_hold()'s `rows` array with this. */
