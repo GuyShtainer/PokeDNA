@@ -62,6 +62,8 @@
 #include "pdna_legality.h" /* pdna_legality_show */
 #include "pdna_gen12.h"    /* GB import: mount a Gen-1/2 save read-only */
 #include "bank_down_convert.h" /* #271/y10: bank_down_dispatch -- the ONE Bank-native -> PC arm the TO GAME row shares with the drop */
+#include "img_stage.h"     /* #234 s0: pure-C funnel body (img_stage_sections / img_pc_edited / img_fold_pc) */
+#include "img_flags.h"     /* #234 s0: pure-C dirty-flag state machine (pc_unstaged / image_dirty / pc_moved) */
 #include "bank_cell.h"     /* bc_is_native -- native Bank cell interception (BACKLOG #150 S150-2) */
 #include "pdna_pk.h"     /* pdna_pk_export (.pk3) */
 #include "pdna_bank.h"   /* pdna_bank_show (bank = parallel boxes) */
@@ -1895,10 +1897,20 @@ static void grow_in(u16 col) {
   }
 }
 
-/* PC-storage dirty flag: set by deferred move-mode swaps, cleared by any successful
- * PC write (which flushes the whole g_pc) or an explicit revert. */
-static bool g_pc_dirty = false;
-static bool g_sb1_deferred = false;   /* g_save holds staged SaveBlock1 (Day-Care) edits not yet on disk */
+/* #234 slice 0: the old g_pc_dirty / g_sb1_deferred pair, split by what each really meant
+ * (see img_flags.h). image_dirty = g_save != card; pc_unstaged = g_pc != what g_save decodes;
+ * pc_moved = a PC box edit is pending (slice-0 compat for the arena refusal + SAVE FIRST).
+ * EWRAM_BSS: three bytes, not IWRAM scalars (IWRAM holds the stack). */
+static ImgFlags EWRAM_BSS g_img;
+
+/* THE staging funnel (design D2): every byte that reaches g_save's 14-section image goes through
+ * here -- commit_block/all/sb12, stage_sb1, dex registration, the box-drop eager stage and the
+ * finalize fold. `block` holds sections lo..hi contiguously (3,968 B each), addressed by section
+ * ID. Marks the image dirty. Battle-record import (sector 31, outside the 14 sections) is NOT
+ * routed here by design; it keeps its own commit. */
+static void app_stage_sections(int sect_lo, int sect_hi, const uint8_t* block) {
+  (void)img_stage_sections(&g_img, g_save, g_vinfo.slot, sect_lo, sect_hi, block);   /* pure C; journal seam lives there */
+}
 
 /* Backup policy for the verified write: 0 = new .bak/.bak1… each time (default),
  * 1 = single rolling .bak (overwrite), 2 = skip backup. Session-only (resets each
@@ -1942,12 +1954,12 @@ static bool app_save_finalize(void) {
    * SaveBlock1 half into g_save (app_stage_sb1) while its PC half lives only in g_pc; without
    * this fold an intervening SB1/SB2/dex commit would persist the SB1 half WITHOUT the PC half
    * -> a half-saved move (a lost or duplicated Pokemon). g_pc is the current intended PC state
-   * whenever it's dirty, so any write must carry it. (g_pc_dirty is cleared only on success,
-   * below — a failed write leaves it set so flush_on_exit still prompts.) */
-  if (g_pc_dirty)
-    for (int id = G3_SID_PKMN_STORAGE_START; id <= G3_SID_PKMN_STORAGE_END; id++)
-      gen3_write_full_section(g_save, g_vinfo.slot, id,
-                              g_pc + (uint32_t)(id - G3_SID_PKMN_STORAGE_START) * G3_SECTOR_DATA_SIZE);
+   * whenever it's ahead of g_save. #234 s0: box drops now stage eagerly at the drop, so this fold
+   * is defence in depth and finds nothing to do; it is keyed on pc_unstaged (g_pc != g_save) and
+   * NEVER on "the image is dirty" -- with the arena lending g_pc out its bytes are foreign, and a
+   * map-warp commit would otherwise write tileset bytes into every box. (The flags are cleared
+   * only on success, below — a failed write leaves them set so flush_on_exit still prompts.) */
+  (void)img_fold_pc(&g_img, g_save, g_vinfo.slot, g_pc);
   int fail = -1;
   if (!gen3_verify_full_checksums(g_save, g_vinfo.slot, &fail)) {
     /* SAY WHICH SECTION. "Image failed checksums" is unactionable: sections 0..4 are the
@@ -1981,8 +1993,7 @@ static bool app_save_finalize(void) {
   rmbl_fire(RCUE_SAVE);
   grow_in(UI_OK);
   msg_wait("SAVED", UI_OK, "Flash written + verified.", "No backup in this build.");
-  g_sb1_deferred = false;      /* same bookkeeping as the SD path: a full write */
-  g_pc_dirty     = false;      /* flushes staged daycare + PC edits */
+  imgf_clear(&g_img);          /* same bookkeeping as the SD path: a full write flushes everything staged */
   return true;
 #else
   log_line("=== edit commit -> %s (backup mode %d) ===", g_path, g_backup_mode);
@@ -2049,8 +2060,7 @@ static bool app_save_finalize(void) {
   snd_save();
   grow_in(UI_OK);                                  /* brief success flourish */
   msg_wait("SAVED", UI_OK, "Edit written + verified.", "Original backed up first.");
-  g_sb1_deferred = false;                           /* a full write flushes any staged daycare edits */
-  g_pc_dirty = false;                               /* and the folded-in PC edits are now on disk */
+  imgf_clear(&g_img);                               /* a full write flushes every staged edit (Day-Care, dex, folded PC) */
   return true;
 #endif /* PDNA_DELTA */
 }
@@ -2058,9 +2068,7 @@ static bool app_save_finalize(void) {
 /* Persist `block` (sections [lo..hi]) into the in-RAM image, then finalize. The
  * single safe write path shared by the full editor and the PC-menu quick edits. */
 static bool app_commit_block(int sect_lo, int sect_hi, uint8_t* block) {
-  for (int id = sect_lo; id <= sect_hi; id++)
-    gen3_write_full_section(g_save, g_vinfo.slot, id,
-                            block + (uint32_t)(id - sect_lo) * G3_SECTOR_DATA_SIZE);
+  app_stage_sections(sect_lo, sect_hi, block);
   return app_save_finalize();
 }
 
@@ -2089,13 +2097,10 @@ static bool app_commit_all(void) {
     icon_store_borrow(false);
     if (app_arena_held()) app_arena_release();
   }
-  gen3_write_full_section(g_save, g_vinfo.slot, 0, g_sb2);
-  for (int id = 1; id <= 4; id++)
-    gen3_write_full_section(g_save, g_vinfo.slot, id, g_sb1 + (uint32_t)(id - 1) * G3_SECTOR_DATA_SIZE);
-  for (int id = G3_SID_PKMN_STORAGE_START; id <= G3_SID_PKMN_STORAGE_END; id++)
-    gen3_write_full_section(g_save, g_vinfo.slot, id,
-                            g_pc + (uint32_t)(id - G3_SID_PKMN_STORAGE_START) * G3_SECTOR_DATA_SIZE);
-  g_pc_dirty = false;
+  app_stage_sections(0, 0, g_sb2);
+  app_stage_sections(1, 4, g_sb1);
+  app_stage_sections(G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, g_pc);
+  imgf_pc_folded(&g_img);              /* g_pc is now in g_save; the write below persists it */
   return app_save_finalize();
 }
 
@@ -2106,14 +2111,20 @@ bool app_commit_sb1(void) { return app_commit_block(1, 4, g_sb1); }
 /* SaveBlock2 + SaveBlock1 (sections 0..4) in ONE verified write — for edits spanning both
  * (trainer card identity+money, the dex). One backup + one write instead of two. */
 bool app_commit_sb12(void) {
-  gen3_write_full_section(g_save, g_vinfo.slot, 0, g_sb2);
-  for (int id = 1; id <= 4; id++)
-    gen3_write_full_section(g_save, g_vinfo.slot, id, g_sb1 + (uint32_t)(id - 1) * G3_SECTOR_DATA_SIZE);
+  app_stage_sections(0, 0, g_sb2);
+  app_stage_sections(1, 4, g_sb1);
   return app_save_finalize();
 }
 
-void app_mark_pc_dirty(void) { g_pc_dirty = true; }
-bool app_pc_dirty(void)      { return g_pc_dirty; }
+/* A PC box edit reached g_pc (move-mode drop, release, reconcile). #234 s0: stage sections 5..13
+ * through the funnel AT THE DROP, so g_save already carries it (design fix 2) and the exit / any
+ * later commit only has to write. When it cannot stage (no parsed Gen-3 save, or the arena has
+ * lent g_pc out -- its bytes are then foreign) it records pc_unstaged instead, exactly the old
+ * "g_pc is the truth, fold it later" behaviour. */
+void app_mark_pc_dirty(void) {
+  bool can_stage = g_vinfo.valid && !app_arena_held();
+  img_pc_edited(&g_img, g_save, g_vinfo.slot, g_pc, can_stage);
+}
 
 /* ---- borrowed EWRAM arena (see pdna_app.h for why g_pc is the donor) -------- */
 static bool g_arena_held = false;
@@ -2308,7 +2319,7 @@ uint8_t* app_arena_acquire(uint32_t need) {
   /* Unsaved box moves live ONLY in g_pc — handing it out would destroy them. The
    * caller must tell the user to save first; it must not "helpfully" commit here,
    * because a PC write is a user-visible destructive action. */
-  if (g_pc_dirty) return NULL;
+  if (!imgf_arena_ok(&g_img)) return NULL;
   g_arena_held = true;
   return g_pc;
 }
@@ -2586,9 +2597,7 @@ void app_pc_release_slot(int box, int slot, const uint8_t* id8) {
  * staged edits survive screen changes; any real commit (or the exit flush) writes
  * the whole image, flushing them. Returns true (staging cannot fail). */
 static bool app_stage_sb1(void) {
-  for (int id = 1; id <= 4; id++)
-    gen3_write_full_section(g_save, g_vinfo.slot, id, g_sb1 + (uint32_t)(id - 1) * G3_SECTOR_DATA_SIZE);
-  g_sb1_deferred = true;
+  app_stage_sections(1, 4, g_sb1);      /* marks the image dirty: flush_on_exit will commit */
   return true;
 }
 
@@ -2605,8 +2614,7 @@ bool app_commit_pc(void)  {
     return false;
   }
   bool ok = app_commit_block(G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, g_pc);
-  if (ok) g_pc_dirty = false;                       /* the write persisted everything */
-  return ok;
+  return ok;                                        /* success: finalize cleared the flags (the write persisted everything) */
 }
 
 /* Register a record's species in the loaded save's Pokédex (seen + owned), in
@@ -2714,10 +2722,8 @@ static void __attribute__((noinline)) app_xfer_pid_rekey(const XferRekeyPlan* pl
  * whole image) persists the dex alongside the PC moves. Idempotent / egg-safe. */
 static void app_register_dex_deferred(const uint8_t* rec, bool is_party) {
   if (!app_dex_register_rec(rec, is_party)) return;          /* unchanged / egg / already known */
-  gen3_write_full_section(g_save, g_vinfo.slot, 0, g_sb2);
-  for (int id = 1; id <= 4; id++)
-    gen3_write_full_section(g_save, g_vinfo.slot, id, g_sb1 + (uint32_t)(id - 1) * G3_SECTOR_DATA_SIZE);
-  g_sb1_deferred = true;                                     /* flush_on_exit will commit */
+  app_stage_sections(0, 0, g_sb2);
+  app_stage_sections(1, 4, g_sb1);                           /* marks the image dirty: flush_on_exit will commit */
 }
 /* BoxSource hook for the PC: a mon just landed in the in-save PC -> auto-register its dex. */
 static void pcsrc_note_add(const uint8_t* rec) { app_register_dex_deferred(rec, false); }
@@ -3637,7 +3643,7 @@ static void app_register_rom(void) {
      * EWRAM arena is held (a Gen-1/2 session's whole visit, app_arena_held()), so a
      * false return here is either an honest PC-dirty refusal or the user simply
      * backing out of the picker -- no separate "NOT HERE" case is left to report. */
-    if (g_pc_dirty) msg_wait("SAVE FIRST", UI_WARN, "Unsaved box moves pending.", "Commit, then retry.");
+    if (!imgf_arena_ok(&g_img)) msg_wait("SAVE FIRST", UI_WARN, "Unsaved box moves pending.", "Commit, then retry.");
     return;
   }
   /* g_rom_path's slots are GB_ROM_PATH_MAX(128) wide (E3 review item 3) -- refuse up
@@ -3769,7 +3775,7 @@ static void app_register_gb_rom(uint8_t gen) {
     /* BACKLOG #55: same fallback as app_register_rom() above -- app_pick_gb_rom()
      * now works from inside a Gen-1/2 session too (mon_decomp-backed picker), so a
      * false return here is either an honest PC-dirty refusal or a plain user cancel. */
-    if (g_pc_dirty) msg_wait("SAVE FIRST", UI_WARN, "Unsaved box moves pending.", "Commit, then retry.");
+    if (!imgf_arena_ok(&g_img)) msg_wait("SAVE FIRST", UI_WARN, "Unsaved box moves pending.", "Commit, then retry.");
     return;
   }
   /* app_gb_rom_path_set() stores into GB_ROM_PATH_MAX(128) slots, not PATH_MAX(256) --
@@ -9445,6 +9451,7 @@ static bool rec_import(void) {
   if (!app_confirm("Import this record?", "Replaces the save's one.")) { f_close(&f); snd_back(); return false; }
 
   f_lseek(&f, 0);
+  /* g_save-write-ok: battle-record import: sector 31 sits OUTSIDE the 14-section image (D1/fix 1); own commit */
   FRESULT fr = f_read(&f, g_save + G3_REC_SECTOR_OFF, G3_SECTOR_SIZE, &br);
   f_close(&f);
   if (fr != FR_OK || br != G3_SECTOR_SIZE) {
@@ -9452,6 +9459,7 @@ static bool rec_import(void) {
     FIL s2; UINT br2 = 0;
     if (f_open(&s2, g_path, FA_READ) == FR_OK) {
       f_lseek(&s2, G3_REC_SECTOR_OFF);
+      /* g_save-write-ok: same record-import read (second try) */
       f_read(&s2, g_save + G3_REC_SECTOR_OFF, G3_SECTOR_SIZE, &br2);
       f_close(&s2);
     }
@@ -10056,13 +10064,36 @@ static BoxSource pc_box_source(void) {
   return s;
 }
 
-/* Leaving the open save: if ANY deferred edits are pending — box moves (g_pc) and/or
- * Day-Care moves (staged into g_save) — ask ONCE and save or discard them together, so
- * a cross-storage move (Day-Care<->PC) can never be half-saved. A writes the whole image
- * in one verified pass (app_commit_pc folds in the staged Day-Care sections); B discards
+/* The exit-prompt flow (flush_on_exit asks; app_discard_staged below is its B arm): if ANY
+ * staged edits are pending — box moves and/or Day-Care moves, all in g_save since #234 s0 —
+ * ask ONCE and save or discard them together, so a cross-storage move (Day-Care<->PC) can
+ * never be half-saved. A writes the whole image in one verified pass; B discards
  * everything — the on-disk save was never touched and we're returning to the browser. */
+/* B at the exit prompt: throw every staged edit away. #234 s0: box drops now stage into g_save
+ * at the drop, so the old revert (re-derive g_pc from g_save) would KEEP the moves the user just
+ * declined -- the untouched card image is re-read first, then g_pc is re-derived from it. A read
+ * failure leaves the (unwritten) staged image in RAM and says so in the log; the caller returns
+ * to the browser and the next open re-reads the file anyway. */
+static void app_discard_staged(void) {
+  uint32_t rsz = 0;
+  bool ok;
+#ifdef PDNA_DELTA
+  /* g_save-write-ok: discard: restores the untouched card image over the staged one */
+  ok = flashsave_read(g_save, G3_SAVE_FILE_SIZE);
+#else
+  rmbl_pause();
+  /* g_save-write-ok: discard: restores the untouched card image over the staged one */
+  ok = sf_read_full(g_path, g_save, G3_SAVE_FILE_SIZE, &rsz) == SF_OK;
+  rmbl_resume();
+#endif
+  (void)rsz;                                            /* size already known from the load */
+  if (!ok) log_line("discard: re-read failed - g_save may be partial; RAM only, never written (browser next, reload on open)");
+  gen3_read_pc_storage(g_save, g_vinfo.slot, g_pc);     /* revert PC moves */
+  imgf_clear(&g_img);                                   /* nothing staged, nothing pending */
+}
+
 static void flush_on_exit(void) {
-  if (!app_pc_dirty() && !g_sb1_deferred) {
+  if (!imgf_exit_prompt(&g_img)) {
     app_xfer_promote();                    /* BACKLOG #150 S150-8 decision 9: the PC was already saved */
     int kept = pdna_bank_flush_deletions();
     if (kept) {
@@ -10071,21 +10102,20 @@ static void flush_on_exit(void) {
     }
     return;
   }
-  if (app_confirm("Save changes?", "Save the moved Pokemon?")) {
+  if (app_confirm("Save changes?", imgf_exit_line(&g_img))) {
     /* GATE the Bank-source deletion on the PC write SUCCEEDING. app_commit_pc() can fail (EZ
      * writes have no retry / verify mismatch / backup-full); on failure the moved mons live only
      * in volatile g_pc and are NOT on the .sav, so deleting their Bank originals would LOSE them
      * (a Bank->PC move — the multi-select chunk amplifies this to a whole box at once). Flush the
      * deletions ONLY after the destination (PC) is verified on disk -> worst case a recoverable
-     * duplicate (mons kept in the Bank), never a loss. g_pc_dirty stays set on failure, so the
+     * duplicate (mons kept in the Bank), never a loss. the flags stay set on failure, so the
      * moves are still pending and can be retried.
      * BACKLOG #175 (S150-8d): this whole success/failure pair is now app_xfer_save_now(),
      * factored out so the tree has ONE promotion+flush chain and not two -- a reviewer can
      * diff this call against the helper's own body rather than two hand-kept copies. */
     (void)app_xfer_save_now();
   } else {
-    gen3_read_pc_storage(g_save, g_vinfo.slot, g_pc);   /* revert PC moves */
-    g_pc_dirty = false; g_sb1_deferred = false;          /* drop staged Day-Care (disk untouched) */
+    app_discard_staged();                                /* revert PC moves + drop staged Day-Care (disk untouched) */
     app_xfer_pending_undo();                             /* decision 9: the transfer never happened */
     pdna_bank_clear_deletions();                         /* move cancelled -> keep the Bank originals */
   }
@@ -11402,8 +11432,7 @@ static void view_save(const char* path) {
   { static bool first = true;
     perf_span_begin(first ? "boot" : "save");
     first = false; }
-  g_pc_dirty = false;                          /* fresh save: no pending moves */
-  g_sb1_deferred = false;
+  imgf_clear(&g_img);                          /* fresh save: no pending moves */
   strncpy(g_path, path, sizeof(g_path) - 1);
   g_path[sizeof(g_path) - 1] = 0;
   gb_art_session_reset();  /* new save -- the "beside the save" fallback forgets the old one */
@@ -11430,6 +11459,7 @@ static void view_save(const char* path) {
 #ifdef PDNA_DELTA
   /* Emulator build: `path` is ignored — the save is this ROM's own flash chip. */
   (void)path;
+  /* g_save-write-ok: loader: fills the whole image from flash */
   sz = flashsave_read(g_save, G3_SAVE_FILE_SIZE) ? (uint32_t)G3_SAVE_FILE_SIZE : 0;
   if (!sz) err = "flash save unreadable";
   /* ...unless the chip has nothing usable on it and a save was fused into the image, in
@@ -11458,6 +11488,7 @@ static void view_save(const char* path) {
     bool g3_from_fused_sav = false;
     uint32_t fsz = 0;
     if (!flash_ok && fused_sav_present(&fsz) && fsz == (uint32_t)G3_SAVE_FILE_SIZE &&
+        /* g_save-write-ok: loader: fills the whole image from the fused ROM */
         fused_sav_read(g_save, fsz)) {
       sz = fsz; err = 0;
       g3_from_fused_sav = true;
@@ -11478,6 +11509,7 @@ static void view_save(const char* path) {
         if (xfer_plant_converted(app_met_game(), r)) clip_copy_from(&g_clip, r, false); }
 #endif
     } else if (!flash_ok && fused_sav_present(&fsz) && pdna_gen12_size_is_gb(fsz) &&
+               /* g_save-write-ok: loader: fills the whole image from the fused ROM */
                fused_sav_read(g_save, fsz)) {
       /* SCREENSHOT VEHICLE ONLY (docs/HANDOFF.md 2026-09-05): the GB fork below this
        * #else is compiled OUT of every emulator build, because the real path reads a
@@ -11574,6 +11606,7 @@ static void view_save(const char* path) {
                                             * resolve THIS save's own paired ROM instead of
                                             * guessing by generation alone */
         any_picked = true;
+        /* g_save-write-ok: Game Boy session: g_save is that GB battery image (never a Gen-3 image) */
         memcpy(g_save, base, psz);
         memset(&g_vinfo, 0, sizeof g_vinfo);
         g_save_size = psz;
@@ -11630,6 +11663,7 @@ static void view_save(const char* path) {
         fused_gb_set_active_save(pick);   /* BACKLOG #98: so fused_gb_rom()/fused_gb_loc()
                                             * resolve THIS save's own paired ROM instead of
                                             * guessing by generation alone */
+        /* g_save-write-ok: Game Boy session: g_save is that GB battery image (never a Gen-3 image) */
         memcpy(g_save, base, psz);
         memset(&g_vinfo, 0, sizeof g_vinfo);
         g_save_size = psz;
@@ -11663,6 +11697,7 @@ static void view_save(const char* path) {
         pdna_gen12_show_image(path, g_save, psz, g_save + GB12_PRISTINE_OFF, 3);
         /* Whatever the GB mount returned, g_save now holds GB bytes -- restore the
          * Gen-3 save before the picker (or the fallthrough) reads g_save again. */
+        /* g_save-write-ok: loader: restores the Gen-3 image after the GB session borrowed g_save */
         if (flash_ok) flashsave_read(g_save, G3_SAVE_FILE_SIZE);
         else           fused_sav_read(g_save, fsz);
       }
@@ -11677,6 +11712,7 @@ static void view_save(const char* path) {
    * (rmbl_pause ends the cue cleanly) rather than relying on the driver flag alone. */
   unsigned long rt0 = flashcartio_read_retries, rf0 = flashcartio_read_failures;
   rmbl_pause();
+  /* g_save-write-ok: loader: fills the whole image from the card */
   SfStatus st = sf_read_full(path, g_save, G3_SAVE_FILE_SIZE, &sz);
   rmbl_resume();
   if (flashcartio_read_retries != rt0 || flashcartio_read_failures != rf0)
