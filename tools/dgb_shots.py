@@ -4495,6 +4495,19 @@ def _served_by(lines: list, gen: int) -> str:
             "portrait never went through a first sprite open this session)")
 
 
+def _floor_text(served: str, bps: float) -> str:
+    """BACKLOG #291: the KB/s "floor" figure only means something when the source was a real SCAN
+    (a TABLE/CACHE hit's frames are a handful of verify reads, not a scan rate) -- empty otherwise."""
+    if not served.startswith("SCAN"):
+        return ""
+    return f", {bps:.0f} B/s ({bps / 1024:.1f} KB/s) floor"
+
+
+def _caption_floor(served: str, bps: float) -> str:
+    """The caption half of #291's floor rule: ', N.N KB/s floor' only for a SCAN, else ''."""
+    return f", {bps / 1024:.1f} KB/s floor" if served.startswith("SCAN") else ""
+
+
 def _measure_b185_auto(core_mod, image_mod, rom: Path, down_n: int,
                        label: str, gb_art_lines: "list | None" = None) -> tuple[int, bytes]:
     """BACKLOG #185 D4 (review fix): measures the box-grid cold-locate cost
@@ -4581,28 +4594,30 @@ def run_b185_cold_locate(core_mod, image_mod, noloc_image: Path,
     frames1, px1 = _measure_b185_auto(core_mod, image_mod, noloc_image, 1, "gen1", lines1)
     secs1 = frames1 / GBA_FPS
     bps1 = 0x100000 / secs1     # Red.gb is exactly 1 MiB (rom_gbsprite.c's own header check)
-    print(f"  Gen 1 (Red.gb, 1,048,576 B)   : {frames1} frames, {secs1:.2f} s emulated, "
-          f"{bps1:.0f} B/s ({bps1/1024:.1f} KB/s) floor")
-    print(f"    served by: {_served_by(lines1, 1)}")
+    served1 = _served_by(lines1, 1)
+    print(f"  Gen 1 (Red.gb, 1,048,576 B)   : {frames1} frames, {secs1:.2f} s emulated"
+          + _floor_text(served1, bps1))
+    print(f"    served by: {served1}")
     name1 = "dgb_b185_gen1_coldscan.png"
     Image.frombytes("RGB", (240, 160), px1).save(out_dir / name1)
     cap1 = (f"#185 Step 1: Red.sav box grid, cold locate() (no .loc seed) -- "
-            f"{frames1} frames ({secs1:.2f} s emulated, {bps1/1024:.1f} KB/s floor) "
-            f"to first stable portrait paint")
+            f"{frames1} frames ({secs1:.2f} s emulated"
+            f"{_caption_floor(served1, bps1)}) to first stable portrait paint, served by {served1}")
     ok.append((name1, cap1, {}))
     print(f"  [ok]   {name1:32s} {cap1}")
 
     frames2, px2 = _measure_b185_auto(core_mod, image_mod, noloc_image, 3, "gen2", lines2)
     secs2 = frames2 / GBA_FPS
     bps2 = 0x200000 / secs2     # Crystal.gbc is exactly 2 MiB
-    print(f"  Gen 2 (Crystal.gbc, 2,097,152 B): {frames2} frames, {secs2:.2f} s emulated, "
-          f"{bps2:.0f} B/s ({bps2/1024:.1f} KB/s) floor")
-    print(f"    served by: {_served_by(lines2, 2)}")
+    served2 = _served_by(lines2, 2)
+    print(f"  Gen 2 (Crystal.gbc, 2,097,152 B): {frames2} frames, {secs2:.2f} s emulated"
+          + _floor_text(served2, bps2))
+    print(f"    served by: {served2}")
     name2 = "dgb_b185_gen2_coldscan.png"
     Image.frombytes("RGB", (240, 160), px2).save(out_dir / name2)
     cap2 = (f"#185 Step 1: Crystal.sav box grid, cold locate() (no .loc seed) -- "
-            f"{frames2} frames ({secs2:.2f} s emulated, {bps2/1024:.1f} KB/s floor) "
-            f"to first stable portrait paint")
+            f"{frames2} frames ({secs2:.2f} s emulated"
+            f"{_caption_floor(served2, bps2)}) to first stable portrait paint, served by {served2}")
     ok.append((name2, cap2, {}))
     print(f"  [ok]   {name2:32s} {cap2}")
 

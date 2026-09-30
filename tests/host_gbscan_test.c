@@ -149,18 +149,19 @@ typedef struct {
   uint32_t last_big_end;
   int      fail_at;          /* >=0: return false from this call on, forever */
   int      calls_after_fail;
-  int      poison_checksum;  /* BACKLOG #185 F5: flip one byte of the header's own
-                              * global_checksum field (0x14E) in flight so
-                              * known_rom_lookup() MISSES a corpus ROM that would
-                              * otherwise hit the F5 fast-path table -- forces the
-                              * real scan to run, for tests that need to observe
-                              * scan_multi's own behaviour (T1/T2/T4/T5, the
-                              * read-failure-unwind test). The header CHECKSUM
-                              * bytes themselves are never read by parse_header()'s
-                              * own boot-logo/header-checksum validation (those
-                              * cover 0x104-0x14D), so flipping 0x14E cannot make a
-                              * genuinely valid ROM fail to open -- only the F5
-                              * table match, which is exactly the point. */
+  int      force_scan;       /* BACKLOG #291: force known_rom_lookup() to MISS a corpus ROM
+                              * that would otherwise hit the F5 fast-path table, so the real
+                              * scan runs (T1/T2/T4/T5, the read-failure-unwind test, the D2
+                              * table-equals-scanner re-derivation). The table is keyed on
+                              * title + version ONLY now (#291), so the flip is the mask-ROM
+                              * VERSION byte 0x14C, with the header checksum 0x14D re-fixed in
+                              * flight (parse_header() validates 0x134-0x14D, so a bare flip
+                              * would make the ROM fail to open instead of miss the table). */
+  int      poison_checksum;  /* BACKLOG #291: flip the GLOBAL checksum 0x14E in flight -- the
+                              * "patched ROM with an unfixed checksum" case. The re-keyed table
+                              * must STILL hit (src == TABLE, verified by try_loc). */
+  uint32_t corrupt_off; uint8_t corrupt_xor;   /* #291: flip one ROM byte in flight (0 = off) */
+  uint8_t  orig_ver, orig_hdrchk;   /* the unflipped 0x14C / 0x14D, read once by rd_open() */
 } Rd;
 
 static bool rd_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
@@ -177,6 +178,13 @@ static bool rd_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
   if (fread(dst, 1, len, r->f) != len) return false;
   if (r->poison_checksum && 0x14E >= off && 0x14E < off + len)
     ((uint8_t*)dst)[0x14E - off] ^= 0xFF;
+  if (r->corrupt_off && r->corrupt_off >= off && r->corrupt_off < off + len)
+    ((uint8_t*)dst)[r->corrupt_off - off] ^= r->corrupt_xor;
+  if (r->force_scan) {
+    if (0x14C >= off && 0x14C < off + len) ((uint8_t*)dst)[0x14C - off] = (uint8_t)(r->orig_ver ^ 1u);
+    if (0x14D >= off && 0x14D < off + len)
+      ((uint8_t*)dst)[0x14D - off] = (uint8_t)(r->orig_hdrchk - ((r->orig_ver ^ 1u) - r->orig_ver));
+  }
   return true;
 }
 
@@ -184,7 +192,11 @@ static int rd_open(Rd* r, const char* name) {
   char p[256]; snprintf(p, sizeof p, "%s%s", ROMS, name);
   memset(r, 0, sizeof *r); r->fail_at = -1;
   r->f = fopen(p, "rb"); if (!r->f) return 0;
-  fseek(r->f, 0, SEEK_END); r->size = (uint32_t)ftell(r->f); fseek(r->f, 0, SEEK_SET);
+  fseek(r->f, 0, SEEK_END); r->size = (uint32_t)ftell(r->f);
+  uint8_t h[2] = {0, 0};
+  if (fseek(r->f, 0x14C, SEEK_SET) != 0 || fread(h, 1, 2, r->f) != 2) { fclose(r->f); return 0; }
+  r->orig_ver = h[0]; r->orig_hdrchk = h[1];
+  fseek(r->f, 0, SEEK_SET);
   return 1;
 }
 
@@ -204,7 +216,7 @@ static void part_b_rom(const char* name, uint8_t gen, const Want* want, int has_
    * path. Poisoning here forces every open in this function through the real
    * scan, unchanged in meaning from before F5 existed; part_b_f5() below is the
    * SEPARATE, UNPOISONED test that the fast path itself actually engages. */
-  r.poison_checksum = 1;
+  r.force_scan = 1;
   char who[48]; snprintf(who, sizeof who, "B %s", name);
   static const uint32_t caps[] = { 2048, 8192, 65536 };
   RomGbSpriteLoc sl[3]; RomGbIconLoc il[3]; RomGbUiLoc ul[3];
@@ -521,11 +533,11 @@ static void part_b_f5_one(const char* name, uint8_t gen, const Want* want) {
     RomGbSpriteLoc from_table; rom_gbsprite_save_loc(&gs, &from_table);
     Rd r2;
     if (rd_open(&r2, name)) {
-      r2.poison_checksum = 1;
+      r2.force_scan = 1;
       RomGbSprite gs2;
       int ok2 = rom_gbsprite_open(&gs2, rd_read, &r2, r2.size, b_scratch, 8192, GB_ROM_NONE);
       chk(who, "D2: the poisoned re-open (forced scan) also locates the ROM", ok2);
-      if (ok2) chk(who, "#205: the poisoned re-open reports src == SCAN", gs2.src == ROM_GBSPRITE_SRC_SCAN);
+      if (ok2) chk(who, "#205: the forced-scan (version-flipped) re-open reports src == SCAN", gs2.src == ROM_GBSPRITE_SRC_SCAN);
       if (ok2) {
         RomGbSpriteLoc from_scan; rom_gbsprite_save_loc(&gs2, &from_scan);
         from_scan.id_hash = from_table.id_hash;   /* the one field the table never claims */
@@ -534,6 +546,31 @@ static void part_b_f5_one(const char* name, uint8_t gen, const Want* want) {
       }
       r2.fail_at = -1;
       fclose(r2.f);
+    }
+  }
+
+  /* BACKLOG #291: the table is keyed on title + version ONLY, so a patched ROM whose global
+   * checksum (0x14E/F) was NOT refixed still hits it -- src == TABLE, same located offsets, at
+   * the fast-path read cost. Safe because try_loc() verifies every located table (g1_bs_verify
+   * /g1_mew_verify or g2_bd/pp/pal verify) before use; the WRONG-ROM half of that claim is
+   * pinned by part_b_f5_wrongrom() below. (Was: this poison made the open run the full scan.) */
+  if (ok) {
+    RomGbSpriteLoc from_table; rom_gbsprite_save_loc(&gs, &from_table);
+    Rd r4;
+    if (rd_open(&r4, name)) {
+      r4.poison_checksum = 1;
+      RomGbSprite gs4;
+      int ok4 = rom_gbsprite_open(&gs4, rd_read, &r4, r4.size, b_scratch, 8192, GB_ROM_NONE);
+      chk(who, "#291: a checksum-poisoned (unfixed 0x14E) ROM still opens", ok4);
+      if (ok4) {
+        chk(who, "#291: ... and is served by the TABLE (with verify), not a SCAN",
+            gs4.src == ROM_GBSPRITE_SRC_TABLE);
+        chk(who, "#291: ... at fast-path read cost", r4.calls < (gen == 1 ? 200u : 600u));
+        RomGbSpriteLoc l4; rom_gbsprite_save_loc(&gs4, &l4);
+        l4.id_hash = from_table.id_hash;   /* header hash differs by the flipped byte */
+        chk(who, "#291: ... with the same located offsets", memcmp(&from_table, &l4, sizeof l4) == 0);
+      }
+      fclose(r4.f);
     }
   }
 
@@ -550,6 +587,21 @@ static void part_b_f5_one(const char* name, uint8_t gen, const Want* want) {
   fclose(r.f);
 }
 
+/* BACKLOG #291 false-positive surface: with the table keyed on title + version only, a DIFFERENT ROM
+ * carrying Red's title/version (a hack, a bad dump) gets the Red table offered as a candidate. It must
+ * be caught by try_loc()'s verify and never served as TABLE. Modelled by corrupting one byte of Red's
+ * base-stats table in flight (the byte romgbsprite_test already uses as its "wrong table" poison). */
+static void part_b_f5_wrongrom(void) {
+  Rd r;
+  if (!rd_open(&r, "Red.gb")) { printf("  Red.gb: SKIP (dump not present)\n"); return; }
+  r.corrupt_off = 0x383DEu + 10u; r.corrupt_xor = 0x11u;   /* Red's known base_stats + BASE_PIC_SIZE */
+  RomGbSprite gs;
+  int ok = rom_gbsprite_open(&gs, rd_read, &r, r.size, b_scratch, 8192, GB_ROM_NONE);
+  chk("B F5", "#291: same title+version but a corrupted table is NOT served from the TABLE (verify rejects it)",
+      !(ok && gs.src == ROM_GBSPRITE_SRC_TABLE));
+  fclose(r.f);
+}
+
 static void part_b_f5(void) {
   static const Want red     = { 0x383DE, 0x0425B, 0, 0, 0 };
   static const Want yellow  = { 0x383DE, 0,       0, 0, 0 };
@@ -559,6 +611,7 @@ static void part_b_f5(void) {
   part_b_f5_one("Yellow.gb",   1, &yellow);
   part_b_f5_one("Gold.gbc",    2, &gold);
   part_b_f5_one("Crystal.gbc", 2, &crystal);
+  part_b_f5_wrongrom();
 }
 
 /* ------------------------------------------------------------------ part C */

@@ -644,11 +644,16 @@ typedef struct {
 
 #include "rom_gbsprite_known.h"
 
-static const RomGbSpriteLoc* known_rom_lookup(const char* title, uint8_t version,
-                                              uint16_t global_checksum) {
+/* BACKLOG #291: keyed on title + version ONLY. The global checksum (0x14E/F) used to be part of the key,
+ * so ANY byte patch that did not refix it (the common patched-ROM case) missed the table and paid the
+ * full cold scan. That key bought no safety: every candidate returned here goes through try_loc()'s
+ * per-table verify (g1_bs_verify/g1_mew_verify or g2_bd+pp+pal verify) before use, so a DIFFERENT ROM
+ * sharing the title+version is rejected there and falls through to the scan. The table's checksum
+ * column is kept in the generated data (documenting the dump each row came from) but is not compared. */
+static const RomGbSpriteLoc* known_rom_lookup(const char* title, uint8_t version) {
   for (uint32_t i = 0; i < sizeof k_known_gbsprite / sizeof k_known_gbsprite[0]; i++) {
     const RomGbSpriteKnown* k = &k_known_gbsprite[i];
-    if (k->version == version && k->global_checksum == global_checksum &&
+    if (k->version == version &&
         memcmp(k->title, title, sizeof k->title) == 0)
       return &k->loc;
   }
@@ -666,7 +671,7 @@ int rom_gbsprite_open(RomGbSprite* gs, GbReadFn read, void* ctx, uint32_t size,
   /* BACKLOG #185 F5: a known ROM's own table entry, verified before use, skips
    * the whole-ROM scan entirely -- checked before locate() so a hit costs
    * only the handful of *_verify reads, not one scan byte. */
-  if (try_loc(gs, known_rom_lookup(gs->title, gs->version, gs->global_checksum), gen_hint)) {
+  if (try_loc(gs, known_rom_lookup(gs->title, gs->version), gen_hint)) {
     gs->src = ROM_GBSPRITE_SRC_TABLE;
     return 1;
   }
