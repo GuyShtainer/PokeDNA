@@ -219,6 +219,11 @@ int main(void) {
   T("ITEM  A take  SEL B", 80);
   T("A menu  SEL  L/R  B", 80);
   T("A menu  UP  SEL  B", 80);
+  T("A menu  SEL+L/R undo", 80);   /* #234 s3: the PC grid footer while the undo chord is live */
+
+  printf("\n== history screen (#234 s3): pdna_hist.c footer, drawn at x=4 ==\n");
+  T("A jump  START newest  B back", 4);
+  T("B back", 4);
 
   printf("\n== summary screen (#25) ==\n");
   /* pdna_summary.c footers, drawn at x=4 — the MACROS the screen draws, not copies of

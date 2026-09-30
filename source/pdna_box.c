@@ -4570,7 +4570,8 @@ static void chord_refuse(const char* title, const char* l1, const char* l2) {
   boxoam_resume();
 }
 
-static bool __attribute__((noinline)) box_chord_action(int ev, char toast[26], bool* need_full) {
+enum { BCA_NONE = 0, BCA_CHANGED = 1, BCA_HISTORY = 2 };   /* nothing / the image changed (re-fetch) / open the History screen */
+static int __attribute__((noinline)) box_chord_action(int ev, char toast[26], bool* need_full) {
   char name[25], l1[40];
   const bool redo = (ev == CHORD_REDO);
   const char* verb = redo ? "REDO" : "UNDO";
@@ -4579,18 +4580,18 @@ static bool __attribute__((noinline)) box_chord_action(int ev, char toast[26], b
     snd_deny();
     chord_refuse(verb, "You are carrying something.", redo ? "Put it down, then redo." : "Put it down, then undo.");
     *need_full = true; s_oam_reload = true;
-    return false;
+    return BCA_NONE;
   }
   rc = app_undo_redo(redo ? 1 : -1, name);
   if (rc == AUR_DONE) {
     snd_ok();
     siprintf(toast, redo ? "Redid: %.17s" : "Undid: %.17s", name);
     s_oam_reload = true; *need_full = true;
-    return true;                                             /* the image changed under the grid: the caller re-fetches the records */
+    return BCA_CHANGED;                                      /* the image changed under the grid: the caller re-fetches the records */
   }
   snd_deny();
-  if (rc == AUR_NOTHING) { siprintf(toast, redo ? "Nothing to redo" : "Nothing to undo"); return false; }
-  if (rc == AUR_OFF)     { siprintf(toast, "History is off"); return false; }
+  if (rc == AUR_NOTHING) { siprintf(toast, redo ? "Nothing to redo" : "Nothing to undo"); return BCA_NONE; }
+  if (rc == AUR_OFF)     { siprintf(toast, "History is off"); return BCA_NONE; }
   if (rc == AUR_FLOOR) {                                     /* D6: a crossed step is a floor -- never patched, never guessed */
     siprintf(l1, redo ? "Redo stops before %.16s." : "Can't undo %.19s.", name[0] ? name : "a transfer");
     chord_refuse(redo ? "REDO STOPS" : "CAN'T UNDO", l1, redo ? "It crossed files: redo it by hand." : "It crossed into another file.");
@@ -4598,12 +4599,12 @@ static bool __attribute__((noinline)) box_chord_action(int ev, char toast[26], b
     chord_refuse(verb, "The box data is on loan to", "another screen. Leave and retry.");
   } else if (rc == AUR_DIVERGED) {                           /* D5: the engine verified, the image no longer matches: never patch blind */
     chord_refuse("HISTORY DIVERGED", "History diverged here: the save", "no longer matches this step.");
-    boxoam_suspend(); pdna_history_screen(); boxoam_resume();
+    return BCA_HISTORY;                                      /* the box screen holds the shared EWRAM borrow the History rows need: leave, the home loop opens it */
   } else {
     chord_refuse(redo ? "REDO FAILED" : "UNDO FAILED", "Nothing was changed.", 0);
   }
   *need_full = true; s_oam_reload = true;
-  return false;
+  return BCA_NONE;
 }
 
 int pdna_box(BoxSource* src) {
@@ -4864,7 +4865,9 @@ int pdna_box(BoxSource* src) {
            cev = chord_frame(&chord, (u16)key_curr_state(), (u16)fresh, chord_live, &cf); fresh = cf; }
          k = fresh | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k && !cev);
     if (cev) {
-      if (box_chord_action(cev, toast, &need_full)) { recs = src->records(box); box_decode(src, recs, box); }   /* the image changed under the grid */
+      int cr = box_chord_action(cev, toast, &need_full);
+      if (cr == BCA_HISTORY) { app_box_resume_note(box, cur); boxoam_exit(); return 6; }   /* D5: diverged -> the History screen (opened by the home loop) */
+      if (cr == BCA_CHANGED) { recs = src->records(box); box_decode(src, recs, box); }      /* the image changed under the grid */
       continue;
     }
     /* fresh-press earcons (held d-pad repeats stay silent) */

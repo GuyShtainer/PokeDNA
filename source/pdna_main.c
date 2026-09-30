@@ -12221,6 +12221,7 @@ static void view_save(const char* path) {
       g_nparty = pk_read_party_auto(g_sb1, g_party, &g_frlg);
       for (int i = 0; i < g_nparty; i++) pk_resolve(&g_party[i]);
     }
+    if (r == 6) pdna_history_screen();           /* #234 s3: SEL+L/R found the history diverged -> the History screen (the box screen released its borrow) */
     if (r == 2) {                                /* START -> nav menu */
       int refresh_party = 0;
       int nvsel = nav_menu(NAV_ALL_AVAILABLE);

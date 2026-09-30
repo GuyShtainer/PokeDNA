@@ -245,8 +245,8 @@ def main() -> int:
         # of the box screen goes through first) -- the mutant still PAINTS blocked
         # cells when explicitly asked (blocked_cells() itself is untouched), it
         # just never gets called on the primary paint path.
-        target1 = "  blocked_cells(src, box);      /* BACKLOG #200 F1: mark cells past this source's capacity */\n  draw_box_banner(src, box, on_title);\n  draw_footer(src->is_bank, on_title, moving);"
-        mutated_line1 = "  draw_box_banner(src, box, on_title);\n  draw_footer(src->is_bank, on_title, moving);"
+        target1 = "  blocked_cells(src, box);      /* BACKLOG #200 F1: mark cells past this source's capacity */\n  draw_box_banner(src, box, on_title);\n  draw_footer(src->is_bank, footer_undo(src), on_title, moving);"
+        mutated_line1 = "  draw_box_banner(src, box, on_title);\n  draw_footer(src->is_bank, footer_undo(src), on_title, moving);"
         if target1 not in box_text:
             print(f"FAIL -- mutant 1 target not found verbatim (source drifted -- "
                   f"update this test's target string):\n{target1!r}")
