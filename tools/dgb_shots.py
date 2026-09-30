@@ -6280,7 +6280,7 @@ def run_y19_s4(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessio
     T("A", "(b) A: re-apply", settle=300)
     T("A", "(b) A: dismiss RE-APPLIED", settle=300)
     s.run(300)
-    SHOT("reapplied", "(b) after RE-APPLIED: back on the box grid, same picture as frame 02 (the grid does not draw items; the item itself is proved by the Item line in (c): undo -> None, redo -> back)")
+    SHOT("reapplied", "(b) after RE-APPLIED: back on the box grid, same picture as frame 01 (the grid does not draw items; the item itself is proved by the Item line in (c): undo -> None, redo -> back)")
 
     # ---- (c) SELECT+L undoes the re-applied item edit, SELECT+R redoes it
     CHORD("L", "(c) SELECT held, THEN L: UNDO -> footer toast 'Undid: Held item' (the grid itself does not draw items)",
