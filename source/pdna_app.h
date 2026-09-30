@@ -572,14 +572,14 @@ void pdna_history_screen_rows(struct JaHist* rows, int max);
 
 /* ---- #234 slice 4: the Game Boy session on the same journal (pdna_main.c owns the recorder + flags) ------------------
  * app_gb_journal_open: bind the recorder to the resident GB image and open its journal (+ the load-time offer, + the ring
- * first fill); never opens for a read-only cart. app_gb_hold_live: the hold-until-exit posture is on (journal recording).
- * app_gb_stage: journal `base` -> `img` as ONE step named `name` (`crossed` bumps the epoch first) and mark the image
+ * first fill); never opens for a read-only cart. app_gb_hold_live: the hold-until-exit posture is on (journal recording, state OK only: a GAP journal cannot record, so it writes at once).
+ * app_gb_stage (false = the step was NOT recorded): journal `base` -> `img` as ONE step named `name` (`crossed` bumps the epoch first) and mark the image
  * dirty. app_gb_dirty: anything staged and unsaved (the exit confirm's question). app_gb_saved / app_gb_discarded: the
  * card now holds the image / the card image was put back. app_gb_rest: flush the pending records + safe-moment work.
  * app_gb_close: unbind at session end. app_history_cap: the Settings retention cap in segments. */
 bool app_gb_journal_open(uint8_t* img, uint64_t key);
 bool app_gb_hold_live(void);
-void app_gb_stage(const uint8_t* base, const uint8_t* img, const char* name, bool crossed);
+bool app_gb_stage(const uint8_t* base, const uint8_t* img, const char* name, bool crossed);
 bool app_gb_dirty(void);
 void app_gb_dirty_clear(void);
 void app_gb_saved(void);

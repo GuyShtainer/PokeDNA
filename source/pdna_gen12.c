@@ -4790,7 +4790,7 @@ bool gb_persist(const char* what_for_log) {
    * this, the session was internally inconsistent: the grid painted post-edit bytes
    * while pristine/rollback still pointed at whatever the card last held. */
   if (strcmp(what_for_log, "exit") != 0 && app_gb_hold_live())         /* #234 s4: the edit is kept in-session: it is a step */
-    app_gb_stage(g_ed->pristine, g_ed->img, gb_step_name(what_for_log), true);
+    (void)app_gb_stage(g_ed->pristine, g_ed->img, gb_step_name(what_for_log), true);
   memcpy(g_ed->pristine, g_ed->img, g_ed->len);
   gb_census(g_m);
   g_m->loaded = -1;
@@ -4884,7 +4884,7 @@ bool gb_persist(const char* what_for_log) {
    * journal never holds a step the image does not. Everything above this line -- the backup, the verified write, its
    * failure triage -- is unchanged and in its original order. */
   if (strcmp(what_for_log, "exit") != 0 && app_gb_hold_live())
-    app_gb_stage(g_ed->pristine, g_ed->img, gb_step_name(what_for_log), true);
+    (void)app_gb_stage(g_ed->pristine, g_ed->img, gb_step_name(what_for_log), true);
   app_gb_saved();                                 /* the image is on the card: not dirty, the journal's cursor is the saved point */
   memcpy(g_ed->pristine, g_ed->img, g_ed->len);   /* the card now holds this image */
   gb_census(g_m);                                 /* nready/nblocked/the exit report may have changed */
@@ -4918,7 +4918,7 @@ void gb_relatch(void) {
 bool gb_hold_commit(const char* what_for_log) {
   if (!g_ed) return false;
   if (!app_can_edit() || !app_gb_hold_live()) return gb_persist(what_for_log);
-  app_gb_stage(g_ed->pristine, g_ed->img, gb_step_name(what_for_log), false);
+  if (!app_gb_stage(g_ed->pristine, g_ed->img, gb_step_name(what_for_log), false)) return gb_persist(what_for_log);   /* not recorded: no net under a hold -> write now */
   memcpy(g_ed->pristine, g_ed->img, g_ed->len);
   gb_census(g_m);
   g_m->loaded = -1;

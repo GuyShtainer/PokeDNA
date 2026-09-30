@@ -173,8 +173,14 @@ def pins(T: dict[str, str]) -> dict[str, bool]:
     return {
         "S1 gb_hold_commit records, re-baselines and writes nothing":
             bool(hc) and order(hc, "app_gb_stage(g_ed->pristine, g_ed->img", "memcpy(g_ed->pristine, g_ed->img")
-            and "sf_write_verified" not in hc and "sf_backup" not in hc and hc.count("gb_persist(") == 1
-            and hc.find("gb_persist(") < hc.find("app_gb_stage("),
+            and "sf_write_verified" not in hc and "sf_backup" not in hc and hc.count("gb_persist(") == 2
+            and hc.find("gb_persist(") < hc.find("app_gb_stage(")
+            and re.search(r"if\s*\(\s*!app_can_edit\(\)\s*\|\|\s*!app_gb_hold_live\(\)\s*\)\s*return gb_persist", hc) is not None
+            and re.search(r"if\s*\(\s*!app_gb_stage\([^;]*\)\s*\)\s*return gb_persist", hc) is not None,
+        "S11 hold_live is true only while the journal records (JA_OK); an unrecordable step writes at once":
+            re.search(r"return\s+app_can_edit\(\)\s*&&\s*st\s*==\s*JA_OK\s*;", body(main, "app_gb_hold_live")) is not None
+            and "JA_GAP" not in body(main, "app_gb_hold_live")
+            and "jrnapp_state(&g_rec) == JA_OK && g_rec.lost == lost0" in body(main, "app_gb_stage"),
         "S2 gb_persist: backup, verified write, THEN the step, THEN saved, THEN the re-baseline":
             bool(gp) and gp.rfind("app_gb_stage(g_ed->pristine, g_ed->img") > gp.rfind("sf_write_verified(g_ed->path, g_ed->img")
             > gp.rfind("sf_backup_rolling(") > 0 and gp.rfind("app_gb_saved();") > gp.rfind("app_gb_stage(")
@@ -238,10 +244,14 @@ def text_half() -> None:
 
     mut("S1 hold_commit writes through", "pdna_gen12.c", "  snd_ok();\n  return true;\n}\n\n/* B at the exit confirm",
         "  snd_ok();\n  return gb_persist(what_for_log);\n}\n\n/* B at the exit confirm", "S1")
-    mut("S1b hold_commit forgets to record", "pdna_gen12.c", "  app_gb_stage(g_ed->pristine, g_ed->img, gb_step_name(what_for_log), false);\n  memcpy",
+    mut("S1b hold_commit forgets to record", "pdna_gen12.c", "  if (!app_gb_stage(g_ed->pristine, g_ed->img, gb_step_name(what_for_log), false)) return gb_persist(what_for_log);   /* not recorded: no net under a hold -> write now */\n  memcpy",
         "  memcpy", "S1")
+    mut("S1c an unrecordable step is held, not written", "pdna_gen12.c", "  if (!app_gb_stage(g_ed->pristine, g_ed->img, gb_step_name(what_for_log), false)) return gb_persist(what_for_log);   /* not recorded: no net under a hold -> write now */\n",
+        "  (void)app_gb_stage(g_ed->pristine, g_ed->img, gb_step_name(what_for_log), false);\n", "S1")
+    mut("S11 hold_live true at JA_GAP again", "pdna_main.c", "return app_can_edit() && st == JA_OK;", "return app_can_edit() && (st == JA_OK || st == JA_GAP);", "S11")
+    mut("S11b the stage ignores a lost record", "pdna_main.c", "jrnapp_state(&g_rec) == JA_OK && g_rec.lost == lost0", "jrnapp_state(&g_rec) == JA_OK", "S11")
     mut("S2 the step is no longer recorded after the verified write", "pdna_gen12.c",
-        "  if (strcmp(what_for_log, \"exit\") != 0 && app_gb_hold_live())\n    app_gb_stage(g_ed->pristine, g_ed->img, gb_step_name(what_for_log), true);\n  app_gb_saved();",
+        "  if (strcmp(what_for_log, \"exit\") != 0 && app_gb_hold_live())\n    (void)app_gb_stage(g_ed->pristine, g_ed->img, gb_step_name(what_for_log), true);\n  app_gb_saved();",
         "  app_gb_saved();", "S2")
     mut("S3 the dex prompt is back unconditionally", "pdna_gbdex.c", "if (!gb_hold_live() && !app_confirm(\"Save Pokedex changes?\"", "if (!app_confirm(\"Save Pokedex changes?\"", "S3")
     mut("S3 the bag prompt is back unconditionally", "pdna_gbbag.c", "if (gb_hold_live() || app_confirm(\"Save bag changes?\"", "if (app_confirm(\"Save bag changes?\"", "S3")

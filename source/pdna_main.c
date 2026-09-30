@@ -10396,14 +10396,16 @@ bool app_gb_journal_open(uint8_t* img, uint64_t key) {
  * lean on): with it off a commit keeps today's confirm + immediate write. */
 bool app_gb_hold_live(void) {
   int st = jrnapp_state(&g_rec);
-  return app_can_edit() && (st == JA_OK || st == JA_GAP);
+  return app_can_edit() && st == JA_OK;
 }
 /* One Game Boy step: `base` (the baseline) -> `img` (the edited image), named `name`; `crossed` bumps the epoch first
  * (a step that lived in another file: a transfer, an identity edit). Marks the image dirty. */
-void app_gb_stage(const uint8_t* base, const uint8_t* img, const char* name, bool crossed) {
+bool app_gb_stage(const uint8_t* base, const uint8_t* img, const char* name, bool crossed) {
+  const uint16_t lost0 = g_rec.lost;
   if (crossed) app_journal_cross();
   (void)img_rec_flat(&g_rec, base, img, 8u, 4096u, name);
   imgf_staged(&g_img);
+  return jrnapp_state(&g_rec) == JA_OK && g_rec.lost == lost0;   /* false: the step was not recorded (too big / gap) */
 }
 bool app_gb_dirty(void) { return imgf_exit_prompt(&g_img); }
 void app_gb_dirty_clear(void) { imgf_clear(&g_img); }
