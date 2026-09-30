@@ -10,7 +10,7 @@
  *
  *   cc -std=c11 -Wall -Wextra -Wno-unused-function -DFF_USE_MKFS=1 -Dsiprintf=sprintf -Dsniprintf=snprintf \
  *      -Dvsniprintf=vsnprintf -I tests/hostfat -I lib/fatfs -I source tests/host_jrn_funnel_test.c \
- *      source/img_stage.c source/gen3_save.c source/journal.c source/journal_undo.c source/journal_fs.c \
+ *      source/img_stage.c source/gen3_save.c source/journal.c source/journal_undo.c source/journal_fs.c source/jrn_app.c \
  *      lib/fatfs/ff.c lib/fatfs/ffunicode.c tests/hostfat/ramdisk.c -o /tmp/hjf && /tmp/hjf <saves...>
  *
  * tests/host_g3_stage_sites_test.py recompiles this against mutated copies of img_stage.c and requires
@@ -19,6 +19,12 @@
 #include "gen3_save.h"
 #include "gen3_box.h"
 #include "img_stage.h"
+#include "jrn_app.h"
+
+/* jrn_app.c is compiled in (its log/rumble deps stubbed): the load-time OFFER (jrnapp_offer) is pinned on the real source. */
+void log_line(const char* fmt, ...) { (void)fmt; }
+void rmbl_pause(void) {}
+void rmbl_resume(void) {}
 
 #define PCB G3_PC_BYTES
 #define KEY 0x0123456789ABCDEFull
@@ -237,6 +243,62 @@ static void t_diverged_is_a_floor(void) {
         "the chain stops before C: total %u avail %u", (unsigned)total, (unsigned)av);
 }
 
+
+/* The load-time offer (jrnapp_offer, the app half): an UNDONE tail (cursor < tip, the cursor marker on disk) is offered
+ * like a half-swap; a DISCARDED tail is not; a crossed record still floors avail. Uses the real jrn_app.c over the
+ * same RAM card (its own root/key, from a real SaveBlock2). */
+static ImgRec RA;
+static uint8_t sb2[G3_SECTOR_DATA_SIZE];
+static int app_world(const uint8_t* file) {
+  memcpy(sv, file, G3_SAVE_FILE_SIZE);
+  memcpy(orig, file, G3_SAVE_FILE_SIZE);
+  acc.save = sv; acc.slot = slot;
+  card_fresh(FM_FAT);
+  rd_fattime_hook = jrn_fattime_filter;
+  imgf_clear(&F);
+  if (!sec_of(0)) return 0;
+  memcpy(sb2, sec_of(0), sizeof sb2);
+  if (jrnapp_open(&RA, sv, slot, sb2, false, true) != JA_OK) return 0;
+  if (jrnapp_prepare(&RA, sb2, false) != JRN_OK) return 0;
+  return read_pc(pc);
+}
+static int app_reopen(void) { return jrnapp_open(&RA, sv, slot, sb2, false, true) == JA_OK; }
+static int stageA(uint32_t off) {
+  poke(off, 6, 0x11);
+  return img_stage_sections(&F, &RA, sv, slot, G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, pc);
+}
+
+static void t_undone_tail_is_offered(void) {
+  uint32_t av = 99, total;
+  char stop[25], nm[25];
+  CHECK(stageA(300) && stageA(900), "stage A, B");
+  CHECK(jrnapp_flush() == JRN_OK, "flush");
+  CHECK(jrnapp_step(-1, nm) == JRN_OK, "undo B");
+  CHECK(jrnapp_flush() == JRN_OK, "the cursor marker lands");
+  CHECK(app_reopen(), "simulated reopen");
+  CHECK(jrnapp_cursor() < jrnapp_tip(), "cursor %u < tip %u", (unsigned)jrnapp_cursor(), (unsigned)jrnapp_tip());
+  total = jrnapp_offer(&av, stop);
+  CHECK(total >= 1 && av >= 1, "an UNDONE tail is offered: total %u avail %u", (unsigned)total, (unsigned)av);
+  /* a DISCARDED tail does not offer */
+  jrnapp_decline();
+  CHECK(app_reopen(), "reopen after decline");
+  CHECK(jrnapp_offer(&av, stop) == 0 && av == 0, "a discarded tail is not offered (avail %u)", (unsigned)av);
+}
+
+static void t_crossed_still_floors_app_offer(void) {
+  uint32_t av = 99, total;
+  char stop[25];
+  CHECK(stageA(300), "A");
+  img_rec_cross(&RA);
+  CHECK(stageA(900) && stageA(1500), "B (crossed), C");
+  CHECK(jrnapp_flush() == JRN_OK, "flush");
+  memcpy(sv, orig, sizeof sv);                              /* the power cut: the card kept the original image */
+  CHECK(app_reopen(), "reopen on the original image");
+  total = jrnapp_offer(&av, stop);
+  CHECK(total == 3 && av == 1, "3 steps, avail floored at 1: total %u avail %u", (unsigned)total, (unsigned)av);
+  CHECK(stop[0] != 0, "the crossed step is named");
+}
+
 int main(int argc, char** argv) {
   int a;
   static uint8_t file[G3_SAVE_FILE_SIZE];
@@ -256,6 +318,8 @@ int main(int argc, char** argv) {
     CHECK(world(file), "world"); t_diverged_is_a_floor();
     CHECK(world(file), "world"); t_scope_is_one_step();
     CHECK(world(file), "world"); t_identical_and_null();
+    CHECK(app_world(file), "app world"); t_undone_tail_is_offered();
+    CHECK(app_world(file), "app world"); t_crossed_still_floors_app_offer();
   }
   printf("%lu checks, %d failed\n", checks, fails);
   return fails ? 1 : 0;
