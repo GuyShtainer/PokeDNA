@@ -374,6 +374,7 @@ static void test_bag_sprite(const char* label, const char* path, int card_bag_g,
     int nframes = expect_ok ? (emerald ? 6 : 4) : 1;
     for (int frame = 0; frame < nframes; frame++) {
       RomChromeBagSprite bs;
+      memset(scratch, 0xEE, sizeof scratch);   /* a reused scratch hid the drop-first-byte mutant */
       int ok = rom_chrome_bag_sprite_load(&rch, card_bag_g, female, frame, scratch, sizeof scratch, &bs);
       CHECK(ok == expect_ok, "%s: bag_sprite_load(female=%d frame=%d)=%d want %d", label, female, frame, ok, expect_ok);
       if (!ok) continue;

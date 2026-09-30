@@ -134,7 +134,7 @@ uint32_t mr_lz77_range(const RomCtx* rom, uint32_t addr, uint32_t start, uint32_
       (v) = in[in_at++];                                                      \
     } while (0)
   #define RPUT(b) do { uint8_t pb_ = (b); ring[out & mask] = pb_;             \
-      if (out >= start && out < stop) dst[out - start] = pb_; out++; } while (0)
+      if (out >= start && out < stop) { dst[out - start] = pb_; } out++; } while (0)
   while (out < stop) {
     uint8_t flags;
     RNEXT(flags);
