@@ -6380,7 +6380,10 @@ def run_y16_261(core_mod, image_mod, rom_gold: Path, out_dir: Path, rom_red: "Pa
     Each leg: UP x3 into the Bank, UP x4 to row 0, [R x N], [RIGHT x slot], A, DOWN x`mv` = MOVE (carry), DOWN x5 off the
     Bank onto the GB grid, R x13 (Gold: boxes 1-12 full -> box 13) or none (Red), then A = drop and A through every
     dialog to the wall, A on the wall. Frames 'pre' (last frame before the wall, still carrying, on the GB grid) and 'post'
-    (the wall dismissed) are the pair under test: same box, same footer, glove still up = the refusal contract holds.
+    (the wall dismissed) are the pair under test: same box, same footer, glove still up = the LANDING matches the refusal
+    contract. NOTE (y16 review): the post-wall grid is a STALE REPAINT — the delta gb_persist keeps the edit in-session,
+    so the mon actually landed (count grows after an R/L reload) while the hand still carries and the Bank slot is
+    unconsumed; a second A re-drops (see BACKLOG #261/#292). This pin tests the SCREEN landing only.
       G3   Gold, BANK 3 slot 0, plain Gen-3 BULBASAUR (bank_down_g3_run)
       EXA  Gold, BANK 1 slot 0, native Gen-2 CHIKORITA (bank_down_dispatch EXACT arm)
       BRG  Gold, BANK 1 slot 1, native Gen-1 PIKACHU (GB_BRIDGE arm)
@@ -6435,10 +6438,13 @@ def run_y16_261(core_mod, image_mod, rom_gold: Path, out_dir: Path, rom_red: "Pa
         for (rom, tag, bank_r, slot, mv, boxes_r, what) in legs:
             s, T = leg(rom, tag, bank_r, slot, mv, boxes_r, what)
             n = to_wall(s, T, tag)
+            if n < 0:
+                sys.exit(f"[Y16] {tag}: the wall never appeared")
             print(f"  [Y16] {tag}: wall after {n} A press(es)")
             T("A", settle=400)
             s.shot("04_post", f"y16 {tag}: the wall dismissed -- THE LANDING STATE: back on the SAME Game Boy grid the drop was "
-                   f"attempted on, footer still 'A drop  B cancel' (the glove still carrying), not the 'A menu' browser footer",
+                   f"attempted on, footer still 'A drop  B cancel' (the glove still carrying; the grid is a stale repaint, "
+                   f"see #261 note), not the 'A menu' browser footer",
                    claim=["A drop", "B cancel", "BOX"], claim_absent=["A menu", "in-session only"], allow_same=True)
             _y16_same_landing(out_dir / f"y16_{tag}_02_gb_grid.png", out_dir / f"y16_{tag}_04_post.png", tag)
             if sess_all is None:
