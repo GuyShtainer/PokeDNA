@@ -179,9 +179,13 @@ def main() -> int:
     lines = strip_comments(text).split("\n")
 
     codes = pdna_box_return_codes()
-    check(codes == {0, 2, 4, 5}, f"pdna_box()'s own boxoam_exit();return sites now use {sorted(codes)}, "
-                                 f"not {{0,2,4,5}} -- gb_session_core's loop (if/else-if on 2/4, else "
-                                 f"catch-all) needs re-auditing for a new code")
+    # #234 s3 audit of code 6 ("the history diverged: open the History screen"): it is returned ONLY by the chord's
+    # BCA_HISTORY arm, and the chord (chord_live) is live only for src->scope == BOXSCOPE_PC && !is_bank -- a Game Boy
+    # source (scope BOXSCOPE_GB, this loop's only source) can never produce it (tests/host_y19_s3_sites_test.py P7/P9 pin
+    # both halves). Were it ever to arrive here, the loop's catch-all arm would just re-enter the SAME GB session.
+    check(codes == {0, 2, 4, 5, 6}, f"pdna_box()'s own boxoam_exit();return sites now use {sorted(codes)}, "
+                                    f"not {{0,2,4,5,6}} -- gb_session_core's loop (if/else-if on 2/4, else "
+                                    f"catch-all) needs re-auditing for a new code")
 
     ok_a, d_a = loop_never_swaps_source(lines)
     check(ok_a, d_a)
