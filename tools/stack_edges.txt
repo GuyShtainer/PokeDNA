@@ -2057,5 +2057,22 @@ gated pcp_open_party_strip_inner need=7392 from=pdna_box.c:PDNA_PARTY_STRIP_NEED
 ImgRec.flush @0 in stage_now -> jrnapp_flush
 JrnImage.get @4 in jrn_i_region_crc -> ja_get
 # The scan/list callbacks journal.c hands to the fs seam (JrnScanFn / JrnListFn): each jfs_* has exactly one call site.
-jfs_scan argsites=1 -> anc_cb first_cb loc_cb pfx_cb
-jfs_list argsites=1 -> dir_cb
+# The journal's fs seam (JrnFs, journal.h): every dispatch lands in the FatFs binding (journal_fs.c). Offsets read off the
+# header: ctx @0 mkdir @4 size @8 read @12 write @16 alloc @20 zero @24 create_zero @28 list @32 scan @36 stamp @40.
+JrnFs.mkdir @4 in fs_mkdir -> jfs_mkdir
+JrnFs.size @8 in jrn_prepare_first,pdr_read,seg_activate -> jfs_size
+JrnFs.read @12 in jrn_compact,pdr_read -> jfs_read
+JrnFs.alloc @20 in jrn_prepare_first -> jfs_alloc
+JrnFs.create_zero @28 in jrn_redirect_write -> jfs_create_zero
+JrnFs.list @32 in jrn_open -> jfs_list
+JfsListCb.cb @0 in jfs_emit_name -> dir_cb
+JfsScanCb.cb @0 in jfs_emit_scan -> anc_cb first_cb loc_cb pfx_cb
+JrnFs.read @12 in seg_read -> jfs_read
+JrnFs.scan @36 in seg_scan.constprop.0 -> jfs_scan
+JrnFs.stamp @40 in seg_write,seg_zero -> jfs_stamp
+JrnFs.write @16 in seg_write -> jfs_write
+JrnFs.zero @24 in seg_zero -> jfs_zero
+JrnFs.size @8 in slot_hdr -> jfs_size
+JrnFs.read @12 in slot_hdr -> jfs_read
+JrnImage.get @4 in span_walk -> ja_get
+JrnImage.set @8 in span_walk -> ja_set

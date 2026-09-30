@@ -126,7 +126,20 @@ static int jfs_create_zero(void* ctx, const char* path, uint32_t size, const voi
   return (f_close(&f) == FR_OK && ok) ? 0 : -1;
 }
 
+/* The two callbacks the engine hands the seam (JrnListFn / JrnScanFn) are called through a file-local one-field struct by a
+ * noipa wrapper each: a struct-field dispatch the cartridge stack walker can name (tools/stack_edges.txt `JfsListCb.cb @0`,
+ * `JfsScanCb.cb @0`), where a bare callback parameter would be an unresolvable register call. */
+typedef struct { JrnListFn cb; } JfsListCb;
+typedef struct { JrnScanFn cb; } JfsScanCb;
+static void __attribute__((noinline, noipa)) jfs_emit_name(const JfsListCb* c, void* arg, const char* name) { c->cb(arg, name); }
+static int __attribute__((noinline, noipa)) jfs_emit_scan(const JfsScanCb* c, void* arg, uint32_t off, const uint8_t* b,
+                                                          uint32_t n, int last, uint32_t* used) {
+  return c->cb(arg, off, b, n, last, used);
+}
+
 static int jfs_list(void* ctx, const char* dir, JrnListFn cb, void* arg) {
+  JfsListCb lc;
+  lc.cb = cb;
   DIR d;
   FILINFO fi;
   uint32_t guard;
@@ -139,7 +152,7 @@ static int jfs_list(void* ctx, const char* dir, JrnListFn cb, void* arg) {
   for (guard = 0; guard < 20000u; guard++) {
     if (f_readdir(&d, &fi) != FR_OK) { ok = 0; break; }    /* a read error is an ERROR, not the end of the list */
     if (!fi.fname[0]) break;
-    if (!(fi.fattrib & AM_DIR)) cb(arg, fi.fname);
+    if (!(fi.fattrib & AM_DIR)) jfs_emit_name(&lc, arg, fi.fname);
   }
   return (f_closedir(&d) == FR_OK && ok) ? 0 : -1;
 }
@@ -148,12 +161,14 @@ static int jfs_list(void* ctx, const char* dir, JrnListFn cb, void* arg) {
  * bytes the callback did not consume carried in front of the next sector. blk is 1 KiB on the stack of this
  * call (never ROM: the flashcart unmaps ROM during a transfer). */
 static int jfs_scan(void* ctx, const char* path, uint32_t start, uint32_t limit, JrnScanFn cb, void* arg) {
+  JfsScanCb sc;
   FIL f;
   UINT br;
   uint8_t blk[2u * ZBLK];
   uint32_t base = start, have = 0, pos = start, n, used, guard;
   int ok = 1, go = 1, last = 0;
   (void)ctx;
+  sc.cb = cb;
   if (!cb || start > limit || start % ZBLK) return -1;
   if (f_open(&f, path, FA_READ | FA_OPEN_EXISTING) != FR_OK) return -1;
   ok = (uint32_t)f_size(&f) >= limit && f_lseek(&f, start) == FR_OK && (uint32_t)f.fptr == start;
@@ -166,7 +181,7 @@ static int jfs_scan(void* ctx, const char* path, uint32_t start, uint32_t limit,
     pos += n;
     last = pos >= limit;
     used = 0;
-    go = cb(arg, base, blk, have + n, last, &used);
+    go = jfs_emit_scan(&sc, arg, base, blk, have + n, last, &used);
     if (!go) break;                                                                 /* cb stopped the scan */
     if (used > have + n || (!last && have + n - used >= ZBLK)) { ok = 0; break; }   /* a callback that stalls is a bug */
     memmove(blk, blk + used, have + n - used);

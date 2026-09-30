@@ -540,6 +540,10 @@ void app_mark_pc_dirty(void);
  * write per section: the #300 coalescing). Inside a scope g_save is only current after the end. */
 void app_step_begin(const char* name);
 void app_step_end(void);
+/* #234: a cross-file op (transfer, Bank<->PC, reconcile release, XRC apply, PID re-key, promotion) bumps the crossed
+ * epoch: the next step is an undo/redo/re-apply floor. app_step_name: the one-shot step name (static ASCII, <= 24). */
+void app_journal_cross(void);
+void app_step_name(const char* name);
 
 /* PC->Bank MOVE support: clear a PC box slot (release from the save) after the destination
  * bank box has been verified on SD, matched by the mon's 8-byte identity so a bystander is

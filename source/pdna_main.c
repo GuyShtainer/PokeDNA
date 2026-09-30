@@ -62,7 +62,8 @@
 #include "pdna_legality.h" /* pdna_legality_show */
 #include "pdna_gen12.h"    /* GB import: mount a Gen-1/2 save read-only */
 #include "bank_down_convert.h" /* #271/y10: bank_down_dispatch -- the ONE Bank-native -> PC arm the TO GAME row shares with the drop */
-#include "img_stage.h"     /* #234 s0: pure-C funnel body (img_stage_sections / img_pc_edited / img_fold_pc) */
+#include "img_stage.h"
+#include "jrn_app.h"       /* #234 s2: the journal wiring (recorder binding, flush, load anchor, re-apply) */     /* #234 s0: pure-C funnel body (img_stage_sections / img_pc_edited / img_fold_pc) */
 #include "img_flags.h"     /* #234 s0: pure-C dirty-flag state machine (pc_unstaged / image_dirty / pc_moved) */
 #include "bank_cell.h"     /* bc_is_native -- native Bank cell interception (BACKLOG #150 S150-2) */
 #include "pdna_pk.h"     /* pdna_pk_export (.pk3) */
@@ -1905,6 +1906,8 @@ static ImgFlags EWRAM_BSS g_img;
 /* #234 s2: the funnel's recorder (journal handle, deferred-scope state, crossed epoch) -- see img_stage.h.
  * ~100 B of EWRAM, zero-initialised = journal off, no scope. */
 static ImgRec EWRAM_BSS g_rec;
+static void app_journal_rest(void);
+static void app_journal_after_save(void);
 
 /* THE staging funnel (design D2): every byte that reaches g_save's 14-section image goes through
  * here -- commit_block/all/sb12, stage_sb1, dex registration, the box-drop eager stage and the
@@ -1921,6 +1924,12 @@ static void app_stage_sections(int sect_lo, int sect_hi, const uint8_t* block) {
  * name is what the history will show (ASCII, <= 24 chars, a string literal). */
 void app_step_begin(const char* name) { img_scope_open(&g_rec, name); }
 void app_step_end(void) { (void)img_scope_close(&g_img, &g_rec, g_save, g_vinfo.slot); }
+/* A cross-file op (transfer, Bank<->PC, reconcile release, XRC apply, PID re-key, promotion; design D6): the
+ * NEXT recorded step is marked crossed, an undo/redo/re-apply floor. Bumped inside a scope it marks that scope's
+ * step (the epoch is read when the step is applied). */
+void app_journal_cross(void) { img_rec_cross(&g_rec); }
+/* The one-shot name of the next step ("Bag", "Pokedex" ...): a static ASCII string of at most 24 chars. */
+void app_step_name(const char* name) { img_rec_name(&g_rec, name); }
 
 /* Backup policy for the verified write: 0 = new .bak/.bak1… each time (default),
  * 1 = single rolling .bak (overwrite), 2 = skip backup. Session-only (resets each
@@ -1987,6 +1996,8 @@ static bool app_save_finalize(void) {
     return false;
   }
 
+  (void)jrnapp_flush();        /* #234: the recorded steps reach the journal BEFORE the .sav write (a cut in between = the re-apply offer) */
+
 #ifdef PDNA_DELTA
   /* Emulator build: the save is this ROM's own 128 KiB flash chip. There is no
    * sibling file, so no .tmp/.bak pipeline is possible — flashsave_write erases,
@@ -2006,6 +2017,7 @@ static bool app_save_finalize(void) {
   grow_in(UI_OK);
   msg_wait("SAVED", UI_OK, "Flash written + verified.", "No backup in this build.");
   imgf_clear(&g_img);          /* same bookkeeping as the SD path: a full write flushes everything staged */
+  app_journal_after_save();
   return true;
 #else
   log_line("=== edit commit -> %s (backup mode %d) ===", g_path, g_backup_mode);
@@ -2073,6 +2085,7 @@ static bool app_save_finalize(void) {
   grow_in(UI_OK);                                  /* brief success flourish */
   msg_wait("SAVED", UI_OK, "Edit written + verified.", "Original backed up first.");
   imgf_clear(&g_img);                               /* a full write flushes every staged edit (Day-Care, dex, folded PC) */
+  app_journal_after_save();
   return true;
 #endif /* PDNA_DELTA */
 }
@@ -2172,6 +2185,7 @@ bool app_xfer_pending(void) { return g_xd_key != 0 && g_xd_idx >= 0; }
 bool app_xfer_pending_is(uint64_t key) { return g_xd_key == key && g_xd_idx >= 0; }
 
 void app_xfer_pending_set(uint64_t key, int idx) {
+  app_journal_cross();                 /* a transfer ledger entry now depends on the PC write that follows */
   g_xd_key = key;
   g_xd_idx = (int16_t)idx;
   g_xd_g3home = false;
@@ -2191,6 +2205,7 @@ void app_xfer_pending_drop(void) { g_xd_key = 0; g_xd_idx = -1; g_xd_g3home = fa
  * "destination unproven", never removable). */
 bool __attribute__((noinline)) app_xfer_promote(void) {
   if (!app_xfer_pending()) return false;
+  app_journal_cross();
   char path[GBSC_PATH_MAX];
   (void)xr_path_for_key(path, g_xd_key);
   uint8_t s_promote_buf[GBSC_FILE_MAX];   /* stack-local, this call's own frame -- no new static */
@@ -2599,6 +2614,7 @@ void app_pc_release_slot(int box, int slot, const uint8_t* id8) {
   if (box < 0 || box >= G3_TOTAL_BOXES || slot < 0 || slot >= G3_IN_BOX) return;
   uint8_t* p = pk_box_slot(g_pc, box, slot);
   if (id8 && memcmp(p, id8, 8) != 0) return;   /* slot no longer holds our mon -> skip (no loss) */
+  app_journal_cross();                         /* PC -> Bank: the Bank copy lives in another file (an undo would clone/lose it) */
   memset(p, 0, 80);
   app_mark_pc_dirty();
 }
@@ -2700,6 +2716,7 @@ static bool __attribute__((noinline)) app_xfer_pid_guard(const uint8_t* old_rec,
   }
 
   out_plan->needs_rekey = true;
+  app_journal_cross();                               /* the re-key edit keeps its immediate commit: a barrier, never undone across */
   return true;
 }
 
@@ -2741,7 +2758,7 @@ static void app_register_dex_deferred(const uint8_t* rec, bool is_party) {
 static void pcsrc_note_add(const uint8_t* rec) { app_register_dex_deferred(rec, false); }
 
 /* Bank->PC carry records the bank source for deletion at the save phase (see pdna_bank). */
-void app_bank_defer_delete(int box, int slot, const uint8_t* rec80) { pdna_bank_defer_delete(box, slot, rec80); }
+void app_bank_defer_delete(int box, int slot, const uint8_t* rec80) { app_journal_cross(); pdna_bank_defer_delete(box, slot, rec80); }   /* Bank -> PC: the original goes at save */
 bool app_bank_defer_full(void) { return pdna_bank_defer_full(); }
 bool app_bank_defer_room(int n) { return pdna_bank_defer_room(n); }
 void app_bank_defer_pop(int n) { pdna_bank_defer_pop(n); }
@@ -4013,6 +4030,7 @@ bool app_inject_to_game(const uint8_t* rec80) {
   for (int b = 0; b < G3_TOTAL_BOXES; b++) {
     int s = box_free_slot(g_pc, b);
     if (s >= 0) {
+      app_journal_cross();                                               /* Bank -> PC inject: the Bank original is deleted at save */
       memcpy(pk_box_slot(g_pc, b, s), rec80, 80);
       if (app_dex_register_rec(rec80, false)) return app_commit_all();   /* + register in dex */
       return app_commit_pc();
@@ -10107,9 +10125,11 @@ static void app_discard_staged(void) {
   if (!ok) log_line("discard: re-read failed - g_save may be partial; RAM only, never written (browser next, reload on open)");
   gen3_read_pc_storage(g_save, g_vinfo.slot, g_pc);     /* revert PC moves */
   imgf_clear(&g_img);                                   /* nothing staged, nothing pending */
+  if (ok) jrnapp_after_discard(&g_rec);                 /* #234: the thrown-away steps stay in the history, marked discarded */
 }
 
 static void flush_on_exit(void) {
+  app_journal_rest();                                    /* #234: the exit is a rest point: pending records first */
   if (!imgf_exit_prompt(&g_img)) {
     app_xfer_promote();                    /* BACKLOG #150 S150-8 decision 9: the PC was already saved */
     int kept = pdna_bank_flush_deletions();
@@ -10150,6 +10170,82 @@ static void reload_saveblocks(void) {
   if (s0 >= 0)
     memcpy(g_sb2, g_save + (uint32_t)g_vinfo.slot * G3_SLOT_BYTES + (uint32_t)s0 * G3_SECTOR_SIZE,
            G3_SECTOR_DATA_SIZE);
+}
+
+/* ---- #234 slice 2: the journal wiring (design D1/D3/D6; the engine is journal.c, the glue jrn_app.c) --------
+ * The image was patched behind the mirrors' backs (a re-apply): re-derive every decoded copy from g_save. */
+static void app_journal_rederive(void) {
+  reload_saveblocks();
+  if (g_have_pc && !g_arena_held) g_have_pc = (gen3_read_pc_storage(g_save, g_vinfo.slot, g_pc) == G3_PC_BYTES);
+  g_nparty = pk_read_party_auto(g_sb1, g_party, &g_frlg);
+  for (int i = 0; i < g_nparty; i++) pk_resolve(&g_party[i]);
+}
+
+/* The load-time offer (D1): "N recorded steps are not in this save -- re-apply?". A = the chained cursor-rule
+ * application, STOPPING before the first crossed record; B = a discarded marker (never re-offered). An empty-reading
+ * journal never gets here (jrn_offer is false: an unreadable journal must not make claims, D9). */
+static void __attribute__((noinline)) app_journal_offer(uint32_t n, uint32_t avail, const char* stop) {
+  char l1[76], l2[40];
+  bool yes;
+  if (avail) {
+    siprintf(l1, "%lu recorded step%s not in this save - re-apply? B = discard them.", (unsigned long)n, n == 1 ? " is" : "s are");
+    yes = app_confirm("Recorded steps found", l1);
+    if (!yes) { jrnapp_decline(); log_line("journal: offer declined (%lu steps)", (unsigned long)n); return; }
+    int k = jrnapp_reapply();
+    log_line("journal: re-applied %d of %lu step(s)", k, (unsigned long)n);
+    if (k > 0) {
+      app_journal_rederive();
+      imgf_staged(&g_img);                                    /* the image is ahead of the card: the exit save confirms once */
+      siprintf(l1, "%d step%s back in the image.", k, k == 1 ? " is" : "s are");
+      if (stop && stop[0]) { siprintf(l2, "Stops at %.20s: redo by hand.", stop); }
+      else siprintf(l2, "Save on exit to keep them.");
+      msg_wait("RE-APPLIED", UI_OK, l1, l2);
+    } else {
+      msg_wait("NOT RE-APPLIED", UI_WARN, "The saved steps no longer fit", "this save. Nothing changed.");
+    }
+    return;
+  }
+  /* every recorded step is behind a crossed one (a transfer, a Bank move): nothing can be re-applied safely */
+  (void)n;
+  siprintf(l1, "Recorded steps start at a transfer (%.14s): redo it by hand. A = forget them.", stop ? stop : "");
+  yes = app_confirm("Recorded steps found", l1);
+  if (yes) jrnapp_decline();
+}
+
+/* View_save, BEFORE any reconcile stages a step: bind the recorder, anchor the journal, offer the re-apply, then the
+ * safe-moment work (first fill of the ring: one status line, no dialog). Never fatal: any failure leaves the journal
+ * off and the UI silent about it ("recorded" is only ever said for JA_OK). Everdrive / hack ROM: never opens. */
+static void __attribute__((noinline)) app_journal_load(void) {
+  int st = jrnapp_open(&g_rec, g_save, g_vinfo.slot, g_sb2, g_frlg, app_can_edit());
+  if (st == JA_OK) {
+    uint32_t avail = 0;
+    char stop[25];
+    uint32_t n = jrnapp_offer(&avail, stop);
+    if (n) app_journal_offer(n, avail, stop);
+    if (jrnapp_first_fill_owed()) busy_panel("Preparing undo history...");
+    (void)jrnapp_prepare(&g_rec, g_sb2, g_frlg);
+  }
+  jrnapp_log_events(&g_rec);
+  log_line("journal: state %d", jrnapp_state(&g_rec));
+}
+
+/* After a VERIFIED .sav write (a safe moment): make the next segment exist and, when the identity changed this session,
+ * write the redirect that keeps the history under the new key. */
+static bool EWRAM_BSS s_jrn_prepare_owed;
+static void app_journal_after_save(void) {
+  s_jrn_prepare_owed = true;     /* NOT run here: finalize sits at the bottom of the deepest commit chains and the ring work
+                                  * (jfs_zero's FIL + block, ~1.7 KiB of frames) must not join them; the next rest point does it */
+}
+
+/* A rest point (a screen returned to the home loop, before any SAVE): the pending records go to disk, rumble paused,
+ * content-verified by the engine; a failure is folded into the state and logged from here, never mid-drop. */
+static void app_journal_rest(void) {
+  (void)jrnapp_flush();
+  if (s_jrn_prepare_owed) {                     /* a verified save happened since: the next segment + any identity redirect */
+    s_jrn_prepare_owed = false;
+    (void)jrnapp_prepare(&g_rec, g_sb2, g_frlg);
+  }
+  jrnapp_log_events(&g_rec);
 }
 
 /* ---- S5-C Part B2: reconcile on load -- release transferred originals -----------
@@ -10378,6 +10474,7 @@ static void __attribute__((noinline)) gb_reconcile_commit_failed_msg(void) {
  * gb_reconcile_apply() can skip its own generic "K of N" shortfall message when
  * THIS function already showed a more specific one for the same event. */
 static int __attribute__((noinline)) gb_reconcile_release(GbReconBuf* rb, bool* commit_failed) {
+  app_journal_cross();                                /* reconcile release: a transfer completing on the other side */
   gb_reconcile_plan(rb->hits, rb->nhits, g_sb1, g_frlg, g_have_pc ? g_pc : NULL);
 
   bool touched_pc = false, touched_party = false;
@@ -11020,6 +11117,7 @@ static uint8_t xrc_action_popup(uint8_t actions) {
  * its own row's entry in place, to be reconsidered on the next visit. */
 static void __attribute__((noinline)) xfer_reconcile_apply(GbReconBuf* rb) {
   if (!app_can_edit()) { log_line("BUG: xfer_reconcile_apply with editing disabled - refused"); return; }
+  app_journal_cross();                                /* XRC apply: Bank / ledger / PC decided together */
   bool remove_entry[GB_RECON_MAX_HITS];
   memset(remove_entry, 0, sizeof remove_entry);
   int removed = 0, released = 0, restored = 0, deleted = 0, rekeyed = 0, failed = 0;
@@ -11971,6 +12069,7 @@ static void view_save(const char* path) {
    * .pds files, plus a party/PC commit) before the box ever paints -- without its own
    * load_phase_n() the screen would still show "10/13 party (forme)" for however long
    * that takes, which reads as a hang on exactly the step that did NOT freeze. */
+  app_journal_load();       /* #234 s2: BEFORE reconcile stages anything (design D6 load order) */
   load_phase_n(11, PDNA_LOAD_PHASE_SIDECARS);
   /* BACKLOG #150 S150-6, decision 6: the migration runs from exactly this ONE
    * place, immediately before gb_reconcile_on_load(). No file-static "already
@@ -12018,6 +12117,7 @@ static void view_save(const char* path) {
    * (Saves with no PC fall back to the party list as home.) */
   for (;;) {
     reload_saveblocks();                         /* editors share g_sb1/g_sb2 + commit all SB1 — keep them == the saved image so a declined edit can't ride along */
+    app_journal_rest();                          /* #234: a screen was left: flush the pending records (rumble paused, verified) */
     int r = g_have_pc ? pdna_box(&pcs) : party_list();
     icon_store_borrow(false);          /* the same backstop for the HOME screen, which
                                         * does not go through nav_menu's switch */
@@ -12026,7 +12126,7 @@ static void view_save(const char* path) {
      * the next Bank screen -- which is also pdna_box -- would claim the save-open
      * paint that never happened. */
     s_crumb_shown_armed = false;
-    if (r == 0) { flush_on_exit(); cfg_save(); return; }  /* B / SAVE tab -> file browser (one prompt for all deferred moves; persist last PC box) */
+    if (r == 0) { flush_on_exit(); app_journal_rest(); cfg_save(); return; }  /* B / SAVE tab -> file browser (one prompt for all deferred moves; persist last PC box) */
     if (r == 4) {                                /* up past the PC tabs -> Bank (cursor from below) */
       rmbl_fire(RCUE_ROOM);
       app_box_start_set(2);                       /* bank opens at the bottom row (unless carrying) */

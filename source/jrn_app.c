@@ -22,7 +22,8 @@ static uint8_t  EWRAM_BSS s_state;      /* JA_* for the states the recorder cann
 static uint8_t  EWRAM_BSS s_ev_new;     /* an event is waiting for jrnapp_log_events                */
 static int      EWRAM_BSS s_ev_rc;
 static const char* EWRAM_BSS s_ev_what;
-static struct { uint8_t* save; int slot; } EWRAM_BSS s_ai;   /* the image accessor's context */
+typedef struct { uint8_t* save; int slot; } JaImg;   /* NAMED: `static struct {...} EWRAM_BSS x;` puts the attribute on the wrong side and lands in IWRAM (icon_store.c s_is) */
+static JaImg EWRAM_BSS s_ai;   /* the image accessor's context */
 
 static void ja_event(const char* what, int rc) { s_ev_what = what; s_ev_rc = rc; s_ev_new = 1; }
 
