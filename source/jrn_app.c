@@ -235,6 +235,11 @@ int jrnapp_step(int dir, char name[25]) {
   if (!s_r || !s_r->j || s_state != JA_OK) return JRN_E_ARG;
   if (s_r->depth) return JRN_E_STATE;                        /* a scope is open: a staged copy is mid-edit */
   memset(&rec, 0, sizeof rec);
+  /* DEVIATION FROM THE BRIEF (isolated in its own commit, one line to revert): the engine pops a still-PENDING record on
+   * undo with no SD I/O, which throws the redo target away -- and a swap is TWO drops, so with the first drop on disk and
+   * the second pending an undo/redo round trip lands on the half-swap (the displaced mon in nobody's hands, 29/30) with
+   * no way to redo the second half. One verified flush before an undo keeps every step redoable. */
+  if (dir < 0 && jrn_pending(&s_j)) (void)jrnapp_flush();
   for (;;) {
     rc = dir < 0 ? jrn_undo(&s_j, &s_r->img, &rec) : jrn_redo(&s_j, &s_r->img, &rec);
     if (rc == JRN_E_FULL && !retried) { retried = 1; (void)jrnapp_flush(); continue; }
