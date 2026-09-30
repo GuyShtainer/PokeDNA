@@ -184,6 +184,31 @@ static void t_identical_and_null(void) {
   CHECK(jrn_tip(&J) == tip && jrn_pending(&J) == 0, "and records nothing");
 }
 
+/* D2 (#301): a step the journal could NOT record (B: > one record) is a gap, and a gap is a floor. The record after it
+ * (C) is crossed, so the load-time re-apply offer stops before C instead of applying C on a base missing B. */
+static void t_gap_is_a_floor(void) {
+  Jrn j2;
+  JrnCfg c = cfg_for(KEY, 0, 0);
+  JrnImage im;
+  uint32_t av = 99, total = 99;
+  JrnRec tip;
+  poke(100, 4, 0x5A);                                                     /* A: region 5 */
+  CHECK(img_stage_sections(&F, &R, sv, slot, G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, pc), "A");
+  CHECK(jrn_flush(&J) == JRN_OK, "flush A");
+  poke(G3_SECTOR_DATA_SIZE, 700, 0x33);                                   /* B: 700 contiguous bytes > one record */
+  (void)img_stage_sections(&F, &R, sv, slot, G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, pc);
+  CHECK(R.state == IREC_GAP, "B could not be recorded: state %d", R.state);
+  poke(2u * G3_SECTOR_DATA_SIZE + 50, 4, 0x77);                           /* C: region 7 */
+  CHECK(img_stage_sections(&F, &R, sv, slot, G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, pc), "C");
+  CHECK(jrn_flush(&J) == JRN_OK, "flush C");
+  CHECK(jrn_find(&J, jrn_tip(&J), &tip) == 0 && tip.crossed, "the record after a gap is crossed");
+  memcpy(sv, orig, sizeof sv);                                            /* the power cut */
+  im.ctx = &acc; im.get = sget; im.set = sset;
+  CHECK(jrn_open(&j2, &c, &im) == JRN_OK, "reopen on the original image");
+  CHECK(jrn_redo_info(&j2, &av, &total, 0) == 1 && total == 2 && av == 1,
+        "the chain stops before C: rc-cut total %u avail %u", (unsigned)total, (unsigned)av);
+}
+
 int main(int argc, char** argv) {
   int a;
   static uint8_t file[G3_SAVE_FILE_SIZE];
@@ -199,6 +224,7 @@ int main(int argc, char** argv) {
     printf("== %s (slot %d)\n", argv[a], slot);
     CHECK(world(file), "world"); t_commit_spans();
     CHECK(world(file), "world"); t_crossed_floors_offer();
+    CHECK(world(file), "world"); t_gap_is_a_floor();
     CHECK(world(file), "world"); t_scope_is_one_step();
     CHECK(world(file), "world"); t_identical_and_null();
   }
