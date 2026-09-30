@@ -19,6 +19,13 @@ bool xg_pc_live(bool vinfo_valid, bool arena_held);
  * Gen-3 PC to receive it, only with something actually in hand. */
 bool xg_togame_row(bool is_bank, bool pc_live, bool have_pc);
 
+/* #286/y12: the GB-session twin of the row above -- TO GAME on a Bank cell during a Bank visit from a RESIDENT
+ * Game Boy edit session. Offered only from a Bank cell, only when there is NO live Gen-3 PC (that case is the
+ * row above's, so the two are mutually exclusive by construction), and only when the session can be written
+ * (`gb_writable` = the mounted save is resident AND the cart can write -- never the read-only nav-menu mount,
+ * never an Everdrive). */
+bool xg_togame_gb_row(bool is_bank, bool pc_live, bool gb_writable);
+
 /* pdna_main.c :4382/:4392 PASTE rows (Bank only — :4208's RO_PASTE is untouched):
  * only with something clipped, only with a live Gen-3 PC to paste into. */
 bool xg_paste_row(bool clip_occupied, bool pc_live);

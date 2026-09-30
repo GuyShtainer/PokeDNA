@@ -1575,7 +1575,9 @@ def main() -> int:
     s, e = extract_function(box_lines, r"^static uint8_t\* drop_held\(")
     ok, d = bank_passthrough_facts(box_lines, s, e)
     check(ok, d)
-    s, e = extract_function(box_lines, r"^drop_held_down_g3\(")
+    # #286/y12: the restore + landing + consume body moved, unchanged, from drop_held_down_g3 into bank_down_g3_run
+    # (the ONE function the drop and the TO GAME menu action share) -- the pin's target follows it; the property is the same.
+    s, e = extract_function(box_lines, r"^bank_down_g3_run\(")
     ok, d = target_restore_order_facts(box_lines, s, e)
     check(ok, d)
     s, e = extract_function(box_lines, r"^gbpc_restore_up\(")
@@ -1701,9 +1703,12 @@ def main() -> int:
     check(not any(DEFER_DELETE_RE.search(ln) for ln in cons_body),
           "bank_down_consume: contains app_bank_defer_delete( -- a Game Boy session never runs the Gen-3 "
           "exit-save flush a deferred delete waits for (merged-tree review F2)")
-    sg, eg = extract_function(box_lines, r"^drop_held_down_g3\(")
+    sg, eg = extract_function(box_lines, r"^bank_down_g3_run\(")
     check(any(CONSUME_CALL_RE.search(ln) for ln in box_lines[sg:eg]),
-          "drop_held_down_g3: no bank_down_consume( call -- the landed Gen-3 cell's Bank slot would never be consumed")
+          "bank_down_g3_run: no bank_down_consume( call -- the landed Gen-3 cell's Bank slot would never be consumed")
+    sg, eg = extract_function(box_lines, r"^drop_held_down_g3\(")
+    check(any(re.search(r"\bbank_down_g3_run\(", ln) for ln in box_lines[sg:eg]),
+          "drop_held_down_g3: no bank_down_g3_run( call -- the drop would no longer share the menu's Gen-3 landing")
 
     # ---- (p) merged-tree review F4/F1: gb_bank_down_bridge's destination generation is
     # the MOUNTED session's own generation, never the inverted `? GB_GEN2 : GB_GEN1`
@@ -2134,7 +2139,7 @@ def self_test_mutation_detection(box_lines: list[str], gen12_lines: list[str],
     # MUT Y7-K (#270): move gbpc_restore_done( ABOVE the accept_down landing in a copy of
     # drop_held_down_g3 -- the entry would read RESTORED before the Game Boy write landed --
     # and assert target_restore_order_facts() reports failure.
-    s, e = extract_function(box_lines, r"^drop_held_down_g3\(")
+    s, e = extract_function(box_lines, r"^bank_down_g3_run\(")   # #286/y12: retargeted with the pin above
     body = box_lines[s:e]
     acc_i = first_match_line(body, 0, len(body), ACCEPT_DOWN_CALL_RE)
     done_i = first_match_line(body, 0, len(body), RESTORE_DONE_RE)

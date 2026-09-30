@@ -1217,13 +1217,60 @@ bank_down_dispatch(BoxSource* src, int dst_box, int dst_cell, const uint8_t cell
   }
 }
 
-/* #271/y10: the TO GAME row on a NATIVE Bank cell (app_mon_menu sets a one-shot; both menu call sites below
- * consume it). The Bank's own box/cell are known HERE, not in the menu. The drop's arm, not a clone: see
- * app_bank_togame_native (pdna_main.c) -> bank_down_dispatch above. Only meaningful on the Bank grid. */
+static bool bank_down_g3_run(int box, const uint8_t held80[80], int orig_box, int orig_slot);   /* defined with drop_held_down_g3 below */
+
+/* #286/y12: TO GAME from a Bank visit inside a RESIDENT Game Boy session -- the menu twin of carrying the Bank cell
+ * onto a box of the loaded game and dropping it. ONE arm, not a clone:
+ *   - a NATIVE cell runs bank_down_dispatch() (the EXACT arm for the session's own generation = a byte-identical insert
+ *     through accept_down; the GB_BRIDGE arm for the other generation = restore-or-convert) with the arguments a drop
+ *     supplies, then -- like drop_held's non-EXACT LANDED tail -- bank_down_consume() for the bridge (the EXACT arm
+ *     consumes inside itself);
+ *   - a plain Gen-3 cell runs bank_down_g3_run(), the very function drop_held_down_g3 calls (restore the native
+ *     original if the ledger holds one, else convert with the loss screen).
+ * Same honest refusals as a drop (read-only, emulator/ROM walls, box full -- each arm's own screen). The destination:
+ * the first storage box with room (gb_togame_pick_box); nothing is silently put into the party. Unlike the Gen-3
+ * direction the write is IMMEDIATE (gb_persist verified the card inside the arm, and the Bank consume is immediate
+ * too -- a Game Boy session never runs the deferred-delete flush). Returns true iff a record landed. */
+static bool __attribute__((noinline)) bank_togame_gb(int orig_box, int orig_slot, const uint8_t* cell) {
+  if (!cell || orig_box < 0 || orig_slot < 0 || !s_xfer_peer || !s_xfer_peer->accept_down) return false;
+  if (!app_can_edit()) { snd_deny(); return false; }
+  int slot = -1;
+  const int dbox = gb_togame_pick_box(&slot);
+  if (dbox < 0 || slot < 0) { snd_deny(); msg_wait("GAME FULL", UI_WARN, "No free slot in the", "loaded game's boxes."); return false; }
+  uint8_t held[80];
+  memcpy(held, cell, 80);                                   /* the arm may re-page the shared Bank buffer */
+  bool landed;
+  if (bc_is_native(held)) {
+    BoxSource gbs; memset(&gbs, 0, sizeof gbs);
+    gbs.scope = BOXSCOPE_GB;                                /* the only member the arm reads */
+    uint8_t conv[80];
+    const uint8_t arm = xg_bank_down_arm(bc_kind(held), gbs.scope, app_gb_session_gen());   /* derived once, as drop_held does */
+    const BankDownResult bd = bank_down_dispatch(&gbs, dbox, slot, held, held, conv, orig_box, orig_slot);
+    landed = (bd == BANK_DOWN_LANDED);
+    if (landed && arm != XG_DOWN_ARM_EXACT) (void)bank_down_consume(orig_box, orig_slot, held);   /* GB_BRIDGE's immediate consume */
+    if (!landed && arm == XG_DOWN_ARM_NONE) snd_deny();
+  } else {
+    landed = bank_down_g3_run(dbox, held, orig_box, orig_slot);
+  }
+  if (!landed) return false;                                /* REFUSED: the arm already said why; nothing changed */
+  boxoam_suspend();   /* the arm's inner boxoam_resume un-suspended the glove; suspend/resume do not nest */
+  char l1[24]; siprintf(l1, "Game box %d, slot %d.", dbox + 1, slot + 1);
+  msg_wait("SENT TO GAME", UI_OK, l1, "Game save written.");
+  return true;
+}
+
+/* #271/y10 + #286/y12: the TO GAME row on a Bank cell (app_mon_menu sets a one-shot; both menu call sites below
+ * consume it). The Bank's own box/cell are known HERE, not in the menu. The drop's arm, not a clone: in a Gen-3
+ * session a NATIVE cell runs app_bank_togame_native (pdna_main.c) -> bank_down_dispatch; in a RESIDENT Game Boy
+ * session any cell runs bank_togame_gb above -- the row gate xg_togame_gb_row decides which. Only meaningful on the
+ * Bank grid. */
 static void __attribute__((noinline)) togame_native_run(BoxSource* src, uint8_t* recs, int box, int cur) {
   if (!src->is_bank || box < 0 || cur < 0 || cur >= G3_BOX_SLOTS) { snd_deny(); return; }
   boxoam_suspend();                                   /* the arm opens screens and may touch the card */
-  (void)app_bank_togame_native(box, cur, recs + (uint32_t)cur * 80);
+  if (xg_togame_gb_row(true, app_gen3_pc_live(), s_xfer_peer && s_xfer_peer->accept_down))
+    (void)bank_togame_gb(box, cur, recs + (uint32_t)cur * 80);
+  else
+    (void)app_bank_togame_native(box, cur, recs + (uint32_t)cur * 80);
   boxoam_resume();
 }
 
@@ -1651,6 +1698,42 @@ static uint8_t* __attribute__((noinline)) drop_held_up(BoxSource* src, int box, 
   return recs;
 }
 
+/* #286/y12: the landing half of drop_held_down_g3, factored so the TO GAME menu action (bank_togame_gb) runs the SAME
+ * function a physical drop does. `held80` is the Bank's Gen-3 record, `orig_box`/`orig_slot` the Bank cell it came
+ * from. rc 0 = no restorable original -> convert (gb_bank_down_g3); rc 1 = restore the native original through the
+ * SAME accept_down hook the EXACT drop uses. Returns true iff the record LANDED in the Game Boy save; on true the
+ * Bank slot has ALREADY been consumed (bank_down_consume, immediate) and a restored ledger entry marked LAST. On
+ * false nothing anywhere changed and the arm/screens already said why. */
+static bool __attribute__((noinline))
+bank_down_g3_run(int box, const uint8_t held80[80], int orig_box, int orig_slot) {
+  uint8_t cell80[80];
+  int rc = (s_xfer_peer && s_xfer_peer->accept_down) ? gbpc_restore_up(held80, app_gb_session_gen(), cell80) : 0;
+  if (rc == -2) return false;                                /* declined/refused -- already said */
+  if (rc < 0) {                                              /* still holding, nothing written */
+    snd_error();
+    boxoam_suspend();
+    msg_wait(PDNA_XFERREC_TITLE, UI_WARN, PDNA_XFERREC_L1, PDNA_XFERREC_L2);
+    boxoam_resume();
+    return false;
+  }
+  boxoam_suspend();
+  bool landed;
+  if (rc == 1) {
+    landed = s_xfer_peer && s_xfer_peer->accept_down && s_xfer_peer->accept_down(box, cell80);
+  } else {
+    landed = gb_bank_down_g3(box, held80) == BANK_DOWN_LANDED;
+  }
+  boxoam_resume();
+  if (!landed) {
+    log_line("gen12: g3-down box %d slot %d -> gb box %d: refused/not landed", orig_box, orig_slot, box);
+    return false;                                            /* still holding -- the arm already said why */
+  }
+  (void)bank_down_consume(orig_box, orig_slot, held80);      /* D7: a failed consume already said "duplicate"; the landing stands */
+  if (rc == 1) gbpc_restore_done(held80);   /* entry marked LAST, after the verified GB write landed */
+  log_line("gen12: g3-down box %d slot %d -> gb box %d: ok", orig_box, orig_slot, box);
+  return true;
+}
+
 /* BACKLOG #246 (#104 Phase 1): the DOWN mirror of drop_held_up above -- a PLAIN
  * Gen-3 Bank cell (never native) carried onto a Game Boy grid and dropped. Own
  * noinline frame for the same reason drop_held_up gets one (BACKLOG #170): gen3_to_gb_fixed
@@ -1675,41 +1758,11 @@ drop_held_down_g3(BoxSource* src, int box, int cur, uint8_t* recs, bool* done) {
   (void)cur;   /* BACKLOG #246 review D7: never read -- a Game Boy list always appends at
                 * its own next free slot (gbs_insert), never at the cursor cell; `cur`
                 * stays in the signature only to match drop_held_up's own sibling shape. */
-  /* #270 TARGET RESTORE (Guy 2026-09-29): a Gen-3 record whose ledger holds a native
-   * original of THIS save's generation goes home byte-exactly -- the SAME accept_down
-   * hook the NATIVE-cell EXACT drop uses (bank_down_exact), fed the cell rebuilt by
-   * gbpc_restore_up. rc 0 = no restorable original (none / other generation / already
-   * RESTORED = the duplicate): today's convert path, unchanged. */
-  uint8_t cell80[80];
-  int rc = (s_xfer_peer && s_xfer_peer->accept_down) ? gbpc_restore_up(s_held, app_gb_session_gen(), cell80) : 0;
-  if (rc == -2) return recs;                                 /* declined/refused -- already said */
-  if (rc < 0) {                                              /* still holding, nothing written */
-    snd_error();
-    boxoam_suspend();
-    msg_wait(PDNA_XFERREC_TITLE, UI_WARN, PDNA_XFERREC_L1, PDNA_XFERREC_L2);
-    boxoam_resume();
-    return recs;
-  }
-  boxoam_suspend();
-  bool landed;
-  if (rc == 1) {
-    landed = s_xfer_peer && s_xfer_peer->accept_down && s_xfer_peer->accept_down(box, cell80);
-  } else {
-    landed = gb_bank_down_g3(box, s_held) == BANK_DOWN_LANDED;
-  }
-  boxoam_resume();
-  if (!landed) {
-    log_line("gen12: g3-down box %d slot %d -> gb box %d: refused/not landed",
-             s_orig_box, s_orig_slot, box);
-    return recs;                                            /* still holding -- the arm already said why */
-  }
-
+  /* #270 TARGET RESTORE / #246 landing / the Bank consume: ALL in bank_down_g3_run (shared with the TO GAME menu). */
+  if (!bank_down_g3_run(box, s_held, s_orig_box, s_orig_slot)) return recs;   /* still holding */
   s_holding = false; *done = true;
-  (void)bank_down_consume(s_orig_box, s_orig_slot, s_held);   /* D7: a failed consume already said "duplicate"; the landing stands */
-  if (rc == 1) gbpc_restore_done(s_held);   /* entry marked LAST, after the verified GB write landed */
   s_oam_reload = true;
   recs = src->records(box);   /* the GB list grew -- repaint from the image */
-  log_line("gen12: g3-down box %d slot %d -> gb box %d: ok", s_orig_box, s_orig_slot, box);
   return recs;
 }
 

@@ -150,9 +150,9 @@ def whitelist_facts(menu: str) -> tuple[bool, str]:
 
 
 def action_facts(menu: str) -> tuple[bool, str]:
-    m = re.search(r"case\s+A_TOGAME:\s*if\s*\(\s*native\s*\)\s*\{\s*g_togame_req\s*=\s*true\s*;\s*return\s+false\s*;\s*\}\s*return\s+app_inject_to_game\(", menu)
+    m = re.search(r"case\s+A_TOGAME:\s*if\s*\(\s*native\s*\|\|\s*xg_togame_gb_row\([^{]*\)\s*\)\s*\{\s*g_togame_req\s*=\s*true\s*;\s*return\s+false\s*;\s*\}\s*return\s+app_inject_to_game\(", menu)
     if not m:
-        return False, "case A_TOGAME must be `if (native) { g_togame_req = true; return false; }` BEFORE app_inject_to_game(rec) (a native cell's raw bytes never reach the PC)"
+        return False, "case A_TOGAME must be `if (native || xg_togame_gb_row(...)) { g_togame_req = true; return false; }` BEFORE app_inject_to_game(rec) (a native cell's raw bytes never reach the PC)"
     return True, "ok"
 
 
@@ -361,7 +361,7 @@ def self_test() -> None:
                 "if (is_bank) { lab[n]=PDNA_LBL_TO_GAME; act[n++]=A_TOGAME; }")),
         ("MUT A2: the whitelist drops A_TOGAME", whitelist_facts, mutate(menu, "act[sel] != A_TOGAME && ", "")),
         ("MUT A3a: a native cell injects its raw bytes", action_facts,
-         mutate(menu, "case A_TOGAME:  if (native) { g_togame_req = true; return false; }", "case A_TOGAME:  if (0) { g_togame_req = true; return false; }")),
+         mutate(menu, "case A_TOGAME:  if (native || xg_togame_gb_row(", "case A_TOGAME:  if (0 || xg_togame_gb_row(")),
         ("MUT A3b: the native action never sets the request", action_facts, mutate(menu, "g_togame_req = true; return false; }   ", "return false; }   ")),
         ("MUT B1: one consumer site removed", consumer_facts,
          box.replace("app_take_togame_request()", "app_take_dup_request()", 1)),
