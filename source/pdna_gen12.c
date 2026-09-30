@@ -745,6 +745,7 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "gen2_save.h"     /* G1 review LOW-5: g2_unown_dv_for_letter (CREATE's Unown letter) */
 #include "pdna_gbedit.h"
 #include "pdna_gbsummary.h"   /* BACKLOG #41: the native VIEW/EDIT summary */
+#include "pdna_summary.h"     /* pdna_summary_quiet_save (#234 s4 D2) */
 #include "pdna_gbtrainer.h"   /* BACKLOG #49 P1b: the Gen-1/2 trainer card */
 #include "pdna_gbbag.h"       /* U4, BACKLOG #67: Red/Yellow's own Item bag */
 #include "pdna_gbpack.h"      /* U5, BACKLOG #67: Gold/Silver/Crystal's own Pack */
@@ -5226,9 +5227,11 @@ static bool gb_view_hook(uint8_t* rec80) {
     bool has_sidecar = gb_has_sidecar(gen, &e);
 
     bool saved = false;
+    pdna_summary_quiet_save(true);            /* #234 s4: a resident-session edit is held (one step; the exit confirm writes) */
     int nav = pdna_gbsummary(&e, can_edit, false,
                              gen == GB_GEN1 ? "Gen 1 record" : "Gen 2 record",
                              has_sidecar, false, &saved, &card);
+    pdna_summary_quiet_save(false);
     if (saved && !gb_edit_commit(box, slot, &e, "view")) return false;
     if (nav == 0) return false;
 
@@ -5784,10 +5787,12 @@ static bool gb_create_hook(void) {
     return false;
 
   bool saved = false; int card = 0;
+  pdna_summary_quiet_save(true);            /* #234 s4: a resident-session edit is held */
   pdna_gbsummary(&box_mon, true, true, g_ed->s.gen == GB_GEN1 ? "Gen 1 record" : "Gen 2 record",
                 false /* a freshly created mon can never already have a sidecar */,
                 true /* BACKLOG #50 UX-parity: the NEW chip + START-keep confirm */,
                 &saved, &card);
+  pdna_summary_quiet_save(false);
   if (!saved) return false;
 
   int slot_out = 0;

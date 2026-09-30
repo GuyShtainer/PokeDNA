@@ -199,6 +199,10 @@ def pins(T: dict[str, str]) -> dict[str, bool]:
                                  ("pdna_gbflags.c", "Save data changes?"), ("pdna_gbtrainer.c", "Save trainer changes?"))),
         "S3b the plain legal mon edit asks nothing while the journal records (gbedit_confirm)":
             "gb_hold_live()" in body(T["pdna_gbedit.c"], "gbedit_confirm") and "gb_check(e, &iss)" in body(T["pdna_gbedit.c"], "gbedit_confirm"),
+        "S3c the GB quiet confirm needs the summary's quiet posture; the three resident summaries set it":
+            "gb_hold_live() && pdna_summary_quiet()" in body(T["pdna_gbedit.c"], "gbedit_confirm")
+            and re.search(r"pdna_summary_quiet_save\(true\);\s*nav = pdna_gbsummary\(&edited[^;]*;\s*pdna_summary_quiet_save\(false\);", strip_comments(T["pdna_gbdaycare.c"])) is not None
+            and len(re.findall(r"pdna_summary_quiet_save\(true\);\s*(?:int nav = |nav = )?pdna_gbsummary\(&(?:e|box_mon)\b[^;]*;\s*pdna_summary_quiet_save\(false\);", strip_comments(T["pdna_gen12.c"]))) == 2,
         "S4 the STAY list is exactly the transfer walls; every plain edit holds":
             tags(T, "gb_persist") == STAY and tags(T, "gb_hold_commit") == HOLD,
         "S5 the exit: pending records first, ONE confirm, discard re-reads the card":
@@ -255,7 +259,9 @@ def text_half() -> None:
         "  app_gb_saved();", "S2")
     mut("S3 the dex prompt is back unconditionally", "pdna_gbdex.c", "if (!gb_hold_live() && !app_confirm(\"Save Pokedex changes?\"", "if (!app_confirm(\"Save Pokedex changes?\"", "S3")
     mut("S3 the bag prompt is back unconditionally", "pdna_gbbag.c", "if (gb_hold_live() || app_confirm(\"Save bag changes?\"", "if (app_confirm(\"Save bag changes?\"", "S3")
-    mut("S3b the plain edit still asks", "pdna_gbedit.c", "  if (gb_hold_live()) {\n    GbIssues iss;", "  if (0) {\n    GbIssues iss;", "S3b")
+    mut("S3b the plain edit still asks", "pdna_gbedit.c", "  if (gb_hold_live() && pdna_summary_quiet()) {\n    GbIssues iss;", "  if (0) {\n    GbIssues iss;", "S3b")
+    mut("S3c the GB quiet confirm skips without the summary posture", "pdna_gbedit.c", "gb_hold_live() && pdna_summary_quiet()", "gb_hold_live()", "S3c")
+    mut("S3c the create summary forgets to set quiet", "pdna_gen12.c", "  pdna_summary_quiet_save(true);            /* #234 s4: a resident-session edit is held */\n", "", "S3c")
     mut("S4 a transfer wall holds instead of writing", "pdna_gen12.c", '  return gb_persist("xferup");', '  return gb_hold_commit("xferup");', "S4")
     mut("S4b a plain edit writes at once", "pdna_gen12.c", '  return gb_hold_commit("move");', '  return gb_persist("move");', "S4")
     mut("S5 the exit forgets the pending records", "pdna_gen12.c", "  if (!g_ed) return;\n  app_gb_rest();\n  if (!app_gb_dirty()) return;", "  if (!g_ed) return;\n  if (!app_gb_dirty()) return;", "S5")

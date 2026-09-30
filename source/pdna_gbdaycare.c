@@ -7,6 +7,7 @@
 #include "gb_edit.h"
 #include "pdna_gen12.h"      /* gb_rollback / gb_persist / gb12_arena_tail(_release) */
 #include "pdna_gbsummary.h"  /* the View/Edit screen (BACKLOG #41's own Gen-1/2 card) */
+#include "pdna_summary.h"   /* pdna_summary_quiet_save (#234 s4 D2) */
 #include "pdna_layout.h"     /* PDNA_DCY_*, PDNA_DCPOP_* -- the SAME geometry pdna_daycare() uses */
 #include "data_tables.h"     /* pk_species_name */
 #include "ui.h"
@@ -320,7 +321,9 @@ static void gbdc_view_edit(GbSession* s, GbDaycare* dc, int start_slot, bool can
     char note[40];
     siprintf(note, "Day-Care %s", dc->gen1 ? "boarder" : (slot == 0 ? "Man's Pokemon" : "Lady's Pokemon"));
     bool saved = false;
+    pdna_summary_quiet_save(true);            /* #234 s4: a resident-session edit is held (one step; the exit confirm writes) */
     nav = pdna_gbsummary(&edited, can_edit, false, note, false, false, &saved, 0);
+    pdna_summary_quiet_save(false);
     if (saved) {
       GbEditMon original;
       GbsStatus wst = gbd_withdraw(s, slot, &original);
