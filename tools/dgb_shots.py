@@ -3424,18 +3424,24 @@ def run_b87_dex(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
                                  "order == national-dex order) -- 'none' (pre-cleared "
                                  "by --op dexset 100 0) before the cycle demo below")
 
-    # A cycles the selected cell through none/seen/caught (dex_state's own state
-    # 0/1/2 = none/seen/caught cycle, pdna_pick.c's `(s_dget(nat)+1) % 3`). Dex #100
-    # was pre-cleared to 'none' by the caller's `--op dexset 100 0`, so this cell
-    # (not species #1) is the one that genuinely shows none->seen->caught.
+    # BACKLOG #203 (y17-203): A on a dex cell/row no longer cycles the state -- it OPENS the
+    # entry's DETAIL view, and the none/seen/caught cycle (dex_state's 0/1/2 -> +1 mod 3,
+    # dex_detail_cycle()) moved INSIDE it. Dex #100 was pre-cleared to 'none' by the
+    # caller's `--op dexset 100 0`, so the detail's A presses show none->seen->caught; B
+    # then returns to the list.
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # list row #100 -> DETAIL view (#203)
+    s.shot("05_detail_open", "#203 (was #87 05_cycle_a): A on dex #100 now OPENS the detail view -- "
+                              "it no longer cycles the state; still 'none' (pre-cleared): status '--'",
+           claim=["No. 100"], claim_absent=["CAUGHT", "SEEN"])
     s.tap("A", settle=gb_shots.BIG_SETTLE)
-    s.shot("05_cycle_a", "#87: A pressed once on dex #100 -- state advanced one step "
-                          "(dex_state's own 0/1/2 -> +1 mod 3 cycle; starts 'none' "
-                          "per the pre-clear, so this step lands on 'seen')")
+    s.shot("05_cycle_a", "#87 via #203: A INSIDE the detail view advances dex #100 one step "
+                          "(0/1/2 -> +1 mod 3; starts 'none' per the pre-clear, so this step lands on 'seen')",
+           claim=["No. 100", "SEEN"])
     s.tap("A", settle=gb_shots.BIG_SETTLE)
-    s.shot("06_cycle_b", "#87: A pressed a second time -- one more step around the "
-                          "cycle ('seen' -> 'caught')")
+    s.shot("06_cycle_b", "#87 via #203: A a second time inside the detail -- 'seen' -> 'caught'",
+           claim=["No. 100", "CAUGHT"])
     s.tap("A", settle=gb_shots.BIG_SETTLE)                   # back to 'none' -- leave the cell as the pre-clear found it
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                   # detail -> the list (B return)
 
     s.tap("START", settle=gb_shots.BIG_SETTLE)               # -> dex_menu()
     s.shot("07_start_menu", "#87: KEY_START -> dex_menu() -- sort/status toggles + "
