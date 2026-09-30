@@ -9281,15 +9281,22 @@ static void pdna_settings(void) {
    * onto the row below, so their LENGTH is load-bearing and the host test checks it. */
 #define SET_MODE_ONE(s) s,
   static const char* const MODE[3] = { PDNA_SET_BACKUP_MODES(SET_MODE_ONE) };
-  enum { S_BACKUP, S_ANIM, S_YARD, S_ROM, S_ART, S_RUMBLE, S_CLEAR, S_CLOSE, S_N };
+#define SET_HIST_ONE(s) s,
+  static const char* const HISTV[3] = { PDNA_SET_HIST_VALUES(SET_HIST_ONE) };
+  /* A row is at most 28 sys8 columns (pdna_layout.h, host-checked against the screen width: a longer one WRAPS), so 32 holds
+   * the longest with its NUL. #234 s4 grew the page from 8 rows to 10: the row buffers shrink from 44 to 32 so the page's
+   * frame (the deepest STACK chain runs through it) does not grow with them. */
+#define SET_ROW_BUF 32
+  enum { S_BACKUP, S_ANIM, S_YARD, S_ROM, S_ART, S_RUMBLE, S_HIST, S_HCLEAR, S_CLEAR, S_CLOSE, S_N };
   _Static_assert(S_N == PDNA_SET_ROWS, "settings row count out of sync with pdna_layout.h");
   int sel = 0;
-  char pv_rows[S_N][44] = { { 0 } };
+  bool hist_noted = false;                            /* the History-size note shows once per visit */
+  char pv_rows[S_N][SET_ROW_BUF] = { { 0 } };
   int pv_sel = -1; bool pv_valid = false; uint32_t pv_gen = 0;
   for (;;) {
     bool full = !pv_valid || pv_gen != ui_clear_gen();
 
-    char r0[44]; siprintf(r0, PDNA_SET_BACKUP_FMT, MODE[g_backup_mode]);
+    char r0[SET_ROW_BUF]; siprintf(r0, PDNA_SET_BACKUP_FMT, MODE[g_backup_mode]);
     /* Say WHY it is unavailable rather than showing a toggle that does nothing:
      * without a registered ROM there is no art to draw a visitor with. */
     bool yard_ok = app_any_rom_registered();
@@ -9297,27 +9304,30 @@ static void pdna_settings(void) {
      * screen holds — and TTE does not clip, it WRAPS: the "OM" reappeared at x=0 on the
      * next row, on top of "Game ROM: not set". "Set Game ROM" is 28 columns and points
      * at the row that fixes it. */
-    char r1[44]; siprintf(r1, PDNA_SET_YARD_FMT,
+    char r1[SET_ROW_BUF]; siprintf(r1, PDNA_SET_YARD_FMT,
                           !yard_ok ? PDNA_SET_YARD_NEEDROM
                                    : (g_yard_visitors ? PDNA_SET_YARD_ON : PDNA_SET_YARD_OFF));
     /* set+detached shows a state distinct from "not set" -- while detached,
      * app_icon_rom_open() never opens s_iconrom, so s_iconrom.ok alone would read
      * as "not set" even though g_rom_path[] still has the file (item 7: the whole
      * point is that the registration survives the flip). */
-    char r2[44];
+    char r2[SET_ROW_BUF];
     if (g_rom_art_off && app_any_rom_registered()) siprintf(r2, PDNA_SET_ROM_FMT, PDNA_SET_ROM_ARTOFF);
     else siprintf(r2, PDNA_SET_ROM_FMT, s_iconrom.ok ? rom_kind_name(s_iconrom_ctx.kind) : PDNA_SET_ROM_NOTSET);
     /* Extract-art row (Phase 2): three dim/live states, same posture as Yard visitors
      * above -- say WHY it is unavailable rather than show a toggle that does nothing. */
     bool art_omega_ok = (active_flashcart == EZ_FLASH_OMEGA);
     bool art_selectable = s_iconrom.ok && art_omega_ok;
-    char r3[44];
+    char r3[SET_ROW_BUF];
     if (!s_iconrom.ok) siprintf(r3, PDNA_SET_ART_FMT, PDNA_SET_ART_NEEDROM);
     else if (!art_omega_ok) siprintf(r3, PDNA_SET_ART_FMT, PDNA_SET_ART_NOOMEGA);
     else if (art_session_icons_ready_memoized())
       siprintf(r3, PDNA_SET_ART_CACHED_FMT, (unsigned long)(ART_ICONS_TOTAL_BYTES / 1024u));
     else siprintf(r3, "%s", PDNA_SET_ART_GO);
-    const char* rows[S_N] = { r0, "Animations  >", r1, r2, r3, "Rumble  >", PDNA_SET_ROW_CLEAR, "Close" };
+    unsigned hp = (g_anim_mask >> HIST_CAP_SHIFT) & 3u;
+    if (hp > 2u) hp = 0u;                              /* the unused preset 3 reads as the default */
+    char r4[SET_ROW_BUF]; siprintf(r4, PDNA_SET_HIST_FMT, HISTV[hp]);
+    const char* rows[S_N] = { r0, "Animations  >", r1, r2, r3, "Rumble  >", r4, PDNA_SET_ROW_HCLEAR, PDNA_SET_ROW_CLEAR, "Close" };
 
     if (full) {
       ui_clear();
@@ -9325,8 +9335,6 @@ static void pdna_settings(void) {
       ui_hline(0, 14, UI_SCR_W, UI_BORDER);
       /* Rebalanced across the two rows: the first was 29 sys8 columns at x=8, i.e. ending
        * on the last pixel column of the screen with no margin at all. */
-      ui_text(PDNA_SET_HELP_X, PDNA_SET_HELP_Y1, UI_DIM, PDNA_SET_HELP1);
-      ui_text(PDNA_SET_HELP_X, PDNA_SET_HELP_Y2, UI_DIM, PDNA_SET_HELP2);
       ui_ptext(PDNA_SET_HELP_X, PDNA_SET_NOTE_Y, UI_DIM, PDNA_SET_NOTE);
       ui_text(PDNA_SET_FOOT_X, PDNA_SET_FOOTER_Y, UI_DIM, PDNA_SET_FOOT);
     }
@@ -9391,6 +9399,22 @@ static void pdna_settings(void) {
 #endif
       }
       else if (sel == S_RUMBLE) rumble_settings();
+      else if (sel == S_HIST) {                       /* #234 s4: cycle the retention-cap preset (1 MiB -> 512 KiB -> 256 KiB) */
+        unsigned p = ((g_anim_mask >> HIST_CAP_SHIFT) & 3u) + 1u;
+        if (p > 2u) p = 0u;
+        g_anim_mask = (g_anim_mask & ~(3u << HIST_CAP_SHIFT)) | (p << HIST_CAP_SHIFT);
+        if (!hist_noted) { hist_noted = true; msg_wait(PDNA_SET_HSIZE_TITLE, UI_OK, PDNA_SET_HSIZE_L1, PDNA_SET_HSIZE_L2); pv_valid = false; }
+      }
+      else if (sel == S_HCLEAR) {                     /* #234 s4: delete this save's history (Omega-only, destructive confirm) */
+        if (!cart_writable()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); continue; }
+        if (!app_history_bound()) { snd_deny(); msg_wait("HISTORY", UI_DIM, "No history is recorded", "for this save."); pv_valid = false; continue; }
+        if (app_confirm(PDNA_SET_HCLEAR_TITLE, PDNA_SET_HCLEAR_L1)) {
+          int hn = app_history_clear();
+          if (hn >= 0) { snd_ok(); msg_wait("CLEARED", UI_OK, "History cleared.", "A new one starts now."); }
+          else { snd_error(); msg_wait("NOT CLEARED", UI_WARN, "The card refused.", "History kept as it was."); }
+        }
+        pv_valid = false;
+      }
       else if (sel == S_CLEAR) {
         if (!cart_writable()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); continue; }
         if (app_confirm("Delete ALL backups?", "For the loaded save only.")) {
@@ -10389,6 +10413,23 @@ void app_gb_rest(void) { app_journal_rest(); }
 void app_gb_discarded(void) { imgf_clear(&g_img); jrnapp_after_discard(&g_rec); }
 /* The session is over: unbind the recorder (a later Gen-3 load re-opens it for its own image). */
 void app_gb_close(void) { imgf_clear(&g_img); jrnapp_close(&g_rec); }
+
+/* Settings > Clear history: is a journal open for the save this Settings page was reached from? (Only then is there
+ * "this save's" history to clear -- off / foreign / error states have nothing this build may delete.) */
+bool app_history_bound(void) { return jrnapp_state(&g_rec) != JA_OFF && jrnapp_state(&g_rec) != JA_FOREIGN && jrnapp_state(&g_rec) != JA_ERROR; }
+/* Delete this save's history (the slot files + their directory), reopen it empty under the Settings cap, and create the
+ * new ring at once (a first fill, one status line). Returns the files removed (>= 0) or a negative JRN_E_*. The image,
+ * its dirty flags and the .sav are untouched: only undo/redo are gone. */
+int app_history_clear(void) {
+  int n = jrnapp_clear(&g_rec, app_history_cap());
+  if (n < 0) { jrnapp_log_events(&g_rec); return n; }
+  busy_panel("Preparing undo history...");
+  if (pdna_gen12_resident()) (void)jrnapp_prepare_key(&g_rec, pdna_gen12_journal_key());
+  else (void)jrnapp_prepare(&g_rec, g_sb2, g_frlg);
+  jrnapp_log_events(&g_rec);
+  log_line("journal: history cleared (%d file(s)), state %d", n, jrnapp_state(&g_rec));
+  return n;
+}
 
 /* ---- S5-C Part B2: reconcile on load -- release transferred originals -----------
  *

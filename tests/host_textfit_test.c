@@ -1884,10 +1884,24 @@ int main(void) {
         (int)strlen(row) * SYS8_W, row); }
   chk("settings row", PDNA_SET_ROW_X, MARGIN_R - PDNA_SET_ROW_X,
       (int)strlen(PDNA_SET_ROW_CLEAR) * SYS8_W, PDNA_SET_ROW_CLEAR);
-  chk("settings help", PDNA_SET_HELP_X, MARGIN_R - PDNA_SET_HELP_X,
-      (int)strlen(PDNA_SET_HELP1) * SYS8_W, PDNA_SET_HELP1);
-  chk("settings help", PDNA_SET_HELP_X, MARGIN_R - PDNA_SET_HELP_X,
-      (int)strlen(PDNA_SET_HELP2) * SYS8_W, PDNA_SET_HELP2);
+  /* #234 slice 4: the undo journal's two Settings rows (pdna_main.c builds them into 32-byte row buffers: 28 columns + NUL) */
+#define SET_HIST_ONE(s) s,
+  { static const char* const HISTV[] = { PDNA_SET_HIST_VALUES(SET_HIST_ONE) };
+    char row[64];
+    for (unsigned i = 0; i < sizeof HISTV / sizeof HISTV[0]; i++) {
+      snprintf(row, sizeof row, PDNA_SET_HIST_FMT, HISTV[i]);
+      chk("settings row", PDNA_SET_ROW_X, MARGIN_R - PDNA_SET_ROW_X, (int)strlen(row) * SYS8_W, row);
+      chkv("settings row buffer (32 B) holds it", (int)strlen(row) + 1, 32); } }
+  chk("settings row", PDNA_SET_ROW_X, MARGIN_R - PDNA_SET_ROW_X,
+      (int)strlen(PDNA_SET_ROW_HCLEAR) * SYS8_W, PDNA_SET_ROW_HCLEAR);
+  chkv("settings row buffer (32 B) holds it", (int)strlen(PDNA_SET_ROW_HCLEAR) + 1, 32);
+  chkv("settings row buffer (32 B) holds the cached-art row",
+       (int)strlen("Extract art:  999 KB cached") + 1, 32);
+  chkv("settings row buffer (32 B) holds the longest backup row",
+       (int)strlen("Backups:  Single (rolling)") + 1, 32);
+  /* msg_wait / app_confirm lines are proportional text fitted into the 184 px dialog (see the GB write-failure panels) */
+  PF(PDNA_SET_HCLEAR_TITLE, 28, 184); PF(PDNA_SET_HCLEAR_L1, 28, 184);
+  PF(PDNA_SET_HSIZE_TITLE, 28, 184); PF(PDNA_SET_HSIZE_L1, 28, 184); PF(PDNA_SET_HSIZE_L2, 28, 184);
   T(PDNA_SET_FOOT, PDNA_SET_FOOT_X);
   /* and the rows must not run into the help text or the footer */
   chkv("settings last row ink",

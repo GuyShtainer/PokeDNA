@@ -207,3 +207,31 @@ const JrnFs jrn_fatfs = {
   0, jfs_mkdir, jfs_size, jfs_read, jfs_write, jfs_alloc, jfs_zero, jfs_create_zero,
   jfs_list, jfs_scan, jfs_stamp
 };
+
+/* ---- Settings > Clear history (slice 4): the ONE place this module removes files ------------------------------------ */
+int jrnfs_clear_key(const char* root, uint64_t key) {
+  char dir[JRN_PATH_MAX], p[JRN_PATH_MAX + 12], hex[17];
+  uint32_t n = 0, i;
+  unsigned s;
+  int removed = 0;
+  FRESULT fr;
+  if (!root) return JRN_E_ARG;
+  jrn_key_hex(key, hex);
+  while (root[n] && n < JRN_PATH_MAX - 18u) { dir[n] = root[n]; n++; }
+  if (root[n]) return JRN_E_ARG;                                  /* the root does not fit: never a truncated path */
+  dir[n++] = '/';
+  for (i = 0; i < 16u; i++) dir[n++] = hex[i];
+  dir[n] = 0;
+  for (s = 1; s <= JRN_RING_MAX; s++) {                           /* bounded: the ring has at most JRN_RING_MAX slot files */
+    memcpy(p, dir, n);
+    p[n] = '/';
+    p[n + 1] = (char)('0' + (s / 1000u) % 10u); p[n + 2] = (char)('0' + (s / 100u) % 10u);
+    p[n + 3] = (char)('0' + (s / 10u) % 10u);   p[n + 4] = (char)('0' + s % 10u);
+    memcpy(p + n + 5, ".pdj", 5);                                 /* incl. the NUL */
+    fr = f_unlink(p);
+    if (fr == FR_OK) removed++;
+    else if (fr != FR_NO_FILE && fr != FR_NO_PATH) return JRN_E_IO;   /* a card error: stop, the journal is whatever it still is */
+  }
+  (void)f_unlink(dir);                                            /* best effort: a stray file keeps it, and that is harmless */
+  return removed;
+}

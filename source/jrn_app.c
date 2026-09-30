@@ -142,6 +142,27 @@ int jrnapp_open_gb(ImgRec* r, uint8_t* img, uint64_t key, uint8_t cap, bool writ
   return ja_open_bound(r);
 }
 
+/* Settings > Clear history: delete this save's slot files + directory (rumble paused; Omega-only is the caller's gate),
+ * then reopen the journal EMPTY under `cap` and keep recording from the image as it is now. Redirect files stay (a later
+ * identity that redirects here just starts a new directory). Returns the files removed or a negative JRN_E_*; a failed
+ * delete leaves the journal exactly as it was, a failed reopen turns it off (never claims what is not recorded). */
+int jrnapp_clear(ImgRec* r, uint8_t cap) {
+  int n, rc;
+  if (!r || !r->j || s_state != JA_OK || s_j.readonly) return JRN_E_ARG;
+  rmbl_pause();
+  n = jrnfs_clear_key(JA_ROOT, s_j.key);
+  rmbl_resume();
+  if (n < 0) { ja_event("clear history failed", n); return n; }
+  s_j.max_segs = cap;
+  r->state = IREC_OK; r->lost = 0; r->epoch = 0; r->epoch_seen = 0; r->mask = 0; r->depth = 0; r->name = 0;
+  rmbl_pause();
+  rc = ja_do_open(r);
+  rmbl_resume();
+  if (rc != JRN_OK) { r->j = 0; r->state = IREC_OFF; s_state = JA_ERROR; ja_event("re-open after clear failed", rc); return rc; }
+  s_saved = jrn_cursor(&s_j);
+  return n;
+}
+
 /* Drop the recorder (the session it was bound to is over): nothing is written, the state reads OFF. */
 void jrnapp_close(ImgRec* r) {
   if (r) { r->j = 0; r->state = IREC_OFF; r->depth = 0; r->mask = 0; }

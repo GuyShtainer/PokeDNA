@@ -1654,29 +1654,27 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * two that did not fit reappeared as "OM" at x=0 on top of the row below. Every string
  * here is therefore length-critical; the host test measures them. */
 #define PDNA_SET_ROW_X        10
-#define PDNA_SET_ROW0_Y       24
-/* 13, not 14: an 8th row (Extract art) needed room. At 13px the 8th row's ink still
- * clears PDNA_SET_HELP_Y1 by 1px (host-checked) — one row cannot afford more than
- * this without either shrinking the pitch further or moving the help block. */
-#define PDNA_SET_ROW_PITCH    13
-#define PDNA_SET_ROWS          8   /* Backups, Animations, Yard, Game ROM, Extract art, Rumble, Clear, Close */
+#define PDNA_SET_ROW0_Y       18
+/* 12, from 13 (and ROW0_Y 18, from 24): #234 slice 4 added two rows (History size, Clear history) and dropped the two
+ * "Animations + Rumble have per-item submenus" help lines (both rows already carry a ">"), so ten rows fit above the
+ * one remaining note. The 10th row's ink still clears PDNA_SET_HELP_Y1 (host-checked). */
+#define PDNA_SET_ROW_PITCH    12
+#define PDNA_SET_ROWS         10   /* Backups, Animations, Yard, Game ROM, Extract art, Rumble, History size, Clear history, Clear backups, Close */
 /* The selection highlight panel: ui_panel(2, y - PDNA_SET_ROW_PANEL_YOFF, 236,
  * <height>, ...). Normal rows use PDNA_SET_ROW_PANEL_H == PDNA_SET_ROW_PITCH, so
  * consecutive rows' panels exactly TOUCH with no gap (row i's panel bottom is
  * y_i - YOFF + H - 1 == y_i + 10; row i+1's panel top is y_(i+1) - YOFF == y_i + 11
  * -- contiguous). The LAST row has no row below it to touch, only the help text at
- * PDNA_SET_HELP_Y1 -- a full PDNA_SET_ROW_PANEL_H-tall panel there reaches
- * ROW0+(ROWS-1)*PITCH - YOFF + H - 1 = 24+91-2+12 = 125, two rows INTO the help
- * text's first ink row (124). PDNA_SET_ROW_LASTPANEL_H is 3 px shorter so the last
- * row's panel bottoms out at 122, one pixel clear of 123 -- host-checked in
- * tests/host_textfit_test.c ("settings last row panel clear of help"). */
+ * PDNA_SET_HELP_Y1 (the top of the block below the rows) -- a full PDNA_SET_ROW_PANEL_H-tall panel there would reach
+ * ROW0+(ROWS-1)*PITCH - YOFF + H - 1 = 18+108-2+12 = 136, INTO that block's first ink row. PDNA_SET_ROW_LASTPANEL_H is
+ * 2 px shorter so the last row's panel bottoms out at 133 -- host-checked in tests/host_textfit_test.c ("settings last
+ * row panel clear of help"). */
 #define PDNA_SET_ROW_PANEL_YOFF   2
 #define PDNA_SET_ROW_PANEL_H      PDNA_SET_ROW_PITCH
 #define PDNA_SET_ROW_LASTPANEL_H  10
 #define PDNA_SET_FOOT_X        4
 #define PDNA_SET_HELP_X        8
-#define PDNA_SET_HELP_Y1     124
-#define PDNA_SET_HELP_Y2     133
+#define PDNA_SET_HELP_Y1     136   /* the first y below the rows (the note's block); the two help lines that sat here are gone */
 #define PDNA_SET_NOTE_Y      142
 #define PDNA_SET_FOOTER_Y    152
 
@@ -1716,8 +1714,17 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_SET_ROM_VALUES(X) \
   X(PDNA_SET_ROM_NOTSET) X(PDNA_SET_ROM_ARTOFF) X(PDNA_SET_ROM_LONGEST_KIND)
 #define PDNA_SET_ROW_CLEAR   "Clear backups (this save)"
-#define PDNA_SET_HELP1       "Animations + Rumble have"
-#define PDNA_SET_HELP2       "per-item on/off submenus."
+/* #234 slice 4: the undo journal's two rows. The size presets are the retention cap in 64 KiB segments (16 / 8 / 4); a
+ * SMALLER cap applies when a save next opens, a BIGGER one only to a history created after Clear history (the ring's
+ * slot files are fixed once made). */
+#define PDNA_SET_HIST_FMT     "History size:  %s"
+#define PDNA_SET_HIST_VALUES(X) X("1 MiB") X("512 KiB") X("256 KiB")
+#define PDNA_SET_ROW_HCLEAR   "Clear history (this save)"
+#define PDNA_SET_HCLEAR_TITLE "Delete ALL history?"
+#define PDNA_SET_HCLEAR_L1    "Undo steps for this save."
+#define PDNA_SET_HSIZE_TITLE  "HISTORY SIZE"
+#define PDNA_SET_HSIZE_L1     "Smaller: next time it opens."
+#define PDNA_SET_HSIZE_L2     "Bigger: after Clear history."
 #define PDNA_SET_NOTE        "Yard visitors are scenery, not your Pokemon."
 #define PDNA_SET_FOOT        "A change/do  U/D move  B back"
 

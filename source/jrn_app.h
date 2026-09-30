@@ -39,6 +39,8 @@ int  jrnapp_state(const ImgRec* r);
 int  jrnapp_open_gb(ImgRec* r, uint8_t* img, uint64_t key, uint8_t cap, bool write_ok);
 /* The Game Boy safe-moment work: the ring/tail/spare, plus the redirect when the identity key moved. */
 int  jrnapp_prepare_key(ImgRec* r, uint64_t key);
+/* Settings > Clear history (see jrn_app.c): delete this save's journal files, reopen empty under `cap`. Files removed or < 0. */
+int  jrnapp_clear(ImgRec* r, uint8_t cap);
 /* The session the recorder was bound to is over: unbind (writes nothing; the state reads JA_OFF). */
 void jrnapp_close(ImgRec* r);
 

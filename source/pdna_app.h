@@ -587,6 +587,9 @@ void app_gb_discarded(void);
 void app_gb_rest(void);
 void app_gb_close(void);
 uint8_t app_history_cap(void);
+/* Settings rows (slice 4): a journal is open for the save in view / delete it and start a fresh one (>= 0 files removed). */
+bool app_history_bound(void);
+int  app_history_clear(void);
 
 /* PC->Bank MOVE support: clear a PC box slot (release from the save) after the destination
  * bank box has been verified on SD, matched by the mon's 8-byte identity so a bystander is
