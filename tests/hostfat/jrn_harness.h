@@ -81,7 +81,8 @@ static JrnCfg cfg_for(uint64_t key, uint8_t max_segs, uint8_t readonly) {
   return c;
 }
 
-static int jopen(Jrn* j, uint64_t key) { JrnCfg c = cfg_for(key, 0, 0); return jrn_open(j, &c, &IMG); }
+static uint8_t g_jopen_segs = 0;   /* max_segs jopen() uses (0 = the default 16; the cut sweep shrinks the ring) */
+static int jopen(Jrn* j, uint64_t key) { JrnCfg c = cfg_for(key, g_jopen_segs, 0); return jrn_open(j, &c, &IMG); }
 static int jopen_ro(Jrn* j, uint64_t key) { JrnCfg c = cfg_for(key, 0, 1); return jrn_open(j, &c, &IMG); }
 
 /* Stage one step the way the funnel will: change `n` bytes of one region to `val`, hand the
