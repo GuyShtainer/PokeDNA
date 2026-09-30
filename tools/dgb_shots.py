@@ -5659,9 +5659,42 @@ def _y9_tool() -> Path:
     return exe
 
 
+_VSD_TEMPLATE_DIR = Path("/tmp/host_vsdimg_test_tmpl")
+_VSD_TEMPLATE_MARKER = "/PokeDNA/bank.meta"      # a file only the template plants (a plain mkimg image has none)
+
+
+def _vsd_template_hint() -> str:
+    return (f"the ledger/xfer chains need an image made WITH the template: "
+            f"`vsd_img mkimg IMG 16 {_VSD_TEMPLATE_DIR}` (a plain `mkimg IMG 16` has no /PokeDNA/xfer folder, so the first "
+            f"ledger plant fails fr=5). That template directory is written by tests/host_vsdimg_test.c "
+            f"(TMPL_DIR) -- run `python3 tests/run_host_tests.py` once (or compile+run that test) if {_VSD_TEMPLATE_DIR} "
+            f"does not exist.")
+
+
+def _vsd_require_template(img: Path) -> None:
+    """Fail FAST, naming the template requirement, when `img` was made by a plain `mkimg IMG 16` (#289 K3)."""
+    r = subprocess.run([str(gb_shots._vsd_img_bin()), "list", str(img)], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"vsd image {img} cannot be listed: {r.stderr.strip()[-200:]}")
+    if _VSD_TEMPLATE_MARKER not in r.stdout:
+        raise RuntimeError(f"vsd image {img} was not made from the template: " + _vsd_template_hint())
+
+
+def _vsd_mkimg_from_template(img: Path) -> Path:
+    """A fresh 16 MiB image WITH the template; fails loudly (never the old silent capture_output) when it cannot (#289 K3)."""
+    if not _VSD_TEMPLATE_DIR.is_dir():
+        raise RuntimeError(f"template directory {_VSD_TEMPLATE_DIR} is missing: " + _vsd_template_hint())
+    r = subprocess.run([str(gb_shots._vsd_img_bin()), "mkimg", str(img), "16", str(_VSD_TEMPLATE_DIR)],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"vsd_img mkimg {img} failed: {r.stderr.strip()[-200:]}")
+    return img
+
+
 def _y9_patch(img: Path, mode_args: "list[list[str]]") -> "list[str]":
     """Write each `y9_mkledger <mode_args> OUT` ledger file into the --vsd image (vsd_img patch) BEFORE
     the Session attaches; returns the on-card paths. The image should be a FRESH `vsd_img mkimg`."""
+    _vsd_require_template(img)
     tool = _y9_tool()
     tmp = Path(tempfile.mkdtemp(prefix="y9_ledgers_"))
     paths = []
@@ -5819,8 +5852,7 @@ def run_y9_g3home_target(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_sh
 
     # ---- a DECLINED exit save: nothing may be consumed, the Bank keeps its cell (R3's other half) ----
     img2 = Path(str(img) + ".decline")
-    subprocess.run([str(gb_shots._vsd_img_bin()), "mkimg", str(img2), "16", "/tmp/host_vsdimg_test_tmpl"],
-                   capture_output=True)
+    _vsd_mkimg_from_template(img2)
     q0, q1 = _y9_patch(img2, [["ledger", "0"], ["ledger", "1"]])
     saved_default = gb_shots._DEFAULT_VSD_IMG
     gb_shots._DEFAULT_VSD_IMG = img2
@@ -5903,8 +5935,7 @@ def _y10_landed(before: "list[bytes]", after: "list[bytes]", label: str) -> "tup
 
 def _y10_fresh_img(img: Path, tag: str) -> Path:
     img2 = Path(str(img) + "." + tag)
-    subprocess.run([str(gb_shots._vsd_img_bin()), "mkimg", str(img2), "16", "/tmp/host_vsdimg_test_tmpl"],
-                   capture_output=True)
+    _vsd_mkimg_from_template(img2)
     return img2
 
 
