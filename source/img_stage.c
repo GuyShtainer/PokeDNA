@@ -46,6 +46,7 @@ static void rec_lost(ImgRec* r, const char* what, int rc) {
   r->last_what = what; r->last_rc = rc;
   if (rc == JRN_E_STOPPED) { r->state = IREC_STOPPED; return; }
   r->lost++;
+  r->epoch++;                       /* a lost step is a floor: the next record is crossed (#301) */
   if (r->state == IREC_OK) r->state = IREC_GAP;
 }
 
@@ -66,6 +67,7 @@ static void rec_step(ImgRec* r, const uint8_t* save, int slot, uint16_t mask, co
     if (rc == JRN_E_DIVERGED) {                                  /* a write outside the funnel moved g_save */
       if (jrn_recompute(r->j, &r->img) != 0) break;
       r->last_what = "resync"; r->last_rc = rc; r->lost++;
+      crossed = 1;                  /* the resynced base is not the recorded chain's base: floor here too */
       if (r->state == IREC_OK) r->state = IREC_GAP;
       continue;
     }
@@ -84,7 +86,8 @@ static void stage_now(ImgFlags* f, ImgRec* r, uint8_t* save, int slot, uint16_t 
     /* #300: a drop changes one or two of the nine PC sections; the rest are byte-identical, and rewriting them
      * (3,968 B copy + checksum each) was most of the mid-drop freeze. An identical section is left as it is. */
     cur = sec_data(save, slot, id);
-    if (cur && memcmp(cur, blk[id], G3_SECTOR_DATA_SIZE) == 0) continue;
+    if (cur && memcmp(cur, blk[id], G3_SECTOR_DATA_SIZE) == 0 &&
+        gen3_section_checksum_ok(save, slot, id, G3_SECTOR_DATA_SIZE)) continue;   /* a stale checksum is still healed */
     (void)gen3_write_full_section(save, slot, id, blk[id]);
   }
   if (r) r->name = 0;

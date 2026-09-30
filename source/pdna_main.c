@@ -10224,7 +10224,7 @@ static void app_journal_rederive(void) {
  * application, STOPPING before the first crossed record; B = a discarded marker (never re-offered). An empty-reading
  * journal never gets here (jrn_offer is false: an unreadable journal must not make claims, D9). */
 static void __attribute__((noinline)) app_journal_offer(uint32_t n, uint32_t avail, const char* stop) {
-  char l1[76], l2[40];
+  char l1[96], l2[48];
   bool yes;
   if (avail) {
     siprintf(l1, "%lu recorded step%s not in this save - re-apply? B = discard them.", (unsigned long)n, n == 1 ? " is" : "s are");
@@ -10261,7 +10261,7 @@ static void __attribute__((noinline)) app_journal_load(void) {
     char stop[25];
     uint32_t n = jrnapp_offer(&avail, stop);
     log_line("journal: open cursor %lu tip %lu offer %lu", (unsigned long)jrnapp_cursor(), (unsigned long)jrnapp_tip(), (unsigned long)n);
-    if (n) app_journal_offer(n, avail, stop);
+    if (n) { hb_pause(); perf_span_pause(); app_journal_offer(n, avail, stop); perf_span_resume(); hb_resume(); }
     if (jrnapp_first_fill_owed()) busy_panel("Preparing undo history...");
     (void)jrnapp_prepare(&g_rec, g_sb2, g_frlg);
   }

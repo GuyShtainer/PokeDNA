@@ -80,7 +80,9 @@ int jrnapp_open(ImgRec* r, uint8_t* save, int slot, const uint8_t* sb2, bool frl
   s_ai.save = save; s_ai.slot = slot;
   if (!write_ok || !save || !sb2) return JA_OFF;            /* Everdrive / hack ROM / no image: never opens, never says "recorded" */
   s_key = ja_key(sb2, frlg);
+  rmbl_pause();                                             /* open can zero a torn tail: an SD write */
   rc = ja_do_open(r);
+  rmbl_resume();
   if (rc == JRN_E_VERSION) { s_state = JA_FOREIGN; ja_event("open: foreign journal, read-only", rc); return JA_FOREIGN; }
   if (rc != JRN_OK) { s_state = JA_ERROR; ja_event("open failed, journal off", rc); return JA_ERROR; }
   r->j = &s_j;
@@ -202,7 +204,9 @@ void jrnapp_after_discard(ImgRec* r) {
   r->mask = 0;
   (void)jrnapp_flush();                                      /* the thrown-away steps stay in the history, marked */
   if (s_j.stopped) return;
+  rmbl_pause();
   rc = ja_do_open(r);                                        /* re-anchor against the restored card image */
+  rmbl_resume();
   if (rc != JRN_OK) { ja_event("re-open after discard failed", rc); r->j = 0; r->state = IREC_OFF; s_state = JA_ERROR; return; }
   jrnapp_decline();
 }
