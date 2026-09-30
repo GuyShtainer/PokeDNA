@@ -554,6 +554,7 @@ static bool gbdex_chooser(GbSession* s, bool can_edit) {
          * pointer this function received, as ctx) after gbdex_chooser() itself
          * returns. */
         pdna_dex_set_cell_art(gbdex_cell_art, s, gbdex_serves_dex(s));
+    pdna_dex_set_detail_gen(s->gen == GB_GEN1 ? (uint8_t)PDNA_GEN1 : (uint8_t)PDNA_GEN2);   /* BACKLOG #203 */
 #ifdef PDNA_DELTA
         pdna_dex_set_page_begin(gbdex_dex_page_begin);
 #endif
@@ -563,6 +564,7 @@ static bool gbdex_chooser(GbSession* s, bool can_edit) {
         pdna_dex_set_page_begin(NULL);
 #endif
         pdna_dex_set_cell_art(NULL, NULL, false);
+        pdna_dex_set_detail_gen(0);
         if (dex_dirty) dirty = true;
       } else {
         if (unown_forms_screen(s, can_edit)) dirty = true;
@@ -604,6 +606,7 @@ bool pdna_gbdex(GbSession* s, bool can_edit) {
      * this branch's `s->gen != GB_GEN2` self-gate meant Gen 1 always fell through
      * to the icon-store ladder). */
     pdna_dex_set_cell_art(gbdex_cell_art, s, gbdex_serves_dex(s));
+        pdna_dex_set_detail_gen(s->gen == GB_GEN1 ? (uint8_t)PDNA_GEN1 : (uint8_t)PDNA_GEN2);   /* BACKLOG #203 */
 #ifdef PDNA_DELTA
     pdna_dex_set_page_begin(gbdex_dex_page_begin);
 #endif
@@ -613,6 +616,7 @@ bool pdna_gbdex(GbSession* s, bool can_edit) {
     pdna_dex_set_page_begin(NULL);
 #endif
     pdna_dex_set_cell_art(NULL, NULL, false);
+    pdna_dex_set_detail_gen(0);
   }
 
   /* BACKLOG #208: release the arena tail borrowed above -- both branches above are

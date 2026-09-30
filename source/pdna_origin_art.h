@@ -664,6 +664,17 @@ int pdna_origin_art_icon(uint16_t dex, PdnaArt* out);
  * enough stack room right now, or the ROM cannot serve this species. */
 int pdna_origin_art_portrait_by_dex(uint16_t dex, PdnaArt* out);
 
+/* BACKLOG #203: by_dex for either GB generation (gen = PDNA_GEN1 or PDNA_GEN2; any
+ * other value refuses). Same contract: front, form 0, never shiny/back, 0 + zeroed
+ * `out` on no ROM / no stack room / not servable. */
+int pdna_origin_art_portrait_by_dex_gen(uint8_t gen, uint16_t dex, PdnaArt* out);
+
+/* BACKLOG #203: the Gen-3 species-keyed front pic for the Pokedex detail view. `species`
+ * is the INTERNAL id (pk_national_no() is NOT applied -- callers hold g_list entries).
+ * Front, form 0, never shiny/back; compiled art first, then the registered ROM rung;
+ * out->gen = PDNA_GEN3, w/h = MON_FRONT_W/H. 0 + zeroed `out` when neither serves it. */
+int pdna_origin_art_front_by_species(uint16_t species, PdnaArt* out);
+
 /*
  * Scale one era picture into a CELL-SIZED image the UI can blit, in exactly the format
  * ui_sprite() takes: dw*dh RGB15 pixels, row-major, 0 = transparent and 0x8000|RGB15

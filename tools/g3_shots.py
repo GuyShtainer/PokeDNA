@@ -482,6 +482,54 @@ def run_b225_party_mail(core_mod, image_mod, rom: Path, out_dir: Path) -> Sessio
     return s
 
 
+def run_y17_dex_detail_g3(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
+    """#203 (lane y17-203): the Gen-3 Pokedex DETAIL view. Vehicle: delta-artless fused with Emerald.sav (fuse_sav.py) AND
+    Emerald.gba (fuse_rom.py) so pdna_origin_art_front_by_species() streams the portrait from the user's ROM. Nav: Pokedex is
+    NAV index 6 (column 0). The artless default view is the LIST; L -> grid."""
+    s = Session(core_mod, image_mod, rom, out_dir, "y17_g3_")
+    print("== #203 (y17-203): Gen-3 Pokedex detail view ==")
+    s.tap("START", settle=BIG_SETTLE)
+    s.press_n("DOWN", 6)
+    s.tap("A", settle=BIG_SETTLE)                      # -> pdna_dex_screen (Gen 3)
+    s.run(200)
+    s.press_n("DOWN", 24, settle=SETTLE)               # artless+ROM opens on the GRID (7 cols): 24 rows down wraps to sel 161 (No. 162)
+    s.press_n("UP", 1, settle=SETTLE)                  # one row up -> No. 155 (caught in Guy's Emerald.sav)
+    s.run(120)
+    list0 = s.shot("00_grid", "y17 g3: the Gen-3 dex GRID, cursor on No. 155", claim=["No.155"], allow_same=True)
+    s.tap("A", settle=BIG_SETTLE); s.run(300)
+    d = s.shot("01_detail", "y17 g3: A opens the DETAIL view for No. 155 -- portrait streamed from the ROM, name, No., CAUGHT",
+               claim=["No. 155", "CAUGHT", "POKEDEX"], allow_same=False)
+    from PIL import Image
+    im = Image.open(d).convert("RGB")
+    px = 0
+    for y in range(14, 78):                             # backdrop = the row's own colour at the panel's left edge
+        bg = im.getpixel((13, y))
+        for x in range(12, 80):
+            c = im.getpixel((x, y))
+            if max(abs(c[0] - bg[0]), abs(c[1] - bg[1]), abs(c[2] - bg[2])) > 12:
+                px += 1
+    print(f"  [Y17 G3 PORTRAIT] {px} non-backdrop px in the portrait panel")
+    if px < 500:
+        print("[Y17 G3 PORTRAIT FAILED] empty portrait panel", file=sys.stderr); sys.exit(1)
+    s.tap("R", settle=BIG_SETTLE); s.run(300)
+    s.shot("02_detail_R", "y17 g3: R -> the NEXT entry, No. 156", claim=["No. 156"], claim_absent=["No. 155"], allow_same=False)
+    s.tap("L", settle=BIG_SETTLE); s.run(300)
+    s.shot("03_detail_L", "y17 g3: L -> back to No. 155", claim=["No. 155"], claim_absent=["No. 156"], allow_same=False)
+    s.tap("B", settle=BIG_SETTLE); s.run(60)
+    back = s.shot("04_back", "y17 g3: B -> the grid, cursor still on No. 155", claim=["No.155"], allow_same=True)
+    # The caught cells BOB (ANIM_DEX), so a whole-frame diff would flag the animation; the landing claim is: header band,
+    # footer band and the selection-frame pixels (UI_SELTEXT yellow) are identical -- same page, same cursor cell.
+    ia, ib = Image.open(list0).convert("RGB"), Image.open(back).convert("RGB")
+    def sel_px(im):
+        return {(x, y) for y in range(23, 147) for x in range(240) if im.getpixel((x, y)) == (255, 255, 148)}
+    band = lambda im: [im.getpixel((x, y)) for y in list(range(0, 23)) + list(range(147, 160)) for x in range(240)]
+    sa, sb = sel_px(ia), sel_px(ib)
+    print(f"  [Y17 G3 LANDING] selection-frame px {len(sa)} vs {len(sb)}, equal={sa == sb}; header+footer equal={band(ia) == band(ib)}")
+    if not sa or sa != sb or band(ia) != band(ib):
+        print("[Y17 G3 LANDING FAILED]", file=sys.stderr); sys.exit(1)
+    return s
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -495,7 +543,7 @@ def main(argv=None) -> int:
     ap.add_argument("--only",
                      choices=("osk", "flags", "contests", "daycare",
                               "b107-contest", "b107-contest-artless", "b218-gender-glyph",
-                              "b225-party-mail"),
+                              "b225-party-mail", "y17-dex"),
                      default=None,
                      help="run just ONE of this script's shot functions (BACKLOG #114's "
                           "pixel-parity proof uses --only daycare against a private --out "
@@ -515,7 +563,8 @@ def main(argv=None) -> int:
                   "b107-contest": run_b107_contest_picker,
                   "b107-contest-artless": run_b107_contest_picker_artless,
                   "b218-gender-glyph": run_b218_gender_glyph,
-                  "b225-party-mail": run_b225_party_mail}
+                  "b225-party-mail": run_b225_party_mail,
+                  "y17-dex": run_y17_dex_detail_g3}
     fns = (fn_by_name[a.only],) if a.only else (run_osk_rename, run_flags_sections, run_contests)
 
     ok, skipped = [], []

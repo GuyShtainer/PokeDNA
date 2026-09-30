@@ -114,8 +114,8 @@ typedef void (*DexSetNat)(bool on);
 /* Run the Pokedex screen. Three views (Grid / List / by-Type), the species-grid
  * filters (Gen/type/legendary) + a caught/seen/unseen status filter + name search,
  * and per-state sprite rendering (greyscale unseen, colour seen, colour+bob caught
- * with a Poke-Ball marker). When `can_edit`, A cycles a species unseen->seen->caught
- * and a "Mark all" bulk op is offered. Returns true iff any dex state changed (so
+ * with a Poke-Ball marker). A opens the entry's DETAIL view (BACKLOG #203: portrait, name, No., status; L/R prev/next, B back) and inside it, when `can_edit`, A cycles a species unseen->seen->caught;
+ * a "Mark all" bulk op is offered. Returns true iff any dex state changed (so
  * the caller can offer to save). */
 bool pdna_dex_screen(DexGetState get, DexSetState set,
                      DexGetNat getnat, DexSetNat setnat, bool can_edit);
@@ -162,6 +162,12 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
  * more places. Ignored/false when `fn` is NULL. */
 typedef bool (*PdnaDexCellArtFn)(uint16_t dex, int x, int y, int w, int h, void* ctx);
 void pdna_dex_set_cell_art(PdnaDexCellArtFn fn, void* ctx, bool serves_page);
+
+/* BACKLOG #203: which art the Pokedex DETAIL view fetches. 0 (default) = the Gen-3
+ * species-keyed front pic; PDNA_GEN1 / PDNA_GEN2 = that Game Boy ROM's front pic
+ * (pdna_origin_art_portrait_by_dex_gen). Same installer contract as
+ * pdna_dex_set_cell_art(): set around a GB visit, cleared (0) on every exit path. */
+void pdna_dex_set_detail_gen(uint8_t gen);
 
 /* BACKLOG #208: an optional hook fired once per FULL repaint of the grid, BEFORE the
  * `vis` dex_cell_grid() calls that follow it -- a cold entry, a view/filter change,

@@ -22,6 +22,9 @@
 #include "mon_icons_gate.h"  /* PDNA_MON_ICONS_ART_COMPILED -- is this a full-art build */
 #include "art_icons_cache.h" /* art_icons_row_for -- species -> icon-store row          */
 #include "icon_store.h"      /* the dex page declares its 21 rows before it paints them */
+#include "pdna_summary.h"    /* BACKLOG #203: pdna_summary_portrait_screen -- the detail view's backdrop */
+#include "rumble.h"          /* BACKLOG #203: rumble_io_suspend/resume around the ROM portrait fetch */
+#include "dex_detail_rule.h" /* BACKLOG #203: L/R wrap + status word + cycle (host-tested) */
 #include "pdna_origin_art.h" /* BACKLOG #124: pdna_origin_art_have -- is a GB ROM actually
                               * registered, for dex_declare_page()'s double-fetch guard  */
 #include "type_icons.h"
@@ -595,8 +598,12 @@ static struct {
  * "no new statics" line means) -- pushing the stack margin from 2,080 to 2,072,
  * a STOP-worthy shrink caught by tools/stack_budget.py. EWRAM has 1,172 B free and
  * does not feed the stack ceiling at all, so the SAME 8 bytes cost nothing there. */
-typedef struct { PdnaDexCellArtFn fn; void* ctx; bool serves_page; } DexCellArtOverride;
+typedef struct { PdnaDexCellArtFn fn; void* ctx; bool serves_page;
+                 uint8_t detail_gen;   /* BACKLOG #203: 0 = Gen-3 detail art, PDNA_GEN1/2 = GB (lives in the struct's padding: no new static) */
+               } DexCellArtOverride;
 static EWRAM_BSS DexCellArtOverride s_cell_art;
+
+void pdna_dex_set_detail_gen(uint8_t gen) { s_cell_art.detail_gen = gen; }
 
 void pdna_dex_set_cell_art(PdnaDexCellArtFn fn, void* ctx, bool serves_page) {
   s_cell_art.fn = fn; s_cell_art.ctx = ctx; s_cell_art.serves_page = serves_page;
@@ -997,6 +1004,97 @@ static int dex_menu(int* filter, int* sort, int* status, bool can_edit) {
   }
 }
 
+/* ===================== BACKLOG #203: Pokedex DETAIL view ======================
+ * One screen for every generation, opened with A from a dex cell/row (Gen-3 dex AND the
+ * Gen-1/2 dex -- pdna_gbdex.c reuses pdna_dex_screen, so this IS the shared code). Walks
+ * g_list/g_n in place (the grid's filtered order; never rebuilt here). Portrait panel in
+ * the summary's left-column shape; art is species-keyed (no owned PkMon exists for a dex
+ * entry): Gen 3 -> pdna_origin_art_front_by_species(INTERNAL id), GB -> by_dex_gen(gen,
+ * NATIONAL no.). Unseen entries show no art (the grid reveals nothing for state 0 either).
+ * Keys: B back; L/R previous/next entry (wraps); A cycles seen/caught when can_edit, deny
+ * tone otherwise. *sel_io follows the viewed entry. Returns true iff a state changed. */
+static void dex_detail_art(uint16_t in, int st) {
+  ui_panel(0, 11, 92, 139, RGB15(4, 7, 16), UI_BORDER);
+  m3_frame(11, 13, 80, 78, UI_BORDER);
+  pdna_summary_portrait_screen();
+  PdnaArt art; memset(&art, 0, sizeof art);
+  if (st != 0) {
+    rumble_io_suspend();   /* the portrait fetch decompresses from ROM */
+    if (s_cell_art.detail_gen)
+      (void)pdna_origin_art_portrait_by_dex_gen(s_cell_art.detail_gen, (uint16_t)pk_national_no(in), &art);
+    else
+      (void)pdna_origin_art_front_by_species(in, &art);
+    rumble_io_resume();
+  }
+  if (art.px) {
+    int ax, ay;
+    pdna_origin_art_place(&art, 12, 14, 68, 64, &ax, &ay);
+    if (art.gen != PDNA_GEN3) ui_fill_rect(ax, ay, art.w, art.h, 0x7FFF);   /* #275: the page behind a GB picture */
+    ui_sprite(ax, ay, art.w, art.h, art.px);
+  } else if (st != 0 && mon_icon_for_form(in, 0)) {
+    ui_sprite(30, 30, MON_ICON_W, MON_ICON_W, mon_icon_for_form(in, 0));   /* trainer-card fallback icon */
+  } else {
+    ui_text(38, 42, UI_DIM, st == 0 ? "?" : "no art");
+  }
+  char buf[24];
+  ui_hline(4, 81, 84, UI_BORDER);
+  siprintf(buf, "#%03u", (unsigned)pk_national_no(in));
+  ui_text(6, 84, UI_DIRCLR, buf);
+  ui_ptext_fit(6, 94, 86, UI_TEXT, st ? pk_species_name(in) : "?????");
+}
+
+/* The right-hand text block; repainted alone after an A-cycle. */
+static void dex_detail_text(uint16_t in, int st, int idx) {
+  ui_fill_rect(94, 12, UI_SCR_W - 94, 134, UI_BG);
+  char b[40];
+  ui_ptext_fit(100, 20, 136, UI_TITLE, pk_species_name(in));
+  siprintf(b, "No. %03u", (unsigned)pk_national_no(in));
+  ui_text(100, 38, UI_DIRCLR, b);
+  siprintf(b, "%s", dex_detail_status_word(st));
+  ui_text(100, 52, st == 2 ? UI_OK : st == 1 ? UI_TEXT : UI_DIM, b);
+  if (st != 0) {
+    uint8_t t1 = pk_species_type1(in), t2 = pk_species_type2(in);
+    if (t1 == t2) siprintf(b, "%s", pk_type_name(t1));
+    else          siprintf(b, "%s/%s", pk_type_name(t1), pk_type_name(t2));
+    ui_text(100, 66, UI_DIM, b);
+  }
+  siprintf(b, "%d/%d", idx + 1, g_n);
+  ui_text(100, 132, UI_DIM, b);
+}
+
+static bool dex_detail(int* sel_io, bool can_edit) {
+  bool dirty = false;
+  int idx = *sel_io;
+  bool full = true;
+  if (g_n <= 0 || idx < 0 || idx >= g_n) return false;
+  for (;;) {
+    uint16_t in = g_list[idx];
+    int st = dstate(in);
+    if (full) {
+      ui_clear();
+      ui_text(4, 2, UI_TITLE, "POKEDEX");
+      ui_hline(0, 147, UI_SCR_W, UI_BORDER);
+      ui_text(4, 152, UI_DIM, can_edit ? "L/R entry  A cyc  B back" : "L/R entry  B back");
+      dex_detail_art(in, st);
+    }
+    dex_detail_text(in, st, idx);
+    full = false;
+    u16 k = s_wait(KEY_A | KEY_B | KEY_L | KEY_R);
+    if (k & KEY_B) break;
+    else if (k & KEY_L) { idx = dex_detail_step(idx, g_n, -1); full = true; }
+    else if (k & KEY_R) { idx = dex_detail_step(idx, g_n, +1); full = true; }
+    else if (k & KEY_A) {
+      if (can_edit) {
+        dex_dset((int)pk_national_no(in), dex_detail_cycle(st));
+        dirty = true;
+        full = true;    /* art appears/disappears with state 0 */
+      } else snd_deny();
+    }
+  }
+  *sel_io = idx;
+  return dirty;
+}
+
 bool pdna_dex_screen(DexGetState get, DexSetState set,
                      DexGetNat getnat, DexSetNat setnat, bool can_edit) {
   s_dex.get = get; s_dex.set = set;
@@ -1079,8 +1177,7 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
       ui_clear();
       ui_hline(0, 22, UI_SCR_W, UI_BORDER);
       ui_hline(0, 147, UI_SCR_W, UI_BORDER);
-      ui_text(4, 152, UI_DIM, can_edit ? "A cyc  L/R view  ST  SEL  B"
-                                        : "L/R view  ST opts  SEL  B");
+      ui_text(4, 152, UI_DIM, "A open  L/R view  ST  SEL  B");
       for (int i = 0; i < vis && top + i < g_n; i++) {
         int x = x0 + (i % cols) * cw, y = y0 + (i / cols) * ch;
         if (grid) dex_cell_grid(x, y, g_list[top + i], bob);
@@ -1180,19 +1277,17 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
 
     if (k & KEY_B) break;
     else if (k & KEY_A) {
-      if (can_edit && g_n) {
-        uint16_t in = g_list[sel]; int nat = pk_national_no(in);
-        dex_dset(nat, (dex_dget(nat) + 1) % 3);
-        dirty = true; dex_counts(&seen, &caught);
-        if (status != DS_ALL) { dex_build(filter, sort, search, status, view); relist = true; }  /* may drop out */
-        else if (grid) {                               /* repaint this cell's new state */
-          int si = sel - top, sx = x0 + (si % cols) * cw, sy = y0 + (si / cols) * ch;
-          ui_fill_rect(sx, sy, 32, 32, UI_BG);
-          dex_cell_grid(sx, sy, in, bob);
-          m3_frame(sx - 1, sy - 1, sx + 32, sy + 32, UI_SELTEXT);
+      if (g_n) {                                       /* BACKLOG #203: A opens the detail view for everyone; the seen/caught cycle lives inside it */
+        if (dex_detail(&sel, can_edit)) {
+          dirty = true; dex_counts(&seen, &caught);
+          if (status != DS_ALL) {                      /* a changed entry may drop out of the filtered list */
+            uint16_t cur = g_list[sel];                /* the entry the user ended on (list not rebuilt yet) */
+            dex_build(filter, sort, search, status, view);
+            for (int i = 0; i < g_n; i++) if (g_list[i] == cur) { sel = i; break; }   /* dropped out: sel stays, clamped at the loop head */
+          }
         }
-        /* list state is reflected by the selection-chrome redraw next iteration */
-      } else if (!can_edit) snd_deny();
+        relist = true;                                 /* the detail view cleared the whole screen */
+      }
     }
     else if (k & KEY_UP)    { if (cols == 1) sel = (sel > 0) ? sel - 1 : (g_n ? g_n - 1 : 0);          /* top -> wrap to last */
                               else if (sel >= cols) sel -= cols; else sel = g_n ? g_n - 1 : 0; }

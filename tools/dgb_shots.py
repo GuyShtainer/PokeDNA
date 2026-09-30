@@ -3424,18 +3424,24 @@ def run_b87_dex(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
                                  "order == national-dex order) -- 'none' (pre-cleared "
                                  "by --op dexset 100 0) before the cycle demo below")
 
-    # A cycles the selected cell through none/seen/caught (dex_state's own state
-    # 0/1/2 = none/seen/caught cycle, pdna_pick.c's `(s_dget(nat)+1) % 3`). Dex #100
-    # was pre-cleared to 'none' by the caller's `--op dexset 100 0`, so this cell
-    # (not species #1) is the one that genuinely shows none->seen->caught.
+    # BACKLOG #203 (y17-203): A on a dex cell/row no longer cycles the state -- it OPENS the
+    # entry's DETAIL view, and the none/seen/caught cycle (dex_state's 0/1/2 -> +1 mod 3,
+    # dex_detail_cycle()) moved INSIDE it. Dex #100 was pre-cleared to 'none' by the
+    # caller's `--op dexset 100 0`, so the detail's A presses show none->seen->caught; B
+    # then returns to the list.
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # list row #100 -> DETAIL view (#203)
+    s.shot("05_detail_open", "#203 (was #87 05_cycle_a): A on dex #100 now OPENS the detail view -- "
+                              "it no longer cycles the state; still 'none' (pre-cleared): status '--'",
+           claim=["No. 100"], claim_absent=["CAUGHT", "SEEN"])
     s.tap("A", settle=gb_shots.BIG_SETTLE)
-    s.shot("05_cycle_a", "#87: A pressed once on dex #100 -- state advanced one step "
-                          "(dex_state's own 0/1/2 -> +1 mod 3 cycle; starts 'none' "
-                          "per the pre-clear, so this step lands on 'seen')")
+    s.shot("05_cycle_a", "#87 via #203: A INSIDE the detail view advances dex #100 one step "
+                          "(0/1/2 -> +1 mod 3; starts 'none' per the pre-clear, so this step lands on 'seen')",
+           claim=["No. 100", "SEEN"])
     s.tap("A", settle=gb_shots.BIG_SETTLE)
-    s.shot("06_cycle_b", "#87: A pressed a second time -- one more step around the "
-                          "cycle ('seen' -> 'caught')")
+    s.shot("06_cycle_b", "#87 via #203: A a second time inside the detail -- 'seen' -> 'caught'",
+           claim=["No. 100", "CAUGHT"])
     s.tap("A", settle=gb_shots.BIG_SETTLE)                   # back to 'none' -- leave the cell as the pre-clear found it
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                   # detail -> the list (B return)
 
     s.tap("START", settle=gb_shots.BIG_SETTLE)               # -> dex_menu()
     s.shot("07_start_menu", "#87: KEY_START -> dex_menu() -- sort/status toggles + "
@@ -6430,6 +6436,66 @@ def _y16_same_landing(pre: Path, post: Path, tag: str, max_frac: float = 0.008) 
         sys.exit(1)
 
 
+def _y17_portrait_nonbg(png: Path, box=(12, 14, 80, 78)) -> int:
+    """#203: count the pixels inside the detail view's portrait 'screen' (12,14)-(79,77) that are NOT the blue backdrop. The
+    backdrop gradient is strongly blue (b - r >= ~50); a Game Boy front pic is grey/white (|b - r| small). A frame with no
+    portrait counts ~0."""
+    from PIL import Image
+    im = Image.open(png).convert("RGB").crop(box)
+    return sum(1 for (r, g, b) in im.getdata() if abs(b - r) < 24)
+
+
+def run_y17_dex_detail(core_mod, image_mod, rom: Path, out_dir: Path, which: str = "red") -> gb_shots.Session:
+    """#203 (lane y17-203): the Pokedex DETAIL view (one screen, every generation) on a Game Boy session. `rom` = a ONE-ROM
+    fused image (fuse_gb.py <delta-artless> Red.gb Red.sav for which='red'; Crystal.gbc for 'crystal'), the corpus dex fully
+    caught. Grid -> RIGHT x2 (dex #3) -> A opens the detail; L/R step the FILTERED list; A cycles the status; B returns."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")
+    tag = f"y17_{which}_"
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, tag)
+    print(f"== #203 (y17-203): Pokedex detail view ({which}) ==")
+    boot_to_gb_session(s, rom, which=which)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)
+    s.press_n("DOWN", 6)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                       # -> pdna_gbdex()
+    if which == "crystal":
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                   # chooser row 0 (Pokedex)
+    s.tap("L", settle=gb_shots.BIG_SETTLE)                       # artless default is DV_LIST -> DV_GRID
+    s.run(GB196_GB_PAGE_SETTLE)
+    T = lambda k, n=1, **kw: (print(f"  [TRACE] y17 {which} {k} x{n}"), s.press_n(k, n, **kw))
+    T("RIGHT", 2)                                                 # sel 0 -> 2 = dex #3
+    s.run(GB196_GB_PAGE_SETTLE)
+    grid0 = s.shot("00_grid", f"y17 {which}: the dex GRID, cursor on dex #3 (2x RIGHT from the top)", claim=["No.3"], allow_same=True)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.run(GB196_GB_PAGE_SETTLE)
+    d3 = s.shot("01_detail_3", f"y17 {which}: A on dex #3 opens the DETAIL view -- name, 'No. 003', CAUGHT, portrait panel",
+                claim=["No. 003", "CAUGHT", "POKEDEX"], allow_same=False)
+    n3 = _y17_portrait_nonbg(d3)
+    print(f"  [Y17 PORTRAIT] {which} dex #3: {n3} non-backdrop px in the 68x64 panel")
+    if n3 < 500:
+        print(f"[Y17 PORTRAIT FAILED] {which}: the detail portrait panel is empty ({n3} px)", file=sys.stderr); sys.exit(1)
+    s.tap("L", settle=gb_shots.BIG_SETTLE); s.run(GB196_GB_PAGE_SETTLE)
+    s.shot("02_detail_L", f"y17 {which}: L -> the PREVIOUS entry (dex #2): number CHANGED",
+           claim=["No. 002", "CAUGHT"], claim_absent=["No. 003"], allow_same=False)
+    s.tap("R", settle=gb_shots.BIG_SETTLE); s.run(GB196_GB_PAGE_SETTLE)
+    s.shot("03_detail_R", f"y17 {which}: R -> back to dex #3", claim=["No. 003", "CAUGHT"], claim_absent=["No. 002"], allow_same=False)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.shot("04_cycle_a", f"y17 {which}: A in the detail view cycles caught -> unseen: status line reads '--', not CAUGHT",
+           claim=["No. 003"], claim_absent=["CAUGHT"], allow_same=False)
+    s.tap("A", settle=gb_shots.BIG_SETTLE); s.run(GB196_GB_PAGE_SETTLE)
+    s.shot("05_cycle_b", f"y17 {which}: A again -> SEEN", claim=["SEEN"], claim_absent=["CAUGHT"], allow_same=False)
+    s.tap("A", settle=gb_shots.BIG_SETTLE); s.run(GB196_GB_PAGE_SETTLE)
+    s.shot("06_cycle_c", f"y17 {which}: A a third time -> CAUGHT again (the corpus state restored)", claim=["CAUGHT"], allow_same=False)
+    s.tap("B", settle=gb_shots.BIG_SETTLE); s.run(GB196_GB_PAGE_SETTLE)
+    back = s.shot("07_back", f"y17 {which}: B -> the grid, cursor still on dex #3", claim=["No.3"], allow_same=True)
+    _y16_same_landing(grid0, back, "y17-" + which)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    T("R", 1, settle=gb_shots.BIG_SETTLE); s.run(GB196_GB_PAGE_SETTLE)
+    s.shot("08_detail_R4", f"y17 {which}: reopened, R -> dex #4", claim=["No. 004"], claim_absent=["No. 003"], allow_same=False)
+    s.tap("B", settle=gb_shots.BIG_SETTLE); s.run(GB196_GB_PAGE_SETTLE)
+    s.shot("09_back_moved", f"y17 {which}: B -> the grid FOLLOWED the viewed entry: cursor now on dex #4", claim=["No.4"], claim_absent=["No.3"], allow_same=False)
+    return s
+
+
 def run_y16_261(core_mod, image_mod, rom_gold: Path, out_dir: Path, rom_red: "Path | None" = None) -> gb_shots.Session:
     """#261 (lane y16-261): where does dismissing the PDNA_DELTA 'Edits are in-session only' wall land after a Bank cell
     is carried onto a Game Boy grid and dropped? Vehicles: `rom_gold` = tools/fuse_gb.py <pokedna-delta-artless.gba>
@@ -8938,6 +9004,9 @@ def _main_dispatch(argv=None) -> int:
     ap.add_argument("--y16-261", action="store_true",
                      help="#261 (lane y16-261): run_y16_261() -- --image = fuse_gb.py <delta-artless> Gold.gbc "
                           "Gold.sav, --vsd = a FRESH mkimg copy.")
+    ap.add_argument("--y17-dex-detail", choices=("red", "crystal"),
+                     help="#203 (lane y17-203): run_y17_dex_detail() -- --image = fuse_gb.py <delta-artless> Red.gb Red.sav "
+                          "(or Crystal.gbc Crystal.sav), a ONE-ROM image.")
     ap.add_argument("--y12-red", type=Path, help="#286: the fused Red image for --y12-togame-gb.")
     ap.add_argument("--y9-lift", action="store_true",
                      help="#280 (lane y9-280): run_y9_lift_passthrough() -- --image = fuse_gb.py "
@@ -10166,6 +10235,20 @@ def _main_dispatch(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] y12-togame-gb: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if getattr(a, "y17_dex_detail", None):
+        ran = True
+        try:
+            sess = run_y17_dex_detail(core_mod, image_mod, a.image, a.out, a.y17_dex_detail)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] y17-dex-detail: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
