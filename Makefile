@@ -300,6 +300,9 @@ CFLAGS += -fstack-usage         # emits .o-adjacent .su files; tools/stack_budge
 # #234 s2: the journal's two hold statics (the frozen FAT stamp get_fattime reads WHILE a card transfer runs) go to
 # EWRAM like every other static: IWRAM holds the stack (journal.h JRN_EWRAM_BSS; empty on the host).
 CFLAGS += -DJRN_EWRAM_BSS='__attribute__((section(".sbss")))'
+# #302: the journal's CRC32 byte kernel runs from IWRAM in ARM state (one cycle per instruction; from ROM each table
+# load stalls the code prefetch). ~50 B of IWRAM: the STACK guard's denominators shrink by the same (docs/briefs).
+CFLAGS += -DJRN_IWRAM_CODE='__attribute__((section(".iwram"), long_call, target("arm"), optimize("Os")))'
 ifeq ($(PDNA_TARGET),sd)
 CFLAGS += -DPDNA_STREAM_SPRITES      # SD build: mon_front/mon_back stream shiny+back from the card
 endif

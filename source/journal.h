@@ -46,6 +46,10 @@
 #ifndef JRN_EWRAM_BSS
 #define JRN_EWRAM_BSS
 #endif
+/* Placement of the CRC32 byte kernel (#302): on the cartridge an IWRAM ARM function; empty on the host. */
+#ifndef JRN_IWRAM_CODE
+#define JRN_IWRAM_CODE
+#endif
 
 /* ---- format constants (the values as landed) ------------------------------------- */
 #define JRN_SEG_SIZE   65536u   /* every segment file is exactly this long, pre-zeroed */

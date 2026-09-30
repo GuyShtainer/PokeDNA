@@ -80,18 +80,16 @@ static const uint32_t k_crc_tab[256] = {
   0x54DE5729u, 0x23D967BFu, 0xB3667A2Eu, 0xC4614AB8u, 0x5D681B02u, 0x2A6F2B94u,
   0xB40BBE37u, 0xC30C8EA1u, 0x5A05DF1Bu, 0x2D02EF8Du };
 
-uint32_t jrn_crc32_update(uint32_t crc, const void* data, uint32_t n) {
-  const uint8_t* p = (const uint8_t*)data;
+/* The byte loop alone, a few dozen bytes of ARM in IWRAM on the cartridge (#302): from ROM the per-byte table load
+ * stalls the code prefetch stream, and IWRAM code costs one cycle per instruction. Empty (plain C) on the host. */
+static JRN_IWRAM_CODE __attribute__((noinline)) uint32_t crc_bytes(uint32_t crc, const uint8_t* p, uint32_t n) {
+  while (n--) crc = (crc >> 8) ^ k_crc_tab[(crc ^ *p++) & 0xFFu];
+  return crc;
+}
+
+__attribute__((noinline)) uint32_t jrn_crc32_update(uint32_t crc, const void* data, uint32_t n) {   /* one call site of the IWRAM kernel: the stack walker resolves it */
   if (!data && n) return crc;
-  crc = ~crc;
-  for (; n >= 4u; n -= 4u, p += 4) {
-    crc = (crc >> 8) ^ k_crc_tab[(crc ^ p[0]) & 0xFFu];
-    crc = (crc >> 8) ^ k_crc_tab[(crc ^ p[1]) & 0xFFu];
-    crc = (crc >> 8) ^ k_crc_tab[(crc ^ p[2]) & 0xFFu];
-    crc = (crc >> 8) ^ k_crc_tab[(crc ^ p[3]) & 0xFFu];
-  }
-  for (; n; n--, p++) crc = (crc >> 8) ^ k_crc_tab[(crc ^ *p) & 0xFFu];
-  return ~crc;
+  return ~crc_bytes(~crc, (const uint8_t*)data, n);
 }
 
 static uint64_t fnv_byte(uint64_t h, uint8_t b) { return (h ^ b) * 0x100000001B3ull; }
