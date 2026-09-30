@@ -187,8 +187,8 @@ def scan_facts(body: str) -> tuple[bool, str]:
         return False, "app_bank_togame_native not found"
     if re.search(r"cs\[0\]\s*\|\s*cs\[1\]", body):
         return False, "the scan tests only the 4 personality bytes: a PID-0 mon / Bad Egg would be overwritten"
-    if not re.search(r"k\s*<\s*80", body):
-        return False, "the free-cell scan must cover all 80 bytes (k < 80)"
+    if not re.search(r"k\s*<\s*80\s*&&\s*zero\s*;", body):
+        return False, "the free-cell scan must fold over ALL 80 bytes with early exit (`k < 80 && zero;` -- a bare `k < 80` lets byte 79 alone decide)"
     if not re.search(r"zero\s*=\s*\(\s*cs\[k\]\s*==\s*0\s*\)", body):
         return False, "the free-cell scan must fold zero = (cs[k] == 0)"
     if not re.search(r"if\s*\(\s*zero\s*\)", body):
@@ -374,6 +374,8 @@ def self_test() -> None:
          mutate(tg, "if (zero) { db = b; ds = c; }", "if (1) { db = b; ds = c; }")),
         ("MUT C3b: the 4-byte personality test is back", scan_facts,
          mutate(tg, "if (zero) { db = b; ds = c; }", "if ((cs[0] | cs[1] | cs[2] | cs[3]) == 0) { db = b; ds = c; }")),
+        ("MUT C3c: byte 79 alone decides (early exit dropped)", scan_facts,
+         mutate(tg, "k < 80 && zero", "k < 80")),
         ("MUT D1a: the menu places the NATIVE cell", parity_facts,
          (dr, tg.replace("memcpy(dst, conv, 80)", "memcpy(dst, held, 80)"), ps, pn)),
         ("MUT D1b: the menu deletes the converted record instead of the original", parity_facts,
