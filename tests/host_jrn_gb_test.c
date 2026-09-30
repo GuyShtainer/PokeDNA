@@ -3,17 +3,9 @@
  * What pdna_gen12.c's gb_hold_commit / gb_persist / the exit confirm do on the console is exactly
  * img_rec_flat(&R, pristine, img, 8, 4096, name) + jrnapp_flush(); this proves the recorder side on the PC:
  *
- *   1. the key: stable across a mon edit, moved by a trainer name / ID edit, never shared between a Gen-1 and a Gen-2 save
- *      of the same name and ID, 0 for a session with no resident image;
- *   2. Everdrive / read-only (write_ok false): the journal never opens and creates no file;
- *   3. a held edit records EXACTLY its changed runs (checksum bytes included), undo restores the image byte for byte,
- *      redo brings it back (the raw patch: no per-section checksum fixup);
- *   4. a crossed step (the epoch) floors the load-time offer; a power cut (reopen on the ORIGINAL image) offers the steps and
- *      jrnapp_reapply brings the edited image back byte for byte;
- *   5. a resync (a write outside the recorder) hashes the BASELINE, records the step crossed and counts it lost (GAP);
- *   6. the ring honours the cap, and a journal opened with the Gen-3 layout over a GB journal is FOREIGN, never misread;
- *   7. Settings > Clear history: the slot files + directory go, the journal reopens EMPTY, records again, and a later first
- *      fill makes the ring at the NEW cap.
+ *   Covers: key (stable/moved/Gen-1 != Gen-2/0 without image); Everdrive never opens; exact recorded runs, byte-exact
+ *   undo/redo; crossed floors + power-cut offer + re-apply; resync hashes the BASELINE (GAP); cap -> ring size; a Gen-3-layout
+ *   open over a GB journal is FOREIGN; Clear history (files+dir gone, reopens EMPTY, .sav untouched).
  *
  *   cc -std=c11 -Wall -Wextra -Wno-unused-function -DFF_USE_MKFS=1 -Dsiprintf=sprintf -Dsniprintf=snprintf \
  *      -Dvsniprintf=vsnprintf -I tests/hostfat -I lib/fatfs -I source -I tests tests/host_jrn_gb_test.c tests/gen12_fixture.c \
