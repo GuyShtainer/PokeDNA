@@ -383,7 +383,9 @@ def self_test() -> None:
 
 def main() -> int:
     run_real()
-    self_test()
+    for f in fails:                    # print real-source failures BEFORE self_test(), whose
+        print("  FAIL:", f)            # mutate() can raise on already-mutated source and
+    self_test()                        # swallow the specific G-check message (y14 review F2)
     print(f"host_y12_togame_gb_sites_test: {checks} checks, {len(fails)} failed")
     for f in fails:
         print("  FAIL:", f)
