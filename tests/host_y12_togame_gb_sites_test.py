@@ -188,8 +188,10 @@ def pick_facts(body: str) -> tuple[bool, str]:
     if not body:
         return False, "gb_togame_pick_box not found"
     checks_ = [
+        (r"g_m->ui_box\s*:\s*0\s*;[^}]*\(\s*start\s*\+\s*i\s*\)\s*%\s*n", "scans from the box on screen (ui_box), wrapping"),
         (r"if\s*\(\s*b\s*==\s*party\s*\)\s*continue\s*;", "never picks the party pseudo-box"),
-        (r"gbs_box_writable\(\s*&g_ed->s\s*,\s*b\s*\)\s*!=\s*GBS_OK\s*\)\s*continue", "skips boxes gbs_box_writable refuses"),
+        (r"gbs_box_writable\(\s*&g_ed->s\s*,\s*b\s*\)\s*!=\s*GBS_OK\s*\)\s*\{\s*if\s*\(\s*out_unwritable\s*\)\s*\(\s*\*out_unwritable\s*\)\+\+\s*;\s*continue\s*;\s*\}",
+         "skips boxes gbs_box_writable refuses AND counts them for the caller"),
         (r"gbs_load_list\([^;]*!=\s*GBS_OK\s*\)\s*continue", "skips a box whose list will not stage"),
         (r"count\s*>=\s*0\s*&&\s*count\s*<\s*gb_list_capacity\(", "requires a trusted count strictly below capacity"),
         (r"\*out_slot\s*=\s*count\s*;", "reports the append slot (== count)"),
@@ -251,7 +253,7 @@ def self_test() -> None:
          mutate(hp, "s_xfer_peer && s_xfer_peer->accept_down", "1")),
         ("MUT G3c: no OAM bracket", consumer_facts, hp.replace("boxoam_suspend();", "", 1)),
         ("MUT G4a: the write gate removed", body_facts, mutate(gb, "if (!app_can_edit())", "if (0)")),
-        ("MUT G4b: the destination pick removed", body_facts, mutate(gb, "gb_togame_pick_box(&slot)", "0")),
+        ("MUT G4b: the destination pick removed", body_facts, mutate(gb, "gb_togame_pick_box(&slot, &nwr)", "0")),
         ("MUT G4c: the bridge consume dropped", body_facts,
          mutate(gb, "if (landed && arm != XG_DOWN_ARM_EXACT) (void)bank_down_consume(orig_box, orig_slot, held);", "")),
         ("MUT G4d: the EXACT arm consumed twice (consume for every arm)", body_facts,
@@ -275,6 +277,11 @@ def self_test() -> None:
          (dr, mutate(gb, "bank_down_g3_run(dbox, held, orig_box, orig_slot)", "bank_down_g3_run(dbox, held, dbox, slot)"), g3)),
         ("MUT G5f: the drop's tail stops consuming through the shared helper", parity_facts,
          (mutate(dr, "(void)bank_down_consume(s_orig_box, s_orig_slot, s_held);", ";"), gb, g3)),
+        ("MUT G6e: the pick drops the writable skip", pick_facts,
+         mutate(pk, "if (gbs_box_writable(&g_ed->s, b) != GBS_OK) { if (out_unwritable) (*out_unwritable)++; continue; }", "")),
+        ("MUT G6f: the pick skips unwritable boxes without counting them (GAME FULL would lie)", pick_facts,
+         mutate(pk, "(*out_unwritable)++;", ";")),
+        ("MUT G6g: the pick scans from box 0 again", pick_facts, mutate(pk, "const int b = (start + i) % n;", "const int b = i;")),
         ("MUT G6a: the pick may choose the party", pick_facts, mutate(pk, "if (b == party) continue;", "")),
         ("MUT G6b: the pick ignores a full box", pick_facts, mutate(pk, "count < gb_list_capacity(", "count < 99 + gb_list_capacity(")),
         ("MUT G6c: the pick trusts an unreadable count", pick_facts, mutate(pk, "count >= 0 && count <", "count <")),

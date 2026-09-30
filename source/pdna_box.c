@@ -1234,9 +1234,14 @@ static bool bank_down_g3_run(int box, const uint8_t held80[80], int orig_box, in
 static bool __attribute__((noinline)) bank_togame_gb(int orig_box, int orig_slot, const uint8_t* cell) {
   if (!cell || orig_box < 0 || orig_slot < 0 || !s_xfer_peer || !s_xfer_peer->accept_down) return false;
   if (!app_can_edit()) { snd_deny(); return false; }
-  int slot = -1;
-  const int dbox = gb_togame_pick_box(&slot);
-  if (dbox < 0 || slot < 0) { snd_deny(); msg_wait("GAME FULL", UI_WARN, "No free slot in the", "loaded game's boxes."); return false; }
+  int slot = -1, nwr = 0;
+  const int dbox = gb_togame_pick_box(&slot, &nwr);
+  if (dbox < 0 || slot < 0) {
+    snd_deny();
+    if (nwr > 0) msg_wait(PDNA_GBEDIT_BOXWR_TITLE, UI_WARN, "No writable box has room.", PDNA_GBEDIT_UNWRITABLE_HINT);
+    else msg_wait("GAME FULL", UI_WARN, "No free slot in the", "loaded game's boxes.");
+    return false;
+  }
   uint8_t held[80];
   memcpy(held, cell, 80);                                   /* the arm may re-page the shared Bank buffer */
   bool landed;

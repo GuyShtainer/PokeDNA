@@ -405,7 +405,7 @@ BankDownResult gb_bank_down_g3(int dst_box, const uint8_t cell80[80]);
 
 /* #286/y12: the first storage box (never the party) of the mounted resident GB save with room for one more mon, or -1;
  * *out_slot = the 0-based slot it would land in. Read-only (see the definition). GBA-only, like the arms above. */
-int gb_togame_pick_box(int* out_slot);
+int gb_togame_pick_box(int* out_slot, int* out_unwritable);
 
 /* BACKLOG #271: write a native Bank cell out as a .pk1/.pk2 file (no GB session needed). */
 bool gb_export_native(const uint8_t cell80[80]);
