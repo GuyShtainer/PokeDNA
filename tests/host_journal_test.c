@@ -622,6 +622,14 @@ static void t_window_edges(void) {
   }
 }
 
+static void t_untouched_diverged(void) {
+  Jrn j;
+  world(&j, FM_FAT);
+  g_img[6][1000] ^= 0xFF;                                   /* a write the journal never saw; the step leaves region 6 as-is */
+  CHECK(jrn_step_begin(&j, "u", 0) == JRN_OK, "untouched: begin");
+  CHECK(jrn_step_region(&j, 6, g_img[6], g_img[6]) == JRN_E_DIVERGED, "an untouched region whose old bytes diverged is DIVERGED (never reuses crc[region])");
+}
+
 static void t_long_session(void) {
   static const unsigned N[] = { 511, 512, 513, 600 };
   unsigned n, g; Jrn j; static uint8_t start[NREG][RSZ]; uint32_t av = 0, tot = 0, s0;
@@ -909,6 +917,7 @@ int main(void) {
   t_header_sector_alone();
   t_staged_first_fill();
   t_window_edges();
+  t_untouched_diverged();
   t_long_session();
   t_read_cost();
   t_index_after_retire();

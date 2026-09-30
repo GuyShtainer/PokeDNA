@@ -244,6 +244,9 @@ MUTANTS = [
     Mutant("crc loop #302: next_run compares only half of each 64-byte window", "journal.c",
            "memcmp(o + i, n + i, 64u) == 0) i += 64u;", "memcmp(o + i, n + i, 32u) == 0) i += 64u;",
            "journal", "the lone byte is found"),
+    Mutant("crc loop #302: an untouched region skips the old-hash (DIVERGED) check", "journal.c",
+           "  if (jrn_crc32_update(0, old_blk, j->reg_size) != j->crc[region]) { jrn_step_abort(j); return JRN_E_DIVERGED; }\n", "",
+           "journal", "never reuses crc[region]"),
 ]
 
 
