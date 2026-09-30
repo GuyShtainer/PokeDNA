@@ -4793,8 +4793,7 @@ bool gb_persist(const char* what_for_log) {
   if (strcmp(what_for_log, "exit") != 0 && app_gb_hold_live())         /* #234 s4: the edit is kept in-session: it is a step */
     (void)app_gb_stage(g_ed->pristine, g_ed->img, gb_step_name(what_for_log), true);
   memcpy(g_ed->pristine, g_ed->img, g_ed->len);
-  gb_census(g_m);
-  g_m->loaded = -1;
+  if (g_m) { gb_census(g_m); g_m->loaded = -1; }   /* the exit save runs after the grid is gone: g_m is NULL */
   snd_error();
   msg_wait("GAME BOY SAVE", UI_WARN, "Edits are in-session only",
            "in the emulator build.");
@@ -4888,8 +4887,7 @@ bool gb_persist(const char* what_for_log) {
     (void)app_gb_stage(g_ed->pristine, g_ed->img, gb_step_name(what_for_log), true);
   app_gb_saved();                                 /* the image is on the card: not dirty, the journal's cursor is the saved point */
   memcpy(g_ed->pristine, g_ed->img, g_ed->len);   /* the card now holds this image */
-  gb_census(g_m);                                 /* nready/nblocked/the exit report may have changed */
-  g_m->loaded = -1;                               /* the grid re-pages from the new bytes */
+  if (g_m) { gb_census(g_m); g_m->loaded = -1; } /* nready/nblocked may have changed; the grid re-pages. g_m is NULL on the exit save */
   snd_save();
   return true;
 #endif /* PDNA_DELTA */

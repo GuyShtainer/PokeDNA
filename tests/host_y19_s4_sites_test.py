@@ -203,6 +203,8 @@ def pins(T: dict[str, str]) -> dict[str, bool]:
             "gb_hold_live() && pdna_summary_quiet()" in body(T["pdna_gbedit.c"], "gbedit_confirm")
             and re.search(r"pdna_summary_quiet_save\(true\);\s*nav = pdna_gbsummary\(&edited[^;]*;\s*pdna_summary_quiet_save\(false\);", strip_comments(T["pdna_gbdaycare.c"])) is not None
             and len(re.findall(r"pdna_summary_quiet_save\(true\);\s*(?:int nav = |nav = )?pdna_gbsummary\(&(?:e|box_mon)\b[^;]*;\s*pdna_summary_quiet_save\(false\);", strip_comments(T["pdna_gen12.c"]))) == 2,
+        "S2b gb_persist guards g_m at BOTH re-census sites (the exit save runs with no grid)":
+            gp.count("if (g_m) { gb_census(g_m); g_m->loaded = -1; }") == 2 and "gb_census(g_m);" not in re.sub(r"if \(g_m\) \{ gb_census\(g_m\); g_m->loaded = -1; \}", "", gp),
         "S4 the STAY list is exactly the transfer walls; every plain edit holds":
             tags(T, "gb_persist") == STAY and tags(T, "gb_hold_commit") == HOLD,
         "S5 the exit: pending records first, ONE confirm, discard re-reads the card":
@@ -257,6 +259,7 @@ def text_half() -> None:
     mut("S2 the step is no longer recorded after the verified write", "pdna_gen12.c",
         "  if (strcmp(what_for_log, \"exit\") != 0 && app_gb_hold_live())\n    (void)app_gb_stage(g_ed->pristine, g_ed->img, gb_step_name(what_for_log), true);\n  app_gb_saved();",
         "  app_gb_saved();", "S2")
+    mut("S2b one persist site dereferences a NULL g_m", "pdna_gen12.c", "  if (g_m) { gb_census(g_m); g_m->loaded = -1; } /* nready", "  gb_census(g_m); g_m->loaded = -1; /* nready", "S2b")
     mut("S3 the dex prompt is back unconditionally", "pdna_gbdex.c", "if (!gb_hold_live() && !app_confirm(\"Save Pokedex changes?\"", "if (!app_confirm(\"Save Pokedex changes?\"", "S3")
     mut("S3 the bag prompt is back unconditionally", "pdna_gbbag.c", "if (gb_hold_live() || app_confirm(\"Save bag changes?\"", "if (app_confirm(\"Save bag changes?\"", "S3")
     mut("S3b the plain edit still asks", "pdna_gbedit.c", "  if (gb_hold_live() && pdna_summary_quiet()) {\n    GbIssues iss;", "  if (0) {\n    GbIssues iss;", "S3b")
