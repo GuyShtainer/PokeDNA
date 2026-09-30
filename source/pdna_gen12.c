@@ -4045,17 +4045,24 @@ BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]) {
     if (ch == GB_XFER_MAKE_LEGAL && fix) gb_set_level(&mon, fix_to);
   }
 
+  /* BACKLOG #289 (K1): the loss-screen resume above un-suspended the glove, and suspend/resume
+   * do not nest -- every dialog from here on (the box refusals, xfer_down_write's ledger
+   * refusals, gb_persist's PDNA_DELTA wall / backup / write panels) drew UNDER the live OBJ.
+   * One fresh suspend for the whole tail; EVERY return below resumes exactly once. */
+  boxoam_suspend();
   GbsStatus wst = gbs_box_writable(&g_ed->s, dst_box);
   if (wst != GBS_OK) {
     snd_deny();
     msg_wait(PDNA_GBEDIT_BOXWR_TITLE, UI_WARN, gbs_status_text(wst),
              wst == GBS_ERR_UNWRITABLE ? PDNA_GBEDIT_UNWRITABLE_HINT : 0);
+    boxoam_resume();
     return BANK_DOWN_REFUSED;
   }
   GbsStatus lst = gbs_load_list(&g_ed->s, dst_box, g_ed->list);
   if (lst != GBS_OK) {
     snd_deny();
     msg_wait(PDNA_GBEDIT_BOXRD_TITLE, UI_WARN, gbs_status_text(lst), 0);
+    boxoam_resume();
     return BANK_DOWN_REFUSED;
   }
   int cnt = gb_list_count(g_ed->s.gen, g_ed->list, dst_box);
@@ -4063,6 +4070,7 @@ BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]) {
     snd_deny();
     msg_wait(PDNA_SIDECAR_XFER_REFUSED_TITLE, UI_WARN, gbs_status_text(GBS_ERR_FULL),
              PDNA_GBEDIT_MOVE_FULL_L2);
+    boxoam_resume();
     return BANK_DOWN_REFUSED;
   }
 
@@ -4080,7 +4088,7 @@ BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]) {
   int idx = -1;
   if (!copy) {
     idx = xfer_down_write(key, cell80, &mon, XR_DIR_ABROAD_GB, NULL, g_ed->sidecar, path, &wlen);
-    if (idx < 0) return BANK_DOWN_REFUSED;
+    if (idx < 0) { boxoam_resume(); return BANK_DOWN_REFUSED; }
   }
 
   int newslot = -1;
@@ -4091,6 +4099,7 @@ BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]) {
     if (!copy) xfer_down_undo(path, g_ed->sidecar);
     snd_error();
     msg_wait(PDNA_SIDECAR_XFER_REFUSED_TITLE, UI_WARN, gbs_status_text(ist), PDNA_GBEDIT_UNCHANGED_L2);
+    boxoam_resume();
     return BANK_DOWN_REFUSED;
   }
 
@@ -4098,11 +4107,13 @@ BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]) {
   bool ok = gb_persist("xferdown");
   if (!ok) {
     if (!copy) xfer_down_undo(path, g_ed->sidecar);
+    boxoam_resume();
     return BANK_DOWN_REFUSED;
   }
 
   if (!copy) xfer_down_claim_now(g_ed->sidecar, wlen, idx, path);           /* decision 15: CLAIMED now */
   else       log_line("gen12: down->bridge box %d slot %d: copy cell, no ledger entry", dst_box, newslot);
+  boxoam_resume();
   return BANK_DOWN_LANDED;
 }
 

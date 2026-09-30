@@ -21,6 +21,14 @@ it imports). Every fact function is shared by the real check and by an in-memory
   G5. MENU-vs-DROP PARITY: bank_down_dispatch is called with the same 8-argument shape by drop_held and bank_togame_gb
       (origin = the carry statics / the cell's own coordinates); bank_down_g3_run is called by BOTH drop_held_down_g3
       and bank_togame_gb with the same shape; the arm is derived by the same xg_bank_down_arm expression on both sides.
+  G7. (#289 RM7) bank_down_consume does its work INSIDE its own OAM bracket: boxoam_suspend -> app_bank_clear_slots ->
+      boxoam_resume, in that order.
+  G8. (#289 RM10) the consume clears the ORIGIN slot: slots1[0] is orig_slot and app_bank_clear_slots gets orig_box, that
+      one-slot array and the cell -- never a constant, never the destination.
+  G9. (#289 RM11) the Gen-3 menu path (app_bank_togame_native) calls NO bank_down_consume / app_bank_clear_slots: its
+      consume is the DEFERRED delete (a direct consume would double-clear and warn "duplicate" falsely).
+  G10. (#289 K1) gb_bank_down_bridge's write tail runs under ONE fresh boxoam_suspend (the loss-screen resume
+      un-suspended the glove) and every return in it resumes exactly once.
   G6. the destination pick (gb_togame_pick_box): skips the party, requires a writable trusted box with room, and
       reports the append slot -- the same predicates gb_accept_down_hook's own pre-flight applies.
 """
@@ -202,17 +210,72 @@ def pick_facts(body: str) -> tuple[bool, str]:
     return True, "ok"
 
 
+# ---- G7-G10 (#289) ---------------------------------------------------------------------------
+def consume_bracket_facts(body: str) -> tuple[bool, str]:
+    if not body:
+        return False, "bank_down_consume not found"
+    ok, d = ordered(body, ["boxoam_suspend", "app_bank_clear_slots", "boxoam_resume"])
+    if not ok:
+        return False, "bank_down_consume must run boxoam_suspend -> app_bank_clear_slots -> boxoam_resume: " + d
+    if len(re.findall(r"\bboxoam_suspend\s*\(", body)) != 1 or len(re.findall(r"\bboxoam_resume\s*\(", body)) != 1:
+        return False, "bank_down_consume must open exactly one suspend/resume bracket"
+    return True, "ok"
+
+
+def consume_origin_facts(body: str) -> tuple[bool, str]:
+    if not body:
+        return False, "bank_down_consume not found"
+    if not re.search(r"slots1\[0\]\s*=\s*\(uint8_t\)\s*orig_slot\s*;", body):
+        return False, "the one-slot array must be filled from orig_slot"
+    if not re.search(r"app_bank_clear_slots\(\s*orig_box\s*,\s*slots1\s*,\s*\(const uint8_t \(\*\)\[80\]\)\s*cell80\s*,\s*1\s*\)", body):
+        return False, "app_bank_clear_slots must be called with (orig_box, slots1, cell80, 1) -- the ORIGIN, never a constant or the destination"
+    return True, "ok"
+
+
+def native_menu_no_consume_facts(body: str) -> tuple[bool, str]:
+    if not body:
+        return False, "app_bank_togame_native not found"
+    bad = [c for c in ("bank_down_consume", "app_bank_clear_slots") if first(body, c) >= 0]
+    if bad:
+        return False, "the Gen-3 menu path calls " + ", ".join(bad) + " (its consume is the deferred delete: a direct one double-clears and shows a false duplicate)"
+    if first(body, "app_bank_defer_delete") < 0:
+        return False, "the Gen-3 menu path no longer queues app_bank_defer_delete"
+    return True, "ok"
+
+
+def bridge_tail_facts(body: str) -> tuple[bool, str]:
+    if not body:
+        return False, "gb_bank_down_bridge not found"
+    i = body.find("GbsStatus wst = gbs_box_writable")
+    if i < 0:
+        return False, "the bridge's write tail (gbs_box_writable) was not found"
+    if not re.search(r"boxoam_suspend\(\);\s*$", body[:i]):
+        return False, "a fresh boxoam_suspend() must sit immediately before the write tail (the loss-screen resume un-suspended the glove)"
+    tail = body[i:]
+    rets = list(re.finditer(r"return\s+BANK_DOWN_\w+\s*;", tail))
+    if len(rets) < 7:
+        return False, f"expected the tail's 7 returns, found {len(rets)}"
+    for m in rets:
+        if not re.search(r"boxoam_resume\(\);\s*(?:\{\s*)?$", tail[:m.start()]):
+            return False, "a return in the bridge's write tail does not resume the OAM first: " + tail[max(0, m.start() - 40):m.end()].strip()
+    if len(re.findall(r"\bboxoam_resume\s*\(", tail)) != len(rets) or re.search(r"\bboxoam_suspend\s*\(", tail):
+        return False, "the write tail must resume exactly once per return and never re-suspend"
+    return True, "ok"
+
+
 def real_texts():
     main, box, gen12, gate = MAIN.read_text(), BOX.read_text(), GEN12.read_text(), GATE.read_text()
     return dict(main=main, menu=function_body(main, "app_mon_menu"), gate=gate,
                 helper=function_body(box, "togame_native_run"), gb=function_body(box, "bank_togame_gb"),
                 drop=function_body(box, "drop_held"), g3drop=function_body(box, "drop_held_down_g3"),
-                pick=function_body(gen12, "gb_togame_pick_box"))
+                pick=function_body(gen12, "gb_togame_pick_box"),
+                consume=function_body(box, "bank_down_consume"), native=function_body(main, "app_bank_togame_native"),
+                bridge=function_body(gen12, "gb_bank_down_bridge"))
 
 
 def run_real() -> None:
     t = real_texts()
-    for k in ("menu", "helper", "gb", "drop", "g3drop", "pick"):
+    for k in ("menu", "helper", "gb", "drop", "g3drop", "pick", "consume", "native", "bridge"):
         check(bool(t[k]), f"{k}: body not found")
     for label, fn, arg in (("G1 rows", rows_facts, t["menu"]),
                            ("G1 writable", writable_facts, t["main"]),
@@ -220,7 +283,11 @@ def run_real() -> None:
                            ("G2 action", action_facts, t["menu"]),
                            ("G3 consumer", consumer_facts, t["helper"]),
                            ("G4 body", body_facts, t["gb"]),
-                           ("G6 pick", pick_facts, t["pick"])):
+                           ("G6 pick", pick_facts, t["pick"]),
+                           ("G7 consume bracket", consume_bracket_facts, t["consume"]),
+                           ("G8 consume origin", consume_origin_facts, t["consume"]),
+                           ("G9 native menu no consume", native_menu_no_consume_facts, t["native"]),
+                           ("G10 bridge tail", bridge_tail_facts, t["bridge"])):
         ok, d = fn(arg)
         check(ok, f"{label}: {d}")
     ok, d = parity_facts(t["drop"], t["gb"], t["g3drop"])
@@ -231,6 +298,7 @@ def self_test() -> None:
     t = real_texts()
     menu, main, gate, hp, gb, dr, g3, pk = (t["menu"], t["main"], t["gate"], t["helper"], t["gb"], t["drop"], t["g3drop"], t["pick"])
     row = "if (xg_togame_gb_row(is_bank, app_gen3_pc_live(), togame_gb_writable())) { lab[n]=PDNA_LBL_TO_GAME; act[n++]=A_TOGAME; }"
+    cs, nt, br = t["consume"], t["native"], t["bridge"]
     muts = [
         ("MUT G1a: the native GB row removed", rows_facts, mutate(menu, row, "", )),
         ("MUT G1b: the native GB row loses its gate", rows_facts, mutate(menu, row, "{ lab[n]=PDNA_LBL_TO_GAME; act[n++]=A_TOGAME; }")),
@@ -286,6 +354,26 @@ def self_test() -> None:
         ("MUT G6b: the pick ignores a full box", pick_facts, mutate(pk, "count < gb_list_capacity(", "count < 99 + gb_list_capacity(")),
         ("MUT G6c: the pick trusts an unreadable count", pick_facts, mutate(pk, "count >= 0 && count <", "count <")),
         ("MUT G6d: the pick reports the wrong slot", pick_facts, mutate(pk, "*out_slot = count;", "*out_slot = 0;")),
+        ("MUT G7a (RM7): the consume loses its OAM suspend", consume_bracket_facts, mutate(cs, "boxoam_suspend();", "")),
+        ("MUT G7b (RM7): the consume clears BEFORE it suspends", consume_bracket_facts,
+         mutate(mutate(cs, "boxoam_suspend();", ""), "(const uint8_t (*)[80])cell80, 1);", "(const uint8_t (*)[80])cell80, 1); boxoam_suspend();")),
+        ("MUT G7c (RM7): the consume never resumes", consume_bracket_facts, mutate(cs, "boxoam_resume();", "")),
+        ("MUT G8a (RM10): the consume clears slot 0 instead of the origin slot", consume_origin_facts,
+         mutate(cs, "slots1[0] = (uint8_t)orig_slot;", "slots1[0] = 0;")),
+        ("MUT G8b (RM10): the consume clears the wrong box", consume_origin_facts,
+         mutate(cs, "app_bank_clear_slots(orig_box,", "app_bank_clear_slots(0,")),
+        ("MUT G8c (RM10): the consume clears a constant slot array", consume_origin_facts,
+         mutate(cs, "app_bank_clear_slots(orig_box, slots1,", "app_bank_clear_slots(orig_box, (const uint8_t[1]){0},")),
+        ("MUT G9a (RM11): the Gen-3 menu path consumes directly too", native_menu_no_consume_facts,
+         mutate(nt, "app_bank_defer_delete(bank_box, bank_slot, held);", "app_bank_defer_delete(bank_box, bank_slot, held); (void)bank_down_consume(bank_box, bank_slot, held);")),
+        ("MUT G9b (RM11): the Gen-3 menu path swaps the deferred delete for the direct consume", native_menu_no_consume_facts,
+         mutate(nt, "app_bank_defer_delete(bank_box, bank_slot, held);", "(void)bank_down_consume(bank_box, bank_slot, held);")),
+        ("MUT G10a (K1): the bridge tail loses its fresh suspend", bridge_tail_facts,
+         mutate(br, "boxoam_suspend();\n  GbsStatus wst", "GbsStatus wst")),
+        ("MUT G10b (K1): the bridge's box-full refusal returns without resuming", bridge_tail_facts,
+         mutate(br, "boxoam_resume();\n    return BANK_DOWN_REFUSED;\n  }\n\n  uint8_t dv4", "return BANK_DOWN_REFUSED;\n  }\n\n  uint8_t dv4")),
+        ("MUT G10c (K1): the LANDED return resumes twice", bridge_tail_facts,
+         mutate(br, "boxoam_resume();\n  return BANK_DOWN_LANDED;", "boxoam_resume(); boxoam_resume();\n  return BANK_DOWN_LANDED;")),
     ]
     for label, fn, arg in muts:
         ok, d = fn(*arg) if isinstance(arg, tuple) else fn(arg)
@@ -295,7 +383,9 @@ def self_test() -> None:
 
 def main() -> int:
     run_real()
-    self_test()
+    for f in fails:                    # print real-source failures BEFORE self_test(), whose
+        print("  FAIL:", f)            # mutate() can raise on already-mutated source and
+    self_test()                        # swallow the specific G-check message (y14 review F2)
     print(f"host_y12_togame_gb_sites_test: {checks} checks, {len(fails)} failed")
     for f in fails:
         print("  FAIL:", f)
