@@ -6189,6 +6189,169 @@ def _y9_bankcell_empty(img: Path, box_path: str, slots: "tuple[int, ...]", label
         sys.exit(1)
 
 
+def run_y19_s4(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """#234 slice 4 (lane y19-s4): a Game Boy save on the same journal. Vehicle: `rom` = tools/fuse_gb.py
+    <pokedna-delta-artless.gba> Gold.gbc Gold.sav (one Gen-2 save: boot lands on its box grid, BANK tab above);
+    `--vsd <img>` REQUIRED and FRESH (`vsd_img mkimg IMG 16 /tmp/host_vsdimg_test_tmpl`): the journal lives on the
+    virtual SD and survives the power cycles (`core.reset()`: flash + vsd kept, RAM not).
+    THE EMULATOR WALL: the delta build cannot persist a Game Boy save (gb_persist refuses under PDNA_DELTA: 'Edits are
+    in-session only'), so a real save + its journal mark are HARDWARE-ONLY; what the chain proves is the quiet edit, the
+    ONE exit confirm, the journal's on-disk steps across a power cut, the offer + re-apply, the chord, History, a STAY
+    prompt, and the Settings rows.
+    (a) MOVE TO BOX: no per-screen prompt; B -> the exit report -> the ONE 'Save changes?'.
+    (b) power cut AT the exit prompt -> the offer on reload -> A re-applies.   (c) SELECT+L undo / SELECT+R redo + toast.
+    (d) the History screen rows.   (e) a STAY prompt still prompts (Release all).
+    (f) Everdrive posture: no emulator flag -> pin-only (tests/host_jrn_gb_test.c section 2).
+    (g) Settings: 'History size' cycles, 'Clear history' confirm -> cleared."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")
+    print("== #234 s4 (y19-s4): Game Boy save on the journal (--vsd) ==")
+    if gb_shots._DEFAULT_VSD_IMG is None:
+        raise RuntimeError("--y19-s4 requires --vsd <img.img> (a FRESH template image)")
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "y19s4_")
+    import numpy as np  # noqa: E402
+    trace: list = []
+    n = [0]
+    K = gb_shots.KEY
+
+    def T(key: str, cap: str, settle: int = 150, times: int = 1, claim=None, claim_absent=None) -> None:
+        for _ in range(times):
+            s.tap(key, settle=settle)
+        name = f"{n[0]:02d}_{key.lower()}"
+        n[0] += 1
+        s.shot(name, cap, allow_same=True, claim=claim, claim_absent=claim_absent)
+        trace.append((name, f"{key} x{times}", cap))
+
+    def SHOT(tag: str, cap: str, claim=None, claim_absent=None) -> None:
+        name = f"{n[0]:02d}_{tag}"
+        n[0] += 1
+        s.shot(name, cap, allow_same=True, claim=claim, claim_absent=claim_absent)
+        trace.append((name, "-", cap))
+
+    def POWER_CYCLE(cap: str, claim=None) -> None:
+        s.vsd_flush()
+        s.core.reset()
+        s.run(1000)
+        SHOT("powercycle", cap, claim=claim)
+
+    def strip():
+        return np.asarray(s.screen.to_pil().convert("RGB"), dtype=np.int16)[150:160, 78:240]
+
+    def CHORD(second: str, cap: str, settle: int = 45, tag: str = "chord", claim=None, claim_absent=None) -> None:
+        """Idle 170 frames (an earlier toast has expired), SELECT down, 8 frames, THEN `second` down (3 frames), up, 6
+        frames, SELECT up; poll every 3 frames until the footer strip changes (the toast is up), `settle` more, shot."""
+        s.run(170)
+        pre = strip()
+        s.core.set_keys(raw=K["SEL"]); s.run(8)
+        s.core.set_keys(raw=K["SEL"] | K[second]); s.run(gb_shots.HOLD)
+        s.core.set_keys(raw=K["SEL"]); s.run(6)
+        s.core.set_keys(raw=0)
+        lat = None
+        for i in range(0, 700, 3):
+            s.run(3)
+            if int((np.abs(strip() - pre).max(axis=2) > 0).sum()) > 0:
+                lat = i + 3
+                break
+        s.run(settle)
+        s._io_quiesce()
+        name = f"{n[0]:02d}_{tag}"
+        n[0] += 1
+        print(f"  {name}: footer changed {lat} frames after SELECT was released (None = never within 700)")
+        trace.append((name, f"SEL down, {second} down/up, SEL up", cap))
+        s.shot(name, cap, allow_same=True, claim=claim, claim_absent=claim_absent)
+
+    s.run(700)
+    s.vsd_snapshot()
+    SHOT("boot", "boot: the FIRST fill of the ring ('Saving - do not power off / Preparing undo history...') over a fresh card",
+         claim=["Preparing undo history"])
+    s.run(2500)
+    SHOT("grid", "the Gold save's box 1 (BANK tab above): the journal is open, no dialog", claim_absent=["Preparing undo history"])
+
+    # ---- (a) a quiet edit, then the ONE exit confirm
+    T("A", "(a) cell menu on BULBASAUR")
+    T("DOWN", "(a) menu on ITEM", claim=["ITEM"])
+    T("A", "(a) ITEM: the item picker", settle=300)
+    T("DOWN", "(a) DOWN: item #1", settle=60)
+    T("A", "(a) A: give item #1 -- NO 'Save ...?' prompt, the item shows in the preview", settle=300, claim_absent=["Save ", "Save the"])
+    T("B", "(a) B: leave the box editor", settle=300)
+    T("B", "(a) B: dismiss the exit report -> the ONE exit confirm", settle=300, claim=["Save changes"])
+    POWER_CYCLE("(b) POWER CUT at the exit prompt (no save): reload -> the offer must be up", claim=["Recorded steps found"])
+    T("A", "(b) A: re-apply", settle=300)
+    T("A", "(b) A: dismiss RE-APPLIED", settle=300)
+    s.run(300)
+    SHOT("reapplied", "(b) the item edit is back in the image: it came back from the journal")
+
+    # ---- (c) SELECT+L undoes the re-applied item edit, SELECT+R redoes it
+    CHORD("L", "(c) SELECT held, THEN L: UNDO -> footer toast 'Undid: Held item' (the grid itself does not draw items)",
+          tag="undo", claim=["Undid"])
+    T("A", "(c) cell menu (to read the Item line after the undo)")
+    T("A", "(c) VIEW / EDIT: BULBASAUR's summary -- Item reads None (the item edit is undone)", settle=300, claim=["None"])
+    T("B", "(c) B: back to the grid", settle=200)
+    CHORD("R", "(c) SELECT held, THEN R: REDO -> footer toast 'Redid: Held item'", tag="redo", claim=["Redid"])
+
+    # ---- (c2) the Item line proves the undo / redo
+    T("A", "(c) cell menu (to read the Item line after the redo)")
+    T("A", "(c) VIEW / EDIT: the summary after the redo", settle=300)
+    T("B", "(c) B: back to the grid", settle=200)
+
+    # ---- (d) the History screen (nav menu: START, RIGHT, DOWN x8 = History)
+    s.run(200)
+    s.tap("START", settle=200)
+    s.tap("RIGHT", settle=20)
+    s.press_n("DOWN", 8, settle=12)
+    SHOT("nav_history", "(d) nav menu, cursor on 'History' (it was NAV_COMING_SOON on a Game Boy save before this slice)",
+         claim=["History"])
+    T("A", "(d) A: the HISTORY screen -- rows of this Game Boy save's steps", settle=300, claim=["HISTORY"])
+    T("B", "(d) B: back to the grid", settle=300)
+
+    # ---- (e) a STAY prompt still prompts: the box menu's 'Release all'
+    T("UP", "(e) UP: onto the box-name row", settle=100)
+    T("SEL", "(e) SELECT on the box-name row: the box menu", settle=200)
+    T("DOWN", "(e) menu on Release all", times=3, settle=60)
+    T("A", "(e) A: 'Release all' KEEPS its own confirm (a STAY prompt: destructive, never quieted)", settle=200,
+      claim=["Release"])
+    T("B", "(e) B: cancel, nothing released", settle=200)
+
+    # ---- (g) Settings: History size + Clear history
+    s.run(100)
+    s.tap("START", settle=200)
+    s.tap("RIGHT", settle=20)
+    s.press_n("DOWN", 9, settle=12)
+    SHOT("nav_settings", "(g) nav menu, cursor on 'Settings'", claim=["Settings"])
+    T("A", "(g) A: SETTINGS -- ten rows; 'History size' and 'Clear history (this save)' are the new ones", settle=300,
+      claim=["History size", "Clear history"])
+    T("DOWN", "(g) DOWN x6: the cursor on 'History size'", times=6, settle=30)
+    T("A", "(g) A: cycle -> 512 KiB + the once-per-visit note ('Smaller: next time it opens.')", settle=200, claim=["HISTORY SIZE"])
+    T("A", "(g) A: dismiss the note", settle=200, claim=["512 KiB"])
+    T("DOWN", "(g) DOWN: the cursor on 'Clear history (this save)'", settle=30)
+    T("A", "(g) A: the destructive confirm 'Delete ALL history?'", settle=200, claim=["Delete ALL history"])
+    T("A", "(g) A: yes -> CLEARED", settle=1500, claim=["CLEARED"])
+    T("A", "(g) A: dismiss -> back in Settings", settle=200)
+    T("B", "(g) B: leave Settings", settle=300)
+
+    # ---- (h) the exit confirm A path in the emulator: the wall, then the reload offers the recorded step again
+    T("B", "(h) B: leave the box editor -> the exit report", settle=300)
+    T("B", "(h) B: dismiss the exit report -> the ONE exit confirm", settle=300, claim=["Save changes"])
+    T("A", "(h) A: yes -> the emulator build's wall ('Edits are in-session only'): HARDWARE-ONLY beyond this point",
+      settle=300, claim=["in-session only"])
+    T("A", "(h) A: dismiss -> the save reloads from the fused image (the card file never changed); NO offer: Clear history "
+      "removed the recorded step", settle=1200, claim_absent=["Recorded steps found"])
+    s.vsd_flush()
+    lst = subprocess.run([str(gb_shots._vsd_img_bin()), "list", str(gb_shots._DEFAULT_VSD_IMG)], capture_output=True, text=True).stdout
+    pdj = [ln.split()[0] for ln in lst.splitlines() if ln.split() and ln.split()[0].endswith(".pdj")]
+    keys = sorted({x.split("/")[3] for x in pdj})
+    print(f"  vsd journal files after Clear history + reopen: {len(pdj)} slot file(s) under {keys}")
+    ok_clear = len(pdj) > 0 and len(pdj) <= 9 and len(keys) == 1
+    print(f"  [{'ok' if ok_clear else 'FAIL'}] the ring was rebuilt at the NEW cap (512 KiB = 8 slot files + the open one; was 17 at 1 MiB): {len(pdj)} files")
+    if not ok_clear:
+        s.any_claim_failed = True
+
+    print("\n  per-tap trace (rule 17): name | input | caption")
+    for nm, k, cap in trace:
+        print(f"  {nm:24s} | {k:22s} | {cap}")
+    s.vsd_flush()
+    return s
+
+
 def run_y9_g3home_target(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
     """#280 (lane y9-280), the Gen-3-TARGET restore of a G3_HOME entry. Vehicle: `rom` = tools/fuse_sav.py
     <pokedna-delta-artless.gba> Emerald.sav; `--vsd <img>` REQUIRED, a FRESH `vsd_img mkimg IMG 16
@@ -9364,6 +9527,9 @@ def _main_dispatch(argv=None) -> int:
     ap.add_argument("--y19-s3", action="store_true",
                      help="#234 slice 3 (lane y19-s3): run_y19_s3() -- --image = plain fuse_sav.py "
                           "<delta-artless> Emerald.sav, --vsd = a FRESH mkimg-from-template copy.")
+    ap.add_argument("--y19-s4", action="store_true",
+                     help="#234 slice 4 (lane y19-s4): run_y19_s4() -- --image = tools/fuse_gb.py <delta-artless> Gold.gbc "
+                          "Gold.sav, --vsd = a FRESH mkimg-from-template copy.")
     ap.add_argument("--y7-bankpass", action="store_true",
                      help="#270 (lane y7-bankpass): only run_y7_bank_passthrough() -- --image "
                           "as for --s150-15 (plain fuse_sav.py <delta-artless> Emerald.sav) "
@@ -10558,6 +10724,21 @@ def _main_dispatch(argv=None) -> int:
         for name, reason in skipped:
             print(f"  [skip] {name}: {reason}")
         return 0
+
+    if getattr(a, "y19_s4", False):
+        ran = True
+        sess = None
+        try:
+            sess = run_y19_s4(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] y19-s4: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0 if sess is not None and not sess.any_claim_failed else 1
 
     if getattr(a, "y19_s3", False):
         ran = True
