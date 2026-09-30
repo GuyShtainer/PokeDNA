@@ -170,12 +170,18 @@ void pdna_summary_bg(void) {
   }
 }
 
+/* The blue "screen" behind a portrait: (12,14)-(79,77). BACKLOG #203: public so the
+ * Pokedex detail view paints the SAME backdrop as draw_left below. */
+void pdna_summary_portrait_screen(void) {
+  for (int yy = 14; yy <= 77; yy++) ui_fill_rect(12, yy, 68, 1, portrait_bg(yy));
+}
+
 /* Shared portrait column (all 7 cards): framed sprite, dex no, name, Lv + colored
  * sex, species, type badges, and an egg/shiny tag. No editable fields here. */
 static void draw_left_ex(const PkMon* p, bool back) {
   ui_panel(0, 11, 92, 139, RGB15(4, 7, 16), UI_BORDER);    /* dark-blue info column */
   m3_frame(11, 13, 80, 78, UI_BORDER);                     /* sprite sub-frame */
-  for (int yy = 14; yy <= 77; yy++) ui_fill_rect(12, yy, 68, 1, portrait_bg(yy));   /* blue "screen" */
+  pdna_summary_portrait_screen();                           /* blue "screen" */
   rumble_io_suspend();   /* portrait fetch decompresses from ROM (Gen-3 LZ77 or GB pic) */
   /* One accessor decides the era: a mon converted from a Game Boy save wears its OWN
    * generation's art when that cartridge is registered, and everything else takes the

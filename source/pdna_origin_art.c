@@ -481,18 +481,23 @@ void pdna_origin_art_set_romsprite(const RomSprite* rs) {
  * extra 8 KB LZ77 pass per repaint (the SAME cost the compiled mon_front_for_form/
  * mon_back_for_form already pay today, since neither of them memoises either), and
  * buys correctness instead of a plausible-looking corrupted portrait. */
-static const uint16_t* rom_portrait(const PkMon* m, int back) {
-  if (!s_romsprite_on || !m) return 0;
+static inline __attribute__((always_inline)) const uint16_t* rom_portrait_sf(uint16_t species, uint8_t form, int shiny, int back) {
+  if (!s_romsprite_on) return 0;
   artbuf_claim();          /* E3 review BLOCKING 2: about to overwrite mon_decomp */
   RomSpritePic pic;
   RomSpriteSide side = back ? ROM_SPRITE_BACK : ROM_SPRITE_FRONT;
-  if (!rom_sprite_pic(&s_romsprite, side, m->species, m->form,
+  if (!rom_sprite_pic(&s_romsprite, side, species, form,
                       (uint8_t*)mon_decomp, MON_DECOMP_BYTES, &pic))
     return 0;
   uint16_t pal[16];
-  if (!rom_sprite_pal(&s_romsprite, m->species, m->form, m->isShiny ? 1 : 0, pal)) return 0;
+  if (!rom_sprite_pal(&s_romsprite, species, form, shiny ? 1 : 0, pal)) return 0;
   if (!rom_sprite_to_rgb15(mon_decomp, MON_DECOMP_BYTES, pic.frame, pal)) return 0;
   return mon_decomp;
+}
+
+static const uint16_t* rom_portrait(const PkMon* m, int back) {
+  if (!m) return 0;
+  return rom_portrait_sf(m->species, m->form, m->isShiny, back);
 }
 
 /* The Gen-3 ladder, character for character what pdna_summary.c's draw_left did before
@@ -873,22 +878,42 @@ int pdna_origin_art_icon(uint16_t dex, PdnaArt* out) {
  * never the `gen` fetch_icon()'s icon=1 call passes). Always form 0, never back,
  * never shiny -- a dex-grid reference picture has no "which specific owned mon"
  * question to answer, exactly like fetch_icon()'s own Gen-2 icon has none either. */
-static int fetch_portrait_by_dex(uint16_t dex, PdnaArt* out) {
+static int fetch_portrait_by_dex(uint8_t gen, uint16_t dex, PdnaArt* out) {
+  if (gen != PDNA_GEN1 && gen != PDNA_GEN2) return 0;
   if (!s_gb_on || !s_gb.pic) return 0;
-  if (!pdna_origin_art_have(PDNA_GEN1)) return 0;
+  if (!pdna_origin_art_have(gen)) return 0;
   if (!pdna_origin_art_stack_room(PDNA_GB_FETCH_NEED)) return 0;
   uint8_t w = 0, h = 0;
-  const uint16_t* px = fetch_pic_ex(PDNA_GEN1, dex, /*form=*/0, /*want_back=*/0,
+  const uint16_t* px = fetch_pic_ex(gen, dex, /*form=*/0, /*want_back=*/0,
                                     /*shiny=*/0, /*icon=*/0, &w, &h);
   if (!px || !w || !h) return 0;
-  out->px = px; out->w = w; out->h = h; out->gen = PDNA_GEN1;
+  out->px = px; out->w = w; out->h = h; out->gen = gen;
   return 1;
 }
 
 int pdna_origin_art_portrait_by_dex(uint16_t dex, PdnaArt* out) {
+  return pdna_origin_art_portrait_by_dex_gen(PDNA_GEN1, dex, out);
+}
+
+/* BACKLOG #203: the same species-keyed front pic for either Game Boy generation (the
+ * Pokedex DETAIL view is one screen for Gen 1 AND Gen 2; the Gen-2 grid shows the
+ * 16x16 icon rung but the detail wants the real 56x56 front pic). */
+__attribute__((noinline)) int pdna_origin_art_portrait_by_dex_gen(uint8_t gen, uint16_t dex, PdnaArt* out) {
   if (out) memset(out, 0, sizeof *out);
   if (!out) return 0;
-  return fetch_portrait_by_dex(dex, out);
+  return fetch_portrait_by_dex(gen, dex, out);
+}
+
+/* BACKLOG #203: the Gen-3 twin -- keyed by INTERNAL species id, front, form 0, never
+ * shiny/back. Same ladder gen3_ladder() walks (compiled art, then the user's ROM). */
+int pdna_origin_art_front_by_species(uint16_t species, PdnaArt* out) {
+  if (out) memset(out, 0, sizeof *out);
+  if (!out || species == 0) return 0;
+  const uint16_t* spr = mon_front_for_form(species, false, 0);
+  if (!spr) spr = rom_portrait_sf(species, 0, 0, 0);
+  if (!spr) return 0;
+  out->px = spr; out->w = MON_FRONT_W; out->h = MON_FRONT_H; out->gen = PDNA_GEN3;
+  return 1;
 }
 
 int pdna_origin_box_art(int slot, const PkMon* m, PdnaArt* out) {
