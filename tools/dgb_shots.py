@@ -5991,7 +5991,7 @@ def run_y19_s3(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessio
     s.press_n("DOWN", 8, settle=12)
     T("A", "(e) History again: the newest row is the crossed step ('Bank move', #306), tagged FLOOR", settle=300, claim=["HISTORY", "Bank move"])
     T("DOWN", "(e) DOWN to the next older row", settle=30)
-    T("A", "(e) A: jump below the floor -> 'STOPPED AT A FLOOR' (undo cannot pass a crossed step)", settle=300)
+    T("A", "(e) A: jump below the floor -> 'STOPPED AT A FLOOR' naming 'Bank move' (#306; undo cannot pass a crossed step)", settle=300, claim=["Stopped at Bank move"], claim_absent=["Box move"])
     T("A", "(e) dismiss", settle=300)
     SHOT("history_after_stop", "(e) History after the refused jump: nothing moved")
     T("B", "(e) B out of History", settle=300)
