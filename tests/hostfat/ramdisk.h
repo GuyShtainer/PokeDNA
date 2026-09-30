@@ -96,5 +96,6 @@ void rd_snapshot(void);           /* remember the volume as it is now */
 void rd_restore(void);            /* rewind to the snapshot; clears the cut + write counters */
 unsigned char* rd_sector(unsigned lba);   /* peek at a sector (test-side inspection) */
 unsigned rd_sector_count(void);
+unsigned rd_changed(unsigned* out, unsigned max);   /* sectors whose bytes differ from the snapshot */
 
 #endif /* HOSTFAT_RAMDISK_H */

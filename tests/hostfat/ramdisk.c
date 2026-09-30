@@ -69,6 +69,17 @@ void rd_restore(void) {
 unsigned char* rd_sector(unsigned lba) { return (s_mem && lba < s_sectors) ? s_mem + (size_t)lba * FF_MAX_SS : 0; }
 unsigned rd_sector_count(void) { return s_sectors; }
 
+unsigned rd_changed(unsigned* out, unsigned max) {
+  unsigned i, n = 0;
+  if (!s_snap || !s_mem || !s_dirty) return 0;
+  for (i = 0; i < s_sectors; i++)
+    if (s_dirty[i] && memcmp(s_mem + (size_t)i * FF_MAX_SS, s_snap + (size_t)i * FF_MAX_SS, FF_MAX_SS) != 0) {
+      if (n < max) out[n] = i;
+      n++;
+    }
+  return n;
+}
+
 DSTATUS disk_initialize(BYTE pdrv) { (void)pdrv; return s_mem ? 0 : STA_NOINIT; }
 
 DSTATUS disk_status(BYTE pdrv) {

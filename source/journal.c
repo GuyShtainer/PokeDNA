@@ -390,12 +390,13 @@ static void dir_cb(void* arg, const char* name) {
   else if (name_idx(name, "tmp", &idx) && d->nstale < 4) d->stale[d->nstale++] = idx;
 }
 
-typedef struct Scan { uint32_t expect, c_last, tip_aux, latest; uint8_t have; } Scan;
+typedef struct Scan { uint32_t expect, c_last, tip_aux, latest; uint8_t have, rootpre; } Scan;
 
 static void scan_absorb(Scan* sc, const JrnRec* r, uint32_t hash) {
   if (r->kind == JRN_KIND_STEP) {
     sc->c_last = r->seq; sc->tip_aux = r->seq;
     if (r->post == hash) sc->latest = r->seq;
+    if (!r->parent && r->pre == hash) sc->rootpre = 1;   /* the image is a root's before-state */
   } else {
     sc->c_last = r->parent;
     sc->tip_aux = r->kind == JRN_KIND_CURSOR ? r->aux : r->parent;
@@ -480,6 +481,7 @@ static void anchor_cursor(Jrn* j, const Scan* sc, uint32_t hash) {
     else if (r.pre == hash) { j->cursor = r.parent; found = 1; }
     else cur = r.parent;
   }
+  if (!found && !sc->c_last && sc->rootpre) { j->cursor = 0; found = 1; }   /* cursor rests before every root */
   if (found) {
     j->tip = j->cursor == sc->c_last ? sc->tip_aux : sc->c_last;
     j->anchor = JRN_ANCHOR_MATCH;
