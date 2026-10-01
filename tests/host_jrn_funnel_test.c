@@ -739,7 +739,7 @@ static void t_chain_never_pairs(void) {
  * swept across the whole press; every point that leaves a PARTIAL image must say TORN. */
 static void t_chain_torn_reapply_and_jump(void) {
   static uint8_t pre[G3_SAVE_FILE_SIZE], mid[G3_SAVE_FILE_SIZE], post[G3_SAVE_FILE_SIZE];
-  uint32_t av = 0; char stop[25]; long k; unsigned long r0, Rn; int n, moved; unsigned partial = 0, bad = 0, jpartial = 0, jbad = 0;
+  uint32_t av = 0; char stop[25]; long k; unsigned long r0, Rn; int n, moved; unsigned partial = 0, bad = 0, jpartial = 0, jbad = 0, discarded = 0;
   memcpy(pre, sv, sizeof pre);
   CHECK(stageA(300), "A (plain)");
   memcpy(mid, sv, sizeof mid);
@@ -760,10 +760,25 @@ static void t_chain_torn_reapply_and_jump(void) {
     ep0 = RA.epoch;
     rd_fail_reads_after = k; n = jrnapp_reapply(); rd_fail_reads_after = -1;
     if (memcmp(sv, pre, sizeof sv) && memcmp(sv, mid, sizeof sv) && memcmp(sv, post, sizeof sv)) {
+      ImgFlags L; int fl = -1;
       partial++;
       if (n != JRN_E_TORN || RA.epoch == ep0) { bad++; if (bad <= 3) printf("  re-apply k=%ld: a PARTIAL image reported as %d (epoch %u -> %u)\n", k, n, (unsigned)ep0, (unsigned)RA.epoch); }
+      /* z9 fixpass / D10 ruling 9.1+9.2: model the app's TORN branch at the offer. The latch is set (and the image staged); the DISCARD
+       * re-reads the card's .sav (`pre`: the bytes the card holds at the offer) over the partial image and ONLY THEN clears the latch;
+       * a failed re-read leaves it set. The reconcile that follows must see the CARD's bytes, with valid checksums. */
+      memset(&L, 0, sizeof L);
+      imgf_partial_set(&L);
+      if (!imgf_partial(&L) || !imgf_exit_prompt(&L)) { bad++; printf("  latch k=%ld: set did not latch + stage\n", k); }
+      imgf_clear(&L);                                              /* the failed-discard shape: the flags reset, the re-read never happened */
+      if (!imgf_partial(&L)) { bad++; printf("  latch k=%ld: imgf_clear cleared the PARTIAL latch (a failed discard must stay latched)\n", k); }
+      memcpy(sv, pre, sizeof sv);                                  /* the discard: the card's image is back in full */
+      imgf_partial_clear(&L);
+      if (imgf_partial(&L) || memcmp(sv, pre, sizeof sv) != 0 || !gen3_verify_full_checksums(sv, slot, &fl)) {
+        bad++; printf("  discard k=%ld: the image is not the card's clean bytes after the discard (partial=%d, sect %d)\n", k, imgf_partial(&L), fl); }
+      else discarded++;
     }
   }
+  CHECK(discarded == partial && partial > 0, "z9 D10/9.1+9.2: at every one of the %u PARTIAL points the modelled offer latches, stays latched through a failed discard, and after the discard the image IS the card's bytes with valid checksums (%u ok)", partial, discarded);
   CHECK(partial > 0 && bad == 0, "D1 re-apply: every PARTIAL image says JRN_E_TORN with the epoch crossed (%u partial points, %u silent)", partial, bad);
   /* the History jump: post -> the root, through the chain's undo */
   rd_restore(); memcpy(sv, post, sizeof sv); card_remount();
