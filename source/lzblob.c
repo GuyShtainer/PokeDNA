@@ -62,7 +62,9 @@ static void rc_cell_fast(uint16_t* dst0, const uint32_t* tw, int hf, int vf, con
     uint32_t bw = btw[bvf ? 7 - ly : ly];
     if (bhf) bw = rc_hflip(bw);
     if (w == 0) rc_row8(d, bpal, bw);        /* whole row transparent: pure background */
-    else        rc_row8_bg(d, pal, bpal, w, bw);
+    else if (((w - 0x11111111u) & ~w & 0x88888888u) == 0u)
+                rc_row8(d, pal, w);          /* no index-0 nibble: fully opaque, background hidden */
+    else        rc_row8_bg(d, pal, bpal, w, bw);   /* a sticker edge: per-pixel select */
   }
 }
 
@@ -158,12 +160,28 @@ void romchrome_blit_tiles(const uint8_t* tiles, const uint16_t* pal16,
                           const int16_t* tile_ids, int ntx, int nty,
                           int dx, int dy) {
   if (!tiles || !pal16 || ntx <= 0 || nty <= 0) return;
+  const int word_ok = (((uintptr_t)tiles & 3u) == 0u);   /* tile i at tiles+32*i stays 4-aligned */
   for (int ty = 0; ty < nty; ty++) {
     for (int tx = 0; tx < ntx; tx++) {
       int tid = tile_ids ? tile_ids[ty * ntx + tx] : (ty * ntx + tx);
       if (tid < 0) continue;                    /* negative = "no tile here" */
       const uint8_t* t = tiles + (uint32_t)tid * 32u;
       int px0 = dx + tx * 8, py0 = dy + ty * 8;
+      if (word_ok && px0 >= 0 && px0 + 8 <= 240 && py0 >= 0 && py0 + 8 <= 160) {
+        /* BACKLOG #103: a tile wholly on screen -- one 32-bit read per row, no per-pixel
+         * clip or byte/nibble extract; an all-zero row (fully transparent) is skipped. */
+        const uint32_t* tw = (const uint32_t*)(const void*)t;
+        for (int y = 0; y < 8; y++) {
+          uint32_t w = tw[y];
+          if (!w) continue;
+          uint16_t* d = &vid_mem[(py0 + y) * 240 + px0];
+          for (int k = 0; k < 8; k++, w >>= 4) {
+            uint32_t i = w & 15u;
+            if (i) d[k] = pal16[i] & 0x7FFFu;
+          }
+        }
+        continue;
+      }
       for (int y = 0; y < 8; y++) {
         int sy = py0 + y;
         if (sy < 0 || sy >= 160) continue;
