@@ -386,7 +386,7 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * pdna_pick.c) so a future PDNA_FILT_ROW_H change is checked against THIS boundary too,
  * not just the filter lists' own footer -- the exact class of gap host_textfit_test's
  * "filter list last row ink" check exists to catch for the other two lists. */
-#define PDNA_MV_VIS          9                /* rows in pick_move's window            */
+#define PDNA_MV_VIS          8                /* rows in pick_move's window (BACKLOG #329: 9 put row 8's ink at y=86..93, 2 px under the panel's top border at 92 -- the selected row came out half-cut) */
 #define PDNA_MV_DETAIL_Y    92                /* top of the stat detail panel below it */
 /* These lists put their hint TWO rows below UI_FOOTER_Y, not on it (nothing pops up over
  * them, so they can use the whole band). Named so the host test can assert it is still
@@ -710,6 +710,16 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * everything else the S2 edit path draws besides the confirm screen (above) and the
  * SF_ERR_RENAME switch (above). msg_wait lines measure against its 184px proportional
  * clamp; s_busy draws with ui_text at x=28 (8px/glyph fixed), budget 240-28=212px. */
+/* The shared "busy" panel (pdna_main.c busy_panel, pdna_gen12.c s_busy / s_busy_reading).
+ * BACKLOG #331: it was ui_panel(16, 60, 208, 48) with text at x=28, so the 25-glyph
+ * "Saving - do not power off" (25 * 8 = 200 px) ran to x=228 -- past the right border at
+ * x=223. Widened to x=8..231 with the text at x=20: the widest line ends at x=219 and
+ * clears the border by 11 px (host_textfit_test asserts >= 2). */
+#define PDNA_BUSY_PANEL_X   8
+#define PDNA_BUSY_PANEL_Y   60
+#define PDNA_BUSY_PANEL_W   224
+#define PDNA_BUSY_PANEL_H   48
+#define PDNA_BUSY_TEXT_X    20
 #define PDNA_GBEDIT_BUSY_SAVING    "Saving - do not power off"     /* s_busy's own line */
 #define PDNA_GBEDIT_BUSY_BACKUP    "Backing up original..."
 #define PDNA_GBEDIT_BUSY_WRITING   "Writing + verifying..."

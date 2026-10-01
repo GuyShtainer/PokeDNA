@@ -1229,9 +1229,9 @@ static void gbsrc_set_name_impl(int box, const char* s) {
 
 static void s_busy(const char* line) {
   ui_clear();
-  ui_panel(16, 60, 208, 48, UI_PANEL, UI_WARN);
-  ui_text(28, 70, UI_WARN, PDNA_GBEDIT_BUSY_SAVING);
-  ui_text(28, 88, UI_TEXT, line);
+  ui_panel(PDNA_BUSY_PANEL_X, PDNA_BUSY_PANEL_Y, PDNA_BUSY_PANEL_W, PDNA_BUSY_PANEL_H, UI_PANEL, UI_WARN);
+  ui_text(PDNA_BUSY_TEXT_X, 70, UI_WARN, PDNA_GBEDIT_BUSY_SAVING);
+  ui_text(PDNA_BUSY_TEXT_X, 88, UI_TEXT, line);
 }
 
 /* G1 review MEDIUM-2: CREATE's own busy screen, NOT s_busy() -- see
@@ -1239,9 +1239,9 @@ static void s_busy(const char* line) {
  * not power off" does not apply to a pure ROM read. Same panel shape. */
 static void s_busy_reading(void) {
   ui_clear();
-  ui_panel(16, 60, 208, 48, UI_PANEL, UI_WARN);
-  ui_text(28, 70, UI_WARN, PDNA_GBCREATE_BUSY_TITLE);
-  ui_text(28, 88, UI_TEXT, PDNA_GBCREATE_BUSY_LINE);
+  ui_panel(PDNA_BUSY_PANEL_X, PDNA_BUSY_PANEL_Y, PDNA_BUSY_PANEL_W, PDNA_BUSY_PANEL_H, UI_PANEL, UI_WARN);
+  ui_text(PDNA_BUSY_TEXT_X, 70, UI_WARN, PDNA_GBCREATE_BUSY_TITLE);
+  ui_text(PDNA_BUSY_TEXT_X, 88, UI_TEXT, PDNA_GBCREATE_BUSY_LINE);
 }
 
 /* The card refused; put RAM back to what the card holds so the grid never shows an
