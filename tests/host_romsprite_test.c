@@ -10,9 +10,10 @@
  *      source/map_render.c source/rom_map.c -o /tmp/hrms && /tmp/hrms
  *
  * What it proves:
- *   1) the GF header parses on Emerald + FireRed + LeafGreen and rom_sprite FAILS
- *      CLOSED on Ruby/Sapphire (no header — they need pinned rows, not guesses),
- *      and on a header whose table pointers do not fit inside the image;
+ *   1) the GF header parses on Emerald + FireRed + LeafGreen, Ruby/Sapphire open
+ *      through their PINNED rows (#293: no header; the 440-row tag shape is proven at
+ *      open and mutants — a wrong tag, a wild pointer, an unpinned revision — fail
+ *      CLOSED), and a header whose table pointers do not fit inside the image fails;
  *   2) all 440 front and all 440 back entries decompress to EXACTLY the byte count
  *      the geometry implies, per game: Emerald fronts are 2-frame (4096), FRLG
  *      fronts and all backs are 1-frame (2048), Castform is 4 formes (8192) and
@@ -153,7 +154,7 @@ static void ref_expand(const uint8_t* frame2048, const uint16_t pal[16], uint16_
 /* ---- expected decompressed size, per game and side ------------------------- */
 static uint32_t expect_bytes(RomKind k, RomSpriteSide side, int ts) {
   if (ts == ROM_SPRITE_CASTFORM) return 8192;                 /* 4 formes, always */
-  if (ts == ROM_SPRITE_DEOXYS)   return 4096;                 /* Normal + own     */
+  if (ts == ROM_SPRITE_DEOXYS)   return (k == ROM_RUBY || k == ROM_SAPPHIRE) ? 2048 : 4096; /* R/S: Normal only */
   if (side == ROM_SPRITE_FRONT && k == ROM_EMERALD) return 4096;  /* anim_front    */
   return 2048;
 }
@@ -274,8 +275,12 @@ static void run_rom(const char* path, const char* name, int expect_header) {
   chk(name, "species 440 rejected", !rom_sprite_pic(&rs, ROM_SPRITE_FRONT, 440, 0, a, sizeof a, &ia));
   chk(name, "a form on a species with no forme axis is rejected",
       !rom_sprite_pic(&rs, ROM_SPRITE_FRONT, 1, 1, a, sizeof a, &ia));
+  const int is_rs = (rc.kind == ROM_RUBY || rc.kind == ROM_SAPPHIRE);
   chk(name, "a 2048-byte buffer fails rather than truncating a 4096 pic",
-      !rom_sprite_pic(&rs, ROM_SPRITE_FRONT, ROM_SPRITE_DEOXYS, 0, a, 2048, &ia));
+      !rom_sprite_pic(&rs, ROM_SPRITE_FRONT, ROM_SPRITE_CASTFORM, 0, a, 2048, &ia));
+  if (!is_rs)
+    chk(name, "a 2048-byte buffer fails rather than truncating Deoxys' 4096",
+        !rom_sprite_pic(&rs, ROM_SPRITE_FRONT, ROM_SPRITE_DEOXYS, 0, a, 2048, &ia));
 
   /* Castform: four formes, four palettes, frame index == palette index */
   chk(name, "Castform is 4 formes", rom_sprite_pic(&rs, ROM_SPRITE_FRONT, ROM_SPRITE_CASTFORM, 0, a, sizeof a, &ia) &&
@@ -300,10 +305,11 @@ static void run_rom(const char* path, const char* name, int expect_header) {
   chk(name, "this cart's Deoxys forme is the right one", own == want);
   chk(name, "Deoxys Normal = frame 0, exact",
       rom_sprite_pic(&rs, ROM_SPRITE_FRONT, ROM_SPRITE_DEOXYS, 0, a, sizeof a, &ia) &&
-      ia.frames == 2 && ia.kind == ROM_SPRITE_FORME && ia.frame == 0 && ia.form_exact);
-  chk(name, "Deoxys own forme = frame 1, exact",
-      rom_sprite_pic(&rs, ROM_SPRITE_FRONT, ROM_SPRITE_DEOXYS, (uint8_t)own, a, sizeof a, &ia) &&
-      ia.frame == 1 && ia.form_exact);
+      ia.frames == (is_rs ? 1 : 2) && ia.kind == ROM_SPRITE_FORME && ia.frame == 0 && ia.form_exact);
+  if (!is_rs)   /* R/S carry Normal only: there is no own-forme frame to select */
+    chk(name, "Deoxys own forme = frame 1, exact",
+        rom_sprite_pic(&rs, ROM_SPRITE_FRONT, ROM_SPRITE_DEOXYS, (uint8_t)own, a, sizeof a, &ia) &&
+        ia.frame == 1 && ia.form_exact);
   for (int fm = 1; fm <= 3; fm++) {
     if (fm == own) continue;
     char w[72]; sprintf(w, "Deoxys forme %d absent here -> Normal, form_exact 0", fm);
@@ -592,6 +598,80 @@ static void run_expand_selftest(void) {
   chk("expand", "NULL arguments are survivable", 1);
 }
 
+/* ---- #293: the Ruby/Sapphire PIN path, positive control + mutants ------------- */
+static int rs_open_slice(uint8_t* img, uint32_t n, RomSprite* rs) {
+  MemCtx mc = { img, n };
+  RomCtx rc;
+  memset(&rc, 0, sizeof rc);
+  rc.read = mem_read; rc.ctx = &mc; rc.size = n;
+  /* fill exactly the fields rom_sprite keys on; the mutants below need no rom_open() */
+  memcpy(rc.code, img + 0xAC, 4); rc.version = img[0xBC];
+  rc.kind = (memcmp(rc.code, "AXVE", 4) == 0) ? ROM_RUBY : ROM_SAPPHIRE;
+  return rom_sprite_open(rs, &rc);
+}
+
+static int rs_matches_emerald(uint8_t* img, uint32_t n, const char* empath) {
+  static uint8_t em[0x1000000];
+  FILE* f = fopen(empath, "rb");
+  if (!f) return -1;
+  size_t m = fread(em, 1, sizeof em, f);
+  fclose(f);
+  MemCtx mr = { img, n }, me = { em, (uint32_t)m };
+  RomCtx rr, re;
+  memset(&rr, 0, sizeof rr); memset(&re, 0, sizeof re);
+  rr.read = mem_read; rr.ctx = &mr; rr.size = n; memcpy(rr.code, img + 0xAC, 4); rr.version = img[0xBC];
+  rr.kind = (memcmp(rr.code, "AXVE", 4) == 0) ? ROM_RUBY : ROM_SAPPHIRE;
+  re.read = mem_read; re.ctx = &me; re.size = (uint32_t)m; memcpy(re.code, em + 0xAC, 4); re.version = em[0xBC];
+  re.kind = ROM_EMERALD;
+  RomSprite a, b;
+  if (!rom_sprite_open(&a, &rr) || !rom_sprite_open(&b, &re)) return 0;
+  static uint8_t x[ROM_SPRITE_BUF_BYTES], y[ROM_SPRITE_BUF_BYTES];
+  RomSpritePic pa, pb;
+  for (int side = 0; side < 2; side++) {
+    RomSpriteSide sd = side ? ROM_SPRITE_BACK : ROM_SPRITE_FRONT;
+    if (!rom_sprite_pic(&a, sd, 1, 0, x, sizeof x, &pa) || !rom_sprite_pic(&b, sd, 1, 0, y, sizeof y, &pb)) return 0;
+    if (memcmp(x, y, ROM_SPRITE_FRAME_BYTES) != 0) return 0;
+  }
+  return 1;
+}
+
+static void run_rs_pins(const char* path, const char* name, uint32_t front, uint32_t back, uint32_t npal, uint32_t spal) {
+  FILE* f = fopen(path, "rb");
+  if (!f) { printf("SKIP %s pins (no %s)\n", name, path); return; }
+  static uint8_t img[0x1000000];   /* the pointers reach 0x08DBxxxx: the whole 16 MiB */
+  size_t n = fread(img, 1, sizeof img, f);
+  fclose(f);
+  if (n != sizeof img) { printf("SKIP %s pins (short read)\n", name); return; }
+  RomSprite rs;
+  /* positive control: without it every "rejected" below could pass for the wrong reason */
+  chk(name, "pin path: the retail image opens (positive control)", rs_open_slice(img, (uint32_t)n, &rs) == 1);
+
+  uint32_t fo = front - ROM_BASE, so = spal - ROM_BASE;
+  uint8_t keep;
+  keep = img[fo + 100 * 8 + 6]; img[fo + 100 * 8 + 6] ^= 1;
+  chk(name, "pin path: front row 100 tag != index -> fails closed", rs_open_slice(img, (uint32_t)n, &rs) == 0);
+  img[fo + 100 * 8 + 6] = keep;
+  keep = img[so + 439 * 8 + 4]; img[so + 439 * 8 + 4] ^= 1;
+  chk(name, "pin path: shiny row 439 tag != 500+index -> fails closed", rs_open_slice(img, (uint32_t)n, &rs) == 0);
+  img[so + 439 * 8 + 4] = keep;
+  keep = img[fo + 7 * 8 + 3]; img[fo + 7 * 8 + 3] = 0x00;     /* pointer leaves the image */
+  chk(name, "pin path: a front pointer outside the image -> fails closed", rs_open_slice(img, (uint32_t)n, &rs) == 0);
+  img[fo + 7 * 8 + 3] = keep;
+  keep = img[0xBC]; img[0xBC] = (uint8_t)(keep ^ 1);          /* an unpinned revision */
+  chk(name, "pin path: an unpinned revision byte -> fails closed", rs_open_slice(img, (uint32_t)n, &rs) == 0);
+  img[0xBC] = keep;
+  uint32_t bo = back - ROM_BASE, no = npal - ROM_BASE;
+  keep = img[bo + 200 * 8 + 6]; img[bo + 200 * 8 + 6] ^= 1;
+  chk(name, "pin path: back row 200 tag != index -> fails closed", rs_open_slice(img, (uint32_t)n, &rs) == 0);
+  img[bo + 200 * 8 + 6] = keep;
+  keep = img[no + 300 * 8 + 4]; img[no + 300 * 8 + 4] ^= 1;
+  chk(name, "pin path: normal-palette row 300 tag != index -> fails closed", rs_open_slice(img, (uint32_t)n, &rs) == 0);
+  img[no + 300 * 8 + 4] = keep;
+  chk(name, "pin path: restored image opens again", rs_open_slice(img, (uint32_t)n, &rs) == 1);
+  int em = rs_matches_emerald(img, (uint32_t)n, "/Users/guyshtainer/VSCodeProjects/gba-toolkit/roms/Emerald.gba");
+  if (em >= 0) chk(name, "pin path: Bulbasaur front/back equal Emerald's (front/back not swapped)", em == 1);
+}
+
 /* ---- synthesised images: a GF header whose pointers are not usable ---------- */
 static void run_synth(const char* path) {
   FILE* f = fopen(path, "rb");
@@ -667,8 +747,10 @@ int main(int argc, char** argv) {
   sprintf(p, "%s/Emerald.gba", dir);   run_rom(p, "Emerald",   1);
   sprintf(p, "%s/FireRed.gba", dir);   run_rom(p, "FireRed",   1);
   sprintf(p, "%s/LeafGreen.gba", dir); run_rom(p, "LeafGreen", 1);
-  sprintf(p, "%s/Ruby.gba", dir);      run_rom(p, "Ruby",      0);
-  sprintf(p, "%s/Sapphire.gba", dir);  run_rom(p, "Sapphire",  0);
+  sprintf(p, "%s/Ruby.gba", dir);      run_rom(p, "Ruby",      1);
+  sprintf(p, "%s/Sapphire.gba", dir);  run_rom(p, "Sapphire",  1);
+  sprintf(p, "%s/Ruby.gba", dir);      run_rs_pins(p, "Ruby",     0x081E836Cu, 0x081E980Cu, 0x081EA5CCu, 0x081EB38Cu);
+  sprintf(p, "%s/Sapphire.gba", dir);  run_rs_pins(p, "Sapphire", 0x081E82FCu, 0x081E979Cu, 0x081EA55Cu, 0x081EB31Cu);
   sprintf(p, "%s/Emerald.gba", dir);   run_synth(p);
   printf("rom_sprite test: %d checks, %d failure(s)\n", checks, fails);
   return fails ? 1 : 0;

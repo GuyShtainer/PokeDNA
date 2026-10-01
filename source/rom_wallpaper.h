@@ -33,6 +33,20 @@
  *    12-byte {tiles; tilemap; palettes}) that this module does not parse. Cost to
  *    close: a second row-reader function; not written here for lack of time in this
  *    pass. Reported, not silently absorbed.
+ *    [BACKLOG #293, 2026-10-01: re-measured by tools/rs_locate.py's independent shape
+ *    scan, and STOPPED there on purpose -- the sprite + icon halves of #293 shipped, this
+ *    half did not.] Found: AXVE rev 2 0x083BB104 / AXPE rev 1 0x083BB160 (the unique run
+ *    of 16 rows whose tilemap LZ10-decodes to exactly 720 B; symbol files agree), exactly
+ *    16 rows (no Walda set) of {tiles LZ10, u32 size, tilemap LZ10, palettes}. Three
+ *    more facts make it a design item, not a pin row: (1) the palette blob is THREE
+ *    32-byte banks (96 B, tilemap bank field 0/1/2 maps 1:1 -- bank 0 = the blank corner
+ *    tile + backdrop colour, 1 = frame, 2 = field), not Emerald's two, so
+ *    ROM_WP_PAL_BANKS / rom_wallpaper_pal_bank / pdna_box.c's pal[2][16] do not fit;
+ *    (2) the R/S art is a DIFFERENT set from Emerald's (all 16 tile blobs differ in
+ *    size and bytes: e.g. Forest 1,696 B vs 2,016 B), so k_em_bg's backdrop shapes do not
+ *    apply and the compiled-art (Emerald-derived) normal build can never be
+ *    pixel-identical to a served R/S wallpaper; (3) the backdrop pattern's own shapes are
+ *    unmeasured for R/S. Until that lane lands, R/S keeps the procedural field.
  *
  * ============================================================================
  * WHERE THE DATA LIVES -- DESIGN.md Sec 1.2, byte-matched against the decomp and

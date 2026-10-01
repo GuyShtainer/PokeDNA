@@ -3,8 +3,10 @@
  * byte-for-byte the code that runs on the GBA (fused today, FatFs later).
  *
  * What it proves:
- *   1) the GF header parses on Emerald + FireRed + LeafGreen, and rom_mon FAILS
- *      CLOSED on Ruby/Sapphire (no header — they need pinned rows, not guesses);
+ *   1) the GF header parses on Emerald + FireRed + LeafGreen; Ruby/Sapphire open via
+ *      their PINNED rows (#293, no header) and mutants of that path — a wild icon
+ *      pointer, a palette id >= 3, a broken palette-tag run, an unpinned revision —
+ *      FAIL CLOSED;
  *   2) every one of the 440 icon-table entries (386 species + ceiling gap + Egg +
  *      27 Unown letters) yields an in-bounds picture pointer, a palette id 0..2,
  *      and a non-blank 512 B frame;
@@ -222,6 +224,56 @@ static void run_rom(const char* path, const char* name, int expect_header) {
   fclose(f);
 }
 
+/* ---- #293: the Ruby/Sapphire PIN path, positive control + mutants ------------- */
+typedef struct { const uint8_t* p; uint32_t n; } MemCtx;
+static bool mem_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
+  MemCtx* m = (MemCtx*)ctx;
+  if (off > m->n || len > m->n - off) return false;
+  memcpy(dst, m->p + off, len);
+  return true;
+}
+static int rs_open_img(uint8_t* img, uint32_t n) {
+  MemCtx mc = { img, n };
+  RomCtx rc; RomMon rm;
+  memset(&rc, 0, sizeof rc);
+  rc.read = mem_read; rc.ctx = &mc; rc.size = n;
+  memcpy(rc.code, img + 0xAC, 4); rc.version = img[0xBC];
+  rc.kind = (memcmp(rc.code, "AXVE", 4) == 0) ? ROM_RUBY : ROM_SAPPHIRE;
+  return rom_mon_open(&rm, &rc);
+}
+static void run_rs_pins(const char* path, const char* name, uint32_t icons, uint32_t ids, uint32_t pals) {
+  FILE* f = fopen(path, "rb");
+  if (!f) { printf("SKIP %s pins (no %s)\n", name, path); return; }
+  static uint8_t img[0x1000000];
+  size_t n = fread(img, 1, sizeof img, f);
+  fclose(f);
+  if (n != sizeof img) { printf("SKIP %s pins (short read)\n", name); return; }
+  chk(name, "pin path: the retail image opens (positive control)", rs_open_img(img, (uint32_t)n) == 1);
+  uint32_t io = icons - ROM_BASE, di = ids - ROM_BASE, po = pals - ROM_BASE;
+  uint8_t keep;
+  keep = img[io + 300 * 4 + 3]; img[io + 300 * 4 + 3] = 0x00;       /* pointer leaves the ROM space */
+  chk(name, "pin path: a wild icon pointer -> fails closed", rs_open_img(img, (uint32_t)n) == 0);
+  img[io + 300 * 4 + 3] = keep;
+  keep = img[di + 439]; img[di + 439] = 3;
+  chk(name, "pin path: a palette id >= 3 -> fails closed", rs_open_img(img, (uint32_t)n) == 0);
+  img[di + 439] = keep;
+  keep = img[po + 8 * 2 + 4]; img[po + 8 * 2 + 4] ^= 1;
+  chk(name, "pin path: a broken palette-tag run -> fails closed", rs_open_img(img, (uint32_t)n) == 0);
+  img[po + 8 * 2 + 4] = keep;
+  keep = img[0xBC]; img[0xBC] = (uint8_t)(keep ^ 1);
+  chk(name, "pin path: an unpinned revision byte -> fails closed", rs_open_img(img, (uint32_t)n) == 0);
+  img[0xBC] = keep;
+  keep = img[po + 8 * 1 + 3]; img[po + 8 * 1 + 3] = 0x00;            /* palette 1 pointer leaves the ROM */
+  chk(name, "pin path: a wild palette pointer -> fails closed", rs_open_img(img, (uint32_t)n) == 0);
+  img[po + 8 * 1 + 3] = keep;
+  uint8_t k4[4]; memcpy(k4, img + io, 4);
+  { uint32_t v = ROM_BASE + (uint32_t)n - 512u;                      /* in the image, but < 1,024 B of room */
+    img[io] = (uint8_t)v; img[io + 1] = (uint8_t)(v >> 8); img[io + 2] = (uint8_t)(v >> 16); img[io + 3] = (uint8_t)(v >> 24); }
+  chk(name, "pin path: an icon pointer without room for both frames -> fails closed", rs_open_img(img, (uint32_t)n) == 0);
+  memcpy(img + io, k4, 4);
+  chk(name, "pin path: restored image opens again", rs_open_img(img, (uint32_t)n) == 1);
+}
+
 int main(int argc, char** argv) {
   const char* dir = "/Users/guyshtainer/VSCodeProjects/gba-toolkit/roms";
   /* run_host_tests.py hands every argv[1]-reading test the .sav corpus — this test
@@ -231,8 +283,10 @@ int main(int argc, char** argv) {
   sprintf(p, "%s/Emerald.gba", dir);   run_rom(p, "Emerald",   1);
   sprintf(p, "%s/FireRed.gba", dir);   run_rom(p, "FireRed",   1);
   sprintf(p, "%s/LeafGreen.gba", dir); run_rom(p, "LeafGreen", 1);
-  sprintf(p, "%s/Ruby.gba", dir);      run_rom(p, "Ruby",      0);
-  sprintf(p, "%s/Sapphire.gba", dir);  run_rom(p, "Sapphire",  0);
+  sprintf(p, "%s/Ruby.gba", dir);      run_rom(p, "Ruby",      1);
+  sprintf(p, "%s/Sapphire.gba", dir);  run_rom(p, "Sapphire",  1);
+  sprintf(p, "%s/Ruby.gba", dir);      run_rs_pins(p, "Ruby",     0x083BBD3Cu, 0x083BC41Cu, 0x083BC5D4u);
+  sprintf(p, "%s/Sapphire.gba", dir);  run_rs_pins(p, "Sapphire", 0x083BBD98u, 0x083BC478u, 0x083BC630u);
   printf("rom_mon test: %d checks, %d failure(s)\n", checks, fails);
   return fails ? 1 : 0;
 }

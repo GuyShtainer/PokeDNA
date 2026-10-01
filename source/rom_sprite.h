@@ -33,9 +33,10 @@
  *     struct CompressedSpriteSheet   { const u32* data; u16 size; u16 tag; }  8 B
  *     struct CompressedSpritePalette { const u32* data; u16 tag; }            8 B (padded)
  *
- * Ruby/Sapphire predate the header (ARM code sits at 0x100) and FAIL CLOSED here,
- * exactly like rom_mon.c. Their tables were located anyway and are recorded in
- * rom_sprite.c's comment, ready to be pinned the day someone wants them.
+ * Ruby/Sapphire predate the header (ARM code sits at 0x100), so they are served from
+ * PINNED addresses keyed by game code + revision (AXVE rev 2, AXPE rev 1 -- the two
+ * corpus dumps; BACKLOG #293), exactly like rom_text.c. The 440-row tag shape is
+ * re-proved at open; any other R/S revision stays unpinned and FAILS CLOSED.
  *
  * MEASURED FACTS, none of which are safe to assume:
  *
@@ -135,8 +136,8 @@ typedef struct RomSpritePic {
 } RomSpritePic;
 
 /* Parse the GF header and sanity-check all four table pointers. Returns 1 on
- * success; 0 (fail closed) for Ruby/Sapphire, an unknown/hacked ROM, or any
- * pointer that does not leave room for 440 entries inside the image. */
+ * success; 0 (fail closed) for an unpinned Ruby/Sapphire revision, an unknown/hacked
+ * ROM, or any pointer that does not leave room for 440 entries inside the image. */
 int rom_sprite_open(RomSprite* rs, const RomCtx* rc);
 
 /* Turn the decode-twice-and-compare verification off (fused/cartridge-bus source)

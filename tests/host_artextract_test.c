@@ -224,8 +224,8 @@ int main(int argc, char** argv) {
   RUN("Emerald.gba", "Emerald", 1);
   RUN("FireRed.gba", "FireRed", 1);
   RUN("LeafGreen.gba", "LeafGreen", 1);
-  RUN("Ruby.gba", "Ruby", 0);         /* R/S predate the GF header -- fails closed, correctly */
-  RUN("Sapphire.gba", "Sapphire", 0);
+  RUN("Ruby.gba", "Ruby", 1);         /* R/S predate the GF header -- served via pinned rows (#293) */
+  RUN("Sapphire.gba", "Sapphire", 1);
 #undef RUN
   printf("art_icons_extract test: %d checks, %d failure(s)\n", checks, fails);
   return fails ? 1 : 0;

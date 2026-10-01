@@ -3072,7 +3072,8 @@ bool app_confirm(const char* title, const char* l1) {
  * image lights the real box icons back up: rom_open() identifies it, rom_mon_open()
  * parses the GF header's icon tables, and box_oam streams 512 B frames from it at
  * box load. Any Pokemon ROM works for icons (the art is per-species, not per-save);
- * Ruby/Sapphire have no GF header yet, so rom_mon fails closed there and the box
+ * Ruby/Sapphire have no GF header: rom_mon serves the two PINNED revisions (AXVE rev 2,
+ * AXPE rev 1; BACKLOG #293) and fails closed on any other R/S revision, where the box
  * keeps its artless name chips. Plain statics in IWRAM .bss — the hardware build's
  * EWRAM headroom (2,116 B) is not touched. The registered-SD-file path is the next
  * phase (it needs the P0 verified reader + a FIL lifetime plan).
@@ -3296,7 +3297,7 @@ static void g3cross_boot_register(void) { }
  * HOISTED OUT of app_icon_cache_resolve so that EVERY app_icon_rom_open() exit emits it.
  * Two paths do not run the resolver at all: the fused and SD-registered Ruby/Sapphire
  * "card/pokeblock chrome only" returns, which bail the moment rom_mon_open() refuses an
- * R/S image (no GF header). Guy's corpus has Ruby and Sapphire dumps, so an R/S session
+ * R/S image (an UNPINNED revision since #293 -- the two corpus revisions open now). Guy's corpus has Ruby and Sapphire dumps, so an R/S session
  * used to produce a log with NONE of these lines in it -- no way to tell whether
  * icons.bin was serving, whether art.idx cross-checked, or why not, i.e. a re-run
  * request, which is exactly what these lines exist to prevent.
@@ -3344,8 +3345,8 @@ static void icon_rung_log(const RomCtx* rc_ok, bool resolved) {
  * 1) a ROM fused into this image (emulator or a fused NOR build);
  * 2) the registered SD .gba for the loaded save's game, then any other game's —
  *    icons are per-species art, so any Pokemon ROM serves them (Deoxys' forme is
- *    the only per-game difference). Ruby/Sapphire have no GF header yet and fail
- *    closed inside rom_mon_open. Call whenever the registration may have changed. */
+ *    the only per-game difference). Ruby/Sapphire have no GF header: the two pinned
+ *    revisions open inside rom_mon_open (#293), any other R/S revision fails closed. Call whenever the registration may have changed. */
 /* Phase 2 (ROM-art cache): resolve icons.bin ONCE per registration and register it
  * with every consumer -- box_oam.c's OAM ladder AND art_fallbacks.c's RGB15 ladder
  * (via the memoized verdict it reads, primed here). Called at the END of
@@ -3357,8 +3358,8 @@ static void icon_rung_log(const RomCtx* rc_ok, bool resolved) {
  *
  * "REGARDLESS" IS NOT QUITE TRUE, and the exception is worth naming rather than leaving
  * for the next reader to discover: app_icon_rom_open's two Ruby/Sapphire "card/pokeblock
- * chrome only" returns bail before reaching here, so on an R/S session the resolver does
- * not run, the memo and boxoam's cache path are whatever a previous save open left, and
+ * chrome only" returns bail before reaching here, so on an UNPINNED R/S revision (the two
+ * pinned ones now take the normal path, #293) the resolver does not run, the memo and boxoam's cache path are whatever a previous save open left, and
  * icon_frame_cache_invalidate() is not called. Those paths now at least LOG the effective
  * state (icon_rung_log above, `resolved = false`). Making them actually resolve is a
  * behaviour change to the icon ladder, not a logging fix, and is deliberately not made
@@ -3454,13 +3455,12 @@ static void app_icon_rom_open(void) {
    * (rom_open() only ever returns true for ROM_ID_RETAIL). */
   if (fused_present) app_rom_note_verdict(&s_iconrom_ctx, "fused");
   if (fused_ok) {
-    /* rom_chrome_open() does NOT need the GF header rom_mon_open() below checks
-     * (Ruby/Sapphire have none) -- it is called unconditionally on every
-     * successful rom_open() so a Ruby cart's card rung is reachable at all,
-     * unlike rom_sprite_open()/rom_itemart_open() below, which stay nested
-     * inside the rom_mon_open() gate and so are pre-existingly unreachable for
-     * R/S (not something this change fixes -- see rom_sprite.h's own "Ruby/
-     * Sapphire: no GF header, so rom_sprite_open fails closed" note). */
+    /* rom_chrome_open() does NOT need the icon tables rom_mon_open() below checks
+     * -- it is called unconditionally on every successful rom_open() so a card rung
+     * is reachable even for an R/S revision rom_mon has no pinned row for. Since
+     * #293 rom_mon_open() itself opens the two pinned R/S revisions (AXVE rev 2,
+     * AXPE rev 1), so rom_sprite_open()/rom_itemart_open()/rom_text_open() below,
+     * which stay nested inside that gate, are reachable for them too. */
     rom_chrome_open(&s_romchrome, &s_iconrom_ctx);
     pdna_trainer_set_romchrome(&s_romchrome);
     pdna_bag_set_romchrome(&s_romchrome);
@@ -3469,7 +3469,7 @@ static void app_icon_rom_open(void) {
       art_fallbacks_set_rommon(&s_iconrom);      /* Phase 1.5: dex/party/picker ROM rung */
       rom_text_open(&s_romtext, &s_iconrom_ctx);
       /* Phase 1 (ROM-art): the summary portrait + item icons/type badges. Neither
-       * gates icons/text above -- Ruby/Sapphire (no GF header) already returned
+       * gates icons/text above -- an unpinned Ruby/Sapphire revision already returned
        * before this point via rom_mon_open's own failure, but a cart with icons and
        * no items (or vice versa) must still light up whichever half it has. */
       rom_sprite_open(&s_romsprite, &s_iconrom_ctx);
@@ -3486,12 +3486,12 @@ static void app_icon_rom_open(void) {
       return;
     }
     if (rom_chrome_card_have(&s_romchrome, PK_RS) || rom_chrome_pokeblock_have(&s_romchrome, PK_EMERALD)) {
-      log_line("icons: fused %s has no GF header (R/S) - card/pokeblock chrome only",
+      log_line("icons: fused %s has no icon tables (unpinned R/S revision) - card/pokeblock chrome only",
                rom_kind_name(s_iconrom_ctx.kind));
       icon_rung_log(&s_iconrom_ctx, false);   /* no resolver on this path -- see icon_rung_log */
       return;
     }
-    log_line("icons: fused %s has no GF header (R/S) - trying SD", rom_kind_name(s_iconrom_ctx.kind));
+    log_line("icons: fused %s has no icon tables (unpinned R/S revision) - trying SD", rom_kind_name(s_iconrom_ctx.kind));
   }
 #ifndef PDNA_DELTA
   if (s_iconrom_fil_open) { f_close(&s_iconrom_fil); s_iconrom_fil_open = false; }
@@ -3559,8 +3559,8 @@ static void app_icon_rom_open(void) {
     app_rom_note_verdict(&s_iconrom_ctx, "sd");
     if (sd_ok) {
       /* Same reasoning as the fused branch above: rom_chrome_open() does not need
-       * the GF header, so it runs on every successful rom_open() -- reaching Ruby,
-       * which rom_mon_open() below always refuses (no GF header). */
+       * the icon tables, so it runs on every successful rom_open() -- reaching an
+       * unpinned R/S revision, which rom_mon_open() below refuses. */
       rom_chrome_open(&s_romchrome, &s_iconrom_ctx);
       pdna_trainer_set_romchrome(&s_romchrome);
       pdna_bag_set_romchrome(&s_romchrome);
@@ -3582,10 +3582,10 @@ static void app_icon_rom_open(void) {
         return;
       }
       if (rom_chrome_card_have(&s_romchrome, PK_RS) || rom_chrome_pokeblock_have(&s_romchrome, PK_EMERALD)) {
-        /* Ruby: no icons/text/sprite (no GF header), but the card rung is real --
+        /* Unpinned R/S revision: no icons/text/sprite (no pinned tables), but the card rung is real --
          * keep this ROM open and registered rather than falling through to the
          * next candidate, which would silently discard it. */
-        log_line("icons: SD %s (%s) has no GF header - card/pokeblock chrome only",
+        log_line("icons: SD %s (%s) has no icon tables (unpinned R/S revision) - card/pokeblock chrome only",
                  path, rom_kind_name(s_iconrom_ctx.kind));
         icon_rung_log(&s_iconrom_ctx, false); /* no resolver on this path -- see icon_rung_log */
         return;
@@ -3781,7 +3781,9 @@ static void app_register_rom(void) {
   app_icon_rom_open();                           /* light it up now (+ resolves the cache) */
   char l1[40]; siprintf(l1, "%s registered.", rom_kind_name(rc.kind));
   msg_wait("GAME ROM", UI_OK, l1,
-           boxoam_icons_available() ? "Real art is ON." : "R/S icons come later; map works.");
+           boxoam_icons_available() ? "Real art is ON."
+           : (rc.kind == ROM_RUBY || rc.kind == ROM_SAPPHIRE) ? "This R/S revision: map only."
+           : "Art unavailable; map works.");
 
   /* Phase 2's second entry point (DESIGN.md Sec 3.1): the moment the user has just
    * told us where their ROM is. Only offered when it would actually work (icons
