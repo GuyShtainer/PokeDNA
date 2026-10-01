@@ -386,8 +386,11 @@ bool bag_screen(uint8_t* sb1, const uint8_t* sb2, PkGame game, int female) {
     if (full) {                                  /* whole chrome (entry / after picker+dialogs) */
       bg_restore(bag_bg(game, female), 0, 0, BAG_BG_W, BAG_BG_H);   /* 20 LZ77 pages ROM->VRAM */
       bag_rest(L, game, female, pocket);         /* bg bakes the CLOSED bag; show the pocket open */
-      if (L->foot_y)                             /* only where the chrome leaves a free strip */
+      if (L->foot_y) {                           /* only where the chrome leaves a free strip */
+        /* 1-row backing strip (#333): the hints sit on the wall's stripes otherwise */
+        ui_fill_rect(L->foot_x - 2, L->foot_y - 1, 26 * 8 + 4, 9, UI_PANEL);
         ui_text(L->foot_x, L->foot_y, BFOOT, "A edit  L/R pocket  B done");
+      }
       draw_header(bag_bg(game, female), L, pocket);
       list = true; full = false;
     }
