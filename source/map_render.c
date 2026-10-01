@@ -25,7 +25,21 @@ uint32_t mr_lz77_size(const RomCtx* rom, uint32_t addr) {
  * resident, and hard-caps every write to dst. When `out_consumed`/`out_hash`
  * are non-NULL, every consumed input byte -- the 4 header bytes included --
  * is folded into an FNV-1a running hash and counted, so the caller learns the
- * EXACT compressed span this decode actually read (BACKLOG #103 step 4). */
+ * EXACT compressed span this decode actually read (BACKLOG #103 step 4).
+ *
+ * BACKLOG #103 (speed): the hash is folded over each window CHUNK as it is retired (every
+ * byte of a chunk is consumed by then) instead of byte-by-byte inside the token loop, and a
+ * flag byte whose eight tokens cannot reach a window refill or the output cap (>= 16 input
+ * bytes left in the window, >= 8*18 output bytes left) is decoded without any per-byte bound
+ * test. The slow per-token path below is the original and handles every flag byte near a
+ * refill or the end of the output. The sequence of window reads, the consumed span, the hash,
+ * the bytes written and every failure return are identical to the byte-at-a-time decoder
+ * (tests/host_lz77_diff_test.c holds the original as the reference). */
+static inline uint32_t mr_fnv_fold(uint32_t hash, const uint8_t* p, uint32_t n) {
+  while (n--) { hash ^= *p++; hash *= MR_FNV_PRIME; }
+  return hash;
+}
+
 static uint32_t lz77_run(const RomCtx* rom, uint32_t addr, uint8_t* dst, uint32_t dst_cap,
                          uint8_t* win, uint32_t win_bytes,
                          uint32_t* out_consumed, uint32_t* out_hash) {
@@ -39,12 +53,13 @@ static uint32_t lz77_run(const RomCtx* rom, uint32_t addr, uint8_t* dst, uint32_
   int track = (out_consumed || out_hash) ? 1 : 0;
   uint32_t hash = MR_FNV_OFFSET;
   uint32_t consumed = 4;
-  if (track) for (int i = 0; i < 4; i++) { hash ^= h[i]; hash *= MR_FNV_PRIME; }
+  if (track) hash = mr_fnv_fold(hash, h, 4);
 
   uint8_t stack_buf[64];
   uint8_t* buf = win_bytes ? win : stack_buf;
   uint32_t buf_cap = win_bytes ? win_bytes : (uint32_t)sizeof stack_buf;
-  uint32_t buf_at = 0, buf_len = 0;               /* buf covers [buf_at, buf_at+buf_len) */
+  const uint8_t* p = buf;                         /* the window holds [buf, pend); p is the cursor */
+  const uint8_t* pend = buf;
   uint32_t src = addr + 4;
   uint32_t out = 0;
   /* LZ10 all-literal upper bound on the compressed span: 4 header bytes + `size`
@@ -59,25 +74,47 @@ static uint32_t lz77_run(const RomCtx* rom, uint32_t addr, uint8_t* dst, uint32_
   uint32_t span_end = addr + 4 + size + 1u + (size + 7u) / 8u;
   uint32_t img_end = ROM_BASE + rom->size;
 
-  /* one byte of compressed input, buffered */
+  /* one byte of compressed input, buffered; a refill retires the whole current chunk */
   #define NEXT(v) do {                                                        \
-      if (buf_at >= buf_len) {                                                \
+      if (p == pend) {                                                        \
         uint32_t remain_span = (src < span_end) ? (span_end - src) : 0u;      \
         uint32_t remain_img  = (src < img_end)  ? (img_end - src)  : 0u;      \
         uint32_t want = buf_cap;                                              \
         if (remain_span < want) want = remain_span;                           \
         if (remain_img  < want) want = remain_img;                            \
         if (!want) return 0;                                                  \
+        if (track) { hash = mr_fnv_fold(hash, buf, (uint32_t)(p - buf));      \
+                     consumed += (uint32_t)(p - buf); }                       \
         if (!rom_read_at(rom, src, buf, want)) return 0;                      \
-        buf_len = want; src += want; buf_at = 0;                              \
+        p = buf; pend = buf + want; src += want;                              \
       }                                                                       \
-      (v) = buf[buf_at++];                                                    \
-      if (track) { hash ^= (v); hash *= MR_FNV_PRIME; consumed++; }           \
+      (v) = *p++;                                                             \
     } while (0)
 
   while (out < size) {
     uint8_t flags;
     NEXT(flags);
+    if ((uint32_t)(pend - p) >= 16u && size - out >= 144u) {
+      /* eight tokens, at most 16 input bytes and 144 output bytes: nothing below can need a
+       * refill or a clamp. */
+      for (uint32_t m = 0x80u; m; m >>= 1) {
+        if (flags & m) {
+          uint32_t b1 = p[0], b2 = p[1];
+          p += 2;
+          uint32_t len  = (b1 >> 4) + 3u;
+          uint32_t disp = (((b1 & 0x0Fu) << 8) | b2) + 1u;
+          if (disp > out) return 0;               /* reference before the start */
+          uint8_t* d = dst + out;
+          const uint8_t* from = d - disp;
+          out += len;
+          /* byte-wise on purpose: overlapping runs are legal and common */
+          do { *d++ = *from++; } while (--len);
+        } else {
+          dst[out++] = *p++;
+        }
+      }
+      continue;
+    }
     for (int bit = 0; bit < 8 && out < size; bit++) {
       if (flags & (0x80 >> bit)) {
         uint8_t b1, b2;
@@ -98,6 +135,7 @@ static uint32_t lz77_run(const RomCtx* rom, uint32_t addr, uint8_t* dst, uint32_
     }
   }
   #undef NEXT
+  if (track) { hash = mr_fnv_fold(hash, buf, (uint32_t)(p - buf)); consumed += (uint32_t)(p - buf); }
   if (out_consumed) *out_consumed = consumed;
   if (out_hash) *out_hash = hash;
   return out;
