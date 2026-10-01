@@ -542,45 +542,79 @@ static void ja_relabel(char name[25], const char* suffix) {   /* swap the 4-char
 
 #define JA_GROUP_MAX 3u   /* a press takes at most Swap + Swap + Box move (#314b): a longer chain is taken in groups, never past the cap */
 
-/* The swap group whose NEWEST step is `newest` and whose steps all lie on its parent chain: 0 = none, 2 = Swap + Box move (#303), 3 = Swap + Swap + Box move
- * (#314b, only when max >= 3). Every link is byte-matched (the replaced bytes of the older step == the bytes the newer one adds, zero mismatches, >= JA_MATCH_MIN),
- * so two unrelated steps that merely carry the names never group: a Swap's displaced mon can only be placed by the NEXT drop, and the bytes say it was. One record
- * buffer, read in turn newest -> oldest: each older_pairs() runs against the signature of the step above it BEFORE that signature is replaced. */
-static unsigned ja_group_at(uint32_t newest, unsigned max) {
-  JrnRec rm, rn, rp;
-  JrnSrc sm, sn, sp;
-  if (jrn_i_locate(&s_j, newest, &rm, &sm) != 0 || !ja_newer_eligible(&rm)) return 0;
-  if (ja_rec_load(&sm, &rm) != 0 || !ja_sig_make(&rm, 1)) return 0;
-  if (!rm.parent || jrn_i_locate(&s_j, rm.parent, &rn, &sn) != 0 || !ja_older_eligible(&rn)) return 0;
-  if (ja_rec_load(&sn, &rn) != 0 || !ja_older_pairs(&rn)) return 0;
-  if (max < 3u || !rn.parent) return 2u;
-  if (jrn_i_locate(&s_j, rn.parent, &rp, &sp) != 0 || !ja_older_eligible(&rp)) return 2u;
-  if (!ja_sig_make(&rn, 0)) return 2u;                        /* s_rec still holds rn: its own signature, the chain link's newer side */
-  if (ja_rec_load(&sp, &rp) != 0 || !ja_older_pairs(&rp)) return 2u;
-  return 3u;
+/* #322: the walk's reads. 0 = ok; 1 = the step is simply not a usable half (compacted away, malformed record -- a legitimate "no group"); JRN_E_IO = a read
+ * FAULT, which the press must refuse (a fault read as "no group" would take a smaller group with a success toast, on a half state). */
+static int ja_walk_locate(uint32_t seq, JrnRec* r, JrnSrc* s) {
+  int rc = jrn_i_locate(&s_j, seq, r, s);
+  return rc == 0 ? 0 : (rc == JRN_E_IO ? JRN_E_IO : 1);
+}
+static int ja_walk_load(const JrnSrc* src, const JrnRec* r) {
+  int rc;
+  if (!src || !r || r->len < JRN_REC_MIN || r->len > JRN_REC_MAX) return 1;
+  rc = jrn_i_src_read(&s_j, src, 0, s_rec, r->len);
+  return rc == 0 ? 0 : (rc == JRN_E_IO ? JRN_E_IO : 1);
 }
 
-/* How many steps does the NEXT chord press take (0 = one plain step)? dir < 0: the group at the cursor, newest-first; dir > 0: the group that BEGINS at the first
+/* The swap group whose NEWEST step is `newest` and whose steps all lie on its parent chain: 0 = none, 2 = Swap + Box move (#303), 3 = Swap + Swap + Box move
+ * (#314b, only when max >= 3); a negative return is a read fault (JRN_E_IO, #322: the press is refused, nothing moves). Every link is byte-matched (the replaced bytes of the older step == the bytes the newer one adds, zero mismatches, >= JA_MATCH_MIN),
+ * so two unrelated steps that merely carry the names never group: a Swap's displaced mon can only be placed by the NEXT drop, and the bytes say it was. One record
+ * buffer, read in turn newest -> oldest: each older_pairs() runs against the signature of the step above it BEFORE that signature is replaced.
+ * #321: every link must also be ADJACENT in sequence (older.seq + 1 == newer.seq): a real swap is two back-to-back commits, so a step with another branch's
+ * records (an orphaned sibling, a cursor marker) between its seq and its parent's is two user actions that merely byte-match, and never pairs. */
+static int ja_group_at(uint32_t newest, unsigned max) {
+  JrnRec rm, rn, rp;
+  JrnSrc sm, sn, sp;
+  int rc;
+  rc = ja_walk_locate(newest, &rm, &sm);
+  if (rc) return rc < 0 ? rc : 0;
+  if (!ja_newer_eligible(&rm)) return 0;
+  rc = ja_walk_load(&sm, &rm);
+  if (rc) return rc < 0 ? rc : 0;
+  if (!ja_sig_make(&rm, 1)) return 0;
+  if (!rm.parent || rm.parent + 1u != newest) return 0;
+  rc = ja_walk_locate(rm.parent, &rn, &sn);
+  if (rc) return rc < 0 ? rc : 0;
+  if (!ja_older_eligible(&rn)) return 0;
+  rc = ja_walk_load(&sn, &rn);
+  if (rc) return rc < 0 ? rc : 0;
+  if (!ja_older_pairs(&rn)) return 0;
+  if (max < 3u || !rn.parent || rn.parent + 1u != rm.parent) return 2;
+  rc = ja_walk_locate(rn.parent, &rp, &sp);
+  if (rc) return rc < 0 ? rc : 2;
+  if (!ja_older_eligible(&rp)) return 2;
+  if (!ja_sig_make(&rn, 0)) return 2;                         /* s_rec still holds rn: its own signature, the chain link's newer side */
+  rc = ja_walk_load(&sp, &rp);
+  if (rc) return rc < 0 ? rc : 2;
+  if (!ja_older_pairs(&rp)) return 2;
+  return 3;
+}
+
+/* How many steps does the NEXT chord press take (0 = one plain step; < 0 = a read fault, refuse -- #322)? dir < 0: the group at the cursor, newest-first; dir > 0: the group that BEGINS at the first
  * step toward the tip (c1): (c1,c2) when c2 is a Box move, (c1,c2,c3) when c3 is. The caller has flushed (an undo of a pending record pops it with no SD I/O:
  * see jrnapp_step). */
-static unsigned ja_chord_pair(int dir) {
+static int ja_chord_pair(int dir) {
   uint32_t t, cur = jrn_cursor(&s_j), p2 = 0, p3 = 0, hops, p1 = 0;
-  unsigned g;
+  int g, rc;
   if (s_ai.slot < 0) return 0;                                /* Game Boy: no 80-byte slots, swaps are refused outright */
   if (dir < 0) return cur ? ja_group_at(cur, JA_GROUP_MAX) : 0;
   for (t = jrn_tip(&s_j), hops = 0; t != cur; hops++) {
     JrnRec w;
     if (!t || hops >= JA_REDO_HOPS) return 0;
     p3 = p2; p2 = p1; p1 = t;                                 /* ends with p1 = c1 (just above the cursor), p2 = c2, p3 = c3 */
-    if (jrn_find(&s_j, t, &w) != 0) return 0;
+    rc = jrn_find(&s_j, t, &w);
+    if (rc != 0) return rc == JRN_E_IO ? rc : 0;
     t = w.parent;
   }
   if (!p1) return 0;
   if (p3) {
     g = ja_group_at(p3, JA_GROUP_MAX);
-    if (g == 3u) return 3u;                                   /* (p3,p2,p1) are exactly the three newest-first parent links */
+    if (g < 0 || g == 3) return g;                            /* (p3,p2,p1) are exactly the three newest-first parent links; a fault refuses */
   }
-  if (p2 && ja_group_at(p2, 2u) == 2u) return 2u;
+  if (p2) {
+    g = ja_group_at(p2, 2u);
+    if (g < 0) return g;
+    if (g == 2) return 2;
+  }
   return 0;
 }
 
@@ -591,16 +625,26 @@ static unsigned ja_chord_pair(int dir) {
 int jrnapp_step_pair(int dir, char name[25]) {
   char n1[25], n2[25];
   int rc, rb = JRN_OK;
-  unsigned g, d, k;
+  unsigned d, k;
+  int g;
   if (name) name[0] = 0;
   if (!s_r || !s_r->j || s_state != JA_OK) return JRN_E_ARG;
   if (s_r->depth) return JRN_E_STATE;
   if (dir < 0 && jrn_pending(&s_j)) (void)jrnapp_flush();      /* same single flush jrnapp_step does, BEFORE the lookup (the src pointers must outlive it) */
   g = ja_chord_pair(dir);
-  if (g < 2u) return jrnapp_step(dir, name);
+  if (g < 0) { ja_event("swap pair: a read fault in the group walk, the press is refused", g); return g; }   /* #322: nothing moved, never a smaller group */
+  if (g < 2) {
+    rc = jrnapp_step(dir, name);
+    /* #323: a whole swap press (g >= 2) names itself "Swap" below. A plain REDO that moved a step carrying the older half's name ("Swap", given only by drop_held's
+     * SWAP tail) applied ONE half without its partner (the party landing, D7 ruling 10; the redo hop cap): the image sits on a half swap, so the toast says so.
+     * A plain UNDO of that name lands pre-swap ONLY when the Swap's parent is not itself a Swap: a mid-chain Swap (4+-step chains, or a History jump into one)
+     * still leaves a half under a plain "Undid: Swap" toast -- a known toast-only residual; the image stays cursor-consistent. History's own labels are untouched. */
+    if (rc == JRN_OK && dir > 0 && name && strcmp(name, "Swap") == 0) memcpy(name, "Swap (half)", 12);
+    return rc;
+  }
   rc = jrnapp_step(dir, n1);
   if (rc != JRN_OK) { if (name) memcpy(name, n1, 25); return rc; }   /* nothing moved */
-  for (d = 1; d < g; d++) {                                    /* g <= JA_GROUP_MAX: the loop is bounded */
+  for (d = 1; d < (unsigned)g; d++) {                                    /* g <= JA_GROUP_MAX: the loop is bounded */
     rc = jrnapp_step(dir, n2);
     if (rc == JRN_OK) continue;
     for (k = 0; k < d && rb == JRN_OK; k++) rb = jrnapp_step(-dir, 0);   /* roll back every step already applied, newest first */
@@ -641,7 +685,7 @@ int jrnapp_history(JaHist* rows, int max, int* more, int* floor_hit) {
     rows[n].saved = (uint8_t)saved_seen;
     memcpy(rows[n].name, rec.name, 24); rows[n].name[24] = 0;
     if ((ja_older_eligible(&rec) || ja_newer_eligible(&rec)) && ja_rec_load(&src, &rec) == 0) {   /* one record read serves both the older-half test and the next newer-half signature */
-      int linked = sig_ok && prev_parent == t && n > 0 && ja_older_eligible(&rec) && ja_older_pairs(&rec);
+      int linked = sig_ok && prev_parent == t && n > 0 && rows[n - 1].seq == t + 1u && ja_older_eligible(&rec) && ja_older_pairs(&rec);
       gl_prev = 0;
       if (linked && sig_kind == 1) {                         /* Swap + Box move */
         ja_label(rows[n - 1].name, " 2/2");

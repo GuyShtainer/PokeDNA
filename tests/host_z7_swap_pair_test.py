@@ -26,6 +26,8 @@ pin can be decoration. The real tree is never touched (scratch dir).
   za #314/#315 mutants (host_jrn_funnel_test.c): C1..C8 chained swaps, R1 the R1 mislabel (older half no longer needs the "Swap" name),
     H1..H3 the 3-step rollback-failure contract (t_swap_chain_rollback_sweep)
     A10 the Game Boy guard dropped (a swap-shaped GB pair would pair)                      -> RED
+  zc #322 mutants R1w..R7w (the walk-fault refusal at each of its seven places); zc #321 mutants (t_swap_seq_adjacency[_chain]): Q1..Q3 each of the three adjacency tests dropped (group first link, group second link, History link);
+    Q4a/Q4b/Q4c the seq-gap test off by one in each direction (a real pair stops grouping / a one-step gap pairs), Q4d the History gap off by one
 """
 from __future__ import annotations
 
@@ -106,7 +108,7 @@ def main() -> int:
     rc, out = mutant("gb", "C1", [])
     check("positive control: the unmutated GB journal test passes", rc == 0, out[-200:])
     J = "jrn_app.c"
-    must_fail("funnel", "A1", "pair predicate never fires", [(J, "if (ja_rec_load(&sn, &rn) != 0 || !ja_older_pairs(&rn)) return 0;", "if (1) return 0;")])
+    must_fail("funnel", "A1", "pair predicate never fires", [(J, "  if (!ja_older_pairs(&rn)) return 0;", "  if (1) return 0;")])
     must_fail("funnel", "A2", "replaced-slot rule relaxed", [(J, "if (nrep != 1u) return 0;", "if (nrep > 1u) return 0;")])
     must_fail("funnel", "A3", "crossed ignored", [(J, "!r->aux && !r->crossed;", "!r->aux;")])
     must_fail("funnel", "A4", "mismatch tolerated", [(J, "if (s_rec[sp.before + i] != s_sig.after[q]) return 0;", "if (s_rec[sp.before + i] != s_sig.after[q]) continue;")])
@@ -116,11 +118,11 @@ def main() -> int:
     must_fail("funnel", "A8", "History never labels", [(J, "ja_label(rows[n - 1].name, \" 2/2\");", ";"), (J, "ja_label(rows[n].name, \" 1/2\");", ";")])
     must_fail("funnel", "A9", "redo never pairs", [(J, "  if (!p1) return 0;\n  if (p3) {", "  return 0;\n  if (p3) {")])
     # za #314b: chained swaps (Swap + Swap + Box move), tests/host_jrn_funnel_test.c t_swap_chain_*
-    must_fail("funnel", "C1", "the chain never extends past two steps", [(J, "  if (max < 3u || !rn.parent) return 2u;", "  if (1) return 2u;")])
-    must_fail("funnel", "C2", "the chain link's bytes are not checked", [(J, "if (ja_rec_load(&sp, &rp) != 0 || !ja_older_pairs(&rp)) return 2u;", "if (ja_rec_load(&sp, &rp) != 0) return 2u;")])
+    must_fail("funnel", "C1", "the chain never extends past two steps", [(J, "  if (max < 3u || !rn.parent || rn.parent + 1u != rm.parent) return 2;", "  if (1) return 2;")])
+    must_fail("funnel", "C2", "the chain link's bytes are not checked", [(J, "  if (!ja_older_pairs(&rp)) return 2;", "  if (0) return 2;")])
     must_fail("funnel", "C3", "a chained Swap must add into an EMPTY slot", [(J, "!ja_sig_make(&rn, 0)", "!ja_sig_make(&rn, 1)")])
-    must_fail("funnel", "C4", "redo never takes a three-step group", [(J, "    g = ja_group_at(p3, JA_GROUP_MAX);\n    if (g == 3u) return 3u;", "    g = 0;\n    if (g == 3u) return 3u;")])
-    must_fail("funnel", "C5", "redo never takes the mid-chain pair", [(J, "if (p2 && ja_group_at(p2, 2u) == 2u) return 2u;", "if (0) return 2u;")])
+    must_fail("funnel", "C4", "redo never takes a three-step group", [(J, "    g = ja_group_at(p3, JA_GROUP_MAX);\n    if (g < 0 || g == 3) return g;", "    g = 0;\n    if (g < 0 || g == 3) return g;")])
+    must_fail("funnel", "C5", "redo never takes the mid-chain pair", [(J, "    g = ja_group_at(p2, 2u);", "    g = 0;")])
     must_fail("funnel", "C6", "the rollback undoes only one of the applied steps", [(J, "for (k = 0; k < d && rb == JRN_OK; k++)", "for (k = 0; k < 1u && rb == JRN_OK; k++)")])
     must_fail("funnel", "C7", "History never relabels a triple", [(J, "        ja_relabel(rows[n - 2].name, \" 3/3\");\n", "")])
     must_fail("funnel", "C8", "the cap lowered to 2 (no chained group forms)", [(J, "#define JA_GROUP_MAX 3u", "#define JA_GROUP_MAX 2u")])
@@ -134,6 +136,33 @@ def main() -> int:
     must_fail("funnel", "M7a", "pair slot cap raised to 8", [(J, "#define JA_PAIR_SLOTS  4u", "#define JA_PAIR_SLOTS  8u")])
     must_fail("funnel", "M7b", "pair slot cap lowered to 3", [(J, "#define JA_PAIR_SLOTS  4u", "#define JA_PAIR_SLOTS  3u")])
     must_fail("funnel", "R1", "the older half no longer needs the Swap name (the R1 mislabel returns)", [(J, "strcmp(r->name, \"Swap\") == 0; }", "strcmp(r->name, \"Box move\") == 0 || strcmp(r->name, \"Swap\") == 0; }")])
+    # zc #321: seq adjacency of a pair's halves
+    A1 = "  if (!rm.parent || rm.parent + 1u != newest) return 0;"
+    A2 = "  if (max < 3u || !rn.parent || rn.parent + 1u != rm.parent) return 2;"
+    A3 = "rows[n - 1].seq == t + 1u && "
+    must_fail("funnel", "Q1", "group first link: adjacency dropped", [(J, A1, "  if (!rm.parent) return 0;")])
+    must_fail("funnel", "Q2", "group second link: adjacency dropped", [(J, A2, "  if (max < 3u || !rn.parent) return 2;")])
+    must_fail("funnel", "Q3", "History link: adjacency dropped", [(J, A3, "")])
+    must_fail("funnel", "Q4a", "group gap test lets a one-step gap pair (> instead of !=)", [(J, A1, A1.replace("!= newest", "> newest"))])
+    must_fail("funnel", "Q4b", "group gap test demands a gap of 2 (a real pair stops grouping)", [(J, A1, A1.replace("+ 1u", "+ 2u"))])
+    must_fail("funnel", "Q4c", "second-link gap test demands a gap of 2", [(J, A2, A2.replace("+ 1u", "+ 2u"))])
+    must_fail("funnel", "Q4d", "History gap test demands a gap of 2", [(J, A3, "rows[n - 1].seq == t + 2u && ")])
+    # zc #322: a walk read fault refuses the press (t_swap_chain_rollback_sweep deg counters + t_swap_pair_fault_sweep)
+    L1 = "return rc == 0 ? 0 : (rc == JRN_E_IO ? JRN_E_IO : 1);"
+    must_fail("funnel", "R1w", "locate swallows a read fault (a walk fault degrades to 'no group')", [(J, L1, "return rc == 0 ? 0 : 1;")])
+    must_fail("funnel", "R2w", "the record load swallows a read fault", [(J, "  rc = jrn_i_src_read(&s_j, src, 0, s_rec, r->len);\n  " + L1, "  rc = jrn_i_src_read(&s_j, src, 0, s_rec, r->len);\n  return rc == 0 ? 0 : 1;")])
+    must_fail("funnel", "R3w", "the redo walk's jrn_find fault is read as 'no group'", [(J, "if (rc != 0) return rc == JRN_E_IO ? rc : 0;", "if (rc != 0) return 0;")])
+    must_fail("funnel", "R4w", "jrnapp_step_pair ignores a negative group (falls to a plain step)", [(J, "  if (g < 0) { ja_event(", "  if (g < 0 && 0) { ja_event(")])
+    must_fail("funnel", "R5w", "a fault at the THIRD link falls back to the pair", [(J, "  if (rc) return rc < 0 ? rc : 2;\n  if (!ja_older_eligible(&rp)) return 2;", "  if (rc) return 2;\n  if (!ja_older_eligible(&rp)) return 2;")])
+    must_fail("funnel", "R6w", "the redo's three-step probe fault falls through to the pair probe", [(J, "if (g < 0 || g == 3) return g;", "if (g == 3) return g;")])
+    must_fail("funnel", "R7w", "the redo's pair probe fault is read as 'no group'", [(J, "    if (g < 0) return g;\n    if (g == 2) return 2;", "    if (g == 2) return 2;")])
+    # zc #323: the half toast (t_swap_half_toast + the hop-cap leg)
+    must_fail("funnel", "T1w", "the (half) mark dropped", [(J, 'memcpy(name, "Swap (half)", 12)', "(void)0")])
+    must_fail("funnel", "T2w", "the mark also applied to a plain UNDO", [(J, "rc == JRN_OK && dir > 0 && name", "rc == JRN_OK && name")])
+    must_fail("funnel", "T3w", "the whole pair press loses the plain name", [(J, 'memcpy(name, "Swap", 5)', 'memcpy(name, "Swap (half)", 12)')])
+    # zc #324(a): the max > 48 clamp of jrnapp_history_tree (t_tree_max_clamp)
+    must_fail("funnel", "K1", "the max>48 clamp dropped", [(J, "  if (max > JA_TREE_ROWS) max = JA_TREE_ROWS;\n", "")])
+    must_fail("funnel", "K2", "the clamp is one row short", [(J, "if (max > JA_TREE_ROWS) max = JA_TREE_ROWS;", "if (max > JA_TREE_ROWS) max = JA_TREE_ROWS - 1;")])
     G = "gb_jkey.c"
     must_fail("gb", "A10", "GB guard dropped", [(J, "if (s_ai.slot < 0) return 0;                                /* Game Boy: no 80-byte slots, swaps are refused outright */", ""), (J, "return s_ai.slot >= 0 && r->kind", "return r->kind")])
     must_fail("gb", "B1", "no 0xFF escape", [(G, "if (legacy || !has_ff) {", "if (1) {")])

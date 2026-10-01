@@ -113,6 +113,15 @@ def pins(src: dict[str, str]) -> list[tuple[str, bool]]:
     pc = body(ja, "ja_group_at") or ""
     out.append(("S2b ja_group_at judges every older half (pair and chain link) with ja_older_eligible and the newest with ja_newer_eligible",
                 "ja_older_eligible(&rn)" in pc and "ja_older_eligible(&rp)" in pc and "ja_newer_eligible(&rm)" in pc))
+    sp = body(ja, "jrnapp_step_pair") or ""
+    out.append(("T1 (#323) the plain path marks a REDO of the older half ('Swap') as 'Swap (half)' -- redo only (a plain undo of it lands on the whole pre-swap image)",
+                bool(re.search(r'rc == JRN_OK && dir > 0 && name && strcmp\(name, "Swap"\) == 0\) memcpy\(name, "Swap \(half\)", 12\)', sp))
+                and before(sp, "if (g < 2)", '"Swap (half)"') and before(sp, '"Swap (half)"', "rc = jrnapp_step(dir, n1)")))
+    out.append(("T2 (#323) the whole-press name stays plain 'Swap' (control)", 'memcpy(name, "Swap", 5)' in sp))
+    w2 = font_w()
+    tw = [pw(x, w2) for x in ("Undid: Swap (half)", "Redid: Swap (half)")] if w2 else [999]
+    out.append(("T3 (#323) both marked toasts fit 184 px (" + "/".join(str(x) for x in tw) + " px)", all(x <= 184 for x in tw)))
+    out.append(("T4 (#323) the chord toast's %.17s keeps the whole marked name (11 chars)", 'redo ? "Redid: %.17s" : "Undid: %.17s"' in bx and len("Swap (half)") <= 17))
     return out
 
 
@@ -142,6 +151,10 @@ MUTANTS: list[tuple[str, str, str, str, str]] = [
     ("M10 the Swap one-shot is dropped from drop_held", "pdna_box.c", '  app_step_name("Swap");', "", "S1a"),
     ("M11 the Swap one-shot is set BEFORE the early refusals", "pdna_box.c", '  if (s_orig_slot >= 0 && s_orig_box != box && src->scope == BOXSCOPE_BANK) { snd_deny(); return recs; }',
      '  app_step_name("Swap");\n  if (s_orig_slot >= 0 && s_orig_box != box && src->scope == BOXSCOPE_BANK) { snd_deny(); return recs; }', "S1"),
+    ("M15 the (half) mark is dropped", "jrn_app.c", 'memcpy(name, "Swap (half)", 12)', "(void)0", "T1"),
+    ("M16 the mark is applied to undo too", "jrn_app.c", "rc == JRN_OK && dir > 0 && name", "rc == JRN_OK && name", "T1"),
+    ("M17 the whole-press name is no longer 'Swap'", "jrn_app.c", 'memcpy(name, "Swap", 5)', 'memcpy(name, "Box move", 9)', "T2"),
+    ("M18 the toast truncates the marker", "pdna_box.c", 'redo ? "Redid: %.17s" : "Undid: %.17s"', 'redo ? "Redid: %.8s" : "Undid: %.8s"', "T4"),
     ("M9 a too-wide second line", "pdna_box.c", '"Press again, or check the card."', '"Press again, or check the card and the cart slot."', "H5"),
 ]
 
