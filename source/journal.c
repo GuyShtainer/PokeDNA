@@ -182,7 +182,7 @@ static int seg_path(const Jrn* j, uint16_t idx, char* out) {
 }
 
 /* ---- segment I/O ------------------------------------------------------------------------------- */
-static int seg_read(const Jrn* j, uint16_t idx, uint32_t off, void* buf, uint32_t n) {
+static __attribute__((noinline)) int seg_read(const Jrn* j, uint16_t idx, uint32_t off, void* buf, uint32_t n) {   /* noinline: ONE seam-dispatch site for `JrnFs.read @12 in seg_read` (stack_edges.txt) however many callers verify/scan */
   char p[JRN_PATH_MAX];
   if (seg_path(j, idx, p) || off + n > JRN_SEG_SIZE) return JRN_E_ARG;
   return j->fs->read(j->fs->ctx, p, off, buf, n) == 0 ? 0 : JRN_E_IO;
@@ -215,7 +215,7 @@ static int seg_zero(const Jrn* j, uint16_t idx, uint32_t off, uint32_t n) {
 }
 
 /* The bytes on the card must equal `buf` (the card ACKs writes it drops: LOG_VERIFY_LOST). */
-static int seg_verify(const Jrn* j, uint16_t idx, uint32_t off, const uint8_t* buf, uint32_t n) {
+static inline __attribute__((always_inline)) int seg_verify(const Jrn* j, uint16_t idx, uint32_t off, const uint8_t* buf, uint32_t n) {   /* always inlined (as when jrn_flush was the only caller): its 128-B chunk then shares the caller's frame instead of adding a call level to the staging funnel's stack chain */
   uint8_t chunk[RCHUNK];
   uint32_t c, m;
   int rc;
@@ -1192,7 +1192,7 @@ static int ch_plan(Jrn* j, const JrnBlk* blk, uint8_t nblk, ChPlan* p) {
 
 /* Record k of the plan, complete (header, spans, CRC), in j->pend[0..len). Head k = 0 carries the step's flags and parent; a part
  * carries parent = the head's seq, aux = k, crossed 0. Every header byte is set: pre/post/name are the step's on every record. */
-static void ch_build(Jrn* j, const JrnBlk* blk, uint8_t nblk, const ChPlan* p, uint8_t k, const char* name, int crossed,
+static __attribute__((noinline)) void ch_build(Jrn* j, const JrnBlk* blk, uint8_t nblk, const ChPlan* p, uint8_t k, const char* name, int crossed,
                      uint32_t pre, uint32_t post) {
   uint8_t* b = j->pend;
   ChCur cur = p->cur[k];
@@ -1212,36 +1212,79 @@ static void ch_build(Jrn* j, const JrnBlk* blk, uint8_t nblk, const ChPlan* p, u
   jrn_wr32(b + len, jrn_crc32_update(0, b, len));
 }
 
-/* Where the chain goes: (*seg, *off). A chain of >= 2 records needs a v2 segment (a v1 header cannot be rewritten in place: a tear of
- * the 32-byte header makes the slot FREE and the whole segment's history is gone). So: the tail when it is v2 and has room; else the spare,
- * which is EMPTY by construction (records only ever enter at the tail) and so may be retired and re-activated as v2 -- both header writes
- * are the existing atomic ones. No spare yet: make one (v2). A plain single record (n == 1) takes the tail or the next segment as it is. */
+/* Re-stamp the EMPTY spare `idx` as version `ver`: its header is zeroed (retired) and the new one written LAST -- the same two atomic header writes as
+ * a retire and an activation, but NO body zero-fill: a spare holds no record (records only enter at the tail) and its body was zero-filled when it was
+ * activated, so only a header differs. This keeps the 64-KiB zero scan (and its 1.6 KB seam frame) off the staging funnel's stack chain. */
+static int seg_rehead(Jrn* j, uint16_t idx, uint16_t ver) {
+  uint8_t h[JRN_SEG_HDR];
+  int rc = seg_retire(j, idx);
+  if (rc) return rc;
+  seg_hdr_build(idx, j->ring, ver, j->nreg, j->reg_size, h);
+  rc = seg_write(j, idx, 0, h, JRN_SEG_HDR);
+  if (rc) return rc;
+  idx_set(j, idx, 0);
+  return seg_valid(j, idx) ? 0 : JRN_E_IO;
+}
+
+/* Where the chain goes: (*seg, *off). A chain of >= 2 records needs a v2 segment (a v1 header cannot be rewritten in place: a tear of the 32-byte
+ * header makes the slot FREE and the whole segment's history is gone). So: the tail when it is v2 and has room; else the EXISTING spare, which is empty
+ * by construction and so may be re-stamped v2 (seg_rehead). A chain never creates a spare mid-session (that is a zero-filled activation, a safe-moment
+ * job: jrn_prepare): no spare -> JRN_E_FULL, the step is an honest gap and the next prepare makes one. A plain single record (n == 1) takes the tail or the
+ * next segment as it is. */
 static int ch_place(Jrn* j, uint8_t n, uint32_t total, uint16_t* seg, uint32_t* off) {
   int v, rc;
   uint16_t s;
   v = seg_ver(j, j->tail_seg);
   if (v < 0) return v;
   if ((n < 2u || v == (int)JRN_SEG_VER2) && j->tail_off + total <= JRN_SEG_SIZE) { *seg = j->tail_seg; *off = j->tail_off; return JRN_OK; }
-  if (j->seg_last == j->tail_seg) {                                    /* no spare: make one (a v2 one when a chain needs it) */
-    rc = prepare_spare(j, n < 2u ? 0 : (uint16_t)JRN_SEG_VER2);
-    if (rc) return rc;
-  }
+  if (j->seg_last == j->tail_seg) return JRN_E_FULL;                   /* no spare to roll into: never made here */
   s = (uint16_t)(j->tail_seg + 1u);
   v = seg_ver(j, s);
   if (v < 0) return v;
-  if (n >= 2u && v != (int)JRN_SEG_VER2) {                             /* an empty v1 spare: retire it, re-activate as v2 */
+  if (n >= 2u && v != (int)JRN_SEG_VER2) {                             /* an empty v1 spare: re-stamp it v2 */
     if (idx_get(j, s)) return JRN_E_STATE;                             /* the spare holds records: never touched */
-    rc = seg_retire(j, s);
-    if (rc == 0) rc = seg_activate(j, s, JRN_SEG_VER2);
+    rc = seg_rehead(j, s, JRN_SEG_VER2);
     if (rc) { j->seg_last = j->tail_seg; idx_set(j, s, 0); return rc; }  /* the spare is gone (or unknowable): a later prepare re-makes it, the next open re-reads the ring */
   }
   *seg = s; *off = JRN_REC_BASE;
   return JRN_OK;
 }
 
+/* The chain's physical write: parts first (back to front), the HEAD last. A failed write may have left valid records past the tail: recording STOPS. Its own
+ * frame (noinline) so the staging funnel's stack chain pays for only one of write / verify at a time. */
+static __attribute__((noinline)) int ch_write_all(Jrn* j, const JrnBlk* blk, uint8_t nblk, const ChPlan* p, const char* name, int crossed,
+                                                    uint32_t pre, uint32_t post, uint16_t seg, uint32_t off) {
+  uint32_t o;
+  uint8_t r, k;
+  int rc;
+  for (k = p->n; k-- > 0;) {
+    for (o = off, r = 0; r < k; r++) o += p->len[r];
+    ch_build(j, blk, nblk, p, k, name, crossed, pre, post);
+    rc = seg_write(j, seg, o, j->pend, p->len[k]);
+    if (rc) { j->stopped = 1; return rc; }
+  }
+  return 0;
+}
+
+/* Read every record back and compare with a fresh rebuild; a mismatch stops recording exactly as a failed flush verify does. */
+static __attribute__((noinline)) int ch_verify_all(Jrn* j, const JrnBlk* blk, uint8_t nblk, const ChPlan* p, const char* name, int crossed,
+                                                    uint32_t pre, uint32_t post, uint16_t seg, uint32_t off) {
+  uint32_t o;
+  uint8_t r, k;
+  int rc;
+  for (k = 0; k < p->n; k++) {
+    for (o = off, r = 0; r < k; r++) o += p->len[r];
+    ch_build(j, blk, nblk, p, k, name, crossed, pre, post);
+    rc = seg_verify(j, seg, o, j->pend, p->len[k]);
+    if (rc == JRN_E_VERIFY) j->stopped = 1;
+    if (rc) return rc;
+  }
+  return 0;
+}
+
 int jrn_chain_record(Jrn* j, const char* name, int crossed, const JrnBlk* blk, uint8_t nblk) {
   ChPlan p;
-  uint32_t pre, post, off, o;
+  uint32_t pre, post, off;
   uint16_t seg;
   uint8_t r, k;
   int rc;
@@ -1261,19 +1304,9 @@ int jrn_chain_record(Jrn* j, const char* name, int crossed, const JrnBlk* blk, u
   pre = hash_of(j->crc, j->nreg); post = hash_of(j->bcrc, j->nreg);
   rc = ch_place(j, p.n, p.total, &seg, &off);
   if (rc) return rc;
-  for (k = p.n; k-- > 0;) {                                                     /* parts first, back to front: the HEAD is the commit point */
-    for (o = off, r = 0; r < k; r++) o += p.len[r];
-    ch_build(j, blk, nblk, &p, k, name, crossed, pre, post);
-    rc = seg_write(j, seg, o, j->pend, p.len[k]);
-    if (rc) { j->stopped = 1; return rc; }                                      /* a failed write may have left valid records past the tail: recording stops */
-  }
-  for (k = 0; k < p.n; k++) {
-    for (o = off, r = 0; r < k; r++) o += p.len[r];
-    ch_build(j, blk, nblk, &p, k, name, crossed, pre, post);
-    rc = seg_verify(j, seg, o, j->pend, p.len[k]);
-    if (rc == JRN_E_VERIFY) j->stopped = 1;
-    if (rc) return rc;
-  }
+  rc = ch_write_all(j, blk, nblk, &p, name, crossed, pre, post, seg, off);
+  if (!rc) rc = ch_verify_all(j, blk, nblk, &p, name, crossed, pre, post, seg, off);
+  if (rc) return rc;
   if (off == JRN_REC_BASE) idx_set(j, seg, j->next_seq);
   j->tail_seg = seg; j->tail_off = off + p.total;
   j->cursor = j->next_seq; j->tip = j->next_seq; j->offer = 0;

@@ -208,7 +208,9 @@ static int op_open_only(void) { Jrn j; return jopen(&j, K); }
 /* ---- z9: CHAINED steps (D10). A chain is written parts-first, HEAD LAST, into a v2 segment: a cut at any sector must leave the journal
  * reading as exactly its before-state or its after-state (the head's last sector is the one commit point), and the orphan parts a cut leaves
  * behind must be gone after the next open (checked in recover_and_use). The first chain into a v1 journal ALSO retires the empty v1 spare and
- * re-activates it as v2 -- both header writes are the existing atomic ones -- so that scenario has one more accepted state (no spare). ---- */
+ * re-stamps it as v2 (no body zero-fill) -- both header writes are the existing atomic ones -- so that scenario has one more accepted state (no spare). A chain
+ * never CREATES a spare mid-session (that is a zero-filled activation, a safe-moment job), so there is no "no spare" chain scenario: it is refused untouched
+ * (host_jrn_chain_test). ---- */
 static uint8_t g_cold[NREG][RSZ], g_cnew[NREG][RSZ];
 static int chain_diff_op(unsigned runs, unsigned len, unsigned region0, const char* name) {
   Jrn j; JrnBlk blk[NREG]; unsigned i, k, r; int rc = jopen(&j, K);
@@ -235,10 +237,6 @@ static void mid_retired_spare(uint32_t* out, int* n) {   /* the spare was retire
   CHECK(raw_write(K, 2, 0, z, sizeof z) == 0, "mid: zero the spare's header");
   out[(*n)++] = jr_fingerprint(K, 0, 0);
 }
-static void mid_spare_made(uint32_t* out, int* n) {      /* no spare existed: the spare was made but the chain was not yet committed */
-  CHECK(op_prepare() == JRN_OK, "mid: spare made");
-  out[(*n)++] = jr_fingerprint(K, 0, 0);
-}
 
 static const Scn SCN[] = {
   /* name                            setup           op                state       eq dm  mid */
@@ -258,7 +256,6 @@ static const Scn SCN[] = {
   { "torn-tail zeroing on open",    su_torn_tail,   op_open_only,     st_default,  1, 0, 0 },
   /* z9 (D10): chained steps */
   { "chain -> v1 spare, made v2",   su_prepared,    op_chain_a,       st_default,  0, 0, mid_retired_spare },
-  { "chain, no spare: spare + chain",su_first_only, op_chain_a,       st_default,  0, 0, mid_spare_made },
   { "chain appended to a v2 tail",  su_v2tail,      op_chain_b,       st_default,  0, 0, 0 },
   { "chain rolls v2 tail -> spare", su_v2full,      op_chain_a,       st_default,  0, 0, 0 },
   { "undo of a chain (marker)",     su_v2tail,      op_undo_marker,   st_default,  0, 0, 0 },

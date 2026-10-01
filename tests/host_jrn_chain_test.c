@@ -316,7 +316,7 @@ static void t_writer_edges(void) {
 /* A long mixed session: plain steps and chains interleaved until the chains roll into a THIRD segment (made v2 mid-session), then a fresh
  * open reads it all: every head's seq, the cursor, the tail, the per-segment versions. A chain with a step still pending refuses (FULL). */
 static void t_writer_session(void) {
-  Jrn j; JrnBlk blk[NREG]; unsigned it, chains = 0, plains = 0; uint32_t last_head = 0; uint8_t h[32];
+  Jrn j; JrnBlk blk[NREG]; unsigned it, chains = 0, plains = 0, no_spare = 0; uint32_t last_head = 0; uint8_t h[32]; int rc;
   world(&j);
   for (it = 0; it < 400 && j.tail_seg < 3u; it++) {
     if (it % 3u == 0u) { CHECK(stage(&j, "plain", 0, (uint8_t)(1u + it % 5u), (uint16_t)(20u + it), 4, fresh_val((uint8_t)(1u + it % 5u), (uint16_t)(20u + it))) == JRN_OK, "plain %u", it); plains++; }
@@ -327,14 +327,24 @@ static void t_writer_session(void) {
       CHECK(jrn_flush(&j) == JRN_OK, "flush");
     }
     last_head = j.next_seq;
-    CHECK(jrn_chain_record(&j, "Chain", 0, blk, NREG) == JRN_OK, "chain %u", it);
+    rc = jrn_chain_record(&j, "Chain", 0, blk, NREG);
+    if (rc == JRN_E_FULL) {   /* the tail is v2 and has no room, and there is NO spare: a chain never makes one mid-session (a zero-filled activation is a safe-moment job) */
+      unsigned long w0 = rd_writes; uint32_t nxt = j.next_seq, toff = j.tail_off;
+      CHECK(jrn_chain_record(&j, "Chain", 0, blk, NREG) == JRN_E_FULL && rd_writes == w0 && j.next_seq == nxt && j.tail_off == toff && !j.stopped,
+            "no spare: FULL again, nothing written, engine unchanged (gap at the funnel, the next prepare makes the spare)");
+      no_spare++;
+      CHECK(jrn_prepare(&j) == JRN_OK, "the safe-moment prepare makes the spare (inherits v2)");
+      rc = jrn_chain_record(&j, "Chain", 0, blk, NREG);
+    }
+    CHECK(rc == JRN_OK, "chain %u (rc %d)", it, rc);
     memcpy(g_img, g_new, sizeof g_img);
     chains++;
     CHECK(j.cursor == last_head, "cursor on the head");
   }
+  CHECK(no_spare >= 1u, "the no-spare refusal was exercised (%u)", no_spare);
   CHECK(j.tail_seg == 3u && chains > 20u, "the chains rolled into segment 3 (tail %u after %u chains, %u plain steps)", j.tail_seg, chains, plains);
   CHECK(raw_read(K, 1, 0, h, 32) == 0 && h[4] == 1 && raw_read(K, 2, 0, h, 32) == 0 && h[4] == 2 && raw_read(K, 3, 0, h, 32) == 0 && h[4] == 2,
-        "versions: seg 1 v1 (plain-only), seg 2 v2, seg 3 v2 (made mid-session for the chain)");
+        "versions: seg 1 v1 (plain-only), seg 2 v2 (the v1 spare re-stamped for the first chain), seg 3 v2 (prepared at a safe moment: inherits v2)");
   { uint32_t nxt = j.next_seq, cur = j.cursor, toff = j.tail_off; unsigned ts = j.tail_seg;
     card_remount();
     CHECK(jopen(&j, K) == JRN_OK && j.next_seq == nxt && j.cursor == cur && j.tip == cur && j.tail_seg == ts && j.tail_off == toff && j.anchor == JRN_ANCHOR_MATCH,

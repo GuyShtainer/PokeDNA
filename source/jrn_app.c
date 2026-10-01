@@ -103,6 +103,8 @@ static int ja_do_open(ImgRec* r) {
   return jrn_open(&s_j, &c, &r->img);
 }
 
+static int jrnapp_chain(const char* name, int crossed, const JrnBlk* blk, uint8_t nblk);   /* the funnel's chain hook (below) */
+
 /* The shared tail of both opens: the accessor is bound and s_key is set; open (rumble paused: a torn tail is zeroed in
  * place, an SD write), then bind the recorder. */
 static int ja_open_bound(ImgRec* r) {
@@ -115,6 +117,7 @@ static int ja_open_bound(ImgRec* r) {
   r->j = &s_j;
   s_saved = jrn_cursor(&s_j);                               /* the loaded image IS the card's: its anchor is the saved point */
   r->flush = jrnapp_flush;
+  r->chain = jrnapp_chain;
   r->state = IREC_OK;
   s_state = JA_OK;
   return JA_OK;
@@ -237,6 +240,19 @@ int jrnapp_prepare(ImgRec* r, const uint8_t* sb2, bool frlg) {
 /* Slice 4: the same safe-moment work for a Game Boy image; `key` = gb_journal_key() of the CURRENT identity (a trainer
  * rename / ID edit moves it: the redirect keeps the history). */
 int jrnapp_prepare_key(ImgRec* r, uint64_t key) { return ja_prepare(r, key, true); }
+
+/* The funnel's chain hook (z9, D10): a step beyond one record, recorded straight to the tail segment as a chain. Rumble paused for the card
+ * transfers (this can retire + re-activate the spare, or make one); a card error stops recording exactly as a failed flush does. */
+static int jrnapp_chain(const char* name, int crossed, const JrnBlk* blk, uint8_t nblk) {
+  int rc;
+  if (!s_r || !s_r->j || s_state != JA_OK) return JRN_E_ARG;
+  rmbl_pause();
+  rc = jrn_chain_record(&s_j, name, crossed, blk, nblk);
+  rmbl_resume();
+  if (rc != JRN_OK && rc != JRN_NOOP && rc != JRN_E_TOOBIG && rc != JRN_E_FULL && rc != JRN_E_DIVERGED) ja_event("chained step failed", rc);
+  if (s_j.stopped) s_r->state = IREC_STOPPED;                 /* the UI must never say "recorded" again */
+  return rc;
+}
 
 int jrnapp_flush(void) {
   int rc;

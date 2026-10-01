@@ -4493,7 +4493,21 @@ out:
  * (hardware-testing-protocol; the emulator cannot prove a stack-overflow refusal is
  * correct on real silicon, only that the code path the refusal message takes is
  * reachable and renders). */
-#define PDNA_PARTY_STRIP_NEED 7392   /* RE-CHECKED 2026-09-23 (BACKLOG #227 D2, lane mail-integrity
+#define PDNA_PARTY_STRIP_NEED 7472   /* RE-DERIVED 2026-10-01 (z9, BACKLOG #301 v2 / #307, chained journal steps): a NEW #1 chain, through the staging
+                                      * funnel -- party_strip_overlay -> app_party_mon_menu -> app_mon_menu -> app_paste_gb_merge -> app_commit_all ->
+                                      * app_save_finalize -> img_fold_pc -> stage_range -> stage_now -> rec_step -> rec_chain_g3 (168, its JrnBlk table) ->
+                                      * jrnapp_chain (40) -> jrn_chain_record (200) -> ch_verify_all (216, the 128-B verify chunk) -> seg_read -> jfs_read -> FatFs.
+                                      * The ONE-record flush path beside it is unchanged (7,200: jrn_flush still inlines its verify); the chain path adds the
+                                      * hook + engine frames above it. Re-measured on fresh ELFs: 7,472 artless / 7,464 normal (the worse, artless, is the
+                                      * constant; the 64 B ISR allowance is part of what stack_budget prints as `total`).
+                                      *   python3 tools/stack_budget.py --elf PokeDNA-artless.elf --builddir "$(pwd)/build-artless" \
+                                      *       --root pcp_open_party_strip_inner --top 1 --variant artless --artless
+                                      * Shaving was tried first (noinline rec_chain_* so rec_step keeps its frame, seg_verify always-inlined so jrn_flush keeps
+                                      * its, split verify/write frames, per-image JrnBlk tables) and brought it from 7,480 to 7,472; the rest is the real
+                                      * cost of a verified multi-record write on the funnel chain. The stack room is 14,968 B (this gate is a tripwire, not a
+                                      * live constraint: margin ~7,500 B at this constant).
+                                      *
+                                      * RE-CHECKED 2026-09-23 (BACKLOG #227 D2, lane mail-integrity
                                       * fix pass): the mail guard added to app_duplicate/app_release/
                                       * app_to_daycare also inlines into app_mon_menu on this #1 chain,
                                       * but each guard is one extra call plus a branch, not a new local

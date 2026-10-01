@@ -313,8 +313,10 @@ void jrn_step_abort(Jrn* j);
  * Returns JRN_OK (the step is on disk, verified; cursor/tip are on its HEAD), JRN_NOOP (nothing changed), JRN_E_TOOBIG (more than
  * JRN_CHAIN_MAX records: nothing was written), JRN_E_DIVERGED (an old block does not hash to the tracked crc), JRN_E_FULL (no room /
  * nothing-pending violated), JRN_E_IO / JRN_E_VERIFY (a card error: recording STOPS, as for a failed flush), or the step_begin refusals.
- * A chain of >= 2 records needs a v2 segment: the tail if it is v2 and has room, else the spare (made v2 on demand, at most one
- * activation, never touching a segment that holds records). The HEAD is written LAST: a cut leaves no chain. */
+ * A chain of >= 2 records needs a v2 segment: the tail if it is v2 and has room, else the EXISTING spare, re-stamped v2 on demand (a retire +
+ * a header write: no body zero-fill, never a segment that holds records; a v1 header is never rewritten in place -- a tear would free the slot).
+ * It never CREATES a spare (a zero-filled activation is a safe-moment job, jrn_prepare, which inherits the last segment's version): no spare ->
+ * JRN_E_FULL and nothing written. The HEAD is written LAST: a cut leaves no chain, and an incomplete chain is never read as a step. */
 typedef struct JrnBlk { const uint8_t* old_blk; const uint8_t* new_blk; } JrnBlk;
 int  jrn_chain_record(Jrn* j, const char* name, int crossed, const JrnBlk* blk, uint8_t nblk);
 int  jrn_flush_wanted(const Jrn* j);      /* pending buffer nearly full: flush at the next idle frame */
