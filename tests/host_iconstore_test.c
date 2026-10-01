@@ -665,6 +665,34 @@ static void t_rom_rung(const char* dir, const char* name) {
         name, unusable);
   }
 
+  /* ---- BACKLOG #330: a STALE PLAN STARVES THE 4-ROW ROM POOL --------------------
+   * The mechanism behind Ruby's blank species picker, pinned. The box screen declares a
+   * 25-row plan and keeps it live under any overlay; the sweep leaves the pool's slots
+   * PINNED (fetched, not yet handed out). A picker that asks for a row NOT in that plan
+   * needs a victim, and with every slot pinned there is none: icon_store_row() answers
+   * NULL -- a blank cell. The fix is on the caller's side (the picker declares its own
+   * page, which replaces the plan); this block pins both halves so the contract the
+   * fix leans on cannot silently change. */
+  {
+    uint16_t boxplan[25], page[4] = { 40, 41, 42, 43 };
+    for (int i = 0; i < 25; i++) boxplan[i] = (uint16_t)(200 + i * 3);
+    icon_store_reset(0, &rm);
+    icon_store_plan(boxplan, 25);                       /* the box's plan, pool pinned */
+    CHK(icon_store_row(40) == 0,
+        "[%s] #330 MECHANISM: an off-plan row against a pool fully pinned by a stale "
+        "plan has no victim and must answer NULL (the blank cell)", name);
+    icon_store_plan(page, 4);                           /* the fix: declare the page   */
+    for (int i = 0; i < 4; i++)
+      CHK(icon_store_row(page[i]) != 0,
+          "[%s] #330 FIX: after the picker declares its own page, row %u must serve",
+          name, page[i]);
+    icon_store_plan(boxplan, 25);
+    icon_store_plan(0, 0);                              /* retiring also unblocks it   */
+    CHK(icon_store_row(40) != 0,
+        "[%s] #330: retiring the plan must leave an off-plan row servable", name);
+    icon_store_reset(0, &rm);
+  }
+
   /* ---- TIER B ON THE RUNG THAT NEEDS IT ------------------------------------------
    * This is the regression payment, measured on Guy's own dump. Tier A here is FOUR
    * rows, because the resident 440-entry offset table costs 1,760 B of the same 6 KiB

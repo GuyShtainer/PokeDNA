@@ -427,6 +427,26 @@ static void sp_row(int y, uint16_t in, bool sel) {
   ui_ptext_fit(66, y, 130, sel ? UI_SELTEXT : UI_TEXT, pk_species_name(in));
 }
 
+/* BACKLOG #330: declare the species grid's page to icon_store before the paint loop.
+ * The picker is an overlay on the box screen, whose 25..30-row plan stays live (and its
+ * rows PINNED) underneath. Undeclared, every picker cell was a non-plan miss that needs a
+ * free victim slot -- but on the ROM rung the pool is only 4 slots, 3 of them pinned by the
+ * box's plan and 1 hot, so slot_victim() answered -1 and icon_store_row() returned NULL:
+ * a blank cell. (Emerald's cache rung has 6 slots, which is why only R/S went blank.)
+ * Declaring replaces the box's plan with this page's, so the sweep refills the pool in
+ * bulk groups exactly like the Pokedex. Artless only, same gate as dex_declare_page. */
+static void species_declare_page(int top_idx, int vis) {
+#if PDNA_MON_ICONS_ART_COMPILED
+  (void)top_idx; (void)vis;
+#else
+  uint16_t rows[ICON_STORE_PLAN_MAX];
+  int n = 0;
+  for (int i = 0; i < vis && top_idx + i < g_n && n < (int)ICON_STORE_PLAN_MAX; i++)
+    rows[n++] = art_icons_row_for(g_list[top_idx + i], 0);
+  icon_store_plan(rows, n);
+#endif
+}
+
 uint16_t pick_species(uint16_t current) {
   int filter = 0, sort = 0;
   char search[16] = "";
@@ -472,6 +492,7 @@ uint16_t pick_species(uint16_t current) {
       ui_hline(0, 21, UI_SCR_W, UI_BORDER);
       ui_hline(0, 147, UI_SCR_W, UI_BORDER);
       ui_text(4, 152, UI_DIM, "A pick  L/R filter  SEL find");
+      if (!lst) species_declare_page(top_idx, cols * vrows);
       for (int i = 0; i < cols * vrows; i++) {
         int idx = top_idx + i;
         if (idx >= g_n) break;
@@ -526,8 +547,10 @@ uint16_t pick_species(uint16_t current) {
     prev_sel = sel; prev_top = top_idx; valid = true; gen = ui_clear_gen();
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B | KEY_L | KEY_R | KEY_SELECT | KEY_START);
-    if (k & KEY_B) return CANCEL;
-    else if (k & KEY_A) return g_n ? g_list[sel] : CANCEL;
+    if (k & (KEY_B | KEY_A)) {
+      icon_store_plan(0, 0);              /* retire this page's plan (the box repaint re-declares its own) */
+      return ((k & KEY_B) || !g_n) ? CANCEL : g_list[sel];
+    }
     else if (k & KEY_LEFT)  sel = (sel > 0) ? sel - 1 : 0;
     else if (k & KEY_RIGHT) sel = (sel < g_n - 1) ? sel + 1 : sel;
     else if (k & KEY_UP)    { if (sel >= cols) sel -= cols; }

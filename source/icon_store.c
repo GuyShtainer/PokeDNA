@@ -760,6 +760,12 @@ int icon_store_plan(const uint16_t* rows, int n) {
    * "yes" -- which is a bob running over rows nobody promised were in RAM, i.e. exactly
    * the per-tick SD I/O the gate exists to stop. */
   s_is.plan_res = 0;
+  /* BACKLOG #330: a pin means "the LIVE plan fetched this and the screen has not drawn it
+   * yet". Retiring (or replacing) the plan ends that debt, so the pins go with it. Before
+   * this, icon_store_plan(0, 0) returned with every slot the old plan had fetched still
+   * pinned -- on the ROM rung's 4-row pool that is NO victim for any off-plan row, and
+   * every later undeclared screen drew blank cells (Ruby's CREATE species picker). */
+  for (int i = 0; i < s_is.cap; i++) slot_at(i)->pinned = 0;
   if (s_is.rung == ICON_RUNG_NONE || !rows || n <= 0) return 0;
 
   for (int i = 0; i < n && s_is.plan_n < (int)ICON_PLAN_MAX; i++) {
