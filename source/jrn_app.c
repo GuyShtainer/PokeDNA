@@ -7,6 +7,7 @@
 #include "gen3_save.h"
 #include "journal.h"
 #include "journal_fs.h"
+#include "journal_int.h"   /* jrn_i_locate / jrn_i_src_read: READ-ONLY record access for the #303 swap-pair predicate (the frozen engine is not touched) */
 #include "log.h"
 #include "rmbl.h"
 #include "sys.h"   /* EWRAM_BSS */
@@ -140,6 +141,29 @@ int jrnapp_open_gb(ImgRec* r, uint8_t* img, uint64_t key, uint8_t cap, bool writ
   s_key = key;
   s_j.max_segs = cap;                                       /* ja_do_open reads it (the engine clamps to 16, 0 = default) */
   return ja_open_bound(r);
+}
+
+/* #308: the Game Boy open with the OLD-key compatibility duty. `key` = gb_journal_key() (new), `legacy` = gb_journal_key_legacy()
+ * (the key every earlier build used; equal to `key` for names without a '9', 0 = none). A journal created under the old key
+ * must still be found and continued. MECHANISM = REDIRECT (the engine's own .pdr, the same one an identity edit writes), never a
+ * copy or a rename: open under `key` (the engine resolves existing redirects, so a save that was adopted once re-opens
+ * straight through its redirect); ONLY when that finds no journal at all (ring 0: no directory under the new key and no
+ * redirect to one) and the old key differs, probe the old key's journal. It is adopted ONLY when its anchor says THIS image sits
+ * on its history (JRN_ANCHOR_MATCH: the last cursor path, or BRANCH: an older record -- the same save lineage); an unrecognized
+ * image (NEWROOT = another save that shares the old truncated key), an empty, foreign or unreadable journal is NOT adopted and
+ * the journal opens fresh under `key`. An adopted journal keeps s_key = the old directory key, so the next safe moment
+ * (jrnapp_prepare_key(r, key)) writes the redirect new -> old through ja_redirect_key, exactly the identity-edit path. */
+int jrnapp_open_gb_compat(ImgRec* r, uint8_t* img, uint64_t key, uint64_t legacy, uint8_t cap, bool write_ok) {
+  int st;
+  if (!r) return JA_OFF;
+  st = jrnapp_open_gb(r, img, key, cap, write_ok);
+  if (st != JA_OK || !legacy || legacy == key || s_j.ring != 0) return st;   /* found under the new key (or no old key to look for) */
+  s_key = legacy;                                                            /* probe the old key's journal over the same image */
+  if (ja_open_bound(r) == JA_OK && s_j.ring != 0 && (s_j.anchor == JRN_ANCHOR_MATCH || s_j.anchor == JRN_ANCHOR_BRANCH)) {
+    ja_event("gb: continuing the old-key journal (a redirect follows)", 0);
+    return JA_OK;
+  }
+  return jrnapp_open_gb(r, img, key, cap, write_ok);                         /* not this save's: a fresh journal under the new key */
 }
 
 /* Settings > Clear history: delete this save's slot files + directory (rumble paused; Omega-only is the caller's gate),
@@ -342,17 +366,216 @@ int jrnapp_step(int dir, char name[25]) {
   return rc;
 }
 
-/* The current branch, newest first: from the tip down the parent chain, at most `max` steps. */
+/* ---- #303: a swap is two journal steps; the chords treat the pair as one -------------------------------------------
+ * THE PREDICATE (derived from what the recorder writes, not guessed). A swap = two drops (pdna_box.c drop_held, SWAP tail):
+ *   drop 1  step N  : the held mon X lands on the occupied PC slot B (slot B: Y -> X), the source slot A is cleared
+ *                     (A: X -> 0), the displaced Y goes into the RAM hand (it is in NO image);
+ *   drop 2  step N+1: Y is placed into an EMPTY slot C (C: 0 -> Y) -- by the A press (a "Box move" scope) or by the B put-
+ *                     away (unscoped; the funnel's default name for a PC-only mask is also "Box move").
+ * Both steps are named "Box move" and carry no other name or scope tag, so the NAME alone cannot pair them (two plain moves
+ * in a row look identical). The SPANS can: step N+1 is a swap's second half iff, in the PC regions (sections 5..13,
+ * 80-byte mon slots from byte 4 of the reassembled PC buffer):
+ *   (1) N+1 is a plain step (not crossed), named "Box move", and N is its parent, also plain and "Box move";
+ *   (2) N+1 touches exactly ONE mon slot, every BEFORE byte there is zero (an empty slot) and nothing outside the mon area;
+ *   (3) N has exactly ONE REPLACED slot (a slot whose spans hold both a non-zero before byte and a non-zero after byte --
+ *       a plain move into an empty slot has no such slot), and touches at most 4 slots;
+ *   (4) wherever both are known (a byte inside a span of both), N's BEFORE bytes of the replaced slot equal N+1's AFTER bytes
+ *       of its slot, with zero mismatches and at least JA_MATCH_MIN bytes compared.
+ * Bytes outside every span are UNKNOWN (never assumed). The chord pairs only along the parent chain, so a floor between the
+ * halves (a crossed record) fails (1) and the press behaves exactly as before. Gen-3 only: a Game Boy image has no 80-byte
+ * slots and its swaps are refused outright (the dialog says why), so a GB session never pairs. */
+#define JA_PC_FIRST    5u
+#define JA_PC_LAST    13u
+#define JA_MON_BASE    4u
+#define JA_MON_BYTES  80u
+#define JA_MON_AREA   (14u * 30u * JA_MON_BYTES)
+#define JA_PAIR_SLOTS  4u
+#define JA_MATCH_MIN  48u
+#define JA_REDO_HOPS  64u   /* redo walks tip -> cursor to find the next two steps; farther than this = no pairing, a plain redo */
+
+typedef struct { uint8_t region; uint16_t off, len, before, after; } JaSpan;
+typedef struct { int32_t slot; uint8_t ok; uint8_t after[JA_MON_BYTES]; uint8_t known[JA_MON_BYTES / 8u + 2u]; } JaSig;
+/* EWRAM_BSS: the record read once (<= 512 B) + the newer half's signature (~100 B). No stack, no IWRAM. */
+static uint8_t EWRAM_BSS s_rec[JRN_REC_MAX];
+static JaSig   EWRAM_BSS s_sig;
+
+static int ja_rec_load(const JrnSrc* src, const JrnRec* r) {
+  if (!src || !r || r->len < JRN_REC_MIN || r->len > JRN_REC_MAX) return -1;
+  return jrn_i_src_read(&s_j, src, 0, s_rec, r->len);
+}
+
+/* The next span of the record in s_rec: 0 ok, -1 malformed (never trust a length that leaves the record). */
+static int ja_span_at(const JrnRec* r, uint16_t* pos, JaSpan* sp) {
+  uint16_t end = (uint16_t)(r->len - 4u);
+  if (*pos + JRN_SPAN_HDR > end) return -1;
+  sp->region = s_rec[*pos];
+  sp->off = jrn_rd16(s_rec + *pos + 2u);
+  sp->len = jrn_rd16(s_rec + *pos + 4u);
+  sp->before = (uint16_t)(*pos + JRN_SPAN_HDR);
+  sp->after = (uint16_t)(sp->before + sp->len);
+  if ((uint32_t)sp->after + sp->len > end) return -1;
+  *pos = (uint16_t)(sp->after + sp->len);
+  return 0;
+}
+
+/* Byte i of a span -> 0 = not a PC region (ignored), 1 = a mon byte (*slot, *q set), 2 = a PC byte outside the mon area. */
+static int ja_mon_at(const JaSpan* sp, uint16_t i, uint32_t* slot, uint8_t* q) {
+  uint32_t p;
+  if (sp->region < JA_PC_FIRST || sp->region > JA_PC_LAST) return 0;
+  p = (uint32_t)(sp->region - JA_PC_FIRST) * G3_SECTOR_DATA_SIZE + sp->off + i;
+  if (p < JA_MON_BASE || p >= JA_MON_BASE + JA_MON_AREA) return 2;
+  p -= JA_MON_BASE;
+  *slot = p / JA_MON_BYTES; *q = (uint8_t)(p % JA_MON_BYTES);
+  return 1;
+}
+
+static int ja_pair_eligible(const JrnRec* r) {
+  return s_ai.slot >= 0 && r->kind == JRN_KIND_STEP && !r->crossed && strcmp(r->name, "Box move") == 0;
+}
+
+/* From the record in s_rec (the NEWER half): fill s_sig. Returns s_sig.ok = "this step adds one mon into one empty slot". */
+static int ja_sig_make(const JrnRec* r) {
+  JaSpan sp;
+  uint16_t pos = JRN_REC_HDR, i;
+  uint32_t slot = 0;
+  uint8_t sn, q = 0;
+  int k;
+  memset(&s_sig, 0, sizeof s_sig);
+  s_sig.slot = -1; s_sig.ok = 1;
+  for (sn = 0; sn < r->nspans; sn++) {
+    if (ja_span_at(r, &pos, &sp)) { s_sig.ok = 0; return 0; }
+    for (i = 0; i < sp.len; i++) {
+      k = ja_mon_at(&sp, i, &slot, &q);
+      if (k == 0) continue;
+      if (k == 2) { s_sig.ok = 0; return 0; }
+      if (s_sig.slot < 0) s_sig.slot = (int32_t)slot;
+      else if ((uint32_t)s_sig.slot != slot) { s_sig.ok = 0; return 0; }
+      if (s_rec[sp.before + i] != 0) { s_sig.ok = 0; return 0; }               /* not an empty slot */
+      s_sig.after[q] = s_rec[sp.after + i];
+      s_sig.known[q >> 3] = (uint8_t)(s_sig.known[q >> 3] | (1u << (q & 7u)));
+    }
+  }
+  if (s_sig.slot < 0) s_sig.ok = 0;
+  return s_sig.ok;
+}
+
+/* The record in s_rec is the OLDER half: does it pair with the newer half's signature in s_sig? (predicate 3 + 4) */
+static int ja_older_pairs(const JrnRec* r) {
+  struct { int32_t slot; uint8_t bnz, anz; } tab[JA_PAIR_SLOTS];
+  JaSpan sp;
+  uint16_t pos, i;
+  uint32_t slot = 0, match = 0;
+  uint8_t sn, q = 0, nt = 0, t, nrep = 0, rep = 0;
+  int k;
+  if (!s_sig.ok) return 0;
+  memset(tab, 0, sizeof tab);
+  pos = JRN_REC_HDR;
+  for (sn = 0; sn < r->nspans; sn++) {
+    if (ja_span_at(r, &pos, &sp)) return 0;
+    for (i = 0; i < sp.len; i++) {
+      k = ja_mon_at(&sp, i, &slot, &q);
+      if (k != 1) continue;
+      for (t = 0; t < nt && tab[t].slot != (int32_t)slot; t++) {}
+      if (t == nt) { if (nt >= JA_PAIR_SLOTS) return 0; tab[nt].slot = (int32_t)slot; nt++; }
+      if (s_rec[sp.before + i]) tab[t].bnz = 1;
+      if (s_rec[sp.after + i]) tab[t].anz = 1;
+    }
+  }
+  for (t = 0; t < nt; t++) if (tab[t].bnz && tab[t].anz) { nrep++; rep = t; }
+  if (nrep != 1u) return 0;
+  pos = JRN_REC_HDR;
+  for (sn = 0; sn < r->nspans; sn++) {
+    if (ja_span_at(r, &pos, &sp)) return 0;
+    for (i = 0; i < sp.len; i++) {
+      if (ja_mon_at(&sp, i, &slot, &q) != 1 || tab[rep].slot != (int32_t)slot) continue;
+      if (!(s_sig.known[q >> 3] & (1u << (q & 7u)))) continue;
+      if (s_rec[sp.before + i] != s_sig.after[q]) return 0;                    /* a mismatch refutes the pair outright */
+      match++;
+    }
+  }
+  return match >= JA_MATCH_MIN;
+}
+
+static void ja_label(char name[25], const char* suffix) {
+  size_t n = strlen(name);
+  if (n + strlen(suffix) <= 24u) memcpy(name + n, suffix, strlen(suffix) + 1u);
+}
+
+/* Is the NEXT chord step (dir < 0: the cursor's step and its parent; dir > 0: the first two steps toward the tip) one swap?
+ * The caller has flushed (an undo of a pending record pops it with no SD I/O: see jrnapp_step). */
+static int ja_chord_pair(int dir) {
+  JrnRec rn, rm;
+  JrnSrc sn, sm;
+  uint32_t t, cur = jrn_cursor(&s_j), older = 0, newer = 0, hops;
+  if (s_ai.slot < 0) return 0;                                /* Game Boy: no 80-byte slots, swaps are refused outright */
+  if (dir < 0) {
+    if (!cur) return 0;
+    newer = cur;
+    if (jrn_i_locate(&s_j, newer, &rm, &sm) != 0) return 0;
+    older = rm.parent;
+  } else {
+    uint32_t p1 = 0, p2 = 0;
+    for (t = jrn_tip(&s_j), hops = 0; t != cur; hops++) {
+      JrnRec w;
+      if (!t || hops >= JA_REDO_HOPS) return 0;
+      p2 = p1; p1 = t;
+      if (jrn_find(&s_j, t, &w) != 0) return 0;
+      t = w.parent;
+    }
+    older = p1; newer = p2;
+    if (!older || !newer || jrn_i_locate(&s_j, newer, &rm, &sm) != 0) return 0;
+  }
+  if (!older || !ja_pair_eligible(&rm) || rm.parent != older) return 0;
+  if (jrn_i_locate(&s_j, older, &rn, &sn) != 0 || !ja_pair_eligible(&rn)) return 0;
+  if (ja_rec_load(&sm, &rm) != 0 || !ja_sig_make(&rm)) return 0;
+  if (ja_rec_load(&sn, &rn) != 0) return 0;
+  return ja_older_pairs(&rn);
+}
+
+/* #303: ONE chord press. A swap's two halves (ja_chord_pair) undo/redo together -- one toast, name "Swap" -- so a press
+ * does not strand the image on a plain swap's half state (the limits are listed in jrn_app.h). All-or-nothing: if the
+ * second half is refused after the first moved, the first is rolled back through the opposite step; only if THAT fails is
+ * the half state reported (name "half a swap", JRN_OK so the caller re-derives its copies). Everything else is exactly
+ * jrnapp_step. */
+int jrnapp_step_pair(int dir, char name[25]) {
+  char n1[25], n2[25];
+  int rc, rb;
+  if (name) name[0] = 0;
+  if (!s_r || !s_r->j || s_state != JA_OK) return JRN_E_ARG;
+  if (s_r->depth) return JRN_E_STATE;
+  if (dir < 0 && jrn_pending(&s_j)) (void)jrnapp_flush();      /* same single flush jrnapp_step does, BEFORE the lookup (the src pointers must outlive it) */
+  if (!ja_chord_pair(dir)) return jrnapp_step(dir, name);
+  rc = jrnapp_step(dir, n1);
+  if (rc != JRN_OK) { if (name) memcpy(name, n1, 25); return rc; }   /* nothing moved */
+  rc = jrnapp_step(dir, n2);
+  if (rc != JRN_OK) {
+    rb = jrnapp_step(-dir, 0);
+    ja_event("swap pair: second half refused, first rolled back", rc);
+    if (rb != JRN_OK) {
+      ja_event("swap pair: rollback failed, image on the half-swap", rb);
+      if (name) { memcpy(name, "half a swap", 12); }
+      return JRN_OK;                                           /* the image DID change: the caller must re-derive */
+    }
+    if (name) memcpy(name, n2, 25);
+    return rc;
+  }
+  if (name) memcpy(name, "Swap", 5);
+  return JRN_OK;
+}
+
+/* The current branch, newest first: from the tip down the parent chain, at most `max` steps. A swap's two halves are
+ * labelled "Box move 1/2" (older) and "Box move 2/2" (newer) when ja_older_pairs() says they are one swap (#303). */
 int jrnapp_history(JaHist* rows, int max, int* more, int* floor_hit) {
   JrnRec rec;
-  uint32_t t, cur, hops = 0;
-  int n = 0, ahead = 1, saved_seen = 0;
+  JrnSrc src;
+  uint32_t t, cur, hops = 0, prev_parent = 0;
+  int n = 0, ahead = 1, saved_seen = 0, sig_ok = 0;
   if (more) *more = 0;
   if (floor_hit) *floor_hit = 0;
   if (!rows || max < 1 || !s_r || !s_r->j || s_state != JA_OK) return 0;
   t = jrn_tip(&s_j); cur = jrn_cursor(&s_j);
   while (t && n < max && hops++ < JRN_WALK_MAX) {
-    if (jrn_find(&s_j, t, &rec) != 0) { if (floor_hit) *floor_hit = 1; return n; }
+    if (jrn_i_locate(&s_j, t, &rec, &src) != 0) { if (floor_hit) *floor_hit = 1; return n; }
     if (t == cur) ahead = 0;                                 /* this row and every older one are IN the image */
     if (t == s_saved) saved_seen = 1;
     rows[n].seq = t;
@@ -361,6 +584,14 @@ int jrnapp_history(JaHist* rows, int max, int* more, int* floor_hit) {
     rows[n].ahead = (uint8_t)ahead;
     rows[n].saved = (uint8_t)saved_seen;
     memcpy(rows[n].name, rec.name, 24); rows[n].name[24] = 0;
+    if (ja_pair_eligible(&rec) && ja_rec_load(&src, &rec) == 0) {   /* one record read serves both the older-half test and the next newer-half signature */
+      if (sig_ok && prev_parent == t && n > 0 && ja_older_pairs(&rec)) {
+        ja_label(rows[n - 1].name, " 2/2");
+        ja_label(rows[n].name, " 1/2");
+      }
+      sig_ok = ja_sig_make(&rec);
+      prev_parent = rec.parent;
+    } else sig_ok = 0;
     n++;
     t = rec.parent;
   }

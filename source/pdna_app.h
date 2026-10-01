@@ -577,7 +577,7 @@ void pdna_history_screen_rows(struct JaHist* rows, int max);
  * dirty. app_gb_dirty: anything staged and unsaved (the exit confirm's question). app_gb_saved / app_gb_discarded: the
  * card now holds the image / the card image was put back. app_gb_rest: flush the pending records + safe-moment work.
  * app_gb_close: unbind at session end. app_history_cap: the Settings retention cap in segments. */
-bool app_gb_journal_open(uint8_t* img, uint64_t key);
+bool app_gb_journal_open(uint8_t* img, uint64_t key, uint64_t legacy_key);   /* #308: legacy_key = gb_journal_key_legacy(): an old-keyed journal is continued */
 bool app_gb_hold_live(void);
 bool app_gb_stage(const uint8_t* base, const uint8_t* img, const char* name, bool crossed);
 bool app_gb_dirty(void);

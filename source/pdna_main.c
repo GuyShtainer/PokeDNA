@@ -10272,7 +10272,7 @@ int app_undo_redo(int dir, char name[25]) {
   name[0] = 0;
   if (st != JA_OK && st != JA_GAP) return AUR_OFF;
   if (!gb && (app_arena_held() || imgf_arena_ok(&g_img) == false)) return AUR_ARENA;   /* T5: g_pc is a loan / ahead of the image */
-  rc = jrnapp_step(dir, name);
+  rc = jrnapp_step_pair(dir, name);              /* #303: a swap's two halves are one chord press */
   if (rc == JRN_OK) {
     app_journal_rederive();
     imgf_staged(&g_img);                          /* the image is ahead of the card: the exit save confirms once */
@@ -10373,11 +10373,11 @@ static void app_journal_rest(void) {
  * pdna_gen12.c owns the GB image, its baseline (`pristine`, the last STAGED state) and the session; this file owns the one
  * recorder (g_rec), the dirty flags (g_img) and the offer dialog. The GB image is edited in place and journaled as a
  * flat 8 x 4,096-byte image (jrn_app.c). Everdrive / read-only never opens (the same write_ok gate as Gen 3). */
-bool app_gb_journal_open(uint8_t* img, uint64_t key) {
+bool app_gb_journal_open(uint8_t* img, uint64_t key, uint64_t legacy_key) {
   int st;
   imgf_clear(&g_img);                                      /* a Game Boy session starts clean: nothing staged, nothing pending */
   s_jrn_prepare_owed = false;
-  st = jrnapp_open_gb(&g_rec, img, key, app_history_cap(), app_can_edit());
+  st = jrnapp_open_gb_compat(&g_rec, img, key, legacy_key, app_history_cap(), app_can_edit());   /* #308 */
   if (st == JA_OK) {
     uint32_t avail = 0;
     char stop[25];

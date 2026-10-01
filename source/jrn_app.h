@@ -37,6 +37,8 @@ int  jrnapp_state(const ImgRec* r);
  * bytes raw, checksums included (a step's spans carry them). `key` = gb_journal_key(); `cap` = the retention cap in
  * segments (0 = the engine default, 16; clamped to 16). Never creates files (jrnapp_prepare_key does). */
 int  jrnapp_open_gb(ImgRec* r, uint8_t* img, uint64_t key, uint8_t cap, bool write_ok);
+/* #308: jrnapp_open_gb + the old-key duty. `legacy` = gb_journal_key_legacy() (0 = none). See jrn_app.c for the mechanism. */
+int  jrnapp_open_gb_compat(ImgRec* r, uint8_t* img, uint64_t key, uint64_t legacy, uint8_t cap, bool write_ok);
 /* The Game Boy safe-moment work: the ring/tail/spare, plus the redirect when the identity key moved. */
 int  jrnapp_prepare_key(ImgRec* r, uint64_t key);
 /* Settings > Clear history (see jrn_app.c): delete this save's journal files, reopen empty under `cap`. Files removed or < 0. */
@@ -90,13 +92,23 @@ void jrnapp_mark_saved(void);
  * CALLER re-derives its decoded copies and sets image-dirty. */
 int  jrnapp_step(int dir, char name[25]);
 
+/* #303: the chord's press. A swap is two journal steps (two drops); when the step at the cursor (undo) or the next step
+ * toward the tip (redo) is the second half of a swap whose first half is its parent, BOTH undo/redo together (name "Swap"),
+ * all-or-nothing, so one press does not strand the image on a plain swap's half state. NOT covered (per-step as before; the
+ * load-time offer still restores): a CHAINED swap (the displaced mon dropped on another occupied slot), a displaced mon put
+ * into the party, a redo more than 64 steps below the tip, a sparse mon (< 48 comparable bytes). Two unscoped PC commits of
+ * the same span shape (an identity edit, then a paste of the pre-edit copy into an empty slot) DO pair (byte-exact, named
+ * "Swap"). Gen-3 only (a Game Boy swap is refused outright). Same returns/name contract as jrnapp_step, except the refused-
+ * rollback case: JRN_OK named "half a swap". History and jump stay per-step. The predicate is in jrn_app.c. */
+int  jrnapp_step_pair(int dir, char name[25]);
+
 typedef struct JaHist {
   uint32_t seq;
   uint8_t  crossed;    /* a floor: undo/redo cannot pass it                                   */
   uint8_t  at_cursor;  /* the image sits exactly here                                         */
   uint8_t  ahead;      /* newer than the cursor: undone, redoable                             */
   uint8_t  saved;      /* at or below the step the CARD holds (else only "recorded")          */
-  char     name[25];
+  char     name[25];            /* a swap's halves read "Box move 1/2" / "Box move 2/2" (#303) */
 } JaHist;
 /* The current branch newest-first (tip down the parent chain), up to `max` rows. *more = 1 when older steps exist
  * past the window; *floor_hit = 1 when the chain ended at a compacted (retired) parent. Returns the row count

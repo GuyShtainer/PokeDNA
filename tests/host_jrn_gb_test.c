@@ -283,6 +283,124 @@ static void t_discard_reanchor(void) {
   CHECK(memcmp(img, saved, GB_LEN) == 0, "D8 undo lands on the restored card image byte-exactly (the journal re-anchored)");
 }
 
+/* #308: the GB journal key stopped at the first 0xFF ('9' in the GB charset). Fix = escape in gb_jkey.c (names WITH a 0xFF only;
+ * every other name keeps its key) + jrnapp_open_gb_compat continuing an OLD-keyed journal through a redirect (jrn_app.c). */
+static void set_name(const uint8_t* nm, unsigned n) {
+  uint32_t noff = gbf_off(gbt_game(&S), GBF_PLAYER_NAME);
+  memcpy(img + noff, nm, n);
+  img[noff + n] = 0x50;
+  memcpy(orig, img, sizeof orig); memcpy(base, img, sizeof base);
+}
+static uint64_t newk, legk;
+static void keys_now(void) { newk = gb_journal_key(&S); legk = gb_journal_key_legacy(&S); }
+
+static void t_key_entropy(void) {
+  static const uint8_t n1[] = { 0x80, 0xFF, 0x81 }, n2[] = { 0x80, 0xFF, 0x82 }, plain[] = { 0x80, 0x81 }, fe[] = { 0x80, 0xFE },
+                       ff[] = { 0x80, 0xFF }, fe01[] = { 0x80, 0xFE, 0x01 };
+  uint64_t a_new, a_leg, b_new, b_leg;
+  CHECK(build(GBF_RBY), "fixture");
+  set_name(n1, 3); keys_now(); a_new = newk; a_leg = legk;
+  set_name(n2, 3); keys_now(); b_new = newk; b_leg = legk;
+  CHECK(a_leg == b_leg, "#308 (documents the bug) the LEGACY key of two names that differ only after a '9' is the same");
+  CHECK(a_new != b_new && a_new != 0 && b_new != 0, "#308 (a) the NEW keys of those two names are DISTINCT");
+  set_name(plain, 2); keys_now();
+  CHECK(newk == legk, "#308 a name without a 0xFF byte keeps its key EXACTLY (nothing existing moves)");
+  set_name(fe, 2); keys_now();
+  CHECK(newk == legk, "#308 a name with a 0xFE (the escape byte) but no 0xFF keeps its key too");
+  set_name(ff, 2); keys_now(); a_new = newk;
+  set_name(fe01, 3); keys_now(); b_new = newk;
+  CHECK(a_new != b_new, "#308 the escape is injective: '9' alone vs the literal bytes of its escape never share a key");
+  { static const uint8_t fe01ff[] = { 0x80, 0xFE, 0x01, 0xFF }, ffff[] = { 0x80, 0xFF, 0xFF };   /* both carry a '9': only the 0xFE escape keeps them apart */
+    set_name(fe01ff, 4); keys_now(); a_new = newk;
+    set_name(ffff, 3); keys_now(); b_new = newk;
+    CHECK(a_new != b_new, "#308 the 0xFE escape is load-bearing: FE 01 '9' vs '9' '9' never share a key"); }
+  { GbSession st2 = S; st2.img = 0; CHECK(gb_journal_key_legacy(&st2) == 0 && gb_journal_key_legacy(0) == 0, "no image / NULL: no legacy key either"); }
+}
+
+static int world9(const uint8_t* nm, unsigned n, uint64_t* legacy_out, uint64_t* new_out) {
+  if (!build(GBF_RBY)) return 0;
+  set_name(nm, n);
+  keys_now();
+  *legacy_out = legk; *new_out = newk;
+  card_fresh(FM_FAT);
+  rd_fattime_hook = jrn_fattime_filter;
+  imgf_clear(&F);
+  return 1;
+}
+
+static void t_old_key_compat(void) {
+  static const uint8_t n1[] = { 0x80, 0xFF, 0x81 }, n2[] = { 0x80, 0xFF, 0x82 };
+  static uint8_t edited[sizeof img];
+  uint64_t leg, nw, leg2, nw2, out = 0;
+  char nm[25];
+  CHECK(world9(n1, 3, &leg, &nw), "world (a name with a '9')");
+  CHECK(leg != nw, "the legacy and new keys differ for this name");
+  /* an OLD build created this journal: open under the legacy key, record, flush */
+  CHECK(jrnapp_open_gb(&R, img, leg, 0, true) == JA_OK && jrnapp_prepare_key(&R, leg) == JRN_OK, "an old-style journal is created under the legacy key");
+  edit(0x0100, 4, 0x5A, "Box move", 0);
+  edit(0x0900, 6, 0x11, "Bag", 0);
+  CHECK(jrnapp_flush() == JRN_OK && jrnapp_tip() == 2, "two steps on disk under the legacy key");
+  memcpy(edited, img, sizeof edited);
+  jrnapp_close(&R);
+  /* (b) the new build opens the SAME save: finds the old-keyed journal and continues it */
+  CHECK(jrnapp_open_gb_compat(&R, img, nw, leg, 0, true) == JA_OK, "#308 (b) compat open");
+  CHECK(jrnapp_tip() == 2 && jrnapp_cursor() == 2, "#308 (b) the OLD journal is continued (cursor %u tip %u), not a fresh empty one", (unsigned)jrnapp_cursor(), (unsigned)jrnapp_tip());
+  CHECK(jrnapp_prepare_key(&R, nw) == JRN_OK, "prepare at the safe moment");
+  CHECK(jrn_key_resolve(&jrn_fatfs, ROOT, nw, &out) == JRN_OK && out == leg, "#308 (b) the REDIRECT new -> old now exists (the engine's own .pdr)");
+  CHECK(jrnapp_step(-1, nm) == JRN_OK && jrnapp_step(-1, nm) == JRN_OK && memcmp(img, orig, GB_LEN) == 0, "#308 (b) undo through the old-keyed journal is byte-exact");
+  CHECK(jrnapp_step(1, nm) == JRN_OK && jrnapp_step(1, nm) == JRN_OK && memcmp(img, edited, GB_LEN) == 0, "#308 (b) and redo");
+  CHECK(jrnapp_flush() == JRN_OK, "flush the cursor markers");
+  memcpy(base, img, sizeof base);
+  edit(0x1100, 6, 0x22, "Box move", 0);
+  CHECK(jrnapp_flush() == JRN_OK && jrnapp_tip() == 5, "recording continues in the adopted journal (tip %u)", (unsigned)jrnapp_tip());
+  jrnapp_close(&R);
+  CHECK(jrnapp_open_gb_compat(&R, img, nw, leg, 0, true) == JA_OK && jrnapp_tip() == 5, "#308 (b) a later session follows the redirect (tip %u)", (unsigned)jrnapp_tip());
+  jrnapp_close(&R);
+  CHECK(jrnapp_open_gb(&R, img, nw, 0, true) == JA_OK && jrnapp_tip() == 5, "#308 (b) even the plain open resolves the redirect (tip %u)", (unsigned)jrnapp_tip());
+  jrnapp_close(&R);
+
+  /* (c) ANOTHER save that shares the truncated legacy key (differs only after the '9'): the old journal does NOT anchor to
+   * its image, so it is never adopted -- a fresh journal under the new key, no redirect, the old one untouched */
+  CHECK(world9(n1, 3, &leg, &nw), "fresh card (the old-keyed journal again)");
+  CHECK(jrnapp_open_gb(&R, img, leg, 0, true) == JA_OK && jrnapp_prepare_key(&R, leg) == JRN_OK, "old-style journal for save 1");
+  edit(0x0100, 4, 0x5A, "Box move", 0);
+  CHECK(jrnapp_flush() == JRN_OK && jrnapp_tip() == 1, "one step");
+  jrnapp_close(&R);
+  CHECK(build(GBF_RBY), "save 2's image");
+  set_name(n2, 3); keys_now(); leg2 = legk; nw2 = newk;
+  CHECK(leg2 == leg && nw2 != nw, "save 2 shares the legacy key but has its own new key");
+  CHECK(jrnapp_open_gb_compat(&R, img, nw2, leg2, 0, true) == JA_OK, "compat open of save 2");
+  CHECK(jrnapp_tip() == 0 && jrnapp_cursor() == 0, "#308 (c) the wrong save's old-keyed journal is NOT adopted (cursor %u tip %u)", (unsigned)jrnapp_cursor(), (unsigned)jrnapp_tip());
+  CHECK(jrnapp_prepare_key(&R, nw2) == JRN_OK, "prepare");
+  out = 0;
+  CHECK(jrn_key_resolve(&jrn_fatfs, ROOT, nw2, &out) == JRN_OK && out == nw2, "#308 (c) no redirect to the old journal was written");
+  jrnapp_close(&R);
+  CHECK(build(GBF_RBY), "save 1's image again");
+  set_name(n1, 3);
+  CHECK(jrnapp_open_gb_compat(&R, img, nw, leg, 0, true) == JA_OK, "save 1 compat open");
+  CHECK(jrnapp_state(&R) == JA_OK, "save 1 still opens (its old journal is intact)");
+  jrnapp_close(&R);
+}
+
+/* #303 GB scope: a Game Boy swap is refused outright (no addressable slots), so a GB journal never pairs -- even a
+ * byte pattern shaped exactly like a Gen-3 swap in regions 5/6 stays per-step (the guard is jrn_app.c's slot < 0 test). */
+static void t_gb_never_pairs(void) {
+  uint8_t x[80], y[80];
+  unsigned i;
+  char nm[25];
+  CHECK(world(GBF_RBY, 0), "world");
+  for (i = 0; i < 80; i++) { x[i] = (uint8_t)(i * 7u + 1u); y[i] = (uint8_t)(i * 13u + 5u); }
+  memset(img + 0x5000, 0, 0x2000); memcpy(base, img, sizeof base);
+  memcpy(img + 0x5000 + 4 + 10 * 80, x, 80); memcpy(img + 0x5000 + 4 + 11 * 80, y, 80);
+  (void)img_rec_flat(&R, base, img, 8, 4096, "Setup"); memcpy(base, img, sizeof base);
+  memcpy(img + 0x5000 + 4 + 11 * 80, x, 80); memset(img + 0x5000 + 4 + 10 * 80, 0, 80);
+  (void)img_rec_flat(&R, base, img, 8, 4096, "Box move"); memcpy(base, img, sizeof base);
+  memcpy(img + 0x5000 + 4 + 12 * 80, y, 80);
+  (void)img_rec_flat(&R, base, img, 8, 4096, "Box move"); memcpy(base, img, sizeof base);
+  CHECK(jrnapp_flush() == JRN_OK && jrnapp_tip() == 3, "three GB steps, tip %u", (unsigned)jrnapp_tip());
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && strcmp(nm, "Box move") == 0 && jrnapp_cursor() == 2, "#303 GB: a swap-shaped pair is still ONE step per press ('%s', cursor %u)", nm, (unsigned)jrnapp_cursor());
+}
+
 int main(void) {
   t_key();
   t_everdrive_never_opens();
@@ -293,6 +411,9 @@ int main(void) {
   t_clear_history();
   t_clear_card_error();
   t_discard_reanchor();
+  t_key_entropy();
+  t_old_key_compat();
+  t_gb_never_pairs();
   printf("%lu checks, %d failed\n", checks, fails);
   return fails ? 1 : 0;
 }

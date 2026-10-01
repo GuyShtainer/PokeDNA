@@ -5002,7 +5002,7 @@ void pdna_gen12_history(void) {
 static void __attribute__((noinline)) gb_journal_session_open(void) {
   uint64_t key = gb_journal_key(&g_ed->s);
   if (!key) { log_line("journal(gb): no identity key, journal off"); return; }
-  (void)app_gb_journal_open(g_ed->img, key);
+  (void)app_gb_journal_open(g_ed->img, key, gb_journal_key_legacy(&g_ed->s));   /* #308: an old-keyed journal is continued */
 }
 
 /* Arena block for a session whose bytes are already resident: no FIL, and the image
