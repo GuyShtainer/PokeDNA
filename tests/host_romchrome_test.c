@@ -46,6 +46,7 @@
  */
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "rom_chrome.h"
@@ -77,6 +78,10 @@ static unsigned long g_reads = 0, g_bytes = 0;
 static long     g_hit_call = 0;
 static uint32_t g_hit_pos = 0;
 
+/* #313: a PERSISTENT poison window -- every read that overlaps file bytes [lo, hi) comes back
+ * with those bytes XOR 0xFF, modelling a wrong/hacked revision at a pinned address. */
+static uint32_t g_poison_lo = 0, g_poison_hi = 0;
+
 static bool host_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
   HostCtx* c = (HostCtx*)ctx;
   g_reads++;
@@ -87,6 +92,8 @@ static bool host_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
     ((uint8_t*)dst)[g_hit_pos] ^= 0xFF;
     g_hit_call = 0;      /* fires exactly once */
   }
+  for (uint32_t i = 0; g_poison_hi > g_poison_lo && i < len; i++)
+    if (off + i >= g_poison_lo && off + i < g_poison_hi) ((uint8_t*)dst)[i] ^= 0xFF;
   return true;
 }
 
@@ -244,6 +251,126 @@ static void test_bag_game(const char* label, const char* path, int expect_style)
   fclose(c.f);
 }
 
+
+/* ---- #313: the Ruby/Sapphire bag ------------------------------------------------------------ */
+
+#define RSB_MAP   0x08E77004u
+#define RSB_TILES 0x08E76728u
+#define RSB_PAL_M 0x08E76F94u
+#define RSB_PAL_F 0x08E76FCCu
+
+/* Independent chain scan over the WHOLE image (the tools/rs_locate.py predicate, host C): at
+ * every 4-aligned LZ10->12288 start, how many leading clauses of
+ * [12288][12288][32][8192][64][64][RAW 2048 map] hold. Uses mr_lz77_x's consumed span so it
+ * shares NOTHING with rs_bag_open_once. Returns the depth at `pinned`, sets *best_other to the
+ * deepest chain anywhere ELSE (the runner-up) and *full to the count of 7-deep chains. */
+static int rs_chain_depth(const RomCtx* rc, const uint8_t* img, uint32_t file_off) {
+  static const uint32_t want[6] = { 12288u, 12288u, 32u, 8192u, 64u, 64u };
+  static uint8_t out[16384];
+  uint32_t o = file_off;
+  for (int i = 0; i < 6; i++) {
+    uint32_t sz = (uint32_t)img[o + 1] | ((uint32_t)img[o + 2] << 8) | ((uint32_t)img[o + 3] << 16);
+    if (img[o] != 0x10 || sz != want[i]) return i;
+    uint32_t consumed = 0, h = 0;
+    if (mr_lz77_x(rc, ROM_BASE + o, out, sizeof out, 0, 0, &consumed, &h) != want[i]) return i;
+    o = (o + consumed + 3u) & ~3u;
+  }
+  /* the RAW tilemap */
+  uint32_t seen = 0, bad = 0;
+  uint8_t used[1024]; memset(used, 0, sizeof used);
+  for (int i = 0; i < 1024; i++) {
+    uint32_t e = (uint32_t)img[o + 2 * i] | ((uint32_t)img[o + 2 * i + 1] << 8);
+    if ((e & 0x3FF) >= 256u || (e >> 12) > 1u) bad = 1;
+    if (!used[e & 0x3FF]) { used[e & 0x3FF] = 1; seen++; }
+  }
+  return (!bad && seen >= 20) ? 7 : 6;
+}
+
+static void test_rs_bag_pins(const char* label, const char* path) {
+  HostCtx c; RomCtx rc;
+  if (!open_rom(path, &c, &rc)) { printf("%s rs-bag pins: SKIP (no dump)\n", label); return; }
+  RomChrome rch; rom_chrome_open(&rch, &rc);
+  CHECK(rch.bag_style == 0 && rom_chrome_bag_have(&rch, 0) && !rom_chrome_bag_have(&rch, 1) &&
+        !rom_chrome_bag_have(&rch, 2), "%s: pinned R/S revision must report bag_style 0", label);
+
+  /* (1) the locator: the chain is found at the pinned address, once, with a wide margin. */
+  fseek(c.f, 0, SEEK_END); long sz = ftell(c.f); fseek(c.f, 0, SEEK_SET);
+  uint8_t* img = (uint8_t*)malloc((size_t)sz);
+  CHECK(img && fread(img, 1, (size_t)sz, c.f) == (size_t)sz, "%s: read image", label);
+  if (!img) { fclose(c.f); return; }
+  int full = 0, best_other = 0, at_pin = -1;
+  for (uint32_t o = 0; o + 4 < (uint32_t)sz; o += 4) {
+    if (img[o] != 0x10 || img[o + 1] != 0x00 || img[o + 2] != 0x30 || img[o + 3] != 0x00) continue;  /* 12288 = 0x003000 */
+    int d = rs_chain_depth(&rc, img, o);
+    if (o == 0x00E75024u) at_pin = d;
+    else if (d > best_other) best_other = d;
+    if (d == 7) full++;
+  }
+  CHECK(at_pin == 7, "%s: the pinned chain start must satisfy all 7 clauses (got %d)", label, at_pin);
+  CHECK(full == 1, "%s: exactly ONE full chain in the image (got %d)", label, full);
+  CHECK(best_other <= 2, "%s: runner-up chain depth %d must stay <= 2 of 7 (margin >= 5)", label, best_other);
+  printf("%s rs-bag locator: pinned depth %d/7, unique=%d, runner-up depth %d/7 (margin %d)\n",
+         label, at_pin, full == 1, best_other, 7 - best_other);
+
+  /* (2) the load against an independent whole-blob oracle */
+  static uint8_t scratch[8192], whole[8192], palbuf[64];
+  CHECK(mr_lz77(&rc, RSB_TILES, whole, sizeof whole) == 8192u, "%s: oracle tileset decode", label);
+  uint16_t first[2][96];
+  for (int female = 0; female <= 1; female++) {
+    RomChromeBag out;
+    memset(scratch, 0xEE, sizeof scratch);
+    int ld = rom_chrome_bag_load(&rch, 0, female, scratch, 6208, &out);
+    CHECK(ld, "%s: an exact 6,208 B buffer must succeed (female=%d)", label, female);
+    if (!ld) continue;
+    CHECK(out.src.tiles == scratch && memcmp(out.src.tiles, whole, 105u * 32u) == 0,
+          "%s: the streamed tile prefix == the whole-blob oracle's first 3,360 B (female=%d)", label, female);
+    CHECK((const uint8_t*)out.src.map == scratch + 4096 &&
+          memcmp(out.src.map, img + (RSB_MAP - ROM_BASE), 2048) == 0,
+          "%s: the tilemap is the raw ROM bytes (female=%d)", label, female);
+    CHECK(mr_lz77(&rc, female ? RSB_PAL_F : RSB_PAL_M, palbuf, sizeof palbuf) == 64u, "%s: pal oracle", label);
+    for (int i = 0; i < 32; i++)
+      CHECK(out.src.pal[i] == (uint16_t)(palbuf[2 * i] | (palbuf[2 * i + 1] << 8)),
+            "%s: palette entry %d (female=%d)", label, i, female);
+    for (int i = 32; i < 96; i++) CHECK(out.src.pal[i] == 0, "%s: pal tail %d must be zeroed", label, i);
+    CHECK(out.src.bg_map == 0 && out.src.map_w == 32 && out.as_lzblob.romsrc == &out.src,
+          "%s: bg_map NULL / map_w 32 / romsrc wired", label);
+    memcpy(first[female], out.src.pal, sizeof first[female]);
+    /* every tile the map names lies inside the decoded prefix */
+    const uint16_t* m = out.src.map; unsigned mx = 0;
+    for (int i = 0; i < 1024; i++) if ((unsigned)(m[i] & 0x3FF) > mx) mx = m[i] & 0x3FF;
+    CHECK(mx < 105u, "%s: map names tile %u outside the 105-tile prefix", label, mx);
+    CHECK(!rom_chrome_bag_load(&rch, 0, female, scratch, 6207, &out),
+          "%s: a 6,207 B buffer must be refused (female=%d)", label, female);
+  }
+  CHECK(memcmp(first[0], first[1], 16 * sizeof(uint16_t)) != 0, "%s: bank 0 must differ by gender", label);
+
+  /* (3) wrong-revision / wrong-code refusal -- the plain-list fallback */
+  RomCtx bad = rc;
+  bad.version = (uint8_t)(rc.version == 2 ? 1 : 2);
+  RomChrome rb; rom_chrome_open(&rb, &bad);
+  CHECK(rb.bag_style == -1 && !rom_chrome_bag_have(&rb, 0), "%s: a different revision must NOT serve the bag", label);
+  bad = rc; bad.version = 0;
+  rom_chrome_open(&rb, &bad);
+  CHECK(rb.bag_style == -1, "%s: revision 0 must NOT serve the bag", label);
+  CHECK(!rom_chrome_bag_load(&rb, 0, 0, scratch, sizeof scratch, &(RomChromeBag){0}), "%s: refused revision cannot load", label);
+
+  /* (4) tampered bytes at the pinned addresses: open fails closed, each poison RED-able */
+  struct { uint32_t lo, hi; const char* what; } pz[] = {
+    { RSB_MAP - ROM_BASE + 2, RSB_MAP - ROM_BASE + 4, "tilemap entry (bank bits)" },
+    { RSB_TILES - ROM_BASE + 1, RSB_TILES - ROM_BASE + 3, "tileset LZ10 size" },
+    { 0x00E75024u + 1, 0x00E75024u + 3, "male sheet LZ10 size" },
+    { RSB_PAL_F - ROM_BASE, RSB_PAL_F - ROM_BASE + 1, "female palette LZ10 type byte" },
+  };
+  for (unsigned k = 0; k < sizeof pz / sizeof pz[0]; k++) {
+    g_poison_lo = pz[k].lo; g_poison_hi = pz[k].hi;
+    RomChrome rp; rom_chrome_open(&rp, &rc);
+    CHECK(rp.bag_style == -1, "%s: poisoned %s must refuse the bag at open", label, pz[k].what);
+    g_poison_lo = g_poison_hi = 0;
+  }
+  free(img);
+  fclose(c.f);
+}
+
 static void test_pokeblock_game(const char* label, const char* path, int expect_ok) {
   HostCtx c; RomCtx rc;
   if (!open_rom(path, &c, &rc)) { printf("%s: SKIP (no dump)\n", label); return; }
@@ -353,6 +480,7 @@ static void test_pokeblock_device(const char* label, const char* path, int expec
 /* Independent oracle for the bag sheet: the WHOLE blob decoded with mr_lz77() into a big host
  * buffer (the very thing Emerald's 8,192 B budget can't do on the GBA). BACKLOG #295. */
 static uint32_t bag_sheet_addr(int emerald, int fr, int female) {
+  if (emerald == 2) return female ? 0x08E75BA0u : 0x08E75024u;   /* Ruby/Sapphire (#313) */
   if (emerald) return female ? 0x08D99A00u : 0x08D98E84u;
   if (fr) return female ? 0x08E83DBCu : 0x08E8362Cu;
   return female ? 0x08E83E3Cu : 0x08E836ACu;
@@ -364,12 +492,13 @@ static void test_bag_sprite(const char* label, const char* path, int card_bag_g,
   RomChrome rch; rom_chrome_open(&rch, &rc);
   CHECK(rom_chrome_bag_sprite_have(&rch, card_bag_g) == expect_ok,
        "%s: bag_sprite_have=%d want %d", label, rom_chrome_bag_sprite_have(&rch, card_bag_g), expect_ok);
-  int emerald = (rc.kind == ROM_EMERALD), fr = (rc.kind == ROM_FIRERED);
+  int rs = (rc.kind == ROM_RUBY || rc.kind == ROM_SAPPHIRE);
+  int emerald = (rc.kind == ROM_EMERALD) || rs, fr = (rc.kind == ROM_FIRERED);
   uint32_t sheet_bytes = emerald ? 12288u : 8192u;
   static uint8_t scratch[8192], whole[16384];
   for (int female = 0; female <= 1; female++) {
     if (expect_ok)
-      CHECK(mr_lz77(&rc, bag_sheet_addr(emerald, fr, female), whole, sizeof whole) == sheet_bytes,
+      CHECK(mr_lz77(&rc, bag_sheet_addr(rs ? 2 : emerald, fr, female), whole, sizeof whole) == sheet_bytes,
             "%s: oracle whole-sheet decode size (female=%d)", label, female);
     int nframes = expect_ok ? (emerald ? 6 : 4) : 1;
     for (int frame = 0; frame < nframes; frame++) {
@@ -593,8 +722,10 @@ int main(void) {
   test_bag_game("Emerald bag", emerald, 1);
   test_bag_game("FireRed bag", firered, 2);
   test_bag_game("LeafGreen bag", leafgreen, 2);
-  test_bag_game("Ruby bag (unwired -- tileset alone saturates the buffer)", ruby, -1);
-  test_bag_game("Sapphire bag (unwired)", sapphire, -1);
+  test_bag_game("Ruby bag (#313: tileset PREFIX streamed)", ruby, 0);
+  test_bag_game("Sapphire bag (#313: tileset PREFIX streamed)", sapphire, 0);
+  test_rs_bag_pins("Ruby", ruby);
+  test_rs_bag_pins("Sapphire", sapphire);
 
   /* stars/badges/photo (card_g: 1 = Emerald, 0 = Ruby) */
   test_foreground_game("Emerald foreground", emerald, 1, 1, 1);
@@ -608,7 +739,8 @@ int main(void) {
   test_bag_sprite("FireRed bag sprite", firered, 2, 1);
   test_bag_sprite("LeafGreen bag sprite", leafgreen, 2, 1);
   test_bag_sprite("Emerald bag sprite (streamed per frame)", emerald, 1, 1);
-  test_bag_sprite("Ruby bag sprite (unwired game)", ruby, 0, 0);
+  test_bag_sprite("Ruby bag sprite (#313, Emerald-shaped streamed frames)", ruby, 0, 1);
+  test_bag_sprite("Sapphire bag sprite (#313)", sapphire, 0, 1);
 
   measure_counts(emerald);
 

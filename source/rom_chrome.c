@@ -13,6 +13,10 @@
  * comparisons and field writes each -- negligible, unlike the LZ77 decode +
  * pin-table weight the *_load() functions below pull in, which is exactly what
  * the gate exists to keep out of a full-art ROM. */
+#if PDNA_ROM_CHROME_NEEDED
+static int rs_bag_open_style(const RomCtx* rc);   /* defined with the R/S bag pins below */
+#endif
+
 void rom_chrome_open(RomChrome* rch, const RomCtx* rc) {
   rch->rc = rc;
   rch->card_style = -1;
@@ -23,7 +27,13 @@ void rom_chrome_open(RomChrome* rch, const RomCtx* rc) {
   if (rc->kind == ROM_EMERALD) { rch->card_style = 1; rch->pokeblock_ok = 1; rch->bag_style = 1; }
   else if (rc->kind == ROM_RUBY) { rch->card_style = 0; }
   else if (rc->kind == ROM_FIRERED || rc->kind == ROM_LEAFGREEN) { rch->bag_style = 2; }
-  /* Sapphire: nothing wired (see rom_chrome.h's scope note). */
+  /* Ruby/Sapphire BAG (BACKLOG #313): only for a pinned revision whose bytes check out at
+   * open (rs_bag_open_style); any other R/S dump keeps bag_style -1 = the plain list. In a
+   * full-art build (the decoders compiled out) the ROM bag rung is never used. Sapphire has
+   * no card/pokeblock chrome (rom_chrome.h's scope note). */
+#if PDNA_ROM_CHROME_NEEDED
+  if (rc->kind == ROM_RUBY || rc->kind == ROM_SAPPHIRE) rch->bag_style = rs_bag_open_style(rc);
+#endif
 }
 
 void rom_chrome_set_verify(RomChrome* rch, int on) { rch->verify = on ? 1 : 0; }
@@ -497,6 +507,149 @@ static const BagPins k_bag_leafgreen = {
   0x08E83684, 1, 1, 0,
 };
 
+/* ---- Ruby / Sapphire bag (BACKLOG #313) ---------------------------------------------
+ * R/S predate the GF header, so the bag assets are PINNED rows keyed by game code + revision
+ * (the rom_sprite.c k_pins precedent): AXVE rev 2 and AXPE rev 1, the two corpus dumps
+ * tools/rs_locate.py's by-shape chain scan found (one unique 7-element chain per ROM; the
+ * best runner-up satisfied 1 of 7 clauses). Any other revision stays unpinned = plain list.
+ * The chain is contiguous, each element at the next 4-aligned address:
+ *   male sheet LZ10 12,288 B | female sheet LZ10 12,288 B | sheet palette LZ10 32 B |
+ *   screen tileset LZ10 8,192 B | screen palette A LZ10 64 B (male) | palette B LZ10 64 B
+ *   (female) | screen tilemap RAW 2,048 B (32x32 u16).
+ * The two games' chains sit at the SAME addresses (measured, not assumed). */
+typedef struct {
+  const char* code;
+  uint8_t     version;
+  uint32_t    sheet_m, sheet_f, sheet_pal, tileset, pal_m, pal_f, map;
+} RsBagPin;
+
+static const RsBagPin k_rs_bag[] = {
+  { "AXVE", 2, 0x08E75024u, 0x08E75BA0u, 0x08E76700u, 0x08E76728u,
+               0x08E76F94u, 0x08E76FCCu, 0x08E77004u },
+  { "AXPE", 1, 0x08E75024u, 0x08E75BA0u, 0x08E76700u, 0x08E76728u,
+               0x08E76F94u, 0x08E76FCCu, 0x08E77004u },
+};
+#define RS_BAG_NPINS ((int)(sizeof k_rs_bag / sizeof k_rs_bag[0]))
+
+/* The tileset is 8,192 B (256 tiles) -- the WHOLE shared buffer, so it can never be decoded
+ * whole next to its tilemap. But the screen's tilemap only ever names tiles 0..104 (measured
+ * on both dumps), so only that 3,360 B PREFIX is decoded (mr_lz77_range, start 0): it fits
+ * inside the 4 KiB LZ ring, which is therefore used AS the destination too. scratch layout:
+ * [0,4096) tile prefix (ring == dst) | [4096,6144) tilemap | [6144,6208) the 2-bank palette. */
+#define RS_BAG_NTILES      105u
+#define RS_BAG_TILE_BYTES  (RS_BAG_NTILES * 32u)
+#define RS_BAG_RING        4096u
+#define RS_BAG_MAP_BYTES   2048u
+#define RS_BAG_PAL_BYTES   64u
+#define RS_BAG_MAP_OFF     RS_BAG_RING
+#define RS_BAG_PAL_OFF     (RS_BAG_MAP_OFF + RS_BAG_MAP_BYTES)
+#define RS_BAG_NEED        (RS_BAG_PAL_OFF + RS_BAG_PAL_BYTES)
+_Static_assert(RS_BAG_TILE_BYTES <= RS_BAG_RING, "the tile prefix must fit inside the LZ ring");
+_Static_assert(RS_BAG_NEED <= 8192u, "the R/S bag must fit the shared 8 KiB buffer");
+
+static const RsBagPin* rs_bag_pin(const RomCtx* rc) {
+  if (!rc || (rc->kind != ROM_RUBY && rc->kind != ROM_SAPPHIRE)) return 0;
+  for (int i = 0; i < RS_BAG_NPINS; i++)
+    if (memcmp(k_rs_bag[i].code, rc->code, 4) == 0 && k_rs_bag[i].version == rc->version)
+      return &k_rs_bag[i];
+  return 0;
+}
+
+/* Tilemap shape, fed in pieces: every entry names a tile < 128 and palette bank 0 or 1; at least
+ * 20 distinct tiles; tracks the highest tile named. The shape the scan keyed on, tightened to
+ * the measured bound (the real map's highest tile is 104). */
+typedef struct { uint32_t seen[4]; uint32_t max_tile; int bad; } RsMapScan;
+
+static void rs_map_feed(RsMapScan* ms, const uint8_t* p, uint32_t n) {
+  for (uint32_t i = 0; i + 1 < n; i += 2) {
+    uint32_t e = (uint32_t)p[i] | ((uint32_t)p[i + 1] << 8);
+    uint32_t tile = e & 0x3FFu, bank = e >> 12;
+    if (tile >= 128u || bank > 1u) { ms->bad = 1; return; }
+    ms->seen[tile >> 5] |= 1u << (tile & 31u);
+    if (tile > ms->max_tile) ms->max_tile = tile;
+  }
+}
+
+static int rs_map_done(const RsMapScan* ms) {
+  int distinct = 0;
+  for (int w = 0; w < 4; w++)
+    for (uint32_t v = ms->seen[w]; v; v &= v - 1u) distinct++;
+  return !ms->bad && distinct >= 20 && ms->max_tile < RS_BAG_NTILES;
+}
+
+static int rs_lz_header_is(const RomCtx* rc, uint32_t addr, uint32_t want) {
+  uint8_t h[4];
+  if (!ptr_ok(rc, addr, 4) || !rom_read_at(rc, addr, h, 4)) return 0;
+  return h[0] == 0x10 &&
+         ((uint32_t)h[1] | ((uint32_t)h[2] << 8) | ((uint32_t)h[3] << 16)) == want;
+}
+
+static int rs_bag_open_once(const RomCtx* rc, const RsBagPin* p) {
+  if (!rs_lz_header_is(rc, p->sheet_m, 12288u) || !rs_lz_header_is(rc, p->sheet_f, 12288u) ||
+      !rs_lz_header_is(rc, p->sheet_pal, 32u) || !rs_lz_header_is(rc, p->tileset, 8192u) ||
+      !rs_lz_header_is(rc, p->pal_m, RS_BAG_PAL_BYTES) ||
+      !rs_lz_header_is(rc, p->pal_f, RS_BAG_PAL_BYTES)) return 0;
+  if (!ptr_ok(rc, p->map, RS_BAG_MAP_BYTES)) return 0;
+  RsMapScan ms; memset(&ms, 0, sizeof ms);
+  uint8_t buf[128];
+  for (uint32_t o = 0; o < RS_BAG_MAP_BYTES; o += (uint32_t)sizeof buf) {
+    if (!rom_read_at(rc, p->map + o, buf, (uint32_t)sizeof buf)) return 0;
+    rs_map_feed(&ms, buf, (uint32_t)sizeof buf);
+  }
+  return rs_map_done(&ms);
+}
+
+/* Open-time byte verify: a pinned code+revision AND the six LZ10 headers declare exactly the
+ * measured sizes AND the tilemap has the measured shape. Two attempts (one garbled read must
+ * not cost the session its bag); a wrong address or a hack that shares the code fails both. */
+static int rs_bag_open_style(const RomCtx* rc) {
+  const RsBagPin* p = rs_bag_pin(rc);
+  if (!p) return -1;
+  for (int attempt = 0; attempt < 2; attempt++)
+    if (rs_bag_open_once(rc, p)) return 0;
+  return -1;
+}
+
+static int rs_bag_load(const RomChrome* rch, int female, uint8_t* scratch, uint32_t cap,
+                       RomChromeBag* out) {
+  const RomCtx* rc = rch->rc;
+  const RsBagPin* p = rs_bag_pin(rc);
+  if (!p || cap < RS_BAG_NEED) return 0;
+  uint8_t* map = scratch + RS_BAG_MAP_OFF;
+  uint8_t* pal = scratch + RS_BAG_PAL_OFF;
+
+  if (!read_verified(rc, rch->verify, p->map, map, RS_BAG_MAP_BYTES)) return 0;
+  RsMapScan ms; memset(&ms, 0, sizeof ms);
+  rs_map_feed(&ms, map, RS_BAG_MAP_BYTES);
+  if (!rs_map_done(&ms)) return 0;       /* the tiles the map names must be in the prefix */
+
+  /* Tile prefix: ring == dst (start 0, len < ring), two decodes must agree when verifying. */
+  int ok = 0;
+  for (int attempt = 0; attempt < 3 && !ok; attempt++) {
+    if (mr_lz77_range(rc, p->tileset, 0, RS_BAG_TILE_BYTES, scratch, scratch, RS_BAG_RING) !=
+        RS_BAG_TILE_BYTES) continue;
+    if (!rch->verify) { ok = 1; break; }
+    uint32_t h1 = hash32(scratch, RS_BAG_TILE_BYTES);
+    if (mr_lz77_range(rc, p->tileset, 0, RS_BAG_TILE_BYTES, scratch, scratch, RS_BAG_RING) ==
+            RS_BAG_TILE_BYTES && hash32(scratch, RS_BAG_TILE_BYTES) == h1) ok = 1;
+  }
+  if (!ok) return 0;
+
+  if (!fetch(rc, rch->verify, female ? p->pal_f : p->pal_m, 1, pal, cap - RS_BAG_PAL_OFF,
+             RS_BAG_PAL_BYTES)) return 0;
+
+  out->src.tiles = scratch;
+  out->src.map = (const uint16_t*)(const void*)map;
+  out->src.bg_map = 0;
+  out->src.map_w = 32;
+  for (int b = 0; b < 2; b++) pal_bank_from_raw(pal + b * 32, &out->src.pal[b * 16]);
+  for (int i = 32; i < 96; i++) out->src.pal[i] = 0;
+  out->as_lzblob.base = 0; out->as_lzblob.pages = 0;
+  out->as_lzblob.npages = 0; out->as_lzblob.raw_len = 0;
+  out->as_lzblob.romsrc = &out->src;
+  return 1;
+}
+
 static const BagPins* bag_pins_for(RomKind kind) {
   switch (kind) {
     case ROM_EMERALD:   return &k_bag_emerald;
@@ -509,6 +662,8 @@ static const BagPins* bag_pins_for(RomKind kind) {
 int rom_chrome_bag_load(const RomChrome* rch, int g, int female,
                         uint8_t* scratch, uint32_t cap, RomChromeBag* out) {
   if (!rom_chrome_bag_have(rch, g) || !scratch || !out) return 0;
+  if (rch->rc->kind == ROM_RUBY || rch->rc->kind == ROM_SAPPHIRE)
+    return rs_bag_load(rch, female, scratch, cap, out);
   const BagPins* p = bag_pins_for(rch->rc->kind);
   if (!p) return 0;   /* rom_chrome_open() promised bag_style only for pinned kinds */
 
@@ -607,7 +762,8 @@ static const BagSpritePins k_bagspr_emerald = {
 int rom_chrome_bag_sprite_have(const RomChrome* rch, int g) {
   if (!rom_chrome_bag_have(rch, g)) return 0;
   return rch->rc->kind == ROM_EMERALD || rch->rc->kind == ROM_FIRERED ||
-         rch->rc->kind == ROM_LEAFGREEN;
+         rch->rc->kind == ROM_LEAFGREEN || rch->rc->kind == ROM_RUBY ||
+         rch->rc->kind == ROM_SAPPHIRE;
 }
 
 /* Emerald: decode ONLY frame `frame` of the 12,288 B sheet. scratch layout (cap >= 8,192 when
@@ -636,14 +792,27 @@ static int bag_sprite_emerald_frame(const RomChrome* rch, uint32_t addr, int fra
 int rom_chrome_bag_sprite_load(const RomChrome* rch, int g, int female, int frame,
                                uint8_t* scratch, uint32_t cap, RomChromeBagSprite* out) {
   if (!rom_chrome_bag_sprite_have(rch, g) || !scratch || !out) return 0;
-  const BagSpritePins* p = (rch->rc->kind == ROM_EMERALD)  ? &k_bagspr_emerald
+  /* Ruby/Sapphire: the sheets are Emerald-shaped (12,288 B, 6 frames), so they take the same
+   * streamed-frame path; the pins come from the verified R/S row (bag_style 0 proved it at open). */
+  const int is_rs = (rch->rc->kind == ROM_RUBY || rch->rc->kind == ROM_SAPPHIRE);
+  const RsBagPin* rp = is_rs ? rs_bag_pin(rch->rc) : 0;
+  if (is_rs && !rp) return 0;
+  BagSpritePins rs_sprite;
+  if (is_rs) {
+    rs_sprite.male = rp->sheet_m; rs_sprite.male_lz = 1;
+    rs_sprite.female = rp->sheet_f; rs_sprite.female_lz = 1;
+    rs_sprite.pal = rp->sheet_pal; rs_sprite.pal_lz = 1;
+    rs_sprite.frame_count = 6;
+  }
+  const BagSpritePins* p = is_rs                           ? &rs_sprite
+                         : (rch->rc->kind == ROM_EMERALD)  ? &k_bagspr_emerald
                          : (rch->rc->kind == ROM_FIRERED)  ? &k_bagspr_firered
                                                            : &k_bagspr_leafgreen;
   if (frame < 0 || frame >= (int)p->frame_count) frame = 0;
   uint32_t addr = female ? p->female : p->male;
   uint8_t addr_lz = female ? p->female_lz : p->male_lz;
   const uint8_t* tiles;
-  if (rch->rc->kind == ROM_EMERALD) {
+  if (rch->rc->kind == ROM_EMERALD || is_rs) {
     if (!bag_sprite_emerald_frame(rch, addr, frame, scratch, cap)) return 0;
     tiles = scratch + BAG_RING_BYTES;
   } else {
