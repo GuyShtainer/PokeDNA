@@ -2063,6 +2063,7 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
   if (bc_is_native(recs + (uint32_t)cur * 80) && !bc_is_native(s_held)) { snd_deny(); return recs; }
   if (s_orig_slot >= 0 && s_orig_box != box && src->scope == BOXSCOPE_BANK) { snd_deny(); return recs; }  /* the REAL Bank's cross-box swap is unsafe (S1 review D1 companion); GB swaps arrive with S3's move_within */
   if (src->note_add) src->note_add(s_held);                                /* placed mon enters this scope -> dex */
+  app_step_name("Swap");                 /* #314a: the older half of a swap pair is named so (one-shot, dies with the drop's scope): the pair walk requires it */
   uint8_t occ[80]; memcpy(occ, recs + (uint32_t)cur * 80, 80);             /* save the occupant */
   memcpy(recs + (uint32_t)cur * 80, s_held, 80);                           /* place the held mon at the cursor */
   src->mark_dirty();
@@ -4631,6 +4632,10 @@ static int __attribute__((noinline)) box_chord_action(int ev, char toast[26], bo
     chord_refuse("PARTIAL STEP", "A step was only partly applied:", "exit without saving it.");
     *need_full = true; s_oam_reload = true;
     return BCA_CHANGED;                                      /* the image DID change (app_undo_redo re-derived + latched it): the caller re-fetches */
+  } else if (rc == AUR_HALF) {                               /* #315: a refused rollback left HALF a swap -- a consistent state, a WARNING, never the success toast */
+    chord_refuse("HALF A SWAP", "Only half of the swap moved.", "Press again, or check the card.");
+    *need_full = true; s_oam_reload = true;
+    return BCA_CHANGED;                                      /* the image DID change, but it is a CONSISTENT half state (not a TORN: no latch): the caller re-fetches */
   } else if (rc == AUR_ARENA) {                              /* T5 */
     chord_refuse(verb, "The box data is on loan to", "another screen. Leave and retry.");
   } else if (rc == AUR_DIVERGED) {                           /* D5: the engine verified, the image no longer matches: never patch blind */

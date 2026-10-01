@@ -394,7 +394,7 @@ static void t_gb_never_pairs(void) {
   memcpy(img + 0x5000 + 4 + 10 * 80, x, 80); memcpy(img + 0x5000 + 4 + 11 * 80, y, 80);
   (void)img_rec_flat(&R, base, img, 8, 4096, "Setup"); memcpy(base, img, sizeof base);
   memcpy(img + 0x5000 + 4 + 11 * 80, x, 80); memset(img + 0x5000 + 4 + 10 * 80, 0, 80);
-  (void)img_rec_flat(&R, base, img, 8, 4096, "Box move"); memcpy(base, img, sizeof base);
+  (void)img_rec_flat(&R, base, img, 8, 4096, "Swap");              /* the older half carries the name a real swap drop gives it (#314a), else the GB guard is untested */ memcpy(base, img, sizeof base);
   memcpy(img + 0x5000 + 4 + 12 * 80, y, 80);
   (void)img_rec_flat(&R, base, img, 8, 4096, "Box move"); memcpy(base, img, sizeof base);
   CHECK(jrnapp_flush() == JRN_OK && jrnapp_tip() == 3, "three GB steps, tip %u", (unsigned)jrnapp_tip());

@@ -23,6 +23,8 @@ pin can be decoration. The real tree is never touched (scratch dir).
     B3  the compat open adopts the old journal WITHOUT the anchor check                    -> RED
     B4  the escaped-name flag (gender) dropped: '9' collides with its own escape bytes     -> RED
     B5  the redirect new -> old is never written                                           -> RED
+  za #314/#315 mutants (host_jrn_funnel_test.c): C1..C8 chained swaps, R1 the R1 mislabel (older half no longer needs the "Swap" name),
+    H1..H3 the 3-step rollback-failure contract (t_swap_chain_rollback_sweep)
     A10 the Game Boy guard dropped (a swap-shaped GB pair would pair)                      -> RED
 """
 from __future__ import annotations
@@ -104,15 +106,34 @@ def main() -> int:
     rc, out = mutant("gb", "C1", [])
     check("positive control: the unmutated GB journal test passes", rc == 0, out[-200:])
     J = "jrn_app.c"
-    must_fail("funnel", "A1", "pair predicate never fires", [(J, "return ja_older_pairs(&rn);", "return 0;")])
+    must_fail("funnel", "A1", "pair predicate never fires", [(J, "if (ja_rec_load(&sn, &rn) != 0 || !ja_older_pairs(&rn)) return 0;", "if (1) return 0;")])
     must_fail("funnel", "A2", "replaced-slot rule relaxed", [(J, "if (nrep != 1u) return 0;", "if (nrep > 1u) return 0;")])
-    must_fail("funnel", "A3", "crossed ignored", [(J, "r->kind == JRN_KIND_STEP && !r->aux && !r->crossed &&", "r->kind == JRN_KIND_STEP && !r->aux &&")])
+    must_fail("funnel", "A3", "crossed ignored", [(J, "!r->aux && !r->crossed;", "!r->aux;")])
     must_fail("funnel", "A4", "mismatch tolerated", [(J, "if (s_rec[sp.before + i] != s_sig.after[q]) return 0;", "if (s_rec[sp.before + i] != s_sig.after[q]) continue;")])
     must_fail("funnel", "A5", "minimum compared bytes dropped", [(J, "return match >= JA_MATCH_MIN;", "return match >= 1u;")])
     must_fail("funnel", "A6", "no rollback", [(J, "rb = jrnapp_step(-dir, 0);", "rb = JRN_OK;")])
     must_fail("funnel", "A7", "wrong section stride", [(J, "(uint32_t)(sp->region - JA_PC_FIRST) * G3_SECTOR_DATA_SIZE", "(uint32_t)(sp->region - JA_PC_FIRST) * 3967u")])
     must_fail("funnel", "A8", "History never labels", [(J, "ja_label(rows[n - 1].name, \" 2/2\");", ";"), (J, "ja_label(rows[n].name, \" 1/2\");", ";")])
-    must_fail("funnel", "A9", "redo never pairs", [(J, "older = p1; newer = p2;", "return 0;")])
+    must_fail("funnel", "A9", "redo never pairs", [(J, "  if (!p1) return 0;\n  if (p3) {", "  return 0;\n  if (p3) {")])
+    # za #314b: chained swaps (Swap + Swap + Box move), tests/host_jrn_funnel_test.c t_swap_chain_*
+    must_fail("funnel", "C1", "the chain never extends past two steps", [(J, "  if (max < 3u || !rn.parent) return 2u;", "  if (1) return 2u;")])
+    must_fail("funnel", "C2", "the chain link's bytes are not checked", [(J, "if (ja_rec_load(&sp, &rp) != 0 || !ja_older_pairs(&rp)) return 2u;", "if (ja_rec_load(&sp, &rp) != 0) return 2u;")])
+    must_fail("funnel", "C3", "a chained Swap must add into an EMPTY slot", [(J, "!ja_sig_make(&rn, 0)", "!ja_sig_make(&rn, 1)")])
+    must_fail("funnel", "C4", "redo never takes a three-step group", [(J, "    g = ja_group_at(p3, JA_GROUP_MAX);\n    if (g == 3u) return 3u;", "    g = 0;\n    if (g == 3u) return 3u;")])
+    must_fail("funnel", "C5", "redo never takes the mid-chain pair", [(J, "if (p2 && ja_group_at(p2, 2u) == 2u) return 2u;", "if (0) return 2u;")])
+    must_fail("funnel", "C6", "the rollback undoes only one of the applied steps", [(J, "for (k = 0; k < d && rb == JRN_OK; k++)", "for (k = 0; k < 1u && rb == JRN_OK; k++)")])
+    must_fail("funnel", "C7", "History never relabels a triple", [(J, "        ja_relabel(rows[n - 2].name, \" 3/3\");\n", "")])
+    must_fail("funnel", "C8", "the cap lowered to 2 (no chained group forms)", [(J, "#define JA_GROUP_MAX 3u", "#define JA_GROUP_MAX 2u")])
+    # za review A4: the 3-step "half a swap" contract (t_swap_chain_rollback_sweep) -- each survived the suite before that pin
+    must_fail("funnel", "H1", "the rollback keeps going after a failed step (a later success hides the half state)", [(J, "for (k = 0; k < d && rb == JRN_OK; k++)", "for (k = 0; k < d; k++)")])
+    must_fail("funnel", "H2", "the 'half a swap' contract only for a one-step rollback", [(J, "    if (rb != JRN_OK) {\n      ja_event(\"swap pair: rollback failed", "    if (rb != JRN_OK && d < 2u) {\n      ja_event(\"swap pair: rollback failed")])
+    must_fail("funnel", "H3", "a two-step rollback failure returns the error, not JRN_OK", [(J, "      return JRN_OK;                                           /* the image DID change", "      return d < 2u ? JRN_OK : rb;                             /* the image DID change")])
+    must_fail("funnel", "M5a", "redo hop cap raised to 4096", [(J, "#define JA_REDO_HOPS  64u", "#define JA_REDO_HOPS  4096u")])
+    must_fail("funnel", "M5b", "redo hop cap off by one (hops > cap)", [(J, "hops >= JA_REDO_HOPS) return 0;", "hops > JA_REDO_HOPS) return 0;")])
+    must_fail("funnel", "M5c", "redo hop cap off by one the other way (cap - 1)", [(J, "hops >= JA_REDO_HOPS) return 0;", "hops >= JA_REDO_HOPS - 1u) return 0;")])
+    must_fail("funnel", "M7a", "pair slot cap raised to 8", [(J, "#define JA_PAIR_SLOTS  4u", "#define JA_PAIR_SLOTS  8u")])
+    must_fail("funnel", "M7b", "pair slot cap lowered to 3", [(J, "#define JA_PAIR_SLOTS  4u", "#define JA_PAIR_SLOTS  3u")])
+    must_fail("funnel", "R1", "the older half no longer needs the Swap name (the R1 mislabel returns)", [(J, "strcmp(r->name, \"Swap\") == 0; }", "strcmp(r->name, \"Box move\") == 0 || strcmp(r->name, \"Swap\") == 0; }")])
     G = "gb_jkey.c"
     must_fail("gb", "A10", "GB guard dropped", [(J, "if (s_ai.slot < 0) return 0;                                /* Game Boy: no 80-byte slots, swaps are refused outright */", ""), (J, "return s_ai.slot >= 0 && r->kind", "return r->kind")])
     must_fail("gb", "B1", "no 0xFF escape", [(G, "if (legacy || !has_ff) {", "if (1) {")])

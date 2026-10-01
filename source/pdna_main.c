@@ -10304,6 +10304,17 @@ int app_undo_redo(int dir, char name[25]) {
     jrnapp_log_events(&g_rec);
     return AUR_PARTIAL;
   }
+  if (rc == JRN_OK && strcmp(name, "half a swap") == 0) {
+    /* #315: a swap pair whose second half was refused AND whose rollback failed: the image sits on a CONSISTENT half state (one
+     * whole step applied, the other not) -- NOT a TORN, so no PARTIAL latch. Re-derive and stage like any applied step, but never
+     * the success path (snd_ok + "Undid: ..."): the caller warns. */
+    app_journal_rederive();
+    imgf_staged(&g_img);
+    log_line("journal: %s HALF a swap (consistent half state; cursor %lu tip %lu)", dir < 0 ? "undo" : "redo",
+             (unsigned long)jrnapp_cursor(), (unsigned long)jrnapp_tip());
+    jrnapp_log_events(&g_rec);
+    return AUR_HALF;
+  }
   if (rc == JRN_OK) {
     app_journal_rederive();
     imgf_staged(&g_img);                          /* the image is ahead of the card: the exit save confirms once */

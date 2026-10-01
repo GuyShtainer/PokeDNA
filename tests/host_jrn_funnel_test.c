@@ -387,6 +387,14 @@ static int stage_pc(const char* scope) {
   if (scope) ok = img_scope_close(&F, &RA, sv, slot) && ok;
   return ok;
 }
+/* za #314a: drop_held's SWAP tail renames the step ("Swap", one-shot, dies with the scope) -- this is the older half of every swap below. */
+static int stage_drop1(void) {
+  int ok;
+  img_scope_open(&RA, "Box move");
+  img_rec_name(&RA, "Swap");
+  ok = img_stage_sections(&F, &RA, sv, slot, G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, pc);
+  return img_scope_close(&F, &RA, sv, slot) && ok;
+}
 static uint8_t snapS[G3_SAVE_FILE_SIZE], snapF[G3_SAVE_FILE_SIZE];
 
 /* setup (name "Setup": never a pair candidate) then the swap: returns with the tip at the swap's 2nd half, flushed.
@@ -399,7 +407,7 @@ static int stage_swap(unsigned a, unsigned b, unsigned c) {
   if (!stage_pc("Setup")) return 0;
   memcpy(snapS, sv, sizeof sv);
   memcpy(slot_at(b), x, MONB); memset(slot_at(a), 0, MONB);               /* drop 1 */
-  if (!stage_pc("Box move")) return 0;
+  if (!stage_drop1()) return 0;
   memcpy(slot_at(c), y, MONB);                                             /* drop 2 */
   if (!stage_pc("Box move")) return 0;
   memcpy(snapF, sv, sizeof sv);
@@ -460,7 +468,7 @@ static void t_swap_pair_negatives(void) {
   CHECK(app_world_reset(), "world");
   memcpy(slot_at(10), x, MONB);
   CHECK(stage_pc("Setup"), "setup");
-  memset(slot_at(10), 0, MONB); memcpy(slot_at(11), x, MONB); CHECK(stage_pc("Box move"), "move A->B");
+  memset(slot_at(10), 0, MONB); memcpy(slot_at(11), x, MONB); CHECK(stage_drop1(), "move A->B (named Swap: only the replaced-slot rule may refuse the pair)");
   memset(slot_at(11), 0, MONB); memcpy(slot_at(12), x, MONB); CHECK(stage_pc("Box move"), "move B->C");
   CHECK(jrnapp_flush() == JRN_OK, "flush");
   CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && strcmp(nm, "Box move") == 0 && jrnapp_cursor() == 2u, "#303 two plain moves are NOT a pair: one undo = one step (cursor %u)", (unsigned)jrnapp_cursor());
@@ -468,7 +476,7 @@ static void t_swap_pair_negatives(void) {
   CHECK(app_world_reset(), "world");
   memcpy(slot_at(11), y, MONB);
   CHECK(stage_pc("Setup"), "setup");
-  memset(slot_at(11), 0, MONB); CHECK(stage_pc("Box move"), "clear B");
+  memset(slot_at(11), 0, MONB); CHECK(stage_drop1(), "clear B (named Swap: only the replaced-slot rule may refuse the pair)");
   memcpy(slot_at(12), y, MONB); CHECK(stage_pc("Box move"), "add Y at C");
   CHECK(jrnapp_flush() == JRN_OK, "flush");
   CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && jrnapp_cursor() == 2u, "#303 no replaced slot in the older half: not a pair (cursor %u)", (unsigned)jrnapp_cursor());
@@ -478,7 +486,7 @@ static void t_swap_pair_negatives(void) {
   CHECK(app_world_reset(), "world");
   memcpy(slot_at(10), x, MONB); memcpy(slot_at(11), y, MONB);
   CHECK(stage_pc("Setup"), "setup");
-  memcpy(slot_at(11), x, MONB); memset(slot_at(10), 0, MONB); CHECK(stage_pc("Box move"), "drop 1");
+  memcpy(slot_at(11), x, MONB); memset(slot_at(10), 0, MONB); CHECK(stage_drop1(), "drop 1");
   memcpy(slot_at(12), z, MONB); CHECK(stage_pc("Box move"), "drop 2 places Z != Y");
   CHECK(jrnapp_flush() == JRN_OK, "flush");
   CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && jrnapp_cursor() == 2u, "#303 the added bytes must equal the displaced bytes: a different mon is not a pair (cursor %u)", (unsigned)jrnapp_cursor());
@@ -487,7 +495,7 @@ static void t_swap_pair_negatives(void) {
   memcpy(slot_at(10), x, MONB); memcpy(slot_at(11), y, MONB);
   memset(y + 20, 0, MONB - 20u); memcpy(slot_at(11), y, MONB);
   CHECK(stage_pc("Setup"), "setup (Y is 20 bytes of data and zeros)");
-  memcpy(slot_at(11), x, MONB); memset(slot_at(10), 0, MONB); CHECK(stage_pc("Box move"), "drop 1");
+  memcpy(slot_at(11), x, MONB); memset(slot_at(10), 0, MONB); CHECK(stage_drop1(), "drop 1");
   memcpy(slot_at(12), y, MONB); CHECK(stage_pc("Box move"), "drop 2 adds the sparse Y");
   CHECK(jrnapp_flush() == JRN_OK, "flush");
   CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && jrnapp_cursor() == 2u, "#303 fewer than the minimum compared bytes: not a pair (cursor %u)", (unsigned)jrnapp_cursor());
@@ -502,7 +510,7 @@ static void t_swap_pair_floors(void) {
   CHECK(app_world_reset(), "world");
   memcpy(slot_at(10), x, MONB); memcpy(slot_at(11), y, MONB);
   CHECK(stage_pc("Setup"), "setup");
-  memcpy(slot_at(11), x, MONB); memset(slot_at(10), 0, MONB); CHECK(stage_pc("Box move"), "drop 1");
+  memcpy(slot_at(11), x, MONB); memset(slot_at(10), 0, MONB); CHECK(stage_drop1(), "drop 1");
   img_rec_cross(&RA);
   memcpy(slot_at(12), y, MONB); CHECK(stage_pc("Box move"), "drop 2 (crossed)");
   CHECK(jrnapp_flush() == JRN_OK, "flush");
@@ -512,7 +520,7 @@ static void t_swap_pair_floors(void) {
   memcpy(slot_at(10), x, MONB); memcpy(slot_at(11), y, MONB);
   CHECK(stage_pc("Setup"), "setup");
   img_rec_cross(&RA);
-  memcpy(slot_at(11), x, MONB); memset(slot_at(10), 0, MONB); CHECK(stage_pc("Box move"), "drop 1 (crossed)");
+  memcpy(slot_at(11), x, MONB); memset(slot_at(10), 0, MONB); CHECK(stage_drop1(), "drop 1 (crossed)");
   memcpy(slot_at(12), y, MONB); CHECK(stage_pc("Box move"), "drop 2");
   CHECK(jrnapp_flush() == JRN_OK, "flush");
   CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && jrnapp_cursor() == 2u, "#303 floor on the older half: no atomic treatment, ONE step (cursor %u)", (unsigned)jrnapp_cursor());
@@ -521,7 +529,7 @@ static void t_swap_pair_floors(void) {
   CHECK(app_world_reset(), "world");
   memcpy(slot_at(10), x, MONB); memcpy(slot_at(11), y, MONB);
   CHECK(stage_pc("Setup"), "setup");
-  memcpy(slot_at(11), x, MONB); memset(slot_at(10), 0, MONB); CHECK(stage_pc("Box move"), "drop 1");
+  memcpy(slot_at(11), x, MONB); memset(slot_at(10), 0, MONB); CHECK(stage_drop1(), "drop 1");
   CHECK(jrnapp_flush() == JRN_OK, "flush drop 1");
   { uint8_t o[4] = { 0xDE, 0xAD, 0xBE, 0xEF }; CHECK(sset(0, 7, 1000, o, 4) == 0 && read_pc(pc), "an outside write lands in region 7"); }
   memcpy(slot_at(12), y, MONB); CHECK(stage_pc("Box move"), "drop 2 after the divergence");
@@ -572,13 +580,13 @@ static void t_swap_pair_shape_and_rollback_failure(void) {
   CHECK(app_world_reset(), "world");
   memcpy(slot_at(10), x, MONB); memcpy(slot_at(11), y, MONB); CHECK(stage_pc("Setup"), "setup X, Y");
   memcpy(slot_at(12), z, MONB); CHECK(stage_pc("Setup"), "setup Z in C");
-  memcpy(slot_at(11), x, MONB); memset(slot_at(10), 0, MONB); CHECK(stage_pc("Box move"), "drop 1");
+  memcpy(slot_at(11), x, MONB); memset(slot_at(10), 0, MONB); CHECK(stage_drop1(), "drop 1");
   memcpy(slot_at(12), y, MONB); CHECK(stage_pc("Box move"), "N+1 replaces Z with Y");
   CHECK(jrnapp_flush() == JRN_OK, "flush");
   CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && jrnapp_cursor() == 3u, "#303 (e) a REPLACING second step is not a swap's second half (cursor %u, '%s')", (unsigned)jrnapp_cursor(), safe(nm));
   CHECK(app_world_reset(), "world");
   memcpy(slot_at(10), x, MONB); memcpy(slot_at(11), y, MONB); CHECK(stage_pc("Setup"), "setup X, Y");
-  memcpy(slot_at(11), x, MONB); memset(slot_at(10), 0, MONB); CHECK(stage_pc("Box move"), "drop 1");
+  memcpy(slot_at(11), x, MONB); memset(slot_at(10), 0, MONB); CHECK(stage_drop1(), "drop 1");
   memcpy(slot_at(9), w, MONB); memcpy(slot_at(12), y, MONB); CHECK(stage_pc("Box move"), "N+1 fills TWO empty slots (9 and 12)");
   CHECK(jrnapp_flush() == JRN_OK, "flush");
   CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && jrnapp_cursor() == 2u, "#303 (f) a two-slot second step is not a swap's second half (cursor %u, '%s')", (unsigned)jrnapp_cursor(), safe(nm));
@@ -597,6 +605,301 @@ static void t_swap_pair_shape_and_rollback_failure(void) {
   }
 }
 
+/* za #314(a), the R1 shape: two same-shaped UNSCOPED PC commits -- an identity edit of the mon in slot A (A: X -> X'), then a paste of
+ * the pre-edit copy into an EMPTY slot C (C: 0 -> X) -- satisfy every span condition of a swap, but they are two user actions. The older half
+ * of a pair must carry the "Swap" name drop_held's SWAP tail gives it, which neither unscoped commit has: no pair, per-step, plain labels. */
+static void t_swap_pair_r1_mislabel(void) {
+  char nm[25];
+  JaHist rows[8];
+  int n, more = 0, fh = 0;
+  uint8_t x[MONB], x2[MONB];
+  mon_fill(x, 1); mon_fill(x2, 9);                                    /* the edit rewrites the whole mon (an identity/personality edit re-encrypts every data byte) */
+  CHECK(app_world_reset(), "world");
+  memcpy(slot_at(10), x, MONB);
+  CHECK(stage_pc("Setup"), "setup X in slot 10");
+  memcpy(slot_at(10), x2, MONB); CHECK(stage_pc(0), "an unscoped identity edit (10: X -> X')");
+  memcpy(slot_at(12), x, MONB);  CHECK(stage_pc(0), "an unscoped paste of the pre-edit copy into the empty slot 12");
+  CHECK(jrnapp_flush() == JRN_OK, "flush");
+  n = jrnapp_history(rows, 8, &more, &fh);
+  CHECK(n == 3 && strcmp(rows[0].name, "Box move") == 0 && strcmp(rows[1].name, "Box move") == 0, "#314a the R1 shape is NOT labelled 1/2 + 2/2 ('%s' '%s')", n > 1 ? safe(rows[0].name) : "", n > 1 ? safe(rows[1].name) : "");
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && strcmp(nm, "Swap") != 0 && jrnapp_cursor() == 2u, "#314a the R1 shape is ONE step per press, not a 'Swap' ('%s', cursor %u)", safe(nm), (unsigned)jrnapp_cursor());
+  CHECK(jrnapp_step_pair(1, nm) == JRN_OK && strcmp(nm, "Swap") != 0 && jrnapp_cursor() == 3u, "#314a ... and redo too ('%s', cursor %u)", safe(nm), (unsigned)jrnapp_cursor());
+  /* the control: the SAME bytes, but the older half named "Swap" (what a real drop produces) DO pair */
+  CHECK(app_world_reset(), "world");
+  memcpy(slot_at(10), x, MONB);
+  CHECK(stage_pc("Setup"), "setup X in slot 10");
+  memcpy(slot_at(10), x2, MONB); CHECK(stage_drop1(), "the same identity edit, but named Swap");
+  memcpy(slot_at(12), x, MONB);  CHECK(stage_pc(0), "the same paste");
+  CHECK(jrnapp_flush() == JRN_OK, "flush");
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && strcmp(nm, "Swap") == 0 && jrnapp_cursor() == 1u, "#314a control: the Swap name on the older half is what pairs ('%s', cursor %u)", safe(nm), (unsigned)jrnapp_cursor());
+}
+
+/* ---- za #314(b): CHAINED swaps. The displaced mon dropped on another OCCUPIED slot is itself a Swap drop (named "Swap", one slot REPLACED), so a chain of k
+ * swaps is k "Swap" steps and a last "Box move" into an empty slot; each link is byte-matched (the replaced bytes of step i == the bytes step i+1 adds).
+ * stage_chain(k): M0 at slot 10, M1..Mk at slots 11..10+k (k in 2..4), empty slot 30. Steps: Setup, Swap_1 (M0 -> slot 11, slot 10 cleared, M1 displaced),
+ * Swap_2 (M1 -> slot 12, M2 displaced), ..., Box move (Mk -> slot 30). snapS = before Swap_1, snapF = after the Box move. */
+static unsigned g_chain_base;   /* the cursor after the Setup steps = the step the chain's undo lands on */
+static int stage_chain(unsigned k, unsigned wrong_link) {
+  uint8_t m[6][MONB], w[MONB];
+  unsigned i;
+  for (i = 0; i <= k; i++) mon_fill(m[i], 1 + i);
+  mon_fill(w, 40);
+  memset(slot_at(30), 0, MONB);
+  for (i = 0; i <= k; i++) {                                  /* one Setup step per mon: all together would exceed ONE record (a chain, +seqs) */
+    memcpy(slot_at(10 + i), m[i], MONB);
+    if (!stage_pc("Setup")) return 0;
+  }
+  g_chain_base = k + 1u;
+  memcpy(snapS, sv, sizeof sv);
+  for (i = 0; i < k; i++) {                                   /* Swap_{i+1}: the held M_i replaces M_{i+1} at slot 11+i */
+    memcpy(slot_at(11 + i), (wrong_link && i == 1) ? w : m[i], MONB);
+    if (i == 0) memset(slot_at(10), 0, MONB);
+    if (!stage_drop1()) return 0;
+  }
+  memcpy(slot_at(30), m[k], MONB);
+  if (!stage_pc("Box move")) return 0;
+  memcpy(snapF, sv, sizeof sv);
+  return jrnapp_flush() == JRN_OK;
+}
+
+static void t_swap_chain3(void) {
+  char nm[25];
+  JaHist rows[8];
+  int n, more = 0, fh = 0;
+  CHECK(app_world_reset(), "world");
+  CHECK(stage_chain(2, 0), "stage a chained swap (setup, Swap, Swap, Box move)");
+  CHECK(jrnapp_tip() == g_chain_base + 3u, "Setup steps + Swap, Swap, Box move: tip %u", (unsigned)jrnapp_tip());
+  n = jrnapp_history(rows, 8, &more, &fh);
+  CHECK(n == 6 && strcmp(rows[0].name, "Box move 3/3") == 0 && strcmp(rows[1].name, "Swap 2/3") == 0 && strcmp(rows[2].name, "Swap 1/3") == 0 && strcmp(rows[3].name, "Setup") == 0,
+        "#314b History labels the three halves 1/3 2/3 3/3 ('%s' '%s' '%s')", n > 2 ? safe(rows[0].name) : "", n > 2 ? safe(rows[1].name) : "", n > 2 ? safe(rows[2].name) : "");
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && strcmp(nm, "Swap") == 0 && jrnapp_cursor() == g_chain_base, "#314b ONE undo press takes all three steps ('%s', cursor %u)", safe(nm), (unsigned)jrnapp_cursor());
+  CHECK(memcmp(sv, snapS, sizeof sv) == 0, "#314b the image is byte-exact the pre-chain image (no half state)");
+  CHECK(jrnapp_step_pair(1, nm) == JRN_OK && strcmp(nm, "Swap") == 0 && jrnapp_cursor() == g_chain_base + 3u, "#314b ONE redo press redoes all three ('%s', cursor %u)", safe(nm), (unsigned)jrnapp_cursor());
+  CHECK(memcmp(sv, snapF, sizeof sv) == 0, "#314b redo: byte-exact the post-chain image");
+  /* mid-chain: per-step undo of the Box move + Swap_2 (the History screen can), then the press redoes the remaining PAIR (Swap_2 is not Box move: it is the
+   * chain's tail, c1 = Swap_2 c2 = Box move) */
+  CHECK(jrnapp_step(-1, nm) == JRN_OK && jrnapp_step(-1, nm) == JRN_OK && jrnapp_cursor() == g_chain_base + 1u, "per-step undo down to Swap_1");
+  CHECK(jrnapp_step_pair(1, nm) == JRN_OK && strcmp(nm, "Swap") == 0 && jrnapp_cursor() == g_chain_base + 3u && memcmp(sv, snapF, sizeof sv) == 0, "#314b mid-chain: the redo press pairs Swap_2 + Box move ('%s', cursor %u)", safe(nm), (unsigned)jrnapp_cursor());
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && jrnapp_cursor() == g_chain_base, "#314b and the undo from the tip is the whole chain again");
+  jrnapp_flush();
+  CHECK(app_reopen() == 1, "reopen");
+}
+
+/* a chain of FOUR (3 Swaps + Box move): the group is capped at three steps; the press never reaches past the cap */
+static void t_swap_chain_cap(void) {
+  char nm[25];
+  CHECK(app_world_reset(), "world");
+  CHECK(stage_chain(3, 0), "stage 3 Swaps + a Box move");
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && jrnapp_cursor() == g_chain_base + 1u, "#314b a 4-step chain: the first press takes the newest THREE steps (cursor %u)", (unsigned)jrnapp_cursor());
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && jrnapp_cursor() == g_chain_base, "#314b the second press takes the remaining Swap alone (cursor %u)", (unsigned)jrnapp_cursor());
+  CHECK(memcmp(sv, snapS, sizeof sv) == 0, "the image is byte-exact the pre-chain image");
+  CHECK(jrnapp_step_pair(1, nm) == JRN_OK && jrnapp_cursor() == g_chain_base + 1u, "#314b redo: the lone Swap first (cursor %u)", (unsigned)jrnapp_cursor());
+  CHECK(jrnapp_step_pair(1, nm) == JRN_OK && jrnapp_cursor() == g_chain_base + 4u && memcmp(sv, snapF, sizeof sv) == 0, "#314b then the three-step group, byte-exact (cursor %u)", (unsigned)jrnapp_cursor());
+}
+
+/* the false-chain negative: Swap_2 drops a DIFFERENT mon than Swap_1 displaced -> the link is refuted by the bytes; only (Swap_2, Box move) pairs */
+static void t_swap_chain_wrong_link(void) {
+  char nm[25];
+  JaHist rows[8];
+  int n, more = 0, fh = 0;
+  CHECK(app_world_reset(), "world");
+  CHECK(stage_chain(2, 1), "stage Swap, Swap (places a DIFFERENT mon), Box move");
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && jrnapp_cursor() == g_chain_base + 1u, "#314b a refuted link: the press is the plain PAIR, not three steps (cursor %u)", (unsigned)jrnapp_cursor());
+  CHECK(jrnapp_step_pair(1, nm) == JRN_OK && jrnapp_cursor() == g_chain_base + 3u, "#314b ... and redo likewise (cursor %u)", (unsigned)jrnapp_cursor());
+  n = jrnapp_history(rows, 8, &more, &fh);
+  CHECK(n == 6 && strcmp(rows[0].name, "Box move 2/2") == 0 && strcmp(rows[1].name, "Swap 1/2") == 0 && strcmp(rows[2].name, "Swap") == 0,
+        "#314b History: only the pair is labelled ('%s' '%s' '%s')", n > 2 ? safe(rows[0].name) : "", n > 2 ? safe(rows[1].name) : "", n > 2 ? safe(rows[2].name) : "");
+}
+
+/* all-or-nothing across THREE steps: the third refused -> the two already applied are rolled back; and a refused rollback is the half-swap contract */
+static void t_swap_chain_rollback(void) {
+  char nm[25];
+  uint8_t before[G3_SAVE_FILE_SIZE], b;
+  static uint8_t snapH[G3_SAVE_FILE_SIZE];
+  CHECK(app_world_reset(), "world");
+  CHECK(stage_chain(2, 0), "stage the chain");
+  CHECK(sget(0, 5, 4 + 11 * MONB + 10, &b, 1) == 0, "read a byte of slot 11 (Swap_1's replaced slot)");
+  b ^= 0x40;
+  CHECK(sset(0, 5, 4 + 11 * MONB + 10, &b, 1) == 0, "corrupt it behind the journal's back: the OLDEST step's span no longer matches");
+  memcpy(before, sv, sizeof sv);
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_E_DIVERGED, "#314b the third step refused: DIVERGED");
+  CHECK(jrnapp_cursor() == g_chain_base + 3u && memcmp(sv, before, sizeof sv) == 0, "#314b both applied steps were rolled back: image byte-identical, cursor %u", (unsigned)jrnapp_cursor());
+  CHECK(app_world_reset(), "world");
+  CHECK(stage_chain(2, 0), "stage the chain again");
+  CHECK(jrnapp_step(-1, nm) == JRN_OK, "per-step undo of the newest step (the state the refused press leaves: one step applied)");
+  memcpy(snapH, sv, sizeof sv);
+  CHECK(app_world_reset(), "world");
+  CHECK(stage_chain(2, 0), "stage the chain a third time");
+  rd_fail_all_writes = 1;
+  {
+    int rc = jrnapp_step_pair(-1, nm);
+    rd_fail_all_writes = 0;
+    CHECK(rc == JRN_OK && strcmp(nm, "half a swap") == 0, "#314b a refused rollback in a 3-step group is the half-swap contract: rc %d '%s'", rc, safe(nm));
+    CHECK(jrnapp_cursor() == g_chain_base + 2u && memcmp(sv, snapH, sizeof sv) == 0, "#314b cursor %u (one step applied) and the image exactly the one-step-undone state (journal and image agree)", (unsigned)jrnapp_cursor());
+  }
+}
+
+/* za review A4: the 3-step "half a swap" contract under EVERY fault point of ONE press. A Swap + Swap + Box move group, pressed
+ * (undo, or redo from below the chain) with (a) no planned refusal, or (b) a planned DIVERGED refusal of the LAST step (d = 2: two
+ * steps already applied); every sector read of the press is then failed in turn, once (a flaky contact) and for good (a dead card).
+ * Contract, checked against the clean image at each cursor (region data, not checksums): a refused press moved NOTHING (cursor and
+ * image unchanged); a JRN_OK press left the image exactly the state AT its cursor, named "Swap" only at the group's far end and
+ * "half a swap" whenever a rollback failed part way. Before this pin a rollback loop that keeps going after a failure, a "half a
+ * swap" name or JRN_OK return reserved for d = 1, all survived the suite (z7 H1..H3). Runs on the first save only (cost). */
+#define ZA_DATA (14u * G3_SECTOR_DATA_SIZE)
+static void za_digest(uint8_t* out) {
+  unsigned r;
+  for (r = 0; r < 14u; r++) (void)sget(0, (uint8_t)r, 0, out + r * G3_SECTOR_DATA_SIZE, G3_SECTOR_DATA_SIZE);
+}
+static uint32_t za_flip_at(unsigned slotn) { return 4u + slotn * MONB + 10u; }   /* PC byte offset of the planted corruption */
+static void za_flip_img(uint32_t p) {
+  uint8_t b;
+  uint8_t region = (uint8_t)(5u + p / G3_SECTOR_DATA_SIZE);
+  uint16_t o = (uint16_t)(p % G3_SECTOR_DATA_SIZE);
+  (void)sget(0, region, o, &b, 1); b ^= 0x40; (void)sset(0, region, o, &b, 1);
+}
+static void t_swap_chain_rollback_sweep(void) {
+  static int done;
+  static uint8_t snap[4][ZA_DATA], img[ZA_DATA], exp[ZA_DATA], pre[G3_SAVE_FILE_SIZE];
+  char nm[25];
+  unsigned scen, mode, bad = 0, half = 0, presses = 0;
+  int i;
+  if (done) return;
+  done = 1;
+  CHECK(app_world_reset() && stage_chain(2, 0), "sweep: the clean chain");
+  za_digest(snap[3]);
+  for (i = 2; i >= 0; i--) { CHECK(jrnapp_step(-1, nm) == JRN_OK, "sweep: clean per-step undo"); za_digest(snap[i]); }   /* snap[c - g_chain_base] */
+  for (scen = 0; scen < 4; scen++) {                          /* 0 undo, 1 undo + the oldest refused, 2 redo, 3 redo + the newest refused */
+    const int dir = scen < 2 ? -1 : 1;
+    const uint32_t p = scen == 1 ? za_flip_at(11) : za_flip_at(30);   /* slot 11: only Swap_1 writes it; slot 30: only the Box move */
+    long k, kmax = 0;
+    CHECK(app_world_reset() && stage_chain(2, 0), "sweep: stage");   /* staged ONCE per scenario; every press restores card + image */
+    if (dir > 0) { for (i = 0; i < 3; i++) (void)jrnapp_step(-1, nm); }
+    CHECK(jrnapp_flush() == JRN_OK, "sweep: flush");
+    memcpy(pre, sv, sizeof sv);
+    rd_snapshot();
+    for (mode = 0; mode < 2; mode++) {
+      for (k = 0; k <= kmax + 2; k++) {
+        uint32_t start, c;
+        int rc;
+        rd_restore(); memcpy(sv, pre, sizeof sv); card_remount();
+        CHECK(app_reopen() && jrnapp_cursor() == (dir < 0 ? g_chain_base + 3u : g_chain_base), "sweep: reopen at the press's start");
+        if (scen & 1u) za_flip_img(p);
+        start = jrnapp_cursor();
+        if (k == 0 && mode == 0) {                            /* the healthy press sizes the sweep */
+          unsigned long r0 = rd_reads;
+          rc = jrnapp_step_pair(dir, nm);
+          kmax = (long)(rd_reads - r0);
+          CHECK(scen & 1u ? rc != JRN_OK && jrnapp_cursor() == start : rc == JRN_OK && strcmp(nm, "Swap") == 0,
+                "sweep scen %u: the healthy press (rc %d '%s')", scen, rc, safe(nm));
+          continue;
+        }
+        if (mode == 0) rd_fail_read_at = k - 1; else rd_fail_reads_after = k - 1;
+        rc = jrnapp_step_pair(dir, nm);
+        rd_fail_read_at = -1; rd_fail_reads_after = -1;
+        presses++;
+        c = jrnapp_cursor();
+        if (c < g_chain_base || c > g_chain_base + 3u) { bad++; continue; }
+        memcpy(exp, snap[c - g_chain_base], ZA_DATA);
+        if (scen & 1u) exp[(5u + p / G3_SECTOR_DATA_SIZE) * G3_SECTOR_DATA_SIZE + p % G3_SECTOR_DATA_SIZE] ^= 0x40;
+        za_digest(img);
+        if (memcmp(img, exp, ZA_DATA) != 0) { bad++; printf("  sweep scen %u mode %u k %ld: image is not the state at cursor %u\n", scen, mode, k, (unsigned)c); continue; }
+        if (rc != JRN_OK) { if (c != start) { bad++; printf("  sweep scen %u mode %u k %ld: rc %d says nothing moved, cursor %u -> %u\n", scen, mode, k, rc, (unsigned)start, (unsigned)c); } continue; }
+        if (c == (dir < 0 ? g_chain_base : g_chain_base + 3u)) { if (strcmp(nm, "Swap") != 0) bad++; continue; }
+        if (strcmp(nm, "half a swap") == 0) half++;          /* else: a walk read fault degraded the group (a plain step): consistent, see the review */
+      }
+    }
+  }
+  CHECK(bad == 0 && half > 0, "za A4: %u of %u faulted 3-step presses broke the contract (%u loud half-swaps)", bad, presses, half);
+  printf("  za A4 sweep: %u faulted 3-step presses, %u contract breaks, %u loud 'half a swap'\n", presses, bad, half);
+}
+
+/* za review A3: a journal recorded BEFORE #314a (main's drop_held never renamed drop 1: both halves "Box move", as stage_pc()
+ * writes them) stays per-step: plain History labels, one step per press both ways, a plain chained swap too, and the load-time
+ * offer still restores a stranded half byte-exact. */
+static void t_swap_pair_old_journal(void) {
+  char nm[25], stop[25];
+  JaHist rows[8];
+  uint32_t av = 0, tot;
+  int n, more = 0, fh = 0;
+  uint8_t x[MONB], y[MONB], z[MONB];
+  mon_fill(x, 1); mon_fill(y, 2); mon_fill(z, 3);
+  CHECK(app_world_reset(), "world");
+  memcpy(slot_at(10), x, MONB); memcpy(slot_at(11), y, MONB); CHECK(stage_pc("Setup"), "setup");
+  memcpy(snapS, sv, sizeof sv);
+  memcpy(slot_at(11), x, MONB); memset(slot_at(10), 0, MONB); CHECK(stage_pc("Box move"), "a pre-za drop 1 (named Box move)");
+  memcpy(slot_at(12), y, MONB); CHECK(stage_pc("Box move"), "drop 2");
+  memcpy(snapF, sv, sizeof sv);
+  CHECK(jrnapp_flush() == JRN_OK, "flush");
+  n = jrnapp_history(rows, 8, &more, &fh);
+  CHECK(n == 3 && strcmp(rows[0].name, "Box move") == 0 && strcmp(rows[1].name, "Box move") == 0, "za A3 an old swap keeps plain labels ('%s' '%s')", n > 1 ? safe(rows[0].name) : "", n > 1 ? safe(rows[1].name) : "");
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && strcmp(nm, "Box move") == 0 && jrnapp_cursor() == 2u, "za A3 an old swap: ONE step per undo press (cursor %u)", (unsigned)jrnapp_cursor());
+  CHECK(jrnapp_flush() == JRN_OK && app_reopen(), "reopen on the stranded half");
+  tot = jrnapp_offer(&av, stop);
+  CHECK(tot == 1u && av == 1u && jrnapp_reapply() == 1 && memcmp(sv, snapF, sizeof sv) == 0, "za A3 the offer restores the old half byte-exact (total %u avail %u)", (unsigned)tot, (unsigned)av);
+  CHECK(app_world_reset(), "world");
+  memcpy(slot_at(10), x, MONB); CHECK(stage_pc("Setup"), "s"); memcpy(slot_at(11), y, MONB); CHECK(stage_pc("Setup"), "s");
+  memcpy(slot_at(12), z, MONB); CHECK(stage_pc("Setup"), "s");
+  memcpy(slot_at(11), x, MONB); memset(slot_at(10), 0, MONB); CHECK(stage_pc("Box move"), "old S1");
+  memcpy(slot_at(12), y, MONB); CHECK(stage_pc("Box move"), "old S2 (replaces)");
+  memcpy(slot_at(30), z, MONB); CHECK(stage_pc("Box move"), "B3");
+  CHECK(jrnapp_flush() == JRN_OK, "flush");
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && jrnapp_cursor() == 5u && jrnapp_step_pair(1, nm) == JRN_OK && jrnapp_cursor() == 6u,
+        "za A3 an old CHAINED swap: one step per press both ways (cursor %u)", (unsigned)jrnapp_cursor());
+}
+
+/* ---- za #314(c): the two caps the z7 review left unpinned -------------------------------------------------------------------------------------------------
+ * M5, the redo walk's 64-hop cap (JA_REDO_HOPS): a redo pairs only while the cursor is within 64 steps of the tip (D = steps above the cursor); at D = 64 it
+ * pairs, at D = 65 it is a plain one-step redo. P plain "Edit" steps (a byte toggled outside every mon slot) sit above a swap; the cursor is put on the Setup
+ * step with per-step undos, so D = P + 2.
+ * M7, the four-slot cap (JA_PAIR_SLOTS): an OLDER half that touches at most 4 distinct mon slots can pair; a fifth refuses it. */
+static int stage_hops(unsigned plain) {
+  unsigned i;
+  if (!stage_swap(10, 11, 12)) return 0;
+  for (i = 0; i < plain; i++) {
+    pc[30000u] = (uint8_t)(pc[30000u] + 1u);                                         /* region 11, past the mon area: never a swap half, never a mon slot */
+    if (!stage_pc("Edit")) return 0;
+  }
+  return jrnapp_flush() == JRN_OK;
+}
+static void t_swap_redo_hop_cap(void) {
+  char nm[25];
+  unsigned plain, d, i, want_cur;
+  for (plain = 62; plain <= 63; plain++) {
+    CHECK(app_world_reset(), "world");
+    CHECK(stage_hops(plain), "stage a swap with %u plain steps above it", plain);
+    d = plain + 2u;                                                         /* steps above the Setup step */
+    CHECK(jrnapp_tip() == 1u + 2u + plain, "tip %u", (unsigned)jrnapp_tip());
+    for (i = 0; i < d; i++) { if (jrnapp_step(-1, nm) != JRN_OK) break; }
+    CHECK(i == d && jrnapp_cursor() == 1u, "per-step undo down to the Setup step (%u undone, cursor %u)", i, (unsigned)jrnapp_cursor());
+    want_cur = d <= 64u ? 3u : 2u;                                          /* paired (cursor over both halves) or plain (one step) */
+    CHECK(jrnapp_step_pair(1, nm) == JRN_OK && jrnapp_cursor() == want_cur,
+          "#314c D = %u: the redo %s (cursor %u, want %u)", d, d <= 64u ? "PAIRS" : "is a plain step", (unsigned)jrnapp_cursor(), want_cur);
+  }
+}
+
+static void t_swap_slot_cap(void) {
+  char nm[25];
+  uint8_t x[MONB], y[MONB], e[MONB];
+  unsigned extra;
+  mon_fill(x, 1); mon_fill(y, 2); mon_fill(e, 7);
+  for (extra = 2; extra <= 3; extra++) {                                    /* the older half touches 2 + extra slots: A, B and `extra` more (4 or 5) */
+    unsigned i;
+    CHECK(app_world_reset(), "world");
+    memcpy(slot_at(10), x, MONB); memcpy(slot_at(11), y, MONB);
+    CHECK(stage_pc("Setup"), "setup X, Y");
+    for (i = 0; i < extra; i++) { memcpy(slot_at(20 + i), e, MONB); memset(slot_at(20 + i), 0, 8); }   /* extras whose first 8 bytes are zero: a 0 -> non-zero fill is no REPLACED slot */
+    CHECK(stage_pc("Setup"), "setup the extras");
+    memcpy(slot_at(11), x, MONB); memset(slot_at(10), 0, MONB);
+    for (i = 0; i < extra; i++) memcpy(slot_at(20 + i), e, MONB);           /* the older step fills those 8 bytes in each extra slot (a SPARSE touch: the step stays ONE record) */
+    CHECK(stage_drop1(), "the older half touches %u distinct slots", 2u + extra);
+    memcpy(slot_at(12), y, MONB); CHECK(stage_pc("Box move"), "drop 2");
+    CHECK(jrnapp_flush() == JRN_OK, "flush");
+    CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && jrnapp_cursor() == (extra == 2u ? 2u : 3u),
+          "#314c an older half touching %u slots %s (cursor %u)", 2u + extra, extra == 2u ? "pairs (the cap is 4)" : "is refused (a fifth slot)", (unsigned)jrnapp_cursor());
+  }
+}
+
 static void t_swap_pair_history_labels(void) {
   JaHist rows[8];
   int n, more = 0, fh = 0;
@@ -611,7 +914,7 @@ static void t_swap_pair_history_labels(void) {
   CHECK(n == 4, "four rows, got %d", n);
   CHECK(n == 4 && strcmp(rows[0].name, "Box move") == 0, "the plain move stays 'Box move' ('%s')", safe(rows[0].name));
   CHECK(n == 4 && strcmp(rows[1].name, "Box move 2/2") == 0, "#303 the swap's newer half reads 'Box move 2/2' ('%s')", safe(rows[1].name));
-  CHECK(n == 4 && strcmp(rows[2].name, "Box move 1/2") == 0, "#303 the swap's older half reads 'Box move 1/2' ('%s')", safe(rows[2].name));
+  CHECK(n == 4 && strcmp(rows[2].name, "Swap 1/2") == 0, "#303 the swap's older half reads 'Swap 1/2' ('%s')", safe(rows[2].name));
   CHECK(n == 4 && strcmp(rows[3].name, "Setup") == 0, "the setup is unlabelled ('%s')", safe(rows[3].name));
 }
 
@@ -713,7 +1016,7 @@ static int stage_swap_chained(unsigned a, unsigned b, unsigned c) {
   memcpy(snapS, sv, sizeof sv);
   memcpy(slot_at(b), x, MONB); memset(slot_at(a), 0, MONB);               /* drop 1 ... */
   for (i = 0; i < 600; i++) pc[34000u + i] = (uint8_t)(pc[34000u + i] ^ 0x5Au ^ (uint8_t)i);   /* ... plus 600 bytes elsewhere (region 13, past the mon area): > one record */
-  if (!stage_pc("Box move")) return 0;
+  if (!stage_drop1()) return 0;
   memcpy(slot_at(c), y, MONB);                                             /* drop 2 */
   if (!stage_pc("Box move")) return 0;
   memcpy(snapF, sv, sizeof sv);
@@ -726,10 +1029,10 @@ static void t_chain_never_pairs(void) {
   CHECK(app_world_reset(), "world");
   CHECK(stage_swap_chained(10, 11, 12), "stage the swap whose first drop is a chain (recorded, not a gap)");
   n = jrnapp_history(rows, 8, &more, &fh);
-  CHECK(n == 3 && strcmp(rows[0].name, "Box move") == 0 && strcmp(rows[1].name, "Box move") == 0 && strcmp(rows[2].name, "Setup") == 0,
+  CHECK(n == 3 && strcmp(rows[0].name, "Box move") == 0 && strcmp(rows[1].name, "Swap") == 0 && strcmp(rows[2].name, "Setup") == 0,
         "History keeps plain names (no 1/2, 2/2): %d rows '%s' '%s'", n, n > 1 ? safe(rows[0].name) : "", n > 1 ? safe(rows[1].name) : "");
   CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && strcmp(nm, "Box move") == 0 && jrnapp_cursor() == 2u, "a chained older half is not paired: ONE press undoes ONE step ('%s', cursor %u)", safe(nm), (unsigned)jrnapp_cursor());
-  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && strcmp(nm, "Box move") == 0 && jrnapp_cursor() == 1u && memcmp(sv, snapS, sizeof sv) == 0, "the next press undoes the whole chain: byte-exact the pre-swap image ('%s')", safe(nm));
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && strcmp(nm, "Swap") == 0 && jrnapp_cursor() == 1u && memcmp(sv, snapS, sizeof sv) == 0, "the next press undoes the whole chain: byte-exact the pre-swap image ('%s')", safe(nm));
   CHECK(jrnapp_step_pair(1, nm) == JRN_OK && jrnapp_step_pair(1, nm) == JRN_OK && memcmp(sv, snapF, sizeof sv) == 0, "and two redo presses restore the post-swap image byte-exact");
 }
 
@@ -829,6 +1132,15 @@ int main(int argc, char** argv) {
     CHECK(app_world(file), "app world"); t_swap_pair_rollback();
     CHECK(app_world(file), "app world"); t_swap_pair_offer();
     CHECK(app_world(file), "app world"); t_swap_pair_history_labels();
+    CHECK(app_world(file), "app world"); t_swap_pair_r1_mislabel();
+    CHECK(app_world(file), "app world"); t_swap_redo_hop_cap();
+    CHECK(app_world(file), "app world"); t_swap_slot_cap();
+    CHECK(app_world(file), "app world"); t_swap_chain3();
+    CHECK(app_world(file), "app world"); t_swap_chain_cap();
+    CHECK(app_world(file), "app world"); t_swap_chain_wrong_link();
+    CHECK(app_world(file), "app world"); t_swap_chain_rollback();
+    CHECK(app_world(file), "app world"); t_swap_chain_rollback_sweep();
+    CHECK(app_world(file), "app world"); t_swap_pair_old_journal();
     CHECK(app_world(file), "app world"); t_swap_pair_shape_and_rollback_failure();
     CHECK(app_world(file), "app world"); t_chain_through_app();
     CHECK(app_world(file), "app world"); t_chain_torn_contract();
