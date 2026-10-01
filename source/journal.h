@@ -306,6 +306,17 @@ int  jrn_step_begin(Jrn* j, const char* name, int crossed);
 int  jrn_step_region(Jrn* j, uint8_t region, const uint8_t* old_blk, const uint8_t* new_blk);
 int  jrn_step_end(Jrn* j);
 void jrn_step_abort(Jrn* j);
+/* CHAINED STEP (z9, D10): record ONE step whose span diff may exceed a record, as a chain of 2..JRN_CHAIN_MAX records written
+ * straight to the tail segment (not through the pending buffer: the diff is split into <=512-byte records at flush-free time).
+ * `blk[r]` = the OLD and NEW full block of region r (old_blk NULL = the region is not part of the step), r < nblk <= nreg.
+ * Preconditions: no step under construction and NOTHING PENDING (else JRN_E_FULL + flush_wanted: flush, then call again).
+ * Returns JRN_OK (the step is on disk, verified; cursor/tip are on its HEAD), JRN_NOOP (nothing changed), JRN_E_TOOBIG (more than
+ * JRN_CHAIN_MAX records: nothing was written), JRN_E_DIVERGED (an old block does not hash to the tracked crc), JRN_E_FULL (no room /
+ * nothing-pending violated), JRN_E_IO / JRN_E_VERIFY (a card error: recording STOPS, as for a failed flush), or the step_begin refusals.
+ * A chain of >= 2 records needs a v2 segment: the tail if it is v2 and has room, else the spare (made v2 on demand, at most one
+ * activation, never touching a segment that holds records). The HEAD is written LAST: a cut leaves no chain. */
+typedef struct JrnBlk { const uint8_t* old_blk; const uint8_t* new_blk; } JrnBlk;
+int  jrn_chain_record(Jrn* j, const char* name, int crossed, const JrnBlk* blk, uint8_t nblk);
 int  jrn_flush_wanted(const Jrn* j);      /* pending buffer nearly full: flush at the next idle frame */
 /* Write the pending records (back to front), then re-read and compare. */
 int  jrn_flush(Jrn* j);

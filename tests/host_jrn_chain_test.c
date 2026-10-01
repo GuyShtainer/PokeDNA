@@ -186,11 +186,170 @@ static void t_reader_v1_unchanged(void) {
   { uint8_t h[32]; CHECK(raw_read(K, 1, 0, h, 32) == 0 && h[4] == 1 && h[5] == 0, "a plain journal is still activated as v1: ver byte %u", h[4]); }
 }
 
+
+/* ---- step 2: the writer ------------------------------------------------------------------------------------------------------ */
+static uint8_t g_old[NREG][RSZ], g_new[NREG][RSZ];
+static uint32_t g_rng = 12345u;
+static uint32_t rnd(void) { g_rng = g_rng * 1664525u + 1013904223u; return g_rng >> 8; }
+
+static void mkblk(JrnBlk* b) { unsigned r; for (r = 0; r < NREG; r++) { b[r].old_blk = g_old[r]; b[r].new_blk = g_new[r]; } }
+
+/* g_new = g_old with `runs` runs of `len` bytes (every byte of a run DIFFERS from the old one, so a run is one run), placed at region/offset
+ * spaced far apart (> JRN_MERGE_GAP) so runs never merge. Returns the bytes changed. */
+static unsigned gen_runs(unsigned runs, unsigned len, unsigned first_region) {
+  unsigned i, k, tot = 0;
+  memcpy(g_old, g_img, sizeof g_old);
+  memcpy(g_new, g_img, sizeof g_new);
+  for (i = 0; i < runs; i++) {
+    unsigned reg = (first_region + i / 10u) % NREG, off = 16u + (i % 10u) * 390u;
+    for (k = 0; k < len; k++) { g_new[reg][off + k] = (uint8_t)(g_old[reg][off + k] ^ (uint8_t)(1u + (rnd() & 0x7Eu))); tot++; }
+  }
+  return tot;
+}
+
+typedef struct { uint32_t off, len; JrnRec r; } RecAt;
+/* every record of segment `seg` from `from` for `n` records, via the raw bytes */
+static unsigned read_recs(unsigned seg, uint32_t from, unsigned max, RecAt* out, uint8_t* seg_bytes) {
+  unsigned n = 0;
+  uint32_t off = from;
+  CHECK(raw_read(K, seg, 0, seg_bytes, JRN_SEG_SIZE) == 0, "read the segment");
+  while (n < max && off + JRN_REC_MIN <= JRN_SEG_SIZE && jrn_i_hdr_parse(seg_bytes + off, &out[n].r) == 0) {
+    out[n].off = off; out[n].len = out[n].r.len;
+    if (jrn_crc32_update(0, seg_bytes + off, out[n].len - 4u) != jrn_rd32(seg_bytes + off + out[n].len - 4u)) break;
+    off += out[n].len; n++;
+  }
+  return n;
+}
+
+/* Apply every span of the chain's records to `img` (forward = after, else before). */
+static int apply_raw(const uint8_t* seg_bytes, const RecAt* recs, unsigned n, uint8_t img[NREG][RSZ], int forward, unsigned* nspans) {
+  unsigned i, sp, bad = 0;
+  *nspans = 0;
+  for (i = 0; i < n; i++) {
+    const uint8_t* b = seg_bytes + recs[i].off;
+    uint32_t pos = JRN_REC_HDR;
+    for (sp = 0; sp < recs[i].r.nspans; sp++) {
+      uint8_t reg = b[pos]; uint16_t off = jrn_rd16(b + pos + 2), len = jrn_rd16(b + pos + 4);
+      if (reg >= NREG || !len || (uint32_t)off + len > RSZ || pos + JRN_SPAN_HDR + 2u * len > recs[i].len - 4u) { bad++; break; }
+      memcpy(img[reg] + off, b + pos + JRN_SPAN_HDR + (forward ? len : 0u), len);
+      pos += JRN_SPAN_HDR + 2u * len; (*nspans)++;
+    }
+    if (pos != recs[i].len - 4u) bad++;
+  }
+  return bad;
+}
+
+static uint8_t g_segb[JRN_SEG_SIZE];
+static uint8_t g_chk[NREG][RSZ];
+
+/* The splitter: for diff sizes from one record's worth to the capacity edge, the chain on the card reassembles BYTE-EXACTLY (old + the spans'
+ * `after` = new; new + the spans' `before` = old), every record is within the cap, and the framing fields are exactly D10's. */
+static void t_writer_reassembly(void) {
+  static const unsigned runs[] = { 1, 1, 2, 3, 5, 7, 9, 13, 20, 25 };
+  static const unsigned lens[] = { 226, 460, 300, 200, 150, 120, 100, 80, 60, 61 };
+  unsigned c;
+  for (c = 0; c < sizeof runs / sizeof runs[0]; c++) {
+    Jrn j; JrnBlk blk[NREG]; RecAt recs[JRN_CHAIN_MAX + 1]; unsigned n, i, nsp, changed, tail0, bad;
+    uint32_t head_seq;
+    world(&j);
+    changed = gen_runs(runs[c], lens[c], 2);
+    mkblk(blk);
+    tail0 = JRN_REC_BASE; head_seq = j.next_seq;   /* the tail segment (1) is v1: the chain ROLLS into the spare (2), made v2, at its first record slot */
+    CHECK(jrn_chain_record(&j, "Bulk edit", 0, blk, NREG) == JRN_OK, "case %u (%u runs x %u B = %u changed): the chain records", c, runs[c], lens[c], changed);
+    n = read_recs(2, tail0, JRN_CHAIN_MAX + 1, recs, g_segb);
+    CHECK(n >= 2u && n <= JRN_CHAIN_MAX, "case %u: %u records on disk (a chain, within the cap)", c, n);
+    CHECK(j.tail_seg == 2u && j.tail_off == recs[n - 1].off + recs[n - 1].len && j.next_seq == head_seq + n && j.cursor == head_seq && j.tip == head_seq, "case %u: the engine's cursor/tail/next_seq follow the chain", c);
+    for (i = 0; i < n; i++) {
+      CHECK(recs[i].len <= JRN_REC_MAX && recs[i].r.nspans >= 1u, "case %u rec %u: <= 512 B and holds spans", c, i);
+      CHECK(recs[i].r.seq == head_seq + i, "case %u rec %u: consecutive seq", c, i);
+      if (i == 0) CHECK(recs[0].r.kind == JRN_KIND_STEP && recs[0].r.aux == n && recs[0].r.parent == 0u, "case %u: head kind 0, aux = %u, parent = the cursor", c, n);
+      else CHECK(recs[i].r.kind == JRN_KIND_PART && recs[i].r.aux == i && recs[i].r.parent == head_seq && !recs[i].r.crossed, "case %u part %u: kind 3, aux = its index, parent = the head", c, i);
+      CHECK(recs[i].r.pre == recs[0].r.pre && recs[i].r.post == recs[0].r.post && strcmp(recs[i].r.name, "Bulk edit") == 0, "case %u rec %u: pre/post/name are the step's", c, i);
+    }
+    memcpy(g_chk, g_old, sizeof g_chk);
+    bad = apply_raw(g_segb, recs, n, g_chk, 1, &nsp);
+    CHECK(bad == 0 && memcmp(g_chk, g_new, sizeof g_chk) == 0, "case %u: old + every span's AFTER == new, byte for byte (%u spans, %u malformed)", c, nsp, bad);
+    memcpy(g_chk, g_new, sizeof g_chk);
+    bad = apply_raw(g_segb, recs, n, g_chk, 0, &nsp);
+    CHECK(bad == 0 && memcmp(g_chk, g_old, sizeof g_chk) == 0, "case %u: new + every span's BEFORE == old, byte for byte", c);
+    { uint8_t h1[32], h2[32];
+      CHECK(raw_read(K, 1, 0, h1, 32) == 0 && h1[4] == 1 && raw_read(K, 2, 0, h2, 32) == 0 && h2[4] == 2,
+            "case %u: seg 1 (had records) stays v1 -- its header is never rewritten in place; the spare became v2 for the chain: ver bytes %u / %u", c, h1[4], h2[4]); }
+  }
+}
+
+/* The record-boundary edges. One run of L bytes costs 6 + 2L, so a record holds 225 of its bytes: N = ceil(L / 225), N = 1 is a PLAIN step
+ * (aux 0, any segment version, the tail), N = 2..8 a chain, L = 1801 is the first TOOBIG. A TOOBIG chain writes NOTHING. */
+static void t_writer_edges(void) {
+  static const unsigned L[] = { 1, 224, 225, 226, 449, 450, 451, 674, 675, 676, 1799, 1800, 1801, 1802, 3000 };
+  unsigned c;
+  for (c = 0; c < sizeof L / sizeof L[0]; c++) {
+    Jrn j; JrnBlk blk[NREG]; RecAt recs[JRN_CHAIN_MAX + 1]; unsigned n, want = (L[c] + 224u) / 225u, nsp, bad; int rc;
+    uint32_t seq0, tail0; unsigned seg0;
+    world(&j);
+    gen_runs(1, L[c], 6);
+    mkblk(blk);
+    seq0 = j.next_seq; tail0 = j.tail_off; seg0 = j.tail_seg;
+    rc = jrn_chain_record(&j, "Edge", 0, blk, NREG);
+    if (want > JRN_CHAIN_MAX) {
+      CHECK(rc == JRN_E_TOOBIG, "L=%u: %u records needed (> %u) -> JRN_E_TOOBIG, got %d", L[c], want, JRN_CHAIN_MAX, rc);
+      CHECK(j.next_seq == seq0 && j.tail_off == tail0 && j.tail_seg == seg0 && j.cursor == 0u && !j.stopped, "L=%u: TOOBIG changed nothing in the engine", L[c]);
+      CHECK(window_zero(tail0, 1024), "L=%u: TOOBIG wrote nothing to the card", L[c]);
+      { uint8_t z[1024]; CHECK(raw_read(K, 2, JRN_REC_BASE, z, sizeof z) == 0 && z[0] == 0 && z[200] == 0, "L=%u: nor to the spare", L[c]); }
+      continue;
+    }
+    CHECK(rc == JRN_OK, "L=%u: records (rc %d)", L[c], rc);
+    n = read_recs(want == 1u ? 1 : 2, want == 1u ? tail0 : JRN_REC_BASE, JRN_CHAIN_MAX + 1, recs, g_segb);
+    if (want == 1u) n = 1;
+    CHECK(n == want, "L=%u: %u records on disk, want %u", L[c], n, want);
+    CHECK(want == 1u ? (recs[0].r.aux == 0u && j.tail_seg == 1u) : (recs[0].r.aux == want && j.tail_seg == 2u), "L=%u: N=1 is a plain step in the tail (aux 0); N>=2 a chain in the spare (aux N)", L[c]);
+    memcpy(g_chk, g_old, sizeof g_chk);
+    bad = apply_raw(g_segb, recs, n, g_chk, 1, &nsp);
+    CHECK(bad == 0 && memcmp(g_chk, g_new, sizeof g_chk) == 0, "L=%u: reassembly byte-exact (after)", L[c]);
+    memcpy(g_chk, g_new, sizeof g_chk);
+    bad = apply_raw(g_segb, recs, n, g_chk, 0, &nsp);
+    CHECK(bad == 0 && memcmp(g_chk, g_old, sizeof g_chk) == 0, "L=%u: reassembly byte-exact (before)", L[c]);
+  }
+}
+
+/* A long mixed session: plain steps and chains interleaved until the chains roll into a THIRD segment (made v2 mid-session), then a fresh
+ * open reads it all: every head's seq, the cursor, the tail, the per-segment versions. A chain with a step still pending refuses (FULL). */
+static void t_writer_session(void) {
+  Jrn j; JrnBlk blk[NREG]; unsigned it, chains = 0, plains = 0; uint32_t last_head = 0; uint8_t h[32];
+  world(&j);
+  for (it = 0; it < 400 && j.tail_seg < 3u; it++) {
+    if (it % 3u == 0u) { CHECK(stage(&j, "plain", 0, (uint8_t)(1u + it % 5u), (uint16_t)(20u + it), 4, fresh_val((uint8_t)(1u + it % 5u), (uint16_t)(20u + it))) == JRN_OK, "plain %u", it); plains++; }
+    gen_runs(4, 150, 7);
+    mkblk(blk);
+    if (jrn_pending(&j)) {
+      CHECK(jrn_chain_record(&j, "Chain", 0, blk, NREG) == JRN_E_FULL && jrn_flush_wanted(&j), "a chain with a step pending refuses (FULL, flush wanted)");
+      CHECK(jrn_flush(&j) == JRN_OK, "flush");
+    }
+    last_head = j.next_seq;
+    CHECK(jrn_chain_record(&j, "Chain", 0, blk, NREG) == JRN_OK, "chain %u", it);
+    memcpy(g_img, g_new, sizeof g_img);
+    chains++;
+    CHECK(j.cursor == last_head, "cursor on the head");
+  }
+  CHECK(j.tail_seg == 3u && chains > 20u, "the chains rolled into segment 3 (tail %u after %u chains, %u plain steps)", j.tail_seg, chains, plains);
+  CHECK(raw_read(K, 1, 0, h, 32) == 0 && h[4] == 1 && raw_read(K, 2, 0, h, 32) == 0 && h[4] == 2 && raw_read(K, 3, 0, h, 32) == 0 && h[4] == 2,
+        "versions: seg 1 v1 (plain-only), seg 2 v2, seg 3 v2 (made mid-session for the chain)");
+  { uint32_t nxt = j.next_seq, cur = j.cursor, toff = j.tail_off; unsigned ts = j.tail_seg;
+    card_remount();
+    CHECK(jopen(&j, K) == JRN_OK && j.next_seq == nxt && j.cursor == cur && j.tip == cur && j.tail_seg == ts && j.tail_off == toff && j.anchor == JRN_ANCHOR_MATCH,
+          "a fresh open reads the whole mixed journal: next_seq %u/%u cursor %u/%u tail %u@%u / %u@%u", (unsigned)j.next_seq, (unsigned)nxt, (unsigned)j.cursor, (unsigned)cur, j.tail_seg, (unsigned)j.tail_off, ts, (unsigned)toff); }
+  CHECK(jrn_prepare(&j) == JRN_OK, "prepare");
+  CHECK(raw_read(K, j.seg_last, 0, h, 32) == 0 && h[4] == 2, "the next spare INHERITS v2 (a journal that went v2 stays v2): seg %u ver %u", j.seg_last, h[4]);
+}
+
 int main(void) {
   t_reader_v1_unchanged();
   t_reader_whole_chain();
   t_reader_incomplete();
   t_reader_oversize();
+  t_writer_reassembly();
+  t_writer_edges();
+  t_writer_session();
   if (fails) { printf("host_jrn_chain_test: %d FAILED of %lu checks\n", fails, checks); return 1; }
   printf("host_jrn_chain_test: all %lu checks passed (real lib/fatfs over a RAM disk)\n", checks);
   return 0;
