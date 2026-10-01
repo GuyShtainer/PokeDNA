@@ -1458,6 +1458,37 @@ static void t_tree_cost(void) {
   }
 }
 
+/* ---- zc #324(a): the max > 48 clamp (JA_TREE_ROWS). A 60-step branch asked for max = 64 rows: the tree clamps the request to 48 (the count arrays in s_rec
+ * are 48 wide), so at most 48 rows come back, the NEWEST is row 0, `more` says older rows were dropped, and a fork at the newest end still reads right. */
+static void t_tree_max_clamp(void) {
+  JaHist rows[64];
+  uint32_t tip;
+  int i, n, more = 0, fh = 0, steps = 0, mc;
+  CHECK(app_world_reset(), "world");
+  for (i = 0; i < 60; i++) (void)TS("s", (unsigned)(i % 50));
+  tip = jrnapp_tip();
+  CHECK(tip >= 60u, "60 steps staged (tip %u)", (unsigned)tip);
+  memset(rows, 0, sizeof rows);
+  n = jrnapp_history_tree(rows, 64, &more, &fh, 0, 0);
+  CHECK(n == 48, "#324a max=64 on a 60-step branch: exactly 48 rows come back, not 60/64 (%d)", n);
+  CHECK(n > 0 && rows[0].seq == tip && rows[0].kind == JH_STEP, "#324a the newest step is row 0 (seq %u, tip %u)", n > 0 ? (unsigned)rows[0].seq : 0u, (unsigned)tip);
+  CHECK(more == 1, "#324a more=1: older steps were dropped (%d)", more);
+  for (i = 0; i < 64; i++) if (rows[i].seq || rows[i].name[0]) steps++;
+  CHECK(steps == 48, "#324a nothing was written past row 47 (%d rows touched)", steps);
+  for (mc = 0, i = 1; i < n; i++) if (rows[i].seq + 1u != rows[i - 1].seq && rows[i].seq != rows[i - 1].parent) mc++;
+  CHECK(mc == 0, "#324a the 48 rows are one unbroken parent chain");
+  /* the same with ONE fork at the newest end (the tree logic engages): 48 rows total INCLUDING the summary, the newest branch row still first */
+  CHECK(app_world_reset(), "world");
+  for (i = 0; i < 59; i++) (void)TS("s", (unsigned)(i % 50));
+  TU();
+  tip = TS("NEW", 50);
+  memset(rows, 0, sizeof rows);
+  n = jrnapp_history_tree(rows, 64, &more, &fh, 0, 0);
+  CHECK(n <= 48 && n >= 47, "#324a max=64 with a fork: at most 48 rows (%d)", n);
+  CHECK(n > 1 && rows[0].seq == tip && rows[0].kind == JH_STEP && rows[1].kind == JH_FORK, "#324a the newest branch row, then its collapsed summary (kinds %s)", kinds(rows, n < 4 ? n : 4));
+  CHECK(more == 1, "#324a more=1 with a fork too (%d)", more);
+}
+
 int main(int argc, char** argv) {
   int a;
   static uint8_t file[G3_SAVE_FILE_SIZE];
@@ -1513,6 +1544,7 @@ int main(int argc, char** argv) {
     CHECK(app_world(file), "app world"); t_tree_saved();
     CHECK(app_world(file), "app world"); t_tree_window();
     CHECK(app_world(file), "app world"); t_tree_cost();
+    CHECK(app_world(file), "app world"); t_tree_max_clamp();
   }
   printf("%lu checks, %d failed\n", checks, fails);
   return fails ? 1 : 0;

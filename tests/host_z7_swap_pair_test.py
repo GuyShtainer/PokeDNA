@@ -160,6 +160,9 @@ def main() -> int:
     must_fail("funnel", "T1w", "the (half) mark dropped", [(J, 'memcpy(name, "Swap (half)", 12)', "(void)0")])
     must_fail("funnel", "T2w", "the mark also applied to a plain UNDO", [(J, "rc == JRN_OK && dir > 0 && name", "rc == JRN_OK && name")])
     must_fail("funnel", "T3w", "the whole pair press loses the plain name", [(J, 'memcpy(name, "Swap", 5)', 'memcpy(name, "Swap (half)", 12)')])
+    # zc #324(a): the max > 48 clamp of jrnapp_history_tree (t_tree_max_clamp)
+    must_fail("funnel", "K1", "the max>48 clamp dropped", [(J, "  if (max > JA_TREE_ROWS) max = JA_TREE_ROWS;\n", "")])
+    must_fail("funnel", "K2", "the clamp is one row short", [(J, "if (max > JA_TREE_ROWS) max = JA_TREE_ROWS;", "if (max > JA_TREE_ROWS) max = JA_TREE_ROWS - 1;")])
     G = "gb_jkey.c"
     must_fail("gb", "A10", "GB guard dropped", [(J, "if (s_ai.slot < 0) return 0;                                /* Game Boy: no 80-byte slots, swaps are refused outright */", ""), (J, "return s_ai.slot >= 0 && r->kind", "return r->kind")])
     must_fail("gb", "B1", "no 0xFF escape", [(G, "if (legacy || !has_ff) {", "if (1) {")])
