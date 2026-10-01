@@ -34,6 +34,10 @@ typedef struct ImgRec {
   int          (*flush)(void);  /* app hook: rumble-paused jrn_flush + logging; 0 = ok. FIRST FIELD ON PURPOSE:
                                  * tools/stack_edges.txt declares `ImgRec.flush @0` and the guard reads the offset
                                  * off this header, which cannot evaluate JRN_NREG_MAX for the fields below. */
+  int          (*chain)(const char* name, int crossed, const JrnBlk* blk, uint8_t nblk);
+                                /* app hook (z9, D10): rumble-paused jrn_chain_record + logging -- the bulk step a single record cannot
+                                 * hold goes to the journal as a CHAIN. SECOND FIELD (`ImgRec.chain @4` in tools/stack_edges.txt);
+                                 * NULL = call the engine directly (the host tests). Returns the engine's result. */
   Jrn*           j;             /* NULL = not recording                                              */
   JrnImage       img;           /* the accessor over g_save (jrn_recompute after a divergence)       */
   const char*    name;          /* one-shot step name for the next step (static ASCII), NULL = default */

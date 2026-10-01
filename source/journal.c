@@ -10,7 +10,7 @@
 
 #define SEG_VER        JRN_SEG_VER
 #define SLOT_FOREIGN   (-1)     /* slot_hdr / hdr_parse: valid magic + crc, but not a header this build understands */
-#define ZWINDOW        1024u   /* the most a cut can leave past the tail; the most we zero */
+#define ZWINDOW        (JRN_CHAIN_MAX * JRN_REC_MAX)   /* the most a cut can leave past the tail (a chain's orphan parts: <= 8 x 512); the most we zero */
 #define RCHUNK         128u    /* streaming chunk for CRC / verify (stack)                */
 #define SEG_MAX        9999u   /* logical segment index cap (the slot files are a fixed ring) */
 #define RING_MAX       JRN_RING_MAX   /* slot files in the ring (max_segs + 1, max_segs <= JRN_MAX_SEGS) */
@@ -20,7 +20,9 @@
 
 _Static_assert(JRN_PEND_MAXN * JRN_REC_MIN <= JRN_PEND_CAP, "pending record count bound");
 _Static_assert(JRN_REC_MAX <= JRN_PEND_CAP, "a record must fit the pending buffer");
-_Static_assert(ZWINDOW >= JRN_PEND_CAP, "the torn-tail zero window must cover a whole orphaned back-to-front batch");
+_Static_assert(ZWINDOW >= JRN_PEND_CAP && ZWINDOW >= JRN_CHAIN_MAX * JRN_REC_MAX, "the torn-tail zero window must cover a whole orphaned batch and a whole orphaned chain");
+_Static_assert(JRN_CHAIN_MAX * JRN_REC_MAX <= JRN_SEG_SIZE - JRN_REC_BASE, "a chain fits one segment");
+_Static_assert(JRN_CHAIN_MAX >= 2u && JRN_CHAIN_MAX <= 255u, "the head stores the record count in aux");
 _Static_assert(JRN_SEG_SIZE % 512u == 0 && JRN_SEG_HDR <= 512u, "the zero seam works in 512-byte chunks that tile a segment");
 _Static_assert(JRN_REC_BASE % 512u == 0 && JRN_REC_BASE >= JRN_SEG_HDR && JRN_REC_BASE + JRN_REC_MAX < JRN_SEG_SIZE, "records start on a sector boundary, after the header sector");
 
@@ -180,7 +182,7 @@ static int seg_path(const Jrn* j, uint16_t idx, char* out) {
 }
 
 /* ---- segment I/O ------------------------------------------------------------------------------- */
-static int seg_read(const Jrn* j, uint16_t idx, uint32_t off, void* buf, uint32_t n) {
+static __attribute__((noinline)) int seg_read(const Jrn* j, uint16_t idx, uint32_t off, void* buf, uint32_t n) {   /* noinline: ONE seam-dispatch site for `JrnFs.read @12 in seg_read` (stack_edges.txt) however many callers verify/scan */
   char p[JRN_PATH_MAX];
   if (seg_path(j, idx, p) || off + n > JRN_SEG_SIZE) return JRN_E_ARG;
   return j->fs->read(j->fs->ctx, p, off, buf, n) == 0 ? 0 : JRN_E_IO;
@@ -213,7 +215,7 @@ static int seg_zero(const Jrn* j, uint16_t idx, uint32_t off, uint32_t n) {
 }
 
 /* The bytes on the card must equal `buf` (the card ACKs writes it drops: LOG_VERIFY_LOST). */
-static int seg_verify(const Jrn* j, uint16_t idx, uint32_t off, const uint8_t* buf, uint32_t n) {
+static inline __attribute__((always_inline)) int seg_verify(const Jrn* j, uint16_t idx, uint32_t off, const uint8_t* buf, uint32_t n) {   /* always inlined (as when jrn_flush was the only caller): its 128-B chunk then shares the caller's frame instead of adding a call level to the staging funnel's stack chain */
   uint8_t chunk[RCHUNK];
   uint32_t c, m;
   int rc;
@@ -229,10 +231,10 @@ static int seg_verify(const Jrn* j, uint16_t idx, uint32_t off, const uint8_t* b
 /* Header (the field-by-field reserved-byte policy is in journal.h): 'PDJS', ver u16, ring u16, logical index
  * u32, nreg u8, rsv u8, reg_size u16, 12 zero bytes, crc32 of the first 28 bytes. All-zero = a FREE slot
  * (never written, or retired in place). */
-static void seg_hdr_build(uint16_t idx, uint16_t ring, uint8_t nreg, uint16_t reg_size, uint8_t* h) {
+static void seg_hdr_build(uint16_t idx, uint16_t ring, uint16_t ver, uint8_t nreg, uint16_t reg_size, uint8_t* h) {
   memset(h, 0, JRN_SEG_HDR);
   h[0] = 'P'; h[1] = 'D'; h[2] = 'J'; h[3] = 'S';
-  jrn_wr16(h + 4, SEG_VER);
+  jrn_wr16(h + 4, ver);
   jrn_wr16(h + 6, ring);
   jrn_wr32(h + 8, idx);
   h[12] = nreg;                       /* [13] reserved: writer zero */
@@ -248,7 +250,7 @@ static int hdr_parse(const uint8_t* h, uint32_t* idx, uint16_t* ring, uint8_t* n
   if (h[0] != 'P' || h[1] != 'D' || h[2] != 'J' || h[3] != 'S') return 0;
   if (jrn_crc32_update(0, h, 28) != jrn_rd32(h + 28)) return 0;
   *idx = jrn_rd32(h + 8); *ring = jrn_rd16(h + 6); *nreg = h[12]; *reg_size = jrn_rd16(h + 14);
-  if (jrn_rd16(h + 4) != SEG_VER || *idx < 1u || *idx > SEG_MAX || *ring < 2u || *ring > RING_MAX) return SLOT_FOREIGN;
+  if ((jrn_rd16(h + 4) != SEG_VER && jrn_rd16(h + 4) != JRN_SEG_VER2) || *idx < 1u || *idx > SEG_MAX || *ring < 2u || *ring > RING_MAX) return SLOT_FOREIGN;
   if (!*nreg || *nreg > JRN_NREG_MAX || !*reg_size) return SLOT_FOREIGN;
   return 1;
 }
@@ -289,7 +291,7 @@ int jrn_i_hdr_parse(const uint8_t* b, JrnRec* r) {
   r->kind = (uint8_t)((flags >> 4) & 3u);
   r->crossed = (uint8_t)(flags & 1u);
   r->nspans = b[7];
-  if (r->kind > JRN_KIND_DISCARD || (r->kind != JRN_KIND_STEP && r->nspans)) return 2;
+  if (r->kind == JRN_KIND_PART ? !r->nspans : (r->kind != JRN_KIND_STEP && r->nspans)) return 2;   /* a part holds spans, a marker none */
   r->len = len;
   r->seq = jrn_rd32(b + 8);   r->parent = jrn_rd32(b + 12); r->aux = jrn_rd32(b + 16);
   r->pre = jrn_rd32(b + 20);  r->post = jrn_rd32(b + 24);
@@ -589,7 +591,7 @@ static int first_cb(void* arg, uint32_t off, const uint8_t* b, uint32_t n, int l
   FirstCx* c = (FirstCx*)arg;
   JrnRec r;
   (void)off; (void)used;
-  c->ok = rec_check(b, n, &r) == 0 && (!c->sc->have || r.seq == c->sc->expect);
+  c->ok = rec_check(b, n, &r) == 0 && r.kind != JRN_KIND_PART && (!c->sc->have || r.seq == c->sc->expect);   /* a part is never a segment's first record */
   (void)last;
   return 0;   /* the first record starts at a sector boundary and is <= 512 B: the first chunk holds it whole */
 }
@@ -604,7 +606,15 @@ static int next_seg_continues(const Jrn* j, uint16_t seg, const Scan* sc) {
   return rc < 0 ? rc : (int)c.ok;
 }
 
-typedef struct PfxCx { Jrn* j; Scan* sc; uint32_t hash, off; uint16_t seg; } PfxCx;
+/* The open scan. A CHAIN (D10) is held back until it is whole: the head's record and its parts are walked but nothing is absorbed
+ * and `off` (the valid end) does not move until the LAST part has been checked -- a chain cut anywhere ends the valid prefix at its
+ * head, so the scan can never report a partial step. `want` = parts still to come, `nxt` = the seq the next part must carry. */
+typedef struct PfxCx { Jrn* j; Scan* sc; JrnRec head; uint32_t hash, off, head_off, nxt; uint16_t seg; uint8_t want; } PfxCx;
+
+/* Is `r` the next part of the chain whose head is `h`? (kind, consecutive seq, parent link, 1-based index, not crossed) */
+static int part_ok(const JrnRec* r, const JrnRec* h, uint32_t nxt) {
+  return r->kind == JRN_KIND_PART && r->seq == nxt && r->parent == h->seq && r->aux == nxt - h->seq && !r->crossed;
+}
 
 static int pfx_cb(void* arg, uint32_t off, const uint8_t* b, uint32_t n, int last, uint32_t* used) {
   PfxCx* c = (PfxCx*)arg;
@@ -614,7 +624,27 @@ static int pfx_cb(void* arg, uint32_t off, const uint8_t* b, uint32_t n, int las
   while (p < n) {
     rc = rec_check(b + p, n - p, &r);
     if (rc == REC_SHORT && !last) break;                                                /* crosses into the next chunk */
-    if (rc != 0 || (c->sc->have && r.seq != c->sc->expect)) return 0;                  /* this segment's run ends */
+    if (rc != 0) return 0;                                                              /* this segment's run ends (an unfinished chain is dropped with it) */
+    if (c->want) {                                                                      /* inside a chain: only the next part will do */
+      if (!part_ok(&r, &c->head, c->nxt)) return 0;
+      c->nxt++; c->want--;
+      p += r.len;
+      if (!c->want) {                                                                   /* the last part landed: the chain is a step */
+        if (c->head_off == JRN_REC_BASE) idx_set(c->j, c->seg, c->head.seq);
+        scan_absorb(c->sc, &c->head, c->hash);
+        c->sc->expect = c->nxt;                                                         /* the part seqs are spent too */
+        c->off = off + p;
+      }
+      continue;
+    }
+    if (c->sc->have && r.seq != c->sc->expect) return 0;                               /* this segment's run ends */
+    if (r.kind == JRN_KIND_PART) return 0;                                              /* a part with no head */
+    if (r.kind == JRN_KIND_STEP && r.aux) {                                             /* a chain HEAD: hold it back until its parts are in */
+      if (r.aux < 2u || r.aux > JRN_CHAIN_MAX) return 0;
+      c->head = r; c->head_off = off + p; c->want = (uint8_t)(r.aux - 1u); c->nxt = r.seq + 1u;
+      p += r.len;
+      continue;
+    }
     if (off + p == JRN_REC_BASE) idx_set(c->j, c->seg, r.seq);
     scan_absorb(c->sc, &r, c->hash);
     p += r.len;
@@ -632,9 +662,9 @@ static int scan_prefix(Jrn* j, uint32_t hash, Scan* sc) {
   uint16_t seg = j->seg_first;
   uint32_t g;
   int rc;
-  c.j = j; c.sc = sc; c.hash = hash; c.off = JRN_REC_BASE;
+  c.j = j; c.sc = sc; c.hash = hash; c.off = JRN_REC_BASE; c.want = 0; c.nxt = 0; c.head_off = 0; memset(&c.head, 0, sizeof c.head);
   for (g = 0; g < RING_MAX; g++) {
-    c.seg = seg; c.off = JRN_REC_BASE;
+    c.seg = seg; c.off = JRN_REC_BASE; c.want = 0;   /* a chain never spans segments */
     rc = seg_scan(j, seg, JRN_REC_BASE, JRN_SEG_SIZE, pfx_cb, &c);
     if (rc) return rc;
     if (seg >= j->seg_last) break;
@@ -661,16 +691,13 @@ static int zero_from(const Jrn* j, uint16_t seg, uint32_t from) {
 
 static int repair_tail(const Jrn* j) {
   uint16_t s;
-  uint8_t b[16];
-  int rc, i, dirty;
+  int rc;
   if (j->readonly || !j->tail_seg) return 0;
   rc = zero_from(j, j->tail_seg, j->tail_off);
   if (rc) return rc;
   for (s = (uint16_t)(j->tail_seg + 1u); s <= j->seg_last && s; s++) {   /* orphans past the tail */
-    rc = seg_read(j, s, JRN_REC_BASE, b, sizeof b);
+    rc = zero_from(j, s, JRN_REC_BASE);   /* the whole window: a chain rolled into a spare lays its parts down BEFORE its head, so the first record's slot can still be clean while parts stand behind it */
     if (rc) return rc;
-    for (dirty = 0, i = 0; i < (int)sizeof b; i++) if (b[i]) dirty = 1;
-    if (dirty) { rc = zero_from(j, s, JRN_REC_BASE); if (rc) return rc; }
   }
   return 0;
 }
@@ -871,7 +898,7 @@ static int ring_ensure(const Jrn* j) {
 static int slot_zero(const Jrn* j, uint16_t idx) { return seg_zero(j, idx, 0, JRN_SEG_SIZE); }
 
 /* Logical segment `idx` becomes live in its slot: recycle (zero-fill) then header LAST. */
-static int seg_activate(Jrn* j, uint16_t idx) {
+static int seg_activate(Jrn* j, uint16_t idx, uint16_t ver) {
   char p[JRN_PATH_MAX];
   uint8_t h[JRN_SEG_HDR];
   uint32_t oi;
@@ -886,7 +913,7 @@ static int seg_activate(Jrn* j, uint16_t idx) {
   if (rc == 1) return JRN_E_STATE;                                     /* a live segment owns it */
   rc = slot_zero(j, idx);
   if (rc) return rc;
-  seg_hdr_build(idx, j->ring, j->nreg, j->reg_size, h);
+  seg_hdr_build(idx, j->ring, ver, j->nreg, j->reg_size, h);
   rc = seg_write(j, idx, 0, h, JRN_SEG_HDR);
   if (rc) return rc;
   idx_set(j, idx, 0);                                   /* a fresh segment holds no record yet */
@@ -921,7 +948,7 @@ int jrn_prepare_first(Jrn* j) {
   j->ring = (uint16_t)(j->max_segs + 1u);      /* a fresh key: the ring is sized once, here */
   rc = ring_ensure(j);
   if (rc) return rc;
-  rc = seg_activate(j, 1);
+  rc = seg_activate(j, 1, SEG_VER);                   /* every journal STARTS as v1: only a chain makes a segment v2 (D10) */
   if (rc) return rc;
   j->seg_first = j->seg_last = j->tail_seg = 1;
   j->tail_off = JRN_REC_BASE;
@@ -950,20 +977,44 @@ int jrn_compact(Jrn* j) {
   return JRN_OK;
 }
 
-int jrn_prepare(Jrn* j) {
-  int rc = jrn_prepare_first(j);
+/* The format version of live segment `idx`, read from its header: 1 / 2, or a JRN_E_* (a segment the engine believes live whose header
+ * is not: an invariant failure, never guessed). */
+static int seg_ver(const Jrn* j, uint16_t idx) {
+  uint8_t h[JRN_SEG_HDR], nreg = 0;
+  uint32_t i = 0;
+  uint16_t r = 0, rsz = 0;
+  int rc = seg_read(j, idx, 0, h, JRN_SEG_HDR);
   if (rc) return rc;
-  if (j->seg_last != j->tail_seg) return JRN_OK;                          /* a spare already exists */
+  if (hdr_parse(h, &i, &r, &nreg, &rsz) != 1) return JRN_E_STATE;
+  return jrn_rd16(h + 4);
+}
+
+/* Make the NEXT segment exist (the spare), retiring the oldest first when the ring has no free slot. `ver` 0 = inherit the last
+ * segment's version (a journal that has gone v2 stays v2; a v1 journal stays v1 and older builds keep reading it). */
+static int prepare_spare(Jrn* j, uint16_t ver) {
+  int rc;
   if (j->seg_last >= SEG_MAX) return JRN_E_FULL;                           /* the logical index space is spent: LOUD, never a silent no-spare */
   if ((uint32_t)(j->seg_last - j->seg_first + 1u) >= j->ring) {           /* no free slot: retire the oldest */
     rc = jrn_compact(j);
     if (rc) return rc;
     if ((uint32_t)(j->seg_last - j->seg_first + 1u) >= j->ring) return JRN_E_FULL;
   }
-  rc = seg_activate(j, (uint16_t)(j->seg_last + 1u));   /* the NEXT segment, never mid-session */
+  if (!ver) {
+    rc = seg_ver(j, j->seg_last);
+    if (rc < 0) return rc;
+    ver = (uint16_t)rc;
+  }
+  rc = seg_activate(j, (uint16_t)(j->seg_last + 1u), ver);   /* the NEXT segment, never mid-session unless a chain asks (D10) */
   if (rc) return rc;
   j->seg_last++;
   return JRN_OK;
+}
+
+int jrn_prepare(Jrn* j) {
+  int rc = jrn_prepare_first(j);
+  if (rc) return rc;
+  if (j->seg_last != j->tail_seg) return JRN_OK;                          /* a spare already exists */
+  return prepare_spare(j, 0);
 }
 
 /* ---- recording: building a step in the pending buffer ------------------------------------------------- */
@@ -1078,6 +1129,189 @@ int jrn_step_end(Jrn* j) {
   memcpy(j->crc, j->bcrc, sizeof j->crc);
   j->bld_len = 0; j->nspans = 0;
   if ((uint32_t)JRN_PEND_CAP - j->pend_len < JRN_FLUSH_HEADROOM) j->flush_wanted = 1;
+  return JRN_OK;
+}
+
+/* ---- chained steps: the writer (D10) ------------------------------------------------------------------------------------ */
+/* A cursor into the diff: region index + the byte position to resume scanning from. A record boundary may fall INSIDE a run, so a
+ * cursor is a position, not a span number; planning and every (re)build walk the very same function, so they cannot disagree. */
+typedef struct ChCur { uint8_t reg; uint16_t pos; } ChCur;
+typedef struct ChPlan {
+  ChCur    cur[JRN_CHAIN_MAX];   /* where record k's scan starts */
+  uint16_t len[JRN_CHAIN_MAX];   /* record k's full length incl. its CRC */
+  uint32_t total;
+  uint16_t changed;              /* bit r = region r holds a span */
+  uint8_t  n;
+} ChPlan;
+
+/* Fill b[JRN_REC_HDR..) with as many whole spans as fit one record, starting at *cur, and leave *cur where the next record resumes. A
+ * run longer than the room is cut (the pieces are disjoint spans of the same region). Returns the body length (header + spans, no CRC);
+ * *nsp = spans written (0 = the diff is exhausted). The scan is bounded: every pass either moves to the next region, emits >= 1 byte or stops. */
+static uint16_t ch_fill(const Jrn* j, const JrnBlk* blk, uint8_t nblk, ChCur* cur, uint8_t* b, uint8_t* nsp, uint16_t* changed) {
+  uint16_t used = JRN_REC_HDR, a, e, take, room;
+  uint8_t ns = 0;
+  while (cur->reg < nblk) {
+    const JrnBlk* k = &blk[cur->reg];
+    if (!k->old_blk || !k->new_blk || !next_run(k->old_blk, k->new_blk, j->reg_size, cur->pos, &a, &e)) { cur->reg++; cur->pos = 0; continue; }
+    room = (uint16_t)(JRN_REC_MAX - 4u - used);
+    if (room < JRN_SPAN_HDR + 2u) break;                               /* this record is full: the run waits for the next one */
+    take = (uint16_t)(e - a);
+    if (take > (room - JRN_SPAN_HDR) / 2u) take = (uint16_t)((room - JRN_SPAN_HDR) / 2u);
+    b[used] = cur->reg; b[used + 1u] = 0;
+    jrn_wr16(b + used + 2u, a); jrn_wr16(b + used + 4u, take);
+    memcpy(b + used + JRN_SPAN_HDR, k->old_blk + a, take);
+    memcpy(b + used + JRN_SPAN_HDR + take, k->new_blk + a, take);
+    used = (uint16_t)(used + JRN_SPAN_HDR + 2u * take);
+    cur->pos = (uint16_t)(a + take);
+    *changed = (uint16_t)(*changed | (1u << cur->reg));
+    ns++;
+  }
+  *nsp = ns;
+  return used;
+}
+
+/* Dry run: split the whole diff into records. JRN_OK, JRN_NOOP (no byte differs), JRN_E_TOOBIG (> JRN_CHAIN_MAX records),
+ * JRN_E_DIVERGED (an old block is not what the engine tracks). The scratch is j->pend (empty by precondition). */
+static int ch_plan(Jrn* j, const JrnBlk* blk, uint8_t nblk, ChPlan* p) {
+  ChCur cur, at;
+  uint16_t len;
+  uint8_t r, ns;
+  memset(p, 0, sizeof *p);
+  cur.reg = 0; cur.pos = 0;
+  for (r = 0; r < nblk; r++)
+    if (blk[r].old_blk && jrn_crc32_update(0, blk[r].old_blk, j->reg_size) != j->crc[r]) return JRN_E_DIVERGED;
+  for (;;) {
+    at = cur;
+    len = ch_fill(j, blk, nblk, &cur, j->pend, &ns, &p->changed);
+    if (!ns) break;
+    if (p->n >= JRN_CHAIN_MAX) return JRN_E_TOOBIG;
+    p->cur[p->n] = at; p->len[p->n] = (uint16_t)(len + 4u); p->total += (uint32_t)len + 4u; p->n++;
+  }
+  return p->n ? JRN_OK : JRN_NOOP;
+}
+
+/* Record k of the plan, complete (header, spans, CRC), in j->pend[0..len). Head k = 0 carries the step's flags and parent; a part
+ * carries parent = the head's seq, aux = k, crossed 0. Every header byte is set: pre/post/name are the step's on every record. */
+static __attribute__((noinline)) void ch_build(Jrn* j, const JrnBlk* blk, uint8_t nblk, const ChPlan* p, uint8_t k, const char* name, int crossed,
+                     uint32_t pre, uint32_t post) {
+  uint8_t* b = j->pend;
+  ChCur cur = p->cur[k];
+  uint16_t scratch = 0, len;
+  uint8_t ns = 0, i;
+  memset(b, 0, JRN_REC_HDR);
+  len = ch_fill(j, blk, nblk, &cur, b, &ns, &scratch);
+  jrn_wr32(b, JRN_REC_MAGIC);
+  jrn_wr16(b + 4, (uint16_t)(len + 4u));
+  b[6] = (uint8_t)((k ? 0u : (crossed ? 1u : 0u)) | ((k ? JRN_KIND_PART : JRN_KIND_STEP) << 4));
+  b[7] = ns;
+  jrn_wr32(b + 8, j->next_seq + k);
+  jrn_wr32(b + 12, k ? j->next_seq : j->cursor);
+  jrn_wr32(b + 16, k ? k : (p->n > 1u ? p->n : 0u));
+  jrn_wr32(b + 20, pre); jrn_wr32(b + 24, post);
+  for (i = 0; i < JRN_NAME_LEN && name[i]; i++) b[28 + i] = (uint8_t)name[i];
+  jrn_wr32(b + len, jrn_crc32_update(0, b, len));
+}
+
+/* Re-stamp the EMPTY spare `idx` as version `ver`: its header is zeroed (retired) and the new one written LAST -- the same two atomic header writes as
+ * a retire and an activation, but NO body zero-fill: a spare holds no record (records only enter at the tail) and its body was zero-filled when it was
+ * activated, so only a header differs. This keeps the 64-KiB zero scan (and its 1.6 KB seam frame) off the staging funnel's stack chain. */
+static int seg_rehead(Jrn* j, uint16_t idx, uint16_t ver) {
+  uint8_t h[JRN_SEG_HDR];
+  int rc = seg_retire(j, idx);
+  if (rc) return rc;
+  seg_hdr_build(idx, j->ring, ver, j->nreg, j->reg_size, h);
+  rc = seg_write(j, idx, 0, h, JRN_SEG_HDR);
+  if (rc) return rc;
+  idx_set(j, idx, 0);
+  return seg_valid(j, idx) ? 0 : JRN_E_IO;
+}
+
+/* Where the chain goes: (*seg, *off). A chain of >= 2 records needs a v2 segment (a v1 header cannot be rewritten in place: a tear of the 32-byte
+ * header makes the slot FREE and the whole segment's history is gone). So: the tail when it is v2 and has room; else the EXISTING spare, which is empty
+ * by construction and so may be re-stamped v2 (seg_rehead). A chain never creates a spare mid-session (that is a zero-filled activation, a safe-moment
+ * job: jrn_prepare): no spare -> JRN_E_FULL, the step is an honest gap and the next prepare makes one. A plain single record (n == 1) takes the tail or the
+ * next segment as it is. */
+static int ch_place(Jrn* j, uint8_t n, uint32_t total, uint16_t* seg, uint32_t* off) {
+  int v, rc;
+  uint16_t s;
+  v = seg_ver(j, j->tail_seg);
+  if (v < 0) return v;
+  if ((n < 2u || v == (int)JRN_SEG_VER2) && j->tail_off + total <= JRN_SEG_SIZE) { *seg = j->tail_seg; *off = j->tail_off; return JRN_OK; }
+  if (j->seg_last == j->tail_seg) return JRN_E_FULL;                   /* no spare to roll into: never made here */
+  s = (uint16_t)(j->tail_seg + 1u);
+  v = seg_ver(j, s);
+  if (v < 0) return v;
+  if (n >= 2u && v != (int)JRN_SEG_VER2) {                             /* an empty v1 spare: re-stamp it v2 */
+    if (idx_get(j, s)) return JRN_E_STATE;                             /* the spare holds records: never touched */
+    rc = seg_rehead(j, s, JRN_SEG_VER2);
+    if (rc) { j->seg_last = j->tail_seg; idx_set(j, s, 0); return rc; }  /* the spare is gone (or unknowable): a later prepare re-makes it, the next open re-reads the ring */
+  }
+  *seg = s; *off = JRN_REC_BASE;
+  return JRN_OK;
+}
+
+/* The chain's physical write: parts first (back to front), the HEAD last. A failed write may have left valid records past the tail: recording STOPS. Its own
+ * frame (noinline) so the staging funnel's stack chain pays for only one of write / verify at a time. */
+static __attribute__((noinline)) int ch_write_all(Jrn* j, const JrnBlk* blk, uint8_t nblk, const ChPlan* p, const char* name, int crossed,
+                                                    uint32_t pre, uint32_t post, uint16_t seg, uint32_t off) {
+  uint32_t o;
+  uint8_t r, k;
+  int rc;
+  for (k = p->n; k-- > 0;) {
+    for (o = off, r = 0; r < k; r++) o += p->len[r];
+    ch_build(j, blk, nblk, p, k, name, crossed, pre, post);
+    rc = seg_write(j, seg, o, j->pend, p->len[k]);
+    if (rc) { j->stopped = 1; return rc; }
+  }
+  return 0;
+}
+
+/* Read every record back and compare with a fresh rebuild; a mismatch stops recording exactly as a failed flush verify does. */
+static __attribute__((noinline)) int ch_verify_all(Jrn* j, const JrnBlk* blk, uint8_t nblk, const ChPlan* p, const char* name, int crossed,
+                                                    uint32_t pre, uint32_t post, uint16_t seg, uint32_t off) {
+  uint32_t o;
+  uint8_t r, k;
+  int rc;
+  for (k = 0; k < p->n; k++) {
+    for (o = off, r = 0; r < k; r++) o += p->len[r];
+    ch_build(j, blk, nblk, p, k, name, crossed, pre, post);
+    rc = seg_verify(j, seg, o, j->pend, p->len[k]);
+    if (rc == JRN_E_VERIFY) j->stopped = 1;
+    if (rc) return rc;
+  }
+  return 0;
+}
+
+int jrn_chain_record(Jrn* j, const char* name, int crossed, const JrnBlk* blk, uint8_t nblk) {
+  ChPlan p;
+  uint32_t pre, post, off;
+  uint16_t seg;
+  uint8_t r, k;
+  int rc;
+  if (!j || !name || !blk || !nblk || nblk > j->nreg) return JRN_E_ARG;
+  if (j->readonly) return JRN_E_RDONLY;
+  if (j->stopped) return JRN_E_STOPPED;
+  if (!j->tail_seg) return JRN_E_NOSEG;
+  if (j->bld_len) return JRN_E_STATE;
+  for (k = 0; k < JRN_NAME_LEN && name[k]; k++)
+    if ((uint8_t)name[k] < 0x20u || (uint8_t)name[k] > 0x7Eu) return JRN_E_ARG;   /* step names are printable ASCII (journal.h) */
+  if (j->pend_n) { j->flush_wanted = 1; return JRN_E_FULL; }                    /* the chain goes straight to the tail: flush what is pending first */
+  rc = ch_plan(j, blk, nblk, &p);
+  if (rc) return rc;
+  memcpy(j->bcrc, j->crc, sizeof j->bcrc);
+  for (r = 0; r < nblk; r++)
+    if (((p.changed >> r) & 1u) && blk[r].new_blk) j->bcrc[r] = jrn_crc32_update(0, blk[r].new_blk, j->reg_size);
+  pre = hash_of(j->crc, j->nreg); post = hash_of(j->bcrc, j->nreg);
+  rc = ch_place(j, p.n, p.total, &seg, &off);
+  if (rc) return rc;
+  rc = ch_write_all(j, blk, nblk, &p, name, crossed, pre, post, seg, off);
+  if (!rc) rc = ch_verify_all(j, blk, nblk, &p, name, crossed, pre, post, seg, off);
+  if (rc) return rc;
+  if (off == JRN_REC_BASE) idx_set(j, seg, j->next_seq);
+  j->tail_seg = seg; j->tail_off = off + p.total;
+  j->cursor = j->next_seq; j->tip = j->next_seq; j->offer = 0;
+  j->next_seq += p.n;
+  memcpy(j->crc, j->bcrc, sizeof j->crc);
   return JRN_OK;
 }
 

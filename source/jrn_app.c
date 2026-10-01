@@ -103,6 +103,8 @@ static int ja_do_open(ImgRec* r) {
   return jrn_open(&s_j, &c, &r->img);
 }
 
+static int jrnapp_chain(const char* name, int crossed, const JrnBlk* blk, uint8_t nblk);   /* the funnel's chain hook (below) */
+
 /* The shared tail of both opens: the accessor is bound and s_key is set; open (rumble paused: a torn tail is zeroed in
  * place, an SD write), then bind the recorder. */
 static int ja_open_bound(ImgRec* r) {
@@ -115,6 +117,7 @@ static int ja_open_bound(ImgRec* r) {
   r->j = &s_j;
   s_saved = jrn_cursor(&s_j);                               /* the loaded image IS the card's: its anchor is the saved point */
   r->flush = jrnapp_flush;
+  r->chain = jrnapp_chain;
   r->state = IREC_OK;
   s_state = JA_OK;
   return JA_OK;
@@ -238,6 +241,19 @@ int jrnapp_prepare(ImgRec* r, const uint8_t* sb2, bool frlg) {
  * rename / ID edit moves it: the redirect keeps the history). */
 int jrnapp_prepare_key(ImgRec* r, uint64_t key) { return ja_prepare(r, key, true); }
 
+/* The funnel's chain hook (z9, D10): a step beyond one record, recorded straight to the tail segment as a chain. Rumble paused for the card
+ * transfers (this can retire + re-activate the spare, or make one); a card error stops recording exactly as a failed flush does. */
+static int jrnapp_chain(const char* name, int crossed, const JrnBlk* blk, uint8_t nblk) {
+  int rc;
+  if (!s_r || !s_r->j || s_state != JA_OK) return JRN_E_ARG;
+  rmbl_pause();
+  rc = jrn_chain_record(&s_j, name, crossed, blk, nblk);
+  rmbl_resume();
+  if (rc != JRN_OK && rc != JRN_NOOP && rc != JRN_E_TOOBIG && rc != JRN_E_FULL && rc != JRN_E_DIVERGED) ja_event("chained step failed", rc);
+  if (s_j.stopped) s_r->state = IREC_STOPPED;                 /* the UI must never say "recorded" again */
+  return rc;
+}
+
 int jrnapp_flush(void) {
   int rc;
   if (!s_r || !s_r->j || s_state != JA_OK) return 0;
@@ -293,6 +309,11 @@ int jrnapp_reapply(void) {
   for (i = 0; i < av; i++) {
     rc = jrn_redo(&s_j, &s_r->img, 0);
     if (rc == JRN_E_FULL && !retried) { retried = 1; (void)jrnapp_flush(); rc = jrn_redo(&s_j, &s_r->img, 0); }
+    if (rc == JRN_E_TORN) {                                  /* a chained step failed AND its rollback failed (z9): the image holds part of it */
+      img_rec_cross(s_r);                                    /* the next recorded step is a floor: the offer never re-applies across it */
+      ja_event("re-apply: a chain's rollback failed, image PARTIAL", rc);
+      return JRN_E_TORN;                                     /* NOT a count: the caller re-derives its copies AND says the image is partial */
+    }
     if (rc != JRN_OK) { ja_event("re-apply stopped", rc); break; }
     n++;
   }
@@ -353,6 +374,12 @@ int jrnapp_step(int dir, char name[25]) {
     rc = dir < 0 ? jrn_undo(&s_j, &s_r->img, &rec) : jrn_redo(&s_j, &s_r->img, &rec);
     if (rc == JRN_E_FULL && !retried) { retried = 1; (void)jrnapp_flush(); continue; }
     break;
+  }
+  if (rc == JRN_E_TORN) {                                    /* z9: a chained undo/redo failed part way and its rollback failed too: the image is PARTIAL */
+    img_rec_cross(s_r);                                      /* floor: the next recorded step is crossed, so a later re-apply stops before it */
+    ja_event(dir < 0 ? "undo: chain rollback failed, image PARTIAL" : "redo: chain rollback failed, image PARTIAL", rc);
+    if (name) memcpy(name, "partial step", 13);              /* #303's contract: JRN_OK + a distinct name, the caller re-derives its copies */
+    return JRN_OK;
   }
   if (rc == JRN_OK && name) { memcpy(name, rec.name, 24); name[24] = 0; }
   if (rc == JRN_E_CROSSED && name) {                         /* name the floor: undo stops AT the cursor's step, redo BEFORE the next crossed one */
@@ -430,7 +457,7 @@ static int ja_mon_at(const JaSpan* sp, uint16_t i, uint32_t* slot, uint8_t* q) {
 }
 
 static int ja_pair_eligible(const JrnRec* r) {
-  return s_ai.slot >= 0 && r->kind == JRN_KIND_STEP && !r->crossed && strcmp(r->name, "Box move") == 0;
+  return s_ai.slot >= 0 && r->kind == JRN_KIND_STEP && !r->aux && !r->crossed && strcmp(r->name, "Box move") == 0;   /* aux != 0: a chain head -- its first record holds only part of the spans, so it never pairs (D10) */
 }
 
 /* From the record in s_rec (the NEWER half): fill s_sig. Returns s_sig.ok = "this step adds one mon into one empty slot". */
@@ -617,10 +644,12 @@ int jrnapp_jump(uint32_t target, char stop[25], int* moved) {
   }
   if (target == 0) dir = -1;
   for (hops = 0; hops < 4096u && jrn_cursor(&s_j) != target; hops++) {
+    char nm[25];
     if (dir < 0 && jrn_cursor(&s_j) == 0) break;
-    rc = jrnapp_step(dir, 0);
+    rc = jrnapp_step(dir, nm);
     if (rc != JRN_OK) break;
     n++;
+    if (strcmp(nm, "partial step") == 0) { rc = JRN_E_TORN; break; }   /* z9: the image holds PART of a chain: stop and say so */
   }
   if (moved) *moved = n;
   if (rc == JRN_E_CROSSED && stop && dir < 0) jrnapp_step_name(jrn_cursor(&s_j), stop);   /* the floor is the step at the cursor */

@@ -82,12 +82,16 @@
  * all refuse. A reader must never zero, recycle or trim what it does not understand. So: ANY change
  * a current reader would reject or misread (a new record kind or flag, a new header field with
  * meaning, a moved offset, a bigger ring) BUMPS JRN_SEG_VER. */
-#define JRN_SEG_VER        1u
+#define JRN_SEG_VER        1u   /* the version every segment is activated with unless it is chain-capable (below) */
+#define JRN_SEG_VER2       2u   /* v2 (z9, D10): the segment MAY hold chained steps (kind 3 parts + a step aux >= 2). A reader
+                                 * of THIS build reads v1 and v2; a v1-only (older) build meets v2 as FOREIGN: "no history", read-only,
+                                 * nothing zeroed. A journal may mix v1 and v2 segments (an old journal continued). */
+#define JRN_CHAIN_MAX      8u   /* records in one chained step (head + <= 7 parts): capacity ~3.6 KiB of span bytes */
 #define JRN_PDR_VER        1u   /* the .pdr redirect layout version (byte 3) */
 
 /* THE SEGMENT HEADER (sector 0, 32 bytes at offset 0; the rest of the sector is zero and never written):
  *   [0..3]  'PDJS'                    magic          reader: bad magic = FREE slot
- *   [4..5]  version u16 (JRN_SEG_VER)               reader: unknown = FOREIGN  (the version rule above)
+ *   [4..5]  version u16 (JRN_SEG_VER or JRN_SEG_VER2)               reader: unknown = FOREIGN  (the version rule above)
  *   [6..7]  ring u16, 2..JRN_RING_MAX               reader: outside = FOREIGN
  *   [8..11] logical index u32, 1..9999              reader: outside = FOREIGN (the cap is part of the format)
  *   [12]    nreg u8      regions of the image       reader: 0 / > JRN_NREG_MAX = FOREIGN; != cfg.nreg = FOREIGN
@@ -110,9 +114,20 @@
  * [7] nspans | [8..11] seq | [12..15] parent | [16..19] aux | [20..23] pre_hash |
  * [24..27] post_hash | [28..51] name[24] | spans... | crc32 of everything before it.
  * kind 0 = step, 1 = cursor marker (parent = the seq the cursor moved to, aux = the
- * redo tip), 2 = discarded marker (parent = the anchor kept, aux = the head thrown away).
- * Span: {region, rsv, off, len} then before[len] then after[len]. */
-enum { JRN_KIND_STEP = 0, JRN_KIND_CURSOR = 1, JRN_KIND_DISCARD = 2 };
+ * redo tip), 2 = discarded marker (parent = the anchor kept, aux = the head thrown away),
+ * 3 = CHAIN PART (v2 segments only, D10). Span: {region, rsv, off, len} then before[len] then after[len].
+ *
+ * CHAINED STEPS (v2). A step whose span diff does not fit one record is a CHAIN of N = 2..JRN_CHAIN_MAX records
+ * with consecutive seqs, all inside ONE segment: a kind-0 HEAD (parent = the normal undo parent, aux = N, pre/post =
+ * the whole step's hashes, crossed = the step's flag) then N-1 kind-3 PARTS, part k (k = 1..N-1) carrying seq = head.seq + k,
+ * parent = head.seq, aux = k, crossed = 0, pre/post = the head's, nspans >= 1. Spans are split across the records in image
+ * order (one run may be cut at a record boundary; the pieces are disjoint). A plain step has aux 0 (no v1 writer ever stored
+ * another value). Cursor, tip, parent and marker links only ever name a HEAD's seq, so every walk sees a chain as ONE step.
+ * COMMIT: the writer lays the parts down first (back to front) and the HEAD LAST, each verified: the head becomes valid -- and
+ * with it the whole chain -- only when its last sector lands, so a power cut leaves the chain absent (orphan parts beyond the
+ * tail are zeroed by the open-time repair). The reader accepts a chain only when ALL N records are present, consecutive and
+ * well-formed; a head without its parts ends the valid prefix AT the head (never a partial step). */
+enum { JRN_KIND_STEP = 0, JRN_KIND_CURSOR = 1, JRN_KIND_DISCARD = 2, JRN_KIND_PART = 3 };
 
 /* ---- results ---------------------------------------------------------------------- */
 enum {
@@ -122,7 +137,7 @@ enum {
   JRN_E_IO = -2,         /* the fs seam failed                                             */
   JRN_E_VERIFY = -3,     /* the re-read did not match what was written: recording STOPS    */
   JRN_E_FULL = -4,       /* pending buffer or segment space exhausted (nothing was lost)   */
-  JRN_E_TOOBIG = -5,     /* one record cannot fit the buffer/segment at all                */
+  JRN_E_TOOBIG = -5,     /* one record cannot fit the buffer/segment at all; for a chain: more than JRN_CHAIN_MAX records */
   JRN_E_RDONLY = -6,     /* opened read-only (Everdrive posture)                           */
   JRN_E_STOPPED = -7,    /* recording was stopped by an earlier verify failure             */
   JRN_E_NOSEG = -8,      /* no tail segment exists: run jrn_prepare at a safe moment       */
@@ -133,8 +148,10 @@ enum {
   JRN_E_LOOP = -13,      /* redirect chain too long / cyclic, or a chain walk ran away     */
   JRN_E_EXISTS = -14,    /* a redirect for that key already exists and points elsewhere    */
   JRN_E_STATE = -15,     /* an internal invariant failed (a bug, never expected)           */
-  JRN_E_VERSION = -16    /* a FOREIGN journal (see JRN_SEG_VER below): jrn_open returns it with j
+  JRN_E_VERSION = -16,   /* a FOREIGN journal (see JRN_SEG_VER below): jrn_open returns it with j
                           * readonly and EMPTY; nothing is read past it, nothing is ever written  */
+  JRN_E_TORN = -17       /* a chained undo/redo failed part way AND its rollback failed: the image holds a PARTIAL
+                          * step. The cursor did not move; the caller re-derives its copies and floors the history */
 };
 
 /* ---- the fs seam (source/journal_fs.c binds it to FatFs; the host sweep injects cuts
@@ -289,6 +306,20 @@ int  jrn_step_begin(Jrn* j, const char* name, int crossed);
 int  jrn_step_region(Jrn* j, uint8_t region, const uint8_t* old_blk, const uint8_t* new_blk);
 int  jrn_step_end(Jrn* j);
 void jrn_step_abort(Jrn* j);
+/* CHAINED STEP (z9, D10): record ONE step whose span diff may exceed a record, as a chain of 2..JRN_CHAIN_MAX records written
+ * straight to the tail segment (not through the pending buffer: the diff is split into <=512-byte records at flush-free time).
+ * `blk[r]` = the OLD and NEW full block of region r (old_blk NULL = the region is not part of the step), r < nblk <= nreg.
+ * Preconditions: no step under construction and NOTHING PENDING (else JRN_E_FULL + flush_wanted: flush, then call again).
+ * Returns JRN_OK (the step is on disk, verified; cursor/tip are on its HEAD), JRN_NOOP (nothing changed), JRN_E_TOOBIG (more than
+ * JRN_CHAIN_MAX records: nothing was written), JRN_E_DIVERGED (an old block does not hash to the tracked crc), JRN_E_FULL (no room /
+ * nothing-pending violated), JRN_E_IO / JRN_E_VERIFY (a card error; only a VERIFY mismatch stops recording -- a read error during the
+ * post-write verify reports JRN_E_IO without stopping, exactly like jrn_flush), or the step_begin refusals.
+ * A chain of >= 2 records needs a v2 segment: the tail if it is v2 and has room, else the EXISTING spare, re-stamped v2 on demand (a retire +
+ * a header write: no body zero-fill, never a segment that holds records; a v1 header is never rewritten in place -- a tear would free the slot).
+ * It never CREATES a spare (a zero-filled activation is a safe-moment job, jrn_prepare, which inherits the last segment's version): no spare ->
+ * JRN_E_FULL and nothing written. The HEAD is written LAST: a cut leaves no chain, and an incomplete chain is never read as a step. */
+typedef struct JrnBlk { const uint8_t* old_blk; const uint8_t* new_blk; } JrnBlk;
+int  jrn_chain_record(Jrn* j, const char* name, int crossed, const JrnBlk* blk, uint8_t nblk);
 int  jrn_flush_wanted(const Jrn* j);      /* pending buffer nearly full: flush at the next idle frame */
 /* Write the pending records (back to front), then re-read and compare. */
 int  jrn_flush(Jrn* j);

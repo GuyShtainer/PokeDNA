@@ -557,7 +557,7 @@ void app_step_name(const char* name);
  * name on DONE ("" otherwise). The CALLER refuses first while carrying (T4) -- the arena hold (T5) and unstaged PC
  * edits are refused here. app_undo_live(): the journal is recording (JA_OK) and the chord may fire -- the ONE
  * question a footer asks before printing the SEL+L/R hint. */
-enum { AUR_DONE = 0, AUR_OFF, AUR_ARENA, AUR_NOTHING, AUR_FLOOR, AUR_DIVERGED, AUR_ERR };
+enum { AUR_DONE = 0, AUR_OFF, AUR_ARENA, AUR_NOTHING, AUR_FLOOR, AUR_DIVERGED, AUR_ERR, AUR_PARTIAL };
 int  app_undo_redo(int dir, char name[25]);
 bool app_undo_live(void);
 /* The history screen's jump: undo/redo along the current branch to `target` (0 = before the first step), stopping at
@@ -584,6 +584,9 @@ bool app_gb_dirty(void);
 void app_gb_dirty_clear(void);
 void app_gb_saved(void);
 void app_gb_discarded(void);
+/* D10 ruling 9.2: true (after the partial-wording dialog) while a mid-session TORN step has left PART of a step in the image; every
+ * commit path -- Gen-3 app_commit_* and the GB gb_persist -- returns false at once. Cleared only by a full re-read of the card image. */
+bool app_partial_refuse(void);
 void app_gb_rest(void);
 void app_gb_close(void);
 uint8_t app_history_cap(void);

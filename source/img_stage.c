@@ -62,6 +62,36 @@ static int rec_try(ImgRec* r, const char* name, int crossed, const uint8_t* save
   return jrn_step_end(r->j);
 }
 
+/* z9 (D10): the diff did not fit ONE record: record it as a CHAIN of up to JRN_CHAIN_MAX records (journal.h). Same blocks, same name, same crossed
+ * flag as the one-record attempt that returned JRN_E_TOOBIG. The old/new pointers are only read for the duration of the call. Two noinline bodies, each with a
+ * table sized to ITS image (14 sections / 8 flat regions), so neither adds the other's frame to the staging funnel's stack chain. */
+static __attribute__((noinline)) int rec_chain_g3(ImgRec* r, const char* name, int crossed, const uint8_t* save, int slot, uint16_t mask,
+                                                    const uint8_t* const* blk) {
+  JrnBlk jb[IMG_NSEC];
+  uint8_t id;
+  memset(jb, 0, sizeof jb);
+  for (id = 0; id < IMG_NSEC; id++) {
+    const uint8_t* old_blk;
+    if (!((mask >> id) & 1u)) continue;
+    old_blk = sec_data(save, slot, id);
+    if (!old_blk) continue;
+    jb[id].old_blk = old_blk; jb[id].new_blk = blk[id];
+  }
+  return r->chain ? r->chain(name, crossed, jb, (uint8_t)IMG_NSEC) : jrn_chain_record(r->j, name, crossed, jb, (uint8_t)IMG_NSEC);
+}
+
+static __attribute__((noinline)) int rec_chain_flat(ImgRec* r, const char* name, int crossed, const FlatPair* fp) {
+  JrnBlk jb[8];
+  uint8_t id;
+  if (fp->nreg > 8u) return JRN_E_TOOBIG;                                      /* a flat image is the 8-region Game Boy one */
+  memset(jb, 0, sizeof jb);
+  for (id = 0; id < fp->nreg; id++) {
+    jb[id].old_blk = fp->old_img + (uint32_t)id * fp->regsz;
+    jb[id].new_blk = fp->new_img + (uint32_t)id * fp->regsz;
+  }
+  return r->chain ? r->chain(name, crossed, jb, fp->nreg) : jrn_chain_record(r->j, name, crossed, jb, fp->nreg);
+}
+
 static void rec_lost(ImgRec* r, const char* what, int rc) {
   r->last_what = what; r->last_rc = rc;
   if (rc == JRN_E_STOPPED) { r->state = IREC_STOPPED; return; }
@@ -82,6 +112,7 @@ static void rec_step(ImgRec* r, const uint8_t* save, int slot, uint16_t mask, co
   crossed = r->epoch != r->epoch_seen;
   for (attempt = 0; attempt < 3; attempt++) {
     rc = rec_try(r, name, crossed, save, slot, mask, blk, fp);
+    if (rc == JRN_E_TOOBIG) rc = fp ? rec_chain_flat(r, name, crossed, fp) : rec_chain_g3(r, name, crossed, save, slot, mask, blk);   /* > one record: a chain, or (beyond JRN_CHAIN_MAX) the honest gap below */
     if (rc == JRN_OK) { r->epoch_seen = r->epoch; return; }
     if (rc == JRN_NOOP) return;                                  /* nothing changed: nothing to record */
     if (rc == JRN_E_FULL) { if (r->flush) (void)r->flush(); continue; }   /* flush, then re-stage in a clear buffer */

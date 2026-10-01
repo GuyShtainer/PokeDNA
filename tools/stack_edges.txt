@@ -2005,7 +2005,7 @@ gated gbscr_open_inner need=6088 from=rom_gbui.h:PDNA_GB_UI_NEED gate=gbscr_open
 # it), growing app_mon_menu's own frame 896 -> 992 B (+96 B), the chain to 7,328 B
 # (artless) / 7,320 B (normal). New need = 7,328 + 64 ISR = 7,392 (artless
 # dominates) -- see PDNA_PARTY_STRIP_NEED's own comment.
-gated pcp_open_party_strip_inner need=7392 from=pdna_box.c:PDNA_PARTY_STRIP_NEED gate=pcp_open_party_strip via=pcp_open_party_strip
+gated pcp_open_party_strip_inner need=7536 from=pdna_box.c:PDNA_PARTY_STRIP_NEED gate=pcp_open_party_strip via=pcp_open_party_strip
 
 # BACKLOG #179 A3 review D14 (informational, 2026-09-23): the delta variant's own
 # deepest-chain figure reported by the gate (e.g. "STACK ok: deepest N of 15,024
@@ -2062,6 +2062,9 @@ gated pcp_open_party_strip_inner need=7392 from=pdna_box.c:PDNA_PARTY_STRIP_NEED
 # .set (jrn_app.c: ja_get / ja_set). rec_step/stage_now are one function after inlining. Offsets read off the
 # headers: ImgRec.flush is the FIRST field (img_stage.h), JrnImage = {ctx @0, get @4, set @8} (journal.h).
 ImgRec.flush @0 in stage_now,rec_step.part.0 -> jrnapp_flush
+# z9 (D10): the funnel's second hook, ImgRec.chain (the SECOND field, @4): the rumble-paused chain recorder, the only target (source/jrn_app.c: jrnapp_chain). rec_chain is inlined into
+# rec_chain_g3 / rec_chain_flat (noinline: their JrnBlk tables must not widen rec_step's frame on the common flush path).
+ImgRec.chain @4 in rec_chain_g3,rec_chain_flat -> jrnapp_chain
 JrnImage.get @4 in jrn_i_region_crc -> ja_get fp_get_old
 # #234 slice 4: img_rec_flat (the Game Boy image's recorder) shares rec_step with the Gen-3 funnel, so rec_step is no longer
 # inlined into stage_now alone: its part.0 clone carries the same ImgRec.flush call. fp_get_old is the read-only accessor a

@@ -293,6 +293,9 @@ bool gb_hold_commit(const char* what_for_log);
 /* The image was patched behind the session's back (undo/redo/re-apply): re-baseline `pristine` to it, re-latch the session
  * over the bytes and re-page the grid (pdna_main.c's app_journal_rederive calls this). */
 void gb_relatch(void);
+/* B at the exit confirm, and the load-time TORN offer (D10 ruling 9.1): re-read the card image over the staged one,
+ * re-latch, mark the steps discarded. A failed re-read leaves the image in RAM, never written. */
+void gb_discard_staged(void);
 /* The journal key of the resident session (gb_jkey.h), 0 without one -- pdna_main.c's rest point needs it for the redirect. */
 uint64_t pdna_gen12_journal_key(void);
 /* The History screen over a resident GB session (borrows its rows from the arena tail); a plain notice without one. */

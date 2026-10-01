@@ -4828,6 +4828,10 @@ bool gb_persist(const char* what_for_log) {
    * touching the card, so it re-checks here rather than trusting every caller
    * (present and future) got its own gate right. Mirrors the PDNA_DELTA
    * refusal shape above: log, sound, message, return false -- nothing touched. */
+  if (app_partial_refuse()) {   /* D10/9.2: a TORN step left PART of a step in the image -- never written; the edit rolls back to the (partial) baseline */
+    gb_rollback();
+    return false;
+  }
   if (!app_can_edit()) {
     log_line("gen12: persist refused: %s", app_readonly_why());
     app_log_flush();
@@ -4949,7 +4953,7 @@ bool gb_hold_commit(const char* what_for_log) {
 /* B at the exit confirm: put the card's image back (re-read the file), re-baseline + re-latch, and tell the journal its
  * thrown-away steps were discarded. A failed re-read leaves the staged image in RAM (never written; the session is
  * ending and the next open re-reads the file). The emulator build has no card: its edits stay in-session, as always. */
-static void gb_discard_staged(void) {
+void gb_discard_staged(void) {
 #ifdef PDNA_DELTA
   log_line("gb exit: discard in the emulator build leaves the in-session image (no card to re-read)");
   app_gb_dirty_clear();

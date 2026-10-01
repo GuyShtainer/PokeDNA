@@ -91,6 +91,88 @@ static int apply_record(Jrn* j, const JrnImage* img, const JrnSrc* s, const JrnR
   return rc ? rc : rc2;
 }
 
+/* ---- CHAINED steps (D10): apply a head + its parts as ONE all-or-nothing step -------------------------------------------------
+ * The chain lives in one segment: the head at hs->base, each part right behind the previous record. Records are read into the ONE 512-byte
+ * stack buffer (#316) one at a time.
+ *   PHASE A (verify): every record is read, header-checked against the head (seq / parent / aux / kind), CRC-checked and span-verified against the
+ *     image (undo: image == after, redo: image == before). Nothing is written; any failure leaves the image untouched.
+ *   PHASE B (apply): the records are read AGAIN (a second read of the card is never trusted to equal the first: the CRC and the header are checked
+ *     again) and patched in: undo head -> parts, redo parts -> head (the spans of a chain are disjoint by construction, so the order only matters for
+ *     the rollback bookkeeping). A failure part way ROLLS BACK every record already applied (and the failing record itself when a patch started),
+ *     newest first, by applying the opposite direction. If the rollback itself fails the image holds a PARTIAL step: JRN_E_TORN, and the caller
+ *     re-derives its copies and floors the history (jrn_app.c). The cursor never moves on any failure. */
+static int chain_load(const Jrn* j, uint16_t seg, uint32_t pos, uint8_t* rec, JrnRec* r) {
+  JrnSrc s;
+  JrnSrc ram;
+  uint32_t n = JRN_SEG_SIZE - pos < JRN_REC_MAX ? JRN_SEG_SIZE - pos : JRN_REC_MAX;
+  if (pos < JRN_REC_BASE || n < JRN_REC_MIN) return JRN_E_STATE;
+  memset(&s, 0, sizeof s);
+  s.seg = seg; s.base = pos;
+  if (jrn_i_src_read(j, &s, 0, rec, n) != 0) return JRN_E_IO;
+  if (jrn_i_hdr_parse(rec, r) != 0 || r->len > n) return JRN_E_STATE;
+  memset(&ram, 0, sizeof ram);
+  ram.ram = rec;
+  return src_crc_ok(j, &ram, r) ? 0 : JRN_E_STATE;
+}
+
+/* Is `r` (just loaded) really record k of the chain headed by `h`? */
+static int chain_member(const JrnRec* r, const JrnRec* h, uint8_t k) {
+  if (!k) return r->kind == JRN_KIND_STEP && r->seq == h->seq && r->aux == h->aux && r->parent == h->parent;
+  return r->kind == JRN_KIND_PART && r->seq == h->seq + k && r->parent == h->seq && r->aux == k && !r->crossed;
+}
+
+static int chain_apply(Jrn* j, const JrnImage* img, const JrnSrc* hs, const JrnRec* head, int forward) {
+  uint8_t rec[JRN_REC_MAX];
+  uint16_t len[JRN_CHAIN_MAX], touched, all = 0;
+  JrnRec r;
+  JrnSrc ram;
+  uint32_t pos = hs->base, base;
+  uint8_t n = (uint8_t)head->aux, k, g, done = 0, i;
+  int rc = 0, rc2 = 0, back, step, torn = 0;
+  if (hs->ram || head->kind != JRN_KIND_STEP || head->aux < 2u || head->aux > JRN_CHAIN_MAX) return JRN_E_STATE;
+  memset(&ram, 0, sizeof ram);
+  ram.ram = rec;
+  for (k = 0; k < n; k++) {                                                    /* phase A: verify everything, touch nothing */
+    rc = chain_load(j, hs->seg, pos, rec, &r);
+    if (rc) return rc;
+    if (!chain_member(&r, head, k)) return JRN_E_STATE;
+    rc = span_walk(j, img, &ram, &r, forward, 0, &touched);
+    if (rc) return rc;
+    len[k] = r.len; pos += r.len;
+  }
+  for (i = 0; i < n; i++) {                                                    /* phase B: apply (undo ascending, redo descending) */
+    k = forward ? (uint8_t)(n - 1u - i) : i;
+    for (base = hs->base, g = 0; g < k; g++) base += len[g];
+    rc = chain_load(j, hs->seg, base, rec, &r);
+    if (!rc && (!chain_member(&r, head, k) || r.len != len[k])) rc = JRN_E_STATE;
+    if (rc) break;
+    rc = span_walk(j, img, &ram, &r, forward, 1, &touched);
+    all = (uint16_t)(all | touched);
+    if (rc) {                                                                  /* a patch began: undo THIS record from the RAM copy first */
+      if (span_walk(j, img, &ram, &r, !forward, 1, &touched) != 0) torn = 1;
+      break;
+    }
+    done++;
+  }
+  if (rc) {                                                                    /* roll back the records already applied, newest first */
+    for (back = (int)done - 1; back >= 0 && !torn; back--) {
+      step = back;
+      k = forward ? (uint8_t)(n - 1u - (uint8_t)step) : (uint8_t)step;
+      for (base = hs->base, g = 0; g < k; g++) base += len[g];
+      if (chain_load(j, hs->seg, base, rec, &r) != 0 || !chain_member(&r, head, k) || r.len != len[k] ||
+          span_walk(j, img, &ram, &r, !forward, 1, &touched) != 0) torn = 1;
+    }
+  }
+  if (rc) all = (uint16_t)((1u << j->nreg) - 1u);                              /* a failed patch may have stopped mid-span: re-derive every region's crc */
+  for (g = 0; g < j->nreg; g++)
+    if (all & (1u << g)) {
+      rc2 = jrn_i_region_crc(j, img, g, &j->crc[g]);
+      if (rc2) break;
+    }
+  if (torn) return JRN_E_TORN;
+  return rc ? rc : rc2;
+}
+
 static int guard_args(const Jrn* j, const JrnImage* img) {
   if (!j || !img || !img->get || !img->set) return JRN_E_ARG;
   if (j->readonly) return JRN_E_RDONLY;
@@ -120,7 +202,7 @@ int jrn_undo(Jrn* j, const JrnImage* img, JrnRec* undone) {
     return JRN_E_FULL;
   }
   pre = jrn_hash(j);
-  rc = apply_record(j, img, &s, &r, 0);
+  rc = r.aux ? chain_apply(j, img, &s, &r, 0) : apply_record(j, img, &s, &r, 0);   /* aux != 0: a chain head (D10) */
   if (rc) return rc;
   oldcur = j->cursor; oldtip = j->tip;
   j->cursor = r.parent;
@@ -163,7 +245,7 @@ int jrn_redo(Jrn* j, const JrnImage* img, JrnRec* redone) {
   if (r.crossed) return JRN_E_CROSSED;                      /* redo STOPS before a crossed record */
   if (!jrn_i_marker_room(j)) { j->flush_wanted = 1; return JRN_E_FULL; }
   pre = jrn_hash(j);
-  rc = apply_record(j, img, &s, &r, 1);
+  rc = r.aux ? chain_apply(j, img, &s, &r, 1) : apply_record(j, img, &s, &r, 1);
   if (rc) return rc;
   j->cursor = r.seq;
   if (j->cursor == j->tip) j->offer = 0;                    /* the offer is fully applied */

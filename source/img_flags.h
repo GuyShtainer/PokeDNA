@@ -11,6 +11,9 @@
  *                set by that loan, only by a PC edit that could not stage.
  *   image_dirty  g_save differs from the card (anything was staged and not yet written).
  *                Gates the exit prompt.
+ *   partial      (z9, D10 ruling 9.2) a mid-session TORN step: the image holds PART of a step. EVERY commit path refuses
+ *                while it is set; ONLY a full re-read of the card image clears it (imgf_partial_clear on a successful
+ *                discard / a fresh load). imgf_clear deliberately does NOT touch it: a failed discard re-read must stay latched.
  *   (pc_moved, the slice-0 compatibility flag, RETIRED in slice 2: a staged box drop survives the arena
  *   loan because g_pc is re-derived from g_save on release, so the arena gate is pc_unstaged alone.)
  * Nothing here touches memory it does not own; every function tolerates a NULL pointer.
@@ -23,6 +26,7 @@
 typedef struct {
   bool pc_unstaged;
   bool image_dirty;
+  bool partial;       /* D10 ruling 9: a TORN undo/redo/jump left PART of a step in the image; no commit may write it */
 } ImgFlags;
 
 /* Every g_save section write (the funnel) marks the image dirty. */
@@ -39,7 +43,14 @@ static inline void imgf_pc_edited(ImgFlags* f, bool staged) {
 /* g_pc was just pushed into g_save (the finalize fold, or an explicit whole-PC stage). */
 static inline void imgf_pc_folded(ImgFlags* f) { if (f) f->pc_unstaged = false; }
 
-/* The whole image reached the card (verified write) or was thrown away: nothing pending. */
+/* A TORN step: latch the partial image. It is also staged (dirty) so the exit prompt still appears and names it. */
+static inline void imgf_partial_set(ImgFlags* f) { if (!f) return; f->partial = true; f->image_dirty = true; }
+/* Only after the card image was re-read in full (discard / fresh load). */
+static inline void imgf_partial_clear(ImgFlags* f) { if (f) f->partial = false; }
+/* May a commit write the image? false while latched. A NULL pointer answers "latched" (never trust nothing). */
+static inline bool imgf_partial(const ImgFlags* f) { return f ? f->partial : true; }
+
+/* The whole image reached the card (verified write) or was thrown away: nothing pending. The PARTIAL latch is NOT cleared here. */
 static inline void imgf_clear(ImgFlags* f) {
   if (!f) return;
   f->pc_unstaged = false; f->image_dirty = false;

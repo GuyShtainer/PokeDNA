@@ -224,7 +224,8 @@ static void t_identical_and_null(void) {
   CHECK(jrn_tip(&J) == tip && jrn_pending(&J) == 0, "and records nothing");
 }
 
-/* D2 (#301): a step the journal could NOT record (B: > one record) is a gap, and a gap is a floor. The record after it
+/* D2 (#301): a step the journal could NOT record (B: more than a CHAIN of JRN_CHAIN_MAX records can hold -- since z9 a step merely
+ * larger than one record is a chain, see t_bulk_chain_funnel) is a gap, and a gap is a floor. The record after it
  * (C) is crossed, so the load-time re-apply offer stops before C instead of applying C on a base missing B. */
 static void t_gap_is_a_floor(void) {
   Jrn j2;
@@ -235,7 +236,7 @@ static void t_gap_is_a_floor(void) {
   poke(100, 4, 0x5A);                                                     /* A: region 5 */
   CHECK(img_stage_sections(&F, &R, sv, slot, G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, pc), "A");
   CHECK(jrn_flush(&J) == JRN_OK, "flush A");
-  poke(G3_SECTOR_DATA_SIZE, 700, 0x33);                                   /* B: 700 contiguous bytes > one record */
+  poke(G3_SECTOR_DATA_SIZE, 2300, 0x33);                                  /* B: 2,300 contiguous bytes = 11 records > JRN_CHAIN_MAX */
   (void)img_stage_sections(&F, &R, sv, slot, G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, pc);
   CHECK(R.state == IREC_GAP, "B could not be recorded: state %d", R.state);
   poke(2u * G3_SECTOR_DATA_SIZE + 50, 4, 0x77);                           /* C: region 7 */
@@ -614,6 +615,189 @@ static void t_swap_pair_history_labels(void) {
   CHECK(n == 4 && strcmp(rows[3].name, "Setup") == 0, "the setup is unlabelled ('%s')", safe(rows[3].name));
 }
 
+/* ---- z9 (#301 v2 / D10): a bulk step too big for ONE record is recorded as a CHAIN, through the funnel --------------------------------- */
+static void t_bulk_chain_funnel(void) {
+  JrnRec rec;
+  uint8_t post[G3_SAVE_FILE_SIZE];
+  poke(3500, 1000, 0x5A);                                                 /* 1,000 contiguous bytes across the section 5/6 seam: > one record */
+  CHECK(img_stage_sections(&F, &R, sv, slot, G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, pc), "stage the bulk edit");
+  CHECK(R.state == IREC_OK && R.lost == 0, "the bulk step IS recorded: state %d lost %u (was a GAP before z9)", R.state, (unsigned)R.lost);
+  CHECK(jrn_pending(&J) == 0, "a chain goes straight to the tail, not through the pending buffer");
+  CHECK(jrn_find(&J, jrn_tip(&J), &rec) == 0 && rec.kind == JRN_KIND_STEP && rec.aux >= 2u && !rec.crossed, "the tip is a chain HEAD (aux %u records), not crossed", (unsigned)rec.aux);
+  CHECK(pc_equals(pc), "the staged bytes are in the image");
+  memcpy(post, sv, sizeof post);
+  CHECK(jrn_undo(&J, &R.img, 0) == JRN_OK && memcmp(sv, orig, sizeof sv) == 0, "ONE undo restores the image byte-for-byte (sections + checksums)");
+  CHECK(jrn_redo(&J, &R.img, 0) == JRN_OK && memcmp(sv, post, sizeof sv) == 0, "ONE redo brings the bulk edit back byte-for-byte");
+  poke(100, 4, 0x77);                                                     /* a small step above the chain */
+  CHECK(img_stage_sections(&F, &R, sv, slot, G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, pc), "a plain step after the chain");
+  CHECK(jrn_flush(&J) == JRN_OK && R.state == IREC_OK, "flush");
+  CHECK(jrn_undo(&J, &R.img, 0) == JRN_OK && jrn_undo(&J, &R.img, 0) == JRN_OK && memcmp(sv, orig, sizeof sv) == 0, "two undos (plain, then the chain) land on the original image");
+  CHECK(jrn_undo(&J, &R.img, 0) == JRN_E_NOTHING, "nothing below the chain");
+}
+
+/* The same through the app half (jrnapp, which binds R.chain = the rumble-paused hook): History shows the chain as ONE row, undo/redo press
+ * once per chain, and after a power cut the load-time offer counts and re-applies it as ONE step. */
+static void t_chain_through_app(void) {
+  JaHist rows[6];
+  char nm[25], stop[25];
+  uint32_t av = 0, total;
+  static uint8_t post[G3_SAVE_FILE_SIZE], mid[G3_SAVE_FILE_SIZE];
+  int n, more = 0, fh = 0;
+  CHECK(RA.chain != 0, "the app bound the chain hook");
+  CHECK(stageA(300), "A (plain)");
+  memcpy(mid, sv, sizeof mid);
+  poke(3500, 1000, 0x5A);
+  CHECK(img_stage_sections(&F, &RA, sv, slot, G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, pc), "B (bulk)");
+  CHECK(RA.state == IREC_OK && RA.lost == 0, "recorded, not a gap: state %d lost %u", RA.state, (unsigned)RA.lost);
+  CHECK(jrnapp_flush() == JRN_OK, "flush");
+  memcpy(post, sv, sizeof post);
+  n = jrnapp_history(rows, 6, &more, &fh);
+  CHECK(n == 2 && !more && !fh && rows[0].seq > rows[1].seq && strcmp(rows[0].name, "Box move") == 0, "History: the chain is ONE row above the plain step (%d rows, '%s')", n, safe(rows[0].name));
+  CHECK(jrnapp_step(-1, nm) == JRN_OK && memcmp(sv, mid, sizeof sv) == 0, "one undo press = the whole chain ('%s')", safe(nm));
+  CHECK(jrnapp_step(1, nm) == JRN_OK && memcmp(sv, post, sizeof sv) == 0, "one redo press = the whole chain");
+  CHECK(jrnapp_flush() == JRN_OK, "flush the markers");
+  memcpy(sv, orig, sizeof sv);                                            /* the power cut: the card kept the original save */
+  CHECK(app_reopen(), "reopen on the original image");
+  total = jrnapp_offer(&av, stop);
+  CHECK(total == 2u && av == 2u, "the offer counts the chain as ONE step: total %u avail %u (plain + chain = 2)", (unsigned)total, (unsigned)av);
+  CHECK(jrnapp_reapply() == 2 && memcmp(sv, post, sizeof sv) == 0, "re-apply restores plain + chain byte-exact");
+}
+
+/* The #303 contract for a chain: when a chained undo fails part way AND the rollback fails, jrnapp_step reports JRN_OK named "partial step" (the caller
+ * re-derives its copies), the image is genuinely partial, and the crossed epoch moved so the next recorded step is a floor. */
+static void t_chain_torn_contract(void) {
+  static uint8_t post[G3_SAVE_FILE_SIZE], pre[G3_SAVE_FILE_SIZE];
+  char nm[25];
+  unsigned long r0, Rn;
+  long k;
+  unsigned torn = 0, loud = 0, ok = 0, bad = 0;
+  memcpy(pre, sv, sizeof pre);
+  poke(3500, 1000, 0x5A);
+  CHECK(img_stage_sections(&F, &RA, sv, slot, G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, pc), "bulk");
+  memcpy(post, sv, sizeof post);
+  CHECK(jrnapp_flush() == JRN_OK, "flush");
+  CHECK(app_reopen(), "reopen on the post image (the chain is read from the card)");
+  rd_snapshot();
+  r0 = rd_reads;
+  CHECK(jrnapp_step(-1, nm) == JRN_OK && memcmp(sv, pre, sizeof sv) == 0, "the healthy undo");
+  Rn = rd_reads - r0;
+  for (k = 0; k < (long)Rn + 1; k++) {
+    uint16_t ep0;
+    int rc;
+    rd_restore(); memcpy(sv, post, sizeof sv); card_remount();
+    CHECK(app_reopen(), "reopen k=%ld", k);
+    ep0 = RA.epoch;
+    rd_fail_reads_after = k;
+    rc = jrnapp_step(-1, nm);
+    rd_fail_reads_after = -1;
+    if (rc == JRN_OK && strcmp(nm, "partial step") == 0) {
+      torn++;
+      if (memcmp(sv, pre, sizeof sv) == 0 || memcmp(sv, post, sizeof sv) == 0) bad++;
+      if (RA.epoch == ep0) bad++;
+    } else if (rc == JRN_OK) { ok++; if (memcmp(sv, pre, sizeof sv) != 0) bad++; }
+    else { loud++; if (memcmp(sv, post, sizeof sv) != 0) bad++; }
+  }
+  CHECK(bad == 0, "%u fault points broke the contract (TORN needs a partial image + a crossed epoch; a loud refusal needs the image UNTOUCHED)", bad);
+  CHECK(torn > 0 && loud > 0, "the sweep reaches the TORN path (%u), the loud path (%u) and completes (%u)", torn, loud, ok);
+}
+
+/* A swap whose older half is itself a CHAIN (its drop also changed 600 unrelated bytes) is NOT paired: the head holds only part of the spans, so the
+ * predicate must not judge it (aux != 0 is ineligible). The press is per-step; History keeps plain names. The control (t_swap_pair_chords) pairs. */
+static int stage_swap_chained(unsigned a, unsigned b, unsigned c) {
+  uint8_t x[MONB], y[MONB];
+  unsigned i;
+  mon_fill(x, 1); mon_fill(y, 2);
+  memset(slot_at(a), 0, MONB); memset(slot_at(b), 0, MONB); memset(slot_at(c), 0, MONB);
+  memcpy(slot_at(a), x, MONB); memcpy(slot_at(b), y, MONB);
+  if (!stage_pc("Setup")) return 0;
+  memcpy(snapS, sv, sizeof sv);
+  memcpy(slot_at(b), x, MONB); memset(slot_at(a), 0, MONB);               /* drop 1 ... */
+  for (i = 0; i < 600; i++) pc[34000u + i] = (uint8_t)(pc[34000u + i] ^ 0x5Au ^ (uint8_t)i);   /* ... plus 600 bytes elsewhere (region 13, past the mon area): > one record */
+  if (!stage_pc("Box move")) return 0;
+  memcpy(slot_at(c), y, MONB);                                             /* drop 2 */
+  if (!stage_pc("Box move")) return 0;
+  memcpy(snapF, sv, sizeof sv);
+  return jrnapp_flush() == JRN_OK && RA.state == IREC_OK && RA.lost == 0;
+}
+static void t_chain_never_pairs(void) {
+  char nm[25];
+  JaHist rows[8];
+  int n, more = 0, fh = 0;
+  CHECK(app_world_reset(), "world");
+  CHECK(stage_swap_chained(10, 11, 12), "stage the swap whose first drop is a chain (recorded, not a gap)");
+  n = jrnapp_history(rows, 8, &more, &fh);
+  CHECK(n == 3 && strcmp(rows[0].name, "Box move") == 0 && strcmp(rows[1].name, "Box move") == 0 && strcmp(rows[2].name, "Setup") == 0,
+        "History keeps plain names (no 1/2, 2/2): %d rows '%s' '%s'", n, n > 1 ? safe(rows[0].name) : "", n > 1 ? safe(rows[1].name) : "");
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && strcmp(nm, "Box move") == 0 && jrnapp_cursor() == 2u, "a chained older half is not paired: ONE press undoes ONE step ('%s', cursor %u)", safe(nm), (unsigned)jrnapp_cursor());
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && strcmp(nm, "Box move") == 0 && jrnapp_cursor() == 1u && memcmp(sv, snapS, sizeof sv) == 0, "the next press undoes the whole chain: byte-exact the pre-swap image ('%s')", safe(nm));
+  CHECK(jrnapp_step_pair(1, nm) == JRN_OK && jrnapp_step_pair(1, nm) == JRN_OK && memcmp(sv, snapF, sizeof sv) == 0, "and two redo presses restore the post-swap image byte-exact");
+}
+
+
+/* z9 review D1: the two OTHER TORN consumers. The load-time re-apply (jrnapp_reapply) and the History jump (jrnapp_jump) must report a chain
+ * whose rollback failed as JRN_E_TORN -- never as a step count / "nothing further changed" -- with the epoch crossed. Persistent read faults are
+ * swept across the whole press; every point that leaves a PARTIAL image must say TORN. */
+static void t_chain_torn_reapply_and_jump(void) {
+  static uint8_t pre[G3_SAVE_FILE_SIZE], mid[G3_SAVE_FILE_SIZE], post[G3_SAVE_FILE_SIZE];
+  uint32_t av = 0; char stop[25]; long k; unsigned long r0, Rn; int n, moved; unsigned partial = 0, bad = 0, jpartial = 0, jbad = 0, discarded = 0;
+  memcpy(pre, sv, sizeof pre);
+  CHECK(stageA(300), "A (plain)");
+  memcpy(mid, sv, sizeof mid);
+  poke(3500, 1000, 0x5A);
+  CHECK(img_stage_sections(&F, &RA, sv, slot, G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, pc) && RA.lost == 0, "B (chain)");
+  memcpy(post, sv, sizeof post);
+  CHECK(jrnapp_flush() == JRN_OK, "flush");
+  memcpy(sv, pre, sizeof sv); card_remount();
+  CHECK(app_reopen() && jrnapp_offer(&av, stop) == 2u && av == 2u, "the offer: 2/2");
+  rd_snapshot(); r0 = rd_reads;
+  CHECK(jrnapp_reapply() == 2 && memcmp(sv, post, sizeof sv) == 0, "the healthy re-apply");
+  Rn = rd_reads - r0;
+  for (k = 0; k <= (long)Rn; k++) {
+    uint16_t ep0;
+    rd_restore(); memcpy(sv, pre, sizeof sv); card_remount();
+    CHECK(app_reopen(), "reopen k=%ld", k);
+    (void)jrnapp_offer(&av, stop);
+    ep0 = RA.epoch;
+    rd_fail_reads_after = k; n = jrnapp_reapply(); rd_fail_reads_after = -1;
+    if (memcmp(sv, pre, sizeof sv) && memcmp(sv, mid, sizeof sv) && memcmp(sv, post, sizeof sv)) {
+      ImgFlags L; int fl = -1;
+      partial++;
+      if (n != JRN_E_TORN || RA.epoch == ep0) { bad++; if (bad <= 3) printf("  re-apply k=%ld: a PARTIAL image reported as %d (epoch %u -> %u)\n", k, n, (unsigned)ep0, (unsigned)RA.epoch); }
+      /* z9 fixpass / D10 ruling 9.1+9.2: model the app's TORN branch at the offer. The latch is set (and the image staged); the DISCARD
+       * re-reads the card's .sav (`pre`: the bytes the card holds at the offer) over the partial image and ONLY THEN clears the latch;
+       * a failed re-read leaves it set. The reconcile that follows must see the CARD's bytes, with valid checksums. */
+      memset(&L, 0, sizeof L);
+      imgf_partial_set(&L);
+      if (!imgf_partial(&L) || !imgf_exit_prompt(&L)) { bad++; printf("  latch k=%ld: set did not latch + stage\n", k); }
+      imgf_clear(&L);                                              /* the failed-discard shape: the flags reset, the re-read never happened */
+      if (!imgf_partial(&L)) { bad++; printf("  latch k=%ld: imgf_clear cleared the PARTIAL latch (a failed discard must stay latched)\n", k); }
+      memcpy(sv, pre, sizeof sv);                                  /* the discard: the card's image is back in full */
+      imgf_partial_clear(&L);
+      if (imgf_partial(&L) || memcmp(sv, pre, sizeof sv) != 0 || !gen3_verify_full_checksums(sv, slot, &fl)) {
+        bad++; printf("  discard k=%ld: the image is not the card's clean bytes after the discard (partial=%d, sect %d)\n", k, imgf_partial(&L), fl); }
+      else discarded++;
+    }
+  }
+  CHECK(discarded == partial && partial > 0, "z9 D10/9.1+9.2: at every one of the %u PARTIAL points the modelled offer latches, stays latched through a failed discard, and after the discard the image IS the card's bytes with valid checksums (%u ok)", partial, discarded);
+  CHECK(partial > 0 && bad == 0, "D1 re-apply: every PARTIAL image says JRN_E_TORN with the epoch crossed (%u partial points, %u silent)", partial, bad);
+  /* the History jump: post -> the root, through the chain's undo */
+  rd_restore(); memcpy(sv, post, sizeof sv); card_remount();
+  CHECK(app_reopen(), "reopen on post");
+  rd_snapshot(); r0 = rd_reads;
+  CHECK(jrnapp_jump(0, stop, &moved) == 0 && moved == 2 && memcmp(sv, pre, sizeof sv) == 0, "the healthy jump to the root");
+  Rn = rd_reads - r0;
+  for (k = 0; k <= (long)Rn; k++) {
+    int rc;
+    rd_restore(); memcpy(sv, post, sizeof sv); card_remount();
+    CHECK(app_reopen(), "reopen k=%ld", k);
+    rd_fail_reads_after = k; rc = jrnapp_jump(0, stop, &moved); rd_fail_reads_after = -1;
+    if (memcmp(sv, pre, sizeof sv) && memcmp(sv, mid, sizeof sv) && memcmp(sv, post, sizeof sv)) {
+      jpartial++;
+      if (rc != JRN_E_TORN) { jbad++; if (jbad <= 3) printf("  jump k=%ld: a PARTIAL image reported as rc %d moved %d\n", k, rc, moved); }
+    }
+  }
+  CHECK(jpartial > 0 && jbad == 0, "D1 jump: every PARTIAL image stops the jump with JRN_E_TORN (%u partial points, %u silent)", jpartial, jbad);
+}
 int main(int argc, char** argv) {
   int a;
   static uint8_t file[G3_SAVE_FILE_SIZE];
@@ -630,6 +814,7 @@ int main(int argc, char** argv) {
     CHECK(world(file), "world"); t_commit_spans();
     CHECK(world(file), "world"); t_crossed_floors_offer();
     CHECK(world(file), "world"); t_gap_is_a_floor();
+    CHECK(world(file), "world"); t_bulk_chain_funnel();
     CHECK(world(file), "world"); t_diverged_is_a_floor();
     CHECK(world(file), "world"); t_diverged_untouched_region();
     CHECK(world(file), "world"); t_scope_is_one_step();
@@ -645,6 +830,10 @@ int main(int argc, char** argv) {
     CHECK(app_world(file), "app world"); t_swap_pair_offer();
     CHECK(app_world(file), "app world"); t_swap_pair_history_labels();
     CHECK(app_world(file), "app world"); t_swap_pair_shape_and_rollback_failure();
+    CHECK(app_world(file), "app world"); t_chain_through_app();
+    CHECK(app_world(file), "app world"); t_chain_torn_contract();
+    CHECK(app_world(file), "app world"); t_chain_torn_reapply_and_jump();
+    CHECK(app_world(file), "app world"); t_chain_never_pairs();
   }
   printf("%lu checks, %d failed\n", checks, fails);
   return fails ? 1 : 0;

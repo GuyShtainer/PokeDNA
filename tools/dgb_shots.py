@@ -6371,26 +6371,23 @@ def run_y19_s4(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessio
     T("A", "(g2) A: dismiss -> back in Settings", settle=200)
     T("B", "(g2) B: leave Settings", settle=300)
 
-    # ---- (i) D1: a step the journal cannot record is WRITTEN at once, never held
+    # ---- (i) z9 (#307): the slot-0 move of a FULL box shifts the whole packed list (> one record): it is now RECORDED as a
+    # chained step and the session KEEPS its hold (the y19-s4 version of this leg wrote it at once and the per-screen prompt returned)
     T("A", "(i) cell menu on BULBASAUR (slot 0 of a full box)")
     T("DOWN", "(i) DOWN x3: the cursor on 'MOVE TO BOX'", times=3, settle=60, claim=["MOVE TO BOX"])
     T("A", "(i) A: MOVE TO BOX -- the box picker (cursor on BOX13 17/20)", settle=300, claim=["MOVE TO", "BOX13"])
-    T("A", "(i) A: pick BOX13 -- slot 0 of a full box shifts the whole box list: the step is TOO BIG to record, so it is "
-      "WRITTEN AT ONCE (the delta wall 'Edits are in-session only' is the emulator's answer to that write)", settle=600,
-      claim=["in-session only"])
-    T("A", "(i) A: dismiss -> the grid (BOX1 19/20); the footer lost its SEL+L/R undo hint: the session left the hold posture",
-      settle=400, claim_absent=["undo"])
+    T("A", "(i) A: pick BOX13 -- slot 0 of a full box shifts the whole box list (> one record): RECORDED as a chain, NO write, so no "
+      "'in-session only' wall; the grid is BOX1 19/20 and the footer KEEPS its SEL+L/R undo hint (the session stays in the hold posture)",
+      settle=600, claim=["19/20", "undo"], claim_absent=["in-session only"])
     s.run(100)
-    s.tap("START", settle=200)
-    s.press_n("DOWN", 7, settle=12)
-    SHOT("nav_bag", "(i) nav menu, cursor on 'Bag'", claim=["Bag"])
-    T("A", "(i) A: the bag (cold open)", settle=GB_ART_COLD_SETTLE)
-    T("A", "(i) A: first row -> the quantity keyboard", settle=300, claim=["QUANTITY"])
-    T("A", "(i) A: insert the digit under the cursor", settle=100)
-    T("START", "(i) START: confirm the new quantity", settle=400)
-    T("B", "(i) B: leave the bag -> the per-screen 'Save pack changes?' prompt is BACK (the session left the hold posture "
-      "when the step was written at once)", settle=600, claim=["Save pack changes"])
-    T("B", "(i) B: no -- the bag edit is discarded", settle=400)
+    SHOT("i_moved", "(i) the moved grid: IVYSAUR now leads BOX1 (19/20)")
+    CHORD("L", "(i) SELECT held, THEN L: ONE undo restores the WHOLE shifted list -> toast 'Undid: ...', BOX1 back to 20/20 with BULBASAUR first",
+          tag="i_undo", claim=["Undid"])
+    s.run(100)
+    SHOT("i_undone", "(i) after the undo: BOX1 20/20, BULBASAUR leads again")
+    CHORD("R", "(i) SELECT held, THEN R: ONE redo re-applies the chain -> toast 'Redid: ...', BOX1 19/20 again", tag="i_redo", claim=["Redid"])
+    s.run(100)
+    SHOT("i_redone", "(i) after the redo: the moved grid again (BOX1 19/20)")
     s.vsd_flush()
     lst = subprocess.run([str(gb_shots._vsd_img_bin()), "list", str(gb_shots._DEFAULT_VSD_IMG)], capture_output=True, text=True).stdout
     pdj = [ln.split()[0] for ln in lst.splitlines() if ln.split() and ln.split()[0].endswith(".pdj")]
