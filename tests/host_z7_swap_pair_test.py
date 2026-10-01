@@ -26,6 +26,8 @@ pin can be decoration. The real tree is never touched (scratch dir).
   za #314/#315 mutants (host_jrn_funnel_test.c): C1..C8 chained swaps, R1 the R1 mislabel (older half no longer needs the "Swap" name),
     H1..H3 the 3-step rollback-failure contract (t_swap_chain_rollback_sweep)
     A10 the Game Boy guard dropped (a swap-shaped GB pair would pair)                      -> RED
+  zc #321 mutants (t_swap_seq_adjacency[_chain]): Q1..Q3 each of the three adjacency tests dropped (group first link, group second link, History link);
+    Q4a/Q4b/Q4c the seq-gap test off by one in each direction (a real pair stops grouping / a one-step gap pairs), Q4d the History gap off by one
 """
 from __future__ import annotations
 
@@ -116,7 +118,7 @@ def main() -> int:
     must_fail("funnel", "A8", "History never labels", [(J, "ja_label(rows[n - 1].name, \" 2/2\");", ";"), (J, "ja_label(rows[n].name, \" 1/2\");", ";")])
     must_fail("funnel", "A9", "redo never pairs", [(J, "  if (!p1) return 0;\n  if (p3) {", "  return 0;\n  if (p3) {")])
     # za #314b: chained swaps (Swap + Swap + Box move), tests/host_jrn_funnel_test.c t_swap_chain_*
-    must_fail("funnel", "C1", "the chain never extends past two steps", [(J, "  if (max < 3u || !rn.parent) return 2u;", "  if (1) return 2u;")])
+    must_fail("funnel", "C1", "the chain never extends past two steps", [(J, "  if (max < 3u || !rn.parent || rn.parent + 1u != rm.parent) return 2u;", "  if (1) return 2u;")])
     must_fail("funnel", "C2", "the chain link's bytes are not checked", [(J, "if (ja_rec_load(&sp, &rp) != 0 || !ja_older_pairs(&rp)) return 2u;", "if (ja_rec_load(&sp, &rp) != 0) return 2u;")])
     must_fail("funnel", "C3", "a chained Swap must add into an EMPTY slot", [(J, "!ja_sig_make(&rn, 0)", "!ja_sig_make(&rn, 1)")])
     must_fail("funnel", "C4", "redo never takes a three-step group", [(J, "    g = ja_group_at(p3, JA_GROUP_MAX);\n    if (g == 3u) return 3u;", "    g = 0;\n    if (g == 3u) return 3u;")])
@@ -134,6 +136,17 @@ def main() -> int:
     must_fail("funnel", "M7a", "pair slot cap raised to 8", [(J, "#define JA_PAIR_SLOTS  4u", "#define JA_PAIR_SLOTS  8u")])
     must_fail("funnel", "M7b", "pair slot cap lowered to 3", [(J, "#define JA_PAIR_SLOTS  4u", "#define JA_PAIR_SLOTS  3u")])
     must_fail("funnel", "R1", "the older half no longer needs the Swap name (the R1 mislabel returns)", [(J, "strcmp(r->name, \"Swap\") == 0; }", "strcmp(r->name, \"Box move\") == 0 || strcmp(r->name, \"Swap\") == 0; }")])
+    # zc #321: seq adjacency of a pair's halves
+    A1 = "rm.parent + 1u != newest || "
+    A2 = " || rn.parent + 1u != rm.parent) return 2u;"
+    A3 = "rows[n - 1].seq == t + 1u && "
+    must_fail("funnel", "Q1", "group first link: adjacency dropped", [(J, A1, "")])
+    must_fail("funnel", "Q2", "group second link: adjacency dropped", [(J, A2, ") return 2u;")])
+    must_fail("funnel", "Q3", "History link: adjacency dropped", [(J, A3, "")])
+    must_fail("funnel", "Q4a", "group gap test lets a one-step gap pair (> instead of !=)", [(J, A1, "rm.parent + 1u > newest || ")])
+    must_fail("funnel", "Q4b", "group gap test demands a gap of 2 (a real pair stops grouping)", [(J, A1, "rm.parent + 2u != newest || ")])
+    must_fail("funnel", "Q4c", "second-link gap test demands a gap of 2", [(J, A2, " || rn.parent + 2u != rm.parent) return 2u;")])
+    must_fail("funnel", "Q4d", "History gap test demands a gap of 2", [(J, A3, "rows[n - 1].seq == t + 2u && ")])
     G = "gb_jkey.c"
     must_fail("gb", "A10", "GB guard dropped", [(J, "if (s_ai.slot < 0) return 0;                                /* Game Boy: no 80-byte slots, swaps are refused outright */", ""), (J, "return s_ai.slot >= 0 && r->kind", "return r->kind")])
     must_fail("gb", "B1", "no 0xFF escape", [(G, "if (legacy || !has_ff) {", "if (1) {")])

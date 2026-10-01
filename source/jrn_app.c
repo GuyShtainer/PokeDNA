@@ -545,15 +545,17 @@ static void ja_relabel(char name[25], const char* suffix) {   /* swap the 4-char
 /* The swap group whose NEWEST step is `newest` and whose steps all lie on its parent chain: 0 = none, 2 = Swap + Box move (#303), 3 = Swap + Swap + Box move
  * (#314b, only when max >= 3). Every link is byte-matched (the replaced bytes of the older step == the bytes the newer one adds, zero mismatches, >= JA_MATCH_MIN),
  * so two unrelated steps that merely carry the names never group: a Swap's displaced mon can only be placed by the NEXT drop, and the bytes say it was. One record
- * buffer, read in turn newest -> oldest: each older_pairs() runs against the signature of the step above it BEFORE that signature is replaced. */
+ * buffer, read in turn newest -> oldest: each older_pairs() runs against the signature of the step above it BEFORE that signature is replaced.
+ * #321: every link must also be ADJACENT in sequence (older.seq + 1 == newer.seq): a real swap is two back-to-back commits, so a step with another branch's
+ * records (an orphaned sibling, a cursor marker) between its seq and its parent's is two user actions that merely byte-match, and never pairs. */
 static unsigned ja_group_at(uint32_t newest, unsigned max) {
   JrnRec rm, rn, rp;
   JrnSrc sm, sn, sp;
   if (jrn_i_locate(&s_j, newest, &rm, &sm) != 0 || !ja_newer_eligible(&rm)) return 0;
   if (ja_rec_load(&sm, &rm) != 0 || !ja_sig_make(&rm, 1)) return 0;
-  if (!rm.parent || jrn_i_locate(&s_j, rm.parent, &rn, &sn) != 0 || !ja_older_eligible(&rn)) return 0;
+  if (!rm.parent || rm.parent + 1u != newest || jrn_i_locate(&s_j, rm.parent, &rn, &sn) != 0 || !ja_older_eligible(&rn)) return 0;
   if (ja_rec_load(&sn, &rn) != 0 || !ja_older_pairs(&rn)) return 0;
-  if (max < 3u || !rn.parent) return 2u;
+  if (max < 3u || !rn.parent || rn.parent + 1u != rm.parent) return 2u;
   if (jrn_i_locate(&s_j, rn.parent, &rp, &sp) != 0 || !ja_older_eligible(&rp)) return 2u;
   if (!ja_sig_make(&rn, 0)) return 2u;                        /* s_rec still holds rn: its own signature, the chain link's newer side */
   if (ja_rec_load(&sp, &rp) != 0 || !ja_older_pairs(&rp)) return 2u;
@@ -641,7 +643,7 @@ int jrnapp_history(JaHist* rows, int max, int* more, int* floor_hit) {
     rows[n].saved = (uint8_t)saved_seen;
     memcpy(rows[n].name, rec.name, 24); rows[n].name[24] = 0;
     if ((ja_older_eligible(&rec) || ja_newer_eligible(&rec)) && ja_rec_load(&src, &rec) == 0) {   /* one record read serves both the older-half test and the next newer-half signature */
-      int linked = sig_ok && prev_parent == t && n > 0 && ja_older_eligible(&rec) && ja_older_pairs(&rec);
+      int linked = sig_ok && prev_parent == t && n > 0 && rows[n - 1].seq == t + 1u && ja_older_eligible(&rec) && ja_older_pairs(&rec);
       gl_prev = 0;
       if (linked && sig_kind == 1) {                         /* Swap + Box move */
         ja_label(rows[n - 1].name, " 2/2");

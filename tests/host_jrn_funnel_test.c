@@ -634,6 +634,61 @@ static void t_swap_pair_r1_mislabel(void) {
   CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && strcmp(nm, "Swap") == 0 && jrnapp_cursor() == 1u, "#314a control: the Swap name on the older half is what pairs ('%s', cursor %u)", safe(nm), (unsigned)jrnapp_cursor());
 }
 
+/* ---- zc #321: a pair's two halves must be ADJACENT in sequence (newer.parent + 1 == newer.seq). The repro: Setup X,Y + a clone Y' -> Swap -> Box move; a
+ * per-step undo puts the cursor ON the Swap; a NEW step copies Y' into an empty slot (parent = the Swap; the orphaned Box move and the undo's cursor marker hold the seqs between). The bytes
+ * link (the Swap replaced Y, the new step adds Y) -- but they are two user actions with a sibling branch between them in sequence. Before zc: 'Box move 2/2'
+ * + 'Swap 1/2' and one undo took the cursor 4 -> 1 named 'Swap'. Byte-exact either way; the defect was the label and the one-press span. */
+static void t_swap_seq_adjacency(void) {
+  char nm[25];
+  JaHist rows[8];
+  int n, more = 0, fh = 0;
+  uint8_t x[MONB], y[MONB];
+  mon_fill(x, 1); mon_fill(y, 2);
+  CHECK(app_world_reset(), "world");
+  memcpy(slot_at(10), x, MONB); CHECK(stage_pc("Setup"), "setup X");                           /* one Setup step per mon (3 mons would exceed ONE record) */
+  memcpy(slot_at(11), y, MONB); CHECK(stage_pc("Setup"), "setup Y");
+  memcpy(slot_at(13), y, MONB); CHECK(stage_pc("Setup"), "setup Y' (slot 13), a byte-identical clone of Y");
+  memcpy(slot_at(11), x, MONB); memset(slot_at(10), 0, MONB); CHECK(stage_drop1(), "Swap (X onto Y's slot)");
+  memcpy(slot_at(12), y, MONB); CHECK(stage_pc("Box move"), "Box move (Y into the empty slot 12)");
+  CHECK(jrnapp_flush() == JRN_OK, "flush");
+  CHECK(jrnapp_tip() == 5u, "tip 5 (3 Setups, Swap, Box move): %u", (unsigned)jrnapp_tip());
+  /* control: the REAL pair (adjacent halves) still groups: one press takes both */
+  n = jrnapp_history(rows, 8, &more, &fh);
+  CHECK(n == 5 && strcmp(rows[0].name, "Box move 2/2") == 0 && strcmp(rows[1].name, "Swap 1/2") == 0, "#321 control: adjacent halves ARE labelled 2/2 + 1/2 ('%s' '%s')", n > 1 ? safe(rows[0].name) : "", n > 1 ? safe(rows[1].name) : "");
+  CHECK(jrnapp_step(-1, nm) == JRN_OK && jrnapp_cursor() == 4u, "per-step undo: the cursor is ON the Swap (seq 4)");
+  CHECK(read_pc(pc), "re-derive the PC image");
+  memcpy(slot_at(14), y, MONB); CHECK(stage_pc("Box move"), "a NEW 'Box move': Y' (== Y) into the empty slot 14");
+  CHECK(jrnapp_flush() == JRN_OK && jrnapp_tip() == 7u, "flush; tip 7, parent the Swap (seq 4); the orphaned Box move (5) and the undo's cursor marker (6) sit between");
+  n = jrnapp_history(rows, 8, &more, &fh);
+  CHECK(n == 5 && strcmp(rows[0].name, "Box move") == 0 && strcmp(rows[1].name, "Swap") == 0, "#321 History: NO pair label across a sequence gap ('%s' '%s')", n > 1 ? safe(rows[0].name) : "", n > 1 ? safe(rows[1].name) : "");
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && strcmp(nm, "Box move") == 0 && jrnapp_cursor() == 4u, "#321 ONE step per undo press, not a 'Swap' pair ('%s', cursor %u)", safe(nm), (unsigned)jrnapp_cursor());
+  CHECK(jrnapp_step_pair(1, nm) == JRN_OK && strcmp(nm, "Swap") != 0 && jrnapp_cursor() == 7u, "#321 ... and redo too ('%s', cursor %u)", safe(nm), (unsigned)jrnapp_cursor());
+}
+
+/* The second link of a chained group: Swap_1(4), an unrelated Edit(5) undone (the cursor marker takes 6), then Swap_2(7, parent 4) + Box move(8): (Swap_2, Box move) are adjacent and
+ * pair; Swap_1 is NOT adjacent to Swap_2 (rn.parent + 1 != rm.parent) so the group is the PAIR, never three. */
+static void t_swap_seq_adjacency_chain(void) {
+  char nm[25];
+  JaHist rows[10];
+  int n, more = 0, fh = 0;
+  uint8_t m[3][MONB];
+  unsigned i;
+  for (i = 0; i < 3; i++) mon_fill(m[i], 1 + i);
+  CHECK(app_world_reset(), "world");
+  for (i = 0; i < 3; i++) { memcpy(slot_at(10 + i), m[i], MONB); CHECK(stage_pc("Setup"), "setup M%u", i); }   /* seqs 1..3 */
+  memcpy(slot_at(11), m[0], MONB); memset(slot_at(10), 0, MONB); CHECK(stage_drop1(), "Swap_1 (seq 4)");
+  pc[30000u] = (uint8_t)(pc[30000u] + 1u); CHECK(stage_pc("Edit"), "an unrelated Edit (seq 5)");
+  CHECK(jrnapp_flush() == JRN_OK && jrnapp_step(-1, nm) == JRN_OK && jrnapp_cursor() == 4u, "undo the Edit: cursor on Swap_1");
+  CHECK(read_pc(pc), "re-derive the PC image");
+  memcpy(slot_at(12), m[1], MONB); CHECK(stage_drop1(), "Swap_2 (seq 7, parent 4)");
+  memcpy(slot_at(30), m[2], MONB); CHECK(stage_pc("Box move"), "Box move (seq 8)");
+  CHECK(jrnapp_flush() == JRN_OK && jrnapp_tip() == 8u, "flush; tip 8 (the undo's cursor marker took seq 6)");
+  n = jrnapp_history(rows, 10, &more, &fh);
+  CHECK(n >= 3 && strcmp(rows[0].name, "Box move 2/2") == 0 && strcmp(rows[1].name, "Swap 1/2") == 0 && strcmp(rows[2].name, "Swap") == 0,
+        "#321 History: only the adjacent PAIR is labelled; the non-adjacent Swap_1 stays plain ('%s' '%s' '%s')", n > 2 ? safe(rows[0].name) : "", n > 2 ? safe(rows[1].name) : "", n > 2 ? safe(rows[2].name) : "");
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && jrnapp_cursor() == 4u, "#321 the press is the PAIR (cursor %u, want 4), not three steps", (unsigned)jrnapp_cursor());
+}
+
 /* ---- za #314(b): CHAINED swaps. The displaced mon dropped on another OCCUPIED slot is itself a Swap drop (named "Swap", one slot REPLACED), so a chain of k
  * swaps is k "Swap" steps and a last "Box move" into an empty slot; each link is byte-matched (the replaced bytes of step i == the bytes step i+1 adds).
  * stage_chain(k): M0 at slot 10, M1..Mk at slots 11..10+k (k in 2..4), empty slot 30. Steps: Setup, Swap_1 (M0 -> slot 11, slot 10 cleared, M1 displaced),
@@ -1316,6 +1371,8 @@ int main(int argc, char** argv) {
     CHECK(app_world(file), "app world"); t_swap_pair_offer();
     CHECK(app_world(file), "app world"); t_swap_pair_history_labels();
     CHECK(app_world(file), "app world"); t_swap_pair_r1_mislabel();
+    CHECK(app_world(file), "app world"); t_swap_seq_adjacency();
+    CHECK(app_world(file), "app world"); t_swap_seq_adjacency_chain();
     CHECK(app_world(file), "app world"); t_swap_redo_hop_cap();
     CHECK(app_world(file), "app world"); t_swap_slot_cap();
     CHECK(app_world(file), "app world"); t_swap_chain3();
