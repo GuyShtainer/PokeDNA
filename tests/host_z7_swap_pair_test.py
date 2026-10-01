@@ -28,7 +28,7 @@ pin can be decoration. The real tree is never touched (scratch dir).
     A10 the Game Boy guard dropped (a swap-shaped GB pair would pair)                      -> RED
   zc #322 mutants R1w..R7w (the walk-fault refusal at each of its seven places); zc #321 mutants (t_swap_seq_adjacency[_chain]): Q1..Q3 each of the three adjacency tests dropped (group first link, group second link, History link);
     Q4a/Q4b/Q4c the seq-gap test off by one in each direction (a real pair stops grouping / a one-step gap pairs), Q4d the History gap off by one
-  zd mutants: PA1..PA5 (#320 the Party add name / prefix 79 / prefix 40 / span offset ignored / PC-touch), LD1..LD4 (#325 the landing mark: dropped / any landing / each swallowed fault), JP1 (#326 the probe's fault)
+  zd mutants: PA1..PA7 (#320 the Party add name / prefix 79 / prefix 40 / span offset ignored / PC-touch / the one-span guard / region 0 admitted), LD1..LD4 (#325 the landing mark: dropped / any landing / each swallowed fault), JP1 (#326 the probe's fault)
 """
 from __future__ import annotations
 
@@ -169,6 +169,8 @@ def main() -> int:
     must_fail("funnel", "PA3", "the party prefix is 40 bytes (below the match minimum)", [(J, "#define JA_PARTY_PREFIX JA_MON_BYTES", "#define JA_PARTY_PREFIX 40u")])
     must_fail("funnel", "PA4", "the span offset ignored (the first SB1 span, the count byte, is taken)", [(J, "if (sp.region < JA_SB1_FIRST || sp.region > JA_SB1_LAST || sp.len < JA_PARTY_PREFIX) continue;", "if (sp.region < JA_SB1_FIRST || sp.region > JA_SB1_LAST) continue;")])
     must_fail("funnel", "PA5", "a Party add that also touches the PC pairs", [(J, "    if (sp.region >= JA_PC_FIRST && sp.region <= JA_PC_LAST) return 0;           /* a landing never touches the PC */\n", "")])
+    must_fail("funnel", "PA6", "a Party add with TWO >= 80-byte SB1 spans pairs (the one-span guard dropped)", [(J, "    if (found) return 0;\n", "")])
+    must_fail("funnel", "PA7", "a region-0 (SaveBlock2) span counts as the party record", [(J, "if (sp.region < JA_SB1_FIRST || sp.region > JA_SB1_LAST || sp.len < JA_PARTY_PREFIX) continue;", "if (sp.region > JA_SB1_LAST || sp.len < JA_PARTY_PREFIX) continue;")])
     # zd #325: the landing-based undo half toast (t_land_half_toast, t_land_fault_sweep)
     LW = '  if (rc == 0 && strcmp(w.name, "Swap") == 0) *land = 1;'
     must_fail("funnel", "LD1", "the landing mark dropped", [(J, LW, "  (void)w;")])

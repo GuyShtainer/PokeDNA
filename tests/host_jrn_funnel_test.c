@@ -737,15 +737,27 @@ static int read_sb1(void) {
   return 1;
 }
 /* Y's party record: the first 80 bytes are the box record `m`, the 20-byte tail is the derived plaintext (non-zero here). `nbytes` < 100 writes only a prefix. */
+static unsigned pl_extra_off;   /* zdr: non-zero = ALSO change 100 bytes of SaveBlock1 at this offset (a second >= 80-byte SB1 span, before or after the record) */
+static int pl_sb2_only;         /* zdr: 1 = the step changes ONLY a >= 100-byte region-0 (SaveBlock2) span carrying the record's first 80 bytes, no SB1 byte at all */
 static int stage_party_land(const char* name, const uint8_t* m, unsigned nbytes, unsigned n, int also_pc) {
   uint8_t rec[100];
   unsigned i;
   int ok;
   memcpy(rec, m, MONB);
   for (i = MONB; i < 100u; i++) rec[i] = (uint8_t)(0x31u + i);
+  if (pl_sb2_only) {
+    static uint8_t sb2x[G3_SECTOR_DATA_SIZE];
+    memcpy(sb2x, sec_of(0), sizeof sb2x);
+    memcpy(sb2x + 0x100, rec, 100);
+    if (name) img_scope_open(&RA, name);
+    ok = img_stage_sections(&F, &RA, sv, slot, 0, 0, sb2x);
+    if (name) ok = img_scope_close(&F, &RA, sv, slot) && ok;
+    return ok;
+  }
   if (!read_sb1()) return 0;
   sb1buf[PT_CNT] = (uint8_t)(n + 1u);
   memcpy(sb1buf + PT_REC + n * 100u, rec, nbytes);
+  if (pl_extra_off) for (i = 0; i < 100u; i++) sb1buf[pl_extra_off + i] ^= 0x5Au;
   if (name) img_scope_open(&RA, name);
   if (also_pc) { pc[30000u] = (uint8_t)(pc[30000u] + 1u); (void)img_stage_sections(&F, &RA, sv, slot, G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, pc); }
   ok = img_stage_sections(&F, &RA, sv, slot, 1, 4, sb1buf);
@@ -809,6 +821,19 @@ static void t_party_add_pairs(void) {
   /* the landing must not touch the PC */
   CHECK(stage_party_swap("Party add", 100, 2, 0, 1), "stage a 'Party add' that ALSO changes the PC");
   CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && jrnapp_cursor() == 2u, "#320 a 'Party add' that touches the PC is not the landing shape (cursor %u)", (unsigned)jrnapp_cursor());
+  /* zdr: exactly ONE >= 80-byte SaveBlock1 span is the landing shape. A second one -- AFTER the record (0xB00) or BEFORE it (0x100): the guard decides, not the last-span-wins accident -- never pairs */
+  pl_extra_off = 0xB00u;
+  CHECK(stage_party_swap("Party add", 100, 2, 0, 0), "stage a 'Party add' with a second 100-byte SB1 span after the record");
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && jrnapp_cursor() == 2u, "#320 two >= 80-byte SB1 spans (extra after) never pair (cursor %u)", (unsigned)jrnapp_cursor());
+  pl_extra_off = 0x100u;
+  CHECK(stage_party_swap("Party add", 100, 2, 0, 0), "stage a 'Party add' with a second 100-byte SB1 span BEFORE the record");
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && jrnapp_cursor() == 2u, "#320 two >= 80-byte SB1 spans (extra first) never pair (cursor %u)", (unsigned)jrnapp_cursor());
+  pl_extra_off = 0;
+  /* zdr: a step named "Party add" whose only change is a region-0 (SaveBlock2) span that carries the record's 80 bytes: the dex step alone never satisfies the party signature */
+  pl_sb2_only = 1;
+  CHECK(stage_party_swap("Party add", 100, 2, 0, 0), "stage a 'Party add' that is ONLY a >= 100-byte SB2 span");
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && jrnapp_cursor() == 2u, "#320 a region-0-only 'Party add' never pairs (cursor %u)", (unsigned)jrnapp_cursor());
+  pl_sb2_only = 0;
   /* the n = 0 limit: count byte + record merge into ONE span that starts at the count byte -> the prefix compare cannot match -> per-step (conservative; retail keeps >= 1 party mon) */
   CHECK(stage_party_swap("Party add", 100, 0, 0, 0), "stage a landing into an EMPTY party (n = 0)");
   CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && jrnapp_cursor() == 2u, "#320 LIMIT: an empty party's landing never pairs (conservative, cursor %u)", (unsigned)jrnapp_cursor());
