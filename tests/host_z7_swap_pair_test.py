@@ -23,7 +23,8 @@ pin can be decoration. The real tree is never touched (scratch dir).
     B3  the compat open adopts the old journal WITHOUT the anchor check                    -> RED
     B4  the escaped-name flag (gender) dropped: '9' collides with its own escape bytes     -> RED
     B5  the redirect new -> old is never written                                           -> RED
-  za #314/#315 mutants (host_jrn_funnel_test.c): C1..C8 chained swaps, R1 the R1 mislabel (older half no longer needs the "Swap" name)
+  za #314/#315 mutants (host_jrn_funnel_test.c): C1..C8 chained swaps, R1 the R1 mislabel (older half no longer needs the "Swap" name),
+    H1..H3 the 3-step rollback-failure contract (t_swap_chain_rollback_sweep)
     A10 the Game Boy guard dropped (a swap-shaped GB pair would pair)                      -> RED
 """
 from __future__ import annotations
@@ -123,6 +124,10 @@ def main() -> int:
     must_fail("funnel", "C6", "the rollback undoes only one of the applied steps", [(J, "for (k = 0; k < d && rb == JRN_OK; k++)", "for (k = 0; k < 1u && rb == JRN_OK; k++)")])
     must_fail("funnel", "C7", "History never relabels a triple", [(J, "        ja_relabel(rows[n - 2].name, \" 3/3\");\n", "")])
     must_fail("funnel", "C8", "the cap lowered to 2 (no chained group forms)", [(J, "#define JA_GROUP_MAX 3u", "#define JA_GROUP_MAX 2u")])
+    # za review A4: the 3-step "half a swap" contract (t_swap_chain_rollback_sweep) -- each survived the suite before that pin
+    must_fail("funnel", "H1", "the rollback keeps going after a failed step (a later success hides the half state)", [(J, "for (k = 0; k < d && rb == JRN_OK; k++)", "for (k = 0; k < d; k++)")])
+    must_fail("funnel", "H2", "the 'half a swap' contract only for a one-step rollback", [(J, "    if (rb != JRN_OK) {\n      ja_event(\"swap pair: rollback failed", "    if (rb != JRN_OK && d < 2u) {\n      ja_event(\"swap pair: rollback failed")])
+    must_fail("funnel", "H3", "a two-step rollback failure returns the error, not JRN_OK", [(J, "      return JRN_OK;                                           /* the image DID change", "      return d < 2u ? JRN_OK : rb;                             /* the image DID change")])
     must_fail("funnel", "M5a", "redo hop cap raised to 4096", [(J, "#define JA_REDO_HOPS  64u", "#define JA_REDO_HOPS  4096u")])
     must_fail("funnel", "M5b", "redo hop cap off by one (hops > cap)", [(J, "hops >= JA_REDO_HOPS) return 0;", "hops > JA_REDO_HOPS) return 0;")])
     must_fail("funnel", "M5c", "redo hop cap off by one the other way (cap - 1)", [(J, "hops >= JA_REDO_HOPS) return 0;", "hops >= JA_REDO_HOPS - 1u) return 0;")])
