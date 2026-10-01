@@ -6001,13 +6001,47 @@ def run_y19_s3(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessio
     s.tap("START", settle=200)
     s.tap("RIGHT", settle=20)
     s.press_n("DOWN", 8, settle=12)
-    T("A", "(e) History again: the newest row is the crossed step ('Bank move', #306), tagged FLOOR", settle=300, claim=["HISTORY", "Bank move"])
-    T("DOWN", "(e) DOWN to the next older row", settle=30)
-    T("A", "(e) A: jump below the floor -> 'STOPPED AT A FLOOR' naming 'Bank move' (#306; undo cannot pass a crossed step)", settle=300, claim=["Stopped at Bank move"], claim_absent=["Box move"])
+    T("A", "(e) History again: the newest row is the crossed step ('Bank move', #306), tagged FLOOR; #304: the (g) jump orphaned a tail, so a collapsed '+ 1 other branch' row hangs under it", settle=300, claim=["HISTORY", "Bank move", "1 other branch"])
+    T("DOWN", "(e) DOWN: onto the '+ 1 other branch' summary row (#304); the footer now says 'A show'", settle=30, claim=["1 other branch", "A show"])
+    T("A", "(e) A on the summary OPENS it (display only): the orphaned tail's first step shows as a dim '| ' row labelled 'other branch'; the summary reads '- 1 other branch', footer 'A hide'", settle=200, claim=["- 1 other branch", "A hide"])
+    T("DOWN", "(e) DOWN: onto the sibling row; the footer says 'A -' (A does nothing here)", settle=30, claim=["A -"])
+    T("A", "(e) A on the SIBLING row: DENIED -- nothing moves, the footer note reads 'Other branch - not jumpable.' (the deny BUZZ is audio: hardware/ear-only)", settle=60, claim=["not jumpable"])
+    T("DOWN", "(e) DOWN: the next older row of the CURRENT branch ('Swap'); the note is gone", settle=30, claim_absent=["not jumpable"])
+    T("A", "(e) A: jump below the floor -> 'STOPPED AT A FLOOR' naming 'Bank move' (#306; undo cannot pass a crossed step) -- the current-branch jump is unchanged with a fork on screen", settle=300, claim=["Stopped at Bank move"], claim_absent=["Box move"])
     T("A", "(e) dismiss", settle=300)
-    SHOT("history_after_stop", "(e) History after the refused jump: nothing moved")
+    SHOT("history_after_stop", "(e) History after the refused jump: nothing moved, the opened fork is still open", claim=["- 1 other branch"])
     T("B", "(e) B out of History", settle=300)
     SHOT("final_grid", "(h) the PC grid footer (short form SEL+L/R)", claim=["SEL+L/R"])
+
+    # ---- (k) #304: the History TREE, staged by design. Swap A (2 steps) -> SELECT+L undoes it -> swap B (a DIFFERENT pair of cells, 2 new steps off the
+    # SAME parent): swap A's steps are now an orphaned sibling branch. History shows ONE collapsed '+ 1 other branch' row under the fork; A on it
+    # opens it; A on the sibling row is DENIED (footer note, nothing moves); A on a CURRENT-branch row still jumps (here: back down to the Bank move
+    # floor row, undoing swap B) -- and the box grid is pixel-identical to its pre-(k) self afterwards.
+    T("DOWN", "(k) DOWN: off the box-name row onto the first grid cell", settle=60)
+    SHOT("k_before", "(k) BEFORE: the box grid the whole leg must return to")
+    swap_edit("k1")
+    CHORD("L", "(k) SELECT+L: swap A undone ('Undid: Swap'); its two steps stay on disk, undone", tag="k_undo", claim=["Undid: Swap"])
+    T("LEFT", "(k) LEFT: the hand cursor back to the first cell (the same pair again: a NEW pair of steps off the same parent)", settle=60)
+    swap_edit("k2")
+    SHOT("k_swapB", "(k) swap B done (the same cells swapped again: a NEW pair of steps): the new branch's tip; swap A's steps are orphaned beside it")
+    s.tap("START", settle=200)
+    s.tap("RIGHT", settle=20)
+    s.press_n("DOWN", 8, settle=12)
+    T("A", "(k) History: swap B's halves newest ('Box move 2/2', 'Swap 1/2'), then ONE collapsed '+ 1 other branch' row under them (the fork point is the step below)", settle=300,
+      claim=["HISTORY", "Box move 2/2", "Swap 1/2", "1 other branch"])
+    T("DOWN", "(k) DOWN: onto 'Swap 1/2'", settle=30)
+    T("DOWN", "(k) DOWN: onto the '+ 1 other branch' summary; footer 'A show'", settle=30, claim=["A show"])
+    T("A", "(k) A: the fork OPENS -- swap A's FIRST step ('Swap') as a dim '| ' sibling row, 'other branch'; footer 'A hide'", settle=200,
+      claim=["- 1 other branch", "other branch", "A hide"])
+    T("DOWN", "(k) DOWN: onto the sibling row ('A -')", settle=30, claim=["A -"])
+    T("A", "(k) A on the sibling: DENIED, the footer note 'Other branch - not jumpable.' and NOTHING moves (the rows are unchanged)", settle=60, claim=["not jumpable"])
+    T("DOWN", "(k) DOWN: the Bank move FLOOR row of the current branch (the fork point is the step just below the sibling... the branch row under the fork)", settle=30, claim_absent=["not jumpable"])
+    T("A", "(k) A: the CURRENT-branch jump is unchanged: swap B's two steps are undone (no dialog: nothing crossed a floor)", settle=500, claim_absent=["STOPPED", "Stopped at"])
+    SHOT("k_history_after", "(k) History after the jump: the cursor mark '>' sits on the Bank move row, swap B's rows read 'undone', the fork row is still there")
+    T("B", "(k) B: back to the box grid", settle=300)
+    SHOT("k_after", "(k) AFTER: the box grid is back to its pre-(k) state", claim=["SEL+L/R"])
+    T("LEFT", "(k) LEFT: the hand cursor back to column 1 (the cursor remembers its column; leg (i) expects to start in column 1)", settle=60)
+    T("UP", "(k) UP: the hand cursor back onto the box-name row, where leg (i) expects to start", settle=60)
 
     # ---- (i) the half-swap recovery net (permanent leg, #234 s3 fix pass): swap -> ONE SEL+L (the box is one mon short:
     # the displaced mon is in nobody's hands) -> exit-SAVE that half-swapped image -> power cycle -> the load-time offer
@@ -6046,6 +6080,8 @@ def run_y19_s3(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessio
     expect(bs is not None, "(c) the summary portrait changed after a lone SELECT (flip)")
     expect(gridcmp_nohand("base", "undo1") == 0, "(a) #303 ONE undo press: the grid is pixel-identical to BASE (no half-swap), hand cursor masked")
     expect(gridcmp_nohand("edited", "redo1") == 0, "(b) #303 ONE redo press: the grid is pixel-identical to EDITED, hand cursor masked")
+    expect(gridcmp_nohand("k_before", "k_swapB") > 0, "(k) swap B really changed the grid (the comparison below is not vacuous)")
+    expect(gridcmp_nohand("k_before", "k_after") == 0, "(k) #304 after the History jump on the CURRENT branch the grid is pixel-identical to its pre-(k) self (swap B undone; the sibling-row A did nothing), hand cursor masked")
     expect(gridcmp_nohand("edited", "undo1") > 0, "(a) the swap really changed the grid (the comparison above is not vacuous)")
     expect(gridcmp("i_swapped", "i_half") > 0, "(i) the undone grid differs from the swapped grid (the whole swap was undone)")
     expect(gridcmp_nohand("i_swapped", "i_whole") == 0, "(i) after the power cut + offer + A the grid is pixel-identical to the pre-undo swapped grid (hand cursor masked: it restarts on the first cell)")
