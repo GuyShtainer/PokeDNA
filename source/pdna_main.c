@@ -10260,6 +10260,7 @@ static int aur_from_rc(int rc) {
   if (rc == JRN_E_NOTHING || rc == JRN_NOOP) return AUR_NOTHING;
   if (rc == JRN_E_CROSSED || rc == JRN_E_FLOOR) return AUR_FLOOR;
   if (rc == JRN_E_DIVERGED) return AUR_DIVERGED;
+  if (rc == JRN_E_TORN) return AUR_PARTIAL;       /* z9: a chain's rollback failed -- the image holds PART of a step */
   if (rc == JRN_E_ARG || rc == JRN_E_STOPPED || rc == JRN_E_RDONLY) return AUR_OFF;
   return AUR_ERR;
 }
@@ -10311,6 +10312,12 @@ static void __attribute__((noinline)) app_journal_offer(uint32_t n, uint32_t ava
     if (!yes) { jrnapp_decline(); log_line("journal: offer declined (%lu steps)", (unsigned long)n); return; }
     int k = jrnapp_reapply();
     log_line("journal: re-applied %d of %lu step(s)", k, (unsigned long)n);
+    if (k == JRN_E_TORN) {                                    /* z9: never a silent partial step (D10) */
+      app_journal_rederive();
+      imgf_staged(&g_img);
+      msg_wait("PARTIAL RE-APPLY", UI_WARN, "A re-applied step is PARTIAL:", "exit without saving it.");
+      return;
+    }
     if (k > 0) {
       app_journal_rederive();
       imgf_staged(&g_img);                                    /* the image is ahead of the card: the exit save confirms once */

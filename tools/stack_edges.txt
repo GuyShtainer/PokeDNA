@@ -2005,7 +2005,7 @@ gated gbscr_open_inner need=6088 from=rom_gbui.h:PDNA_GB_UI_NEED gate=gbscr_open
 # it), growing app_mon_menu's own frame 896 -> 992 B (+96 B), the chain to 7,328 B
 # (artless) / 7,320 B (normal). New need = 7,328 + 64 ISR = 7,392 (artless
 # dominates) -- see PDNA_PARTY_STRIP_NEED's own comment.
-gated pcp_open_party_strip_inner need=7472 from=pdna_box.c:PDNA_PARTY_STRIP_NEED gate=pcp_open_party_strip via=pcp_open_party_strip
+gated pcp_open_party_strip_inner need=7536 from=pdna_box.c:PDNA_PARTY_STRIP_NEED gate=pcp_open_party_strip via=pcp_open_party_strip
 
 # BACKLOG #179 A3 review D14 (informational, 2026-09-23): the delta variant's own
 # deepest-chain figure reported by the gate (e.g. "STACK ok: deepest N of 15,024

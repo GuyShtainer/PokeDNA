@@ -312,7 +312,7 @@ int jrnapp_reapply(void) {
     if (rc == JRN_E_TORN) {                                  /* a chained step failed AND its rollback failed (z9): the image holds part of it */
       img_rec_cross(s_r);                                    /* the next recorded step is a floor: the offer never re-applies across it */
       ja_event("re-apply: a chain's rollback failed, image PARTIAL", rc);
-      return n ? n : 1;                                      /* "changed": the caller must re-derive its copies */
+      return JRN_E_TORN;                                     /* NOT a count: the caller re-derives its copies AND says the image is partial */
     }
     if (rc != JRN_OK) { ja_event("re-apply stopped", rc); break; }
     n++;
@@ -644,10 +644,12 @@ int jrnapp_jump(uint32_t target, char stop[25], int* moved) {
   }
   if (target == 0) dir = -1;
   for (hops = 0; hops < 4096u && jrn_cursor(&s_j) != target; hops++) {
+    char nm[25];
     if (dir < 0 && jrn_cursor(&s_j) == 0) break;
-    rc = jrnapp_step(dir, 0);
+    rc = jrnapp_step(dir, nm);
     if (rc != JRN_OK) break;
     n++;
+    if (strcmp(nm, "partial step") == 0) { rc = JRN_E_TORN; break; }   /* z9: the image holds PART of a chain: stop and say so */
   }
   if (moved) *moved = n;
   if (rc == JRN_E_CROSSED && stop && dir < 0) jrnapp_step_name(jrn_cursor(&s_j), stop);   /* the floor is the step at the cursor */

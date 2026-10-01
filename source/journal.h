@@ -91,7 +91,7 @@
 
 /* THE SEGMENT HEADER (sector 0, 32 bytes at offset 0; the rest of the sector is zero and never written):
  *   [0..3]  'PDJS'                    magic          reader: bad magic = FREE slot
- *   [4..5]  version u16 (JRN_SEG_VER)               reader: unknown = FOREIGN  (the version rule above)
+ *   [4..5]  version u16 (JRN_SEG_VER or JRN_SEG_VER2)               reader: unknown = FOREIGN  (the version rule above)
  *   [6..7]  ring u16, 2..JRN_RING_MAX               reader: outside = FOREIGN
  *   [8..11] logical index u32, 1..9999              reader: outside = FOREIGN (the cap is part of the format)
  *   [12]    nreg u8      regions of the image       reader: 0 / > JRN_NREG_MAX = FOREIGN; != cfg.nreg = FOREIGN
@@ -312,7 +312,8 @@ void jrn_step_abort(Jrn* j);
  * Preconditions: no step under construction and NOTHING PENDING (else JRN_E_FULL + flush_wanted: flush, then call again).
  * Returns JRN_OK (the step is on disk, verified; cursor/tip are on its HEAD), JRN_NOOP (nothing changed), JRN_E_TOOBIG (more than
  * JRN_CHAIN_MAX records: nothing was written), JRN_E_DIVERGED (an old block does not hash to the tracked crc), JRN_E_FULL (no room /
- * nothing-pending violated), JRN_E_IO / JRN_E_VERIFY (a card error: recording STOPS, as for a failed flush), or the step_begin refusals.
+ * nothing-pending violated), JRN_E_IO / JRN_E_VERIFY (a card error; only a VERIFY mismatch stops recording -- a read error during the
+ * post-write verify reports JRN_E_IO without stopping, exactly like jrn_flush), or the step_begin refusals.
  * A chain of >= 2 records needs a v2 segment: the tail if it is v2 and has room, else the EXISTING spare, re-stamped v2 on demand (a retire +
  * a header write: no body zero-fill, never a segment that holds records; a v1 header is never rewritten in place -- a tear would free the slot).
  * It never CREATES a spare (a zero-filled activation is a safe-moment job, jrn_prepare, which inherits the last segment's version): no spare ->

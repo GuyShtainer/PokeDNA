@@ -73,6 +73,8 @@ static void h_say(int rc, int moved, const char* stop) {
     msg_wait("HISTORY DIVERGED", UI_WARN, "History diverged here: the save", "no longer matches this step.");
   } else if (rc == AUR_ARENA) {
     msg_wait("NOT NOW", UI_WARN, "The box data is on loan to", "another screen. Leave and retry.");
+  } else if (rc == AUR_PARTIAL) {
+    msg_wait("PARTIAL STEP", UI_WARN, "A step was only partly applied:", "exit without saving it.");
   } else if (rc == AUR_NOTHING) {
     msg_wait("HISTORY", UI_OK, "Already there.", 0);
   } else {

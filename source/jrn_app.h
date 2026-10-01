@@ -70,7 +70,9 @@ void jrnapp_log_events(ImgRec* r);
 uint32_t jrnapp_offer(uint32_t* avail, char stop[25]);
 /* Re-apply up to `avail` steps through the cursor rule, patching the image via the accessor. Returns
  * the number applied, or a negative JRN_E_* (nothing half-applied: the engine verifies each step
- * against the image before it touches a byte). */
+ * against the image before it touches a byte) -- EXCEPT JRN_E_TORN (z9): a chained step failed part way AND
+ * its rollback failed, so the image holds PART of a step; the epoch is crossed and the caller must re-derive
+ * its copies and say so (never report it as a count). */
 int  jrnapp_reapply(void);
 /* The user declined: write the discarded marker (and flush it). */
 void jrnapp_decline(void);
@@ -117,7 +119,7 @@ typedef struct JaHist {
 int  jrnapp_history(JaHist* rows, int max, int* more, int* floor_hit);
 /* Undo/redo along that branch until the cursor sits on `target` (a row's seq; 0 = before the first step),
  * stopping at a floor. *moved = steps applied; `stop` = the crossed step's name when a floor stopped it. Returns 0
- * on arrival or the JRN_E_* that stopped the chain. */
+ * on arrival or the JRN_E_* that stopped the chain (JRN_E_TORN: the last step counted in *moved is PARTIAL). */
 int  jrnapp_jump(uint32_t target, char stop[25], int* moved);
 
 #endif /* JRN_APP_H */

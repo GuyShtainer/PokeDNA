@@ -733,6 +733,56 @@ static void t_chain_never_pairs(void) {
   CHECK(jrnapp_step_pair(1, nm) == JRN_OK && jrnapp_step_pair(1, nm) == JRN_OK && memcmp(sv, snapF, sizeof sv) == 0, "and two redo presses restore the post-swap image byte-exact");
 }
 
+
+/* z9 review D1: the two OTHER TORN consumers. The load-time re-apply (jrnapp_reapply) and the History jump (jrnapp_jump) must report a chain
+ * whose rollback failed as JRN_E_TORN -- never as a step count / "nothing further changed" -- with the epoch crossed. Persistent read faults are
+ * swept across the whole press; every point that leaves a PARTIAL image must say TORN. */
+static void t_chain_torn_reapply_and_jump(void) {
+  static uint8_t pre[G3_SAVE_FILE_SIZE], mid[G3_SAVE_FILE_SIZE], post[G3_SAVE_FILE_SIZE];
+  uint32_t av = 0; char stop[25]; long k; unsigned long r0, Rn; int n, moved; unsigned partial = 0, bad = 0, jpartial = 0, jbad = 0;
+  memcpy(pre, sv, sizeof pre);
+  CHECK(stageA(300), "A (plain)");
+  memcpy(mid, sv, sizeof mid);
+  poke(3500, 1000, 0x5A);
+  CHECK(img_stage_sections(&F, &RA, sv, slot, G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, pc) && RA.lost == 0, "B (chain)");
+  memcpy(post, sv, sizeof post);
+  CHECK(jrnapp_flush() == JRN_OK, "flush");
+  memcpy(sv, pre, sizeof sv); card_remount();
+  CHECK(app_reopen() && jrnapp_offer(&av, stop) == 2u && av == 2u, "the offer: 2/2");
+  rd_snapshot(); r0 = rd_reads;
+  CHECK(jrnapp_reapply() == 2 && memcmp(sv, post, sizeof sv) == 0, "the healthy re-apply");
+  Rn = rd_reads - r0;
+  for (k = 0; k <= (long)Rn; k++) {
+    uint16_t ep0;
+    rd_restore(); memcpy(sv, pre, sizeof sv); card_remount();
+    CHECK(app_reopen(), "reopen k=%ld", k);
+    (void)jrnapp_offer(&av, stop);
+    ep0 = RA.epoch;
+    rd_fail_reads_after = k; n = jrnapp_reapply(); rd_fail_reads_after = -1;
+    if (memcmp(sv, pre, sizeof sv) && memcmp(sv, mid, sizeof sv) && memcmp(sv, post, sizeof sv)) {
+      partial++;
+      if (n != JRN_E_TORN || RA.epoch == ep0) { bad++; if (bad <= 3) printf("  re-apply k=%ld: a PARTIAL image reported as %d (epoch %u -> %u)\n", k, n, (unsigned)ep0, (unsigned)RA.epoch); }
+    }
+  }
+  CHECK(partial > 0 && bad == 0, "D1 re-apply: every PARTIAL image says JRN_E_TORN with the epoch crossed (%u partial points, %u silent)", partial, bad);
+  /* the History jump: post -> the root, through the chain's undo */
+  rd_restore(); memcpy(sv, post, sizeof sv); card_remount();
+  CHECK(app_reopen(), "reopen on post");
+  rd_snapshot(); r0 = rd_reads;
+  CHECK(jrnapp_jump(0, stop, &moved) == 0 && moved == 2 && memcmp(sv, pre, sizeof sv) == 0, "the healthy jump to the root");
+  Rn = rd_reads - r0;
+  for (k = 0; k <= (long)Rn; k++) {
+    int rc;
+    rd_restore(); memcpy(sv, post, sizeof sv); card_remount();
+    CHECK(app_reopen(), "reopen k=%ld", k);
+    rd_fail_reads_after = k; rc = jrnapp_jump(0, stop, &moved); rd_fail_reads_after = -1;
+    if (memcmp(sv, pre, sizeof sv) && memcmp(sv, mid, sizeof sv) && memcmp(sv, post, sizeof sv)) {
+      jpartial++;
+      if (rc != JRN_E_TORN) { jbad++; if (jbad <= 3) printf("  jump k=%ld: a PARTIAL image reported as rc %d moved %d\n", k, rc, moved); }
+    }
+  }
+  CHECK(jpartial > 0 && jbad == 0, "D1 jump: every PARTIAL image stops the jump with JRN_E_TORN (%u partial points, %u silent)", jpartial, jbad);
+}
 int main(int argc, char** argv) {
   int a;
   static uint8_t file[G3_SAVE_FILE_SIZE];
@@ -767,6 +817,7 @@ int main(int argc, char** argv) {
     CHECK(app_world(file), "app world"); t_swap_pair_shape_and_rollback_failure();
     CHECK(app_world(file), "app world"); t_chain_through_app();
     CHECK(app_world(file), "app world"); t_chain_torn_contract();
+    CHECK(app_world(file), "app world"); t_chain_torn_reapply_and_jump();
     CHECK(app_world(file), "app world"); t_chain_never_pairs();
   }
   printf("%lu checks, %d failed\n", checks, fails);
