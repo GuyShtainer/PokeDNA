@@ -6043,6 +6043,43 @@ def run_y19_s3(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessio
     T("LEFT", "(k) LEFT: the hand cursor back to column 1 (the cursor remembers its column; leg (i) expects to start in column 1)", settle=60)
     T("UP", "(k) UP: the hand cursor back onto the box-name row, where leg (i) expects to start", settle=60)
 
+    # ---- (l) zc #324(b): FIVE forks on one branch -- the JA_OPEN_MAX = 4 eviction (pdna_hist.c: opening a fifth fork closes the oldest-opened one).
+    # Placed right after (k), before the (i)/(j) power-cut legs ((j) kills the journal: 'History is off'). The swap is staged on the FULL row 4 (6 occupied
+    # cells), moving one cell to the right each round (a drop-2 'put away' goes to the first EMPTY slot of the box, up in rows 1-2, so rows 3-5 never drift
+    # except the one cell the moved mon just left). Round r: swap A (2 steps) -> SELECT+L undoes it -> LEFT (the hand back on the source cell) -> swap B (2 NEW
+    # steps off the same parent: A's pair is an orphaned sibling); the hand ends on the moved mon, the next round's source. Each round forks at the previous
+    # round's tip, so the current branch carries five collapsed '+ 1 other branch' rows (one per fork point, under B_r's first step).
+    T("DOWN", "(l) DOWN: off the box-name row onto the first grid cell", settle=60)
+    T("DOWN", "(l) DOWN: row 2", settle=40)
+    T("DOWN", "(l) DOWN: row 3", settle=40)
+    T("DOWN", "(l) DOWN: row 4 (a FULL row: six occupied cells)", settle=40)
+    SHOT("l_before", "(l) BEFORE the five rounds: the hand on row 4, column 1 (VOL); the whole row is occupied")
+    for r in range(1, 6):
+        swap_edit(f"l{r}a")
+        CHORD("L", f"(l) round {r}: SELECT+L undoes swap A{r} (its 2 steps stay on disk, undone)", tag=f"l{r}_undo", claim=["Undid: Swap"])
+        T("LEFT", f"(l) round {r}: LEFT: the hand cursor back on the source cell", settle=60)
+        swap_edit(f"l{r}b")
+    s.tap("START", settle=200)
+    s.tap("RIGHT", settle=20)
+    s.press_n("DOWN", 8, settle=12)
+    T("A", "(l) History after FIVE rounds: B5's pair on top, then (under B5's first step) '+ 1 other branch', then B4's pair + its own summary ... (five collapsed summaries down the list)", settle=300,
+      claim=["HISTORY", "1 other branch"])
+    # the walk: rows are [Box move 2/2][Swap 1/2][+ 1 other branch] x5 (fork 1 = the newest); each OPEN fork adds one sibling row under its summary
+    T("DOWN", "(l) DOWN x2: the cursor on fork 1's summary (the newest fork)", times=2, settle=30, claim=["A show"])
+    T("A", "(l) A: fork 1 OPENS (1 of 4 allowed open)", settle=200, claim=["- 1 other branch", "A hide"])
+    for k in range(2, 5):
+        T("DOWN", f"(l) DOWN x4: past the sibling row and the next pair, onto fork {k}'s summary", times=4, settle=30, claim=["A show"])
+        T("A", f"(l) A: fork {k} OPENS ({k} of 4 allowed open)", settle=200, claim=["- 1 other branch", "A hide"])
+    T("UP", "(l) UP x14: back to the top of the list", times=14, settle=30)
+    SHOT("l_four_open", "(l) FOUR forks open (the maximum): the top of the list shows fork 1 and fork 2 as '- 1 other branch' each followed by its dim '| ' sibling row", claim=["- 1 other branch"])
+    T("DOWN", "(l) DOWN x18: onto fork 5's summary (the OLDEST fork, still collapsed: '+ 3 other branches' -- round 1's orphan shares this fork point with the (e)/(k) legs' two older orphans)", times=18, settle=30, claim=["A show", "3 other branches"])
+    T("A", "(l) A: fork 5 OPENS -- a FIFTH open fork: JA_OPEN_MAX = 4 closes the oldest-OPENED one (fork 1, the newest fork), so every row below it shifts up by one and the highlight (an index) lands on the sibling row under the summary just opened", settle=200, claim=["- 3 other branches"])
+    T("UP", "(l) UP x18: back to the top of the list", times=18, settle=30)
+    SHOT("l_five_open", "(l) after the FIFTH open: fork 1's summary reads '+ 1 other branch' again (closed by the eviction) and its sibling row is gone; forks 2-4 stay open", claim=["+ 1 other branch", "- 1 other branch"])
+    T("B", "(l) B: back out of History", settle=300)
+    T("LEFT", "(l) LEFT x5: the hand cursor back to column 1 (leg (i) expects column 1)", times=5, settle=30)
+    T("UP", "(l) UP x4: the hand cursor back onto the box-name row, where leg (i) expects to start", times=4, settle=30)
+
     # ---- (i) the half-swap recovery net (permanent leg, #234 s3 fix pass): swap -> ONE SEL+L (the box is one mon short:
     # the displaced mon is in nobody's hands) -> exit-SAVE that half-swapped image -> power cycle -> the load-time offer
     # is up for the UNDONE tail ("1 recorded step...") -> A re-applies it -> the box is whole again.
@@ -6437,6 +6474,32 @@ def run_y19_s4(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessio
     CHORD("R", "(i) SELECT held, THEN R: ONE redo re-applies the chain -> toast 'Redid: ...', BOX1 19/20 again", tag="i_redo", claim=["Redid"])
     s.run(100)
     SHOT("i_redone", "(i) after the redo: the moved grid again (BOX1 19/20)")
+
+    # ---- (j) zc #324(c): the FIRST Game Boy History-TREE frame. The Game Boy History screen shares pdna_history_screen_rows with the Gen-3 one, so a fork must
+    # show the same collapsed '+ 1 other branch' row. Stage it: give item #1 (a step above the (i) move), SELECT+L undoes it, give item #2 instead (a NEW step off
+    # the SAME parent): the first item step is now an orphaned sibling.
+    T("A", "(j) cell menu on the first cell (IVYSAUR after the (i) move)")
+    T("DOWN", "(j) menu on ITEM", claim=["ITEM"])
+    T("A", "(j) ITEM: the item picker", settle=300)
+    T("DOWN", "(j) DOWN: item #1", settle=60)
+    T("A", "(j) A: give item #1 (a new recorded step above the move)", settle=300, claim_absent=["Save ", "Save the"])
+    CHORD("L", "(j) SELECT+L: item #1 undone ('Undid: Held item'); its step stays on disk, undone", tag="j_undo", claim=["Undid"])
+    T("A", "(j) cell menu again")
+    T("DOWN", "(j) menu on ITEM", claim=["ITEM"])
+    T("A", "(j) ITEM: the item picker", settle=300)
+    T("DOWN", "(j) DOWN x2: item #2 (a DIFFERENT item)", times=2, settle=60)
+    T("A", "(j) A: give item #2 -- a NEW step off the same parent: item #1's step is now an orphaned sibling", settle=300, claim_absent=["Save ", "Save the"])
+    s.run(200)
+    s.tap("START", settle=200)
+    s.tap("RIGHT", settle=20)
+    s.press_n("DOWN", 8, settle=12)
+    SHOT("j_nav_history", "(j) nav menu, cursor on 'History'", claim=["History"])
+    T("A", "(j) A: the Game Boy HISTORY screen with a fork: the newest row is item #2's step, directly under it a collapsed '+ 1 other branch' row (the first Game Boy tree frame)",
+      settle=300, claim=["HISTORY", "1 other branch"])
+    T("DOWN", "(j) DOWN: onto the '+ 1 other branch' summary row; the footer says 'A show'", settle=30, claim=["1 other branch", "A show"])
+    T("A", "(j) A: the fork OPENS -- item #1's step shows as a dim '| ' sibling row 'other branch'; the summary reads '- 1 other branch'", settle=200,
+      claim=["- 1 other branch", "other branch", "A hide"])
+    T("B", "(j) B: back out of History", settle=300)
     s.vsd_flush()
     lst = subprocess.run([str(gb_shots._vsd_img_bin()), "list", str(gb_shots._DEFAULT_VSD_IMG)], capture_output=True, text=True).stdout
     pdj = [ln.split()[0] for ln in lst.splitlines() if ln.split() and ln.split()[0].endswith(".pdj")]
