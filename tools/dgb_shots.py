@@ -6027,7 +6027,7 @@ def run_y19_s3(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessio
     s.tap("START", settle=200)
     s.tap("RIGHT", settle=20)
     s.press_n("DOWN", 8, settle=12)
-    T("A", "(k) History: swap B's halves newest ('Box move 2/2', 'Swap 1/2'), then ONE collapsed '+ 1 other branch' row under them (the fork point is the step below)", settle=300,
+    T("A", "(k) History: swap B's halves newest ('Box move 2/2', 'Swap 1/2'), then TWO collapsed '+ 1 other branch' rows — swap A's orphaned tail under the halves, and leg (e)'s older fork under Bank move", settle=300,
       claim=["HISTORY", "Box move 2/2", "Swap 1/2", "1 other branch"])
     T("DOWN", "(k) DOWN: onto 'Swap 1/2'", settle=30)
     T("DOWN", "(k) DOWN: onto the '+ 1 other branch' summary; footer 'A show'", settle=30, claim=["A show"])
@@ -6035,7 +6035,7 @@ def run_y19_s3(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessio
       claim=["- 1 other branch", "other branch", "A hide"])
     T("DOWN", "(k) DOWN: onto the sibling row ('A -')", settle=30, claim=["A -"])
     T("A", "(k) A on the sibling: DENIED, the footer note 'Other branch - not jumpable.' and NOTHING moves (the rows are unchanged)", settle=60, claim=["not jumpable"])
-    T("DOWN", "(k) DOWN: the Bank move FLOOR row of the current branch (the fork point is the step just below the sibling... the branch row under the fork)", settle=30, claim_absent=["not jumpable"])
+    T("DOWN", "(k) DOWN: the Bank move FLOOR row of the current branch", settle=30, claim_absent=["not jumpable"])
     T("A", "(k) A: the CURRENT-branch jump is unchanged: swap B's two steps are undone (no dialog: nothing crossed a floor)", settle=500, claim_absent=["STOPPED", "Stopped at"])
     SHOT("k_history_after", "(k) History after the jump: the cursor mark '>' sits on the Bank move row, swap B's rows read 'undone', the fork row is still there")
     T("B", "(k) B: back to the box grid", settle=300)

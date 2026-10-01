@@ -216,6 +216,78 @@ static void t_cost(void) {
   CHECK(rl < r1, "a list with an early stop reads less than the full count (%lu < %lu)", rl, r1);
 }
 
+
+/* ---- review zb-304 additions: the holes the first 10 mutants left (each pinned RED by a named journal_mutants.py mutant) -------------------------------- */
+/* a SMALL step (8 bytes, ~100-byte record): several fit the pending buffer at once, which a 200-byte step never does */
+static uint32_t small(Jrn* j, const char* name, unsigned off) {
+  CHECK(stage(j, name, 0, 1, (uint16_t)off, 8, fresh_val(1, (uint16_t)off)) == JRN_OK, "stage %s", name);
+  return jrn_cursor(j);
+}
+/* MULTI-RECORD pending buffer: the walk must advance past each pending record, not re-read the first */
+static void t_pending_many(void) {
+  Jrn j; uint32_t a, c, e, f, par[2], sk[2] = { 0, 0 }; uint16_t cn[2]; JrnKid kid[4]; uint8_t got;
+  world(&j);
+  a = small(&j, "A", 16); CHECK(jrn_flush(&j) == JRN_OK, "flush A");
+  (void)small(&j, "B", 40); CHECK(jrn_flush(&j) == JRN_OK, "flush B");
+  CHECK(jrn_undo(&j, &IMG, 0) == JRN_OK && jrn_flush(&j) == JRN_OK, "undo B + flush");
+  c = small(&j, "C", 64); e = small(&j, "E", 88); f = small(&j, "F", 112);   /* three records PENDING: A->C->E->F */
+  CHECK(jrn_pending(&j) == 3, "three records pending (%d)", jrn_pending(&j));
+  par[0] = e; par[1] = c;
+  CHECK(jrn_kid_counts(&j, par, sk, cn, 2) == JRN_OK && cn[0] == 1u && cn[1] == 1u, "PENDING x3: E has 1 child (F) and C has 1 (E) (got %u, %u)", cn[0], cn[1]);
+  CHECK(jrn_kid_list(&j, e, 0, 0, kid, 4, &got) == JRN_OK && got == 1 && kid[0].seq == f, "PENDING x3: list(E) = {F} (the THIRD pending record)");
+  CHECK(jrn_kid_list(&j, c, 0, 0, kid, 4, &got) == JRN_OK && got == 1 && kid[0].seq == e, "PENDING x3: list(C) = {E} (the SECOND pending record)");
+  (void)a;
+}
+/* SEVERAL parents at once: the binary search must land on the right slot for each (the single-parent checks above cannot see a flipped search) */
+static void t_multi_parent(void) {
+  Jrn j; uint32_t a, b, c, d, e, par[3], sk[3]; uint16_t cn[3];
+  world(&j);
+  a = stepf(&j, "A", 0); b = stepf(&j, "B", 0); c = stepf(&j, "C", 0);     /* A->B->C */
+  undo1(&j); undo1(&j);                                                    /* cursor A */
+  d = stepf(&j, "D", 0); undo1(&j);                                        /* A->D, cursor A */
+  e = stepf(&j, "E", 0);                                                   /* A->E : A has B, D, E ; B has C ; C has none */
+  par[0] = c; par[1] = b; par[2] = a; sk[0] = 0; sk[1] = 0; sk[2] = e;
+  CHECK(jrn_kid_counts(&j, par, sk, cn, 3) == JRN_OK && cn[0] == 0u && cn[1] == 1u && cn[2] == 2u, "MULTI-PARENT: counts for [C,B,A] = [0,1,2] (got %u,%u,%u)", cn[0], cn[1], cn[2]);
+  (void)d;
+}
+/* the list CAP: with more children than cap the walk stops AT cap and never writes past out[cap-1] */
+static void t_list_cap(void) {
+  Jrn j; uint32_t a, sib[10], keep, prev = 0; JrnKid kid[16]; uint8_t got = 0xFF; unsigned i, ok = 1;
+  world(&j);
+  a = stepf(&j, "A", 0);
+  for (i = 0; i < 10; i++) { sib[i] = stepf(&j, "S", 0); undo1(&j); }      /* A gains 10 children, one after another */
+  keep = stepf(&j, "KEEP", 0);                                             /* the 11th: the branch child */
+  memset(kid, 0xEE, sizeof kid);
+  CHECK(jrn_kid_list(&j, a, keep, 0, kid, 8, &got) == JRN_OK && got == 8u, "CAP: 10 siblings, cap 8 -> exactly 8 returned (got %u)", got);
+  for (i = 0; i < 8; i++) { if (kid[i].seq != sib[i] || kid[i].seq <= prev) ok = 0; prev = kid[i].seq; }
+  CHECK(ok, "CAP: the 8 returned are the FIRST 8 siblings, ascending");
+  CHECK(kid[8].seq == 0xEEEEEEEEu, "CAP: out[8] was never written (the walk stopped at the cap)");
+  CHECK(jrn_kid_list(&j, a, keep, 8, kid, 8, &got) == JRN_OK && got == 2u && kid[0].seq == sib[8] && kid[1].seq == sib[9], "CAP: page 2 (first=8) returns the last 2 siblings");
+  CHECK(cnt1(&j, a, keep) == 10u, "CAP: the count is all 10");
+}
+/* A COMPACTED fork parent: its segment is retired, the walk must start at the first LIVE segment and still find every surviving child */
+static void t_compacted_parent(void) {
+  Jrn j; uint32_t p, k1, k2, i; JrnRec r; JrnKid kid[4]; uint8_t got = 0xFF; uint16_t c = 0xFFFFu, c2[2]; uint32_t pp, sk, par2[2], sk2[2];
+  g_jopen_segs = 2;                                                        /* ring of 3, 2 live segments: retention is tiny */
+  world(&j);
+  p = stepf(&j, "P", 0);
+  for (i = 0; i < 150; i++) { (void)stepf(&j, "f", 0); if (j.seg_last == j.tail_seg) CHECK(jrn_prepare(&j) == JRN_OK, "prepare"); }
+  for (i = 0; i < 150; i++) { undo1(&j); if (j.seg_last == j.tail_seg) CHECK(jrn_prepare(&j) == JRN_OK, "prepare"); }
+  CHECK(jrn_cursor(&j) == p, "cursor back at P");
+  k1 = stepf(&j, "K1", 0); undo1(&j);
+  k2 = stepf(&j, "K2", 0);                                                 /* P's two surviving children, in a LATER segment than P */
+  CHECK(jrn_find(&j, p, &r) == JRN_OK, "P is still live before the fill");
+  for (i = 0; i < 400 && j.seg_first == 1u; i++) { (void)stepf(&j, "g", 0); if (j.seg_last == j.tail_seg) CHECK(jrn_prepare(&j) == JRN_OK, "prepare"); }
+  CHECK(j.seg_first > 1u && jrn_find(&j, p, &r) == JRN_E_FLOOR, "P's segment was retired (seg_first %u): P is a FLOOR now", j.seg_first);
+  CHECK(jrn_find(&j, k1, &r) == JRN_OK && jrn_find(&j, k2, &r) == JRN_OK, "K1 and K2 survived the compaction");
+  pp = p; sk = k2;
+  CHECK(jrn_kid_counts(&j, &pp, &sk, &c, 1) == JRN_OK && c == 1u, "COMPACTED PARENT: counts(P, skip K2) = 1 (K1) (got %u): the walk falls back to the first live segment", c);
+  CHECK(jrn_kid_list(&j, p, k2, 0, kid, 4, &got) == JRN_OK && got == 1u && kid[0].seq == k1, "COMPACTED PARENT: list = {K1}");
+  par2[0] = k2; par2[1] = p; sk2[0] = 0; sk2[1] = k2;
+  CHECK(jrn_kid_counts(&j, par2, sk2, c2, 2) == JRN_OK && c2[1] == 1u, "COMPACTED PARENT: the low slot of a 2-parent call also answers 1 (got %u)", c2[1]);
+  g_jopen_segs = 0;
+}
+
 int main(void) {
   t_two_and_three();
   t_orphan();
@@ -225,6 +297,10 @@ int main(void) {
   t_segments_reopen_pending();
   t_v2();
   t_cost();
+  t_pending_many();
+  t_multi_parent();
+  t_list_cap();
+  t_compacted_parent();
   if (fails) { printf("host_jrn_kids_test: %d FAILED of %lu checks\n", fails, checks); return 1; }
   printf("host_jrn_kids_test: all %lu checks passed (real lib/fatfs over a RAM disk)\n", checks);
   return 0;

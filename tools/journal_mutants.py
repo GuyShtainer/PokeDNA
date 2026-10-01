@@ -336,6 +336,19 @@ MUTANTS = [
     Mutant("kids: list paging off by one (first is exclusive)", "journal.c",
            "if (c->seen++ >= c->first) {", "if (c->seen++ > c->first) {",
            "kids", "list page"),
+    # ---- review zb-304: the holes the first ten left ----
+    Mutant("kids: the pending walk never advances (re-reads the first pending record)", "journal.c",
+           "    off = (uint16_t)(off + r.len);\n  }\n  return JRN_OK;\n}\n\nint jrn_kid_counts", "  }\n  return JRN_OK;\n}\n\nint jrn_kid_counts",
+           "kids", "PENDING x3"),
+    Mutant("kids: the multi-parent binary search goes the wrong way", "journal.c",
+           "if (c->par[mid] > r->parent) lo = mid + 1; else hi = mid - 1;", "if (c->par[mid] < r->parent) lo = mid + 1; else hi = mid - 1;",
+           "kids", "MULTI-PARENT"),
+    Mutant("kids: the list ignores its cap (writes past out[cap-1])", "journal.c",
+           "  return c->got < c->cap;", "  return 1;",
+           "kids", "CAP: 10 siblings, cap 8"),
+    Mutant("kids: a compacted parent starts no walk (no first-live-segment fallback)", "journal.c",
+           "    if (!s) s = j->seg_first;\n    for (; s <= j->tail_seg && !c->done; s++) {", "    if (!s) return JRN_OK;\n    for (; s <= j->tail_seg && !c->done; s++) {",
+           "kids", "COMPACTED PARENT"),
 ]
 
 
