@@ -5918,6 +5918,15 @@ def run_y19_s3(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessio
         d[0:33, 10:58] = False
         return int(d.sum())
 
+    def gridcmp_hand3(a: str, b: str):
+        """gridcmp minus the hand cursor's bob box at ROW 4, COLUMN 1 (leg (m)'s hand position): x 86..112, y 84..112. The cursor bobs between
+        two poses, so two frames at the SAME cell can differ by <= ~70 pixels inside this box and nowhere else."""
+        ia = np.asarray(Image.open(res(a)).convert("RGB"), dtype=np.int16)[32:148, 78:240]
+        ib = np.asarray(Image.open(res(b)).convert("RGB"), dtype=np.int16)[32:148, 78:240]
+        d = np.abs(ia - ib).max(axis=2) > 0
+        d[84 - 32:112 - 32, 86 - 78:112 - 78] = False
+        return int(d.sum())
+
     def swap_edit(tag: str) -> None:
         T("A", f"({tag}) cell menu")
         T("DOWN", f"({tag}) menu on MOVE", times=3, claim=["MOVE"])
@@ -6080,6 +6089,36 @@ def run_y19_s3(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessio
     T("LEFT", "(l) LEFT x5: the hand cursor back to column 1 (leg (i) expects column 1)", times=5, settle=30)
     T("UP", "(l) UP x4: the hand cursor back onto the box-name row, where leg (i) expects to start", times=4, settle=30)
 
+    # ---- (m) zd #325 (+ #320's chain shape): a 4-DROP chain -- three Swaps (the displaced mon dropped on another OCCUPIED cell, twice more) and the final put-away.
+    # ONE SELECT+L takes the newest THREE steps (the group cap) and LANDS on Swap_1, an applied older half whose partner it undid: the image is a half swap and the
+    # toast must say so ('Undid: Swap (half)', never the plain 'Undid: Swap'); a SECOND press undoes the lone Swap_1 onto the pre-chain image: plain 'Undid: Swap'
+    # and the grid is pixel-identical to its pre-chain self. (The party-landing shape of #320 cannot be staged in this vehicle: host pins carry it.)
+    T("DOWN", "(m) DOWN: the hand starts on row 1 (where the previous leg leaves it); row 2", settle=60)
+    T("DOWN", "(m) DOWN: row 3", settle=40)
+    T("DOWN", "(m) DOWN: row 4, column 1 (VOL, a full row: six occupied cells)", settle=40)
+    SHOT("m_before", "(m) BEFORE the chain: the hand on row 4, column 1 (VOL); the grid every undo below must return to")
+    T("A", "(m) cell menu")
+    T("DOWN", "(m) menu on MOVE", times=3, claim=["MOVE"])
+    T("A", "(m) MOVE picked (the first mon is in the hand)")
+    T("RIGHT", "(m) hand onto the 2nd cell (WAI, occupied)")
+    T("A", "(m) drop 1 = Swap_1 (the 2nd cell's mon is now IN HAND)", claim_absent=["Save "])
+    T("RIGHT", "(m) hand onto the 3rd cell (SEE, occupied)")
+    T("A", "(m) drop 2 = Swap_2 (the displaced mon dropped on ANOTHER occupied cell: a CHAINED swap; the 3rd cell's mon is now in hand)", claim_absent=["Save "])
+    T("RIGHT", "(m) hand onto the 4th cell (PLU, occupied)")
+    T("A", "(m) drop 3 = Swap_3 (the 4th cell's mon is now in hand)", claim_absent=["Save "])
+    T("B", "(m) B: put the last displaced mon away (the chain's final Box move); no prompt", claim_absent=["Save changes", "Save the"])
+    s.run(120)
+    SHOT("m_chained", "(m) AFTER the chain (3 Swaps + the put-away): four cells have moved")
+    CHORD("L", "(m) ONE SELECT+L: takes the newest THREE steps (Swap_2, Swap_3, the put-away) and LANDS on Swap_1 -> the image is a HALF swap -> toast 'Undid: Swap (half)'",
+          tag="m_half", claim=["Undid: Swap (half)"])
+    T("LEFT", "(m) LEFT x3: the hand back on row 4, column 1 (the pre-chain hand position) to see the half grid", times=3, settle=60)
+    SHOT("m_half_c1", "(m) the HALF-swap grid (27/30: WAI is in nobody's hands) with the hand on row 4 column 1: Swap_1 is still applied (not the pre-chain grid)")
+    CHORD("L", "(m) a SECOND SELECT+L: the lone Swap_1 is undone onto the pre-chain image (whole) -> plain 'Undid: Swap', NO '(half)'",
+          tag="m_whole", claim=["Undid: Swap"], claim_absent=["(half)"])
+    s.run(250)
+    SHOT("m_whole_c1", "(m) the pre-chain grid again (toast expired, hand still on row 4 column 1): must equal m_before")
+    T("UP", "(m) UP x3: back to row 1, exactly where the previous leg left the hand (leg (i) starts from there)", times=3, settle=30)
+
     # ---- (i) the half-swap recovery net (permanent leg, #234 s3 fix pass): swap -> ONE SEL+L (the box is one mon short:
     # the displaced mon is in nobody's hands) -> exit-SAVE that half-swapped image -> power cycle -> the load-time offer
     # is up for the UNDONE tail ("1 recorded step...") -> A re-applies it -> the box is whole again.
@@ -6117,6 +6156,10 @@ def run_y19_s3(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessio
     expect(bs is not None, "(c) the summary portrait changed after a lone SELECT (flip)")
     expect(gridcmp_nohand("base", "undo1") == 0, "(a) #303 ONE undo press: the grid is pixel-identical to BASE (no half-swap), hand cursor masked")
     expect(gridcmp_nohand("edited", "redo1") == 0, "(b) #303 ONE redo press: the grid is pixel-identical to EDITED, hand cursor masked")
+    expect(gridcmp_nohand("m_before", "m_chained") > 0, "(m) the chain really changed the grid (the comparisons below are not vacuous)")
+    expect(gridcmp("m_chained", "m_half") > 0, "(m) #325 the first press moved the grid (three steps undone; the hand did not move between the two frames)")
+    expect(gridcmp_hand3("m_before", "m_half_c1") > 0, "(m) #325 the half state is NOT the pre-chain grid (same hand position: Swap_1 is still applied, so the toast 'Undid: Swap (half)' is honest)")
+    expect(gridcmp_hand3("m_before", "m_whole_c1") == 0, "(m) #325 the second press lands on the pre-chain grid, pixel-identical (same hand cell; the cursor bob box masked)")
     expect(gridcmp_nohand("k_before", "k_swapB") > 0, "(k) swap B really changed the grid (the comparison below is not vacuous)")
     expect(gridcmp_nohand("k_before", "k_after") == 0, "(k) #304 after the History jump on the CURRENT branch the grid is pixel-identical to its pre-(k) self (swap B undone; the sibling-row A did nothing), hand cursor masked")
     expect(gridcmp_nohand("edited", "undo1") > 0, "(a) the swap really changed the grid (the comparison above is not vacuous)")

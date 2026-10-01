@@ -4875,7 +4875,13 @@ static bool party_place_held(const uint8_t* held80, int target, int orig_box, in
       if (orig_bank) app_bank_defer_delete(orig_box, orig_slot, src_id80 ? src_id80 : held80);
       else           memset(pk_box_slot(g_pc, orig_box, orig_slot), 0, 80);
     }
+    /* #320: a mon with NO origin slot (the displaced occupant a swap left in the hand -- RAM-only) landing in the party is the swap chain's
+     * last half. The landing is ONE step named "Party add" (a SCOPE, not the one-shot: a new species stages the dex SB2 step FIRST and would
+     * eat a one-shot name), so jrn_app's pair walk can pair it with the Swap whose replaced bytes it carries. Only this tail gives the name. */
+    bool landing = (orig_slot < 0 && !orig_bank);
+    if (landing) app_step_begin("Party add");
     app_mark_pc_dirty(); app_register_dex_deferred(p100, true); app_stage_sb1();
+    if (landing) app_step_end();
     snd_ok(); return true;
   }
   /* SWAP with party[target]: the party mon takes the held mon's PC origin */
