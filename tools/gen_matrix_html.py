@@ -232,140 +232,8 @@ if (fcEl) fcEl.addEventListener('click', function () {
   if (first && first.scrollIntoView) first.scrollIntoView({ block: 'start' });
 });
 
-// --- Hardware queue: PASS/FAIL/SKIP per row, notes, "Show unchecked only", "Copy report" ---
-(function () {
-  var HW_BUILD = HW_BUILD_JS, HW_BUILD_DATE = HW_BUILD_DATE_JS;
-  var table = document.getElementById('hwq-table');
-  if (!table) return;
-  var rows = Array.prototype.slice.call(table.querySelectorAll('tbody tr'));
-
-  function keyFor(id) { return 'pokedna-hw:' + id; }
-  function load(id) {
-    try { return JSON.parse(localStorage.getItem(keyFor(id)) || 'null') || {}; }
-    catch (e) { return {}; }
-  }
-  function save(id, obj) {
-    try { localStorage.setItem(keyFor(id), JSON.stringify(obj)); } catch (e) { /* storage full/blocked */ }
-  }
-  function paintRow(tr, state) {
-    tr.classList.remove('hwrow-pass', 'hwrow-fail', 'hwrow-skip');
-    if (state) tr.classList.add('hwrow-' + state.toLowerCase());
-  }
-  function updateCount() {
-    var done = rows.filter(function (tr) { return !!load(tr.dataset.id).v; }).length;
-    var el = document.getElementById('hwq-count');
-    if (el) el.textContent = done + ' / ' + rows.length + ' checked';
-  }
-
-  rows.forEach(function (tr) {
-    var id = tr.dataset.id;
-    var data = load(id);
-    var btns = Array.prototype.slice.call(tr.querySelectorAll('.hwbtn'));
-    var note = tr.querySelector('.hwnote');
-    if (data.v) {
-      btns.forEach(function (b) { b.classList.toggle('on', b.dataset.v === data.v); });
-      paintRow(tr, data.v);
-    }
-    if (note && data.n) note.value = data.n;
-    btns.forEach(function (b) {
-      b.addEventListener('click', function () {
-        var cur = load(id);
-        var next = (cur.v === b.dataset.v) ? null : b.dataset.v;
-        cur.v = next;
-        save(id, cur);
-        btns.forEach(function (bb) { bb.classList.toggle('on', !!next && bb.dataset.v === next); });
-        paintRow(tr, next);
-        updateCount();
-        applyUncheckedFilter();
-      });
-    });
-    if (note) {
-      note.addEventListener('input', function () {
-        var cur = load(id);
-        cur.n = note.value;
-        save(id, cur);
-      });
-    }
-  });
-  updateCount();
-
-  var uncheckedOnly = false;
-  /* Touch targets: give the toolbar buttons room for a thumb and stop the browser
-     double-tap-zooming on them (a 300 ms tap delay reads as "the button did nothing"). */
-  var btnUnchecked = document.getElementById('hwq-unchecked');
-  var btnCopy = document.getElementById('hwq-copy');
-  var btnReset = document.getElementById('hwq-reset');
-  var reportBox = document.getElementById('hwq-reportbox');
-
-  function applyUncheckedFilter() {
-    rows.forEach(function (tr) {
-      var hide = uncheckedOnly && !!load(tr.dataset.id).v;
-      tr.classList.toggle('hidden', hide);
-    });
-  }
-  if (btnUnchecked) {
-    btnUnchecked.addEventListener('click', function () {
-      uncheckedOnly = !uncheckedOnly;
-      btnUnchecked.classList.toggle('on', uncheckedOnly);
-      applyUncheckedFilter();
-    });
-  }
-  if (btnReset) {
-    btnReset.addEventListener('click', function () {
-      if (!window.confirm('Clear all HW-queue results and step checkboxes on this device?')) return;
-      var toRemove = [];
-      for (var i = 0; i < localStorage.length; i++) {
-        var k = localStorage.key(i);
-        if (k && (k.indexOf('pokedna-hw:') === 0 || k.indexOf('pokedna-hw-step:') === 0)) toRemove.push(k);
-      }
-      toRemove.forEach(function (k) { localStorage.removeItem(k); });
-      location.reload();
-    });
-  }
-  if (btnCopy) {
-    btnCopy.addEventListener('click', function () {
-      var lines = ['PokeDNA HW report — build ' + HW_BUILD + ' — ' + HW_BUILD_DATE];
-      rows.forEach(function (tr) {
-        var id = tr.dataset.id;
-        var data = load(id);
-        if (!data.v) return;
-        var line = id + ' ' + data.v;
-        if (data.v === 'FAIL' && data.n) line += ': ' + data.n;
-        lines.push(line);
-        if (data.v === 'FAIL') {
-          var sec = tr.dataset.stepsSection;
-          if (sec) {
-            var det = document.getElementById('hw-' + sec);
-            if (det) {
-              var un = Array.prototype.slice.call(det.querySelectorAll('.hwstep-cb'))
-                .filter(function (cb) { return !cb.checked; })
-                .map(function (cb) { return cb.dataset.step; });
-              if (un.length) lines.push('  unchecked in §' + sec + ': ' + un.join(', '));
-            }
-          }
-        }
-      });
-      var text = lines.length > 1 ? lines.join('\\n') : lines[0] + '\\n(no rows marked yet)';
-      if (reportBox) {
-        reportBox.value = text;
-        reportBox.classList.remove('hidden');
-        reportBox.focus();
-        reportBox.select();
-      }
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).catch(function () { /* fall back to the textarea above */ });
-      }
-    });
-  }
-  // The mini toolbar is sticky just under the global filter bar -- measure it (it can
-  // wrap to 2-3 lines on a phone) instead of guessing a fixed offset.
-  function stickHwqBar() {
-    var hwqBar = document.getElementById('hwq-bar');
-    if (bar && hwqBar) hwqBar.style.top = bar.offsetHeight + 'px';
-  }
-  window.addEventListener('resize', stickHwqBar);
-  stickHwqBar();
-})();
+// The HW-queue sign-off UI (PASS/FAIL/SKIP, notes, Copy report) moved to the
+// claude.ai "PokeDNA HW Tests" tracker page (2026-10-02, Guy's ask) -- this table is read-only.
 
 // --- Detailed hardware steps: per-step checkboxes + open the section named in the URL hash ---
 (function () {
@@ -534,36 +402,20 @@ def render_hwqueue(path: "pathlib.Path"):
                 md_inline(check), md_inline(expect), steps_html, status_html,
             )
         )
-        buttons = "".join(
-            '<button type="button" class="hwbtn hwbtn-%s" data-v="%s">%s</button>'
-            % (v.lower(), v, v)
-            for v in ("PASS", "FAIL", "SKIP")
-        )
-        tds += '<td><div class="hwbtns">%s</div></td>' % buttons
-        tds += '<td><input type="text" class="hwnote" placeholder="note (esp. on FAIL)"></td>'
         sec_attr = ' data-steps-section="%s"' % html.escape(section_letter) if section_letter else ""
         rows_html.append('<tr data-id="%s"%s>%s</tr>' % (html.escape(rid), sec_attr, tds))
 
     preamble_html = md_block_html(preamble) if preamble.strip() else ""
     toolbar_html = (
-        '<div class="hwq-bar" id="hwq-bar">'
-        '<button type="button" id="hwq-unchecked">Show unchecked only</button>'
-        '<button type="button" id="hwq-copy">Copy report</button>'
-        '<button type="button" id="hwq-reset">Reset</button>'
-        '<span class="hwq-count" id="hwq-count"></span>'
-        '<span class="hwq-count" id="hwq-filtercount"></span>'
-        "</div>"
+        '<p class="hwq-hint"><b>Signing off moved:</b> tap PASS / FAIL / SKIP, write notes and '
+        "attach photos on the <b>PokeDNA HW Tests</b> page on claude.ai (it syncs back to the "
+        "queue at 7:00 and 22:00). This table is read-only now.</p>"
     )
     table_html = (
         '<div class="hwq-table-wrap"><table class="hwq-table" id="hwq-table">'
         "<thead><tr><th>ID</th><th>Kind</th><th>What landed</th><th>Commit</th>"
-        "<th>Check on the cart</th><th>Expect</th><th>Steps</th><th>Status</th>"
-        "<th>Your result</th><th>Note</th></tr></thead>"
+        "<th>Check on the cart</th><th>Expect</th><th>Steps</th><th>Status</th></tr></thead>"
         "<tbody>" + "".join(rows_html) + "</tbody></table></div>"
-        '<textarea id="hwq-reportbox" class="hwreport hidden" readonly></textarea>'
-        '<p class="hwq-hint">If "Copy report" did not copy automatically (common on iOS '
-        "Safari when a page is served over plain HTTP, which this one is), tap the box "
-        "above, select all, and copy by hand.</p>"
     )
     out_html = (
         '<h2 id="hwqueue">Hardware queue — what to check</h2>'

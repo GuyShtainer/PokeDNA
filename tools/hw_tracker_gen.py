@@ -118,10 +118,18 @@ def main():
         r["sec"] = classify(r)
         r["emu"] = emu_hint(r)
         stat_up = r["status"].upper()
-        retired = "SUPERSEDED" in r["what"].upper() or "RETIRED" in r["what"].upper()
-        r["baked"] = ("pass" if "HW-PASS" in stat_up else
-                      "retired" if retired or stat_up not in ("HW-PEND", "HW-PASS", "") else
-                      "pend")
+        what_up = r["what"].upper()
+        if "HW-PASS" in stat_up:
+            r["baked"] = "pass"
+        elif ("RETIRED" in stat_up or "SUPERSEDED" in stat_up
+              or "RETIRED" in what_up or "SUPERSEDED" in what_up):
+            r["baked"] = "retired"
+        else:
+            # decorated statuses ("HW-PEND (blocked ...)", "Guy 2026-09-05: ...") stay PENDING;
+            # the raw text is surfaced on the row so a session note is never hidden.
+            r["baked"] = "pend"
+        plain = re.sub(r"[`\s]", "", r["status"])
+        r["rawst"] = "" if plain in ("HW-PEND", "HW-PASS", "", "—", "-") else r["status"]
         for k in ("what", "check", "expect", "steps"):
             r[k] = md(r[k])
     counts = {}
@@ -168,8 +176,7 @@ body { background:var(--bg); color:var(--ink); font:15px/1.5 "IBM Plex Sans",sys
 h1 { font-family:"Silkscreen",monospace; font-size:1.35rem; letter-spacing:.5px; margin:0; }
 h2 { font-family:"Silkscreen",monospace; font-size:.95rem; margin:0; letter-spacing:.5px; }
 code { background:var(--code); padding:0 .3em; border-radius:4px; font:.88em "IBM Plex Mono",monospace; }
-.hdr { position:sticky; top:env(safe-area-inset-top,0px); background:var(--bg); z-index:5;
-  padding:10px 0 8px; border-bottom:2px solid var(--line); }
+.hdr { background:var(--bg); padding:10px 0 8px; border-bottom:2px solid var(--line); }
 .hdr-top { display:flex; flex-wrap:wrap; gap:8px 16px; align-items:baseline; }
 .build { color:var(--muted); font-size:.82rem; }
 .progress { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; font-size:.8rem; }
@@ -230,6 +237,18 @@ code { background:var(--code); padding:0 .3em; border-radius:4px; font:.88em "IB
   background:var(--fail); color:#fff; width:18px; height:18px; line-height:16px; font-size:11px; cursor:pointer; padding:0; }
 .addph { font-size:.8rem; }
 .offline { background:var(--skip-bg); color:var(--skip); border-radius:8px; padding:8px 12px; margin:12px 0; font-size:.86rem; }
+details.card > summary { cursor:pointer; list-style:none; }
+details.card > summary::-webkit-details-marker { display:none; }
+details.card > summary h2 { display:inline; }
+details.card > summary::after { content:" \25BE"; color:var(--muted); }
+details.card[open] > summary::after { content:" \25B4"; }
+.copybtn { border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--accent);
+  padding:5px 12px; font:600 .82rem "IBM Plex Sans",sans-serif; cursor:pointer; }
+.repbox { width:100%; box-sizing:border-box; min-height:120px; border:1px solid var(--line); border-radius:8px;
+  background:var(--panel); color:var(--ink); font:.8rem "IBM Plex Mono",monospace; padding:8px; margin-top:8px; }
+.hint { color:var(--muted); font-size:.78rem; }
+.empty { color:var(--muted); padding:28px 0; text-align:center; }
+.rawst { color:var(--skip); font-size:.76rem; overflow-wrap:anywhere; }
 .fnd { border-top:1px dashed var(--line); padding:8px 0; font-size:.88rem; }
 .fnd img { max-width:100%; border-radius:6px; border:1px solid var(--line); margin-top:4px; }
 .sev { font-size:.72rem; border-radius:99px; padding:1px 8px; margin-right:6px; }
@@ -247,19 +266,15 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline:2px 
       <span class="build">build <b id="build">__BUILD__</b> · Omega DE · <span id="sync"></span></span>
     </div>
     <div class="progress" id="progress"></div>
-    <div class="bar">
-      <input type="search" id="q" placeholder="Search ID or text&hellip;" aria-label="Search rows">
-      <div class="seg" id="filter" role="group" aria-label="Status filter"></div>
-    </div>
   </header>
 
   <div id="offline" class="offline" hidden>Read-only view: open this page signed in on claude.ai to save sign-offs, notes and photos.</div>
 
-  <section class="card" id="claude-card">
-    <h2>Claude's side</h2>
+  <details class="card" id="claude-dt">
+    <summary><h2>Claude's side &mdash; findings &amp; sync note</h2></summary>
     <p class="note-claude" id="claude-note">Loading&hellip;</p>
     <div id="findings"></div>
-  </section>
+  </details>
 
   <section class="card">
     <h2>Note to Claude</h2>
@@ -268,6 +283,14 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline:2px 
     <div class="st" id="guy-note-st"></div></div>
   </section>
 
+  <div class="bar" id="rowbar">
+    <input type="search" id="q" placeholder="Search ID or text&hellip;" aria-label="Search rows">
+    <div class="seg" id="filter" role="group" aria-label="Status filter"></div>
+    <button type="button" id="copyrep" class="copybtn">Copy report</button>
+  </div>
+  <textarea id="repbox" class="repbox" hidden readonly></textarea>
+  <p class="hint" id="rephint" hidden>If it did not copy automatically (iOS does that over some transports), tap the box above, select all, and copy by hand.</p>
+  <div id="empty" class="empty" hidden></div>
   <div id="sections"></div>
 </div>
 <script>
@@ -285,6 +308,17 @@ function lsSet(k,v){ try { localStorage.setItem(k,v); } catch(e){} }
 
 function domId(id){ return id.replace(/[^A-Za-z0-9_-]/g, "-"); }
 function esc(s){ var d=document.createElement("span"); d.textContent=s==null?"":String(s); return d.innerHTML; }
+/* Asset images: try the root-relative blob path, fall back to relative, then hide. */
+function blobImg(assetId, alt){
+  var img = document.createElement("img");
+  img.alt = alt || "";
+  img.onerror = function(){
+    if (!img.dataset.try2) { img.dataset.try2 = "1"; img.src = "_blob/" + assetId; }
+    else img.hidden = true;
+  };
+  img.src = "/_blob/" + assetId;
+  return img;
+}
 
 // ------------------------------------------------- render skeleton
 function rowGuy(id){ return state.signoffs[id] || null; }
@@ -327,7 +361,8 @@ function rowEl(r){
     '<div class="row-h"><span class="rid">' + esc(r.id) + '</span>' +
     '<span class="kind">' + esc(r.kind) + '</span>' +
     '<span class="chip st" id="st-' + d + '"></span>' +
-    '<span class="chip walled" id="cl-' + d + '" hidden></span></div>' +
+    '<span class="chip walled" id="cl-' + d + '" hidden></span>' +
+    (r.rawst ? '<span class="rawst">queue: ' + esc(r.rawst) + '</span>' : '') + '</div>' +
     '<p class="what">' + r.what + '</p>' +
     (r.emu ? '<p class="emu">emu note: ' + r.emu + '</p>' : '') +
     '<p class="claude-note" id="cn-' + d + '" hidden></p>' +
@@ -400,7 +435,7 @@ function applyRow(id){
   ph.innerHTML = "";
   ((g && g.images) || []).forEach(function(aid){
     var w = document.createElement("span"); w.className = "ph";
-    var img = document.createElement("img"); img.src = "/_blob/" + aid; img.alt = "photo for " + r.id;
+    var img = blobImg(aid, "photo for " + r.id);
     img.addEventListener("click", function(){ img.classList.toggle("big"); });
     w.appendChild(img);
     if (canWrite) { var x = document.createElement("button"); x.textContent = "×"; x.title = "remove";
@@ -497,9 +532,9 @@ function renderFindings(){
     var d = document.createElement("div"); d.className = "fnd";
     d.innerHTML = '<span class="sev ' + esc(f.sev || "question") + '">' + esc(f.sev || "?") + "</span>" +
       "<b>FND-" + esc(f.n) + (f.item ? " · #" + esc(f.item) : "") + ":</b> " + esc(f.title || "") +
+      (f.status && f.status !== "open" ? ' <span class="chip pass">' + esc(f.status) + "</span>" : "") +
       (f.detail ? '<div style="color:var(--muted)">' + esc(f.detail) + "</div>" : "");
-    if (f.img) { var img = document.createElement("img"); img.loading = "lazy"; img.src = "/_blob/" + f.img; img.alt = "finding " + f.n; d.appendChild(img); }
-    if (f.status && f.status !== "open") d.innerHTML += ' <span class="chip pass">' + esc(f.status) + "</span>";
+    if (f.img) d.appendChild(blobImg(f.img, "finding " + f.n));
     host.appendChild(d);
   });
 }
@@ -534,6 +569,7 @@ function buildFilter(){
 function applyFilter(){
   var q = document.getElementById("q").value.trim().toLowerCase();
   document.querySelectorAll("#filter button").forEach(function(b){ b.classList.toggle("on", b.dataset.f === curFilter); });
+  var visible = 0;
   ROWS.forEach(function(r){
     var el = document.getElementById("row-" + domId(r.id));
     if (!el) return;
@@ -541,7 +577,41 @@ function applyFilter(){
     var okF = curFilter === "all" || st === curFilter;
     var okQ = !q || (r.id + " " + r.what + " " + r.check).toLowerCase().indexOf(q) >= 0;
     el.hidden = !(okF && okQ);
+    if (!el.hidden) visible++;
   });
+  /* a section whose rows are all hidden hides whole, so filters visibly change the page */
+  ["g3","gb","xg","sys"].forEach(function(sec){
+    var el = document.getElementById("sec-" + sec);
+    if (!el) return;
+    var any = ROWS.some(function(r){
+      if (r.sec !== sec) return false;
+      var rowEl = document.getElementById("row-" + domId(r.id));
+      return rowEl && !rowEl.hidden;
+    });
+    el.hidden = !any;
+  });
+  var em = document.getElementById("empty");
+  em.hidden = visible > 0;
+  em.textContent = q ? "No rows match “" + q + "” with this filter." :
+    "No rows have this status yet.";
+}
+
+function copyReport(){
+  var m = state.meta || {};
+  var lines = ["PokeDNA HW report — build " + (m.build || "?")];
+  ROWS.forEach(function(r){
+    var g = rowGuy(r.id);
+    if (!g || (!g.status && !g.note)) return;
+    var line = r.id + " " + (g.status ? g.status.toUpperCase() : "(note)");
+    if (g.note) line += ": " + g.note;
+    if (g.images && g.images.length) line += " [" + g.images.length + " photo(s) on the page]";
+    lines.push(line);
+  });
+  var text = lines.length > 1 ? lines.join("\n") : lines[0] + "\n(no rows signed yet)";
+  var box = document.getElementById("repbox"), hint = document.getElementById("rephint");
+  box.hidden = false; hint.hidden = false; box.value = text; box.focus(); box.select();
+  if (navigator.clipboard && navigator.clipboard.writeText)
+    navigator.clipboard.writeText(text).catch(function(){ /* the textarea stays selected */ });
 }
 
 function markOffline(){ document.getElementById("offline").hidden = false;
@@ -549,6 +619,12 @@ function markOffline(){ document.getElementById("offline").hidden = false;
 
 // ------------------------------------------------- boot
 buildFilter(); renderAll(); wireGuyNote();
+document.getElementById("copyrep").addEventListener("click", copyReport);
+(function(){
+  var dt = document.getElementById("claude-dt");
+  if (lsGet("claude-dt") === "1") dt.open = true;
+  dt.addEventListener("toggle", function(){ lsSet("claude-dt", dt.open ? "1" : "0"); });
+})();
 (async function(){
   if (!(window.claude && window.claude.use)) { markOffline(); return; }
   db = await claude.use("db");
