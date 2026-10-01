@@ -293,6 +293,11 @@ int jrnapp_reapply(void) {
   for (i = 0; i < av; i++) {
     rc = jrn_redo(&s_j, &s_r->img, 0);
     if (rc == JRN_E_FULL && !retried) { retried = 1; (void)jrnapp_flush(); rc = jrn_redo(&s_j, &s_r->img, 0); }
+    if (rc == JRN_E_TORN) {                                  /* a chained step failed AND its rollback failed (z9): the image holds part of it */
+      img_rec_cross(s_r);                                    /* the next recorded step is a floor: the offer never re-applies across it */
+      ja_event("re-apply: a chain's rollback failed, image PARTIAL", rc);
+      return n ? n : 1;                                      /* "changed": the caller must re-derive its copies */
+    }
     if (rc != JRN_OK) { ja_event("re-apply stopped", rc); break; }
     n++;
   }
@@ -353,6 +358,12 @@ int jrnapp_step(int dir, char name[25]) {
     rc = dir < 0 ? jrn_undo(&s_j, &s_r->img, &rec) : jrn_redo(&s_j, &s_r->img, &rec);
     if (rc == JRN_E_FULL && !retried) { retried = 1; (void)jrnapp_flush(); continue; }
     break;
+  }
+  if (rc == JRN_E_TORN) {                                    /* z9: a chained undo/redo failed part way and its rollback failed too: the image is PARTIAL */
+    img_rec_cross(s_r);                                      /* floor: the next recorded step is crossed, so a later re-apply stops before it */
+    ja_event(dir < 0 ? "undo: chain rollback failed, image PARTIAL" : "redo: chain rollback failed, image PARTIAL", rc);
+    if (name) memcpy(name, "partial step", 13);              /* #303's contract: JRN_OK + a distinct name, the caller re-derives its copies */
+    return JRN_OK;
   }
   if (rc == JRN_OK && name) { memcpy(name, rec.name, 24); name[24] = 0; }
   if (rc == JRN_E_CROSSED && name) {                         /* name the floor: undo stops AT the cursor's step, redo BEFORE the next crossed one */
@@ -430,7 +441,7 @@ static int ja_mon_at(const JaSpan* sp, uint16_t i, uint32_t* slot, uint8_t* q) {
 }
 
 static int ja_pair_eligible(const JrnRec* r) {
-  return s_ai.slot >= 0 && r->kind == JRN_KIND_STEP && !r->crossed && strcmp(r->name, "Box move") == 0;
+  return s_ai.slot >= 0 && r->kind == JRN_KIND_STEP && !r->aux && !r->crossed && strcmp(r->name, "Box move") == 0;   /* aux != 0: a chain head -- its first record holds only part of the spans, so it never pairs (D10) */
 }
 
 /* From the record in s_rec (the NEWER half): fill s_sig. Returns s_sig.ok = "this step adds one mon into one empty slot". */

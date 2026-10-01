@@ -11,8 +11,9 @@
 
 static const uint64_t K = 0x2233445566778899ull;
 
+static BYTE g_fmt = FM_FAT;
 static void world(Jrn* j) {
-  card_fresh(FM_FAT);
+  card_fresh(g_fmt);
   img_fill(3);
   rd_fattime_hook = jrn_fattime_filter;
   CHECK(jopen(j, K) == JRN_OK, "open fresh");
@@ -342,6 +343,221 @@ static void t_writer_session(void) {
   CHECK(raw_read(K, j.seg_last, 0, h, 32) == 0 && h[4] == 2, "the next spare INHERITS v2 (a journal that went v2 stays v2): seg %u ver %u", j.seg_last, h[4]);
 }
 
+/* ---- step 3: undo / redo of a chain --------------------------------------------------------------------------------------------- */
+/* Record one chain from a diff (gen_runs) and leave g_img = new; returns the head seq. */
+static uint32_t rec_chain(Jrn* j, unsigned runs, unsigned len, unsigned region0, const char* name) {
+  JrnBlk blk[NREG]; uint32_t head = j->next_seq; int rc;
+  gen_runs(runs, len, region0);
+  mkblk(blk);
+  rc = jrn_chain_record(j, name, 0, blk, NREG);
+  CHECK(rc == JRN_OK, "rec_chain %u x %u: rc %d", runs, len, rc);
+  if (rc == JRN_OK) memcpy(g_img, g_new, sizeof g_img);
+  return head;
+}
+
+/* Chains of every length 2..8 undo and redo BYTE-EXACTLY, on a live journal and on a reopened one (the records read from the card). */
+static void t_apply_roundtrip(void) {
+  static const unsigned runs[] = { 1, 2, 3, 4, 6, 8, 10 }, lens[] = { 226, 226, 225, 225, 225, 224, 140 };
+  static uint8_t pre[NREG][RSZ], post[NREG][RSZ];
+  unsigned c, reopen;
+  for (c = 0; c < sizeof runs / sizeof runs[0]; c++) for (reopen = 0; reopen < 2; reopen++) {
+    Jrn j; JrnRec u, d; uint32_t head, av = 0, tot = 0;
+    world(&j);
+    memcpy(pre, g_img, sizeof pre);
+    head = rec_chain(&j, runs[c], lens[c], 1 + c, "Bulk");
+    memcpy(post, g_img, sizeof post);
+    CHECK(jrn_flush(&j) == JRN_OK, "flush");
+    if (reopen) { card_remount(); CHECK(jopen(&j, K) == JRN_OK && j.cursor == head && j.anchor == JRN_ANCHOR_MATCH, "reopen on the post image"); }
+    CHECK(jrn_undo(&j, &IMG, &u) == JRN_OK && u.seq == head && strcmp(u.name, "Bulk") == 0, "case %u/%u: undo of a chain (rc ok, names the head)", c, reopen);
+    CHECK(memcmp(g_img, pre, sizeof pre) == 0, "case %u/%u: ONE undo restores the image byte-exact (%u runs x %u B)", c, reopen, runs[c], lens[c]);
+    CHECK(j.cursor == 0u && j.tip == head && jrn_hash(&j) == jrn_hash(&j), "case %u/%u: cursor 0, tip = the head", c, reopen);
+    CHECK(jrn_redo_info(&j, &av, &tot, 0) == 0 && tot == 1u && av == 1u, "case %u/%u: the redo walk counts the chain as ONE step (%u/%u)", c, reopen, (unsigned)av, (unsigned)tot);
+    CHECK(jrn_redo(&j, &IMG, &d) == JRN_OK && d.seq == head, "case %u/%u: redo", c, reopen);
+    CHECK(memcmp(g_img, post, sizeof post) == 0 && j.cursor == head, "case %u/%u: ONE redo restores the post image byte-exact", c, reopen);
+    CHECK(jrn_flush(&j) == JRN_OK, "flush markers");
+    card_remount();
+    CHECK(jopen(&j, K) == JRN_OK && j.cursor == head && j.anchor == JRN_ANCHOR_MATCH && !jrn_offer(&j), "case %u/%u: a later open sits on the head", c, reopen);
+    CHECK(jrn_undo(&j, &IMG, 0) == JRN_OK && memcmp(g_img, pre, sizeof pre) == 0, "case %u/%u: undo again after the reopen", c, reopen);
+  }
+}
+
+/* A mixed history: plain, chain, plain, chain, plain. Undo walks back ONE step per press (a chain is one press), redo walks forward; the
+ * journal's own walks (find, redo_info) see five steps. */
+static void t_apply_mixed(void) {
+  static uint8_t snap[6][NREG][RSZ];
+  Jrn j; uint32_t seqs[5]; unsigned i; uint32_t av = 0, tot = 0;
+  world(&j);
+  memcpy(snap[0], g_img, sizeof g_img);
+  for (i = 0; i < 5; i++) {
+    seqs[i] = j.next_seq;
+    if (i % 2u == 0u) { CHECK(stage(&j, "plain", 0, (uint8_t)(1u + i), 30, 4, fresh_val((uint8_t)(1u + i), 30)) == JRN_OK, "plain %u", i); }
+    else { CHECK(jrn_flush(&j) == JRN_OK, "flush"); rec_chain(&j, 3u + i, 150, 2u + i, "Chain"); }
+    memcpy(snap[i + 1], g_img, sizeof g_img);
+  }
+  CHECK(jrn_flush(&j) == JRN_OK, "flush all");
+  card_remount();
+  CHECK(jopen(&j, K) == JRN_OK && j.cursor == seqs[4], "reopen: cursor on the last step");
+  for (i = 5; i-- > 0;) {
+    JrnRec u;
+    CHECK(jrn_undo(&j, &IMG, &u) == JRN_OK && u.seq == seqs[i], "undo %u names step seq %u (got %u)", i, (unsigned)seqs[i], (unsigned)u.seq);
+    CHECK(memcmp(g_img, snap[i], sizeof g_img) == 0, "undo %u: image == snapshot %u byte-exact", i, i);
+  }
+  CHECK(jrn_undo(&j, &IMG, 0) == JRN_E_NOTHING, "nothing left to undo after five presses");
+  CHECK(jrn_redo_info(&j, &av, &tot, 0) == 0 && tot == 5u && av == 5u, "the walk counts 5 steps (two of them chains): %u/%u", (unsigned)av, (unsigned)tot);
+  for (i = 0; i < 5; i++) {
+    JrnRec d;
+    CHECK(jrn_redo(&j, &IMG, &d) == JRN_OK && d.seq == seqs[i] && memcmp(g_img, snap[i + 1], sizeof g_img) == 0, "redo %u byte-exact", i);
+  }
+  CHECK(jrn_redo(&j, &IMG, 0) == JRN_NOOP, "nothing left to redo");
+}
+
+
+/* Which records of the chain at seg 2 / REC_BASE does g_img hold in their AFTER state (1) / BEFORE state (0) / neither (-1, a record cut mid-patch)? */
+static unsigned chain_pattern(int out[JRN_CHAIN_MAX]) {
+  RecAt recs[JRN_CHAIN_MAX + 1]; unsigned n = read_recs(2, JRN_REC_BASE, JRN_CHAIN_MAX + 1, recs, g_segb), i, sp;
+  for (i = 0; i < n; i++) {
+    const uint8_t* b = g_segb + recs[i].off; uint32_t pos = JRN_REC_HDR; int na = 0, nb = 0;
+    for (sp = 0; sp < recs[i].r.nspans; sp++) {
+      uint8_t reg = b[pos]; uint16_t off = jrn_rd16(b + pos + 2), len = jrn_rd16(b + pos + 4);
+      if (memcmp(g_img[reg] + off, b + pos + JRN_SPAN_HDR + len, len) == 0) na++;
+      if (memcmp(g_img[reg] + off, b + pos + JRN_SPAN_HDR, len) == 0) nb++;
+      pos += JRN_SPAN_HDR + 2u * len;
+    }
+    out[i] = na == (int)recs[i].r.nspans ? 1 : nb == (int)recs[i].r.nspans ? 0 : -1;
+  }
+  return n;
+}
+
+/* A JrnImage whose set() fails on the m-th call (and on every later one when `persist`): the RAM side of a mid-chain failure. */
+typedef struct { long fail_at, count; int persist; } FImg;
+static int fimg_set(void* c, uint8_t r, uint16_t off, const uint8_t* src, uint16_t n) {
+  FImg* f = (FImg*)c;
+  long k = f->count++;
+  if (f->fail_at >= 0 && (k == f->fail_at || (f->persist && k > f->fail_at))) return -1;
+  return img_set(0, r, off, src, n);
+}
+
+/* #301/#307 apply atomicity. One chain (5 records over 4 regions), undo and redo, three card formats. Faults are swept over EVERY sector read of
+ * the press (phase A reads, phase B re-reads, rollback reads), as one transient fault and as a fault that never heals, and over EVERY image
+ * patch (set) call. The contract: the press completes, or fails with the image BYTE-IDENTICAL to before and the cursor unmoved (phase A,
+ * or phase B with a working rollback), or -- only when the rollback itself cannot run -- JRN_E_TORN with a genuinely PARTIAL image and the
+ * cursor unmoved. Never a silent partial step. */
+static void t_apply_faults(void) {
+  static const BYTE fmts[3] = { FM_FAT, FM_FAT32, FM_EXFAT };
+  static uint8_t pre_u[NREG][RSZ], post_u[NREG][RSZ];
+  unsigned fi, dir, mode, order_pts = 0, p_partial = 0, p_ok = 0, p_io = 0, p_torn = 0, p_points = 0, bad = 0, a_pts = 0, b_pts = 0;
+  for (fi = 0; fi < 3; fi++) for (dir = 0; dir < 2; dir++) {
+    Jrn j; unsigned long R, r0; long k; uint32_t head, cur0; JrnImage fim; FImg fs;
+    g_fmt = fmts[fi];
+    world(&j);
+    memcpy(pre_u, g_img, sizeof pre_u);
+    head = rec_chain(&j, 6, 150, 2, "Bulk");
+    memcpy(post_u, g_img, sizeof post_u);
+    CHECK(jrn_flush(&j) == JRN_OK, "flush");
+    if (dir) CHECK(jrn_undo(&j, &IMG, 0) == JRN_OK && jrn_flush(&j) == JRN_OK, "undo for the redo leg");
+    CHECK(jopen(&j, K) == JRN_OK, "reopen so the chain is read from the CARD");
+    rd_snapshot();
+    r0 = rd_reads;
+    CHECK((dir ? jrn_redo(&j, &IMG, 0) : jrn_undo(&j, &IMG, 0)) == JRN_OK, "the healthy press");
+    R = rd_reads - r0;
+    for (mode = 0; mode < 2; mode++) for (k = 0; k < (long)R + 2; k++) {   /* mode 0 = one transient fault, 1 = a fault that never heals */
+      const uint8_t (*pre)[RSZ] = dir ? pre_u : post_u, (*want)[RSZ] = dir ? post_u : pre_u;
+      int rc;
+      rd_restore(); memcpy(g_img, pre, sizeof g_img); card_remount();
+      CHECK(jopen(&j, K) == JRN_OK, "reopen k=%ld", k);
+      cur0 = jrn_cursor(&j);
+      if (mode) rd_fail_reads_after = k; else rd_fail_read_at = k;
+      rc = dir ? jrn_redo(&j, &IMG, 0) : jrn_undo(&j, &IMG, 0);
+      rd_fail_read_at = -1; rd_fail_reads_after = -1;
+      p_points++;
+      if (rc == JRN_OK) { p_ok++; if (memcmp(g_img, want, sizeof g_img) != 0) { bad++; printf("  BAD: %s fmt %u mode %u k=%ld: OK but image != target\n", dir ? "redo" : "undo", fi, mode, k); } continue; }
+      if (rc == JRN_E_IO || rc == JRN_E_STATE) {
+        p_io++; if (k < (long)(R / 2)) a_pts++; else b_pts++;
+        if (memcmp(g_img, pre, sizeof g_img) != 0) { bad++; printf("  TORN: %s fmt %u mode %u k=%ld: rc %d left a changed image\n", dir ? "redo" : "undo", fi, mode, k, rc); }
+      } else if (rc == JRN_E_TORN) {
+        p_torn++;
+        if (!mode) { bad++; printf("  BAD: a TRANSIENT fault must roll back cleanly, got TORN at k=%ld\n", k); }
+        if (memcmp(g_img, pre, sizeof g_img) == 0 || memcmp(g_img, want, sizeof g_img) == 0) { bad++; printf("  BAD: TORN reported but the image is %s\n", memcmp(g_img, pre, sizeof g_img) == 0 ? "untouched" : "complete"); }
+        else {   /* the documented order: undo patches head -> parts, redo parts -> head, so a cut leaves a PREFIX / SUFFIX applied and never a hole */
+          int st[JRN_CHAIN_MAX]; unsigned nn = chain_pattern(st), q, lead = 0, tail = 0, holes = 0;
+          for (q = 0; q < nn; q++) { int applied = dir ? (st[q] == 1) : (st[q] == 0); if (st[q] < 0) holes += 100; if (applied) { if (dir) tail++; else lead++; } }
+          for (q = 0; q < nn; q++) { int applied = dir ? (st[q] == 1) : (st[q] == 0); int should = dir ? (q >= nn - tail) : (q < lead); if (applied != should) holes++; }
+          if (holes) { bad++; printf("  BAD: %s applied records are not a %s (%u disorder) at k=%ld\n", dir ? "redo" : "undo", dir ? "suffix" : "prefix", holes, k); }
+          order_pts++;
+        }
+      } else { bad++; printf("  BAD: unexpected rc %d at k=%ld\n", rc, k); }
+      CHECK(jrn_cursor(&j) == cur0 && !jrn_pending(&j), "%s fmt %u mode %u k=%ld: the cursor did not move (rc %d)", dir ? "redo" : "undo", fi, mode, k, rc);
+      if (rc != JRN_E_TORN) {   /* the retry on a healed card reaches the target */
+        rd_restore(); memcpy(g_img, pre, sizeof g_img); card_remount();
+        CHECK(jopen(&j, K) == JRN_OK && (dir ? jrn_redo(&j, &IMG, 0) : jrn_undo(&j, &IMG, 0)) == JRN_OK && memcmp(g_img, want, sizeof g_img) == 0, "the retry after a fault reaches the target (k=%ld)", k);
+      }
+    }
+    /* the image side: the m-th patch call fails (transient: rollback runs; persistent: the rollback cannot) */
+    { unsigned long total = 0; long m;
+      const uint8_t (*pre)[RSZ] = dir ? pre_u : post_u, (*want)[RSZ] = dir ? post_u : pre_u;
+      rd_restore(); memcpy(g_img, pre, sizeof g_img); card_remount();
+      CHECK(jopen(&j, K) == JRN_OK, "reopen for the set sweep");
+      fim.ctx = &fs; fim.get = img_get; fim.set = fimg_set; fs.fail_at = -1; fs.count = 0; fs.persist = 0;
+      CHECK((dir ? jrn_redo(&j, &fim, 0) : jrn_undo(&j, &fim, 0)) == JRN_OK, "the healthy press through the counting image");
+      total = (unsigned long)fs.count;
+      CHECK(total >= 5u, "the chain patches the image in >= 5 set calls (%lu)", total);
+      for (mode = 0; mode < 2; mode++) for (m = 0; m < (long)total + 1; m++) {
+        int rc;
+        rd_restore(); memcpy(g_img, pre, sizeof g_img); card_remount();
+        CHECK(jopen(&j, K) == JRN_OK, "reopen m=%ld", m);
+        cur0 = jrn_cursor(&j);
+        fs.fail_at = m; fs.count = 0; fs.persist = (int)mode;
+        rc = dir ? jrn_redo(&j, &fim, 0) : jrn_undo(&j, &fim, 0);
+        p_points++;
+        if (rc == JRN_OK) { p_ok++; CHECK(memcmp(g_img, want, sizeof g_img) == 0, "set sweep: OK but not the target (m=%ld)", m); continue; }
+        if (!mode) { CHECK(rc == JRN_E_IO && memcmp(g_img, pre, sizeof g_img) == 0, "set sweep m=%ld transient: rc %d, image must be restored byte-exact", m, rc); p_io++; }
+        else {
+          CHECK(rc == JRN_E_TORN || rc == JRN_E_IO, "set sweep m=%ld persistent: rc %d", m, rc);
+          if (rc == JRN_E_TORN) { p_torn++; CHECK(memcmp(g_img, want, sizeof g_img) != 0, "TORN on a persistent set fault: the step is NOT complete (m=%ld)", m);
+            if (memcmp(g_img, pre, sizeof g_img) != 0) p_partial++; }   /* m = 0 writes nothing yet the engine cannot know: TORN is the safe word */
+          else p_io++;
+        }
+        CHECK(jrn_cursor(&j) == cur0, "set sweep m=%ld: the cursor did not move", m);
+      }
+    }
+  }
+  g_fmt = FM_FAT;
+  CHECK(bad == 0, "%u fault points violated the contract", bad);
+  CHECK(order_pts > 10, "the application order is observed at %u partial images", order_pts);
+  CHECK(p_partial > 0, "some TORN points leave a genuinely partial image (%u): the contract is not vacuous", p_partial);
+  CHECK(p_torn > 0 && p_io > 20 && a_pts > 5 && b_pts > 5, "the sweeps reach phase A (%u loud points), phase B (%u), and the rollback-failure path (%u TORN)", a_pts, b_pts, p_torn);
+  printf("  chain apply fault sweep: %u fault points over 3 formats x undo/redo x (transient, persistent read fault; set fault): %u completed, %u loud + image untouched, %u TORN (rollback failed), %u violations\n", p_points, p_ok, p_io, p_torn, bad);
+}
+
+/* A chain whose image has drifted from the record's `after` (undo) / `before` (redo) at ONE record -- the head, a middle part, the last part -- is
+ * refused as a whole: JRN_E_DIVERGED, image byte-identical, cursor unmoved. (Phase A verifies EVERY record before one byte is patched.) */
+static void t_apply_diverged(void) {
+  unsigned rec_k, dir;
+  for (dir = 0; dir < 2; dir++) for (rec_k = 0; rec_k < 5; rec_k++) {
+    Jrn j; static uint8_t pre[NREG][RSZ], drift[NREG][RSZ]; RecAt recs[JRN_CHAIN_MAX + 1]; unsigned n; int rc; uint32_t head;
+    world(&j);
+    head = rec_chain(&j, 6, 150, 2, "Bulk");
+    CHECK(jrn_flush(&j) == JRN_OK, "flush");
+    if (dir) CHECK(jrn_undo(&j, &IMG, 0) == JRN_OK && jrn_flush(&j) == JRN_OK, "undo for the redo leg");
+    n = read_recs(2, JRN_REC_BASE, JRN_CHAIN_MAX + 1, recs, g_segb);
+    CHECK(n >= 5u, "a chain of >= 5 records (%u)", n);
+    { const uint8_t* b = g_segb + recs[rec_k].off; uint8_t reg = b[JRN_REC_HDR]; uint16_t off = jrn_rd16(b + JRN_REC_HDR + 2);
+      g_img[reg][off] ^= 0x55; }   /* drift one byte inside record rec_k's first span */
+    memcpy(pre, g_img, sizeof pre);
+    card_remount();
+    CHECK(jopen(&j, K) == JRN_OK, "reopen (image drifted: %s)", j.anchor == JRN_ANCHOR_MATCH ? "matched" : "branch/newroot");
+    (void)head;
+    memcpy(drift, g_img, sizeof drift);
+    {
+      j.cursor = dir ? 0u : head; j.tip = head;   /* put the cursor where the press expects it, whatever the anchor made of the drifted image */
+      rc = dir ? jrn_redo(&j, &IMG, 0) : jrn_undo(&j, &IMG, 0);
+      CHECK(rc == JRN_E_DIVERGED, "%s with drift in record %u: rc %d (want JRN_E_DIVERGED)", dir ? "redo" : "undo", rec_k, rc);
+      CHECK(memcmp(g_img, drift, sizeof drift) == 0, "%s with drift in record %u: the image is BYTE-IDENTICAL after the refusal", dir ? "redo" : "undo", rec_k);
+      CHECK(j.cursor == (dir ? 0u : head), "cursor unmoved");
+    }
+  }
+}
+
 int main(void) {
   t_reader_v1_unchanged();
   t_reader_whole_chain();
@@ -350,6 +566,10 @@ int main(void) {
   t_writer_reassembly();
   t_writer_edges();
   t_writer_session();
+  t_apply_roundtrip();
+  t_apply_mixed();
+  t_apply_faults();
+  t_apply_diverged();
   if (fails) { printf("host_jrn_chain_test: %d FAILED of %lu checks\n", fails, checks); return 1; }
   printf("host_jrn_chain_test: all %lu checks passed (real lib/fatfs over a RAM disk)\n", checks);
   return 0;
