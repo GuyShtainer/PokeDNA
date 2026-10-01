@@ -169,6 +169,7 @@ static void t_reader_oversize(void) {
   lay_chain(&c, 9);
   card_remount();
   CHECK(jopen(&j, K) == JRN_OK && j.next_seq == 2u && j.tail_off == c.tail, "a whole 9-record chain is refused: next_seq %u tail %u (want 2 / %u)", (unsigned)j.next_seq, (unsigned)j.tail_off, (unsigned)c.tail);
+  CHECK(c.total > JRN_REC_MAX && window_zero(c.tail, c.total), "the open zeroed ALL %u stale bytes of the refused chain (more than one record's 512: the window is a whole chain's worth)", (unsigned)c.total);
   world(&j);
   build_chain_n(&j, &c, 8, 8);
   set_hdr_ver(2);
@@ -315,6 +316,24 @@ static void t_writer_edges(void) {
 
 /* A long mixed session: plain steps and chains interleaved until the chains roll into a THIRD segment (made v2 mid-session), then a fresh
  * open reads it all: every head's seq, the cursor, the tail, the per-segment versions. A chain with a step still pending refuses (FULL). */
+/* The write-back verify: a card that ACKs a chain's records and keeps nothing is caught, recording stops, and nothing is claimed recorded. */
+static void t_writer_verify(void) {
+  Jrn j; JrnBlk blk[NREG]; int rc;
+  world(&j);
+  gen_runs(3, 300, 6);
+  mkblk(blk);
+  CHECK(jrn_chain_record(&j, "First", 0, blk, NREG) == JRN_OK, "a first chain (it moves the tail onto the v2 spare, so the next one is a plain tail write)");
+  memcpy(g_img, g_new, sizeof g_img);
+  gen_runs(4, 300, 6);
+  mkblk(blk);
+  rd_lie_writes = 1;
+  rc = jrn_chain_record(&j, "Lost", 0, blk, NREG);
+  rd_lie_writes = 0;
+  CHECK(rc == JRN_E_VERIFY, "a card that dropped the chain's writes: JRN_E_VERIFY, got %d", rc);
+  CHECK(j.stopped == 1 && j.cursor == 1u, "recording STOPS and the cursor stayed on the verified chain, not the lost one (stopped %d cursor %u)", (int)j.stopped, (unsigned)j.cursor);
+  CHECK(jrn_chain_record(&j, "Again", 0, blk, NREG) == JRN_E_STOPPED, "and no further chain is accepted");
+}
+
 static void t_writer_session(void) {
   Jrn j; JrnBlk blk[NREG]; unsigned it, chains = 0, plains = 0, no_spare = 0; uint32_t last_head = 0; uint8_t h[32]; int rc;
   world(&j);
@@ -575,6 +594,7 @@ int main(void) {
   t_reader_oversize();
   t_writer_reassembly();
   t_writer_edges();
+  t_writer_verify();
   t_writer_session();
   t_apply_roundtrip();
   t_apply_mixed();
