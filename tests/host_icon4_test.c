@@ -99,8 +99,8 @@ int main(void) {
       }
       memset(a, 0, sizeof a); memcpy(a, raw, 512);
       if (!icon4_to_rgb15(a, ART_ICON_RGB15_BYTES, pl) || memcmp(a, ref, ART_ICON_RGB15_BYTES)) bad++;
-      memset(a, 0, sizeof a); memcpy(a + 1, raw, 512);
-      if (!icon4_to_rgb15(a + 1, ART_ICON_RGB15_BYTES, pl) || memcmp(a + 1, ref, ART_ICON_RGB15_BYTES)) bad++;
+      memset(a, 0, sizeof a); memcpy(a + 2, raw, 512);
+      if (!icon4_to_rgb15(a + 2, ART_ICON_RGB15_BYTES, pl) || memcmp(a + 2, ref, ART_ICON_RGB15_BYTES)) bad++;
     }
     CHK(bad == 0, "icon4 word/byte paths differ from the reference expander in %d of 400 cases", bad);
   }

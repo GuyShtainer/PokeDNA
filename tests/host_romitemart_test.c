@@ -937,7 +937,7 @@ int main(int argc, char** argv) {
       buf[got] = 0;
       fclose(f);
       chk("perf#145", "app_type_badge still passes the widened cap, not `need`",
-          strstr(buf, "scratch, scratch ? MON_DECOMP_BYTES : 0") != 0);
+          strstr(buf, "rom_type_badge_memo(&s_romitemart, (uint8_t*)mon_decomp, MON_DECOMP_BYTES,") != 0);
     }
   }
   return fails ? 1 : 0;

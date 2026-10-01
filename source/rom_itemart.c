@@ -124,8 +124,8 @@ static int decode_verified(const RomItemArt* ra, uint32_t addr, uint8_t* dst,
    * rom_chrome.c's decode_verified: mr_lz77_w only ever writes dst[0,size)
    * (size == `want`) and only ever reads dst[0,out) with out < size for
    * back-references, so dst[want,cap) is provably untouched by this decode.
-   * Only ONE caller actually supplies a window: pdna_main.c's app_type_badge()
-   * passes rom_type_sheet_load() the whole MON_DECOMP_BYTES (8,192) buffer as
+   * Only ONE caller actually supplies a window: rom_type_badge_memo() (below, for
+   * pdna_main.c's app_type_badge) passes rom_type_sheet_load() the whole 8,192 B buffer as
    * scratch_cap, not just ROM_TYPE_SHEET_BYTES (5,888) == want (BACKLOG #145),
    * because it leaves scratch[ROM_TYPE_SHEET_BYTES, scratch_cap) untouched by
    * every later step of that same call (the RSE palette table decodes into its
@@ -431,4 +431,38 @@ int rom_type_badge(const RomItemArt* ra, const RomTypeSheet* ts, uint8_t badge,
   tiles_to_rgb15(blk, BADGE_TILES_W, ROM_TYPE_BADGE_W, ROM_TYPE_BADGE_H_FRLG,
                  ts->pal[0], dst);
   return 1;
+}
+
+/* BACKLOG #103: the type-sheet memo (rom_itemart.h). The memo lives in buf's own tail, so it
+ * needs no static; it is clear of the sheet [0, 5888) and of the badge [6144, 7168). The miss
+ * path's decode borrows buf[5888, cap) as its LZ77 input window, so the memo is written only
+ * AFTER the load returns. */
+typedef struct { uint32_t stamp; RomTypeSheet ts; } RomTypeMemo;
+_Static_assert(ROM_TYPE_SHEET_BYTES <= ROM_TYPE_BADGE_OFF, "sheet overlaps the badge");
+_Static_assert(ROM_TYPE_BADGE_OFF + ROM_TYPE_BADGE_MAX_PX * 2u <= ROM_TYPE_MEMO_OFF, "badge overlaps the memo");
+_Static_assert(ROM_TYPE_MEMO_OFF % 4u == 0u, "memo must stay word aligned");
+_Static_assert(ROM_TYPE_MEMO_OFF + sizeof(RomTypeMemo) <= ROM_TYPE_MEMO_END, "memo outgrew ROM_TYPE_MEMO_END");
+
+/* Distinct epochs give distinct stamps (odd multiplier), and a zeroed buffer never matches
+ * epoch 0. */
+static uint32_t type_memo_stamp(uint32_t epoch) { return (epoch * 0x9E3779B1u) ^ 0x54534D31u; }
+
+const uint16_t* rom_type_badge_memo(const RomItemArt* ra, uint8_t* buf, uint32_t buf_cap,
+                                    uint32_t* epoch, uint8_t badge) {
+  if (!ra || !buf || !epoch || ((uintptr_t)buf & 3u) != 0u || buf_cap < ROM_TYPE_MEMO_END) return 0;
+  if (!rom_itemart_have_types(ra)) return 0;
+  RomTypeMemo* m = (RomTypeMemo*)(void*)(buf + ROM_TYPE_MEMO_OFF);
+  /* HIT = nobody wrote buf since the last successful call stamped it, for this RomItemArt */
+  const int hit = m->stamp == type_memo_stamp(*epoch) && m->ts.ok && m->ts.owner == ra;
+  (*epoch)++;                                   /* about to write buf (artbuf.h's rule) */
+  if (!hit) {
+    uint32_t need = (uint32_t)rom_type_scratch_bytes(ra);   /* 5,888 RSE / 0 FRLG */
+    RomTypeSheet ts;
+    if (!rom_type_sheet_load(ra, &ts, need ? buf : 0, need ? buf_cap : 0)) return 0;
+    m->ts = ts;                                 /* after the load: its window used this tail */
+  }
+  uint16_t* dst = (uint16_t*)(void*)(buf + ROM_TYPE_BADGE_OFF);
+  if (!rom_type_badge(ra, &m->ts, badge, dst, ROM_TYPE_BADGE_MAX_PX)) return 0;
+  m->stamp = type_memo_stamp(*epoch);           /* this write left the sheet and the memo intact */
+  return dst;
 }

@@ -34,7 +34,9 @@ uint32_t mr_lz77_size(const RomCtx* rom, uint32_t addr) {
  * test. The slow per-token path below is the original and handles every flag byte near a
  * refill or the end of the output. The sequence of window reads, the consumed span, the hash,
  * the bytes written and every failure return are identical to the byte-at-a-time decoder
- * (tests/host_lz77_diff_test.c holds the original as the reference). */
+ * when `win` does not overlap dst[0,size) -- every caller guarantees this or rejects
+ * n != size first; an overlapping window can only change the hash toward a false reject,
+ * never accept garbage (tests/host_lz77_diff_test.c holds the original as the reference). */
 static inline uint32_t mr_fnv_fold(uint32_t hash, const uint8_t* p, uint32_t n) {
   while (n--) { hash ^= *p++; hash *= MR_FNV_PRIME; }
   return hash;

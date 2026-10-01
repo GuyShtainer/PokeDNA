@@ -3664,54 +3664,18 @@ const uint16_t* app_item_icon(uint16_t item_id) {
   return rom_item_icon(&s_romitemart, item_id, dst, ROM_ITEM_ICON_PX) ? dst : 0;
 }
 
-/* BACKLOG #103 (speed): the RSE type sheet (5,888 B LZ77 -> mon_decomp[0..5888)) used to be
- * re-decoded for EVERY badge -- four times (~27 ms each in the emulator, far more through SD)
- * for the two badges a summary card draws. The decoded sheet now stays valid for as long as
- * nothing else writes mon_decomp, and "nothing else" is exactly what artbuf_epoch already
- * means (artbuf.h: every writer calls artbuf_claim() first). The RomTypeSheet that describes
- * it (palettes + pointers, 752 B) lives IN the buffer's own tail, at TS_MEMO_OFF, stamped with
- * the epoch it was current at -- no static, so EWRAM/IWRAM do not move. The tail is clear of
- * both the sheet [0,5888) and the badge pixels [6144,7168); decode_verified() borrows the
- * buffer tail as its input window DURING the load, so the memo is written only after it. */
-typedef struct { uint32_t stamp; RomTypeSheet ts; } TsMemo;
-#define TS_MEMO_OFF 7424u
-typedef char ts_memo_fits[(TS_MEMO_OFF + sizeof(TsMemo) <= MON_DECOMP_BYTES) ? 1 : -1];
-typedef char ts_memo_clear_of_badge[(TS_MEMO_OFF >= 6144u + 1024u) ? 1 : -1];
-static inline uint32_t ts_stamp(uint32_t epoch) { return (epoch * 0x9E3779B1u) ^ 0x54534D31u; }
-
+/* BACKLOG #103 (speed): the RSE type sheet used to be re-decoded for EVERY badge. It is now
+ * memoised inside mon_decomp's own tail, keyed by artbuf_epoch -- rom_type_badge_memo()
+ * (rom_itemart.c, host-tested by tests/host_typememo_test.c) owns the layout and the epoch
+ * rule, and bumps artbuf_epoch (artbuf_claim()'s whole body) before its first write. */
 const uint16_t* app_type_badge(uint8_t type_id, uint8_t* out_h) {
   const uint16_t* ic = type_icon_for(type_id);             /* compiled rung first */
   if (ic) { if (out_h) *out_h = TYPE_ICON_H; return ic; }
   if (!s_romitemart.ok || !rom_itemart_have_types(&s_romitemart)) return 0;
-  TsMemo* m = (TsMemo*)(void*)((uint8_t*)mon_decomp + TS_MEMO_OFF);
-  /* HIT = the stamp matches THIS epoch (nobody wrote mon_decomp since we did) and the stored
-   * sheet is a live one for this ROM. */
-  const bool hit = m->stamp == ts_stamp(artbuf_epoch) && m->ts.ok && m->ts.owner == &s_romitemart;
-  artbuf_claim();          /* E3 review BLOCKING 2: about to overwrite mon_decomp */
-  if (!hit) {
-    uint32_t need = (uint32_t)rom_type_scratch_bytes(&s_romitemart);   /* 5,888 RSE / 0 FRLG */
-    uint8_t* scratch = need ? (uint8_t*)mon_decomp : 0;
-    RomTypeSheet ts;
-    /* BACKLOG #145: hand decode_verified() the WHOLE mon_decomp buffer as cap, not
-     * just `need` -- passing cap == want (need == ROM_TYPE_SHEET_BYTES) made the
-     * BACKLOG #103 caller-tail LZ77 window (rom_itemart.c's decode_verified) size
-     * to zero, so the RSE type sheet never got the ~86 -> ~5 read win the window
-     * gives every other caller. Safe because the badge below (mon_decomp + 6144)
-     * is written strictly AFTER this call returns, and decode_verified only READS
-     * dst[want,cap) as LZ77 back-reference input during its own decode -- it never
-     * writes there (rom_itemart.c's decode_verified comment). scratch is 0 on
-     * FR/LG (need == 0); rom_type_sheet_load ignores scratch_cap on that path. */
-    if (!rom_type_sheet_load(&s_romitemart, &ts, scratch, scratch ? MON_DECOMP_BYTES : 0))
-      return 0;                                /* stamp is stale (epoch moved): next call reloads */
-    m->ts = ts;                                /* after the load: its window used this tail */
-  }
-  /* the sheet occupies mon_decomp[0..need); the badge is decoded past it, at the
-   * offset rom_itemart.h:145-149 recommends, well inside the 8 KiB buffer either
-   * way (need is at most ROM_TYPE_SHEET_BYTES == 5,888). */
-  uint16_t* dst = mon_decomp + (6144 / 2);
-  if (!rom_type_badge(&s_romitemart, &m->ts, type_id, dst, ROM_TYPE_BADGE_MAX_PX)) return 0;
-  m->stamp = ts_stamp(artbuf_epoch);           /* this writer left the sheet and the memo intact */
-  if (out_h) *out_h = (uint8_t)rom_type_badge_h(&s_romitemart);
+  /* E3 review BLOCKING 2: the claim (artbuf_epoch++) happens inside, before any write */
+  const uint16_t* dst = rom_type_badge_memo(&s_romitemart, (uint8_t*)mon_decomp, MON_DECOMP_BYTES,
+                                            &artbuf_epoch, type_id);
+  if (dst && out_h) *out_h = (uint8_t)rom_type_badge_h(&s_romitemart);
   return dst;
 }
 

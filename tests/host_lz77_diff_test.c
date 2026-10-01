@@ -217,6 +217,40 @@ int main(void) {
       if (mr_lz77_w(&rc, ROM_BASE + addr_off, dd, n + win, win ? dd + n : 0, win) == n) nonzero_ret++;
     }
   }
+  /* The fast path's two guard edges, built token by token (the random encoder above almost never
+   * lands a flag byte exactly there): `pre` literals, then three flag bytes of eight max-length
+   * (18 B) back-references, with the declared size set so the SECOND reference flag byte sees
+   * size - out = 144 + extra (extra -2..2: 142..146 output bytes left, both sides of the 144
+   * guard), and every window size moves where the flag bytes fall against a refill (the 16-byte
+   * input guard). A guard loosened by one (143, or 15) makes the fast path overrun `size`. */
+  int edge_cases = 0;
+  for (uint32_t pre = 1; pre <= 160; pre++) {
+    for (int extra = -2; extra <= 2; extra++) {
+      uint32_t lit = (pre + 7u) & ~7u, o = 4, n = lit + 3u * 144u;
+      uint32_t hdr = (uint32_t)((int)n - 144 + extra);
+      uint32_t addr_off = pre % 7u;
+      uint8_t* e = g_img + addr_off;
+      memset(g_img, 0x77, sizeof g_img);
+      e[0] = 0x10; e[1] = (uint8_t)hdr; e[2] = (uint8_t)(hdr >> 8); e[3] = (uint8_t)(hdr >> 16);
+      for (uint32_t i = 0; i < lit; i++) {
+        if (i % 8u == 0) e[o++] = 0x00;                            /* eight literals */
+        e[o++] = (uint8_t)rnd();
+      }
+      for (uint32_t g = 0; g < 3u; g++) {
+        e[o++] = 0xFF;                                             /* eight references */
+        for (uint32_t k = 0; k < 8u; k++) {
+          uint32_t d = 1u + rnd() % lit;                           /* 1 .. lit <= out */
+          e[o++] = (uint8_t)(0xF0u | ((d - 1u) >> 8)); e[o++] = (uint8_t)((d - 1u) & 0xFFu);
+        }
+      }
+      for (uint32_t wi = 0; wi < sizeof wins / sizeof wins[0]; wi++) {
+        int b = run_case(addr_off, addr_off + o, hdr, wins[wi], (int)(wi & 1u), -1, 0);
+        cases++; edge_cases++;
+        if (b) bad[b]++;
+      }
+    }
+  }
+  CHK(edge_cases == 160 * 5 * 9, "edge sweep ran %d cases", edge_cases);
   CHK(bad[1] == 0, "return value differs from the reference in %d of %d cases", bad[1], cases);
   CHK(bad[2] == 0, "consumed span / hash differs in %d of %d cases", bad[2], cases);
   CHK(bad[3] == 0, "destination bytes differ in %d of %d cases", bad[3], cases);
