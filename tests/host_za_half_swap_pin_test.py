@@ -93,7 +93,9 @@ def pins(src: dict[str, str]) -> list[tuple[str, bool]]:
     out.append(("H4a the AUR_DONE success path still toasts with snd_ok (control)", before(ch, "rc == AUR_DONE", "snd_ok()") and ch.find("snd_ok()") < ch.find("AUR_HALF") if "AUR_HALF" in ch else False))
     out.append(("H4b the AUR_PARTIAL branch is intact beside it", "AUR_PARTIAL" in ch and "PARTIAL STEP" in ch))
     w = font_w()
-    strs = re.findall(r'chord_refuse\("(HALF A SWAP)",\s*"([^"]*)",\s*"([^"]*)"\)', bs)
+    # #339: the second line is a ternary of two literals (retry possible / journal stopped) -- measure every literal of the call.
+    strs = [(t, l1, *re.findall(r'"([^"]*)"', rest)) for t, l1, rest in
+            re.findall(r'chord_refuse\("(HALF A SWAP)",\s*"([^"]*)",\s*([^;]*)\);', bs)]
     ok = bool(w) and len(w) >= 96 and bool(strs) and all(pw(x, w) <= 184 for t in strs for x in t)
     out.append(("H5 every new dialog string fits ui_ptext_fit's 184 px clamp" + (" (" + ", ".join(f"{pw(x, w)}" for t in strs for x in t) + " px)" if strs and w else ""), ok))
     db = body(bx, "drop_held") or ""
