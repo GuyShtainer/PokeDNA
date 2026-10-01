@@ -122,9 +122,11 @@ def main():
     rows, build_line = parse(SRC.read_text(encoding="utf-8"))
     # Guy has no Everdrive (2026-10-02): rows whose whole check NEEDS one are dropped.
     # A row that names an Omega alternative ("EverDrive, or Omega with ...") stays.
+    ED_EXTRA = {"MAP-G2-8", "B90-7", "MAP-G1-8"}   # Everdrive-posture rows the regex misses
     dropped = [r["id"] for r in rows
-               if (RE_ED_ONLY.match(r["check"]) or r["what"].startswith("Everdrive:"))
-               and "Omega" not in r["check"]]
+               if r["id"] in ED_EXTRA
+               or ((RE_ED_ONLY.match(r["check"]) or r["what"].startswith("Everdrive:"))
+                   and "Omega" not in r["check"])]
     rows = [r for r in rows if r["id"] not in dropped]
     if dropped:
         print(f"everdrive-only rows dropped: {' '.join(dropped)}", file=sys.stderr)
