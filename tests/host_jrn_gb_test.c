@@ -401,6 +401,92 @@ static void t_gb_never_pairs(void) {
   CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && strcmp(nm, "Box move") == 0 && jrnapp_cursor() == 2, "#303 GB: a swap-shaped pair is still ONE step per press ('%s', cursor %u)", nm, (unsigned)jrnapp_cursor());
 }
 
+/* ---- z9 (#307): shifting-list steps -- a full-box slot-0 release / move changes 800-1,400 B of a packed list, far past one record (the y19-s4 fix pass
+ * made such a step WRITE IMMEDIATELY and drop the session out of hold). With chained steps it RECORDS: app_gb_stage's `recorded` answer (state OK, no lost step) is
+ * what gb_hold_commit keeps the hold on; the write-immediately fallback is only for a step beyond JRN_CHAIN_MAX records. */
+static uint8_t g_gl[GBS_LIST_BYTES], g_gl2[GBS_LIST_BYTES];
+
+/* The fixture image, one writable non-party box filled to capacity (by gbs_insert of a copy of an existing mon). Returns the box, or -1. */
+static int build_full_box(GbfGame g) {
+  GbEditMon mon;
+  int nb, pb, b, box = -1, slot, cap, cnt, srcbox = -1;
+  if (!build(g)) return -1;
+  nb = gbs_nboxes(&S); pb = gbs_party_box(&S);
+  for (b = 0; b < nb && srcbox < 0; b++) {
+    if (b == pb || gbs_load_list(&S, b, g_gl) != GBS_OK) continue;
+    if (gb_list_count(S.gen, g_gl, b) > 0 && gb_load(&mon, S.gen, g_gl, b, 0)) srcbox = b;
+  }
+  if (srcbox < 0) return -1;
+  for (b = 0; b < nb && box < 0; b++) {
+    if (b == pb || gbs_box_writable(&S, b) != GBS_OK || gbs_load_list(&S, b, g_gl) != GBS_OK) continue;
+    if (gb_list_count(S.gen, g_gl, b) >= 0) box = b;
+  }
+  if (box < 0) return -1;
+  if (gbs_load_list(&S, box, g_gl) != GBS_OK) return -1;
+  cap = gb_list_capacity(S.gen, box);
+  for (cnt = gb_list_count(S.gen, g_gl, box); cnt < cap; cnt++)
+    if (gbs_insert(&S, box, &mon, &slot, g_gl) != GBS_OK) return -1;
+  if (gbs_load_list(&S, box, g_gl) != GBS_OK || gb_list_count(S.gen, g_gl, box) != cap) return -1;
+  memcpy(orig, img, sizeof orig); memcpy(base, img, sizeof base);   /* the FULL box is the session's baseline: the journal opens on it */
+  return box;
+}
+static unsigned diff_bytes(const uint8_t* a, const uint8_t* b) {   /* first..last differing byte, inclusive: what the encoder must carry */
+  unsigned i, lo = GB_LEN, hi = 0;
+  for (i = 0; i < GB_LEN; i++) if (a[i] != b[i]) { if (lo == GB_LEN) lo = i; hi = i; }
+  return lo == GB_LEN ? 0u : hi - lo + 1u;
+}
+
+static void t_shifting_step(GbfGame g, int op) {   /* op 0 = release slot 0, 1 = move slot 0 to another box */
+  static uint8_t post[GB_LEN + GBF_RTC_TAIL_64];
+  const char* what = op ? "box move from slot 0" : "release slot 0";
+  int box = build_full_box(g), dst = -1, b;
+  uint32_t av = 99, total;
+  char nm[25], stop[25];
+  unsigned changed;
+  uint16_t lost0;
+  CHECK(box >= 0, "%s (%d): a full box could be staged", what, (int)g);
+  if (box < 0) return;
+  card_fresh(FM_FAT);
+  rd_fattime_hook = jrn_fattime_filter;
+  imgf_clear(&F);
+  CHECK(jrnapp_open_gb(&R, img, gb_journal_key(&S), 0, true) == JA_OK && jrnapp_prepare_key(&R, gb_journal_key(&S)) == JRN_OK, "%s (%d): journal open + prepare", what, (int)g);
+  lost0 = R.lost;
+  if (op == 0) CHECK(gbs_delete(&S, box, 0, g_gl) == GBS_OK, "%s (%d): the release lands in RAM", what, (int)g);
+  else {
+    int to_slot = -1;
+    for (b = 0; b < gbs_nboxes(&S) && dst < 0; b++)
+      if (b != box && b != gbs_party_box(&S) && gbs_box_writable(&S, b) == GBS_OK && gbs_load_list(&S, b, g_gl2) == GBS_OK &&
+          gb_list_count(S.gen, g_gl2, b) < gb_list_capacity(S.gen, b)) dst = b;
+    CHECK(dst >= 0 && gbs_move(&S, box, 0, dst, &to_slot, g_gl, g_gl2) == GBS_OK, "%s (%d): the move lands in RAM (to box %d)", what, (int)g, dst);
+  }
+  changed = diff_bytes(base, img);
+  CHECK(changed > 460u, "%s (%d): the shifting step spans %u bytes -- past ONE record's ~460 B (the #307 shape)", what, (int)g, changed);
+  (void)img_rec_flat(&R, base, img, 8, 4096, "Box move");
+  CHECK(jrnapp_state(&R) == JA_OK && R.lost == lost0, "%s (%d): app_gb_stage's answer is TRUE -- recorded, so the session KEEPS its hold (state %d, lost %u)", what, (int)g, jrnapp_state(&R), (unsigned)R.lost);
+  memcpy(post, img, sizeof post);
+  CHECK(jrnapp_flush() == JRN_OK, "flush");
+  CHECK(jrnapp_tip() == 1u, "%s (%d): ONE step recorded, tip %u", what, (int)g, (unsigned)jrnapp_tip());
+  CHECK(jrnapp_step(-1, nm) == JRN_OK && strcmp(nm, "Box move") == 0 && memcmp(img, orig, GB_LEN) == 0, "%s (%d): ONE undo restores the image BYTE-EXACT ('%s')", what, (int)g, nm);
+  CHECK(jrnapp_step(1, nm) == JRN_OK && memcmp(img, post, GB_LEN) == 0, "%s (%d): ONE redo brings the shifted lists back byte-exact", what, (int)g);
+  CHECK(jrnapp_flush() == JRN_OK, "flush the markers");
+  /* the pull: the card kept the ORIGINAL full box; the next load offers the step and re-applies it byte-exact */
+  memcpy(img, orig, sizeof img);
+  CHECK(jrnapp_open_gb(&R, img, gb_journal_key(&S), 0, true) == JA_OK, "%s (%d): reopen on the original image", what, (int)g);
+  total = jrnapp_offer(&av, stop);
+  CHECK(total == 1u && av == 1u, "%s (%d): the offer counts the chain as ONE step: total %u avail %u", what, (int)g, (unsigned)total, (unsigned)av);
+  CHECK(jrnapp_reapply() == 1 && memcmp(img, post, GB_LEN) == 0, "%s (%d): the pull is survived: re-apply restores the shifted lists byte-exact", what, (int)g);
+}
+
+/* The write-immediately fallback survives for a step BEYOND the chain (> JRN_CHAIN_MAX records): not recorded, state GAP, the caller's `recorded` answer is false. */
+static void t_shifting_beyond_chain(void) {
+  uint16_t lost0;
+  CHECK(world(GBF_RBY, 0), "world");
+  lost0 = R.lost;
+  { unsigned i; for (i = 0; i < 3000u; i++) img[0x3000 + i] ^= 0x5A; }       /* 3,000 changed bytes in one region: 14 records > JRN_CHAIN_MAX */
+  (void)img_rec_flat(&R, base, img, 8, 4096, "Box move");
+  CHECK(R.lost == lost0 + 1u && R.state == IREC_GAP, "beyond JRN_CHAIN_MAX records the step is an honest GAP (the hold fallback applies): lost %u state %d", (unsigned)R.lost, R.state);
+}
+
 int main(void) {
   t_key();
   t_everdrive_never_opens();
@@ -414,6 +500,8 @@ int main(void) {
   t_key_entropy();
   t_old_key_compat();
   t_gb_never_pairs();
+  t_shifting_step(GBF_RBY, 0); t_shifting_step(GBF_RBY, 1); t_shifting_step(GBF_GS, 0); t_shifting_step(GBF_GS, 1);
+  t_shifting_beyond_chain();
   printf("%lu checks, %d failed\n", checks, fails);
   return fails ? 1 : 0;
 }
