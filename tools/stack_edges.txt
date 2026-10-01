@@ -1262,7 +1262,7 @@ Br.rd @0 in br_byte -> gb_art_read fused_gb_slice_read gb_read
 # RomGbSprite.read above (the codec always decodes bytes rom_gbsprite.c already read
 # through that same class).
 
-RomCtx.read @0 in read_entry.constprop.0,read_small,read_verified.constprop.0,stage_and_expand,mr_region_enter,mr_region_next_view,rom_mon_open,rom_sprite_open,rom_text_open,art_icons_stream,rom_read_at -> fused_rom_read rom_fatfs_read g3x_fatfs_read iconrom_fatfs_read
+RomCtx.read @0 in pin_shape_once,table_shape_ok,read_entry.constprop.0,read_small,read_verified.constprop.0,stage_and_expand,mr_region_enter,mr_region_next_view,rom_mon_open,rom_sprite_open,rom_text_open,art_icons_stream,rom_read_at -> fused_rom_read rom_fatfs_read g3x_fatfs_read iconrom_fatfs_read
 # rom_read_at (rom_map.c:69, `c->read(c->ctx, off, dst, len)`) was previously declared
 # `argsites=1` for the same reason g1_bs_verify/g2_bd_verify/g2_pp_verify above were --
 # the OLD resolver's linear scan couldn't attribute its site to a clean field (BACKLOG
