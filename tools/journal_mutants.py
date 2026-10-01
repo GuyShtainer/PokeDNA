@@ -247,6 +247,15 @@ MUTANTS = [
     Mutant("crc loop #302: an untouched region skips the old-hash (DIVERGED) check", "journal.c",
            "  if (jrn_crc32_update(0, old_blk, j->reg_size) != j->crc[region]) { jrn_step_abort(j); return JRN_E_DIVERGED; }\n", "",
            "journal", "never reuses crc[region]"),
+    Mutant("#316: pass 2 streams the record from the CARD again (torn image on a mid-apply read fault)", "journal_undo.c",
+           "rc = span_walk(j, img, &ram, r, forward, 1, &touched);", "rc = span_walk(j, img, s, r, forward, 1, &touched);",
+           "journal", "TORN image"),
+    Mutant("#316: the crc check reads the card (a read fault surfaces as JRN_E_STATE, not JRN_E_IO)", "journal_undo.c",
+           "if (!src_crc_ok(j, &ram, r)) return JRN_E_STATE;", "if (!src_crc_ok(j, s, r)) return JRN_E_STATE;",
+           "journal", "want JRN_E_IO"),
+    Mutant("#316: the RAM copy is partial (the last 4 bytes never copied)", "journal_undo.c",
+           "jrn_i_src_read(j, s, 0, rec, r->len) != 0", "jrn_i_src_read(j, s, 0, rec, r->len - 4u) != 0",
+           "journal", "the healthy press"),
 ]
 
 
