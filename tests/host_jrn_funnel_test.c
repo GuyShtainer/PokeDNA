@@ -558,6 +558,44 @@ static void t_swap_pair_offer(void) {
   CHECK(jrnapp_reapply() == 1 && memcmp(sv, snapF, sizeof sv) == 0, "#303 re-apply restores the displaced mon byte-exact");
 }
 
+/* z7 review: the newer half's two shape rules and the rollback-failure contract, each with teeth.
+ * (e) N+1 REPLACES an occupied slot with the displaced bytes (C: Z -> Y): not "fills an EMPTY slot" -> not a pair.
+ * (f) N+1 fills TWO empty slots (D: 0 -> W, then C: 0 -> Y, D first in span order): not "exactly ONE slot" -> not a pair.
+ * (g) the second half refused AND the rollback refused (every card write fails from the press on): JRN_OK, "half a swap",
+ *     the cursor on the older half and the image EXACTLY the post-drop-1 state -- the caller must re-derive (pdna_main.c). */
+static void t_swap_pair_shape_and_rollback_failure(void) {
+  char nm[25];
+  uint8_t x[MONB], y[MONB], z[MONB], w[MONB];
+  static uint8_t snapH[G3_SAVE_FILE_SIZE];
+  mon_fill(x, 1); mon_fill(y, 2); mon_fill(z, 4); mon_fill(w, 3);
+  CHECK(app_world_reset(), "world");
+  memcpy(slot_at(10), x, MONB); memcpy(slot_at(11), y, MONB); CHECK(stage_pc("Setup"), "setup X, Y");
+  memcpy(slot_at(12), z, MONB); CHECK(stage_pc("Setup"), "setup Z in C");
+  memcpy(slot_at(11), x, MONB); memset(slot_at(10), 0, MONB); CHECK(stage_pc("Box move"), "drop 1");
+  memcpy(slot_at(12), y, MONB); CHECK(stage_pc("Box move"), "N+1 replaces Z with Y");
+  CHECK(jrnapp_flush() == JRN_OK, "flush");
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && jrnapp_cursor() == 3u, "#303 (e) a REPLACING second step is not a swap's second half (cursor %u, '%s')", (unsigned)jrnapp_cursor(), safe(nm));
+  CHECK(app_world_reset(), "world");
+  memcpy(slot_at(10), x, MONB); memcpy(slot_at(11), y, MONB); CHECK(stage_pc("Setup"), "setup X, Y");
+  memcpy(slot_at(11), x, MONB); memset(slot_at(10), 0, MONB); CHECK(stage_pc("Box move"), "drop 1");
+  memcpy(slot_at(9), w, MONB); memcpy(slot_at(12), y, MONB); CHECK(stage_pc("Box move"), "N+1 fills TWO empty slots (9 and 12)");
+  CHECK(jrnapp_flush() == JRN_OK, "flush");
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && jrnapp_cursor() == 2u, "#303 (f) a two-slot second step is not a swap's second half (cursor %u, '%s')", (unsigned)jrnapp_cursor(), safe(nm));
+  CHECK(app_world_reset(), "world");
+  CHECK(stage_swap(10, 11, 12), "stage the swap");
+  CHECK(jrnapp_step(-1, nm) == JRN_OK, "per-step undo of the 2nd half (to capture the half state)");
+  memcpy(snapH, sv, sizeof sv);
+  CHECK(app_world_reset(), "world");
+  CHECK(stage_swap(10, 11, 12), "stage the swap again");
+  rd_fail_all_writes = 1;                                   /* the flush between the halves fails: recording stops, the rollback is refused */
+  {
+    int rc = jrnapp_step_pair(-1, nm);
+    rd_fail_all_writes = 0;
+    CHECK(rc == JRN_OK && strcmp(nm, "half a swap") == 0, "#303 (g) a refused rollback returns JRN_OK named 'half a swap' (the caller re-derives): rc %d '%s'", rc, safe(nm));
+    CHECK(jrnapp_cursor() == 2u && memcmp(sv, snapH, sizeof sv) == 0, "#303 (g) cursor %u on the older half and the image EXACTLY the half state (journal and image agree)", (unsigned)jrnapp_cursor());
+  }
+}
+
 static void t_swap_pair_history_labels(void) {
   JaHist rows[8];
   int n, more = 0, fh = 0;
@@ -606,6 +644,7 @@ int main(int argc, char** argv) {
     CHECK(app_world(file), "app world"); t_swap_pair_rollback();
     CHECK(app_world(file), "app world"); t_swap_pair_offer();
     CHECK(app_world(file), "app world"); t_swap_pair_history_labels();
+    CHECK(app_world(file), "app world"); t_swap_pair_shape_and_rollback_failure();
   }
   printf("%lu checks, %d failed\n", checks, fails);
   return fails ? 1 : 0;

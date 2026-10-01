@@ -94,8 +94,12 @@ int  jrnapp_step(int dir, char name[25]);
 
 /* #303: the chord's press. A swap is two journal steps (two drops); when the step at the cursor (undo) or the next step
  * toward the tip (redo) is the second half of a swap whose first half is its parent, BOTH undo/redo together (name "Swap"),
- * all-or-nothing, so one press never strands the image on the half-swap state. Gen-3 only (a Game Boy swap is refused
- * outright). Same returns/name contract as jrnapp_step; History and jump stay per-step. The predicate is in jrn_app.c. */
+ * all-or-nothing, so one press does not strand the image on a plain swap's half state. NOT covered (per-step as before; the
+ * load-time offer still restores): a CHAINED swap (the displaced mon dropped on another occupied slot), a displaced mon put
+ * into the party, a redo more than 64 steps below the tip, a sparse mon (< 48 comparable bytes). Two unscoped PC commits of
+ * the same span shape (an identity edit, then a paste of the pre-edit copy into an empty slot) DO pair (byte-exact, named
+ * "Swap"). Gen-3 only (a Game Boy swap is refused outright). Same returns/name contract as jrnapp_step, except the refused-
+ * rollback case: JRN_OK named "half a swap". History and jump stay per-step. The predicate is in jrn_app.c. */
 int  jrnapp_step_pair(int dir, char name[25]);
 
 typedef struct JaHist {

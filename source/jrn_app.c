@@ -533,9 +533,10 @@ static int ja_chord_pair(int dir) {
 }
 
 /* #303: ONE chord press. A swap's two halves (ja_chord_pair) undo/redo together -- one toast, name "Swap" -- so a press
- * can never strand the image on the half-swap state. All-or-nothing: if the second half is refused after the first moved,
- * the first is rolled back through the opposite step; only if THAT fails is the half state reported (name "half a swap",
- * JRN_OK so the caller re-derives its copies). Everything else is exactly jrnapp_step. */
+ * does not strand the image on a plain swap's half state (the limits are listed in jrn_app.h). All-or-nothing: if the
+ * second half is refused after the first moved, the first is rolled back through the opposite step; only if THAT fails is
+ * the half state reported (name "half a swap", JRN_OK so the caller re-derives its copies). Everything else is exactly
+ * jrnapp_step. */
 int jrnapp_step_pair(int dir, char name[25]) {
   char n1[25], n2[25];
   int rc, rb;

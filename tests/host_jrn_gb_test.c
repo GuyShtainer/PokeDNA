@@ -310,6 +310,10 @@ static void t_key_entropy(void) {
   set_name(ff, 2); keys_now(); a_new = newk;
   set_name(fe01, 3); keys_now(); b_new = newk;
   CHECK(a_new != b_new, "#308 the escape is injective: '9' alone vs the literal bytes of its escape never share a key");
+  { static const uint8_t fe01ff[] = { 0x80, 0xFE, 0x01, 0xFF }, ffff[] = { 0x80, 0xFF, 0xFF };   /* both carry a '9': only the 0xFE escape keeps them apart */
+    set_name(fe01ff, 4); keys_now(); a_new = newk;
+    set_name(ffff, 3); keys_now(); b_new = newk;
+    CHECK(a_new != b_new, "#308 the 0xFE escape is load-bearing: FE 01 '9' vs '9' '9' never share a key"); }
   { GbSession st2 = S; st2.img = 0; CHECK(gb_journal_key_legacy(&st2) == 0 && gb_journal_key_legacy(0) == 0, "no image / NULL: no legacy key either"); }
 }
 
