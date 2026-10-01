@@ -110,9 +110,9 @@ def pins(src: dict[str, str]) -> list[tuple[str, bool]]:
     out.append(("S2a the older half must be named \"Swap\" (ja_older_eligible), the newer half \"Box move\"",
                 re.search(r"ja_older_eligible\(const JrnRec\* r\)\s*\{[^}]*strcmp\(r->name, \"Swap\"\) == 0", jc) is not None
                 and re.search(r"ja_newer_eligible\(const JrnRec\* r\)\s*\{[^}]*strcmp\(r->name, \"Box move\"\) == 0", jc) is not None))
-    pc = body(ja, "ja_chord_pair") or ""
-    out.append(("S2b ja_chord_pair judges the older half with ja_older_eligible and the newer half with ja_newer_eligible",
-                "ja_older_eligible(&rn)" in pc and "ja_newer_eligible(&rm)" in pc))
+    pc = body(ja, "ja_group_at") or ""
+    out.append(("S2b ja_group_at judges every older half (pair and chain link) with ja_older_eligible and the newest with ja_newer_eligible",
+                "ja_older_eligible(&rn)" in pc and "ja_older_eligible(&rp)" in pc and "ja_newer_eligible(&rm)" in pc))
     return out
 
 
@@ -138,6 +138,7 @@ MUTANTS: list[tuple[str, str, str, str, str]] = [
     ("M8 the half-swap branch latches PARTIAL in the chord", "pdna_box.c", 'chord_refuse("HALF A SWAP"', 'imgf_partial_set(&g_img); chord_refuse("HALF A SWAP"', "H3c"),
     ("M12 the older half no longer needs the Swap name", "jrn_app.c", 'strcmp(r->name, "Swap") == 0; }', 'strcmp(r->name, "Box move") == 0; }', "S2a"),
     ("M13 the pair walk judges the older half with the newer rule", "jrn_app.c", "!ja_older_eligible(&rn)", "!ja_newer_eligible(&rn)", "S2b"),
+    ("M14 the chain link's older half judged with the newer rule", "jrn_app.c", "!ja_older_eligible(&rp)", "!ja_newer_eligible(&rp)", "S2b"),
     ("M10 the Swap one-shot is dropped from drop_held", "pdna_box.c", '  app_step_name("Swap");', "", "S1a"),
     ("M11 the Swap one-shot is set BEFORE the early refusals", "pdna_box.c", '  if (s_orig_slot >= 0 && s_orig_box != box && src->scope == BOXSCOPE_BANK) { snd_deny(); return recs; }',
      '  app_step_name("Swap");\n  if (s_orig_slot >= 0 && s_orig_box != box && src->scope == BOXSCOPE_BANK) { snd_deny(); return recs; }', "S1"),
