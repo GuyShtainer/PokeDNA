@@ -105,19 +105,36 @@ int  jrnapp_step(int dir, char name[25]);
  * History and jump stay per-step (History labels the halves 1/2 2/2 or 1/3 2/3 3/3). The predicate is in jrn_app.c. */
 int  jrnapp_step_pair(int dir, char name[25]);
 
+/* A History row's kind (#304): a step of the CURRENT branch, the collapsed summary of the other branches that FORK off the step
+ * below it, or one of those other branches' first step (shown only when its fork is opened). */
+enum { JH_STEP = 0, JH_FORK = 1, JH_SIB = 2 };
 typedef struct JaHist {
-  uint32_t seq;
+  uint32_t seq;        /* the step's seq; 0 on a JH_FORK row                                                   */
+  uint32_t parent;     /* JH_STEP: its parent seq. JH_FORK / JH_SIB: the FORK POINT (the step the branches leave; 0 = the root) */
   uint8_t  crossed;    /* a floor: undo/redo cannot pass it                                   */
   uint8_t  at_cursor;  /* the image sits exactly here                                         */
   uint8_t  ahead;      /* newer than the cursor: undone, redoable                             */
-  uint8_t  saved;      /* at or below the step the CARD holds (else only "recorded")          */
+  uint8_t  saved;      /* at or below the step the CARD holds (else only "recorded"); a JH_SIB: it IS that step */
+  uint8_t  kind;       /* JH_STEP / JH_FORK / JH_SIB                                          */
+  uint8_t  open;       /* JH_FORK: its sibling rows are materialised below it                 */
+  uint16_t nsib;       /* JH_FORK: how many OTHER steps leave the same fork point (all of them, shown or not) */
   char     name[25];            /* a swap's halves read "Box move 1/2" / "Box move 2/2" (#303) */
 } JaHist;
 /* The current branch newest-first (tip down the parent chain), up to `max` rows. *more = 1 when older steps exist
  * past the window; *floor_hit = 1 when the chain ended at a compacted (retired) parent. Returns the row count
- * (0 = nothing recorded / the journal is not usable). Other branches are NOT enumerated (the engine has no
- * children walk): only the chain the redo tip sits on is listed. */
+ * (0 = nothing recorded / the journal is not usable). Every row is a JH_STEP. Other branches are NOT enumerated here
+ * (jrnapp_history_tree below adds them). */
 int  jrnapp_history(JaHist* rows, int max, int* more, int* floor_hit);
+/* THE TREE (#304, display only): the same current branch, plus -- right BELOW the on-branch step whose PARENT is a fork point -- ONE JH_FORK
+ * summary row saying how many OTHER steps leave that fork point (the steps an undo-then-new-step orphaned), and, for every fork point listed in
+ * open_forks[0..nopen) (parent seqs; 0 = the root), up to JA_SIB_SHOW JH_SIB rows under its summary (name, FLOOR mark, SAVED when it is the step the card holds).
+ * Only the branch's own steps are ever jump targets; the sibling rows are display (no apply semantics). `max` is the TOTAL row budget: summary and sibling rows
+ * take slots, so the oldest branch rows give way to them (*more = 1 then) -- a fork's rows are never split from the branch row they hang under, and the
+ * newest branch row always fits. COST: ONE linear pass over the journal from the oldest visible row's parent to the tail (jrn_kid_counts: every fork on screen
+ * answered together; no per-row scan), plus ONE short pass per opened fork (jrn_kid_list pages of 16). max is clamped to 48 for the walk. The row count returned. */
+#define JA_SIB_SHOW 8
+#define JA_OPEN_MAX 4
+int  jrnapp_history_tree(JaHist* rows, int max, int* more, int* floor_hit, const uint32_t* open_forks, int nopen);
 /* Undo/redo along that branch until the cursor sits on `target` (a row's seq; 0 = before the first step),
  * stopping at a floor. *moved = steps applied; `stop` = the crossed step's name when a floor stopped it. Returns 0
  * on arrival or the JRN_E_* that stopped the chain (JRN_E_TORN: the last step counted in *moved is PARTIAL). */

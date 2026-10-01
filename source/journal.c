@@ -419,6 +419,101 @@ int jrn_find(Jrn* j, uint32_t seq, JrnRec* out) {
   return jrn_i_locate(j, seq, out, &s);
 }
 
+/* ---- the CHILDREN WALK (#304; contract in journal.h) -------------------------------------------------------------------------- */
+typedef struct KidCx {
+  const uint32_t* par; const uint32_t* skip; uint16_t* cnt; uint8_t n;               /* counts mode (cnt != 0) */
+  uint32_t want, wskip; JrnKid* out; uint16_t first, seen; uint8_t cap, got;         /* list mode */
+  uint8_t done;
+} KidCx;
+
+/* One STEP record. Returns 1 to go on, 0 to stop the whole walk. */
+static int kid_take(KidCx* c, const JrnRec* r) {
+  if (r->kind != JRN_KIND_STEP) return 1;                                            /* parts and markers are never children */
+  if (c->cnt) {
+    int lo = 0, hi = (int)c->n - 1;                                                  /* par[] is strictly descending: binary search */
+    while (lo <= hi) {
+      int mid = (lo + hi) / 2;
+      if (c->par[mid] == r->parent) {
+        if (r->seq != c->skip[mid] && c->cnt[mid] < 0xFFFFu) c->cnt[mid]++;
+        break;
+      }
+      if (c->par[mid] > r->parent) lo = mid + 1; else hi = mid - 1;
+    }
+    return 1;
+  }
+  if (r->parent != c->want || r->seq == c->wskip) return 1;
+  if (c->seen++ >= c->first) {
+    c->out[c->got].seq = r->seq;
+    c->out[c->got].crossed = r->crossed;
+    memcpy(c->out[c->got].name, r->name, JRN_NAME_LEN + 1u);
+    c->got++;
+  }
+  return c->got < c->cap;
+}
+
+static int kid_cb(void* arg, uint32_t off, const uint8_t* b, uint32_t n, int last, uint32_t* used) {
+  KidCx* c = (KidCx*)arg;
+  uint32_t p = 0;
+  JrnRec r;
+  int rc;
+  (void)off;
+  while (p < n) {
+    rc = rec_hdr(b + p, n - p, &r);
+    if (rc == REC_SHORT && !last) break;                                             /* the record crosses into the next chunk */
+    if (rc) return 0;                                                                /* end of this segment's records */
+    if (!kid_take(c, &r)) { c->done = 1; return 0; }
+    p += r.len;
+  }
+  *used = p;
+  return 1;
+}
+
+/* The whole walk: segments from the one holding `from` (or the first live one: `from` was compacted away, or 0) to the tail, then pending. */
+static int kid_walk(Jrn* j, uint32_t from, KidCx* c) {
+  uint16_t s;
+  uint8_t i;
+  uint16_t off = 0;
+  int rc;
+  if (!j) return JRN_E_ARG;                                                          /* a FOREIGN / empty journal has no segments mapped: zero children */
+  if (j->seg_first && j->tail_seg) {
+    s = seg_for_seq(j, from);
+    if (!s) s = j->seg_first;
+    for (; s <= j->tail_seg && !c->done; s++) {
+      rc = seg_scan(j, s, JRN_REC_BASE, s == j->tail_seg ? j->tail_off : JRN_SEG_SIZE, kid_cb, c);
+      if (rc) return rc;
+    }
+  }
+  for (i = 0; i < j->pend_n && !c->done; i++) {
+    JrnRec r;
+    if (jrn_i_hdr_parse(j->pend + off, &r)) return JRN_E_STATE;
+    if (!kid_take(c, &r)) c->done = 1;
+    off = (uint16_t)(off + r.len);
+  }
+  return JRN_OK;
+}
+
+int jrn_kid_counts(Jrn* j, const uint32_t* parent, const uint32_t* skip, uint16_t* count, uint8_t n) {
+  KidCx c;
+  uint8_t i;
+  if (!j || !parent || !skip || !count || !n) return JRN_E_ARG;
+  for (i = 1; i < n; i++) if (parent[i] >= parent[i - 1u]) return JRN_E_ARG;        /* strictly descending */
+  memset(&c, 0, sizeof c);
+  c.par = parent; c.skip = skip; c.cnt = count; c.n = n;
+  memset(count, 0, (size_t)n * sizeof count[0]);
+  return kid_walk(j, parent[n - 1u], &c);
+}
+
+int jrn_kid_list(Jrn* j, uint32_t parent, uint32_t skip, uint16_t first, JrnKid* out, uint8_t cap, uint8_t* got) {
+  KidCx c;
+  int rc;
+  if (!j || !out || !got || !cap) return JRN_E_ARG;
+  memset(&c, 0, sizeof c);
+  c.want = parent; c.wskip = skip; c.out = out; c.first = first; c.cap = cap;
+  rc = kid_walk(j, parent, &c);
+  *got = c.got;
+  return rc;
+}
+
 /* ---- redirects (.pdr) ---------------------------------------------------------------------------- */
 /* 0 = found and valid, 1 = absent or corrupt (a corrupt redirect is no redirect), JRN_E_VERSION = valid
  * magic + crc but an unknown version (FOREIGN: never followed, never ignored), other < 0 = a card error

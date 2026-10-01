@@ -2079,7 +2079,7 @@ JrnFs.alloc @20 in jrn_prepare_first -> jfs_alloc
 JrnFs.create_zero @28 in jrn_redirect_write -> jfs_create_zero
 JrnFs.list @32 in jrn_open -> jfs_list
 JfsListCb.cb @0 in jfs_emit_name -> dir_cb
-JfsScanCb.cb @0 in jfs_emit_scan -> anc_cb first_cb loc_cb pfx_cb
+JfsScanCb.cb @0 in jfs_emit_scan -> anc_cb first_cb kid_cb loc_cb pfx_cb
 JrnFs.read @12 in seg_read -> jfs_read
 JrnFs.scan @36 in seg_scan.constprop.0 -> jfs_scan
 JrnFs.stamp @40 in seg_write,seg_zero -> jfs_stamp
