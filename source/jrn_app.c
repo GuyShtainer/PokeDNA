@@ -206,6 +206,10 @@ int jrnapp_state(const ImgRec* r) {
   return r->state == IREC_OK ? JA_OK : JA_OFF;
 }
 
+/* #339: read-only -- did a failed write/apply-verify latch the engine (j->stopped)? A stopped journal refuses every later verb
+ * (JRN_E_STOPPED), so no second undo/redo press can follow. jrnapp_state() does NOT show it on the step path. */
+bool jrnapp_stopped(void) { return s_j.stopped != 0; }
+
 uint32_t jrnapp_cursor(void) { return jrn_cursor(&s_j); }
 uint32_t jrnapp_tip(void) { return jrn_tip(&s_j); }
 

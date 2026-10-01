@@ -4633,7 +4633,10 @@ static int __attribute__((noinline)) box_chord_action(int ev, char toast[26], bo
     *need_full = true; s_oam_reload = true;
     return BCA_CHANGED;                                      /* the image DID change (app_undo_redo re-derived + latched it): the caller re-fetches */
   } else if (rc == AUR_HALF) {                               /* #315: a refused rollback left HALF a swap -- a consistent state, a WARNING, never the success toast */
-    chord_refuse("HALF A SWAP", "Only half of the swap moved.", "Press again, or check the card.");
+    /* #339: a second press only helps while the journal can still step. A write fault that stopped it (app_undo_stopped, or the
+     * recorder off/stopped via app_undo_live) makes every later press "History is off" -- so the line must not promise one. */
+    const bool retry = app_undo_live() && !app_undo_stopped();
+    chord_refuse("HALF A SWAP", "Only half of the swap moved.", retry ? "Press again, or check the card." : "History is off: check the card.");
     *need_full = true; s_oam_reload = true;
     return BCA_CHANGED;                                      /* the image DID change, but it is a CONSISTENT half state (not a TORN: no latch): the caller re-fetches */
   } else if (rc == AUR_ARENA) {                              /* T5 */

@@ -51,6 +51,7 @@ void jrnapp_close(ImgRec* r);
  * leaves the journal off (state JA_ERROR) so the UI never claims what is not recorded. */
 int  jrnapp_prepare(ImgRec* r, const uint8_t* sb2, bool frlg);
 /* The engine's cursor and tip (for the load log line only). */
+bool jrnapp_stopped(void);   /* #339: the engine latched a failed write/verify; every later step returns JRN_E_STOPPED */
 uint32_t jrnapp_cursor(void);
 uint32_t jrnapp_tip(void);
 /* True while the FIRST fill of the ring is still owed (the caller shows one status line before it). */
