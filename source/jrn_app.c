@@ -423,7 +423,7 @@ int jrnapp_step(int dir, char name[25]) {
 typedef struct { uint8_t region; uint16_t off, len, before, after; } JaSpan;
 typedef struct { int32_t slot; uint8_t ok; uint8_t after[JA_MON_BYTES]; uint8_t known[JA_MON_BYTES / 8u + 2u]; } JaSig;
 /* EWRAM_BSS: the record read once (<= 512 B) + the newer half's signature (~100 B). No stack, no IWRAM. */
-static uint8_t EWRAM_BSS s_rec[JRN_REC_MAX];
+static uint8_t EWRAM_BSS s_rec[JRN_REC_MAX] __attribute__((aligned(4)));   /* aligned: the History tree reads JrnKid / u32 views of it (#304) */
 static JaSig   EWRAM_BSS s_sig;
 
 static int ja_rec_load(const JrnSrc* src, const JrnRec* r) {
@@ -633,6 +633,8 @@ int jrnapp_history(JaHist* rows, int max, int* more, int* floor_hit) {
     if (t == cur) ahead = 0;                                 /* this row and every older one are IN the image */
     if (t == s_saved) saved_seen = 1;
     rows[n].seq = t;
+    rows[n].parent = rec.parent;
+    rows[n].kind = JH_STEP; rows[n].open = 0; rows[n].nsib = 0;
     rows[n].crossed = rec.crossed ? 1 : 0;
     rows[n].at_cursor = (t == cur) ? 1 : 0;
     rows[n].ahead = (uint8_t)ahead;
@@ -662,6 +664,84 @@ int jrnapp_history(JaHist* rows, int max, int* more, int* floor_hit) {
   }
   if (t && more) *more = 1;
   return n;
+}
+
+/* ---- #304: the TREE. See jrn_app.h. s_rec is idle here (the branch walk is over), so it holds the three small arrays of jrn_kid_counts
+ * (par u32[48] | skip u32[48] | cnt u16[48] = 480 B) and, later, the JrnKid page (16 x 32 B): no new static, no stack. ---- */
+#define JA_TREE_ROWS 48
+_Static_assert(JA_TREE_ROWS * (4 + 4 + 2) <= (int)JRN_REC_MAX, "the tree's count arrays must fit s_rec");
+_Static_assert(16 * sizeof(JrnKid) <= JRN_REC_MAX, "one page of 16 JrnKid must fit s_rec");
+
+static int ja_is_open(const uint32_t* open_forks, int nopen, uint32_t p) {
+  int i;
+  for (i = 0; i < nopen && i < (int)JA_OPEN_MAX; i++) if (open_forks[i] == p) return 1;
+  return 0;
+}
+/* How many rows a fork point's branch row carries BELOW it: 0 (no fork), 1 (the collapsed summary), or 1 + the siblings shown (opened). */
+static int ja_ins(uint16_t nsib, int open, int max) {
+  int shown;
+  if (!nsib) return 0;
+  if (!open) return 1;
+  shown = nsib < JA_SIB_SHOW ? (int)nsib : (int)JA_SIB_SHOW;
+  if (shown > max - 2) shown = max - 2;                       /* the newest branch row + its summary always fit */
+  return shown < 0 ? 1 : 1 + shown;
+}
+
+int jrnapp_history_tree(JaHist* rows, int max, int* more, int* floor_hit, const uint32_t* open_forks, int nopen) {
+  uint32_t* par = (uint32_t*)(void*)s_rec;
+  uint32_t* skip = par + JA_TREE_ROWS;
+  uint16_t* cnt = (uint16_t*)(void*)(skip + JA_TREE_ROWS);
+  int nb, i, total, pre, mm;
+  if (max > JA_TREE_ROWS) max = JA_TREE_ROWS;
+  nb = jrnapp_history(rows, max, more, floor_hit);
+  if (!open_forks || nopen < 0) nopen = 0;
+  if (nb <= 0 || max < 3) return nb;
+  for (i = 0; i < nb; i++) { par[i] = rows[i].parent; skip[i] = rows[i].seq; }
+  if (jrn_kid_counts(&s_j, par, skip, cnt, (uint8_t)nb) != JRN_OK) { ja_event("history tree: the children walk failed (branch only)", 0); return nb; }
+  for (total = nb, i = 0; i < nb; i++) total += ja_ins(cnt[i], ja_is_open(open_forks, nopen, par[i]), max);
+  while (total > max && nb > 1) {                              /* the window: older branch rows give way, each with the rows hanging under it */
+    nb--;
+    total -= 1 + ja_ins(cnt[nb], ja_is_open(open_forks, nopen, par[nb]), max);
+    if (more) *more = 1;
+  }
+  for (pre = total - nb, i = nb - 1; i >= 0; i--) {            /* back to front, in place: a row only ever moves to a HIGHER index */
+    int ins = ja_ins(cnt[i], ja_is_open(open_forks, nopen, par[i]), max), dest;
+    pre -= ins;
+    dest = i + pre;
+    if (dest != i) memmove(&rows[dest], &rows[i], sizeof rows[0]);
+    if (ins) {
+      JaHist* f = &rows[dest + 1];
+      memset(f, 0, sizeof *f);
+      f->kind = JH_FORK; f->parent = par[i]; f->nsib = cnt[i];
+      f->open = ins > 1 ? 1 : 0;
+      for (mm = 1; mm < ins; mm++) {                           /* placeholders, filled below */
+        JaHist* sb = &rows[dest + 1 + mm];
+        memset(sb, 0, sizeof *sb);
+        sb->kind = JH_SIB; sb->parent = par[i];
+      }
+    }
+  }
+  for (i = 0; i < total; i++) {                                /* fill each opened fork's sibling rows: one short pass per fork (pages of 16) */
+    int m, filled = 0;
+    if (rows[i].kind != JH_FORK || !rows[i].open) continue;
+    for (m = 0; i + 1 + m < total && rows[i + 1 + m].kind == JH_SIB; m++) {}
+    while (filled < m) {
+      JrnKid* kid = (JrnKid*)(void*)s_rec;
+      uint8_t got = 0;
+      int k, want = m - filled > 16 ? 16 : m - filled;
+      if (jrn_kid_list(&s_j, rows[i].parent, rows[i - 1].seq, (uint16_t)filled, kid, (uint8_t)want, &got) != JRN_OK || !got) break;
+      for (k = 0; k < (int)got; k++, filled++) {
+        JaHist* sb = &rows[i + 1 + filled];
+        sb->seq = kid[k].seq;
+        sb->crossed = kid[k].crossed;
+        sb->at_cursor = (kid[k].seq == jrn_cursor(&s_j)) ? 1 : 0;
+        sb->saved = (kid[k].seq == s_saved) ? 1 : 0;
+        memcpy(sb->name, kid[k].name, 24); sb->name[24] = 0;
+      }
+    }
+    for (; filled < m; filled++) strcpy(rows[i + 1 + filled].name, "(gone)");   /* the journal changed under us: never a hole with a stale seq */
+  }
+  return total;
 }
 
 /* Undo or redo along the current branch until the cursor sits on `target`, stopping at a floor. *moved = steps

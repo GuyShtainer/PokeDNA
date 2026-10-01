@@ -1101,6 +1101,188 @@ static void t_chain_torn_reapply_and_jump(void) {
   }
   CHECK(jpartial > 0 && jbad == 0, "D1 jump: every PARTIAL image stops the jump with JRN_E_TORN (%u partial points, %u silent)", jpartial, jbad);
 }
+/* ---- #304: the History TREE (jrnapp_history_tree). Forks on the current branch collapse into ONE summary row under the on-branch step whose parent is the fork
+ * point; opened forks add their siblings' first steps; the 48-row window accounts for them; the cost is one shared pass. ---- */
+static unsigned g_tseed = 1;
+static uint32_t TS(const char* nm, unsigned k) {              /* ONE mon-sized step (a ~230-byte record) in slot k, a fresh mon every time; returns its seq, flushed */
+  mon_fill(slot_at(k), 100u + ++g_tseed);
+  CHECK(stage_pc(nm), "stage %s", nm);
+  CHECK(jrnapp_flush() == JRN_OK, "flush %s", nm);
+  return jrnapp_cursor();
+}
+static void TU(void) { char nm[25]; CHECK(jrnapp_step(-1, nm) == JRN_OK && jrnapp_flush() == JRN_OK, "undo + flush"); }
+static int rows_kinds_ok(const JaHist* r, int n, const char* want) {   /* want: one char per row, S F B (step / fork / sibling) */
+  int i;
+  for (i = 0; i < n; i++) {
+    char c = r[i].kind == JH_STEP ? 'S' : r[i].kind == JH_FORK ? 'F' : r[i].kind == JH_SIB ? 'B' : '?';
+    if (want[i] != c) return 0;
+  }
+  return want[n] == 0;
+}
+static const char* kinds(const JaHist* r, int n) {
+  static char b[4][64];
+  static int k;
+  char* o = b[k++ & 3];
+  int i;
+  for (i = 0; i < n && i < 62; i++) o[i] = r[i].kind == JH_STEP ? 'S' : r[i].kind == JH_FORK ? 'F' : r[i].kind == JH_SIB ? 'B' : '?';
+  o[i] = 0;
+  return o;
+}
+
+static void t_tree_shapes(void) {
+  JaHist rows[48], ref[48];
+  uint32_t s1, s2, s3, nw, nw2, op[1];
+  int n, nr, more = 0, fh = 0, m2 = 0, f2 = 0;
+  CHECK(app_world_reset(), "world");
+  s1 = TS("s1", 10); s2 = TS("s2", 11); s3 = TS("s3", 12);
+  n = jrnapp_history_tree(rows, 48, &more, &fh, 0, 0);
+  nr = jrnapp_history(ref, 48, &m2, &f2);
+  CHECK(n == nr && n == 3 && rows_kinds_ok(rows, n, "SSS") && !more == !m2, "TREE: a LINEAR journal has no fork rows and equals jrnapp_history (n %d, kinds %s)", n, kinds(rows, n));
+  { int i, same = 1; for (i = 0; i < n; i++) if (rows[i].seq != ref[i].seq || strcmp(rows[i].name, ref[i].name) || rows[i].saved != ref[i].saved || rows[i].ahead != ref[i].ahead || rows[i].at_cursor != ref[i].at_cursor) same = 0;
+    CHECK(same, "TREE: every linear row is field-for-field the jrnapp_history row"); }
+  TU(); TU();                                                  /* cursor s1, tip s3 */
+  nw = TS("NEW", 13);                                          /* NEW's parent is s1: s2-s3 are orphaned */
+  n = jrnapp_history_tree(rows, 48, &more, &fh, 0, 0);
+  CHECK(n == 3 && rows_kinds_ok(rows, n, "SFS") && rows[0].seq == nw && strcmp(rows[0].name, "NEW") == 0, "FORK-2: NEW, one collapsed summary, s1 (kinds %s)", kinds(rows, n));
+  CHECK(rows[1].parent == s1 && rows[1].nsib == 1 && rows[1].open == 0 && rows[1].seq == 0, "FORK-2: the summary names the fork point s1 (%u) and counts 1 (nsib %u open %u)", (unsigned)rows[1].parent, (unsigned)rows[1].nsib, (unsigned)rows[1].open);
+  CHECK(rows[2].seq == s1 && rows[0].parent == s1, "FORK-2: the summary sits BELOW the branch child (whose parent is the fork point) and above the fork point itself");
+  op[0] = s1;
+  n = jrnapp_history_tree(rows, 48, &more, &fh, op, 1);
+  CHECK(n == 4 && rows_kinds_ok(rows, n, "SFBS") && rows[1].open == 1 && rows[1].nsib == 1, "OPEN: NEW, summary(open), one sibling, s1 (kinds %s)", kinds(rows, n));
+  CHECK(rows[2].seq == s2 && strcmp(rows[2].name, "s2") == 0 && rows[2].parent == s1 && rows[2].crossed == 0, "OPEN: the sibling row is s2 -- the orphaned tail's FIRST step (seq %u '%s'), never NEW itself nor s3", (unsigned)rows[2].seq, safe(rows[2].name));
+  op[0] = s2;
+  n = jrnapp_history_tree(rows, 48, &more, &fh, op, 1);
+  CHECK(n == 3 && rows_kinds_ok(rows, n, "SFS") && rows[1].open == 0, "OPEN of an UNRELATED fork point leaves this fork collapsed (kinds %s open %u)", kinds(rows, n), (unsigned)rows[1].open);
+  TU();                                                        /* cursor s1 again */
+  nw2 = TS("NEW2", 14);                                        /* s1 now has THREE children: s2, NEW, NEW2 */
+  op[0] = s1;
+  n = jrnapp_history_tree(rows, 48, &more, &fh, 0, 0);
+  CHECK(n == 3 && rows_kinds_ok(rows, n, "SFS") && rows[0].seq == nw2 && rows[1].nsib == 2, "FORK-3: the summary counts BOTH other children (nsib %u)", (unsigned)rows[1].nsib);
+  n = jrnapp_history_tree(rows, 48, &more, &fh, op, 1);
+  CHECK(n == 5 && rows_kinds_ok(rows, n, "SFBBS") && rows[2].seq == s2 && rows[3].seq == nw, "FORK-3 OPEN: the siblings are s2 then NEW in seq order, NEW2 (the branch child) excluded (kinds %s: %u %u)", kinds(rows, n), (unsigned)rows[2].seq, (unsigned)rows[3].seq);
+  (void)s3;
+}
+
+/* a fork must not move any JH_STEP row, and a jump still works along the branch only */
+static void t_tree_jump_unchanged(void) {
+  JaHist rows[48];
+  uint32_t s1, s2, op[1];
+  int n, more = 0, fh = 0, moved = 0, rc;
+  char stop[25];
+  CHECK(app_world_reset(), "world");
+  s1 = TS("s1", 10); s2 = TS("s2", 11); (void)TS("s3", 12);
+  TU(); TU();
+  (void)TS("NEW", 13);
+  op[0] = s1;
+  n = jrnapp_history_tree(rows, 48, &more, &fh, op, 1);
+  CHECK(n == 4 && rows[3].kind == JH_STEP && rows[3].seq == s1, "rows: NEW, summary, sibling, s1");
+  rc = jrnapp_jump(rows[3].seq, stop, &moved);                  /* A-jump on the current branch: unchanged */
+  CHECK(rc == 0 && jrnapp_cursor() == s1 && moved == 1, "the branch jump to s1 still works (rc %d cursor %u moved %d)", rc, (unsigned)jrnapp_cursor(), moved);
+  n = jrnapp_history_tree(rows, 48, &more, &fh, op, 1);
+  CHECK(n == 4 && rows[0].ahead == 1 && rows[3].at_cursor == 1 && rows[2].kind == JH_SIB && rows[2].seq == s2, "after the jump the branch marks follow the cursor; the sibling row is unchanged");
+}
+
+/* SAVED: a sibling that IS the saved step carries it; the summary row above a SAVED branch row carries nothing */
+static void t_tree_saved(void) {
+  JaHist rows[48];
+  uint32_t s1, s2, s3, op[1];
+  int n, more = 0, fh = 0;
+  CHECK(app_world_reset(), "world");
+  s1 = TS("s1", 10); s2 = TS("s2", 11); s3 = TS("s3", 12);
+  jrnapp_mark_saved();                                         /* the card holds s3 */
+  TU(); TU();
+  (void)TS("NEW", 13);                                         /* s1's second child NEW; s2-s3 orphaned */
+  op[0] = s1;
+  n = jrnapp_history_tree(rows, 48, &more, &fh, op, 1);
+  CHECK(n == 4 && rows[2].kind == JH_SIB && rows[2].seq == s2 && rows[2].saved == 0, "the sibling s2 is not the saved step");
+  CHECK(rows[0].saved == 0 && rows[1].saved == 0 && rows[3].saved == 0, "nothing on the current branch is SAVED (the card holds an orphaned step)");
+  TU(); TU();                                                  /* cursor s1 .. wait: NEW undone -> s1, then s1 undone -> 0 */
+  CHECK(jrnapp_cursor() == 0u, "cursor before the first step");
+  CHECK(app_world_reset(), "world");
+  s1 = TS("s1", 10); s2 = TS("s2", 11);
+  jrnapp_mark_saved();                                         /* the card holds s2 */
+  TU();                                                        /* cursor s1 */
+  (void)TS("N3", 12);                                          /* N3: s2's sibling (parent s1): s2 is SAVED and orphaned */
+  op[0] = s1;
+  n = jrnapp_history_tree(rows, 48, &more, &fh, op, 1);
+  CHECK(n == 4 && rows_kinds_ok(rows, n, "SFBS") && rows[2].seq == s2 && rows[2].saved == 1, "a sibling that IS the saved step shows SAVED (kinds %s saved %u)", kinds(rows, n), (unsigned)rows[2].saved);
+  /* the fork row directly above a SAVED branch row */
+  CHECK(app_world_reset(), "world");
+  s1 = TS("s1", 10); s2 = TS("s2", 11); s3 = TS("s3", 12);
+  TU();                                                        /* cursor s2 */
+  jrnapp_mark_saved();                                         /* the card holds s2 */
+  (void)TS("N3", 13);                                          /* N3 hangs off s2 beside s3 */
+  n = jrnapp_history_tree(rows, 48, &more, &fh, 0, 0);
+  CHECK(n == 4 && rows_kinds_ok(rows, n, "SFSS") && rows[2].seq == s2 && rows[2].saved == 1 && rows[1].saved == 0 && rows[3].saved == 1 && rows[0].saved == 0,
+        "a fork directly above a SAVED mark: the summary carries no mark, s2 and older read SAVED, NEW (above) does not (kinds %s)", kinds(rows, n));
+  (void)s3;
+}
+
+/* THE WINDOW. A branch of 4 steps with two forks (at N3 and at s2); every row budget 3..12, collapsed and fully opened, against an independent cost model. */
+static void t_tree_window(void) {
+  JaHist rows[48];
+  uint32_t s1, s2, s3, s4, n3, n4, n5, m4, op[4];
+  int n, max, open, more = 0, fh = 0;
+  CHECK(app_world_reset(), "world");
+  s1 = TS("s1", 10); s2 = TS("s2", 11); s3 = TS("s3", 12); s4 = TS("s4", 13);
+  TU(); TU();                                                  /* cursor s2 */
+  n3 = TS("N3", 14); n4 = TS("N4", 15); n5 = TS("N5", 16);
+  TU(); TU();                                                  /* cursor N3 */
+  m4 = TS("M4", 17);                                           /* branch: M4, N3, s2, s1 ; forks: at N3 (N4), at s2 (s3) */
+  op[0] = n3; op[1] = s2;
+  for (open = 0; open <= 1; open++) {
+    for (max = 3; max <= 12; max++) {
+      /* the model: branch rows in order with the rows each carries below it */
+      int cost[4], k, tot = 0, keep = 0, want_total;
+      cost[0] = 1 + 1 + (open ? 1 : 0);                        /* M4 + its summary (+ sibling N4) */
+      cost[1] = 1 + 1 + (open ? 1 : 0);                        /* N3 + its summary (+ sibling s3) */
+      cost[2] = 1;                                             /* s2 */
+      cost[3] = 1;                                             /* s1 */
+      for (k = 0; k < 4; k++) { if (tot + cost[k] > max && keep > 0) break; tot += cost[k]; keep++; }
+      want_total = tot;
+      n = jrnapp_history_tree(rows, max, &more, &fh, open ? op : 0, open ? 2 : 0);
+      CHECK(n == want_total && n <= max, "WINDOW open=%d max=%d: %d rows (model %d, never over the budget)", open, max, n, want_total);
+      { int i, steps = 0; for (i = 0; i < n; i++) if (rows[i].kind == JH_STEP) steps++;
+        CHECK(steps == keep, "WINDOW open=%d max=%d: %d branch rows kept (model %d) -- no row lost beyond the budget, none split from its fork rows", open, max, steps, keep); }
+      CHECK(rows[0].kind == JH_STEP && rows[0].seq == m4, "WINDOW open=%d max=%d: the newest branch row is always row 0", open, max);
+      CHECK(!more == (keep == 4), "WINDOW open=%d max=%d: more=%d iff older branch rows were dropped (kept %d of 4)", open, max, more, keep);
+      { int i, bad = 0; for (i = 0; i < n; i++) if (rows[i].kind == JH_FORK && !(i > 0 && rows[i - 1].kind == JH_STEP && rows[i - 1].parent == rows[i].parent)) bad++;
+        CHECK(bad == 0, "WINDOW open=%d max=%d: every summary directly follows the on-branch row whose parent is its fork point", open, max); }
+      { int i, bad = 0; for (i = 0; i < n; i++) if (rows[i].kind == JH_SIB && !(i > 0 && (rows[i - 1].kind == JH_FORK || rows[i - 1].kind == JH_SIB) && rows[i].seq != 0 && rows[i].parent == rows[i - 1].parent)) bad++;
+        CHECK(bad == 0, "WINDOW open=%d max=%d: every sibling row follows its own summary (right fork point, a real seq)", open, max); }
+    }
+  }
+  n = jrnapp_history_tree(rows, 48, &more, &fh, op, 2);
+  CHECK(n == 8 && rows_kinds_ok(rows, n, "SFBSFBSS") && rows[2].seq == n4 && rows[5].seq == s3 && rows[1].parent == n3 && rows[4].parent == s2,
+        "TWO opened forks, each with ITS OWN sibling: N4 under the N3 fork, s3 under the s2 fork (kinds %s; %u %u)", kinds(rows, n), (unsigned)rows[2].seq, (unsigned)rows[5].seq);
+  (void)s1; (void)s4; (void)n5;
+}
+
+/* THE COST: reads of jrnapp_history (main) vs jrnapp_history_tree on journals of 14 / 42 / 70 steps, one fork at the newest end; after a reopen so every read is the card's */
+static void t_tree_cost(void) {
+  static const int Nrows[3] = { 14, 42, 70 };
+  int c;
+  for (c = 0; c < 3; c++) {
+    JaHist rows[48];
+    int i, n, more = 0, fh = 0;
+    unsigned long r_main, r_tree, r_open;
+    uint32_t op[1];
+    CHECK(app_world_reset(), "world");
+    for (i = 0; i < Nrows[c]; i++) (void)TS("s", (unsigned)(i % 50));
+    TU();
+    (void)TS("NEW", 50);                                        /* one fork at the newest end */
+    jrnapp_flush();
+    CHECK(app_reopen(), "reopen (every read is a card read)");
+    rd_reads = 0; n = jrnapp_history(rows, 48, &more, &fh); r_main = rd_reads;
+    rd_reads = 0; n = jrnapp_history_tree(rows, 48, &more, &fh, 0, 0); r_tree = rd_reads;
+    op[0] = rows[1].parent;
+    rd_reads = 0; n = jrnapp_history_tree(rows, 48, &more, &fh, op, 1); r_open = rd_reads;
+    printf("  tree cost, %d steps + 1 fork: jrnapp_history %lu sector reads; tree collapsed %lu (+%lu); tree with the fork OPEN %lu (+%lu)  (%d rows)\n",
+           Nrows[c], r_main, r_tree, r_tree - r_main, r_open, r_open - r_main, n);
+    CHECK(r_tree >= r_main && r_tree - r_main <= 2048u, "TREE cost: the shared pass adds at most one segment-span of reads (%lu extra)", r_tree - r_main);
+  }
+}
+
 int main(int argc, char** argv) {
   int a;
   static uint8_t file[G3_SAVE_FILE_SIZE];
@@ -1146,6 +1328,11 @@ int main(int argc, char** argv) {
     CHECK(app_world(file), "app world"); t_chain_torn_contract();
     CHECK(app_world(file), "app world"); t_chain_torn_reapply_and_jump();
     CHECK(app_world(file), "app world"); t_chain_never_pairs();
+    CHECK(app_world(file), "app world"); t_tree_shapes();
+    CHECK(app_world(file), "app world"); t_tree_jump_unchanged();
+    CHECK(app_world(file), "app world"); t_tree_saved();
+    CHECK(app_world(file), "app world"); t_tree_window();
+    CHECK(app_world(file), "app world"); t_tree_cost();
   }
   printf("%lu checks, %d failed\n", checks, fails);
   return fails ? 1 : 0;
