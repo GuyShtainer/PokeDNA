@@ -74,7 +74,7 @@ static void h_row(const JaHist* rows, int n, int i, int top, bool sel, bool has_
 /* The footer's one line: a denial `note` (until the next key), else the hint for what A does on the selected row. */
 static const char* h_hint(const JaHist* rows, int n, int sel) {
   if (sel < n && rows[sel].kind == JH_FORK) return rows[sel].open ? "A hide  START newest  B back" : "A show  START newest  B back";
-  if (sel < n && rows[sel].kind == JH_SIB) return "Other branch  START newest  B back";
+  if (sel < n && rows[sel].kind == JH_SIB) return "A -  START newest  B back";
   return "A jump  START newest  B back";
 }
 

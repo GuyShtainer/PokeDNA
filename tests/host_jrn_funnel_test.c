@@ -1286,6 +1286,7 @@ static void t_tree_cost(void) {
 int main(int argc, char** argv) {
   int a;
   static uint8_t file[G3_SAVE_FILE_SIZE];
+  setvbuf(stdout, 0, _IONBF, 0);                              /* a mutant that CRASHES (a row overrun) must still leave its FAIL lines behind */
   for (a = 1; a < argc; a++) {
     FILE* fp = fopen(argv[a], "rb");
     Gen3SaveInfo info;
