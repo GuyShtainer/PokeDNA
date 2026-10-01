@@ -230,6 +230,14 @@ int rom_wallpaper_cell_key(const RomWpBase* bs, uint16_t e, int tx, int ty) {
   return (int)e | (pi << 16);        /* pi 0 = no base tile; fits 16 + 8 bits, never negative */
 }
 
+/* One row of 8 pixels through a 16-entry palette as four 32-bit stores (BACKLOG #103). */
+static inline void row_store(uint32_t* d, const uint16_t* pal, uint32_t w) {
+  d[0] = (uint32_t)pal[w & 15u]         | ((uint32_t)pal[(w >> 4) & 15u]  << 16);
+  d[1] = (uint32_t)pal[(w >> 8) & 15u]  | ((uint32_t)pal[(w >> 12) & 15u] << 16);
+  d[2] = (uint32_t)pal[(w >> 16) & 15u] | ((uint32_t)pal[(w >> 20) & 15u] << 16);
+  d[3] = (uint32_t)pal[(w >> 24) & 15u] | ((uint32_t)pal[(w >> 28) & 15u] << 16);
+}
+
 int rom_wallpaper_expand_cell(const uint8_t* tiles, uint32_t tiles_bytes, uint16_t e,
                               int tx, int ty, const RomWpBase* bs,
                               const uint16_t pal[ROM_WP_PAL_BANKS][16], uint16_t out[64]) {
@@ -244,26 +252,49 @@ int rom_wallpaper_expand_cell(const uint8_t* tiles, uint32_t tiles_bytes, uint16
    * black where the answer is unknown (City's tone IS black, but City is table-backed). */
   uint16_t fill = tone;
   if (!bs->cols && tone == 0) fill = fg[0];
-  if (((uintptr_t)out & 3u) == 0u) {              /* BACKLOG #103: word fill (32 stores, not 64) */
-    uint32_t* ow = (uint32_t*)(void*)out;
-    uint32_t f2 = (uint32_t)fill | ((uint32_t)fill << 16);
-    for (int i = 0; i < 32; i++) ow[i] = f2;
-  } else {
-    for (int i = 0; i < 64; i++) out[i] = fill;
-  }
+  const uint8_t* btile = 0;                          /* the backdrop tile, if there is one */
+  uint16_t bp[16];
   if (bs->cols && bs->rows) {
     int pi = (ty % bs->rows) * bs->cols + (tx % bs->cols);
     if (pi < bs->used) {
       uint32_t boff = ((uint32_t)bs->first + (uint32_t)pi) * 32u;
       if (boff + 32u <= tiles_bytes) {
-        uint16_t bp[16];
         memcpy(bp, bg, sizeof bp);
         bp[0] = tone;                               /* bg index 0 -> interior tone */
-        expand_px(tiles + boff, 0, 0, bp, 0, out);
+        btile = tiles + boff;
       }
     }
   }
+  const uint8_t* otile = tiles + (uint32_t)tid * 32u;
+  const int hf = (e >> 10) & 1, vf = (e >> 11) & 1;
+  /* BACKLOG #103: the fused word path. Per row, in the order base-then-overlay-with-index-0-
+   * transparent, the FINAL pixels are: the overlay row alone when it has no index-0 nibble
+   * (the base would be fully overwritten, so it is never expanded), the base row alone when the
+   * overlay row is wholly transparent, otherwise the base row with the overlay's non-zero
+   * pixels over it. Needs 4-byte-aligned tiles and output (every real caller); anything else
+   * takes the original two-pass code below. */
+  if ((((uintptr_t)out | (uintptr_t)otile | (uintptr_t)btile) & 3u) == 0u) {
+    const uint32_t* ow = (const uint32_t*)(const void*)otile;
+    const uint32_t* bw = (const uint32_t*)(const void*)btile;
+    uint32_t* d = (uint32_t*)(void*)out;
+    const uint32_t f2 = (uint32_t)fill | ((uint32_t)fill << 16);
+    for (int y = 0; y < 8; y++, d += 4) {
+      uint32_t w = ow[vf ? (7 - y) : y];
+      if (hf) w = rev_nibbles(w);
+      if (w != 0u && ((w - 0x11111111u) & ~w & 0x88888888u) == 0u) { row_store(d, fg, w); continue; }
+      if (btile) row_store(d, bp, bw[y]);
+      else { d[0] = f2; d[1] = f2; d[2] = f2; d[3] = f2; }
+      if (w != 0u) {
+        uint16_t* o = &out[y * 8];
+        for (int k = 0; k < 8; k++, w >>= 4)
+          if (w & 15u) o[k] = fg[w & 15u];
+      }
+    }
+    return 1;
+  }
+  for (int i = 0; i < 64; i++) out[i] = fill;
+  if (btile) expand_px(btile, 0, 0, bp, 0, out);
   /* 2) the tilemap's own tile over it, index 0 transparent */
-  expand_px(tiles + (uint32_t)tid * 32u, (e >> 10) & 1, (e >> 11) & 1, fg, 1, out);
+  expand_px(otile, hf, vf, fg, 1, out);
   return 1;
 }
