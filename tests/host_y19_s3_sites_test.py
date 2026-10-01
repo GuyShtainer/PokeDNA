@@ -78,7 +78,7 @@ def checks(box: str, summ: str, main: str, jrn: str, lay: str) -> dict[str, bool
         "P1 box loop feeds chord_frame and wakes on the chord": bool(pb) and "chord_frame(&chord" in pb and "while (!k && !cev)" in pb,
         "P2 summary loop feeds chord_frame": "chord_frame(&chord" in ps,
         "P3 carrying is refused before the engine": bool(bca) and before(bca, "s_holding", "app_undo_redo(") and "s_ch_hold" in bca and "s_item_held" in bca,
-        "P4 the arena loan is refused before the engine (T5)": bool(aur) and before(aur, "app_arena_held()", "jrnapp_step(") and "imgf_arena_ok" in aur,
+        "P4 the arena loan is refused before the engine (T5)": bool(aur) and before(aur, "app_arena_held()", "jrnapp_step_pair(") and "imgf_arena_ok" in aur,
         "P5 undo never uses the funnel; re-derives + dirties on success": bool(aur) and "app_stage_sections" not in aur and "img_stage" not in aur
             and "app_journal_rederive()" in aur and "imgf_staged(&g_img)" in aur,
         "P6 pending records are flushed before an undo": bool(jst) and before(jst, "jrn_pending(&s_j)", "jrn_undo("),

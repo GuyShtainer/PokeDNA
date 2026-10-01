@@ -26,6 +26,16 @@ void log_line(const char* fmt, ...) { (void)fmt; }
 void rmbl_pause(void) {}
 void rmbl_resume(void) {}
 
+/* A step name for a CHECK message: a mutant can leave garbage in a name; the report must stay printable. */
+static const char* safe(const char* n) {
+  static char b[4][32];
+  static int k;
+  char* o = b[k++ & 3];
+  int i;
+  for (i = 0; i < 31 && n && n[i]; i++) o[i] = (n[i] >= 0x20 && n[i] < 0x7F) ? n[i] : '?';
+  o[i] = 0;
+  return o;
+}
 #define PCB G3_PC_BYTES
 #define KEY 0x0123456789ABCDEFull
 
@@ -172,7 +182,7 @@ static void t_scope_is_one_step(void) {
     CHECK(jrn_tip(&J) == base + 1u, "the whole scope is ONE step: tip %u -> %u", (unsigned)base, (unsigned)jrn_tip(&J));
     CHECK(jrn_flush(&J) == JRN_OK, "flush scope");
     CHECK(jrn_find(&J, jrn_tip(&J), &rec) == 0 && rec.nspans == 2, "its two runs are its two spans, got %u", (unsigned)rec.nspans);
-    CHECK(strcmp(rec.name, "Box move") == 0, "the scope's name is the step's name: '%s'", rec.name);
+    CHECK(strcmp(rec.name, "Box move") == 0, "the scope's name is the step's name: '%s'", safe(rec.name));
   }
   /* BACKLOG #306: a CROSSED drop (Bank <-> PC) opens the same "Box move" scope as a plain drop, then
    * renames it at the cross site (app_step_name -> img_rec_name). The recorded step must carry the
@@ -188,7 +198,7 @@ static void t_scope_is_one_step(void) {
     CHECK(jrn_tip(&J) == base + 1u, "the renamed scope is one step");
     CHECK(jrn_flush(&J) == JRN_OK, "flush renamed");
     CHECK(jrn_find(&J, jrn_tip(&J), &rec) == 0 && strcmp(rec.name, "Bank move") == 0,
-          "the crossed drop's step is named 'Bank move', got '%s'", rec.name);
+          "the crossed drop's step is named 'Bank move', got '%s'", safe(rec.name));
     CHECK(R.name == 0, "the rename does not outlive its scope");
     img_scope_open(&R, "Box move");
     poke(2700, 6, 0x5E);
@@ -196,7 +206,7 @@ static void t_scope_is_one_step(void) {
     CHECK(img_scope_close(&F, &R, sv, slot), "close the next plain scope");
     CHECK(jrn_flush(&J) == JRN_OK, "flush plain");
     CHECK(jrn_find(&J, jrn_tip(&J), &rec) == 0 && strcmp(rec.name, "Box move") == 0,
-          "a plain drop after it is still 'Box move', got '%s'", rec.name);
+          "a plain drop after it is still 'Box move', got '%s'", safe(rec.name));
   }
 }
 
@@ -402,12 +412,12 @@ static void t_swap_pair_chords(void) {
   CHECK(stage_swap(10, 11, 12), "stage the swap (setup + 2 halves)");
   tip = jrnapp_tip();
   CHECK(jrnapp_cursor() == tip && tip == 3u, "three steps recorded (setup + two halves), tip %u", (unsigned)tip);
-  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && strcmp(nm, "Swap") == 0, "#303 pair at the tip: ONE undo press, named Swap ('%s')", nm);
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && strcmp(nm, "Swap") == 0, "#303 pair at the tip: ONE undo press, named Swap ('%s')", safe(nm));
   CHECK(jrnapp_cursor() == 1u, "#303 the press moved over BOTH halves: cursor %u", (unsigned)jrnapp_cursor());
   CHECK(memcmp(sv, snapS, sizeof sv) == 0, "#303 the image is byte-exact the pre-swap image (no half-swap state)");
-  CHECK(jrnapp_step_pair(1, nm) == JRN_OK && strcmp(nm, "Swap") == 0 && jrnapp_cursor() == tip, "#303 ONE redo press redoes BOTH ('%s', cursor %u)", nm, (unsigned)jrnapp_cursor());
+  CHECK(jrnapp_step_pair(1, nm) == JRN_OK && strcmp(nm, "Swap") == 0 && jrnapp_cursor() == tip, "#303 ONE redo press redoes BOTH ('%s', cursor %u)", safe(nm), (unsigned)jrnapp_cursor());
   CHECK(memcmp(sv, snapF, sizeof sv) == 0, "#303 redo: byte-exact the post-swap image");
-  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && jrnapp_step_pair(-1, nm) == JRN_OK && strcmp(nm, "Setup") == 0, "the step below the pair is a plain one (named '%s')", nm);
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && jrnapp_step_pair(-1, nm) == JRN_OK && strcmp(nm, "Setup") == 0, "the step below the pair is a plain one (named '%s')", safe(nm));
   CHECK(jrnapp_step_pair(-1, nm) == JRN_E_NOTHING, "nothing left to undo at the root");
 }
 
@@ -416,7 +426,7 @@ static void t_swap_pair_straddle(void) {
   CHECK(app_world_reset(), "world");
   CHECK(stage_swap(48, 49, 50), "stage a swap whose displaced slot (49) straddles sections 5/6 (and C=50 straddles nothing)");
   CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && strcmp(nm, "Swap") == 0 && memcmp(sv, snapS, sizeof sv) == 0,
-        "#303 a section-straddling slot still pairs and undoes byte-exact ('%s')", nm);
+        "#303 a section-straddling slot still pairs and undoes byte-exact ('%s')", safe(nm));
   CHECK(jrnapp_step_pair(1, nm) == JRN_OK && strcmp(nm, "Swap") == 0 && memcmp(sv, snapF, sizeof sv) == 0, "and redoes byte-exact");
   jrnapp_flush();
   CHECK(app_reopen() == 1, "reopen");
@@ -432,11 +442,11 @@ static void t_swap_pair_mid_history(void) {
   CHECK(stage_pc("Box move"), "a plain move above the pair");
   CHECK(jrnapp_flush() == JRN_OK, "flush");
   CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && strcmp(nm, "Box move") == 0 && jrnapp_cursor() == 3u,
-        "#303 undo INTO the pair from above: the plain move above it is ONE step ('%s', cursor %u)", nm, (unsigned)jrnapp_cursor());
+        "#303 undo INTO the pair from above: the plain move above it is ONE step ('%s', cursor %u)", safe(nm), (unsigned)jrnapp_cursor());
   CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && strcmp(nm, "Swap") == 0 && jrnapp_cursor() == 1u && memcmp(sv, snapS, sizeof sv) == 0,
-        "#303 pair mid-history: the next press takes BOTH halves ('%s', cursor %u)", nm, (unsigned)jrnapp_cursor());
+        "#303 pair mid-history: the next press takes BOTH halves ('%s', cursor %u)", safe(nm), (unsigned)jrnapp_cursor());
   CHECK(jrnapp_step_pair(1, nm) == JRN_OK && strcmp(nm, "Swap") == 0 && jrnapp_cursor() == 3u && memcmp(sv, snapF, sizeof sv) == 0,
-        "#303 redo pairs mid-history too ('%s')", nm);
+        "#303 redo pairs mid-history too ('%s')", safe(nm));
   CHECK(jrnapp_step_pair(1, nm) == JRN_OK && strcmp(nm, "Box move") == 0 && jrnapp_cursor() == 4u, "then the plain step above is redone alone");
 }
 
@@ -560,10 +570,10 @@ static void t_swap_pair_history_labels(void) {
   CHECK(jrnapp_flush() == JRN_OK, "flush");
   n = jrnapp_history(rows, 8, &more, &fh);
   CHECK(n == 4, "four rows, got %d", n);
-  CHECK(n == 4 && strcmp(rows[0].name, "Box move") == 0, "the plain move stays 'Box move' ('%s')", rows[0].name);
-  CHECK(n == 4 && strcmp(rows[1].name, "Box move 2/2") == 0, "#303 the swap's newer half reads 'Box move 2/2' ('%s')", rows[1].name);
-  CHECK(n == 4 && strcmp(rows[2].name, "Box move 1/2") == 0, "#303 the swap's older half reads 'Box move 1/2' ('%s')", rows[2].name);
-  CHECK(n == 4 && strcmp(rows[3].name, "Setup") == 0, "the setup is unlabelled ('%s')", rows[3].name);
+  CHECK(n == 4 && strcmp(rows[0].name, "Box move") == 0, "the plain move stays 'Box move' ('%s')", safe(rows[0].name));
+  CHECK(n == 4 && strcmp(rows[1].name, "Box move 2/2") == 0, "#303 the swap's newer half reads 'Box move 2/2' ('%s')", safe(rows[1].name));
+  CHECK(n == 4 && strcmp(rows[2].name, "Box move 1/2") == 0, "#303 the swap's older half reads 'Box move 1/2' ('%s')", safe(rows[2].name));
+  CHECK(n == 4 && strcmp(rows[3].name, "Setup") == 0, "the setup is unlabelled ('%s')", safe(rows[3].name));
 }
 
 int main(int argc, char** argv) {
