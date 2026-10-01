@@ -302,12 +302,46 @@ MUTANTS = [
     Mutant("chain: an unknown version (3) is read as live", "journal.c",
            "(jrn_rd16(h + 4) != SEG_VER && jrn_rd16(h + 4) != JRN_SEG_VER2)", "(jrn_rd16(h + 4) != SEG_VER && jrn_rd16(h + 4) != JRN_SEG_VER2 && jrn_rd16(h + 4) != 3)",
            "journal", "FAIL"),
+    # ---- #304 the children walk (tests/host_jrn_kids_test.c) ----
+    Mutant("kids: the walk counts the branch child as its own sibling (skip ignored)", "journal.c",
+           "if (r->seq != c->skip[mid] && c->cnt[mid] < 0xFFFFu) c->cnt[mid]++;", "if (c->cnt[mid] < 0xFFFFu) c->cnt[mid]++;",
+           "kids", "FORK-2: A's children other than the branch child C = 1"),
+    Mutant("kids: the list ignores skip (self-inclusion)", "journal.c",
+           "if (r->parent != c->want || r->seq == c->wskip) return 1;", "if (r->parent != c->want) return 1;",
+           "kids", "FORK-2: the listed sibling is B"),
+    Mutant("kids: the TAIL segment is not scanned", "journal.c",
+           "for (; s <= j->tail_seg && !c->done; s++) {", "for (; s < j->tail_seg && !c->done; s++) {",
+           "kids", "TAIL/FLUSHED"),
+    Mutant("kids: the pending buffer is not walked", "journal.c",
+           "for (i = 0; i < j->pend_n && !c->done; i++) {", "for (i = 0; 0 && i < j->pend_n && !c->done; i++) {",
+           "kids", "TAIL/PENDING"),
+    Mutant("kids: the walk starts one segment too late", "journal.c",
+           "    s = seg_for_seq(j, from);\n    if (!s) s = j->seg_first;\n    for (; s <= j->tail_seg && !c->done; s++) {",
+           "    s = (uint16_t)(seg_for_seq(j, from) + 1u);\n    if (!s) s = j->seg_first;\n    for (; s <= j->tail_seg && !c->done; s++) {",
+           "kids", "TAIL/FLUSHED"),
+    Mutant("kids: a chain PART counts as a child", "journal.c",
+           "  if (r->kind != JRN_KIND_STEP) return 1;                                            /* parts and markers are never children */",
+           "  if (r->kind != JRN_KIND_STEP && r->kind != JRN_KIND_PART) return 1;",
+           "kids", "CHAIN: the head has NO children"),
+    Mutant("kids: a cursor MARKER counts as a child", "journal.c",
+           "  if (r->kind != JRN_KIND_STEP) return 1;                                            /* parts and markers are never children */",
+           "  if (r->kind != JRN_KIND_STEP && r->kind != JRN_KIND_CURSOR) return 1;",
+           "kids", "FORK-2"),
+    Mutant("kids: counts are not reset (a stale counter survives a call)", "journal.c",
+           "  memset(count, 0, (size_t)n * sizeof count[0]);\n", "",
+           "kids", "FORK-2: A's children other than the branch child C = 1"),
+    Mutant("kids: a non-descending parent list is accepted", "journal.c",
+           "if (parent[i] >= parent[i - 1u]) return JRN_E_ARG;", "if (0) return JRN_E_ARG;",
+           "kids", "equal parents are refused"),
+    Mutant("kids: list paging off by one (first is exclusive)", "journal.c",
+           "if (c->seen++ >= c->first) {", "if (c->seen++ > c->first) {",
+           "kids", "list page"),
 ]
 
 
 def build(test: str, src_dir: Path, out: Path) -> subprocess.CompletedProcess[str]:
     """Compile host_journal_{test}_test.c against `src_dir`'s journal sources."""
-    name = {"journal": "host_journal_test.c", "chain": "host_jrn_chain_test.c"}.get(test, "host_journal_cut_test.c")
+    name = {"journal": "host_journal_test.c", "chain": "host_jrn_chain_test.c", "kids": "host_jrn_kids_test.c"}.get(test, "host_journal_cut_test.c")
     cmd = ["cc", "-std=c11", "-w", "-DFF_USE_MKFS=1", "-Dsiprintf=sprintf", "-Dsniprintf=snprintf",
            "-Dvsniprintf=vsnprintf", "-I", str(ROOT / "tests/hostfat"), "-I", str(ROOT / "lib/fatfs"),
            "-I", str(src_dir), str(ROOT / "tests" / name), str(src_dir / "journal.c"),

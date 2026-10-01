@@ -352,4 +352,18 @@ int      jrn_pending(const Jrn* j);       /* sealed records not yet on disk */
 /* Look a STEP record up by seq (pending first, then the segments). 0 found, else JRN_E_FLOOR. */
 int      jrn_find(Jrn* j, uint32_t seq, JrnRec* out);
 
+/* ---- the CHILDREN WALK (#304): READ-ONLY and ADDITIVE -- the format stores parent pointers only, so "the steps whose parent is X" is a
+ * SCAN: ONE linear pass over the segments from the one that holds X (seg_for_seq) through the tail, then the pending buffer. No stored
+ * byte, header field or SEG_VER changes (v1 and v2 segments read alike). Only STEP records count (kind 0): a chain HEAD is ONE step, its
+ * kind-3 parts and the cursor / discarded markers are never children. ONE record header in RAM at a time; nothing is held across a read.
+ * The cost is the pass itself, independent of how many parents are asked about: jrn_kid_counts answers EVERY parent of a window in one pass. */
+typedef struct JrnKid { uint32_t seq; uint8_t crossed; char name[JRN_NAME_LEN + 1]; } JrnKid;
+/* count[i] = how many steps have parent[i], NOT counting the step skip[i] (the branch child the caller already knows: a step is never its own
+ * sibling; skip[i] = 0 counts them all). parent[] must be STRICTLY DESCENDING (0 allowed as the last entry = the root: steps with no parent).
+ * n <= 255. Returns JRN_OK or JRN_E_ARG / JRN_E_IO (a card error: count[] is then meaningless). */
+int      jrn_kid_counts(Jrn* j, const uint32_t* parent, const uint32_t* skip, uint16_t* count, uint8_t n);
+/* The children of ONE parent in seq order, minus `skip`: the ones numbered first .. first+cap-1 go to out[0..*got). *got < cap means the
+ * list ended. Same pass, same rules; cap >= 1. */
+int      jrn_kid_list(Jrn* j, uint32_t parent, uint32_t skip, uint16_t first, JrnKid* out, uint8_t cap, uint8_t* got);
+
 #endif /* JOURNAL_H */
