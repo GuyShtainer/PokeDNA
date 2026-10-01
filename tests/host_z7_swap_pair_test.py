@@ -156,6 +156,10 @@ def main() -> int:
     must_fail("funnel", "R5w", "a fault at the THIRD link falls back to the pair", [(J, "  if (rc) return rc < 0 ? rc : 2;\n  if (!ja_older_eligible(&rp)) return 2;", "  if (rc) return 2;\n  if (!ja_older_eligible(&rp)) return 2;")])
     must_fail("funnel", "R6w", "the redo's three-step probe fault falls through to the pair probe", [(J, "if (g < 0 || g == 3) return g;", "if (g == 3) return g;")])
     must_fail("funnel", "R7w", "the redo's pair probe fault is read as 'no group'", [(J, "    if (g < 0) return g;\n    if (g == 2) return 2;", "    if (g == 2) return 2;")])
+    # zc #323: the half toast (t_swap_half_toast + the hop-cap leg)
+    must_fail("funnel", "T1w", "the (half) mark dropped", [(J, 'memcpy(name, "Swap (half)", 12)', "(void)0")])
+    must_fail("funnel", "T2w", "the mark also applied to a plain UNDO", [(J, "rc == JRN_OK && dir > 0 && name", "rc == JRN_OK && name")])
+    must_fail("funnel", "T3w", "the whole pair press loses the plain name", [(J, 'memcpy(name, "Swap", 5)', 'memcpy(name, "Swap (half)", 12)')])
     G = "gb_jkey.c"
     must_fail("gb", "A10", "GB guard dropped", [(J, "if (s_ai.slot < 0) return 0;                                /* Game Boy: no 80-byte slots, swaps are refused outright */", ""), (J, "return s_ai.slot >= 0 && r->kind", "return r->kind")])
     must_fail("gb", "B1", "no 0xFF escape", [(G, "if (legacy || !has_ff) {", "if (1) {")])

@@ -633,7 +633,15 @@ int jrnapp_step_pair(int dir, char name[25]) {
   if (dir < 0 && jrn_pending(&s_j)) (void)jrnapp_flush();      /* same single flush jrnapp_step does, BEFORE the lookup (the src pointers must outlive it) */
   g = ja_chord_pair(dir);
   if (g < 0) { ja_event("swap pair: a read fault in the group walk, the press is refused", g); return g; }   /* #322: nothing moved, never a smaller group */
-  if (g < 2) return jrnapp_step(dir, name);
+  if (g < 2) {
+    rc = jrnapp_step(dir, name);
+    /* #323: a whole swap press (g >= 2) names itself "Swap" below. A plain REDO that moved a step carrying the older half's name ("Swap", given only by drop_held's
+     * SWAP tail) applied ONE half without its partner (the party landing, D7 ruling 10; the redo hop cap): the image sits on a half swap, so the toast says so.
+     * A plain UNDO of that name is not a half: the cursor reaches the Swap only after everything above it is undone, so the image is the pre-swap one. History's
+     * own labels are untouched. */
+    if (rc == JRN_OK && dir > 0 && name && strcmp(name, "Swap") == 0) memcpy(name, "Swap (half)", 12);
+    return rc;
+  }
   rc = jrnapp_step(dir, n1);
   if (rc != JRN_OK) { if (name) memcpy(name, n1, 25); return rc; }   /* nothing moved */
   for (d = 1; d < (unsigned)g; d++) {                                    /* g <= JA_GROUP_MAX: the loop is bounded */

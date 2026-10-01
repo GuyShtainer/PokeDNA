@@ -689,6 +689,37 @@ static void t_swap_seq_adjacency_chain(void) {
   CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && jrnapp_cursor() == 4u, "#321 the press is the PAIR (cursor %u, want 4), not three steps", (unsigned)jrnapp_cursor());
 }
 
+/* ---- zc #323: a plain press that moves ONE half of a swap toasts the marked name "Swap (half)" (REDO only: a plain undo of the older half lands on the whole
+ * pre-swap image). Instance 1, the party landing (D7 ruling 10): Setup, Swap, then a step that is no Box move (an "Edit" stands in for the unscoped landing
+ * write) -- the redo from below pairs nothing, so the press applies the Swap alone. Instance 2, the D = 65 hop cap (t_swap_redo_hop_cap, checked there).
+ * Controls: the WHOLE pair / group press keeps the plain "Swap", the plain undo of the lone Swap keeps "Swap", a plain "Box move" press is untouched. */
+static int stage_chain(unsigned k, unsigned wrong_link);
+static void t_swap_half_toast(void) {
+  char nm[25];
+  {
+    uint8_t x[MONB], y[MONB];
+    mon_fill(x, 1); mon_fill(y, 2);
+    CHECK(app_world_reset(), "world");
+    memcpy(slot_at(10), x, MONB); memcpy(slot_at(11), y, MONB);
+    CHECK(stage_pc("Setup"), "Setup X, Y");
+    memcpy(slot_at(11), x, MONB); memset(slot_at(10), 0, MONB);
+    CHECK(stage_drop1(), "the Swap (drop 1; the displaced Y goes to the PARTY, so no Box move follows)");
+  }
+  pc[30000u] = (uint8_t)(pc[30000u] + 1u);
+  CHECK(stage_pc("Edit") && jrnapp_flush() == JRN_OK, "the landing stand-in (a non-Box-move step above the Swap)");
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && strcmp(nm, "Edit") == 0, "undo the landing stand-in ('%s')", safe(nm));
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && strcmp(nm, "Swap") == 0 && jrnapp_cursor() == 1u,
+        "#323 control: a plain UNDO of the lone Swap lands on the whole pre-swap image and keeps the plain name ('%s', cursor %u)", safe(nm), (unsigned)jrnapp_cursor());
+  CHECK(jrnapp_step_pair(1, nm) == JRN_OK && strcmp(nm, "Swap (half)") == 0 && jrnapp_cursor() == 2u,
+        "#323 the party-landing instance: the REDO that applies the Swap alone toasts 'Swap (half)' ('%s', cursor %u)", safe(nm), (unsigned)jrnapp_cursor());
+  CHECK(jrnapp_step_pair(1, nm) == JRN_OK && strcmp(nm, "Edit") == 0, "#323 control: the next redo (a plain non-Swap step) is untouched ('%s')", safe(nm));
+  CHECK(app_world_reset() && stage_swap(10, 11, 12), "world + the swap again");
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && strcmp(nm, "Swap") == 0 && jrnapp_cursor() == 1u, "#323 control: the WHOLE pair undo keeps 'Swap' ('%s')", safe(nm));
+  CHECK(jrnapp_step_pair(1, nm) == JRN_OK && strcmp(nm, "Swap") == 0 && jrnapp_cursor() == 3u, "#323 control: the WHOLE pair redo keeps 'Swap' ('%s')", safe(nm));
+  CHECK(app_world_reset() && stage_chain(2, 0), "world + a chained swap");
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && strcmp(nm, "Swap") == 0 && jrnapp_step_pair(1, nm) == JRN_OK && strcmp(nm, "Swap") == 0, "#323 control: the WHOLE 3-step group keeps 'Swap' both ways ('%s')", safe(nm));
+}
+
 /* ---- za #314(b): CHAINED swaps. The displaced mon dropped on another OCCUPIED slot is itself a Swap drop (named "Swap", one slot REPLACED), so a chain of k
  * swaps is k "Swap" steps and a last "Box move" into an empty slot; each link is byte-matched (the replaced bytes of step i == the bytes step i+1 adds).
  * stage_chain(k): M0 at slot 10, M1..Mk at slots 11..10+k (k in 2..4), empty slot 30. Steps: Setup, Swap_1 (M0 -> slot 11, slot 10 cleared, M1 displaced),
@@ -1018,6 +1049,7 @@ static void t_swap_redo_hop_cap(void) {
     want_cur = d <= 64u ? 3u : 2u;                                          /* paired (cursor over both halves) or plain (one step) */
     CHECK(jrnapp_step_pair(1, nm) == JRN_OK && jrnapp_cursor() == want_cur,
           "#314c D = %u: the redo %s (cursor %u, want %u)", d, d <= 64u ? "PAIRS" : "is a plain step", (unsigned)jrnapp_cursor(), want_cur);
+    CHECK(strcmp(nm, d <= 64u ? "Swap" : "Swap (half)") == 0, "#323 D = %u: the toast is '%s' (got '%s')", d, d <= 64u ? "Swap" : "Swap (half)", safe(nm));   /* the hop-cap instance */
   }
 }
 
@@ -1461,6 +1493,7 @@ int main(int argc, char** argv) {
     CHECK(app_world(file), "app world"); t_swap_pair_r1_mislabel();
     CHECK(app_world(file), "app world"); t_swap_seq_adjacency();
     CHECK(app_world(file), "app world"); t_swap_seq_adjacency_chain();
+    CHECK(app_world(file), "app world"); t_swap_half_toast();
     CHECK(app_world(file), "app world"); t_swap_redo_hop_cap();
     CHECK(app_world(file), "app world"); t_swap_slot_cap();
     CHECK(app_world(file), "app world"); t_swap_chain3();
