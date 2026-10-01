@@ -84,7 +84,7 @@ MUTANTS = [
            "  j->pend_n--;\n  j->next_seq--;", "  j->pend_n--;",
            "journal", "seq reclaimed"),
     Mutant("undo: pass 1 skipped (half-applied undo possible)", "journal_undo.c",
-           "  rc = span_walk(j, img, s, r, forward, 0, &touched);       /* pass 1: touches nothing */\n  if (rc) return rc;\n",
+           "  rc = span_walk(j, img, &ram, r, forward, 0, &touched);    /* pass 1: touches nothing */\n  if (rc) return rc;\n",
            "",
            "journal", "no half-applied undo"),
     Mutant("verify: the re-read after a flush is skipped", "journal.c",
