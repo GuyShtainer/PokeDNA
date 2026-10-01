@@ -61,15 +61,28 @@ static int span_walk(const Jrn* j, const JrnImage* img, const JrnSrc* s, const J
   return pos == end ? 0 : JRN_E_STATE;
 }
 
-/* Verify, then apply, then re-derive the crc of every touched region from the image. */
+/* Verify, then apply, then re-derive the crc of every touched region from the image.
+ * #316: the record is read from the card ONCE into a RAM copy (<= JRN_REC_MAX); the crc check, pass 1 and
+ * pass 2 all run from that copy. A card read fault therefore aborts BEFORE a single image byte changes, and
+ * pass 2 can no longer be cut short by a read error halfway through a patch. */
 static int apply_record(Jrn* j, const JrnImage* img, const JrnSrc* s, const JrnRec* r, int forward) {
+  uint8_t rec[JRN_REC_MAX];
+  JrnSrc ram;
   uint16_t touched;
   uint8_t g;
   int rc, rc2 = 0;
-  if (!src_crc_ok(j, s, r)) return JRN_E_STATE;
-  rc = span_walk(j, img, s, r, forward, 0, &touched);       /* pass 1: touches nothing */
+  if (r->len < JRN_REC_MIN || r->len > JRN_REC_MAX) return JRN_E_STATE;
+  if (s->ram) {
+    ram = *s;                                               /* already in RAM (the pending buffer) */
+  } else {
+    if (jrn_i_src_read(j, s, 0, rec, r->len) != 0) return JRN_E_IO;   /* the only card read of the apply */
+    memset(&ram, 0, sizeof ram);
+    ram.ram = rec;
+  }
+  if (!src_crc_ok(j, &ram, r)) return JRN_E_STATE;
+  rc = span_walk(j, img, &ram, r, forward, 0, &touched);    /* pass 1: touches nothing */
   if (rc) return rc;
-  rc = span_walk(j, img, s, r, forward, 1, &touched);       /* pass 2 */
+  rc = span_walk(j, img, &ram, r, forward, 1, &touched);    /* pass 2: from RAM, no card read can interrupt it */
   for (g = 0; g < j->nreg; g++)
     if (touched & (1u << g)) {
       rc2 = jrn_i_region_crc(j, img, g, &j->crc[g]);

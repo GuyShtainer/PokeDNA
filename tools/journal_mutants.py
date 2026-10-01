@@ -84,7 +84,7 @@ MUTANTS = [
            "  j->pend_n--;\n  j->next_seq--;", "  j->pend_n--;",
            "journal", "seq reclaimed"),
     Mutant("undo: pass 1 skipped (half-applied undo possible)", "journal_undo.c",
-           "  rc = span_walk(j, img, s, r, forward, 0, &touched);       /* pass 1: touches nothing */\n  if (rc) return rc;\n",
+           "  rc = span_walk(j, img, &ram, r, forward, 0, &touched);    /* pass 1: touches nothing */\n  if (rc) return rc;\n",
            "",
            "journal", "no half-applied undo"),
     Mutant("verify: the re-read after a flush is skipped", "journal.c",
@@ -247,6 +247,18 @@ MUTANTS = [
     Mutant("crc loop #302: an untouched region skips the old-hash (DIVERGED) check", "journal.c",
            "  if (jrn_crc32_update(0, old_blk, j->reg_size) != j->crc[region]) { jrn_step_abort(j); return JRN_E_DIVERGED; }\n", "",
            "journal", "never reuses crc[region]"),
+    Mutant("#316: pass 2 streams the record from the CARD again (torn image on a mid-apply read fault)", "journal_undo.c",
+           "rc = span_walk(j, img, &ram, r, forward, 1, &touched);", "rc = span_walk(j, img, s, r, forward, 1, &touched);",
+           "journal", "TORN image"),
+    Mutant("#316: the crc check reads the card (a read fault surfaces as JRN_E_STATE, not JRN_E_IO)", "journal_undo.c",
+           "if (!src_crc_ok(j, &ram, r)) return JRN_E_STATE;", "if (!src_crc_ok(j, s, r)) return JRN_E_STATE;",
+           "journal", "want JRN_E_IO"),
+    Mutant("#316: the RAM copy is partial (the last 4 bytes never copied)", "journal_undo.c",
+           "jrn_i_src_read(j, s, 0, rec, r->len) != 0", "jrn_i_src_read(j, s, 0, rec, r->len - 4u) != 0",
+           "journal", "the healthy press"),
+    Mutant("#316 review: the crc check on the RAM copy is skipped (a rotted record body is applied)", "journal_undo.c",
+           "  if (!src_crc_ok(j, &ram, r)) return JRN_E_STATE;\n", "",
+           "journal", "rotted record body was APPLIED"),
 ]
 
 
