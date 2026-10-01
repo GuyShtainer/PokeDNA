@@ -730,6 +730,62 @@ static void t_read_error_honesty(void) {
   g_jopen_segs = 0;
 }
 
+/* BACKLOG #316: an SD read fault ANYWHERE inside an undo / redo press must never leave a TORN image. The
+ * press either completes (image == the target state) or fails with the image BYTE-IDENTICAL to what it was
+ * before the press, the cursor unmoved, and the very next un-faulted press still works. One transient read
+ * error (rd_fail_read_at) is swept over EVERY sector read of the press, both directions, FAT16/FAT32/exFAT. */
+static void t_read_fault_apply_atomic(void) {
+  static const BYTE fmts[3] = { FM_FAT, FM_FAT32, FM_EXFAT };
+  static uint8_t base[NREG][RSZ], post[NREG][RSZ], tmp[RSZ], old_b[RSZ];
+  unsigned fi, dir, torn = 0, loud = 0, done = 0, n_points = 0;
+  for (fi = 0; fi < 3; fi++) {
+    for (dir = 0; dir < 2; dir++) {                           /* 0 = undo, 1 = redo */
+      Jrn j; unsigned long R, r0; long k; int rc;
+      world(&j, fmts[fi]);
+      memcpy(base, g_img, sizeof g_img);
+      /* one step, TWO regions, 90-B spans: each streams as 64 + 26 through the chunk buffers */
+      memcpy(old_b, g_img[2], RSZ); memset(g_img[2] + 10, 0x5A, 90);
+      CHECK(jrn_step_begin(&j, "two", 0) == JRN_OK && jrn_step_region(&j, 2, old_b, g_img[2]) == JRN_OK, "#316 begin + region 2");
+      memcpy(tmp, g_img[5], RSZ); memset(g_img[5] + 20, 0x6B, 90);
+      CHECK(jrn_step_region(&j, 5, tmp, g_img[5]) == JRN_OK && jrn_step_end(&j) == JRN_OK && jrn_flush(&j) == JRN_OK, "#316 region 5 + end + flush");
+      memcpy(post, g_img, sizeof g_img);
+      if (dir) {                                              /* redo: undo first, flush the marker */
+        CHECK(jrn_undo(&j, &IMG, 0) == JRN_OK && jrn_flush(&j) == JRN_OK, "#316 undo for the redo leg");
+      }
+      CHECK(jopen(&j, K) == JRN_OK, "#316 reopen so the record is read from the CARD");
+      rd_snapshot();
+      r0 = rd_reads;
+      CHECK((dir ? jrn_redo(&j, &IMG, 0) : jrn_undo(&j, &IMG, 0)) == JRN_OK, "#316 the healthy press");
+      R = rd_reads - r0;
+      for (k = 0; k < (long)R + 2; k++) {
+        const uint8_t (*pre)[RSZ] = dir ? base : post, (*want)[RSZ] = dir ? post : base;
+        uint32_t cur0;
+        rd_restore(); memcpy(g_img, pre, sizeof g_img); card_remount();
+        CHECK(jopen(&j, K) == JRN_OK, "#316 reopen k=%ld", k);
+        cur0 = jrn_cursor(&j);
+        rd_fail_read_at = k;
+        rc = dir ? jrn_redo(&j, &IMG, 0) : jrn_undo(&j, &IMG, 0);
+        rd_fail_read_at = -1;
+        n_points++;
+        if (rc == JRN_OK) { done++; CHECK(memcmp(g_img, want, sizeof g_img) == 0, "#316 %s fmt %u k=%ld rc OK but the image is not the target", dir ? "redo" : "undo", fi, k); continue; }
+        loud++;
+        if (memcmp(g_img, pre, sizeof g_img) != 0) {
+          torn++;
+          if (torn <= 20) printf("  TORN: %s fmt %u fault at sector %ld: rc %d left a TORN image\n", dir ? "redo" : "undo", fi, k, rc);
+        }
+        CHECK(rc == JRN_E_IO && jrn_cursor(&j) == cur0, "#316 %s fmt %u k=%ld: rc %d (want JRN_E_IO), cursor %u -> %u", dir ? "redo" : "undo", fi, k, rc, (unsigned)cur0, (unsigned)jrn_cursor(&j));
+        /* the journal still opens and offers correctly: a fresh open + the un-faulted press reaches the target */
+        rd_restore(); memcpy(g_img, pre, sizeof g_img); card_remount();
+        CHECK(jopen(&j, K) == JRN_OK && jrn_cursor(&j) == cur0, "#316 reopen after the fault k=%ld", k);
+        CHECK((dir ? jrn_redo(&j, &IMG, 0) : jrn_undo(&j, &IMG, 0)) == JRN_OK && memcmp(g_img, want, sizeof g_img) == 0, "#316 the retry after a fault reaches the target k=%ld", k);
+      }
+    }
+  }
+  CHECK(torn == 0, "#316: a read fault left a TORN image at %u of %u fault points (%u loud, %u completed)", torn, n_points, loud, done);
+  CHECK(loud > 20, "#316 the sweep reaches the failing paths (%u loud)", loud);
+  printf("  #316 sweep: %u fault points over 3 formats x undo/redo, %u loud, %u torn\n", n_points, loud, torn);
+}
+
 /* A flush whose write fails PART WAY leaves valid-CRC records past the tail: recording STOPS (no pop that
  * would reclaim their seqs), and the next session neither resurrects nor re-links them. */
 static void t_partial_flush_stops(void) {
@@ -898,6 +954,7 @@ int main(void) {
   t_format();
   t_roundtrip_undo_redo();
   t_two_pass_no_partial();
+  t_read_fault_apply_atomic();
   t_pending_pop_and_overflow();
   t_crossed_floors();
   t_anchor_branches();
