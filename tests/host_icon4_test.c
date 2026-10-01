@@ -67,6 +67,44 @@ int main(void) {
   }
   CHK(opaque == 1024, "dense frame (no zero nibbles) produced %d opaque of 1024", opaque);
 
+  /* BACKLOG #103: the word-wide path and the byte-wise path against the ORIGINAL expander (kept
+   * here verbatim as the reference), on seeded random frames and palettes incl. palette entries
+   * with bit 15 set (the 0x7FFF mask) and index-0 runs. Aligned buffer = the wide path,
+   * buffer+1 = the byte-wise fallback; all three must be byte-identical. */
+  {
+    static _Alignas(4) uint8_t a[ART_ICON_RGB15_BYTES + 4];
+    static uint8_t ref[ART_ICON_RGB15_BYTES], raw[512];
+    uint32_t seed = 0x1234ABCDu;
+    int bad = 0;
+    for (int iter = 0; iter < 200; iter++) {
+      for (int i = 0; i < 512; i++) {
+        seed = seed * 1664525u + 1013904223u;
+        raw[i] = (uint8_t)(seed >> 24);
+        if (iter % 3 == 0 && (seed & 0x300u) == 0) raw[i] = 0;   /* transparent runs */
+      }
+      uint16_t pl[16];
+      for (int i = 0; i < 16; i++) { seed = seed * 1664525u + 1013904223u; pl[i] = (uint16_t)(seed >> 16); }
+      memset(ref, 0, sizeof ref); memcpy(ref, raw, 512);
+      { /* the original algorithm */
+        uint8_t* lin = ref + 1536;
+        for (uint32_t t = 0; t < 16; t++) { uint32_t tx = (t & 3u) * 4u, ty = (t >> 2) * 8u;
+          const uint8_t* src = ref + t * 32u;
+          for (uint32_t r = 0; r < 8; r++) { uint8_t* d = lin + (ty + r) * 16u + tx;
+            d[0] = src[0]; d[1] = src[1]; d[2] = src[2]; d[3] = src[3]; src += 4; } }
+        uint16_t* o = (uint16_t*)(void*)ref;
+        for (uint32_t i = 0; i < 512u; i++) { uint8_t v = lin[i];
+          uint8_t lo = (uint8_t)(v & 0x0Fu), hi = (uint8_t)(v >> 4);
+          o[i * 2u] = lo ? (uint16_t)(0x8000u | (pl[lo] & 0x7FFFu)) : 0u;
+          o[i * 2u + 1u] = hi ? (uint16_t)(0x8000u | (pl[hi] & 0x7FFFu)) : 0u; }
+      }
+      memset(a, 0, sizeof a); memcpy(a, raw, 512);
+      if (!icon4_to_rgb15(a, ART_ICON_RGB15_BYTES, pl) || memcmp(a, ref, ART_ICON_RGB15_BYTES)) bad++;
+      memset(a, 0, sizeof a); memcpy(a + 1, raw, 512);
+      if (!icon4_to_rgb15(a + 1, ART_ICON_RGB15_BYTES, pl) || memcmp(a + 1, ref, ART_ICON_RGB15_BYTES)) bad++;
+    }
+    CHK(bad == 0, "icon4 word/byte paths differ from the reference expander in %d of 400 cases", bad);
+  }
+
   printf("%d checks, %d fail%s\n", checks, fails, fails == 1 ? "" : "s");
   return fails ? 1 : 0;
 }
