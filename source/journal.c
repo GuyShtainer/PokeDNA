@@ -248,7 +248,7 @@ static int hdr_parse(const uint8_t* h, uint32_t* idx, uint16_t* ring, uint8_t* n
   if (h[0] != 'P' || h[1] != 'D' || h[2] != 'J' || h[3] != 'S') return 0;
   if (jrn_crc32_update(0, h, 28) != jrn_rd32(h + 28)) return 0;
   *idx = jrn_rd32(h + 8); *ring = jrn_rd16(h + 6); *nreg = h[12]; *reg_size = jrn_rd16(h + 14);
-  if (jrn_rd16(h + 4) != SEG_VER || *idx < 1u || *idx > SEG_MAX || *ring < 2u || *ring > RING_MAX) return SLOT_FOREIGN;
+  if ((jrn_rd16(h + 4) != SEG_VER && jrn_rd16(h + 4) != JRN_SEG_VER2) || *idx < 1u || *idx > SEG_MAX || *ring < 2u || *ring > RING_MAX) return SLOT_FOREIGN;
   if (!*nreg || *nreg > JRN_NREG_MAX || !*reg_size) return SLOT_FOREIGN;
   return 1;
 }
@@ -289,7 +289,7 @@ int jrn_i_hdr_parse(const uint8_t* b, JrnRec* r) {
   r->kind = (uint8_t)((flags >> 4) & 3u);
   r->crossed = (uint8_t)(flags & 1u);
   r->nspans = b[7];
-  if (r->kind > JRN_KIND_DISCARD || (r->kind != JRN_KIND_STEP && r->nspans)) return 2;
+  if (r->kind == JRN_KIND_PART ? !r->nspans : (r->kind != JRN_KIND_STEP && r->nspans)) return 2;   /* a part holds spans, a marker none */
   r->len = len;
   r->seq = jrn_rd32(b + 8);   r->parent = jrn_rd32(b + 12); r->aux = jrn_rd32(b + 16);
   r->pre = jrn_rd32(b + 20);  r->post = jrn_rd32(b + 24);
@@ -589,7 +589,7 @@ static int first_cb(void* arg, uint32_t off, const uint8_t* b, uint32_t n, int l
   FirstCx* c = (FirstCx*)arg;
   JrnRec r;
   (void)off; (void)used;
-  c->ok = rec_check(b, n, &r) == 0 && (!c->sc->have || r.seq == c->sc->expect);
+  c->ok = rec_check(b, n, &r) == 0 && r.kind != JRN_KIND_PART && (!c->sc->have || r.seq == c->sc->expect);   /* a part is never a segment's first record */
   (void)last;
   return 0;   /* the first record starts at a sector boundary and is <= 512 B: the first chunk holds it whole */
 }
@@ -604,7 +604,15 @@ static int next_seg_continues(const Jrn* j, uint16_t seg, const Scan* sc) {
   return rc < 0 ? rc : (int)c.ok;
 }
 
-typedef struct PfxCx { Jrn* j; Scan* sc; uint32_t hash, off; uint16_t seg; } PfxCx;
+/* The open scan. A CHAIN (D10) is held back until it is whole: the head's record and its parts are walked but nothing is absorbed
+ * and `off` (the valid end) does not move until the LAST part has been checked -- a chain cut anywhere ends the valid prefix at its
+ * head, so the scan can never report a partial step. `want` = parts still to come, `nxt` = the seq the next part must carry. */
+typedef struct PfxCx { Jrn* j; Scan* sc; JrnRec head; uint32_t hash, off, head_off, nxt; uint16_t seg; uint8_t want; } PfxCx;
+
+/* Is `r` the next part of the chain whose head is `h`? (kind, consecutive seq, parent link, 1-based index, not crossed) */
+static int part_ok(const JrnRec* r, const JrnRec* h, uint32_t nxt) {
+  return r->kind == JRN_KIND_PART && r->seq == nxt && r->parent == h->seq && r->aux == nxt - h->seq && !r->crossed;
+}
 
 static int pfx_cb(void* arg, uint32_t off, const uint8_t* b, uint32_t n, int last, uint32_t* used) {
   PfxCx* c = (PfxCx*)arg;
@@ -614,7 +622,27 @@ static int pfx_cb(void* arg, uint32_t off, const uint8_t* b, uint32_t n, int las
   while (p < n) {
     rc = rec_check(b + p, n - p, &r);
     if (rc == REC_SHORT && !last) break;                                                /* crosses into the next chunk */
-    if (rc != 0 || (c->sc->have && r.seq != c->sc->expect)) return 0;                  /* this segment's run ends */
+    if (rc != 0) return 0;                                                              /* this segment's run ends (an unfinished chain is dropped with it) */
+    if (c->want) {                                                                      /* inside a chain: only the next part will do */
+      if (!part_ok(&r, &c->head, c->nxt)) return 0;
+      c->nxt++; c->want--;
+      p += r.len;
+      if (!c->want) {                                                                   /* the last part landed: the chain is a step */
+        if (c->head_off == JRN_REC_BASE) idx_set(c->j, c->seg, c->head.seq);
+        scan_absorb(c->sc, &c->head, c->hash);
+        c->sc->expect = c->nxt;                                                         /* the part seqs are spent too */
+        c->off = off + p;
+      }
+      continue;
+    }
+    if (c->sc->have && r.seq != c->sc->expect) return 0;                               /* this segment's run ends */
+    if (r.kind == JRN_KIND_PART) return 0;                                              /* a part with no head */
+    if (r.kind == JRN_KIND_STEP && r.aux) {                                             /* a chain HEAD: hold it back until its parts are in */
+      if (r.aux < 2u || r.aux > JRN_CHAIN_MAX) return 0;
+      c->head = r; c->head_off = off + p; c->want = (uint8_t)(r.aux - 1u); c->nxt = r.seq + 1u;
+      p += r.len;
+      continue;
+    }
     if (off + p == JRN_REC_BASE) idx_set(c->j, c->seg, r.seq);
     scan_absorb(c->sc, &r, c->hash);
     p += r.len;
@@ -632,9 +660,9 @@ static int scan_prefix(Jrn* j, uint32_t hash, Scan* sc) {
   uint16_t seg = j->seg_first;
   uint32_t g;
   int rc;
-  c.j = j; c.sc = sc; c.hash = hash; c.off = JRN_REC_BASE;
+  c.j = j; c.sc = sc; c.hash = hash; c.off = JRN_REC_BASE; c.want = 0; c.nxt = 0; c.head_off = 0; memset(&c.head, 0, sizeof c.head);
   for (g = 0; g < RING_MAX; g++) {
-    c.seg = seg; c.off = JRN_REC_BASE;
+    c.seg = seg; c.off = JRN_REC_BASE; c.want = 0;   /* a chain never spans segments */
     rc = seg_scan(j, seg, JRN_REC_BASE, JRN_SEG_SIZE, pfx_cb, &c);
     if (rc) return rc;
     if (seg >= j->seg_last) break;

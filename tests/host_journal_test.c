@@ -926,7 +926,7 @@ static void t_seg_max(void) {
 static void t_version_foreign(void) {
   Jrn j; uint8_t rec0[64], rec1[64], mark[16], back[16]; unsigned long wr; unsigned k;
   static const struct { uint32_t idx; uint16_t ring, ver; const char* what; } F[] = {
-    { 1, 17, 2, "a v2 header" }, { 0, 17, 1, "index 0" }, { 10000, 17, 1, "index past SEG_MAX" },
+    { 1, 17, 3, "a v3 header (v2 is live since z9)" }, { 0, 17, 1, "index 0" }, { 10000, 17, 1, "index past SEG_MAX" },
     { 1, 1, 1, "ring 1" }, { 1, 300, 1, "a ring bigger than this build's" } };
   for (k = 0; k < sizeof F / sizeof F[0]; k++) {
     world(&j, FM_FAT);
@@ -951,13 +951,13 @@ static void t_version_foreign(void) {
   CHECK(jopen(&j, K) == JRN_OK && jrn_prepare_first(&j) == JRN_OK, "first segment only");
   memset(mark, 0xEE, sizeof mark);
   CHECK(raw_write(K, 2, 4096, mark, sizeof mark) == 0, "mark slot 2");
-  plant_hdr(K, 2, 2, 17, 2);
+  plant_hdr(K, 2, 2, 17, 3);
   CHECK(jrn_prepare(&j) == JRN_E_VERSION && j.foreign == 1, "activating over a foreign slot refuses");
   CHECK(raw_read(K, 2, 4096, back, sizeof back) == 0 && memcmp(mark, back, sizeof mark) == 0, "the newer build's slot was NOT zeroed");
   CHECK(jrn_flush(&j) == JRN_OK, "the session's own tail still flushes nothing pending");
   /* a bad-crc header is FREE, not foreign (a torn write never reads as somebody else's data) */
   world(&j, FM_FAT);
-  plant_hdr(K, 1, 1, 17, 2);
+  plant_hdr(K, 1, 1, 17, 3);
   { uint8_t z = 0x55; CHECK(raw_write(K, 1, 30, &z, 1) == 0, "break the crc"); }
   CHECK(jopen(&j, K) == JRN_OK && j.foreign == 0, "a bad-crc header is a free slot, not foreign");
 }
