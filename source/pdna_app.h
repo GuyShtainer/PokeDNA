@@ -557,7 +557,7 @@ void app_step_name(const char* name);
  * name on DONE ("" otherwise). The CALLER refuses first while carrying (T4) -- the arena hold (T5) and unstaged PC
  * edits are refused here. app_undo_live(): the journal is recording (JA_OK) and the chord may fire -- the ONE
  * question a footer asks before printing the SEL+L/R hint. */
-enum { AUR_DONE = 0, AUR_OFF, AUR_ARENA, AUR_NOTHING, AUR_FLOOR, AUR_DIVERGED, AUR_ERR, AUR_PARTIAL };
+enum { AUR_DONE = 0, AUR_OFF, AUR_ARENA, AUR_NOTHING, AUR_FLOOR, AUR_DIVERGED, AUR_ERR, AUR_PARTIAL, AUR_HALF };
 int  app_undo_redo(int dir, char name[25]);
 bool app_undo_live(void);
 /* The history screen's jump: undo/redo along the current branch to `target` (0 = before the first step), stopping at

@@ -4631,6 +4631,10 @@ static int __attribute__((noinline)) box_chord_action(int ev, char toast[26], bo
     chord_refuse("PARTIAL STEP", "A step was only partly applied:", "exit without saving it.");
     *need_full = true; s_oam_reload = true;
     return BCA_CHANGED;                                      /* the image DID change (app_undo_redo re-derived + latched it): the caller re-fetches */
+  } else if (rc == AUR_HALF) {                               /* #315: a refused rollback left HALF a swap -- a consistent state, a WARNING, never the success toast */
+    chord_refuse("HALF A SWAP", "Only half of the swap moved.", "Press again, or check the card.");
+    *need_full = true; s_oam_reload = true;
+    return BCA_CHANGED;                                      /* the image DID change, but it is a CONSISTENT half state (not a TORN: no latch): the caller re-fetches */
   } else if (rc == AUR_ARENA) {                              /* T5 */
     chord_refuse(verb, "The box data is on loan to", "another screen. Leave and retry.");
   } else if (rc == AUR_DIVERGED) {                           /* D5: the engine verified, the image no longer matches: never patch blind */
