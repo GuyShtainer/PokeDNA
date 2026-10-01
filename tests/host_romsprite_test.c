@@ -610,7 +610,32 @@ static int rs_open_slice(uint8_t* img, uint32_t n, RomSprite* rs) {
   return rom_sprite_open(rs, &rc);
 }
 
-static void run_rs_pins(const char* path, const char* name, uint32_t front, uint32_t spal) {
+static int rs_matches_emerald(uint8_t* img, uint32_t n, const char* empath) {
+  static uint8_t em[0x1000000];
+  FILE* f = fopen(empath, "rb");
+  if (!f) return -1;
+  size_t m = fread(em, 1, sizeof em, f);
+  fclose(f);
+  MemCtx mr = { img, n }, me = { em, (uint32_t)m };
+  RomCtx rr, re;
+  memset(&rr, 0, sizeof rr); memset(&re, 0, sizeof re);
+  rr.read = mem_read; rr.ctx = &mr; rr.size = n; memcpy(rr.code, img + 0xAC, 4); rr.version = img[0xBC];
+  rr.kind = (memcmp(rr.code, "AXVE", 4) == 0) ? ROM_RUBY : ROM_SAPPHIRE;
+  re.read = mem_read; re.ctx = &me; re.size = (uint32_t)m; memcpy(re.code, em + 0xAC, 4); re.version = em[0xBC];
+  re.kind = ROM_EMERALD;
+  RomSprite a, b;
+  if (!rom_sprite_open(&a, &rr) || !rom_sprite_open(&b, &re)) return 0;
+  static uint8_t x[ROM_SPRITE_BUF_BYTES], y[ROM_SPRITE_BUF_BYTES];
+  RomSpritePic pa, pb;
+  for (int side = 0; side < 2; side++) {
+    RomSpriteSide sd = side ? ROM_SPRITE_BACK : ROM_SPRITE_FRONT;
+    if (!rom_sprite_pic(&a, sd, 1, 0, x, sizeof x, &pa) || !rom_sprite_pic(&b, sd, 1, 0, y, sizeof y, &pb)) return 0;
+    if (memcmp(x, y, ROM_SPRITE_FRAME_BYTES) != 0) return 0;
+  }
+  return 1;
+}
+
+static void run_rs_pins(const char* path, const char* name, uint32_t front, uint32_t back, uint32_t npal, uint32_t spal) {
   FILE* f = fopen(path, "rb");
   if (!f) { printf("SKIP %s pins (no %s)\n", name, path); return; }
   static uint8_t img[0x1000000];   /* the pointers reach 0x08DBxxxx: the whole 16 MiB */
@@ -635,7 +660,16 @@ static void run_rs_pins(const char* path, const char* name, uint32_t front, uint
   keep = img[0xBC]; img[0xBC] = (uint8_t)(keep ^ 1);          /* an unpinned revision */
   chk(name, "pin path: an unpinned revision byte -> fails closed", rs_open_slice(img, (uint32_t)n, &rs) == 0);
   img[0xBC] = keep;
+  uint32_t bo = back - ROM_BASE, no = npal - ROM_BASE;
+  keep = img[bo + 200 * 8 + 6]; img[bo + 200 * 8 + 6] ^= 1;
+  chk(name, "pin path: back row 200 tag != index -> fails closed", rs_open_slice(img, (uint32_t)n, &rs) == 0);
+  img[bo + 200 * 8 + 6] = keep;
+  keep = img[no + 300 * 8 + 4]; img[no + 300 * 8 + 4] ^= 1;
+  chk(name, "pin path: normal-palette row 300 tag != index -> fails closed", rs_open_slice(img, (uint32_t)n, &rs) == 0);
+  img[no + 300 * 8 + 4] = keep;
   chk(name, "pin path: restored image opens again", rs_open_slice(img, (uint32_t)n, &rs) == 1);
+  int em = rs_matches_emerald(img, (uint32_t)n, "/Users/guyshtainer/VSCodeProjects/gba-toolkit/roms/Emerald.gba");
+  if (em >= 0) chk(name, "pin path: Bulbasaur front/back equal Emerald's (front/back not swapped)", em == 1);
 }
 
 /* ---- synthesised images: a GF header whose pointers are not usable ---------- */
@@ -715,8 +749,8 @@ int main(int argc, char** argv) {
   sprintf(p, "%s/LeafGreen.gba", dir); run_rom(p, "LeafGreen", 1);
   sprintf(p, "%s/Ruby.gba", dir);      run_rom(p, "Ruby",      1);
   sprintf(p, "%s/Sapphire.gba", dir);  run_rom(p, "Sapphire",  1);
-  sprintf(p, "%s/Ruby.gba", dir);      run_rs_pins(p, "Ruby",     0x081E836Cu, 0x081EB38Cu);
-  sprintf(p, "%s/Sapphire.gba", dir);  run_rs_pins(p, "Sapphire", 0x081E82FCu, 0x081EB31Cu);
+  sprintf(p, "%s/Ruby.gba", dir);      run_rs_pins(p, "Ruby",     0x081E836Cu, 0x081E980Cu, 0x081EA5CCu, 0x081EB38Cu);
+  sprintf(p, "%s/Sapphire.gba", dir);  run_rs_pins(p, "Sapphire", 0x081E82FCu, 0x081E979Cu, 0x081EA55Cu, 0x081EB31Cu);
   sprintf(p, "%s/Emerald.gba", dir);   run_synth(p);
   printf("rom_sprite test: %d checks, %d failure(s)\n", checks, fails);
   return fails ? 1 : 0;

@@ -41,7 +41,7 @@
  *
  * R/S fronts are single-frame (no anim_front), Castform is still 8192 B / four
  * formes, and Deoxys is 2048 B -- Normal only, so R/S add no forme to the set.
- * A pinned row is re-verified at open (pin_shape_ok below): the 440-row
+ * A pinned row is re-verified at open (table_shape_ok below): the 440-row
  * tag == index shape must hold in all four tables, or the open fails closed.
  */
 typedef struct {

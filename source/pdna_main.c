@@ -3781,7 +3781,9 @@ static void app_register_rom(void) {
   app_icon_rom_open();                           /* light it up now (+ resolves the cache) */
   char l1[40]; siprintf(l1, "%s registered.", rom_kind_name(rc.kind));
   msg_wait("GAME ROM", UI_OK, l1,
-           boxoam_icons_available() ? "Real art is ON." : "This R/S revision: map only.");
+           boxoam_icons_available() ? "Real art is ON."
+           : (rc.kind == ROM_RUBY || rc.kind == ROM_SAPPHIRE) ? "This R/S revision: map only."
+           : "Art unavailable; map works.");
 
   /* Phase 2's second entry point (DESIGN.md Sec 3.1): the moment the user has just
    * told us where their ROM is. Only offered when it would actually work (icons

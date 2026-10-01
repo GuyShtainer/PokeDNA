@@ -130,7 +130,7 @@ def main():
                     if int(t[1]) != want_pal or raw != d[o:o+1024]: bad += 1; print('ROW MISMATCH', row)
                 else:
                     bad += 1; print('LINE', line)
-            print(f'{name}: module vs independent decode: {len(out)-3+1} lines, {bad} mismatches (rows 0..439 both frames + 3 palettes)')
+            print(f'{name}: module vs independent decode: {len(out)} lines, {bad} mismatches (rows 0..439 both frames + 3 palettes)')
         # (3) vs the normal build's compiled icons
         rows = [r for r in list(range(1, 252)) + list(range(277, 412)) + [412] + list(range(413, 440))]
         tot_mm = tot_n = 0; tot_err = 0.0; cmp = 0; worst = []

@@ -263,6 +263,14 @@ static void run_rs_pins(const char* path, const char* name, uint32_t icons, uint
   keep = img[0xBC]; img[0xBC] = (uint8_t)(keep ^ 1);
   chk(name, "pin path: an unpinned revision byte -> fails closed", rs_open_img(img, (uint32_t)n) == 0);
   img[0xBC] = keep;
+  keep = img[po + 8 * 1 + 3]; img[po + 8 * 1 + 3] = 0x00;            /* palette 1 pointer leaves the ROM */
+  chk(name, "pin path: a wild palette pointer -> fails closed", rs_open_img(img, (uint32_t)n) == 0);
+  img[po + 8 * 1 + 3] = keep;
+  uint8_t k4[4]; memcpy(k4, img + io, 4);
+  { uint32_t v = ROM_BASE + (uint32_t)n - 512u;                      /* in the image, but < 1,024 B of room */
+    img[io] = (uint8_t)v; img[io + 1] = (uint8_t)(v >> 8); img[io + 2] = (uint8_t)(v >> 16); img[io + 3] = (uint8_t)(v >> 24); }
+  chk(name, "pin path: an icon pointer without room for both frames -> fails closed", rs_open_img(img, (uint32_t)n) == 0);
+  memcpy(img + io, k4, 4);
   chk(name, "pin path: restored image opens again", rs_open_img(img, (uint32_t)n) == 1);
 }
 

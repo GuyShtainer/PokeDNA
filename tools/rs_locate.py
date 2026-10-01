@@ -9,7 +9,7 @@ Scans a Gen-3 R/S dump for tables by SHAPE only (no symbol files, no code copied
             after it (4-aligned); the icon palette table = 3 rows {ptr -> 32 B, u16
             tag, u16 pad} with consecutive tags.
   wallpaper: rows of 16 B {tiles LZ10, u32 size, tilemap LZ10 -> 720 B, pal ptr},
-            16 consecutive standard rows, then the 32-entry Walda continuation.
+            exactly 16 rows (R/S have no Walda set).
 Prints every address with the evidence it matched.   usage: rs_locate.py <rom.gba>
 """
 import struct, sys
