@@ -2788,9 +2788,9 @@ static bool gbsrc_export_all_impl(int box) {
   if (total <= 0) {
     snd_deny();
     ui_clear();
-    ui_panel(20, 60, 200, 44, UI_PANEL, UI_BORDER);
-    ui_text(30, 70, UI_WARN, "BOX IS EMPTY");
-    ui_text(30, 86, UI_DIM, "Nothing to export. Press A");
+    ui_panel(PDNA_NOTICE_PANEL_X, 60, PDNA_NOTICE_PANEL_W, 44, UI_PANEL, UI_BORDER);
+    ui_text(PDNA_NOTICE_TEXT_X, 70, UI_WARN, "BOX IS EMPTY");
+    ui_text(PDNA_NOTICE_TEXT_X, 86, UI_DIM, "Nothing to export. Press A");
     u16 kk; do { s_vsync(); kk = key_hit(KEY_A); } while (!kk);
     return false;
   }
@@ -2870,9 +2870,9 @@ static bool gbsrc_release_all_impl(int box) {
   if (total <= 0) {
     snd_deny();
     ui_clear();
-    ui_panel(20, 60, 200, 44, UI_PANEL, UI_BORDER);
-    ui_text(30, 70, UI_WARN, "BOX IS EMPTY");
-    ui_text(30, 86, UI_DIM, "Nothing to release. Press A");
+    ui_panel(PDNA_NOTICE_PANEL_X, 60, PDNA_NOTICE_PANEL_W, 44, UI_PANEL, UI_BORDER);
+    ui_text(PDNA_NOTICE_TEXT_X, 70, UI_WARN, "BOX IS EMPTY");
+    ui_text(PDNA_NOTICE_TEXT_X, 86, UI_DIM, "Nothing to release. Press A");
     u16 kk; do { s_vsync(); kk = key_hit(KEY_A); } while (!kk);
     return false;
   }

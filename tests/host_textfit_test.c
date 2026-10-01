@@ -745,19 +745,41 @@ int main(void) {
    * S2 edit path draws. s_busy's own line ("Saving - do not power off") and the
    * caller-supplied line draw via ui_text at x=28 (T(), fixed sys8); every msg_wait
    * title/line is PF() at the same (28, .., 184) clamp as the rest of this screen. */
-  T(PDNA_GBEDIT_BUSY_SAVING,  28);
+  T(PDNA_GBEDIT_BUSY_SAVING,  PDNA_BUSY_TEXT_X);
   /* BACKLOG #331: the shared busy panel's ink must clear its right border by >= 2 px. */
   {
     static const char* const busy[] = { PDNA_GBEDIT_BUSY_SAVING, PDNA_GBEDIT_BUSY_BACKUP,
         PDNA_GBEDIT_BUSY_WRITING, PDNA_GBCREATE_BUSY_TITLE, PDNA_GBCREATE_BUSY_LINE,
+        /* hand-copied literals (drift guard): pdna_main.c busy_panel callers */
         "Preparing undo history...", "Writing flash save...", "Duplicating..." };
     for (unsigned i = 0; i < sizeof busy / sizeof busy[0]; i++)
       chkv(busy[i], PDNA_BUSY_TEXT_X + (int)strlen(busy[i]) * SYS8_W + 2,
            PDNA_BUSY_PANEL_X + PDNA_BUSY_PANEL_W - 1 - 1);
     chkv("busy panel left clearance >= 2", PDNA_BUSY_PANEL_X + 1 + 2, PDNA_BUSY_TEXT_X);
   }
-  T(PDNA_GBEDIT_BUSY_BACKUP,  28);
-  T(PDNA_GBEDIT_BUSY_WRITING, 28);
+  /* BACKLOG #345: the "Press A" notice dialogs, panel-relative. Each literal is hand-copied from
+   * its call site (drift guard -- change a string there, change it here):
+   *   pdna_box.c  drop_chunk_pc_to_bank   "BANK WRITE FAILED" / "Kept in the save. Press A"
+   *   pdna_box.c  box_drop_chunk          "CELLS NOT FREE YET" / "They hold mons you moved" / "out. Save first. Press A"
+   *   pdna_box.c  box_drop_chunk          "TOO MANY MOVES" / "Save first, then continue."
+   *   pdna_box.c  export_box_all          "NOTHING TO EXPORT" / "%d native skipped. Press A" / "Nothing to export. Press A"
+   *   pdna_box.c  release_box_all         "BOX IS EMPTY" / "Nothing to release. Press A"
+   *   pdna_gen12.c gb export / release    "Nothing to export. Press A" / "Nothing to release. Press A" (twins) */
+  {
+    static const char* const notice[] = { "BANK WRITE FAILED", "Kept in the save. Press A",
+        "CELLS NOT FREE YET", "They hold mons you moved", "out. Save first. Press A",
+        "TOO MANY MOVES", "Save first, then continue.", "NOTHING TO EXPORT", "30 native skipped. Press A",
+        "Nothing to export. Press A", "BOX IS EMPTY", "Nothing to release. Press A" };
+    for (unsigned i = 0; i < sizeof notice / sizeof notice[0]; i++) {
+      chkv(notice[i], PDNA_NOTICE_TEXT_X + (int)strlen(notice[i]) * SYS8_W + 2,
+           PDNA_NOTICE_PANEL_X + PDNA_NOTICE_PANEL_W - 1 - 1);
+      chkv(notice[i], PDNA_NOTICE_TEXT_X + (int)strlen(notice[i]) * SYS8_W, SCR_W);
+    }
+    chkv("notice panel inside the screen", PDNA_NOTICE_PANEL_X + PDNA_NOTICE_PANEL_W, SCR_W);
+    chkv("notice panel left clearance >= 2", PDNA_NOTICE_PANEL_X + 1 + 2, PDNA_NOTICE_TEXT_X);
+  }
+  T(PDNA_GBEDIT_BUSY_BACKUP,  PDNA_BUSY_TEXT_X);
+  T(PDNA_GBEDIT_BUSY_WRITING, PDNA_BUSY_TEXT_X);
   PF(PDNA_GBEDIT_READONLY_TITLE,    28, 184);
   /* b153 review F5: PDNA_GBEDIT_NEEDS_OMEGA was deleted (dead -- the GB refusal
    * sites now call app_gb_readonly_why(), never that literal). Its replacements,
