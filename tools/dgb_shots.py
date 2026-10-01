@@ -5930,19 +5930,16 @@ def run_y19_s3(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessio
     # ---- (a)/(b): a swap is TWO recorded drops; undo x2 returns to BASE, redo x2 returns to EDITED
     swap_edit("a")
     SHOT("edited", "(a) AFTER the swap: MAG and VOL exchanged (first two cells; the 'edited' frame)")
-    CHORD("L", "(a) SELECT held, THEN L: UNDO #1 -> toast 'Undid: Box move'. The grid is the HALF-swap: only the second "
-          "drop is undone, MAG is in nobody's hands (29/30) -- a swap is two steps (see the report)", tag="undo1",
-          claim=["Undid"])
-    CHORD("L", "(a) SELECT+L again: UNDO #2 -> the grid is BASE again + toast", tag="undo2", claim=["Undid"])
-    CHORD("R", "(b) SELECT held, THEN R: REDO #1 -> toast 'Redid: Box move' (half-swap again, 29/30)", tag="redo1",
-          claim=["Redid"])
-    CHORD("R", "(b) SELECT+R again: REDO #2 -> EDITED again + toast", tag="redo2", claim=["Redid"])
+    CHORD("L", "(a) SELECT held, THEN L: ONE press undoes the WHOLE swap (#303: both halves) -> toast 'Undid: Swap'. The grid "
+          "is BASE again: there is no half-swap state to land on", tag="undo1", claim=["Undid: Swap"])
+    CHORD("R", "(b) SELECT held, THEN R: ONE press redoes the WHOLE swap -> toast 'Redid: Swap'; EDITED again", tag="redo1",
+          claim=["Redid: Swap"])
     s.run(250)
     SHOT("after_toast", "(b) ~4 s later: the toast expired, the grid footer is back (short form SEL+L/R)", claim=["SEL+L/R"])
-    CHORD("L", "(a0) SELECT+L pressed on ONE frame: still an undo (toast 'Undid')", tag="undo_same", same_frame=True,
-          claim=["Undid"])
-    CHORD("R", "(a0) SELECT+R pressed on ONE frame: still a redo (toast 'Redid')", tag="redo_same", same_frame=True,
-          claim=["Redid"])
+    CHORD("L", "(a0) SELECT+L pressed on ONE frame: still an undo (toast 'Undid: Swap')", tag="undo_same", same_frame=True,
+          claim=["Undid: Swap"])
+    CHORD("R", "(a0) SELECT+R pressed on ONE frame: still a redo (toast 'Redid: Swap')", tag="redo_same", same_frame=True,
+          claim=["Redid: Swap"])
     s.run(150)
 
     # ---- (c) SELECT alone still cycles the mode; (d) SEL+L/R does not; portrait flip still flips
@@ -6018,24 +6015,27 @@ def run_y19_s3(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessio
     T("DOWN", "(i) DOWN: off the box-name row onto the first grid cell", settle=60)
     swap_edit("i")
     SHOT("i_swapped", "(i) after a fresh swap: the box is whole (the count is the 'before' number)")
-    CHORD("L", "(i) ONE SELECT+L: undo #1 of the swap = the HALF-swap; the box count drops by one (a mon is in nobody's hands)",
-          tag="i_half", claim=["Undid"])
-    T("B", "(i) B: exit the box editor -> the exit confirm for the HALF-swapped image", settle=200, claim=["Save changes"])
-    T("A", "(i) A: yes -> the half-swapped image is SAVED", settle=400, claim=["Flash written"])
+    CHORD("L", "(i) ONE SELECT+L: the WHOLE swap is undone (#303) -- the box is whole, no mon is in nobody's hands",
+          tag="i_half", claim=["Undid: Swap"])
+    T("B", "(i) B: exit the box editor -> the exit confirm for the undone image", settle=200, claim=["Save changes"])
+    T("A", "(i) A: yes -> the undone image is SAVED", settle=400, claim=["Flash written"])
     T("A", "(i) A: dismiss SAVED -> the vehicle's planted-transfer notice (pre-existing on main; the cut lands here)", settle=300)
     s.vsd_flush()
     s.core.reset()
     s.run(1000)
-    SHOT("i_reloaded", "(i) POWER CYCLE + reload: the load-time offer must be up ('1 recorded step...') for the undone tail",
-         claim=["Recorded steps found"])
-    T("A", "(i) A: re-apply the undone step", settle=300)
+    SHOT("i_reloaded", "(i) POWER CYCLE + reload: the load-time offer must be up ('2 recorded steps...': both halves of the undone swap)",
+         claim=["Recorded steps found", "2 recorded steps"])
+    T("A", "(i) A: re-apply the undone steps", settle=300)
     T("A", "(i) A: dismiss RE-APPLIED", settle=300)
     s.run(200)
     SHOT("i_whole", "(i) re-applied: the swap is back and the box count is whole again (the 'before' number)")
 
     print("\n  frame checks (numbers, not impressions):")
     expect(bs is not None, "(c) the summary portrait changed after a lone SELECT (flip)")
-    expect(gridcmp("i_swapped", "i_half") > 0, "(i) the half-swap grid differs from the swapped grid (the undo took a mon out of the box)")
+    expect(gridcmp_nohand("base", "undo1") == 0, "(a) #303 ONE undo press: the grid is pixel-identical to BASE (no half-swap), hand cursor masked")
+    expect(gridcmp_nohand("edited", "redo1") == 0, "(b) #303 ONE redo press: the grid is pixel-identical to EDITED, hand cursor masked")
+    expect(gridcmp_nohand("edited", "undo1") > 0, "(a) the swap really changed the grid (the comparison above is not vacuous)")
+    expect(gridcmp("i_swapped", "i_half") > 0, "(i) the undone grid differs from the swapped grid (the whole swap was undone)")
     expect(gridcmp_nohand("i_swapped", "i_whole") == 0, "(i) after the power cut + offer + A the grid is pixel-identical to the pre-undo swapped grid (hand cursor masked: it restarts on the first cell)")
     print("\n  chord latency (frames from the L/R press to the toast/dialog on screen): " +
           ", ".join(f"{a.split('_', 1)[1]}={b}" for a, b in latency))
