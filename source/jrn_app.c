@@ -865,9 +865,12 @@ int jrnapp_jump(uint32_t target, char stop[25], int* moved) {
   dir = 1;                                                   /* an ancestor of the cursor means UNDO, else REDO */
   for (t = jrn_cursor(&s_j), hops = 0; t && hops < 4096u; hops++) {
     if (t == target) { dir = -1; break; }
-    if (jrn_find(&s_j, t, &rec) != 0) break;
+    rc = jrn_find(&s_j, t, &rec);
+    if (rc == JRN_E_IO) { ja_event("history jump: a read fault in the direction probe, the jump is refused", rc); return rc; }   /* #326: a fault is NOT "not an ancestor" -- that would jump the wrong way; nothing moved */
+    if (rc != 0) break;                                      /* unlocatable (compacted / malformed): not an ancestor -> redo */
     t = rec.parent;
   }
+  rc = 0;
   if (target == 0) dir = -1;
   for (hops = 0; hops < 4096u && jrn_cursor(&s_j) != target; hops++) {
     char nm[25];

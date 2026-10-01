@@ -1562,6 +1562,53 @@ static void t_tree_shapes(void) {
   (void)s3;
 }
 
+/* ---- zd #326: the History jump's direction probe (jrnapp_jump walks UP from the cursor looking for the target) REFUSES on a read fault: a faulted read is not "not an ancestor"
+ * (that left the direction at redo and jumped the WRONG WAY, to a redo destination). Setup: s1..s4 flushed, two undos (cursor s2), then a jump to s1 (an ancestor: UNDO-ward) with every read
+ * of the call failed in turn, once and for good. Contract: the jump either ARRIVES at s1 or leaves the cursor at s2 with a nonzero rc -- the cursor is NEVER s3/s4 (the wrong way) -- and at
+ * least one fault point refuses with exactly JRN_E_IO and the image untouched (pdna_main's aur_from_rc maps it to AUR_ERR, h_say's "Could not move there."). The redo-ward jump (s2 -> s4)
+ * is the unchanged control, healthy both ways. ---- */
+static void t_jump_probe_fault(void) {
+  static uint8_t pre[G3_SAVE_FILE_SIZE];
+  uint32_t s[5];
+  char stop[25];
+  unsigned mode, wrong = 0, ioref = 0, presses = 0;
+  long k, kmax = 0;
+  int moved = 0, rc;
+  CHECK(app_world_reset(), "world");
+  s[1] = TS("s1", 10); s[2] = TS("s2", 11); s[3] = TS("s3", 12); s[4] = TS("s4", 13);
+  TU(); TU();
+  CHECK(jrnapp_cursor() == s[2], "cursor on s2 (%u)", (unsigned)jrnapp_cursor());
+  rc = jrnapp_jump(s[4], stop, &moved);
+  CHECK(rc == 0 && jrnapp_cursor() == s[4] && moved == 2, "#326 control: the healthy REDO-ward jump s2 -> s4 is unchanged (rc %d cursor %u moved %d)", rc, (unsigned)jrnapp_cursor(), moved);
+  TU(); TU();
+  CHECK(jrnapp_flush() == JRN_OK, "flush");
+  memcpy(pre, sv, sizeof sv);
+  rd_snapshot();
+  for (mode = 0; mode < 2; mode++) {
+    for (k = 0; k <= kmax + 2; k++) {
+      uint32_t c;
+      rd_restore(); memcpy(sv, pre, sizeof sv); card_remount();
+      CHECK(app_reopen() && jrnapp_cursor() == s[2], "probe sweep: reopen on s2 (cursor %u)", (unsigned)jrnapp_cursor());
+      if (k == 0 && mode == 0) {
+        unsigned long r0 = rd_reads;
+        rc = jrnapp_jump(s[1], stop, &moved);
+        kmax = (long)(rd_reads - r0);
+        CHECK(rc == 0 && jrnapp_cursor() == s[1] && moved == 1, "#326 control: the healthy UNDO-ward jump s2 -> s1 is unchanged (rc %d cursor %u moved %d)", rc, (unsigned)jrnapp_cursor(), moved);
+        continue;
+      }
+      if (mode == 0) rd_fail_read_at = k - 1; else rd_fail_reads_after = k - 1;
+      rc = jrnapp_jump(s[1], stop, &moved);
+      rd_fail_read_at = -1; rd_fail_reads_after = -1;
+      presses++;
+      c = jrnapp_cursor();
+      if (c != s[1] && c != s[2]) { wrong++; printf("  probe sweep mode %u k %ld: the jump ended at cursor %u (rc %d) -- the wrong way\n", mode, k, (unsigned)c, rc); continue; }
+      if (c == s[2] && rc == 0) { wrong++; continue; }                                    /* nothing moved yet success */
+      if (rc == JRN_E_IO && c == s[2] && moved == 0 && memcmp(sv, pre, sizeof sv) == 0) ioref++;
+    }
+  }
+  CHECK(wrong == 0 && ioref > 0, "#326 a faulted probe REFUSES, the direction never flips: %u of %u wrong, %u clean JRN_E_IO refusals (nothing moved)", wrong, presses, ioref);
+}
+
 /* a fork must not move any JH_STEP row, and a jump still works along the branch only */
 static void t_tree_jump_unchanged(void) {
   JaHist rows[48];
@@ -1769,6 +1816,7 @@ int main(int argc, char** argv) {
     CHECK(app_world(file), "app world"); t_chain_never_pairs();
     CHECK(app_world(file), "app world"); t_tree_shapes();
     CHECK(app_world(file), "app world"); t_tree_jump_unchanged();
+    CHECK(app_world(file), "app world"); t_jump_probe_fault();
     CHECK(app_world(file), "app world"); t_tree_saved();
     CHECK(app_world(file), "app world"); t_tree_window();
     CHECK(app_world(file), "app world"); t_tree_cost();
