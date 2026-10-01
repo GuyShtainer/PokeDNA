@@ -3403,6 +3403,11 @@ static void app_icon_cache_resolve(const RomCtx* rc_ok, bool deep) {
 }
 
 static void app_icon_rom_open(void) {
+  /* BACKLOG #103: the type-sheet memo in mon_decomp's tail (app_type_badge) is keyed by the
+   * artbuf epoch and by &s_romitemart, which is the SAME address for a different ROM -- Ruby,
+   * Sapphire and Emerald share the sheet layout but not the art. A (re)open is a ROM change, so
+   * it moves the epoch: no memo can outlive the ROM it was decoded from. */
+  artbuf_claim();
   boxoam_rom_icons(0, 0);
   art_fallbacks_set_rommon(0);   /* Phase 1.5: the dex/party/picker RGB15 ROM rung */
 #if !PDNA_HAND_ART_COMPILED
@@ -3659,31 +3664,18 @@ const uint16_t* app_item_icon(uint16_t item_id) {
   return rom_item_icon(&s_romitemart, item_id, dst, ROM_ITEM_ICON_PX) ? dst : 0;
 }
 
+/* BACKLOG #103 (speed): the RSE type sheet used to be re-decoded for EVERY badge. It is now
+ * memoised inside mon_decomp's own tail, keyed by artbuf_epoch -- rom_type_badge_memo()
+ * (rom_itemart.c, host-tested by tests/host_typememo_test.c) owns the layout and the epoch
+ * rule, and bumps artbuf_epoch (artbuf_claim()'s whole body) before its first write. */
 const uint16_t* app_type_badge(uint8_t type_id, uint8_t* out_h) {
   const uint16_t* ic = type_icon_for(type_id);             /* compiled rung first */
   if (ic) { if (out_h) *out_h = TYPE_ICON_H; return ic; }
   if (!s_romitemart.ok || !rom_itemart_have_types(&s_romitemart)) return 0;
-  artbuf_claim();          /* E3 review BLOCKING 2: about to overwrite mon_decomp */
-  uint32_t need = (uint32_t)rom_type_scratch_bytes(&s_romitemart);   /* 5,888 RSE / 0 FRLG */
-  uint8_t* scratch = need ? (uint8_t*)mon_decomp : 0;
-  RomTypeSheet ts;
-  /* BACKLOG #145: hand decode_verified() the WHOLE mon_decomp buffer as cap, not
-   * just `need` -- passing cap == want (need == ROM_TYPE_SHEET_BYTES) made the
-   * BACKLOG #103 caller-tail LZ77 window (rom_itemart.c's decode_verified) size
-   * to zero, so the RSE type sheet never got the ~86 -> ~5 read win the window
-   * gives every other caller. Safe because the badge below (mon_decomp + 6144)
-   * is written strictly AFTER this call returns, and decode_verified only READS
-   * dst[want,cap) as LZ77 back-reference input during its own decode -- it never
-   * writes there (rom_itemart.c's decode_verified comment). scratch is 0 on
-   * FR/LG (need == 0); rom_type_sheet_load ignores scratch_cap on that path. */
-  if (!rom_type_sheet_load(&s_romitemart, &ts, scratch, scratch ? MON_DECOMP_BYTES : 0))
-    return 0;
-  /* the sheet occupies mon_decomp[0..need); the badge is decoded past it, at the
-   * offset rom_itemart.h:145-149 recommends, well inside the 8 KiB buffer either
-   * way (need is at most ROM_TYPE_SHEET_BYTES == 5,888). */
-  uint16_t* dst = mon_decomp + (6144 / 2);
-  if (!rom_type_badge(&s_romitemart, &ts, type_id, dst, ROM_TYPE_BADGE_MAX_PX)) return 0;
-  if (out_h) *out_h = (uint8_t)rom_type_badge_h(&s_romitemart);
+  /* E3 review BLOCKING 2: the claim (artbuf_epoch++) happens inside, before any write */
+  const uint16_t* dst = rom_type_badge_memo(&s_romitemart, (uint8_t*)mon_decomp, MON_DECOMP_BYTES,
+                                            &artbuf_epoch, type_id);
+  if (dst && out_h) *out_h = (uint8_t)rom_type_badge_h(&s_romitemart);
   return dst;
 }
 

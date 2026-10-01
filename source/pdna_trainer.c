@@ -317,22 +317,34 @@ static void card_draw_stars(PkGame game, int tier) {
 #endif
 }
 
-static void card_draw_badge(PkGame game, int i, int x, int y) {
+/* Paint every OWNED badge of the front row. BACKLOG #103 (speed): the ROM rung used to decode
+ * the whole badge sheet (1,024 B LZ77 + palette) once PER owned badge -- eight decodes for a
+ * full case. The sheet is now decoded ONCE per row paint: between two badge blits nothing else
+ * writes mon_decomp (the loop only blits and, on Ruby, reads a 64 B id map into a local), so the
+ * sheet stays valid for the row. `mask` bit i = badge i owned. If the sheet cannot be loaded
+ * (no ROM, or a failed fetch) the compiled-art / no-op sprite path draws each owned badge
+ * exactly as before. A failed id lookup skips only that badge (as before: no fallback once
+ * the sheet itself loaded). */
+static void card_draw_badges(PkGame game, unsigned mask, int x0, int y) {
 #if !PDNA_CARD_ART_COMPILED
   if (s_romchrome && rom_chrome_card_badges_have(s_romchrome, (int)game)) {
     RomChromeCardBadges b;
     artbuf_claim();          /* E3 review BLOCKING 2: about to overwrite mon_decomp */
     if (rom_chrome_card_badges_load(s_romchrome, (int)game,
                                     (uint8_t*)mon_decomp, MON_DECOMP_BYTES, &b)) {
-      int16_t ids[4];
-      if (rom_chrome_card_badge_ids(s_romchrome, (int)game, i, ids))
-        romchrome_blit_tiles(b.tiles, b.pal, ids, 2, 2, x, y);
+      for (int i = 0; i < 8; i++) {
+        int16_t ids[4];
+        if (((mask >> i) & 1u) && rom_chrome_card_badge_ids(s_romchrome, (int)game, i, ids))
+          romchrome_blit_tiles(b.tiles, b.pal, ids, 2, 2, x0 + 24 * i, y);
+      }
       return;
     }
   }
 #endif
-  ui_sprite(x, y, 16, 16, card_badge16((int)game, i));   /* compiled-art path (or a
-                                                          * no-ROM artless no-op) */
+  for (int i = 0; i < 8; i++)
+    if ((mask >> i) & 1u)
+      ui_sprite(x0 + 24 * i, y, 16, 16, card_badge16((int)game, i));   /* compiled-art path (or a
+                                                                         * no-ROM artless no-op) */
 }
 
 static void card_draw_photo(PkGame game, int female) {
@@ -422,9 +434,7 @@ void card_field_one(PkGame game, int f, const CardFields* cf) {
     case CARDF_BADGES:                       /* badges overlay only when owned
                                               * (the baked empty slots keep the
                                               * games' own 1..8 digit marks) */
-      for (int i = 0; i < 8; i++)
-        if ((cf->badges >> i) & 1u)
-          card_draw_badge(game, i, L->badge_x + 24 * i, L->badge_y);
+      card_draw_badges(game, cf->badges, L->badge_x, L->badge_y);
       break;
     default: break;   /* CARDF_SEX / CARDF_STARS: the caller's own art */
   }

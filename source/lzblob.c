@@ -18,6 +18,56 @@
  * same order of work pdna_box.c's wp_blit_tile already spends on a box
  * wallpaper. Only the first 30 columns / 20 rows are ever drawn (a 240x160
  * screen); a wider stored map_w (Ruby pads to 32) just changes the row stride. */
+/* BACKLOG #103 (artless speed): one tile row of 8 pixels through a 16-entry palette, written as
+ * four 32-bit stores (two RGB15 pixels each). `w` is the tile row's 32-bit word (pixel k =
+ * nibble k, LSB first); the 0x7FFF mask is applied per pixel exactly as the per-pixel path
+ * below does, so the framebuffer bytes are identical. `d` must be 4-byte aligned. */
+static inline void rc_row8(uint32_t* d, const uint16_t* pal, uint32_t w) {
+  d[0] = ((uint32_t)pal[w & 15u]         | ((uint32_t)pal[(w >> 4) & 15u]  << 16)) & 0x7FFF7FFFu;
+  d[1] = ((uint32_t)pal[(w >> 8) & 15u]  | ((uint32_t)pal[(w >> 12) & 15u] << 16)) & 0x7FFF7FFFu;
+  d[2] = ((uint32_t)pal[(w >> 16) & 15u] | ((uint32_t)pal[(w >> 20) & 15u] << 16)) & 0x7FFF7FFFu;
+  d[3] = ((uint32_t)pal[(w >> 24) & 15u] | ((uint32_t)pal[(w >> 28) & 15u] << 16)) & 0x7FFF7FFFu;
+}
+
+/* The same with a background layer showing through every index-0 pixel of the front row. */
+static inline uint32_t rc_px_bg(const uint16_t* pal, const uint16_t* bpal, uint32_t w,
+                                uint32_t bw, int k) {
+  uint32_t i = (w >> (4 * k)) & 15u;
+  return i ? pal[i] : bpal[(bw >> (4 * k)) & 15u];
+}
+static inline void rc_row8_bg(uint32_t* d, const uint16_t* pal, const uint16_t* bpal,
+                              uint32_t w, uint32_t bw) {
+  d[0] = (rc_px_bg(pal, bpal, w, bw, 0) | (rc_px_bg(pal, bpal, w, bw, 1) << 16)) & 0x7FFF7FFFu;
+  d[1] = (rc_px_bg(pal, bpal, w, bw, 2) | (rc_px_bg(pal, bpal, w, bw, 3) << 16)) & 0x7FFF7FFFu;
+  d[2] = (rc_px_bg(pal, bpal, w, bw, 4) | (rc_px_bg(pal, bpal, w, bw, 5) << 16)) & 0x7FFF7FFFu;
+  d[3] = (rc_px_bg(pal, bpal, w, bw, 6) | (rc_px_bg(pal, bpal, w, bw, 7) << 16)) & 0x7FFF7FFFu;
+}
+
+/* hflip of one tile row: reverse the eight nibbles (swap the nibbles inside each byte, then
+ * reverse the byte order) so pixel k of the result is source pixel 7-k. */
+static inline uint32_t rc_hflip(uint32_t w) {
+  w = ((w & 0x0F0F0F0Fu) << 4) | ((w >> 4) & 0x0F0F0F0Fu);
+  return (w << 24) | ((w & 0xFF00u) << 8) | ((w >> 8) & 0xFF00u) | (w >> 24);
+}
+
+/* One FULL 8x8 cell (no clipping), at an even destination x, as eight row8 stores. `tw` points
+ * at the front tile's 32 bytes, `btw` at the background tile's (NULL = no background layer). */
+static void rc_cell_fast(uint16_t* dst0, const uint32_t* tw, int hf, int vf, const uint16_t* pal,
+                         const uint32_t* btw, int bhf, int bvf, const uint16_t* bpal) {
+  for (int ly = 0; ly < 8; ly++) {
+    uint32_t w = tw[vf ? 7 - ly : ly];
+    uint32_t* d = (uint32_t*)(void*)(dst0 + ly * 240);
+    if (hf) w = rc_hflip(w);
+    if (!btw) { rc_row8(d, pal, w); continue; }
+    uint32_t bw = btw[bvf ? 7 - ly : ly];
+    if (bhf) bw = rc_hflip(bw);
+    if (w == 0) rc_row8(d, bpal, bw);        /* whole row transparent: pure background */
+    else if (((w - 0x11111111u) & ~w & 0x88888888u) == 0u)
+                rc_row8(d, pal, w);          /* no index-0 nibble: fully opaque, background hidden */
+    else        rc_row8_bg(d, pal, bpal, w, bw);   /* a sticker edge: per-pixel select */
+  }
+}
+
 static void romchrome_blit(const RomChromeSrc* s, uint32_t off, int sw,
                            int x, int y, int w, int h) {
   if (!s || !s->tiles || !s->map || w <= 0 || h <= 0) return;
@@ -25,6 +75,9 @@ static void romchrome_blit(const RomChromeSrc* s, uint32_t off, int sw,
   int sx0 = (int)(srcpx % (uint32_t)sw), sy0 = (int)(srcpx / (uint32_t)sw);
   int x0 = sx0, y0 = sy0, x1 = sx0 + w, y1 = sy0 + h;
   int tx0 = x0 >> 3, ty0 = y0 >> 3, tx1 = (x1 - 1) >> 3, ty1 = (y1 - 1) >> 3;
+  /* The word-wide cell path needs 4-byte-aligned tile data (every caller stages tiles at
+   * offset 0 of the 4-aligned mon_decomp, tile i at +32*i) and an even destination x. */
+  const int word_ok = (((uintptr_t)s->tiles & 3u) == 0u);
   for (int ty = ty0; ty <= ty1; ty++) {
     if (ty < 0 || ty >= 20) continue;
     for (int tx = tx0; tx <= tx1; tx++) {
@@ -46,6 +99,14 @@ static void romchrome_blit(const RomChromeSrc* s, uint32_t off, int sw,
       int px0 = tx * 8, py0 = ty * 8;
       int lx0 = (px0 < x0) ? (x0 - px0) : 0, lx1 = (px0 + 8 > x1) ? (x1 - px0) : 8;
       int ly0 = (py0 < y0) ? (y0 - py0) : 0, ly1 = (py0 + 8 > y1) ? (y1 - py0) : 8;
+      if (word_ok && lx0 == 0 && lx1 == 8 && ly0 == 0 && ly1 == 8 &&
+          ((x + px0 - x0) & 1) == 0) {                /* a whole cell at an even x: word path */
+        rc_cell_fast(&vid_mem[(y + (py0 - y0)) * 240 + x + (px0 - x0)],
+                     (const uint32_t*)(const void*)(s->tiles + (uint32_t)tile * 32u), hf, vf, pal,
+                     s->bg_map ? (const uint32_t*)(const void*)(s->tiles + (uint32_t)btile * 32u) : 0,
+                     bhf, bvf, bpal);
+        continue;
+      }
       for (int ly = ly0; ly < ly1; ly++) {
         int sy = vf ? 7 - ly : ly;
         const uint8_t* trow = s->tiles + (uint32_t)tile * 32u + (uint32_t)sy * 4u;
@@ -99,12 +160,28 @@ void romchrome_blit_tiles(const uint8_t* tiles, const uint16_t* pal16,
                           const int16_t* tile_ids, int ntx, int nty,
                           int dx, int dy) {
   if (!tiles || !pal16 || ntx <= 0 || nty <= 0) return;
+  const int word_ok = (((uintptr_t)tiles & 3u) == 0u);   /* tile i at tiles+32*i stays 4-aligned */
   for (int ty = 0; ty < nty; ty++) {
     for (int tx = 0; tx < ntx; tx++) {
       int tid = tile_ids ? tile_ids[ty * ntx + tx] : (ty * ntx + tx);
       if (tid < 0) continue;                    /* negative = "no tile here" */
       const uint8_t* t = tiles + (uint32_t)tid * 32u;
       int px0 = dx + tx * 8, py0 = dy + ty * 8;
+      if (word_ok && px0 >= 0 && px0 + 8 <= 240 && py0 >= 0 && py0 + 8 <= 160) {
+        /* BACKLOG #103: a tile wholly on screen -- one 32-bit read per row, no per-pixel
+         * clip or byte/nibble extract; an all-zero row (fully transparent) is skipped. */
+        const uint32_t* tw = (const uint32_t*)(const void*)t;
+        for (int y = 0; y < 8; y++) {
+          uint32_t w = tw[y];
+          if (!w) continue;
+          uint16_t* d = &vid_mem[(py0 + y) * 240 + px0];
+          for (int k = 0; k < 8; k++, w >>= 4) {
+            uint32_t i = w & 15u;
+            if (i) d[k] = pal16[i] & 0x7FFFu;
+          }
+        }
+        continue;
+      }
       for (int y = 0; y < 8; y++) {
         int sy = py0 + y;
         if (sy < 0 || sy >= 160) continue;

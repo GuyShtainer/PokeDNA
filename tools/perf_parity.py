@@ -175,6 +175,43 @@ class Driver:
         box_ms = self.to_box()
         return ms, box_ms
 
+    def bag_pocket(self) -> int | None:
+        """START -> 7 DOWN -> A (bag opens, its own 'bag' span closes at first paint), then ONE R
+        (next pocket): the 'bag.pocket' span (BACKLOG #103) covers pocket anim + header + list
+        + desc. B leaves the bag, B again returns to the box grid."""
+        n0 = len(self.lines)
+        self.s.tap("START", settle=BIG_SETTLE)
+        for _ in range(7):
+            self.s.tap("DOWN", settle=SETTLE)
+        self.s.tap("A", settle=BIG_SETTLE)
+        self.s.run(FLUSH_SETTLE)
+        n1 = len(self.lines)
+        self.s.tap("R", settle=BIG_SETTLE)
+        got = self._settled(n1)
+        ms = find_last(got, lambda l: parse_span_ms(l, "bag.pocket"))
+        self.to_box()
+        return ms
+
+    def summary_step(self) -> tuple[int | None, int | None]:
+        """From the box grid: A, A (summary, first portrait), then ONE DOWN (the nav step to the
+        next mon -- summary_run returns +1 and the caller re-enters it, so the SAME
+        'summary.open' rollup accumulates), then B (flush). Returns (tot_ms of the x2 rollup,
+        worst_ms) -- step cost = tot - first (the first-open number measured by summary_enter)."""
+        n0 = len(self.lines)
+        self.s.tap("A", settle=BIG_SETTLE)
+        self.s.tap("A", settle=BIG_SETTLE)
+        self.s.tap("DOWN", settle=BIG_SETTLE)
+        self.s.tap("B", settle=BIG_SETTLE)
+        got = self._settled(n0)
+        tot = find_last(got, lambda l: parse_rep_ms(l, "summary.open"))
+        worst = None
+        for l in reversed(got):
+            if l.startswith("perf summary.open x"):
+                worst = int(l.split("worst ", 1)[1].split(" ms", 1)[0]); break
+        self.s.tap("B", settle=BIG_SETTLE)
+        self.s.run(FLUSH_SETTLE)
+        return tot, worst
+
     def party_strip(self) -> int | None:
         """START -> A (Party, index 0). For a save WITH PC storage (every corpus save
         used here) this does NOT open the standalone party_list() screen that owns the
@@ -230,6 +267,8 @@ def measure_image(core_mod, image_mod, lines: list[str], rom: Path, prefix: str,
     results: dict[str, list[int]] = {label: [] for _, _, label in NAV_SCREENS}
     results["box-grid first paint (return-to-box)"] = []
     results["summary enter (portrait)"] = []
+    results["bag pocket switch (1x R)"] = []
+    results["summary cursor-step (x2 tot - first)"] = []
 
     for i in range(runs):
         for downs, name, label in NAV_SCREENS:
@@ -240,10 +279,21 @@ def measure_image(core_mod, image_mod, lines: list[str], rom: Path, prefix: str,
                 results["box-grid first paint (return-to-box)"].append(box_ms)
             print(f"  [{prefix}{i+1}/{runs}] {label:32s} -> {ms} ms   (return-to-box: {box_ms} ms)")
 
+        pk = d.bag_pocket()
+        if pk is not None:
+            results["bag pocket switch (1x R)"].append(pk)
+        print(f"  [{prefix}{i+1}/{runs}] {'bag pocket switch (1x R)':32s} -> {pk} ms")
+
         summary_ms = d.summary_enter()
         if summary_ms is not None:
             results["summary enter (portrait)"].append(summary_ms)
         print(f"  [{prefix}{i+1}/{runs}] {'summary enter (portrait)':32s} -> {summary_ms} ms")
+
+        tot, worst = d.summary_step()
+        first = results["summary enter (portrait)"][-1] if results["summary enter (portrait)"] else None
+        if tot is not None and first is not None:
+            results["summary cursor-step (x2 tot - first)"].append(tot - first)
+        print(f"  [{prefix}{i+1}/{runs}] {'summary cursor-step':32s} -> x2 tot {tot} ms, worst {worst} ms (first {first})")
 
     return results
 
@@ -338,6 +388,13 @@ def main(argv=None) -> int:
         flag = "SLOWER >1.5x" if (ratio and ratio > 1.5) else ""
         print(f"{row:38s} {summarize(nv):>26s} {summarize(av):>26s} "
               f"{(f'{ratio:.2f}x' if ratio else 'n/a'):>8s}  {flag}")
+    # BACKLOG #103: first open vs the 2nd+ opens of the SAME session (the cache test). A
+    # screen that caches across opens shows later < first; equal means a full re-decode.
+    for row in ("dex open", "trainer card", "bag"):
+        nv, av = normal[row], artless[row]
+        if len(nv) >= 2 and len(av) >= 2:
+            print(f"  {row}: first open normal {nv[0]} / artless {av[0]} ms; "
+                  f"later opens normal {statistics.median(nv[1:]):.0f} / artless {statistics.median(av[1:]):.0f} ms")
     if gb_normal is not None:
         nmed = statistics.median(gb_normal) if gb_normal else None
         amed = statistics.median(gb_artless) if gb_artless else None

@@ -317,4 +317,22 @@ int rom_type_sheet_load(const RomItemArt* ra, RomTypeSheet* ts,
 int rom_type_badge(const RomItemArt* ra, const RomTypeSheet* ts, uint8_t badge,
                    uint16_t* dst, uint32_t cap_px);
 
+/*
+ * BACKLOG #103: one badge through a sheet MEMO kept inside the caller's shared scratch
+ * (`buf`, 4-byte aligned, buf_cap >= ROM_TYPE_MEMO_END): the RSE sheet at buf[0, 5888),
+ * the badge pixels at buf[ROM_TYPE_BADGE_OFF, +1024), the memo (a stamp + the
+ * RomTypeSheet) at buf[ROM_TYPE_MEMO_OFF, ...). `*epoch` is the buffer's shared write
+ * epoch (artbuf.h's artbuf_epoch): every writer of `buf` bumps it first, and this
+ * function bumps it too (it writes buf) BEFORE its first write. The sheet is re-decoded
+ * only when the epoch moved since the last successful call stamped the memo, or the
+ * memo was loaded from a different RomItemArt. A caller that re-opens the SAME
+ * RomItemArt on another ROM must bump the epoch (the owner pointer cannot tell).
+ * Returns the badge (32 x rom_type_badge_h() RGB15 px, inside buf), or NULL.
+ */
+#define ROM_TYPE_BADGE_OFF 6144u
+#define ROM_TYPE_MEMO_OFF  7424u
+#define ROM_TYPE_MEMO_END  (ROM_TYPE_MEMO_OFF + 128u)   /* >= stamp + sizeof(RomTypeSheet) on GBA and host */
+const uint16_t* rom_type_badge_memo(const RomItemArt* ra, uint8_t* buf, uint32_t buf_cap,
+                                    uint32_t* epoch, uint8_t badge);
+
 #endif /* ROM_ITEMART_H */

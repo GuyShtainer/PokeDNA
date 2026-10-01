@@ -423,6 +423,10 @@ bool bag_screen(uint8_t* sb1, const uint8_t* sb2, PkGame game, int female) {
       snd_tab();
       pocket = (pocket + ((k & (KEY_R | KEY_RIGHT)) ? 1 : POCKET_COUNT - 1)) % POCKET_COUNT;
       sel = top = 0; prev_sel = -1; list = true;
+      /* BACKLOG #103 (speed): a pocket switch is a screen-enter in miniature (pocket anim +
+       * header + list + desc), so it gets its own span, closed by the same first-paint hook
+       * once the repaint below the loop top has run. */
+      perf_first_paint = true; perf_span_begin("bag.pocket");
       pocket_anim(bag_bg(game, female), L, game, female, pocket);  /* closed bag pops + the pocket opens */
       draw_header(bag_bg(game, female), L, pocket);
     } else if (k & KEY_A) {                      /* the plain tab's edit powers, verbatim */

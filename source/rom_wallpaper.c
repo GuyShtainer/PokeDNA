@@ -128,8 +128,46 @@ int rom_wallpaper_pal_bank(int bank) {
 /* One tile's pixels, rows/cols flipped as asked. `skip0` = 1 leaves every index-0 pixel
  * of `out` UNTOUCHED (the overlay pass: index 0 is transparent over the base); 0 writes
  * all 64 (the literal expansion rom_wallpaper_expand_tile documents). */
+/* BACKLOG #103 (speed): reverse the eight nibbles of a tile row (hflip): swap the nibbles inside
+ * each byte, then reverse the byte order. Pixel k of the result is source pixel 7-k. */
+static inline uint32_t rev_nibbles(uint32_t w) {
+  w = ((w & 0x0F0F0F0Fu) << 4) | ((w >> 4) & 0x0F0F0F0Fu);
+  return (w << 24) | ((w & 0xFF00u) << 8) | ((w >> 8) & 0xFF00u) | (w >> 24);
+}
+
 static void expand_px(const uint8_t* src, int hflip, int vflip, const uint16_t pal[16],
                       int skip0, uint16_t out[64]) {
+  /* BACKLOG #103: the artless box grid spent ~240 of its ~490 ms here (360 cells x 192 pixel
+   * operations through a per-pixel branch and two index conversions). With 4-byte-aligned source
+   * and destination (every real caller: tiles at +32*tid in the 4-aligned mon_decomp, `out` =
+   * the aligned s_wp_tile) a tile row is ONE 32-bit read and, when no pixel is skipped, four
+   * 32-bit stores; an overlay row that is wholly transparent is skipped outright and one with
+   * no index-0 nibble is written whole. LITTLE-ENDIAN (the GBA, and the host test machines):
+   * pixel k of a row is nibble k of the word. Anything unaligned takes the byte-wise path
+   * below, which is the original code. */
+  if ((((uintptr_t)src | (uintptr_t)out) & 3u) == 0u) {
+    const uint32_t* sw = (const uint32_t*)(const void*)src;
+    uint32_t* ow = (uint32_t*)(void*)out;
+    for (int y = 0; y < 8; y++) {
+      uint32_t w = sw[vflip ? (7 - y) : y];
+      if (hflip) w = rev_nibbles(w);
+      uint32_t* d = &ow[y * 4];
+      if (skip0) {
+        if (w == 0u) continue;                              /* wholly transparent row */
+        if (((w - 0x11111111u) & ~w & 0x88888888u) != 0u) { /* a transparent nibble: per pixel */
+          uint16_t* o = &out[y * 8];
+          for (int k = 0; k < 8; k++, w >>= 4)
+            if (w & 15u) o[k] = pal[w & 15u];
+          continue;
+        }
+      }
+      d[0] = (uint32_t)pal[w & 15u]         | ((uint32_t)pal[(w >> 4) & 15u]  << 16);
+      d[1] = (uint32_t)pal[(w >> 8) & 15u]  | ((uint32_t)pal[(w >> 12) & 15u] << 16);
+      d[2] = (uint32_t)pal[(w >> 16) & 15u] | ((uint32_t)pal[(w >> 20) & 15u] << 16);
+      d[3] = (uint32_t)pal[(w >> 24) & 15u] | ((uint32_t)pal[(w >> 28) & 15u] << 16);
+    }
+    return;
+  }
   for (int y = 0; y < 8; y++) {
     int sy = vflip ? (7 - y) : y;
     for (int xb = 0; xb < 4; xb++) {
@@ -192,6 +230,14 @@ int rom_wallpaper_cell_key(const RomWpBase* bs, uint16_t e, int tx, int ty) {
   return (int)e | (pi << 16);        /* pi 0 = no base tile; fits 16 + 8 bits, never negative */
 }
 
+/* One row of 8 pixels through a 16-entry palette as four 32-bit stores (BACKLOG #103). */
+static inline void row_store(uint32_t* d, const uint16_t* pal, uint32_t w) {
+  d[0] = (uint32_t)pal[w & 15u]         | ((uint32_t)pal[(w >> 4) & 15u]  << 16);
+  d[1] = (uint32_t)pal[(w >> 8) & 15u]  | ((uint32_t)pal[(w >> 12) & 15u] << 16);
+  d[2] = (uint32_t)pal[(w >> 16) & 15u] | ((uint32_t)pal[(w >> 20) & 15u] << 16);
+  d[3] = (uint32_t)pal[(w >> 24) & 15u] | ((uint32_t)pal[(w >> 28) & 15u] << 16);
+}
+
 int rom_wallpaper_expand_cell(const uint8_t* tiles, uint32_t tiles_bytes, uint16_t e,
                               int tx, int ty, const RomWpBase* bs,
                               const uint16_t pal[ROM_WP_PAL_BANKS][16], uint16_t out[64]) {
@@ -206,20 +252,49 @@ int rom_wallpaper_expand_cell(const uint8_t* tiles, uint32_t tiles_bytes, uint16
    * black where the answer is unknown (City's tone IS black, but City is table-backed). */
   uint16_t fill = tone;
   if (!bs->cols && tone == 0) fill = fg[0];
-  for (int i = 0; i < 64; i++) out[i] = fill;
+  const uint8_t* btile = 0;                          /* the backdrop tile, if there is one */
+  uint16_t bp[16];
   if (bs->cols && bs->rows) {
     int pi = (ty % bs->rows) * bs->cols + (tx % bs->cols);
     if (pi < bs->used) {
       uint32_t boff = ((uint32_t)bs->first + (uint32_t)pi) * 32u;
       if (boff + 32u <= tiles_bytes) {
-        uint16_t bp[16];
         memcpy(bp, bg, sizeof bp);
         bp[0] = tone;                               /* bg index 0 -> interior tone */
-        expand_px(tiles + boff, 0, 0, bp, 0, out);
+        btile = tiles + boff;
       }
     }
   }
+  const uint8_t* otile = tiles + (uint32_t)tid * 32u;
+  const int hf = (e >> 10) & 1, vf = (e >> 11) & 1;
+  /* BACKLOG #103: the fused word path. Per row, in the order base-then-overlay-with-index-0-
+   * transparent, the FINAL pixels are: the overlay row alone when it has no index-0 nibble
+   * (the base would be fully overwritten, so it is never expanded), the base row alone when the
+   * overlay row is wholly transparent, otherwise the base row with the overlay's non-zero
+   * pixels over it. Needs 4-byte-aligned tiles and output (every real caller); anything else
+   * takes the original two-pass code below. */
+  if ((((uintptr_t)out | (uintptr_t)otile | (uintptr_t)btile) & 3u) == 0u) {
+    const uint32_t* ow = (const uint32_t*)(const void*)otile;
+    const uint32_t* bw = (const uint32_t*)(const void*)btile;
+    uint32_t* d = (uint32_t*)(void*)out;
+    const uint32_t f2 = (uint32_t)fill | ((uint32_t)fill << 16);
+    for (int y = 0; y < 8; y++, d += 4) {
+      uint32_t w = ow[vf ? (7 - y) : y];
+      if (hf) w = rev_nibbles(w);
+      if (w != 0u && ((w - 0x11111111u) & ~w & 0x88888888u) == 0u) { row_store(d, fg, w); continue; }
+      if (btile) row_store(d, bp, bw[y]);
+      else { d[0] = f2; d[1] = f2; d[2] = f2; d[3] = f2; }
+      if (w != 0u) {
+        uint16_t* o = &out[y * 8];
+        for (int k = 0; k < 8; k++, w >>= 4)
+          if (w & 15u) o[k] = fg[w & 15u];
+      }
+    }
+    return 1;
+  }
+  for (int i = 0; i < 64; i++) out[i] = fill;
+  if (btile) expand_px(btile, 0, 0, bp, 0, out);
   /* 2) the tilemap's own tile over it, index 0 transparent */
-  expand_px(tiles + (uint32_t)tid * 32u, (e >> 10) & 1, (e >> 11) & 1, fg, 1, out);
+  expand_px(otile, hf, vf, fg, 1, out);
   return 1;
 }
