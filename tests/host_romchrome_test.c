@@ -82,6 +82,14 @@ static uint32_t g_hit_pos = 0;
  * with those bytes XOR 0xFF, modelling a wrong/hacked revision at a pinned address. */
 static uint32_t g_poison_lo = 0, g_poison_hi = 0;
 
+/* #313 review: PERSISTENT byte overrides (set, not XOR -- exact boundary values) and a ONE-SHOT
+ * flip of file byte g_flip_at in the first read that covers it (a transient garbled read). */
+static uint32_t g_set_off[2];
+static uint8_t  g_set_val[2];
+static int      g_set_n = 0;
+static uint32_t g_flip_at = 0;
+static int      g_flip_armed = 0;
+
 static bool host_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
   HostCtx* c = (HostCtx*)ctx;
   g_reads++;
@@ -94,6 +102,12 @@ static bool host_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
   }
   for (uint32_t i = 0; g_poison_hi > g_poison_lo && i < len; i++)
     if (off + i >= g_poison_lo && off + i < g_poison_hi) ((uint8_t*)dst)[i] ^= 0xFF;
+  for (int k = 0; k < g_set_n; k++)
+    if (g_set_off[k] >= off && g_set_off[k] - off < len) ((uint8_t*)dst)[g_set_off[k] - off] = g_set_val[k];
+  if (g_flip_armed && g_flip_at >= off && g_flip_at - off < len) {
+    ((uint8_t*)dst)[g_flip_at - off] ^= 0x5A;
+    g_flip_armed = 0;    /* fires exactly once */
+  }
   return true;
 }
 
@@ -366,6 +380,58 @@ static void test_rs_bag_pins(const char* label, const char* path) {
     RomChrome rp; rom_chrome_open(&rp, &rc);
     CHECK(rp.bag_style == -1, "%s: poisoned %s must refuse the bag at open", label, pz[k].what);
     g_poison_lo = g_poison_hi = 0;
+  }
+
+  /* (5) #313 review: the fail-closed map bounds, each pinned on its own clause -- map entry 40
+   * rewritten to tile 105 / palette bank 2 must refuse at open AND, when the change appears after
+   * a clean open, at load; tile 104 (the last prefix tile) must still pass both. */
+  {
+    const uint32_t e40 = RSB_MAP - ROM_BASE + 80u;
+    const uint8_t hi = (uint8_t)(img[e40 + 1] & 0x0Cu);       /* keep the flip bits; bank 0; tile < 256 */
+    const struct { uint8_t lo, hi; int want; const char* what; } mv[] = {
+      { 105u, hi, -1, "tile 105 (first tile past the prefix)" },
+      { 104u, hi,  0, "tile 104 (last prefix tile)" },
+      {  10u, (uint8_t)(hi | 0x20u), -1, "palette bank 2" },
+    };
+    for (unsigned k = 0; k < sizeof mv / sizeof mv[0]; k++) {
+      g_set_n = 2;
+      g_set_off[0] = e40;      g_set_val[0] = mv[k].lo;
+      g_set_off[1] = e40 + 1u; g_set_val[1] = mv[k].hi;
+      RomChrome rp; rom_chrome_open(&rp, &rc);
+      CHECK(rp.bag_style == mv[k].want, "%s: map naming %s: open bag_style=%d want %d",
+            label, mv[k].what, rp.bag_style, mv[k].want);
+      g_set_n = 0; rom_chrome_open(&rp, &rc); g_set_n = 2;     /* clean open, THEN the bytes change */
+      RomChromeBag ob;
+      int ld = rom_chrome_bag_load(&rp, 0, 0, scratch, sizeof scratch, &ob);
+      CHECK(ld == (mv[k].want == 0), "%s: map naming %s after a clean open: load=%d", label, mv[k].what, ld);
+      g_set_n = 0;
+    }
+  }
+
+  /* (6) #313 review: ONE garbled read is absorbed, never drawn -- in the tileset stream during the
+   * first decode (decode-twice hash), in the raw tilemap (read_verified), and in a header at open
+   * (the 2-attempt verify). */
+  {
+    const struct { uint32_t at; const char* what; } fl[] = {
+      { RSB_TILES - ROM_BASE + 0x80u, "tileset stream" },
+      { RSB_MAP - ROM_BASE + 0x101u, "raw tilemap" },
+    };
+    for (unsigned k = 0; k < sizeof fl / sizeof fl[0]; k++) {
+      RomChrome rp; rom_chrome_open(&rp, &rc);
+      g_flip_at = fl[k].at; g_flip_armed = 1;
+      RomChromeBag ob; memset(scratch, 0, sizeof scratch);
+      int ld = rom_chrome_bag_load(&rp, 0, 0, scratch, sizeof scratch, &ob);
+      CHECK(!g_flip_armed, "%s: the %s flip must have fired", label, fl[k].what);
+      CHECK(ld && memcmp(scratch, whole, 105u * 32u) == 0 &&
+            memcmp(scratch + 4096, img + (RSB_MAP - ROM_BASE), 2048) == 0,
+            "%s: one garbled %s read must be absorbed (load=%d)", label, fl[k].what, ld);
+      g_flip_armed = 0;
+    }
+    g_flip_at = RSB_TILES - ROM_BASE + 1u; g_flip_armed = 1;
+    RomChrome rp; rom_chrome_open(&rp, &rc);
+    CHECK(!g_flip_armed && rp.bag_style == 0, "%s: one garbled header read at open must be retried (bag_style=%d)",
+          label, rp.bag_style);
+    g_flip_armed = 0;
   }
   free(img);
   fclose(c.f);

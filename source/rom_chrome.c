@@ -544,7 +544,9 @@ static const RsBagPin k_rs_bag[] = {
 #define RS_BAG_MAP_OFF     RS_BAG_RING
 #define RS_BAG_PAL_OFF     (RS_BAG_MAP_OFF + RS_BAG_MAP_BYTES)
 #define RS_BAG_NEED        (RS_BAG_PAL_OFF + RS_BAG_PAL_BYTES)
-_Static_assert(RS_BAG_TILE_BYTES <= RS_BAG_RING, "the tile prefix must fit inside the LZ ring");
+/* ring == dst: mr_lz77_range finishes the back-reference that crosses the range end, writing up
+ * to 17 B past it into the ring -- they must not wrap onto the prefix (+17, not +0). */
+_Static_assert(RS_BAG_TILE_BYTES + 17u <= RS_BAG_RING, "the tile prefix + 17 B overshoot must fit the LZ ring");
 _Static_assert(RS_BAG_NEED <= 8192u, "the R/S bag must fit the shared 8 KiB buffer");
 
 static const RsBagPin* rs_bag_pin(const RomCtx* rc) {
