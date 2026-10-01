@@ -879,6 +879,99 @@ static int stage_chain(unsigned k, unsigned wrong_link) {
   return jrnapp_flush() == JRN_OK;
 }
 
+/* ---- zd #325: an UNDO press that LANDS on a step named "Swap" leaves a half (that Swap is applied, its partner undone) and toasts "Swap (half)"; the landing step's name is
+ * resolved BEFORE the press moves anything (a fault there refuses). Marks: the 4-chain press 1 (the capped 3-group lands on Swap_1), the 5-chain presses 1 and 2, the History-jump-then-chord.
+ * Controls: landing on Setup / a Box move / a crossed floor, every whole pair/group press, a plain non-Swap press all stay plain. ---- */
+static void t_land_half_toast(void) {
+  char nm[25];
+  static uint8_t snapH[G3_SAVE_FILE_SIZE];
+  unsigned i;
+  /* 4-chain (3 Swaps + Box move): press 1 takes Swap_2, Swap_3, Box move and LANDS on Swap_1 */
+  CHECK(app_world_reset() && stage_chain(3, 0), "world + a 3-Swap chain");
+  for (i = 0; i < 3; i++) CHECK(jrnapp_step(-1, nm) == JRN_OK, "clean per-step undo");
+  memcpy(snapH, sv, sizeof sv);                                                       /* the half image: Swap_1 applied only */
+  for (i = 0; i < 3; i++) CHECK(jrnapp_step(1, nm) == JRN_OK, "clean per-step redo");
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && strcmp(nm, "Swap (half)") == 0 && jrnapp_cursor() == g_chain_base + 1u && memcmp(sv, snapH, sizeof sv) == 0,
+        "#325 the 4-chain's press 1 lands ON Swap_1 and says so ('%s', cursor %u, image == the half state)", safe(nm), (unsigned)jrnapp_cursor());
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && strcmp(nm, "Swap") == 0 && jrnapp_cursor() == g_chain_base && memcmp(sv, snapS, sizeof sv) == 0,
+        "#325 control: press 2 (the lone Swap_1) lands on Setup, whole: plain 'Swap' ('%s', cursor %u, image == pre-chain)", safe(nm), (unsigned)jrnapp_cursor());
+  CHECK(jrnapp_step_pair(1, nm) == JRN_OK && strcmp(nm, "Swap (half)") == 0, "#325 the redo side is the zc rule: 'Swap (half)' ('%s')", safe(nm));
+  /* 5-chain (4 Swaps + Box move): press 1 lands on Swap_2 (half), press 2 is the plain Swap_2 landing on Swap_1 (half), press 3 the lone Swap_1 on Setup (whole) */
+  CHECK(app_world_reset() && stage_chain(4, 0), "world + a 4-Swap chain");
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && strcmp(nm, "Swap (half)") == 0 && jrnapp_cursor() == g_chain_base + 2u, "#325 the 5-chain's press 1 ('%s', cursor %u)", safe(nm), (unsigned)jrnapp_cursor());
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && strcmp(nm, "Swap (half)") == 0 && jrnapp_cursor() == g_chain_base + 1u, "#325 the 5-chain's press 2 (a plain Swap landing on a Swap) ('%s', cursor %u)", safe(nm), (unsigned)jrnapp_cursor());
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && strcmp(nm, "Swap") == 0 && jrnapp_cursor() == g_chain_base && memcmp(sv, snapS, sizeof sv) == 0, "#325 control: press 3 lands on Setup, plain ('%s')", safe(nm));
+  /* History jump onto a mid-chain Swap, then the chord */
+  CHECK(app_world_reset() && stage_chain(2, 0), "world + a 2-Swap chain");
+  CHECK(jrnapp_jump(g_chain_base + 2u, nm, 0) == 0 && jrnapp_cursor() == g_chain_base + 2u, "History jump onto Swap_2 (per step)");
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && strcmp(nm, "Swap (half)") == 0 && jrnapp_cursor() == g_chain_base + 1u, "#325 the chord from a jump onto Swap_2 lands on Swap_1 ('%s', cursor %u)", safe(nm), (unsigned)jrnapp_cursor());
+  /* controls: a lone Swap landing on a Box move; on a CROSSED Setup (a floor); a whole pair; a plain Edit landing on a Swap keeps its own name */
+  {
+    uint8_t x[MONB], y[MONB], z[MONB];
+    mon_fill(x, 1); mon_fill(y, 2); mon_fill(z, 5);
+    CHECK(app_world_reset(), "world");
+    memcpy(slot_at(10), x, MONB); memcpy(slot_at(11), y, MONB);
+    CHECK(stage_pc("Setup"), "Setup X, Y");
+    memcpy(slot_at(13), z, MONB);
+    CHECK(stage_pc("Setup"), "Setup Z (a record holds only two of the three mons)");
+    memset(slot_at(13), 0, MONB); memcpy(slot_at(14), z, MONB);
+    CHECK(stage_pc("Box move"), "a plain Box move");
+    memcpy(slot_at(11), x, MONB); memset(slot_at(10), 0, MONB);
+    CHECK(stage_drop1() && jrnapp_flush() == JRN_OK, "a lone Swap above it (the displaced mon is in the hand)");
+    CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && strcmp(nm, "Swap") == 0 && jrnapp_cursor() == 3u, "#325 control: a lone Swap landing on a Box move stays plain ('%s', cursor %u)", safe(nm), (unsigned)jrnapp_cursor());
+    CHECK(app_world_reset(), "world");
+    memcpy(slot_at(10), x, MONB); memcpy(slot_at(11), y, MONB);
+    img_rec_cross(&RA);
+    CHECK(stage_pc("Setup"), "a CROSSED Setup (a floor)");
+    memcpy(slot_at(11), x, MONB); memset(slot_at(10), 0, MONB);
+    CHECK(stage_drop1() && jrnapp_flush() == JRN_OK, "a lone Swap above the floor");
+    CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && strcmp(nm, "Swap") == 0 && jrnapp_cursor() == 1u, "#325 control: a lone Swap landing on a crossed floor stays plain ('%s', cursor %u)", safe(nm), (unsigned)jrnapp_cursor());
+  }
+  CHECK(app_world_reset() && stage_swap(10, 11, 12), "world + a swap");
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && strcmp(nm, "Swap") == 0, "#325 control: a whole pair press stays plain 'Swap' ('%s')", safe(nm));
+  CHECK(jrnapp_step_pair(1, nm) == JRN_OK && strcmp(nm, "Swap") == 0, "#325 control: ... and its redo ('%s')", safe(nm));
+}
+
+/* zd #325: the landing lookup is PRE-move, inside the walk -- every read of the press failed in turn (once, and for good): a refused press moves nothing; a press that
+ * succeeds is NEVER a plain 'Swap' on the half image (the post-move / swallowed-fault shape would toast it). scen 0: the 4-chain's group press (the landing is the OLDEST
+ * group step's parent); scen 1: a plain Swap press after a per-step undo of the Box move (the landing is the plain step's parent). */
+static void land_sweep(unsigned scen) {
+  static uint8_t pre[G3_SAVE_FILE_SIZE];
+  char nm[25];
+  unsigned mode, bad = 0, refused = 0, marked = 0, presses = 0, start0, land0;
+  long k, kmax = 0;
+  CHECK(app_world_reset() && (scen ? stage_chain(2, 0) : stage_chain(3, 0)), "land sweep: stage");
+  if (scen) CHECK(jrnapp_step(-1, nm) == JRN_OK, "land sweep: per-step undo of the Box move");
+  start0 = g_chain_base + (scen ? 2u : 4u); land0 = g_chain_base + 1u;
+  CHECK(jrnapp_flush() == JRN_OK, "land sweep: flush");
+  memcpy(pre, sv, sizeof sv);
+  rd_snapshot();
+  for (mode = 0; mode < 2; mode++) {
+    for (k = 0; k <= kmax + 2; k++) {
+      uint32_t start;
+      int rc;
+      rd_restore(); memcpy(sv, pre, sizeof sv); card_remount();
+      CHECK(app_reopen() && jrnapp_cursor() == start0, "land sweep %u: reopen at the press's start (cursor %u)", scen, (unsigned)jrnapp_cursor());
+      start = jrnapp_cursor();
+      if (k == 0 && mode == 0) {
+        unsigned long r0 = rd_reads;
+        rc = jrnapp_step_pair(-1, nm);
+        kmax = (long)(rd_reads - r0);
+        CHECK(rc == JRN_OK && strcmp(nm, "Swap (half)") == 0 && jrnapp_cursor() == land0, "land sweep %u: the healthy press (rc %d '%s')", scen, rc, safe(nm));
+        continue;
+      }
+      if (mode == 0) rd_fail_read_at = k - 1; else rd_fail_reads_after = k - 1;
+      rc = jrnapp_step_pair(-1, nm);
+      rd_fail_read_at = -1; rd_fail_reads_after = -1;
+      presses++;
+      if (rc != JRN_OK) { refused++; if (jrnapp_cursor() != start || memcmp(sv, pre, sizeof sv) != 0) bad++; continue; }
+      if (jrnapp_cursor() == land0) { if (strcmp(nm, "Swap (half)") == 0) marked++; else bad++; continue; }   /* the image is on Swap_1's half: any other name is a wrong toast */
+    }
+  }
+  CHECK(bad == 0 && marked > 0 && refused > 0, "#325 scen %u: every faulted press either REFUSES (nothing moved) or is marked '(half)': %u of %u wrong (%u refused, %u marked)", scen, bad, presses, refused, marked);
+}
+static void t_land_fault_sweep(void) { land_sweep(0); land_sweep(1); }
+
 static void t_swap_chain3(void) {
   char nm[25];
   JaHist rows[8];
@@ -1658,6 +1751,8 @@ int main(int argc, char** argv) {
     CHECK(app_world(file), "app world"); t_swap_half_toast();
     CHECK(app_world(file), "app world"); t_party_add_pairs();
     CHECK(app_world(file), "app world"); t_party_add_chain();
+    CHECK(app_world(file), "app world"); t_land_half_toast();
+    CHECK(app_world(file), "app world"); t_land_fault_sweep();
     CHECK(app_world(file), "app world"); t_swap_redo_hop_cap();
     CHECK(app_world(file), "app world"); t_swap_slot_cap();
     CHECK(app_world(file), "app world"); t_swap_chain3();

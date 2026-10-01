@@ -114,10 +114,17 @@ def pins(src: dict[str, str]) -> list[tuple[str, bool]]:
     out.append(("S2b ja_group_at judges every older half (pair and chain link) with ja_older_eligible and the newest with ja_newer_eligible",
                 "ja_older_eligible(&rn)" in pc and "ja_older_eligible(&rp)" in pc and "ja_newer_eligible(&rm)" in pc))
     sp = body(ja, "jrnapp_step_pair") or ""
-    out.append(("T1 (#323) the plain path marks a REDO of the older half ('Swap') as 'Swap (half)' -- redo only (a plain undo of it lands on the whole pre-swap image)",
-                bool(re.search(r'rc == JRN_OK && dir > 0 && name && strcmp\(name, "Swap"\) == 0\) memcpy\(name, "Swap \(half\)", 12\)', sp))
+    cp = body(ja, "ja_chord_pair") or ""
+    lw = body(ja, "ja_land_swap") or ""
+    out.append(("T1 (#323/#325) the plain path marks a 'Swap' press 'Swap (half)' on a REDO, or on an UNDO that LANDS on a Swap (the landing resolved by ja_chord_pair, not post-move)",
+                bool(re.search(r'rc == JRN_OK && name && strcmp\(name, "Swap"\) == 0 && \(dir > 0 \|\| land\)\) memcpy\(name, "Swap \(half\)", 12\)', sp))
                 and before(sp, "if (g < 2)", '"Swap (half)"') and before(sp, '"Swap (half)"', "rc = jrnapp_step(dir, n1)")))
-    out.append(("T2 (#323) the whole-press name stays plain 'Swap' (control)", 'memcpy(name, "Swap", 5)' in sp))
+    out.append(("T1b (#325) the landing is resolved INSIDE the walk, before any step moves: ja_chord_pair calls ja_land_swap and passes a read fault up; jrnapp_step_pair reads it BEFORE jrnapp_step",
+                'ja_land_swap(below, land)' in cp and "return rc ? rc : g" in cp and 'strcmp(w.name, "Swap") == 0) *land = 1' in lw and "rc == JRN_E_IO) return rc" in lw
+                and before(sp, "ja_chord_pair(dir, &land)", "jrnapp_step(dir, name)") and before(sp, "ja_chord_pair(dir, &land)", "jrnapp_step(dir, n1)")))
+    out.append(("T1c (#325) the group's far-end name is 'Swap (half)' only on an UNDO that landed on a Swap (control: the plain 'Swap' remains)",
+                'if (dir < 0 && land) memcpy(name, "Swap (half)", 12); else memcpy(name, "Swap", 5)' in sp))
+    out.append(("T2 (#323) the whole-press name stays plain 'Swap' (control)", 'else memcpy(name, "Swap", 5)' in sp))
     w2 = font_w()
     tw = [pw(x, w2) for x in ("Undid: Swap (half)", "Redid: Swap (half)")] if w2 else [999]
     out.append(("T3 (#323) both marked toasts fit 184 px (" + "/".join(str(x) for x in tw) + " px)", all(x <= 184 for x in tw)))
@@ -165,9 +172,11 @@ MUTANTS: list[tuple[str, str, str, str, str]] = [
     ("M10 the Swap one-shot is dropped from drop_held", "pdna_box.c", '  app_step_name("Swap");', "", "S1a"),
     ("M11 the Swap one-shot is set BEFORE the early refusals", "pdna_box.c", '  if (s_orig_slot >= 0 && s_orig_box != box && src->scope == BOXSCOPE_BANK) { snd_deny(); return recs; }',
      '  app_step_name("Swap");\n  if (s_orig_slot >= 0 && s_orig_box != box && src->scope == BOXSCOPE_BANK) { snd_deny(); return recs; }', "S1"),
-    ("M15 the (half) mark is dropped", "jrn_app.c", 'memcpy(name, "Swap (half)", 12)', "(void)0", "T1"),
-    ("M16 the mark is applied to undo too", "jrn_app.c", "rc == JRN_OK && dir > 0 && name", "rc == JRN_OK && name", "T1"),
-    ("M17 the whole-press name is no longer 'Swap'", "jrn_app.c", 'memcpy(name, "Swap", 5)', 'memcpy(name, "Box move", 9)', "T2"),
+    ("M15 the (half) mark is dropped", "jrn_app.c", 'memcpy(name, "Swap (half)", 12);\n    return rc;', "(void)0;\n    return rc;", "T1"),
+    ("M16 the mark is applied to EVERY undo (the landing test dropped)", "jrn_app.c", '(dir > 0 || land)', '1', "T1"),
+    ("M17 the whole-press name is no longer 'Swap'", "jrn_app.c", 'else memcpy(name, "Swap", 5)', 'else memcpy(name, "Box move", 9)', "T2"),
+    ("M27 the landing lookup swallows a read fault", "jrn_app.c", "  if (rc == JRN_E_IO) return rc;\n  if (rc == 0 && strcmp(w.name", "  if (rc == 0 && strcmp(w.name", "T1b"),
+    ("M29 the group's undo name ignores the landing", "jrn_app.c", 'if (dir < 0 && land) memcpy(name, "Swap (half)", 12); else', 'if (0) memcpy(name, "Swap (half)", 12); else', "T1c"),
     ("M18 the toast truncates the marker", "pdna_box.c", 'redo ? "Redid: %.17s" : "Undid: %.17s"', 'redo ? "Redid: %.8s" : "Undid: %.8s"', "T4"),
     ("M20 the Party add scope is dropped", "pdna_main.c", '    if (landing) app_step_begin("Party add");\n', "", "P1a"),
     ("M21 the Party add scope opens AFTER the dex registration", "pdna_main.c", '    if (landing) app_step_begin("Party add");\n    app_mark_pc_dirty(); app_register_dex_deferred(p100, true); app_stage_sb1();',

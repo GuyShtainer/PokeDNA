@@ -597,10 +597,11 @@ static int ja_walk_load(const JrnSrc* src, const JrnRec* r) {
  * buffer, read in turn newest -> oldest: each older_pairs() runs against the signature of the step above it BEFORE that signature is replaced.
  * #321: every link must also be ADJACENT in sequence (older.seq + 1 == newer.seq): a real swap is two back-to-back commits, so a step with another branch's
  * records (an orphaned sibling, a cursor marker) between its seq and its parent's is two user actions that merely byte-match, and never pairs. */
-static int ja_group_at(uint32_t newest, unsigned max) {
+static int ja_group_at(uint32_t newest, unsigned max, uint32_t* below) {
   JrnRec rm, rn, rp;
   JrnSrc sm, sn, sp;
   int rc;
+  if (below) *below = 0;
   rc = ja_walk_locate(newest, &rm, &sm);
   if (rc) return rc < 0 ? rc : 0;
   if (!ja_newer_eligible(&rm)) return 0;
@@ -614,6 +615,7 @@ static int ja_group_at(uint32_t newest, unsigned max) {
   rc = ja_walk_load(&sn, &rn);
   if (rc) return rc < 0 ? rc : 0;
   if (!ja_older_pairs(&rn)) return 0;
+  if (below) *below = rn.parent;                              /* #325: the step an undo of this pair LANDS on */
   if (max < 3u || !rn.parent || rn.parent + 1u != rm.parent) return 2;
   rc = ja_walk_locate(rn.parent, &rp, &sp);
   if (rc) return rc < 0 ? rc : 2;
@@ -622,17 +624,42 @@ static int ja_group_at(uint32_t newest, unsigned max) {
   rc = ja_walk_load(&sp, &rp);
   if (rc) return rc < 0 ? rc : 2;
   if (!ja_older_pairs(&rp)) return 2;
+  if (below) *below = rp.parent;
   return 3;
 }
 
 /* How many steps does the NEXT chord press take (0 = one plain step; < 0 = a read fault, refuse -- #322)? dir < 0: the group at the cursor, newest-first; dir > 0: the group that BEGINS at the first
  * step toward the tip (c1): (c1,c2) when c2 is a Box move, (c1,c2,c3) when c3 is. The caller has flushed (an undo of a pending record pops it with no SD I/O:
  * see jrnapp_step). */
-static int ja_chord_pair(int dir) {
-  uint32_t t, cur = jrn_cursor(&s_j), p2 = 0, p3 = 0, hops, p1 = 0;
+/* #325: *land (an undo only) = 1 when the step the press LANDS on is named "Swap" -- an applied older half whose partner the press undoes -- so the image is on a half swap.
+ * It is resolved HERE, before anything moves: a read fault in the lookup is a refusal (JRN_E_IO, nothing moved), never a wrong toast. */
+static int ja_land_swap(uint32_t landing, int* land) {
+  JrnRec w;
+  int rc;
+  if (!landing) return 0;                                     /* the base image: nothing applied below */
+  rc = jrn_find(&s_j, landing, &w);
+  if (rc == JRN_E_IO) return rc;
+  if (rc == 0 && strcmp(w.name, "Swap") == 0) *land = 1;
+  return 0;
+}
+static int ja_chord_pair(int dir, int* land) {
+  uint32_t t, cur = jrn_cursor(&s_j), p2 = 0, p3 = 0, hops, p1 = 0, below = 0;
   int g, rc;
+  *land = 0;
   if (s_ai.slot < 0) return 0;                                /* Game Boy: no 80-byte slots, swaps are refused outright */
-  if (dir < 0) return cur ? ja_group_at(cur, JA_GROUP_MAX) : 0;
+  if (dir < 0) {
+    if (!cur) return 0;
+    g = ja_group_at(cur, JA_GROUP_MAX, &below);
+    if (g < 0) return g;
+    if (g < 2) {                                              /* a plain step: it lands on its own parent */
+      JrnRec w;
+      rc = jrn_find(&s_j, cur, &w);
+      if (rc == JRN_E_IO) return rc;
+      below = rc == 0 ? w.parent : 0;
+    }
+    rc = ja_land_swap(below, land);
+    return rc ? rc : g;
+  }
   for (t = jrn_tip(&s_j), hops = 0; t != cur; hops++) {
     JrnRec w;
     if (!t || hops >= JA_REDO_HOPS) return 0;
@@ -643,11 +670,11 @@ static int ja_chord_pair(int dir) {
   }
   if (!p1) return 0;
   if (p3) {
-    g = ja_group_at(p3, JA_GROUP_MAX);
+    g = ja_group_at(p3, JA_GROUP_MAX, 0);
     if (g < 0 || g == 3) return g;                            /* (p3,p2,p1) are exactly the three newest-first parent links; a fault refuses */
   }
   if (p2) {
-    g = ja_group_at(p2, 2u);
+    g = ja_group_at(p2, 2u, 0);
     if (g < 0) return g;
     if (g == 2) return 2;
   }
@@ -662,20 +689,21 @@ int jrnapp_step_pair(int dir, char name[25]) {
   char n1[25], n2[25];
   int rc, rb = JRN_OK;
   unsigned d, k;
-  int g;
+  int g, land = 0;
   if (name) name[0] = 0;
   if (!s_r || !s_r->j || s_state != JA_OK) return JRN_E_ARG;
   if (s_r->depth) return JRN_E_STATE;
   if (dir < 0 && jrn_pending(&s_j)) (void)jrnapp_flush();      /* same single flush jrnapp_step does, BEFORE the lookup (the src pointers must outlive it) */
-  g = ja_chord_pair(dir);
+  g = ja_chord_pair(dir, &land);
   if (g < 0) { ja_event("swap pair: a read fault in the group walk, the press is refused", g); return g; }   /* #322: nothing moved, never a smaller group */
   if (g < 2) {
     rc = jrnapp_step(dir, name);
-    /* #323: a whole swap press (g >= 2) names itself "Swap" below. A plain REDO that moved a step carrying the older half's name ("Swap", given only by drop_held's
-     * SWAP tail) applied ONE half without its partner (the party landing, D7 ruling 10; the redo hop cap): the image sits on a half swap, so the toast says so.
-     * A plain UNDO of that name lands pre-swap ONLY when the Swap's parent is not itself a Swap: a mid-chain Swap (4+-step chains, or a History jump into one)
-     * still leaves a half under a plain "Undid: Swap" toast -- a known toast-only residual; the image stays cursor-consistent. History's own labels are untouched. */
-    if (rc == JRN_OK && dir > 0 && name && strcmp(name, "Swap") == 0) memcpy(name, "Swap (half)", 12);
+    /* #323/#325: a whole swap press (g >= 2) names itself "Swap" below. A plain REDO that moved a step carrying the older half's name ("Swap", given only by drop_held's
+     * SWAP tail) applied ONE half without its partner (the redo hop cap, a History jump): the image sits on a half swap, so the toast says so (#323). A plain UNDO of a
+     * Swap lands pre-swap -- a whole image, plain name -- UNLESS the step it lands on is itself a Swap (a 4+-step chain, a History jump into a mid-chain Swap): that Swap is applied
+     * while its partner is undone, a half. ja_chord_pair resolved the landing step's name BEFORE anything moved (`land`; a read fault there refused the press), so the undo marks it
+     * the same way (#325). The party landing no longer needs the exception: it is a "Party add" and pairs (#320). History's own labels are untouched. */
+    if (rc == JRN_OK && name && strcmp(name, "Swap") == 0 && (dir > 0 || land)) memcpy(name, "Swap (half)", 12);
     return rc;
   }
   rc = jrnapp_step(dir, n1);
@@ -693,7 +721,7 @@ int jrnapp_step_pair(int dir, char name[25]) {
     if (name) memcpy(name, n2, 25);
     return rc;
   }
-  if (name) memcpy(name, "Swap", 5);
+  if (name) { if (dir < 0 && land) memcpy(name, "Swap (half)", 12); else memcpy(name, "Swap", 5); }   /* #325: a group undo that lands ON a Swap leaves a half */
   return JRN_OK;
 }
 
