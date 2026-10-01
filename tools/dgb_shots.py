@@ -6030,6 +6030,18 @@ def run_y19_s3(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessio
     s.run(200)
     SHOT("i_whole", "(i) re-applied: the swap is back and the box count is whole again (the 'before' number)")
 
+    # ---- (j) za #315: a swap pair whose second half is refused AND whose rollback fails (every card write dead) is a WARNING, not a
+    # success: the live VsdImage's fail_all_writes knob is armed right before the chord (the records are on the card already: the
+    # re-applied swap above). Expected: the 'HALF A SWAP' dialog (deny tone is audio: not visible), the grid re-fetched (one mon short,
+    # the image is on a CONSISTENT half state), NOT the 'Undid: Swap' toast. Then the card heals, a second SEL+L is a plain undo.
+    s.vsd_flush()
+    setattr(s.vsd.image, "fail_all_writes", True)
+    CHORD("L", "(j) card writes DEAD, then ONE SELECT+L on the re-applied swap: the second half / the rollback cannot be written",
+          tag="j_half", settle=120, claim=["HALF A SWAP", "Only half of the swap moved"], claim_absent=["Undid: Swap"])
+    s.vsd.image.fail_all_writes = False
+    T("A", "(j) A: dismiss the warning (if one is up)", settle=300)
+    SHOT("j_after", "(j) the grid after the warning")
+
     print("\n  frame checks (numbers, not impressions):")
     expect(bs is not None, "(c) the summary portrait changed after a lone SELECT (flip)")
     expect(gridcmp_nohand("base", "undo1") == 0, "(a) #303 ONE undo press: the grid is pixel-identical to BASE (no half-swap), hand cursor masked")
@@ -6037,6 +6049,7 @@ def run_y19_s3(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessio
     expect(gridcmp_nohand("edited", "undo1") > 0, "(a) the swap really changed the grid (the comparison above is not vacuous)")
     expect(gridcmp("i_swapped", "i_half") > 0, "(i) the undone grid differs from the swapped grid (the whole swap was undone)")
     expect(gridcmp_nohand("i_swapped", "i_whole") == 0, "(i) after the power cut + offer + A the grid is pixel-identical to the pre-undo swapped grid (hand cursor masked: it restarts on the first cell)")
+    expect(gridcmp_nohand("i_whole", "j_after") > 0, "(j) #315 the refused rollback left a HALF swap on the grid (the displaced mon is missing): the image DID change, which is why the dialog warns")
     print("\n  chord latency (frames from the L/R press to the toast/dialog on screen): " +
           ", ".join(f"{a.split('_', 1)[1]}={b}" for a, b in latency))
     print("\n  per-tap trace (rule 17): name | input | caption")
