@@ -122,6 +122,20 @@ def pins(src: dict[str, str]) -> list[tuple[str, bool]]:
     tw = [pw(x, w2) for x in ("Undid: Swap (half)", "Redid: Swap (half)")] if w2 else [999]
     out.append(("T3 (#323) both marked toasts fit 184 px (" + "/".join(str(x) for x in tw) + " px)", all(x <= 184 for x in tw)))
     out.append(("T4 (#323) the chord toast's %.17s keeps the whole marked name (11 chars)", 'redo ? "Redid: %.17s" : "Undid: %.17s"' in bx and len("Swap (half)") <= 17))
+    pb = body(m, "party_place_held") or ""
+    add = pb[:pb.find("SWAP with party")] if pb else ""
+    out.append(("P1a (#320) party_place_held's ADD arm opens the \"Party add\" scope exactly once, guarded by the no-origin test (orig_slot < 0 && !orig_bank)",
+                pb.count('app_step_begin("Party add")') == 1 and bool(re.search(r'landing\s*=\s*\(orig_slot < 0 && !orig_bank\)', pb)) and bool(re.search(r'if \(landing\) app_step_begin\("Party add"\)', pb))))
+    out.append(("P1b ... the scope opens BEFORE the dex registration and the SB1 staging (a new species' dex step must not eat the name) and closes AFTER them",
+                bool(add) and before(add, 'app_step_begin("Party add")', "app_register_dex_deferred(p100, true)") and before(add, "app_stage_sb1()", "app_step_end()")))
+    out.append(("P1c ... the scope opens after the last refusal of the ADD arm (party_append) and never in the SWAP arm",
+                bool(add) and before(add, "party_append(", 'app_step_begin("Party add")') and 'Party add' not in pb[pb.find("SWAP with party"):]))
+    out.append(("P2a (#320) jrn_app: only a plain step named \"Party add\" is a party landing; ja_group_at picks the signature by name",
+                re.search(r"ja_party_step\(const JrnRec\* r\)\s*\{[^}]*strcmp\(r->name, \"Party add\"\) == 0", jc) is not None and "ja_sig_newest(&rm)" in pc))
+    out.append(("P2b ... the Box move path keeps the empty-slot rule: ja_sig_newest hands a non-party newest half to ja_sig_make(r, 1)",
+                re.search(r"ja_sig_newest\(const JrnRec\* r\)\s*\{[^}]*ja_sig_make\(r, 1\)", jc) is not None))
+    out.append(("P2c ... the party prefix is the whole 80-byte box record (JA_PARTY_PREFIX == JA_MON_BYTES) and a landing may not touch the PC",
+                "#define JA_PARTY_PREFIX JA_MON_BYTES" in ja and bool(re.search(r"sp\.region >= JA_PC_FIRST && sp\.region <= JA_PC_LAST\) return 0", jc))))
     return out
 
 
@@ -155,6 +169,14 @@ MUTANTS: list[tuple[str, str, str, str, str]] = [
     ("M16 the mark is applied to undo too", "jrn_app.c", "rc == JRN_OK && dir > 0 && name", "rc == JRN_OK && name", "T1"),
     ("M17 the whole-press name is no longer 'Swap'", "jrn_app.c", 'memcpy(name, "Swap", 5)', 'memcpy(name, "Box move", 9)', "T2"),
     ("M18 the toast truncates the marker", "pdna_box.c", 'redo ? "Redid: %.17s" : "Undid: %.17s"', 'redo ? "Redid: %.8s" : "Undid: %.8s"', "T4"),
+    ("M20 the Party add scope is dropped", "pdna_main.c", '    if (landing) app_step_begin("Party add");\n', "", "P1a"),
+    ("M21 the Party add scope opens AFTER the dex registration", "pdna_main.c", '    if (landing) app_step_begin("Party add");\n    app_mark_pc_dirty(); app_register_dex_deferred(p100, true); app_stage_sb1();',
+     '    app_mark_pc_dirty(); app_register_dex_deferred(p100, true);\n    if (landing) app_step_begin("Party add");\n    app_stage_sb1();', "P1b"),
+    ("M22 every party ADD is named (the no-origin guard dropped)", "pdna_main.c", "bool landing = (orig_slot < 0 && !orig_bank);", "bool landing = true;", "P1a"),
+    ("M23 the Party add scope never closes before the return", "pdna_main.c", "    if (landing) app_step_end();\n", "", "P1b"),
+    ("M24 the party landing needs no name", "jrn_app.c", 'strcmp(r->name, "Party add") == 0; }\nstatic int ja_newer', 'strcmp(r->name, "Box move") != 0; }\nstatic int ja_newer', "P2a"),
+    ("M25 the Box move path loses its empty-slot rule", "jrn_app.c", "ja_party_step(r) ? ja_sig_party(r) : ja_sig_make(r, 1)", "ja_party_step(r) ? ja_sig_party(r) : ja_sig_make(r, 0)", "P2b"),
+    ("M26 the party prefix shrinks", "jrn_app.c", "#define JA_PARTY_PREFIX JA_MON_BYTES", "#define JA_PARTY_PREFIX 79u", "P2c"),
     ("M9 a too-wide second line", "pdna_box.c", '"Press again, or check the card."', '"Press again, or check the card and the cart slot."', "H5"),
 ]
 

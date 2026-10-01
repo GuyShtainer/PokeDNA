@@ -462,7 +462,10 @@ static int ja_mon_at(const JaSpan* sp, uint16_t i, uint32_t* slot, uint8_t* q) {
 static int ja_plain_step(const JrnRec* r) {
   return s_ai.slot >= 0 && r->kind == JRN_KIND_STEP && !r->aux && !r->crossed;
 }
-static int ja_newer_eligible(const JrnRec* r) { return ja_plain_step(r) && strcmp(r->name, "Box move") == 0; }
+/* #320: the NEWER (last) half is a "Box move" (a mon into an empty PC slot) OR a "Party add" (the displaced mon landing in the PARTY: pdna_main.c's party_place_held
+ * ADD arm names that step, only that tail does). The name picks the signature maker: a Party add has no empty-slot rule and no PC slot. */
+static int ja_party_step(const JrnRec* r) { return ja_plain_step(r) && strcmp(r->name, "Party add") == 0; }
+static int ja_newer_eligible(const JrnRec* r) { return ja_plain_step(r) && (strcmp(r->name, "Box move") == 0 || strcmp(r->name, "Party add") == 0); }
 static int ja_older_eligible(const JrnRec* r) { return ja_plain_step(r) && strcmp(r->name, "Swap") == 0; }
 
 /* From the record in s_rec (the NEWER half): fill s_sig. Returns s_sig.ok = "this step adds one mon into ONE slot" -- an EMPTY one when need_empty (a swap's
@@ -491,6 +494,39 @@ static int ja_sig_make(const JrnRec* r, int need_empty) {
   if (s_sig.slot < 0) s_sig.ok = 0;
   return s_sig.ok;
 }
+
+/* #320: the signature of a PARTY landing (the record in s_rec, named "Party add"): the displaced mon's 100-byte party record, whose first 80 bytes ARE its box record
+ * (box_to_party widens the box record; the prefix is byte-identical -- host-checked over species 1..411). Span-located, NO game knowledge: the landing's ONE SaveBlock1
+ * span of >= 80 added bytes carries the record (the party count byte is its own 1-byte span, the dex flags sit in section 0), and its FIRST 80 added bytes are the
+ * signature (all 80 known). A landing that touches a PC section, or holds two such spans, is not this shape. The empty-slot rule does NOT apply here (a stale party slot
+ * may hold bytes); the Box move path keeps it through ja_sig_make(r, 1). */
+#define JA_SB1_FIRST 1u
+#define JA_SB1_LAST  4u
+#define JA_PARTY_PREFIX JA_MON_BYTES
+static int ja_sig_party(const JrnRec* r) {
+  JaSpan sp;
+  uint16_t pos = JRN_REC_HDR, i;
+  uint8_t sn;
+  int found = 0;
+  memset(&s_sig, 0, sizeof s_sig);
+  s_sig.slot = -1;
+  for (sn = 0; sn < r->nspans; sn++) {
+    if (ja_span_at(r, &pos, &sp)) return 0;
+    if (sp.region >= JA_PC_FIRST && sp.region <= JA_PC_LAST) return 0;           /* a landing never touches the PC */
+    if (sp.region < JA_SB1_FIRST || sp.region > JA_SB1_LAST || sp.len < JA_PARTY_PREFIX) continue;
+    if (found) return 0;
+    found = 1;
+    for (i = 0; i < JA_PARTY_PREFIX; i++) {
+      s_sig.after[i] = s_rec[sp.after + i];
+      s_sig.known[i >> 3] = (uint8_t)(s_sig.known[i >> 3] | (1u << (i & 7u)));
+    }
+  }
+  if (!found) return 0;
+  s_sig.slot = -2; s_sig.ok = 1;
+  return 1;
+}
+/* The signature of the NEWEST half of a group, by its name. */
+static int ja_sig_newest(const JrnRec* r) { return ja_party_step(r) ? ja_sig_party(r) : ja_sig_make(r, 1); }
 
 /* The record in s_rec is the OLDER half: does it pair with the newer half's signature in s_sig? (predicate 3 + 4) */
 static int ja_older_pairs(const JrnRec* r) {
@@ -570,7 +606,7 @@ static int ja_group_at(uint32_t newest, unsigned max) {
   if (!ja_newer_eligible(&rm)) return 0;
   rc = ja_walk_load(&sm, &rm);
   if (rc) return rc < 0 ? rc : 0;
-  if (!ja_sig_make(&rm, 1)) return 0;
+  if (!ja_sig_newest(&rm)) return 0;
   if (!rm.parent || rm.parent + 1u != newest) return 0;
   rc = ja_walk_locate(rm.parent, &rn, &sn);
   if (rc) return rc < 0 ? rc : 0;
@@ -697,7 +733,7 @@ int jrnapp_history(JaHist* rows, int max, int* more, int* floor_hit) {
         ja_label(rows[n].name, " 1/3");
       }
       sig_kind = 0;
-      if (ja_newer_eligible(&rec) && ja_sig_make(&rec, 1)) sig_kind = 1;
+      if (ja_newer_eligible(&rec) && ja_sig_newest(&rec)) sig_kind = 1;
       else if (gl_prev && ja_sig_make(&rec, 0)) sig_kind = 2;   /* the head of a pair may itself be the newer side of a chain link */
       sig_ok = sig_kind != 0;
       prev_parent = rec.parent;
