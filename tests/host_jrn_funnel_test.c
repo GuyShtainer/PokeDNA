@@ -634,6 +634,111 @@ static void t_swap_pair_r1_mislabel(void) {
   CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && strcmp(nm, "Swap") == 0 && jrnapp_cursor() == 1u, "#314a control: the Swap name on the older half is what pairs ('%s', cursor %u)", safe(nm), (unsigned)jrnapp_cursor());
 }
 
+/* ---- za #314(b): CHAINED swaps. The displaced mon dropped on another OCCUPIED slot is itself a Swap drop (named "Swap", one slot REPLACED), so a chain of k
+ * swaps is k "Swap" steps and a last "Box move" into an empty slot; each link is byte-matched (the replaced bytes of step i == the bytes step i+1 adds).
+ * stage_chain(k): M0 at slot 10, M1..Mk at slots 11..10+k (k in 2..4), empty slot 30. Steps: Setup, Swap_1 (M0 -> slot 11, slot 10 cleared, M1 displaced),
+ * Swap_2 (M1 -> slot 12, M2 displaced), ..., Box move (Mk -> slot 30). snapS = before Swap_1, snapF = after the Box move. */
+static unsigned g_chain_base;   /* the cursor after the Setup steps = the step the chain's undo lands on */
+static int stage_chain(unsigned k, unsigned wrong_link) {
+  uint8_t m[6][MONB], w[MONB];
+  unsigned i;
+  for (i = 0; i <= k; i++) mon_fill(m[i], 1 + i);
+  mon_fill(w, 40);
+  memset(slot_at(30), 0, MONB);
+  for (i = 0; i <= k; i++) {                                  /* one Setup step per mon: all together would exceed ONE record (a chain, +seqs) */
+    memcpy(slot_at(10 + i), m[i], MONB);
+    if (!stage_pc("Setup")) return 0;
+  }
+  g_chain_base = k + 1u;
+  memcpy(snapS, sv, sizeof sv);
+  for (i = 0; i < k; i++) {                                   /* Swap_{i+1}: the held M_i replaces M_{i+1} at slot 11+i */
+    memcpy(slot_at(11 + i), (wrong_link && i == 1) ? w : m[i], MONB);
+    if (i == 0) memset(slot_at(10), 0, MONB);
+    if (!stage_drop1()) return 0;
+  }
+  memcpy(slot_at(30), m[k], MONB);
+  if (!stage_pc("Box move")) return 0;
+  memcpy(snapF, sv, sizeof sv);
+  return jrnapp_flush() == JRN_OK;
+}
+
+static void t_swap_chain3(void) {
+  char nm[25];
+  JaHist rows[8];
+  int n, more = 0, fh = 0;
+  CHECK(app_world_reset(), "world");
+  CHECK(stage_chain(2, 0), "stage a chained swap (setup, Swap, Swap, Box move)");
+  CHECK(jrnapp_tip() == g_chain_base + 3u, "Setup steps + Swap, Swap, Box move: tip %u", (unsigned)jrnapp_tip());
+  n = jrnapp_history(rows, 8, &more, &fh);
+  CHECK(n == 6 && strcmp(rows[0].name, "Box move 3/3") == 0 && strcmp(rows[1].name, "Swap 2/3") == 0 && strcmp(rows[2].name, "Swap 1/3") == 0 && strcmp(rows[3].name, "Setup") == 0,
+        "#314b History labels the three halves 1/3 2/3 3/3 ('%s' '%s' '%s')", n > 2 ? safe(rows[0].name) : "", n > 2 ? safe(rows[1].name) : "", n > 2 ? safe(rows[2].name) : "");
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && strcmp(nm, "Swap") == 0 && jrnapp_cursor() == g_chain_base, "#314b ONE undo press takes all three steps ('%s', cursor %u)", safe(nm), (unsigned)jrnapp_cursor());
+  CHECK(memcmp(sv, snapS, sizeof sv) == 0, "#314b the image is byte-exact the pre-chain image (no half state)");
+  CHECK(jrnapp_step_pair(1, nm) == JRN_OK && strcmp(nm, "Swap") == 0 && jrnapp_cursor() == g_chain_base + 3u, "#314b ONE redo press redoes all three ('%s', cursor %u)", safe(nm), (unsigned)jrnapp_cursor());
+  CHECK(memcmp(sv, snapF, sizeof sv) == 0, "#314b redo: byte-exact the post-chain image");
+  /* mid-chain: per-step undo of the Box move + Swap_2 (the History screen can), then the press redoes the remaining PAIR (Swap_2 is not Box move: it is the
+   * chain's tail, c1 = Swap_2 c2 = Box move) */
+  CHECK(jrnapp_step(-1, nm) == JRN_OK && jrnapp_step(-1, nm) == JRN_OK && jrnapp_cursor() == g_chain_base + 1u, "per-step undo down to Swap_1");
+  CHECK(jrnapp_step_pair(1, nm) == JRN_OK && strcmp(nm, "Swap") == 0 && jrnapp_cursor() == g_chain_base + 3u && memcmp(sv, snapF, sizeof sv) == 0, "#314b mid-chain: the redo press pairs Swap_2 + Box move ('%s', cursor %u)", safe(nm), (unsigned)jrnapp_cursor());
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && jrnapp_cursor() == g_chain_base, "#314b and the undo from the tip is the whole chain again");
+  jrnapp_flush();
+  CHECK(app_reopen() == 1, "reopen");
+}
+
+/* a chain of FOUR (3 Swaps + Box move): the group is capped at three steps; the press never reaches past the cap */
+static void t_swap_chain_cap(void) {
+  char nm[25];
+  CHECK(app_world_reset(), "world");
+  CHECK(stage_chain(3, 0), "stage 3 Swaps + a Box move");
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && jrnapp_cursor() == g_chain_base + 1u, "#314b a 4-step chain: the first press takes the newest THREE steps (cursor %u)", (unsigned)jrnapp_cursor());
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && jrnapp_cursor() == g_chain_base, "#314b the second press takes the remaining Swap alone (cursor %u)", (unsigned)jrnapp_cursor());
+  CHECK(memcmp(sv, snapS, sizeof sv) == 0, "the image is byte-exact the pre-chain image");
+  CHECK(jrnapp_step_pair(1, nm) == JRN_OK && jrnapp_cursor() == g_chain_base + 1u, "#314b redo: the lone Swap first (cursor %u)", (unsigned)jrnapp_cursor());
+  CHECK(jrnapp_step_pair(1, nm) == JRN_OK && jrnapp_cursor() == g_chain_base + 4u && memcmp(sv, snapF, sizeof sv) == 0, "#314b then the three-step group, byte-exact (cursor %u)", (unsigned)jrnapp_cursor());
+}
+
+/* the false-chain negative: Swap_2 drops a DIFFERENT mon than Swap_1 displaced -> the link is refuted by the bytes; only (Swap_2, Box move) pairs */
+static void t_swap_chain_wrong_link(void) {
+  char nm[25];
+  JaHist rows[8];
+  int n, more = 0, fh = 0;
+  CHECK(app_world_reset(), "world");
+  CHECK(stage_chain(2, 1), "stage Swap, Swap (places a DIFFERENT mon), Box move");
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && jrnapp_cursor() == g_chain_base + 1u, "#314b a refuted link: the press is the plain PAIR, not three steps (cursor %u)", (unsigned)jrnapp_cursor());
+  CHECK(jrnapp_step_pair(1, nm) == JRN_OK && jrnapp_cursor() == g_chain_base + 3u, "#314b ... and redo likewise (cursor %u)", (unsigned)jrnapp_cursor());
+  n = jrnapp_history(rows, 8, &more, &fh);
+  CHECK(n == 6 && strcmp(rows[0].name, "Box move 2/2") == 0 && strcmp(rows[1].name, "Swap 1/2") == 0 && strcmp(rows[2].name, "Swap") == 0,
+        "#314b History: only the pair is labelled ('%s' '%s' '%s')", n > 2 ? safe(rows[0].name) : "", n > 2 ? safe(rows[1].name) : "", n > 2 ? safe(rows[2].name) : "");
+}
+
+/* all-or-nothing across THREE steps: the third refused -> the two already applied are rolled back; and a refused rollback is the half-swap contract */
+static void t_swap_chain_rollback(void) {
+  char nm[25];
+  uint8_t before[G3_SAVE_FILE_SIZE], b;
+  static uint8_t snapH[G3_SAVE_FILE_SIZE];
+  CHECK(app_world_reset(), "world");
+  CHECK(stage_chain(2, 0), "stage the chain");
+  CHECK(sget(0, 5, 4 + 11 * MONB + 10, &b, 1) == 0, "read a byte of slot 11 (Swap_1's replaced slot)");
+  b ^= 0x40;
+  CHECK(sset(0, 5, 4 + 11 * MONB + 10, &b, 1) == 0, "corrupt it behind the journal's back: the OLDEST step's span no longer matches");
+  memcpy(before, sv, sizeof sv);
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_E_DIVERGED, "#314b the third step refused: DIVERGED");
+  CHECK(jrnapp_cursor() == g_chain_base + 3u && memcmp(sv, before, sizeof sv) == 0, "#314b both applied steps were rolled back: image byte-identical, cursor %u", (unsigned)jrnapp_cursor());
+  CHECK(app_world_reset(), "world");
+  CHECK(stage_chain(2, 0), "stage the chain again");
+  CHECK(jrnapp_step(-1, nm) == JRN_OK, "per-step undo of the newest step (the state the refused press leaves: one step applied)");
+  memcpy(snapH, sv, sizeof sv);
+  CHECK(app_world_reset(), "world");
+  CHECK(stage_chain(2, 0), "stage the chain a third time");
+  rd_fail_all_writes = 1;
+  {
+    int rc = jrnapp_step_pair(-1, nm);
+    rd_fail_all_writes = 0;
+    CHECK(rc == JRN_OK && strcmp(nm, "half a swap") == 0, "#314b a refused rollback in a 3-step group is the half-swap contract: rc %d '%s'", rc, safe(nm));
+    CHECK(jrnapp_cursor() == g_chain_base + 2u && memcmp(sv, snapH, sizeof sv) == 0, "#314b cursor %u (one step applied) and the image exactly the one-step-undone state (journal and image agree)", (unsigned)jrnapp_cursor());
+  }
+}
+
 static void t_swap_pair_history_labels(void) {
   JaHist rows[8];
   int n, more = 0, fh = 0;
@@ -867,6 +972,10 @@ int main(int argc, char** argv) {
     CHECK(app_world(file), "app world"); t_swap_pair_offer();
     CHECK(app_world(file), "app world"); t_swap_pair_history_labels();
     CHECK(app_world(file), "app world"); t_swap_pair_r1_mislabel();
+    CHECK(app_world(file), "app world"); t_swap_chain3();
+    CHECK(app_world(file), "app world"); t_swap_chain_cap();
+    CHECK(app_world(file), "app world"); t_swap_chain_wrong_link();
+    CHECK(app_world(file), "app world"); t_swap_chain_rollback();
     CHECK(app_world(file), "app world"); t_swap_pair_shape_and_rollback_failure();
     CHECK(app_world(file), "app world"); t_chain_through_app();
     CHECK(app_world(file), "app world"); t_chain_torn_contract();
