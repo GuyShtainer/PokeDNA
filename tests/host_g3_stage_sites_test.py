@@ -286,8 +286,8 @@ def wiring_pins_slice01() -> None:
         "flush_on_exit gate back to a PC-only reader": ("!imgf_exit_prompt(&g_img)) {", "!imgf_arena_ok(&g_img)) {"),   # the flush_on_exit gate (not the Settings SAVE FIRST check, #234 s4 D6)
         "drop no longer stages": ("img_pc_edited(&g_img, &g_rec, g_save, g_vinfo.slot, g_pc, can_stage);",
                                   "imgf_pc_edited(&g_img, false);"),
-        "commit_sb12 writes a section itself": ("bool app_commit_sb12(void) {\n  app_stage_sections(0, 0, g_sb2);",
-                                  "bool app_commit_sb12(void) {\n  gen3_write_full_section(g_save, g_vinfo.slot, 0, g_sb2);"),
+        "commit_sb12 writes a section itself": ("bool app_commit_sb12(void) {\n  if (app_partial_refuse()) return false;           /* D10/9.2 */\n  app_stage_sections(0, 0, g_sb2);",
+                                  "bool app_commit_sb12(void) {\n  if (app_partial_refuse()) return false;           /* D10/9.2 */\n  gen3_write_full_section(g_save, g_vinfo.slot, 0, g_sb2);"),   # z9: the latch consult is the function's first line
         "arena gate dropped": ("if (!imgf_arena_ok(&g_img)) return NULL;", ""),
     }
     for name, (old, new) in muts.items():
