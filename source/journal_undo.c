@@ -192,7 +192,11 @@ int jrn_undo(Jrn* j, const JrnImage* img, JrnRec* undone) {
   rc = jrn_i_locate(j, j->cursor, &r, &s);
   if (rc) return rc;
   if (r.crossed) return JRN_E_CROSSED;                      /* an undo FLOOR (D6) */
-  if (r.parent && jrn_i_locate(j, r.parent, &pr, &ps) != 0) return JRN_E_FLOOR;   /* orphan floor */
+  if (r.parent) {
+    rc = jrn_i_locate(j, r.parent, &pr, &ps);
+    if (rc == JRN_E_IO) return rc;                          /* #317: a flaky read is an I/O error, not "crossed into another file" */
+    if (rc) return JRN_E_FLOOR;                             /* orphan floor */
+  }
   pending = s.ram != 0;
   if (pending) {
     rc = jrn_i_pend_last(j, &start, &lastr);

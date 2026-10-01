@@ -786,6 +786,47 @@ static void t_read_fault_apply_atomic(void) {
   printf("  #316 sweep: %u fault points over 3 formats x undo/redo, %u loud, %u torn\n", n_points, loud, torn);
 }
 
+/* BACKLOG #317: a read fault during jrn_undo's PARENT locate is an I/O error, never the crossed-floor refusal. Two
+ * steps, flushed, reopened so every locate reads the CARD; undo the second (its parent is the first) with one transient
+ * read error swept over every sector read of the press. Every non-OK result must be JRN_E_IO (the image untouched, the
+ * cursor unmoved); a JRN_E_FLOOR here means the fault was misreported as "crossed into another file". */
+static void t_parent_locate_fault_is_io(void) {
+  static const BYTE fmts[3] = { FM_FAT, FM_FAT32, FM_EXFAT };
+  static uint8_t base[NREG][RSZ], post[NREG][RSZ], old_b[RSZ];
+  unsigned fi, floors = 0, ios = 0, n_points = 0;
+  for (fi = 0; fi < 3; fi++) {
+    Jrn j; unsigned long R, r0; long k; int rc; uint32_t cur0;
+    world(&j, fmts[fi]);
+    memcpy(base, g_img, sizeof g_img);
+    memcpy(old_b, g_img[2], RSZ); memset(g_img[2] + 10, 0x5A, 20);
+    CHECK(jrn_step_begin(&j, "one", 0) == JRN_OK && jrn_step_region(&j, 2, old_b, g_img[2]) == JRN_OK && jrn_step_end(&j) == JRN_OK, "#317 step one");
+    memcpy(old_b, g_img[5], RSZ); memset(g_img[5] + 20, 0x6B, 20);
+    CHECK(jrn_step_begin(&j, "two", 0) == JRN_OK && jrn_step_region(&j, 5, old_b, g_img[5]) == JRN_OK && jrn_step_end(&j) == JRN_OK && jrn_flush(&j) == JRN_OK, "#317 step two + flush");
+    memcpy(post, g_img, sizeof g_img);
+    CHECK(jopen(&j, K) == JRN_OK, "#317 reopen so the locates read the CARD");
+    rd_snapshot();
+    r0 = rd_reads;
+    CHECK(jrn_undo(&j, &IMG, 0) == JRN_OK, "#317 the healthy press");
+    R = rd_reads - r0;
+    for (k = 0; k < (long)R + 2; k++) {
+      rd_restore(); memcpy(g_img, post, sizeof g_img); card_remount();
+      CHECK(jopen(&j, K) == JRN_OK, "#317 reopen k=%ld", k);
+      cur0 = jrn_cursor(&j);
+      rd_fail_read_at = k;
+      rc = jrn_undo(&j, &IMG, 0);
+      rd_fail_read_at = -1;
+      n_points++;
+      if (rc == JRN_OK) continue;
+      if (rc == JRN_E_FLOOR) floors++;
+      if (rc == JRN_E_IO) ios++;
+      CHECK(rc == JRN_E_IO && jrn_cursor(&j) == cur0 && memcmp(g_img, post, sizeof g_img) == 0,
+            "#317 fmt %u fault at sector %ld: rc %d (want JRN_E_IO), image/cursor must be untouched", fi, k, rc);
+    }
+  }
+  CHECK(floors == 0 && ios > 10, "#317: %u fault points misreported as a crossed floor, %u honest I/O errors", floors, ios);
+  printf("  #317 sweep: %u fault points over 3 formats, %u I/O errors, %u misreported as FLOOR\n", n_points, ios, floors);
+}
+
 /* #316 review: the record's own CRC is the ONE check between the RAM copy and the image. A record whose BODY rots
  * on the card after open (header intact, so locate still finds it) must be refused: JRN_E_STATE, image untouched,
  * cursor unmoved -- never a pass 2 that writes the rotted `before` bytes into the image. */
@@ -985,6 +1026,7 @@ int main(void) {
   t_roundtrip_undo_redo();
   t_two_pass_no_partial();
   t_read_fault_apply_atomic();
+  t_parent_locate_fault_is_io();
   t_rotted_record_refused();
   t_pending_pop_and_overflow();
   t_crossed_floors();
