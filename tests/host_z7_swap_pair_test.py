@@ -106,7 +106,7 @@ def main() -> int:
     J = "jrn_app.c"
     must_fail("funnel", "A1", "pair predicate never fires", [(J, "return ja_older_pairs(&rn);", "return 0;")])
     must_fail("funnel", "A2", "replaced-slot rule relaxed", [(J, "if (nrep != 1u) return 0;", "if (nrep > 1u) return 0;")])
-    must_fail("funnel", "A3", "crossed ignored", [(J, "r->kind == JRN_KIND_STEP && !r->aux && !r->crossed &&", "r->kind == JRN_KIND_STEP && !r->aux &&")])
+    must_fail("funnel", "A3", "crossed ignored", [(J, "!r->aux && !r->crossed;", "!r->aux;")])
     must_fail("funnel", "A4", "mismatch tolerated", [(J, "if (s_rec[sp.before + i] != s_sig.after[q]) return 0;", "if (s_rec[sp.before + i] != s_sig.after[q]) continue;")])
     must_fail("funnel", "A5", "minimum compared bytes dropped", [(J, "return match >= JA_MATCH_MIN;", "return match >= 1u;")])
     must_fail("funnel", "A6", "no rollback", [(J, "rb = jrnapp_step(-dir, 0);", "rb = JRN_OK;")])

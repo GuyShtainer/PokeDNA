@@ -127,7 +127,7 @@ def pins(src: dict[str, str]) -> list[tuple[str, bool]]:
     out.append(("P3f the exit confirm's A reaches the latch: flush_on_exit -> app_xfer_save_now -> app_commit_pc",
                 "app_xfer_save_now()" in (body(m, "flush_on_exit") or "") and "app_commit_pc()" in (body(m, "app_xfer_save_now") or "")))
     ch = body(bx, "box_chord_action") or ""
-    seg = ch[ch.find("AUR_PARTIAL"):].split("else if (rc == AUR_ARENA)")[0] if "AUR_PARTIAL" in ch else ""
+    seg = re.split(r"else if \(rc == AUR_(?:ARENA|HALF)\)", ch[ch.find("AUR_PARTIAL"):])[0] if "AUR_PARTIAL" in ch else ""   # za #315: AUR_HALF's branch follows AUR_PARTIAL's
     out.append(("P4a box_chord_action has an AUR_PARTIAL branch that is a refuse dialog", "AUR_PARTIAL" in ch and "chord_refuse(" in seg))
     out.append(("P4b the AUR_PARTIAL branch plays NO snd_ok and returns BCA_CHANGED", bool(seg) and "snd_ok" not in seg and "return BCA_CHANGED" in seg))
     out.append(("P4c the AUR_DONE success path still toasts with snd_ok (control: the pin is not 'no snd_ok anywhere')",

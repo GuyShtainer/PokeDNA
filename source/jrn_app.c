@@ -456,9 +456,14 @@ static int ja_mon_at(const JaSpan* sp, uint16_t i, uint32_t* slot, uint8_t* q) {
   return 1;
 }
 
-static int ja_pair_eligible(const JrnRec* r) {
-  return s_ai.slot >= 0 && r->kind == JRN_KIND_STEP && !r->aux && !r->crossed && strcmp(r->name, "Box move") == 0;   /* aux != 0: a chain head -- its first record holds only part of the spans, so it never pairs (D10) */
+/* A record that may be a pair's half: a plain step (not crossed, not a chain head: aux != 0 holds only part of the spans, D10) on a Gen-3 image.
+ * The NEWER half is named "Box move" (the drop-2 scope or the unscoped put-away default); the OLDER half carries the name drop_held's SWAP tail
+ * gives it ("Swap", #314a) -- the name that separates a real swap from two same-shaped unscoped commits (the R1 mislabel). */
+static int ja_plain_step(const JrnRec* r) {
+  return s_ai.slot >= 0 && r->kind == JRN_KIND_STEP && !r->aux && !r->crossed;
 }
+static int ja_newer_eligible(const JrnRec* r) { return ja_plain_step(r) && strcmp(r->name, "Box move") == 0; }
+static int ja_older_eligible(const JrnRec* r) { return ja_plain_step(r) && strcmp(r->name, "Swap") == 0; }
 
 /* From the record in s_rec (the NEWER half): fill s_sig. Returns s_sig.ok = "this step adds one mon into one empty slot". */
 static int ja_sig_make(const JrnRec* r) {
@@ -552,8 +557,8 @@ static int ja_chord_pair(int dir) {
     older = p1; newer = p2;
     if (!older || !newer || jrn_i_locate(&s_j, newer, &rm, &sm) != 0) return 0;
   }
-  if (!older || !ja_pair_eligible(&rm) || rm.parent != older) return 0;
-  if (jrn_i_locate(&s_j, older, &rn, &sn) != 0 || !ja_pair_eligible(&rn)) return 0;
+  if (!older || !ja_newer_eligible(&rm) || rm.parent != older) return 0;
+  if (jrn_i_locate(&s_j, older, &rn, &sn) != 0 || !ja_older_eligible(&rn)) return 0;
   if (ja_rec_load(&sm, &rm) != 0 || !ja_sig_make(&rm)) return 0;
   if (ja_rec_load(&sn, &rn) != 0) return 0;
   return ja_older_pairs(&rn);
@@ -611,12 +616,12 @@ int jrnapp_history(JaHist* rows, int max, int* more, int* floor_hit) {
     rows[n].ahead = (uint8_t)ahead;
     rows[n].saved = (uint8_t)saved_seen;
     memcpy(rows[n].name, rec.name, 24); rows[n].name[24] = 0;
-    if (ja_pair_eligible(&rec) && ja_rec_load(&src, &rec) == 0) {   /* one record read serves both the older-half test and the next newer-half signature */
-      if (sig_ok && prev_parent == t && n > 0 && ja_older_pairs(&rec)) {
+    if ((ja_older_eligible(&rec) || ja_newer_eligible(&rec)) && ja_rec_load(&src, &rec) == 0) {   /* one record read serves both the older-half test and the next newer-half signature */
+      if (sig_ok && prev_parent == t && n > 0 && ja_older_eligible(&rec) && ja_older_pairs(&rec)) {
         ja_label(rows[n - 1].name, " 2/2");
         ja_label(rows[n].name, " 1/2");
       }
-      sig_ok = ja_sig_make(&rec);
+      sig_ok = ja_newer_eligible(&rec) && ja_sig_make(&rec);
       prev_parent = rec.parent;
     } else sig_ok = 0;
     n++;

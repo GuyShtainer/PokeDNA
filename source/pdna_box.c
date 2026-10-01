@@ -2063,6 +2063,7 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
   if (bc_is_native(recs + (uint32_t)cur * 80) && !bc_is_native(s_held)) { snd_deny(); return recs; }
   if (s_orig_slot >= 0 && s_orig_box != box && src->scope == BOXSCOPE_BANK) { snd_deny(); return recs; }  /* the REAL Bank's cross-box swap is unsafe (S1 review D1 companion); GB swaps arrive with S3's move_within */
   if (src->note_add) src->note_add(s_held);                                /* placed mon enters this scope -> dex */
+  app_step_name("Swap");                 /* #314a: the older half of a swap pair is named so (one-shot, dies with the drop's scope): the pair walk requires it */
   uint8_t occ[80]; memcpy(occ, recs + (uint32_t)cur * 80, 80);             /* save the occupant */
   memcpy(recs + (uint32_t)cur * 80, s_held, 80);                           /* place the held mon at the cursor */
   src->mark_dirty();

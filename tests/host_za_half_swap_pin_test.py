@@ -11,6 +11,9 @@ pdna_box.c, GBA halves the host cannot compile) as SOURCE TEXT, and proves each 
       the branch never sets the PARTIAL latch (imgf_partial_set) and never returns AUR_PARTIAL.
   H3  box_chord_action has an AUR_HALF branch: a refuse dialog (warn), NO snd_ok, returns BCA_CHANGED (the image DID change).
   H4  the success path still toasts with snd_ok (control: the pin is not 'no snd_ok anywhere'); the AUR_PARTIAL branch is intact.
+  S1  (#314a) drop_held's SWAP tail names the step: app_step_name("Swap") sits AFTER the last early refusal of the occupied-cell path and BEFORE
+      the destination write + mark_dirty (so the one-shot lands on the step that records the swap's older half), exactly once.
+  S2  (#314a) jrn_app.c requires that name on the OLDER half of a pair ("Swap") and keeps "Box move" for the newer half.
   H5  every new dialog string is <= 184 px wide (ui_ptext_fit's clamp), measured with source/ui_font.c's own width table.
 
 Run: python3 tests/host_za_half_swap_pin_test.py   (exit 0 = every pin holds on the real tree AND every mutant is caught)
@@ -93,11 +96,28 @@ def pins(src: dict[str, str]) -> list[tuple[str, bool]]:
     strs = re.findall(r'chord_refuse\("(HALF A SWAP)",\s*"([^"]*)",\s*"([^"]*)"\)', bs)
     ok = bool(w) and len(w) >= 96 and bool(strs) and all(pw(x, w) <= 184 for t in strs for x in t)
     out.append(("H5 every new dialog string fits ui_ptext_fit's 184 px clamp" + (" (" + ", ".join(f"{pw(x, w)}" for t in strs for x in t) + " px)" if strs and w else ""), ok))
+    db = body(bx, "drop_held") or ""
+    anchor = "bc_is_native(recs + (uint32_t)cur * 80) && !bc_is_native(s_held)"
+    tail = db[db.find(anchor):] if anchor in db else ""
+    i_name = tail.find('app_step_name("Swap")')
+    i_dirty = tail.find("src->mark_dirty()")
+    i_guard = tail.rfind("snd_deny(); return recs;", 0, i_name if i_name >= 0 else 0)
+    out.append(("S1a drop_held's SWAP tail calls app_step_name(\"Swap\") exactly once, before the destination write + mark_dirty",
+                db.count('app_step_name("Swap")') == 1 and 0 <= i_name < i_dirty and i_name < tail.find("memcpy(recs + (uint32_t)cur * 80, s_held, 80)")))
+    out.append(("S1b ... and after the last early refusal of the occupied path (a refused swap must not leave a rename behind)", i_guard >= 0 and i_guard < i_name))
+    ja = src["jrn_app.c"]
+    jc = strip_comments(ja)
+    out.append(("S2a the older half must be named \"Swap\" (ja_older_eligible), the newer half \"Box move\"",
+                re.search(r"ja_older_eligible\(const JrnRec\* r\)\s*\{[^}]*strcmp\(r->name, \"Swap\"\) == 0", jc) is not None
+                and re.search(r"ja_newer_eligible\(const JrnRec\* r\)\s*\{[^}]*strcmp\(r->name, \"Box move\"\) == 0", jc) is not None))
+    pc = body(ja, "ja_chord_pair") or ""
+    out.append(("S2b ja_chord_pair judges the older half with ja_older_eligible and the newer half with ja_newer_eligible",
+                "ja_older_eligible(&rn)" in pc and "ja_newer_eligible(&rm)" in pc))
     return out
 
 
 def load() -> dict[str, str]:
-    return {n: (S / n).read_text() for n in ("pdna_main.c", "pdna_box.c", "pdna_app.h")}
+    return {n: (S / n).read_text() for n in ("pdna_main.c", "pdna_box.c", "pdna_app.h", "jrn_app.c")}
 
 
 def mut(src: dict[str, str], f: str, old: str, new: str) -> dict[str, str]:
@@ -116,6 +136,11 @@ MUTANTS: list[tuple[str, str, str, str, str]] = [
     ("M6 the chord's half-swap branch returns BCA_NONE", "pdna_box.c", "return BCA_CHANGED;                                      /* the image DID change, but it is a CONSISTENT half", "return BCA_NONE;                                      /* the image DID change, but it is a CONSISTENT half", "H3b"),
     ("M7 the chord has no AUR_HALF branch", "pdna_box.c", "} else if (rc == AUR_HALF) {", "} else if (rc == 9998) {", "H3a"),
     ("M8 the half-swap branch latches PARTIAL in the chord", "pdna_box.c", 'chord_refuse("HALF A SWAP"', 'imgf_partial_set(&g_img); chord_refuse("HALF A SWAP"', "H3c"),
+    ("M12 the older half no longer needs the Swap name", "jrn_app.c", 'strcmp(r->name, "Swap") == 0; }', 'strcmp(r->name, "Box move") == 0; }', "S2a"),
+    ("M13 the pair walk judges the older half with the newer rule", "jrn_app.c", "!ja_older_eligible(&rn)", "!ja_newer_eligible(&rn)", "S2b"),
+    ("M10 the Swap one-shot is dropped from drop_held", "pdna_box.c", '  app_step_name("Swap");', "", "S1a"),
+    ("M11 the Swap one-shot is set BEFORE the early refusals", "pdna_box.c", '  if (s_orig_slot >= 0 && s_orig_box != box && src->scope == BOXSCOPE_BANK) { snd_deny(); return recs; }',
+     '  app_step_name("Swap");\n  if (s_orig_slot >= 0 && s_orig_box != box && src->scope == BOXSCOPE_BANK) { snd_deny(); return recs; }', "S1"),
     ("M9 a too-wide second line", "pdna_box.c", '"Press again, or check the card."', '"Press again, or check the card and the cart slot."', "H5"),
 ]
 
