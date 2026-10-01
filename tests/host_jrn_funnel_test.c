@@ -739,6 +739,58 @@ static void t_swap_chain_rollback(void) {
   }
 }
 
+/* ---- za #314(c): the two caps the z7 review left unpinned -------------------------------------------------------------------------------------------------
+ * M5, the redo walk's 64-hop cap (JA_REDO_HOPS): a redo pairs only while the cursor is within 64 steps of the tip (D = steps above the cursor); at D = 64 it
+ * pairs, at D = 65 it is a plain one-step redo. P plain "Edit" steps (a byte toggled outside every mon slot) sit above a swap; the cursor is put on the Setup
+ * step with per-step undos, so D = P + 2.
+ * M7, the four-slot cap (JA_PAIR_SLOTS): an OLDER half that touches at most 4 distinct mon slots can pair; a fifth refuses it. */
+static int stage_hops(unsigned plain) {
+  unsigned i;
+  if (!stage_swap(10, 11, 12)) return 0;
+  for (i = 0; i < plain; i++) {
+    pc[30000u] = (uint8_t)(pc[30000u] + 1u);                                         /* region 11, past the mon area: never a swap half, never a mon slot */
+    if (!stage_pc("Edit")) return 0;
+  }
+  return jrnapp_flush() == JRN_OK;
+}
+static void t_swap_redo_hop_cap(void) {
+  char nm[25];
+  unsigned plain, d, i, want_cur;
+  for (plain = 62; plain <= 63; plain++) {
+    CHECK(app_world_reset(), "world");
+    CHECK(stage_hops(plain), "stage a swap with %u plain steps above it", plain);
+    d = plain + 2u;                                                         /* steps above the Setup step */
+    CHECK(jrnapp_tip() == 1u + 2u + plain, "tip %u", (unsigned)jrnapp_tip());
+    for (i = 0; i < d; i++) { if (jrnapp_step(-1, nm) != JRN_OK) break; }
+    CHECK(i == d && jrnapp_cursor() == 1u, "per-step undo down to the Setup step (%u undone, cursor %u)", i, (unsigned)jrnapp_cursor());
+    want_cur = d <= 64u ? 3u : 2u;                                          /* paired (cursor over both halves) or plain (one step) */
+    CHECK(jrnapp_step_pair(1, nm) == JRN_OK && jrnapp_cursor() == want_cur,
+          "#314c D = %u: the redo %s (cursor %u, want %u)", d, d <= 64u ? "PAIRS" : "is a plain step", (unsigned)jrnapp_cursor(), want_cur);
+  }
+}
+
+static void t_swap_slot_cap(void) {
+  char nm[25];
+  uint8_t x[MONB], y[MONB], e[MONB];
+  unsigned extra;
+  mon_fill(x, 1); mon_fill(y, 2); mon_fill(e, 7);
+  for (extra = 2; extra <= 3; extra++) {                                    /* the older half touches 2 + extra slots: A, B and `extra` more (4 or 5) */
+    unsigned i;
+    CHECK(app_world_reset(), "world");
+    memcpy(slot_at(10), x, MONB); memcpy(slot_at(11), y, MONB);
+    CHECK(stage_pc("Setup"), "setup X, Y");
+    for (i = 0; i < extra; i++) { memcpy(slot_at(20 + i), e, MONB); memset(slot_at(20 + i), 0, 8); }   /* extras whose first 8 bytes are zero: a 0 -> non-zero fill is no REPLACED slot */
+    CHECK(stage_pc("Setup"), "setup the extras");
+    memcpy(slot_at(11), x, MONB); memset(slot_at(10), 0, MONB);
+    for (i = 0; i < extra; i++) memcpy(slot_at(20 + i), e, MONB);           /* the older step fills those 8 bytes in each extra slot (a SPARSE touch: the step stays ONE record) */
+    CHECK(stage_drop1(), "the older half touches %u distinct slots", 2u + extra);
+    memcpy(slot_at(12), y, MONB); CHECK(stage_pc("Box move"), "drop 2");
+    CHECK(jrnapp_flush() == JRN_OK, "flush");
+    CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && jrnapp_cursor() == (extra == 2u ? 2u : 3u),
+          "#314c an older half touching %u slots %s (cursor %u)", 2u + extra, extra == 2u ? "pairs (the cap is 4)" : "is refused (a fifth slot)", (unsigned)jrnapp_cursor());
+  }
+}
+
 static void t_swap_pair_history_labels(void) {
   JaHist rows[8];
   int n, more = 0, fh = 0;
@@ -972,6 +1024,8 @@ int main(int argc, char** argv) {
     CHECK(app_world(file), "app world"); t_swap_pair_offer();
     CHECK(app_world(file), "app world"); t_swap_pair_history_labels();
     CHECK(app_world(file), "app world"); t_swap_pair_r1_mislabel();
+    CHECK(app_world(file), "app world"); t_swap_redo_hop_cap();
+    CHECK(app_world(file), "app world"); t_swap_slot_cap();
     CHECK(app_world(file), "app world"); t_swap_chain3();
     CHECK(app_world(file), "app world"); t_swap_chain_cap();
     CHECK(app_world(file), "app world"); t_swap_chain_wrong_link();

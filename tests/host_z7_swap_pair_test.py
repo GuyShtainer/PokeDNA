@@ -123,6 +123,11 @@ def main() -> int:
     must_fail("funnel", "C6", "the rollback undoes only one of the applied steps", [(J, "for (k = 0; k < d && rb == JRN_OK; k++)", "for (k = 0; k < 1u && rb == JRN_OK; k++)")])
     must_fail("funnel", "C7", "History never relabels a triple", [(J, "        ja_relabel(rows[n - 2].name, \" 3/3\");\n", "")])
     must_fail("funnel", "C8", "the cap lowered to 2 (no chained group forms)", [(J, "#define JA_GROUP_MAX 3u", "#define JA_GROUP_MAX 2u")])
+    must_fail("funnel", "M5a", "redo hop cap raised to 4096", [(J, "#define JA_REDO_HOPS  64u", "#define JA_REDO_HOPS  4096u")])
+    must_fail("funnel", "M5b", "redo hop cap off by one (hops > cap)", [(J, "hops >= JA_REDO_HOPS) return 0;", "hops > JA_REDO_HOPS) return 0;")])
+    must_fail("funnel", "M5c", "redo hop cap off by one the other way (cap - 1)", [(J, "hops >= JA_REDO_HOPS) return 0;", "hops >= JA_REDO_HOPS - 1u) return 0;")])
+    must_fail("funnel", "M7a", "pair slot cap raised to 8", [(J, "#define JA_PAIR_SLOTS  4u", "#define JA_PAIR_SLOTS  8u")])
+    must_fail("funnel", "M7b", "pair slot cap lowered to 3", [(J, "#define JA_PAIR_SLOTS  4u", "#define JA_PAIR_SLOTS  3u")])
     must_fail("funnel", "R1", "the older half no longer needs the Swap name (the R1 mislabel returns)", [(J, "strcmp(r->name, \"Swap\") == 0; }", "strcmp(r->name, \"Box move\") == 0 || strcmp(r->name, \"Swap\") == 0; }")])
     G = "gb_jkey.c"
     must_fail("gb", "A10", "GB guard dropped", [(J, "if (s_ai.slot < 0) return 0;                                /* Game Boy: no 80-byte slots, swaps are refused outright */", ""), (J, "return s_ai.slot >= 0 && r->kind", "return r->kind")])
