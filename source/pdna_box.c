@@ -4627,6 +4627,10 @@ static int __attribute__((noinline)) box_chord_action(int ev, char toast[26], bo
   if (rc == AUR_FLOOR) {                                     /* D6: a crossed step is a floor -- never patched, never guessed */
     siprintf(l1, redo ? "Redo stops before %.16s." : "Can't undo %.19s.", name[0] ? name : "a transfer");
     chord_refuse(redo ? "REDO STOPS" : "CAN'T UNDO", l1, redo ? "It crossed files: redo it by hand." : "It crossed into another file.");
+  } else if (rc == AUR_PARTIAL) {                            /* D10 ruling 9.3: a TORN chain -- a WARNING, never the success toast */
+    chord_refuse("PARTIAL STEP", "A step was only partly applied:", "exit without saving it.");
+    *need_full = true; s_oam_reload = true;
+    return BCA_CHANGED;                                      /* the image DID change (app_undo_redo re-derived + latched it): the caller re-fetches */
   } else if (rc == AUR_ARENA) {                              /* T5 */
     chord_refuse(verb, "The box data is on loan to", "another screen. Leave and retry.");
   } else if (rc == AUR_DIVERGED) {                           /* D5: the engine verified, the image no longer matches: never patch blind */
