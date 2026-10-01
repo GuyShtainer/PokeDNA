@@ -43,7 +43,7 @@ static uint8_t* slurp(const char* path, uint32_t* n) {
   return b;
 }
 
-static _Alignas(4) uint8_t g_buf[8192];
+static _Alignas(8) uint8_t g_buf[8192];
 static uint16_t g_ref[2][ROM_TYPE_TYPES][ROM_TYPE_BADGE_MAX_PX];
 
 /* every badge decoded the plain way (own scratch, no memo) -- the pixels the memo must match */
@@ -97,8 +97,10 @@ int main(int argc, char** argv) {
 
   /* 4. a failed load (unreadable card) leaves nothing live: the next call reloads */
   epoch++; memset(g_buf, 0x5A, 1152);
+  uint32_t e_fail = epoch;
   ie.fail = 1; px = rom_type_badge_memo(&ra, g_buf, sizeof g_buf, &epoch, 5); ie.fail = 0;
   CHK(px == 0, "a failed sheet load returns NULL");
+  CHK(epoch == e_fail + 1u, "a FAILED call still claims the buffer (epoch %u -> %u)", e_fail, epoch);
   r0 = ie.reads; px = rom_type_badge_memo(&ra, g_buf, sizeof g_buf, &epoch, 5);
   CHK(same(px, g_ref[0][5]) && ie.reads > r0, "after a failed load the next call reloads (%ld reads)", ie.reads - r0);
 
