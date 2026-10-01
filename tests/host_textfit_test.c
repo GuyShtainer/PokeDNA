@@ -1799,16 +1799,15 @@ int main(void) {
    * coincidentally-equal literal) is what makes them apply, so no separate numeric check
    * was added here.
    *
-   * A DIFFERENT boundary was investigated and is RESIDUAL, stated rather than hidden
-   * (pdna_pick.c's ROW REPAINT RULE names the same class): PDNA_MV_VIS rows at
-   * PDNA_FILT_ROW_H pitch put row 8's ink at y=86..93 (PDNA_FILT_Y0 + 8*9 .. +8-1),
-   * 2 px INTO PDNA_MV_DETAIL_Y=92's panel rect. This is not a bug -- pick_move's own
-   * `full`/`mid != prev_mid` gating means the detail panel redraws in the SAME pass as
-   * every row-8 draw (any `top` change forces `full`; any `sel` change changes `mid`,
-   * since the list holds no duplicate move ids), so the panel's opaque fill always paints
-   * over those 2 scanlines after mv_row does. A chkv here would need a hand-tuned "+2 px
-   * is fine, more is not" fudge factor to pass without asserting the real invariant (paint
-   * order, which a static geometry check cannot see) -- worse than not adding one. */
+   * BACKLOG #329 (the earlier "residual, not a bug" note here was WRONG): with 9 rows,
+   * row 8's ink sat at y=86..93, 2 px INTO PDNA_MV_DETAIL_Y=92's panel. The panel's opaque
+   * fill does paint after the row, so those two scanlines were not "arbitrated" -- they
+   * were CUT, and the selected row (always the one scrolled to the bottom) lost its
+   * descenders and bar. The window is now PDNA_MV_VIS=8, and the geometry check below is
+   * the real invariant: the last row's bar must end above the panel's top rule. */
+  chkv("move picker last row's bar ends above the detail panel",
+       PDNA_FILT_Y0 + (PDNA_MV_VIS - 1) * PDNA_FILT_ROW_H + PDNA_FILT_BAR_DY + PDNA_FILT_BAR_H - 1,
+       PDNA_MV_DETAIL_Y - 1);
 
   /* GAP, stated rather than faked: that the bar is ui_fill_rect and NOT ui_panel is a
    * property of filt_bar()'s body, and no header can carry it. The two invariants above

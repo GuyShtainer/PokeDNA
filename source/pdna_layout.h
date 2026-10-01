@@ -386,7 +386,7 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * pdna_pick.c) so a future PDNA_FILT_ROW_H change is checked against THIS boundary too,
  * not just the filter lists' own footer -- the exact class of gap host_textfit_test's
  * "filter list last row ink" check exists to catch for the other two lists. */
-#define PDNA_MV_VIS          9                /* rows in pick_move's window            */
+#define PDNA_MV_VIS          8                /* rows in pick_move's window (BACKLOG #329: 9 put row 8's ink at y=86..93, 2 px under the panel's top border at 92 -- the selected row came out half-cut) */
 #define PDNA_MV_DETAIL_Y    92                /* top of the stat detail panel below it */
 /* These lists put their hint TWO rows below UI_FOOTER_Y, not on it (nothing pops up over
  * them, so they can use the whole band). Named so the host test can assert it is still
