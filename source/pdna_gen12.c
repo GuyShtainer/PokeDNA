@@ -900,7 +900,7 @@ static void gb_report_page(const Gb12Mount* m) {
     } else {
       ui_ptext_fit(4, 18, 232, UI_DIM, "Where they are, and why they stay:");
       int rows = m->nreport;
-      if (rows > 11) rows = 11;
+      if (rows > 11) rows = 10;                  /* overflow: 10 rows + the "More than fit" line = the 11-line budget, clear of the rule at y=147 (#342) */
       for (int i = 0; i < rows; i++) {
         const Gb12Report* r = &m->report[i];
         char where[24]; int pos = 0;
@@ -915,7 +915,7 @@ static void gb_report_page(const Gb12Mount* m) {
         ui_ptext_fit(142, y, 94, UI_WARN, pdna_gen12_block_reason(r->reason));
       }
       if (m->nreport > 11)
-        ui_ptext_fit(4, 30 + 11 * 10, 232, UI_DIM, "More than fit; the rest are in the boxes.");
+        ui_ptext_fit(4, 30 + 10 * 10 + 2, 232, UI_DIM, "More than fit; the rest are in the boxes.");
     }
     ui_hline(0, 147, UI_SCR_W, UI_BORDER);
     ui_text(4, 150, UI_DIM, "B back");

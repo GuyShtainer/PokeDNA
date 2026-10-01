@@ -1832,6 +1832,7 @@ static void stack_report(const char* where) {
  * number is there because a photograph of "party" alone cannot say whether the two
  * party decodes either side of the Deoxys re-read is the one that died. */
 static void load_phase_n(int step, const char* what) {
+  if (step == 1) ui_clear();                       /* once per open: wipe the dialog we came from (#336) */
   ui_panel(24, 62, 192, 36, UI_PANEL, UI_TITLE);   /* re-fills, so it self-erases */
   ui_ptext(32, 70, UI_TITLE, "Opening save...");
   char l[40];
