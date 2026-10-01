@@ -461,7 +461,9 @@ static void t_swap_pair_negatives(void) {
   memcpy(slot_at(12), y, MONB); CHECK(stage_pc("Box move"), "add Y at C");
   CHECK(jrnapp_flush() == JRN_OK, "flush");
   CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && jrnapp_cursor() == 2u, "#303 no replaced slot in the older half: not a pair (cursor %u)", (unsigned)jrnapp_cursor());
-  /* (c) a swap whose second drop places a DIFFERENT mon Z (not the displaced Y): bytes disagree, never paired */
+  /* (c) a swap whose second drop places a DIFFERENT mon Z (not the displaced Y): bytes disagree, never paired. Z agrees with Y
+   * in 75 of 80 bytes (>= the minimum), so ONLY the zero-mismatch rule keeps this from pairing. */
+  memcpy(z, y, MONB); z[70] ^= 0x55; z[71] ^= 0x33; z[72] ^= 0x11; z[73] ^= 0x77; z[74] ^= 0x22;
   CHECK(app_world_reset(), "world");
   memcpy(slot_at(10), x, MONB); memcpy(slot_at(11), y, MONB);
   CHECK(stage_pc("Setup"), "setup");

@@ -378,6 +378,25 @@ static void t_old_key_compat(void) {
   jrnapp_close(&R);
 }
 
+/* #303 GB scope: a Game Boy swap is refused outright (no addressable slots), so a GB journal never pairs -- even a
+ * byte pattern shaped exactly like a Gen-3 swap in regions 5/6 stays per-step (the guard is jrn_app.c's slot < 0 test). */
+static void t_gb_never_pairs(void) {
+  uint8_t x[80], y[80];
+  unsigned i;
+  char nm[25];
+  CHECK(world(GBF_RBY, 0), "world");
+  for (i = 0; i < 80; i++) { x[i] = (uint8_t)(i * 7u + 1u); y[i] = (uint8_t)(i * 13u + 5u); }
+  memset(img + 0x5000, 0, 0x2000); memcpy(base, img, sizeof base);
+  memcpy(img + 0x5000 + 4 + 10 * 80, x, 80); memcpy(img + 0x5000 + 4 + 11 * 80, y, 80);
+  (void)img_rec_flat(&R, base, img, 8, 4096, "Setup"); memcpy(base, img, sizeof base);
+  memcpy(img + 0x5000 + 4 + 11 * 80, x, 80); memset(img + 0x5000 + 4 + 10 * 80, 0, 80);
+  (void)img_rec_flat(&R, base, img, 8, 4096, "Box move"); memcpy(base, img, sizeof base);
+  memcpy(img + 0x5000 + 4 + 12 * 80, y, 80);
+  (void)img_rec_flat(&R, base, img, 8, 4096, "Box move"); memcpy(base, img, sizeof base);
+  CHECK(jrnapp_flush() == JRN_OK && jrnapp_tip() == 3, "three GB steps, tip %u", (unsigned)jrnapp_tip());
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && strcmp(nm, "Box move") == 0 && jrnapp_cursor() == 2, "#303 GB: a swap-shaped pair is still ONE step per press ('%s', cursor %u)", nm, (unsigned)jrnapp_cursor());
+}
+
 int main(void) {
   t_key();
   t_everdrive_never_opens();
@@ -390,6 +409,7 @@ int main(void) {
   t_discard_reanchor();
   t_key_entropy();
   t_old_key_compat();
+  t_gb_never_pairs();
   printf("%lu checks, %d failed\n", checks, fails);
   return fails ? 1 : 0;
 }
