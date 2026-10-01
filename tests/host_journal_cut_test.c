@@ -205,6 +205,41 @@ static void su_torn_tail(void) {
 }
 static int op_open_only(void) { Jrn j; return jopen(&j, K); }
 
+/* ---- z9: CHAINED steps (D10). A chain is written parts-first, HEAD LAST, into a v2 segment: a cut at any sector must leave the journal
+ * reading as exactly its before-state or its after-state (the head's last sector is the one commit point), and the orphan parts a cut leaves
+ * behind must be gone after the next open (checked in recover_and_use). The first chain into a v1 journal ALSO retires the empty v1 spare and
+ * re-activates it as v2 -- both header writes are the existing atomic ones -- so that scenario has one more accepted state (no spare). ---- */
+static uint8_t g_cold[NREG][RSZ], g_cnew[NREG][RSZ];
+static int chain_diff_op(unsigned runs, unsigned len, unsigned region0, const char* name) {
+  Jrn j; JrnBlk blk[NREG]; unsigned i, k, r; int rc = jopen(&j, K);
+  if (rc) return rc;
+  memcpy(g_cold, g_img, sizeof g_cold); memcpy(g_cnew, g_img, sizeof g_cnew);
+  for (i = 0; i < runs; i++) { unsigned reg = (region0 + i / 10u) % NREG, off = 16u + (i % 10u) * 390u; for (k = 0; k < len; k++) g_cnew[reg][off + k] ^= (uint8_t)(0x21u + (i & 7u)); }
+  for (r = 0; r < NREG; r++) { blk[r].old_blk = g_cold[r]; blk[r].new_blk = g_cnew[r]; }
+  rc = jrn_chain_record(&j, name, 0, blk, NREG);
+  if (rc == JRN_OK) memcpy(g_img, g_cnew, sizeof g_img);
+  return rc;
+}
+static int op_chain_a(void) { return chain_diff_op(5, 150, 2, "Bulk edit"); }
+static int op_chain_b(void) { return chain_diff_op(6, 140, 4, "Bulk two"); }
+static void su_v2tail(void) { Jrn j; open_prep(&j); CHECK(chain_diff_op(4, 120, 3, "setup chain") == JRN_OK && jopen(&j, K) == JRN_OK && j.tail_seg == 2, "setup: a chain landed in the (v2) segment 2"); }
+static void su_v2full(void) {
+  Jrn j; unsigned g;
+  su_v2tail();
+  CHECK(jopen(&j, K) == JRN_OK, "reopen");
+  for (g = 0; g < 200 && JRN_SEG_SIZE - j.tail_off >= 1500; g++) step_flush(&j, 1, 0, 220);
+  CHECK(JRN_SEG_SIZE - j.tail_off < 1700 && jrn_prepare(&j) == JRN_OK && j.seg_last == 3, "setup: segment 2 nearly full (%u B left), spare 3 prepared (inherits v2)", (unsigned)(JRN_SEG_SIZE - j.tail_off));
+}
+static void mid_retired_spare(uint32_t* out, int* n) {   /* the spare was retired (header zeroed) but not yet re-activated: one intermediate state */
+  uint8_t z[JRN_SEG_HDR]; memset(z, 0, sizeof z);
+  CHECK(raw_write(K, 2, 0, z, sizeof z) == 0, "mid: zero the spare's header");
+  out[(*n)++] = jr_fingerprint(K, 0, 0);
+}
+static void mid_spare_made(uint32_t* out, int* n) {      /* no spare existed: the spare was made but the chain was not yet committed */
+  CHECK(op_prepare() == JRN_OK, "mid: spare made");
+  out[(*n)++] = jr_fingerprint(K, 0, 0);
+}
+
 static const Scn SCN[] = {
   /* name                            setup           op                state       eq dm  mid */
   { "append 1 record",              su_prepared,    op_append1,       st_default,  0, 0, 0 },
@@ -221,6 +256,12 @@ static const Scn SCN[] = {
   { "discarded marker",             su_three_lost,  op_discard,       st_default,  0, 0, 0 },
   { "retire oldest in place",       su_three_seg,   op_compact,       st_default,  0, 0, 0 },
   { "torn-tail zeroing on open",    su_torn_tail,   op_open_only,     st_default,  1, 0, 0 },
+  /* z9 (D10): chained steps */
+  { "chain -> v1 spare, made v2",   su_prepared,    op_chain_a,       st_default,  0, 0, mid_retired_spare },
+  { "chain, no spare: spare + chain",su_first_only, op_chain_a,       st_default,  0, 0, mid_spare_made },
+  { "chain appended to a v2 tail",  su_v2tail,      op_chain_b,       st_default,  0, 0, 0 },
+  { "chain rolls v2 tail -> spare", su_v2full,      op_chain_a,       st_default,  0, 0, 0 },
+  { "undo of a chain (marker)",     su_v2tail,      op_undo_marker,   st_default,  0, 0, 0 },
 };
 #define NSCN ((int)(sizeof SCN / sizeof SCN[0]))
 
@@ -229,7 +270,7 @@ static const Scn SCN[] = {
 static const int TEARS[] = { 0, 16, 32, 64, 256 };
 #define NTEAR ((int)(sizeof TEARS / sizeof TEARS[0]))
 
-static unsigned long g_ops, g_points, g_runs, sc_hazA[16], sc_hazB[16];
+static unsigned long g_ops, g_points, g_runs, sc_hazA[32], sc_hazB[32];
 static int tear_pos_ok(int t) { return t > 0; }
 
 static unsigned long g_hazA, g_hazB;   /* the exFAT torn-directory-set hazard, counted: every scenario AFTER the first fill (must be 0/0) */
@@ -254,6 +295,22 @@ static int keydir_broken(void) {
   return fr != FR_EXIST;
 }
 
+/* After an open, NOTHING is left past the valid tail inside the zero window: not in the tail segment, not in a spare behind it. A chain's parts are laid
+ * down before its head, so a cut leaves them standing beyond the tail -- invisible to the scan, but a later record that ends exactly where one starts
+ * would re-link it. The open's repair must have zeroed them all. */
+static int beyond_tail_clean(const Jrn* j) {
+  static uint8_t buf[JRN_CHAIN_MAX * JRN_REC_MAX];
+  unsigned seg, i, n;
+  if (!j->tail_seg) return 1;
+  for (seg = j->tail_seg; seg <= j->seg_last; seg++) {
+    uint32_t from = seg == j->tail_seg ? j->tail_off : JRN_REC_BASE;
+    n = JRN_SEG_SIZE - from < sizeof buf ? JRN_SEG_SIZE - from : (unsigned)sizeof buf;
+    if (raw_read(K, seg, from, buf, n) != 0) return 1;   /* an unreadable file is another check's business */
+    for (i = 0; i < n; i++) if (buf[i]) return 0;
+  }
+  return 1;
+}
+
 /* (e) the journal must still work after the cut, whatever state the cut left. On exFAT a torn
  * directory set can make CREATING impossible (FatFs itself refuses): that is counted, must be
  * confirmed at the FatFs level, and the journal must still append into what already exists. */
@@ -265,6 +322,7 @@ static void recover_and_use(BYTE fmt, const char* what, unsigned k, int tear, in
   if (rc && fmt == FM_EXFAT && tear > 0 && dirmut == 1 && keydir_broken()) { if (g_garbage) g_gtal[si][GC_EXFAT]++; else { g_ffB++; sc_hazB[si]++; } return; }   /* a torn first-fill create damaged the key directory: the open FAILS LOUDLY (counted, accepted residual) */
   SCHECK(GC_REOPEN, rc == JRN_OK, "%s k=%u tear=%d: reopen after the cut -> %d", what, k, tear, rc);
   if (rc) return;
+  SCHECK(GC_REOPEN, beyond_tail_clean(&j), "%s k=%u tear=%d: bytes survive past the tail after the open (an orphan chain part: it could be re-linked behind a later record)", what, k, tear);
   rc = jrn_prepare(&j);
   if (rc && fmt == FM_EXFAT && tear > 0 && keydir_broken()) {
     if (getenv("HAZ")) printf("HAZB %s k=%u tear=%d rc=%d seg %u..%u tail %u\n", what, k, tear, rc, j.seg_first, j.seg_last, j.tail_seg);
