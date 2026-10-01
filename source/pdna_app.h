@@ -584,6 +584,9 @@ bool app_gb_dirty(void);
 void app_gb_dirty_clear(void);
 void app_gb_saved(void);
 void app_gb_discarded(void);
+/* D10 ruling 9.2: true (after the partial-wording dialog) while a mid-session TORN step has left PART of a step in the image; every
+ * commit path -- Gen-3 app_commit_* and the GB gb_persist -- returns false at once. Cleared only by a full re-read of the card image. */
+bool app_partial_refuse(void);
 void app_gb_rest(void);
 void app_gb_close(void);
 uint8_t app_history_cap(void);

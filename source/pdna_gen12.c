@@ -4828,6 +4828,10 @@ bool gb_persist(const char* what_for_log) {
    * touching the card, so it re-checks here rather than trusting every caller
    * (present and future) got its own gate right. Mirrors the PDNA_DELTA
    * refusal shape above: log, sound, message, return false -- nothing touched. */
+  if (app_partial_refuse()) {   /* D10/9.2: a TORN step left PART of a step in the image -- never written; the edit rolls back to the (partial) baseline */
+    gb_rollback();
+    return false;
+  }
   if (!app_can_edit()) {
     log_line("gen12: persist refused: %s", app_readonly_why());
     app_log_flush();

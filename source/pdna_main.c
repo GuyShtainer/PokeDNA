@@ -1964,6 +1964,16 @@ void app_note_boot_checksums(void) {
            g_boot_csum == -2 ? "OK" : "BAD", g_vinfo.slot, fail);
 }
 
+/* D10 ruling 9.2: while a mid-session TORN step has left PART of a step in the image, EVERY commit path refuses -- here, with
+ * the partial wording, BEFORE it stages or writes anything. Cleared only by a full re-read of the card image. */
+bool app_partial_refuse(void) {
+  if (!imgf_partial(&g_img)) return false;
+  log_line("commit refused: the image holds a PARTIAL step (TORN) - exit without saving");
+  snd_error();
+  msg_wait("PARTIAL IMAGE", UI_WARN, "PARTIAL image: exit without saving,", "or undo/redo again.");
+  return true;
+}
+
 static bool app_save_finalize(void) {
   /* Review fix F7 (defence in depth, BACKLOG #54): app_save_finalize() is the single
    * funnel every Gen-3 whole-file write passes through (app_commit_all/app_commit_sb1/
@@ -1974,6 +1984,10 @@ static bool app_save_finalize(void) {
    * possible moment instead of writing the flash chip. */
   if (!app_can_edit()) {
     log_line("BUG: app_save_finalize with editing disabled - refused");
+    return false;
+  }
+  if (imgf_partial(&g_img)) {                       /* D10/9.2 defence in depth: the funnel itself never writes a PARTIAL image */
+    log_line("BUG: app_save_finalize with a PARTIAL image latched - refused");
     return false;
   }
   /* Fold any pending deferred PC-box edits into the image FIRST, so EVERY whole-file write
@@ -2101,6 +2115,7 @@ static bool app_save_finalize(void) {
 /* Persist `block` (sections [lo..hi]) into the in-RAM image, then finalize. The
  * single safe write path shared by the full editor and the PC-menu quick edits. */
 static bool app_commit_block(int sect_lo, int sect_hi, uint8_t* block) {
+  if (app_partial_refuse()) return false;           /* D10/9.2: sb1/sb2/pc all route here */
   app_stage_sections(sect_lo, sect_hi, block);
   return app_save_finalize();
 }
@@ -2119,6 +2134,7 @@ static bool app_commit_all(void) {
     log_line("BUG: commit-all with no parsed Gen-3 save - refused");
     return false;
   }
+  if (app_partial_refuse()) return false;           /* D10/9.2 */
   /* g_pc is Tier B's donor (icon_store_borrow). Reaching a PC-writing commit with the
    * arena still lent out would write icon tiles into every box the user owns, so this
    * is the one place worth a belt-and-braces check: every screen releases before it
@@ -2144,6 +2160,7 @@ bool app_commit_sb1(void) { return app_commit_block(1, 4, g_sb1); }
 /* SaveBlock2 + SaveBlock1 (sections 0..4) in ONE verified write — for edits spanning both
  * (trainer card identity+money, the dex). One backup + one write instead of two. */
 bool app_commit_sb12(void) {
+  if (app_partial_refuse()) return false;           /* D10/9.2 */
   app_stage_sections(0, 0, g_sb2);
   app_stage_sections(1, 4, g_sb1);
   return app_save_finalize();
@@ -2665,6 +2682,7 @@ static bool app_stage_sb1(void) {
 }
 
 bool app_commit_pc(void)  {
+  if (app_partial_refuse()) return false;           /* D10/9.2 */
   /* BACKLOG #120 S2: same "no live Gen-3 PC" refusal app_inject_to_game() uses --
    * g_pc may be on loan to a GB session's mount arena, or there may be no parsed
    * Gen-3 save at all, in which case app_commit_block() below would write Gen-3
@@ -10195,6 +10213,7 @@ static void app_discard_staged(void) {
   if (!ok) log_line("discard: re-read failed - g_save may be partial; RAM only, never written (browser next, reload on open)");
   gen3_read_pc_storage(g_save, g_vinfo.slot, g_pc);     /* revert PC moves */
   imgf_clear(&g_img);                                   /* nothing staged, nothing pending */
+  if (ok) imgf_partial_clear(&g_img);                   /* D10/9.2: the card's image is back in full -- the ONLY thing that clears the PARTIAL latch */
   if (ok) jrnapp_after_discard(&g_rec);                 /* #234: the thrown-away steps stay in the history, marked discarded */
 }
 
@@ -10274,6 +10293,17 @@ int app_undo_redo(int dir, char name[25]) {
   if (st != JA_OK && st != JA_GAP) return AUR_OFF;
   if (!gb && (app_arena_held() || imgf_arena_ok(&g_img) == false)) return AUR_ARENA;   /* T5: g_pc is a loan / ahead of the image */
   rc = jrnapp_step_pair(dir, name);              /* #303: a swap's two halves are one chord press */
+  if (rc == JRN_E_TORN || (rc == JRN_OK && strcmp(name, "partial step") == 0)) {
+    /* z9 / D10 ruling 9: the engine reports a chain whose rollback failed as JRN_OK + the name "partial step" (#303's contract).
+     * The image holds PART of a step: re-derive every copy, stage it, LATCH it (no commit may write it), and say so --
+     * never the success path (snd_ok + "Undid: ..."). */
+    app_journal_rederive();
+    imgf_staged(&g_img);
+    imgf_partial_set(&g_img);
+    log_line("journal: %s TORN (partial step) - image LATCHED PARTIAL", dir < 0 ? "undo" : "redo");
+    jrnapp_log_events(&g_rec);
+    return AUR_PARTIAL;
+  }
   if (rc == JRN_OK) {
     app_journal_rederive();
     imgf_staged(&g_img);                          /* the image is ahead of the card: the exit save confirms once */
@@ -10294,7 +10324,8 @@ int app_history_jump(uint32_t target, char stop[25], int* moved) {
   if (!pdna_gen12_resident() && (app_arena_held() || imgf_arena_ok(&g_img) == false)) return AUR_ARENA;
   rc = jrnapp_jump(target, stop, &n);
   if (moved) *moved = n;
-  if (n > 0) { app_journal_rederive(); imgf_staged(&g_img); }
+  if (n > 0 || rc == JRN_E_TORN) { app_journal_rederive(); imgf_staged(&g_img); }   /* a TORN jump can have n == 0 and still hold a partial image */
+  if (rc == JRN_E_TORN) imgf_partial_set(&g_img);                                    /* D10/9.2: latch */
   log_line("journal: jump to %lu: %d step(s), rc %d", (unsigned long)target, n, rc);
   jrnapp_log_events(&g_rec);
   return aur_from_rc(rc);
@@ -10314,7 +10345,7 @@ static void __attribute__((noinline)) app_journal_offer(uint32_t n, uint32_t ava
     log_line("journal: re-applied %d of %lu step(s)", k, (unsigned long)n);
     if (k == JRN_E_TORN) {                                    /* z9: never a silent partial step (D10) */
       app_journal_rederive();
-      imgf_staged(&g_img);
+      imgf_partial_set(&g_img);                               /* latched until the discard below re-reads the card in full (a failed re-read stays latched) */
       msg_wait("PARTIAL RE-APPLY", UI_WARN, "A re-applied step was only partly applied:", "Save left as it was.");
       /* D10 ruling 9.1: nothing else is staged at the load-time offer, so the partial image is DISCARDED on the spot --
        * the card's bytes come back, then every decoded copy is re-derived from them: the reconcile that follows sees a
@@ -10387,6 +10418,7 @@ static void app_journal_rest(void) {
 bool app_gb_journal_open(uint8_t* img, uint64_t key, uint64_t legacy_key) {
   int st;
   imgf_clear(&g_img);                                      /* a Game Boy session starts clean: nothing staged, nothing pending */
+  imgf_partial_clear(&g_img);                              /* D10/9.2 */
   s_jrn_prepare_owed = false;
   st = jrnapp_open_gb_compat(&g_rec, img, key, legacy_key, app_history_cap(), app_can_edit());   /* #308 */
   if (st == JA_OK) {
@@ -10422,9 +10454,9 @@ void app_gb_dirty_clear(void) { imgf_clear(&g_img); }
 void app_gb_saved(void) { imgf_clear(&g_img); app_journal_after_save(); }
 void app_gb_rest(void) { app_journal_rest(); }
 /* B at the GB exit confirm: the card image was put back in the buffer; re-anchor and mark the thrown-away steps discarded. */
-void app_gb_discarded(void) { imgf_clear(&g_img); jrnapp_after_discard(&g_rec); }
+void app_gb_discarded(void) { imgf_clear(&g_img); imgf_partial_clear(&g_img); jrnapp_after_discard(&g_rec); }   /* D10/9.2: gb_discard_staged re-read the card in full */
 /* The session is over: unbind the recorder (a later Gen-3 load re-opens it for its own image). */
-void app_gb_close(void) { imgf_clear(&g_img); jrnapp_close(&g_rec); }
+void app_gb_close(void) { imgf_clear(&g_img); imgf_partial_clear(&g_img); jrnapp_close(&g_rec); }
 
 /* Settings > Clear history: is a journal open for the save this Settings page was reached from? (Only then is there
  * "this save's" history to clear -- off / foreign / error states have nothing this build may delete.) */
@@ -11743,6 +11775,7 @@ static void view_save(const char* path) {
     perf_span_begin(first ? "boot" : "save");
     first = false; }
   imgf_clear(&g_img);                          /* fresh save: no pending moves */
+  imgf_partial_clear(&g_img);                  /* D10/9.2: a new load re-reads the card in full */
   strncpy(g_path, path, sizeof(g_path) - 1);
   g_path[sizeof(g_path) - 1] = 0;
   gb_art_session_reset();  /* new save -- the "beside the save" fallback forgets the old one */
