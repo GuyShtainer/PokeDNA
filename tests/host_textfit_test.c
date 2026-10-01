@@ -757,6 +757,27 @@ int main(void) {
            PDNA_BUSY_PANEL_X + PDNA_BUSY_PANEL_W - 1 - 1);
     chkv("busy panel left clearance >= 2", PDNA_BUSY_PANEL_X + 1 + 2, PDNA_BUSY_TEXT_X);
   }
+  /* BACKLOG #348: every sys8 footer / hint row that was wider than the screen. The strings come from
+   * pdna_layout.h (the shipped call sites draw those same macros); the x is the call site's (drift guard
+   * -- change an x there, change it here):
+   *   PDNA_FOOT_BASES_EDIT/_VIEW  pdna_main.c  ui_text(4, 152)  Secret Bases footer
+   *   PDNA_FOOT_BROWSE            pdna_main.c  ui_text(2, UI_FOOTER_Y)  folder browser
+   *   PDNA_FOOT_FLAGS_EDIT        pdna_main.c + pdna_gbflags.c  ui_text(4, 152)
+   *   PDNA_FOOT_PBLOCK            pdna_main.c  ui_text(4, 152)  POKEBLOCK editor
+   *   PDNA_FOOT_CLOCK_SYNC        pdna_main.c  ui_text(4, 152)  clock sync
+   *   PDNA_FOOT_HOF_LEVEL/_PICK   pdna_gbhof.c  ui_text(4, 152)  (the gbhof trio = ONE screen family: level stepper,
+   *                                member list and species list share the Hall-of-Fame editor chrome)
+   *   PDNA_HINT_ABILITY           pdna_pick.c  ui_text(4, 140)
+   *   PDNA_HINT_STARS_ON/_NOART   pdna_trainer.c  ui_text(4, 62) / (4, 72)
+   * Not table-driven by the sources: a ui_text literal is checked here only through its macro. */
+  T(PDNA_FOOT_BASES_EDIT, 4);  T(PDNA_FOOT_BASES_VIEW, 4);
+  T(PDNA_FOOT_BROWSE, 2);
+  T(PDNA_FOOT_FLAGS_EDIT, 4);  T("U/D  SEL jump#  B back", 4);   /* pdna_gbflags.c view-only branch (literal, already fit) */
+  T(PDNA_FOOT_PBLOCK, 4);
+  T(PDNA_FOOT_CLOCK_SYNC, 4);
+  T(PDNA_FOOT_HOF_LEVEL, 4);   T(PDNA_FOOT_HOF_PICK, 4);
+  T(PDNA_HINT_ABILITY, 4);
+  T(PDNA_HINT_STARS_ON, 4);    T(PDNA_HINT_STARS_NOART, 4);
   /* BACKLOG #345: the "Press A" notice dialogs, panel-relative. Each literal is hand-copied from
    * its call site (drift guard -- change a string there, change it here):
    *   pdna_box.c  drop_chunk_pc_to_bank   "BANK WRITE FAILED" / "Kept in the save. Press A"
@@ -2705,7 +2726,7 @@ int main(void) {
   PF(PDNA_GBCLOCK_CONFIRM_RESET_TITLE, 28, 184);
   PF(PDNA_GBCLOCK_CONFIRM_CLEAR_TITLE, 28, 184);
   PF(PDNA_GBCLOCK_CONFIRM_SHIFT_TITLE, 28, 184);
-  PF(PDNA_GBCLOCK_NOCLOCK_L1, 28, 184);
+  T(PDNA_GBCLOCK_NOCLOCK_L1, 6);   /* BACKLOG #348: drawn by ui_text (sys8) at x=6, not the proportional face -- was checked with PF and so passed at 30 glyphs / 246 px */
   checks++;
   { int ln = wrap_lines(PDNA_GBCLOCK_CONFIRM_RESET_L1, 184);
     int ok = (ln <= 2);

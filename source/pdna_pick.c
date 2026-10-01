@@ -2290,7 +2290,7 @@ uint8_t pick_ability(uint16_t species, uint8_t cur) {
       ui_clear();
       ui_text(4, 2, UI_TITLE, "ABILITY");
       ui_hline(0, 11, UI_SCR_W, UI_BORDER);
-      ui_text(4, 140, UI_DIM, "Gen-3 stores only the species' abilities");
+      ui_text(4, 140, UI_DIM, PDNA_HINT_ABILITY);   /* #348 */
       ui_text(4, 152, UI_DIM, "A pick  U/D move  B cancel");
       for (int i = 0; i < n; i++) ab_panel(i, i ? a1 : a0, i ? da1 : da0, i == sel);
     } else if (sel != prev_sel) {

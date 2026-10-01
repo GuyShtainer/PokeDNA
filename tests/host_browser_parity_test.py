@@ -147,7 +147,9 @@ def main() -> int:
     check(true_count == 1, f"exactly one BrowseSpec (the .sav one) may set menu_extra = true, found {true_count}")
 
     # ---- 6. the footer string is defined exactly once -----------------------------
-    footer_count = main_text.count('"A pick  B up  SEL sort  ST menu"')
+    # BACKLOG #348: the string moved to pdna_layout.h (PDNA_FOOT_BROWSE, textfit-measured); the
+    # single shared draw site in the core is what must stay unique.
+    footer_count = main_text.count('PDNA_FOOT_BROWSE')
     check(footer_count == 1,
           f"the browser footer must be a single shared string in the core, found {footer_count} occurrence(s) "
           "(one per kind would mean the chrome forked again)")
