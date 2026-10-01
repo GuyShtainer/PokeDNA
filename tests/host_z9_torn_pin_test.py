@@ -97,9 +97,20 @@ def pins(src: dict[str, str]) -> list[tuple[str, bool]]:
     out.append(("P2d a fresh load (view_save) and a GB session open/close/discard clear the latch",
                 "imgf_partial_clear(&g_img)" in (body(m, "view_save") or "") and "imgf_partial_clear(&g_img)" in (body(m, "app_gb_journal_open") or "")
                 and "imgf_partial_clear(&g_img)" in (re.search(r"void app_gb_discarded\(void\)[^\n]*", strip_comments(m)) or [""])[0]))
+    out.append(("P1e the offer's discard dispatch has the right polarity (GB session -> gb_discard_staged, else Gen-3)",
+                re.search(r"if\s*\(pdna_gen12_resident\(\)\)\s*gb_discard_staged\(\);\s*else\s*\{\s*app_discard_staged\(\);\s*app_journal_rederive\(\);\s*\}", torn) is not None))
+    clear_fns = ("app_discard_staged", "app_gb_journal_open", "view_save")
+    one_liners = [l for l in strip_comments(m).splitlines() if "imgf_partial_clear(&g_img)" in l]
+    out.append(("P2e the latch is cleared at EXACTLY the five ruled sites, nowhere else (a retry / rest point must not unlatch)",
+                strip_comments(m).count("imgf_partial_clear(") == 5 and "imgf_partial_clear(" not in strip_comments(g) + strip_comments(bx)
+                and all("imgf_partial_clear(&g_img)" in (body(m, f) or "") for f in clear_fns)
+                and sum(1 for l in one_liners if re.match(r"\s*void app_gb_(discarded|close)\(void\)", l)) == 2))
+    gd = body(g, "gb_discard_staged") or ""
+    out.append(("P2f the GB discard unlatches only after a FULL-length re-read (got == len) then app_gb_discarded",
+                re.search(r"st\s*!=\s*SF_OK\s*\|\|\s*got\s*!=\s*g_ed->len", gd) is not None and before(gd, "got != g_ed->len", "app_gb_discarded()")))
     helper = body(m, "app_partial_refuse") or ""
     out.append(("P3a app_partial_refuse reads the latch, speaks the partial wording, returns true",
-                "imgf_partial(&g_img)" in helper and 'msg_wait("PARTIAL IMAGE"' in helper and "return true" in helper and "return false" in helper))
+                "imgf_partial(&g_img)" in helper and 'msg_wait("PARTIAL IMAGE"' in helper and helper.count("return true") == 1 and helper.count("return false") == 1))
     for fn in ("app_commit_block", "app_commit_pc", "app_commit_all", "app_commit_sb12"):
         b = body(m, fn) or ""
         refuse_at = b.find("app_partial_refuse()")
@@ -107,9 +118,12 @@ def pins(src: dict[str, str]) -> list[tuple[str, bool]]:
         out.append((f"P3b {fn} refuses on the latch BEFORE it stages or writes", refuse_at >= 0 and refuse_at < stage_at))
     out.append(("P3c app_commit_sb1 / app_commit_sb2 route through app_commit_block",
                 len(re.findall(r"bool app_commit_sb[12]\(void\)\s*\{\s*return app_commit_block\(", strip_comments(m))) == 2))
-    out.append(("P3d the app_save_finalize funnel itself refuses a latched image (defence in depth)",
-                "imgf_partial(&g_img)" in (body(m, "app_save_finalize") or "")))
-    out.append(("P3e gb_persist (every GB write, 'exit' included) refuses on the latch", "app_partial_refuse()" in (body(g, "gb_persist") or "")))
+    fz = body(m, "app_save_finalize") or ""
+    out.append(("P3d the app_save_finalize funnel itself refuses a latched image BEFORE any write (defence in depth)",
+                before(fz, "imgf_partial(&g_img)", "flashsave_write(") and before(fz, "imgf_partial(&g_img)", "sf_write_verified(")))
+    gp = body(g, "gb_persist") or ""
+    out.append(("P3e gb_persist (every GB write, 'exit' included) refuses on the latch BEFORE the backup and the write",
+                before(gp, "app_partial_refuse()", "sf_backup_rolling(") and before(gp, "app_partial_refuse()", "sf_write_verified(")))
     out.append(("P3f the exit confirm's A reaches the latch: flush_on_exit -> app_xfer_save_now -> app_commit_pc",
                 "app_xfer_save_now()" in (body(m, "flush_on_exit") or "") and "app_commit_pc()" in (body(m, "app_xfer_save_now") or "")))
     ch = body(bx, "box_chord_action") or ""
@@ -138,8 +152,8 @@ TEXT_MUTANTS: list[tuple[str, str, str, str, str]] = [
     ("D1 drop the whole discard at the offer", "pdna_main.c", DISCARD_LINE, "", "P1"),
     ("D2 drop only the GB discard at the offer", "pdna_main.c", DISCARD_LINE, "if (!pdna_gen12_resident()) { app_discard_staged(); app_journal_rederive(); }", "P1b"),
     ("D3 drop the Gen-3 re-derive after the discard", "pdna_main.c", DISCARD_LINE, "if (pdna_gen12_resident()) gb_discard_staged(); else { app_discard_staged(); }", "P1b"),
-    ("D4 return before the discard", "pdna_main.c", 'msg_wait("PARTIAL RE-APPLY", UI_WARN, "A re-applied step was only partly applied:", "Save left as it was.");',
-     'msg_wait("PARTIAL RE-APPLY", UI_WARN, "A re-applied step was only partly applied:", "Save left as it was."); return;', "P1d"),
+    ("D4 return before the discard", "pdna_main.c", 'msg_wait("PARTIAL RE-APPLY", UI_WARN, "A step was only partly re-applied:", "Save left as it was.");',
+     'msg_wait("PARTIAL RE-APPLY", UI_WARN, "A step was only partly re-applied:", "Save left as it was."); return;', "P1d"),
     ("D5 latch AFTER the dialog (a failed discard would not stay latched)", "pdna_main.c",
      "imgf_partial_set(&g_img);                               /* latched until", "/* latched until", "P1a"),
     ("L1 app_commit_block drops its latch consult", "pdna_main.c", "if (app_partial_refuse()) return false;           /* D10/9.2: sb1/sb2/pc all route here */", "", "P3b app_commit_block"),

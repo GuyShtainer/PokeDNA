@@ -10346,7 +10346,7 @@ static void __attribute__((noinline)) app_journal_offer(uint32_t n, uint32_t ava
     if (k == JRN_E_TORN) {                                    /* z9: never a silent partial step (D10) */
       app_journal_rederive();
       imgf_partial_set(&g_img);                               /* latched until the discard below re-reads the card in full (a failed re-read stays latched) */
-      msg_wait("PARTIAL RE-APPLY", UI_WARN, "A re-applied step was only partly applied:", "Save left as it was.");
+      msg_wait("PARTIAL RE-APPLY", UI_WARN, "A step was only partly re-applied:", "Save left as it was.");
       /* D10 ruling 9.1: nothing else is staged at the load-time offer, so the partial image is DISCARDED on the spot --
        * the card's bytes come back, then every decoded copy is re-derived from them: the reconcile that follows sees a
        * CLEAN image. A Game Boy session has its own discard (app_discard_staged re-reads g_save: wrong for GB). */
