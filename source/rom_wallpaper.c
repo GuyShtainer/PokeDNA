@@ -128,8 +128,46 @@ int rom_wallpaper_pal_bank(int bank) {
 /* One tile's pixels, rows/cols flipped as asked. `skip0` = 1 leaves every index-0 pixel
  * of `out` UNTOUCHED (the overlay pass: index 0 is transparent over the base); 0 writes
  * all 64 (the literal expansion rom_wallpaper_expand_tile documents). */
+/* BACKLOG #103 (speed): reverse the eight nibbles of a tile row (hflip): swap the nibbles inside
+ * each byte, then reverse the byte order. Pixel k of the result is source pixel 7-k. */
+static inline uint32_t rev_nibbles(uint32_t w) {
+  w = ((w & 0x0F0F0F0Fu) << 4) | ((w >> 4) & 0x0F0F0F0Fu);
+  return (w << 24) | ((w & 0xFF00u) << 8) | ((w >> 8) & 0xFF00u) | (w >> 24);
+}
+
 static void expand_px(const uint8_t* src, int hflip, int vflip, const uint16_t pal[16],
                       int skip0, uint16_t out[64]) {
+  /* BACKLOG #103: the artless box grid spent ~240 of its ~490 ms here (360 cells x 192 pixel
+   * operations through a per-pixel branch and two index conversions). With 4-byte-aligned source
+   * and destination (every real caller: tiles at +32*tid in the 4-aligned mon_decomp, `out` =
+   * the aligned s_wp_tile) a tile row is ONE 32-bit read and, when no pixel is skipped, four
+   * 32-bit stores; an overlay row that is wholly transparent is skipped outright and one with
+   * no index-0 nibble is written whole. LITTLE-ENDIAN (the GBA, and the host test machines):
+   * pixel k of a row is nibble k of the word. Anything unaligned takes the byte-wise path
+   * below, which is the original code. */
+  if ((((uintptr_t)src | (uintptr_t)out) & 3u) == 0u) {
+    const uint32_t* sw = (const uint32_t*)(const void*)src;
+    uint32_t* ow = (uint32_t*)(void*)out;
+    for (int y = 0; y < 8; y++) {
+      uint32_t w = sw[vflip ? (7 - y) : y];
+      if (hflip) w = rev_nibbles(w);
+      uint32_t* d = &ow[y * 4];
+      if (skip0) {
+        if (w == 0u) continue;                              /* wholly transparent row */
+        if (((w - 0x11111111u) & ~w & 0x88888888u) != 0u) { /* a transparent nibble: per pixel */
+          uint16_t* o = &out[y * 8];
+          for (int k = 0; k < 8; k++, w >>= 4)
+            if (w & 15u) o[k] = pal[w & 15u];
+          continue;
+        }
+      }
+      d[0] = (uint32_t)pal[w & 15u]         | ((uint32_t)pal[(w >> 4) & 15u]  << 16);
+      d[1] = (uint32_t)pal[(w >> 8) & 15u]  | ((uint32_t)pal[(w >> 12) & 15u] << 16);
+      d[2] = (uint32_t)pal[(w >> 16) & 15u] | ((uint32_t)pal[(w >> 20) & 15u] << 16);
+      d[3] = (uint32_t)pal[(w >> 24) & 15u] | ((uint32_t)pal[(w >> 28) & 15u] << 16);
+    }
+    return;
+  }
   for (int y = 0; y < 8; y++) {
     int sy = vflip ? (7 - y) : y;
     for (int xb = 0; xb < 4; xb++) {
@@ -206,7 +244,13 @@ int rom_wallpaper_expand_cell(const uint8_t* tiles, uint32_t tiles_bytes, uint16
    * black where the answer is unknown (City's tone IS black, but City is table-backed). */
   uint16_t fill = tone;
   if (!bs->cols && tone == 0) fill = fg[0];
-  for (int i = 0; i < 64; i++) out[i] = fill;
+  if (((uintptr_t)out & 3u) == 0u) {              /* BACKLOG #103: word fill (32 stores, not 64) */
+    uint32_t* ow = (uint32_t*)(void*)out;
+    uint32_t f2 = (uint32_t)fill | ((uint32_t)fill << 16);
+    for (int i = 0; i < 32; i++) ow[i] = f2;
+  } else {
+    for (int i = 0; i < 64; i++) out[i] = fill;
+  }
   if (bs->cols && bs->rows) {
     int pi = (ty % bs->rows) * bs->cols + (tx % bs->cols);
     if (pi < bs->used) {
