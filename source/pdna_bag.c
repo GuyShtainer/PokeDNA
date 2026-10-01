@@ -225,7 +225,8 @@ static void pocket_anim(BgFrame bg, const BagLayout* L,
  * to erase the dot markers. */
 static void draw_header(BgFrame bg, const BagLayout* L, int pocket) {
   bg_restore(bg, L->pkt_rx, L->pkt_ry, L->pkt_rw, L->pkt_rh);
-  ui_text(L->pkt_tx, L->pkt_ty, BINK, pk_pocket_name(pocket));
+  /* proportional face: the 8-px cell face made "Poke Balls"/"TMs & HMs" overrun the baked pill (#332/#327) */
+  ui_ptext(L->pkt_tx, L->pkt_ty + 1, BINK, pk_pocket_name(pocket));
   if (L->dot_x)
     ui_fill_rect(L->dot_x - 1 + pocket * 8, L->dot_y - 1, 4, 4, BCUR);
 }
