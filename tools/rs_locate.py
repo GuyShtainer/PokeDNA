@@ -92,6 +92,91 @@ def locate_wallpaper(d):
         if ok: hits.append(BASE + o)
     return hits
 
+
+# ---- bag chrome (BACKLOG #313) ----------------------------------------------------------
+# The R/S bag screen's assets sit in ONE contiguous run, in this order, each element starting
+# at the next 4-aligned address after the previous element's end:
+#   [LZ10 -> 12288 B] male bag sprite sheet   (64x384 4bpp = 6 frames x 2048 B)
+#   [LZ10 -> 12288 B] female sheet
+#   [LZ10 ->    32 B] the sheets' shared palette
+#   [LZ10 ->  8192 B] screen tileset (256 tiles)
+#   [LZ10 ->    64 B] screen palette A (2 banks)
+#   [LZ10 ->    64 B] screen palette B (2 banks)
+#   [RAW  ->  2048 B] screen tilemap: 32x32 u16, tile < 256, palette bank in {0,1},
+#                     >= 20 distinct tiles
+BAG_CHAIN = [('lz', 12288), ('lz', 12288), ('lz', 32), ('lz', 8192), ('lz', 64), ('lz', 64), ('map', 2048)]
+
+def lz10_span(d, o, want):
+    """(span, decoded) when an LZ10 stream at file offset o declares `want` bytes and decodes
+    cleanly to exactly that; else None. Keeps only the LZ10 rules the BIOS uses."""
+    if o + 4 > len(d) or d[o] != 0x10: return None
+    if (d[o+1] | (d[o+2] << 8) | (d[o+3] << 16)) != want: return None
+    out = bytearray(); p = o + 4
+    while len(out) < want:
+        if p >= len(d): return None
+        fl = d[p]; p += 1
+        for b in range(8):
+            if len(out) >= want: break
+            if fl & (0x80 >> b):
+                if p + 2 > len(d): return None
+                a, c = d[p], d[p+1]; p += 2
+                disp = (((a & 15) << 8) | c) + 1
+                if disp > len(out): return None
+                for _ in range(min((a >> 4) + 3, want - len(out))): out.append(out[-disp])
+            else:
+                if p >= len(d): return None
+                out.append(d[p]); p += 1
+    return p - o, bytes(out)
+
+def bag_map_ok(raw):
+    w = struct.unpack('<1024H', raw)
+    tiles = [x & 0x3FF for x in w]
+    return max(tiles) < 256 and {x >> 12 for x in w} <= {0, 1} and len(set(tiles)) >= 20
+
+def bag_chain_depth(d, o):
+    """How many leading clauses of BAG_CHAIN hold when the chain starts at file offset o, and the
+    element offsets reached."""
+    at = []
+    for i, (kind, want) in enumerate(BAG_CHAIN):
+        if o + want > len(d): return i, at
+        if kind == 'lz':
+            r = lz10_span(d, o, want)
+            if not r: return i, at
+            at.append(o); o = (o + r[0] + 3) & ~3
+        else:
+            if not bag_map_ok(d[o:o + want]): return i, at
+            at.append(o); o += want
+    return len(BAG_CHAIN), at
+
+def locate_bag(d):
+    """Scan EVERY 4-aligned offset whose first word is an LZ10 header for 12288 B, and score the
+    chain depth there; also (as the runner-up pool) every offset that starts the 4-clause screen
+    sub-chain tileset/pal/pal/map. Returns (full hits, depth histogram, best runner-up)."""
+    full, depth, tail = [], {}, {}
+    for o in range(0, len(d) - 4, 4):
+        if d[o] != 0x10: continue
+        want = d[o+1] | (d[o+2] << 8) | (d[o+3] << 16)
+        if want == 12288:
+            n, at = bag_chain_depth(d, o)
+            depth[n] = depth.get(n, 0) + 1
+            if n == len(BAG_CHAIN): full.append([BASE + x for x in at])
+        elif want == 8192:
+            sub = BAG_CHAIN[3:]
+            save = BAG_CHAIN
+            n, at = bag_chain_depth_from(d, o, 3)
+            tail[n] = tail.get(n, 0) + 1
+    return full, depth, tail
+
+def bag_chain_depth_from(d, o, first):
+    """bag_chain_depth for the sub-chain starting at clause index `first`."""
+    global BAG_CHAIN
+    full = BAG_CHAIN
+    try:
+        BAG_CHAIN = full[first:]
+        return bag_chain_depth(d, o)
+    finally:
+        BAG_CHAIN = full
+
 def main():
     d = open(sys.argv[1], 'rb').read()
     print('rom', sys.argv[1], 'code', d[0xAC:0xB0].decode(), 'rev', d[0xBC])
@@ -104,6 +189,10 @@ def main():
               'pal rows', [(hex(a), hex(b), c) for a, b, c in r['pal_rows']],
               'id hist', r['id_hist'], 'distinct ptrs', r['distinct'], 'pal-shape', r['shape_ok'])
     print('wallpaper (16 B rows, tilemap LZ10==720 B):', [hex(x) for x in locate_wallpaper(d)])
+    full, depth, tail = locate_bag(d)
+    print('bag chain (7 clauses) full hits:', [[hex(x) for x in h] for h in full])
+    print('bag chain depth histogram over every LZ10->12288 start (depth: count):', dict(sorted(depth.items())))
+    print('bag screen sub-chain (tileset,palA,palB,map = 4 clauses) over every LZ10->8192 start:', dict(sorted(tail.items())))
 
 if __name__ == '__main__':
     main()
