@@ -100,6 +100,7 @@ def field(body, name):
 
 
 def cstr(s):
+    s = s.replace("{POKEBLOCK}", "POK\u00e9BLOCK")   # the ligature macro; never print the raw token (#334)
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
