@@ -10292,6 +10292,7 @@ static int aur_from_rc(int rc) {
 }
 
 bool app_undo_live(void) { return app_can_edit() && jrnapp_state(&g_rec) == JA_OK; }
+bool app_undo_stopped(void) { return jrnapp_stopped(); }
 
 int app_undo_redo(int dir, char name[25]) {
   int rc, st = jrnapp_state(&g_rec);
@@ -10317,8 +10318,8 @@ int app_undo_redo(int dir, char name[25]) {
      * the success path (snd_ok + "Undid: ..."): the caller warns. */
     app_journal_rederive();
     imgf_staged(&g_img);
-    log_line("journal: %s HALF a swap (consistent half state; cursor %lu tip %lu)", dir < 0 ? "undo" : "redo",
-             (unsigned long)jrnapp_cursor(), (unsigned long)jrnapp_tip());
+    log_line("journal: %s HALF a swap (consistent half state; cursor %lu tip %lu) live=%d stopped=%d", dir < 0 ? "undo" : "redo",
+             (unsigned long)jrnapp_cursor(), (unsigned long)jrnapp_tip(), (int)app_undo_live(), (int)app_undo_stopped());
     jrnapp_log_events(&g_rec);
     return AUR_HALF;
   }

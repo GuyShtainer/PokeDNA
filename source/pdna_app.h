@@ -560,6 +560,7 @@ void app_step_name(const char* name);
 enum { AUR_DONE = 0, AUR_OFF, AUR_ARENA, AUR_NOTHING, AUR_FLOOR, AUR_DIVERGED, AUR_ERR, AUR_PARTIAL, AUR_HALF };
 int  app_undo_redo(int dir, char name[25]);
 bool app_undo_live(void);
+bool app_undo_stopped(void);   /* #339: the journal latched a failed write -- no second undo/redo press can succeed (HALF dialog wording) */
 /* The history screen's jump: undo/redo along the current branch to `target` (0 = before the first step), stopping at
  * a floor. Returns the AUR_* of what stopped it (AUR_DONE = arrived); *moved = steps applied, `stop` = the floor's
  * step name. Re-derives the copies whenever anything moved. */

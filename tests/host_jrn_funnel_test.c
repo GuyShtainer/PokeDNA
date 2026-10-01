@@ -597,10 +597,12 @@ static void t_swap_pair_shape_and_rollback_failure(void) {
   memcpy(snapH, sv, sizeof sv);
   CHECK(app_world_reset(), "world");
   CHECK(stage_swap(10, 11, 12), "stage the swap again");
+  CHECK(jrnapp_stopped() == false, "#339 before the fault the journal is live (a second press would work)");
   rd_fail_all_writes = 1;                                   /* the flush between the halves fails: recording stops, the rollback is refused */
   {
     int rc = jrnapp_step_pair(-1, nm);
     rd_fail_all_writes = 0;
+    CHECK(jrnapp_stopped() == true, "#339 the write fault that made the half LATCHED the journal: the HALF dialog must not promise a retry");
     CHECK(rc == JRN_OK && strcmp(nm, "half a swap") == 0, "#303 (g) a refused rollback returns JRN_OK named 'half a swap' (the caller re-derives): rc %d '%s'", rc, safe(nm));
     CHECK(jrnapp_cursor() == 2u && memcmp(sv, snapH, sizeof sv) == 0, "#303 (g) cursor %u on the older half and the image EXACTLY the half state (journal and image agree)", (unsigned)jrnapp_cursor());
   }
