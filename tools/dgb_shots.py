@@ -6062,7 +6062,7 @@ def run_y19_s3(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessio
     s.tap("START", settle=200)
     s.tap("RIGHT", settle=20)
     s.press_n("DOWN", 8, settle=12)
-    T("A", "(l) History after FIVE rounds: B5's pair on top, then (under B5's first step) '+ 1 other branch', then B4's pair + its own summary ... (five collapsed summaries down the list)", settle=300,
+    T("A", "(l) History after FIVE rounds: B5's pair on top, then (under B5's first step) '+ 1 other branch', then B4's pair + its own summary ... (five forks staged; FOUR summaries fit the visible window)", settle=300,
       claim=["HISTORY", "1 other branch"])
     # the walk: rows are [Box move 2/2][Swap 1/2][+ 1 other branch] x5 (fork 1 = the newest); each OPEN fork adds one sibling row under its summary
     T("DOWN", "(l) DOWN x2: the cursor on fork 1's summary (the newest fork)", times=2, settle=30, claim=["A show"])

@@ -637,8 +637,8 @@ int jrnapp_step_pair(int dir, char name[25]) {
     rc = jrnapp_step(dir, name);
     /* #323: a whole swap press (g >= 2) names itself "Swap" below. A plain REDO that moved a step carrying the older half's name ("Swap", given only by drop_held's
      * SWAP tail) applied ONE half without its partner (the party landing, D7 ruling 10; the redo hop cap): the image sits on a half swap, so the toast says so.
-     * A plain UNDO of that name is not a half: the cursor reaches the Swap only after everything above it is undone, so the image is the pre-swap one. History's
-     * own labels are untouched. */
+     * A plain UNDO of that name lands pre-swap ONLY when the Swap's parent is not itself a Swap: a mid-chain Swap (4+-step chains, or a History jump into one)
+     * still leaves a half under a plain "Undid: Swap" toast -- a known toast-only residual; the image stays cursor-consistent. History's own labels are untouched. */
     if (rc == JRN_OK && dir > 0 && name && strcmp(name, "Swap") == 0) memcpy(name, "Swap (half)", 12);
     return rc;
   }
