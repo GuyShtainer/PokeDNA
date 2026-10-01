@@ -487,6 +487,7 @@ uint16_t pick_species(uint16_t current) {
       else {
         int px = GX + (pi % GCOLS) * GCELLX, py = GY + (pi / GCOLS) * GCELLY;
         m3_frame(px - 1, py - 1, px + GICON, py + GICON, UI_BG);
+        if (pi < GCOLS) ui_hline(px - 1, 21, GICON + 2, UI_BORDER);   /* the frame's top edge IS the rule row: restore it (#338) */
       }
     }
 
@@ -2313,6 +2314,7 @@ int pick_unown_form(int cur) {
       int pi = prev_sel - top_idx;                 /* erase the old selection frame */
       int px = GX + (pi % GCOLS) * GCELLX, py = GY + (pi / GCOLS) * GCELLY;
       m3_frame(px - 1, py - 1, px + GICON, py + GICON, UI_BG);
+      if (pi < GCOLS) ui_hline(px - 1, 21, GICON + 2, UI_BORDER);   /* restore the rule the erase crossed (#338) */
     }
     { int si = sel - top_idx;                      /* current selection frame */
       int sx = GX + (si % GCOLS) * GCELLX, sy = GY + (si / GCOLS) * GCELLY;
