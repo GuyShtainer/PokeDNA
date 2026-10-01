@@ -17,6 +17,9 @@
 /* The journal key of the OPEN resident session `s` as its image reads NOW; 0 when the session is not a resident image
  * (streamed / not open) or the identity fields cannot be located. */
 uint64_t gb_journal_key(const GbSession* s);
+/* #308: the key every build before the fix used (the name cut at its first 0xFF = '9'). It equals gb_journal_key() for every
+ * name WITHOUT a 0xFF byte; for the others it is the key an OLD journal sits under (jrnapp_open_gb_compat adopts it). */
+uint64_t gb_journal_key_legacy(const GbSession* s);
 
 /* The history name (ASCII, <= 24 chars) of the step a gb_persist/gb_hold_commit tag records ("move" -> "Box move"); an
  * unknown tag reads "Edit". Never NULL. */
