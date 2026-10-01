@@ -155,7 +155,7 @@ static void bag_rect(const BagLayout* L, BgFrame r) {
 }
 
 #if !PDNA_BAG_ART_COMPILED
-/* The bag SPRITE'S ROM rung -- Emerald/FireRed/LeafGreen's drawn bag (BACKLOG #295: Emerald
+/* The bag SPRITE'S ROM rung -- Emerald/Ruby/Sapphire/FireRed/LeafGreen's drawn bag (BACKLOG #295: Emerald
  * joined 2026-09-30). FireRed/LeafGreen decode their whole 8,192 B sheet into the shared
  * buffer; Emerald's 12,288 B sheet is bigger than the buffer, so rom_chrome streams just the
  * ONE frame asked for through a 4 KiB LZ window inside the same buffer (rom_chrome.h). Either
@@ -177,7 +177,8 @@ static void rom_bag_sprite_draw(const BagLayout* L, PkGame g, int female, int po
   static const uint8_t k_pocket_frame_frlg[5] = { 2, 3, 1, 2, 2 };
   int valid = (pocket >= 0 && pocket < 5);
   int frame = 0;
-  if (valid) frame = ((int)g == 1) ? pocket + 1 : (int)k_pocket_frame_frlg[pocket];
+  /* Emerald (1) and Ruby/Sapphire (0, #313) share the 6-frame sheet layout: pocket + 1 */
+  if (valid) frame = ((int)g <= 1) ? pocket + 1 : (int)k_pocket_frame_frlg[pocket];
   RomChromeBagSprite bs;
   artbuf_claim();          /* E3 review BLOCKING 2: about to overwrite mon_decomp */
   if (!rom_chrome_bag_sprite_load(s_bag_romchrome, (int)g, female, frame,

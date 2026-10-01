@@ -38,8 +38,7 @@
  * global.h) and rom_chrome_pokeblock_have() reports that honestly, matching
  * gen3_pokeblock.c's own pk_pokeblock_offset()==0 for FRLG.
  *
- * BAG: IMPLEMENTED for Emerald + FireRed + LeafGreen. Ruby/Sapphire NOT
- * implemented, and this is now pinned down rather than estimated.
+ * BAG: IMPLEMENTED for Emerald + FireRed + LeafGreen + (pinned revisions) Ruby/Sapphire.
  *
  * The DESIGN.md inventory (Sec 1.4) had Emerald's screen TILESET as "not
  * located" and FireRed/LeafGreen with no tileset row at all — only a tilemap,
@@ -113,13 +112,14 @@
  * 1,024). There is no second (bg_map) layer here — the bag has one tilemap, unlike the
  * card's front/back-over-bg composite — so RomChromeBag.src.bg_map is always 0.
  *
- * RUBY/SAPPHIRE REMAIN UNSUPPORTED, and not for a located-data reason this
- * time: DESIGN.md Sec 1.4 already fully locates Ruby's bag_screen.png tileset,
- * and it is a genuine, unavoidable budget miss — LZ10 decodes to exactly
- * 8,192 B, the WHOLE shared 8 KiB staging buffer (artbuf.h), leaving zero
- * bytes for its own tilemap or palette, before even considering anything else
- * that buffer must hold. Sapphire is not in DESIGN.md's bag table and was not
- * independently probed (Ruby's own number already rules the family out).
+ * RUBY/SAPPHIRE (BACKLOG #313, pinned AXVE rev 2 / AXPE rev 1): the tileset LZ10 decodes to
+ * 8,192 B, the WHOLE shared buffer, so it cannot sit next to its tilemap -- but the R/S tilemap
+ * only names tiles 0..104 (measured), so only that 3,360 B PREFIX is decoded
+ * (mr_lz77_range, start 0, the 4 KiB ring doubling as the destination), with the RAW 2,048 B
+ * tilemap and the 64 B palette behind it: 6,208 B of the 8,192. The pocket-picture sheets are
+ * Emerald-shaped (12,288 B, 6 frames) and use the same streamed-frame path. bag_style 0 is set
+ * at rom_chrome_open() only after a byte verify of the pinned chain; any other R/S dump keeps
+ * -1 (the plain list). tools/rs_locate.py prints the chain.
  *
  * THE SHARED-BUFFER HAZARD THIS MODULE DOES NOT REMOVE: bag chrome (this file)
  * and item icons (rom_itemart.c, Phase 1, already wired) target the SAME
@@ -189,7 +189,8 @@ typedef struct {
   int pokeblock_ok;       /* 1 iff this ROM is Emerald (the only one wired)    */
   int bag_style;           /* -1 = none; else the PkGame (1 EMERALD / 2 FRLG)
                              * this ROM's bag chrome renders as — bag_bg.h's own
-                             * index. Ruby/Sapphire always -1 (see header note). */
+                             * index. Ruby/Sapphire: 0 only for a pinned revision that passed the
+                            * open-time verify (#313), else -1. */
   int verify;             /* fetch-twice-and-compare, default ON (rom_itemart's
                              * "silent-garbage hazard" posture) — see
                              * rom_chrome_set_verify() */
@@ -313,7 +314,7 @@ int rom_chrome_pokeblock_load(const RomChrome* rch, int g,
 /* ---- bag ---------------------------------------------------------------- */
 
 /* 1 iff rom_chrome_bag_load(game=g, ...) can succeed for THIS rom. g is
- * bag_bg()'s own convention (bag_bg.h): 0 = RS (never true here), 1 = Emerald,
+ * bag_bg()'s own convention (bag_bg.h): 0 = RS (pinned Ruby/Sapphire only), 1 = Emerald,
  * 2 = FRLG (FireRed and LeafGreen both report g==2; rom_chrome_bag_load() picks
  * the right pin table from rch->rc->kind). */
 int rom_chrome_bag_have(const RomChrome* rch, int g);
@@ -341,7 +342,7 @@ int rom_chrome_bag_load(const RomChrome* rch, int g, int female,
 
 /* ---- bag SPRITE (the drawn bag itself, gendered, one frame per pocket) --- *
  *
- * Emerald + FireRed + LeafGreen (rom_chrome_bag_have()'s coverage minus Ruby/Sapphire).
+ * Emerald + FireRed + LeafGreen + pinned Ruby/Sapphire (rom_chrome_bag_have()'s coverage).
  * The ROM stores every gender's animation sheet as ONE monolithic LZ10 blob (closed + one
  * open frame per pocket, under a single header) and there is no seek. FireRed/LeafGreen's
  * declared size is 8,192 B, which fits the shared 8,192 B buffer ALONE, so those decode the
