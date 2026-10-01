@@ -28,6 +28,7 @@ pin can be decoration. The real tree is never touched (scratch dir).
     A10 the Game Boy guard dropped (a swap-shaped GB pair would pair)                      -> RED
   zc #322 mutants R1w..R7w (the walk-fault refusal at each of its seven places); zc #321 mutants (t_swap_seq_adjacency[_chain]): Q1..Q3 each of the three adjacency tests dropped (group first link, group second link, History link);
     Q4a/Q4b/Q4c the seq-gap test off by one in each direction (a real pair stops grouping / a one-step gap pairs), Q4d the History gap off by one
+  zd mutants: PA1..PA5 (#320 the Party add name / prefix 79 / prefix 40 / span offset ignored / PC-touch), LD1..LD4 (#325 the landing mark: dropped / any landing / each swallowed fault), JP1 (#326 the probe's fault)
 """
 from __future__ import annotations
 
@@ -121,8 +122,8 @@ def main() -> int:
     must_fail("funnel", "C1", "the chain never extends past two steps", [(J, "  if (max < 3u || !rn.parent || rn.parent + 1u != rm.parent) return 2;", "  if (1) return 2;")])
     must_fail("funnel", "C2", "the chain link's bytes are not checked", [(J, "  if (!ja_older_pairs(&rp)) return 2;", "  if (0) return 2;")])
     must_fail("funnel", "C3", "a chained Swap must add into an EMPTY slot", [(J, "!ja_sig_make(&rn, 0)", "!ja_sig_make(&rn, 1)")])
-    must_fail("funnel", "C4", "redo never takes a three-step group", [(J, "    g = ja_group_at(p3, JA_GROUP_MAX);\n    if (g < 0 || g == 3) return g;", "    g = 0;\n    if (g < 0 || g == 3) return g;")])
-    must_fail("funnel", "C5", "redo never takes the mid-chain pair", [(J, "    g = ja_group_at(p2, 2u);", "    g = 0;")])
+    must_fail("funnel", "C4", "redo never takes a three-step group", [(J, "    g = ja_group_at(p3, JA_GROUP_MAX, 0);\n    if (g < 0 || g == 3) return g;", "    g = 0;\n    if (g < 0 || g == 3) return g;")])
+    must_fail("funnel", "C5", "redo never takes the mid-chain pair", [(J, "    g = ja_group_at(p2, 2u, 0);", "    g = 0;")])
     must_fail("funnel", "C6", "the rollback undoes only one of the applied steps", [(J, "for (k = 0; k < d && rb == JRN_OK; k++)", "for (k = 0; k < 1u && rb == JRN_OK; k++)")])
     must_fail("funnel", "C7", "History never relabels a triple", [(J, "        ja_relabel(rows[n - 2].name, \" 3/3\");\n", "")])
     must_fail("funnel", "C8", "the cap lowered to 2 (no chained group forms)", [(J, "#define JA_GROUP_MAX 3u", "#define JA_GROUP_MAX 2u")])
@@ -158,8 +159,24 @@ def main() -> int:
     must_fail("funnel", "R7w", "the redo's pair probe fault is read as 'no group'", [(J, "    if (g < 0) return g;\n    if (g == 2) return 2;", "    if (g == 2) return 2;")])
     # zc #323: the half toast (t_swap_half_toast + the hop-cap leg)
     must_fail("funnel", "T1w", "the (half) mark dropped", [(J, 'memcpy(name, "Swap (half)", 12)', "(void)0")])
-    must_fail("funnel", "T2w", "the mark also applied to a plain UNDO", [(J, "rc == JRN_OK && dir > 0 && name", "rc == JRN_OK && name")])
+    must_fail("funnel", "T2w", "the mark also applied to a plain UNDO", [(J, "(dir > 0 || land)", "1")])
     must_fail("funnel", "T3w", "the whole pair press loses the plain name", [(J, 'memcpy(name, "Swap", 5)', 'memcpy(name, "Swap (half)", 12)')])
+    # zd #320: the party landing pairs (t_party_add_pairs / t_party_add_chain)
+    PN = 'static int ja_party_step(const JrnRec* r) { return ja_plain_step(r) && strcmp(r->name, "Party add") == 0; }'
+    NE = 'static int ja_newer_eligible(const JrnRec* r) { return ja_plain_step(r) && (strcmp(r->name, "Box move") == 0 || strcmp(r->name, "Party add") == 0); }'
+    must_fail("funnel", "PA1", "the Party add name requirement dropped (any plain SB1 landing pairs)", [(J, PN, 'static int ja_party_step(const JrnRec* r) { return ja_plain_step(r) && strcmp(r->name, "Box move") != 0; }'), (J, NE, "static int ja_newer_eligible(const JrnRec* r) { return ja_plain_step(r); }")])
+    must_fail("funnel", "PA2", "the party prefix is 79 bytes", [(J, "#define JA_PARTY_PREFIX JA_MON_BYTES", "#define JA_PARTY_PREFIX 79u")])
+    must_fail("funnel", "PA3", "the party prefix is 40 bytes (below the match minimum)", [(J, "#define JA_PARTY_PREFIX JA_MON_BYTES", "#define JA_PARTY_PREFIX 40u")])
+    must_fail("funnel", "PA4", "the span offset ignored (the first SB1 span, the count byte, is taken)", [(J, "if (sp.region < JA_SB1_FIRST || sp.region > JA_SB1_LAST || sp.len < JA_PARTY_PREFIX) continue;", "if (sp.region < JA_SB1_FIRST || sp.region > JA_SB1_LAST) continue;")])
+    must_fail("funnel", "PA5", "a Party add that also touches the PC pairs", [(J, "    if (sp.region >= JA_PC_FIRST && sp.region <= JA_PC_LAST) return 0;           /* a landing never touches the PC */\n", "")])
+    # zd #325: the landing-based undo half toast (t_land_half_toast, t_land_fault_sweep)
+    LW = '  if (rc == 0 && strcmp(w.name, "Swap") == 0) *land = 1;'
+    must_fail("funnel", "LD1", "the landing mark dropped", [(J, LW, "  (void)w;")])
+    must_fail("funnel", "LD2", "the mark fires on ANY landing", [(J, LW, "  if (rc == 0) *land = 1;")])
+    must_fail("funnel", "LD3", "the landing lookup swallows a read fault (a wrong toast, not a refusal)", [(J, "  if (rc == JRN_E_IO) return rc;\n  if (rc == 0 && strcmp(w.name", "  if (rc == 0 && strcmp(w.name")])
+    must_fail("funnel", "LD4", "the plain press's landing-parent lookup swallows a read fault", [(J, "      if (rc == JRN_E_IO) return rc;\n      below = rc == 0 ? w.parent : 0;", "      below = rc == 0 ? w.parent : 0;")])
+    # zd #326: the History jump's direction probe refuses a read fault (t_jump_probe_fault)
+    must_fail("funnel", "JP1", "the probe's read fault is 'not an ancestor' (the wrong-way jump returns)", [(J, '    if (rc == JRN_E_IO) { ja_event("history jump: a read fault in the direction probe, the jump is refused", rc); return rc; }', "")])
     # zc #324(a): the max > 48 clamp of jrnapp_history_tree (t_tree_max_clamp)
     must_fail("funnel", "K1", "the max>48 clamp dropped", [(J, "  if (max > JA_TREE_ROWS) max = JA_TREE_ROWS;\n", "")])
     must_fail("funnel", "K2", "the clamp is one row short", [(J, "if (max > JA_TREE_ROWS) max = JA_TREE_ROWS;", "if (max > JA_TREE_ROWS) max = JA_TREE_ROWS - 1;")])
