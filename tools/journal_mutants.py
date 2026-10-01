@@ -256,6 +256,9 @@ MUTANTS = [
     Mutant("#316: the RAM copy is partial (the last 4 bytes never copied)", "journal_undo.c",
            "jrn_i_src_read(j, s, 0, rec, r->len) != 0", "jrn_i_src_read(j, s, 0, rec, r->len - 4u) != 0",
            "journal", "the healthy press"),
+    Mutant("#316 review: the crc check on the RAM copy is skipped (a rotted record body is applied)", "journal_undo.c",
+           "  if (!src_crc_ok(j, &ram, r)) return JRN_E_STATE;\n", "",
+           "journal", "rotted record body was APPLIED"),
 ]
 
 

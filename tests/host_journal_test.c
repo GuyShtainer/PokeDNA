@@ -786,6 +786,36 @@ static void t_read_fault_apply_atomic(void) {
   printf("  #316 sweep: %u fault points over 3 formats x undo/redo, %u loud, %u torn\n", n_points, loud, torn);
 }
 
+/* #316 review: the record's own CRC is the ONE check between the RAM copy and the image. A record whose BODY rots
+ * on the card after open (header intact, so locate still finds it) must be refused: JRN_E_STATE, image untouched,
+ * cursor unmoved -- never a pass 2 that writes the rotted `before` bytes into the image. */
+static void t_rotted_record_refused(void) {
+  static const BYTE fmts[3] = { FM_FAT, FM_FAT32, FM_EXFAT };
+  static uint8_t old[RSZ], post[NREG][RSZ];
+  unsigned fi, lba, hit;
+  for (fi = 0; fi < 3; fi++) {
+    Jrn j; JrnRec r; JrnSrc s; uint8_t hdr[JRN_REC_HDR]; uint32_t cur0; int i;
+    world(&j, fmts[fi]);
+    memcpy(old, g_img[4], RSZ);
+    for (i = 0; i < 40; i++) g_img[4][200 + i] ^= 0xFF;
+    CHECK(jrn_step_begin(&j, "rot", 0) == JRN_OK && jrn_step_region(&j, 4, old, g_img[4]) == JRN_OK &&
+          jrn_step_end(&j) == JRN_OK && jrn_flush(&j) == JRN_OK, "rot: step");
+    memcpy(post, g_img, sizeof g_img);
+    memset(&s, 0, sizeof s);
+    if (jopen(&j, K) != JRN_OK || jrn_i_locate(&j, jrn_cursor(&j), &r, &s) != 0 || s.ram ||
+        jrn_i_src_read(&j, &s, 0, hdr, JRN_REC_HDR) != 0) { CHECK(0, "rot fmt %u: the step is not on the card", fi); continue; }
+    for (hit = 0, lba = 0; lba < rd_sector_count(); lba++) {
+      uint8_t* p = rd_sector(lba);
+      if (p && memcmp(p, hdr, JRN_REC_HDR) == 0) { p[JRN_REC_HDR + JRN_SPAN_HDR + 3] ^= 0x01; hit++; }   /* a `before` byte */
+    }
+    CHECK(hit == 1, "rot: the record sits once on the disk (%u)", hit);
+    card_remount();
+    cur0 = jrn_cursor(&j);
+    CHECK(jrn_undo(&j, &IMG, 0) == JRN_E_STATE && memcmp(g_img, post, sizeof g_img) == 0 && jrn_cursor(&j) == cur0,
+          "rot fmt %u: a rotted record body was APPLIED (the crc check on the RAM copy is the guard)", fi);
+  }
+}
+
 /* A flush whose write fails PART WAY leaves valid-CRC records past the tail: recording STOPS (no pop that
  * would reclaim their seqs), and the next session neither resurrects nor re-links them. */
 static void t_partial_flush_stops(void) {
@@ -955,6 +985,7 @@ int main(void) {
   t_roundtrip_undo_redo();
   t_two_pass_no_partial();
   t_read_fault_apply_atomic();
+  t_rotted_record_refused();
   t_pending_pop_and_overflow();
   t_crossed_floors();
   t_anchor_branches();
