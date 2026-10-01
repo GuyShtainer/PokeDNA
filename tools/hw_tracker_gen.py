@@ -112,8 +112,53 @@ def md(s):
     return s
 
 
+RE_ED_ONLY = re.compile(r"^\s*(On the )?Everdrive", re.I)
+PLAIN = ROOT / "docs" / "hw-tracker-plain.json"
+MANIFEST = ROOT / "docs" / "hw-tracker-rows.json"
+ASSETS = ROOT / "docs" / "hw-tracker-assets.json"
+
+
 def main():
     rows, build_line = parse(SRC.read_text(encoding="utf-8"))
+    # Guy has no Everdrive (2026-10-02): rows whose whole check NEEDS one are dropped.
+    # A row that names an Omega alternative ("EverDrive, or Omega with ...") stays.
+    dropped = [r["id"] for r in rows
+               if (RE_ED_ONLY.match(r["check"]) or r["what"].startswith("Everdrive:"))
+               and "Omega" not in r["check"]]
+    rows = [r for r in rows if r["id"] not in dropped]
+    if dropped:
+        print(f"everdrive-only rows dropped: {' '.join(dropped)}", file=sys.stderr)
+    # raw-cell manifest for the plain-language sidecar author (and the sync crons)
+    MANIFEST.write_text(json.dumps(rows, ensure_ascii=False, indent=0), encoding="utf-8")
+    # plain-language + Claude-coverage sidecar: docs/hw-tracker-plain.json
+    #   {"ID": {"t","do","see", "cl": {"state","note","frames":[qa-artless paths]}}}
+    # frames resolve to uploaded asset ids via docs/hw-tracker-assets.json {path: assetId}.
+    plain = {}
+    if PLAIN.is_file():
+        plain = json.loads(PLAIN.read_text(encoding="utf-8"))
+    amap = {}
+    if ASSETS.is_file():
+        amap = json.loads(ASSETS.read_text(encoding="utf-8"))
+    missing = 0
+    for r in rows:
+        p = plain.get(r["id"]) or {}
+        if p.get("t") and p.get("do") and p.get("see"):
+            r["pt"] = html.escape(p["t"], quote=False)
+            r["pdo"] = html.escape(p["do"], quote=False)
+            r["psee"] = html.escape(p["see"], quote=False)
+        else:
+            r["pt"] = r["pdo"] = r["psee"] = ""
+            missing += 1
+        cl = p.get("cl") or {}
+        if cl.get("state"):
+            r["cl"] = {"state": cl["state"],
+                       "note": html.escape(cl.get("note", ""), quote=False),
+                       "frames": [amap[f] for f in cl.get("frames", []) if f in amap]}
+        else:
+            r["cl"] = None
+    if missing:
+        print(f"plain-language entries missing for {missing} rows (original text shown there)",
+              file=sys.stderr)
     for r in rows:
         r["sec"] = classify(r)
         r["emu"] = emu_hint(r)
@@ -249,6 +294,8 @@ details.card[open] > summary::after { content:" \25B4"; }
 .hint { color:var(--muted); font-size:.78rem; }
 .empty { color:var(--muted); padding:28px 0; text-align:center; }
 .rawst { color:var(--skip); font-size:.76rem; overflow-wrap:anywhere; }
+.plain { white-space:pre-line; }
+.tech > summary { color:var(--muted); font-size:.78rem; cursor:pointer; margin-top:8px; }
 .fnd { border-top:1px dashed var(--line); padding:8px 0; font-size:.88rem; }
 .fnd img { max-width:100%; border-radius:6px; border:1px solid var(--line); margin-top:4px; }
 .sev { font-size:.72rem; border-radius:99px; padding:1px 8px; margin-right:6px; }
@@ -363,14 +410,20 @@ function rowEl(r){
     '<span class="chip st" id="st-' + d + '"></span>' +
     '<span class="chip walled" id="cl-' + d + '" hidden></span>' +
     (r.rawst ? '<span class="rawst">queue: ' + esc(r.rawst) + '</span>' : '') + '</div>' +
-    '<p class="what">' + r.what + '</p>' +
-    (r.emu ? '<p class="emu">emu note: ' + r.emu + '</p>' : '') +
+    '<p class="what">' + (r.pt || r.what) + '</p>' +
     '<p class="claude-note" id="cn-' + d + '" hidden></p>' +
-    '<dl class="more" id="more-' + d + '" hidden>' +
+    '<div class="photos" id="cph-' + d + '"></div>' +
+    '<div class="more" id="more-' + d + '" hidden>' +
+    (r.pdo ? '<dl><dt>Do this</dt><dd class="plain">' + r.pdo + '</dd>' +
+             '<dt>You should see</dt><dd class="plain">' + r.psee + '</dd></dl>' : '') +
+    (r.pdo ? '<details class="tech"><summary>Full technical row</summary>' : '') +
+    '<dl>' + (r.pt ? '<dt>What landed</dt><dd>' + r.what + '</dd>' : '') +
     '<dt>Check on the cart</dt><dd>' + r.check + '</dd>' +
     '<dt>Expect</dt><dd>' + r.expect + '</dd>' +
     (r.steps && r.steps !== "—" ? '<dt>Steps</dt><dd>' + r.steps + '</dd>' : '') +
+    (r.emu && !r.cl ? '<dt>Emulator note</dt><dd>' + r.emu + '</dd>' : '') +
     '<dt>Commit</dt><dd><code>' + esc(r.commit) + '</code> · queue status: ' + esc(r.status) + '</dd></dl>' +
+    (r.pdo ? '</details>' : '') + '</div>' +
     '<div class="ctl">' +
       '<div class="sgn" role="group" aria-label="Sign off ' + esc(r.id) + '">' +
         '<button type="button" data-s="pass" id="bp-' + d + '">PASS</button>' +
@@ -421,15 +474,28 @@ function applyRow(id){
   });
   var ta = document.getElementById("note-" + d);
   if (g && typeof g.note === "string" && document.activeElement !== ta) ta.value = g.note;
-  // claude layer
+  // claude layer: the live db doc wins; the baked sidecar assessment is the floor
   var cchip = document.getElementById("cl-" + d), cnote = document.getElementById("cn-" + d);
-  if (c && c.state) {
+  var eff = (c && c.state) ? c : (r.cl || null);
+  var LBL = { ok:"Claude: emu ✓", verified:"Claude: emu ✓", partial:"Claude: emu partial",
+              walled:"Claude: can't emu-prove", untested:"Claude: not emu-checked" };
+  if (eff && eff.state) {
     cchip.hidden = false;
-    cchip.textContent = { ok:"Claude: emu ✓", partial:"Claude: emu partial", walled:"Claude: emu can't prove" }[c.state] || ("Claude: " + c.state);
-    cchip.className = "chip " + (c.state === "ok" ? "pass" : "walled");
+    cchip.textContent = LBL[eff.state] || ("Claude: " + eff.state);
+    cchip.className = "chip " + ((eff.state === "ok" || eff.state === "verified") ? "pass" :
+                                 eff.state === "partial" ? "walled" : "");
   } else cchip.hidden = true;
-  if (c && c.note) { cnote.hidden = false; cnote.innerHTML = "<b>Claude:</b> " + esc(c.note) + (c.at ? ' <span style="color:var(--muted)">(' + esc(c.at) + ")</span>" : ""); }
+  var cn = eff ? (eff.note || "") : "";
+  if (cn) { cnote.hidden = false; cnote.innerHTML = "<b>Claude:</b> " + esc(cn) + (eff.at ? ' <span style="color:var(--muted)">(' + esc(eff.at) + ")</span>" : ""); }
   else cnote.hidden = true;
+  var cph = document.getElementById("cph-" + d);
+  cph.innerHTML = "";
+  ((r.cl && r.cl.frames) || []).concat((c && c.images) || []).forEach(function(aid){
+    var img = blobImg(aid, "Claude's emulator frame for " + r.id);
+    img.addEventListener("click", function(){ img.classList.toggle("big"); });
+    var w = document.createElement("span"); w.className = "ph"; w.appendChild(img);
+    cph.appendChild(w);
+  });
   // photos
   var ph = document.getElementById("ph-" + d);
   ph.innerHTML = "";
@@ -575,7 +641,7 @@ function applyFilter(){
     if (!el) return;
     var st = effStatus(r) || "pend";
     var okF = curFilter === "all" || st === curFilter;
-    var okQ = !q || (r.id + " " + r.what + " " + r.check).toLowerCase().indexOf(q) >= 0;
+    var okQ = !q || (r.id + " " + r.what + " " + r.check + " " + (r.pt || "") + " " + (r.pdo || "")).toLowerCase().indexOf(q) >= 0;
     el.hidden = !(okF && okQ);
     if (!el.hidden) visible++;
   });
