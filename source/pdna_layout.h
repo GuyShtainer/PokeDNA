@@ -710,6 +710,16 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * everything else the S2 edit path draws besides the confirm screen (above) and the
  * SF_ERR_RENAME switch (above). msg_wait lines measure against its 184px proportional
  * clamp; s_busy draws with ui_text at x=28 (8px/glyph fixed), budget 240-28=212px. */
+/* The shared "busy" panel (pdna_main.c busy_panel, pdna_gen12.c s_busy / s_busy_reading).
+ * BACKLOG #331: it was ui_panel(16, 60, 208, 48) with text at x=28, so the 25-glyph
+ * "Saving - do not power off" (25 * 8 = 200 px) ran to x=228 -- past the right border at
+ * x=223. Widened to x=8..231 with the text at x=20: the widest line ends at x=219 and
+ * clears the border by 11 px (host_textfit_test asserts >= 2). */
+#define PDNA_BUSY_PANEL_X   8
+#define PDNA_BUSY_PANEL_Y   60
+#define PDNA_BUSY_PANEL_W   224
+#define PDNA_BUSY_PANEL_H   48
+#define PDNA_BUSY_TEXT_X    20
 #define PDNA_GBEDIT_BUSY_SAVING    "Saving - do not power off"     /* s_busy's own line */
 #define PDNA_GBEDIT_BUSY_BACKUP    "Backing up original..."
 #define PDNA_GBEDIT_BUSY_WRITING   "Writing + verifying..."

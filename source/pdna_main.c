@@ -1884,9 +1884,9 @@ void msg_wait(const char* title, u16 col, const char* l1, const char* l2) {
  * transfer) so the multi-second verified write doesn't read as a hang on hardware. */
 static void busy_panel(const char* line) {
   ui_clear();
-  ui_panel(16, 60, 208, 48, UI_PANEL, UI_WARN);
-  ui_text(28, 70, UI_WARN, "Saving - do not power off");
-  ui_text(28, 88, UI_TEXT, line);
+  ui_panel(PDNA_BUSY_PANEL_X, PDNA_BUSY_PANEL_Y, PDNA_BUSY_PANEL_W, PDNA_BUSY_PANEL_H, UI_PANEL, UI_WARN);
+  ui_text(PDNA_BUSY_TEXT_X, 70, UI_WARN, PDNA_GBEDIT_BUSY_SAVING);
+  ui_text(PDNA_BUSY_TEXT_X, 88, UI_TEXT, line);
 }
 
 /* A short, deliberate one-shot flourish — a green frame that grows outward — shown

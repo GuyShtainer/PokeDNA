@@ -746,6 +746,16 @@ int main(void) {
    * caller-supplied line draw via ui_text at x=28 (T(), fixed sys8); every msg_wait
    * title/line is PF() at the same (28, .., 184) clamp as the rest of this screen. */
   T(PDNA_GBEDIT_BUSY_SAVING,  28);
+  /* BACKLOG #331: the shared busy panel's ink must clear its right border by >= 2 px. */
+  {
+    static const char* const busy[] = { PDNA_GBEDIT_BUSY_SAVING, PDNA_GBEDIT_BUSY_BACKUP,
+        PDNA_GBEDIT_BUSY_WRITING, PDNA_GBCREATE_BUSY_TITLE, PDNA_GBCREATE_BUSY_LINE,
+        "Preparing undo history...", "Writing flash save...", "Duplicating..." };
+    for (unsigned i = 0; i < sizeof busy / sizeof busy[0]; i++)
+      chkv(busy[i], PDNA_BUSY_TEXT_X + (int)strlen(busy[i]) * SYS8_W + 2,
+           PDNA_BUSY_PANEL_X + PDNA_BUSY_PANEL_W - 1 - 1);
+    chkv("busy panel left clearance >= 2", PDNA_BUSY_PANEL_X + 1 + 2, PDNA_BUSY_TEXT_X);
+  }
   T(PDNA_GBEDIT_BUSY_BACKUP,  28);
   T(PDNA_GBEDIT_BUSY_WRITING, 28);
   PF(PDNA_GBEDIT_READONLY_TITLE,    28, 184);
