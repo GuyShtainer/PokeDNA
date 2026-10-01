@@ -26,6 +26,8 @@
 #include "mon_front.h"
 #include "mon_back.h"
 #include "mon_icons.h"
+#include "mon_icons_gate.h"   /* PDNA_MON_ICONS_ART_COMPILED: #347 plan retire is artless-only */
+#include "icon_store.h"       /* icon_store_plan(0, 0) */
 #include "pdna_origin_art.h"   /* draw the mon in the art of the generation it came FROM */
 #include "sprite_era.h"        /* SE_PLACE_SUMMARY -- pdna_origin_art_set_place() (E4) */
 #include "mon_anim.h"     /* per-species Emerald front-animation family */
@@ -199,7 +201,18 @@ static void draw_left_ex(const PkMon* p, bool back) {
   } else if (art.egg) {
     ui_sprite(30, 30, MON_ICON_W, MON_ICON_H, mon_icon_egg());
   } else {
-    /* #344 audit: a planned row is safe (a miss is a plan_sweep that drops all pins first). Latent, cosmetic and pre-existing: em_field_adjust(F_SPECIES) in EDIT mode swaps in an OFF-plan species, which can find (cap-1) pins + 1 hot = NULL (blank icon) on the icon-only rung -- filed #347. */
+    /* #347 FIXED: the summary is a plan-less overlay. Opened over the box, the box's page plan (and
+     * the pins its paint left) is still live, and em_field_adjust(F_SPECIES) in EDIT mode steps to an
+     * OFF-plan species -- with (cap-1) pins + 1 hot the fetch found no victim and drew a blank icon.
+     * Retiring the plan drops the pins too (#330), so every row here is an ordinary off-plan fill.
+     * Safe: the box re-declares its page on return (every app_mon_menu caller sets s_oam_reload, and
+     * oam_sync -> boxoam_load_box -> boxoam_declare_box runs on the repaint); party/daycare already
+     * dropped theirs (app_icons_drop) before the menu. pdna_summary_art's portrait_sprite below
+     * inherits this: it only runs after a draw_left in the same repaint. Artless only: the compiled
+     * icons never consult the store. */
+#if !PDNA_MON_ICONS_ART_COMPILED
+    icon_store_plan(0, 0);
+#endif
     ui_sprite(30, 30, MON_ICON_W, MON_ICON_H, mon_icon_for_form(p->species, p->form));
   }
   if (p->isShiny) ui_text(70, 16, C_HOT, "*");             /* gold shiny mark on the portrait */
@@ -971,7 +984,7 @@ static const uint16_t* portrait_sprite(const PkMon* p, bool* is_icon, bool* is_e
   rumble_io_resume();
   if (art.px) { *is_icon = false; *is_era = (art.gen != PDNA_GEN3); *sw = art.w; *sh = art.h; return art.px; }
   *is_icon = true; *is_era = false; *sw = MON_ICON_W; *sh = MON_ICON_H;
-  /* #344 audit: same as draw_left_ex (see #347). */
+  /* #347 FIXED: inherits draw_left_ex's icon_store_plan(0, 0) -- the fetch below runs after draw_left in the same repaint. */
   return art.egg ? mon_icon_egg() : mon_icon_for_form(p->species, p->form);
 }
 
