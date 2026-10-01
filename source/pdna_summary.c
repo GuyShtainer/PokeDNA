@@ -199,6 +199,7 @@ static void draw_left_ex(const PkMon* p, bool back) {
   } else if (art.egg) {
     ui_sprite(30, 30, MON_ICON_W, MON_ICON_H, mon_icon_egg());
   } else {
+    /* #344 audit: SAFE -- icon only when there is no portrait art; the mon is a row of the LIVE plan (box/party), so a miss is a plan_sweep (drops every pin first), never the starving off-plan path. */
     ui_sprite(30, 30, MON_ICON_W, MON_ICON_H, mon_icon_for_form(p->species, p->form));
   }
   if (p->isShiny) ui_text(70, 16, C_HOT, "*");             /* gold shiny mark on the portrait */
@@ -970,6 +971,7 @@ static const uint16_t* portrait_sprite(const PkMon* p, bool* is_icon, bool* is_e
   rumble_io_resume();
   if (art.px) { *is_icon = false; *is_era = (art.gen != PDNA_GEN3); *sw = art.w; *sh = art.h; return art.px; }
   *is_icon = true; *is_era = false; *sw = MON_ICON_W; *sh = MON_ICON_H;
+  /* #344 audit: SAFE -- same reasoning as draw_left_ex: icon fallback only, and a plan row. */
   return art.egg ? mon_icon_egg() : mon_icon_for_form(p->species, p->form);
 }
 

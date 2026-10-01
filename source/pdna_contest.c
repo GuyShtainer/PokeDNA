@@ -162,6 +162,7 @@ static void mon_row(int i, int y, bool sel, void* vctx) {
     if (sel) ui_panel(PDNA_FILT_BAR_X, y - 1, PDNA_FILT_BAR_W, PDNA_PR_ICON_PANEL, UI_SEL, UI_TITLE);
     else     ui_fill_rect(PDNA_FILT_BAR_X, y - 1, PDNA_FILT_BAR_W, PDNA_PR_ICON_PANEL, UI_BG);
     if (ok) {
+      /* #344 audit: SAFE (plan-less by design) -- the nav switch retires the box plan AND its pins (icon_store_borrow(false)) before this screen opens, so every row here is an ordinary off-plan fill. */
       const uint16_t* ic = mon_icon_for_form_frame(m.species, m.form, 0);
       if (ic) ui_icon_scaled(PDNA_PR_ICON_X, y, PDNA_PR_ICON_W, PDNA_PR_ICON_W, ic);
     }

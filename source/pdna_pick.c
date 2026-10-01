@@ -470,6 +470,14 @@ uint16_t pick_species(uint16_t current) {
   uint32_t gen = 0; bool valid = false;
   /* Art-free build: one text row per species instead of the icon grid (Guy's call).
    * Same machinery — the grid just collapses to 1 column of 9 px rows. */
+#if !PDNA_MON_ICONS_ART_COMPILED
+  /* BACKLOG #344: retire any plan the screen underneath left live BEFORE the probe. A box page
+   * can rest with 3 of the ROM rung's 4 slots pinned (+1 hot = no victim), and the probe's
+   * off-plan row 1 then answers NULL -- the picker opened as the TEXT LIST on Ruby (CREATE from
+   * box 6). icon_store_plan(0, 0) drops plan + pins; the grid below declares its own page, and
+   * the box re-declares its plan on return (oam_sync -> boxoam_declare_box). */
+  icon_store_plan(0, 0);
+#endif
   const bool lst = (mon_icon_for(1) == 0);
   const int cols = lst ? 1 : GCOLS, vrows = lst ? 13 : GVROWS;
 
@@ -2328,6 +2336,7 @@ int pick_unown_form(int cur) {
         int idx = top_idx + i;
         if (idx >= N) break;
         int x = GX + (i % GCOLS) * GCELLX, y = GY + (i / GCOLS) * GCELLY;
+        /* #344 audit: SAFE -- all three callers run right after pick_species(), whose entry and exit retire the plan and its pins. */
         { const uint16_t* ic = mon_icon_for_form(201, (uint8_t)idx);
           if (ic) ui_icon_scaled(x, y, GICON, GICON, ic);
           else { char l[2] = { "ABCDEFGHIJKLMNOPQRSTUVWXYZ!?"[idx], 0 };   /* art-free: the letter IS the icon */
