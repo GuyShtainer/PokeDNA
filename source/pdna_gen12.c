@@ -4949,7 +4949,7 @@ bool gb_hold_commit(const char* what_for_log) {
 /* B at the exit confirm: put the card's image back (re-read the file), re-baseline + re-latch, and tell the journal its
  * thrown-away steps were discarded. A failed re-read leaves the staged image in RAM (never written; the session is
  * ending and the next open re-reads the file). The emulator build has no card: its edits stay in-session, as always. */
-static void gb_discard_staged(void) {
+void gb_discard_staged(void) {
 #ifdef PDNA_DELTA
   log_line("gb exit: discard in the emulator build leaves the in-session image (no card to re-read)");
   app_gb_dirty_clear();
