@@ -2962,9 +2962,9 @@ static uint8_t* drop_chunk_pc_to_bank(BoxSource* src, int box, uint8_t* recs, co
     for (int i = 0; i < s_ch.n; i++) memset(recs + (uint32_t)tgt[i] * 80, 0, 80);   /* revert (were empty) */
     snd_error();
     ui_clear();
-    ui_panel(20, 60, 200, 44, UI_PANEL, UI_WARN);
-    ui_text(30, 70, UI_WARN, "BANK WRITE FAILED");
-    ui_text(30, 86, UI_DIM, "Kept in the save. Press A");
+    ui_panel(PDNA_NOTICE_PANEL_X, 60, PDNA_NOTICE_PANEL_W, 44, UI_PANEL, UI_WARN);
+    ui_text(PDNA_NOTICE_TEXT_X, 70, UI_WARN, "BANK WRITE FAILED");
+    ui_text(PDNA_NOTICE_TEXT_X, 86, UI_DIM, "Kept in the save. Press A");
     u16 kk; do { s_vsync(); kk = key_hit(KEY_A); } while (!kk);   /* keep holding the chunk */
   }
   boxoam_resume();
@@ -3058,10 +3058,10 @@ static uint8_t* drop_chunk(BoxSource* src, int box, uint8_t* recs, bool* pfull) 
     snd_deny();
     if (footprint_hits_pending(src, box)) {      /* the one non-obvious block: cells that LOOK empty */
       boxoam_suspend(); ui_clear();
-      ui_panel(20, 56, 200, 52, UI_PANEL, UI_WARN);
-      ui_text(30, 66, UI_WARN, "CELLS NOT FREE YET");
-      ui_text(30, 82, UI_DIM, "They hold mons you moved");
-      ui_text(30, 92, UI_DIM, "out. Save first. Press A");
+      ui_panel(PDNA_NOTICE_PANEL_X, 56, PDNA_NOTICE_PANEL_W, 52, UI_PANEL, UI_WARN);
+      ui_text(PDNA_NOTICE_TEXT_X, 66, UI_WARN, "CELLS NOT FREE YET");
+      ui_text(PDNA_NOTICE_TEXT_X, 82, UI_DIM, "They hold mons you moved");
+      ui_text(PDNA_NOTICE_TEXT_X, 92, UI_DIM, "out. Save first. Press A");
       u16 kk; do { s_vsync(); kk = key_hit(KEY_A); } while (!kk);
       boxoam_resume();
     } else *pfull = false;                       /* bare refusal: beep only — Emerald repaints nothing
@@ -3120,9 +3120,9 @@ static uint8_t* drop_chunk(BoxSource* src, int box, uint8_t* recs, bool* pfull) 
   if (!app_bank_defer_room(s_ch.n)) {
     snd_deny();
     boxoam_suspend(); ui_clear();
-    ui_panel(20, 60, 200, 44, UI_PANEL, UI_WARN);
-    ui_text(30, 70, UI_WARN, "TOO MANY MOVES");
-    ui_text(30, 86, UI_DIM, "Save first, then continue.");
+    ui_panel(PDNA_NOTICE_PANEL_X, 60, PDNA_NOTICE_PANEL_W, 44, UI_PANEL, UI_WARN);
+    ui_text(PDNA_NOTICE_TEXT_X, 70, UI_WARN, "TOO MANY MOVES");
+    ui_text(PDNA_NOTICE_TEXT_X, 86, UI_DIM, "Save first, then continue.");
     u16 kk; do { s_vsync(); kk = key_hit(KEY_A); } while (!kk);
     boxoam_resume();
     return recs;
@@ -3374,10 +3374,10 @@ static void export_box_all(BoxSource* src, int box) {
   if (total == 0) {
     snd_deny();
     ui_clear();
-    ui_panel(20, 60, 200, 44, UI_PANEL, UI_BORDER);
-    ui_text(30, 70, UI_WARN, native_skip ? "NOTHING TO EXPORT" : "BOX IS EMPTY");
-    if (native_skip) { char l0[40]; siprintf(l0, "%d native skipped. Press A", native_skip); ui_text(30, 86, UI_DIM, l0); }
-    else ui_text(30, 86, UI_DIM, "Nothing to export. Press A");
+    ui_panel(PDNA_NOTICE_PANEL_X, 60, PDNA_NOTICE_PANEL_W, 44, UI_PANEL, UI_BORDER);
+    ui_text(PDNA_NOTICE_TEXT_X, 70, UI_WARN, native_skip ? "NOTHING TO EXPORT" : "BOX IS EMPTY");
+    if (native_skip) { char l0[40]; siprintf(l0, "%d native skipped. Press A", native_skip); ui_text(PDNA_NOTICE_TEXT_X, 86, UI_DIM, l0); }
+    else ui_text(PDNA_NOTICE_TEXT_X, 86, UI_DIM, "Nothing to export. Press A");
     u16 kk; do { s_vsync(); kk = key_hit(KEY_A); } while (!kk);
     return;
   }
@@ -3420,9 +3420,9 @@ static void release_box_all(BoxSource* src, int box) {
   if (total == 0) {
     snd_deny();
     ui_clear();
-    ui_panel(20, 60, 200, 44, UI_PANEL, UI_BORDER);
-    ui_text(30, 70, UI_WARN, "BOX IS EMPTY");
-    ui_text(30, 86, UI_DIM, "Nothing to release. Press A");
+    ui_panel(PDNA_NOTICE_PANEL_X, 60, PDNA_NOTICE_PANEL_W, 44, UI_PANEL, UI_BORDER);
+    ui_text(PDNA_NOTICE_TEXT_X, 70, UI_WARN, "BOX IS EMPTY");
+    ui_text(PDNA_NOTICE_TEXT_X, 86, UI_DIM, "Nothing to release. Press A");
     u16 kk; do { s_vsync(); kk = key_hit(KEY_A); } while (!kk);
     return;
   }

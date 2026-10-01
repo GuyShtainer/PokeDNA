@@ -691,6 +691,16 @@ static void t_rom_rung(const char* dir, const char* name) {
     CHK(icon_store_row(40) != 0,
         "[%s] #330: retiring the plan must leave an off-plan row servable", name);
     icon_store_reset(0, &rm);
+    /* BACKLOG #344: the OTHER retire -- icon_store_borrow(false), what the nav switch calls --
+     * must drop the pins too, borrow held or not (here none is). Before the fix the pool stayed
+     * pinned and the off-plan row answered NULL: Ruby's blank Secret Base icons. */
+    icon_store_plan(boxplan, 25);
+    CHK(icon_store_row(40) == 0,
+        "[%s] #344 PRECONDITION: the stale plan starves an off-plan row", name);
+    icon_store_borrow(false);
+    CHK(icon_store_row(40) != 0,
+        "[%s] #344: icon_store_borrow(false) (the nav retire) must clear the pins", name);
+    icon_store_reset(0, &rm);
   }
 
   /* ---- TIER B ON THE RUNG THAT NEEDS IT ------------------------------------------

@@ -8164,6 +8164,7 @@ static void sb_card_draw(const SbRecord* b, int i, bool sel) {
   if (!sp) { ui_text(cx + 26, cy + 14, UI_DIM, "-"); return; }
   uint8_t fo = (sp == 201) ? pk_unown_form(b->party.personality[i])
              : (sp == 410) ? (uint8_t)pk_get_deoxys_form() : 0;   /* letter/forme, not form 0 (Deoxys internal 410) */
+  /* #344 audit: SAFE (plan-less by design) -- the nav switch retires the box plan AND its pins (icon_store_borrow(false)) before this screen opens, so every row here is an ordinary off-plan fill. */
   ui_sprite(cx + 22, cy, MON_ICON_W, MON_ICON_H, mon_icon_for_form(sp, fo));
   /* nm: 9-col ui_truncate output, ui.h's contract wants max_cols*4+1 (37). Source is
    * pk_species_name() (a static internal table, plain ASCII, short) so 16 was safe by

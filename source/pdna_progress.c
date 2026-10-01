@@ -29,6 +29,7 @@ void pdna_progress_frame(const char* title, const PkMon* m, int done, int total,
   else if (m && m->species) spr = mon_front_for_form(m->species, m->isShiny, m->form);
   rumble_io_resume();
   if (spr) ui_sprite(SPR_X, SPR_Y, MON_FRONT_W, MON_FRONT_H, spr);
+  /* #344 audit: LEFT ALONE (not needed for the rig): icon only when mon_front_* is NULL; the mon is a row of the live box plan. A mon carried ACROSS boxes by a Bank drop is off-plan (latent, SD-bank only = hardware). Every caller sets s_oam_reload afterwards, so a retire here WOULD be safe (box re-declares) -- #346b. */
   else if (m && m->species)
     ui_sprite(SPR_X + (MON_FRONT_W - MON_ICON_W) / 2, SPR_Y + (MON_FRONT_H - MON_ICON_H) / 2,
               MON_ICON_W, MON_ICON_H, egg ? mon_icon_egg() : mon_icon_for_form(m->species, m->form));

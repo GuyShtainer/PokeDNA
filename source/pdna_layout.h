@@ -720,6 +720,14 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_BUSY_PANEL_W   224
 #define PDNA_BUSY_PANEL_H   48
 #define PDNA_BUSY_TEXT_X    20
+/* BACKLOG #345: the "Press A" notice dialogs (BANK WRITE FAILED, CELLS NOT FREE YET, TOO MANY MOVES,
+ * BOX IS EMPTY / NOTHING TO EXPORT / NOTHING TO RELEASE; pdna_box.c, pdna_gen12.c) drew 8 px/glyph text at
+ * x=30 inside ui_panel(20, .., 200, ..): the 27-glyph "Nothing to release. Press A" (216 px) ended at
+ * x=246, past the 240 px screen. Panel x=4..235, text x=12: the widest line ends at x=228 and clears
+ * the right border by 7 px (host_textfit_test asserts >= 2). Each dialog keeps its own y/height. */
+#define PDNA_NOTICE_PANEL_X 4
+#define PDNA_NOTICE_PANEL_W 232
+#define PDNA_NOTICE_TEXT_X  12
 #define PDNA_GBEDIT_BUSY_SAVING    "Saving - do not power off"     /* s_busy's own line */
 #define PDNA_GBEDIT_BUSY_BACKUP    "Backing up original..."
 #define PDNA_GBEDIT_BUSY_WRITING   "Writing + verifying..."

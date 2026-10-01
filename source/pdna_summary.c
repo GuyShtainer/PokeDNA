@@ -199,6 +199,7 @@ static void draw_left_ex(const PkMon* p, bool back) {
   } else if (art.egg) {
     ui_sprite(30, 30, MON_ICON_W, MON_ICON_H, mon_icon_egg());
   } else {
+    /* #344 audit: a planned row is safe (a miss is a plan_sweep that drops all pins first). Latent, cosmetic and pre-existing: em_field_adjust(F_SPECIES) in EDIT mode swaps in an OFF-plan species, which can find (cap-1) pins + 1 hot = NULL (blank icon) on the icon-only rung -- filed #347. */
     ui_sprite(30, 30, MON_ICON_W, MON_ICON_H, mon_icon_for_form(p->species, p->form));
   }
   if (p->isShiny) ui_text(70, 16, C_HOT, "*");             /* gold shiny mark on the portrait */
@@ -970,6 +971,7 @@ static const uint16_t* portrait_sprite(const PkMon* p, bool* is_icon, bool* is_e
   rumble_io_resume();
   if (art.px) { *is_icon = false; *is_era = (art.gen != PDNA_GEN3); *sw = art.w; *sh = art.h; return art.px; }
   *is_icon = true; *is_era = false; *sw = MON_ICON_W; *sh = MON_ICON_H;
+  /* #344 audit: same as draw_left_ex (see #347). */
   return art.egg ? mon_icon_egg() : mon_icon_for_form(p->species, p->form);
 }
 

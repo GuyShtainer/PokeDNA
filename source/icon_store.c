@@ -831,6 +831,13 @@ bool icon_store_borrow(bool on) {
   if (!on) {
     s_is.plan_n = 0;
     s_is.plan_res = 0;
+    /* BACKLOG #344: retiring the plan ends the pins' debt exactly as icon_store_plan(0, 0)
+     * does (#330) -- this is the retire the nav switch uses, and it used to leave every
+     * pin standing whenever no borrow was held (the ROM rung's refused/never-taken borrow,
+     * the common case). A box page can come to rest with 3 of the 4 ROM-rung slots still
+     * pinned; the plan-less screen the nav opens (Secret Bases, Contests) then found 3
+     * pinned + 1 hot = no victim and drew six blank icons. */
+    for (int i = 0; i < (int)s_tierA; i++) s_is.slot[i].pinned = 0;
     if (!s_borrow) return false;
     /* Invalidate every Tier B slot BEFORE the memory leaves. Order is the whole point:
      * these records live INSIDE the block we are handing back, and app_arena_release()
@@ -842,7 +849,6 @@ bool icon_store_borrow(bool on) {
     s_borrow  = 0;
     s_is.cap  = s_tierA;
     s_is.hot  = 0xFF;                    /* `hot` may have been one of those slots */
-    for (int i = 0; i < (int)s_tierA; i++) s_is.slot[i].pinned = 0;
     app_arena_release();                 /* re-derives g_pc from g_save, byte for byte */
     return false;
   }
