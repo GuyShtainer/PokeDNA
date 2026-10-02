@@ -15,11 +15,13 @@ that constant up or delete the check. Exit status is 0 only if all of them bite.
 It edits source files in place, so do not run it with unsaved work in those three headers;
 every mutation is restored in a finally, including on Ctrl-C.
 """
-import subprocess, sys, os
+import subprocess, sys, os, re, tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
+sys.path.insert(0, str(ROOT / "tests"))
+from run_host_tests import cc_line_for   # the header-cc-line contract the gate already uses
 
 UL = "source/ui_layout.h"
 PL = "source/pdna_layout.h"
@@ -30,12 +32,12 @@ M = [
  (UL, "#define UI_FOOTER_Y  150", "#define UI_FOOTER_Y  140", "UI_FOOTER_Y 150->140"),
  (UL, "#define UI_SCR_W   240", "#define UI_SCR_W   200", "UI_SCR_W 240->200"),
  (UL, "#define UI_ROW_H     8", "#define UI_ROW_H     10", "UI_ROW_H 8->10"),
- (UL, "  int y = (UI_FOOTER_Y - h) / 2;", "  int y = (UI_SCR_H - h) / 2;",
+ (UL, "  int y = (footer_y - h) / 2;", "  int y = (UI_SCR_H - h) / 2;",
       "ui_popup_fit centres on the SCREEN again (the old bug)"),
  (UL, "  if (vis > nrows) vis = nrows;", "  if (vis > nrows + 4) vis = nrows;",
       "ui_popup_fit stops clamping vis to nrows"),
  # --- nav menu ---------------------------------------------------------------
- (PL, "#define PDNA_NAV_ROW_H   11", "#define PDNA_NAV_ROW_H   13", "NAV_ROW_H 11->13 (the shipped regression)"),
+ (PL, "#define PDNA_NAV_ROW_H   10", "#define PDNA_NAV_ROW_H   13", "NAV_ROW_H 10->13 (the shipped regression)"),
  (PL, "#define PDNA_NAV_HEAD    20", "#define PDNA_NAV_HEAD    30", "NAV_HEAD 20->30"),
  (PL, "#define PDNA_NAV_FOOT    14", "#define PDNA_NAV_FOOT    24", "NAV_FOOT 14->24"),
  (PL, "#define PDNA_NAV_COL_W   98", "#define PDNA_NAV_COL_W   80", "NAV_COL_W 98->80 (narrower band)"),
@@ -50,6 +52,14 @@ M = [
  # --- per-mon action popup ---------------------------------------------------
  (PL, "#define PDNA_MONMENU_W     100", "#define PDNA_MONMENU_W     90", "MONMENU_W 100->90"),
  (PL, "#define PDNA_MONMENU_ROW_DX  6", "#define PDNA_MONMENU_ROW_DX 14", "MONMENU_ROW_DX 6->14"),
+ (PL, "#define PDNA_MONMENU_ROW_DX  6", "#define PDNA_MONMENU_ROW_DX 10", "MONMENU_ROW_DX 6->10 (the pre-zl flush-against-the-border value)"),
+ # Exactly the pre-zl state: ROW_DX back to 10 AND the gap term gone, so ROW_W's budget moves with
+ # them (88 = 11 glyphs still "fits") and ONLY the host test's chkv_min >= 4 gap pin can see it.
+ # RGAP 4->0 alone is unobservable by design (it only widens a budget no label reaches), so it is
+ # not listed separately.
+ (PL, ["#define PDNA_MONMENU_ROW_DX  6", "#define PDNA_MONMENU_RGAP    4"],
+      ["#define PDNA_MONMENU_ROW_DX 10", "#define PDNA_MONMENU_RGAP    0"],
+      "MONMENU ROW_DX 6->10 + RGAP 4->0 (the exact pre-zl menu: only the gap pin bites)"),
  (PL, '#define PDNA_LBL_MOVE_TO_BOX "MOVE TO BOX"', '#define PDNA_LBL_MOVE_TO_BOX "MOVE TO A BOX"',
       'action label "MOVE TO BOX" grows'),
  (PL, '#define PDNA_MONMENU_FOOT_TXT "A ok B back"', '#define PDNA_MONMENU_FOOT_TXT "A ok  B back"',
@@ -78,16 +88,16 @@ M = [
       "backup row FORMAT grows"),
  (PL, '#define PDNA_SET_ROW_CLEAR   "Clear backups (this save)"',
       '#define PDNA_SET_ROW_CLEAR   "Clear all backups (this save)"', '"Clear backups" row grows'),
- (PL, '#define PDNA_SET_HELP1       "Animations + Rumble have"',
-      '#define PDNA_SET_HELP1       "Animations and Rumble both have"', "settings help line 1 grows"),
- (PL, '#define PDNA_SET_HELP2       "per-item on/off submenus."',
-      '#define PDNA_SET_HELP2       "per-item on and off submenus."', "settings help line 2 grows"),
+ (PL, "#define PDNA_SET_HELP_Y1     136", "#define PDNA_SET_HELP_Y1     120",
+      "SET_HELP_Y1 136->120 (the rows' clearance line rises into the 10th row; the help-line defines are gone)"),
+ (PL, "#define PDNA_SET_NOTE_Y      142", "#define PDNA_SET_NOTE_Y      156",
+      "SET_NOTE_Y 142->156 (the note's ink runs off the bottom; stands in for the removed help-line anchors)"),
  (PL, '#define PDNA_SET_FOOT        "A change/do  U/D move  B back"',
       '#define PDNA_SET_FOOT        "A change/do  U/D move  B go back"', "settings footer grows"),
  (PL, '#define PDNA_SET_NOTE        "Yard visitors are scenery, not your Pokemon."',
       '#define PDNA_SET_NOTE        "Yard visitors are only scenery, not your own Pokemon."',
       "yard-visitors note grows"),
- (PL, "#define PDNA_SET_ROWS          7", "#define PDNA_SET_ROWS          9", "SET_ROWS 7->9 (two new settings)"),
+ (PL, "#define PDNA_SET_ROWS         10   /*", "#define PDNA_SET_ROWS         12   /*", "SET_ROWS 10->12 (two new settings)"),
  (PL, "#define PDNA_SET_NOTE_Y      142", "#define PDNA_SET_NOTE_Y      146", "SET_NOTE_Y 142->146"),
  # --- rumble page ------------------------------------------------------------
  (PL, "#define PDNA_RMB_HELP_Y1     132", "#define PDNA_RMB_HELP_Y1     110", "RMB_HELP_Y1 132->110"),
@@ -139,7 +149,7 @@ M = [
       "NAV_BAND_DY -2->0 (bar eats the row below)"),
  (PL, "#define PDNA_NAV_BAND_H  12", "#define PDNA_NAV_BAND_H  9",
       "NAV_BAND_H 12->9 (bar cuts the label's glyph box)"),
- (PL, "#define PDNA_NAV_ROW_H   11", "#define PDNA_NAV_ROW_H   9", "NAV_ROW_H 11->9"),
+ (PL, "#define PDNA_NAV_ROW_H   10", "#define PDNA_NAV_ROW_H   9", "NAV_ROW_H 10->9"),
  (PL, "#define PDNA_NAV_HINT_DY (-10)", "#define PDNA_NAV_HINT_DY (-30)",
       "NAV_HINT_DY -10->-30 (hint lands on the last row)"),
  # (4) PDNA_FILT_TEXT_X was a decoy: defined, read by neither the screens nor the test.
@@ -262,14 +272,19 @@ WIRING = [
   "a band string typed at the draw site instead of coming from pdna_layout.h"),
 ]
 
-CC = ("cc -std=c11 -I source tests/host_textfit_test.c source/ui_font.c "
-      "-o /tmp/htf_mut")
+TEST_SRC = ROOT / "tests" / "host_textfit_test.c"
+WORK_DIR = tempfile.mkdtemp(prefix="htf_mut-")      # per-run scratch: no fixed /tmp path to race on
+BIN = os.path.join(WORK_DIR, "htf_mut")
+_header_cc = cc_line_for(TEST_SRC)
+if not _header_cc:
+    sys.exit(f"no cc line in the first 24 lines of {TEST_SRC} -- cannot build the baseline")
+CC = re.sub(r"-o\s+\S+", f"-o {BIN}", _header_cc)  # the test's OWN source list, never a second copy
 
 def run_test():
     b = subprocess.run(CC, shell=True, capture_output=True, text=True)
     if b.returncode != 0:
         return "BUILD", b.stderr.strip().split("\n")[0]
-    r = subprocess.run(["/tmp/htf_mut"], capture_output=True, text=True)
+    r = subprocess.run([BIN], capture_output=True, text=True)
     bit = [l.strip() for l in r.stdout.split("\n") if l.strip().startswith("FAIL")]
     return ("FAIL" if r.returncode != 0 else "green"), (bit[0] if bit else "")
 
@@ -280,11 +295,16 @@ print("baseline: test is GREEN\n")
 bad = []
 for path, old, new, label in M:
     orig = open(path).read()
-    if orig.count(old) != 1:
-        print(f"  ??  {label:<62} anchor not unique ({orig.count(old)}x)")
+    olds, news = (old, new) if isinstance(old, list) else ([old], [new])
+    counts = [orig.count(o) for o in olds]
+    if any(c != 1 for c in counts):
+        print(f"  ??  {label:<62} anchor not unique ({counts}x)")
         bad.append(label); continue
+    mutated = orig
+    for o, n in zip(olds, news):
+        mutated = mutated.replace(o, n)
     try:
-        open(path, "w").write(orig.replace(old, new))
+        open(path, "w").write(mutated)
         state, bit = run_test()
     finally:
         open(path, "w").write(orig)                  # restore, byte for byte
