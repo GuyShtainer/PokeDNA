@@ -1,7 +1,7 @@
 /* source/gb_editor.c — the GB mon editor's FIELD MODEL — under test.
  *
  *   cc -std=c11 -Wall -Wextra -I source -I tests tests/host_gbeditor_test.c \
- *      source/gb_editor.c source/gb_session.c source/gb_edit.c source/gen1_save.c \
+ *      source/gb_editor.c source/gb_item_names.c source/gb_session.c source/gb_edit.c source/gen1_save.c \
  *      source/gen1_write.c source/gen2_save.c source/gen2_write.c source/data_tables.c \
  *      source/ui_font.c \
  *      -o /tmp/hgbe && /tmp/hgbe

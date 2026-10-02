@@ -7,7 +7,7 @@
  *      source/gen2_save.c source/gen2_write.c source/gen3_save.c source/gen3_box.c \
  *      source/gen3_mon.c source/gen3_edit.c source/gen3_daycare.c source/gen3_clip.c \
  *      source/gen12_convert.c source/data_tables.c source/bank_plant.c \
- *      source/gb_new_mon.c source/gb_editor.c source/gb_session.c source/rom_gblearn.c \
+ *      source/gb_new_mon.c source/gb_editor.c source/gb_item_names.c source/gb_session.c source/rom_gblearn.c \
  *      source/rom_gbbase.c source/rom_gbsprite.c source/gb_sprite_codec.c \
  *      source/ui_font.c source/gb_sidecar.c source/xfer_rec.c source/item_map_g2g3.c \
  *      -o /tmp/hbc
