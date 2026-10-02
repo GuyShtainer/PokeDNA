@@ -45,7 +45,7 @@ static int ref_cell(const uint8_t* tiles, uint32_t tiles_bytes, uint16_t e, int 
   uint16_t tone = bg[1];
   uint16_t fill = tone;
   if (!bs->cols && tone == 0) fill = fg[0];
-  if (bs->rs) fill = pal[0][0];
+  if (bs->rs) fill = 0x1041u;   /* review-zr D2: UI_BG, not the transparency key pal[0][0] */
   for (int i = 0; i < 64; i++) out[i] = fill;
   if (bs->cols && bs->rows) {
     int pi = (ty % bs->rows) * bs->cols + (tx % bs->cols);
