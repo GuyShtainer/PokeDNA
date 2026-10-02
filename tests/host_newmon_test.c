@@ -1,7 +1,7 @@
 /* source/gb_new_mon.c -- BACKLOG #50, "create a mon from scratch" -- under test.
  *
  *   cc -std=c11 -Wall -Wextra -I source tests/host_newmon_test.c \
- *      source/gb_new_mon.c source/gb_editor.c source/gb_edit.c source/gb_session.c \
+ *      source/gb_new_mon.c source/gb_editor.c source/gb_item_names.c source/gb_edit.c source/gb_session.c \
  *      source/gen1_save.c source/gen1_write.c source/gen2_save.c source/gen2_write.c \
  *      source/rom_gblearn.c source/rom_gbbase.c source/rom_gbsprite.c \
  *      source/gb_sprite_codec.c source/data_tables.c source/ui_font.c \
