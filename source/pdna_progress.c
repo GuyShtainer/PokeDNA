@@ -6,6 +6,8 @@
 #include "ui.h"
 #include "mon_front.h"
 #include "mon_icons.h"
+#include "mon_icons_gate.h"   /* PDNA_MON_ICONS_ART_COMPILED: the #346b retire is artless-only */
+#include "icon_store.h"       /* icon_store_plan(0, 0) */
 #include "data_tables.h"
 #include "rumble.h"        /* rumble_io_suspend/resume around the ROM sprite fetch */
 
@@ -29,10 +31,18 @@ void pdna_progress_frame(const char* title, const PkMon* m, int done, int total,
   else if (m && m->species) spr = mon_front_for_form(m->species, m->isShiny, m->form);
   rumble_io_resume();
   if (spr) ui_sprite(SPR_X, SPR_Y, MON_FRONT_W, MON_FRONT_H, spr);
-  /* #344 audit: LEFT ALONE (not needed for the rig): icon only when mon_front_* is NULL; the mon is a row of the live box plan. A mon carried ACROSS boxes by a Bank drop is off-plan (latent, SD-bank only = hardware). Every caller sets s_oam_reload afterwards, so a retire here WOULD be safe (box re-declares) -- #346b. */
-  else if (m && m->species)
+  else if (m && m->species) {
+    /* #346b: a Bank drop can carry a mon across boxes, so this icon is OFF the live box plan; retire
+     * the plan first (drops its pins too, #330) so the fetch is an ordinary off-plan fill -- the same
+     * retire the summary does (#347). Safe: every caller of this frame re-declares afterwards
+     * (s_oam_reload -> oam_sync -> boxoam_load_box -> boxoam_declare_box), so the box repays at most one
+     * <=4-row plan_sweep. Artless only: the compiled icons never consult the store. */
+#if !PDNA_MON_ICONS_ART_COMPILED
+    icon_store_plan(0, 0);
+#endif
     ui_sprite(SPR_X + (MON_FRONT_W - MON_ICON_W) / 2, SPR_Y + (MON_FRONT_H - MON_ICON_H) / 2,
               MON_ICON_W, MON_ICON_H, egg ? mon_icon_egg() : mon_icon_for_form(m->species, m->form));
+  }
 
   /* name + shiny/egg tag, centred under the sprite */
   char nm[24];
