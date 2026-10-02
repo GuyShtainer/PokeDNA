@@ -1034,9 +1034,10 @@ def run_u4_bag(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_
         s.tap("A", settle=gb_shots.BIG_SETTLE)                # ADD ITEM -> pick_item() opens
         s.shot("08_picker_open", "U4 (BACKLOG #195): ADD ITEM now opens the real "
                                   "item picker -- REAL Gen-1 names (gb_item_label, "
-                                  "not '#n'), a category header ('ITEM [All] 251': "
-                                  "251 = ids 0..250, gbb_max_item_id(RED)=250 "
-                                  "inclusive), list view, cursor on MASTER BALL "
+                                  "not '#n'), a category header ('ITEM [All] 150': "
+                                  "150 = ids 0..250 minus the 100 unnamed junk "
+                                  "ids the list hides -- 0x07, 0x2C, 0x62-0xC3), "
+                                  "list view, cursor on MASTER BALL "
                                   "(pick_item(1)'s own `current` -- '#0' NO_ITEM's "
                                   "own row is visible just above it, still "
                                   "selectable, gbb_insert() refuses it as BAD ID "
@@ -1056,13 +1057,13 @@ def run_u4_bag(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_
                                       "invalid for every pocket) is gone from the "
                                       "top of the list -- MASTER BALL is now row 0")
 
-        # Navigate to POTION (id 20/0x14): 19 DOWN presses from MASTER_BALL (id 1,
-        # now row 0 under the Items filter) -- ids 1..20 have no TM/HM ids in
-        # range (Gen 1's TM/HM block starts at 0xC4/196) and no other exclusion,
-        # so the Items-filtered list and the unfiltered list agree on this stretch;
-        # 19 DOWNs is exactly "one row per id from 1 to 20".
-        s.press_n("DOWN", 19, settle=gb_shots.SETTLE)
-        s.shot("08d_potion_selected", "U4: 19 DOWNs from MASTER_BALL lands on "
+        # Navigate to POTION (id 20/0x14): 18 DOWN presses from MASTER_BALL (id 1,
+        # now row 0 under the Items filter) -- the Gen-1 list hides unnamed junk
+        # ids (0x07 is the only one in 1..20), so ids 1..20 are 19 rows and
+        # POTION is row 18; the unfiltered All list (id 0 at row 0, 0x07 absent)
+        # puts MASTER_BALL at row 1 and POTION at row 19, the same 18 DOWNs.
+        s.press_n("DOWN", 18, settle=gb_shots.SETTLE)
+        s.shot("08d_potion_selected", "U4: 18 DOWNs from MASTER_BALL lands on "
                                        "POTION (id 20) -- a real name from the "
                                        "table, not '#20'")
         s.tap("A", settle=gb_shots.BIG_SETTLE)                # pick POTION -> QUANTITY prompt (unchanged UI)
@@ -1084,13 +1085,13 @@ def run_u4_bag(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_
         # N4's own saturation-refusal demo, reused verbatim except for HOW the id
         # is chosen: ADD ITEM POTION again (a fresh pick_item() call always opens
         # at cat=All, current=1 -- the Gen-1 ADD site never calls
-        # pick_item_set_gen1_2_cat(), so this is the SAME 19-DOWNs-from-MASTER_BALL
-        # trip as above, just over the unfiltered 251-row list instead of the
-        # 250-row Items-filtered one -- id 0's own extra row exactly cancels out
+        # pick_item_set_gen1_2_cat(), so this is the SAME 18-DOWNs-from-MASTER_BALL
+        # trip as above, just over the unfiltered 150-row list instead of the
+        # 95-row Items-filtered one -- id 0's own extra row exactly cancels out
         # id 20 also shifting up by one, so the DOWN count is unchanged).
         s.tap("START", settle=gb_shots.BIG_SETTLE)            # -> item menu, cursor still on POTION (last row)
         s.tap("A", settle=gb_shots.BIG_SETTLE)                # ADD ITEM -> picker opens fresh (cat=All again)
-        s.press_n("DOWN", 19, settle=gb_shots.SETTLE)         # MASTER_BALL -> POTION (All list)
+        s.press_n("DOWN", 18, settle=gb_shots.SETTLE)         # MASTER_BALL -> POTION (All list)
         s.tap("A", settle=gb_shots.BIG_SETTLE)                # pick POTION again -> QUANTITY prompt
         s.tap("B", settle=gb_shots.SETTLE)                    # clear seeded "1"
         s.press_n("RIGHT", 4, settle=gb_shots.SETTLE)         # col0 -> col4 '5'
