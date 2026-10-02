@@ -436,7 +436,7 @@ static void hof_add_team_row_paint(const GbHofTeam* t) {
     const char* nm = (t->mon[i].dex >= 1 && t->mon[i].dex <= 251)
                      ? pk_species_name(t->mon[i].dex) : "?";
     siprintf(l, "%d. %s Lv%d", i + 1, nm, t->mon[i].level);
-    ui_text(6, 20 + i * 10, UI_TEXT, l);
+    ui_text(6, 30 + i * 10, UI_TEXT, l);   /* #369b: header '%d/6 mons' sits at y=18; rows start clear of it */
   }
 }
 

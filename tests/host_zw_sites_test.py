@@ -4,6 +4,7 @@
 
 Each pin is a text check over comment-stripped function bodies; every pin is re-run against a MUTANT copy of
 the real source (the fix reverted) and must FAIL there:
+  Z369b ADD TEAM rows start below the n/6 header
   Z367 gbdc_land: on Gen 1 the party leg uses gbs_insert_party() with a ROM base row, never gbs_move() box->party
 """
 from __future__ import annotations
@@ -56,10 +57,19 @@ def p367(b):
             and "GBS_ERR_NEEDS_BASE" in b)
 
 
-PINS = [("Z367 Gen-1 Day-Care party leg = gbs_insert_party + ROM base row", "pdna_gbdaycare.c", "gbdc_land", p367)]
+def p369(b):
+    # mon rows start below the "%d/6 mons" header (y=18, 7 px tall) and the last row (6th) stays above the y=96 rule
+    m = re.search(r"ui_text\(6,\s*(\d+)\s*\+\s*i\s*\*\s*10", b)
+    return bool(m) and int(m.group(1)) >= 26 and int(m.group(1)) + 5 * 10 + 7 <= 95
+
+
+PINS = [
+    ("Z369b ADD TEAM mon rows clear of the n/6 header", "pdna_gbhof.c", "hof_add_team_row_paint", p369),
+    ("Z367 Gen-1 Day-Care party leg = gbs_insert_party + ROM base row", "pdna_gbdaycare.c", "gbdc_land", p367)]
 
 # mutants: (pin name, file, old, new) -- applied to the REAL source text, the pin must go RED
 MUTANTS = [
+    ("Z369b ADD TEAM mon rows clear of the n/6 header", "pdna_gbhof.c", "ui_text(6, 30 + i * 10", "ui_text(6, 20 + i * 10"),
     ("Z367 Gen-1 Day-Care party leg = gbs_insert_party + ROM base row", "pdna_gbdaycare.c",
      "gbs_insert_party(s, mon, &g1base, &pslot, list)", "gbs_insert(s, 0, mon, &pslot, list)"),
     ("Z367 Gen-1 Day-Care party leg = gbs_insert_party + ROM base row", "pdna_gbdaycare.c",

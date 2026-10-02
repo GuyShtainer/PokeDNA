@@ -940,6 +940,40 @@ static void delete_inverse(const char* file) {
         "deleting B: UI index 1 is '%s', want 'TEAMA'", file, seq1.mon[0].nick);
 }
 
+/* ---- Q: lane zw #369 -- a team of fewer than 6 mons ends with the retail $FF terminator in the NEXT
+ * mon's species byte (Gen 1 and Gen 2); a full 6-mon team gets no extra byte ---- */
+
+static void append_terminator(const char* file) {
+  uint32_t len = load(file);
+  if (!len) { printf("  SKIP %s (not present)\n", file); return; }
+  GbSession s;
+  if (gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) != GBS_OK) { printf("  SKIP %s (open)\n", file); return; }
+  g_ran++;
+  GbGame g = (s.gen == GB_GEN1) ? GBF_G_RED : ((s.g2w.sv.version == G2_VER_CRYSTAL) ? GBF_G_CRYSTAL : GBF_G_GS);
+  uint32_t base = gbf_off(g, GBF_HOF_TEAMS);
+  uint32_t first = (s.gen == GB_GEN1) ? 0u : 1u;      /* Gen 2: win-count byte, then the mons */
+  for (int n = 1; n <= 6; n++) {
+    CHECKF(gbh_clear(&s) == GBS_OK, "%s: clear before n=%d", file, n);
+    GbHofTeam t;
+    build_team(&t, 25, 30, "PIKA");
+    t.n = n;
+    for (int m = 1; m < n; m++) t.mon[m] = t.mon[0];
+    CHECKF(gbh_append_team(&s, &t) == GBS_OK, "%s: append n=%d", file, n);
+    /* Gen 1 fills slot 0 (old_count 0); Gen 2 always writes slot 0 -- both at `base`. */
+    if (n < 6) {
+      uint8_t term = g_img[base + first + (uint32_t)n * 16u];
+      CHECKF(term == 0xFFu, "%s: n=%d: next mon's species byte is 0x%02X, want the $FF terminator", file, n, term);
+    } else if (s.gen == GB_GEN2) {
+      CHECKF(g_img[base + 97u] == 0u, "%s: n=6: byte 97 is 0x%02X, a full team must be unchanged", file, g_img[base + 97u]);
+    } else {
+      CHECKF(g_img[base + 96u] == 0u, "%s: n=6: next slot byte 0 is 0x%02X, a full team must be unchanged", file, g_img[base + 96u]);
+    }
+    GbHofTeam back;
+    int top = gbh_team(&s, 0, &back) ? 1 : 0;
+    CHECKF(top && back.n == n, "%s: n=%d reads back %d mon(s)", file, n, top ? back.n : -1);
+  }
+}
+
 int main(void) {
   const char* saves[] = { "Red.sav", "Yellow.sav", "Gold.sav", "Crystal.sav" };
   printf("== A: decode real corpus teams ==\n");
@@ -999,6 +1033,9 @@ int main(void) {
 
   printf("== P: BACKLOG #194 F3 -- gbh_delete_team is append's byte-exact inverse ==\n");
   for (size_t i = 0; i < sizeof saves / sizeof saves[0]; i++) delete_inverse(saves[i]);
+
+  printf("== Q: lane zw #369 -- $FF terminator after a <6-mon team ==\n");
+  for (size_t i = 0; i < sizeof saves / sizeof saves[0]; i++) append_terminator(saves[i]);
 
   if (g_ran == 0) printf("  (no corpus present -- structural checks only, none ran)\n");
   printf("\n%d checks, %d failed (%d save(s) loaded)\n", g_check, g_fail, g_ran);
