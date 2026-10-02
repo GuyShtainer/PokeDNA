@@ -1502,6 +1502,7 @@ bool app_rom_hack_active(void) { return g_vinfo.valid && app_rom_is_hack(g_game)
  * hack-flagged (app_can_edit() now refuses for that reason too, BACKLOG #54).
  * This picks the honest wording for all remaining sites. */
 const char* app_readonly_why(void) {
+  if (g_vinfo.valid && g_vinfo.ours_rejected) return "Game loads other copy.";
   if (g_vinfo.valid && g_vinfo.game_loads_other) return "Game loads damaged copy.";
   return (g_vinfo.valid && app_rom_is_hack(g_game)) ? PDNA_ROMHACK_WHY : "Needs EZ-Flash Omega.";
 }
@@ -1509,6 +1510,7 @@ const char* app_readonly_why(void) {
 /* Review fix F3: renamed from app_readonly_why_short() -- callers need the full
  * footer including the "  B back" hint, not just the reason fragment. */
 const char* app_readonly_footer(void) {
+  if (g_vinfo.valid && g_vinfo.ours_rejected) return "mismatch: locked  B back";
   if (g_vinfo.valid && g_vinfo.game_loads_other) return "damaged save: locked  B back";
   return (g_vinfo.valid && app_rom_is_hack(g_game)) ? "ROM hack: locked  B back" : "read-only (Omega)  B back";
 }
@@ -12248,13 +12250,15 @@ static void view_save(const char* path) {
    * SD transfer is in flight). A 64 KiB file's absent slot B is never "signed", so it
    * cannot reach either branch. */
   if (g_vinfo.slot_damaged[0] || g_vinfo.slot_damaged[1])
-    log_line("save: slot damaged A=%d B=%d fallback=%d game_other=%d", (int)g_vinfo.slot_damaged[0],
+    log_line("save: slot damaged A=%d B=%d fallback=%d game_other=%d rej=%d", (int)g_vinfo.slot_damaged[0],
              (int)g_vinfo.slot_damaged[1], (int)g_vinfo.damaged_fallback,
-             (int)g_vinfo.game_loads_other);
+             (int)g_vinfo.game_loads_other, (int)g_vinfo.ours_rejected);
   if (g_vinfo.damaged_fallback || g_vinfo.game_loads_other) {
     snd_error();
     hb_pause(); perf_span_pause();
-    if (g_vinfo.game_loads_other)
+    if (g_vinfo.ours_rejected)
+      msg_wait("SAVE MISMATCH", UI_WARN, "The game loads the other copy.", "This copy shown, read-only.");
+    else if (g_vinfo.game_loads_other)
       msg_wait("DAMAGED SAVE", UI_WARN, "Game loads the damaged copy.", "Intact copy shown, read-only.");
     else
       msg_wait("DAMAGED SAVE", UI_WARN, "Newer copy damaged (old bug?)", "Opened the intact copy.");

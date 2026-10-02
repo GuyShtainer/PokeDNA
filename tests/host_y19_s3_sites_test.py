@@ -48,7 +48,7 @@ One later pin rides along because it guards the same file at the same text level
       in the idle upper half), so no foreign trainer's bytes survive in g_save's tail
   P16 #354: view_save warns ONLY on `damaged_fallback || game_loads_other` (snd_error, heartbeat+perf pause, one DAMAGED SAVE
       msg_wait), after the parse log line and before the party read; never on the slot_damaged log-only branch; both app_can_edit
-      variants and the read-only why/footer honour game_loads_other
+      variants and the read-only why/footer honour game_loads_other; #363: ours_rejected gets its own SAVE MISMATCH dialog, why and footer
 """
 from __future__ import annotations
 
@@ -148,14 +148,19 @@ def checks(box: str, summ: str, main: str, jrn: str, lay: str, prog: str, pick: 
             and before(vsv, "pdna_gen12_show_image(path, g_save, sz", "memset(g_save + sz, 0xFF"),
         "P16 #354: view_save warns on damaged_fallback / game_loads_other behind hb+perf pauses; both app_can_edit variants lock on game_loads_other": bool(vsv)
             and re.search(r"if \(g_vinfo\.damaged_fallback \|\| g_vinfo\.game_loads_other\)\s*\{\s*snd_error\(\);\s*hb_pause\(\);\s*perf_span_pause\(\);\s*"
-                          r"if \(g_vinfo\.game_loads_other\)\s*msg_wait\(\"DAMAGED SAVE\", UI_WARN,[^;]*;\s*else\s*msg_wait\(\"DAMAGED SAVE\", UI_WARN,[^;]*;\s*"
+                          r"if \(g_vinfo\.ours_rejected\)\s*msg_wait\(\"SAVE MISMATCH\", UI_WARN, \"The game loads the other copy\.\", \"This copy shown, read-only\.\"\);\s*"
+                          r"else if \(g_vinfo\.game_loads_other\)\s*msg_wait\(\"DAMAGED SAVE\", UI_WARN,[^;]*;\s*else\s*msg_wait\(\"DAMAGED SAVE\", UI_WARN,[^;]*;\s*"
                           r"perf_span_resume\(\);\s*hb_resume\(\);\s*\}", vsv) is not None
-            and vsv.count("DAMAGED SAVE") == 2 and "gen3_slot_consistent" not in vsv
+            and vsv.count("DAMAGED SAVE") == 2 and vsv.count("SAVE MISMATCH") == 1 and "gen3_slot_consistent" not in vsv
             and before(vsv, "gen3_parse_into(g_save, sz, &g_vinfo", "g_vinfo.damaged_fallback")
             and before(vsv, "g_vinfo.damaged_fallback", "pk_read_party_auto(")
             and len(re.findall(r"bool app_can_edit\(void\)\s*\{[^}]*g_vinfo\.game_loads_other[^}]*\}", strip_comments(main))) == 2
             and "Game loads damaged copy." in body(main, "app_readonly_why")
-            and "damaged save: locked  B back" in body(main, "app_readonly_footer"),
+            and "damaged save: locked  B back" in body(main, "app_readonly_footer")
+            and re.search(r"ours_rejected\)\s*return \"Game loads other copy\.\";", body(main, "app_readonly_why")) is not None
+            and re.search(r"ours_rejected\)\s*return \"mismatch: locked  B back\";", body(main, "app_readonly_footer")) is not None
+            and before(body(main, "app_readonly_why"), "ours_rejected", "game_loads_other")
+            and before(body(main, "app_readonly_footer"), "ours_rejected", "game_loads_other"),
         "P17 #360: item_desc_for refuses the unused id's \"?\" text": bool(idf)
             and re.search(r"if \(d && !\(d\[0\] == '\?' && d\[1\] == 0\)\)\s*return d;", idf) is not None
             and before(idf, "d[1] == 0", "return PDNA_ITEM_NO_DESC_YET"),
@@ -225,6 +230,10 @@ def main() -> int:
     mutant("M-P16f the delta app_can_edit ignores game_loads_other", "main", "  return !pdna_romcheck_bad() && !(g_vinfo.valid && app_rom_is_hack(g_game)) &&\n         !g_vinfo.game_loads_other;", "  return !pdna_romcheck_bad() && !(g_vinfo.valid && app_rom_is_hack(g_game));", "P16")
     mutant("M-P16g the GBA app_can_edit ignores game_loads_other", "main", " &&\n         !(g_vinfo.valid && g_vinfo.game_loads_other);", ";", "P16")
     mutant("M-P16h heartbeat not paused around the dialog", "main", "    hb_pause(); perf_span_pause();\n", "", "P16")
+    mutant("M-P16j the SAVE MISMATCH dialog silenced", "main", "      msg_wait(\"SAVE MISMATCH\", UI_WARN, \"The game loads the other copy.\", \"This copy shown, read-only.\");\n", "      (void)0;\n", "P16")
+    mutant("M-P16k ours_rejected falls into the damaged-copy wording", "main", "    if (g_vinfo.ours_rejected)\n      msg_wait(\"SAVE MISMATCH\"", "    if (0)\n      msg_wait(\"SAVE MISMATCH\"", "P16")
+    mutant("M-P16l the read-only reason ignores ours_rejected", "main", "  if (g_vinfo.valid && g_vinfo.ours_rejected) return \"Game loads other copy.\";\n", "", "P16")
+    mutant("M-P16m the read-only footer ignores ours_rejected", "main", "  if (g_vinfo.valid && g_vinfo.ours_rejected) return \"mismatch: locked  B back\";\n", "", "P16")
     mutant("M-P16i the read-only reason ignores the damaged copy", "main", "  if (g_vinfo.valid && g_vinfo.game_loads_other) return \"Game loads damaged copy.\";\n", "", "P16")
     mutant("M-P13a the short-read predicate stripped (bare ok)", "main", "  if (ok && rsz < g_save_size) {", "  if (0) {", "P13")
     mutant("M-P13b the latch-clear no longer gated on ok", "main", "if (ok) imgf_partial_clear(&g_img);", "imgf_partial_clear(&g_img);", "P13")
