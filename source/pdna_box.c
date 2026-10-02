@@ -2466,6 +2466,21 @@ static void era_cell_mark(int slot) {
   ui_ptext(cx + 2, cy + 1, UI_TEXT, s);     /* the 5x7 face: rows cy+1..cy+8 */
 }
 
+/* BACKLOG #337b: while the cell action menu is up boxoam_suspend() blanks the OBJ layer, so
+ * the grid's mon icons vanish -- but the era pads above are BG bitmap pixels, not sprites,
+ * and stayed behind as orphans. Put the wallpaper back under every pad (the same restore the
+ * chunk-move path uses). A cell whose bitmap era PICTURE is up (s_era_drawn) keeps its pad:
+ * the pad sits on that picture and a wallpaper rect there would punch a hole in it. Every
+ * path out of the menu repaints the grid (render_full / need_full, which runs era_cells()),
+ * so there is no separate restore. Loop bound: G3_BOX_SLOTS. */
+static void era_marks_hide(void) {
+  for (int s = 0; s < G3_BOX_SLOTS; s++) {
+    if (!pdna_origin_box_mark(s) || (s_era_drawn & (1u << s))) continue;
+    wp_restore_rect(GRID_X + (s % COLS) * CELL_W + (CELL_W - 8),
+                    GRID_Y + (s / COLS) * CELL_H + (CELL_H - 9), 8, 9);
+  }
+}
+
 /* Give a cell back to the OBJ layer (its bitmap art is about to be painted over and we
  * are not paying an SD decode to redraw it right now). */
 static void era_cell_icon_back(int slot) {
@@ -5288,6 +5303,7 @@ int pdna_box(BoxSource* src) {
         uint8_t* rec = recs + (uint32_t)cur * 80;
         int mbox = src->is_bank ? 0 : box;                               /* box index within menu_block */
         boxoam_suspend();                                                /* sprites off while the menu/summary is up */
+        era_marks_hide();                                                /* #337b: ...and the BG era pads with them */
         app_mon_menu(rec, false, src->is_bank, src->commit, src->menu_block, mbox, cur, UI_FOOTER_Y);
         boxoam_resume();
         recs = src->records(box);                                        /* menu may have edited it */
