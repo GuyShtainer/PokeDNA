@@ -239,12 +239,12 @@ M = [
 WIRING = [
  ("source/pdna_main.c", r"ui_text\(\s*\d+\s*,\s*150\s*,", 0,
   "a footer drawn at a literal y=150 instead of UI_FOOTER_Y"),
- ("source/pdna_main.c", r"ui_text\([^,]+,\s*UI_FOOTER_Y\s*,", 5,
-  "the five footers that must draw AT UI_FOOTER_Y"),
+ ("source/pdna_main.c", r"ui_text\([^,]+,\s*UI_FOOTER_Y\s*,", 9,
+  "the nine footers that must draw AT UI_FOOTER_Y"),
  ("source/pdna_main.c", r"ui_hline\(\s*0\s*,\s*147\s*,", 0,
   "a footer rule at a literal y=147 instead of UI_FOOTER_RULE_Y"),
- ("source/pdna_main.c", r"ui_hline\(\s*0\s*,\s*UI_FOOTER_RULE_Y\s*,", 2,
-  "the two footer rules that must derive from UI_FOOTER_Y"),
+ ("source/pdna_main.c", r"ui_hline\(\s*0\s*,\s*UI_FOOTER_RULE_Y\s*,", 6,
+  "the six footer rules that must derive from UI_FOOTER_Y"),
  ("source/pdna_main.c", r"my \+ 20 \+", 0,
   "a nav row placed at a literal head of 20 instead of PDNA_NAV_HEAD"),
  ("source/pdna_main.c", r"my \+ PDNA_NAV_HEAD \+", 3,
@@ -255,10 +255,10 @@ WIRING = [
   "a filter row drawn at a literal x=8 instead of PDNA_FILT_TEXT_X"),
  ("source/pdna_pick.c", r"ui_text\(\s*40\s*,\s*y\s*,", 0,
   "a type-row name at a literal x=40 instead of TEXT_X + CHIP_DX"),
- ("source/pdna_pick.c", r"PDNA_FILT_TEXT_X", 13,
-  "the 13 filter-row draw lines (filter_menu 4, dex_menu 6, item_filter_menu 3)"),
- ("source/pdna_pick.c", r"ui_text\(4, PDNA_FILT_FOOTER_Y,", 3,
-  "the three FILTER / SORT footers"),
+ ("source/pdna_pick.c", r"PDNA_FILT_TEXT_X", 17,
+  "the 17 filter-row draw lines (filter_menu 4, dex_menu 6, item_filter_menu 3, transfers 4)"),
+ ("source/pdna_pick.c", r"ui_text\(4, PDNA_FILT_FOOTER_Y,", 8,
+  "the eight FILTER / SORT footers (filter_menu, dex_menu, item_filter, transfers, two XRC, gb_edit_party, gb_editor)"),
  # The ROM IMAGE CHECK band. Its strings sat as literals INSIDE pdna_romfull.c until
  # 2026-08-18, where no host test could reach them — which is why six of them shipped
  # clipping. BAND_X / BAND_W are the .c's aliases for the two header constants.
