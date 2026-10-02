@@ -280,6 +280,9 @@ int pdna_gen12_show_image(const char* path, uint8_t* img, uint32_t len,
  * handler can call them directly on the SAME session it was handed
  * (gb_nav_from_start passes exactly &g_ed->s, whose enclosing Gb12Edit is g_ed). */
 void gb_rollback(void);
+
+/* BACKLOG #367: Gen-1 base-stat row for a mon (ROM beside the .sav); false = none available. */
+bool gb12_gen1_base_for(const GbEditMon* mon, GbGen1Base* out);
 bool gb_persist(const char* what_for_log);
 
 /* ---- #234 slice 4: hold-until-exit for a resident Game Boy session (design D8) --------------------------------------

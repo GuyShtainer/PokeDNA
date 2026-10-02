@@ -175,6 +175,19 @@ static bool gbdc_land(GbSession* s, const GbEditMon* mon, uint8_t* list, uint8_t
   if (party_room) {
     /* Find a storage box with a free slot to stage the insert -- try `cur_box`-agnostic,
      * first box first, since any box works equally well as a scratch landing spot. */
+    if (s->gen == GB_GEN1) {
+      /* #367: gbs_move box->party always refuses on Gen 1 (no base stats), so the party
+       * leg goes through gbs_insert_party() with the ROM's BaseStats row, the same
+       * stat-recomputing path the Bank TO-GAME landing uses. No ROM row = the old,
+       * honest GBS_ERR_NEEDS_BASE refusal (nothing changed). */
+      GbGen1Base g1base;
+      if (!gb12_gen1_base_for(mon, &g1base)) { *out_status = GBS_ERR_NEEDS_BASE; return false; }
+      int pslot = -1;
+      GbsStatus pst = gbs_insert_party(s, mon, &g1base, &pslot, list);
+      if (pst == GBS_OK) { *landed_box = -1; return true; }
+      *out_status = pst;
+      return false;
+    }
     for (int b = 0; b < nb; b++) {
       GbsStatus bld = gbs_load_list(s, b, list);
       if (bld != GBS_OK) continue;

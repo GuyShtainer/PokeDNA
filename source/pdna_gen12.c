@@ -3882,6 +3882,17 @@ gb_gen1_base_from_rom(uint16_t dex, GbGen1Base* out) {
   return GB1BASE_OK;
 }
 
+/* BACKLOG #367: the Gen-1 BaseStats row for a Day-Care mon about to land in the PARTY
+ * (pdna_gbdaycare.c's gbdc_land) -- the same ROM lookup the Bank TO-GAME landing uses,
+ * exposed without its UI so the caller keeps its own honest refusal. false = no usable
+ * ROM row (no ROM beside the .sav, bad ROM, or an impossible species); `out` untouched. */
+bool gb12_gen1_base_for(const GbEditMon* mon, GbGen1Base* out) {
+  if (!mon || !out) return false;
+  uint16_t dex = gb_get_species_dex(mon);
+  if (!dex) return false;
+  return gb_gen1_base_from_rom(dex, out) == GB1BASE_OK;
+}
+
 /* The ROM was absent: name it. base_only points INTO the arena-resident romspath
  * (still holding "<dir><base>" after the failed locate above -- gb_gen1_base_from_rom's
  * own probe, or, since BACKLOG #150 S150-10 decision 10, gb_create_locate_rom's), so
