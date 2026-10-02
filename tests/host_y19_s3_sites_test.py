@@ -28,6 +28,9 @@ One later pin rides along because it guards the same file at the same text level
       regresses #347 with the full host suite still green
   P12 #346b: the progress frame's icon fallback (a mon carried ACROSS boxes by a Bank drop is off-plan) retires
       the plan the same way, BEFORE its icon fetch
+  P13 #319: app_discard_staged's PARTIAL-latch clear sits behind the SHORT-READ predicate (`ok && rsz < g_save_size`
+      demotes ok) -- sf_read_full returns SF_OK on a short read, so a bare `ok` would clear the latch over a
+      card-head + staged-tail chimera
 """
 from __future__ import annotations
 
@@ -81,6 +84,7 @@ def checks(box: str, summ: str, main: str, jrn: str, lay: str, prog: str) -> dic
     aur = body(main, "app_undo_redo")
     jst = body(jrn, "jrnapp_step")
     fu = body(box, "footer_undo")
+    ads = body(main, "app_discard_staged")        # #319
     us = body(box, "box_undo_scope")              # #234 s4: the ONE scope predicate (a Gen-3 PC grid or a RESIDENT Game Boy grid)
     return {
         "P1 box loop feeds chord_frame and wakes on the chord": bool(pb) and "chord_frame(&chord" in pb and "while (!k && !cev)" in pb,
@@ -100,6 +104,11 @@ def checks(box: str, summ: str, main: str, jrn: str, lay: str, prog: str) -> dic
         "P11 #347: summary icon fallback retires the plan before the fetch": re.search(
             r"#if !PDNA_MON_ICONS_ART_COMPILED\s*icon_store_plan\(0, 0\);\s*#endif\s*"
             r"ui_sprite\(30, 30, MON_ICON_W, MON_ICON_H, mon_icon_for_form", strip_comments(summ)) is not None,
+        "P13 #319: the PARTIAL-latch clear is behind the short-read predicate": bool(ads)
+            and re.search(r"if \(ok && rsz < g_save_size\)\s*\{[^}]*ok = false;", ads) is not None
+            and re.search(r"if \(ok\)\s*imgf_partial_clear\(&g_img\);", ads) is not None
+            and before(ads, "rsz < g_save_size", "imgf_partial_clear(") and ads.count("imgf_partial_clear(") == 1
+            and "sf_read_full(g_path, g_save, G3_SAVE_FILE_SIZE, &rsz) == SF_OK" in ads,
         "P12 #346b: progress-frame icon fallback retires the plan before the fetch": re.search(
             r"#if !PDNA_MON_ICONS_ART_COMPILED\s*icon_store_plan\(0, 0\);\s*#endif\s*"
             r"ui_sprite\(SPR_X \+ \(MON_FRONT_W - MON_ICON_W\) / 2, SPR_Y \+ \(MON_FRONT_H - MON_ICON_H\) / 2,\s*"
@@ -145,6 +154,11 @@ def main() -> int:
     mutant("M-P10 chord_swallow removed", "box", "chord_swallow(&chord);", "", "P10")
     mutant("M-P11 the #347 retire deleted from the call site", "summ", "    icon_store_plan(0, 0);\n", "", "P11")
     mutant("M-P12 the #346b retire deleted from the progress frame", "prog", "    icon_store_plan(0, 0);\n", "", "P12")
+    mutant("M-P13a the short-read predicate stripped (bare ok)", "main", "  if (ok && rsz < g_save_size) {", "  if (0) {", "P13")
+    mutant("M-P13b the latch-clear no longer gated on ok", "main", "if (ok) imgf_partial_clear(&g_img);", "imgf_partial_clear(&g_img);", "P13")
+    mutant("M-P13c the demotion dropped", "main", "    ok = false;\n  }\n#endif\n  if (!ok) log_line(\"discard:", "  }\n#endif\n  if (!ok) log_line(\"discard:", "P13")
+    mutant("M-P13d a second, unconditional latch-clear", "main", "  if (ok) jrnapp_after_discard(&g_rec);", "  if (ok) jrnapp_after_discard(&g_rec);\n  imgf_partial_clear(&g_img);", "P13")
+    mutant("M-P13e rsz never filled (always refuses: latched until reopen)", "main", "G3_SAVE_FILE_SIZE, &rsz) == SF_OK;", "G3_SAVE_FILE_SIZE, 0) == SF_OK;", "P13")
     if fails:
         print("FAILED:", ", ".join(fails))
         return 1
