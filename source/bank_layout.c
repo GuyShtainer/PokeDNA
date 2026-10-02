@@ -12,8 +12,11 @@
 #define BML_PATH 48
 #define BML_DIR_MAX 20   /* + "/bank.meta.bak" (14) + NUL fits BML_PATH */
 
+/* "Exists" for the layout question: anything but a clean NO_FILE / NO_PATH counts (#379: a card
+ * fault must not read as an empty card -- the first-run path writes defaults). */
 static bool present(const char* path) {
-  return f_stat(path, 0) == FR_OK;
+  FRESULT fr = f_stat(path, 0);
+  return fr != FR_NO_FILE && fr != FR_NO_PATH;
 }
 
 static bool any_box(const char* dir, int nboxes) {
@@ -35,9 +38,16 @@ bool __attribute__((noinline)) bml_layout_exists(const char* dir, int nboxes) {
   return any_box(dir, nboxes);
 }
 
-static bool read_ok(const char* path, uint8_t* buf, uint32_t cap, uint32_t need, const char* magic) {
+typedef enum { MP_OK, MP_ABSENT, MP_BAD, MP_ERR } MetaProbe;
+
+/* One meta file: absent / present-but-unusable (short or wrong magic) / read-or-stat ERROR / usable. */
+static MetaProbe meta_probe(const char* path, uint8_t* buf, uint32_t cap, uint32_t need, const char* magic) {
+  FRESULT fr = f_stat(path, 0);
+  if (fr == FR_NO_FILE || fr == FR_NO_PATH) return MP_ABSENT;
+  if (fr != FR_OK) return MP_ERR;
   uint32_t sz = 0;
-  return sf_read_full(path, buf, cap, &sz) == SF_OK && sz >= need && memcmp(buf, magic, 6) == 0;
+  if (sf_read_full(path, buf, cap, &sz) != SF_OK) return MP_ERR;
+  return (sz >= need && memcmp(buf, magic, 6) == 0) ? MP_OK : MP_BAD;
 }
 
 BmlSource __attribute__((noinline)) bml_meta_read(const char* dir, int nboxes, uint8_t* buf,
@@ -45,11 +55,24 @@ BmlSource __attribute__((noinline)) bml_meta_read(const char* dir, int nboxes, u
   char p[BML_PATH];
   if (!dir || !buf || !magic || cap < need || strlen(dir) > BML_DIR_MAX) return BML_NONE_EMPTY;
   siprintf(p, "%s/bank.meta", dir);
-  if (read_ok(p, buf, cap, need, magic)) return BML_PRIMARY;
-  FRESULT pr = f_stat(p, 0);
-  bool absent = pr == FR_NO_FILE || pr == FR_NO_PATH;
+  MetaProbe m = meta_probe(p, buf, cap, need, magic);
+  if (m == MP_OK) return BML_PRIMARY;
+  if (m == MP_ERR) return BML_READ_ERROR;
+  bool absent = m == MP_ABSENT;
   siprintf(p, "%s/bank.meta.bak", dir);
-  if (read_ok(p, buf, cap, need, magic)) return absent ? BML_BAK_PRIMARY_ABSENT : BML_BAK_PRIMARY_BAD;
+  m = meta_probe(p, buf, cap, need, magic);
+  if (m == MP_OK) return absent ? BML_BAK_PRIMARY_ABSENT : BML_BAK_PRIMARY_BAD;
+  if (m == MP_ERR) return BML_READ_ERROR;
+  /* #379 F3: only now (no .bak parses) the verified scratch copies: the .tmp is a write that passed
+   * its byte-compare (sf_write_verified unlinks it on a verify fail), the .baktmp a verified rolling
+   * copy of the primary. A torn/short one fails the length check. */
+  static const char* const last[2] = { "tmp", "baktmp" };
+  for (int i = 0; i < 2; i++) {
+    siprintf(p, "%s/bank.meta.%s", dir, last[i]);
+    m = meta_probe(p, buf, cap, need, magic);
+    if (m == MP_OK) return absent ? BML_LAST_RESORT_ABSENT : BML_LAST_RESORT_BAD;
+    if (m == MP_ERR) return BML_READ_ERROR;
+  }
   return any_box(dir, nboxes) ? BML_NONE_BOXES : BML_NONE_EMPTY;
 }
 

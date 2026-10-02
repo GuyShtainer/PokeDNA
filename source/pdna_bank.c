@@ -112,6 +112,14 @@ bool pdna_bank_serial_trusted(void) { return g_serial_trusted; }
  * meta_load() already detects on its own via the normal FR_OK+magic probe. */
 static bool EWRAM_BSS g_meta_from_bak;
 
+/* BACKLOG #379 F4: do g_meta/g_bank_serial hold a real read of the card (or legit defaults)?
+ * 0 = unknown (nothing loaded yet this session: the legacy behaviour, every caller as before),
+ * 1 = valid (a clean/restored load, or the genuine no-Bank defaults), 2 = UNSAFE (the very first
+ * meta_load() hit a card READ ERROR: RAM holds display-only defaults, so meta_save() must refuse
+ * -- a defaults-shaped write would roll the good primary into .bak). A READ ERROR after a valid
+ * load changes nothing: the names the session holds ARE the card's names and stay. */
+static uint8_t EWRAM_BSS g_meta_state;
+
 /* ---- paths ---- */
 static void box_path(int box, char* out) { siprintf(out, PDNA_BANK_DIR "/box%02d.box", box); }
 static const char* meta_path(void) { return PDNA_BANK_DIR "/bank.meta"; }
@@ -125,6 +133,7 @@ static void meta_defaults(void) {
   g_bank_serial = 0;   /* decision 2: zero it too, same as every other meta_defaults() field */
   g_serial_trusted = false;   /* BACKLOG #168: a defaulted serial can never be trusted */
   g_meta_from_bak = false;   /* BACKLOG #219a: a fresh default has no corrupt primary to heal */
+  g_meta_state = 1;          /* legit defaults (no Bank yet); meta_load's READ_ERROR path downgrades it */
 }
 
 /* noinline (BACKLOG #81): meta_load's 176-byte buf[] would otherwise be inlined into
@@ -138,17 +147,31 @@ static bool __attribute__((noinline)) meta_load(void) {
   /* BACKLOG #371: the source decision (primary / .bak / nothing) lives in bank_layout.c so a
    * host test drives the REAL logic. An ABSENT primary with a good .bak takes the same restore
    * path as a corrupt primary (the interrupted-write window unlink -> rename leaves exactly
-   * that); a leftover bank.meta.tmp is never read as data (it is left in place: it may hold the
-   * only copy of a newer verified write, and the next sf_write_verified truncates it anyway --
-   * savefile.c's "keep the .tmp" convention). */
+   * that). BACKLOG #379 F3: when NO .bak parses either, the verified bank.meta.tmp (else .baktmp:
+   * magic + length checked, kept by savefile.c only after a passing byte-compare) is used as a last
+   * resort and treated as a .bak restore. A card READ ERROR is not "missing" (F4, below). */
   BmlSource src = bml_meta_read(PDNA_BANK_DIR, BANK_BOXES, buf, sizeof buf, META_BYTES, META_MAGIC);
-  bool from_bak = src == BML_BAK_PRIMARY_ABSENT || src == BML_BAK_PRIMARY_BAD;
+  bool from_bak = src == BML_BAK_PRIMARY_ABSENT || src == BML_BAK_PRIMARY_BAD ||
+                  src == BML_LAST_RESORT_ABSENT || src == BML_LAST_RESORT_BAD;
   bool ok = src == BML_PRIMARY || from_bak;
+  if (src == BML_READ_ERROR) {
+    /* BACKLOG #379 F4: a card fault is NOT "missing". Keep the names RAM already holds (they are the
+     * card's), do not meta_defaults() them, return false. Only a session that never loaded anything
+     * gets display-only defaults, and then g_meta_state=2 makes meta_save() refuse. */
+    log_line("bank: meta read error - keeping the names in RAM, nothing is written");
+    app_log_flush();
+    if (g_meta_state == 0) { meta_defaults(); g_meta_state = 2; }
+    return false;
+  }
   if (src == BML_BAK_PRIMARY_ABSENT) {
     log_line("bank: meta primary missing, restored from bank.meta.bak");
     app_log_flush();
   } else if (src == BML_BAK_PRIMARY_BAD) {
     log_line("bank: meta primary unreadable/corrupt, restored from bank.meta.bak");
+    app_log_flush();
+  } else if (src == BML_LAST_RESORT_ABSENT || src == BML_LAST_RESORT_BAD) {
+    log_line("bank: meta primary %s, no usable .bak - restored from the verified bank.meta.tmp/.baktmp",
+             src == BML_LAST_RESORT_ABSENT ? "missing" : "unreadable/corrupt");
     app_log_flush();
   } else if (src == BML_NONE_BOXES) {
     /* Neither copy is usable but box files exist: an existing Bank. Names stay at their
@@ -178,6 +201,7 @@ static bool __attribute__((noinline)) meta_load(void) {
    * load fell back past -- meta_save()'s next call must heal it before it can safely
    * take its usual rolling backup. */
   g_meta_from_bak = from_bak;
+  g_meta_state = 1;
   return true;
 }
 
@@ -191,6 +215,11 @@ static bool __attribute__((noinline)) meta_load(void) {
  * does not distinguish from success; either way the directory exists after this
  * line. */
 static bool meta_save(void) {
+  if (g_meta_state == 2) {   /* BACKLOG #379 F4: RAM holds display-only defaults after a card read error */
+    log_line("bank: meta NOT saved - never read from the card (read error), refusing a defaults write");
+    app_log_flush();
+    return false;
+  }
   f_mkdir("/PokeDNA");
   f_mkdir(PDNA_BANK_DIR);
 

@@ -235,12 +235,57 @@ int main(void) {
   fresh_card(); put(DIR_ "/box16.box", junk, 64);
   CHECK(!bml_layout_exists(DIR_, 16), "box16 (out of range) counted");
 
-  /* a leftover .tmp is never trusted as data and never counts as a Bank */
+  /* #379 F3: a verified bank.meta.tmp / .baktmp is the LAST resort: used only when no .bak parses */
   fresh_card(); put(TMP, good, NEED);
   CHECK(!bml_layout_exists(DIR_, 16), "lone bank.meta.tmp counted as a Bank");
-  CHECK(rd(out) == BML_NONE_EMPTY, "lone bank.meta.tmp read as meta data");
+  CHECK(rd(out) == BML_LAST_RESORT_ABSENT && memcmp(out, good, NEED) == 0, "#379: lone .tmp not used as the last resort");
   fresh_card(); put(TMP, good, NEED); put(BAK, old, NEED);
-  CHECK(rd(out) == BML_BAK_PRIMARY_ABSENT && memcmp(out, old, NEED) == 0, ".tmp preferred over .bak");
+  CHECK(rd(out) == BML_BAK_PRIMARY_ABSENT && memcmp(out, old, NEED) == 0, "#379: .bak must be preferred over .tmp");
+  fresh_card(); put(META ".baktmp", old, NEED);
+  CHECK(rd(out) == BML_LAST_RESORT_ABSENT && memcmp(out, old, NEED) == 0, "#379: lone .baktmp not used");
+  fresh_card(); put(TMP, good, NEED); put(META ".baktmp", old, NEED);
+  CHECK(rd(out) == BML_LAST_RESORT_ABSENT && memcmp(out, good, NEED) == 0, "#379: .tmp must be preferred over .baktmp");
+  fresh_card(); put(TMP, junk, NEED); put(META ".baktmp", old, NEED);
+  CHECK(rd(out) == BML_LAST_RESORT_ABSENT && memcmp(out, old, NEED) == 0, "#379: bad-magic .tmp must fall to .baktmp");
+  fresh_card(); put(TMP, good, 100);
+  CHECK(rd(out) == BML_NONE_EMPTY, "#379: a short (torn) .tmp was trusted");
+  fresh_card(); put(META, junk, NEED); put(TMP, good, NEED);
+  CHECK(rd(out) == BML_LAST_RESORT_BAD && memcmp(out, good, NEED) == 0, "#379: corrupt primary + only .tmp");
+  fresh_card(); put(TMP, good, NEED); put(DIR_ "/box07.box", junk, 64);
+  CHECK(rd(out) == BML_LAST_RESORT_ABSENT, "#379: .tmp must beat NONE_BOXES");
+
+  /* #379 F4: a card fault is not "missing" */
+  fresh_card(); put(META, good, NEED); put(BAK, old, NEED);
+  f_mount(0, "", 0); f_mount(&s_fs, "", 1);
+  rd_fail_reads_after = 0;
+  { BmlSource r = rd(out); CHECK(r == BML_READ_ERROR, "#379: stat failure on the primary returned %d", (int)r); }
+  CHECK(bml_layout_exists(DIR_, 16), "#379: a stat fault read as 'no Bank' (first-run path would write defaults)");
+  rd_fail_reads_after = -1;
+  { int errs = 0, fallbacks = 0;
+    for (long n = 0; n < 8; n++) {
+      fresh_card(); put(META, good, NEED); put(BAK, old, NEED);
+      f_mount(0, "", 0); f_mount(&s_fs, "", 1);
+      rd_fail_read_at = n;
+      BmlSource r = rd(out);
+      rd_fail_read_at = -1;
+      if (r == BML_READ_ERROR) errs++;
+      if (r != BML_PRIMARY && r != BML_READ_ERROR) { fallbacks++; printf("  read fault %ld -> source %d\n", n, (int)r); }
+    }
+    CHECK(fallbacks == 0, "#379: a transient read fault on a PRESENT primary fell back to .bak/NONE (%d)", fallbacks);
+    CHECK(errs > 0, "#379: no read fault ever reached bml_meta_read (vacuous)"); }
+  /* primary absent, .bak present but its read errors -> READ_ERROR, not .tmp/NONE */
+  { int errs = 0, bad = 0;
+    for (long n = 0; n < 8; n++) {
+      fresh_card(); put(BAK, old, NEED); put(TMP, good, NEED);
+      f_mount(0, "", 0); f_mount(&s_fs, "", 1);
+      rd_fail_read_at = n;
+      BmlSource r = rd(out);
+      rd_fail_read_at = -1;
+      if (r == BML_READ_ERROR) errs++;
+      if (r == BML_LAST_RESORT_ABSENT || r == BML_NONE_BOXES || r == BML_NONE_EMPTY) bad++;
+    }
+    CHECK(bad == 0, "#379: a read fault on .bak fell through to .tmp/NONE (%d)", bad);
+    CHECK(errs > 0, "#379: .bak read fault never reached (vacuous)"); }
 
   /* a box .bak / other stray files alone do not count */
   fresh_card(); put(DIR_ "/box00.box.bak", junk, 64);

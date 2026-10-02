@@ -13,17 +13,30 @@ typedef enum {
   BML_BAK_PRIMARY_ABSENT,  /* primary missing, bank.meta.bak parsed -> restore from it     */
   BML_BAK_PRIMARY_BAD,     /* primary present but unreadable/corrupt, .bak parsed          */
   BML_NONE_BOXES,          /* no usable meta, but box files exist: an existing Bank        */
-  BML_NONE_EMPTY           /* no usable meta and no box file: a card with no Bank at all   */
+  BML_NONE_EMPTY,          /* no usable meta and no box file: a card with no Bank at all   */
+  /* BACKLOG #379 F3: last resort -- no primary and no usable .bak, but a verified scratch copy
+   * (bank.meta.tmp, else bank.meta.baktmp: magic + length checked) parses. Handled like a .bak
+   * restore (heal the primary, keep the names). */
+  BML_LAST_RESORT_ABSENT,  /* primary missing                                              */
+  BML_LAST_RESORT_BAD,     /* primary present but unreadable/corrupt                       */
+  /* BACKLOG #379 F4: a card fault is NOT "missing". f_stat(primary/.bak) returned something other
+   * than FR_OK / FR_NO_FILE / FR_NO_PATH, or a PRESENT file's read errored (rather than mismatched
+   * magic/length). Nothing was decided: the caller keeps the names it has in RAM, never
+   * meta_defaults(), and must not let a defaults-shaped write reach the card. */
+  BML_READ_ERROR
 } BmlSource;
 
 /* True when a Bank is already on the card: bank.meta OR bank.meta.bak OR any boxNN.box.
- * A leftover bank.meta.tmp alone does NOT count (never trusted as data). `dir` is the
+ * A leftover bank.meta.tmp alone does NOT count. A stat ERROR (not FR_NO_FILE/FR_NO_PATH)
+ * counts as "exists" (#379: fail closed -- never take the first-run path on a faulting card).
+ * `dir` is the
  * Bank folder without a trailing slash; `nboxes` <= 99. */
 bool bml_layout_exists(const char* dir, int nboxes);
 
-/* Read bank.meta (else bank.meta.bak) into buf[cap]; a file is usable when it is at least
- * `need` bytes and starts with the 6-byte `magic`. Never writes the card. When nothing is
- * usable returns BML_NONE_BOXES / BML_NONE_EMPTY (buf is then unspecified). */
+/* Read bank.meta (else bank.meta.bak, else -- #379 F3 -- the verified bank.meta.tmp, then
+ * bank.meta.baktmp) into buf[cap]; a file is usable when it is at least `need` bytes and
+ * starts with the 6-byte `magic`. Never writes the card. When nothing is usable returns
+ * BML_NONE_BOXES / BML_NONE_EMPTY (buf is then unspecified); a card fault returns BML_READ_ERROR. */
 BmlSource bml_meta_read(const char* dir, int nboxes, uint8_t* buf, uint32_t cap,
                         uint32_t need, const char* magic);
 
