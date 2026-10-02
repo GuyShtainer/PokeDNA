@@ -57,6 +57,14 @@ void loss_item_text(const Gen3ToGbLoss* loss, char* out, int cap) {
       return;
     case G3GB_ITEM_NONE:
     default:
+      /* BACKLOG #376: a Game Boy SOURCE (the Gen-2 -> Gen-1 bridge) reaches here with item_dropped and no
+       * Gen-3 outcome; it has no Secret ID, so the generic "Held item and Secret ID" row was wrong. Name the
+       * item that stays behind in the ledger original (g3_held_item is its Gen-3 counterpart when one exists). */
+      if (!sid && loss->item_dropped) {
+        if (loss->g3_held_item != 0) { strcpy(out, "Item: "); strcat(out, name); strcat(out, " stays behind"); }
+        else strcpy(out, PDNA_SIDECAR_LOSS_ITEMBEHIND);
+        return;
+      }
       strcpy(out, PDNA_SIDECAR_LOSS_ITEMSECRET);
       return;
   }
@@ -1400,6 +1408,11 @@ static bool gb_can_lift_hook_impl(int box, int slot) {
   return gb_lift_why_bs(box, slot) == NULL;
 }
 
+/* BACKLOG #372a: the reason the grid's MOVE-mode grab of (box, slot) was refused, or NULL. Same table
+ * BoxSource.can_lift and AppSrcOps.lift_why use (gb_lift_why_bs), so the toast and the refusal can never
+ * disagree. Read-only. GBA-only (the host build never links pdna_box.c). */
+const char* gb_lift_why_note(int box, int slot) { return gb_lift_why_bs(box, slot); }
+
 /* AppSrcOps.lift_why real body (BACKLOG #166): same question as gb_can_lift_hook_impl
  * above, but for a caller that only has the record's own ADDRESS -- app_mon_menu's
  * `box` parameter is zeroed for any is_bank source (pdna_box.c's `mbox = src->is_bank
@@ -2268,7 +2281,7 @@ static int gb_lift_pack(int box, int slot, uint8_t* out80, bool copy) {
   uint32_t serial = pdna_bank_next_serial();
   if (!serial) {                              /* meta write failed -> refuse the lift */
     log_line("gen12: %s lift refused: bank.meta write failed (pdna_bank_next_serial)", copy ? "copy" : "xferup");
-    return XG_LIFT_FAILED;
+    return XG_LIFT_CARD;
   }
 
   uint8_t flags = 0;
@@ -4019,6 +4032,8 @@ BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]) {
   }
 
   loss.item_dropped |= notes.item_dropped;   /* S150-8 decision 15: the Gen-2 item stays behind */
+  if (notes.item_dropped && notes.item_g2 != 0 && loss.g3_held_item == 0)
+    loss.g3_held_item = item_g2_to_g3(notes.item_g2);   /* #376: name it on the row (0 = no Gen-3 counterpart) */
   /* BACKLOG #177: gb_name_changed() (bank_down_convert.c, review F1) already compared
    * the SOURCE record's name spelling against the WRITTEN record's; fold the verdict
    * into Gen3ToGbLoss's own ot_lossy/nick_lossy so the pre-existing PDNA_SIDECAR_LOSS_NAME

@@ -1062,6 +1062,18 @@ int main(void) {
    * l2 is NULL at the call site, so only the title + l1 rows are measured. */
   PF(PDNA_BANK_COLL_TITLE,   28, 184);
   PF(PDNA_BANK_COLL_L1,      28, 184);
+  PF(PDNA_BANK_COLL_L2,      28, 184);   /* BACKLOG #372c */
+  /* BACKLOG #372b: the card-write-failure lift dialog (same x/clamp as the generic REFUSED pair). */
+  PF(PDNA_XFER_LIFT_REFUSED_TITLE, 28, 184);
+  PF(PDNA_XFER_LIFT_CARD_L1, 28, 184);
+  PF(PDNA_XFER_LIFT_CARD_L2, 28, 184);
+  /* BACKLOG #372a: the MOVE-mode grab-refusal toast is drawn with ui_ptext_fit(WP_X + 2 = 80, .., WP_W - 4 = 158). */
+  PF(PDNA_GB_LIFT_WHY_FLOOR, 80, 158);
+  PF(PDNA_GB_LIFT_WHY_MAIL,  80, 158);
+  PF(PDNA_GB_LIFT_WHY_BOX,   80, 158);
+  PF(PDNA_GB_LIFT_WHY_OTHER, 80, 158);
+  PF(PDNA_GB_LIFT_WHY_VIEW,  80, 158);
+  PF(PDNA_GB_LIFT_WHY_OMEGA, 80, 158);
   /* BACKLOG #150 S150-12 decision 16: drop_held's UP branch, read-only-mount COPY
    * shape -- msg_wait's own (28, .., 184) clamp. */
   PF(PDNA_XFER_COPIED_TITLE, 28, 184);
@@ -1329,6 +1341,9 @@ int main(void) {
   PF(PDNA_SIDECAR_LOSS_EXP_FLOORED, 4, UI_SCR_W - 8);
   PF(PDNA_SIDECAR_LOSS_EVS_EXP,     4, UI_SCR_W - 8);
   PF(PDNA_SIDECAR_LOSS_ITEMSECRET,  4, UI_SCR_W - 8);
+  /* BACKLOG #376: the Game Boy-source item row (Gen-2 -> Gen-1 bridge): the fixed fallback and the named form. */
+  PF(PDNA_SIDECAR_LOSS_ITEMBEHIND,  4, UI_SCR_W - 8);
+  PF("Item: {POKEBLOCK} CASE stays behind", 4, UI_SCR_W - 8);
   /* F3 (xfer-items fix pass): loss_item_text() (pdna_gen12.c) now suffixes every
    * outcome with "+ Secret ID" when loss->secret_id is also true -- worst case over
    * every pk_item_name() entry and every G3GbItemOutcome format, brute-force checked

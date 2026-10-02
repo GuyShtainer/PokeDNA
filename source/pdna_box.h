@@ -42,6 +42,7 @@
 #define XG_LIFT_OK        1   /* packed; the drop proceeds */
 #define XG_LIFT_CANCELLED 0   /* declined, or already explained on screen -- stay silent */
 #define XG_LIFT_FAILED   (-1) /* unreported -- the caller shows its own generic dialog */
+#define XG_LIFT_CARD     (-2) /* BACKLOG #372b: the card refused the first bank.meta write -- the caller says so */
 
 /* Carried-mon cross-generation transfer state; the full definition lands with S3 (the UP
  * mechanics). S1 only needs the incomplete type so BoxXferOps's function pointers can

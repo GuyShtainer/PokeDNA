@@ -1086,6 +1086,9 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XFER_LIFT_REFUSED_TITLE "NOT MOVED TO THE BANK"
 #define PDNA_XFER_LIFT_REFUSED_L1    "This Pokemon could not be"
 #define PDNA_XFER_LIFT_REFUSED_L2    "packed for the Bank."
+/* BACKLOG #372b: the lift failed because the CARD refused the first bank.meta write (not packing). */
+#define PDNA_XFER_LIFT_CARD_L1       "Could not write to the card."
+#define PDNA_XFER_LIFT_CARD_L2       "Nothing moved. Check the card."
 
 /* BACKLOG #150 S150-9 decision 6/13: app_xferrestore_confirm (S150-8b review F3/D6)
  * is DELETED this commit -- its only call site (gbpc_restore_up) now shows the
@@ -1308,6 +1311,7 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * (msg_wait's own if (l2) guard) -- one body line reads better than a padded second. */
 #define PDNA_BANK_COLL_TITLE "BANK RECORD CLASH"
 #define PDNA_BANK_COLL_L1    "Nothing was moved. See log.txt."
+#define PDNA_BANK_COLL_L2    "Check the card, then try again."   /* #372c: the next step */
 
 #define PDNA_XFER_REC_TITLE  "IT CAME FROM GEN 3"
 #define PDNA_XFER_REC_L1     "Use COPY here, then PASTE in"
@@ -1516,6 +1520,7 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_SIDECAR_LOSS_EXP_FLOORED "EXP: within-level progress reset"
 #define PDNA_SIDECAR_LOSS_EVS_EXP    "EVs rescaled; EXP progress reset"
 #define PDNA_SIDECAR_LOSS_ITEMSECRET "Held item and Secret ID"
+#define PDNA_SIDECAR_LOSS_ITEMBEHIND "Held item stays behind"   /* #376: a Game Boy source with no nameable item */
 #define PDNA_SIDECAR_LOSS_POKERUS    "Pokerus and friendship"
 #define PDNA_SIDECAR_LOSS_SHINY      "Shiny not preserved"
 #define PDNA_SIDECAR_LOSS_GENDER     "Gender not preserved"

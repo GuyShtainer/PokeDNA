@@ -5,6 +5,9 @@
 Pure text checks against the shipped source (no build). Every fact function is shared by the real
 check and by an in-memory MUTATION that must turn it red (self-test at the bottom).
 
+  #372a-c    the MOVE-mode grab refusal goes through grab_refused() (beep + GB why-toast + log line); a card
+             write failure at the first meta write is XG_LIFT_CARD -> its own "could not write to the card"
+             dialog, not the packing one; BANK RECORD CLASH carries a second (next-step) line.
   #374/#375  app_xfer_save_now (source/pdna_main.c): after a CONFIRMED app_commit_pc(), a failed
              promotion shows PDNA_XFER_LEDGER_* ("saved, ledger not updated"), never PDNA_XFER_NOTSAVED_*
              (that panel stays on the commit-FAILED arm), keeps ok = promoted (#175 D1: the caller still
@@ -16,6 +19,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 MAIN = ROOT / "source" / "pdna_main.c"
+BOX = ROOT / "source" / "pdna_box.c"
+GEN12 = ROOT / "source" / "pdna_gen12.c"
 checks = 0
 fails: list[str] = []
 
@@ -79,6 +84,24 @@ def save_now_facts(body: str) -> tuple[bool, str]:
     return True, "ok"
 
 
+def grab_facts(box_text: str, gen12_text: str) -> tuple[bool, str]:
+    t = strip_comments(box_text)
+    if not re.search(r"s_cur_mode\s*==\s*CM_MOVE\)\s*\{\s*if\s*\(\s*!src_can_lift\(src,\s*box,\s*cur\)\)\s*grab_refused\(src,\s*box,\s*cur,\s*toast\)", t):
+        return False, "the CM_MOVE A-grab refusal does not call grab_refused(src, box, cur, toast) (#372a)"
+    gr = function_body(box_text, "grab_refused")
+    if not gr or "gb_lift_why_note(" not in gr or "log_line(" not in gr or "toast" not in gr or "snd_deny()" not in gr:
+        return False, "grab_refused() must beep, query gb_lift_why_note, queue the toast and log_line (#372a)"
+    dh = function_body(box_text, "drop_held_up")
+    if not re.search(r"XG_LIFT_CARD\)\s*\{[^}]*PDNA_XFER_LIFT_CARD_L1", dh):
+        return False, "drop_held_up: XG_LIFT_CARD does not show PDNA_XFER_LIFT_CARD_L1 (#372b)"
+    if "PDNA_BANK_COLL_L2" not in dh:
+        return False, "drop_held_up: BANK RECORD CLASH lost its next-step line PDNA_BANK_COLL_L2 (#372c)"
+    lp = function_body(gen12_text, "gb_lift_pack")
+    if not re.search(r"pdna_bank_next_serial\(\);\s*if\s*\(!serial\)\s*\{[^}]*return XG_LIFT_CARD;", lp):
+        return False, "gb_lift_pack: a failed pdna_bank_next_serial() must return XG_LIFT_CARD (#372b)"
+    return True, "ok"
+
+
 def mutate(body: str, old: str, new: str) -> str:
     assert old in body, f"mutation anchor not found: {old!r}"
     return body.replace(old, new, 1)
@@ -103,6 +126,21 @@ def main() -> int:
         if label.startswith("375"):
             mo = mo.replace('\n                      : "xfer: save-now: committed, promotion FAILED (ledger entry stays pending)");', ');')
         ok, _ = save_now_facts(mo)
+        check(not ok, f"MUT {label} was NOT caught")
+    bt, gt = BOX.read_text(), GEN12.read_text()
+    ok, d = grab_facts(bt, gt)
+    check(ok, d)
+    for label, which, old, new in (
+        ("372a: grab refusal back to a bare beep", "box", "grab_refused(src, box, cur, toast);", "snd_deny();"),
+        ("372b: card failure back to FAILED", "gen12", "return XG_LIFT_CARD;", "return XG_LIFT_FAILED;"),
+        ("372c: clash line dropped", "box", "PDNA_BANK_COLL_L1, PDNA_BANK_COLL_L2", "PDNA_BANK_COLL_L1, NULL"),
+    ):
+        src = bt if which == "box" else gt
+        if old not in src:
+            check(False, f"mutation anchor missing ({label})")
+            continue
+        mb, mg = (mutate(bt, old, new), gt) if which == "box" else (bt, mutate(gt, old, new))
+        ok, _ = grab_facts(mb, mg)
         check(not ok, f"MUT {label} was NOT caught")
     print(f"host_zx_sites: {checks} checks, {len(fails)} failed")
     for f in fails:

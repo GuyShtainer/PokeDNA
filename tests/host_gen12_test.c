@@ -24,6 +24,7 @@
 #include "gen2_save.h"
 #include "gen12_convert.h"
 #include "pdna_gen12.h"
+#include "pdna_layout.h"   /* BACKLOG #376: PDNA_SIDECAR_LOSS_ITEMBEHIND / _ITEMSECRET */
 #include "gen3_mon.h"
 #include "gen3_edit.h"
 #include "data_tables.h"
@@ -1094,6 +1095,24 @@ static void part7_loss_item_text(void) {
             "%s, secret_id=%d: row %s 'Secret ID' as expected (row=\"%s\")",
             names[i], sid, has_sid == (sid != 0) ? "does" : "does NOT", row);
     }
+  }
+  /* BACKLOG #376: a Game Boy SOURCE (the Gen-2 -> Gen-1 bridge) has item_dropped, outcome NONE and no Secret ID:
+   * the row must NOT claim a Secret ID loss. With a Gen-3 counterpart it names the item; without, the fixed fallback. */
+  {
+    Gen3ToGbLoss loss; memset(&loss, 0, sizeof loss);
+    loss.item_outcome = G3GB_ITEM_NONE; loss.item_dropped = true; loss.g3_held_item = 20;   /* POTION */
+    char row[48];
+    loss_item_text(&loss, row, (int)sizeof row);
+    CHECK(strstr(row, "Secret ID") == NULL, "#376: GB-source dropped item row claims a Secret ID (row=\"%s\")", row);
+    CHECK(strstr(row, "stays behind") != NULL && strstr(row, pk_item_name(20)) != NULL,
+          "#376: GB-source dropped item row does not name the item that stays behind (row=\"%s\")", row);
+    loss.g3_held_item = 0;
+    loss_item_text(&loss, row, (int)sizeof row);
+    CHECK(strcmp(row, PDNA_SIDECAR_LOSS_ITEMBEHIND) == 0, "#376: unnamed dropped item: wrong fallback (row=\"%s\")", row);
+    loss.secret_id = true;   /* a Gen-3 source with a Secret ID and no item keeps the original wording */
+    loss.item_dropped = false;
+    loss_item_text(&loss, row, (int)sizeof row);
+    CHECK(strcmp(row, PDNA_SIDECAR_LOSS_ITEMSECRET) == 0, "#376: secret-ID-only row changed (row=\"%s\")", row);
   }
   /* cap < 48 defensiveness (golden rule 7): writes an empty string, never truncates
    * into the caller's buffer past what it declared. */
