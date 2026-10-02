@@ -2474,6 +2474,7 @@ static void era_cell_mark(int slot) {
  * path out of the menu repaints the grid (render_full / need_full, which runs era_cells()),
  * so there is no separate restore. Loop bound: G3_BOX_SLOTS. */
 static void era_marks_hide(void) {
+  if (!boxoam_icons_available()) return;   /* artless: the "icons" are BG name chips that stay up with their pads (hiding the pad would notch the chip) */
   for (int s = 0; s < G3_BOX_SLOTS; s++) {
     if (!pdna_origin_box_mark(s) || (s_era_drawn & (1u << s))) continue;
     wp_restore_rect(GRID_X + (s % COLS) * CELL_W + (CELL_W - 8),
