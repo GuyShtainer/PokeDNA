@@ -2953,6 +2953,14 @@ static const char* loss_name_text(const Gen3ToGbLoss* loss) {
   return PDNA_SIDECAR_LOSS_NAME;
 }
 
+/* #365: the DOWN confirm's twin of loss_name_text() (that one reads Gen3ToGbLoss; this screen
+ * holds a Gb12Notes) -- the same three strings, so the wording matches the GB-bound screen. */
+static const char* down_name_text(const Gb12Notes* n) {
+  if (n->otname_lossy && !n->nick_lossy) return PDNA_SIDECAR_LOSS_OTNAME;
+  if (n->nick_lossy && !n->otname_lossy) return PDNA_SIDECAR_LOSS_NICKNAME;
+  return PDNA_SIDECAR_LOSS_NAME;
+}
+
 /* BACKLOG #248/#249: the item row's text, five possible shapes (case A HELD / B BAG /
  * C PC / D-E STAYS / no item at all). loss_item_text() itself now lives at the top of
  * this file, ABOVE the PDNA_GEN12_HOST guard (F3/F5, xfer-items fix pass) -- see the
@@ -3362,6 +3370,9 @@ gb_down_loss_screen(const Gb12Notes* n, uint8_t g2_item, bool item_travels, bool
   }
   y = loss_row(y, n->exp_clamped, "EXP clamped to level 100");
   y = loss_row(y, n->gender_relaxed || n->letter_relaxed, "PID search relaxed");
+  /* #365: a nickname / OT name whose spelling changed crossing the bridge (a `[AB]` nickname
+   * lands as ` AB `, a long OT truncates) -- one row, the text names which of the two. */
+  y = loss_row(y, n->nick_lossy || n->otname_lossy, down_name_text(n));
   y = loss_row(y, true, "IVs come from DVs, nature from EXP");
   y = loss_row(y, true, "Met: this game, traded");
   /* BACKLOG #174 (S150-8c) D7: to_party and is_copy are mutually exclusive -- a COPY
