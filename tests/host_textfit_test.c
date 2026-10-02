@@ -2761,6 +2761,17 @@ int main(void) {
   T("Needs EZ-Flash Omega.", 6);
   T(PDNA_ROMHACK_WHY, 6);
   T(PDNA_GB_VIEWONLY_WHY, 6);
+  /* review-zs F1: the "game loads the damaged copy" read-only wording. pdna_fly.c's s_msg / map_dialog draw the why line with
+   * sys8 at x=20 inside a panel that ends at x=228 (<= 25 columns: a 28-column wording lost its final '.' off the edge on
+   * the first mGBA frame); the footer is drawn by pdna_fly.c at x=4. msg_wait's own proportional (28, 184) clamp holds the
+   * open-time dialog lines. */
+  { const char* w = "Game loads damaged copy.";            /* panel right edge x=228 -> 208 px from x=20 */
+    chk("text", 20, 208, (int)strlen(w) * SYS8_W, w); }
+  T("damaged save: locked  B back", 4);
+  PF("Game loads the damaged copy.", 28, 184);
+  PF("Intact copy shown, read-only.", 28, 184);
+  PF("Newer copy damaged (old bug?)", 28, 184);
+  PF("Opened the intact copy.", 28, 184);
   /* M1 (BACKLOG #91) D6: the Gen-1 Map screen's own "D-PAD PAN" hint is
    * drawn with gbscr_text() (pdna_gbmap.c's gbmap_paint), the GB-screen
    * shell's own fixed one-glyph-per-cell font -- not ui_ptext/sys8 -- so the

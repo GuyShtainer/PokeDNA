@@ -423,6 +423,43 @@ uint32_t gen3_write_full_section(uint8_t* save, int slot, int section_id,
   return secoff;
 }
 
+bool gen3_slot_consistent(const uint8_t* save, uint32_t size, int slot) {
+  if (!save || slot < 0 || slot >= G3_NUM_SLOTS) return false;
+  uint32_t base = (uint32_t)slot * G3_SLOT_BYTES;
+  if (base + (uint32_t)G3_SLOT_BYTES > size) return false;
+  uint32_t seen = 0, counter = 0;
+  for (int s = 0; s < G3_SECTORS_PER_SLOT; s++) {
+    const uint8_t* sec = save + base + (uint32_t)s * G3_SECTOR_SIZE;
+    if (rd32(sec + G3_OFF_SIGNATURE) != G3_SIGNATURE) return false;
+    uint16_t id = rd16(sec + G3_OFF_ID);
+    if (id >= G3_SECTORS_PER_SLOT || (seen & (1u << id))) return false;
+    seen |= 1u << id;
+    uint32_t c = rd32(sec + G3_OFF_COUNTER);
+    if (s == 0) counter = c;
+    else if (c != counter) return false;
+  }
+  return seen == (1u << G3_SECTORS_PER_SLOT) - 1u;
+}
+
+/* #354 review F1: the retail loader's own slot test -- 14 signed sectors, ids 0..13 once each,
+ * counters NOT compared. *last = the counter of the slot's LAST sector read (physical sector 13),
+ * which is the counter the game takes for that slot (pret save.c GetSaveValidStatus assigns the
+ * slot counter on every sector pass, so the last one wins; confirmed in pokeemerald, reference only).
+ * Sector checksums are not re-verified here (per-id data sizes are not known to the parser). */
+static bool slot_game_ok(const uint8_t* save, uint32_t size, int slot, uint32_t* last) {
+  uint32_t base = (uint32_t)slot * G3_SLOT_BYTES, seen = 0;
+  if (base + (uint32_t)G3_SLOT_BYTES > size) return false;
+  for (int s = 0; s < G3_SECTORS_PER_SLOT; s++) {
+    const uint8_t* sec = save + base + (uint32_t)s * G3_SECTOR_SIZE;
+    if (rd32(sec + G3_OFF_SIGNATURE) != G3_SIGNATURE) return false;
+    uint16_t id = rd16(sec + G3_OFF_ID);
+    if (id >= G3_SECTORS_PER_SLOT || (seen & (1u << id))) return false;
+    seen |= 1u << id;
+    *last = rd32(sec + G3_OFF_COUNTER);
+  }
+  return true;
+}
+
 bool gen3_parse_into(const uint8_t* save, uint32_t size, Gen3SaveInfo* out,
                      uint8_t* sb1_scratch) {
   memset(out, 0, sizeof(*out));
@@ -449,7 +486,23 @@ bool gen3_parse_into(const uint8_t* save, uint32_t size, Gen3SaveInfo* out,
   else if (out->slot_valid[0]) slot = 0;
   else if (out->slot_valid[1]) slot = 1;
   if (slot < 0) return false;
+
+  /* BACKLOG #354: a signed slot that is not one coherent write (a section id missing or
+   * doubled, or counters that differ) is damaged -- the game's own loader rejects it too.
+   * When BOTH slots are signed and EXACTLY one is coherent, that one wins even with the
+   * lower counter; the counter rule is kept for "both" and "neither". */
+  for (int sl = 0; sl < G3_NUM_SLOTS; sl++)
+    out->slot_damaged[sl] = out->slot_valid[sl] && !gen3_slot_consistent(save, size, sl);
+  if (out->slot_valid[0] && out->slot_valid[1] &&
+      out->slot_damaged[0] != out->slot_damaged[1]) {
+    int intact = out->slot_damaged[0] ? 1 : 0;
+    out->damaged_fallback = (intact != slot);
+    slot = intact;
+  }
   out->slot = slot;
+  { uint32_t last = 0; int o = 1 - slot;
+    out->game_loads_other = out->slot_damaged[o] && !out->slot_damaged[slot] &&
+                            slot_game_ok(save, size, o, &last) && last > out->counter[slot]; }
 
   /* Count distinct valid sections in the chosen slot. */
   for (int id = 0; id < G3_SECTORS_PER_SLOT; id++)

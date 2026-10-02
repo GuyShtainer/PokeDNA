@@ -36,6 +36,9 @@ One later pin rides along because it guards the same file at the same text level
       save's bytes as a 64 KiB dump's slot B), and a size RAM gate refuses an impossible size BEFORE the write
   P15 #353: view_save pads a short Gen-3 read with 0xFF (after the Game Boy fork, which keeps its pristine copy
       in the idle upper half), so no foreign trainer's bytes survive in g_save's tail
+  P16 #354: view_save warns ONLY on `damaged_fallback || game_loads_other` (snd_error, heartbeat+perf pause, one DAMAGED SAVE
+      msg_wait), after the parse log line and before the party read; never on the slot_damaged log-only branch; both app_can_edit
+      variants and the read-only why/footer honour game_loads_other
 """
 from __future__ import annotations
 
@@ -127,6 +130,16 @@ def checks(box: str, summ: str, main: str, jrn: str, lay: str, prog: str) -> dic
         "P15 #353: view_save pads a short Gen-3 read with 0xFF after the Game Boy fork": bool(vsv)
             and re.search(r"if \(!err && sz < \(uint32_t\)G3_SAVE_FILE_SIZE\)\s*\{\s*memset\(g_save \+ sz, 0xFF, \(size_t\)G3_SAVE_FILE_SIZE - sz\);", vsv) is not None
             and before(vsv, "pdna_gen12_show_image(path, g_save, sz", "memset(g_save + sz, 0xFF"),
+        "P16 #354: view_save warns on damaged_fallback / game_loads_other behind hb+perf pauses; both app_can_edit variants lock on game_loads_other": bool(vsv)
+            and re.search(r"if \(g_vinfo\.damaged_fallback \|\| g_vinfo\.game_loads_other\)\s*\{\s*snd_error\(\);\s*hb_pause\(\);\s*perf_span_pause\(\);\s*"
+                          r"if \(g_vinfo\.game_loads_other\)\s*msg_wait\(\"DAMAGED SAVE\", UI_WARN,[^;]*;\s*else\s*msg_wait\(\"DAMAGED SAVE\", UI_WARN,[^;]*;\s*"
+                          r"perf_span_resume\(\);\s*hb_resume\(\);\s*\}", vsv) is not None
+            and vsv.count("DAMAGED SAVE") == 2 and "gen3_slot_consistent" not in vsv
+            and before(vsv, "gen3_parse_into(g_save, sz, &g_vinfo", "g_vinfo.damaged_fallback")
+            and before(vsv, "g_vinfo.damaged_fallback", "pk_read_party_auto(")
+            and len(re.findall(r"bool app_can_edit\(void\)\s*\{[^}]*g_vinfo\.game_loads_other[^}]*\}", strip_comments(main))) == 2
+            and "Game loads damaged copy." in body(main, "app_readonly_why")
+            and "damaged save: locked  B back" in body(main, "app_readonly_footer"),
         "P12 #346b: progress-frame icon fallback retires the plan before the fetch": re.search(
             r"#if !PDNA_MON_ICONS_ART_COMPILED\s*icon_store_plan\(0, 0\);\s*#endif\s*"
             r"ui_sprite\(SPR_X \+ \(MON_FRONT_W - MON_ICON_W\) / 2, SPR_Y \+ \(MON_FRONT_H - MON_ICON_H\) / 2,\s*"
@@ -172,6 +185,15 @@ def main() -> int:
     mutant("M-P10 chord_swallow removed", "box", "chord_swallow(&chord);", "", "P10")
     mutant("M-P11 the #347 retire deleted from the call site", "summ", "    icon_store_plan(0, 0);\n", "", "P11")
     mutant("M-P12 the #346b retire deleted from the progress frame", "prog", "    icon_store_plan(0, 0);\n", "", "P12")
+    mutant("M-P16a the dialog fires on any damaged slot, not only the fallback", "main", "  if (g_vinfo.damaged_fallback || g_vinfo.game_loads_other) {\n    snd_error();", "  if (g_vinfo.slot_damaged[0] || g_vinfo.slot_damaged[1]) {\n    snd_error();", "P16")
+    mutant("M-P16b the fallback dialog silenced", "main", "      msg_wait(\"DAMAGED SAVE\", UI_WARN, \"Newer copy damaged (old bug?)\", \"Opened the intact copy.\");\n", "      (void)0;\n", "P16")
+    mutant("M-P16c the warning moved before the parse", "main", "  load_phase_n(2, \"parse slots\");", "  if (g_vinfo.damaged_fallback) { snd_error(); msg_wait(\"DAMAGED SAVE\", UI_WARN, \"x\", \"y\"); }\n  load_phase_n(2, \"parse slots\");", "P16")
+    mutant("M-P16d dialog only on the fallback (game_loads_other branch unreachable)", "main", "  if (g_vinfo.damaged_fallback || g_vinfo.game_loads_other) {", "  if (g_vinfo.damaged_fallback) {", "P16")
+    mutant("M-P16e game_loads_other dialog silenced", "main", "      msg_wait(\"DAMAGED SAVE\", UI_WARN, \"Game loads the damaged copy.\", \"Intact copy shown, read-only.\");\n", "      (void)0;\n", "P16")
+    mutant("M-P16f the delta app_can_edit ignores game_loads_other", "main", "  return !pdna_romcheck_bad() && !(g_vinfo.valid && app_rom_is_hack(g_game)) &&\n         !g_vinfo.game_loads_other;", "  return !pdna_romcheck_bad() && !(g_vinfo.valid && app_rom_is_hack(g_game));", "P16")
+    mutant("M-P16g the GBA app_can_edit ignores game_loads_other", "main", " &&\n         !(g_vinfo.valid && g_vinfo.game_loads_other);", ";", "P16")
+    mutant("M-P16h heartbeat not paused around the dialog", "main", "    hb_pause(); perf_span_pause();\n", "", "P16")
+    mutant("M-P16i the read-only reason ignores the damaged copy", "main", "  if (g_vinfo.valid && g_vinfo.game_loads_other) return \"Game loads damaged copy.\";\n", "", "P16")
     mutant("M-P13a the short-read predicate stripped (bare ok)", "main", "  if (ok && rsz < g_save_size) {", "  if (0) {", "P13")
     mutant("M-P13b the latch-clear no longer gated on ok", "main", "if (ok) imgf_partial_clear(&g_img);", "imgf_partial_clear(&g_img);", "P13")
     mutant("M-P13c the demotion dropped", "main", "    ok = false;\n  }\n#endif\n  if (!ok) log_line(\"discard:", "  }\n#endif\n  if (!ok) log_line(\"discard:", "P13")
