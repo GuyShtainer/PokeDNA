@@ -1502,12 +1502,14 @@ bool app_rom_hack_active(void) { return g_vinfo.valid && app_rom_is_hack(g_game)
  * hack-flagged (app_can_edit() now refuses for that reason too, BACKLOG #54).
  * This picks the honest wording for all remaining sites. */
 const char* app_readonly_why(void) {
+  if (g_vinfo.valid && g_vinfo.game_loads_other) return "Game loads the damaged copy.";
   return (g_vinfo.valid && app_rom_is_hack(g_game)) ? PDNA_ROMHACK_WHY : "Needs EZ-Flash Omega.";
 }
 
 /* Review fix F3: renamed from app_readonly_why_short() -- callers need the full
  * footer including the "  B back" hint, not just the reason fragment. */
 const char* app_readonly_footer(void) {
+  if (g_vinfo.valid && g_vinfo.game_loads_other) return "damaged save: locked  B back";
   return (g_vinfo.valid && app_rom_is_hack(g_game)) ? "ROM hack: locked  B back" : "read-only (Omega)  B back";
 }
 
@@ -1611,12 +1613,14 @@ static bool     g_item_held = false;
 /* Emulator build: there is no flashcart to gate on — the save is our own flash chip,
  * which is always writable. */
 bool app_can_edit(void) {
-  return !pdna_romcheck_bad() && !(g_vinfo.valid && app_rom_is_hack(g_game));
+  return !pdna_romcheck_bad() && !(g_vinfo.valid && app_rom_is_hack(g_game)) &&
+         !g_vinfo.game_loads_other;
 }
 #else
 bool app_can_edit(void) {
   return active_flashcart == EZ_FLASH_OMEGA && !pdna_romcheck_bad() &&
-         !(g_vinfo.valid && app_rom_is_hack(g_game));
+         !(g_vinfo.valid && app_rom_is_hack(g_game)) &&
+         !(g_vinfo.valid && g_vinfo.game_loads_other);
 }
 #endif
 
@@ -12244,11 +12248,17 @@ static void view_save(const char* path) {
    * SD transfer is in flight). A 64 KiB file's absent slot B is never "signed", so it
    * cannot reach either branch. */
   if (g_vinfo.slot_damaged[0] || g_vinfo.slot_damaged[1])
-    log_line("save: slot damaged A=%d B=%d fallback=%d", (int)g_vinfo.slot_damaged[0],
-             (int)g_vinfo.slot_damaged[1], (int)g_vinfo.damaged_fallback);
-  if (g_vinfo.damaged_fallback) {
+    log_line("save: slot damaged A=%d B=%d fallback=%d game_other=%d", (int)g_vinfo.slot_damaged[0],
+             (int)g_vinfo.slot_damaged[1], (int)g_vinfo.damaged_fallback,
+             (int)g_vinfo.game_loads_other);
+  if (g_vinfo.damaged_fallback || g_vinfo.game_loads_other) {
     snd_error();
-    msg_wait("DAMAGED SAVE", UI_WARN, "Newer copy damaged (old bug?)", "Opened the intact copy.");
+    hb_pause(); perf_span_pause();
+    if (g_vinfo.game_loads_other)
+      msg_wait("DAMAGED SAVE", UI_WARN, "Game loads the damaged copy.", "Intact copy shown, read-only.");
+    else
+      msg_wait("DAMAGED SAVE", UI_WARN, "Newer copy damaged (old bug?)", "Opened the intact copy.");
+    perf_span_resume(); hb_resume();
   }
   app_log_flush();
 
