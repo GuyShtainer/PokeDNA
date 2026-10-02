@@ -1559,6 +1559,7 @@ STRUCT_HEADERS = {
     # parse cleanly now and get the same real header verification as the seven
     # above (see tests/host_stack_budget_test.py's fixture + mutation for the fix).
     "RomGbSprite": "rom_gbsprite.h",
+    "RomGbItem": "rom_gbitem.h",      # #340b: rom_gbitem_rd's one GbReadFn dispatch (read @0)
     "Gb12Mount": "pdna_gen12.h",
     "G2Writer": "gen2_write.h",
     "RomCtx": "rom_map.h",

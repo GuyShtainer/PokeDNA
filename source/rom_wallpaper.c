@@ -27,17 +27,21 @@
 #include <string.h>
 #include "map_render.h"   /* mr_lz77 / mr_lz77_size -- do not write another */
 
-typedef struct { const char* code; uint8_t version; RomKind kind; uint32_t table; } RomWpPin;
+typedef struct { const char* code; uint8_t version; RomKind kind; uint32_t table; uint8_t rs; } RomWpPin;
 
-/* Exactly the three dumps DESIGN.md Sec 1.2 measured -- see rom_wallpaper.h SCOPE. */
+/* The three dumps DESIGN.md Sec 1.2 measured, plus the two byte-verified R/S revisions
+ * (#311; Guy #328: every other R/S revision stays unpinned) -- see rom_wallpaper.h SCOPE. */
 static const RomWpPin k_pins[] = {
-  { "BPEE", 0, ROM_EMERALD,   0x085775B8u },
-  { "BPRE", 1, ROM_FIRERED,   0x083D2A80u },
-  { "BPGE", 0, ROM_LEAFGREEN, 0x083D284Cu },
+  { "BPEE", 0, ROM_EMERALD,   0x085775B8u, 0 },
+  { "BPRE", 1, ROM_FIRERED,   0x083D2A80u, 0 },
+  { "BPGE", 0, ROM_LEAFGREEN, 0x083D284Cu, 0 },
+  { "AXVE", 2, ROM_RUBY,      0x083BB104u, 1 },
+  { "AXPE", 1, ROM_SAPPHIRE,  0x083BB160u, 1 },
 };
 #define K_NPINS ((int)(sizeof k_pins / sizeof k_pins[0]))
 
-#define ROW_BYTES 12u   /* { const u32* tiles; const u32* tilemap; const u16* palettes } */
+#define ROW_BYTES    12u   /* Emerald/FRLG { const u32* tiles; const u32* tilemap; const u16* palettes } */
+#define RS_ROW_BYTES 16u   /* R/S { tiles; u32 compressedSize; tilemap; palettes } (#311) */
 
 static uint32_t rd32(const uint8_t* p) {
   return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
@@ -48,12 +52,30 @@ static uint16_t rd16(const uint8_t* p) { return (uint16_t)(p[0] | (p[1] << 8)); 
  * for all three; does NOT validate the pointers are real LZ77 blobs (the open-time
  * self-check does that for row 0; a caller decompressing a later row finds out via
  * mr_lz77 returning 0, same as any other bad-pointer failure in this codebase). */
-static int read_row(const RomCtx* rc, uint32_t table, int wp, uint32_t* tiles,
+static int read_row(const RomWallpaper* rw, int wp, uint32_t* tiles,
                     uint32_t* tilemap, uint32_t* pals) {
-  uint8_t b[ROW_BYTES];
-  if (!rom_read_at(rc, table + (uint32_t)wp * ROW_BYTES, b, ROW_BYTES)) return 0;
-  *tiles = rd32(b); *tilemap = rd32(b + 4); *pals = rd32(b + 8);
+  const RomCtx* rc = rw->rc;
+  uint8_t b[RS_ROW_BYTES];
+  uint32_t rb = rw->rs ? RS_ROW_BYTES : ROW_BYTES;
+  if (!rom_read_at(rc, rw->table + (uint32_t)wp * rb, b, rb)) return 0;
+  *tiles = rd32(b);
+  *tilemap = rd32(b + (rw->rs ? 8 : 4));
+  *pals = rd32(b + (rw->rs ? 12 : 8));
   if (!rom_ptr_ok(rc, *tiles) || !rom_ptr_ok(rc, *tilemap) || !rom_ptr_ok(rc, *pals)) return 0;
+  return 1;
+}
+
+/* R/S open-time verify (#311): all 16 rows must have in-image pointers, a tilemap that
+ * decodes to exactly 720 B and a tile blob with an LZ10 header whose size is a whole
+ * number of 32-B tiles within ROM_WP_TILES_MAX_BYTES. A wrong layout fails here. */
+static int rs_verify(const RomWallpaper* rw) {
+  for (int i = 0; i < ROM_WP_COUNT; i++) {
+    uint32_t tiles, tilemap, pals;
+    if (!read_row(rw, i, &tiles, &tilemap, &pals)) return 0;
+    if (mr_lz77_size(rw->rc, tilemap) != ROM_WP_MAP_BYTES) return 0;
+    uint32_t tb = mr_lz77_size(rw->rc, tiles);
+    if (tb == 0 || (tb % 32u) != 0 || tb > ROM_WP_TILES_MAX_BYTES) return 0;
+  }
   return 1;
 }
 
@@ -67,9 +89,12 @@ int rom_wallpaper_open(RomWallpaper* rw, const RomCtx* rc) {
     if (rc->version != k_pins[i].version) continue;
     if (memcmp(rc->code, k_pins[i].code, 4) != 0) continue;
     uint32_t tiles, tilemap, pals;
-    if (!read_row(rc, k_pins[i].table, 0, &tiles, &tilemap, &pals)) return 0;
-    if (mr_lz77_size(rc, tilemap) != ROM_WP_MAP_BYTES) return 0;   /* self-check */
     rw->table = k_pins[i].table;
+    rw->rs = k_pins[i].rs;
+    int good = read_row(rw, 0, &tiles, &tilemap, &pals) &&
+               mr_lz77_size(rc, tilemap) == ROM_WP_MAP_BYTES &&   /* self-check */
+               (!rw->rs || rs_verify(rw));
+    if (!good) { rw->table = 0; rw->rs = 0; return 0; }          /* fail closed */
     rw->ok = 1;
     return 1;
   }
@@ -79,7 +104,7 @@ int rom_wallpaper_open(RomWallpaper* rw, const RomCtx* rc) {
 int rom_wallpaper_map(const RomWallpaper* rw, int wp, uint16_t dst[ROM_WP_MAP_ENTRIES]) {
   if (!rw || !rw->ok || !dst || wp < 0 || wp >= ROM_WP_COUNT) return 0;
   uint32_t tiles, tilemap, pals;
-  if (!read_row(rw->rc, rw->table, wp, &tiles, &tilemap, &pals)) return 0;
+  if (!read_row(rw, wp, &tiles, &tilemap, &pals)) return 0;
   /* dst is a properly 2-aligned uint16_t[]; mr_lz77 writes it byte-by-byte, which is
    * always safe regardless of destination "type" (map_render.c does the same into
    * VRAM-adjacent buffers elsewhere) -- no pointer-cast read ever happens here. */
@@ -92,7 +117,7 @@ int rom_wallpaper_tiles(const RomWallpaper* rw, int wp, uint8_t* dst, uint32_t d
   if (out_bytes) *out_bytes = 0;
   if (!rw || !rw->ok || !dst || wp < 0 || wp >= ROM_WP_COUNT) return 0;
   uint32_t tiles, tilemap, pals;
-  if (!read_row(rw->rc, rw->table, wp, &tiles, &tilemap, &pals)) return 0;
+  if (!read_row(rw, wp, &tiles, &tilemap, &pals)) return 0;
   uint32_t n = mr_lz77(rw->rc, tiles, dst, dst_cap);
   if (!n || (n % 32u) != 0) return 0;
   if (out_bytes) *out_bytes = n;
@@ -102,17 +127,18 @@ int rom_wallpaper_tiles(const RomWallpaper* rw, int wp, uint8_t* dst, uint32_t d
 int rom_wallpaper_pal(const RomWallpaper* rw, int wp, uint16_t dst[ROM_WP_PAL_BANKS][16]) {
   if (!rw || !rw->ok || !dst || wp < 0 || wp >= ROM_WP_COUNT) return 0;
   uint32_t tiles, tilemap, pals;
-  if (!read_row(rw->rc, rw->table, wp, &tiles, &tilemap, &pals)) return 0;
+  if (!read_row(rw, wp, &tiles, &tilemap, &pals)) return 0;
   memset(dst, 0, ROM_WP_PAL_BANKS * 16 * sizeof(uint16_t));
-  uint8_t raw[ROM_WP_PAL_BYTES];
+  uint8_t raw[ROM_WP_RS_PAL_BYTES];
   /* The palette blob is plain (uncompressed) raw RGB15, like every other shared
    * palette table this codebase reads (rom_mon_icon_pal, item icon palettes).
-   * ROM_WP_PAL_BYTES is exactly the row's real length (64 B = 2 banks, MEASURED:
-   * on Emerald wp 0 this blob is immediately followed by the tiles blob's own
-   * LZ77 header at +64 -- see rom_wallpaper.h's top-of-file note), so this read
-   * never runs into the next blob's compressed bytes. */
-  if (!rom_read_at(rw->rc, pals, raw, sizeof raw)) return 0;
-  for (int bk = 0; bk < ROM_WP_PAL_BANKS; bk++)
+   * The length is exactly the row's real one: Emerald/FRLG 64 B = 2 banks (MEASURED:
+   * on Emerald wp 0 this blob is immediately followed by the tiles blob's own LZ77
+   * header at +64 -- see rom_wallpaper.h's top-of-file note), R/S 96 B = 3 banks, so
+   * this read never runs into the next blob's compressed bytes. */
+  uint32_t nb = rw->rs ? ROM_WP_PAL_BANKS : ROM_WP_EM_BANKS;
+  if (!rom_read_at(rw->rc, pals, raw, nb * 32u)) return 0;
+  for (uint32_t bk = 0; bk < nb; bk++)
     for (int c = 0; c < 16; c++)
       dst[bk][c] = (uint16_t)(rd16(raw + bk * 32 + c * 2) & 0x7FFF);
   return 1;
@@ -120,9 +146,15 @@ int rom_wallpaper_pal(const RomWallpaper* rw, int wp, uint16_t dst[ROM_WP_PAL_BA
 
 int rom_wallpaper_pal_bank(int bank) {
   int pb = (bank <= 1) ? 0 : bank - 1;
-  if (pb >= ROM_WP_PAL_BANKS) pb = ROM_WP_PAL_BANKS - 1;
+  if (pb >= ROM_WP_EM_BANKS) pb = ROM_WP_EM_BANKS - 1;
   if (pb < 0) pb = 0;
   return pb;
+}
+
+/* R/S: raw tilemap bank n reads pal bank n (0/1/2 measured), clamped. */
+static int rs_pal_bank(int bank) {
+  if (bank < 0) return 0;
+  return (bank >= ROM_WP_PAL_BANKS) ? ROM_WP_PAL_BANKS - 1 : bank;
 }
 
 /* One tile's pixels, rows/cols flipped as asked. `skip0` = 1 leaves every index-0 pixel
@@ -215,6 +247,7 @@ int rom_wallpaper_base(const RomWallpaper* rw, int wp, uint32_t tiles_bytes, Rom
   if (!out) return 0;
   memset(out, 0, sizeof *out);
   if (!rw || !rw->ok || !rw->rc || wp < 0 || wp >= ROM_WP_COUNT) return 0;
+  if (rw->rs) { out->rs = 1; return 1; }                /* R/S: map covers the box, no sheet */
   if (rw->rc->kind != ROM_EMERALD) return 1;            /* no table: flat tone, but valid */
   uint32_t total = tiles_bytes / 32u;
   const BgShape* sh = &k_em_bg[wp];
@@ -244,14 +277,15 @@ int rom_wallpaper_expand_cell(const uint8_t* tiles, uint32_t tiles_bytes, uint16
   if (!tiles || !pal || !out || !bs) return 0;
   uint16_t tid = (uint16_t)(e & 0x3FFu);
   if ((uint32_t)tid * 32u + 32u > tiles_bytes) return 0;
-  const uint16_t* bg = pal[ROM_WP_PAL_BANKS - 1];
-  const uint16_t* fg = pal[rom_wallpaper_pal_bank((e >> 12) & 0xF)];
+  const uint16_t* bg = pal[ROM_WP_EM_BANKS - 1];
+  const uint16_t* fg = pal[bs->rs ? rs_pal_bank((e >> 12) & 0xF) : rom_wallpaper_pal_bank((e >> 12) & 0xF)];
   uint16_t tone = bg[1];
   /* 1) the base: the tiled bg tile, or (no table / past the sheet) the flat tone. A
    * table-less wallpaper whose tone is 0 keeps the literal index-0 colour -- never paint
    * black where the answer is unknown (City's tone IS black, but City is table-backed). */
   uint16_t fill = tone;
   if (!bs->cols && tone == 0) fill = fg[0];
+  if (bs->rs) fill = 0x1041u;  /* = UI_BG (ui.h RGB15(1,2,4); pure core, so the literal); retail shows the PC screen's BG3 here. pal[0][0] is Game Freak's transparency KEY (green), never a colour */
   const uint8_t* btile = 0;                          /* the backdrop tile, if there is one */
   uint16_t bp[16];
   if (bs->cols && bs->rows) {

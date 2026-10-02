@@ -617,9 +617,12 @@ static bool wp_rom_stage(const RomWallpaper* rw, int wp, uint32_t* tiles_bytes,
 
   ok = 0;
   for (int a = 0; a < WP_ROM_RETRIES && !ok; a++) {
-    uint16_t pal2[ROM_WP_PAL_BANKS][16];             /* 128 B, a real automatic (rule 2 OK) */
+    /* #311: the second pass lands in the back half of mon_decomp (tb): its tile compare is
+     * done and only the front half (ta) stays resident for the draw. A 96 B stack twin would
+     * cost stack on the deepest chain; the borrowed half costs none. */
+    uint16_t (*pal2)[16] = (uint16_t (*)[16])(void*)tb;
     if (!rom_wallpaper_pal(rw, wp, pal)) { (*retries_io)++; continue; }
-    if (rom_wallpaper_pal(rw, wp, pal2) && memcmp(pal, pal2, sizeof pal2) == 0) ok = 1;
+    if (rom_wallpaper_pal(rw, wp, pal2) && memcmp(pal, pal2, sizeof(uint16_t) * ROM_WP_PAL_BANKS * 16) == 0) ok = 1;
     else (*retries_io)++;
   }
   return ok != 0;

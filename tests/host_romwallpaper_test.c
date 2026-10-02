@@ -12,6 +12,7 @@
  *      (BPGE r0), and FAILS CLOSED on Ruby/Sapphire (different row struct, not
  *      parsed by this module — see rom_wallpaper.h SCOPE) and on any revision not
  *      in k_pins (FireRed r0, LeafGreen r1 — never measured, deliberately absent);
+ *      [#311: Ruby/Sapphire are now served for AXVE r2 / AXPE r1 ONLY; r0 and a layout lie refuse]
  *   2) all 16 standard wallpapers decompress: the tilemap is EXACTLY 720 B every
  *      time, the tile blob is a whole multiple of 32 B and never exceeds
  *      ROM_WP_TILES_MAX_BYTES (the whole reason this rung needs no new EWRAM);
@@ -45,15 +46,24 @@ static void chk(const char* rom, const char* what, int cond) {
   if (!cond) { printf("FAIL [%s] %s\n", rom, what); fails++; }
 }
 
-typedef struct { FILE* f; long calls; } FileCtx;
+typedef struct { FILE* f; long calls; long poff; uint8_t pval; } FileCtx;   /* poff < 0: no patch */
 static bool file_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
   FileCtx* fc = (FileCtx*)ctx;
   fc->calls++;
   if (fseek(fc->f, (long)off, SEEK_SET) != 0) return false;
-  return fread(dst, 1, len, fc->f) == len;
+  if (fread(dst, 1, len, fc->f) != len) return false;
+  if (fc->poff >= 0 && (uint32_t)fc->poff >= off && (uint32_t)fc->poff < off + len)
+    ((uint8_t*)dst)[(uint32_t)fc->poff - off] = fc->pval;     /* test-only byte mutation */
+  return true;
 }
 
 /* FNV-1a 32 over the composed 160x144 image's little-endian u16 pixels (bit 15 cleared). */
+/* #311: R/S goldens from an INDEPENDENT Python decoder (own LZ10, index 0 = UI_BG 0x1041 (review-zr D2; pal[0][0] is
+ * Game Freak's transparency KEY, not a colour), raw bank n -> pal bank n); AXVE rev 2 and AXPE rev 1 carry identical wallpaper data. */
+static const uint32_t k_rs_golden[ROM_WP_COUNT] = {
+  0x166F6459u, 0x999A8CCEu, 0xB8623E7Au, 0x075F13C1u, 0xF76FAD2Eu, 0x67FD2402u, 0x7DD610B2u, 0xAF093EF0u,
+  0xDDD32853u, 0x14A4FFFAu, 0x72451F34u, 0x7F3D96AEu, 0x9DE8F2D4u, 0xE521C55Bu, 0x8C81CFB4u, 0x7F126531u,
+};
 static const uint32_t k_em_golden[ROM_WP_COUNT] = {
   0xFF8FA8AEu, 0xD6199C60u, 0x190381CBu, 0x2C8EEFADu, 0xE6539EF7u, 0x5AF9A66Du, 0x70F2EA42u, 0xAAF78964u,
   0xA1E53319u, 0x899EC365u, 0x856CCDC6u, 0xCB92A806u, 0xC561316Du, 0x3A6F7ED0u, 0x922705A5u, 0x0EE18723u,
@@ -83,11 +93,25 @@ static uint32_t compose_hash(const RomWallpaper* rw, int wp, const uint8_t* tile
   return h;
 }
 
+/* Open with one ROM byte mutated (poff/pval) and check the verdict. Proves the pin + the
+ * R/S open-time verify refuse a wrong revision / a wrong layout. */
+static void open_patched(const char* path, const char* name, long poff, uint8_t pval, int expect_open) {
+  FILE* f = fopen(path, "rb");
+  if (!f) { printf("SKIP %s (no %s)\n", name, path); return; }
+  fseek(f, 0, SEEK_END); long sz = ftell(f);
+  FileCtx fc = { f, 0, poff, pval };
+  RomCtx rc;
+  RomWallpaper rw;
+  int opened = rom_open(&rc, file_read, &fc, (uint32_t)sz) && rom_wallpaper_open(&rw, &rc);
+  chk(name, expect_open ? "opens" : "refused (fail closed)", opened == expect_open);
+  fclose(f);
+}
+
 static void run_rom(const char* path, const char* name, int expect_open) {
   FILE* f = fopen(path, "rb");
   if (!f) { printf("SKIP %s (no %s)\n", name, path); return; }
   fseek(f, 0, SEEK_END); long sz = ftell(f);
-  FileCtx fc = { f, 0 };
+  FileCtx fc = { f, 0, -1, 0 };
   RomCtx rc;
   if (!rom_open(&rc, file_read, &fc, (uint32_t)sz)) {
     chk(name, "rom_open accepts the retail dump", 0);
@@ -122,10 +146,11 @@ static void run_rom(const char* path, const char* name, int expect_open) {
       uint16_t e = map_a[c];
       uint16_t tid = (uint16_t)(e & 0x3FFu);
       int hf = (e >> 10) & 1, vf = (e >> 11) & 1, bank = (e >> 12) & 0xF;
+      if (rw.rs && bank >= ROM_WP_PAL_BANKS) { bad_tid++; continue; }   /* R/S bank field in {0,1,2} */
       if ((uint32_t)tid * 32u + 32u > tbytes) { bad_tid++; continue; }
       uint16_t out[64];
       if (!rom_wallpaper_expand_tile(tiles_a, tbytes, tid, hf, vf,
-                                     pal[rom_wallpaper_pal_bank(bank)], out))
+                                     pal[rw.rs ? bank : rom_wallpaper_pal_bank(bank)], out))
         bad_expand++;
     }
     chk(name, tag, bad_tid == 0);
@@ -139,8 +164,16 @@ static void run_rom(const char* path, const char* name, int expect_open) {
       if (rc.kind == ROM_EMERALD) {
         char t2[64]; sprintf(t2, "wp %d composite == compiled wallpapers.c (golden hash)", wp);
         chk(name, t2, h == k_em_golden[wp]);
+      } else if (rw.rs) {
+        char t2[64]; sprintf(t2, "wp %d R/S composite == independent oracle (golden hash)", wp);
+        chk(name, t2, h == k_rs_golden[wp]);
+        /* 3 banks parsed: the R/S palette blob is 96 B, bank 2 is the field/interior bank */
+        int any2 = 0; for (int c = 1; c < 16; c++) if (pal[2][c]) any2 = 1;
+        chk(name, "R/S pal bank 2 parsed (non-empty)", any2);
+        chk(name, "R/S has no backdrop sheet (the map covers the box)",
+            rom_wallpaper_base(&rw, wp, tbytes, &(RomWpBase){0}) == 1);
       } else {
-        uint16_t tone = pal[ROM_WP_PAL_BANKS - 1][1];
+        uint16_t tone = pal[ROM_WP_EM_BANKS - 1][1];
         chk(name, "FR/LG flat tone: corner cells not literal white unless the tone is", tone == 0x7FFF || tone == 0 || white == 0);
       }
     }
@@ -196,8 +229,13 @@ int main(void) {
   run_rom(RP("Emerald"),   "Emerald",   1);
   run_rom(RP("FireRed"),   "FireRed",   1);
   run_rom(RP("LeafGreen"), "LeafGreen", 1);
-  run_rom(RP("Ruby"),      "Ruby",      0);
-  run_rom(RP("Sapphire"),  "Sapphire",  0);
+  run_rom(RP("Ruby"),      "Ruby",      1);
+  run_rom(RP("Sapphire"),  "Sapphire",  1);
+  open_patched(RP("Ruby"), "Ruby r0 (version byte patched)", 0xBC, 0, 0);
+  open_patched(RP("Sapphire"), "Sapphire r0 (version byte patched)", 0xBC, 0, 0);
+  open_patched(RP("Ruby"), "Ruby, row 9 tilemap ptr off (layout lie)", 0x3BB104 + 9 * 16 + 8, 0xFF, 0);
+  open_patched(RP("Sapphire"), "Sapphire, row 15 tilemap ptr off (layout lie)", 0x3BB160 + 15 * 16 + 8, 0xFF, 0);
+  open_patched(RP("Ruby"), "Ruby, unpatched control (same path opens)", 0x7FFFFF, 0, 1);
 #undef RP
 
   printf("%d checks, %d fails\n", checks, fails);

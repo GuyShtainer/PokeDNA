@@ -280,6 +280,14 @@ void gb_art_session_reset(void);
  * generation-`gen` Game Boy image. A no-op (returns false) under PDNA_DELTA. */
 bool gb_rom_path_beside(const char* save_path, uint8_t gen, char* out, int cap);
 
+/* BACKLOG #340b: the description text of Gen-2 item `id` (1..190; TM/HM ids and Gen 1 have none)
+ * read live from the registered / beside-the-save / fused Gen-2 ROM (rom_gbitem.h). Returns a
+ * pointer into a ONE-entry cache (valid until the next call), or NULL when there is no ROM, the
+ * ROM does not carry the table (hack, other revision) or the read failed -- the caller then
+ * shows its honest "no description" string. Cheap on a repeat of the same id (the picker redraw
+ * path); a new id costs one f_open + ~4 small reads. */
+const char* gb_art_item_desc(uint8_t id);
+
 /* ---- BACKLOG #263: the per-PASS batch ------------------------------------------------
  * Guy's first cart run of the Game Boy box grid: "each time I switch to another box they
  * load slowly from top left to bottom right one by one". The Gen-3 grid asks its icon store
