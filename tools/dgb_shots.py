@@ -1035,13 +1035,11 @@ def run_u4_bag(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_
         s.shot("08_picker_open", "U4 (BACKLOG #195): ADD ITEM now opens the real "
                                   "item picker -- REAL Gen-1 names (gb_item_label, "
                                   "not '#n'), a category header ('ITEM [All] 150': "
-                                  "150 = ids 0..250 minus the 100 unnamed junk "
-                                  "ids the list hides -- 0x07, 0x2C, 0x62-0xC3), "
+                                  "ids 1..250 = 250 minus the 100 unnamed junk "
+                                  "ids the ADD list hides -- 0x07, 0x2C, 0x62-0xC3; "
+                                  "NO ITEM (id 0) is not offered when adding), "
                                   "list view, cursor on MASTER BALL "
-                                  "(pick_item(1)'s own `current` -- '#0' NO_ITEM's "
-                                  "own row is visible just above it, still "
-                                  "selectable, gbb_insert() refuses it as BAD ID "
-                                  "the same as before)")
+                                  "(pick_item(1)'s own `current`), row 0")
 
         s.tap("START", settle=gb_shots.BIG_SETTLE)            # -> ritem_cat_menu (BACKLOG #195 F1)
         s.shot("08b_category_menu", "U4: START opens the restricted picker's OWN "
@@ -1053,15 +1051,13 @@ def run_u4_bag(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_
         s.tap("A", settle=gb_shots.BIG_SETTLE)                # pick Items -> re-filters, closes menu
         s.shot("08c_items_filtered", "U4: picking 'Items' re-filters the list "
                                       "through gbb_pocket_of() -- the header now "
-                                      "reads 'ITEM [Items]', and id 0 (NO_ITEM, "
-                                      "invalid for every pocket) is gone from the "
-                                      "top of the list -- MASTER BALL is now row 0")
+                                      "reads 'ITEM [Items]' with the count 95 (150 minus "
+                                      "the 55 TM/HM ids), MASTER BALL still row 0")
 
         # Navigate to POTION (id 20/0x14): 18 DOWN presses from MASTER_BALL (id 1,
-        # now row 0 under the Items filter) -- the Gen-1 list hides unnamed junk
-        # ids (0x07 is the only one in 1..20), so ids 1..20 are 19 rows and
-        # POTION is row 18; the unfiltered All list (id 0 at row 0, 0x07 absent)
-        # puts MASTER_BALL at row 1 and POTION at row 19, the same 18 DOWNs.
+        # row 0 in the Items list, and also in All -- the ADD list never offers id 0)
+        # -- the Gen-1 list hides unnamed junk ids (0x07 is the only one in 1..20),
+        # so ids 1..20 are 19 rows and POTION is row 18 in both lists.
         s.press_n("DOWN", 18, settle=gb_shots.SETTLE)
         s.shot("08d_potion_selected", "U4: 18 DOWNs from MASTER_BALL lands on "
                                        "POTION (id 20) -- a real name from the "
@@ -1087,8 +1083,8 @@ def run_u4_bag(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_
         # at cat=All, current=1 -- the Gen-1 ADD site never calls
         # pick_item_set_gen1_2_cat(), so this is the SAME 18-DOWNs-from-MASTER_BALL
         # trip as above, just over the unfiltered 150-row list instead of the
-        # 95-row Items-filtered one -- id 0's own extra row exactly cancels out
-        # id 20 also shifting up by one, so the DOWN count is unchanged).
+        # 95-row Items-filtered one -- both start MASTER_BALL at row 0, so the
+        # DOWN count is unchanged).
         s.tap("START", settle=gb_shots.BIG_SETTLE)            # -> item menu, cursor still on POTION (last row)
         s.tap("A", settle=gb_shots.BIG_SETTLE)                # ADD ITEM -> picker opens fresh (cat=All again)
         s.press_n("DOWN", 18, settle=gb_shots.SETTLE)         # MASTER_BALL -> POTION (All list)
