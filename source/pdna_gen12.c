@@ -3345,9 +3345,11 @@ gb_paste_write(const GbEditMon* mon, int box, const uint8_t orig80[80],
 /* BACKLOG #150 S150-12 decision 10: `is_copy` adds one extra dim row before
  * A_TRANSFER -- a copy cell's DOWN never reaches the ledger (decision 9), so this
  * is the honest replacement for "there is a transfer record" that every other DOWN
- * implicitly promises. Row budget (decision 10's own header note): Item + all four
- * conditional rows + these two + the two hint rows = 10 rows of PDNA_SIDECAR_LOSS_
- * ROW_H (9 px) from y=PDNA_SIDECAR_LOSS_ROW_Y0 (16) -> 106 px, inside UI_SCR_H (160). */
+ * implicitly promises. Row budget (re-counted at #365 against the code below): worst case is
+ * Item + exp + PID + name-loss + the 2 fixed rows + copy's 2 = 8 content rows of
+ * PDNA_SIDECAR_LOSS_ROW_H (9 px) from PDNA_SIDECAR_LOSS_ROW_Y0 (16) -> y=88, then the 4 px
+ * half-gap -> A_TRANSFER at 92, B_CANCEL at 101, block ends 110 px, inside UI_SCR_H (160).
+ * (to_party shows 1 row where copy shows 2, so the worst case is the copy cell.) */
 static bool __attribute__((noinline))
 gb_down_loss_screen(const Gb12Notes* n, uint8_t g2_item, bool item_travels, bool is_copy,
                     bool to_party) {
@@ -3377,9 +3379,8 @@ gb_down_loss_screen(const Gb12Notes* n, uint8_t g2_item, bool item_travels, bool
   y = loss_row(y, true, "Met: this game, traded");
   /* BACKLOG #174 (S150-8c) D7: to_party and is_copy are mutually exclusive -- a COPY
    * cell's DOWN never writes a ledger entry (decision 9), and D2 admits only Bank-origin
-   * native cells to the party site, so the row budget (Item + 4 conditional + 2 fixed +
-   * copy's 2 + 2 hint rows = 10, PDNA_SIDECAR_LOSS_ROW_H*10 = 90 px from y=16 -> 106 px,
-   * inside UI_SCR_H 160) is unchanged by adding this ONE row in the same slot copy's two
+   * native cells to the party site, so the row budget (see the header: 8 content
+   * rows worst case, block ends at 110 px, inside UI_SCR_H 160) is unchanged by adding this ONE row in the same slot copy's two
    * would otherwise occupy alone. */
   if (to_party) {
     y = loss_row(y, true, PDNA_XFER_PARTYLAND_L1);
@@ -3895,13 +3896,16 @@ gb_gen1_base_from_rom(uint16_t dex, GbGen1Base* out) {
 
 /* BACKLOG #367: the Gen-1 BaseStats row for a Day-Care mon about to land in the PARTY
  * (pdna_gbdaycare.c's gbdc_land) -- the same ROM lookup the Bank TO-GAME landing uses,
- * exposed without its UI so the caller keeps its own honest refusal. false = no usable
- * ROM row (no ROM beside the .sav, bad ROM, or an impossible species); `out` untouched. */
-bool gb12_gen1_base_for(const GbEditMon* mon, GbGen1Base* out) {
-  if (!mon || !out) return false;
+ * exposed without its UI so the caller keeps its own honest refusal. NO_ROM = no ROM beside
+ * the .sav (caller names it with gb_gen12_norom_msg, like the Bank twin); BAD = bad ROM or an
+ * impossible species; `out` untouched unless OK. */
+Gb12BaseSt gb12_gen1_base_for(const GbEditMon* mon, GbGen1Base* out) {
+  if (!mon || !out) return GB12_BASE_BAD;
   uint16_t dex = gb_get_species_dex(mon);
-  if (!dex) return false;
-  return gb_gen1_base_from_rom(dex, out) == GB1BASE_OK;
+  if (!dex) return GB12_BASE_BAD;
+  Gb1BaseStatus bst = gb_gen1_base_from_rom(dex, out);
+  if (bst == GB1BASE_OK) return GB12_BASE_OK;
+  return (bst == GB1BASE_NO_ROM) ? GB12_BASE_NO_ROM : GB12_BASE_BAD;
 }
 
 /* The ROM was absent: name it. base_only points INTO the arena-resident romspath
@@ -3914,7 +3918,7 @@ bool gb12_gen1_base_for(const GbEditMon* mon, GbGen1Base* out) {
  * Decision 10: generalised by generation (was gb_gen1_norom_msg(void), Gen-1-only) --
  * ".gb"/GEN-1 title for GB_GEN1, ".gbc"/NEW GEN-2 title for GB_GEN2; L1's wording never
  * named an extension, so it is reused unchanged for both. */
-static void __attribute__((noinline)) gb_gen12_norom_msg(uint8_t gen) {
+void __attribute__((noinline)) gb_gen12_norom_msg(uint8_t gen) {
   const char* base_only = g_ed->romspath;
   for (int i = 0; g_ed->romspath[i]; i++)
     if (g_ed->romspath[i] == '/') base_only = g_ed->romspath + i + 1;

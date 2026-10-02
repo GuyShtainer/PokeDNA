@@ -164,7 +164,7 @@ static int gbdc_menu(bool occupied, bool can_put_here, bool can_take) {
  * mon ended up in, or -1 for the party (so the caller can name the landing in its own
  * message); on failure, `*out_status` explains why and nothing has changed. */
 static bool gbdc_land(GbSession* s, const GbEditMon* mon, uint8_t* list, uint8_t* list2,
-                      int* landed_box, GbsStatus* out_status) {
+                      int* landed_box, GbsStatus* out_status, Gb12BaseSt* base_st) {
   int nb = gbs_nboxes(s);
   int party = gbs_party_box(s);
 
@@ -181,9 +181,10 @@ static bool gbdc_land(GbSession* s, const GbEditMon* mon, uint8_t* list, uint8_t
        * stat-recomputing path the Bank TO-GAME landing uses. No ROM row = the old,
        * honest GBS_ERR_NEEDS_BASE refusal (nothing changed). */
       GbGen1Base g1base;
-      if (!gb12_gen1_base_for(mon, &g1base)) { *out_status = GBS_ERR_NEEDS_BASE; return false; }
+      *base_st = gb12_gen1_base_for(mon, &g1base);
+      if (*base_st != GB12_BASE_OK) { *out_status = GBS_ERR_NEEDS_BASE; return false; }
       int pslot = -1;
-      GbsStatus pst = gbs_insert_party(s, mon, &g1base, &pslot, list);
+      GbsStatus pst = gbs_insert_party_daycare(s, mon, &g1base, &pslot, list);
       if (pst == GBS_OK) { *landed_box = -1; return true; }
       *out_status = pst;
       return false;
@@ -238,10 +239,19 @@ static void gbdc_take(GbSession* s, int slot, uint8_t* list, uint8_t* list2) {
 
   int landed_box = -2;
   GbsStatus lst = GBS_OK;
-  if (!gbdc_land(s, &mon, list, list2, &landed_box, &lst)) {
+  Gb12BaseSt base_st = GB12_BASE_OK;
+  if (!gbdc_land(s, &mon, list, list2, &landed_box, &lst, &base_st)) {
     gb_rollback();
     snd_deny();
-    msg_wait("TAKE OUT", UI_WARN, gbs_status_text(lst), "Nothing was changed.");
+    /* D6: the no-ROM refusal speaks like the Bank twin (pdna_gen12.c) -- name the missing
+     * ROM / the bad ROM instead of the generic "needs base stats" status text. */
+    if (lst == GBS_ERR_NEEDS_BASE && base_st == GB12_BASE_NO_ROM) {
+      gb_gen12_norom_msg(GB_GEN1);
+    } else if (lst == GBS_ERR_NEEDS_BASE && base_st == GB12_BASE_BAD) {
+      msg_wait(PDNA_GBEDIT_MOVE_REFUSED_TITLE, UI_WARN, PDNA_GBEDIT_MOVE_NEEDSBASE_L2, "Nothing was changed.");
+    } else {
+      msg_wait("TAKE OUT", UI_WARN, gbs_status_text(lst), "Nothing was changed.");
+    }
     return;
   }
   if (!gb_hold_commit("daycare-take")) return;   /* gb_persist already reported any refusal */
@@ -266,7 +276,8 @@ static void gbdc_take_egg(GbSession* s, uint8_t* list, uint8_t* list2) {
    * PARTY_LENGTH first) -- the same party-first landing gbdc_take() uses (re-verify N2). */
   int landed_box = -2;
   GbsStatus ist = GBS_OK;
-  if (!gbdc_land(s, &egg, list, list2, &landed_box, &ist)) {
+  Gb12BaseSt egg_base_st = GB12_BASE_OK;   /* Gen 2 only: never set */
+  if (!gbdc_land(s, &egg, list, list2, &landed_box, &ist, &egg_base_st)) {
     gb_rollback();
     snd_deny();
     msg_wait("EGG", UI_WARN, gbs_status_text(ist), "Nothing was changed.");
