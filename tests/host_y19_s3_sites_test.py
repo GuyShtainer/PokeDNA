@@ -34,16 +34,19 @@ One later pin rides along because it guards the same file at the same text level
   P14 #353: app_save_finalize's SD arm commits EXACTLY g_save_size bytes -- both sf_write_verified and
       sf_where_are_the_bytes take g_save_size (never the G3_SAVE_FILE_SIZE cap, which would write the previous
       save's bytes as a 64 KiB dump's slot B), and a size RAM gate refuses an impossible size BEFORE the write
-  P16 #360 (review-zr D3): pdna_pick.c's item_desc_for refuses an unused id's "?" description (returns the honest
+  P17 #360 (review-zr D3): pdna_pick.c's item_desc_for refuses an unused id's "?" description (returns the honest
       placeholder instead of the one-glyph text)
-  P17 #360 (review-zr D5): gb_art_item_desc checks gb_art_have(PDNA_GEN2) BEFORE the one-entry cache hit, so a
+  P18 #360 (review-zr D5): gb_art_item_desc checks gb_art_have(PDNA_GEN2) BEFORE the one-entry cache hit, so a
       detached ROM never serves a stale cached description
-  P18 #356: the Day-Care view/edit loop and the new-mon summary mark the record Crystal-or-not from the SESSION
+  P19 #356: the Day-Care view/edit loop and the new-mon summary mark the record Crystal-or-not from the SESSION
       (gb_set_caught_available(.., gb_session_is_crystal(..)), at BOTH Day-Care slot loads and before the new-mon
       pdna_gbsummary), because gb_load_parts leaves has_caught false and pdna_gbedit.c's held-item picker keys the
       game off it
   P15 #353: view_save pads a short Gen-3 read with 0xFF (after the Game Boy fork, which keeps its pristine copy
       in the idle upper half), so no foreign trainer's bytes survive in g_save's tail
+  P16 #354: view_save warns ONLY on `damaged_fallback || game_loads_other` (snd_error, heartbeat+perf pause, one DAMAGED SAVE
+      msg_wait), after the parse log line and before the party read; never on the slot_damaged log-only branch; both app_can_edit
+      variants and the read-only why/footer honour game_loads_other
 """
 from __future__ import annotations
 
@@ -139,12 +142,22 @@ def checks(box: str, summ: str, main: str, jrn: str, lay: str, prog: str, pick: 
         "P15 #353: view_save pads a short Gen-3 read with 0xFF after the Game Boy fork": bool(vsv)
             and re.search(r"if \(!err && sz < \(uint32_t\)G3_SAVE_FILE_SIZE\)\s*\{\s*memset\(g_save \+ sz, 0xFF, \(size_t\)G3_SAVE_FILE_SIZE - sz\);", vsv) is not None
             and before(vsv, "pdna_gen12_show_image(path, g_save, sz", "memset(g_save + sz, 0xFF"),
-        "P16 #360: item_desc_for refuses the unused id's \"?\" text": bool(idf)
+        "P16 #354: view_save warns on damaged_fallback / game_loads_other behind hb+perf pauses; both app_can_edit variants lock on game_loads_other": bool(vsv)
+            and re.search(r"if \(g_vinfo\.damaged_fallback \|\| g_vinfo\.game_loads_other\)\s*\{\s*snd_error\(\);\s*hb_pause\(\);\s*perf_span_pause\(\);\s*"
+                          r"if \(g_vinfo\.game_loads_other\)\s*msg_wait\(\"DAMAGED SAVE\", UI_WARN,[^;]*;\s*else\s*msg_wait\(\"DAMAGED SAVE\", UI_WARN,[^;]*;\s*"
+                          r"perf_span_resume\(\);\s*hb_resume\(\);\s*\}", vsv) is not None
+            and vsv.count("DAMAGED SAVE") == 2 and "gen3_slot_consistent" not in vsv
+            and before(vsv, "gen3_parse_into(g_save, sz, &g_vinfo", "g_vinfo.damaged_fallback")
+            and before(vsv, "g_vinfo.damaged_fallback", "pk_read_party_auto(")
+            and len(re.findall(r"bool app_can_edit\(void\)\s*\{[^}]*g_vinfo\.game_loads_other[^}]*\}", strip_comments(main))) == 2
+            and "Game loads damaged copy." in body(main, "app_readonly_why")
+            and "damaged save: locked  B back" in body(main, "app_readonly_footer"),
+        "P17 #360: item_desc_for refuses the unused id's \"?\" text": bool(idf)
             and re.search(r"if \(d && !\(d\[0\] == '\?' && d\[1\] == 0\)\)\s*return d;", idf) is not None
             and before(idf, "d[1] == 0", "return PDNA_ITEM_NO_DESC_YET"),
-        "P17 #360: gb_art_item_desc checks the ROM/detach switch before the cache hit": bool(gid)
+        "P18 #360: gb_art_item_desc checks the ROM/detach switch before the cache hit": bool(gid)
             and before(gid, "gb_art_have(PDNA_GEN2)", "s_idesc.state") and "if (!gb_art_have(PDNA_GEN2)) return 0;" in gid,
-        "P18 #356: Day-Care + new-mon records are marked Crystal from the session": bool(gdv) and bool(gnm)
+        "P19 #356: Day-Care + new-mon records are marked Crystal from the session": bool(gdv) and bool(gnm)
             and gdv.count("gb_set_caught_available(&edited, gb_session_is_crystal(s))") == 2
             and before(gdv, "gb_set_caught_available(&edited", "pdna_gbsummary(")
             and "gb_set_caught_available(&box_mon, gb_session_is_crystal(&g_ed->s))" in gnm
@@ -194,6 +207,15 @@ def main() -> int:
     mutant("M-P10 chord_swallow removed", "box", "chord_swallow(&chord);", "", "P10")
     mutant("M-P11 the #347 retire deleted from the call site", "summ", "    icon_store_plan(0, 0);\n", "", "P11")
     mutant("M-P12 the #346b retire deleted from the progress frame", "prog", "    icon_store_plan(0, 0);\n", "", "P12")
+    mutant("M-P16a the dialog fires on any damaged slot, not only the fallback", "main", "  if (g_vinfo.damaged_fallback || g_vinfo.game_loads_other) {\n    snd_error();", "  if (g_vinfo.slot_damaged[0] || g_vinfo.slot_damaged[1]) {\n    snd_error();", "P16")
+    mutant("M-P16b the fallback dialog silenced", "main", "      msg_wait(\"DAMAGED SAVE\", UI_WARN, \"Newer copy damaged (old bug?)\", \"Opened the intact copy.\");\n", "      (void)0;\n", "P16")
+    mutant("M-P16c the warning moved before the parse", "main", "  load_phase_n(2, \"parse slots\");", "  if (g_vinfo.damaged_fallback) { snd_error(); msg_wait(\"DAMAGED SAVE\", UI_WARN, \"x\", \"y\"); }\n  load_phase_n(2, \"parse slots\");", "P16")
+    mutant("M-P16d dialog only on the fallback (game_loads_other branch unreachable)", "main", "  if (g_vinfo.damaged_fallback || g_vinfo.game_loads_other) {", "  if (g_vinfo.damaged_fallback) {", "P16")
+    mutant("M-P16e game_loads_other dialog silenced", "main", "      msg_wait(\"DAMAGED SAVE\", UI_WARN, \"Game loads the damaged copy.\", \"Intact copy shown, read-only.\");\n", "      (void)0;\n", "P16")
+    mutant("M-P16f the delta app_can_edit ignores game_loads_other", "main", "  return !pdna_romcheck_bad() && !(g_vinfo.valid && app_rom_is_hack(g_game)) &&\n         !g_vinfo.game_loads_other;", "  return !pdna_romcheck_bad() && !(g_vinfo.valid && app_rom_is_hack(g_game));", "P16")
+    mutant("M-P16g the GBA app_can_edit ignores game_loads_other", "main", " &&\n         !(g_vinfo.valid && g_vinfo.game_loads_other);", ";", "P16")
+    mutant("M-P16h heartbeat not paused around the dialog", "main", "    hb_pause(); perf_span_pause();\n", "", "P16")
+    mutant("M-P16i the read-only reason ignores the damaged copy", "main", "  if (g_vinfo.valid && g_vinfo.game_loads_other) return \"Game loads damaged copy.\";\n", "", "P16")
     mutant("M-P13a the short-read predicate stripped (bare ok)", "main", "  if (ok && rsz < g_save_size) {", "  if (0) {", "P13")
     mutant("M-P13b the latch-clear no longer gated on ok", "main", "if (ok) imgf_partial_clear(&g_img);", "imgf_partial_clear(&g_img);", "P13")
     mutant("M-P13c the demotion dropped", "main", "    ok = false;\n  }\n#endif\n  if (!ok) log_line(\"discard:", "  }\n#endif\n  if (!ok) log_line(\"discard:", "P13")
@@ -207,15 +229,15 @@ def main() -> int:
     mutant("M-P14f a backup issued before the size gate", "main", "  /* #353: write exactly what view_save loaded.", "  (void)sf_backup(g_path, bak, sizeof(bak));\n  /* #353: write exactly what view_save loaded.", "P14")
     mutant("M-P15a the pad removed", "main", "    memset(g_save + sz, 0xFF, (size_t)G3_SAVE_FILE_SIZE - sz);", "", "P15")
     mutant("M-P15b the pad disabled", "main", "  if (!err && sz < (uint32_t)G3_SAVE_FILE_SIZE) {\n    /* g_save-write-ok: loader: pads", "  if (0) {\n    /* g_save-write-ok: loader: pads", "P15")
-    mutant("M-P16a the \"?\" filter reverted", "pick", "if (d && !(d[0] == '?' && d[1] == 0)) return d;", "if (d) return d;", "P16")
-    mutant("M-P16b the filter returns the placeholder only when d is NULL", "pick", "if (d && !(d[0] == '?' && d[1] == 0)) return d;", "if (d && d[0] != '?') return d;", "P16")
-    mutant("M-P17a the detach check moved after the cache hit", "gart",
+    mutant("M-P17a the \"?\" filter reverted", "pick", "if (d && !(d[0] == '?' && d[1] == 0)) return d;", "if (d) return d;", "P17")
+    mutant("M-P17b the filter returns the placeholder only when d is NULL", "pick", "if (d && !(d[0] == '?' && d[1] == 0)) return d;", "if (d && d[0] != '?') return d;", "P17")
+    mutant("M-P18a the detach check moved after the cache hit", "gart",
            "  if (!gb_art_have(PDNA_GEN2)) return 0;                           /* no ROM, or the detach switch: before the cache (review-zr D5) */\n  if (s_idesc.state && s_idesc.id == id) return s_idesc.state == 1 ? s_idesc.text : 0;",
-           "  if (s_idesc.state && s_idesc.id == id) return s_idesc.state == 1 ? s_idesc.text : 0;\n  if (!gb_art_have(PDNA_GEN2)) return 0;", "P17")
-    mutant("M-P17b the detach check dropped", "gart", "  if (!gb_art_have(PDNA_GEN2)) return 0;                           /* no ROM, or the detach switch: before the cache (review-zr D5) */\n", "", "P17")
-    mutant("M-P18a Day-Care slot-0 mark removed", "dcy", "  gb_set_caught_available(&edited, gb_session_is_crystal(s));   /* #356: gb_load_parts leaves has_caught false; the session knows Crystal */\n", "", "P18")
-    mutant("M-P18b Day-Care U/D reload mark removed", "dcy", " gb_set_caught_available(&edited, gb_session_is_crystal(s)); }", " }", "P18")
-    mutant("M-P18c new-mon mark removed", "g12", "  gb_set_caught_available(&box_mon, gb_session_is_crystal(&g_ed->s));", "", "P18")
+           "  if (s_idesc.state && s_idesc.id == id) return s_idesc.state == 1 ? s_idesc.text : 0;\n  if (!gb_art_have(PDNA_GEN2)) return 0;", "P18")
+    mutant("M-P18b the detach check dropped", "gart", "  if (!gb_art_have(PDNA_GEN2)) return 0;                           /* no ROM, or the detach switch: before the cache (review-zr D5) */\n", "", "P18")
+    mutant("M-P19a Day-Care slot-0 mark removed", "dcy", "  gb_set_caught_available(&edited, gb_session_is_crystal(s));   /* #356: gb_load_parts leaves has_caught false; the session knows Crystal */\n", "", "P19")
+    mutant("M-P19b Day-Care U/D reload mark removed", "dcy", " gb_set_caught_available(&edited, gb_session_is_crystal(s)); }", " }", "P19")
+    mutant("M-P19c new-mon mark removed", "g12", "  gb_set_caught_available(&box_mon, gb_session_is_crystal(&g_ed->s));", "", "P19")
     if fails:
         print("FAILED:", ", ".join(fails))
         return 1
