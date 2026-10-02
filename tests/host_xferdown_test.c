@@ -436,6 +436,11 @@ static void test_bridge_one_case(uint16_t species_dex, uint8_t src_gen, uint8_t 
   CHECK(g3gb == G3GB_OK, "%s: gen3_to_gb succeeds (got %s)", label, g3gb_status_text(g3gb));
   if (g3gb != G3GB_OK) return;
 
+  /* BACKLOG #381: a Game Boy SOURCE has no nature/ability/met-data/ball to lose -- those flags came from
+   * the Gen-3 intermediate, so the loss screen must not list them (its rows read exactly these flags). */
+  CHECK(!loss.nature && !loss.ability, "%s: #381 'Nature and ability' row flags clear for a GB source", label);
+  CHECK(!loss.met_data && !loss.ball,  "%s: #381 'Met place / level / ball' row flags clear for a GB source", label);
+
   /* (a) the entry's original80 is byte-identical to the source native cell. */
   GbscEntry e;
   gbsc_entry_from(&e, &out, cell, 0);

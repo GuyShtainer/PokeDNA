@@ -137,6 +137,11 @@ void bdc_convert_gb_core(const uint8_t cell80[BC_CELL_BYTES], uint8_t dst_gen,
   G3GbStatus st = gen3_to_gb_fixed(mid80, dst_gen, caught_available, g1base,
                                    nb > 0 ? bad4 : NULL, out, loss);
   *g3gb = st;
+  /* BACKLOG #381: the "Nature and ability" / "Met place / level / ball" rows describe what a Gen-3 record
+   * carries that a Game Boy record has no room for. Here the SOURCE is a Game Boy record: those flags were
+   * computed off the Gen-3 INTERMEDIATE (gen12_convert's mid80, PID-derived nature/ability, a synthetic
+   * met block), and the Game Boy mon never had either -- nothing is lost, so the rows must not appear. */
+  if (st == G3GB_OK) { loss->nature = false; loss->ability = false; loss->met_data = false; loss->ball = false; }
   /* BACKLOG #177 (review F1): compare the SOURCE record's own name spelling against the
    * WRITTEN record's -- `out` is only meaningfully populated on G3GB_OK, so this runs
    * after `st` is known, not alongside the item-drop re-apply above (which does not
