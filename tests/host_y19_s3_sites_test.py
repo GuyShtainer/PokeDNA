@@ -26,6 +26,8 @@ One later pin rides along because it guards the same file at the same text level
   P11 #347: the summary's icon fallback retires the plan (icon_store_plan(0, 0), artless only) BEFORE the
       icon fetch -- the store-side pin in host_iconstore_test.c cannot see this call site, and deleting it
       regresses #347 with the full host suite still green
+  P12 #346b: the progress frame's icon fallback (a mon carried ACROSS boxes by a Bank drop is off-plan) retires
+      the plan the same way, BEFORE its icon fetch
 """
 from __future__ import annotations
 
@@ -70,7 +72,7 @@ def before(b: str, first: str, second: str) -> bool:
     return i >= 0 and j >= 0 and i < j
 
 
-def checks(box: str, summ: str, main: str, jrn: str, lay: str) -> dict[str, bool]:
+def checks(box: str, summ: str, main: str, jrn: str, lay: str, prog: str) -> dict[str, bool]:
     pb = body(box, "pdna_box")
     ps = body(summ, "pdna_summary")
     if not ps:                                   # the summary loop's function name differs; fall back to the whole file
@@ -98,26 +100,30 @@ def checks(box: str, summ: str, main: str, jrn: str, lay: str) -> dict[str, bool
         "P11 #347: summary icon fallback retires the plan before the fetch": re.search(
             r"#if !PDNA_MON_ICONS_ART_COMPILED\s*icon_store_plan\(0, 0\);\s*#endif\s*"
             r"ui_sprite\(30, 30, MON_ICON_W, MON_ICON_H, mon_icon_for_form", strip_comments(summ)) is not None,
+        "P12 #346b: progress-frame icon fallback retires the plan before the fetch": re.search(
+            r"#if !PDNA_MON_ICONS_ART_COMPILED\s*icon_store_plan\(0, 0\);\s*#endif\s*"
+            r"ui_sprite\(SPR_X \+ \(MON_FRONT_W - MON_ICON_W\) / 2, SPR_Y \+ \(MON_FRONT_H - MON_ICON_H\) / 2,\s*"
+            r"MON_ICON_W, MON_ICON_H, egg \? mon_icon_egg\(\) : mon_icon_for_form", strip_comments(prog)) is not None,
     }
 
 
 def main() -> int:
-    box, summ, mn, jrn, lay = (rd("pdna_box.c"), rd("pdna_summary.c"), rd("pdna_main.c"), rd("jrn_app.c"), rd("pdna_layout.h"))
+    box, summ, mn, jrn, lay, prog = (rd("pdna_box.c"), rd("pdna_summary.c"), rd("pdna_main.c"), rd("jrn_app.c"), rd("pdna_layout.h"), rd("pdna_progress.c"))
     print("real tree:")
-    real = checks(box, summ, mn, jrn, lay)
+    real = checks(box, summ, mn, jrn, lay, prog)
     for k, v in real.items():
         print(f"  {'ok  ' if v else 'FAIL'} {k}")
         if not v:
             fails.append(k)
 
     def mutant(tag: str, which: str, old: str, new: str, expect_red: str) -> None:
-        texts = {"box": box, "summ": summ, "main": mn, "jrn": jrn, "lay": lay}
+        texts = {"box": box, "summ": summ, "main": mn, "jrn": jrn, "lay": lay, "prog": prog}
         if old not in texts[which]:
             print(f"  FAIL {tag}: target not found verbatim (source drifted)")
             fails.append(tag)
             return
         texts[which] = texts[which].replace(old, new, 1)
-        r = checks(texts["box"], texts["summ"], texts["main"], texts["jrn"], texts["lay"])
+        r = checks(texts["box"], texts["summ"], texts["main"], texts["jrn"], texts["lay"], texts["prog"])
         red = [k for k, v in r.items() if not v]
         ok = any(k.startswith(expect_red) for k in red)
         print(f"  {'ok  ' if ok else 'FAIL'} {tag}: mutant makes {expect_red} RED (red: {[k.split()[0] for k in red]})")
@@ -138,6 +144,7 @@ def main() -> int:
     mutant("M-P9 home loop ignores code 6", "main", "if (r == 6) pdna_history_screen();", "", "P9")
     mutant("M-P10 chord_swallow removed", "box", "chord_swallow(&chord);", "", "P10")
     mutant("M-P11 the #347 retire deleted from the call site", "summ", "    icon_store_plan(0, 0);\n", "", "P11")
+    mutant("M-P12 the #346b retire deleted from the progress frame", "prog", "    icon_store_plan(0, 0);\n", "", "P12")
     if fails:
         print("FAILED:", ", ".join(fails))
         return 1

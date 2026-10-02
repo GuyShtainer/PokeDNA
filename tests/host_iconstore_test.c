@@ -720,6 +720,67 @@ static void t_rom_rung(const char* dir, const char* name) {
     icon_store_reset(0, &rm);
   }
 
+  /* ---- BACKLOG #346a: a full box paint must come to rest with ZERO stale pins ----------
+   * THE PRODUCER of the #330/#344/#347 starvation family. A cell that REPEATS an earlier species
+   * asks for a row the paint already drew and a later sweep evicted: a PLANNED miss at an EARLY plan
+   * index. plan_sweep(pi) walks "forward, never wrapping" on the assumption that everything before
+   * `start` was just drawn -- false for a repeat -- so it re-fetched the next pool-sized group of
+   * plan rows that were ALREADY drawn, pinned all of them, handed out one, and no later cell ever
+   * asks for the other three: a pool left pinned at rest. Real data, Guy's Ruby.sav (rows are
+   * art_icons_row_for, plan = first occurrences): box 6 ends on a second row-84 cell -> stale
+   * 369/288/45; box 11 ends on a fourth row-395 cell -> stale 346/172/60 (the zj probe's exact rows).
+   * Detector = starvation: after the paint the last row handed out is HOT, so 3 pins of 4 leave NO
+   * victim and an off-plan row answers NULL (the blank cell the consumers' retire fixes contain). */
+  {
+    static const uint16_t box6[] = { 84, 369, 288, 45, 369, 286, 43, 183, 129, 293, 289, 289, 292, 387,
+                                     100, 292, 307, 293, 294, 386, 43, 174, 346, 338, 292, 289, 317, 84 };
+    static const uint16_t box11[] = { 72, 350, 89, 395, 346, 172, 60, 26, 25, 350, 412, 350, 183, 395,
+                                      346, 395, 395, 412, 53, 289, 395, 46, 412, 412, 412, 412, 412, 412, 395 };
+    const uint16_t* boxes[2] = { box6, box11 };
+    const int nbox[2] = { (int)(sizeof box6 / sizeof box6[0]), (int)(sizeof box11 / sizeof box11[0]) };
+    for (int b = 0; b < 2; b++) {
+      uint16_t plan[40]; int np = 0;
+      for (int i = 0; i < nbox[b]; i++) {            /* boxoam_declare_box: first occurrences, paint order */
+        int dup = 0;
+        for (int j = 0; j < np; j++) if (plan[j] == boxes[b][i]) dup = 1;
+        if (!dup) plan[np++] = boxes[b][i];
+      }
+      icon_store_reset(0, &rm);
+      icon_store_plan(plan, np);
+      int nulls = 0;
+      for (int i = 0; i < nbox[b]; i++) {            /* the paint: one fetch per cell, cell order */
+        const uint8_t* p = icon_store_row(boxes[b][i]);
+        if (!p) nulls++;
+      }
+      CHK(nulls == 0, "[%s] #346a box %d: every cell of the paint must be served (%d NULL)",
+          name, b == 0 ? 6 : 11, nulls);
+      CHK(icon_store_row(40) != 0,
+          "[%s] #346a box %d: after a full paint an off-plan row must find a victim -- a repeat cell's "
+          "planned miss must not re-fetch and pin already-drawn rows (stale pins starve the pool)",
+          name, b == 0 ? 6 : 11);
+    }
+    /* The repeat's own corner: it arrives while a freshly prefetched group is still pinned ahead of the
+     * paint (E miss -> E F G H fetched, F/G/H pinned, E hot; then a cell repeating the evicted A). No
+     * unpinned, non-hot slot exists, so the repeat must give the prefetch up rather than blank a drawn
+     * row; the abandoned rows simply re-fetch on demand. */
+    {
+      static const uint16_t cells[] = { 100, 110, 120, 130, 140, 100, 150, 160, 170, 140, 100 };
+      uint16_t plan[12]; int np = 0, nulls = 0;
+      for (int i = 0; i < (int)(sizeof cells / sizeof cells[0]); i++) {
+        int dup = 0;
+        for (int j = 0; j < np; j++) if (plan[j] == cells[i]) dup = 1;
+        if (!dup) plan[np++] = cells[i];
+      }
+      icon_store_reset(0, &rm);
+      icon_store_plan(plan, np);
+      for (int i = 0; i < (int)(sizeof cells / sizeof cells[0]); i++) if (!icon_store_row(cells[i])) nulls++;
+      CHK(nulls == 0, "[%s] #346a: a repeat cell met while a prefetched group is pinned ahead must still "
+                      "be served (%d NULL)", name, nulls);
+      CHK(icon_store_row(40) != 0, "[%s] #346a: and the pool must come to rest unpinned", name);
+    }
+    icon_store_reset(0, &rm);
+  }
+
   /* ---- TIER B ON THE RUNG THAT NEEDS IT ------------------------------------------
    * This is the regression payment, measured on Guy's own dump. Tier A here is FOUR
    * rows, because the resident 440-entry offset table costs 1,760 B of the same 6 KiB

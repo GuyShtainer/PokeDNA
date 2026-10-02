@@ -123,11 +123,14 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_MONMENU_FOOT   11                  /* "A ok B back" + bottom border      */
 #define PDNA_MONMENU_X     138
 #define PDNA_MONMENU_W     100
-#define PDNA_MONMENU_ROW_DX 10                  /* row text inset (sys8)              */
+#define PDNA_MONMENU_ROW_DX  6                  /* row text inset (sys8) = PAD, so the left gap matches the title */
 #define PDNA_MONMENU_PAD     6                  /* title / prose / hint inset         */
 /* Right edge of the panel's ink: x + w - 2 is the border column, so a row drawn at
- * X + ROW_DX has this much room. */
-#define PDNA_MONMENU_ROW_W  (PDNA_MONMENU_W - PDNA_MONMENU_ROW_DX - 2)
+ * X + ROW_DX has this much room, MINUS an honest 4 px gap before that border (BACKLOG #337a:
+ * an 11-glyph row at ROW_DX 10 ended flush against it; the other panels keep 4 px,
+ * PDNA_NOTICE_* panel 4..235 / text x=12 is the same shape). */
+#define PDNA_MONMENU_RGAP    4
+#define PDNA_MONMENU_ROW_W  (PDNA_MONMENU_W - PDNA_MONMENU_ROW_DX - 2 - PDNA_MONMENU_RGAP)
 /* The read-only popup's two prose lines are ui_ptext_fit'd to this. */
 #define PDNA_MONMENU_PROSE_W (PDNA_MONMENU_W - 2 * PDNA_MONMENU_PAD)
 #define PDNA_MONMENU_FOOT_TXT "A ok B back"     /* 100 px panel: 12 sys8 columns max  */
