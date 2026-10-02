@@ -138,7 +138,7 @@ def checks(box: str, summ: str, main: str, jrn: str, lay: str, prog: str) -> dic
             and before(vsv, "gen3_parse_into(g_save, sz, &g_vinfo", "g_vinfo.damaged_fallback")
             and before(vsv, "g_vinfo.damaged_fallback", "pk_read_party_auto(")
             and len(re.findall(r"bool app_can_edit\(void\)\s*\{[^}]*g_vinfo\.game_loads_other[^}]*\}", strip_comments(main))) == 2
-            and "Game loads the damaged copy." in body(main, "app_readonly_why")
+            and "Game loads damaged copy." in body(main, "app_readonly_why")
             and "damaged save: locked  B back" in body(main, "app_readonly_footer"),
         "P12 #346b: progress-frame icon fallback retires the plan before the fetch": re.search(
             r"#if !PDNA_MON_ICONS_ART_COMPILED\s*icon_store_plan\(0, 0\);\s*#endif\s*"
@@ -193,7 +193,7 @@ def main() -> int:
     mutant("M-P16f the delta app_can_edit ignores game_loads_other", "main", "  return !pdna_romcheck_bad() && !(g_vinfo.valid && app_rom_is_hack(g_game)) &&\n         !g_vinfo.game_loads_other;", "  return !pdna_romcheck_bad() && !(g_vinfo.valid && app_rom_is_hack(g_game));", "P16")
     mutant("M-P16g the GBA app_can_edit ignores game_loads_other", "main", " &&\n         !(g_vinfo.valid && g_vinfo.game_loads_other);", ";", "P16")
     mutant("M-P16h heartbeat not paused around the dialog", "main", "    hb_pause(); perf_span_pause();\n", "", "P16")
-    mutant("M-P16i the read-only reason ignores the damaged copy", "main", "  if (g_vinfo.valid && g_vinfo.game_loads_other) return \"Game loads the damaged copy.\";\n", "", "P16")
+    mutant("M-P16i the read-only reason ignores the damaged copy", "main", "  if (g_vinfo.valid && g_vinfo.game_loads_other) return \"Game loads damaged copy.\";\n", "", "P16")
     mutant("M-P13a the short-read predicate stripped (bare ok)", "main", "  if (ok && rsz < g_save_size) {", "  if (0) {", "P13")
     mutant("M-P13b the latch-clear no longer gated on ok", "main", "if (ok) imgf_partial_clear(&g_img);", "imgf_partial_clear(&g_img);", "P13")
     mutant("M-P13c the demotion dropped", "main", "    ok = false;\n  }\n#endif\n  if (!ok) log_line(\"discard:", "  }\n#endif\n  if (!ok) log_line(\"discard:", "P13")

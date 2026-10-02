@@ -1502,7 +1502,7 @@ bool app_rom_hack_active(void) { return g_vinfo.valid && app_rom_is_hack(g_game)
  * hack-flagged (app_can_edit() now refuses for that reason too, BACKLOG #54).
  * This picks the honest wording for all remaining sites. */
 const char* app_readonly_why(void) {
-  if (g_vinfo.valid && g_vinfo.game_loads_other) return "Game loads the damaged copy.";
+  if (g_vinfo.valid && g_vinfo.game_loads_other) return "Game loads damaged copy.";
   return (g_vinfo.valid && app_rom_is_hack(g_game)) ? PDNA_ROMHACK_WHY : "Needs EZ-Flash Omega.";
 }
 
