@@ -309,6 +309,13 @@ endif
 ifeq ($(PDNA_TARGET),delta)
 CFLAGS += -DPDNA_DELTA               # emulator build: save is our own 128 KiB flash, no SD
 endif
+# #363/F3 shot tooling: `make delta-artless PDNA_PLANT_CRYSTAL=1` plants Bank box 1 slot 0 with origin CRYSTAL
+# (source/bank_plant.c). Delta-only and OFF by default: the gate builds never set it, so no shipped byte moves.
+ifeq ($(PDNA_PLANT_CRYSTAL),1)
+ifeq ($(PDNA_TARGET),delta)
+CFLAGS += -DPDNA_PLANT_CRYSTAL_ORIGIN=1
+endif
+endif
 # Artless: the ~21 generated art files stay ON DISK (never moved), so their own
 # __has_include probes (mon_icons_gate.h/hand_gate.h/rom_chrome_gate.h) would otherwise find
 # them present and wrongly report "art compiled" even though PDNA_ART_CFILES/PDNA_ART_SFILES
