@@ -4,6 +4,7 @@
 
 Each pin is a text check over comment-stripped function bodies; every pin is re-run against a MUTANT copy of
 the real source (the fix reverted) and must FAIL there:
+  Z365 gb_down_loss_screen shows the name-loss row
   Z369b ADD TEAM rows start below the n/6 header
   Z367 gbdc_land: on Gen 1 the party leg uses gbs_insert_party() with a ROM base row, never gbs_move() box->party
 """
@@ -34,6 +35,8 @@ def strip_comments(t):
 def body(text, fn):
     t = strip_comments(text)
     m = re.search(r"(?m)^[A-Za-z_][^;{}\n]*\b" + re.escape(fn) + r"\s*\([^;{]*\)\s*\{", t)
+    if not m:   # return type / attributes on the previous line: "static bool ...\nfn(args) {"
+        m = re.search(r"(?m)^" + re.escape(fn) + r"\s*\([^;{]*\)\s*\{", t)
     if not m:
         return ""
     i, d = m.end() - 1, 0
@@ -63,12 +66,47 @@ def p369(b):
     return bool(m) and int(m.group(1)) >= 26 and int(m.group(1)) + 5 * 10 + 7 <= 95
 
 
+def p365(b):
+    k = b.find("down_name_text(n)")
+    return (k >= 0 and "n->nick_lossy" in b and "n->otname_lossy" in b
+            and b.find("PID search relaxed") < k < b.find("IVs come from DVs"))
+
+
+def p366a(b):   # COUNTERS tab: the partial path repaints the CURRENT row even when sel did not move
+    i = b.find("ctr_row_repaint(s, g, ctr_rows, ctr_n, top, sel, sel)")
+    j = b.find("sel != c_sel")
+    return i >= 0 and j >= 0 and "else if (sel != c_sel)" not in b
+
+
+def p366b(b):   # trainer plain page: same
+    i = b.find("gbtr_row_paint(t, rows[sel], gen1, row_y0 + sel * 9, true)")
+    return i >= 0 and "} else if (sel != pv->sel)" not in b
+
+
+def p366c(b):   # a rename re-encodes name_raw, which both real cards draw
+    return bool(re.search(r"if \(renamed\)[^;]*gb_name_encode\([^;]*t->name_raw", b)) and b.find("strcpy(t->name, b)") < b.find("gb_name_encode(")
+
+
 PINS = [
+    ("Z366a COUNTERS partial repaint always redraws the current row", "pdna_gbflags.c", "pdna_gbflags", p366a),
+    ("Z366b trainer plain page always redraws the current row", "pdna_gbtrainer.c", "gbtr_plain_render", p366b),
+    ("Z366c rename re-encodes name_raw (Gen-1 + Gen-2 card face)", "pdna_gbtrainer.c", "gbtr_edit_row", p366c),
+    ("Z365 DOWN confirm has a nickname/OT loss row (Gb12Notes flags)", "pdna_gen12.c", "gb_down_loss_screen", p365),
     ("Z369b ADD TEAM mon rows clear of the n/6 header", "pdna_gbhof.c", "hof_add_team_row_paint", p369),
     ("Z367 Gen-1 Day-Care party leg = gbs_insert_party + ROM base row", "pdna_gbdaycare.c", "gbdc_land", p367)]
 
 # mutants: (pin name, file, old, new) -- applied to the REAL source text, the pin must go RED
 MUTANTS = [
+    ("Z366a COUNTERS partial repaint always redraws the current row", "pdna_gbflags.c",
+     "      } else {                                    /* partial: swap", "      } else if (sel != c_sel) {                  /* partial: swap"),
+    ("Z366b trainer plain page always redraws the current row", "pdna_gbtrainer.c",
+     "  } else {\n    /* #366 D2", "  } else if (sel != pv->sel) {\n    /* #366 D2"),
+    ("Z366c rename re-encodes name_raw (Gen-1 + Gen-2 card face)", "pdna_gbtrainer.c",
+     "if (renamed) (void)gb_name_encode(", "if (0) (void)gb_name_encode("),
+    ("Z365 DOWN confirm has a nickname/OT loss row (Gb12Notes flags)", "pdna_gen12.c",
+     "y = loss_row(y, n->nick_lossy || n->otname_lossy, down_name_text(n));", "y = loss_row(y, false, down_name_text(n));"),
+    ("Z365 DOWN confirm has a nickname/OT loss row (Gb12Notes flags)", "pdna_gen12.c",
+     "n->nick_lossy || n->otname_lossy, down_name_text(n)", "n->nick_lossy, down_name_text(n)"),
     ("Z369b ADD TEAM mon rows clear of the n/6 header", "pdna_gbhof.c", "ui_text(6, 30 + i * 10", "ui_text(6, 20 + i * 10"),
     ("Z367 Gen-1 Day-Care party leg = gbs_insert_party + ROM base row", "pdna_gbdaycare.c",
      "gbs_insert_party(s, mon, &g1base, &pslot, list)", "gbs_insert(s, 0, mon, &pslot, list)"),

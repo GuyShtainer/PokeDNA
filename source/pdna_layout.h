@@ -792,7 +792,7 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * reused verbatim (decision-mandated); these two are new, GB-specific structural
  * refusals (step 3: "with a message, never a bare buzz"). */
 #define PDNA_GBEDIT_DAYCARE_PARTY_TITLE "CAN'T"
-#define PDNA_GBEDIT_DAYCARE_PARTY_L1    "The party can't go to Day-Care that way."
+#define PDNA_GBEDIT_DAYCARE_PARTY_L1    "The party can't go to Day-Care."
 #define PDNA_GBEDIT_DAYCARE_EGG_TITLE   "EGG"
 #define PDNA_GBEDIT_DAYCARE_EGG_L1      "An Egg can't be left at the Day-Care."
 
