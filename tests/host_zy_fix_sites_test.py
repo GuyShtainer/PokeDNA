@@ -58,6 +58,7 @@ def func(text: str, sig_re: str) -> str:
 
 def p_d1(bank: str, box: str) -> str | None:
     bl = func(bank, r"^static bool box_load\(int box\) \{")
+    if re.search(r"\bbsrc\s*=(?!=)", bl.split("bml_box_read(", 1)[1]): return "box_load reassigns bsrc after bml_box_read"
     if not re.search(r"g_box_unread\s*=\s*bsrc\s*==\s*BML_BOX_READ_ERROR\s*;\s*\n\s*g_loaded\s*=\s*box\s*;", bl):
         return "box_load: no `g_box_unread = bsrc == BML_BOX_READ_ERROR;` right before `g_loaded = box;`"
     bs = func(bank, r"^static bool box_save\(void\) \{")
