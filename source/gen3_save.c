@@ -446,7 +446,7 @@ bool gen3_slot_consistent(const uint8_t* save, uint32_t size, int slot) {
  * which is the counter the game takes for that slot (pret save.c GetSaveValidStatus assigns the
  * slot counter on every sector pass, so the last one wins; confirmed in pokeemerald, reference only).
  * Checksums of ids 1-3, 5-12 (full 3968-byte sections) are verified; ids 0/4/13 are exempt (per-game sizes). */
-static bool slot_game_ok(const uint8_t* save, uint32_t size, int slot, uint32_t* last) {
+static bool slot_game_ok(const uint8_t* save, uint32_t size, int slot, uint32_t* last, bool strict) {
   uint32_t base = (uint32_t)slot * G3_SLOT_BYTES, seen = 0;
   if (base + (uint32_t)G3_SLOT_BYTES > size) return false;
   for (int s = 0; s < G3_SECTORS_PER_SLOT; s++) {
@@ -457,8 +457,11 @@ static bool slot_game_ok(const uint8_t* save, uint32_t size, int slot, uint32_t*
     seen |= 1u << id;
     /* #361: the game also rejects a bad sector checksum. Ids 0/4/13 have PER-GAME data sizes the parser
      * does not know yet (version_guess comes later), so they stay exempt -- never guess a size: a wrong
-     * one would unlock edits while the game loads the damaged copy. */
-    if (id != 0 && id != 4 && id != 13 &&
+     * one would unlock edits while the game loads the damaged copy. #363: `strict` (used ONLY for the slot we
+     * show) also checks 0/4/13 over the full 3968 bytes -- equal to the game's per-size sum because genuine saves
+     * have zero tails (pinned over all corpus sectors); a mismatch there only means "may be rejected", which
+     * resolves toward READ-ONLY. The lenient call (the OTHER slot) stays exempt so it never claims a rejection. */
+    if ((strict || (id != 0 && id != 4 && id != 13)) &&
         gen3_checksum(sec, G3_SECTOR_DATA_SIZE) != rd16(sec + G3_OFF_CHECKSUM)) return false;
     *last = rd32(sec + G3_OFF_COUNTER);
   }
@@ -505,9 +508,14 @@ bool gen3_parse_into(const uint8_t* save, uint32_t size, Gen3SaveInfo* out,
     slot = intact;
   }
   out->slot = slot;
-  { uint32_t last = 0; int o = 1 - slot;
-    out->game_loads_other = out->slot_damaged[o] && !out->slot_damaged[slot] &&
-                            slot_game_ok(save, size, o, &last) && last > out->counter[slot]; }
+  /* #363: ask whether the GAME would load the other slot. other_ok = signed and passes the game's own (lenient)
+   * test; ours_ok = the slot we show passes the STRICT test. The game loads the other slot when it passes and
+   * ours does not, or when both pass and its last-sector counter is higher. Uncertainty -> READ-ONLY. */
+  { uint32_t lo = 0, ls = 0; int o = 1 - slot;
+    bool other_ok = out->slot_valid[o] && slot_game_ok(save, size, o, &lo, false);
+    bool ours_ok  = slot_game_ok(save, size, slot, &ls, true);
+    out->game_loads_other = other_ok && (!ours_ok || lo > ls);
+    out->ours_rejected    = other_ok && !ours_ok; }
 
   /* Count distinct valid sections in the chosen slot. */
   for (int id = 0; id < G3_SECTORS_PER_SLOT; id++)
