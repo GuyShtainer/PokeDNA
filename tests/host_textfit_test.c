@@ -1754,9 +1754,15 @@ int main(void) {
    * action popups draw from this one list of labels. */
 #define MON_LABEL_ONE(s) s,
   { static const char* const ML[] = { PDNA_MONMENU_LABELS(MON_LABEL_ONE) };
-    for (unsigned i = 0; i < sizeof ML / sizeof ML[0]; i++)
+    for (unsigned i = 0; i < sizeof ML / sizeof ML[0]; i++) {
       chk("mon menu row", PDNA_MONMENU_X + PDNA_MONMENU_ROW_DX, PDNA_MONMENU_ROW_W,
-          (int)strlen(ML[i]) * SYS8_W, ML[i]); }
+          (int)strlen(ML[i]) * SYS8_W, ML[i]);
+      /* #337a's actual promise: the longest row keeps a real gap to the panel's right
+       * border column (X + W - 2). ROW_W alone cannot see a ROW_DX/RGAP revert (the
+       * budget moves with them and stays satisfied — review-zl E4). */
+      chkv_min("mon menu row right gap", (PDNA_MONMENU_X + PDNA_MONMENU_W - 2) -
+               (PDNA_MONMENU_X + PDNA_MONMENU_ROW_DX + (int)strlen(ML[i]) * SYS8_W), 4);
+    } }
   chk("mon menu hint", PDNA_MONMENU_X + PDNA_MONMENU_PAD,
       PDNA_MONMENU_W - 2 * PDNA_MONMENU_PAD,
       (int)strlen(PDNA_MONMENU_FOOT_TXT) * SYS8_W, PDNA_MONMENU_FOOT_TXT);
