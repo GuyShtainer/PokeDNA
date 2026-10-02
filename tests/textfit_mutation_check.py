@@ -275,6 +275,8 @@ WIRING = [
 TEST_SRC = ROOT / "tests" / "host_textfit_test.c"
 WORK_DIR = tempfile.mkdtemp(prefix="htf_mut-")      # per-run scratch: no fixed /tmp path to race on
 BIN = os.path.join(WORK_DIR, "htf_mut")
+import atexit, shutil
+atexit.register(shutil.rmtree, WORK_DIR, True)   # review-zm nit: never leak the per-run tempdir
 _header_cc = cc_line_for(TEST_SRC)
 if not _header_cc:
     sys.exit(f"no cc line in the first 24 lines of {TEST_SRC} -- cannot build the baseline")
