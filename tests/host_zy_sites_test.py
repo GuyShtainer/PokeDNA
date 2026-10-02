@@ -57,7 +57,7 @@ def check_bank(bank):
     f = []
     bl = body(bank, "static bool box_load(")
     if "bml_box_read(path, box_recs(), BOX_BYTES, &sz)" not in bl: f.append("box_load does not classify through bml_box_read")
-    if not re.search(r"app_can_edit\(\) && !bml_box_heal\(path, bsrc, box_recs\(\), BOX_BYTES\)", bl): f.append("box heal is not gated on app_can_edit()")
+    if not re.search(r"if \(app_can_edit\(\)\) \{[^\n]*\n\s*rmbl_pause\(\);\s*healed = bml_box_heal\(path, bsrc, box_recs\(\), BOX_BYTES\);", bl): f.append("box heal is not gated on app_can_edit()")
     if "primary missing, restored from" not in bl: f.append("restore log line missing")
     if "got && !heal_failed" not in bl: f.append("box_load does not return false after a failed heal")
     ml = body(bank, "static bool __attribute__((noinline)) meta_load(")
@@ -84,7 +84,7 @@ def main():
         ("380 restore before setnat", lambda p, m, g, b: (p.replace("dex_setnat_call(s_dex_snap_natl);", "(void)0;").replace("for (int nat = 1; nat <= s_dex_max; nat++) dex_dset(nat, s_dex_snap[nat - 1]);", "dex_setord_call((uint8_t)s_dex_snap[DEX_SNAP_ORD]); dex_setnat_call(s_dex_snap_natl);").replace("        dex_setord_call((uint8_t)s_dex_snap[DEX_SNAP_ORD]);\n", ""), m, g, b)),
         ("380 setord ungated", lambda p, m, g, b: (p.replace("(ord && can_edit) ? ord->setord", "ord ? ord->setord"), m, g, b)),
         ("380 main not wired", lambda p, m, g, b: (p, m.replace("&k_dex_ord, app_can_edit()", "NULL, app_can_edit()"), g, b)),
-        ("378 heal ungated", lambda p, m, g, b: (p, m, g, b.replace("app_can_edit() && !bml_box_heal", "!bml_box_heal"))),
+        ("378 heal ungated", lambda p, m, g, b: (p, m, g, b.replace("if (app_can_edit()) {                       /* Zy D7", "if (1) {                       /* Zy D7"))),
         ("378 heal fail ignored", lambda p, m, g, b: (p, m, g, b.replace("got && !heal_failed", "got"))),
         ("378 not classified", lambda p, m, g, b: (p, m, g, b.replace("bml_box_read(path", "sf_read_full(path"))),
         ("379 save unguarded", lambda p, m, g, b: (p, m, g, b.replace("if (g_meta_state == 2) {   /* BACKLOG #379", "if (0) {   /* BACKLOG #379"))),
