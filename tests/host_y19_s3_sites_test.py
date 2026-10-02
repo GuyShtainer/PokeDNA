@@ -107,7 +107,8 @@ def checks(box: str, summ: str, main: str, jrn: str, lay: str, prog: str) -> dic
         "P13 #319: the PARTIAL-latch clear is behind the short-read predicate": bool(ads)
             and re.search(r"if \(ok && rsz < g_save_size\)\s*\{[^}]*ok = false;", ads) is not None
             and re.search(r"if \(ok\)\s*imgf_partial_clear\(&g_img\);", ads) is not None
-            and before(ads, "rsz < g_save_size", "imgf_partial_clear(") and "imgf_partial_clear" in ads,
+            and before(ads, "rsz < g_save_size", "imgf_partial_clear(") and ads.count("imgf_partial_clear(") == 1
+            and "sf_read_full(g_path, g_save, G3_SAVE_FILE_SIZE, &rsz) == SF_OK" in ads,
         "P12 #346b: progress-frame icon fallback retires the plan before the fetch": re.search(
             r"#if !PDNA_MON_ICONS_ART_COMPILED\s*icon_store_plan\(0, 0\);\s*#endif\s*"
             r"ui_sprite\(SPR_X \+ \(MON_FRONT_W - MON_ICON_W\) / 2, SPR_Y \+ \(MON_FRONT_H - MON_ICON_H\) / 2,\s*"
@@ -156,6 +157,8 @@ def main() -> int:
     mutant("M-P13a the short-read predicate stripped (bare ok)", "main", "  if (ok && rsz < g_save_size) {", "  if (0) {", "P13")
     mutant("M-P13b the latch-clear no longer gated on ok", "main", "if (ok) imgf_partial_clear(&g_img);", "imgf_partial_clear(&g_img);", "P13")
     mutant("M-P13c the demotion dropped", "main", "    ok = false;\n  }\n#endif\n  if (!ok) log_line(\"discard:", "  }\n#endif\n  if (!ok) log_line(\"discard:", "P13")
+    mutant("M-P13d a second, unconditional latch-clear", "main", "  if (ok) jrnapp_after_discard(&g_rec);", "  if (ok) jrnapp_after_discard(&g_rec);\n  imgf_partial_clear(&g_img);", "P13")
+    mutant("M-P13e rsz never filled (always refuses: latched until reopen)", "main", "G3_SAVE_FILE_SIZE, &rsz) == SF_OK;", "G3_SAVE_FILE_SIZE, 0) == SF_OK;", "P13")
     if fails:
         print("FAILED:", ", ".join(fails))
         return 1
