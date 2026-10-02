@@ -20,6 +20,12 @@ every run:
       opens the History screen for it
   P10 pdna_box swallows the spent SELECT hold (`chord_swallow(&chord)`) after the audit, so lifting SELECT is no
       mode-cycle tap
+
+One later pin rides along because it guards the same file at the same text level:
+
+  P11 #347: the summary's icon fallback retires the plan (icon_store_plan(0, 0), artless only) BEFORE the
+      icon fetch -- the store-side pin in host_iconstore_test.c cannot see this call site, and deleting it
+      regresses #347 with the full host suite still green
 """
 from __future__ import annotations
 
@@ -89,6 +95,9 @@ def checks(box: str, summ: str, main: str, jrn: str, lay: str) -> dict[str, bool
         "P9 diverged -> return 6 -> home loop opens History": "cr == BCA_HISTORY" in strip_comments(box) and "return 6;" in strip_comments(box)
             and re.search(r"if \(r == 6\)\s*pdna_history_screen\(\);", strip_comments(main)) is not None,
         "P10 the spent SELECT hold is swallowed (no mode-cycle tap)": bool(pb) and "chord_swallow(&chord);" in pb,
+        "P11 #347: summary icon fallback retires the plan before the fetch": re.search(
+            r"#if !PDNA_MON_ICONS_ART_COMPILED\s*icon_store_plan\(0, 0\);\s*#endif\s*"
+            r"ui_sprite\(30, 30, MON_ICON_W, MON_ICON_H, mon_icon_for_form", strip_comments(summ)) is not None,
     }
 
 
@@ -128,6 +137,7 @@ def main() -> int:
     mutant("M-P8 History row not dispatched", "main", "case NV_HISTORY: pdna_history_screen(); break;", "", "P8")
     mutant("M-P9 home loop ignores code 6", "main", "if (r == 6) pdna_history_screen();", "", "P9")
     mutant("M-P10 chord_swallow removed", "box", "chord_swallow(&chord);", "", "P10")
+    mutant("M-P11 the #347 retire deleted from the call site", "summ", "    icon_store_plan(0, 0);\n", "", "P11")
     if fails:
         print("FAILED:", ", ".join(fails))
         return 1

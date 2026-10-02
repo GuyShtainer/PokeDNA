@@ -219,7 +219,7 @@ static bool hof_level_editor(uint8_t* level) {
       ui_text(4, 4, UI_TITLE, "LEVEL");
       ui_hline(0, 14, UI_SCR_W, UI_BORDER);
       ui_text(10, 60, UI_TEXT, b);
-      ui_text(4, 152, UI_DIM, "U/D +-1  L/R +-10  A set  B cancel");
+      ui_text(4, 152, UI_DIM, PDNA_FOOT_HOF_LEVEL);   /* #348 */
     } else if (v != pv) {
       ui_fill_rect(8, 52, 200, 16, UI_BG);
       ui_text(10, 60, UI_TEXT, b);
@@ -282,7 +282,7 @@ static bool hof_edit_mon_menu(uint8_t gen, GbHofMon* staged) {
     ui_text(6, 20, UI_DIM, l1);
     for (int i = 0; i < HOFEDIT_N; i++)
       trainer_row_paint(40 + i * 16, i == sel, kHofEditLbl[i], "", UI_TEXT);
-    ui_text(4, 152, UI_DIM, "U/D select  A choose  B cancel");
+    ui_text(4, 152, UI_DIM, PDNA_FOOT_HOF_PICK);   /* #348 */
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) {
@@ -488,7 +488,7 @@ static void hof_do_add_team(GbSession* s) {
     ui_hline(0, 96, UI_SCR_W, UI_BORDER);
     for (int i = 0; i < nitems; i++)
       trainer_row_paint(100 + i * 16, i == sel, items[i], "", UI_TEXT);
-    ui_text(4, 152, UI_DIM, "U/D select  A choose  B cancel");
+    ui_text(4, 152, UI_DIM, PDNA_FOOT_HOF_PICK);   /* #348 */
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) return;   /* discard: nothing written, no matter how many staged */

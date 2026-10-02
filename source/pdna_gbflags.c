@@ -56,6 +56,7 @@
 #include "ui.h"
 #include "snd.h"
 #include "pdna_app.h"      /* msg_wait / app_confirm                                */
+#include "pdna_layout.h"   /* PDNA_FOOT_FLAGS_EDIT (BACKLOG #348) */
 
 static void s_vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
 static u16  s_wait(u16 mask) {
@@ -375,7 +376,7 @@ static void raw_flag_browser(GbSession* s, GbGame g, bool* dirty, bool* warned, 
       ui_text(8, y, ink, row);
     }
     ui_hline(0, 151, UI_SCR_W, UI_BORDER);
-    ui_text(4, 152, UI_DIM, can_edit ? "A toggle  U/D  SEL jump#  B back"
+    ui_text(4, 152, UI_DIM, can_edit ? PDNA_FOOT_FLAGS_EDIT   /* #348 */
                                      : "U/D  SEL jump#  B back");
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B | KEY_SELECT);

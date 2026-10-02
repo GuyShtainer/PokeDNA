@@ -18,6 +18,7 @@
 #include <string.h>
 
 #include "pdna_trainer.h"
+#include "pdna_layout.h"   /* PDNA_HINT_STARS_* (BACKLOG #348) */
 #include "ui.h"
 #include "snd.h"
 #include "osk.h"
@@ -730,8 +731,8 @@ static int stars_editor(uint8_t* sb1, uint8_t* sb2, PkGame game) {
       ui_hline(0, 11, UI_SCR_W, UI_BORDER);
       for (int i = 0; i < n; i++)
         star_row_paint(sb1, sb2, game, dex, i, 16 + i * 9, i == sel);
-      ui_text(4, 62, UI_DIM, "Each ON = one star (card color).");
-      if (!dex) ui_text(4, 72, UI_DIM, "n/a: needs the generated art data.");
+      ui_text(4, 62, UI_DIM, PDNA_HINT_STARS_ON);   /* #348 */
+      if (!dex) ui_text(4, 72, UI_DIM, PDNA_HINT_STARS_NOART);   /* #348 */
       trainer_key_legend("A toggle  U/D  B back");
     } else {
       if (sel != pv.sel) {

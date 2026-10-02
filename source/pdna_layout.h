@@ -2371,7 +2371,7 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 /* Gen 1 / a GS-without-the-field fallback (nav_avail already keeps this row out of
  * reach in both cases, but the screen stays honest if it is ever reached anyway --
  * same posture as pdna_clock()'s own FRLG fallback, pdna_main.c). */
-#define PDNA_GBCLOCK_NOCLOCK_L1 "This save has no clock to fix."
+#define PDNA_GBCLOCK_NOCLOCK_L1 "This save has no clock."   /* sys8 at x=6: 23 glyphs = 184 px (BACKLOG #348: was 30 glyphs, ended at 246) */
 
 /* ---- boot: flashcart detection rows + the header-only dialog (pdna_main.c) ---------
  * detect_line() paints one sys8 row per detection attempt at PDNA_DETECT_X, from
@@ -2455,5 +2455,24 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_ROMOTHER_TITLE "UNSUPPORTED ROM"
 #define PDNA_ROMOTHER_L1    "Not a retail US R/S/E/FR/LG."
 #define PDNA_ROMOTHER_L2    "A hack, or another region."
+
+/* ---- BACKLOG #348: sys8 (8 px/glyph) footers + hint lines that were wider than the 240 px screen ----
+ * ui_text() clips SILENTLY at x=240, so a footer that ran long simply lost its tail ("B back" cut
+ * off the Secret Bases screen -- pixel-confirmed). A drawn-at-x sys8 string must satisfy
+ * x + 8*strlen <= 240, i.e. 29 glyphs at x=4 (28 at x=6, 29 at x=2). Every key hint is kept: only
+ * the two-space separators and the verbs the bare "U/D" convention already implies were dropped.
+ * tests/host_textfit_test.c measures each one from THIS header (T(PDNA_FOOT_*, x)); change a string
+ * here and the assert follows it. The drawing x is in the comment; the call site owns it. */
+#define PDNA_FOOT_BASES_EDIT   "A view  U/D  SEL clr  B back"   /* pdna_main.c Secret Bases (can_edit), x=4: 28 gl = 228 px (was 35) */
+#define PDNA_FOOT_BASES_VIEW   "A view  U/D move  B back"       /* same screen, view-only, x=4: 24 gl (unchanged, already fit) */
+#define PDNA_FOOT_BROWSE       "A pick B up SEL sort ST menu"   /* pdna_main.c folder browser, x=2: 28 gl = 226 px (was 31) */
+#define PDNA_FOOT_FLAGS_EDIT   "A toggle U/D SEL jump# B back"  /* pdna_main.c + pdna_gbflags.c flag lists, x=4: 29 gl = 236 px (was 32) */
+#define PDNA_FOOT_PBLOCK       "A edit/pick <> +/- U/D B done"  /* pdna_main.c POKEBLOCK editor, x=4: 29 gl = 236 px (was 32) */
+#define PDNA_FOOT_CLOCK_SYNC   "A sync to cart SEL set B back" /* pdna_main.c clock sync, x=4: 29 gl = 236 px (was 31) */
+#define PDNA_FOOT_HOF_LEVEL    "U/D +-1 L/R +-10 A set B back"  /* pdna_gbhof.c level stepper, x=4: 29 gl = 236 px (was 34; "B cancel" -> "B back", B still leaves *level untouched) */
+#define PDNA_FOOT_HOF_PICK     "U/D select A choose B cancel"   /* pdna_gbhof.c member list + species list, x=4: 28 gl = 228 px (was 30) */
+#define PDNA_HINT_ABILITY      "Gen-3: species abilities only"  /* pdna_pick.c pick_ability hint row, x=4: 29 gl = 236 px (was 40) */
+#define PDNA_HINT_STARS_ON     "Each ON = 1 star (card color)"  /* pdna_trainer.c card stars, x=4: 29 gl = 236 px (was 32) */
+#define PDNA_HINT_STARS_NOART  "n/a: needs generated art data"  /* pdna_trainer.c card stars, x=4: 29 gl = 236 px (was 34) */
 
 #endif /* PDNA_LAYOUT_H */

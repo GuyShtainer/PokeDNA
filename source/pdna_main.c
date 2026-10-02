@@ -1163,7 +1163,7 @@ static void __attribute__((noinline)) render_browser(BrowseEntry* ents, int sel,
     /* UI_FOOTER_Y, not a hard 150: this row is what every popup is laid out to clear, and
      * a literal here would let the two drift apart (see source/ui_layout.h). */
     ui_hline(0, UI_FOOTER_RULE_Y, UI_SCR_W, UI_BORDER);
-    ui_text(2, UI_FOOTER_Y, UI_DIM, "A pick  B up  SEL sort  ST menu");
+    ui_text(2, UI_FOOTER_Y, UI_DIM, PDNA_FOOT_BROWSE);   /* #348: x=2, 28 glyphs */
   }
 
   /* Per-ROW dirty, mirroring pdna_edit.c's render(): compare the entry index that WAS
@@ -6798,7 +6798,7 @@ static void flags_raw_view(bool* dirty, bool* warned) {
       ui_text(6, 14, UI_WARN, "Raw flags can break a save!");
       ui_hline(0, 24, UI_SCR_W, UI_BORDER);
       ui_hline(0, 151, UI_SCR_W, UI_BORDER);
-      ui_text(4, 152, UI_DIM, "A toggle  U/D  SEL jump#  B back");
+      ui_text(4, 152, UI_DIM, PDNA_FOOT_FLAGS_EDIT);   /* #348 */
     }
     for (int i = -6; i <= 6; i++) {
       int fn = flagn + i, idx = i + 6;
@@ -7300,7 +7300,7 @@ static bool pokeblock_edit(int idx) {
       ui_clear();
       char t[24]; siprintf(t, "POKEBLOCK %d", idx + 1); ui_text(4, 2, UI_TITLE, t);
       ui_hline(0, 13, UI_SCR_W, UI_BORDER);
-      ui_text(4, 152, UI_DIM, "A edit/pick  <> +/-  U/D  B done");
+      ui_text(4, 152, UI_DIM, PDNA_FOOT_PBLOCK);   /* #348 */
     }
     if (full || pb.color != pv_color || (sel == 0) != (pv_sel == 0))
       pbe_row0_paint(&pb, sel == 0);
@@ -8310,8 +8310,8 @@ static void pdna_secretbase(void) {
       char cnt[16]; siprintf(cnt, "%d/%d", n, SB_COUNT); ui_text(196, 3, UI_DIM, cnt);
       ui_hline(0, 13, UI_SCR_W, UI_BORDER);
       ui_hline(0, 151, UI_SCR_W, UI_BORDER);
-      ui_text(4, 152, UI_DIM, app_can_edit() ? "A view  U/D move  SEL clear  B back"
-                                              : "A view  U/D move  B back");
+      ui_text(4, 152, UI_DIM, app_can_edit() ? PDNA_FOOT_BASES_EDIT   /* #348: x + 8*len <= 240 */
+                                              : PDNA_FOOT_BASES_VIEW);
     }
     /* Per-row dirty: the entry index drawn at row i WAS (pv_top+i), belongs there NOW
      * (top+i) -- differ, or the row's selection flipped, and it repaints. A scroll (any
@@ -8672,7 +8672,7 @@ static void pdna_clock(void) {
       } else {
         ui_text(6, 102, UI_DIM, "Set the cart clock correctly");
         ui_text(6, 112, UI_DIM, "first, then sync.");
-        ui_text(4, 152, UI_DIM, "A sync to cart  SEL set  B back");
+        ui_text(4, 152, UI_DIM, PDNA_FOOT_CLOCK_SYNC);   /* #348 */
       }
     }
     strcpy(pv_txt, txt); valid = true; gen = ui_clear_gen();

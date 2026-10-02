@@ -701,6 +701,23 @@ static void t_rom_rung(const char* dir, const char* name) {
     CHK(icon_store_row(40) != 0,
         "[%s] #344: icon_store_borrow(false) (the nav retire) must clear the pins", name);
     icon_store_reset(0, &rm);
+    /* BACKLOG #347: the summary's EDIT species step is an off-plan row asked AFTER a planned hit on a
+     * live plan (the box's own plan, the mon's own row served first). With no retire the pool is pinned
+     * and the off-plan row starved (blank icon); draw_left_ex now calls icon_store_plan(0, 0) before
+     * its icon fallback -- a retire AFTER a hit, then the off-plan row, must serve, at any plan row. */
+    icon_store_plan(boxplan, 25);
+    {
+      int hit = 0;
+      for (int i = 0; i < 25 && !hit; i++) if (icon_store_row(boxplan[i]) != 0) hit = 1;
+      CHK(hit, "[%s] #347 PRECONDITION: a planned row of the live plan must serve (the hit)", name);
+    }
+    CHK(icon_store_row(40) == 0,
+        "[%s] #347 PRECONDITION: after the planned hit an off-plan row is still starved (no retire)", name);
+    icon_store_plan(0, 0);                              /* draw_left_ex's retire */
+    for (uint16_t r = 40; r < 46; r++)
+      CHK(icon_store_row(r) != 0,
+          "[%s] #347: after a retire following a planned hit, off-plan row %u must serve", name, r);
+    icon_store_reset(0, &rm);
   }
 
   /* ---- TIER B ON THE RUNG THAT NEEDS IT ------------------------------------------
