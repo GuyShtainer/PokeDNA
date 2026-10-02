@@ -150,6 +150,10 @@ typedef struct {
   IconSlot slot[ICON_POOL_SLOTS];
   uint16_t plan[ICON_PLAN_MAX];  /* the live declaration, in PAINT order             */
   uint8_t  plan_n;
+  /* BACKLOG #346a: the highest plan index the live declaration's sweeps have already covered
+   * (fetched or found resident), 0xFF = none yet. A planned miss at or below it is a REPEAT of
+   * a row the paint already drew, not forward progress -- see icon_store_row. (Sits here to fill the pad before age_clock: no growth.) */
+  uint8_t  sweep_hi;
   uint16_t age_clock;
   uint8_t  rung;                 /* ICON_RUNG_*                                      */
   uint8_t  cap;                  /* usable slots                                     */
@@ -164,10 +168,6 @@ typedef struct {
    * answering it honestly is plan_n x cap slot comparisons -- up to 40 x 38 = 1,520 of
    * them, ~12 k cycles, ~4 % of a frame, spent to re-derive a value nothing changed. */
   uint8_t  plan_res;
-  /* BACKLOG #346a: the highest plan index the live declaration's sweeps have already covered
-   * (fetched or found resident), 0xFF = none yet. A planned miss at or below it is a REPEAT of
-   * a row the paint already drew, not forward progress -- see icon_store_row. */
-  uint8_t  sweep_hi;
   uint32_t epoch;                /* bumped by every reset; a debugging anchor        */
 } IconStoreState;
 
