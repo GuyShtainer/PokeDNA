@@ -120,6 +120,10 @@ static bool EWRAM_BSS g_meta_from_bak;
  * load changes nothing: the names the session holds ARE the card's names and stay. */
 static uint8_t EWRAM_BSS g_meta_state;
 
+/* Zy D1: the page-in of g_loaded hit a card READ ERROR, so g_bankbuf is a zeroed buffer, not that box.
+ * box_save() refuses while set (committing it would wipe the box's untouched mons). */
+static bool EWRAM_BSS g_box_unread;
+
 /* ---- paths ---- */
 static void box_path(int box, char* out) { siprintf(out, PDNA_BANK_DIR "/box%02d.box", box); }
 static const char* meta_path(void) { return PDNA_BANK_DIR "/bank.meta"; }
@@ -362,6 +366,7 @@ static bool box_load(int box) {
   g_native_snap = 0;
   for (int s = 0; s < BOX_RECS; s++)
     if (bc_is_native(box_recs() + (uint32_t)s * REC_BYTES)) g_native_snap |= (1u << s);
+  g_box_unread = bsrc == BML_BOX_READ_ERROR;
   g_loaded = box;
   g_dirty = false;
   g_box_unsaved_box = -1;   /* review F1: a fresh page-in re-reads the CARD's own copy --
@@ -459,6 +464,11 @@ static void box_save_rename_triage(const char* path, SfWhere w, bool ok, bool ba
 
 static bool box_save(void) {                    /* write the loaded box's records */
   if (g_loaded < 0) return false;
+  if (g_box_unread) {
+    log_line("bank: box %02d was not read (card error) - refusing to write over it", g_loaded);
+    app_log_flush();
+    return false;
+  }
   /* review F1: a refusal here still LEAVES the box dirty (it always did -- the invariant
    * refusal never touched g_dirty at all before this fix, which is exactly how it could
    * drift out of sync with g_box_unsaved_box: the marker said "unsaved", g_dirty could
@@ -616,7 +626,12 @@ int pdna_bank_flush_deletions(void) {
         kept++;
         continue;                                    /* never page away from an unsaved box */
       }
-      box_load(box);   /* page the box in (reads its file) */
+      (void)box_load(box);   /* page the box in (reads its file) */
+    }
+    if (g_box_unread) {                              /* Zy D1: the page-in hit a card error -> the buffer is not that box */
+      if (kept != i) g_bank_del[kept] = g_bank_del[i];
+      kept++;
+      continue;                                      /* keep the deletion queued; worst case a duplicate */
     }
     uint8_t* p = box_recs() + (uint32_t)slot * REC_BYTES;
     if (memcmp(p, g_bank_del[i].id, BANK_DEL_IDLEN) != 0) continue;    /* slot no longer holds OUR mon -> don't delete */
@@ -662,6 +677,7 @@ static void __attribute__((noinline)) migrate_flat_pk3(void) {
    * whatever box_load() last ran would false-refuse this function's own box_save()
    * calls below. */
   g_native_snap = 0;
+  g_box_unread = false;
   g_loaded = 0;
 
   DIR d; FILINFO fno;

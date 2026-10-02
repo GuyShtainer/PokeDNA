@@ -1133,7 +1133,11 @@ static uint8_t* clear_origin(BoxSource* src, int box) {
   }
   if (s_orig_slot < 0 || !same_scope(src)) { s_orig_slot = -1; return src->records(box); }
   uint8_t* o = src->records(s_orig_box);                     /* bank: flushes the current (dest) box first */
-  memset(o + (uint32_t)s_orig_slot * 80, 0, 80);
+  /* Zy D2: `o` is NOT always the origin box -- a Bank page-away refused by a failed dest save (user chose
+   * "keep editing") returns the still-loaded DEST buffer, so clear only a slot that still holds the carried
+   * mon (PID+OTID = 8 bytes, the same identity the Bank deletion queue uses): a bystander survives, the
+   * outcome degrades to a duplicate, never a loss. */
+  if (memcmp(o + (uint32_t)s_orig_slot * 80, s_held, 8) == 0) memset(o + (uint32_t)s_orig_slot * 80, 0, 80);
   src->mark_dirty(); s_orig_slot = -1;
   return src->records(box);                                  /* reload the current box */
 }
