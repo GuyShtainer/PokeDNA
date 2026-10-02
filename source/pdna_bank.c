@@ -155,8 +155,9 @@ static bool __attribute__((noinline)) meta_load(void) {
    * magic + length checked, kept by savefile.c only after a passing byte-compare) is used as a last
    * resort and treated as a .bak restore. A card READ ERROR is not "missing" (F4, below). */
   BmlSource src = bml_meta_read(PDNA_BANK_DIR, BANK_BOXES, buf, sizeof buf, META_BYTES, META_MAGIC);
+  bool from_tmp = src == BML_LAST_RESORT_ABSENT || src == BML_LAST_RESORT_BAD;   /* Zy D3: bytes came from bank.meta.tmp */
   bool from_bak = src == BML_BAK_PRIMARY_ABSENT || src == BML_BAK_PRIMARY_BAD ||
-                  src == BML_LAST_RESORT_ABSENT || src == BML_LAST_RESORT_BAD;
+                  from_tmp || src == BML_LAST_RESORT_BAKTMP_ABSENT || src == BML_LAST_RESORT_BAKTMP_BAD;
   bool ok = src == BML_PRIMARY || from_bak;
   if (src == BML_READ_ERROR) {
     /* BACKLOG #379 F4: a card fault is NOT "missing". Keep the names RAM already holds (they are the
@@ -173,9 +174,10 @@ static bool __attribute__((noinline)) meta_load(void) {
   } else if (src == BML_BAK_PRIMARY_BAD) {
     log_line("bank: meta primary unreadable/corrupt, restored from bank.meta.bak");
     app_log_flush();
-  } else if (src == BML_LAST_RESORT_ABSENT || src == BML_LAST_RESORT_BAD) {
-    log_line("bank: meta primary %s, no usable .bak - restored from the verified bank.meta.tmp/.baktmp",
-             src == BML_LAST_RESORT_ABSENT ? "missing" : "unreadable/corrupt");
+  } else if (from_bak && src != BML_BAK_PRIMARY_ABSENT && src != BML_BAK_PRIMARY_BAD) {
+    log_line("bank: meta primary %s, no usable .bak - restored from the verified bank.meta.%s",
+             (src == BML_LAST_RESORT_ABSENT || src == BML_LAST_RESORT_BAKTMP_ABSENT) ? "missing" : "unreadable/corrupt",
+             from_tmp ? "tmp" : "baktmp");
     app_log_flush();
   } else if (src == BML_NONE_BOXES) {
     /* Neither copy is usable but box files exist: an existing Bank. Names stay at their
@@ -206,6 +208,19 @@ static bool __attribute__((noinline)) meta_load(void) {
    * take its usual rolling backup. */
   g_meta_from_bak = from_bak;
   g_meta_state = 1;
+  if (from_tmp && app_can_edit()) {
+    /* Zy D3: meta_save()'s verified write would TRUNCATE bank.meta.tmp (its own scratch) -- the only copy of
+     * these names. Heal by RENAME, before any write can happen. A failed heal makes meta_save refuse
+     * (state 2: it would hit that truncation), a later meta_load retries. */
+    if (bml_meta_heal_tmp(PDNA_BANK_DIR, META_BYTES)) {
+      g_meta_from_bak = false;        /* primary is now the good file and no .bak was displaced */
+      log_line("bank: meta healed by renaming bank.meta.tmp into place");
+    } else {
+      g_meta_state = 2;
+      log_line("bank: meta heal from .tmp failed - names kept in RAM, meta writes refused");
+    }
+    app_log_flush();
+  }
   return true;
 }
 

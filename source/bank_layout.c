@@ -38,6 +38,12 @@ bool __attribute__((noinline)) bml_layout_exists(const char* dir, int nboxes) {
   return any_box(dir, nboxes);
 }
 
+/* Does `path` exist at exactly `len` bytes? (own frame: FILINFO carries an LFN buffer) */
+static bool __attribute__((noinline)) size_is(const char* path, uint32_t len) {
+  FILINFO fno;
+  return f_stat(path, &fno) == FR_OK && (uint32_t)fno.fsize == len;
+}
+
 typedef enum { MP_OK, MP_ABSENT, MP_BAD, MP_ERR } MetaProbe;
 
 /* One meta file: absent / present-but-unusable (short or wrong magic) / read-or-stat ERROR / usable. */
@@ -70,10 +76,24 @@ BmlSource __attribute__((noinline)) bml_meta_read(const char* dir, int nboxes, u
   for (int i = 0; i < 2; i++) {
     siprintf(p, "%s/bank.meta.%s", dir, last[i]);
     m = meta_probe(p, buf, cap, need, magic);
-    if (m == MP_OK) return absent ? BML_LAST_RESORT_ABSENT : BML_LAST_RESORT_BAD;
+    if (m == MP_OK) {
+      if (i == 0) return absent ? BML_LAST_RESORT_ABSENT : BML_LAST_RESORT_BAD;
+      return absent ? BML_LAST_RESORT_BAKTMP_ABSENT : BML_LAST_RESORT_BAKTMP_BAD;
+    }
     if (m == MP_ERR) return BML_READ_ERROR;
   }
   return any_box(dir, nboxes) ? BML_NONE_BOXES : BML_NONE_EMPTY;
+}
+
+bool __attribute__((noinline)) bml_meta_heal_tmp(const char* dir, uint32_t len) {
+  char m[BML_PATH], t[BML_PATH];
+  if (!dir || len == 0 || strlen(dir) > BML_DIR_MAX) return false;
+  siprintf(m, "%s/bank.meta", dir);
+  siprintf(t, "%s/bank.meta.tmp", dir);
+  FRESULT ur = f_unlink(m);                          /* a corrupt primary must make way for the rename */
+  if (ur != FR_OK && ur != FR_NO_FILE && ur != FR_NO_PATH) return false;
+  if (f_rename(t, m) != FR_OK) return false;         /* the verified .tmp stays where it is */
+  return size_is(m, len) && f_stat(t, 0) == FR_NO_FILE;
 }
 
 /* ---- BACKLOG #378: box files ---- */
@@ -113,11 +133,6 @@ BmlBoxSrc __attribute__((noinline)) bml_box_read(const char* path, uint8_t* buf,
   return BML_BOX_NONE;
 }
 
-/* Does `path` exist at exactly `len` bytes? (own frame: FILINFO carries an LFN buffer) */
-static bool __attribute__((noinline)) size_is(const char* path, uint32_t len) {
-  FILINFO fno;
-  return f_stat(path, &fno) == FR_OK && (uint32_t)fno.fsize == len;
-}
 
 bool __attribute__((noinline)) bml_box_heal(const char* path, BmlBoxSrc src, const uint8_t* bytes,
                                              uint32_t len) {

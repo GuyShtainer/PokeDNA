@@ -17,8 +17,13 @@ typedef enum {
   /* BACKLOG #379 F3: last resort -- no primary and no usable .bak, but a verified scratch copy
    * (bank.meta.tmp, else bank.meta.baktmp: magic + length checked) parses. Handled like a .bak
    * restore (heal the primary, keep the names). */
-  BML_LAST_RESORT_ABSENT,  /* primary missing                                              */
-  BML_LAST_RESORT_BAD,     /* primary present but unreadable/corrupt                       */
+  BML_LAST_RESORT_ABSENT,  /* primary missing; the bytes came from bank.meta.tmp           */
+  BML_LAST_RESORT_BAD,     /* primary present but unreadable/corrupt; bytes from bank.meta.tmp */
+  /* Zy D3: the same two cases when the bytes came from bank.meta.baktmp (a verified rolling-backup
+   * copy -- NOT the next write's own scratch, so a plain verified write heals it safely). A heal
+   * from bank.meta.tmp must RENAME (bml_meta_heal_tmp): a verified write truncates that very file. */
+  BML_LAST_RESORT_BAKTMP_ABSENT,
+  BML_LAST_RESORT_BAKTMP_BAD,
   /* BACKLOG #379 F4: a card fault is NOT "missing". f_stat(primary/.bak) returned something other
    * than FR_OK / FR_NO_FILE / FR_NO_PATH, or a PRESENT file's read errored (rather than mismatched
    * magic/length). Nothing was decided: the caller keeps the names it has in RAM, never
@@ -39,6 +44,12 @@ bool bml_layout_exists(const char* dir, int nboxes);
  * BML_NONE_BOXES / BML_NONE_EMPTY (buf is then unspecified); a card fault returns BML_READ_ERROR. */
 BmlSource bml_meta_read(const char* dir, int nboxes, uint8_t* buf, uint32_t cap,
                         uint32_t need, const char* magic);
+
+/* Zy D3: heal the primary from a BML_LAST_RESORT_ABSENT/BAD recovery (bytes came from
+ * bank.meta.tmp): unlink a corrupt primary (absent is fine), then RENAME bank.meta.tmp into place --
+ * the only copy of the newest bytes is never rewritten or truncated. True only when bank.meta now
+ * exists at `len` bytes and the .tmp is gone. Call only when app_can_edit(). */
+bool bml_meta_heal_tmp(const char* dir, uint32_t len);
 
 /* ---- BACKLOG #378: a Bank BOX file has the same interrupted-swap window as bank.meta ---- */
 typedef enum {
