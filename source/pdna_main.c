@@ -4932,8 +4932,8 @@ static int app_pick_party_slot(void) {
       if (sh) ui_panel(2, y - 1, UI_SCR_W - 4, PDNA_GBEDIT_PICKBOX_ROW_H, UI_SEL, UI_TITLE);
       ui_ptext_fit(4, y, UI_SCR_W - 8, sh ? UI_SELTEXT : UI_TEXT, nm[0] ? nm : "?");
     }
-    ui_hline(0, 147, UI_SCR_W, UI_BORDER);
-    ui_text(4, 150, UI_DIM, PDNA_GBEDIT_PICKPARTY_FOOT);
+    ui_hline(0, UI_FOOTER_RULE_Y, UI_SCR_W, UI_BORDER);
+    ui_text(4, UI_FOOTER_Y, UI_DIM, PDNA_GBEDIT_PICKPARTY_FOOT);
 
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) return -1;
@@ -11306,8 +11306,8 @@ static void __attribute__((noinline)) xrc_paint_list(GbReconBuf* rb, int sel, in
     ui_ptext_fit(8, y, UI_SCR_W - 16, ink, buf);
   }
   if (capped) ui_text(4, XRC_LIST_Y1 - 9, UI_WARN, PDNA_XRC_MORE);
-  ui_hline(0, 147, UI_SCR_W, UI_BORDER);
-  ui_text(4, 150, UI_DIM, PDNA_XRC_FOOT);
+  ui_hline(0, UI_FOOTER_RULE_Y, UI_SCR_W, UI_BORDER);
+  ui_text(4, UI_FOOTER_Y, UI_DIM, PDNA_XRC_FOOT);
 }
 
 static void xrc_paint_empty(void) {
@@ -11317,8 +11317,8 @@ static void xrc_paint_empty(void) {
   ui_text(20, 60, UI_TEXT, PDNA_XRC_EMPTY_L1);
   ui_text(20, 76, UI_TEXT, PDNA_XRC_EMPTY_L2);
   ui_text(20, 92, UI_TEXT, PDNA_XRC_EMPTY_L3);
-  ui_hline(0, 147, UI_SCR_W, UI_BORDER);
-  ui_text(4, 150, UI_DIM, "B done");
+  ui_hline(0, UI_FOOTER_RULE_Y, UI_SCR_W, UI_BORDER);
+  ui_text(4, UI_FOOTER_Y, UI_DIM, "B done");
 }
 
 /* The per-row action popup (decision 14): only the rows h->actions actually allows,
@@ -11712,8 +11712,8 @@ static int gb_delta_pick_save(void) {
       if (s) ui_panel(2, y - 1, UI_SCR_W - 4, 13, UI_SEL, UI_TITLE);
       ui_text(10, y, s ? UI_SELTEXT : UI_TEXT, names[idx]);
     }
-    ui_hline(0, 147, UI_SCR_W, UI_BORDER);
-    ui_text(4, 150, UI_DIM, "A pick  B exit");
+    ui_hline(0, UI_FOOTER_RULE_Y, UI_SCR_W, UI_BORDER);
+    ui_text(4, UI_FOOTER_Y, UI_DIM, "A pick  B exit");
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) return -1;
     if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : n - 1;
@@ -11760,8 +11760,8 @@ static int gb_delta_boot_pick(const char* g3_label) {
       if (s) ui_panel(2, y - 1, UI_SCR_W - 4, 13, UI_SEL, UI_TITLE);
       ui_text(10, y, s ? UI_SELTEXT : UI_TEXT, names[idx]);
     }
-    ui_hline(0, 147, UI_SCR_W, UI_BORDER);
-    ui_text(4, 150, UI_DIM, "A pick  B Emerald");
+    ui_hline(0, UI_FOOTER_RULE_Y, UI_SCR_W, UI_BORDER);
+    ui_text(4, UI_FOOTER_Y, UI_DIM, "A pick  B Emerald");
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) return 0;                   /* never a dead end: KEY_B = Emerald */
     if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : n - 1;
