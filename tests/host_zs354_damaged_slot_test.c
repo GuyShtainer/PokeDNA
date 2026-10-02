@@ -97,6 +97,25 @@ int main(void) {
     CHECK(!t.game_loads_other, "%s dup-id: the game rejects it too (id missing)", NAMES[g]);
   }
 
+  /* 3d. #361: a complete-ids slot with ONE bad sector checksum is rejected by the game too.
+   *     Covered ids (1-3, 5-12): torn counter on a DIFFERENT sector so the slot is damaged+id-complete, then
+   *     flip a data byte (checksum left stale) -> game_loads_other FALSE. Exempt ids 0/4/13 (per-game sizes) stay
+   *     "game loads" (we never guess a size). */
+  for (int g = 0; g < NG; g++) for (int id = 0; id < 14; id++) {
+    Gen3SaveInfo in, t;
+    parse(sav[g], G3_SAVE_FILE_SIZE, &in);
+    memcpy(img, sav[g], sizeof img);
+    int sec = gen3_find_section(img, in.slot, id);
+    CHECK(sec >= 0, "%s id %d located", NAMES[g], id);
+    uint32_t base = (uint32_t)in.slot * G3_SLOT_BYTES;
+    img[base + (uint32_t)((sec + 1) % 14) * G3_SECTOR_SIZE + G3_OFF_COUNTER]++;          /* damage the slot (torn counter) */
+    img[base + (uint32_t)sec * G3_SECTOR_SIZE + 0x10] ^= 0x5A;                           /* stale checksum on `id` */
+    CHECK(parse(img, G3_SAVE_FILE_SIZE, &t), "%s bad-cks@%d parses", NAMES[g], id);
+    int exempt = (id == 0 || id == 4 || id == 13);
+    CHECK(t.slot_damaged[in.slot], "%s bad-cks@%d: newer slot damaged", NAMES[g], id);
+    CHECK(t.game_loads_other == exempt, "%s bad-cks@%d: game_loads_other %d, want %d", NAMES[g], id, t.game_loads_other, exempt);
+  }
+
   /* 3c. a LONE damaged slot A (slot B erased) still opens: nothing intact to prefer, nothing to warn about */
   for (int g = 0; g < NG; g++) {
     Gen3SaveInfo in, t;
