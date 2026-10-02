@@ -707,6 +707,11 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_BANK_LOST_L2               "Its edits are lost."
 #define PDNA_BANK_DISCARD_L1            "Edits discarded."
 #define PDNA_BANK_DISCARD_L2            "This box's edits are lost."
+/* Zy D4: bank.meta (box names, wallpapers) was not written -- e.g. the first read of the session hit a
+ * card error, so meta_save() refuses rather than write display-only defaults over the real names. */
+#define PDNA_BANK_META_TITLE            "NAMES NOT SAVED"
+#define PDNA_BANK_META_L1               "Box names were not written."
+#define PDNA_BANK_META_L2               "Leave the Bank and re-open it."
 
 /* gbs_box_writable's SF_ERR_UNWRITABLE hint (source/pdna_gen12.c gb_edit_hook step 2):
  * "Switch boxes in-game once, then retry." measures 195px, over the 184px clamp;

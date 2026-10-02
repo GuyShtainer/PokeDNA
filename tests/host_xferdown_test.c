@@ -436,6 +436,11 @@ static void test_bridge_one_case(uint16_t species_dex, uint8_t src_gen, uint8_t 
   CHECK(g3gb == G3GB_OK, "%s: gen3_to_gb succeeds (got %s)", label, g3gb_status_text(g3gb));
   if (g3gb != G3GB_OK) return;
 
+  /* BACKLOG #381: a Game Boy SOURCE has no nature/ability/met-data/ball to lose -- those flags came from
+   * the Gen-3 intermediate, so the loss screen must not list them (its rows read exactly these flags). */
+  CHECK(!loss.nature && !loss.ability, "%s: #381 'Nature and ability' row flags clear for a GB source", label);
+  CHECK(!loss.met_data && !loss.ball,  "%s: #381 'Met place / level / ball' row flags clear for a GB source", label);
+
   /* (a) the entry's original80 is byte-identical to the source native cell. */
   GbscEntry e;
   gbsc_entry_from(&e, &out, cell, 0);
@@ -484,10 +489,34 @@ static void test_bridge_one_case(uint16_t species_dex, uint8_t src_gen, uint8_t 
   }
 }
 
+/* Zy D6: a Crystal source carries caught data (time/level/location/OT gender) that a Gen-1 record cannot hold,
+ * so the 2->1 loss screen's "Met place / level / ball" row must appear; a Gold/Silver-style cell (no caught
+ * data) still shows nothing (test_bridge_one_case asserts that). */
+static void test_crystal_met_loss(void) {
+  GbEditMon m; memset(&m, 0, sizeof m);
+  m.gen = GB_GEN2;
+  gb_set_species(&m, 25, NULL); gb_set_level(&m, 20);
+  gb_set_dv(&m, GB_ATK, 12); gb_set_dv(&m, GB_DEF, 12); gb_set_dv(&m, GB_SPE, 12); gb_set_dv(&m, GB_SPC, 12);
+  gb_set_move(&m, 0, 33); gb_set_otid(&m, 12345);
+  gb_set_caught_available(&m, true);   /* Crystal */
+  CHECK(gb_set_caught(&m, 2, 7, 12, 1), "D6: caught data set");
+  uint8_t cell[80];
+  CHECK(bc_pack(&m, 0, 0, 0, 777, cell) == 0, "D6: crystal cell packs");
+  int tc; uint16_t tc_bad; Gb12Result g12; G3GbStatus g3gb;
+  GbEditMon out; Gen3ToGbLoss loss; Gb12Notes notes;
+  uint16_t from4[4]; uint8_t bad4[4]; int nbad;
+  GbGen1Base base = { .base = { 35, 55, 40, 90, 50 }, .type1 = 0x18, .type2 = 0x18 };
+  bdc_convert_gb_core(cell, GB_GEN1, false, &base, &tc, &tc_bad, &g12, &g3gb, &out, &loss, &notes, from4, bad4, &nbad);
+  CHECK(tc == 0 && g12 == GB12_OK && g3gb == G3GB_OK, "D6: crystal 2->1 converts");
+  CHECK(loss.met_data, "D6: a Crystal source's caught data is lost at 2->1 and the loss row must say so");
+  CHECK(!loss.nature && !loss.ability && !loss.ball, "D6: nature/ability/ball rows stay cleared (#381)");
+}
+
 static void test_bridge_roundtrips(void) {
   test_bridge_one_case(25, GB_GEN1, GB_GEN2, 0, "1->2 Pikachu");
   test_bridge_one_case(25, GB_GEN2, GB_GEN1, 0, "2->1 Pikachu, no item");
   test_bridge_one_case(25, GB_GEN2, GB_GEN1, 0x1D, "2->1 Pikachu, Light Ball dropped");
+  test_crystal_met_loss();
 }
 
 /* F6/R2 (review): a REAL two-hop byte compare -- a real Crystal.sav box-0 record run

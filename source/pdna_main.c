@@ -7193,6 +7193,10 @@ static void dex_set_state(int nat, int state) {
  * regional list). Touches g_sb2 + g_sb1; persisted by app_commit_dex like the flags. */
 static bool dex_get_national(void)    { return pk_dex_national_on(g_sb1, g_sb2, g_game); }
 static void dex_set_national(bool on) { pk_dex_set_national(g_sb1, g_sb2, g_game, on); }
+/* BACKLOG #380: the Emerald sort-order byte, snapshotted/restored by the dex screen's bulk-op Undo. */
+static uint8_t dex_get_order(void)    { return pk_dex_order_get(g_sb2, g_game); }
+static void dex_set_order(uint8_t v)  { pk_dex_order_set(g_sb2, g_game, v); }
+static const DexOrdHooks k_dex_ord = { dex_get_order, dex_set_order };
 
 /* Full Pokedex: the HGSS-style grid/list/by-type viewer in pdna_pick.c. Browsable
  * read-only on any cart; A cycles a species' state (Omega-only edit). The screen
@@ -7201,7 +7205,8 @@ static void dex_set_national(bool on) { pk_dex_set_national(g_sb1, g_sb2, g_game
 static bool pdna_dex_edit(void) {
   key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);   /* grid needs L/R repeat; leave this default set */
   pdna_dex_set_max(386);   /* every Gen-3 entry resets the cap: a prior GB visit must not leak (BACKLOG #87) */
-  bool dirty = pdna_dex_screen(dex_state, dex_set_state, dex_get_national, dex_set_national, app_can_edit());
+  bool dirty = pdna_dex_screen(dex_state, dex_set_state, dex_get_national, dex_set_national,
+                               &k_dex_ord, app_can_edit());
   if (dirty) return app_commit_dex();                /* #234: staged, no prompt */
   return false;
 }

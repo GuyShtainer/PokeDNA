@@ -629,6 +629,11 @@ static struct {
   DexGetNat   getnat;   /* national-dex live? (may be NULL) */
   DexSetNat   setnat;   /* enable/disable national dex (may be NULL) */
 } s_dex __attribute__((section(".bss.pdna_pick_s_dex")));
+/* BACKLOG #380: the Emerald dex sort-order pair, snapshotted/restored by the bulk-op Undo. Its own EWRAM_BSS
+ * copy, NOT two more fields of s_dex: s_dex is IWRAM (the stack's 32 KiB; +8 B there cost 8 B of stack margin,
+ * measured 1,848 -> 1,832) and its section-pinned layout keeps fields 0/4/8/12. The hooks arrive as ONE
+ * pointer parameter: two extra scalar parameters grew main's frame by 8 B (on the deepest chain). */
+static DexOrdHooks EWRAM_BSS s_dex_ord;   /* getord: Emerald dex sort-order byte; setord NULL on a read-only cart */
 /* BACKLOG #124: optional cell-art override, installed by pdna_gbdex.c around a
  * GB-session dex visit only -- see pdna_pick.h's own comment on pdna_dex_set_cell_art
  * for the full contract (NULL by default, so an ordinary Gen-3 dex visit is
@@ -720,7 +725,9 @@ void pdna_dex_set_max(int max_dex) {
 /* Snapshot of every species' dex state before the last bulk op, so a mistaken
  * "Catch/See/Wipe ALL" can be undone in one step (the changes aren't written to the
  * SD until the user confirms the dex save, so this RAM revert fully restores it). */
-static int8_t s_dex_snap[DEX_NAT_MAX];
+#define DEX_SNAP_ORD DEX_NAT_MAX   /* BACKLOG #380: one extra slot at the END of the snapshot holds the Emerald
+                                    * sort-order byte (no new static: the array grows by one byte) */
+static int8_t s_dex_snap[DEX_NAT_MAX + 1];
 static bool   s_dex_snap_valid = false;
 static bool   s_dex_snap_natl = false;   /* National-Dex state at snapshot time (Catch ALL flips it) */
 
@@ -748,6 +755,9 @@ static __attribute__((noinline)) int  dex_dget(int nat) { return s_dex.get(nat);
 static __attribute__((noinline)) void dex_dset(int nat, int st) { s_dex.set(nat, st); }
 static __attribute__((noinline)) bool dex_getnat_live(void) { return s_dex.getnat && s_dex.getnat(); }
 static __attribute__((noinline)) void dex_setnat_call(bool on) { if (s_dex.setnat) s_dex.setnat(on); }
+/* BACKLOG #380: same one-indirect-call-site-per-field technique for the sort-order pair. */
+static __attribute__((noinline)) uint8_t dex_getord_call(void) { return s_dex_ord.getord ? s_dex_ord.getord() : 0; }
+static __attribute__((noinline)) void    dex_setord_call(uint8_t v) { if (s_dex_ord.setord) s_dex_ord.setord(v); }
 
 static int dstate(uint16_t internal) { return dex_dget((int)pk_national_no(internal)); }
 
@@ -941,6 +951,9 @@ static bool dex_bulk(void) {
          * resets on entry. */
         if (dex_getnat_live() != s_dex_snap_natl)
           dex_setnat_call(s_dex_snap_natl);                              /* Catch ALL auto-unlocked natl -> revert too */
+        /* BACKLOG #380: AFTER setnat (the lock/unlock transition is what zeroes the order byte): put the
+         * pre-op sort order back. Unconditional -- when National did not change it writes the same byte. */
+        dex_setord_call((uint8_t)s_dex_snap[DEX_SNAP_ORD]);
         s_dex_snap_valid = false;
         return true;
       }
@@ -949,6 +962,7 @@ static bool dex_bulk(void) {
                          amsg)) return false; }
       for (int nat = 1; nat <= s_dex_max; nat++) s_dex_snap[nat - 1] = (int8_t)dex_dget(nat);   /* snapshot first */
       s_dex_snap_natl = dex_getnat_live();                 /* incl. the National-Dex state */
+      s_dex_snap[DEX_SNAP_ORD] = (int8_t)dex_getord_call();   /* BACKLOG #380: and the Emerald sort-order byte */
       s_dex_snap_valid = true;
       for (int nat = 1; nat <= s_dex_max; nat++) dex_dset(nat, a);
       /* Catching every species is meaningless without National mode (the dex caps at the
@@ -1137,9 +1151,12 @@ static bool dex_detail(int* sel_io, bool can_edit) {
 }
 
 bool pdna_dex_screen(DexGetState get, DexSetState set,
-                     DexGetNat getnat, DexSetNat setnat, bool can_edit) {
+                     DexGetNat getnat, DexSetNat setnat,
+                     const DexOrdHooks* ord, bool can_edit) {
   s_dex.get = get; s_dex.set = set;
   s_dex.getnat = getnat; s_dex.setnat = can_edit ? setnat : NULL;   /* read-only carts can't toggle it */
+  s_dex_ord.getord = ord ? ord->getord : NULL;                       /* BACKLOG #380 */
+  s_dex_ord.setord = (ord && can_edit) ? ord->setord : NULL;         /* same read-only gate as setnat */
   s_dex_snap_valid = false;        /* fresh session: no bulk op to undo yet */
   /* Rent 32 more icon rows for the WHOLE life of this screen -- the one screen in the
    * app that can hold the borrow that long, and the reason it matters is the SCROLL.

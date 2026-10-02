@@ -112,6 +112,18 @@ bool pdna_bank_serial_trusted(void) { return g_serial_trusted; }
  * meta_load() already detects on its own via the normal FR_OK+magic probe. */
 static bool EWRAM_BSS g_meta_from_bak;
 
+/* BACKLOG #379 F4: do g_meta/g_bank_serial hold a real read of the card (or legit defaults)?
+ * 0 = unknown (nothing loaded yet this session: the legacy behaviour, every caller as before),
+ * 1 = valid (a clean/restored load, or the genuine no-Bank defaults), 2 = UNSAFE (the very first
+ * meta_load() hit a card READ ERROR: RAM holds display-only defaults, so meta_save() must refuse
+ * -- a defaults-shaped write would roll the good primary into .bak). A READ ERROR after a valid
+ * load changes nothing: the names the session holds ARE the card's names and stay. */
+static uint8_t EWRAM_BSS g_meta_state;
+
+/* Zy D1: the page-in of g_loaded hit a card READ ERROR, so g_bankbuf is a zeroed buffer, not that box.
+ * box_save() refuses while set (committing it would wipe the box's untouched mons). */
+static bool EWRAM_BSS g_box_unread;
+
 /* ---- paths ---- */
 static void box_path(int box, char* out) { siprintf(out, PDNA_BANK_DIR "/box%02d.box", box); }
 static const char* meta_path(void) { return PDNA_BANK_DIR "/bank.meta"; }
@@ -125,6 +137,7 @@ static void meta_defaults(void) {
   g_bank_serial = 0;   /* decision 2: zero it too, same as every other meta_defaults() field */
   g_serial_trusted = false;   /* BACKLOG #168: a defaulted serial can never be trusted */
   g_meta_from_bak = false;   /* BACKLOG #219a: a fresh default has no corrupt primary to heal */
+  g_meta_state = 1;          /* legit defaults (no Bank yet); meta_load's READ_ERROR path downgrades it */
 }
 
 /* noinline (BACKLOG #81): meta_load's 176-byte buf[] would otherwise be inlined into
@@ -138,17 +151,33 @@ static bool __attribute__((noinline)) meta_load(void) {
   /* BACKLOG #371: the source decision (primary / .bak / nothing) lives in bank_layout.c so a
    * host test drives the REAL logic. An ABSENT primary with a good .bak takes the same restore
    * path as a corrupt primary (the interrupted-write window unlink -> rename leaves exactly
-   * that); a leftover bank.meta.tmp is never read as data (it is left in place: it may hold the
-   * only copy of a newer verified write, and the next sf_write_verified truncates it anyway --
-   * savefile.c's "keep the .tmp" convention). */
+   * that). BACKLOG #379 F3: when NO .bak parses either, the verified bank.meta.tmp (else .baktmp:
+   * magic + length checked, kept by savefile.c only after a passing byte-compare) is used as a last
+   * resort and treated as a .bak restore. A card READ ERROR is not "missing" (F4, below). */
   BmlSource src = bml_meta_read(PDNA_BANK_DIR, BANK_BOXES, buf, sizeof buf, META_BYTES, META_MAGIC);
-  bool from_bak = src == BML_BAK_PRIMARY_ABSENT || src == BML_BAK_PRIMARY_BAD;
+  bool from_tmp = src == BML_LAST_RESORT_ABSENT || src == BML_LAST_RESORT_BAD;   /* Zy D3: bytes came from bank.meta.tmp */
+  bool from_bak = src == BML_BAK_PRIMARY_ABSENT || src == BML_BAK_PRIMARY_BAD ||
+                  from_tmp || src == BML_LAST_RESORT_BAKTMP_ABSENT || src == BML_LAST_RESORT_BAKTMP_BAD;
   bool ok = src == BML_PRIMARY || from_bak;
+  if (src == BML_READ_ERROR) {
+    /* BACKLOG #379 F4: a card fault is NOT "missing". Keep the names RAM already holds (they are the
+     * card's), do not meta_defaults() them, return false. Only a session that never loaded anything
+     * gets display-only defaults, and then g_meta_state=2 makes meta_save() refuse. */
+    log_line("bank: meta read error - keeping the names in RAM, nothing is written");
+    app_log_flush();
+    if (g_meta_state == 0) { meta_defaults(); g_meta_state = 2; }
+    return false;
+  }
   if (src == BML_BAK_PRIMARY_ABSENT) {
     log_line("bank: meta primary missing, restored from bank.meta.bak");
     app_log_flush();
   } else if (src == BML_BAK_PRIMARY_BAD) {
     log_line("bank: meta primary unreadable/corrupt, restored from bank.meta.bak");
+    app_log_flush();
+  } else if (from_bak && src != BML_BAK_PRIMARY_ABSENT && src != BML_BAK_PRIMARY_BAD) {
+    log_line("bank: meta primary %s, no usable .bak - restored from the verified bank.meta.%s",
+             (src == BML_LAST_RESORT_ABSENT || src == BML_LAST_RESORT_BAKTMP_ABSENT) ? "missing" : "unreadable/corrupt",
+             from_tmp ? "tmp" : "baktmp");
     app_log_flush();
   } else if (src == BML_NONE_BOXES) {
     /* Neither copy is usable but box files exist: an existing Bank. Names stay at their
@@ -178,6 +207,23 @@ static bool __attribute__((noinline)) meta_load(void) {
    * load fell back past -- meta_save()'s next call must heal it before it can safely
    * take its usual rolling backup. */
   g_meta_from_bak = from_bak;
+  g_meta_state = 1;
+  if (from_tmp && app_can_edit()) {
+    /* Zy D3: meta_save()'s verified write would TRUNCATE bank.meta.tmp (its own scratch) -- the only copy of
+     * these names. Heal by RENAME, before any write can happen. A failed heal makes meta_save refuse
+     * (state 2: it would hit that truncation), a later meta_load retries. */
+    rmbl_pause();
+    bool healed = bml_meta_heal_tmp(PDNA_BANK_DIR, META_BYTES);
+    rmbl_resume();
+    if (healed) {
+      g_meta_from_bak = false;        /* primary is now the good file and no .bak was displaced */
+      log_line("bank: meta healed by renaming bank.meta.tmp into place");
+    } else {
+      g_meta_state = 2;
+      log_line("bank: meta heal from .tmp failed - names kept in RAM, meta writes refused");
+    }
+    app_log_flush();
+  }
   return true;
 }
 
@@ -191,6 +237,11 @@ static bool __attribute__((noinline)) meta_load(void) {
  * does not distinguish from success; either way the directory exists after this
  * line. */
 static bool meta_save(void) {
+  if (g_meta_state == 2) {   /* BACKLOG #379 F4: RAM holds display-only defaults after a card read error */
+    log_line("bank: meta NOT saved - never read from the card (read error), refusing a defaults write");
+    app_log_flush();
+    return false;
+  }
   f_mkdir("/PokeDNA");
   f_mkdir(PDNA_BANK_DIR);
 
@@ -287,21 +338,49 @@ static bool box_load(int box) {
   char path[SF_PATH_MAX]; box_path(box, path);
   uint32_t sz = 0;
   memset(g_bankbuf, 0, sizeof g_bankbuf);
-  SfStatus st = sf_read_full(path, box_recs(), BOX_BYTES, &sz);
+  /* BACKLOG #378: the box file has the same interrupted-swap window as bank.meta (#371): the verified
+   * write's unlink -> rename leaves the primary ABSENT while the verified .tmp holds the newest bytes
+   * and the .bak the previous ones. The classifier (bank_layout.c, host-tested) picks primary, else
+   * .tmp, else .bak -- only when the primary is truly absent; a card read ERROR is not "absent". */
+  BmlBoxSrc bsrc = bml_box_read(path, box_recs(), BOX_BYTES, &sz);
+  bool recovered = bsrc == BML_BOX_TMP || bsrc == BML_BOX_BAK;
+  bool heal_failed = false;
+  if (recovered) {
+    log_line("bank: box %02d primary missing, restored from %s", box, bsrc == BML_BOX_TMP ? "tmp" : "bak");
+    app_log_flush();
+    /* Heal BEFORE anything can write: the primary is back (rename of the .tmp, or a verified write from
+     * the .bak -- never sf_save_rolling, so no backup roll can bury the good .bak). Read-only (Everdrive):
+     * recovered in RAM only, never written. A failed heal returns false below so every writer refuses. */
+    bool healed = true;
+    if (app_can_edit()) {                       /* Zy D7: rmbl.h requires the pause around every SD write */
+      rmbl_pause();
+      healed = bml_box_heal(path, bsrc, box_recs(), BOX_BYTES);
+      rmbl_resume();
+    }
+    if (!healed) {
+      heal_failed = true;
+      log_line("bank: box %02d heal failed - recovered copy kept on the card, browse only", box);
+      app_log_flush();
+    }
+  } else if (bsrc == BML_BOX_READ_ERROR) {
+    log_line("bank: box %02d read error - not treated as empty, writes refused", box);
+    app_log_flush();
+  }
+  bool got = bsrc == BML_BOX_PRIMARY || bsrc == BML_BOX_BAD || recovered;   /* BAD = present but short, as before: no plant */
 #ifdef PDNA_DELTA
   /* BACKLOG #150 S150-2 step 6: a PDNA_DELTA-only test plant -- boxes 0 and 1 only, and
    * only when the real file could not be read (a virgin/absent box, the common delta-
    * test-vehicle case). ZERO effect on the shipped build (PDNA_DELTA is never defined
    * there): see bank_plant.h. */
-  if (st != SF_OK && box == 0) bank_plant_box0(box_recs());
-  if (st != SF_OK && box == 1) bank_plant_box_full(box_recs());
+  if (!got && box == 0) bank_plant_box0(box_recs());
+  if (!got && box == 1) bank_plant_box_full(box_recs());
   /* BACKLOG #246 (#104 Phase 1): a THIRD, dedicated box -- never box 0/1, so every
    * existing shot chain keyed on those two boxes' own byte-for-byte content stays
    * untouched. This is the one plant this whole file never had before: a PLAIN
    * Gen-3 cell (see bank_plant_g3_box's own comment), the source this lane's new
    * arm needs to demonstrate carrying a Gen-3 Bank cell onto a Game Boy grid. */
-  if (st != SF_OK && box == 2) bank_plant_g3_box(box_recs());
-  if (st != SF_OK && box == 3) bank_plant_y9_box(box_recs());   /* #280: the target-drop restore chains' cells */
+  if (!got && box == 2) bank_plant_g3_box(box_recs());
+  if (!got && box == 3) bank_plant_y9_box(box_recs());   /* #280: the target-drop restore chains' cells */
 #endif
   /* BACKLOG #150 S150-3 decision 6: recomputed at every page-in, AFTER the PDNA_DELTA
    * plant above so a planted native cell is captured too -- this is the ONE choke
@@ -311,11 +390,12 @@ static bool box_load(int box) {
   g_native_snap = 0;
   for (int s = 0; s < BOX_RECS; s++)
     if (bc_is_native(box_recs() + (uint32_t)s * REC_BYTES)) g_native_snap |= (1u << s);
+  g_box_unread = bsrc == BML_BOX_READ_ERROR;
   g_loaded = box;
   g_dirty = false;
   g_box_unsaved_box = -1;   /* review F1: a fresh page-in re-reads the CARD's own copy --
                              * whatever RAM-only edits g_box_unsaved_box was about are gone. */
-  return st == SF_OK && sz >= BOX_BYTES;
+  return got && !heal_failed && sz >= BOX_BYTES;
 }
 
 /* box_save's pre-write backup + write + SF_ERR_RENAME triage (BACKLOG #150 S150-0). Up
@@ -408,6 +488,11 @@ static void box_save_rename_triage(const char* path, SfWhere w, bool ok, bool ba
 
 static bool box_save(void) {                    /* write the loaded box's records */
   if (g_loaded < 0) return false;
+  if (g_box_unread) {
+    log_line("bank: box %02d was not read (card error) - refusing to write over it", g_loaded);
+    app_log_flush();
+    return false;
+  }
   /* review F1: a refusal here still LEAVES the box dirty (it always did -- the invariant
    * refusal never touched g_dirty at all before this fix, which is exactly how it could
    * drift out of sync with g_box_unsaved_box: the marker said "unsaved", g_dirty could
@@ -565,7 +650,12 @@ int pdna_bank_flush_deletions(void) {
         kept++;
         continue;                                    /* never page away from an unsaved box */
       }
-      box_load(box);   /* page the box in (reads its file) */
+      (void)box_load(box);   /* page the box in (reads its file) */
+    }
+    if (g_box_unread) {                              /* Zy D1: the page-in hit a card error -> the buffer is not that box */
+      if (kept != i) g_bank_del[kept] = g_bank_del[i];
+      kept++;
+      continue;                                      /* keep the deletion queued; worst case a duplicate */
     }
     uint8_t* p = box_recs() + (uint32_t)slot * REC_BYTES;
     if (memcmp(p, g_bank_del[i].id, BANK_DEL_IDLEN) != 0) continue;    /* slot no longer holds OUR mon -> don't delete */
@@ -611,6 +701,7 @@ static void __attribute__((noinline)) migrate_flat_pk3(void) {
    * whatever box_load() last ran would false-refuse this function's own box_save()
    * calls below. */
   g_native_snap = 0;
+  g_box_unread = false;
   g_loaded = 0;
 
   DIR d; FILINFO fno;
@@ -722,6 +813,9 @@ static bool __attribute__((noinline)) bank_backup_v1(void) {
   for (int b = 0; b < BANK_BOXES; b++) {
     char src[SF_PATH_MAX]; box_path(b, src);
     FILINFO sfno;
+    /* Zy D5: an ABSENT primary may still be healable (box_load restores it from the verified .tmp/.bak, and
+     * app_can_edit() is true here) -- heal first so that box lands in the backup instead of being skipped. */
+    if (f_stat(src, 0) == FR_NO_FILE) (void)box_load(b);
     if (f_stat(src, &sfno) != FR_OK || (uint32_t)sfno.fsize != (uint32_t)BOX_BYTES) continue;   /* absent or wrong size -> skip */
     if (!box_load(b)) { log_line("bank: backup-v1 box %d page-in incomplete, refusing", b); app_log_flush(); return false; }
     char dst[SF_PATH_MAX];
@@ -815,7 +909,10 @@ static void banksrc_set_wp(int box, int wp) {
 static bool banksrc_can_edit(void) { return app_can_edit(); }
 static bool banksrc_commit(void) {               /* immediate edits: persist box + meta */
   bool ok = box_save();
-  meta_save();
+  /* Zy D4: a refused/failed meta write used to be silent (state 2 after a card read error refuses outright,
+   * and the box write is refused too then -- nothing at all appeared on screen). */
+  if (!meta_save())
+    msg_wait(PDNA_BANK_META_TITLE, UI_WARN, PDNA_BANK_META_L1, PDNA_BANK_META_L2);
   return ok;
 }
 static void banksrc_mark_dirty(void) { g_dirty = true; }   /* moves: deferred to box-switch/exit */

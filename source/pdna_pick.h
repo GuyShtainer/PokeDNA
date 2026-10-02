@@ -100,6 +100,13 @@ typedef void (*DexSetState)(int nat, int state);
  * Both may be NULL (then the toggle is hidden). */
 typedef bool (*DexGetNat)(void);
 typedef void (*DexSetNat)(bool on);
+/* BACKLOG #380: the Emerald dex sort-order byte, snapshotted with the bulk-op snapshot and put back
+ * by "Undo last" (a Catch ALL on a locked dex zeroes it). Both NULL on every non-Emerald caller. */
+typedef uint8_t (*DexGetOrd)(void);
+typedef void    (*DexSetOrd)(uint8_t v);
+/* ...handed to the screen as ONE pointer (NULL for every non-Emerald caller): a sixth+seventh scalar
+ * parameter put a stack-argument slot pair on main's frame, which is on the deepest stack chain. */
+typedef struct { DexGetOrd getord; DexSetOrd setord; } DexOrdHooks;
 
 /* Run the Pokedex screen. Three views (Grid / List / by-Type), the species-grid
  * filters (Gen/type/legendary) + a caught/seen/unseen status filter + name search,
@@ -108,7 +115,8 @@ typedef void (*DexSetNat)(bool on);
  * a "Mark all" bulk op is offered. Returns true iff any dex state changed (so
  * the caller can offer to save). */
 bool pdna_dex_screen(DexGetState get, DexSetState set,
-                     DexGetNat getnat, DexSetNat setnat, bool can_edit);
+                     DexGetNat getnat, DexSetNat setnat,
+                     const DexOrdHooks* ord, bool can_edit);
 
 /* BACKLOG #124: process-wide optional cell-art override, same style as pdna_box.c's
  * own pdna_box_xfer_set() (a file-static pointer a caller installs around its own

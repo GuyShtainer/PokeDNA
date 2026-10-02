@@ -177,8 +177,12 @@
 # reads 52 from BACKLOG #208).
 # y12-286 (2026-09-30): app_commit_with_dex fully inlined again, no standalone symbol; its argsites declaration is
 # dormant; the 52->51 list diff removes exactly that name.
-count-only-max 51 variant=nor artless=1
-count-only-max 51 variant=nor
+# BACKLOG #380 (2026-10-02, lane zy): 51 -> 53 on nor/nor-artless (delta 53 -> 55): the Emerald dex
+# sort-order getter/setter pair (pdna_pick.c's dex_getord_call / dex_setord_call, declared above with
+# `argsites=1`) are two NEW indirect-dispatch wrappers beside getnat/setnat -- the brief's own design
+# ("a getter/setter pair beside getnat/setnat"). Each is exactly one declared site; nothing else moved.
+count-only-max 53 variant=nor artless=1
+count-only-max 53 variant=nor
 # BACKLOG #208 (2026-09-23): dex_page_begin_call is PDNA_DELTA-only (pdna_pick.h's own
 # comment on PdnaDexPageFn), so it only ever adds a count-only site on the delta
 # variant -- nor/nor-artless/sd are untouched by this lane, hence only this one line
@@ -190,7 +194,7 @@ count-only-max 51 variant=nor
 # beyond that, dex_page_begin_call (the pre-existing delta-only site #208 already
 # accounts for) -- so this line moves the same +1, 52 -> 53. Built and measured
 # privately for this lane's own mGBA shot vehicle (`make delta`), not by the gate.
-count-only-max 53 variant=delta
+count-only-max 55 variant=delta
 
 # Delta-only -- the artless/normal (PDNA_TARGET=nor) links do not contain it:
 # Listing EVERY variant in variants= re-creates a blanket exemption -- if the symbol exists
@@ -601,6 +605,9 @@ dex_dget argsites=1 -> dex_state gbdex_shim_get
 dex_dset argsites=1 -> dex_set_state gbdex_shim_set
 dex_getnat_live argsites=1 -> dex_get_national
 dex_setnat_call argsites=1 -> dex_set_national
+# BACKLOG #380: the sort-order pair, same wrapper technique (one indirect call site each).
+dex_getord_call argsites=1 -> dex_get_order
+dex_setord_call argsites=1 -> dex_set_order
 # BACKLOG #124: dex_cell_grid()'s NEW call (the GB-session cell-art override) does not
 # dispatch through s_cell_art.fn directly -- review ruling: it goes through ONE
 # noinline wrapper, dex_cell_art_call() (pdna_pick.c), so this dispatch compiles to

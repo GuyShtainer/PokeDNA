@@ -13,6 +13,7 @@
 
 #include "ff.h"
 #include "bank_layout.h"
+#include "savefile.h"
 #include "ramdisk.h"
 
 #define DIR_ "/PokeDNA/bank"
@@ -50,6 +51,203 @@ static void meta_bytes(uint8_t* b, uint8_t tag) {
 }
 
 static BmlSource rd(uint8_t* out) { return bml_meta_read(DIR_, 16, out, NEED, NEED, MAGIC); }
+
+
+/* ---------------- BACKLOG #378: box files ---------------- */
+#define BOXN 2400u
+#define BX DIR_ "/box03.box"
+static uint8_t boxA[BOXN], boxB[BOXN], boxC[BOXN], bout[BOXN];
+static void box_fill(uint8_t* b, uint8_t seed) { for (unsigned i = 0; i < BOXN; i++) b[i] = (uint8_t)(seed + i * 7 + 1); }
+static BmlBoxSrc brd(uint32_t* sz) { return bml_box_read(BX, bout, BOXN, sz); }
+static bool exists(const char* p) { return f_stat(p, 0) == FR_OK; }
+static bool file_is(const char* p, const uint8_t* b) {
+  FIL f; UINT br = 0; static uint8_t t[BOXN];
+  if (f_open(&f, p, FA_READ) != FR_OK) return false;
+  FRESULT fr = f_read(&f, t, BOXN, &br); f_close(&f);
+  return fr == FR_OK && br == BOXN && memcmp(t, b, BOXN) == 0;
+}
+
+static void box_decisions(void) {
+  uint32_t sz = 0;
+  box_fill(boxA, 1); box_fill(boxB, 2); box_fill(boxC, 3);
+  /* genuinely new box: nothing -> NONE, zeroed buffer */
+  fresh_card(); memset(bout, 0x5A, BOXN);
+  CHECK(brd(&sz) == BML_BOX_NONE && sz == 0, "#378: new box not NONE");
+  { unsigned nz = 0; for (unsigned i = 0; i < BOXN; i++) nz += bout[i] != 0; CHECK(nz == 0, "#378: NONE left bytes in buf"); }
+  /* primary present wins over both copies */
+  fresh_card(); put(BX, boxA, BOXN); put(BX ".tmp", boxB, BOXN); put(BX ".bak", boxC, BOXN);
+  CHECK(brd(&sz) == BML_BOX_PRIMARY && memcmp(bout, boxA, BOXN) == 0, "#378: primary must win");
+  /* primary absent: the verified .tmp (newest) beats .bak */
+  fresh_card(); put(BX ".tmp", boxB, BOXN); put(BX ".bak", boxC, BOXN);
+  CHECK(brd(&sz) == BML_BOX_TMP && memcmp(bout, boxB, BOXN) == 0 && sz == BOXN, "#378: .tmp not preferred");
+  /* primary absent, no .tmp -> .bak */
+  fresh_card(); put(BX ".bak", boxC, BOXN);
+  CHECK(brd(&sz) == BML_BOX_BAK && memcmp(bout, boxC, BOXN) == 0, "#378: .bak not used");
+  /* a SHORT .tmp (torn / unverified) is not data: falls to .bak */
+  fresh_card(); put(BX ".tmp", boxB, 1000); put(BX ".bak", boxC, BOXN);
+  CHECK(brd(&sz) == BML_BOX_BAK && memcmp(bout, boxC, BOXN) == 0, "#378: short .tmp trusted");
+  /* short .tmp and no .bak -> NONE and the partial read must not leak */
+  fresh_card(); put(BX ".tmp", boxB, 1000);
+  CHECK(brd(&sz) == BML_BOX_NONE, "#378: short .tmp alone not NONE");
+  { unsigned nz = 0; for (unsigned i = 0; i < BOXN; i++) nz += bout[i] != 0; CHECK(nz == 0, "#378: partial tmp leaked into buf"); }
+  /* a short .bak is not data */
+  fresh_card(); put(BX ".bak", boxC, 100);
+  CHECK(brd(&sz) == BML_BOX_NONE, "#378: short .bak trusted");
+  /* present-but-short primary: BAD (no silent fallback), as box_load behaved before */
+  fresh_card(); put(BX, boxA, 1000); put(BX ".bak", boxC, BOXN);
+  CHECK(brd(&sz) == BML_BOX_BAD && sz == 1000, "#378: short primary must be BAD");
+  /* READ ERROR on a present primary is NOT absent: no fallback to the older .bak */
+  fresh_card(); put(BX, boxA, BOXN); put(BX ".bak", boxC, BOXN);
+  rd_fail_reads_after = 0;
+  CHECK(brd(&sz) == BML_BOX_READ_ERROR, "#378: read error on primary treated as absent/ok");
+  rd_fail_reads_after = -1;
+  /* ONE failed read at every step of the probe: a present primary is never mistaken for an absent one,
+   * so the older .tmp/.bak copies are never returned in its place */
+  { int saw_err = 0;
+    for (long n = 0; n < 8; n++) {
+      fresh_card(); put(BX, boxA, BOXN); put(BX ".tmp", boxB, BOXN); put(BX ".bak", boxC, BOXN);
+      f_mount(0, "", 0); f_mount(&s_fs, "", 1);
+      rd_fail_read_at = n;
+      BmlBoxSrc r = brd(&sz);
+      rd_fail_read_at = -1;
+      CHECK(r == BML_BOX_PRIMARY || r == BML_BOX_READ_ERROR, "#378: read fail at %ld returned fallback r=%d", n, (int)r);
+      if (r == BML_BOX_READ_ERROR) saw_err++;
+    }
+    CHECK(saw_err > 0, "#378: no read fault ever reached the probe (vacuous)"); }
+  /* primary absent, .tmp present but unreadable: READ_ERROR, never fall back past it to the older .bak */
+  fresh_card(); put(BX ".tmp", boxB, BOXN); put(BX ".bak", boxC, BOXN);
+  f_mount(0, "", 0); f_mount(&s_fs, "", 1);          /* drop the cached sectors so reads hit the disk */
+  rd_fail_reads_after = 0;
+  { BmlBoxSrc r = brd(&sz); CHECK(r == BML_BOX_READ_ERROR, "#378: unreadable .tmp fell past to .bak (r=%d)", (int)r); }
+  rd_fail_reads_after = -1;
+  /* argument validation */
+  CHECK(bml_box_read(NULL, bout, BOXN, &sz) == BML_BOX_READ_ERROR, "#378: NULL path");
+  CHECK(!bml_box_heal(BX, BML_BOX_PRIMARY, boxA, BOXN), "#378: heal accepted PRIMARY");
+  CHECK(!bml_box_heal(BX, BML_BOX_NONE, boxA, BOXN), "#378: heal accepted NONE");
+}
+
+static void box_heal_cases(void) {
+  uint32_t sz = 0;
+  /* TMP heal: rename in place, .tmp consumed, .bak untouched */
+  fresh_card(); put(BX ".tmp", boxB, BOXN); put(BX ".bak", boxC, BOXN);
+  CHECK(brd(&sz) == BML_BOX_TMP, "heal pre: not TMP");
+  CHECK(bml_box_heal(BX, BML_BOX_TMP, bout, BOXN), "#378: TMP heal failed");
+  CHECK(file_is(BX, boxB) && !exists(BX ".tmp") && file_is(BX ".bak", boxC), "#378: TMP heal result wrong");
+  /* BAK heal: primary created from .bak, .bak byte-identical, still there */
+  fresh_card(); put(BX ".bak", boxC, BOXN);
+  CHECK(brd(&sz) == BML_BOX_BAK, "heal pre: not BAK");
+  CHECK(bml_box_heal(BX, BML_BOX_BAK, bout, BOXN), "#378: BAK heal failed");
+  CHECK(file_is(BX, boxC) && file_is(BX ".bak", boxC), "#378: BAK heal result wrong");
+  /* a failed heal leaves the copies in place (retry next open) */
+  fresh_card(); put(BX ".tmp", boxB, BOXN); put(BX ".bak", boxC, BOXN);
+  CHECK(brd(&sz) == BML_BOX_TMP, "heal fail pre");
+  rd_fail_all_writes = 1;
+  bool hr = bml_box_heal(BX, BML_BOX_TMP, bout, BOXN);
+  rd_fail_all_writes = 0;
+  (void)hr;                                            /* result depends on whether the dir write is flushed */
+  { BmlBoxSrc r = brd(&sz); CHECK(r == BML_BOX_PRIMARY || r == BML_BOX_TMP, "#378: failed heal lost the box (r=%d)", (int)r);
+    CHECK(memcmp(bout, boxB, BOXN) == 0, "#378: failed heal changed the recovered bytes"); }
+}
+
+/* The point of the lane: sweep a box save (second save of a box = backup + verified write) over
+ * every k, fail exactly ONE disk write, then a cold boot (classify + heal) must show ALL the new
+ * or ALL the old mons, never an empty/short box, and two ordinary edits afterwards keep it. */
+static int sweep_rows, sweep_old_prim_only_bad;
+static void cold_boot(void) { f_mount(0, "", 0); CHECK(f_mount(&s_fs, "", 1) == FR_OK, "remount"); }
+
+static void sweep_one(int mode, long k) {
+  uint32_t sz = 0; bool backed;
+  fresh_card();
+  CHECK(sf_save_rolling(BX, boxA, BOXN, &backed) == SF_OK, "sweep seed save A");
+  CHECK(sf_save_rolling(BX, boxB, BOXN, &backed) == SF_OK, "sweep seed save B");   /* primary B, .bak A */
+  if (mode == 0) rd_fail_at = k; else rd_lie_after = k;      /* mode 0: one failed write; 1: the card lies from write k on */
+  (void)sf_save_rolling(BX, boxC, BOXN, &backed);            /* the faulted C save */
+  rd_fail_at = -1; rd_lie_after = -1; rd_lie_writes = 0;
+  cold_boot();                                               /* power cycle: only what reached the disk */
+  sweep_rows++;
+  if (f_stat(BX, 0) != FR_OK) sweep_old_prim_only_bad++;     /* the PRE-FIX primary-only read shows an empty box */
+  BmlBoxSrc r = brd(&sz);
+  bool known = memcmp(bout, boxA, BOXN) == 0 || memcmp(bout, boxB, BOXN) == 0 || memcmp(bout, boxC, BOXN) == 0;
+  bool good = (r == BML_BOX_PRIMARY || r == BML_BOX_TMP || r == BML_BOX_BAK) && sz == BOXN && known;
+  CHECK(good, "#378 sweep mode %d k=%ld: cold boot shows no box (r=%d sz=%u)", mode, k, (int)r, (unsigned)sz);
+  if (!good) return;
+  if (r != BML_BOX_PRIMARY)
+    CHECK(bml_box_heal(BX, r, bout, BOXN), "#378 sweep mode %d k=%ld: heal failed", mode, k);
+  uint8_t rec[BOXN]; memcpy(rec, bout, BOXN);
+  uint8_t d[BOXN]; box_fill(d, 9);
+  CHECK(sf_save_rolling(BX, d, BOXN, &backed) == SF_OK, "sweep k=%ld: edit D", k);
+  CHECK(file_is(BX ".bak", rec), "#378 sweep mode %d k=%ld: after edit D the .bak is not the recovered box", mode, k);
+  CHECK(file_is(BX, d), "sweep k=%ld: D not in place", k);
+  /* heal invariant: a recovered box reads back as the SAME bytes on the next cold boot */
+  cold_boot();
+  CHECK(brd(&sz) == BML_BOX_PRIMARY && memcmp(bout, d, BOXN) == 0, "sweep k=%ld: second boot", k);
+}
+
+static void box_save_sweep(void) {
+  for (int mode = 0; mode < 2; mode++)
+    for (long k = 0; k < 120; k++) sweep_one(mode, k);
+  CHECK(sweep_old_prim_only_bad > 0, "#378 sweep never produced an absent-primary window (test is vacuous)");
+  printf("sweep: %d rows, pre-fix primary-only read lost the box in %d\n", sweep_rows, sweep_old_prim_only_bad);
+}
+
+/* ---------------- Zy D3: the last-resort heal from bank.meta.tmp ---------------- */
+static bool mfile_is(const char* p, const uint8_t* b) {
+  FIL f; UINT br = 0; static uint8_t t[NEED];
+  if (f_open(&f, p, FA_READ) != FR_OK) return false;
+  FRESULT fr = f_read(&f, t, NEED, &br); f_close(&f);
+  return fr == FR_OK && br == NEED && memcmp(t, b, NEED) == 0;
+}
+
+static void meta_tmp_heal_cases(void) {
+  uint8_t good[NEED], junk[NEED], out[NEED];
+  meta_bytes(good, 0x11); memset(junk, 0xA5, sizeof junk);
+  /* absent primary: rename, .tmp consumed */
+  fresh_card(); put(TMP, good, NEED);
+  CHECK(rd(out) == BML_LAST_RESORT_ABSENT, "D3 pre: not LAST_RESORT_ABSENT");
+  CHECK(bml_meta_heal_tmp(DIR_, NEED), "D3: heal (absent primary) failed");
+  CHECK(mfile_is(META, good) && !exists(TMP), "D3: heal (absent) result wrong");
+  /* corrupt primary: replaced by the .tmp bytes */
+  fresh_card(); put(META, junk, NEED); put(TMP, good, NEED);
+  CHECK(rd(out) == BML_LAST_RESORT_BAD, "D3 pre: not LAST_RESORT_BAD");
+  CHECK(bml_meta_heal_tmp(DIR_, NEED), "D3: heal (corrupt primary) failed");
+  CHECK(mfile_is(META, good) && !exists(TMP), "D3: heal (corrupt) result wrong");
+  /* no .tmp -> refuses, touches nothing it cannot restore */
+  fresh_card(); put(META, junk, NEED);
+  CHECK(!bml_meta_heal_tmp(DIR_, NEED), "D3: heal with no .tmp claimed success");
+  CHECK(!bml_meta_heal_tmp(NULL, NEED) && !bml_meta_heal_tmp(DIR_, 0), "D3: heal accepted bad args");
+}
+
+/* The window: a card holding ONLY bank.meta.tmp. Open = read + heal + (a later) rolling meta write of
+ * changed names; the card lies from write k on. A cold boot must still find the names (ALPHA tag 0x11 or
+ * the newer 0x33), whatever k. `heal_by_write` re-enacts the PRE-FIX sequence (verified write straight
+ * over the primary, truncating the .tmp) and must lose the names at some k, or the sweep is vacuous. */
+static int msweep_rows, msweep_old_bad;
+static void msweep_one(int heal_by_write, long k) {
+  uint8_t g1[NEED], g2[NEED], out[NEED];
+  meta_bytes(g1, 0x11); meta_bytes(g2, 0x33);
+  fresh_card(); put(TMP, g1, NEED);
+  rd_lie_after = k;
+  BmlSource r = rd(out);
+  CHECK(r == BML_LAST_RESORT_ABSENT, "D3 sweep k=%ld: pre-read r=%d", k, (int)r);
+  if (heal_by_write) { (void)sf_write_verified(META, out, NEED); }
+  else { (void)bml_meta_heal_tmp(DIR_, NEED); }
+  bool backed;
+  (void)sf_save_rolling(META, g2, NEED, &backed);            /* the next ordinary names edit */
+  rd_lie_after = -1; rd_lie_writes = 0;
+  cold_boot();
+  r = rd(out);
+  bool names = (r == BML_PRIMARY || r == BML_BAK_PRIMARY_ABSENT || r == BML_BAK_PRIMARY_BAD ||
+                r == BML_LAST_RESORT_ABSENT || r == BML_LAST_RESORT_BAD || r == BML_LAST_RESORT_BAKTMP_ABSENT ||
+                r == BML_LAST_RESORT_BAKTMP_BAD) && (out[16] == 0x11 || out[16] == 0x33);
+  msweep_rows++;
+  if (heal_by_write) { if (!names) msweep_old_bad++; return; }
+  CHECK(names, "D3 sweep k=%ld: cold boot lost the names (r=%d tag=%02x)", k, (int)r, out[16]);
+}
+static void meta_tmp_sweep(void) {
+  for (long k = 0; k < 60; k++) { msweep_one(1, k); msweep_one(0, k); }
+  CHECK(msweep_old_bad > 0, "D3 sweep: the pre-fix sequence never lost the names (test is vacuous)");
+  printf("meta sweep: %d rows, pre-fix verified-write heal lost the names in %d\n", msweep_rows, msweep_old_bad);
+}
 
 int main(void) {
   uint8_t good[NEED], old[NEED], out[NEED], junk[NEED];
@@ -96,12 +294,57 @@ int main(void) {
   fresh_card(); put(DIR_ "/box16.box", junk, 64);
   CHECK(!bml_layout_exists(DIR_, 16), "box16 (out of range) counted");
 
-  /* a leftover .tmp is never trusted as data and never counts as a Bank */
+  /* #379 F3: a verified bank.meta.tmp / .baktmp is the LAST resort: used only when no .bak parses */
   fresh_card(); put(TMP, good, NEED);
   CHECK(!bml_layout_exists(DIR_, 16), "lone bank.meta.tmp counted as a Bank");
-  CHECK(rd(out) == BML_NONE_EMPTY, "lone bank.meta.tmp read as meta data");
+  CHECK(rd(out) == BML_LAST_RESORT_ABSENT && memcmp(out, good, NEED) == 0, "#379: lone .tmp not used as the last resort");
   fresh_card(); put(TMP, good, NEED); put(BAK, old, NEED);
-  CHECK(rd(out) == BML_BAK_PRIMARY_ABSENT && memcmp(out, old, NEED) == 0, ".tmp preferred over .bak");
+  CHECK(rd(out) == BML_BAK_PRIMARY_ABSENT && memcmp(out, old, NEED) == 0, "#379: .bak must be preferred over .tmp");
+  fresh_card(); put(META ".baktmp", old, NEED);
+  CHECK(rd(out) == BML_LAST_RESORT_BAKTMP_ABSENT && memcmp(out, old, NEED) == 0, "#379: lone .baktmp not used (zy D3: must report BAKTMP)");
+  fresh_card(); put(TMP, good, NEED); put(META ".baktmp", old, NEED);
+  CHECK(rd(out) == BML_LAST_RESORT_ABSENT && memcmp(out, good, NEED) == 0, "#379: .tmp must be preferred over .baktmp");
+  fresh_card(); put(TMP, junk, NEED); put(META ".baktmp", old, NEED);
+  CHECK(rd(out) == BML_LAST_RESORT_BAKTMP_ABSENT && memcmp(out, old, NEED) == 0, "#379: bad-magic .tmp must fall to .baktmp");
+  fresh_card(); put(TMP, good, 100);
+  CHECK(rd(out) == BML_NONE_EMPTY, "#379: a short (torn) .tmp was trusted");
+  fresh_card(); put(META, junk, NEED); put(TMP, good, NEED);
+  CHECK(rd(out) == BML_LAST_RESORT_BAD && memcmp(out, good, NEED) == 0, "#379: corrupt primary + only .tmp");
+  fresh_card(); put(TMP, good, NEED); put(DIR_ "/box07.box", junk, 64);
+  CHECK(rd(out) == BML_LAST_RESORT_ABSENT, "#379: .tmp must beat NONE_BOXES");
+
+  /* #379 F4: a card fault is not "missing" */
+  fresh_card(); put(META, good, NEED); put(BAK, old, NEED);
+  f_mount(0, "", 0); f_mount(&s_fs, "", 1);
+  rd_fail_reads_after = 0;
+  { BmlSource r = rd(out); CHECK(r == BML_READ_ERROR, "#379: stat failure on the primary returned %d", (int)r); }
+  CHECK(bml_layout_exists(DIR_, 16), "#379: a stat fault read as 'no Bank' (first-run path would write defaults)");
+  rd_fail_reads_after = -1;
+  { int errs = 0, fallbacks = 0;
+    for (long n = 0; n < 8; n++) {
+      fresh_card(); put(META, good, NEED); put(BAK, old, NEED);
+      f_mount(0, "", 0); f_mount(&s_fs, "", 1);
+      rd_fail_read_at = n;
+      BmlSource r = rd(out);
+      rd_fail_read_at = -1;
+      if (r == BML_READ_ERROR) errs++;
+      if (r != BML_PRIMARY && r != BML_READ_ERROR) { fallbacks++; printf("  read fault %ld -> source %d\n", n, (int)r); }
+    }
+    CHECK(fallbacks == 0, "#379: a transient read fault on a PRESENT primary fell back to .bak/NONE (%d)", fallbacks);
+    CHECK(errs > 0, "#379: no read fault ever reached bml_meta_read (vacuous)"); }
+  /* primary absent, .bak present but its read errors -> READ_ERROR, not .tmp/NONE */
+  { int errs = 0, bad = 0;
+    for (long n = 0; n < 8; n++) {
+      fresh_card(); put(BAK, old, NEED); put(TMP, good, NEED);
+      f_mount(0, "", 0); f_mount(&s_fs, "", 1);
+      rd_fail_read_at = n;
+      BmlSource r = rd(out);
+      rd_fail_read_at = -1;
+      if (r == BML_READ_ERROR) errs++;
+      if (r == BML_LAST_RESORT_ABSENT || r == BML_NONE_BOXES || r == BML_NONE_EMPTY) bad++;
+    }
+    CHECK(bad == 0, "#379: a read fault on .bak fell through to .tmp/NONE (%d)", bad);
+    CHECK(errs > 0, "#379: .bak read fault never reached (vacuous)"); }
 
   /* a box .bak / other stray files alone do not count */
   fresh_card(); put(DIR_ "/box00.box.bak", junk, 64);
@@ -110,6 +353,9 @@ int main(void) {
   /* argument validation */
   CHECK(!bml_layout_exists(NULL, 16), "NULL dir");
   CHECK(bml_meta_read(DIR_, 16, out, 10, NEED, MAGIC) == BML_NONE_EMPTY, "cap < need accepted");
+
+  box_decisions(); box_heal_cases(); box_save_sweep();
+  meta_tmp_heal_cases(); meta_tmp_sweep();
 
   if (fails) { printf("host_bank_layout_test: %d FAILED\n", fails); return 1; }
   printf("host_bank_layout_test: all passed\n");

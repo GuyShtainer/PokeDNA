@@ -36,5 +36,11 @@ int  pk_dex_count(const uint8_t* sb2, bool owned);
  * National). Edits SB2 + SB1 in place — commit both (SB2 sec0 + SB1 sec1..4). */
 bool pk_dex_national_on (const uint8_t* sb1, const uint8_t* sb2, PkGame g);
 void pk_dex_set_national(uint8_t* sb1, uint8_t* sb2, PkGame g, bool on);
+/* BACKLOG #380: the Emerald dex SORT-ORDER byte (SaveBlock2 pokedex+0x00 = sb2[0x18]) is zeroed by a
+ * locked -> unlocked pk_dex_set_national(true) (Catch ALL on a locked dex). The Undo of that bulk op
+ * needs to put it back, so the screen snapshots it with the dex and restores it through these. Only
+ * Emerald has the byte the setter touches: get returns 0 and set is a no-op for every other game. */
+uint8_t pk_dex_order_get(const uint8_t* sb2, PkGame g);
+void    pk_dex_order_set(uint8_t* sb2, PkGame g, uint8_t v);
 
 #endif /* GEN3_DEX_H */
