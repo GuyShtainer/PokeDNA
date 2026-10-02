@@ -8502,7 +8502,7 @@ static void clock_manual_entry(GbaRtcTime live) {
  * mirage dice u16s; nothing here can change a party member's personality or nickname
  * out from under an unshadowed content_dirty. If a future edit adds any party mutation
  * to this screen, content_dirty must start covering it too. */
-static void pdna_mirage(void) {
+static void __attribute__((noinline)) pdna_mirage(void) {
   int sel = 0;
   int pv_sel = -1; uint16_t pv_hi = 0; bool pv_have = false; int pv_owed = -2;
   bool pv_valid = false; uint32_t pv_gen = 0;
@@ -11837,6 +11837,31 @@ static void nav_open_bank(int* refresh_party) {
   *refresh_party = 1;
 }
 
+/* BACKLOG #354/#363: the open-time slot warning, out of line so view_save's (main's) frame does not absorb the
+ * dialog's call sites (a stack-margin lane: inlining it grew main by 80 B). */
+static void __attribute__((noinline)) save_slot_warn(void) {
+  /* gen3_parse_into preferred the intact slot over a damaged one. Read-only:
+   * nothing is repaired or rewritten here. A damaged slot the counter rule already
+   * skipped only logs; a damaged NEWER copy gets one dialog, shown at a safe point (no
+   * SD transfer is in flight). A 64 KiB file's absent slot B is never "signed", so it
+   * cannot reach either branch. */
+  if (g_vinfo.slot_damaged[0] || g_vinfo.slot_damaged[1])
+    log_line("save: slot damaged A=%d B=%d fallback=%d game_other=%d rej=%d", (int)g_vinfo.slot_damaged[0],
+             (int)g_vinfo.slot_damaged[1], (int)g_vinfo.damaged_fallback,
+             (int)g_vinfo.game_loads_other, (int)g_vinfo.ours_rejected);
+  if (g_vinfo.damaged_fallback || g_vinfo.game_loads_other) {
+    snd_error();
+    hb_pause(); perf_span_pause();
+    if (g_vinfo.ours_rejected)
+      msg_wait("SAVE MISMATCH", UI_WARN, "The game loads the other copy.", "This copy shown, read-only.");
+    else if (g_vinfo.game_loads_other)
+      msg_wait("DAMAGED SAVE", UI_WARN, "Game loads the damaged copy.", "Intact copy shown, read-only.");
+    else
+      msg_wait("DAMAGED SAVE", UI_WARN, "Newer copy damaged (old bug?)", "Opened the intact copy.");
+    perf_span_resume(); hb_resume();
+  }
+}
+
 /* Load the picked save and show it: start in the PC boxes; SELECT toggles to the
  * party list and back; B from either returns to the file browser. */
 static void view_save(const char* path) {
@@ -12244,26 +12269,7 @@ static void view_save(const char* path) {
   /* Right after the deepest call chain in the whole program. Until 421e867 this line
    * would have read OVERFLOW on every single save open. */
   stack_report("after parse");
-  /* BACKLOG #354: gen3_parse_into preferred the intact slot over a damaged one. Read-only:
-   * nothing is repaired or rewritten here. A damaged slot the counter rule already
-   * skipped only logs; a damaged NEWER copy gets one dialog, shown at a safe point (no
-   * SD transfer is in flight). A 64 KiB file's absent slot B is never "signed", so it
-   * cannot reach either branch. */
-  if (g_vinfo.slot_damaged[0] || g_vinfo.slot_damaged[1])
-    log_line("save: slot damaged A=%d B=%d fallback=%d game_other=%d rej=%d", (int)g_vinfo.slot_damaged[0],
-             (int)g_vinfo.slot_damaged[1], (int)g_vinfo.damaged_fallback,
-             (int)g_vinfo.game_loads_other, (int)g_vinfo.ours_rejected);
-  if (g_vinfo.damaged_fallback || g_vinfo.game_loads_other) {
-    snd_error();
-    hb_pause(); perf_span_pause();
-    if (g_vinfo.ours_rejected)
-      msg_wait("SAVE MISMATCH", UI_WARN, "The game loads the other copy.", "This copy shown, read-only.");
-    else if (g_vinfo.game_loads_other)
-      msg_wait("DAMAGED SAVE", UI_WARN, "Game loads the damaged copy.", "Intact copy shown, read-only.");
-    else
-      msg_wait("DAMAGED SAVE", UI_WARN, "Newer copy damaged (old bug?)", "Opened the intact copy.");
-    perf_span_resume(); hb_resume();
-  }
+  save_slot_warn();
   app_log_flush();
 
   load_phase_n(6, "party");

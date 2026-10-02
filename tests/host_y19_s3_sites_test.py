@@ -150,10 +150,14 @@ def checks(box: str, summ: str, main: str, jrn: str, lay: str, prog: str, pick: 
             and re.search(r"if \(g_vinfo\.damaged_fallback \|\| g_vinfo\.game_loads_other\)\s*\{\s*snd_error\(\);\s*hb_pause\(\);\s*perf_span_pause\(\);\s*"
                           r"if \(g_vinfo\.ours_rejected\)\s*msg_wait\(\"SAVE MISMATCH\", UI_WARN, \"The game loads the other copy\.\", \"This copy shown, read-only\.\"\);\s*"
                           r"else if \(g_vinfo\.game_loads_other\)\s*msg_wait\(\"DAMAGED SAVE\", UI_WARN,[^;]*;\s*else\s*msg_wait\(\"DAMAGED SAVE\", UI_WARN,[^;]*;\s*"
-                          r"perf_span_resume\(\);\s*hb_resume\(\);\s*\}", vsv) is not None
-            and vsv.count("DAMAGED SAVE") == 2 and vsv.count("SAVE MISMATCH") == 1 and "gen3_slot_consistent" not in vsv
-            and before(vsv, "gen3_parse_into(g_save, sz, &g_vinfo", "g_vinfo.damaged_fallback")
-            and before(vsv, "g_vinfo.damaged_fallback", "pk_read_party_auto(")
+                          r"perf_span_resume\(\);\s*hb_resume\(\);\s*\}", body(main, "save_slot_warn")) is not None
+            and vsv.count("DAMAGED SAVE") == 0 and body(main, "save_slot_warn").count("DAMAGED SAVE") == 2
+            and body(main, "save_slot_warn").count("SAVE MISMATCH") == 1 and "gen3_slot_consistent" not in vsv
+            and vsv.count("save_slot_warn();") == 1
+            and before(vsv, "gen3_parse_into(g_save, sz, &g_vinfo", "save_slot_warn();")
+            and before(vsv, "save_slot_warn();", "pk_read_party_auto(")
+            and re.search(r"__attribute__\(\(noinline\)\)\s*save_slot_warn\(void\)", strip_comments(main)) is not None
+            and re.search(r"__attribute__\(\(noinline\)\)\s*pdna_mirage\(void\)", strip_comments(main)) is not None
             and len(re.findall(r"bool app_can_edit\(void\)\s*\{[^}]*g_vinfo\.game_loads_other[^}]*\}", strip_comments(main))) == 2
             and "Game loads damaged copy." in body(main, "app_readonly_why")
             and "damaged save: locked  B back" in body(main, "app_readonly_footer")
@@ -234,6 +238,9 @@ def main() -> int:
     mutant("M-P16k ours_rejected falls into the damaged-copy wording", "main", "    if (g_vinfo.ours_rejected)\n      msg_wait(\"SAVE MISMATCH\"", "    if (0)\n      msg_wait(\"SAVE MISMATCH\"", "P16")
     mutant("M-P16l the read-only reason ignores ours_rejected", "main", "  if (g_vinfo.valid && g_vinfo.ours_rejected) return \"Game loads other copy.\";\n", "", "P16")
     mutant("M-P16m the read-only footer ignores ours_rejected", "main", "  if (g_vinfo.valid && g_vinfo.ours_rejected) return \"mismatch: locked  B back\";\n", "", "P16")
+    mutant("M-P16n the slot-warn helper loses noinline (main's frame +40 B, #363 stack floor)", "main", "static void __attribute__((noinline)) save_slot_warn(void) {", "static void save_slot_warn(void) {", "P16")
+    mutant("M-P16o pdna_mirage loses noinline (main's frame +24 B)", "main", "static void __attribute__((noinline)) pdna_mirage(void) {", "static void pdna_mirage(void) {", "P16")
+    mutant("M-P16p the helper call dropped from view_save", "main", "  save_slot_warn();\n  app_log_flush();", "  app_log_flush();", "P16")
     mutant("M-P16i the read-only reason ignores the damaged copy", "main", "  if (g_vinfo.valid && g_vinfo.game_loads_other) return \"Game loads damaged copy.\";\n", "", "P16")
     mutant("M-P13a the short-read predicate stripped (bare ok)", "main", "  if (ok && rsz < g_save_size) {", "  if (0) {", "P13")
     mutant("M-P13b the latch-clear no longer gated on ok", "main", "if (ok) imgf_partial_clear(&g_img);", "imgf_partial_clear(&g_img);", "P13")
