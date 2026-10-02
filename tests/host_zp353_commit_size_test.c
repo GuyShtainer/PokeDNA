@@ -5,9 +5,12 @@
  *
  * Models the three states of g_save after view_save loads a 64 KiB dump over a buffer that still holds a
  * DIFFERENT 128 KiB save (the real g_save is EWRAM and sf_read_full never touches the unread tail):
- *   (a) OLD  -- write all G3_SAVE_FILE_SIZE bytes: the stale tail becomes slot B, the reopen picks another trainer;
+ *   (a) OLD  -- write all G3_SAVE_FILE_SIZE bytes: the stale tail becomes a damaged slot B with the higher counter; since
+ *               #354 the parser still opens the fixture's trainer on slot A and flags damaged_fallback (before #354 it
+ *               opened the foreign trainer);
  *   (b) NEW  -- write g_save_size bytes: reopen gives the same trainer, slot A byte-identical;
- *   (c) PAD  -- the load-time 0xFF backstop: the tail holds no foreign bytes (a padded 128 KiB parse never names another trainer).
+ *   (c) PAD  -- the load-time 0xFF backstop: the tail holds no foreign bytes, and a padded 128 KiB parse still names the
+ *               fixture's trainer (the run prints slot 0, ctr [8,9]).
  * Corpus: Guy's own dumps (gitignored, outside the repo). LeafGreen's first 64 KiB is the fixture because
  * its head parses as an active slot A, and a stale Ruby tail makes slot 1 (counters [8,9]) win in the OLD world.
  * A missing corpus SKIPS. */
@@ -71,11 +74,9 @@ int main(void) {
   CHECK(memcmp(disk, fix, G3_SLOT_BYTES) == 0, "NEW image: slot A byte-identical to the fixture");
   CHECK(memcmp(disk, fix, HEAD) == 0, "NEW image: all %u written bytes equal the fixture head", (unsigned)HEAD);
 
-  /* (c) PAD backstop: view_save's memset(g_save + sz, 0xFF, cap - sz). Padding ALONE does not restore the old
-   * reading (the dump's own slot-B sectors 14/15 still carry a valid signature and a higher counter, so a
-   * 128 KiB parse picks the half-erased slot 1 and reports unreadable) -- it only guarantees that NO FOREIGN
-   * TRAINER'S BYTES survive in the tail. That is what is pinned: every tail byte is 0xFF, and a 128 KiB parse
-   * of the padded image never yields a trainer other than the fixture's. */
+  /* (c) PAD backstop: view_save's memset(g_save + sz, 0xFF, cap - sz). It guarantees that NO FOREIGN TRAINER'S
+   * BYTES survive in the tail. That is what is pinned: every tail byte is 0xFF, and a 128 KiB parse of the padded
+   * image never yields a trainer other than the fixture's (the padded slot B is unsigned, so slot A is read). */
   memset(gsave + g_save_size, 0xFF, G3_SAVE_FILE_SIZE - g_save_size);
   int tail_ff = 1;
   for (uint32_t i = g_save_size; i < G3_SAVE_FILE_SIZE; i++) if (gsave[i] != 0xFF) { tail_ff = 0; break; }
