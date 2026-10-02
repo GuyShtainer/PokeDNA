@@ -69,8 +69,8 @@ int main(void) {
 
   /* 3. hand-built torn slot: bump ONE sector's counter in the newer slot -- first, middle and last physical sector
    *    (sector 0 is the reference the others are compared against; sector 13 is the one the game takes the counter from) */
-  static const int TORN[3] = {0, 5, 13};
-  for (int g = 0; g < NG; g++) for (int k = 0; k < 3; k++) {
+  static const int TORN[14] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13};   /* every sector (re-verify F3) */
+  for (int g = 0; g < NG; g++) for (int k = 0; k < 14; k++) {
     Gen3SaveInfo in, t;
     parse(sav[g], G3_SAVE_FILE_SIZE, &in);
     memcpy(img, sav[g], sizeof img);

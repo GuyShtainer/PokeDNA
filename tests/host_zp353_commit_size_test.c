@@ -76,7 +76,7 @@ int main(void) {
 
   /* (c) PAD backstop: view_save's memset(g_save + sz, 0xFF, cap - sz). It guarantees that NO FOREIGN TRAINER'S
    * BYTES survive in the tail. That is what is pinned: every tail byte is 0xFF, and a 128 KiB parse of the padded
-   * image never yields a trainer other than the fixture's (the padded slot B is unsigned, so slot A is read). */
+   * image never yields a trainer other than the fixture's (slot B keeps the dump's signed sectors 14/15 over 0xFF padding: signed but damaged, so since #354 the parser reads slot A and sets damaged_fallback). */
   memset(gsave + g_save_size, 0xFF, G3_SAVE_FILE_SIZE - g_save_size);
   int tail_ff = 1;
   for (uint32_t i = g_save_size; i < G3_SAVE_FILE_SIZE; i++) if (gsave[i] != 0xFF) { tail_ff = 0; break; }
