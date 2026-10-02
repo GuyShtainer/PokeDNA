@@ -85,6 +85,8 @@ typedef struct {
   int      slot;            /* 0 or 1: the current (newer) save slot      */
   uint32_t counter[2];      /* save counters of both slots                */
   bool     slot_valid[2];   /* whether each slot had a valid signature    */
+  bool     slot_damaged[2]; /* #354: signed but not one coherent write     */
+  bool     damaged_fallback;/* #354: counter rule would have picked the other (damaged) slot */
   int      sections_found;  /* distinct valid section ids in current slot */
   bool     sb1_ok;          /* SaveBlock1 (ids 1..4) all present          */
 
@@ -169,6 +171,10 @@ typedef struct {
  * That is hard rule 2 ("never big buffers on the IWRAM stack") and it is why there
  * is no convenience overload for the cartridge build: the signature is the
  * enforcement. */
+/* #354: true iff all 14 sectors are signed, ids 0..13 each appear exactly once and
+ * all 14 counters are equal. False for a slot that does not fit in `size`. */
+bool     gen3_slot_consistent(const uint8_t* save, uint32_t size, int slot);
+
 bool     gen3_parse_into(const uint8_t* save, uint32_t size, Gen3SaveInfo* out,
                          uint8_t* sb1_scratch);
 

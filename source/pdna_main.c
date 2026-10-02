@@ -12238,6 +12238,18 @@ static void view_save(const char* path) {
   /* Right after the deepest call chain in the whole program. Until 421e867 this line
    * would have read OVERFLOW on every single save open. */
   stack_report("after parse");
+  /* BACKLOG #354: gen3_parse_into preferred the intact slot over a damaged one. Read-only:
+   * nothing is repaired or rewritten here. A damaged slot the counter rule already
+   * skipped only logs; a damaged NEWER copy gets one dialog, shown at a safe point (no
+   * SD transfer is in flight). A 64 KiB file's absent slot B is never "signed", so it
+   * cannot reach either branch. */
+  if (g_vinfo.slot_damaged[0] || g_vinfo.slot_damaged[1])
+    log_line("save: slot damaged A=%d B=%d fallback=%d", (int)g_vinfo.slot_damaged[0],
+             (int)g_vinfo.slot_damaged[1], (int)g_vinfo.damaged_fallback);
+  if (g_vinfo.damaged_fallback) {
+    snd_error();
+    msg_wait("DAMAGED SAVE", UI_WARN, "Newer copy damaged (old bug?)", "Opened the intact copy.");
+  }
   app_log_flush();
 
   load_phase_n(6, "party");
