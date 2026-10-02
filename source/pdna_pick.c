@@ -2117,6 +2117,22 @@ static void iv_cell(int v, int x, int y, int id) {
   }
 }
 
+/* #357c: held mode only -- a non-zero byte the list does not carry (an unused id) gets ONE
+ * preselected row of its own, inserted in id order, so A keeps the byte and B still cancels;
+ * without it the cursor sat on NO ITEM and an accidental A cleared the item. Returns the
+ * selected row (`sel` unchanged when the byte is already listed or no row applies). */
+static int item_held_row(u16* idx, int* np, uint16_t current, int sel) {
+  int n = *np;
+  if (!(g_item_max_id && g_item_allow_none && current != 0 && current <= 0xFFu && n < NITEM)) return sel;
+  int at = 0;
+  while (at < n && idx[at] < current) at++;
+  if (at < n && idx[at] == current) return sel;
+  for (int k = n; k > at; k--) idx[k] = idx[k - 1];
+  idx[at] = current;
+  *np = n + 1;
+  return at;
+}
+
 uint16_t pick_item(uint16_t current) {
   u16* idx = g_idx;
   char search[16] = "";
@@ -2139,17 +2155,7 @@ uint16_t pick_item(uint16_t current) {
   int n = item_build(idx, search, sort, cat, gamef);
   int sel = 0;
   for (int i = 0; i < n; i++) if (idx[i] == current) { sel = i; break; }
-  /* #357c: held mode only -- a non-zero byte the list does not carry (an unused id) gets ONE
-   * preselected row of its own, so A keeps the byte and B still cancels; without it the cursor
-   * sat on NO ITEM and an accidental A cleared the item. */
-  if (g_item_max_id && g_item_allow_none && current != 0 && current <= 0xFFu && n < NITEM) {
-    int at = 0;
-    while (at < n && idx[at] < current) at++;
-    if (at >= n || idx[at] != current) {
-      for (int k = n; k > at; k--) idx[k] = idx[k - 1];
-      idx[at] = current; n++; sel = at;
-    }
-  }
+  sel = item_held_row(idx, &n, current, sel);
 
   int prev_sel = -1, prev_top = -1, prev_view = -1, toprow = 0;
   unsigned gen = 0; bool valid = false;   /* gen term: osk_search paints its whole

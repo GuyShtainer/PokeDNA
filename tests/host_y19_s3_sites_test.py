@@ -38,6 +38,10 @@ One later pin rides along because it guards the same file at the same text level
       placeholder instead of the one-glyph text)
   P17 #360 (review-zr D5): gb_art_item_desc checks gb_art_have(PDNA_GEN2) BEFORE the one-entry cache hit, so a
       detached ROM never serves a stale cached description
+  P18 #356: the Day-Care view/edit loop and the new-mon summary mark the record Crystal-or-not from the SESSION
+      (gb_set_caught_available(.., gb_session_is_crystal(..)), at BOTH Day-Care slot loads and before the new-mon
+      pdna_gbsummary), because gb_load_parts leaves has_caught false and pdna_gbedit.c's held-item picker keys the
+      game off it
   P15 #353: view_save pads a short Gen-3 read with 0xFF (after the Game Boy fork, which keeps its pristine copy
       in the idle upper half), so no foreign trainer's bytes survive in g_save's tail
 """
@@ -84,7 +88,7 @@ def before(b: str, first: str, second: str) -> bool:
     return i >= 0 and j >= 0 and i < j
 
 
-def checks(box: str, summ: str, main: str, jrn: str, lay: str, prog: str, pick: str, gart: str) -> dict[str, bool]:
+def checks(box: str, summ: str, main: str, jrn: str, lay: str, prog: str, pick: str, gart: str, dcy: str, g12: str) -> dict[str, bool]:
     pb = body(box, "pdna_box")
     ps = body(summ, "pdna_summary")
     if not ps:                                   # the summary loop's function name differs; fall back to the whole file
@@ -99,6 +103,8 @@ def checks(box: str, summ: str, main: str, jrn: str, lay: str, prog: str, pick: 
     sdarm = asf.split("#else", 1)[1] if "#else" in asf else ""
     vsv = body(main, "view_save")
     idf = body(pick, "item_desc_for")             # #360
+    gdv = body(dcy, "gbdc_view_edit")            # #356
+    gnm = body(g12, "gb_create_hook")            # #356: the new-mon summary opener
     gid = body(gart, "gb_art_item_desc")          # #360
     return {
         "P1 box loop feeds chord_frame and wakes on the chord": bool(pb) and "chord_frame(&chord" in pb and "while (!k && !cev)" in pb,
@@ -138,6 +144,11 @@ def checks(box: str, summ: str, main: str, jrn: str, lay: str, prog: str, pick: 
             and before(idf, "d[1] == 0", "return PDNA_ITEM_NO_DESC_YET"),
         "P17 #360: gb_art_item_desc checks the ROM/detach switch before the cache hit": bool(gid)
             and before(gid, "gb_art_have(PDNA_GEN2)", "s_idesc.state") and "if (!gb_art_have(PDNA_GEN2)) return 0;" in gid,
+        "P18 #356: Day-Care + new-mon records are marked Crystal from the session": bool(gdv) and bool(gnm)
+            and gdv.count("gb_set_caught_available(&edited, gb_session_is_crystal(s))") == 2
+            and before(gdv, "gb_set_caught_available(&edited", "pdna_gbsummary(")
+            and "gb_set_caught_available(&box_mon, gb_session_is_crystal(&g_ed->s))" in gnm
+            and before(gnm, "gb_set_caught_available(&box_mon", "pdna_gbsummary(&box_mon"),
         "P12 #346b: progress-frame icon fallback retires the plan before the fetch": re.search(
             r"#if !PDNA_MON_ICONS_ART_COMPILED\s*icon_store_plan\(0, 0\);\s*#endif\s*"
             r"ui_sprite\(SPR_X \+ \(MON_FRONT_W - MON_ICON_W\) / 2, SPR_Y \+ \(MON_FRONT_H - MON_ICON_H\) / 2,\s*"
@@ -146,22 +157,22 @@ def checks(box: str, summ: str, main: str, jrn: str, lay: str, prog: str, pick: 
 
 
 def main() -> int:
-    box, summ, mn, jrn, lay, prog, pick, gart = (rd("pdna_box.c"), rd("pdna_summary.c"), rd("pdna_main.c"), rd("jrn_app.c"), rd("pdna_layout.h"), rd("pdna_progress.c"), rd("pdna_pick.c"), rd("gb_art_source.c"))
+    box, summ, mn, jrn, lay, prog, pick, gart, dcy, g12 = (rd("pdna_box.c"), rd("pdna_summary.c"), rd("pdna_main.c"), rd("jrn_app.c"), rd("pdna_layout.h"), rd("pdna_progress.c"), rd("pdna_pick.c"), rd("gb_art_source.c"), rd("pdna_gbdaycare.c"), rd("pdna_gen12.c"))
     print("real tree:")
-    real = checks(box, summ, mn, jrn, lay, prog, pick, gart)
+    real = checks(box, summ, mn, jrn, lay, prog, pick, gart, dcy, g12)
     for k, v in real.items():
         print(f"  {'ok  ' if v else 'FAIL'} {k}")
         if not v:
             fails.append(k)
 
     def mutant(tag: str, which: str, old: str, new: str, expect_red: str) -> None:
-        texts = {"box": box, "summ": summ, "main": mn, "jrn": jrn, "lay": lay, "prog": prog, "pick": pick, "gart": gart}
+        texts = {"box": box, "summ": summ, "main": mn, "jrn": jrn, "lay": lay, "prog": prog, "pick": pick, "gart": gart, "dcy": dcy, "g12": g12}
         if old not in texts[which]:
             print(f"  FAIL {tag}: target not found verbatim (source drifted)")
             fails.append(tag)
             return
         texts[which] = texts[which].replace(old, new, 1)
-        r = checks(texts["box"], texts["summ"], texts["main"], texts["jrn"], texts["lay"], texts["prog"], texts["pick"], texts["gart"])
+        r = checks(texts["box"], texts["summ"], texts["main"], texts["jrn"], texts["lay"], texts["prog"], texts["pick"], texts["gart"], texts["dcy"], texts["g12"])
         red = [k for k, v in r.items() if not v]
         ok = any(k.startswith(expect_red) for k in red)
         print(f"  {'ok  ' if ok else 'FAIL'} {tag}: mutant makes {expect_red} RED (red: {[k.split()[0] for k in red]})")
@@ -202,6 +213,9 @@ def main() -> int:
            "  if (!gb_art_have(PDNA_GEN2)) return 0;                           /* no ROM, or the detach switch: before the cache (review-zr D5) */\n  if (s_idesc.state && s_idesc.id == id) return s_idesc.state == 1 ? s_idesc.text : 0;",
            "  if (s_idesc.state && s_idesc.id == id) return s_idesc.state == 1 ? s_idesc.text : 0;\n  if (!gb_art_have(PDNA_GEN2)) return 0;", "P17")
     mutant("M-P17b the detach check dropped", "gart", "  if (!gb_art_have(PDNA_GEN2)) return 0;                           /* no ROM, or the detach switch: before the cache (review-zr D5) */\n", "", "P17")
+    mutant("M-P18a Day-Care slot-0 mark removed", "dcy", "  gb_set_caught_available(&edited, gb_session_is_crystal(s));   /* #356: gb_load_parts leaves has_caught false; the session knows Crystal */\n", "", "P18")
+    mutant("M-P18b Day-Care U/D reload mark removed", "dcy", " gb_set_caught_available(&edited, gb_session_is_crystal(s)); }", " }", "P18")
+    mutant("M-P18c new-mon mark removed", "g12", "  gb_set_caught_available(&box_mon, gb_session_is_crystal(&g_ed->s));", "", "P18")
     if fails:
         print("FAILED:", ", ".join(fails))
         return 1
