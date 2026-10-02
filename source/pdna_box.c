@@ -2472,13 +2472,16 @@ static void era_cell_mark(int slot) {
  * chunk-move path uses). A cell whose bitmap era PICTURE is up (s_era_drawn) keeps its pad:
  * the pad sits on that picture and a wallpaper rect there would punch a hole in it. Every
  * path out of the menu repaints the grid (render_full / need_full, which runs era_cells()),
- * so there is no separate restore. Loop bound: G3_BOX_SLOTS. */
-static void era_marks_hide(void) {
+ * so there is no separate restore. xmin clips the restore to x >= xmin (0 = none; the party-strip
+ * popup passes PDNA_PCP_OCCLUDE_X1 because its panel is still on screen). Loop bound: G3_BOX_SLOTS. */
+static void era_marks_hide(int xmin) {
   if (!boxoam_icons_available()) return;   /* artless: the "icons" are BG name chips that stay up with their pads (hiding the pad would notch the chip) */
   for (int s = 0; s < G3_BOX_SLOTS; s++) {
     if (!pdna_origin_box_mark(s) || (s_era_drawn & (1u << s))) continue;
-    wp_restore_rect(GRID_X + (s % COLS) * CELL_W + (CELL_W - 8),
-                    GRID_Y + (s / COLS) * CELL_H + (CELL_H - 9), 8, 9);
+    int px = GRID_X + (s % COLS) * CELL_W + (CELL_W - 8);
+    int x0 = px < xmin ? xmin : px;          /* #349: clip at xmin so an on-screen panel left of it is never painted into */
+    if (x0 >= px + 8) continue;              /* pad wholly left of the clip */
+    wp_restore_rect(x0, GRID_Y + (s / COLS) * CELL_H + (CELL_H - 9), px + 8 - x0, 9);
   }
 }
 
@@ -4137,6 +4140,7 @@ static int party_strip_overlay(BoxSource* src, int box, int* cur,
                                             * unreachable from this focus. */
           int mbox = src->is_bank ? 0 : box;
           boxoam_suspend();                 /* full-screen sub-view — own bracket, see box_oam.h */
+          era_marks_hide(PDNA_PCP_OCCLUDE_X1);  /* #349: era pads right of the pcp panel (clip: the panel stays on screen) */
           app_mon_menu(recs + (uint32_t)gcur * 80, false, src->is_bank, src->commit,
                        src->menu_block, mbox, gcur, UI_FOOTER_Y);
           boxoam_resume();
@@ -5304,7 +5308,7 @@ int pdna_box(BoxSource* src) {
         uint8_t* rec = recs + (uint32_t)cur * 80;
         int mbox = src->is_bank ? 0 : box;                               /* box index within menu_block */
         boxoam_suspend();                                                /* sprites off while the menu/summary is up */
-        era_marks_hide();                                                /* #337b: ...and the BG era pads with them */
+        era_marks_hide(0);                                               /* #337b: ...and the BG era pads with them */
         app_mon_menu(rec, false, src->is_bank, src->commit, src->menu_block, mbox, cur, UI_FOOTER_Y);
         boxoam_resume();
         recs = src->records(box);                                        /* menu may have edited it */
