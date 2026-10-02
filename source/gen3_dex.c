@@ -90,3 +90,11 @@ void pk_dex_set_national(uint8_t* sb1, uint8_t* sb2, PkGame g, bool on) {
     if (g == PK_EMERALD) sb2[DEX_POKEDEX + 0x01] = 0;
   }
 }
+
+/* BACKLOG #380: see gen3_dex.h. Same offset pk_dex_set_national zeroes (DEX_POKEDEX + 0x00). */
+uint8_t pk_dex_order_get(const uint8_t* sb2, PkGame g) {
+  return (sb2 && g == PK_EMERALD) ? sb2[DEX_POKEDEX + 0x00] : 0;
+}
+void pk_dex_order_set(uint8_t* sb2, PkGame g, uint8_t v) {
+  if (sb2 && g == PK_EMERALD) sb2[DEX_POKEDEX + 0x00] = v;
+}

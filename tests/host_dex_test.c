@@ -73,10 +73,43 @@ static int natl_view_case(void){
   return fail;
 }
 
+/* BACKLOG #380: Catch ALL on a LOCKED Emerald dex zeroes the sort-order byte; the Undo path
+ * (snapshot -> set_national(true) -> ... -> set_national(false) -> restore) must put it back. This
+ * drives the REAL pure functions in the same order pdna_pick.c's bulk op / Undo call them (the
+ * screen itself cannot link on the host; tests/host_zy_sites_test.py pins that order in the source). */
+static int order_undo_case(void){
+  int fail=0;
+  memset(nsb1,0,sizeof nsb1); memset(nsb2,0,sizeof nsb2); nsb2[ORDER_OFF]=2;      /* locked, sort order 2 */
+  uint8_t snap = pk_dex_order_get(nsb2,PK_EMERALD);
+  bool snap_natl = pk_dex_national_on(nsb1,nsb2,PK_EMERALD);
+  if (snap!=2 || snap_natl){ printf("  380: getter/snapshot wrong (%d)\n",snap); fail++; }
+  pk_dex_set_national(nsb1,nsb2,PK_EMERALD,true);                                 /* Catch ALL */
+  if (nsb2[ORDER_OFF]!=0){ printf("  380: premise: the unlock did not zero the order byte\n"); fail++; }
+  pk_dex_set_national(nsb1,nsb2,PK_EMERALD,false);                                /* Undo: natl back */
+  if (nsb2[ORDER_OFF]!=0){ printf("  380: premise: lock alone does not restore the order (the bug)\n"); fail++; }
+  pk_dex_order_set(nsb2,PK_EMERALD,snap);                                         /* Undo: order back */
+  if (nsb2[ORDER_OFF]!=2){ printf("  380: Undo did not restore the sort order (%d)\n",nsb2[ORDER_OFF]); fail++; }
+  /* an already-unlocked dex: the bulk op never touches the byte, restoring it is a same-value write */
+  memset(nsb1,0,sizeof nsb1); memset(nsb2,0,sizeof nsb2);
+  pk_dex_set_national(nsb1,nsb2,PK_EMERALD,true); nsb2[ORDER_OFF]=3;
+  snap = pk_dex_order_get(nsb2,PK_EMERALD);
+  pk_dex_set_national(nsb1,nsb2,PK_EMERALD,true); pk_dex_order_set(nsb2,PK_EMERALD,snap);
+  if (nsb2[ORDER_OFF]!=3){ printf("  380: already-on restore changed the order (%d)\n",nsb2[ORDER_OFF]); fail++; }
+  /* other games: getter reads 0, setter writes nothing */
+  memset(nsb2,0,sizeof nsb2); nsb2[ORDER_OFF]=9;
+  if (pk_dex_order_get(nsb2,PK_FRLG)!=0 || pk_dex_order_get(nsb2,PK_RS)!=0){ printf("  380: non-Emerald getter read the byte\n"); fail++; }
+  pk_dex_order_set(nsb2,PK_FRLG,1); pk_dex_order_set(nsb2,PK_RS,1);
+  if (nsb2[ORDER_OFF]!=9){ printf("  380: non-Emerald setter wrote the byte\n"); fail++; }
+  pk_dex_order_set(NULL,PK_EMERALD,1); if (pk_dex_order_get(NULL,PK_EMERALD)!=0){ printf("  380: NULL\n"); fail++; }
+  printf("%s\n\n", fail?"sort-order Undo (#380): FAIL":"sort-order Undo (#380): OK");
+  return fail;
+}
+
 int main(int c, char** v){
   int fail=0;
   fail += natl_roundtrip();
   fail += natl_view_case();
+  fail += order_undo_case();
   for (int a=1;a<c;a++){
     FILE* f=fopen(v[a],"rb"); if(!f)continue; size_t n=fread(save,1,sizeof save,f); fclose(f);
     Gen3SaveInfo info; if(!gen3_parse(save,(uint32_t)n,&info)){printf("%s parse fail\n",v[a]);fail++;continue;}

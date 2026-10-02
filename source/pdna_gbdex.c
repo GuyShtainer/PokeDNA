@@ -558,7 +558,7 @@ static bool gbdex_chooser(GbSession* s, bool can_edit) {
 #ifdef PDNA_DELTA
         pdna_dex_set_page_begin(gbdex_dex_page_begin);
 #endif
-        bool dex_dirty = pdna_dex_screen(gbdex_shim_get, gbdex_shim_set, NULL, NULL, can_edit);
+        bool dex_dirty = pdna_dex_screen(gbdex_shim_get, gbdex_shim_set, NULL, NULL, NULL, can_edit);
 #ifdef PDNA_DELTA
         gbdex_dex_page_flush_last();
         pdna_dex_set_page_begin(NULL);
@@ -610,7 +610,7 @@ bool pdna_gbdex(GbSession* s, bool can_edit) {
 #ifdef PDNA_DELTA
     pdna_dex_set_page_begin(gbdex_dex_page_begin);
 #endif
-    dirty = pdna_dex_screen(gbdex_shim_get, gbdex_shim_set, NULL, NULL, can_edit);
+    dirty = pdna_dex_screen(gbdex_shim_get, gbdex_shim_set, NULL, NULL, NULL, can_edit);
 #ifdef PDNA_DELTA
     gbdex_dex_page_flush_last();
     pdna_dex_set_page_begin(NULL);
