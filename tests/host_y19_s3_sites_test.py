@@ -34,6 +34,10 @@ One later pin rides along because it guards the same file at the same text level
   P14 #353: app_save_finalize's SD arm commits EXACTLY g_save_size bytes -- both sf_write_verified and
       sf_where_are_the_bytes take g_save_size (never the G3_SAVE_FILE_SIZE cap, which would write the previous
       save's bytes as a 64 KiB dump's slot B), and a size RAM gate refuses an impossible size BEFORE the write
+  P16 #360 (review-zr D3): pdna_pick.c's item_desc_for refuses an unused id's "?" description (returns the honest
+      placeholder instead of the one-glyph text)
+  P17 #360 (review-zr D5): gb_art_item_desc checks gb_art_have(PDNA_GEN2) BEFORE the one-entry cache hit, so a
+      detached ROM never serves a stale cached description
   P15 #353: view_save pads a short Gen-3 read with 0xFF (after the Game Boy fork, which keeps its pristine copy
       in the idle upper half), so no foreign trainer's bytes survive in g_save's tail
 """
@@ -80,7 +84,7 @@ def before(b: str, first: str, second: str) -> bool:
     return i >= 0 and j >= 0 and i < j
 
 
-def checks(box: str, summ: str, main: str, jrn: str, lay: str, prog: str) -> dict[str, bool]:
+def checks(box: str, summ: str, main: str, jrn: str, lay: str, prog: str, pick: str, gart: str) -> dict[str, bool]:
     pb = body(box, "pdna_box")
     ps = body(summ, "pdna_summary")
     if not ps:                                   # the summary loop's function name differs; fall back to the whole file
@@ -94,6 +98,8 @@ def checks(box: str, summ: str, main: str, jrn: str, lay: str, prog: str) -> dic
     asf = body(main, "app_save_finalize")         # #353
     sdarm = asf.split("#else", 1)[1] if "#else" in asf else ""
     vsv = body(main, "view_save")
+    idf = body(pick, "item_desc_for")             # #360
+    gid = body(gart, "gb_art_item_desc")          # #360
     return {
         "P1 box loop feeds chord_frame and wakes on the chord": bool(pb) and "chord_frame(&chord" in pb and "while (!k && !cev)" in pb,
         "P2 summary loop feeds chord_frame": "chord_frame(&chord" in ps,
@@ -127,6 +133,11 @@ def checks(box: str, summ: str, main: str, jrn: str, lay: str, prog: str) -> dic
         "P15 #353: view_save pads a short Gen-3 read with 0xFF after the Game Boy fork": bool(vsv)
             and re.search(r"if \(!err && sz < \(uint32_t\)G3_SAVE_FILE_SIZE\)\s*\{\s*memset\(g_save \+ sz, 0xFF, \(size_t\)G3_SAVE_FILE_SIZE - sz\);", vsv) is not None
             and before(vsv, "pdna_gen12_show_image(path, g_save, sz", "memset(g_save + sz, 0xFF"),
+        "P16 #360: item_desc_for refuses the unused id's \"?\" text": bool(idf)
+            and re.search(r"if \(d && !\(d\[0\] == '\?' && d\[1\] == 0\)\)\s*return d;", idf) is not None
+            and before(idf, "d[1] == 0", "return PDNA_ITEM_NO_DESC_YET"),
+        "P17 #360: gb_art_item_desc checks the ROM/detach switch before the cache hit": bool(gid)
+            and before(gid, "gb_art_have(PDNA_GEN2)", "s_idesc.state") and "if (!gb_art_have(PDNA_GEN2)) return 0;" in gid,
         "P12 #346b: progress-frame icon fallback retires the plan before the fetch": re.search(
             r"#if !PDNA_MON_ICONS_ART_COMPILED\s*icon_store_plan\(0, 0\);\s*#endif\s*"
             r"ui_sprite\(SPR_X \+ \(MON_FRONT_W - MON_ICON_W\) / 2, SPR_Y \+ \(MON_FRONT_H - MON_ICON_H\) / 2,\s*"
@@ -135,22 +146,22 @@ def checks(box: str, summ: str, main: str, jrn: str, lay: str, prog: str) -> dic
 
 
 def main() -> int:
-    box, summ, mn, jrn, lay, prog = (rd("pdna_box.c"), rd("pdna_summary.c"), rd("pdna_main.c"), rd("jrn_app.c"), rd("pdna_layout.h"), rd("pdna_progress.c"))
+    box, summ, mn, jrn, lay, prog, pick, gart = (rd("pdna_box.c"), rd("pdna_summary.c"), rd("pdna_main.c"), rd("jrn_app.c"), rd("pdna_layout.h"), rd("pdna_progress.c"), rd("pdna_pick.c"), rd("gb_art_source.c"))
     print("real tree:")
-    real = checks(box, summ, mn, jrn, lay, prog)
+    real = checks(box, summ, mn, jrn, lay, prog, pick, gart)
     for k, v in real.items():
         print(f"  {'ok  ' if v else 'FAIL'} {k}")
         if not v:
             fails.append(k)
 
     def mutant(tag: str, which: str, old: str, new: str, expect_red: str) -> None:
-        texts = {"box": box, "summ": summ, "main": mn, "jrn": jrn, "lay": lay, "prog": prog}
+        texts = {"box": box, "summ": summ, "main": mn, "jrn": jrn, "lay": lay, "prog": prog, "pick": pick, "gart": gart}
         if old not in texts[which]:
             print(f"  FAIL {tag}: target not found verbatim (source drifted)")
             fails.append(tag)
             return
         texts[which] = texts[which].replace(old, new, 1)
-        r = checks(texts["box"], texts["summ"], texts["main"], texts["jrn"], texts["lay"], texts["prog"])
+        r = checks(texts["box"], texts["summ"], texts["main"], texts["jrn"], texts["lay"], texts["prog"], texts["pick"], texts["gart"])
         red = [k for k, v in r.items() if not v]
         ok = any(k.startswith(expect_red) for k in red)
         print(f"  {'ok  ' if ok else 'FAIL'} {tag}: mutant makes {expect_red} RED (red: {[k.split()[0] for k in red]})")
@@ -185,6 +196,12 @@ def main() -> int:
     mutant("M-P14f a backup issued before the size gate", "main", "  /* #353: write exactly what view_save loaded.", "  (void)sf_backup(g_path, bak, sizeof(bak));\n  /* #353: write exactly what view_save loaded.", "P14")
     mutant("M-P15a the pad removed", "main", "    memset(g_save + sz, 0xFF, (size_t)G3_SAVE_FILE_SIZE - sz);", "", "P15")
     mutant("M-P15b the pad disabled", "main", "  if (!err && sz < (uint32_t)G3_SAVE_FILE_SIZE) {\n    /* g_save-write-ok: loader: pads", "  if (0) {\n    /* g_save-write-ok: loader: pads", "P15")
+    mutant("M-P16a the \"?\" filter reverted", "pick", "if (d && !(d[0] == '?' && d[1] == 0)) return d;", "if (d) return d;", "P16")
+    mutant("M-P16b the filter returns the placeholder only when d is NULL", "pick", "if (d && !(d[0] == '?' && d[1] == 0)) return d;", "if (d && d[0] != '?') return d;", "P16")
+    mutant("M-P17a the detach check moved after the cache hit", "gart",
+           "  if (!gb_art_have(PDNA_GEN2)) return 0;                           /* no ROM, or the detach switch: before the cache (review-zr D5) */\n  if (s_idesc.state && s_idesc.id == id) return s_idesc.state == 1 ? s_idesc.text : 0;",
+           "  if (s_idesc.state && s_idesc.id == id) return s_idesc.state == 1 ? s_idesc.text : 0;\n  if (!gb_art_have(PDNA_GEN2)) return 0;", "P17")
+    mutant("M-P17b the detach check dropped", "gart", "  if (!gb_art_have(PDNA_GEN2)) return 0;                           /* no ROM, or the detach switch: before the cache (review-zr D5) */\n", "", "P17")
     if fails:
         print("FAILED:", ", ".join(fails))
         return 1
