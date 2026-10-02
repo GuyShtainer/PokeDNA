@@ -136,17 +136,46 @@ def check_meta_save(body: list[str]) -> tuple[bool, str]:
 
 
 def check_meta_load_fallback(body: list[str]) -> tuple[bool, str]:
-    read_lines = [i for i, ln in enumerate(body) if SF_READ_FULL_RE.search(ln)]
-    if len(read_lines) < 2:
-        return False, f"meta_load(): expected 2 sf_read_full( calls (primary + .bak), found {len(read_lines)}"
-    if not any(BAK_SUFFIX_RE.search(ln) for ln in body):
-        return False, 'meta_load(): no \'"%s.bak", meta_path()\' fallback path construction found'
+    # BACKLOG #371: the primary-then-.bak read moved into bank_layout.c (bml_meta_read, host-tested
+    # in host_bank_layout_test.c); meta_load() must still call it BEFORE meta_defaults().
+    read_lines = [i for i, ln in enumerate(body) if re.search(r"\bbml_meta_read\(", ln)]
+    if not read_lines:
+        return False, "meta_load(): no bml_meta_read( call (primary + .bak source decision) found"
     defaults_lines = [i for i, ln in enumerate(body) if META_DEFAULTS_CALL_RE.search(ln)]
     if not defaults_lines:
         return False, "meta_load(): no meta_defaults() call found"
     if not (read_lines[-1] < defaults_lines[0]):
-        return False, "meta_load(): meta_defaults() is not called AFTER the .bak read attempt"
+        return False, "meta_load(): meta_defaults() is not called AFTER the bml_meta_read attempt"
     return True, ""
+
+
+def check_371_sites(lines: list[str]) -> tuple[bool, str]:
+    """layout_exists() must be bml_layout_exists (meta OR .bak OR any box), and pdna_bank_show()
+    must heal a .bak restore (meta_save() guarded by g_meta_from_bak) right after meta_load()."""
+    s, e = extract_function(lines, r"^static bool layout_exists\(void\) \{")
+    if not any(re.search(r"\breturn bml_layout_exists\(", ln) for ln in lines[s:e]):
+        return False, "layout_exists(): does not return bml_layout_exists(...) (BACKLOG #371)"
+    s, e = extract_function(lines, r"^int pdna_bank_show\(void\) \{")
+    body = lines[s:e]
+    load = [i for i, ln in enumerate(body) if re.search(r"\bmeta_load\(\)", ln)]
+    if not load:
+        return False, "pdna_bank_show(): no meta_load() call"
+    heal = [i for i, ln in enumerate(body) if "g_meta_from_bak" in ln and "meta_save()" in ln]
+    if not heal or heal[0] < load[0] or heal[0] > load[0] + 1:
+        return False, "pdna_bank_show(): no `meta_load() && g_meta_from_bak ... meta_save()` heal at the meta_load call"
+    mig = [i for i, ln in enumerate(body) if "migrate_flat_pk3()" in ln]
+    if not mig or not (mig[0] < load[0]):
+        return False, "pdna_bank_show(): migrate_flat_pk3() must stay gated before meta_load()"
+    return True, ""
+
+
+def self_test_mutation_detection_371(lines: list[str]) -> None:
+    mutated = [ln.replace("return bml_layout_exists(", "return layout_old_exists(") for ln in lines]
+    ok, detail = check_371_sites(mutated)
+    check(not ok, f"MUT 371a (layout_exists no longer bml_layout_exists) NOT caught ({detail!r})")
+    mutated = [ln.replace("g_meta_from_bak && app_can_edit() && !meta_save()", "app_can_edit()") for ln in lines]
+    ok, detail = check_371_sites(mutated)
+    check(not ok, f"MUT 371b (heal dropped) NOT caught ({detail!r})")
 
 
 def check_trust_flag(load_body: list[str], defaults_body: list[str]) -> tuple[bool, str]:
@@ -282,7 +311,11 @@ def main() -> int:
     ok, detail = check_backupv1_no_redo(backupv1_body)
     check(ok, detail)
 
+    ok, detail = check_371_sites(lines)
+    check(ok, detail)
+
     self_test_mutation_detection(lines)
+    self_test_mutation_detection_371(lines)
     self_test_mutation_detection_219a(lines)
     self_test_mutation_detection_219c(lines)
 
