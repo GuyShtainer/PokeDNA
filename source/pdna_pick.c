@@ -1869,7 +1869,7 @@ static const char* item_desc_for(uint16_t id) {
    * missing/unreadable ROM keeps the honest string. */
   if (g_item_gen == GBIN_GEN2 && id >= 1u && id <= 255u) {
     const char* d = gb_art_item_desc((uint8_t)id);
-    if (d) return d;
+    if (d && !(d[0] == '?' && d[1] == 0)) return d;            /* an unused id's "?" text: honest string (review-zr D3) */
   }
   return PDNA_ITEM_NO_DESC_YET;
 }

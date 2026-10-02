@@ -111,7 +111,7 @@ int rom_gbitem_desc(const RomGbItem* gi, uint8_t id, char* out, int cap) {
     else if (c < 0x7Fu) { out[0] = 0; return 0; }              /* any other control byte: refuse */
     else {
       gl = gb_char_decode(2, c, g);
-      if (gl <= 0) { out[0] = 0; return 0; }
+      if (gl <= 0 || g[0] == '{') { out[0] = 0; return 0; }   /* unknown glyph "{XX}": refuse (review-zr D4) */
     }
     if (w + gl >= cap) { out[0] = 0; return 0; }               /* does not fit: refuse, never truncate */
     memcpy(out + w, g, (size_t)gl);

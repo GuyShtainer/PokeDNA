@@ -100,7 +100,7 @@ static const uint16_t* gb_art_batch_icon(GbArtBatchImpl* b, uint8_t gen, uint16_
  * changed. ONE block, so "no SD in the emulator build" is a single fact instead of
  * five scattered ones. */
 /* BACKLOG #340b: the one-entry Gen-2 item description cache (gb_art_item_desc at the end of the file).
- * EWRAM_BSS, 68 B. state: 0 empty, 1 found (text valid), 2 known miss. */
+ * EWRAM_BSS, 66 B. state: 0 empty, 1 found (text valid), 2 known miss. */
 static EWRAM_BSS struct { uint8_t id, state; char text[ROM_GBITEM_DESC_MAX]; } s_idesc;
 
 #ifndef PDNA_DELTA
@@ -1265,10 +1265,10 @@ void gb_art_session_reset(void) {
  * remembers a MISS too (state 2), so a ROM-less or unreadable card costs one attempt per id,
  * not one per frame. Cleared by gb_art_session_reset() and gb_art_register(). */
 const char* gb_art_item_desc(uint8_t id) {
+  if (!gb_art_have(PDNA_GEN2)) return 0;                           /* no ROM, or the detach switch: before the cache (review-zr D5) */
   if (s_idesc.state && s_idesc.id == id) return s_idesc.state == 1 ? s_idesc.text : 0;
   s_idesc.id = id; s_idesc.state = 2; s_idesc.text[0] = 0;
   if (id < 1u || id > ROM_GBITEM_MAX_ID) return 0;                 /* TM/HM block etc.: no I/O at all */
-  if (!gb_art_have(PDNA_GEN2)) return 0;                           /* no ROM, or the detach switch */
   if (gb_art_item_desc_read(id, s_idesc.text)) s_idesc.state = 1; else s_idesc.text[0] = 0;
   return s_idesc.state == 1 ? s_idesc.text : 0;
 }

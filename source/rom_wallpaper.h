@@ -126,7 +126,7 @@
 typedef struct RomWallpaper {
   const RomCtx* rc;
   uint32_t table;   /* FILE offset of the 16-row standard wallpaper table */
-  int      ok;      /* 1 = a pin matched AND row 0's tilemap self-checked to 720 B */
+  uint8_t  ok;      /* 1 = a pin matched AND row 0's tilemap self-checked to 720 B */
   uint8_t  rs;      /* 1 = Ruby/Sapphire row layout (16-B rows, 3 palette banks, #311) */
 } RomWallpaper;
 
