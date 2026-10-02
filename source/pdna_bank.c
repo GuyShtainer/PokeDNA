@@ -25,6 +25,7 @@
 #include "pdna_app.h"     /* app_can_edit, app_confirm */
 #include "pdna_pk.h"      /* PDNA_BANK_DIR */
 #include "pdna_bank.h"
+#include "bank_layout.h"  /* BACKLOG #371: layout_exists / meta source decisions (pure, host-tested) */
 #include "bank_cell.h"    /* bc_is_native -- box_save's native invariant (BACKLOG #150 S150-3) */
 #include "bank_plant.h"   /* PDNA_DELTA-only test plant (BACKLOG #150 S150-2 step 6) */
 #include "pdna_layout.h"  /* PDNA_BANKSAVE_* -- box_save's SF_ERR_RENAME switch (S150-0 F4) */
@@ -133,25 +134,27 @@ static void meta_defaults(void) {
  * forcing a real call/return frees those bytes before the deep chain begins. Pure
  * stack-layout change, no behavior change (same code, same order). */
 static bool __attribute__((noinline)) meta_load(void) {
-  uint8_t buf[META_BYTES]; uint32_t sz = 0;
-  bool ok = sf_read_full(meta_path(), buf, sizeof buf, &sz) == SF_OK && sz >= META_BYTES &&
-            memcmp(buf, META_MAGIC, 6) == 0;
-  /* BACKLOG #168b: meta_save() now takes a rolling .bak (sf_save_rolling, same as
-   * box_save()) -- fall back to it when the primary bank.meta is unreadable or
-   * fails to parse. `bak[40]` is sized to the fixed, known path
-   * (PDNA_BANK_DIR "/bank.meta.bak" is well under 40 bytes), not SF_PATH_MAX (272 B):
-   * this is a noinline leaf, but there is no reason to pay for a general path buffer
-   * to hold one constant-shaped string. */
-  bool from_bak = false;
-  if (!ok) {
-    char bak[40]; siprintf(bak, "%s.bak", meta_path());
-    ok = sf_read_full(bak, buf, sizeof buf, &sz) == SF_OK && sz >= META_BYTES &&
-         memcmp(buf, META_MAGIC, 6) == 0;
-    if (ok) {
-      from_bak = true;
-      log_line("bank: meta primary unreadable/corrupt, restored from bank.meta.bak");
-      app_log_flush();
-    }
+  uint8_t buf[META_BYTES];
+  /* BACKLOG #371: the source decision (primary / .bak / nothing) lives in bank_layout.c so a
+   * host test drives the REAL logic. An ABSENT primary with a good .bak takes the same restore
+   * path as a corrupt primary (the interrupted-write window unlink -> rename leaves exactly
+   * that); a leftover bank.meta.tmp is never read as data (it is left in place: it may hold the
+   * only copy of a newer verified write, and the next sf_write_verified truncates it anyway --
+   * savefile.c's "keep the .tmp" convention). */
+  BmlSource src = bml_meta_read(PDNA_BANK_DIR, BANK_BOXES, buf, sizeof buf, META_BYTES, META_MAGIC);
+  bool from_bak = src == BML_BAK_PRIMARY_ABSENT || src == BML_BAK_PRIMARY_BAD;
+  bool ok = src == BML_PRIMARY || from_bak;
+  if (src == BML_BAK_PRIMARY_ABSENT) {
+    log_line("bank: meta primary missing, restored from bank.meta.bak");
+    app_log_flush();
+  } else if (src == BML_BAK_PRIMARY_BAD) {
+    log_line("bank: meta primary unreadable/corrupt, restored from bank.meta.bak");
+    app_log_flush();
+  } else if (src == BML_NONE_BOXES) {
+    /* Neither copy is usable but box files exist: an existing Bank. Names stay at their
+     * defaults in RAM, the 16-box scan + serial resync run as before; nothing is written here. */
+    log_line("bank: meta missing (no primary, no .bak) but box files exist - default names in RAM");
+    app_log_flush();
   }
   if (!ok) { meta_defaults(); return false; }
   for (int b = 0; b < BANK_BOXES; b++) {
@@ -637,8 +640,8 @@ static void __attribute__((noinline)) migrate_flat_pk3(void) {
 /* True once the new layout has been initialised (bank.meta written) — so an empty
  * bank is migrated/initialised exactly once, not on every open. */
 static bool layout_exists(void) {
-  FILINFO fno;
-  return f_stat(meta_path(), &fno) == FR_OK;
+  /* BACKLOG #371: bank.meta OR bank.meta.bak OR any boxNN.box -- an existing Bank is never "first run". */
+  return bml_layout_exists(PDNA_BANK_DIR, BANK_BOXES);
 }
 
 /* BACKLOG #150 S150-4 decision 3: the one-shot immutable pre-#150 snapshot hard rule 3
@@ -833,7 +836,13 @@ int pdna_bank_show(void) {
   f_mkdir(PDNA_BANK_DIR);
 
   if (app_can_edit() && !layout_exists()) migrate_flat_pk3();   /* first run: import old .pk3 */
-  meta_load();
+  /* BACKLOG #371: a restore from .bak rewrites the primary NOW (verified-write), before any other
+   * meta_save() can roll .bak forward; meta_save()'s from-bak unlink step keeps .bak intact. A failed
+   * heal leaves the primary absent and .bak untouched, so the next open simply retries. */
+  if (meta_load() && g_meta_from_bak && app_can_edit() && !meta_save()) {
+    log_line("bank: meta heal from bank.meta.bak failed - .bak kept, will retry next open");
+    app_log_flush();
+  }
   /* review F1: a fresh session starts with no box resident and nothing pending -- the
    * unsaved marker from any PRIOR session must not survive to describe a box this one
    * has not touched yet. */

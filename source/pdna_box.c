@@ -1549,10 +1549,13 @@ static uint8_t* __attribute__((noinline)) drop_held_up(BoxSource* src, int box, 
        * dialog left standing. */
       snd_error();
       msg_wait(PDNA_XFER_LIFT_REFUSED_TITLE, UI_WARN, PDNA_XFER_LIFT_REFUSED_L1, PDNA_XFER_LIFT_REFUSED_L2);
+    } else if (lift_rc == XG_LIFT_CARD) {                 /* #372b: say it is the card, not the packing */
+      snd_error();
+      msg_wait(PDNA_XFER_LIFT_REFUSED_TITLE, UI_WARN, PDNA_XFER_LIFT_CARD_L1, PDNA_XFER_LIFT_CARD_L2);
     }
     boxoam_resume();
     log_line("bank: up box %d slot %d -> bank box %d slot %d: lift %s", s_orig_box, s_orig_slot, box, cur,
-              lift_rc == XG_LIFT_CANCELLED ? "cancelled" : "refused");
+              lift_rc == XG_LIFT_CANCELLED ? "cancelled" : lift_rc == XG_LIFT_CARD ? "refused (card write)" : "refused");
     app_log_flush();
     return recs;                                          /* still holding */
   }
@@ -1655,7 +1658,7 @@ static uint8_t* __attribute__((noinline)) drop_held_up(BoxSource* src, int box, 
        * msg_wait BEFORE boxoam_resume(), same as the backup-gate refusal above (the
        * comment on the write-failure branch below says this bracket's own reason:
        * sprites must be off while a dialog draws). */
-      msg_wait(PDNA_BANK_COLL_TITLE, UI_WARN, PDNA_BANK_COLL_L1, NULL);
+      msg_wait(PDNA_BANK_COLL_TITLE, UI_WARN, PDNA_BANK_COLL_L1, PDNA_BANK_COLL_L2);
       boxoam_resume();
       log_line("bank: up box %d slot %d -> bank box %d slot %d: ident32 collision at box %d slot %d, refusing", s_orig_box, s_orig_slot, box, cur, coll_box, coll_slot);
       app_log_flush();
@@ -4626,6 +4629,17 @@ static void chord_refuse(const char* title, const char* l1, const char* l2) {
   boxoam_resume();
 }
 
+/* BACKLOG #372a: a refused MOVE-mode grab used to be a bare beep (XFER-UP4: a party-Mail refusal left no log line and
+ * no on-screen reason). Beep as before; on a Game Boy grid also log the reason and queue it as the footer toast. */
+static void __attribute__((noinline)) grab_refused(const BoxSource* src, int box, int slot, char toast[26]) {
+  snd_deny();
+  if (src->scope != BOXSCOPE_GB) return;
+  const char* why = gb_lift_why_note(box, slot);
+  if (!why) return;
+  siprintf(toast, "%.25s", why);
+  log_line("grab refused: GB box %d slot %d - %s", box, slot, why);
+}
+
 enum { BCA_NONE = 0, BCA_CHANGED = 1, BCA_HISTORY = 2 };   /* nothing / the image changed (re-fetch) / open the History screen */
 static int __attribute__((noinline)) box_chord_action(int ev, char toast[26], bool* need_full) {
   char name[25], l1[40];
@@ -5266,7 +5280,7 @@ int pdna_box(BoxSource* src) {
     else if (k & KEY_DOWN)  { if (src->is_bank && cur + COLS >= COLS * ROWS) { app_box_resume_note(box, cur); boxoam_exit(); return 5; }   /* off the PHYSICAL bank bottom -> PC tabs; a capacity edge mid-grid (GB source) wraps below instead (b200 review A1) */
                               else cur = (cur + COLS >= cap) ? cur % COLS : cur + COLS; }
     else if ((k & KEY_A) && s_cur_mode == CM_MOVE) {     /* orange hand: TAP = grab one; HOLD+DPAD = rubber-band multi-select */
-      if (!src_can_lift(src, box, cur)) snd_deny();
+      if (!src_can_lift(src, box, cur)) grab_refused(src, box, cur, toast);   /* #372a: beep + log + why-toast */
       else recs = begin_select(src, box, recs, cur, &need_full);
     }
     else if ((k & KEY_A) && s_cur_mode == CM_ITEM) {     /* transparent hand: pick up the held item */

@@ -160,6 +160,10 @@ typedef struct {
 /* Could a file of this size be a GB battery save? 32 KiB, plus the 44/48-byte MBC3
  * RTC footer emulators append (bgb.bircd.org/rtcsave.html). Deliberately a SIZE
  * test only — the file browser calls this before anything is parsed. */
+/* BACKLOG #372a: why a MOVE-mode grab of (box, slot) on the GB grid was refused (a short PDNA_GB_LIFT_WHY_*
+ * bucket, fits the grid toast), or NULL when nothing refuses it / not a GBA build. */
+const char* gb_lift_why_note(int box, int slot);
+
 bool pdna_gen12_size_is_gb(uint32_t size);
 
 /* Identify + open. Tries Gen 2 FIRST (a 16-bit checksum over ~3 KB is a far stronger

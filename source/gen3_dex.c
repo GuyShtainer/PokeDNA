@@ -72,14 +72,21 @@ bool pk_dex_national_on(const uint8_t* sb1, const uint8_t* sb2, PkGame g) {
 void pk_dex_set_national(uint8_t* sb1, uint8_t* sb2, PkGame g, bool on) {
   NatlParams p = natl_params(g);
   if (on) {
+    /* BACKLOG #370: the Emerald dex VIEW (+0x01) / ORDER (+0x00) bytes are written ONLY on the
+     * locked -> unlocked transition. A Catch ALL on a save whose National Dex is ALREADY on used to
+     * flip a Hoenn-view dex to the National list (and zero its sort order) without National changing. */
+    bool was_on = pk_dex_national_on(sb1, sb2, g);
     sb2[p.magic_off] = p.magic;
     sb1[p.var_off]     = (uint8_t)(p.var_val & 0xFF);
     sb1[p.var_off + 1] = (uint8_t)(p.var_val >> 8);
     pk_flag_set(sb1, g, p.flag, true);
-    if (g == PK_EMERALD) { sb2[DEX_POKEDEX + 0x01] = 1; sb2[DEX_POKEDEX + 0x00] = 0; }  /* DEX_MODE_NATIONAL, order 0 */
+    if (g == PK_EMERALD && !was_on) { sb2[DEX_POKEDEX + 0x01] = 1; sb2[DEX_POKEDEX + 0x00] = 0; }  /* DEX_MODE_NATIONAL, order 0 */
   } else {
     sb2[p.magic_off] = 0;
     sb1[p.var_off] = 0; sb1[p.var_off + 1] = 0;
     pk_flag_set(sb1, g, p.flag, false);
+    /* BACKLOG #370: a National VIEW with National locked is a state the game cannot reach (the Catch ALL
+     * Undo and the Natl Dex: OFF toggle both land here): put the view back to Hoenn (0). */
+    if (g == PK_EMERALD) sb2[DEX_POKEDEX + 0x01] = 0;
   }
 }
