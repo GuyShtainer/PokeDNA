@@ -31,6 +31,11 @@
 #define ROW_Y0   21
 #define HDR_MAX  64
 
+/* #362: set by the Bank path (native_summary_run) from the record's authoritative meta.origin_game for the
+ * duration of one pdna_gbsummary call; has_caught (capture bytes) stays untouched -- it also gates Met rows. */
+static u8 EWRAM_BSS s_crystal_origin;
+void gbedit_set_crystal_origin(bool on) { s_crystal_origin = on ? 1 : 0; }
+
 static void s_vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
 static u16  s_wait(u16 mask) {
   u16 k; do { s_vsync(); k = key_hit(mask); } while (!k);
@@ -321,8 +326,9 @@ void gbedit_press(GbEditMon* e, int f, bool has_sidecar, bool* dv_warned) {
   if (kind == GBE_K_ITEM) {
     /* #340a: real names. Only Gen 2 reaches here (gbe_fields drops GBE_ITEM on Gen 1, where the
      * byte is the catch rate). has_caught is the session's Crystal flag: gb_mark_caught (live editor) and, since #356,
-     * the Day-Care / new-mon call sites set it from gb_session_is_crystal; a Bank-unpacked record has no flag and reads as GS. */
-    GbGame g = e->has_caught ? GBF_G_CRYSTAL : GBF_G_GS;
+     * the Day-Care / new-mon call sites set it from gb_session_is_crystal; a Bank record has no flag --
+     * native_summary_run's gbedit_set_crystal_origin (#362) supplies Crystal from meta.origin_game. */
+    GbGame g = (e->has_caught || s_crystal_origin) ? GBF_G_CRYSTAL : GBF_G_GS;
     pick_item_set_gen1_2_held(GBIN_GEN2, g, gbb_max_item_id(g));
     uint16_t id = pick_item(gb_get_held_item(e));
     pick_item_set_gen1_2(0, GBF_G_RED, 0);

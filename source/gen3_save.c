@@ -445,7 +445,7 @@ bool gen3_slot_consistent(const uint8_t* save, uint32_t size, int slot) {
  * counters NOT compared. *last = the counter of the slot's LAST sector read (physical sector 13),
  * which is the counter the game takes for that slot (pret save.c GetSaveValidStatus assigns the
  * slot counter on every sector pass, so the last one wins; confirmed in pokeemerald, reference only).
- * Sector checksums are not re-verified here (per-id data sizes are not known to the parser). */
+ * Checksums of ids 1-3, 5-12 (full 3968-byte sections) are verified; ids 0/4/13 are exempt (per-game sizes). */
 static bool slot_game_ok(const uint8_t* save, uint32_t size, int slot, uint32_t* last) {
   uint32_t base = (uint32_t)slot * G3_SLOT_BYTES, seen = 0;
   if (base + (uint32_t)G3_SLOT_BYTES > size) return false;
@@ -455,6 +455,11 @@ static bool slot_game_ok(const uint8_t* save, uint32_t size, int slot, uint32_t*
     uint16_t id = rd16(sec + G3_OFF_ID);
     if (id >= G3_SECTORS_PER_SLOT || (seen & (1u << id))) return false;
     seen |= 1u << id;
+    /* #361: the game also rejects a bad sector checksum. Ids 0/4/13 have PER-GAME data sizes the parser
+     * does not know yet (version_guess comes later), so they stay exempt -- never guess a size: a wrong
+     * one would unlock edits while the game loads the damaged copy. */
+    if (id != 0 && id != 4 && id != 13 &&
+        gen3_checksum(sec, G3_SECTOR_DATA_SIZE) != rd16(sec + G3_OFF_CHECKSUM)) return false;
     *last = rd32(sec + G3_OFF_COUNTER);
   }
   return true;
