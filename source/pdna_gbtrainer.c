@@ -274,9 +274,11 @@ static void gbtr_plain_render(const GbTrainer* t, bool gen1, const int* rows, in
       gbtr_row_paint(t, rows[i], gen1, row_y0 + i * 9, i == sel);
     ui_hline(0, 151, UI_SCR_W, UI_BORDER);
     ui_text(4, 152, UI_DIM, can_edit ? "A edit  START save  B cancel" : app_gb_readonly_footer());
-  } else if (sel != pv->sel) {
-    gbtr_row_paint(t, rows[pv->sel], gen1, row_y0 + pv->sel * 9, false);
-    gbtr_row_paint(t, rows[sel],     gen1, row_y0 + sel     * 9, true);
+  } else {
+    /* #366 D2: always repaint the current row too -- an in-place edit (Mom's saving) changes the
+     * value with `sel` unmoved and opens no overlay that would force a full repaint. */
+    if (sel != pv->sel) gbtr_row_paint(t, rows[pv->sel], gen1, row_y0 + pv->sel * 9, false);
+    gbtr_row_paint(t, rows[sel], gen1, row_y0 + sel * 9, true);
   }
 
   pv->sel = sel; pv->gen = ui_clear_gen(); pv->valid = true;
@@ -294,7 +296,14 @@ static void gbtr_edit_row(GbTrainer* t, bool gen1, int kind) {
       char b[GB_TEXT_MAX];        /* t.name is char[GB_TEXT_MAX]; UTF-8 decoded,
                                     * a truncated buffer here silently drops glyphs
                                     * (P1b review D1) */
-      if (osk_input("TRAINER NAME", t->name, b, sizeof b)) strcpy(t->name, b);
+      if (osk_input("TRAINER NAME", t->name, b, sizeof b)) {
+        bool renamed = strcmp(t->name, b) != 0;   /* same text = untouched record (keeps the no-op memcmp honest) */
+        strcpy(t->name, b);
+        /* #366 D3/D4: both real cards (g1card_paint / g2card_paint_upper) draw name_raw, the GB-encoded
+         * twin of `name` -- keep it in step or the card face shows the OLD name until the visit ends.
+         * (gbt_write commits `name` alone; name_raw is display-only.) */
+        if (renamed) (void)gb_name_encode(gen1 ? GB_GEN1 : GB_GEN2, t->name_raw, GB_NAME_BYTES, GB_OT_GLYPHS, t->name);
+      }
     } break;
     case GBTR_ID:
       if (!gbtr_id_edit_ok()) break;
