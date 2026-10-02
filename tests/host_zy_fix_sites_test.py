@@ -93,7 +93,7 @@ def p_d3(bank: str, box: str) -> str | None:
 
 def p_d4(bank: str, box: str) -> str | None:
     bc = func(bank, r"^static bool banksrc_commit\(void\) \{")
-    if not re.search(r"if\s*\(\s*!meta_save\(\)\s*&&\s*ok\s*\)\s*\n?\s*msg_wait\(\s*PDNA_BANK_META_TITLE,\s*UI_WARN,\s*PDNA_BANK_META_L1,\s*PDNA_BANK_META_L2\s*\)", bc):
+    if not re.search(r"if\s*\(\s*!meta_save\(\)\s*\)\s*\n?\s*msg_wait\(\s*PDNA_BANK_META_TITLE,\s*UI_WARN,\s*PDNA_BANK_META_L1,\s*PDNA_BANK_META_L2\s*\)", bc):
         return "banksrc_commit: a failed meta_save is silent"
     return None
 
@@ -131,7 +131,7 @@ PINS = [
         (BANK, "bml_meta_heal_tmp(PDNA_BANK_DIR, META_BYTES)", "false"),
         (BANK, "      g_meta_state = 2;\n      log_line(\"bank: meta heal from .tmp failed", "      log_line(\"bank: meta heal from .tmp failed"),
     ]),
-    ("D4", p_d4, [(BANK, "if (!meta_save() && ok)", "meta_save();\n  if (0)")]),
+    ("D4", p_d4, [(BANK, "if (!meta_save())\n    msg_wait(PDNA_BANK_META_TITLE", "meta_save();\n  if (0)\n    msg_wait(PDNA_BANK_META_TITLE")]),
     ("D5", p_d5, [(BANK, "if (f_stat(src, 0) == FR_NO_FILE) (void)box_load(b);", "")]),
     ("D7", p_d7, [
         (BANK, "      rmbl_pause();\n      healed = bml_box_heal(", "      healed = bml_box_heal("),

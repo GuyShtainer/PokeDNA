@@ -909,9 +909,9 @@ static void banksrc_set_wp(int box, int wp) {
 static bool banksrc_can_edit(void) { return app_can_edit(); }
 static bool banksrc_commit(void) {               /* immediate edits: persist box + meta */
   bool ok = box_save();
-  /* Zy D4: a refused/failed meta write used to be silent. Only when the box itself saved: a failed box save
-   * already shows its own dialog (box_save_rename_triage) and a second one would bury it. */
-  if (!meta_save() && ok)
+  /* Zy D4: a refused/failed meta write used to be silent (state 2 after a card read error refuses outright,
+   * and the box write is refused too then -- nothing at all appeared on screen). */
+  if (!meta_save())
     msg_wait(PDNA_BANK_META_TITLE, UI_WARN, PDNA_BANK_META_L1, PDNA_BANK_META_L2);
   return ok;
 }
