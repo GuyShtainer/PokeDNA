@@ -514,7 +514,7 @@ bool gen3_parse_into(const uint8_t* save, uint32_t size, Gen3SaveInfo* out,
   { uint32_t lo = 0, ls = 0; int o = 1 - slot;
     bool other_ok = out->slot_valid[o] && slot_game_ok(save, size, o, &lo, false);
     bool ours_ok  = slot_game_ok(save, size, slot, &ls, true);
-    out->game_loads_other = other_ok && (!ours_ok || lo > ls);
+    out->game_loads_other = other_ok && (!ours_ok || lo >= ls);   /* a tie is uncertain -> lock; genuine slots never tie */
     out->ours_rejected    = other_ok && !ours_ok; }
 
   /* Count distinct valid sections in the chosen slot. */
