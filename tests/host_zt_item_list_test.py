@@ -14,7 +14,9 @@ gb_item_names.c, and asserts on the lists they build:
      GBF_G_CRYSTAL and not for GBF_G_GS (this is what #356's game threading buys);
   D  held mode keeps the NO ITEM row (id 0, first); ADD mode never has it;
   E  item_held_row: a held byte outside the list gets ONE preselected row in id order (held mode only);
-     a listed byte, 0, and ADD mode leave the list untouched.
+     a listed byte, 0, and ADD mode leave the list untouched;
+  F  exact per-category counts (Gold/Crystal 0..4 add+held; Red AND Yellow All/Items/TM-HM add+held);
+  G  after item_held_row's insert the idx[] list is strictly ascending, the planted hole 0x06 at row 6.
 
 Every assertion is shown RED against a mutant of the REAL extracted source, every run.
 Run: python3 tests/host_zt_item_list_test.py   (registered in tests/run_host_tests.py PY_TESTS)
@@ -85,6 +87,16 @@ int main(void) {
   static u16 idx[NITEM];
   int games[2] = { GBF_G_GS, GBF_G_CRYSTAL };
   const char* gname[2] = { "GS", "CRYSTAL" };
+  for (int g1 = 0; g1 < 2; g1++)
+    for (int held = 0; held < 2; held++)
+      for (int cat = 0; cat < NRICAT_G1; cat++) {
+        int gm = g1 ? GBF_G_YELLOW : GBF_G_RED;
+        g_item_gen = GBIN_GEN1; g_item_game = gm; g_item_max_id = gbb_max_item_id((GbGame)gm);
+        g_item_allow_none = held;
+        int n = item_build(idx, "", 0, cat, 0);
+        char tag[48]; sprintf(tag, "L %s %s %d:", g1 ? "YELLOW" : "RED", held ? "held" : "add", cat);
+        dump(tag, idx, n);
+      }
   for (int g = 0; g < 2; g++)
     for (int held = 0; held < 2; held++)
       for (int cat = 0; cat < NRICAT_G2; cat++) {
@@ -106,7 +118,9 @@ int main(void) {
     for (int p = 0; p < 5; p++) {
       int n = item_build(idx, "", 0, 0, 0), n0 = n;
       int sel = item_held_row(idx, &n, (uint16_t)probes[p], 0);
-      printf("R %s %u n0=%d n=%d sel=%d selid=%u\n", mode == 0 ? "held" : "add", probes[p], n0, n, sel, idx[sel]);
+      int asc = 1;
+      for (int q = 1; q < n; q++) if (idx[q] <= idx[q - 1]) asc = 0;
+      printf("R %s %u n0=%d n=%d sel=%d selid=%u asc=%d\n", mode == 0 ? "held" : "add", probes[p], n0, n, sel, idx[sel], asc);
     }
   }
   return 0;
@@ -135,15 +149,29 @@ def run(pick_c: str) -> dict:
         elif ln.startswith("UNNAMED"):
             res["unnamed"].append(int(ln.split()[1]))
         elif ln.startswith("R "):
-            m = re.match(r"R (\w+) (\d+) n0=(\d+) n=(\d+) sel=(\d+) selid=(\d+)", ln)
-            res["R"][(m.group(1), int(m.group(2)))] = tuple(int(m.group(i)) for i in range(3, 7))
+            m = re.match(r"R (\w+) (\d+) n0=(\d+) n=(\d+) sel=(\d+) selid=(\d+) asc=(\d+)", ln)
+            res["R"][(m.group(1), int(m.group(2)))] = tuple(int(m.group(i)) for i in range(3, 8))
     return res
+
+
+EXPECT = {   # (game, mode) -> exact list length per category (All, Items, Balls, Key, TM-HM / Gen 1: All, Items, TM-HM)
+    ("GS", "add"): [218, 131, 12, 18, 57], ("GS", "held"): [219, 131, 12, 18, 57],
+    ("CRYSTAL", "add"): [222, 131, 12, 22, 57], ("CRYSTAL", "held"): [223, 131, 12, 22, 57],
+    ("RED", "add"): [150, 95, 55], ("RED", "held"): [151, 95, 55],
+    ("YELLOW", "add"): [150, 95, 55], ("YELLOW", "held"): [151, 95, 55],
+}
+K_A = "A holes in no list (held+add, GS+Crystal, every category)"
+K_E = "E hole byte -> one inserted preselected row"
+K_E1 = "E' listed byte / 0 / add mode leave the list untouched"
+K_E2 = "E'' another hole (BE) and over-range FF each get their own row"
+K_F = "F exact per-category counts (GS/Crystal 0..4, Red/Yellow 0..2, add+held)"
+K_G = "G idx ascending after the held-row insert; hole 0x06 at row 6"
 
 
 def verdicts(res: dict) -> dict[str, bool]:
     L = res["lists"]
     v = {}
-    v["A holes in no list (held+add, GS+Crystal, every category)"] = all(not (set(ids) & set(HOLES)) for ids in L.values())
+    v[K_A] = all(not (set(ids) & set(HOLES)) for (g, _m, _c), ids in L.items() if g in ("GS", "CRYSTAL"))
     v["A' the unfiltered lists are non-trivial (>100 ids)"] = all(len(L[(g, m, 0)]) > 100 for g in ("GS", "CRYSTAL") for m in ("held", "add"))
     v["B every listed id has a real name"] = not res["unnamed"]
     v["C Crystal-only 4 in Crystal held+add All, absent from Gold"] = all(
@@ -151,14 +179,22 @@ def verdicts(res: dict) -> dict[str, bool]:
     v["D held has NO ITEM (0) first; add never"] = all(L[(g, "held", 0)][0] == 0 for g in ("GS", "CRYSTAL")) and all(
         0 not in L[(g, "add", c)] for g in ("GS", "CRYSTAL") for c in range(5))
     R = res["R"]
-    v["E hole byte -> one inserted preselected row"] = R.get(("held", 0x06)) == (R[("held", 0x06)][0], R[("held", 0x06)][0] + 1, R[("held", 0x06)][2], 6) and R[("held", 0x06)][2] > 0
-    v["E' listed byte / 0 / add mode leave the list untouched"] = (
+    v[K_E] = R.get(("held", 0x06), (0,) * 5)[:4] == (R[("held", 0x06)][0], R[("held", 0x06)][0] + 1, R[("held", 0x06)][2], 6) and R[("held", 0x06)][2] > 0
+    v[K_E1] = (
         R[("held", 0x01)][1] == R[("held", 0x01)][0] and R[("held", 0)][1] == R[("held", 0)][0]
         and all(R[("add", p)][1] == R[("add", p)][0] for p in (0x06, 0x01, 0, 0xBE, 0xFF)))
-    v["E'' another hole (BE) and over-range FF each get their own row"] = (
+    v[K_E2] = (
         R[("held", 0xBE)][1] == R[("held", 0xBE)][0] + 1 and R[("held", 0xBE)][3] == 0xBE
         and R[("held", 0xFF)][1] == R[("held", 0xFF)][0] + 1 and R[("held", 0xFF)][3] == 0xFF)
+    v[K_F] = all([len(L.get((g, m, c), [])) for c in range(len(cnt))] == cnt for (g, m), cnt in EXPECT.items())
+    v[K_G] = (all(R[("held", p)][4] == 1 for p in (0x06, 0x01, 0, 0xBE, 0xFF))
+              and R[("held", 0x06)][2] == 6)
     return v
+
+
+K_D1 = "D held has NO ITEM (0) first; add never"
+K_D2 = K_D1
+K_C = "C Crystal-only 4 in Crystal held+add All, absent from Gold"
 
 
 def main() -> int:
@@ -171,15 +207,17 @@ def main() -> int:
         if not ok:
             bad.append(k)
     muts = [
-        ("M-A the named-id filter removed", "A", "      if (!(i == 0 && g_item_allow_none)) {\n        char nm0", "      if (0) {\n        char nm0"),
-        ("M-B the filter admits unnamed ids but keeps the call", "A", "if (!gb_item_label(g_item_gen, (uint8_t)i, nm0, sizeof nm0)) continue;", "(void)gb_item_label(g_item_gen, (uint8_t)i, nm0, sizeof nm0);"),
-        ("M-D the NO ITEM row dropped from held mode", "D", "(i == 0 && g_item_allow_none)", "(i == 0 && 0)"),
-        ("M-D2 NO ITEM admitted in ADD mode", "D", "(i == 0 && g_item_allow_none)", "(i == 0)"),
-        ("M-E held row never inserted", "E", "if (!(g_item_max_id && g_item_allow_none && current != 0", "if (1 || !(g_item_max_id && g_item_allow_none && current != 0"),
-        ("M-E2 held row inserted in ADD mode too", "E'", "g_item_max_id && g_item_allow_none && current != 0", "g_item_max_id && current != 0"),
-        ("M-E3 held row appended at the end (not id order)", "E", "while (at < n && idx[at] < current) at++;", "at = n;"),
-        ("M-E4 sel not moved to the new row", "E", "  *np = n + 1;\n  return at;", "  *np = n + 1;\n  return sel;"),
-        ("M-C Crystal game ignored (always Gold pocket map)", "C", "gbb_pocket_of(g_item_game, (uint8_t)i) == GBB_POCKET_COUNT", "gbb_pocket_of(GBF_G_GS, (uint8_t)i) == GBB_POCKET_COUNT"),
+        ("M-A the named-id filter removed", K_A, "      if (!(i == 0 && g_item_allow_none)) {\n        char nm0", "      if (0) {\n        char nm0"),
+        ("M-B the filter admits unnamed ids but keeps the call", K_A, "if (!gb_item_label(g_item_gen, (uint8_t)i, nm0, sizeof nm0)) continue;", "(void)gb_item_label(g_item_gen, (uint8_t)i, nm0, sizeof nm0);"),
+        ("M-D the NO ITEM row dropped from held mode", K_D1, "(i == 0 && g_item_allow_none)", "(i == 0 && 0)"),
+        ("M-D2 NO ITEM admitted in ADD mode", K_D2, "(i == 0 && g_item_allow_none)", "(i == 0)"),
+        ("M-E held row never inserted", K_E, "if (!(g_item_max_id && g_item_allow_none && current != 0", "if (1 || !(g_item_max_id && g_item_allow_none && current != 0"),
+        ("M-E2 held row inserted in ADD mode too", K_E1, "g_item_max_id && g_item_allow_none && current != 0", "g_item_max_id && current != 0"),
+        ("M-E3 held row appended at the end (not id order)", K_G, "while (at < n && idx[at] < current) at++;", "at = n;"),
+        ("M-G2 append-at-end via a never-true scan", K_G, "while (at < n && idx[at] < current) at++;", "while (at < n && idx[at] != current) at++;"),
+        ("M-E4 sel not moved to the new row", K_E, "  *np = n + 1;\n  return at;", "  *np = n + 1;\n  return sel;"),
+        ("M-C Crystal game ignored (always Gold pocket map)", K_C, "gbb_pocket_of(g_item_game, (uint8_t)i) == GBB_POCKET_COUNT", "gbb_pocket_of(GBF_G_GS, (uint8_t)i) == GBB_POCKET_COUNT"),
+        ("M-F named id 0x50 dropped from every list", K_F, "      if (cat) {\n        GbBagPocket want", "      if (i == 0x50) continue;\n      if (cat) {\n        GbBagPocket want"),
     ]
     print("mutants (each must turn its verdict RED):")
     for tag, key, old, new in muts:
@@ -189,7 +227,7 @@ def main() -> int:
             continue
         r = verdicts(run(pick_c.replace(old, new, 1 if not tag.startswith('M-D') else 99)))
         red = [k for k, ok in r.items() if not ok]
-        ok = any(k.startswith(key + " ") or k.startswith(key) for k in red)
+        ok = key in red
         print(f"  {'ok  ' if ok else 'FAIL'} {tag}: red = {[k.split()[0] for k in red]}")
         if not ok:
             bad.append(tag)
