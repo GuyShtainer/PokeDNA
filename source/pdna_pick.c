@@ -1934,6 +1934,12 @@ static int item_build(u16* idx, const char* search, int sort, int cat, int gamef
        * redundant call). */
       if (g_item_gen && !g2_tmhm && !(i == 0 && g_item_allow_none) &&
           gbb_pocket_of(g_item_game, (uint8_t)i) == GBB_POCKET_COUNT) continue;
+      /* #357a: the 25 unused ids inside the item range have a pocket but no real name
+       * (gb_item_label fails): never offer them -- held AND bag/pack ADD pickers. */
+      if (g_item_gen && !(i == 0 && g_item_allow_none)) {
+        char nm0[GB_ITEM_NAME_MAXLEN + 8];
+        if (!gb_item_label(g_item_gen, (uint8_t)i, nm0, sizeof nm0)) continue;
+      }
       if (g_item_gen && cat) {
         GbBagPocket want = (g_item_gen == GBIN_GEN2) ? RICAT_POCKET_G2[cat] : RICAT_POCKET_G1[cat];
         if (gbb_pocket_of(g_item_game, (uint8_t)i) != want) continue;
@@ -2161,6 +2167,17 @@ uint16_t pick_item(uint16_t current) {
   int n = item_build(idx, search, sort, cat, gamef);
   int sel = 0;
   for (int i = 0; i < n; i++) if (idx[i] == current) { sel = i; break; }
+  /* #357c: held mode only -- a non-zero byte the list does not carry (an unused id) gets ONE
+   * preselected row of its own, so A keeps the byte and B still cancels; without it the cursor
+   * sat on NO ITEM and an accidental A cleared the item. */
+  if (g_item_gen && g_item_allow_none && current != 0 && current <= 0xFFu && n < NITEM) {
+    int at = 0;
+    while (at < n && idx[at] < current) at++;
+    if (at >= n || idx[at] != current) {
+      for (int k = n; k > at; k--) idx[k] = idx[k - 1];
+      idx[at] = current; n++; sel = at;
+    }
+  }
 
   int prev_sel = -1, prev_top = -1, prev_view = -1, toprow = 0;
   unsigned gen = 0; bool valid = false;   /* gen term: osk_search paints its whole
