@@ -714,8 +714,8 @@ GbsStatus gbs_insert(GbSession* s, int box, const GbEditMon* mon, int* slot_out,
  * gbs_insert() (which refuses the party on purpose, above).
  * ========================================================================== */
 
-GbsStatus gbs_insert_party(GbSession* s, const GbEditMon* mon, const GbGen1Base* g1base,
-                           int* slot_out, uint8_t* list) {
+static GbsStatus insert_party_impl(GbSession* s, const GbEditMon* mon, const GbGen1Base* g1base,
+                                   int* slot_out, uint8_t* list, bool g1_daycare) {
   if (!s || !s->open || !mon || !slot_out || !list) return GBS_ERR_ARG;
   if (mon->gen != s->gen || mon->is_party) return GBS_ERR_ARG;
   if (!gbs_can_write(s)) return GBS_ERR_UNWRITABLE;   /* BACKLOG #64: streamed = read-only */
@@ -764,6 +764,12 @@ GbsStatus gbs_insert_party(GbSession* s, const GbEditMon* mon, const GbGen1Base*
     uint16_t dex = gb_get_species_dex(&e);
     uint8_t level = gb_level_from_exp(dex, gb_get_exp(&e));
     if (!level) level = mon->rec[G1R_BOXLEVEL];   /* glitch species, no growth curve: honest fallback */
+    if (g1_daycare) {
+      /* Retail Red's DaycareGentlemanText (15:62f8-6321, 63bc, 63e7-63f7): the withdrawn mon
+       * carries BoxLevel = its new level, and a Lv-100 mon's EXP is capped at the Lv-100 value. */
+      if (level >= 100) { level = 100; (void)gb_set_exp(&e, gb_exp_for_level(dex, 100)); }
+      e.rec[G1R_BOXLEVEL] = level;
+    }
     e.rec[G1R_LEVEL] = level;
 
     if (!g1base) return GBS_ERR_NEEDS_BASE;
@@ -773,9 +779,11 @@ GbsStatus gbs_insert_party(GbSession* s, const GbEditMon* mon, const GbGen1Base*
     /* D4: types and current HP/status are the record's OWN bytes, never the ROM's --
      * gb_set_gen1_base() just overwrote the types with the ROM row and gb_recalc_stats()
      * (via carry_hp, old_max==0 after the memset above) just filled HP to the newly
-     * computed max. Both undone here, after the stat math that needed them is done. */
+     * computed max. Both undone here, after the stat math that needed them is done.
+     * The Gen-1 Day-Care withdrawal (g1_daycare) is the exception for HP: retail sets
+     * HP = MaxHP there, which is exactly what carry_hp already left in the record. */
     e.rec[G1R_TYPE1] = t1; e.rec[G1R_TYPE2] = t2;
-    e.rec[G1R_HP] = (uint8_t)(hp >> 8); e.rec[G1R_HP + 1] = (uint8_t)hp;
+    if (!g1_daycare) { e.rec[G1R_HP] = (uint8_t)(hp >> 8); e.rec[G1R_HP + 1] = (uint8_t)hp; }
 
     Gen1EditMon ge;
     memset(&ge, 0, sizeof ge);
@@ -794,4 +802,16 @@ GbsStatus gbs_insert_party(GbSession* s, const GbEditMon* mon, const GbGen1Base*
   if (cst != GBS_OK) return cst;
   *slot_out = slot;
   return GBS_OK;
+}
+
+GbsStatus gbs_insert_party(GbSession* s, const GbEditMon* mon, const GbGen1Base* g1base,
+                           int* slot_out, uint8_t* list) {
+  return insert_party_impl(s, mon, g1base, slot_out, list, false);
+}
+
+/* Gen-1 Day-Care withdrawal flavour: HP = MaxHP, BoxLevel = new level, EXP capped at Lv 100
+ * (retail Red's DaycareGentlemanText). Gen 2 behaves exactly like gbs_insert_party(). */
+GbsStatus gbs_insert_party_daycare(GbSession* s, const GbEditMon* mon, const GbGen1Base* g1base,
+                                   int* slot_out, uint8_t* list) {
+  return insert_party_impl(s, mon, g1base, slot_out, list, true);
 }

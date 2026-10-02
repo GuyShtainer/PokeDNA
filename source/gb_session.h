@@ -311,6 +311,10 @@ GbsStatus gbs_insert(GbSession* s, int box, const GbEditMon* mon, int* slot_out,
  * `list` is the caller's GBS_LIST_BYTES staging buffer, same convention as gbs_insert. */
 GbsStatus gbs_insert_party(GbSession* s, const GbEditMon* mon, const GbGen1Base* g1base,
                            int* slot_out, uint8_t* list);
+/* Same, but with the Gen-1 Day-Care withdrawal rules of retail Red (HP = MaxHP, BoxLevel =
+ * new level, EXP capped at the Lv-100 value). Gen 2: identical to gbs_insert_party(). */
+GbsStatus gbs_insert_party_daycare(GbSession* s, const GbEditMon* mon, const GbGen1Base* g1base,
+                                   int* slot_out, uint8_t* list);
 
 /* ---- generic field read/write (BACKLOG #49 P0, docs/GEN12-PARITY-DESIGN.md §4.0) ----
  *

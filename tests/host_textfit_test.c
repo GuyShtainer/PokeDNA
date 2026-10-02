@@ -572,6 +572,7 @@ int main(void) {
   PF(PDNA_GBEDIT_GENDER_LOCKED_TITLE, 28, 184);   /* G1 review LOW-1 */
   PF(PDNA_GBEDIT_GENDER_LOCKED_L1,    28, 184);
   PF(PDNA_GBEDIT_DAYCARE_PARTY_TITLE, 28, 184);   /* D5, review-opus, BACKLOG #93 */
+  PF(PDNA_GBEDIT_DAYCARE_PARTY_L1,    28, 184);   /* #368: the BODY line was clipped "...Day-Care tha~" */
   PF(PDNA_GBEDIT_DUP_PARTY_L1,        28, 184);
 
   PF(PDNA_GBCREATE_REDIRECTED_TITLE, 28, 184);   /* review fix 3, BACKLOG #187 */
@@ -1376,6 +1377,7 @@ int main(void) {
     y += PDNA_SIDECAR_LOSS_ROW_H;   /* Item (g2_item != 0) */
     y += PDNA_SIDECAR_LOSS_ROW_H;   /* exp_clamped */
     y += PDNA_SIDECAR_LOSS_ROW_H;   /* gender_relaxed || letter_relaxed */
+    y += PDNA_SIDECAR_LOSS_ROW_H;   /* #365: nick_lossy || otname_lossy */
     y += PDNA_SIDECAR_LOSS_ROW_H;   /* "IVs come from DVs, nature from EXP" (always) */
     y += PDNA_SIDECAR_LOSS_ROW_H;   /* "Met: this game, traded" (always) */
     y += 2 * PDNA_SIDECAR_LOSS_ROW_H;  /* is_copy's two NOBACK rows -- the worst of the

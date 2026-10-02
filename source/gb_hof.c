@@ -477,6 +477,21 @@ GbsStatus gbh_append_team(GbSession* s, const GbHofTeam* team) {
     if (mst != GBS_OK) return mst;
   }
 
+  /* #369: a team of fewer than 6 ends with the retail $FF terminator in the NEXT mon's
+   * species byte (retail's HoF display / LoadHOFTeam stop on it; without it the real game
+   * pages through blank mons -- Crystal `No.000 ?????`, Red `LEVEL/ 0`). The corpus Crystal.sav
+   * carries it on its 4-5 mon teams. A full Gen-1 6-mon team has no
+   * next slot: unchanged. Gen 2 always has one (byte 97 of the 98-byte team: retail writes $FF
+   * after a full team too, as every 6-mon team in the corpus Crystal/Gold saves shows). */
+  if (team->n < GBH_NUM_MONS || s->gen == GB_GEN2) {
+    uint32_t term_off = (s->gen == GB_GEN1) ? team_off + (uint32_t)team->n * 16u
+                                             : team_off + 1u + (uint32_t)team->n * 16u;
+    const uint8_t ff = 0xFFu;
+    GbsStatus tst = (s->gen == GB_GEN1) ? gbs_write_outside_sum(s, term_off, &ff, 1)
+                                         : gbs_write_field(s, term_off, &ff, 1);
+    if (tst != GBS_OK) return tst;
+  }
+
   uint8_t cv = (uint8_t)new_count;
   GbsStatus cst = gbs_write_field(s, count_off, &cv, 1);
   if (cst != GBS_OK) return cst;

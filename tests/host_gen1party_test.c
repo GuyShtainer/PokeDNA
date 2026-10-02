@@ -355,6 +355,64 @@ static void test_gen2_unchanged(const char* savfile) {
 
 /* ---- check 5: refusals before any byte moves --------------------------------- */
 
+/* D3 (lane zw fix): the Gen-1 Day-Care withdrawal flavour -- retail Red's DaycareGentlemanText
+ * (15:62f8-6321, 63bc, 63e7-63f7): HP = MaxHP, BoxLevel = new level, EXP capped at Lv 100. The
+ * plain gbs_insert_party must stay on the D4 rules (HP/BoxLevel untouched) so the flag is what
+ * the assertions pin. */
+static void test_daycare_flavour(void) {
+  printf("  -- check 3b: Gen-1 Day-Care withdrawal = HP max, BoxLevel = level, EXP cap\n");
+  const uint16_t dex = 25;   /* Pikachu */
+  uint8_t ot[GB_NAME_BYTES], nick[GB_NAME_BYTES];
+  memset(ot, 0x50, sizeof ot); memset(nick, 0x50, sizeof nick);
+
+  for (int flavour = 0; flavour < 2; flavour++) {   /* 0 = plain (D4), 1 = daycare */
+    uint32_t len = gbf_build(GBF_RBY, g_fimg, 0);
+    GbSession s; memset(&s, 0, sizeof s);
+    CHECK(gbs_open(&s, g_fimg, len, g_fscratch, sizeof g_fscratch) == GBS_OK, "dc test: session opens");
+    uint8_t rec33[GEN1_BOX_REC_BYTES];
+    build_g1_box_rec(rec33, dex, gb_exp_for_level(dex, 23), /*boxlevel=*/18, /*hp=*/1, 0, 0x18, 0x18);
+    GbEditMon mon;
+    CHECK(gb_load_parts(&mon, GB_GEN1, false, rec33, ot, nick, rec33[G1R_SPECIES]), "dc test: box mon builds");
+    int pb = gbs_party_box(&s), slot_out = -1;
+    GbsStatus st = flavour ? gbs_insert_party_daycare(&s, &mon, &k_fake_g1base, &slot_out, g_flist)
+                           : gbs_insert_party(&s, &mon, &k_fake_g1base, &slot_out, g_flist);
+    CHECK(st == GBS_OK, "dc test[%d]: insert lands (%s)", flavour, gbs_status_text(st));
+    if (st != GBS_OK) return;
+    Gen1EditMon landed;
+    CHECK(gen1_edit_load(g_flist, pb, slot_out, &landed), "dc test[%d]: landed reloads", flavour);
+    uint16_t hp = rd16be_local(landed.rec + G1R_HP), mx = rd16be_local(landed.rec + G1R_STATS);
+    CHECK(landed.rec[G1R_LEVEL] == 23, "dc test[%d]: live level 23 (got %u)", flavour, landed.rec[G1R_LEVEL]);
+    CHECK(mx > 1, "dc test[%d]: MaxHP computed (%u)", flavour, mx);
+    if (flavour) {
+      CHECK(hp == mx, "dc test: Day-Care HP == MaxHP (hp %u, max %u)", hp, mx);
+      CHECK(landed.rec[G1R_BOXLEVEL] == 23, "dc test: BoxLevel == new level 23 (got %u)", landed.rec[G1R_BOXLEVEL]);
+    } else {
+      CHECK(hp == 1, "dc test: plain insert keeps HP 1 (got %u)", hp);
+      CHECK(landed.rec[G1R_BOXLEVEL] == 18, "dc test: plain insert keeps BoxLevel 18 (got %u)", landed.rec[G1R_BOXLEVEL]);
+    }
+  }
+
+  /* Lv-100 cap: an EXP above the Lv-100 value lands as exactly the Lv-100 value. */
+  uint32_t len = gbf_build(GBF_RBY, g_fimg, 0);
+  GbSession s; memset(&s, 0, sizeof s);
+  CHECK(gbs_open(&s, g_fimg, len, g_fscratch, sizeof g_fscratch) == GBS_OK, "dc cap: session opens");
+  uint32_t cap = gb_exp_for_level(dex, 100);
+  uint8_t rec33[GEN1_BOX_REC_BYTES];
+  build_g1_box_rec(rec33, dex, cap + 5000u, 100, 1, 0, 0x18, 0x18);
+  GbEditMon mon;
+  CHECK(gb_load_parts(&mon, GB_GEN1, false, rec33, ot, nick, rec33[G1R_SPECIES]), "dc cap: box mon builds");
+  int pb = gbs_party_box(&s), slot_out = -1;
+  GbsStatus st = gbs_insert_party_daycare(&s, &mon, &k_fake_g1base, &slot_out, g_flist);
+  CHECK(st == GBS_OK, "dc cap: insert lands (%s)", gbs_status_text(st));
+  if (st != GBS_OK) return;
+  Gen1EditMon landed;
+  CHECK(gen1_edit_load(g_flist, pb, slot_out, &landed), "dc cap: landed reloads");
+  uint32_t lexp = ((uint32_t)landed.rec[G1R_EXP] << 16) | ((uint32_t)landed.rec[G1R_EXP + 1] << 8) | landed.rec[G1R_EXP + 2];
+  CHECK(lexp <= cap, "dc cap: EXP capped at the Lv-100 value %u (got %u)", (unsigned)cap, (unsigned)lexp);
+  CHECK(landed.rec[G1R_LEVEL] == 100 && landed.rec[G1R_BOXLEVEL] == 100, "dc cap: level/BoxLevel 100 (got %u/%u)",
+        landed.rec[G1R_LEVEL], landed.rec[G1R_BOXLEVEL]);
+}
+
 static void test_refusals(void) {
   printf("  -- check 5: refusals before any byte moves\n");
 
@@ -513,6 +571,7 @@ int main(void) {
   test_gen2_unchanged("Crystal.sav");
   test_level_from_exp();
   test_hp_status_types_preserved();
+  test_daycare_flavour();
   test_refusals();
 
   printf("%s: %d/%d checks passed\n", g_fail ? "FAIL" : "ok", g_check - g_fail, g_check);

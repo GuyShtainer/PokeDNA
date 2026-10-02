@@ -462,8 +462,10 @@ void pdna_gbflags(GbSession* s, bool can_edit) {
           ctr_row_paint(s, g, ctr_rows[top + i], 16 + i * 9, top + i == sel);
         ui_text(4, 152, UI_DIM, can_edit ? "A edit  U/D  L/R tab  B done"
                                          : "U/D  L/R tab  B done");
-      } else if (sel != c_sel) {                  /* cursor-only change: swap the highlight */
-        ctr_row_repaint(s, g, ctr_rows, ctr_n, top, c_sel, sel);
+      } else {                                    /* partial: swap the highlight AND always repaint the
+                                                   * current row (#366 D1: the LUCKY# toggle writes the
+                                                   * byte with `sel` unmoved and no overlay) */
+        if (sel != c_sel) ctr_row_repaint(s, g, ctr_rows, ctr_n, top, c_sel, sel);
         ctr_row_repaint(s, g, ctr_rows, ctr_n, top, sel, sel);
       }
       c_top = top; c_sel = sel; c_valid = true; c_gen = ui_clear_gen();
