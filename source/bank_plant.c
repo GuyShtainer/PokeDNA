@@ -77,6 +77,13 @@ void bank_plant_box0(uint8_t* recs) {
   /* slot 0: Gen-2 CHIKORITA @ L12, origin GOLD -> FULL */
   bank_plant_cell0(cell);
   memcpy(recs + (uint32_t)0 * 80, cell, 80);
+#ifdef PDNA_PLANT_CRYSTAL_ORIGIN
+  /* #363/F3 shot tooling (`make delta-artless PDNA_PLANT_CRYSTAL=1`): the SAME slot-0 mon repacked with origin CRYSTAL,
+   * so a Bank edit shows the Crystal-origin held-item list (#362). Default builds never define it. */
+  plant_gen2_chikorita(&e, 12, 1u);
+  bc_pack(&e, 0, BC_ORIGIN_CRYSTAL, 0, 1u, cell);
+  memcpy(recs + (uint32_t)0 * 80, cell, 80);
+#endif
 
   /* slot 1: Gen-1 PIKACHU @ L20, origin YELLOW -> FULL. Real Gen-1 base stats
    * (HP/Atk/Def/Spe/Spc = 35/55/30/90/50) and type (0x17, Electric) -- Gen 1 is the

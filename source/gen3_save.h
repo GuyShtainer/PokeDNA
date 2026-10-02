@@ -88,6 +88,7 @@ typedef struct {
   bool     slot_damaged[2]; /* #354: signed but not one coherent write     */
   bool     damaged_fallback;/* #354: counter rule would have picked the other (damaged) slot */
   bool     game_loads_other;/* #354: the other, damaged slot passes the game's own test with a higher counter -- the GAME loads it */
+  bool     ours_rejected;   /* #363: the slot shown may be rejected by the game's own test while the other one passes (implies game_loads_other) */
   int      sections_found;  /* distinct valid section ids in current slot */
   bool     sb1_ok;          /* SaveBlock1 (ids 1..4) all present          */
 

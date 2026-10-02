@@ -9621,6 +9621,9 @@ def _main_dispatch(argv=None) -> int:
                           "Gen-2-only fused image (Gold.gbc+Gold.sav or "
                           "Crystal.gbc+Crystal.sav, tools/fuse_gb.py, one ROM per "
                           "image -- BACKLOG #98)")
+    ap.add_argument("--zv-crystal", action="store_true",
+                     help="lane zv: run_zv_crystal() against --image (a ONE-ROM Gold image from "
+                          "`make delta-artless PDNA_PLANT_CRYSTAL=1`): Bank Crystal-origin cell -> Key items")
     ap.add_argument("--zt-crystal", action="store_true",
                      help="lane zt: run_zt_crystal() against --image (a one-ROM Crystal image)")
     ap.add_argument("--zt-gold", action="store_true",
@@ -10765,6 +10768,19 @@ def _main_dispatch(argv=None) -> int:
             print(f"  [skip] {name}: {reason}")
         ran = True
 
+    if a.zv_crystal:
+        try:
+            sess = run_zv_crystal(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] zv crystal: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        ran = True
+
     if a.zt_crystal:
         try:
             sess = run_zt_crystal(core_mod, image_mod, a.image, a.out)
@@ -11537,6 +11553,48 @@ def run_zt_crystal(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Se
                                "Crystal-only ids) are listed too")
     s.tap("B", settle=gb_shots.BIG_SETTLE)
     return s
+
+
+def run_zv_crystal(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """lane zv (#363 F3 / #362): a Bank cell of CRYSTAL origin edited from a GOLD session. `rom` = a ONE-ROM Gold image
+    built from `make delta-artless PDNA_PLANT_CRYSTAL=1` (Bank box 1 slot 0 is then the Crystal-origin Chikorita;
+    slot 3 is the GOLD-origin item holder, the control). The held-item picker keys off the record's origin
+    (BC_ORIGIN_CRYSTAL), not the Gold session: the Key items filter lists CLEAR BELL / GS BALL / BLUE CARD / EGG TICKET
+    for the Crystal cell (22 rows) and 18 rows for the Gold-origin cell. Nav: UP x3 grid->Bank hop, UP x4 to the top
+    row (the Bank cursor lands on the bottom row), RIGHT x`rights` to the cell."""
+    gb_shots.assert_vehicle(rom, "ARTLESS")
+    def one(tag, rights, label, n_key):
+        s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"zv_{tag}_")
+        print(f"== lane zv: Bank {label} cell, held-item picker ==")
+        s.run(700)
+        s.run(GB_ART_COLD_SETTLE)
+        s.press_n("UP", 3, settle=100)
+        s.press_n("UP", 4, settle=60)
+        for _ in range(rights):
+            s.tap("RIGHT", settle=100)
+        s.shot("01_bank_cell", f"zv: Bank box 1, cursor on the {label} cell", allow_same=True)
+        s.tap("A", settle=150)
+        s.shot("02_menu", "zv: the cell menu", allow_same=True)
+        s.tap("A", settle=gb_shots.BIG_SETTLE)
+        s.shot("03_view", f"zv: VIEW of the {label} cell", allow_same=True)
+        s.tap("A", settle=gb_shots.BIG_SETTLE)
+        s.press_n("DOWN", 5, settle=80)
+        s.shot("04_item_row", "zv: edit mode, cursor on the Item row", allow_same=True)
+        s.tap("A", settle=gb_shots.BIG_SETTLE)
+        s.shot("05_picker_all", "zv: the held-item picker, All", allow_same=True)
+        s.tap("START", settle=150)
+        s.shot("06_category", "zv: the category menu", allow_same=True)
+        s.press_n("DOWN", 3, settle=100)
+        s.tap("A", settle=200)
+        s.shot("08_key_items", f"zv: Key items filter for the {label} cell", allow_same=True)
+        s.press_n("DOWN", n_key - 1, settle=40)
+        s.shot("09_key_items_end", f"zv: Key items list scrolled to its last row, {label}", allow_same=True)
+        return s
+    s1 = one("crystal", 0, "CRYSTAL-origin", 22)
+    s2 = one("gold", 3, "GOLD-origin item-holder", 18)
+    s1.taken += s2.taken
+    s1.skipped += s2.skipped
+    return s1
 
 
 def run_gbmon(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:

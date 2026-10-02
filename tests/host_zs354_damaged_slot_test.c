@@ -60,7 +60,7 @@ int main(void) {
     CHECK(parse(sav[g], G3_SAVE_FILE_SIZE, &in), "%s parses", NAMES[g]);
     int want = (in.counter[1] > in.counter[0]) ? 1 : 0;
     CHECK(in.slot == want, "%s: slot %d, counter rule says %d", NAMES[g], in.slot, want);
-    CHECK(!in.game_loads_other, "%s: game_loads_other clear", NAMES[g]);
+    CHECK(!in.game_loads_other && !in.ours_rejected, "%s: game_loads_other / ours_rejected clear", NAMES[g]);
     CHECK(!in.damaged_fallback && !in.slot_damaged[0] && !in.slot_damaged[1], "%s: flags clear (%d%d fb %d)", NAMES[g], in.slot_damaged[0], in.slot_damaged[1], in.damaged_fallback);
     CHECK(gen3_slot_consistent(sav[g], G3_SAVE_FILE_SIZE, 0) && gen3_slot_consistent(sav[g], G3_SAVE_FILE_SIZE, 1), "%s: both slots consistent", NAMES[g]);
     Gen3SaveInfo h;   /* 64 KiB view: slot B absent, never flagged */
@@ -116,6 +116,63 @@ int main(void) {
     CHECK(t.game_loads_other == exempt, "%s bad-cks@%d: game_loads_other %d, want %d", NAMES[g], id, t.game_loads_other, exempt);
   }
 
+  /* 3e. #363: the GAME rejects the slot we show while it accepts the other -> game_loads_other + ours_rejected.
+   *     N = the newer slot of the pristine save, Ol = the older one.
+   *     C: neither slot damaged, ONE sector of N has a stale checksum (any id 0..13) -- the game rejects N.
+   *        Before #363 only the other-slot test was strict, so this slipped through unlocked (ids 0/4/13 included).
+   *     A: Ol torn (a mid-slot counter -2, ids complete) + N consistent but id-0 checksum bad.
+   *     B: Ol torn + N missing a sector (both damaged).
+   *     D: a TIE -- Ol is a copy of N with one torn sector: equal last-sector counters are uncertain -> lock. */
+  for (int g = 0; g < NG; g++) {
+    Gen3SaveInfo in, t;
+    parse(sav[g], G3_SAVE_FILE_SIZE, &in);
+    int N = in.slot, O = 1 - N;
+    uint32_t bn = (uint32_t)N * G3_SLOT_BYTES, bo = (uint32_t)O * G3_SLOT_BYTES;
+    for (int id = 0; id < 14; id++) {                                              /* C */
+      memcpy(img, sav[g], sizeof img);
+      int sec = gen3_find_section(img, N, id);
+      img[bn + (uint32_t)sec * G3_SECTOR_SIZE + 0x10] ^= 0x5A;
+      CHECK(parse(img, G3_SAVE_FILE_SIZE, &t), "%s C@%d parses", NAMES[g], id);
+      CHECK(t.slot == N && !t.slot_damaged[0] && !t.slot_damaged[1], "%s C@%d: shows the newer slot, nothing structurally damaged", NAMES[g], id);
+      CHECK(t.game_loads_other && t.ours_rejected, "%s C@%d: game_loads_other %d ours_rejected %d", NAMES[g], id, t.game_loads_other, t.ours_rejected);
+    }
+    memcpy(img, sav[g], sizeof img);                                               /* A */
+    img[bo + 5u * G3_SECTOR_SIZE + G3_OFF_COUNTER] -= 2;
+    img[bn + (uint32_t)gen3_find_section(img, N, 0) * G3_SECTOR_SIZE + 0x10] ^= 0x5A;
+    CHECK(parse(img, G3_SAVE_FILE_SIZE, &t), "%s A parses", NAMES[g]);
+    CHECK(t.slot == N && t.slot_damaged[O] && !t.slot_damaged[N] && t.game_loads_other && t.ours_rejected,
+          "%s A: slot %d dmg %d%d loads_other %d rej %d", NAMES[g], t.slot, t.slot_damaged[0], t.slot_damaged[1], t.game_loads_other, t.ours_rejected);
+    memcpy(img, sav[g], sizeof img);                                               /* B */
+    img[bo + 5u * G3_SECTOR_SIZE + G3_OFF_COUNTER] -= 2;
+    img[bn + 3u * G3_SECTOR_SIZE + G3_OFF_SIGNATURE] ^= 0xFF;
+    CHECK(parse(img, G3_SAVE_FILE_SIZE, &t), "%s B parses", NAMES[g]);
+    CHECK(t.slot == N && t.slot_damaged[O] && t.slot_damaged[N] && t.game_loads_other && t.ours_rejected,
+          "%s B: slot %d dmg %d%d loads_other %d rej %d", NAMES[g], t.slot, t.slot_damaged[0], t.slot_damaged[1], t.game_loads_other, t.ours_rejected);
+    memcpy(img, sav[g], sizeof img);                                               /* D (tie) */
+    memcpy(img + bo, img + bn, G3_SLOT_BYTES);
+    img[bo + 5u * G3_SECTOR_SIZE + G3_OFF_COUNTER] -= 2;
+    CHECK(parse(img, G3_SAVE_FILE_SIZE, &t), "%s D parses", NAMES[g]);
+    CHECK(t.slot_damaged[O] && !t.slot_damaged[N] && t.game_loads_other && !t.ours_rejected,
+          "%s D (tie): dmg %d%d loads_other %d rej %d", NAMES[g], t.slot_damaged[0], t.slot_damaged[1], t.game_loads_other, t.ours_rejected);
+    memcpy(img, sav[g], sizeof img);                                               /* E: neither slot passes -> no flag (review-zv F1) */
+    img[bn + (uint32_t)gen3_find_section(img, N, 0) * G3_SECTOR_SIZE + 0x10] ^= 0x5A;
+    img[bo + 3u * G3_SECTOR_SIZE + G3_OFF_SIGNATURE] ^= 0xFF;
+    CHECK(parse(img, G3_SAVE_FILE_SIZE, &t), "%s E parses", NAMES[g]);
+    CHECK(t.slot == N && !t.game_loads_other && !t.ours_rejected,
+          "%s E (neither passes): slot %d loads_other %d rej %d", NAMES[g], t.slot, t.game_loads_other, t.ours_rejected);
+  }
+
+  /* 3f. the 3968-byte sum equals the stored (per-game-size) checksum on EVERY genuine corpus sector -- the claim
+   *     the strict ids 0/4/13 test rests on (genuine tails are zero). 5 games x 2 slots x 14 = 140 sectors. */
+  { int n = 0;
+    for (int g = 0; g < NG; g++) for (int sl = 0; sl < 2; sl++) for (int p = 0; p < 14; p++) {
+      const uint8_t* sec = sav[g] + (uint32_t)sl * G3_SLOT_BYTES + (uint32_t)p * G3_SECTOR_SIZE;
+      CHECK(gen3_checksum(sec, G3_SECTOR_DATA_SIZE) == (uint16_t)(sec[G3_OFF_CHECKSUM] | (sec[G3_OFF_CHECKSUM + 1] << 8)),
+            "%s slot %d sector %d: 3968-byte sum != stored", NAMES[g], sl, p);
+      n++;
+    }
+    CHECK(n == 140, "140 corpus sectors checked (%d)", n); }
+
   /* 3c. a LONE damaged slot A (slot B erased) still opens: nothing intact to prefer, nothing to warn about */
   for (int g = 0; g < NG; g++) {
     Gen3SaveInfo in, t;
@@ -140,6 +197,7 @@ int main(void) {
     /* the GAME loads the damaged tail slot B exactly when its complete ids + last-sector counter beat slot A's */
     CHECK(o.game_loads_other == ((h == LG && (t == FR || t == SA)) || (h == SA && t == FR)),
           "%s over %s: game_loads_other %d", NAMES[h], NAMES[t], o.game_loads_other);
+    CHECK(!o.ours_rejected, "%s over %s: the shown (intact) head slot is never rejected (#363)", NAMES[h], NAMES[t]);
     pairs++;
   }
   CHECK(pairs == 20, "20 pairs");

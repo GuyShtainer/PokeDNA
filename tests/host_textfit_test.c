@@ -2766,6 +2766,13 @@ int main(void) {
   { const char* w = "Game loads damaged copy.";            /* panel right edge x=228 -> 208 px from x=20 */
     chk("text", 20, 208, (int)strlen(w) * SYS8_W, w); }
   T("damaged save: locked  B back", 4);
+  /* #363: the OURS-rejected wording (this copy fails the game's test, the other passes) */
+  { const char* w = "Game loads other copy.";
+    chk("text", 20, 208, (int)strlen(w) * SYS8_W, w); }
+  T("mismatch: locked  B back", 4);
+  PF("SAVE MISMATCH", 28, 184);
+  PF("The game loads the other copy.", 28, 184);
+  PF("This copy shown, read-only.", 28, 184);
   PF("Game loads the damaged copy.", 28, 184);
   PF("Intact copy shown, read-only.", 28, 184);
   PF("Newer copy damaged (old bug?)", 28, 184);
