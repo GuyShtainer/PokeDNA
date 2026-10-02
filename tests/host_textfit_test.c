@@ -11,7 +11,7 @@
  * no GBA headers, so it dual-compiles on the host.
  *
  *   cc -std=c11 -I source tests/host_textfit_test.c source/ui_font.c \
- *      source/gb_editor.c source/gb_edit.c source/gen1_save.c source/gen2_save.c \
+ *      source/gb_editor.c source/gb_item_names.c source/gb_edit.c source/gen1_save.c source/gen2_save.c \
  *      source/data_tables.c source/sprite_era.c -o /tmp/htf && /tmp/htf
  *
  * (run_host_tests.py reads that line out of the FIRST 24 lines of this comment — keep

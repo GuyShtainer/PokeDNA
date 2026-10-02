@@ -56,6 +56,10 @@ void     pick_item_set_gen1_2_max(uint16_t max_id);
  * Set right before the call, clear (0, GBF_G_RED, 0) right after -- same
  * one-shot-per-call contract as every other picker restrictor here. */
 void     pick_item_set_gen1_2(int gen, GbGame game, uint16_t max_id);
+/* #340a: pick_item_set_gen1_2() for the HELD-ITEM pickers: also keeps a "NO ITEM" row (id 0),
+ * which the bag-ADD mode drops, so the picker can still clear a held item. Clear with the
+ * same (0, GBF_G_RED, 0) call (the plain setter resets the row flag). */
+void     pick_item_set_gen1_2_held(int gen, GbGame game, uint16_t max_id);
 /* BACKLOG #195: primes the NEXT pick_item() call's STARTING category filter
  * when gen1_2 mode is active (ignored otherwise) -- GBB_POCKET_ITEMS/KEY/
  * BALLS/TMHM opens pre-filtered to that pocket's category; GBB_POCKET_COUNT

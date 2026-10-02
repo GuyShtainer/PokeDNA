@@ -4,6 +4,7 @@
 
 #include "gb_editor.h"
 #include "data_tables.h"   /* pk_species_name, pk_move_name */
+#include "gb_item_names.h"   /* gb_item_label, GBIN_GEN2 -- #340a: the Item row shows the name the picker shows */
 
 /* ---- tiny text helpers (no stdio: this file dual-compiles into the GBA image) --- */
 
@@ -128,6 +129,7 @@ void gbe_value(const GbEditMon* e, int f, char* out, int cap) {
     case GBE_ITEM: {
       uint8_t it = gb_get_held_item(e);
       if (!it) { put_str(out, cap, &pos, "None"); return; }
+      if (gb_item_label(GBIN_GEN2, it, out, cap)) return;   /* #340a: the real name (GBE_ITEM exists on Gen-2 mounts only, :62); "#n" stays for a hole/out-of-table byte */
       put_ch(out, cap, &pos, '#'); put_uint(out, cap, &pos, it); return;
     }
     case GBE_FRIEND: put_uint(out, cap, &pos, gb_get_friendship(e)); return;

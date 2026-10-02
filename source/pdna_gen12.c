@@ -5846,8 +5846,9 @@ static bool gb_create_hook(void) {
  * never appears for a Gen-1 mount rather than appearing and refusing every press
  * (pdna_app.h's own `item` comment). Mirrors Gen 3's own quick-item action
  * (app_quick_item, pdna_main.c): the SAME pick_item() screen gb_editor.c's own
- * GBE_ITEM row already opens (pdna_gbedit.c's GBE_K_ITEM branch), restricted to ids
- * 0..255 shown as "#n" (#0 = no item, the way to remove one) via pick_item_set_gen1_2_max() -- no separate legality gate:
+ * GBE_ITEM row already opens (pdna_gbedit.c's GBE_K_ITEM branch), restricted to the
+ * real Gen-2 item ids with REAL names (#340a; the "NO ITEM" row, id 0, removes one, via
+ * pick_item_set_gen1_2_held()) -- no separate legality gate:
  * any byte is structurally legal for this field (that branch's own comment: "Held
  * item has no move-style validation to fail"). Same load/commit shape as EDIT
  * (gb_edit_hook above), just loading one field's picker instead of opening the full
@@ -5866,9 +5867,10 @@ static bool gb_item_hook(uint8_t* rec80) {
   GbEditMon e;
   if (!gb_load(&e, s->gen, g_ed->list, box, slot)) { snd_deny(); return false; }
 
-  pick_item_set_gen1_2_max(255);
+  GbGame ig = gb_session_is_crystal(s) ? GBF_G_CRYSTAL : GBF_G_GS;   /* #340a: Gold vs Crystal pocket map */
+  pick_item_set_gen1_2_held(GBIN_GEN2, ig, gbb_max_item_id(ig));
   uint16_t id = pick_item(gb_get_held_item(&e));
-  pick_item_set_gen1_2_max(0);
+  pick_item_set_gen1_2(0, GBF_G_RED, 0);
   if (id == 0xFFFF) return false;                      /* cancel */
   /* BACKLOG #95 review C5: an Egg cannot hold an item at all (pack.asm
    * AnEggCantHoldAnItemText) -- checked here, ahead of gb_set_held_item's own

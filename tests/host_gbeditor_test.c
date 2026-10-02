@@ -1,7 +1,7 @@
 /* source/gb_editor.c — the GB mon editor's FIELD MODEL — under test.
  *
  *   cc -std=c11 -Wall -Wextra -I source -I tests tests/host_gbeditor_test.c \
- *      source/gb_editor.c source/gb_session.c source/gb_edit.c source/gen1_save.c \
+ *      source/gb_editor.c source/gb_item_names.c source/gb_session.c source/gb_edit.c source/gen1_save.c \
  *      source/gen1_write.c source/gen2_save.c source/gen2_write.c source/data_tables.c \
  *      source/ui_font.c \
  *      -o /tmp/hgbe && /tmp/hgbe
@@ -351,6 +351,18 @@ static void test_gender(void) {
   gb_load_parts(&e, GB_GEN2, false, rec, nm, nm, 25);
   gbe_value(&e, GBE_GENDER, val, sizeof val);
   CHECK(strcmp(val, "M") == 0, "ratio 127: Atk DV 8 reads M");
+
+  /* ---- #340a (review-zq F6): the Item row prints the item NAME on a Gen-2 mon, "#n" only for a hole id,
+   * "None" for 0 -- red if gbe_value loses its gb_item_label call. */
+  CHECK(gb_set_held_item(&e, 3), "hold id 3");
+  gbe_value(&e, GBE_ITEM, val, sizeof val);
+  CHECK(strcmp(val, "BRIGHTPOWDER") == 0, "Item row: id 3 reads BRIGHTPOWDER, not #3");
+  CHECK(gb_set_held_item(&e, 6), "hold hole id 6");
+  gbe_value(&e, GBE_ITEM, val, sizeof val);
+  CHECK(strcmp(val, "#6") == 0, "Item row: unused id 6 falls back to #6");
+  CHECK(gb_set_held_item(&e, 0), "clear held item");
+  gbe_value(&e, GBE_ITEM, val, sizeof val);
+  CHECK(strcmp(val, "None") == 0, "Item row: id 0 reads None");
 
   /* ---- the flip itself: LEFT/RIGHT/A all just call gbe_flip_gender, so one exercises
    * gbe_adjust and the other gbe_press rather than testing the same call twice. */

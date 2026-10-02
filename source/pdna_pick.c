@@ -1400,7 +1400,8 @@ static struct {
   uint8_t  item_gen;       /* 0 / GBIN_GEN1 / GBIN_GEN2 */
   uint8_t  item_game;      /* GbGame: GBF_G_RED/YELLOW/GS/CRYSTAL */
   uint8_t  item_open_pocket; /* GbBagPocket, one-shot; sentinel GBB_POCKET_COUNT */
-} s_gb_pick = { 0, 0, 0, GBF_G_RED, GBB_POCKET_COUNT };
+  uint8_t  item_allow_none;  /* #340a: held-item mode keeps a "NO ITEM" row (id 0) so the picker can still clear */
+} s_gb_pick = { 0, 0, 0, GBF_G_RED, GBB_POCKET_COUNT, 0 };
 /* Range proof for the two enum-into-uint8_t fields above (BACKLOG #204). */
 _Static_assert(GBB_POCKET_COUNT < 256, "GbBagPocket must fit item_open_pocket's uint8_t");
 _Static_assert(GBF_G_COUNT < 256, "GbGame must fit item_game's uint8_t");
@@ -1833,14 +1834,22 @@ _Static_assert(GBIN_GEN2 < 256, "item_gen fits uint8_t");
 #define g_item_gen          s_gb_pick.item_gen
 #define g_item_game         s_gb_pick.item_game
 #define g_item_open_pocket  s_gb_pick.item_open_pocket
+#define g_item_allow_none   s_gb_pick.item_allow_none
 void pick_item_set_gen1_2_max(uint16_t max_id) { pick_item_set_gen1_2(0, GBF_G_RED, max_id); }
 void pick_item_set_gen1_2(int gen, GbGame game, uint16_t max_id) {
   g_item_gen = gen; g_item_game = game; g_item_max_id = max_id;
+  g_item_allow_none = 0;                      /* every plain setter (and its (0,RED,0) clear) drops the held-item row */
+}
+/* #340a: real names AND the "NO ITEM" (id 0) row the old raw "#n" held-item picker had. */
+void pick_item_set_gen1_2_held(int gen, GbGame game, uint16_t max_id) {
+  pick_item_set_gen1_2(gen, game, max_id);
+  g_item_allow_none = 1;
 }
 void pick_item_set_gen1_2_cat(GbBagPocket pocket0) { g_item_open_pocket = pocket0; }
 
 static void item_label_for(uint16_t id, char* out, int cap) {
   if (g_item_max_id) {
+    if (id == 0 && g_item_allow_none && g_item_gen) { siprintf(out, "NO ITEM"); return; }
     if (g_item_gen && gb_item_label(g_item_gen, (uint8_t)id, out, cap)) return;
     siprintf(out, "#%u", (unsigned)id);
     return;
@@ -1915,7 +1924,8 @@ static int item_build(u16* idx, const char* search, int sort, int cat, int gamef
        * proved admission; gbb_pocket_of() agrees for those, so this is not
        * a second, possibly-diverging test, just skipped to avoid a
        * redundant call). */
-      if (g_item_gen && !g2_tmhm && gbb_pocket_of(g_item_game, (uint8_t)i) == GBB_POCKET_COUNT) continue;
+      if (g_item_gen && !g2_tmhm && !(i == 0 && g_item_allow_none) &&
+          gbb_pocket_of(g_item_game, (uint8_t)i) == GBB_POCKET_COUNT) continue;
       if (g_item_gen && cat) {
         GbBagPocket want = (g_item_gen == GBIN_GEN2) ? RICAT_POCKET_G2[cat] : RICAT_POCKET_G1[cat];
         if (gbb_pocket_of(g_item_game, (uint8_t)i) != want) continue;
