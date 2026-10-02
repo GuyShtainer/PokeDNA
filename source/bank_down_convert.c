@@ -140,8 +140,10 @@ void bdc_convert_gb_core(const uint8_t cell80[BC_CELL_BYTES], uint8_t dst_gen,
   /* BACKLOG #381: the "Nature and ability" / "Met place / level / ball" rows describe what a Gen-3 record
    * carries that a Game Boy record has no room for. Here the SOURCE is a Game Boy record: those flags were
    * computed off the Gen-3 INTERMEDIATE (gen12_convert's mid80, PID-derived nature/ability, a synthetic
-   * met block), and the Game Boy mon never had either -- nothing is lost, so the rows must not appear. */
-  if (st == G3GB_OK) { loss->nature = false; loss->ability = false; loss->met_data = false; loss->ball = false; }
+   * met block), and the Game Boy mon never had either -- nothing is lost, so those rows must not appear. Zy D6: the met row is
+   * the exception when the SOURCE is Crystal -- its caught data (time/level/location/OT gender) genuinely has
+   * no home in a Gen-1 record, so `view.has_caught_data` (the converter's own Crystal-only rule) keeps it. */
+  if (st == G3GB_OK) { loss->nature = false; loss->ability = false; loss->met_data = view.has_caught_data; loss->ball = false; }
   /* BACKLOG #177 (review F1): compare the SOURCE record's own name spelling against the
    * WRITTEN record's -- `out` is only meaningfully populated on G3GB_OK, so this runs
    * after `st` is known, not alongside the item-drop re-apply above (which does not
