@@ -164,6 +164,10 @@ typedef struct {
    * answering it honestly is plan_n x cap slot comparisons -- up to 40 x 38 = 1,520 of
    * them, ~12 k cycles, ~4 % of a frame, spent to re-derive a value nothing changed. */
   uint8_t  plan_res;
+  /* BACKLOG #346a: the highest plan index the live declaration's sweeps have already covered
+   * (fetched or found resident), 0xFF = none yet. A planned miss at or below it is a REPEAT of
+   * a row the paint already drew, not forward progress -- see icon_store_row. */
+  uint8_t  sweep_hi;
   uint32_t epoch;                /* bumped by every reset; a debugging anchor        */
 } IconStoreState;
 
@@ -691,11 +695,15 @@ static void plan_sweep(int start) {
    * drawn. Wrapping would re-fetch the head of the page at the tail of the paint --
    * measured at 6 wasted sectors on a 21-cell contiguous page, for rows already on
    * screen. A caller that then asks for one of them gets its own sweep. */
-  for (int k = start; k < s_is.plan_n && nw < cap; k++) {
+  int k = start;
+  for (; k < s_is.plan_n && nw < cap; k++) {
     uint16_t r = s_is.plan[k];
     if (slot_find(r) >= 0) continue;                 /* already here: no I/O, no slot */
     want[nw++] = r;
   }
+  /* BACKLOG #346a: the walk covered plan indices start..k-1 (k = the first it did not look at).
+   * Every later PLANNED miss at or below this is a repeat, not progress (icon_store_row). */
+  s_is.sweep_hi = (uint8_t)(k - 1);
   if (!nw) { plan_res_recount(); return; }   /* every planned row already resident */
 
   /* 3. ascending by source offset. An UNKNOWN offset sorts stable, so a rung with no
@@ -760,6 +768,7 @@ int icon_store_plan(const uint16_t* rows, int n) {
    * "yes" -- which is a bob running over rows nobody promised were in RAM, i.e. exactly
    * the per-tick SD I/O the gate exists to stop. */
   s_is.plan_res = 0;
+  s_is.sweep_hi = 0xFF;                              /* a new declaration: nothing swept yet */
   /* BACKLOG #330: a pin means "the LIVE plan fetched this and the screen has not drawn it
    * yet". Retiring (or replacing) the plan ends that debt, so the pins go with it. Before
    * this, icon_store_plan(0, 0) returned with every slot the old plan had fetched still
@@ -890,7 +899,13 @@ const uint8_t* icon_store_row(uint16_t row) {
   if (i < 0) {
     PERF_ICON(mru_miss);
     int pi = plan_index(row);
-    if (pi >= 0) {
+    /* BACKLOG #346a: a planned miss at or below the last sweep's coverage is a REPEAT -- a cell that
+     * shows a species the paint already drew, whose row a later sweep evicted. plan_sweep's forward
+     * walk assumes everything before `pi` is drawn, so sweeping from here would re-fetch and PIN the
+     * next pool-sized group of rows the paint has already drawn -- rows no later cell asks for, a
+     * pool left pinned at rest (Ruby box 6: stale 45/288/369). A repeat is an ordinary one-row fill. */
+    const bool repeat = (pi >= 0 && s_is.sweep_hi != 0xFF && pi <= (int)s_is.sweep_hi);
+    if (pi >= 0 && !repeat) {
       /* A PLANNED miss. The screen has walked past the group the last sweep fetched, so
        * fetch the next one -- in bulk, sorted, merged -- rather than this single row.
        * That is what turns a 21-cell page against a 6-row pool from 21 transfers into
@@ -900,6 +915,11 @@ const uint8_t* icon_store_row(uint16_t row) {
       if (i < 0) return 0;                   /* the sweep could not produce it          */
     } else {
       int v = slot_victim();
+      if (v < 0 && repeat) {                 /* a prefetched group is pinned ahead of the paint: give it up
+                                              * (it re-fetches on demand) rather than blank a drawn row */
+        for (int i = 0; i < s_is.cap; i++) slot_at(i)->pinned = 0;
+        v = slot_victim();
+      }
       if (v < 0) return 0;                   /* every slot pinned AND hot: nothing to give */
       bool filled = slot_fill(v, row);
       /* The victim may have BEEN a planned row that was already handed out (a pin is
