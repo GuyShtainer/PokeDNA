@@ -27,7 +27,12 @@
  *    LeafGreen rev 1 were never measured and are deliberately absent from k_pins
  *    rather than guessed at: rom_wallpaper_open() fails closed (ok = 0) for them,
  *    same posture rom_sprite.c/rom_mon.c take for Ruby/Sapphire.
- *  - Ruby/Sapphire are not pinned at all. DESIGN.md Sec 1.2 locates their table
+ *  - [BACKLOG #311 CLOSED 2026-10-02, lane zr: Ruby/Sapphire ARE served now, only the two
+ *    byte-verified revisions AXVE rev 2 and AXPE rev 1 (Guy #328: strict). The row reader is
+ *    kind-aware (RomWallpaper.rs), palette storage is ROM_WP_PAL_BANKS == 3, and R/S needs
+ *    NO backdrop shapes: its tilemap covers every box cell (interior tiles use bank 2) and
+ *    tile index 0 reads the bank 0 entry 0 backdrop colour. The paragraph below is history.]
+ *  - Ruby/Sapphire were not pinned at all. DESIGN.md Sec 1.2 locates their table
  *    addresses (AXVE 0x083BB104 / AXPE 0x083BB160) but they use a DIFFERENT 16-byte
  *    row struct ({tiles; u32 compressedSize; tilemap; palettes}, not this file's
  *    12-byte {tiles; tilemap; palettes}) that this module does not parse. Cost to
@@ -108,18 +113,21 @@
 #define ROM_WP_MAP_BYTES       (ROM_WP_MAP_ENTRIES * 2u)   /* 720                 */
 #define ROM_WP_TILES_MAX_BYTES 4096 /* >= measured worst case (3,072 B); refuses  *
                                       * rather than truncates a longer decode      */
-#define ROM_WP_PAL_BANKS       2   /* MEASURED: the row's palette blob is exactly *
-                                     * 64 B (2 banks) -- on Emerald wp 0 it is    *
-                                     * immediately followed by the tiles blob's   *
-                                     * LZ77 header (see rom_wallpaper.c). The old *
-                                     * 4-bank/128 B guess read past it into the   *
-                                     * next blob's compressed stream bytes.       */
-#define ROM_WP_PAL_BYTES       (ROM_WP_PAL_BANKS * 32u)    /* 64                  */
+#define ROM_WP_PAL_BANKS       3   /* STORAGE: the widest row (R/S, 3 raw banks). Emerald/FRLG  *
+                                     * rows hold ROM_WP_EM_BANKS and leave bank 2 zeroed.        */
+#define ROM_WP_EM_BANKS        2   /* MEASURED: an Emerald/FRLG row's palette blob is exactly   *
+                                     * 64 B (2 banks) -- on Emerald wp 0 it is immediately       *
+                                     * followed by the tiles blob's LZ77 header (see              *
+                                     * rom_wallpaper.c). The old 4-bank/128 B guess read past it  *
+                                     * into the next blob's compressed stream bytes.              */
+#define ROM_WP_EM_PAL_BYTES    (ROM_WP_EM_BANKS * 32u)     /* 64                  */
+#define ROM_WP_RS_PAL_BYTES    (ROM_WP_PAL_BANKS * 32u)    /* 96: R/S, 3 raw banks */
 
 typedef struct RomWallpaper {
   const RomCtx* rc;
   uint32_t table;   /* FILE offset of the 16-row standard wallpaper table */
   int      ok;      /* 1 = a pin matched AND row 0's tilemap self-checked to 720 B */
+  uint8_t  rs;      /* 1 = Ruby/Sapphire row layout (16-B rows, 3 palette banks, #311) */
 } RomWallpaper;
 
 /* Look up this ROM's pin and self-check row 0 (tilemap decompresses to exactly
@@ -173,8 +181,11 @@ int rom_wallpaper_expand_tile(const uint8_t* tiles, uint32_t tiles_bytes, uint16
 
 /* BACKLOG #294: the wallpaper's tiled BACKDROP (what index 0 is transparent over). `first` =
  * tile id of the bg sheet's first tile, cols x rows its tiling period, used its tile count;
- * cols == 0 means "no sheet known" (FireRed/LeafGreen): the flat interior tone. */
-typedef struct RomWpBase { uint16_t first; uint8_t cols, rows, used; } RomWpBase;
+ * cols == 0 means "no sheet known" (FireRed/LeafGreen): the flat interior tone. rs == 1
+ * (#311, Ruby/Sapphire): the tilemap already covers the whole box, so there is NO sheet
+ * (cols == 0) and index 0 is transparent over the hardware backdrop = bank 0 entry 0; raw
+ * tilemap banks 0/1/2 read pal banks 0/1/2 one to one. */
+typedef struct RomWpBase { uint16_t first; uint8_t cols, rows, used, rs; } RomWpBase;
 
 /* Fill *out for wallpaper `wp` whose decompressed tile blob is tiles_bytes long. Returns 1
  * (also for a table-less game, cols == 0) or 0 on a bad argument / a blob shorter than the

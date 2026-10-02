@@ -38,11 +38,14 @@ static int ref_cell(const uint8_t* tiles, uint32_t tiles_bytes, uint16_t e, int 
                     const RomWpBase* bs, const uint16_t pal[ROM_WP_PAL_BANKS][16], uint16_t out[64]) {
   uint16_t tid = (uint16_t)(e & 0x3FFu);
   if ((uint32_t)tid * 32u + 32u > tiles_bytes) return 0;
-  const uint16_t* bg = pal[ROM_WP_PAL_BANKS - 1];
-  const uint16_t* fg = pal[rom_wallpaper_pal_bank((e >> 12) & 0xF)];
+  const uint16_t* bg = pal[ROM_WP_EM_BANKS - 1];
+  int rb = (e >> 12) & 0xF;                                  /* #311: R/S reads banks 1:1, clamped */
+  const uint16_t* fg = bs->rs ? pal[rb >= ROM_WP_PAL_BANKS ? ROM_WP_PAL_BANKS - 1 : rb]
+                              : pal[rom_wallpaper_pal_bank(rb)];
   uint16_t tone = bg[1];
   uint16_t fill = tone;
   if (!bs->cols && tone == 0) fill = fg[0];
+  if (bs->rs) fill = pal[0][0];
   for (int i = 0; i < 64; i++) out[i] = fill;
   if (bs->cols && bs->rows) {
     int pi = (ty % bs->rows) * bs->cols + (tx % bs->cols);
@@ -78,9 +81,10 @@ int main(void) {
     uint16_t pal[ROM_WP_PAL_BANKS][16];
     for (int b = 0; b < ROM_WP_PAL_BANKS; b++)
       for (int c = 0; c < 16; c++) pal[b][c] = (uint16_t)rnd();
-    if (iter % 7 == 0) pal[ROM_WP_PAL_BANKS - 1][1] = 0;              /* tone 0: the fg[0] fill */
-    RomWpBase bs = { (uint16_t)(rnd() % 8u), (uint8_t)(rnd() % 4u), (uint8_t)(rnd() % 4u), (uint8_t)(rnd() % 12u) };
+    if (iter % 7 == 0) pal[ROM_WP_EM_BANKS - 1][1] = 0;              /* tone 0: the fg[0] fill */
+    RomWpBase bs = { (uint16_t)(rnd() % 8u), (uint8_t)(rnd() % 4u), (uint8_t)(rnd() % 4u), (uint8_t)(rnd() % 12u), 0 };
     if (iter % 5 == 0) bs.cols = 0;
+    if (iter % 3 == 0) { bs.rs = 1; bs.cols = 0; }                  /* #311: R/S flat backdrop */
     uint16_t e = (uint16_t)rnd();
     e = (uint16_t)((e & 0xFC00u) | (rnd() % NT));                      /* in-range tid, any flags/bank */
     int tx = (int)(rnd() % 20u), ty = (int)(rnd() % 18u);
