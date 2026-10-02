@@ -46,9 +46,37 @@ static int natl_roundtrip(void){
   return fail;
 }
 
+/* BACKLOG #370: Emerald dex VIEW byte (SB2 pokedex+0x01) / ORDER byte (+0x00). */
+#define VIEW_OFF (0x18 + 0x01)
+#define ORDER_OFF (0x18 + 0x00)
+static int natl_view_case(void){
+  int fail=0;
+  /* A: National ALREADY on, Hoenn view, alphabetical order -> Catch ALL's set_national(true) must not touch either byte */
+  memset(nsb1,0,sizeof nsb1); memset(nsb2,0,sizeof nsb2);
+  pk_dex_set_national(nsb1,nsb2,PK_EMERALD,true);
+  nsb2[VIEW_OFF]=0; nsb2[ORDER_OFF]=1;
+  pk_dex_set_national(nsb1,nsb2,PK_EMERALD,true);
+  if (nsb2[VIEW_OFF]!=0 || nsb2[ORDER_OFF]!=1){ printf("  370A: already-on Catch ALL moved view/order (%d/%d)\n",nsb2[VIEW_OFF],nsb2[ORDER_OFF]); fail++; }
+  /* B: locked -> unlocked still flips the view to National and the order to 0 (documented behaviour) */
+  memset(nsb1,0,sizeof nsb1); memset(nsb2,0,sizeof nsb2); nsb2[ORDER_OFF]=1;
+  pk_dex_set_national(nsb1,nsb2,PK_EMERALD,true);
+  if (nsb2[VIEW_OFF]!=1 || nsb2[ORDER_OFF]!=0){ printf("  370B: unlock transition did not set the National view (%d/%d)\n",nsb2[VIEW_OFF],nsb2[ORDER_OFF]); fail++; }
+  /* C: lock again (Undo of a Catch ALL that auto-unlocked) -> view back to Hoenn */
+  pk_dex_set_national(nsb1,nsb2,PK_EMERALD,false);
+  if (nsb2[VIEW_OFF]!=0){ printf("  370C: locking National left the National view on (%d)\n",nsb2[VIEW_OFF]); fail++; }
+  /* D: other games never get the Emerald-only bytes written */
+  memset(nsb1,0,sizeof nsb1); memset(nsb2,0,sizeof nsb2); nsb2[VIEW_OFF]=7; nsb2[ORDER_OFF]=9;
+  pk_dex_set_national(nsb1,nsb2,PK_FRLG,true);  pk_dex_set_national(nsb1,nsb2,PK_FRLG,false);
+  pk_dex_set_national(nsb1,nsb2,PK_RS,true);    pk_dex_set_national(nsb1,nsb2,PK_RS,false);
+  if (nsb2[VIEW_OFF]!=7 || nsb2[ORDER_OFF]!=9){ printf("  370D: a non-Emerald game had its view/order bytes written\n"); fail++; }
+  printf("%s\n\n", fail?"national view/order (#370): FAIL":"national view/order (#370): OK");
+  return fail;
+}
+
 int main(int c, char** v){
   int fail=0;
   fail += natl_roundtrip();
+  fail += natl_view_case();
   for (int a=1;a<c;a++){
     FILE* f=fopen(v[a],"rb"); if(!f)continue; size_t n=fread(save,1,sizeof save,f); fclose(f);
     Gen3SaveInfo info; if(!gen3_parse(save,(uint32_t)n,&info)){printf("%s parse fail\n",v[a]);fail++;continue;}
