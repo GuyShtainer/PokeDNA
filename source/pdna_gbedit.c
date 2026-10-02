@@ -17,6 +17,7 @@
 #include "pdna_gbedit.h"
 #include "gb_editor.h"
 #include "gb_session.h"    /* gbs_is_mail_item (BACKLOG #95 review C4) */
+#include "gb_item_names.h" /* GBIN_GEN2 (#340a) */
 #include "ui.h"
 #include "osk.h"
 #include "pdna_pick.h"
