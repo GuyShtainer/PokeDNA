@@ -25,25 +25,11 @@ uint16_t pick_species(uint16_t current_internal);
 void     pick_species_set_max_dex(uint16_t max_dex);
 uint16_t pick_move(uint16_t current_move);
 uint16_t pick_item(uint16_t current_item);
-/* Restricts the NEXT pick_item() call to ids 1..max_id shown as "#n" (no real
- * name/description/icon -- 0 = unrestricted, the default every existing
- * caller sees). The Gen-1/2 held-item field's own use (UX-parity audit, Guy
- * 2026-09-07); see source/pdna_pick.c's header comment on g_item_max_id for
- * why this is not merely a ceiling the way pick_species_set_max_dex() is.
- * Set it right before the call and clear it (pass 0) right after.
- *
- * BACKLOG #195: a thin wrapper over pick_item_set_gen1_2(0, GBF_G_RED,
- * max_id) -- kept so the held-item callers (pdna_gbedit.c, pdna_gen12.c)
- * that want the OLD "#n" raw-byte behaviour (no name table: a held item is
- * any raw byte 0..255, no legality gate) need no change. */
-void     pick_item_set_gen1_2_max(uint16_t max_id);
-/* BACKLOG #195: like pick_item_set_gen1_2_max(), but `gen` (GBIN_GEN1/
- * GBIN_GEN2, gb_item_names.h) also turns on REAL names (gb_item_label) and a
- * pocket CATEGORY filter (gbb_pocket_of) in the restricted picker -- see
- * pdna_pick.c's header comment on g_item_max_id/g_item_gen for the full
- * behaviour matrix. `gen` 0 is the old raw "#n" mode (identical to
- * pick_item_set_gen1_2_max()); GBIN_GEN1/GBIN_GEN2 are the Gen-1/2 bag/pack
- * ADD ITEM sites' own use.
+/* Restricts the NEXT pick_item() call to the real Gen-1/2 items: ids 1..max_id (plus Gen 2's
+ * TM/HM block) that have a real name (gb_item_label, #357a), shown with REAL names and a pocket
+ * CATEGORY filter (gbb_pocket_of) -- see pdna_pick.c's header comment on g_item_max_id/g_item_gen.
+ * `gen` is GBIN_GEN1 or GBIN_GEN2 (gb_item_names.h) whenever max_id is non-zero; (0, GBF_G_RED, 0)
+ * is the unrestricted Gen-3 picker. #358: the old raw "#n" mode (gen 0 with a ceiling) is gone.
  *
  * Review D2: `game` is the ACTUAL GbGame (GBF_G_RED/YELLOW for Gen-1 callers,
  * the session's own GBF_G_GS/GBF_G_CRYSTAL for Gen-2 callers), not merely
@@ -70,7 +56,7 @@ void     pick_item_set_gen1_2_held(int gen, GbGame game, uint16_t max_id);
 void     pick_item_set_gen1_2_cat(GbBagPocket pocket0);
 /* BACKLOG #189: restricts the NEXT pick_move() call's list to ids 1..max_id (0 =
  * unrestricted, the default every existing caller sees). Mirrors
- * pick_item_set_gen1_2_max() exactly: file-scope static, consulted in build_moves(),
+ * pick_item_set_gen1_2() exactly: file-scope static, consulted in build_moves(),
  * set right before the call and cleared (pass 0) right after so it never leaks into
  * the next, unrelated pick_move() caller. Unlike the item ceiling, move names/data
  * ARE real at every id shown (pk_move_name/pk_move_power/etc. already cover the

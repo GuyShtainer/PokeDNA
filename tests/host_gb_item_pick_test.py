@@ -135,7 +135,7 @@ def check_label_uses_gb_item_label(pick_c: str) -> list[str]:
                 "real-name upgrade has no effect (still \"#n\"-only)"]
     if "g_item_gen" not in body:
         return ["pdna_pick.c: item_label_for() calls gb_item_label() unconditionally -- the "
-                "g_item_gen == 0 raw \"#n\" mode (held-item fields) would silently change"]
+                "Gen-3 (ceiling 0) picker would silently change"]
     return []
 
 
@@ -251,7 +251,7 @@ def main() -> int:
 
         # --- self-mutation 3: item_label_for() stops reading g_item_gen (always "#n") ------
         pick_c = PICK_C.read_text()
-        target3 = "    if (g_item_gen && gb_item_label(g_item_gen, (uint8_t)id, out, cap)) return;\n"
+        target3 = "    if (gb_item_label(g_item_gen, (uint8_t)id, out, cap)) return;\n"
         if target3 not in pick_c:
             print(f"FAIL -- self-mutation 3 target line not found verbatim: {target3!r} "
                   f"(source drifted -- update this test)")

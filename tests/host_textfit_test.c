@@ -1842,12 +1842,10 @@ int main(void) {
    * the fixed sys8 grid) must fit from PDNA_PR_ICON_TEXT_X to the screen edge. */
   chkv("icon row: truncated text budget fits the screen",
        PDNA_PR_ICON_TEXT_X + PDNA_PR_ICON_MAXCOLS * SYS8_W, UI_SCR_W);
-  /* UX-parity audit (Guy 2026-09-07): pick_item()'s restricted-mode footer,
-   * fixed sys8 at x=4 like the two above. PDNA_ITEM_NO_DESC_YET is drawn only
-   * through proportional ui_ptext_fit/ui_ptext_wrap (clips safely, same as
-   * every other data-driven item description in this screen), so it is not
-   * pinned here the way a fixed-width string would be. */
-  T(PDNA_ITEM_GB_FOOT, 4);
+  /* PDNA_ITEM_NO_DESC_YET is drawn only through proportional ui_ptext_fit/ui_ptext_wrap
+   * (clips safely), so it is not pinned here the way a fixed-width string would be;
+   * the restricted-mode footer is fixed sys8 at x=4: */
+  T(PDNA_ITEM_GB2_FOOT, 4);
 
   printf("\n== move picker window (source/pdna_pick.c pick_move/mv_row) ==\n");
   /* mv_row (BACKLOG #36 item 7) now paints on the SAME PDNA_FILT_Y0/ROW_H/BAR_* geometry

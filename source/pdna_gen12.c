@@ -767,7 +767,7 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "jrn_app.h"          /* #234 s4: JaHist (the History screen's rows) */
 #include "pdna_bank.h"        /* BACKLOG #120 S2: the Bank, reachable from a GB session now */
 #include "xfer_gate.h"        /* BACKLOG #120 S2: xg_clear_carry_on_gb_exit */
-#include "pdna_pick.h"        /* BACKLOG #92: pick_item / pick_item_set_gen1_2_max */
+#include "pdna_pick.h"        /* BACKLOG #92: pick_item / pick_item_set_gen1_2_held */
 #include "pdna_layout.h"   /* PDNA_GBEDIT_* / PDNA_SIDECAR_* -- fixed strings         */
 #include "gb_sidecar.h"    /* S5-B: the sidecar format + gbsc_path/gbsc_key            */
 #include "gen3_to_gb.h"    /* S5-B: the Gen-3 -> Game Boy down converter               */
@@ -5807,6 +5807,7 @@ static bool gb_create_hook(void) {
   if (!gb_load_parts(&box_mon, g_ed->s.gen, false, party_mon.rec,
                      party_mon.otname, party_mon.nick, party_mon.list_species))
     return false;
+  gb_set_caught_available(&box_mon, gb_session_is_crystal(&g_ed->s));   /* #356: gb_load_parts leaves has_caught false (gb_mark_caught's rule) */
 
   bool saved = false; int card = 0;
   pdna_summary_quiet_save(true);            /* #234 s4: a resident-session edit is held */

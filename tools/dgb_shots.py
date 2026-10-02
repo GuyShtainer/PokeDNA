@@ -1034,13 +1034,12 @@ def run_u4_bag(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_
         s.tap("A", settle=gb_shots.BIG_SETTLE)                # ADD ITEM -> pick_item() opens
         s.shot("08_picker_open", "U4 (BACKLOG #195): ADD ITEM now opens the real "
                                   "item picker -- REAL Gen-1 names (gb_item_label, "
-                                  "not '#n'), a category header ('ITEM [All] 251': "
-                                  "251 = ids 0..250, gbb_max_item_id(RED)=250 "
-                                  "inclusive), list view, cursor on MASTER BALL "
-                                  "(pick_item(1)'s own `current` -- '#0' NO_ITEM's "
-                                  "own row is visible just above it, still "
-                                  "selectable, gbb_insert() refuses it as BAD ID "
-                                  "the same as before)")
+                                  "not '#n'), a category header ('ITEM [All] 150': "
+                                  "ids 1..250 = 250 minus the 100 unnamed junk "
+                                  "ids the ADD list hides -- 0x07, 0x2C, 0x62-0xC3; "
+                                  "NO ITEM (id 0) is not offered when adding), "
+                                  "list view, cursor on MASTER BALL "
+                                  "(pick_item(1)'s own `current`), row 0")
 
         s.tap("START", settle=gb_shots.BIG_SETTLE)            # -> ritem_cat_menu (BACKLOG #195 F1)
         s.shot("08b_category_menu", "U4: START opens the restricted picker's OWN "
@@ -1052,17 +1051,15 @@ def run_u4_bag(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_
         s.tap("A", settle=gb_shots.BIG_SETTLE)                # pick Items -> re-filters, closes menu
         s.shot("08c_items_filtered", "U4: picking 'Items' re-filters the list "
                                       "through gbb_pocket_of() -- the header now "
-                                      "reads 'ITEM [Items]', and id 0 (NO_ITEM, "
-                                      "invalid for every pocket) is gone from the "
-                                      "top of the list -- MASTER BALL is now row 0")
+                                      "reads 'ITEM [Items]' with the count 95 (150 minus "
+                                      "the 55 TM/HM ids), MASTER BALL still row 0")
 
-        # Navigate to POTION (id 20/0x14): 19 DOWN presses from MASTER_BALL (id 1,
-        # now row 0 under the Items filter) -- ids 1..20 have no TM/HM ids in
-        # range (Gen 1's TM/HM block starts at 0xC4/196) and no other exclusion,
-        # so the Items-filtered list and the unfiltered list agree on this stretch;
-        # 19 DOWNs is exactly "one row per id from 1 to 20".
-        s.press_n("DOWN", 19, settle=gb_shots.SETTLE)
-        s.shot("08d_potion_selected", "U4: 19 DOWNs from MASTER_BALL lands on "
+        # Navigate to POTION (id 20/0x14): 18 DOWN presses from MASTER_BALL (id 1,
+        # row 0 in the Items list, and also in All -- the ADD list never offers id 0)
+        # -- the Gen-1 list hides unnamed junk ids (0x07 is the only one in 1..20),
+        # so ids 1..20 are 19 rows and POTION is row 18 in both lists.
+        s.press_n("DOWN", 18, settle=gb_shots.SETTLE)
+        s.shot("08d_potion_selected", "U4: 18 DOWNs from MASTER_BALL lands on "
                                        "POTION (id 20) -- a real name from the "
                                        "table, not '#20'")
         s.tap("A", settle=gb_shots.BIG_SETTLE)                # pick POTION -> QUANTITY prompt (unchanged UI)
@@ -1084,13 +1081,13 @@ def run_u4_bag(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_
         # N4's own saturation-refusal demo, reused verbatim except for HOW the id
         # is chosen: ADD ITEM POTION again (a fresh pick_item() call always opens
         # at cat=All, current=1 -- the Gen-1 ADD site never calls
-        # pick_item_set_gen1_2_cat(), so this is the SAME 19-DOWNs-from-MASTER_BALL
-        # trip as above, just over the unfiltered 251-row list instead of the
-        # 250-row Items-filtered one -- id 0's own extra row exactly cancels out
-        # id 20 also shifting up by one, so the DOWN count is unchanged).
+        # pick_item_set_gen1_2_cat(), so this is the SAME 18-DOWNs-from-MASTER_BALL
+        # trip as above, just over the unfiltered 150-row list instead of the
+        # 95-row Items-filtered one -- both start MASTER_BALL at row 0, so the
+        # DOWN count is unchanged).
         s.tap("START", settle=gb_shots.BIG_SETTLE)            # -> item menu, cursor still on POTION (last row)
         s.tap("A", settle=gb_shots.BIG_SETTLE)                # ADD ITEM -> picker opens fresh (cat=All again)
-        s.press_n("DOWN", 19, settle=gb_shots.SETTLE)         # MASTER_BALL -> POTION (All list)
+        s.press_n("DOWN", 18, settle=gb_shots.SETTLE)         # MASTER_BALL -> POTION (All list)
         s.tap("A", settle=gb_shots.BIG_SETTLE)                # pick POTION again -> QUANTITY prompt
         s.tap("B", settle=gb_shots.SETTLE)                    # clear seeded "1"
         s.press_n("RIGHT", 4, settle=gb_shots.SETTLE)         # col0 -> col4 '5'
@@ -9624,6 +9621,10 @@ def _main_dispatch(argv=None) -> int:
                           "Gen-2-only fused image (Gold.gbc+Gold.sav or "
                           "Crystal.gbc+Crystal.sav, tools/fuse_gb.py, one ROM per "
                           "image -- BACKLOG #98)")
+    ap.add_argument("--zt-crystal", action="store_true",
+                     help="lane zt: run_zt_crystal() against --image (a one-ROM Crystal image)")
+    ap.add_argument("--zt-gold", action="store_true",
+                     help="lane zt: run_zt_gold() against --image (a one-ROM Gold image planted with held id 0x06)")
     ap.add_argument("--b93-menu", choices=("red", "gold"),
                      help="BACKLOG #93: only run_b93_menu() against --image -- "
                           "DUPLICATE/TO DAY-CARE/EXPORT .pk on the mon menu plus "
@@ -10764,6 +10765,32 @@ def _main_dispatch(argv=None) -> int:
             print(f"  [skip] {name}: {reason}")
         ran = True
 
+    if a.zt_crystal:
+        try:
+            sess = run_zt_crystal(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] zt crystal: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        ran = True
+
+    if a.zt_gold:
+        try:
+            sess = run_zt_gold(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] zt gold: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        ran = True
+
     if a.b93_menu:
         try:
             sess = run_b93_menu(core_mod, image_mod, a.image, a.out, a.b93_menu)
@@ -11427,6 +11454,91 @@ def _main_dispatch(argv=None) -> int:
     return 0
 
 
+def run_zt_gold(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """lane zt (#357a/#357c) on a ONE-ROM Gold image whose box1 slot0 mon was planted with the
+    UNUSED held-item id 0x06 (tests/host_gbsurgery_tool.c --op helditem 0 0 6): (a) the picker
+    opens PRESELECTED on that mon's own "#6" row; B leaves the byte; A keeps it; (b) the NEXT
+    cell's mon (a normal held item) shows the list with no "#n" hole rows."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "zt_gold_")
+    print("== lane zt: Gold held-item picker, planted hole id 0x06 ==")
+    boot_to_gb_session(s, rom)
+    s.shot("00_grid", "zt: Gold box1, top-left cell = the mon planted with held id 0x06")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # cell -> mon menu
+    s.tap("DOWN", settle=gb_shots.SETTLE)                   # VIEW/EDIT -> ITEM
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ITEM -> pick_item (held)
+    s.shot("01_planted_row", "zt #357c: picker opened on the planted mon (held byte 0x06 = unused id): ONE extra "
+                             "row \"#6\" in id order, preselected (cursor on it, not on NO ITEM)")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # cancel: the byte stays
+    s.shot("02_b_cancel", "zt #357c: B cancelled the picker -- back at the grid, nothing written")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.tap("DOWN", settle=gb_shots.SETTLE)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # reopen
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # A on the preselected \"#6\" row = keep
+    s.shot("03_a_keep", "zt #357c: A on the preselected \"#6\" row (keeps the byte; the delta build then shows its "
+                        "in-session notice or returns to the grid)")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.tap("DOWN", settle=gb_shots.SETTLE)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.shot("04_reopen", "zt #357c: reopened after A: still preselected on the \"#6\" row (the byte survived, "
+                        "it was NOT cleared to NO ITEM)")
+    s.tap("B", settle=300)
+    s.tap("RIGHT", settle=120)                               # next cell: an ordinary mon
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.shot("04b_menu_cell1", "zt: the mon menu of the NEXT cell (an ordinary mon) is open")
+    s.tap("DOWN", settle=gb_shots.SETTLE)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.shot("05_list_top", "zt #357a: an ordinary mon's picker, list top: NO ITEM, MASTER BALL ... POKe BALL, then "
+                          "BICYCLE -- the \"#6\" row that used to sit between them is GONE")
+    s.press_n("DOWN", 40, settle=gb_shots.SETTLE)
+    s.shot("06_list_scrolled", "zt #357a: scrolled 40 rows down the same list (past where hole ids 0x19 and 0x2D would sit); every row is a real name, no \"#n\" row")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)
+    return s
+
+
+def run_zt_crystal(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """lane zt (#356) on a ONE-ROM Crystal image: a mon PUT INTO THE DAY-CARE (a gb_load_parts record,
+    has_caught false before #356) is opened in View/Edit, and its held-item picker (SELECT -> the flat
+    editor -> Item row -> A) must list the four Crystal-only ids (CLEAR BELL, GS BALL, BLUE CARD,
+    EGG TICKET); the START category filter is set to Key items to bring them on one page."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "zt_crystal_")
+    print("== lane zt: Crystal Day-Care held-item picker ==")
+    boot_to_gb_session(s, rom, which="crystal")
+    s.tap("START", settle=gb_shots.BIG_SETTLE)
+    s.press_n("DOWN", 2)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # Day Care
+    s.shot("00_daycare", "zt: Crystal Day-Care on entry")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # slot 0 popup (Put in)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # pick list
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # top row -> confirm
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # accept
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss the in-session notice
+    s.shot("01_deposited", "zt: slot 0 now holds the deposited mon")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # slot 0 popup (View/Edit first)
+    s.shot("02_popup", "zt: occupied-slot popup")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # View/Edit -> pdna_gbsummary
+    s.shot("03_summary", "zt: the Day-Care mon's summary card")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # A edit
+    s.shot("04_editing", "zt: edit mode on the INFO card")
+    s.press_n("DOWN", 5, settle=gb_shots.SETTLE)            # Name, Lv, Gender, OT, ID -> Item
+    s.shot("05_item_row", "zt: cursor on the Item row")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # -> pick_item (held, game from the session)
+    s.shot("06_picker", "zt #356: the Day-Care mon's held-item picker in a CRYSTAL session: header count 223 "
+                        "(Gold's list of the same filter is 219: the 4 Crystal-only ids are present)",
+           claim="223")
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # category filter menu
+    s.shot("07_filter_menu", "zt: the category menu (All / Items / Poke Balls / Key items / TM-HM)")
+    s.press_n("DOWN", 3, settle=gb_shots.SETTLE)            # All -> Items -> Poke Balls -> Key items
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.shot("08_key_items", "zt #356: Key items only: CLEAR BELL, GS BALL, BLUE CARD, EGG TICKET are listed "
+                           "(Crystal-only ids 46/73/74/81)")
+    s.press_n("DOWN", 21, settle=gb_shots.SETTLE)
+    s.shot("09_key_items_end", "zt #356: the tail of the Key items list: BLUE CARD and EGG TICKET (the other two "
+                               "Crystal-only ids) are listed too")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)
+    return s
+
+
 def run_gbmon(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
     """BACKLOG #92: the new ITEM row on the Gen-1/2 mon-menu popup
     (app_mon_menu_readonly, pdna_main.c) -- Gen 2 only. `rom` must be a Gen-2-only
@@ -11468,10 +11580,10 @@ def run_gbmon(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session
     s.tap("DOWN", settle=gb_shots.SETTLE)                   # VIEW/EDIT (row 0) -> ITEM (row 1)
     s.shot("03_item_row_selected", "#92: cursor on the ITEM row")
 
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # -> pick_item(), restricted (1..255, "#n")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # -> pick_item(), restricted (real Gen-2 names)
     s.shot("04_item_picker", "#92: gb_item_hook opens the SAME pick_item() screen "
                               "app_quick_item (Gen 3) uses, restricted to ids "
-                              "1..255 shown as \"#n\" via pick_item_set_gen1_2_max "
+                              "with their real names (pick_item_set_gen1_2_held) "
                               "-- the identical restricted mode gb_editor.c's own "
                               "GBE_ITEM row already uses inside the full summary "
                               "editor, now reachable straight from the mon menu too")
