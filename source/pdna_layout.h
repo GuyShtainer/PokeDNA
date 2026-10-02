@@ -110,6 +110,11 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_NAV_MW      (PDNA_NAV_COL_W * 2 + 12)
 #define PDNA_NAV_HINT_DY (-10)                  /* hint baseline rel. to panel bottom */
 #define PDNA_NAV_HINT    "A pick  B back"
+/* #335: backing tint painted ONCE under each label column (full bar width x the column's
+ * rows, label extent only) before the labels draw: the panel's own 5/8 blend lets the box
+ * art through, so labels over the portrait/icons read overprinted. Blends toward UI_BG by
+ * PDNA_NAV_TINT_NUM/8 on top of the panel blend; the rest of the panel is untouched. */
+#define PDNA_NAV_TINT_NUM 6
 
 /* ---------------------------------------------------------------------------
  * Per-mon action popup (app_mon_menu / app_mon_menu_readonly, source/pdna_main.c)

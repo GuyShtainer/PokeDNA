@@ -5173,7 +5173,7 @@ static void party_draw_slot_border(int i, bool selected) {
     for (int px = x; px <= x2; px++) if ((unsigned)px < (unsigned)UI_SCR_W) row[px] = c;
   }
   for (int py = y; py <= y2; py++) {
-    if ((unsigned)py >= (unsigned)UI_SCR_H) continue;
+    if ((unsigned)py >= 160u) continue;
     if ((unsigned)x  < (unsigned)UI_SCR_W) vid_mem[py * UI_SCR_W + x]  = c;
     if ((unsigned)x2 < (unsigned)UI_SCR_W) vid_mem[py * UI_SCR_W + x2] = c;
   }
@@ -5369,7 +5369,7 @@ static void party_icon_repaint(int slot_i, int x, int y, const u16* data) {
    * up-to-3 comparisons 32 times over for no reason. */
   int probe = slot_i - 1; if (probe < 1) probe = 1;
   for (int j = 0; j < MON_ICON_H; j++) {
-    int py = y + j; if ((unsigned)py >= (unsigned)UI_SCR_H) continue;
+    int py = y + j; if ((unsigned)py >= 160u) continue;
     int splitX; u16 leftCol, rightCol;
     if (isbox) {
       splitX = PDNA_PTY_BOX_X;
@@ -10026,6 +10026,22 @@ static u16 EWRAM_BSS s_nav_band[PDNA_NAV_BAND_W * PDNA_NAV_BAND_H];
  * out at compile time. */
 static bool nav_item_available(uint32_t mask, int nv) { return (mask & (1u << nv)) != 0; }
 
+/* #335: blend the w x h rect toward UI_BG by PDNA_NAV_TINT_NUM/8 (no border). Clipped. */
+static void nav_tint(int x, int y, int w, int h) {
+  const int num = PDNA_NAV_TINT_NUM;
+  const int fr = UI_BG & 31, fg = (UI_BG >> 5) & 31, fb = (UI_BG >> 10) & 31;
+  for (int py = y; py < y + h; py++) {
+    if ((unsigned)py >= 160u) continue;
+    for (int px = x; px < x + w; px++) {
+      if ((unsigned)px >= (unsigned)UI_SCR_W) continue;
+      u16 c = vid_mem[py * UI_SCR_W + px];
+      int r = c & 31, g = (c >> 5) & 31, b = (c >> 10) & 31;
+      r += ((fr - r) * num) >> 3; g += ((fg - g) * num) >> 3; b += ((fb - b) * num) >> 3;
+      vid_mem[py * UI_SCR_W + px] = (u16)(r | (g << 5) | (b << 10));
+    }
+  }
+}
+
 /* BACKLOG #48: `avail_mask` is a bitmask of `1u << NV_*` — the item is drawn UI_DIM
  * (instead of UI_TEXT) and, if picked, returns NAV_UNAVAILABLE instead of its own id
  * when its bit is clear. A dimmed row is still fully selectable (the cursor and the
@@ -10062,6 +10078,13 @@ static int nav_menu(uint32_t avail_mask) {
   ui_panel_alpha(mx, my, mw, mh, UI_PANEL, UI_BORDER, 5);
   ui_text(mx + PDNA_NAV_PAD, my + PDNA_NAV_TITLE_DY, UI_TITLE, "MENU");
   ui_hline(mx + 2, my + PDNA_NAV_DIV_DY, mw - 4, UI_BORDER);
+  /* #335: backing tint under each label column (once, before the labels; the selection
+   * bar saves/restores pixels from vid_mem so it lifts back to the tint, never to bare art). */
+  for (int c = 0; c * rows < NV_COUNT; c++) {
+    int n = NV_COUNT - c * rows; if (n > rows) n = rows;
+    nav_tint(mx + PDNA_NAV_PAD + c * cw - PDNA_NAV_LABEL_DX,
+             my + PDNA_NAV_HEAD + PDNA_NAV_BAND_DY, bw, (n - 1) * rh + PDNA_NAV_BAND_H);
+  }
   for (int i = 0; i < NV_COUNT; i++) {
     int col = i / rows, row = i % rows;
     u16 ink = nav_item_available(avail_mask, i) ? UI_TEXT : UI_DIM;
