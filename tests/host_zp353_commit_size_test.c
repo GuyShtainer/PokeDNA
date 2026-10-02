@@ -54,7 +54,9 @@ int main(void) {
   bool old_ok = parse(gsave, G3_SAVE_FILE_SIZE, &old);
   int old_same = old_ok && old.slot == ref.slot && strcmp(old.trainer_name, ref.trainer_name) == 0 &&
                  old.tid_public == ref.tid_public && old.tid_secret == ref.tid_secret;
-  CHECK(!old_same, "OLD behaviour must NOT reproduce the fixture trainer (test would not bite): slot %d name %s", old.slot, old.trainer_name);
+  /* #354: the parser now PREFERS the coherent slot, so the damaged 128 KiB image opens on the fixture trainer
+   * again -- but only by detecting the damage. The bytes are still wrong on disk, which is what (b) pins. */
+  CHECK(old_same && old.damaged_fallback, "OLD image: parser rescues the trainer AND flags the damage (#354): slot %d name %s fb %d", old.slot, old.trainer_name, old.damaged_fallback);
   printf("  old (128K write): ok=%d slot=%d ctr=[%u,%u] name=%s (fixture: %s)\n", old_ok, old.slot,
          (unsigned)old.counter[0], (unsigned)old.counter[1], old.trainer_name, ref.trainer_name);
 
