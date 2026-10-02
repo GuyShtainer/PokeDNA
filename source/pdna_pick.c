@@ -2232,9 +2232,9 @@ uint16_t pick_item(uint16_t current) {
       ui_ptext_wrap(126, 36, 108, UI_ROW_H, 12, UI_TEXT, item_desc_for(cur));
     } else {
       ui_fill_rect(0, 138, UI_SCR_W, 8, UI_BG);
-      char d[96], nm[48];
-      item_label_for(cur, nm, sizeof nm);
-      siprintf(d, "%s  %s", nm, item_desc_for(cur));
+      char d[96];
+      if (g_item_max_id) siprintf(d, "%s", item_desc_for(cur));    /* #340b: restricted (Game Boy) mode shows the text alone -- the highlighted row already names it, and "NAME  text" overran 232 px */
+      else { char nm[48]; item_label_for(cur, nm, sizeof nm); siprintf(d, "%s  %s", nm, item_desc_for(cur)); }
       ui_ptext_fit(4, 139, UI_SCR_W - 8, UI_DIM, d);
     }
 
