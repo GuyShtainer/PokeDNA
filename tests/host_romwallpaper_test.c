@@ -58,11 +58,11 @@ static bool file_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
 }
 
 /* FNV-1a 32 over the composed 160x144 image's little-endian u16 pixels (bit 15 cleared). */
-/* #311: R/S goldens from an INDEPENDENT Python decoder (own LZ10, backdrop = bank 0 entry 0,
- * raw bank n -> pal bank n); AXVE rev 2 and AXPE rev 1 carry identical wallpaper data. */
+/* #311: R/S goldens from an INDEPENDENT Python decoder (own LZ10, index 0 = UI_BG 0x1041 (review-zr D2; pal[0][0] is
+ * Game Freak's transparency KEY, not a colour), raw bank n -> pal bank n); AXVE rev 2 and AXPE rev 1 carry identical wallpaper data. */
 static const uint32_t k_rs_golden[ROM_WP_COUNT] = {
-  0x9D06EDD1u, 0xBB4576C2u, 0xADB72E42u, 0x692D7B71u, 0x30044116u, 0xD18A722Au, 0xA1CF73BAu, 0x200731C8u,
-  0x5DE6E423u, 0x17DB85AAu, 0x3C464B7Cu, 0x5BF22CCEu, 0xE57EEDECu, 0x12241E83u, 0xDC1C5914u, 0x386189C1u,
+  0x166F6459u, 0x999A8CCEu, 0xB8623E7Au, 0x075F13C1u, 0xF76FAD2Eu, 0x67FD2402u, 0x7DD610B2u, 0xAF093EF0u,
+  0xDDD32853u, 0x14A4FFFAu, 0x72451F34u, 0x7F3D96AEu, 0x9DE8F2D4u, 0xE521C55Bu, 0x8C81CFB4u, 0x7F126531u,
 };
 static const uint32_t k_em_golden[ROM_WP_COUNT] = {
   0xFF8FA8AEu, 0xD6199C60u, 0x190381CBu, 0x2C8EEFADu, 0xE6539EF7u, 0x5AF9A66Du, 0x70F2EA42u, 0xAAF78964u,

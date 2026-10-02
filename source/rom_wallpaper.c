@@ -285,7 +285,7 @@ int rom_wallpaper_expand_cell(const uint8_t* tiles, uint32_t tiles_bytes, uint16
    * black where the answer is unknown (City's tone IS black, but City is table-backed). */
   uint16_t fill = tone;
   if (!bs->cols && tone == 0) fill = fg[0];
-  if (bs->rs) fill = pal[0][0];          /* R/S: index 0 shows the hardware backdrop = bank 0 entry 0 */
+  if (bs->rs) fill = 0x1041u;  /* = UI_BG (ui.h RGB15(1,2,4); pure core, so the literal); retail shows the PC screen's BG3 here. pal[0][0] is Game Freak's transparency KEY (green), never a colour */
   const uint8_t* btile = 0;                          /* the backdrop tile, if there is one */
   uint16_t bp[16];
   if (bs->cols && bs->rows) {

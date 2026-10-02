@@ -31,7 +31,8 @@
  *    byte-verified revisions AXVE rev 2 and AXPE rev 1 (Guy #328: strict). The row reader is
  *    kind-aware (RomWallpaper.rs), palette storage is ROM_WP_PAL_BANKS == 3, and R/S needs
  *    NO backdrop shapes: its tilemap covers every box cell (interior tiles use bank 2) and
- *    tile index 0 reads the bank 0 entry 0 backdrop colour. The paragraph below is history.]
+ *    tile index 0 is transparent over BG3 of the PC screen, which we draw as UI_BG 0x1041 (review-zr D2: bank 0 entry 0 is
+ *    Game Freak's transparency KEY, not the backdrop). The paragraph below is history.]
  *  - Ruby/Sapphire were not pinned at all. DESIGN.md Sec 1.2 locates their table
  *    addresses (AXVE 0x083BB104 / AXPE 0x083BB160) but they use a DIFFERENT 16-byte
  *    row struct ({tiles; u32 compressedSize; tilemap; palettes}, not this file's
@@ -183,7 +184,7 @@ int rom_wallpaper_expand_tile(const uint8_t* tiles, uint32_t tiles_bytes, uint16
  * tile id of the bg sheet's first tile, cols x rows its tiling period, used its tile count;
  * cols == 0 means "no sheet known" (FireRed/LeafGreen): the flat interior tone. rs == 1
  * (#311, Ruby/Sapphire): the tilemap already covers the whole box, so there is NO sheet
- * (cols == 0) and index 0 is transparent over the hardware backdrop = bank 0 entry 0; raw
+ * (cols == 0) and index 0 is transparent over the PC screen's BG3, drawn as UI_BG 0x1041 (NOT pal bank 0 entry 0, the transparency key); raw
  * tilemap banks 0/1/2 read pal banks 0/1/2 one to one. */
 typedef struct RomWpBase { uint16_t first; uint8_t cols, rows, used, rs; } RomWpBase;
 
