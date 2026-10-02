@@ -2044,6 +2044,15 @@ static bool app_save_finalize(void) {
   app_journal_after_save();
   return true;
 #else
+  /* #353: write exactly what view_save loaded. The loader admits G3_SLOT_BYTES <= sz <= G3_SAVE_FILE_SIZE (a 64 KiB dump has
+   * g_save_size = 64 KiB); writing the full cap would commit the PREVIOUS save's bytes as the file's tail (slot B). Any size
+   * outside that window is not a Gen-3 image the loader could have produced: refuse, write nothing. */
+  if (g_save_size < (uint32_t)G3_SLOT_BYTES || g_save_size > (uint32_t)G3_SAVE_FILE_SIZE) {
+    log_line("BUG: app_save_finalize with g_save_size %lu outside the loaded Gen-3 window - refused", (unsigned long)g_save_size);
+    snd_error();
+    msg_wait("SAVE REFUSED", UI_WARN, "Bad image size.", "NOT written.");
+    return false;
+  }
   log_line("=== edit commit -> %s (backup mode %d) ===", g_path, g_backup_mode);
   char bak[SF_PATH_MAX]; bak[0] = 0;
   if (g_backup_mode != 2) {                        /* 2 = skip backup; else back up the pre-save file */
@@ -2059,15 +2068,6 @@ static bool app_save_finalize(void) {
       msg_wait("BACKUP FAILED", UI_WARN, sf_status_str(bst), "Save NOT modified.");
       return false;
     }
-  }
-  /* #353: write exactly what view_save loaded. The loader admits G3_SLOT_BYTES <= sz <= G3_SAVE_FILE_SIZE (a 64 KiB dump has
-   * g_save_size = 64 KiB); writing the full cap would commit the PREVIOUS save's bytes as the file's tail (slot B). Any size
-   * outside that window is not a Gen-3 image the loader could have produced: refuse, write nothing. */
-  if (g_save_size < (uint32_t)G3_SLOT_BYTES || g_save_size > (uint32_t)G3_SAVE_FILE_SIZE) {
-    log_line("BUG: app_save_finalize with g_save_size %lu outside the loaded Gen-3 window - refused", (unsigned long)g_save_size);
-    snd_error();
-    msg_wait("SAVE REFUSED", UI_WARN, "Bad image size.", "NOT written.");
-    return false;
   }
   SfStatus st;
   busy_panel("Writing + verifying...");            /* safe point: before SD write */

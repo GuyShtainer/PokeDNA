@@ -121,7 +121,9 @@ def checks(box: str, summ: str, main: str, jrn: str, lay: str, prog: str) -> dic
             and "sf_write_verified(g_path, g_save, g_save_size)" in sdarm
             and "sf_where_are_the_bytes(g_path, g_save, g_save_size)" in sdarm
             and re.search(r"g_save_size < \(uint32_t\)G3_SLOT_BYTES \|\| g_save_size > \(uint32_t\)G3_SAVE_FILE_SIZE\)\s*\{[^}]*return false;", sdarm) is not None
-            and before(sdarm, "g_save_size > (uint32_t)G3_SAVE_FILE_SIZE", "sf_write_verified("),
+            and before(sdarm, "g_save_size > (uint32_t)G3_SAVE_FILE_SIZE", "sf_write_verified(")
+            and before(sdarm, "g_save_size > (uint32_t)G3_SAVE_FILE_SIZE", "sf_backup")   # review-zp F1: the RAM gate precedes ALL card I/O
+            and sdarm.count("sf_write_verified(") == 1 and sdarm.count("G3_SAVE_FILE_SIZE") == 1,   # review-zp F2: no second full-cap write
         "P15 #353: view_save pads a short Gen-3 read with 0xFF after the Game Boy fork": bool(vsv)
             and re.search(r"if \(!err && sz < \(uint32_t\)G3_SAVE_FILE_SIZE\)\s*\{\s*memset\(g_save \+ sz, 0xFF, \(size_t\)G3_SAVE_FILE_SIZE - sz\);", vsv) is not None
             and before(vsv, "pdna_gen12_show_image(path, g_save, sz", "memset(g_save + sz, 0xFF"),
@@ -179,8 +181,10 @@ def main() -> int:
     mutant("M-P14b the cap restored at the where-check", "main", "sf_where_are_the_bytes(g_path, g_save, g_save_size)", "sf_where_are_the_bytes(g_path, g_save, G3_SAVE_FILE_SIZE)", "P14")
     mutant("M-P14c the size gate removed", "main", "if (g_save_size < (uint32_t)G3_SLOT_BYTES || g_save_size > (uint32_t)G3_SAVE_FILE_SIZE) {", "if (0) {", "P14")
     mutant("M-P14d the size gate no longer refuses", "main", "msg_wait(\"SAVE REFUSED\", UI_WARN, \"Bad image size.\", \"NOT written.\");\n    return false;", "msg_wait(\"SAVE REFUSED\", UI_WARN, \"Bad image size.\", \"NOT written.\");", "P14")
+    mutant("M-P14e a second full-cap write", "main", "st = sf_write_verified(g_path, g_save, g_save_size);", "st = sf_write_verified(g_path, g_save, g_save_size);\n  st = sf_write_verified(g_path, g_save, G3_SAVE_FILE_SIZE);", "P14")
+    mutant("M-P14f a backup issued before the size gate", "main", "  /* #353: write exactly what view_save loaded.", "  (void)sf_backup(g_path, bak, sizeof(bak));\n  /* #353: write exactly what view_save loaded.", "P14")
     mutant("M-P15a the pad removed", "main", "    memset(g_save + sz, 0xFF, (size_t)G3_SAVE_FILE_SIZE - sz);", "", "P15")
-    mutant("M-P15b the pad moved before the Game Boy fork", "main", "  if (!err && sz < (uint32_t)G3_SAVE_FILE_SIZE) {\n    /* g_save-write-ok: loader: pads", "  if (0) {\n    /* g_save-write-ok: loader: pads", "P15")
+    mutant("M-P15b the pad disabled", "main", "  if (!err && sz < (uint32_t)G3_SAVE_FILE_SIZE) {\n    /* g_save-write-ok: loader: pads", "  if (0) {\n    /* g_save-write-ok: loader: pads", "P15")
     if fails:
         print("FAILED:", ", ".join(fails))
         return 1
