@@ -379,6 +379,12 @@ int jrnapp_step(int dir, char name[25]) {
     if (rc == JRN_E_FULL && !retried) { retried = 1; (void)jrnapp_flush(); continue; }
     break;
   }
+  /* #319 RULING: recording while the PARTIAL latch is set is SAFE AND WANTED -- do NOT refuse records on a latched image.
+   * (1) the epoch crosses on TORN (here and in jrnapp_reapply) so the NEXT record is a floor: offer/redo stop before it
+   * (journal_undo.c); (2) re-apply memcmp-verifies every byte against the image it was recorded over (span_walk,
+   * journal_undo.c:46-50) and stops DIVERGED, never patching; (3) GB relatches its baseline (gb_relatch), so only the user's
+   * own edit is recorded. Refusing would strip undo coverage from the user's post-partial edits for no safety gain. The
+   * latch's one clear is a FULL-image discard (app_discard_staged's short-read predicate, #319). */
   if (rc == JRN_E_TORN) {                                    /* z9: a chained undo/redo failed part way and its rollback failed too: the image is PARTIAL */
     img_rec_cross(s_r);                                      /* floor: the next recorded step is crossed, so a later re-apply stops before it */
     ja_event(dir < 0 ? "undo: chain rollback failed, image PARTIAL" : "redo: chain rollback failed, image PARTIAL", rc);

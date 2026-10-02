@@ -10206,18 +10206,30 @@ static BoxSource pc_box_source(void) {
  * failure leaves the (unwritten) staged image in RAM and says so in the log; the caller returns
  * to the browser and the next open re-reads the file anyway. */
 static void app_discard_staged(void) {
-  uint32_t rsz = 0;
   bool ok;
 #ifdef PDNA_DELTA
   /* g_save-write-ok: discard: restores the untouched card image over the staged one */
-  ok = flashsave_read(g_save, G3_SAVE_FILE_SIZE);
+  ok = flashsave_read(g_save, G3_SAVE_FILE_SIZE);   /* all-or-nothing: false only on a null dst / len > chip size, never a short copy (#319) */
 #else
+  uint32_t rsz = 0;
   rmbl_pause();
   /* g_save-write-ok: discard: restores the untouched card image over the staged one */
   ok = sf_read_full(g_path, g_save, G3_SAVE_FILE_SIZE, &rsz) == SF_OK;
   rmbl_resume();
+  /* #319: sf_read_full returns SF_OK on a SHORT read (f_read gives FR_OK with br < cap at EOF), and a truncated card file is
+   * exactly the world the PARTIAL latch lives in -- the tail of g_save would KEEP the staged bytes while `ok` is true, and the
+   * latch-clear below would fire over a chimera (card head + staged tail). The load (view_save) ACCEPTS files shorter than
+   * G3_SAVE_FILE_SIZE (64 KiB dumps, g_save_size = sz), so the predicate is "the read covered at least the loaded image":
+   * rsz >= g_save_size. NOT rsz == cap (a 64 KiB save is written back as 128 KiB by app_commit, so the file GROWS while
+   * g_save_size stays 64 KiB), and NOT equality with g_save_size (the grown file reads 128 KiB: latched forever). A short
+   * read is the !ok arm: no retry, the next open re-reads. GB parity: gb_discard_staged checks got != g_ed->len (its cap IS
+   * len, so a grown file reads len and cannot trip it) -- no hole there. */
+  if (ok && rsz < g_save_size) {
+    log_line("discard: SHORT re-read (%lu of %lu B loaded) - g_save is card head + staged tail; PARTIAL latch kept, RAM only, never written",
+             (unsigned long)rsz, (unsigned long)g_save_size);
+    ok = false;
+  }
 #endif
-  (void)rsz;                                            /* size already known from the load */
   if (!ok) log_line("discard: re-read failed - g_save may be partial; RAM only, never written (browser next, reload on open)");
   gen3_read_pc_storage(g_save, g_vinfo.slot, g_pc);     /* revert PC moves */
   imgf_clear(&g_img);                                   /* nothing staged, nothing pending */
