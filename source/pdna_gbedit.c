@@ -303,9 +303,10 @@ void gbedit_press(GbEditMon* e, int f, bool has_sidecar, bool* dv_warned) {
   /* UX-parity audit (Guy 2026-09-07): the held-item field used to LEFT/RIGHT-
    * step a raw byte with no picker at all -- A now opens the SAME pick_item()
    * screen the Gen-3 flow uses (app_quick_item, pdna_main.c), restricted to
-   * ids 0..255 shown as "#n" (pick_item_set_gen1_2_max()'s own header comment
-   * has the full "why not real names yet" reasoning; #0 is NO_ITEM and removes
-   * the item, same as every other slot's item picker). gb_get_held_item/
+   * the real Gen-2 item ids shown with their REAL names (#340a; the old raw "#n" mode is
+   * gone here). pick_item_set_gen1_2_held() keeps a "NO ITEM" row (id 0) that removes the
+   * item, same as every other slot's item picker. A held byte outside the list (an unused
+   * id) opens at row 0 and B keeps it untouched. gb_get_held_item/
    * gb_set_held_item are gb_edit.h calls, reachable here because gb_editor.h
    * includes that header itself -- no new wrapper needed, unlike gbe_set_move
    * (which validates against gb_max_move/move_taken; held_item needs neither).
@@ -317,9 +318,13 @@ void gbedit_press(GbEditMon* e, int f, bool has_sidecar, bool* dv_warned) {
    * would refuse the whole party the moment this mon carries one, gb_session.h
    * gbs_is_mail_item). */
   if (kind == GBE_K_ITEM) {
-    pick_item_set_gen1_2_max(255);
+    /* #340a: real names. Only Gen 2 reaches here (gbe_fields drops GBE_ITEM on Gen 1, where the
+     * byte is the catch rate). has_caught is the session's Crystal flag (gb_mark_caught), so Gold
+     * vs Crystal threads through; a Bank-unpacked record has no flag and reads as GS. */
+    GbGame g = e->has_caught ? GBF_G_CRYSTAL : GBF_G_GS;
+    pick_item_set_gen1_2_held(GBIN_GEN2, g, gbb_max_item_id(g));
     uint16_t id = pick_item(gb_get_held_item(e));
-    pick_item_set_gen1_2_max(0);
+    pick_item_set_gen1_2(0, GBF_G_RED, 0);
     if (id == 0xFFFF) return;                              /* cancel */
     if (id != 0 && gb_is_egg(e)) {
       snd_deny();
