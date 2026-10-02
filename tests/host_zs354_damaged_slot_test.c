@@ -154,6 +154,12 @@ int main(void) {
     CHECK(parse(img, G3_SAVE_FILE_SIZE, &t), "%s D parses", NAMES[g]);
     CHECK(t.slot_damaged[O] && !t.slot_damaged[N] && t.game_loads_other && !t.ours_rejected,
           "%s D (tie): dmg %d%d loads_other %d rej %d", NAMES[g], t.slot_damaged[0], t.slot_damaged[1], t.game_loads_other, t.ours_rejected);
+    memcpy(img, sav[g], sizeof img);                                               /* E: neither slot passes -> no flag (review-zv F1) */
+    img[bn + (uint32_t)gen3_find_section(img, N, 0) * G3_SECTOR_SIZE + 0x10] ^= 0x5A;
+    img[bo + 3u * G3_SECTOR_SIZE + G3_OFF_SIGNATURE] ^= 0xFF;
+    CHECK(parse(img, G3_SAVE_FILE_SIZE, &t), "%s E parses", NAMES[g]);
+    CHECK(t.slot == N && !t.game_loads_other && !t.ours_rejected,
+          "%s E (neither passes): slot %d loads_other %d rej %d", NAMES[g], t.slot, t.game_loads_other, t.ours_rejected);
   }
 
   /* 3f. the 3968-byte sum equals the stored (per-game-size) checksum on EVERY genuine corpus sector -- the claim

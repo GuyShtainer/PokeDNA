@@ -8305,7 +8305,7 @@ static void sb_list_row_paint(int idx, int i, bool sel) {
  * which is why this one does NOT need an explicit relist-style flag. `top` is kept
  * OUT of `full` (a scroll must not pay the ui_clear()) and handled by the same
  * per-row index-identity diff render_browser uses. */
-static void pdna_secretbase(void) {
+static void __attribute__((noinline)) pdna_secretbase(void) {   /* review-zv F2: keeps main's frame off the stack floor (+48 B margin) */
   Gen3Version v = (g_game == PK_RS) ? G3_VER_RS : (g_game == PK_EMERALD) ? G3_VER_EMERALD : G3_VER_UNKNOWN;
   uint32_t off = gen3_secret_base_offset(v);
   if (off == 0) { msg_wait("SECRET BASES", UI_DIM, "FireRed/LeafGreen has no", "Secret Bases."); return; }

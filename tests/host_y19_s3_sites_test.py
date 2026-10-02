@@ -158,6 +158,7 @@ def checks(box: str, summ: str, main: str, jrn: str, lay: str, prog: str, pick: 
             and before(vsv, "save_slot_warn();", "pk_read_party_auto(")
             and re.search(r"__attribute__\(\(noinline\)\)\s*save_slot_warn\(void\)", strip_comments(main)) is not None
             and re.search(r"__attribute__\(\(noinline\)\)\s*pdna_mirage\(void\)", strip_comments(main)) is not None
+            and re.search(r"__attribute__\(\(noinline\)\)\s*pdna_secretbase\(void\)", strip_comments(main)) is not None
             and len(re.findall(r"bool app_can_edit\(void\)\s*\{[^}]*g_vinfo\.game_loads_other[^}]*\}", strip_comments(main))) == 2
             and "Game loads damaged copy." in body(main, "app_readonly_why")
             and "damaged save: locked  B back" in body(main, "app_readonly_footer")
@@ -240,6 +241,7 @@ def main() -> int:
     mutant("M-P16m the read-only footer ignores ours_rejected", "main", "  if (g_vinfo.valid && g_vinfo.ours_rejected) return \"mismatch: locked  B back\";\n", "", "P16")
     mutant("M-P16n the slot-warn helper loses noinline (main's frame +40 B, #363 stack floor)", "main", "static void __attribute__((noinline)) save_slot_warn(void) {", "static void save_slot_warn(void) {", "P16")
     mutant("M-P16o pdna_mirage loses noinline (main's frame +24 B)", "main", "static void __attribute__((noinline)) pdna_mirage(void) {", "static void pdna_mirage(void) {", "P16")
+    mutant("M-P16q pdna_secretbase loses noinline (main's frame +48 B)", "main", "static void __attribute__((noinline)) pdna_secretbase(void) {", "static void pdna_secretbase(void) {", "P16")
     mutant("M-P16p the helper call dropped from view_save", "main", "  save_slot_warn();\n  app_log_flush();", "  app_log_flush();", "P16")
     mutant("M-P16i the read-only reason ignores the damaged copy", "main", "  if (g_vinfo.valid && g_vinfo.game_loads_other) return \"Game loads damaged copy.\";\n", "", "P16")
     mutant("M-P13a the short-read predicate stripped (bare ok)", "main", "  if (ok && rsz < g_save_size) {", "  if (0) {", "P13")
