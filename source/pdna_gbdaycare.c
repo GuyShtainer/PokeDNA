@@ -316,6 +316,7 @@ static void gbdc_view_edit(GbSession* s, GbDaycare* dc, int start_slot, bool can
   int nrows = dc->gen1 ? 1 : 2;
   int slot = start_slot;
   GbEditMon edited = dc->slot[slot].mon;
+  gb_set_caught_available(&edited, gb_session_is_crystal(s));   /* #356: gb_load_parts leaves has_caught false; the session knows Crystal */
   int nav;
   do {
     char note[40];
@@ -342,7 +343,7 @@ static void gbdc_view_edit(GbSession* s, GbDaycare* dc, int start_slot, bool can
         }
       }
     }
-    if (nrows > 1 && nav != 0) { slot ^= 1; edited = dc->slot[slot].mon; }
+    if (nrows > 1 && nav != 0) { slot ^= 1; edited = dc->slot[slot].mon; gb_set_caught_available(&edited, gb_session_is_crystal(s)); }
   } while (nav != 0 && nrows > 1);
 }
 

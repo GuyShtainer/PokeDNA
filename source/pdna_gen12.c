@@ -5807,6 +5807,7 @@ static bool gb_create_hook(void) {
   if (!gb_load_parts(&box_mon, g_ed->s.gen, false, party_mon.rec,
                      party_mon.otname, party_mon.nick, party_mon.list_species))
     return false;
+  gb_set_caught_available(&box_mon, gb_session_is_crystal(&g_ed->s));   /* #356: gb_load_parts leaves has_caught false (gb_mark_caught's rule) */
 
   bool saved = false; int card = 0;
   pdna_summary_quiet_save(true);            /* #234 s4: a resident-session edit is held */
