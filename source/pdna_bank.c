@@ -287,21 +287,43 @@ static bool box_load(int box) {
   char path[SF_PATH_MAX]; box_path(box, path);
   uint32_t sz = 0;
   memset(g_bankbuf, 0, sizeof g_bankbuf);
-  SfStatus st = sf_read_full(path, box_recs(), BOX_BYTES, &sz);
+  /* BACKLOG #378: the box file has the same interrupted-swap window as bank.meta (#371): the verified
+   * write's unlink -> rename leaves the primary ABSENT while the verified .tmp holds the newest bytes
+   * and the .bak the previous ones. The classifier (bank_layout.c, host-tested) picks primary, else
+   * .tmp, else .bak -- only when the primary is truly absent; a card read ERROR is not "absent". */
+  BmlBoxSrc bsrc = bml_box_read(path, box_recs(), BOX_BYTES, &sz);
+  bool recovered = bsrc == BML_BOX_TMP || bsrc == BML_BOX_BAK;
+  bool heal_failed = false;
+  if (recovered) {
+    log_line("bank: box %02d primary missing, restored from %s", box, bsrc == BML_BOX_TMP ? "tmp" : "bak");
+    app_log_flush();
+    /* Heal BEFORE anything can write: the primary is back (rename of the .tmp, or a verified write from
+     * the .bak -- never sf_save_rolling, so no backup roll can bury the good .bak). Read-only (Everdrive):
+     * recovered in RAM only, never written. A failed heal returns false below so every writer refuses. */
+    if (app_can_edit() && !bml_box_heal(path, bsrc, box_recs(), BOX_BYTES)) {
+      heal_failed = true;
+      log_line("bank: box %02d heal failed - recovered copy kept on the card, browse only", box);
+      app_log_flush();
+    }
+  } else if (bsrc == BML_BOX_READ_ERROR) {
+    log_line("bank: box %02d read error - not treated as empty, writes refused", box);
+    app_log_flush();
+  }
+  bool got = bsrc == BML_BOX_PRIMARY || bsrc == BML_BOX_BAD || recovered;   /* BAD = present but short, as before: no plant */
 #ifdef PDNA_DELTA
   /* BACKLOG #150 S150-2 step 6: a PDNA_DELTA-only test plant -- boxes 0 and 1 only, and
    * only when the real file could not be read (a virgin/absent box, the common delta-
    * test-vehicle case). ZERO effect on the shipped build (PDNA_DELTA is never defined
    * there): see bank_plant.h. */
-  if (st != SF_OK && box == 0) bank_plant_box0(box_recs());
-  if (st != SF_OK && box == 1) bank_plant_box_full(box_recs());
+  if (!got && box == 0) bank_plant_box0(box_recs());
+  if (!got && box == 1) bank_plant_box_full(box_recs());
   /* BACKLOG #246 (#104 Phase 1): a THIRD, dedicated box -- never box 0/1, so every
    * existing shot chain keyed on those two boxes' own byte-for-byte content stays
    * untouched. This is the one plant this whole file never had before: a PLAIN
    * Gen-3 cell (see bank_plant_g3_box's own comment), the source this lane's new
    * arm needs to demonstrate carrying a Gen-3 Bank cell onto a Game Boy grid. */
-  if (st != SF_OK && box == 2) bank_plant_g3_box(box_recs());
-  if (st != SF_OK && box == 3) bank_plant_y9_box(box_recs());   /* #280: the target-drop restore chains' cells */
+  if (!got && box == 2) bank_plant_g3_box(box_recs());
+  if (!got && box == 3) bank_plant_y9_box(box_recs());   /* #280: the target-drop restore chains' cells */
 #endif
   /* BACKLOG #150 S150-3 decision 6: recomputed at every page-in, AFTER the PDNA_DELTA
    * plant above so a planted native cell is captured too -- this is the ONE choke
@@ -315,7 +337,7 @@ static bool box_load(int box) {
   g_dirty = false;
   g_box_unsaved_box = -1;   /* review F1: a fresh page-in re-reads the CARD's own copy --
                              * whatever RAM-only edits g_box_unsaved_box was about are gone. */
-  return st == SF_OK && sz >= BOX_BYTES;
+  return got && !heal_failed && sz >= BOX_BYTES;
 }
 
 /* box_save's pre-write backup + write + SF_ERR_RENAME triage (BACKLOG #150 S150-0). Up

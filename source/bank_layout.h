@@ -26,4 +26,31 @@ bool bml_layout_exists(const char* dir, int nboxes);
  * usable returns BML_NONE_BOXES / BML_NONE_EMPTY (buf is then unspecified). */
 BmlSource bml_meta_read(const char* dir, int nboxes, uint8_t* buf, uint32_t cap,
                         uint32_t need, const char* magic);
+
+/* ---- BACKLOG #378: a Bank BOX file has the same interrupted-swap window as bank.meta ---- */
+typedef enum {
+  BML_BOX_PRIMARY = 0,  /* boxNN.box read in full                                          */
+  BML_BOX_TMP,          /* primary ABSENT, boxNN.box.tmp (a verified write's scratch) usable */
+  BML_BOX_BAK,          /* primary ABSENT, no usable .tmp, boxNN.box.bak usable              */
+  BML_BOX_NONE,         /* primary absent and neither copy usable: a genuinely new box      */
+  BML_BOX_BAD,          /* primary PRESENT but short (buf holds what was read): as before   */
+  BML_BOX_READ_ERROR    /* a stat/open/read ERROR on a present file or an unexpected stat
+                         * result: NOT "absent" -- never fall back past it, never heal      */
+} BmlBoxSrc;
+
+/* Classify box file `path` ("<dir>/boxNN.box") and load its bytes into buf[need] (cap == need).
+ * A copy is usable when it is at least `need` bytes (box files carry no magic, so length is the
+ * only check box_load ever applied). The fallbacks (".tmp" then ".bak") are consulted ONLY when
+ * the primary is absent (FR_NO_FILE / FR_NO_PATH): savefile.c keeps a ".tmp" only after the
+ * byte-compare passed (sf_write_verified unlinks it on a verify fail) and unlinks the primary
+ * only after that, so a usable ".tmp" is the newest verified copy and ".bak" the one before.
+ * Never writes the card. On NONE buf is zeroed; `*out_sz` is the bytes read from the chosen file. */
+BmlBoxSrc bml_box_read(const char* path, uint8_t* buf, uint32_t need, uint32_t* out_sz);
+
+/* Rewrite the absent primary from a TMP / BAK recovery. TMP: rename the verified ".tmp" into
+ * place (no data rewrite, the only copy of the newest bytes is never truncated) and read the
+ * swap back. BAK: sf_write_verified the recovered bytes (the ".bak" itself is never touched: no
+ * backup roll happens because the primary is absent). True only when the primary now exists at
+ * `len` bytes. Call only when app_can_edit(). */
+bool bml_box_heal(const char* path, BmlBoxSrc src, const uint8_t* bytes, uint32_t len);
 #endif
