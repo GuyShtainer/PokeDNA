@@ -63,7 +63,8 @@ def p367(b):
 
 def p367d6(b):   # D6: the no-ROM refusal is the Bank twin's message, with the NO_ROM / BAD split
     return ("GB12_BASE_NO_ROM" in b and "gb_gen12_norom_msg(GB_GEN1)" in b and "GB12_BASE_BAD" in b
-            and "PDNA_GBEDIT_MOVE_NEEDSBASE_L2" in b)
+            and "PDNA_GBEDIT_MOVE_NEEDSBASE_L2" in b
+            and 0 <= b.find("gb_rollback();") < b.find("gb_gen12_norom_msg("))   # rollback BEFORE the message
 
 
 def p369(b):
