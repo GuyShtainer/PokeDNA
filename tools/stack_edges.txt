@@ -2089,3 +2089,9 @@ JrnFs.size @8 in slot_hdr -> jfs_size
 JrnFs.read @12 in slot_hdr -> jfs_read
 JrnImage.get @4 in span_walk -> ja_get
 JrnImage.set @8 in span_walk -> ja_set
+
+# BACKLOG #340b: rom_gbitem.c's one dispatch. Every read in the file goes through the
+# noinline rom_gbitem_rd(), which calls the RomGbItem.read hook (FIRST field, offset 0 --
+# a struct-field site, NOT a count-only one). Implementations: the SD-backed guarded shim
+# (gb_art_item_desc_read, SD half) and the fused-corpus slice reader (delta half).
+RomGbItem.read @0 in rom_gbitem_rd -> gb_art_read fused_gb_slice_read

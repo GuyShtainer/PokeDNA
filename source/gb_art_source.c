@@ -11,6 +11,7 @@
 #include "pdna_origin_art.h"  /* PdnaGbArtSource, PDNA_GEN1/2, pdna_origin_art_register */
 #include "rom_gbsprite.h"
 #include "rom_gbicon.h"       /* E5: the 16x16 Gen-2 party/PC menu icon rung          */
+#include "rom_gbitem.h"       /* #340b: Gen-2 item descriptions                        */
 #include "gb_art_source.h"
 #include "gb_art_io.h"        /* BACKLOG #148: GbArtIo/gb_art_io_init/gb_art_read moved  *
                                * here so source/pdna_gbscreen.c can reuse them            */
@@ -98,6 +99,10 @@ static const uint16_t* gb_art_batch_icon(GbArtBatchImpl* b, uint8_t gen, uint16_
  * real function to keep in sync by hand every time one of the per-function ifdefs
  * changed. ONE block, so "no SD in the emulator build" is a single fact instead of
  * five scattered ones. */
+/* BACKLOG #340b: the one-entry Gen-2 item description cache (gb_art_item_desc at the end of the file).
+ * EWRAM_BSS, 68 B. state: 0 empty, 1 found (text valid), 2 known miss. */
+static EWRAM_BSS struct { uint8_t id, state; char text[ROM_GBITEM_DESC_MAX]; } s_idesc;
+
 #ifndef PDNA_DELTA
 
 /* ---- the location cache file: /PokeDNA/gbart1.loc / gbart2.loc ---------------------
@@ -416,6 +421,7 @@ gb_art_open_and_identify(uint8_t gen, const char* path, RomGbSpriteLoc* out_loc,
 
 GbArtRegStatus gb_art_register(uint8_t gen, const char* path, GbArtProgressFn progress,
                                void* progress_ctx, GbArtRegInfo* info) {
+  s_idesc.state = 0;                                  /* #340b: a new ROM means new descriptions */
   if (info) memset(info, 0, sizeof *info);
   if (gen != PDNA_GEN1 && gen != PDNA_GEN2) return GB_ART_REG_BAD_ROM;
   if (!path || !path[0]) {
@@ -777,6 +783,35 @@ static void gb_batch_close(GbArtBatchImpl* b) {
   b->have_gs = b->have_gi = 0;
 }
 
+
+/* ---- BACKLOG #340b: one Gen-2 item description off the registered ROM (SD half) ----------
+ * The picker that asks sits at the bottom of the deepest gated chain (pcp_open_party_strip_inner
+ * -> ... -> pick_item), where a FIL + GbArtIo + path[128] frame (824 B measured) overran
+ * PDNA_PARTY_STRIP_NEED. So the working set lives in mon_decomp instead (EWRAM scratch, claimed
+ * first like every other GB fetch), leaving this frame ~tens of bytes. Silent guard (no progress
+ * UI, like the icon fetch): a read error just latches and the caller falls back to its honest
+ * string. Writes at most ROM_GBITEM_DESC_MAX bytes to `out`. */
+typedef struct { FIL fil; GbArtIo io; char path[GB_ROM_PATH_MAX]; } GbItemDescWork;
+_Static_assert(sizeof(GbItemDescWork) + 8u <= MON_DECOMP_BYTES, "item-desc work set (+ alignment slack) must fit mon_decomp");
+_Static_assert(_Alignof(GbItemDescWork) <= 8, "rounded up to 8 below; mon_decomp itself is only aligned(4)");
+
+static bool __attribute__((noinline)) gb_art_item_desc_read(uint8_t id, char* out) {
+  artbuf_claim();                                  /* about to overwrite mon_decomp (artbuf.h) */
+  /* FIL (64-bit FSIZE_t) wants 8-byte alignment, mon_decomp guarantees 4: round up, the slack is in the assert above. */
+  GbItemDescWork* w = (GbItemDescWork*)(void*)(((uintptr_t)mon_decomp + 7u) & ~(uintptr_t)7u);
+  if (!gb_art_resolve_path(PDNA_GEN2, w->path, (int)sizeof w->path)) return false;
+  memset(&w->fil, 0, sizeof w->fil);
+  if (f_open(&w->fil, w->path, FA_READ) != FR_OK) return false;
+  FSIZE_t fsz = f_size(&w->fil);
+  uint32_t sz = (fsz > (FSIZE_t)0xFFFFFFFFu) ? 0xFFFFFFFFu : (uint32_t)fsz;
+  gb_art_io_init(&w->io, &w->fil, sz, 0, 0, GB_ART_LOC_ICONS, false);
+  RomGbItem gi;
+  bool ok = rom_gbitem_open(&gi, gb_art_read, &w->io, sz) &&
+            rom_gbitem_desc(&gi, id, out, (int)ROM_GBITEM_DESC_MAX) > 0;
+  f_close(&w->fil);
+  return ok;
+}
+
 #else /* PDNA_DELTA: no SD card at all -- but BACKLOG #62's delta-gb build fuses a
        * whole Game Boy corpus (ROMs + saves) into cartridge space (tools/fuse_gb.py,
        * source/fused_gb.h). This half reads THAT instead of a FIL: fused_gb_rom()
@@ -817,6 +852,7 @@ static void gb_art_note_src(uint8_t gen, bool cold, bool had_loc, const RomGbSpr
 GbArtRegStatus gb_art_register(uint8_t gen, const char* path, GbArtProgressFn progress,
                                void* progress_ctx, GbArtRegInfo* info) {
   (void)path; (void)progress; (void)progress_ctx;
+  s_idesc.state = 0;                                  /* #340b */
   if (info) memset(info, 0, sizeof *info);
   if (gen != PDNA_GEN1 && gen != PDNA_GEN2) return GB_ART_REG_BAD_ROM;
   /* No file browser / SD under PDNA_DELTA to register a path FROM -- the only
@@ -1030,6 +1066,17 @@ gb_batch_open(GbArtBatchImpl* b, uint8_t gen, bool icon) {
 
 static void gb_batch_close(GbArtBatchImpl* b) { b->gen = 0; b->have_gs = b->have_gi = 0; }
 
+
+/* ---- BACKLOG #340b: one Gen-2 item description off the fused ROM (delta half) ------------ */
+static bool __attribute__((noinline)) gb_art_item_desc_read(uint8_t id, char* out) {
+  const uint8_t* base; uint32_t size;
+  if (!fused_gb_rom(PDNA_GEN2, &base, &size)) return false;
+  FusedGbSlice slice = { base, size };
+  RomGbItem gi;
+  return rom_gbitem_open(&gi, fused_gb_slice_read, &slice, size) &&
+         rom_gbitem_desc(&gi, id, out, (int)ROM_GBITEM_DESC_MAX) > 0;
+}
+
 #endif /* PDNA_DELTA */
 
 #ifdef PDNA_DELTA
@@ -1209,4 +1256,19 @@ void gb_art_boot_register(GbArtProgressFn progress, void* progress_ctx) {
 void gb_art_session_reset(void) {
   s_fb_have[PDNA_GEN1] = s_fb_have[PDNA_GEN2] = false;
   s_fb_checked[PDNA_GEN1] = s_fb_checked[PDNA_GEN2] = false;
+  s_idesc.state = 0;                              /* #340b: the next save may sit beside another ROM */
+}
+
+/* ---- BACKLOG #340b: Gen-2 item descriptions for the held-item / pack pickers ---------------
+ * ONE cached entry: the picker asks for the highlighted row's text on every redraw, and the
+ * answer must outlive the call (the caller hands the pointer to the text layout). The entry
+ * remembers a MISS too (state 2), so a ROM-less or unreadable card costs one attempt per id,
+ * not one per frame. Cleared by gb_art_session_reset() and gb_art_register(). */
+const char* gb_art_item_desc(uint8_t id) {
+  if (s_idesc.state && s_idesc.id == id) return s_idesc.state == 1 ? s_idesc.text : 0;
+  s_idesc.id = id; s_idesc.state = 2; s_idesc.text[0] = 0;
+  if (id < 1u || id > ROM_GBITEM_MAX_ID) return 0;                 /* TM/HM block etc.: no I/O at all */
+  if (!gb_art_have(PDNA_GEN2)) return 0;                           /* no ROM, or the detach switch */
+  if (gb_art_item_desc_read(id, s_idesc.text)) s_idesc.state = 1; else s_idesc.text[0] = 0;
+  return s_idesc.state == 1 ? s_idesc.text : 0;
 }

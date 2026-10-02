@@ -16,6 +16,7 @@
 #include "data_tables.h"
 #include "gen3_items.h"    /* pk_item_pocket / PkPocket (item-picker category filter) */
 #include "gb_item_names.h" /* gb_item_label / GBIN_GEN1 / GBIN_GEN2 (BACKLOG #195)     */
+#include "gb_art_source.h" /* gb_art_item_desc (BACKLOG #340b)                         */
 #include "gb_bag.h"        /* gbb_pocket_of (BACKLOG #195 restricted category filter) */
 #include "gen3_places.h"   /* met-location region / per-game scoping / list build     */
 #include "mon_icons.h"
@@ -1863,7 +1864,14 @@ static const uint16_t* gb_item_icon_or_none(uint16_t id) {
   return g_item_max_id ? NULL : app_item_icon(id);
 }
 static const char* item_desc_for(uint16_t id) {
-  return g_item_max_id ? PDNA_ITEM_NO_DESC_YET : app_item_desc(id);
+  if (!g_item_max_id) return app_item_desc(id);
+  /* #340b: Gen 2 reads the description off the user's own ROM; Gen 1 has none, and a
+   * missing/unreadable ROM keeps the honest string. */
+  if (g_item_gen == GBIN_GEN2 && id >= 1u && id <= 255u) {
+    const char* d = gb_art_item_desc((uint8_t)id);
+    if (d) return d;
+  }
+  return PDNA_ITEM_NO_DESC_YET;
 }
 
 /* ---- item picker filters (BACKLOG #13, "like the pokedex"): two combinable
