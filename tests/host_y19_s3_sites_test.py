@@ -42,6 +42,8 @@ One later pin rides along because it guards the same file at the same text level
       (gb_set_caught_available(.., gb_session_is_crystal(..)), at BOTH Day-Care slot loads and before the new-mon
       pdna_gbsummary), because gb_load_parts leaves has_caught false and pdna_gbedit.c's held-item picker keys the
       game off it
+  P20 #362: native_summary_run sets gbedit_set_crystal_origin(meta.origin_game == BC_ORIGIN_CRYSTAL) right before
+      pdna_gbsummary and clears it right after; pdna_gbedit.c's held-item game choice is `has_caught || override`
   P15 #353: view_save pads a short Gen-3 read with 0xFF (after the Game Boy fork, which keeps its pristine copy
       in the idle upper half), so no foreign trainer's bytes survive in g_save's tail
   P16 #354: view_save warns ONLY on `damaged_fallback || game_loads_other` (snd_error, heartbeat+perf pause, one DAMAGED SAVE
@@ -91,7 +93,7 @@ def before(b: str, first: str, second: str) -> bool:
     return i >= 0 and j >= 0 and i < j
 
 
-def checks(box: str, summ: str, main: str, jrn: str, lay: str, prog: str, pick: str, gart: str, dcy: str, g12: str) -> dict[str, bool]:
+def checks(box: str, summ: str, main: str, jrn: str, lay: str, prog: str, pick: str, gart: str, dcy: str, g12: str, gbe: str) -> dict[str, bool]:
     pb = body(box, "pdna_box")
     ps = body(summ, "pdna_summary")
     if not ps:                                   # the summary loop's function name differs; fall back to the whole file
@@ -108,6 +110,8 @@ def checks(box: str, summ: str, main: str, jrn: str, lay: str, prog: str, pick: 
     idf = body(pick, "item_desc_for")             # #360
     gdv = body(dcy, "gbdc_view_edit")            # #356
     gnm = body(g12, "gb_create_hook")            # #356: the new-mon summary opener
+    nsr = body(g12, "native_summary_run")        # #362
+    gbi = strip_comments(gbe)
     gid = body(gart, "gb_art_item_desc")          # #360
     return {
         "P1 box loop feeds chord_frame and wakes on the chord": bool(pb) and "chord_frame(&chord" in pb and "while (!k && !cev)" in pb,
@@ -162,6 +166,12 @@ def checks(box: str, summ: str, main: str, jrn: str, lay: str, prog: str, pick: 
             and before(gdv, "gb_set_caught_available(&edited", "pdna_gbsummary(")
             and "gb_set_caught_available(&box_mon, gb_session_is_crystal(&g_ed->s))" in gnm
             and before(gnm, "gb_set_caught_available(&box_mon", "pdna_gbsummary(&box_mon"),
+        "P20 #362: Bank-origin Crystal scoped around pdna_gbsummary; gbedit's item game honours it": bool(nsr) and bool(gbi)
+            and nsr.count("gbedit_set_crystal_origin(") == 2
+            and "gbedit_set_crystal_origin(meta.origin_game == BC_ORIGIN_CRYSTAL)" in nsr
+            and re.search(r"gbedit_set_crystal_origin\(meta\.origin_game == BC_ORIGIN_CRYSTAL\);\s*int nav = pdna_gbsummary\(.*?\);\s*gbedit_set_crystal_origin\(false\);", nsr, re.S) is not None
+            and "GbGame g = (e->has_caught || s_crystal_origin) ? GBF_G_CRYSTAL : GBF_G_GS;" in gbi
+            and "s_crystal_origin = on ? 1 : 0;" in gbi,
         "P12 #346b: progress-frame icon fallback retires the plan before the fetch": re.search(
             r"#if !PDNA_MON_ICONS_ART_COMPILED\s*icon_store_plan\(0, 0\);\s*#endif\s*"
             r"ui_sprite\(SPR_X \+ \(MON_FRONT_W - MON_ICON_W\) / 2, SPR_Y \+ \(MON_FRONT_H - MON_ICON_H\) / 2,\s*"
@@ -170,22 +180,22 @@ def checks(box: str, summ: str, main: str, jrn: str, lay: str, prog: str, pick: 
 
 
 def main() -> int:
-    box, summ, mn, jrn, lay, prog, pick, gart, dcy, g12 = (rd("pdna_box.c"), rd("pdna_summary.c"), rd("pdna_main.c"), rd("jrn_app.c"), rd("pdna_layout.h"), rd("pdna_progress.c"), rd("pdna_pick.c"), rd("gb_art_source.c"), rd("pdna_gbdaycare.c"), rd("pdna_gen12.c"))
+    box, summ, mn, jrn, lay, prog, pick, gart, dcy, g12, gbe = (rd("pdna_box.c"), rd("pdna_summary.c"), rd("pdna_main.c"), rd("jrn_app.c"), rd("pdna_layout.h"), rd("pdna_progress.c"), rd("pdna_pick.c"), rd("gb_art_source.c"), rd("pdna_gbdaycare.c"), rd("pdna_gen12.c"), rd("pdna_gbedit.c"))
     print("real tree:")
-    real = checks(box, summ, mn, jrn, lay, prog, pick, gart, dcy, g12)
+    real = checks(box, summ, mn, jrn, lay, prog, pick, gart, dcy, g12, gbe)
     for k, v in real.items():
         print(f"  {'ok  ' if v else 'FAIL'} {k}")
         if not v:
             fails.append(k)
 
     def mutant(tag: str, which: str, old: str, new: str, expect_red: str) -> None:
-        texts = {"box": box, "summ": summ, "main": mn, "jrn": jrn, "lay": lay, "prog": prog, "pick": pick, "gart": gart, "dcy": dcy, "g12": g12}
+        texts = {"box": box, "summ": summ, "main": mn, "jrn": jrn, "lay": lay, "prog": prog, "pick": pick, "gart": gart, "dcy": dcy, "g12": g12, "gbe": gbe}
         if old not in texts[which]:
             print(f"  FAIL {tag}: target not found verbatim (source drifted)")
             fails.append(tag)
             return
         texts[which] = texts[which].replace(old, new, 1)
-        r = checks(texts["box"], texts["summ"], texts["main"], texts["jrn"], texts["lay"], texts["prog"], texts["pick"], texts["gart"], texts["dcy"], texts["g12"])
+        r = checks(texts["box"], texts["summ"], texts["main"], texts["jrn"], texts["lay"], texts["prog"], texts["pick"], texts["gart"], texts["dcy"], texts["g12"], texts["gbe"])
         red = [k for k, v in r.items() if not v]
         ok = any(k.startswith(expect_red) for k in red)
         print(f"  {'ok  ' if ok else 'FAIL'} {tag}: mutant makes {expect_red} RED (red: {[k.split()[0] for k in red]})")
@@ -238,6 +248,11 @@ def main() -> int:
     mutant("M-P19a Day-Care slot-0 mark removed", "dcy", "  gb_set_caught_available(&edited, gb_session_is_crystal(s));   /* #356: gb_load_parts leaves has_caught false; the session knows Crystal */\n", "", "P19")
     mutant("M-P19b Day-Care U/D reload mark removed", "dcy", " gb_set_caught_available(&edited, gb_session_is_crystal(s)); }", " }", "P19")
     mutant("M-P19c new-mon mark removed", "g12", "  gb_set_caught_available(&box_mon, gb_session_is_crystal(&g_ed->s));", "", "P19")
+    mutant("M-P20a the set removed", "g12", "    gbedit_set_crystal_origin(meta.origin_game == BC_ORIGIN_CRYSTAL);   /* #362: held-item list follows the record's origin */\n", "", "P20")
+    mutant("M-P20b the clear removed", "g12", "    gbedit_set_crystal_origin(false);\n", "", "P20")
+    mutant("M-P20c wrong origin constant", "g12", "meta.origin_game == BC_ORIGIN_CRYSTAL)", "meta.origin_game == BC_ORIGIN_GOLD)", "P20")
+    mutant("M-P20d the picker ignores the override", "gbe", "(e->has_caught || s_crystal_origin) ? GBF_G_CRYSTAL", "(e->has_caught) ? GBF_G_CRYSTAL", "P20")
+    mutant("M-P20e the setter ignores its argument", "gbe", "s_crystal_origin = on ? 1 : 0;", "s_crystal_origin = 0;", "P20")
     if fails:
         print("FAILED:", ", ".join(fails))
         return 1

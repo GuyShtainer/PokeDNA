@@ -5129,9 +5129,11 @@ static bool native_summary_run(const uint8_t rec80[80], bool can_edit,
     GbEditMon e; BcMeta meta;
     if (!bc_unpack(rec80, &e, &meta)) return false;
     bool saved = false;
+    gbedit_set_crystal_origin(meta.origin_game == BC_ORIGIN_CRYSTAL);   /* #362: held-item list follows the record's origin */
     int nav = pdna_gbsummary(&e, can_edit, /*start_editing*/false,
                         note ? note : (meta.gen == GB_GEN1 ? "Gen 1 record" : "Gen 2 record"),
                         /*has_sidecar*/false, /*create*/false, &saved, &card);
+    gbedit_set_crystal_origin(false);
     if (saved) {
       /* decision 4: keep bank_serial/origin_game/rtc_epoch; ident32 recomputes for
        * free inside bc_pack; re-derive only the two flag bits a GbEditMon can carry

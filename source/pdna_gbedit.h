@@ -38,6 +38,9 @@
  * after the first in the same visit proceeds silently, since the sidecar is already
  * orphaned by then and a second warning would say nothing new. */
 bool pdna_gbedit(GbEditMon* e, const char* note, bool has_sidecar);
+/* #362: scoped override for the held-item picker's game list: true = Crystal list even when the mon's capture
+ * bytes are zero (Bank records). Set/cleared around pdna_gbsummary by native_summary_run; has_caught unchanged. */
+void gbedit_set_crystal_origin(bool on);
 
 /* ---- shared with pdna_gbsummary.c (BACKLOG #41) ---------------------------------
  * The Gen-1/2 summary editor mirrors this screen's row dispatch and confirm-before-
