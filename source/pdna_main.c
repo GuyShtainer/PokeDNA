@@ -2028,6 +2028,7 @@ static bool app_save_finalize(void) {
    * in an UNKNOWN state. That is exactly why the failure message tells the user to
    * restore their own copy: their .sav on the phone IS the backup. */
   busy_panel("Writing flash save...");
+  /* #353 n/a here: the chip IS 128 KiB, so the full-cap write is the whole device, not a stale tail on a file. */
   bool fok = flashsave_write(g_save, G3_SAVE_FILE_SIZE);
   log_line("edit: flash write %s", fok ? "OK" : "FAILED");
   if (!fok) {
@@ -2043,6 +2044,15 @@ static bool app_save_finalize(void) {
   app_journal_after_save();
   return true;
 #else
+  /* #353: write exactly what view_save loaded. The loader admits G3_SLOT_BYTES <= sz <= G3_SAVE_FILE_SIZE (a 64 KiB dump has
+   * g_save_size = 64 KiB); writing the full cap would commit the PREVIOUS save's bytes as the file's tail (slot B). Any size
+   * outside that window is not a Gen-3 image the loader could have produced: refuse, write nothing. */
+  if (g_save_size < (uint32_t)G3_SLOT_BYTES || g_save_size > (uint32_t)G3_SAVE_FILE_SIZE) {
+    log_line("BUG: app_save_finalize with g_save_size %lu outside the loaded Gen-3 window - refused", (unsigned long)g_save_size);
+    snd_error();
+    msg_wait("SAVE REFUSED", UI_WARN, "Bad image size.", "NOT written.");
+    return false;
+  }
   log_line("=== edit commit -> %s (backup mode %d) ===", g_path, g_backup_mode);
   char bak[SF_PATH_MAX]; bak[0] = 0;
   if (g_backup_mode != 2) {                        /* 2 = skip backup; else back up the pre-save file */
@@ -2062,7 +2072,7 @@ static bool app_save_finalize(void) {
   SfStatus st;
   busy_panel("Writing + verifying...");            /* safe point: before SD write */
   rmbl_pause();                                    /* no motor on the cart bus mid-transfer */
-  st = sf_write_verified(g_path, g_save, G3_SAVE_FILE_SIZE);
+  st = sf_write_verified(g_path, g_save, g_save_size);
   rmbl_resume();
   log_line("edit: write %s (backup %s)", st == SF_OK ? "OK" : sf_status_str(st), bak);
   log_flush_to_sd(LOG_PATH);
@@ -2075,7 +2085,7 @@ static bool app_save_finalize(void) {
     const char* nm = strrchr(g_path, '/');
     nm = nm ? nm + 1 : g_path;
     char l1[64];
-    SfWhere w = sf_where_are_the_bytes(g_path, g_save, G3_SAVE_FILE_SIZE);
+    SfWhere w = sf_where_are_the_bytes(g_path, g_save, g_save_size);
     log_line("edit: rename unconfirmed, bytes are at %d (%s)", (int)w, nm);
     log_flush_to_sd(LOG_PATH);
     snd_error();
@@ -10220,8 +10230,10 @@ static void app_discard_staged(void) {
    * exactly the world the PARTIAL latch lives in -- the tail of g_save would KEEP the staged bytes while `ok` is true, and the
    * latch-clear below would fire over a chimera (card head + staged tail). The load (view_save) ACCEPTS files shorter than
    * G3_SAVE_FILE_SIZE (64 KiB dumps, g_save_size = sz), so the predicate is "the read covered at least the loaded image":
-   * rsz >= g_save_size. NOT rsz == cap (a 64 KiB save is written back as 128 KiB by app_commit, so the file GROWS while
-   * g_save_size stays 64 KiB), and NOT equality with g_save_size (the grown file reads 128 KiB: latched forever). A short
+   * rsz >= g_save_size. NOT rsz == cap (a 64 KiB save stays 64 KiB: since #353 app_save_finalize writes exactly g_save_size,
+   * so the file is the loaded length and rsz == g_save_size; the cap is only a read ceiling). The >= (not ==) is kept so a
+   * file that is LONGER on the card than the load (e.g. a 128 KiB file externally replaced) still passes, while any read
+   * shorter than the loaded image does not. A short
    * read is the !ok arm: no retry, the next open re-reads. GB parity: gb_discard_staged checks got != g_ed->len (its cap IS
    * len, so a grown file reads len and cannot trip it) -- no hole there. */
   if (ok && rsz < g_save_size) {
@@ -12141,6 +12153,14 @@ static void view_save(const char* path) {
     }
     /* NOT_GB: 32 KiB, but not a Game Boy save either. Say THAT, not "not a Gen-3 .sav" */
     err = "32 KiB, but not a Gen-1/2 save";
+  }
+  /* #353 backstop (the FIX is app_save_finalize writing g_save_size bytes): a short Gen-3 read leaves g_save[sz..cap) holding
+   * the previous save's bytes (sf_read_full never touches the tail). Pad it with erased-flash 0xFF so no other trainer's data
+   * can be parsed as a slot B. Placed AFTER the GB fork on purpose: the fork returns above (or errs), and its pristine copy
+   * lives at g_save + GB12_PRISTINE_OFF, so padding before it would erase that copy. */
+  if (!err && sz < (uint32_t)G3_SAVE_FILE_SIZE) {
+    /* g_save-write-ok: loader: pads the unread tail of a short (64 KiB) Gen-3 dump with 0xFF */
+    memset(g_save + sz, 0xFF, (size_t)G3_SAVE_FILE_SIZE - sz);
   }
 #endif
   /* The read returned. What used to be ONE opaque phase called "parsing" is steps
