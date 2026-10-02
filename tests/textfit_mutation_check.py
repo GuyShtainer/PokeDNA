@@ -49,7 +49,7 @@ M = [
       "two more nav entries (20 -> 21)"),
  # --- per-mon action popup ---------------------------------------------------
  (PL, "#define PDNA_MONMENU_W     100", "#define PDNA_MONMENU_W     90", "MONMENU_W 100->90"),
- (PL, "#define PDNA_MONMENU_ROW_DX 10", "#define PDNA_MONMENU_ROW_DX 14", "MONMENU_ROW_DX 10->14"),
+ (PL, "#define PDNA_MONMENU_ROW_DX  6", "#define PDNA_MONMENU_ROW_DX 14", "MONMENU_ROW_DX 6->14"),
  (PL, '#define PDNA_LBL_MOVE_TO_BOX "MOVE TO BOX"', '#define PDNA_LBL_MOVE_TO_BOX "MOVE TO A BOX"',
       'action label "MOVE TO BOX" grows'),
  (PL, '#define PDNA_MONMENU_FOOT_TXT "A ok B back"', '#define PDNA_MONMENU_FOOT_TXT "A ok  B back"',
