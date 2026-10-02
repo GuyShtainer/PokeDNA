@@ -86,6 +86,20 @@ int rom_gbitem_open(RomGbItem* gi, GbReadFn read, void* ctx, uint32_t size) {
   return 0;
 }
 
+/* A line break right after '-' is the game's own hyphenation ("catch-/ing": join, drop the
+ * hyphen) EXCEPT before the second half of a real compound ("ground-/type", "silver-/colored",
+ * "lower-/level"): those keep the hyphen. r/n = the raw bytes after the break. */
+static int keeps_hyphen(const uint8_t* r, unsigned n) {
+  static const char* const k[] = { "type", "colored", "level" };
+  for (unsigned j = 0; j < sizeof k / sizeof k[0]; j++) {
+    unsigned m = (unsigned)strlen(k[j]), x = 0;
+    if (m > n) continue;
+    while (x < m && r[x] == (uint8_t)(0xA0u + (uint8_t)(k[j][x] - 'a'))) x++;
+    if (x == m) return 1;
+  }
+  return 0;
+}
+
 int rom_gbitem_desc(const RomGbItem* gi, uint8_t id, char* out, int cap) {
   if (out && cap > 0) out[0] = 0;
   if (!gi || !gi->ok || !gi->read || !out || cap < 2) return 0;
@@ -104,7 +118,7 @@ int rom_gbitem_desc(const RomGbItem* gi, uint8_t id, char* out, int cap) {
     const char* dg = desc_glyph(c);
     if (c == LINE) {
       /* a line that ends in '-' is the game's own hyphenation: join the halves, no hyphen */
-      if (w > 0 && out[w - 1] == '-') { w--; continue; }
+      if (w > 0 && out[w - 1] == '-') { if (!keeps_hyphen(raw + i + 1u, len - 1u - i)) w--; continue; }
       g[0] = ' '; g[1] = 0; gl = 1;
     }
     else if (dg) { gl = (int)strlen(dg); if (gl >= (int)sizeof g) { out[0] = 0; return 0; } memcpy(g, dg, (size_t)gl); }

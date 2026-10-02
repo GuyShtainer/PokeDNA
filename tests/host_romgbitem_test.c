@@ -8,7 +8,8 @@
  * What it proves (ROMs are the user's own dumps, never in the repo; a missing ROM SKIPs):
  *   1) Gold and Crystal open (the two pins) and Red (Gen 1: no table) is REFUSED;
  *   2) all 190 descriptions of each decode, fit ROM_GBITEM_DESC_MAX, contain no "{XX}" escape
- *      and hash EXACTLY to goldens made by an independent Python decoder (own charmap);
+ *      and hash EXACTLY to goldens made by an independent Python decoder (own charmap; the line-end
+ *      '-' join keeps the hyphen before type/colored/level -- review-zr D1);
  *   3) spot texts: id 1 "[redacted]" (the first entry), the hyphenation
  *      join ("[redacted]") and POKe/&/'s glyphs;
  *   4) refusals: id 0, id 191 (TM/HM block), id 255, a cap too small (never truncates), a
@@ -58,8 +59,8 @@ static uint32_t fnv_add(uint32_t h, const char* s) {
 typedef struct { const char* file; const char* name; uint32_t bank_off; uint32_t taddr; uint32_t golden; } Game;
 /* goldens: independent Python decode of the 190 strings, '\n'-joined, FNV-1a 32 (UTF-8) */
 static const Game k_games[] = {
-  { "Gold.gbc",    "Gold",    0x6Eu * 0x4000u, 0x4000u, 0x7DB2C394u },
-  { "Crystal.gbc", "Crystal", 0x72u * 0x4000u, 0x4987u, 0xB77FD021u },
+  { "Gold.gbc",    "Gold",    0x6Eu * 0x4000u, 0x4000u, 0x3ED940B6u },
+  { "Crystal.gbc", "Crystal", 0x72u * 0x4000u, 0x4987u, 0xD4871EE1u },
 };
 
 static void run_game(const char* dir, const Game* g) {
@@ -93,6 +94,13 @@ static void run_game(const char* dir, const Game* g) {
   chk(g->name, "hyphen join + no leading/trailing space (id 4)", rom_gbitem_desc(&gi, 4, d, (int)sizeof d) > 0 &&
                            strcmp(d, "[redacted]") == 0);
   chk(g->name, "id 3 apostrophe-s", rom_gbitem_desc(&gi, 3, d, (int)sizeof d) > 0 &&
+                           strcmp(d, "[redacted]") == 0);
+  /* review-zr D1: a line-end '-' before type/colored/level is a REAL compound hyphen (kept) */
+  chk(g->name, "id 60 compound 'silver-colored' keeps its hyphen", rom_gbitem_desc(&gi, 60, d, (int)sizeof d) > 0 &&
+                           strcmp(d, "[redacted]") == 0);
+  chk(g->name, "id 76 compound 'ground-type' keeps its hyphen", rom_gbitem_desc(&gi, 76, d, (int)sizeof d) > 0 &&
+                           strcmp(d, "[redacted]") == 0);
+  chk(g->name, "id 159 compound 'lower-level' keeps its hyphen", rom_gbitem_desc(&gi, 159, d, (int)sizeof d) > 0 &&
                            strcmp(d, "[redacted]") == 0);
   chk(g->name, "id 5 POKe glyph", rom_gbitem_desc(&gi, 5, d, (int)sizeof d) > 0 &&
                            strcmp(d, "[redacted]") == 0);
