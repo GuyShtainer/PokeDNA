@@ -1235,6 +1235,10 @@ int main(void) {
   /* ==== BACKLOG #150 S150-11 decision 18 -- the TRANSFERS screen's own strings === */
   PF(PDNA_XFER_NOTSAVED_TITLE, 28, 184);
   PF(PDNA_XFER_NOTSAVED_L1,    28, 184);
+  PF(PDNA_XFER_NOTSAVED_L2,    28, 184);
+  PF(PDNA_XFER_LEDGER_TITLE,   28, 184);   /* BACKLOG #374 */
+  PF(PDNA_XFER_LEDGER_L1,      28, 184);
+  PF(PDNA_XFER_LEDGER_L2,      28, 184);
   /* review D3b: PDNA_XRC_FOOT/_TITLE/_MORE/_EMPTY_L1-3 are all drawn with
    * ui_text() (source/pdna_main.c ~10346-10371), the FIXED sys8 8px/glyph font --
    * NOT ui_ptext's proportional metric PF() checks. T() is the right pin. */

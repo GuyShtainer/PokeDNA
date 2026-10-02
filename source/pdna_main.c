@@ -2343,13 +2343,17 @@ bool app_xfer_save_now(void) {
       char l1[48]; siprintf(l1, PDNA_XFER_FLUSHFAIL_L1, kept);
       msg_wait(PDNA_XFER_FLUSHFAIL_TITLE, UI_WARN, l1, PDNA_XFER_FLUSHFAIL_L2);
     }
-    log_line("xfer: save-now: committed, entry promoted");
+    /* BACKLOG #375: log the REAL promotion outcome. */
+    log_line(promoted ? "xfer: save-now: committed, entry promoted"
+                      : "xfer: save-now: committed, promotion FAILED (ledger entry stays pending)");
     /* BACKLOG #175 review D1: a failed promotion left the ledger entry PENDING and
      * uncollectable while ok stayed true regardless -- the caller (pdna_gen12.c's
      * SAVE NOW? site) then treated the whole thing as success and let a SECOND
      * transfer proceed, orphaning a duplicate .pds the ledger can never resolve.
      * Report the real outcome so the caller refuses instead. */
-    if (!promoted) { snd_error(); msg_wait(PDNA_XFER_NOTSAVED_TITLE, UI_WARN, PDNA_XFER_NOTSAVED_L1, PDNA_XFER_NOTSAVED_L2); }
+    /* BACKLOG #374: the save WAS confirmed -- say "saved, ledger not updated", not "NOT SAVED". ok stays false
+     * (the #175 D1 behaviour above): the caller refuses a second transfer until TRANSFERS reconciles this one. */
+    if (!promoted) { snd_error(); msg_wait(PDNA_XFER_LEDGER_TITLE, UI_WARN, PDNA_XFER_LEDGER_L1, PDNA_XFER_LEDGER_L2); }
     ok = promoted;
   } else {
     /* BACKLOG #150 S150-11 decision 11(i)/#176 (review D2): app_commit_pc() returning

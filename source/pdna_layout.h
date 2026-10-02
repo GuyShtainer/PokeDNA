@@ -1197,6 +1197,13 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XFER_NOTSAVED_L1    "The save was not confirmed."
 #define PDNA_XFER_NOTSAVED_L2    "Your Pokemon is still in the Bank."
 
+/* BACKLOG #374: the Gen-3 save IS verified but the ledger entry could not be promoted (the card
+ * refused a write, so FatFs's dirty window made the re-read fail too). Not "NOT SAVED": the game
+ * save is safe; the TRANSFERS screen reconciles the entry. Pinned beside NOTSAVED in host_textfit_test.c. */
+#define PDNA_XFER_LEDGER_TITLE "SAVED - LEDGER NOT UPDATED"
+#define PDNA_XFER_LEDGER_L1    "The game save is confirmed."
+#define PDNA_XFER_LEDGER_L2    "TRANSFERS will finish it."
+
 /* BACKLOG #150 S150-11 decision 18/13/14 -- the TRANSFERS screen (start-menu row,
  * list, per-row action popup, APPLY/discard confirms, the loss confirm). Every
  * title/line below is a plain literal through msg_wait/app_confirm's shared (28,
