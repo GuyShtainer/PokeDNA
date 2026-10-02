@@ -264,7 +264,8 @@ static void field_row(const GbEditMon* e, int field, const char* label, int y,
   gbe_value(e, field, val, sizeof val);
   ui_truncate(vt, val, vw / 8);
   ui_text(x, y, C_KEY, label);
-  ui_text(vx, y, C_VAL, vt);
+  if (field == GBE_ITEM) ui_ptext_fit(vx, y, vw, C_VAL, val);   /* #340a (review-zq F1): 68 Gen-2 names exceed 10 fixed cols; proportional max 72 px <= vw 86 */
+  else                   ui_text(vx, y, C_VAL, vt);
   reg(slot, n, field, vx, y, vw);
 }
 

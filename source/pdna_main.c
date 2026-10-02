@@ -5173,7 +5173,7 @@ static void party_draw_slot_border(int i, bool selected) {
     for (int px = x; px <= x2; px++) if ((unsigned)px < (unsigned)UI_SCR_W) row[px] = c;
   }
   for (int py = y; py <= y2; py++) {
-    if ((unsigned)py >= 160u) continue;
+    if ((unsigned)py >= (unsigned)UI_SCR_H) continue;
     if ((unsigned)x  < (unsigned)UI_SCR_W) vid_mem[py * UI_SCR_W + x]  = c;
     if ((unsigned)x2 < (unsigned)UI_SCR_W) vid_mem[py * UI_SCR_W + x2] = c;
   }
@@ -5369,7 +5369,7 @@ static void party_icon_repaint(int slot_i, int x, int y, const u16* data) {
    * up-to-3 comparisons 32 times over for no reason. */
   int probe = slot_i - 1; if (probe < 1) probe = 1;
   for (int j = 0; j < MON_ICON_H; j++) {
-    int py = y + j; if ((unsigned)py >= 160u) continue;
+    int py = y + j; if ((unsigned)py >= (unsigned)UI_SCR_H) continue;
     int splitX; u16 leftCol, rightCol;
     if (isbox) {
       splitX = PDNA_PTY_BOX_X;
@@ -10031,7 +10031,7 @@ static void nav_tint(int x, int y, int w, int h) {
   const int num = PDNA_NAV_TINT_NUM;
   const int fr = UI_BG & 31, fg = (UI_BG >> 5) & 31, fb = (UI_BG >> 10) & 31;
   for (int py = y; py < y + h; py++) {
-    if ((unsigned)py >= 160u) continue;
+    if ((unsigned)py >= (unsigned)UI_SCR_H) continue;
     for (int px = x; px < x + w; px++) {
       if ((unsigned)px >= (unsigned)UI_SCR_W) continue;
       u16 c = vid_mem[py * UI_SCR_W + px];

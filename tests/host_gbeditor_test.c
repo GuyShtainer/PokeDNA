@@ -352,6 +352,18 @@ static void test_gender(void) {
   gbe_value(&e, GBE_GENDER, val, sizeof val);
   CHECK(strcmp(val, "M") == 0, "ratio 127: Atk DV 8 reads M");
 
+  /* ---- #340a (review-zq F6): the Item row prints the item NAME on a Gen-2 mon, "#n" only for a hole id,
+   * "None" for 0 -- red if gbe_value loses its gb_item_label call. */
+  CHECK(gb_set_held_item(&e, 3), "hold id 3");
+  gbe_value(&e, GBE_ITEM, val, sizeof val);
+  CHECK(strcmp(val, "BRIGHTPOWDER") == 0, "Item row: id 3 reads BRIGHTPOWDER, not #3");
+  CHECK(gb_set_held_item(&e, 6), "hold hole id 6");
+  gbe_value(&e, GBE_ITEM, val, sizeof val);
+  CHECK(strcmp(val, "#6") == 0, "Item row: unused id 6 falls back to #6");
+  CHECK(gb_set_held_item(&e, 0), "clear held item");
+  gbe_value(&e, GBE_ITEM, val, sizeof val);
+  CHECK(strcmp(val, "None") == 0, "Item row: id 0 reads None");
+
   /* ---- the flip itself: LEFT/RIGHT/A all just call gbe_flip_gender, so one exercises
    * gbe_adjust and the other gbe_press rather than testing the same call twice. */
   mk_g2_rec(rec, 25, 20, 7, 0, 0, 0);
