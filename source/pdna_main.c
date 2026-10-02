@@ -2352,7 +2352,7 @@ bool app_xfer_save_now(void) {
      * transfer proceed, orphaning a duplicate .pds the ledger can never resolve.
      * Report the real outcome so the caller refuses instead. */
     /* BACKLOG #374: the save WAS confirmed -- say "saved, ledger not updated", not "NOT SAVED". ok stays false
-     * (the #175 D1 behaviour above): the caller refuses a second transfer until TRANSFERS reconciles this one. */
+     * (the #175 D1 behaviour above): the caller refuses a second transfer; flush_on_exit retries the promotion on exit. */
     if (!promoted) { snd_error(); msg_wait(PDNA_XFER_LEDGER_TITLE, UI_WARN, PDNA_XFER_LEDGER_L1, PDNA_XFER_LEDGER_L2); }
     ok = promoted;
   } else {

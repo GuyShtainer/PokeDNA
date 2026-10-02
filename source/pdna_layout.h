@@ -1202,10 +1202,11 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 
 /* BACKLOG #374: the Gen-3 save IS verified but the ledger entry could not be promoted (the card
  * refused a write, so FatFs's dirty window made the re-read fail too). Not "NOT SAVED": the game
- * save is safe; the TRANSFERS screen reconciles the entry. Pinned beside NOTSAVED in host_textfit_test.c. */
+ * save is safe; flush_on_exit retries app_xfer_promote() when the save is exited (same power-on session only --
+ * TRANSFERS has no action for a PENDING row, BACKLOG #377). Pinned beside NOTSAVED in host_textfit_test.c. */
 #define PDNA_XFER_LEDGER_TITLE "SAVED - LEDGER NOT UPDATED"
 #define PDNA_XFER_LEDGER_L1    "The game save is confirmed."
-#define PDNA_XFER_LEDGER_L2    "TRANSFERS will finish it."
+#define PDNA_XFER_LEDGER_L2    "Exit the save to retry it."
 
 /* BACKLOG #150 S150-11 decision 18/13/14 -- the TRANSFERS screen (start-menu row,
  * list, per-row action popup, APPLY/discard confirms, the loss confirm). Every
