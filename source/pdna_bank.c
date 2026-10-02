@@ -212,7 +212,10 @@ static bool __attribute__((noinline)) meta_load(void) {
     /* Zy D3: meta_save()'s verified write would TRUNCATE bank.meta.tmp (its own scratch) -- the only copy of
      * these names. Heal by RENAME, before any write can happen. A failed heal makes meta_save refuse
      * (state 2: it would hit that truncation), a later meta_load retries. */
-    if (bml_meta_heal_tmp(PDNA_BANK_DIR, META_BYTES)) {
+    rmbl_pause();
+    bool healed = bml_meta_heal_tmp(PDNA_BANK_DIR, META_BYTES);
+    rmbl_resume();
+    if (healed) {
       g_meta_from_bak = false;        /* primary is now the good file and no .bak was displaced */
       log_line("bank: meta healed by renaming bank.meta.tmp into place");
     } else {
@@ -348,7 +351,13 @@ static bool box_load(int box) {
     /* Heal BEFORE anything can write: the primary is back (rename of the .tmp, or a verified write from
      * the .bak -- never sf_save_rolling, so no backup roll can bury the good .bak). Read-only (Everdrive):
      * recovered in RAM only, never written. A failed heal returns false below so every writer refuses. */
-    if (app_can_edit() && !bml_box_heal(path, bsrc, box_recs(), BOX_BYTES)) {
+    bool healed = true;
+    if (app_can_edit()) {                       /* Zy D7: rmbl.h requires the pause around every SD write */
+      rmbl_pause();
+      healed = bml_box_heal(path, bsrc, box_recs(), BOX_BYTES);
+      rmbl_resume();
+    }
+    if (!healed) {
       heal_failed = true;
       log_line("bank: box %02d heal failed - recovered copy kept on the card, browse only", box);
       app_log_flush();
@@ -804,6 +813,9 @@ static bool __attribute__((noinline)) bank_backup_v1(void) {
   for (int b = 0; b < BANK_BOXES; b++) {
     char src[SF_PATH_MAX]; box_path(b, src);
     FILINFO sfno;
+    /* Zy D5: an ABSENT primary may still be healable (box_load restores it from the verified .tmp/.bak, and
+     * app_can_edit() is true here) -- heal first so that box lands in the backup instead of being skipped. */
+    if (f_stat(src, 0) == FR_NO_FILE) (void)box_load(b);
     if (f_stat(src, &sfno) != FR_OK || (uint32_t)sfno.fsize != (uint32_t)BOX_BYTES) continue;   /* absent or wrong size -> skip */
     if (!box_load(b)) { log_line("bank: backup-v1 box %d page-in incomplete, refusing", b); app_log_flush(); return false; }
     char dst[SF_PATH_MAX];
@@ -897,7 +909,10 @@ static void banksrc_set_wp(int box, int wp) {
 static bool banksrc_can_edit(void) { return app_can_edit(); }
 static bool banksrc_commit(void) {               /* immediate edits: persist box + meta */
   bool ok = box_save();
-  meta_save();
+  /* Zy D4: a refused/failed meta write used to be silent. Only when the box itself saved: a failed box save
+   * already shows its own dialog (box_save_rename_triage) and a second one would bury it. */
+  if (!meta_save() && ok)
+    msg_wait(PDNA_BANK_META_TITLE, UI_WARN, PDNA_BANK_META_L1, PDNA_BANK_META_L2);
   return ok;
 }
 static void banksrc_mark_dirty(void) { g_dirty = true; }   /* moves: deferred to box-switch/exit */
