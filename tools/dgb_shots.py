@@ -9624,6 +9624,10 @@ def _main_dispatch(argv=None) -> int:
                           "Gen-2-only fused image (Gold.gbc+Gold.sav or "
                           "Crystal.gbc+Crystal.sav, tools/fuse_gb.py, one ROM per "
                           "image -- BACKLOG #98)")
+    ap.add_argument("--zt-crystal", action="store_true",
+                     help="lane zt: run_zt_crystal() against --image (a one-ROM Crystal image)")
+    ap.add_argument("--zt-gold", action="store_true",
+                     help="lane zt: run_zt_gold() against --image (a one-ROM Gold image planted with held id 0x06)")
     ap.add_argument("--b93-menu", choices=("red", "gold"),
                      help="BACKLOG #93: only run_b93_menu() against --image -- "
                           "DUPLICATE/TO DAY-CARE/EXPORT .pk on the mon menu plus "
@@ -10764,6 +10768,32 @@ def _main_dispatch(argv=None) -> int:
             print(f"  [skip] {name}: {reason}")
         ran = True
 
+    if a.zt_crystal:
+        try:
+            sess = run_zt_crystal(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] zt crystal: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        ran = True
+
+    if a.zt_gold:
+        try:
+            sess = run_zt_gold(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] zt gold: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        ran = True
+
     if a.b93_menu:
         try:
             sess = run_b93_menu(core_mod, image_mod, a.image, a.out, a.b93_menu)
@@ -11425,6 +11455,91 @@ def _main_dispatch(argv=None) -> int:
     for name, reason in skipped:
         print(f"  [skip] {name}: {reason}")
     return 0
+
+
+def run_zt_gold(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """lane zt (#357a/#357c) on a ONE-ROM Gold image whose box1 slot0 mon was planted with the
+    UNUSED held-item id 0x06 (tests/host_gbsurgery_tool.c --op helditem 0 0 6): (a) the picker
+    opens PRESELECTED on that mon's own "#6" row; B leaves the byte; A keeps it; (b) the NEXT
+    cell's mon (a normal held item) shows the list with no "#n" hole rows."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "zt_gold_")
+    print("== lane zt: Gold held-item picker, planted hole id 0x06 ==")
+    boot_to_gb_session(s, rom)
+    s.shot("00_grid", "zt: Gold box1, top-left cell = the mon planted with held id 0x06")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # cell -> mon menu
+    s.tap("DOWN", settle=gb_shots.SETTLE)                   # VIEW/EDIT -> ITEM
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ITEM -> pick_item (held)
+    s.shot("01_planted_row", "zt #357c: picker opened on the planted mon (held byte 0x06 = unused id): ONE extra "
+                             "row \"#6\" in id order, preselected (cursor on it, not on NO ITEM)")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # cancel: the byte stays
+    s.shot("02_b_cancel", "zt #357c: B cancelled the picker -- back at the grid, nothing written")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.tap("DOWN", settle=gb_shots.SETTLE)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # reopen
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # A on the preselected \"#6\" row = keep
+    s.shot("03_a_keep", "zt #357c: A on the preselected \"#6\" row (keeps the byte; the delta build then shows its "
+                        "in-session notice or returns to the grid)")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.tap("DOWN", settle=gb_shots.SETTLE)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.shot("04_reopen", "zt #357c: reopened after A: still preselected on the \"#6\" row (the byte survived, "
+                        "it was NOT cleared to NO ITEM)")
+    s.tap("B", settle=300)
+    s.tap("RIGHT", settle=120)                               # next cell: an ordinary mon
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.shot("04b_menu_cell1", "zt: the mon menu of the NEXT cell (an ordinary mon) is open")
+    s.tap("DOWN", settle=gb_shots.SETTLE)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.shot("05_list_top", "zt #357a: an ordinary mon's picker, list top: NO ITEM, MASTER BALL ... POKe BALL, then "
+                          "BICYCLE -- the \"#6\" row that used to sit between them is GONE")
+    s.press_n("DOWN", 40, settle=gb_shots.SETTLE)
+    s.shot("06_list_scrolled", "zt #357a: scrolled 40 rows down the same list (past where hole ids 0x19 and 0x2D would sit); every row is a real name, no \"#n\" row")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)
+    return s
+
+
+def run_zt_crystal(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """lane zt (#356) on a ONE-ROM Crystal image: a mon PUT INTO THE DAY-CARE (a gb_load_parts record,
+    has_caught false before #356) is opened in View/Edit, and its held-item picker (SELECT -> the flat
+    editor -> Item row -> A) must list the four Crystal-only ids (CLEAR BELL, GS BALL, BLUE CARD,
+    EGG TICKET); the START category filter is set to Key items to bring them on one page."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "zt_crystal_")
+    print("== lane zt: Crystal Day-Care held-item picker ==")
+    boot_to_gb_session(s, rom, which="crystal")
+    s.tap("START", settle=gb_shots.BIG_SETTLE)
+    s.press_n("DOWN", 2)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # Day Care
+    s.shot("00_daycare", "zt: Crystal Day-Care on entry")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # slot 0 popup (Put in)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # pick list
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # top row -> confirm
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # accept
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss the in-session notice
+    s.shot("01_deposited", "zt: slot 0 now holds the deposited mon")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # slot 0 popup (View/Edit first)
+    s.shot("02_popup", "zt: occupied-slot popup")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # View/Edit -> pdna_gbsummary
+    s.shot("03_summary", "zt: the Day-Care mon's summary card")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # A edit
+    s.shot("04_editing", "zt: edit mode on the INFO card")
+    s.press_n("DOWN", 5, settle=gb_shots.SETTLE)            # Name, Lv, Gender, OT, ID -> Item
+    s.shot("05_item_row", "zt: cursor on the Item row")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # -> pick_item (held, game from the session)
+    s.shot("06_picker", "zt #356: the Day-Care mon's held-item picker in a CRYSTAL session: header count 223 "
+                        "(Gold's list of the same filter is 219: the 4 Crystal-only ids are present)",
+           claim="223")
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # category filter menu
+    s.shot("07_filter_menu", "zt: the category menu (All / Items / Poke Balls / Key items / TM-HM)")
+    s.press_n("DOWN", 3, settle=gb_shots.SETTLE)            # All -> Items -> Poke Balls -> Key items
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.shot("08_key_items", "zt #356: Key items only: CLEAR BELL, GS BALL, BLUE CARD, EGG TICKET are listed "
+                           "(Crystal-only ids 46/73/74/81)")
+    s.press_n("DOWN", 21, settle=gb_shots.SETTLE)
+    s.shot("09_key_items_end", "zt #356: the tail of the Key items list: BLUE CARD and EGG TICKET (the other two "
+                               "Crystal-only ids) are listed too")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)
+    return s
 
 
 def run_gbmon(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
