@@ -11468,10 +11468,10 @@ def run_gbmon(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session
     s.tap("DOWN", settle=gb_shots.SETTLE)                   # VIEW/EDIT (row 0) -> ITEM (row 1)
     s.shot("03_item_row_selected", "#92: cursor on the ITEM row")
 
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # -> pick_item(), restricted (1..255, "#n")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # -> pick_item(), restricted (real Gen-2 names)
     s.shot("04_item_picker", "#92: gb_item_hook opens the SAME pick_item() screen "
                               "app_quick_item (Gen 3) uses, restricted to ids "
-                              "1..255 shown as \"#n\" via pick_item_set_gen1_2_max "
+                              "with their real names (pick_item_set_gen1_2_held) "
                               "-- the identical restricted mode gb_editor.c's own "
                               "GBE_ITEM row already uses inside the full summary "
                               "editor, now reachable straight from the mon menu too")

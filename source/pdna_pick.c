@@ -1397,7 +1397,7 @@ static int g_mvn;
  * predictable layout. */
 static struct {
   uint16_t move_max_id;    /* BACKLOG #189: 0 = unrestricted, every existing caller's default */
-  uint16_t item_max_id;    /* BACKLOG #189/#195: 0 = unrestricted (raw "#n" held-item mode) */
+  uint16_t item_max_id;    /* BACKLOG #189/#195: 0 = unrestricted (the Gen-3 picker) */
   uint8_t  item_gen;       /* 0 / GBIN_GEN1 / GBIN_GEN2 */
   uint8_t  item_game;      /* GbGame: GBF_G_RED/YELLOW/GS/CRYSTAL */
   uint8_t  item_open_pocket; /* GbBagPocket, one-shot; sentinel GBB_POCKET_COUNT */
@@ -1786,57 +1786,31 @@ static uint16_t list_pick(const char* title, int count, const char* (*name_fn)(u
   return r < 0 ? CANCEL : (uint16_t)r;
 }
 
-/* Gen-1/2 restriction (UX-parity audit, Guy 2026-09-07: "the item row -- Gen 3
- * uses pick_item with names; if the GB editor adjusts the item id numerically,
- * switch it to pick_item restricted to the gen's item ids, names '#n' where
- * the app has none"). The GB editor's held-item field (gb_editor.c's GBE_ITEM)
- * used to LEFT/RIGHT-step a raw byte 0..255 instead of opening a real picker.
+/* Gen-1/2 restriction: pick_item_set_gen1_2() sets the item-id ceiling (g_item_max_id),
+ * the generation (g_item_gen: GBIN_GEN1 / GBIN_GEN2, gb_item_names.h), the real GbGame and
+ * the "NO ITEM" row flag; a ceiling of 0 is the unrestricted Gen-3 picker, every other
+ * caller's default. A non-zero ceiling ALWAYS comes with a generation (the old raw "#n"
+ * mode -- ceiling set, generation 0 -- was removed in #358: no caller reached it after
+ * #340a). Gen-1/2 items have NO numbering in common with Gen 3, so a Gen-3
+ * name/description/icon at the SAME raw number would be actively WRONG; restricted mode
+ * therefore suppresses every Gen-3-specific thing: real names come from gb_item_label,
+ * icons (gb_item_icon_or_none returns NULL) and the L/R view-cycle do not exist,
+ * descriptions come from the user's own GB ROM (#340b, item_desc_for) or an honest
+ * placeholder, and the category filter is the Gen-1/2 pocket map (gbb_pocket_of).
  *
- * Unlike pick_species_set_max_dex()'s ceiling, this is not merely "hide ids
- * above a cutoff": Gen-1/2 items have NO numbering in common with Gen 3 AT
- * ALL (gen2_save.h's own held_item comment: "Gen-2 item id, no Gen-3
- * equivalent for many"), so a Gen-3 name/description/icon at the SAME raw
- * number would be actively WRONG, not merely irrelevant. Restricted mode
- * therefore also suppresses every Gen-3-specific thing that has no meaning
- * here: real names (item_label_for below draws "#n"), icons (gb_item_icon_or_none
- * returns NULL), descriptions (item_desc_for returns a placeholder), and the
- * category/per-game filters (Gen-3 pocket/availability metadata that says
- * nothing about a Gen-2 id -- the START filter menu and the L/R view-cycle,
- * which only ever shows an icon-bearing view, are both no-ops while
- * restricted; search still works, but by NUMBER, the species picker's own
- * digit-search idiom, since there is no name to search by).
+ * `g_item_game` is the ACTUAL GbGame (GBF_G_RED/YELLOW/GS/CRYSTAL), not merely the
+ * generation: gbb_pocket_of()'s answer for four ids (0x46/0x73/0x74/0x81) depends on
+ * Gold/Silver vs Crystal (gb_bag.h's own header comment on gbb_pocket_of has the
+ * derivation), so every caller threads its own real game.
  *
- * "#n" stands in until a future phase reads the real Gen-1/2 item names live
- * off the user's own cartridge (Guy's own words: "P2 will bring ROM names"),
- * the same way rom_gblearn.c now reads level-up learnsets -- this SCREEN does
- * not need to change again when that lands, only where item_label_for's text
- * comes from. 0 = unrestricted, every existing Gen-3 caller's default.
- *
- * BACKLOG #195: `g_item_gen` (0 / GBIN_GEN1 / GBIN_GEN2, gb_item_names.h)
- * upgrades restricted mode from raw "#n" rows to REAL names (gb_item_label)
- * plus a pocket CATEGORY filter (gbb_pocket_of) -- the ROM-read icon/
- * description upgrade the comment above describes is still a later phase;
- * this one is the NAME phase Guy's own ask ("there should be a way to add
- * items") needed. g_item_gen == 0 (the held-item fields' own use, unchanged)
- * keeps the exact old "#n"-only, numeric-search-only behaviour.
- *
- * Review D2: `g_item_game` is the ACTUAL GbGame (GBF_G_RED/YELLOW/GS/
- * CRYSTAL), not merely the generation -- gbb_pocket_of()'s answer for four
- * ids (0x46/0x73/0x74/0x81) depends on Gold/Silver vs Crystal specifically
- * (pokegold's own attributes.asm differs from pokecrystal's there, gb_bag.h's
- * own header comment on gbb_pocket_of has the derivation), so a "pick any
- * representative Gen-2 game" shortcut silently mis-filters Gold. Every
- * caller threads its own real game through now.
- *
- * BACKLOG #204: these four scalars are packed into s_gb_pick (declared near
- * g_move_max_id above, this file) -- see that struct's own comment. */
+ * BACKLOG #204: these scalars are packed into s_gb_pick (declared near g_move_max_id
+ * above) -- see that struct's own comment. */
 _Static_assert(GBIN_GEN2 < 256, "item_gen fits uint8_t");
 #define g_item_max_id       s_gb_pick.item_max_id
 #define g_item_gen          s_gb_pick.item_gen
 #define g_item_game         s_gb_pick.item_game
 #define g_item_open_pocket  s_gb_pick.item_open_pocket
 #define g_item_allow_none   s_gb_pick.item_allow_none
-void pick_item_set_gen1_2_max(uint16_t max_id) { pick_item_set_gen1_2(0, GBF_G_RED, max_id); }
 void pick_item_set_gen1_2(int gen, GbGame game, uint16_t max_id) {
   g_item_gen = gen; g_item_game = game; g_item_max_id = max_id;
   g_item_allow_none = 0;                      /* every plain setter (and its (0,RED,0) clear) drops the held-item row */
@@ -1850,8 +1824,8 @@ void pick_item_set_gen1_2_cat(GbBagPocket pocket0) { g_item_open_pocket = pocket
 
 static void item_label_for(uint16_t id, char* out, int cap) {
   if (g_item_max_id) {
-    if (id == 0 && g_item_allow_none && g_item_gen) { siprintf(out, "NO ITEM"); return; }
-    if (g_item_gen && gb_item_label(g_item_gen, (uint8_t)id, out, cap)) return;
+    if (id == 0 && g_item_allow_none) { siprintf(out, "NO ITEM"); return; }
+    if (gb_item_label(g_item_gen, (uint8_t)id, out, cap)) return;
     siprintf(out, "#%u", (unsigned)id);
     return;
   }
@@ -1932,25 +1906,23 @@ static int item_build(u16* idx, const char* search, int sort, int cat, int gamef
        * proved admission; gbb_pocket_of() agrees for those, so this is not
        * a second, possibly-diverging test, just skipped to avoid a
        * redundant call). */
-      if (g_item_gen && !g2_tmhm && !(i == 0 && g_item_allow_none) &&
+      if (!g2_tmhm && !(i == 0 && g_item_allow_none) &&
           gbb_pocket_of(g_item_game, (uint8_t)i) == GBB_POCKET_COUNT) continue;
       /* #357a: the 25 unused ids inside the item range have a pocket but no real name
        * (gb_item_label fails): never offer them -- held AND bag/pack ADD pickers. */
-      if (g_item_gen && !(i == 0 && g_item_allow_none)) {
+      if (!(i == 0 && g_item_allow_none)) {
         char nm0[GB_ITEM_NAME_MAXLEN + 8];
         if (!gb_item_label(g_item_gen, (uint8_t)i, nm0, sizeof nm0)) continue;
       }
-      if (g_item_gen && cat) {
+      if (cat) {
         GbBagPocket want = (g_item_gen == GBIN_GEN2) ? RICAT_POCKET_G2[cat] : RICAT_POCKET_G1[cat];
         if (gbb_pocket_of(g_item_game, (uint8_t)i) != want) continue;
       }
       if (search[0]) {
-        /* Names exist only when g_item_gen is set -- search those too, on
-         * top of the species-picker's own digit-search idiom (a plain
-         * numeric search still works either way, and is the ONLY option
-         * left when g_item_gen == 0, the held-item fields' raw "#n" mode). */
+        /* Search the real names too, on top of the species-picker's own
+         * digit-search idiom (a plain numeric search still works as well). */
         bool hit = num_prefix((unsigned)i, search);
-        if (!hit && g_item_gen) {
+        if (!hit) {
           char nm[GB_ITEM_NAME_MAXLEN + 8];
           item_label_for((uint16_t)i, nm, sizeof nm);
           hit = ci_contains(nm, search);
@@ -2128,10 +2100,10 @@ static void iv_geom(int v, int* cols, int* cw, int* ch, int* x0, int* y0, int* v
 static void iv_cell(int v, int x, int y, int id) {
   const uint16_t* ic = gb_item_icon_or_none((uint16_t)id);  /* compiled art -> the registered ROM; NULL if restricted */
   char lbl[48];
-  item_label_for((uint16_t)id, lbl, sizeof lbl);     /* "No26 EARTHQUAKE" for a TM, or "#n" if restricted */
+  item_label_for((uint16_t)id, lbl, sizeof lbl);     /* Gen 3: "No26 EARTHQUAKE"; Gen 1/2: the real name, "#n" for an out-of-list held byte */
   if (v == IV_LIST) {
     char row[64];
-    if (g_item_max_id) siprintf(row, "%s", lbl);     /* lbl is already "#n" -- no separate number column */
+    if (g_item_max_id) siprintf(row, "%s", lbl);     /* no separate number column */
     else                siprintf(row, "%3d %s", id, lbl);
     ui_ptext_fit(x + 2, y, UI_SCR_W - (x + 4), UI_TEXT, row);
   } else if (v == IV_ICONS) {
@@ -2158,7 +2130,7 @@ uint16_t pick_item(uint16_t current) {
    * calls pick_item_set_gen1_2_cat() sees g_item_open_pocket still at its
    * GBB_POCKET_COUNT default, which maps to no row below (cat stays 0/All),
    * matching every OTHER pick_item() caller's behaviour exactly. */
-  if (g_item_gen) {
+  if (g_item_max_id) {
     const GbBagPocket* map = (g_item_gen == GBIN_GEN2) ? RICAT_POCKET_G2 : RICAT_POCKET_G1;
     int ncat = (g_item_gen == GBIN_GEN2) ? NRICAT_G2 : NRICAT_G1;
     for (int i = 1; i < ncat; i++) if (map[i] == g_item_open_pocket) { cat = i; break; }
@@ -2170,7 +2142,7 @@ uint16_t pick_item(uint16_t current) {
   /* #357c: held mode only -- a non-zero byte the list does not carry (an unused id) gets ONE
    * preselected row of its own, so A keeps the byte and B still cancels; without it the cursor
    * sat on NO ITEM and an accidental A cleared the item. */
-  if (g_item_gen && g_item_allow_none && current != 0 && current <= 0xFFu && n < NITEM) {
+  if (g_item_max_id && g_item_allow_none && current != 0 && current <= 0xFFu && n < NITEM) {
     int at = 0;
     while (at < n && idx[at] < current) at++;
     if (at >= n || idx[at] != current) {
@@ -2206,16 +2178,10 @@ uint16_t pick_item(uint16_t current) {
       ui_clear();
       char h[64], ht[40];                          /* active filters live in the header */
       /* Restricted: no game filter or A-Z sort exists (item_build's own
-       * comment). Gen-3 raw mode (g_item_gen == 0, the held-item fields'
-       * own use) has no category either -- the bracket that would otherwise
-       * show it ("[All] No.") is dropped rather than printed as dead-
-       * looking noise, same as before BACKLOG #195. Gen 1/2 DOES have a
-       * category now (gbb_pocket_of()), so its header shows it. */
+       * comment); Gen 1/2 has a category (gbb_pocket_of()), so its header shows it. */
       if (g_item_max_id) {
-        if (g_item_gen) {
-          const char* const* names = (g_item_gen == GBIN_GEN2) ? RICAT_NAME_G2 : RICAT_NAME_G1;
-          siprintf(h, "ITEM [%s] %d", names[cat], n);
-        } else siprintf(h, "ITEM %d", n);
+        const char* const* names = (g_item_gen == GBIN_GEN2) ? RICAT_NAME_G2 : RICAT_NAME_G1;
+        siprintf(h, "ITEM [%s] %d", names[cat], n);
       }
       else siprintf(h, "ITEM %s [%s|%s] %s %d", IV_NAME[view], ICAT_NAME[cat], IGAME_NAME[gamef],
                sort ? "A-Z" : "No.", n);
@@ -2223,7 +2189,7 @@ uint16_t pick_item(uint16_t current) {
       ui_text(4, 2, UI_TITLE, ht);
       ui_hline(0, 11, UI_SCR_W, UI_BORDER);
       ui_hline(0, 147, UI_SCR_W, UI_BORDER);
-      ui_text(4, 152, UI_DIM, g_item_max_id ? (g_item_gen ? PDNA_ITEM_GB2_FOOT : PDNA_ITEM_GB_FOOT)
+      ui_text(4, 152, UI_DIM, g_item_max_id ? PDNA_ITEM_GB2_FOOT
                                              : "A pick  L/R view  ST  SEL  B");
       if (view == IV_SPLIT) ui_panel(122, 20, 116, 124, UI_PANEL, UI_BORDER);
       for (int i = 0; i < vis && top + i < n; i++)
@@ -2268,16 +2234,12 @@ uint16_t pick_item(uint16_t current) {
     else if (k & KEY_L) { if (!g_item_max_id) { view = (view + IV_N - 1) % IV_N; relist = true; } }
     else if (k & KEY_R) { if (!g_item_max_id) { view = (view + 1) % IV_N; relist = true; } }
     else if (k & KEY_START) {                     /* filter menu, like the species picker.
-                                                     * BACKLOG #195: restricted mode now has
-                                                     * its OWN filter (category only, via
-                                                     * ritem_cat_menu) when names exist
-                                                     * (g_item_gen != 0); the raw "#n" mode
-                                                     * (held-item fields) still has no filter
-                                                     * at all -- no category to filter BY. */
+                                                     * Restricted mode has its OWN filter
+                                                     * (category only, via ritem_cat_menu). */
       if (!g_item_max_id) {
         item_filter_menu(&cat, &gamef, &sort);
         n = item_build(idx, search, sort, cat, gamef); sel = 0; toprow = 0; relist = true;
-      } else if (g_item_gen) {
+      } else {
         ritem_cat_menu(g_item_gen, &cat);
         n = item_build(idx, search, sort, cat, gamef); sel = 0; toprow = 0; relist = true;
       }

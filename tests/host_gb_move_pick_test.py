@@ -11,7 +11,7 @@ text-level checks instead of a compiled unit test. Three things must all hold:
 
   (a) pick_move_set_gen_max(uint16_t max_id) exists (declared in pdna_pick.h,
       defined in pdna_pick.c) and sets a file-scope static the way
-      pick_item_set_gen1_2_max()/g_item_max_id already do.
+      pick_item_set_gen1_2()/g_item_max_id already do.
   (b) build_moves() consults that static -- a ceiling that is never read is a
       setter with no effect.
   (c) EVERY pick_move( call site in source/*.c other than pick_move's own
@@ -54,7 +54,7 @@ def check_setter_exists(pick_h: str, pick_c: str) -> list[str]:
     if not re.search(r"void\s+pick_move_set_gen_max\s*\(\s*uint16_t\s+max_id\s*\)\s*\{\s*g_move_max_id\s*=\s*max_id\s*;\s*\}",
                      pick_c):
         v.append("pdna_pick.c: pick_move_set_gen_max() is not `{ g_move_max_id = max_id; }` "
-                 "over a file-scope static (the pick_item_set_gen1_2_max()/g_item_max_id shape)")
+                 "over a file-scope static (the pick_item_set_gen1_2()/g_item_max_id shape)")
     return v
 
 

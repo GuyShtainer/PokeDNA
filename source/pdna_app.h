@@ -206,8 +206,8 @@ bool app_src_readonly(void);
 /* `item` (BACKLOG #92, Gen 2 only): adds an ITEM row to the read-only popup, right
  * after VIEW/EDIT and before LEGALITY -- the same relative position Gen 3's own
  * app_mon_menu uses for its A_ITEM row (pdna_main.c). Opens the SAME pick_item()
- * screen app_quick_item uses, restricted to ids 0..255 shown as "#n"
- * (pick_item_set_gen1_2_max(), the mode gb_editor.c's own GBE_ITEM row already
+ * screen app_quick_item uses, restricted to the real Gen-2 held-item ids with their names
+ * (pick_item_set_gen1_2_held(), the mode gb_editor.c's own GBE_ITEM row already
  * uses) -- #0 is NO_ITEM and REMOVES the held item, same as every other item
  * picker in this tree; it is not excluded, and doing so would make "take the
  * item off" unreachable from this row -- then commits through the identical
