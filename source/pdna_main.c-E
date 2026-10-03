@@ -2302,7 +2302,7 @@ bool __attribute__((noinline)) app_xfer_promote(void) {
     }
     rmbl_pause();
     SfStatus cst = (gbsc_count(s_promote_buf, len) == 0)
-                     ? ((xh_unlink_ledger(path) == FR_OK) ? SF_OK : SF_ERR_WRITE)
+                     ? ((f_unlink(path) == FR_OK) ? SF_OK : SF_ERR_WRITE)
                      : sf_write_verified(path, s_promote_buf, len);
     rmbl_resume();
     if (cst != SF_OK) { log_line("xfer: promote: g3home consume failed for %s", path); return false; }
@@ -2416,7 +2416,7 @@ void __attribute__((noinline)) app_xfer_pending_undo(void) {
   }
   rmbl_pause();
   SfStatus wst;
-  if (gbsc_count(s_promote_buf, len) == 0) wst = (xh_unlink_ledger(path) == FR_OK) ? SF_OK : SF_ERR_WRITE;
+  if (gbsc_count(s_promote_buf, len) == 0) wst = (f_unlink(path) == FR_OK) ? SF_OK : SF_ERR_WRITE;
   else                                     wst = sf_write_verified(path, s_promote_buf, len);
   rmbl_resume();
   if (wst != SF_OK) log_line("xfer: undo: rewrite failed for %s", path);
@@ -2844,7 +2844,7 @@ static void __attribute__((noinline)) app_xfer_pid_rekey(const XferRekeyPlan* pl
                gbsc_file_key(buf, len) == new_key;
   if (ok) ok = sf_write_verified(plan->new_path, buf, len) == SF_OK;
   if (ok) app_xv_cache_invalidate();   /* BACKLOG #213: new_path now holds this key's ledger */
-  if (ok) ok = xh_unlink_ledger(plan->old_path) == FR_OK;
+  if (ok) ok = f_unlink(plan->old_path) == FR_OK;
 
   if (!ok) {
     log_line("xfer: rekey failed, old key kept (%s -> %s)", plan->old_path, plan->new_path);
@@ -4610,7 +4610,7 @@ static bool app_paste_gb_commit(uint8_t* buf, uint32_t* len, const char* path, i
   if (gbsc_remove(buf, len, idx) == 0) {
     if (gbsc_count(buf, *len) == 0) {
       rmbl_pause();
-      sidecar_ok = (xh_unlink_ledger(path) == FR_OK);
+      sidecar_ok = (f_unlink(path) == FR_OK);
       rmbl_resume();
     } else {
       rmbl_pause();
@@ -11639,7 +11639,7 @@ static void __attribute__((noinline)) xfer_reconcile_apply(GbReconBuf* rb) {
 
     rmbl_pause();
     bool wok;
-    if (gbsc_count(rb->sidecar, len) == 0) wok = (xh_unlink_ledger(rb->path) == FR_OK);
+    if (gbsc_count(rb->sidecar, len) == 0) wok = (f_unlink(rb->path) == FR_OK);
     else                                   wok = (sf_write_verified(rb->path, rb->sidecar, len) == SF_OK);
     rmbl_resume();
     if (!wok) { log_line("xfer: reconcile: %s NOT updated after apply", rb->path); any_notupdated = true; failed += np_ok; }

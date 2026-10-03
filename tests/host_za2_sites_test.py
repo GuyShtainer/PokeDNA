@@ -97,6 +97,21 @@ def f389(heal: str, boot: str, load: str, walk: str, main: str, dmain: str) -> t
     return True, "ok"
 
 
+# ------------------------------------------------------------------------------------------------ #389 review D2
+D2_SITES = (("main", "app_xfer_promote"), ("main", "app_xfer_pending_undo"), ("main", "app_xfer_pid_rekey"),
+            ("main", "app_paste_gb_commit"), ("main", "xfer_reconcile_apply"),
+            ("g12", "gb_paste_sidecar_undo"), ("g12", "xfer_down_undo"))
+
+
+def f389u(**b: str) -> tuple[bool, str]:
+    for k, body in b.items():
+        if "xh_unlink_ledger(" not in body:
+            return False, f"{k}: a ledger delete does not go through xh_unlink_ledger (a stale .tmp would resurrect it)"
+        if re.search(r"\bf_unlink\(", body):
+            return False, f"{k}: a bare f_unlink of a ledger path is back"
+    return True, "ok"
+
+
 # ------------------------------------------------------------------------------------------------ #390
 def f390(bridge: str, g3run: str, fill: str) -> tuple[bool, str]:
     if not re.search(r"if \(GB_GEN2 == dst_gen && fill_no_rom\) gb_gen12_norom_msg\(GB_GEN2\);\s*else gb_gen12_nomoves_msg\(dst_gen\);", bridge):
@@ -200,6 +215,15 @@ def run() -> None:
         ("shipped boot call removed", "main", "app_ledger_heal_boot();", ""),
         ("vsd boot call removed", "dmain", "app_ledger_heal_boot();", ""),
     ))
+    # -------- #389 review D2
+    texts = {"main": main_t, "g12": g12_t}
+    parts = {nm: function_body(texts[f], nm) for f, nm in D2_SITES}
+    for k_, v in parts.items():
+        check(bool(v), f"#389 D2: {k_} not located")
+    ok, d = f389u(**parts)
+    check(ok, d)
+    run_muts("389u", f389u, parts, tuple(
+        (f"{nm} back to a bare f_unlink", nm, "xh_unlink_ledger(", "f_unlink(") for _, nm in D2_SITES))
     # -------- #390
     bridge = function_body(g12_t, "gb_bank_down_bridge")
     g3run = function_body(g12_t, "bank_down_g3_run")

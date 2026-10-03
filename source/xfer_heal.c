@@ -92,3 +92,15 @@ int __attribute__((noinline)) xh_heal_dir(const char* dir, uint8_t* scratch, uin
   }
   return restored;
 }
+
+/* #389 review: delete a ledger -- its stale .tmp FIRST, so a later heal can never resurrect it. */
+FRESULT xh_unlink_ledger(const char* path) {
+  char tmp[GBSC_PATH_MAX + 8];
+  size_t n = strlen(path);
+  if (n + 5 > sizeof tmp) return FR_INVALID_NAME;
+  memcpy(tmp, path, n);
+  memcpy(tmp + n, ".tmp", 5);
+  FRESULT tr = f_unlink(tmp);
+  if (tr != FR_OK && tr != FR_NO_FILE) return tr;
+  return f_unlink(path);
+}

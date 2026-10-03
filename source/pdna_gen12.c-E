@@ -743,7 +743,6 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "savefile.h"      /* SF_PATH_MAX */
 #include "log.h"
 #include "xfer_io.h"       /* BACKLOG #150 S150-6: xr_path_for_key -- the one reader */
-#include "xfer_heal.h"     /* #389 review: xh_unlink_ledger / xh_heal_key (the same-session gap) */
 #include "ui.h"
 #include "snd.h"
 #include "rmbl.h"
@@ -3158,7 +3157,7 @@ static void gb_paste_sidecar_undo(const char* path) {
   }
   rmbl_pause();
   SfStatus wst;
-  if (gbsc_count(g_ed->sidecar, len) == 0) wst = (xh_unlink_ledger(path) == FR_OK) ? SF_OK : SF_ERR_WRITE;
+  if (gbsc_count(g_ed->sidecar, len) == 0) wst = (f_unlink(path) == FR_OK) ? SF_OK : SF_ERR_WRITE;
   else                                     wst = sf_write_verified(path, g_ed->sidecar, len);
   rmbl_resume();
   if (wst != SF_OK) log_line("gen12: sidecar cleanup: rewrite failed for %s", path);
@@ -3432,7 +3431,7 @@ static void xfer_down_undo(const char* path, uint8_t* scratch) {
   }
   rmbl_pause();
   SfStatus wst;
-  if (gbsc_count(scratch, len) == 0) wst = (xh_unlink_ledger(path) == FR_OK) ? SF_OK : SF_ERR_WRITE;
+  if (gbsc_count(scratch, len) == 0) wst = (f_unlink(path) == FR_OK) ? SF_OK : SF_ERR_WRITE;
   else                                wst = sf_write_verified(path, scratch, len);
   rmbl_resume();
   if (wst != SF_OK) log_line("gen12: xfer_down cleanup: rewrite failed for %s", path);

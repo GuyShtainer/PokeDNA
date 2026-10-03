@@ -191,9 +191,43 @@ static void sweep(void) {
   printf("sweep: %d rows, pre-fix tree lost the primary in %d\n", sweep_rows, pre_absent);
 }
 
+/* #389 review D2: resurrect-after-delete. A lying rewrite leaves primary + verified .tmp both present; the
+ * user later deletes / consumes the record. Plain f_unlink(primary) lets the next boot's heal bring it back;
+ * xh_unlink_ledger (stale .tmp first) must not. Both arms run the same 160 rows; the plain arm MUST
+ * resurrect somewhere (else the test is vacuous). */
+static void resurrect(void) {
+  uint8_t v1[GBSC_FILE_MAX], v2[GBSC_FILE_MAX];
+  uint32_t n1 = build(v1, KEY_A, 1, 1), n2 = build(v2, KEY_A, 1, 2);
+  int both = 0, plain_rez = 0, fixed_rez = 0;
+  for (int arm = 0; arm < 2; arm++)
+    for (int mode = 0; mode < 2; mode++)
+      for (long k = 0; k < 80; k++) {
+        fresh_card();
+        CHECK(sf_write_verified(PA, v1, n1) == SF_OK, "rez seed");
+        if (mode == 0) rd_fail_at = k; else rd_lie_after = k;
+        (void)sf_write_verified(PA, v2, n2);
+        rd_fail_at = -1; rd_lie_after = -1; rd_lie_writes = 0;
+        cold_boot();
+        if (!(exists(PA) && exists(PA ".tmp"))) continue;
+        if (arm == 0) both++;
+        if (arm == 0) CHECK(f_unlink(PA) == FR_OK, "plain consume unlink");
+        else CHECK(xh_unlink_ledger(PA) == FR_OK && !exists(PA) && !exists(PA ".tmp"), "xh_unlink_ledger left a file");
+        cold_boot();
+        (void)xh_heal_dir(XD, scr, sizeof scr, true, NULL);
+        if (exists(PA)) { if (arm == 0) plain_rez++; else { fixed_rez++; CHECK(0, "RESURRECTED after xh_unlink_ledger: mode %d k=%ld", mode, k); } }
+      }
+  CHECK(both > 0 && plain_rez > 0, "resurrect test vacuous (both=%d plain_rez=%d)", both, plain_rez);
+  fresh_card();
+  CHECK(xh_unlink_ledger(PA) == FR_NO_FILE, "absent ledger not FR_NO_FILE");
+  { char longp[96]; memset(longp, 'a', sizeof longp - 1); longp[sizeof longp - 1] = 0;
+    CHECK(xh_unlink_ledger(longp) == FR_INVALID_NAME, "overlong path accepted"); }
+  printf("resurrect: %d both-present states, plain unlink resurrected %d, xh_unlink_ledger %d\n", both, plain_rez, fixed_rez);
+}
+
 int main(void) {
   decisions();
   sweep();
+  resurrect();
   printf("%s (%d failures)\n", fails ? "FAILED" : "PASSED", fails);
   return fails ? 1 : 0;
 }

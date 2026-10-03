@@ -9,6 +9,7 @@
 #define XFER_HEAL_H
 #include <stdbool.h>
 #include <stdint.h>
+#include "ff.h"
 
 typedef enum {
   XH_NONE = 0,    /* nothing to do: the primary exists (a stale .tmp is never touched) or no .tmp  */
@@ -29,4 +30,9 @@ XhResult xh_heal_key(const char* dir, uint64_t key, uint8_t* scratch, uint32_t c
  * the rest heal on the next call) and xh_heal_key() each. Returns the number of keys RESTORED. A missing
  * dir is 0. `*n_ro` (may be NULL) receives how many usable orphans were left because can_edit is false. */
 int xh_heal_dir(const char* dir, uint8_t* scratch, uint32_t cap, bool can_edit, int* n_ro);
+
+/* #389 review: delete a ledger file -- its stale <path>.tmp FIRST (FR_NO_FILE is fine), then the primary. A
+ * verified .tmp left by an earlier lying write would otherwise be healed back into a record the user
+ * deleted / a transfer consumed (primary wins at heal time, the delete unlinks only the primary). */
+FRESULT xh_unlink_ledger(const char* path);
 #endif
