@@ -288,9 +288,46 @@ void jrnapp_log_events(ImgRec* r) {
 }
 
 /* ---- load-time re-apply ----------------------------------------------------------------------------- */
+/* #406: the re-apply must never end on the OLDER half of a swap whose newer half is not on the card. A swap is two drops (drop 1 = the step named "Swap", #314a; the
+ * displaced mon sits only in the RAM hand until drop 2, a "Box move"/"Party add"): re-applying drop 1 alone deletes the displaced mon from the image. The step named
+ * "Swap" (ja_older_eligible: plain, uncrossed, Gen-3) IS the older half by construction -- every pair/chain link below the newest carries it -- so a trailing run of
+ * them (the newest `av` re-appliable steps, walked back from the tip) has no partner on the card and is cut. *cut = how many. Game Boy images never carry the name. */
+static int ja_older_eligible(const JrnRec* r);
+static int ja_cut_tail(uint32_t av, uint32_t total, uint32_t* cut) {
+  JrnRec w;
+  uint32_t t = jrn_tip(&s_j), idx = total, n = 0;
+  int rc;
+  *cut = 0;
+  if (s_ai.slot < 0 || !av || av > total) return 0;
+  while (idx > av) {                                          /* from the tip down to the newest re-appliable step */
+    if (!t) return JRN_E_DIVERGED;
+    rc = jrn_find(&s_j, t, &w);
+    if (rc) return rc;
+    t = w.parent; idx--;
+  }
+  while (n < av) {
+    if (!t) return JRN_E_DIVERGED;
+    rc = jrn_find(&s_j, t, &w);
+    if (rc) return rc;
+    if (!ja_older_eligible(&w)) break;
+    n++; t = w.parent;
+  }
+  *cut = n;
+  return 0;
+}
+
+/* How many trailing half-swap steps the offer is holding back (0 = none). Only meaningful after jrnapp_offer returned 0: the load turns it into the "cut off" note. */
+uint32_t jrnapp_cutoff(void) {
+  uint32_t av = 0, total = 0, cut = 0;
+  if (!s_r || !s_r->j || s_state != JA_OK) return 0;
+  if (!jrn_offer(&s_j) && jrn_tip(&s_j) == jrn_cursor(&s_j)) return 0;
+  if (jrn_redo_info(&s_j, &av, &total, 0) < 0 || ja_cut_tail(av, total, &cut) != 0) return 0;
+  return cut;
+}
+
 uint32_t jrnapp_offer(uint32_t* avail, char stop[25]) {
   JrnRec st;
-  uint32_t av = 0, total = 0;
+  uint32_t av = 0, total = 0, cut = 0;
   int rc;
   if (avail) *avail = 0;
   if (stop) stop[0] = 0;
@@ -299,17 +336,22 @@ uint32_t jrnapp_offer(uint32_t* avail, char stop[25]) {
   memset(&st, 0, sizeof st);
   rc = jrn_redo_info(&s_j, &av, &total, &st);
   if (rc < 0 || !total) return 0;
+  if (ja_cut_tail(av, total, &cut) != 0) cut = av;                  /* a read fault: offer nothing rather than a half swap */
+  av -= cut; total -= cut;
+  if (!total) return 0;
   if (avail) *avail = av;
   if (stop && rc == 1) { memcpy(stop, st.name, 24); stop[24] = 0; }
   return total;
 }
 
 int jrnapp_reapply(void) {
-  uint32_t av = 0, total = 0, i;
+  uint32_t av = 0, total = 0, i, cut = 0;
   int rc, n = 0, retried = 0;
   if (!s_r || !s_r->j || s_state != JA_OK) return JRN_E_ARG;
   rc = jrn_redo_info(&s_j, &av, &total, 0);
   if (rc < 0) return rc;
+  if (ja_cut_tail(av, total, &cut) != 0) cut = av;            /* #406: never re-apply a swap's older half without its partner (a fault: nothing) */
+  av -= cut;
   for (i = 0; i < av; i++) {
     rc = jrn_redo(&s_j, &s_r->img, 0);
     if (rc == JRN_E_FULL && !retried) { retried = 1; (void)jrnapp_flush(); rc = jrn_redo(&s_j, &s_r->img, 0); }
@@ -321,6 +363,7 @@ int jrnapp_reapply(void) {
     if (rc != JRN_OK) { ja_event("re-apply stopped", rc); break; }
     n++;
   }
+  if (cut && (uint32_t)n == av) jrnapp_decline();             /* #406: the held-back half is thrown away (marked discarded): redo / the next load never offers a lone half */
   return (n == 0 && rc < 0) ? rc : n;
 }
 

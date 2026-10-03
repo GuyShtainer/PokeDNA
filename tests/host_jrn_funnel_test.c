@@ -397,6 +397,7 @@ static int stage_drop1(void) {
   return img_scope_close(&F, &RA, sv, slot) && ok;
 }
 static uint8_t snapS[G3_SAVE_FILE_SIZE], snapF[G3_SAVE_FILE_SIZE];
+static int g_cut;   /* #406: the staging helpers flush everything BUT the swap's last half (the power cut between the drops: that record dies in RAM) */
 
 /* setup (name "Setup": never a pair candidate) then the swap: returns with the tip at the swap's 2nd half, flushed.
  * snapS = the image before the swap, snapF = after both halves. */
@@ -409,10 +410,11 @@ static int stage_swap(unsigned a, unsigned b, unsigned c) {
   memcpy(snapS, sv, sizeof sv);
   memcpy(slot_at(b), x, MONB); memset(slot_at(a), 0, MONB);               /* drop 1 */
   if (!stage_drop1()) return 0;
+  if (g_cut && jrnapp_flush() != JRN_OK) return 0;
   memcpy(slot_at(c), y, MONB);                                             /* drop 2 */
   if (!stage_pc("Box move")) return 0;
   memcpy(snapF, sv, sizeof sv);
-  return jrnapp_flush() == JRN_OK;
+  return g_cut ? 1 : jrnapp_flush() == JRN_OK;
 }
 
 static void t_swap_pair_chords(void) {
@@ -776,10 +778,11 @@ static int stage_party_swap(const char* name, unsigned nbytes, unsigned n, int f
   memcpy(snapS, sv, sizeof sv);
   memcpy(slot_at(11), x, MONB); memset(slot_at(10), 0, MONB);
   if (!stage_drop1()) return 0;
+  if (g_cut && jrnapp_flush() != JRN_OK) return 0;
   if (flip79) y[79] ^= 0x01;
   if (!stage_party_land(name, y, nbytes, n, also_pc)) return 0;
   memcpy(snapF, sv, sizeof sv);
-  return jrnapp_flush() == JRN_OK;
+  return g_cut ? 1 : jrnapp_flush() == JRN_OK;
 }
 static void t_party_add_pairs(void) {
   char nm[25];
@@ -900,10 +903,11 @@ static int stage_chain(unsigned k, unsigned wrong_link) {
     if (i == 0) memset(slot_at(10), 0, MONB);
     if (!stage_drop1()) return 0;
   }
+  if (g_cut && jrnapp_flush() != JRN_OK) return 0;
   memcpy(slot_at(30), m[k], MONB);
   if (!stage_pc("Box move")) return 0;
   memcpy(snapF, sv, sizeof sv);
-  return jrnapp_flush() == JRN_OK;
+  return g_cut ? 1 : jrnapp_flush() == JRN_OK;
 }
 
 /* ---- zd #325: an UNDO press that LANDS on a step named "Swap" leaves a half (that Swap is applied, its partner undone) and toasts "Swap (half)"; the landing step's name is
@@ -1238,6 +1242,63 @@ static void t_swap_pair_fault_sweep(void) {
   printf("  zc history sweep: %u faulted History walks, %u wrong rows\n", hruns, hbad);
 }
 
+
+
+/* ---- #406: a power cut between a swap's two drops leaves ONLY the older half ("Swap") on the card. The load-time offer must never re-apply it (the displaced mon
+ * lives only in the lost RAM hand: applying drop 1 alone deletes it from the image). g_cut stages the swap with its LAST half unflushed, then the cut: the card keeps
+ * the pre-swap image (`snapS`, or `snapB` for the bag-step case) and the journal's flushed records; the pending record dies with the RAM. ---- */
+static void cut_and_reopen(const uint8_t* card) { memcpy(sv, card, sizeof sv); CHECK(app_reopen(), "power cut + reopen"); }
+static void t_swap_cutoff(void) {
+  uint32_t av = 99, tot;
+  char stop[25];
+  static uint8_t snapB[G3_SAVE_FILE_SIZE];
+  /* 1: only drop 1 flushed -> nothing to re-apply, image untouched, the lone half is marked discarded */
+  g_cut = 1;
+  CHECK(app_world_reset() && stage_swap(10, 11, 12), "cut: stage Setup, Swap (flushed), Box move (pending)");
+  g_cut = 0;
+  cut_and_reopen(snapS);
+  tot = jrnapp_offer(&av, stop);
+  CHECK(tot == 0u && av == 0u, "#406 a lone older half is NOT offered (total %u avail %u)", (unsigned)tot, (unsigned)av);
+  CHECK(jrnapp_cutoff() == 1u, "#406 the load can say so: cutoff %u", (unsigned)jrnapp_cutoff());
+  CHECK(jrnapp_reapply() == 0 && memcmp(sv, snapS, sizeof sv) == 0, "#406 re-apply of a lone half applies 0 steps, the image is unchanged");
+  jrnapp_decline();
+  CHECK(app_reopen() && jrnapp_offer(&av, stop) == 0 && jrnapp_cutoff() == 0u, "#406 after the note, the discarded half never re-offers");
+  /* 2: both drops flushed -> the whole swap */
+  CHECK(app_world_reset() && stage_swap(10, 11, 12), "whole: stage the swap, both flushed");
+  cut_and_reopen(snapS);
+  tot = jrnapp_offer(&av, stop);
+  CHECK(tot == 2u && av == 2u && jrnapp_cutoff() == 0u, "#406 control: both halves on the card -> 2 steps offered (total %u avail %u)", (unsigned)tot, (unsigned)av);
+  CHECK(jrnapp_reapply() == 2 && memcmp(sv, snapF, sizeof sv) == 0, "#406 control: the whole swap is re-applied byte-exact");
+  /* 3: a plain step, then a lone half -> the plain step only */
+  g_cut = 0;
+  CHECK(app_world_reset(), "bag: world");
+  CHECK(stageA(300), "bag: a plain step (not a swap)");
+  memcpy(snapB, sv, sizeof sv);
+  g_cut = 1;
+  CHECK(stage_swap(10, 11, 12), "bag: Setup + Swap flushed + Box move pending");
+  g_cut = 0;
+  cut_and_reopen(snapB);
+  tot = jrnapp_offer(&av, stop);
+  CHECK(tot == 1u && av == 1u && jrnapp_cutoff() == 1u, "bag: the Setup step is offered, the lone Swap held back (total %u avail %u cutoff %u)", (unsigned)tot, (unsigned)av, (unsigned)jrnapp_cutoff());
+  CHECK(jrnapp_reapply() == 1 && memcmp(sv, snapS, sizeof sv) == 0, "bag: ONLY the plain step is re-applied (image == the after-Setup image)");
+  CHECK(jrnapp_cursor() == jrnapp_tip(), "bag: the lone half is marked discarded after the re-apply (cursor %u tip %u)", (unsigned)jrnapp_cursor(), (unsigned)jrnapp_tip());
+  /* 4: a chained swap (#314b) with only Swap_1, Swap_2 flushed -> both held back */
+  g_cut = 1;
+  CHECK(app_world_reset() && stage_chain(2, 0), "chain: Setup x3, Swap, Swap flushed, Box move pending");
+  g_cut = 0;
+  cut_and_reopen(snapS);
+  tot = jrnapp_offer(&av, stop);
+  CHECK(tot == 0u && jrnapp_cutoff() == 2u, "#406 a chained swap cut before its Box move holds back BOTH Swaps (total %u cutoff %u)", (unsigned)tot, (unsigned)jrnapp_cutoff());
+  CHECK(jrnapp_reapply() == 0 && memcmp(sv, snapS, sizeof sv) == 0, "#406 chain: nothing applied");
+  /* 5: the party variant (#320) */
+  g_cut = 1;
+  CHECK(stage_party_swap("Party add", 100, 2, 0, 0), "party: Setup, Swap flushed, Party add pending");
+  g_cut = 0;
+  cut_and_reopen(snapS);
+  tot = jrnapp_offer(&av, stop);
+  CHECK(tot == 0u && jrnapp_cutoff() == 1u, "#406 party variant: the lone Swap is held back (total %u cutoff %u)", (unsigned)tot, (unsigned)jrnapp_cutoff());
+  CHECK(jrnapp_reapply() == 0 && memcmp(sv, snapS, sizeof sv) == 0, "#406 party: nothing applied");
+}
 
 /* za review A3: a journal recorded BEFORE #314a (main's drop_held never renamed drop 1: both halves "Box move", as stage_pc()
  * writes them) stays per-step: plain History labels, one step per press both ways, a plain chained swap too, and the load-time
@@ -1835,6 +1896,7 @@ int main(int argc, char** argv) {
     CHECK(app_world(file), "app world"); t_swap_chain_rollback();
     CHECK(app_world(file), "app world"); t_swap_chain_rollback_sweep();
     CHECK(app_world(file), "app world"); t_swap_pair_fault_sweep();
+    CHECK(app_world(file), "app world"); t_swap_cutoff();
     CHECK(app_world(file), "app world"); t_swap_pair_old_journal();
     CHECK(app_world(file), "app world"); t_swap_pair_shape_and_rollback_failure();
     CHECK(app_world(file), "app world"); t_chain_through_app();

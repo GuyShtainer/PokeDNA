@@ -10476,6 +10476,15 @@ static void __attribute__((noinline)) app_journal_offer(uint32_t n, uint32_t ava
   if (yes) jrnapp_decline();
 }
 
+/* #406: the journal holds ONLY the older half of a swap (the power was cut between the two drops): nothing is offered -- re-applying drop 1 alone would delete the
+ * displaced mon from the image. The half is marked discarded (it is half a move: nothing to redo) and the player is told. */
+static void __attribute__((noinline)) app_journal_cutoff_note(void) {
+  if (!jrnapp_cutoff()) return;
+  jrnapp_decline();
+  log_line("journal: a swap's first half had no partner on the card: nothing to re-apply");
+  msg_wait("LAST MOVE CUT OFF", UI_WARN, "A swap was cut off half way.", "Nothing to re-apply.");
+}
+
 /* View_save, BEFORE any reconcile stages a step: bind the recorder, anchor the journal, offer the re-apply, then the
  * safe-moment work (first fill of the ring: one status line, no dialog). Never fatal: any failure leaves the journal
  * off and the UI silent about it ("recorded" is only ever said for JA_OK). Everdrive / hack ROM: never opens. */
@@ -10487,6 +10496,7 @@ static void __attribute__((noinline)) app_journal_load(void) {
     uint32_t n = jrnapp_offer(&avail, stop);
     log_line("journal: open cursor %lu tip %lu offer %lu", (unsigned long)jrnapp_cursor(), (unsigned long)jrnapp_tip(), (unsigned long)n);
     if (n) { hb_pause(); perf_span_pause(); app_journal_offer(n, avail, stop); perf_span_resume(); hb_resume(); }
+    else app_journal_cutoff_note();
     if (jrnapp_first_fill_owed()) busy_panel("Preparing undo history...");
     (void)jrnapp_prepare(&g_rec, g_sb2, g_frlg);
   }
@@ -10531,6 +10541,7 @@ bool app_gb_journal_open(uint8_t* img, uint64_t key, uint64_t legacy_key) {
     uint32_t n = jrnapp_offer(&avail, stop);
     log_line("journal(gb): open cursor %lu tip %lu offer %lu", (unsigned long)jrnapp_cursor(), (unsigned long)jrnapp_tip(), (unsigned long)n);
     if (n) { hb_pause(); perf_span_pause(); app_journal_offer(n, avail, stop); perf_span_resume(); hb_resume(); }
+    else app_journal_cutoff_note();
     if (jrnapp_first_fill_owed()) busy_panel("Preparing undo history...");
     (void)jrnapp_prepare_key(&g_rec, key);
   }
