@@ -401,6 +401,26 @@ static void test_format(void) {
           "s150-11: bank_keep clears without touching claimed");
 
     CHECK(gbsc_file_key(sb, 3) == 0, "s150-11: gbsc_file_key returns 0 on a too-short buffer");
+
+    /* BACKLOG #384: re-key rewrites the header key + crc16; the entry survives byte for byte. */
+    uint8_t ent_before[GBSC_ENTRY]; memcpy(ent_before, sb + GBSC_HEADER, GBSC_ENTRY);
+    uint8_t bad[GBSC_FILE_MAX]; memcpy(bad, sb, slen); bad[GBSC_HEADER + 3] ^= 0x55;   /* entry crc broken */
+    CHECK(gbsc_set_file_key(bad, slen, 0x1122334455667788ull) == -1, "384: set_file_key refuses a non-validating buffer");
+    CHECK(gbsc_set_file_key(sb, slen, 0x1122334455667788ull) == 0, "384: set_file_key ok");
+    CHECK(gbsc_count(sb, slen) == 1, "384: the file still validates after the header rewrite (header crc16)");
+    CHECK(gbsc_file_key(sb, slen) == 0x1122334455667788ull, "384: gbsc_file_key reads the NEW key (the TRANSFERS match)");
+    CHECK(memcmp(ent_before, sb + GBSC_HEADER, GBSC_ENTRY) == 0, "384: the entry bytes are untouched");
+    CHECK(gbsc_set_file_key(sb, slen, 0xC0FFEEu) == 0 && gbsc_file_key(sb, slen) == 0xC0FFEEu, "384: set back");
+    {
+      char pth[GBSC_PATH_MAX]; uint64_t pk = 0;
+      CHECK(gbsc_path(pth, GBSC_PATH_MAX, "/PokeDNA/xfer", 0x06DBCC49A513CD46ull) > 0 &&
+            gbsc_key_from_path(pth, &pk) && pk == 0x06DBCC49A513CD46ull, "384: key_from_path inverts gbsc_path");
+      CHECK(gbsc_key_from_path("/PokeDNA/xfer/06dbcc49a513cd46.PDS", &pk) && pk == 0x06DBCC49A513CD46ull, "384: key_from_path accepts lower hex / .PDS");
+      CHECK(!gbsc_key_from_path("/PokeDNA/xfer/06DBCC49A513CD4.pds", &pk), "384: key_from_path refuses 15 digits");
+      CHECK(!gbsc_key_from_path("/PokeDNA/xfer/06DBCC49A513CD4G.pds", &pk), "384: key_from_path refuses a non-hex digit");
+      CHECK(!gbsc_key_from_path("/PokeDNA/xfer/x06DBCC49A513CD46.pds", &pk), "384: key_from_path refuses a 17th digit");
+      CHECK(!gbsc_key_from_path("/PokeDNA/xfer/06DBCC49A513CD46.pdx", &pk), "384: key_from_path refuses another extension");
+    }
   }
   /* ==== END BACKLOG #150 S150-11 decision 10 ==================================== */
 

@@ -5,6 +5,8 @@
 Pure text checks against the shipped source (no build). Every fact function is shared by the real
 check and by in-memory MUTATIONS that must turn it red (self-test in main()).
 
+  #384  app_xfer_pid_rekey rewrites the copy's header key (gbsc_set_file_key, checked against gbsc_file_key) BEFORE the
+        verified write of the new name, and unlinks the old name only after that write -- never zero copies.
   #383  app_xfer_save_now promotes ONLY when a transfer is pending ("nothing pending" == ok), a REAL failed
         promotion (pending, rewrite failed) still gives ok = false (#175 D1).
 """
@@ -70,8 +72,37 @@ def f383(body: str) -> tuple[bool, str]:
     return True, "ok"
 
 
+# ---------------------------------------------------------------------------------------------- #384
+def f384(body: str) -> tuple[bool, str]:
+    i_rd = body.find("sf_read_full(plan->old_path")
+    i_key = body.find("gbsc_set_file_key(buf, len, new_key)")
+    i_chk = body.find("gbsc_file_key(buf, len) == new_key")
+    i_wr = body.find("sf_write_verified(plan->new_path, buf, len)")
+    i_ul = body.find("f_unlink(plan->old_path)")
+    if min(i_rd, i_key, i_chk, i_wr, i_ul) < 0:
+        return False, "app_xfer_pid_rekey: read / set_file_key / file_key check / verified write / unlink not all present (#384)"
+    if not (i_rd < i_key < i_wr < i_ul and i_key < i_chk < i_wr):
+        return False, "app_xfer_pid_rekey: order must be read, header key rewrite (+check), verified write of the new name, unlink old (#384)"
+    if "gbsc_key_from_path(plan->new_path" not in body:
+        return False, "app_xfer_pid_rekey: the key must come from the new path (#384)"
+    return True, "ok"
+
+
 def run() -> None:
     main_t = (SRC / "pdna_main.c").read_text()
+    rk = function_body(main_t, "app_xfer_pid_rekey")
+    check(bool(rk), "app_xfer_pid_rekey body not found")
+    ok, d = f384(rk)
+    check(ok, d)
+    for label, old, new in (
+        ("384: header rewrite dropped", "gbsc_set_file_key(buf, len, new_key) == 0", "true"),
+        ("384: unlink the old name before the verified write", "sf_write_verified(plan->new_path, buf, len) == SF_OK;", "f_unlink(plan->old_path) == FR_OK;"),
+    ):
+        if old not in rk:
+            check(False, f"mutation anchor missing ({label})")
+            continue
+        ok, _ = f384(mutate(rk, old, new))
+        check(not ok, f"MUT {label} was NOT caught")
     b = function_body(main_t, "app_xfer_save_now")
     check(bool(b), "app_xfer_save_now body not found")
     ok, d = f383(b)

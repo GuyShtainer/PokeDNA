@@ -302,6 +302,12 @@ int gbsc_set_bank_keep(uint8_t* buf, uint32_t len, int idx, bool keep);
  * validate (the gbsc_flags_get "absent == 0" convention). */
 uint64_t gbsc_file_key(const uint8_t* buf, uint32_t len);
 
+/* BACKLOG #384: rewrite the header key (bytes 8..15, LE) and the header crc16 in place -- what a re-key does after it
+ * renames the file. Entries are untouched. 0 on success, -1 on a NULL/non-validating buffer (buf then untouched).
+ * gbsc_key_from_path parses the key out of "<dir>/<16 hex>.pds" (either hex case); false on any other shape. */
+int  gbsc_set_file_key(uint8_t* buf, uint32_t len, uint64_t key);
+bool gbsc_key_from_path(const char* path, uint64_t* key);
+
 /* Header `flags` (bit 0 GBSC_FLAG_KEEP_ASKED, see the header layout above). Rewrites
  * the header crc16 on set. gbsc_flags_get returns 0 for a file that does not
  * validate (the same "absent == no flags" convention gbsc_count's callers already

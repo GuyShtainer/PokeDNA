@@ -2813,8 +2813,8 @@ static bool __attribute__((noinline)) app_xfer_pid_guard(const uint8_t* old_rec,
 }
 
 /* D-Q3: runs ONLY after app_commit_with_dex() has reported a verified success.
- * Re-key = sf_read_full(old) -> sf_write_verified(new) -> f_unlink(old), in that
- * order (SS11.6 verbatim). Any failure before the unlink leaves the OLD file
+ * Re-key = sf_read_full(old) -> header key rewrite -> sf_write_verified(new) -> f_unlink(old), in that
+ * order (SS11.6 verbatim; the header rewrite is #384). Any failure before the unlink leaves the OLD file
  * intact -- the save itself already committed, so there is no "abandon" left to
  * do; this can only log and move on. S150-11's reconcile matches a stale-keyed
  * file by identity (ident32 + OT + name) later.
@@ -2827,6 +2827,13 @@ static void __attribute__((noinline)) app_xfer_pid_rekey(const XferRekeyPlan* pl
   uint8_t buf[GBSC_FILE_MAX];
   uint32_t len = 0;
   bool ok = sf_read_full(plan->old_path, buf, sizeof buf, &len) == SF_OK;
+  /* BACKLOG #384: the copy must carry the NEW key in its header (bytes 8..15 + crc16) -- the TRANSFERS screen
+   * matches rows by the header key, so a verbatim copy under the new NAME read "not linked" forever. The key
+   * is the new file's own name (the only place both callers already have it); written BEFORE the verified
+   * write, so the new file is complete when it first exists and the old name goes only after it verified. */
+  uint64_t new_key = 0;
+  if (ok) ok = gbsc_key_from_path(plan->new_path, &new_key) && gbsc_set_file_key(buf, len, new_key) == 0 &&
+               gbsc_file_key(buf, len) == new_key;
   if (ok) ok = sf_write_verified(plan->new_path, buf, len) == SF_OK;
   if (ok) app_xv_cache_invalidate();   /* BACKLOG #213: new_path now holds this key's ledger */
   if (ok) ok = f_unlink(plan->old_path) == FR_OK;
