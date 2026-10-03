@@ -1351,6 +1351,9 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 
 #define PDNA_XFER_PCQ_TITLE    "WAITING FOR THE PC"
 #define PDNA_XFER_PCQ_L1_FMT   "%d Pokemon. Put them in now?"
+/* #407: the load-time offer whose FIRST recorded step is crossed (a transfer / Bank move): app_confirm wraps l1 to 2 lines at 184 px. The old text (80 chars + a 14-char name) ran to
+ * three lines and the last ("A = forget them.") was clipped to "A =". %.10s of the step name ("Bank move" is 9); pinned at 10 x 'W' in host_textfit_test. */
+#define PDNA_JRN_CROSSED_L1_FMT "Starts at a transfer (%.10s). Redo by hand; A forgets."
 
 #define PDNA_XFER_COPY_NOBACK_L1 "No transfer record: this copy"
 #define PDNA_XFER_COPY_NOBACK_L2 "cannot be sent back."

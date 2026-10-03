@@ -10471,7 +10471,7 @@ static void __attribute__((noinline)) app_journal_offer(uint32_t n, uint32_t ava
   }
   /* every recorded step is behind a crossed one (a transfer, a Bank move): nothing can be re-applied safely */
   (void)n;
-  siprintf(l1, "Recorded steps start at a transfer (%.14s): redo it by hand. A = forget them.", stop ? stop : "");
+  siprintf(l1, PDNA_JRN_CROSSED_L1_FMT, stop ? stop : "");   /* #407: fits app_confirm's two lines (textfit-pinned) */
   yes = app_confirm("Recorded steps found", l1);
   if (yes) jrnapp_decline();
 }
