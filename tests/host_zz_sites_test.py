@@ -7,7 +7,7 @@ check and by in-memory MUTATIONS that must turn it red (self-test in main()).
 
   #384  app_xfer_pid_rekey rewrites the copy's header key (gbsc_set_file_key, checked against gbsc_file_key) BEFORE the
         verified write of the new name, and unlinks the old name only after that write -- never zero copies.
-  #385  xfer_reconcile_bank_phase2 counts identity-only Bank hits (xrc_bank_match(..., true, ..)) where a box has no first-8
+  #385  xfer_reconcile_bank_phase2 counts identity-only Bank hits (xrc_bank_reserial_match, #385 D1) where a box has no first-8
         hit, xfer_reconcile_classify_all hands them to xrc_classify, and the detail line is wired.
   #377  MARK FINISHED: classify_all derives g3_on_card from the CLEAN image (!imgf_exit_prompt), the popup lists
         PDNA_XRC_ACT_PROMOTE, apply re-checks the on-disk entry (NATIVE_HOME / ABROAD_G3 / PENDING) before
@@ -100,8 +100,8 @@ def f384(body: str) -> tuple[bool, str]:
 def f385(phase2: str, classify: str, detail: str) -> tuple[bool, str]:
     if not re.search(r"if\s*\(\s*!by_identity\s*&&\s*m\s*==\s*0\s*&&\s*h->direction\s*==\s*XR_DIR_ABROAD_G3\s*&&\s*h->bank_ident_matches\s*<\s*2\s*\)", phase2):
         return False, "phase2: the identity-only scan guard (!by_identity && m == 0 && ABROAD_G3 && < 2) is missing (#385)"
-    if not re.search(r"xrc_bank_match\(recs,\s*&e2,\s*true,\s*&islot\)", phase2):
-        return False, "phase2: the identity scan must call xrc_bank_match(recs, &e2, true, ..) (#385)"
+    if not re.search(r"xrc_bank_reserial_match\(recs,\s*h->orig8,\s*h->orig_serial\)", phase2):
+        return False, "phase2: the identity scan must call xrc_bank_reserial_match(recs, h->orig8, h->orig_serial) (#385 D1)"
     if not re.search(r"in\.bank_ident_matches\s*=\s*h->bank_ident_matches\s*;", classify):
         return False, "classify_all: bank_ident_matches not passed to xrc_classify (#385)"
     if "case XRC_IN_BANK" not in detail or "PDNA_XRC_D_IN_BANK" not in detail:
@@ -158,7 +158,7 @@ def run() -> None:
     check(ok, d)
     for label, which, old, new in (
         ("385: identity scan guard dropped", "p2", "!by_identity && m == 0 &&", "false &&"),
-        ("385: identity scan uses the first-8 match", "p2", "xrc_bank_match(recs, &e2, true, &islot)", "xrc_bank_match(recs, &e2, false, &islot)"),
+        ("385: identity scan falls back to the bare-identity match (D1)", "p2", "xrc_bank_reserial_match(recs, h->orig8, h->orig_serial)", "xrc_bank_match(recs, &e2, true, &islot)"),
         ("385: classify_all forgets the count", "ca", "in.bank_ident_matches = h->bank_ident_matches;", ""),
         ("385: detail line unwired", "dl", "case XRC_IN_BANK", "case XRC_G3HOME_DUP"),
     ):
