@@ -272,7 +272,7 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 /* Hint rows. sys8 is a FIXED 8 px cell drawn from x=4, so 29 columns is the budget
  * (4 + 29*8 = 236). The reroll line is exactly at it — measure before editing. */
 #define PDNA_SUM_FOOT_EDIT        "A list  <>edit  U/D  L/R  B"
-#define PDNA_SUM_FOOT_CREATE_EDIT "A list  <>edit  L/R  START"
+#define PDNA_SUM_FOOT_CREATE_EDIT "A list <>edit L/R START keep"
 #define PDNA_SUM_FOOT_CREATE      "A edit  L/R card  START keep"
 #define PDNA_SUM_FOOT_VIEW        "A edit  U/D mon  L/R  SEL  B"
 #define PDNA_SUM_FOOT_RO          "U/D mon  L/R card  SEL  B"
@@ -900,7 +900,7 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * and START keeps it from EITHER sub-mode -- mirrors pdna_summary.c's own
  * PDNA_SUM_FOOT_CREATE_EDIT/PDNA_SUM_FOOT_CREATE text closely (adapted to this
  * screen's own "L/R card" wording, not Gen 3's card-dot-only convention). */
-#define PDNA_GBSUM_FOOT_CREATE_EDIT "A ok <>edit L/R card START"
+#define PDNA_GBSUM_FOOT_CREATE_EDIT "A ok <>edit L/R START keep"
 #define PDNA_GBSUM_FOOT_CREATE      "A edit  L/R card  START keep"
 #define PDNA_GBSUM_FOOT_VIEW    "A edit  U/D mon  L/R  SEL  B"
 #define PDNA_GBSUM_FOOT_VIEW_RO "U/D mon  L/R card  SEL  B"

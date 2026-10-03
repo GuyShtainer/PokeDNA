@@ -107,6 +107,16 @@ pin("#409 pick_rows footer uses the proportional fitted draw",
     lambda t: "ui_ptext_fit(PDNA_PICKROWS_FOOT_X, 152, PDNA_PICKROWS_FOOT_W, UI_DIM, foot)" in t,
     lambda t: t.replace("ui_ptext_fit(PDNA_PICKROWS_FOOT_X, 152, PDNA_PICKROWS_FOOT_W, UI_DIM, foot)", "ui_text(4, 152, UI_DIM, foot)"))
 
+# ---- #399 both CREATE-edit footers end "START keep" (the Gen-3 and Game Boy twins share one verb)
+pin("#399 Gen-3 CREATE-edit footer names START's verb",
+    lay,
+    lambda t: re.search(r'PDNA_SUM_FOOT_CREATE_EDIT\s+"[^"]*START keep"', t) is not None,
+    lambda t: t.replace('L/R START keep"', 'L/R START"'))
+pin("#399 Game Boy CREATE-edit footer names START's verb",
+    lay,
+    lambda t: re.search(r'PDNA_GBSUM_FOOT_CREATE_EDIT\s+"[^"]*START keep"', t) is not None,
+    lambda t: t.replace('L/R START keep"', 'L/R START"'))
+
 if fails:
     for f in fails:
         print("FAIL:", f)
