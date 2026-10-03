@@ -156,8 +156,8 @@ def f391(helper: str, save_now: str, flush_exit: str, layout: str, tf: str) -> t
 def f386(cls: str, phase2: str, walk: str, classify_all: str, detail: str) -> tuple[bool, str]:
     if len(re.findall(r"in->bank_unread", cls)) < 2:
         return False, "xrc_classify: both LOST branches (PENDING + CLAIMED) must consult bank_unread (#386)"
-    if not re.search(r"if \(!recs\) \{ rb->bank_unread = true;", phase2):
-        return False, "phase 2: an unreadable Bank box does not raise rb->bank_unread (#386)"
+    if "pdna_bank_peek_box_ex(box, &unread)" not in phase2 or not re.search(r"if \(!recs\) \{ if \(unread\) \{ rb->bank_unread = true;", phase2):
+        return False, "phase 2: an unreadable (not merely ABSENT) Bank box must raise rb->bank_unread via peek_box_ex (#386 D1)"
     if "rb->bank_unread = false;" not in walk:
         return False, "xfer_reconcile_walk: bank_unread is never reset per scan (#386)"
     if "in.bank_unread = rb->bank_unread;" not in classify_all:
@@ -282,6 +282,8 @@ def run() -> None:
         ("PENDING branch ignores the flag", "cls", "else if (in->bank_unread)", "else if (false)"),
         ("CLAIMED branch ignores the flag", "cls", "!g3_seen && in->bank_unread)", "!g3_seen && false)"),
         ("phase 2 does not raise it", "phase2", "rb->bank_unread = true;", ""),
+        ("absent box raises the flag (D1 bug)", "phase2", "if (unread) { rb->bank_unread = true;", "{ rb->bank_unread = true;"),
+        ("phase 2 back on plain peek (D1 bug)", "phase2", "pdna_bank_peek_box_ex(box, &unread)", "pdna_bank_peek_box(box)"),
         ("walk never resets it", "walk", "rb->bank_unread = false;", ""),
         ("classify_all drops it", "classify_all", "in.bank_unread = rb->bank_unread;", ""),
         ("detail line unwired", "detail", "case XRC_UNREAD:", "case XRC_G3HOME_DUP:"),

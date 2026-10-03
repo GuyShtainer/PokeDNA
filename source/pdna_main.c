@@ -11091,8 +11091,9 @@ static void __attribute__((noinline)) xfer_reconcile_bank_phase2(GbReconBuf* rb)
     bool touched = false;
     for (int i = 0; i < rb->nxrc; i++) if (rb->xrc[i].bank_matches < 2) { touched = true; break; }
     if (!touched) break;   /* every candidate already ambiguous or already resolved  */
-    const uint8_t* recs = pdna_bank_peek_box(box);
-    if (!recs) { rb->bank_unread = true; log_line("xfer: reconcile: box %d unread, unmatched rows become unknown", box); continue; }   /* #386 */
+    bool unread = false;
+    const uint8_t* recs = pdna_bank_peek_box_ex(box, &unread);
+    if (!recs) { if (unread) { rb->bank_unread = true; log_line("xfer: reconcile: box %d unread, unmatched rows become unknown", box); } continue; }   /* #386: an ABSENT box is empty, not unread */
     log_line("xfer: reconcile: box %d paged", box);
     for (int i = 0; i < rb->nxrc; i++) {
       XrcHit* h = &rb->xrc[i];
@@ -11773,7 +11774,7 @@ static void __attribute__((noinline)) pdna_xfer_reconcile_screen(void) {
     else if (k & KEY_DOWN) sel = (sel + 1) % rb->nxrc;
     else if (k & KEY_SELECT) {
       msg_wait(PDNA_XRC_TITLE, UI_TEXT, xrc_detail_line(rb->xrc[sel].row_kind),
-              "See log.txt for the exact slot.");
+              (rb->xrc[sel].row_kind == XRC_UNREAD) ? 0 : "See log.txt for the exact slot.");
     } else if (k & KEY_A) {
       if (ro) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, app_readonly_why(), 0); continue; }
       XrcHit* h = &rb->xrc[sel];
