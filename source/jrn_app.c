@@ -744,6 +744,18 @@ static int ja_chord_pair(int dir, int* land) {
   return 0;
 }
 
+/* #410: 1 = EVERY remaining redo step is the load-time offer's cut tail (a trailing unpaired older half: the redo chord must not step onto it), 0 = the next redo step is
+ * allowed (or there is none -- jrnapp_step reports that), <0 = a read fault in the walk (the caller refuses; never a half swap). After a re-apply refused with JRN_E_IO (nothing
+ * applied, nothing discarded) the cursor still sits BELOW a swap's drop 1 whose partner is not on the card; stepping it would delete the displaced mon from the image. */
+static int __attribute__((noinline)) ja_redo_in_cut(void) {
+  uint32_t av = 0, total = 0, cut = 0;
+  int rc = jrn_redo_info(&s_j, &av, &total, 0);
+  if (rc < 0 || !av) return 0;
+  rc = ja_cut_tail(av, total, &cut);
+  if (rc) return rc < 0 ? rc : JRN_E_STATE;
+  return cut >= av ? 1 : 0;
+}
+
 /* #303/#314b: ONE chord press. A swap's halves (ja_chord_pair: two steps, or three for a chained swap) undo/redo together -- one toast, name "Swap" -- so a press
  * does not strand the image on a swap's half state (the limits are listed in jrn_app.h). All-or-nothing: if a later half is refused after earlier ones moved, every
  * one already applied is rolled back through the opposite step; only if THAT fails is the half state reported (name "half a swap", JRN_OK so the caller re-derives
@@ -759,6 +771,11 @@ int jrnapp_step_pair(int dir, char name[25]) {
   if (dir < 0 && jrn_pending(&s_j)) (void)jrnapp_flush();      /* same single flush jrnapp_step does, BEFORE the lookup (the src pointers must outlive it) */
   g = ja_chord_pair(dir, &land);
   if (g < 0) { ja_event("swap pair: a read fault in the group walk, the press is refused", g); return g; }   /* #322: nothing moved, never a smaller group */
+  if (g < 2 && dir > 0) {                                      /* #410: see ja_redo_in_cut */
+    rc = ja_redo_in_cut();
+    if (rc < 0) { ja_event("redo: a read fault in the half-swap guard, the press is refused", rc); return rc; }
+    if (rc > 0) return JRN_NOOP;                                /* nothing moved */
+  }
   if (g < 2) {
     rc = jrnapp_step(dir, name);
     /* #323/#325: a whole swap press (g >= 2) names itself "Swap" below. A plain REDO that moved a step carrying the older half's name ("Swap", given only by drop_held's

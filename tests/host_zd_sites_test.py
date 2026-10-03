@@ -45,6 +45,21 @@ pin("#404 the page repaint reaches the grid through dex_grid_cells (not a bare p
     pick, lambda t: "if (grid) dex_grid_cells(x0, y0, cols, cw, ch, top, vis, bob);" in t,
     lambda t: t.replace("if (grid) dex_grid_cells(x0, y0, cols, cw, ch, top, vis, bob);",
                         "if (grid) for (int i = 0; i < vis && top + i < g_n; i++) dex_cell_grid(x0 + (i % cols) * cw, y0 + (i / cols) * ch, g_list[top + i], bob);"))
+# ---- #410 the redo chord applies the offer's ja_cut_tail guard (never stops on a trailing unpaired older half)
+jrn = rd("jrn_app.c")
+pin("#410 ja_redo_in_cut refuses when EVERY remaining redo step is the cut tail (cut >= av), via ja_cut_tail",
+    jrn,
+    lambda t: re.search(r"static int __attribute__\(\(noinline\)\) ja_redo_in_cut\(void\) \{[^}]*?ja_cut_tail\(av, total, &cut\);[^}]*?return cut >= av \? 1 : 0;", t, re.S) is not None,
+    lambda t: t.replace("return cut >= av ? 1 : 0;", "return 0;"))
+pin("#410 jrnapp_step_pair consults the guard on a plain REDO (g < 2 && dir > 0) and returns JRN_NOOP",
+    jrn,
+    lambda t: re.search(r"if \(g < 2 && dir > 0\) \{.{0,200}?rc = ja_redo_in_cut\(\);.{0,300}?if \(rc > 0\) return JRN_NOOP;", t, re.S) is not None,
+    lambda t: t.replace("rc = ja_redo_in_cut();", "rc = 0;"))
+pin("#410 a read fault in the guard's walk refuses the press (never a half swap)",
+    jrn,
+    lambda t: re.search(r"if \(rc < 0\) \{ ja_event\(\"redo: a read fault in the half-swap guard, the press is refused\", rc\); return rc; \}", t) is not None,
+    lambda t: t.replace("if (rc < 0) { ja_event(\"redo: a read fault in the half-swap guard, the press is refused\", rc); return rc; }", ""))
+
 if fails:
     for f in fails:
         print("FAIL:", f)
