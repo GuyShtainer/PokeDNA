@@ -42,6 +42,10 @@ def parse(src_text: str):
         if not line.startswith("| "):
             continue
         cells = split_row(line)
+        if cells and cells[0] not in ("ID", "---") and not set(cells[0]) <= {"-"} and 0 < len(cells) < 8:
+            # 2026-10-03: five safety rows (ZX-1..ZB2-1) were written with 7 cells (no Steps column) and
+            # silently never reached the page -- name every short row instead of dropping it quietly.
+            print(f"WARNING: row {cells[0]} has {len(cells)} cells (need 8) -- SKIPPED", file=sys.stderr)
         if len(cells) < 8 or cells[0] in ("ID", "---") or set(cells[0]) <= {"-"}:
             continue
         rid = cells[0]
