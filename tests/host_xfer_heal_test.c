@@ -224,6 +224,33 @@ static void resurrect(void) {
   printf("resurrect: %d both-present states, plain unlink resurrected %d, xh_unlink_ledger %d\n", both, plain_rez, fixed_rez);
 }
 
+/* za2 F5: the ORDER of xh_unlink_ledger (D2). Staged primary + stale .tmp; power is cut after c sectors of the
+ * delete; whatever state survives, the next boot's heal must not bring back a primary that was gone before it. */
+static void unlink_order(void) {
+  uint8_t v1[GBSC_FILE_MAX], v2[GBSC_FILE_MAX];
+  uint32_t n1 = build(v1, KEY_A, 1, 1), n2 = build(v2, KEY_A, 1, 2);
+  int staged = 0, cuts = 0, gone = 0;
+  for (long k = 0; k < 80; k++) {
+    fresh_card();
+    CHECK(sf_write_verified(PA, v1, n1) == SF_OK, "order seed");
+    rd_lie_after = k; (void)sf_write_verified(PA, v2, n2); rd_lie_after = -1; rd_lie_writes = 0;
+    cold_boot();
+    if (!(exists(PA) && exists(PA ".tmp"))) continue;
+    staged++;
+    for (long c = 0; c <= 11; c++) {
+      rd_snapshot(); rd_cut_sectors = c; (void)xh_unlink_ledger(PA); rd_cut_sectors = -1; rd_cut_fired = 0;
+      cold_boot();
+      bool pre = exists(PA);
+      (void)xh_heal_dir(XD, scr, sizeof scr, true, NULL);
+      cuts++; if (!pre) gone++;
+      CHECK(!(!pre && exists(PA)), "unlink order: primary resurrected after a cut at %ld sectors (k=%ld)", c, k);
+      rd_restore();
+    }
+  }
+  CHECK(staged > 0 && gone > 0, "unlink-order test vacuous (staged=%d gone=%d)", staged, gone);
+  printf("unlink_order: %d staged states, %d cut points, primary already gone in %d\n", staged, cuts, gone);
+}
+
 /* za2 F2: a power cut during the FIRST-ever write of a key leaves a torn/empty .tmp and no primary. The writers'
  * absent branch must accept that (fresh ledger) and the next verified write must succeed. */
 static void lockout(void) {
@@ -267,6 +294,7 @@ int main(void) {
   decisions();
   sweep();
   resurrect();
+  unlink_order();
   gap();
   printf("%s (%d failures)\n", fails ? "FAILED" : "PASSED", fails);
   return fails ? 1 : 0;
