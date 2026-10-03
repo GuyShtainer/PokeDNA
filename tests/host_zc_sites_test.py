@@ -61,6 +61,30 @@ check_prefix = len("999/999  FULL")
 if check_prefix > 29:
     fails.append("FULL no longer fits the 29-col status line")
 
+# ---- #403 (a) art-off wording, (b) cached item-desc pin
+lay = rd("pdna_layout.h")
+gas = rd("gb_art_source.c")
+pin("#403a Extract row says ROM art is off when a ROM is registered but art is off",
+    mainc,
+    lambda t: "art_off_reg ? PDNA_SET_ART_ARTOFF : PDNA_SET_ART_NEEDROM" in t,
+    lambda t: t.replace("art_off_reg ? PDNA_SET_ART_ARTOFF : PDNA_SET_ART_NEEDROM", "PDNA_SET_ART_NEEDROM"))
+pin("#403a the A-press refusal names art-off too",
+    mainc,
+    lambda t: 'off_reg ? "ROM art is off"' in t,
+    lambda t: t.replace('off_reg ? "ROM art is off" :', ''))
+pin("#403a new Extract value is in the textfit value list",
+    lay,
+    lambda t: "X(PDNA_SET_ART_ARTOFF)" in t,
+    lambda t: t.replace(" X(PDNA_SET_ART_ARTOFF)", ""))
+pin("#403b item-desc read re-opens on the cached pin before the full probe",
+    gas,
+    lambda t: re.search(r"s_idesc\.pin && rom_gbitem_open_pin\([^;]*\)\) \|\|\s*rom_gbitem_open\(", t) is not None,
+    lambda t: t.replace("(s_idesc.pin && rom_gbitem_open_pin(", "(0 && rom_gbitem_open_pin("))
+pin("#403b the cached pin is dropped at all three session/registration resets",
+    gas,
+    lambda t: t.count("s_idesc.state = 0; s_idesc.pin = 0;") == 3,
+    lambda t: t.replace("s_idesc.state = 0; s_idesc.pin = 0;", "s_idesc.state = 0;", 1))
+
 if fails:
     for f in fails:
         print("FAIL:", f)

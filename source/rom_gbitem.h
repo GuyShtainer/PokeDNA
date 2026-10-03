@@ -55,11 +55,18 @@ typedef struct RomGbItem {
   uint32_t bank_off;   /* bank * 0x4000: file offset of the bank; file = bank_off + (addr - 0x4000) */
   uint16_t taddr;      /* the table's address inside the bank window (0x4000..0x7FFF)               */
   uint8_t  ok;         /* 1 = a pin matched the table shape                                         */
+  uint8_t  pin;        /* index of the matched pin (#403b: lets a caller cache the probe)           */
 } RomGbItem;
 
 /* Try the pins; fill *gi. Returns 1 on a shape match, 0 (gi->ok == 0) otherwise. A read
  * failure is a plain 0. The reader and its ctx are kept in *gi for rom_gbitem_desc(). */
 int rom_gbitem_open(RomGbItem* gi, GbReadFn read, void* ctx, uint32_t size);   /* read/ctx must outlive gi */
+
+/* #403b: re-open on a pin index remembered from an earlier rom_gbitem_open() of the SAME file
+ * (gi->pin), skipping the 16-entry probe: only the pin's bank bound and the first / last
+ * entry links are re-checked (4 small reads instead of ~36). Returns 0 on any doubt -- the
+ * caller then falls back to rom_gbitem_open(). */
+int rom_gbitem_open_pin(RomGbItem* gi, GbReadFn read, void* ctx, uint32_t size, uint8_t pin);
 
 /* Decode item `id` (1..ROM_GBITEM_MAX_ID) into out (cap >= 2; ROM_GBITEM_DESC_MAX is always
  * enough): the description with the game's line breaks turned into single spaces, trailing

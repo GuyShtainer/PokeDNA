@@ -101,7 +101,7 @@ static const uint16_t* gb_art_batch_icon(GbArtBatchImpl* b, uint8_t gen, uint16_
  * five scattered ones. */
 /* BACKLOG #340b: the one-entry Gen-2 item description cache (gb_art_item_desc at the end of the file).
  * EWRAM_BSS, 66 B. state: 0 empty, 1 found (text valid), 2 known miss. */
-static EWRAM_BSS struct { uint8_t id, state; char text[ROM_GBITEM_DESC_MAX]; } s_idesc;
+static EWRAM_BSS struct { uint8_t id, state, pin; char text[ROM_GBITEM_DESC_MAX]; } s_idesc;   /* pin: #403b, 0 = unknown else matched-pin index + 1 */
 
 #ifndef PDNA_DELTA
 
@@ -421,7 +421,7 @@ gb_art_open_and_identify(uint8_t gen, const char* path, RomGbSpriteLoc* out_loc,
 
 GbArtRegStatus gb_art_register(uint8_t gen, const char* path, GbArtProgressFn progress,
                                void* progress_ctx, GbArtRegInfo* info) {
-  s_idesc.state = 0;                                  /* #340b: a new ROM means new descriptions */
+  s_idesc.state = 0; s_idesc.pin = 0;                                  /* #340b: a new ROM means new descriptions */
   if (info) memset(info, 0, sizeof *info);
   if (gen != PDNA_GEN1 && gen != PDNA_GEN2) return GB_ART_REG_BAD_ROM;
   if (!path || !path[0]) {
@@ -806,8 +806,12 @@ static bool __attribute__((noinline)) gb_art_item_desc_read(uint8_t id, char* ou
   uint32_t sz = (fsz > (FSIZE_t)0xFFFFFFFFu) ? 0xFFFFFFFFu : (uint32_t)fsz;
   gb_art_io_init(&w->io, &w->fil, sz, 0, 0, GB_ART_LOC_ICONS, false);
   RomGbItem gi;
-  bool ok = rom_gbitem_open(&gi, gb_art_read, &w->io, sz) &&
-            rom_gbitem_desc(&gi, id, out, (int)ROM_GBITEM_DESC_MAX) > 0;
+  /* #403b: the probe (16 chained link checks, ~40 SD reads) ran on EVERY highlighted description;
+   * the pin that matched is remembered per session (reset with the other s_idesc state) and re-checked cheaply. */
+  bool op = (s_idesc.pin && rom_gbitem_open_pin(&gi, gb_art_read, &w->io, sz, (uint8_t)(s_idesc.pin - 1u))) ||
+            rom_gbitem_open(&gi, gb_art_read, &w->io, sz);
+  s_idesc.pin = op ? (uint8_t)(gi.pin + 1u) : 0;
+  bool ok = op && rom_gbitem_desc(&gi, id, out, (int)ROM_GBITEM_DESC_MAX) > 0;
   f_close(&w->fil);
   return ok;
 }
@@ -852,7 +856,7 @@ static void gb_art_note_src(uint8_t gen, bool cold, bool had_loc, const RomGbSpr
 GbArtRegStatus gb_art_register(uint8_t gen, const char* path, GbArtProgressFn progress,
                                void* progress_ctx, GbArtRegInfo* info) {
   (void)path; (void)progress; (void)progress_ctx;
-  s_idesc.state = 0;                                  /* #340b */
+  s_idesc.state = 0; s_idesc.pin = 0;                                  /* #340b */
   if (info) memset(info, 0, sizeof *info);
   if (gen != PDNA_GEN1 && gen != PDNA_GEN2) return GB_ART_REG_BAD_ROM;
   /* No file browser / SD under PDNA_DELTA to register a path FROM -- the only
@@ -1256,7 +1260,7 @@ void gb_art_boot_register(GbArtProgressFn progress, void* progress_ctx) {
 void gb_art_session_reset(void) {
   s_fb_have[PDNA_GEN1] = s_fb_have[PDNA_GEN2] = false;
   s_fb_checked[PDNA_GEN1] = s_fb_checked[PDNA_GEN2] = false;
-  s_idesc.state = 0;                              /* #340b: the next save may sit beside another ROM */
+  s_idesc.state = 0; s_idesc.pin = 0;                              /* #340b: the next save may sit beside another ROM */
 }
 
 /* ---- BACKLOG #340b: Gen-2 item descriptions for the held-item / pack pickers ---------------

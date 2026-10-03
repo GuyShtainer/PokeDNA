@@ -9388,7 +9388,10 @@ static void pdna_settings(void) {
     bool art_omega_ok = (active_flashcart == EZ_FLASH_OMEGA);
     bool art_selectable = s_iconrom.ok && art_omega_ok;
     char r3[SET_ROW_BUF];
-    if (!s_iconrom.ok) siprintf(r3, PDNA_SET_ART_FMT, PDNA_SET_ART_NEEDROM);
+    /* #403a: while ROM art is merely switched OFF the ROM stays registered (s_iconrom is detached), so
+     * "Set Game ROM" would be a lie -- say the art is off instead. */
+    const bool art_off_reg = g_rom_art_off && app_any_rom_registered();
+    if (!s_iconrom.ok) siprintf(r3, PDNA_SET_ART_FMT, art_off_reg ? PDNA_SET_ART_ARTOFF : PDNA_SET_ART_NEEDROM);
     else if (!art_omega_ok) siprintf(r3, PDNA_SET_ART_FMT, PDNA_SET_ART_NOOMEGA);
     else if (art_session_icons_ready_memoized())
       siprintf(r3, PDNA_SET_ART_CACHED_FMT, (unsigned long)(ART_ICONS_TOTAL_BYTES / 1024u));
@@ -9464,9 +9467,10 @@ static void pdna_settings(void) {
 #else
         if (!art_selectable) {
           snd_deny();
+          const bool off_reg = !s_iconrom.ok && g_rom_art_off && app_any_rom_registered();   /* #403a */
           msg_wait("EXTRACT ART", UI_DIM,
-                   !s_iconrom.ok ? "Register your game ROM first" : "Needs EZ-Flash Omega DE",
-                   !s_iconrom.ok ? "(Settings > Game ROM)." : "(EverDrive stays read-only).");
+                   off_reg ? "ROM art is off" : !s_iconrom.ok ? "Register your game ROM first" : "Needs EZ-Flash Omega DE",
+                   off_reg ? "(Settings > Game ROM > ON)." : !s_iconrom.ok ? "(Settings > Game ROM)." : "(EverDrive stays read-only).");
         } else art_extract_screen();
 #endif
       }

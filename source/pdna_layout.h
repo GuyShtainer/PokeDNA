@@ -1758,7 +1758,8 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_SET_ART_FMT      "Extract art:  %s"
 #define PDNA_SET_ART_NEEDROM  "Set Game ROM"
 #define PDNA_SET_ART_NOOMEGA  "Omega only"
-#define PDNA_SET_ART_VALUES(X) X(PDNA_SET_ART_NEEDROM) X(PDNA_SET_ART_NOOMEGA)
+#define PDNA_SET_ART_ARTOFF   "ROM art is off"   /* #403a: a ROM IS registered, its art is switched off */
+#define PDNA_SET_ART_VALUES(X) X(PDNA_SET_ART_NEEDROM) X(PDNA_SET_ART_NOOMEGA) X(PDNA_SET_ART_ARTOFF)
 #define PDNA_SET_ART_GO       "Extract art from ROM  >"
 #define PDNA_SET_ART_CACHED_FMT "Extract art:  %lu KB cached"
 /* worst-case KB the host test tries against PDNA_SET_ART_CACHED_FMT's width budget;
