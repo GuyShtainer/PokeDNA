@@ -59,6 +59,15 @@ pin("#410 a read fault in the guard's walk refuses the press (never a half swap)
     jrn,
     lambda t: re.search(r"if \(rc < 0\) \{ ja_event\(\"redo: a read fault in the half-swap guard, the press is refused\", rc\); return rc; \}", t) is not None,
     lambda t: t.replace("if (rc < 0) { ja_event(\"redo: a read fault in the half-swap guard, the press is refused\", rc); return rc; }", ""))
+# ---- #392(b) step (1c) asks the pure guard BEFORE reading the sidecar / burning a serial, and drops the twin's entry
+main = rd("pdna_main.c")
+G = r"if \(h->action != XRC_ACT_RESTORE\) continue;\s*if \(xrc_restore_is_dup\(rb->xrc, remove_entry, i\)\) \{[^}]*remove_entry\[i\] = true;[^}]*continue;\s*\}\s*gb_recon_path"
+pin("#392b step (1c) skips a RESTORE whose original was already restored this pass (guard before the read), entry dropped",
+    main, lambda t: re.search(G, t) is not None,
+    lambda t: t.replace("if (xrc_restore_is_dup(rb->xrc, remove_entry, i)) {", "if (0) {"))
+pin("#392b the guard skip drops the twin's ledger entry (remove_entry) rather than leaving a row that re-offers RESTORE",
+    main, lambda t: re.search(G, t) is not None,
+    lambda t: t.replace("      remove_entry[i] = true;\n      log_line(\"xfer: reconcile: row %d RESTORE skipped", "      log_line(\"xfer: reconcile: row %d RESTORE skipped"))
 
 if fails:
     for f in fails:

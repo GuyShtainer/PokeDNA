@@ -228,4 +228,11 @@ typedef struct {
   uint8_t orig_serial[4];              /* #385: original80[73..76]                  */
 } XrcHit;
 
+/* BACKLOG #392(b): the one-pass clone guard for step (1c). Two LOST rows can carry the SAME original (a re-key
+ * left a stale twin); RESTOREing both in one pass would write two Bank cells. True when row `i` (a RESTORE) has the
+ * same original80[0..7] as an EARLIER RESTORE row j < i whose done[j] is set (restored, or itself skipped as this
+ * very duplicate) -- the caller then drops the entry instead of writing a second cell. Rows whose first RESTORE
+ * did not land are NOT done, so a failed first restore does not swallow the second. */
+bool xrc_restore_is_dup(const XrcHit* hits, const bool* done, int i);
+
 #endif /* XFER_RECONCILE_H */
