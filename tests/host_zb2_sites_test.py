@@ -43,7 +43,9 @@ def function_body(text: str, name: str) -> str:
 NOTE = re.compile(r"hb_pause\(\);\s*perf_span_pause\(\);\s*app_journal_cutoff_note\(\);\s*perf_span_resume\(\);\s*hb_resume\(\);")
 
 
-def fact(step_end: str, g3_load: str, gb_open: str) -> tuple[bool, str]:
+def fact(step_end: str, g3_load: str, gb_open: str, note: str) -> tuple[bool, str]:
+    if not re.search(r"if \(!jrnapp_cutoff\(\)\) return;\s*jrnapp_decline\(\);", note):
+        return False, "app_journal_cutoff_note must decline ONLY when jrnapp_cutoff() says the cut is all there is (#406)"
     if not re.search(r"img_scope_close\([^;]*\);\s*jrnapp_pair_flush\(\);", step_end):
         return False, "app_step_end must call jrnapp_pair_flush() after img_scope_close (#406(b))"
     for name, body in (("app_journal_load", g3_load), ("app_gb_journal_open", gb_open)):
@@ -57,6 +59,7 @@ MUTS = (
     ("Gen-3 note dropped", "g3_load", "app_journal_cutoff_note();", ""),
     ("GB note dropped", "gb_open", "app_journal_cutoff_note();", ""),
     ("Gen-3 note unpaused", "g3_load", "hb_pause(); perf_span_pause(); app_journal_cutoff_note();", "perf_span_pause(); app_journal_cutoff_note();"),
+    ("note guard dropped", "note", "if (!jrnapp_cutoff()) return;", ""),
     ("GB note unpaused", "gb_open", "hb_pause(); perf_span_pause(); app_journal_cutoff_note();", "perf_span_pause(); app_journal_cutoff_note();"),
 )
 
@@ -65,7 +68,8 @@ def main() -> int:
     main_c = (SRC / "pdna_main.c").read_text()
     parts = {"step_end": function_body(main_c, "app_step_end"),
              "g3_load": function_body(main_c, "app_journal_load"),
-             "gb_open": function_body(main_c, "app_gb_journal_open")}
+             "gb_open": function_body(main_c, "app_gb_journal_open"),
+             "note": function_body(main_c, "app_journal_cutoff_note")}
     for k, v in parts.items():
         check(bool(v), f"function not found: {k}")
     ok, why = fact(**parts)

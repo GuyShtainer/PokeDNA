@@ -1987,6 +1987,38 @@ static void t_rev_offer_fault(void) {
   CHECK(lost == 0u, "REVIEW: an offer-path read fault let the cut-off note discard legit steps at %u point(s)", lost);
 }
 
+/* RE-VERIFY zb2: an offer-path read fault with a CROSSED record above plain steps must never turn into the crossed "A forgets" dialog (avail 0 while the
+ * healthy offer has avail > 0): that dialog's A discards the re-appliable steps too. */
+static void t_rv_offer_fault_crossed(void) {
+  uint32_t av = 99, tot, base, bav;
+  char stop[25];
+  static uint8_t pre[G3_SAVE_FILE_SIZE];
+  long k; unsigned bad = 0, zero = 0, healthy = 0;
+  CHECK(app_world_reset(), "rv: world");
+  CHECK(stageA(300) && stageA(600), "rv: two plain steps");
+  img_rec_cross(&RA);
+  CHECK(stageA(900), "rv: a crossed step");
+  CHECK(jrnapp_flush() == JRN_OK, "rv: flush");
+  memcpy(sv, orig, sizeof sv);
+  CHECK(app_reopen(), "rv: reopen");
+  base = jrnapp_offer(&bav, stop);
+  CHECK(base == 3u && bav == 2u, "rv: healthy offer total %u avail %u", (unsigned)base, (unsigned)bav);
+  memcpy(pre, sv, sizeof sv);
+  rd_snapshot();
+  for (k = 0; k < 400; k++) {
+    rd_restore(); memcpy(sv, pre, sizeof sv); card_remount();
+    if (!app_reopen()) continue;
+    rd_fail_read_at = k;
+    tot = jrnapp_offer(&av, stop);
+    rd_fail_read_at = -1;
+    if (tot == 0u) zero++;
+    else if (tot == base && av == bav) healthy++;
+    else { bad++; if (bad <= 3) printf("  RV BAD k %ld: offer %u avail %u under a fault (healthy %u/%u)\n", k, (unsigned)tot, (unsigned)av, (unsigned)base, (unsigned)bav); }
+  }
+  printf("  rv offer-fault crossed sweep: zero %u healthy %u BAD %u\n", zero, healthy, bad);
+  CHECK(bad == 0u, "RE-VERIFY: an offer-path read fault turned re-appliable steps into the crossed dialog at %u point(s)", bad);
+}
+
 int main(int argc, char** argv) {
   int a;
   static uint8_t file[G3_SAVE_FILE_SIZE];
@@ -2039,6 +2071,7 @@ int main(int argc, char** argv) {
     CHECK(app_world(file), "app world"); t_rev_pair_flush_chain_half();
     CHECK(app_world(file), "app world"); t_rev_cut_fault();
     CHECK(app_world(file), "app world"); t_rev_offer_fault();
+    CHECK(app_world(file), "app world"); t_rv_offer_fault_crossed();
     CHECK(app_world(file), "app world"); t_swap_pair_old_journal();
     CHECK(app_world(file), "app world"); t_swap_pair_shape_and_rollback_failure();
     CHECK(app_world(file), "app world"); t_chain_through_app();
