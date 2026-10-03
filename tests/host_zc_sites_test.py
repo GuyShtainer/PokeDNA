@@ -39,6 +39,17 @@ pin("#400 nickname==species drops the parenthesis",
     lambda t: "if (same || ui_ptext_w(out) > PDNA_DCY_NAME_W)" in t,
     lambda t: t.replace("if (same || ui_ptext_w(out)", "if (ui_ptext_w(out)"))
 
+# ---- #402 Settings > Game ROM reaches rom_row_menu for a GB-only owner; app_any_rom_registered keeps its Gen-3 meaning
+mainc = rd("pdna_main.c")
+pin("#402 Settings branch is GB-aware",
+    mainc,
+    lambda t: re.search(r"if \(app_any_rom_registered\(\) \|\| app_gb_session_gen\(\) != 0 \|\|\s*app_gb_rom_path\(PDNA_GEN1\)\[0\] \|\| app_gb_rom_path\(PDNA_GEN2\)\[0\]\) rom_row_menu\(\); else app_register_rom\(\);", t) is not None,
+    lambda t: t.replace("app_any_rom_registered() || app_gb_session_gen() != 0 ||", "app_any_rom_registered() ||"))
+pin("#402 app_any_rom_registered stays Gen-3 only (3 slots)",
+    mainc,
+    lambda t: re.search(r"bool app_any_rom_registered\(void\) \{\s*for \(int i = 0; i < 3; i\+\+\) if \(g_rom_path\[i\]\[0\]\) return true;\s*return false;", t) is not None,
+    lambda t: t.replace("for (int i = 0; i < 3; i++) if (g_rom_path[i][0]) return true;", "for (int i = 0; i < 5; i++) if (g_rom_path[i][0]) return true;"))
+
 if fails:
     for f in fails:
         print("FAIL:", f)

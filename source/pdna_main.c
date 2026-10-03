@@ -9451,7 +9451,10 @@ static void pdna_settings(void) {
          * row in the emulator build is the E4 Sprites grid, so go straight there. */
         sprite_settings();
 #else
-        if (app_any_rom_registered()) rom_row_menu(); else app_register_rom();
+        /* #402: a Game-Boy-only owner has no Gen-3 ROM (app_any_rom_registered() is Gen-3 by
+         * design -- Yard visitors rely on that), but must still reach the Gen 1 / Gen 2 rows. */
+        if (app_any_rom_registered() || app_gb_session_gen() != 0 ||
+            app_gb_rom_path(PDNA_GEN1)[0] || app_gb_rom_path(PDNA_GEN2)[0]) rom_row_menu(); else app_register_rom();
 #endif
       }
       else if (sel == S_ART) {
