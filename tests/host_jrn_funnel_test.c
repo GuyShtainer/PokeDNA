@@ -1982,6 +1982,20 @@ static void t_redo_lone_half(void) {
       if (memcmp(sv, snapB, sizeof sv) && memcmp(sv, snapS, sizeof sv)) lone++;
     }
     CHECK(lone == 0, "#410 re-verify-2: no single read fault lets a History jump land on the lone Swap half (%u point(s) did)", lone); }
+  { long kk; unsigned lone = 0;                                 /* re-verify-zd-3: the redo KEY's half-swap guard (ja_redo_in_cut) fails CLOSED under a single read fault */
+    CHECK(app_world_reset() && stageA(300), "#410 key sweep: a plain step");
+    memcpy(snapB, sv, sizeof sv);
+    g_cut = 1; CHECK(stage_swap(10, 11, 12), "#410 key sweep: Setup + Swap flushed + Box move pending"); g_cut = 0;
+    cut_and_reopen(snapB);
+    CHECK(jrnapp_step_pair(1, nm) == JRN_OK && memcmp(sv, snapS, sizeof sv) == 0, "#410 key sweep: press 1 redoes the plain Setup");
+    rd_snapshot();
+    for (kk = 0; kk < 120; kk++) {
+      rd_restore(); memcpy(sv, snapS, sizeof sv); card_remount();
+      if (!app_reopen()) continue;
+      rd_fail_read_at = kk; (void)jrnapp_step_pair(1, nm); rd_fail_read_at = -1;
+      if (memcmp(sv, snapS, sizeof sv)) lone++;
+    }
+    CHECK(lone == 0, "#410 re-verify-3: no single read fault lets the redo key apply the lone Swap half (%u point(s) did)", lone); }
   /* 3: control - the whole swap on the card: the chord redoes the pair (unchanged behaviour) */
   CHECK(app_world_reset() && stage_swap(10, 11, 12), "#410 whole: both drops flushed");
   cut_and_reopen(snapS);
