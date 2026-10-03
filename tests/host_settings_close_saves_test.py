@@ -21,7 +21,7 @@ src = (ROOT / "source" / "pdna_main.c").read_text(encoding="utf-8")
 fails = []
 
 i = src.index("enum { S_BACKUP, S_ANIM, S_YARD, S_ROM, S_ART, S_RUMBLE, S_HIST, S_HCLEAR, S_CLEAR, S_CLOSE, S_N };")
-body = src[i:i + 9000]
+body = src[i:i + 12000]
 end = body.index("/* S_CLOSE")
 loop = body[:end + 400]
 
