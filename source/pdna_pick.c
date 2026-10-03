@@ -1744,9 +1744,9 @@ int pick_rows(const char* title, int n, int current,
       if (m && sel >= top && sel < top + vis)
         row(idx[sel], 14 + (sel - top) * rowh, true, ctx);
       char foot[48];
-      siprintf(foot, "A pick  L/R +-%d  %s%sB", page,
-               searchable ? "SEL find  " : "", sortable ? "ST sort  " : "");
-      ui_text(4, 152, UI_DIM, foot);
+      siprintf(foot, PDNA_PICKROWS_FOOT_FMT, page,
+               searchable ? PDNA_PICKROWS_FOOT_FIND : "", sortable ? PDNA_PICKROWS_FOOT_SORT : "");
+      (void)ui_ptext_fit(PDNA_PICKROWS_FOOT_X, 152, PDNA_PICKROWS_FOOT_W, UI_DIM, foot);   /* #409: sys8 clipped the last two words */
     } else if (sel != prev_sel) {
       if (prev_sel >= top && prev_sel < top + vis)
         row(idx[prev_sel], 14 + (prev_sel - top) * rowh, false, ctx);

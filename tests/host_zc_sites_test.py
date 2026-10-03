@@ -101,6 +101,12 @@ pin("#405 pin is red on the old overrunning position",
     lambda t: 'ui_text(38, 42, UI_DIM' not in t,
     lambda t: t.replace('ui_text(st == 0 ? 42 : 22, 42, UI_DIM', 'ui_text(38, 42, UI_DIM'))
 
+# ---- #409 pick_rows footer is drawn through ui_ptext_fit from the shared layout macros
+pin("#409 pick_rows footer uses the proportional fitted draw",
+    pick,
+    lambda t: "ui_ptext_fit(PDNA_PICKROWS_FOOT_X, 152, PDNA_PICKROWS_FOOT_W, UI_DIM, foot)" in t,
+    lambda t: t.replace("ui_ptext_fit(PDNA_PICKROWS_FOOT_X, 152, PDNA_PICKROWS_FOOT_W, UI_DIM, foot)", "ui_text(4, 152, UI_DIM, foot)"))
+
 if fails:
     for f in fails:
         print("FAIL:", f)

@@ -358,6 +358,13 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_FILT_Y0        14
 #define PDNA_FILT_ROW_H      9
 #define PDNA_FILT_VIS       15                /* rows in the window                   */
+/* #409: pick_rows' footer (pdna_pick.c). 38 glyphs at 8 px (sys8) overran the 240-px screen with search + sort
+ * ("...SEL find  ST" was the last thing visible); it is drawn proportional, ui_ptext_fit into PDNA_PICKROWS_FOOT_W. */
+#define PDNA_PICKROWS_FOOT_FMT   "A pick  L/R +-%d  %s%sB"
+#define PDNA_PICKROWS_FOOT_FIND  "SEL find  "
+#define PDNA_PICKROWS_FOOT_SORT  "ST sort  "
+#define PDNA_PICKROWS_FOOT_X     4
+#define PDNA_PICKROWS_FOOT_W     232
 #define PDNA_FILT_BAR_X      2
 #define PDNA_FILT_BAR_W    236
 #define PDNA_FILT_BAR_DY   (-1)               /* bar top, relative to the text row     */
