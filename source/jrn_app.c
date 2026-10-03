@@ -320,7 +320,7 @@ static int ja_cut_tail(uint32_t av, uint32_t total, uint32_t* cut) {
 uint32_t jrnapp_cutoff(void) {
   uint32_t av = 0, total = 0, cut = 0;
   if (!s_r || !s_r->j || s_state != JA_OK) return 0;
-  if (!jrn_offer(&s_j) && jrn_tip(&s_j) == jrn_cursor(&s_j)) return 0;
+  if (jrn_tip(&s_j) == jrn_cursor(&s_j) && !jrn_offer(&s_j)) return 0;       /* the same test as jrnapp_offer, spelled differently on purpose: host_g3_stage_sites_test mutates the offer's line */
   if (jrn_redo_info(&s_j, &av, &total, 0) < 0 || ja_cut_tail(av, total, &cut) != 0) return 0;
   return cut;
 }
