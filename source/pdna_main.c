@@ -10629,6 +10629,7 @@ typedef struct {
    * NATIVE_HOME entry the reconcile walk finds, one XrcHit each. */
   XrcHit     xrc[GB_RECON_MAX_HITS];
   int        nxrc;
+  bool       bank_unread;   /* BACKLOG #386: phase 2 skipped a Bank box it could not read -- "not found" proves nothing */
 } GbReconBuf;
 _Static_assert(sizeof(GbReconBuf) <= sizeof(g_entries),
               "gb_reconcile buffer no longer fits the borrowed g_entries cache");
@@ -11004,6 +11005,7 @@ static void __attribute__((noinline)) xfer_reconcile_walk(GbReconBuf* rb, int ca
   (void)bank_open;
   rb->nfiles = 0;
   rb->nxrc = 0;
+  rb->bank_unread = false;   /* #386: phase 2 raises it */
   int examined = 0;
   uint32_t dc_base, dc_stride; dc_layout(&dc_base, &dc_stride);
 
@@ -11090,7 +11092,7 @@ static void __attribute__((noinline)) xfer_reconcile_bank_phase2(GbReconBuf* rb)
     for (int i = 0; i < rb->nxrc; i++) if (rb->xrc[i].bank_matches < 2) { touched = true; break; }
     if (!touched) break;   /* every candidate already ambiguous or already resolved  */
     const uint8_t* recs = pdna_bank_peek_box(box);
-    if (!recs) continue;
+    if (!recs) { rb->bank_unread = true; log_line("xfer: reconcile: box %d unread, unmatched rows become unknown", box); continue; }   /* #386 */
     log_line("xfer: reconcile: box %d paged", box);
     for (int i = 0; i < rb->nxrc; i++) {
       XrcHit* h = &rb->xrc[i];
@@ -11147,6 +11149,7 @@ static void __attribute__((noinline)) xfer_reconcile_classify_all(GbReconBuf* rb
     in.bank_keep = h->bank_keep;
     in.bank_g3_matches = h->bank_g3_matches;
     in.bank_ident_matches = h->bank_ident_matches;
+    in.bank_unread = rb->bank_unread;   /* #386 */
     in.g3_on_card = !imgf_exit_prompt(&g_img);   /* #377: nothing staged -> the RAM save IS the verified one */
     XrcResult out;
     xrc_classify(&in, &out);
@@ -11276,6 +11279,7 @@ static const char* xrc_detail_line(uint8_t row_kind) {
     case XRC_DEFERRED:       return PDNA_XRC_D_DEFERRED;
     case XRC_ABROAD:         return PDNA_XRC_D_ABROAD;
     case XRC_ABROAD_BANK:    return PDNA_XRC_D_ABROAD_BANK;
+    case XRC_UNREAD:         return PDNA_XRC_D_UNREAD;
     case XRC_LOST:           return PDNA_XRC_D_LOST;
     case XRC_ABROAD_GB:      return PDNA_XRC_D_ABROAD_GB;
     case XRC_DUP_G3:         return PDNA_XRC_D_DUP_G3;

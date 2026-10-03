@@ -1277,6 +1277,7 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XRC_D_DEFERRED        "Queued to leave the Bank."
 #define PDNA_XRC_D_ABROAD          "In the Gen-3 PC, restorable."
 #define PDNA_XRC_D_ABROAD_BANK     "In the Bank, restorable."   /* #387: the copy is parked in the Bank */
+#define PDNA_XRC_D_UNREAD          "Bank unread; re-open later."  /* #386: no verdict, no action */
 #define PDNA_XRC_D_ABROAD_GB       "In a Game Boy save."
 #define PDNA_XRC_D_DUP_G3          "Restored; Gen-3 copy is a dup."
 #define PDNA_XRC_D_STALE           "Restored; record is stale."

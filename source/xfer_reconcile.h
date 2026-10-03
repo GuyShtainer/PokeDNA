@@ -42,8 +42,11 @@ typedef enum {
   XRC_G3HOME,              /* Gen-3 original; the shipped load-time screen owns it     */
   XRC_IN_BANK,             /* #385: the Bank already holds this mon (a restored copy under a NEW serial, the
                             * ledger rewrite never landed) -- DELETE RECORD only, never RESTORE (a clone) */
-  XRC_ABROAD_BANK          /* #387: the Gen-3 copy is parked in the Bank (#270 pass-through), not in the PC --
+  XRC_ABROAD_BANK,         /* #387: the Gen-3 copy is parked in the Bank (#270 pass-through), not in the PC --
                             * same normal end state and no actions as XRC_ABROAD, but its detail line says WHERE */
+  XRC_UNREAD               /* #386: a Bank box could not be read during the scan, so "nothing found" proves nothing --
+                            * a row that would be LOST says "unknown -- re-open later" and offers NO action (RESTORE
+                            * would clone a mon that is merely sitting in the unread box) */
 } XrcRowKind;
 
 /* Allowed-action mask, decision 8's letters. */
@@ -75,6 +78,7 @@ typedef struct {
   bool    g3_on_card;           /* #377: nothing is staged in the open save (it equals the last verified
                                  * write), so a Gen-3 key match is ON the card -- the only case in which a
                                  * PENDING row may be marked finished                                    */
+  bool    bank_unread;          /* #386: the Bank scan skipped a box it could not read (read error / failed heal) */
   int     bank_ident_matches;   /* #385: native Bank cells that are a RE-SERIAL of the entry's
                                  * original80 (xrc_bank_reserial_match): every hashed byte equal
                                  * except bank_serial. 0/1/2(+); 0 when never scanned            */

@@ -152,6 +152,21 @@ def f391(helper: str, save_now: str, flush_exit: str, layout: str, tf: str) -> t
     return True, "ok"
 
 
+# ------------------------------------------------------------------------------------------------ #386
+def f386(cls: str, phase2: str, walk: str, classify_all: str, detail: str) -> tuple[bool, str]:
+    if len(re.findall(r"in->bank_unread", cls)) < 2:
+        return False, "xrc_classify: both LOST branches (PENDING + CLAIMED) must consult bank_unread (#386)"
+    if not re.search(r"if \(!recs\) \{ rb->bank_unread = true;", phase2):
+        return False, "phase 2: an unreadable Bank box does not raise rb->bank_unread (#386)"
+    if "rb->bank_unread = false;" not in walk:
+        return False, "xfer_reconcile_walk: bank_unread is never reset per scan (#386)"
+    if "in.bank_unread = rb->bank_unread;" not in classify_all:
+        return False, "classify_all: the flag is not handed to xrc_classify (#386)"
+    if not re.search(r"case XRC_UNREAD:\s*return PDNA_XRC_D_UNREAD;", detail):
+        return False, "xrc_detail_line: XRC_UNREAD has no detail line (#386)"
+    return True, "ok"
+
+
 def run() -> None:
     main_t = (SRC / "pdna_main.c").read_text()
     g12_t = (SRC / "pdna_gen12.c").read_text()
@@ -255,6 +270,21 @@ def run() -> None:
         ("exit flush bypasses the helper", "flush_exit", "app_flushfail_msg(kept);", "(void)kept;"),
         ("PLACED wording reverted", "layout", '"Kept until you save. Load"', '"Load your save to appear"'),
         ("pin dropped", "tf", "PF(PDNA_GBMAP_PLACED_L1,", "PF(X,"),
+    ))
+    # -------- #386
+    parts = dict(cls=cls, phase2=function_body(main_t, "xfer_reconcile_bank_phase2"), walk=function_body(main_t, "xfer_reconcile_walk"),
+                 classify_all=function_body(main_t, "xfer_reconcile_classify_all"), detail=detail)
+    for k_, v in parts.items():
+        check(bool(v), f"#386: {k_} not located")
+    ok, d = f386(**parts)
+    check(ok, d)
+    run_muts("386", f386, parts, (
+        ("PENDING branch ignores the flag", "cls", "else if (in->bank_unread)", "else if (false)"),
+        ("CLAIMED branch ignores the flag", "cls", "!g3_seen && in->bank_unread)", "!g3_seen && false)"),
+        ("phase 2 does not raise it", "phase2", "rb->bank_unread = true;", ""),
+        ("walk never resets it", "walk", "rb->bank_unread = false;", ""),
+        ("classify_all drops it", "classify_all", "in.bank_unread = rb->bank_unread;", ""),
+        ("detail line unwired", "detail", "case XRC_UNREAD:", "case XRC_G3HOME_DUP:"),
     ))
 
 

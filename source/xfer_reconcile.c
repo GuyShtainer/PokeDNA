@@ -59,6 +59,7 @@ void xrc_classify(const XrcInput* in, XrcResult* out) {
       else if (bank_seen)             { out->kind = XRC_PENDING_ORPHAN; out->actions = XRC_ACT_DELETE; }
       else if (g3_seen)               { out->kind = XRC_PENDING_NOBANK; if (in->g3_on_card) out->actions = XRC_ACT_PROMOTE; }
       else if (in->bank_ident_matches >= 1) { out->kind = XRC_IN_BANK; out->actions = XRC_ACT_DELETE; }   /* #385 */
+      else if (in->bank_unread)       { out->kind = XRC_UNREAD; }   /* #386: could be in a box we could not read */
       else                             { out->kind = XRC_PENDING_LOST; out->actions = XRC_ACT_RESTORE | XRC_ACT_DELETE; }
       return;
 
@@ -71,6 +72,7 @@ void xrc_classify(const XrcInput* in, XrcResult* out) {
       /* #385: the mon is already in the Bank under a NEW serial (an earlier RESTORE whose ledger rewrite never
        * landed): RESTORE would clone it -- only the record can go. */
       if (!bank_seen && !g3_seen && in->bank_ident_matches >= 1) { out->kind = XRC_IN_BANK; out->actions = XRC_ACT_DELETE; return; }
+      if (!bank_seen && !g3_seen && in->bank_unread) { out->kind = XRC_UNREAD; return; }   /* #386 */
       if (!bank_seen && !g3_seen)             { out->kind = XRC_LOST; out->actions = XRC_ACT_RESTORE | XRC_ACT_DELETE; return; }
       /* bank_seen && !g3_seen, not slot_pending: no decision-2 row covers a stray
        * Bank cell with no linked Gen-3 copy at all -- REMOVE requires a g3_seen
@@ -289,6 +291,7 @@ static const char* xrc_status_word(XrcRowKind kind) {
     case XRC_DEFERRED:        return "moving out";
     case XRC_ABROAD:          return "restorable";
     case XRC_ABROAD_BANK:     return "restorable";
+    case XRC_UNREAD:          return "unknown";
     case XRC_LOST:             return "record only";
     case XRC_ABROAD_GB:       return "in a GB save";
     case XRC_DUP_G3:          return "duplicate";
