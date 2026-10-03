@@ -1310,6 +1310,8 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XFER_FLUSHFAIL_TITLE "BANK NOT FULLY UPDATED"
 #define PDNA_XFER_FLUSHFAIL_L1    "%d Pokemon are still in the"
 #define PDNA_XFER_FLUSHFAIL_L2    "Bank. They are not lost."
+#define PDNA_XFER_FLUSHFAIL_L1_ONE "%d Pokemon is still in the"      /* #391(a): the singular */
+#define PDNA_XFER_FLUSHFAIL_L2_ONE "Bank. It is not lost."
 
 /* BACKLOG #150 S150-4 decision 11: the UP drop's own strings. PREP = the backup gate
  * refused (nothing moved); KEPT = the Bank write landed but release_up refused (a
@@ -2304,8 +2306,8 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * carried here through source/gb1_warp.h since Gen 1 has no
  * continueGameWarp-style indirection to write instead). */
 #define PDNA_GBMAP_CONFIRM_TITLE   "PLACE CHARACTER HERE?"
-#define PDNA_GBMAP_PLACED_L1       "Load your save to appear"
-#define PDNA_GBMAP_PLACED_L2       "there."
+#define PDNA_GBMAP_PLACED_L1       "Kept until you save. Load"        /* #391(b): staged until the exit save, as the Gen-3 map says */
+#define PDNA_GBMAP_PLACED_L2       "the save to appear there."
 #define PDNA_GBMAP_CANNOT_L1       "That spot is outside"
 #define PDNA_GBMAP_CANNOT_L2       "the map."
 #define PDNA_GBMAP_UNDO_TITLE      "UNDO THE LAST PLACEMENT?"

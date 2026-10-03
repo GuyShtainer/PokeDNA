@@ -136,6 +136,22 @@ def f388(render: str, left: str, hint: str, leftfn: str, g3call: str) -> tuple[b
     return True, "ok"
 
 
+# ------------------------------------------------------------------------------------------------ #391
+def f391(helper: str, save_now: str, flush_exit: str, layout: str, tf: str) -> tuple[bool, str]:
+    if not re.search(r"kept == 1 \? PDNA_XFER_FLUSHFAIL_L1_ONE : PDNA_XFER_FLUSHFAIL_L1", helper) or \
+       not re.search(r"kept == 1 \? PDNA_XFER_FLUSHFAIL_L2_ONE : PDNA_XFER_FLUSHFAIL_L2", helper):
+        return False, "app_flushfail_msg: not singular/plural on both lines (#391a)"
+    if "app_flushfail_msg(kept);" not in save_now or "app_flushfail_msg(kept);" not in flush_exit:
+        return False, "a BANK NOT FULLY UPDATED call site bypasses app_flushfail_msg (#391a)"
+    if "PDNA_XFER_FLUSHFAIL_L1, kept" in save_now or "PDNA_XFER_FLUSHFAIL_L1, kept" in flush_exit:
+        return False, "a call site still formats the plural-only line (#391a)"
+    if '"Kept until you save. Load"' not in layout:
+        return False, "PDNA_GBMAP_PLACED_L1 no longer says the placement is kept until the save (#391b)"
+    if "PF(PDNA_GBMAP_PLACED_L1," not in tf or "PF(PDNA_XFER_FLUSHFAIL_L2_ONE," not in tf:
+        return False, "textfit: the #391 strings are not pinned"
+    return True, "ok"
+
+
 def run() -> None:
     main_t = (SRC / "pdna_main.c").read_text()
     g12_t = (SRC / "pdna_gen12.c").read_text()
@@ -224,6 +240,21 @@ def run() -> None:
         ("override not applied", "left", "if (t1o >= 0) {", "if (false) {"),
         ("hint drops the override", "hint", "draw_left_ex(p, back, t1o, t2o);", "draw_left_ex(p, back, -1, -1);"),
         ("a Gen-3 caller passes an override", "leftfn", "g_back, -1, -1", "g_back, 0, 0"),
+    ))
+    # -------- #391
+    parts = dict(helper=function_body(main_t, "app_flushfail_msg"), save_now=function_body(main_t, "app_xfer_save_now"),
+                 flush_exit=function_body(main_t, "flush_on_exit"), layout=lay, tf=tf)
+    for k_, v in parts.items():
+        check(bool(v), f"#391: {k_} not located")
+    ok, d = f391(**parts)
+    check(ok, d)
+    run_muts("391", f391, parts, (
+        ("singular dropped (line 1)", "helper", "kept == 1 ? PDNA_XFER_FLUSHFAIL_L1_ONE : PDNA_XFER_FLUSHFAIL_L1", "PDNA_XFER_FLUSHFAIL_L1"),
+        ("singular dropped (line 2)", "helper", "kept == 1 ? PDNA_XFER_FLUSHFAIL_L2_ONE : PDNA_XFER_FLUSHFAIL_L2", "PDNA_XFER_FLUSHFAIL_L2"),
+        ("save-now bypasses the helper", "save_now", "app_flushfail_msg(kept);", "siprintf(l1, PDNA_XFER_FLUSHFAIL_L1, kept);"),
+        ("exit flush bypasses the helper", "flush_exit", "app_flushfail_msg(kept);", "(void)kept;"),
+        ("PLACED wording reverted", "layout", '"Kept until you save. Load"', '"Load your save to appear"'),
+        ("pin dropped", "tf", "PF(PDNA_GBMAP_PLACED_L1,", "PF(X,"),
     ))
 
 

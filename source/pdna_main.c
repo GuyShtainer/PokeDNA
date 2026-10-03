@@ -2264,6 +2264,14 @@ bool app_xfer_pending_is_g3home(void)   { return g_xd_g3home && app_xfer_pending
 
 void app_xfer_pending_drop(void) { g_xd_key = 0; g_xd_idx = -1; g_xd_g3home = false; }
 
+/* BACKLOG #391(a): "BANK NOT FULLY UPDATED" -- singular/plural ("1 Pokemon is" / "N Pokemon are"). One helper for both
+ * exit/save-now call sites so the wording cannot drift between them. */
+static void __attribute__((noinline)) app_flushfail_msg(int kept) {
+  char l1[48];
+  siprintf(l1, kept == 1 ? PDNA_XFER_FLUSHFAIL_L1_ONE : PDNA_XFER_FLUSHFAIL_L1, kept);
+  msg_wait(PDNA_XFER_FLUSHFAIL_TITLE, UI_WARN, l1, kept == 1 ? PDNA_XFER_FLUSHFAIL_L2_ONE : PDNA_XFER_FLUSHFAIL_L2);
+}
+
 /* Re-resolve the entry's path, re-read it, do a cheap identity re-check (still the
  * right kind/direction/state at that index -- a mismatch means the file changed
  * under us; log and give up rather than promote the wrong entry), flip it to
@@ -2345,8 +2353,7 @@ bool app_xfer_save_now(void) {
     bool promoted = !had_pending || app_xfer_promote();  /* decision 9: the PC is now verified on disk */
     int kept = pdna_bank_flush_deletions();
     if (kept) {
-      char l1[48]; siprintf(l1, PDNA_XFER_FLUSHFAIL_L1, kept);
-      msg_wait(PDNA_XFER_FLUSHFAIL_TITLE, UI_WARN, l1, PDNA_XFER_FLUSHFAIL_L2);
+      app_flushfail_msg(kept);
     }
     /* BACKLOG #375: log the REAL promotion outcome. */
     log_line(promoted ? (had_pending ? "xfer: save-now: committed, entry promoted" : "xfer: save-now: committed, nothing pending")
@@ -10308,8 +10315,7 @@ static void flush_on_exit(void) {
       log_line("xfer: exit: promotion FAILED (entry stays pending; TRANSFERS can mark it finished)");
     int kept = pdna_bank_flush_deletions();
     if (kept) {
-      char l1[48]; siprintf(l1, PDNA_XFER_FLUSHFAIL_L1, kept);
-      msg_wait(PDNA_XFER_FLUSHFAIL_TITLE, UI_WARN, l1, PDNA_XFER_FLUSHFAIL_L2);
+      app_flushfail_msg(kept);
     }
     return;
   }

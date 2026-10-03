@@ -1197,6 +1197,11 @@ int main(void) {
   { char row[48]; snprintf(row, sizeof row, PDNA_XFER_FLUSHFAIL_L1, 64);
     chk("ptext_fit", 28, 184, pwidth(row), row); }
   PF(PDNA_XFER_FLUSHFAIL_L2,    28, 184);
+  { char row[48]; snprintf(row, sizeof row, PDNA_XFER_FLUSHFAIL_L1_ONE, 1);
+    chk("ptext_fit", 28, 184, pwidth(row), row); }
+  PF(PDNA_XFER_FLUSHFAIL_L2_ONE, 28, 184);
+  PF(PDNA_GBMAP_PLACED_L1,      28, 184);
+  PF(PDNA_GBMAP_PLACED_L2,      28, 184);
   /* BACKLOG #120 S2: app_inject_to_game()/_deferred()'s "no live Gen-3 PC" refusal
    * (pdna_main.c). Literal, like the msg_wait call sites that pass it directly. */
   PF("NO GEN-3 SAVE",              28, 184);
