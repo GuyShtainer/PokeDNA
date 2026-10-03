@@ -321,7 +321,7 @@ uint32_t jrnapp_cutoff(void) {
   uint32_t av = 0, total = 0, cut = 0;
   if (!s_r || !s_r->j || s_state != JA_OK) return 0;
   if (jrn_tip(&s_j) == jrn_cursor(&s_j) && !jrn_offer(&s_j)) return 0;       /* the same test as jrnapp_offer, spelled differently on purpose: host_g3_stage_sites_test mutates the offer's line */
-  if (jrn_redo_info(&s_j, &av, &total, 0) < 0 || ja_cut_tail(av, total, &cut) != 0) return 0;
+  if (jrn_redo_info(&s_j, &av, &total, 0) < 0 || ja_cut_tail(av, total, &cut) != 0 || cut != total) return 0;   /* only when the cut is ALL there is: an offer that read 0 under a fault must not discard real steps */
   return cut;
 }
 
@@ -336,7 +336,7 @@ uint32_t jrnapp_offer(uint32_t* avail, char stop[25]) {
   memset(&st, 0, sizeof st);
   rc = jrn_redo_info(&s_j, &av, &total, &st);
   if (rc < 0 || !total) return 0;
-  if (ja_cut_tail(av, total, &cut) != 0) cut = av;                  /* a read fault: offer nothing rather than a half swap */
+  if (ja_cut_tail(av, total, &cut) != 0) return 0;                  /* a read fault: no offer THIS load (never a half swap, never the crossed "A forgets" dialog); the next load asks again */
   av -= cut; total -= cut;
   if (!total) return 0;
   if (avail) *avail = av;
@@ -350,7 +350,7 @@ int jrnapp_reapply(void) {
   if (!s_r || !s_r->j || s_state != JA_OK) return JRN_E_ARG;
   rc = jrn_redo_info(&s_j, &av, &total, 0);
   if (rc < 0) return rc;
-  if (ja_cut_tail(av, total, &cut) != 0) cut = av;            /* #406: never re-apply a swap's older half without its partner (a fault: nothing) */
+  if (ja_cut_tail(av, total, &cut) != 0) return JRN_E_IO;      /* #406: never re-apply a swap's older half without its partner; a fault: nothing applied, NOTHING discarded */
   av -= cut;
   for (i = 0; i < av; i++) {
     rc = jrn_redo(&s_j, &s_r->img, 0);
@@ -527,7 +527,7 @@ void jrnapp_pair_flush(void) {
   JrnRec w;
   if (!s_r || !s_r->j || s_state != JA_OK || s_ai.slot < 0 || !jrn_pending(&s_j)) return;
   if (jrn_find(&s_j, jrn_tip(&s_j), &w) != 0 || !ja_newer_eligible(&w)) return;
-  if (jrn_find(&s_j, w.parent, &w) != 0 || !ja_older_eligible(&w)) return;
+  if (jrn_find(&s_j, w.parent, &w) != 0 || w.kind != JRN_KIND_STEP || strcmp(w.name, "Swap") != 0) return;   /* the cut's predicate: a CHAIN-shaped drop 1 (unprimed save) pairs too */
   (void)jrnapp_flush();
 }
 

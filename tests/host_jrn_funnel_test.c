@@ -1280,7 +1280,7 @@ static void t_swap_cutoff(void) {
   g_cut = 0;
   cut_and_reopen(snapB);
   tot = jrnapp_offer(&av, stop);
-  CHECK(tot == 1u && av == 1u && jrnapp_cutoff() == 1u, "bag: the Setup step is offered, the lone Swap held back (total %u avail %u cutoff %u)", (unsigned)tot, (unsigned)av, (unsigned)jrnapp_cutoff());
+  CHECK(tot == 1u && av == 1u && jrnapp_cutoff() == 0u, "bag: the Setup step is offered, the lone Swap held back (total %u avail %u cutoff %u)", (unsigned)tot, (unsigned)av, (unsigned)jrnapp_cutoff());
   CHECK(jrnapp_reapply() == 1 && memcmp(sv, snapS, sizeof sv) == 0, "bag: ONLY the plain step is re-applied (image == the after-Setup image)");
   CHECK(jrnapp_cursor() == jrnapp_tip(), "bag: the lone half is marked discarded after the re-apply (cursor %u tip %u)", (unsigned)jrnapp_cursor(), (unsigned)jrnapp_tip());
   /* 4: a chained swap (#314b) with only Swap_1, Swap_2 flushed -> both held back */
@@ -1899,6 +1899,94 @@ static void t_tree_max_clamp(void) {
   CHECK(more == 1, "#324a more=1 with a fork too (%d)", more);
 }
 
+static void t_rev_pair_flush_chain_half(void) {
+  uint32_t av = 0, tot;
+  char stop[25];
+  g_cut = 1;
+  CHECK(app_world_reset() && stage_swap_chained(10, 11, 12), "rev3: Setup, Swap (chain, on card), Box move pending");
+  g_cut = 0;
+  jrnapp_pair_flush();
+  cut_and_reopen(snapS);
+  tot = jrnapp_offer(&av, stop);
+  CHECK(tot == 2u && av == 2u, "REVIEW: the pair flush puts a swap whose drop 1 is a CHAIN on the card (total %u avail %u)", (unsigned)tot, (unsigned)av);
+}
+
+/* REVIEW zb2: a read fault inside jrnapp_reapply's cut walk must never DISCARD the user's whole offer. */
+static void t_rev_cut_fault(void) {
+  uint32_t av = 99, tot, tot2, av2;
+  char stop[25];
+  static uint8_t snapB[G3_SAVE_FILE_SIZE], pre[G3_SAVE_FILE_SIZE];
+  long k; unsigned lost = 0, presses = 0, applied_ok = 0, refused_kept = 0;
+  CHECK(app_world_reset(), "rev: world");
+  CHECK(stageA(300), "rev: plain step");
+  memcpy(snapB, sv, sizeof sv);
+  g_cut = 1;
+  CHECK(stage_swap(10, 11, 12), "rev: Setup + Swap flushed + Box move pending");
+  g_cut = 0;
+  cut_and_reopen(snapB);
+  tot = jrnapp_offer(&av, stop);
+  uint32_t base = tot;
+  CHECK(tot >= 1u && av == tot, "rev: healthy offer (got %u/%u)", (unsigned)tot, (unsigned)av);
+  memcpy(pre, sv, sizeof sv);
+  rd_snapshot();
+  for (k = 0; k < 400; k++) {
+    int rc;
+    rd_restore(); memcpy(sv, pre, sizeof sv); card_remount();
+    if (!app_reopen()) { printf("  rev k %ld reopen failed\n", k); continue; }
+    tot = jrnapp_offer(&av, stop);
+    if (tot != base) { printf("  rev k %ld pre-offer %u\n", k, (unsigned)tot); continue; }
+    rd_fail_read_at = k;
+    rc = jrnapp_reapply();
+    rd_fail_read_at = -1;
+    presses++;
+    /* the user exits WITHOUT saving (or the reapply said nothing changed): the card's save is `pre` */
+    memcpy(sv, pre, sizeof sv); card_remount();
+    if (!app_reopen()) { printf("  rev k %ld re-reopen failed\n", k); continue; }
+    tot2 = jrnapp_offer(&av2, stop);
+    if (rc == (int)base) { applied_ok++; continue; }
+    if (rc <= 0 && tot2 == 0u) { lost++; if (lost <= 5) printf("  REV LOST k %ld: reapply rc %d, next offer %u (the offered steps are gone)\n", k, rc, (unsigned)tot2); }
+    else refused_kept++;
+  }
+  printf("  rev cut-fault sweep: presses %u, healthy %u, refused+kept %u, OFFER LOST %u\n", presses, applied_ok, refused_kept, lost);
+  CHECK(lost == 0u, "REVIEW: a read fault in the re-apply's cut walk discarded the whole offer at %u fault point(s)", lost);
+}
+
+/* REVIEW zb2: the LOAD sequence (app_journal_load): n = jrnapp_offer(); n == 0 -> app_journal_cutoff_note (jrnapp_cutoff() -> jrnapp_decline()). A read fault in the offer must not
+ * let the note discard steps that are NOT a lone half. */
+static void t_rev_offer_fault(void) {
+  uint32_t av = 99, tot, tot2, av2, base, c;
+  char stop[25];
+  static uint8_t snapB[G3_SAVE_FILE_SIZE], pre[G3_SAVE_FILE_SIZE];
+  long k; unsigned lost = 0, presses = 0, noted = 0;
+  CHECK(app_world_reset(), "rev2: world");
+  CHECK(stageA(300), "rev2: plain step");
+  memcpy(snapB, sv, sizeof sv);
+  g_cut = 1;
+  CHECK(stage_swap(10, 11, 12), "rev2: Setup + Swap flushed + Box move pending");
+  g_cut = 0;
+  cut_and_reopen(snapB);
+  base = jrnapp_offer(&av, stop);
+  CHECK(base >= 1u, "rev2: healthy offer %u", (unsigned)base);
+  memcpy(pre, sv, sizeof sv);
+  rd_snapshot();
+  for (k = 0; k < 400; k++) {
+    rd_restore(); memcpy(sv, pre, sizeof sv); card_remount();
+    if (!app_reopen()) continue;
+    rd_fail_read_at = k;
+    tot = jrnapp_offer(&av, stop);
+    rd_fail_read_at = -1;
+    presses++;
+    if (tot == 0u) { c = jrnapp_cutoff(); if (c) { noted++; jrnapp_decline(); } }
+    else continue;                                          /* an offer was made: the user decides */
+    memcpy(sv, pre, sizeof sv); card_remount();
+    if (!app_reopen()) continue;
+    tot2 = jrnapp_offer(&av2, stop);
+    if (tot2 == 0u) { lost++; if (lost <= 3) printf("  REV2 LOST k %ld: offer 0 under the fault, cutoff note discarded %u legit step(s)\n", k, (unsigned)base); }
+  }
+  printf("  rev offer-fault sweep: presses %u, cut-off notes %u, LEGIT STEPS LOST %u\n", presses, noted, lost);
+  CHECK(lost == 0u, "REVIEW: an offer-path read fault let the cut-off note discard legit steps at %u point(s)", lost);
+}
+
 int main(int argc, char** argv) {
   int a;
   static uint8_t file[G3_SAVE_FILE_SIZE];
@@ -1948,6 +2036,9 @@ int main(int argc, char** argv) {
     CHECK(app_world(file), "app world"); t_swap_chain_rollback_sweep();
     CHECK(app_world(file), "app world"); t_swap_pair_fault_sweep();
     CHECK(app_world(file), "app world"); t_swap_cutoff();
+    CHECK(app_world(file), "app world"); t_rev_pair_flush_chain_half();
+    CHECK(app_world(file), "app world"); t_rev_cut_fault();
+    CHECK(app_world(file), "app world"); t_rev_offer_fault();
     CHECK(app_world(file), "app world"); t_swap_pair_old_journal();
     CHECK(app_world(file), "app world"); t_swap_pair_shape_and_rollback_failure();
     CHECK(app_world(file), "app world"); t_chain_through_app();

@@ -10496,7 +10496,7 @@ static void __attribute__((noinline)) app_journal_load(void) {
     uint32_t n = jrnapp_offer(&avail, stop);
     log_line("journal: open cursor %lu tip %lu offer %lu", (unsigned long)jrnapp_cursor(), (unsigned long)jrnapp_tip(), (unsigned long)n);
     if (n) { hb_pause(); perf_span_pause(); app_journal_offer(n, avail, stop); perf_span_resume(); hb_resume(); }
-    else app_journal_cutoff_note();
+    else { hb_pause(); perf_span_pause(); app_journal_cutoff_note(); perf_span_resume(); hb_resume(); }
     if (jrnapp_first_fill_owed()) busy_panel("Preparing undo history...");
     (void)jrnapp_prepare(&g_rec, g_sb2, g_frlg);
   }
@@ -10541,7 +10541,7 @@ bool app_gb_journal_open(uint8_t* img, uint64_t key, uint64_t legacy_key) {
     uint32_t n = jrnapp_offer(&avail, stop);
     log_line("journal(gb): open cursor %lu tip %lu offer %lu", (unsigned long)jrnapp_cursor(), (unsigned long)jrnapp_tip(), (unsigned long)n);
     if (n) { hb_pause(); perf_span_pause(); app_journal_offer(n, avail, stop); perf_span_resume(); hb_resume(); }
-    else app_journal_cutoff_note();
+    else { hb_pause(); perf_span_pause(); app_journal_cutoff_note(); perf_span_resume(); hb_resume(); }
     if (jrnapp_first_fill_owed()) busy_panel("Preparing undo history...");
     (void)jrnapp_prepare_key(&g_rec, key);
   }
