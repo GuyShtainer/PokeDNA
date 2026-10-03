@@ -3004,6 +3004,19 @@ int main(void) {
   }
   /* ==== END BACKLOG #178 party-landing confirm panel ============================ */
 
+  /* ==== BACKLOG #409 pick_rows footer: search + sort at the largest page step (PDNA_FILT_VIS) ==== */
+  {
+    static const int pages[] = { 5, 10, PDNA_FILT_VIS };
+    for (unsigned pi = 0; pi < sizeof pages / sizeof pages[0]; pi++)
+      for (int srch = 0; srch < 2; srch++)
+        for (int srt = 0; srt < 2; srt++) {
+          char foot[64];
+          snprintf(foot, sizeof foot, PDNA_PICKROWS_FOOT_FMT, pages[pi],
+                   srch ? PDNA_PICKROWS_FOOT_FIND : "", srt ? PDNA_PICKROWS_FOOT_SORT : "");
+          PF(foot, PDNA_PICKROWS_FOOT_X, PDNA_PICKROWS_FOOT_W);
+        }
+  }
+
   printf("\n%d checks, %d FAILED\n", checks, fails);
   return fails ? 1 : 0;
 }

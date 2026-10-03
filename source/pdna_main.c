@@ -1099,13 +1099,14 @@ static void br_detail_paint(const BrowseEntry* ents, int sel, const BrowseSpec* 
   /* D5: the "List full - some files not shown." warning pick_rom() used to show got
    * lost when that implementation was deleted (BACKLOG #186) -- the GB-session ROM
    * picker's cap (PICK_MAX_ART, mon_decomp-backed) is only ~107 entries, so a folder
-   * that busy needs SOME visible sign it isn't showing everything. " FULL" on the
-   * status line (already ui_truncate'd to 29 cols below, so a long path/sort label
-   * just drops it the same safe way it already drops anything else over budget,
-   * never overruns). */
-  siprintf(status, "%d/%d  %s  %s%s", g_count ? sel + 1 : 0, g_count,
-           sort_label(), g_show_all ? "all" : spec->filter_label,
-           g_count >= spec->cap ? " FULL" : "");
+   * that busy needs SOME visible sign it isn't showing everything: "FULL" on the
+   * status line, which is ui_truncate'd to 29 cols below. Since #401 FULL sits right
+   * after n/N (worst case "256/256  FULL  " = 15 cols), so the truncation can only
+   * ever eat the sort/filter labels, never the warning. */
+  /* #401: FULL goes FIRST (right after "n/N"), not last -- appended it was the first thing the 29-col
+   * truncation ate ("FU~" at 1/107, "~" at 107/107), i.e. exactly when it mattered. */
+  siprintf(status, "%d/%d  %s%s  %s", g_count ? sel + 1 : 0, g_count,
+           g_count >= spec->cap ? "FULL  " : "", sort_label(), g_show_all ? "all" : spec->filter_label);
   ui_truncate(stc, status, 29);
   ui_text(2, 138, UI_OK, stc);
 }
@@ -9387,7 +9388,10 @@ static void pdna_settings(void) {
     bool art_omega_ok = (active_flashcart == EZ_FLASH_OMEGA);
     bool art_selectable = s_iconrom.ok && art_omega_ok;
     char r3[SET_ROW_BUF];
-    if (!s_iconrom.ok) siprintf(r3, PDNA_SET_ART_FMT, PDNA_SET_ART_NEEDROM);
+    /* #403a: while ROM art is merely switched OFF the ROM stays registered (s_iconrom is detached), so
+     * "Set Game ROM" would be a lie -- say the art is off instead. */
+    const bool art_off_reg = g_rom_art_off && app_any_rom_registered();
+    if (!s_iconrom.ok) siprintf(r3, PDNA_SET_ART_FMT, art_off_reg ? PDNA_SET_ART_ARTOFF : PDNA_SET_ART_NEEDROM);
     else if (!art_omega_ok) siprintf(r3, PDNA_SET_ART_FMT, PDNA_SET_ART_NOOMEGA);
     else if (art_session_icons_ready_memoized())
       siprintf(r3, PDNA_SET_ART_CACHED_FMT, (unsigned long)(ART_ICONS_TOTAL_BYTES / 1024u));
@@ -9451,7 +9455,10 @@ static void pdna_settings(void) {
          * row in the emulator build is the E4 Sprites grid, so go straight there. */
         sprite_settings();
 #else
-        if (app_any_rom_registered()) rom_row_menu(); else app_register_rom();
+        /* #402: a Game-Boy-only owner has no Gen-3 ROM (app_any_rom_registered() is Gen-3 by
+         * design -- Yard visitors rely on that), but must still reach the Gen 1 / Gen 2 rows. */
+        if (app_any_rom_registered() || app_gb_session_gen() != 0 ||
+            app_gb_rom_path(PDNA_GEN1)[0] || app_gb_rom_path(PDNA_GEN2)[0]) rom_row_menu(); else app_register_rom();
 #endif
       }
       else if (sel == S_ART) {
@@ -9460,9 +9467,10 @@ static void pdna_settings(void) {
 #else
         if (!art_selectable) {
           snd_deny();
+          const bool off_reg = !s_iconrom.ok && g_rom_art_off && app_any_rom_registered();   /* #403a */
           msg_wait("EXTRACT ART", UI_DIM,
-                   !s_iconrom.ok ? "Register your game ROM first" : "Needs EZ-Flash Omega DE",
-                   !s_iconrom.ok ? "(Settings > Game ROM)." : "(EverDrive stays read-only).");
+                   off_reg ? "ROM art is off" : !s_iconrom.ok ? "Register your game ROM first" : "Needs EZ-Flash Omega DE",
+                   off_reg ? "(Settings > Game ROM > ON)." : !s_iconrom.ok ? "(Settings > Game ROM)." : "(EverDrive stays read-only).");
         } else art_extract_screen();
 #endif
       }

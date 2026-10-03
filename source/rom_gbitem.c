@@ -80,10 +80,28 @@ int rom_gbitem_open(RomGbItem* gi, GbReadFn read, void* ctx, uint32_t size) {
     if (good) good = link_ok(&c, ROM_GBITEM_MAX_ID - 1u);
     if (!good) continue;
     c.ok = 1;
+    c.pin = (uint8_t)p;
     *gi = c;
     return 1;
   }
   return 0;
+}
+
+int rom_gbitem_open_pin(RomGbItem* gi, GbReadFn read, void* ctx, uint32_t size, uint8_t pin) {
+  if (!gi) return 0;
+  memset(gi, 0, sizeof *gi);
+  if (!read || pin >= K_NPINS) return 0;
+  RomGbItem c;
+  memset(&c, 0, sizeof c);
+  c.read = read; c.ctx = ctx;
+  c.bank_off = (uint32_t)k_pins[pin].bank * GB_BANK;
+  c.taddr = k_pins[pin].addr;
+  if (c.bank_off + GB_BANK > size) return 0;
+  if (!link_ok(&c, 0) || !link_ok(&c, ROM_GBITEM_MAX_ID - 1u)) return 0;
+  c.ok = 1;
+  c.pin = pin;
+  *gi = c;
+  return 1;
 }
 
 /* A line break right after '-' is the game's own hyphenation ("catch-/ing": join, drop the

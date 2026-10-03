@@ -32,8 +32,10 @@ static void chk(const char* who, const char* what, int cond) {
 }
 
 typedef struct { const uint8_t* d; uint32_t n; long poff; uint8_t pval; } Img;
+static unsigned g_reads;
 static bool rd(void* ctx, uint32_t off, void* dst, uint32_t len) {
   Img* im = (Img*)ctx;
+  g_reads++;
   if ((uint64_t)off + len > im->n) return false;
   memcpy(dst, im->d + off, len);
   if (im->poff >= 0 && (uint32_t)im->poff >= off && (uint32_t)im->poff < off + len)
@@ -140,6 +142,24 @@ static void run_game(const char* dir, const Game* g) {
   chk(g->name, "MUT control byte inside a text: that id refuses",
       rom_gbitem_desc(&gi, 10, d, (int)sizeof d) == 0);
   im.poff = -1;
+  /* #403b: the cached-pin re-open reads far less than the full probe and serves the same text */
+  {
+    RomGbItem pn; char a[ROM_GBITEM_DESC_MAX], b[ROM_GBITEM_DESC_MAX];
+    unsigned r0 = g_reads; RomGbItem full; int fo = rom_gbitem_open(&full, rd, &im, n); unsigned r_full = g_reads - r0;
+    r0 = g_reads; int po = rom_gbitem_open_pin(&pn, rd, &im, n, full.pin); unsigned r_pin = g_reads - r0;
+    chk(g->name, "pinned re-open succeeds on the remembered pin", fo && po && pn.ok && pn.pin == full.pin);
+    chk(g->name, "pinned re-open reads at most 6 times and fewer than half the full probe", r_pin <= 6 && r_pin * 2 < r_full);
+    chk(g->name, "pinned re-open serves the same text",
+        rom_gbitem_desc(&full, 7, a, (int)sizeof a) > 0 && rom_gbitem_desc(&pn, 7, b, (int)sizeof b) > 0 && strcmp(a, b) == 0);
+    RomGbItem w;
+    chk(g->name, "pinned re-open on a pin index out of range refuses", rom_gbitem_open_pin(&w, rd, &im, n, 200) == 0 && w.ok == 0);
+    chk(g->name, "pinned re-open on the OTHER game's pin refuses", rom_gbitem_open_pin(&w, rd, &im, n, (uint8_t)(full.pin ^ 1u)) == 0);
+    im.poff = (long)(tbl + 1); im.pval = 0xFF;
+    chk(g->name, "MUT pinned re-open: first entry out of the bank refuses", rom_gbitem_open_pin(&w, rd, &im, n, full.pin) == 0);
+    im.poff = (long)(g->bank_off + eL - 0x4000u - 1u); im.pval = 0x7F;
+    chk(g->name, "MUT pinned re-open: broken last terminator refuses", rom_gbitem_open_pin(&w, rd, &im, n, full.pin) == 0);
+    im.poff = -1;
+  }
   /* image too small to hold the pinned bank */
   chk(g->name, "image shorter than the bank: refused", rom_gbitem_open(&m, rd, &im, g->bank_off + 0x2000u) == 0);
   free(rom);

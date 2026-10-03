@@ -272,7 +272,7 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 /* Hint rows. sys8 is a FIXED 8 px cell drawn from x=4, so 29 columns is the budget
  * (4 + 29*8 = 236). The reroll line is exactly at it — measure before editing. */
 #define PDNA_SUM_FOOT_EDIT        "A list  <>edit  U/D  L/R  B"
-#define PDNA_SUM_FOOT_CREATE_EDIT "A list  <>edit  L/R  START"
+#define PDNA_SUM_FOOT_CREATE_EDIT "A list <>edit L/R START keep"
 #define PDNA_SUM_FOOT_CREATE      "A edit  L/R card  START keep"
 #define PDNA_SUM_FOOT_VIEW        "A edit  U/D mon  L/R  SEL  B"
 #define PDNA_SUM_FOOT_RO          "U/D mon  L/R card  SEL  B"
@@ -358,6 +358,13 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_FILT_Y0        14
 #define PDNA_FILT_ROW_H      9
 #define PDNA_FILT_VIS       15                /* rows in the window                   */
+/* #409: pick_rows' footer (pdna_pick.c). 38 glyphs at 8 px (sys8) overran the 240-px screen with search + sort
+ * ("...SEL find  ST" was the last thing visible); it is drawn proportional, ui_ptext_fit into PDNA_PICKROWS_FOOT_W. */
+#define PDNA_PICKROWS_FOOT_FMT   "A pick  L/R +-%d  %s%sB"
+#define PDNA_PICKROWS_FOOT_FIND  "SEL find  "
+#define PDNA_PICKROWS_FOOT_SORT  "ST sort  "
+#define PDNA_PICKROWS_FOOT_X     4
+#define PDNA_PICKROWS_FOOT_W     232
 #define PDNA_FILT_BAR_X      2
 #define PDNA_FILT_BAR_W    236
 #define PDNA_FILT_BAR_DY   (-1)               /* bar top, relative to the text row     */
@@ -893,7 +900,7 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * and START keeps it from EITHER sub-mode -- mirrors pdna_summary.c's own
  * PDNA_SUM_FOOT_CREATE_EDIT/PDNA_SUM_FOOT_CREATE text closely (adapted to this
  * screen's own "L/R card" wording, not Gen 3's card-dot-only convention). */
-#define PDNA_GBSUM_FOOT_CREATE_EDIT "A ok <>edit L/R card START"
+#define PDNA_GBSUM_FOOT_CREATE_EDIT "A ok <>edit L/R START keep"
 #define PDNA_GBSUM_FOOT_CREATE      "A edit  L/R card  START keep"
 #define PDNA_GBSUM_FOOT_VIEW    "A edit  U/D mon  L/R  SEL  B"
 #define PDNA_GBSUM_FOOT_VIEW_RO "U/D mon  L/R card  SEL  B"
@@ -1758,7 +1765,8 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_SET_ART_FMT      "Extract art:  %s"
 #define PDNA_SET_ART_NEEDROM  "Set Game ROM"
 #define PDNA_SET_ART_NOOMEGA  "Omega only"
-#define PDNA_SET_ART_VALUES(X) X(PDNA_SET_ART_NEEDROM) X(PDNA_SET_ART_NOOMEGA)
+#define PDNA_SET_ART_ARTOFF   "ROM art is off"   /* #403a: a ROM IS registered, its art is switched off */
+#define PDNA_SET_ART_VALUES(X) X(PDNA_SET_ART_NEEDROM) X(PDNA_SET_ART_NOOMEGA) X(PDNA_SET_ART_ARTOFF)
 #define PDNA_SET_ART_GO       "Extract art from ROM  >"
 #define PDNA_SET_ART_CACHED_FMT "Extract art:  %lu KB cached"
 /* worst-case KB the host test tries against PDNA_SET_ART_CACHED_FMT's width budget;

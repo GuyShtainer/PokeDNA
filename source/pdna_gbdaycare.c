@@ -378,8 +378,17 @@ static void gbdc_boarder_name(char out[48], const GbEditMon* mon, const GbDaycar
   const char* species = pk_species_name(gb_get_species_dex(mon));
   uint8_t level = gb_get_level(mon);
 
+  /* #400: no "NAME (NAME)" repeat when the nickname is just the species (case-blind) */
+  bool same = true;
+  for (int i = 0; i < 12 && same; i++) {
+    char a = nick[i], b = species[i];
+    if (a >= 'a' && a <= 'z') a = (char)(a - 32);
+    if (b >= 'a' && b <= 'z') b = (char)(b - 32);
+    if (a != b) same = false;
+    if (a == 0 || b == 0) break;
+  }
   siprintf(out, "%s (%s) Lv.%u is boarding.", nick, species, (unsigned)level);
-  if (ui_ptext_w(out) > PDNA_DCY_NAME_W) {
+  if (same || ui_ptext_w(out) > PDNA_DCY_NAME_W) {
     siprintf(out, "%s Lv.%u is boarding.", nick, (unsigned)level);
   }
 }
@@ -413,7 +422,8 @@ static void gbdc_panel(const GbDaycare* dc, int n, bool visitors_ok, int n_visit
     }
   } else if (n == 1) {
     char l[48];
-    gbdc_boarder_name(l, &dc->slot[0].mon, &dc->slot[0]);
+    const GbDaycareSlot* bs = dc->slot[0].occupied ? &dc->slot[0] : &dc->slot[1];   /* #400: only the Lady's slot may be used */
+    gbdc_boarder_name(l, &bs->mon, bs);
     ui_ptext(dcx, dcy0, UI_DIM, l);
     if (dc->has_egg) ui_ptext(dcx, dcy0 + dcyp, UI_OK, "An EGG is ready to collect!");
   } else {
