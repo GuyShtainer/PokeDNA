@@ -936,7 +936,7 @@ int jrnapp_history_tree(JaHist* rows, int max, int* more, int* floor_hit, const 
  * applied. Returns 0 (arrived), or the JRN_E_* / JRN_NOOP that stopped the chain (`stop` = the step it stopped at). */
 int jrnapp_jump(uint32_t target, char stop[25], int* moved) {
   JrnRec rec;
-  uint32_t t, hops;
+  uint32_t t, hops, room = 0xFFFFFFFFu;
   int rc = 0, dir, n = 0;
   if (stop) stop[0] = 0;
   if (moved) *moved = 0;
@@ -952,13 +952,18 @@ int jrnapp_jump(uint32_t target, char stop[25], int* moved) {
   }
   rc = 0;
   if (target == 0) dir = -1;
+  if (dir > 0) {                                             /* #410: the redo budget, measured ONCE -- the cut tail is fixed while the cursor climbs (cut_i = min(cut0, av0 - i)) */
+    uint32_t av = 0, tot = 0, cut = 0;
+    if (jrn_redo_info(&s_j, &av, &tot, 0) >= 0 && av) {
+      rc = ja_cut_tail(av, tot, &cut);
+      if (rc) { ja_event("history jump: a read fault in the half-swap guard, the jump is refused", rc); return rc < 0 ? rc : JRN_E_STATE; }
+      room = av - cut;
+    }
+  }
   for (hops = 0; hops < 4096u && jrn_cursor(&s_j) != target; hops++) {
     char nm[25];
     if (dir < 0 && jrn_cursor(&s_j) == 0) break;
-    if (dir > 0) {                                           /* REVIEW-ZD: the #410 guard -- a jump never lands on a lone older swap half */
-      rc = ja_redo_in_cut();
-      if (rc) { if (rc > 0) rc = JRN_NOOP; break; }
-    }
+    if (dir > 0 && (uint32_t)n >= room) { rc = JRN_NOOP; break; }   /* REVIEW-ZD: a jump never lands on a lone older swap half */
     rc = jrnapp_step(dir, nm);
     if (rc != JRN_OK) break;
     n++;

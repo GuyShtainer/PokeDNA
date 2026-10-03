@@ -10440,7 +10440,7 @@ int app_history_jump(uint32_t target, char stop[25], int* moved) {
   if (rc == JRN_E_TORN) imgf_partial_set(&g_img);                                    /* D10/9.2: latch */
   log_line("journal: jump to %lu: %d step(s), rc %d", (unsigned long)target, n, rc);
   jrnapp_log_events(&g_rec);
-  return aur_from_rc(rc);
+  return (rc == JRN_NOOP && jrnapp_cursor() != target) ? AUR_ERR : aur_from_rc(rc);   /* #410 (re-verify F1): a refused jump stopped before a lone swap half -- not "already there" */
 }
 
 /* The load-time offer (D1): "N recorded steps are not in this save -- re-apply?". A = the chained cursor-rule

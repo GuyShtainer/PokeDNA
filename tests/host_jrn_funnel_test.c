@@ -1958,6 +1958,11 @@ static void t_redo_lone_half(void) {
   cut_and_reopen(snapB);
   tot = jrnapp_offer(&av, stop);
   CHECK(tot == 1u, "#410 bag: only the Setup is offered (%u)", (unsigned)tot);
+  { int mv = 0, jr; char st2[25]; uint32_t c0 = jrnapp_cursor();   /* re-verify-zd: a jump that is refused MID-way (a plain step, then the lone half) */
+    jr = jrnapp_jump(jrnapp_tip(), st2, &mv);
+    CHECK(jr == JRN_NOOP && mv == 1 && memcmp(sv, snapS, sizeof sv) == 0, "#410 bag: a History jump to the tip redoes the plain Setup, then stops before the lone Swap (rc %d, moved %d)", jr, mv);
+    jr = jrnapp_jump(c0, st2, &mv);
+    CHECK(jr == JRN_OK && mv == 1 && memcmp(sv, snapB, sizeof sv) == 0, "#410 bag: an UNDO jump is unaffected by the redo guard (rc %d, moved %d)", jr, mv); }
   CHECK(jrnapp_step_pair(1, nm) == JRN_OK && memcmp(sv, snapS, sizeof sv) == 0, "#410 bag: redo press 1 applies the plain Setup (image == after-Setup)");
   CHECK(jrnapp_step_pair(1, nm) == JRN_NOOP && memcmp(sv, snapS, sizeof sv) == 0, "#410 bag: redo press 2 stops before the lone Swap (image unchanged)");
   CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && memcmp(sv, snapB, sizeof sv) == 0, "#410 bag: UNDO is unaffected by the redo guard (undoes the Setup back to the bag step)");
