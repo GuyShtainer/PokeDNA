@@ -121,8 +121,12 @@ static bool EWRAM_BSS g_meta_from_bak;
 static uint8_t EWRAM_BSS g_meta_state;
 
 /* Zy D1: the page-in of g_loaded hit a card READ ERROR, so g_bankbuf is a zeroed buffer, not that box.
- * box_save() refuses while set (committing it would wipe the box's untouched mons). */
-static bool EWRAM_BSS g_box_unread;
+ * box_save() refuses while non-zero (committing it would wipe the box's untouched mons).
+ * BACKLOG #382(b): 1 = READ ERROR (zeroed buffer), 2 = the #378 heal FAILED (the buffer holds the recovered
+ * copy, shown browse-only; writing it would roll the .bak and could unlink the .tmp, the only good copy). */
+#define BOX_UNREAD_ERR   1
+#define BOX_UNREAD_HEAL  2
+static uint8_t EWRAM_BSS g_box_unread;
 
 /* ---- paths ---- */
 static void box_path(int box, char* out) { siprintf(out, PDNA_BANK_DIR "/box%02d.box", box); }
@@ -350,7 +354,8 @@ static bool box_load(int box) {
     app_log_flush();
     /* Heal BEFORE anything can write: the primary is back (rename of the .tmp, or a verified write from
      * the .bak -- never sf_save_rolling, so no backup roll can bury the good .bak). Read-only (Everdrive):
-     * recovered in RAM only, never written. A failed heal returns false below so every writer refuses. */
+     * recovered in RAM only, never written. A failed heal returns false below and sets g_box_unread
+     * (BOX_UNREAD_HEAL, #382b) so box_save refuses too -- every writer, not only the box_load callers. */
     bool healed = true;
     if (app_can_edit()) {                       /* Zy D7: rmbl.h requires the pause around every SD write */
       rmbl_pause();
@@ -359,7 +364,7 @@ static bool box_load(int box) {
     }
     if (!healed) {
       heal_failed = true;
-      log_line("bank: box %02d heal failed - recovered copy kept on the card, browse only", box);
+      log_line("bank: box %02d heal failed - recovered copy kept on the card, browse only (writes refused)", box);
       app_log_flush();
     }
   } else if (bsrc == BML_BOX_READ_ERROR) {
@@ -390,12 +395,41 @@ static bool box_load(int box) {
   g_native_snap = 0;
   for (int s = 0; s < BOX_RECS; s++)
     if (bc_is_native(box_recs() + (uint32_t)s * REC_BYTES)) g_native_snap |= (1u << s);
-  g_box_unread = bsrc == BML_BOX_READ_ERROR;
+  /* BACKLOG #382(b): a FAILED heal is write-protected too (it logged "browse only" but the box was still
+   * written). Trade-off, accepted: that box's edits do not save this session -- re-open the Bank to retry. */
+  g_box_unread = (bsrc == BML_BOX_READ_ERROR) ? BOX_UNREAD_ERR : heal_failed ? BOX_UNREAD_HEAL : 0;
   g_loaded = box;
   g_dirty = false;
   g_box_unsaved_box = -1;   /* review F1: a fresh page-in re-reads the CARD's own copy --
                              * whatever RAM-only edits g_box_unsaved_box was about are gone. */
   return got && !heal_failed && sz >= BOX_BYTES;
+}
+
+/* BACKLOG #382(a): the on-screen notice for a box that is not safe to write. Shown once per page-in (banksrc_records),
+ * sprites off like every dialog this file raises. */
+static void box_unread_notice(void) {
+  u16 dc = REG_DISPCNT;
+  REG_DISPCNT &= ~DCNT_OBJ;
+  if (g_box_unread == BOX_UNREAD_HEAL)
+    msg_wait(PDNA_BANK_HEALFAIL_TITLE, UI_WARN, PDNA_BANK_HEALFAIL_L1, PDNA_BANK_HEALFAIL_L2);
+  else
+    msg_wait(PDNA_BANK_UNREAD_TITLE, UI_WARN, PDNA_BANK_UNREAD_L1, PDNA_BANK_UNREAD_L2);
+  REG_DISPCNT = dc;
+}
+
+/* BACKLOG #382(a): "Retry the save?" on a box whose page-in hit a READ ERROR must re-read it -- nothing else ever
+ * does, so the retry could never succeed. Only when the buffer is still the zeroed phantom (no edit to merge: a
+ * failed drop reverts its cells before it keeps holding); a heal-failed box (BOX_UNREAD_HEAL) is re-opened, not
+ * re-read here. true = the card answered this time and the buffer now IS the box: there is nothing left to write. */
+static bool box_unread_reread(void) {
+  if (g_box_unread != BOX_UNREAD_ERR || g_loaded < 0) return false;
+  const uint8_t* p = box_recs();
+  for (int i = 0; i < BOX_BYTES; i++) if (p[i]) return false;     /* an edit sits in the phantom: cannot merge, keep refusing */
+  int box = g_loaded;
+  (void)box_load(box);                                            /* resets g_box_unread / g_dirty / the unsaved marker */
+  log_line("bank: box %02d re-read on retry -> %s", box, g_box_unread ? "still unread" : "ok");
+  app_log_flush();
+  return g_box_unread == 0;
 }
 
 /* box_save's pre-write backup + write + SF_ERR_RENAME triage (BACKLOG #150 S150-0). Up
@@ -489,7 +523,7 @@ static void box_save_rename_triage(const char* path, SfWhere w, bool ok, bool ba
 static bool box_save(void) {                    /* write the loaded box's records */
   if (g_loaded < 0) return false;
   if (g_box_unread) {
-    log_line("bank: box %02d was not read (card error) - refusing to write over it", g_loaded);
+    log_line("bank: box %02d was not read (card error) or its heal failed - refusing to write over it", g_loaded);
     app_log_flush();
     return false;
   }
@@ -549,6 +583,7 @@ static bool box_save_or_keep_dirty(void) {
     bool retry = app_confirm(PDNA_BANK_UNSAVED_BANNER, PDNA_BANK_RETRY_L1);
     REG_DISPCNT = dc;
     if (!retry) return false;                        /* B: keep editing -- box stays dirty */
+    if (g_box_unread && box_unread_reread()) return true;   /* #382(a): the box was never read -- re-read it */
   }
   return false;
 }
@@ -891,6 +926,7 @@ static uint8_t* banksrc_records(int box) {
      * below overwrites the one shared buffer. Refuse to page: never silently flip. */
     if (g_dirty && !box_save_or_keep_dirty()) return box_recs();
     box_load(box);
+    if (g_box_unread) box_unread_notice();     /* BACKLOG #382(a): never show a phantom-empty / unwritable box silently */
   }
   return box_recs();
 }

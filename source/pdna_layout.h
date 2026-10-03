@@ -697,6 +697,16 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * define since the banner and that one dialog can change independently. */
 #define PDNA_BANK_UNSAVED_BANNER        "BOX NOT SAVED"
 
+/* BACKLOG #382: raised once when a Bank box is paged in and cannot be trusted for writing -- the card read failed
+ * (the box shows empty but is NOT; nothing is written to it), or the #378 heal failed (the recovered copy is shown
+ * browse-only; the .tmp stays the good copy). msg_wait (28, .., 184). */
+#define PDNA_BANK_UNREAD_TITLE          "BOX NOT READ"
+#define PDNA_BANK_UNREAD_L1             "Box could not be read."
+#define PDNA_BANK_UNREAD_L2             "Re-open the Bank."
+#define PDNA_BANK_HEALFAIL_TITLE        "BOX NOT WRITTEN"
+#define PDNA_BANK_HEALFAIL_L1           "Showing the saved copy only."
+#define PDNA_BANK_HEALFAIL_L2           "Re-open the Bank to retry."
+
 /* review F5 (hygiene): the flush-retry loop and the exit prompt's own follow-up
  * messages (pdna_bank.c: box_save_or_keep_dirty, pdna_bank_show's exit block) were
  * inline literals -- named here alongside the banner they share a title with, so

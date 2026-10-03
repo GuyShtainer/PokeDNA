@@ -12,6 +12,9 @@ check and by in-memory MUTATIONS that must turn it red (self-test in main()).
   #377  MARK FINISHED: classify_all derives g3_on_card from the CLEAN image (!imgf_exit_prompt), the popup lists
         PDNA_XRC_ACT_PROMOTE, apply re-checks the on-disk entry (NATIVE_HOME / ABROAD_G3 / PENDING) before
         gbsc_set_state(.., XR_STATE_CLAIMED), and flush_on_exit logs a failed exit promotion.
+  #382  pdna_bank.c: box_load sets g_box_unread for a READ ERROR (1) AND a failed heal (2); banksrc_records raises the
+        notice after a page-in that left it set; the retry loop re-reads an unread box only while its buffer is the
+        zeroed phantom; textfit pins the six notice strings.
   #383  app_xfer_save_now promotes ONLY when a transfer is pending ("nothing pending" == ok), a REAL failed
         promotion (pending, rewrite failed) still gives ok = false (#175 D1).
 """
@@ -129,6 +132,23 @@ def f377(classify: str, popup: str, apply_: str, flush: str) -> tuple[bool, str]
     return True, "ok"
 
 
+# ---------------------------------------------------------------------------------------------- #382
+def f382(load: str, records: str, reread: str, loop: str, tests_text: str) -> tuple[bool, str]:
+    if not re.search(r"g_box_unread\s*=\s*\(bsrc\s*==\s*BML_BOX_READ_ERROR\)\s*\?\s*BOX_UNREAD_ERR\s*:\s*heal_failed\s*\?\s*BOX_UNREAD_HEAL\s*:\s*0\s*;", load):
+        return False, "box_load: g_box_unread must be set for a READ ERROR and for heal_failed (#382b)"
+    if not re.search(r"box_load\(box\)\s*;\s*if\s*\(\s*g_box_unread\s*\)\s*box_unread_notice\(\)\s*;", records):
+        return False, "banksrc_records: the notice must follow the page-in when g_box_unread (#382a)"
+    if "g_box_unread != BOX_UNREAD_ERR" not in reread or not re.search(r"if\s*\(\s*p\[i\]\s*\)\s*return false", reread):
+        return False, "box_unread_reread: must refuse a heal-failed box and a buffer holding an edit (#382a)"
+    if not re.search(r"retry\)\s*return false;\s*[^\n]*\n?\s*if\s*\(\s*g_box_unread\s*&&\s*box_unread_reread\(\)\s*\)\s*return true", loop):
+        return False, "box_save_or_keep_dirty: a chosen retry must re-read an unread box (#382a)"
+    for m in ("PDNA_BANK_UNREAD_TITLE", "PDNA_BANK_UNREAD_L1", "PDNA_BANK_UNREAD_L2",
+              "PDNA_BANK_HEALFAIL_TITLE", "PDNA_BANK_HEALFAIL_L1", "PDNA_BANK_HEALFAIL_L2"):
+        if f"PF({m}," not in tests_text:
+            return False, f"host_textfit_test.c does not pin {m} (#382a)"
+    return True, "ok"
+
+
 def run() -> None:
     main_t = (SRC / "pdna_main.c").read_text()
     p2 = function_body(main_t, "xfer_reconcile_bank_phase2")
@@ -169,6 +189,28 @@ def run() -> None:
         parts[which] = mutate(parts[which], old, new)
         ok, _ = f377(parts["ca"], parts["pp"], parts["ap"], parts["fe"])
         check(not ok, f"MUT {label} was NOT caught")
+    bank_t = (SRC / "pdna_bank.c").read_text()
+    tf_t = (ROOT / "tests" / "host_textfit_test.c").read_text()
+    bl, br, brr, bloop = (function_body(bank_t, n) for n in ("box_load", "banksrc_records", "box_unread_reread", "box_save_or_keep_dirty"))
+    # box_load's body is stripped of comments; the assignment lives in it
+    ok, d = f382(bl, br, brr, bloop, tf_t)
+    check(ok, d)
+    for label, which, old, new in (
+        ("382b: failed heal not write-protected", "bl", ": heal_failed ? BOX_UNREAD_HEAL : 0;", ": 0;"),
+        ("382a: no notice after the page-in", "br", "if (g_box_unread) box_unread_notice();", ""),
+        ("382a: reread accepts a buffer with an edit", "rr", "if (p[i]) return false;", ""),
+        ("382a: reread also accepts a heal-failed box", "rr", "g_box_unread != BOX_UNREAD_ERR", "g_box_unread == 0"),
+        ("382a: retry no longer re-reads", "lp", "if (g_box_unread && box_unread_reread()) return true;", ""),
+    ):
+        parts = {"bl": bl, "br": br, "rr": brr, "lp": bloop}
+        if old not in parts[which]:
+            check(False, f"mutation anchor missing ({label})")
+            continue
+        parts[which] = mutate(parts[which], old, new)
+        ok, _ = f382(parts["bl"], parts["br"], parts["rr"], parts["lp"], tf_t)
+        check(not ok, f"MUT {label} was NOT caught")
+    ok, _ = f382(bl, br, brr, bloop, tf_t.replace("PF(PDNA_BANK_UNREAD_L2,", "PF(X,"))
+    check(not ok, "MUT 382a: unpinned notice string was NOT caught")
     rk = function_body(main_t, "app_xfer_pid_rekey")
     check(bool(rk), "app_xfer_pid_rekey body not found")
     ok, d = f384(rk)

@@ -744,6 +744,13 @@ int main(void) {
   PF(PDNA_BANK_META_TITLE,  28, 184);
   PF(PDNA_BANK_META_L1,     28, 184);
   PF(PDNA_BANK_META_L2,     28, 184);
+  /* BACKLOG #382: the unread / heal-failed box notices (msg_wait, 28/184). */
+  PF(PDNA_BANK_UNREAD_TITLE,   28, 184);
+  PF(PDNA_BANK_UNREAD_L1,      28, 184);
+  PF(PDNA_BANK_UNREAD_L2,      28, 184);
+  PF(PDNA_BANK_HEALFAIL_TITLE, 28, 184);
+  PF(PDNA_BANK_HEALFAIL_L1,    28, 184);
+  PF(PDNA_BANK_HEALFAIL_L2,    28, 184);
 
   /* gb_edit_hook / gb_edit_persist's own gate + verdict popups — everything else the
    * S2 edit path draws. s_busy's own line ("Saving - do not power off") and the
