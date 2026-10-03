@@ -150,7 +150,11 @@ def f387(detail: str, cls: str, tf: str, layout: str) -> tuple[bool, str]:
 
 
 # ------------------------------------------------------------------------------------------------ #388
-def f388(render: str, left: str, hint: str, leftfn: str, g3call: str) -> tuple[bool, str]:
+def f388(render: str, left: str, hint: str, leftfn: str, g3call: str, g1fn: str = "", main_t: str = "") -> tuple[bool, str]:
+    if g1fn and not (re.search(r"t >= 0x07u && t <= 0x08u", g1fn) and re.search(r"t >= 0x14u && t <= 0x1Au", g1fn)):
+        return False, "g1_to_g3_type: Gen-1 type ids are 0x00-0x05, 0x07-0x08, 0x14-0x1A only (0x09 STEEL / 0x1B DARK are glitch ids) (#388 D5)"
+    if main_t and not re.search(r"g_src_ops->view\(rec\); return false; \}\s*if \(occupied\) \{ uint8_t d\[100\]; int card = 0; pdna_inspect", main_t):
+        return False, "the read-only box menu path does not use the source's own view op before pdna_inspect (#388 D5)"
     if not re.search(r"if \(e->gen == GB_GEN1\) \{\s*t1o = g1_to_g3_type\(gb_get_gen1_type1\(e\)\);\s*t2o = \(t1o >= 0\) \? g1_to_g3_type\(gb_get_gen1_type2\(e\)\) : -1;", render):
         return False, "gbsummary render: a Gen-1 record's own type bytes are not handed to the left panel (#388)"
     if not re.search(r"pdna_summary_draw_left_hint\(left, false, e->gen, t1o, t2o\)", render):
@@ -295,7 +299,8 @@ def run() -> None:
     m = re.search(r"void pdna_summary_draw_left\(const PkMon\* p, bool back\) \{[^\n]*\}", sm_s)
     g3call = m.group(0) if m else ""
     parts = dict(render=function_body(gs_t, "render"), left=function_body(sm_t, "draw_left_ex"),
-                 hint=function_body(sm_t, "pdna_summary_draw_left_hint"), leftfn=leftfn, g3call=g3call)
+                 hint=function_body(sm_t, "pdna_summary_draw_left_hint"), leftfn=leftfn, g3call=g3call,
+                 g1fn=function_body(gs_t, "g1_to_g3_type"), main_t=strip_comments(main_t))
     for k_, v in parts.items():
         check(bool(v), f"#388: {k_} not located")
     ok, d = f388(**parts)
@@ -306,6 +311,9 @@ def run() -> None:
         ("override not applied", "left", "if (t1o >= 0) {", "if (false) {"),
         ("hint drops the override", "hint", "draw_left_ex(p, back, t1o, t2o);", "draw_left_ex(p, back, -1, -1);"),
         ("a Gen-3 caller passes an override", "leftfn", "g_back, -1, -1", "g_back, 0, 0"),
+        ("D5: STEEL accepted again", "g1fn", "t <= 0x08u", "t <= 0x09u"),
+        ("D5: DARK accepted again", "g1fn", "t <= 0x1Au", "t <= 0x1Bu"),
+        ("D5: RO box view drops the view op", "main_t", "g_src_ops->view(rec); return false; }   \n    if (occupied) { uint8_t d[100]; int card = 0; pdna_inspect", "return false; }\n    if (occupied) { uint8_t d[100]; int card = 0; pdna_inspect"),
     ))
     # -------- #391
     parts = dict(helper=function_body(main_t, "app_flushfail_msg"), save_now=function_body(main_t, "app_xfer_save_now"),

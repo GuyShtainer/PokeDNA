@@ -6221,6 +6221,7 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
      * decode for a native cell too -- the same G-H2 fix RO_VIEW/app_box_browse
      * already apply elsewhere in this file. */
     if (native) { gb_native_summary_open(rec, /*allow_edit*/false, 0); return false; }
+    if (g_src_ops && g_src_ops->view) { g_src_ops->view(rec); return false; }   /* #388 review D5: a read-only cart's GB box view = the GB summary, as RO_VIEW */
     if (occupied) { uint8_t d[100]; int card = 0; pdna_inspect(rec, is_party, false, d, 0, &card); }
     return false;
   }
