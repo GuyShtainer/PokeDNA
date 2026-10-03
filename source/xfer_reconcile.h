@@ -40,8 +40,10 @@ typedef enum {
   XRC_STALE_KEY,          /* PID changed; record not linked -- RE-KEY (decision 15)   */
   XRC_AMBIGUOUS,          /* 2+ matches by key or identity -- no action, logged       */
   XRC_G3HOME,              /* Gen-3 original; the shipped load-time screen owns it     */
-  XRC_IN_BANK              /* #385: the Bank already holds this mon (a restored copy under a NEW serial, the
+  XRC_IN_BANK,             /* #385: the Bank already holds this mon (a restored copy under a NEW serial, the
                             * ledger rewrite never landed) -- DELETE RECORD only, never RESTORE (a clone) */
+  XRC_ABROAD_BANK          /* #387: the Gen-3 copy is parked in the Bank (#270 pass-through), not in the PC --
+                            * same normal end state and no actions as XRC_ABROAD, but its detail line says WHERE */
 } XrcRowKind;
 
 /* Allowed-action mask, decision 8's letters. */

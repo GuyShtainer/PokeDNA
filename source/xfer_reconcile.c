@@ -33,7 +33,7 @@ void xrc_classify(const XrcInput* in, XrcResult* out) {
   /* #270: the Gen-3 copy is parked in the Bank (PC -> Bank pass-through), not in the
    * save. It is not lost -- the normal "abroad" state, and never destructive (no
    * RESTORE, which would clone it, and no DELETE, which would lose the way home). */
-  if (in->bank_g3_matches >= 1 && in->g3_key_matches == 0) { out->kind = XRC_ABROAD; return; }
+  if (in->bank_g3_matches >= 1 && in->g3_key_matches == 0) { out->kind = XRC_ABROAD_BANK; return; }
 
   bool g3_seen = (in->g3_key_matches == 1);
   bool bank_seen = (in->bank_matches == 1);
@@ -288,6 +288,7 @@ static const char* xrc_status_word(XrcRowKind kind) {
     case XRC_DUP_BANK:        return "in two places";
     case XRC_DEFERRED:        return "moving out";
     case XRC_ABROAD:          return "restorable";
+    case XRC_ABROAD_BANK:     return "restorable";
     case XRC_LOST:             return "record only";
     case XRC_ABROAD_GB:       return "in a GB save";
     case XRC_DUP_G3:          return "duplicate";

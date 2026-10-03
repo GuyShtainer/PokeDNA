@@ -108,6 +108,19 @@ def f390(bridge: str, g3run: str, fill: str) -> tuple[bool, str]:
     return True, "ok"
 
 
+# ------------------------------------------------------------------------------------------------ #387
+def f387(detail: str, cls: str, tf: str, layout: str) -> tuple[bool, str]:
+    if not re.search(r"case XRC_ABROAD_BANK:\s*return PDNA_XRC_D_ABROAD_BANK;", detail):
+        return False, "xrc_detail_line: XRC_ABROAD_BANK has no Bank detail line (#387)"
+    if not re.search(r"bank_g3_matches >= 1 && in->g3_key_matches == 0\) \{ out->kind = XRC_ABROAD_BANK;", cls):
+        return False, "xrc_classify: a Bank-parked Gen-3 copy must classify XRC_ABROAD_BANK (#387)"
+    if "PF(PDNA_XRC_D_ABROAD_BANK," not in tf:
+        return False, "textfit: PDNA_XRC_D_ABROAD_BANK is not pinned (#387)"
+    if '"In the Bank, restorable."' not in layout:
+        return False, "pdna_layout.h: the Bank detail wording changed (#387)"
+    return True, "ok"
+
+
 def run() -> None:
     main_t = (SRC / "pdna_main.c").read_text()
     g12_t = (SRC / "pdna_gen12.c").read_text()
@@ -158,6 +171,22 @@ def run() -> None:
         ("bridge: Gen-2 no-ROM says NO MOVES again", "bridge", "GB_GEN2 == dst_gen && fill_no_rom", "false && fill_no_rom"),
         ("g3 landing: Gen-2 no-ROM says NO MOVES again", "g3run", "g_ed->s.gen == GB_GEN2 && fill_no_rom", "false && fill_no_rom"),
         ("fill never reports a missing ROM", "fill", "if (no_rom) *no_rom = !have_rom;", ""),
+    ))
+    # -------- #387
+    detail = function_body(main_t, "xrc_detail_line")
+    cls = function_body((SRC / "xfer_reconcile.c").read_text(), "xrc_classify")
+    tf = (ROOT / "tests" / "host_textfit_test.c").read_text()
+    lay = (SRC / "pdna_layout.h").read_text()
+    parts = dict(detail=detail, cls=cls, tf=tf, layout=lay)
+    for k_, v in parts.items():
+        check(bool(v), f"#387: {k_} not located")
+    ok, d = f387(**parts)
+    check(ok, d)
+    run_muts("387", f387, parts, (
+        ("detail line unwired", "detail", "case XRC_ABROAD_BANK:", "case XRC_G3HOME_DUP:"),
+        ("classify back to the PC row", "cls", "out->kind = XRC_ABROAD_BANK;", "out->kind = XRC_ABROAD;"),
+        ("pin dropped", "tf", "PF(PDNA_XRC_D_ABROAD_BANK,", "PF(X,"),
+        ("wording says PC again", "layout", '"In the Bank, restorable."', '"In the Gen-3 PC, restorable."'),
     ))
 
 

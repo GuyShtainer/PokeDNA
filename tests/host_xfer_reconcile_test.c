@@ -173,8 +173,8 @@ static void test_bankg3(void) {
   in.kind = XR_KIND_NATIVE_HOME; in.state = XR_STATE_CLAIMED; in.direction = XR_DIR_ABROAD_G3;
   in.bank_g3_matches = 1;
   XrcResult r; xrc_classify(&in, &r);
-  CHECK(r.kind == XRC_ABROAD && r.actions == XRC_ACT_NONE,
-        "BANKG3-1: parked in Bank -> ABROAD, no actions (got kind %d actions 0x%x)", r.kind, r.actions);
+  CHECK(r.kind == XRC_ABROAD_BANK && r.actions == XRC_ACT_NONE,
+        "BANKG3-1: parked in Bank -> ABROAD_BANK (#387), no actions (got kind %d actions 0x%x)", r.kind, r.actions);
   in.bank_g3_matches = 0; xrc_classify(&in, &r);
   CHECK(r.kind == XRC_LOST, "BANKG3-1: nothing anywhere -> still LOST");
   in.bank_g3_matches = 1; in.g3_key_matches = 1; xrc_classify(&in, &r);
@@ -429,6 +429,9 @@ static void test_row1(void) {
   int n2 = xrc_row_text(XRC_AMBIGUOUS, "WAYTOOLONGASPECIESNAME", "WAYTOOLONGAGAME", out);
   CHECK(n2 <= 39, "ROW-1: an oversized species/game is truncated to fit (got %d)", n2);
   CHECK((int)strlen(out) == n2, "ROW-1: strlen matches after truncation too");
+  /* #387: the Bank-parked row reads like the PC one ("restorable"); only its detail line differs */
+  xrc_row_text(XRC_ABROAD_BANK, "NIDOKING", "SAPPHIRE", out);
+  CHECK(strstr(out, "restorable") != NULL, "ROW-1: ABROAD_BANK row has no status word (got '%s')", out);
 }
 
 /* ==== INBANK-1 (BACKLOG #385) =========================================================

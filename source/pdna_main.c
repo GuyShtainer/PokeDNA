@@ -11269,6 +11269,7 @@ static const char* xrc_detail_line(uint8_t row_kind) {
     case XRC_DUP_BANK:       return PDNA_XRC_D_DUP_BANK;
     case XRC_DEFERRED:       return PDNA_XRC_D_DEFERRED;
     case XRC_ABROAD:         return PDNA_XRC_D_ABROAD;
+    case XRC_ABROAD_BANK:    return PDNA_XRC_D_ABROAD_BANK;
     case XRC_LOST:           return PDNA_XRC_D_LOST;
     case XRC_ABROAD_GB:      return PDNA_XRC_D_ABROAD_GB;
     case XRC_DUP_G3:         return PDNA_XRC_D_DUP_G3;

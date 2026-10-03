@@ -1295,6 +1295,7 @@ int main(void) {
   PF(PDNA_XRC_D_DUP_BANK,       28, 184);
   PF(PDNA_XRC_D_DEFERRED,       28, 184);
   PF(PDNA_XRC_D_ABROAD,         28, 184);
+  PF(PDNA_XRC_D_ABROAD_BANK,    28, 184);
   PF(PDNA_XRC_D_ABROAD_GB,      28, 184);
   PF(PDNA_XRC_D_DUP_G3,         28, 184);
   PF(PDNA_XRC_D_STALE,          28, 184);
