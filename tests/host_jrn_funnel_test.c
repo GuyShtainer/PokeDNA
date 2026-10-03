@@ -369,6 +369,9 @@ static void t_crossed_still_floors_app_offer(void) {
   total = jrnapp_offer(&av, stop);
   CHECK(total == 3 && av == 1, "3 steps, avail floored at 1: total %u avail %u", (unsigned)total, (unsigned)av);
   CHECK(stop[0] != 0, "the crossed step is named");
+  { int mv = -1, jr; char st2[25];                            /* re-verify-zd-2: no lone half -> no budget; the redo itself reports the floor */
+    jr = jrnapp_jump(jrnapp_tip(), st2, &mv);
+    CHECK(jr == JRN_E_CROSSED && mv == 1 && st2[0] != 0, "#410 re-verify-2: a History jump across a crossed floor stops AT it and names it (rc %d, moved %d, stop '%s')", jr, mv, safe(st2)); }
 }
 
 /* ---- #303: a swap's two halves are one chord press. The staging below is EXACTLY what drop_held does to the PC image:
@@ -1966,6 +1969,19 @@ static void t_redo_lone_half(void) {
   CHECK(jrnapp_step_pair(1, nm) == JRN_OK && memcmp(sv, snapS, sizeof sv) == 0, "#410 bag: redo press 1 applies the plain Setup (image == after-Setup)");
   CHECK(jrnapp_step_pair(1, nm) == JRN_NOOP && memcmp(sv, snapS, sizeof sv) == 0, "#410 bag: redo press 2 stops before the lone Swap (image unchanged)");
   CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && memcmp(sv, snapB, sizeof sv) == 0, "#410 bag: UNDO is unaffected by the redo guard (undoes the Setup back to the bag step)");
+  { int mv; char st2[25]; long kk; unsigned lone = 0; uint32_t tip;   /* re-verify-zd-2: the jump's budget walk fails CLOSED under a single read fault */
+    CHECK(app_world_reset() && stageA(300), "#410 sweep: a plain step");
+    memcpy(snapB, sv, sizeof sv);
+    g_cut = 1; CHECK(stage_swap(10, 11, 12), "#410 sweep: Setup + Swap flushed + Box move pending"); g_cut = 0;
+    cut_and_reopen(snapB);
+    tip = jrnapp_tip(); rd_snapshot();
+    for (kk = 0; kk < 120; kk++) {
+      rd_restore(); memcpy(sv, snapB, sizeof sv); card_remount();
+      if (!app_reopen()) continue;
+      rd_fail_read_at = kk; (void)jrnapp_jump(tip, st2, &mv); rd_fail_read_at = -1;
+      if (memcmp(sv, snapB, sizeof sv) && memcmp(sv, snapS, sizeof sv)) lone++;
+    }
+    CHECK(lone == 0, "#410 re-verify-2: no single read fault lets a History jump land on the lone Swap half (%u point(s) did)", lone); }
   /* 3: control - the whole swap on the card: the chord redoes the pair (unchanged behaviour) */
   CHECK(app_world_reset() && stage_swap(10, 11, 12), "#410 whole: both drops flushed");
   cut_and_reopen(snapS);

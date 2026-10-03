@@ -76,6 +76,16 @@ g12 = rd("pdna_gen12.c")
 pin("#392c the waiting-for-the-PC offer picks 'Put it in now?' for exactly one queued copy",
     g12, lambda t: "g_pcq_count == 1 ? PDNA_XFER_PCQ_L1_ONE_FMT : PDNA_XFER_PCQ_L1_FMT" in t,
     lambda t: t.replace("g_pcq_count == 1 ? PDNA_XFER_PCQ_L1_ONE_FMT : PDNA_XFER_PCQ_L1_FMT", "PDNA_XFER_PCQ_L1_FMT"))
+# ---- #410 (re-verify): a History jump that stopped short of its target is an error, never "Already there."
+pin("#410 app_history_jump maps a short-stopped JRN_NOOP to AUR_ERR (not AUR_NOTHING)",
+    main, lambda t: "return (rc == JRN_NOOP && jrnapp_cursor() != target) ? AUR_ERR : aur_from_rc(rc);" in t,
+    lambda t: t.replace("return (rc == JRN_NOOP && jrnapp_cursor() != target) ? AUR_ERR : aur_from_rc(rc);", "return aur_from_rc(rc);"))
+pin("#410 jnrapp_jump's budget walk fails CLOSED on a read fault",
+    jrn, lambda t: 'if (rc < 0) { ja_event("history jump: a read fault in the half-swap guard, the jump is refused", rc); return rc; }' in t,
+    lambda t: t.replace('if (rc < 0) { ja_event("history jump: a read fault in the half-swap guard, the jump is refused", rc); return rc; }', ""))
+pin("#410 jnrapp_jump's budget applies only when a lone half exists (a bare floor stays JRN_E_CROSSED)",
+    jrn, lambda t: "if (cut) room = av - cut;" in t,
+    lambda t: t.replace("if (cut) room = av - cut;", "room = av - cut;"))
 
 if fails:
     for f in fails:

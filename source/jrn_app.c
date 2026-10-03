@@ -750,7 +750,8 @@ static int ja_chord_pair(int dir, int* land) {
 static int __attribute__((noinline)) ja_redo_in_cut(void) {
   uint32_t av = 0, total = 0, cut = 0;
   int rc = jrn_redo_info(&s_j, &av, &total, 0);
-  if (rc < 0 || !av) return 0;
+  if (rc < 0) return rc;                                     /* fail CLOSED */
+  if (!av) return 0;
   rc = ja_cut_tail(av, total, &cut);
   if (rc) return rc < 0 ? rc : JRN_E_STATE;
   return cut >= av ? 1 : 0;
@@ -954,11 +955,14 @@ int jrnapp_jump(uint32_t target, char stop[25], int* moved) {
   if (target == 0) dir = -1;
   if (dir > 0) {                                             /* #410: the redo budget, measured ONCE -- the cut tail is fixed while the cursor climbs (cut_i = min(cut0, av0 - i)) */
     uint32_t av = 0, tot = 0, cut = 0;
-    if (jrn_redo_info(&s_j, &av, &tot, 0) >= 0 && av) {
+    rc = jrn_redo_info(&s_j, &av, &tot, 0);
+    if (rc < 0) { ja_event("history jump: a read fault in the half-swap guard, the jump is refused", rc); return rc; }   /* fail CLOSED: a faulted walk is not "no cut" */
+    if (av) {
       rc = ja_cut_tail(av, tot, &cut);
       if (rc) { ja_event("history jump: a read fault in the half-swap guard, the jump is refused", rc); return rc < 0 ? rc : JRN_E_STATE; }
-      room = av - cut;
+      if (cut) room = av - cut;                              /* no cut: the step itself reports the floor (JRN_E_CROSSED + its name) or the tip (JRN_NOOP) */
     }
+    rc = 0;
   }
   for (hops = 0; hops < 4096u && jrn_cursor(&s_j) != target; hops++) {
     char nm[25];
