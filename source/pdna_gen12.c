@@ -3164,6 +3164,19 @@ static void gb_paste_sidecar_undo(const char* path) {
   if (wst != SF_OK) log_line("gen12: sidecar cleanup: rewrite failed for %s", path);
 }
 
+/* #389 review D4 (same-session gap): the ledger read said "absent" (SF_ERR_OPEN). In a session where an
+ * earlier verified write already lost its rename, the verified bytes sit in <path>.tmp and ONLY the boot
+ * heal ever looks there -- gbsc_init + a verified write over it would drop those entries. Heal the key first
+ * (xh_absent_resolve, host-tested; `buf` is the caller's GBSC_FILE_MAX buffer, reused -- no new stack buffer). 1 = go on (a fresh ledger in
+ * buf, or the healed one read back into buf with *len); 0 = refused, message shown. */
+static int __attribute__((noinline))
+gb_ledger_absent_heal(const char* path, uint64_t key, uint8_t* buf, uint32_t* len) {
+  if (xh_absent_resolve(PDNA_XFER_DIR, path, key, buf, GBSC_FILE_MAX, app_can_edit(), len)) return 1;
+  snd_error();
+  msg_wait(PDNA_SIDECAR_READFAIL_TITLE, UI_WARN, sf_status_str(SF_ERR_READ), PDNA_SIDECAR_NOTWRITTEN_L2);
+  return 0;
+}
+
 /* The sidecar, then gbs_insert(), then the card -- shared by every Gen-3 -> Game Boy
  * landing (BACKLOG #246: gb_bank_down_g3 below is its only caller now; the menu-driven
  * gb_paste_hook this comment used to describe steps 6-8 of is deleted, along with the
@@ -3232,7 +3245,7 @@ gb_paste_write(const GbEditMon* mon, int box, const uint8_t orig80[80],
     msg_wait(PDNA_SIDECAR_CORRUPT_TITLE, UI_WARN, PDNA_SIDECAR_CORRUPT_KEPT_L1, 0);
     len = (uint32_t)gbsc_init(g_ed->sidecar, key);
   } else if (rst == SF_ERR_OPEN) {
-    len = (uint32_t)gbsc_init(g_ed->sidecar, key);   /* genuinely absent (or unopenable) */
+    if (!gb_ledger_absent_heal(path, key, g_ed->sidecar, &len)) return false;   /* #389 D4: absent, or a .tmp in the way */
   } else if (rst != SF_OK) {
     /* S5-B re-verification NEW-2 (must): SF_ERR_OPEN is the ONLY status that means
      * "no such file" -- sf_read_full() also returns SF_ERR_READ for a failed/short
@@ -3485,7 +3498,7 @@ xfer_down_write(uint64_t key, const uint8_t cell80[80], const GbEditMon* written
     msg_wait(PDNA_SIDECAR_CORRUPT_TITLE, UI_WARN, PDNA_SIDECAR_CORRUPT_KEPT_L1, 0);
     len = (uint32_t)gbsc_init(scratch, key);
   } else if (rst == SF_ERR_OPEN) {
-    len = (uint32_t)gbsc_init(scratch, key);
+    if (!gb_ledger_absent_heal(path_out, key, scratch, &len)) return -1;   /* #389 D4 */
   } else if (rst != SF_OK) {
     snd_error();
     msg_wait(PDNA_SIDECAR_READFAIL_TITLE, UI_WARN, sf_status_str(rst), PDNA_SIDECAR_NOTWRITTEN_L2);

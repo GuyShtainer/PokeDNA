@@ -112,6 +112,19 @@ def f389u(**b: str) -> tuple[bool, str]:
     return True, "ok"
 
 
+# ------------------------------------------------------------------------------------------------ #389 review D4
+def f389g(helper: str, paste: str, down: str) -> tuple[bool, str]:
+    if "xh_absent_resolve(PDNA_XFER_DIR," not in helper or "app_can_edit()" not in helper:
+        return False, "gb_ledger_absent_heal must call xh_absent_resolve(PDNA_XFER_DIR, ... app_can_edit() ...) (#389 D4)"
+    if not re.search(r"SF_ERR_OPEN\)\s*\{\s*if \(!gb_ledger_absent_heal\(path, key, g_ed->sidecar, &len\)\) return false;", paste):
+        return False, "gb_paste_write: the SF_ERR_OPEN branch does not heal before starting a fresh ledger (#389 D4)"
+    if not re.search(r"SF_ERR_OPEN\)\s*\{\s*if \(!gb_ledger_absent_heal\(path_out, key, scratch, &len\)\) return -1;", down):
+        return False, "xfer_down_write: the SF_ERR_OPEN branch does not heal before starting a fresh ledger (#389 D4)"
+    if "gbsc_init" in paste.split("SF_ERR_OPEN")[1].split("else if")[0] or "gbsc_init" in down.split("SF_ERR_OPEN")[1].split("else if")[0]:
+        return False, "a SF_ERR_OPEN branch still gbsc_init()s directly (#389 D4)"
+    return True, "ok"
+
+
 # ------------------------------------------------------------------------------------------------ #390
 def f390(bridge: str, g3run: str, fill: str) -> tuple[bool, str]:
     if not re.search(r"if \(GB_GEN2 == dst_gen && fill_no_rom\) gb_gen12_norom_msg\(GB_GEN2\);\s*else gb_gen12_nomoves_msg\(dst_gen\);", bridge):
@@ -224,6 +237,19 @@ def run() -> None:
     check(ok, d)
     run_muts("389u", f389u, parts, tuple(
         (f"{nm} back to a bare f_unlink", nm, "xh_unlink_ledger(", "f_unlink(") for _, nm in D2_SITES))
+    # -------- #389 review D4
+    parts = dict(helper=function_body(g12_t, "gb_ledger_absent_heal"), paste=function_body(g12_t, "gb_paste_write"),
+                 down=function_body(g12_t, "xfer_down_write"))
+    for k_, v in parts.items():
+        check(bool(v), f"#389 D4: {k_} not located")
+    ok, d = f389g(**parts)
+    check(ok, d)
+    run_muts("389g", f389g, parts, (
+        ("helper does not heal", "helper", "xh_absent_resolve(PDNA_XFER_DIR,", "xh_resolve_not(PDNA_XFER_DIR,"),
+        ("helper ignores the write gate", "helper", "app_can_edit()", "true"),
+        ("gb_paste_write inits directly", "paste", "if (!gb_ledger_absent_heal(path, key, g_ed->sidecar, &len)) return false;", "len = (uint32_t)gbsc_init(g_ed->sidecar, key);"),
+        ("xfer_down_write inits directly", "down", "if (!gb_ledger_absent_heal(path_out, key, scratch, &len)) return -1;", "len = (uint32_t)gbsc_init(scratch, key);"),
+    ))
     # -------- #390
     bridge = function_body(g12_t, "gb_bank_down_bridge")
     g3run = function_body(g12_t, "bank_down_g3_run")

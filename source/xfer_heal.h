@@ -35,4 +35,10 @@ int xh_heal_dir(const char* dir, uint8_t* scratch, uint32_t cap, bool can_edit, 
  * verified .tmp left by an earlier lying write would otherwise be healed back into a record the user
  * deleted / a transfer consumed (primary wins at heal time, the delete unlinks only the primary). */
 FRESULT xh_unlink_ledger(const char* path);
+
+/* #389 review D4 (same-session gap): a writer's sf_read_full said SF_ERR_OPEN ("absent"). Heals `key` first;
+ * true = go on with `buf`/`*len` (fresh ledger, or the healed one read back); false = refuse (never gbsc_init
+ * over a .tmp). `buf`/`cap` (>= GBSC_FILE_MAX) is the caller's own buffer. */
+bool xh_absent_resolve(const char* dir, const char* path, uint64_t key, uint8_t* buf, uint32_t cap,
+                       bool can_edit, uint32_t* len);
 #endif

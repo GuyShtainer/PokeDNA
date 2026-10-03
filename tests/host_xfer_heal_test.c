@@ -224,10 +224,29 @@ static void resurrect(void) {
   printf("resurrect: %d both-present states, plain unlink resurrected %d, xh_unlink_ledger %d\n", both, plain_rez, fixed_rez);
 }
 
+/* #389 review D4: the same-session gap. A verified .tmp (2 entries), primary absent, NO boot heal yet: the
+ * writers' "absent" branch (xh_absent_resolve) must keep the 2 entries, not gbsc_init over them. */
+static void gap(void) {
+  uint8_t v[GBSC_FILE_MAX], nb[GBSC_FILE_MAX], bad[GBSC_FILE_MAX]; uint32_t n = build(v, KEY_A, 2, 1), len = 0;
+  fresh_card(); put(PA ".tmp", v, n);
+  CHECK(xh_absent_resolve(XD, PA, KEY_A, nb, sizeof nb, true, &len) && len == n && memcmp(nb, v, n) == 0 && exists(PA) && !exists(PA ".tmp"),
+        "orphan .tmp not healed + read back (len=%u)", (unsigned)len);
+  fresh_card(); len = 0;
+  CHECK(xh_absent_resolve(XD, PA, KEY_A, nb, sizeof nb, true, &len) && gbsc_count(nb, len) == 0 && gbsc_file_key(nb, len) == KEY_A, "no .tmp: not a fresh ledger");
+  fresh_card(); put(PA ".tmp", v, n);
+  CHECK(!xh_absent_resolve(XD, PA, KEY_A, nb, sizeof nb, false, &len) && file_is(PA ".tmp", v, n) && !exists(PA), "read-only card: not refused / wrote");
+  memcpy(bad, v, n); bad[GBSC_HEADER + 40] ^= 0x55;
+  fresh_card(); put(PA ".tmp", bad, n);
+  CHECK(!xh_absent_resolve(XD, PA, KEY_A, nb, sizeof nb, true, &len) && file_is(PA ".tmp", bad, n), "corrupt .tmp not refused");
+  CHECK(!xh_absent_resolve(XD, PA, KEY_A, nb, 100, true, &len), "small buffer accepted");
+  printf("gap: orphan entries survive the same-session writer path\n");
+}
+
 int main(void) {
   decisions();
   sweep();
   resurrect();
+  gap();
   printf("%s (%d failures)\n", fails ? "FAILED" : "PASSED", fails);
   return fails ? 1 : 0;
 }
