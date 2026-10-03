@@ -3714,7 +3714,7 @@ gb_rec_moves(const uint8_t rec80[80], uint8_t gen, uint16_t from4[4], uint8_t ba
  * learnset block this needs, BACKLOG #150 S150-10 decision 5) -- forward-declared here
  * because gb_paste_hook, which calls it, sits earlier in this file than that block. */
 static int __attribute__((noinline)) gb_paste_fill_moves(uint16_t dex, uint8_t level, GbEditMon* mon,
-                                const uint8_t bad4[4], uint8_t fill4[4]);
+                                const uint8_t bad4[4], uint8_t fill4[4], bool* no_rom);
 
 /* Derive "<save's dir><save's basename>" (no extension) from g_ed->path into
  * g_ed->romspath -- arena-resident, so the path never lives on any function's own
@@ -3947,10 +3947,10 @@ void __attribute__((noinline)) gb_gen12_norom_msg(uint8_t gen) {
            UI_WARN, l1, PDNA_SIDECAR_GEN1_L1);
 }
 
-/* BACKLOG #212 review D9: the bridge's zero-move refusal runs AFTER the base-stats
- * gate has already proved a ROM is present (gb_gen12_norom_msg above would be a
- * false "the ROM is missing" claim there) -- the true reason is that no eligible
- * move was found anywhere in that ROM's learnset for this species/level. */
+/* BACKLOG #212 review D9 / #390: the zero-move refusal. For GEN 1 the base-stats gate has already proved a ROM is
+ * present by the time it runs (gb_gen12_norom_msg above would be a false "the ROM is missing" claim), so the true
+ * reason is that no eligible move was found in that ROM's learnset for this species/level. GEN 2 has no such gate:
+ * its callers check gb_paste_fill_moves' no_rom flag first and name the missing ROM instead. */
 static void __attribute__((noinline)) gb_gen12_nomoves_msg(uint8_t gen) {
   msg_wait(gen == GB_GEN1 ? PDNA_SIDECAR_NOMOVES_TITLE1 : PDNA_SIDECAR_NOMOVES_TITLE2,
            UI_WARN, PDNA_SIDECAR_NOMOVES_L1, 0);
@@ -4069,7 +4069,8 @@ BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]) {
      * the same function. */
     boxoam_suspend();
     s_busy_reading();
-    nfill = gb_paste_fill_moves(gb_get_species_dex(&mon), wlvl, &mon, bad4, fill4);
+    bool fill_no_rom = false;
+    nfill = gb_paste_fill_moves(gb_get_species_dex(&mon), wlvl, &mon, bad4, fill4, &fill_no_rom);
     log_line("gen12: bridge moves: gen %u, %d bad slot(s), %d filled",
              (unsigned)dst_gen, nbad, nfill);
     /* Decision 8.7's real predicate (review D1): "the record would be WRITTEN with
@@ -4080,7 +4081,10 @@ BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]) {
     for (int i = 0; i < 4; i++) if (gb_get_move(&mon, i)) nleft++;
     if (nleft == 0) {
       snd_deny();
-      gb_gen12_nomoves_msg(dst_gen);   /* D9: the base-stats gate already proved a ROM */
+      /* D9 + #390: the Gen-1 base-stats gate above already proved a ROM, so "no learnset" is true there. Gen 2 has no
+       * such gate: its fill comes up empty when the ROM is simply missing, and that is what the player must be told. */
+      if (GB_GEN2 == dst_gen && fill_no_rom) gb_gen12_norom_msg(GB_GEN2);
+      else gb_gen12_nomoves_msg(dst_gen);
       boxoam_resume();
       return BANK_DOWN_REFUSED;
     }
@@ -4785,7 +4789,8 @@ BankDownResult gb_bank_down_g3(int dst_box, const uint8_t cell80[80]) {
      * BACKLOG #246 review D2: no boxoam_suspend/resume bracket -- see the loss-screen
      * comment above (drop_held_down_g3's own outer bracket already covers this). */
     s_busy_reading();
-    nfill = gb_paste_fill_moves(gb_get_species_dex(&mon), wlvl, &mon, bad4, fill4);
+    bool fill_no_rom = false;
+    nfill = gb_paste_fill_moves(gb_get_species_dex(&mon), wlvl, &mon, bad4, fill4, &fill_no_rom);
     /* "packed": did any KEPT (non-bad) slot's move end up at a different index than
      * it started at? g3gb_moves_fill's own contract writes a fill AT its bad slot's
      * own index and never touches a kept slot's value -- so a kept slot's move can
@@ -4806,7 +4811,9 @@ BankDownResult gb_bank_down_g3(int dst_box, const uint8_t cell80[80]) {
     for (int i = 0; i < 4; i++) if (gb_get_move(&mon, i)) nleft++;
     if (nleft == 0) {
       snd_deny();
-      gb_gen12_nomoves_msg(g_ed->s.gen);
+      /* #390: same wording rule as the bridge above -- a Gen-2 session with no ROM must say so. */
+      if (g_ed->s.gen == GB_GEN2 && fill_no_rom) gb_gen12_norom_msg(GB_GEN2);
+      else gb_gen12_nomoves_msg(g_ed->s.gen);
       return BANK_DOWN_REFUSED;
     }
   }
@@ -5553,7 +5560,7 @@ gb_create_learn(uint16_t dex, const uint8_t g1_start[4], uint8_t at_level,
  * both inside g3gb_moves_fill(), this function is a pure ROM-resolution wrapper
  * around it. Returns g3gb_moves_fill()'s own fill count (0..nbad). */
 static int __attribute__((noinline)) gb_paste_fill_moves(uint16_t dex, uint8_t level, GbEditMon* mon,
-                                const uint8_t bad4[4], uint8_t fill4[4]) {
+                                const uint8_t bad4[4], uint8_t fill4[4], bool* no_rom) {
   uint8_t learn4[4] = { 0, 0, 0, 0 };
   bool have_rom = gb_create_locate_rom(g_ed->s.gen);
   if (have_rom && g_ed->s.gen == GB_GEN1) {
@@ -5568,6 +5575,7 @@ static int __attribute__((noinline)) gb_paste_fill_moves(uint16_t dex, uint8_t l
   } else if (have_rom) {
     have_rom = gb_create_learn(dex, NULL, level, NULL, learn4) >= 0;
   }
+  if (no_rom) *no_rom = !have_rom;   /* BACKLOG #390: the caller's refusal wording depends on WHY the fill came up empty */
   if (!have_rom) {
     int n = 0; for (int i = 0; i < 4; i++) n += bad4[i] != 0;
     log_line("gen12: paste moves: no gen-%u rom, %d slot(s) emptied", (unsigned)g_ed->s.gen, n);
