@@ -168,7 +168,7 @@ TEXT_MUTANTS: list[tuple[str, str, str, str, str]] = [
     ("L10 the jump skips the re-derive when n == 0", "pdna_main.c", "if (n > 0 || rc == JRN_E_TORN) {", "if (n > 0) {", "P2c"),
     ("L11 a failed discard re-read still clears the latch", "pdna_main.c", "if (ok) imgf_partial_clear(&g_img); ", "imgf_partial_clear(&g_img); ", "P2a"),
     ("L12 a fresh load keeps a stale latch", "pdna_main.c", "imgf_partial_clear(&g_img);                  /* D10/9.2: a new load", "/* D10/9.2: a new load", "P2d"),
-    ("L13 the exit save no longer reaches app_commit_pc", "pdna_main.c", "  if (app_commit_pc()) {\n    bool promoted", "  if (1) {\n    bool promoted", "P3f"),
+    ("L13 the exit save no longer reaches app_commit_pc", "pdna_main.c", "  if (app_commit_pc()) {\n    /* BACKLOG #383", "  if (1) {\n    /* BACKLOG #383", "P3f"),
     ("F1 restore snd_ok in the chord's TORN branch", "pdna_box.c", 'chord_refuse("PARTIAL STEP", "A step was only partly applied:", "exit without saving it.");',
      'snd_ok(); chord_refuse("PARTIAL STEP", "A step was only partly applied:", "exit without saving it.");', "P4b"),
     ("F2 delete the chord's AUR_PARTIAL branch (it falls to 'Nothing was changed')", "pdna_box.c", "} else if (rc == AUR_PARTIAL) {", "} else if (rc == 9999) {", "P4a"),

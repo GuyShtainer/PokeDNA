@@ -59,8 +59,9 @@ def func(text: str, sig_re: str) -> str:
 def p_d1(bank: str, box: str) -> str | None:
     bl = func(bank, r"^static bool box_load\(int box\) \{")
     if re.search(r"\bbsrc\s*=(?!=)", bl.split("bml_box_read(", 1)[1]): return "box_load reassigns bsrc after bml_box_read"
-    if not re.search(r"g_box_unread\s*=\s*bsrc\s*==\s*BML_BOX_READ_ERROR\s*;\s*\n\s*g_loaded\s*=\s*box\s*;", bl):
-        return "box_load: no `g_box_unread = bsrc == BML_BOX_READ_ERROR;` right before `g_loaded = box;`"
+    # zz #382(b): the assignment became a kind code (READ ERROR -> 1, a failed heal -> 2); the READ ERROR term is the D1 pin.
+    if not re.search(r"g_box_unread\s*=\s*\(bsrc\s*==\s*BML_BOX_READ_ERROR\)\s*\?\s*BOX_UNREAD_ERR[^;]*;\s*\n\s*g_loaded\s*=\s*box\s*;", bl):
+        return "box_load: no `g_box_unread = (bsrc == BML_BOX_READ_ERROR) ? BOX_UNREAD_ERR ...;` right before `g_loaded = box;`"
     bs = func(bank, r"^static bool box_save\(void\) \{")
     m = re.search(r"if\s*\(\s*g_box_unread\s*\)\s*\{[^}]*return false;\s*\}", bs)
     if not m or bs.find("sf_save_rolling_ok") < m.start():
@@ -122,7 +123,7 @@ def p_d7(bank: str, box: str) -> str | None:
 
 PINS = [
     ("D1", p_d1, [
-        (BANK, "  g_box_unread = bsrc == BML_BOX_READ_ERROR;\n", ""),
+        (BANK, "  g_box_unread = (bsrc == BML_BOX_READ_ERROR) ? BOX_UNREAD_ERR : heal_failed ? BOX_UNREAD_HEAL : 0;\n", ""),
         (BANK, "  if (g_box_unread) {\n    log_line(\"bank: box %02d was not read", "  if (0) {\n    log_line(\"bank: box %02d was not read"),
         (BANK, "  g_box_unread = false;\n  g_loaded = 0;", "  g_loaded = 0;"),
         (BANK, "    if (g_box_unread) {                              /* Zy D1", "    if (0) {                              /* Zy D1"),
