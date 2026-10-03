@@ -41,6 +41,7 @@
 #include "xfer_gate.h"      /* BACKLOG #120 S2: xg_pc_live/xg_togame_row/xg_paste_row/xg_inject_refuse */
 #include "bank_cell.h"      /* BACKLOG #150 S150-6: bc_is_native -- app_paste_gb_commit's G-H6 guard */
 #include "xfer_io.h"        /* BACKLOG #150 S150-6: xr_path_for_key/xr_path_for_name/xr_migrate_once */
+#include "xfer_heal.h"      /* BACKLOG #389: heal a ledger whose verified-write swap was interrupted (orphan .pds.tmp) */
 #include "xfer_rec.h"       /* BACKLOG #150 S150-6: xr_key_g3 -- the reroll re-key guard             */
 #include "xfer_view.h"      /* BACKLOG #150 S150-15: xv_has_original/xv_find_original -- GB ORIGINAL */
 #ifdef PDNA_DELTA
@@ -10626,6 +10627,30 @@ typedef struct {
 _Static_assert(sizeof(GbReconBuf) <= sizeof(g_entries),
               "gb_reconcile buffer no longer fits the borrowed g_entries cache");
 
+/* BACKLOG #389: a card pull (or a swallowed rename) inside sf_write_verified's unlink -> rename window
+ * leaves a ledger as ONLY <key>.pds.tmp (verified bytes), which every "*.pds" scan skips -- the record and
+ * the Game Boy original it holds vanished from every screen. Heal each orphan by RENAME (xfer_heal.c, the
+ * #371/#378 pattern) BEFORE anything reads or writes that key: at boot, at a Gen-3 save load, and at the
+ * TRANSFERS scan. `scratch` is a caller-owned GBSC_FILE_MAX buffer (this function holds none, NO new
+ * statics). Read-only carts never write (xh_heal_dir with can_edit false only counts). Both ledger folders
+ * (the legacy /sidecar one too). The rumble motor is paused around the renames (rmbl.h). */
+static void __attribute__((noinline)) app_ledger_heal(uint8_t* scratch) {
+  if (!scratch) return;
+  int ro1 = 0, ro2 = 0;
+  rmbl_pause();
+  int n = xh_heal_dir(PDNA_XFER_DIR, scratch, GBSC_FILE_MAX, app_can_edit(), &ro1);
+  n += xh_heal_dir(PDNA_SIDECAR_DIR, scratch, GBSC_FILE_MAX, app_can_edit(), &ro2);
+  rmbl_resume();
+  if (n) app_xv_cache_invalidate();   /* BACKLOG #213: the ledger changed under the GB ORIGINAL cache */
+  if (ro1 + ro2) log_line("xfer: %d orphan ledger .tmp left (card read-only)", ro1 + ro2);
+}
+
+/* Boot-time wrapper: the one place a stack scratch is taken (boot is shallow; the .su diff is in the lane report). */
+static void __attribute__((noinline)) app_ledger_heal_boot(void) {
+  uint8_t scratch[GBSC_FILE_MAX];
+  app_ledger_heal(scratch);
+}
+
 /* BACKLOG #150 S150-6, site 5: decision 4/D-Q7 applied to a FILENAME instead of a
  * key, so a reconcile hit's later claim write lands in the same file it was read
  * from (xr_path_for_name's own contract). `out` is always left holding a usable
@@ -10976,6 +11001,7 @@ static void __attribute__((noinline)) xfer_reconcile_walk(GbReconBuf* rb, int ca
   int examined = 0;
   uint32_t dc_base, dc_stride; dc_layout(&dc_base, &dc_stride);
 
+  app_ledger_heal(rb->sidecar);   /* BACKLOG #389: an orphan <key>.pds.tmp is the primary -- heal before this scan */
   DIR dir; FILINFO fi;
   if (f_opendir(&dir, PDNA_XFER_DIR) != FR_OK) return;
   while (rb->nxrc < GB_RECON_MAX_HITS && rb->nfiles < GB_RECON_MAX_FILES &&
@@ -12472,6 +12498,7 @@ static void view_save(const char* path) {
   {
     uint8_t* mig = app_box_swap_acquire(GBSC_FILE_MAX);
     if (mig) {
+      app_ledger_heal(mig);   /* BACKLOG #389: BEFORE the migration / reconcile read or write any ledger */
       xr_migrate_once(mig, GBSC_FILE_MAX);
       app_box_swap_release();
     }
@@ -12754,6 +12781,7 @@ int main(void) {
         }
         msg_wait("LOG NOT SAVING", UI_WARN, m, why);
       }
+      app_ledger_heal_boot();   /* BACKLOG #389: the shipped boot's own call (below), so a --vsd pull sweep reaches it too */
     }
   }
   /* ---- emulator build: no flashcart, no microSD, no file browser. -------------
@@ -12876,6 +12904,7 @@ int main(void) {
     msg_wait("LOG NOT SAVING", UI_WARN, m, why);
   }
   pdna_romcheck_report();  /* the verdict is already on the card before we ask for A */
+  app_ledger_heal_boot();  /* BACKLOG #389: an interrupted ledger swap (orphan <key>.pds.tmp) is healed before any screen reads it */
 
   bus_late_selftests();
 
