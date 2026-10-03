@@ -75,6 +75,11 @@ uint32_t jrnapp_offer(uint32_t* avail, char stop[25]);
  * its rollback failed, so the image holds PART of a step; the epoch is crossed and the caller must re-derive
  * its copies and say so (never report it as a count). */
 int  jrnapp_reapply(void);
+/* #406: the offer never ends on a swap's OLDER half (the step named "Swap") whose newer half is not on the card -- applying drop 1 alone deletes the displaced mon from the
+ * image. jrnapp_offer / jrnapp_reapply hold such a trailing run back; this returns how many (0 = none) so the load can say so when NOTHING is left to offer. */
+uint32_t jrnapp_cutoff(void);
+/* #406(b): call after a step closes -- when it completed a swap pair (Swap + Box move / Party add) the pair is flushed to the card at once. */
+void jrnapp_pair_flush(void);
 /* The user declined: write the discarded marker (and flush it). */
 void jrnapp_decline(void);
 /* The exit-B discard put the card's image back: re-anchor and mark the thrown-away steps discarded. */

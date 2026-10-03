@@ -1099,6 +1099,10 @@ int main(void) {
     int lines = wrap_lines(b, 184);
     chkv("PDNA_XFER_PCQ_L1_FMT composed at n=255 wraps to <= 2 lines (app_confirm's own cap)",
          lines, 2); }
+  { char b[96]; snprintf(b, sizeof b, PDNA_JRN_CROSSED_L1_FMT, "WWWWWWWWWWWWWWWW");   /* %.10s: the widest 10 glyphs */
+    chkv("#407 PDNA_JRN_CROSSED_L1_FMT composed with a 10-glyph W step name wraps to <= 2 lines (app_confirm's own cap)", wrap_lines(b, 184), 2);
+    snprintf(b, sizeof b, PDNA_JRN_CROSSED_L1_FMT, "Bank move");
+    chkv("#407 ... and with 'Bank move'", wrap_lines(b, 184), 2); }
   PF(PDNA_XFER_REC_TITLE,    28, 184);
   PF(PDNA_XFER_REC_L1,       28, 184);
   PF(PDNA_XFER_REC_L2,       28, 184);
