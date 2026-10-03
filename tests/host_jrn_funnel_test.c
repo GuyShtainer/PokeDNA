@@ -1290,6 +1290,43 @@ static void t_swap_cutoff(void) {
   tot = jrnapp_offer(&av, stop);
   CHECK(tot == 0u && jrnapp_cutoff() == 2u, "#406 a chained swap cut before its Box move holds back BOTH Swaps (total %u cutoff %u)", (unsigned)tot, (unsigned)jrnapp_cutoff());
   CHECK(jrnapp_reapply() == 0 && memcmp(sv, snapS, sizeof sv) == 0, "#406 chain: nothing applied");
+  /* 6: (b) the pair-completion flush: the swap's two drops reach the card with NO rest point; a lone first half does NOT flush (nothing to pair) */
+  {
+    uint8_t x[MONB], y[MONB];
+    mon_fill(x, 1); mon_fill(y, 2);
+    CHECK(app_world_reset(), "pair-flush: world");
+    memcpy(slot_at(10), x, MONB); memcpy(slot_at(11), y, MONB);
+    CHECK(stage_pc("Setup") && jrnapp_flush() == JRN_OK, "pair-flush: Setup on the card");
+    memcpy(snapS, sv, sizeof sv);
+    memcpy(slot_at(11), x, MONB); memset(slot_at(10), 0, MONB);
+    CHECK(stage_drop1(), "pair-flush: drop 1 (unflushed)");
+    jrnapp_pair_flush();
+    cut_and_reopen(snapS);
+    CHECK(jrnapp_offer(&av, stop) == 0u && jrnapp_cutoff() == 0u, "#406(b) control: a lone drop 1 is not flushed by the hook (nothing on the card)");
+    CHECK(app_world_reset(), "pair-flush: world 2");
+    memcpy(slot_at(10), x, MONB); memcpy(slot_at(11), y, MONB);
+    CHECK(stage_pc("Setup") && jrnapp_flush() == JRN_OK, "pair-flush: Setup 2");
+    memcpy(snapS, sv, sizeof sv);
+    memcpy(slot_at(11), x, MONB); memset(slot_at(10), 0, MONB);
+    CHECK(stage_drop1(), "pair-flush: drop 1");
+    memcpy(slot_at(12), y, MONB);
+    CHECK(stage_pc("Box move"), "pair-flush: drop 2");
+    memcpy(snapF, sv, sizeof sv);
+    jrnapp_pair_flush();
+    cut_and_reopen(snapS);
+    tot = jrnapp_offer(&av, stop);
+    CHECK(tot == 2u && av == 2u && jrnapp_reapply() == 2 && memcmp(sv, snapF, sizeof sv) == 0, "#406(b) the completed pair is on the card with no rest point: whole swap offered (%u/%u)", (unsigned)tot, (unsigned)av);
+    /* a plain Box move (parent not a Swap) stays pending: the hook costs nothing for ordinary moves */
+    CHECK(app_world_reset(), "pair-flush: world 3");
+    memcpy(slot_at(10), x, MONB);
+    CHECK(stage_pc("Setup") && jrnapp_flush() == JRN_OK, "pair-flush: Setup 3");
+    memcpy(snapS, sv, sizeof sv);
+    memset(slot_at(10), 0, MONB); memcpy(slot_at(12), x, MONB);
+    CHECK(stage_pc("Box move"), "pair-flush: a plain move");
+    jrnapp_pair_flush();
+    cut_and_reopen(snapS);
+    CHECK(jrnapp_offer(&av, stop) == 0u, "#406(b) control: a plain Box move is not flushed by the hook");
+  }
   /* 5: the party variant (#320) */
   g_cut = 1;
   CHECK(stage_party_swap("Party add", 100, 2, 0, 0), "party: Setup, Swap flushed, Party add pending");

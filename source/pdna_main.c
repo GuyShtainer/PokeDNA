@@ -1934,7 +1934,7 @@ static void app_stage_sections(int sect_lo, int sect_hi, const uint8_t* block) {
  * again after step_end -- keep scopes tight (one handler) and always close them on every path. The
  * name is what the history will show (ASCII, <= 24 chars, a string literal). */
 void app_step_begin(const char* name) { img_scope_open(&g_rec, name); }
-void app_step_end(void) { (void)img_scope_close(&g_img, &g_rec, g_save, g_vinfo.slot); }
+void app_step_end(void) { (void)img_scope_close(&g_img, &g_rec, g_save, g_vinfo.slot); jrnapp_pair_flush(); }   /* #406(b): a completed swap reaches the card at once */
 /* A cross-file op (transfer, Bank<->PC, reconcile release, XRC apply, PID re-key, promotion; design D6): the
  * NEXT recorded step is marked crossed, an undo/redo/re-apply floor. Bumped inside a scope it marks that scope's
  * step (the epoch is read when the step is applied). */

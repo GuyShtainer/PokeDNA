@@ -521,6 +521,16 @@ static int ja_party_step(const JrnRec* r) { return ja_plain_step(r) && strcmp(r-
 static int ja_newer_eligible(const JrnRec* r) { return ja_plain_step(r) && (strcmp(r->name, "Box move") == 0 || strcmp(r->name, "Party add") == 0); }
 static int ja_older_eligible(const JrnRec* r) { return ja_plain_step(r) && strcmp(r->name, "Swap") == 0; }
 
+/* #406(b): a swap's pair just completed (the tip is a "Box move"/"Party add" whose parent is the "Swap") -- flush NOW (rumble-paused, verified), so the card holds the
+ * whole swap instead of waiting for the next rest point. This shrinks the lone-half window; the offer's cut (ja_cut_tail) is the guarantee. Cheap: one tip lookup per step. */
+void jrnapp_pair_flush(void) {
+  JrnRec w;
+  if (!s_r || !s_r->j || s_state != JA_OK || s_ai.slot < 0 || !jrn_pending(&s_j)) return;
+  if (jrn_find(&s_j, jrn_tip(&s_j), &w) != 0 || !ja_newer_eligible(&w)) return;
+  if (jrn_find(&s_j, w.parent, &w) != 0 || !ja_older_eligible(&w)) return;
+  (void)jrnapp_flush();
+}
+
 /* From the record in s_rec (the NEWER half): fill s_sig. Returns s_sig.ok = "this step adds one mon into ONE slot" -- an EMPTY one when need_empty (a swap's
  * last half), any one for a chained Swap (#314b: the displaced mon dropped on another occupied slot; the replaced slot's own pairing is ja_older_pairs's job). */
 static int ja_sig_make(const JrnRec* r, int need_empty) {
