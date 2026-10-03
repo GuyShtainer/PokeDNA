@@ -105,6 +105,21 @@ FRESULT xh_unlink_ledger(const char* path) {
   return f_unlink(path);
 }
 
+/* #394: a BAD <path>.tmp is moved to <path>.tmp.bad (an older .tmp.bad is replaced) before the fresh ledger is
+ * started -- the same set-aside the primary-corruption path does -- so a salvageable torn write is kept, not
+ * silently overwritten. false = the rename failed (the bytes are still at .tmp): the caller refuses. */
+static bool xh_set_aside_tmp(const char* path) {
+  char tmp[GBSC_PATH_MAX + 8], bad[GBSC_PATH_MAX + 12];
+  size_t n = strlen(path);
+  if (n + 9 > sizeof bad) return false;
+  memcpy(tmp, path, n); memcpy(tmp + n, ".tmp", 5);
+  memcpy(bad, path, n); memcpy(bad + n, ".tmp.bad", 9);
+  (void)f_unlink(bad);                                   /* an older set-aside: replaced (FR_NO_FILE is the normal case) */
+  FRESULT rr = f_rename(tmp, bad);
+  log_line("xfer_heal: %s bad .tmp set aside as .tmp.bad (%s)", path, rr == FR_OK ? "OK" : "FAILED");
+  return rr == FR_OK;
+}
+
 /* #389 review D4: the writers' "ledger read said absent" branch. XH_NONE -> a fresh ledger in buf; XH_RESTORED
  * -> the healed ledger read back into buf; XH_BAD_TMP -> a fresh ledger too (a bad .tmp holds no verified bytes,
  * so the caller's next verified write replaces it; refusing would lock the mon's transfers forever after a
@@ -118,6 +133,7 @@ bool xh_absent_resolve(const char* dir, const char* path, uint64_t key, uint8_t*
   if (hr == XH_NONE) { FRESULT ps = f_stat(path, 0); if (ps != FR_NO_FILE && ps != FR_NO_PATH) return false; }
   /* An unparseable .tmp is torn scratch from a pull mid-write (savefile only keeps a byte-compared .tmp past
    * the write itself); the caller's next verified write replaces it. */
+  if (hr == XH_BAD_TMP && !xh_set_aside_tmp(path)) return false;   /* #394: keep the bad bytes, refuse if they cannot be moved */
   if (hr == XH_NONE || hr == XH_BAD_TMP) { *len = (uint32_t)gbsc_init(buf, key); return true; }
   if (hr == XH_RESTORED) {
     log_line("xfer_heal: %s healed from its .tmp mid-session", path);

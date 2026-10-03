@@ -285,6 +285,10 @@ static void gap(void) {
   len = 0;
   CHECK(xh_absent_resolve(XD, PA, KEY_A, nb, sizeof nb, true, &len) && gbsc_count(nb, len) == 0 && gbsc_file_key(nb, len) == KEY_A,
         "corrupt .tmp: not a fresh ledger");
+  CHECK(file_is(PA ".tmp.bad", bad, n) && !exists(PA ".tmp"), "#394: bad .tmp not set aside byte-identical as .tmp.bad");
+  { uint8_t older[GBSC_FILE_MAX]; memcpy(older, v, n); older[0] ^= 0xFF;            /* an older .tmp.bad is replaced */
+    fresh_card(); put(PA ".tmp.bad", older, n); put(PA ".tmp", bad, n); len = 0;
+    CHECK(xh_absent_resolve(XD, PA, KEY_A, nb, sizeof nb, true, &len) && file_is(PA ".tmp.bad", bad, n), "#394: older .tmp.bad not replaced"); }
   { uint8_t w[GBSC_FILE_MAX]; uint32_t m = build(w, KEY_A, 3, 4); fresh_card(); put(PA, w, m);   /* re-verify-za2b F1 */
     CHECK(!xh_absent_resolve(XD, PA, KEY_A, nb, sizeof nb, true, &len) && file_is(PA, w, m), "primary present: absent_resolve handed back a fresh ledger"); }
   for (long k = 0; k < 40; k++) {   /* a card fault in the heal (XH_FAILED) or the read-back: refuse; entries survive */
