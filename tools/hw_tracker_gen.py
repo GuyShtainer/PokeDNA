@@ -480,12 +480,12 @@ function applyRow(id){
   var cchip = document.getElementById("cl-" + d), cnote = document.getElementById("cn-" + d);
   var eff = (c && c.state) ? c : (r.cl || null);
   var LBL = { ok:"Claude: emu ✓", verified:"Claude: emu ✓", partial:"Claude: emu partial",
-              walled:"Claude: can't emu-prove", untested:"Claude: not emu-checked" };
+              walled:"Claude: can't emu-prove", untested:"Claude: not emu-checked", fail:"Claude: emu ✗ defect filed" };
   if (eff && eff.state) {
     cchip.hidden = false;
     cchip.textContent = LBL[eff.state] || ("Claude: " + eff.state);
     cchip.className = "chip " + ((eff.state === "ok" || eff.state === "verified") ? "pass" :
-                                 eff.state === "partial" ? "walled" : "");
+                                 eff.state === "partial" ? "walled" : eff.state === "fail" ? "fail" : "");
   } else cchip.hidden = true;
   var cn = eff ? (eff.note || "") : "";
   if (cn) { cnote.hidden = false; cnote.innerHTML = "<b>Claude:</b> " + esc(cn) + (eff.at ? ' <span style="color:var(--muted)">(' + esc(eff.at) + ")</span>" : ""); }
