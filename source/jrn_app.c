@@ -744,6 +744,19 @@ static int ja_chord_pair(int dir, int* land) {
   return 0;
 }
 
+/* #410: 1 = EVERY remaining redo step is the load-time offer's cut tail (a trailing unpaired older half: the redo chord must not step onto it), 0 = the next redo step is
+ * allowed (or there is none -- jrnapp_step reports that), <0 = a read fault in the walk (the caller refuses; never a half swap). After a re-apply refused with JRN_E_IO (nothing
+ * applied, nothing discarded) the cursor still sits BELOW a swap's drop 1 whose partner is not on the card; stepping it would delete the displaced mon from the image. */
+static int __attribute__((noinline)) ja_redo_in_cut(void) {
+  uint32_t av = 0, total = 0, cut = 0;
+  int rc = jrn_redo_info(&s_j, &av, &total, 0);
+  if (rc < 0) return rc;                                     /* fail CLOSED */
+  if (!av) return 0;
+  rc = ja_cut_tail(av, total, &cut);
+  if (rc) return rc < 0 ? rc : JRN_E_STATE;
+  return cut >= av ? 1 : 0;
+}
+
 /* #303/#314b: ONE chord press. A swap's halves (ja_chord_pair: two steps, or three for a chained swap) undo/redo together -- one toast, name "Swap" -- so a press
  * does not strand the image on a swap's half state (the limits are listed in jrn_app.h). All-or-nothing: if a later half is refused after earlier ones moved, every
  * one already applied is rolled back through the opposite step; only if THAT fails is the half state reported (name "half a swap", JRN_OK so the caller re-derives
@@ -759,6 +772,11 @@ int jrnapp_step_pair(int dir, char name[25]) {
   if (dir < 0 && jrn_pending(&s_j)) (void)jrnapp_flush();      /* same single flush jrnapp_step does, BEFORE the lookup (the src pointers must outlive it) */
   g = ja_chord_pair(dir, &land);
   if (g < 0) { ja_event("swap pair: a read fault in the group walk, the press is refused", g); return g; }   /* #322: nothing moved, never a smaller group */
+  if (g < 2 && dir > 0) {                                      /* #410: see ja_redo_in_cut */
+    rc = ja_redo_in_cut();
+    if (rc < 0) { ja_event("redo: a read fault in the half-swap guard, the press is refused", rc); return rc; }
+    if (rc > 0) return JRN_NOOP;                                /* nothing moved */
+  }
   if (g < 2) {
     rc = jrnapp_step(dir, name);
     /* #323/#325: a whole swap press (g >= 2) names itself "Swap" below. A plain REDO that moved a step carrying the older half's name ("Swap", given only by drop_held's
@@ -919,7 +937,7 @@ int jrnapp_history_tree(JaHist* rows, int max, int* more, int* floor_hit, const 
  * applied. Returns 0 (arrived), or the JRN_E_* / JRN_NOOP that stopped the chain (`stop` = the step it stopped at). */
 int jrnapp_jump(uint32_t target, char stop[25], int* moved) {
   JrnRec rec;
-  uint32_t t, hops;
+  uint32_t t, hops, room = 0xFFFFFFFFu;
   int rc = 0, dir, n = 0;
   if (stop) stop[0] = 0;
   if (moved) *moved = 0;
@@ -935,9 +953,21 @@ int jrnapp_jump(uint32_t target, char stop[25], int* moved) {
   }
   rc = 0;
   if (target == 0) dir = -1;
+  if (dir > 0) {                                             /* #410: the redo budget, measured ONCE -- the cut tail is fixed while the cursor climbs (cut_i = min(cut0, av0 - i)) */
+    uint32_t av = 0, tot = 0, cut = 0;
+    rc = jrn_redo_info(&s_j, &av, &tot, 0);
+    if (rc < 0) { ja_event("history jump: a read fault in the half-swap guard, the jump is refused", rc); return rc; }   /* fail CLOSED: a faulted walk is not "no cut" */
+    if (av) {
+      rc = ja_cut_tail(av, tot, &cut);
+      if (rc) { ja_event("history jump: a read fault in the half-swap guard, the jump is refused", rc); return rc < 0 ? rc : JRN_E_STATE; }
+      if (cut) room = av - cut;                              /* no cut: the step itself reports the floor (JRN_E_CROSSED + its name) or the tip (JRN_NOOP) */
+    }
+    rc = 0;
+  }
   for (hops = 0; hops < 4096u && jrn_cursor(&s_j) != target; hops++) {
     char nm[25];
     if (dir < 0 && jrn_cursor(&s_j) == 0) break;
+    if (dir > 0 && (uint32_t)n >= room) { rc = JRN_NOOP; break; }   /* REVIEW-ZD: a jump never lands on a lone older swap half */
     rc = jrnapp_step(dir, nm);
     if (rc != JRN_OK) break;
     n++;

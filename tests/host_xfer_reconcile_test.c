@@ -383,6 +383,40 @@ static void test_order1(void) {
    * already fails on that mutant (idx[0]==6 would be false). */
 }
 
+/* ==== DUP-1: BACKLOG #392(b), xrc_restore_is_dup -- the one-pass RESTORE clone guard ================ */
+
+/* The decision loop of xfer_reconcile_apply step (1c), cell write replaced by a counter. */
+static int sim_restore_pass(XrcHit* hits, int n, const bool* first_fails) {
+  bool done[8]; memset(done, 0, sizeof done);
+  int cells = 0;
+  for (int i = 0; i < n; i++) {
+    if (hits[i].action != XRC_ACT_RESTORE) continue;
+    if (xrc_restore_is_dup(hits, done, i)) { done[i] = true; continue; }
+    if (first_fails && first_fails[i]) continue;          /* this restore did not land */
+    cells++; done[i] = true;
+  }
+  return cells;
+}
+
+static void test_dup1(void) {
+  printf("== DUP-1: two LOST rows of one original -> exactly ONE Bank cell ==\n");
+  XrcHit h[3]; memset(h, 0, sizeof h);
+  for (int i = 0; i < 3; i++) h[i].action = XRC_ACT_RESTORE;
+  memcpy(h[0].orig8, "\x11\x22\x33\x44\x55\x66\x77\x88", 8);
+  memcpy(h[1].orig8, h[0].orig8, 8);
+  memcpy(h[2].orig8, "\x99\x22\x33\x44\x55\x66\x77\x88", 8);
+  CHECK(sim_restore_pass(h, 2, NULL) == 1, "DUP-1: two rows of one original wrote %d cells, want 1", sim_restore_pass(h, 2, NULL));
+  CHECK(sim_restore_pass(h, 3, NULL) == 2, "DUP-1: a different original is still restored (%d cells, want 2)", sim_restore_pass(h, 3, NULL));
+  { bool ff[3] = {true, false, false};     /* the first restore failed: the twin must NOT be swallowed */
+    CHECK(sim_restore_pass(h, 2, ff) == 1, "DUP-1: failed first restore swallowed its twin (%d cells)", sim_restore_pass(h, 2, ff)); }
+  { XrcHit z[2]; memset(z, 0, sizeof z); z[0].action = z[1].action = XRC_ACT_RESTORE;     /* uncaptured orig8 never matches */
+    CHECK(sim_restore_pass(z, 2, NULL) == 2, "DUP-1: all-zero orig8 rows matched each other"); }
+  { XrcHit r[2]; memcpy(r, h, sizeof r); r[0].action = XRC_ACT_DELETE;                    /* only RESTORE rows count */
+    bool d[2] = {true, false};
+    CHECK(!xrc_restore_is_dup(r, d, 1), "DUP-1: a DELETE row counted as a restored twin"); }
+  CHECK(!xrc_restore_is_dup(NULL, NULL, 1) && !xrc_restore_is_dup(h, NULL, 1), "DUP-1: NULL args");
+}
+
 /* ==== ROW-1 ========================================================================= */
 
 /* ==== REKEY-1: BACKLOG #215(b), xrc_rekey_should_attempt/xrc_rekey_mark_done ======= */
@@ -741,6 +775,7 @@ int main(int argc, char** argv) {
   test_g3home_parked();
   test_phase2();
   test_order1();
+  test_dup1();
   test_rekey1();
   test_row1();
   test_rebuild1();

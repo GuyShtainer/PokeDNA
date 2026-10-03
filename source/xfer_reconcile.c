@@ -268,6 +268,16 @@ int xrc_rebuild_cell(const GbscEntry* e, uint32_t serial, uint8_t out80[80]) {
 
 /* ---- decision 9: apply ordering ---------------------------------------------------- */
 
+/* #392(b): see xfer_reconcile.h. All-zero orig8 never matches (an uncaptured snapshot is not an identity). */
+bool xrc_restore_is_dup(const XrcHit* hits, const bool* done, int i) {
+  if (!hits || !done || i <= 0) return false;
+  static const uint8_t zero8[8] = {0};
+  if (memcmp(hits[i].orig8, zero8, 8) == 0) return false;
+  for (int j = 0; j < i; j++)
+    if (hits[j].action == XRC_ACT_RESTORE && done[j] && memcmp(hits[j].orig8, hits[i].orig8, 8) == 0) return true;
+  return false;
+}
+
 void xrc_apply_order(uint8_t* idx, int n) {
   if (!idx || n <= 1) return;
   /* bounded insertion sort, descending; n <= GBSC_MAX_ENTRIES (8), golden rule 2. */

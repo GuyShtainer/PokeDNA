@@ -190,8 +190,10 @@ def f386(cls: str, phase2: str, walk: str, classify_all: str, detail: str, bank_
         return False, "xrc_classify: both LOST branches (PENDING + CLAIMED) must consult bank_unread (#386)"
     if "pdna_bank_peek_box_ex(box, &unread)" not in phase2 or not re.search(r"if \(!recs\) \{ if \(unread\) \{ rb->bank_unread = true;", phase2):
         return False, "phase 2: an unreadable (not merely ABSENT) Bank box must raise rb->bank_unread via peek_box_ex (#386 D1)"
-    if "if (box_load(box)) { *unread = false; return box_recs(); }" not in bank_peek or "*unread = (g_box_unread != 0);" not in bank_peek:
-        return False, "pdna_bank_peek_box_ex: must report unread=false on a good load and unread=(g_box_unread != 0) on a failed one (#386 D1)"
+    if "if (box_load(box)) { *unread = false; return box_recs(); }" not in bank_peek or "if (g_box_unread) return NULL;" not in bank_peek:
+        return False, "pdna_bank_peek_box_ex: must report unread=false on a good load and leave unread set on a read error / failed heal (#386 D1)"
+    if not re.search(r"f_stat\(p, 0\);\s*\*unread = !\(fr == FR_NO_FILE \|\| fr == FR_NO_PATH\);", bank_peek):
+        return False, "pdna_bank_peek_box_ex: a failed load with g_box_unread 0 must f_stat the primary; only FR_NO_FILE/FR_NO_PATH is absent, a truncated box is unread (#393)"
     if not re.search(r"\*unread = true;\s+if \(box < 0 \|\| box >= BANK_BOXES\) return NULL;", bank_peek):
         return False, "pdna_bank_peek_box_ex: a bad box / refused flush must report unread (#386 D1)"
     if "rb->bank_unread = false;" not in walk:
@@ -351,7 +353,10 @@ def run() -> None:
         ("walk never resets it", "walk", "rb->bank_unread = false;", ""),
         ("classify_all drops it", "classify_all", "in.bank_unread = rb->bank_unread;", ""),
         ("detail line unwired", "detail", "case XRC_UNREAD:", "case XRC_G3HOME_DUP:"),
-        ("peek helper always reports unread", "bank_peek", "*unread = (g_box_unread != 0);", "*unread = true;"),
+        ("peek helper always reports unread", "bank_peek", "*unread = !(fr == FR_NO_FILE || fr == FR_NO_PATH);", "*unread = true;"),
+        ("#393 truncated box reads absent (old behaviour)", "bank_peek", "*unread = !(fr == FR_NO_FILE || fr == FR_NO_PATH);", "*unread = false;"),
+        ("#393 only FR_NO_FILE counts absent", "bank_peek", "fr == FR_NO_FILE || fr == FR_NO_PATH", "fr == FR_NO_FILE"),
+        ("#393 read-error early return dropped", "bank_peek", "if (g_box_unread) return NULL;", ""),
         ("peek helper leaves unread set on a good load", "bank_peek", "*unread = false; return box_recs();", "return box_recs();"),
         ("peek helper defaults to read", "bank_peek", "*unread = true;\n  if (box < 0", "*unread = false;\n  if (box < 0"),
     ))

@@ -10440,7 +10440,7 @@ int app_history_jump(uint32_t target, char stop[25], int* moved) {
   if (rc == JRN_E_TORN) imgf_partial_set(&g_img);                                    /* D10/9.2: latch */
   log_line("journal: jump to %lu: %d step(s), rc %d", (unsigned long)target, n, rc);
   jrnapp_log_events(&g_rec);
-  return aur_from_rc(rc);
+  return (rc == JRN_NOOP && jrnapp_cursor() != target) ? AUR_ERR : aur_from_rc(rc);   /* #410 (re-verify F1): a refused jump stopped before a lone swap half -- not "already there" */
 }
 
 /* The load-time offer (D1): "N recorded steps are not in this save -- re-apply?". A = the chained cursor-rule
@@ -11225,7 +11225,7 @@ void __attribute__((noinline)) app_xfer_reconcile_bank_open(void) {
 
   if (cand > 0) {
     char title[40]; siprintf(title, "%d %s", cand, PDNA_XRC_DUP_TITLE_SUFFIX);
-    if (app_confirm(title, PDNA_XRC_DUP_L1)) {
+    if (app_confirm(title, cand == 1 ? PDNA_XRC_DUP_L1_ONE : PDNA_XRC_DUP_L1)) {   /* #392c */
       xfer_reconcile_apply_bank_open(rb);
     } else {
       /* KEEP BOTH (decision 7): mark bank_keep on every offered entry so this prompt
@@ -11514,7 +11514,7 @@ static void __attribute__((noinline)) xfer_reconcile_apply(GbReconBuf* rb) {
   app_journal_cross();                                /* XRC apply: Bank / ledger / PC decided together */
   bool remove_entry[GB_RECON_MAX_HITS];
   memset(remove_entry, 0, sizeof remove_entry);
-  int removed = 0, released = 0, restored = 0, deleted = 0, rekeyed = 0, failed = 0, promoted = 0;
+  int removed = 0, released = 0, restored = 0, deleted = 0, rekeyed = 0, failed = 0, promoted = 0, dup_skipped = 0;
   bool any_noroom = false;   /* review D6(2): RESTORE hit a genuinely full Bank */
   uint32_t dc_base, dc_stride; dc_layout(&dc_base, &dc_stride);
 
@@ -11575,6 +11575,12 @@ static void __attribute__((noinline)) xfer_reconcile_apply(GbReconBuf* rb) {
   for (int i = 0; i < rb->nxrc; i++) {
     XrcHit* h = &rb->xrc[i];
     if (h->action != XRC_ACT_RESTORE) continue;
+    if (xrc_restore_is_dup(rb->xrc, remove_entry, i)) {   /* #392(b): the same original already restored this pass */
+      remove_entry[i] = true;
+      log_line("xfer: reconcile: row %d RESTORE skipped, same original (%s) already restored this pass", i, rb->names[h->file_idx]);
+      dup_skipped++;
+      continue;
+    }
     gb_recon_path(rb->path, rb->names[h->file_idx]);
     uint32_t len = 0;
     GbscEntry e; bool got = false;
@@ -11733,8 +11739,8 @@ static void __attribute__((noinline)) xfer_reconcile_apply(GbReconBuf* rb) {
   xrc_cache_invalidate();   /* BACKLOG #215(a): any of the writes above can change what
                              * a still-pending row's own text would decode to */
 
-  log_line("xfer: reconcile: apply removed=%d released=%d restored=%d deleted=%d rekeyed=%d failed=%d promoted=%d",
-          removed, released, restored, deleted, rekeyed, failed, promoted);
+  log_line("xfer: reconcile: apply removed=%d released=%d restored=%d deleted=%d rekeyed=%d failed=%d promoted=%d dup_skipped=%d",
+          removed, released, restored, deleted, rekeyed, failed, promoted, dup_skipped);
   if (failed > 0) {
     char l1[40];
     siprintf(l1, "%d of %d failed", failed, removed + released + restored + deleted + rekeyed + failed + promoted);

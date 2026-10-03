@@ -26,7 +26,8 @@
 #include "gb_sidecar.h"
 #include "xfer_io.h"
 
-bool app_can_edit(void) { return true; }
+static bool g_can_edit = true;
+bool app_can_edit(void) { return g_can_edit; }
 /* BACKLOG #213: write_marker() (this file's own SUT) now invalidates the caller-side
  * GB ORIGINAL cache on every successful write -- that cache lives in pdna_main.c,
  * not linked here, so a no-op stub stands in for it exactly like app_can_edit() above. */
@@ -281,6 +282,33 @@ int main(void) {
     CHECK(xr_miss_cache_has(&c, 999), "9th remember's own key is now cached");
     for (int i = 1; i < XR_MISS_RING_N; i++)
       CHECK(xr_miss_cache_has(&c, (uint64_t)(i + 1)), "keys 2..8 survive the 9th remember");
+  }
+
+  /* ---- BACKLOG #392(a): a READ-ONLY card reads an orphan <key>.pds.tmp as the primary, in RAM, never writing ---- */
+  printf("== (392a) read-only card: orphan .tmp read as the primary ==\n");
+  {
+    uint32_t tn = build_one(content, sizeof content, key, 0x5A), len = 0;
+    char out[GBSC_PATH_MAX], tmp_path[128];
+    snprintf(tmp_path, sizeof tmp_path, "%s.tmp", xfer_path);
+    fresh_card(2048); CHECK(f_mkdir("/PokeDNA/xfer") == FR_OK, "(392a) mkdir xfer");
+    CHECK(write_raw(tmp_path, content, tn), "(392a) write orphan .tmp");
+    g_can_edit = false;
+    CHECK(xr_path_for_key(out, key) && strcmp(out, xfer_path) == 0, "(392a) read-only: orphan .tmp counts as present, path stays the PRIMARY (%s)", out);
+    SfStatus st = xr_open(key, readback, sizeof readback, &len, out);
+    CHECK(st == SF_OK && len == tn && memcmp(readback, content, tn) == 0, "(392a) read-only: xr_open returns the .tmp bytes (%s)", sf_status_str(st));
+    CHECK(!exists(xfer_path) && exists(tmp_path), "(392a) read-only: NOTHING written/renamed");
+    g_can_edit = true;
+    CHECK(!xr_path_for_key(out, key), "(392a) writable card: the same orphan is NOT claimed present (heal owns it)");
+    CHECK(xr_open(key, readback, sizeof readback, &len, out) == SF_ERR_OPEN, "(392a) writable card: xr_open does not read the .tmp");
+    /* a .tmp that fails the same test as xh_heal_key (wrong key / torn) reads as absent even read-only */
+    uint8_t other[GBSC_FILE_MAX]; uint32_t on = build_one(other, sizeof other, key ^ 1ULL, 0x33);
+    fresh_card(2048); CHECK(f_mkdir("/PokeDNA/xfer") == FR_OK, "(392a) mkdir xfer 2");
+    CHECK(write_raw(tmp_path, other, on), "(392a) write foreign-key .tmp");
+    g_can_edit = false;
+    CHECK(xr_open(key, readback, sizeof readback, &len, out) == SF_ERR_OPEN, "(392a) read-only: foreign-key .tmp refused");
+    CHECK(write_raw(tmp_path, content, tn / 2), "(392a) write torn .tmp");
+    CHECK(xr_open(key, readback, sizeof readback, &len, out) == SF_ERR_OPEN, "(392a) read-only: torn .tmp refused");
+    g_can_edit = true;
   }
 
   printf("\n%d check(s), %s\n", g_check, g_fail ? "FAIL" : "OK");

@@ -369,6 +369,9 @@ static void t_crossed_still_floors_app_offer(void) {
   total = jrnapp_offer(&av, stop);
   CHECK(total == 3 && av == 1, "3 steps, avail floored at 1: total %u avail %u", (unsigned)total, (unsigned)av);
   CHECK(stop[0] != 0, "the crossed step is named");
+  { int mv = -1, jr; char st2[25];                            /* re-verify-zd-2: no lone half -> no budget; the redo itself reports the floor */
+    jr = jrnapp_jump(jrnapp_tip(), st2, &mv);
+    CHECK(jr == JRN_E_CROSSED && mv == 1 && st2[0] != 0, "#410 re-verify-2: a History jump across a crossed floor stops AT it and names it (rc %d, moved %d, stop '%s')", jr, mv, safe(st2)); }
 }
 
 /* ---- #303: a swap's two halves are one chord press. The staging below is EXACTLY what drop_held does to the PC image:
@@ -1911,6 +1914,94 @@ static void t_rev_pair_flush_chain_half(void) {
   CHECK(tot == 2u && av == 2u, "REVIEW: the pair flush puts a swap whose drop 1 is a CHAIN on the card (total %u avail %u)", (unsigned)tot, (unsigned)av);
 }
 
+/* ---- #410: after a re-apply REFUSED with JRN_E_IO (a read fault: nothing applied, nothing discarded) the cursor still sits below a lone older half. The redo CHORD must apply
+ * the same ja_cut_tail guard the offer uses and stop BEFORE it (a "Swap (half)" redo would delete the displaced mon from the image). ---- */
+static void t_redo_lone_half(void) {
+  uint32_t av = 99, tot;
+  char stop[25], nm[25];
+  static uint8_t snapB[G3_SAVE_FILE_SIZE], pre[G3_SAVE_FILE_SIZE];
+  long k; int io = 0;
+  /* 1: Setup (in the card image), lone Swap on the card; the re-apply is refused by a read fault, then the chord */
+  g_cut = 1;
+  CHECK(app_world_reset() && stage_swap(10, 11, 12), "#410 world: Setup, Swap (flushed), Box move (pending)");
+  g_cut = 0;
+  cut_and_reopen(snapS);
+  memcpy(pre, sv, sizeof sv);
+  rd_snapshot();
+  for (k = 0; k < 400 && !io; k++) {
+    int rc;
+    rd_restore(); memcpy(sv, pre, sizeof sv); card_remount();
+    if (!app_reopen()) continue;
+    tot = jrnapp_offer(&av, stop);
+    rd_fail_read_at = k;
+    rc = jrnapp_reapply();
+    rd_fail_read_at = -1;
+    if (rc == JRN_E_IO) io = 1;
+  }
+  CHECK(io, "#410 a read fault refuses the re-apply with JRN_E_IO (fault point %ld)", k - 1);
+  CHECK(memcmp(sv, snapS, sizeof sv) == 0, "#410 the refused re-apply left the image untouched");
+  {
+    uint32_t cur = jrnapp_cursor();
+    int rc = jrnapp_step_pair(1, nm);
+    CHECK(rc == JRN_NOOP && memcmp(sv, snapS, sizeof sv) == 0 && jrnapp_cursor() == cur,
+          "#410 the redo chord stops BEFORE the lone older half (rc %d, name '%s', cursor %u -> %u, image untouched)", rc, safe(nm), (unsigned)cur, (unsigned)jrnapp_cursor());
+    rc = jrnapp_step_pair(1, nm);
+    CHECK(rc == JRN_NOOP && memcmp(sv, snapS, sizeof sv) == 0, "#410 and again: still refused (rc %d)", rc);
+    { int mv = 0; char st2[25]; uint32_t c0 = jrnapp_cursor(), tip = jrnapp_tip();
+      int jr = jrnapp_jump(tip, st2, &mv);
+      CHECK(memcmp(sv, snapS, sizeof sv) == 0, "#410 review: a History jump to the lone Swap half must not apply it (rc %d, moved %d, cursor %u -> %u, tip %u)", jr, mv, (unsigned)c0, (unsigned)jrnapp_cursor(), (unsigned)tip); }
+  }
+  /* 2: a plain step, then the lone half: the chord redoes the plain step, then stops before the half */
+  g_cut = 0;
+  CHECK(app_world_reset() && stageA(300), "#410 bag: a plain step");
+  memcpy(snapB, sv, sizeof sv);
+  g_cut = 1;
+  CHECK(stage_swap(10, 11, 12), "#410 bag: Setup + Swap flushed + Box move pending");
+  g_cut = 0;
+  cut_and_reopen(snapB);
+  tot = jrnapp_offer(&av, stop);
+  CHECK(tot == 1u, "#410 bag: only the Setup is offered (%u)", (unsigned)tot);
+  { int mv = 0, jr; char st2[25]; uint32_t c0 = jrnapp_cursor();   /* re-verify-zd: a jump that is refused MID-way (a plain step, then the lone half) */
+    jr = jrnapp_jump(jrnapp_tip(), st2, &mv);
+    CHECK(jr == JRN_NOOP && mv == 1 && memcmp(sv, snapS, sizeof sv) == 0, "#410 bag: a History jump to the tip redoes the plain Setup, then stops before the lone Swap (rc %d, moved %d)", jr, mv);
+    jr = jrnapp_jump(c0, st2, &mv);
+    CHECK(jr == JRN_OK && mv == 1 && memcmp(sv, snapB, sizeof sv) == 0, "#410 bag: an UNDO jump is unaffected by the redo guard (rc %d, moved %d)", jr, mv); }
+  CHECK(jrnapp_step_pair(1, nm) == JRN_OK && memcmp(sv, snapS, sizeof sv) == 0, "#410 bag: redo press 1 applies the plain Setup (image == after-Setup)");
+  CHECK(jrnapp_step_pair(1, nm) == JRN_NOOP && memcmp(sv, snapS, sizeof sv) == 0, "#410 bag: redo press 2 stops before the lone Swap (image unchanged)");
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && memcmp(sv, snapB, sizeof sv) == 0, "#410 bag: UNDO is unaffected by the redo guard (undoes the Setup back to the bag step)");
+  { int mv; char st2[25]; long kk; unsigned lone = 0; uint32_t tip;   /* re-verify-zd-2: the jump's budget walk fails CLOSED under a single read fault */
+    CHECK(app_world_reset() && stageA(300), "#410 sweep: a plain step");
+    memcpy(snapB, sv, sizeof sv);
+    g_cut = 1; CHECK(stage_swap(10, 11, 12), "#410 sweep: Setup + Swap flushed + Box move pending"); g_cut = 0;
+    cut_and_reopen(snapB);
+    tip = jrnapp_tip(); rd_snapshot();
+    for (kk = 0; kk < 120; kk++) {
+      rd_restore(); memcpy(sv, snapB, sizeof sv); card_remount();
+      if (!app_reopen()) continue;
+      rd_fail_read_at = kk; (void)jrnapp_jump(tip, st2, &mv); rd_fail_read_at = -1;
+      if (memcmp(sv, snapB, sizeof sv) && memcmp(sv, snapS, sizeof sv)) lone++;
+    }
+    CHECK(lone == 0, "#410 re-verify-2: no single read fault lets a History jump land on the lone Swap half (%u point(s) did)", lone); }
+  { long kk; unsigned lone = 0;                                 /* re-verify-zd-3: the redo KEY's half-swap guard (ja_redo_in_cut) fails CLOSED under a single read fault */
+    CHECK(app_world_reset() && stageA(300), "#410 key sweep: a plain step");
+    memcpy(snapB, sv, sizeof sv);
+    g_cut = 1; CHECK(stage_swap(10, 11, 12), "#410 key sweep: Setup + Swap flushed + Box move pending"); g_cut = 0;
+    cut_and_reopen(snapB);
+    CHECK(jrnapp_step_pair(1, nm) == JRN_OK && memcmp(sv, snapS, sizeof sv) == 0, "#410 key sweep: press 1 redoes the plain Setup");
+    rd_snapshot();
+    for (kk = 0; kk < 120; kk++) {
+      rd_restore(); memcpy(sv, snapS, sizeof sv); card_remount();
+      if (!app_reopen()) continue;
+      rd_fail_read_at = kk; (void)jrnapp_step_pair(1, nm); rd_fail_read_at = -1;
+      if (memcmp(sv, snapS, sizeof sv)) lone++;
+    }
+    CHECK(lone == 0, "#410 re-verify-3: no single read fault lets the redo key apply the lone Swap half (%u point(s) did)", lone); }
+  /* 3: control - the whole swap on the card: the chord redoes the pair (unchanged behaviour) */
+  CHECK(app_world_reset() && stage_swap(10, 11, 12), "#410 whole: both drops flushed");
+  cut_and_reopen(snapS);
+  CHECK(jrnapp_step_pair(1, nm) == JRN_OK && strcmp(nm, "Swap") == 0 && memcmp(sv, snapF, sizeof sv) == 0, "#410 control: a whole swap is redone as one press ('%s')", safe(nm));
+}
+
 /* REVIEW zb2: a read fault inside jrnapp_reapply's cut walk must never DISCARD the user's whole offer. */
 static void t_rev_cut_fault(void) {
   uint32_t av = 99, tot, tot2, av2;
@@ -2069,6 +2160,7 @@ int main(int argc, char** argv) {
     CHECK(app_world(file), "app world"); t_swap_pair_fault_sweep();
     CHECK(app_world(file), "app world"); t_swap_cutoff();
     CHECK(app_world(file), "app world"); t_rev_pair_flush_chain_half();
+    CHECK(app_world(file), "app world"); t_redo_lone_half();
     CHECK(app_world(file), "app world"); t_rev_cut_fault();
     CHECK(app_world(file), "app world"); t_rev_offer_fault();
     CHECK(app_world(file), "app world"); t_rv_offer_fault_crossed();

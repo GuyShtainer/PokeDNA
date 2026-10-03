@@ -895,13 +895,16 @@ const uint8_t* pdna_bank_peek_box(int box) {
 
 /* #386 review: like pdna_bank_peek_box, but says WHY it returned NULL. An ABSENT box (never written,
  * BML_BOX_NONE) is empty, not unread; a read error / failed heal / refused flush proves nothing.
- * A short (BML_BOX_BAD) box also reads "not unread" (box_load leaves g_box_unread 0 for it). */
+ * #393: a short (BML_BOX_BAD) box leaves g_box_unread 0 but its file EXISTS, so it reads "unread" too --
+ * only a primary the card says is not there (FR_NO_FILE / FR_NO_PATH) is "absent". */
 const uint8_t* pdna_bank_peek_box_ex(int box, bool* unread) {
   *unread = true;
   if (box < 0 || box >= BANK_BOXES) return NULL;
   if (g_dirty && !box_save_or_keep_dirty()) return NULL;
   if (box_load(box)) { *unread = false; return box_recs(); }
-  *unread = (g_box_unread != 0);
+  if (g_box_unread) return NULL;                                  /* read error / failed heal: *unread stays true */
+  { char p[SF_PATH_MAX]; box_path(box, p); FRESULT fr = f_stat(p, 0);
+    *unread = !(fr == FR_NO_FILE || fr == FR_NO_PATH); }          /* #393: exists-but-short is NOT absent */
   return NULL;
 }
 

@@ -872,6 +872,23 @@ static void dex_cell_grid(int x, int y, uint16_t in, int bob) {
   else { ui_icon_scaled(x, y, 32, 32, mon_icon_for_frame(in, (uint8_t)bob)); ui_pokeball(x + 21, y + 21); }
 }
 
+/* BACKLOG #404: ONE ROM open + table validation for the whole dex PAGE pass, not one per
+ * icon. On the SD path every GB cell-art fetch was a one-shot (f_open + .loc + ROM
+ * re-validate, ~80 single-sector reads) -- 21 icons cost 1765 sectors on a cold page. The
+ * batch (GB_ART_BATCH_BYTES, on THIS noinline frame so the heavy struct is live only
+ * for the paint pass) is begun only when the GB override actually serves the page
+ * (a Gen-3 dex visit never opens one) and begin() does no I/O, so a page whose cells
+ * all hit the #208 cache still costs nothing. No early return between begin and end. */
+static __attribute__((noinline)) void
+dex_grid_cells(int x0, int y0, int cols, int cw, int ch, int top, int vis, int bob) {
+  GbArtBatch bt;
+  bool batched = dex_cell_art_page_served();
+  if (batched) gb_art_batch_begin(&bt);
+  for (int i = 0; i < vis && top + i < g_n; i++)
+    dex_cell_grid(x0 + (i % cols) * cw, y0 + (i / cols) * ch, g_list[top + i], bob);
+  if (batched) gb_art_batch_end(&bt);
+}
+
 /* one list row text, coloured by state (or the selection colour) */
 static void dex_cell_list(int x, int y, uint16_t in, bool sel) {
   int nat = pk_national_no(in), st = dex_dget(nat);
@@ -1238,11 +1255,9 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
       ui_hline(0, 22, UI_SCR_W, UI_BORDER);
       ui_hline(0, 147, UI_SCR_W, UI_BORDER);
       ui_text(4, 152, UI_DIM, "A open  L/R view  ST  SEL  B");
-      for (int i = 0; i < vis && top + i < g_n; i++) {
-        int x = x0 + (i % cols) * cw, y = y0 + (i / cols) * ch;
-        if (grid) dex_cell_grid(x, y, g_list[top + i], bob);
-        else dex_cell_list(x, y, g_list[top + i], (top + i == sel));
-      }
+      if (grid) dex_grid_cells(x0, y0, cols, cw, ch, top, vis, bob);
+      else for (int i = 0; i < vis && top + i < g_n; i++)
+        dex_cell_list(x0 + (i % cols) * cw, y0 + (i / cols) * ch, g_list[top + i], (top + i == sel));
       perf_rep_end(PERF_REP_PAGE);
     } else if (prev_sel >= top && prev_sel < top + vis) {   /* erase old selection chrome */
       int pi = prev_sel - top, px = x0 + (pi % cols) * cw, py = y0 + (pi / cols) * ch;
