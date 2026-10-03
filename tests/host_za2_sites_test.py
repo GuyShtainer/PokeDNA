@@ -185,11 +185,13 @@ def f391(helper: str, save_now: str, flush_exit: str, layout: str, tf: str) -> t
 
 
 # ------------------------------------------------------------------------------------------------ #386
-def f386(cls: str, phase2: str, walk: str, classify_all: str, detail: str) -> tuple[bool, str]:
+def f386(cls: str, phase2: str, walk: str, classify_all: str, detail: str, bank_peek: str) -> tuple[bool, str]:
     if len(re.findall(r"in->bank_unread", cls)) < 2:
         return False, "xrc_classify: both LOST branches (PENDING + CLAIMED) must consult bank_unread (#386)"
     if "pdna_bank_peek_box_ex(box, &unread)" not in phase2 or not re.search(r"if \(!recs\) \{ if \(unread\) \{ rb->bank_unread = true;", phase2):
         return False, "phase 2: an unreadable (not merely ABSENT) Bank box must raise rb->bank_unread via peek_box_ex (#386 D1)"
+    if "if (box_load(box)) { *unread = false; return box_recs(); }" not in bank_peek or "*unread = (g_box_unread != 0);" not in bank_peek:
+        return False, "pdna_bank_peek_box_ex: must report unread=false on a good load and unread=(g_box_unread != 0) on a failed one (#386 D1)"
     if "rb->bank_unread = false;" not in walk:
         return False, "xfer_reconcile_walk: bank_unread is never reset per scan (#386)"
     if "in.bank_unread = rb->bank_unread;" not in classify_all:
@@ -332,7 +334,8 @@ def run() -> None:
     ))
     # -------- #386
     parts = dict(cls=cls, phase2=function_body(main_t, "xfer_reconcile_bank_phase2"), walk=function_body(main_t, "xfer_reconcile_walk"),
-                 classify_all=function_body(main_t, "xfer_reconcile_classify_all"), detail=detail)
+                 classify_all=function_body(main_t, "xfer_reconcile_classify_all"), detail=detail,
+                 bank_peek=function_body((SRC / "pdna_bank.c").read_text(), "pdna_bank_peek_box_ex"))
     for k_, v in parts.items():
         check(bool(v), f"#386: {k_} not located")
     ok, d = f386(**parts)
@@ -346,6 +349,8 @@ def run() -> None:
         ("walk never resets it", "walk", "rb->bank_unread = false;", ""),
         ("classify_all drops it", "classify_all", "in.bank_unread = rb->bank_unread;", ""),
         ("detail line unwired", "detail", "case XRC_UNREAD:", "case XRC_G3HOME_DUP:"),
+        ("peek helper always reports unread", "bank_peek", "*unread = (g_box_unread != 0);", "*unread = true;"),
+        ("peek helper leaves unread set on a good load", "bank_peek", "*unread = false; return box_recs();", "return box_recs();"),
     ))
 
 
