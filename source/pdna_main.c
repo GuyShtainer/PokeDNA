@@ -11576,8 +11576,9 @@ static void __attribute__((noinline)) xfer_reconcile_apply(GbReconBuf* rb) {
     XrcHit* h = &rb->xrc[i];
     if (h->action != XRC_ACT_RESTORE) continue;
     if (xrc_restore_is_dup(rb->xrc, remove_entry, i)) {   /* #392(b): the same original already restored this pass */
-      remove_entry[i] = true; dup_skipped++;
+      remove_entry[i] = true;
       log_line("xfer: reconcile: row %d RESTORE skipped, same original (%s) already restored this pass", i, rb->names[h->file_idx]);
+      dup_skipped++;
       continue;
     }
     gb_recon_path(rb->path, rb->names[h->file_idx]);
