@@ -5563,7 +5563,8 @@ gb_create_learn(uint16_t dex, const uint8_t g1_start[4], uint8_t at_level,
 static int __attribute__((noinline)) gb_paste_fill_moves(uint16_t dex, uint8_t level, GbEditMon* mon,
                                 const uint8_t bad4[4], uint8_t fill4[4], bool* no_rom) {
   uint8_t learn4[4] = { 0, 0, 0, 0 };
-  bool have_rom = gb_create_locate_rom(g_ed->s.gen);
+  bool located = gb_create_locate_rom(g_ed->s.gen);   /* #390 review: ROM present vs learnset found are different facts */
+  bool have_rom = located;
   if (have_rom && g_ed->s.gen == GB_GEN1) {
     RomGb1Species sp;
     if (gb_create_base1(dex, &sp)) {
@@ -5576,7 +5577,7 @@ static int __attribute__((noinline)) gb_paste_fill_moves(uint16_t dex, uint8_t l
   } else if (have_rom) {
     have_rom = gb_create_learn(dex, NULL, level, NULL, learn4) >= 0;
   }
-  if (no_rom) *no_rom = !have_rom;   /* BACKLOG #390: the caller's refusal wording depends on WHY the fill came up empty */
+  if (no_rom) *no_rom = !located;   /* BACKLOG #390: the caller's refusal wording depends on WHY the fill came up empty */
   if (!have_rom) {
     int n = 0; for (int i = 0; i < 4; i++) n += bad4[i] != 0;
     log_line("gen12: paste moves: no gen-%u rom, %d slot(s) emptied", (unsigned)g_ed->s.gen, n);

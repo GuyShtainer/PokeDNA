@@ -118,8 +118,8 @@ def f390(bridge: str, g3run: str, fill: str) -> tuple[bool, str]:
         return False, "gb_bank_down_bridge: a Gen-2 no-ROM refusal must say NO GEN-2 ROM (#390)"
     if not re.search(r"if \(g_ed->s\.gen == GB_GEN2 && fill_no_rom\) gb_gen12_norom_msg\(GB_GEN2\);\s*else gb_gen12_nomoves_msg\(g_ed->s\.gen\);", g3run):
         return False, "the bank-down->g3 zero-move refusal must say NO GEN-2 ROM for a Gen-2 session without a ROM (#390)"
-    if "if (no_rom) *no_rom = !have_rom;" not in fill:
-        return False, "gb_paste_fill_moves: no_rom out-flag not set from have_rom (#390)"
+    if "bool have_rom = located;" not in fill or "if (no_rom) *no_rom = !located;" not in fill:
+        return False, "gb_paste_fill_moves: no_rom must mean 'no ROM LOCATED' (!located), not 'learnset missing' (#390 review D3)"
     return True, "ok"
 
 
@@ -240,7 +240,8 @@ def run() -> None:
     run_muts("390", f390, parts, (
         ("bridge: Gen-2 no-ROM says NO MOVES again", "bridge", "GB_GEN2 == dst_gen && fill_no_rom", "false && fill_no_rom"),
         ("g3 landing: Gen-2 no-ROM says NO MOVES again", "g3run", "g_ed->s.gen == GB_GEN2 && fill_no_rom", "false && fill_no_rom"),
-        ("fill never reports a missing ROM", "fill", "if (no_rom) *no_rom = !have_rom;", ""),
+        ("fill never reports a missing ROM", "fill", "if (no_rom) *no_rom = !located;", ""),
+        ("D3: ROM present but learnset missing claims NO ROM", "fill", "*no_rom = !located;", "*no_rom = !have_rom;"),
     ))
     # -------- #387
     detail = function_body(main_t, "xrc_detail_line")
