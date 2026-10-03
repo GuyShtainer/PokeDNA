@@ -68,6 +68,14 @@ pin("#392b step (1c) skips a RESTORE whose original was already restored this pa
 pin("#392b the guard skip drops the twin's ledger entry (remove_entry) rather than leaving a row that re-offers RESTORE",
     main, lambda t: re.search(G, t) is not None,
     lambda t: t.replace("      remove_entry[i] = true;\n      log_line(\"xfer: reconcile: row %d RESTORE skipped", "      log_line(\"xfer: reconcile: row %d RESTORE skipped"))
+# ---- #392(c) the singular strings are actually chosen at the two call sites
+pin("#392c Bank-open prompt picks the singular 'duplicate' line for exactly one candidate",
+    main, lambda t: "cand == 1 ? PDNA_XRC_DUP_L1_ONE : PDNA_XRC_DUP_L1" in t,
+    lambda t: t.replace("cand == 1 ? PDNA_XRC_DUP_L1_ONE : PDNA_XRC_DUP_L1", "PDNA_XRC_DUP_L1"))
+g12 = rd("pdna_gen12.c")
+pin("#392c the waiting-for-the-PC offer picks 'Put it in now?' for exactly one queued copy",
+    g12, lambda t: "g_pcq_count == 1 ? PDNA_XFER_PCQ_L1_ONE_FMT : PDNA_XFER_PCQ_L1_FMT" in t,
+    lambda t: t.replace("g_pcq_count == 1 ? PDNA_XFER_PCQ_L1_ONE_FMT : PDNA_XFER_PCQ_L1_FMT", "PDNA_XFER_PCQ_L1_FMT"))
 
 if fails:
     for f in fails:

@@ -11225,7 +11225,7 @@ void __attribute__((noinline)) app_xfer_reconcile_bank_open(void) {
 
   if (cand > 0) {
     char title[40]; siprintf(title, "%d %s", cand, PDNA_XRC_DUP_TITLE_SUFFIX);
-    if (app_confirm(title, PDNA_XRC_DUP_L1)) {
+    if (app_confirm(title, cand == 1 ? PDNA_XRC_DUP_L1_ONE : PDNA_XRC_DUP_L1)) {   /* #392c */
       xfer_reconcile_apply_bank_open(rb);
     } else {
       /* KEEP BOTH (decision 7): mark bank_keep on every offered entry so this prompt

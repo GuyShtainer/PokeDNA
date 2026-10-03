@@ -6400,7 +6400,7 @@ static int __attribute__((noinline)) gb_ro_exit_offer(void) {
     return 0;
   }
   char l1[40];
-  siprintf(l1, PDNA_XFER_PCQ_L1_FMT, (int)g_pcq_count);
+  siprintf(l1, g_pcq_count == 1 ? PDNA_XFER_PCQ_L1_ONE_FMT : PDNA_XFER_PCQ_L1_FMT, (int)g_pcq_count);   /* #392c */
   bool yes = app_confirm(PDNA_XFER_PCQ_TITLE, l1);
   if (yes) pdna_bank_start_box_set(g_pcq_box);
   g_pcq_count = 0;
