@@ -336,6 +336,38 @@ uint64_t gbsc_file_key(const uint8_t* buf, uint32_t len) {
   return k;
 }
 
+/* BACKLOG #384: a re-key moves the file to its new NAME, and the header key (bytes 8..15) must follow it --
+ * the TRANSFERS screen matches rows by the header key. Entries are untouched (their crc16s do not cover the
+ * header); only the header crc16 is rewritten. */
+int gbsc_set_file_key(uint8_t* buf, uint32_t len, uint64_t key) {
+  if (!buf || gbsc_count(buf, len) < 0) return -1;
+  for (int i = 0; i < 8; i++) buf[8 + i] = (uint8_t)(key >> (8 * i));
+  wr16(buf + 16, crc16(buf, 16));
+  return 0;
+}
+
+/* "<anything>/<16 hex digits>.pds" -> key. Inverse of gbsc_path's name; false on any other shape. */
+bool gbsc_key_from_path(const char* path, uint64_t* key) {
+  if (!path || !key) return false;
+  size_t n = strlen(path);
+  if (n < 20) return false;
+  const char* e = path + n - 4;
+  if (e[0] != '.' || (e[1] | 32) != 'p' || (e[2] | 32) != 'd' || (e[3] | 32) != 's') return false;
+  if (n > 20 && path[n - 21] != '/') return false;
+  uint64_t k = 0;
+  for (int i = 0; i < 16; i++) {
+    char c = path[n - 20 + i];
+    uint8_t v;
+    if (c >= '0' && c <= '9') v = (uint8_t)(c - '0');
+    else if (c >= 'A' && c <= 'F') v = (uint8_t)(c - 'A' + 10);
+    else if (c >= 'a' && c <= 'f') v = (uint8_t)(c - 'a' + 10);
+    else return false;
+    k = (k << 4) | v;
+  }
+  *key = k;
+  return true;
+}
+
 uint16_t gbsc_flags_get(const uint8_t* buf, uint32_t len) {
   if (gbsc_count(buf, len) < 0) return 0;
   return rd16(buf + 6);

@@ -697,6 +697,16 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * define since the banner and that one dialog can change independently. */
 #define PDNA_BANK_UNSAVED_BANNER        "BOX NOT SAVED"
 
+/* BACKLOG #382: raised once when a Bank box is paged in and cannot be trusted for writing -- the card read failed
+ * (the box shows empty but is NOT; nothing is written to it), or the #378 heal failed (the recovered copy is shown
+ * browse-only; the .tmp stays the good copy). msg_wait (28, .., 184). */
+#define PDNA_BANK_UNREAD_TITLE          "BOX NOT READ"
+#define PDNA_BANK_UNREAD_L1             "Box could not be read."
+#define PDNA_BANK_UNREAD_L2             "Re-open the Bank."
+#define PDNA_BANK_HEALFAIL_TITLE        "BOX NOT WRITTEN"
+#define PDNA_BANK_HEALFAIL_L1           "Showing the saved copy only."
+#define PDNA_BANK_HEALFAIL_L2           "Re-open the Bank to retry."
+
 /* review F5 (hygiene): the flush-retry loop and the exit prompt's own follow-up
  * messages (pdna_bank.c: box_save_or_keep_dirty, pdna_bank_show's exit block) were
  * inline literals -- named here alongside the banner they share a title with, so
@@ -1231,6 +1241,7 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XRC_ACT_RESTORE "Restore to Bank"
 #define PDNA_XRC_ACT_DELETE  "Delete record"
 #define PDNA_XRC_ACT_REKEY   "Re-link record"
+#define PDNA_XRC_ACT_PROMOTE "Mark finished"
 #define PDNA_XRC_ACT_CANCEL  "Cancel"
 
 /* The loss confirm (decision 2/8d) -- DELETE behind a second confirm naming the
@@ -1273,6 +1284,7 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XRC_D_STALE_KEY       "PID changed; not linked."
 #define PDNA_XRC_D_AMBIGUOUS       "Ambiguous match; skipped."
 #define PDNA_XRC_D_G3HOME          "Gen-3 original; see load screen."
+#define PDNA_XRC_D_IN_BANK         "Already in the Bank. Delete it."
 
 #define PDNA_XFER_TC_TITLE        "NO GEN 1 FORM"
 /* BACKLOG #150 S150-8: shortened from the brief's original "%s did not exist in

@@ -51,9 +51,14 @@ void xrc_classify(const XrcInput* in, XrcResult* out) {
   switch (in->state) {
     case XR_STATE_PENDING:
       /* G-F1: a PENDING entry never drives anything destructive. */
-      if (bank_seen && g3_seen)       { out->kind = XRC_PENDING_BOTH; }
+      /* #377: the Gen-3 copy is found exactly once AND the save holding it is the verified one on the card
+       * (g3_on_card) -> the exit-time promotion that never happened can be done by hand ("Mark finished":
+       * PENDING -> CLAIMED, nothing else changes). Never without g3_on_card: a copy that exists only in RAM is
+       * exactly what PENDING protects. */
+      if (bank_seen && g3_seen)       { out->kind = XRC_PENDING_BOTH; if (in->g3_on_card) out->actions = XRC_ACT_PROMOTE; }
       else if (bank_seen)             { out->kind = XRC_PENDING_ORPHAN; out->actions = XRC_ACT_DELETE; }
-      else if (g3_seen)               { out->kind = XRC_PENDING_NOBANK; }
+      else if (g3_seen)               { out->kind = XRC_PENDING_NOBANK; if (in->g3_on_card) out->actions = XRC_ACT_PROMOTE; }
+      else if (in->bank_ident_matches >= 1) { out->kind = XRC_IN_BANK; out->actions = XRC_ACT_DELETE; }   /* #385 */
       else                             { out->kind = XRC_PENDING_LOST; out->actions = XRC_ACT_RESTORE | XRC_ACT_DELETE; }
       return;
 
@@ -63,6 +68,9 @@ void xrc_classify(const XrcInput* in, XrcResult* out) {
       if (bank_seen && in->bank_slot_pending) { out->kind = XRC_DEFERRED; return; }
       if (bank_seen && g3_seen)               { out->kind = XRC_DUP_BANK; out->actions = XRC_ACT_REMOVE; return; }
       if (!bank_seen && g3_seen)              { out->kind = XRC_ABROAD; return; }
+      /* #385: the mon is already in the Bank under a NEW serial (an earlier RESTORE whose ledger rewrite never
+       * landed): RESTORE would clone it -- only the record can go. */
+      if (!bank_seen && !g3_seen && in->bank_ident_matches >= 1) { out->kind = XRC_IN_BANK; out->actions = XRC_ACT_DELETE; return; }
       if (!bank_seen && !g3_seen)             { out->kind = XRC_LOST; out->actions = XRC_ACT_RESTORE | XRC_ACT_DELETE; return; }
       /* bank_seen && !g3_seen, not slot_pending: no decision-2 row covers a stray
        * Bank cell with no linked Gen-3 copy at all -- REMOVE requires a g3_seen
@@ -220,6 +228,19 @@ int xrc_bank_match(const uint8_t box2400[2400], const GbscEntry* e, bool by_iden
   return count > 2 ? 2 : count;
 }
 
+int xrc_bank_reserial_match(const uint8_t box2400[2400], const uint8_t orig8[8], const uint8_t orig_serial[4]) {
+  if (!box2400 || !orig8 || !orig_serial) return 0;
+  uint32_t want = (uint32_t)orig8[4] | ((uint32_t)orig8[5] << 8) | ((uint32_t)orig8[6] << 16) | ((uint32_t)orig8[7] << 24);
+  int count = 0;
+  for (int s = 0; s < 30 && count < 2; s++) {
+    const uint8_t* cell = box2400 + (uint32_t)s * 80;
+    if (!bc_is_native(cell)) continue;
+    uint8_t t[80]; memcpy(t, cell, 80); memcpy(t + BC_OFF_BANK_SERIAL, orig_serial, 4);
+    if (bc_ident32(t) == want) count++;
+  }
+  return count;
+}
+
 int xrc_bank_g3_match(const uint8_t box2400[2400], uint64_t key) {
   if (!box2400) return 0;
   int count = 0;
@@ -276,6 +297,7 @@ static const char* xrc_status_word(XrcRowKind kind) {
     case XRC_STALE_KEY:       return "not linked";
     case XRC_AMBIGUOUS:       return "ambiguous";
     case XRC_G3HOME:          return "original";
+    case XRC_IN_BANK:         return "in the Bank";
     default:                   return "";
   }
 }

@@ -744,6 +744,13 @@ int main(void) {
   PF(PDNA_BANK_META_TITLE,  28, 184);
   PF(PDNA_BANK_META_L1,     28, 184);
   PF(PDNA_BANK_META_L2,     28, 184);
+  /* BACKLOG #382: the unread / heal-failed box notices (msg_wait, 28/184). */
+  PF(PDNA_BANK_UNREAD_TITLE,   28, 184);
+  PF(PDNA_BANK_UNREAD_L1,      28, 184);
+  PF(PDNA_BANK_UNREAD_L2,      28, 184);
+  PF(PDNA_BANK_HEALFAIL_TITLE, 28, 184);
+  PF(PDNA_BANK_HEALFAIL_L1,    28, 184);
+  PF(PDNA_BANK_HEALFAIL_L2,    28, 184);
 
   /* gb_edit_hook / gb_edit_persist's own gate + verdict popups — everything else the
    * S2 edit path draws. s_busy's own line ("Saving - do not power off") and the
@@ -1270,6 +1277,7 @@ int main(void) {
   PF(PDNA_XRC_ACT_RESTORE, 28, 184);
   PF(PDNA_XRC_ACT_DELETE,  28, 184);
   PF(PDNA_XRC_ACT_REKEY,   28, 184);
+  PF(PDNA_XRC_ACT_PROMOTE, 28, 184);
   PF(PDNA_XRC_LOSS_TITLE, 28, 184);
   PF(PDNA_XRC_LOSS_L1,    28, 184);
   PF(PDNA_XRC_NOBANK_L1, 28, 184);
@@ -1295,6 +1303,7 @@ int main(void) {
   PF(PDNA_XRC_D_STALE_KEY,      28, 184);
   PF(PDNA_XRC_D_AMBIGUOUS,      28, 184);
   PF(PDNA_XRC_D_G3HOME,         28, 184);
+  PF(PDNA_XRC_D_IN_BANK,        28, 184);
   /* ==== END BACKLOG #150 S150-11 decision 18 ==================================== */
 
   /* ==== S5-B Part D: PASTE, source/pdna_gen12.c gb_paste_hook/gb_paste_write ===

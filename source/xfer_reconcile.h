@@ -39,7 +39,9 @@ typedef enum {
   XRC_DAYCARE,            /* in the Day-Care -- no action (decision 15)               */
   XRC_STALE_KEY,          /* PID changed; record not linked -- RE-KEY (decision 15)   */
   XRC_AMBIGUOUS,          /* 2+ matches by key or identity -- no action, logged       */
-  XRC_G3HOME               /* Gen-3 original; the shipped load-time screen owns it     */
+  XRC_G3HOME,              /* Gen-3 original; the shipped load-time screen owns it     */
+  XRC_IN_BANK              /* #385: the Bank already holds this mon (a restored copy under a NEW serial, the
+                            * ledger rewrite never landed) -- DELETE RECORD only, never RESTORE (a clone) */
 } XrcRowKind;
 
 /* Allowed-action mask, decision 8's letters. */
@@ -49,6 +51,7 @@ typedef enum {
 #define XRC_ACT_RESTORE  0x04u   /* RESTORE TO BANK   (8c)                            */
 #define XRC_ACT_DELETE   0x08u   /* DELETE RECORD     (8d)                            */
 #define XRC_ACT_REKEY    0x10u   /* RE-KEY            (8e)                            */
+#define XRC_ACT_PROMOTE  0x20u   /* MARK FINISHED (#377): PENDING -> CLAIMED, the Gen-3 copy is on the card */
 
 /* What the caller observed THIS SESSION for one entry, before any classification --
  * every field is a plain fact the caller already had to compute (xrc_g3_match_key(),
@@ -67,6 +70,12 @@ typedef struct {
   bool    bank_keep;            /* the entry's bank_keep bit (decision 7)              */
   int     bank_g3_matches;      /* xrc_bank_g3_match(): Gen-3 copies PARKED in the Bank
                                  * (#270 pass-through), 0/1/2(+); 0 when never scanned  */
+  bool    g3_on_card;           /* #377: nothing is staged in the open save (it equals the last verified
+                                 * write), so a Gen-3 key match is ON the card -- the only case in which a
+                                 * PENDING row may be marked finished                                    */
+  int     bank_ident_matches;   /* #385: native Bank cells that are a RE-SERIAL of the entry's
+                                 * original80 (xrc_bank_reserial_match): every hashed byte equal
+                                 * except bank_serial. 0/1/2(+); 0 when never scanned            */
 } XrcInput;
 
 typedef struct {
@@ -117,6 +126,12 @@ int xrc_g3_match_identity(const uint8_t* sb1, bool frlg, const uint8_t* pc,
  * count, clamped to 2; `*slot` filled only on exactly 1. */
 int xrc_bank_match(const uint8_t box2400[2400], const GbscEntry* e, bool by_identity,
                    int* slot);
+
+/* #385: native cells of one box that are a RE-SERIAL of the entry's original: the cell with its bank_serial
+ * (bytes 73..76) swapped for `orig_serial` hashes (bc_ident32) to the original's ident32 `orig8[4..7]`. Only
+ * xrc_rebuild_cell's output (new serial + ident32, nothing else) qualifies -- a different mon that merely shares
+ * gen/OT id/DVs/OT name does not. Count clamped to 2. */
+int xrc_bank_reserial_match(const uint8_t box2400[2400], const uint8_t orig8[8], const uint8_t orig_serial[4]);
 
 /* #270 pass-through: the Gen-3 copy of an ABROAD_G3 entry may sit in the Bank (a PC ->
  * Bank drop lands as-is). Counts NON-native cells of one 2400-byte box whose first 8
@@ -190,6 +205,7 @@ typedef struct {
   bool    g3_in_daycare;
   int8_t  bank_matches;                /* -1 unresolved until phase 2                */
   int8_t  bank_g3_matches;             /* Gen-3 copies parked in the Bank (phase 2)  */
+  int8_t  bank_ident_matches;          /* #385: re-serial Bank matches (D1)      */
   uint64_t file_key;                   /* the ledger file's key (ABROAD_G3 only)     */
   bool    bank_slot_pending;
   bool    bank_keep;
@@ -203,6 +219,7 @@ typedef struct {
   uint8_t dv4[4];
   uint8_t otname[GB_NAME_BYTES];
   uint8_t orig8[8];                    /* original80[0..7]                          */
+  uint8_t orig_serial[4];              /* #385: original80[73..76]                  */
 } XrcHit;
 
 #endif /* XFER_RECONCILE_H */

@@ -1133,6 +1133,12 @@ static uint8_t* clear_origin(BoxSource* src, int box) {
   }
   if (s_orig_slot < 0 || !same_scope(src)) { s_orig_slot = -1; return src->records(box); }
   uint8_t* o = src->records(s_orig_box);                     /* bank: flushes the current (dest) box first */
+  /* BACKLOG #382(c), documented edge (no behaviour change): a cross-box MOVE whose DEST save failed and the user chose
+   * "keep editing" leaves `o` aliasing the still-loaded DEST buffer (see D2 below). When the origin slot INDEX equals
+   * the slot just filled in the dest, the identity check passes on the carried mon itself, so the guard clears the
+   * just-placed dest copy: the mon reappears in its origin box -- no loss, no duplicate, merely surprising. Left as is
+   * on purpose: telling "origin box" from "dest buffer" apart would need the Bank to report which box the pointer
+   * is, and the outcome is safe. */
   /* Zy D2: `o` is NOT always the origin box -- a Bank page-away refused by a failed dest save (user chose
    * "keep editing") returns the still-loaded DEST buffer, so clear only a slot that still holds the carried
    * mon (PID+OTID = 8 bytes, the same identity the Bank deletion queue uses): a bystander survives, the

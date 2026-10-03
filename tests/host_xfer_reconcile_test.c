@@ -431,6 +431,128 @@ static void test_row1(void) {
   CHECK((int)strlen(out) == n2, "ROW-1: strlen matches after truncation too");
 }
 
+/* ==== INBANK-1 (BACKLOG #385) =========================================================
+ * A RESTORE TO BANK whose ledger rewrite never landed leaves the mon in the Bank under a NEW serial: the entry's
+ * first-8-byte match misses, so the row read LOST and offered RESTORE again (a clone). With the identity-only
+ * Bank count the row is XRC_IN_BANK, DELETE only. Mutation: drop either bank_ident_matches branch in
+ * xrc_classify -- the matching assertion fails. */
+static void test_inbank1(void) {
+  printf("== INBANK-1: identity already in the Bank -> IN_BANK, never RESTORE ==\n");
+  XrcInput in; XrcResult r;
+  memset(&in, 0, sizeof in);
+  in.kind = XR_KIND_NATIVE_HOME; in.direction = XR_DIR_ABROAD_G3; in.state = XR_STATE_CLAIMED;
+  in.bank_ident_matches = 1;
+  xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_IN_BANK && r.actions == XRC_ACT_DELETE, "INBANK-1: CLAIMED, nothing but an identity hit -> IN_BANK, DELETE only (kind %d act 0x%x)", r.kind, r.actions);
+  in.bank_ident_matches = 2;
+  xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_IN_BANK && r.actions == XRC_ACT_DELETE, "INBANK-1: 2+ identity hits is still IN_BANK (a copy exists)");
+  in.bank_ident_matches = 0;
+  xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_LOST && r.actions == (XRC_ACT_RESTORE | XRC_ACT_DELETE), "INBANK-1: no identity hit -> LOST keeps RESTORE|DELETE");
+  in.state = XR_STATE_PENDING; in.bank_ident_matches = 1;
+  xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_IN_BANK && r.actions == XRC_ACT_DELETE, "INBANK-1: PENDING, nothing but an identity hit -> IN_BANK");
+  in.bank_ident_matches = 0;
+  xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_PENDING_LOST && (r.actions & XRC_ACT_RESTORE), "INBANK-1: PENDING, no identity hit -> PENDING_LOST keeps RESTORE");
+  /* the override must not eat the normal rows */
+  in.state = XR_STATE_CLAIMED; in.bank_ident_matches = 1; in.g3_key_matches = 1;
+  xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_ABROAD && r.actions == XRC_ACT_NONE, "INBANK-1: a Gen-3 copy in the save wins (ABROAD)");
+  in.g3_key_matches = 0; in.bank_matches = 1;
+  xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_ABROAD, "INBANK-1: a first-8 Bank hit keeps the normal row");
+  char out[40];
+  int n = xrc_row_text(XRC_IN_BANK, "NIDOKING", "SAPPHIRE", out);
+  CHECK(n <= 39 && strstr(out, "in the Bank") != NULL, "INBANK-1: row text says 'in the Bank' and fits (%s)", out);
+  /* the real pair: an original cell and its RESTORE rebuild (new serial) -- first 8 differ, identity hits */
+  uint8_t otname[GB_NAME_BYTES] = "INB\x50\x50\x50\x50\x50\x50\x50\x50";
+  GbEditMon m; mk_gb_mon(&m, GB_GEN2, 0x4242, 3, 4, 5, 6, otname);
+  uint8_t orig[80], rebuilt[80], box[2400];
+  CHECK(bc_pack(&m, 0, BC_ORIGIN_GOLD, 7u, 1000u, orig) == 0, "INBANK-1: original cell packed");
+  GbscEntry e; memset(&e, 0, sizeof e);
+  e.gen = GB_GEN2; e.otid16 = 0x4242;
+  e.dv4[0] = gb_get_dv(&m, GB_ATK); e.dv4[1] = gb_get_dv(&m, GB_DEF); e.dv4[2] = gb_get_dv(&m, GB_SPE); e.dv4[3] = gb_get_dv(&m, GB_SPC);
+  memcpy(e.otname_written, otname, GB_NAME_BYTES); memcpy(e.original80, orig, 80);
+  CHECK(xrc_rebuild_cell(&e, 2000u, rebuilt) == 0, "INBANK-1: rebuilt (RESTORE) cell");
+  memset(box, 0, sizeof box); memcpy(box + 3 * 80, rebuilt, 80);
+  int slot = -1;
+  CHECK(xrc_bank_match(box, &e, false, &slot) == 0, "INBANK-1: the restored copy does NOT match by first-8 bytes (new serial)");
+  CHECK(xrc_bank_match(box, &e, true, &slot) == 1 && slot == 3, "INBANK-1: ...but matches by identity (the #385 count)");
+  /* D1 (review): the Bank match is a RE-SERIAL of the original, not bare identity. Mutant: helper skips the serial
+   * swap (hash the cell as stored) -> the positive case below goes RED. */
+  uint8_t ser[4]; memcpy(ser, orig + BC_OFF_BANK_SERIAL, 4);
+  CHECK(xrc_bank_reserial_match(box, orig, ser) == 1, "INBANK-1: re-serial of the original -> 1 hit (=> XRC_IN_BANK)");
+  in.state = XR_STATE_CLAIMED; in.g3_key_matches = 0; in.bank_matches = 0; in.bank_ident_matches = 1;
+  xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_IN_BANK, "INBANK-1: re-serial hit classifies XRC_IN_BANK");
+  /* negatives: a DIFFERENT Bank mon with the same gen + OT id + DVs + OT name */
+  GbEditMon d; mk_gb_mon(&d, GB_GEN2, 0x4242, 3, 4, 5, 6, otname);
+  uint8_t oth[80], bx2[2400];
+  d.list_species = 130;                              /* different species */
+  CHECK(bc_pack(&d, 0, BC_ORIGIN_GOLD, 7u, 3000u, oth) == 0, "INBANK-1: other-species cell packed");
+  memset(bx2, 0, sizeof bx2); memcpy(bx2 + 5 * 80, oth, 80);
+  CHECK(xrc_bank_match(bx2, &e, true, &slot) == 1, "INBANK-1: (precondition) the OLD identity match WOULD hit the other mon");
+  CHECK(xrc_bank_reserial_match(bx2, orig, ser) == 0, "INBANK-1: different species, same OT+DVs -> NOT a re-serial");
+  d.list_species = 1; d.nick[0] = 0x80; d.nick[1] = 0x50;     /* different nickname */
+  CHECK(bc_pack(&d, 0, BC_ORIGIN_GOLD, 7u, 3000u, oth) == 0, "INBANK-1: other-nickname cell packed");
+  memcpy(bx2 + 5 * 80, oth, 80);
+  CHECK(xrc_bank_reserial_match(bx2, orig, ser) == 0, "INBANK-1: different nickname, same OT+DVs -> NOT a re-serial");
+  d.nick[0] = 0; d.nick[1] = 0;                      /* same everything, other serial: the bare twin */
+  CHECK(bc_pack(&d, 0, BC_ORIGIN_GOLD, 7u, 3000u, oth) == 0, "INBANK-1: twin cell packed");
+  memcpy(bx2 + 5 * 80, oth, 80);
+  CHECK(xrc_bank_reserial_match(bx2, orig, ser) == 1, "INBANK-1: byte-identical twin under a new serial IS a re-serial (same record)");
+  /* the classify result for the lost-original-in-ledger fixture: no re-serial hit -> LOST with RESTORE */
+  in.bank_ident_matches = 0;
+  xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_LOST && (r.actions & XRC_ACT_RESTORE), "INBANK-1: different Bank mon (0 re-serial hits) -> stays LOST with RESTORE");
+  /* D2 (review): PENDING ordering -- a Gen-3 copy on the card wins over an identity hit */
+  memset(&in, 0, sizeof in);
+  in.kind = XR_KIND_NATIVE_HOME; in.direction = XR_DIR_ABROAD_G3; in.state = XR_STATE_PENDING;
+  in.g3_key_matches = 1; in.g3_on_card = true; in.bank_ident_matches = 1;
+  xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_PENDING_NOBANK && r.actions == XRC_ACT_PROMOTE, "INBANK-1: PENDING + g3 copy + identity hit -> PENDING_NOBANK/PROMOTE (kind %d act 0x%x)", r.kind, r.actions);
+}
+
+/* ==== PROMOTE-1 (BACKLOG #377) ========================================================
+ * A PENDING row whose Gen-3 copy is found exactly once offers MARK FINISHED (PROMOTE) -- but ONLY when the open save is
+ * the verified one on the card (g3_on_card). Mutations: drop g3_on_card from either branch -> the "RAM only" check
+ * fails; drop the PROMOTE bit -> the offering checks fail. PENDING_ORPHAN / PENDING_LOST must never offer it. */
+static void test_promote1(void) {
+  printf("== PROMOTE-1: MARK FINISHED only for a PENDING row whose Gen-3 copy is on the card ==\n");
+  XrcInput in; XrcResult r;
+  memset(&in, 0, sizeof in);
+  in.kind = XR_KIND_NATIVE_HOME; in.direction = XR_DIR_ABROAD_G3; in.state = XR_STATE_PENDING;
+  in.g3_key_matches = 1; in.g3_on_card = true;
+  xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_PENDING_NOBANK && r.actions == XRC_ACT_PROMOTE, "PROMOTE-1: unproven + on card -> PROMOTE (kind %d act 0x%x)", r.kind, r.actions);
+  in.bank_matches = 1;
+  xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_PENDING_BOTH && r.actions == XRC_ACT_PROMOTE, "PROMOTE-1: unfinished + on card -> PROMOTE");
+  in.g3_on_card = false;
+  xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_PENDING_BOTH && r.actions == XRC_ACT_NONE, "PROMOTE-1: unfinished but the copy is RAM-only -> nothing offered");
+  in.bank_matches = 0;
+  xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_PENDING_NOBANK && r.actions == XRC_ACT_NONE, "PROMOTE-1: unproven but RAM-only -> nothing offered");
+  in.g3_on_card = true; in.g3_key_matches = 2;
+  xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_AMBIGUOUS && r.actions == XRC_ACT_NONE, "PROMOTE-1: 2 copies is ambiguous, not promotable");
+  in.g3_key_matches = 0; in.bank_matches = 1;
+  xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_PENDING_ORPHAN && r.actions == XRC_ACT_DELETE, "PROMOTE-1: never-landed (no Gen-3 copy) offers no PROMOTE");
+  in.bank_matches = 0;
+  xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_PENDING_LOST && !(r.actions & XRC_ACT_PROMOTE), "PROMOTE-1: record-only offers no PROMOTE");
+  in.state = XR_STATE_CLAIMED; in.g3_key_matches = 1;
+  xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_ABROAD && r.actions == XRC_ACT_NONE, "PROMOTE-1: a CLAIMED row never gets PROMOTE");
+  /* the bit is its own and fits the popup mask */
+  CHECK(XRC_ACT_PROMOTE == 0x20u && (XRC_ACT_PROMOTE & (XRC_ACT_REMOVE | XRC_ACT_RELEASE | XRC_ACT_RESTORE | XRC_ACT_DELETE | XRC_ACT_REKEY)) == 0,
+        "PROMOTE-1: XRC_ACT_PROMOTE is a distinct bit");
+}
+
 /* ==== REBUILD-1 ====================================================================== */
 
 static void test_rebuild1(void) {
@@ -592,6 +714,8 @@ int main(int argc, char** argv) {
   test_rekey1();
   test_row1();
   test_rebuild1();
+  test_inbank1();
+  test_promote1();
 
   int examined = 0;
   for (int i = 1; i < argc; i++) { test_corpus(argv[i]); examined++; }
