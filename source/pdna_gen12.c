@@ -743,6 +743,7 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "savefile.h"      /* SF_PATH_MAX */
 #include "log.h"
 #include "xfer_io.h"       /* BACKLOG #150 S150-6: xr_path_for_key -- the one reader */
+#include "xfer_heal.h"     /* #389 review: xh_unlink_ledger / xh_heal_key (the same-session gap) */
 #include "ui.h"
 #include "snd.h"
 #include "rmbl.h"
@@ -3157,10 +3158,26 @@ static void gb_paste_sidecar_undo(const char* path) {
   }
   rmbl_pause();
   SfStatus wst;
-  if (gbsc_count(g_ed->sidecar, len) == 0) wst = (f_unlink(path) == FR_OK) ? SF_OK : SF_ERR_WRITE;
+  if (gbsc_count(g_ed->sidecar, len) == 0) wst = (xh_unlink_ledger(path) == FR_OK) ? SF_OK : SF_ERR_WRITE;
   else                                     wst = sf_write_verified(path, g_ed->sidecar, len);
   rmbl_resume();
   if (wst != SF_OK) log_line("gen12: sidecar cleanup: rewrite failed for %s", path);
+}
+
+/* #389 review D4 (same-session gap): the ledger read said "absent" (SF_ERR_OPEN). In a session where an
+ * earlier verified write already lost its rename, the verified bytes sit in <path>.tmp and ONLY the boot
+ * heal ever looks there -- gbsc_init + a verified write over it would drop those entries. Heal the key first
+ * (xh_absent_resolve, host-tested; `buf` is the caller's GBSC_FILE_MAX buffer, reused -- no new stack buffer). 1 = go on (a fresh ledger in
+ * buf, or the healed one read back into buf with *len); 0 = refused, message shown. */
+static int __attribute__((noinline))
+gb_ledger_absent_heal(const char* path, uint64_t key, uint8_t* buf, uint32_t* len) {
+  rmbl_pause();   /* the heal may f_rename on the card (rmbl.h: pause around every SD write) */
+  bool ok = xh_absent_resolve(PDNA_XFER_DIR, path, key, buf, GBSC_FILE_MAX, app_can_edit(), len);
+  rmbl_resume();
+  if (ok) return 1;
+  snd_error();
+  msg_wait(PDNA_SIDECAR_READFAIL_TITLE, UI_WARN, sf_status_str(SF_ERR_READ), PDNA_SIDECAR_NOTWRITTEN_L2);
+  return 0;
 }
 
 /* The sidecar, then gbs_insert(), then the card -- shared by every Gen-3 -> Game Boy
@@ -3231,7 +3248,7 @@ gb_paste_write(const GbEditMon* mon, int box, const uint8_t orig80[80],
     msg_wait(PDNA_SIDECAR_CORRUPT_TITLE, UI_WARN, PDNA_SIDECAR_CORRUPT_KEPT_L1, 0);
     len = (uint32_t)gbsc_init(g_ed->sidecar, key);
   } else if (rst == SF_ERR_OPEN) {
-    len = (uint32_t)gbsc_init(g_ed->sidecar, key);   /* genuinely absent (or unopenable) */
+    if (!gb_ledger_absent_heal(path, key, g_ed->sidecar, &len)) return false;   /* #389 D4: absent, or a .tmp in the way */
   } else if (rst != SF_OK) {
     /* S5-B re-verification NEW-2 (must): SF_ERR_OPEN is the ONLY status that means
      * "no such file" -- sf_read_full() also returns SF_ERR_READ for a failed/short
@@ -3431,7 +3448,7 @@ static void xfer_down_undo(const char* path, uint8_t* scratch) {
   }
   rmbl_pause();
   SfStatus wst;
-  if (gbsc_count(scratch, len) == 0) wst = (f_unlink(path) == FR_OK) ? SF_OK : SF_ERR_WRITE;
+  if (gbsc_count(scratch, len) == 0) wst = (xh_unlink_ledger(path) == FR_OK) ? SF_OK : SF_ERR_WRITE;
   else                                wst = sf_write_verified(path, scratch, len);
   rmbl_resume();
   if (wst != SF_OK) log_line("gen12: xfer_down cleanup: rewrite failed for %s", path);
@@ -3484,7 +3501,7 @@ xfer_down_write(uint64_t key, const uint8_t cell80[80], const GbEditMon* written
     msg_wait(PDNA_SIDECAR_CORRUPT_TITLE, UI_WARN, PDNA_SIDECAR_CORRUPT_KEPT_L1, 0);
     len = (uint32_t)gbsc_init(scratch, key);
   } else if (rst == SF_ERR_OPEN) {
-    len = (uint32_t)gbsc_init(scratch, key);
+    if (!gb_ledger_absent_heal(path_out, key, scratch, &len)) return -1;   /* #389 D4 */
   } else if (rst != SF_OK) {
     snd_error();
     msg_wait(PDNA_SIDECAR_READFAIL_TITLE, UI_WARN, sf_status_str(rst), PDNA_SIDECAR_NOTWRITTEN_L2);
@@ -3714,7 +3731,7 @@ gb_rec_moves(const uint8_t rec80[80], uint8_t gen, uint16_t from4[4], uint8_t ba
  * learnset block this needs, BACKLOG #150 S150-10 decision 5) -- forward-declared here
  * because gb_paste_hook, which calls it, sits earlier in this file than that block. */
 static int __attribute__((noinline)) gb_paste_fill_moves(uint16_t dex, uint8_t level, GbEditMon* mon,
-                                const uint8_t bad4[4], uint8_t fill4[4]);
+                                const uint8_t bad4[4], uint8_t fill4[4], bool* no_rom);
 
 /* Derive "<save's dir><save's basename>" (no extension) from g_ed->path into
  * g_ed->romspath -- arena-resident, so the path never lives on any function's own
@@ -3947,10 +3964,10 @@ void __attribute__((noinline)) gb_gen12_norom_msg(uint8_t gen) {
            UI_WARN, l1, PDNA_SIDECAR_GEN1_L1);
 }
 
-/* BACKLOG #212 review D9: the bridge's zero-move refusal runs AFTER the base-stats
- * gate has already proved a ROM is present (gb_gen12_norom_msg above would be a
- * false "the ROM is missing" claim there) -- the true reason is that no eligible
- * move was found anywhere in that ROM's learnset for this species/level. */
+/* BACKLOG #212 review D9 / #390: the zero-move refusal. For GEN 1 the base-stats gate has already proved a ROM is
+ * present by the time it runs (gb_gen12_norom_msg above would be a false "the ROM is missing" claim), so the true
+ * reason is that no eligible move was found in that ROM's learnset for this species/level. GEN 2 has no such gate:
+ * its callers check gb_paste_fill_moves' no_rom flag first and name the missing ROM instead. */
 static void __attribute__((noinline)) gb_gen12_nomoves_msg(uint8_t gen) {
   msg_wait(gen == GB_GEN1 ? PDNA_SIDECAR_NOMOVES_TITLE1 : PDNA_SIDECAR_NOMOVES_TITLE2,
            UI_WARN, PDNA_SIDECAR_NOMOVES_L1, 0);
@@ -4069,7 +4086,8 @@ BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]) {
      * the same function. */
     boxoam_suspend();
     s_busy_reading();
-    nfill = gb_paste_fill_moves(gb_get_species_dex(&mon), wlvl, &mon, bad4, fill4);
+    bool fill_no_rom = false;
+    nfill = gb_paste_fill_moves(gb_get_species_dex(&mon), wlvl, &mon, bad4, fill4, &fill_no_rom);
     log_line("gen12: bridge moves: gen %u, %d bad slot(s), %d filled",
              (unsigned)dst_gen, nbad, nfill);
     /* Decision 8.7's real predicate (review D1): "the record would be WRITTEN with
@@ -4080,7 +4098,10 @@ BankDownResult gb_bank_down_bridge(int dst_box, const uint8_t cell80[80]) {
     for (int i = 0; i < 4; i++) if (gb_get_move(&mon, i)) nleft++;
     if (nleft == 0) {
       snd_deny();
-      gb_gen12_nomoves_msg(dst_gen);   /* D9: the base-stats gate already proved a ROM */
+      /* D9 + #390: the Gen-1 base-stats gate above already proved a ROM, so "no learnset" is true there. Gen 2 has no
+       * such gate: its fill comes up empty when the ROM is simply missing, and that is what the player must be told. */
+      if (GB_GEN2 == dst_gen && fill_no_rom) gb_gen12_norom_msg(GB_GEN2);
+      else gb_gen12_nomoves_msg(dst_gen);
       boxoam_resume();
       return BANK_DOWN_REFUSED;
     }
@@ -4785,7 +4806,8 @@ BankDownResult gb_bank_down_g3(int dst_box, const uint8_t cell80[80]) {
      * BACKLOG #246 review D2: no boxoam_suspend/resume bracket -- see the loss-screen
      * comment above (drop_held_down_g3's own outer bracket already covers this). */
     s_busy_reading();
-    nfill = gb_paste_fill_moves(gb_get_species_dex(&mon), wlvl, &mon, bad4, fill4);
+    bool fill_no_rom = false;
+    nfill = gb_paste_fill_moves(gb_get_species_dex(&mon), wlvl, &mon, bad4, fill4, &fill_no_rom);
     /* "packed": did any KEPT (non-bad) slot's move end up at a different index than
      * it started at? g3gb_moves_fill's own contract writes a fill AT its bad slot's
      * own index and never touches a kept slot's value -- so a kept slot's move can
@@ -4806,7 +4828,9 @@ BankDownResult gb_bank_down_g3(int dst_box, const uint8_t cell80[80]) {
     for (int i = 0; i < 4; i++) if (gb_get_move(&mon, i)) nleft++;
     if (nleft == 0) {
       snd_deny();
-      gb_gen12_nomoves_msg(g_ed->s.gen);
+      /* #390: same wording rule as the bridge above -- a Gen-2 session with no ROM must say so. */
+      if (g_ed->s.gen == GB_GEN2 && fill_no_rom) gb_gen12_norom_msg(GB_GEN2);
+      else gb_gen12_nomoves_msg(g_ed->s.gen);
       return BANK_DOWN_REFUSED;
     }
   }
@@ -5553,9 +5577,10 @@ gb_create_learn(uint16_t dex, const uint8_t g1_start[4], uint8_t at_level,
  * both inside g3gb_moves_fill(), this function is a pure ROM-resolution wrapper
  * around it. Returns g3gb_moves_fill()'s own fill count (0..nbad). */
 static int __attribute__((noinline)) gb_paste_fill_moves(uint16_t dex, uint8_t level, GbEditMon* mon,
-                                const uint8_t bad4[4], uint8_t fill4[4]) {
+                                const uint8_t bad4[4], uint8_t fill4[4], bool* no_rom) {
   uint8_t learn4[4] = { 0, 0, 0, 0 };
-  bool have_rom = gb_create_locate_rom(g_ed->s.gen);
+  bool located = gb_create_locate_rom(g_ed->s.gen);   /* #390 review: ROM present vs learnset found are different facts */
+  bool have_rom = located;
   if (have_rom && g_ed->s.gen == GB_GEN1) {
     RomGb1Species sp;
     if (gb_create_base1(dex, &sp)) {
@@ -5568,6 +5593,7 @@ static int __attribute__((noinline)) gb_paste_fill_moves(uint16_t dex, uint8_t l
   } else if (have_rom) {
     have_rom = gb_create_learn(dex, NULL, level, NULL, learn4) >= 0;
   }
+  if (no_rom) *no_rom = !located;   /* BACKLOG #390: the caller's refusal wording depends on WHY the fill came up empty */
   if (!have_rom) {
     int n = 0; for (int i = 0; i < 4; i++) n += bad4[i] != 0;
     log_line("gen12: paste moves: no gen-%u rom, %d slot(s) emptied", (unsigned)g_ed->s.gen, n);

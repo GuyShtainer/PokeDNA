@@ -173,8 +173,8 @@ static void test_bankg3(void) {
   in.kind = XR_KIND_NATIVE_HOME; in.state = XR_STATE_CLAIMED; in.direction = XR_DIR_ABROAD_G3;
   in.bank_g3_matches = 1;
   XrcResult r; xrc_classify(&in, &r);
-  CHECK(r.kind == XRC_ABROAD && r.actions == XRC_ACT_NONE,
-        "BANKG3-1: parked in Bank -> ABROAD, no actions (got kind %d actions 0x%x)", r.kind, r.actions);
+  CHECK(r.kind == XRC_ABROAD_BANK && r.actions == XRC_ACT_NONE,
+        "BANKG3-1: parked in Bank -> ABROAD_BANK (#387), no actions (got kind %d actions 0x%x)", r.kind, r.actions);
   in.bank_g3_matches = 0; xrc_classify(&in, &r);
   CHECK(r.kind == XRC_LOST, "BANKG3-1: nothing anywhere -> still LOST");
   in.bank_g3_matches = 1; in.g3_key_matches = 1; xrc_classify(&in, &r);
@@ -429,6 +429,9 @@ static void test_row1(void) {
   int n2 = xrc_row_text(XRC_AMBIGUOUS, "WAYTOOLONGASPECIESNAME", "WAYTOOLONGAGAME", out);
   CHECK(n2 <= 39, "ROW-1: an oversized species/game is truncated to fit (got %d)", n2);
   CHECK((int)strlen(out) == n2, "ROW-1: strlen matches after truncation too");
+  /* #387: the Bank-parked row reads like the PC one ("restorable"); only its detail line differs */
+  xrc_row_text(XRC_ABROAD_BANK, "NIDOKING", "SAPPHIRE", out);
+  CHECK(strstr(out, "restorable") != NULL, "ROW-1: ABROAD_BANK row has no status word (got '%s')", out);
 }
 
 /* ==== INBANK-1 (BACKLOG #385) =========================================================
@@ -703,6 +706,33 @@ static void test_corpus(const char* path) {
   }
 }
 
+/* ==== UNREAD-1 (BACKLOG #386) =========================================================
+ * A Bank box that could not be read (read error / failed heal) hides any mon stored in it, so a row that would be
+ * LOST ("only the record is left": RESTORE offered -> a clone once the box reads again) must say "unknown" and offer
+ * NOTHING. Mutations: delete either `bank_unread` branch in xrc_classify -> the PENDING / CLAIMED row goes back to
+ * LOST with RESTORE|DELETE; ignore the flag for a row that WAS found (bank_seen) -> that row loses its real kind. */
+static void test_unread1(void) {
+  printf("== UNREAD-1: an unread Bank box turns LOST into unknown ==\n");
+  XrcResult r;
+  XrcInput in; memset(&in, 0, sizeof in);
+  in.kind = XR_KIND_NATIVE_HOME; in.state = XR_STATE_CLAIMED; in.direction = XR_DIR_ABROAD_G3;
+  xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_LOST && (r.actions & XRC_ACT_RESTORE), "UNREAD-1: baseline CLAIMED nothing-found is LOST + RESTORE");
+  in.bank_unread = true; xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_UNREAD && r.actions == XRC_ACT_NONE, "UNREAD-1: CLAIMED + unread box -> UNREAD, no actions (got kind %d actions 0x%x)", r.kind, r.actions);
+  in.state = XR_STATE_PENDING; xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_UNREAD && r.actions == XRC_ACT_NONE, "UNREAD-1: PENDING + unread box -> UNREAD, no actions (got kind %d actions 0x%x)", r.kind, r.actions);
+  in.bank_unread = false; xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_PENDING_LOST && (r.actions & XRC_ACT_RESTORE), "UNREAD-1: baseline PENDING nothing-found is PENDING_LOST + RESTORE");
+  /* a row that WAS found keeps its real verdict even with an unread box elsewhere */
+  in.bank_unread = true; in.state = XR_STATE_CLAIMED; in.g3_key_matches = 1; xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_ABROAD, "UNREAD-1: a Gen-3 copy found in the save still says ABROAD with an unread box");
+  in.g3_key_matches = 0; in.bank_matches = 1; in.bank_g3_matches = 0; xrc_classify(&in, &r);
+  CHECK(r.kind != XRC_UNREAD, "UNREAD-1: a Bank cell that WAS found is not unknown");
+  char out[40]; xrc_row_text(XRC_UNREAD, "NIDOKING", "SAPPHIRE", out);
+  CHECK(strstr(out, "unknown") != NULL, "UNREAD-1: row word (got '%s')", out);
+}
+
 int main(int argc, char** argv) {
   printf("== xfer_reconcile ==\n");
   test_cls1();
@@ -716,6 +746,7 @@ int main(int argc, char** argv) {
   test_rebuild1();
   test_inbank1();
   test_promote1();
+  test_unread1();
 
   int examined = 0;
   for (int i = 1; i < argc; i++) { test_corpus(argv[i]); examined++; }

@@ -41,6 +41,7 @@
 #include "xfer_gate.h"      /* BACKLOG #120 S2: xg_pc_live/xg_togame_row/xg_paste_row/xg_inject_refuse */
 #include "bank_cell.h"      /* BACKLOG #150 S150-6: bc_is_native -- app_paste_gb_commit's G-H6 guard */
 #include "xfer_io.h"        /* BACKLOG #150 S150-6: xr_path_for_key/xr_path_for_name/xr_migrate_once */
+#include "xfer_heal.h"      /* BACKLOG #389: heal a ledger whose verified-write swap was interrupted (orphan .pds.tmp) */
 #include "xfer_rec.h"       /* BACKLOG #150 S150-6: xr_key_g3 -- the reroll re-key guard             */
 #include "xfer_view.h"      /* BACKLOG #150 S150-15: xv_has_original/xv_find_original -- GB ORIGINAL */
 #ifdef PDNA_DELTA
@@ -2263,6 +2264,14 @@ bool app_xfer_pending_is_g3home(void)   { return g_xd_g3home && app_xfer_pending
 
 void app_xfer_pending_drop(void) { g_xd_key = 0; g_xd_idx = -1; g_xd_g3home = false; }
 
+/* BACKLOG #391(a): "BANK NOT FULLY UPDATED" -- singular/plural ("1 Pokemon is" / "N Pokemon are"). One helper for both
+ * exit/save-now call sites so the wording cannot drift between them. */
+static void __attribute__((noinline)) app_flushfail_msg(int kept) {
+  char l1[48];
+  siprintf(l1, kept == 1 ? PDNA_XFER_FLUSHFAIL_L1_ONE : PDNA_XFER_FLUSHFAIL_L1, kept);
+  msg_wait(PDNA_XFER_FLUSHFAIL_TITLE, UI_WARN, l1, kept == 1 ? PDNA_XFER_FLUSHFAIL_L2_ONE : PDNA_XFER_FLUSHFAIL_L2);
+}
+
 /* Re-resolve the entry's path, re-read it, do a cheap identity re-check (still the
  * right kind/direction/state at that index -- a mismatch means the file changed
  * under us; log and give up rather than promote the wrong entry), flip it to
@@ -2293,7 +2302,7 @@ bool __attribute__((noinline)) app_xfer_promote(void) {
     }
     rmbl_pause();
     SfStatus cst = (gbsc_count(s_promote_buf, len) == 0)
-                     ? ((f_unlink(path) == FR_OK) ? SF_OK : SF_ERR_WRITE)
+                     ? ((xh_unlink_ledger(path) == FR_OK) ? SF_OK : SF_ERR_WRITE)
                      : sf_write_verified(path, s_promote_buf, len);
     rmbl_resume();
     if (cst != SF_OK) { log_line("xfer: promote: g3home consume failed for %s", path); return false; }
@@ -2344,8 +2353,7 @@ bool app_xfer_save_now(void) {
     bool promoted = !had_pending || app_xfer_promote();  /* decision 9: the PC is now verified on disk */
     int kept = pdna_bank_flush_deletions();
     if (kept) {
-      char l1[48]; siprintf(l1, PDNA_XFER_FLUSHFAIL_L1, kept);
-      msg_wait(PDNA_XFER_FLUSHFAIL_TITLE, UI_WARN, l1, PDNA_XFER_FLUSHFAIL_L2);
+      app_flushfail_msg(kept);
     }
     /* BACKLOG #375: log the REAL promotion outcome. */
     log_line(promoted ? (had_pending ? "xfer: save-now: committed, entry promoted" : "xfer: save-now: committed, nothing pending")
@@ -2408,7 +2416,7 @@ void __attribute__((noinline)) app_xfer_pending_undo(void) {
   }
   rmbl_pause();
   SfStatus wst;
-  if (gbsc_count(s_promote_buf, len) == 0) wst = (f_unlink(path) == FR_OK) ? SF_OK : SF_ERR_WRITE;
+  if (gbsc_count(s_promote_buf, len) == 0) wst = (xh_unlink_ledger(path) == FR_OK) ? SF_OK : SF_ERR_WRITE;
   else                                     wst = sf_write_verified(path, s_promote_buf, len);
   rmbl_resume();
   if (wst != SF_OK) log_line("xfer: undo: rewrite failed for %s", path);
@@ -2836,7 +2844,7 @@ static void __attribute__((noinline)) app_xfer_pid_rekey(const XferRekeyPlan* pl
                gbsc_file_key(buf, len) == new_key;
   if (ok) ok = sf_write_verified(plan->new_path, buf, len) == SF_OK;
   if (ok) app_xv_cache_invalidate();   /* BACKLOG #213: new_path now holds this key's ledger */
-  if (ok) ok = f_unlink(plan->old_path) == FR_OK;
+  if (ok) ok = xh_unlink_ledger(plan->old_path) == FR_OK;
 
   if (!ok) {
     log_line("xfer: rekey failed, old key kept (%s -> %s)", plan->old_path, plan->new_path);
@@ -4602,7 +4610,7 @@ static bool app_paste_gb_commit(uint8_t* buf, uint32_t* len, const char* path, i
   if (gbsc_remove(buf, len, idx) == 0) {
     if (gbsc_count(buf, *len) == 0) {
       rmbl_pause();
-      sidecar_ok = (f_unlink(path) == FR_OK);
+      sidecar_ok = (xh_unlink_ledger(path) == FR_OK);
       rmbl_resume();
     } else {
       rmbl_pause();
@@ -6213,6 +6221,7 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
      * decode for a native cell too -- the same G-H2 fix RO_VIEW/app_box_browse
      * already apply elsewhere in this file. */
     if (native) { gb_native_summary_open(rec, /*allow_edit*/false, 0); return false; }
+    if (g_src_ops && g_src_ops->view) { g_src_ops->view(rec); return false; }   /* #388 review D5: a read-only cart's GB box view = the GB summary, as RO_VIEW */
     if (occupied) { uint8_t d[100]; int card = 0; pdna_inspect(rec, is_party, false, d, 0, &card); }
     return false;
   }
@@ -10307,8 +10316,7 @@ static void flush_on_exit(void) {
       log_line("xfer: exit: promotion FAILED (entry stays pending; TRANSFERS can mark it finished)");
     int kept = pdna_bank_flush_deletions();
     if (kept) {
-      char l1[48]; siprintf(l1, PDNA_XFER_FLUSHFAIL_L1, kept);
-      msg_wait(PDNA_XFER_FLUSHFAIL_TITLE, UI_WARN, l1, PDNA_XFER_FLUSHFAIL_L2);
+      app_flushfail_msg(kept);
     }
     return;
   }
@@ -10622,9 +10630,34 @@ typedef struct {
    * NATIVE_HOME entry the reconcile walk finds, one XrcHit each. */
   XrcHit     xrc[GB_RECON_MAX_HITS];
   int        nxrc;
+  bool       bank_unread;   /* BACKLOG #386: phase 2 skipped a Bank box it could not read -- "not found" proves nothing */
 } GbReconBuf;
 _Static_assert(sizeof(GbReconBuf) <= sizeof(g_entries),
               "gb_reconcile buffer no longer fits the borrowed g_entries cache");
+
+/* BACKLOG #389: a card pull (or a swallowed rename) inside sf_write_verified's unlink -> rename window
+ * leaves a ledger as ONLY <key>.pds.tmp (verified bytes), which every "*.pds" scan skips -- the record and
+ * the Game Boy original it holds vanished from every screen. Heal each orphan by RENAME (xfer_heal.c, the
+ * #371/#378 pattern) BEFORE anything reads or writes that key: at boot, at a Gen-3 save load, and at the
+ * TRANSFERS scan. `scratch` is a caller-owned GBSC_FILE_MAX buffer (this function holds none, NO new
+ * statics). Read-only carts never write (xh_heal_dir with can_edit false only counts). Both ledger folders
+ * (the legacy /sidecar one too). The rumble motor is paused around the renames (rmbl.h). */
+static void __attribute__((noinline)) app_ledger_heal(uint8_t* scratch) {
+  if (!scratch) return;
+  int ro1 = 0, ro2 = 0;
+  rmbl_pause();
+  int n = xh_heal_dir(PDNA_XFER_DIR, scratch, GBSC_FILE_MAX, app_can_edit(), &ro1);
+  n += xh_heal_dir(PDNA_SIDECAR_DIR, scratch, GBSC_FILE_MAX, app_can_edit(), &ro2);
+  rmbl_resume();
+  if (n) app_xv_cache_invalidate();   /* BACKLOG #213: the ledger changed under the GB ORIGINAL cache */
+  if (ro1 + ro2) log_line("xfer: %d orphan ledger .tmp left (card read-only)", ro1 + ro2);
+}
+
+/* Boot-time wrapper: the one place a stack scratch is taken (boot is shallow; the .su diff is in the lane report). */
+static void __attribute__((noinline)) app_ledger_heal_boot(void) {
+  uint8_t scratch[GBSC_FILE_MAX];
+  app_ledger_heal(scratch);
+}
 
 /* BACKLOG #150 S150-6, site 5: decision 4/D-Q7 applied to a FILENAME instead of a
  * key, so a reconcile hit's later claim write lands in the same file it was read
@@ -10973,9 +11006,11 @@ static void __attribute__((noinline)) xfer_reconcile_walk(GbReconBuf* rb, int ca
   (void)bank_open;
   rb->nfiles = 0;
   rb->nxrc = 0;
+  rb->bank_unread = false;   /* #386: phase 2 raises it */
   int examined = 0;
   uint32_t dc_base, dc_stride; dc_layout(&dc_base, &dc_stride);
 
+  app_ledger_heal(rb->sidecar);   /* BACKLOG #389: an orphan <key>.pds.tmp is the primary -- heal before this scan */
   DIR dir; FILINFO fi;
   if (f_opendir(&dir, PDNA_XFER_DIR) != FR_OK) return;
   while (rb->nxrc < GB_RECON_MAX_HITS && rb->nfiles < GB_RECON_MAX_FILES &&
@@ -11057,8 +11092,9 @@ static void __attribute__((noinline)) xfer_reconcile_bank_phase2(GbReconBuf* rb)
     bool touched = false;
     for (int i = 0; i < rb->nxrc; i++) if (rb->xrc[i].bank_matches < 2) { touched = true; break; }
     if (!touched) break;   /* every candidate already ambiguous or already resolved  */
-    const uint8_t* recs = pdna_bank_peek_box(box);
-    if (!recs) continue;
+    bool unread = false;
+    const uint8_t* recs = pdna_bank_peek_box_ex(box, &unread);
+    if (!recs) { if (unread) { rb->bank_unread = true; log_line("xfer: reconcile: box %d unread, unmatched rows become unknown", box); } continue; }   /* #386: an ABSENT box is empty, not unread */
     log_line("xfer: reconcile: box %d paged", box);
     for (int i = 0; i < rb->nxrc; i++) {
       XrcHit* h = &rb->xrc[i];
@@ -11115,6 +11151,7 @@ static void __attribute__((noinline)) xfer_reconcile_classify_all(GbReconBuf* rb
     in.bank_keep = h->bank_keep;
     in.bank_g3_matches = h->bank_g3_matches;
     in.bank_ident_matches = h->bank_ident_matches;
+    in.bank_unread = rb->bank_unread;   /* #386 */
     in.g3_on_card = !imgf_exit_prompt(&g_img);   /* #377: nothing staged -> the RAM save IS the verified one */
     XrcResult out;
     xrc_classify(&in, &out);
@@ -11243,6 +11280,8 @@ static const char* xrc_detail_line(uint8_t row_kind) {
     case XRC_DUP_BANK:       return PDNA_XRC_D_DUP_BANK;
     case XRC_DEFERRED:       return PDNA_XRC_D_DEFERRED;
     case XRC_ABROAD:         return PDNA_XRC_D_ABROAD;
+    case XRC_ABROAD_BANK:    return PDNA_XRC_D_ABROAD_BANK;
+    case XRC_UNREAD:         return PDNA_XRC_D_UNREAD;
     case XRC_LOST:           return PDNA_XRC_D_LOST;
     case XRC_ABROAD_GB:      return PDNA_XRC_D_ABROAD_GB;
     case XRC_DUP_G3:         return PDNA_XRC_D_DUP_G3;
@@ -11601,7 +11640,7 @@ static void __attribute__((noinline)) xfer_reconcile_apply(GbReconBuf* rb) {
 
     rmbl_pause();
     bool wok;
-    if (gbsc_count(rb->sidecar, len) == 0) wok = (f_unlink(rb->path) == FR_OK);
+    if (gbsc_count(rb->sidecar, len) == 0) wok = (xh_unlink_ledger(rb->path) == FR_OK);
     else                                   wok = (sf_write_verified(rb->path, rb->sidecar, len) == SF_OK);
     rmbl_resume();
     if (!wok) { log_line("xfer: reconcile: %s NOT updated after apply", rb->path); any_notupdated = true; failed += np_ok; }
@@ -11736,7 +11775,7 @@ static void __attribute__((noinline)) pdna_xfer_reconcile_screen(void) {
     else if (k & KEY_DOWN) sel = (sel + 1) % rb->nxrc;
     else if (k & KEY_SELECT) {
       msg_wait(PDNA_XRC_TITLE, UI_TEXT, xrc_detail_line(rb->xrc[sel].row_kind),
-              "See log.txt for the exact slot.");
+              (rb->xrc[sel].row_kind == XRC_UNREAD) ? 0 : "See log.txt for the exact slot.");
     } else if (k & KEY_A) {
       if (ro) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, app_readonly_why(), 0); continue; }
       XrcHit* h = &rb->xrc[sel];
@@ -12472,6 +12511,7 @@ static void view_save(const char* path) {
   {
     uint8_t* mig = app_box_swap_acquire(GBSC_FILE_MAX);
     if (mig) {
+      app_ledger_heal(mig);   /* BACKLOG #389: BEFORE the migration / reconcile read or write any ledger */
       xr_migrate_once(mig, GBSC_FILE_MAX);
       app_box_swap_release();
     }
@@ -12754,6 +12794,7 @@ int main(void) {
         }
         msg_wait("LOG NOT SAVING", UI_WARN, m, why);
       }
+      app_ledger_heal_boot();   /* BACKLOG #389: the shipped boot's own call (below), so a --vsd pull sweep reaches it too */
     }
   }
   /* ---- emulator build: no flashcart, no microSD, no file browser. -------------
@@ -12876,6 +12917,7 @@ int main(void) {
     msg_wait("LOG NOT SAVING", UI_WARN, m, why);
   }
   pdna_romcheck_report();  /* the verdict is already on the card before we ask for A */
+  app_ledger_heal_boot();  /* BACKLOG #389: an interrupted ledger swap (orphan <key>.pds.tmp) is healed before any screen reads it */
 
   bus_late_selftests();
 

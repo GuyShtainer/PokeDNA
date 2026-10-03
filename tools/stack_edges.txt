@@ -1407,7 +1407,7 @@ wait_keys_bob_p argsites=1 -> party_overlay_bob
 AppSrcOps.release @8 in app_mon_menu_readonly -> gb_release_hook gb_move_hook
 AppSrcOps.move @4 in app_mon_menu_readonly -> gb_move_hook
 AppSrcOps.copy_native @12 in app_copy.isra.0 -> gb_copy_native_hook
-AppSrcOps.view @20 in app_mon_menu_readonly -> gb_view_hook
+AppSrcOps.view @20 in app_mon_menu_readonly,app_mon_menu -> gb_view_hook
 BoxSource.records @20 in clear_origin,drop_held,drop_held_up,drop_held_down_g3,drop_held_down_g3.isra.0,export_box_all,party_strip_overlay,release_box_all -> banksrc_records gbsrc_records pcsrc_records
 # drop_held's own offset-20 call site (BACKLOG #150 S150-7 step 3): `recs =
 # src->records(box);` after bank_down_dispatch() lands the EXACT arm, repainting the

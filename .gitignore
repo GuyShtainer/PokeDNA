@@ -146,3 +146,6 @@ __pycache__/
 # files. Both live under /tmp/pokedna-vsd/ (design S4.6) and are never committed.
 *.img
 *.list
+
+# macOS sed -i -E backups
+*-E

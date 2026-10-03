@@ -893,6 +893,18 @@ const uint8_t* pdna_bank_peek_box(int box) {
   return box_recs();
 }
 
+/* #386 review: like pdna_bank_peek_box, but says WHY it returned NULL. An ABSENT box (never written,
+ * BML_BOX_NONE) is empty, not unread; a read error / failed heal / refused flush proves nothing.
+ * A short (BML_BOX_BAD) box also reads "not unread" (box_load leaves g_box_unread 0 for it). */
+const uint8_t* pdna_bank_peek_box_ex(int box, bool* unread) {
+  *unread = true;
+  if (box < 0 || box >= BANK_BOXES) return NULL;
+  if (g_dirty && !box_save_or_keep_dirty()) return NULL;
+  if (box_load(box)) { *unread = false; return box_recs(); }
+  *unread = (g_box_unread != 0);
+  return NULL;
+}
+
 /* BACKLOG #150 S150-11 decision 8c/19 -- RESTORE TO BANK's write path: a genuinely
  * NEW Bank write with no merge (only ever called for a *_LOST row, where there is no
  * Gen-3 copy to fold in). Omega-gated FIRST. Refuses unless the target slot is

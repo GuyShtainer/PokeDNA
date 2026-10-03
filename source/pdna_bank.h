@@ -92,6 +92,9 @@ bool pdna_bank_prepare_native(void);
  * only valid until the next call that pages a box in. */
 const uint8_t* pdna_bank_peek_box(int box);
 
+/* #386: as pdna_bank_peek_box, plus *unread = false when NULL only means the box is absent/short (empty). */
+const uint8_t* pdna_bank_peek_box_ex(int box, bool* unread);
+
 /* BACKLOG #168: true only right after a meta_load() whose PRIMARY bank.meta parsed
  * clean this session (never after a .bak fallback or a default reset). Lets
  * drop_held()'s UP-branch ident32 collision scan (source/pdna_box.c) skip its 15

@@ -130,14 +130,15 @@ static const char* gbsum_g1_status_text(uint8_t st) {
  * table lookup does, instead of a raw "T14"-style id:
  *   0x00-0x05 NORMAL..ROCK    -> identity (both tables agree here)
  *   0x06                      -> Gen 1's unused BIRD slot: no Gen-3 equivalent
- *   0x07-0x09 BUG/GHOST/STEEL -> t-1  (Gen 3's BUG=6, GHOST=7, STEEL=8)
- *   0x14-0x1B FIRE..DARK      -> t-0x0A (Gen 3's FIRE=10 .. DARK=17)
+ *   0x07-0x08 BUG/GHOST       -> t-1  (Gen 3's BUG=6, GHOST=7)
+ *   0x14-0x1A FIRE..PSYCHIC   -> t-0x0A (Gen 3's FIRE=10 .. PSYCHIC=16; ice/dragon incl.)
+ *   0x09 STEEL / 0x1B DARK are Gen-2-only ids: on a Gen-1 record they are glitch bytes -> -1 (#388 review D5)
  * Returns -1 for 0x06 or any id outside those ranges (a corrupt/hacked byte) — the
  * caller skips drawing a chip rather than showing a wrong one. */
 static int g1_to_g3_type(uint8_t t) {
   if (t <= 0x05u) return t;
-  if (t >= 0x07u && t <= 0x09u) return t - 1;
-  if (t >= 0x14u && t <= 0x1Bu) return t - 0x0A;
+  if (t >= 0x07u && t <= 0x08u) return t - 1;
+  if (t >= 0x14u && t <= 0x1Au) return t - 0x0A;
   return -1;
 }
 
@@ -482,7 +483,14 @@ static void render(const GbEditMon* e, const PkMon* left, bool left_ok, bool dra
      * mon was loaded off that mount, not inferred -- so the chip reads GB1/GB2
      * instead of pdna_origin_of's own best guess. See pdna_summary.c's header
      * comment on pdna_summary_draw_left_hint (E1-b, 2026-09-06 review). */
-    if (left_ok) pdna_summary_draw_left_hint(left, false, e->gen);
+    /* #388: a Gen-1 record carries its OWN type bytes -- draw those, not the Gen-3 species table (MAGNEMITE is
+     * ELECTRIC only in Gen 1; the table says ELECTRIC/STEEL). Gen 2: the species table is its type table. */
+    int t1o = -1, t2o = -1;
+    if (e->gen == GB_GEN1) {
+      t1o = g1_to_g3_type(gb_get_gen1_type1(e));
+      t2o = (t1o >= 0) ? g1_to_g3_type(gb_get_gen1_type2(e)) : -1;
+    }
+    if (left_ok) pdna_summary_draw_left_hint(left, false, e->gen, t1o, t2o);
     else         gbsum_draw_left_unknown();
   }
 
