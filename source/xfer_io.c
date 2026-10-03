@@ -76,6 +76,16 @@ bool xr_dir_exists(void) {
   return f_stat(PDNA_XFER_DIR, &fi) == FR_OK;
 }
 
+/* #392(a): does "<path>.tmp" exist? (own noinline frame: the 48 B path copy stays off xr_path_for_key_hint's) */
+static __attribute__((noinline)) bool xr_tmp_exists(const char* path) {
+  char t[GBSC_PATH_MAX + 8];
+  FILINFO fi;
+  size_t n = strlen(path);
+  if (n + 5 > sizeof t) return false;
+  memcpy(t, path, n); memcpy(t + n, ".tmp", 5);
+  return f_stat(t, &fi) == FR_OK;
+}
+
 bool xr_path_for_key(char out[GBSC_PATH_MAX], uint64_t key) {
   return xr_path_for_key_hint(out, key, false);
 }
@@ -133,6 +143,9 @@ bool xr_path_for_key_hint(char out[GBSC_PATH_MAX], uint64_t key, bool xfer_dir_a
     }
   }
 
+  /* #392(a): read-only card + an orphan .tmp in xfer: the record exists as far as a reader can tell (xr_open reads
+   * the .tmp in RAM). `out` stays the PRIMARY path -- nothing here ever points a writer at the .tmp. */
+  if (!xfer_dir_absent && !app_can_edit() && xr_tmp_exists(xpath)) { memcpy(out, xpath, GBSC_PATH_MAX); return true; }
   /* neither exists (or migration already ran) -- a brand-new file belongs under
    * xfer (decision 4/D-Q7). */
   memcpy(out, xpath, GBSC_PATH_MAX);
@@ -172,6 +185,24 @@ bool xr_path_for_name(char out[GBSC_PATH_MAX], const char* name) {
   return false;
 }
 
+/* BACKLOG #392(a): a READ-ONLY card (Everdrive) cannot run the boot heal (xh_heal_dir only counts there), so an
+ * orphan <path>.tmp -- the verified bytes of an interrupted write whose primary is gone -- would stay invisible
+ * until the next Omega boot. Read it as the primary IN RAM, never writing: same acceptance test as xh_heal_key
+ * (whole file read, parses, key matches). Anything else reads as the absence it was before. */
+static __attribute__((noinline)) SfStatus xr_read_orphan_tmp(const char* path, uint64_t key, uint8_t* buf,
+                                                            uint32_t cap, uint32_t* sz) {
+  char tmp[GBSC_PATH_MAX + 8];
+  FILINFO fi;
+  size_t n = strlen(path);
+  if (n + 5 > sizeof tmp) return SF_ERR_OPEN;
+  memcpy(tmp, path, n); memcpy(tmp + n, ".tmp", 5);
+  if (f_stat(tmp, &fi) != FR_OK) return SF_ERR_OPEN;
+  SfStatus st = sf_read_full(tmp, buf, cap, sz);
+  if (st != SF_OK) return st;
+  if (*sz != (uint32_t)fi.fsize || gbsc_count(buf, *sz) < 0 || gbsc_file_key(buf, *sz) != key) return SF_ERR_OPEN;
+  return SF_OK;
+}
+
 /* ---- the one reader ----------------------------------------------------------- */
 
 SfStatus xr_open(uint64_t key, uint8_t* buf, uint32_t cap, uint32_t* len, char* path_out) {
@@ -191,6 +222,7 @@ SfStatus xr_open(uint64_t key, uint8_t* buf, uint32_t cap, uint32_t* len, char* 
    * just returns SF_ERR_OPEN, falling through to the shim exactly as before. */
   uint32_t sz = 0;
   SfStatus st = exists ? sf_read_full(path, buf, cap, &sz) : SF_ERR_OPEN;
+  if (st == SF_ERR_OPEN && !app_can_edit()) st = xr_read_orphan_tmp(path, key, buf, cap, &sz);   /* #392a */
 #ifdef PDNA_DELTA
   if (st == SF_ERR_OPEN && bank_plant_xfer_open(key, buf, cap, len)) return SF_OK;
 #endif
