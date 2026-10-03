@@ -2337,14 +2337,18 @@ bool __attribute__((noinline)) app_xfer_promote(void) {
 bool app_xfer_save_now(void) {
   bool ok;
   if (app_commit_pc()) {
-    bool promoted = app_xfer_promote();  /* decision 9: the PC is now verified on disk */
+    /* BACKLOG #383: promote ONLY when this session holds a pending entry. "Nothing pending" is not a failed
+     * promotion (app_xfer_promote() returns false for it) -- a plain save used to raise LEDGER NOT UPDATED
+     * with a retry that could never succeed. A REAL failed promotion (pending, rewrite failed) stays false (#175 D1). */
+    bool had_pending = app_xfer_pending();
+    bool promoted = !had_pending || app_xfer_promote();  /* decision 9: the PC is now verified on disk */
     int kept = pdna_bank_flush_deletions();
     if (kept) {
       char l1[48]; siprintf(l1, PDNA_XFER_FLUSHFAIL_L1, kept);
       msg_wait(PDNA_XFER_FLUSHFAIL_TITLE, UI_WARN, l1, PDNA_XFER_FLUSHFAIL_L2);
     }
     /* BACKLOG #375: log the REAL promotion outcome. */
-    log_line(promoted ? "xfer: save-now: committed, entry promoted"
+    log_line(promoted ? (had_pending ? "xfer: save-now: committed, entry promoted" : "xfer: save-now: committed, nothing pending")
                       : "xfer: save-now: committed, promotion FAILED (ledger entry stays pending)");
     /* BACKLOG #175 review D1: a failed promotion left the ledger entry PENDING and
      * uncollectable while ok stayed true regardless -- the caller (pdna_gen12.c's

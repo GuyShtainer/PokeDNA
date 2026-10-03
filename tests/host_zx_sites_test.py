@@ -78,7 +78,7 @@ def save_now_facts(body: str) -> tuple[bool, str]:
         return False, "the commit-FAILED arm lost PDNA_XFER_NOTSAVED_TITLE"
     if not re.search(r"ok\s*=\s*promoted\s*;", ok_arm):
         return False, "`ok = promoted;` missing (#175 D1: a failed promotion must refuse a second transfer)"
-    lg = re.search(r'log_line\(\s*promoted\s*\?\s*"xfer: save-now: committed, entry promoted"\s*:\s*"xfer: save-now: committed, promotion FAILED', ok_arm)
+    lg = re.search(r'log_line\(\s*promoted\s*\?\s*(?:\(\s*had_pending\s*\?\s*)?"xfer: save-now: committed, entry promoted"(?:\s*:\s*"xfer: save-now: committed, nothing pending"\s*\))?\s*:\s*"xfer: save-now: committed, promotion FAILED', ok_arm)
     if not lg:
         return False, "the save-now log line does not branch on `promoted` (#375)"
     return True, "ok"
@@ -116,7 +116,7 @@ def main() -> int:
     for label, old, new in (
         ("374: !promoted shows NOTSAVED again", "PDNA_XFER_LEDGER_TITLE, UI_WARN, PDNA_XFER_LEDGER_L1, PDNA_XFER_LEDGER_L2",
          "PDNA_XFER_NOTSAVED_TITLE, UI_WARN, PDNA_XFER_NOTSAVED_L1, PDNA_XFER_NOTSAVED_L2"),
-        ("375: log unconditional again", 'log_line(promoted ? "xfer: save-now: committed, entry promoted"', 'log_line("xfer: save-now: committed, entry promoted"'),
+        ("375: log unconditional again", 'log_line(promoted ? (had_pending ? "xfer: save-now: committed, entry promoted" : "xfer: save-now: committed, nothing pending")', 'log_line("xfer: save-now: committed, entry promoted"'),
         ("175D1: ok no longer follows promoted", "ok = promoted;", "ok = true;"),
     ):
         if old not in body:
@@ -124,7 +124,7 @@ def main() -> int:
             continue
         mo = mutate(body, old, new)
         if label.startswith("375"):
-            mo = mo.replace('\n                      : "xfer: save-now: committed, promotion FAILED (ledger entry stays pending)");', ');')
+            mo = re.sub(r'\)?\s*\n\s*: "xfer: save-now: committed, promotion FAILED \(ledger entry stays pending\)"\);', ');', mo)
         ok, _ = save_now_facts(mo)
         check(not ok, f"MUT {label} was NOT caught")
     bt, gt = BOX.read_text(), GEN12.read_text()
