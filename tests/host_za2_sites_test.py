@@ -121,6 +121,21 @@ def f387(detail: str, cls: str, tf: str, layout: str) -> tuple[bool, str]:
     return True, "ok"
 
 
+# ------------------------------------------------------------------------------------------------ #388
+def f388(render: str, left: str, hint: str, leftfn: str, g3call: str) -> tuple[bool, str]:
+    if not re.search(r"if \(e->gen == GB_GEN1\) \{\s*t1o = g1_to_g3_type\(gb_get_gen1_type1\(e\)\);\s*t2o = \(t1o >= 0\) \? g1_to_g3_type\(gb_get_gen1_type2\(e\)\) : -1;", render):
+        return False, "gbsummary render: a Gen-1 record's own type bytes are not handed to the left panel (#388)"
+    if not re.search(r"pdna_summary_draw_left_hint\(left, false, e->gen, t1o, t2o\)", render):
+        return False, "gbsummary render: the type override is not passed to pdna_summary_draw_left_hint (#388)"
+    if not re.search(r"if \(t1o >= 0\) \{ t1 = \(uint8_t\)t1o; t2 = \(t2o >= 0\) \? \(uint8_t\)t2o : t1; \}", left):
+        return False, "draw_left_ex: the type override is not applied before the badges (#388)"
+    if "draw_left_ex(p, back, t1o, t2o);" not in hint:
+        return False, "pdna_summary_draw_left_hint does not forward the override (#388)"
+    if "draw_left_ex(p, g_back, -1, -1)" not in leftfn or "draw_left_ex(p, back, -1, -1)" not in g3call:
+        return False, "a Gen-3 summary caller no longer passes -1/-1 (species table) (#388)"
+    return True, "ok"
+
+
 def run() -> None:
     main_t = (SRC / "pdna_main.c").read_text()
     g12_t = (SRC / "pdna_gen12.c").read_text()
@@ -187,6 +202,28 @@ def run() -> None:
         ("classify back to the PC row", "cls", "out->kind = XRC_ABROAD_BANK;", "out->kind = XRC_ABROAD;"),
         ("pin dropped", "tf", "PF(PDNA_XRC_D_ABROAD_BANK,", "PF(X,"),
         ("wording says PC again", "layout", '"In the Bank, restorable."', '"In the Gen-3 PC, restorable."'),
+    ))
+    # -------- #388
+    sm_t = (SRC / "pdna_summary.c").read_text()
+    gs_t = (SRC / "pdna_gbsummary.c").read_text()
+    # left panel body = draw_left_ex; the file-level statics are one-liners -> take them from the stripped text
+    sm_s = strip_comments(sm_t)
+    m = re.search(r"static void draw_left\(const PkMon\* p\) \{[^\n]*\}", sm_s)
+    leftfn = m.group(0) if m else ""
+    m = re.search(r"void pdna_summary_draw_left\(const PkMon\* p, bool back\) \{[^\n]*\}", sm_s)
+    g3call = m.group(0) if m else ""
+    parts = dict(render=function_body(gs_t, "render"), left=function_body(sm_t, "draw_left_ex"),
+                 hint=function_body(sm_t, "pdna_summary_draw_left_hint"), leftfn=leftfn, g3call=g3call)
+    for k_, v in parts.items():
+        check(bool(v), f"#388: {k_} not located")
+    ok, d = f388(**parts)
+    check(ok, d)
+    run_muts("388", f388, parts, (
+        ("Gen-1 override dropped", "render", "if (e->gen == GB_GEN1) {", "if (false) {"),
+        ("override not passed", "render", "e->gen, t1o, t2o)", "e->gen, -1, -1)"),
+        ("override not applied", "left", "if (t1o >= 0) {", "if (false) {"),
+        ("hint drops the override", "hint", "draw_left_ex(p, back, t1o, t2o);", "draw_left_ex(p, back, -1, -1);"),
+        ("a Gen-3 caller passes an override", "leftfn", "g_back, -1, -1", "g_back, 0, 0"),
     ))
 
 

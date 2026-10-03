@@ -482,7 +482,14 @@ static void render(const GbEditMon* e, const PkMon* left, bool left_ok, bool dra
      * mon was loaded off that mount, not inferred -- so the chip reads GB1/GB2
      * instead of pdna_origin_of's own best guess. See pdna_summary.c's header
      * comment on pdna_summary_draw_left_hint (E1-b, 2026-09-06 review). */
-    if (left_ok) pdna_summary_draw_left_hint(left, false, e->gen);
+    /* #388: a Gen-1 record carries its OWN type bytes -- draw those, not the Gen-3 species table (MAGNEMITE is
+     * ELECTRIC only in Gen 1; the table says ELECTRIC/STEEL). Gen 2: the species table is its type table. */
+    int t1o = -1, t2o = -1;
+    if (e->gen == GB_GEN1) {
+      t1o = g1_to_g3_type(gb_get_gen1_type1(e));
+      t2o = (t1o >= 0) ? g1_to_g3_type(gb_get_gen1_type2(e)) : -1;
+    }
+    if (left_ok) pdna_summary_draw_left_hint(left, false, e->gen, t1o, t2o);
     else         gbsum_draw_left_unknown();
   }
 

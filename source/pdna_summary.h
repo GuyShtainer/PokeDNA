@@ -62,7 +62,9 @@ void pdna_summary_draw_left(const PkMon* p, bool back);
  * mounted the GB save itself — the provenance chip reads GB1/GB2 (certain)
  * instead of draw_left's own best guess ("GB?"). See pdna_summary.c's own
  * header comment on this function for the full rationale. */
-void pdna_summary_draw_left_hint(const PkMon* p, bool back, uint8_t hint_gen);
+void pdna_summary_draw_left_hint(const PkMon* p, bool back, uint8_t hint_gen, int t1o, int t2o);
+/* #388: t1o/t2o are Gen-3-numbered type ids taken from the Game Boy RECORD itself (Gen 1 stores its own type bytes);
+ * pass -1/-1 to draw the species-table types (Gen 2: its species table is its type table). */
 
 /* The card-index dots (n dots, dot `active` lit). */
 void pdna_summary_draw_dots(int x, int y, int n, int active);

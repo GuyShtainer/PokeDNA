@@ -181,7 +181,10 @@ void pdna_summary_portrait_screen(void) {
 
 /* Shared portrait column (all 7 cards): framed sprite, dex no, name, Lv + colored
  * sex, species, type badges, and an egg/shiny tag. No editable fields here. */
-static void draw_left_ex(const PkMon* p, bool back) {
+/* #388: t1o/t2o >= 0 override the species-table types (a Gen-1 record carries its OWN type bytes: MAGNEMITE is
+ * ELECTRIC only there, no STEEL); -1 = use the species table (every Gen-3 caller, and Gen 2, whose species
+ * table IS its type table). t2o < 0 with t1o >= 0 means a single-typed record (t2 = t1). */
+static void draw_left_ex(const PkMon* p, bool back, int t1o, int t2o) {
   ui_panel(0, 11, 92, 139, RGB15(4, 7, 16), UI_BORDER);    /* dark-blue info column */
   m3_frame(11, 13, 80, 78, UI_BORDER);                     /* sprite sub-frame */
   pdna_summary_portrait_screen();                           /* blue "screen" */
@@ -241,6 +244,7 @@ static void draw_left_ex(const PkMon* p, bool back) {
   ui_ptext_fit(6, 114, 86, C_KEY, pk_species_name(p->species));
 
   uint8_t t1 = pk_species_type1(p->species), t2 = pk_species_type2(p->species);
+  if (t1o >= 0) { t1 = (uint8_t)t1o; t2 = (t2o >= 0) ? (uint8_t)t2o : t1; }
   type_badge(6, 126, t1);
   if (t2 != t1) type_badge(42, 126, t2);
 
@@ -250,12 +254,12 @@ static void draw_left_ex(const PkMon* p, bool back) {
 }
 
 /* This screen's own front/back toggle (SELECT), unchanged. */
-static void draw_left(const PkMon* p) { draw_left_ex(p, g_back); }
+static void draw_left(const PkMon* p) { draw_left_ex(p, g_back, -1, -1); }
 
 /* Exported for pdna_gbsummary.c (BACKLOG #41 slice E1) — same body as draw_left(),
  * just with the front/back flag passed in rather than read off this file's g_back,
  * since the Game Boy summary has no such toggle of its own. */
-void pdna_summary_draw_left(const PkMon* p, bool back) { draw_left_ex(p, back); }
+void pdna_summary_draw_left(const PkMon* p, bool back) { draw_left_ex(p, back, -1, -1); }
 
 /* Same, but for a caller that KNOWS the source generation because it mounted the
  * GB save itself (pdna_gbsummary.c: e->gen, 1 or 2) — draw_left_ex's own
@@ -271,8 +275,8 @@ void pdna_summary_draw_left(const PkMon* p, bool back) { draw_left_ex(p, back); 
  * The ART itself staying Gen-3-shaped regardless of hint_gen is E3's job (wiring
  * rom_gbsprite as the router's own GB source, docs/SPRITE-ERA-DESIGN.md sec 4);
  * this only fixes the LABEL. */
-void pdna_summary_draw_left_hint(const PkMon* p, bool back, uint8_t hint_gen) {
-  draw_left_ex(p, back);
+void pdna_summary_draw_left_hint(const PkMon* p, bool back, uint8_t hint_gen, int t1o, int t2o) {
+  draw_left_ex(p, back, t1o, t2o);
   PdnaOrigin org;
   pdna_origin_of_hint(p, hint_gen, &org);
   if (org.verdict == PDNA_ORIGIN_GB)
