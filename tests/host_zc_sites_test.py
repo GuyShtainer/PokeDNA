@@ -85,6 +85,22 @@ pin("#403b the cached pin is dropped at all three session/registration resets",
     lambda t: t.count("s_idesc.state = 0; s_idesc.pin = 0;") == 3,
     lambda t: t.replace("s_idesc.state = 0; s_idesc.pin = 0;", "s_idesc.state = 0;", 1))
 
+# ---- #405 dex detail "no art" is centred in the 68-px portrait frame (x 12..79)
+pick = rd("pdna_pick.c")
+m = re.search(r'ui_text\(st == 0 \? (\d+) : (\d+), 42, UI_DIM, st == 0 \? "\?" : "no art"\);', pick)
+if not m:
+    fails.append("#405 centred no-art call not found")
+else:
+    q_x, na_x = int(m.group(1)), int(m.group(2))
+    if not (12 <= na_x and na_x + 6 * 8 <= 80 and abs((na_x + 24) - 46) <= 1):
+        fails.append("#405 'no art' not centred on the frame (x %d)" % na_x)
+    if not (12 <= q_x and q_x + 8 <= 80 and abs((q_x + 4) - 46) <= 1):
+        fails.append("#405 '?' not centred on the frame (x %d)" % q_x)
+pin("#405 pin is red on the old overrunning position",
+    pick,
+    lambda t: 'ui_text(38, 42, UI_DIM' not in t,
+    lambda t: t.replace('ui_text(st == 0 ? 42 : 22, 42, UI_DIM', 'ui_text(38, 42, UI_DIM'))
+
 if fails:
     for f in fails:
         print("FAIL:", f)

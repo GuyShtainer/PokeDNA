@@ -1089,7 +1089,8 @@ static void dex_detail_art(uint16_t in, int st) {
   } else if (st != 0 && mon_icon_for_form(in, 0)) {
     ui_sprite(30, 30, MON_ICON_W, MON_ICON_W, mon_icon_for_form(in, 0));   /* trainer-card fallback icon */
   } else {
-    ui_text(38, 42, UI_DIM, st == 0 ? "?" : "no art");
+    /* #405: centred in the 68-px portrait frame (x 12..79; ui_text is 8 px per glyph): "no art" (48 px) -> x 22, "?" -> x 42 */
+    ui_text(st == 0 ? 42 : 22, 42, UI_DIM, st == 0 ? "?" : "no art");
   }
   char buf[24];
   ui_hline(4, 81, 84, UI_BORDER);
