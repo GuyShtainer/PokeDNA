@@ -73,10 +73,9 @@ typedef struct {
   bool    g3_on_card;           /* #377: nothing is staged in the open save (it equals the last verified
                                  * write), so a Gen-3 key match is ON the card -- the only case in which a
                                  * PENDING row may be marked finished                                    */
-  int     bank_ident_matches;   /* #385: native Bank cells whose IDENTITY (gen + otid +
-                                 * dv4 + OT name) equals the entry's although their first 8 bytes
-                                 * (magic + ident32, serial baked in) do not -- a RESTORE-TO-BANK
-                                 * cell carries a NEW serial. 0/1/2(+); 0 when never scanned     */
+  int     bank_ident_matches;   /* #385: native Bank cells that are a RE-SERIAL of the entry's
+                                 * original80 (xrc_bank_reserial_match): every hashed byte equal
+                                 * except bank_serial. 0/1/2(+); 0 when never scanned            */
 } XrcInput;
 
 typedef struct {
@@ -206,7 +205,7 @@ typedef struct {
   bool    g3_in_daycare;
   int8_t  bank_matches;                /* -1 unresolved until phase 2                */
   int8_t  bank_g3_matches;             /* Gen-3 copies parked in the Bank (phase 2)  */
-  int8_t  bank_ident_matches;          /* #385: identity-only Bank matches (phase 2) */
+  int8_t  bank_ident_matches;          /* #385: re-serial Bank matches (D1)      */
   uint64_t file_key;                   /* the ledger file's key (ABROAD_G3 only)     */
   bool    bank_slot_pending;
   bool    bank_keep;

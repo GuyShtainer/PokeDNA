@@ -169,6 +169,12 @@ def run() -> None:
         parts[which] = mutate(parts[which], old, new)
         ok, _ = f385(parts["p2"], parts["ca"], parts["dl"])
         check(not ok, f"MUT {label} was NOT caught")
+    wk = function_body(main_t, "xfer_reconcile_walk")
+    pat = r"memcpy\(h->orig_serial,\s*e2\.original80\s*\+\s*BC_OFF_BANK_SERIAL,\s*4\)"
+    has_cap = re.search(pat, wk) is not None
+    check(has_cap, "walk: phase 1 must capture original80[73..76] into h->orig_serial (#385 D1)")
+    check(not has_cap or re.search(pat, mutate(wk, "memcpy(h->orig_serial", "(void)(h->orig_serial")) is None,
+          "MUT 385: phase-1 orig_serial capture dropped was NOT caught")
     pp = function_body(main_t, "xrc_action_popup")
     ap = function_body(main_t, "xfer_reconcile_apply")
     fe = function_body(main_t, "flush_on_exit")

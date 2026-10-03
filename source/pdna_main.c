@@ -11080,7 +11080,7 @@ static void __attribute__((noinline)) xfer_reconcile_bank_phase2(GbReconBuf* rb)
       h->bank_matches = (int8_t)(total > 2 ? 2 : total);
       if (m == 1 && h->bank_matches == 1) { h->bank_box = (int8_t)box; h->bank_slot = (int8_t)slot; }
       /* BACKLOG #385: a RESTORE-TO-BANK cell carries a NEW serial, so it never matches the entry's first 8 bytes.
-       * Where this box has no first-8 hit, count identity-only hits too (the same match RESTORED rows use) --
+       * Where this box has no first-8 hit, count RE-SERIAL hits (xrc_rebuild_cell's output: only ident32 + serial differ from original80) --
        * xrc_classify turns "no copy anywhere but the Bank already holds the identity" into XRC_IN_BANK instead of
        * a second RESTORE (a clone). */
       if (!by_identity && m == 0 && h->direction == XR_DIR_ABROAD_G3 && h->bank_ident_matches < 2) {
