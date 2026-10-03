@@ -39,7 +39,9 @@ typedef enum {
   XRC_DAYCARE,            /* in the Day-Care -- no action (decision 15)               */
   XRC_STALE_KEY,          /* PID changed; record not linked -- RE-KEY (decision 15)   */
   XRC_AMBIGUOUS,          /* 2+ matches by key or identity -- no action, logged       */
-  XRC_G3HOME               /* Gen-3 original; the shipped load-time screen owns it     */
+  XRC_G3HOME,              /* Gen-3 original; the shipped load-time screen owns it     */
+  XRC_IN_BANK              /* #385: the Bank already holds this mon (a restored copy under a NEW serial, the
+                            * ledger rewrite never landed) -- DELETE RECORD only, never RESTORE (a clone) */
 } XrcRowKind;
 
 /* Allowed-action mask, decision 8's letters. */
@@ -67,6 +69,10 @@ typedef struct {
   bool    bank_keep;            /* the entry's bank_keep bit (decision 7)              */
   int     bank_g3_matches;      /* xrc_bank_g3_match(): Gen-3 copies PARKED in the Bank
                                  * (#270 pass-through), 0/1/2(+); 0 when never scanned  */
+  int     bank_ident_matches;   /* #385: native Bank cells whose IDENTITY (gen + otid +
+                                 * dv4 + OT name) equals the entry's although their first 8 bytes
+                                 * (magic + ident32, serial baked in) do not -- a RESTORE-TO-BANK
+                                 * cell carries a NEW serial. 0/1/2(+); 0 when never scanned     */
 } XrcInput;
 
 typedef struct {
@@ -190,6 +196,7 @@ typedef struct {
   bool    g3_in_daycare;
   int8_t  bank_matches;                /* -1 unresolved until phase 2                */
   int8_t  bank_g3_matches;             /* Gen-3 copies parked in the Bank (phase 2)  */
+  int8_t  bank_ident_matches;          /* #385: identity-only Bank matches (phase 2) */
   uint64_t file_key;                   /* the ledger file's key (ABROAD_G3 only)     */
   bool    bank_slot_pending;
   bool    bank_keep;

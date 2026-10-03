@@ -1295,6 +1295,7 @@ int main(void) {
   PF(PDNA_XRC_D_STALE_KEY,      28, 184);
   PF(PDNA_XRC_D_AMBIGUOUS,      28, 184);
   PF(PDNA_XRC_D_G3HOME,         28, 184);
+  PF(PDNA_XRC_D_IN_BANK,        28, 184);
   /* ==== END BACKLOG #150 S150-11 decision 18 ==================================== */
 
   /* ==== S5-B Part D: PASTE, source/pdna_gen12.c gb_paste_hook/gb_paste_write ===

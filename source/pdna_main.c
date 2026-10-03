@@ -11075,6 +11075,15 @@ static void __attribute__((noinline)) xfer_reconcile_bank_phase2(GbReconBuf* rb)
       int total = h->bank_matches + m;
       h->bank_matches = (int8_t)(total > 2 ? 2 : total);
       if (m == 1 && h->bank_matches == 1) { h->bank_box = (int8_t)box; h->bank_slot = (int8_t)slot; }
+      /* BACKLOG #385: a RESTORE-TO-BANK cell carries a NEW serial, so it never matches the entry's first 8 bytes.
+       * Where this box has no first-8 hit, count identity-only hits too (the same match RESTORED rows use) --
+       * xrc_classify turns "no copy anywhere but the Bank already holds the identity" into XRC_IN_BANK instead of
+       * a second RESTORE (a clone). */
+      if (!by_identity && m == 0 && h->direction == XR_DIR_ABROAD_G3 && h->bank_ident_matches < 2) {
+        int islot = -1;
+        int im = h->bank_ident_matches + xrc_bank_match(recs, &e2, true, &islot);
+        h->bank_ident_matches = (int8_t)(im > 2 ? 2 : im);
+      }
       if (h->bank_matches == 1 && h->bank_box == (int8_t)box)
         h->bank_slot_pending = pdna_bank_slot_pending(box, slot);
     }
@@ -11102,6 +11111,7 @@ static void __attribute__((noinline)) xfer_reconcile_classify_all(GbReconBuf* rb
     in.bank_slot_pending = h->bank_slot_pending;
     in.bank_keep = h->bank_keep;
     in.bank_g3_matches = h->bank_g3_matches;
+    in.bank_ident_matches = h->bank_ident_matches;
     XrcResult out;
     xrc_classify(&in, &out);
     h->row_kind = (uint8_t)out.kind;
@@ -11238,6 +11248,7 @@ static const char* xrc_detail_line(uint8_t row_kind) {
     case XRC_STALE_KEY:      return PDNA_XRC_D_STALE_KEY;
     case XRC_AMBIGUOUS:      return PDNA_XRC_D_AMBIGUOUS;
     case XRC_G3HOME:         return PDNA_XRC_D_G3HOME;
+    case XRC_IN_BANK:        return PDNA_XRC_D_IN_BANK;
     default:                 return "?";
   }
 }

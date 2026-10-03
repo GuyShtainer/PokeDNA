@@ -431,6 +431,57 @@ static void test_row1(void) {
   CHECK((int)strlen(out) == n2, "ROW-1: strlen matches after truncation too");
 }
 
+/* ==== INBANK-1 (BACKLOG #385) =========================================================
+ * A RESTORE TO BANK whose ledger rewrite never landed leaves the mon in the Bank under a NEW serial: the entry's
+ * first-8-byte match misses, so the row read LOST and offered RESTORE again (a clone). With the identity-only
+ * Bank count the row is XRC_IN_BANK, DELETE only. Mutation: drop either bank_ident_matches branch in
+ * xrc_classify -- the matching assertion fails. */
+static void test_inbank1(void) {
+  printf("== INBANK-1: identity already in the Bank -> IN_BANK, never RESTORE ==\n");
+  XrcInput in; XrcResult r;
+  memset(&in, 0, sizeof in);
+  in.kind = XR_KIND_NATIVE_HOME; in.direction = XR_DIR_ABROAD_G3; in.state = XR_STATE_CLAIMED;
+  in.bank_ident_matches = 1;
+  xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_IN_BANK && r.actions == XRC_ACT_DELETE, "INBANK-1: CLAIMED, nothing but an identity hit -> IN_BANK, DELETE only (kind %d act 0x%x)", r.kind, r.actions);
+  in.bank_ident_matches = 2;
+  xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_IN_BANK && r.actions == XRC_ACT_DELETE, "INBANK-1: 2+ identity hits is still IN_BANK (a copy exists)");
+  in.bank_ident_matches = 0;
+  xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_LOST && r.actions == (XRC_ACT_RESTORE | XRC_ACT_DELETE), "INBANK-1: no identity hit -> LOST keeps RESTORE|DELETE");
+  in.state = XR_STATE_PENDING; in.bank_ident_matches = 1;
+  xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_IN_BANK && r.actions == XRC_ACT_DELETE, "INBANK-1: PENDING, nothing but an identity hit -> IN_BANK");
+  in.bank_ident_matches = 0;
+  xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_PENDING_LOST && (r.actions & XRC_ACT_RESTORE), "INBANK-1: PENDING, no identity hit -> PENDING_LOST keeps RESTORE");
+  /* the override must not eat the normal rows */
+  in.state = XR_STATE_CLAIMED; in.bank_ident_matches = 1; in.g3_key_matches = 1;
+  xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_ABROAD && r.actions == XRC_ACT_NONE, "INBANK-1: a Gen-3 copy in the save wins (ABROAD)");
+  in.g3_key_matches = 0; in.bank_matches = 1;
+  xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_ABROAD, "INBANK-1: a first-8 Bank hit keeps the normal row");
+  char out[40];
+  int n = xrc_row_text(XRC_IN_BANK, "NIDOKING", "SAPPHIRE", out);
+  CHECK(n <= 39 && strstr(out, "in the Bank") != NULL, "INBANK-1: row text says 'in the Bank' and fits (%s)", out);
+  /* the real pair: an original cell and its RESTORE rebuild (new serial) -- first 8 differ, identity hits */
+  uint8_t otname[GB_NAME_BYTES] = "INB\x50\x50\x50\x50\x50\x50\x50\x50";
+  GbEditMon m; mk_gb_mon(&m, GB_GEN2, 0x4242, 3, 4, 5, 6, otname);
+  uint8_t orig[80], rebuilt[80], box[2400];
+  CHECK(bc_pack(&m, 0, BC_ORIGIN_GOLD, 7u, 1000u, orig) == 0, "INBANK-1: original cell packed");
+  GbscEntry e; memset(&e, 0, sizeof e);
+  e.gen = GB_GEN2; e.otid16 = 0x4242;
+  e.dv4[0] = gb_get_dv(&m, GB_ATK); e.dv4[1] = gb_get_dv(&m, GB_DEF); e.dv4[2] = gb_get_dv(&m, GB_SPE); e.dv4[3] = gb_get_dv(&m, GB_SPC);
+  memcpy(e.otname_written, otname, GB_NAME_BYTES); memcpy(e.original80, orig, 80);
+  CHECK(xrc_rebuild_cell(&e, 2000u, rebuilt) == 0, "INBANK-1: rebuilt (RESTORE) cell");
+  memset(box, 0, sizeof box); memcpy(box + 3 * 80, rebuilt, 80);
+  int slot = -1;
+  CHECK(xrc_bank_match(box, &e, false, &slot) == 0, "INBANK-1: the restored copy does NOT match by first-8 bytes (new serial)");
+  CHECK(xrc_bank_match(box, &e, true, &slot) == 1 && slot == 3, "INBANK-1: ...but matches by identity (the #385 count)");
+}
+
 /* ==== REBUILD-1 ====================================================================== */
 
 static void test_rebuild1(void) {
@@ -592,6 +643,7 @@ int main(int argc, char** argv) {
   test_rekey1();
   test_row1();
   test_rebuild1();
+  test_inbank1();
 
   int examined = 0;
   for (int i = 1; i < argc; i++) { test_corpus(argv[i]); examined++; }

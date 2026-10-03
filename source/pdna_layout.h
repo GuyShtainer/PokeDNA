@@ -1273,6 +1273,7 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XRC_D_STALE_KEY       "PID changed; not linked."
 #define PDNA_XRC_D_AMBIGUOUS       "Ambiguous match; skipped."
 #define PDNA_XRC_D_G3HOME          "Gen-3 original; see load screen."
+#define PDNA_XRC_D_IN_BANK         "Already in the Bank. Delete it."
 
 #define PDNA_XFER_TC_TITLE        "NO GEN 1 FORM"
 /* BACKLOG #150 S150-8: shortened from the brief's original "%s did not exist in

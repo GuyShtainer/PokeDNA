@@ -7,6 +7,8 @@ check and by in-memory MUTATIONS that must turn it red (self-test in main()).
 
   #384  app_xfer_pid_rekey rewrites the copy's header key (gbsc_set_file_key, checked against gbsc_file_key) BEFORE the
         verified write of the new name, and unlinks the old name only after that write -- never zero copies.
+  #385  xfer_reconcile_bank_phase2 counts identity-only Bank hits (xrc_bank_match(..., true, ..)) where a box has no first-8
+        hit, xfer_reconcile_classify_all hands them to xrc_classify, and the detail line is wired.
   #383  app_xfer_save_now promotes ONLY when a transfer is pending ("nothing pending" == ok), a REAL failed
         promotion (pending, rewrite failed) still gives ok = false (#175 D1).
 """
@@ -88,8 +90,39 @@ def f384(body: str) -> tuple[bool, str]:
     return True, "ok"
 
 
+# ---------------------------------------------------------------------------------------------- #385
+def f385(phase2: str, classify: str, detail: str) -> tuple[bool, str]:
+    if not re.search(r"if\s*\(\s*!by_identity\s*&&\s*m\s*==\s*0\s*&&\s*h->direction\s*==\s*XR_DIR_ABROAD_G3\s*&&\s*h->bank_ident_matches\s*<\s*2\s*\)", phase2):
+        return False, "phase2: the identity-only scan guard (!by_identity && m == 0 && ABROAD_G3 && < 2) is missing (#385)"
+    if not re.search(r"xrc_bank_match\(recs,\s*&e2,\s*true,\s*&islot\)", phase2):
+        return False, "phase2: the identity scan must call xrc_bank_match(recs, &e2, true, ..) (#385)"
+    if not re.search(r"in\.bank_ident_matches\s*=\s*h->bank_ident_matches\s*;", classify):
+        return False, "classify_all: bank_ident_matches not passed to xrc_classify (#385)"
+    if "case XRC_IN_BANK" not in detail or "PDNA_XRC_D_IN_BANK" not in detail:
+        return False, "xrc_detail_line: XRC_IN_BANK has no detail line (#385)"
+    return True, "ok"
+
+
 def run() -> None:
     main_t = (SRC / "pdna_main.c").read_text()
+    p2 = function_body(main_t, "xfer_reconcile_bank_phase2")
+    ca = function_body(main_t, "xfer_reconcile_classify_all")
+    dl = function_body(main_t, "xrc_detail_line")
+    ok, d = f385(p2, ca, dl)
+    check(ok, d)
+    for label, which, old, new in (
+        ("385: identity scan guard dropped", "p2", "!by_identity && m == 0 &&", "false &&"),
+        ("385: identity scan uses the first-8 match", "p2", "xrc_bank_match(recs, &e2, true, &islot)", "xrc_bank_match(recs, &e2, false, &islot)"),
+        ("385: classify_all forgets the count", "ca", "in.bank_ident_matches = h->bank_ident_matches;", ""),
+        ("385: detail line unwired", "dl", "case XRC_IN_BANK", "case XRC_G3HOME_DUP"),
+    ):
+        parts = {"p2": p2, "ca": ca, "dl": dl}
+        if old not in parts[which]:
+            check(False, f"mutation anchor missing ({label})")
+            continue
+        parts[which] = mutate(parts[which], old, new)
+        ok, _ = f385(parts["p2"], parts["ca"], parts["dl"])
+        check(not ok, f"MUT {label} was NOT caught")
     rk = function_body(main_t, "app_xfer_pid_rekey")
     check(bool(rk), "app_xfer_pid_rekey body not found")
     ok, d = f384(rk)
