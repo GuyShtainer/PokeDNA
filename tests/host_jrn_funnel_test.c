@@ -1944,6 +1944,9 @@ static void t_redo_lone_half(void) {
           "#410 the redo chord stops BEFORE the lone older half (rc %d, name '%s', cursor %u -> %u, image untouched)", rc, safe(nm), (unsigned)cur, (unsigned)jrnapp_cursor());
     rc = jrnapp_step_pair(1, nm);
     CHECK(rc == JRN_NOOP && memcmp(sv, snapS, sizeof sv) == 0, "#410 and again: still refused (rc %d)", rc);
+    { int mv = 0; char st2[25]; uint32_t c0 = jrnapp_cursor(), tip = jrnapp_tip();
+      int jr = jrnapp_jump(tip, st2, &mv);
+      CHECK(memcmp(sv, snapS, sizeof sv) == 0, "#410 review: a History jump to the lone Swap half must not apply it (rc %d, moved %d, cursor %u -> %u, tip %u)", jr, mv, (unsigned)c0, (unsigned)jrnapp_cursor(), (unsigned)tip); }
   }
   /* 2: a plain step, then the lone half: the chord redoes the plain step, then stops before the half */
   g_cut = 0;
@@ -1957,6 +1960,7 @@ static void t_redo_lone_half(void) {
   CHECK(tot == 1u, "#410 bag: only the Setup is offered (%u)", (unsigned)tot);
   CHECK(jrnapp_step_pair(1, nm) == JRN_OK && memcmp(sv, snapS, sizeof sv) == 0, "#410 bag: redo press 1 applies the plain Setup (image == after-Setup)");
   CHECK(jrnapp_step_pair(1, nm) == JRN_NOOP && memcmp(sv, snapS, sizeof sv) == 0, "#410 bag: redo press 2 stops before the lone Swap (image unchanged)");
+  CHECK(jrnapp_step_pair(-1, nm) == JRN_OK && memcmp(sv, snapB, sizeof sv) == 0, "#410 bag: UNDO is unaffected by the redo guard (undoes the Setup back to the bag step)");
   /* 3: control - the whole swap on the card: the chord redoes the pair (unchanged behaviour) */
   CHECK(app_world_reset() && stage_swap(10, 11, 12), "#410 whole: both drops flushed");
   cut_and_reopen(snapS);

@@ -11514,7 +11514,7 @@ static void __attribute__((noinline)) xfer_reconcile_apply(GbReconBuf* rb) {
   app_journal_cross();                                /* XRC apply: Bank / ledger / PC decided together */
   bool remove_entry[GB_RECON_MAX_HITS];
   memset(remove_entry, 0, sizeof remove_entry);
-  int removed = 0, released = 0, restored = 0, deleted = 0, rekeyed = 0, failed = 0, promoted = 0;
+  int removed = 0, released = 0, restored = 0, deleted = 0, rekeyed = 0, failed = 0, promoted = 0, dup_skipped = 0;
   bool any_noroom = false;   /* review D6(2): RESTORE hit a genuinely full Bank */
   uint32_t dc_base, dc_stride; dc_layout(&dc_base, &dc_stride);
 
@@ -11576,8 +11576,8 @@ static void __attribute__((noinline)) xfer_reconcile_apply(GbReconBuf* rb) {
     XrcHit* h = &rb->xrc[i];
     if (h->action != XRC_ACT_RESTORE) continue;
     if (xrc_restore_is_dup(rb->xrc, remove_entry, i)) {   /* #392(b): the same original already restored this pass */
-      remove_entry[i] = true;
-      log_line("xfer: reconcile: row %d RESTORE skipped, same original already restored this pass", i);
+      remove_entry[i] = true; dup_skipped++;
+      log_line("xfer: reconcile: row %d RESTORE skipped, same original (%s) already restored this pass", i, rb->names[h->file_idx]);
       continue;
     }
     gb_recon_path(rb->path, rb->names[h->file_idx]);
@@ -11738,8 +11738,8 @@ static void __attribute__((noinline)) xfer_reconcile_apply(GbReconBuf* rb) {
   xrc_cache_invalidate();   /* BACKLOG #215(a): any of the writes above can change what
                              * a still-pending row's own text would decode to */
 
-  log_line("xfer: reconcile: apply removed=%d released=%d restored=%d deleted=%d rekeyed=%d failed=%d promoted=%d",
-          removed, released, restored, deleted, rekeyed, failed, promoted);
+  log_line("xfer: reconcile: apply removed=%d released=%d restored=%d deleted=%d rekeyed=%d failed=%d promoted=%d dup_skipped=%d",
+          removed, released, restored, deleted, rekeyed, failed, promoted, dup_skipped);
   if (failed > 0) {
     char l1[40];
     siprintf(l1, "%d of %d failed", failed, removed + released + restored + deleted + rekeyed + failed + promoted);

@@ -1099,8 +1099,11 @@ int main(void) {
     int lines = wrap_lines(b, 184);
     chkv("PDNA_XFER_PCQ_L1_FMT composed at n=255 wraps to <= 2 lines (app_confirm's own cap)",
          lines, 2); }
-  { char b[40]; snprintf(b, sizeof b, PDNA_XFER_PCQ_L1_ONE_FMT, 1);                  /* #392c singular */
-    chkv("#392c PDNA_XFER_PCQ_L1_ONE_FMT composed at n=1 wraps to <= 2 lines (app_confirm's own cap)", wrap_lines(b, 184), 2); }
+  { char b[160]; snprintf(b, sizeof b, PDNA_XFER_PCQ_L1_ONE_FMT, 1);                 /* #392c singular; b > l1 so growth is SEEN */
+    chkv("#392c PDNA_XFER_PCQ_L1_ONE_FMT composed at n=1 wraps to <= 2 lines (app_confirm's own cap)", wrap_lines(b, 184), 2);
+    chkv("#392c PDNA_XFER_PCQ_L1_ONE_FMT at n=1 fits pdna_gen12.c's siprintf target l1[40]", (int)strlen(b), 39);
+    snprintf(b, sizeof b, PDNA_XFER_PCQ_L1_FMT, 255);
+    chkv("PDNA_XFER_PCQ_L1_FMT at n=255 fits pdna_gen12.c's siprintf target l1[40]", (int)strlen(b), 39); }
   { char b[96]; snprintf(b, sizeof b, PDNA_JRN_CROSSED_L1_FMT, "WWWWWWWWWWWWWWWW");   /* %.10s: the widest 10 glyphs */
     chkv("#407 PDNA_JRN_CROSSED_L1_FMT composed with a 10-glyph W step name wraps to <= 2 lines (app_confirm's own cap)", wrap_lines(b, 184), 2);
     snprintf(b, sizeof b, PDNA_JRN_CROSSED_L1_FMT, "Bank move");

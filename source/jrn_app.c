@@ -955,6 +955,10 @@ int jrnapp_jump(uint32_t target, char stop[25], int* moved) {
   for (hops = 0; hops < 4096u && jrn_cursor(&s_j) != target; hops++) {
     char nm[25];
     if (dir < 0 && jrn_cursor(&s_j) == 0) break;
+    if (dir > 0) {                                           /* REVIEW-ZD: the #410 guard -- a jump never lands on a lone older swap half */
+      rc = ja_redo_in_cut();
+      if (rc) { if (rc > 0) rc = JRN_NOOP; break; }
+    }
     rc = jrnapp_step(dir, nm);
     if (rc != JRN_OK) break;
     n++;
