@@ -285,6 +285,17 @@ static void gap(void) {
   len = 0;
   CHECK(xh_absent_resolve(XD, PA, KEY_A, nb, sizeof nb, true, &len) && gbsc_count(nb, len) == 0 && gbsc_file_key(nb, len) == KEY_A,
         "corrupt .tmp: not a fresh ledger");
+  { uint8_t w[GBSC_FILE_MAX]; uint32_t m = build(w, KEY_A, 3, 4); fresh_card(); put(PA, w, m);   /* re-verify-za2b F1 */
+    CHECK(!xh_absent_resolve(XD, PA, KEY_A, nb, sizeof nb, true, &len) && file_is(PA, w, m), "primary present: absent_resolve handed back a fresh ledger"); }
+  for (long k = 0; k < 40; k++) {   /* a card fault in the heal (XH_FAILED) or the read-back: refuse; entries survive */
+    fresh_card(); put(PA ".tmp", v, n); cold_boot(); len = 0; rd_fail_read_at = k;
+    bool ok = xh_absent_resolve(XD, PA, KEY_A, nb, sizeof nb, true, &len);
+    long left = rd_fail_read_at; rd_fail_read_at = -1;
+    if (left >= 0) continue;
+    cold_boot();
+    CHECK(!ok || (len == n && memcmp(nb, v, n) == 0), "fault at read %ld: accepted a ledger that is not the .tmp's (len=%u)", k, (unsigned)len);
+    CHECK(ok || file_is(PA ".tmp", v, n) || file_is(PA, v, n), "fault at read %ld: refused but the entries are gone", k);
+  }
   lockout();
   CHECK(!xh_absent_resolve(XD, PA, KEY_A, nb, 100, true, &len), "small buffer accepted");
   printf("gap: orphan entries survive the same-session writer path\n");

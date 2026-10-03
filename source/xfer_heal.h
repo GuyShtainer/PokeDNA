@@ -38,7 +38,8 @@ FRESULT xh_unlink_ledger(const char* path);
 
 /* #389 review D4 (same-session gap): a writer's sf_read_full said SF_ERR_OPEN ("absent"). Heals `key` first;
  * true = go on with `buf`/`*len` (fresh ledger, or the healed one read back); false = refuse (never gbsc_init
- * over a .tmp). `buf`/`cap` (>= GBSC_FILE_MAX) is the caller's own buffer. */
+ * over a VALID .tmp or a present primary; a bad .tmp is replaced by the next verified write). `buf`/`cap`
+ * (>= GBSC_FILE_MAX) is the caller's own buffer. */
 bool xh_absent_resolve(const char* dir, const char* path, uint64_t key, uint8_t* buf, uint32_t cap,
                        bool can_edit, uint32_t* len);
 #endif

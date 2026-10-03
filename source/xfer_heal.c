@@ -113,7 +113,11 @@ bool xh_absent_resolve(const char* dir, const char* path, uint64_t key, uint8_t*
                        bool can_edit, uint32_t* len) {
   if (!dir || !path || !buf || !len || cap < GBSC_FILE_MAX) return false;
   XhResult hr = xh_heal_key(dir, key, buf, cap, can_edit);
-  /* savefile keeps a .tmp only past its byte-compare, so an unparseable .tmp is torn scratch, not a copy. */
+  /* SF_ERR_OPEN is ANY failed f_open, not "absent": a present primary the caller could not open is refused,
+   * never replaced by a fresh ledger (re-verify-za2b F1; the loss predates za2). */
+  if (hr == XH_NONE) { FRESULT ps = f_stat(path, 0); if (ps != FR_NO_FILE && ps != FR_NO_PATH) return false; }
+  /* An unparseable .tmp is torn scratch from a pull mid-write (savefile only keeps a byte-compared .tmp past
+   * the write itself); the caller's next verified write replaces it. */
   if (hr == XH_NONE || hr == XH_BAD_TMP) { *len = (uint32_t)gbsc_init(buf, key); return true; }
   if (hr == XH_RESTORED) {
     log_line("xfer_heal: %s healed from its .tmp mid-session", path);
