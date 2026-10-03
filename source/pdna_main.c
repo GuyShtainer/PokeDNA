@@ -1103,9 +1103,10 @@ static void br_detail_paint(const BrowseEntry* ents, int sel, const BrowseSpec* 
    * status line (already ui_truncate'd to 29 cols below, so a long path/sort label
    * just drops it the same safe way it already drops anything else over budget,
    * never overruns). */
-  siprintf(status, "%d/%d  %s  %s%s", g_count ? sel + 1 : 0, g_count,
-           sort_label(), g_show_all ? "all" : spec->filter_label,
-           g_count >= spec->cap ? " FULL" : "");
+  /* #401: FULL goes FIRST (right after "n/N"), not last -- appended it was the first thing the 29-col
+   * truncation ate ("FU~" at 1/107, "~" at 107/107), i.e. exactly when it mattered. */
+  siprintf(status, "%d/%d  %s%s  %s", g_count ? sel + 1 : 0, g_count,
+           g_count >= spec->cap ? "FULL  " : "", sort_label(), g_show_all ? "all" : spec->filter_label);
   ui_truncate(stc, status, 29);
   ui_text(2, 138, UI_OK, stc);
 }
