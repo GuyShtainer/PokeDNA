@@ -1099,10 +1099,10 @@ static void br_detail_paint(const BrowseEntry* ents, int sel, const BrowseSpec* 
   /* D5: the "List full - some files not shown." warning pick_rom() used to show got
    * lost when that implementation was deleted (BACKLOG #186) -- the GB-session ROM
    * picker's cap (PICK_MAX_ART, mon_decomp-backed) is only ~107 entries, so a folder
-   * that busy needs SOME visible sign it isn't showing everything. " FULL" on the
-   * status line (already ui_truncate'd to 29 cols below, so a long path/sort label
-   * just drops it the same safe way it already drops anything else over budget,
-   * never overruns). */
+   * that busy needs SOME visible sign it isn't showing everything: "FULL" on the
+   * status line, which is ui_truncate'd to 29 cols below. Since #401 FULL sits right
+   * after n/N (worst case "256/256  FULL  " = 15 cols), so the truncation can only
+   * ever eat the sort/filter labels, never the warning. */
   /* #401: FULL goes FIRST (right after "n/N"), not last -- appended it was the first thing the 29-col
    * truncation ate ("FU~" at 1/107, "~" at 107/107), i.e. exactly when it mattered. */
   siprintf(status, "%d/%d  %s%s  %s", g_count ? sel + 1 : 0, g_count,

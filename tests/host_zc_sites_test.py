@@ -38,6 +38,10 @@ pin("#400 nickname==species drops the parenthesis",
     dcy,
     lambda t: "if (same || ui_ptext_w(out) > PDNA_DCY_NAME_W)" in t,
     lambda t: t.replace("if (same || ui_ptext_w(out)", "if (ui_ptext_w(out)"))
+pin("#400 the nickname==species test is a real case-blind equality (review-zc2 F1)",
+    dcy,
+    lambda t: re.search(r"if \(a != b\) same = false;\s*\n\s*if \(a == 0 \|\| b == 0\) break;", t) is not None,
+    lambda t: t.replace("if (a != b) same = false;", "/* if (a != b) same = false; */"))
 
 # ---- #402 Settings > Game ROM reaches rom_row_menu for a GB-only owner; app_any_rom_registered keeps its Gen-3 meaning
 mainc = rd("pdna_main.c")
