@@ -98,6 +98,8 @@ def classify(r):
     return "sys"
 
 
+RE_STAMP = re.compile(r"(EMU-(?:PASS|PARTIAL|FAIL))\s+(\d{4}-\d{2}-\d{2})\s*(.*)", re.S | re.I)
+STAMP_STATE = {"EMU-PASS": "verified", "EMU-PARTIAL": "partial", "EMU-FAIL": "fail"}
 RE_EMU = re.compile(r"[^.]*?(?:emulat|HW-only|HW-owed|hardware-only|hardware alone|"
                     r"delta has no FAT|only proof|never runs on|cart-only)[^.]*\.", re.I)
 
@@ -156,6 +158,15 @@ def main():
             r["pt"] = r["pdo"] = r["psee"] = ""
             missing += 1
         cl = p.get("cl") or {}
+        # 2026-10-04: the Status cell's EMU-PASS / EMU-PARTIAL / EMU-FAIL stamp (written at every emulator
+        # batch) is the freshest Claude verdict -- derive the claude layer from it whenever it is at least
+        # as new as the sidecar's hand-written entry, so a sync that only regenerates still carries it.
+        m_st = RE_STAMP.search(r["status"])
+        if m_st and m_st.group(2) >= str(cl.get("at", "")):
+            kind, date, rest = m_st.group(1).upper(), m_st.group(2), m_st.group(3).strip().strip("`")
+            rest = re.sub(r"^\((.*)\)$", r"\1", rest, flags=re.S)
+            cl = {"state": STAMP_STATE[kind], "note": f"{kind} {date}: {rest}"[:600], "at": date,
+                  "frames": cl.get("frames", [])}
         if cl.get("state"):
             r["cl"] = {"state": cl["state"],
                        "note": html.escape(cl.get("note", ""), quote=False),
