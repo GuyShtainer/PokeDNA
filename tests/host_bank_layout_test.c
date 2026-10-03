@@ -120,6 +120,15 @@ static void box_decisions(void) {
   rd_fail_reads_after = 0;
   { BmlBoxSrc r = brd(&sz); CHECK(r == BML_BOX_READ_ERROR, "#378: unreadable .tmp fell past to .bak (r=%d)", (int)r); }
   rd_fail_reads_after = -1;
+  /* #393 premise of pdna_bank_peek_box_ex: a TRUNCATED primary classifies BAD yet the file EXISTS (f_stat ok => the
+   * peek reports unread), while a never-written box classifies NONE and f_stat says FR_NO_FILE/FR_NO_PATH (=> absent) */
+  { FILINFO fi;
+    fresh_card(); put(BX, boxA, BOXN / 2);
+    CHECK(brd(&sz) == BML_BOX_BAD, "#393: truncated primary is not BAD");
+    CHECK(f_stat(BX, &fi) == FR_OK, "#393: truncated primary does not exist per f_stat (would read absent)");
+    fresh_card();
+    CHECK(brd(&sz) == BML_BOX_NONE, "#393: never-written box is not NONE");
+    { FRESULT fr = f_stat(BX, &fi); CHECK(fr == FR_NO_FILE || fr == FR_NO_PATH, "#393: absent box f_stat is %d", (int)fr); } }
   /* argument validation */
   CHECK(bml_box_read(NULL, bout, BOXN, &sz) == BML_BOX_READ_ERROR, "#378: NULL path");
   CHECK(!bml_box_heal(BX, BML_BOX_PRIMARY, boxA, BOXN), "#378: heal accepted PRIMARY");
