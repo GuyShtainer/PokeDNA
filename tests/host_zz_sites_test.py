@@ -86,7 +86,7 @@ def f384(body: str) -> tuple[bool, str]:
     i_key = body.find("gbsc_set_file_key(buf, len, new_key)")
     i_chk = body.find("gbsc_file_key(buf, len) == new_key")
     i_wr = body.find("sf_write_verified(plan->new_path, buf, len)")
-    i_ul = body.find("f_unlink(plan->old_path)")
+    i_ul = body.find("xh_unlink_ledger(plan->old_path)")
     if min(i_rd, i_key, i_chk, i_wr, i_ul) < 0:
         return False, "app_xfer_pid_rekey: read / set_file_key / file_key check / verified write / unlink not all present (#384)"
     if not (i_rd < i_key < i_wr < i_ul and i_key < i_chk < i_wr):
@@ -224,7 +224,7 @@ def run() -> None:
     check(ok, d)
     for label, old, new in (
         ("384: header rewrite dropped", "gbsc_set_file_key(buf, len, new_key) == 0", "true"),
-        ("384: unlink the old name before the verified write", "sf_write_verified(plan->new_path, buf, len) == SF_OK;", "f_unlink(plan->old_path) == FR_OK;"),
+        ("384: unlink the old name before the verified write", "sf_write_verified(plan->new_path, buf, len) == SF_OK;", "xh_unlink_ledger(plan->old_path) == FR_OK;"),
     ):
         if old not in rk:
             check(False, f"mutation anchor missing ({label})")

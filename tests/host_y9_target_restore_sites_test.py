@@ -111,7 +111,7 @@ def restore_order_facts(body: str) -> tuple[bool, str]:
 
 
 def restore_writes_nothing_facts(body: str) -> tuple[bool, str]:
-    bad = [c for c in ("sf_write_verified", "f_unlink", "gbsc_remove", "gbsc_add", "gbsc_set_state",
+    bad = [c for c in ("sf_write_verified", "f_unlink", "xh_unlink_ledger", "gbsc_remove", "gbsc_add", "gbsc_set_state",
                        "pdna_bank_next_serial", "app_bank_defer_delete") if first(body, c) >= 0]
     return (not bad), ("ok" if not bad else "writes to the card / bank: " + ", ".join(bad))
 
@@ -148,7 +148,7 @@ def promote_consume_facts(body: str) -> tuple[bool, str]:
     ok, d = ordered(seg, ["gbsc_remove", "sf_write_verified", "app_xfer_pending_drop"])
     if not ok:
         return False, "G3_HOME branch: " + d
-    if first(seg, "f_unlink") < 0:
+    if first(seg, "xh_unlink_ledger") < 0:
         return False, "G3_HOME branch: the last entry must unlink the file"
     if "XR_STATE_NONE" not in seg:
         return False, "G3_HOME branch: must require a plain (NONE) entry"
@@ -349,7 +349,7 @@ def self_test() -> None:
         ("MUT C1: consume writes before removing", promote_consume_facts,
          mutate(pr, "gbsc_remove(", "sf_write_verified(path, s_promote_buf, len); gbsc_remove(")),
         ("MUT C2: no G3_HOME branch", promote_consume_facts, pr.replace("XR_KIND_G3_HOME", "XR_KIND_XXX")),
-        ("MUT C3: last entry not unlinked", promote_consume_facts, pr.replace("f_unlink", "f_xunlink")),
+        ("MUT C3: last entry not unlinked", promote_consume_facts, pr.replace("xh_unlink_ledger", "f_xunlink")),
         ("MUT C4a: the failure arm drops the key unconditionally (the #284 strand)", save_now_fail_facts,
          mutate(sn, "if (!app_xfer_pending_is_g3home()) app_xfer_pending_drop();", "app_xfer_pending_drop();")),
         ("MUT C4b: the failure arm never drops a NATIVE_HOME key", save_now_fail_facts,
