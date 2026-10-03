@@ -1247,6 +1247,7 @@ static void t_swap_pair_fault_sweep(void) {
 /* ---- #406: a power cut between a swap's two drops leaves ONLY the older half ("Swap") on the card. The load-time offer must never re-apply it (the displaced mon
  * lives only in the lost RAM hand: applying drop 1 alone deletes it from the image). g_cut stages the swap with its LAST half unflushed, then the cut: the card keeps
  * the pre-swap image (`snapS`, or `snapB` for the bag-step case) and the journal's flushed records; the pending record dies with the RAM. ---- */
+static int stage_swap_chained(unsigned a, unsigned b, unsigned c);
 static void cut_and_reopen(const uint8_t* card) { memcpy(sv, card, sizeof sv); CHECK(app_reopen(), "power cut + reopen"); }
 static void t_swap_cutoff(void) {
   uint32_t av = 99, tot;
@@ -1290,6 +1291,18 @@ static void t_swap_cutoff(void) {
   tot = jrnapp_offer(&av, stop);
   CHECK(tot == 0u && jrnapp_cutoff() == 2u, "#406 a chained swap cut before its Box move holds back BOTH Swaps (total %u cutoff %u)", (unsigned)tot, (unsigned)jrnapp_cutoff());
   CHECK(jrnapp_reapply() == 0 && memcmp(sv, snapS, sizeof sv) == 0, "#406 chain: nothing applied");
+  /* 7: the swap's drop 1 is itself a CHAIN (> one record: an unprimed save) -- written straight to the card, the usual lone half in mGBA */
+  g_cut = 1;
+  CHECK(app_world_reset() && stage_swap_chained(10, 11, 12), "chain-half: Setup, Swap (a chain, on the card), Box move pending");
+  g_cut = 0;
+  cut_and_reopen(snapS);
+  tot = jrnapp_offer(&av, stop);
+  CHECK(tot == 0u && jrnapp_cutoff() == 1u, "#406 a lone CHAIN-shaped older half is held back too (total %u cutoff %u)", (unsigned)tot, (unsigned)jrnapp_cutoff());
+  CHECK(jrnapp_reapply() == 0 && memcmp(sv, snapS, sizeof sv) == 0, "#406 chain-half: nothing applied, image unchanged");
+  CHECK(app_world_reset() && stage_swap_chained(10, 11, 12), "chain-half control: both drops flushed");
+  cut_and_reopen(snapS);
+  tot = jrnapp_offer(&av, stop);
+  CHECK(tot == 2u && av == 2u && jrnapp_reapply() == 2 && memcmp(sv, snapF, sizeof sv) == 0, "#406 control: chain + Box move both on the card -> whole swap (%u/%u)", (unsigned)tot, (unsigned)av);
   /* 6: (b) the pair-completion flush: the swap's two drops reach the card with NO rest point; a lone first half does NOT flush (nothing to pair) */
   {
     uint8_t x[MONB], y[MONB];
@@ -1541,10 +1554,11 @@ static int stage_swap_chained(unsigned a, unsigned b, unsigned c) {
   memcpy(slot_at(b), x, MONB); memset(slot_at(a), 0, MONB);               /* drop 1 ... */
   for (i = 0; i < 600; i++) pc[34000u + i] = (uint8_t)(pc[34000u + i] ^ 0x5Au ^ (uint8_t)i);   /* ... plus 600 bytes elsewhere (region 13, past the mon area): > one record */
   if (!stage_drop1()) return 0;
+  if (g_cut && jrnapp_flush() != JRN_OK) return 0;
   memcpy(slot_at(c), y, MONB);                                             /* drop 2 */
   if (!stage_pc("Box move")) return 0;
   memcpy(snapF, sv, sizeof sv);
-  return jrnapp_flush() == JRN_OK && RA.state == IREC_OK && RA.lost == 0;
+  return g_cut ? RA.state == IREC_OK && RA.lost == 0 : (jrnapp_flush() == JRN_OK && RA.state == IREC_OK && RA.lost == 0);
 }
 static void t_chain_never_pairs(void) {
   char nm[25];

@@ -290,9 +290,9 @@ void jrnapp_log_events(ImgRec* r) {
 /* ---- load-time re-apply ----------------------------------------------------------------------------- */
 /* #406: the re-apply must never end on the OLDER half of a swap whose newer half is not on the card. A swap is two drops (drop 1 = the step named "Swap", #314a; the
  * displaced mon sits only in the RAM hand until drop 2, a "Box move"/"Party add"): re-applying drop 1 alone deletes the displaced mon from the image. The step named
- * "Swap" (ja_older_eligible: plain, uncrossed, Gen-3) IS the older half by construction -- every pair/chain link below the newest carries it -- so a trailing run of
- * them (the newest `av` re-appliable steps, walked back from the tip) has no partner on the card and is cut. *cut = how many. Game Boy images never carry the name. */
-static int ja_older_eligible(const JrnRec* r);
+ * "Swap" (Gen-3, ANY shape: plain or a chain head -- mGBA found that an unprimed save's drop 1 is a chain, written straight to the card) IS the older half by
+ * construction -- every pair/chain link below the newest carries it -- so a trailing run of them (the newest `av` re-appliable steps, walked back from the tip) has no
+ * partner on the card and is cut. *cut = how many. Game Boy images never carry the name. */
 static int ja_cut_tail(uint32_t av, uint32_t total, uint32_t* cut) {
   JrnRec w;
   uint32_t t = jrn_tip(&s_j), idx = total, n = 0;
@@ -309,7 +309,7 @@ static int ja_cut_tail(uint32_t av, uint32_t total, uint32_t* cut) {
     if (!t) return JRN_E_DIVERGED;
     rc = jrn_find(&s_j, t, &w);
     if (rc) return rc;
-    if (!ja_older_eligible(&w)) break;
+    if (w.kind != JRN_KIND_STEP || strcmp(w.name, "Swap") != 0) break;   /* a CHAIN head counts too: a swap's drop 1 beyond one record (an unprimed save) is written straight to the card, so it is the usual lone half */
     n++; t = w.parent;
   }
   *cut = n;
