@@ -136,9 +136,9 @@ def f377(classify: str, popup: str, apply_: str, flush: str) -> tuple[bool, str]
 def f382(load: str, records: str, reread: str, loop: str, tests_text: str) -> tuple[bool, str]:
     if not re.search(r"g_box_unread\s*=\s*\(bsrc\s*==\s*BML_BOX_READ_ERROR\)\s*\?\s*BOX_UNREAD_ERR\s*:\s*heal_failed\s*\?\s*BOX_UNREAD_HEAL\s*:\s*0\s*;", load):
         return False, "box_load: g_box_unread must be set for a READ ERROR and for heal_failed (#382b)"
-    if not re.search(r"box_load\(box\)\s*;\s*if\s*\(\s*g_box_unread\s*\)\s*box_unread_notice\(\)\s*;", records):
+    if not re.search(r"if\s*\(\s*g_box_unread\s*&&\s*!\(g_box_unread\s*&\s*BOX_UNREAD_NOTED\)\s*\)\s*\{\s*box_unread_notice\(\)\s*;\s*g_box_unread\s*\|=\s*BOX_UNREAD_NOTED\s*;", records):
         return False, "banksrc_records: the notice must follow the page-in when g_box_unread (#382a)"
-    if "g_box_unread != BOX_UNREAD_ERR" not in reread or not re.search(r"if\s*\(\s*p\[i\]\s*\)\s*return false", reread):
+    if "(g_box_unread & BOX_UNREAD_KIND) != BOX_UNREAD_ERR" not in reread or not re.search(r"if\s*\(\s*p\[i\]\s*\)\s*return false", reread):
         return False, "box_unread_reread: must refuse a heal-failed box and a buffer holding an edit (#382a)"
     if not re.search(r"retry\)\s*return false;\s*[^\n]*\n?\s*if\s*\(\s*g_box_unread\s*&&\s*box_unread_reread\(\)\s*\)\s*return true", loop):
         return False, "box_save_or_keep_dirty: a chosen retry must re-read an unread box (#382a)"
@@ -197,9 +197,10 @@ def run() -> None:
     check(ok, d)
     for label, which, old, new in (
         ("382b: failed heal not write-protected", "bl", ": heal_failed ? BOX_UNREAD_HEAL : 0;", ": 0;"),
-        ("382a: no notice after the page-in", "br", "if (g_box_unread) box_unread_notice();", ""),
+        ("382a: no notice after the page-in", "br", "box_unread_notice(); g_box_unread |= BOX_UNREAD_NOTED;", ""),
+        ("382a: notice repeats every call (never latched)", "br", "&& !(g_box_unread & BOX_UNREAD_NOTED)", ""),
         ("382a: reread accepts a buffer with an edit", "rr", "if (p[i]) return false;", ""),
-        ("382a: reread also accepts a heal-failed box", "rr", "g_box_unread != BOX_UNREAD_ERR", "g_box_unread == 0"),
+        ("382a: reread also accepts a heal-failed box", "rr", "(g_box_unread & BOX_UNREAD_KIND) != BOX_UNREAD_ERR", "g_box_unread == 0"),
         ("382a: retry no longer re-reads", "lp", "if (g_box_unread && box_unread_reread()) return true;", ""),
     ):
         parts = {"bl": bl, "br": br, "rr": brr, "lp": bloop}

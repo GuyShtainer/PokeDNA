@@ -126,6 +126,8 @@ static uint8_t EWRAM_BSS g_meta_state;
  * copy, shown browse-only; writing it would roll the .bak and could unlink the .tmp, the only good copy). */
 #define BOX_UNREAD_ERR   1
 #define BOX_UNREAD_HEAL  2
+#define BOX_UNREAD_KIND  0x03u   /* the kind bits */
+#define BOX_UNREAD_NOTED 0x80u   /* the on-screen notice was already shown for this page-in (box_load clears it) */
 static uint8_t EWRAM_BSS g_box_unread;
 
 /* ---- paths ---- */
@@ -410,7 +412,7 @@ static bool box_load(int box) {
 static void box_unread_notice(void) {
   u16 dc = REG_DISPCNT;
   REG_DISPCNT &= ~DCNT_OBJ;
-  if (g_box_unread == BOX_UNREAD_HEAL)
+  if ((g_box_unread & BOX_UNREAD_KIND) == BOX_UNREAD_HEAL)
     msg_wait(PDNA_BANK_HEALFAIL_TITLE, UI_WARN, PDNA_BANK_HEALFAIL_L1, PDNA_BANK_HEALFAIL_L2);
   else
     msg_wait(PDNA_BANK_UNREAD_TITLE, UI_WARN, PDNA_BANK_UNREAD_L1, PDNA_BANK_UNREAD_L2);
@@ -422,7 +424,7 @@ static void box_unread_notice(void) {
  * failed drop reverts its cells before it keeps holding); a heal-failed box (BOX_UNREAD_HEAL) is re-opened, not
  * re-read here. true = the card answered this time and the buffer now IS the box: there is nothing left to write. */
 static bool box_unread_reread(void) {
-  if (g_box_unread != BOX_UNREAD_ERR || g_loaded < 0) return false;
+  if ((g_box_unread & BOX_UNREAD_KIND) != BOX_UNREAD_ERR || g_loaded < 0) return false;
   const uint8_t* p = box_recs();
   for (int i = 0; i < BOX_BYTES; i++) if (p[i]) return false;     /* an edit sits in the phantom: cannot merge, keep refusing */
   int box = g_loaded;
@@ -926,8 +928,10 @@ static uint8_t* banksrc_records(int box) {
      * below overwrites the one shared buffer. Refuse to page: never silently flip. */
     if (g_dirty && !box_save_or_keep_dirty()) return box_recs();
     box_load(box);
-    if (g_box_unread) box_unread_notice();     /* BACKLOG #382(a): never show a phantom-empty / unwritable box silently */
   }
+  /* BACKLOG #382(a): never show a phantom-empty / unwritable box silently -- once per page-in, whoever paged it
+   * (the reconcile / backup helpers page boxes too, so the first look at it here is the one that tells the user). */
+  if (g_box_unread && !(g_box_unread & BOX_UNREAD_NOTED)) { box_unread_notice(); g_box_unread |= BOX_UNREAD_NOTED; }
   return box_recs();
 }
 static void banksrc_get_name(int box, char out[12]) {
