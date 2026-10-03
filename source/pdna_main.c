@@ -10301,7 +10301,10 @@ static void app_discard_staged(void) {
 static void flush_on_exit(void) {
   app_journal_rest();                                    /* #234: the exit is a rest point: pending records first */
   if (!imgf_exit_prompt(&g_img)) {
-    app_xfer_promote();                    /* BACKLOG #150 S150-8 decision 9: the PC was already saved */
+    /* BACKLOG #150 S150-8 decision 9: the PC was already saved. #377: a FAILED promotion is logged, not ignored. */
+    bool had_pending = app_xfer_pending();
+    if (had_pending && !app_xfer_promote())
+      log_line("xfer: exit: promotion FAILED (entry stays pending; TRANSFERS can mark it finished)");
     int kept = pdna_bank_flush_deletions();
     if (kept) {
       char l1[48]; siprintf(l1, PDNA_XFER_FLUSHFAIL_L1, kept);
@@ -11112,6 +11115,7 @@ static void __attribute__((noinline)) xfer_reconcile_classify_all(GbReconBuf* rb
     in.bank_keep = h->bank_keep;
     in.bank_g3_matches = h->bank_g3_matches;
     in.bank_ident_matches = h->bank_ident_matches;
+    in.g3_on_card = !imgf_exit_prompt(&g_img);   /* #377: nothing staged -> the RAM save IS the verified one */
     XrcResult out;
     xrc_classify(&in, &out);
     h->row_kind = (uint8_t)out.kind;
@@ -11410,12 +11414,13 @@ static void xrc_paint_empty(void) {
  * 0 == Cancel/nothing chosen (also returned when actions == 0, the caller's own
  * responsibility not to open this for an all-informational row). */
 static uint8_t xrc_action_popup(uint8_t actions) {
-  const char* labels[6]; uint8_t vals[6]; int n = 0;
+  const char* labels[7]; uint8_t vals[7]; int n = 0;
   if (actions & XRC_ACT_REMOVE)  { labels[n] = PDNA_XRC_ACT_REMOVE;  vals[n++] = XRC_ACT_REMOVE; }
   if (actions & XRC_ACT_RELEASE) { labels[n] = PDNA_XRC_ACT_RELEASE; vals[n++] = XRC_ACT_RELEASE; }
   if (actions & XRC_ACT_RESTORE) { labels[n] = PDNA_XRC_ACT_RESTORE; vals[n++] = XRC_ACT_RESTORE; }
   if (actions & XRC_ACT_DELETE)  { labels[n] = PDNA_XRC_ACT_DELETE;  vals[n++] = XRC_ACT_DELETE; }
   if (actions & XRC_ACT_REKEY)   { labels[n] = PDNA_XRC_ACT_REKEY;   vals[n++] = XRC_ACT_REKEY; }
+  if (actions & XRC_ACT_PROMOTE) { labels[n] = PDNA_XRC_ACT_PROMOTE; vals[n++] = XRC_ACT_PROMOTE; }
   if (n == 0) return 0;
   labels[n] = PDNA_XRC_ACT_CANCEL; vals[n++] = 0;
 
@@ -11451,7 +11456,7 @@ static void __attribute__((noinline)) xfer_reconcile_apply(GbReconBuf* rb) {
   app_journal_cross();                                /* XRC apply: Bank / ledger / PC decided together */
   bool remove_entry[GB_RECON_MAX_HITS];
   memset(remove_entry, 0, sizeof remove_entry);
-  int removed = 0, released = 0, restored = 0, deleted = 0, rekeyed = 0, failed = 0;
+  int removed = 0, released = 0, restored = 0, deleted = 0, rekeyed = 0, failed = 0, promoted = 0;
   bool any_noroom = false;   /* review D6(2): RESTORE hit a genuinely full Bank */
   uint32_t dc_base, dc_stride; dc_layout(&dc_base, &dc_stride);
 
@@ -11553,11 +11558,13 @@ static void __attribute__((noinline)) xfer_reconcile_apply(GbReconBuf* rb) {
    * still queued for removal in the SAME pass. */
   bool any_notupdated = false;
   for (int f = 0; f < rb->nfiles; f++) {
-    uint8_t idx[GBSC_MAX_ENTRIES]; int n = 0;
-    for (int i = 0; i < rb->nxrc; i++)
-      if (rb->xrc[i].file_idx == (uint8_t)f && remove_entry[i] && n < GBSC_MAX_ENTRIES)
-        idx[n++] = rb->xrc[i].entry_idx;
-    if (n == 0) continue;
+    uint8_t idx[GBSC_MAX_ENTRIES]; int n = 0, np = 0;
+    for (int i = 0; i < rb->nxrc; i++) {
+      if (rb->xrc[i].file_idx != (uint8_t)f) continue;
+      if (remove_entry[i] && n < GBSC_MAX_ENTRIES) idx[n++] = rb->xrc[i].entry_idx;
+      if (rb->xrc[i].action == XRC_ACT_PROMOTE) np++;          /* #377 */
+    }
+    if (n == 0 && np == 0) continue;
     xrc_apply_order(idx, n);
 
     gb_recon_path(rb->path, rb->names[f]);
@@ -11566,6 +11573,24 @@ static void __attribute__((noinline)) xfer_reconcile_apply(GbReconBuf* rb) {
         gbsc_count(rb->sidecar, len) < 0) {
       log_line("xfer: reconcile: could not re-read %s for apply", rb->path);
       any_notupdated = true; continue;
+    }
+    /* BACKLOG #377: MARK FINISHED -- flip the entry PENDING -> CLAIMED in place (indexes unchanged, so it
+     * composes with the removals below). The entry is re-checked on the fresh read: still the same native
+     * ABROAD_G3 PENDING entry, or it is skipped and counted failed (never promote what changed under us). */
+    int np_ok = 0;
+    for (int i = 0; i < rb->nxrc; i++) {
+      XrcHit* h = &rb->xrc[i];
+      if (h->file_idx != (uint8_t)f || h->action != XRC_ACT_PROMOTE) continue;
+      GbscEntry pe;
+      if (gbsc_get(rb->sidecar, len, h->entry_idx, &pe) && pe.kind == XR_KIND_NATIVE_HOME &&
+          pe.direction == XR_DIR_ABROAD_G3 && pe.state == XR_STATE_PENDING &&
+          gbsc_set_state(rb->sidecar, len, h->entry_idx, XR_STATE_CLAIMED) == 0) {
+        np_ok++;
+        log_line("xfer: reconcile: row %d MARK FINISHED", i);
+      } else {
+        failed++;
+        log_line("xfer: reconcile: row %d MARK FINISHED refused, entry changed", i);
+      }
     }
     bool ok = true;
     for (int j = 0; j < n && ok; j++) ok = gbsc_remove(rb->sidecar, &len, idx[j]) == 0;
@@ -11579,7 +11604,8 @@ static void __attribute__((noinline)) xfer_reconcile_apply(GbReconBuf* rb) {
     if (gbsc_count(rb->sidecar, len) == 0) wok = (f_unlink(rb->path) == FR_OK);
     else                                   wok = (sf_write_verified(rb->path, rb->sidecar, len) == SF_OK);
     rmbl_resume();
-    if (!wok) { log_line("xfer: reconcile: %s NOT updated after apply", rb->path); any_notupdated = true; }
+    if (!wok) { log_line("xfer: reconcile: %s NOT updated after apply", rb->path); any_notupdated = true; failed += np_ok; }
+    else promoted += np_ok;
   }
   if (any_notupdated) {
     snd_error();
@@ -11649,11 +11675,11 @@ static void __attribute__((noinline)) xfer_reconcile_apply(GbReconBuf* rb) {
   xrc_cache_invalidate();   /* BACKLOG #215(a): any of the writes above can change what
                              * a still-pending row's own text would decode to */
 
-  log_line("xfer: reconcile: apply removed=%d released=%d restored=%d deleted=%d rekeyed=%d failed=%d",
-          removed, released, restored, deleted, rekeyed, failed);
+  log_line("xfer: reconcile: apply removed=%d released=%d restored=%d deleted=%d rekeyed=%d failed=%d promoted=%d",
+          removed, released, restored, deleted, rekeyed, failed, promoted);
   if (failed > 0) {
     char l1[40];
-    siprintf(l1, "%d of %d failed", failed, removed + released + restored + deleted + rekeyed + failed);
+    siprintf(l1, "%d of %d failed", failed, removed + released + restored + deleted + rekeyed + failed + promoted);
     /* review D6(2): a genuinely full Bank gets its own, more accurate line -- other
      * failures keep the generic "nothing was written" wording. */
     msg_wait("SOME NOT APPLIED", UI_WARN, l1, any_noroom ? PDNA_XRC_NOROOM_L1 : PDNA_XRC_NOBANK_L1);

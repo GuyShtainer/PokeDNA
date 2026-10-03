@@ -482,6 +482,44 @@ static void test_inbank1(void) {
   CHECK(xrc_bank_match(box, &e, true, &slot) == 1 && slot == 3, "INBANK-1: ...but matches by identity (the #385 count)");
 }
 
+/* ==== PROMOTE-1 (BACKLOG #377) ========================================================
+ * A PENDING row whose Gen-3 copy is found exactly once offers MARK FINISHED (PROMOTE) -- but ONLY when the open save is
+ * the verified one on the card (g3_on_card). Mutations: drop g3_on_card from either branch -> the "RAM only" check
+ * fails; drop the PROMOTE bit -> the offering checks fail. PENDING_ORPHAN / PENDING_LOST must never offer it. */
+static void test_promote1(void) {
+  printf("== PROMOTE-1: MARK FINISHED only for a PENDING row whose Gen-3 copy is on the card ==\n");
+  XrcInput in; XrcResult r;
+  memset(&in, 0, sizeof in);
+  in.kind = XR_KIND_NATIVE_HOME; in.direction = XR_DIR_ABROAD_G3; in.state = XR_STATE_PENDING;
+  in.g3_key_matches = 1; in.g3_on_card = true;
+  xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_PENDING_NOBANK && r.actions == XRC_ACT_PROMOTE, "PROMOTE-1: unproven + on card -> PROMOTE (kind %d act 0x%x)", r.kind, r.actions);
+  in.bank_matches = 1;
+  xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_PENDING_BOTH && r.actions == XRC_ACT_PROMOTE, "PROMOTE-1: unfinished + on card -> PROMOTE");
+  in.g3_on_card = false;
+  xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_PENDING_BOTH && r.actions == XRC_ACT_NONE, "PROMOTE-1: unfinished but the copy is RAM-only -> nothing offered");
+  in.bank_matches = 0;
+  xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_PENDING_NOBANK && r.actions == XRC_ACT_NONE, "PROMOTE-1: unproven but RAM-only -> nothing offered");
+  in.g3_on_card = true; in.g3_key_matches = 2;
+  xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_AMBIGUOUS && r.actions == XRC_ACT_NONE, "PROMOTE-1: 2 copies is ambiguous, not promotable");
+  in.g3_key_matches = 0; in.bank_matches = 1;
+  xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_PENDING_ORPHAN && r.actions == XRC_ACT_DELETE, "PROMOTE-1: never-landed (no Gen-3 copy) offers no PROMOTE");
+  in.bank_matches = 0;
+  xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_PENDING_LOST && !(r.actions & XRC_ACT_PROMOTE), "PROMOTE-1: record-only offers no PROMOTE");
+  in.state = XR_STATE_CLAIMED; in.g3_key_matches = 1;
+  xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_ABROAD && r.actions == XRC_ACT_NONE, "PROMOTE-1: a CLAIMED row never gets PROMOTE");
+  /* the bit is its own and fits the popup mask */
+  CHECK(XRC_ACT_PROMOTE == 0x20u && (XRC_ACT_PROMOTE & (XRC_ACT_REMOVE | XRC_ACT_RELEASE | XRC_ACT_RESTORE | XRC_ACT_DELETE | XRC_ACT_REKEY)) == 0,
+        "PROMOTE-1: XRC_ACT_PROMOTE is a distinct bit");
+}
+
 /* ==== REBUILD-1 ====================================================================== */
 
 static void test_rebuild1(void) {
@@ -644,6 +682,7 @@ int main(int argc, char** argv) {
   test_row1();
   test_rebuild1();
   test_inbank1();
+  test_promote1();
 
   int examined = 0;
   for (int i = 1; i < argc; i++) { test_corpus(argv[i]); examined++; }

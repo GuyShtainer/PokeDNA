@@ -51,9 +51,13 @@ void xrc_classify(const XrcInput* in, XrcResult* out) {
   switch (in->state) {
     case XR_STATE_PENDING:
       /* G-F1: a PENDING entry never drives anything destructive. */
-      if (bank_seen && g3_seen)       { out->kind = XRC_PENDING_BOTH; }
+      /* #377: the Gen-3 copy is found exactly once AND the save holding it is the verified one on the card
+       * (g3_on_card) -> the exit-time promotion that never happened can be done by hand ("Mark finished":
+       * PENDING -> CLAIMED, nothing else changes). Never without g3_on_card: a copy that exists only in RAM is
+       * exactly what PENDING protects. */
+      if (bank_seen && g3_seen)       { out->kind = XRC_PENDING_BOTH; if (in->g3_on_card) out->actions = XRC_ACT_PROMOTE; }
       else if (bank_seen)             { out->kind = XRC_PENDING_ORPHAN; out->actions = XRC_ACT_DELETE; }
-      else if (g3_seen)               { out->kind = XRC_PENDING_NOBANK; }
+      else if (g3_seen)               { out->kind = XRC_PENDING_NOBANK; if (in->g3_on_card) out->actions = XRC_ACT_PROMOTE; }
       else if (in->bank_ident_matches >= 1) { out->kind = XRC_IN_BANK; out->actions = XRC_ACT_DELETE; }   /* #385 */
       else                             { out->kind = XRC_PENDING_LOST; out->actions = XRC_ACT_RESTORE | XRC_ACT_DELETE; }
       return;

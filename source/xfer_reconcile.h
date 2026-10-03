@@ -51,6 +51,7 @@ typedef enum {
 #define XRC_ACT_RESTORE  0x04u   /* RESTORE TO BANK   (8c)                            */
 #define XRC_ACT_DELETE   0x08u   /* DELETE RECORD     (8d)                            */
 #define XRC_ACT_REKEY    0x10u   /* RE-KEY            (8e)                            */
+#define XRC_ACT_PROMOTE  0x20u   /* MARK FINISHED (#377): PENDING -> CLAIMED, the Gen-3 copy is on the card */
 
 /* What the caller observed THIS SESSION for one entry, before any classification --
  * every field is a plain fact the caller already had to compute (xrc_g3_match_key(),
@@ -69,6 +70,9 @@ typedef struct {
   bool    bank_keep;            /* the entry's bank_keep bit (decision 7)              */
   int     bank_g3_matches;      /* xrc_bank_g3_match(): Gen-3 copies PARKED in the Bank
                                  * (#270 pass-through), 0/1/2(+); 0 when never scanned  */
+  bool    g3_on_card;           /* #377: nothing is staged in the open save (it equals the last verified
+                                 * write), so a Gen-3 key match is ON the card -- the only case in which a
+                                 * PENDING row may be marked finished                                    */
   int     bank_ident_matches;   /* #385: native Bank cells whose IDENTITY (gen + otid +
                                  * dv4 + OT name) equals the entry's although their first 8 bytes
                                  * (magic + ident32, serial baked in) do not -- a RESTORE-TO-BANK

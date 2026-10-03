@@ -9,6 +9,9 @@ check and by in-memory MUTATIONS that must turn it red (self-test in main()).
         verified write of the new name, and unlinks the old name only after that write -- never zero copies.
   #385  xfer_reconcile_bank_phase2 counts identity-only Bank hits (xrc_bank_match(..., true, ..)) where a box has no first-8
         hit, xfer_reconcile_classify_all hands them to xrc_classify, and the detail line is wired.
+  #377  MARK FINISHED: classify_all derives g3_on_card from the CLEAN image (!imgf_exit_prompt), the popup lists
+        PDNA_XRC_ACT_PROMOTE, apply re-checks the on-disk entry (NATIVE_HOME / ABROAD_G3 / PENDING) before
+        gbsc_set_state(.., XR_STATE_CLAIMED), and flush_on_exit logs a failed exit promotion.
   #383  app_xfer_save_now promotes ONLY when a transfer is pending ("nothing pending" == ok), a REAL failed
         promotion (pending, rewrite failed) still gives ok = false (#175 D1).
 """
@@ -103,6 +106,29 @@ def f385(phase2: str, classify: str, detail: str) -> tuple[bool, str]:
     return True, "ok"
 
 
+# ---------------------------------------------------------------------------------------------- #377
+def f377(classify: str, popup: str, apply_: str, flush: str) -> tuple[bool, str]:
+    if not re.search(r"in\.g3_on_card\s*=\s*!imgf_exit_prompt\(&g_img\)\s*;", classify):
+        return False, "classify_all: g3_on_card must be !imgf_exit_prompt(&g_img) (a RAM-only copy is not on the card) (#377)"
+    if not re.search(r"XRC_ACT_PROMOTE\)\s*\{\s*labels\[n\]\s*=\s*PDNA_XRC_ACT_PROMOTE", popup):
+        return False, "xrc_action_popup: PROMOTE not listed (#377)"
+    m = re.search(r"h->action\s*!=\s*XRC_ACT_PROMOTE\)\s*continue;(.*?)np_ok\+\+", apply_, re.S)
+    if not m:
+        return False, "apply: no MARK FINISHED loop (#377)"
+    chk = m.group(1)
+    for need in ("pe.kind == XR_KIND_NATIVE_HOME", "pe.direction == XR_DIR_ABROAD_G3", "pe.state == XR_STATE_PENDING",
+                 "gbsc_set_state(rb->sidecar, len, h->entry_idx, XR_STATE_CLAIMED) == 0"):
+        if need not in chk:
+            return False, f"apply: MARK FINISHED lost its re-check `{need}` (#377)"
+    if apply_.find("XRC_ACT_PROMOTE") > apply_.find("gbsc_remove(rb->sidecar, &len, idx[j])") >= 0:
+        return False, "apply: the promote must run before the removals on the fresh read (#377)"
+    if "promoted += np_ok" not in apply_ or "failed += np_ok" not in apply_:
+        return False, "apply: promoted/failed accounting for the verified rewrite is missing (#377)"
+    if not re.search(r"had_pending\s*&&\s*!app_xfer_promote\(\)\s*\)\s*log_line\(", flush):
+        return False, "flush_on_exit: a failed exit promotion must be logged (#377)"
+    return True, "ok"
+
+
 def run() -> None:
     main_t = (SRC / "pdna_main.c").read_text()
     p2 = function_body(main_t, "xfer_reconcile_bank_phase2")
@@ -122,6 +148,26 @@ def run() -> None:
             continue
         parts[which] = mutate(parts[which], old, new)
         ok, _ = f385(parts["p2"], parts["ca"], parts["dl"])
+        check(not ok, f"MUT {label} was NOT caught")
+    pp = function_body(main_t, "xrc_action_popup")
+    ap = function_body(main_t, "xfer_reconcile_apply")
+    fe = function_body(main_t, "flush_on_exit")
+    ok, d = f377(ca, pp, ap, fe)
+    check(ok, d)
+    for label, which, old, new in (
+        ("377: g3_on_card always true", "ca", "!imgf_exit_prompt(&g_img);", "true;"),
+        ("377: popup lacks PROMOTE", "pp", "XRC_ACT_PROMOTE) { labels[n] = PDNA_XRC_ACT_PROMOTE", "XRC_ACT_PROMOTE) { labels[n] = PDNA_XRC_ACT_REKEY"),
+        ("377: apply drops the state re-check", "ap", "pe.state == XR_STATE_PENDING &&", ""),
+        ("377: apply drops the direction re-check", "ap", "pe.direction == XR_DIR_ABROAD_G3 &&", ""),
+        ("377: promotion counted before the verified write", "ap", "else promoted += np_ok;", ""),
+        ("377: exit promotion failure ignored", "fe", "had_pending && !app_xfer_promote()", "had_pending && app_xfer_promote()"),
+    ):
+        parts = {"ca": ca, "pp": pp, "ap": ap, "fe": fe}
+        if old not in parts[which]:
+            check(False, f"mutation anchor missing ({label})")
+            continue
+        parts[which] = mutate(parts[which], old, new)
+        ok, _ = f377(parts["ca"], parts["pp"], parts["ap"], parts["fe"])
         check(not ok, f"MUT {label} was NOT caught")
     rk = function_body(main_t, "app_xfer_pid_rekey")
     check(bool(rk), "app_xfer_pid_rekey body not found")

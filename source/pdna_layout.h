@@ -1231,6 +1231,7 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_XRC_ACT_RESTORE "Restore to Bank"
 #define PDNA_XRC_ACT_DELETE  "Delete record"
 #define PDNA_XRC_ACT_REKEY   "Re-link record"
+#define PDNA_XRC_ACT_PROMOTE "Mark finished"
 #define PDNA_XRC_ACT_CANCEL  "Cancel"
 
 /* The loss confirm (decision 2/8d) -- DELETE behind a second confirm naming the
