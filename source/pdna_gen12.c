@@ -3171,7 +3171,10 @@ static void gb_paste_sidecar_undo(const char* path) {
  * buf, or the healed one read back into buf with *len); 0 = refused, message shown. */
 static int __attribute__((noinline))
 gb_ledger_absent_heal(const char* path, uint64_t key, uint8_t* buf, uint32_t* len) {
-  if (xh_absent_resolve(PDNA_XFER_DIR, path, key, buf, GBSC_FILE_MAX, app_can_edit(), len)) return 1;
+  rmbl_pause();   /* the heal may f_rename on the card (rmbl.h: pause around every SD write) */
+  bool ok = xh_absent_resolve(PDNA_XFER_DIR, path, key, buf, GBSC_FILE_MAX, app_can_edit(), len);
+  rmbl_resume();
+  if (ok) return 1;
   snd_error();
   msg_wait(PDNA_SIDECAR_READFAIL_TITLE, UI_WARN, sf_status_str(SF_ERR_READ), PDNA_SIDECAR_NOTWRITTEN_L2);
   return 0;
