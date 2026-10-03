@@ -11022,6 +11022,7 @@ static void __attribute__((noinline)) xfer_reconcile_walk(GbReconBuf* rb, int ca
       memcpy(h->dv4, e2.dv4, 4);
       memcpy(h->otname, e2.otname_written, GB_NAME_BYTES);
       memcpy(h->orig8, e2.original80, 8);
+      memcpy(h->orig_serial, e2.original80 + BC_OFF_BANK_SERIAL, 4);
 
       if (e2.direction == XR_DIR_ABROAD_G3) {
         int wb, ws;
@@ -11083,8 +11084,7 @@ static void __attribute__((noinline)) xfer_reconcile_bank_phase2(GbReconBuf* rb)
        * xrc_classify turns "no copy anywhere but the Bank already holds the identity" into XRC_IN_BANK instead of
        * a second RESTORE (a clone). */
       if (!by_identity && m == 0 && h->direction == XR_DIR_ABROAD_G3 && h->bank_ident_matches < 2) {
-        int islot = -1;
-        int im = h->bank_ident_matches + xrc_bank_match(recs, &e2, true, &islot);
+        int im = h->bank_ident_matches + xrc_bank_reserial_match(recs, h->orig8, h->orig_serial);
         h->bank_ident_matches = (int8_t)(im > 2 ? 2 : im);
       }
       if (h->bank_matches == 1 && h->bank_box == (int8_t)box)

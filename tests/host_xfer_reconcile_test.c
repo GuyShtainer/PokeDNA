@@ -480,6 +480,39 @@ static void test_inbank1(void) {
   int slot = -1;
   CHECK(xrc_bank_match(box, &e, false, &slot) == 0, "INBANK-1: the restored copy does NOT match by first-8 bytes (new serial)");
   CHECK(xrc_bank_match(box, &e, true, &slot) == 1 && slot == 3, "INBANK-1: ...but matches by identity (the #385 count)");
+  /* D1 (review): the Bank match is a RE-SERIAL of the original, not bare identity. Mutant: helper skips the serial
+   * swap (hash the cell as stored) -> the positive case below goes RED. */
+  uint8_t ser[4]; memcpy(ser, orig + BC_OFF_BANK_SERIAL, 4);
+  CHECK(xrc_bank_reserial_match(box, orig, ser) == 1, "INBANK-1: re-serial of the original -> 1 hit (=> XRC_IN_BANK)");
+  in.state = XR_STATE_CLAIMED; in.g3_key_matches = 0; in.bank_matches = 0; in.bank_ident_matches = 1;
+  xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_IN_BANK, "INBANK-1: re-serial hit classifies XRC_IN_BANK");
+  /* negatives: a DIFFERENT Bank mon with the same gen + OT id + DVs + OT name */
+  GbEditMon d; mk_gb_mon(&d, GB_GEN2, 0x4242, 3, 4, 5, 6, otname);
+  uint8_t oth[80], bx2[2400];
+  d.list_species = 130;                              /* different species */
+  CHECK(bc_pack(&d, 0, BC_ORIGIN_GOLD, 7u, 3000u, oth) == 0, "INBANK-1: other-species cell packed");
+  memset(bx2, 0, sizeof bx2); memcpy(bx2 + 5 * 80, oth, 80);
+  CHECK(xrc_bank_match(bx2, &e, true, &slot) == 1, "INBANK-1: (precondition) the OLD identity match WOULD hit the other mon");
+  CHECK(xrc_bank_reserial_match(bx2, orig, ser) == 0, "INBANK-1: different species, same OT+DVs -> NOT a re-serial");
+  d.list_species = 1; d.nick[0] = 0x80; d.nick[1] = 0x50;     /* different nickname */
+  CHECK(bc_pack(&d, 0, BC_ORIGIN_GOLD, 7u, 3000u, oth) == 0, "INBANK-1: other-nickname cell packed");
+  memcpy(bx2 + 5 * 80, oth, 80);
+  CHECK(xrc_bank_reserial_match(bx2, orig, ser) == 0, "INBANK-1: different nickname, same OT+DVs -> NOT a re-serial");
+  d.nick[0] = 0; d.nick[1] = 0;                      /* same everything, other serial: the bare twin */
+  CHECK(bc_pack(&d, 0, BC_ORIGIN_GOLD, 7u, 3000u, oth) == 0, "INBANK-1: twin cell packed");
+  memcpy(bx2 + 5 * 80, oth, 80);
+  CHECK(xrc_bank_reserial_match(bx2, orig, ser) == 1, "INBANK-1: byte-identical twin under a new serial IS a re-serial (same record)");
+  /* the classify result for the lost-original-in-ledger fixture: no re-serial hit -> LOST with RESTORE */
+  in.bank_ident_matches = 0;
+  xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_LOST && (r.actions & XRC_ACT_RESTORE), "INBANK-1: different Bank mon (0 re-serial hits) -> stays LOST with RESTORE");
+  /* D2 (review): PENDING ordering -- a Gen-3 copy on the card wins over an identity hit */
+  memset(&in, 0, sizeof in);
+  in.kind = XR_KIND_NATIVE_HOME; in.direction = XR_DIR_ABROAD_G3; in.state = XR_STATE_PENDING;
+  in.g3_key_matches = 1; in.g3_on_card = true; in.bank_ident_matches = 1;
+  xrc_classify(&in, &r);
+  CHECK(r.kind == XRC_PENDING_NOBANK && r.actions == XRC_ACT_PROMOTE, "INBANK-1: PENDING + g3 copy + identity hit -> PENDING_NOBANK/PROMOTE (kind %d act 0x%x)", r.kind, r.actions);
 }
 
 /* ==== PROMOTE-1 (BACKLOG #377) ========================================================

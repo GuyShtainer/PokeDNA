@@ -228,6 +228,19 @@ int xrc_bank_match(const uint8_t box2400[2400], const GbscEntry* e, bool by_iden
   return count > 2 ? 2 : count;
 }
 
+int xrc_bank_reserial_match(const uint8_t box2400[2400], const uint8_t orig8[8], const uint8_t orig_serial[4]) {
+  if (!box2400 || !orig8 || !orig_serial) return 0;
+  uint32_t want = (uint32_t)orig8[4] | ((uint32_t)orig8[5] << 8) | ((uint32_t)orig8[6] << 16) | ((uint32_t)orig8[7] << 24);
+  int count = 0;
+  for (int s = 0; s < 30 && count < 2; s++) {
+    const uint8_t* cell = box2400 + (uint32_t)s * 80;
+    if (!bc_is_native(cell)) continue;
+    uint8_t t[80]; memcpy(t, cell, 80); memcpy(t + BC_OFF_BANK_SERIAL, orig_serial, 4);
+    if (bc_ident32(t) == want) count++;
+  }
+  return count;
+}
+
 int xrc_bank_g3_match(const uint8_t box2400[2400], uint64_t key) {
   if (!box2400) return 0;
   int count = 0;

@@ -128,6 +128,12 @@ int xrc_g3_match_identity(const uint8_t* sb1, bool frlg, const uint8_t* pc,
 int xrc_bank_match(const uint8_t box2400[2400], const GbscEntry* e, bool by_identity,
                    int* slot);
 
+/* #385: native cells of one box that are a RE-SERIAL of the entry's original: the cell with its bank_serial
+ * (bytes 73..76) swapped for `orig_serial` hashes (bc_ident32) to the original's ident32 `orig8[4..7]`. Only
+ * xrc_rebuild_cell's output (new serial + ident32, nothing else) qualifies -- a different mon that merely shares
+ * gen/OT id/DVs/OT name does not. Count clamped to 2. */
+int xrc_bank_reserial_match(const uint8_t box2400[2400], const uint8_t orig8[8], const uint8_t orig_serial[4]);
+
 /* #270 pass-through: the Gen-3 copy of an ABROAD_G3 entry may sit in the Bank (a PC ->
  * Bank drop lands as-is). Counts NON-native cells of one 2400-byte box whose first 8
  * bytes hash to `key` (xr_key_g3()'s FNV-1a-64). All-zero first 8 bytes never match.
@@ -214,6 +220,7 @@ typedef struct {
   uint8_t dv4[4];
   uint8_t otname[GB_NAME_BYTES];
   uint8_t orig8[8];                    /* original80[0..7]                          */
+  uint8_t orig_serial[4];              /* #385: original80[73..76]                  */
 } XrcHit;
 
 #endif /* XFER_RECONCILE_H */
