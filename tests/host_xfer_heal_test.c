@@ -224,6 +224,24 @@ static void resurrect(void) {
   printf("resurrect: %d both-present states, plain unlink resurrected %d, xh_unlink_ledger %d\n", both, plain_rez, fixed_rez);
 }
 
+/* za2 F2: a power cut during the FIRST-ever write of a key leaves a torn/empty .tmp and no primary. The writers'
+ * absent branch must accept that (fresh ledger) and the next verified write must succeed. */
+static void lockout(void) {
+  uint8_t v[GBSC_FILE_MAX], nb[GBSC_FILE_MAX]; uint32_t n = build(v, KEY_A, 2, 1), len = 0; int torn = 0;
+  for (long c = 1; c <= 20; c++) {
+    fresh_card(); rd_snapshot();
+    rd_cut_sectors = c; (void)sf_write_verified(PA, v, n); rd_cut_sectors = -1; rd_cut_fired = 0;
+    cold_boot();
+    if (exists(PA ".tmp") && !exists(PA)) torn++;
+    len = 0;
+    CHECK(xh_absent_resolve(XD, PA, KEY_A, nb, sizeof nb, true, &len) || exists(PA), "lockout c=%ld: absent_resolve refused", c);
+    if (!exists(PA)) CHECK(sf_write_verified(PA, v, n) == SF_OK && file_is(PA, v, n), "lockout c=%ld: next write failed", c);
+    rd_restore();
+  }
+  CHECK(torn > 0, "lockout test vacuous: no cut left a .tmp-only state");
+  printf("lockout: %d cut points left a .tmp-only first write\n", torn);
+}
+
 /* #389 review D4: the same-session gap. A verified .tmp (2 entries), primary absent, NO boot heal yet: the
  * writers' "absent" branch (xh_absent_resolve) must keep the 2 entries, not gbsc_init over them. */
 static void gap(void) {
@@ -237,7 +255,10 @@ static void gap(void) {
   CHECK(!xh_absent_resolve(XD, PA, KEY_A, nb, sizeof nb, false, &len) && file_is(PA ".tmp", v, n) && !exists(PA), "read-only card: not refused / wrote");
   memcpy(bad, v, n); bad[GBSC_HEADER + 40] ^= 0x55;
   fresh_card(); put(PA ".tmp", bad, n);
-  CHECK(!xh_absent_resolve(XD, PA, KEY_A, nb, sizeof nb, true, &len) && file_is(PA ".tmp", bad, n), "corrupt .tmp not refused");
+  len = 0;
+  CHECK(xh_absent_resolve(XD, PA, KEY_A, nb, sizeof nb, true, &len) && gbsc_count(nb, len) == 0 && gbsc_file_key(nb, len) == KEY_A,
+        "corrupt .tmp: not a fresh ledger");
+  lockout();
   CHECK(!xh_absent_resolve(XD, PA, KEY_A, nb, 100, true, &len), "small buffer accepted");
   printf("gap: orphan entries survive the same-session writer path\n");
 }

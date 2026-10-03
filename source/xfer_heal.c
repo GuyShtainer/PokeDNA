@@ -106,13 +106,15 @@ FRESULT xh_unlink_ledger(const char* path) {
 }
 
 /* #389 review D4: the writers' "ledger read said absent" branch. XH_NONE -> a fresh ledger in buf; XH_RESTORED
- * -> the healed ledger read back into buf; anything else (read-only .tmp, bad .tmp, card fault, a restored
- * file that does not parse) -> refuse, never gbsc_init over a .tmp. */
+ * -> the healed ledger read back into buf; XH_BAD_TMP -> a fresh ledger too (a bad .tmp holds no verified bytes,
+ * so the caller's next verified write replaces it; refusing would lock the mon's transfers forever after a
+ * torn FIRST write); anything else (read-only .tmp, card fault, a restored file that does not parse) -> refuse. */
 bool xh_absent_resolve(const char* dir, const char* path, uint64_t key, uint8_t* buf, uint32_t cap,
                        bool can_edit, uint32_t* len) {
   if (!dir || !path || !buf || !len || cap < GBSC_FILE_MAX) return false;
   XhResult hr = xh_heal_key(dir, key, buf, cap, can_edit);
-  if (hr == XH_NONE) { *len = (uint32_t)gbsc_init(buf, key); return true; }
+  /* savefile keeps a .tmp only past its byte-compare, so an unparseable .tmp is torn scratch, not a copy. */
+  if (hr == XH_NONE || hr == XH_BAD_TMP) { *len = (uint32_t)gbsc_init(buf, key); return true; }
   if (hr == XH_RESTORED) {
     log_line("xfer_heal: %s healed from its .tmp mid-session", path);
     if (sf_read_full(path, buf, cap, len) == SF_OK && gbsc_count(buf, *len) >= 0 &&
