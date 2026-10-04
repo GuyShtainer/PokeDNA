@@ -1910,6 +1910,7 @@ static void t_tree_discarded(void) {
   int n, more = 0, fh = 0;
   CHECK(app_world_reset(), "world");
   op[0] = 0;
+  CHECK(jrnapp_history_tree(rows, 48, &more, &fh, 0, 0) == 0, "DISC: a fresh journal (no kids) still reads EMPTY, never \"0 discarded branches\"");   /* review-ze F1 */
   s1 = TS("s1", 10); s2 = TS("s2", 11);
   TU(); TU();                                                  /* the image is back at the root, steps ahead */
   jrnapp_decline();                                            /* what jrnapp_after_discard ends with: tip = cursor = 0, a discarded marker */

@@ -81,8 +81,8 @@ pin("#397 ja_tree_discarded is READ-ONLY of the journal (kid walks only, no jrn_
     jra, lambda t: (lambda b: "jrn_kid_counts(" in b and "jrn_kid_list(" in b and not re.search(r"jrn_(mark|step|flush|recompute|i_marker)|jrnapp_(flush|decline)", b))(re.search(r"static int ja_tree_discarded\(.*?\n\}\n", t, re.S).group(0)),
     lambda t: t.replace("  rows[0].kind = JH_FORK; rows[0].nsib = cnt; rows[0].disc = 1;", "  (void)jrnapp_flush(); rows[0].kind = JH_FORK; rows[0].nsib = cnt; rows[0].disc = 1;"))
 pin("#397 only a tip == 0 branch takes the discarded view",
-    jra, lambda t: "jrn_tip(&s_j) != 0) return 0;" in t,
-    lambda t: t.replace("|| jrn_tip(&s_j) != 0) return 0;", ") return 0;"))
+    jra, lambda t: "s_state != JA_OK || jrn_tip(&s_j) != 0) return 0;" in t,
+    lambda t: t.replace("s_state != JA_OK || ", ""))   # review-ze F2: the journal-state guard is pinned too
 
 # ---- #398 gb_create_hook's dead BOX FULL -> CREATE IN picker is gone (Gen 3 has no such redirect)
 g12 = rd("pdna_gen12.c")
