@@ -188,6 +188,13 @@ static uint32_t evo_skip(GbReadFn read, void* ctx, uint32_t bank_hi, uint32_t of
  * relists a move it already starts with -- measured: Nidoqueen, Nidoking and
  * Kabutops all do, in Guy's own Red.gb.
  *
+ * `level_floor`: entries with `lvl <= level_floor` are skipped (the Day-Care
+ * FillMoves rule -- a mon that already stood at that level was taught those
+ * moves then). 0 = no floor, every pre-existing caller. `ev`/`n_ev`/`overflow`
+ * (all three NULL or all three set) record each learn that actually changed the
+ * four: `replaced` = the move shifted out, 0 = a free slot filled; `*n_ev`
+ * keeps counting past DC_LEARN_MAX, `ev` stops filling, `*overflow` latches.
+ *
  * `*total_moves` (may be NULL) gets the count of ALL legal move pairs seen,
  * ignoring `level_cap` -- gbl_verify()'s "does this look like a real learnset"
  * bar, and nothing else. Returns the number of moves kept in `out4` (0..4), or
@@ -197,8 +204,9 @@ static uint32_t evo_skip(GbReadFn read, void* ctx, uint32_t bank_hi, uint32_t of
  * this module has decoded (2 evolutions, 14 moves) -- real data will never
  * approach them, so hitting one means the data is not what it claims to be. */
 static int walk_entry(GbReadFn read, void* ctx, uint32_t bank_hi, uint32_t off,
-                      uint8_t gen, uint8_t level_cap, const uint8_t seed4[4],
-                      uint8_t out4[4], int* total_moves) {
+                      uint8_t gen, uint8_t level_floor, uint8_t level_cap,
+                      const uint8_t seed4[4], uint8_t out4[4], int* total_moves,
+                      DcLearn ev[DC_LEARN_MAX], int* n_ev, bool* overflow) {
   uint32_t cur = evo_skip(read, ctx, bank_hi, off, gen, 0, NULL, NULL, NULL);
   if (!cur) return -1;
 
@@ -217,7 +225,7 @@ static int walk_entry(GbReadFn read, void* ctx, uint32_t bank_hi, uint32_t off,
     cur++;
     if (mv < 1u || (int)mv > maxmove) return -1;
     seen++;
-    if (lvl <= level_cap) {
+    if (lvl > level_floor && lvl <= level_cap) {
       /* A handful of real species (Metapod/Kakuna's Harden, Smeargle's Sketch)
        * genuinely relist the SAME move at a later level -- verified against
        * Gold.gbc/Crystal.gbc, not a parsing artifact. The real games skip
@@ -230,6 +238,14 @@ static int walk_entry(GbReadFn read, void* ctx, uint32_t bank_hi, uint32_t off,
       bool already_known = false;
       for (int k = 0; k < kept; k++) if (kept_moves[k] == mv) { already_known = true; break; }
       if (!already_known) {
+        uint8_t shifted = (kept < 4) ? 0 : kept_moves[0];
+        if (ev && n_ev) {
+          if (*n_ev < DC_LEARN_MAX) {
+            ev[*n_ev].newmove = mv; ev[*n_ev].replaced = shifted; ev[*n_ev].at_level = lvl;
+          }
+          (*n_ev)++;
+          if (overflow) *overflow = *n_ev > DC_LEARN_MAX;
+        }
         if (kept < 4) {
           kept_moves[kept++] = mv;
         } else {
@@ -266,7 +282,7 @@ static int gbl_verify(GbReadFn read, void* ctx, uint32_t size, uint32_t table_of
     if (i == 0) first_target = off;
     else if (off != first_target) distinct = 1;
     int seen = 0;
-    if (walk_entry(read, ctx, bank_hi, off, gen, 255u, NULL, NULL, &seen) < 0) return -1;
+    if (walk_entry(read, ctx, bank_hi, off, gen, 0, 255u, NULL, NULL, &seen, NULL, NULL, NULL) < 0) return -1;
     if (seen > 0) with_moves++;
   }
   if (!distinct) return -1;
@@ -363,22 +379,40 @@ int rom_gblearn_open(RomGbLearn* rl, uint8_t gen, GbReadFn read, void* ctx, uint
   return 1;
 }
 
-int rom_gblearn_moves_at_seeded(RomGbLearn* rl, uint16_t dex, uint8_t level,
-                                const uint8_t seed4[4], uint8_t out4[4]) {
-  if (!rl || !out4 || !rl->ok) return -1;
+/* Resolve `dex`'s evos+moves blob to (flat offset, bank end); false on any bad input. */
+static bool gbl_entry_off(RomGbLearn* rl, uint16_t dex, uint32_t* off, uint32_t* bank_hi) {
+  if (!rl || !rl->ok) return false;
   uint32_t n = (rl->gen == GB_GEN1) ? GBL_G1_N : GBL_G2_N;
   uint32_t idx = (rl->gen == GB_GEN1) ? gb_index_from_dex(GB_GEN1, dex) : dex;
-  if (idx < 1u || idx > n) return -1;
+  if (idx < 1u || idx > n) return false;
 
   uint8_t p[2];
-  if (!rl->read(rl->ctx, rl->table_off + (idx - 1u) * 2u, p, 2)) return -1;
+  if (!rl->read(rl->ctx, rl->table_off + (idx - 1u) * 2u, p, 2)) return false;
   uint16_t addr = rd16(p);
-  if (addr < GB_WIN_LO || addr >= GB_WIN_HI) return -1;
+  if (addr < GB_WIN_LO || addr >= GB_WIN_HI) return false;
   uint32_t bank_lo = (uint32_t)rl->data_bank * GB_BANK;
-  uint32_t off = bank_lo + (addr - GB_WIN_LO);
-  if (off >= rl->size) return -1;
+  *off = bank_lo + (addr - GB_WIN_LO);
+  *bank_hi = bank_lo + GB_BANK;
+  return *off < rl->size;
+}
 
-  return walk_entry(rl->read, rl->ctx, bank_lo + GB_BANK, off, rl->gen, level, seed4, out4, NULL);
+int rom_gblearn_moves_at_seeded(RomGbLearn* rl, uint16_t dex, uint8_t level,
+                                const uint8_t seed4[4], uint8_t out4[4]) {
+  uint32_t off, bank_hi;
+  if (!out4 || !gbl_entry_off(rl, dex, &off, &bank_hi)) return -1;
+  return walk_entry(rl->read, rl->ctx, bank_hi, off, rl->gen, 0, level, seed4, out4, NULL,
+                    NULL, NULL, NULL);
+}
+
+int rom_gblearn_moves_between(RomGbLearn* rl, uint16_t dex, uint8_t lv_prev, uint8_t lv_new,
+                              const uint8_t cur4[4], uint8_t out4[4],
+                              DcLearn ev[DC_LEARN_MAX], int* n_ev, bool* overflow) {
+  uint32_t off, bank_hi;
+  if (!out4 || !cur4 || !ev || !n_ev || !overflow) return -1;
+  if (!gbl_entry_off(rl, dex, &off, &bank_hi)) return -1;
+  *n_ev = 0; *overflow = false;
+  return walk_entry(rl->read, rl->ctx, bank_hi, off, rl->gen, lv_prev, lv_new, cur4, out4, NULL,
+                    ev, n_ev, overflow);
 }
 
 int rom_gblearn_moves_at(RomGbLearn* rl, uint16_t dex, uint8_t level, uint8_t out4[4]) {

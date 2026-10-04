@@ -998,7 +998,9 @@ G2Writer.wr @4 in refresh_checksums,write_patch.part.0 -> img_wr str_wr
 # gblearn_moves_at_seeded (rom_gblearn.c:366, `RomGbLearn* rl`) is a NEW caller this
 # class was never declared for -- same implementation family as rom_gblearn_open/
 # walk_entry/gbl_verify above (all the same struct).
-RomGbLearn.read @4 in rom_gblearn_moves_at_seeded -> fused_gb_slice_read gb_read
+# BACKLOG #373: the table-pointer read moved into gbl_entry_off (shared by moves_at_seeded and
+# the Day-Care rom_gblearn_moves_between) -- same field, same implementation set.
+RomGbLearn.read @4 in rom_gblearn_moves_at_seeded,gbl_entry_off -> fused_gb_slice_read gb_read
 
 # BACKLOG #206 fixes2 R2 (2026-09-22): bank_collision.c's bank_ident32_collision()
 # and bank_serial_max() (BACKLOG #170 / #223, formerly declared here as two separate

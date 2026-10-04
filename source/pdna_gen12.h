@@ -7,6 +7,7 @@
 #include "gen1_save.h"
 #include "gen2_save.h"
 #include "gen12_convert.h"
+#include "dc_learn.h"        /* DcLearn (BACKLOG #373) */
 #include "pdna_box.h"        /* BoxSource */
 #include "bank_down_convert.h"  /* BankDownResult -- BACKLOG #150 S150-8 */
 
@@ -288,6 +289,12 @@ void gb_rollback(void);
 /* BACKLOG #367: Gen-1 base-stat row for a mon (ROM beside the .sav); false = none available. */
 typedef enum { GB12_BASE_OK = 0, GB12_BASE_NO_ROM, GB12_BASE_BAD } Gb12BaseSt;
 Gb12BaseSt gb12_gen1_base_for(const GbEditMon* mon, GbGen1Base* out);
+/* BACKLOG #373: Day-Care take-out preview for a Gen-1/2 mon -- the level-up moves of
+ * lv_prev < lvl <= lv_new from the user's own ROM, FIFO-seeded with cur4 (the mon's four
+ * moves). -1 = no ROM / table unreadable (outputs undefined). */
+int gb_daycare_learn(uint8_t gen, uint16_t dex, uint8_t lv_prev, uint8_t lv_new,
+                     const uint8_t cur4[4], uint8_t out4[4], DcLearn ev[DC_LEARN_MAX],
+                     int* n_ev, bool* overflow);
 /* "Put <rom> here" dialog (GB_GEN1 = .gb, GB_GEN2 = .gbc); shared with the Day-Care refusal. */
 void gb_gen12_norom_msg(uint8_t gen);
 bool gb_persist(const char* what_for_log);

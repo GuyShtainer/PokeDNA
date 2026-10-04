@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include "gb_session.h"
+#include "gen3_daycare.h"   /* DcGrow */
 
 /* pdna_gbdaycare — the Gen-1/2 twin of pdna_main.c's pdna_daycare() (BACKLOG #85,
  * BACKLOG #61 parity rule: "mirror Gen 3's Day-Care screen exactly in shape and
@@ -68,5 +69,18 @@
  * every write the same way every other Gen-1/2 screen's own `can_edit` does (View
  * always works read-only; Take out/Put in/saving an edit all refuse without it). */
 void pdna_gbdaycare(GbSession* s, int cur_box, bool can_edit);
+
+/* ---- BACKLOG #373: the take-out growth panel, ONE for both generations ----------------
+ * Both Day-Care screens (Gen 3 dc_withdraw in pdna_main.c, Gen 1/2 gbdc_take here) fill a
+ * DcGrow and call pdna_dc_grow_panel() BEFORE anything is written. `g` is the single
+ * static staging struct (pdna_dc_grow_buf, EWRAM -- one for the whole app: only one
+ * take-out runs at a time, and neither caller holds it across an SD transfer). */
+#define PDNA_DCG_LEAVE 0   /* leave inside: nothing written                       */
+#define PDNA_DCG_LEARN 1   /* take, grown, with the move changes                   */
+#define PDNA_DCG_KEEP  2   /* take, grown, move changes discarded (or none/no ROM) */
+DcGrow* pdna_dc_grow_buf(void);
+/* `no_rom`: Gen 1/2 only -- the moves could not be previewed (needs the game ROM); the
+ * panel then offers only Leave inside / Take, keep moves. */
+int pdna_dc_grow_panel(const DcGrow* g, bool no_rom);
 
 #endif /* PDNA_GBDAYCARE_H */

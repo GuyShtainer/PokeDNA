@@ -9,7 +9,8 @@
 #include "pdna_gbsummary.h"  /* the View/Edit screen (BACKLOG #41's own Gen-1/2 card) */
 #include "pdna_summary.h"   /* pdna_summary_quiet_save (#234 s4 D2) */
 #include "pdna_layout.h"     /* PDNA_DCY_*, PDNA_DCPOP_* -- the SAME geometry pdna_daycare() uses */
-#include "data_tables.h"     /* pk_species_name */
+#include "data_tables.h"     /* pk_species_name, pk_move_name */
+#include "log.h"             /* log_line */
 #include "ui.h"
 #include "snd.h"
 #include "pdna_app.h"        /* msg_wait / app_confirm / app_yard_visitors_ok / app_icons_* */
@@ -148,6 +149,81 @@ static int gbdc_menu(bool occupied, bool can_put_here, bool can_take) {
   }
 }
 
+/* ---- BACKLOG #373: the take-out growth panel (shared with pdna_main.c's dc_withdraw) ---- */
+
+static EWRAM_BSS DcGrow s_dc_grow;
+DcGrow* pdna_dc_grow_buf(void) { return &s_dc_grow; }
+
+#define DCG_ROW_H 12
+
+/* One event line: "<new> replaces <old>" or "<new> learned". `buf` is the caller's. */
+static void dcg_event_line(char* buf, int cap, const DcLearn* l) {
+  if (l->replaced) sniprintf(buf, (size_t)cap, "%s replaces %s", pk_move_name(l->newmove), pk_move_name(l->replaced));
+  else             sniprintf(buf, (size_t)cap, "%s learned", pk_move_name(l->newmove));
+}
+
+/* "GREW IN DAY-CARE": how far it rose and which attack replaces which, then the three
+ * choices (Guy 2026-10-04): leave it inside / take it and learn / take it and keep its
+ * old moves. B = leave inside. Rows are drawn into one popup sized by ui_popup_vfit. */
+int pdna_dc_grow_panel(const DcGrow* g, bool no_rom) {
+  const char* opts[3]; int act[3], nopt = 0;
+  opts[nopt] = "Leave inside"; act[nopt++] = PDNA_DCG_LEAVE;
+  if (no_rom)               { opts[nopt] = "Take, keep moves"; act[nopt++] = PDNA_DCG_KEEP; }
+  else if (g->n_learn == 0) { opts[nopt] = "Take out";         act[nopt++] = PDNA_DCG_KEEP; }
+  else { opts[nopt] = "Take, learn moves"; act[nopt++] = PDNA_DCG_LEARN;
+         opts[nopt] = "Take, keep moves";  act[nopt++] = PDNA_DCG_KEEP; }
+
+  bool big = g->overflow || g->n_learn > 4;
+  int nev = no_rom || g->n_learn == 0 ? 0 : (big ? 2 : g->n_learn);
+  int ntext = 1 + (no_rom || g->n_learn == 0 ? 1 : nev + (big ? 4 : 0));   /* + the Lv line below */
+  /* big: "...and N more", "Moves now:", 2 name lines (two names each) */
+  int sel = 0;
+  for (;;) {
+    int my, mh;
+    ui_popup_vfit(ntext + nopt, DCG_ROW_H, PDNA_DCPOP_HEAD, PDNA_DCPOP_FOOT, &my, &mh);
+    const int mx = 8, mw = 224;
+    ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
+    ui_text(mx + 6, my + 4, UI_TITLE, "GREW IN DAY-CARE");
+    ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
+    char line[48];
+    int y = my + PDNA_DCPOP_HEAD;
+    siprintf(line, "Lv %d -> Lv %d  (+%d)", (int)g->lv_before, (int)g->lv_after,
+             (int)g->lv_after - (int)g->lv_before);
+    ui_ptext_fit(mx + 8, y, mw - 16, UI_TEXT, line); y += DCG_ROW_H;
+    if (no_rom) {
+      ui_ptext_fit(mx + 8, y, mw - 16, UI_DIM, "Moves: needs the game ROM"); y += DCG_ROW_H;
+    } else if (g->n_learn == 0) {
+      ui_ptext_fit(mx + 8, y, mw - 16, UI_DIM, "No new moves."); y += DCG_ROW_H;
+    } else {
+      for (int i = 0; i < nev; i++) {
+        dcg_event_line(line, sizeof line, &g->learn[i]);
+        ui_ptext_fit(mx + 8, y, mw - 16, UI_TEXT, line); y += DCG_ROW_H;
+      }
+      if (big) {
+        siprintf(line, "...and %d more", g->n_learn - nev);
+        ui_ptext_fit(mx + 8, y, mw - 16, UI_DIM, line); y += DCG_ROW_H;
+        ui_ptext_fit(mx + 8, y, mw - 16, UI_DIM, "Moves now:"); y += DCG_ROW_H;
+        for (int r = 0; r < 2; r++) {
+          sniprintf(line, sizeof line, "%s, %s", pk_move_name(g->moves_after[r * 2]),
+                   pk_move_name(g->moves_after[r * 2 + 1]));
+          ui_ptext_fit(mx + 8, y, mw - 16, UI_TEXT, line); y += DCG_ROW_H;
+        }
+      }
+    }
+    for (int i = 0; i < nopt; i++) {
+      bool sh = (i == sel);
+      if (sh) ui_panel(mx + 2, y - 1, mw - 4, 13, UI_SEL, UI_TITLE);
+      ui_text(mx + 10, y, sh ? UI_SELTEXT : UI_TEXT, opts[i]);
+      y += DCG_ROW_H;
+    }
+    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    if (k & KEY_B) return PDNA_DCG_LEAVE;
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : nopt - 1;
+    else if (k & KEY_DOWN) sel = (sel + 1) % nopt;
+    else if (k & KEY_A)    return act[sel];
+  }
+}
+
 /* Land `mon` (already withdrawn, box-shaped) the same way retail's own counter does:
  * the PARTY if it has room, else the FIRST storage box with a free slot, else refuse.
  * gbs_insert() itself refuses the party pseudo-box outright (gb_session.h), so the
@@ -232,10 +308,73 @@ static bool gbdc_land(GbSession* s, const GbEditMon* mon, uint8_t* list, uint8_t
  * gbd_withdraw() commits to RAM first; any landing failure below rolls the WHOLE image
  * back from pristine, so the withdraw and the landing are never left half-done on the
  * card, only (briefly) in RAM. */
-static void gbdc_take(GbSession* s, int slot, uint8_t* list, uint8_t* list2) {
+/* BACKLOG #373: what the boarded mon grew by, from the record the screen already holds.
+ * Fills the shared DcGrow staging struct and returns true when it crossed at least one
+ * level (then *no_rom says whether the learnset could not be read). Both generations keep
+ * the grown EXP and re-derive the level from it in gbdc_grow_apply (orchestrator ruling D4:
+ * no floor, unlike pokecrystal's RetrieveBreedmon). Nothing is written here. */
+static bool gbdc_grow_preview(const GbSession* s, const GbEditMon* mon, DcGrow* g, bool* no_rom) {
+  uint16_t dex = gb_get_species_dex(mon);
+  if (!dex) return false;
+  uint8_t lv0 = gb_get_level(mon);
+  uint8_t lv1 = gb_level_from_exp(dex, gb_get_exp(mon));
+  if (lv1 <= lv0) return false;
+  memset(g, 0, sizeof *g);
+  g->lv_before = lv0; g->lv_after = lv1;
+  uint8_t cur4[4], out4[4];
+  for (int k = 0; k < 4; k++) { cur4[k] = gb_get_move(mon, k); out4[k] = cur4[k]; }
+  int n_ev = 0; bool ovf = false;
+  DcLearn ev[DC_LEARN_MAX];
+  int kept = gb_daycare_learn(s->gen, dex, lv0, lv1, cur4, out4, ev, &n_ev, &ovf);
+  *no_rom = kept < 0;
+  if (kept >= 0) {
+    g->n_learn = n_ev; g->overflow = ovf;
+    for (int i = 0; i < DC_LEARN_MAX; i++) g->learn[i] = ev[i];
+  }
+  for (int k = 0; k < 4; k++) g->moves_after[k] = out4[k];
+  return true;
+}
+
+/* Write the grown level/EXP (always) and, when with_moves, the learned moves, into the
+ * freshly withdrawn `mon`. New moves get base PP; shifted moves keep their original PP and PP Ups. */
+static void gbdc_grow_apply(GbEditMon* mon, uint8_t gen, const DcGrow* g, bool with_moves) {
+  (void)gb_set_exp(mon, gb_get_exp(mon));   /* level re-derived, EXP kept — a mid-level EXP is a normal, legal record */
+  if (!with_moves) return;
+  uint8_t om[4], opp[4], oup[4];
+  for (int k = 0; k < 4; k++) { om[k] = gb_get_move(mon, k); opp[k] = gb_get_pp(mon, k); oup[k] = gb_get_ppup(mon, k); }
+  for (int k = 0; k < 4; k++) {
+    uint8_t mv = (uint8_t)g->moves_after[k];
+    if (om[k] == mv) continue;
+    (void)gb_set_move(mon, k, mv);                    /* a NEW move: base PP, no PP Ups */
+    for (int j = 0; j < 4; j++)                       /* a SHIFTED move keeps its PP + PP Ups (pokered */
+      if (mv && om[j] == mv) {                        /* WriteMonMoves shifts the PP bytes with the moves) */
+        (void)gb_set_ppup(mon, k, oup[j]);
+        (void)gb_set_pp(mon, k, opp[j]);
+        break;
+      }
+  }
+}
+
+static void gbdc_take(GbSession* s, const GbDaycare* dc, int slot, uint8_t* list, uint8_t* list2) {
+  DcGrow* grow = pdna_dc_grow_buf();
+  bool grew = false, grow_norom = false, with_moves = false;
+  if (slot >= 0 && slot < 2 && dc->slot[slot].occupied) {
+    grew = gbdc_grow_preview(s, &dc->slot[slot].mon, grow, &grow_norom);
+    if (grew) {
+      int pick = pdna_dc_grow_panel(grow, grow_norom);
+      if (pick == PDNA_DCG_LEAVE) return;                 /* nothing written */
+      with_moves = (pick == PDNA_DCG_LEARN);
+    }
+  }
   GbEditMon mon;
   GbsStatus wst = gbd_withdraw(s, slot, &mon);
   if (wst != GBS_OK) { snd_error(); msg_wait("TAKE OUT", UI_WARN, gbs_status_text(wst), 0); return; }
+  if (grew) {
+    gbdc_grow_apply(&mon, s->gen, grow, with_moves);
+    log_line("daycare: take %s Lv%d->%d +%d moves(%s)", pk_species_name(gb_get_species_dex(&mon)),
+             (int)grow->lv_before, (int)grow->lv_after, with_moves ? grow->n_learn : 0,
+             grow_norom ? "no rom" : (with_moves ? "learn" : "keep"));
+  }
 
   int landed_box = -2;
   GbsStatus lst = GBS_OK;
@@ -650,7 +789,7 @@ void pdna_gbdaycare(GbSession* s, int cur_box, bool can_edit) {
         } else {
           int act = gbdc_menu(occ, can_put_here, can_take_here);
           if (act == 0)      gbdc_view_edit(s, dc, slot, can_edit);
-          else if (act == 1) gbdc_take(s, slot, list, list2);
+          else if (act == 1) gbdc_take(s, dc, slot, list, list2);
           else if (act == 2) gbdc_deposit(s, slot, cur_box, list);
         }
       }

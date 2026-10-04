@@ -622,6 +622,17 @@ void em_set_level(EditMon* e, uint8_t level) {
   }
 }
 
+/* Raw EXP write (the Day-Care take-out path). The caller owns the value; a party record
+ * re-derives its plaintext level from it and recomputes the battle stats. */
+void em_set_exp(EditMon* e, uint32_t exp) {
+  wr32(e->sub[0] + 4, exp);
+  if (e->is_party) {
+    uint16_t species = rd16(e->sub[0] + 0);
+    e->raw[0x54] = pk_level_from_exp(pk_species_growth(species), exp);
+    recompute_party_stats(e);
+  }
+}
+
 /* Switch a loaded record between box(80) and party(100) kinds. Converting a box
  * record TO party derives the plaintext level (from exp) + battle stats; commit
  * then writes 100 bytes. Converting party->box just drops the plaintext block
