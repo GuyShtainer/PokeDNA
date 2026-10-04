@@ -155,15 +155,28 @@ int gbsc_init(uint8_t* buf, uint64_t key) {
   return GBSC_HEADER;
 }
 
-int gbsc_count(const uint8_t* buf, uint32_t len) {
-  if (!buf || len < GBSC_HEADER) return -1;
-  if (memcmp(buf, "PDS1", 4) != 0) return -1;
-  if (buf[4] != 1) return -1;                        /* version */
+/* #415: the header half of gbsc_count, callable on the first GBSC_HEADER bytes alone (`file_len` is the whole file's
+ * size). Reads buf[0..GBSC_HEADER-1] only. gbsc_count calls THIS, so a header-only probe and the full parse can never
+ * disagree about magic / version / count / exact length / header crc16. */
+bool gbsc_header_ok(const uint8_t* buf, uint32_t file_len) {
+  if (!buf || file_len < GBSC_HEADER) return false;
+  if (memcmp(buf, "PDS1", 4) != 0) return false;
+  if (buf[4] != 1) return false;                        /* version */
   uint8_t count = buf[5];
-  if (count > GBSC_MAX_ENTRIES) return -1;
-  if (len != (uint32_t)GBSC_HEADER + (uint32_t)count * GBSC_ENTRY) return -1;
-  if (rd16(buf + 16) != crc16(buf, 16)) return -1;    /* header crc16 */
+  if (count > GBSC_MAX_ENTRIES) return false;
+  if (file_len != (uint32_t)GBSC_HEADER + (uint32_t)count * GBSC_ENTRY) return false;
+  return rd16(buf + 16) == crc16(buf, 16);              /* header crc16 */
+}
 
+uint64_t gbsc_header_key(const uint8_t* buf) {
+  uint64_t k = 0;
+  for (int i = 0; i < 8; i++) k |= (uint64_t)buf[8 + i] << (8 * i);
+  return k;
+}
+
+int gbsc_count(const uint8_t* buf, uint32_t len) {
+  if (!gbsc_header_ok(buf, len)) return -1;
+  uint8_t count = buf[5];
   for (uint8_t i = 0; i < count; i++) {
     const uint8_t* e = buf + GBSC_HEADER + (uint32_t)i * GBSC_ENTRY;
     if (rd16(e + E_CRC) != crc16(e, GBSC_ENTRY - 2)) return -1;
@@ -331,9 +344,7 @@ int gbsc_set_bank_keep(uint8_t* buf, uint32_t len, int idx, bool keep) {
 /* BACKLOG #150 S150-11 decision 10 -- the gbsc_flags_get "absent == 0" convention. */
 uint64_t gbsc_file_key(const uint8_t* buf, uint32_t len) {
   if (gbsc_count(buf, len) < 0) return 0;
-  uint64_t k = 0;
-  for (int i = 0; i < 8; i++) k |= (uint64_t)buf[8 + i] << (8 * i);
-  return k;
+  return gbsc_header_key(buf);
 }
 
 /* BACKLOG #384: a re-key moves the file to its new NAME, and the header key (bytes 8..15) must follow it --

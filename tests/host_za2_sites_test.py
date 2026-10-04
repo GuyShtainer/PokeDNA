@@ -114,8 +114,8 @@ def f389u(**b: str) -> tuple[bool, str]:
 
 # ------------------------------------------------------------------------------------------------ #389 review D4
 def f389g(helper: str, paste: str, down: str) -> tuple[bool, str]:
-    if "xh_absent_resolve(PDNA_XFER_DIR," not in helper or "app_can_edit()" not in helper:
-        return False, "gb_ledger_absent_heal must call xh_absent_resolve(PDNA_XFER_DIR, ... app_can_edit() ...) (#389 D4)"
+    if "xh_absent_resolve_ex(PDNA_XFER_DIR," not in helper or "app_can_edit()" not in helper:
+        return False, "gb_ledger_absent_heal must call xh_absent_resolve_ex(PDNA_XFER_DIR, ... app_can_edit() ...) (#389 D4)"
     if not re.search(r"SF_ERR_OPEN\)\s*\{\s*if \(!gb_ledger_absent_heal\(path, key, g_ed->sidecar, &len\)\) return false;", paste):
         return False, "gb_paste_write: the SF_ERR_OPEN branch does not heal before starting a fresh ledger (#389 D4)"
     if not re.search(r"SF_ERR_OPEN\)\s*\{\s*if \(!gb_ledger_absent_heal\(path_out, key, scratch, &len\)\) return -1;", down):
@@ -255,7 +255,7 @@ def run() -> None:
     ok, d = f389g(**parts)
     check(ok, d)
     run_muts("389g", f389g, parts, (
-        ("helper does not heal", "helper", "xh_absent_resolve(PDNA_XFER_DIR,", "xh_resolve_not(PDNA_XFER_DIR,"),
+        ("helper does not heal", "helper", "xh_absent_resolve_ex(PDNA_XFER_DIR,", "xh_resolve_not(PDNA_XFER_DIR,"),
         ("helper ignores the write gate", "helper", "app_can_edit()", "true"),
         ("gb_paste_write inits directly", "paste", "if (!gb_ledger_absent_heal(path, key, g_ed->sidecar, &len)) return false;", "len = (uint32_t)gbsc_init(g_ed->sidecar, key);"),
         ("xfer_down_write inits directly", "down", "if (!gb_ledger_absent_heal(path_out, key, scratch, &len)) return -1;", "len = (uint32_t)gbsc_init(scratch, key);"),

@@ -173,6 +173,10 @@ void xrc_apply_order(uint8_t* idx, int n);
  * later slice adds to pdna_layout.h -- the row line and the detail view are different
  * text. Returns the length written (excluding NUL). */
 int xrc_row_text(XrcRowKind kind, const char* species, const char* game, char out[40]);
+/* #414: same row, status slot "draft" (a read-only card's orphan <key>.pds.tmp). */
+int xrc_row_text_draft(const char* species, const char* game, char out[40]);
+/* #414: true for exactly "<16 hex>.pds.tmp" (extension case-blind); *key (may be NULL) = the 16 hex digits. */
+bool xrc_draft_name(const char* fname, uint64_t* key);
 
 /* BACKLOG #215(b): a .pds ledger file's identity is its NAME, not any one entry
  * inside it. Two stale-key rows can name the SAME file_idx (two entries inside one

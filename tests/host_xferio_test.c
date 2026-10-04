@@ -311,6 +311,38 @@ int main(void) {
     g_can_edit = true;
   }
 
+  /* ---- BACKLOG #415: the presence probe and acceptance share ONE header predicate (read-only card) ---- */
+  printf("== (415) read-only: xr_path_for_key presence == xr_open acceptance ==\n");
+  {
+    uint32_t tn = build_one(content, sizeof content, key, 0x5A), len = 0;
+    char out[GBSC_PATH_MAX], tmp_path[128];
+    snprintf(tmp_path, sizeof tmp_path, "%s.tmp", xfer_path);
+    uint8_t other[GBSC_FILE_MAX]; uint32_t on = build_one(other, sizeof other, key ^ 1ULL, 0x33);
+    fresh_card(2048); CHECK(f_mkdir("/PokeDNA/xfer") == FR_OK, "(415) mkdir xfer");
+    g_can_edit = false;
+    CHECK(write_raw(tmp_path, content, tn), "(415) write good orphan");
+    CHECK(xr_path_for_key(out, key), "(415) good orphan -> present");
+    CHECK(write_raw(tmp_path, content, GBSC_HEADER - 1), "(415) write truncated header");
+    CHECK(!xr_path_for_key(out, key), "(415) truncated header -> absent");
+    CHECK(write_raw(tmp_path, content, tn / 2), "(415) write torn body");
+    CHECK(!xr_path_for_key(out, key), "(415) torn body (size != header count) -> absent");
+    CHECK(write_raw(tmp_path, other, on), "(415) write foreign-key .tmp");
+    CHECK(!xr_path_for_key(out, key), "(415) wrong key -> absent");
+    CHECK(write_raw(tmp_path, content, 0), "(415) write zero-length");
+    CHECK(!xr_path_for_key(out, key), "(415) zero-length -> absent");
+    uint8_t bad[GBSC_FILE_MAX]; memcpy(bad, content, tn); bad[0] = 'X';
+    CHECK(write_raw(tmp_path, bad, tn), "(415) write bad magic");
+    CHECK(!xr_path_for_key(out, key), "(415) bad magic -> absent");
+    memcpy(bad, content, tn); bad[16] ^= 0xFF;
+    CHECK(write_raw(tmp_path, bad, tn), "(415) write bad header crc");
+    CHECK(!xr_path_for_key(out, key), "(415) bad header crc -> absent");
+    /* every one of those is also what xr_open says -- presence and acceptance agree */
+    CHECK(xr_open(key, readback, sizeof readback, &len, out) == SF_ERR_OPEN, "(415) bad-crc .tmp: xr_open refuses too");
+    CHECK(write_raw(tmp_path, content, tn), "(415) rewrite good orphan");
+    CHECK(xr_path_for_key(out, key) && xr_open(key, readback, sizeof readback, &len, out) == SF_OK, "(415) good orphan: present AND opens");
+    g_can_edit = true;
+  }
+
   printf("\n%d check(s), %s\n", g_check, g_fail ? "FAIL" : "OK");
   return g_fail ? 1 : 0;
 }

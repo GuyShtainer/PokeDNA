@@ -3172,10 +3172,22 @@ static void gb_paste_sidecar_undo(const char* path) {
 static int __attribute__((noinline))
 gb_ledger_absent_heal(const char* path, uint64_t key, uint8_t* buf, uint32_t* len) {
   rmbl_pause();   /* the heal may f_rename on the card (rmbl.h: pause around every SD write) */
-  bool ok = xh_absent_resolve(PDNA_XFER_DIR, path, key, buf, GBSC_FILE_MAX, app_can_edit(), len);
+  bool stuck = false;
+  bool ok = xh_absent_resolve_ex(PDNA_XFER_DIR, path, key, buf, GBSC_FILE_MAX, app_can_edit(), len, &stuck);
   rmbl_resume();
   if (ok) return 1;
   snd_error();
+  if (stuck) {   /* #416(b): name the file the user must clear -- "<key>.pds.tmp.bad" */
+    char nm[32];
+    const char* base = path;
+    for (const char* q = path; *q; q++) if (*q == '/') base = q + 1;
+    size_t bn = strlen(base);
+    if (bn + 9 <= sizeof nm) {
+      memcpy(nm, base, bn); memcpy(nm + bn, ".tmp.bad", 9);
+      msg_wait(PDNA_SIDECAR_READFAIL_TITLE, UI_WARN, nm, PDNA_SIDECAR_STUCK_L2);
+      return 0;
+    }
+  }
   msg_wait(PDNA_SIDECAR_READFAIL_TITLE, UI_WARN, sf_status_str(SF_ERR_READ), PDNA_SIDECAR_NOTWRITTEN_L2);
   return 0;
 }

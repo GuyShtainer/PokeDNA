@@ -466,6 +466,30 @@ static void test_row1(void) {
   /* #387: the Bank-parked row reads like the PC one ("restorable"); only its detail line differs */
   xrc_row_text(XRC_ABROAD_BANK, "NIDOKING", "SAPPHIRE", out);
   CHECK(strstr(out, "restorable") != NULL, "ROW-1: ABROAD_BANK row has no status word (got '%s')", out);
+
+  /* #414: a draft row (orphan .tmp on a read-only card) keeps the layout, status slot "draft", still <= 39 bytes.
+   * Mutation: xrc_row_text_draft returning the kind's own word -> the strstr fails. */
+  int nd = xrc_row_text_draft("NIDOKING", "SAPPHIRE", out);
+  CHECK(nd <= 39 && strstr(out, "draft") != NULL && strstr(out, "NIDOKING from SAPPHIR") == out,
+        "#414: draft row text (got '%s')", out);
+  nd = xrc_row_text_draft("WAYTOOLONGASPECIESNAME", "WAYTOOLONGAGAME", out);
+  CHECK(nd <= 39 && (int)strlen(out) == nd, "#414: oversized draft row truncated (got %d)", nd);
+}
+
+/* #414: xrc_draft_name admits exactly "<16 hex>.pds.tmp" (24 chars, extension case-blind) and returns the key.
+ * Mutations: accept ".pds" -> the 20-char case fails; skip the hex check -> the 'G' case fails. */
+static void test_draft_name(void) {
+  printf("== #414: xrc_draft_name ==\n");
+  uint64_t k = 0;
+  CHECK(xrc_draft_name("0019A3F17C0B44E2.pds.tmp", &k) && k == 0x0019A3F17C0B44E2ULL, "#414: good name + key");
+  CHECK(xrc_draft_name("0019a3f17c0b44e2.PDS.TMP", &k) && k == 0x0019A3F17C0B44E2ULL, "#414: lower hex / upper ext");
+  CHECK(xrc_draft_name("0019A3F17C0B44E2.pds.tmp", NULL), "#414: NULL key accepted");
+  CHECK(!xrc_draft_name("0019A3F17C0B44E2.pds", &k), "#414: the primary name is not a draft");
+  CHECK(!xrc_draft_name("0019A3F17C0B44E2.pds.bad", &k), "#414: .bad is not a draft");
+  CHECK(!xrc_draft_name("0019A3F17C0B44EG.pds.tmp", &k), "#414: non-hex stem refused");
+  CHECK(!xrc_draft_name("019A3F17C0B44E2.pds.tmp", &k), "#414: short stem refused");
+  CHECK(!xrc_draft_name("0019A3F17C0B44E2.pds.tmp.bad", &k), "#414: longer name refused");
+  CHECK(!xrc_draft_name(NULL, &k), "#414: NULL refused");
 }
 
 /* ==== INBANK-1 (BACKLOG #385) =========================================================
@@ -778,6 +802,7 @@ int main(int argc, char** argv) {
   test_dup1();
   test_rekey1();
   test_row1();
+  test_draft_name();
   test_rebuild1();
   test_inbank1();
   test_promote1();

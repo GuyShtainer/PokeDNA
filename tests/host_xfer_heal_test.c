@@ -293,6 +293,19 @@ static void gap(void) {
     fresh_card(); put(PA ".tmp", bad, n); CHECK(f_mkdir(PA ".tmp.bad") == FR_OK, "#394: mkdir blocker"); put(PA ".tmp.bad/x", &one, 1); len = 0;
     CHECK(!xh_absent_resolve(XD, PA, KEY_A, nb, sizeof nb, true, &len) && file_is(PA ".tmp", bad, n) && !exists(PA),
           "#394: a set-aside that cannot happen must refuse and keep the bad .tmp (no fresh ledger)"); }
+  { uint8_t one = 0x5A;   /* #416(b): the refusal says WHY -- stuck only for the failed set-aside. Mutation: never set *stuck -> the first CHECK fails. */
+    bool stuck = false;
+    fresh_card(); put(PA ".tmp", bad, n); CHECK(f_mkdir(PA ".tmp.bad") == FR_OK, "#416: mkdir blocker"); put(PA ".tmp.bad/x", &one, 1); len = 0;
+    CHECK(!xh_absent_resolve_ex(XD, PA, KEY_A, nb, sizeof nb, true, &len, &stuck) && stuck, "#416: blocked set-aside must report stuck");
+    stuck = true; fresh_card(); put(PA ".tmp", bad, n); len = 0;
+    CHECK(xh_absent_resolve_ex(XD, PA, KEY_A, nb, sizeof nb, true, &len, &stuck) && !stuck, "#416: a normal set-aside must not report stuck");
+    stuck = true; fresh_card(); put(PA ".tmp", v, n);
+    CHECK(!xh_absent_resolve_ex(XD, PA, KEY_A, nb, sizeof nb, false, &len, &stuck) && !stuck, "#416: a read-only refusal is NOT 'stuck' (no misnamed file)");
+    stuck = true; fresh_card(); put(PA ".tmp", bad, n); len = 0; rd_fail_at = 0;   /* review-zf F2: a card fault in the rename is NOT 'stuck' */
+    { bool okf = xh_absent_resolve_ex(XD, PA, KEY_A, nb, sizeof nb, true, &len, &stuck); rd_fail_at = -1; cold_boot();
+      CHECK(!okf && !stuck && !exists(PA ".tmp.bad") && file_is(PA ".tmp", bad, n), "#416: a faulted rename must refuse WITHOUT naming a .tmp.bad that does not exist"); }
+    fresh_card(); put(PA ".tmp.bad", v, n); put(PA ".tmp", bad, n); len = 0;   /* (a): the older salvage is replaced, policy kept */
+    CHECK(xh_absent_resolve_ex(XD, PA, KEY_A, nb, sizeof nb, true, &len, 0) && file_is(PA ".tmp.bad", bad, n), "#416: overwrite-older policy kept"); }
   { uint8_t w[GBSC_FILE_MAX]; uint32_t m = build(w, KEY_A, 3, 4); fresh_card(); put(PA, w, m);   /* re-verify-za2b F1 */
     CHECK(!xh_absent_resolve(XD, PA, KEY_A, nb, sizeof nb, true, &len) && file_is(PA, w, m), "primary present: absent_resolve handed back a fresh ledger"); }
   for (long k = 0; k < 40; k++) {   /* a card fault in the heal (XH_FAILED) or the read-back: refuse; entries survive */

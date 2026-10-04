@@ -10629,7 +10629,7 @@ int app_history_clear(void) {
 #define GB_RECON_MAX_EXAMINE 256   /* S5-C review #11: files LOOKED AT, not just .pds
                                     * ones accepted -- a directory full of unrelated
                                     * files must not make this scan unbounded */
-#define GB_RECON_NAME_MAX    21    /* "0123456789ABCDEF.pds" + NUL == 20 + 1        */
+#define GB_RECON_NAME_MAX    25    /* "0123456789ABCDEF.pds.tmp" + NUL == 24 + 1 (#414: a read-only card lists orphan .tmp) */
 
 typedef struct {
   DIR        dir;
@@ -10737,7 +10737,7 @@ static void __attribute__((noinline)) gb_reconcile_walk(GbReconBuf* rb, bool app
     rb->examined++;
     if (rb->fi.fattrib & AM_DIR) continue;
     int L = 0; while (rb->fi.fname[L]) L++;
-    if (L < 5 || L >= GB_RECON_NAME_MAX) continue;
+    if (L < 5 || L >= 21) continue;   /* the .pds names only (20 chars): NAME_MAX grew for xfer_reconcile_walk's .tmp form, not here */
     const char* e = rb->fi.fname + L - 4;
     if (e[0] != '.' || (e[1] | 32) != 'p' || (e[2] | 32) != 'd' || (e[3] | 32) != 's') continue;
 
@@ -11036,6 +11036,7 @@ static void __attribute__((noinline)) xfer_reconcile_walk(GbReconBuf* rb, int ca
   uint32_t dc_base, dc_stride; dc_layout(&dc_base, &dc_stride);
 
   app_ledger_heal(rb->sidecar);   /* BACKLOG #389: an orphan <key>.pds.tmp is the primary -- heal before this scan */
+  const bool ro_walk = !app_can_edit();   /* #414: only a read-only card (no heal) lists the orphan .tmp */
   DIR dir; FILINFO fi;
   if (f_opendir(&dir, PDNA_XFER_DIR) != FR_OK) return;
   while (rb->nxrc < GB_RECON_MAX_HITS && rb->nfiles < GB_RECON_MAX_FILES &&
@@ -11044,9 +11045,21 @@ static void __attribute__((noinline)) xfer_reconcile_walk(GbReconBuf* rb, int ca
     examined++;
     if (fi.fattrib & AM_DIR) continue;
     int L = 0; while (fi.fname[L]) L++;
-    if (L < 5 || L >= GB_RECON_NAME_MAX) continue;
-    const char* e = fi.fname + L - 4;
-    if (e[0] != '.' || (e[1] | 32) != 'p' || (e[2] | 32) != 'd' || (e[3] | 32) != 's') continue;
+    uint64_t name_key = 0; bool draft = false;
+    if (ro_walk && xrc_draft_name(fi.fname, &name_key)) {
+      /* #414: read-only card -- an orphan <key>.pds.tmp is the record's only copy (the writable case healed it above).
+       * The PRIMARY wins: if <key>.pds is there too the .tmp is skipped; the .tmp is judged by the SAME #415 predicate
+       * xr_open uses (xr_orphan_hdr_ok + the full-file parse below). */
+      char* prim = rb->names[rb->nfiles];   /* scratch: the slot the accepted row would take, rewritten below */
+      for (int q = 0; q < 20; q++) prim[q] = fi.fname[q];
+      prim[20] = 0;
+      if (xr_path_for_name(rb->path, prim)) continue;
+      draft = true;
+    } else {
+      if (L < 5 || L >= 21) continue;   /* the .pds names (20 chars) -- NAME_MAX grew for the .tmp form only */
+      const char* e = fi.fname + L - 4;
+      if (e[0] != '.' || (e[1] | 32) != 'p' || (e[2] | 32) != 'd' || (e[3] | 32) != 's') continue;
+    }
 
     int fidx = rb->nfiles;
     int cn = 0; while (fi.fname[cn] && cn < GB_RECON_NAME_MAX - 1) { rb->names[fidx][cn] = fi.fname[cn]; cn++; }
@@ -11065,6 +11078,10 @@ static void __attribute__((noinline)) xfer_reconcile_walk(GbReconBuf* rb, int ca
       continue;
     }
     uint64_t file_key = gbsc_file_key(rb->sidecar, len);
+    if (draft && !xr_orphan_hdr_ok(rb->sidecar, len, name_key)) {   /* #414/#415: a foreign-key .tmp is not this record */
+      log_line("xfer: reconcile: %s is not the draft of its own key, skipped", rb->path);
+      continue;
+    }
 
     for (int i = 0; i < count && rb->nxrc < GB_RECON_MAX_HITS; i++) {
       GbscEntry e2;
@@ -11388,6 +11405,12 @@ static void xrc_cache_invalidate(void) {
  * newly exposed row; staying on the same window (only `sel` moves) decodes 0.
  * The text itself is ALWAYS re-rendered from the LIVE row_kind, cache hit or
  * miss: only the SD decode of species/origin is ever skipped. */
+/* #414: the row text, with the status slot reading "draft" for a row sourced from an orphan <key>.pds.tmp. */
+static void xrc_text_of(const GbReconBuf* rb, const XrcHit* h, const char* sp, const char* game, char out[40]) {
+  if (xrc_draft_name(rb->names[h->file_idx], NULL)) xrc_row_text_draft(sp, game, out);
+  else xrc_row_text((XrcRowKind)h->row_kind, sp, game, out);
+}
+
 static void xrc_visible_text(GbReconBuf* rb, int idx, bool claimed[XRC_VIS_CACHE_N], char out[40]) {
   XrcHit* h = &rb->xrc[idx];
   int found = -1;
@@ -11406,8 +11429,7 @@ static void xrc_visible_text(GbReconBuf* rb, int idx, bool claimed[XRC_VIS_CACHE
     if (found < 0) {                       /* unreachable: vis <= XRC_VIS_CACHE_N */
       uint16_t sp; uint8_t og;
       xrc_row_decode(rb, idx, &sp, &og);
-      xrc_row_text((XrcRowKind)h->row_kind,
-                   sp == 0xFFFFu ? "?" : pk_species_name(sp), xrc_origin_name_id(og), out);
+      xrc_text_of(rb, h, sp == 0xFFFFu ? "?" : pk_species_name(sp), xrc_origin_name_id(og), out);
       return;                              /* uncached, but NEVER a negative index */
     }
     uint16_t sp; uint8_t og;
@@ -11418,8 +11440,8 @@ static void xrc_visible_text(GbReconBuf* rb, int idx, bool claimed[XRC_VIS_CACHE
   }
   claimed[found] = true;
   XrcTextCache* c = &s_xrc_cache[found];
-  xrc_row_text((XrcRowKind)h->row_kind, c->species == 0xFFFFu ? "?" : pk_species_name(c->species),
-               xrc_origin_name_id(c->origin), out);
+  xrc_text_of(rb, h, c->species == 0xFFFFu ? "?" : pk_species_name(c->species),
+              xrc_origin_name_id(c->origin), out);
 }
 
 /* decision 19: the first raw-all-zero slot of the lowest box with room, for RESTORE

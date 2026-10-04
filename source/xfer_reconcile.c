@@ -326,14 +326,13 @@ void xrc_rekey_mark_done(bool* file_rekeyed, int n, uint8_t file_idx) {
   file_rekeyed[file_idx] = true;
 }
 
-int xrc_row_text(XrcRowKind kind, const char* species, const char* game, char out[40]) {
+static int xrc_row_fmt(const char* status, const char* species, const char* game, char out[40]) {
   if (!out) return 0;
   char sp[11]; char gm[8];
   int si = 0; if (species) for (; si < 10 && species[si]; si++) sp[si] = species[si];
   sp[si] = 0;
   int gi = 0; if (game) for (; gi < 7 && game[gi]; gi++) gm[gi] = game[gi];
   gm[gi] = 0;
-  const char* status = xrc_status_word(kind);
 
   int p = 0;
   #define PUT(c) do { if (p < 39) out[p++] = (char)(c); } while (0)
@@ -345,4 +344,30 @@ int xrc_row_text(XrcRowKind kind, const char* species, const char* game, char ou
   #undef PUT
   out[p] = 0;
   return p;
+}
+
+int xrc_row_text(XrcRowKind kind, const char* species, const char* game, char out[40]) {
+  return xrc_row_fmt(xrc_status_word(kind), species, game, out);
+}
+
+/* #414: a read-only-card row sourced from an orphan <key>.pds.tmp -- same text, the status slot reads "draft". */
+int xrc_row_text_draft(const char* species, const char* game, char out[40]) {
+  return xrc_row_fmt("draft", species, game, out);
+}
+
+/* #414: "<16 hex>.pds.tmp" (exactly 24 chars, extension case-blind) -> true and *key (key may be NULL). */
+bool xrc_draft_name(const char* fname, uint64_t* key) {
+  if (!fname) return false;
+  unsigned n = 0; while (fname[n] && n < 32) n++;
+  if (n != 24) return false;
+  const char* e = fname + 16;
+  if (e[0] != '.' || (e[1] | 32) != 'p' || (e[2] | 32) != 'd' || (e[3] | 32) != 's' ||
+      e[4] != '.' || (e[5] | 32) != 't' || (e[6] | 32) != 'm' || (e[7] | 32) != 'p') return false;
+  char stem[21];
+  for (int i = 0; i < 16; i++) stem[i] = fname[i];
+  stem[16] = '.'; stem[17] = 'p'; stem[18] = 'd'; stem[19] = 's'; stem[20] = 0;
+  uint64_t k = 0;
+  if (!gbsc_key_from_path(stem, &k)) return false;
+  if (key) *key = k;
+  return true;
 }
