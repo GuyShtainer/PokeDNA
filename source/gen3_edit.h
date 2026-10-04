@@ -104,6 +104,7 @@ void em_set_egg(EditMon* e, bool egg);                      /* flags byte bit2 +
 void em_hatch(EditMon* e);
 void em_set_ability(EditMon* e, uint8_t n);                  /* 0 or 1 */
 void em_set_level(EditMon* e, uint8_t level);                /* sets exp (+ party level + stats) */
+void em_set_exp(EditMon* e, uint32_t exp);                  /* raw exp (+ party level + stats); no clamp */
 void em_set_party_flag(EditMon* e, bool is_party);          /* box<->party kind (derives/drops plaintext stats) */
 void em_set_nickname(EditMon* e, const char* s);            /* <=10 chars */
 
