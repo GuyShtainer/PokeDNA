@@ -337,15 +337,24 @@ static bool gbdc_grow_preview(const GbSession* s, const GbEditMon* mon, DcGrow* 
 }
 
 /* Write the grown level/EXP (always) and, when with_moves, the learned moves, into the
- * freshly withdrawn `mon`. Only slots whose move CHANGED are touched, so every untouched
- * move keeps its PP and PP Ups. */
+ * freshly withdrawn `mon`. New moves get base PP; shifted moves keep their original PP and PP Ups. */
 static void gbdc_grow_apply(GbEditMon* mon, uint8_t gen, const DcGrow* g, bool with_moves) {
   if (gen == GB_GEN1) (void)gb_set_exp(mon, gb_get_exp(mon));   /* keep EXP, re-derive the level */
   else                (void)gb_set_level(mon, g->lv_after);     /* Gen 2: EXP floors to the level */
   if (!with_moves) return;
-  for (int k = 0; k < 4; k++)
-    if (gb_get_move(mon, k) != (uint8_t)g->moves_after[k])
-      (void)gb_set_move(mon, k, (uint8_t)g->moves_after[k]);
+  uint8_t om[4], opp[4], oup[4];
+  for (int k = 0; k < 4; k++) { om[k] = gb_get_move(mon, k); opp[k] = gb_get_pp(mon, k); oup[k] = gb_get_ppup(mon, k); }
+  for (int k = 0; k < 4; k++) {
+    uint8_t mv = (uint8_t)g->moves_after[k];
+    if (om[k] == mv) continue;
+    (void)gb_set_move(mon, k, mv);                    /* a NEW move: base PP, no PP Ups */
+    for (int j = 0; j < 4; j++)                       /* a SHIFTED move keeps its PP + PP Ups (pokered */
+      if (mv && om[j] == mv) {                        /* WriteMonMoves shifts the PP bytes with the moves) */
+        (void)gb_set_ppup(mon, k, oup[j]);
+        (void)gb_set_pp(mon, k, opp[j]);
+        break;
+      }
+  }
 }
 
 static void gbdc_take(GbSession* s, const GbDaycare* dc, int slot, uint8_t* list, uint8_t* list2) {
