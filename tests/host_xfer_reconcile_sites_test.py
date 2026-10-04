@@ -357,12 +357,16 @@ def check_p_readonly_draft_walk(text: str) -> list[str]:
         return ["xfer_reconcile_walk() not found in source/pdna_main.c"]
     if not re.search(r"ro_walk\s*=\s*!app_can_edit\(\)", body):
         out.append("xfer_reconcile_walk(): ro_walk = !app_can_edit() gate missing (#414)")
-    if not re.search(r"if\s*\(\s*ro_walk\s*&&\s*xrc_draft_name\(", body):
-        out.append("xfer_reconcile_walk(): the .tmp admit is not gated on ro_walk && xrc_draft_name (#414)")
+    # #419: the admit decision is the pure xrc_walk_admit (host-proven, ADMIT-1: W2 prim/primary, name_key, allow_draft gate);
+    # the walk must hand it ro_walk as allow_draft and act on its DRAFT verdict.
+    if not re.search(r"xrc_walk_admit\(\s*fi\.fname\s*,[^;]*,\s*ro_walk\s*,\s*&name_key\s*,\s*prim\s*\)", body):
+        out.append("xfer_reconcile_walk(): the admit is not xrc_walk_admit(..., ro_walk, &name_key, prim) (#414/#419)")
+    if not re.search(r"case\s+XRC_ADMIT_DRAFT\s*:", body):
+        out.append("xfer_reconcile_walk(): no XRC_ADMIT_DRAFT case (#414/#419)")
     if not re.search(r"if\s*\(\s*xr_path_for_name\([^)]*\)\s*\)\s*continue", body):
         out.append("xfer_reconcile_walk(): primary-wins skip (xr_path_for_name ... continue) missing (#414)")
-    if not re.search(r"draft\s*&&\s*!xr_orphan_hdr_ok\(", body):
-        out.append("xfer_reconcile_walk(): the shared xr_orphan_hdr_ok predicate is not applied to the draft (#414/#415)")
+    if not re.search(r"draft\s*&&\s*!xrc_draft_accept\(\s*rb->sidecar\s*,\s*len\s*,\s*name_key\s*\)", body):
+        out.append("xfer_reconcile_walk(): xrc_draft_accept(rb->sidecar, len, name_key) is not applied to the draft (#414/#415/#419)")
     vt = strip_comments(extract_function_body(text, "xrc_visible_text"))
     if vt.count("xrc_text_of(") != 2 or "xrc_row_text(" in vt:
         out.append("xrc_visible_text(): the draft label (xrc_text_of) is not on the row text path (#414)")
@@ -581,9 +585,9 @@ def main() -> int:
     # (p) #414: each of the five wiring pieces removed must turn its check red.
     for label, target, repl in (
         ("(p) ro gate", "const bool ro_walk = !app_can_edit();", "const bool ro_walk = true;"),
-        ("(p) admit gate", "if (ro_walk && xrc_draft_name(fi.fname, &name_key))", "if (xrc_draft_name(fi.fname, &name_key))"),
+        ("(p) admit gate", "(fi.fattrib & AM_DIR) != 0, ro_walk, &name_key, prim)", "(fi.fattrib & AM_DIR) != 0, true, &name_key, prim)"),
         ("(p) primary wins", "if (xr_path_for_name(rb->path, prim)) continue;", ""),
-        ("(p) shared predicate", "if (draft && !xr_orphan_hdr_ok(", "if (0 && !xr_orphan_hdr_ok("),
+        ("(p) shared predicate", "if (draft && !xrc_draft_accept(", "if (0 && !xrc_draft_accept("),
         ("(p) draft label", "  xrc_text_of(rb, h, c->species", "  xrc_row_text((XrcRowKind)h->row_kind, c->species"),
     ):
         if target not in main_text:

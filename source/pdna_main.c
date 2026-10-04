@@ -11043,22 +11043,16 @@ static void __attribute__((noinline)) xfer_reconcile_walk(GbReconBuf* rb, int ca
         rb->nfiles < cap_files && examined < GB_RECON_MAX_EXAMINE &&
         f_readdir(&dir, &fi) == FR_OK && fi.fname[0]) {
     examined++;
-    if (fi.fattrib & AM_DIR) continue;
-    int L = 0; while (fi.fname[L]) L++;
     uint64_t name_key = 0; bool draft = false;
-    if (ro_walk && xrc_draft_name(fi.fname, &name_key)) {
-      /* #414: read-only card -- an orphan <key>.pds.tmp is the record's only copy (the writable case healed it above).
-       * The PRIMARY wins: if <key>.pds is there too the .tmp is skipped; the .tmp is judged by the SAME #415 predicate
-       * xr_open uses (xr_orphan_hdr_ok + the full-file parse below). */
-      char* prim = rb->names[rb->nfiles];   /* scratch: the slot the accepted row would take, rewritten below */
-      for (int q = 0; q < 20; q++) prim[q] = fi.fname[q];
-      prim[20] = 0;
-      if (xr_path_for_name(rb->path, prim)) continue;
-      draft = true;
-    } else {
-      if (L < 5 || L >= 21) continue;   /* the .pds names (20 chars) -- NAME_MAX grew for the .tmp form only */
-      const char* e = fi.fname + L - 4;
-      if (e[0] != '.' || (e[1] | 32) != 'p' || (e[2] | 32) != 'd' || (e[3] | 32) != 's') continue;
+    /* #419: the name -> {skip, .pds, draft} decision is the pure xrc_walk_admit (host-tested, ADMIT-1). #414: read-only card --
+     * an orphan <key>.pds.tmp is the record's only copy (the writable case healed it above). The PRIMARY wins: if <key>.pds
+     * is there too the .tmp is skipped; the .tmp is judged by the SAME #415 predicate xr_open uses (xrc_draft_accept below
+     * + the full-file parse). prim is a scratch: the slot the accepted row would take, rewritten below. */
+    char* prim = rb->names[rb->nfiles];
+    switch (xrc_walk_admit(fi.fname, (fi.fattrib & AM_DIR) != 0, ro_walk, &name_key, prim)) {
+      case XRC_ADMIT_DRAFT: if (xr_path_for_name(rb->path, prim)) continue; draft = true; break;
+      case XRC_ADMIT_PDS: break;
+      default: continue;
     }
 
     int fidx = rb->nfiles;
@@ -11078,7 +11072,7 @@ static void __attribute__((noinline)) xfer_reconcile_walk(GbReconBuf* rb, int ca
       continue;
     }
     uint64_t file_key = gbsc_file_key(rb->sidecar, len);
-    if (draft && !xr_orphan_hdr_ok(rb->sidecar, len, name_key)) {   /* #414/#415: a foreign-key .tmp is not this record */
+    if (draft && !xrc_draft_accept(rb->sidecar, len, name_key)) {   /* #414/#415: a foreign-key .tmp is not this record */
       log_line("xfer: reconcile: %s is not the draft of its own key, skipped", rb->path);
       continue;
     }

@@ -38,10 +38,15 @@ def checks(heal, gen12, layout, main=None):
         rw = body(main, "gb_reconcile_walk")
         if "if (L < 5 || L >= 21) continue;" not in rw:
             out.append("F1: gb_reconcile_walk must filter .pds names at the literal 21, not GB_RECON_NAME_MAX")
-        # reverify-zf F-A: the sibling TRANSFERS walk keeps the same literal-21 .pds bound (only the .tmp branch uses NAME_MAX 25)
+        # reverify-zf F-A (#419: re-aimed): the sibling TRANSFERS walk's .pds bound (literal 21; only the .tmp branch uses
+        # NAME_MAX 25) now lives in the pure xrc_walk_admit, host-proven by host_xfer_reconcile_test.c ADMIT-1 (19/21-char
+        # names SKIP, mutants shown RED). What stays pinned HERE is that the walk really routes every name through it and
+        # kept no private length filter of its own.
         xw = body(main, "xfer_reconcile_walk")
-        if "if (L < 5 || L >= 21) continue;" not in xw:
-            out.append("F-A: xfer_reconcile_walk must filter .pds names at the literal 21, not GB_RECON_NAME_MAX")
+        if "xrc_walk_admit(fi.fname" not in xw:
+            out.append("F-A: xfer_reconcile_walk must decide .pds/draft admission through xrc_walk_admit (#419)")
+        if re.search(r"L\s*>=\s*(21|GB_RECON_NAME_MAX)", xw):
+            out.append("F-A: xfer_reconcile_walk grew a private .pds length filter beside xrc_walk_admit (#419)")
     sa = body(heal, "xh_set_aside_tmp")
     if not re.search(r'f_stat\(bad, 0\) == FR_OK\)[^;]*\n?\s*log_line\("xfer_heal: %s: an older \.tmp\.bad salvage exists and is being replaced', sa):
         out.append("#416(a): xh_set_aside_tmp no longer logs the older .tmp.bad being replaced")
@@ -53,7 +58,18 @@ def checks(heal, gen12, layout, main=None):
     ar = body(heal, "xh_absent_resolve_ex")
     if not re.search(r"FRESULT sr = xh_set_aside_tmp\(path\);\s*if \(sr != FR_OK\) \{ if \(stuck\) \*stuck = \(sr == FR_EXIST\); return false; \}", ar):
         out.append("#416(b): xh_absent_resolve_ex must set *stuck exactly when the set-aside fails")
+    # #419 S2: *stuck is raised ONLY by the failed set-aside (never by the primary-present refusal or any other return)
+    assigns = re.findall(r"\*stuck\s*=\s*([^;]+);", ar)
+    if assigns != ["false", "(sr == FR_EXIST)"]:
+        out.append("#419(S2): xh_absent_resolve_ex must assign *stuck exactly twice (init false; set-aside failure == FR_EXIST), got %r" % assigns)
+    pm = re.search(r"if \(hr == XH_NONE\) \{[^\n]*\}", ar)
+    if not pm or "stuck" in pm.group(0):
+        out.append("#419(S2): the primary-present refusal (hr == XH_NONE) must not touch *stuck")
     g = body(gen12, "gb_ledger_absent_heal")
+    # #419 S6: the name shown is the BASENAME + ".tmp.bad" -- the '/' strip loop feeds the memcpy
+    if not re.search(r"for \(const char\* q = path; \*q; q\+\+\) if \(\*q == '/'\) base = q \+ 1;", g) or \
+       not re.search(r"memcpy\(nm, base, bn\)", g):
+        out.append("#419(S6): gb_ledger_absent_heal must strip the directory (base) before building <key>.pds.tmp.bad")
     if "xh_absent_resolve_ex(" not in g or not re.search(r"if \(stuck\)", g):
         out.append("#416(b): gb_ledger_absent_heal does not branch on stuck")
     if not re.search(r'memcpy\(nm \+ bn, "\.tmp\.bad", 9\)', g) or "msg_wait(PDNA_SIDECAR_READFAIL_TITLE, UI_WARN, nm, PDNA_SIDECAR_STUCK_L2)" not in g:
@@ -73,8 +89,10 @@ def main():
     fails = 0
     muts = (
         ("F1 bound widened", "main", "if (L < 5 || L >= 21) continue;", "if (L < 5 || L >= GB_RECON_NAME_MAX) continue;"),
-        ("F-A xfer walk bound widened", "main", "if (L < 5 || L >= 21) continue;   /* the .pds names (20 chars) --", "if (L < 5 || L >= GB_RECON_NAME_MAX) continue;   /* the .pds names (20 chars) --"),
-        ("F-A xfer walk bound shrunk", "main", "if (L < 5 || L >= 21) continue;   /* the .pds names (20 chars) --", "if (L < 5 || L >= 20) continue;   /* the .pds names (20 chars) --"),
+        ("F-A xfer walk bypasses the helper", "main", "switch (xrc_walk_admit(fi.fname, (fi.fattrib & AM_DIR) != 0, ro_walk, &name_key, prim)) {", "switch (xrc_walk_admit_x(fi.fname, (fi.fattrib & AM_DIR) != 0, ro_walk, &name_key, prim)) {"),
+        ("F-A xfer walk private length filter", "main", "    examined++;\n    uint64_t name_key = 0; bool draft = false;", "    examined++; int L = 0; while (fi.fname[L]) L++; if (L < 5 || L >= 21) continue;\n    uint64_t name_key = 0; bool draft = false;"),
+        ("S2 stuck set on primary-present refusal", "heal", "if (ps != FR_NO_FILE && ps != FR_NO_PATH) return false; }", "if (ps != FR_NO_FILE && ps != FR_NO_PATH) { if (stuck) *stuck = true; return false; } }"),
+        ("S6 basename not stripped", "gen12", "for (const char* q = path; *q; q++) if (*q == '/') base = q + 1;", ""),
         ("(a) log removed", "heal", 'log_line("xfer_heal: %s: an older .tmp.bad salvage exists', 'log_line_x("xfer_heal: %s: an older .tmp.bad salvage exists'),
         ("(a) policy removed", "heal", "(void)f_unlink(bad);", ""),
         ("(b) stuck never set", "heal", "if (stuck) *stuck = (sr == FR_EXIST);", ""),

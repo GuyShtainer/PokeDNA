@@ -178,6 +178,17 @@ int xrc_row_text_draft(const char* species, const char* game, char out[40]);
 /* #414: true for exactly "<16 hex>.pds.tmp" (extension case-blind); *key (may be NULL) = the 16 hex digits. */
 bool xrc_draft_name(const char* fname, uint64_t* key);
 
+/* #419: the TRANSFERS walk's per-name decision, I/O-free. is_dir: the entry is a directory. allow_draft: read-only card AND
+ * pass 1 (the xfer dir). DRAFT = "<16 hex>.pds.tmp" with allow_draft: fills *name_key (may be NULL) and prim[21] =
+ * "<16hex>.pds" (the primary the caller must f_stat; the primary wins). PDS = a 20-char ".pds" name (literal bound 21,
+ * extension case-blind). Anything else SKIP. */
+typedef enum { XRC_ADMIT_SKIP = 0, XRC_ADMIT_PDS = 1, XRC_ADMIT_DRAFT = 2 } XrcAdmit;
+XrcAdmit xrc_walk_admit(const char* fname, bool is_dir, bool allow_draft, uint64_t* name_key, char prim[21]);
+/* #415 acceptance for a DRAFT after the full-file read: the record's header (magic/version/count/exact size/crc) must
+ * parse AND its header key must equal the NAME's key -- the same two-call predicate as xr_orphan_hdr_ok (xfer_io.c:82),
+ * restated here because xfer_io.c is FatFs-bound. */
+bool xrc_draft_accept(const uint8_t* buf, uint32_t len, uint64_t name_key);
+
 /* BACKLOG #215(b): a .pds ledger file's identity is its NAME, not any one entry
  * inside it. Two stale-key rows can name the SAME file_idx (two entries inside one
  * physical file, both stale against their own current Gen-3 record); the file only
