@@ -6,6 +6,7 @@
 
 #include "gb_sprite_codec.h"   /* GbReadFn */
 #include "gb_edit.h"           /* GB_GEN1 / GB_GEN2, gb_index_from_dex, gb_max_move */
+#include "dc_learn.h"          /* DcLearn: Day-Care learn events */
 
 /*
  * Gen-1/2 LEVEL-UP LEARNSETS, read live out of the user's own Game Boy cartridge
@@ -139,6 +140,16 @@ int rom_gblearn_moves_at(RomGbLearn* rl, uint16_t dex, uint8_t level, uint8_t ou
  * starters; nothing else in this tree needs a seed. */
 int rom_gblearn_moves_at_seeded(RomGbLearn* rl, uint16_t dex, uint8_t level,
                                 const uint8_t seed4[4], uint8_t out4[4]);
+
+/* Day-Care growth (BACKLOG #373): the FIFO of rom_gblearn_moves_at_seeded(), seeded with
+ * the mon's CURRENT four moves (`cur4`, left-packed, 0 = unused), but taking ONLY entries
+ * with `lv_prev < lvl <= lv_new` (retail FillMoves' wPrevPartyLevel rule: what the mon
+ * already stood above was taught then). Writes the resulting four to `out4` and one
+ * DcLearn per move that actually changed them to `ev[0..7]` (`*n_ev` counts all, past 8;
+ * `*overflow` latches then). Returns the number of moves held (0..4) or -1. */
+int rom_gblearn_moves_between(RomGbLearn* rl, uint16_t dex, uint8_t lv_prev, uint8_t lv_new,
+                              const uint8_t cur4[4], uint8_t out4[4],
+                              DcLearn ev[DC_LEARN_MAX], int* n_ev, bool* overflow);
 
 /* The lowest level at which `dex` can legally exist from nothing -- Gen 3's
  * own create flow answer (gen3_edit.c's gen3_build_level, "5 for a Bulbasaur,
