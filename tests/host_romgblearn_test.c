@@ -10,7 +10,7 @@
  * learnsets (this file's main subject) and the Gen-2 half of rom_gbbase.c's base
  * stats (the cross-check source for gb_new_mon's growth-rate agreement gate).
  *
- * Coverage:
+ * Coverage (7 = rom_gblearn_moves_between, BACKLOG #373):
  *   1. every species parses (Red/Yellow 1..151, Gold/Crystal 1..251): a real
  *      rom_gblearn_open() hit, and rom_gblearn_moves_at() never structurally
  *      refuses (>= 0) at level 100 for any of them.
@@ -298,6 +298,95 @@ static void test_min_level(const char* file, uint8_t gen) {
   fclose(f);
 }
 
+
+/* ============================================================================ */
+/* 7. rom_gblearn_moves_between (BACKLOG #373, Day-Care take-out growth)         */
+/* ============================================================================ */
+
+/* Apply the recorded events to cur4 with an INDEPENDENT four-slot FIFO (free slot, else oldest
+ * out). If rom_gblearn_moves_between's out4 and its event list ever disagree, this is where. */
+static void replay_events(const uint8_t cur4[4], const DcLearn* ev, int n, uint8_t out[4]) {
+  memcpy(out, cur4, 4);
+  for (int i = 0; i < n; i++) {
+    int slot = -1;
+    for (int k = 0; k < 4; k++) if (out[k] == 0) { slot = k; break; }
+    if (slot < 0) { out[0] = out[1]; out[1] = out[2]; out[2] = out[3]; slot = 3; }
+    out[slot] = (uint8_t)ev[i].newmove;
+  }
+}
+
+static void test_between(const char* file, uint8_t gen) {
+  RomGbLearn rl; RomGbSprite gs; FILE* f;
+  printf("\n== moves_between %s ==\n", file);
+  if (!open_rom(file, gen, &rl, &gs, &f)) return;
+  uint16_t maxdex = (gen == GB_GEN1) ? 151 : 251;
+  const uint8_t junk[4] = { 15, 19, 57, 70 };   /* Cut, Fly, Surf, Strength: no species' learnset */
+
+  /* (a) floor 0 + a seed reproduces rom_gblearn_moves_at_seeded byte-for-byte, 20 pairs */
+  uint32_t rng = 12345u;
+  for (int t = 0; t < 20; t++) {
+    rng = rng * 1103515245u + 12345u;
+    uint16_t dex = (uint16_t)(1 + (rng >> 8) % maxdex);
+    rng = rng * 1103515245u + 12345u;
+    uint8_t lvl = (uint8_t)(1 + (rng >> 8) % 100);
+    uint8_t seed[4] = { 0, 0, 0, 0 }, a4[4], b4[4];
+    rom_gblearn_moves_at(&rl, dex, (uint8_t)(1 + (rng >> 16) % 100), seed);   /* a realistic current set */
+    int ka = rom_gblearn_moves_at_seeded(&rl, dex, lvl, seed, a4);
+    DcLearn ev[DC_LEARN_MAX]; int n = 0; bool ovf = false;
+    int kb = rom_gblearn_moves_between(&rl, dex, 0, lvl, seed, b4, ev, &n, &ovf);
+    CHECK(ka == kb && memcmp(a4, b4, 4) == 0,
+          "%s: floor 0 == _seeded (dex %u lvl %u): kept %d/%d", file, dex, lvl, ka, kb);
+  }
+
+  /* (b) per species: events replay to out4; overflow flag == (n > 8); the first
+   *     shift drops the OLDEST move */
+  int nsp_overflow = 0;
+  for (uint16_t dex = 1; dex <= maxdex; dex++) {
+    uint8_t out4[4], rep[4]; DcLearn ev[DC_LEARN_MAX]; int n = 0; bool ovf = false;
+    int k = rom_gblearn_moves_between(&rl, dex, 0, 100, junk, out4, ev, &n, &ovf);
+    CHECK(k >= 0, "%s: dex %u between(0,100) refused", file, dex);
+    if (k < 0) continue;
+    CHECK(ovf == (n > DC_LEARN_MAX), "%s: dex %u overflow flag %d vs n %d", file, dex, ovf, n);
+    nsp_overflow += ovf;
+    int shown = n < DC_LEARN_MAX ? n : DC_LEARN_MAX;
+    replay_events(junk, ev, shown, rep);
+    if (!ovf) CHECK(memcmp(rep, out4, 4) == 0, "%s: dex %u events do not replay to out4", file, dex);
+    for (int i = 0; i < shown; i++) {
+      CHECK(ev[i].at_level >= 1 && ev[i].at_level <= 100, "%s: dex %u ev level", file, dex);
+      /* NOT asserted ascending: a few real tables are not level-sorted (Yellow dex 57, dex 89) and the
+       * games walk them in TABLE order, which is what the events record. */
+    }
+    if (n >= 1) CHECK(ev[0].replaced == junk[0], "%s: dex %u first shift drops the OLDEST (%u)", file, dex, ev[0].replaced);
+  }
+  /* Red's tables are short enough that no species reaches 9 events from L0 (measured: 0); Yellow
+   * (2 species) and Gen 2 have some, so the overflow latch is exercised for real there. */
+  if (strcmp(file, "Red.gb") != 0)
+    CHECK(nsp_overflow > 0, "%s: at least one species overflows 8 events from L0 to L100 (got %d)", file, nsp_overflow);
+
+  /* (c) the floor rule on Bulbasaur (dex 1): find a level L where a move is learned, then
+   *     (L-1, L] teaches it but (L, L] does not -- an entry AT lv_prev is NOT taught */
+  uint8_t L = 0, prev4[4] = { 0, 0, 0, 0 }, at4[4] = { 0, 0, 0, 0 };
+  for (uint8_t l = 8; l <= 60 && !L; l++) {           /* >= 8 skips Gen 2's level-1 starters */
+    rom_gblearn_moves_at(&rl, 1, (uint8_t)(l - 1), prev4);
+    rom_gblearn_moves_at(&rl, 1, l, at4);
+    if (memcmp(prev4, at4, 4)) L = l;
+  }
+  CHECK(L != 0, "%s: Bulbasaur has a learn level >= 8", file);
+  if (L) {
+    DcLearn ev[DC_LEARN_MAX]; int n = 0; bool ovf = false; uint8_t o4[4];
+    CHECK(rom_gblearn_moves_between(&rl, 1, (uint8_t)(L - 1), L, prev4, o4, ev, &n, &ovf) >= 0 && n >= 1
+          && ev[0].at_level == L, "%s: (%u,%u] teaches the L%u move", file, L - 1, L, L);
+    n = 0;
+    CHECK(rom_gblearn_moves_between(&rl, 1, L, L, prev4, o4, ev, &n, &ovf) >= 0 && n == 0
+          && memcmp(o4, prev4, 4) == 0, "%s: (%u,%u] teaches nothing", file, L, L);
+    /* (d) already-known is skipped: carry the learned move, nothing is taught */
+    n = 0;
+    CHECK(rom_gblearn_moves_between(&rl, 1, (uint8_t)(L - 1), L, at4, o4, ev, &n, &ovf) >= 0 && n == 0
+          && memcmp(o4, at4, 4) == 0, "%s: a move already known is skipped", file);
+  }
+  fclose(f);
+}
+
 static void test_cross_gen_refusal(void) {
   printf("\n== cross-generation refusal ==\n");
   char path[512]; uint32_t sz; FILE* f; RomGbLearn rl;
@@ -417,6 +506,11 @@ int main(void) {
   test_min_level("Yellow.gb", GB_GEN1);
   test_min_level("Gold.gbc", GB_GEN2);
   test_min_level("Crystal.gbc", GB_GEN2);
+
+  test_between("Red.gb", GB_GEN1);
+  test_between("Yellow.gb", GB_GEN1);
+  test_between("Gold.gbc", GB_GEN2);
+  test_between("Crystal.gbc", GB_GEN2);
 
   test_cross_gen_refusal();
   test_mutation_negative_control();

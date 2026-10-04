@@ -1,5 +1,8 @@
 /* Host test for the Day-Care compatibility core (pure C, no hardware).
- *   cc -std=c11 -I source tests/host_daycare_test.c source/gen3_daycare.c -o /tmp/hd && /tmp/hd
+ *   cc -std=c11 -I source tests/host_daycare_test.c source/gen3_daycare.c source/gen3_edit.c \
+ *      source/learnsets2.c source/data_tables.c source/evolutions.c source/gen3_mon.c \
+ *      source/gen3_save.c source/gen3_trainer.c -o /tmp/hd && /tmp/hd
+ * (gen3_daycare.c also carries the take-out growth core, BACKLOG #373, which needs the edit core.)
  * Internal ids: Bulbasaur 1, Charmander 4, Squirtle 7, Magnemite 81, Ditto 132, Mew 151. */
 #include <stdio.h>
 #include "gen3_daycare.h"
