@@ -84,6 +84,11 @@ static void run_game(PkGame g, int museum_i, const char* label) {
     CHECK(raw == expect, msg);
     snprintf(msg, sizeof(msg), "slot %d raw caption byte should stay under 5*3=15 (got %d)", k, raw);
     CHECK(raw < 5 * 3, msg);
+
+    /* #408: check PAINTING_MADE flag is set */
+    bool flag = pk_flag_get(g_sb1, g, 0xA0 + k);
+    snprintf(msg, sizeof(msg), "#408: slot %d PAINTING_MADE flag should be set after fill", k);
+    CHECK(flag, msg);
   }
 }
 
@@ -160,6 +165,10 @@ static void test_keep_real_wins(void) {
   CHECK(mask == 1, "ACH_MUSEUM on should dirty SB1 only");
   CHECK(memcmp(g_sb1 + off0, snapshot, GC_RECORD_BYTES) == 0,
        "slot 0's pre-existing real win must be byte-identical after an ON pass");
+
+  /* #408: check that the pre-existing win's flag is now set (heals lost flag) */
+  bool flag = pk_flag_get(g_sb1, PK_EMERALD, 0xA0);
+  CHECK(flag, "#408: slot 0's pre-existing real win's PAINTING_MADE flag should be set without rewriting the record");
 }
 
 /* OFF must zero all 5 * 0x20 = 0xA0 museum bytes -- gen3_stars.c's
@@ -181,6 +190,14 @@ static void test_off_zeroes(void) {
   memset(zeros, 0, sizeof(zeros));
   CHECK(memcmp(g_sb1 + base, zeros, sizeof(zeros)) == 0,
        "all 5 * 0x20 museum bytes should be zero after OFF");
+
+  /* #408: check all PAINTING_MADE flags are cleared */
+  for (int k = 0; k < GC_MUSEUM_COUNT; k++) {
+    bool flag = pk_flag_get(g_sb1, PK_EMERALD, 0xA0 + k);
+    char msg[64];
+    snprintf(msg, sizeof(msg), "#408: slot %d PAINTING_MADE flag should be cleared after OFF", k);
+    CHECK(!flag, msg);
+  }
 }
 
 int main(void) {

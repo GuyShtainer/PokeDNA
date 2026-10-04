@@ -17,6 +17,7 @@
 #include "sys.h"           /* EWRAM_BSS */
 #include "pdna_contest.h"
 #include "gen3_contest.h"
+#include "gen3_flags.h"    /* pk_flag_get/set, for PAINTING_MADE flags */
 #include "gen3_save.h"     /* SB1_OFF_PARTY(_COUNT) */
 #include "gen3_mon.h"
 #include "gen3_box.h"      /* pk_box_name, G3_TOTAL_BOXES/G3_IN_BOX, pk_resolve */
@@ -262,8 +263,9 @@ void pdna_contest(uint8_t* sb1, uint8_t* pc, PkGame game) {
       if (!app_confirm("SET PAINTING", l1)) continue;
       uint32_t off = gc_museum_offset(game, sel);
       uint8_t before[GC_RECORD_BYTES]; memcpy(before, sb1 + off, GC_RECORD_BYTES);
+      bool flag_before = pk_flag_get(sb1, game, GC_FLAG_PAINTING_MADE0 + sel);   /* #408: track prior flag */
       write_museum(sb1, game, sel, &donor);
-      if (memcmp(before, sb1 + off, GC_RECORD_BYTES) != 0) {
+      if (memcmp(before, sb1 + off, GC_RECORD_BYTES) != 0 || !flag_before) {     /* #408: commit if record or flag changed */
         rmbl_fire(RCUE_SAVE);
         (void)app_hold_sb1("Contest painting");     /* #234 s2: staged (the SET PAINTING confirm above stays) */
       }

@@ -20,7 +20,7 @@
  *
  * Build + run (repo root):
  *   cc -std=c11 -O2 -Wall -Wextra -I source tests/host_contest_test.c \
- *     source/gen3_contest.c source/gen3_save.c source/gen3_edit.c source/gen3_mon.c \
+ *     source/gen3_contest.c source/gen3_flags.c source/gen3_save.c source/gen3_edit.c source/gen3_mon.c \
  *     source/data_tables.c source/gen3_daycare.c \
  *     -o /tmp/hcontest && /tmp/hcontest \
  *     [emerald.sav] [ruby.sav] [sapphire.sav]
@@ -130,6 +130,8 @@ static void one(const char* path) {
 
   CHECK(gc_museum_set(g_sb1, game, cat, donor.species, donor.personality, donor.otId,
                       donor.nickname, donor.otName), "gc_museum_set succeeds");
+
+  CHECK(pk_flag_get(g_sb1, game, 0xA0 + cat), "#408: the category's PAINTING_MADE flag is set with the record");
 
   /* Exact changed-bytes list, SaveBlock1-relative. */
   int changed = 0, first_off = -1, last_off = -1;

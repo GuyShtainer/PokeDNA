@@ -115,6 +115,7 @@ typedef struct {
 bool gc_supported(PkGame g);          /* false for FRLG only                        */
 int  gc_hall_count(PkGame g);         /* 6 (Emerald), 8 (RS), 0 (FRLG)               */
 #define GC_MUSEUM_COUNT 5             /* Cool/Beauty/Cute/Smart/Tough, every RSE game */
+#define GC_FLAG_PAINTING_MADE0 0xA0   /* FLAG_COOL_PAINTING_MADE; +cat for other categories; same on E and RS */
 
 /* idx 0..gc_hall_count(g)-1. Returns false on an out-of-range idx or FRLG. */
 bool gc_hall_get(const uint8_t* sb1, PkGame g, int idx, GcWinner* out);
