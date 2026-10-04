@@ -6,15 +6,16 @@
  *   cc -std=c11 -O2 -Wall -Wextra -I source tests/host_scancap_test.c -o /tmp/hscap && /tmp/hscap
  */
 #include <stdio.h>
+#include <stdbool.h>
 #include "scan_cap.h"
 
 static int fails;
 #define CHECK(c) do { if (!(c)) { printf("FAIL line %d: %s\n", __LINE__, #c); fails++; } } while (0)
 
 /* n listing entries, of which the first `pass` pass the filter; returns count, sets *more. */
-static int scan(int n, int pass, int cap, int* more) {
+static int scan(int n, int pass, int cap, bool* more) {
   int count = 0;
-  *more = 0;
+  *more = false;
   for (int i = 0; i < n; i++) {
     if (i >= pass) continue;                       /* filtered out: never reaches the cap test */
     if (!scan_cap_admit(count, cap, more)) break;  /* the lookahead */
@@ -24,7 +25,7 @@ static int scan(int n, int pass, int cap, int* more) {
 }
 
 int main(void) {
-  int more, n;
+  bool more; int n;
   const int cap = 107;
   n = scan(cap - 1, cap - 1, cap, &more); CHECK(n == cap - 1 && !more);
   n = scan(cap,     cap,     cap, &more); CHECK(n == cap     && !more);   /* the #411 case */

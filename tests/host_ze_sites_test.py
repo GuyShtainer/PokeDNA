@@ -47,8 +47,8 @@ pin("#411 the status line's FULL comes from g_scan_more",
     main, lambda t: 'g_scan_more ? "FULL  " : ""' in t,
     lambda t: t.replace('g_scan_more ? "FULL  " : ""', 'g_count >= spec->cap ? "FULL  " : ""'))
 pin("#411 g_scan_more is cleared at every scan start",
-    main, lambda t: re.search(r"g_count = 0;\s*g_scan_more = 0;", t) is not None,
-    lambda t: t.replace("g_scan_more = 0;\n  DIR dir;", "DIR dir;"))
+    main, lambda t: re.search(r"g_count = 0;\s*g_scan_more = false;", t) is not None,
+    lambda t: t.replace("g_scan_more = false;\n  DIR dir;", "DIR dir;"))
 pin("#411 g_scan_more is EWRAM_BSS",
     main, lambda t: "EWRAM_BSS g_scan_more;" in t,
     lambda t: t.replace("EWRAM_BSS g_scan_more;", "g_scan_more;"))

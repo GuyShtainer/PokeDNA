@@ -101,9 +101,9 @@ def pins(src: dict[str, str]) -> list[tuple[str, bool]]:
     out.append(("U6 every footer string fits ui_text's 8x8 grid (<= 30 chars): " + ", ".join(str(len(x)) for x in flat), bool(strs) and all(len(x) <= 30 for x in flat)))
     row = body(h, "h_row") or ""
     out.append(("U7a the summary row prints the count it was given and an open/closed glyph",
-                """r->open ? '-' : '+', (unsigned)r->nsib, r->nsib == 1 ? "" : "es");""" in row and "r->kind == JH_FORK" in row))
+                """r->open ? '-' : '+', (unsigned)r->nsib, r->disc ? PDNA_HIST_DISC : "other", r->nsib == 1 ? "" : "es");""" in row and "r->kind == JH_FORK" in row))
     out.append(("U7b the sibling row shows FLOOR and SAVED, is set off (bar + dim) and says 'other branch'",
-                "r->kind == JH_SIB" in row and "r->crossed" in row and '"SAVED" : "other branch"' in row and 'ui_ptext(15, y, ink, "|")' in row))
+                "r->kind == JH_SIB" in row and "r->crossed" in row and '"SAVED" : (r->disc ? PDNA_HIST_DISC : "other branch")' in row and 'ui_ptext(15, y, ink, "|")' in row))
     return out
 
 
@@ -131,8 +131,8 @@ UI_MUTANTS: list[tuple[str, str, str, str, str]] = [
     ("M8 the fork toggle does not refetch (the rows would stay stale)", "pdna_hist.c", "          open_forks[nopen++] = fp;\n        }\n        refetch = true;", "          open_forks[nopen++] = fp;\n        }", "U4a"),
     ("M9 START jumps to the selected row", "pdna_hist.c", "(k & KEY_START) ? rows[0].seq :", "(k & KEY_START) ? rows[sel].seq :", "U5"),
     ("M10 the sibling hint overflows the 30-char footer", "pdna_hist.c", '"A -  START newest  B back"', '"A -  START newest  B back, other"', "U6"),
-    ("M11 the summary prints one more than it was given", "pdna_hist.c", "(unsigned)r->nsib, r->nsib == 1", "(unsigned)r->nsib + 1u, r->nsib == 1", "U7a"),
-    ("M12 the sibling row drops its SAVED/other-branch mark", "pdna_hist.c", 'r->saved ? "SAVED" : "other branch"', '"recorded"', "U7b"),
+    ("M11 the summary prints one more than it was given", "pdna_hist.c", "(unsigned)r->nsib, r->disc ?", "(unsigned)r->nsib + 1u, r->disc ?", "U7a"),
+    ("M12 the sibling row drops its SAVED/other-branch mark", "pdna_hist.c", 'r->saved ? "SAVED" : (r->disc ? PDNA_HIST_DISC : "other branch")', '"recorded"', "U7b"),
 ]
 
 # (name, edits, the RED line that must appear) -- mutants of source/jrn_app.c run against the REAL funnel test

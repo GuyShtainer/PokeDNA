@@ -901,7 +901,7 @@ static int ja_tree_discarded(JaHist* rows, int max, const uint32_t* open_forks, 
       sb->kind = JH_SIB; sb->disc = 1;
       sb->seq = kid[k].seq;
       sb->crossed = kid[k].crossed;
-      sb->saved = (kid[k].seq == s_saved) ? 1 : 0;
+      sb->saved = (uint8_t)(kid[k].seq == s_saved);
       memcpy(sb->name, kid[k].name, 24); sb->name[24] = 0;
     }
   }

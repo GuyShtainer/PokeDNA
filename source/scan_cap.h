@@ -1,5 +1,6 @@
 #ifndef SCAN_CAP_H
 #define SCAN_CAP_H
+#include <stdbool.h>
 /*
  * scan_cap -- BACKLOG #411's one-entry lookahead for the file-picker directory scan.
  *
@@ -11,10 +12,10 @@
  *
  * Pure C, header-only; tests/host_scancap_test.c includes this exact file.
  */
-/* Returns 1 when the entry fits (count < cap); otherwise sets *more = 1 and returns 0. */
-static inline int scan_cap_admit(int count, int cap, int* more) {
+/* Returns 1 when the entry fits (count < cap); otherwise sets *more and returns 0. */
+static inline int scan_cap_admit(int count, int cap, bool* more) {
   if (count < cap) return 1;
-  *more = 1;
+  *more = true;
   return 0;
 }
 #endif

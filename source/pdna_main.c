@@ -204,7 +204,7 @@ static uint32_t    g_save_size = 0;                       /* actual loaded byte 
 static u8          EWRAM_BSS g_sb1[G3_SAVEBLOCK1_BYTES];  /* reassembled SaveBlock1  */
 static BrowseEntry EWRAM_BSS g_entries[MAX_ENTRIES];      /* current-dir listing     */
 static int         g_count = 0;
-static int         EWRAM_BSS g_scan_more;                /* #411: an entry past the cap exists (FULL) */
+static bool        EWRAM_BSS g_scan_more;                /* #411: an entry past the cap exists (FULL) */
 static char        EWRAM_BSS g_cwd[PATH_MAX];             /* current directory (set in main) */
 /* ONE registered-ROM-path table for all five slots this app ever remembers a ROM
  * for: PkGame's RS/Emerald/FRLG (indices 0-2, the map screen's per-game ROMs) plus
@@ -714,7 +714,7 @@ static void sort_entries(BrowseEntry* ents) {      /* stable insertion sort, nev
  * every kind. */
 static void __attribute__((noinline)) scan_dir(const BrowseSpec* spec, BrowseEntry* ents) {
   g_count = 0;
-  g_scan_more = 0;
+  g_scan_more = false;
   DIR dir;
   FILINFO fno;
   if (f_opendir(&dir, g_cwd) != FR_OK) { log_line("opendir %s failed", g_cwd); return; }
