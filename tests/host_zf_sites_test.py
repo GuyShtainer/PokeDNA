@@ -89,7 +89,7 @@ def main():
     fails = 0
     muts = (
         ("F1 bound widened", "main", "if (L < 5 || L >= 21) continue;", "if (L < 5 || L >= GB_RECON_NAME_MAX) continue;"),
-        ("F-A xfer walk bypasses the helper", "main", "switch (xrc_walk_admit(fi.fname, (fi.fattrib & AM_DIR) != 0, ro_walk, &name_key, prim)) {", "switch (xrc_walk_admit_x(fi.fname, (fi.fattrib & AM_DIR) != 0, ro_walk, &name_key, prim)) {"),
+        ("F-A xfer walk bypasses the helper", "main", "switch (xrc_walk_admit(fi.fname, (fi.fattrib & AM_DIR) != 0, ro_walk && pass == 0, &name_key, prim)) {", "switch (xrc_walk_admit_x(fi.fname, (fi.fattrib & AM_DIR) != 0, ro_walk && pass == 0, &name_key, prim)) {"),
         ("F-A xfer walk private length filter", "main", "    examined++;\n    uint64_t name_key = 0; bool draft = false;", "    examined++; int L = 0; while (fi.fname[L]) L++; if (L < 5 || L >= 21) continue;\n    uint64_t name_key = 0; bool draft = false;"),
         ("S2 stuck set on primary-present refusal", "heal", "if (ps != FR_NO_FILE && ps != FR_NO_PATH) return false; }", "if (ps != FR_NO_FILE && ps != FR_NO_PATH) { if (stuck) *stuck = true; return false; } }"),
         ("S6 basename not stripped", "gen12", "for (const char* q = path; *q; q++) if (*q == '/') base = q + 1;", ""),

@@ -87,7 +87,7 @@ def f389(heal: str, boot: str, load: str, walk: str, main: str, dmain: str) -> t
     i_h, i_m = load.find("app_ledger_heal(mig)"), load.find("xr_migrate_once(")
     if i_h < 0 or i_m < 0 or i_h > i_m:
         return False, "Gen-3 load: the ledger heal must run BEFORE xr_migrate_once (#389)"
-    i_h, i_o = walk.find("app_ledger_heal(rb->sidecar)"), walk.find("f_opendir(&dir, PDNA_XFER_DIR)")
+    i_h, i_o = walk.find("app_ledger_heal(rb->sidecar)"), walk.find("f_opendir(&dir, pass == 0 ? PDNA_XFER_DIR : PDNA_SIDECAR_DIR)")
     if i_h < 0 or i_o < 0 or i_h > i_o:
         return False, "xfer_reconcile_walk: the heal must run BEFORE the xfer dir scan (#389)"
     if main.count("app_ledger_heal_boot();") != 1:

@@ -11038,7 +11038,15 @@ static void __attribute__((noinline)) xfer_reconcile_walk(GbReconBuf* rb, int ca
   app_ledger_heal(rb->sidecar);   /* BACKLOG #389: an orphan <key>.pds.tmp is the primary -- heal before this scan */
   const bool ro_walk = !app_can_edit();   /* #414: only a read-only card (no heal) lists the orphan .tmp */
   DIR dir; FILINFO fi;
-  if (f_opendir(&dir, PDNA_XFER_DIR) != FR_OK) return;
+  /* #418: pass 0 = the xfer dir; pass 1 = the legacy /sidecar dir, only while the card is NOT migrated (S150-6 decision 4:
+   * /sidecar is a fallback only until the MIGRATED marker). One loop body, mirroring gb_reconcile_walk's two-pass shape
+   * (:10982-10995). The three global bounds and `examined` run across BOTH passes (never reset). An absent xfer dir falls
+   * through to pass 1 (an unmigrated card with only /sidecar). */
+  const bool legacy_ok = !xr_migrated();
+  int legacy_start = 0;
+  for (int pass = 0; pass < 2; pass++) {
+  if (pass == 1) { if (!legacy_ok) break; legacy_start = rb->nfiles; }
+  if (f_opendir(&dir, pass == 0 ? PDNA_XFER_DIR : PDNA_SIDECAR_DIR) != FR_OK) continue;
   while (rb->nxrc < GB_RECON_MAX_HITS && rb->nfiles < GB_RECON_MAX_FILES &&
         rb->nfiles < cap_files && examined < GB_RECON_MAX_EXAMINE &&
         f_readdir(&dir, &fi) == FR_OK && fi.fname[0]) {
@@ -11049,11 +11057,22 @@ static void __attribute__((noinline)) xfer_reconcile_walk(GbReconBuf* rb, int ca
      * is there too the .tmp is skipped; the .tmp is judged by the SAME #415 predicate xr_open uses (xrc_draft_accept below
      * + the full-file parse). prim is a scratch: the slot the accepted row would take, rewritten below. */
     char* prim = rb->names[rb->nfiles];
-    switch (xrc_walk_admit(fi.fname, (fi.fattrib & AM_DIR) != 0, ro_walk, &name_key, prim)) {
+    /* #418: allow_draft is pass 0 only. A /sidecar/<key>.pds.tmp is NOT openable by xr_open (its orphan fallback reads the
+     * XFER path's .tmp, xr_path_for_key_hint), so a legacy draft row would fail on open (the #415 defect): pass 1 admits
+     * .pds ONLY. */
+    switch (xrc_walk_admit(fi.fname, (fi.fattrib & AM_DIR) != 0, ro_walk && pass == 0, &name_key, prim)) {
       case XRC_ADMIT_DRAFT: if (xr_path_for_name(rb->path, prim)) continue; draft = true; break;
       case XRC_ADMIT_PDS: break;
       default: continue;
     }
+    if (pass == 1) {   /* primary wins: a name pass 0 already took is the xfer copy -- skip the /sidecar twin */
+      bool dup = false;
+      for (int k = 0; k < rb->nfiles; k++) if (strcmp(rb->names[k], fi.fname) == 0) { dup = true; break; }
+      if (dup) continue;
+    }
+    /* A /sidecar-only record needs no per-file directory tag in rb->names: every later gb_recon_path(rb->path, name) ->
+     * xr_path_for_name resolves the NAME to /PokeDNA/xfer/<name> when that exists, else /PokeDNA/sidecar/<name> while
+     * !marker_present() -- "the xfer copy wins" is exactly that order. */
 
     int fidx = rb->nfiles;
     int cn = 0; while (fi.fname[cn] && cn < GB_RECON_NAME_MAX - 1) { rb->names[fidx][cn] = fi.fname[cn]; cn++; }
@@ -11113,6 +11132,9 @@ static void __attribute__((noinline)) xfer_reconcile_walk(GbReconBuf* rb, int ca
     }
   }
   f_closedir(&dir);
+  if (pass == 1 && rb->nfiles > legacy_start)
+    log_line("xfer: reconcile: %d legacy /sidecar record(s)", rb->nfiles - legacy_start);
+  }
 }
 
 /* Phase 2 (decision 3(ii)/(iii)/5/19): pages every Bank box ONCE and, for each box,
