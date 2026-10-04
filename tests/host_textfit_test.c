@@ -1025,6 +1025,13 @@ int main(void) {
   /* PDNA_SIDECAR_BUSY_* removed (S5-B review fix BLOCKING #2): app_paste_gb_merge no
    * longer borrows app_box_swap, so that refusal path no longer exists. */
   PF(PDNA_SIDECAR_READFAIL_TITLE,  28, 184);
+  PF(PDNA_SIDECAR_STUCK_L2,        28, 184);   /* #416(b): the stuck-file refusal's second line */
+  for (int d = 0; d < 16; d++) {              /* ... and its first line: the ledger name + ".tmp.bad", every hex digit worst-cased */
+    char nm[32]; const char* hx = "0123456789ABCDEF";
+    for (int i = 0; i < 16; i++) nm[i] = hx[d];
+    memcpy(nm + 16, ".pds.tmp.bad", 13);
+    PF(nm, 28, 184);
+  }
   PF(PDNA_SIDECAR_NONE_TITLE,      28, 184);
   PF(PDNA_SIDECAR_NONE_L1,         28, 184);
   PF(PDNA_SIDECAR_MERGEFAIL_TITLE, 28, 184);

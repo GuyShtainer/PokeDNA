@@ -1498,6 +1498,9 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_SIDECAR_FULL_L1         "Too many clones of this Pokemon."
 #define PDNA_SIDECAR_NOTWRITTEN_TITLE "SIDECAR NOT WRITTEN"
 #define PDNA_SIDECAR_NOTWRITTEN_L2   "Nothing transferred."
+/* #416(b): a bad <key>.pds.tmp could not be set aside because <key>.pds.tmp.bad is stuck -- line 1 NAMES that file
+ * (built at runtime from the ledger's own name; worst case 28 glyphs, textfit-pinned), line 2 is this. */
+#define PDNA_SIDECAR_STUCK_L2        "Delete it on a PC."
 /* BACKLOG #246 review F4 fix: gb_paste_write's own pre-gbsc_add guard. Two live
  * entries in one .pds that share BOTH the fingerprint (already guaranteed -- one
  * file per key) AND species_written are indistinguishable to xr_resolve_home's

@@ -114,6 +114,8 @@ static bool xh_set_aside_tmp(const char* path) {
   if (n + 9 > sizeof bad) return false;
   memcpy(tmp, path, n); memcpy(tmp + n, ".tmp", 5);
   memcpy(bad, path, n); memcpy(bad + n, ".tmp.bad", 9);
+  if (f_stat(bad, 0) == FR_OK)   /* #416(a): the replace is deliberate, but never silent */
+    log_line("xfer_heal: %s: an older .tmp.bad salvage exists and is being replaced by this one", path);
   (void)f_unlink(bad);                                   /* an older set-aside: replaced (FR_NO_FILE is the normal case) */
   FRESULT rr = f_rename(tmp, bad);
   log_line("xfer_heal: %s bad .tmp set aside as .tmp.bad (%s)", path, rr == FR_OK ? "OK" : "FAILED");
@@ -126,6 +128,12 @@ static bool xh_set_aside_tmp(const char* path) {
  * torn FIRST write); anything else (read-only .tmp, card fault, a restored file that does not parse) -> refuse. */
 bool xh_absent_resolve(const char* dir, const char* path, uint64_t key, uint8_t* buf, uint32_t cap,
                        bool can_edit, uint32_t* len) {
+  return xh_absent_resolve_ex(dir, path, key, buf, cap, can_edit, len, 0);
+}
+
+bool xh_absent_resolve_ex(const char* dir, const char* path, uint64_t key, uint8_t* buf, uint32_t cap,
+                          bool can_edit, uint32_t* len, bool* stuck) {
+  if (stuck) *stuck = false;
   if (!dir || !path || !buf || !len || cap < GBSC_FILE_MAX) return false;
   XhResult hr = xh_heal_key(dir, key, buf, cap, can_edit);
   /* SF_ERR_OPEN is ANY failed f_open, not "absent": a present primary the caller could not open is refused,
@@ -133,7 +141,7 @@ bool xh_absent_resolve(const char* dir, const char* path, uint64_t key, uint8_t*
   if (hr == XH_NONE) { FRESULT ps = f_stat(path, 0); if (ps != FR_NO_FILE && ps != FR_NO_PATH) return false; }
   /* An unparseable .tmp is torn scratch from a pull mid-write (savefile only keeps a byte-compared .tmp past
    * the write itself); the caller's next verified write replaces it. */
-  if (hr == XH_BAD_TMP && !xh_set_aside_tmp(path)) return false;   /* #394: keep the bad bytes, refuse if they cannot be moved */
+  if (hr == XH_BAD_TMP && !xh_set_aside_tmp(path)) { if (stuck) *stuck = true; return false; }   /* #394: keep the bad bytes, refuse if they cannot be moved */
   if (hr == XH_NONE || hr == XH_BAD_TMP) { *len = (uint32_t)gbsc_init(buf, key); return true; }
   if (hr == XH_RESTORED) {
     log_line("xfer_heal: %s healed from its .tmp mid-session", path);

@@ -42,4 +42,8 @@ FRESULT xh_unlink_ledger(const char* path);
  * (>= GBSC_FILE_MAX) is the caller's own buffer. */
 bool xh_absent_resolve(const char* dir, const char* path, uint64_t key, uint8_t* buf, uint32_t cap,
                        bool can_edit, uint32_t* len);
+/* #416(b): same, plus `*stuck` (may be NULL) = true ONLY when the refusal is the set-aside of a bad .tmp failing (an
+ * undeletable / directory-blocked <path>.tmp.bad), so the caller can name that file for the user. */
+bool xh_absent_resolve_ex(const char* dir, const char* path, uint64_t key, uint8_t* buf, uint32_t cap,
+                          bool can_edit, uint32_t* len, bool* stuck);
 #endif
