@@ -406,6 +406,11 @@ def check_q_legacy_sidecar_pass(text: str) -> list[str]:
     if not re.search(r"if\s*\(\s*f_opendir\(&dir,\s*pass\s*==\s*0\s*\?\s*PDNA_XFER_DIR\s*:\s*PDNA_SIDECAR_DIR\)\s*!=\s*FR_OK\)\s*continue;", body) \
        or re.search(r"\breturn\b", body):
         out.append("#418(r): an absent xfer dir must fall through to pass 1 (continue), and the walk must not return early")
+    # #421: legacy_n++ must be after gbsc_count passes (not before sf_read_full)
+    cn = re.search(r"if\s*\(\s*count\s*<\s*0\s*\)\s*\{[^}]*continue;", body)
+    ln = re.search(r"if\s*\(\s*pass\s*==\s*1\s*\)\s*legacy_n\+\+;", body)
+    if not cn or not ln or cn.end() > ln.start():
+        out.append("#421: legacy_n++ must be after the gbsc_count(count < 0) check")
     return out
 
 
@@ -643,10 +648,11 @@ def main() -> int:
         ("(#418 n) ungated pass 2", "const bool legacy_ok = !xr_migrated();", "const bool legacy_ok = true;", "#418(n)"),
         ("(#418 o) drafts allowed in pass 2", "ro_walk && pass == 0,", "ro_walk,", "#418(o)"),
         ("(#418 p) dedupe dropped", "if (dup) continue;", "", "#418(p)"),
-        ("(#418 q) examined reset", "legacy_start = rb->nfiles; }", "legacy_start = rb->nfiles; examined = 0; }", "#418(q)"),
+        ("(#418 q) examined reset", "if (pass == 1) { if (!legacy_ok) break; }", "if (pass == 1) { if (!legacy_ok) break; examined = 0; }", "#418(q)"),
         ("(#418 q2) examined declared per pass", "for (int pass = 0; pass < 2; pass++) {", "for (int pass = 0; pass < 2; pass++) { int examined = 0;", "#418(q)"),
         ("(#418 p2) dedupe loop dead", "for (int k = 0; k < rb->nfiles; k++) if (xrc_name_eq_ci", "for (int k = 0; k < 0; k++) if (xrc_name_eq_ci", "#418(p)"),
         ("(#420) dedupe case-sensitive", "xrc_name_eq_ci(rb->names[k], fi.fname)", "(strcmp(rb->names[k], fi.fname) == 0)", "#418(p)"),
+        ("#421 legacy_n++ moved before the read", "    gb_recon_path(rb->path, rb->names[fidx]);\n    uint32_t len = 0;\n    if (sf_read_full(rb->path, rb->sidecar, GBSC_FILE_MAX, &len) != SF_OK) {\n      log_line(\"xfer: reconcile: could not read %s\", rb->path);\n      continue;\n    }\n    int count = gbsc_count(rb->sidecar, len);\n    if (count < 0) {\n      log_line(\"xfer: reconcile: %s fails its own crc, skipped\", rb->path);\n      continue;\n    }\n    if (pass == 1) legacy_n++;", "    if (pass == 1) legacy_n++;\n    gb_recon_path(rb->path, rb->names[fidx]);\n    uint32_t len = 0;\n    if (sf_read_full(rb->path, rb->sidecar, GBSC_FILE_MAX, &len) != SF_OK) {\n      log_line(\"xfer: reconcile: could not read %s\", rb->path);\n      continue;\n    }\n    int count = gbsc_count(rb->sidecar, len);\n    if (count < 0) {\n      log_line(\"xfer: reconcile: %s fails its own crc, skipped\", rb->path);\n      continue;\n    }"),
         ("(#418 p3) dedupe on the wrong pass", "if (pass == 1) {   /* primary wins", "if (pass == 2) {   /* primary wins", "#418(p)"),
         ("(#418 r) absent xfer returns", "PDNA_SIDECAR_DIR) != FR_OK) continue;", "PDNA_SIDECAR_DIR) != FR_OK) return;", "#418(r)"),
         ("(#419 W2) walk f_stats the .tmp", "if (xr_path_for_name(rb->path, prim)) continue;", "if (xr_path_for_name(rb->path, fi.fname)) continue;", "W2"),

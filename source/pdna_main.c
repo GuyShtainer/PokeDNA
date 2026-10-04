@@ -11043,9 +11043,9 @@ static void __attribute__((noinline)) xfer_reconcile_walk(GbReconBuf* rb, int ca
    * (:10982-10995). The three global bounds and `examined` run across BOTH passes (never reset). An absent xfer dir falls
    * through to pass 1 (an unmigrated card with only /sidecar). */
   const bool legacy_ok = !xr_migrated();
-  int legacy_start = 0;
+  int legacy_n = 0;
   for (int pass = 0; pass < 2; pass++) {
-  if (pass == 1) { if (!legacy_ok) break; legacy_start = rb->nfiles; }
+  if (pass == 1) { if (!legacy_ok) break; }
   if (f_opendir(&dir, pass == 0 ? PDNA_XFER_DIR : PDNA_SIDECAR_DIR) != FR_OK) continue;
   while (rb->nxrc < GB_RECON_MAX_HITS && rb->nfiles < GB_RECON_MAX_FILES &&
         rb->nfiles < cap_files && examined < GB_RECON_MAX_EXAMINE &&
@@ -11090,6 +11090,7 @@ static void __attribute__((noinline)) xfer_reconcile_walk(GbReconBuf* rb, int ca
       log_line("xfer: reconcile: %s fails its own crc, skipped", rb->path);
       continue;
     }
+    if (pass == 1) legacy_n++;
     uint64_t file_key = gbsc_file_key(rb->sidecar, len);
     if (draft && !xrc_draft_accept(rb->sidecar, len, name_key)) {   /* #414/#415: a foreign-key .tmp is not this record */
       log_line("xfer: reconcile: %s is not the draft of its own key, skipped", rb->path);
@@ -11132,8 +11133,8 @@ static void __attribute__((noinline)) xfer_reconcile_walk(GbReconBuf* rb, int ca
     }
   }
   f_closedir(&dir);
-  if (pass == 1 && rb->nfiles > legacy_start)
-    log_line("xfer: reconcile: %d legacy /sidecar record(s)", rb->nfiles - legacy_start);
+  if (pass == 1 && legacy_n)
+    log_line("xfer: reconcile: %d legacy /sidecar record(s)", legacy_n);
   }
 }
 
