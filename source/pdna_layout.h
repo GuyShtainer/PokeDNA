@@ -1781,9 +1781,10 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_SET_ROM_FMT      "Game ROM:  %s"
 #define PDNA_SET_ROM_NOTSET   "not set"
 #define PDNA_SET_ROM_ARTOFF   "set, art OFF"
+#define PDNA_SET_ROM_GBONLY   "GB only"          /* #412: no Gen-3 ROM, but a Gen 1/2 ROM path is registered */
 #define PDNA_SET_ROM_LONGEST_KIND "LeafGreen"
 #define PDNA_SET_ROM_VALUES(X) \
-  X(PDNA_SET_ROM_NOTSET) X(PDNA_SET_ROM_ARTOFF) X(PDNA_SET_ROM_LONGEST_KIND)
+  X(PDNA_SET_ROM_NOTSET) X(PDNA_SET_ROM_ARTOFF) X(PDNA_SET_ROM_GBONLY) X(PDNA_SET_ROM_LONGEST_KIND)
 #define PDNA_SET_ROW_CLEAR   "Clear backups (this save)"
 /* #234 slice 4: the undo journal's two rows. The size presets are the retention cap in 64 KiB segments (16 / 8 / 4); a
  * SMALLER cap applies when a save next opens, a BIGGER one only to a history created after Clear history (the ring's

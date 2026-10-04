@@ -9386,7 +9386,9 @@ static void pdna_settings(void) {
      * point is that the registration survives the flip). */
     char r2[SET_ROW_BUF];
     if (g_rom_art_off && app_any_rom_registered()) siprintf(r2, PDNA_SET_ROM_FMT, PDNA_SET_ROM_ARTOFF);
-    else siprintf(r2, PDNA_SET_ROM_FMT, s_iconrom.ok ? rom_kind_name(s_iconrom_ctx.kind) : PDNA_SET_ROM_NOTSET);
+    else siprintf(r2, PDNA_SET_ROM_FMT, s_iconrom.ok ? rom_kind_name(s_iconrom_ctx.kind)
+                                       : (app_gb_rom_path(PDNA_GEN1)[0] || app_gb_rom_path(PDNA_GEN2)[0])
+                                           ? PDNA_SET_ROM_GBONLY : PDNA_SET_ROM_NOTSET);   /* #412: a Gen 1/2 path alone is not "not set" */
     /* Extract-art row (Phase 2): three dim/live states, same posture as Yard visitors
      * above -- say WHY it is unavailable rather than show a toggle that does nothing. */
     bool art_omega_ok = (active_flashcart == EZ_FLASH_OMEGA);

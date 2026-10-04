@@ -53,6 +53,18 @@ pin("#411 g_scan_more is EWRAM_BSS",
     main, lambda t: "EWRAM_BSS g_scan_more;" in t,
     lambda t: t.replace("EWRAM_BSS g_scan_more;", "g_scan_more;"))
 
+# ---- #412 Game ROM row: a Gen 1/2 path with no Gen-3 ROM reads "GB only", not "not set"
+pin("#412 the Game ROM row falls to PDNA_SET_ROM_GBONLY when a GB ROM path (gen 1 or 2) is registered",
+    main, lambda t: re.search(r"app_gb_rom_path\(PDNA_GEN1\)\[0\] \|\| app_gb_rom_path\(PDNA_GEN2\)\[0\]\)\s*\? PDNA_SET_ROM_GBONLY : PDNA_SET_ROM_NOTSET", t) is not None,
+    lambda t: t.replace("? PDNA_SET_ROM_GBONLY : PDNA_SET_ROM_NOTSET", "? PDNA_SET_ROM_NOTSET : PDNA_SET_ROM_NOTSET"))
+pin("#412 app_any_rom_registered keeps its Gen-3-only meaning (slots 0-2)",
+    main, lambda t: "for (int i = 0; i < 3; i++) if (g_rom_path[i][0]) return true;" in t,
+    lambda t: t.replace("for (int i = 0; i < 3; i++) if (g_rom_path[i][0])", "for (int i = 0; i < APP_ROM_SLOTS; i++) if (g_rom_path[i][0])"))
+lay = rd("pdna_layout.h")
+pin("#412 GBONLY is in the textfit value list",
+    lay, lambda t: "X(PDNA_SET_ROM_GBONLY)" in t,
+    lambda t: t.replace("X(PDNA_SET_ROM_GBONLY) ", ""))
+
 if fails:
     for f in fails:
         print("FAIL:", f)
