@@ -36,6 +36,23 @@ pin("#396 the ROM-hack banner msg_wait is bracketed by perf_span_pause/resume (l
     main, lambda t: re.search(RH, t) is not None,
     lambda t: t.replace("perf_span_resume(); hb_resume();\n  } else {\n    app_src_readonly_clear();", "} else {\n    app_src_readonly_clear();"))
 
+# ---- #411 FULL means "an entry past the cap exists" (scan_dir lookahead), not "count reached the cap"
+pin("#411 scan_dir admits through scan_cap_admit AFTER the filters (the lookahead sees only passing entries)",
+    main, lambda t: re.search(r"spec_ext_match\(spec, fno\.fname\)\) continue;[^\n]*\n\s*if \(!scan_cap_admit\(g_count, spec->cap, &g_scan_more\)\) break;", t) is not None,
+    lambda t: t.replace("if (!scan_cap_admit(g_count, spec->cap, &g_scan_more)) break;", ""))
+pin("#411 the readdir loop no longer stops AT the cap (the lookahead must read one entry past it)",
+    main, lambda t: "while (f_readdir(&dir, &fno) == FR_OK && fno.fname[0]) {" in t and "while (g_count < spec->cap && f_readdir" not in t,
+    lambda t: t.replace("while (f_readdir(&dir, &fno) == FR_OK && fno.fname[0]) {", "while (g_count < spec->cap && f_readdir(&dir, &fno) == FR_OK && fno.fname[0]) {"))
+pin("#411 the status line's FULL comes from g_scan_more",
+    main, lambda t: 'g_scan_more ? "FULL  " : ""' in t,
+    lambda t: t.replace('g_scan_more ? "FULL  " : ""', 'g_count >= spec->cap ? "FULL  " : ""'))
+pin("#411 g_scan_more is cleared at every scan start",
+    main, lambda t: re.search(r"g_count = 0;\s*g_scan_more = 0;", t) is not None,
+    lambda t: t.replace("g_scan_more = 0;\n  DIR dir;", "DIR dir;"))
+pin("#411 g_scan_more is EWRAM_BSS",
+    main, lambda t: "EWRAM_BSS g_scan_more;" in t,
+    lambda t: t.replace("EWRAM_BSS g_scan_more;", "g_scan_more;"))
+
 if fails:
     for f in fails:
         print("FAIL:", f)
