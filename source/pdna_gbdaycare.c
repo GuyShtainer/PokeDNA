@@ -339,8 +339,7 @@ static bool gbdc_grow_preview(const GbSession* s, const GbEditMon* mon, DcGrow* 
 /* Write the grown level/EXP (always) and, when with_moves, the learned moves, into the
  * freshly withdrawn `mon`. New moves get base PP; shifted moves keep their original PP and PP Ups. */
 static void gbdc_grow_apply(GbEditMon* mon, uint8_t gen, const DcGrow* g, bool with_moves) {
-  if (gen == GB_GEN1) (void)gb_set_exp(mon, gb_get_exp(mon));   /* keep EXP, re-derive the level */
-  else                (void)gb_set_level(mon, g->lv_after);     /* Gen 2: EXP floors to the level */
+  (void)gb_set_exp(mon, gb_get_exp(mon));   /* level re-derived, EXP kept — a mid-level EXP is a normal, legal record */
   if (!with_moves) return;
   uint8_t om[4], opp[4], oup[4];
   for (int k = 0; k < 4; k++) { om[k] = gb_get_move(mon, k); opp[k] = gb_get_pp(mon, k); oup[k] = gb_get_ppup(mon, k); }

@@ -94,9 +94,9 @@ def checks(main, gbdc, gen12):
     ap = body(gbdc, "gbdc_grow_apply")
     if "gb_set_ppup(mon, k, oup[j])" not in ap:
         out.append("P8: shifted moves must keep their PP Ups (gb_set_ppup(mon, k, oup[j]))")
-    # P9: Gen 1 keeps the grown EXP, Gen 2 floors it to the level
-    if "if (gen == GB_GEN1) (void)gb_set_exp(mon, gb_get_exp(mon));" not in ap or "gb_set_level(mon, g->lv_after)" not in ap:
-        out.append("P9: Gen 1 must keep EXP (gb_set_exp), Gen 2 must floor it (gb_set_level)")
+    # P9: both Gen 1 and Gen 2 keep the grown EXP (never floor)
+    if "(void)gb_set_exp(mon, gb_get_exp(mon));" not in ap or "gb_set_level(mon, g->lv_after)" in ap:
+        out.append("P9: both Gen 1 and Gen 2 must keep EXP (gb_set_exp), never floor it (gb_set_level)")
     # P10: one log line per take, both twins
     if 'log_line("daycare: take %s Lv%d->%d +%d moves(%s)"' not in ask:
         out.append("P10: the Gen-3 take must log 'daycare: take ...'")
@@ -138,7 +138,7 @@ def main():
         ("P6 apply after land", "gbdc", "    gbdc_grow_apply(&mon, s->gen, grow, with_moves);\n    log_line", "    log_line"),
         ("P7 no_rom lost", "gbdc", "*no_rom = kept < 0;", "*no_rom = false;"),
         ("P8 sub-level steps dropped", "gbdc", "gb_set_ppup(mon, k, oup[j]);", ";"),
-        ("P9 gen1 floors", "gbdc", "if (gen == GB_GEN1) (void)gb_set_exp(mon, gb_get_exp(mon));", "if (gen == GB_GEN1) (void)gb_set_level(mon, g->lv_after);"),
+        ("P9 never keep exp", "gbdc", "(void)gb_set_exp(mon, gb_get_exp(mon));   /* level re-derived, EXP kept", "(void)gb_set_level(mon, g->lv_after);   /* level re-derived, EXP kept"),
         ("P10 gen3 log dropped", "main", 'log_line("daycare: take %s Lv%d->%d +%d moves(%s)"', 'log_line("daycare: grow %s Lv%d->%d +%d moves(%s)"'),
         ("P10 gb log dropped", "gbdc", 'log_line("daycare: take %s Lv%d->%d +%d moves(%s)"', 'log_line("daycare: grow %s Lv%d->%d +%d moves(%s)"'),
         ("P11 private open", "gen12", "  if (!gb_learn_begin()) return -1;\n  int kept = rom_gblearn_moves_between", "  int kept = rom_gblearn_moves_between"),
