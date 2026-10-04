@@ -7823,7 +7823,10 @@ static bool __attribute__((noinline)) dc_grow_ask(uint32_t base, uint32_t stride
   DcGrow* g = pdna_dc_grow_buf();
   *grow = NULL; *with_moves = false;
   if (!gen3_dc_preview(g_game, rec, false, dc_steps_of(base, stride, physi), g)) return true;
-  if (g->lv_after == g->lv_before) return true;       /* steps short of a level: today's flow */
+  if (g->lv_after == g->lv_before) {                 /* short of a level: no panel, but retail still */
+    if (g->exp_after != g->exp_before) *grow = g;     /* adds the steps (daycare.c :236-262): EXP only */
+    return true;
+  }
   int pick = pdna_dc_grow_panel(g, false);
   if (pick == PDNA_DCG_LEAVE) return false;
   *grow = g; *with_moves = (pick == PDNA_DCG_LEARN);

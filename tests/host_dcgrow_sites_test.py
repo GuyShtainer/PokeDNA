@@ -47,11 +47,11 @@ def checks(main, gbdc, gen12):
         out.append("P1: dc_withdraw must run dc_grow_ask BEFORE the To Party / To PC destination menu")
     if not re.search(r"if \(!dc_grow_ask\([^)]*\)\) return false;", w):
         out.append("P1: a 'Leave inside' (dc_grow_ask false) must return false from dc_withdraw with nothing written")
-    # P2: preview is the pure core, no panel when the level did not move, LEAVE writes nothing
+    # P2: preview is the pure core, no panel when the level did not move, but steps still become EXP
     if "gen3_dc_preview(g_game, rec, false, dc_steps_of(base, stride, physi), g)" not in ask:
         out.append("P2: dc_grow_ask must preview with the SAVE'S game and the slot's own steps")
-    if "if (g->lv_after == g->lv_before) return true;" not in ask:
-        out.append("P2: no panel (today's flow) when the level did not change")
+    if not re.search(r"if \(g->lv_after == g->lv_before\) \{[^}]*if \(g->exp_after != g->exp_before\) \*grow = g;[^}]*return true;", ask):
+        out.append("P2: no panel when the level did not change, but the steps still become EXP (*grow = g)")
     if not re.search(r"if \(pick == PDNA_DCG_LEAVE\) return false;", ask):
         out.append("P2: Leave inside must return false")
     # P3: the steps address == the one dc_clear_slot_aux zeroes
@@ -119,7 +119,8 @@ def main():
     muts = (
         ("P1 menu before ask", "main", "if (!dc_grow_ask(base, stride, rec, physi, &grow, &with_moves)) return false;   /* Leave inside */", ""),
         ("P1 leave ignored", "main", "if (!dc_grow_ask(base, stride, rec, physi, &grow, &with_moves)) return false;", "(void)dc_grow_ask(base, stride, rec, physi, &grow, &with_moves);"),
-        ("P2 panel on every take", "main", "if (g->lv_after == g->lv_before) return true;", ""),
+        ("P2 panel on every take", "main", "  if (g->lv_after == g->lv_before) {", "  if (0) {"),
+        ("P2 sub-level steps dropped", "main", "if (g->exp_after != g->exp_before) *grow = g;", ";"),
         ("P2 leave not false", "main", "if (pick == PDNA_DCG_LEAVE) return false;", "if (pick == PDNA_DCG_LEAVE) return true;"),
         ("P2 wrong game", "main", "gen3_dc_preview(g_game, rec", "gen3_dc_preview(PK_EMERALD, rec"),
         ("P3 steps offset", "main", "base + 272 + (uint32_t)physi * 4", "base + 270 + (uint32_t)physi * 4"),
