@@ -5737,8 +5737,6 @@ static bool gb_create_hook(void) {
   int box = (g_m->ui_box >= 0 && g_m->ui_box <= g_m->party_box) ? g_m->ui_box
           : (g_m->current_box >= 0 && g_m->current_box <= g_m->party_box) ? g_m->current_box
           : 0;
-  const int original_box = box;   /* review fix 3: named in the post-create message
-                                   * only when F4's picker actually redirected here */
   if (gb_box_is_party(g_ed->s.gen, box)) {
     snd_deny();
     msg_wait(PDNA_GBCREATE_TITLE, UI_WARN, PDNA_SIDECAR_PARTY_L1, 0);
@@ -5769,21 +5767,13 @@ static bool gb_create_hook(void) {
     snd_deny(); msg_wait(PDNA_GBCREATE_BADLIST_TITLE, UI_WARN, PDNA_GBCREATE_BADLIST_L1, 0);
     return false;
   }
+  /* BACKLOG #398: a full box never reaches here -- since #200 every non-mon cell of a full GB box is
+   * blocked, so no empty cell opens a CREATE menu, and Gen 3 has no "pick another box" redirect for a
+   * full box either (UX parity: nothing to mirror). The old BOX FULL -> "CREATE IN" picker was dead code and is
+   * gone with its strings; this stays only as the defensive refusal (nothing is written). */
   if (count >= cap) {
-    /* Name the box and its count (brief's own wording: "Box 1 is full (20/20) --
-     * pick another box"), then offer the SAME destination picker DUPLICATE/MOVE TO
-     * BOX use (gb_pick_box, F3's n/cap+dim-full picker) instead of a flat refusal.
-     * `box` is reassigned to the pick -- everything below (species/level/insert)
-     * runs against the NEW destination; gbs_insert() reloads its own list for
-     * whatever box it is handed, so no stale state carries over from the full one. */
-    char nm[12], l1[32];
-    pdna_gen12_box_name(g_m, box, nm);
-    siprintf(l1, "%s is full (%d/%d).", nm, count, cap);
-    snd_deny();
-    msg_wait(PDNA_GBCREATE_FULL_TITLE, UI_WARN, l1, PDNA_GBCREATE_FULL_PICKHINT_L2);
-    int dst = gb_pick_box(g_m, box, PDNA_GBEDIT_PICKBOX_CREATE_TITLE, true);
-    if (dst < 0) return false;   /* B on the picker, or gb_pick_box's own "no room anywhere" */
-    box = dst;
+    snd_deny(); msg_wait(PDNA_GBCREATE_FULL_TITLE, UI_WARN, PDNA_GBCREATE_FULL_L1, 0);
+    return false;
   }
 
   /* Species picker: pdna_pick.c's own big icon-grid pick_species(), the EXACT
@@ -5898,16 +5888,6 @@ static bool gb_create_hook(void) {
   }
   log_line("=== gb create -> %s box %d slot %d dex %u lv %d ===", g_ed->path, box, slot_out, dex, lvl);
   bool ok = gb_hold_commit("create");
-  /* Review fix 3 (LOW), BACKLOG #187: F4's picker can redirect `box` away from the
-   * one the grid is showing -- say so, or the new mon looks like it never landed. A
-   * plain in-place create (the common case) already shows it right where the
-   * player is looking; nothing new to say there. */
-  if (ok && box != original_box) {
-    char nm[12], l1[32];
-    pdna_gen12_box_name(g_m, box, nm);
-    siprintf(l1, PDNA_GBCREATE_REDIRECTED_FMT, nm, slot_out + 1);
-    msg_wait(PDNA_GBCREATE_REDIRECTED_TITLE, UI_OK, l1, 0);
-  }
   return ok;
 }
 

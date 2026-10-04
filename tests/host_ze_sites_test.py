@@ -84,6 +84,18 @@ pin("#397 only a tip == 0 branch takes the discarded view",
     jra, lambda t: "jrn_tip(&s_j) != 0) return 0;" in t,
     lambda t: t.replace("|| jrn_tip(&s_j) != 0) return 0;", ") return 0;"))
 
+# ---- #398 gb_create_hook's dead BOX FULL -> CREATE IN picker is gone (Gen 3 has no such redirect)
+g12 = rd("pdna_gen12.c")
+lay2 = rd("pdna_layout.h")
+def create_hook(t):
+    return re.search(r"static bool gb_create_hook\(void\) \{.*?\n\}\n", t, re.S).group(0)
+pin("#398 gb_create_hook keeps only the defensive full-box refusal (no picker, no redirect message)",
+    g12, lambda t: (lambda b: "if (count >= cap) {" in b and "PDNA_GBCREATE_FULL_L1" in b and "gb_pick_box" not in b and "original_box" not in b and "REDIRECTED" not in b)(create_hook(t)),
+    lambda t: t.replace("    snd_deny(); msg_wait(PDNA_GBCREATE_FULL_TITLE, UI_WARN, PDNA_GBCREATE_FULL_L1, 0);\n    return false;", "    int dst = gb_pick_box(g_m, box, \"x\", true); (void)dst;"))
+pin("#398 the dead strings are gone from the layout header",
+    lay2, lambda t: not any(k in t for k in ("PDNA_GBCREATE_FULL_PICKHINT_L2", "PDNA_GBEDIT_PICKBOX_CREATE_TITLE", "PDNA_GBCREATE_REDIRECTED_")),
+    lambda t: t + "\n#define PDNA_GBCREATE_FULL_PICKHINT_L2 \"x\"\n")
+
 if fails:
     for f in fails:
         print("FAIL:", f)
