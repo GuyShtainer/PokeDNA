@@ -178,6 +178,9 @@ int xrc_row_text_draft(const char* species, const char* game, char out[40]);
 /* #414: true for exactly "<16 hex>.pds.tmp" (extension case-blind); *key (may be NULL) = the 16 hex digits. */
 bool xrc_draft_name(const char* fname, uint64_t* key);
 
+/* #420: FAT lookup is case-blind, so two names that differ only in ASCII case are the SAME file; the walks' dedupe must agree. */
+bool xrc_name_eq_ci(const char* a, const char* b);
+
 /* #419: the TRANSFERS walk's per-name decision, I/O-free. is_dir: the entry is a directory. allow_draft: read-only card AND
   * pass 0 (the xfer-dir pass). DRAFT = "<16 hex>.pds.tmp" with allow_draft: fills *name_key (may be NULL) and prim[21] =
  * "<16hex>.pds" (the primary the caller must f_stat; the primary wins). PDS = a 5..20-char ".pds" name (literal bound 21, gb_reconcile_walk's rule,
