@@ -12473,7 +12473,10 @@ static void view_save(const char* path) {
    * leak here is STOP-level, per this lane's brief). */
   if (app_rom_is_hack(g_game)) {
     app_src_readonly_set(0, PDNA_ROMHACK_NOTE);
+    /* BACKLOG #396: a wait on the user -- keep it out of the `perf boot` span (like save_slot_warn). */
+    hb_pause(); perf_span_pause();
     msg_wait(PDNA_ROMHACK_TITLE, UI_WARN, PDNA_ROMHACK_L1, PDNA_ROMHACK_L2);
+    perf_span_resume(); hb_resume();
   } else {
     app_src_readonly_clear();
   }
