@@ -75,6 +75,7 @@
 #include "gen3_dex.h"      /* Pokedex seen/owned flags */
 #include "gen3_pokeblock.h" /* Pokeblock case (RS/Emerald) */
 #include "gen3_daycare.h"  /* daycare breeding compatibility (the man's verdict) */
+#include "pdna_gbdaycare.h" /* BACKLOG #373: pdna_dc_grow_panel / pdna_dc_grow_buf */
 #include "gen3_items.h"    /* item bags */
 #include "pdna_bag.h"      /* real Emerald bag screen (data-editor bag tab) */
 #include "pdna_yard.h"     /* BACKLOG #114: Day-Care yard scene -- dc_scene/dc_pointer/
@@ -7806,13 +7807,40 @@ static bool dc_deposit(uint32_t base, uint32_t stride) {
   return true;
 }
 
-/* Take the selected daycare mon OUT, to a chosen destination (the mon moves AS-IS — we
- * don't replay the game's withdraw-time EXP-from-steps gain):
+/* The boarding steps of physical slot `physi` (the u32 dc_clear_slot_aux zeroes). */
+static uint32_t dc_steps_of(uint32_t base, uint32_t stride, int physi) {
+  const uint8_t* p = g_sb1 + ((g_game == PK_RS) ? base + 272 + (uint32_t)physi * 4
+                                                : base + (uint32_t)physi * stride + 136);
+  return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+/* BACKLOG #373: retail adds the boarding steps to the mon's EXP on take-out and teaches the
+ * level-up moves of every level it crossed. Previews that on a copy and asks (Leave inside /
+ * Take, learn moves / Take, keep moves). Returns false = leave it inside (nothing written);
+ * true = go on, `*grow` set when it grew (else `*grow = NULL`: today's flow untouched). */
+static bool __attribute__((noinline)) dc_grow_ask(uint32_t base, uint32_t stride, const uint8_t* rec, int physi,
+                        DcGrow** grow, bool* with_moves) {
+  DcGrow* g = pdna_dc_grow_buf();
+  *grow = NULL; *with_moves = false;
+  if (!gen3_dc_preview(g_game, rec, false, dc_steps_of(base, stride, physi), g)) return true;
+  if (g->lv_after == g->lv_before) return true;       /* steps short of a level: today's flow */
+  int pick = pdna_dc_grow_panel(g, false);
+  if (pick == PDNA_DCG_LEAVE) return false;
+  *grow = g; *with_moves = (pick == PDNA_DCG_LEARN);
+  log_line("daycare: take %s Lv%d->%d +%d moves(%s)", pk_species_name(g->species), (int)g->lv_before,
+           (int)g->lv_after, *with_moves ? g->n_learn : 0, *with_moves ? "learn" : "keep");
+  return true;
+}
+
+/* Take the selected daycare mon OUT, to a chosen destination. It first grows the way the
+ * game's own counter grows it (dc_grow_ask above; no panel when it stayed at its level):
  *   To Party - append directly, refused with a message if the party is already full.
  *   To PC    - place on the clipboard so the user PASTEs it onto any free PC slot
  *              (a "grab"-style placement of their choice). */
 static bool dc_withdraw(uint32_t base, uint32_t stride, uint8_t* rec, int physi) {
   if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, app_readonly_why(), 0); return false; }
+  DcGrow* grow; bool with_moves;
+  if (!dc_grow_ask(base, stride, rec, physi, &grow, &with_moves)) return false;   /* Leave inside */
   static const char* const D[3] = { "To Party", "To PC", "Cancel" };
   int sel = 0;
   for (;;) {
@@ -7834,7 +7862,9 @@ static bool dc_withdraw(uint32_t base, uint32_t stride, uint8_t* rec, int physi)
   if (sel == 2) return false;
   if (sel == 0) {                                /* To Party — append (atomic, full-checked) */
     if (party_count(g_sb1, g_frlg) >= 6) { snd_deny(); msg_wait("PARTY FULL", UI_WARN, "Free a party slot first.", 0); return false; }
-    EditMon e; gen3_edit_load(rec, false, &e); em_set_party_flag(&e, true);   /* box -> party form */
+    EditMon e; gen3_edit_load(rec, false, &e);
+    if (grow) gen3_dc_apply(&e, grow, with_moves);                             /* grown BEFORE the party form */
+    em_set_party_flag(&e, true);                                              /* box -> party form */
     uint8_t out[100]; gen3_edit_commit(&e, out);
     party_append(g_sb1, g_frlg, out);
     memset(rec, 0, 80); dc_clear_slot_aux(base, stride, physi); dc_clear_egg(base);
@@ -7842,7 +7872,15 @@ static bool dc_withdraw(uint32_t base, uint32_t stride, uint8_t* rec, int physi)
     snd_ok(); msg_wait("TO PARTY", UI_OK, "Added to your party.", "Saved when you leave.");
   } else {                                       /* To PC — park in a free slot, then carry it in the glove */
     int pb = -1, ps = -1;
-    if (!app_inject_to_game_deferred(rec, &pb, &ps)) return false;   /* PC full: daycare kept */
+    uint8_t grown[80];
+    const uint8_t* src = rec;
+    if (grow) {                                  /* the grown copy: the daycare record stays untouched until it lands */
+      EditMon e; gen3_edit_load(rec, false, &e);
+      gen3_dc_apply(&e, grow, with_moves);
+      gen3_edit_commit(&e, grown);
+      src = grown;
+    }
+    if (!app_inject_to_game_deferred(src, &pb, &ps)) return false;   /* PC full: daycare kept */
     memset(rec, 0, 80); dc_clear_slot_aux(base, stride, physi); dc_clear_egg(base);   /* PC has it now -> clear daycare */
     app_stage_sb1();
     g_pickup_box = pb; g_pickup_slot = ps;                      /* box grid opens here carrying it */

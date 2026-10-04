@@ -131,6 +131,7 @@ bool gen3_dc_preview(PkGame learnset_game, const uint8_t* rec, bool is_party,
   if (species == 0 || (e.raw[0x13] & 0x04)) return false;      /* empty / egg: never grows */
 
   memset(out, 0, sizeof(*out));
+  out->species = species;
   uint8_t gr = pk_species_growth(species);
   out->exp_before = dcg_rd32(e.sub[0] + 4);
   out->lv_before  = pk_level_from_exp(gr, out->exp_before);

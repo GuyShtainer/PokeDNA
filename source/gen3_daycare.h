@@ -47,6 +47,7 @@ const char* pk_daycare_yard_note(int boarders, int visitors);
  * `learnset_game` = the game the save belongs to (a boarded mon learns from the game it
  * is in). */
 typedef struct {
+  uint16_t species;                   /* internal id, for the log line */
   uint8_t  lv_before, lv_after;
   uint32_t exp_before, exp_after;
   int      n_learn;                   /* TRUE count; only the first DC_LEARN_MAX are in learn[] */
