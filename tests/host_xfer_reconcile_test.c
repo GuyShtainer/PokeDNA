@@ -511,6 +511,18 @@ static void test_draft_name(void) {
   CHECK(!xrc_draft_name(NULL, &k), "#414: NULL refused");
 }
 
+/* ==== NAMEEQ-1 (BACKLOG #420) ========================================================= */
+static void test_nameeq1(void) {
+  printf("== #420: xrc_name_eq_ci ==\n");
+  CHECK(xrc_name_eq_ci("0123456789ABCDEF.pds", "0123456789ABCDEF.pds"), "NAMEEQ-1: equal");
+  CHECK(xrc_name_eq_ci("0123456789ABCDEF.pds", "0123456789abcdef.PDS"), "NAMEEQ-1: case-variant equal");
+  CHECK(!xrc_name_eq_ci("0123456789ABCDEF.pds", "0123456789ABCFEF.pds"), "NAMEEQ-1: different hex digit → false");
+  CHECK(!xrc_name_eq_ci("abc.pds", "abc.pds.tmp"), "NAMEEQ-1: prefix → false");
+  CHECK(!xrc_name_eq_ci(NULL, "abc.pds"), "NAMEEQ-1: NULL → false");
+  CHECK(!xrc_name_eq_ci("abc.pds", NULL), "NAMEEQ-1: NULL → false");
+  CHECK(!xrc_name_eq_ci("@", "`"), "NAMEEQ-1: '@' vs '`' → false (is_alpha guard)");
+}
+
 /* ==== ADMIT-1 / ACCEPT-1 (BACKLOG #419) ================================================ */
 static void test_admit1(void) {
   printf("== #419: xrc_walk_admit / xrc_draft_accept ==\n");
@@ -853,6 +865,7 @@ int main(int argc, char** argv) {
   test_rekey1();
   test_row1();
   test_draft_name();
+  test_nameeq1();
   test_admit1();
   test_rebuild1();
   test_inbank1();

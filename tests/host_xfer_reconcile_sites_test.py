@@ -392,10 +392,10 @@ def check_q_legacy_sidecar_pass(text: str) -> list[str]:
     if not re.search(r"xrc_walk_admit\([^;]*,\s*ro_walk\s*&&\s*pass\s*==\s*0\s*,", body):
         out.append("#418(o): the xrc_walk_admit call does not restrict allow_draft to pass 0 (ro_walk && pass == 0)")
     dm = re.search(r"if\s*\(\s*pass\s*==\s*1\s*\)\s*\{[^}]*?for\s*\(\s*int\s+k\s*=\s*0\s*;\s*k\s*<\s*rb->nfiles\s*;\s*k\+\+\s*\)\s*"
-                   r"if\s*\(\s*strcmp\(\s*rb->names\[\s*k\s*\]\s*,\s*fi\.fname\s*\)\s*==\s*0\s*\)", body)
+                   r"if\s*\(\s*xrc_name_eq_ci\(\s*rb->names\[\s*k\s*\]\s*,\s*fi\.fname\s*\)\s*\)", body)
     am = body.find("rb->nfiles++")
     if not dm or am < 0 or dm.start() > am or not re.search(r"if\s*\(\s*dup\s*\)\s*continue", body):
-        out.append("#418(p): the dedupe strcmp(rb->names[k], fi.fname) + continue must precede the accept (rb->nfiles++)")
+        out.append("#418(p): the dedupe xrc_name_eq_ci(rb->names[k], fi.fname) + continue must precede the accept (rb->nfiles++)")
     # review-zg2: the declaration itself must sit BEFORE the pass loop -- `int examined = 0;` moved inside the loop resets it
     # per pass (the S150-6 F6 regression) and passed the old replace()-based check.
     dq, fp = body.find("int examined = 0;"), body.find("for (int pass = 0;")
@@ -645,7 +645,8 @@ def main() -> int:
         ("(#418 p) dedupe dropped", "if (dup) continue;", "", "#418(p)"),
         ("(#418 q) examined reset", "legacy_start = rb->nfiles; }", "legacy_start = rb->nfiles; examined = 0; }", "#418(q)"),
         ("(#418 q2) examined declared per pass", "for (int pass = 0; pass < 2; pass++) {", "for (int pass = 0; pass < 2; pass++) { int examined = 0;", "#418(q)"),
-        ("(#418 p2) dedupe loop dead", "for (int k = 0; k < rb->nfiles; k++) if (strcmp", "for (int k = 0; k < 0; k++) if (strcmp", "#418(p)"),
+        ("(#418 p2) dedupe loop dead", "for (int k = 0; k < rb->nfiles; k++) if (xrc_name_eq_ci", "for (int k = 0; k < 0; k++) if (xrc_name_eq_ci", "#418(p)"),
+        ("(#420) dedupe case-sensitive", "xrc_name_eq_ci(rb->names[k], fi.fname)", "(strcmp(rb->names[k], fi.fname) == 0)", "#418(p)"),
         ("(#418 p3) dedupe on the wrong pass", "if (pass == 1) {   /* primary wins", "if (pass == 2) {   /* primary wins", "#418(p)"),
         ("(#418 r) absent xfer returns", "PDNA_SIDECAR_DIR) != FR_OK) continue;", "PDNA_SIDECAR_DIR) != FR_OK) return;", "#418(r)"),
         ("(#419 W2) walk f_stats the .tmp", "if (xr_path_for_name(rb->path, prim)) continue;", "if (xr_path_for_name(rb->path, fi.fname)) continue;", "W2"),

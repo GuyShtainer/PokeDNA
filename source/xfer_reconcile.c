@@ -326,6 +326,23 @@ void xrc_rekey_mark_done(bool* file_rekeyed, int n, uint8_t file_idx) {
   file_rekeyed[file_idx] = true;
 }
 
+/* #420: FAT lookup is case-blind, so two names that differ only in ASCII case are the SAME file; the walks' dedupe must agree. */
+bool xrc_name_eq_ci(const char* a, const char* b) {
+  if (!a || !b) return false;
+  for (int i = 0; i < 32; i++) {
+    char ca = a[i], cb = b[i];
+    bool ca_is_letter = (ca >= 'A' && ca <= 'Z') || (ca >= 'a' && ca <= 'z');
+    bool cb_is_letter = (cb >= 'A' && cb <= 'Z') || (cb >= 'a' && cb <= 'z');
+    if (ca_is_letter && cb_is_letter) {
+      if ((ca | 32) != (cb | 32)) return false;
+    } else {
+      if (ca != cb) return false;
+    }
+    if (ca == 0 && cb == 0) return true;
+  }
+  return false;
+}
+
 static int xrc_row_fmt(const char* status, const char* species, const char* game, char out[40]) {
   if (!out) return 0;
   char sp[11]; char gm[8];

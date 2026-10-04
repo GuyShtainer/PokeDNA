@@ -38,6 +38,10 @@ def checks(heal, gen12, layout, main=None):
         rw = body(main, "gb_reconcile_walk")
         if "if (L < 5 || L >= 21) continue;" not in rw:
             out.append("F1: gb_reconcile_walk must filter .pds names at the literal 21, not GB_RECON_NAME_MAX")
+        # #420-G3: gb_reconcile_walk's dedupe must use case-blind comparison
+        if not re.search(r"for\s*\(\s*int\s+k\s*=\s*0\s*;\s*k\s*<\s*rb->nfiles\s*;\s*k\+\+\s*\)\s*"
+                        r"if\s*\(\s*xrc_name_eq_ci\(\s*rb->names\[\s*k\s*\]\s*,\s*rb->fi\.fname\s*\)\s*\)", rw):
+            out.append("#420-G3: gb_reconcile_walk must use xrc_name_eq_ci for case-blind dedupe")
         # reverify-zf F-A (#419: re-aimed): the sibling TRANSFERS walk's .pds bound (literal 21; only the .tmp branch uses
         # NAME_MAX 25) now lives in the pure xrc_walk_admit, host-proven by host_xfer_reconcile_test.c ADMIT-1 (19/21-char
         # names SKIP, mutants shown RED). What stays pinned HERE is that the walk really routes every name through it and
@@ -89,6 +93,7 @@ def main():
     fails = 0
     muts = (
         ("F1 bound widened", "main", "if (L < 5 || L >= 21) continue;", "if (L < 5 || L >= GB_RECON_NAME_MAX) continue;"),
+        ("#420-G3 dedupe case-sensitive", "main", "xrc_name_eq_ci(rb->names[k], rb->fi.fname)", "(strcmp(rb->names[k], rb->fi.fname) == 0)"),
         ("F-A xfer walk bypasses the helper", "main", "switch (xrc_walk_admit(fi.fname, (fi.fattrib & AM_DIR) != 0, ro_walk && pass == 0, &name_key, prim)) {", "switch (xrc_walk_admit_x(fi.fname, (fi.fattrib & AM_DIR) != 0, ro_walk && pass == 0, &name_key, prim)) {"),
         ("F-A xfer walk private length filter", "main", "    examined++;\n    uint64_t name_key = 0; bool draft = false;", "    examined++; int L = 0; while (fi.fname[L]) L++; if (L < 5 || L >= 21) continue;\n    uint64_t name_key = 0; bool draft = false;"),
         ("S2 stuck set on primary-present refusal", "heal", "if (ps != FR_NO_FILE && ps != FR_NO_PATH) return false; }", "if (ps != FR_NO_FILE && ps != FR_NO_PATH) { if (stuck) *stuck = true; return false; } }"),

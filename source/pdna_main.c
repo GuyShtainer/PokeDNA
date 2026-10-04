@@ -10744,7 +10744,7 @@ static void __attribute__((noinline)) gb_reconcile_walk(GbReconBuf* rb, bool app
     if (append) {
       bool seen = false;
       for (int k = 0; k < rb->nfiles; k++)
-        if (strcmp(rb->names[k], rb->fi.fname) == 0) { seen = true; break; }
+        if (xrc_name_eq_ci(rb->names[k], rb->fi.fname)) { seen = true; break; }
       if (seen) continue;               /* already found in pass 1 (xfer)          */
     }
 
@@ -11067,7 +11067,7 @@ static void __attribute__((noinline)) xfer_reconcile_walk(GbReconBuf* rb, int ca
     }
     if (pass == 1) {   /* primary wins: a name pass 0 already took is the xfer copy -- skip the /sidecar twin */
       bool dup = false;
-      for (int k = 0; k < rb->nfiles; k++) if (strcmp(rb->names[k], fi.fname) == 0) { dup = true; break; }
+      for (int k = 0; k < rb->nfiles; k++) if (xrc_name_eq_ci(rb->names[k], fi.fname)) { dup = true; break; }
       if (dup) continue;
     }
     /* A /sidecar-only record needs no per-file directory tag in rb->names: every later gb_recon_path(rb->path, name) ->
