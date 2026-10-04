@@ -252,6 +252,9 @@ code { background:var(--code); padding:0 .3em; border-radius:4px; font:.88em "IB
 .seg { display:flex; flex-wrap:wrap; gap:0; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
 .seg button { border:0; background:var(--panel); color:var(--muted); padding:5px 10px; font:.82rem "IBM Plex Sans",sans-serif; cursor:pointer; }
 .seg button.on { background:var(--accent); color:var(--accent-ink); }
+.seg button .n { opacity:.65; margin-left:4px; font-size:.72rem; }
+.flbl { font-size:.72rem; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; }
+.bar2 { margin-top:6px; gap:6px 10px; }
 .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin:14px 0; }
 .note-claude { font-size:.88rem; }
 .sec { margin-top:26px; }
@@ -351,6 +354,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline:2px 
     <input type="search" id="q" placeholder="Search ID or text&hellip;" aria-label="Search rows">
     <div class="seg" id="filter" role="group" aria-label="Status filter"></div>
     <button type="button" id="copyrep" class="copybtn">Copy report</button>
+  </div>
+  <div class="bar bar2" id="rowbar2">
+    <span class="flbl">Emulator</span><div class="seg" id="f-cl" role="group" aria-label="Claude's emulator result"></div>
+    <span class="flbl">Game</span><div class="seg" id="f-gen" role="group" aria-label="Game filter"></div>
+    <span class="flbl">Only</span><div class="seg" id="f-x" role="group" aria-label="Extra filters"></div>
+    <button type="button" id="clearf" class="copybtn" hidden>Clear filters</button>
   </div>
   <textarea id="repbox" class="repbox" hidden readonly></textarea>
   <p class="hint" id="rephint" hidden>If it did not copy automatically (iOS does that over some transports), tap the box above, select all, and copy by hand.</p>
@@ -565,7 +574,7 @@ function sign(r, s){
   var g = state.signoffs[r.id] = signDoc(r.id);
   g.status = (g.status === s) ? "" : s;
   g.at = g.status ? nowStr() : "";
-  applyRow(r.id); refreshCounts(); writeSign(r);
+  applyRow(r.id); refreshCounts(); updateFilterCounts(document.getElementById("q").value.trim().toLowerCase()); writeSign(r);
 }
 function queueNote(r, text){
   if (!canWrite) return;
@@ -638,28 +647,95 @@ function wireGuyNote(){
 }
 
 // ------------------------------------------------- filter/search
+// Four independent groups AND together: cart status (single), Claude's emulator result (single),
+// game section (single), extras (multi). Each button shows how many rows it would leave visible
+// given the OTHER groups + the search box (faceted counts), so "Needs cart" + "Emu ✓" reads as
+// "what the emulator already proved and the cart still owes".
 var FILTERS = [["all","All"],["pend","Needs cart"],["pass","Passed"],["fail","Failed"],["skip","Skipped"],["retired","Retired"]];
-var curFilter = lsGet("filter") || "all";
-function buildFilter(){
-  var seg = document.getElementById("filter");
-  FILTERS.forEach(function(f){
-    var b = document.createElement("button"); b.type = "button"; b.textContent = f[1]; b.dataset.f = f[0];
-    b.addEventListener("click", function(){ curFilter = f[0]; lsSet("filter", curFilter); applyFilter(); });
+var CLF = [["all","All"],["emu","Emu ✓"],["partial","Emu partial"],["walled","Can't emu-prove"],["unchecked","Not emu-checked"],["emufail","Emu ✗"]];
+var GENF = [["all","All"],["g3","Gen 3"],["gb","Gen 1/2"],["xg","Cross-gen"],["sys","System"]];
+var XF = [["photos","Has photos"],["note","Has my note"],["raw","Queue note"]];
+var filt = { st: lsGet("filter") || "all", cl: lsGet("f-cl") || "all", gen: lsGet("f-gen") || "all",
+             x: (lsGet("f-x") || "").split(",").filter(Boolean) };
+function effCl(r){
+  var c = state.claude[r.id], eff = (c && c.state) ? c : (r.cl || null), s = eff ? eff.state : "";
+  if (s === "ok" || s === "verified") return "emu";
+  if (s === "partial" || s === "walled") return s;
+  if (s === "fail") return "emufail";
+  return "unchecked";
+}
+function matchSt(r, v){ return v === "all" || (effStatus(r) || "pend") === v; }
+function matchCl(r, v){ return v === "all" || effCl(r) === v; }
+function matchGen(r, v){ return v === "all" || r.sec === v; }
+function matchX(r, xs){
+  var g = rowGuy(r.id), c = state.claude[r.id];
+  for (var i = 0; i < xs.length; i++) {
+    if (xs[i] === "photos" && !((r.cl && r.cl.frames && r.cl.frames.length) || (c && c.images && c.images.length) ||
+                                (g && g.images && g.images.length))) return false;
+    if (xs[i] === "note" && !(g && g.note)) return false;
+    if (xs[i] === "raw" && !r.rawst) return false;
+  }
+  return true;
+}
+function matchQ(r, q){
+  return !q || (r.id + " " + r.what + " " + r.check + " " + (r.pt || "") + " " + (r.pdo || "")).toLowerCase().indexOf(q) >= 0;
+}
+function buildSeg(id, defs, onPick){
+  var seg = document.getElementById(id);
+  defs.forEach(function(f){
+    var b = document.createElement("button"); b.type = "button"; b.dataset.f = f[0];
+    b.innerHTML = esc(f[1]) + '<span class="n"></span>';
+    b.addEventListener("click", function(){ onPick(f[0]); applyFilter(); });
     seg.appendChild(b);
   });
+}
+function buildFilter(){
+  buildSeg("filter", FILTERS, function(v){ filt.st = v; lsSet("filter", v); });
+  buildSeg("f-cl", CLF, function(v){ filt.cl = v; lsSet("f-cl", v); });
+  buildSeg("f-gen", GENF, function(v){ filt.gen = v; lsSet("f-gen", v); });
+  buildSeg("f-x", XF, function(v){
+    var i = filt.x.indexOf(v); if (i >= 0) filt.x.splice(i, 1); else filt.x.push(v);
+    lsSet("f-x", filt.x.join(","));
+  });
   document.getElementById("q").addEventListener("input", applyFilter);
+  document.getElementById("clearf").addEventListener("click", function(){
+    filt = { st:"all", cl:"all", gen:"all", x:[] };
+    ["filter","f-cl","f-gen","f-x"].forEach(function(k){ lsSet(k, k === "f-x" ? "" : "all"); });
+    document.getElementById("q").value = "";
+    applyFilter();
+  });
+}
+function updateFilterCounts(q){
+  // faceted: each button counts rows passing every OTHER group + the search box
+  function paint(id, defs, fn){
+    defs.forEach(function(f){
+      var b = document.querySelector("#" + id + ' button[data-f="' + f[0] + '"]');
+      if (!b) return;
+      var n = 0;
+      ROWS.forEach(function(r){ if (fn(r, f[0]) && matchQ(r, q)) n++; });
+      b.querySelector(".n").textContent = n;
+    });
+  }
+  paint("filter", FILTERS, function(r, v){ return matchSt(r, v) && matchCl(r, filt.cl) && matchGen(r, filt.gen) && matchX(r, filt.x); });
+  paint("f-cl", CLF, function(r, v){ return matchSt(r, filt.st) && matchCl(r, v) && matchGen(r, filt.gen) && matchX(r, filt.x); });
+  paint("f-gen", GENF, function(r, v){ return matchSt(r, filt.st) && matchCl(r, filt.cl) && matchGen(r, v) && matchX(r, filt.x); });
+  paint("f-x", XF, function(r, v){
+    var xs = filt.x.indexOf(v) >= 0 ? filt.x : filt.x.concat([v]);
+    return matchSt(r, filt.st) && matchCl(r, filt.cl) && matchGen(r, filt.gen) && matchX(r, xs);
+  });
 }
 function applyFilter(){
   var q = document.getElementById("q").value.trim().toLowerCase();
-  document.querySelectorAll("#filter button").forEach(function(b){ b.classList.toggle("on", b.dataset.f === curFilter); });
+  document.querySelectorAll("#filter button").forEach(function(b){ b.classList.toggle("on", b.dataset.f === filt.st); });
+  document.querySelectorAll("#f-cl button").forEach(function(b){ b.classList.toggle("on", b.dataset.f === filt.cl); });
+  document.querySelectorAll("#f-gen button").forEach(function(b){ b.classList.toggle("on", b.dataset.f === filt.gen); });
+  document.querySelectorAll("#f-x button").forEach(function(b){ b.classList.toggle("on", filt.x.indexOf(b.dataset.f) >= 0); });
+  document.getElementById("clearf").hidden = (filt.st === "all" && filt.cl === "all" && filt.gen === "all" && !filt.x.length && !q);
   var visible = 0;
   ROWS.forEach(function(r){
     var el = document.getElementById("row-" + domId(r.id));
     if (!el) return;
-    var st = effStatus(r) || "pend";
-    var okF = curFilter === "all" || st === curFilter;
-    var okQ = !q || (r.id + " " + r.what + " " + r.check + " " + (r.pt || "") + " " + (r.pdo || "")).toLowerCase().indexOf(q) >= 0;
-    el.hidden = !(okF && okQ);
+    el.hidden = !(matchSt(r, filt.st) && matchCl(r, filt.cl) && matchGen(r, filt.gen) && matchX(r, filt.x) && matchQ(r, q));
     if (!el.hidden) visible++;
   });
   /* a section whose rows are all hidden hides whole, so filters visibly change the page */
@@ -675,8 +751,8 @@ function applyFilter(){
   });
   var em = document.getElementById("empty");
   em.hidden = visible > 0;
-  em.textContent = q ? "No rows match “" + q + "” with this filter." :
-    "No rows have this status yet.";
+  em.textContent = q ? "No rows match “" + q + "” with these filters." : "No rows match these filters.";
+  updateFilterCounts(q);
 }
 
 function copyReport(){
@@ -730,6 +806,7 @@ document.getElementById("copyrep").addEventListener("click", copyReport);
       else state.claude[c.doc.id] = c.doc.data();
       applyRow(c.doc.id);
     });
+    applyFilter();   /* the Emulator filter group reads this layer */
   }, function(){});
   db.collection("findings").onSnapshot(function(s){
     s.docChanges().forEach(function(c){
