@@ -153,6 +153,16 @@ static void run_game(const char* dir, const Game* g) {
         rom_gbitem_desc(&full, 7, a, (int)sizeof a) > 0 && rom_gbitem_desc(&pn, 7, b, (int)sizeof b) > 0 && strcmp(a, b) == 0);
     RomGbItem w;
     chk(g->name, "pinned re-open on a pin index out of range refuses", rom_gbitem_open_pin(&w, rd, &im, n, 200) == 0 && w.ok == 0);
+    /* #413: the two guards themselves. pin == K_NPINS (the first index past the table, 2 today: the
+     * pin table has exactly Gold's and Crystal's entry) must refuse BEFORE any read; a size shorter
+     * than the pinned bank must refuse BEFORE any read (the bank-size guard precedes link_ok). */
+    r0 = g_reads;
+    chk(g->name, "pin == K_NPINS refuses with zero reads", rom_gbitem_open_pin(&w, rd, &im, n, 2) == 0 && w.ok == 0 && g_reads == r0);
+    r0 = g_reads;
+    chk(g->name, "pinned open with a size shorter than the bank refuses with zero reads",
+        rom_gbitem_open_pin(&w, rd, &im, g->bank_off + 0x2000u, full.pin) == 0 && w.ok == 0 && g_reads == r0);
+    chk(g->name, "pinned open with a size EXACTLY at the bank end still opens",
+        rom_gbitem_open_pin(&w, rd, &im, g->bank_off + 0x4000u, full.pin) == 1 && w.ok == 1);
     chk(g->name, "pinned re-open on the OTHER game's pin refuses", rom_gbitem_open_pin(&w, rd, &im, n, (uint8_t)(full.pin ^ 1u)) == 0);
     im.poff = (long)(tbl + 1); im.pval = 0xFF;
     chk(g->name, "MUT pinned re-open: first entry out of the bank refuses", rom_gbitem_open_pin(&w, rd, &im, n, full.pin) == 0);
