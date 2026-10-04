@@ -1902,6 +1902,37 @@ static void t_tree_max_clamp(void) {
   CHECK(more == 1, "#324a more=1 with a fork too (%d)", more);
 }
 
+/* #397: after "Save changes?" -> NO the branch is EMPTY (tip == cursor == 0) but the thrown-away steps stay in the journal as children of the root.
+ * The tree must show them (ONE collapsed "discarded" fork row; opened: their first steps), not an empty list. */
+static void t_tree_discarded(void) {
+  JaHist rows[48];
+  uint32_t s1, s2, nw, op[1];
+  int n, more = 0, fh = 0;
+  CHECK(app_world_reset(), "world");
+  op[0] = 0;
+  s1 = TS("s1", 10); s2 = TS("s2", 11);
+  TU(); TU();                                                  /* the image is back at the root, steps ahead */
+  jrnapp_decline();                                            /* what jrnapp_after_discard ends with: tip = cursor = 0, a discarded marker */
+  CHECK(jrnapp_flush() == JRN_OK, "flush the marker");
+  CHECK(jrnapp_history(rows, 48, &more, &fh) == 0, "DISC: the plain branch walk is EMPTY (the screen's old n == 0)");
+  n = jrnapp_history_tree(rows, 48, &more, &fh, 0, 0);
+  CHECK(n == 1 && rows[0].kind == JH_FORK && rows[0].disc == 1 && rows[0].nsib == 1 && rows[0].open == 0 && rows[0].parent == 0 && rows[0].seq == 0,
+        "DISC: ONE collapsed discarded-fork row, 1 branch (n %d kind %u disc %u nsib %u)", n, (unsigned)rows[0].kind, (unsigned)rows[0].disc, (unsigned)rows[0].nsib);
+  n = jrnapp_history_tree(rows, 48, &more, &fh, op, 1);
+  CHECK(n == 2 && rows[0].kind == JH_FORK && rows[0].open == 1 && rows[1].kind == JH_SIB && rows[1].disc == 1 && rows[1].seq == s1 && strcmp(rows[1].name, "s1") == 0,
+        "DISC OPEN: the sibling is the discarded branch's FIRST step s1 (n %d seq %u '%s')", n, (unsigned)rows[1].seq, safe(rows[1].name));
+  (void)s2;
+  CHECK(app_reopen(), "reopen");
+  n = jrnapp_history_tree(rows, 48, &more, &fh, op, 1);
+  CHECK(n == 2 && rows[1].seq == s1 && rows[1].disc == 1, "DISC: the same after a reopen (the card's reads) (n %d)", n);
+  nw = TS("NEW", 12);                                          /* a NEW edit: History is the old shape ("1 step + 1 other branch") */
+  n = jrnapp_history_tree(rows, 48, &more, &fh, 0, 0);
+  CHECK(n >= 2 && rows[0].kind == JH_STEP && rows[0].seq == nw && rows[0].disc == 0, "DISC: a plain step row carries disc 0 (n %d)", n);
+  TU(); jrnapp_decline(); CHECK(jrnapp_flush() == JRN_OK, "second discard flush");
+  n = jrnapp_history_tree(rows, 48, &more, &fh, 0, 0);
+  CHECK(n == 1 && rows[0].kind == JH_FORK && rows[0].nsib == 2, "DISC: after a SECOND discard the fork counts both branches (n %d nsib %u)", n, (unsigned)rows[0].nsib);
+}
+
 static void t_rev_pair_flush_chain_half(void) {
   uint32_t av = 0, tot;
   char stop[25];
@@ -2171,6 +2202,7 @@ int main(int argc, char** argv) {
     CHECK(app_world(file), "app world"); t_chain_torn_reapply_and_jump();
     CHECK(app_world(file), "app world"); t_chain_never_pairs();
     CHECK(app_world(file), "app world"); t_tree_shapes();
+    CHECK(app_world(file), "app world"); t_tree_discarded();
     CHECK(app_world(file), "app world"); t_tree_jump_unchanged();
     CHECK(app_world(file), "app world"); t_jump_probe_fault();
     CHECK(app_world(file), "app world"); t_tree_saved();

@@ -17,6 +17,7 @@
 #include <string.h>
 
 #include "jrn_app.h"
+#include "pdna_layout.h"   /* #397: PDNA_HIST_DISC */
 #include "pdna_app.h"
 #include "snd.h"
 #include "ui.h"
@@ -46,7 +47,7 @@ static void h_row(const JaHist* rows, int n, int i, int top, bool sel, bool has_
     const JaHist* r = &rows[i];
     if (r->kind == JH_FORK) {                                  /* the collapsed / opened summary of the other branches at this fork point */
       ink = sel ? UI_SELTEXT : UI_DIM;
-      siprintf(buf, "%c %u other branch%s", r->open ? '-' : '+', (unsigned)r->nsib, r->nsib == 1 ? "" : "es");
+      siprintf(buf, "%c %u %s branch%s", r->open ? '-' : '+', (unsigned)r->nsib, r->disc ? PDNA_HIST_DISC : "other", r->nsib == 1 ? "" : "es");   /* #397: disc = the steps thrown away at "Save changes?" -> NO */
       ui_ptext_fit(13, y, 150, ink, buf);
       if (r->open && r->nsib > JA_SIB_SHOW) ui_ptext_right(UI_SCR_W - 6, y, UI_DIM, "first 8");
       return;
@@ -56,7 +57,7 @@ static void h_row(const JaHist* rows, int n, int i, int top, bool sel, bool has_
       ui_ptext(15, y, ink, "|");
       ui_ptext_fit(22, y, 108, ink, r->name[0] ? r->name : "(step)");
       if (r->crossed) ui_ptext(134, y, UI_WARN, "FLOOR");
-      ui_ptext_right(UI_SCR_W - 6, y, r->saved ? UI_OK : ink, r->saved ? "SAVED" : "other branch");
+      ui_ptext_right(UI_SCR_W - 6, y, r->saved ? UI_OK : ink, r->saved ? "SAVED" : (r->disc ? PDNA_HIST_DISC : "other branch"));
       return;
     }
     ink = sel ? UI_SELTEXT : (r->ahead ? UI_DIM : UI_TEXT);

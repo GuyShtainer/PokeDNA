@@ -224,6 +224,10 @@ int main(void) {
   printf("\n== history screen (#234 s3): pdna_hist.c footer, drawn at x=4 ==\n");
   T("A jump  START newest  B back", 4);
   T("B back", 4);
+  /* #397: the discarded-branch rows (h_row): the fork summary is ui_ptext_fit'd into 150 px at x=13; the sibling's right label must not be wider than
+   * the "other branch" it replaces (it shares the row with the name clip (22..130) and FLOOR (134..)). */
+  PF(PDNA_HIST_DISC_FORK_WORST, 13, 150);
+  chk("history sibling label", 0, pwidth("other branch"), pwidth(PDNA_HIST_DISC), PDNA_HIST_DISC);
 
   printf("\n== summary screen (#25) ==\n");
   /* pdna_summary.c footers, drawn at x=4 — the MACROS the screen draws, not copies of

@@ -125,6 +125,7 @@ typedef struct JaHist {
   uint8_t  open;       /* JH_FORK: its sibling rows are materialised below it                 */
   uint16_t nsib;       /* JH_FORK: how many OTHER steps leave the same fork point (all of them, shown or not) */
   char     name[25];            /* a swap's halves read "Box move 1/2" / "Box move 2/2" (#303) */
+  uint8_t  disc;       /* #397: JH_FORK / JH_SIB of the EMPTY branch: the steps were thrown away at "Save changes?" -> NO (labelled "discarded") */
 } JaHist;
 /* The current branch newest-first (tip down the parent chain), up to `max` rows. *more = 1 when older steps exist
  * past the window; *floor_hit = 1 when the chain ended at a compacted (retired) parent. Returns the row count

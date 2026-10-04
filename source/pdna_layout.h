@@ -1785,6 +1785,10 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_SET_ROM_LONGEST_KIND "LeafGreen"
 #define PDNA_SET_ROM_VALUES(X) \
   X(PDNA_SET_ROM_NOTSET) X(PDNA_SET_ROM_ARTOFF) X(PDNA_SET_ROM_GBONLY) X(PDNA_SET_ROM_LONGEST_KIND)
+/* #397: the History screen's discarded-branch wording (pdna_hist.c h_row). FORK row: "<+|-> <n> discarded branch(es)" fitted into 150 px at x=13;
+ * a sibling row's right label is "discarded" (right-aligned at UI_SCR_W-6, never wider than the "other branch" it replaces). */
+#define PDNA_HIST_DISC        "discarded"
+#define PDNA_HIST_DISC_FORK_WORST "- 999 discarded branches"
 #define PDNA_SET_ROW_CLEAR   "Clear backups (this save)"
 /* #234 slice 4: the undo journal's two rows. The size presets are the retention cap in 64 KiB segments (16 / 8 / 4); a
  * SMALLER cap applies when a save next opens, a BIGGER one only to a history created after Clear history (the ring's

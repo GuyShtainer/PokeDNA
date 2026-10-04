@@ -65,6 +65,25 @@ pin("#412 GBONLY is in the textfit value list",
     lay, lambda t: "X(PDNA_SET_ROM_GBONLY)" in t,
     lambda t: t.replace("X(PDNA_SET_ROM_GBONLY) ", ""))
 
+# ---- #397 History shows the discarded branch of an EMPTY branch
+hist = rd("pdna_hist.c")
+jra = rd("jrn_app.c")
+pin("#397 h_row labels a fork row from disc (\"discarded\" vs \"other\")",
+    hist, lambda t: 'r->disc ? PDNA_HIST_DISC : "other"' in t,
+    lambda t: t.replace('r->disc ? PDNA_HIST_DISC : "other"', '"other"'))
+pin("#397 h_row labels a sibling row's right text \"discarded\" when disc",
+    hist, lambda t: '(r->disc ? PDNA_HIST_DISC : "other branch")' in t,
+    lambda t: t.replace('(r->disc ? PDNA_HIST_DISC : "other branch")', '"other branch"'))
+pin("#397 the tree hands an EMPTY (non-floor) branch to ja_tree_discarded, before the nb<=0 early return",
+    jra, lambda t: re.search(r"if \(nb == 0 && !\(floor_hit && \*floor_hit\)\) return ja_tree_discarded\(rows, max, open_forks, nopen\);[^\n]*\n\s*if \(nb <= 0 \|\| max < 3\) return nb;", t) is not None,
+    lambda t: t.replace("if (nb == 0 && !(floor_hit && *floor_hit)) return ja_tree_discarded(rows, max, open_forks, nopen);", ""))
+pin("#397 ja_tree_discarded is READ-ONLY of the journal (kid walks only, no jrn_mark/stage/flush call)",
+    jra, lambda t: (lambda b: "jrn_kid_counts(" in b and "jrn_kid_list(" in b and not re.search(r"jrn_(mark|step|flush|recompute|i_marker)|jrnapp_(flush|decline)", b))(re.search(r"static int ja_tree_discarded\(.*?\n\}\n", t, re.S).group(0)),
+    lambda t: t.replace("  rows[0].kind = JH_FORK; rows[0].nsib = cnt; rows[0].disc = 1;", "  (void)jrnapp_flush(); rows[0].kind = JH_FORK; rows[0].nsib = cnt; rows[0].disc = 1;"))
+pin("#397 only a tip == 0 branch takes the discarded view",
+    jra, lambda t: "jrn_tip(&s_j) != 0) return 0;" in t,
+    lambda t: t.replace("|| jrn_tip(&s_j) != 0) return 0;", ") return 0;"))
+
 if fails:
     for f in fails:
         print("FAIL:", f)
