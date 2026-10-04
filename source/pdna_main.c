@@ -10737,7 +10737,7 @@ static void __attribute__((noinline)) gb_reconcile_walk(GbReconBuf* rb, bool app
     rb->examined++;
     if (rb->fi.fattrib & AM_DIR) continue;
     int L = 0; while (rb->fi.fname[L]) L++;
-    if (L < 5 || L >= GB_RECON_NAME_MAX) continue;
+    if (L < 5 || L >= 21) continue;   /* the .pds names only (20 chars): NAME_MAX grew for xfer_reconcile_walk's .tmp form, not here */
     const char* e = rb->fi.fname + L - 4;
     if (e[0] != '.' || (e[1] | 32) != 'p' || (e[2] | 32) != 'd' || (e[3] | 32) != 's') continue;
 

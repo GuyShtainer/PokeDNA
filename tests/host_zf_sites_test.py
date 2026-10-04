@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parent.parent
 HEAL = (ROOT / "source" / "xfer_heal.c").read_text()
 GEN12 = (ROOT / "source" / "pdna_gen12.c").read_text()
 LAYOUT = (ROOT / "source" / "pdna_layout.h").read_text()
+MAIN = (ROOT / "source" / "pdna_main.c").read_text()
 
 
 def body(text, name):
@@ -30,8 +31,13 @@ def body(text, name):
     return ""
 
 
-def checks(heal, gen12, layout):
+def checks(heal, gen12, layout, main=None):
     out = []
+    if main is not None:
+        # review-zf F1: GB_RECON_NAME_MAX grew 21 -> 25 for the .tmp form; the Gen-3 load walk must keep its own 20-char .pds bound
+        rw = body(main, "gb_reconcile_walk")
+        if "if (L < 5 || L >= 21) continue;" not in rw:
+            out.append("F1: gb_reconcile_walk must filter .pds names at the literal 21, not GB_RECON_NAME_MAX")
     sa = body(heal, "xh_set_aside_tmp")
     if not re.search(r'f_stat\(bad, 0\) == FR_OK\)[^;]*\n?\s*log_line\("xfer_heal: %s: an older \.tmp\.bad salvage exists and is being replaced', sa):
         out.append("#416(a): xh_set_aside_tmp no longer logs the older .tmp.bad being replaced")
@@ -41,7 +47,7 @@ def checks(heal, gen12, layout):
     if "f_unlink(bad)" not in sa:
         out.append("#416(a): the deliberate overwrite-older policy (f_unlink(bad)) is gone")
     ar = body(heal, "xh_absent_resolve_ex")
-    if not re.search(r"xh_set_aside_tmp\(path\)\)\s*\{\s*if \(stuck\) \*stuck = true;\s*return false;", ar):
+    if not re.search(r"FRESULT sr = xh_set_aside_tmp\(path\);\s*if \(sr != FR_OK\) \{ if \(stuck\) \*stuck = \(sr == FR_EXIST\); return false; \}", ar):
         out.append("#416(b): xh_absent_resolve_ex must set *stuck exactly when the set-aside fails")
     g = body(gen12, "gb_ledger_absent_heal")
     if "xh_absent_resolve_ex(" not in g or not re.search(r"if \(stuck\)", g):
@@ -54,26 +60,27 @@ def checks(heal, gen12, layout):
 
 
 def main():
-    v = checks(HEAL, GEN12, LAYOUT)
+    v = checks(HEAL, GEN12, LAYOUT, MAIN)
     if v:
         for x in v:
             print("FAIL:", x)
         return 1
-    print("ok: #416 (a) replace-older log line before the unlink, (b) stuck flag + named refusal")
+    print("ok: #416 (a) replace-older log line before the unlink, (b) stuck flag + named refusal; F1 gb_reconcile_walk .pds bound")
     fails = 0
     muts = (
+        ("F1 bound widened", "main", "if (L < 5 || L >= 21) continue;", "if (L < 5 || L >= GB_RECON_NAME_MAX) continue;"),
         ("(a) log removed", "heal", 'log_line("xfer_heal: %s: an older .tmp.bad salvage exists', 'log_line_x("xfer_heal: %s: an older .tmp.bad salvage exists'),
         ("(a) policy removed", "heal", "(void)f_unlink(bad);", ""),
-        ("(b) stuck never set", "heal", "if (stuck) *stuck = true;", ""),
+        ("(b) stuck never set", "heal", "if (stuck) *stuck = (sr == FR_EXIST);", ""),
         ("(b) caller ignores stuck", "gen12", "  if (stuck) {   /* #416(b)", "  if (0) {   /* #416(b)"),
         ("(b) name dropped", "gen12", 'msg_wait(PDNA_SIDECAR_READFAIL_TITLE, UI_WARN, nm, PDNA_SIDECAR_STUCK_L2)', 'msg_wait(PDNA_SIDECAR_READFAIL_TITLE, UI_WARN, "x", PDNA_SIDECAR_STUCK_L2)'),
     )
     for label, which, a, b in muts:
-        srcs = {"heal": HEAL, "gen12": GEN12}
+        srcs = {"heal": HEAL, "gen12": GEN12, "main": MAIN}
         if a not in srcs[which]:
             print(f"FAIL: mutation {label} target not found"); fails += 1; continue
         srcs[which] = srcs[which].replace(a, b, 1)
-        if checks(srcs["heal"], srcs["gen12"], LAYOUT):
+        if checks(srcs["heal"], srcs["gen12"], LAYOUT, srcs["main"]):
             print(f"mutation {label}: correctly caught")
         else:
             print(f"FAIL: mutation {label} did NOT turn a check red"); fails += 1

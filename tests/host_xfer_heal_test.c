@@ -301,6 +301,9 @@ static void gap(void) {
     CHECK(xh_absent_resolve_ex(XD, PA, KEY_A, nb, sizeof nb, true, &len, &stuck) && !stuck, "#416: a normal set-aside must not report stuck");
     stuck = true; fresh_card(); put(PA ".tmp", v, n);
     CHECK(!xh_absent_resolve_ex(XD, PA, KEY_A, nb, sizeof nb, false, &len, &stuck) && !stuck, "#416: a read-only refusal is NOT 'stuck' (no misnamed file)");
+    stuck = true; fresh_card(); put(PA ".tmp", bad, n); len = 0; rd_fail_at = 0;   /* review-zf F2: a card fault in the rename is NOT 'stuck' */
+    { bool okf = xh_absent_resolve_ex(XD, PA, KEY_A, nb, sizeof nb, true, &len, &stuck); rd_fail_at = -1; cold_boot();
+      CHECK(!okf && !stuck && !exists(PA ".tmp.bad") && file_is(PA ".tmp", bad, n), "#416: a faulted rename must refuse WITHOUT naming a .tmp.bad that does not exist"); }
     fresh_card(); put(PA ".tmp.bad", v, n); put(PA ".tmp", bad, n); len = 0;   /* (a): the older salvage is replaced, policy kept */
     CHECK(xh_absent_resolve_ex(XD, PA, KEY_A, nb, sizeof nb, true, &len, 0) && file_is(PA ".tmp.bad", bad, n), "#416: overwrite-older policy kept"); }
   { uint8_t w[GBSC_FILE_MAX]; uint32_t m = build(w, KEY_A, 3, 4); fresh_card(); put(PA, w, m);   /* re-verify-za2b F1 */
