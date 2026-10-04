@@ -5517,9 +5517,12 @@ static bool __attribute__((noinline)) gb_create_base2(uint16_t dex, RomGb2Specie
  * the level the transfer will actually WRITE, decision 5's "written level" answer to
  * §11.12) and `*out_level` is left untouched (the caller already knows the level it
  * asked for -- there is nothing new to report back). */
-static int __attribute__((noinline))
-gb_create_learn(uint16_t dex, const uint8_t g1_start[4], uint8_t at_level,
-                 uint8_t* out_level, uint8_t out4[4]) {
+/* The ROM-open half of gb_create_learn, factored out (BACKLOG #373) so the Day-Care
+ * growth preview opens the learnset table through the SAME code and cache keys.
+ * Precondition: gb_create_locate_rom already succeeded for g_ed->s.gen. Returns true with
+ * g_ed->learn located and its read/ctx pointing at THIS call's source; the SD arm leaves
+ * romfil OPEN, so every true return is paired with gb_learn_end(). */
+static bool __attribute__((noinline)) gb_learn_begin(void) {
 #ifdef PDNA_DELTA
   /* BACKLOG #62: same cache-hit shape as the SD path below, just against the fused
    * cart-space slice gb_create_locate_rom already set instead of a FIL. */
@@ -5535,18 +5538,10 @@ gb_create_learn(uint16_t dex, const uint8_t g1_start[4], uint8_t at_level,
   }
   g_ed->learn.read = fused_gb_slice_read;
   g_ed->learn.ctx = &s_gb_create_slice;
-  int kept = -1;
-  if (ok) {
-    uint8_t lvl = at_level ? at_level
-                             : gb_origin_level_floor(g_ed->s.gen, dex, rom_gblearn_min_level(&g_ed->learn, dex));
-    kept = g1_start ? rom_gblearn_moves_at_seeded(&g_ed->learn, dex, lvl, g1_start, out4)
-                    : rom_gblearn_moves_at(&g_ed->learn, dex, lvl, out4);
-    if (kept >= 0 && out_level && !at_level) *out_level = lvl;
-  }
-  return kept;
+  return ok != 0;
 #else
   memset(&g_ed->romfil, 0, sizeof g_ed->romfil);
-  if (f_open(&g_ed->romfil, g_ed->romspath, FA_READ) != FR_OK) return -1;
+  if (f_open(&g_ed->romfil, g_ed->romspath, FA_READ) != FR_OK) return false;
   int ok;
   if (g_ed->learn_ready && g_ed->learn_path == g_ed->path && g_ed->learn.gen == g_ed->s.gen &&
       g_ed->learn_rom_id == g_ed->romgs.id_hash) {
@@ -5560,17 +5555,47 @@ gb_create_learn(uint16_t dex, const uint8_t g1_start[4], uint8_t at_level,
    * a cache hit skips the scan, never the fact that the old FIL is long closed. */
   g_ed->learn.read = gb_read;
   g_ed->learn.ctx = &g_ed->romfil;
-  int kept = -1;
-  if (ok) {
-    uint8_t lvl = at_level ? at_level
-                             : gb_origin_level_floor(g_ed->s.gen, dex, rom_gblearn_min_level(&g_ed->learn, dex));
-    kept = g1_start ? rom_gblearn_moves_at_seeded(&g_ed->learn, dex, lvl, g1_start, out4)
-                    : rom_gblearn_moves_at(&g_ed->learn, dex, lvl, out4);
-    if (kept >= 0 && out_level && !at_level) *out_level = lvl;
-  }
-  f_close(&g_ed->romfil);
-  return kept;
+  if (!ok) f_close(&g_ed->romfil);
+  return ok != 0;
 #endif
+}
+
+static void gb_learn_end(void) {
+#ifndef PDNA_DELTA
+  f_close(&g_ed->romfil);
+#endif
+}
+
+static int __attribute__((noinline))
+gb_create_learn(uint16_t dex, const uint8_t g1_start[4], uint8_t at_level,
+                 uint8_t* out_level, uint8_t out4[4]) {
+  if (!gb_learn_begin()) return -1;
+  uint8_t lvl = at_level ? at_level
+                           : gb_origin_level_floor(g_ed->s.gen, dex, rom_gblearn_min_level(&g_ed->learn, dex));
+  int kept = g1_start ? rom_gblearn_moves_at_seeded(&g_ed->learn, dex, lvl, g1_start, out4)
+                      : rom_gblearn_moves_at(&g_ed->learn, dex, lvl, out4);
+  if (kept >= 0 && out_level && !at_level) *out_level = lvl;
+  gb_learn_end();
+  return kept;
+}
+
+/* BACKLOG #373: the Day-Care take-out preview for a Gen-1/2 mon -- which level-up moves
+ * of `lv_prev < lvl <= lv_new` it would learn from the user's own ROM, FIFO-seeded with
+ * its current four. Uses CREATE's ROM resolution (registered first, then beside the save)
+ * and the same learnset cache. Returns -1 when no ROM resolves (or its table does not
+ * open): the screen then says so and never teaches silently. out4/ev/n_ev/overflow are
+ * only meaningful on a return >= 0. */
+int __attribute__((noinline))
+gb_daycare_learn(uint8_t gen, uint16_t dex, uint8_t lv_prev, uint8_t lv_new,
+                 const uint8_t cur4[4], uint8_t out4[4], DcLearn ev[DC_LEARN_MAX],
+                 int* n_ev, bool* overflow) {
+  if (!g_ed || g_ed->s.gen != gen) return -1;
+  if (!gb_create_locate_rom(gen)) return -1;
+  if (!gb_learn_begin()) return -1;
+  int kept = rom_gblearn_moves_between(&g_ed->learn, dex, lv_prev, lv_new, cur4, out4, ev,
+                                       n_ev, overflow);
+  gb_learn_end();
+  return kept;
 }
 
 /* BACKLOG #150 S150-10 decision 5: the fill for gb_paste_hook's bad move slots, off
