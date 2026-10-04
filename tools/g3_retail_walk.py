@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Boot retail Emerald in headless mGBA on a prepared .sav, press through Continue,
-walk around Lilycove Museum 2F and save PNG frames. usage: museum_shots.py ROM SAV OUTDIR [script]
-script = comma list of steps: 'wN' wait N frames, 'A','B','START','UP','DOWN','LEFT','RIGHT' tap (held 8 frames + 12 settle), 'sNAME' shot."""
+walk around Lilycove Museum 2F and save PNG frames. usage: g3_retail_walk.py ROM SAV OUTDIR [script]
+script = comma list of steps: 'wN' wait N frames, 'A','B','START','UP','DOWN','LEFT','RIGHT' tap (held 8 frames + 12 settle), 'sNAME' shot.
+Note: the Lilycove Museum 2F curator's first-visit speech needs ~30 slow B taps (B,w45) -- 14 fast taps leave it on screen."""
 import sys, os
 sys.path.insert(0, "/Users/guyshtainer/VSCodeProjects/gba-toolkit/projects/rec2mp4/vendor")
 import mgba.core, mgba.image, mgba.log, mgba.vfs
