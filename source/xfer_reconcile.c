@@ -372,7 +372,8 @@ bool xrc_draft_name(const char* fname, uint64_t* key) {
   return true;
 }
 
-/* #419: see xfer_reconcile.h. The .pds bound is the literal 21 (NAME_MAX grew to 25 for the .tmp form only). */
+/* #419: see xfer_reconcile.h. The .pds bound is the literal 21 (NAME_MAX grew to 25 for the .tmp form only): 5..20 chars, the SAME
+ * rule gb_reconcile_walk applies, so a record one screen lists the other lists too (the #418 defect class). */
 XrcAdmit xrc_walk_admit(const char* fname, bool is_dir, bool allow_draft, uint64_t* name_key, char prim[21]) {
   if (!fname || !prim || is_dir) return XRC_ADMIT_SKIP;
   if (allow_draft && xrc_draft_name(fname, name_key)) {
@@ -381,7 +382,7 @@ XrcAdmit xrc_walk_admit(const char* fname, bool is_dir, bool allow_draft, uint64
     return XRC_ADMIT_DRAFT;
   }
   unsigned n = 0; while (fname[n] && n < 32) n++;
-  if (n != 20) return XRC_ADMIT_SKIP;
+  if (n < 5 || n >= 21) return XRC_ADMIT_SKIP;   /* gb_reconcile_walk's own bound, kept identical */
   const char* e = fname + n - 4;
   if (e[0] != '.' || (e[1] | 32) != 'p' || (e[2] | 32) != 'd' || (e[3] | 32) != 's') return XRC_ADMIT_SKIP;
   return XRC_ADMIT_PDS;

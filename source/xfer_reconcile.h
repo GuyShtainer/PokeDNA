@@ -180,7 +180,7 @@ bool xrc_draft_name(const char* fname, uint64_t* key);
 
 /* #419: the TRANSFERS walk's per-name decision, I/O-free. is_dir: the entry is a directory. allow_draft: read-only card AND
  * pass 1 (the xfer dir). DRAFT = "<16 hex>.pds.tmp" with allow_draft: fills *name_key (may be NULL) and prim[21] =
- * "<16hex>.pds" (the primary the caller must f_stat; the primary wins). PDS = a 20-char ".pds" name (literal bound 21,
+ * "<16hex>.pds" (the primary the caller must f_stat; the primary wins). PDS = a 5..20-char ".pds" name (literal bound 21, gb_reconcile_walk's rule,
  * extension case-blind). Anything else SKIP. */
 typedef enum { XRC_ADMIT_SKIP = 0, XRC_ADMIT_PDS = 1, XRC_ADMIT_DRAFT = 2 } XrcAdmit;
 XrcAdmit xrc_walk_admit(const char* fname, bool is_dir, bool allow_draft, uint64_t* name_key, char prim[21]);

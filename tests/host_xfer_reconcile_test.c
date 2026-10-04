@@ -11,7 +11,7 @@
  *   /tmp/hxrc /Users/guyshtainer/VSCodeProjects/gba-toolkit/roms/ (.sav files)
  *
  * ADMIT-1 (#419): xrc_walk_admit, the walk's pure name decision. Mutations: drop the is_dir guard -> the directory case fails;
- *   accept any length >= 5 / != 20 -> the 19/21-char cases fail; case-sensitive extension -> ".PDS" fails; ignore allow_draft ->
+ *   bound widened to >= 21 -> the 21-char case fails; lower bound dropped -> the 4-char case fails; case-sensitive extension -> ".PDS" fails; ignore allow_draft ->
  *   the read-write draft case fails (a draft row on a healing card); leave prim as the ".tmp" name (W2 -- primary-wins would
  *   then f_stat the .tmp itself and the draft feature is dead) -> the prim == "<key>.pds" compare fails; drop the key
  *   (name_key) fill or take it from another stem -> the name_key compare fails; a non-hex stem admitted as a draft -> "zz" fails.
@@ -519,7 +519,9 @@ static void test_admit1(void) {
   CHECK(xrc_walk_admit("0123456789ABCDEF.pds", true, false, &k, prim) == XRC_ADMIT_SKIP, "ADMIT-1: a directory is skipped");
   CHECK(xrc_walk_admit("0123456789ABCDEF.pds", false, false, &k, prim) == XRC_ADMIT_PDS, "ADMIT-1: 20-char .pds admitted");
   CHECK(xrc_walk_admit("0123456789ABCDEF.PDS", false, false, &k, prim) == XRC_ADMIT_PDS, "ADMIT-1: .PDS (case-blind) admitted");
-  CHECK(xrc_walk_admit("0123456789ABCDE.pds", false, false, &k, prim) == XRC_ADMIT_SKIP, "ADMIT-1: 19-char name skipped");
+  CHECK(xrc_walk_admit("0123456789ABCDE.pds", false, false, &k, prim) == XRC_ADMIT_PDS, "ADMIT-1: 19-char .pds admitted (5..20, gb_reconcile_walk's bound)");
+  CHECK(xrc_walk_admit("a.pds", false, false, &k, prim) == XRC_ADMIT_PDS, "ADMIT-1: 5-char .pds admitted (lower bound)");
+  CHECK(xrc_walk_admit(".pds", false, false, &k, prim) == XRC_ADMIT_SKIP, "ADMIT-1: 4-char name skipped");
   CHECK(xrc_walk_admit("0123456789ABCDEF0.pds", false, false, &k, prim) == XRC_ADMIT_SKIP, "ADMIT-1: 21-char name skipped");
   CHECK(xrc_walk_admit("0123456789ABCDEF.pdx", false, false, &k, prim) == XRC_ADMIT_SKIP, "ADMIT-1: wrong extension skipped");
   CHECK(xrc_walk_admit(NULL, false, false, &k, prim) == XRC_ADMIT_SKIP, "ADMIT-1: NULL name skipped");
