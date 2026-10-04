@@ -32,6 +32,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "gen3_stars.h"
+#include "gen3_flags.h"  /* pk_flag_get for #408 tests */
 #include "gen3_contest.h"
 #include "gen3_save.h"
 #include "gen3_edit.h"

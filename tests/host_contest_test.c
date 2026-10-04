@@ -35,6 +35,7 @@
 #include <string.h>
 #include "gen3_trainer.h"
 #include "gen3_contest.h"
+#include "gen3_flags.h"  /* pk_flag_get for #408 tests */
 #include "gen3_save.h"
 #include "gen3_mon.h"
 #include "gen3_edit.h"
