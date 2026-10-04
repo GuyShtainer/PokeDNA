@@ -229,6 +229,11 @@ int gbsc_init(uint8_t* buf, uint64_t key);
  * land in). Returns the entry count on success, -1 otherwise. */
 int gbsc_count(const uint8_t* buf, uint32_t len);
 
+/* #415: gbsc_count's header half, on the first GBSC_HEADER bytes alone (`file_len` = the whole file's size; entry crc16s
+ * are NOT checked). gbsc_header_key reads header bytes 8..15 LE (call only after gbsc_header_ok). */
+bool gbsc_header_ok(const uint8_t* buf, uint32_t file_len);
+uint64_t gbsc_header_key(const uint8_t* buf);
+
 /* Append `e` as a new entry. `*len` is updated on success. Fails (-1, `buf`/`*len`
  * unchanged) if the file does not already validate, is already at GBSC_MAX_ENTRIES,
  * or the grown file would not fit in `cap` bytes. Returns the new entry's index. */

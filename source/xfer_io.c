@@ -76,14 +76,27 @@ bool xr_dir_exists(void) {
   return f_stat(PDNA_XFER_DIR, &fi) == FR_OK;
 }
 
-/* #392(a): does "<path>.tmp" exist? (own noinline frame: the 48 B path copy stays off xr_path_for_key_hint's) */
-static __attribute__((noinline)) bool xr_tmp_exists(const char* path) {
+/* #415: THE orphan-.tmp predicate on the first GBSC_HEADER bytes (xr_tmp_present) AND on the whole file (xr_read_orphan_tmp).
+ * Both call gbsc_header_ok + the key compare through here, so presence and acceptance share one header test; acceptance
+ * adds gbsc_count's entry crc16s on top (the probe cannot afford a 1 KB buffer on its frame). */
+static bool xr_orphan_hdr_ok(const uint8_t* hdr, uint32_t fsize, uint64_t key) {
+  return gbsc_header_ok(hdr, fsize) && gbsc_header_key(hdr) == key;
+}
+
+/* #392(a)/#415: is there a "<path>.tmp" a reader would accept? Opens it, reads the header, checks magic/version/count/
+ * exact size/header crc/key. Torn, foreign, zero-length or unreadable -> false (the same "absent" xr_open reports).
+ * (own noinline frame: the 48 B path copy stays off xr_path_for_key_hint's) */
+static __attribute__((noinline)) bool xr_tmp_present(const char* path, uint64_t key) {
   char t[GBSC_PATH_MAX + 8];
+  uint8_t hdr[GBSC_HEADER] = {0};
   FILINFO fi;
+  uint32_t got = 0;
   size_t n = strlen(path);
   if (n + 5 > sizeof t) return false;
   memcpy(t, path, n); memcpy(t + n, ".tmp", 5);
-  return f_stat(t, &fi) == FR_OK;
+  if (f_stat(t, &fi) != FR_OK) return false;
+  if (sf_read_full(t, hdr, GBSC_HEADER, &got) != SF_OK || got != GBSC_HEADER) return false;
+  return xr_orphan_hdr_ok(hdr, (uint32_t)fi.fsize, key);
 }
 
 bool xr_path_for_key(char out[GBSC_PATH_MAX], uint64_t key) {
@@ -145,7 +158,7 @@ bool xr_path_for_key_hint(char out[GBSC_PATH_MAX], uint64_t key, bool xfer_dir_a
 
   /* #392(a): read-only card + an orphan .tmp in xfer: the record exists as far as a reader can tell (xr_open reads
    * the .tmp in RAM). `out` stays the PRIMARY path -- nothing here ever points a writer at the .tmp. */
-  if (!xfer_dir_absent && !app_can_edit() && xr_tmp_exists(xpath)) { memcpy(out, xpath, GBSC_PATH_MAX); return true; }
+  if (!xfer_dir_absent && !app_can_edit() && xr_tmp_present(xpath, key)) { memcpy(out, xpath, GBSC_PATH_MAX); return true; }
   /* neither exists (or migration already ran) -- a brand-new file belongs under
    * xfer (decision 4/D-Q7). */
   memcpy(out, xpath, GBSC_PATH_MAX);
@@ -199,7 +212,7 @@ static __attribute__((noinline)) SfStatus xr_read_orphan_tmp(const char* path, u
   if (f_stat(tmp, &fi) != FR_OK) return SF_ERR_OPEN;
   SfStatus st = sf_read_full(tmp, buf, cap, sz);
   if (st != SF_OK) return st;
-  if (*sz != (uint32_t)fi.fsize || gbsc_count(buf, *sz) < 0 || gbsc_file_key(buf, *sz) != key) return SF_ERR_OPEN;
+  if (*sz != (uint32_t)fi.fsize || gbsc_count(buf, *sz) < 0 || !xr_orphan_hdr_ok(buf, *sz, key)) return SF_ERR_OPEN;
   return SF_OK;
 }
 
