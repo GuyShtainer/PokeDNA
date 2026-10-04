@@ -224,6 +224,10 @@ int main(void) {
   printf("\n== history screen (#234 s3): pdna_hist.c footer, drawn at x=4 ==\n");
   T("A jump  START newest  B back", 4);
   T("B back", 4);
+  /* #397: the discarded-branch rows (h_row): the fork summary is ui_ptext_fit'd into 150 px at x=13; the sibling's right label must not be wider than
+   * the "other branch" it replaces (it shares the row with the name clip (22..130) and FLOOR (134..)). */
+  PF(PDNA_HIST_DISC_FORK_WORST, 13, 150);
+  chk("history sibling label", 0, pwidth("other branch"), pwidth(PDNA_HIST_DISC), PDNA_HIST_DISC);
 
   printf("\n== summary screen (#25) ==\n");
   /* pdna_summary.c footers, drawn at x=4 — the MACROS the screen draws, not copies of
@@ -575,17 +579,8 @@ int main(void) {
   PF(PDNA_GBEDIT_DAYCARE_PARTY_L1,    28, 184);   /* #368: the BODY line was clipped "...Day-Care tha~" */
   PF(PDNA_GBEDIT_DUP_PARTY_L1,        28, 184);
 
-  PF(PDNA_GBCREATE_REDIRECTED_TITLE, 28, 184);   /* review fix 3, BACKLOG #187 */
-  { /* PDNA_GBCREATE_REDIRECTED_FMT is siprintf'd with the box's own display name
-     * (pdna_gen12_box_name(), a 12-byte buffer, max 11 real characters) and a 1-2
-     * digit slot number -- worst case, not the lucky one: every character of the
-     * name at its widest (a run of 'W', the widest glyph this font draws) and a
-     * 2-digit slot. */
-    char nm[12]; memset(nm, 'W', 11); nm[11] = 0;
-    char row[32];
-    snprintf(row, sizeof row, PDNA_GBCREATE_REDIRECTED_FMT, nm, 20);
-    PF(row, 28, 184);
-  }
+  PF(PDNA_GBCREATE_FULL_TITLE, 28, 184);   /* #398: the defensive full-box refusal gb_create_hook keeps */
+  PF(PDNA_GBCREATE_FULL_L1,    28, 184);
 
   /* BACKLOG #95 review C2: msg_wait's (28, .., 184) clamp again -- these are pre-
    * split across l1/l2 rather than wrapped (msg_wait's l1/l2 are each a single

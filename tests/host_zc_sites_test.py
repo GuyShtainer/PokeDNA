@@ -55,11 +55,11 @@ pin("#402 app_any_rom_registered stays Gen-3 only (3 slots)",
     lambda t: t.replace("for (int i = 0; i < 3; i++) if (g_rom_path[i][0]) return true;", "for (int i = 0; i < 5; i++) if (g_rom_path[i][0]) return true;"))
 
 # ---- #401 the picker's FULL notice sits right after "n/N" so the 29-col truncation can never eat it
-FMT = r'siprintf\(status, "%d/%d  %s%s  %s", g_count \? sel \+ 1 : 0, g_count,\s*g_count >= spec->cap \? "FULL  " : "", sort_label\(\), g_show_all \? "all" : spec->filter_label\);'
+FMT = r'siprintf\(status, "%d/%d  %s%s  %s", g_count \? sel \+ 1 : 0, g_count,\s*g_scan_more \? "FULL  " : "", sort_label\(\), g_show_all \? "all" : spec->filter_label\);'
 pin("#401 FULL precedes the sort label in the browser status line",
     mainc,
     lambda t: re.search(FMT, t) is not None,
-    lambda t: t.replace('g_count >= spec->cap ? "FULL  " : "", sort_label()', '"", sort_label()'))
+    lambda t: t.replace('g_scan_more ? "FULL  " : "", sort_label()', '"", sort_label()'))   # #411: the flag, not "count reached cap"
 # worst case prefix: 3-digit "n/N" (cap <= 999) + "  FULL" must end inside the 29 visible columns
 check_prefix = len("999/999  FULL")
 if check_prefix > 29:

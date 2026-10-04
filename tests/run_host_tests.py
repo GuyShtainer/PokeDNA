@@ -75,7 +75,7 @@ PY_TESTS = ["tests/host_hp_repaint_pin_test.py", "tests/host_stack_budget_test.p
             "tests/host_b185_caption_test.py", "tests/host_z7_swap_pair_test.py", "tests/host_z9_torn_pin_test.py",
             "tests/host_zb_tree_pin_test.py", "tests/host_zx_sites_test.py", "tests/host_zy_sites_test.py",
             "tests/host_zz_sites_test.py", "tests/host_za2_sites_test.py",
-            "tests/host_zb2_sites_test.py", "tests/host_zd_sites_test.py"]
+            "tests/host_zb2_sites_test.py", "tests/host_zd_sites_test.py", "tests/host_ze_sites_test.py"]
 
 VERBOSE = "-v" in sys.argv
 

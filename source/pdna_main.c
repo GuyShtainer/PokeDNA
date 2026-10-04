@@ -24,6 +24,7 @@
 #endif
 #include "sys.h"           /* EWRAM_BSS (idempotent; guarded)                          */
 #include "ff.h"
+#include "scan_cap.h"      /* BACKLOG #411: scan_dir's one-entry lookahead */
 #include "gen3_save.h"
 #include "gen3_mirage.h"
 #include "gen3_mon.h"
@@ -203,6 +204,7 @@ static uint32_t    g_save_size = 0;                       /* actual loaded byte 
 static u8          EWRAM_BSS g_sb1[G3_SAVEBLOCK1_BYTES];  /* reassembled SaveBlock1  */
 static BrowseEntry EWRAM_BSS g_entries[MAX_ENTRIES];      /* current-dir listing     */
 static int         g_count = 0;
+static bool        EWRAM_BSS g_scan_more;                /* #411: an entry past the cap exists (FULL) */
 static char        EWRAM_BSS g_cwd[PATH_MAX];             /* current directory (set in main) */
 /* ONE registered-ROM-path table for all five slots this app ever remembers a ROM
  * for: PkGame's RS/Emerald/FRLG (indices 0-2, the map screen's per-game ROMs) plus
@@ -712,13 +714,15 @@ static void sort_entries(BrowseEntry* ents) {      /* stable insertion sort, nev
  * every kind. */
 static void __attribute__((noinline)) scan_dir(const BrowseSpec* spec, BrowseEntry* ents) {
   g_count = 0;
+  g_scan_more = false;
   DIR dir;
   FILINFO fno;
   if (f_opendir(&dir, g_cwd) != FR_OK) { log_line("opendir %s failed", g_cwd); return; }
-  while (g_count < spec->cap && f_readdir(&dir, &fno) == FR_OK && fno.fname[0]) {
+  while (f_readdir(&dir, &fno) == FR_OK && fno.fname[0]) {
     bool is_dir = (fno.fattrib & AM_DIR) != 0;
     if (!g_show_hidden && (fno.fattrib & (AM_HID | AM_SYS))) continue;
     if (!is_dir && !g_show_all && !spec_ext_match(spec, fno.fname)) continue;  /* folders + filter unless show-all */
+    if (!scan_cap_admit(g_count, spec->cap, &g_scan_more)) break;   /* #411: one-entry lookahead */
     strncpy(ents[g_count].name, fno.fname, NAME_MAX - 1);
     ents[g_count].name[NAME_MAX - 1] = 0;
     ents[g_count].size = is_dir ? 0 : (uint32_t)fno.fsize;
@@ -1106,7 +1110,7 @@ static void br_detail_paint(const BrowseEntry* ents, int sel, const BrowseSpec* 
   /* #401: FULL goes FIRST (right after "n/N"), not last -- appended it was the first thing the 29-col
    * truncation ate ("FU~" at 1/107, "~" at 107/107), i.e. exactly when it mattered. */
   siprintf(status, "%d/%d  %s%s  %s", g_count ? sel + 1 : 0, g_count,
-           g_count >= spec->cap ? "FULL  " : "", sort_label(), g_show_all ? "all" : spec->filter_label);
+           g_scan_more ? "FULL  " : "", sort_label(), g_show_all ? "all" : spec->filter_label);
   ui_truncate(stc, status, 29);
   ui_text(2, 138, UI_OK, stc);
 }
@@ -9382,7 +9386,9 @@ static void pdna_settings(void) {
      * point is that the registration survives the flip). */
     char r2[SET_ROW_BUF];
     if (g_rom_art_off && app_any_rom_registered()) siprintf(r2, PDNA_SET_ROM_FMT, PDNA_SET_ROM_ARTOFF);
-    else siprintf(r2, PDNA_SET_ROM_FMT, s_iconrom.ok ? rom_kind_name(s_iconrom_ctx.kind) : PDNA_SET_ROM_NOTSET);
+    else siprintf(r2, PDNA_SET_ROM_FMT, s_iconrom.ok ? rom_kind_name(s_iconrom_ctx.kind)
+                                       : (app_gb_rom_path(PDNA_GEN1)[0] || app_gb_rom_path(PDNA_GEN2)[0])
+                                           ? PDNA_SET_ROM_GBONLY : PDNA_SET_ROM_NOTSET);   /* #412: a Gen 1/2 path alone is not "not set" */
     /* Extract-art row (Phase 2): three dim/live states, same posture as Yard visitors
      * above -- say WHY it is unavailable rather than show a toggle that does nothing. */
     bool art_omega_ok = (active_flashcart == EZ_FLASH_OMEGA);
@@ -12473,7 +12479,10 @@ static void view_save(const char* path) {
    * leak here is STOP-level, per this lane's brief). */
   if (app_rom_is_hack(g_game)) {
     app_src_readonly_set(0, PDNA_ROMHACK_NOTE);
+    /* BACKLOG #396: a wait on the user -- keep it out of the `perf boot` span (like save_slot_warn). */
+    hb_pause(); perf_span_pause();
     msg_wait(PDNA_ROMHACK_TITLE, UI_WARN, PDNA_ROMHACK_L1, PDNA_ROMHACK_L2);
+    perf_span_resume(); hb_resume();
   } else {
     app_src_readonly_clear();
   }

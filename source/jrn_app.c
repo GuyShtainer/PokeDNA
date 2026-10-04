@@ -823,7 +823,7 @@ int jrnapp_history(JaHist* rows, int max, int* more, int* floor_hit) {
     if (t == s_saved) saved_seen = 1;
     rows[n].seq = t;
     rows[n].parent = rec.parent;
-    rows[n].kind = JH_STEP; rows[n].open = 0; rows[n].nsib = 0;
+    rows[n].kind = JH_STEP; rows[n].open = 0; rows[n].nsib = 0; rows[n].disc = 0;
     rows[n].crossed = rec.crossed ? 1 : 0;
     rows[n].at_cursor = (t == cur) ? 1 : 0;
     rows[n].ahead = (uint8_t)ahead;
@@ -876,6 +876,43 @@ static int ja_ins(uint16_t nsib, int open, int max) {
   return shown < 0 ? 1 : 1 + shown;
 }
 
+/* #397: the EMPTY branch (tip == 0: nothing on the current branch) after "Save changes?" -> NO. jrn_mark_discarded keeps the thrown-away steps as children of the root, so
+ * the branch walk reads 0 rows and the screen said "Nothing recorded". Here they are ONE collapsed JH_FORK row (parent 0, disc = 1: "N discarded branches"), and, when the
+ * root fork is opened, up to JA_SIB_SHOW JH_SIB rows (their first steps). READ-ONLY (jrn_kid_counts / jrn_kid_list); returns the row count, 0 = nothing to show. */
+static int ja_tree_discarded(JaHist* rows, int max, const uint32_t* open_forks, int nopen) {
+  uint32_t zero = 0;
+  uint16_t cnt = 0;
+  int shown = 0, filled = 0, k;
+  if (max < 1 || !s_r || !s_r->j || s_state != JA_OK || jrn_tip(&s_j) != 0) return 0;
+  if (jrn_kid_counts(&s_j, &zero, &zero, &cnt, 1) != JRN_OK || !cnt) return 0;
+  memset(&rows[0], 0, sizeof rows[0]);
+  rows[0].kind = JH_FORK; rows[0].nsib = cnt; rows[0].disc = 1;
+  if (!ja_is_open(open_forks, nopen, 0)) return 1;
+  rows[0].open = 1;
+  shown = ja_ins(cnt, 1, max) - 1;                             /* the siblings that fit under the summary */
+  while (filled < shown) {
+    JrnKid* kid = (JrnKid*)(void*)s_rec;
+    uint8_t got = 0;
+    int want = shown - filled > 16 ? 16 : shown - filled;
+    if (jrn_kid_list(&s_j, 0, 0, (uint16_t)filled, kid, (uint8_t)want, &got) != JRN_OK || !got) break;
+    for (k = 0; k < (int)got; k++, filled++) {
+      JaHist* sb = &rows[1 + filled];
+      memset(sb, 0, sizeof *sb);
+      sb->kind = JH_SIB; sb->disc = 1;
+      sb->seq = kid[k].seq;
+      sb->crossed = kid[k].crossed;
+      sb->saved = (uint8_t)(kid[k].seq == s_saved);
+      memcpy(sb->name, kid[k].name, 24); sb->name[24] = 0;
+    }
+  }
+  for (; filled < shown; filled++) {                           /* the journal changed under us: never a hole */
+    memset(&rows[1 + filled], 0, sizeof rows[0]);
+    rows[1 + filled].kind = JH_SIB; rows[1 + filled].disc = 1;
+    strcpy(rows[1 + filled].name, "(gone)");
+  }
+  return 1 + shown;
+}
+
 int jrnapp_history_tree(JaHist* rows, int max, int* more, int* floor_hit, const uint32_t* open_forks, int nopen) {
   uint32_t* par = (uint32_t*)(void*)s_rec;
   uint32_t* skip = par + JA_TREE_ROWS;
@@ -884,6 +921,7 @@ int jrnapp_history_tree(JaHist* rows, int max, int* more, int* floor_hit, const 
   if (max > JA_TREE_ROWS) max = JA_TREE_ROWS;
   nb = jrnapp_history(rows, max, more, floor_hit);
   if (!open_forks || nopen < 0) nopen = 0;
+  if (nb == 0 && !(floor_hit && *floor_hit)) return ja_tree_discarded(rows, max, open_forks, nopen);   /* #397 */
   if (nb <= 0 || max < 3) return nb;
   for (i = 0; i < nb; i++) { par[i] = rows[i].parent; skip[i] = rows[i].seq; }
   if (jrn_kid_counts(&s_j, par, skip, cnt, (uint8_t)nb) != JRN_OK) { ja_event("history tree: the children walk failed (branch only)", 0); return nb; }

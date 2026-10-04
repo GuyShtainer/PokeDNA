@@ -846,7 +846,6 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * own full-source-box destination picker -- a distinct title so the screen never
  * reads "MOVE TO" while the mon is actually being copied, not relocated. */
 #define PDNA_GBEDIT_PICKBOX_DUP_TITLE "DUPLICATE TO"
-#define PDNA_GBEDIT_PICKBOX_CREATE_TITLE "CREATE IN"
 #define PDNA_GBEDIT_PICKBOX_FOOT   "A pick  B cancel"
 #define PDNA_GBEDIT_PICKBOX_Y0     20    /* first row's y, below the y=13 title rule */
 #define PDNA_GBEDIT_PICKBOX_ROW_H  10
@@ -1460,12 +1459,6 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_GBCREATE_NOROM_L2       "(Settings > Game ROM)."
 #define PDNA_GBCREATE_FULL_TITLE     "BOX FULL"
 #define PDNA_GBCREATE_FULL_L1        "No empty slot here."
-/* BACKLOG #187, F4: l1 is overwritten at the call site with the actual box name +
- * count ("BOX1 is full (20/20)."), siprintf'd into a stack buffer -- this L1 stays
- * only as the (now-unused after F4) generic fallback string, kept for
- * PDNA_GBCREATE_FULL_TITLE's own sizing convention comment above. l2 offers the
- * picker that now actually opens right after this message is dismissed. */
-#define PDNA_GBCREATE_FULL_PICKHINT_L2 "Pick another box."
 /* BACKLOG #187, F4: split out of the old BOX_FULL fold -- an unreadable list
  * (gb_list_count() returning <0, GBS_ERR_STRUCT's own condition) is a corrupt/
  * malformed box, not a full one; conflating the two hid the 2026-09-07 index-bug
@@ -1476,15 +1469,6 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * same fold, caught while re-deriving the message rather than reproduced). */
 #define PDNA_GBCREATE_BADLIST_TITLE  "CAN'T READ BOX"
 #define PDNA_GBCREATE_BADLIST_L1     "This box's data looks corrupt."
-/* Review fix 3 (LOW), BACKLOG #187: CREATE via F4's picker lands in a box the grid
- * is not currently showing (gb_create_hook reassigns `box = dst` before the
- * species/level/insert pipeline runs) -- without this, the ONLY feedback after a
- * successful create is the grid simply not gaining a new mon where the player is
- * still looking, easy to misread as a silent failure. Shown only when box != the
- * box the player actually opened CREATE from (the common case, staying in the same
- * box, already shows it landing right there). */
-#define PDNA_GBCREATE_REDIRECTED_TITLE "CREATED"
-#define PDNA_GBCREATE_REDIRECTED_FMT   "Created in %s, slot %d."
 #define PDNA_GBCREATE_BUILDFAIL_L1   "Could not build a legal record."
 
 /* BACKLOG #265: the LEGIT COPY / FROM SCRATCH choice CREATE asks BEFORE it reads the
@@ -1781,9 +1765,14 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_SET_ROM_FMT      "Game ROM:  %s"
 #define PDNA_SET_ROM_NOTSET   "not set"
 #define PDNA_SET_ROM_ARTOFF   "set, art OFF"
+#define PDNA_SET_ROM_GBONLY   "GB only"          /* #412: no Gen-3 ROM, but a Gen 1/2 ROM path is registered */
 #define PDNA_SET_ROM_LONGEST_KIND "LeafGreen"
 #define PDNA_SET_ROM_VALUES(X) \
-  X(PDNA_SET_ROM_NOTSET) X(PDNA_SET_ROM_ARTOFF) X(PDNA_SET_ROM_LONGEST_KIND)
+  X(PDNA_SET_ROM_NOTSET) X(PDNA_SET_ROM_ARTOFF) X(PDNA_SET_ROM_GBONLY) X(PDNA_SET_ROM_LONGEST_KIND)
+/* #397: the History screen's discarded-branch wording (pdna_hist.c h_row). FORK row: "<+|-> <n> discarded branch(es)" fitted into 150 px at x=13;
+ * a sibling row's right label is "discarded" (right-aligned at UI_SCR_W-6, never wider than the "other branch" it replaces). */
+#define PDNA_HIST_DISC        "discarded"
+#define PDNA_HIST_DISC_FORK_WORST "- 999 discarded branches"
 #define PDNA_SET_ROW_CLEAR   "Clear backups (this save)"
 /* #234 slice 4: the undo journal's two rows. The size presets are the retention cap in 64 KiB segments (16 / 8 / 4); a
  * SMALLER cap applies when a save next opens, a BIGGER one only to a history created after Clear history (the ring's
