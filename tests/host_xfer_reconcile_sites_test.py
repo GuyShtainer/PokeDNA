@@ -357,15 +357,55 @@ def check_p_readonly_draft_walk(text: str) -> list[str]:
         return ["xfer_reconcile_walk() not found in source/pdna_main.c"]
     if not re.search(r"ro_walk\s*=\s*!app_can_edit\(\)", body):
         out.append("xfer_reconcile_walk(): ro_walk = !app_can_edit() gate missing (#414)")
-    if not re.search(r"if\s*\(\s*ro_walk\s*&&\s*xrc_draft_name\(", body):
-        out.append("xfer_reconcile_walk(): the .tmp admit is not gated on ro_walk && xrc_draft_name (#414)")
-    if not re.search(r"if\s*\(\s*xr_path_for_name\([^)]*\)\s*\)\s*continue", body):
-        out.append("xfer_reconcile_walk(): primary-wins skip (xr_path_for_name ... continue) missing (#414)")
-    if not re.search(r"draft\s*&&\s*!xr_orphan_hdr_ok\(", body):
-        out.append("xfer_reconcile_walk(): the shared xr_orphan_hdr_ok predicate is not applied to the draft (#414/#415)")
+    # #419: the admit decision is the pure xrc_walk_admit (host-proven, ADMIT-1: W2 prim/primary, name_key, allow_draft gate);
+    # the walk must hand it ro_walk as allow_draft and act on its DRAFT verdict.
+    if not re.search(r"xrc_walk_admit\(\s*fi\.fname\s*,[^;]*,\s*ro_walk\b[^,;]*,\s*&name_key\s*,\s*prim\s*\)", body):
+        out.append("xfer_reconcile_walk(): the admit is not xrc_walk_admit(..., ro_walk, &name_key, prim) (#414/#419)")
+    if not re.search(r"case\s+XRC_ADMIT_DRAFT\s*:", body):
+        out.append("xfer_reconcile_walk(): no XRC_ADMIT_DRAFT case (#414/#419)")
+    # review-zg2: pin the ARGUMENT -- `xr_path_for_name(rb->path, fi.fname)` (the walk-level W2: f_stat the .tmp itself, so
+    # primary-wins is always true and the draft feature is dead) passed the old `[^)]*` form.
+    if not re.search(r"if\s*\(\s*xr_path_for_name\(\s*rb->path\s*,\s*prim\s*\)\s*\)\s*continue", body) or \
+       not re.search(r"char\*\s*prim\s*=\s*rb->names\[\s*rb->nfiles\s*\]\s*;", body):
+        out.append("xfer_reconcile_walk(): primary-wins skip must f_stat prim (= rb->names[rb->nfiles]), not the .tmp name (#414/#419 W2)")
+    if not re.search(r"draft\s*&&\s*!xrc_draft_accept\(\s*rb->sidecar\s*,\s*len\s*,\s*name_key\s*\)", body):
+        out.append("xfer_reconcile_walk(): xrc_draft_accept(rb->sidecar, len, name_key) is not applied to the draft (#414/#415/#419)")
     vt = strip_comments(extract_function_body(text, "xrc_visible_text"))
     if vt.count("xrc_text_of(") != 2 or "xrc_row_text(" in vt:
         out.append("xrc_visible_text(): the draft label (xrc_text_of) is not on the row text path (#414)")
+    return out
+
+
+def check_q_legacy_sidecar_pass(text: str) -> list[str]:
+    """(#418 n/o/p/q) the TRANSFERS walk's second pass over the legacy /sidecar dir: (n) gated on !xr_migrated(); (o) never
+    admits a .tmp draft (allow_draft is pass 0 only -- xr_open cannot read a /sidecar .tmp); (p) the dedupe strcmp over
+    rb->names precedes the accept (rb->nfiles++), primary = the xfer copy wins; (q) `examined` is never reset between passes."""
+    body = strip_comments(extract_function_body(text, "xfer_reconcile_walk"))
+    out = []
+    if not body:
+        return ["xfer_reconcile_walk() not found in source/pdna_main.c"]
+    if not re.search(r"legacy_ok\s*=\s*!xr_migrated\(\)", body) or \
+       not re.search(r"if\s*\(\s*pass\s*==\s*1\s*\)\s*\{\s*if\s*\(\s*!legacy_ok\s*\)\s*break;", body):
+        out.append("#418(n): pass 2 over PDNA_SIDECAR_DIR is not gated on !xr_migrated()")
+    if "PDNA_SIDECAR_DIR" not in body:
+        out.append("#418(n): xfer_reconcile_walk never opens PDNA_SIDECAR_DIR")
+    if not re.search(r"xrc_walk_admit\([^;]*,\s*ro_walk\s*&&\s*pass\s*==\s*0\s*,", body):
+        out.append("#418(o): the xrc_walk_admit call does not restrict allow_draft to pass 0 (ro_walk && pass == 0)")
+    dm = re.search(r"if\s*\(\s*pass\s*==\s*1\s*\)\s*\{[^}]*?for\s*\(\s*int\s+k\s*=\s*0\s*;\s*k\s*<\s*rb->nfiles\s*;\s*k\+\+\s*\)\s*"
+                   r"if\s*\(\s*strcmp\(\s*rb->names\[\s*k\s*\]\s*,\s*fi\.fname\s*\)\s*==\s*0\s*\)", body)
+    am = body.find("rb->nfiles++")
+    if not dm or am < 0 or dm.start() > am or not re.search(r"if\s*\(\s*dup\s*\)\s*continue", body):
+        out.append("#418(p): the dedupe strcmp(rb->names[k], fi.fname) + continue must precede the accept (rb->nfiles++)")
+    # review-zg2: the declaration itself must sit BEFORE the pass loop -- `int examined = 0;` moved inside the loop resets it
+    # per pass (the S150-6 F6 regression) and passed the old replace()-based check.
+    dq, fp = body.find("int examined = 0;"), body.find("for (int pass = 0;")
+    if dq < 0 or fp < 0 or dq > fp or len(re.findall(r"\bexamined\s*=\s*0\b", body)) != 1:
+        out.append("#418(q): `examined` is reset between passes (the bound must be global across both)")
+    # review-zg2 (r): an absent /PokeDNA/xfer must FALL THROUGH to the /sidecar pass (an unmigrated card with only /sidecar),
+    # never return early as the pre-#418 walk did.
+    if not re.search(r"if\s*\(\s*f_opendir\(&dir,\s*pass\s*==\s*0\s*\?\s*PDNA_XFER_DIR\s*:\s*PDNA_SIDECAR_DIR\)\s*!=\s*FR_OK\)\s*continue;", body) \
+       or re.search(r"\breturn\b", body):
+        out.append("#418(r): an absent xfer dir must fall through to pass 1 (continue), and the walk must not return early")
     return out
 
 
@@ -381,6 +421,7 @@ def run_all(main_text: str, bank_text: str) -> tuple[list[str], int]:
     violations += check_n_bank_g3_wiring(main_text)
     violations += check_o_g3home_not_listed(main_text)
     violations += check_p_readonly_draft_walk(main_text)
+    violations += check_q_legacy_sidecar_pass(main_text)
     return violations, h_sites
 
 
@@ -581,9 +622,9 @@ def main() -> int:
     # (p) #414: each of the five wiring pieces removed must turn its check red.
     for label, target, repl in (
         ("(p) ro gate", "const bool ro_walk = !app_can_edit();", "const bool ro_walk = true;"),
-        ("(p) admit gate", "if (ro_walk && xrc_draft_name(fi.fname, &name_key))", "if (xrc_draft_name(fi.fname, &name_key))"),
+        ("(p) admit gate", "(fi.fattrib & AM_DIR) != 0, ro_walk && pass == 0, &name_key, prim)", "(fi.fattrib & AM_DIR) != 0, true, &name_key, prim)"),
         ("(p) primary wins", "if (xr_path_for_name(rb->path, prim)) continue;", ""),
-        ("(p) shared predicate", "if (draft && !xr_orphan_hdr_ok(", "if (0 && !xr_orphan_hdr_ok("),
+        ("(p) shared predicate", "if (draft && !xrc_draft_accept(", "if (0 && !xrc_draft_accept("),
         ("(p) draft label", "  xrc_text_of(rb, h, c->species", "  xrc_row_text((XrcRowKind)h->row_kind, c->species"),
     ):
         if target not in main_text:
@@ -592,6 +633,29 @@ def main() -> int:
             continue
         v, _ = run_all(main_text.replace(target, repl, 1), bank_text)
         if not any("#414" in x for x in v):
+            print(f"FAIL -- self-mutation {label}: did NOT turn its check red")
+            fails += 1
+        else:
+            print(f"self-mutation {label}: correctly caught")
+
+    # (#418 n/o/p/q): each pass-2 property removed must turn its own check red.
+    for label, target, repl, tag in (
+        ("(#418 n) ungated pass 2", "const bool legacy_ok = !xr_migrated();", "const bool legacy_ok = true;", "#418(n)"),
+        ("(#418 o) drafts allowed in pass 2", "ro_walk && pass == 0,", "ro_walk,", "#418(o)"),
+        ("(#418 p) dedupe dropped", "if (dup) continue;", "", "#418(p)"),
+        ("(#418 q) examined reset", "legacy_start = rb->nfiles; }", "legacy_start = rb->nfiles; examined = 0; }", "#418(q)"),
+        ("(#418 q2) examined declared per pass", "for (int pass = 0; pass < 2; pass++) {", "for (int pass = 0; pass < 2; pass++) { int examined = 0;", "#418(q)"),
+        ("(#418 p2) dedupe loop dead", "for (int k = 0; k < rb->nfiles; k++) if (strcmp", "for (int k = 0; k < 0; k++) if (strcmp", "#418(p)"),
+        ("(#418 p3) dedupe on the wrong pass", "if (pass == 1) {   /* primary wins", "if (pass == 2) {   /* primary wins", "#418(p)"),
+        ("(#418 r) absent xfer returns", "PDNA_SIDECAR_DIR) != FR_OK) continue;", "PDNA_SIDECAR_DIR) != FR_OK) return;", "#418(r)"),
+        ("(#419 W2) walk f_stats the .tmp", "if (xr_path_for_name(rb->path, prim)) continue;", "if (xr_path_for_name(rb->path, fi.fname)) continue;", "W2"),
+    ):
+        if target not in main_text:
+            print(f"FAIL -- self-mutation {label} target not found verbatim (source drifted)")
+            fails += 1
+            continue
+        v, _ = run_all(main_text.replace(target, repl, 1), bank_text)
+        if not any(tag in x for x in v):
             print(f"FAIL -- self-mutation {label}: did NOT turn its check red")
             fails += 1
         else:

@@ -10,6 +10,14 @@
  *      source/data_tables.c source/item_map_g2g3.c -o /tmp/hxrc
  *   /tmp/hxrc /Users/guyshtainer/VSCodeProjects/gba-toolkit/roms/ (.sav files)
  *
+ * ADMIT-1 (#419): xrc_walk_admit, the walk's pure name decision. Mutations: drop the is_dir guard -> the directory case fails;
+ *   bound widened to >= 21 -> the 21-char case fails; lower bound dropped -> the 4-char case fails; case-sensitive extension -> ".PDS" fails; ignore allow_draft ->
+ *   the read-write draft case fails (a draft row on a healing card); leave prim as the ".tmp" name (W2 -- primary-wins would
+ *   then f_stat the .tmp itself and the draft feature is dead) -> the prim == "<key>.pds" compare fails; drop the key
+ *   (name_key) fill or take it from another stem -> the name_key compare fails; a non-hex stem admitted as a draft -> "zz" fails.
+ * ACCEPT-1 (#419/#415): xrc_draft_accept on a real GBSC buffer. Mutation: the W3 tautology (compare the buffer's key to itself,
+ *   i.e. name_key = gbsc_header_key(buf)) or dropping the key compare -> the key^1 refusal fails; dropping gbsc_header_ok -> the
+ *   torn-length refusal fails.
  * CLS-1: the whole decision-2 table, one call per row, mutation: swap the
  *   bank_slot_pending guard so XRC_DEFERRED becomes XRC_DUP_BANK -- CLS-1 fails.
  * KEY-1: over the real corpus, every occupied party/PC slot's own xr-key finds
@@ -467,6 +475,17 @@ static void test_row1(void) {
   xrc_row_text(XRC_ABROAD_BANK, "NIDOKING", "SAPPHIRE", out);
   CHECK(strstr(out, "restorable") != NULL, "ROW-1: ABROAD_BANK row has no status word (got '%s')", out);
 
+  /* #419: every status word with the maximal species (10) + game (7) stays inside the 39-byte cap. NOTE the cap mutant
+   * `p < 39` -> `p < 40` in xrc_row_fmt is EQUIVALENT today: the longest word ("in two places", 13) gives 38 bytes, so the
+   * cap is never reached and no input can turn it red; this loop only guards a future longer status word. */
+  { int worst = 0;
+    for (int kd = XRC_PENDING_BOTH; kd <= XRC_UNREAD; kd++) {
+      int nk = xrc_row_text((XrcRowKind)kd, "ABCDEFGHIJ", "ABCDEFG", out);
+      if (nk > worst) worst = nk;
+      CHECK(nk <= 39 && (int)strlen(out) == nk, "ROW-1: kind %d worst-case row fits 39 (got %d)", kd, nk);
+    }
+    CHECK(worst == 38, "ROW-1: the longest worst-case row is 38 bytes today (got %d) -- the p<40 cap mutant is equivalent", worst); }
+
   /* #414: a draft row (orphan .tmp on a read-only card) keeps the layout, status slot "draft", still <= 39 bytes.
    * Mutation: xrc_row_text_draft returning the kind's own word -> the strstr fails. */
   int nd = xrc_row_text_draft("NIDOKING", "SAPPHIRE", out);
@@ -490,6 +509,37 @@ static void test_draft_name(void) {
   CHECK(!xrc_draft_name("019A3F17C0B44E2.pds.tmp", &k), "#414: short stem refused");
   CHECK(!xrc_draft_name("0019A3F17C0B44E2.pds.tmp.bad", &k), "#414: longer name refused");
   CHECK(!xrc_draft_name(NULL, &k), "#414: NULL refused");
+}
+
+/* ==== ADMIT-1 / ACCEPT-1 (BACKLOG #419) ================================================ */
+static void test_admit1(void) {
+  printf("== #419: xrc_walk_admit / xrc_draft_accept ==\n");
+  uint64_t k = 0; char prim[21];
+  const uint64_t want = 0x0123456789ABCDEFULL;
+  CHECK(xrc_walk_admit("0123456789ABCDEF.pds", true, false, &k, prim) == XRC_ADMIT_SKIP, "ADMIT-1: a directory is skipped");
+  CHECK(xrc_walk_admit("0123456789ABCDEF.pds", false, false, &k, prim) == XRC_ADMIT_PDS, "ADMIT-1: 20-char .pds admitted");
+  CHECK(xrc_walk_admit("0123456789ABCDEF.PDS", false, false, &k, prim) == XRC_ADMIT_PDS, "ADMIT-1: .PDS (case-blind) admitted");
+  CHECK(xrc_walk_admit("0123456789ABCDE.pds", false, false, &k, prim) == XRC_ADMIT_PDS, "ADMIT-1: 19-char .pds admitted (5..20, gb_reconcile_walk's bound)");
+  CHECK(xrc_walk_admit("a.pds", false, false, &k, prim) == XRC_ADMIT_PDS, "ADMIT-1: 5-char .pds admitted (lower bound)");
+  CHECK(xrc_walk_admit(".pds", false, false, &k, prim) == XRC_ADMIT_SKIP, "ADMIT-1: 4-char name skipped");
+  CHECK(xrc_walk_admit("0123456789ABCDEF0.pds", false, false, &k, prim) == XRC_ADMIT_SKIP, "ADMIT-1: 21-char name skipped");
+  CHECK(xrc_walk_admit("0123456789ABCDEF.pdx", false, false, &k, prim) == XRC_ADMIT_SKIP, "ADMIT-1: wrong extension skipped");
+  CHECK(xrc_walk_admit(NULL, false, false, &k, prim) == XRC_ADMIT_SKIP, "ADMIT-1: NULL name skipped");
+  memset(prim, 'x', 21); k = 0;
+  CHECK(xrc_walk_admit("0123456789ABCDEF.pds.tmp", false, true, &k, prim) == XRC_ADMIT_DRAFT, "ADMIT-1: .pds.tmp with allow_draft is a DRAFT");
+  CHECK(strcmp(prim, "0123456789ABCDEF.pds") == 0, "ADMIT-1/W2: prim is the PRIMARY name (got '%s')", prim);
+  CHECK(k == want, "ADMIT-1: name_key is the stem's key (got %llx)", (unsigned long long)k);
+  CHECK(xrc_walk_admit("0123456789ABCDEF.pds.tmp", false, false, &k, prim) == XRC_ADMIT_SKIP, "ADMIT-1: same name without allow_draft is skipped");
+  CHECK(xrc_walk_admit("0123456789ABCDEF.pds.tmp", true, true, &k, prim) == XRC_ADMIT_SKIP, "ADMIT-1: a directory named .pds.tmp is skipped");
+  CHECK(xrc_walk_admit("zzzzzzzzzzzzzzzz.pds.tmp", false, true, &k, prim) == XRC_ADMIT_SKIP, "ADMIT-1: non-hex draft stem skipped");
+
+  uint8_t buf[GBSC_FILE_MAX];
+  uint32_t len = (uint32_t)gbsc_init(buf, want);
+  CHECK(len > 0 && gbsc_count(buf, len) == 0, "ACCEPT-1: fixture buffer parses");
+  CHECK(xrc_draft_accept(buf, len, want), "ACCEPT-1: accepted with its own key");
+  CHECK(!xrc_draft_accept(buf, len, want ^ 1), "ACCEPT-1/W3: refused with a different name key");
+  CHECK(!xrc_draft_accept(buf, len - 1, want), "ACCEPT-1: a torn (short) file is refused");
+  CHECK(!xrc_draft_accept(NULL, 0, want), "ACCEPT-1: NULL refused");
 }
 
 /* ==== INBANK-1 (BACKLOG #385) =========================================================
@@ -803,6 +853,7 @@ int main(int argc, char** argv) {
   test_rekey1();
   test_row1();
   test_draft_name();
+  test_admit1();
   test_rebuild1();
   test_inbank1();
   test_promote1();
