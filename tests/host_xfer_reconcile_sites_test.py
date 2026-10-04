@@ -347,6 +347,28 @@ def check_o_g3home_not_listed(text: str) -> list[str]:
     return []
 
 
+def check_p_readonly_draft_walk(text: str) -> list[str]:
+    """(p) #414: the TRANSFERS walk admits an orphan <key>.pds.tmp ONLY on a read-only card (the writable card
+    heals it first), skips it when the primary is present, judges it by the shared #415 predicate, and the row text
+    goes through xrc_text_of. RED if any of the four is dropped."""
+    body = strip_comments(extract_function_body(text, "xfer_reconcile_walk"))
+    out = []
+    if not body:
+        return ["xfer_reconcile_walk() not found in source/pdna_main.c"]
+    if not re.search(r"ro_walk\s*=\s*!app_can_edit\(\)", body):
+        out.append("xfer_reconcile_walk(): ro_walk = !app_can_edit() gate missing (#414)")
+    if not re.search(r"if\s*\(\s*ro_walk\s*&&\s*xrc_draft_name\(", body):
+        out.append("xfer_reconcile_walk(): the .tmp admit is not gated on ro_walk && xrc_draft_name (#414)")
+    if not re.search(r"if\s*\(\s*xr_path_for_name\([^)]*\)\s*\)\s*continue", body):
+        out.append("xfer_reconcile_walk(): primary-wins skip (xr_path_for_name ... continue) missing (#414)")
+    if not re.search(r"draft\s*&&\s*!xr_orphan_hdr_ok\(", body):
+        out.append("xfer_reconcile_walk(): the shared xr_orphan_hdr_ok predicate is not applied to the draft (#414/#415)")
+    vt = strip_comments(extract_function_body(text, "xrc_visible_text"))
+    if vt.count("xrc_text_of(") != 2 or "xrc_row_text(" in vt:
+        out.append("xrc_visible_text(): the draft label (xrc_text_of) is not on the row text path (#414)")
+    return out
+
+
 def run_all(main_text: str, bank_text: str) -> tuple[list[str], int]:
     violations = list(check_g_flush_on_exit_undo(main_text))
     h_violations, h_sites = check_h_load_sites(main_text)
@@ -358,6 +380,7 @@ def run_all(main_text: str, bank_text: str) -> tuple[list[str], int]:
     violations += check_m_apply_gate(main_text)
     violations += check_n_bank_g3_wiring(main_text)
     violations += check_o_g3home_not_listed(main_text)
+    violations += check_p_readonly_draft_walk(main_text)
     return violations, h_sites
 
 
@@ -550,6 +573,25 @@ def main() -> int:
         repl = "0" if label.startswith("(n) xrc") else ("" if "wiring" in label else "e2.kind != 99) continue;")
         v, _ = run_all(main_text.replace(target, repl, 1), bank_text)
         if not any(("xrc_bank_g3_match" in x or "bank_g3_matches" in x or "skip is gone" in x) for x in v):
+            print(f"FAIL -- self-mutation {label}: did NOT turn its check red")
+            fails += 1
+        else:
+            print(f"self-mutation {label}: correctly caught")
+
+    # (p) #414: each of the five wiring pieces removed must turn its check red.
+    for label, target, repl in (
+        ("(p) ro gate", "const bool ro_walk = !app_can_edit();", "const bool ro_walk = true;"),
+        ("(p) admit gate", "if (ro_walk && xrc_draft_name(fi.fname, &name_key))", "if (xrc_draft_name(fi.fname, &name_key))"),
+        ("(p) primary wins", "if (xr_path_for_name(rb->path, prim)) continue;", ""),
+        ("(p) shared predicate", "if (draft && !xr_orphan_hdr_ok(", "if (0 && !xr_orphan_hdr_ok("),
+        ("(p) draft label", "  xrc_text_of(rb, h, c->species", "  xrc_row_text((XrcRowKind)h->row_kind, c->species"),
+    ):
+        if target not in main_text:
+            print(f"FAIL -- self-mutation {label} target not found verbatim (source drifted)")
+            fails += 1
+            continue
+        v, _ = run_all(main_text.replace(target, repl, 1), bank_text)
+        if not any("#414" in x for x in v):
             print(f"FAIL -- self-mutation {label}: did NOT turn its check red")
             fails += 1
         else:

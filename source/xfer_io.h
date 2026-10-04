@@ -64,6 +64,11 @@ bool xr_path_for_key_hint(char out[GBSC_PATH_MAX], uint64_t key, bool xfer_dir_a
  * per-session latch built on top of this lives in the caller, e.g. pdna_main.c). */
 bool xr_dir_exists(void);
 
+/* #415/#414: the shared orphan-.tmp header predicate -- gbsc_header_ok(hdr, fsize) AND header key == `key`. `hdr` is the
+ * first GBSC_HEADER bytes (or the whole file), `fsize` the whole file's size. xr_path_for_key_hint's presence probe,
+ * xr_open's orphan read and the read-only TRANSFERS walk all go through it. */
+bool xr_orphan_hdr_ok(const uint8_t* hdr, uint32_t fsize, uint64_t key);
+
 /* Same rule, applied to an on-card FILENAME (e.g. "0019A3F17C0B44E2.pds") instead of
  * a key -- gb_recon_path()'s replacement, so a reconcile hit's later claim write
  * lands in the same file it was read from. */

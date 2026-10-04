@@ -79,7 +79,7 @@ bool xr_dir_exists(void) {
 /* #415: THE orphan-.tmp predicate on the first GBSC_HEADER bytes (xr_tmp_present) AND on the whole file (xr_read_orphan_tmp).
  * Both call gbsc_header_ok + the key compare through here, so presence and acceptance share one header test; acceptance
  * adds gbsc_count's entry crc16s on top (the probe cannot afford a 1 KB buffer on its frame). */
-static bool xr_orphan_hdr_ok(const uint8_t* hdr, uint32_t fsize, uint64_t key) {
+bool xr_orphan_hdr_ok(const uint8_t* hdr, uint32_t fsize, uint64_t key) {
   return gbsc_header_ok(hdr, fsize) && gbsc_header_key(hdr) == key;
 }
 
