@@ -134,17 +134,25 @@ static void one(const char* path) {
 
   CHECK(pk_flag_get(g_sb1, game, 0xA0 + cat), "#408: the category's PAINTING_MADE flag is set with the record");
 
-  /* Exact changed-bytes list within the target record. */
-  int record_changed = 0;
-  for (uint32_t i = off; i < off + GC_RECORD_BYTES; i++) {
-    if (sb1_before[i] != g_sb1[i]) {
-      record_changed++;
-    }
+  /* Exact changed-bytes list, SaveBlock1-relative: the 32-byte record plus EXACTLY the one
+   * flags[] byte that carries FLAG_<cat>_PAINTING_MADE (#408) -- nothing else. */
+  bool flag_was_set = pk_flag_get(sb1_before, game, 0xA0 + cat);
+  int record_changed = 0, outside_changed = 0;
+  uint32_t outside_off = 0;
+  for (uint32_t i = 0; i < sizeof sb1_before; i++) {
+    if (sb1_before[i] == g_sb1[i]) continue;
+    if (i >= off && i < off + GC_RECORD_BYTES) { record_changed++; continue; }
+    outside_changed++;
+    outside_off = i;
   }
-  printf("  write: %d bytes changed in record (off 0x%04X..0x%04X)\n",
-        record_changed, off, off + GC_RECORD_BYTES - 1);
+  printf("  write: %d record byte(s) changed (0x%04X..0x%04X), %d byte(s) outside (flag byte 0x%04X, flag was %s)\n",
+         record_changed, off, off + GC_RECORD_BYTES - 1, outside_changed, outside_off, flag_was_set ? "set" : "clear");
   CHECK(record_changed > 0, "the record actually changed");
-  /* #408: flag-setting also modifies flags outside the record, which is expected */
+  CHECK(outside_changed == (flag_was_set ? 0 : 1),
+        "#408: outside the record exactly the PAINTING_MADE flag byte changed (none if the flag was already set)");
+  if (outside_changed == 1)
+    CHECK((uint8_t)(sb1_before[outside_off] ^ g_sb1[outside_off]) == (uint8_t)(1u << ((0xA0 + cat) % 8)),
+          "#408: that byte differs by exactly the category's flag bit");
 
   /* ---- full verified-write round trip: sections 1..4, then re-parse + checksum ---- */
   uint8_t save_copy[262144];
