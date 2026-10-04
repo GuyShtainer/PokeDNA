@@ -124,6 +124,11 @@ int main(void) {
   eq("final m0", g.moves_after[0], 73); eq("final m1", g.moves_after[1], 22);
   eq("final m2", g.moves_after[2], 77); eq("final m3", g.moves_after[3], 79);
 
+  /* the start level's own entry is never re-taught (retail's loop starts at level + 1) */
+  { const uint16_t f4[4] = { 1, 2, 3, 4 }; uint8_t r7[80]; mk(BULBA, 7, f4, NULL, NULL, r7);
+    gen3_dc_preview(PK_EMERALD, r7, false, steps_for(BULBA, 7, 9), &g);
+    eq("L7 start: Leech Seed not retaught", g.n_learn, 0); }
+
   /* known move is skipped: carry Leech Seed already */
   const uint16_t known[4] = { 73, 1, 2, 3 };
   uint8_t rk[80]; mk(BULBA, 5, known, NULL, NULL, rk);
