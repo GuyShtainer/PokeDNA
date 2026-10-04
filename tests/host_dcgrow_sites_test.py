@@ -92,8 +92,8 @@ def checks(main, gbdc, gen12):
         out.append("P7: gbdc_take must hand the no-ROM flag to the panel")
     # P8: learned moves: new moves get base PP, shifted moves keep their PP + PP Ups
     ap = body(gbdc, "gbdc_grow_apply")
-    if "gb_set_ppup(mon, k, oup[j])" not in ap:
-        out.append("P8: shifted moves must keep their PP Ups (gb_set_ppup(mon, k, oup[j]))")
+    if not re.search(r"if \(mv && om\[j\] == mv\) \{[^}]*\(void\)gb_set_ppup\(mon, k, oup\[j\]\);\s*\(void\)gb_set_pp\(mon, k, opp\[j\]\);\s*break;", ap):
+        out.append("P8: a shifted move restores PP Ups FIRST, then its PP, both from source slot j")
     # P9: both Gen 1 and Gen 2 keep the grown EXP (never floor)
     if "(void)gb_set_exp(mon, gb_get_exp(mon));" not in ap or "gb_set_level(mon, g->lv_after)" in ap:
         out.append("P9: both Gen 1 and Gen 2 must keep EXP (gb_set_exp), never floor it (gb_set_level)")
@@ -137,7 +137,10 @@ def main():
         ("P6 leave falls through", "gbdc", "if (pick == PDNA_DCG_LEAVE) return;                 /* nothing written */", ""),
         ("P6 apply after land", "gbdc", "    gbdc_grow_apply(&mon, s->gen, grow, with_moves);\n    log_line", "    log_line"),
         ("P7 no_rom lost", "gbdc", "*no_rom = kept < 0;", "*no_rom = false;"),
-        ("P8 sub-level steps dropped", "gbdc", "gb_set_ppup(mon, k, oup[j]);", ";"),
+        ("P8 ppup restore dropped", "gbdc", "gb_set_ppup(mon, k, oup[j]);", ";"),
+        ("P8 pp before ppup", "gbdc", "        (void)gb_set_ppup(mon, k, oup[j]);\n        (void)gb_set_pp(mon, k, opp[j]);", "        (void)gb_set_pp(mon, k, opp[j]);\n        (void)gb_set_ppup(mon, k, oup[j]);"),
+        ("P8 pp restore dropped", "gbdc", "        (void)gb_set_pp(mon, k, opp[j]);\n", ""),
+        ("P8 pp from wrong slot", "gbdc", "(void)gb_set_pp(mon, k, opp[j]);", "(void)gb_set_pp(mon, k, opp[k]);"),
         ("P9 never keep exp", "gbdc", "(void)gb_set_exp(mon, gb_get_exp(mon));   /* level re-derived, EXP kept", "(void)gb_set_level(mon, g->lv_after);   /* level re-derived, EXP kept"),
         ("P10 gen3 log dropped", "main", 'log_line("daycare: take %s Lv%d->%d +%d moves(%s)"', 'log_line("daycare: grow %s Lv%d->%d +%d moves(%s)"'),
         ("P10 gb log dropped", "gbdc", 'log_line("daycare: take %s Lv%d->%d +%d moves(%s)"', 'log_line("daycare: grow %s Lv%d->%d +%d moves(%s)"'),

@@ -310,10 +310,9 @@ static bool gbdc_land(GbSession* s, const GbEditMon* mon, uint8_t* list, uint8_t
  * card, only (briefly) in RAM. */
 /* BACKLOG #373: what the boarded mon grew by, from the record the screen already holds.
  * Fills the shared DcGrow staging struct and returns true when it crossed at least one
- * level (then *no_rom says whether the learnset could not be read). Gen 1 keeps the grown
- * EXP (pokered's DAYCARE_TO_PARTY copies the record and derives the level from EXP);
- * Gen 2 floors the EXP to the new level (pokecrystal's RetrieveBreedmon) -- the caller's
- * gbdc_grow_apply does the matching write. Nothing is written here. */
+ * level (then *no_rom says whether the learnset could not be read). Both generations keep
+ * the grown EXP and re-derive the level from it in gbdc_grow_apply (orchestrator ruling D4:
+ * no floor, unlike pokecrystal's RetrieveBreedmon). Nothing is written here. */
 static bool gbdc_grow_preview(const GbSession* s, const GbEditMon* mon, DcGrow* g, bool* no_rom) {
   uint16_t dex = gb_get_species_dex(mon);
   if (!dex) return false;
