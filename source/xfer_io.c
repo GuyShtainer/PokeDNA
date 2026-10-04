@@ -247,8 +247,8 @@ SfStatus xr_open(uint64_t key, uint8_t* buf, uint32_t cap, uint32_t* len, char* 
 
 /* "<16 uppercase hex>.pds" -- exactly GBSC_PATH_MAX's own construction (gbsc_path),
  * reused here as an acceptance filter (mirrors the suffix test at
- * source/pdna_main.c's gb_reconcile_walk). 20 chars + NUL, same bound as
- * GB_RECON_NAME_MAX. */
+ * source/pdna_main.c's gb_reconcile_walk). 20 chars + NUL: the reconcile walks'
+ * .pds bound (their literal 21; GB_RECON_NAME_MAX is 25 for the #414 .tmp form). */
 #define XR_MIGRATE_NAME_LEN 20
 
 static bool is_hex_pds_name(const char* name, int len) {

@@ -38,6 +38,10 @@ def checks(heal, gen12, layout, main=None):
         rw = body(main, "gb_reconcile_walk")
         if "if (L < 5 || L >= 21) continue;" not in rw:
             out.append("F1: gb_reconcile_walk must filter .pds names at the literal 21, not GB_RECON_NAME_MAX")
+        # reverify-zf F-A: the sibling TRANSFERS walk keeps the same literal-21 .pds bound (only the .tmp branch uses NAME_MAX 25)
+        xw = body(main, "xfer_reconcile_walk")
+        if "if (L < 5 || L >= 21) continue;" not in xw:
+            out.append("F-A: xfer_reconcile_walk must filter .pds names at the literal 21, not GB_RECON_NAME_MAX")
     sa = body(heal, "xh_set_aside_tmp")
     if not re.search(r'f_stat\(bad, 0\) == FR_OK\)[^;]*\n?\s*log_line\("xfer_heal: %s: an older \.tmp\.bad salvage exists and is being replaced', sa):
         out.append("#416(a): xh_set_aside_tmp no longer logs the older .tmp.bad being replaced")
@@ -65,10 +69,12 @@ def main():
         for x in v:
             print("FAIL:", x)
         return 1
-    print("ok: #416 (a) replace-older log line before the unlink, (b) stuck flag + named refusal; F1 gb_reconcile_walk .pds bound")
+    print("ok: #416 (a) replace-older log line before the unlink, (b) stuck flag + named refusal; F1 gb_reconcile_walk + F-A xfer_reconcile_walk .pds bounds")
     fails = 0
     muts = (
         ("F1 bound widened", "main", "if (L < 5 || L >= 21) continue;", "if (L < 5 || L >= GB_RECON_NAME_MAX) continue;"),
+        ("F-A xfer walk bound widened", "main", "if (L < 5 || L >= 21) continue;   /* the .pds names (20 chars) --", "if (L < 5 || L >= GB_RECON_NAME_MAX) continue;   /* the .pds names (20 chars) --"),
+        ("F-A xfer walk bound shrunk", "main", "if (L < 5 || L >= 21) continue;   /* the .pds names (20 chars) --", "if (L < 5 || L >= 20) continue;   /* the .pds names (20 chars) --"),
         ("(a) log removed", "heal", 'log_line("xfer_heal: %s: an older .tmp.bad salvage exists', 'log_line_x("xfer_heal: %s: an older .tmp.bad salvage exists'),
         ("(a) policy removed", "heal", "(void)f_unlink(bad);", ""),
         ("(b) stuck never set", "heal", "if (stuck) *stuck = (sr == FR_EXIST);", ""),
