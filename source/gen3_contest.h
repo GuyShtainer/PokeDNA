@@ -128,9 +128,11 @@ bool gc_museum_get(const uint8_t* sb1, PkGame g, int cat, GcWinner* out);
  * category fixed to the slot's own `cat`, rank forced to CONTEST_RANK_MASTER (Emerald
  * only — matches ShouldReadyContestArtist: only a Master win with 800+ points ever
  * reaches the museum). Names are given as ASCII (<=10 / <=7 chars) and encoded here.
- * A byte-identical write (donor already occupies this slot) is a true no-op — the
- * caller compares before/after and skips the commit, same as every other editor in
- * this codebase. Returns false on FRLG or a bad `cat`. */
+ * A byte-identical write (donor already occupies this slot) leaves the RECORD
+ * untouched, but every successful call ALSO sets FLAG_<cat>_PAINTING_MADE (0xA0 + cat,
+ * SB1 flags[], section 2; #408 -- without it the game never draws the painting). So a
+ * caller that compares only the record before/after must still commit when that flag
+ * was clear before the call. Returns false on FRLG or a bad `cat`. */
 bool gc_museum_set(uint8_t* sb1, PkGame g, int cat, uint16_t species, uint32_t personality,
                    uint32_t otId, const char* monName_ascii, const char* trainerName_ascii);
 
@@ -148,7 +150,9 @@ bool gc_museum_set_raw(uint8_t* sb1, PkGame g, int cat, uint16_t species, uint32
  * caller can snapshot just that record before a gc_museum_set() call and memcmp after,
  * instead of copying the whole SaveBlock1 (sections 1-4 carry 15,752 B of data, section
  * 4 alone 3,848 B -- either way it would not fit the 32 KiB IWRAM stack). Returns 0 on
- * FRLG or a bad `cat` (never a valid record there). */
+ * FRLG or a bad `cat` (never a valid record there). The record is NOT the whole write
+ * footprint since #408: gc_museum_set* also sets the PAINTING_MADE flag, so read that
+ * flag (pk_flag_get) before the call too when deciding whether to commit. */
 uint32_t gc_museum_offset(PkGame g, int cat);
 #define GC_RECORD_BYTES 32
 

@@ -5,7 +5,8 @@
  * (0xA0..0xA4) too, and warp the player to Lilycove Museum 2F (group 13, map 3)
  * with g3warp_apply. Writes a fresh .sav with valid section checksums.
  * usage: museum_fill IN.sav OUT.sav flags(0|1|core) [x y]
- *   flags=0: don't set any flags
+ *   flags=0: no extra flag writes (since #408 gc_museum_set_raw sets the flag itself,
+ *            so 0 and core now behave the same)
  *   flags=1: manually set flags after gc_museum_set_raw
  *   flags=core: let gc_museum_set_raw set flags (after fix, this is the default) */
 #include <stdio.h>

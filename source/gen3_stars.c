@@ -169,11 +169,11 @@ int pk_star_ach_set(uint8_t* sb1, uint8_t* sb2, PkGame g, int i, bool on,
         uint8_t* w = sb1 + museum_off(g) + k * 0x20;
         if (!on) {
           memset(w, 0, 0x20);
-          pk_flag_set(sb1, g, 0xA0 + k, false);   /* #408: clear PAINTING_MADE flag */
+          pk_flag_set(sb1, g, GC_FLAG_PAINTING_MADE0 + k, false);   /* #408: clear PAINTING_MADE flag */
         } else if (rd16(w + 8) == 0) {
           museum_fill(sb1, sb2, g, k);    /* keep real wins */
         } else {
-          pk_flag_set(sb1, g, 0xA0 + k, true);    /* #408: set PAINTING_MADE flag for non-empty slots (heals lost flags) */
+          pk_flag_set(sb1, g, GC_FLAG_PAINTING_MADE0 + k, true);    /* #408: set PAINTING_MADE flag for non-empty slots (heals lost flags) */
         }
       }
       return 1;
