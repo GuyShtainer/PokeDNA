@@ -161,8 +161,8 @@ bool gc_museum_set_raw(uint8_t* sb1, PkGame g, int cat, uint16_t species, uint32
   memcpy(w, rec, sizeof(rec));   /* memcpy, not per-field writes: a byte-identical
                                   * donor must leave the record untouched at the
                                   * memory-compare level; the caller diffs the record
-                                  * AND checks the flag below to decide whether to
-                                  * commit at all. */
+                                  * AND compares the flag's prior state to decide
+                                  * whether to commit at all. */
   pk_flag_set(sb1, g, GC_FLAG_PAINTING_MADE0 + cat, true);   /* #408: set PAINTING_MADE flag */
   return true;
 }

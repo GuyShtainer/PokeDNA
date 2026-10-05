@@ -8,7 +8,7 @@
  *   flags=0: no extra flag writes (since #408 gc_museum_set_raw sets the flag itself,
  *            so 0 and core now behave the same)
  *   flags=1: manually set flags after gc_museum_set_raw
- *   flags=core: let gc_museum_set_raw set flags (after fix, this is the default) */
+ *   flags=core: let gc_museum_set_raw set flags */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
