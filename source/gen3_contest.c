@@ -126,6 +126,10 @@ bool gc_hall_get(const uint8_t* sb1, PkGame g, int idx, GcWinner* out) {
                      idx, out);
 }
 
+bool gc_museum_needs_commit(const uint8_t* before, const uint8_t* after, bool flag_before) {
+  return memcmp(before, after, GC_RECORD_BYTES) != 0 || !flag_before;
+}
+
 bool gc_museum_get(const uint8_t* sb1, PkGame g, int cat, GcWinner* out) {
   if (!sb1 || !out || !gc_supported(g)) return false;
   if (cat < 0 || cat >= GC_CATEGORY_COUNT) return false;

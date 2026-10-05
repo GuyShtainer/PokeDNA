@@ -784,6 +784,7 @@ int main(void) {
   T(PDNA_FOOT_HOF_LEVEL, 4);   T(PDNA_FOOT_HOF_PICK, 4);
   T(PDNA_HINT_ABILITY, 4);
   T(PDNA_HINT_STARS_ON, 4);    T(PDNA_HINT_STARS_NOART, 4);
+  T(PDNA_HINT_STARS_FIX, 4);   /* #422 pdna_trainer.c ui_text(4, 82) */
   /* BACKLOG #345: the "Press A" notice dialogs, panel-relative. Each literal is hand-copied from
    * its call site (drift guard -- change a string there, change it here):
    *   pdna_box.c  drop_chunk_pc_to_bank   "BANK WRITE FAILED" / "Kept in the save. Press A"

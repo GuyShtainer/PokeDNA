@@ -4,11 +4,13 @@
  * writer pdna_contest.c/gen3_stars.c use), optionally set FLAG_*_PAINTING_MADE
  * (0xA0..0xA4) too, and warp the player to Lilycove Museum 2F (group 13, map 3)
  * with g3warp_apply. Writes a fresh .sav with valid section checksums.
- * usage: museum_fill IN.sav OUT.sav flags(0|1|core) [x y]
+ * usage: museum_fill IN.sav OUT.sav flags(0|1|core|clear) [x y]
  *   flags=0: no extra flag writes (since #408 gc_museum_set_raw sets the flag itself,
  *            so 0 and core now behave the same)
  *   flags=1: manually set flags after gc_museum_set_raw
- *   flags=core: let gc_museum_set_raw set flags */
+ *   flags=core: let gc_museum_set_raw set flags
+ *   flags=clear: fill exactly like core, then clear 0xA0..0xA4 for ALL five categories (incl. KEPT
+ *            real wins) = a pre-#408 save (records without PAINTING_MADE flags), BACKLOG #422 */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,9 +26,10 @@ static uint8_t g_sb1[G3_SAVEBLOCK1_BYTES];
 static uint8_t g_sb2[G3_SECTOR_DATA_SIZE];
 
 int main(int argc, char** argv) {
-  if (argc < 4) { fprintf(stderr, "usage: %s IN.sav OUT.sav flags(0|1|core) [x y]\n", argv[0]); return 2; }
+  if (argc < 4) { fprintf(stderr, "usage: %s IN.sav OUT.sav flags(0|1|core|clear) [x y]\n", argv[0]); return 2; }
   int want_flags = 0;
-  if (strcmp(argv[3], "core") == 0) {
+  bool clear_flags = (strcmp(argv[3], "clear") == 0);
+  if (strcmp(argv[3], "core") == 0 || clear_flags) {
     want_flags = -1;  /* -1 means "don't manually touch flags, gc_museum_set_raw does it" */
   } else {
     want_flags = atoi(argv[3]);
@@ -63,8 +66,13 @@ int main(int argc, char** argv) {
            flag_before);
     if (want_flags > 0) pk_flag_set(g_sb1, game, 0xA0 + cat, true);
     bool flag_after = pk_flag_get(g_sb1, game, 0xA0 + cat);
-    printf(" after=%d%s\n", flag_after, want_flags == -1 ? " (core mode: gc_museum_set_raw set the flag)" : "");
+    printf(" after=%d%s\n", flag_after, want_flags == -1 ? (clear_flags ? " (clear mode: set by the core, cleared below)" : " (core mode: gc_museum_set_raw set the flag)") : "");
   }
+  if (clear_flags)
+    for (int cat = 0; cat < GC_CATEGORY_COUNT; cat++) {
+      pk_flag_set(g_sb1, game, 0xA0 + cat, false);
+      printf("  clear mode: flag 0x%02X now %d\n", 0xA0 + cat, pk_flag_get(g_sb1, game, 0xA0 + cat));
+    }
   G3Warp w = { .group = 13, .num = 3, .x = (int16_t)wx, .y = (int16_t)wy, .centre = false };
   G3Warp cur; if (g3warp_get_current(g_sb1, &cur)) printf("current map %u/%u pos %d,%d\n", cur.group, cur.num, cur.x, cur.y);
   if (!g3warp_apply(g_sb1, g_sb2, game, &w)) { fprintf(stderr, "warp apply failed\n"); return 1; }
@@ -77,7 +85,7 @@ int main(int argc, char** argv) {
   if (!gen3_verify_full_checksums(g_save, info.slot, &fail)) { fprintf(stderr, "checksum fail sec %d\n", fail); return 1; }
   if (!gen3_section_checksum_ok(g_save, info.slot, 0, game == PK_RS ? 0x890 : 0xF2C)) { fprintf(stderr, "sec0 checksum bad at the game's SaveBlock2 length\n"); return 1; }
   f = fopen(argv[2], "wb"); fwrite(g_save, 1, sz, f); fclose(f);
-  const char* flags_mode = (want_flags == -1) ? "core" : (want_flags ? "manual" : "none");
+  const char* flags_mode = clear_flags ? "clear" : (want_flags == -1) ? "core" : (want_flags ? "manual" : "none");
   printf("wrote %s (%zu B), game=%s, flags=%s, warp 13/3 @%d,%d\n", argv[2], sz, game == PK_RS ? "RS" : "Emerald", flags_mode, wx, wy);
   return 0;
 }

@@ -265,7 +265,7 @@ void pdna_contest(uint8_t* sb1, uint8_t* pc, PkGame game) {
       uint8_t before[GC_RECORD_BYTES]; memcpy(before, sb1 + off, GC_RECORD_BYTES);
       bool flag_before = pk_flag_get(sb1, game, GC_FLAG_PAINTING_MADE0 + sel);   /* #408: track prior flag */
       write_museum(sb1, game, sel, &donor);
-      if (memcmp(before, sb1 + off, GC_RECORD_BYTES) != 0 || !flag_before) {     /* #408: commit if record or flag changed */
+      if (gc_museum_needs_commit(before, sb1 + off, flag_before)) {     /* #408: commit if record or flag changed */
         rmbl_fire(RCUE_SAVE);
         (void)app_hold_sb1("Contest painting");     /* #234 s2: staged (the SET PAINTING confirm above stays) */
       }

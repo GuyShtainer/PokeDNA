@@ -48,6 +48,19 @@ bool pk_star_ach_done(const uint8_t* sb1, const uint8_t* sb2, PkGame g, int i,
 int  pk_star_count(const uint8_t* sb1, const uint8_t* sb2, PkGame g,
                    const uint16_t* hoenn200);        /* 0..4 */
 
+/* #422: true ONLY for the museum star when every record is filled (so
+ * pk_star_ach_done reads ON) but at least one FLAG_<cat>_PAINTING_MADE flag
+ * (0xA0+cat) is clear -- the state pre-#408 PokeDNA builds left behind, where the
+ * paintings are invisible in-game. Healing = pk_star_ach_set(on=true), which sets
+ * the flags and keeps the record bytes. False for every other kind/game/index. */
+bool pk_star_ach_needs_heal(const uint8_t* sb1, const uint8_t* sb2, PkGame g, int i,
+                            const uint16_t* hoenn200);
+
+/* The `on` value one A-press should pass to pk_star_ach_set: turn ON when the
+ * star is off, and also ON (heal) when it reads done but needs_heal. */
+bool pk_star_ach_toggle_target(const uint8_t* sb1, const uint8_t* sb2, PkGame g, int i,
+                               const uint16_t* hoenn200);
+
 /* Can achievement i be toggled at all? (false: FRLG rows, dex without table) */
 bool pk_star_ach_can_set(PkGame g, int i, const uint16_t* hoenn200);
 
