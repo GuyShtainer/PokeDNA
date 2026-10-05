@@ -20,7 +20,7 @@
  *
  * Build + run (repo root):
  *   cc -std=c11 -O2 -Wall -Wextra -I source tests/host_contest_test.c \
- *     source/gen3_contest.c source/gen3_save.c source/gen3_edit.c source/gen3_mon.c \
+ *     source/gen3_contest.c source/gen3_flags.c source/gen3_save.c source/gen3_edit.c source/gen3_mon.c \
  *     source/data_tables.c source/gen3_daycare.c \
  *     -o /tmp/hcontest && /tmp/hcontest \
  *     [emerald.sav] [ruby.sav] [sapphire.sav]
@@ -35,6 +35,7 @@
 #include <string.h>
 #include "gen3_trainer.h"
 #include "gen3_contest.h"
+#include "gen3_flags.h"  /* pk_flag_get for #408 tests */
 #include "gen3_save.h"
 #include "gen3_mon.h"
 #include "gen3_edit.h"
@@ -131,20 +132,33 @@ static void one(const char* path) {
   CHECK(gc_museum_set(g_sb1, game, cat, donor.species, donor.personality, donor.otId,
                       donor.nickname, donor.otName), "gc_museum_set succeeds");
 
-  /* Exact changed-bytes list, SaveBlock1-relative. */
-  int changed = 0, first_off = -1, last_off = -1;
+  CHECK(pk_flag_get(g_sb1, game, 0xA0 + cat), "#408: the category's PAINTING_MADE flag is set with the record");
+
+  /* Exact changed-bytes list, SaveBlock1-relative: the 32-byte record plus EXACTLY the one
+   * flags[] byte that carries FLAG_<cat>_PAINTING_MADE (#408) -- nothing else. */
+  bool flag_was_set = pk_flag_get(sb1_before, game, 0xA0 + cat);
+  int record_changed = 0, outside_changed = 0;
+  uint32_t outside_off = 0;
   for (uint32_t i = 0; i < sizeof sb1_before; i++) {
-    if (sb1_before[i] != g_sb1[i]) {
-      changed++;
-      if (first_off < 0) first_off = (int)i;
-      last_off = (int)i;
-    }
+    if (sb1_before[i] == g_sb1[i]) continue;
+    if (i >= off && i < off + GC_RECORD_BYTES) { record_changed++; continue; }
+    outside_changed++;
+    outside_off = i;
   }
-  printf("  write: %d bytes changed, SB1 [0x%04X..0x%04X] (record at 0x%04X..0x%04X)\n",
-        changed, first_off, last_off, off, off + GC_RECORD_BYTES - 1);
-  CHECK(changed > 0, "the write actually changed something");
-  CHECK((uint32_t)first_off >= off && (uint32_t)last_off < off + GC_RECORD_BYTES,
-       "every changed byte is INSIDE the target record (nothing else touched)");
+  printf("  write: %d record byte(s) changed (0x%04X..0x%04X), %d byte(s) outside (flag byte 0x%04X, flag was %s)\n",
+         record_changed, off, off + GC_RECORD_BYTES - 1, outside_changed, outside_off, flag_was_set ? "set" : "clear");
+  CHECK(record_changed > 0, "the record actually changed");
+  /* #408 pin, independent of gen3_flags.c's flags_off(): SaveBlock1.flags[] is at 0x1270 (pokeemerald) / 0x1220
+   * (pokeruby), so FLAG_<cat>_PAINTING_MADE (0xA0 + cat) is bit cat of SB1 byte 0x1284 (E) / 0x1234 (RS). */
+  uint32_t flag_byte = (game == PK_EMERALD ? 0x1270u : 0x1220u) + (0xA0u + (uint32_t)cat) / 8u;
+  CHECK(((g_sb1[flag_byte] >> ((0xA0 + cat) % 8)) & 1u) != 0,
+        "#408: the PAINTING_MADE bit is set at the decomp-derived SB1 byte (E 0x1284 / RS 0x1234)");
+  if (outside_changed == 1) CHECK(outside_off == flag_byte, "#408: the one changed byte outside the record IS that flag byte");
+  CHECK(outside_changed == (flag_was_set ? 0 : 1),
+        "#408: outside the record exactly the PAINTING_MADE flag byte changed (none if the flag was already set)");
+  if (outside_changed == 1)
+    CHECK((uint8_t)(sb1_before[outside_off] ^ g_sb1[outside_off]) == (uint8_t)(1u << ((0xA0 + cat) % 8)),
+          "#408: that byte differs by exactly the category's flag bit");
 
   /* ---- full verified-write round trip: sections 1..4, then re-parse + checksum ---- */
   uint8_t save_copy[262144];

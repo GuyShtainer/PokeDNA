@@ -1,5 +1,6 @@
 #include "gen3_contest.h"
 #include "gen3_save.h"   /* gen3_decode_char */
+#include "gen3_flags.h"  /* pk_flag_set, for PAINTING_MADE flags */
 #include <string.h>
 
 /* ASCII -> Gen-3 charset, same table as gen3_edit.c's gen3_encode_char. Duplicated
@@ -158,9 +159,11 @@ bool gc_museum_set_raw(uint8_t* sb1, PkGame g, int cat, uint16_t species, uint32
 
   uint8_t* w = sb1 + museum_base(g) + (uint32_t)cat * GC_STRIDE;
   memcpy(w, rec, sizeof(rec));   /* memcpy, not per-field writes: a byte-identical
-                                  * donor must leave sb1 untouched at the memory-
-                                  * compare level, and the caller diffs before/after
-                                  * to decide whether to commit at all. */
+                                  * donor must leave the record untouched at the
+                                  * memory-compare level; the caller diffs the record
+                                  * AND compares the flag's prior state to decide
+                                  * whether to commit at all. */
+  pk_flag_set(sb1, g, GC_FLAG_PAINTING_MADE0 + cat, true);   /* #408: set PAINTING_MADE flag */
   return true;
 }
 
