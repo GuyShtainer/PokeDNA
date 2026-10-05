@@ -255,6 +255,7 @@ code { background:var(--code); padding:0 .3em; border-radius:4px; font:.88em "IB
 .seg button .n { opacity:.65; margin-left:4px; font-size:.72rem; }
 .flbl { font-size:.72rem; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; }
 .bar2 { margin-top:6px; gap:6px 10px; }
+.fg { display:flex; align-items:center; gap:6px; }
 .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin:14px 0; }
 .note-claude { font-size:.88rem; }
 .sec { margin-top:26px; }
@@ -280,7 +281,7 @@ code { background:var(--code); padding:0 .3em; border-radius:4px; font:.88em "IB
 .more dt { font-weight:600; margin-top:8px; color:var(--muted); font-size:.78rem; text-transform:uppercase; letter-spacing:.5px; }
 .more dd { margin:2px 0 0; overflow-wrap:anywhere; }
 .emu { margin-top:6px; font-size:.82rem; color:var(--walled); }
-.claude-note { margin-top:6px; font-size:.85rem; }
+.claude-note { margin-top:6px; font-size:.85rem; overflow-wrap:anywhere; }
 .claude-note b { color:var(--accent); }
 .ctl { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; align-items:center; }
 .ctl .sgn { display:flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
@@ -356,9 +357,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline:2px 
     <button type="button" id="copyrep" class="copybtn">Copy report</button>
   </div>
   <div class="bar bar2" id="rowbar2">
-    <span class="flbl">Emulator</span><div class="seg" id="f-cl" role="group" aria-label="Claude's emulator result"></div>
-    <span class="flbl">Game</span><div class="seg" id="f-gen" role="group" aria-label="Game filter"></div>
-    <span class="flbl">Only</span><div class="seg" id="f-x" role="group" aria-label="Extra filters"></div>
+    <div class="fg"><span class="flbl">Emulator</span><div class="seg" id="f-cl" role="group" aria-label="Claude's emulator result"></div></div>
+    <div class="fg"><span class="flbl">Game</span><div class="seg" id="f-gen" role="group" aria-label="Game filter"></div></div>
+    <div class="fg"><span class="flbl">Only</span><div class="seg" id="f-x" role="group" aria-label="Extra filters"></div></div>
     <button type="button" id="clearf" class="copybtn" hidden>Clear filters</button>
   </div>
   <textarea id="repbox" class="repbox" hidden readonly></textarea>
@@ -580,6 +581,7 @@ function queueNote(r, text){
   if (!canWrite) return;
   var g = state.signoffs[r.id] = signDoc(r.id);
   g.note = text;
+  updateFilterCounts(document.getElementById("q").value.trim().toLowerCase());
   var st = document.getElementById("notest-" + domId(r.id));
   st.textContent = "saving…";
   clearTimeout(saveTimers[r.id]);
@@ -593,7 +595,7 @@ function addPhotos(r, files){
   var list = Array.prototype.slice.call(files);
   (function next(){
     var f = list.shift();
-    if (!f) { st.textContent = ""; writeSign(r); applyRow(r.id); return; }
+    if (!f) { st.textContent = ""; writeSign(r); applyRow(r.id); updateFilterCounts(document.getElementById("q").value.trim().toLowerCase()); return; }
     assetsNS.upload(f).then(function(res){
       var g = state.signoffs[r.id] = signDoc(r.id);
       g.images = (g.images || []).concat([res.id]);
@@ -604,7 +606,7 @@ function addPhotos(r, files){
 function removePhoto(r, aid){
   var g = state.signoffs[r.id] = signDoc(r.id);
   g.images = (g.images || []).filter(function(x){ return x !== aid; });
-  applyRow(r.id); writeSign(r);
+  applyRow(r.id); updateFilterCounts(document.getElementById("q").value.trim().toLowerCase()); writeSign(r);
 }
 
 // ------------------------------------------------- claude card + findings
@@ -655,8 +657,9 @@ var FILTERS = [["all","All"],["pend","Needs cart"],["pass","Passed"],["fail","Fa
 var CLF = [["all","All"],["emu","Emu ✓"],["partial","Emu partial"],["walled","Can't emu-prove"],["unchecked","Not emu-checked"],["emufail","Emu ✗"]];
 var GENF = [["all","All"],["g3","Gen 3"],["gb","Gen 1/2"],["xg","Cross-gen"],["sys","System"]];
 var XF = [["photos","Has photos"],["note","Has my note"],["raw","Queue note"]];
-var filt = { st: lsGet("filter") || "all", cl: lsGet("f-cl") || "all", gen: lsGet("f-gen") || "all",
-             x: (lsGet("f-x") || "").split(",").filter(Boolean) };
+function lsKnown(k, defs){ var v = lsGet(k); return defs.some(function(d){ return d[0] === v; }) ? v : "all"; }
+var filt = { st: lsKnown("filter", FILTERS), cl: lsKnown("f-cl", CLF), gen: lsKnown("f-gen", GENF),
+             x: (lsGet("f-x") || "").split(",").filter(function(k, i, a){ return XF.some(function(d){ return d[0] === k; }) && a.indexOf(k) === i; }) };
 function effCl(r){
   var c = state.claude[r.id], eff = (c && c.state) ? c : (r.cl || null), s = eff ? eff.state : "";
   if (s === "ok" || s === "verified") return "emu";
