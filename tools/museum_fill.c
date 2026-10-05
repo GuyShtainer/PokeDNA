@@ -66,7 +66,7 @@ int main(int argc, char** argv) {
            flag_before);
     if (want_flags > 0) pk_flag_set(g_sb1, game, 0xA0 + cat, true);
     bool flag_after = pk_flag_get(g_sb1, game, 0xA0 + cat);
-    printf(" after=%d%s\n", flag_after, want_flags == -1 ? " (core mode: gc_museum_set_raw set the flag)" : "");
+    printf(" after=%d%s\n", flag_after, want_flags == -1 ? (clear_flags ? " (clear mode: set by the core, cleared below)" : " (core mode: gc_museum_set_raw set the flag)") : "");
   }
   if (clear_flags)
     for (int cat = 0; cat < GC_CATEGORY_COUNT; cat++) {

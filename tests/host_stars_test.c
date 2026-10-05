@@ -212,6 +212,8 @@ static void heal_prep(PkGame g, int mi) {
   g_sb2[6] = 0xFF;
   pk_star_ach_set(g_sb1, g_sb2, g, mi, true, NULL);
   for (int k = 0; k < 5; k++) pk_flag_set(g_sb1, g, 0xA0 + k, false);   /* = pre-#408 */
+  { uint32_t fb = (g == PK_EMERALD) ? 0x1284u : 0x1234u;   /* neighbours set: gym-TM flags 0xA5..0xA7 + bytes either side */
+    g_sb1[fb] |= 0xE0; g_sb1[fb - 1] = 0xFF; g_sb1[fb + 1] = 0xFF; }   /* zk review F1: a heal that clears a neighbour bit must go RED */
 }
 
 static void test_heal_pre408(PkGame g, int mi) {
