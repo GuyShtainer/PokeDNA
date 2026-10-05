@@ -2518,6 +2518,8 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_FOOT_HOF_PICK     "U/D select A choose B cancel"   /* pdna_gbhof.c member list + species list, x=4: 28 gl = 228 px (was 30) */
 #define PDNA_HINT_ABILITY      "Gen-3: species abilities only"  /* pdna_pick.c pick_ability hint row, x=4: 29 gl = 236 px (was 40) */
 #define PDNA_HINT_STARS_ON     "Each ON = 1 star (card color)"  /* pdna_trainer.c card stars, x=4: 29 gl = 236 px (was 32) */
+#define PDNA_STAR_FIX          "fix"                            /* pdna_trainer.c card stars row token: museum records filled but PAINTING_MADE flags lost (#422) */
+#define PDNA_HINT_STARS_FIX    "fix = A restores museum flags"  /* pdna_trainer.c card stars, x=4, y=82 (#422) */
 #define PDNA_HINT_STARS_NOART  "n/a: needs generated art data"  /* pdna_trainer.c card stars, x=4: 29 gl = 236 px (was 34) */
 
 #endif /* PDNA_LAYOUT_H */

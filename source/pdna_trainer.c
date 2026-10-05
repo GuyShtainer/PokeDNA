@@ -704,11 +704,20 @@ static void star_row_paint(uint8_t* sb1, uint8_t* sb2, PkGame game, const uint16
                            int idx, int y, bool sel) {
   bool can = pk_star_ach_can_set(game, idx, dex);
   bool on  = pk_star_ach_done(sb1, sb2, game, idx, dex);
+  bool fix = pk_star_ach_needs_heal(sb1, sb2, game, idx, dex);   /* #422 */
   char row[40]; siprintf(row, "%-16s %s", pk_star_ach_name(game, idx),
-                         !can ? "n/a" : on ? "ON" : "off");
+                         !can ? "n/a" : fix ? PDNA_STAR_FIX : on ? "ON" : "off");
   if (sel) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
   else     ui_fill_rect(2, y - 1, 236, 9, UI_BG);
-  ui_text(8, y, sel ? UI_SELTEXT : (can && on ? UI_OK : UI_DIM), row);
+  ui_text(8, y, sel ? UI_SELTEXT : fix ? UI_WARN : (can && on ? UI_OK : UI_DIM), row);
+}
+
+/* #422: does any row of this game's star list need its museum flags healed? */
+static bool stars_any_fix(const uint8_t* sb1, const uint8_t* sb2, PkGame game,
+                          const uint16_t* dex, int n) {
+  for (int i = 0; i < n; i++)
+    if (pk_star_ach_needs_heal(sb1, sb2, game, i, dex)) return true;
+  return false;
 }
 
 /* The STARS row's sub-editor: this game's 4 star achievements (each ONE card
@@ -732,6 +741,7 @@ static int stars_editor(uint8_t* sb1, uint8_t* sb2, PkGame game) {
       for (int i = 0; i < n; i++)
         star_row_paint(sb1, sb2, game, dex, i, 16 + i * 9, i == sel);
       ui_text(4, 62, UI_DIM, PDNA_HINT_STARS_ON);   /* #348 */
+      if (stars_any_fix(sb1, sb2, game, dex, n)) ui_text(4, 82, UI_WARN, PDNA_HINT_STARS_FIX);   /* #422 */
       if (!dex) ui_text(4, 72, UI_DIM, PDNA_HINT_STARS_NOART);   /* #348 */
       trainer_key_legend("A toggle  U/D  B back");
     } else {
@@ -754,11 +764,11 @@ static int stars_editor(uint8_t* sb1, uint8_t* sb2, PkGame game) {
     else if (k & KEY_DOWN) sel = (sel + 1) % n;
     else if (k & KEY_A) {
       if (!pk_star_ach_can_set(game, sel, dex)) continue;
-      bool on = pk_star_ach_done(sb1, sb2, game, sel, dex);
-      if (on && pk_star_ach_is_dex(game, sel) &&   /* dex stars: OFF un-catches */
+      bool target = pk_star_ach_toggle_target(sb1, sb2, game, sel, dex);   /* #422: heal reads as ON-again */
+      if (!target && pk_star_ach_is_dex(game, sel) &&   /* dex stars: OFF un-catches */
           !app_confirm("Clear dex catches?", "Un-catches these species."))
         continue;
-      dirty |= pk_star_ach_set(sb1, sb2, game, sel, !on, dex);
+      dirty |= pk_star_ach_set(sb1, sb2, game, sel, target, dex);
       /* NOT a single-row repaint: FRLG's achievements overlap (gen3_stars.c --
        * ACH_NATDEX's dex ranges 0..2 INCLUDE ACH_KANTO's range 0, so turning
        * NatDex on/off can silently flip the Kanto row's on-state too, leaving a
@@ -772,6 +782,8 @@ static int stars_editor(uint8_t* sb1, uint8_t* sb2, PkGame game) {
       char t2[32]; siprintf(t2, "CARD STARS  %d/4", scount2);
       ui_fill_rect(0, 2, UI_SCR_W, UI_ROW_H, UI_BG);
       ui_text(4, 2, UI_TITLE, t2);
+      ui_fill_rect(0, 82, UI_SCR_W, UI_ROW_H, UI_BG);   /* #422: hint only while a row still needs heal */
+      if (stars_any_fix(sb1, sb2, game, dex, n)) ui_text(4, 82, UI_WARN, PDNA_HINT_STARS_FIX);
     }
   }
 }

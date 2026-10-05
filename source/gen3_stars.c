@@ -114,6 +114,21 @@ int pk_star_count(const uint8_t* sb1, const uint8_t* sb2, PkGame g,
   return n;
 }
 
+bool pk_star_ach_needs_heal(const uint8_t* sb1, const uint8_t* sb2, PkGame g, int i,
+                            const uint16_t* hoenn200) {
+  if (ach_kind(g, i) != ACH_MUSEUM) return false;
+  if (!pk_star_ach_done(sb1, sb2, g, i, hoenn200)) return false;
+  for (int k = 0; k < 5; k++)
+    if (!pk_flag_get(sb1, g, GC_FLAG_PAINTING_MADE0 + k)) return true;
+  return false;
+}
+
+bool pk_star_ach_toggle_target(const uint8_t* sb1, const uint8_t* sb2, PkGame g, int i,
+                               const uint16_t* hoenn200) {
+  return !pk_star_ach_done(sb1, sb2, g, i, hoenn200) ||
+         pk_star_ach_needs_heal(sb1, sb2, g, i, hoenn200);
+}
+
 bool pk_star_ach_can_set(PkGame g, int i, const uint16_t* hoenn200) {
   int k = ach_kind(g, i);
   if (k < 0) return false;

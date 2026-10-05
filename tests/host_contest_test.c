@@ -255,6 +255,19 @@ int main(int argc, char** argv) {
   r = gc_ribbon_flag_set(r, GC_RFLAG_ARTIST, false);
   CHECK(!gc_ribbon_flag_get(r, GC_RFLAG_ARTIST), "Artist ribbon flag clears");
 
+  /* #423: SET PAINTING commit predicate truth table (record bytes + prior flag). */
+  {
+    uint8_t a[GC_RECORD_BYTES], b[GC_RECORD_BYTES];
+    memset(a, 0x5A, sizeof a); memcpy(b, a, sizeof b);
+    CHECK(!gc_museum_needs_commit(a, b, true),  "#423: identical record + flag set -> no commit");
+    CHECK(gc_museum_needs_commit(a, b, false),  "#423: identical record + flag clear -> commit (#408)");
+    b[0] ^= 1;
+    CHECK(gc_museum_needs_commit(a, b, true),   "#423: byte 0 differs + flag set -> commit");
+    CHECK(gc_museum_needs_commit(a, b, false),  "#423: byte 0 differs + flag clear -> commit");
+    b[0] = a[0]; b[GC_RECORD_BYTES - 1] ^= 1;
+    CHECK(gc_museum_needs_commit(a, b, true),   "#423: LAST byte differs + flag set -> commit (full-length memcmp)");
+  }
+
   printf("\n%s (%d failure%s)\n", fails ? "SOME CHECKS FAILED" : "ALL CHECKS PASSED",
         fails, fails == 1 ? "" : "s");
   return fails ? 1 : 0;

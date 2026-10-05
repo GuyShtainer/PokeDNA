@@ -156,4 +156,11 @@ bool gc_museum_set_raw(uint8_t* sb1, PkGame g, int cat, uint16_t species, uint32
 uint32_t gc_museum_offset(PkGame g, int cat);
 #define GC_RECORD_BYTES 32
 
+/* #423: should a SET PAINTING write be committed? `before`/`after` are the
+ * GC_RECORD_BYTES museum record before and after the write. True when the record
+ * changed, OR when the PAINTING_MADE flag was clear beforehand: since #408 the write
+ * also sets that flag, so an identical record whose flag was clear still changed the
+ * save. */
+bool gc_museum_needs_commit(const uint8_t* before, const uint8_t* after, bool flag_before);
+
 #endif /* GEN3_CONTEST_H */

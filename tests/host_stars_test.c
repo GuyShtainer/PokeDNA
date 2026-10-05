@@ -201,12 +201,83 @@ static void test_off_zeroes(void) {
   }
 }
 
+/* #422: a pre-#408 save has all 5 records but none of the PAINTING_MADE flags. The
+ * museum star reads ON there, so the old A-press (toggle to OFF) wiped the real
+ * records. needs_heal/toggle_target steer the press to ON, which sets the flags. */
+static void heal_prep(PkGame g, int mi) {
+  memset(g_sb1, 0, sizeof(g_sb1));
+  memset(g_sb2, 0, sizeof(g_sb2));
+  static const char* NAME = "TESTER";
+  for (int k = 0; NAME[k]; k++) g_sb2[k] = gen3_encode_char(NAME[k]);
+  g_sb2[6] = 0xFF;
+  pk_star_ach_set(g_sb1, g_sb2, g, mi, true, NULL);
+  for (int k = 0; k < 5; k++) pk_flag_set(g_sb1, g, 0xA0 + k, false);   /* = pre-#408 */
+}
+
+static void test_heal_pre408(PkGame g, int mi) {
+  printf("-- #422 heal pre-#408 save (game %d, star %d) --\n", (int)g, mi);
+  heal_prep(g, mi);
+  CHECK(pk_star_ach_done(g_sb1, g_sb2, g, mi, NULL), "#422: star reads done on records alone");
+  CHECK(pk_star_ach_needs_heal(g_sb1, g_sb2, g, mi, NULL), "#422: needs_heal true");
+  CHECK(pk_star_ach_toggle_target(g_sb1, g_sb2, g, mi, NULL), "#422: toggle_target true (ON, not OFF)");
+
+  static uint8_t snap[G3_SAVEBLOCK1_BYTES];
+  memcpy(snap, g_sb1, sizeof(snap));
+  CHECK(pk_star_ach_set(g_sb1, g_sb2, g, mi, true, NULL) == 1, "#422: set(target) dirties SB1");
+
+  uint32_t base = gc_museum_offset(g, 0);
+  CHECK(memcmp(snap + base, g_sb1 + base, 5 * 0x20) == 0, "#422: record bytes byte-identical");
+  for (int k = 0; k < 5; k++) CHECK(pk_flag_get(g_sb1, g, 0xA0 + k), "#422: flag set after heal");
+
+  uint32_t flagbyte = (g == PK_EMERALD) ? 0x1284u : 0x1234u;   /* absolute: 0x1270/0x1220 + 0xA0/8 */
+  int changed = 0, bad = 0;
+  for (uint32_t i = 0; i < sizeof(snap); i++) {
+    if (snap[i] == g_sb1[i]) continue;
+    if (i >= base && i < base + 5 * 0x20) continue;
+    changed++;
+    if (i != flagbyte || (uint8_t)(g_sb1[i] ^ snap[i]) != 0x1F) bad++;
+  }
+  CHECK(changed == 1 && bad == 0, "#422: exactly one SB1 byte changed outside records, at the flag byte, by 0x1F");
+  CHECK(!pk_star_ach_needs_heal(g_sb1, g_sb2, g, mi, NULL), "#422: needs_heal false after heal");
+  CHECK(!pk_star_ach_toggle_target(g_sb1, g_sb2, g, mi, NULL), "#422: next A turns it OFF");
+
+  /* only flag 3 clear */
+  pk_flag_set(g_sb1, g, 0xA0 + 3, false);
+  CHECK(pk_star_ach_needs_heal(g_sb1, g_sb2, g, mi, NULL), "#422: only flag 3 clear -> needs_heal");
+  pk_flag_set(g_sb1, g, 0xA0 + 3, true);
+  CHECK(!pk_star_ach_needs_heal(g_sb1, g_sb2, g, mi, NULL), "#422: all flags set -> no heal");
+
+  /* slot 4 empty + flags clear: not done, so no heal, target ON */
+  heal_prep(g, mi);
+  memset(g_sb1 + base + 4 * 0x20, 0, 0x20);
+  CHECK(!pk_star_ach_done(g_sb1, g_sb2, g, mi, NULL), "#422: empty slot 4 -> not done");
+  CHECK(!pk_star_ach_needs_heal(g_sb1, g_sb2, g, mi, NULL), "#422: not done -> no heal");
+  CHECK(pk_star_ach_toggle_target(g_sb1, g_sb2, g, mi, NULL), "#422: not done -> target ON");
+
+  /* HOF row (0) and dex row (1, hoenn200 NULL) never need heal */
+  heal_prep(g, mi);
+  CHECK(!pk_star_ach_needs_heal(g_sb1, g_sb2, g, 0, NULL), "#422: HOF row no heal");
+  CHECK(!pk_star_ach_needs_heal(g_sb1, g_sb2, g, 1, NULL), "#422: dex row (NULL table) no heal");
+  CHECK(!pk_star_ach_needs_heal(g_sb1, g_sb2, g, 7, NULL), "#422: out-of-range index no heal");
+}
+
+static void test_heal_frlg(void) {
+  printf("-- #422 FRLG never needs heal --\n");
+  memset(g_sb1, 0, sizeof(g_sb1));
+  memset(g_sb2, 0, sizeof(g_sb2));
+  for (int i = 0; i < 4; i++)
+    CHECK(!pk_star_ach_needs_heal(g_sb1, g_sb2, PK_FRLG, i, NULL), "#422: FRLG row no heal");
+}
+
 int main(void) {
   run_game(PK_EMERALD, 2, "Emerald museum_off 0x2F90");
   run_game(PK_RS,       3, "Ruby/Sapphire museum_off 0x2EFC");
   test_raw_name_bytes();
   test_keep_real_wins();
   test_off_zeroes();
+  test_heal_pre408(PK_EMERALD, 2);
+  test_heal_pre408(PK_RS, 3);
+  test_heal_frlg();
 
   if (fails) {
     printf("%d check(s) FAILED\n", fails);
