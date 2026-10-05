@@ -148,6 +148,12 @@ static void one(const char* path) {
   printf("  write: %d record byte(s) changed (0x%04X..0x%04X), %d byte(s) outside (flag byte 0x%04X, flag was %s)\n",
          record_changed, off, off + GC_RECORD_BYTES - 1, outside_changed, outside_off, flag_was_set ? "set" : "clear");
   CHECK(record_changed > 0, "the record actually changed");
+  /* #408 pin, independent of gen3_flags.c's flags_off(): SaveBlock1.flags[] is at 0x1270 (pokeemerald) / 0x1220
+   * (pokeruby), so FLAG_<cat>_PAINTING_MADE (0xA0 + cat) is bit cat of SB1 byte 0x1284 (E) / 0x1234 (RS). */
+  uint32_t flag_byte = (game == PK_EMERALD ? 0x1270u : 0x1220u) + (0xA0u + (uint32_t)cat) / 8u;
+  CHECK(((g_sb1[flag_byte] >> ((0xA0 + cat) % 8)) & 1u) != 0,
+        "#408: the PAINTING_MADE bit is set at the decomp-derived SB1 byte (E 0x1284 / RS 0x1234)");
+  if (outside_changed == 1) CHECK(outside_off == flag_byte, "#408: the one changed byte outside the record IS that flag byte");
   CHECK(outside_changed == (flag_was_set ? 0 : 1),
         "#408: outside the record exactly the PAINTING_MADE flag byte changed (none if the flag was already set)");
   if (outside_changed == 1)
