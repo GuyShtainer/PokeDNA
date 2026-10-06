@@ -1510,8 +1510,9 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * pick_item_set_gen1_2_held(), instead of stepping a raw byte). #340a: the held-item pickers now
  * show REAL names (gb_item_label); descriptions come from the ROM (#340b), so the line below
  * is only the honest placeholder for a build/mount that has none. */
-/* #437: the dex detail's portrait frame (68 px wide, x 12..79; ui_text = 8 px/glyph) when no ROM is registered: three centred
- * lines. "no art" is drawn by pdna_pick.c as before; these two are the pointer, 8 chars each (64 px, x 14..77). */
+/* #437: the portrait frame (68 px wide, x 12..79) of the dex detail AND the Gen-3 summary when no sprite can be drawn. With NO ROM registered
+ * it is four centred lines (ui_ptext, proportional face, drawn by pdna_summary_noart_pointer): "no art" / "Add a ROM:" / "Settings >" /
+ * "Game ROM" (y 26/36/46/56); a registered ROM gets the plain "no art" alone. */
 #define PDNA_DEX_NOART_L1 "no art"
 #define PDNA_DEX_NOART_L2 "Add a ROM:"
 #define PDNA_DEX_NOART_L3 PDNA_ROM_WHERE_A
@@ -2305,8 +2306,9 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * since a fixed string clipping is a new, avoidable regression, not an existing one.
  * tests/host_textfit_test.c measures it against this budget, not the ball row. */
 #define PDNA_PICK_DESC_LINE_BUDGET_PX 127
-#define PDNA_DESC_PLACEHOLDER "(Add a ROM: " PDNA_ROM_WHERE ")"   /* #437/romhint F2: no ROM at all; 159 px -- wraps in the summary (134 px) and
-                                                                    * the move/ability panels; the item picker's one-line view shows it ALONE (232 px) */
+#define PDNA_DESC_PLACEHOLDER_L1 "(Add a Gen-3 ROM:"   /* #437/romhint fix2: Gen-3 text comes from a Gen-3 ROM (a GB-only user has a ROM, just not that one) */
+#define PDNA_DESC_PLACEHOLDER_L2 PDNA_ROM_WHERE ")"
+#define PDNA_DESC_PLACEHOLDER    PDNA_DESC_PLACEHOLDER_L1 " " PDNA_DESC_PLACEHOLDER_L2   /* joined: the summary draws L1/L2 on two rows; the picker/ball row/28-col wraps use the joined form */
 #define PDNA_DESC_ROMOFF      "(" PDNA_SET_ART_ARTOFF ")"        /* a ROM IS registered, its art/text is switched off: never "add a ROM" */
 #define PDNA_DESC_NOTEXT      "(no text in this ROM)"            /* a ROM IS registered and on, but has no text of this kind */
 

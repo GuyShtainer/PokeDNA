@@ -179,6 +179,24 @@ void pdna_summary_portrait_screen(void) {
   for (int yy = 14; yy <= 77; yy++) ui_fill_rect(12, yy, 68, 1, portrait_bg(yy));
 }
 
+/* romhint F1/fix2: text drawn inside the 68-px portrait frame (x 12..79) when there is no sprite: proportional face, dark ink that reads on the
+ * light-blue gradient, centred by measuring. Shared by the summary and the dex detail (pdna_pick.c). */
+void pdna_summary_noart_line(int y, const char* s) {
+  ui_ptext(PDNA_DEX_NOART_FX + (PDNA_DEX_NOART_FW - ui_ptext_w(s)) / 2, y, PDNA_DEX_NOART_INK, s);
+}
+/* With NO ROM registered anywhere the frame says where art comes from (four lines, y 26/36/46/56); a registered ROM keeps the plain
+ * "no art" (telling that user to add a ROM they have would be a lie). */
+void pdna_summary_noart_pointer(void) {
+  if (app_any_rom_registered() || app_gb_rom_path(PDNA_GEN1)[0] || app_gb_rom_path(PDNA_GEN2)[0]) {
+    pdna_summary_noart_line(42, PDNA_DEX_NOART_L1);
+  } else {
+    pdna_summary_noart_line(26, PDNA_DEX_NOART_L1);
+    pdna_summary_noart_line(36, PDNA_DEX_NOART_L2);
+    pdna_summary_noart_line(46, PDNA_DEX_NOART_L3);
+    pdna_summary_noart_line(56, PDNA_DEX_NOART_L4);
+  }
+}
+
 /* Shared portrait column (all 7 cards): framed sprite, dex no, name, Lv + colored
  * sex, species, type badges, and an egg/shiny tag. No editable fields here. */
 /* #388: t1o/t2o >= 0 override the species-table types (a Gen-1 record carries its OWN type bytes: MAGNEMITE is
@@ -216,7 +234,10 @@ static void draw_left_ex(const PkMon* p, bool back, int t1o, int t2o) {
 #if !PDNA_MON_ICONS_ART_COMPILED
     icon_store_plan(0, 0);
 #endif
-    ui_sprite(30, 30, MON_ICON_W, MON_ICON_H, mon_icon_for_form(p->species, p->form));
+    { const uint16_t* ic = mon_icon_for_form(p->species, p->form);
+      if (ic) ui_sprite(30, 30, MON_ICON_W, MON_ICON_H, ic);
+      else pdna_summary_noart_pointer();   /* romhint fix2 #5: no sprite at all -> say so (and where it comes from) */
+    }
   }
   if (p->isShiny) ui_text(70, 16, C_HOT, "*");             /* gold shiny mark on the portrait */
   /* Provenance stamp — drawn ONLY for a GB import, so a native Gen-3 mon's portrait is
@@ -424,7 +445,12 @@ static void card_info(const PkMon* p) {
   uint16_t ab = pk_species_ability(p->species, p->abilityNum);
   ui_text(x, y, C_KEY, "Abil."); reg(F_ABILITY, x + 48, y, 88);
   ui_ptext_fit(x + 48, y, INFO_W - 48, C_VAL, pk_ability_name(ab)); y += 9;
-  y += UI_ROW_H * ui_ptext_wrap(x + 4, y, INFO_W - 4, UI_ROW_H, 0, UI_DIM, app_ability_desc(ab));
+  { const char* ad = app_ability_desc(ab);
+    if (app_desc_is_placeholder(ad)) {   /* romhint fix2 #4: the no-ROM pointer is two explicit lines, each fitted to the 134-px card column */
+      ui_ptext_fit(x + 4, y, INFO_W - 4, UI_DIM, PDNA_DESC_PLACEHOLDER_L1); y += UI_ROW_H;
+      ui_ptext_fit(x + 4, y, INFO_W - 4, UI_DIM, PDNA_DESC_PLACEHOLDER_L2); y += UI_ROW_H;
+    } else y += UI_ROW_H * ui_ptext_wrap(x + 4, y, INFO_W - 4, UI_ROW_H, 0, UI_DIM, ad);
+  }
   y += 1;
 
   ui_text(x, y, C_KEY, "Nat."); reg(F_NATURE, x + 48, y, 60);

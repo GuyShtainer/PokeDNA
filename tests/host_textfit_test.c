@@ -2273,6 +2273,10 @@ int main(void) {
   /* romhint F2: the long placeholder (159 px) cannot fit the 127-px half of "NAME  text"; the picker shows it ALONE (232 px) and the
    * ball row gives it tw = 240-36-4 = 200 px. The short art-off/no-text forms still fit the 127-px half (so a registered-ROM user
    * keeps "NAME  text"). */
+  PF(PDNA_DESC_PLACEHOLDER_L1, 4, 138 - 4);      /* romhint fix2 #4: summary ability row, two explicit lines (INFO_W 138 - 4) */
+  PF(PDNA_DESC_PLACEHOLDER_L2, 4, 138 - 4);
+  PF(PDNA_DESC_PLACEHOLDER_L1, 0, 108);          /* item picker split panel (ptext_wrap, 108 px) wraps on spaces; each half still fits */
+  PF(PDNA_DESC_PLACEHOLDER_L2, 0, 108);
   PF(PDNA_DESC_PLACEHOLDER, 4, UI_SCR_W - 8);
   PF(PDNA_DESC_PLACEHOLDER, 36, UI_SCR_W - 36 - 4);
   PF(PDNA_DESC_ROMOFF,      0, PDNA_PICK_DESC_LINE_BUDGET_PX);

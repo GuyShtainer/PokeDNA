@@ -1085,9 +1085,6 @@ static int dex_menu(int* filter, int* sort, int* status, bool can_edit) {
  * NATIONAL no.). Unseen entries show no art (the grid reveals nothing for state 0 either).
  * Keys: B back; L/R previous/next entry (wraps); A cycles seen/caught when can_edit, deny
  * tone otherwise. *sel_io follows the viewed entry. Returns true iff a state changed. */
-static void noart_line(int y, const char* s) {   /* one centred line inside the dex portrait frame */
-  ui_ptext(PDNA_DEX_NOART_FX + (PDNA_DEX_NOART_FW - ui_ptext_w(s)) / 2, y, PDNA_DEX_NOART_INK, s);
-}
 static void dex_detail_art(uint16_t in, int st) {
   ui_panel(0, 11, 92, 139, RGB15(4, 7, 16), UI_BORDER);
   m3_frame(11, 13, 80, 78, UI_BORDER);
@@ -1113,14 +1110,8 @@ static void dex_detail_art(uint16_t in, int st) {
      * reads on the light-blue gradient (the dim UI ink vanished on it). With NO ROM registered anywhere the frame says where the art
      * comes from: "no art" / "Add a ROM:" / "Settings >" / "Game ROM" (y 26/36/46/56); a registered ROM keeps the plain "no art"
      * (telling that user to add a ROM they have would be a lie). */
-    if (st == 0) noart_line(42, "?");
-    else if (app_any_rom_registered() || app_gb_rom_path(PDNA_GEN1)[0] || app_gb_rom_path(PDNA_GEN2)[0]) noart_line(42, PDNA_DEX_NOART_L1);
-    else {
-      noart_line(26, PDNA_DEX_NOART_L1);
-      noart_line(36, PDNA_DEX_NOART_L2);
-      noart_line(46, PDNA_DEX_NOART_L3);
-      noart_line(56, PDNA_DEX_NOART_L4);
-    }
+    if (st == 0) pdna_summary_noart_line(42, "?");
+    else pdna_summary_noart_pointer();
   }
   char buf[24];
   ui_hline(4, 81, 84, UI_BORDER);
@@ -2271,8 +2262,10 @@ uint16_t pick_item(uint16_t current) {
       ui_fill_rect(0, 138, UI_SCR_W, 8, UI_BG);
       char d[96];
       const char* idesc = item_desc_for(cur);
-      if (g_item_max_id || app_desc_is_placeholder(idesc)) siprintf(d, "%s", idesc);   /* romhint F2: a placeholder (159 px) overran the 127-px half of "NAME  text": show it alone */    /* #340b: restricted (Game Boy) mode shows the text alone -- the highlighted row already names it, and "NAME  text" overran 232 px */
-      else { char nm[48]; item_label_for(cur, nm, sizeof nm); siprintf(d, "%s  %s", nm, idesc); }
+      /* #340b: restricted (Game Boy) mode shows the text alone -- the highlighted row already names it, and "NAME  text" overran 232 px. */
+      /* romhint F2: a placeholder (159 px) overran the 127-px half of "NAME  text": show it alone too. */
+      if (g_item_max_id || app_desc_is_placeholder(idesc)) sniprintf(d, sizeof d, "%s", idesc);
+      else { char nm[48]; item_label_for(cur, nm, sizeof nm); sniprintf(d, sizeof d, "%s  %s", nm, idesc); }
       ui_ptext_fit(4, 139, UI_SCR_W - 8, UI_DIM, d);
     }
 

@@ -130,7 +130,7 @@ def checks(box: str, summ: str, main: str, jrn: str, lay: str, prog: str, pick: 
         "P10 the spent SELECT hold is swallowed (no mode-cycle tap)": bool(pb) and "chord_swallow(&chord);" in pb,
         "P11 #347: summary icon fallback retires the plan before the fetch": re.search(
             r"#if !PDNA_MON_ICONS_ART_COMPILED\s*icon_store_plan\(0, 0\);\s*#endif\s*"
-            r"ui_sprite\(30, 30, MON_ICON_W, MON_ICON_H, mon_icon_for_form", strip_comments(summ)) is not None,
+            r"\{\s*const uint16_t\* ic = mon_icon_for_form", strip_comments(summ)) is not None,
         "P13 #319: the PARTIAL-latch clear is behind the short-read predicate": bool(ads)
             and re.search(r"if \(ok && rsz < g_save_size\)\s*\{[^}]*ok = false;", ads) is not None
             and re.search(r"if \(ok\)\s*imgf_partial_clear\(&g_img\);", ads) is not None

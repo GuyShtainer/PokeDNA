@@ -1005,10 +1005,12 @@ static void cfg_load(void) {
       else if (!strcmp(k, "yard"))   g_yard_visitors = (v[0] == '1');
       else if (!strcmp(k, "romoff")) g_rom_art_off = (v[0] == '1');
       else if (!strcmp(k, "gbscale")) gb_scale_mode = (v[0] == '1') ? 1 : 0;
-      else if (!strcmp(k, "romask")) { /* #438: no resident flag -- app_rom_welcome_asked() re-reads it on demand */ }
+      else if (!strcmp(k, "romask")) { /* #438: no resident flag -- rom_welcome_asked() re-reads it on demand */ }
       else if (!strcmp(k, "bak"))    { int m = v[0] - '0'; if (m >= 0 && m <= 2) g_backup_mode = m; }
       else if (!strcmp(k, "anim"))   { unsigned m = 0; for (const char* d = v; *d >= '0' && *d <= '9'; d++) m = m * 10 + (unsigned)(*d - '0'); g_anim_mask = m & (((1u << ANIM_COUNT) - 1u) | (3u << HIST_CAP_SHIFT)); }
       else if (!strcmp(k, "rumble")) { unsigned m = 0; for (const char* d = v; *d >= '0' && *d <= '9'; d++) m = m * 10 + (unsigned)(*d - '0'); rmbl_set_mask(m); }
+      else if (!strcmp(k, "rstr"))   { int m = 0; for (const char* d = v; *d >= '0' && *d <= '9' && m < 100; d++) m = m * 10 + (*d - '0'); rmbl_set_strength(m); }
+      else if (!strcmp(k, "rdur"))   { int m = 0; for (const char* d = v; *d >= '0' && *d <= '9' && m < 100; d++) m = m * 10 + (*d - '0'); rmbl_set_duration(m); }
       else if (!strcmp(k, "pcbox"))  { int m = 0; for (const char* d = v; *d >= '0' && *d <= '9'; d++) m = m * 10 + (*d - '0'); g_pc_last_box = m; }
       /* All five ROM-path keys REJECT (and log) a value too long for
        * GB_ROM_PATH_MAX(128) instead of truncating it -- E3 review item 3. This used
@@ -12850,14 +12852,17 @@ static void __attribute__((noinline)) rom_welcome(void) {
   ui_clear();
   ui_panel(PDNA_NOTICE_PANEL_X, PDNA_ROMWEL_PANEL_Y, PDNA_NOTICE_PANEL_W, PDNA_ROMWEL_PANEL_H, UI_PANEL, UI_BORDER);
   ui_ptext_fit(PDNA_NOTICE_TEXT_X, PDNA_ROMWEL_TITLE_Y, PDNA_ROMWEL_W, UI_TITLE, PDNA_ROMWEL_TITLE);
-  static const char* const k_line[5] = { PDNA_ROMWEL_L1, PDNA_ROMWEL_L2, PDNA_ROMWEL_L3, PDNA_ROMWEL_L4, PDNA_ROMWEL_L5 };
-  for (int i = 0; i < 5; i++)
+#define ROMWEL_ELT(s) s,
+  static const char* const k_line[] = { PDNA_ROMWEL_LINES(ROMWEL_ELT) };
+#undef ROMWEL_ELT
+  const int n_line = (int)(sizeof k_line / sizeof k_line[0]);
+  for (int i = 0; i < n_line; i++)
     ui_ptext_fit(PDNA_NOTICE_TEXT_X, PDNA_ROMWEL_LINE_Y0 + i * PDNA_ROMWEL_LINE_DY, PDNA_ROMWEL_W,
-                 i == 4 ? UI_DIM : UI_TEXT, k_line[i]);
+                 i == n_line - 1 ? UI_DIM : UI_TEXT, k_line[i]);
   ui_text(PDNA_NOTICE_TEXT_X, PDNA_ROMWEL_KEYS_Y, UI_DIM, PDNA_ROMWEL_KEYS);
   u16 k = wait_keys(KEY_A | KEY_B);
   cfg_save_ex("romask", "1", NULL);
-  if (k & KEY_A) { snd_ok(); rom_row_menu(); } else snd_back();
+  if (k & KEY_A) { snd_ok(); ui_clear(); rom_row_menu(); } else snd_back();   /* ui_clear: the welcome text must not bleed through the menu */
 }
 #endif
 

@@ -92,12 +92,13 @@ pin("#403b the cached pin is dropped at all three session/registration resets",
 # ---- #405 (+#437, romhint F1) dex detail "no art" is centred in the 68-px portrait frame (x 12..79) by MEASURING the proportional
 # line; with NO ROM registered the frame carries four centred lines (PDNA_DEX_NOART_L1..L4) in a dark ink that reads on the light gradient
 pick = rd("pdna_pick.c")
+summ = rd("pdna_summary.c")   # romhint fix2: noart_line moved here (shared by the dex detail and the Gen-3 summary)
 lay_h = rd("pdna_layout.h")
 def _def(name):
     mm = re.search(r'#define\s+' + name + r'\s+(\d+)\b', lay_h)
     return int(mm.group(1)) if mm else -1
 pin("#405 noart_line centres on the frame's own x/width by measuring the line (a fixed x would overrun again)",
-    pick,
+    summ,
     lambda t: re.search(r'ui_ptext\(PDNA_DEX_NOART_FX \+ \(PDNA_DEX_NOART_FW - ui_ptext_w\(s\)\) / 2, y, PDNA_DEX_NOART_INK, s\);', t) is not None
               and _def("PDNA_DEX_NOART_FX") == 12 and _def("PDNA_DEX_NOART_FW") == 68,
     lambda t: t.replace('PDNA_DEX_NOART_FX + (PDNA_DEX_NOART_FW - ui_ptext_w(s)) / 2', 'PDNA_DEX_NOART_FX + 26', 1))
@@ -106,12 +107,17 @@ pin("romhint F1 the no-art ink is a DARK colour (dim UI ink vanished on the ligh
     lambda t: (lambda mm: mm is not None and max(int(mm.group(i)) for i in (1, 2, 3)) <= 8)(
         re.search(r'#define PDNA_DEX_NOART_INK\s+RGB15\((\d+),\s*(\d+),\s*(\d+)\)', t)),
     lambda t: t.replace('PDNA_DEX_NOART_INK   RGB15(1, 2, 6)', 'PDNA_DEX_NOART_INK   RGB15(17, 18, 21)', 1))
-pin("romhint F1 no-art lines are drawn by noart_line (the dark ink), never ui_text(UI_DIM)",
+pin("romhint F1 no-art lines are drawn by pdna_summary_noart_line (the dark ink), never ui_text(UI_DIM)",
+    summ,
+    lambda t: all(re.search(x, t) for x in (r'pdna_summary_noart_line\(42, PDNA_DEX_NOART_L1\)',
+                                            r'pdna_summary_noart_line\(26, PDNA_DEX_NOART_L1\)', r'pdna_summary_noart_line\(36, PDNA_DEX_NOART_L2\)',
+                                            r'pdna_summary_noart_line\(46, PDNA_DEX_NOART_L3\)', r'pdna_summary_noart_line\(56, PDNA_DEX_NOART_L4\)')),
+    lambda t: t.replace('pdna_summary_noart_line(36, PDNA_DEX_NOART_L2)', 'ui_text(14, 42, UI_DIM, PDNA_DEX_NOART_L2)', 1))
+pin("romhint fix2 #5 the dex detail AND the Gen-3 summary draw the same pointer (dex: '?' for unseen, else pdna_summary_noart_pointer)",
     pick,
-    lambda t: all(re.search(x, t) for x in (r'noart_line\(42, "\?"\)', r'noart_line\(42, PDNA_DEX_NOART_L1\)',
-                                            r'noart_line\(26, PDNA_DEX_NOART_L1\)', r'noart_line\(36, PDNA_DEX_NOART_L2\)',
-                                            r'noart_line\(46, PDNA_DEX_NOART_L3\)', r'noart_line\(56, PDNA_DEX_NOART_L4\)')),
-    lambda t: t.replace('noart_line(36, PDNA_DEX_NOART_L2)', 'ui_text(14, 42, UI_DIM, PDNA_DEX_NOART_L2)', 1))
+    lambda t: 'pdna_summary_noart_line(42, "?")' in t and "else pdna_summary_noart_pointer();" in t and "static void noart_line" not in t
+              and "else pdna_summary_noart_pointer();   /* romhint fix2 #5" in summ,
+    lambda t: t.replace("else pdna_summary_noart_pointer();", "else (void)0;", 1))
 pin("romhint F1 the pointer names the WHOLE term (L3 + L4 rebuild PDNA_ROM_WHERE: Settings > Game ROM)",
     lay_h,
     lambda t: re.search(r'PDNA_DEX_NOART_L3\s+PDNA_ROM_WHERE_A', t) is not None
@@ -119,9 +125,9 @@ pin("romhint F1 the pointer names the WHOLE term (L3 + L4 rebuild PDNA_ROM_WHERE
               and re.search(r'#define PDNA_ROM_WHERE PDNA_ROM_WHERE_A " " PDNA_ROM_WHERE_B', t) is not None,
     lambda t: t.replace('#define PDNA_DEX_NOART_L4 PDNA_ROM_WHERE_B', '#define PDNA_DEX_NOART_L4 ""', 1))
 pin("#437 the no-art pointer is gated on 'no ROM registered' (a registered ROM keeps plain 'no art')",
-    pick,
-    lambda t: re.search(r'else if \(app_any_rom_registered\(\) \|\| app_gb_rom_path\(PDNA_GEN1\)\[0\] \|\| app_gb_rom_path\(PDNA_GEN2\)\[0\]\) noart_line\(42, PDNA_DEX_NOART_L1\);', t) is not None,
-    lambda t: t.replace('else if (app_any_rom_registered() ||', 'else if (0 ||'))
+    summ,
+    lambda t: re.search(r'if \(app_any_rom_registered\(\) \|\| app_gb_rom_path\(PDNA_GEN1\)\[0\] \|\| app_gb_rom_path\(PDNA_GEN2\)\[0\]\) \{\s*pdna_summary_noart_line\(42, PDNA_DEX_NOART_L1\);', t) is not None,
+    lambda t: t.replace('if (app_any_rom_registered() ||', 'if (0 ||', 1))
 
 # ---- #409 pick_rows footer is drawn through ui_ptext_fit from the shared layout macros
 pin("#409 pick_rows footer uses the proportional fitted draw",

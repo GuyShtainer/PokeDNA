@@ -48,6 +48,8 @@ int pdna_inspect_create(uint8_t* rec, uint8_t* out_rec, bool* saved, int* card);
 void pdna_summary_bg(void);
 /* BACKLOG #203: the summary's blue portrait "screen" fill, (12,14)-(79,77). */
 void pdna_summary_portrait_screen(void);
+void pdna_summary_noart_line(int y, const char* s);   /* romhint fix2: centred dark-ink line in the 68-px portrait frame */
+void pdna_summary_noart_pointer(void);                  /* the no-sprite text: "no art" or the four-line no-ROM pointer */
 
 /* The shared left info column: framed sprite (drawn via the origin-art router, so a
  * Game Boy import shows in ITS OWN generation's art the same way it does inside a

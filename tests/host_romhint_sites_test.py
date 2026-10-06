@@ -3,8 +3,8 @@
 # Copyright (C) 2026 Guy Shtainer
 """host_romhint_sites_test.py -- lane romhint (#437/#438/#439) structural pins (pure text, no build).
 
-config.cfg parsing/writing lives in pdna_main.c next to FatFs, so it cannot dual-compile on the host; these pins hold the
-shape that matters (the welcome's gate, the key's round trip, the retired per-session offer, the map-only predicate). Each pin
+the config code's behaviour is proved by host_romhint_cfg_test.py (a real dual-compile round trip); these pins hold the
+SHAPE that matters (the welcome's gate, the retired per-session offer, the map-only predicate, the strings). Each pin
 is checked on the real source and then against an in-memory MUTANT; a pin green on its mutant is reported as a defect.
 """
 import re
@@ -53,7 +53,7 @@ pin("#438 welcome gate (writable, no ROM of any kind, key absent)",
     lambda t: t.replace("if (rom_welcome_asked()) return;", "", 1))
 pin("#438 welcome writes romask=1 for EITHER answer, before the menu opens",
     mn,
-    lambda t: re.search(r'wait_keys\(KEY_A \| KEY_B\);\s*cfg_save_ex\("romask", "1", NULL\);\s*if \(k & KEY_A\)\s*\{ snd_ok\(\); rom_row_menu\(\); \}', body(t, "rom_welcome")) is not None,
+    lambda t: re.search(r'wait_keys\(KEY_A \| KEY_B\);\s*cfg_save_ex\("romask", "1", NULL\);\s*if \(k & KEY_A\)\s*\{ snd_ok\(\); ui_clear\(\); rom_row_menu\(\); \}', body(t, "rom_welcome")) is not None,
     lambda t: t.replace('cfg_save_ex("romask", "1", NULL);', 'if (k & KEY_B) cfg_save_ex("romask", "1", NULL);', 1))
 pin("#438 main shows it after cfg_load and before the first save picker",
     mn,
@@ -75,10 +75,33 @@ pin("#438 the active_key path sets it from the caller's value",
     lambda t: 'else if (!strcmp(active_key, "romask"))    romask = (active_val[0] == \'1\');' in t,
     lambda t: t.replace('romask = (active_val[0] == \'1\');', 'romask = false;', 1))
 # ---- #438 the old per-session offer is retired for anyone who answered
-pin("#438 the per-session save-open offer is gated on the key being absent",
+pin("#438/fix2 #1 the per-session save-open offer fires only for a user with NO ROM registered who never answered",
     mn,
-    lambda t: "if (!offered && !boxoam_icons_available() && app_can_edit() && !rom_welcome_asked()) {" in t,
-    lambda t: t.replace(" && app_can_edit() && !rom_welcome_asked()) {", " && app_can_edit()) {", 1))
+    lambda t: re.search(r'if \(!offered && !boxoam_icons_available\(\) && app_can_edit\(\)\) \{\s*offered = true;\s*'
+                        r'(?:/\*.*?\*/\s*)?if \(!app_any_rom_registered\(\) && !rom_welcome_asked\(\)\) \{', t, re.S) is not None,
+    lambda t: t.replace("if (!app_any_rom_registered() && !rom_welcome_asked()) {", "if (!rom_welcome_asked()) {", 1))
+pin("fix2 #7 cfg_load parses rstr/rdur and applies them (the config round trip keeps the rumble strength/duration)",
+    mn,
+    lambda t: re.search(r'!strcmp\(k, "rstr"\)\)\s*\{[^}]*rmbl_set_strength\(m\);\s*\}', t) is not None
+              and re.search(r'!strcmp\(k, "rdur"\)\)\s*\{[^}]*rmbl_set_duration\(m\);\s*\}', t) is not None,
+    lambda t: t.replace('rmbl_set_duration(m);', '(void)m;', 1))
+pin("fix2 #8 the welcome draws its lines from the X-macro count (no hard-coded 5 / i == 4)",
+    mn,
+    lambda t: "PDNA_ROMWEL_LINES(ROMWEL_ELT)" in body(t, "rom_welcome") and "k_line[5]" not in t and "i == 4 ? UI_DIM" not in t,
+    lambda t: t.replace("k_line[] = {", "k_line[5] = {", 1))
+pin("fix2 #4 the summary ability row draws the placeholder as two explicit fitted lines",
+    rd("pdna_summary.c"),
+    lambda t: re.search(r'if \(app_desc_is_placeholder\(ad\)\) \{[^}]*ui_ptext_fit\(x \+ 4, y, INFO_W - 4, UI_DIM, PDNA_DESC_PLACEHOLDER_L1\); y \+= UI_ROW_H;\s*'
+                        r'ui_ptext_fit\(x \+ 4, y, INFO_W - 4, UI_DIM, PDNA_DESC_PLACEHOLDER_L2\); y \+= UI_ROW_H;', t) is not None,
+    lambda t: t.replace("PDNA_DESC_PLACEHOLDER_L2); y += UI_ROW_H;", "PDNA_DESC_PLACEHOLDER_L2); y += 0;", 1))
+pin("fix2 #3 the Game Boy create dialog and the yard refusal name PDNA_ROM_WHERE (one term)",
+    lay,
+    lambda t: '#define PDNA_GBCREATE_NOROM_L2       "(" PDNA_ROM_WHERE ")."' in t and '"(" PDNA_ROM_WHERE ").");' in mn,
+    lambda t: t.replace('"(" PDNA_ROM_WHERE ")."', '"(Settings > Game ROM)."', 1))
+pin("fix2 #6 the item picker's line buffer is bounded (sniprintf into char d[96])",
+    rd("pdna_pick.c"),
+    lambda t: 'sniprintf(d, sizeof d, "%s", idesc)' in t and 'sniprintf(d, sizeof d, "%s  %s", nm, idesc)' in t,
+    lambda t: t.replace('sniprintf(d, sizeof d, "%s  %s", nm, idesc)', 'siprintf(d, "%s  %s", nm, idesc)', 1))
 # ---- #439 map-only: the predicate is a registered PATH, never s_iconrom.ok
 pin("#439 the Game ROM row says 'map only' for a registered path with no icon tables",
     mn,
@@ -96,7 +119,8 @@ pin("#437 every no-ROM pointer is built from PDNA_ROM_WHERE",
               and re.search(r'#define PDNA_ROM_WHERE PDNA_ROM_WHERE_A " " PDNA_ROM_WHERE_B', t) is not None
               and t.count("PDNA_ROM_WHERE") >= 5
               and re.search(r'PDNA_GBSCR_REASON_NO_ROM\s+"Add a ROM: " PDNA_ROM_WHERE', t) is not None
-              and re.search(r'PDNA_DESC_PLACEHOLDER "\(Add a ROM: " PDNA_ROM_WHERE "\)"', t) is not None,
+              and re.search(r'PDNA_DESC_PLACEHOLDER_L1 "\(Add a Gen-3 ROM:"', t) is not None
+              and re.search(r'PDNA_DESC_PLACEHOLDER_L2 PDNA_ROM_WHERE "\)"', t) is not None,
     lambda t: t.replace('"Add a ROM: " PDNA_ROM_WHERE   /* #437/romhint F4 */', '"no ROM - Settings"   /* #437/romhint F4 */', 1))
 # ---- romhint F2: the placeholder splits by WHY there is no text
 pin("romhint F2 art-off / no-text placeholders never say 'add a ROM'",
@@ -111,7 +135,7 @@ pin("romhint F2 desc_or_fallback swaps the placeholder only when a ROM IS regist
     lambda t: t.replace("strcmp(embedded, PDNA_DESC_PLACEHOLDER) == 0 && app_any_rom_registered()", "strcmp(embedded, PDNA_DESC_PLACEHOLDER) == 0", 1))
 pin("romhint F2 the item picker's one-line view shows the long placeholder alone",
     rd("pdna_pick.c"),
-    lambda t: "if (g_item_max_id || app_desc_is_placeholder(idesc)) siprintf(d, \"%s\", idesc);" in t,
+    lambda t: "if (g_item_max_id || app_desc_is_placeholder(idesc)) sniprintf(d, sizeof d, \"%s\", idesc);" in t,
     lambda t: t.replace("g_item_max_id || app_desc_is_placeholder(idesc)", "g_item_max_id", 1))
 # ---- romhint F3: nothing registered -> "GBA ROM: not set", no art toggle
 pin("romhint F3 rom_row_menu: unregistered shows 'GBA ROM: not set' and hides the art toggle",
