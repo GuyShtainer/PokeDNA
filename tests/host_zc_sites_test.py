@@ -70,12 +70,12 @@ lay = rd("pdna_layout.h")
 gas = rd("gb_art_source.c")
 pin("#403a Extract row says ROM art is off when a ROM is registered but art is off",
     mainc,
-    lambda t: "art_off_reg ? PDNA_SET_ART_ARTOFF : PDNA_SET_ART_NEEDROM" in t,
-    lambda t: t.replace("art_off_reg ? PDNA_SET_ART_ARTOFF : PDNA_SET_ART_NEEDROM", "PDNA_SET_ART_NEEDROM"))
+    lambda t: re.search(r"art_off_reg \? PDNA_SET_ART_ARTOFF\s*:\s*app_any_rom_registered\(\) \? PDNA_SET_ART_MAPONLY[^\n]*\n\s*: PDNA_SET_ART_NEEDROM", t) is not None,   # #439 inserted the map-only rung between the two
+    lambda t: t.replace("art_off_reg ? PDNA_SET_ART_ARTOFF", "0 ? PDNA_SET_ART_ARTOFF"))
 pin("#403a the A-press refusal names art-off too",
     mainc,
-    lambda t: 'off_reg ? "ROM art is off"' in t,
-    lambda t: t.replace('off_reg ? "ROM art is off" :', ''))
+    lambda t: re.search(r'off_reg \? "ROM art is off"\s*:', t) is not None,
+    lambda t: re.sub(r'off_reg \? "ROM art is off"\s*:', '', t, count=1))
 pin("#403a new Extract value is in the textfit value list",
     lay,
     lambda t: "X(PDNA_SET_ART_ARTOFF)" in t,
