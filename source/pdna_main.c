@@ -837,8 +837,9 @@ static bool cfg_read_raw_key(const char* key, char* out, int cap) {
  * other unreadable dir_* key already does here (round-trips as absent, next write
  * drops it) -- nothing here is safety-critical (cfg_save_ex's own header comment). */
 #define CFG_DIRKEY_SCAN_BYTES 1024
-static void __attribute__((noinline)) cfg_read_old_dirkeys(char* dirrom, char* dirgb, char* dirgbsav) {
+static void __attribute__((noinline)) cfg_read_old_dirkeys(char* dirrom, char* dirgb, char* dirgbsav, bool* romask) {
   dirrom[0] = dirgb[0] = dirgbsav[0] = 0;
+  *romask = false;
   FIL f;
   if (f_open(&f, CFG_PATH, FA_READ) != FR_OK) return;
   char buf[CFG_DIRKEY_SCAN_BYTES];
@@ -849,6 +850,10 @@ static void __attribute__((noinline)) cfg_read_old_dirkeys(char* dirrom, char* d
   find_key_in_text(buf, br, "dir_rom", dirrom, GB_ROM_PATH_MAX);
   find_key_in_text(buf, br, "dir_gb", dirgb, GB_ROM_PATH_MAX);
   find_key_in_text(buf, br, "dir_gbsav", dirgbsav, GB_ROM_PATH_MAX);
+  /* #438: "romask=1" = the first-launch ROM welcome was answered (either way). Round-tripped like the dir_* keys so no
+   * resident flag is needed (no new static): an absent key stays absent, a present one survives every other cfg_save(). */
+  char ask[4];
+  *romask = find_key_in_text(buf, br, "romask", ask, (int)sizeof ask) && ask[0] == '1';
 }
 
 /* D1 (fix pass, review-caught real regression): `dir_val`, when non-NULL, is what
@@ -865,7 +870,8 @@ static void cfg_save_ex(const char* active_key, const char* active_val, const ch
   char old_dirrom[GB_ROM_PATH_MAX];
   char old_dirgb[GB_ROM_PATH_MAX];
   char old_dirgbsav[GB_ROM_PATH_MAX];
-  cfg_read_old_dirkeys(old_dirrom, old_dirgb, old_dirgbsav);
+  bool romask = false;
+  cfg_read_old_dirkeys(old_dirrom, old_dirgb, old_dirgbsav, &romask);
 
   char buf[CFG_BUF_BYTES];   /* built fresh below -- the OLD file's bytes never touch this one */
   const char* dirrom = old_dirrom;
@@ -875,6 +881,7 @@ static void cfg_save_ex(const char* active_key, const char* active_val, const ch
     if      (!strcmp(active_key, "dir_rom"))   dirrom = active_val;
     else if (!strcmp(active_key, "dir_gb"))    dirgb = active_val;
     else if (!strcmp(active_key, "dir_gbsav")) dirgbsav = active_val;
+    else if (!strcmp(active_key, "romask"))    romask = (active_val[0] == '1');
   }
 
   int n = sniprintf(buf, sizeof buf,
@@ -884,6 +891,11 @@ static void cfg_save_ex(const char* active_key, const char* active_val, const ch
                    g_yard_visitors ? 1 : 0, g_backup_mode, g_rom_art_off ? 1 : 0, (int)gb_scale_mode);
   bool truncated = (n < 0 || n >= (int)sizeof buf);
   if (truncated) n = (int)sizeof buf - 1;
+  /* #438: written only once the welcome was answered, so an old config.cfg round-trips byte-for-byte until then. */
+  if (romask && !truncated) {
+    int w = sniprintf(buf + n, sizeof(buf) - (size_t)n, "romask=1\n");
+    if (w < 0 || w >= (int)(sizeof(buf) - (size_t)n)) truncated = true; else n += w;
+  }
 
   /* dir_rom/dir_gb/dir_gbsav (BACKLOG #186): only non-empty entries are written,
    * same rule as the ROM-path keys below -- a card that has never used a given
@@ -984,6 +996,7 @@ static void cfg_load(void) {
       else if (!strcmp(k, "yard"))   g_yard_visitors = (v[0] == '1');
       else if (!strcmp(k, "romoff")) g_rom_art_off = (v[0] == '1');
       else if (!strcmp(k, "gbscale")) gb_scale_mode = (v[0] == '1') ? 1 : 0;
+      else if (!strcmp(k, "romask")) { /* #438: no resident flag -- app_rom_welcome_asked() re-reads it on demand */ }
       else if (!strcmp(k, "bak"))    { int m = v[0] - '0'; if (m >= 0 && m <= 2) g_backup_mode = m; }
       else if (!strcmp(k, "anim"))   { unsigned m = 0; for (const char* d = v; *d >= '0' && *d <= '9'; d++) m = m * 10 + (unsigned)(*d - '0'); g_anim_mask = m & (((1u << ANIM_COUNT) - 1u) | (3u << HIST_CAP_SHIFT)); }
       else if (!strcmp(k, "rumble")) { unsigned m = 0; for (const char* d = v; *d >= '0' && *d <= '9'; d++) m = m * 10 + (unsigned)(*d - '0'); rmbl_set_mask(m); }
