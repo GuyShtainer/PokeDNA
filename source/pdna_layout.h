@@ -1478,7 +1478,7 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * rom_gblearn_min_level() instead of asking for either. */
 #define PDNA_GBCREATE_TITLE          "CAN'T CREATE"
 #define PDNA_GBCREATE_NOROM_L1       "Needs your Gen 1/2 ROM"
-#define PDNA_GBCREATE_NOROM_L2       "(Settings > Game ROM)."
+#define PDNA_GBCREATE_NOROM_L2       "(" PDNA_ROM_WHERE ")."
 #define PDNA_GBCREATE_FULL_TITLE     "BOX FULL"
 #define PDNA_GBCREATE_FULL_L1        "No empty slot here."
 /* BACKLOG #187, F4: split out of the old BOX_FULL fold -- an unreadable list

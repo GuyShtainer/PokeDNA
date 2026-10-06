@@ -9530,7 +9530,7 @@ static void pdna_settings(void) {
         if (!yard_ok) {
           snd_deny();
           msg_wait("YARD VISITORS", UI_DIM, "Register your game ROM first",
-                   "(Settings > Game ROM).");
+                   "(" PDNA_ROM_WHERE ").");
         } else g_yard_visitors = !g_yard_visitors;
       }
       else if (sel == S_ROM) {
@@ -12613,8 +12613,10 @@ static void view_save(const char* path) {
   { static bool offered = false;
     /* #438: the first-launch welcome (main) is the ask now; this per-session offer remains only for a card that has
      * never answered it (it was read-only at first boot, then became writable). */
-    if (!offered && !boxoam_icons_available() && app_can_edit() && !rom_welcome_asked()) {
+    if (!offered && !boxoam_icons_available() && app_can_edit()) {
       offered = true;
+      /* A user who HAS a Gen-3 ROM registered (art off / map-only R/S) is never asked to add one. */
+      if (!app_any_rom_registered() && !rom_welcome_asked()) {
       /* The heartbeat cell (196,66) sits INSIDE app_confirm's frame (16,44)-(224,118)
        * and inside the ROM picker behind it, so an armed bar would blink a white
        * diagonal through the dialog every 8th frame. Pause it while the screen
@@ -12636,7 +12638,7 @@ static void view_save(const char* path) {
         app_register_rom();
       perf_span_resume();
       hb_resume();
-    } }
+      } } }
 #endif
   /* Deoxys forme follows the game version (RS Normal / Emerald Speed / FR-LG Attack). FR vs LG
    * can't be told apart from the save, so FR/LG defaults to Attack (FireRed); the summary lets
