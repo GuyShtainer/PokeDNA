@@ -16,7 +16,6 @@
 #include <stdbool.h>
 
 #include "gb_daycare.h"
-#include "pdna_layout.h"   /* PDNA_ROM_WHERE (#437) */
 
 #define ROMS "/Users/guyshtainer/VSCodeProjects/gba-toolkit/roms/gb"
 
@@ -598,10 +597,10 @@ static void egg_withdraw_ot_and_eggness(const char* file) {
  * exactly one wording; all-true is "no note" (visitors are drawn). Order = the user's fix order. */
 static void visitors_note(void) {
   struct { bool reg, off, on; const char* want; } t[] = {
-    { false, false, false, "Add a Gen-3 ROM: " PDNA_ROM_WHERE },
-    { false, false, true,  "Add a Gen-3 ROM: " PDNA_ROM_WHERE },
-    { false, true,  false, "Add a Gen-3 ROM: " PDNA_ROM_WHERE },   /* no ROM wins over art-off */
-    { false, true,  true,  "Add a Gen-3 ROM: " PDNA_ROM_WHERE },
+    { false, false, false, "Register a Gen-3 ROM for visitors" },
+    { false, false, true,  "Register a Gen-3 ROM for visitors" },
+    { false, true,  false, "Register a Gen-3 ROM for visitors" },   /* no ROM wins over art-off */
+    { false, true,  true,  "Register a Gen-3 ROM for visitors" },
     { true,  true,  false, "Visitors need ROM art (turn it back on)" },   /* art-off wins over the switch */
     { true,  true,  true,  "Visitors need ROM art (turn it back on)" },
     { true,  false, false, "Turn on Yard visitors in Settings" },

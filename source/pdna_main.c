@@ -795,6 +795,15 @@ static bool cfg_read_raw_key(const char* key, char* out, int cap) {
   return find_key_in_text(buf, br, key, out, cap);
 }
 
+#ifndef PDNA_DELTA
+/* #438: has the first-launch ROM welcome been answered (either way)? The key is read on demand -- no resident flag,
+ * no new static; cfg_save_ex() round-trips it. noinline: the CFG_BUF_BYTES read buffer lives only for this call. */
+static bool __attribute__((noinline)) rom_welcome_asked(void) {
+  char v[4];
+  return cfg_read_raw_key("romask", v, (int)sizeof v) && v[0] == '1';
+}
+#endif
+
 /* Persist the browser state so the next launch reopens the same folder with the
  * same sort/filter. Writes are EZ-Flash-Omega-only (EverDrive write isn't wired),
  * so this is a no-op on a read-only cart; best-effort, any failure is ignored.
@@ -9301,7 +9310,10 @@ static void sprite_settings(void) {
  * pdna_settings' S_GAMEROM handler below) rather than its own, so it can never again
  * end up compiled where its callee isn't. */
 
-static void rom_row_menu(void) {
+/* always_inline (#438): rom_welcome() is a second caller. Two callers made GCC stop inlining this into pdna_settings(), which
+ * put its 248-B frame on top of pdna_settings' (856 -> 768 + 248) on the deepest chain (+160 B). Inlining it into both keeps
+ * the Settings chain exactly as it was; the welcome's own frame (off every top chain) carries the second copy. */
+static inline __attribute__((always_inline)) void rom_row_menu(void) {
   /* Slice E3: two more rows, same menu, same "no new PDNA_SET_ROWS slot" reasoning
    * item 7 already used for the ROM-art toggle. Computed once at entry -- every
    * action below returns immediately, so (unlike pdna_settings' own loop) this popup
@@ -12583,7 +12595,9 @@ static void view_save(const char* path) {
   /* The artless first run: offer the ROM registration ONCE per session, right where
    * its effect is about to be visible. B declines and the name chips carry on. */
   { static bool offered = false;
-    if (!offered && !boxoam_icons_available() && app_can_edit()) {
+    /* #438: the first-launch welcome (main) is the ask now; this per-session offer remains only for a card that has
+     * never answered it (it was read-only at first boot, then became writable). */
+    if (!offered && !boxoam_icons_available() && app_can_edit() && !rom_welcome_asked()) {
       offered = true;
       /* The heartbeat cell (196,66) sits INSIDE app_confirm's frame (16,44)-(224,118)
        * and inside the ROM picker behind it, so an armed bar would blink a white
@@ -12805,6 +12819,29 @@ static void view_save(const char* path) {
     /* r == 1 no longer used (SELECT now cycles the box cursor mode, not box<->party) */
   }
 }
+
+#ifndef PDNA_DELTA
+/* BACKLOG #438: the first-launch ROM welcome. Shown ONCE per card, after cfg_load() and before the first save picker, when
+ * the card is writable (Omega), no Gen-3 and no Game Boy ROM is registered, and config.cfg has no romask= key. EITHER
+ * answer writes romask=1 (through the verified cfg_save_ex path, before any menu so a cancel keeps it), so it never
+ * returns. A opens Settings > Game ROM's own menu (rom_row_menu: Gen-3 / Gen 1 / Gen 2 rows); B just continues. */
+static void __attribute__((noinline)) rom_welcome(void) {
+  if (!app_can_edit() || app_any_rom_registered() ||
+      app_gb_rom_path(PDNA_GEN1)[0] || app_gb_rom_path(PDNA_GEN2)[0]) return;
+  if (rom_welcome_asked()) return;
+  ui_clear();
+  ui_panel(PDNA_NOTICE_PANEL_X, PDNA_ROMWEL_PANEL_Y, PDNA_NOTICE_PANEL_W, PDNA_ROMWEL_PANEL_H, UI_PANEL, UI_BORDER);
+  ui_ptext_fit(PDNA_NOTICE_TEXT_X, PDNA_ROMWEL_TITLE_Y, PDNA_ROMWEL_W, UI_TITLE, PDNA_ROMWEL_TITLE);
+  static const char* const k_line[5] = { PDNA_ROMWEL_L1, PDNA_ROMWEL_L2, PDNA_ROMWEL_L3, PDNA_ROMWEL_L4, PDNA_ROMWEL_L5 };
+  for (int i = 0; i < 5; i++)
+    ui_ptext_fit(PDNA_NOTICE_TEXT_X, PDNA_ROMWEL_LINE_Y0 + i * PDNA_ROMWEL_LINE_DY, PDNA_ROMWEL_W,
+                 i == 4 ? UI_DIM : UI_TEXT, k_line[i]);
+  ui_text(PDNA_NOTICE_TEXT_X, PDNA_ROMWEL_KEYS_Y, UI_DIM, PDNA_ROMWEL_KEYS);
+  u16 k = wait_keys(KEY_A | KEY_B);
+  cfg_save_ex("romask", "1", NULL);
+  if (k & KEY_A) { snd_ok(); rom_row_menu(); } else snd_back();
+}
+#endif
 
 int main(void) {
   init_system();
@@ -13061,6 +13098,7 @@ int main(void) {
     gb_art_boot_register(gb_reg_progress, &boot_ui);
   }
   pdna_era_boot_register();                  /* E4: the era resolver + cross-game Gen-3 rung */
+  rom_welcome();                             /* #438: once per card, before the first save picker */
   /* ONE throughput sample per run, at two sizes, on the user's own card -- see
    * perf_sd_sample(). It runs HERE because it needs two things that only exist at this
    * point: a mounted card, and cfg_load()'s restored ROM paths to pick a big enough

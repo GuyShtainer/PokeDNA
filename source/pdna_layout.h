@@ -761,6 +761,23 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_NOTICE_PANEL_X 4
 #define PDNA_NOTICE_PANEL_W 232
 #define PDNA_NOTICE_TEXT_X  12
+/* BACKLOG #438: the first-launch ROM welcome (pdna_main.c rom_welcome). Notice-dialog standard: panel 4..235, text x=12
+ * (inner width 216). Title + five proportional lines at an 11-px pitch + the fixed sys8 key line (27 glyphs = 216 px). */
+#define PDNA_ROMWEL_TITLE   "ADD YOUR GAME ROMS?"
+#define PDNA_ROMWEL_L1      "PokeDNA works without them."
+#define PDNA_ROMWEL_L2      "Your own ROMs add the real sprites,"
+#define PDNA_ROMWEL_L3      "icons, wallpapers and item text."
+#define PDNA_ROMWEL_L4      "Highly recommended, never required."
+#define PDNA_ROMWEL_L5      "Later: " PDNA_ROM_WHERE "."
+#define PDNA_ROMWEL_KEYS    "A = add now   B = no thanks"
+#define PDNA_ROMWEL_PANEL_Y 22
+#define PDNA_ROMWEL_PANEL_H 108
+#define PDNA_ROMWEL_TITLE_Y 30
+#define PDNA_ROMWEL_LINE_Y0 46
+#define PDNA_ROMWEL_LINE_DY 11
+#define PDNA_ROMWEL_KEYS_Y  112
+#define PDNA_ROMWEL_W (PDNA_NOTICE_PANEL_W - 2 * (PDNA_NOTICE_TEXT_X - PDNA_NOTICE_PANEL_X))   /* 216 */
+#define PDNA_ROMWEL_LINES(X) X(PDNA_ROMWEL_L1) X(PDNA_ROMWEL_L2) X(PDNA_ROMWEL_L3) X(PDNA_ROMWEL_L4) X(PDNA_ROMWEL_L5)
 #define PDNA_GBEDIT_BUSY_SAVING    "Saving - do not power off"     /* s_busy's own line */
 #define PDNA_GBEDIT_BUSY_BACKUP    "Backing up original..."
 #define PDNA_GBEDIT_BUSY_WRITING   "Writing + verifying..."
