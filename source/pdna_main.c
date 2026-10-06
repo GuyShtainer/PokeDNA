@@ -9453,6 +9453,7 @@ static void pdna_settings(void) {
     char r2[SET_ROW_BUF];
     if (g_rom_art_off && app_any_rom_registered()) siprintf(r2, PDNA_SET_ROM_FMT, PDNA_SET_ROM_ARTOFF);
     else siprintf(r2, PDNA_SET_ROM_FMT, s_iconrom.ok ? rom_kind_name(s_iconrom_ctx.kind)
+                                       : app_any_rom_registered() ? PDNA_SET_ROM_MAPONLY   /* #439: a path IS registered, just no icon tables (unpinned R/S) -- never "not set" */
                                        : (app_gb_rom_path(PDNA_GEN1)[0] || app_gb_rom_path(PDNA_GEN2)[0])
                                            ? PDNA_SET_ROM_GBONLY : PDNA_SET_ROM_NOTSET);   /* #412: a Gen 1/2 path alone is not "not set" */
     /* Extract-art row (Phase 2): three dim/live states, same posture as Yard visitors
@@ -9463,7 +9464,9 @@ static void pdna_settings(void) {
     /* #403a: while ROM art is merely switched OFF the ROM stays registered (s_iconrom is detached), so
      * "Set Game ROM" would be a lie -- say the art is off instead. */
     const bool art_off_reg = g_rom_art_off && app_any_rom_registered();
-    if (!s_iconrom.ok) siprintf(r3, PDNA_SET_ART_FMT, art_off_reg ? PDNA_SET_ART_ARTOFF : PDNA_SET_ART_NEEDROM);
+    if (!s_iconrom.ok) siprintf(r3, PDNA_SET_ART_FMT, art_off_reg ? PDNA_SET_ART_ARTOFF
+                                                    : app_any_rom_registered() ? PDNA_SET_ART_MAPONLY   /* #439 */
+                                                    : PDNA_SET_ART_NEEDROM);
     else if (!art_omega_ok) siprintf(r3, PDNA_SET_ART_FMT, PDNA_SET_ART_NOOMEGA);
     else if (art_session_icons_ready_memoized())
       siprintf(r3, PDNA_SET_ART_CACHED_FMT, (unsigned long)(ART_ICONS_TOTAL_BYTES / 1024u));
@@ -9541,8 +9544,12 @@ static void pdna_settings(void) {
           snd_deny();
           const bool off_reg = !s_iconrom.ok && g_rom_art_off && app_any_rom_registered();   /* #403a */
           msg_wait("EXTRACT ART", UI_DIM,
-                   off_reg ? "ROM art is off" : !s_iconrom.ok ? "Register your game ROM first" : "Needs EZ-Flash Omega DE",
-                   off_reg ? "(Settings > Game ROM > ON)." : !s_iconrom.ok ? "(Settings > Game ROM)." : "(EverDrive stays read-only).");
+                   off_reg ? "ROM art is off"
+                           : (!s_iconrom.ok && app_any_rom_registered()) ? "This ROM has no art to extract"   /* #439 */
+                           : !s_iconrom.ok ? "Register your game ROM first" : "Needs EZ-Flash Omega DE",
+                   off_reg ? "(" PDNA_ROM_WHERE " > ON)."
+                           : (!s_iconrom.ok && app_any_rom_registered()) ? "(map only: unpinned R/S revision)."
+                           : !s_iconrom.ok ? "(" PDNA_ROM_WHERE ")." : "(EverDrive stays read-only).");
         } else art_extract_screen();
 #endif
       }

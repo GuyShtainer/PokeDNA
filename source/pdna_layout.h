@@ -1781,7 +1781,8 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_SET_ART_NEEDROM  "Set Game ROM"
 #define PDNA_SET_ART_NOOMEGA  "Omega only"
 #define PDNA_SET_ART_ARTOFF   "ROM art is off"   /* #403a: a ROM IS registered, its art is switched off */
-#define PDNA_SET_ART_VALUES(X) X(PDNA_SET_ART_NEEDROM) X(PDNA_SET_ART_NOOMEGA) X(PDNA_SET_ART_ARTOFF)
+#define PDNA_SET_ART_MAPONLY  "ROM has no art"    /* #439: a ROM IS registered (path set, art on) but serves no icon tables -- an unpinned R/S revision */
+#define PDNA_SET_ART_VALUES(X) X(PDNA_SET_ART_NEEDROM) X(PDNA_SET_ART_NOOMEGA) X(PDNA_SET_ART_ARTOFF) X(PDNA_SET_ART_MAPONLY)
 #define PDNA_SET_ART_GO       "Extract art from ROM  >"
 #define PDNA_SET_ART_CACHED_FMT "Extract art:  %lu KB cached"
 /* worst-case KB the host test tries against PDNA_SET_ART_CACHED_FMT's width budget;
@@ -1795,9 +1796,10 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_SET_ROM_NOTSET   "not set"
 #define PDNA_SET_ROM_ARTOFF   "set, art OFF"
 #define PDNA_SET_ROM_GBONLY   "GB only"          /* #412: no Gen-3 ROM, but a Gen 1/2 ROM path is registered */
+#define PDNA_SET_ROM_MAPONLY  "map only"         /* #439: a Gen-3 path is registered and art is on, but no icon tables open (unpinned R/S revision) */
 #define PDNA_SET_ROM_LONGEST_KIND "LeafGreen"
 #define PDNA_SET_ROM_VALUES(X) \
-  X(PDNA_SET_ROM_NOTSET) X(PDNA_SET_ROM_ARTOFF) X(PDNA_SET_ROM_GBONLY) X(PDNA_SET_ROM_LONGEST_KIND)
+  X(PDNA_SET_ROM_NOTSET) X(PDNA_SET_ROM_ARTOFF) X(PDNA_SET_ROM_GBONLY) X(PDNA_SET_ROM_MAPONLY) X(PDNA_SET_ROM_LONGEST_KIND)
 /* #397: the History screen's discarded-branch wording (pdna_hist.c h_row). FORK row: "<+|-> <n> discarded branch(es)" fitted into 150 px at x=13;
  * a sibling row's right label is "discarded" (right-aligned at UI_SCR_W-6, never wider than the "other branch" it replaces). */
 #define PDNA_HIST_DISC        "discarded"
