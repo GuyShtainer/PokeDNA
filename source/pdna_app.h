@@ -784,6 +784,9 @@ bool app_box_swap_canary_ok(void);
 const char* app_item_desc(uint16_t item_id);
 const char* app_move_desc(uint16_t move_id);
 const char* app_ability_desc(uint16_t ability_id);
+/* romhint F2: true iff `d` is the long no-ROM placeholder (PDNA_DESC_PLACEHOLDER, 159 px) -- the item picker's
+ * one-line "NAME  text" view shows it alone because it cannot fit the 127-px description half. */
+bool app_desc_is_placeholder(const char* d);
 
 const char* app_rom_path(PkGame game);
 /* Returns false (refused, unchanged) when `path` would not fit the shared

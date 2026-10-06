@@ -2270,7 +2270,13 @@ int main(void) {
    * pre-existing), but the placeholder must actually FIT it: a fixed string
    * clipping would be a new, avoidable regression, not an existing one. */
   printf("\n== item picker (non-split line, PDNA_DESC_PLACEHOLDER) ==\n");
-  PF(PDNA_DESC_PLACEHOLDER, 0, PDNA_PICK_DESC_LINE_BUDGET_PX);
+  /* romhint F2: the long placeholder (159 px) cannot fit the 127-px half of "NAME  text"; the picker shows it ALONE (232 px) and the
+   * ball row gives it tw = 240-36-4 = 200 px. The short art-off/no-text forms still fit the 127-px half (so a registered-ROM user
+   * keeps "NAME  text"). */
+  PF(PDNA_DESC_PLACEHOLDER, 4, UI_SCR_W - 8);
+  PF(PDNA_DESC_PLACEHOLDER, 36, UI_SCR_W - 36 - 4);
+  PF(PDNA_DESC_ROMOFF,      0, PDNA_PICK_DESC_LINE_BUDGET_PX);
+  PF(PDNA_DESC_NOTEXT,      0, PDNA_PICK_DESC_LINE_BUDGET_PX);
   /* ==== END: item picker's non-split line ======================================= */
 
   /* ==== BEGIN: #437/#438 -- the "no ROM" pointers and the first-launch ROM welcome ============
@@ -2278,8 +2284,11 @@ int main(void) {
   printf("\n== no-ROM pointers + first-launch ROM welcome (#437/#438) ==\n");
   {
     /* dex detail portrait frame x 12..79 (68 px), ui_text 8 px/glyph: the two pointer lines are centred, not clipped */
-    chk("dex no-art L2", 14, 80 - 14 - 2, (int)strlen(PDNA_DEX_NOART_L2) * SYS8_W, PDNA_DEX_NOART_L2);
-    chk("dex no-art L3", 14, 80 - 14 - 2, (int)strlen(PDNA_DEX_NOART_L3) * SYS8_W, PDNA_DEX_NOART_L3);
+    PF(PDNA_DEX_NOART_L1, PDNA_DEX_NOART_FX, PDNA_DEX_NOART_FW);   /* noart_line: ui_ptext, centred by measuring */
+    PF(PDNA_DEX_NOART_L2, PDNA_DEX_NOART_FX, PDNA_DEX_NOART_FW);
+    PF(PDNA_DEX_NOART_L3, PDNA_DEX_NOART_FX, PDNA_DEX_NOART_FW);
+    PF(PDNA_DEX_NOART_L4, PDNA_DEX_NOART_FX, PDNA_DEX_NOART_FW);
+    PF(PDNA_GBSCR_REASON_NO_ROM, 28, 184);                         /* msg_wait's line (gbmap / gbmap2 / hof / bag dialogs) */
     PF(PDNA_ITEM_NO_DESC_YET,        0, 232);   /* restricted item picker's single line (ui_ptext_fit, 232 px) */
     PF(PDNA_ITEM_NO_DESC_NOROM_GEN1, 0, 232);
     PF(PDNA_ITEM_NO_DESC_UNREAD,     0, 232);

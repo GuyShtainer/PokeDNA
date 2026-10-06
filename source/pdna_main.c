@@ -3781,8 +3781,14 @@ static const char* desc_or_fallback(RomTextKind kind, uint16_t id, char* buf, ui
                                     const char* embedded) {
   if (rom_text_have(&s_romtext, kind) && rom_text_get(&s_romtext, kind, id, buf, cap))
     return buf;
-  return embedded ? embedded : "";
+  if (!embedded) return "";
+  /* romhint F2: the no-ROM placeholder only tells the user to ADD a ROM when none is registered. A registered ROM whose art is
+   * switched off says so (never "add a ROM"); a registered ROM that simply has no such text says that instead. */
+  if (strcmp(embedded, PDNA_DESC_PLACEHOLDER) == 0 && app_any_rom_registered())
+    return g_rom_art_off ? PDNA_DESC_ROMOFF : PDNA_DESC_NOTEXT;
+  return embedded;
 }
+bool app_desc_is_placeholder(const char* d) { return d && strcmp(d, PDNA_DESC_PLACEHOLDER) == 0; }
 const char* app_item_desc(uint16_t id) {
   static char b[128];
   return desc_or_fallback(ROM_TEXT_ITEM, id, b, sizeof b, pk_item_desc(id));
@@ -9322,8 +9328,11 @@ static inline __attribute__((always_inline)) void rom_row_menu(void) {
   siprintf(r_gb1, "Gen 1 ROM: %s", app_gb_rom_path(PDNA_GEN1)[0] ? "set" : "not set");
   siprintf(r_gb2, "Gen 2 ROM: %s", app_gb_rom_path(PDNA_GEN2)[0] ? "set" : "not set");
   const char* rows[6]; int act[6], nr = 0;
-  rows[nr] = "Change ROM";                                       act[nr++] = 0;
-  rows[nr] = g_rom_art_off ? "Turn ROM art ON" : "Turn ROM art OFF"; act[nr++] = 1;
+  /* romhint F3: with no Gen-3 ROM registered there is nothing to "change" and no art to turn off -- the first row says
+   * "not set" (same action: browse + register) and the art toggle is left out, parallel to the Gen 1/2 rows below. */
+  const bool g3_reg = app_any_rom_registered();
+  rows[nr] = g3_reg ? "Change ROM" : "GBA ROM: not set";          act[nr++] = 0;
+  if (g3_reg) { rows[nr] = g_rom_art_off ? "Turn ROM art ON" : "Turn ROM art OFF"; act[nr++] = 1; }
   rows[nr] = r_gb1;                                              act[nr++] = 2;
   rows[nr] = r_gb2;                                              act[nr++] = 3;
   rows[nr] = "Sprites  >";                                       act[nr++] = 4;

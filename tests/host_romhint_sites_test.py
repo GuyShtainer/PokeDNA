@@ -91,11 +91,35 @@ pin("#439 the Extract art row says 'ROM has no art' for the same state",
 # ---- #437 one term; the art-off / unreadable reasons stay pointer-free
 pin("#437 every no-ROM pointer is built from PDNA_ROM_WHERE",
     lay,
-    lambda t: '#define PDNA_ROM_WHERE "Settings > Game ROM"' in t
+    lambda t: re.search(r'#define PDNA_ROM_WHERE_A "Settings >"', t) is not None
+              and re.search(r'#define PDNA_ROM_WHERE_B "Game ROM"', t) is not None
+              and re.search(r'#define PDNA_ROM_WHERE PDNA_ROM_WHERE_A " " PDNA_ROM_WHERE_B', t) is not None
               and t.count("PDNA_ROM_WHERE") >= 5
-              and re.search(r'PDNA_GBSCR_REASON_NO_ROM\s+"no ROM - " PDNA_ROM_WHERE', t) is not None
-              and re.search(r'PDNA_DESC_PLACEHOLDER "\(" PDNA_ROM_WHERE "\)"', t) is not None,
-    lambda t: t.replace('"no ROM - " PDNA_ROM_WHERE', '"no ROM - Settings"', 1))
+              and re.search(r'PDNA_GBSCR_REASON_NO_ROM\s+"Add a ROM: " PDNA_ROM_WHERE', t) is not None
+              and re.search(r'PDNA_DESC_PLACEHOLDER "\(Add a ROM: " PDNA_ROM_WHERE "\)"', t) is not None,
+    lambda t: t.replace('"Add a ROM: " PDNA_ROM_WHERE   /* #437/romhint F4 */', '"no ROM - Settings"   /* #437/romhint F4 */', 1))
+# ---- romhint F2: the placeholder splits by WHY there is no text
+pin("romhint F2 art-off / no-text placeholders never say 'add a ROM'",
+    lay,
+    lambda t: re.search(r'PDNA_DESC_ROMOFF\s+"\(" PDNA_SET_ART_ARTOFF "\)"', t) is not None
+              and re.search(r'PDNA_DESC_NOTEXT\s+"\(no text in this ROM\)"', t) is not None,
+    lambda t: t.replace('"(" PDNA_SET_ART_ARTOFF ")"', '"(Add a ROM: " PDNA_ROM_WHERE ")"', 1))
+pin("romhint F2 desc_or_fallback swaps the placeholder only when a ROM IS registered (off -> ROMOFF, else NOTEXT)",
+    mn,
+    lambda t: re.search(r'if \(strcmp\(embedded, PDNA_DESC_PLACEHOLDER\) == 0 && app_any_rom_registered\(\)\)\s*'
+                        r'return g_rom_art_off \? PDNA_DESC_ROMOFF : PDNA_DESC_NOTEXT;', body(t, "desc_or_fallback")) is not None,
+    lambda t: t.replace("strcmp(embedded, PDNA_DESC_PLACEHOLDER) == 0 && app_any_rom_registered()", "strcmp(embedded, PDNA_DESC_PLACEHOLDER) == 0", 1))
+pin("romhint F2 the item picker's one-line view shows the long placeholder alone",
+    rd("pdna_pick.c"),
+    lambda t: "if (g_item_max_id || app_desc_is_placeholder(idesc)) siprintf(d, \"%s\", idesc);" in t,
+    lambda t: t.replace("g_item_max_id || app_desc_is_placeholder(idesc)", "g_item_max_id", 1))
+# ---- romhint F3: nothing registered -> "GBA ROM: not set", no art toggle
+pin("romhint F3 rom_row_menu: unregistered shows 'GBA ROM: not set' and hides the art toggle",
+    mn,
+    lambda t: re.search(r'const bool g3_reg = app_any_rom_registered\(\);\s*'
+                        r'rows\[nr\] = g3_reg \? "Change ROM" : "GBA ROM: not set";\s*act\[nr\+\+\] = 0;\s*'
+                        r'if \(g3_reg\) \{ rows\[nr\] = g_rom_art_off \? "Turn ROM art ON" : "Turn ROM art OFF"; act\[nr\+\+\] = 1; \}', t) is not None,
+    lambda t: t.replace("if (g3_reg) { rows[nr] = g_rom_art_off", "if (1) { rows[nr] = g_rom_art_off", 1))
 pin("#437 art-off and unreadable-ROM texts never tell the user to add a ROM",
     lay,
     lambda t: re.search(r'PDNA_SET_ART_ARTOFF\s+"ROM art is off"', t) is not None

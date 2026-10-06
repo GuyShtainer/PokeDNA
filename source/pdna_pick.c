@@ -1085,6 +1085,9 @@ static int dex_menu(int* filter, int* sort, int* status, bool can_edit) {
  * NATIONAL no.). Unseen entries show no art (the grid reveals nothing for state 0 either).
  * Keys: B back; L/R previous/next entry (wraps); A cycles seen/caught when can_edit, deny
  * tone otherwise. *sel_io follows the viewed entry. Returns true iff a state changed. */
+static void noart_line(int y, const char* s) {   /* one centred line inside the dex portrait frame */
+  ui_ptext(PDNA_DEX_NOART_FX + (PDNA_DEX_NOART_FW - ui_ptext_w(s)) / 2, y, PDNA_DEX_NOART_INK, s);
+}
 static void dex_detail_art(uint16_t in, int st) {
   ui_panel(0, 11, 92, 139, RGB15(4, 7, 16), UI_BORDER);
   m3_frame(11, 13, 80, 78, UI_BORDER);
@@ -1106,16 +1109,17 @@ static void dex_detail_art(uint16_t in, int st) {
   } else if (st != 0 && mon_icon_for_form(in, 0)) {
     ui_sprite(30, 30, MON_ICON_W, MON_ICON_W, mon_icon_for_form(in, 0));   /* trainer-card fallback icon */
   } else {
-    /* #405: centred in the 68-px portrait frame (x 12..79; ui_text is 8 px per glyph): "no art" (48 px) -> x 22, "?" -> x 42.
-     * #437: with NO ROM registered anywhere the same frame says where the art comes from: three centred 8-px-glyph lines
-     * ("no art" 48 -> x 22, "add ROM:" 64 -> x 14, "Settings" 64 -> x 14, y 32/42/52); a registered ROM keeps the plain "no art"
+    /* #405/#437/romhint F1: every line is centred in the 68-px portrait frame (x 12..79) in the PROPORTIONAL face, in a dark ink that
+     * reads on the light-blue gradient (the dim UI ink vanished on it). With NO ROM registered anywhere the frame says where the art
+     * comes from: "no art" / "Add a ROM:" / "Settings >" / "Game ROM" (y 26/36/46/56); a registered ROM keeps the plain "no art"
      * (telling that user to add a ROM they have would be a lie). */
-    if (st == 0) ui_text(42, 42, UI_DIM, "?");
-    else if (app_any_rom_registered() || app_gb_rom_path(PDNA_GEN1)[0] || app_gb_rom_path(PDNA_GEN2)[0]) ui_text(22, 42, UI_DIM, "no art");
+    if (st == 0) noart_line(42, "?");
+    else if (app_any_rom_registered() || app_gb_rom_path(PDNA_GEN1)[0] || app_gb_rom_path(PDNA_GEN2)[0]) noart_line(42, PDNA_DEX_NOART_L1);
     else {
-      ui_text(22, 32, UI_DIM, "no art");
-      ui_text(14, 42, UI_DIM, PDNA_DEX_NOART_L2);
-      ui_text(14, 52, UI_DIM, PDNA_DEX_NOART_L3);
+      noart_line(26, PDNA_DEX_NOART_L1);
+      noart_line(36, PDNA_DEX_NOART_L2);
+      noart_line(46, PDNA_DEX_NOART_L3);
+      noart_line(56, PDNA_DEX_NOART_L4);
     }
   }
   char buf[24];
@@ -2266,8 +2270,9 @@ uint16_t pick_item(uint16_t current) {
     } else {
       ui_fill_rect(0, 138, UI_SCR_W, 8, UI_BG);
       char d[96];
-      if (g_item_max_id) siprintf(d, "%s", item_desc_for(cur));    /* #340b: restricted (Game Boy) mode shows the text alone -- the highlighted row already names it, and "NAME  text" overran 232 px */
-      else { char nm[48]; item_label_for(cur, nm, sizeof nm); siprintf(d, "%s  %s", nm, item_desc_for(cur)); }
+      const char* idesc = item_desc_for(cur);
+      if (g_item_max_id || app_desc_is_placeholder(idesc)) siprintf(d, "%s", idesc);   /* romhint F2: a placeholder (159 px) overran the 127-px half of "NAME  text": show it alone */    /* #340b: restricted (Game Boy) mode shows the text alone -- the highlighted row already names it, and "NAME  text" overran 232 px */
+      else { char nm[48]; item_label_for(cur, nm, sizeof nm); siprintf(d, "%s  %s", nm, idesc); }
       ui_ptext_fit(4, 139, UI_SCR_W - 8, UI_DIM, d);
     }
 
