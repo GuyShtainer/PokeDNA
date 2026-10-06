@@ -2277,6 +2277,8 @@ int main(void) {
   PF(PDNA_DESC_PLACEHOLDER_L2, 4, 138 - 4);
   PF(PDNA_DESC_PLACEHOLDER_L1, 0, 108);          /* item picker split panel (ptext_wrap, 108 px) wraps on spaces; each half still fits */
   PF(PDNA_DESC_PLACEHOLDER_L2, 0, 108);
+  _Static_assert(sizeof(PDNA_DESC_PLACEHOLDER_L1 " " PDNA_ROM_WHERE_A) - 1 <= 28, "28-col wrap: line 1 must end at '>'");
+  _Static_assert(sizeof(PDNA_ROM_WHERE_B ")") - 1 <= 28, "28-col wrap: line 2");
   PF(PDNA_DESC_PLACEHOLDER, 4, UI_SCR_W - 8);
   PF(PDNA_DESC_PLACEHOLDER, 36, UI_SCR_W - 36 - 4);
   PF(PDNA_DESC_ROMOFF,      0, PDNA_PICK_DESC_LINE_BUDGET_PX);

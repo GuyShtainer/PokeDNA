@@ -1285,6 +1285,7 @@ static int summary_run_inner(uint8_t* rec, bool is_party, bool can_edit, uint8_t
      * pixels. Every path that CAN clobber the buffer clears p_spr_ok: render_card above,
      * and a picker/OSK (which ui_clear()s, so the next iteration repaints anyway). */
     if (anim && !p_spr_ok) { p_spr = portrait_sprite(&cur, &p_icon, &p_era, &p_sw, &p_sh); p_spr_ok = true; }
+    if (!p_spr) anim = false;   /* no sprite: nothing to animate -- portrait_redraw's gradient repaint would erase draw_left's no-art text */
     if (anim) { int fam = mon_anim_family(cur.species), wx, sy, dx, dy;
                               portrait_params(fam, anim_t, &wx, &sy, &dx, &dy); portrait_redraw(&cur, p_spr, p_icon, p_era, p_sw, p_sh, wx, sy, dx, dy, &lastkey); }  /* first paint -- memcpy32, see portrait_redraw's header comment */
 

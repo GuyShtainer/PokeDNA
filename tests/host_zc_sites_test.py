@@ -74,7 +74,7 @@ pin("#403a Extract row says ROM art is off when a ROM is registered but art is o
     lambda t: t.replace("art_off_reg ? PDNA_SET_ART_ARTOFF", "0 ? PDNA_SET_ART_ARTOFF"))
 pin("#403a the A-press refusal names art-off too",
     mainc,
-    lambda t: re.search(r'off_reg \? "ROM art is off"\s*:', t) is not None,
+    lambda t: re.search(r'off_reg \? "ROM art is off"\s*:', t) is not None and "const bool off_reg = !s_iconrom.ok && g_rom_art_off && app_any_rom_registered();" in t,
     lambda t: re.sub(r'off_reg \? "ROM art is off"\s*:', '', t, count=1))
 pin("#403a new Extract value is in the textfit value list",
     lay,

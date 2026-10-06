@@ -89,6 +89,10 @@ pin("fix2 #8 the welcome draws its lines from the X-macro count (no hard-coded 5
     mn,
     lambda t: "PDNA_ROMWEL_LINES(ROMWEL_ELT)" in body(t, "rom_welcome") and "k_line[5]" not in t and "i == 4 ? UI_DIM" not in t,
     lambda t: t.replace("k_line[] = {", "k_line[5] = {", 1))
+pin("fix3 D1 summary: no sprite -> anim=false right after the fetch (else portrait_redraw erases the no-art text)",
+    rd("pdna_summary.c"),
+    lambda t: re.search(r'if \(anim && !p_spr_ok\) \{ p_spr = portrait_sprite\([^\n]*\n\s*if \(!p_spr\) anim = false;', t) is not None,
+    lambda t: t.replace("    if (!p_spr) anim = false;", "    /* mutant */", 1))
 pin("fix2 #4 the summary ability row draws the placeholder as two explicit fitted lines",
     rd("pdna_summary.c"),
     lambda t: re.search(r'if \(app_desc_is_placeholder\(ad\)\) \{[^}]*ui_ptext_fit\(x \+ 4, y, INFO_W - 4, UI_DIM, PDNA_DESC_PLACEHOLDER_L1\); y \+= UI_ROW_H;\s*'
