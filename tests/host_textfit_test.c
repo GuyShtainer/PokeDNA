@@ -2273,6 +2273,31 @@ int main(void) {
   PF(PDNA_DESC_PLACEHOLDER, 0, PDNA_PICK_DESC_LINE_BUDGET_PX);
   /* ==== END: item picker's non-split line ======================================= */
 
+  /* ==== BEGIN: #437/#438 -- the "no ROM" pointers and the first-launch ROM welcome ============
+   * Every string is the shipped macro (built from PDNA_ROM_WHERE), measured in the face and slot it is drawn in. */
+  printf("\n== no-ROM pointers + first-launch ROM welcome (#437/#438) ==\n");
+  {
+    /* dex detail portrait frame x 12..79 (68 px), ui_text 8 px/glyph: the two pointer lines are centred, not clipped */
+    chk("dex no-art L2", 14, 80 - 14 - 2, (int)strlen(PDNA_DEX_NOART_L2) * SYS8_W, PDNA_DEX_NOART_L2);
+    chk("dex no-art L3", 14, 80 - 14 - 2, (int)strlen(PDNA_DEX_NOART_L3) * SYS8_W, PDNA_DEX_NOART_L3);
+    PF(PDNA_ITEM_NO_DESC_YET,        0, 232);   /* restricted item picker's single line (ui_ptext_fit, 232 px) */
+    PF(PDNA_ITEM_NO_DESC_NOROM_GEN1, 0, 232);
+    PF(PDNA_ITEM_NO_DESC_UNREAD,     0, 232);
+    PF("Add a Gen-3 ROM: " PDNA_ROM_WHERE, PDNA_DCY_TEXT_X, 232 - PDNA_DCY_TEXT_X);    /* gbd_visitors_note, ui_ptext (does not clip) */
+    PF("Moves need a ROM: " PDNA_ROM_WHERE, 8 + 8, 224 - 16);                          /* pdna_dc_grow_panel's no_rom line */
+    /* the welcome: notice-dialog standard (panel 4..235, text x=12) */
+#define ROMWEL_ONE(s) PF(s, PDNA_NOTICE_TEXT_X, PDNA_ROMWEL_W);
+    PF(PDNA_ROMWEL_TITLE, PDNA_NOTICE_TEXT_X, PDNA_ROMWEL_W);
+    PDNA_ROMWEL_LINES(ROMWEL_ONE)
+    chk("welcome keys", PDNA_NOTICE_TEXT_X, PDNA_ROMWEL_W, (int)strlen(PDNA_ROMWEL_KEYS) * SYS8_W, PDNA_ROMWEL_KEYS);
+    chkv_min("welcome: the first line clears the title (8-px row + 1)", PDNA_ROMWEL_LINE_Y0 - PDNA_ROMWEL_TITLE_Y, 9);
+    chkv_min("welcome: the key line clears the last text line", PDNA_ROMWEL_KEYS_Y - (PDNA_ROMWEL_LINE_Y0 + 4 * PDNA_ROMWEL_LINE_DY), 9);
+    chkv_min("welcome: the key line's 8-px glyphs end inside the panel (>= 4 px)",
+             PDNA_ROMWEL_PANEL_Y + PDNA_ROMWEL_PANEL_H - (PDNA_ROMWEL_KEYS_Y + 8), 4);
+    chkv("welcome: the panel stays on the 160-px screen", PDNA_ROMWEL_PANEL_Y + PDNA_ROMWEL_PANEL_H, UI_SCR_H - 1);
+  }
+  /* ==== END: #437/#438 ======================================================================= */
+
   /* ==== BEGIN: MET-LOCATION list + REGION chooser ==============================
    * Both are lists over gen3_places.c now. Place names are table data the host cannot
    * see and are ui_truncate'd (which clips with a visible '~'); what is measured here is
