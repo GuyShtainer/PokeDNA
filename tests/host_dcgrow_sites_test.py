@@ -66,7 +66,7 @@ def checks(main, gbdc, gen12):
     # P5: the panel strings (shared panel lives in pdna_gbdaycare.c)
     pn = body(gbdc, "pdna_dc_grow_panel")
     for s in ('"GREW IN DAY-CARE"', '"Leave inside"', '"Take, learn moves"', '"Take, keep moves"', '"Take out"',
-              '"No new moves."', '"Moves: needs the game ROM"', '"...and %d more"', '"Moves now:"',
+              '"No new moves."', '"Moves need a ROM: " PDNA_ROM_WHERE', '"...and %d more"', '"Moves now:"',
               '"Lv %d -> Lv %d  (+%d)"', '"%s replaces %s"', '"%s learned"'):
         if s not in pn + body(gbdc, "dcg_event_line"):
             out.append("P5: panel string missing: " + s)

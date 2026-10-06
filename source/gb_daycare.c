@@ -1,4 +1,5 @@
 #include "gb_daycare.h"
+#include "pdna_layout.h"   /* PDNA_ROM_WHERE (#437) */
 
 #include <string.h>
 
@@ -258,7 +259,7 @@ GbsStatus gbd_withdraw_egg(GbSession* s, GbEditMon* out) {
 /* BACKLOG #298 -- see gb_daycare.h. First failing predicate wins: no ROM, then art off, then the
  * Settings switch. */
 const char* gbd_visitors_note(bool registered, bool art_off, bool setting_on) {
-  if (!registered) return "Register a Gen-3 ROM for visitors";
+  if (!registered) return "Add a Gen-3 ROM: " PDNA_ROM_WHERE;
   if (art_off) return "Visitors need ROM art (turn it back on)";
   if (!setting_on) return "Turn on Yard visitors in Settings";
   return 0;

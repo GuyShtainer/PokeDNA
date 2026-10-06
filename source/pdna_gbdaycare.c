@@ -191,7 +191,7 @@ int pdna_dc_grow_panel(const DcGrow* g, bool no_rom) {
              (int)g->lv_after - (int)g->lv_before);
     ui_ptext_fit(mx + 8, y, mw - 16, UI_TEXT, line); y += DCG_ROW_H;
     if (no_rom) {
-      ui_ptext_fit(mx + 8, y, mw - 16, UI_DIM, "Moves: needs the game ROM"); y += DCG_ROW_H;
+      ui_ptext_fit(mx + 8, y, mw - 16, UI_DIM, "Moves need a ROM: " PDNA_ROM_WHERE); y += DCG_ROW_H;
     } else if (g->n_learn == 0) {
       ui_ptext_fit(mx + 8, y, mw - 16, UI_DIM, "No new moves."); y += DCG_ROW_H;
     } else {

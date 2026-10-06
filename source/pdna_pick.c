@@ -1106,8 +1106,17 @@ static void dex_detail_art(uint16_t in, int st) {
   } else if (st != 0 && mon_icon_for_form(in, 0)) {
     ui_sprite(30, 30, MON_ICON_W, MON_ICON_W, mon_icon_for_form(in, 0));   /* trainer-card fallback icon */
   } else {
-    /* #405: centred in the 68-px portrait frame (x 12..79; ui_text is 8 px per glyph): "no art" (48 px) -> x 22, "?" -> x 42 */
-    ui_text(st == 0 ? 42 : 22, 42, UI_DIM, st == 0 ? "?" : "no art");
+    /* #405: centred in the 68-px portrait frame (x 12..79; ui_text is 8 px per glyph): "no art" (48 px) -> x 22, "?" -> x 42.
+     * #437: with NO ROM registered anywhere the same frame says where the art comes from: three centred 8-px-glyph lines
+     * ("no art" 48 -> x 22, "add ROM:" 64 -> x 14, "Settings" 64 -> x 14, y 32/42/52); a registered ROM keeps the plain "no art"
+     * (telling that user to add a ROM they have would be a lie). */
+    if (st == 0) ui_text(42, 42, UI_DIM, "?");
+    else if (app_any_rom_registered() || app_gb_rom_path(PDNA_GEN1)[0] || app_gb_rom_path(PDNA_GEN2)[0]) ui_text(22, 42, UI_DIM, "no art");
+    else {
+      ui_text(22, 32, UI_DIM, "no art");
+      ui_text(14, 42, UI_DIM, PDNA_DEX_NOART_L2);
+      ui_text(14, 52, UI_DIM, PDNA_DEX_NOART_L3);
+    }
   }
   char buf[24];
   ui_hline(4, 81, 84, UI_BORDER);
@@ -1878,6 +1887,8 @@ static const char* item_desc_for(uint16_t id) {
     const char* d = gb_art_item_desc((uint8_t)id);
     if (d && !(d[0] == '?' && d[1] == 0)) return d;            /* an unused id's "?" text: honest string (review-zr D3) */
   }
+  if (g_item_gen != GBIN_GEN2) return PDNA_ITEM_NO_DESC_NOROM_GEN1;   /* Gen 1 has no item text at all: a ROM cannot fix it */
+  if (app_gb_rom_path(PDNA_GEN2)[0]) return PDNA_ITEM_NO_DESC_UNREAD;   /* a ROM IS registered: do not tell them to add one */
   return PDNA_ITEM_NO_DESC_YET;
 }
 

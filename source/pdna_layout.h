@@ -755,6 +755,9 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * x=30 inside ui_panel(20, .., 200, ..): the 27-glyph "Nothing to release. Press A" (216 px) ended at
  * x=246, past the 240 px screen. Panel x=4..235, text x=12: the widest line ends at x=228 and clears
  * the right border by 7 px (host_textfit_test asserts >= 2). Each dialog keeps its own y/height. */
+/* BACKLOG #437: the ONE term every "no ROM" pointer uses for where a ROM is added. It names the
+ * Settings row (Settings > Game ROM), never "Options" or "ROM menu" -- one term for one place. */
+#define PDNA_ROM_WHERE "Settings > Game ROM"
 #define PDNA_NOTICE_PANEL_X 4
 #define PDNA_NOTICE_PANEL_W 232
 #define PDNA_NOTICE_TEXT_X  12
@@ -1488,7 +1491,13 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * pick_item_set_gen1_2_held(), instead of stepping a raw byte). #340a: the held-item pickers now
  * show REAL names (gb_item_label); descriptions come from the ROM (#340b), so the line below
  * is only the honest placeholder for a build/mount that has none. */
-#define PDNA_ITEM_NO_DESC_YET  "No description in this build"
+/* #437: the dex detail's portrait frame (68 px wide, x 12..79; ui_text = 8 px/glyph) when no ROM is registered: three centred
+ * lines. "no art" is drawn by pdna_pick.c as before; these two are the pointer, 8 chars each (64 px, x 14..77). */
+#define PDNA_DEX_NOART_L2 "add ROM:"
+#define PDNA_DEX_NOART_L3 "Settings"
+#define PDNA_ITEM_NO_DESC_YET  "No text. Add a ROM: " PDNA_ROM_WHERE   /* #437: Gen 2, no GB ROM registered */
+#define PDNA_ITEM_NO_DESC_NOROM_GEN1 "No Gen 1 item text exists"        /* #437: a ROM cannot help, so no pointer */
+#define PDNA_ITEM_NO_DESC_UNREAD   "No description available"          /* #437: a ROM IS registered but gave none */
 /* BACKLOG #195: the NAMED restricted picker (g_item_gen set -- real Gen-1/2
  * item names + a gbb_pocket_of() category filter) adds ST for that filter,
  * same length (28 cols) as the unrestricted picker's own footer above it. */
@@ -2268,7 +2277,7 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * since a fixed string clipping is a new, avoidable regression, not an existing one.
  * tests/host_textfit_test.c measures it against this budget, not the ball row. */
 #define PDNA_PICK_DESC_LINE_BUDGET_PX 127
-#define PDNA_DESC_PLACEHOLDER "(needs ROM)"
+#define PDNA_DESC_PLACEHOLDER "(" PDNA_ROM_WHERE ")"   /* #437: was "(needs ROM)"; 106 px, inside the 127-px budget */
 
 /* pdna_gbtrainer.c's gbtr_id_edit_ok() -- the Gen-1/2 mirror of pdna_trainer.c's
  * id_edit_ok/s_id_warned, gating GBTR_NAME/GBTR_ID (P1b review D6). Same app_confirm
@@ -2356,7 +2365,7 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_GBTR_FALLBACK_TITLE  "GB ART: OFF"
 #define GBTR_HEADER2_MAXW 232   /* screen width 240, x=4, 4px right margin */
 
-#define PDNA_GBSCR_REASON_NO_ROM      "no ROM registered"
+#define PDNA_GBSCR_REASON_NO_ROM      "no ROM - " PDNA_ROM_WHERE   /* #437 */
 #define PDNA_GBSCR_REASON_NO_STACK    "not enough stack"
 #define PDNA_GBSCR_REASON_OPEN        "ROM art unavailable"
 #define PDNA_GBSCR_REASON_OPEN_DETAIL "(bad ROM or non-English)"

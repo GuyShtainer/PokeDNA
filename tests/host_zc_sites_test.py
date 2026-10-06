@@ -89,21 +89,44 @@ pin("#403b the cached pin is dropped at all three session/registration resets",
     lambda t: t.count("s_idesc.state = 0; s_idesc.pin = 0;") == 3,
     lambda t: t.replace("s_idesc.state = 0; s_idesc.pin = 0;", "s_idesc.state = 0;", 1))
 
-# ---- #405 dex detail "no art" is centred in the 68-px portrait frame (x 12..79)
+# ---- #405 (+#437) dex detail "no art" is centred in the 68-px portrait frame (x 12..79); with NO ROM registered the
+# frame carries three centred 8-px-glyph lines ("no art" / PDNA_DEX_NOART_L2 / PDNA_DEX_NOART_L3)
 pick = rd("pdna_pick.c")
-m = re.search(r'ui_text\(st == 0 \? (\d+) : (\d+), 42, UI_DIM, st == 0 \? "\?" : "no art"\);', pick)
-if not m:
-    fails.append("#405 centred no-art call not found")
+lay_h = rd("pdna_layout.h")
+def _noart_xs(t):
+    q = re.search(r'ui_text\((\d+), 42, UI_DIM, "\?"\);', t)
+    reg = re.search(r'ui_text\((\d+), 42, UI_DIM, "no art"\);', t)
+    l1 = re.search(r'ui_text\((\d+), 32, UI_DIM, "no art"\);', t)
+    l2 = re.search(r'ui_text\((\d+), 42, UI_DIM, PDNA_DEX_NOART_L2\);', t)
+    l3 = re.search(r'ui_text\((\d+), 52, UI_DIM, PDNA_DEX_NOART_L3\);', t)
+    return q, reg, l1, l2, l3
+def _macro_len(name):
+    mm = re.search(r'#define\s+' + name + r'\s+"([^"]*)"', lay_h)
+    return len(mm.group(1)) if mm else -1
+q, reg, l1, l2, l3 = _noart_xs(pick)
+if not all((q, reg, l1, l2, l3)):
+    fails.append("#405/#437 centred no-art calls not found")
 else:
-    q_x, na_x = int(m.group(1)), int(m.group(2))
-    if not (12 <= na_x and na_x + 6 * 8 <= 80 and abs((na_x + 24) - 46) <= 1):
-        fails.append("#405 'no art' not centred on the frame (x %d)" % na_x)
-    if not (12 <= q_x and q_x + 8 <= 80 and abs((q_x + 4) - 46) <= 1):
-        fails.append("#405 '?' not centred on the frame (x %d)" % q_x)
+    def centred(x, glyphs, what):
+        if not (12 <= x and x + glyphs * 8 <= 80 and abs((x + glyphs * 4) - 46) <= 1):
+            fails.append("#405/#437 %s not centred on the frame (x %d, %d glyphs)" % (what, x, glyphs))
+    centred(int(q.group(1)), 1, "'?'")
+    centred(int(reg.group(1)), 6, "'no art' (ROM registered)")
+    centred(int(l1.group(1)), 6, "'no art' (no ROM, line 1)")
+    centred(int(l2.group(1)), _macro_len("PDNA_DEX_NOART_L2"), "PDNA_DEX_NOART_L2")
+    centred(int(l3.group(1)), _macro_len("PDNA_DEX_NOART_L3"), "PDNA_DEX_NOART_L3")
 pin("#405 pin is red on the old overrunning position",
     pick,
     lambda t: 'ui_text(38, 42, UI_DIM' not in t,
-    lambda t: t.replace('ui_text(st == 0 ? 42 : 22, 42, UI_DIM', 'ui_text(38, 42, UI_DIM'))
+    lambda t: t.replace('ui_text(22, 42, UI_DIM, "no art")', 'ui_text(38, 42, UI_DIM, "no art")'))
+pin("#437 the pointer lines are on the frame's centre (a shifted line is caught)",
+    pick,
+    lambda t: all(_noart_xs(t)) and abs((int(_noart_xs(t)[3].group(1)) + _macro_len("PDNA_DEX_NOART_L2") * 4) - 46) <= 1,
+    lambda t: t.replace('ui_text(14, 42, UI_DIM, PDNA_DEX_NOART_L2)', 'ui_text(38, 42, UI_DIM, PDNA_DEX_NOART_L2)'))
+pin("#437 the no-art pointer is gated on 'no ROM registered' (a registered ROM keeps plain 'no art')",
+    pick,
+    lambda t: re.search(r'else if \(app_any_rom_registered\(\) \|\| app_gb_rom_path\(PDNA_GEN1\)\[0\] \|\| app_gb_rom_path\(PDNA_GEN2\)\[0\]\) ui_text\(22, 42, UI_DIM, "no art"\);', t) is not None,
+    lambda t: t.replace('else if (app_any_rom_registered() ||', 'else if (0 ||'))
 
 # ---- #409 pick_rows footer is drawn through ui_ptext_fit from the shared layout macros
 pin("#409 pick_rows footer uses the proportional fitted draw",

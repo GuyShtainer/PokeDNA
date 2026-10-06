@@ -124,7 +124,7 @@ GbsStatus gbd_withdraw_egg(GbSession* s, GbEditMon* out);
  * app_yard_visitors_ok() is (setting on) AND (a Gen-3 ROM registered) AND (ROM art not switched
  * off) -- three ways to be false, and one sentence for all of them sent users who HAD a ROM off to
  * register another. This names the FIRST failing predicate, in the order the user can fix them:
- *   !registered                 -> "Register a Gen-3 ROM for visitors"
+ *   !registered                 -> "Add a Gen-3 ROM: Settings > Game ROM" (PDNA_ROM_WHERE)
  *   registered && art_off       -> "Visitors need ROM art (turn it back on)"
  *   registered && !art_off && !setting_on -> "Turn on Yard visitors in Settings"
  * and NULL when all three hold (visitors ARE drawn, there is nothing to explain). Pure: the caller
