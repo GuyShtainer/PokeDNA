@@ -4864,7 +4864,14 @@ int pdna_box(BoxSource* src) {
      * safe for pcp_open_party_strip's own render_full(...,clear=false) passes to draw
      * over it. Consumed once: a later need_full repaint (e.g. once the strip closes)
      * must never re-trigger this. */
-    if (want_party_strip) { want_party_strip = false; pcp_open_party_strip(src, box, &cur, &need_full); }
+    if (want_party_strip) {
+      want_party_strip = false; pcp_open_party_strip(src, box, &cur, &need_full);
+      /* romhint2 #447: the strip (or its READ-ONLY refusal panel) was drawn over the box and need_full is now set, but the key wait
+       * below runs BEFORE the next loop top could repaint, so the panel stayed on screen until the next key and A then opened the
+       * cell menu over it. Repaint at once, over the box (no wipe): the same effect the Bag/Tickets/Flags refusals get by returning
+       * to a loop whose top paints (pdna_main.c nav switch, NV_BAG..NV_EVENTS). */
+      if (need_full) { paint_over = true; continue; }
+    }
     if (toast[0]) {                            /* #234 s3: a toast lives in the footer strip; it is drawn AFTER any repaint */
       ui_fill_rect(WP_X, 152, WP_W, 8, UI_BG);
       ui_ptext_fit(WP_X + 2, 152, WP_W - 4, RGB15(31, 31, 31), toast);
