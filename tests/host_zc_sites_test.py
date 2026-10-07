@@ -18,6 +18,17 @@ def rd(n):
     return (ROOT / "source" / n).read_text(encoding="utf-8")
 
 
+def body(t, name):
+    m = re.search(r"\b" + re.escape(name) + r"\(", t)
+    # first definition (a line ending in ') {' after the name)
+    for m in re.finditer(r"^[^\n;]*\b" + re.escape(name) + r"\([^;{]*\)\s*\{", t, re.M):
+        i = m.end(); d = 1
+        while i < len(t) and d:
+            d += (t[i] == "{") - (t[i] == "}"); i += 1
+        return t[m.start():i]
+    return ""
+
+
 def pin(name, text, pred, mutate):
     if not pred(text):
         fails.append("RED on real source: " + name)
@@ -99,20 +110,21 @@ def _def(name):
     return int(mm.group(1)) if mm else -1
 pin("#405 noart_line centres on the frame's own x/width by measuring the line (a fixed x would overrun again)",
     summ,
-    lambda t: re.search(r'ui_ptext\(PDNA_DEX_NOART_FX \+ \(PDNA_DEX_NOART_FW - ui_ptext_w\(s\)\) / 2, y, PDNA_DEX_NOART_INK, s\);', t) is not None
+    lambda t: re.search(r'ui_ptext\(fx \+ \(fw - ui_ptext_w\(s\)\) / 2, y, PDNA_DEX_NOART_INK, s\);', t) is not None
+              and re.search(r'pdna_summary_noart_line_in\(PDNA_DEX_NOART_FX, PDNA_DEX_NOART_FW, y, s\)', t) is not None
               and _def("PDNA_DEX_NOART_FX") == 12 and _def("PDNA_DEX_NOART_FW") == 68,
-    lambda t: t.replace('PDNA_DEX_NOART_FX + (PDNA_DEX_NOART_FW - ui_ptext_w(s)) / 2', 'PDNA_DEX_NOART_FX + 26', 1))
+    lambda t: t.replace('fx + (fw - ui_ptext_w(s)) / 2', 'fx + 26', 1))
 pin("romhint F1 the no-art ink is a DARK colour (dim UI ink vanished on the light-blue portrait gradient)",
     lay_h,
     lambda t: (lambda mm: mm is not None and max(int(mm.group(i)) for i in (1, 2, 3)) <= 8)(
         re.search(r'#define PDNA_DEX_NOART_INK\s+RGB15\((\d+),\s*(\d+),\s*(\d+)\)', t)),
     lambda t: t.replace('PDNA_DEX_NOART_INK   RGB15(1, 2, 6)', 'PDNA_DEX_NOART_INK   RGB15(17, 18, 21)', 1))
-pin("romhint F1 no-art lines are drawn by pdna_summary_noart_line (the dark ink), never ui_text(UI_DIM)",
+pin("romhint F1 no-art lines are drawn by pdna_summary_noart_line_in (the dark ink), never ui_text(UI_DIM)",
     summ,
-    lambda t: all(re.search(x, t) for x in (r'pdna_summary_noart_line\(42, PDNA_DEX_NOART_L1\)',
-                                            r'pdna_summary_noart_line\(26, PDNA_DEX_NOART_L1\)', r'pdna_summary_noart_line\(36, PDNA_DEX_NOART_L2\)',
-                                            r'pdna_summary_noart_line\(46, PDNA_DEX_NOART_L3\)', r'pdna_summary_noart_line\(56, PDNA_DEX_NOART_L4\)')),
-    lambda t: t.replace('pdna_summary_noart_line(36, PDNA_DEX_NOART_L2)', 'ui_text(14, 42, UI_DIM, PDNA_DEX_NOART_L2)', 1))
+    lambda t: all(re.search(x, t) for x in (r'pdna_summary_noart_line_in\(fx, fw, 42 \+ dy, PDNA_DEX_NOART_L1\)',
+                                            r'pdna_summary_noart_line_in\(fx, fw, 26 \+ dy, PDNA_DEX_NOART_L1\)', r'pdna_summary_noart_line_in\(fx, fw, 36 \+ dy, PDNA_DEX_NOART_L2\)',
+                                            r'pdna_summary_noart_line_in\(fx, fw, 46 \+ dy, PDNA_DEX_NOART_L3\)', r'pdna_summary_noart_line_in\(fx, fw, 56 \+ dy, PDNA_DEX_NOART_L4\)')),
+    lambda t: t.replace('pdna_summary_noart_line_in(fx, fw, 36 + dy, PDNA_DEX_NOART_L2)', 'ui_text(14, 42, UI_DIM, PDNA_DEX_NOART_L2)', 1))
 pin("romhint fix2 #5 the dex detail AND the Gen-3 summary draw the same pointer (dex: '?' for unseen, else pdna_summary_noart_pointer)",
     pick,
     lambda t: 'pdna_summary_noart_line(42, "?")' in t and "else pdna_summary_noart_pointer();" in t and "static void noart_line" not in t
@@ -124,10 +136,32 @@ pin("romhint F1 the pointer names the WHOLE term (L3 + L4 rebuild PDNA_ROM_WHERE
               and re.search(r'PDNA_DEX_NOART_L4\s+PDNA_ROM_WHERE_B', t) is not None
               and re.search(r'#define PDNA_ROM_WHERE PDNA_ROM_WHERE_A " " PDNA_ROM_WHERE_B', t) is not None,
     lambda t: t.replace('#define PDNA_DEX_NOART_L4 PDNA_ROM_WHERE_B', '#define PDNA_DEX_NOART_L4 ""', 1))
-pin("#437 the no-art pointer is gated on 'no ROM registered' (a registered ROM keeps plain 'no art')",
+pin("#437 the no-art pointer is gated on 'no ROM registered' (a Gen-3 ROM keeps plain 'no art')",
     summ,
-    lambda t: re.search(r'if \(app_any_rom_registered\(\) \|\| app_gb_rom_path\(PDNA_GEN1\)\[0\] \|\| app_gb_rom_path\(PDNA_GEN2\)\[0\]\) \{\s*pdna_summary_noart_line\(42, PDNA_DEX_NOART_L1\);', t) is not None,
-    lambda t: t.replace('if (app_any_rom_registered() ||', 'if (0 ||', 1))
+    lambda t: re.search(r'if \(app_any_rom_registered\(\)\) \{\s*pdna_summary_noart_line_in\(fx, fw, 42 \+ dy, PDNA_DEX_NOART_L1\);', t) is not None,
+    lambda t: t.replace('if (app_any_rom_registered()) {', 'if (0) {', 1))
+pin("romhint2 #448b a GB-only owner (no Gen-3 ROM, a Gen 1/2 ROM) gets the five Gen-3 lines, not plain 'no art'",
+    summ,
+    lambda t: re.search(r'else if \(app_gb_rom_path\(PDNA_GEN1\)\[0\] \|\| app_gb_rom_path\(PDNA_GEN2\)\[0\]\) \{\s*'
+                        r'pdna_summary_noart_line_in\(fx, fw, 21 \+ dy, PDNA_DEX_NOART_L1\);\s*'
+                        r'pdna_summary_noart_line_in\(fx, fw, 31 \+ dy, PDNA_DEX_NOART_G3_L2\);\s*'
+                        r'pdna_summary_noart_line_in\(fx, fw, 41 \+ dy, PDNA_DEX_NOART_G3_L3\);\s*'
+                        r'pdna_summary_noart_line_in\(fx, fw, 51 \+ dy, PDNA_DEX_NOART_L3\);\s*'
+                        r'pdna_summary_noart_line_in\(fx, fw, 61 \+ dy, PDNA_DEX_NOART_L4\);', t) is not None
+              and re.search(r'PDNA_DEX_NOART_G3_L2\s+"Add a Gen-3"', lay_h) is not None
+              and re.search(r'PDNA_DEX_NOART_G3_L3\s+"ROM:"', lay_h) is not None,
+    lambda t: t.replace('else if (app_gb_rom_path(PDNA_GEN1)[0] || app_gb_rom_path(PDNA_GEN2)[0]) {', 'else if (0) {', 1))
+box = rd("pdna_box.c")
+pin("romhint2 #448a the box PKMN DATA pane draws the pointer in its own 66-px checker frame when no icon exists (ui_sprite(NULL) draws nothing)",
+    box,
+    lambda t: re.search(r'const uint16_t\* ic = mon_icon_for_form\(p->species, p->form\);\s*if \(ic\) ui_sprite\(22, 32, MON_ICON_W, MON_ICON_H, ic\);\s*'
+                        r'else pdna_summary_noart_pointer_in\(PDNA_BOX_NOART_FX, PDNA_BOX_NOART_FW, PDNA_BOX_NOART_DY\);', body(t, "draw_left")) is not None
+              and _def("PDNA_BOX_NOART_FX") == 5 and _def("PDNA_BOX_NOART_FW") == 66 and _def("PDNA_BOX_NOART_DY") == 2,
+    lambda t: t.replace('else pdna_summary_noart_pointer_in(PDNA_BOX_NOART_FX, PDNA_BOX_NOART_FW, PDNA_BOX_NOART_DY);', ';', 1))
+pin("romhint2 #447 the START>Party entry repaints at once when the strip (or its READ-ONLY refusal) set need_full (the key wait ran first)",
+    box,
+    lambda t: re.search(r'want_party_strip = false; pcp_open_party_strip\(src, box, &cur, &need_full\);[^}]*?if \(need_full\) \{ paint_over = true; continue; \}', t, re.S) is not None,
+    lambda t: t.replace('if (need_full) { paint_over = true; continue; }', '', 1))
 
 # ---- #409 pick_rows footer is drawn through ui_ptext_fit from the shared layout macros
 pin("#409 pick_rows footer uses the proportional fitted draw",

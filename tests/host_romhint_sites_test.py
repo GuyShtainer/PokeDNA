@@ -154,6 +154,19 @@ pin("#437 art-off and unreadable-ROM texts never tell the user to add a ROM",
               and re.search(r'PDNA_GBSCR_REASON_OPEN\s+"ROM art unavailable"', t) is not None,
     lambda t: t.replace('"ROM art unavailable"', '"add a ROM: " PDNA_ROM_WHERE', 1))
 
+# ---- romhint2 #448: the three-case pointer (Gen-3 ROM / GB-only / nothing) and its three call sites
+summ = rd("pdna_summary.c")
+pin("romhint2 #448b the pointer has THREE cases: Gen-3 ROM -> plain 'no art'; GB-only -> Gen-3 wording; nothing -> 'Add a ROM:'",
+    body(summ, "pdna_summary_noart_pointer_in"),
+    lambda t: (lambda i1, i2, i3: 0 <= t.find("app_any_rom_registered()") < t.find("PDNA_DEX_NOART_G3_L2") < t.find("PDNA_DEX_NOART_L2")
+               and "app_gb_rom_path(PDNA_GEN1)[0]" in t[i1:i2] and "app_gb_rom_path(PDNA_GEN2)[0]" in t[i1:i2])(
+        t.find("app_any_rom_registered()"), t.find("else {"), 0),
+    lambda t: t.replace("PDNA_DEX_NOART_G3_L2", "PDNA_DEX_NOART_L1", 1))
+pin("romhint2 #448 all three call sites (summary, dex detail, box pane) reach the same helper family",
+    summ + rd("pdna_pick.c") + rd("pdna_box.c"),
+    lambda t: t.count("pdna_summary_noart_pointer()") >= 2 and "pdna_summary_noart_pointer_in(PDNA_BOX_NOART_FX, PDNA_BOX_NOART_FW, PDNA_BOX_NOART_DY)" in t,
+    lambda t: t.replace("pdna_summary_noart_pointer_in(PDNA_BOX_NOART_FX", "(void)(PDNA_BOX_NOART_FX", 1))
+
 if fails:
     for f in fails:
         print("FAIL:", f)

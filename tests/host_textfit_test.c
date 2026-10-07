@@ -2294,6 +2294,15 @@ int main(void) {
     PF(PDNA_DEX_NOART_L2, PDNA_DEX_NOART_FX, PDNA_DEX_NOART_FW);
     PF(PDNA_DEX_NOART_L3, PDNA_DEX_NOART_FX, PDNA_DEX_NOART_FW);
     PF(PDNA_DEX_NOART_L4, PDNA_DEX_NOART_FX, PDNA_DEX_NOART_FW);
+    /* romhint2 #448b: the GB-only owner's five lines in the same 68-px frame, and every pointer line in the box pane's 66-px checker (#448a) */
+    PF(PDNA_DEX_NOART_G3_L2, PDNA_DEX_NOART_FX, PDNA_DEX_NOART_FW);
+    PF(PDNA_DEX_NOART_G3_L3, PDNA_DEX_NOART_FX, PDNA_DEX_NOART_FW);
+    PF(PDNA_DEX_NOART_L1,    PDNA_BOX_NOART_FX, PDNA_BOX_NOART_FW);
+    PF(PDNA_DEX_NOART_L2,    PDNA_BOX_NOART_FX, PDNA_BOX_NOART_FW);
+    PF(PDNA_DEX_NOART_L3,    PDNA_BOX_NOART_FX, PDNA_BOX_NOART_FW);
+    PF(PDNA_DEX_NOART_L4,    PDNA_BOX_NOART_FX, PDNA_BOX_NOART_FW);
+    PF(PDNA_DEX_NOART_G3_L2, PDNA_BOX_NOART_FX, PDNA_BOX_NOART_FW);
+    PF(PDNA_DEX_NOART_G3_L3, PDNA_BOX_NOART_FX, PDNA_BOX_NOART_FW);
     PF(PDNA_GBSCR_REASON_NO_ROM, 28, 184);                         /* msg_wait's line (gbmap / gbmap2 / hof / bag dialogs) */
     PF(PDNA_ITEM_NO_DESC_YET,        0, 232);   /* restricted item picker's single line (ui_ptext_fit, 232 px) */
     PF(PDNA_ITEM_NO_DESC_NOROM_GEN1, 0, 232);

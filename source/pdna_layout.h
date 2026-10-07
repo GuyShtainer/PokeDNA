@@ -1512,7 +1512,7 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * is only the honest placeholder for a build/mount that has none. */
 /* #437: the portrait frame (68 px wide, x 12..79) of the dex detail AND the Gen-3 summary when no sprite can be drawn. With NO ROM registered
  * it is four centred lines (ui_ptext, proportional face, drawn by pdna_summary_noart_pointer): "no art" / "Add a ROM:" / "Settings >" /
- * "Game ROM" (y 26/36/46/56); a registered ROM gets the plain "no art" alone. */
+ * "Game ROM" (y 26/36/46/56); a registered Gen-3 ROM gets the plain "no art" alone, and a Game-Boy-only owner the five-line Gen-3 wording below (romhint2 #448b). */
 #define PDNA_DEX_NOART_L1 "no art"
 #define PDNA_DEX_NOART_L2 "Add a ROM:"
 #define PDNA_DEX_NOART_L3 PDNA_ROM_WHERE_A
