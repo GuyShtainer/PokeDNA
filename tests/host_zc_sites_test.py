@@ -138,16 +138,20 @@ pin("romhint F1 the pointer names the WHOLE term (L3 + L4 rebuild PDNA_ROM_WHERE
     lambda t: t.replace('#define PDNA_DEX_NOART_L4 PDNA_ROM_WHERE_B', '#define PDNA_DEX_NOART_L4 ""', 1))
 pin("#437 the no-art pointer is gated on 'no ROM registered' (a Gen-3 ROM keeps plain 'no art')",
     summ,
-    lambda t: re.search(r'if \(app_any_rom_registered\(\)\) \{\s*pdna_summary_noart_line_in\(fx, fw, 42 \+ dy, PDNA_DEX_NOART_L1\);', t) is not None,
-    lambda t: t.replace('if (app_any_rom_registered()) {', 'if (0) {', 1))
+    lambda t: re.search(r'if \(app_any_rom_registered\(\)( \|\| app_rom_art_off\(\))?\) \{\s*pdna_summary_noart_line_in\(fx, fw, 42 \+ dy, PDNA_DEX_NOART_L1\);', t) is not None,
+    lambda t: t.replace('if (app_any_rom_registered() || app_rom_art_off()) {', 'if (0) {', 1))
+pin("romhint2 fix A: ROM art OFF keeps plain 'no art' (a GB-only owner with art switched off is not told to add a ROM)",
+    summ,
+    lambda t: re.search(r'if \(app_any_rom_registered\(\) \|\| app_rom_art_off\(\)\) \{\s*pdna_summary_noart_line_in\(fx, fw, 42 \+ dy', t) is not None,
+    lambda t: t.replace(' || app_rom_art_off()', '', 1))
 pin("romhint2 #448b a GB-only owner (no Gen-3 ROM, a Gen 1/2 ROM) gets the five Gen-3 lines, not plain 'no art'",
     summ,
     lambda t: re.search(r'else if \(app_gb_rom_path\(PDNA_GEN1\)\[0\] \|\| app_gb_rom_path\(PDNA_GEN2\)\[0\]\) \{\s*'
-                        r'pdna_summary_noart_line_in\(fx, fw, 21 \+ dy, PDNA_DEX_NOART_L1\);\s*'
-                        r'pdna_summary_noart_line_in\(fx, fw, 31 \+ dy, PDNA_DEX_NOART_G3_L2\);\s*'
-                        r'pdna_summary_noart_line_in\(fx, fw, 41 \+ dy, PDNA_DEX_NOART_G3_L3\);\s*'
-                        r'pdna_summary_noart_line_in\(fx, fw, 51 \+ dy, PDNA_DEX_NOART_L3\);\s*'
-                        r'pdna_summary_noart_line_in\(fx, fw, 61 \+ dy, PDNA_DEX_NOART_L4\);', t) is not None
+                        r'pdna_summary_noart_line_in\(fx, fw, 26 \+ dy, PDNA_DEX_NOART_L1\);\s*'
+                        r'pdna_summary_noart_line_in\(fx, fw, 36 \+ dy, PDNA_DEX_NOART_G3_L2\);\s*'
+                        r'pdna_summary_noart_line_in\(fx, fw, 46 \+ dy, PDNA_DEX_NOART_G3_L3\);\s*'
+                        r'pdna_summary_noart_line_in\(fx, fw, 56 \+ dy, PDNA_DEX_NOART_L3\);\s*'
+                        r'pdna_summary_noart_line_in\(fx, fw, 66 \+ dy, PDNA_DEX_NOART_L4\);', t) is not None
               and re.search(r'PDNA_DEX_NOART_G3_L2\s+"Add a Gen-3"', lay_h) is not None
               and re.search(r'PDNA_DEX_NOART_G3_L3\s+"ROM:"', lay_h) is not None,
     lambda t: t.replace('else if (app_gb_rom_path(PDNA_GEN1)[0] || app_gb_rom_path(PDNA_GEN2)[0]) {', 'else if (0) {', 1))
