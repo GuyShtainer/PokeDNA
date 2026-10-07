@@ -179,22 +179,33 @@ void pdna_summary_portrait_screen(void) {
   for (int yy = 14; yy <= 77; yy++) ui_fill_rect(12, yy, 68, 1, portrait_bg(yy));
 }
 
-/* romhint F1/fix2: text drawn inside the 68-px portrait frame (x 12..79) when there is no sprite: proportional face, dark ink that reads on the
- * light-blue gradient, centred by measuring. Shared by the summary and the dex detail (pdna_pick.c). */
-void pdna_summary_noart_line(int y, const char* s) {
-  ui_ptext(PDNA_DEX_NOART_FX + (PDNA_DEX_NOART_FW - ui_ptext_w(s)) / 2, y, PDNA_DEX_NOART_INK, s);
+/* romhint F1/fix2 + romhint2 #448: text drawn inside a picture frame when there is no sprite: proportional face, dark ink that reads on
+ * the light-blue gradient / the light-grey checker, centred by measuring inside the frame (fx, fw). The summary + dex detail frame is
+ * x 12..79 (68 px, PDNA_DEX_NOART_FX/FW, the pdna_summary_noart_line wrapper below); the box pane's checker is x 5..70 (66 px). */
+void pdna_summary_noart_line_in(int fx, int fw, int y, const char* s) {
+  if (!s || fw <= 0) return;
+  ui_ptext(fx + (fw - ui_ptext_w(s)) / 2, y, PDNA_DEX_NOART_INK, s);
 }
-/* With NO ROM registered anywhere the frame says where art comes from (four lines, y 26/36/46/56); a registered ROM keeps the plain
- * "no art" (telling that user to add a ROM they have would be a lie). */
-void pdna_summary_noart_pointer(void) {
+void pdna_summary_noart_line(int y, const char* s) {
+  pdna_summary_noart_line_in(PDNA_DEX_NOART_FX, PDNA_DEX_NOART_FW, y, s);
+}
+/* The no-sprite text, three cases (romhint2 #448b); dy shifts every line for a frame whose centre differs (summary/dex 0, box pane +2):
+ *  - a Gen-3 ROM registered (app_any_rom_registered: a map-only R/S ROM and ROM art OFF count) -> plain "no art" (never tell anyone
+ *    to add a ROM they have);
+ *  - no Gen-3 ROM but a Gen 1 or Gen 2 ROM -> five lines naming the Gen-3 ROM (y 21..61), because the art missing here comes from one;
+ *  - nothing registered -> the four-line "Add a ROM:" pointer (y 26..56). */
+void pdna_summary_noart_pointer_in(int fx, int fw, int dy) {
   if (app_any_rom_registered() || app_gb_rom_path(PDNA_GEN1)[0] || app_gb_rom_path(PDNA_GEN2)[0]) {
-    pdna_summary_noart_line(42, PDNA_DEX_NOART_L1);
+    pdna_summary_noart_line_in(fx, fw, 42 + dy, PDNA_DEX_NOART_L1);
   } else {
-    pdna_summary_noart_line(26, PDNA_DEX_NOART_L1);
-    pdna_summary_noart_line(36, PDNA_DEX_NOART_L2);
-    pdna_summary_noart_line(46, PDNA_DEX_NOART_L3);
-    pdna_summary_noart_line(56, PDNA_DEX_NOART_L4);
+    pdna_summary_noart_line_in(fx, fw, 26 + dy, PDNA_DEX_NOART_L1);
+    pdna_summary_noart_line_in(fx, fw, 36 + dy, PDNA_DEX_NOART_L2);
+    pdna_summary_noart_line_in(fx, fw, 46 + dy, PDNA_DEX_NOART_L3);
+    pdna_summary_noart_line_in(fx, fw, 56 + dy, PDNA_DEX_NOART_L4);
   }
+}
+void pdna_summary_noart_pointer(void) {
+  pdna_summary_noart_pointer_in(PDNA_DEX_NOART_FX, PDNA_DEX_NOART_FW, 0);
 }
 
 /* Shared portrait column (all 7 cards): framed sprite, dex no, name, Lv + colored

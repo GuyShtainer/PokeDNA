@@ -421,7 +421,11 @@ static void draw_left(const PkMon* p) {
   } else if (art.egg) {
     ui_sprite(22, 32, MON_ICON_W, MON_ICON_H, mon_icon_egg());
   } else {
-    ui_sprite(22, 32, MON_ICON_W, MON_ICON_H, mon_icon_for_form(p->species, p->form));
+    /* romhint2 #448a: ui_sprite(NULL) draws nothing (ui.c: `if (!data) return;`), so an artless build with no ROM left the checker empty;
+     * with no icon either, say why (and where the art comes from), the same text the summary/dex frame carries. */
+    const uint16_t* ic = mon_icon_for_form(p->species, p->form);
+    if (ic) ui_sprite(22, 32, MON_ICON_W, MON_ICON_H, ic);
+    else pdna_summary_noart_pointer_in(PDNA_BOX_NOART_FX, PDNA_BOX_NOART_FW, PDNA_BOX_NOART_DY);
   }
 
   /* Names are drawn with the PROPORTIONAL face. At 8 px/glyph this panel held nine

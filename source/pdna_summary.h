@@ -49,6 +49,8 @@ void pdna_summary_bg(void);
 /* BACKLOG #203: the summary's blue portrait "screen" fill, (12,14)-(79,77). */
 void pdna_summary_portrait_screen(void);
 void pdna_summary_noart_line(int y, const char* s);   /* romhint fix2: centred dark-ink line in the 68-px portrait frame */
+void pdna_summary_noart_line_in(int fx, int fw, int y, const char* s);   /* romhint2: same, centred in any frame (fx, fw) */
+void pdna_summary_noart_pointer_in(int fx, int fw, int dy);              /* romhint2 #448: the pointer in any frame, every line shifted by dy */
 void pdna_summary_noart_pointer(void);                  /* the no-sprite text: "no art" or the four-line no-ROM pointer */
 
 /* The shared left info column: framed sprite (drawn via the origin-art router, so a

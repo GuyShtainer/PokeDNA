@@ -1522,6 +1522,11 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_DEX_NOART_INK   RGB15(1, 2, 6)
 #define PDNA_DEX_NOART_FX    12
 #define PDNA_DEX_NOART_FW    68
+/* romhint2 #448a: the box screen's PKMN DATA pane (checker x 5..70, y 15..80) draws the same pointer when NOTHING else was drawn:
+ * frame x 5, 66 px wide, lines shifted +2 (the checker's centre is 2 px below the summary frame's). */
+#define PDNA_BOX_NOART_FX    5
+#define PDNA_BOX_NOART_FW    66
+#define PDNA_BOX_NOART_DY    2
 #define PDNA_ITEM_NO_DESC_YET  "No text. Add a ROM: " PDNA_ROM_WHERE   /* #437: Gen 2, no GB ROM registered */
 #define PDNA_ITEM_NO_DESC_NOROM_GEN1 "No Gen 1 item text exists"        /* #437: a ROM cannot help, so no pointer */
 #define PDNA_ITEM_NO_DESC_UNREAD   "No description available"          /* #437: a ROM IS registered but gave none */
