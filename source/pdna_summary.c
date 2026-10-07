@@ -190,12 +190,12 @@ void pdna_summary_noart_line(int y, const char* s) {
   pdna_summary_noart_line_in(PDNA_DEX_NOART_FX, PDNA_DEX_NOART_FW, y, s);
 }
 /* The no-sprite text, three cases (romhint2 #448b); dy shifts every line for a frame whose centre differs (summary/dex 0, box pane +2):
- *  - a Gen-3 ROM registered (app_any_rom_registered: a map-only R/S ROM and ROM art OFF count) -> plain "no art" (never tell anyone
- *    to add a ROM they have);
+ *  - a Gen-3 ROM registered (app_any_rom_registered: a map-only R/S ROM counts), or ROM art switched OFF (app_rom_art_off: art is off
+ *    on purpose, even with only a GB ROM registered) -> plain "no art" (never tell anyone to add a ROM they have);
  *  - no Gen-3 ROM but a Gen 1 or Gen 2 ROM -> five lines naming the Gen-3 ROM (y 21..61), because the art missing here comes from one;
  *  - nothing registered -> the four-line "Add a ROM:" pointer (y 26..56). */
 void pdna_summary_noart_pointer_in(int fx, int fw, int dy) {
-  if (app_any_rom_registered()) {
+  if (app_any_rom_registered() || app_rom_art_off()) {
     pdna_summary_noart_line_in(fx, fw, 42 + dy, PDNA_DEX_NOART_L1);
   } else if (app_gb_rom_path(PDNA_GEN1)[0] || app_gb_rom_path(PDNA_GEN2)[0]) {
     pdna_summary_noart_line_in(fx, fw, 21 + dy, PDNA_DEX_NOART_L1);
