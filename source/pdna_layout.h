@@ -1522,6 +1522,10 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_DEX_NOART_INK   RGB15(1, 2, 6)
 #define PDNA_DEX_NOART_FX    12
 #define PDNA_DEX_NOART_FW    68
+/* romhint2 #448b: no Gen-3 ROM but a Gen 1/2 ROM registered -> five lines: L1 "no art" / G3_L2 / G3_L3 / L3 / L4 ("Add a Gen-3" / "ROM:" /
+ * "Settings >" / "Game ROM", y 21/31/41/51/61). Same dark ink, same frame, so both widths (68 and the box pane's 66) are pinned. */
+#define PDNA_DEX_NOART_G3_L2 "Add a Gen-3"
+#define PDNA_DEX_NOART_G3_L3 "ROM:"
 /* romhint2 #448a: the box screen's PKMN DATA pane (checker x 5..70, y 15..80) draws the same pointer when NOTHING else was drawn:
  * frame x 5, 66 px wide, lines shifted +2 (the checker's centre is 2 px below the summary frame's). */
 #define PDNA_BOX_NOART_FX    5

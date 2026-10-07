@@ -195,8 +195,14 @@ void pdna_summary_noart_line(int y, const char* s) {
  *  - no Gen-3 ROM but a Gen 1 or Gen 2 ROM -> five lines naming the Gen-3 ROM (y 21..61), because the art missing here comes from one;
  *  - nothing registered -> the four-line "Add a ROM:" pointer (y 26..56). */
 void pdna_summary_noart_pointer_in(int fx, int fw, int dy) {
-  if (app_any_rom_registered() || app_gb_rom_path(PDNA_GEN1)[0] || app_gb_rom_path(PDNA_GEN2)[0]) {
+  if (app_any_rom_registered()) {
     pdna_summary_noart_line_in(fx, fw, 42 + dy, PDNA_DEX_NOART_L1);
+  } else if (app_gb_rom_path(PDNA_GEN1)[0] || app_gb_rom_path(PDNA_GEN2)[0]) {
+    pdna_summary_noart_line_in(fx, fw, 21 + dy, PDNA_DEX_NOART_L1);
+    pdna_summary_noart_line_in(fx, fw, 31 + dy, PDNA_DEX_NOART_G3_L2);
+    pdna_summary_noart_line_in(fx, fw, 41 + dy, PDNA_DEX_NOART_G3_L3);
+    pdna_summary_noart_line_in(fx, fw, 51 + dy, PDNA_DEX_NOART_L3);
+    pdna_summary_noart_line_in(fx, fw, 61 + dy, PDNA_DEX_NOART_L4);
   } else {
     pdna_summary_noart_line_in(fx, fw, 26 + dy, PDNA_DEX_NOART_L1);
     pdna_summary_noart_line_in(fx, fw, 36 + dy, PDNA_DEX_NOART_L2);
