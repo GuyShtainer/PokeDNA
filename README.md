@@ -55,6 +55,19 @@ Treat v3.0.0 as a preview until those rows are signed. **Back up your `.sav` bef
 anything.** PokeDNA takes an immutable backup itself and keeps an undo journal, but keep your own
 copy too.
 
+## Screenshots
+
+These are frames of the art-free release build, captured in mGBA on real saves. Only text screens
+are shown, so no game art appears here. The screens that draw sprites, icons or screen chrome read
+them from your own ROM at run time, and they are deliberately left out of this page.
+
+| | | |
+|---|---|---|
+| ![One picker for Gen 3 and Game Boy saves](https://github.com/GuyShtainer/PokeDNA/releases/download/v3.0.0/save-picker.png)<br>One picker for Gen 3 and Game Boy saves | ![Gen 3 to Game Boy: what stays behind, and where it is kept](https://github.com/GuyShtainer/PokeDNA/releases/download/v3.0.0/transfer-what-wont-travel.png)<br>Gen 3 to Game Boy: what stays behind, and where it is kept | ![The History screen: every step, jump to any point](https://github.com/GuyShtainer/PokeDNA/releases/download/v3.0.0/history.png)<br>The History screen: every step, jump to any point |
+| ![CREATE: a legit copy from your ROM, or from scratch](https://github.com/GuyShtainer/PokeDNA/releases/download/v3.0.0/create-legit-copy.png)<br>CREATE: a legit copy from your ROM, or from scratch | ![LEGALITY, with the PID/IV RNG check](https://github.com/GuyShtainer/PokeDNA/releases/download/v3.0.0/legality-rng.png)<br>LEGALITY, with the PID/IV RNG check | ![Battle Record: export the Frontier battle for rec2mp4](https://github.com/GuyShtainer/PokeDNA/releases/download/v3.0.0/battle-record-export.png)<br>Battle Record: export the Frontier battle for rec2mp4 |
+| ![Battle Frontier win streaks, editable](https://github.com/GuyShtainer/PokeDNA/releases/download/v3.0.0/frontier-streaks.png)<br>Battle Frontier win streaks, editable | ![Gen 2 clock: offset, clock-error flag, shift](https://github.com/GuyShtainer/PokeDNA/releases/download/v3.0.0/gen2-clock.png)<br>Gen 2 clock: offset, clock-error flag, shift | ![Crystal event flags, grouped and named](https://github.com/GuyShtainer/PokeDNA/releases/download/v3.0.0/gen2-flags.png)<br>Crystal event flags, grouped and named |
+| ![Gen 3 counters: money, coins, steps, battles](https://github.com/GuyShtainer/PokeDNA/releases/download/v3.0.0/counters.png)<br>Gen 3 counters: money, coins, steps, battles | ![Event tickets and what each one unlocks](https://github.com/GuyShtainer/PokeDNA/releases/download/v3.0.0/event-tickets.png)<br>Event tickets and what each one unlocks | ![Fly destinations, toggled one by one or all](https://github.com/GuyShtainer/PokeDNA/releases/download/v3.0.0/fly.png)<br>Fly destinations, toggled one by one or all |
+
 ## What it does
 
 ### Your own ROM supplies the art
