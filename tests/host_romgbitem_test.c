@@ -11,7 +11,7 @@
  *      and hash EXACTLY to goldens made by an independent Python decoder (own charmap; the line-end
  *      '-' join keeps the hyphen before type/colored/level -- review-zr D1);
  *   3) spot texts: id 1 (the first entry, pinned by length + FNV, never verbatim), the hyphenation
- *      join ("[redacted]") and POKe/&/'s glyphs;
+ *      join (id 4, a line-end hyphen joining two word halves) and POKe/&/'s glyphs;
  *   4) refusals: id 0, id 191 (TM/HM block), id 255, a cap too small (never truncates), a
  *      NULL out, an unopened RomGbItem;
  *   5) MUTATIONS through a patching read hook: a version/layout lie (the first table entry
