@@ -18,8 +18,9 @@ The hardware queue is the source of truth; treat this release as a preview until
 
 ### The release is art-free
 - **`PokeDNA.gba` on the Releases page is now the art-free build** (about 1 MB). It compiles no
-  game-derived sprites, chrome, maps or text; `tools/check_no_desc_text.sh` fails the build if a
-  description string gets in. The full-art build still exists for local use and is never released.
+  game-derived sprites, chrome, maps, descriptions or dialogue (name tables and factual
+  game-mechanics tables are compiled in); `tools/check_no_desc_text.sh` fails the build if a
+  description string, a generated art array or an oversized ROM gets in. The full-art build still exists for local use and is never released.
 - **Your own ROM supplies the art, at run time:** box icons, front/back sprites, wallpapers, type
   badges, item icons, the bag / trainer-card / Pokéblock-case chrome, item and move descriptions
   (Gen 3 from the `.gba`, Gen 2 from the `.gbc`), the Game Boy sprites and icons, and the

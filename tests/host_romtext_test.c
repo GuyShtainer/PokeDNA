@@ -159,20 +159,27 @@ typedef struct {
   int         expect_open;     /* 1 = every kind must open                       */
   int         expect_items;    /* item count this ROM must serve                 */
   int         group;
-  const char* potion;          /* item 13, from that game's own decomp text      */
-  const char* pound;           /* move 1                                          */
+  TextPin     potion;          /* item 13, pinned by length + FNV                 */
+  TextPin     pound;           /* move 1                                          */
 } RomCase;
 
-/* The expected strings below are the decomps' own text for those three ids, with the
- * source's "\n" collapsed to a space -- exactly what the on-cartridge bytes say:
- *   RSE   item_descriptions.h ITEM_POTION, move_descriptions.h sPoundDescription
- *   FRLG  pokefirered item_descriptions.h / move_descriptions.c gMoveDescription_Pound
- * They differ per game, which is the reason rom_text exposes a group at all. */
-#define POTION_RSE  "Restores the HP of a POK\xC3\xA9MON by 20 points."
-#define POTION_FRLG "A spray-type wound medicine. It restores the HP of one POK\xC3\xA9MON by 20 points."
-#define POUND_RSE   "Pounds the foe with forelegs or tail."
-#define POUND_FRLG  "A physical attack delivered with a long tail or a foreleg, etc."
-#define ABIL13      "Negates weather effects."   /* CLOUD_NINE -- identical in all five */
+/* Expected texts are pinned by (UTF-8 byte length, FNV-1a 32 of the decoded string) --
+ * never verbatim, so the test carries no game text (release audit 2026-10-08). The pins
+ * are of item 13 / move 1 / ability 13 as the on-cartridge bytes decode (the source's "\n"
+ * collapsed to a space); they differ per game, which is why rom_text exposes a group.
+ * Regenerate a pin with tools/text_pin.py "<decoded string>". */
+typedef struct { int len; uint32_t fnv; } TextPin;
+static uint32_t fnv1a(const char* s) {
+  uint32_t h = 0x811C9DC5u;
+  for (; *s; s++) { h ^= (uint8_t)*s; h *= 0x01000193u; }
+  return h;
+}
+static int pin_ok(const char* s, TextPin p) { return (int)strlen(s) == p.len && fnv1a(s) == p.fnv; }
+static const TextPin POTION_RSE = { 43, 0x3CDA01EBu };
+static const TextPin POTION_FRLG = { 77, 0x0F1BDE2Bu };
+static const TextPin POUND_RSE = { 37, 0x9A403A6Du };
+static const TextPin POUND_FRLG = { 63, 0x8E9E211Eu };
+static const TextPin ABIL13 = { 24, 0x56022BD4u };
 
 static void run_rom(const char* dir, const RomCase* rcase) {
   char path[512];
@@ -217,14 +224,14 @@ static void run_rom(const char* dir, const RomCase* rcase) {
   /* 2) known ids decode EXACTLY */
   char b[ROM_TEXT_MAX];
   chk(name, "POTION (item 13) decodes exactly",
-      rom_text_get(&rt, ROM_TEXT_ITEM, 13, b, sizeof b) && strcmp(b, rcase->potion) == 0);
-  if (strcmp(b, rcase->potion) != 0) printf("      got %s\n", b);
+      rom_text_get(&rt, ROM_TEXT_ITEM, 13, b, sizeof b) && pin_ok(b, rcase->potion));
+  if (!pin_ok(b, rcase->potion)) printf("      got %s\n", b);
   chk(name, "move 1 (Pound) decodes exactly",
-      rom_text_get(&rt, ROM_TEXT_MOVE, 1, b, sizeof b) && strcmp(b, rcase->pound) == 0);
-  if (strcmp(b, rcase->pound) != 0) printf("      got %s\n", b);
+      rom_text_get(&rt, ROM_TEXT_MOVE, 1, b, sizeof b) && pin_ok(b, rcase->pound));
+  if (!pin_ok(b, rcase->pound)) printf("      got %s\n", b);
   chk(name, "ability 13 decodes exactly",
-      rom_text_get(&rt, ROM_TEXT_ABILITY, 13, b, sizeof b) && strcmp(b, ABIL13) == 0);
-  if (strcmp(b, ABIL13) != 0) printf("      got %s\n", b);
+      rom_text_get(&rt, ROM_TEXT_ABILITY, 13, b, sizeof b) && pin_ok(b, ABIL13));
+  if (!pin_ok(b, ABIL13)) printf("      got %s\n", b);
 
   /* 3) EVERY entry decodes, and every one of them is drawable + wrappable */
   int bad = 0, empty = 0, undrawable = 0, toowide = 0, longest = 0, nonempty = 0;
@@ -369,7 +376,7 @@ static void unpinned_revision_tests(const char* dir) {
           !rom_text_have(&rt, ROM_TEXT_MOVE));
       chk("FireRed rev0", "and a move read fails", !rom_text_get(&rt, ROM_TEXT_MOVE, 1, b, sizeof b));
       chk("FireRed rev0", "while POTION still decodes",
-          rom_text_get(&rt, ROM_TEXT_ITEM, 13, b, sizeof b) && strcmp(b, POTION_FRLG) == 0);
+          rom_text_get(&rt, ROM_TEXT_ITEM, 13, b, sizeof b) && pin_ok(b, POTION_FRLG));
     }
     free(rom);
   }
@@ -418,7 +425,7 @@ static void bounds_tests(const char* dir) {
   chk("bounds", "and a disabled kind reads nothing",
       !rom_text_get(&rt, ROM_TEXT_ITEM, 13, b, sizeof b) && b[0] == 0);
   chk("bounds", "moves still decode", rom_text_get(&rt, ROM_TEXT_MOVE, 1, b, sizeof b) &&
-      strcmp(b, POUND_RSE) == 0);
+      pin_ok(b, POUND_RSE));
 
   /* (d) garbage text: repoint the ability table at a run of executable code. Every
    *     pointer there is nonsense, so the probe must reject the whole kind. */
@@ -431,7 +438,7 @@ static void bounds_tests(const char* dir) {
   chk("bounds", "garbage ability table is rejected by the probe",
       !rom_text_have(&rt, ROM_TEXT_ABILITY));
   chk("bounds", "items are unaffected", rom_text_have(&rt, ROM_TEXT_ITEM) &&
-      rom_text_get(&rt, ROM_TEXT_ITEM, 13, b, sizeof b) && strcmp(b, POTION_RSE) == 0);
+      rom_text_get(&rt, ROM_TEXT_ITEM, 13, b, sizeof b) && pin_ok(b, POTION_RSE));
 
   /* (e) an unterminated string: blot out every 0xFF for a long stretch after the
    *     Master Ball description so the decoder runs off the end of its window. */

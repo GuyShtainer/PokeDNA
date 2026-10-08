@@ -57,9 +57,27 @@ elif [ -f "$ELF" ]; then
     echo "*** FATAL: $ELF still links s_itemdesc/s_mvdesc/s_abilitydesc ($n symbol(s))"
     fail=1
   fi
+  # Art-symbol denylist: generated art arrays that must never reach an artless link.
+  # daycare_bg is the porymap/decomp-tileset render (release audit 2026-10-08).
+  n=$(arm-none-eabi-nm "$ELF" | grep -c -w -E 'daycare_bg' || true)
+  if [ "$n" -gt 0 ]; then
+    echo "*** FATAL: $ELF links a generated art array ($n symbol(s) from the denylist)"
+    fail=1
+  fi
 else
   echo "*** FATAL: $ELF not found -- the symbol check did NOT run, so this is not a pass" >&2
   fail=1
+fi
+
+# Size ceiling: the artless ROM is ~919 KB; a 50 KB+ jump is an art array leaking in
+# (the daycare render added 52 KB without tripping the text checks). Raise deliberately.
+MAX_GBA_BYTES=940000
+if [ -f "$GBA" ]; then
+  sz=$(stat -f%z "$GBA" 2>/dev/null || stat -c%s "$GBA")
+  if [ "$sz" -gt "$MAX_GBA_BYTES" ]; then
+    echo "*** FATAL: $GBA is $sz bytes, over the artless ceiling of $MAX_GBA_BYTES -- an art array leaked in"
+    fail=1
+  fi
 fi
 
 if [ "$fail" -ne 0 ]; then

@@ -288,8 +288,8 @@ static void draw_list(BgFrame bg, const BagLayout* L, const uint8_t* sb1,
 
 /* ---- description pane: word-wrap + AUTO-PAGING (BACKLOG 12d) --------------
  * Laid out in PIXELS with the proportional face (ui_ptext), the same way the
- * games do it — which is why retail fits "Powerful, but makes the user flinch if
- * hit by the foe." in four short lines and our 8 px font could not. Most
+ * games do it — which is why retail fits a two-clause move description (about
+ * 55 characters) in four short lines and our 8 px font could not. Most
  * descriptions now land on a single page; the pager stays for the few that don't
  * and flips every BAG_DESC_FLIP idle frames. The pane is PURE TEXT (full width,
  * no icon flow-around): the 24x24 item icon lives in the game's own icon slot

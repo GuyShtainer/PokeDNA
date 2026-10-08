@@ -35,7 +35,7 @@ matters to you, feel free to open an issue or a PR.
 ## Planned — graphics & UI
 
 - ~~Pokéblock case chrome~~ — done: the game's own case screen for RS and Emerald, generated
-  locally from the decomps like the bag and trainer card (FRLG has no Pokéblocks).
+  read from your own ROM at run time, like the bag and trainer card (FRLG has no Pokéblocks).
 - ~~Emerald's real pickup animation~~ — done: the transparency matches retail exactly (per-icon
   `BLDALPHA_BLEND(7, 11)`, holders opaque, hand solid) and so does the motion (the 17-frame grab
   dip: open hand descends onto the still-in-place Pokémon, the fist closes, both rise together).

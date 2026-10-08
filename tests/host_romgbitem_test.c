@@ -10,7 +10,7 @@
  *   2) all 190 descriptions of each decode, fit ROM_GBITEM_DESC_MAX, contain no "{XX}" escape
  *      and hash EXACTLY to goldens made by an independent Python decoder (own charmap; the line-end
  *      '-' join keeps the hyphen before type/colored/level -- review-zr D1);
- *   3) spot texts: id 1 "[redacted]" (the first entry), the hyphenation
+ *   3) spot texts: id 1 (the first entry, pinned by length + FNV, never verbatim), the hyphenation
  *      join ("[redacted]") and POKe/&/'s glyphs;
  *   4) refusals: id 0, id 191 (TM/HM block), id 255, a cap too small (never truncates), a
  *      NULL out, an unopened RomGbItem;
@@ -58,6 +58,13 @@ static uint32_t fnv_add(uint32_t h, const char* s) {
   return h;
 }
 
+/* Expected texts are pinned by (byte length, FNV-1a 32) -- never verbatim -- so the test
+ * carries no game text (release audit 2026-10-08). Regenerate a pin with
+ * tools/text_pin.py "<the decoded string>". */
+typedef struct { int len; uint32_t fnv; } TextPin;
+static int pin_ok(const char* s, TextPin p) {
+  return (int)strlen(s) == p.len && fnv_add(0x811C9DC5u, s) == p.fnv;
+}
 typedef struct { const char* file; const char* name; uint32_t bank_off; uint32_t taddr; uint32_t golden; } Game;
 /* goldens: independent Python decode of the 190 strings, '\n'-joined, FNV-1a 32 (UTF-8) */
 static const Game k_games[] = {
@@ -92,20 +99,20 @@ static void run_game(const char* dir, const Game* g) {
          g->name, (unsigned)gi.bank_off, (unsigned)gi.taddr, maxlen, (unsigned)h);
 
   chk(g->name, "id 1 text", rom_gbitem_desc(&gi, 1, d, (int)sizeof d) > 0 &&
-                           strcmp(d, "[redacted]") == 0);
+                           pin_ok(d, { 31, 0x3FA9E074u }));
   chk(g->name, "hyphen join + no leading/trailing space (id 4)", rom_gbitem_desc(&gi, 4, d, (int)sizeof d) > 0 &&
-                           strcmp(d, "[redacted]") == 0);
+                           pin_ok(d, { 34, 0xCA60BA1Eu }));
   chk(g->name, "id 3 apostrophe-s", rom_gbitem_desc(&gi, 3, d, (int)sizeof d) > 0 &&
-                           strcmp(d, "[redacted]") == 0);
+                           pin_ok(d, { 33, 0x6AA9BABFu }));
   /* review-zr D1: a line-end '-' before type/colored/level is a REAL compound hyphen (kept) */
   chk(g->name, "id 60 compound 'silver-colored' keeps its hyphen", rom_gbitem_desc(&gi, 60, d, (int)sizeof d) > 0 &&
-                           strcmp(d, "[redacted]") == 0);
+                           pin_ok(d, { 31, 0x7E6B9DE8u }));
   chk(g->name, "id 76 compound 'ground-type' keeps its hyphen", rom_gbitem_desc(&gi, 76, d, (int)sizeof d) > 0 &&
-                           strcmp(d, "[redacted]") == 0);
+                           pin_ok(d, { 35, 0x28453F1Eu }));
   chk(g->name, "id 159 compound 'lower-level' keeps its hyphen", rom_gbitem_desc(&gi, 159, d, (int)sizeof d) > 0 &&
-                           strcmp(d, "[redacted]") == 0);
+                           pin_ok(d, { 32, 0x86505702u }));
   chk(g->name, "id 5 POKe glyph", rom_gbitem_desc(&gi, 5, d, (int)sizeof d) > 0 &&
-                           strcmp(d, "[redacted]") == 0);
+                           pin_ok(d, { 30, 0x1C4B84F9u }));
 
   /* refusals */
   chk(g->name, "id 0 refused", rom_gbitem_desc(&gi, 0, d, (int)sizeof d) == 0 && d[0] == 0);

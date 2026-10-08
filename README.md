@@ -12,8 +12,8 @@ The name says what it does: like reading **DNA** you can inspect the traits a Po
 with — and because DNA is **mutable**, PokeDNA can *edit* it too, all on real hardware with no PC
 in the loop.
 
-**The download contains no game art and no game text.** Every sprite, icon, wallpaper, screen
-chrome and item description you see on screen is read at run time out of *your own* cartridge
+**The download contains no game art and no game descriptions or dialogue.** Every sprite, icon,
+wallpaper, screen chrome and item description you see on screen is read at run time out of *your own* cartridge
 dumps on the SD card, the same way the map viewer has always worked. Without a ROM beside your
 save, PokeDNA still opens and edits everything, drawn with its own stand-ins. See *Credits &
 legality*.
@@ -276,8 +276,9 @@ the backlog.
   maps, flag numbers, script opcodes) are cited in the source to the
   [pret decompilations](https://github.com/pret) as reference; no decompilation code is included.
 - **What ships in the binary:** species, item, move, ability and location *name* tables and
-  event-flag names (short identifiers), the tool's own font and stand-in graphics, and the vendored
-  libraries below. **What does not:** sprites, icons, wallpapers, screen chrome, descriptions,
+  event-flag names (short identifiers), factual game-mechanics tables (base stats, level-up
+  learnsets, egg groups, Gen-3 wild-encounter tables), the tool's own font and stand-in
+  graphics, and the vendored libraries below. **What does not:** sprites, icons, wallpapers, screen chrome, descriptions,
   dialogue, maps — all of that is read from your own cartridge dumps at run time and never stored.
 - **Your saves and your ROMs stay yours.** PokeDNA reads them off your own card, transiently, and
   copies nothing anywhere except the optional art cache under `/PokeDNA/art/` on that same card.

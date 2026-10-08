@@ -149,3 +149,10 @@ __pycache__/
 
 # macOS sed -i -E backups
 *-E
+
+# emulator savestates / battery saves (never commit)
+*.ss[0-9]
+*.sgm
+*.srm
+*.sa[0-9]
+*.sav.*

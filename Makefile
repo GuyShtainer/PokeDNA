@@ -326,9 +326,14 @@ endif
 ifeq ($(strip $(PDNA_ARTLESS)),1)
 CFLAGS += -DPDNA_HAND_ART_COMPILED=0 -DPDNA_MON_ICONS_ART_COMPILED=0 \
           -DPDNA_CARD_ART_COMPILED=0 -DPDNA_POKEBLOCK_ART_COMPILED=0 \
-          -DPDNA_BAG_ART_COMPILED=0 -DPDNA_DESC_TEXT_COMPILED=0
-# Daycare BG is procedurally generated (tools/gen_daycare_bg.py) from user-supplied images,
-# not ROM-derived, so the artless build includes it. Consumer gates via __has_include probe.
+          -DPDNA_BAG_ART_COMPILED=0 -DPDNA_DESC_TEXT_COMPILED=0 \
+          -DPDNA_NO_DAYCARE_BG=1
+# Daycare BG (source/daycare_bg_data.h, git-ignored) is rendered by tools/gen_daycare_img.py
+# from a porymap map built on the decomp tilesets -- game-derived art. The artless build
+# must NOT include it (release audit 2026-10-08: it had leaked 52 KB of tiles into the
+# "art-free" ROM since d459b521, whose message named the wrong generator). The daycare
+# screen falls back to its procedural scene; tools/check_no_desc_text.sh fails the link
+# if the daycare_bg symbol or an oversized ROM ever comes back.
 # ...and tell the CODE which variant it is, not just which art gates are off, so the
 # log's boot line can name the build the user is actually running (source/perf.c).
 CFLAGS += -DPDNA_ARTLESS=1
