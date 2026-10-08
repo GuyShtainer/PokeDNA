@@ -2,39 +2,103 @@
 
 All notable changes to PokeDNA. Versions follow semantic versioning (`MAJOR.MINOR.PATCH`).
 
-## Unreleased (2026-08-08) — ⚠️ not yet validated on hardware
+## v3.0.0 — Game Boy saves, transfers, undo history, art-free (2026-10-08)
 
-Emulator-verified against real saves + the host test suite; the hardware pass is still
-outstanding for everything below (per-item state in the commit messages).
+**Hardware status: mostly not yet signed off on a cartridge.** v2.0.0 was validated screen by
+screen on an EZ-Flash Omega DE. Everything below was verified in mGBA (scripted screenshot
+chains, a virtual SD card power-cut at every write), by the host suite (168 harnesses over real
+saves) and by the retail gate (the real games booted headlessly on edited saves, 123 cases).
+Four shorter cart sessions (August to late September) exercised parts of it — opening Game Boy
+saves, a Yellow summary edit, Day-Care, Pokédex, trainer card, a Bank grab, a Bank → Emerald drop
+that came back byte-identical — and found bugs that were fixed afterwards and not re-run on a
+cart. Never on a cart: Gen 3 → Game Boy end to end, the undo journal and its power-cut recovery,
+Bank/ledger self-heal after a card pull, the 64 KiB save commit, ROM-hack detection, Ruby/Sapphire
+art from the SD card, the EverDrive on this build, rumble settings persistence, real-card speed.
+The hardware queue is the source of truth; treat this release as a preview until it is signed.
 
-### Features
-- **The art-free build is a real product**: a clean clone builds a ~0.45 MB PokeDNA with zero
-  game-derived art — original name chips in the PC grid, text lists for the Pokédex and the
-  species/item pickers, coloured type chips, an original arrow cursor.
-- **Game ROM registration**: Settings → *Game ROM* (plus a first-run offer on the art-free
-  build) browses the SD for your own `.gba`, remembers it per game (shared with the map), and
-  the PC box then streams the **real box icons out of your ROM at runtime** — fused or SD file
-  (Emerald/FireRed/LeafGreen; Ruby/Sapphire fail closed for now).
-- **Retail pickup, measured from the real game**: the exact PC transparency, the 17-frame grab
-  dip, a real PLACE beat, the hand idle bounce (icons static, as retail), the 6-frame cursor
-  slide, and retail's carry look (big white fist in front, no pop).
-- **Pokéblock case**: the game's own screen chrome (RS + Emerald) with the FLAVOR/FEEL board
-  filled for the selected block.
-- Create-from-scratch opens the six-card summary; hatching names the Pokémon; the Day-Care
-  explains its two real slots and its scenery visitors (with a toggle); the Records screen
-  says what a `.rec` is for.
+### The release is art-free
+- **`PokeDNA.gba` on the Releases page is now the art-free build** (about 1 MB). It compiles no
+  game-derived sprites, chrome, maps or text; `tools/check_no_desc_text.sh` fails the build if a
+  description string gets in. The full-art build still exists for local use and is never released.
+- **Your own ROM supplies the art, at run time:** box icons, front/back sprites, wallpapers, type
+  badges, item icons, the bag / trainer-card / Pokéblock-case chrome, item and move descriptions
+  (Gen 3 from the `.gba`, Gen 2 from the `.gbc`), the Game Boy sprites and icons, and the
+  learnset / encounter data CREATE and LEGALITY use. Ruby and Sapphire are served too.
+- **First launch asks once whether to add game ROMs**; *Settings → Game ROM* registers them per
+  game (also from inside a Game Boy save); *Extract art* caches the heavy pieces under
+  `/PokeDNA/art/`; *ROM art* can be switched off. Every place that would have shown art says
+  where it comes from instead.
+- **ROM-hack detection:** a registered ROM that is not a retail dump keeps the save viewable but
+  locks every write, and says why.
+- Reads are cancellable (B) and no longer die on a slow card; the icon cache is one store.
 
-### Fixes
-- **Every front sprite was horizontally mirrored** (visible as Unown p↔q) — generator fixed,
-  all fronts regenerated.
-- The PC box cursor survives L/R box flips, and a flip no longer wipes the screen to black.
-- A full backup shelf (21 files) no longer blocks every save; the backup mode (new-each-time /
-  single rolling / none) finally **persists**; *Clear backups* logs exactly what it removed
-  or why it could not.
-- The summary's confirm dialog no longer overflows the panel; the artless summary no longer
-  paints open-bus garbage in the portrait.
+### Game Boy saves (Red, Blue, Yellow, Gold, Silver, Crystal)
+- Open a Gen-1/2 `.sav` straight from the picker into the box grid; the same screens in the same
+  design as Gen 3: box grid and party, the summary editor (moves and items filtered to that
+  game, Crystal's extra fields), create (ROM-free for Gen 1), duplicate, release, move, `.pk1` /
+  `.pk2` export, EXPORT ALL / RELEASE ALL.
+- Day-Care, trainer card (editable), bag and pack, event flags, Pokédex (with the new per-species
+  detail view every generation shares), Fly, the Gen-2 clock screen (offsets and the clock-error
+  flag), Hall of Fame.
+- Map: Gen 1 draws the player's current map from the ROM and places the player on it with a
+  warning and an undo; Gen 2 has an all-maps browser.
+- Mail is respected: box / release / duplicate / Day-Care refuse while a letter is attached, the
+  way the games do, instead of stranding a mail slot.
+
+### Transfers between generations, through the Bank
+- The Bank is the only road between saves (one save open at a time, so nothing clones).
+- **Gen 3 → Game Boy** with a confirm screen that lists what travels and what stays; held items
+  that cannot travel are placed or left behind, never dropped silently; the Gen-3 original is
+  parked in a sidecar so the **round trip back is byte-exact**.
+- **Game Boy → Gen 3**: *keep as is* or *make legal*; a Bank Pokémon can drop straight into a
+  party slot, and a full party offers to send someone to a box first.
+- **TRANSFERS** screen: every parked original, where its copy is, restore / re-link / mark
+  finished; records and the ledger heal themselves after a card pull mid-write.
+
+### Undo, redo and the History screen
+- No per-screen "Save X?" prompts: every edit (Gen 3 and Game Boy) is held and written once at
+  exit, and journaled under `/PokeDNA/journal/`.
+- `SELECT`+`L` / `SELECT`+`R` undo and redo on the box grid and summary; a swap's two halves and
+  a chained swap undo as one press, with an all-or-nothing rollback.
+- **History** (nav menu) lists every step, which are already saved, and jumps to any point.
+- After a power cut the next load offers to re-apply the steps that never reached the save.
+- *History size* and *Clear history* in Settings; the EverDrive stays untouched.
+
+### Editing and legality
+- **LEGALITY** on any Pokémon; **CREATE** asks *legit copy* (built from the ROM's own encounter
+  and evolution data, at a level the game could produce) or *from scratch*; static legendaries
+  start at their real level; the move picker only offers the species' generation.
+- Current HP is editable; the Lilycove museum star is settable (and heals older saves); the
+  Pokédex has a detail view; Shedinja keeps its 1 HP when moved to the party; a party Pokémon's
+  mail byte is written the way the games write it.
+
+### Safety and robustness
+- Bank boxes and the Bank index keep a rolling backup and restore themselves when a primary is
+  missing or short; a failed Bank or ledger write names the file that still holds your bytes.
+- A failed save is reported as a failure, never a success; cancelling never costs a Pokémon.
+- 64 KiB Gen-3 dumps are committed at 64 KiB; a save damaged by an earlier build (two slots that
+  disagree) opens on its intact slot and says so.
+- Copying a Pokémon can no longer clone it into another save (the clipboard empties on close).
+- Build-time guards: every save-image write goes through one funnel; the build fails if the
+  variant marker, the stack budget or the EWRAM budget is violated.
+
+### Also
+- Pokéblock case with the game's own screen; the real Ruby/Sapphire bag chrome; retail pickup
+  timing in the PC; rumble strength and duration persist; dozens of texts that overflowed their
+  panel now fit (a lint checks every footer against the 240 px screen).
+- The emulator-only `delta` builds are a test vehicle and are not released.
+
+### Known issues (open at release)
+- History shows the current branch only; undo and redo take about a second in the emulator.
+- Editing a *copy* of a save can make the *original* offer to re-apply the copy's steps.
+- A card that fails inside a rename can cross-link a file and its `.tmp`; a failed backup with a
+  full backup shelf can lose the oldest backup. Both are being hardened.
+- A Day-Care take-out does not teach the moves learned while boarded.
+- Without a ROM the art-free screens are text and chips, by design.
 
 ## v2.0.0 — everything since the first release (2026-08-04)
+
+*The original v2.0.0 download was withdrawn on 2026-10-08; use the art-free build from v3.0.0.*
 
 **Validated on real hardware** (EZ-Flash Omega DE), against real Generation-III saves, with the
 pure-C cores additionally covered by the host test suite. Back up your `.sav` before you edit
@@ -107,8 +171,7 @@ Every write still keeps an immutable backup first — keep your backups regardle
 - **Nintendo 3DS:** launch `PokeDNA.gba` via `open_agb_firm`.
 
 ### Notes
-- The release `PokeDNA.gba` bundles Generation-III sprites that are © Nintendo / Creatures Inc. /
-  GAME FREAK Inc. — included for convenience on a non-commercial, tolerated basis (see the README's
-  *Credits & legality*). The source repository contains no copyrighted art. PokeDNA is unofficial and
-  not affiliated with Nintendo, Game Freak, or The Pokémon Company.
-- PokeDNA's own code is GPLv3.
+- The original v1.0.0 download was withdrawn on 2026-10-08; the art-free `PokeDNA.gba` on the
+  Releases page is the only binary. The source repository has never contained game art.
+- PokeDNA is unofficial and not affiliated with Nintendo, Game Freak, or The Pokémon Company.
+  PokeDNA's own code is GPLv3.
