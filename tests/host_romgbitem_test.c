@@ -99,20 +99,20 @@ static void run_game(const char* dir, const Game* g) {
          g->name, (unsigned)gi.bank_off, (unsigned)gi.taddr, maxlen, (unsigned)h);
 
   chk(g->name, "id 1 text", rom_gbitem_desc(&gi, 1, d, (int)sizeof d) > 0 &&
-                           pin_ok(d, { 31, 0x3FA9E074u }));
+                           pin_ok(d, (TextPin){ 31, 0x3FA9E074u }));
   chk(g->name, "hyphen join + no leading/trailing space (id 4)", rom_gbitem_desc(&gi, 4, d, (int)sizeof d) > 0 &&
-                           pin_ok(d, { 34, 0xCA60BA1Eu }));
+                           pin_ok(d, (TextPin){ 34, 0xCA60BA1Eu }));
   chk(g->name, "id 3 apostrophe-s", rom_gbitem_desc(&gi, 3, d, (int)sizeof d) > 0 &&
-                           pin_ok(d, { 33, 0x6AA9BABFu }));
+                           pin_ok(d, (TextPin){ 33, 0x6AA9BABFu }));
   /* review-zr D1: a line-end '-' before type/colored/level is a REAL compound hyphen (kept) */
   chk(g->name, "id 60 compound 'silver-colored' keeps its hyphen", rom_gbitem_desc(&gi, 60, d, (int)sizeof d) > 0 &&
-                           pin_ok(d, { 31, 0x7E6B9DE8u }));
+                           pin_ok(d, (TextPin){ 31, 0x7E6B9DE8u }));
   chk(g->name, "id 76 compound 'ground-type' keeps its hyphen", rom_gbitem_desc(&gi, 76, d, (int)sizeof d) > 0 &&
-                           pin_ok(d, { 35, 0x28453F1Eu }));
+                           pin_ok(d, (TextPin){ 35, 0x28453F1Eu }));
   chk(g->name, "id 159 compound 'lower-level' keeps its hyphen", rom_gbitem_desc(&gi, 159, d, (int)sizeof d) > 0 &&
-                           pin_ok(d, { 32, 0x86505702u }));
+                           pin_ok(d, (TextPin){ 32, 0x86505702u }));
   chk(g->name, "id 5 POKe glyph", rom_gbitem_desc(&gi, 5, d, (int)sizeof d) > 0 &&
-                           pin_ok(d, { 30, 0x1C4B84F9u }));
+                           pin_ok(d, (TextPin){ 30, 0x1C4B84F9u }));
 
   /* refusals */
   chk(g->name, "id 0 refused", rom_gbitem_desc(&gi, 0, d, (int)sizeof d) == 0 && d[0] == 0);

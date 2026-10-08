@@ -152,17 +152,6 @@ static void normalise(const char* src, char* dst, size_t cap) {
   dst[w] = 0;
 }
 
-/* ---- per-ROM run ---------------------------------------------------------------- */
-typedef struct {
-  const char* name;
-  const char* file;
-  int         expect_open;     /* 1 = every kind must open                       */
-  int         expect_items;    /* item count this ROM must serve                 */
-  int         group;
-  TextPin     potion;          /* item 13, pinned by length + FNV                 */
-  TextPin     pound;           /* move 1                                          */
-} RomCase;
-
 /* Expected texts are pinned by (UTF-8 byte length, FNV-1a 32 of the decoded string) --
  * never verbatim, so the test carries no game text (release audit 2026-10-08). The pins
  * are of item 13 / move 1 / ability 13 as the on-cartridge bytes decode (the source's "\n"
@@ -180,6 +169,18 @@ static const TextPin POTION_FRLG = { 77, 0x0F1BDE2Bu };
 static const TextPin POUND_RSE = { 37, 0x9A403A6Du };
 static const TextPin POUND_FRLG = { 63, 0x8E9E211Eu };
 static const TextPin ABIL13 = { 24, 0x56022BD4u };
+
+/* ---- per-ROM run ---------------------------------------------------------------- */
+typedef struct {
+  const char* name;
+  const char* file;
+  int         expect_open;     /* 1 = every kind must open                       */
+  int         expect_items;    /* item count this ROM must serve                 */
+  int         group;
+  TextPin     potion;          /* item 13, pinned by length + FNV                 */
+  TextPin     pound;           /* move 1                                          */
+} RomCase;
+
 
 static void run_rom(const char* dir, const RomCase* rcase) {
   char path[512];

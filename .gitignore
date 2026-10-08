@@ -156,3 +156,4 @@ __pycache__/
 *.srm
 *.sa[0-9]
 *.sav.*
+*.state
